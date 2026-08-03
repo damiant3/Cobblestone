@@ -1,5 +1,11 @@
 # Emit the entire Codex compiler (codex/compiler/) as a single C# file.
 #
+# THIS IS THE DIVERSE DOUBLE-COMPILING WITNESS. Roslyn is the only compiler
+# in reach whose lineage is unrelated to ours, so this pipeline is the `B`
+# in Wheeler's DDC and the only standing check on whether the seed is
+# honest rather than merely self-consistent. Do not delete this plug as
+# unused. See docs/OperatorsManual.md, "Diverse Double-Compiling".
+#
 #   codex/compiler/*.codex  (54 files, + cited forewords)
 #     |
 #     v  build/concat-codex-self.ps1

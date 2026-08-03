@@ -58,7 +58,7 @@ mutable state.
 
 ## Architecture
 
-### Phase 1 -- Atomic Primitives (language + emitter) — DONE (all three backends)
+### Phase 1 -- Atomic Primitives (language + emitter) -- DONE (all three backends)
 
 Six atomic builtins. x86-64 landed in CL 4626; the ARM64 and RISC-V
 plugs carry the same six (ARM64: `a64-emit-memory-fence` / `-atomic-load`
@@ -92,7 +92,7 @@ The `[Atomic]` effect prevents accidental use in non-concurrent
 contexts. `punctual` functions cannot use `[Atomic]` (atomics have
 variable latency from contention).
 
-### Phase 2 -- Per-Core Bootstrap — DONE (boot gate + VM flag)
+### Phase 2 -- Per-Core Bootstrap -- DONE (boot gate + VM flag)
 
 SMP is opt-in. The boot sequence reads the core count from
 `ap-core-count-addr` (GPA 0xFF8); if <= 1, SMP init is skipped
@@ -218,7 +218,7 @@ single consumer) is the natural fit for work distribution.
 
 | Phase | Depends on | Blocks | Status |
 |-------|-----------|--------|--------|
-| 1 (atomics) | Emitter changes only | Phase 3, 4, 5 | DONE — x86-64, ARM64, RISC-V |
+| 1 (atomics) | Emitter changes only | Phase 3, 4, 5 | DONE -- x86-64, ARM64, RISC-V |
 | 2 (boot) | Phase 1, LAPIC/GIC driver | Phase 3 | DONE for x86-64 (opt-in `-smp N`); ARM64/RISC-V open |
 | 3 (scheduler) | Phase 1, 2 | Phase 5 | Module DONE (CoreState + work stealing); not wired |
 | 4 (heap) | Phase 1 | Nothing (can parallelize with 3) | Module DONE (CoreHeap per-core arenas); not wired |
@@ -233,7 +233,7 @@ timer (a), honours core affinity (b), halts when idle and is woken by IPI
 wait/exit double-run race are fixed. Work stealing (Phase 3) is not a gap --
 the single global process table is the shared run queue -- and CoreHeap
 (Phase 4) is unused off the critical path. The channel-block lost-wakeup
-(4.11g) is now fixed — `chan-send-block`/`chan-recv-block` got the same
+(4.11g) is now fixed -- `chan-send-block`/`chan-recv-block` got the same
 block-then-recheck-and-retry as `process-wait`. **One item remains and is why
 this doc is still Active: AP boot on ARM64/RISC-V (BACKLOG 4.2)** is unbuilt.
 When it lands, move this doc to `Done/`.
@@ -261,9 +261,9 @@ join:
 | Cooperative switch | `process-yield`, `process-exit`, `process-wait` (`X86_64ProcessHelpers.codex`) |
 | Blocking switch | channel send/recv, `emit-find-next-ready` (`X86_64IPCHelpers.codex`) |
 | Preemptive switch | timer ISR, `__interrupt_common` (`X86_64Boot.codex`) |
-| Context restore | `__process_resume` — takes the table entry in RSI |
+| Context restore | `__process_resume` -- takes the table entry in RSI |
 
-### Step 1 — the running process is not a global (DONE)
+### Step 1 -- the running process is not a global (DONE)
 
 `current-proc-addr` (cell 28688) named the running process and was read
 at 38 sites. It is correct for exactly one core and for no more than
@@ -294,17 +294,17 @@ cheaper than the load it replaced. The timer ISR must use the
 **interrupted** RSP off the interrupt frame (`[rsp+64]`), not the one it
 is handling on.
 
-### Step 2 — claim first, publish second (DONE)
+### Step 2 -- claim first, publish second (DONE)
 
 Every scan-and-claim was `cmp state, READY` followed by `mov state,
-RUNNING`. That is a TOCTOU: safe on one core, unsafe on two. All five —
+RUNNING`. That is a TOCTOU: safe on one core, unsafe on two. All five --
 `process-yield`, `process-exit`, `process-wait`, `emit-find-next-ready`
-and the timer ISR — now claim with `lock cmpxchg`. Losing the race is
+and the timer ISR -- now claim with `lock cmpxchg`. Losing the race is
 not an error; another core took the slot, so keep scanning.
 
 **Atomicity alone was not the fix.** `process-yield` marked *itself*
 READY **before** it scanned for a replacement. On one core that is
-harmless — nobody else is looking. With an AP dispatching it advertises
+harmless -- nobody else is looking. With an AP dispatching it advertises
 a process as claimable *while its own core is still executing it*: the
 AP claims it, the BSP finds no replacement, takes its `no-switch` path,
 and carries on running the process the AP has now also resumed.
@@ -313,7 +313,7 @@ So the order is inverted: **secure a replacement with a successful
 cmpxchg first, and only then mark yourself READY.** A core standing
 inside a process never advertises it. The no-switch path has nothing to
 undo, because it never published. The timer ISR's preempt path had the
-same shape and got the same treatment — with one extra wrinkle: its
+same shape and got the same treatment -- with one extra wrinkle: its
 publish is *itself* a cmpxchg (RUNNING → READY), because the max-ticks
 check above it may have already marked the process a ZOMBIE and a plain
 store would resurrect it.
@@ -325,16 +325,16 @@ READY publish fails against it and the BSP can never be scheduled back
 onto proc 0.
 
 **A trap that cost a hang, written down so it is not re-found:** in the
-timer ISR, RCX holds `&proc[current]` for the context save — and the
+timer ISR, RCX holds `&proc[current]` for the context save -- and the
 **starve check clobbers it** (`sv1` loads the starve counter into RCX).
 Anything below that point which wants `&proc[current]` must rebuild it
 from RDI, which does survive. The original code reloaded it for exactly
 this reason.
 
-### Step 3 — the AP dispatch loop (DONE)
+### Step 3 -- the AP dispatch loop (DONE)
 
 An application processor no longer halts. It goes to **`__idle_dispatch`**
-— the same place the boot processor goes when it runs out of work — with
+-- the same place the boot processor goes when it runs out of work -- with
 its core id in R15, claims a READY process with a `lock cmpxchg`, and runs
 it. Six children at `-smp 4` execute across four cores; the same binary
 works at 2 and 8. `codex/test/smp-dispatch.codex` pins it.
@@ -346,7 +346,7 @@ works at 2 and 8. `codex/test/smp-dispatch.codex` pins it.
 
 `process-wait` marks itself BLOCKED and spins. The moment the child it
 waits on exits, the wake loop marks it READY, another core claims it, and
-resumes it **on that stack**. Two cores, one stack — and the parked core's
+resumes it **on that stack**. Two cores, one stack -- and the parked core's
 next interrupt or fault pushes a frame straight through the other core's
 process. It showed up as `!EXC=08` with **RSP = 0** and a core executing
 inside the process table.
@@ -361,7 +361,7 @@ To know which idle stack is its own, a core has to know which core it is.
 **It reads that out of the process it is standing in.** `proc-core-offset`
 (entry offset 8, which was free) records the core that claimed the slot,
 stamped by whoever won the CMPXCHG; the AP's bring-up seeds its own id
-from R15. That is the entire per-core identity mechanism — **no MSR, no
+from R15. That is the entire per-core identity mechanism -- **no MSR, no
 LAPIC read, no GS base.** A core asks the process it is running.
 
 Core 0 may claim slot 0; an AP may not. Slot 0 is the program the machine
@@ -369,20 +369,20 @@ booted and it owns the boot stack and the main heap.
 
 `process-exit`, `process-wait` and the channel block path all now end in
 `jmp __idle_dispatch` rather than carrying their own scan. `process-yield`
-keeps its own scan, and safely — it never publishes itself before it has
+keeps its own scan, and safely -- it never publishes itself before it has
 won a claim, so it is never standing on a stack anyone can take.
 
 ### What step 3 looked like before it worked (kept: the diagnosis is the useful part)
 
 An AP still ends bring-up at `hlt; jmp hlt` (`emit-smp-init`). The loop
 that replaces it: sentinel and cursor both start at slot 0 so the walk
-covers 1..15 and stops on wrap (**never claim slot 0** — proc 0 is the
+covers 1..15 and stops on wrap (**never claim slot 0** -- proc 0 is the
 booted program and owns the BSP's stack and main heap); claim a READY
 slot with `lock cmpxchg`; load the slice from `slice-table-addr`; `jmp
 __process_resume` with RSI = the table entry; on no work, `pause` and
 walk again.
 
-**This was built and it worked** — an AP claimed a spawned process,
+**This was built and it worked** -- an AP claimed a spawned process,
 executed it, and its side effect landed. A one-child probe at `-smp 4`
 printed `val: 9` and `ap claims: 1`, where the claim counter is a cell
 only the AP dispatch loop writes. **So the capability is real.** It is
@@ -392,19 +392,19 @@ having written down before anyone tries again:
 **A core parked with no work is still standing on the stack of the
 process it was last running.** `process-exit` and `process-wait` spin
 their idle scan *on the exiting/blocking process's own stack*. That
-process is about to be made READY by the wake loop — at which point
+process is about to be made READY by the wake loop -- at which point
 another core claims it and resumes it **on the very stack the parked
 core is still executing on**. Two cores, one stack. The crash signature
 is a `!EXC=08` with **RSP = 0** and a `!EXC=06` executing inside the
 process table at `RIP≈0x502a`: a core resumed a context that was being
 rewritten underneath it.
 
-The AP's *initial* dispatch loop gets this right by accident — it spins
+The AP's *initial* dispatch loop gets this right by accident -- it spins
 on its own idle stack, which nothing else owns. The shared idle paths do
 not. **The fix is that a core with no work must leave the process's
 stack before it parks** (switch RSP to a per-core idle stack, then
 scan). That needs a per-core identity, which is the one thing the
-RSP-derivation of step 1 deliberately does not give you — an AP knows
+RSP-derivation of step 1 deliberately does not give you -- an AP knows
 its core id in R15 at bring-up, but a process resumed on it does not.
 The cleanest route is probably to carry the owning core in the process
 table entry, written by whoever claims the slot, so a core can always
@@ -428,7 +428,7 @@ Of the `smp-cores` shape, and for the same reason: **find a counter only
 an AP can write, and make sure nothing else can write it.** The probe
 used a cell (36200) bumped only inside the AP dispatch loop's claim, and
 read it back from the guest. A test showing that N processes completed
-proves nothing — the BSP alone can do that, and a test that cannot fail
+proves nothing -- the BSP alone can do that, and a test that cannot fail
 is how SMP came to be faked here in the first place.
 
 **Cell hygiene, learned the hard way:** 36152 is a permanent booby trap
@@ -436,19 +436,19 @@ is how SMP came to be faked here in the first place.
 codex-vm's blit cells. **Grep `tools/codex-vm.c` before claiming any
 cell in this band.** 36200 is free.
 
-### AP boot on RISC-V — CLOSED 2026-07-15 (blu)
+### AP boot on RISC-V -- CLOSED 2026-07-15 (blu)
 
 A secondary hart executes guest code. The insight is that RISC-V needs
 no SBI here: under QEMU `virt -smp N -bios none` **every hart enters the
-kernel at the reset entry** — there is no OpenSBI to park the
-secondaries — so the bring-up is the park-the-secondaries model, not
+kernel at the reset entry** -- there is no OpenSBI to park the
+secondaries -- so the bring-up is the park-the-secondaries model, not
 `sbi_hart_start`. The plug's `__start` (`rv-emit-runtime`,
 `RiscVRuntime.codex`) reads `mhartid` (`csrr`) as its first act; hart 0
 takes the existing boot path (stack, FP, heap, CCE tables, trap vector,
 `opening`); a hart whose id is non-zero branches to a four-instruction AP
 path that stores 1 to a fixed DRAM cell (`0x80090000`) and parks in
 `wfi; j .`. No new instruction encoder was needed. The marker is written
-only by a core that ran our guest code — the `smp-cores` discipline
+only by a core that ran our guest code -- the `smp-cores` discipline
 (a counter only an AP can write). `codex/test/smp-riscv-boot.codex` reads
 it back: "an ap executed guest code" at `-smp 2`/`4`, "AP DID NOT RUN" at
 `-smp 1`, so **the test can fail**. Run by `build/test-cross-smp.ps1`
@@ -456,26 +456,26 @@ under QEMU (a `.smp` sidecar carries the core count; the single-core
 cross batteries skip `.smp` tests). Plug-only; no seed.
 
 Not yet built on RISC-V, and not needed for the proof: CLINT software
-IPIs (MSIP at `0x02000000`) between harts, and any real per-core work —
+IPIs (MSIP at `0x02000000`) between harts, and any real per-core work --
 the AP path only parks. A secondary joining a scheduler is moot here
 anyway, because these backends have no process table or scheduler (that
 lives only in the x86-64 emitter).
 
-### AP boot on ARM64 — CLOSED 2026-07-15 (blu)
+### AP boot on ARM64 -- CLOSED 2026-07-15 (blu)
 
 A secondary ARM64 core executes guest code. Unlike RISC-V, QEMU `virt` does
-NOT auto-enter the secondaries — a spike (`qemu-system-aarch64 -M virt
+NOT auto-enter the secondaries -- a spike (`qemu-system-aarch64 -M virt
 -smp 2`) produced a single core's output, so the secondaries are held in
 QEMU's PSCI implementation. Core 0's `__start` (`a64-emit-runtime`,
 `Arm64Runtime.codex`) therefore issues **PSCI `CPU_ON`** to start core 1:
 `x0` = `0xC4000003` (CPU_ON, SMC64 id), `x1` = target core (1), `x2` = the AP
 stub's address (PC-relative `adr`, so it is position-independent), `x3` = 0
 (context), then `hvc #0`. **The conduit is HVC on QEMU virt** (proven by
-spike — a second spike issuing `CPU_ON` over HVC ran the secondary), so no
+spike -- a second spike issuing `CPU_ON` over HVC ran the secondary), so no
 EL3/secure firmware is needed and no spin-table. The AP stub stores 1 to
 `0x60000000` (mid-RAM, clear of the heap and stack) and parks in `wfi; b .`.
 No `mpidr` read is needed: the secondary enters the AP stub directly, and
-core 0 is the only core at `__start`. No new instruction encoder — `hvc` is a
+core 0 is the only core at `__start`. No new instruction encoder -- `hvc` is a
 literal word and `adr` is a small byte-computing helper (`a64-adr-bytes`).
 QEMU boots the ELF (honouring its `0x40100880` entry); ARM64 emits no flat
 `.bin`. Plug-only; no seed. `codex/test/smp-arm64-boot.codex` pins it.

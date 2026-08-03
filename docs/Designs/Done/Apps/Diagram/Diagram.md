@@ -9,7 +9,7 @@ standalone inside codex-vm.
 
 ## 1. Vision
 
-Every diagramming tool is a web app now — Miro, Lucidchart, draw.io,
+Every diagramming tool is a web app now -- Miro, Lucidchart, draw.io,
 Excalidraw. They all depend on the browser's DOM, SVG, and Canvas
 APIs. We have none of those. What we have is better: a typed widget
 tree, a rasterizer with lines/circles/rects/polygons/beziers, a

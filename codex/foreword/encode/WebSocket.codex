@@ -1,11 +1,29 @@
 Chapter: WebSocket
   cites Encode chapter Base64
-  cites Foreword chapter Sha256
+  cites Foreword chapter Sha1
   cites Foreword chapter CCE
 
  WebSocket protocol (RFC 6455). Frame encoder/decoder for text and
  binary messages. Includes handshake header generation with
  Sec-WebSocket-Accept computation.
+
+ Three things here were wrong in a way no test in this tree could see,
+ because nothing outside this chapter ever called it. All three are
+ about talking to a peer that is not us.
+
+ The accept key is SHA-1, named by number in the specification. It was
+ SHA-256, and the digest was handed to a byte encoder as the word list
+ every hash here answers with, so the published example produced a run
+ of padding characters instead of an accept key. No browser would have
+ completed a handshake.
+
+ A frame sent by a client is required to be masked, and the decoder did
+ not unmask, so every message arriving from a browser decoded to the
+ four-byte-keyed ciphertext rather than the payload.
+
+ The response was joined with a bare newline. A carriage return has no
+ code point in this encoding, so a conforming response cannot be built
+ as Text at all; it is built as bytes, which is what a socket takes.
 
  We say:
 
@@ -28,35 +46,54 @@ Section: Types
   }
 
 Section: Frame Encoding
+
+ A masked frame needs a key, and the frame builder used to take a
+ Boolean instead. Passing True set the mask bit over an unmasked
+ payload with no key behind it, which is a frame no peer can read.
+ The builder now emits what a server sends, and the masked builder
+ beside it takes the four key bytes it cannot work without.
+
   ws-encode-text : Text -> List Integer
   ws-encode-text (msg) =
     let payload = ws-text-to-bytes msg
-    in ws-encode-frame True ws-opcode-text False payload
+    in ws-encode-frame True ws-opcode-text payload
 
   ws-encode-binary : List Integer -> List Integer
   ws-encode-binary (payload) =
-    ws-encode-frame True ws-opcode-binary False payload
+    ws-encode-frame True ws-opcode-binary payload
 
   ws-encode-close : Integer -> List Integer
   ws-encode-close (code) =
-    ws-encode-frame True ws-opcode-close False (ws-be16 code)
+    ws-encode-frame True ws-opcode-close (ws-be16 code)
 
   ws-encode-ping : List Integer -> List Integer
   ws-encode-ping (payload) =
-    ws-encode-frame True ws-opcode-ping False payload
+    ws-encode-frame True ws-opcode-ping payload
 
   ws-encode-pong : List Integer -> List Integer
   ws-encode-pong (payload) =
-    ws-encode-frame True ws-opcode-pong False payload
+    ws-encode-frame True ws-opcode-pong payload
 
-  ws-encode-frame : Boolean, Integer, Boolean, List Integer -> List Integer
-  ws-encode-frame (fin) (opcode) (masked) (payload) =
+  ws-encode-frame : Boolean, Integer, List Integer -> List Integer
+  ws-encode-frame (fin) (opcode) (payload) =
     let len = list-length payload
     in let byte0 = bit-or (if fin then 128 else 0) opcode
-    in let mask-bit = if masked then 128 else 0
-    in if len < 126 then [byte0, bit-or mask-bit len] & payload
-    else if len < 65536 then [byte0, bit-or mask-bit 126] & ws-be16 len & payload
-    else [byte0, bit-or mask-bit 127] & ws-be64 len & payload
+    in if len < 126 then [byte0, len] & payload
+    else if len < 65536 then [byte0, 126] & ws-be16 len & payload
+    else [byte0, 127] & ws-be64 len & payload
+
+  ws-encode-frame-masked : Boolean, Integer, List Integer, List Integer -> List Integer
+  ws-encode-frame-masked (fin) (opcode) (key) (payload) =
+    let len = list-length payload
+    in let byte0 = bit-or (if fin then 128 else 0) opcode
+    in let body = key & ws-apply-mask payload key 0 []
+    in if len < 126 then [byte0, bit-or 128 len] & body
+    else if len < 65536 then [byte0, bit-or 128 126] & ws-be16 len & body
+    else [byte0, bit-or 128 127] & ws-be64 len & body
+
+  ws-encode-text-masked : Text, List Integer -> List Integer
+  ws-encode-text-masked (msg) (key) =
+    ws-encode-frame-masked True ws-opcode-text key (ws-text-to-bytes msg)
 
 Section: Frame Decoding
   ws-decode-frame : List Integer -> WsFrame
@@ -69,8 +106,21 @@ Section: Frame Decoding
     in let len-code = bit-and byte1 127
     in let header-end = ws-header-size len-code masked
     in let payload-len = ws-read-length bytes len-code
-    in let payload = ws-slice bytes header-end payload-len []
+    in let raw = ws-slice bytes header-end payload-len []
+    in let key = ws-slice bytes (ws-header-size len-code False) 4 []
+    in let payload = if masked then ws-apply-mask raw key 0 [] else raw
     in WsFrame { ws-fin = fin, ws-opcode = opcode, ws-masked = masked, ws-payload = payload, ws-length = payload-len }
+
+ Masking is a repeating four-byte exclusive-or, so it is its own
+ inverse and one function serves the encoder and the decoder both.
+ The key sits directly after the length, which is where the header
+ would otherwise have ended.
+
+  ws-apply-mask : List Integer, List Integer, Integer, List Integer -> List Integer
+  ws-apply-mask (payload) (key) (i) (acc) =
+    if i >= list-length payload then acc
+    else let k = list-at key (int-mod i 4)
+    in ws-apply-mask payload key (i + 1) (list-push acc (bit-xor (list-at payload i) k))
 
   ws-header-size : Integer, Boolean -> Integer
   ws-header-size (len-code) (masked) =
@@ -84,16 +134,30 @@ Section: Frame Decoding
     else bit-or (bit-shl (list-at bytes 6) 24) (bit-or (bit-shl (list-at bytes 7) 16) (bit-or (bit-shl (list-at bytes 8) 8) (list-at bytes 9)))
 
 Section: Handshake
+
+ The accept key is the base64 of the SHA-1 of the client key joined to
+ the fixed identifier, and the specification prints a worked example
+ of it. That example is the test.
+
   ws-accept-key : Text -> Text
   ws-accept-key (client-key) =
     let combined = client-key & ws-guid
-    in let hash = sha256 (ws-text-to-bytes combined)
-    in base64-encode hash
+    in base64-encode (sha1-bytes (ws-text-to-bytes combined))
 
-  ws-handshake-response : Text -> Text
-  ws-handshake-response (client-key) =
-    let accept = ws-accept-key client-key
-    in "HTTP/1.1 101 Switching Protocols\nUpgrade: websocket\nConnection: Upgrade\nSec-WebSocket-Accept: " & accept & "\n\n"
+ The response is bytes rather than Text because its line ending is a
+ carriage return and a line feed, and a carriage return is one of the
+ characters this encoding does not carry. Building it as Text and
+ settling for a bare line feed is what the previous version did.
+
+  ws-crlf : List Integer = [13, 10]
+
+  ws-handshake-response-bytes : Text -> List Integer
+  ws-handshake-response-bytes (client-key) =
+    let l1 = ws-text-to-bytes "HTTP/1.1 101 Switching Protocols" & ws-crlf
+    in let l2 = ws-text-to-bytes "Upgrade: websocket" & ws-crlf
+    in let l3 = ws-text-to-bytes "Connection: Upgrade" & ws-crlf
+    in let l4 = ws-text-to-bytes ("Sec-WebSocket-Accept: " & ws-accept-key client-key) & ws-crlf
+    in l1 & l2 & l3 & l4 & ws-crlf
 
 Section: Helpers
   ws-be16 : Integer -> List Integer

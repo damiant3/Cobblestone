@@ -1,11 +1,11 @@
-# Iteration 3 — Handoff Summary
+# Iteration 3 -- Handoff Summary
 
 > **Date correction (2026-03-18)**: The original date `2025-06-21` was hallucinated
 > by the agent from training data. The actual date of this work was `2026-03-14`
 > based on git commit `05a40ea` (timestamp `2026-03-14 07:29:57 -0700`).
 
 **Date**: 2026-03-14  
-**Commit**: `05a40ea` feat: Milestone 3 — IR, C# emitter, codex build/run commands  
+**Commit**: `05a40ea` feat: Milestone 3 -- IR, C# emitter, codex build/run commands  
 **Branch**: `master`  
 **Remote**: https://github.com/damiant3/NewRepository  
 **All pushed**: ✅ Yes
@@ -38,10 +38,10 @@
 
 ### Bug Fixes This Iteration
 
-1. **CS0414 warning-as-error** — Removed unused `m_mode` field from `Lexer.cs` (was blocking entire build cascade)
-2. **Top-level statements ordering** — C# requires top-level statements before type declarations; moved `Console.WriteLine` before the class
-3. **Class/member name collision** — Prefixed generated class with `Codex_` to avoid C# error when method name matches filename
-4. **Local variable type resolution in lowering** — Added `m_localEnv` to `Lowering` so parameter types (e.g., `Text` for `name` in `greeting`) are properly tracked during IR emission. Without this, `++` on text was emitting as list append.
+1. **CS0414 warning-as-error** -- Removed unused `m_mode` field from `Lexer.cs` (was blocking entire build cascade)
+2. **Top-level statements ordering** -- C# requires top-level statements before type declarations; moved `Console.WriteLine` before the class
+3. **Class/member name collision** -- Prefixed generated class with `Codex_` to avoid C# error when method name matches filename
+4. **Local variable type resolution in lowering** -- Added `m_localEnv` to `Lowering` so parameter types (e.g., `Text` for `name` in `greeting`) are properly tracked during IR emission. Without this, `++` on text was emitting as list append.
 
 ### Demos Working
 
@@ -87,7 +87,7 @@ Source (.codex)
 - **IR is explicitly typed**: Every `IRExpr` carries its resolved `CodexType`. No inference downstream.
 - **C# emitter uses top-level statements**: Generated code is a single `.cs` file with top-level `Console.WriteLine` + a static class.
 - **Lowering tracks local env**: Parameters, let-bindings, and match-pattern bindings are tracked in `m_localEnv` during IR construction.
-- **Functions emit as static methods**: Multi-parameter Codex functions emit as C# methods with multiple parameters (not curried Func chains — simpler, more efficient).
+- **Functions emit as static methods**: Multi-parameter Codex functions emit as C# methods with multiple parameters (not curried Func chains -- simpler, more efficient).
 
 ---
 
@@ -110,12 +110,12 @@ Source (.codex)
 - [ ] `.gitignore` update to exclude generated `.cs` files in `samples/`
 
 ### Known Limitations
-- **No sum types or record types** in the type system yet — only primitive types, functions, and lists
-- **No effect system** — all functions are pure from the type checker's perspective
-- **Let-in lowering** does redundant work (lowers bindings twice) — works but not optimal
-- **`codex run`** shells out to `dotnet build` + `dotnet run` in a temp dir — works but slow (~2s overhead)
-- **No prose mode** yet — only notation-mode Codex is supported
-- **The `Lowering` let-in handling** is suboptimal — it re-lowers bindings. Should be cleaned up.
+- **No sum types or record types** in the type system yet -- only primitive types, functions, and lists
+- **No effect system** -- all functions are pure from the type checker's perspective
+- **Let-in lowering** does redundant work (lowers bindings twice) -- works but not optimal
+- **`codex run`** shells out to `dotnet build` + `dotnet run` in a temp dir -- works but slow (~2s overhead)
+- **No prose mode** yet -- only notation-mode Codex is supported
+- **The `Lowering` let-in handling** is suboptimal -- it re-lowers bindings. Should be cleaned up.
 
 ---
 
@@ -125,6 +125,6 @@ Source (.codex)
 - **Also present**: `NewRepository.sln` (old, ignore it)
 - **Build**: `dotnet build Codex.sln`
 - **Test**: `dotnet test Codex.sln`
-- **TreatWarningsAsErrors**: `true` in `Directory.Build.props` — don't leave unused variables
-- **Agent instructions**: See `copilot-instructions.md` — terminal discipline, file editing rules
-- **Contributing rules**: See `CONTRIBUTING.md` — `m_` prefix for private fields, XML docs on public types
+- **TreatWarningsAsErrors**: `true` in `Directory.Build.props` -- don't leave unused variables
+- **Agent instructions**: See `copilot-instructions.md` -- terminal discipline, file editing rules
+- **Contributing rules**: See `CONTRIBUTING.md` -- `m_` prefix for private fields, XML docs on public types

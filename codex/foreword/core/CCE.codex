@@ -39,8 +39,14 @@ Section: Definitions
     | Cyrillic
     | Other
 
+ Whitespace is the band 1..2, the line feed and the space. NUL is Tier 0's
+ first slot and sits below them, and it is not whitespace: it is the absence
+ of a character rather than a gap between two, and a trim that eats it
+ shortens the text it was asked to tidy. This read `<= 2` until 2026-07-28,
+ which took NUL in with the other two, and it was the CCE oracle's G1.
+
   is-whitespace : Char -> Boolean
-  is-whitespace (c) = char-code c <= 2
+  is-whitespace (c) = if char-code c >= 1 then char-code c <= 2 else False
 
   is-digit : Char -> Boolean
   is-digit (c) = if char-code c >= 3 then char-code c <= 12 else False
@@ -48,14 +54,29 @@ Section: Definitions
   digit-value : Char -> Integer
   digit-value (c) = char-code c - 3
 
+ A letter is TWO bands and a lowercase letter is two bands, because the
+ punctuation sits between them. 13..38 is the ASCII lowercase, 39..64 the
+ ASCII uppercase, 65..96 the punctuation and symbols, 97..112 sixteen
+ accented Latin letters and 113..127 fifteen Cyrillic ones. Every one of
+ those last 31 is a lowercase form, so both predicates take them.
+
+ These read 13..38 and 13..64 until 2026-07-27, which refused every letter
+ that is not ASCII. Extending the upper end to 127 instead is the obvious
+ change and it is wrong: it would call all 32 punctuation characters
+ letters. The band has a hole in the middle and the test has to have one too.
+
   is-lower : Char -> Boolean
-  is-lower (c) = if char-code c >= 13 then char-code c <= 38 else False
+  is-lower (c) =
+    if char-code c >= 97 then char-code c <= 127
+    else if char-code c >= 13 then char-code c <= 38 else False
 
   is-upper : Char -> Boolean
   is-upper (c) = if char-code c >= 39 then char-code c <= 64 else False
 
   is-letter : Char -> Boolean
-  is-letter (c) = if char-code c >= 13 then char-code c <= 64 else False
+  is-letter (c) =
+    if char-code c >= 97 then char-code c <= 127
+    else if char-code c >= 13 then char-code c <= 64 else False
 
   is-punct : Char -> Boolean
   is-punct (c) = if char-code c >= 65 then char-code c <= 96 else False
@@ -66,16 +87,38 @@ Section: Definitions
   is-cyrillic : Char -> Boolean
   is-cyrillic (c) = if char-code c >= 113 then char-code c <= 127 else False
 
+ Case conversion names its own band and no longer borrows is-lower and
+ is-upper. The plus and minus 26 is arithmetic between the ASCII lowercase
+ band and the ASCII uppercase band and it is meaningless anywhere else, so a
+ predicate that legitimately grew to cover accented and Cyrillic letters
+ must not be the thing that gates it. Measured while widening is-lower: with
+ to-upper still asking is-lower, all 32 punctuation characters shift into the
+ accented and Cyrillic bands, and an exclamation mark uppercases to a
+ backtick. That is the historical minus-32 corruption with a different
+ constant, and this decoupling is what stops it.
+
+ The uppercase of an accented or Cyrillic letter is deliberately NOT produced
+ here. Those forms are Tier 1 code points and a Char carries a Tier 0 byte,
+ so the answer does not fit in the return type; the identity is the honest
+ answer for a function of this shape rather than a wrong letter.
+
   to-lower : Char -> Char
-  to-lower (c) = if is-upper c then code-to-char (char-code c - 26) else c
+  to-lower (c) =
+    if char-code c >= 39 then
+      if char-code c <= 64 then code-to-char (char-code c - 26) else c
+    else c
 
   to-upper : Char -> Char
-  to-upper (c) = if is-lower c then code-to-char (char-code c + 26) else c
+  to-upper (c) =
+    if char-code c >= 13 then
+      if char-code c <= 38 then code-to-char (char-code c + 26) else c
+    else c
 
   classify : Char -> CharClass
   classify (c) =
     let b = char-code c
-    in if b <= 2 then Whitespace
+    in if b == 0 then Other
+      else if b <= 2 then Whitespace
       else if b <= 12 then Digit
       else if b <= 38 then Lower
       else if b <= 64 then Upper
@@ -218,11 +261,15 @@ Section: Tier 1 Classification
     else let block = cce-tier1-block cp
     in if block >= 0 then block <= 5 else False
 
+ The Tier 0 arm read `if c >= 13 then c <= 127`, which calls all 32
+ punctuation code points letters. It has no caller anywhere in the tree, so
+ it never bit; it is corrected rather than deleted because the answer it is
+ supposed to give is exactly is-letter's, and having two spellings of one
+ band is what let them drift apart.
+
   cce-is-letter-any : Integer -> Boolean
   cce-is-letter-any (cp) =
-    if cp < 128 then
-      let c = cp
-      in if c >= 13 then c <= 127 else False
+    if cp < 128 then is-letter (code-to-char cp)
     else if cp < 2176 then cce-is-letter-ext cp
     else cce-is-cjk cp | cce-is-hangul cp | cce-is-kana cp
 

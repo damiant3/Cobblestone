@@ -2,14 +2,14 @@
 
 **Reviewer:** Agent Linux  
 **Date:** 2026-03-25  
-**Status:** Merged to master — 1 bug found by new regression tests
+**Status:** Merged to master -- 1 bug found by new regression tests
 
 ---
 
-## Bug: x86_64 `is-whitespace` — returns true for non-whitespace characters
+## Bug: x86_64 `is-whitespace` -- returns true for non-whitespace characters
 
 **File:** `src/Codex.Emit.X86_64/X86_64CodeGen.cs`  
-**Severity:** Functional — false positives
+**Severity:** Functional -- false positives
 
 The `is-whitespace` implementation accumulates matches using `Setcc` + `AddRR` across four character comparisons (space, tab, newline, CR). The letter "a" incorrectly returns 1.
 
@@ -30,10 +30,10 @@ If `AllocTemp()` wraps or reuses `rd`'s register, the `CmpRI(rd, '\t')` on the n
 
 **Fix:** Either pin `rd` as a local (`AllocLocal`) so it isn't recycled, or explicitly save it to a callee-saved register before the comparison chain.
 
-**Regression test:** `LinuxNativeTests.IsWhitespace_letter_rejected_x86_64` — expects "a"→0, gets 1.
+**Regression test:** `LinuxNativeTests.IsWhitespace_letter_rejected_x86_64` -- expects "a"→0, gets 1.
 
 ---
 
-## is-letter CC_BE fix — LGTM
+## is-letter CC_BE fix -- LGTM
 
 The `CC_LE → CC_BE` fix for `is-letter` (both lowercase and uppercase range checks) is correct. Same bug class as the `is-digit` fix. Confirmed by the existing test suite passing.

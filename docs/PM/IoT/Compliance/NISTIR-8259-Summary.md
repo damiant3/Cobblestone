@@ -1,4 +1,4 @@
-# NISTIR 8259 Series — IoT Device Cybersecurity
+# NISTIR 8259 Series -- IoT Device Cybersecurity
 
 **Source**: NIST Applied Cybersecurity Division
 **Status**: Active (Rev 1 April 2026)
@@ -34,9 +34,9 @@ conceive, design, develop, test, sell, and support.
 | NIST Capability | Codex Feature |
 |---|---|
 | Device Identification | Ed25519 public key IS the device identity |
-| Device Configuration | Capability leases — permissions granted, scoped, and revocable |
+| Device Configuration | Capability leases -- permissions granted, scoped, and revocable |
 | Data Protection | AES-GCM/ChaCha20 encryption, TLS, effect-typed I/O channels |
-| Logical Access | Effect types — unauthorized interface access is a type error |
+| Logical Access | Effect types -- unauthorized interface access is a type error |
 | Software Update | CDX signed binaries + verifier + trust lattice |
 | State Awareness | Event bus, journal, health checks, metrics (codex/os/observe/) |
 

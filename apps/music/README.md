@@ -11,8 +11,8 @@ A Spotify-style music player with a sidebar (nav + playlists), an album grid and
 
 ## Completeness
 
-40% — Layout is polished and play/pause toggle is live. Clicking a track does not update now-playing, albums are not navigable, search absent, playlist contents not defined. Progress/volume bars are static CSS widths. Shuffle/Prev/Next/Repeat return 0. No audio playback pathway.
+40% -- Layout is polished and play/pause toggle is live. Clicking a track does not update now-playing, albums are not navigable, search absent, playlist contents not defined. Progress/volume bars are static CSS widths. Shuffle/Prev/Next/Repeat return 0. No audio playback pathway.
 
 ## Codex Conformance
 
-Full — Pure Codex. Audio playback is a backend plug responsibility.
+Full -- Pure Codex. Audio playback is a backend plug responsibility.

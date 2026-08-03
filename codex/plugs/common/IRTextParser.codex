@@ -47,6 +47,17 @@ Section: Tokenize
  space (CCE space, LF) separates tokens; '(' and ')' are structural;
  '"' begins a string with backslash escapes.
 
+ Every recursion here is a SELF call, and that is load-bearing: the
+ emitter turns only self tail calls into jumps (is-self-call gates the
+ TCO), so a mutually tail-recursive loop pays one stack frame per hop.
+ This tokenizer used to hop tokenize-loop -> tokenize-atom ->
+ tokenize-loop per token and scan-string-body <-> scan-string-escape
+ per escaped character, which is one frame per token of input: on a
+ 48 MB IR payload (ui-orchestrator-test, 2026-07-28) the plug VM
+ double-faulted with the stack exhausted inside tokenize-atom. The
+ helpers now RETURN to the one loop instead of continuing it, and the
+ loop alone recurses.
+
   tokenize : Text -> List SExpToken
   tokenize (s) = tokenize-loop s 0 (text-length s) []
 
@@ -57,8 +68,12 @@ Section: Tokenize
    in if is-sexp-space c then tokenize-loop s (i + 1) len acc
    else if c == char-code-at "(" 0 then tokenize-loop s (i + 1) len (list-push acc TokOpen)
    else if c == char-code-at ")" 0 then tokenize-loop s (i + 1) len (list-push acc TokClose)
-   else if c == char-code-at "\"" 0 then tokenize-string s (i + 1) len acc
-   else tokenize-atom s i len acc
+   else if c == char-code-at "\"" 0 then
+    let r = scan-string-body s (i + 1) len []
+    in tokenize-loop s (r.next) len (list-push acc (TokStr (r.value)))
+   else
+    let stop = scan-atom-end s i len
+    in tokenize-loop s stop len (list-push acc (TokAtom (substring s i (stop - i))))
 
   is-sexp-space : Integer -> Boolean
   is-sexp-space (c) =
@@ -74,44 +89,37 @@ Section: Tokenize
    else if is-sexp-space c then False
    else True
 
-  tokenize-atom : Text, Integer, Integer, List SExpToken -> List SExpToken
-  tokenize-atom (s) (start) (len) (acc) =
-   let stop = scan-atom-end s start len
-   in let lit = substring s start (stop - start)
-   in tokenize-loop s stop len (list-push acc (TokAtom lit))
-
   scan-atom-end : Text, Integer, Integer -> Integer
   scan-atom-end (s) (i) (len) =
    if i >= len then i
    else if is-atom-char (char-code-at s i) then scan-atom-end s (i + 1) len
    else i
 
-  tokenize-string : Text, Integer, Integer, List SExpToken -> List SExpToken
-  tokenize-string (s) (start) (len) (acc) =
-   let result = scan-string-body s start len []
-   in tokenize-loop s (result.next) len (list-push acc (TokStr (result.value)))
-
   StringScanResult = record {
    value : Text,
    next : Integer
   }
+
+ The escape arm advances TWO characters inside the one self loop
+ rather than handing off to a second function: a hop per escaped
+ character is a frame per escaped character (see the tokenizer prose).
 
   scan-string-body : Text, Integer, Integer, List Text -> StringScanResult
   scan-string-body (s) (i) (len) (acc) =
    if i >= len then StringScanResult { value = text-concat-list acc, next = i }
    else let c = char-code-at s i
    in if c == char-code-at "\"" 0 then StringScanResult { value = text-concat-list acc, next = i + 1 }
-   else if c == char-code-at "\\" 0 then scan-string-escape s (i + 1) len acc
+   else if c == char-code-at "\\" 0 then
+    (if i + 1 >= len then StringScanResult { value = text-concat-list acc, next = i + 1 }
+     else scan-string-body s (i + 2) len (list-push acc (unescape-char-text (char-code-at s (i + 1)))))
    else scan-string-body s (i + 1) len (list-push acc (char-to-text (code-to-char c)))
 
-  scan-string-escape : Text, Integer, Integer, List Text -> StringScanResult
-  scan-string-escape (s) (i) (len) (acc) =
-   if i >= len then StringScanResult { value = text-concat-list acc, next = i }
-   else let c = char-code-at s i
-   in if c == char-code-at "\\" 0 then scan-string-body s (i + 1) len (list-push acc "\\")
-   else if c == char-code-at "\"" 0 then scan-string-body s (i + 1) len (list-push acc "\"")
-   else if c == char-code-at "n" 0 then scan-string-body s (i + 1) len (list-push acc "\n")
-   else scan-string-body s (i + 1) len (list-push acc (char-to-text (code-to-char c)))
+  unescape-char-text : Integer -> Text
+  unescape-char-text (c) =
+   if c == char-code-at "\\" 0 then "\\"
+   else if c == char-code-at "\"" 0 then "\""
+   else if c == char-code-at "n" 0 then "\n"
+   else char-to-text (code-to-char c)
 
 Section: Tree Builder
 
@@ -150,7 +158,7 @@ Section: Tree Builder
 Section: Tree Helpers
 
  Coercions used pervasively by walkers. SExp is sum-typed but every
- walker knows the expected shape — these helpers extract values while
+ walker knows the expected shape -- these helpers extract values while
  falling back to safe defaults so a malformed input degrades rather
  than crashes.
 
@@ -282,10 +290,12 @@ Section: CodexType
   parse-type-atom : Text -> CodexType
   parse-type-atom (a) =
    if a == "int-default" then int-ty-default
-   else if a == "real" then RealTy
-   else if a == "real-approx" then RealApproxTy
-   else if a == "real-trapping" then RealTrappingTy
-   else if a == "real-saturating" then RealSaturatingTy
+   else if a == "real" then real-f64
+   else if a == "real-approx" then real-f32
+   else if a == "real-trapping" then real-f64-trapping
+   else if a == "real-saturating" then real-f64-saturating
+   else if a == "real-approx-trapping" then RealTy RwF32 RmTrapping
+   else if a == "real-approx-saturating" then RealTy RwF32 RmSaturating
    else if a == "text" then TextTy
    else if a == "boolean" then BooleanTy
    else if a == "char" then CharTy
@@ -568,7 +578,7 @@ Section: IRPattern
 
 Section: IRExpr
 
- The big dispatcher. Mirrors ir-emit-expr in the emitter — same atom
+ The big dispatcher. Mirrors ir-emit-expr in the emitter -- same atom
  names, same field order.
 
   parse-expr : SExp -> IRExpr

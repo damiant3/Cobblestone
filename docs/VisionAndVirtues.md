@@ -7,7 +7,7 @@
 ## The Vision
 
 Codex is a self-sustaining compiler written in its own language. It
-compiles to bare-metal x86-64 with no borrowed substrate — no OS, no
+compiles to bare-metal x86-64 with no borrowed substrate -- no OS, no
 runtime, no libc. The long-term target is a fully owned, verified
 software stack that runs on arbitrary hardware.
 
@@ -16,7 +16,7 @@ But Codex is not just a compiler. It is a language designed so that
 intention does not serve the notation. If the notation forces you to
 distort the intention, the notation is wrong.
 
-The founding specification and the first commit were simultaneous —
+The founding specification and the first commit were simultaneous --
 thought and build as one motion. Condense the best ideas humans have
 had about programming into a single language that reads like
 literature, compiles to anything, and proves its own correctness.
@@ -44,11 +44,11 @@ refuses to emit and explains why. You never silently degrade.
 
 **Effects are explicit. Resources are linear.** A function that reads
 a file and one that multiplies two numbers are not the same kind of
-thing. Memory, handles, connections — acquired, used, released exactly
+thing. Memory, handles, connections -- acquired, used, released exactly
 once. Use-after-free is a type error here.
 
 **Legacy concerns belong at input boundaries.** CRLF, tab
-normalization, encoding conversion — these happen at the edge. The
+normalization, encoding conversion -- these happen at the edge. The
 compiler itself stays clean.
 
 **We don't put dates on mountains.** The work takes as long as it
@@ -69,7 +69,7 @@ the milestone is wrong.
 ### 2. Correctness Over Performance
 
 Correct first, fast second. Optimization comes after correctness is
-proven — by sweeping the sample battery and re-running pingpong. When
+proven -- by sweeping the sample battery and re-running pingpong. When
 performance does become load-bearing, fix it by *measuring* the actual
 hot path, not by guessing.
 
@@ -87,7 +87,7 @@ phases.
 Error messages are part of the user interface. Every diagnostic must
 state what went wrong, show where, suggest a fix, and use language a
 programmer would understand. `cannot unify ?a with Integer` is a bug.
-The compiler emits numbered diagnostics (CDX1xxx–CDX9xxx) covering
+The compiler emits numbered diagnostics (CDX1xxx-CDX9xxx) covering
 lexer, parser, type system, codegen, proofs, punctual enforcement,
 and memory safety.
 
@@ -116,15 +116,15 @@ saved.
 
 The vision describes the destination. The planning documents describe
 the route. When the vision says something impractical for the current
-milestone, we defer it — we do not compromise the current milestone
+milestone, we defer it -- we do not compromise the current milestone
 reaching for it prematurely.
 
 ### 9. One Thing at a Time
 
 Each file does one thing. Each Chapter does one thing. Each CL does
-one thing. The compiler is ~39,900 lines across 60 files. A wrong
-change in one place surfaces as a silent corruption three pipeline
-stages later.
+one thing. The compiler is ~57,466 lines across 63 files (measured
+2026-07-31; this line said 55,900 on 07-25). A wrong change in one
+place surfaces as a silent corruption three pipeline stages later.
 
 ### 10. Read the Literature
 
@@ -150,8 +150,8 @@ re-evaluate.
 
 Bare metal has no GC. Every phase declares what it retains and what is
 scratch, and phase-compact enforces the declaration. Reservations are
-generous fixed floors over demand-paged address space — physical memory
-is what you touch, not what you reserve — so the discipline is not
+generous fixed floors over demand-paged address space -- physical memory
+is what you touch, not what you reserve -- so the discipline is not
 sizing but honesty: retained data lives on the deck, scratch dies at
 the compact, and every CL review states a memory and time-complexity
 verdict. (The survey-multiplier era, where reservations scaled with
@@ -178,7 +178,7 @@ delivery.
 
 - Values: `kebab-case`; types: `PascalCase`; intrinsics: `__double-underscore`.
 - Entry point: `opening` (not `main`).
-- No comments — prose at column 2 under `Section:` headers.
+- No comments -- prose at column 2 under `Section:` headers.
 - No `\t` / `\r`. Internal encoding is CCE; Unicode at I/O boundaries only.
 - Bounded integers: `Integer between L and H` with `wrapping`/`clamping`/`error`.
 - Record updates: `__record-set`. Pattern matching: `when`/`is`/`->`.
@@ -191,9 +191,9 @@ delivery.
 
 A feature is done when:
 
-1. It works — samples produce their `.expected` output.
-2. It is tested — positive, negative, edge cases — and sweep is green.
-3. It has diagnostics — error messages with source location.
+1. It works -- samples produce their `.expected` output.
+2. It is tested -- positive, negative, edge cases -- and sweep is green.
+3. It has diagnostics -- error messages with source location.
 4. Both gates pass: pingpong AND sweep.
 5. The CL has a memory + time-complexity verdict.
-6. It matches the planning document — or the document is updated.
+6. It matches the planning document -- or the document is updated.

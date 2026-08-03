@@ -12,8 +12,8 @@ A fitness tracking dashboard displaying three Apple Watch-style activity rings, 
 
 ## Completeness
 
-45% — Display is rich and visually complete for a read-only dashboard. No interaction is implemented: quick-log buttons don't open a logging modal, workout items aren't selectable, bar heights not driven by the percentage parameter. Date header is hardcoded.
+45% -- Display is rich and visually complete for a read-only dashboard. No interaction is implemented: quick-log buttons don't open a logging modal, workout items aren't selectable, bar heights not driven by the percentage parameter. Date header is hardcoded.
 
 ## Codex Conformance
 
-Full — Written in Codex using Widget/Theme foreword primitives and local stubs.
+Full -- Written in Codex using Widget/Theme foreword primitives and local stubs.

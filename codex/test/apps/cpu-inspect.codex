@@ -1,0 +1,88 @@
+Chapter: CpuInspectTest
+  cites Dev chapter CpuInspector
+  cites Dev chapter HexFormat
+
+ The CPU inspector against the processor this test is running on.
+
+ NO REGISTER VALUE IS ASSERTED, and that is forced rather than chosen. CR3
+ is a physical address that moves with the page tables, the vendor string
+ differs between hosts, and the feature list differs between a laptop and
+ a hypervisor. An expected file naming any of them would pin this test to
+ one machine and one boot, and would fail on the next one for a reason
+ that is not a defect.
+
+ WHAT IS ASSERTED IS WHAT LONG MODE REQUIRES. This code is executing, so
+ the processor is in long mode, so PE and PG must be set, LONG-MODE must
+ be reported, CR3 must be page-aligned, and the vendor string must be
+ twelve characters. Those hold on every machine that can run this test at
+ all, which is exactly the property an expected file needs.
+
+ THE VENDOR LENGTH IS THE CCE CHECK. Twelve bytes go in and twelve
+ characters must come out; `from-unicode` returning negative one for a
+ byte drops that character, so a broken conversion shortens the string.
+ A length of twelve is therefore a statement that all twelve bytes
+ converted, without naming a vendor that varies. The three-register order
+ is checked the same way -- it cannot be checked by value, but a decode
+ reading them in the wrong order still produces twelve characters, so the
+ length alone does NOT cover it and this test does not claim to.
+
+ THE OUT-OF-RANGE LEAF REFUSAL IS THE ONE ARM THE MACHINE WILL NOT
+ PRODUCE. Every leaf up to the maximum answers something, so the refusal
+ is unreachable without asking for a leaf that does not exist; it is
+ exercised directly here because an inspector that reported zeroes as a
+ real answer is precisely the failure this refusal prevents.
+
+ We say:
+
+Section: Joining
+
+  joined : List Text, Integer, Text -> Text
+  joined (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else if text-length acc == 0 then joined xs (i + 1) (list-at xs i)
+    else joined xs (i + 1) (acc & " | " & list-at xs i)
+
+Section: Contains
+
+  has-word : Text, Text -> Boolean
+  has-word (hay) (needle) = has-loop hay needle 0 (text-length hay - text-length needle)
+
+  has-loop : Text, Text, Integer, Integer -> Boolean
+  has-loop (hay) (needle) (i) (last) =
+    if i > last then False
+    else if substring hay i (text-length needle) == needle then True
+    else has-loop hay needle (i + 1) last
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    let cr0 = cpu-read-cr0
+    in let cr3 = cpu-read-cr3
+    in act
+      print-line-uni ("cr0-pe: " & bit-flag cr0 0 & " cr0-pg: " & bit-flag cr0 31)
+      print-line-uni ("cr0-line-shape: " & show (has-word ci-cr0-line "PE=1") & " " & show (has-word ci-cr0-line "PG=1"))
+      print-line-uni ("cr3-page-aligned: " & show (bit-and cr3 4095 == 0))
+      print-line-uni ("cr3-line-has-pml4: " & show (has-word ci-cr3-line "PML4"))
+      print-line-uni ("cr-report-lines: " & show (list-length ci-cr-report))
+
+      print-line-uni ("vendor-length: " & show (text-length ci-vendor))
+      print-line-uni ("max-leaf-at-least-1: " & show (ci-max-leaf >= 1))
+
+      print-line-uni ("leaf0-accepted: " & show (list-length (ci-leaf-report 0)))
+      print-line-uni ("leaf0-shape: " & show (has-word (list-at (ci-leaf-report 0) 0) "eax #"))
+      print-line-uni ("leaf-negative: " & joined (ci-leaf-report (0 - 1)) 0 "")
+      print-line-uni ("leaf-too-high: " & show (list-length (ci-leaf-report 4096)) & " lines, refused: " & show (has-word (list-at (ci-leaf-report 4096) 0) "refused"))
+
+      print-line-uni ("feat-report-lines: " & show (list-length ci-feat-report))
+      print-line-uni ("long-mode-reported: " & show (has-word ci-ext-edx "LONG-MODE"))
+      print-line-uni ("sse2-reported: " & show (has-word ci-leaf1-edx "SSE2"))
+      print-line-uni ("tsc-reported: " & show (has-word ci-leaf1-edx "TSC"))
+
+ An empty register must render as a word, and under codex-vm leaf 1 ECX
+ really is zero, so this line exercises the empty arm on the machine the
+ battery runs on rather than needing one contrived.
+
+      print-line-uni ("empty-renders-as-word: " & ci-or-none "")
+      print-line-uni ("nonempty-passes-through: " & ci-or-none "SSE2")
+    end
+  end

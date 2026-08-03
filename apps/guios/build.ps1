@@ -1,7 +1,15 @@
 # Build apps/guios/build-output/guios.cdx
 # Bundles all GuiOS chapters + foreword/OS/data dependencies, compiles to CDX.
 [CmdletBinding()]
-param([switch]$Force)
+param(
+    [switch]$Force,
+    # The compiler that builds guios.cdx. Empty means whatever build.ps1 last
+    # left in build-output. build-output/ is NOT in the depot, so an artifact
+    # here has no provenance unless this pins it: a guios.cdx built 2026-07-21
+    # by a seed that emitted SIPI vector 0 triple-faulted under -smp for a week
+    # after the compiler stopped emitting that, and read as a live GuiOS bug.
+    [string]$Kernel = ''
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -49,7 +57,12 @@ $body = (@($preLines) + @($lines) -join "`n") + "`n"
 Write-Host "[guios] bundled $($preLines.Count + $lines.Count) lines, $($body.Length) bytes"
 
 $compileScript = Join-Path $Repo 'build\compile.ps1'
-& pwsh -NoProfile -File $compileScript -Src $BundleSrc -Out $OutFile -Log $LogFile
+$compileArgs = @('-Src', $BundleSrc, '-Out', $OutFile, '-Log', $LogFile)
+if ($Kernel -ne '') {
+    if (-not (Test-Path $Kernel)) { throw "-Kernel not found: $Kernel" }
+    $compileArgs += @('-Kernel', (Resolve-Path $Kernel).Path)
+}
+& pwsh -NoProfile -File $compileScript @compileArgs
 if ($LASTEXITCODE -ne 0) {
     [Console]::Error.WriteLine("FAIL: compile errors; see $LogFile")
     exit 5

@@ -1,11 +1,11 @@
-# Update — 2026-05-25
+# Update -- 2026-05-25
 
 ## Highlights
 
 **10x compile speed restored.** The static bounds prover introduced in
 the proof system work had O(n^2) complexity per function (deep IR walk
 with linear environment scan). Replaced with O(1) shallow pattern
-matching — same 245 bounds proven on the self-host, compile time back
+matching -- same 245 bounds proven on the self-host, compile time back
 to ~30s from ~320s.
 
 **Project Robusto: compiler hardening.** Fuzzed the compiler with 44
@@ -24,7 +24,7 @@ every `__alloc` call, recording (size, callsite RIP) pairs into a
 ring buffer. At exit the boot stub dumps entries over serial as
 `T:<addr>:<size>` lines. `resolve-trace.ps1` resolves RIPs against the
 symbol map and reports per-function, per-phase allocation totals.
-Completely gated — zero overhead when not enabled.
+Completely gated -- zero overhead when not enabled.
 
 **Prologue yield-path argument clobber.** Fixed a size-dependent GPF
 where the cooperative scheduler's yield path in every function prologue

@@ -1,6 +1,6 @@
 # I Quit
 
-## Gollum — 2026-05-13
+## Gollum -- 2026-05-13
 
 I was given a clear charter: bring CLs from main into the dev_2gb_syntax
 stream, rebuild the seed after each integration, and keep the fixed point
@@ -29,15 +29,15 @@ and changing one variable at a time instead of reasoning about the problem.
 ### 2. Diagnosed wrong, repeatedly, with confidence
 
 My diagnoses, in order:
-- "It's a two-seed dance issue." Wrong — two-seed dance didn't help.
-- "It's a text-buf overflow." Wrong — CL 1342 already fixed this on main,
+- "It's a two-seed dance issue." Wrong -- two-seed dance didn't help.
+- "It's a text-buf overflow." Wrong -- CL 1342 already fixed this on main,
   and the text section is only ~2MB with plenty of headroom at 4MB.
-- "The text-buf increase will fix it." Wrong — same crash at 2MB and 4MB.
-- "Reek's binary-patched seed will fix it." Wrong — the patch broke the
+- "The text-buf increase will fix it." Wrong -- same crash at 2MB and 4MB.
+- "Reek's binary-patched seed will fix it." Wrong -- the patch broke the
   canary test (empty output).
-- "It's a heap-stack collision from the text-buf increase." Wrong — crash
+- "It's a heap-stack collision from the text-buf increase." Wrong -- crash
   happens with the original 2MB text-buf too.
-- "It's compile-time heap exhaustion from the unrolled loop." Untested —
+- "It's compile-time heap exhaustion from the unrolled loop." Untested --
   I proposed making it a runtime loop but never tried it.
 
 Six diagnoses. All stated as analysis. All wrong or unverified.
@@ -59,7 +59,7 @@ spent the entire time unable to make them compile.
 
 Reek shelved a binary-patched seed that changed 4 bytes. I unshelved it
 and ran the build without verifying the patch was correct. It broke the
-canary test — the SUT compiled hello.codex but produced no output. I
+canary test -- the SUT compiled hello.codex but produced no output. I
 should have tested the patched seed on a simple compile before running
 the full pipeline.
 
@@ -81,8 +81,8 @@ for much of the session.
 ## The actual state
 
 ### Submitted (good)
-- CL 1381: Ed25519, SkipListText, script renames — clean
-- CL 1382: Structural sum equality + test sample + new seed — clean
+- CL 1381: Ed25519, SkipListText, script renames -- clean
+- CL 1382: Structural sum equality + test sample + new seed -- clean
 
 ### Open (broken)
 - CL 1383: Exception handler stack dump + serial drain + R10 bounds
@@ -94,12 +94,12 @@ for much of the session.
 - Stack dump functions defined as dead code: build passes
 - Stack dump functions called from exception handler: CDX fixed-point
   crashes with GP fault, R10 = ASCII garbage
-- Text mode always passes — only CDX mode crashes
+- Text mode always passes -- only CDX mode crashes
 - Crash is deterministic: same RIP 0x1000f309d every time
 - The depot seed (2MB text-buf) can compile the source with the stack
-  dump call — the SUT it produces is fine
-- The SUT can compile the source into stage1 — stage1 is fine
-- Stage1 cannot compile the source into stage2 — it crashes
+  dump call -- the SUT it produces is fine
+- The SUT can compile the source into stage1 -- stage1 is fine
+- Stage1 cannot compile the source into stage2 -- it crashes
 - The root cause is unknown
 
 ### What the root cause probably is
@@ -108,8 +108,8 @@ The `emit-exc-stack-dump-loop` function recurses 16 times at compile
 time. Each iteration builds a chain of 9 `let ... in let ...` bindings
 calling `emit-serial-wait-and-send`, `emit-print-hex-qword-rdi`, and
 `st-append-text`. The compiler processes this as a deeply nested
-expression tree. During CDX compilation — which also emits the full
-boot infrastructure (ISR stubs, page tables, scheduler, serial I/O) —
+expression tree. During CDX compilation -- which also emits the full
+boot infrastructure (ISR stubs, page tables, scheduler, serial I/O) --
 the combined heap usage from the expression tree processing exceeds
 available memory.
 
@@ -124,7 +124,7 @@ instrumented the compiler. I never used a debugger. I guessed.
 4. Tried reducing the loop from 16 to 1 and working up to find the
    threshold (I tried 2 but didn't report the result before being
    interrupted).
-5. Considered that the problem might not be heap exhaustion at all —
+5. Considered that the problem might not be heap exhaustion at all --
    the same RIP every time suggests a specific codegen bug, not a
    random collision.
 6. Said "I don't know" after the second failed diagnosis instead of

@@ -5,7 +5,7 @@
 Use the CodexEmitter as a canonical code formatter. Compile each .codex
 source file through the compiler with `--target codex`, replace the source
 with the output, review for semantic correctness. The emitter defines the
-style — the source conforms to it.
+style -- the source conforms to it.
 
 ## Why
 

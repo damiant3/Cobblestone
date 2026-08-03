@@ -26,12 +26,12 @@ QEMU provides: `-device ne2k_isa,netdev=net0,irq=9,iobase=0x300,mac=52:54:00:12:
 | 0x07   | 0x307 | ISR      | Interrupt status   | Interrupt status   |
 | 0x08   | 0x308 | RSAR0    | Remote start low   | CRDA0              |
 | 0x09   | 0x309 | RSAR1    | Remote start high  | CRDA1              |
-| 0x0A   | 0x30A | RBCR0    | Remote count low   | —                  |
-| 0x0B   | 0x30B | RBCR1    | Remote count high  | —                  |
+| 0x0A   | 0x30A | RBCR0    | Remote count low   | --                  |
+| 0x0B   | 0x30B | RBCR1    | Remote count high  | --                  |
 | 0x0C   | 0x30C | RCR      | RX config          | RSR (RX status)    |
-| 0x0D   | 0x30D | TCR      | TX config          | —                  |
-| 0x0E   | 0x30E | DCR      | Data config        | —                  |
-| 0x0F   | 0x30F | IMR      | Interrupt mask     | —                  |
+| 0x0D   | 0x30D | TCR      | TX config          | --                  |
+| 0x0E   | 0x30E | DCR      | Data config        | --                  |
+| 0x0F   | 0x30F | IMR      | Interrupt mask     | --                  |
 | 0x10   | 0x310 | DATA     | Remote DMA data    | Remote DMA data    |
 | 0x1F   | 0x31F | RESET    | Reset (write any)  | Reset (read any)   |
 
@@ -51,7 +51,7 @@ CURR (current RX page), 0x08-0x0F are MAR0-7 (multicast filter).
 9. TCR=0x02 (internal loopback for init)
 10. PSTART=0x46, PSTOP=0x80, BNRY=0x46
 11. Clear IMR
-12. DMA read 32 bytes at address 0 (the PROM — 6-byte MAC doubled)
+12. DMA read 32 bytes at address 0 (the PROM -- 6-byte MAC doubled)
 13. Read 6 words from DATA port → extract MAC bytes
 14. Clear RDC in ISR
 15. CR=0x61 (stop, page 1) → write CURR=PSTART via page 1 offset 7
@@ -121,7 +121,7 @@ Handle ports 0x300-0x31F in `handle_io`:
 
 This is enough for `emit-nic-init` to succeed and `nic-present=1`.
 
-### Phase 2: TX — guest-to-host frames
+### Phase 2: TX -- guest-to-host frames
 
 When the guest issues TX (CR bit 2):
 1. Read the frame from `ne2k.mem[tpsr * 256]`, length = `tbcr`
@@ -134,7 +134,7 @@ When the guest issues TX (CR bit 2):
    - FIN → `closesocket()`
 6. Set ISR bit 1 (TX complete)
 
-### Phase 3: RX — host-to-guest frames
+### Phase 3: RX -- host-to-guest frames
 
 Background thread polls host sockets for incoming data:
 1. `recv()` on host sockets
@@ -149,7 +149,7 @@ Implement minimal user-mode NAT (like QEMU's SLIRP but simpler):
 - Gateway IP: 10.0.2.2 (responds to ARP, acts as default gateway)
 - Guest IP: 10.0.2.15 (or DHCP)
 - DNS: forward to host's DNS resolver
-- TCP: 1:1 NAT — each guest TCP connection maps to a host socket
+- TCP: 1:1 NAT -- each guest TCP connection maps to a host socket
 - UDP: same pattern for DNS queries
 - ICMP: optional (ping), can stub initially
 
@@ -157,10 +157,10 @@ Implement minimal user-mode NAT (like QEMU's SLIRP but simpler):
 
 | Phase | Lines of C | Effort |
 |-------|-----------|--------|
-| 1: Registers | ~200 | Small — mechanical port handling |
-| 2: TX | ~300 | Medium — frame parsing, socket management |
-| 3: RX | ~250 | Medium — background thread, ring buffer writes |
-| 4: NAT | ~400 | Medium — ARP replies, IP routing, connection table |
+| 1: Registers | ~200 | Small -- mechanical port handling |
+| 2: TX | ~300 | Medium -- frame parsing, socket management |
+| 3: RX | ~250 | Medium -- background thread, ring buffer writes |
+| 4: NAT | ~400 | Medium -- ARP replies, IP routing, connection table |
 | **Total** | **~1150** | |
 
 ### What we skip

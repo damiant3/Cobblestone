@@ -13,9 +13,19 @@ Section: Value Type
     | JsonNull
     | JsonBool (Boolean)
     | JsonInt (Integer)
+    | JsonNum (JsonNumber)
     | JsonStr (Text)
     | JsonArray (List JsonValue)
     | JsonObject (List JsonPair)
+
+ A JsonNumber is the exact decimal mantissa / 10 ^ decimals. JSON has one
+ number type and no binary floating point, so carrying the digits as they
+ were written is what round-trips: 2.000 stays 2.000 and does not become 2.
+
+  JsonNumber = record {
+    jn-mantissa : Integer,
+    jn-decimals : Integer
+  }
 
   JsonPair = record {
     key : Text,
@@ -30,6 +40,24 @@ Section: Constructors
 
   json-int : Integer -> JsonValue
   json-int (n) = JsonInt n
+
+ 18 is the most decimal places a 64-bit mantissa can carry, so it is the
+ cap on both the scale and the exponent everywhere in this chapter.
+
+  json-max-decimals : Integer = 18
+
+  json-num : Integer, Integer -> JsonValue
+  json-num (mantissa) (decimals) =
+    let d = if decimals < 0 then 0 else if decimals > json-max-decimals then json-max-decimals else decimals
+    in JsonNum (JsonNumber { jn-mantissa = mantissa, jn-decimals = d })
+
+  json-pow10 : Integer -> Integer
+  json-pow10 (k) = if k <= 0 then 1 else 10 * json-pow10 (k - 1)
+
+  json-num-to-int : JsonNumber -> Integer
+  json-num-to-int (n) =
+    if n.jn-decimals <= 0 then n.jn-mantissa
+    else n.jn-mantissa / json-pow10 (n.jn-decimals)
 
   json-str : Text -> JsonValue
   json-str (s) = JsonStr s
@@ -49,9 +77,26 @@ Section: Emitter
     is JsonNull -> "null"
     is JsonBool (b) -> if b then "true" else "false"
     is JsonInt (n) -> show n
+    is JsonNum (n) -> json-emit-num n
     is JsonStr (s) -> json-quote s
     is JsonArray (items) -> "[" & json-emit-array items 0 (list-length items) "" & "]"
     is JsonObject (pairs) -> "{" & json-emit-object pairs 0 (list-length pairs) "" & "}"
+
+  json-emit-num : JsonNumber -> Text
+  json-emit-num (n) =
+    if n.jn-decimals <= 0 then show (n.jn-mantissa)
+    else let neg = n.jn-mantissa < 0
+    in let m = if neg then 0 - n.jn-mantissa else n.jn-mantissa
+    in let p = json-pow10 (n.jn-decimals)
+    in let whole = m / p
+    in let frac = m - whole * p
+    in let sign = if neg then "-" else ""
+    in sign & show whole & "." & json-zero-pad (show frac) (n.jn-decimals)
+
+  json-zero-pad : Text, Integer -> Text
+  json-zero-pad (t) (width) =
+    if text-length t >= width then t
+    else json-zero-pad ("0" & t) width
 
   json-quote : Text -> Text
   json-quote (s) = "\"" & json-escape s 0 (text-length s) "" & "\""
@@ -109,8 +154,23 @@ Section: Object Access
     in when found
       is Just (jv) -> when jv
         is JsonInt (n) -> n
+        is JsonNum (n) -> json-num-to-int n
         is otherwise -> default-val
       is None -> default-val
+
+ A caller asking for a number wants the number. Letting JsonNum fall to the
+ catch-all would answer the default for a field that was present and
+ numeric, which is the reading that hides a malformed document.
+
+  json-get-num : JsonValue, Text -> Maybe JsonNumber
+  json-get-num (v) (key) =
+    let found = json-get v key
+    in when found
+      is Just (jv) -> when jv
+        is JsonNum (n) -> Just n
+        is JsonInt (i) -> Just (JsonNumber { jn-mantissa = i, jn-decimals = 0 })
+        is otherwise -> None
+      is None -> None
 
   json-get-bool : JsonValue, Text, Boolean -> Boolean
   json-get-bool (v) (key) (default-val) =
@@ -247,17 +307,102 @@ Section: Literal Keywords
 
 Section: Numbers
 
- Integers only. Optional leading minus, then one-or-more digits.
- Decimal points and exponents are rejected — the existing
- JsonInt is integer-typed.
+ RFC 8259 section 6: minus? int frac? exp?, where frac and exp each
+ require at least one digit after their marker. A number whose decimal
+ places all cancel against its exponent is an integer and is answered as
+ JsonInt, so 1e3 reads as 1000 and a document of plain integers parses
+ exactly as it did before this chapter grew a decimal.
+
+ Both the decimal places and the exponent are bounded by
+ json-max-decimals. Digits past that bound are consumed and dropped
+ rather than overflowing the mantissa; an exponent past it is refused
+ rather than silently truncated, because a wrong magnitude is a worse
+ answer than no answer.
+
+  JsonNumScan = record {
+    jns-mantissa : Integer,
+    jns-decimals : Integer,
+    jns-next : Integer,
+    jns-ok : Boolean
+  }
+
+  json-scan-fail : Integer -> JsonNumScan
+  json-scan-fail (at) = JsonNumScan { jns-mantissa = 0, jns-decimals = 0, jns-next = at, jns-ok = False }
+
+  json-scan-ok : Integer, Integer, Integer -> JsonNumScan
+  json-scan-ok (m) (d) (next) = JsonNumScan { jns-mantissa = m, jns-decimals = d, jns-next = next, jns-ok = True }
 
   json-parse-number : Text, Integer, Integer -> JsonParseResult
   json-parse-number (s) (i) (len) =
     let neg = is-minus s i len
     in let start = if neg then i + 1 else i
-    in let stop = scan-digits s start len
-    in if stop == start then parse-fail i
-    else parse-ok (JsonInt (digits-to-int s start stop neg 0)) stop
+    in let int-stop = scan-digits s start len
+    in if int-stop == start then parse-fail i
+    else let whole = digits-to-int s start int-stop False 0
+    in json-number-after-int s i len neg whole int-stop
+
+  json-number-after-int : Text, Integer, Integer, Boolean, Integer, Integer -> JsonParseResult
+  json-number-after-int (s) (i) (len) (neg) (whole) (at) =
+    let fr = json-scan-frac s at len whole
+    in if fr.jns-ok == False then parse-fail i
+    else json-number-after-frac s i len neg fr
+
+  json-number-after-frac : Text, Integer, Integer, Boolean, JsonNumScan -> JsonParseResult
+  json-number-after-frac (s) (i) (len) (neg) (fr) =
+    let ex = json-scan-exp s (fr.jns-next) len
+    in if ex.jns-ok == False then parse-fail i
+    else json-number-result (fr.jns-mantissa) (fr.jns-decimals - ex.jns-mantissa) neg (ex.jns-next)
+
+  json-number-result : Integer, Integer, Boolean, Integer -> JsonParseResult
+  json-number-result (mantissa) (decimals) (neg) (next) =
+    let m = if neg then 0 - mantissa else mantissa
+    in if decimals > 0 then parse-ok (json-num m decimals) next
+    else if decimals == 0 then parse-ok (JsonInt m) next
+    else if 0 - decimals > json-max-decimals then parse-fail next
+    else parse-ok (JsonInt (m * json-pow10 (0 - decimals))) next
+
+  json-scan-frac : Text, Integer, Integer, Integer -> JsonNumScan
+  json-scan-frac (s) (i) (len) (whole) =
+    if i >= len then json-scan-ok whole 0 i
+    else if cp-at s i == 46 then json-scan-frac-digits s (i + 1) len whole 0
+    else json-scan-ok whole 0 i
+
+  json-scan-frac-digits : Text, Integer, Integer, Integer, Integer -> JsonNumScan
+  json-scan-frac-digits (s) (i) (len) (acc) (count) =
+    if i >= len then json-frac-end i acc count
+    else if json-is-digit (cp-at s i) == False then json-frac-end i acc count
+    else if count >= json-max-decimals then json-scan-frac-digits s (i + 1) len acc count
+    else json-scan-frac-digits s (i + 1) len (acc * 10 + (cp-at s i - 48)) (count + 1)
+
+  json-frac-end : Integer, Integer, Integer -> JsonNumScan
+  json-frac-end (i) (acc) (count) =
+    if count == 0 then json-scan-fail i
+    else json-scan-ok acc count i
+
+  json-scan-exp : Text, Integer, Integer -> JsonNumScan
+  json-scan-exp (s) (i) (len) =
+    if i >= len then json-scan-ok 0 0 i
+    else if json-is-exp-marker (cp-at s i) then json-scan-exp-sign s (i + 1) len
+    else json-scan-ok 0 0 i
+
+  json-is-exp-marker : Integer -> Boolean
+  json-is-exp-marker (cp) = if cp == 101 then True else if cp == 69 then True else False
+
+  json-scan-exp-sign : Text, Integer, Integer -> JsonNumScan
+  json-scan-exp-sign (s) (i) (len) =
+    if i >= len then json-scan-fail i
+    else if cp-at s i == 43 then json-scan-exp-digits s (i + 1) len False
+    else if cp-at s i == 45 then json-scan-exp-digits s (i + 1) len True
+    else json-scan-exp-digits s i len False
+
+  json-scan-exp-digits : Text, Integer, Integer, Boolean -> JsonNumScan
+  json-scan-exp-digits (s) (i) (len) (neg) =
+    let stop = scan-digits s i len
+    in if stop == i then json-scan-fail i
+    else let v = digits-to-int s i stop False 0
+    in if v > json-max-decimals then json-scan-fail i
+    else let signed = if neg then 0 - v else v
+    in json-scan-ok signed 0 stop
 
   is-minus : Text, Integer, Integer -> Boolean
   is-minus (s) (i) (len) =

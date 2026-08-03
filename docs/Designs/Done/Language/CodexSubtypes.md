@@ -1,8 +1,8 @@
-# Codex Subtypes — Bounded Ranges and Unit Domains
+# Codex Subtypes -- Bounded Ranges and Unit Domains
 
 **Date:** 2026-04-16 (initial), updated 2026-07-13.
 **Status:** **Both axes shipped.** Axis 1 (bounds) through CL 410 +
-`__narrow`. Axis 2 (units) shipped as **unit families** — the earlier
+`__narrow`. Axis 2 (units) shipped as **unit families** -- the earlier
 "deferred, not started" line was stale.
 
 Units as built: `unit family <Base>` with a scale table per member.
@@ -20,7 +20,7 @@ Read the unit sections as rationale, not as a spec of the syntax.
 
 **The real residual is on Axis 1, not Axis 2:** arithmetic result-type
 derivation. `Integer between 0 and 255` plus anything still yields an
-unbounded `Integer` — the bound does not propagate through `+`. That
+unbounded `Integer` -- the bound does not propagate through `+`. That
 is exactly why `__narrow` exists and why CDX2051 fires on `field + 1`.
 See "Still open (Axis 1)" below; it is the one item standing between
 bounded types and the ergonomics they were designed for.
@@ -35,10 +35,10 @@ bounded types and the ergonomics they were designed for.
 | 376–381 | Token / SourcePosition / Diagnostic / DiagnosticBag and the CL 381 sweep migrated to bounded fields |
 | 384 | Revert ExprTypeEntry.key bound (CL 381 over-narrowed a packed hash) |
 | 403 | Lint pass: CDX2050 (literal out-of-bound, error) + CDX2051 (wider type, warning); `bag-errors` filter so warnings don't pollute TEXT-mode stdout |
-| 404 | `OverflowMode` AST + parser plumbing — `wrapping` / `clamping` / `error` keyword (default `error`) |
+| 404 | `OverflowMode` AST + parser plumbing -- `wrapping` / `clamping` / `error` keyword (default `error`) |
 | 409 | Error-mode codegen at narrow-store; `cmp+jcc+ud2`. Bounds in i32-signed range use `cmp-ri`; u32 bounds use a `push-r9 / mov-ri64 / cmp-rr / pop-r9` sandwich. `AdvanceResult.pos` annotated `wrapping` because skip-list span arithmetic is genuinely modular |
 | 410 | Clamping codegen at narrow-store (`cmp + jcc + mov-ri32` saturating). Lint mode-aware: CDX2050/CDX2051 fire only under `error` mode |
-| 411 | `__narrow` builtin — explicit-narrow primitive that suppresses CDX2050/CDX2051 at a specific call site. Codegen pass-through; downstream narrow-store enforces the field's mode |
+| 411 | `__narrow` builtin -- explicit-narrow primitive that suppresses CDX2050/CDX2051 at a specific call site. Codegen pass-through; downstream narrow-store enforces the field's mode |
 | this CL | `between L and H` syntax (canonical, prose-form) accepted alongside `in L..H`. Closed-inclusive only. Spec rewritten throughout to use the new form. Selfhost source migration is the follow-on CL. |
 
 Default overflow mode is **`error`** (Damian, 2026-04-26). Unannotated bounded fields trap on out-of-range writes.
@@ -50,7 +50,7 @@ Default overflow mode is **`error`** (Damian, 2026-04-26). Unannotated bounded f
 Every `Integer` in Codex is 64-bit on bare-metal. A `file-id` that will
 never exceed 40 occupies 8 bytes. A `line` number that will never exceed
 20,000 occupies 8 bytes. A `Boolean` occupies 8 bytes. The self-host
-compiler's heap HWM is 192 MB to compile 600 KB of source — most of
+compiler's heap HWM is 192 MB to compile 600 KB of source -- most of
 those bytes are zeros in the high bits of fields that could be far
 smaller.
 
@@ -75,7 +75,7 @@ Integer between 0 and 1048576           -- 20 bits sufficient
 ```
 
 The compiler picks the tightest power-of-two-aligned representation
-that covers the declared range. The user never writes "Int32" — they
+that covers the declared range. The user never writes "Int32" -- they
 write the domain constraint. The width follows.
 
 Bounds are closed-inclusive. `Integer between 0 and 255` includes
@@ -113,7 +113,7 @@ The `__narrow` builtin is the explicit-narrow primitive: writing
 `__narrow expr` at an assignment site suppresses CDX2050 and CDX2051
 for that site. Codegen is pass-through; the downstream narrow-store
 still enforces the field's mode (so `__narrow` under `error` mode
-will trap if the value really doesn't fit at runtime — it's an
+will trap if the value really doesn't fit at runtime -- it's an
 intent annotation, not an unchecked cast).
 
 ### Axis 2: Units (meaning)
@@ -193,7 +193,7 @@ relationship IS the safety mechanism.
 ```
 
 Nobody wrote a fact connecting time and length. That's not an oversight
-— it's the type system working correctly.
+-- it's the type system working correctly.
 
 ### Non-multiplicative conversions
 
@@ -239,7 +239,7 @@ the user calls when they want a structured breakdown):
   }
 ```
 
-`1000 Second` is a valid `Second` — it's just large. Only when you
+`1000 Second` is a valid `Second` -- it's just large. Only when you
 want a human-readable decomposition do you normalize.
 
 ---
@@ -270,7 +270,7 @@ chain extends to units.
 | Range bounds | `range 0..23` | no | `Integer between 0 and 23` |
 | Distinct types | yes (strong) | yes (measures) | yes (unit) |
 | Conversion | explicit function call | explicit annotated constant | implicit from declared fact |
-| Syntax | `Hour_Type`, `for T'Size use 8` | `float<meter/second^2>` | `Hour`, `Meter` — plain words |
+| Syntax | `Hour_Type`, `for T'Size use 8` | `float<meter/second^2>` | `Hour`, `Meter` -- plain words |
 | Runtime presence | yes (tagged) | no (erased) | yes (domain tag travels) |
 | Where defined | package spec | inline attributes | foreword chapters (citable) |
 | Non-linear convert | manual | doesn't fit | `convert X -> Y = \v -> expr` |
@@ -301,14 +301,14 @@ Key differentiators:
    field annotated `wrapping` (AdvanceResult.pos, CL 409) when the
    semantic was genuinely modular.
 
-### Still open (Axis 1) — THE remaining work
+### Still open (Axis 1) -- THE remaining work
 
 2. **Arithmetic result types.** `Integer between 0 and 255 + Integer
    between 0 and 255 → Integer between 0 and 510` is not derived. `+`
    returns unbounded `Integer` regardless of operand bounds, which is why
    CDX2051 fires on `field + 1` patterns. Refinement-typed
    arithmetic is the proper fix; for now, `__narrow` is the
-   manual escape hatch — and its existence in the source is the
+   manual escape hatch -- and its existence in the source is the
    standing receipt that this is unfinished. Every `__narrow` in the
    tree is a place the compiler should have derived the bound and
    didn't.
@@ -317,20 +317,20 @@ Key differentiators:
    bounds, `*` multiplies them, `-` subtracts low-from-high, `/` by a
    positive constant divides). The work is threading the derived bound
    through the unifier so it reaches the narrow-store, and deciding
-   what happens when a derived bound exceeds the destination's — which
+   what happens when a derived bound exceeds the destination's -- which
    is the same question the overflow modes already answer.
 
 7. **`__narrow` runtime semantics.** Currently codegen pass-through.
    Could optionally emit a runtime check at the narrow point itself
    (catch the violation earlier in the trace) when the destination
-   type is in `error` mode. Deferred — downstream narrow-store
+   type is in `error` mode. Deferred -- downstream narrow-store
    already catches it.
 
 8. **Layout details.** Width-sort + alignment rules from CL 374 are
    codegen decisions with no spec guidance. Spec should formalize
    so future backends can match.
 
-### Still open (Axis 2 — units shipped; these questions survive it)
+### Still open (Axis 2 -- units shipped; these questions survive it)
 
 1. **Interaction between bounds and units.** Can you write
    `ShortDuration = Second between 0 and 3600`? Bounded AND unit-tagged?
@@ -355,12 +355,12 @@ From the 2026-04-16 bare-metal heap profiling session: the self-host
 compiler allocates 192 MB to compile 600 KB of source. Most record
 fields (line numbers, column numbers, offsets, file IDs, token kinds)
 use fewer than 24 bits of their 64-bit slots. The remaining bits are
-zeros — carried through memory, cached, bus-transferred, and never
+zeros -- carried through memory, cached, bus-transferred, and never
 read.
 
 Bounded-range types would let the compiler pack these fields without
-the user writing bit-manipulation code. The SourceSpan record — today
-80+ bytes with nested SourcePosition records — could become 12 bytes
+the user writing bit-manipulation code. The SourceSpan record -- today
+80+ bytes with nested SourcePosition records -- could become 12 bytes
 with offset-range fields.
 
 Unit types would prevent a class of bugs the language currently cannot

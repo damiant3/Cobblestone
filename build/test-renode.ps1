@@ -1,4 +1,4 @@
-# test-renode.ps1 — Run a Codex ELF binary under Renode, capture UART output.
+# test-renode.ps1 -- Run a Codex ELF binary under Renode, capture UART output.
 #
 # Usage:
 #   build/test-renode.ps1 -Arch arm64 -Elf <file.elf> -OutFile <output.txt>
@@ -56,7 +56,7 @@ if (Test-Path $uartLog) {
     $content = [System.IO.File]::ReadAllText($uartLog)
     $lines = ($content -split "`n" | Select-Object -First 1) -replace "`r",""
     [System.IO.File]::WriteAllText($OutFile, $lines + "`n")
-    Write-Host "[renode] ${Arch}: $($lines.Length) chars — $lines"
+    Write-Host "[renode] ${Arch}: $($lines.Length) chars -- $lines"
     Remove-Item $uartLog -Force -ErrorAction SilentlyContinue
 } else {
     [System.IO.File]::WriteAllText($OutFile, '')

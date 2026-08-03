@@ -1,0 +1,33 @@
+[
+  {
+    "target": "chapter:ImageTensor",
+    "kind": "doctrine",
+    "author": "val",
+    "date": "2026-07-28",
+    "body": "Two scales, and the caller picks by which pair it calls. image-to-tensor and tensor-to-image carry [-1000, 1000], which is [-1, 1] at a fixed-point scale of 1000. image-to-tensor-unit and tensor-to-image-unit carry [0, 1000], which is [0, 1]. Which one a model wants is a property of the model, not of this chapter, and mixing a signed encode with a unit decode is not diagnosed anywhere: it silently halves the range and shifts the midpoint. Pixels are [0, 255] integer RGB on both sides. The layout is NCHW throughout, meaning all R values, then all G, then all B, pinned by the first two rows of foreword-image-tensor."
+  },
+  {
+    "target": "function:img-denormalize",
+    "kind": "invariant",
+    "author": "val",
+    "date": "2026-07-28",
+    "body": "The rounding term is what makes this the exact inverse of img-extract-channel, and it is not decoration. Truncating instead, as this did until 2026-07-28, moved 250 of 256 channel values and moved every one of them DOWNWARD: measured net bias -250 over the 256, with 250 down and 0 up. That is a uniform one-step darkening of every image crossing the boundary, not dither, and the diffusion paths cross it twice per pass with HiresFix, VaeTiling and ControlNet chaining several. The forward map spreads 256 inputs over 2001 tensor steps, so it is injective and an exact inverse exists; the rounding term recovers all 256 without touching the forward direction. Keep it.",
+    "thread": "image-tensor-roundtrip"
+  },
+  {
+    "target": "function:img-denorm-unit",
+    "kind": "invariant",
+    "author": "val",
+    "date": "2026-07-28",
+    "body": "Same rounding term, same reason, measured separately: the unit path also read net bias -250 over 256 before 2026-07-28 and also recovers all 256 with it. Both denormalizers still answer 0 and 255 at the clamped extremes, which is the property the declared range depends on.",
+    "thread": "image-tensor-roundtrip"
+  },
+  {
+    "target": "function:image-to-tensor",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-07-28",
+    "body": "The accumulator is threaded through the three channel passes rather than concatenated at the end, and that is the whole point of the shape. Building reds, greens and blues separately and answering reds & greens & blues copies the entire tensor after it has already been built. Measured on a 32 by 32 image against a null control reading zero, same seed either side: 49240 bytes before, 32784 after, or 16 bytes per tensor value down to 10. The output is identical, which the first two rows of foreword-image-tensor pin by printing the NCHW order for a two-pixel image; get the threading order wrong and the channels permute. There is no GC, so the copy was permanent for the life of the conversion, and the diffusion paths convert repeatedly.",
+    "thread": "image-tensor-cost"
+  }
+]

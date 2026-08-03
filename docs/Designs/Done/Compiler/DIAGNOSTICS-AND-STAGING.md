@@ -17,7 +17,7 @@ Each is its own body of work.
 - **Find-all-references / go-to-definition**: symbol table with
   backlinks. Cheap to design in now, expensive to add later.
 
-## F. Provenance — transformation origin tag
+## F. Provenance -- transformation origin tag
 
 Every IR node records *what transformation produced it* in addition to
 the source span it came from (span landed separately). Concrete example:
@@ -41,6 +41,6 @@ per allocation. Only worth it if profiling shows overhead.
 
 ## K. Plugin points / phase composition
 
-Phases as first-class values — orderable, replaceable, instrumentable.
+Phases as first-class values -- orderable, replaceable, instrumentable.
 Enables experimental phases, external consumers (LSP, doc generators),
 and research work without forking. Big refactor; not urgent.

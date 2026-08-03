@@ -1,12 +1,12 @@
-Now I have a thorough picture. Let me write the formal grammar for Codex Prose — the load-bearing subset of English that is mathematically unambiguous.Now I have everything I need. Let me write the formal grammar specification.Damian. Here it is. The razor applied to English. I've read every word of the book, and every line of those two codex files. This grammar is derived from first principles, not patched onto existing English.
+Now I have a thorough picture. Let me write the formal grammar for Codex Prose -- the load-bearing subset of English that is mathematically unambiguous.Now I have everything I need. Let me write the formal grammar specification.Damian. Here it is. The razor applied to English. I've read every word of the book, and every line of those two codex files. This grammar is derived from first principles, not patched onto existing English.
 
 ---
 
-# Codex Prose Language (CPL) — Formal Grammar Specification
+# Codex Prose Language (CPL) -- Formal Grammar Specification
 
 ## Preamble: The Founding Axiom
 
-English is ambiguous because it permits **implicit binding** — a word can refer to something unnamed, in an unnamed quantity, at an unnamed position in time. CPL is a proper subset of English from which all three forms of implicit binding are surgically removed. Every other English feature is inherited unchanged. The result reads like careful technical English. It is also formally unambiguous.
+English is ambiguous because it permits **implicit binding** -- a word can refer to something unnamed, in an unnamed quantity, at an unnamed position in time. CPL is a proper subset of English from which all three forms of implicit binding are surgically removed. Every other English feature is inherited unchanged. The result reads like careful technical English. It is also formally unambiguous.
 
 **The Three Axioms:**
 
@@ -117,13 +117,13 @@ QE ::= NUMBER-LIT
      | "the number of" NP
 ```
 
-**Rule QE-1: Arithmetic is spelled out.** The symbols +, -, *, / are notation-layer constructs. In load-bearing prose, arithmetic is expressed in words. This makes the intended operation unambiguous — "the balance plus the amount" cannot be read as subtraction.
+**Rule QE-1: Arithmetic is spelled out.** The symbols +, -, *, / are notation-layer constructs. In load-bearing prose, arithmetic is expressed in words. This makes the intended operation unambiguous -- "the balance plus the amount" cannot be read as subtraction.
 
 ---
 
 ## Part III: Sentence Grammar
 
-This is where CPL diverges most sharply from English. CPL sentences belong to exactly one of six **sentence forms**. Every load-bearing prose sentence must be identifiable as one of these forms. If it cannot be parsed as any of them, it is a prose comment only — not load-bearing — and must be introduced with "Note:" or placed outside a `We say:` block.
+This is where CPL diverges most sharply from English. CPL sentences belong to exactly one of six **sentence forms**. Every load-bearing prose sentence must be identifiable as one of these forms. If it cannot be parsed as any of them, it is a prose comment only -- not load-bearing -- and must be introduced with "Note:" or placed outside a `We say:` block.
 
 ### Form 1: Type Declaration
 
@@ -182,7 +182,7 @@ COMPARATOR ::= "is less than" | "is greater than"
 
 **Rule CD-1: Every constraint names its subject explicitly.** "such that it is positive" is illegal. "such that the amount is positive" is required.
 
-**Rule CD-2: Compound constraints use explicit connectives.** "such that the amount is positive and the account is not closed" — both halves independently evaluable. No shortcutting "such that both fields are valid" — valid according to what?
+**Rule CD-2: Compound constraints use explicit connectives.** "such that the amount is positive and the account is not closed" -- both halves independently evaluable. No shortcutting "such that both fields are valid" -- valid according to what?
 
 ### Form 3: Function Declaration
 
@@ -237,7 +237,7 @@ CLAIM ::= NP "implies" NP
         | CLAIM "and" CLAIM
 ```
 
-**Rule PA-1: Claims have no hedge words.** "It seems that," "presumably," "it appears that" — these are forbidden in proof assertions. A claim is asserted unconditionally or it is a comment.
+**Rule PA-1: Claims have no hedge words.** "It seems that," "presumably," "it appears that" -- these are forbidden in proof assertions. A claim is asserted unconditionally or it is a comment.
 
 ### Form 5: Procedure Step
 
@@ -265,7 +265,7 @@ FUNCTION-CALL ::= IDENTIFIER "(" IDENTIFIER "," ... ")"
 field-assignments ::= IDENTIFIER "set to" RVALUE ("and" IDENTIFIER "set to" RVALUE)*
 ```
 
-**Rule PS-1: First/then/finally are mandatory sequence markers.** "Let balance be the old balance plus amount. Return the account." — no sequence markers — is illegal. "First, let updated-balance be the balance of account plus amount. Then, return a new Account with balance set to updated-balance." is required.
+**Rule PS-1: First/then/finally are mandatory sequence markers.** "Let balance be the old balance plus amount. Return the account." -- no sequence markers -- is illegal. "First, let updated-balance be the balance of account plus amount. Then, return a new Account with balance set to updated-balance." is required.
 
 **Rule PS-2: "if/otherwise" is exhaustive.** Every conditional step must have an otherwise branch. "If the amount is positive, proceed" with no otherwise is a compile error in prose. The else branch can be "otherwise, fail with [reason]" but it must be stated.
 
@@ -284,7 +284,7 @@ QUANTIFIED ::= "for every" NP "in" NP "," CLAIM
 SATISFIES ::= "satisfies" | "has" | "equals"
 ```
 
-**Rule QS-1: The bound variable is named.** "For every element in the history" is ambiguous when constraints need to access fields. "For every transaction in the history" is required — `transaction` becomes the bound variable name in scope for the subsequent CLAIM.
+**Rule QS-1: The bound variable is named.** "For every element in the history" is ambiguous when constraints need to access fields. "For every transaction in the history" is required -- `transaction` becomes the bound variable name in scope for the subsequent CLAIM.
 
 ---
 
@@ -315,7 +315,7 @@ PROSE-COMMENT ::= Any English text not beginning with a CPL keyword.
                   -- Must not be placed inside a We say: block.
 ```
 
-**Rule DOC-1: `We say:` marks the load-bearing boundary.** Everything inside a `We say:` block is parsed as CPL. Everything outside is prose commentary — human-readable, machine-ignored. This is the fundamental load-bearing/commentary demarcation.
+**Rule DOC-1: `We say:` marks the load-bearing boundary.** Everything inside a `We say:` block is parsed as CPL. Everything outside is prose commentary -- human-readable, machine-ignored. This is the fundamental load-bearing/commentary demarcation.
 
 **Rule DOC-2: Chapters and sections are not optional decoration.** They define the namespace scope for TYPE-NAMEs. A type declared in `Chapter: Accounts` is not automatically in scope in `Chapter: Ledger`. It must be imported with `using Account from Chapter Accounts.`
 
@@ -323,7 +323,7 @@ PROSE-COMMENT ::= Any English text not beginning with a CPL keyword.
 
 ## Part V: Scope Rules
 
-These are the rules that make CPL formally compositional — able to be analyzed section by section without reading the whole document.
+These are the rules that make CPL formally compositional -- able to be analyzed section by section without reading the whole document.
 
 **Scope Rule 1: Lexical scoping.** A name is in scope from its introduction point to the end of its enclosing `We say:` block or function body.
 
@@ -357,9 +357,9 @@ CPL is not full English. These valid English constructions are outside CPL and b
 - **Metaphor.** "The account is a container for value." Fine commentary. Not parseable.
 - **Analogy.** "This works like a bank ledger." Not parseable.
 - **Passive voice with omitted agent.** "The balance is updated." By what? Illegal in load-bearing position. Required: "The deposit function updates the balance."
-- **Relative clauses modifying verbs.** "The function, which handles the edge case, returns..." — the relative clause is commentary. In CPL the signature and the constraint are separate sentences.
+- **Relative clauses modifying verbs.** "The function, which handles the edge case, returns..." -- the relative clause is commentary. In CPL the signature and the constraint are separate sentences.
 - **Rhetorical questions.** None. Ever. In load-bearing prose.
-- **Implicit subject.** "Returns the updated account." — returns is a verb without a subject. Illegal. "The function gives the updated account."
+- **Implicit subject.** "Returns the updated account." -- returns is a verb without a subject. Illegal. "The function gives the updated account."
 
 ---
 
@@ -390,7 +390,7 @@ Proof:         assume, by, qed
 
 The grammar above has one property that is not in any other language specification I know of: **every rule exists to eliminate exactly one class of natural-language ambiguity, and no rule exists for any other reason.** There is no syntax sugar. There are no convenience forms. Every restriction removes something that would otherwise permit two valid interpretations of the same sentence.
 
-The result is a language that a human reads as careful English — the kind a good engineer writes when documenting a critical system — and that a machine reads as a formal specification with no resolution ambiguity at any level.
+The result is a language that a human reads as careful English -- the kind a good engineer writes when documenting a critical system -- and that a machine reads as a formal specification with no resolution ambiguity at any level.
 
 That is the razor. English is the stone. CPL is what remains after the cut.
 
@@ -407,4 +407,4 @@ IntegerRange ::= All non-negative Integers          -- "zero or more"
 | Between (lo : Integer) (hi : Integer)  -- "between lo and hi"
 
 
-Quantity Rule: Every cardinal reference in load-bearing CPL prose must be an expression of type Cardinality. Words that do not reduce to Exact, Bounded, or Parameter are banned at the lexical level. Vagueness about quantity is not a prose style — it is a type error.
+Quantity Rule: Every cardinal reference in load-bearing CPL prose must be an expression of type Cardinality. Words that do not reduce to Exact, Bounded, or Parameter are banned at the lexical level. Vagueness about quantity is not a prose style -- it is a type error.

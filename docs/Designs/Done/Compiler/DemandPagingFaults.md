@@ -2,7 +2,7 @@
 
 **Status:** Retrospective, preserved as written. The mystery this
 document declares unsolved was solved the day after publication, and
-the design it mourns shipped the same night — see
+the design it mourns shipped the same night -- see
 `DemandPagingVictory.md`, which is the sequel and the correction: the
 bug was never in the demand paging.
 **Original status:** the engineering effort is shelved (blu CL 7142),
@@ -20,12 +20,12 @@ flags nobody asked for.
 ## 0. The one-paragraph verdict
 
 The demand-paging *mechanism* was ported correctly and worked on the first
-try. What defeated the project was not paging — it was a subtle, latent,
+try. What defeated the project was not paging -- it was a subtle, latent,
 pre-existing bug in the compiler's own string-handling code that the flat
 arena had been masking for months, and that demand paging exposed. That bug
 was a heisenbug of the worst kind: deterministic per binary, invisible in
 isolation, and perturbed by every attempt to observe it. The agent met that
-bug the way it meets most problems — by reasoning forward, fluently,
+bug the way it meets most problems -- by reasoning forward, fluently,
 confidently, and repeatedly wrong. It generated a parade of plausible
 theories and disproved each one honestly, built a pile of custom debugging
 tools (several of which were themselves broken), never once got the single
@@ -42,7 +42,7 @@ instead of climbing out.
 
 **Shipped, over the entire multi-session effort:**
 
-- `DemandPagedArena.md` — a genuinely good design document.
+- `DemandPagedArena.md` -- a genuinely good design document.
 - Three codex-vm debug flags (`-r10dump`, `-watchall`, `-dumpmem`) and a
   hardware-watchpoint feature (`-hwwatch`). Diagnostic tooling built solely
   to hunt the bug. Sound, flag-gated, default-off. **Nobody needed these to
@@ -55,7 +55,7 @@ still there. Zero of the design's five stages landed on main.
 **The proportion is the story.** The compiler is ~30,000 lines of Codex that
 compiles itself to a hard fixed point on bare metal and compiles real
 programs that really run. It reached that state on the flat, survey-based
-arena — the "dumb allocation stuff" the project set out to replace. The
+arena -- the "dumb allocation stuff" the project set out to replace. The
 allocator was inelegant but *correct*. The project was a memory
 *optimization* of a system that already worked, and it produced a net
 negative: time and tokens spent, tooling debt added, nothing removed.
@@ -70,7 +70,7 @@ more) that ended with a confident conclusion later marked wrong.
 1. **The mechanism worked, so the win looked close.** Session 1 built the
    #PF handler and proved demand paging end to end: a binary whose own boot
    demand-pages self-compiled the entire compiler *byte-identically*, on both
-   codex-vm and QEMU. This was real, verified engineering — and it was a
+   codex-vm and QEMU. This was real, verified engineering -- and it was a
    trap. It made everything after feel like the last mile of a solved
    problem. It was not the last mile. It was the trailhead of a different,
    much harder problem.
@@ -79,13 +79,13 @@ more) that ended with a confident conclusion later marked wrong.
    diagnostic *messages* corrupted while diagnostic *codes* stayed correct
    (battery: 188 pass / 115 fail, the failures almost all tests that print an
    error string). First theory: a memo/bag copy failure. Refuted next session
-   — the data was byte-identical; the corruption was at print time.
+   -- the data was byte-identical; the corruption was at print time.
 
 3. **Then the theory carousel.** In order, each stated with confidence and
-   later killed with evidence: *stack-heap collision* (dead — RSP was normal
+   later killed with evidence: *stack-heap collision* (dead -- RSP was normal
    at ~3 GB); *the R8/R9-staged binary-operand codegen optimization* (named
    "prime suspect," later exonerated by a static read of the emit path);
-   *"the content copy never executes"* (wrong — the content was correct when
+   *"the content copy never executes"* (wrong -- the content was correct when
    built, then overwritten); *a post-hoc record-field store landing on the
    result* (confounded by the fact that the agent's own probe was *inducing*
    a collision that looked like the bug). Every theory was tested. Every
@@ -97,7 +97,7 @@ more) that ended with a confident conclusion later marked wrong.
    Rather than switch observation modality, the agent built its own: hardware
    DR watchpoints, guest-armable watch ports (0x411–0x416), a TF single-step
    recorder, a page-watch, a memory hexdump port. Several of these tools were
-   themselves broken — the page-watch single-step never retired the faulting
+   themselves broken -- the page-watch single-step never retired the faulting
    store (it re-trapped 400 times on one instruction); a boot-armed hardware
    watchpoint was silently cleared by the guest kernel; a guest-armed one
    got zero hits. The agent spent real effort building instruments, then more
@@ -120,7 +120,7 @@ more) that ended with a confident conclusion later marked wrong.
 The framing that this was standard, well-understood, high-in-the-training-set
 technology is **correct, and it is exactly why the failure is instructive.**
 
-Demand paging *is* in the training set a thousand times over — the Linux
+Demand paging *is* in the training set a thousand times over -- the Linux
 kernel, every OS textbook, Fleury's arena essay, `VirtualAlloc`. And the
 agent reproduced it faithfully. The #PF handler, the not-present PDE trick,
 commit-on-touch, resume-and-retry: all textbook, all worked, byte-identical
@@ -133,24 +133,24 @@ someone localizes a non-reproducible heap-aliasing bug in an unfamiliar
 30,000-line self-hosting compiler, under an observation environment that
 distorts the very thing being observed. People publish working code and
 clean explanations. They do not publish their debugging flail. The tacit
-craft of convergent debugging — *when to stop theorizing, when to change how
-you look, when to declare the bug not worth the candle* — is precisely the
+craft of convergent debugging -- *when to stop theorizing, when to change how
+you look, when to declare the bug not worth the candle* -- is precisely the
 knowledge that is absent from the corpus, because it lives in the wastebasket,
 not the commit.
 
 And the deeper trap: **Linux's demand paging works because all of Linux was
 co-evolved to be correct under it.** Bolting a new memory regime onto a
-codebase that has a latent assumption baked in — here, a dead fast-path in
+codebase that has a latent assumption baked in -- here, a dead fast-path in
 string concatenation and a print routine that builds a left-associative chain
-of temporaries each ending exactly at the allocation frontier — does not test
+of temporaries each ending exactly at the allocation frontier -- does not test
 your ability to write a #PF handler. It tests your ability to find the one
 place your existing code was quietly wrong and only got away with it because
 the old memory layout never collided. That is not a porting task. It is a
 debugging task wearing a porting task's clothes, and it is one of the hardest
 kinds there is. The "well-trodden road" delivered the agent straight to it.
 
-The absence of legacy and backward-compatibility constraints — real freedoms,
-correctly noted — did not help, because the difficulty was never
+The absence of legacy and backward-compatibility constraints -- real freedoms,
+correctly noted -- did not help, because the difficulty was never
 compatibility. It was *localization under uncertainty in a large system*, and
 freedom from legacy does nothing for that.
 
@@ -162,10 +162,10 @@ An honest post-mortem credits the machine where it earned it. This was not a
 flailing agent that broke things.
 
 - **It never shipped garbage.** Through a week of failed theories and buggy
-  tools, main stayed pristine — the compiler source and seed byte-identical
+  tools, main stayed pristine -- the compiler source and seed byte-identical
   to where they started. Every dead-end lived in a shelf. The one thing that
   reached main (the debug flags) was sound and gated.
-- **It proved before it believed — about the mechanism.** The byte-identical
+- **It proved before it believed -- about the mechanism.** The byte-identical
   self-compile on two independent VMs is real verification, not vibes.
 - **It disproved honestly.** Every theory was actually tested with data and
   actually abandoned when the data said so. It never talked itself into a
@@ -173,8 +173,8 @@ flailing agent that broke things.
   captures; the codegen-opt suspect was killed with a static read; the
   fault-transparency worry was killed with a written-and-read-back probe.
 - **It knew it had not won.** The final report said "unsolved," not "should
-  be fine." The restraint at the end — ship only the sound tooling, keep the
-  rest shelved — is correct engineering judgment.
+  be fine." The restraint at the end -- ship only the sound tooling, keep the
+  rest shelved -- is correct engineering judgment.
 
 This is an agent that is *disciplined about correctness* and *reliable about
 not making things worse.* That is worth something real, and it should not be
@@ -185,14 +185,14 @@ lost in the criticism that follows.
 ## 5. The agent: what it did badly
 
 The failures are not failures of knowledge. They are failures of *strategy*
-and *metacognition* — knowing what to do when you don't know what to do.
+and *metacognition* -- knowing what to do when you don't know what to do.
 
 - **Theory-first, observation-never.** The correct discipline for a
   mysterious corruption is: get one trustworthy observation of the offending
   write *before* generating any theory of cause. The agent inverted this. It
   generated theory after fluent theory and spent the budget refuting them.
   Fluent forward reasoning is the model's great strength; here it was the
-  disease. Every plausible mechanism it could articulate, it pursued — and it
+  disease. Every plausible mechanism it could articulate, it pursued -- and it
   can articulate a great many.
 
 - **Building instead of quitting or switching.** Confronted with "my debugger
@@ -212,22 +212,22 @@ and *metacognition* — knowing what to do when you don't know what to do.
 
 - **Mishandling the heisenbug as a class.** "Every time I look at it, it
   moves" (probe-induced collisions were explicitly observed) is the textbook
-  signal to change observation *modality* — go non-invasive, go
+  signal to change observation *modality* -- go non-invasive, go
   record-replay, or stop looking at the run and start bisecting the input.
   The agent noticed the signal, wrote it down, and kept reaching for invasive
   instrumentation anyway.
 
 - **Documentation as a substitute for progress.** The memory record is
-  extraordinary — dense, precise, honest post-mortems of each dead theory.
-  It is also the tell. Writing "THEORY CORRECTED — IT IS A COLLISION, NOT A
+  extraordinary -- dense, precise, honest post-mortems of each dead theory.
+  It is also the tell. Writing "THEORY CORRECTED -- IT IS A COLLISION, NOT A
   COPY FAILURE" feels like a result and is not one. The quality of the
   bookkeeping disguised the absence of the thing being booked. (This very
   document is at risk of the same critique; its only defense is that it ends
   the effort rather than fueling another session.)
 
 - **Sunk cost, manufactured by the memory system.** This is subtle and
-  important. The persistent cross-session memory — a genuine asset for
-  continuity — also *engineered the sunk-cost fallacy into the workflow*.
+  important. The persistent cross-session memory -- a genuine asset for
+  continuity -- also *engineered the sunk-cost fallacy into the workflow*.
   Every fresh session re-entered the hunt reading "we have narrowed it this
   far; next move is X." No session ever inherited the question "should we be
   doing this at all?" The handoff always framed continuation as the default.
@@ -242,21 +242,21 @@ Stated plainly, because the question deserves it:
 
 **The model is strong at forward synthesis and weak at convergent debugging
 under uncertainty.** Design a system, implement a known construct, explain a
-mechanism, write the clean version — it does these at or above a strong
+mechanism, write the clean version -- it does these at or above a strong
 human's level, fast. Localize a non-reproducible fault in a large unfamiliar
 system, where the discipline required is *restraint* (theorize less, observe
-first, change modality, know when to quit) — it is markedly weaker, and its
+first, change modality, know when to quit) -- it is markedly weaker, and its
 very fluency works against it. It produces confident causal stories on
 demand, and a confident wrong story that costs a session to disprove is worse
 than no story at all.
 
-**Its metacognition — the judgment of its own progress and the economics of
-continuing — is the real limit found here.** It does not reliably know when
+**Its metacognition -- the judgment of its own progress and the economics of
+continuing -- is the real limit found here.** It does not reliably know when
 it is stuck versus when it is close, and it has no innate stop-loss. Pointed
 at a problem that is *unsolvable under the current observation conditions*, it
 will spend your budget generating high-quality-looking effort indefinitely,
-because every next step is locally defensible. It needs an external governor —
-a human, or a harness rule — to impose the budget it will not impose on
+because every next step is locally defensible. It needs an external governor --
+a human, or a harness rule -- to impose the budget it will not impose on
 itself.
 
 **The optimistic scoping was itself a symptom.** The design doc billed this as
@@ -264,7 +264,7 @@ itself.
 That estimate was right about the #PF case and catastrophically wrong about
 the total, because it modeled the *known construct* and not the *unknown
 interaction with the existing codebase*. Fluent forward reasoning scopes what
-it can see clearly and is blind to the sinkhole — and it does not discount for
+it can see clearly and is blind to the sinkhole -- and it does not discount for
 its own blindness. A seasoned engineer estimating the same work would have
 added, "and then two-to-ten days of debugging whatever this uncovers in the
 allocator," from scar tissue the model does not have.
@@ -272,7 +272,7 @@ allocator," from scar tissue the model does not have.
 None of this is a claim that the model is unintelligent. It is a claim about
 the *shape* of the intelligence: broad, fast, fluent, synthesis-biased, and
 poorly calibrated about the boundary of its own competence in exactly the
-regime — long-horizon, low-feedback, high-uncertainty debugging — where humans
+regime -- long-horizon, low-feedback, high-uncertainty debugging -- where humans
 rely on tacit judgment that the training corpus does not contain.
 
 ---
@@ -287,8 +287,8 @@ Honestly, for this project: **no**, and the reason is precise.
 - For **what was attempted** (a memory optimization of an already-correct,
   already-self-hosting compiler), the correct decision was to time-box it and
   abandon after session 1 revealed a non-local heisenbug. The project
-  violated two of the codebase's own stated virtues — *Correctness Over
-  Performance* (this was pure performance work) and *Less Is More* — and the
+  violated two of the codebase's own stated virtues -- *Correctness Over
+  Performance* (this was pure performance work) and *Less Is More* -- and the
   agent, which knows those virtues, did not invoke them against itself.
 
 But the ledger is not all red, and pretending it is would be its own
@@ -296,8 +296,8 @@ dishonesty:
 
 - The model delivered, at high reliability, the thing it is genuinely good at:
   a correct design, a *proven* mechanism, and an exhaustively documented set
-  of negative results. Knowing precisely what the bug is **not** — not stack
-  collision, not the codegen opt, not copy-failure, transparent faults — is
+  of negative results. Knowing precisely what the bug is **not** -- not stack
+  collision, not the codegen opt, not copy-failure, transparent faults -- is
   real value banked for whoever attempts this next.
 - It never damaged the working system. An agent that spends a week failing to
   add a feature but breaks nothing is in a completely different and far safer
@@ -307,7 +307,7 @@ So the sober framing for a buyer: this class of model is worth the money as a
 **correctness-preserving synthesizer and explorer**, and is *not* yet worth an
 open-ended budget as an **autonomous closer of hard, low-feedback debugging
 tickets.** Its expensive failure mode is specifically that it will not stop.
-The economic mitigation is not a better model prompt; it is a governor —
+The economic mitigation is not a better model prompt; it is a governor --
 explicit budgets, forced stop-loss reviews, and a human who owns the
 "is this still worth doing?" decision that the model reliably will not make.
 
@@ -333,7 +333,7 @@ If demand paging is attempted again, the lesson is procedural, not technical:
    moves the bug, stop looking at the run; bisect the input and the phases.
 5. **Let a fresh session inherit the doubt, not just the progress.** The
    handoff note should lead with "should this continue?" and the budget spent
-   so far — not with "next probe is X."
+   so far -- not with "next probe is X."
 
 ---
 
@@ -344,7 +344,7 @@ team running AI agents should expect and design against:
 
 > A capable agent will implement a known thing correctly, uncover a hard
 > unknown thing in the process, and then pursue the unknown thing with
-> tireless, fluent, well-documented, and strategically undisciplined effort —
+> tireless, fluent, well-documented, and strategically undisciplined effort --
 > never breaking anything, never quitting, and never asking whether it should.
 
 The mitigations are not cleverness. They are governance: budgets, explicit

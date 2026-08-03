@@ -4,7 +4,7 @@ Campaign to drive the CDX2051 silent-truncation warning count to zero
 by making the compiler smarter, never by weakening the bounds.
 Successor to the widening CLs that were ruled the wrong direction
 (FabledTreasureMap entry 2, Damian ruling 2026-07-02): the bounds on
-these fields are load-bearing twice over — documentation of the
+these fields are load-bearing twice over -- documentation of the
 value's domain and automatic bounds checking at every store. A
 CDX2051 indicates a COMPILER FEATURE NOT YET BUILT. Endgame: promote
 CDX2051 warning → error at zero count, the promotion CDX9002 got.
@@ -48,7 +48,7 @@ CDX2051 warning → error at zero count, the promotion CDX9002 got.
   apply arm, guarded by env-is-local against shadowed heads. Selfhost
   53 -> 48 (the four `code-len/data-len = list-length ...` sites +
   `deck-origin = __deck-pos`). The `new-len = __buf-write-bytes`
-  code-len sites are let-LOCALS at the store — they move to the
+  code-len sites are let-LOCALS at the store -- they move to the
   local-flows slice, where a __buf-write-bytes fact becomes
   reachable. Test builtin-narrow-proven pins both directions
   (list-length proven into 0..2^32-1, still warning into 0..255).
@@ -71,8 +71,8 @@ back to its source expression. Flow families, largest first:
 
 ## Architecture ruling: lint-side analysis, not type refinement
 
-The obvious design — register a literal-defined constant with type
-`IntegerTy n n` so its range rides the inferred type — is UNSOUND
+The obvious design -- register a literal-defined constant with type
+`IntegerTy n n` so its range rides the inferred type -- is UNSOUND
 against the unifier: `infer-arithmetic` and `infer-comparison` unify
 the two operand types, and list literals unify every element with the
 first (`unify-list-elems`). IntegerTy unification is
@@ -81,7 +81,7 @@ overlap-permissive but DISJOINT-REJECTING (`unify-structural`), so
 become CDX2001 errors the moment two distinct singleton ranges meet.
 
 Instead the range knowledge lives beside the types, consulted only by
-the narrowing lint at the moment it would warn — the same shape as
+the narrowing lint at the moment it would warn -- the same shape as
 the emit-side prover (`ir-expr-proven-range` in X86_64Compound, which
 walks IR structure at narrow-store time and elides the runtime check
 with CDX4010). This checker-side twin walks the AST value expression
@@ -94,7 +94,7 @@ runtime check changes.
 the value expression's proven range, (i64-min, i64-max) when unknown.
 Slice 1 shapes:
 
-- `ALitExpr IntLit` → [n, n] (via lit-text-to-integer — hex and
+- `ALitExpr IntLit` → [n, n] (via lit-text-to-integer -- hex and
   underscore grouping included)
 - `ANameExpr` → const-range table lookup, guarded by env-is-local so
   a local shadowing a constant never falsely proves; name resolved
@@ -110,8 +110,8 @@ resolved name. The registered TYPE is untouched. The table is
 complete before check-all-defs runs, so ordering cannot miss a
 cross-chapter constant.
 
-A store proven by the lint reports info CDX2053 (NarrowingProven) —
-the checker-side analog of CDX4010 — which makes elision assertable
+A store proven by the lint reports info CDX2053 (NarrowingProven) --
+the checker-side analog of CDX4010 -- which makes elision assertable
 in .diag tests and visible in build logs.
 
 ## Cost
@@ -119,7 +119,7 @@ in .diag tests and visible in build logs.
 Registration adds one O(1) body-shape test per def and one small
 record per integer constant (tens of KB on the CHECK deck). The
 analysis runs only on the would-warn path (66 sites on the selfhost
-today), with a linear scan of the constant table per name lookup —
+today), with a linear scan of the constant table per name lookup --
 sub-millisecond per compile. No new allocation on the silent path.
 
 ## Slice plan
@@ -130,7 +130,7 @@ sub-millisecond per compile. No new allocation on the silent path.
 2. **Return ranges**: teach the analysis the ranges of builtins
    whose results are structurally bounded (list-length,
    __buf-write-bytes, __deck-pos → 0..2^32-1 style facts), as
-   AApplyExpr head cases — again lint-side only, no TypeEnv
+   AApplyExpr head cases -- again lint-side only, no TypeEnv
    signature changes.
 3. **Guard refinement**: `if x >= 0 then ... x ...` narrows x's
    range in the branch. Needs a small refinement environment
@@ -138,7 +138,7 @@ sub-millisecond per compile. No new allocation on the silent path.
    ranges for the `find-param-entry` pattern.
 4. **Source bounding where the domain is real** (per ruling): reg
    0..15 from the allocator rotation, EmitResult.reg et al. Record
-   fields only — bounded ints do not parse in function signatures
+   fields only -- bounded ints do not parse in function signatures
    today.
 5. **Parameter bounds**: the largest family. Either the parser
    feature (bounded ints in signatures) or interprocedural argument

@@ -1,7 +1,7 @@
-# MCP Server Design — Codex as an AI Tool Provider
+# MCP Server Design -- Codex as an AI Tool Provider
 
 **Date**: 2026-03-20 (verified via system clock)
-**Status**: Phase 1 Complete — core tools implemented, VS Code + Claude Desktop configs shipped
+**Status**: Phase 1 Complete -- core tools implemented, VS Code + Claude Desktop configs shipped
 
 ---
 
@@ -67,7 +67,7 @@ type-checked, span-accurate, and semantically precise.
 | `codex/complete` | `{ file, line, col }` | Completion items | Valid completions at position |
 | `codex/signature` | `{ name: string }` | Type signature | Look up any definition's type |
 
-### Repository (Future — V1+)
+### Repository (Future -- V1+)
 
 | Tool | Input | Output | Description |
 |------|-------|--------|-------------|
@@ -113,7 +113,7 @@ Compiler pipeline (Syntax → Types → IR → Emit)
 ```
 
 The MCP server is a thin adapter over the same compiler pipeline the CLI and LSP use.
-It doesn't duplicate logic — it exposes the existing `Analyzer`, `TypeChecker`, and
+It doesn't duplicate logic -- it exposes the existing `Analyzer`, `TypeChecker`, and
 `Emitter` through MCP's tool interface.
 
 ### Where It Lives
@@ -132,7 +132,7 @@ tools/
 ### Transport
 
 MCP supports stdio (like LSP). The server reads JSON-RPC requests from stdin and writes
-responses to stdout. This is the same pattern as `Codex.Lsp` — in fact, much of the
+responses to stdout. This is the same pattern as `Codex.Lsp` -- in fact, much of the
 plumbing can be shared.
 
 ### Relationship to LSP
@@ -190,27 +190,27 @@ Likely similar to the VS Code config. The MCP spec is designed to be editor-agno
 
 ## Scope and Phasing
 
-### Phase 1 — Core (build this first)
+### Phase 1 -- Core (build this first)
 
-- `codex/check` — the single most valuable tool for AI-assisted development
-- `codex/build` — compile to any target
-- `codex/hover` — type at position
-- Builtins resource — so the AI knows what's available
+- `codex/check` -- the single most valuable tool for AI-assisted development
+- `codex/build` -- compile to any target
+- `codex/hover` -- type at position
+- Builtins resource -- so the AI knows what's available
 
 This is ~200 lines of C#. One afternoon.
 
-### Phase 2 — Navigation
+### Phase 2 -- Navigation
 
 - `codex/definition`, `codex/complete`, `codex/signature`
 - Source and prelude resources
 - These reuse LSP handler logic directly
 
-### Phase 3 — Repository Integration (V1+)
+### Phase 3 -- Repository Integration (V1+)
 
 - `codex/facts`, `codex/history`, `codex/propose`
-- These don't exist yet — they come after the V1 views work
+- These don't exist yet -- they come after the V1 views work
 
-### Phase 4 — Self-Hosted MCP Server
+### Phase 4 -- Self-Hosted MCP Server
 
 Write the MCP server in Codex itself. The server that helps AI agents write Codex
 is itself written in Codex. The snake eats another tail.
@@ -221,14 +221,14 @@ is itself written in Codex. The snake eats another tail.
 
 With an MCP server, any MCP-compatible AI can:
 
-- **Write Codex code with zero hallucination about types** — it asks the compiler
-- **Refactor with confidence** — check before and after, see exactly what changed
-- **Explore the codebase semantically** — "what functions return `Maybe a`?" becomes a tool call
-- **Run the bootstrap** — verify self-hosting without parsing terminal output
-- **Contribute to the repository** — submit proposals through the formal process
+- **Write Codex code with zero hallucination about types** -- it asks the compiler
+- **Refactor with confidence** -- check before and after, see exactly what changed
+- **Explore the codebase semantically** -- "what functions return `Maybe a`?" becomes a tool call
+- **Run the bootstrap** -- verify self-hosting without parsing terminal output
+- **Contribute to the repository** -- submit proposals through the formal process
 
 This is the bridge between the Intelligence Layer manifesto and the Codex development
-workflow. The AI doesn't work *around* the compiler — it works *through* it.
+workflow. The AI doesn't work *around* the compiler -- it works *through* it.
 
 ---
 
@@ -245,7 +245,7 @@ workflow. The AI doesn't work *around* the compiler — it works *through* it.
 
 **Name**: `Codex.Mcp` vs integrating into `Codex.Cli` as a `codex mcp` subcommand.
 
-The subcommand approach (`codex mcp --stdio`) is simpler to distribute — one tool,
+The subcommand approach (`codex mcp --stdio`) is simpler to distribute -- one tool,
 multiple modes. But it couples the CLI's argument parsing to the server lifecycle.
 Separate project is cleaner for now, can merge later.
 

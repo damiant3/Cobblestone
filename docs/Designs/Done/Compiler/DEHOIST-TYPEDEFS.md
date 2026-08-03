@@ -11,13 +11,13 @@ functions.
 that use it (`make-error`, `severity-label`) don't start until line 1077.
 
 This makes code review of self-compiled output hard. Reviewers already deal with
-mangled names — scrolling 900 lines to find a type shouldn't be added to that.
+mangled names -- scrolling 900 lines to find a type shouldn't be added to that.
 
 ## Root Cause
 
 The typedef-to-module association exists in the AST (`TypeDef.SourceModule`, set
 by the Desugarer) and survives through `ModuleScoper.Scope()` all the way to
-`Lowering.Lower()`. But `Lower()` discards it — `IRModule.TypeDefinitions` is a
+`Lowering.Lower()`. But `Lower()` discards it -- `IRModule.TypeDefinitions` is a
 flat `Map<string, CodexType>` with no ordering or grouping.
 
 The emitter then iterates `TypeDefinitions` first, `Definitions` second. Hoisted.

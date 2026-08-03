@@ -32,10 +32,10 @@ individual compile times not separable):
 
 | Slot | Tests | Wall time |
 |------|------:|-----------|
-| pcore 1 | 46 | 07:27:46 – 07:30:03 (~2m 17s) |
-| pcore 2 | 46 | 07:27:46 – 07:31:43 (~3m 57s) |
-| pcore 3 | 45 | 07:27:46 – 07:31:05 (~3m 19s) |
-| pcore 4 | 45 | 07:27:46 – 07:32:19 (~4m 33s) |
+| pcore 1 | 46 | 07:27:46 - 07:30:03 (~2m 17s) |
+| pcore 2 | 46 | 07:27:46 - 07:31:43 (~3m 57s) |
+| pcore 3 | 45 | 07:27:46 - 07:31:05 (~3m 19s) |
+| pcore 4 | 45 | 07:27:46 - 07:32:19 (~4m 33s) |
 
 ## Failures
 
@@ -47,7 +47,7 @@ Compile exit code 7 (codegen halted with errors). Investigation needed.
 
 Compiled successfully but runtime output did not match `.expected` file.
 
-## Detailed Results — Positive Tests (PASS_EXPECTED)
+## Detailed Results -- Positive Tests (PASS_EXPECTED)
 
 Tests that compiled, ran, and matched expected output.
 Run time is VM boot + execute + serial capture (where measured).
@@ -57,29 +57,29 @@ Run time is VM boot + execute + serial capture (where measured).
 | 1 | approx-eq | OK | 119 |
 | 2 | arithmetic | OK | 126 |
 | 3 | arm64-encoder | OK | 126 |
-| 4 | atomic-smoke | OK | — |
+| 4 | atomic-smoke | OK | -- |
 | 5 | audio-diffusion-test | OK | 132 |
-| 6 | av-codec-test | OK | — |
+| 6 | av-codec-test | OK | -- |
 | 7 | board-types | OK | 130 |
 | 8 | bounded-integer-ops | OK | 139 |
 | 9 | bounds-proof | OK | 136 |
 | 10 | bounds-prover | OK | 146 |
 | 11 | bs3-smoke | OK | 137 |
-| 12 | cce-tier1 | OK | — |
+| 12 | cce-tier1 | OK | -- |
 | 13 | circbuf-test | OK | 123 |
 | 14 | coap-encode | OK | 130 |
 | 15 | coap-packet | OK | 137 |
 | 16 | color-test | OK | 125 |
-| 17 | compliance-evidence | OK | — |
+| 17 | compliance-evidence | OK | -- |
 | 18 | compliance-report | OK | 144 |
 | 19 | concurrent-test | OK | 142 |
-| 20 | crypto-test | OK | — |
+| 20 | crypto-test | OK | -- |
 | 21 | edit-distance-test | OK | 131 |
 | 22 | effect-smoke | OK | 138 |
 | 23 | esp32c6-drivers | OK | 137 |
 | 24 | eventbus-test | OK | 144 |
 | 25 | expr-calculator | OK | 148 |
-| 26 | factorial | OK | — |
+| 26 | factorial | OK | -- |
 | 27 | fe310-drivers | OK | 131 |
 | 28 | final-batch-test | OK | 142 |
 | 29 | fork-nested | OK | 134 |
@@ -90,7 +90,7 @@ Run time is VM boot + execute + serial capture (where measured).
 | 34 | history-test | OK | 134 |
 | 35 | implicit-convert | OK | 129 |
 | 36 | infra-test | OK | 125 |
-| 37 | iterate-test | OK | — |
+| 37 | iterate-test | OK | -- |
 | 38 | iterate-zip-test | OK | 139 |
 | 39 | keyboard-layout-test | OK | 458 |
 | 40 | kvstore-test | OK | 123 |
@@ -98,19 +98,19 @@ Run time is VM boot + execute + serial capture (where measured).
 | 42 | lazy-smoke | OK | 133 |
 | 43 | linear-branch | OK | 135 |
 | 44 | linear-smoke | OK | 130 |
-| 45 | list-append-perf-N8-L7 | OK | — |
+| 45 | list-append-perf-N8-L7 | OK | -- |
 | 46 | list-test | OK | 144 |
 | 47 | lwm2m-encode | OK | 135 |
 | 48 | mask-ops | OK | 132 |
-| 49 | matrix3-test | OK | — |
+| 49 | matrix3-test | OK | -- |
 | 50 | media-codec-test | OK | 137 |
 | 51 | mini-bootstrap | OK | 145 |
 | 52 | mqtt-encode | OK | 146 |
-| 53 | mqtt-packet | OK | — |
+| 53 | mqtt-packet | OK | -- |
 | 54 | mutable-smoke | OK | 138 |
 | 55 | noise-test | OK | 123 |
 | 56 | nrf52840-drivers | OK | 134 |
-| 57 | nrf9160-drivers | OK | — |
+| 57 | nrf9160-drivers | OK | -- |
 | 58 | ota-gate-real | OK | 142 |
 | 59 | ota-state-machine | OK | 127 |
 | 60 | ota-update | OK | 140 |
@@ -119,81 +119,81 @@ Run time is VM boot + execute + serial capture (where measured).
 | 63 | parse-test | OK | 140 |
 | 64 | pi4-drivers | OK | 139 |
 | 65 | pipe-unique-test | OK | 120 |
-| 66 | prose-consistency | OK | — |
+| 66 | prose-consistency | OK | -- |
 | 67 | prose-smoke | OK | 152 |
-| 68 | punctual-iot | OK | — |
+| 68 | punctual-iot | OK | -- |
 | 69 | punctual-quire | OK | 141 |
-| 70 | punctual-smoke | OK | — |
-| 71 | qemu-virt-board | OK | — |
-| 72 | queue-test | OK | — |
+| 70 | punctual-smoke | OK | -- |
+| 71 | qemu-virt-board | OK | -- |
+| 72 | queue-test | OK | -- |
 | 73 | rasterizer-test | OK | 133 |
-| 74 | raytracer-test | OK | — |
-| 75 | real-approx | OK | — |
-| 76 | real-saturating | OK | — |
-| 77 | real-trapping | OK | — |
-| 78 | record-smoke | OK | — |
-| 79 | riscv-encoder | OK | — |
+| 74 | raytracer-test | OK | -- |
+| 75 | real-approx | OK | -- |
+| 76 | real-saturating | OK | -- |
+| 77 | real-trapping | OK | -- |
+| 78 | record-smoke | OK | -- |
+| 79 | riscv-encoder | OK | -- |
 | 80 | riscv32c-encoder | OK | 125 |
-| 81 | rp2040-drivers | OK | — |
-| 82 | sensor-data | OK | — |
+| 81 | rp2040-drivers | OK | -- |
+| 82 | sensor-data | OK | -- |
 | 83 | smtp-md-test | OK | 131 |
 | 84 | sort-test | OK | 129 |
 | 85 | sound-test | OK | 131 |
-| 86 | sprite-test | OK | — |
+| 86 | sprite-test | OK | -- |
 | 87 | stats-wrap-test | OK | 124 |
-| 88 | stm32f4-drivers | OK | — |
-| 89 | stm32l4-drivers | OK | — |
+| 88 | stm32f4-drivers | OK | -- |
+| 89 | stm32l4-drivers | OK | -- |
 | 90 | stringbuilder-test | OK | 124 |
 | 91 | stringutils-test | OK | 137 |
 | 92 | suggested-width | OK | 138 |
 | 93 | synth-test | OK | 123 |
-| 94 | text-fold-indexed | OK | — |
+| 94 | text-fold-indexed | OK | -- |
 | 95 | textscan-test | OK | 135 |
-| 96 | textsearch-test | OK | — |
-| 97 | thumb2-encoder | OK | — |
+| 96 | textsearch-test | OK | -- |
+| 97 | thumb2-encoder | OK | -- |
 | 98 | tls-test | OK | 190 |
-| 99 | trie-prefix-test | OK | — |
+| 99 | trie-prefix-test | OK | -- |
 | 100 | truetype-bridge-test | OK | 130 |
 | 101 | truetype-render-test | OK | 131 |
-| 102 | truetype-test | OK | — |
-| 103 | try-smoke | OK | — |
+| 102 | truetype-test | OK | -- |
+| 103 | try-smoke | OK | -- |
 | 104 | tuple-syntax | OK | 137 |
-| 105 | type-checker-test | OK | — |
-| 106 | typeclass-poly | OK | — |
+| 105 | type-checker-test | OK | -- |
+| 106 | typeclass-poly | OK | -- |
 | 107 | typeclass-smoke | OK | 142 |
-| 108 | ui-anim-test | OK | — |
+| 108 | ui-anim-test | OK | -- |
 | 109 | ui-dialog-test | OK | 136 |
 | 110 | ui-event-test | OK | 131 |
 | 111 | ui-focus-test | OK | 128 |
 | 112 | ui-font-test | OK | 137 |
-| 113 | ui-layout-test | OK | — |
+| 113 | ui-layout-test | OK | -- |
 | 114 | ui-orchestrator-test | OK | 128 |
-| 115 | ui-scroll-test | OK | — |
+| 115 | ui-scroll-test | OK | -- |
 | 116 | ui-sound-test | OK | 142 |
 | 117 | ui-surface-test | OK | 127 |
-| 118 | ui-theme-test | OK | — |
-| 119 | unit-family | OK | — |
-| 120 | unit-family-mixed | OK | — |
+| 118 | ui-theme-test | OK | -- |
+| 119 | unit-family | OK | -- |
+| 120 | unit-family-mixed | OK | -- |
 | 121 | unit-smoke | OK | 132 |
 | 122 | units-foreword | OK | 138 |
-| 123 | usb-msc-test | OK | — |
+| 123 | usb-msc-test | OK | -- |
 | 124 | usb-test | OK | 131 |
-| 125 | vec-pattern | OK | — |
-| 126 | vec-reduce-add | OK | — |
+| 125 | vec-pattern | OK | -- |
+| 126 | vec-reduce-add | OK | -- |
 | 127 | vec-select | OK | 147 |
-| 128 | vector-basic | OK | — |
+| 128 | vector-basic | OK | -- |
 | 129 | vector-f32 | OK | 128 |
-| 130 | vector-int | OK | — |
-| 131 | wavelet-sort-aliasing | OK | — |
-| 132 | with-timeout-test | OK | — |
+| 130 | vector-int | OK | -- |
+| 131 | wavelet-sort-aliasing | OK | -- |
+| 132 | with-timeout-test | OK | -- |
 | 133 | xhci-enum-test | OK | 139 |
 | 134 | ui-icon-test | OK | FAIL |
 
-Run time "—" = sweep log did not capture start/end pair (parallel
+Run time "--" = sweep log did not capture start/end pair (parallel
 scheduling interleave or log line corruption). Median measured run
 time: ~134 ms. Outlier: keyboard-layout-test at 458 ms.
 
-## Detailed Results — Expected-Failure Tests (PASS_FAILING)
+## Detailed Results -- Expected-Failure Tests (PASS_FAILING)
 
 Tests that must fail with specific CDX diagnostic codes.
 
@@ -276,7 +276,7 @@ Exit code 8 = foreword resolution failure (missing-cite: expected).
   REPL batch mode (one persistent VM per job slot compiling multiple
   tests sequentially). The total batch compile wall time across 4
   slots was ~4m 33s (longest slot).
-- Run times marked "—" had their sweep log entries corrupted by
+- Run times marked "--" had their sweep log entries corrupted by
   parallel interleaving of log writes from multiple job slots.
 - The two failures (helm-full-test compile, ui-icon-test output
   mismatch) are regressions that need investigation.

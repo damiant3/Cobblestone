@@ -1,14 +1,14 @@
 # The Emitter Exodus
 
 *In which the container format writers leave the compiler and find
-their own homes — but the compiler keeps its soul.*
+their own homes -- but the compiler keeps its soul.*
 
 ## The Shire
 
 The compiler today is a single monolith: parser, type checker, IR
 lowering, lambda lifting, x86-64 codegen, and *every output format
 writer* all live under one roof in `codex/compiler/`. The ELF/DWARF
-writer, the PE writer, the GPT/FAT disk image writer — they all share
+writer, the PE writer, the GPT/FAT disk image writer -- they all share
 the compiler's heap, its phase allocator, its build cycle. A change
 to how DWARF line tables are encoded requires a full seed rebuild.
 
@@ -24,7 +24,7 @@ source, it produces a byte-identical copy of itself. One binary, one
 input, one output. Self-sustaining.
 
 This constrains what can leave. The x86-64 codegen and CDX writer are
-not packaging — they ARE the compiler's output. Extracting them would
+not packaging -- they ARE the compiler's output. Extracting them would
 mean the compiler alone can no longer reproduce itself. You would need
 the compiler plus the x86 plug plus the CDX plug, and the fixed-point
 property would require all three to be coordinated. The simplicity and
@@ -41,7 +41,7 @@ unifier, IR lowering, lambda lifting, x86-64 codegen, CDX writer, text
 round-trip emitter, and IR text emitter. These are the compiler. They
 produce CDX, which is the self-sustaining artifact.
 
-The `.codex` text emitter also stays — it is part of the fixed-point
+The `.codex` text emitter also stays -- it is part of the fixed-point
 proof (text round-trip: source → TEXT → TEXT must be identical).
 
 ## What Left
@@ -53,9 +53,9 @@ phase allocator. They just need bytes and metadata.
 
 | Writer | Plug | Input | Output | Status |
 |---|---|---|---|---|
-| ELF + DWARF | `codex/plugs/elf/` | x86 code+data+funcs | `.elf` binary | Done — verified byte-identical, selfhost compiles |
-| PE | `codex/plugs/pe/` | CDX bytes | PE32+ UEFI binary | Done — verified zero code diffs |
-| GPT + FAT32 + FAT16 | `codex/plugs/img/` | PE + CDX bytes | GPT disk image | Done — compiles, runtime test pending |
+| ELF + DWARF | `codex/plugs/elf/` | x86 code+data+funcs | `.elf` binary | Done -- verified byte-identical, selfhost compiles |
+| PE | `codex/plugs/pe/` | CDX bytes | PE32+ UEFI binary | Done -- verified zero code diffs |
+| GPT + FAT32 + FAT16 | `codex/plugs/img/` | PE + CDX bytes | GPT disk image | Done -- compiles, runtime test pending |
 
 ## The Architecture
 
@@ -72,7 +72,7 @@ Compiler → CDX (self-sustaining, fixed point, the root of trust)
 ```
 
 The compiler produces CDX. Container plugs convert CDX to other
-formats. The x86 machine code never leaves the compiler — plugs
+formats. The x86 machine code never leaves the compiler -- plugs
 receive it as bytes extracted from the CDX artifact, not from a
 separate codegen step.
 
@@ -121,11 +121,11 @@ For each function:
 
 ## Shared Infrastructure
 
-- `codex/plugs/common/ByteHelpers.codex` — LE byte encoding/decoding
-- `codex/plugs/common/PlugChain.codex` — wire protocol types and parsers
-- `codex/plugs/common/plug-build-lib.ps1` — shared build script (foreword
+- `codex/plugs/common/ByteHelpers.codex` -- LE byte encoding/decoding
+- `codex/plugs/common/PlugChain.codex` -- wire protocol types and parsers
+- `codex/plugs/common/plug-build-lib.ps1` -- shared build script (foreword
   resolution, VM launch, serial compile protocol)
-- `build/run-plug-chain.ps1` — host-side chain orchestrator
+- `build/run-plug-chain.ps1` -- host-side chain orchestrator
 
 ## Foreword Rules
 

@@ -7,7 +7,7 @@
 ## Context
 
 The Codex OS VGA terminal (keyboard-driven REPL, interactive on bare metal)
-is proven in QEMU. Booting from USB on real hardware fails silently — the
+is proven in QEMU. Booting from USB on real hardware fails silently -- the
 BIOS boot sector has two showstopper bugs and the kernel assumes QEMU-only
 hardware.
 
@@ -27,7 +27,7 @@ at the `sector_count` offset in the first 512 bytes.
 
 The boot sector sets up a 32-bit GDT and jumps to 0x100020 in 32-bit
 protected mode. The CDX code is compiled for x86-64 (long mode). QEMU's
-multiboot loader handles the 64-bit transition internally — the boot
+multiboot loader handles the 64-bit transition internally -- the boot
 sector doesn't.
 
 **Fix**: after loading the CDX, set up identity-mapped page tables

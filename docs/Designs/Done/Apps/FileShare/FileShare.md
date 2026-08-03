@@ -6,7 +6,7 @@ swarms, Kademlia DHT discovery, and trust-weighted peer selection.
 ## Architecture
 
 Files are split into 256 KB pieces, each SHA-256 hashed. A Merkle
-tree over the piece hashes produces the root hash — the content
+tree over the piece hashes produces the root hash -- the content
 address. Peers exchange pieces over TCP using a BitTorrent-inspired
 wire protocol. Discovery uses a Kademlia-style DHT with Ed25519-
 signed announce records, verified on receipt.
@@ -39,7 +39,7 @@ signed announce records, verified on receipt.
 
 | BitTorrent | Codex FileShare |
 |-----------|----------------|
-| .torrent file with tracker URL | ContentManifest with root hash — no file needed |
+| .torrent file with tracker URL | ContentManifest with root hash -- no file needed |
 | Centralized trackers | Kademlia DHT with Ed25519 signed announces |
 | Anonymous peers | Identity-based (Ed25519 keys), trust-weighted selection |
 | SHA-1 piece hashes | SHA-256 Merkle tree with full integrity proof |

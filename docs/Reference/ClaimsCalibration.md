@@ -1,4 +1,4 @@
-# Claims Calibration — WIP Gap Register
+# Claims Calibration -- WIP Gap Register
 
 **Status:** Living gap register. 2026-06-30.
 
@@ -10,7 +10,7 @@ So this is **not** a pre-release scrub. The operating rule:
 - **Plans are WIP.** A plan may state its goal in the present tense; it is
   understood as the target, not a shipped fact.
 - **Partial implementations are "pending completion,"** not "done."
-- **The only thing actually wrong is a present-tense *factual mislabel*** —
+- **The only thing actually wrong is a present-tense *factual mislabel*** --
   calling X a thing it is not. Those get fixed.
 
 What matters is whether the **goal and the path** hold up, not our current
@@ -23,12 +23,12 @@ Companion: `TrustedComputingBase.md` (what we trust vs. check vs. prove).
 
 ## Fixed (factual mislabel)
 
-- **"invalid proofs are type errors" → made TRUE in code, same day
+- **"invalid proofs are type errors" -> made TRUE in code, same day
   (2026-07-04, blu).** Stage-0 probes showed the proof CONTENT checks
   were real (wrong equations, unsound induction steps, false literal
   equalities all reject CDX2001) but **totality was not checked**: a
   circular proof term inhabited any proposition, silently, through
-  six routes — self-referential def (`bad = bad`), mutual defs,
+  six routes -- self-referential def (`bad = bad`), mutual defs,
   generally-recursive prop-returning helper, `claim/proof/qed`
   self-reference, an induction step citing the claim being proven as
   a lemma (accepted as CHECKED, not CDX4022-unproven), and two
@@ -47,22 +47,22 @@ Companion: `TrustedComputingBase.md` (what we trust vs. check vs. prove).
   as optional hardening). The README sentence stands unqualified
   because the compiler now enforces it.
 
-- **"A linear value must be used exactly once on every path" →
+- **"A linear value must be used exactly once on every path" ->
   scope-qualified (2026-07-03).** The DevelopersGuide stated the
   linearity guarantee in the present tense with no scope. The stage-0
   adversarial probes (blu, nine probes, all compile clean and execute
   the violation at runtime) show enforcement is *param-mention-only*:
   a declared `linear` parameter's direct mentions are counted; every
-  indirection — let-local alias, closure capture, partial
+  indirection -- let-local alias, closure capture, partial
   application, list/record stash, non-linear callee boundary,
-  plain-typed return, mutable let-alias — launders the discipline
+  plain-typed return, mutable let-alias -- launders the discipline
   silently. This is the linear-types analog of the effect-laundering
   hole (CL 6494), found the same way. The TypeChecker's own prose
   already admitted "tracking ownership through arbitrary let-bound
   locals is later work"; the guide now carries the same honesty
   (Current enforcement scope note). Probes:
   `codex/test/linear-launder-*.codex`, `mutable-launder-alias.codex`
-  (each flipped to `.failing` as enforcement landed — the campaign
+  (each flipped to `.failing` as enforcement landed -- the campaign
   completed 2026-07-03, stages 2-4: let-local aliasing is a tracked
   move, argument boundaries admit linears only through
   linear-declared parameters (CDX2065), a bare linear return demands
@@ -76,20 +76,32 @@ Companion: `TrustedComputingBase.md` (what we trust vs. check vs. prove).
   probe-catalog level. Residual honest edges, named in the design
   doc's stage 4 notes (locals minted from linear-returning calls;
   container literals in argument/tail position), keep this from
-  being an unqualified totality claim — quote it with the catalog,
+  being an unqualified totality claim -- quote it with the catalog,
   not without it.
 
-- **"punctual WCET proofs" → "punctual instruction-count bounds."**
+- **"punctual WCET proofs" -> "punctual instruction-count bounds."**
   `punctual` reports an architecture-independent instruction count; the
   DevelopersGuide already says the compiler does not claim wall-clock time.
   Calling the count a "proof" was just inaccurate and muddied the one place
   "proof" means something real (the propositional-equality layer). Fixed in
   `KingsAndCourts.md` (CRA 1(d) row). The `[HardRealtime]` design doc may
-  use the same loose wording for a *planned* timed-effect WCET system —
+  use the same loose wording for a *planned* timed-effect WCET system --
   that's a plan, so it reads as the goal; tighten only if/when it ships.
 
+  **The fix landed in one file and never reached the other four
+  (2026-07-27).** `KingsAndCourts.md` was corrected as this entry says.
+  `CRA-Compliance-Matrix.md`, `ETSI-303645-Mapping.md` and
+  `IEC62443-Evidence.md` kept "WCET proofs" the whole time, and IEC FR6
+  escalated it to "if the compiler cannot prove the deadline is met,
+  compilation fails" -- which was then measured false: an over-budget
+  `punctual` function compiles to a binary at exit 0 with a CDX6011
+  warning. **Correcting the doc you are looking at does not correct the
+  three that say the same thing**, and nothing in the tree links a claim to
+  its restatements. When an entry here names one file, grep the phrase
+  across `docs/` before closing it. CL 10802 swept all four.
+
 - **"`punctual` is proven to have bounded execution at compile time"
-  → scope-qualified (2026-07-03, blu stage-0 probes).** The five
+  -> scope-qualified (2026-07-03, blu stage-0 probes).** The five
   structural checks (CDX6001-6005) are real, but four of the five
   (calls, heap, closures, bare I/O) are syntax-directed AST walks
   covering only {Apply, If, Let, Binary, Match arms}; anything outside
@@ -98,13 +110,26 @@ Companion: `TrustedComputingBase.md` (what we trust vs. check vs. prove).
   recursive call and a list literal under unary negation, a custom
   effect + lambda + recursive call inside an `act` block, and
   allocating/O(n) allowlisted builtins (`show`, `list-length`). The
-  mutual-recursion cycle check (CDX6005) is the exception — it already
+  mutual-recursion cycle check (CDX6005) is the exception -- it already
   has the exhaustive node coverage the other four need.
   Treat `punctual` today as enforced for the common shapes and a
   documented intention for the rest.
 
+  **CLOSED, and this entry was stale in the reassuring direction until
+  2026-07-27.** All four probes now live in `codex/test/errors/` with
+  `.failing` sidecars and are re-run by every battery:
+  `punctual-launder-head` and `-builtin` expect CDX6001, `-unary` expects
+  CDX6001 and CDX6002, `-act` expects CDX6001, CDX6003 and CDX6004. So the
+  four syntax-directed walks gained the coverage this entry says they need,
+  and the sentence above ("enforced for the common shapes and a documented
+  intention for the rest") stopped being true at some point nobody recorded.
+  The five restrictions are hard errors with adversarial coverage behind
+  each, which is what lets the compliance documents rest on them.
+  **Note the shape: this register is itself a set of claims with no runner,
+  and this one decayed exactly as the register's own subjects do.**
+
 - **"signed, capability-scoped binaries ... no undeclared I/O ...
-  rejected at load time" → scope-qualified (2026-07-03, blu stage-0
+  rejected at load time" -> scope-qualified (2026-07-03, blu stage-0
   probes).** The format, verifier (5 phases), policy engine, and
   kernel cap-bits all exist and are individually real, but the
   pipeline is not stitched together. The CDX capability manifest is
@@ -121,20 +146,20 @@ Companion: `TrustedComputingBase.md` (what we trust vs. check vs. prove).
   new `read-mmio`/`poke-mmio` carry `Device.Mmio` (heap `peek-*`/
   `poke-byte` intentionally pure by the 7.3 ruling); the enforced
   foreword io modules (Fat32, Gpt, GpuRender, InputSource, AppRunner)
-  declare their effects; and the capability manifest is REAL — every
+  declare their effects; and the capability manifest is REAL -- every
   binary carries a signed manifest derived from `opening`'s registered
   type (effects + covering capabilities, inside the hashed+signed
   content), with the verifier's cap/effect phases non-vacuous and the
   content-hash range fixed. All three `cap-launder-pure-*` probes are
   errors/.failing; `cap-manifest-derived` is the positive guard. The
   owned hardware stack (compiler/kernel/os/boards/plugs) is
-  quire-exempt by ruling — a named TCB boundary (`CapabilityProbe.md`
+  quire-exempt by ruling -- a named TCB boundary (`CapabilityProbe.md`
   sec 7, recorded in `TrustedComputingBase.md`).
   STAGE 4 CLOSED (blu CL 7325, 2026-07-08): boot now grants process 0
   exactly the mask derived from the binary's OWN manifest (empty
   manifest = zero grants; identity/capability-admin bits have no
   effect-row source, so no program receives them). The syscall
-  capability check is real for the first time — it previously tested
+  capability check is real for the first time -- it previously tested
   bit RDX (the syscall ARGUMENT mod 64) and branched on a flag `bt`
   does not set; it now tests the required cap bit as an immediate and
   branches on CF. `ProcessCaps.apply-load-decision` writes an approved
@@ -145,11 +170,11 @@ Companion: `TrustedComputingBase.md` (what we trust vs. check vs. prove).
   grant -> proc table -> syscall bit-test. Remaining honesty note: the
   syscall surface that CONSULTS the cap word is thin (console-write;
   block syscalls do not check yet), and `granted-capabilities` in the
-  TYPE CHECKER remains the static all-known-caps list — a compile-time
+  TYPE CHECKER remains the static all-known-caps list -- a compile-time
   vocabulary gate, not a runtime grant (renaming/narrowing it is
   follow-up polish, not a soundness hole).
 
-## Fine as-is (aspirational / marketing — leave)
+## Fine as-is (aspirational / marketing -- leave)
 
 - **CLAUDE.md mission: "intended to be impervious to all known attack
   vectors by-design."** Already hedged with *intended to be*. It is a goal
@@ -163,14 +188,14 @@ Companion: `TrustedComputingBase.md` (what we trust vs. check vs. prove).
   TCB). Vision states the aim; TCB states the position. Both true, kept
   side by side.
 - **CodexIoTPlan: "the compiler proves the shipped binary is free of
-  memory-safety bugs."** This lives in the IoT *strategic plan* — a WIP
+  memory-safety bugs."** This lives in the IoT *strategic plan* -- a WIP
   planning doc. Read as the target of the path, it is fine. The path to
   earning it (translation validation, verified codegen) is roadmap, not
   claim.
 
 ## The real question this register serves
 
-Not "is our current position defensible to a hostile auditor" — we are not
+Not "is our current position defensible to a hostile auditor" -- we are not
 auditing a release. It is: **does the path from where we are to those
 aspirational claims actually close the gap?** That is tracked in
 `TrustedComputingBase.md` §5 (the shrink roadmap) and in the proof-layer

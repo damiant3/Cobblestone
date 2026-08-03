@@ -1,0 +1,57 @@
+Chapter: UnitPatternLit
+  cites Foreword chapter Console
+
+ A literal pattern must match on a unit type exactly as it does on the
+ type inside the wrapper. `emit-pattern-lit-test` dispatches on the
+ scrutinee type, and until 2026-07-28 it dispatched on the WRAPPER: a
+ unit Text missed the TextTy arm and fell to the otherwise arm, which
+ compares the register against `pat-lit-to-integer` of the spelling.
+ The register holds a pointer, so the arm could never match:
+ `when (Name "sin") is "sin"` took the catchall. Measured on seed
+ 759D3E0F and again, identically, on 6ED0A257.
+
+ This one is silent, which is why it is worth a test of its own rather
+ than a line in the show pin. Nothing is printed oddly and nothing
+ faults; the program simply takes a branch it should not have taken.
+ The same hole in `show` at least produced a visibly absurd number.
+
+ Two controls, and the test means nothing without them. `text-plain`
+ is the same match on an unwrapped Text and must match under every
+ reading -- without it, a compiler that had broken literal patterns
+ outright would look identical here. `int-unit` is a literal pattern on
+ a unit Integer, where the otherwise arm is the CORRECT destination, so
+ it must match under every reading too; it is the row that says the fix
+ strips the wrapper rather than sending everything to the Text arm.
+
+Section: Types
+
+  Name = unit Text
+  Count = unit Integer
+
+Section: Match
+
+  classify-plain : Text -> Text
+  classify-plain (s) =
+   when s
+    is "sin" -> "matched"
+    is otherwise -> "fell-through"
+
+  classify-unit : Name -> Text
+  classify-unit (n) =
+   when n
+    is "sin" -> "matched"
+    is otherwise -> "fell-through"
+
+  classify-int : Count -> Text
+  classify-int (c) =
+   when c
+    is 42 -> "matched"
+    is otherwise -> "fell-through"
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni ("text-plain=" & classify-plain "sin")
+    print-line-uni ("text-unit =" & classify-unit (Name "sin"))
+    print-line-uni ("int-unit  =" & classify-int (Count 42))
+  end

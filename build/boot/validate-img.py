@@ -6,6 +6,29 @@ import struct, sys
 img_path = sys.argv[1] if len(sys.argv) > 1 else r"D:\Projects\NewRepository-fester\build\boot\optiona.img"
 img = open(img_path, "rb").read()
 print(f"validating: {img_path}")
+
+# This script is cited as one of Loop A's two gates, and until now it could not
+# fail: every problem was a print, the three not-found paths were a bare
+# sys.exit() (which is exit 0), and a totally broken image returned success. A
+# caller wiring it into a script got a green from a bad artifact. Failures now
+# accumulate here and set the exit code.
+#
+# STILL NOT CHECKED: the BACKUP GPT, at all. Two of the three defects that kept
+# the ASUS from booting lived exactly there -- an entry array below the UEFI
+# 16 KB minimum, and a one-sector disagreement between build-img and flash-usb
+# over where the backup array starts -- and this gate would have passed every
+# one of them.
+problems = []
+def bad(msg):
+    problems.append(msg)
+    print(f"  *** {msg} ***")
+def verdict():
+    if problems:
+        print(f"\nFAIL: {len(problems)} problem(s)")
+        for m in problems: print(f"  - {m}")
+        sys.exit(1)
+    print("\nPASS")
+    sys.exit(0)
 SS = 512
 def u16(b,o): return struct.unpack_from("<H",b,o)[0]
 def u32(b,o): return struct.unpack_from("<I",b,o)[0]
@@ -39,11 +62,13 @@ import binascii
 hdr = bytearray(img[g:g+92]); hdr[16:20]=b"\0\0\0\0"
 calc = binascii.crc32(bytes(hdr)) & 0xffffffff
 print(f"  header CRC: stored={hex(hdr_crc)} calc={hex(calc)} {'OK' if hdr_crc==calc else 'MISMATCH!!'}")
+if hdr_crc != calc: bad(f"GPT header CRC mismatch: stored={hex(hdr_crc)} calc={hex(calc)}")
 # partition array CRC
 pe_crc = u32(img,g+88)
 parr = img[part_lba*SS : part_lba*SS + nparts*psize]
 calc2 = binascii.crc32(parr) & 0xffffffff
 print(f"  part-array CRC: stored={hex(pe_crc)} calc={hex(calc2)} {'OK' if pe_crc==calc2 else 'MISMATCH!!'}")
+if pe_crc != calc2: bad(f"GPT partition-array CRC mismatch: stored={hex(pe_crc)} calc={hex(calc2)}")
 
 # --- Partition entry 0 ---
 p = part_lba*SS
@@ -87,7 +112,7 @@ elif n_clusters < 65525: realtype="FAT16"
 else: realtype="FAT32"
 print(f"  >>> SPEC FAT TYPE by cluster count = {realtype}  (label says {fstype.strip()})")
 if realtype!="FAT16":
-    print(f"  *** MISMATCH: firmware determines FAT type by cluster count, not label. {realtype} != FAT16 label ***")
+    bad(f"firmware determines FAT type by cluster count, not label: {realtype} != FAT16 label")
 
 # --- Walk root dir for EFI/BOOT/BOOTX64.EFI ---
 fat1 = f + rsvd*bps
@@ -113,17 +138,17 @@ def find(ents,name83):
         if nm==name83: return (nm,attr,cl,sz)
     return None
 efi=find(root,"EFI        ")
-if not efi: print("  *** EFI dir NOT FOUND in root ***"); sys.exit()
+if not efi: bad("EFI dir NOT FOUND in root"); verdict()
 efidir=read_dir(cluster_off(efi[2]), spc*bps//32)
 print("\n== EFI/ ==")
 for e in efidir: print(f"  {e[0]!r} attr={hex(e[1])} cluster={e[2]} size={e[3]}")
 boot=find(efidir,"BOOT       ")
-if not boot: print("  *** BOOT dir NOT FOUND ***"); sys.exit()
+if not boot: bad("EFI/BOOT dir NOT FOUND"); verdict()
 bootdir=read_dir(cluster_off(boot[2]), spc*bps//32)
 print("\n== EFI/BOOT/ ==")
 for e in bootdir: print(f"  {e[0]!r} attr={hex(e[1])} cluster={e[2]} size={e[3]}")
 b64=find(bootdir,"BOOTX64 EFI")
-if not b64: print("  *** BOOTX64.EFI NOT FOUND ***"); sys.exit()
+if not b64: bad("EFI/BOOT/BOOTX64.EFI NOT FOUND"); verdict()
 print(f"\n== BOOTX64.EFI == cluster={b64[2]} size={b64[3]}")
 peoff=cluster_off(b64[2])
 pe=img[peoff:peoff+b64[3]]
@@ -147,3 +172,5 @@ for s in range(nsec):
     so=sectab+s*40
     snm=pe[so:so+8]; vsz=u32(pe,so+8); vad=u32(pe,so+12); rsz=u32(pe,so+16); rof=u32(pe,so+20); ch=u32(pe,so+36)
     print(f"    {snm} vsz={hex(vsz)} vaddr={hex(vad)} rawsz={hex(rsz)} rawoff={hex(rof)} chars={hex(ch)}")
+
+verdict()

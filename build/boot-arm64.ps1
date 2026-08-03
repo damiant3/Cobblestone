@@ -98,7 +98,7 @@ try {
     $tcpStream.Write($payload, 0, $payload.Length)
     $tcpStream.Flush()
 
-    # Receive PE output — keep reading until connection closes
+    # Receive PE output -- keep reading until connection closes
     $tcpStream.ReadTimeout = 60000
     $allBytes = [System.Collections.Generic.List[byte]]::new(65536)
     $readBuf = [byte[]]::new(8192)

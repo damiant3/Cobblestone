@@ -12,8 +12,8 @@ A photo gallery app with a chronological grid view, album browser, and full-scre
 
 ## Completeness
 
-40% — Layout, tab navigation, and lightbox overlay structure are present. Clicking a photo cell does not open the lightbox. Lightbox always shows the same placeholder. No Favorites view. No real image loading.
+40% -- Layout, tab navigation, and lightbox overlay structure are present. Clicking a photo cell does not open the lightbox. Lightbox always shows the same placeholder. No Favorites view. No real image loading.
 
 ## Codex Conformance
 
-Partial — Written in Codex with platform stubs. No plug wired for image I/O.
+Partial -- Written in Codex with platform stubs. No plug wired for image I/O.

@@ -1,0 +1,147 @@
+Chapter: Sha1
+  cites Foreword chapter Sha256
+
+ SHA-1 cryptographic hash producing a 160-bit digest from a byte list,
+ as published in FIPS 180-4 and RFC 3174.
+
+ SHA-1 is broken for any purpose that depends on collision resistance
+ and must not be reached for when choosing a digest. It is here because
+ two wire protocols name it by number and leave the implementer no
+ choice: the WebSocket opening handshake and the older TLS cipher
+ suites. A protocol constant is not a recommendation.
+
+ The padding and the big-endian word packing are bit-for-bit the same
+ construction SHA-256 uses -- both are Merkle-Damgard over 64-byte
+ blocks with a 64-bit big-endian length appended -- so sha256-pad and
+ bytes-to-words are reused rather than copied. Only the compression
+ function differs.
+
+ To sha1 gives a List Integer of five 32-bit words from a byte list.
+ To sha1-bytes gives the twenty bytes those words denote.
+ To sha1-to-hex gives Text, formatting a digest as a 40-character
+ lowercase hex string.
+
+ The two shapes are both published because the word form is what every
+ other digest in this library answers with, and the byte form is what
+ every consumer on a wire actually wants. Handing the word list to a
+ byte encoder is a silent error: the words exceed 255 and whatever
+ reads them is reading numbers that were never bytes.
+
+ We say:
+
+Section: Constants
+
+  sha1-h0 : List Integer = [
+    1732584193, 4023233417, 2562383102, 271733878, 3285377520
+  ]
+
+  sha1-k0 : Integer = 1518500249
+  sha1-k1 : Integer = 1859775393
+  sha1-k2 : Integer = 2400959708
+  sha1-k3 : Integer = 3395469782
+
+Section: Bitwise Helpers
+
+  sha1-rotl32 : Integer, Integer -> Integer
+  sha1-rotl32 (x) (n) =
+    w32 (bit-or (bit-shl (bit-and x mask32) n) (bit-shru (bit-and x mask32) (32 - n)))
+
+  sha1-f : Integer, Integer, Integer, Integer -> Integer
+  sha1-f (t) (b) (c) (d) =
+    if t < 20 then bit-or (bit-and b c) (bit-and (bit-xor b mask32) d)
+    else if t < 40 then bit-xor b (bit-xor c d)
+    else if t < 60 then bit-or (bit-and b c) (bit-or (bit-and b d) (bit-and c d))
+    else bit-xor b (bit-xor c d)
+
+  sha1-k : Integer -> Integer
+  sha1-k (t) =
+    if t < 20 then sha1-k0
+    else if t < 40 then sha1-k1
+    else if t < 60 then sha1-k2
+    else sha1-k3
+
+Section: Message Schedule
+
+ The schedule extends the sixteen words of a block to eighty. The
+ rotate by one is what separates SHA-1 from its withdrawn predecessor
+ SHA-0, which is otherwise the same function.
+
+  sha1-schedule : List Integer -> List Integer
+  sha1-schedule (block) = sha1-schedule-loop block 16
+
+  sha1-schedule-loop : List Integer, Integer -> List Integer
+  sha1-schedule-loop (w) (t) =
+    if t == 80 then w
+    else let x0 = bit-xor (list-at w (t - 14)) (list-at w (t - 16))
+    in let x1 = bit-xor (list-at w (t - 8)) x0
+    in let x = bit-xor (list-at w (t - 3)) x1
+    in sha1-schedule-loop (list-push w (sha1-rotl32 x 1)) (t + 1)
+
+Section: Compression
+
+  Sha1State = record {
+    sa : Integer, sb : Integer, sc : Integer, sd : Integer, se : Integer
+  }
+
+  sha1-state-from-hash : List Integer -> Sha1State
+  sha1-state-from-hash (hs) = Sha1State {
+    sa = list-at hs 0, sb = list-at hs 1, sc = list-at hs 2,
+    sd = list-at hs 3, se = list-at hs 4
+  }
+
+  sha1-round : Sha1State, Integer, Integer -> Sha1State
+  sha1-round (s) (t) (wt) =
+    let tmp = w32 (sha1-rotl32 (s.sa) 5 + sha1-f t (s.sb) (s.sc) (s.sd) + s.se + sha1-k t + wt)
+    in Sha1State {
+      sa = tmp, sb = s.sa, sc = sha1-rotl32 (s.sb) 30, sd = s.sc, se = s.sd
+    }
+
+  sha1-rounds : Sha1State, List Integer, Integer -> Sha1State
+  sha1-rounds (s) (w) (t) =
+    if t == 80 then s
+    else sha1-rounds (sha1-round s t (list-at w t)) w (t + 1)
+
+  sha1-compress : List Integer, List Integer -> List Integer
+  sha1-compress (hash) (block-words) =
+    let w = sha1-schedule block-words
+    in let s0 = sha1-state-from-hash hash
+    in let sf = sha1-rounds s0 w 0
+    in let h0 = list-set-at hash 0 (w32 (list-at hash 0 + sf.sa))
+    in let h1 = list-set-at h0 1 (w32 (list-at h0 1 + sf.sb))
+    in let h2 = list-set-at h1 2 (w32 (list-at h1 2 + sf.sc))
+    in let h3 = list-set-at h2 3 (w32 (list-at h2 3 + sf.sd))
+    in list-set-at h3 4 (w32 (list-at h3 4 + sf.se))
+
+Section: Block Processing
+
+  sha1-process-blocks : List Integer, List Integer, Integer, Integer -> List Integer
+  sha1-process-blocks (padded) (hash) (offset) (total-len) =
+    if offset >= total-len then hash
+    else let block-words = bytes-to-words padded offset (offset + 64) 0 [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+    in sha1-process-blocks padded (sha1-compress hash block-words) (offset + 64) total-len
+
+Section: Public API
+
+  sha1 : List Integer -> List Integer
+  sha1 (msg) =
+    let padded = sha256-pad msg
+    in sha1-process-blocks padded sha1-h0 0 (list-length padded)
+
+  sha1-bytes : List Integer -> List Integer
+  sha1-bytes (msg) = sha1-words-to-bytes (sha1 msg) 0 []
+
+  sha1-words-to-bytes : List Integer, Integer, List Integer -> List Integer
+  sha1-words-to-bytes (ws) (i) (acc) =
+    if i >= list-length ws then acc
+    else let v = list-at ws i
+    in sha1-words-to-bytes ws (i + 1) (acc & [
+      bit-and (bit-shru v 24) 255,
+      bit-and (bit-shru v 16) 255,
+      bit-and (bit-shru v 8) 255,
+      bit-and v 255
+    ])
+
+  sha1-to-hex : List Integer -> Text
+  sha1-to-hex (hash) = words-to-hex hash 0 (list-length hash) ""
+
+Page 1

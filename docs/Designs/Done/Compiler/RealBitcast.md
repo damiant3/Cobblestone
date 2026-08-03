@@ -18,17 +18,17 @@ IEEE-754 bit pattern as an integer, so you can emit the 4 or 8 little-/big-endia
 bytes. There is currently **no way to obtain those bits** at the language level.
 
 `real-to-int` is a *value* conversion (x86-64 `cvttsd2si`): `real-to-int 1.5`
-gives `1`, not the bit pattern. It truncates toward zero. It is the wrong tool —
+gives `1`, not the bit pattern. It truncates toward zero. It is the wrong tool --
 we need a *bit reinterpret* (a bitcast), not a numeric conversion.
 
 Concretely, Sparkplug B metrics of datatype Float (9) and Double (10) must encode
 the value in Protobuf field 12 (`fixed32`, wire type 5) and field 13 (`fixed64`,
-wire type 1). The Sparkplug module ships without them for exactly this reason —
+wire type 1). The Sparkplug module ships without them for exactly this reason --
 see the prose note in `Sparkplug.codex` ("Float and double values ... are a later
 addition"). Every other binary float sink hits the same wall.
 
-The manual workaround — decomposing the float into sign/exponent/mantissa with
-float arithmetic and reassembling the bits — is error-prone at the edges
+The manual workaround -- decomposing the float into sign/exponent/mantissa with
+float arithmetic and reassembling the bits -- is error-prone at the edges
 (signed zero, denormals, infinities, NaN, round-to-nearest-even) and would
 violate "correctness is absolute." This belongs in the compiler, where it is a
 single machine instruction.
@@ -104,21 +104,21 @@ pattern zero-extended to 64 (the `xorps` before `cvtsd2ss`+`movq` in
 which touches only the low 32 bits, so computed f32 keeps a clean high
 half). Consequences:
 
-- `real-to-bits` / `bits-to-real` are **pure identity** — `Real` and
+- `real-to-bits` / `bits-to-real` are **pure identity** -- `Real` and
   `Integer` share the same GPR representation. Emitted as
-  `alloc-temp` + `mov-rr` (a fresh temp is required — returning `val.reg`
+  `alloc-temp` + `mov-rr` (a fresh temp is required -- returning `val.reg`
   directly, as the `to-real-trapping` no-ops do, desyncs the temp
   allocator and corrupts chained expressions; that bug showed up as
   garbage sums in the acceptance test before the fix).
 - `real-approx-to-bits` / `bits-to-real-approx` use `movd` through xmm0
   to guarantee a 32-bit-clean zero-extension regardless of the source's
-  high half — cheap insurance against a stray high bit corrupting a wire
+  high half -- cheap insurance against a stray high bit corrupting a wire
   format.
 
 **Encoder bug found and fixed.** `movd-to-xmm` / `movd-from-xmm` in
 `X86_64Encoder.codex` were emitting no REX prefix, so any operand in
-R8–R15 (the temp allocator rotates through **R11**) or xmm8–15 was
-mis-encoded as register `n & 7` — e.g. R11 read as RBX. Fixed to emit a
+R8-R15 (the temp allocator rotates through **R11**) or xmm8–15 was
+mis-encoded as register `n & 7` -- e.g. R11 read as RBX. Fixed to emit a
 REX (no W) with R/B extension bits when either operand is ≥ 8; the 0–7
 path is byte-identical, so no existing output changed (these encoders
 had no other callers).

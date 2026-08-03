@@ -82,10 +82,7 @@ Section: PIC Clause and Type Helpers
   cobol-pic (ty) =
    when ty
     is IntegerTy (lo) (hi) (mode) -> "PIC S9(18)"
-    is RealTy -> "PIC S9(18)"
-    is RealApproxTy -> "PIC S9(18)"
-    is RealTrappingTy -> "PIC S9(18)"
-    is RealSaturatingTy -> "PIC S9(18)"
+    is RealTy (w) (m) -> "PIC S9(18)"
     is TextTy -> "PIC X(256)"
     is BooleanTy -> "PIC 9(1)"
     is CharTy -> "PIC S9(18)"
@@ -433,18 +430,16 @@ Section: Expression Emission
    "negate", "print-line-uni", "process-exit", "read-text", "show",
    "substring", "text-length", "text-to-integer", "write-file"]
 
-  cobol-bsearch-builtin : List Text, Text, Integer, Integer -> Integer
-  cobol-bsearch-builtin (names) (target) (lo) (hi) =
-   if lo >= hi then -1
-   else let mid = lo + (hi - lo) / 2
-   in let cmp = text-compare target (list-at names mid)
-   in if cmp == 0 then mid
-      else if cmp < 0 then cobol-bsearch-builtin names target lo mid
-      else cobol-bsearch-builtin names target (mid + 1) hi
+
+  cobol-find-builtin : List Text, Text, Integer -> Integer
+  cobol-find-builtin (names) (target) (i) =
+   if i >= list-length names then -1
+   else if list-at names i == target then i
+   else cobol-find-builtin names target (i + 1)
 
   emit-cobol-apply-named : Text, List IRExpr, List ArityEntry, CobolState -> CobolExprResult
   emit-cobol-apply-named (n) (args) (arities) (st) =
-   let idx = cobol-bsearch-builtin cobol-builtin-names n 0 (list-length cobol-builtin-names)
+   let idx = cobol-find-builtin cobol-builtin-names n 0
    in if idx >= 0 then emit-cobol-builtin-by-idx idx n args arities st
       else emit-cobol-call-def n args arities st
 
@@ -591,23 +586,38 @@ Section: Expression Emission
     state = st2
    }
 
+ The character predicates test CCE BANDS: 1..2 whitespace, 3..12 digit,
+ 13..64 or 97..127 letter, the hole being CCE's punctuation at 65..96.
+
+ Both of these ran `FUNCTION ORD` over the operand and compared against
+ 66..91 and 98..123, which is ASCII with COBOL's one-based ordinal added.
+ Two things were wrong with that. The bands were ASCII rather than CCE,
+ and the operand is already an INTEGER here -- a Char reaches this
+ emitter as a numeric literal or a numeric working-storage item, so ORD
+ was being applied to a number. Comparing the value directly is both
+ correct and one variable cheaper.
+
+ is-whitespace is absent from cobol-builtin-names and is therefore not
+ emitted at all; a program using it emits a call to a paragraph that does
+ not exist, which COBOL refuses at compile time rather than answering
+ wrongly. Left alone deliberately: the dispatch below is by list index,
+ so inserting a name shifts every index after it.
+
   emit-cobol-builtin-is-letter : List IRExpr, List ArityEntry, CobolState -> CobolExprResult
   emit-cobol-builtin-is-letter (args) (arities) (st) =
    let arg-r = emit-cobol-expr-to-var (list-at args 0) arities st
    in let alloc = cobol-alloc-var (arg-r.state) "ISLT"
    in let st2 = cobol-add-ws (alloc.state) ("       01 " & alloc.name & "       PIC 9(1).")
-   in let alloc2 = cobol-alloc-var st2 "ORD"
-   in let st3 = cobol-add-ws (alloc2.state) ("       01 " & alloc2.name & "       PIC S9(18).")
    in CobolExprResult {
     var-name = alloc.name,
-    code = arg-r.code & "           COMPUTE " & alloc2.name & " = FUNCTION ORD(" & arg-r.var-name & ")\n" &
-     "           IF (" & alloc2.name & " >= 66 AND " & alloc2.name & " <= 91)\n" &
-     "              OR (" & alloc2.name & " >= 98 AND " & alloc2.name & " <= 123)\n" &
+    code = arg-r.code &
+     "           IF (" & arg-r.var-name & " >= 13 AND " & arg-r.var-name & " <= 64)\n" &
+     "              OR (" & arg-r.var-name & " >= 97 AND " & arg-r.var-name & " <= 127)\n" &
      "             MOVE 1 TO " & alloc.name & "\n" &
      "           ELSE\n" &
      "             MOVE 0 TO " & alloc.name & "\n" &
      "           END-IF\n",
-    state = st3
+    state = st2
    }
 
   emit-cobol-builtin-is-digit : List IRExpr, List ArityEntry, CobolState -> CobolExprResult
@@ -615,17 +625,15 @@ Section: Expression Emission
    let arg-r = emit-cobol-expr-to-var (list-at args 0) arities st
    in let alloc = cobol-alloc-var (arg-r.state) "ISDI"
    in let st2 = cobol-add-ws (alloc.state) ("       01 " & alloc.name & "       PIC 9(1).")
-   in let alloc2 = cobol-alloc-var st2 "ORD"
-   in let st3 = cobol-add-ws (alloc2.state) ("       01 " & alloc2.name & "       PIC S9(18).")
    in CobolExprResult {
     var-name = alloc.name,
-    code = arg-r.code & "           COMPUTE " & alloc2.name & " = FUNCTION ORD(" & arg-r.var-name & ")\n" &
-     "           IF " & alloc2.name & " >= 49 AND " & alloc2.name & " <= 58\n" &
+    code = arg-r.code &
+     "           IF " & arg-r.var-name & " >= 3 AND " & arg-r.var-name & " <= 12\n" &
      "             MOVE 1 TO " & alloc.name & "\n" &
      "           ELSE\n" &
      "             MOVE 0 TO " & alloc.name & "\n" &
      "           END-IF\n",
-    state = st3
+    state = st2
    }
 
   emit-cobol-builtin-read-file : List IRExpr, List ArityEntry, CobolState -> CobolExprResult

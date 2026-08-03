@@ -5,12 +5,10 @@ Chapter: Opening
   cites Foreword chapter ImportGate
   cites Foreword chapter FactDisk
 
- Entry point for the Codex compiler.
-
   cites Emit chapter Codex Emitter (codex-emit-text-chapter, codex-emit-type-defs, codex-emit-def)
-  cites Emit chapter IR Text Emitter (emit-ir-chapter, ir-prune-unreachable, ir-prune-unreachable-roots)
+  cites Emit chapter IR Text Emitter (emit-ir-chapter, emit-ir-chapter-prefix, ir-defs-wire-size, ir-print-defs, ir-prune-unreachable, ir-prune-unreachable-roots, ir-dropped-budgeted-punctuals)
   cites Emit chapter Emit Allocator (emit-build)
-  cites Emit chapter X86-64 Code Generator (x86-64-emit-cdx, x86-64-emit-cdx-with-exit-mode, ir-chapter-with-proofs, keep-proof-defs, X86_64ExitMode, ExitRepl, Exit, X86_64WatchdogMode, WatchdogProgress, WatchdogPet, pmap-self-test, pmap-escape-count, pmap-escape-count-quiet, pmap-escape-list-quiet, utf8-to-cce, lir-target-x86)
+  cites Emit chapter X86-64 Code Generator (x86-64-emit-cdx, x86-64-emit-cdx-with-exit-mode, ir-chapter-with-proofs, keep-proof-defs, X86_64ExitMode, ExitRepl, Exit, X86_64WatchdogMode, WatchdogProgress, WatchdogPet, pmap-self-test, pmap-escape-count, pmap-escape-count-quiet, pmap-escape-list-quiet, pmap-escape-reached, utf8-to-cce, lir-target-x86)
   cites Semantics chapter Name Resolution (resolve-chapter, check-entry-point-duplicate, check-duplicate-cites, check-cites-resolve, count-typecheck-units)
   cites Codex chapter LirTargets (lir-target-a64-shape, lir-target-narrow-shape)
   cites Foreword chapter CCE (to-unicode)
@@ -29,22 +27,6 @@ Section: Compile Flags
   compile-flags-default : CompileFlags
   compile-flags-default = CompileFlags { prose = False, escape-check = False, poison-compact = False, deck-scale = 100, phase-trace = False, pipeline = default-ir-pipeline }
 
- Every phase deck floor is scaled by deck-scale, a percentage carried on
- the mode line as `decks=N`. A hundred means the floors as written in
- BuildSettings; two hundred means twice them.
-
- It is a knob because it has to be one. A floor is compiled into the
- compiler, so a source that outgrows the floor cannot be compiled by the
- compiler that would carry the bigger floor: you would need the new seed
- in order to build the new seed. Raising the constant and rebuilding does
- not escape that, and the only way out without a knob is a two-stage
- bootstrap through an intermediate seed. That is a trap, and it is the
- kind of trap that is only discovered by falling into it.
-
- With the knob there is no trap. Turn the floors up for the one compile
- that needs it, build the seed that carries the higher default, and turn
- the knob back off.
-
   scaled-floor : Integer, Integer -> Integer
   scaled-floor (pct) (floor) = floor / 100 * pct
 
@@ -52,25 +34,6 @@ Section: Compile Flags
   deck-scale-of (mode) =
    let v = mode-flag-value mode "decks=" 100
    in if v < 1 then 100 else v
-
- The IR pass pipeline is data — a list of pass names — and `passes=`
- on the mode line is the knob that sets it: `passes=name,name` runs
- exactly those passes in that order, `passes=none` runs the empty
- pipeline, and an absent flag means the default. The knob is the
- ablation surface the middle-end campaign is built on — a pass that
- cannot be switched off cannot be measured.
-
- **`passes=name` REPLACES the default; `passes=+name` adds to it.** Both
- are wanted and the difference is not guessable, which is why the additive
- form exists and why the pipeline is reported into the log
- (`run-ir-pipeline`, `IR/Passes.codex`). A replacement is what an ablation
- needs. Adding a *reporter* is what almost every other caller needs, and
- spelling that as a replacement silently switches off `fold-constants` and
- `inline-leaf-calls`, which is exactly what `build/lir-dump-test.ps1` did
- for its whole existence, pinning a program the compiler never emits, with
- `math-mod` still a call. The prose in `lir-check.codex` then reasoned from
- that output that the inliner ran in a later phase. It does not; the flag
- was emptying the pipeline it ran in.
 
   pipeline-of : Text -> List Text
   pipeline-of (mode) =
@@ -103,21 +66,6 @@ Section: Compile Flags
    else if byte == 169 then "FRONTEND"
    else ""
 
- A phase that runs out of deck does not always live long enough to say
- so. The post-hoc check-deck-overflow runs at the END of a phase, and a
- phase whose deck grew into the bivy has already read its own overwrite
- by then: the compile dies in a garbage-pointer fault whose crash site
- names a runtime helper (__linked_list_to_list, copy-sx-text) shared by
- half the frontend, so the site does not identify the phase. Measured
- 2026-07-21 on the 2.80 MB selfhost, `-Decks` at 20, 40, 50 and 60 all
- die that way and the four logs name three different helpers.
- phase-trace is the discriminator: under the existing `debug` mode flag
- every completed phase writes one PH: line over the control channel, so
- the last line before a crash bounds the failure to the phase after it.
- It writes through port-out-byte rather than print-line-uni because the
- phase chain is a pure let-chain and a Console row here would have to be
- threaded through every phase signature.
-
   compact-phase : CompileFlags, Integer -> Nothing
   compact-phase (flags) (byte) =
    let marked = phase-trace-mark (flags.phase-trace) byte
@@ -126,51 +74,12 @@ Section: Compile Flags
 
 Section: Compile Target
 
- The transpile / codegen target. Every compile mode reads the same
- frontend IR; only the final emit phase is target-specific.
-
   CompileTarget =
    | CtCodexText
    | CtX86_64Bare
    | CtCdx
 
 Section: Frontend
-
- Two frontend builders: compile-frontend-passes (TEXT/IR/MEASURE -- LOWER on
- deck, no RESOLVE/LIFT) and compile-frontend-cdx (CDX -- LOWER on
- deck, then RESOLVE on deck, then LIFT on deck). Both paths wrap
- lower-chapter in deck-record; rewrite-ir-defs does not deep-copy
- all referenced type data, so bivy placement is unsafe (CL 2968).
-
- **Whether the IR pass pipeline runs is a parameter, and it has to be.**
- compile-frontend-passes serves two consumers with opposite needs. The IR
- emitters hand their chapter to a plug, which wants the same optimised IR
- the CDX emitter compiles: without the pipeline every leaf call x86
- inlines arrives at the ARM64 and RISC-V backends as a real call, and the
- power-of-two remainder fusion cannot happen at all, because nothing
- inlined the remainder for it to fuse. The TEXT emitters print definitions
- back as source, and build.ps1's semantic-equivalence leg compares each
- printed definition against the one in the file. An inlined body is not
- that definition. Running the pipeline for both turns that leg red on
- every build, by construction; running it for neither is what left the
- plug lanes on raw lowering. So compile-frontend (TEXT, MEASURE) passes
- False and compile-frontend-ir (IR) passes True, and the two wrappers
- exist so that a call site states which one it is.
-
- **This path DOES merge the pipeline's own diagnostics into its bag**, the
- same ir-check-violation-bag and occ-info-bag compile-frontend-cdx uses, so
- a `-Passes ir-check` or `-Passes occ-report` run in IR mode reports what it
- found. It has to do it through frontend-bag-with-passes (below) and not
- inline, and that is not a style choice: adding the two bags directly to
- this function's own bag-merge-all killed the compiler in `bag-add` with a
- general protection fault, reading a Text where a Diagnostic belongs, on a
- source as small as codex/test/arithmetic. It was not the bags' contents --
- two EMPTY extra bags did it as reliably as one holding an info, and the CDX
- path merges fourteen bags the same way without complaint. This function's
- let-chain is long enough that the two extra bindings pushed its register
- allocation over a spill boundary; the helper keeps the binding count here
- and does the merge where there is room. Pinned by
- `build/ir-passes-test.ps1`. BACKLOG 3.24.
 
   CompileFrontend = record {
    type-defs : List ATypeDef,
@@ -279,28 +188,6 @@ Section: Frontend
     phase-metrics = []
    }
 
- Hand this plain Integers captured from __deck-pos, never fields read back
- out of a PhaseMetrics. phase-measure allocates its record with deck-record,
- on the phase's own deck, at the END of the phase -- so a phase that has
- overflowed allocates the record describing that overflow past its own
- reservation, in bivy territory, where it is promptly overwritten. The
- instrument is destroyed by the exact condition it exists to measure, and
- the verdict computed from it is noise in BOTH directions.
-
- Measured 2026-07-21 with `compile.ps1 -Measure` on the 2.80 MB selfhost,
- LOWER's reported deck-origin is a sane heap address at `-Decks` 91 and 100
- (no overflow) and reads 15, 29 and 3,571,777,536 at 88, 89 and 90. That
- last one makes `deck-end - deck-origin` NEGATIVE, so the check answers
- "fits" for a phase that is 169 KB over its floor -- which is the whole of
- the non-monotonic knob: 88 and 89 report, 90 passes on a
- negative subtraction, 91 genuinely fits.
-
- An Integer let-binding is a value, not a heap record, so it cannot be
- trampled by the allocation it is measuring. The RECORD is still wrong when
- a phase overflows and that is a reporting defect worth knowing about when
- reading a `-Measure` table; the fix for it is the write-path guard that
- stops the overflow happening, not a better record.
-
   check-deck-overflow : Integer, Integer -> Integer
   check-deck-overflow (usage) (budget) =
    if usage > budget then 1 else 0
@@ -331,11 +218,6 @@ Section: Frontend
 
   serial-newline : Integer = serial-byte 10
 
-
- char-code answers the CCE code point and the wire wants Unicode, so
- every byte goes through to-unicode. Sending char-code straight out
- spells a label nobody can read and looks like a corrupted log rather
- than like an encoding mistake.
 
   serial-text-loop : Text, Integer, Integer -> Integer
   serial-text-loop (t) (i) (len) =
@@ -379,21 +261,14 @@ Section: Frontend
   precise-escape-bag (enabled) (root-addr) (type-name) (m) (phase-name) =
    if enabled then
     let escaped = pmap-escape-count root-addr type-name (m.bivy-origin) (m.bivy-hwm)
-    in bag-from-list [make-warning cdx-escape-violation ("PRECISE escape (" & phase-name & "/" & type-name & "): " & show escaped & " ptr(s) into bivy") synthetic-span]
+    in let reached = pmap-escape-reached root-addr type-name
+    in bag-from-list [make-warning cdx-escape-violation ("PRECISE escape (" & phase-name & "/" & type-name & "): " & show escaped & " ptr(s) into bivy, reach " & show reached) synthetic-span]
    else bag-from-list []
 
   pmap-selftest-bag : Boolean -> DiagnosticBag
   pmap-selftest-bag (enabled) =
    if enabled then pmap-selftest-result pmap-self-test
    else bag-from-list []
-
- The deck-liveness map. Under -EscapeCheck, the emitter's input roots
- are walked against earlier deck address ranges to measure which
- sealed decks the late game still references. A zero count for a
- segment means the emit inputs do not reach it and its space is a
- candidate for reclamation; the pre-scope segment is recycled space
- (the desugar-boundary compact reuses the lex/parse ranges), so hits
- there mean the frontend keep deck, not dead lex data.
 
   deck-live-warn : Text, Text, Integer -> DiagnosticBag
   deck-live-warn (root-name) (seg) (n) =
@@ -444,23 +319,6 @@ Section: Frontend
    in let result = deck-record (LexResult { tokens = tokens, bag = lex-bag2, heap-marks = [h0], phase-metrics = [lex-metrics] })
    in let sealed = compact-phase flags poison-lex
    in result
-
- The parse phase historically never compacted: the Document lived in
- its bivy, so the entire parse scratch region stayed buried under
- every later phase. compile-parse now uses the reservation pattern
- from the LOWER rewrite: a keep deck is reserved FIRST, a bounded
- scratch deck is built above it, and scan/parse run there exactly as
- before. The deck is then pointed back at the reservation and the
- survivors are copied in: copy-sx-document rebuilds the CST (sharing
- lexer tokens from the LEX deck below, rebuilding parser-synthesized
- nodes and scratch texts), the assignments are re-recorded with their
- texts rematerialized, and the colliding set is rebuilt through its
- list round-trip. One phase-compact then reclaims the scratch deck,
- the bivy, and the unused tail of the reservation. The scratch deck
- must sit strictly below the bivy, and the keep deck strictly below
- the scratch, or deck-exit rewinds R10 over live allocations. The
- error path returns scratch references without compacting -- the
- compile halts there, so nothing above it ever allocates.
 
   compile-parse : List Token, Text, Integer, List PhaseMetrics, CompileFlags -> ParseResult
   compile-parse (tokens) (source) (h0) (prior-metrics) (flags) =
@@ -736,21 +594,6 @@ Section: Frontend
   compile-frontend-ir (source) (chapter-name) (flags) =
    compile-frontend-passes source chapter-name flags True
 
- The ir-check and occ-report passes get their diagnostics into the frontend
- bag through this helper rather than inline in compile-frontend-passes, and
- the reason is a codegen cliff, not tidiness. compile-frontend-passes is a
- very long let-chain, and adding the two extra bindings an inline merge
- needs pushed its register allocation over a spill boundary: the compiler
- then died in bag-add reading a Text where a Diagnostic belongs, on a source
- as small as codex/test/arithmetic, whether the extra bags held anything or
- not (two empty bags did it as reliably as one holding an info). The merge
- itself was never the problem -- compile-frontend-cdx merges fourteen bags
- the same way without complaint. Doing it here keeps the caller's binding
- count exactly where the four-bag version had it and moves the extra
- bindings into a small function with room to spare. The two inner
- deck-records match compile-frontend-cdx's, so the bag survives the frontend
- compact. BACKLOG 3.24, found by reek closing 3.23.
-
   frontend-bag-with-passes : DiagnosticBag, DiagnosticBag, DiagnosticBag, DiagnosticBag, IRPassResult -> DiagnosticBag
   frontend-bag-with-passes (base) (ov) (esc) (precise) (passed) =
    bag-merge-all [base, ov, esc, precise,
@@ -908,23 +751,6 @@ Section: Frontend
 
 Section: Library Loading
 
- Classifies a cite by quire and maps a quire to its directory. What used
- to live here as well was a whole file-reading loader -- `load-cited-
- foreword` over `read-and-rename-library` and `load-and-advance-library`,
- renaming chapter headers to "Quire--Name" so they could be concatenated.
- **Nothing ever called it.** The host does this job: `Resolve-CiteOrder`
- in `build/quire-map.ps1`, driven by `build/compile.ps1`, which is also
- what actually raises CDX3010 when a cited chapter is not on disk.
-
- Deleted 2026-07-18. It mattered because that dead loop
- held the compiler's ONLY raise of `cdx-missing-cite`, so the code read as
- though the compiler diagnosed a missing cite when no path could reach it.
- The registry entry stays -- the code is real and the host emits it -- but
- the compiler no longer pretends to raise it. `dedup-library-cites` and
- `ForewordLoadResult` went with it, having no other caller;
- `filter-library-cites`, `is-library-quire` and `quire-to-dir` stayed,
- because Disk Foreword Loading below uses all three.
-
   is-library-quire : Text -> Boolean
   is-library-quire (q) =
    if q == "Foreword" then True
@@ -1024,32 +850,17 @@ Section: Disk Foreword Loading
 
 Section: Quoted Works
 
- A citation is resolved by the host, which finds the named file and
- splices its text into the unit before the compiler ever sees it. A
- quotation cannot work that way. If quoted code arrived already spliced
- into the source, it would be compiled whatever the gate said, and the
- gate would be theatre.
+ Threat model: the transport is untrusted. Whoever hands us these bytes
+ may hand us anything at all, so the gate takes the messenger's word for
+ nothing -- content that does not match its digest, a signer the source
+ did not pin, a forged signature, and a score below the floor are each
+ refused independently.
 
- So a quoted work travels beside the source, not inside it, in a section
- the compiler cuts off before it compiles anything. Each work is offered
- with its author, its signature, and the key that signed it; the
- compiler hashes the content itself, checks the signature itself, and
- looks up the score itself. Only a work that survives all four guards is
- spliced in.
-
- That is what lets the transport be untrusted. Whoever hands us these
- bytes may hand us anything at all: a work whose content does not match
- its digest is refused, a work signed by a stranger is refused, a forged
- signature is refused, and a signer we do not trust enough is refused.
- The messenger cannot smuggle a definition past the gate, because the
- gate does not take the messenger's word for anything.
-
- The offered works look like this, after the marker line: a KEY line per
+ The offered-works wire format, after the marker line: a KEY line per
  trusted key, giving its fingerprint, its public key in hex, and the
- score we have already decided it deserves; and a WORK line per offered
- definition, giving its digest, its author, its timestamp, the
- fingerprint that signed it, the signature in hex, and the number of
- lines of content that follow.
+ score; and a WORK line per offered definition, giving its digest, its
+ author, its timestamp, the fingerprint that signed it, the signature in
+ hex, and the number of lines of content that follow.
 
   quoted-works-marker : Text = "%%QUOTED-WORKS%%"
 
@@ -1057,10 +868,6 @@ Section: Quoted Works
    sp-body : Text,
    sp-works : Text
   }
-
- Found by scanning, not by text-split: the marker is many characters
- long, and a splitter that is only ever asked for single characters
- elsewhere in this compiler is not a thing to take on trust here.
 
   match-at : Text, Text, Integer, Integer, Integer -> Boolean
   match-at (t) (m) (i) (j) (mlen) =
@@ -1074,23 +881,12 @@ Section: Quoted Works
    else if match-at t m i 0 mlen then i
    else index-of-from t m (i + 1) tlen mlen
 
- The marker is a line, and only a line. It is not enough to find those
- characters somewhere in the source, because the first source that ever
- contains them is this one: the marker is defined here, as a text
- literal, a few lines above. A compiler that split on any occurrence
- would cut its own source in half at the definition of the thing it was
- looking for, and every chapter after this one would cease to exist.
-
- So an occurrence counts only when it stands alone on its line. The
- literal above sits in the middle of a definition and is not one.
-
- The source is CCE by the time it reaches here, and CCE is not ASCII. A
- newline is 1 and a space is 2; 10 is the digit seven. A guard written
+ The source is CCE by the time it reaches here, and CCE is not ASCII: a
+ newline is 1, a space is 2, and 10 is the digit seven. A guard written
  against the ASCII numbers asks whether the character before the marker
- is a seven, decides it is not, refuses to see a marker standing in plain
- sight, and hands the offered works to the parser as if they were code --
- which is the one thing this section exists to prevent. Ask the encoding
- for its own numbers. Never write them down.
+ is a seven, decides it is not, and hands the offered works to the parser
+ as if they were code. Ask the encoding for its own numbers. Never write
+ them down.
 
   at-line-start : Text, Integer -> Boolean
   at-line-start (t) (i) =
@@ -1119,16 +915,9 @@ Section: Quoted Works
         sp-works = substring src (at + mlen) (tlen - at - mlen)
       }
 
- Resolving quotations costs a second parse of the source, so a source
- with no quotations must not pay for one. A false positive would cost
- only that wasted parse; a false negative would let a quotation through
- ungated, so the guard must be the loosest thing that cannot miss one.
-
- It looks for a line whose first word is the keyword. Searching the
- whole text for the keyword would find it in this very chapter, in the
- literal the guard itself is written with, and every self-compile would
- then pay for a parse it does not need -- the same self-reference the
- marker has, arriving by a different road.
+ The asymmetry that fixes the guard's strictness: a false positive costs
+ one wasted parse, a false negative lets a quotation through ungated. So
+ the guard must be the loosest thing that cannot miss one.
 
   next-line-at : Text, Integer, Integer -> Integer
   next-line-at (t) (i) (tlen) =
@@ -1159,9 +948,7 @@ Section: Hex
  them by frequency, so a is 15 and f is 28, and everything from o to w
  sits between them. A hex decoder written as two range checks over ASCII
  therefore accepts a dozen letters that are not hex digits and mis-values
- every one of them. Tokens already has the decoder that gets this right,
- and it spells the six letters out one at a time for exactly this reason.
- Cite it. A second copy is a second thing to get wrong.
+ every one of them.
 
   hex-to-bytes : Text, Integer, Integer, List Integer -> List Integer
   hex-to-bytes (t) (i) (len) (acc) =
@@ -1188,12 +975,9 @@ Section: Reading The Offered Works
    else join-work-lines lines (i + 1) stop (acc & list-at lines i & "\n")
 
  The trust manifest is built from the SOURCE, never from the offered works.
- Each trusted-key declaration in the chapter header pins a fingerprint, the
- public key its signatures verify against, and the score the source gives
- it. A KEY line in the works blob is ignored on purpose: it arrives over
- the transport, and the transport is exactly what the gate must not
- believe. A signer the source did not pin is an unknown signer, whatever
- the works claim about it.
+ A KEY line in the works blob is ignored on purpose: it arrives over the
+ transport, and the transport is what the gate must not believe. A signer
+ the source did not pin is an unknown signer, whatever the works claim.
 
   build-source-manifest : List CitesDecl, Integer, Integer, TrustManifest -> TrustManifest
   build-source-manifest (ks) (i) (len) (m) =
@@ -1204,11 +988,10 @@ Section: Reading The Offered Works
    in build-source-manifest ks (i + 1) len m2
 
  A WORK line offers a signed work; an OFFER line offers one with no
- signature at all. The two are different things and the gate answers them
- differently, so the transport has to be able to say which it means. An
+ signature at all. The transport must be able to say which it means: an
  unsigned work smuggled in as a WORK line with an empty signature would
- be filed as signed, fail to verify, and be refused as forged -- a true
- statement about the bytes and an answer to a question nobody asked.
+ be filed as signed and refused as forged, which answers a different
+ question from the one asked.
 
   parse-works : List Text, Integer, Integer, WorksState -> WorksState
   parse-works (lines) (i) (len) (st) =
@@ -1247,11 +1030,9 @@ Section: Reading The Offered Works
    in parse-works lines (i + 1 + nlines) len st2
 
  No carriage return survives to be stripped here. CCE has no code point
- for one -- the table maps 0, 10 and 32, and 13 is simply not in it -- so
- the conversion at the I/O boundary drops it, and a CRLF file and an LF
- file are the same text by the time the gate sees them. That is the
- encoding doing its job, and it is why this reads the lines and nothing
- else.
+ for one -- 13 is not in the table -- so the conversion at the I/O
+ boundary drops it, and a CRLF file and an LF file are the same text by
+ the time the gate sees them.
 
   build-works : Text -> WorksState
   build-works (works) =
@@ -1289,13 +1070,11 @@ Section: Refusing A Quotation
    let sp = span-at (q.quire.line) (q.quire.column) (q.quire.offset) (q.quire.length) (q.quire.file-id)
    in make-error (__narrow (quotation-code o)) (quotation-message q o) sp
 
- A chapter that quotes a work and never says how much trust a signer
- must clear has not finished saying what it wants. With the keys pinned
- in the source an absent floor is a weak default rather than a hole --
- floor zero admits only keys the author pinned, at any score -- but a
- weak default chosen by omission is not a choice, so the gate refuses
- the chapter before resolving anything. The parser stamps an absent
- floor as a negative sentinel; a declared floor of zero stays legal.
+ An absent trust floor is refused rather than defaulted: a weak default
+ chosen by omission is not a choice. The parser stamps an absent floor as
+ a NEGATIVE sentinel, which is what distinguishes it from a declared
+ floor of zero -- and zero stays legal, admitting only keys the author
+ pinned, at any score.
 
   quotation-no-floor-diag : CitesDecl -> Diagnostic
   quotation-no-floor-diag (q) =
@@ -1335,10 +1114,6 @@ Section: Refusing A Quotation
    else if char-code-at t i == char-code '\n' then i
    else line-end-at t (i + 1) len
 
- An admitted work is bound to the name the quotation gave it, so the
- chapter that quoted it reads by that name and not by whatever the work
- happened to call itself.
-
   rewrite-chapter-header : Text, Text -> Text
   rewrite-chapter-header (content) (local-name) =
    let len = text-length content
@@ -1347,11 +1122,6 @@ Section: Refusing A Quotation
    in if text-starts-with head "Chapter:"
       then "Chapter: " & local-name & substring content nl (len - nl)
       else content
-
- The bundle handed in already holds the offered-works blob and, when a
- store disk is attached, everything the store holds on top of it. This
- function stays pure: the disk read that assembled the bundle happened in
- the effectful caller, and what reaches the gate here is a value.
 
   resolve-quotations : Text, FactBundle -> QuoteResolve
   resolve-quotations (body) (bundle) =
@@ -1369,11 +1139,6 @@ Section: Refusing A Quotation
 
 Section: Text Compilation
 
- Transpile targets (Codex text) share this path. Binary targets go
- through compile-frontend because their result is bytes, not text. heap-marks exposes phase-boundary heap
- positions (frontend + pre-emit + post-emit) so callers can report
- measurements without a parallel pipeline.
-
   compile-text : CompileFrontend, CompileTarget -> Text
   compile-text (fe) (target) =
    if bag-has-errors (fe.bag) then ""
@@ -1387,34 +1152,8 @@ Section: Text Compilation
 
 Section: Binary Compilation
 
- x86-64 bare-metal. Output is bytes, not text. Future binary targets
- (CDX, riscv-bare, ...) will dispatch from here once we have more than
- one.
-
   compile-to-cdx : CompileFrontend -> EmitChapterResult
   compile-to-cdx (fe) = compile-to-cdx-with-exit-mode fe Exit False WatchdogProgress
-
- The CDX root set. `opening` is the entry point and the root of
- everything the machine will run. The two fat16 servicer workers are not
- reachable from it by name: the default FileSystem handler stubs
- (emit-fs-servicer-helpers, X86_64Helpers) call them through a hardcoded
- string in the emitter, so no IR body anywhere mentions them and a
- flood-fill from `opening` alone would drop the workers out from under
- the stubs that call them.
-
- They are named unconditionally rather than behind the emitter's own
- read-text guard. A program that does not cite FileSystem never defines
- them, and a root that names no definition is skipped -- so the guard
- would buy two definitions in the programs that do cite it, at the price
- of a second copy of a condition free to drift from the first.
-
- A root omitted here is not a silent wrong binary. Every way emitted code
- reaches a function is checked at finalize: a call through
- check-call-patch-targets, an address-of through check-func-addr-targets,
- an effect-op slot through check-effect-op-reads. Each raises CDX2040 (or
- its effect-op sibling) naming the function, and the bag then refuses the
- binary. The failure mode of a wrong root set is a red build that names
- what is missing.
 
   cdx-emit-roots : List Text
   cdx-emit-roots = ["opening", "fat16-servicer-read", "fat16-servicer-write"]
@@ -1422,9 +1161,11 @@ Section: Binary Compilation
   compile-to-cdx-with-exit-mode : CompileFrontend, X86_64ExitMode, Boolean, X86_64WatchdogMode -> EmitChapterResult
   compile-to-cdx-with-exit-mode (fe) (exit-mode) (poison) (wd-mode) =
    if bag-has-errors (fe.bag) then EmitChapterResult { header-bytes = [], content-buf = 0, content-len = 0, tail-bytes = [], bag = fe.bag, symbol-map = [] }
-   else let proofs = keep-proof-defs [] ((fe.cdx-ir).defs) 0
+   else let all-defs = (fe.cdx-ir).defs
+    in let proofs = keep-proof-defs [] all-defs 0
     in let pruned = ir-prune-unreachable-roots (fe.cdx-ir) cdx-emit-roots
-    in let emit-result = x86-64-emit-cdx-with-exit-mode (ir-chapter-with-proofs pruned proofs) (fe.sorted-type-defs) exit-mode poison False wd-mode
+    in let dropped = ir-dropped-budgeted-punctuals all-defs (pruned.defs)
+    in let emit-result = x86-64-emit-cdx-with-exit-mode (ir-chapter-with-proofs pruned proofs) (fe.sorted-type-defs) exit-mode poison False wd-mode dropped
     in EmitChapterResult {
      header-bytes = emit-result.header-bytes,
      content-buf = emit-result.content-buf,
@@ -1435,10 +1176,6 @@ Section: Binary Compilation
     }
 
 Section: Measurement
-
- Phase labels line up 1:1 with CompileFrontend.heap-marks (plus two
- emit-phase marks appended by the caller). format-heap-marks renders
- them for MEASURE mode output.
 
   phase-labels : List Text
   phase-labels =
@@ -1529,9 +1266,6 @@ Section: Codegen Diagnostics
 
 Section: Streaming Emission
 
- Per-definition emit with heap strikes between definitions.
- Uses pre-lowered IR from compile-frontend, matching the CDX path.
-
   emit-streaming-ir-defs : List IRDef, List Text, List RenameEntry, Integer, Integer -> [Console] Nothing
   emit-streaming-ir-defs (ir-defs) (ctor-names) (renames) (i) (len) =
    if i == len then print-line-uni ""
@@ -1581,7 +1315,9 @@ Section: Entry Point
 
   emit-cdx : Text, Text, CompileFlags -> [Console, FileSystem] Nothing
   emit-cdx (source) (mode) (flags) =
-   let exit-mode = if has-mode-flag mode "repl" then ExitRepl else Exit
+   let exit-mode = if has-mode-flag mode "repl" then ExitRepl
+    else if has-mode-flag mode "uefi" then ExitUefi
+    else Exit
    in let want-map = has-mode-flag mode "map"
    in let poison = has-mode-flag mode "poison"
    in let debug = has-mode-flag mode "debug"
@@ -1682,10 +1418,12 @@ Section: Entry Point
     in print-line-uni (format-heap-marks-wd (fe.heap-marks & [h-pre-emit, h-post-emit]))
    end
 
- Emit the IR S-expression chapter as the SIZE-framed wire format the
- emit plugs consume. Streams one def at a time via print-uni (no
- trailing LF), reclaiming heap between defs so large programs with
- many imported chapters do not exhaust the bump allocator.
+ The SIZE-framed wire format the emit plugs consume: the SIZE line must
+ precede the first payload byte, and the closing print-line supplies the
+ one raw linefeed that follows the payload. Only emission knows a def's
+ length, hence two passes -- ir-defs-wire-size for the total, then
+ ir-print-defs through print-text so the wire bytes are exactly what
+ emit-ir-chapter produced.
 
   emit-ir-cce : Text, CompileFlags -> [Console] Nothing
   emit-ir-cce (source) (flags) =
@@ -1694,13 +1432,16 @@ Section: Entry Point
    in act
     print-codegen-error-header (bag-errors (fe.bag))
     if bag-has-errors (fe.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no IR emitted"
-    else act
-     let ir-text = emit-ir-chapter (ir-prune-unreachable (fe.ir) "opening") (fe.text-meta) (fe.type-defs)
+    else let ir = ir-prune-unreachable (fe.ir) "opening"
+     in let defs-len = list-length (ir.defs)
+     in let prefix = emit-ir-chapter-prefix ir (fe.text-meta) (fe.type-defs)
+     in let total = text-length prefix + ir-defs-wire-size (ir.defs) 0 defs-len 0 + 3
      in act
-      print-line-uni ("SIZE:" & show (text-length ir-text))
-      print-line ir-text
+      print-line-uni ("SIZE:" & show total)
+      print-text prefix
+      ir-print-defs (ir.defs) 0 defs-len
+      print-line ""
      end
-    end
     let h-post-emit = __heap-save
     in print-line-uni (format-heap-marks-wd (fe.heap-marks & [h-pre-emit, h-post-emit]))
    end
@@ -1776,12 +1517,10 @@ Section: Entry Point
   parse-mode-flags (mode) =
    CompileFlags { prose = has-mode-flag mode "prose", escape-check = has-mode-flag mode "escape-check", poison-compact = has-mode-flag mode "poison-compact", deck-scale = deck-scale-of mode, phase-trace = has-mode-flag mode "debug", pipeline = pipeline-of mode }
 
- The volume is resolved from the disk's own GPT rather than assumed to start
- at LBA 2048. That constant was only ever right for an image our GptWriter
- laid down; a stick partitioned elsewhere, or our own dual-boot install,
- puts the volume at a different offset and DISK mode read the wrong sectors.
- fat16-boot-volume walks the partition table and takes the first entry that
- parses as FAT16, falling back to 2048 when there is no readable GPT.
+ The volume is resolved from the disk's own GPT rather than assumed to
+ start at LBA 2048. That constant is only right for an image our own
+ GptWriter laid down; a stick partitioned elsewhere puts the volume at a
+ different offset. 2048 remains the fallback when there is no readable GPT.
 
   emit-from-disk : Text -> [Console, FileSystem] Nothing
   emit-from-disk (mode) = act
@@ -1807,38 +1546,6 @@ Section: Entry Point
    else if cmd == "MEASURE" then emit-measure source flags
    else emit-text-streaming source flags
 
- A refused quotation halts every mode, not just the one that emits a
- binary. Refusing to link untrusted code and then handing back its IR,
- or its text, would be a distinction without a difference.
-
- Resolving a quotation means parsing the source to find it, and the
- parser allocates on the deck. There is no deck here: the phase
- allocator is raised inside the frontend, far downstream of this point.
- So the gate raises it and reserves its own, exactly as a phase does.
-
- It must reserve, and not merely raise. init-phase-allocator only points
- deck-pos at the current heap; it does not move the heap past it. A deck
- record written there therefore lands at the same address the next bivy
- allocation takes, and the two overwrite each other. That was the crash
- that stopped this work before, and it looked like the parser failing.
- It was the deck and the bivy standing on the same spot.
-
- Two decks, following the parse phase. The scratch deck carries the
- tokens and the syntax tree of a parse whose only purpose is to find the
- quotations, and it is thrown away. The keep deck carries the one thing
- that must outlive the gate: the text of the works we admitted. Copying
- that text down into the reservation and compacting reclaims the
- scratch, so the frontend proper starts where it would have started
- anyway, and a source that quotes nothing never comes here at all.
-
- A quotation may be answered from the offered-works blob, from the fact
- store on an attached disk, or from both. The blob bundle is built first;
- the store, when the mode line carries `store`, is read on top of it, so a
- quotation the blob already satisfies still resolves and one it does not
- is looked for on the disk. Reading the disk is a Device.Block effect,
- which is why this function carries it and binds the read; a compile with
- no store disk never calls store-read-bundle and never touches the bus.
-
   compile-with-quotations : SourceSplit, Text, Text, CompileFlags -> [Console, FileSystem, Device.Block] Nothing
   compile-with-quotations (split) (cmd) (mode) (flags) =
    let mountain = init-phase-allocator
@@ -1861,12 +1568,6 @@ Section: Entry Point
    print-codegen-error-header errs
    print-line-uni "CODEGEN-HALTED: quotation refused; nothing emitted"
   end
-
- The keep deck is checked before it is written, not after. An overrun
- here would be copy-sx-text writing past its reservation into the
- scratch it is still reading -- the silent halt with a garbage pointer
- that BuildSettings warns about -- and the check that runs afterwards
- would run too late to say so.
 
   admit-quotations : SourceSplit, Text, Text, CompileFlags, Integer, Integer, Text -> [Console, FileSystem] Nothing
   admit-quotations (split) (cmd) (mode) (flags) (keep-base) (keep-height) (prefix) =

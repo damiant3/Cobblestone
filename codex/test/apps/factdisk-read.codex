@@ -1,0 +1,82 @@
+Chapter: FactDiskRead
+  cites Foreword chapter FactDisk
+  cites Foreword chapter ImportGate
+  cites Foreword chapter FactStore
+  cites Foreword chapter Hamt
+  cites Foreword chapter Maybe
+
+ FactDisk is how the compiler reads a work out of the fact store: the
+ quotation gate reaches it from `opening.codex`, and until this test
+ nothing had ever run a line of it. The two fact-log disks that existed
+ (`disk-facts-read.disk`, `disk-facts-load.disk`) hold a single kind-0
+ entry each, so the source-definition decode path -- the entire reason the
+ chapter exists -- had no fixture at all.
+
+ The disk here is minted by `build/mint-factlog-fixture.ps1` from the
+ SPECIFICATION: Foreword chapter FactLog for the sector layout, Foreword
+ chapter SourceDefWire for the record format. It is deliberately NOT
+ produced by running DiskFacts. A fixture written by the writer under test
+ proves only that the reader agrees with its own writer, which is the
+ failure `BrotliBeatsOpus` is about, and the reason the reverse direction
+ gets written first.
+
+ Three entries, in an order chosen to be adversarial:
+
+   sector 2  kind 0   a five-character record that is NOT a definition
+   sector 3  kind 30  an unsigned definition, hash abc123
+   sector 4  kind 30  a signed definition, hash def456, signature aabb
+
+ The kind-0 entry is FIRST on purpose. A walk that stopped at the first
+ entry it could not decode would report zero works, and a walk that
+ decoded it anyway would report three.
+
+ The signed and unsigned records are both present because `fd-admit-work`
+ routes them differently: an empty signature is OFFERED and a real one is
+ PUBLISHED, and only the published one belongs in the bundle's signed map.
+ A reader that published everything would look identical on a count.
+
+ The last two lines are the supplement property. The compiler hands
+ `store-read-bundle` the bundle it already built from the offered-works
+ blob, so the disk must ADD to it and not replace it: a quotation the blob
+ already satisfied has to still resolve afterwards.
+
+ We say:
+
+Section: Reading a fact back
+
+  show-fact : Maybe Fact -> Text
+  show-fact (m) =
+    when m
+     is None -> "absent"
+     is Just (f) -> f.content & "/" & f.author & "/" & show (f.timestamp)
+
+  show-signed : Maybe SignedFact -> Text
+  show-signed (m) =
+    when m
+     is None -> "unpublished"
+     is Just (s) -> s.signer-fingerprint & "/" & show (list-length (s.signature))
+
+Section: A bundle that already holds something
+
+  prior : Fact
+  prior = Fact {
+    hash = "zzz999",
+    kind = DefinitionFact,
+    content = "from the blob",
+    author = "base",
+    timestamp = 1
+  }
+
+Section: Body
+
+  opening : [Console, Device.Block] Nothing = act
+    fresh <- store-read-bundle bundle-empty
+    print-line-uni ("count=" & show (fact-count (fresh.facts)))
+    print-line-uni ("unsigned=" & show-fact (fact-load (fresh.facts) "abc123"))
+    print-line-uni ("signed=" & show-fact (fact-load (fresh.facts) "def456"))
+    print-line-uni ("published=" & show-signed (hamt-get (fresh.signed) "def456"))
+    print-line-uni ("offered-not-published=" & show-signed (hamt-get (fresh.signed) "abc123"))
+    supplemented <- store-read-bundle (bundle-offer bundle-empty prior)
+    print-line-uni ("supplemented-count=" & show (fact-count (supplemented.facts)))
+    print-line-uni ("prior-survives=" & show-fact (fact-load (supplemented.facts) "zzz999"))
+  end

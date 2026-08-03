@@ -1,4 +1,4 @@
-# Encoder Updates — Missing x86-64 Instructions for Crypto
+# Encoder Updates -- Missing x86-64 Instructions for Crypto
 
 **Date**: 2026-03-31
 **Status**: Design
@@ -12,7 +12,7 @@
 
 The x86-64 instruction encoder (both C# and self-hosted Codex) is missing
 several instructions required by the crypto primitives. The encoder was
-built for compiler codegen — it has what the compiler needs today. Crypto
+built for compiler codegen -- it has what the compiler needs today. Crypto
 needs more.
 
 ### Current encoder instruction set
@@ -22,17 +22,17 @@ The self-hosted encoder (`Codex.Codex/Emit/X86_64Encoder.codex`) supports:
 ```
 MOV    (rr, ri32, ri64, load, store, rip-rel, byte)
 ADD    (rr, ri)           SUB    (rr, ri)
-IMUL   (rr — 2-operand, signed, truncated to 64 bits)
+IMUL   (rr -- 2-operand, signed, truncated to 64 bits)
 NEG    (r)                CQO
 IDIV   (r)
-AND    (rr, ri)           XOR    (rr — 32-bit only, used for zeroing)
+AND    (rr, ri)           XOR    (rr -- 32-bit only, used for zeroing)
 SHL    (ri)               SHR    (ri)               SAR    (ri)
 CMP    (rr, ri)           TEST   (rr)
 SETcc  (cc, r)            MOVZX  (byte)
 Jcc    (cc, rel32)        JMP    (rel32)
 CALL   (rel32)            RET                        NOP
 PUSH   (r)                POP    (r)
-LEA    (r, [r+off])       LI     (r, imm — shortest encoding)
+LEA    (r, [r+off])       LI     (r, imm -- shortest encoding)
 SYSCALL, OUT, IN, HLT, PAUSE, CLI, STI, IRETQ, LIDT, SWAPGS
 ```
 
@@ -129,7 +129,7 @@ shorter than `xor rax, rax` and both zero the full 64-bit register).
 
 **Option B: Rename current to `xor-rr32`, add `xor-rr` as 64-bit.**
 
-This would break existing code that calls `xor-rr`. Option A is safer —
+This would break existing code that calls `xor-rr`. Option A is safer --
 additive, no renaming.
 
 **Decision: Option A.** Add `xor-rr64` alongside the existing `xor-rr`.
@@ -145,7 +145,7 @@ xor-ri (rd) (imm) = alu-ri 6 rd imm
 ### 4. MUL r/m64 (unsigned, 128-bit result)
 
 Unsigned multiply. One-operand form: RDX:RAX = RAX * operand. This is
-the critical instruction for Ed25519 field multiplication — the 5x51
+the critical instruction for Ed25519 field multiplication -- the 5x51
 representation produces 102-bit intermediate products.
 
 ```
@@ -279,15 +279,15 @@ the general-purpose builtins.
 
 | Function | Opcode | Extension | Pattern matches |
 |----------|--------|-----------|-----------------|
-| `or-rr` | 0x09 | — | `and-rr` (0x21) |
+| `or-rr` | 0x09 | -- | `and-rr` (0x21) |
 | `or-ri` | via `alu-ri` | ext=1 | `and-ri` (ext=4) |
 | `not-r` | 0xF7 | /2 | `neg-r` (/3) |
-| `xor-rr64` | 0x31 + REX.W | — | `xor-rr` (0x31, no REX.W) |
+| `xor-rr64` | 0x31 + REX.W | -- | `xor-rr` (0x31, no REX.W) |
 | `xor-ri` | via `alu-ri` | ext=6 | `and-ri` (ext=4) |
 | `mul-r` | 0xF7 | /4 | `idiv-r` (/7) |
 | `ror-ri` | 0xC1 | /1 | `shl-ri` (/4) |
-| `ror-ri32` | 0xC1 (no REX.W) | /1 | — |
-| `rdtsc` | 0x0F 0x31 | — | `syscall` (0x0F 0x05) |
+| `ror-ri32` | 0xC1 (no REX.W) | /1 | -- |
+| `rdtsc` | 0x0F 0x31 | -- | `syscall` (0x0F 0x05) |
 | `shl-rcl` | 0xD3 | /4 | `shl-ri` (0xC1 /4) |
 | `shr-rcl` | 0xD3 | /5 | `shr-ri` (0xC1 /5) |
 
@@ -340,7 +340,7 @@ prefix handling.
 | 5 | Add `rdtsc` | Trivial | Two-byte fixed encoding |
 | 6 | Add `shl-rcl`, `shr-rcl` | Trivial | Same 0xD3 group pattern |
 | 7 | Golden tests for all new instructions | Small | Byte-for-byte against NASM |
-| 8 | Update `alu-ri` comment to document all ext codes | Trivial | Currently documents 0,4,5,7 — add 1,6 |
+| 8 | Update `alu-ri` comment to document all ext codes | Trivial | Currently documents 0,4,5,7 -- add 1,6 |
 
 Total effort: ~1 session. Every instruction is a mechanical variation of
 an existing encoder function. The hardest part is the golden tests.

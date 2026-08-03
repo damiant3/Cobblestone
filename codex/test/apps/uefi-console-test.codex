@@ -2,19 +2,36 @@ Chapter: UefiConsoleTest
 
   cites Foreword chapter Console
   cites Foreword chapter Maybe
+  cites UI chapter Event
+  cites UI chapter KeyInput
   cites Works chapter UefiConsole
 
  UefiConsole wraps the firmware's text-in and text-out protocols. Most
- of it is decision rather than device: a key arrives as a scan code, a
- character code and a shift mask, and the chapter's job is to say which
- of forty-odd predicates that key satisfies. Attributes and pixels are
- the same shape of work -- packing named colours into the bit layout the
- firmware expects.
+ of it is decision rather than device: a key arrives with a code and a
+ modifier mask, and the chapter's job is to say which of forty-odd
+ predicates that key satisfies. Attributes and pixels are the same shape
+ of work -- packing named colours into the bit layout the firmware
+ expects.
 
- The old body touched none of it. It cited UI Widget and UI Layout, not
- UefiConsole, built a menu of thirteen strings, and printed
- `selected=0` from a `sel-idx` bound to the literal 0 two lines above --
- an assertion whose answer was written in the assertion.
+ THIS TEST WAS WRITTEN AGAINST A CONTRACT THAT NO LONGER EXISTS, and it
+ did not fail quietly: main 10550 deleted the `uefi-scan-*` table and
+ every one of those names became CDX3002. So the test stopped compiling
+ rather than stopping being true, which is the good failure of the two.
+ Red found it with the first instrumented `-All`.
+
+ The rework is worth stating because the test has to encode it. **This
+ chapter is named for UEFI and has not read a UEFI key in a long time.**
+ After ExitBootServices there is no system table, so a UefiKey is filled
+ from `poll-key`, which speaks `UI chapter KeyInput`: a character is its
+ CCE code point and an editing key is a named constant at or above
+ `key-named-base` (1048576). The predicates used to compare against
+ UEFI's own scan numbering and its left/right shift-state pairs, and
+ poll-key has never produced either, so they were dead code that read
+ exactly like working code.
+
+ So the old fixtures were not merely misnamed, they were all wrong:
+ `enter` was 13, `escape` was a UEFI scan code, and Ctrl+C was ASCII 3.
+ Not one of them can satisfy the predicate it was named for now.
 
  What is NOT covered here, deliberately: uefi-console-init reads the
  SystemTable through peek-qword, and uefi-con-move and friends call into
@@ -25,19 +42,38 @@ Chapter: UefiConsoleTest
 
 Section: Key Fixtures
 
-  uct-key : Integer, Integer, Integer -> UefiKey
-  uct-key (scan) (ch) (shift) =
-    UefiKey { scan-code = scan, char-code = ch, shift-state = shift }
+ The builder mirrors `uefi-key-of`, which is the one place a UefiKey is
+ built in the shipping path: scan-code and char-code are both the raw
+ poll-key value, and shift-state is poll-mods with the validity bit set.
+ A fixture that filled those fields any other way would be testing a
+ shape the producer never emits.
 
-  uct-ctrl : Integer = 8
-  uct-alt : Integer = 32
-  uct-valid : Integer = 2147483648
+  uct-key : Integer, Integer -> UefiKey
+  uct-key (raw) (mods) =
+    UefiKey {
+      scan-code = raw,
+      char-code = raw,
+      shift-state = bit-or mods uefi-shift-valid
+    }
+
+ The unvalidated builder exists for exactly one reading. The firmware
+ sets the validity bit to say the modifier field means anything at all,
+ and `uefi-key-is-ctrl-alt-del` gates on it, so a reboot combo that
+ fires on an unset modifier field is the failure worth pinning.
+
+  uct-key-unvalidated : Integer, Integer -> UefiKey
+  uct-key-unvalidated (raw) (mods) =
+    UefiKey { scan-code = raw, char-code = raw, shift-state = mods }
+
+  uct-none : Integer = 0
 
 Section: Predicate Reporting
 
  Each key is described by the NAMES of every predicate it satisfies, not
  by a count. A count would pass if two predicates swapped which key they
- answered to; the names would not.
+ answered to; the names would not. It also means a named key that
+ answered `char` as well as itself is visible in the line rather than
+ hidden behind a total.
 
   uct-flag : Boolean, Text -> Text
   uct-flag (b) (name) = if b then name & " " else ""
@@ -71,41 +107,82 @@ Section: Predicate Reporting
 
 Section: Body
 
- The two ctrl-alt-delete lines are the point of the key half. They
- differ in one bit: the second omits the shift-state-valid flag, which
- the firmware sets to say the modifier bits mean anything at all. The
- predicate must answer no to the second, and a reboot combo that fires
- on an unset modifier field is exactly the failure worth pinning.
+ Every named key is asked with no modifiers, so its line must carry its
+ own name and NOTHING else. That is the reading that separates a working
+ predicate set from one where two predicates compare against the same
+ constant: a duplicated comparison shows up as two names on one line.
+
+ `insert` is asked even though `uefi-key-is-insert` is hardcoded False,
+ because KeyInput has no named key for it. The line proves the honest
+ False rather than leaving a predicate nobody exercises; if Insert is
+ ever given a named key, this line is where the wiring gets noticed.
 
   opening : [Console] Nothing =
     act
-      uct-report "letter" (uct-key 0 97 0)
-      uct-report "enter" (uct-key 0 13 0)
-      uct-report "backspace" (uct-key 0 8 0)
-      uct-report "tab" (uct-key 0 9 0)
-      uct-report "escape" (uct-key uefi-scan-escape 0 0)
-      uct-report "up" (uct-key uefi-scan-up 0 0)
-      uct-report "down" (uct-key uefi-scan-down 0 0)
-      uct-report "left" (uct-key uefi-scan-left 0 0)
-      uct-report "right" (uct-key uefi-scan-right 0 0)
-      uct-report "home" (uct-key uefi-scan-home 0 0)
-      uct-report "end" (uct-key uefi-scan-end 0 0)
-      uct-report "insert" (uct-key uefi-scan-insert 0 0)
-      uct-report "delete" (uct-key uefi-scan-delete 0 0)
-      uct-report "pgup" (uct-key uefi-scan-page-up 0 0)
-      uct-report "pgdn" (uct-key uefi-scan-page-down 0 0)
-      uct-report "shift-A" (uct-key 0 65 uefi-left-shift)
-      uct-report "ctrl-c" (uct-key 0 3 uct-ctrl)
-      uct-report "ctrl-s" (uct-key 0 19 uct-ctrl)
-      uct-report "cad-valid" (uct-key uefi-scan-delete 0 (uct-valid + uct-ctrl + uct-alt))
-      uct-report "cad-unvalidated" (uct-key uefi-scan-delete 0 (uct-ctrl + uct-alt))
+      uct-report "letter-a" (uct-key (char-code 'a') uct-none)
+      uct-report "letter-Z" (uct-key (char-code 'Z') uct-none)
+      uct-report "digit-7" (uct-key (char-code '7') uct-none)
+      uct-report "enter" (uct-key key-enter uct-none)
+      uct-report "backspace" (uct-key key-backspace uct-none)
+      uct-report "tab" (uct-key key-tab uct-none)
+      uct-report "escape" (uct-key key-escape uct-none)
+      uct-report "up" (uct-key key-up uct-none)
+      uct-report "down" (uct-key key-down uct-none)
+      uct-report "left" (uct-key key-left uct-none)
+      uct-report "right" (uct-key key-right uct-none)
+      uct-report "home" (uct-key key-home uct-none)
+      uct-report "end" (uct-key key-end uct-none)
+      uct-report "delete" (uct-key key-delete uct-none)
+      uct-report "pgup" (uct-key key-pgup uct-none)
+      uct-report "pgdn" (uct-key key-pgdn uct-none)
+      uct-report "insert-has-no-key" (uct-key 1048582 uct-none)
+
+ The modifier bits are poll-mods bits (shift 1, ctrl 2, alt 4), not
+ UEFI's left/right pairs. The old test passed `uefi-left-shift` (2) for
+ a shift, which is `mod-ctrl` in this numbering -- so the fixture that
+ was meant to say shift said ctrl.
+
+      uct-report "shift-A" (uct-key (char-code 'A') mod-shift)
+      uct-report "alt-a" (uct-key (char-code 'a') mod-alt)
+      uct-report "ctrl-alt-a" (uct-key (char-code 'a') (bit-or mod-ctrl mod-alt))
+
+ A Ctrl chord is the letter plus the ctrl bit, and `key-upper` folds the
+ case so it fires whether or not shift is held. Both cases are asked,
+ and the last two lines are the ones that make the chord a chord: the
+ same letter without the ctrl bit must NOT fire, and ctrl with a
+ different letter must not fire either.
+
+      uct-report "ctrl-c-lower" (uct-key (char-code 'c') mod-ctrl)
+      uct-report "ctrl-c-upper" (uct-key (char-code 'C') mod-ctrl)
+      uct-report "ctrl-s" (uct-key (char-code 's') mod-ctrl)
+      uct-report "plain-c-no-ctrl" (uct-key (char-code 'c') uct-none)
+      uct-report "ctrl-x-is-neither" (uct-key (char-code 'x') mod-ctrl)
+
+ The two ctrl-alt-delete lines differ in one bit: the second omits the
+ validity flag. Ctrl+Alt+Del in the dev console never fired for years
+ because every constructor left shift-state at zero, so the predicate
+ was False unconditionally; the validated line is what proves it fires
+ at all and the unvalidated line is what proves the gate still holds.
+
+      uct-report "cad-valid" (uct-key key-delete (bit-or mod-ctrl mod-alt))
+      uct-report "cad-unvalidated" (uct-key-unvalidated key-delete (bit-or mod-ctrl mod-alt))
+      uct-report "cad-no-alt" (uct-key key-delete mod-ctrl)
+
+ `uefi-key-is-char` is now "not a named key, and not zero". The old
+ boundaries here were 31/32/126/127, an ASCII printable-range check on a
+ value that is no longer ASCII -- in CCE that band is a slice through
+ punctuation and accented letters and excludes every ASCII letter. The
+ boundaries that mean something now are zero, an ordinary code point,
+ and the named-key base.
+
+      print-line-uni ("char-of-zero=" & show (uefi-key-is-char (uct-key 0 uct-none)))
+      print-line-uni ("char-of-letter=" & show (uefi-key-is-char (uct-key (char-code 'a') uct-none)))
+      print-line-uni ("char-below-named-base=" & show (uefi-key-is-char (uct-key 1048575 uct-none)))
+      print-line-uni ("char-at-named-base=" & show (uefi-key-is-char (uct-key key-named-base uct-none)))
+      print-line-uni ("char-of-enter=" & show (uefi-key-is-char (uct-key key-enter uct-none)))
       print-line-uni ("attr-yellow-on-blue=" & show (uefi-attr UefiYellow UefiBlue))
       print-line-uni ("attr-black-on-black=" & show (uefi-attr UefiBlack UefiBlack))
       print-line-uni ("attr-white-on-white=" & show (uefi-attr UefiWhite UefiWhite))
       print-line-uni ("pixel=" & show (uefi-pixel-pack (uefi-pixel 255 128 64)))
       print-line-uni ("pixel-black=" & show (uefi-pixel-pack (uefi-pixel 0 0 0)))
-      print-line-uni ("char-31=" & show (uefi-key-is-char (uct-key 0 31 0)))
-      print-line-uni ("char-32=" & show (uefi-key-is-char (uct-key 0 32 0)))
-      print-line-uni ("char-126=" & show (uefi-key-is-char (uct-key 0 126 0)))
-      print-line-uni ("char-127=" & show (uefi-key-is-char (uct-key 0 127 0)))
     end

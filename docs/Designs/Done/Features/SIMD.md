@@ -1,6 +1,6 @@
-# SIMD — Data-Parallel Vector Types for Codex
+# SIMD -- Data-Parallel Vector Types for Codex
 
-> **Filed to Done 2026-07-15 (val):** Phase 1 (SSE2, 128-bit, VectorMask, `~`) shipped with tests; the later phases — AVX/VEX, AVX-512/SVE/RISC-V V, and vector intrinsics — are tracked in BACKLOG 3.3. Moved out of Active to keep init light; reopen if a later phase is picked up.
+> **Filed to Done 2026-07-15 (val):** Phase 1 (SSE2, 128-bit, VectorMask, `~`) shipped with tests; the later phases -- AVX/VEX, AVX-512/SVE/RISC-V V, and vector intrinsics -- are tracked in BACKLOG 3.3. Moved out of Active to keep init light; reopen if a later phase is picked up.
 
 ## Status
 
@@ -14,7 +14,7 @@ References: `docs/Reference/SIMD_Architecture_References.md`
 
 ---
 
-## Real — Floating-Point Types with Confidence Levels
+## Real -- Floating-Point Types with Confidence Levels
 
 `Number` is renamed to `Real`. The qualifier communicates confidence
 level, not bit width. A programmer who has never heard of IEEE 754
@@ -54,7 +54,7 @@ Cost: 2-3 instructions per operation.
 
 **saturating:** After each op, emit a compare-and-conditional-move
 sequence to clamp the result to `[Real-MIN, Real-MAX]`. NaN becomes
-zero (or trap — TBD). Cost: 3-4 instructions per operation.
+zero (or trap -- TBD). Cost: 3-4 instructions per operation.
 
 **checked:** The return type changes to `Result Real`. The compiler
 wraps each operation in a NaN/Inf check and returns `Err` on failure.
@@ -85,13 +85,13 @@ The `~` operator reads as "approximately equal" and returns `Boolean`
 
 **Default (4 ULP):** `x ~ y` computes the ULP distance between x and
 y. If the distance is <= 4, the result is True. ULP distance scales
-automatically with magnitude — comparing 1e20 values uses the same
+automatically with magnitude -- comparing 1e20 values uses the same
 operator as comparing 1e-20 values. The default of 4 ULP accounts for
 typical accumulated rounding (one or two chained operations). This
 covers 99% of floating-point comparison needs without the programmer
 having to think about epsilon values.
 
-**Zero tolerance:** `x ~0 y` is ordinal comparison — the values must
+**Zero tolerance:** `x ~0 y` is ordinal comparison -- the values must
 map to the same position in the IEEE 754 ordering. +0.0 ~0 -0.0 is
 True (same ordinal). NaN ~0 NaN is False. The programmer explicitly
 wrote the zero, acknowledging that exact floating-point comparison is
@@ -102,7 +102,7 @@ round-trip checks, and other cases where bit-exact equality is correct.
 
 **Variable tolerances deferred.** `~Nulp` (explicit ULP count) and
 `~(expr)` (arbitrary comptime tolerance) are not implemented. The two
-forms above — default ULP and exact — cover the common cases. Variable
+forms above -- default ULP and exact -- cover the common cases. Variable
 tolerances can be added via feature request if a real use case arises.
 
 **Ordering operators remain.** `<`, `>`, `<=`, `>=` are well-defined
@@ -125,13 +125,13 @@ silently compares as "close enough."
 ```
 
 Cost: ~15 instructions scalar. Both `~` and `~0` use the same
-`float-to-ordinal` path — only the `cmp-ri` threshold differs.
+`float-to-ordinal` path -- only the `cmp-ri` threshold differs.
 
 #### Diagnostic
 
 | Code | Severity | Meaning |
 |------|----------|---------|
-| CDX2085 | error | `==` or `/=` used on Real type — use `~` operator |
+| CDX2085 | error | `==` or `/=` used on Real type -- use `~` operator |
 
 The diagnostic message reads:
 
@@ -157,7 +157,7 @@ CDX2085: Floating-point equality is not safe. Use the ~ operator:
    intrinsics are available but opt-in and target-gated.
 
 3. **No autovectorization.** The compiler does not silently vectorize
-   scalar loops. SIMD is explicit — the programmer writes vector types
+   scalar loops. SIMD is explicit -- the programmer writes vector types
    and vector operations. This follows the Codex virtue of "no magic"
    and avoids the fragility of autovectorization (where an innocuous
    code change silently de-vectorizes a hot loop with no warning).
@@ -174,11 +174,11 @@ CDX2085: Floating-point equality is not safe. Use the ~ operator:
    and fits naturally into Codex's existing dependent type machinery.
 
 6. **Bounded integers in lanes.** `Vector 16 (Integer between 0 and 255)`
-   is a valid type — a vector of 16 bytes with range guarantees. The
+   is a valid type -- a vector of 16 bytes with range guarantees. The
    bounds prover applies per-lane. This is unique to Codex and enables
    safe SIMD for pixel processing, crypto, and protocol parsing.
 
-7. **Linear vectors.** A `linear Vector 4 FileHandle` is meaningful —
+7. **Linear vectors.** A `linear Vector 4 FileHandle` is meaningful --
    each lane holds a resource. The linearity checker counts lane-wise.
    This is a stretch goal, not required for Phase 1.
 
@@ -195,7 +195,7 @@ Vector N T
   - `Integer` (64-bit signed, maps to i64 lanes)
   - `Real` (IEEE 754 f64, maps to f64 lanes)
   - `Real approximate` (IEEE 754 f32, maps to f32 lanes)
-  - `Real guess` (IEEE 754 f16, maps to f16 lanes — future)
+  - `Real guess` (IEEE 754 f16, maps to f16 lanes -- future)
   - `Integer between L and H` (bounded, maps to i8/i16/i32/i64 based on range)
   - Any Real with a safety mode (`Real trapping`, `Real approximate checked`, etc.)
 
@@ -229,7 +229,7 @@ write width-agnostic code:
 ```
 
 The value is comptime-known (resolved at emit time from the target
-profile). It is NOT a runtime CPUID query — the compiler picks the
+profile). It is NOT a runtime CPUID query -- the compiler picks the
 width when emitting code for a specific target.
 
 | Target | Real (f64) | Real approx (f32) | Integer (i64) | Byte (i8) |
@@ -458,7 +458,7 @@ Vector register allocation is independent of the integer register pool:
 ```
 
 Integer registers remain untouched. The existing temp/local rotation
-scheme extends naturally — add `alloc-vector-temp` and
+scheme extends naturally -- add `alloc-vector-temp` and
 `alloc-vector-local` to CodegenState.
 
 ### Spill/Reload
@@ -468,7 +468,7 @@ Stack frame size computation must account for alignment. The prologue
 already aligns RSP to 16 bytes; AVX requires 32-byte alignment,
 AVX-512 requires 64-byte.
 
-### Instruction Table (Phase 1 — SSE2 Packed)
+### Instruction Table (Phase 1 -- SSE2 Packed)
 
 | Operation | Instruction | Encoding |
 |-----------|------------|----------|
@@ -514,7 +514,7 @@ SVE uses predicate registers (P0-P15) and a runtime-variable vector
 length. The programming model differs: loops use `whilelt` to generate
 predicates and `incp` to advance. This is a Phase 3 concern.
 
-### Instruction Table (Phase 1 — NEON)
+### Instruction Table (Phase 1 -- NEON)
 
 | Operation | Instruction | Encoding |
 |-----------|------------|----------|
@@ -532,10 +532,10 @@ predicates and `incp` to advance. This is a Phase 3 concern.
 RISC-V V is scalable (like SVE). Vector length is configured at runtime
 via VSETVLI. The programming model:
 
-1. `vsetvli t0, a0, e64, m1` — configure 64-bit elements, LMUL=1
-2. `vle64.v v1, (a1)` — vector load
-3. `vadd.vv v3, v1, v2` — vector add
-4. `vse64.v v3, (a3)` — vector store
+1. `vsetvli t0, a0, e64, m1` -- configure 64-bit elements, LMUL=1
+2. `vle64.v v1, (a1)` -- vector load
+3. `vadd.vv v3, v1, v2` -- vector add
+4. `vse64.v v3, (a3)` -- vector store
 
 The scalable model means the compiler emits loops with `vsetvli` as
 the trip-count control, processing `vl` elements per iteration.
@@ -591,7 +591,7 @@ text parser and emit their target instructions.
 
 `VectorTy(N, T)` where N is a literal integer and T is a numeric type.
 The unifier rejects unification of `VectorTy(4, Integer)` with
-`VectorTy(8, Integer)` — different widths are different types.
+`VectorTy(8, Integer)` -- different widths are different types.
 
 ### VectorMask
 
@@ -651,7 +651,7 @@ propagates range arithmetic lane-wise. For `vec-reduce-add` over
 Scope: `Vector 2 Real`, `Vector 4 (Real approximate)`,
 `Vector 2 Integer`, `Vector 4 i32`, `Vector 8 i16`, `Vector 16 i8`.
 All fit in 128-bit XMM / NEON Q regs. Real approximate doubles the
-lane count at every width tier — the primary motivation for f32.
+lane count at every width tier -- the primary motivation for f32.
 
 ### Phase 2: AVX/AVX2 + VEX Encoding
 
@@ -679,7 +679,7 @@ lane count at every width tier — the primary motivation for f32.
 - Arm64Simd foreword: AES, SHA, polynomial multiply
 - Crypto foreword rewrite: SHA-256 using vec-shuffle + AES-NI
   (currently scalar; the CryptoPrimitives.md performance targets
-  assumed "no SIMD" — this is where the payoff arrives)
+  assumed "no SIMD" -- this is where the payoff arrives)
 
 ---
 
@@ -695,13 +695,13 @@ pipeline, even though it does 4 additions.
 
 ### Effect System
 
-Vector operations are pure — no effects. `vec-load` and `vec-store`
+Vector operations are pure -- no effects. `vec-load` and `vec-store`
 require a pointer, which comes from the memory effect. The vector
 operations themselves do not introduce new effects.
 
 ### Unit Types
 
-`Vector 4 (Second)` is a valid type — a vector of 4 time values. The
+`Vector 4 (Second)` is a valid type -- a vector of 4 time values. The
 unit wrapper is erased at codegen (the vector contains raw integers).
 Cross-unit vector arithmetic is a type error, same as scalar.
 
@@ -716,7 +716,7 @@ as expected. The alignment requirement propagates to the record layout.
 
 **Memory:** Vector types are value types, same size as their hardware
 representation (16/32/64 bytes). No heap allocation for vector
-operations — they live in registers or on the stack. The only new
+operations -- they live in registers or on the stack. The only new
 allocation is the vector spill slots in the stack frame, bounded by
 the number of live vector variables (at most 16 XMM regs on x86-64).
 
@@ -765,7 +765,7 @@ rather than second-class intrinsic wrappers.
 `Real approximate` is f32 (scalar and vector). `Real guess` is f16
 (future, ML inference). Safety modes `trapping`/`saturating`/`checked`
 apply to all tiers. The qualifier names communicate confidence level,
-not bit width — a programmer who has never heard of IEEE 754 reads
+not bit width -- a programmer who has never heard of IEEE 754 reads
 `Real approximate` and immediately understands the precision tradeoff.
 f32 ships as part of Phase 1 (both scalar and `Vector 4 (Real
 approximate)`), because it is the primary motivation for SIMD lane

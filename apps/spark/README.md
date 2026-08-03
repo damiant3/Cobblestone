@@ -1,60 +1,60 @@
 # Codex.Spark
 
-A full-stack creative suite — 3D modeling, image editing, animation, audio/DAW, and video compositing — written entirely in Codex and running on bare metal. All math uses fixed-point integers (scale 1000); all rendering targets a Framebuf that blits to the GOP framebuffer or exports as raw pixel data.
+A full-stack creative suite -- 3D modeling, image editing, animation, audio/DAW, and video compositing -- written entirely in Codex and running on bare metal. All math uses fixed-point integers (scale 1000); all rendering targets a Framebuf that blits to the GOP framebuffer or exports as raw pixel data.
 
 ## Modules
 
 ### 3D Modeling and Geometry
-- **Mesh, MeshPrimitives, MeshOps, MeshBoolean** — Core TriMesh type, primitives (cube/sphere/plane/torus/cylinder/cone/pyramid), subdivision, CSG boolean ops
-- **ShapeBuilder** — Path-based extrude and lathe
-- **ObjFormat, StlFormat** — OBJ and ASCII STL export
+- **Mesh, MeshPrimitives, MeshOps, MeshBoolean** -- Core TriMesh type, primitives (cube/sphere/plane/torus/cylinder/cone/pyramid), subdivision, CSG boolean ops
+- **ShapeBuilder** -- Path-based extrude and lathe
+- **ObjFormat, StlFormat** -- OBJ and ASCII STL export
 
 ### Scene Graph and Rendering
-- **SceneGraph, SceneNode, SceneRender** — Hierarchical node tree, software rasterizer with flat shading and depth test
-- **Pipeline3D, DepthBuffer, RenderPass, RenderModes, RenderQueue** — Low-level MVP transform, clip, rasterize, multi-pass pipeline
-- **TextureMap, NoiseTexture** — UV-mapped texture sampling, procedural Perlin noise
+- **SceneGraph, SceneNode, SceneRender** -- Hierarchical node tree, software rasterizer with flat shading and depth test
+- **Pipeline3D, DepthBuffer, RenderPass, RenderModes, RenderQueue** -- Low-level MVP transform, clip, rasterize, multi-pass pipeline
+- **TextureMap, NoiseTexture** -- UV-mapped texture sampling, procedural Perlin noise
 
 ### Camera, UV, and Transforms
-- **ViewportNav, CameraPath, TransformGizmo, GridSnap** — Orbit/pan/zoom, dolly/arc/flythrough, screen-space handles
-- **UvEditor** — UV island auto-unwrap, pin, relax
-- **NodeTransform, Armature, IkSolver, WeightPaint** — Hierarchical transforms, bone rigs, two-bone and chain IK, vertex weights
+- **ViewportNav, CameraPath, TransformGizmo, GridSnap** -- Orbit/pan/zoom, dolly/arc/flythrough, screen-space handles
+- **UvEditor** -- UV island auto-unwrap, pin, relax
+- **NodeTransform, Armature, IkSolver, WeightPaint** -- Hierarchical transforms, bone rigs, two-bone and chain IK, vertex weights
 
 ### Image Editing (Canvas)
-- **Canvas, Brush, BrushEngine, LayerStack, LayerEffects** — Layered canvas, stroke/stamp brushes, blend modes, effects
-- **ImageFilter, ImageLevels** — Grayscale, blur, sharpen, emboss, histogram, curves
-- **SelectionTools, Selection** — Rect, ellipse, lasso, magic-wand, feather
-- **ColorPicker, Gradient, TextRender, ExportImage, Clipboard** — Tools and export (PPM, BMP, raw)
+- **Canvas, Brush, BrushEngine, LayerStack, LayerEffects** -- Layered canvas, stroke/stamp brushes, blend modes, effects
+- **ImageFilter, ImageLevels** -- Grayscale, blur, sharpen, emboss, histogram, curves
+- **SelectionTools, Selection** -- Rect, ellipse, lasso, magic-wand, feather
+- **ColorPicker, Gradient, TextRender, ExportImage, Clipboard** -- Tools and export (PPM, BMP, raw)
 
 ### Animation
-- **Keyframe, AnimChannel, AnimPlayer, Timeline, CurveEditor** — Per-property channels, bezier interpolation, playback
-- **Track, Sequencer** — Multi-track audio+MIDI sequencer
+- **Keyframe, AnimChannel, AnimPlayer, Timeline, CurveEditor** -- Per-property channels, bezier interpolation, playback
+- **Track, Sequencer** -- Multi-track audio+MIDI sequencer
 
 ### Audio and DAW
-- **AudioDsp, FxChain, Mixer, MidiTrack, SynthInstrument** — Biquad filters, reverb, multi-track mixer, wavetable synth
-- **ExportAudio, SpectrumAnalyzer, WaveformView** — PCM mix-down, FFT visualization
+- **AudioDsp, FxChain, Mixer, MidiTrack, SynthInstrument** -- Biquad filters, reverb, multi-track mixer, wavetable synth
+- **ExportAudio, SpectrumAnalyzer, WaveformView** -- PCM mix-down, FFT visualization
 
 ### Video Compositing
-- **VideoCompositor** — Layer-based compositor with opacity, blend, crossfade transitions
+- **VideoCompositor** -- Layer-based compositor with opacity, blend, crossfade transitions
 
 ### Application Shell
-- **PanelLayout, SceneOutliner, AssetBrowser, PropertyInspector** — Dockable panel grid
-- **CommandSystem, InputManager, UndoIntegration, History** — Named commands, keybindings, undo/redo
-- **Project, ProjectFile** — Project state, save/load
+- **PanelLayout, SceneOutliner, AssetBrowser, PropertyInspector** -- Dockable panel grid
+- **CommandSystem, InputManager, UndoIntegration, History** -- Named commands, keybindings, undo/redo
+- **Project, ProjectFile** -- Project state, save/load
 
 ### Display and Web Output
-- **SparkDisplay** — GOP framebuffer bridge
-- **SparkBridge, SparkCss, SparkHtmlGen** — JS/WebGPU code generator, CSS generator, HTML assembler
-- **SparkServer** — Bare-metal HTTP server serving WASM, HTML, CSS, JS, and JSON API
+- **SparkDisplay** -- GOP framebuffer bridge
+- **SparkBridge, SparkCss, SparkHtmlGen** -- JS/WebGPU code generator, CSS generator, HTML assembler
+- **SparkServer** -- Bare-metal HTTP server serving WASM, HTML, CSS, JS, and JSON API
 
 ### Entry Points
-- **App** — Console smoke-test exercising all 70+ modules
-- **SparkApp** — Interactive keyboard-driven 3D viewport (GOP, bare metal)
-- **SparkIntro, SparkDemo, SparkGfxDemo** — Animated demos and single-frame render tests
+- **App** -- Console smoke-test exercising all 70+ modules
+- **SparkApp** -- Interactive keyboard-driven 3D viewport (GOP, bare metal)
+- **SparkIntro, SparkDemo, SparkGfxDemo** -- Animated demos and single-frame render tests
 
 ## Completeness
 
-65% — All 89 files compile and link. The software rasterizer, CSG, layered canvas, brush engine, keyframe animation, audio DSP, MIDI, particle system, IK, armature, UV editor, and HTTP server are all substantively implemented. The WebGPU shader is fully written. Gaps: SparkServer API routes return stub JSON, VideoCompositor transitions are minimal, many export paths produce info strings rather than encoded binaries, and the interactive SparkApp loop lacks delete-object, file save, and undo integration.
+65% -- All 89 files compile and link. The software rasterizer, CSG, layered canvas, brush engine, keyframe animation, audio DSP, MIDI, particle system, IK, armature, UV editor, and HTTP server are all substantively implemented. The WebGPU shader is fully written. Gaps: SparkServer API routes return stub JSON, VideoCompositor transitions are minimal, many export paths produce info strings rather than encoded binaries, and the interactive SparkApp loop lacks delete-object, file save, and undo integration.
 
 ## Codex Conformance
 
-Full — All 89 .codex files use standard chapter/section/cite structure, fixed-point integer arithmetic, and effect-typed I/O. Backend and client implementations are emitted through plugs: software rasterizer targets Framebuf/GOP, web client is generated by SparkHtmlGen/SparkBridge, and binary formats are produced by dedicated export modules. The WASM binary is a compiled CDX artifact.
+Full -- All 89 .codex files use standard chapter/section/cite structure, fixed-point integer arithmetic, and effect-typed I/O. Backend and client implementations are emitted through plugs: software rasterizer targets Framebuf/GOP, web client is generated by SparkHtmlGen/SparkBridge, and binary formats are produced by dedicated export modules. The WASM binary is a compiled CDX artifact.

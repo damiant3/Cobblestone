@@ -1,7 +1,9 @@
 Chapter: DataTable
   cites Foreword chapter Sort
+  cites Foreword chapter Collate
   cites UI chapter Widget
   cites UI chapter Layout
+  cites UI chapter KeyInput
 
  Sortable data table with column headers, row selection, pagination,
  and striped rows. Columns define width, alignment, and sortability.
@@ -99,26 +101,83 @@ Section: Actions
       in __record-set (__record-set (__record-set dt "dt-rows" sorted) "dt-sort-col" col-idx) "dt-sort-asc" asc
     else dt
 
+ The sort writes through list-set-at, which stores into the slot and
+ hands back the same list, so it is copied first. Without the copy the
+ state handed in is sorted too, and a caller holding the unsorted table
+ finds it reordered underneath: this function's own type says it returns
+ a new state, and the single-select path already copies for the same
+ reason.
+
+ A collation key is extracted once per row and the sort compares those,
+ which is what the key design is for: the rank tables are consulted once
+ per character per row rather than twice per comparison, and the
+ comparison stays the `text-compare` this file already used.
+
   dt-sort-rows : List TableRow, Integer, Boolean, Integer -> List TableRow
   dt-sort-rows (rows) (col) (asc) (n) =
     if n <= 1 then rows
-    else dt-isort rows col asc 1 n
+    else let copied = dt-copy-rows rows 0 n []
+    in let keys = dt-key-rows copied col 0 n []
+    in dt-isort copied keys asc 1 n
 
-  dt-isort : List TableRow, Integer, Boolean, Integer, Integer -> List TableRow
-  dt-isort (rows) (col) (asc) (i) (n) =
+  dt-copy-rows : List TableRow, Integer, Integer, List TableRow -> List TableRow
+  dt-copy-rows (rows) (i) (n) (acc) =
+    if i >= n then acc
+    else dt-copy-rows rows (i + 1) n (list-push acc (list-at rows i))
+
+  dt-key-rows : List TableRow, Integer, Integer, Integer, List Text -> List Text
+  dt-key-rows (rows) (col) (i) (n) (acc) =
+    if i >= n then acc
+    else let k = collate-key (dt-cell-at (list-at rows i) col)
+    in dt-key-rows rows col (i + 1) n (list-push acc k)
+
+  dt-isort : List TableRow, List Text, Boolean, Integer, Integer -> List TableRow
+  dt-isort (rows) (keys) (asc) (i) (n) =
     if i >= n then rows
-    else dt-isort (dt-insert rows col asc i) col asc (i + 1) n
+    else dt-isort (dt-insert rows keys asc i) keys asc (i + 1) n
 
-  dt-insert : List TableRow, Integer, Boolean, Integer -> List TableRow
-  dt-insert (rows) (col) (asc) (i) =
+ Two cells are ordered with text-compare and never with the ordering
+ operators. Measured 2026-07-27 against the depot seed: the ordering
+ operators on Text do not read the Text at all. They compare the operands
+ as they were handed over rather than by content, so two freshly built
+ literals answer by the order they were built in and give the same answer
+ whatever the letters are: "a" is reported less than "b", "b" less than
+ "a", and "a" less than "a", all True. text-compare is the primitive that
+ reads the characters, and it is what SkipListText and RankedTextSet
+ already order by.
+
+ **text-compare orders by CCE code point, and that is not the alphabet.**
+ CCE numbers the letters by English frequency, so e is 13, t is 14, a is
+ 15, d is 22, c is 24, b is 32 and z is 38, and a column sorted through it
+ comes out in an order a human reads as arbitrary. That is the right order
+ for an ordered container and the wrong one for a column somebody reads.
+
+ So the cells are not compared directly at all. `Foreword chapter Collate`
+ turns each into a sort key whose ENCODING order is collation order, the
+ keys are extracted once per row, and `text-compare` over two keys is then
+ the alphabetical comparison this column wants.
+
+ The two lists move together. `list-set-at` writes the slot and hands
+ back the same list, so swapping the keys is what keeps a row and its key
+ at the same index; separating them by one swap would sort the rows by
+ somebody else's key and the answer would look almost right.
+
+  dt-insert : List TableRow, List Text, Boolean, Integer -> List TableRow
+  dt-insert (rows) (keys) (asc) (i) =
     if i <= 0 then rows
     else let cur = list-at rows i
     in let prev = list-at rows (i - 1)
-    in let cur-val = dt-cell-at cur col
-    in let prev-val = dt-cell-at prev col
-    in let swap = if asc then cur-val < prev-val else cur-val > prev-val
-    in if swap then dt-insert (list-set-at (list-set-at rows i prev) (i - 1) cur) col asc (i - 1)
+    in let kcur = list-at keys i
+    in let kprev = list-at keys (i - 1)
+    in let ord = text-compare kcur kprev
+    in let swap = if asc then ord < 0 else ord > 0
+    in if swap then dt-insert (dt-swap rows keys i cur prev kcur kprev) keys asc (i - 1)
     else rows
+
+  dt-swap : List TableRow, List Text, Integer, TableRow, TableRow, Text, Text -> List TableRow
+  dt-swap (rows) (keys) (i) (cur) (prev) (kcur) (kprev) =
+    let moved = list-set-at (list-set-at keys i kprev) (i - 1) kcur
+    in list-set-at (list-set-at rows i prev) (i - 1) cur
 
   dt-cell-at : TableRow, Integer -> Text
   dt-cell-at (row) (col) =
@@ -161,9 +220,15 @@ Section: Actions
 
 Section: Pagination
 
+ A table with no rows still has the page the reader is looking at, so the
+ count is one rather than zero. Left at zero the footer reads "Page 1 of
+ 0", and the page a caller is on is outside the range its own count
+ declares.
+
   data-table-page-count : DataTableState -> Integer
   data-table-page-count (dt) =
     if dt.dt-page-size <= 0 then 1
+    else if dt.dt-row-count <= 0 then 1
     else let full = dt.dt-row-count / dt.dt-page-size
     in if full * dt.dt-page-size < dt.dt-row-count then full + 1 else full
 
@@ -222,15 +287,21 @@ Section: Widget Building
     in let row-widget = dt-row-widget dt row (base-idx + i) i
     in dt-body-widgets dt rows (i + 1) n base-idx (list-push acc row-widget)
 
+ A stripe is decoration and a selection is state, so the selection wins.
+ The stripe used to be applied last and unconditionally, which set the
+ hover state over the pressed state a selected row had just been given:
+ selecting an odd row looked exactly like selecting nothing, on every
+ other row, while the row's own tr-selected said otherwise.
+
   dt-row-widget : DataTableState, TableRow, Integer, Integer -> WidgetNode
   dt-row-widget (dt) (row) (abs-idx) (vis-idx) =
     let cells = dt-cell-widgets dt row 0 (dt.dt-col-count) []
     in let row-w = widget-panel (dt.dt-id & "-row-" & show abs-idx) DirRow 1 cells
-    in let selected = if row.tr-selected then widget-set-state row-w state-pressed else row-w
-    in if dt.dt-stripe then
+    in if row.tr-selected then widget-set-state row-w state-pressed
+    else if dt.dt-stripe then
       let even = vis-idx - (vis-idx / 2) * 2
-      in if even == 0 then selected else widget-set-state selected state-hover
-    else selected
+      in if even == 0 then row-w else widget-set-state row-w state-hover
+    else row-w
 
   dt-cell-widgets : DataTableState, TableRow, Integer, Integer, List WidgetNode -> List WidgetNode
   dt-cell-widgets (dt) (row) (i) (n) (acc) =
@@ -251,13 +322,26 @@ Section: Widget Building
 
 Section: Keyboard Handling
 
+ A key is what `UI chapter KeyInput` says it is: a character is its CCE
+ code point and a named key is a constant at or above `key-named-base`.
+ These arms tested 38, 40, 13, 33 and 34, which are Windows virtual key
+ codes and, read as CCE, ordinary letters. Under the contract the quire
+ publishes every one of them missed, so a table could not be walked,
+ selected from or paged at all: measured against seed 8B7A02EC on a
+ twenty-five row two-page table, every key left `dt-selected-row` at -1
+ and `dt-page` at 0.
+
+ Enter selects whatever row the navigation has reached, so on a table
+ nobody has moved in yet it correctly does nothing: `dt-selected-row`
+ starts at -1 and `data-table-select-row` refuses a negative index.
+
   data-table-handle-key : DataTableState, Integer -> DataTableState
   data-table-handle-key (dt) (key) =
-    if key == 38 then dt-nav-up dt
-    else if key == 40 then dt-nav-down dt
-    else if key == 13 then data-table-select-row dt (dt.dt-selected-row)
-    else if key == 33 then data-table-page-prev dt
-    else if key == 34 then data-table-page-next dt
+    if key == key-up then dt-nav-up dt
+    else if key == key-down then dt-nav-down dt
+    else if key == key-enter then data-table-select-row dt (dt.dt-selected-row)
+    else if key == key-pgup then data-table-page-prev dt
+    else if key == key-pgdn then data-table-page-next dt
     else dt
 
   dt-nav-up : DataTableState -> DataTableState

@@ -81,7 +81,7 @@ written, the prose may be wrong. Common issues:
 - Pipeline descriptions that don't match the current implementation
 - Parameter descriptions that are outdated
 
-This is a manual review task — read the prose, read the code below it,
+This is a manual review task -- read the prose, read the code below it,
 verify they agree. Fix any prose that doesn't match.
 
 ### Step 6: Commit and verify

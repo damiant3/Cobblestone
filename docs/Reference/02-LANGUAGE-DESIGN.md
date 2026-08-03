@@ -1,8 +1,8 @@
-# 02 — Language Design
+# 02 -- Language Design
 
 ## Overview
 
-Codex is a literate, statically-typed, purely functional programming language with dependent types, linear types, and algebraic effects. Its distinguishing feature is that prose and notation are co-equal parts of the source — the English text is load-bearing, not decorative.
+Codex is a literate, statically-typed, purely functional programming language with dependent types, linear types, and algebraic effects. Its distinguishing feature is that prose and notation are co-equal parts of the source -- the English text is load-bearing, not decorative.
 
 This document defines the language design at the level needed to begin implementation. It is not a formal specification (that comes later, written in Codex itself). It is an engineering blueprint.
 
@@ -46,13 +46,13 @@ UTF-8. Unicode operators (→, ∀, ∃, ≡, ≠, ⊢, ⊗) are first-class. AS
 
 The lexer operates in two modes:
 
-1. **Prose mode** (default) — text is treated as natural language. The lexer recognizes:
+1. **Prose mode** (default) -- text is treated as natural language. The lexer recognizes:
    - Chapter/section headers
    - Transition phrases that introduce notation ("We say:", "This is written:", "We define:")
    - Inline type references in parentheses
    - Inline code references in backticks
 
-2. **Notation mode** (entered via indentation under a prose block) — text is treated as formal notation. Standard lexical analysis applies: identifiers, operators, literals, keywords.
+2. **Notation mode** (entered via indentation under a prose block) -- text is treated as formal notation. Standard lexical analysis applies: identifiers, operators, literals, keywords.
 
 The transition between modes is governed by **indentation**. Prose is at the base indentation level. Notation is indented beneath the prose that introduces it.
 
@@ -84,7 +84,7 @@ import, export, as, is, are, an, a, the, of,
 carrying, carries, either, or
 ```
 
-Note: many "keywords" are English words used in prose-mode transitions. They are only keywords when they appear in specific syntactic positions. `the` is not reserved — it is recognized as part of the pattern `the sum of`.
+Note: many "keywords" are English words used in prose-mode transitions. They are only keywords when they appear in specific syntactic positions. `the` is not reserved -- it is recognized as part of the pattern `the sum of`.
 
 ### Operators
 
@@ -116,7 +116,7 @@ Note: many "keywords" are English words used in prose-mode transitions. They are
 
 ### Comments
 
-Codex has no comments in the traditional sense. Prose *is* the commentary. If you need to say something that isn't part of the program's meaning, you write it as prose — and you think carefully about whether it should be there at all.
+Codex has no comments in the traditional sense. Prose *is* the commentary. If you need to say something that isn't part of the program's meaning, you write it as prose -- and you think carefully about whether it should be there at all.
 
 For compiler directives and annotations that are not prose, we use:
 
@@ -196,7 +196,7 @@ Prose introducing the definition.
   name (params) = body
 ```
 
-### Type Definition — Record
+### Type Definition -- Record
 
 ```
 A Person is a record containing:
@@ -211,7 +211,7 @@ A Person is a record containing:
   }
 ```
 
-### Type Definition — Sum
+### Type Definition -- Sum
 
 ```
 A Shape is either:
@@ -223,7 +223,7 @@ A Shape is either:
     | Rectangle (width : Number) (height : Number)
 ```
 
-### Type Definition — With Constraint
+### Type Definition -- With Constraint
 
 ```
 An Account is a record containing:
@@ -341,7 +341,7 @@ The key design challenge: how does the compiler understand prose?
 
 ### Approach: Structured Prose Templates
 
-We do NOT attempt natural language understanding. Instead, we define a set of **prose templates** — English sentence structures that the parser recognizes and maps to formal constructs.
+We do NOT attempt natural language understanding. Instead, we define a set of **prose templates** -- English sentence structures that the parser recognizes and maps to formal constructs.
 
 Examples of recognized templates:
 
@@ -358,7 +358,7 @@ Examples of recognized templates:
 | `We say:` | Transition to notation |
 | `This is written:` | Transition to notation |
 
-The parser maintains a catalog of these templates. They are extensible — part of the language evolution is adding new recognized prose patterns.
+The parser maintains a catalog of these templates. They are extensible -- part of the language evolution is adding new recognized prose patterns.
 
 ### What Prose Does NOT Do
 
@@ -369,11 +369,11 @@ The parser maintains a catalog of these templates. They are extensible — part 
 ### The Prose-Notation Contract
 
 Every definition has:
-1. **Prose** — human explanation, optionally containing structured templates
-2. **Signature** — formal type
-3. **Body** — formal implementation
+1. **Prose** -- human explanation, optionally containing structured templates
+2. **Signature** -- formal type
+3. **Body** -- formal implementation
 
-The prose and the signature must be consistent (the compiler checks this where prose templates are recognized). The body and the signature must be consistent (standard type checking). The prose and the body are not directly checked against each other — the signature is the bridge.
+The prose and the signature must be consistent (the compiler checks this where prose templates are recognized). The body and the signature must be consistent (standard type checking). The prose and the body are not directly checked against each other -- the signature is the bridge.
 
 ---
 
@@ -381,9 +381,9 @@ The prose and the signature must be consistent (the compiler checks this where p
 
 There are no exceptions. All recoverable errors are values of type `Result (a)`.
 
-For truly unrecoverable situations (out of memory, stack overflow), the runtime aborts. These are not part of the language's type system — they are failures of the machine, not the program.
+For truly unrecoverable situations (out of memory, stack overflow), the runtime aborts. These are not part of the language's type system -- they are failures of the machine, not the program.
 
-The `fail` keyword produces a `Failure` value. The `succeed` keyword produces a `Success` value. Pattern matching on `Result` is exhaustive — you must handle both cases.
+The `fail` keyword produces a `Failure` value. The `succeed` keyword produces a `Success` value. Pattern matching on `Result` is exhaustive -- you must handle both cases.
 
 ---
 
@@ -393,7 +393,7 @@ Codex is **strict by default** with **opt-in laziness**.
 
 - Function arguments are evaluated before the function body executes
 - `lazy` annotation defers evaluation: `lazy (expensive-computation)`
-- Lazy values are memoized — evaluated at most once
+- Lazy values are memoized -- evaluated at most once
 
 Strict-by-default was chosen for predictability of effects and resource usage. Lazy evaluation is available where it provides clear benefit (infinite data structures, short-circuit evaluation).
 
@@ -405,14 +405,14 @@ These are questions we will resolve during implementation, not before:
 
 1. **How much prose parsing is enough?** We start minimal (a few templates) and expand based on what feels natural when writing real Codex programs.
 
-2. **Record syntax** — do we use braces `{ }` or indentation-based? The vision doc uses braces. We may want both.
+2. **Record syntax** -- do we use braces `{ }` or indentation-based? The vision doc uses braces. We may want both.
 
-3. **Operator sections** — do we support `(+ 1)` as a shorthand for `\x → x + 1`?
+3. **Operator sections** -- do we support `(+ 1)` as a shorthand for `\x → x + 1`?
 
-4. **Type classes vs. traits vs. something else** — the vision doc mentions type classes (from Haskell). We need to decide on the exact ad-hoc polymorphism mechanism.
+4. **Type classes vs. traits vs. something else** -- the vision doc mentions type classes (from Haskell). We need to decide on the exact ad-hoc polymorphism mechanism.
 
-5. **Universe hierarchy** — `Type : Type` is inconsistent (Girard's paradox). We need a universe hierarchy (`Type₀ : Type₁ : Type₂ : ...`) but how explicit should it be?
+5. **Universe hierarchy** -- `Type : Type` is inconsistent (Girard's paradox). We need a universe hierarchy (`Type₀ : Type₁ : Type₂ : ...`) but how explicit should it be?
 
-6. **Proof automation** — how much automated proof search do we include in the bootstrap? Start minimal.
+6. **Proof automation** -- how much automated proof search do we include in the bootstrap? Start minimal.
 
-7. **Recursion** — do we require termination proofs for all recursive functions? Probably yes for proofs, no for general computation (with `[Diverge]` effect).
+7. **Recursion** -- do we require termination proofs for all recursive functions? Probably yes for proofs, no for general computation (with `[Diverge]` effect).

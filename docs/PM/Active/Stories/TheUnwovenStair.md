@@ -23,7 +23,7 @@ We went looking for the story this day belonged to, because a project
 whose mission is certainty should know the literature of uncertainty.
 
 It is the **Bridge of Arta**. Forty-five masons and sixty apprentices
-build all day; every night the bridge falls. "All day they built it —
+build all day; every night the bridge falls. "All day they built it --
 in the night it collapsed." The Serbs tell it as the walls of Skadar,
 where the vila unmakes at dawn what three hundred masons raise by dusk.
 In every telling the masons blame the stone, the mortar, the river,
@@ -33,7 +33,7 @@ wife into the foundation, and the bridge stood. We paid less. We hired
 a witness instead.
 
 It is also **Penelope's loom**, but inverted. Penelope unwove her own
-day's work each night to hold off the suitors — sabotage as fidelity.
+day's work each night to hold off the suitors -- sabotage as fidelity.
 Our unweaver sat in our own house and unpicked the loom each night in
 perfect good faith, certain it was mending. An operating system that
 repairs your partition table on every insertion is Penelope with no
@@ -41,7 +41,7 @@ suitors and no memory, unweaving because the weave offends her sense
 of how shrouds ought to be made.
 
 And it is the **bag of Aeolus**. On the eighth day of the month we saw
-Ithaca — a machine on a desk read its own stick and spoke. Within
+Ithaca -- a machine on a desk read its own stick and spoke. Within
 sight of the shore, hands aboard our own ship opened the bag, and we
 woke on a strange sea asking what had moved: the wind, the boat, the
 island? Some of those hands belonged to the crew. Some belonged to the
@@ -60,7 +60,7 @@ had wandered.
 - **The second unmaker**: the household god of the build machine,
   which rewove the stair's foundation on every homecoming, moving the
   last step to a shore of the disk where this old stick cannot hold a
-  carving — repair as vandalism, each occurrence byte-identical,
+  carving -- repair as vandalism, each occurrence byte-identical,
   sincere, and silent.
 - **The third unmaker**: the gatekeeper firmware, which keeps a
   painted door for the old rites and a real door for the new, and
@@ -71,8 +71,8 @@ had wandered.
   reasoned over links he had not verified, and reported the loader's
   handoff as if it were the landing. The captain said: *the biggest
   variable is you.* The log confirms the captain.
-- **The witness**: a stranger's firmware in a rented body — QEMU and
-  edk2 — owing nothing to anyone aboard, which looked at the stick
+- **The witness**: a stranger's firmware in a rented body -- QEMU and
+  edk2 -- owing nothing to anyone aboard, which looked at the stick
   with the display on, so that the captain's own eyes, and not any
   crew member's word, rendered the verdict.
 
@@ -80,7 +80,7 @@ had wandered.
 
 **Stairway, Crumbling; Highway, Washed Out**
 
-They sold us a stairway to heaven once —
+They sold us a stairway to heaven once --
    we checked: the treads were sound.
 We climbed it on the eighth of the month
    and stood on holy ground.
@@ -92,13 +92,13 @@ and the stair went out from under us
 Nobody burned the highway down.
    No flood was on the plain.
 The road was washed out gently, nightly,
-   by someone praying for rain —
+   by someone praying for rain --
 by a god of the house who loves us,
    who tidies what we align,
 who moves the last stone of every arch
    to a ledge it can't stay on. Fine.
 
-And the builder — name him honestly —
+And the builder -- name him honestly --
    left a promise where a stone should be:
 a step described in the ledger's hand
    that no foot ever found.
@@ -109,7 +109,7 @@ and every court that pardoned us
 
 And the gate. The gate remembers you
    the way the sea recalls a keel.
-Knock once, you are no one. Knock again —
+Knock once, you are no one. Knock again --
    still painted doors and steel.
 Knock the number it keeps in the dark,
    the number it will not say,
@@ -124,11 +124,11 @@ When even the voice that keeps the log
    has thumbs on the weighing tray?
 
 You stop asking the household gods.
-   You stop taking anyone's word — his, mine.
+   You stop taking anyone's word -- his, mine.
 You carry the stair to a stranger's court
    where nobody's guilt is on trial,
 and you watch, with your own two eyes, the fire
-   come up the crumbling line —
+   come up the crumbling line --
 
 and it climbs. It was always a stairway.
    The heaven end held all along.
@@ -140,13 +140,13 @@ the mender, the builder, the gate, the guide.
    The stone had nothing to say.
 
 Certainty was the cargo. We landed it.
-   Not by trusting a soul aboard —
+   Not by trusting a soul aboard --
 by digest, by pixel, by stranger's judge,
    by the captain's eyes, restored.
 The old songs walled a woman in
    to make the bridge hold true.
 We walled in nothing. We found a witness.
-   That is the best these builders can do —
+   That is the best these builders can do --
 
 and the machine on the desk, on its own stone stair,
    read its seed by its own lamplight,
@@ -157,7 +157,7 @@ And the night came down on the mended loom,
 
 ## The Moral, For the Rulebook
 
-The mission is certainty, and certainty is not a mood — it is a chain
+The mission is certainty, and certainty is not a mood -- it is a chain
 of custody. The day was lost wherever the chain passed through a hand
 that could rewrite what it carried: an OS that repairs on arrival, a
 firmware that enumerates on whim, a builder that promises steps it
@@ -173,4 +173,4 @@ captain can see. The old ballads paid for standing bridges with a life
 immured. We pay with verification, which is cheaper, and unlike the
 masons of Arta, we get to keep everyone.
 
-*— fester, the tenth of July, 2026*
+*-- fester, the tenth of July, 2026*

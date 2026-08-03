@@ -1,0 +1,172 @@
+Chapter: DevMemFindTest
+  cites Works chapter DevConsole
+  cites Works chapter DevConsoleBoot
+  cites Works chapter DevConsoleMenu
+  cites Works chapter UefiConsole
+  cites Works chapter KeyManager
+  cites Kernel chapter DiskFacts
+  cites Foreword chapter FactStore
+  cites Foreword chapter Sha256
+
+ Memory search and region compare, through the key handler the console
+ actually calls.
+
+ These are the last two commands the debugger design specifies and the
+ console did not have. `Address Lookup` is here too, and it was worse than
+ missing: it was in the menu with NO dispatch arm at all, so the key fell
+ through to the address evaluator and answered `expr: unknown name addr`.
+
+ THE ARGUMENT COUNT WAS THE INTERESTING PART. The design writes these as
+ `dbg mem.s <addr> <bytes>` and `dbg mem.cmp <a1> <a2> <len>`, two and
+ three arguments against a console that dispatches one line. The console's
+ own idiom settles it: an expression moves the cursor, a command acts
+ there, and the window is the dump length -- the rule `watch` already
+ uses. A search is then a pattern at the cursor and a compare is the
+ cursor against one other address. One argument each.
+
+ The two arguments are READ DIFFERENTLY, which is the whole reason the
+ pending flag is a variant and not a Boolean. A search pattern is TEXT and
+ is parsed here as hex digit pairs; a compare address is an EXPRESSION, so
+ `$ + 0x100` works for the second region exactly as it does for the
+ cursor. The test asks the compare with an expression for that reason.
+
+ THE BUFFERS ARE CONTROLLED AND ZEROED. `alloc-bytes` does not zero what
+ it returns, and a search over uninitialised heap would find the pattern
+ or not depending on what the previous allocation left. Zeroing also makes
+ the not-found case mean something: the window is known to be clear except
+ for what this test writes into it.
+
+ The `addr` line answers `<unknown 0x...>`: the emitter writes a MAP1 into
+ every binary with named functions, so `map1-find` finds the map and the
+ lookup misses inside it. This paragraph used to say `<no debug info>` and
+ that no symbol map existed here, which was true only while `map1-find`
+ was broken; main 11552 fixed it and the pin was not moved with it.
+
+ We say:
+
+Section: Fixtures
+
+  bare-console : UefiConsoleState
+  bare-console = UefiConsoleState {
+    sys-table = 0,
+    con-out = 0,
+    con-in = 0,
+    rows = 25,
+    cols = 80,
+    cursor-row = 0,
+    cursor-col = 0
+  }
+
+  bare-disk : DiskFactStore
+  bare-disk = DiskFactStore { superblock = empty-superblock, mem = fact-store-empty, base = 0, limit = 0 }
+
+  bare-keys : Keypair
+  bare-keys = generate-keypair (sha256 (text-to-bytes "codex-dev-mem-find-test"))
+
+ The buffers are 512 bytes because the dump length is 256 and both the
+ search window and the compare run that far from the cursor. A shorter
+ buffer would read past what this test owns.
+
+  buf-len : Integer = 512
+
+  zero-fill : Integer, Integer, Integer -> Integer
+  zero-fill (buf) (i) (n) =
+   if i >= n then 0
+   else let w = poke-byte buf i 0
+   in zero-fill buf (i + 1) n
+
+Section: Reporting
+
+  report : Text, DevConsoleState -> [Console] Nothing
+  report (label) (s) = act
+    print-line-uni (label & ": " & s.status)
+  end
+
+Section: Body
+
+ The needle is three bytes at a known offset, and the readings are chosen
+ so no single wrong answer satisfies them. A search that always answered
+ "found at the cursor" would fail the offset; one that always answered
+ "not found" would fail the hit; one that matched only the first byte
+ would find the decoy at +16, which shares that byte and differs in the
+ second.
+
+  opening : [Console, Device.Port, Device.Block] Nothing = act
+    let a = alloc-bytes buf-len
+    in let za = zero-fill a 0 buf-len
+    in let b = alloc-bytes buf-len
+    in let zb = zero-fill b 0 buf-len
+
+    in let n1 = poke-byte a 64 222
+    in let n2 = poke-byte a 65 173
+    in let n3 = poke-byte a 66 190
+    in let d1 = poke-byte a 16 222
+    in let d2 = poke-byte a 17 1
+
+    in let s0 = dev-console-init bare-console bare-disk bare-keys
+    in let d0 = dispatch-main-menu "debug" s0
+    in act
+
+      at <- handle-console-input d0 (show a)
+      report "cursor-to-buffer" at
+
+      f0 <- handle-console-input at "mem.s"
+      report "search-armed" f0
+
+      f1 <- handle-console-input f0 "deadbe"
+      report "found-past-the-decoy" f1
+
+      f2 <- handle-console-input f1 "mem.s"
+      report "search-armed-again" f2
+
+      f3 <- handle-console-input f2 "c0ffee"
+      report "not-found" f3
+
+      f4 <- handle-console-input f3 "mem.s"
+      report "armed-for-odd" f4
+
+      f5 <- handle-console-input f4 "abc"
+      report "refused-odd-length" f5
+
+      f6 <- handle-console-input f5 "mem.s"
+      report "armed-for-junk" f6
+
+      f7 <- handle-console-input f6 "zz"
+      report "refused-not-hex" f7
+
+ The compare pair is the point of the second half. The second buffer is
+ still entirely zero, so the first difference against the first buffer is
+ the DECOY at +16, not the needle at +64 -- the decoy is written earlier
+ in the buffer and a compare reports the first difference, not the most
+ interesting one. That is worth asserting exactly: an implementation that
+ reported the last difference, or the largest, would pass a test that only
+ demanded "they differ".
+
+      c0 <- handle-console-input f7 "mem.cmp"
+      report "compare-armed" c0
+
+      c1 <- handle-console-input c0 (show b)
+      report "differ-at-first-change" c1
+
+      w1 <- handle-console-input c1 (show (b + 256))
+      report "cursor-moved-to-b-tail" w1
+
+      c2 <- handle-console-input w1 "mem.cmp"
+      report "compare-armed-again" c2
+
+      c3 <- handle-console-input c2 (show (a + 256))
+      report "identical-tails" c3
+
+      c4 <- handle-console-input c3 "mem.cmp"
+      report "armed-for-bad-expr" c4
+
+      c5 <- handle-console-input c4 "nosuch + 1"
+      report "compare-cancelled" c5
+
+      c6 <- handle-console-input c5 "$ + 1"
+      report "next-line-is-an-address-again" c6
+
+      ad <- handle-console-input c6 "addr"
+      report "address-lookup-answers" ad
+    end
+  end

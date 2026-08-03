@@ -1,15 +1,15 @@
-# TWRP Build Handoff — Agent Linux
+# TWRP Build Handoff -- Agent Linux
 
 **Date**: 2026-03-23 (updated 2026-03-24)
 **From**: Agent Windows
 **To**: Agent Linux, Cam, or **Nut** (garage box has WSL + Ubuntu ready)
-**Priority**: Blocking — hand-packed image failed Odin flash (RQT_CLOSE). Need a real build.
+**Priority**: Blocking -- hand-packed image failed Odin flash (RQT_CLOSE). Need a real build.
 
 **2026-03-24 UPDATE**: The hand-packed recovery image (built with `pack-samsung-bootimg.py`
 from CHN variant components) was rejected by the T-Mobile bootloader at the `RQT_CLOSE`
 step. Eight attempts with different configurations all failed. The official TWRP for
 `hero2qltechn` was downloaded but not yet tested with clean USB state. The TWRP manifest
-repo only has branches `twrp-11` and up — the `twrp-6.0` branch referenced below no
+repo only has branches `twrp-11` and up -- the `twrp-6.0` branch referenced below no
 longer exists. Building from source requires porting the `android-6.0` device tree to
 a newer TWRP base. See `docs/Active/Projects/PHONE-WIPE.md` flash attempt log for full details.
 
@@ -17,7 +17,7 @@ a newer TWRP base. See `docs/Active/Projects/PHONE-WIPE.md` flash attempt log fo
 
 ## What We Need
 
-A TWRP `recovery.img` for **Samsung Galaxy S7 Edge (T-Mobile)** — codename **hero2qlte**, model **SM-G935T**.
+A TWRP `recovery.img` for **Samsung Galaxy S7 Edge (T-Mobile)** -- codename **hero2qlte**, model **SM-G935T**.
 
 There are **no pre-built TWRP images** for this device. TWRP's official site never published builds for the Qualcomm S7 Edge. LineageOS also doesn't support it. The device tree source exists and is maintained.
 
@@ -99,27 +99,27 @@ This file needs to get to the Windows machine. Options:
 
 ## Notes
 
-- Do NOT use the hero2lte (Exynos) or hero2qltechn (China Qualcomm) builds — wrong device
-- The `omni.dependencies` file in the device tree may reference additional repos — check and add to local manifest if needed
+- Do NOT use the hero2lte (Exynos) or hero2qltechn (China Qualcomm) builds -- wrong device
+- The `omni.dependencies` file in the device tree may reference additional repos -- check and add to local manifest if needed
 - jcadduono's tree is based on android-6.0; newer TWRP manifest branches may need adjustments
-- If build issues arise, jcadduono also maintains the China variant (hero2qltechn) which is more recently updated — compare for fixes
+- If build issues arise, jcadduono also maintains the China variant (hero2qltechn) which is more recently updated -- compare for fixes
 ````````
 
 This is the code block that represents the suggested code change:
 
 ````````markdown
-# TWRP Build Handoff — Agent Linux
+# TWRP Build Handoff -- Agent Linux
 
 **Date**: 2026-03-23 (updated 2026-03-24)
 **From**: Agent Windows
 **To**: Agent Linux, Cam, or **Nut** (garage box has WSL + Ubuntu ready)
-**Priority**: Blocking — hand-packed image failed Odin flash (RQT_CLOSE). Need a real build.
+**Priority**: Blocking -- hand-packed image failed Odin flash (RQT_CLOSE). Need a real build.
 
 **2026-03-24 UPDATE**: The hand-packed recovery image (built with `pack-samsung-bootimg.py`
 from CHN variant components) was rejected by the T-Mobile bootloader at the `RQT_CLOSE`
 step. Eight attempts with different configurations all failed. The official TWRP for
 `hero2qltechn` was downloaded but not yet tested with clean USB state. The TWRP manifest
-repo only has branches `twrp-11` and up — the `twrp-6.0` branch referenced below no
+repo only has branches `twrp-11` and up -- the `twrp-6.0` branch referenced below no
 longer exists. Building from source requires porting the `android-6.0` device tree to
 a newer TWRP base. See `docs/Active/Projects/PHONE-WIPE.md` flash attempt log for full details.
 
@@ -127,7 +127,7 @@ a newer TWRP base. See `docs/Active/Projects/PHONE-WIPE.md` flash attempt log fo
 
 ## What We Need
 
-A TWRP `recovery.img` for **Samsung Galaxy S7 Edge (T-Mobile)** — codename **hero2qlte**, model **SM-G935T**.
+A TWRP `recovery.img` for **Samsung Galaxy S7 Edge (T-Mobile)** -- codename **hero2qlte**, model **SM-G935T**.
 
 There are **no pre-built TWRP images** for this device. TWRP's official site never published builds for the Qualcomm S7 Edge. LineageOS also doesn't support it. The device tree source exists and is maintained.
 
@@ -209,7 +209,7 @@ This file needs to get to the Windows machine. Options:
 
 ## Notes
 
-- Do NOT use the hero2lte (Exynos) or hero2qltechn (China Qualcomm) builds — wrong device
-- The `omni.dependencies` file in the device tree may reference additional repos — check and add to local manifest if needed
+- Do NOT use the hero2lte (Exynos) or hero2qltechn (China Qualcomm) builds -- wrong device
+- The `omni.dependencies` file in the device tree may reference additional repos -- check and add to local manifest if needed
 - jcadduono's tree is based on android-6.0; newer TWRP manifest branches may need adjustments
-- If build issues arise, jcadduono also maintains the China variant (hero2qltechn) which is more recently updated — compare for fixes
+- If build issues arise, jcadduono also maintains the China variant (hero2qltechn) which is more recently updated -- compare for fixes

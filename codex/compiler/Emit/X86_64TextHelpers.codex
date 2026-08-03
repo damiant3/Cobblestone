@@ -473,6 +473,28 @@ Section: __text_to_int
    in st-append-code st5 x86-ret
 
 Section: __text_to_double
+
+ The digits are accumulated as one integer and the decimal point is recorded
+ as a count of fractional digits; the scaling is then a single divide by ten
+ to that power.
+
+ It used to divide by ten once per fractional digit, in a loop, and that is
+ a rounding per digit rather than the one rounding IEEE-754 division
+ promises. `2.9000001` came out one ulp below the correctly rounded value,
+ and every arithmetic result built on such a literal inherited the error. A
+ comparison lattice cannot see this -- a one-ulp shift in an operand leaves
+ every ordering unchanged -- so it stayed invisible until the operands
+ themselves were adjudicated against the host in `build/oracle-scalar.ps1`.
+
+ Ten to the power k is exact as a double for k up to 22, so accumulating it
+ by repeated multiplication and dividing once is correctly rounded over the
+ whole range a literal can usefully name. Beyond 22 the divisor is itself
+ inexact, but that is still one rounding against k of them.
+
+ The numerator is a separate and untouched limit: `cvtsi2sd` of the digit
+ integer is exact only below 2^53, so a literal carrying more than about
+ sixteen significant digits loses precision before the scaling ever runs.
+
   emit-text-to-double-setup : CodegenState -> HelpResult1
   emit-text-to-double-setup (st) =
     let st0 = record-func-offset st "__text_to_double"
@@ -541,12 +563,15 @@ Section: __text_to_double
    in let no-div-pos = st6.code-len
    in let st7 = st-append-code st6 (jcc cc-e 0)
    in let st8 = st-append-code st7 (li reg-rdx 4621819117588971520)
-   in let st9 = st-append-code st8 (movq-to-xmm 1 reg-rdx)
-   in let div-loop = st9.code-len
-   in let st10 = st-append-code st9 (divsd-xmm 0 1)
+   in let st9 = st-append-code st8 (movq-to-xmm 2 reg-rdx)
+   in let st9a = st-append-code st9 (li reg-rdx 4607182418800017408)
+   in let st9b = st-append-code st9a (movq-to-xmm 1 reg-rdx)
+   in let pow-loop = st9b.code-len
+   in let st10 = st-append-code st9b (mulsd-xmm 1 2)
    in let st11 = st-append-code st10 (sub-ri reg-r8 1)
-   in let st12 = st-append-code st11 (jcc cc-ne (div-loop - (st11.code-len + 6)))
-   in let st13 = patch-jcc-at st12 no-div-pos (st12.code-len)
+   in let st12 = st-append-code st11 (jcc cc-ne (pow-loop - (st11.code-len + 6)))
+   in let st12a = st-append-code st12 (divsd-xmm 0 1)
+   in let st13 = patch-jcc-at st12a no-div-pos (st12a.code-len)
    in let st14 = st-append-code st13 (movq-from-xmm reg-rax 0)
    in let st15 = patch-jcc-at st14 (setup.p1) (st14.code-len)
    in st-append-code st15 x86-ret
@@ -1200,6 +1225,19 @@ Section: __str_replace
    in emit-str-replace-done st3 (head.p1)
 
 Section: __text_split
+
+ The list carries a capacity header at [-8], like every list this
+ runtime builds: __list-with-capacity, __linked_list_to_list and
+ __list_concat_many all store it, and the inlined list-at reads its
+ SIGN to pick the inline or the indirect element path. This helper
+ alone used to skip the header, so [-8] was whatever the heap held:
+ zeros on a fresh VM (positive, inline, correct by luck) and 0xCD
+ poison in a REPL session after a failed compile (negative, so every
+ element read went through the "indirect" pointer that inline lists
+ do not have). That is the defect that killed ten batch-session
+ tests -- every quotes-* and prose-* test, all clean standalone --
+ at text-starts-with on CCE text bytes used as a pointer.
+
   emit-text-split-prologue : CodegenState -> CodegenState
   emit-text-split-prologue (st) =
     let st0 = record-func-offset st "__text_split"
@@ -1211,7 +1249,11 @@ Section: __text_split
    in let st6 = st-append-code st5 (mov-rr reg-rbx reg-rdi)
    in let st7 = st-append-code st6 (mov-load reg-r12 reg-rbx 0)
    in let st8 = st-append-code st7 (movzx-byte reg-r13 reg-rsi 8)
-   in let st9 = st-append-code st8 (mov-rr reg-r14 reg-r10)
+   in let st8a = st-append-code st8 (mov-rr reg-rax reg-r12)
+   in let st8b = st-append-code st8a (add-ri reg-rax 1)
+   in let st8c = st-append-code st8b (mov-store reg-r10 reg-rax 0)
+   in let st8d = st-append-code st8c (add-ri reg-r10 8)
+   in let st9 = st-append-code st8d (mov-rr reg-r14 reg-r10)
    in let st10 = st-append-code st9 (mov-rr reg-rax reg-r12)
    in let st11 = st-append-code st10 (add-ri reg-rax 2)
    in let st12 = st-append-code st11 (shl-ri reg-rax 3)

@@ -19,7 +19,7 @@ that they believe they own, but that works for someone else.
 Can we fix this? Not all of it. But we can fix the foundation. If the
 software on the phone is written in a language that **tracks effects**,
 **enforces capabilities**, and **makes permission violations a compile-time
-error**, then the phone can't spy on you — not because you trust the
+error**, then the phone can't spy on you -- not because you trust the
 developer, but because the compiler won't let the code compile if it
 tries to access the microphone without an explicit, auditable grant.
 
@@ -44,9 +44,9 @@ putting them on a real phone.
 | Sensors | Accelerometer, gyroscope, fingerprint, barometer, SpO2 |
 | Camera | 12 MP rear, 5 MP front |
 | Cellular | LTE Cat 9 (Qualcomm X12 modem) |
-| Bootloader | T-Mobile — unlockable via OEM unlock |
+| Bootloader | T-Mobile -- unlockable via OEM unlock |
 | Custom ROM | TWRP + LineageOS available; postmarketOS experimental |
-| Status | Expendable lab device — owner willing to wipe |
+| Status | Expendable lab device -- owner willing to wipe |
 
 ### Why This Phone
 
@@ -67,11 +67,11 @@ putting them on a real phone.
 
 | File | Lines | Status |
 |------|-------|--------|
-| `Arm64Encoder.cs` | 367 | ✅ Complete — all instruction formats |
-| `Arm64CodeGen.cs` | 1,740 | ✅ Complete — full IR→ARM64 codegen |
-| `ElfWriterArm64.cs` | 113 | ✅ Complete — ELF64 AArch64 writer |
-| `Arm64Emitter.cs` | 16 | ✅ Complete — IAssemblyEmitter wrapper |
-| CLI integration | — | ✅ `codex build --target arm64` wired |
+| `Arm64Encoder.cs` | 367 | ✅ Complete -- all instruction formats |
+| `Arm64CodeGen.cs` | 1,740 | ✅ Complete -- full IR→ARM64 codegen |
+| `ElfWriterArm64.cs` | 113 | ✅ Complete -- ELF64 AArch64 writer |
+| `Arm64Emitter.cs` | 16 | ✅ Complete -- IAssemblyEmitter wrapper |
+| CLI integration | -- | ✅ `codex build --target arm64` wired |
 
 **Total: 2,236 lines.** Produces valid ELF64 AArch64 binaries.
 Smoke-tested: `hello.codex` → 4,112-byte ELF (correct EM_AARCH64 header).
@@ -119,9 +119,9 @@ No .NET. No CLR. Native machine code, start to finish.
 |------|------|-----|--------|
 | 1a | Agent Linux pulls `windows/arm64-backend` | Linux | Awaiting |
 | 1b | Run `qemu-aarch64` on hello/factorial | Linux | Awaiting |
-| 1c | Fix any QEMU failures | Windows/Linux | — |
-| 1d | Install Termux on S7 Edge | Human | — |
-| 1e | `adb push` binary to phone, run natively | Human | — |
+| 1c | Fix any QEMU failures | Windows/Linux | -- |
+| 1d | Install Termux on S7 Edge | Human | -- |
+| 1e | `adb push` binary to phone, run natively | Human | -- |
 
 ```bash
 # Build on dev machine
@@ -162,14 +162,14 @@ capabilities. Android is gone."
 
 **Timeline**: Weeks after Phase 1.
 
-### Phase 3: Codex OS (FUTURE — Peak IV)
+### Phase 3: Codex OS (FUTURE -- Peak IV)
 
 **Goal**: Replace Linux itself. ARM64 bare metal. Boot, MMU, device
-drivers, scheduler — all written in Codex.
+drivers, scheduler -- all written in Codex.
 
 Requires Camp III completion (linear allocator escape analysis,
 capability I/O runtime enforcement, structured concurrency). This
-is months out. But Phases 1 and 2 are independently useful — we
+is months out. But Phases 1 and 2 are independently useful -- we
 don't need Peak IV to put a verified-capability phone in your hand.
 
 ---
@@ -207,9 +207,9 @@ effect Identity where
 | Mode | Who | Capability Set |
 |------|-----|---------------|
 | **Owner** | Biometric-verified | All granted capabilities |
-| **Guest** | Anyone holding it | `[Display]` only — "return this phone" screen |
+| **Guest** | Anyone holding it | `[Display]` only -- "return this phone" screen |
 | **Trusted** | Owner-vouched person | Per-person set defined by owner |
-| **Lost** | No owner biometric for N hours | `[Display]` — return info, everything else locked |
+| **Lost** | No owner biometric for N hours | `[Display]` -- return info, everything else locked |
 
 The identity system runs in an `Identity` effect handler that **does not
 have `Network`**. Biometric data stays on-device. Type system guarantee.
@@ -236,12 +236,12 @@ verified this. It turns pixels white. That's all it can do.
 ```
 ARM64 Register    Codex Use
 ─────────────────────────────────
-x0–x7             Arguments/returns
+x0-x7             Arguments/returns
 x8                Syscall number
-x9–x15            Temps (caller-saved, rotated)
-x16–x17           Intra-procedure scratch
+x9-x15            Temps (caller-saved, rotated)
+x16-x17           Intra-procedure scratch
 x18               Platform register (reserved)
-x19–x27           Locals (callee-saved, monotonic alloc)
+x19-x27           Locals (callee-saved, monotonic alloc)
 x28               Heap pointer (callee-saved)
 x29 (FP)          Frame pointer
 x30 (LR)          Link register
@@ -264,7 +264,7 @@ close  = 57   (x8=57,  x0=fd → svc #0)
 On postmarketOS with a downstream kernel, the display should be
 accessible via either legacy framebuffer (`/dev/fb0`) or DRM
 (`/dev/dri/card0`). The S7 Edge's display controller is the
-Qualcomm MDP5. DRM is preferred — it supports page flipping and
+Qualcomm MDP5. DRM is preferred -- it supports page flipping and
 vsync. A minimal DRM client needs:
 - `drmOpen` → `drmModeGetResources` → `drmModeGetConnector`
 - Allocate a dumb buffer → `drmModeSetCrtc`
@@ -278,7 +278,7 @@ for 2D rendering.
 The capacitive touchscreen reports events on `/dev/input/eventN`.
 Read `struct input_event` (16 bytes on 64-bit): timestamp, type,
 code, value. Touch events are `EV_ABS` with `ABS_MT_POSITION_X`
-and `ABS_MT_POSITION_Y`. This is pure `read()` syscalls — no
+and `ABS_MT_POSITION_Y`. This is pure `read()` syscalls -- no
 library needed.
 
 ---
@@ -303,7 +303,7 @@ If the human gets mauled by dogs (or otherwise becomes unavailable):
 |----------|----------|
 | Source | `https://github.com/damiant3/NewRepository` |
 | ARM64 branch | `windows/arm64-backend` (awaiting merge) |
-| Solution | `Codex.sln` — 37 projects, .NET 8 |
+| Solution | `Codex.sln` -- 37 projects, .NET 8 |
 | ARM64 backend | `src/Codex.Emit.Arm64/` |
 | RISC-V backend | `src/Codex.Emit.RiscV/` |
 | Self-hosted source | `Codex.Codex/` (26 `.codex` files) |
@@ -333,14 +333,14 @@ If the human gets mauled by dogs (or otherwise becomes unavailable):
 - **Agent Cam** (Claude Code CLI, 1M context): Fast iteration. Fixed 11
   bugs in one session for Camp II-C summit. Works from a separate worktree.
 - **The Human** (Damian): Routes between agents. Picks the line. Has the
-  phone. If absent, the agents can continue — git is the shared state,
+  phone. If absent, the agents can continue -- git is the shared state,
   `dotnet test` is the acceptance criterion.
 
 ### The Three Rules
 
-1. **Build passes.** `dotnet build Codex.sln` — zero warnings.
-2. **Tests pass.** `dotnet test Codex.sln` — all green (ignore CS5001
-   in Codex.Codex and `Peek_non_numeric_start` — both pre-existing).
+1. **Build passes.** `dotnet build Codex.sln` -- zero warnings.
+2. **Tests pass.** `dotnet test Codex.sln` -- all green (ignore CS5001
+   in Codex.Codex and `Peek_non_numeric_start` -- both pre-existing).
 3. **Don't merge your own work.** Push to a branch. Another agent reviews.
 
 ---
@@ -352,5 +352,5 @@ guarantees, is worth a thousand design documents about hypothetical
 platforms.
 
 The ARM64 backend is built. The phone is identified. The plan is three
-phases — the first one is days away. The only step between here and
+phases -- the first one is days away. The only step between here and
 "Codex program running in your hand" is one QEMU verification run.

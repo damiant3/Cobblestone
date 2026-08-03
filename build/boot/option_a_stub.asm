@@ -79,6 +79,31 @@ efi_main PROC
     mov     r13d, DWORD PTR [rcx+INFO_VRES]  ; r13 = height (preserved)
     mov     ebx, DWORD PTR [rcx+INFO_STRIDE] ; rbx = PixelsPerScanLine (preserved; ebx zero-extends)
 
+    ; ---- LIVENESS MARK 1: we have GOP ----
+    ; Every failure path in this stub ends at `fatal`, which is `jmp fatal`:
+    ; a silent spin. So a board that cannot give us GOP, cannot give us
+    ; 128 MB, or refuses ExitBootServices produces exactly the same thing an
+    ; operator sees when the firmware never loaded us at all -- an unchanged
+    ; screen. On 2026-07-29 that ambiguity cost a boot on the ASUS and
+    ; returned one bit of information. Two solid fills split the silence into
+    ; three states readable across a room with no camera:
+    ;   firmware screen unchanged -> never loaded, or no GOP
+    ;   DARK BLUE and nothing more -> GOP acquired, died in allocation,
+    ;                                 GetMemoryMap or ExitBootServices
+    ;   DARK GREEN and nothing more -> through ExitBootServices and paging,
+    ;                                  died in the payload
+    ; rdi holds BootServices and is needed for every call below, so it is
+    ; saved around the store.
+    push    rdi
+    cld
+    mov     rdi, rsi
+    mov     eax, r13d
+    imul    eax, ebx                     ; pixels = height * PixelsPerScanLine
+    mov     ecx, eax
+    mov     eax, 00202060h               ; dark blue
+    rep     stosd
+    pop     rdi
+
     ; ---- AllocateAnyPages(0, EfiLoaderData=2, ALLOC_PAGES, &base) ----
     xor     rcx, rcx
     mov     rdx, 2
@@ -152,6 +177,24 @@ pd_l:
     mov     [CELL_STRIDE], rbx           ; real PixelsPerScanLine (correct on padded-scanline hw)
     lea     rax, [rbp+HEAPBASE_OFF]
     mov     [CELL_HEAP], rax
+
+    ; ---- LIVENESS MARK 2: past ExitBootServices, our page tables are live ----
+    ; Placed after the handoff cells so the fill also proves the framebuffer
+    ; address we just handed the payload is one WE can write through our own
+    ; map, not merely one the firmware could reach. If the payload paints
+    ; nothing over this, the fault is in the payload rather than the handoff.
+    ; rdi is dead here -- BootServices is finished with, and the next read of
+    ; rdi is `mov rdi, CELL_ENTROPY` below -- so it is clobbered rather than
+    ; pushed. Nothing else in this stub touches the stack after `mov cr3`,
+    ; and a push here would newly depend on the firmware's stack being
+    ; mapped by OUR page tables.
+    cld
+    mov     rdi, rsi
+    mov     eax, r13d
+    imul    eax, ebx
+    mov     ecx, eax
+    mov     eax, 00104020h               ; dark green
+    rep     stosd
 
     ; ---- capture the ACPI RSDP from the UEFI configuration table ----
     ; The RSDP is not a protocol -- LocateProtocol cannot find it. It is a

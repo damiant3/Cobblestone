@@ -1,4 +1,4 @@
-# generate-creatures.ps1 — Generate additional sea creatures and decorations.
+# generate-creatures.ps1 -- Generate additional sea creatures and decorations.
 [CmdletBinding()]
 param([switch]$Force)
 

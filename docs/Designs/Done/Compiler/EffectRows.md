@@ -1,6 +1,6 @@
-# Effect Rows — Effect Polymorphism and Subsumption
+# Effect Rows -- Effect Polymorphism and Subsumption
 
-**Status: SHIPPED — all stages complete, enforcement live.**
+**Status: SHIPPED -- all stages complete, enforcement live.**
 Stage 0 (probes, CLs 6508-6511), 1a/1b (representation + syntax,
 CLs 6512/6513), 2 (row unification, CL 6532), 3a (ambient-row
 calculus per the ruled Γ ⊢ e : τ | ε architecture, CL 6550), 3b
@@ -25,17 +25,17 @@ Every code citation below was verified against the tree at CL 6506.
 ## 1. The problem
 
 Codex tracks effects as a flat name set attached to the *return type*:
-`EffectfulTy (List Name) (List Text) (CodexType)` — effects, per-effect
+`EffectfulTy (List Name) (List Text) (CodexType)` -- effects, per-effect
 scopes, inner type (`CodexType.codex:26`). So `Text -> [Console] Nothing`
 is `FunTy Text (EffectfulTy [Console] [] Nothing)` (`CodexType.codex:18`
-— `FunTy` is a two-field curried arrow with no effect component of its
+-- `FunTy` is a two-field curried arrow with no effect component of its
 own). Enforcement today is four point checks:
 
-0. **Let boundary** — CDX2033 rejects let-binding an effectful value
+0. **Let boundary** -- CDX2033 rejects let-binding an effectful value
    outside an act-bind, closing the simplest laundering route (an
-   effectful call let-bound in a plain pure body). Stage 0 finding —
+   effectful call let-bound in a plain pure body). Stage 0 finding --
    the original draft and the first revision both missed it.
-1. **Definition boundary** — `check-effect-subset`
+1. **Definition boundary** -- `check-effect-subset`
    (`TypeChecker.codex:629`): the body's extracted effect names must each
    be covered by the signature's, where "covered" includes the one-level
    dotted prefix relation (`Console.Write` covered by `Console`,
@@ -43,11 +43,11 @@ own). Enforcement today is four point checks:
    dead code until CL 6509: `find-dot` compared char codes against ASCII
    46, which is the letter H in CCE, so real dots never matched. Fixed
    and pinned by the `effect-dotted-allow`/`effect-dotted-deny` probes.
-2. **Application argument boundary** (CL 6494) — `effect-le`
+2. **Application argument boundary** (CL 6494) -- `effect-le`
    (`TypeCheckerInference.codex:439`): a function argument may not carry
    effects a *concrete* pure parameter type forbids. Deliberately lenient
-   when the parameter is a type variable — which is every HOF.
-3. **Act-block union** (CL 6494) — `infer-act-loop`
+   when the parameter is a type variable -- which is every HOF.
+3. **Act-block union** (CL 6494) -- `infer-act-loop`
    (`TypeCheckerInference.codex:788-805`) unions each statement's
    extracted effects so a mid-block effect is not dropped.
 
@@ -61,7 +61,7 @@ This is effect *checking*, not an effect *system*. The structural gaps:
 
 2. **No effect variable.** A higher-order function cannot be
    effect-polymorphic. `map` is `ForAllTy 0 (ForAllTy 1 (FunTy (FunTy
-   (TypeVar 0) (TypeVar 1)) ...))` (`TypeEnv.codex:145`) — its function
+   (TypeVar 0) (TypeVar 1)) ...))` (`TypeEnv.codex:145`) -- its function
    parameter is a *pure* arrow, so an effectful argument is not
    constrained and its effects do not surface in `map`'s result. This is
    the residual hole `effect-le` is deliberately lenient about
@@ -77,7 +77,7 @@ This is effect *checking*, not an effect *system*. The structural gaps:
    binding in the environment (`AHandleExpr`,
    `TypeCheckerInference.codex:910-916`; `strip-handled-effect`,
    `:1010`; `strip-effect-from-env`, `:995`). This subtraction is only
-   as trustworthy as the effect information reaching it — which gap 1
+   as trustworthy as the effect information reaching it -- which gap 1
    destroys, and the env-rewriting form of it (`strip-effect-from-env`)
    is a scoping approximation that rows make unnecessary (§7).
 
@@ -101,26 +101,26 @@ property being established, stated so it can be attacked:
 
 This is the standard soundness statement for row-based effect systems
 (Leijen 2014 for Koka; Lucassen & Gifford 1988 for the original effect
-discipline). We claim the upper-bound direction only — rows may
+discipline). We claim the upper-bound direction only -- rows may
 over-approximate (dead branches, imprecise tails); they may never
 under-approximate. Every stage gate in §12 preserves the self-compile
 fixed point.
 
-**Non-goals.** No effect-handler *runtime* redesign — `IrHandle` /
+**Non-goals.** No effect-handler *runtime* redesign -- `IrHandle` /
 `emit-handle` and the resume trampolines are complete and untouched. No
-new runtime cost — effects stay erased at codegen and at the IR wire
+new runtime cost -- effects stay erased at codegen and at the IR wire
 boundary (§10). Not a scoped-effects / named-instance system
 (Frank-style) and not Koka's scoped-label rows (§5 says why); a single
 global row per arrow. No effect-indexed types (`Task e a`) in this
-design — the conservative `fork` typing in §9 avoids them; revisit only
+design -- the conservative `fork` typing in §9 avoids them; revisit only
 if structured concurrency demands precision later.
 
-## 3. Surface syntax (DECIDED — brackets, 2026-07-02)
+## 3. Surface syntax (DECIDED -- brackets, 2026-07-02)
 
-`-(e)->` (Koka) is rejected — ugly, and alien to a language that reads
+`-(e)->` (Koka) is rejected -- ugly, and alien to a language that reads
 like a book. **Decision: reuse the existing `[...]` effect notation and
 allow a lowercase identifier inside it as an effect-row variable.** This
-mirrors the distinction Codex already draws everywhere else —
+mirrors the distinction Codex already draws everywhere else --
 `PascalCase` is a concrete thing (`Console`, `FileSystem`), lowercase is
 a variable (like type variables `a`, `b`). No new operator.
 
@@ -165,27 +165,27 @@ Well-formedness (parse errors, not warnings):
   the canonical form (§4) and the printer place it last.
 - A `row-tail` takes no scope literal and no dot (`[e "s"]`, `[e.Write]`
   are CDX1121).
-- Duplicate labels are accepted and collapsed to the canonical set —
+- Duplicate labels are accepted and collapsed to the canonical set --
   rows are idempotent (§5). The printer never emits duplicates, so the
   text fixed point is safe.
 - `[]` (empty brackets) is the explicit empty row, identical in meaning
   to writing no brackets: both denote the closed pure row. The printer
-  always omits empty brackets — one rendering per type, or pingpong
+  always omits empty brackets -- one rendering per type, or pingpong
   breaks.
 
 **Reclassification hazard.** The current parser already accepts a
-lowercase identifier inside effect brackets — `is-ident` alongside
-`is-type-ident` (`Parser.codex:261`) — and today it becomes a *concrete
+lowercase identifier inside effect brackets -- `is-ident` alongside
+`is-type-ident` (`Parser.codex:261`) -- and today it becomes a *concrete
 effect name*. Stage 1 changes the meaning of that text. Before stage 1
 lands, sweep the depot for lowercase identifiers in effect position
 (`codex/`, `apps/`, `codex/test/`, foreword); each hit is either renamed
 to PascalCase or is a latent bug. `effect` declarations use PascalCase by
-convention throughout the tree, so the expected hit count is zero — but
+convention throughout the tree, so the expected hit count is zero -- but
 the sweep is a gate, not an assumption.
 
 Rationale: the bracket already means "this is an effect." Keeping the row
 variable inside the same bracket says *this is an effect* whether the row
-is concrete or a variable — one visual vocabulary for effects, no second
+is concrete or a variable -- one visual vocabulary for effects, no second
 notation to learn. Decided 2026-07-02; drives the lexer/parser and every
 effect-type rendering, and everything below assumes it.
 
@@ -210,7 +210,7 @@ with `FunTy (CodexType) (EffectRow) (CodexType)` and a single interned
 *not needed*: a row variable can only ever appear as a row's tail, so
 representing it as an integer id inside the row (solved against a
 separate row-substitution table in stage 2) makes a type/row kind
-confusion unrepresentable rather than merely checked — the unifier
+confusion unrepresentable rather than merely checked -- the unifier
 cannot bind a `TypeVar` to a row because no CodexType *is* a row.
 `ForAllEff (Integer) (CodexType)` is still planned, deferred to stage 2
 where signature row variables first need binding and freshening
@@ -223,17 +223,17 @@ compile error in the compiler itself.
 stage 1b) is restored now that stage 2 reads it:
 `tail-id : Integer between -1 and 4294967295`, -1 meaning no id (a
 closed row, or a source tail awaiting parameterization). `tail-name`
-is kept alongside for diagnostics and printing — ids never print.
+is kept alongside for diagnostics and printing -- ids never print.
 `ForAllEff` is **appended as the last CodexType constructor**, not
 inserted beside `ForAllTy`: constructor ordinals are load-bearing in
 emission (runtime sum tags), so the ctor list is append-only. Row
 bindings live in `row-substitutions : List EffectRow` on
-`UnificationState` — a dense table indexed by row id (slot i holds
+`UnificationState` -- a dense table indexed by row id (slot i holds
 row id i's binding; an unbound slot holds the self-row `row-var i`,
 mirroring the TypeVar self-slot trick; the table grows on first
 binding past its length, so fresh ids alone allocate nothing). Row
 ids come from a dedicated `next-row-id` counter with the same 32-bit
-bound as type-variable ids — the bound is the ruling; a shared
+bound as type-variable ids -- the bound is the ruling; a shared
 counter bought nothing once the tables were separate, and a dense
 table needs its own id space. The stage-2 CL shipped a flat
 association list here; it was converted before stage 3 because
@@ -242,14 +242,14 @@ made association-list resolution quadratic in program size. The GADT-arm snapsho
 (`SubstSnapshot`) covers both tables; restoring one without the other
 would leak speculative bindings from an abandoned branch. Signature
 row names parameterize through the same `ParamEntry` list as type
-names with an `is-row` kind flag — name AND kind match, so one
+names with an `is-row` kind flag -- name AND kind match, so one
 lowercase letter can serve as both a type variable and a row tail in
 a single signature without collision. Two lint discoveries: a
 negative literal in field position is a negate application at AST
 level, not `ALitExpr`, so `tail-id = -1` trips the CDX2051 narrowing
 lint unless written `__narrow (-1)`; and bounded integers do not
 parse in function-signature positions (params, returns, tuple
-payloads) — they are record-field and ctor-payload syntax only, so
+payloads) -- they are record-field and ctor-payload syntax only, so
 the id plumbing uses plain `Integer` with `__narrow` at the
 construction boundary.
 
@@ -260,7 +260,7 @@ The flat pair-of-parallel-lists becomes a list of labels each carrying
 its scope. Row operations move labels *with* their scopes; two labels are
 identical only if name and scope both match. Whether a scoped label is a
 sub-effect of its unscoped name (`Console "auth"` ⊑ `Console`) follows
-the same lattice rule as dotted names (§5) — decide once, in
+the same lattice rule as dotted names (§5) -- decide once, in
 `row-covered-by`, with a test.
 
 **Canonical form is an invariant, not a convention.** A single smart
@@ -271,20 +271,20 @@ unification (both sides sorted), and structural equality = set equality.
 
 **Curried arrows.** Codex multi-parameter functions are curried `FunTy`
 chains. The row lives on *every* arrow; for `A, B -> [E] C` the desugarer
-produces `FunTy A {} (FunTy B {E} C)` — inner arrows empty, the row on
+produces `FunTy A {} (FunTy B {E} C)` -- inner arrows empty, the row on
 the arrow whose application performs the effects. Partial application is
 therefore pure by construction, matching today's semantics where the
 `EffectfulTy` wraps the final return. The desugarer owns this placement;
 the checker never guesses.
 
 **`EffectfulTy` is retained for effectful values (DECIDED here,
-was §9-open).** A parameterless effectful binding — `read-line :
+was §9-open).** A parameterless effectful binding -- `read-line :
 [Console] (Maybe Text)` (`TypeEnv.codex:146`), `current-dir : [Process]
-Text` (`:167`) — is an effectful *value*, not an arrow. Modeling it as a
+Text` (`:167`) -- is an effectful *value*, not an arrow. Modeling it as a
 nullary arrow would ripple a call-shim through lowering and codegen for
 zero user benefit. Keep `EffectfulTy` for the value case only; the arrow
 case migrates to the `FunTy` row. Post-stage-4, an `EffectfulTy` whose
-inner type is `FunTy` is ill-formed — add a checker assertion (CDX9xxx
+inner type is `FunTy` is ill-formed -- add a checker assertion (CDX9xxx
 internal error) so the transitional form cannot silently survive.
 
 The row on `FunTy` is the empty closed row for a pure arrow, so the
@@ -296,7 +296,7 @@ meaning and print with no `[...]`.
 **The equational theory is ACI1 label sets, not Koka scoped labels.**
 Rows are finite sets of labels plus an optional tail: associative,
 commutative, idempotent, with `{}` as unit. Koka's rows are *multisets*
-(scoped labels — duplicates are meaningful, because a nested handler for
+(scoped labels -- duplicates are meaningful, because a nested handler for
 the same effect discharges one occurrence). Codex's handler discharge is
 already set-semantics: `filter-effect` removes **every** occurrence of
 the handled name (`TypeCheckerInference.codex:1021-1026`), so an inner
@@ -309,7 +309,7 @@ wanted, that is a new design, not a parameter of this one.
 failure of principal unification for set-based rows arises from label
 *payloads* (record fields with types: unifying `{x : Int | ρ1}` with
 `{x : Text | ρ2}` forces a field-type conflict through the tails).
-Effect labels carry no payload — a label is present or absent. Under ACI1
+Effect labels carry no payload -- a label is present or absent. Under ACI1
 with payload-free labels and at most one tail per row, the algorithm
 below produces a unifier that is most general up to ACI1 equivalence:
 the only candidate divergence (re-adding a shared label into both tails)
@@ -323,7 +323,7 @@ not participate.** `Console.Write` and `Console` are distinct labels to
 scoped-label rule from §4) applies only in the *directed* subsumption
 check `row-le` (§6), where a direction exists to make widening coherent.
 Putting the lattice into symmetric unification poses an unanswerable
-question — which label survives cancellation? — and forfeits principal
+question -- which label survives cancellation? -- and forfeits principal
 solutions. This resolves the "dotted sub-effects" open question of the
 original draft.
 
@@ -334,15 +334,15 @@ original draft.
 2. Case on tails:
    - closed / closed: `only1 = only2 = ∅` or fail (CDX2090).
    - open t1 / closed: the closed side cannot absorb, so `only1 = ∅` or
-     fail; bind `t1 := make-row only2 None` — the tail absorbs exactly
+     fail; bind `t1 := make-row only2 None` -- the tail absorbs exactly
      the closed side's leftovers and closes.
    - open t1 / open t2, t1 ≠ t2: fresh `t3`; bind `t1 := make-row only2
-     (Some t3)`, `t2 := make-row only1 (Some t3)` — each tail absorbs
+     (Some t3)`, `t2 := make-row only1 (Some t3)` -- each tail absorbs
      the other side's leftovers, sharing one fresh remainder.
    - same tail both sides: `only1 = only2 = ∅` or fail (a tail cannot
      absorb labels on one side of itself).
-3. **Occurs check.** Rows do not nest — a row contains labels and at
-   most one variable — so the occurs check is a walk of the tail
+3. **Occurs check.** Rows do not nest -- a row contains labels and at
+   most one variable -- so the occurs check is a walk of the tail
    substitution chain (bind t1 to a row whose resolved tail chain
    reaches t1 = infinite row, CDX2091). O(chain length), no recursion
    into types, unlike `occurs-in` (`Unifier.codex:151`).
@@ -354,7 +354,7 @@ original draft.
    an internal error, asserted, not ignored.
 
 Arrow vs arrow in `unify-at` becomes: unify params, unify rows
-(`unify-row`), unify results. Symmetric, no polarity — see §6 for where
+(`unify-row`), unify results. Symmetric, no polarity -- see §6 for where
 direction lives. `unify-at`'s `EffectfulTy`-stripping arms
 (`Unifier.codex:173-181`) are deleted in stage 3; `EffectfulTy` (values
 only, §4) unifies by unifying rows and inner types.
@@ -373,7 +373,7 @@ single sorted merge, the four tail cases, tail-chain occurs check
 The principality lemma prose sits with the code. Until stage 3
 migrates concrete effects onto arrows, live rows carry no labels, so
 the closed/closed and same-tail failure paths (CDX2090) are
-unreachable — the label machinery is exercised in anger by stage 3's
+unreachable -- the label machinery is exercised in anger by stage 3's
 probe catalog. The 16-label assert-and-log is deferred to stage 3
 with label liveness.
 
@@ -391,8 +391,8 @@ already exist in embryo:
 When a named function's type is instantiated at a *use* site
 (`instantiate-type`, `TypeCheckerInference.codex:117`), each arrow whose
 row is closed is opened with a fresh tail: `Integer -> Integer` is used
-at `Integer -[t]-> Integer`, `t` fresh. This is sound — a function
-performing `{}` may be ascribed any superset — and it makes pure and
+at `Integer -[t]-> Integer`, `t` fresh. This is sound -- a function
+performing `{}` may be ascribed any superset -- and it makes pure and
 less-effectful functions flow into effectful contexts through *plain
 unification*, no subtyping: passing `square` where `a -> [Console] b` is
 expected solves `t := {Console}`. Two hard rules:
@@ -400,7 +400,7 @@ expected solves `t := {Console}`. Two hard rules:
   - Opening applies at instantiation of a *referenced* name and to
     inferred lambda literals (fresh tail from the start). It never
     applies to a type that is the declared type of a *binding position*
-    — a definition's own signature, a record field, a parameter
+    -- a definition's own signature, a record field, a parameter
     annotation. Those stay as written.
   - **Mutable-record fields are invariant.** A field of a `mutable`
     record holding an arrow type admits no opening and no widening in
@@ -413,16 +413,16 @@ expected solves `t := {Console}`. Two hard rules:
     survives to codegen is an internal error.
 
 **(b) Directed `row-le` at the declared boundaries.** The lattice-aware
-subset check — actual row ⊑ expected row, where ⊑ consults
-`effect-covered-by` (dotted prefix) and the scope rule — runs at:
+subset check -- actual row ⊑ expected row, where ⊑ consults
+`effect-covered-by` (dotted prefix) and the scope rule -- runs at:
 
   1. the definition boundary (`check-effect-subset` generalizes to
      `row-le` on the full arrow type, recursing with the flip:
-     contravariant in parameters, covariant in results — the same
+     contravariant in parameters, covariant in results -- the same
      recursion `effect-le` already sketches at
      `TypeCheckerInference.codex:449-451`);
   2. the application argument boundary (`effect-le` becomes row-aware;
-     its leniency at type-variable parameters is *removed* — a
+     its leniency at type-variable parameters is *removed* -- a
      row-polymorphic parameter now constrains via unification, so the
      leniency has nothing left to excuse);
   3. act statements (the act union now falls out of arrow rows, but the
@@ -430,19 +430,19 @@ subset check — actual row ⊑ expected row, where ⊑ consults
      site).
 
 `row-le` is ~40 lines, directed by construction, and auditable in
-isolation — the variance subtlety the draft correctly feared lives
+isolation -- the variance subtlety the draft correctly feared lives
 there and only there, not smeared through the unifier. Getting variance
 wrong in `row-le` rejects valid code or accepts laundering; that is what
 the probe catalog (§13) exists to pin from both sides.
 
 ## 7. Handler typing under rows
 
-New — absent from the original draft, and it is the one place effect
+New -- absent from the original draft, and it is the one place effect
 *elimination* meets row inference.
 
 Current rule (`AHandleExpr`, `TypeCheckerInference.codex:910-916`): strip
 the handled name from the body's inferred type and from every env binding
-(`strip-effect-from-env` — an approximation that rewrites the whole
+(`strip-effect-from-env` -- an approximation that rewrites the whole
 environment because flat effects cannot express "this call's effects are
 discharged here").
 
@@ -455,19 +455,19 @@ Row rule, replacing both:
 
 Unifying the body row against the extension `{E | t'}` forces `E` into
 the concrete part if the body's row is open, so the subtraction is exact
-— not the "remove concrete occurrences and hope the tail is honest"
+-- not the "remove concrete occurrences and hope the tail is honest"
 approximation. The result row is `t'`: everything the body does *except*
 `E`, plus whatever the handler clauses themselves do (clause bodies are
-checked normally and their rows unioned in — a `Console` handler whose
+checked normally and their rows unioned in -- a `Console` handler whose
 clause writes files yields `[FileSystem, t']`). If the body's row is
 closed and lacks `E` entirely, warn (CDX2092: handling an effect the
-body cannot perform — legal, suspicious). `strip-effect-from-env` and
+body cannot perform -- legal, suspicious). `strip-effect-from-env` and
 `strip-handled-effect` (`:995`, `:1010`) are retired in stage 4;
 discharge-all-occurrences semantics is preserved by set idempotence
 (`E` appears in a row at most once).
 
 Note the soundness asymmetry: removing only concrete occurrences while a
-tail hides more `E` would still be *sound* (over-approximation — the
+tail hides more `E` would still be *sound* (over-approximation -- the
 runtime handler catches every dynamic perform in its extent regardless),
 but the extension-unification rule is both sound and precise, and it is
 one unify call. Take precise.
@@ -483,11 +483,11 @@ that def; `instantiate-type` (`TypeCheckerInference.codex:117`) freshens
 opening). There is no HM generalization pass and therefore no
 value-restriction question: an effect variable is born quantified (from
 a signature) or born free-and-locally-solved (fresh tail), never
-generalized from an inference residue. Monomorphic recursion holds — a
+generalized from an inference residue. Monomorphic recursion holds -- a
 self-call sees the declared signature.
 
 `check-effect-subset` becomes redundant once rows flow through the body
-— and is kept anyway, as `row-le` at the def boundary: it is free, it is
+-- and is kept anyway, as `row-le` at the def boundary: it is free, it is
 the natural site for the primary diagnostic ("Effect 'X' not declared in
 function signature", `cdx-effect-undeclared`), and it is the backstop
 if a unifier bug ever lets a row through. Belt and suspenders, in that
@@ -516,13 +516,13 @@ spawns the work answers for it.
 
 **`lazy` thunks:** `ALazyExpr` types as `FunTy int {} inner`
 (`TypeCheckerInference.codex:953-958`); the deferred body's row must land
-on that arrow, not vanish — `lazy (print-line "x")` forced in a pure
+on that arrow, not vanish -- `lazy (print-line "x")` forced in a pure
 context is probe material (§13).
 
 **Class methods:** a `class` operation's declared arrow rows are the
 contract; `instance` bodies are checked against them by the ordinary def
 machinery, so an effectful instance behind a pure class signature dies at
-the instance's definition boundary. No special dictionary rule needed —
+the instance's definition boundary. No special dictionary rule needed --
 but the probe exists because the claim is load-bearing.
 
 **Foreword HOFs** (`list-map`, `filter`, `fold-left`, `Iterate`,
@@ -535,14 +535,14 @@ stage 2 requires a seed rebuild per the procedure in
 
 `IRTextEmitter.codex:206` renders arrows as `(fn <param> <ret>)` and
 declared effect types as `(a-eff (effs ...) (scopes ...) <ret>)`
-(`:243`). Every plug — all 52, native backends included — parses this
+(`:243`). Every plug -- all 52, native backends included -- parses this
 with the shared `IRTextParser`. **Decision: rows are erased at the IR
 boundary.** `(fn p r)` stays two-field; `EffectVar`/`ForAllEff` never
 reach IR (defaulted or instantiated away by codegen time, §6(a));
 `(a-eff ...)` continues to carry the declared concrete effects for plugs
 that surface them (documentation emitters, capability manifests). This
-matches the "no runtime cost" non-goal — effects are a checking
-artifact — and means **zero plug rebuilds** for stages 1-3. The
+matches the "no runtime cost" non-goal -- effects are a checking
+artifact -- and means **zero plug rebuilds** for stages 1-3. The
 alternative (widening the wire format) buys nothing today and would
 require a lock-step rebuild of every plug plus the cross-arch batteries;
 rejected. If a future plug needs per-arrow rows (a Koka or Haskell
@@ -561,24 +561,24 @@ design time, not after:
 | CDX2090 | error | closed-row mismatch | "this expression performs [FileSystem] but the context allows only [Console]" |
 | CDX2091 | error | row occurs check | "effect row would be infinite (row variable absorbs itself)" |
 | CDX2092 | warning | handling an effect the body cannot perform | "handler for 'Console' encloses a body whose type performs no Console" |
-| CDX2093 | error | effect variable escapes to codegen | internal — assert, do not ship programs past it |
+| CDX2093 | error | effect variable escapes to codegen | internal -- assert, do not ship programs past it |
 | (reuse) `cdx-effect-undeclared` | error | def-boundary `row-le` failure | existing wording, now row-aware |
 
-Messages name the effects, per the diagnostics doctrine — "cannot unify
+Messages name the effects, per the diagnostics doctrine -- "cannot unify
 row ?e3" is a bug, not a message.
 
 ## 12. Migration plan (each stage a green fixed point)
 
-Blast radius, measured (word-boundary grep, CL 6506): `FunTy` — 256
-occurrences across 15 compiler files; `EffectfulTy` — 53 across 13. The
-heavy files: `TypeEnv.codex` (188 — almost all builtin signatures, one
+Blast radius, measured (word-boundary grep, CL 6506): `FunTy` -- 256
+occurrences across 15 compiler files; `EffectfulTy` -- 53 across 13. The
+heavy files: `TypeEnv.codex` (188 -- almost all builtin signatures, one
 mechanical shape), `TypeChecker.codex` (12), `TypeCheckerInference.codex`
 (9), `Lowering.codex` (9), `X86_64Compound.codex` (7),
 `CodexEmitter.codex` (6), remainder ≤ 4 each. AST-level `AFunType` /
 `AEffectType` are separate constructors and stage 1 leaves their shapes
 alone (the desugarer maps them onto the new `FunTy`).
 
-0. **Probes first.** DONE 2026-07-02 — see §13 Stage 0 results. The
+0. **Probes first.** DONE 2026-07-02 -- see §13 Stage 0 results. The
    catalog is landed, the depot sweep came back clean, and two
    pre-existing checker bugs found by the probes were fixed and
    seed-rebuilt (CLs 6508-6510).
@@ -587,17 +587,17 @@ alone (the desugarer maps them onto the new `FunTy`).
    `FunTy` field; every existing site constructs the empty closed row;
    `make-row` is the only row constructor. Unifier ignores rows
    (strip-equivalent). IR emission unchanged (§10). Printer emits `[...]`
-   only for non-empty rows — **the text fixed point is the gate that
+   only for non-empty rows -- **the text fixed point is the gate that
    proves the printer and parser round-trip**; run semantic equivalence,
    pingpong, CDX fixed point, full battery. Seed rebuild (compiler
-   changed). A regression here is a shape bug, not a semantics bug —
+   changed). A regression here is a shape bug, not a semantics bug --
    that is the point of the stage.
 2. **Row unification, no direction.** `unify-row` per §5 (canonical
    merge, tail absorption, occurs check, kind-disjoint resolution);
    arrow-vs-arrow unifies rows; handler rule from §7. Retype the
    builtins and foreword HOFs (§9); seed rebuild. This is where
    legitimately-effectful compiler code first flows effects through
-   inference — budget for surfacing latent under-declarations in the
+   inference -- budget for surfacing latent under-declarations in the
    compiler's own `[Console, FileSystem]` code (each is a real bug being
    found, but it is throughput, not a soundness event).
 
@@ -608,15 +608,15 @@ alone (the desugarer maps them onto the new `FunTy`).
    force:
 
    - **The EffectfulTy-to-row migration of concrete effects is
-     deferred to stage 3.** Every effect reader — `extract-effects`
+     deferred to stage 3.** Every effect reader -- `extract-effects`
      at the def boundary, `effect-le` at the argument boundary, the
-     act-union — reads `EffectfulTy`. Moving concretes onto arrow
+     act-union -- reads `EffectfulTy`. Moving concretes onto arrow
      rows before those readers are row-aware would drain the existing
      point checks silently and regress the stage-0 policed probes
      (direct CDX2031, let CDX2033). Stage 3 makes the readers
      row-aware; that is when concretes move.
    - **The §7 handler rule is deferred to stage 3 with it.** The rule
-     unifies the BODY's row against the extension {E, t'} — but under
+     unifies the BODY's row against the extension {E, t'} -- but under
      the split a body's effects are not in any row, so the rule would
      unify empty rows and enforce nothing while appearing to be
      implemented. It lands with the migration that makes body rows
@@ -625,7 +625,7 @@ alone (the desugarer maps them onto the new `FunTy`).
      the §9 table, `fork` charging the spawner), the compiler's own
      `Collections` map/fold family (every `for` expression desugars
      to `map-list`, so row instantiation and unify-row run at every
-     for loop in the selfhost — the fixed point exercises the
+     for loop in the selfhost -- the fixed point exercises the
      machinery end to end), and the foreword `ListUtils`
      map/fold/filter family. `Iterate`, `Pipeline`, and the `Sort`
      comparators follow in stage 3 with the enforcement that makes
@@ -634,7 +634,7 @@ alone (the desugarer maps them onto the new `FunTy`).
 
    No latent under-declarations surfaced: with the split intact and
    rows inert, every solved row is the empty row and the battery and
-   fixed point are behavior-identical by construction — the
+   fixed point are behavior-identical by construction -- the
    under-declaration budget moves to stage 3.
 3. **Open instantiation + directed `row-le`.** §6(a) opening in
    `instantiate-type`; §6(b) row-le at the three boundaries; delete the
@@ -644,7 +644,7 @@ alone (the desugarer maps them onto the new `FunTy`).
    it ships with the full probe catalog green in both directions.
 
    **Stage-3 architecture (RULED by Damian, 2026-07-02): ambient row
-   threading.** The checker's judgment becomes Γ ⊢ e : τ | ε —
+   threading.** The checker's judgment becomes Γ ⊢ e : τ | ε --
    `CheckResult` gains an `effect-row` field carrying the expression's
    ambient effects (what evaluating it performs; the effects of a
    function VALUE it produces live on that value's arrow, not in the
@@ -656,7 +656,7 @@ alone (the desugarer maps them onto the new `FunTy`).
 
    - **Ambient union equates open tails (the Koka shared-ε move).**
      `row-union` of two resolved open rows with distinct tails t1 ≠
-     t2 binds `t1 := {| t2}` and yields `{labels1 ∪ labels2 | t2}` —
+     t2 binds `t1 := {| t2}` and yields `{labels1 ∪ labels2 | t2}` --
      representable rows have at most one tail, so independent
      subexpression tails inside one body are EQUATED. This is exactly
      what Koka's single ambient ε per judgment does implicitly (every
@@ -664,7 +664,7 @@ alone (the desugarer maps them onto the new `FunTy`).
      (two HOF calls in one body share an effect variable) but never
      under-approximates, which is the §2 soundness direction.
      `row-union` therefore threads UnificationState. Fast paths: an
-     empty operand returns the other operand unchanged — pre-migration
+     empty operand returns the other operand unchanged -- pre-migration
      every union is empty ∪ empty and returns the interned empty-row
      with zero allocation.
    - **Applications capture the callee row with a fresh variable.**
@@ -680,7 +680,7 @@ alone (the desugarer maps them onto the new `FunTy`).
      ambient is EMPTY (a value performs nothing); its BODY's ambient
      row becomes the innermost synthesized arrow's row
      (`wrap-fun-type` takes it as the last-arrow row). Same for
-     `ALazyExpr`'s thunk arrow — which closes the lazy laundering
+     `ALazyExpr`'s thunk arrow -- which closes the lazy laundering
      probe by construction. Pre-migration the body ambient is always
      empty, so synthesized types are bit-identical to today's.
    - **Undeclared defs** get a fresh row variable on the innermost
@@ -695,7 +695,7 @@ alone (the desugarer maps them onto the new `FunTy`).
    decisions worth recording:
 
    - **Zero under-declarations surfaced in the compiler's own 28k
-     lines** — the old boundary check had kept direct declarations
+     lines** -- the old boundary check had kept direct declarations
      honest, and the compiler never exploited the HOF routes
      internally. The budgeted triage was not needed.
    - **The battery's only failures were the five open laundering
@@ -707,16 +707,16 @@ alone (the desugarer maps them onto the new `FunTy`).
    - **effect-le is deleted, not made row-aware**: its job is done by
      row unification itself (a concrete pure parameter's closed row
      rejects an effectful argument's opened row), and its
-     type-variable leniency has nothing left to excuse — a
+     type-variable leniency has nothing left to excuse -- a
      row-polymorphic parameter constrains through its variable.
    - **The def boundary reuses CDX2031** via check-effect-row-subset
      (name-lattice coverage through effect-covered-by; tails
-     ignored — the signature's own variable is trivially allowed and
+     ignored -- the signature's own variable is trivially allowed and
      any other unsolved tail absorbed nothing). Scope literals ride
      the labels but are not enforced at this boundary; scopes remain
      the capability machinery's. Argument-boundary DOTTED widening
      (passing a Console.Write-rowed function where a Console-rowed
-     one is expected) is not lattice-aware — unification is exact —
+     one is expected) is not lattice-aware -- unification is exact --
      and is deferred until a real program needs it.
    - **CDX2033 reads the binding's ambient labels**; a row that is
      only an unsolved tail is allowed at a let (the HOF-body
@@ -730,13 +730,13 @@ alone (the desugarer maps them onto the new `FunTy`).
      (exact-name membership), matching filter-effect's existing
      exactness.
    - **The CodexType printer learned to render row labels** (with
-     scopes) — emit-def prints signatures from the CHECKED type, and
+     scopes) -- emit-def prints signatures from the CHECKED type, and
      the stage-1b emit-row-result only knew tails. Canonical
      name-sorted label order is the single rendering; the text fixed
      point pins it.
    - **check-rt-effects (punctual CDX6004) and the opening
-     capability check read effects through collect-effect-names** —
-     spine arrow-row labels plus effectful-value sets — instead of
+     capability check read effects through collect-effect-names** --
+     spine arrow-row labels plus effectful-value sets -- instead of
      the EffectfulTy-only extract-effects.
    - **Sort comparators and Pipeline stay strictly pure by design**:
      an effectful comparator observed under sort reordering is
@@ -748,7 +748,7 @@ alone (the desugarer maps them onto the new `FunTy`).
      the declared row for the boundary check via
      declared-performing-row.
 
-   **Stage 3 ships as two gated CLs.** CL 3a — the ambient calculus,
+   **Stage 3 ships as two gated CLs.** CL 3a -- the ambient calculus,
    inert: the `effect-row` field, `row-union`, per-arm unions
    (union of subexpression ambients everywhere; match unions
    scrutinee + guards + arm bodies; act unions statements alongside
@@ -756,8 +756,8 @@ alone (the desugarer maps them onto the new `FunTy`).
    clauses, no subtraction yet), application capture, lambda/lazy/
    undeclared-def arrow rows. Pre-migration every ambient row
    computes to the empty row, so the fixed point and battery are
-   byte-identical — that gate PROVES the union plumbing drops
-   nothing. CL 3b — the migration and the teeth: concretes move onto
+   byte-identical -- that gate PROVES the union plumbing drops
+   nothing. CL 3b -- the migration and the teeth: concretes move onto
    arrows (`resolve-type-expr`, TypeEnv `print-line` et al.),
    `infer-name` value-effects, readers switch to ambient rows
    (act/def-boundary/let-boundary), §6(a) opening, §6(b) row-le,
@@ -786,7 +786,7 @@ alone (the desugarer maps them onto the new `FunTy`).
    check per §8.
 
 Stages 1-2 are mechanical-but-wide; stage 3 is the hard type theory.
-Every stage: shelve, revert, sync, unshelve, inspect, then gates — per
+Every stage: shelve, revert, sync, unshelve, inspect, then gates -- per
 `docs/Agents/PerforceProcess.md`. Zero failures before copy-up, verified
 against the last-known-good baseline, not asserted.
 
@@ -833,46 +833,46 @@ passing `.expected` tests documenting the hole; stage 3 flips each to
 via `list-map`), `effect-launder-record` (effectful closure through a
 pure record field), `effect-launder-lazy` (deferred effect forced via
 a HOF), `effect-handler-clause` (handler clauses are not effect-checked
-at all — the §7 clause-union rule is not optional), and
+at all -- the §7 clause-union rule is not optional), and
 `effect-launder-fork` (type-level only; the unawaited thunk never ran).
 
 **Already policed** (land in `errors/` as `.failing` regressions):
 direct concrete-parameter laundering (CDX2031, pre-existing test),
 partial application (CDX2031), let-bound effectful value (CDX2033),
-effectful instance body behind a pure class op (CDX2031 — instance
+effectful instance body behind a pure class op (CDX2031 -- instance
 defs are held to the class signature by the ordinary def boundary),
 dotted wrong-direction (CDX2031).
 
 **Two compiler bugs found and fixed by this stage:**
 
-- CL 6508 — act-bind matched the raw inferred type when stripping
+- CL 6508 -- act-bind matched the raw inferred type when stripping
   `EffectfulTy`, missing a type variable bound to one; every later use
   of the bound name tripped CDX2031. (`TypeCheckerInference.codex`,
   act-bind arm; pinned by `effect-map-effctx`.)
-- CL 6509 — `find-dot` compared against ASCII 46 ('H' in CCE); the
+- CL 6509 -- `find-dot` compared against ASCII 46 ('H' in CCE); the
   dotted sub-effect lattice had never functioned. (Pinned by
   `effect-dotted-allow`/`-deny`.)
 
 Seed rebuilt with both fixes: CL 6510, digest `7928F8FD…`. Nested
 same-effect handler semantics pinned by `effect-handler-nested-same`
-(innermost discharges completely — the §5 set-semantics commitment).
+(innermost discharges completely -- the §5 set-semantics commitment).
 The §3 depot sweep found zero lowercase identifiers in effect-bracket
 type position; the stage 1 reclassification is unobstructed.
 
 ## 14. Memory and time-complexity verdict (Rule 8)
 
 **Heap.** `FunTy` gains one field: +8 bytes per arrow node, plus one
-shared static empty-row record (intern it — one allocation, every pure
+shared static empty-row record (intern it -- one allocation, every pure
 arrow points at it; do *not* allocate a fresh empty row per arrow, which
 would be ~256+ sites × per-instantiation copies). Rows allocate only
 when non-empty (compiler tree today: a few dozen effectful signatures)
 or when opened (§6(a): one `EffectVar` + one small row per *arrow* per
-*instantiation* of a referenced name — bounded by application count,
+*instantiation* of a referenced name -- bounded by application count,
 the same order as the fresh `TypeVar`s `instantiate-type` already
 mints). `subst-type-var` / `codex-type-map-children` walks gain a field
 to copy but no new recursion. Expected CHECK-deck growth: single-digit
 MB on the selfhost (baseline ~69 MB, survey `S × 400 + units × 296000 +
-1 MB` with 120% headroom — Sketchbook). **Measure, don't trust:** run
+1 MB` with 120% headroom -- Sketchbook). **Measure, don't trust:** run
 `MEASURE` mode before/after stages 1 and 3, diff `heap hwm` per phase;
 bump `survey-check-mul` only on evidence (CDX9002 is an error, so
 under-reservation halts cleanly rather than corrupting).
@@ -882,15 +882,15 @@ under-reservation halts cleanly rather than corrupting).
 O(arrows-in-type) work to instantiation, same shape as existing
 `ForAllTy` freshening. No new loops over defs, no accumulators that
 outlive a phase, no `buf-read-bytes`, no deck retention across phases.
-Verdict: bounded, phase-local, measurable — no red flags. Pingpong
+Verdict: bounded, phase-local, measurable -- no red flags. Pingpong
 elapsed-time diff at each stage is the enforcement.
 
 ## 15. Risks and open questions
 
 Resolved into decisions above (kept here so reviewers see they were
-raised): dotted sub-effects in unification (§5 — lattice only in
-`row-le`); `EffectfulTy` retire-or-keep (§4 — keep for values);
-polarity through the unifier (§6 — rejected for open instantiation +
+raised): dotted sub-effects in unification (§5 -- lattice only in
+`row-le`); `EffectfulTy` retire-or-keep (§4 -- keep for values);
+polarity through the unifier (§6 -- rejected for open instantiation +
 directed `row-le`); handler typing (§7); wire format (§10).
 
 Remaining risks, honestly held:
@@ -906,14 +906,14 @@ Remaining risks, honestly held:
 - **Fixed point under stricter rules.** The compiler's own effectful
   code must re-typecheck; every under-declaration surfaced in stage 2-3
   is a latent bug being found (good) and a schedule cost (budget it).
-  Unknown count until stage 2 runs — that is *why* stage 2 is its own
+  Unknown count until stage 2 runs -- that is *why* stage 2 is its own
   gated CL.
 - **Text fixed point vs printing.** The printer must emit exactly one
   rendering per row (canonical order, no empty brackets, tail last) or
   pingpong breaks in the most tedious possible way. `make-row` + one
   printer function, tested by the existing text round-trip gate.
 - **Opening-rule leaks.** §6(a)'s "never open binding positions" is a
-  rule about *sites*, enforced by code paths, not by types — a missed
+  rule about *sites*, enforced by code paths, not by types -- a missed
   site is an unsoundness (opening a mutable field's type) or an
   over-acceptance. The mutable-field probe and a checker-internal
   assertion (opened row reaching a binding position) both guard it.
@@ -922,32 +922,32 @@ Remaining risks, honestly held:
   one-decision test; either answer is sound, the risk is deciding it
   twice inconsistently.
 
-## 16. Prior art (Virtue 10 — read before implementing)
+## 16. Prior art (Virtue 10 -- read before implementing)
 
-- Lucassen & Gifford, *Polymorphic Effect Systems* (POPL 1988) — the
+- Lucassen & Gifford, *Polymorphic Effect Systems* (POPL 1988) -- the
   origin of effect rows on arrows.
 - Rémy, *Type Inference for Records in a Natural Extension of ML*
-  (1989/1994) — row variables, tail absorption, why payloads make
+  (1989/1994) -- row variables, tail absorption, why payloads make
   principality hard (and why our payload-free labels dodge it).
-- Leijen, *Extensible Records with Scoped Labels* (TFP 2005) — the
+- Leijen, *Extensible Records with Scoped Labels* (TFP 2005) -- the
   multiset alternative we deliberately reject (§5).
 - Leijen, *Koka: Programming with Row-Polymorphic Effect Types*
-  (MSFP 2014) — the open-rows instantiation trick (§6(a)), effect
+  (MSFP 2014) -- the open-rows instantiation trick (§6(a)), effect
   safety statement, handler row rule (§7).
 - Pretnar, *An Introduction to Algebraic Effects and Handlers* (2015)
-  — handler semantics the runtime already implements.
+  -- handler semantics the runtime already implements.
 - Dolan & Mycroft, *Polymorphism, Subtyping, and Type Inference in
-  MLsub* (POPL 2017) — the principled subtyped-inference road not
+  MLsub* (POPL 2017) -- the principled subtyped-inference road not
   taken, cited so the rejection is informed, not ignorant.
 
 ## 17. Recommendation
 
 Syntax (§3) is decided: brackets. Land stage 0 (probes + depot sweep)
-immediately — it has value even if the rest slips, because it converts
+immediately -- it has value even if the rest slips, because it converts
 the BACKLOG's "verify the safety claims" stream into executable form.
 Then stage 1 (representation) as one mechanical CL gated on the fixed
 point, before any semantics change. Stages 2-3 carry the real risk and
 each want their own CL with the probe catalog green in both directions;
 stage 4 is cleanup. This is multi-CL, fixed-point-gated type-system
-work, not a single change — and at the end of it, the KingsAndCourts
+work, not a single change -- and at the end of it, the KingsAndCourts
 claim stops being a hope and becomes a theorem with a regression suite.

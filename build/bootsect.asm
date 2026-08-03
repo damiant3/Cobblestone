@@ -1,4 +1,4 @@
-; Codex boot sector — loads CDX to 0x100000, enters 32-bit protected mode,
+; Codex boot sector -- loads CDX to 0x100000, enters 32-bit protected mode,
 ; jumps to CDX trampoline at 0x100020 (which handles 64-bit transition).
 ; Assemble: nasm -f bin bootsect.asm -o bootsect.bin
 ; Image builder patches sector_count (use listing to find offset).

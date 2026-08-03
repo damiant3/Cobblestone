@@ -2,7 +2,7 @@
 
 **Date**: 2026-03-20 (verified via system clock)
 **Author**: Claude (Opus 4.6, claude.ai, Linux)
-**Status**: ✅ Complete — all 21 builtins inlined, bootstrap fixed-point proven
+**Status**: ✅ Complete -- all 21 builtins inlined, bootstrap fixed-point proven
 
 ---
 
@@ -47,7 +47,7 @@ unblock dogfooding, and enable standalone execution of self-hosted compiler outp
 | `read-line` | `Console.ReadLine()` | ❌ Missing |
 
 The self-hosted `is-builtin-name` recognizes all 20 implemented builtins. Both
-functions have survived the bootstrap — they are present and correct in
+functions have survived the bootstrap -- they are present and correct in
 `stage1-output.cs` (the compiled self-hosted compiler).
 
 ### Comparison with Reference Compiler
@@ -78,7 +78,7 @@ else if n == "read-line" then "Console.ReadLine()"
 
 Note: `read-line` is a zero-arg builtin (no arguments). The reference compiler handles
 it as a special case in the name emission path (line 32 of `CSharpEmitter.Expressions.cs`),
-not in the application path. The self-hosted emitter should handle it similarly — when
+not in the application path. The self-hosted emitter should handle it similarly -- when
 `read-line` appears as a bare name (not in an application), emit `Console.ReadLine()`
 directly. Check how the current emit path dispatches bare names vs applications to ensure
 `read-line` works in both positions.
@@ -141,18 +141,18 @@ This unblocks:
 
 Once P1 is closed, the priority shifts to making the compiler usable as a real CLI tool:
 
-1. **File-based compilation** — `main.codex` currently compiles a hardcoded string.
+1. **File-based compilation** -- `main.codex` currently compiles a hardcoded string.
    Change it to read from file arguments or stdin using `open-file` + `read-all`.
 
-2. **First dogfood target** — rewrite the simplest shell script (`codexdashboard.sh`)
+2. **First dogfood target** -- rewrite the simplest shell script (`codexdashboard.sh`)
    in `.codex`. It's mostly string formatting and file reading. Proves the language
    works for real tasks.
 
-3. **New cognitive meter** — dashboard counters shift from bootstrap-era metrics
+3. **New cognitive meter** -- dashboard counters shift from bootstrap-era metrics
    (type debt, fixed point, context budget) to dogfood-era metrics (dogfood ratio,
    external dependency count, practical program complexity, MCP tool coverage).
 
-4. **Tool replacement sequence** — ordered by complexity, each one exercises more
+4. **Tool replacement sequence** -- ordered by complexity, each one exercises more
    language features:
    - Dashboard (string formatting, file reading)
    - Session init (process execution, conditional logic)

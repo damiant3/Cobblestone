@@ -1,0 +1,299 @@
+Chapter: BrotliDictIndex
+  cites Compress chapter BrotliDict
+
+ An index over RFC 7932's 13504 dictionary words, so a position in the input can
+ ask "is there a dictionary word here" without comparing itself against all of
+ them. The corpus itself is BrotliDict, which is generated; this is the part that
+ is written rather than extracted, so it lives in its own chapter.
+
+ The shape is Lz77's, for the same reason and with the same guarantees: words are
+ bucketed by a hash of their first four bytes, and the candidates for a position
+ are the chain of words sharing that hash, walked and verified against the actual
+ bytes. A chain is a HINT. Every candidate is checked byte for byte before it is
+ taken, so a hash collision costs a wasted comparison and never a wrong word, and
+ that is what makes the chain limit safe: giving up early can only cost ratio.
+
+ THE INDEX IS BUILT ONCE PER STREAM, NOT ONCE PER POSITION. Building it walks all
+ 13504 words and allocates about a third of a megabyte; doing that inside the
+ matcher's loop would be quadratic in the input. The caller builds it and threads
+ it, which is why it is a record rather than something looked up on demand.
+
+ The corpus is carried inside the index for the same reason -- one load, threaded
+ -- because every reference to a list constant rebuilds it and the corpus is a
+ megabyte.
+
+ To brdix-build gives an index over the whole dictionary.
+ To brdix-none gives an index that never matches, for input too small to bother.
+ To brdix-find gives the longest dictionary word at a position, or minus one.
+
+ We say:
+
+Section: Shape
+
+ Four thousand buckets against 13504 words keeps the average chain near three.
+ Collisions cost only a wasted comparison, because the bytes are checked anyway.
+
+  brdix-hash-size : Integer = 4096
+  brdix-hash-mask : Integer = 4095
+
+ How many candidates a position looks at before settling for the best it has.
+ Common four-byte prefixes put many words in one chain -- English function words
+ share them heavily -- and without a bound a position could walk the whole bucket.
+
+  brdix-chain-limit : Integer = 64
+
+ The shortest word worth taking, and it was MEASURED rather than reasoned about.
+ The reasoning said six: a dictionary reference costs an insert-and-copy symbol
+ plus a distance code plus fifteen or so extra bits, which a four-byte word looks
+ unable to repay against four literals. The measurement disagreed. On the interop
+ probe's English text, a floor of six left the case byte-identical -- every word
+ in it is three to five bytes, so the floor excluded the entire input -- and the
+ three floors go 1754 at six, 1749 at five, 1722 at FOUR, with all nine other
+ cases unchanged at every setting.
+
+ Four is also the shortest word the corpus has, so this floor now excludes
+ nothing. It is a floor on the SEARCH, not a judgement about any stream: the plan
+ as a whole is still costed against not using the dictionary, which is what makes
+ a marginal word safe to take.
+
+  brdix-min-word : Integer = 4
+
+  BrDictIx = record {
+    bx-head : List Integer,
+    bx-next : List Integer,
+    bx-off : List Integer,
+    bx-len : List Integer,
+    bx-data : List Integer,
+    bx-n : Integer
+  }
+
+Section: Building
+
+ The hash is over the four bytes a word starts with, which is also the shortest
+ word in the corpus, so every word can be indexed by it.
+
+  brdix-hash : List Integer, Integer -> Integer
+  brdix-hash (xs) (p) =
+    bit-and (bit-xor (bit-xor (bit-xor (bit-shl (list-at xs p) 12) (bit-shl (list-at xs (p + 1)) 8)) (bit-shl (list-at xs (p + 2)) 4)) (list-at xs (p + 3))) brdix-hash-mask
+
+ The four tables are filled IN PLACE and the slot count is what comes back.
+ list-set-at writes the slot and returns the same list, so the caller's tables are
+ these tables; copying them per word would allocate a third of a megabyte 13504
+ times over. Slots are numbered in corpus order, length by length, so a slot's
+ length and offset are what the two side tables say and nothing has to be walked
+ to recover them.
+
+  brdix-fill : List Integer, List Integer, List Integer, List Integer, List Integer, Integer, Integer, Integer -> Integer
+  brdix-fill (data) (head) (next) (offs) (lens) (len) (idx) (slot) =
+    if len > brdict-max-len then slot
+    else if idx >= brdict-count len then brdix-fill data head next offs lens (len + 1) 0 slot
+    else let off = brdict-word-at len idx
+    in let h = brdix-hash data off
+    in let n1 = list-set-at next slot (list-at head h)
+    in let h1 = list-set-at head h slot
+    in let o1 = list-set-at offs slot off
+    in let l1 = list-set-at lens slot len
+    in brdix-fill data h1 n1 o1 l1 len (idx + 1) (slot + 1)
+
+ THE TABLES ARE PRE-SIZED, and it is worth more than it looks. A list grown from
+ empty doubles as it fills, and every abandoned backing buffer stays on the heap
+ until the producing function returns -- there is no collector. Built that way the
+ four tables cost 5.5 MB per stream against the 360 KB they actually occupy, and
+ that is charged to every compress call of a program that makes many.
+
+  brdix-fill-n : Integer, Integer, List Integer -> List Integer
+  brdix-fill-n (n) (v) (acc) =
+    if n <= 0 then acc
+    else brdix-fill-n (n - 1) v (list-push acc v)
+
+  brdix-sized : Integer, Integer -> List Integer
+  brdix-sized (n) (v) = brdix-fill-n n v (__list-with-capacity n)
+
+  brdix-build : List Integer -> BrDictIx
+  brdix-build (data) =
+    let head = brdix-sized brdix-hash-size (0 - 1)
+    in let next = brdix-sized brdict-words (0 - 1)
+    in let offs = brdix-sized brdict-words 0
+    in let lens = brdix-sized brdict-words 0
+    in BrDictIx {
+      bx-head = head,
+      bx-next = next,
+      bx-off = offs,
+      bx-len = lens,
+      bx-data = data,
+      bx-n = brdix-fill data head next offs lens brdict-min-len 0 0
+    }
+
+ An index with no slots. Every lookup answers minus one, so a caller that does not
+ want the dictionary -- input too short to repay a megabyte of tables -- takes the
+ same path as one that looked and found nothing.
+
+  brdix-none : Integer -> BrDictIx
+  brdix-none (ignored) =
+    BrDictIx { bx-head = [], bx-next = [], bx-off = [], bx-len = [], bx-data = [], bx-n = 0 }
+
+Section: Lookup
+
+  brdix-eq : List Integer, Integer, List Integer, Integer, Integer, Integer -> Boolean
+  brdix-eq (d) (off) (xs) (p) (i) (n) =
+    if i >= n then True
+    else if list-at d (off + i) == list-at xs (p + i) then brdix-eq d off xs p (i + 1) n
+    else False
+
+ The walk keeps the LONGEST word that matches, not the first. A shorter candidate
+ is rejected on its length before its bytes are touched, so the common case costs
+ one comparison of two integers.
+
+  brdix-walk : BrDictIx, List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  brdix-walk (ix) (xs) (p) (avail) (slot) (fuel) (best) =
+    if slot < 0 then best
+    else if fuel <= 0 then best
+    else let wl = list-at (ix.bx-len) slot
+    in let bl = if best < 0 then brdix-min-word - 1 else list-at (ix.bx-len) best
+    in let take = if wl > avail then False
+       else if wl <= bl then False
+       else brdix-eq (ix.bx-data) (list-at (ix.bx-off) slot) xs p 0 wl
+    in brdix-walk ix xs p avail (list-at (ix.bx-next) slot) (fuel - 1) (if take then slot else best)
+
+ Answers a SLOT, not a word. The caller needs the length and the index within that
+ length to build a distance, and both come off the slot.
+
+  brdix-find : BrDictIx, List Integer, Integer, Integer -> Integer
+  brdix-find (ix) (xs) (p) (avail) =
+    if ix.bx-n <= 0 then 0 - 1
+    else if avail < brdix-min-word then 0 - 1
+    else brdix-walk ix xs p avail (list-at (ix.bx-head) (brdix-hash xs p)) brdix-chain-limit (0 - 1)
+
+  brdix-slot-len : BrDictIx, Integer -> Integer
+  brdix-slot-len (ix) (slot) = list-at (ix.bx-len) slot
+
+ The index within its own length, which is the word id transform zero uses. Slots
+ are numbered in corpus order, so subtracting the length's own base offset and
+ dividing by the length recovers it without a table.
+
+  brdix-slot-idx : BrDictIx, Integer -> Integer
+  brdix-slot-idx (ix) (slot) =
+    let wl = list-at (ix.bx-len) slot
+    in (list-at (ix.bx-off) slot - brdict-offset wl) / wl
+
+Section: Transformed Lookup
+
+ A transform can be searched with the SAME chain walk the plain lookup already
+ does whenever its output starts with the word's own first bytes -- true exactly
+ when it has no prefix and its core is either the word (identity) or a leading
+ piece of it (omit-last). That is 54 of the 121, and it is the half that matters
+ for prose: a trailing space, " the ", " of ", " and ", ", ", " in ", " to ", a
+ full stop, a quote, a newline.
+
+ The other 67 are not searched. The ferment ones would need the input lower-cased
+ before hashing; the omit-first ones match a word from the middle, so the hash
+ that found the word is the wrong hash and they need an index of their own. Both
+ are ratio and not correctness -- the decoder applies all 121, so any stream is
+ still read correctly, and a transform we decline to search costs bytes.
+
+ EVERY TABLE HERE ARRIVES AS A RECORD FIELD, NEVER AS A CONSTANT. This loop reads
+ the transform tables 121 times per candidate, per chain slot, per input byte, and
+ a list constant is rebuilt at every mention: measured, 100000 reads of one
+ element of a 121-element constant cost 98.4 MB against 1 KB for the same reads
+ through a parameter. The first version of this search read the constants and ran
+ the heap into the stack.
+
+  brdix-xf-usable : BrXf, Integer -> Boolean
+  brdix-xf-usable (xf) (t) =
+    if list-at (xf.bxf-pre-len) t > 0 then False
+    else let ty = list-at (xf.bxf-type) t
+    in if ty == brdict-xf-identity then True
+    else if ty >= brdict-xf-omit-last then True
+    else False
+
+  brdix-core-len : Integer, Integer -> Integer
+  brdix-core-len (wl) (ty) =
+    if ty >= brdict-xf-omit-last then wl - (ty - brdict-xf-omit-last + 1) else wl
+
+  brdix-aff-eq : List Integer, Integer, Integer, List Integer, Integer, Integer -> Boolean
+  brdix-aff-eq (aff) (off) (n) (xs) (q) (i) =
+    if i >= n then True
+    else if list-at aff (off + i) == list-at xs (q + i) then brdix-aff-eq aff off n xs q (i + 1)
+    else False
+
+ A find answers one integer carrying the slot and the transform:
+ `slot * 128 + transform + 1`. The plus one keeps zero free as "nothing found",
+ which is unambiguous because slot zero with transform zero is a real answer. How
+ many input bytes the pair consumes is NOT packed in -- it is recomputed from the
+ slot and the transform at the use site, so there is no field to overflow.
+
+  brdix-pack : Integer, Integer -> Integer
+  brdix-pack (slot) (t) = slot * 128 + t + 1
+
+  brdix-slot-of : Integer -> Integer
+  brdix-slot-of (packed) = (packed - 1) / 128
+
+  brdix-tf-of : Integer -> Integer
+  brdix-tf-of (packed) = (packed - 1) - ((packed - 1) / 128) * 128
+
+ A TRANSFORM IS NOT FREE, AND THE GREEDY RULE COULD NOT SEE THE PRICE. A word
+ under transform t has id `index + t * words-at-that-length`, so its distance is
+ larger by a factor of t and costs more extra bits to encode. Taking the longest
+ match regardless fired on 167 of 191 commands and cost 662 bits MORE than
+ transform zero alone -- it was buying one saved literal, worth four or five bits
+ under a decent literal code, for eight or ten bits of distance.
+
+ So a candidate is scored rather than measured: eight bits earned per byte
+ consumed, less the width of the word id it needs. That is an estimate and it is
+ meant to be -- the PLAN is still costed exactly, against the same plan without
+ transforms, so a bad estimate costs ratio and can never cost correctness.
+
+  brdix-idbits : Integer, Integer -> Integer
+  brdix-idbits (v) (acc) =
+    if v <= 0 then acc
+    else brdix-idbits (bit-shru v 1) (acc + 1)
+
+  brdix-score : BrDictIx, BrXf, Integer, Integer -> Integer
+  brdix-score (ix) (xf) (slot) (t) =
+    let wl = list-at (ix.bx-len) slot
+    in let used = brdix-core-len wl (list-at (xf.bxf-type) t) + list-at (xf.bxf-suf-len) t
+    in used * 8 - brdix-idbits (brdix-slot-idx ix slot + t * brdict-count wl) 0
+
+  brdix-used : BrDictIx, BrXf, Integer, Integer -> Integer
+  brdix-used (ix) (xf) (slot) (t) =
+    brdix-core-len (list-at (ix.bx-len) slot) (list-at (xf.bxf-type) t) + list-at (xf.bxf-suf-len) t
+
+ Every usable transform tried against one candidate word, cheapest test first: a
+ length that cannot win is rejected before a byte is read.
+
+  brdix-xf-scan : BrDictIx, BrXf, List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  brdix-xf-scan (ix) (xf) (xs) (p) (avail) (slot) (t) (best) =
+    if t >= brdict-xf-count then best
+    else if brdix-xf-usable xf t == False then brdix-xf-scan ix xf xs p avail slot (t + 1) best
+    else let cl = brdix-core-len (list-at (ix.bx-len) slot) (list-at (xf.bxf-type) t)
+    in let sl = list-at (xf.bxf-suf-len) t
+    in let used = cl + sl
+    in let bestscore = if best == 0 then 0 - 1000000 else brdix-score ix xf (brdix-slot-of best) (brdix-tf-of best)
+    in let ok = if cl < brdix-min-word then False
+       else if used > avail then False
+       else if brdix-score ix xf slot t <= bestscore then False
+       else if brdix-eq (ix.bx-data) (list-at (ix.bx-off) slot) xs p 0 cl then
+              brdix-aff-eq (xf.bxf-aff) (list-at (xf.bxf-suf-off) t) sl xs (p + cl) 0
+            else False
+    in brdix-xf-scan ix xf xs p avail slot (t + 1) (if ok then brdix-pack slot t else best)
+
+  brdix-xf-walk : BrDictIx, BrXf, List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  brdix-xf-walk (ix) (xf) (xs) (p) (avail) (slot) (fuel) (best) =
+    if slot < 0 then best
+    else if fuel <= 0 then best
+    else brdix-xf-walk ix xf xs p avail (list-at (ix.bx-next) slot) (fuel - 1) (brdix-xf-scan ix xf xs p avail slot 0 best)
+
+ The plain lookup in the same packed form, so a caller can ask for the dictionary
+ WITHOUT transforms and get an answer of the same shape. Transform zero is the
+ identity, so this is that answer.
+
+  brdix-find-0 : BrDictIx, List Integer, Integer, Integer -> Integer
+  brdix-find-0 (ix) (xs) (p) (avail) =
+    let s = brdix-find ix xs p avail
+    in if s < 0 then 0 else brdix-pack s 0
+
+  brdix-find-xf : BrDictIx, BrXf, List Integer, Integer, Integer -> Integer
+  brdix-find-xf (ix) (xf) (xs) (p) (avail) =
+    if ix.bx-n <= 0 then 0
+    else if avail < brdix-min-word then 0
+    else brdix-xf-walk ix xf xs p avail (list-at (ix.bx-head) (brdix-hash xs p)) brdix-chain-limit 0

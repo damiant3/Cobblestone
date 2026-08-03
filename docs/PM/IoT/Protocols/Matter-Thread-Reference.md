@@ -11,7 +11,7 @@ Zigbee/Z-Wave/HomeKit/SmartThings landscape.
 
 ## Transport
 
-- **Thread**: Low-power mesh (802.15.4) — primary for battery devices
+- **Thread**: Low-power mesh (802.15.4) -- primary for battery devices
 - **WiFi**: High-bandwidth devices (cameras, displays)
 - **Ethernet**: Wired devices (bridges, hubs)
 - **BLE**: Commissioning only (initial device setup)

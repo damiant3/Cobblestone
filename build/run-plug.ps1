@@ -113,7 +113,7 @@ try {
             for ($bi = 0; $bi -lt $n; $bi++) { $allBytes.Add($readBuf[$bi]) }
         }
     } catch [System.IO.IOException] {
-        # Read timeout or connection reset — normal end
+        # Read timeout or connection reset -- normal end
     }
 
     $client.Close()

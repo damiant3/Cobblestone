@@ -1,0 +1,269 @@
+Chapter: SyntaxHighlight
+  cites Foreword chapter CCE
+
+ Codex source, classified into coloured runs. This is the half of
+ syntax highlighting that has nothing to do with a screen: it takes one
+ line of source and answers where each token starts, how long it is, and
+ what kind of thing it is. Drawing is somebody else's job, which is what
+ lets this be tested without a framebuffer.
+
+ THE INDENT DECIDES EVERYTHING, and it decides it before any character
+ is looked at. `scan-token` in the compiler's lexer branches on
+ `s.column == 2`: a line whose text begins one space in is PROSE and its
+ contents are never tokenized, and one more space makes the same line
+ code. So this classifier counts leading spaces first and only then asks
+ what the characters are. Getting that order wrong produces a highlighter
+ that colours the word `cites` inside an English sentence, which is the
+ same confusion the compiler itself raises CDX3010 for.
+
+   zero spaces   a Chapter: or Section: header
+   one space     prose, whole line, no tokens inside it
+   two or more   code
+
+ EVERY CHARACTER TEST GOES THROUGH THE CCE PREDICATES. Codex text is CCE
+ internally, not ASCII: `a` is 15 and `e` is 13, digits are 3 to 12, and
+ a space is 2. A classifier written against ASCII ranges answers that no
+ line contains a letter, which is the bug `text-to-upper` shipped with
+ for as long as it did. So `is-letter`, `is-digit`, `is-upper` and
+ `is-whitespace` come from Foreword chapter CCE, and the three
+ punctuation characters this file needs are derived from Text literals
+ with `syn-ch` rather than written as numbers. A literal's characters are
+ already CCE, so the derivation cannot drift the way a hardcoded 45 for a
+ hyphen would.
+
+ We say:
+
+Section: Classes
+
+ SynPlain is the honest answer for anything unrecognised, and it exists
+ so that an unclassified character is drawn in the foreground colour
+ rather than dropped. A highlighter that silently omits what it does not
+ understand loses source off the screen.
+
+  SynClass =
+   | SynPlain
+   | SynProse
+   | SynHeader
+   | SynDirective
+   | SynKeyword
+   | SynType
+   | SynName
+   | SynNumber
+   | SynString
+   | SynOperator
+
+  SynRun = record {
+   sr-start : Integer,
+   sr-len : Integer,
+   sr-class : SynClass
+  }
+
+ One letter per class, for tests and for reading a classification at a
+ glance. The runtime path never calls this.
+
+  syn-class-tag : SynClass -> Text
+  syn-class-tag (k) =
+   when k
+    is SynPlain -> "."
+    is SynProse -> "p"
+    is SynHeader -> "h"
+    is SynDirective -> "d"
+    is SynKeyword -> "k"
+    is SynType -> "T"
+    is SynName -> "n"
+    is SynNumber -> "9"
+    is SynString -> "s"
+    is SynOperator -> "o"
+
+Section: Characters
+
+ The three characters this file must recognise by identity rather than
+ by category, derived from literals so they are CCE by construction.
+
+  syn-ch : Text -> Integer
+  syn-ch (t) = char-code (char-at t 0)
+
+  syn-hyphen : Integer
+  syn-hyphen = syn-ch "-"
+
+  syn-dquote : Integer
+  syn-dquote = syn-ch "\""
+
+  syn-hash : Integer
+  syn-hash = syn-ch "#"
+
+  syn-backslash : Integer
+  syn-backslash = syn-ch "\\"
+
+  syn-is-word-char : Text, Integer -> Boolean
+  syn-is-word-char (s) (i) =
+   let c = char-at s i
+   in is-letter c | is-digit c
+
+Section: Indent
+
+  syn-indent : Text, Integer, Integer -> Integer
+  syn-indent (s) (i) (len) =
+   if i >= len then i
+   else if is-whitespace (char-at s i) then syn-indent s (i + 1) len
+   else i
+
+Section: Keywords
+
+ The reserved word list, as `docs/DevelopersGuide.md` states it. `as` is
+ deliberately absent: it is not reserved, it is the idiomatic name for a
+ list, and colouring it as a keyword would be wrong in most of the tree.
+
+ `cites`, `quotes`, `grounds` and `trusting` are split out as directives
+ rather than keywords because they are the chapter header's vocabulary
+ and a reader looks for them as a block. `above` stays a keyword: it is
+ only ever the tail of `trusting above N`, and colouring a bare `above`
+ as a directive would be a lie in any other position.
+
+  syn-directives : List Text
+  syn-directives = ["cites", "quotes", "grounds", "trusting"]
+
+  syn-keywords : List Text
+  syn-keywords = [
+   "let", "in", "if", "then", "else", "when", "is", "otherwise", "act", "end",
+   "record", "mutable", "punctual", "unit", "above",
+   "claim", "proof", "qed", "forall", "exists", "induction",
+   "linear", "effect", "where", "with", "between", "and", "such", "that",
+   "class", "instance", "lazy", "True", "False"
+  ]
+
+  syn-in-list : List Text, Text, Integer, Integer -> Boolean
+  syn-in-list (xs) (w) (i) (len) =
+   if i >= len then False
+   else if list-at xs i == w then True
+   else syn-in-list xs w (i + 1) len
+
+Section: Classifying One Word
+
+ A word that begins with an upper-case letter is a type, which is the
+ whole of Codex's naming convention: types are PascalCase and values are
+ kebab-case, so the first character settles it with no table.
+
+  syn-classify-word : Text -> SynClass
+  syn-classify-word (w) =
+   if syn-in-list syn-directives w 0 (list-length syn-directives) then SynDirective
+   else if syn-in-list syn-keywords w 0 (list-length syn-keywords) then SynKeyword
+   else if text-length w == 0 then SynPlain
+   else if is-upper (char-at w 0) then SynType
+   else SynName
+
+Section: Token Ends
+
+ A hyphen continues a name only when a letter or a digit follows it,
+ which is exactly the compiler's rule and is what keeps `x - 1` a
+ subtraction, `a-2` one identifier, and `a->b` an arrow rather than a
+ name called `a-`.
+
+  syn-word-end : Text, Integer, Integer -> Integer
+  syn-word-end (s) (i) (len) =
+   if i >= len then i
+   else if syn-is-word-char s i then syn-word-end s (i + 1) len
+   else if char-code (char-at s i) == syn-hyphen
+         & i + 1 < len
+         & syn-is-word-char s (i + 1)
+    then syn-word-end s (i + 2) len
+   else i
+
+  syn-number-end : Text, Integer, Integer -> Integer
+  syn-number-end (s) (i) (len) =
+   if i >= len then i
+   else if is-digit (char-at s i) | is-letter (char-at s i) then syn-number-end s (i + 1) len
+   else i
+
+ A string runs to its closing quote, and a backslash inside it consumes
+ the character after it so an escaped quote does not end the run. An
+ unterminated string ends at the end of the line rather than running off
+ it: a half-typed line is the normal state of an editor buffer, and a
+ classifier that faulted on one would be useless in the place it is most
+ wanted.
+
+  syn-string-end : Text, Integer, Integer -> Integer
+  syn-string-end (s) (i) (len) =
+   if i >= len then i
+   else if char-code (char-at s i) == syn-backslash then syn-string-end s (i + 2) len
+   else if char-code (char-at s i) == syn-dquote then i + 1
+   else syn-string-end s (i + 1) len
+
+Section: Classifying A Line
+
+  syn-line : Text -> List SynRun
+  syn-line (s) =
+   let len = text-length s
+   in let ind = syn-indent s 0 len
+   in if ind >= len then []
+   else if ind == 0 then [SynRun { sr-start = 0, sr-len = len, sr-class = SynHeader }]
+   else if ind == 1 then [SynRun { sr-start = 1, sr-len = len - 1, sr-class = SynProse }]
+   else syn-code-runs s ind len []
+
+  syn-code-runs : Text, Integer, Integer, List SynRun -> List SynRun
+  syn-code-runs (s) (i) (len) (acc) =
+   if i >= len then acc
+   else if is-whitespace (char-at s i) then syn-code-runs s (i + 1) len acc
+   else syn-code-token s i len acc
+
+  syn-code-token : Text, Integer, Integer, List SynRun -> List SynRun
+  syn-code-token (s) (i) (len) (acc) =
+   let c = char-at s i
+   in let code = char-code c
+   in if code == syn-dquote then
+     let e = syn-string-end s (i + 1) len
+     in syn-code-runs s e len (list-push acc (SynRun { sr-start = i, sr-len = e - i, sr-class = SynString }))
+   else if code == syn-hash then
+     let e = syn-number-end s (i + 1) len
+     in syn-code-runs s e len (list-push acc (SynRun { sr-start = i, sr-len = e - i, sr-class = SynNumber }))
+   else if is-digit c then
+     let e = syn-number-end s i len
+     in syn-code-runs s e len (list-push acc (SynRun { sr-start = i, sr-len = e - i, sr-class = SynNumber }))
+   else if is-letter c then
+     let e = syn-word-end s i len
+     in let w = substring s i (e - i)
+     in syn-code-runs s e len (list-push acc (SynRun { sr-start = i, sr-len = e - i, sr-class = syn-classify-word w }))
+   else syn-code-runs s (i + 1) len (list-push acc (SynRun { sr-start = i, sr-len = 1, sr-class = SynOperator }))
+
+Section: Rendering A Classification
+
+ One tag character per source character, gaps included, so a test can
+ compare a whole line's classification as a string. This is what makes
+ the classifier falsifiable without a screen: the expected output names
+ every character's class, so a token that grows, shrinks or changes kind
+ moves the line.
+
+  syn-tags : Text -> Text
+  syn-tags (s) = syn-tag-fill (syn-line s) (text-length s) 0 0 ""
+
+  syn-tag-fill : List SynRun, Integer, Integer, Integer, Text -> Text
+  syn-tag-fill (runs) (len) (i) (ri) (acc) =
+   if i >= len then acc
+   else if ri >= list-length runs then syn-tag-fill runs len (i + 1) ri (acc & " ")
+   else let r = list-at runs ri
+   in if i < r.sr-start then syn-tag-fill runs len (i + 1) ri (acc & " ")
+   else if i < (r.sr-start) + (r.sr-len) then syn-tag-fill runs len (i + 1) ri (acc & syn-class-tag (r.sr-class))
+   else syn-tag-fill runs len i (ri + 1) acc
+
+Section: Colours
+
+ XRGB, and deliberately a fixed palette rather than a Theme lookup. The
+ GOP text primitive takes a packed colour and nothing on that path
+ carries a Theme; wiring one through to reach six constants would be an
+ abstraction for a single implementation, which is the thing
+ `VisionAndVirtues` virtue 7 says not to build. When a second consumer
+ wants different colours, that is the moment for a parameter.
+
+  syn-colour : SynClass -> Integer
+  syn-colour (k) =
+   when k
+    is SynPlain -> #D8D8D8
+    is SynProse -> #7FA87F
+    is SynHeader -> #E8C86A
+    is SynDirective -> #C88ED8
+    is SynKeyword -> #6AA9E8
+    is SynType -> #6AD8C0
+    is SynName -> #D8D8D8
+    is SynNumber -> #E8916A
+    is SynString -> #C0D86A
+    is SynOperator -> #9AA0A8

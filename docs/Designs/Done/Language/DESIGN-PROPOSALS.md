@@ -28,7 +28,7 @@ landed, so nobody re-proposes them; their full text is gone.
 
 **Problem:** Checking if two values of the same variant type have the same
 constructor, without inspecting fields. Currently requires exhaustive
-nested `when` (see `types-equal` in Unifier.codex — 30 lines).
+nested `when` (see `types-equal` in Unifier.codex -- 30 lines).
 
 **Proposed:**
 

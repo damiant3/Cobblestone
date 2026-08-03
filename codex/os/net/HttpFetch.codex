@@ -1,5 +1,5 @@
 Chapter: HttpFetch
-  cites Kernel chapter Ne2k
+  cites Net chapter NetDriver
   cites Net chapter Ethernet
   cites Net chapter NetworkStack
   cites Net chapter TcpTransport
@@ -180,7 +180,7 @@ Section: DNS On The Wire
   http-dns-query (host) =
    let frame = udp-build-frame mac-broadcast http-local-mac http-local-ip http-dns-ip 1024 dns-port (dns-build-a-query http-dns-tx-id host)
    in act
-    sent <- ne2k-send-frame frame
+    sent <- net-driver-send-frame frame
     http-dns-await host 0
    end
 
@@ -189,7 +189,7 @@ Section: DNS On The Wire
    if tries > http-dns-budget then []
    else let hp = __heap-save
    in act
-    frame <- ne2k-recv-frame
+    frame <- net-driver-recv-frame
     if list-length frame == 0 then let restored = __heap-restore hp
       in http-dns-await host (tries + 1)
     else let addr = http-dns-extract frame
@@ -288,7 +288,7 @@ Section: Receive
    else if list-length acc >= http-max-response then HttpRecv { transport = ts, data = acc }
    else let hp = __heap-save
    in act
-    frame <- ne2k-recv-frame
+    frame <- net-driver-recv-frame
     if list-length frame == 0 then let restored = __heap-restore hp
       in http-recv ts acc head-end want (tries + 1)
     else let r = net-process-frame (ts.session) frame
@@ -402,17 +402,32 @@ Section: The Request
 
 Section: The Refusal
 
- An https URL is not fetched. It would be fetched in the CLEAR -- this
- chapter speaks HTTP/1.0 and negotiates nothing -- and a caller that
- wrote https has said, in the only way the URL lets them, that the
- bytes must not cross the wire unprotected. Honouring the scheme as a
- parse and ignoring it as a promise is how a transport-security bug
- gets shipped, so the request is refused and says why. Foreword chapter
- Tls exists; wiring it in is what would make https mean https, and
- until someone does, this is the honest answer.
+ An https URL is not fetched by THIS function. It would be fetched in
+ the CLEAR -- the cleartext path speaks HTTP/1.0 and negotiates nothing
+ -- and a caller that wrote https has said, in the only way the URL
+ lets them, that the bytes must not cross the wire unprotected.
+ Honouring the scheme as a parse and ignoring it as a promise is how a
+ transport-security bug gets shipped, so the request is refused.
+
+ What a refusal must not do is misdescribe itself, and this one did for
+ as long as it said "TLS is not implemented here". TLS IS implemented
+ here: `fetch-tls`, in the section below, runs a real TLS 1.3 handshake
+ with Ed25519 X.509 authentication over this same transport. What
+ `fetch` lacks is not the transport. It is the two things a caller has
+ to supply and this chapter must never invent -- entropy (an ephemeral
+ X25519 private key and a 32-byte handshake random) and a security
+ policy (trust anchors, and the calendar time to check a certificate
+ against). A one-argument `fetch` has nowhere to carry either, so it
+ cannot authenticate anybody, and an anonymous connection under the
+ https scheme is exactly the false promise this project does not ship.
+
+ So the refusal is permanent by design rather than pending on somebody
+ doing the work, and it names the function that does the job. A
+ diagnostic that sends its reader looking for an unimplemented feature
+ is worse than one that says nothing, because it looks like an answer.
 
   https-refusal : Text -> Text
-  https-refusal (url) = "https: TLS is not implemented here; refusing to fetch " & url & " in the clear"
+  https-refusal (url) = "https: refusing to fetch " & url & " in the clear. fetch carries no trust anchors and no entropy, so it cannot authenticate a server; use fetch-tls, which takes both"
 
 Section: HTTPS Over TLS 1.3
 
@@ -437,8 +452,13 @@ Section: HTTPS Over TLS 1.3
  promise this project does not ship. Authenticated fetch is this function.
 
  The live exchange cannot run in the headless battery -- it starts no TLS
- server -- so this is compile-verified and rests on the loopback for
- correctness, the same standing as the cleartext live half.
+ server -- so in the battery this is compile-verified and rests on the
+ loopback, the same standing as the cleartext live half.
+ `build/https-interop-test.ps1` is the other half and it is the one that
+ matters: three OpenSSL servers, an ECDSA P-256 chain and an RSA-2048
+ chain that must both authenticate and deliver the served file byte for
+ byte, and an unanchored self-signed leaf that must be refused. Until it
+ existed this path had only ever been driven by code that agreed with it.
 
   https-port : Text -> Integer
   https-port (url) =
@@ -502,14 +522,54 @@ Section: HTTPS Over TLS 1.3
    else if off + i >= list-length bs then acc
    else http-slice-loop bs off n (i + 1) (list-push acc (list-at bs (off + i)))
 
+ The bytes are pulled with a loop of this chapter's own rather than
+ net-io-recv-raw, for the reason http-recv above gives about the cleartext
+ path: net-io-recv-raw returns only when a frame carried payload, so it
+ cannot tell a peer that has finished from a peer that is merely slow, and
+ it spins out its whole fifty-million-iteration budget after the last byte
+ has already arrived. The cleartext half was written that way from the
+ start. This half was not, and nothing in the tree could show it: every
+ loopback here keeps its connection open forever, so the spin never
+ happened. The first foreign server this fetch ever met sent its response,
+ sent a FIN, had the FIN acknowledged by the stack, and the client then sat
+ for minutes with the entire body already in hand.
+
+ An empty answer ends the read, and it means either the connection closed
+ or the budget ran out. The caller does the same thing in both cases -- it
+ stops -- so the two are not distinguished here; a field nobody reads is
+ worth what no field is worth.
+
+  HttpsPull = record {
+    hp-ts : TcpTransportState,
+    hp-data : List Integer
+  }
+
+  https-pull : TcpTransportState, Integer -> [Network.Read, Network.Write] HttpsPull
+  https-pull (ts) (tries) =
+   if tries > http-recv-budget then HttpsPull { hp-ts = ts, hp-data = [] }
+   else let hp = __heap-save
+   in act
+    frame <- net-driver-recv-frame
+    if list-length frame == 0 then let restored = __heap-restore hp
+      in https-pull ts (tries + 1)
+    else let r = net-process-frame (ts.session) frame
+    in act
+      ts1 <- flush-transport-outbox (TcpTransportState { session = r.session, recv-buf = ts.recv-buf, recv-base = ts.recv-base, recv-len = ts.recv-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received })
+      if list-length (r.data) > 0 then HttpsPull { hp-ts = ts1, hp-data = r.data }
+      else when (ts1.session).conn.state
+       is TcpEstablished -> https-pull ts1 (tries + 1)
+       is otherwise -> HttpsPull { hp-ts = ts1, hp-data = [] }
+    end
+   end
+
   tls-recv-record : TcpTransportState, List Integer, Integer -> [Network.Read, Network.Write] HttpsRecv
   tls-recv-record (ts) (buf) (guard) =
    if guard <= 0 then HttpsRecv { hr-ts = ts, hr-rec = [], hr-rest = buf, hr-ok = False }
    else if tls-record-ready buf then tls-split-record ts buf
    else act
-    rr <- net-io-recv-raw ts 0
-    if rr.has-data == False then HttpsRecv { hr-ts = rr.transport, hr-rec = [], hr-rest = buf, hr-ok = False }
-    else tls-recv-record (rr.transport) (buf & rr.data) (guard - 1)
+    rr <- https-pull ts 0
+    if list-length (rr.hp-data) == 0 then HttpsRecv { hr-ts = rr.hp-ts, hr-rec = [], hr-rest = buf, hr-ok = False }
+    else tls-recv-record (rr.hp-ts) (buf & (rr.hp-data)) (guard - 1)
    end
 
   https-send-all : TcpTransportState, List (List Integer) -> [Network.Write] TcpTransportState
@@ -527,9 +587,16 @@ Section: HTTPS Over TLS 1.3
  feed it to the endpoint and send whatever the endpoint answers, until the
  endpoint reports the handshake done or the stream stalls.
 
+ The host out of the URL is what the certificate is checked against, in
+ ASCII, because a certificate holds ASCII and `host` is CCE Text. This is
+ the whole reason an https fetch can mean anything: the authority in the
+ URL is the identity the caller asked for, so it is the identity the
+ server has to prove. A certificate that is genuine but belongs to another
+ host now fails the handshake instead of completing it.
+
   https-run : TcpTransportState, Text, Text, List Integer, List Integer, List X509Anchor, List Integer -> [Network.Read, Network.Write] Result Text Text
   https-run (ts) (host) (path) (client-priv) (random) (anchors) (cal-now) =
-   let st0 = tls-ep-hello (tls-ep-client-new client-priv random anchors cal-now)
+   let st0 = tls-ep-hello (tls-ep-client-new client-priv random anchors cal-now (http-to-ascii host))
    in act
     ts1 <- https-send-all ts (st0.tes-out)
     hs <- https-drive ts1 (st0.tes-ep) []

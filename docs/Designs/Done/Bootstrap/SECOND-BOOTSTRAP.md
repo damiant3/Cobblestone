@@ -1,7 +1,7 @@
-# The Second Bootstrap — Cutting the Cord
+# The Second Bootstrap -- Cutting the Cord
 
 **Date**: 2026-03-31
-**Status**: Phases 1–5 and 7 shipped against the pre-CL-128 REF; phase 6 (escape copy) deferred post-MM4 after two failed attempts; phase 8 (fixed point) was "in flight" against that same REF. **As of 2026-04-20 (CL 128 reset), every green on the prior REF is treated as ceremonial** — agreement with a REF that had silent correctness holes is not correctness. Re-verification against the new REF baseline gates everything below. See `CurrentPlan.md` for the post-reset milestone path and `docs/Active/Compiler/REF-LESSONS-FOR-SELFHOST.md` for the explicit list of REF fixes the self-host still needs to absorb.
+**Status**: Phases 1–5 and 7 shipped against the pre-CL-128 REF; phase 6 (escape copy) deferred post-MM4 after two failed attempts; phase 8 (fixed point) was "in flight" against that same REF. **As of 2026-04-20 (CL 128 reset), every green on the prior REF is treated as ceremonial** -- agreement with a REF that had silent correctness holes is not correctness. Re-verification against the new REF baseline gates everything below. See `CurrentPlan.md` for the post-reset milestone path and `docs/Active/Compiler/REF-LESSONS-FOR-SELFHOST.md` for the explicit list of REF fixes the self-host still needs to absorb.
 **Depends on**: front-end self-compilation (structurally proven on pre-CL-128 REF), Codex emitter (ported), REF sample battery (`tools/ref-sweep.sh`, 54 verified / 72 post-CL-128)
 
 ---
@@ -10,7 +10,7 @@
 
 The self-hosted compiler is a self-hosted **front end**. It reads Codex, runs
 the full pipeline, and emits Codex. The fixed point holds. Pingpong is green.
-But every binary that runs — in QEMU, on bare metal, anywhere — was built by
+But every binary that runs -- in QEMU, on bare metal, anywhere -- was built by
 the C# reference compiler. The chain today:
 
 ```
@@ -22,11 +22,11 @@ the C# reference compiler. The chain today:
     → emits .codex over serial
 ```
 
-The C# compiler IS the compiler — the .codex source proves the front end
+The C# compiler IS the compiler -- the .codex source proves the front end
 can regenerate itself, but it cannot produce the binary that runs it. The
 x86-64 instruction encoder, the ELF writer, the register allocator, the
 boot trampoline, the escape-copy machinery, the 50+ builtins, the 22
-runtime helpers — all C#.
+runtime helpers -- all C#.
 
 **MM3 proved the front end is self-sustaining. It did not prove the compiler
 is self-sustaining.** This document is the plan to finish the job.
@@ -85,7 +85,7 @@ This is MM4: **self-sustaining native compiler on bare metal.**
 
 ### What We Are NOT Porting
 
-- C# emitter (replaced by Codex emitter — already done)
+- C# emitter (replaced by Codex emitter -- already done)
 - JavaScript, Python, Rust, C++, Go, Java, Ada, Fortran, COBOL emitters
 - IL emitter
 - RISC-V backend (abandoned)
@@ -116,7 +116,7 @@ IR → X86_64Emitter   → bare-metal ELF binary
 ```
 
 This is a new .codex file (or set of files) that takes the IR module and
-produces a byte sequence — the raw binary. The byte sequence is written to
+produces a byte sequence -- the raw binary. The byte sequence is written to
 a file via `write-file`. The result is a bootable ELF.
 
 ### Output Strategy
@@ -153,7 +153,7 @@ add-ri (dst) (imm) = ...  -- REX + 0x81 + ModRM + imm32
 ```
 
 **Why first**: Everything else depends on it. It's self-contained. It's the
-easiest to test — encode an instruction, check the bytes against the C#
+easiest to test -- encode an instruction, check the bytes against the C#
 output. Binary-identical output is the acceptance criterion.
 
 **Test strategy**: Encode every instruction type, compare byte-for-byte
@@ -179,7 +179,7 @@ build-elf-bare (text) (rodata) =
 **Test strategy**: Build an ELF from hand-assembled bytes, boot it in QEMU,
 verify serial output.
 
-### Phase 3: Core Codegen — Expressions (~2,000 lines)
+### Phase 3: Core Codegen -- Expressions (~2,000 lines)
 
 Port the expression emission core of `X86_64CodeGen.cs`:
 
@@ -206,7 +206,7 @@ Split across files for sanity:
 and prints `42` to serial. This proves the full chain: Codex IR → Codex
 encoder → Codex ELF writer → working binary.
 
-### Phase 4: Runtime Helpers (~1,300 lines) — DONE (16 of 22)
+### Phase 4: Runtime Helpers (~1,300 lines) -- DONE (16 of 22)
 
 16 runtime helpers ported to `Emit/X86_64Helpers.codex`:
 
@@ -216,8 +216,8 @@ encoder → Codex ELF writer → working binary.
 | List | `__list_snoc`, `__list_insert_at`, `__list_contains`, `__list_cons`, `__list_append` | Done |
 | Text/List | `__text_concat_list`, `__text_split` | Done |
 | Math | `__ipow`, `__text_to_int` | Done |
-| I/O | `__read_file`, `__read_line`, `__bare_metal_read_serial` | **Deferred** — need rodata fixups, syscalls, CCE tables |
-| CCE | `__cce_to_unicode`, `__unicode_to_cce` | **Deferred** — need rodata table support |
+| I/O | `__read_file`, `__read_line`, `__bare_metal_read_serial` | **Deferred** -- need rodata fixups, syscalls, CCE tables |
+| CCE | `__cce_to_unicode`, `__unicode_to_cce` | **Deferred** -- need rodata table support |
 
 The 5 deferred helpers require rodata fixup infrastructure (patching
 absolute addresses into `mov r64, imm64` instructions at link time)
@@ -254,7 +254,7 @@ Port the two-space GC and forwarding hash table:
 - Region entry/exit (save mark, copy, restore)
 - Result-space base tracking
 
-This is the most intricate code in the backend — pointer arithmetic,
+This is the most intricate code in the backend -- pointer arithmetic,
 hash table operations, type-dispatched deep copy. Needs careful testing.
 
 ### Phase 7: Boot + I/O Boundary (~700 lines)
@@ -280,9 +280,9 @@ I/O boundary (barbarians at the gates):
 
 Much of the boot sequence is constant byte sequences (the trampoline is
 essentially a data blob). The I/O boundary is where CCE meets the outside
-world — every byte crosses the encoding gate exactly once.
+world -- every byte crosses the encoding gate exactly once.
 
-### Phase 8: Self-Compilation — The Second Fixed Point
+### Phase 8: Self-Compilation -- The Second Fixed Point
 
 With Phases 1–7 complete, the Codex compiler can emit x86-64 bare-metal
 binaries. The test:
@@ -308,7 +308,7 @@ output against REF output.
 
 | Milestone | What | How you know it works |
 |-----------|------|----------------------|
-| **M6** | Escape copy | Region-based heap reclamation working — will shrink HWM from 109MB |
+| **M6** | Escape copy | Region-based heap reclamation working -- will shrink HWM from 109MB |
 | **M7** | Self-compilation | The compiler compiles itself to a bare-metal ELF |
 | **M8** | Fixed point | Stage 1 ELF == Stage 2 ELF. **This is MM4.** |
 
@@ -354,7 +354,7 @@ The `main.codex` pipeline gains a `--target x86-64-bare` path that calls
 | `Emit/X86_64Boot.codex` | ~500 | 7 |
 | **Total** | **~5,650** | |
 
-The C# backend is ~7,000 lines. The Codex port is estimated at ~5,650 —
+The C# backend is ~7,000 lines. The Codex port is estimated at ~5,650 --
 smaller because Codex is more expressive (pattern matching, algebraic types)
 and because we're not porting the Linux user-mode path, only bare metal.
 
@@ -391,7 +391,7 @@ Phase 4–6 but must complete before Phase 8.
 emitter output compiled by `dotnet`). The native backend will be tested
 by running the compiler on .NET and checking that its x86-64 output boots
 correctly. This means .NET is still in the development loop during Phases
-1–7 — but it's in the *testing* loop, not the *output* loop. The output
+1–7 -- but it's in the *testing* loop, not the *output* loop. The output
 is pure Codex → native binary. Once Phase 8 achieves fixed point, .NET
 leaves the loop entirely.
 
@@ -400,7 +400,7 @@ binary output may be slow for large binaries. The self-hosted compiler's
 ELF will be ~300 KB. Building a 300 KB byte list via `list-snoc` is O(n)
 per append if we're careful about linear ownership, but the constant factor
 matters. If this becomes a bottleneck, we may need an `Array` type with
-O(1) indexed write — which connects to the safe-mutation design
+O(1) indexed write -- which connects to the safe-mutation design
 (`docs/Designs/Features/SAFE-MUTATION.md`).
 
 **Memory risk**: At 55 MB HWM for front-end self-compilation (Codex→Codex),
@@ -416,12 +416,12 @@ After MM4, the following stop being in the self-host build chain, but
 remain maintained in `src/` as correctness anchors and as the rope down
 the mountain for anyone who needs to re-climb:
 
-- `src/Codex.Emit.X86_64/` — shadowed by `Codex.Codex/Emit/X86_64*.codex`
-- `src/Codex.Emit.CSharp/` — shadowed by `Codex.Codex/Emit/CodexEmitter.codex`
-- `src/Codex.Emit.RiscV/` — abandoned (per CurrentPlan)
-- `src/Codex.Emit.Arm64/` — abandoned (per CurrentPlan)
-- `src/Codex.Emit.IL/` — no Codex replacement yet
-- Transpilation backends (JS, Python, Rust, etc.) — kept as REF targets
+- `src/Codex.Emit.X86_64/` -- shadowed by `Codex.Codex/Emit/X86_64*.codex`
+- `src/Codex.Emit.CSharp/` -- shadowed by `Codex.Codex/Emit/CodexEmitter.codex`
+- `src/Codex.Emit.RiscV/` -- abandoned (per CurrentPlan)
+- `src/Codex.Emit.Arm64/` -- abandoned (per CurrentPlan)
+- `src/Codex.Emit.IL/` -- no Codex replacement yet
+- Transpilation backends (JS, Python, Rust, etc.) -- kept as REF targets
 
 The `src/` tree is not deleted. CL 128 made it clear that REF-side fixes
 are sometimes the shortest path to correctness and that the sample battery

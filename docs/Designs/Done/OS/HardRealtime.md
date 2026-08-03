@@ -1,4 +1,4 @@
-# Punctual — Bounded Time, Bounded Space, Proven Deadlines
+# Punctual -- Bounded Time, Bounded Space, Proven Deadlines
 
 ## The Problem
 
@@ -25,13 +25,13 @@ of these can be satisfied by "it's probably fast enough."
 `punctual` is a compile-time contract. A function marked `punctual`
 guarantees:
 
-1. **Bounded time** — the compiler can compute a static upper bound on
+1. **Bounded time** -- the compiler can compute a static upper bound on
    execution time (WCET) from the function's structure alone.
-2. **Bounded space** — no heap allocation; all data lives in regions,
+2. **Bounded space** -- no heap allocation; all data lives in regions,
    the stack, or pre-allocated pools.
-3. **No blocking** — no unbounded waits, no locks that could invert
+3. **No blocking** -- no unbounded waits, no locks that could invert
    priority, no I/O without a timeout.
-4. **Preemptibility** — the scheduler can always preempt this task in
+4. **Preemptibility** -- the scheduler can always preempt this task in
    bounded time to service a higher-priority deadline.
 
 If the compiler cannot prove all four properties, it rejects the
@@ -51,7 +51,7 @@ signature, like `mutable` for records:
    in convert-reading (h.calibration) raw
 ```
 
-Two lines, no name repetition. The word reads naturally — "this
+Two lines, no name repetition. The word reads naturally -- "this
 function is punctual" means it shows up on time, every time.
 
 The compiler tracks `punctual` through the call graph. A `punctual`
@@ -82,7 +82,7 @@ enforced at compile time:
 | Pre-allocated buffers | `__alloc` | Heap bump |
 
 The compiler verifies these structurally. No user annotation is needed
-beyond the top-level `punctual` — the restrictions propagate
+beyond the top-level `punctual` -- the restrictions propagate
 through the call graph automatically.
 
 ### Effect Integration
@@ -94,7 +94,7 @@ It refines the existing effect row:
 sensor-read : SensorHandle -> [Gpio, Clock | HardRealtime] SensorReading
 ```
 
-The `HardRealtime` effect is a *negative* effect — it restricts what
+The `HardRealtime` effect is a *negative* effect -- it restricts what
 other effects may appear in the row. An effect handler for
 `HardRealtime` is the scheduler's deadline enforcement mechanism (see
 Scheduling below). The type system ensures:
@@ -105,7 +105,7 @@ Scheduling below). The type system ensures:
 - `punctual` functions cannot perform `[FileSystem]` at all
   (disk I/O is inherently unbounded)
 - `punctual` functions CAN perform `[Gpio]`, `[Clock]`,
-  `[Serial]` — hardware I/O with bounded latency
+  `[Serial]` -- hardware I/O with bounded latency
 
 ### Timed Budget Tracking
 
@@ -141,7 +141,7 @@ cycles. A 2025 extension of AARA to algebraic effects (polynomial
 resource bounds for effectful programs) provides the theoretical
 bridge.
 
-The budget is architectural — it names a target platform (Phase 2):
+The budget is architectural -- it names a target platform (Phase 2):
 
 ```
   punctual control-loop : MotorState -> [Gpio, Clock | Timed 100us cortex-m4-168mhz] MotorState
@@ -168,7 +168,7 @@ compile-time-visible bound:
 ```
 
 The compiler derives the bound from the `i >= n` guard and the `i + 1`
-increment — this is a counted loop with exactly `n` iterations. `n` is
+increment -- this is a counted loop with exactly `n` iterations. `n` is
 a parameter, so the WCET formula is `O(n)` with a constant factor
 determined by the loop body's instruction count.
 
@@ -206,13 +206,13 @@ compiled code meets absolute timing bounds on modern hardware:
 
 Codex takes a pragmatic, layered approach:
 
-**Layer 1 — Structural bounds (compile time, sound).** The compiler
+**Layer 1 -- Structural bounds (compile time, sound).** The compiler
 proves that every `punctual` function terminates, uses bounded
 stack, performs no allocation, and has no unbounded blocking. This is
 the type-system guarantee. It does not give an absolute time in
 microseconds, but it proves the WCET is *finite and computable*.
 
-**Layer 2 — Instruction-count bounds (compile time, architecture-aware).**
+**Layer 2 -- Instruction-count bounds (compile time, architecture-aware).**
 The emitter counts instructions for each `punctual` function body
 on the target architecture. Since Codex controls the entire compilation
 pipeline (no external assembler, no linker), instruction counts are
@@ -221,7 +221,7 @@ exact. The compiler emits a WCET report:
 ```
 WCET: sensor-read = 47 instructions (ARM Cortex-M4 @ 168 MHz)
       worst-case: 47 * 3 cycles = 141 cycles = 0.84 us
-      deadline: 500 us — PASS (0.17% utilization)
+      deadline: 500 us -- PASS (0.17% utilization)
 ```
 
 The per-instruction cycle count is a platform constant (defined in the
@@ -229,10 +229,10 @@ backend's architecture profile). For in-order cores (Cortex-M4, RV32IMC),
 the worst-case is the sum of per-instruction maxima. For out-of-order
 cores (Cortex-A72), the estimate is conservative (no pipeline modeling).
 
-**Layer 3 — Measured calibration (runtime, informational).** On first
+**Layer 3 -- Measured calibration (runtime, informational).** On first
 boot, the runtime can optionally execute a calibration sequence that
 times known instruction patterns and adjusts the cycle-count constants.
-This does not affect the compile-time proof — it provides runtime
+This does not affect the compile-time proof -- it provides runtime
 diagnostics if the platform deviates from the assumed profile.
 
 ### Architecture Profiles
@@ -273,7 +273,7 @@ scheduling:
 **Earliest Deadline First (EDF)** for punctual tasks. Among tasks
 at `TaskCritical` priority with `punctual` annotations, the
 scheduler dispatches the one whose absolute deadline is nearest. EDF
-is optimal for uniprocessor preemptive scheduling — if any algorithm
+is optimal for uniprocessor preemptive scheduling -- if any algorithm
 can meet all deadlines, EDF can.
 
 **Static priority** for non-realtime tasks. Tasks without
@@ -284,7 +284,7 @@ tasks always preempt non-realtime tasks.
 
 Priority inversion occurs when a high-priority task waits for a
 resource held by a low-priority task, while a medium-priority task
-preempts the low-priority one — the high-priority task is blocked
+preempts the low-priority one -- the high-priority task is blocked
 indefinitely.
 
 Codex prevents this through **two complementary mechanisms**:
@@ -385,12 +385,12 @@ The TrustAndRuntime design defines safe mode as the fallback when an
 agent's confidence drops below threshold or an anomaly is detected.
 `punctual` is the implementation mechanism for safe mode:
 
-1. **Anomaly detected** — agent enters safe mode.
-2. **Capability lease restricted** — agent reverts to compiled-in safe
+1. **Anomaly detected** -- agent enters safe mode.
+2. **Capability lease restricted** -- agent reverts to compiled-in safe
    capabilities (no network, no filesystem, minimal GPIO).
-3. **All code paths are `punctual`** — pre-compiled safe
+3. **All code paths are `punctual`** -- pre-compiled safe
    responses execute with proven bounded time and space.
-4. **Escalation** — the agent sends a distress signal to its supervisor
+4. **Escalation** -- the agent sends a distress signal to its supervisor
    over a pre-authorized channel. The signal itself is
    `punctual` (bounded-size, fixed-format, no allocation).
 
@@ -478,7 +478,7 @@ attempt to preempt during the stop window.
 
 ## Implementation Plan
 
-### Phase 1 — Structural Verification (with IoT Phase 1)
+### Phase 1 -- Structural Verification (with IoT Phase 1)
 
 - `punctual` annotation parsing and representation in AST/IR
 - Compile-time restriction checker: no heap, no unbounded loops, no
@@ -487,7 +487,7 @@ attempt to preempt during the stop window.
 - Effect row integration: `HardRealtime` as a negative effect
 - Call-graph analysis: transitivity of restrictions
 
-### Phase 2 — WCET Computation (with IoT Phase 2)
+### Phase 2 -- WCET Computation (with IoT Phase 2)
 
 - Architecture profiles for Cortex-M4, RV32IMC, Cortex-A72
 - Instruction-count accumulator in the emitter (per-function)
@@ -496,7 +496,7 @@ attempt to preempt during the stop window.
 - WCET report emission (text mode diagnostic)
 - Loop-bound inference from counted-loop patterns
 
-### Phase 3 — Scheduler Integration (with IoT Phase 3)
+### Phase 3 -- Scheduler Integration (with IoT Phase 3)
 
 - EDF scheduling for `punctual` tasks
 - Priority ceiling computation from call graph
@@ -505,7 +505,7 @@ attempt to preempt during the stop window.
 - Interrupt handler support (vector table emission, entry overhead
   accounting)
 
-### Phase 4 — Calibration and Hardening (with IoT Phase 4)
+### Phase 4 -- Calibration and Hardening (with IoT Phase 4)
 
 - Runtime calibration sequence for cycle-count adjustment
 - Multi-core considerations (Cortex-A72 quad-core, ESP32-C6 dual-core)
@@ -520,15 +520,15 @@ five tiers. No production language occupies the space `punctual` fills.
 ### Tier 1: Production Languages with Real-Time Restrictions
 
 **Ada / Ravenscar / SPARK.** Ravenscar (`pragma Profile(Ravenscar)`)
-is compiler-enforced — compile errors, not warnings. It restricts
+is compiler-enforced -- compile errors, not warnings. It restricts
 the tasking model: no dynamic task creation, no `select`, no `abort`,
 no relative `delay`, one entry per protected object. But Ravenscar
 restricts CONCURRENCY, not COMPUTATION. It does not reject unbounded
 loops, does not check recursion, and has no WCET awareness.
 
-`pragma Restrictions(No_Allocators)` is a hard compile error — the
+`pragma Restrictions(No_Allocators)` is a hard compile error -- the
 compiler rejects `new`. `pragma Restrictions(No_Recursion)` is NOT a
-compile error — the Ada RM defines it as "erroneous execution"
+compile error -- the Ada RM defines it as "erroneous execution"
 (undefined behavior). The compiler is not required to detect it. GNAT
 may catch direct recursion but mutual recursion through dispatching
 escapes. SPARK's `Loop_Variant` proves termination, not bounded time.
@@ -548,7 +548,7 @@ but does NOT check loops or recursion.
 
 **MISRA C/C++.** NOT enforced by any standard compiler. Checked by
 external tools (Polyspace, PC-lint, LDRA, cppcheck). Rule 17.2 bans
-recursion, Rule 21.3 bans malloc — but these are linting rules, not
+recursion, Rule 21.3 bans malloc -- but these are linting rules, not
 compiler features. IAR and Green Hills have partial built-in MISRA
 modes; GCC/Clang have none. No C/C++ compiler has a "bounded-time
 function" annotation.
@@ -556,13 +556,13 @@ function" annotation.
 ### Tier 2: Synchronous Languages (Bounded by Construction)
 
 **Esterel.** Bounded execution per tick is COMPILER-CHECKED, not
-structural. The language CAN express instantaneous loops — the
+structural. The language CAN express instantaneous loops -- the
 compiler rejects them via static analysis (every loop path must
 contain a `pause`). Constructive causality analysis rejects cyclic
 signal dependencies. No recursion, no dynamic allocation. Each tick
 compiles to a finite automaton.
 
-**Lustre / SCADE.** Bounded execution is STRUCTURAL — the language has
+**Lustre / SCADE.** Bounded execution is STRUCTURAL -- the language has
 no loop construct and no recursion. Programs are dataflow equations
 evaluated once per tick. SCADE's KCG code generator produces C with no
 loops, no recursion, no malloc, no function pointers. Qualified
@@ -572,7 +572,7 @@ standard for compile-time bounded execution in production avionics
 
 **Key limitation:** These are whole-language restrictions. You cannot
 write unrestricted code in the same program. `punctual` is per-function
-opt-in — the rest of the program is unrestricted.
+opt-in -- the rest of the program is unrestricted.
 
 ### Tier 3: Per-Function Totality / Restriction Annotations
 
@@ -586,7 +586,7 @@ and Dafny have similar totality checking.
 compiler-enforced annotations. `@nogc` rejects GC allocation,
 `pure` rejects side effects, `nothrow` rejects exceptions. Transitive
 to callees. The mechanism (keyword on function, compiler rejects
-violations) matches `punctual` exactly — but applied to effects, not
+violations) matches `punctual` exactly -- but applied to effects, not
 bounded execution.
 
 **Rust `const fn`.** Restricts heap allocation and I/O but permits
@@ -670,13 +670,13 @@ A side-by-side example (missile warning receiver) lives in
 | Aspect | Ada + Ravenscar | Codex + punctual |
 |--------|----------------|-----------------|
 | Scope | Global (whole program restricted) | Per-function (unrestricted code coexists) |
-| Heap check | `pragma Restrictions(No_Allocators)` — global | CDX6002 — per punctual function |
-| Recursion check | `No_Recursion` — erroneous execution, not always detected | CDX6005 — hard compile error |
+| Heap check | `pragma Restrictions(No_Allocators)` -- global | CDX6002 -- per punctual function |
+| Recursion check | `No_Recursion` -- erroneous execution, not always detected | CDX6005 -- hard compile error |
 | WCET | External tool (aiT, $50K+) | Compiler reports instruction count at CDX6010 |
-| Budget | None — compiler has no timing awareness | `punctual 128 name` sets instruction budget |
+| Budget | None -- compiler has no timing awareness | `punctual 128 name` sets instruction budget |
 | Violation | External tool finds it post-compilation | CDX6011 warning at compile time |
-| I/O check | None — you can do I/O in any function | CDX6004 — punctual cannot do bare I/O |
-| Unsafe calls | Not checked — any function can call any function | CDX6001 — punctual can only call punctual or safe builtins |
+| I/O check | None -- you can do I/O in any function | CDX6004 -- punctual cannot do bare I/O |
+| Unsafe calls | Not checked -- any function can call any function | CDX6001 -- punctual can only call punctual or safe builtins |
 
 No production language has all of: per-function granularity, single keyword,
 compiler-enforced structural restrictions, and instruction-count reporting.

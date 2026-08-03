@@ -1,0 +1,102 @@
+Chapter: RealCompareNegative
+
+ Real ordering comparisons where BOTH operands are negative.
+
+ `<`, `>`, `<=` and `>=` on Real were emitted as a SIGNED INTEGER compare of
+ the two IEEE-754 bit patterns. That is right for two non-negatives and right
+ for mixed signs, because a double's sign bit sits where the integer sign bit
+ sits. For two negatives the order reverses, and every one of the four
+ operators answered backwards.
+
+ The four operators were the only numeric comparisons that ignored their
+ operand type: `IrEq` and `IrNotEq` beside them already resolved it and sent
+ Real to `ucomisd`, and the vector comparisons took it too.
+
+ Two different code paths reach a comparison and each had the defect
+ separately, so each case below is asked twice. A comparison in condition
+ position is FUSED into the branch (`is-fusable-int-comparison`, and
+ `lir-cmp-whitelisted` in the LIR); a comparison whose result is passed on as
+ a value is MATERIALISED by `emit-binary-op`. Testing only one shape would
+ have left the other broken and looked green.
+
+ Every line prints the fused answer then the value answer, and both must be
+ the number the line names.
+
+Section: Operands
+
+  neg-big : Real
+  neg-big = 0.0 - 2.9
+
+  neg-small : Real
+  neg-small = 0.0 - 1.5
+
+  pos-big : Real
+  pos-big = 2.9
+
+  pos-small : Real
+  pos-small = 1.5
+
+  zero : Real
+  zero = 0.0
+
+Section: The Two Paths
+
+  b2i : Boolean -> Integer
+  b2i (b) = if b then 1 else 0
+
+  fused-lt : Real, Real -> Integer
+  fused-lt (a) (b) = if a < b then 1 else 0
+
+  fused-gt : Real, Real -> Integer
+  fused-gt (a) (b) = if a > b then 1 else 0
+
+  fused-le : Real, Real -> Integer
+  fused-le (a) (b) = if a <= b then 1 else 0
+
+  fused-ge : Real, Real -> Integer
+  fused-ge (a) (b) = if a >= b then 1 else 0
+
+  val-lt : Real, Real -> Integer
+  val-lt (a) (b) = b2i (a < b)
+
+  val-gt : Real, Real -> Integer
+  val-gt (a) (b) = b2i (a > b)
+
+  val-le : Real, Real -> Integer
+  val-le (a) (b) = b2i (a <= b)
+
+  val-ge : Real, Real -> Integer
+  val-ge (a) (b) = b2i (a >= b)
+
+Section: Report
+
+  say-lt : Text, Real, Real -> Text
+  say-lt (label) (a) (b) = label & " " & show (fused-lt a b) & show (val-lt a b)
+
+  say-gt : Text, Real, Real -> Text
+  say-gt (label) (a) (b) = label & " " & show (fused-gt a b) & show (val-gt a b)
+
+  say-le : Text, Real, Real -> Text
+  say-le (label) (a) (b) = label & " " & show (fused-le a b) & show (val-le a b)
+
+  say-ge : Text, Real, Real -> Text
+  say-ge (label) (a) (b) = label & " " & show (fused-ge a b) & show (val-ge a b)
+
+  opening : [Console] Nothing
+  opening = act
+    print-line-uni (say-lt "neg-big lt neg-small want 11" neg-big neg-small)
+    print-line-uni (say-gt "neg-big gt neg-small want 00" neg-big neg-small)
+    print-line-uni (say-le "neg-big le neg-small want 11" neg-big neg-small)
+    print-line-uni (say-ge "neg-big ge neg-small want 00" neg-big neg-small)
+    print-line-uni (say-lt "neg-small lt neg-big want 00" neg-small neg-big)
+    print-line-uni (say-gt "neg-small gt neg-big want 11" neg-small neg-big)
+    print-line-uni (say-lt "neg-big lt neg-big want 00" neg-big neg-big)
+    print-line-uni (say-le "neg-big le neg-big want 11" neg-big neg-big)
+    print-line-uni (say-ge "neg-big ge neg-big want 11" neg-big neg-big)
+    print-line-uni (say-lt "pos-small lt pos-big want 11" pos-small pos-big)
+    print-line-uni (say-gt "pos-small gt pos-big want 00" pos-small pos-big)
+    print-line-uni (say-lt "neg-big lt pos-small want 11" neg-big pos-small)
+    print-line-uni (say-lt "pos-big lt neg-small want 00" pos-big neg-small)
+    print-line-uni (say-lt "neg-small lt zero want 11" neg-small zero)
+    print-line-uni (say-gt "neg-small gt zero want 00" neg-small zero)
+  end

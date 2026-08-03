@@ -3,12 +3,13 @@ Chapter: DevAgent
   cites Works chapter AgentRuntime
   cites Works chapter AgentCoordinator
   cites Kernel chapter GpuBridge
+  cites AI chapter Tensor
   cites Foreword chapter Maybe
   cites Foreword chapter Hamt
   cites Foreword chapter Sha256
 
  Agent management in the dev console. DevAgent is a local AI that
- runs on the device — DevAgent loads a GGUF model, runs inference
+ runs on the device -- DevAgent loads a GGUF model, runs inference
  via the NeuralNet/Tensor stack, and provides a chat interface for
  code assistance. For hard problems DevAgent escalates to an
  upstream server with a larger model.
@@ -74,6 +75,44 @@ Section: Agent Registry
   agent-lookup : AgentRegistry, Text -> Maybe AgentState
   agent-lookup (reg) (name) = hamt-get (reg.agents) name
 
+ The registry could be written to and read back by name, and that was the
+ whole of it: nothing could ask what was IN it. The dev console's Agent
+ Manager answered "Registry: 0 agents" from a literal for exactly as long,
+ which is a sentence that looks like a reading and is not one.
+
+  agent-names : AgentRegistry -> List Text
+  agent-names (reg) =
+    let es = hamt-to-list (reg.agents)
+    in agent-name-loop es 0 (list-length es) []
+
+  agent-name-loop : List (HamtEntry AgentState), Integer, Integer, List Text -> List Text
+  agent-name-loop (es) (i) (n) (acc) =
+    if i >= n then acc
+    else agent-name-loop es (i + 1) n (list-push acc ((list-at es i).key))
+
+  agent-switch-role : AgentRegistry, Text, RoleConfig -> AgentRegistry
+  agent-switch-role (reg) (name) (role) =
+    when hamt-get (reg.agents) name
+      is None -> reg
+      is Just (a) ->
+        let moved = __record-set a "coordinator" (coordinator-switch-role (a.coordinator) role)
+        in __record-set reg "agents" (hamt-set (reg.agents) name moved)
+
+Section: Role Selection
+
+ The menu keys, mapped to the configs they promise. None for a key that
+ names no role, so a caller can tell an unknown key from a role that
+ happens to leave the agent where it was.
+
+  role-config-for-key : Text -> Maybe RoleConfig
+  role-config-for-key (key) =
+    if key == "dev" then Just dev-console-role
+    else if key == "ui" then Just ui-assist-role
+    else if key == "build" then Just build-watch-role
+    else if key == "review" then Just code-review-role
+    else if key == "general" then Just general-role
+    else None
+
 Section: Agent Menu
 
   agent-menu : MenuState
@@ -89,8 +128,15 @@ Section: Agent Menu
     menu-item "Back" "back"
   ]
 
+ The title is a constant because the dispatcher matches on it to tell the
+ role keys from the agent keys. Two spellings of the same string, one in
+ the menu and one in the comparison, is a silent dead menu the first time
+ either is reworded.
+
+  role-switch-title : Text = "Switch Agent Role"
+
   role-switch-menu : MenuState
-  role-switch-menu = menu-new "Switch Agent Role" [
+  role-switch-menu = menu-new role-switch-title [
     menu-item "Dev Console Assistant" "dev",
     menu-item "UI Design Assistant" "ui",
     menu-item "Build Watcher" "build",
@@ -117,5 +163,76 @@ Section: Formatting
   format-gpu-status : GpuBridge -> Text
   format-gpu-status (bridge) =
     "GPU Bridge: " & if bridge.bridge-ready then "READY (doorbell @ #420)" else "NOT READY"
+
+ One line per agent, and the role is on it. Without the role a swap is
+ invisible: the console would report the same text before and after,
+ which is indistinguishable from a swap that did nothing.
+
+  format-agent-line : AgentState -> Text
+  format-agent-line (a) =
+    a.manifest.name & " v" & a.manifest.version
+    & " [" & format-agent-status (a.status) & "]"
+    & " role=" & agent-role-label (a.coordinator.active-role.role)
+
+  format-agent-registry : AgentRegistry -> Text
+  format-agent-registry (reg) =
+    if reg.count == 0 then "Registry: empty (no agent registered)"
+    else let es = hamt-to-list (reg.agents)
+    in "Registry: " & show (reg.count) & " agent(s)"
+      & agent-line-loop es 0 (list-length es) ""
+
+  agent-line-loop : List (HamtEntry AgentState), Integer, Integer, Text -> Text
+  agent-line-loop (es) (i) (n) (acc) =
+    if i >= n then acc
+    else agent-line-loop es (i + 1) n (acc & "\n  " & format-agent-line ((list-at es i).value))
+
+Section: GPU Probe
+
+ `format-gpu-status` above reads a field that `gpu-bridge-init` sets to
+ True unconditionally, so it reports READY on a machine with no host
+ serving compute at all. It is kept because callers hold a bridge and
+ want its declared state; it is not an answer to "is the bridge working".
+
+ This is. It rings the doorbell with a 2x2 matmul whose answer is four
+ distinct non-zero numbers, none of them an operand: [[1,2],[3,4]] times
+ [[5,6],[7,8]] is [[19,22],[43,50]]. A host that is not there answers
+ None, a host that echoes its input answers the operands, and a host that
+ replies with zeros fails the comparison. Only real arithmetic passes.
+
+ The cost is four values in and four out on a fixed command buffer that
+ is mapped from boot, so the probe allocates one small tensor pair per
+ call and no part of it grows with anything.
+
+ The tolerance is `codex/test/gpu-doorbell`'s and for its reason: the
+ guest decoder divides the mantissa down to scale 1000 before applying
+ the exponent, so 19.0 arrives as 18992 rather than 19000. One part in a
+ hundred is far tighter than the 3000-unit gap between the entries.
+
+  gpu-probe-a : Tensor = Tensor { data = [1000, 2000, 3000, 4000], rows = 2, cols = 2 }
+  gpu-probe-b : Tensor = Tensor { data = [5000, 6000, 7000, 8000], rows = 2, cols = 2 }
+
+  gpu-probe-near : Integer, Integer -> Boolean
+  gpu-probe-near (got) (want) =
+    let diff = if got > want then got - want else want - got
+    in diff <= want / 100
+
+  agent-gpu-probe : GpuBridge -> Text
+  agent-gpu-probe (bridge) =
+    when gpu-bridge-matmul bridge gpu-probe-a gpu-probe-b
+      is None -> "GPU Bridge: no reply (nothing is serving compute)"
+      is Just (t) -> gpu-probe-verdict t
+
+  gpu-probe-verdict : Tensor -> Text
+  gpu-probe-verdict (t) =
+    if list-length (t.data) /= 4
+      then "GPU Bridge: reply held " & show (list-length (t.data)) & " values, wanted 4"
+    else if gpu-probe-near (list-at (t.data) 0) 19000
+      & gpu-probe-near (list-at (t.data) 1) 22000
+      & gpu-probe-near (list-at (t.data) 2) 43000
+      & gpu-probe-near (list-at (t.data) 3) 50000
+      then "GPU Bridge: serving (2x2 matmul verified)"
+    else "GPU Bridge: wrong arithmetic (" & show (list-at (t.data) 0) & " "
+      & show (list-at (t.data) 1) & " " & show (list-at (t.data) 2) & " "
+      & show (list-at (t.data) 3) & ")"
 
 Page 1

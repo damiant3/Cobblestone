@@ -1,0 +1,161 @@
+Chapter: DiskInspector
+  cites Dev chapter HexFormat
+  cites Kernel chapter DiskFacts
+  cites Foreword chapter FactLog
+  cites Foreword chapter Maybe
+
+ The disk half of the developer debugger: what is actually on the medium,
+ as against what the fact store believes about it. The two disagreeing is
+ the case this chapter exists to make visible.
+
+ THE STORE NO LONGER STARTS AT SECTOR ZERO, and that is why every command
+ here resolves the region before it reads anything. The fact store lives
+ in a partition of its own type and addresses every sector relative to
+ that partition's base; on the shipped 16 MB image the base is 28639. A
+ superblock decode pointed at LBA 0 therefore reads the protective MBR and
+ reports no superblock about a disk that has one. The design this chapter
+ implements still describes that command as reading sectors 0 and 1, which
+ was true before the partition existed and is not true now.
+
+ THE REGION IS RESOLVED ONCE AND THREADED. `fact-store-region` takes no
+ arguments, so every mention of it runs again, and each run reads the GPT.
+ Threading the answer is the discipline the store itself follows:
+ `disk-init` and `disk-load` resolve the base once and carry it in the
+ `DiskFactStore` rather than asking per access.
+
+ EVERY SECTOR READ COSTS 512 BYTES OF HEAP THAT IS NEVER RETURNED.
+ `block-read-sector` is three instructions over the bump allocator: it
+ takes the current heap pointer as its destination and advances the heap
+ register by 512. Two consequences, and both shape the code below. A
+ comparison needs no snapshot, because two reads land on two distinct
+ buffers. And a walk of N entries costs 512N bytes until the calling
+ function returns, which is why the walk is fuel-capped rather than
+ running to the log head unconditionally.
+
+ THE EFFECT ROWS ARE NOT UNIFORM HERE, AND THE SPLIT IS NOT ARBITRARY.
+ `block-read-sector` and `block-sector-count` are builtins that declare
+ `Device.Block`, so anything calling one directly declares it too and
+ binds the result with an act-bind. Everything reached through
+ `DiskFacts` -- `fact-read-at`, `read-superblock`, `fact-store-region` --
+ declares no row, so the functions built on those declare none either.
+ The boundary belongs to that chapter rather than to this one, and
+ restating it here would be inventing a second answer to a question
+ already settled next door.
+
+ We say:
+
+Section: The Region
+
+ All three states of a region are things an operator has to be able to
+ tell apart, and two of them answer base zero. A whole-disk store really
+ does begin at LBA 0; a refusal reports base -1 and means the disk carries
+ a partition table with no fact partition in it. Printing the number alone
+ would collapse the first into the second.
+
+  di-region-line : DiskRegion -> Text
+  di-region-line (r) =
+    if r.dr-base == fact-base-refuse then "region: REFUSED -- partition table with no fact partition"
+    else if r.dr-base == fact-base-whole-disk then "region: whole disk, base 0 (unpartitioned)"
+    else "region: base " & show (r.dr-base) & ", " & show (r.dr-limit) & " sectors"
+
+Section: The Medium
+
+ The sector count is the drive's own answer, and a stuck counter reports
+ zero for every disk. Zero is also the truthful answer when no disk is
+ attached, so the two are named differently here rather than both printing
+ as a number.
+
+  di-sector-count-line : [Device.Block] Text
+  di-sector-count-line = act
+    n <- block-sector-count
+    if n <= 0 then "no disk attached (0 sectors)" else show n & " sectors, " & show (n / 2) & " KB"
+  end
+
+Section: One Sector
+
+  di-sector-lines : Integer -> [Device.Block] List Text
+  di-sector-lines (lba) = act
+    buf <- (block-read-sector lba)
+    (["LBA " & show lba] & hex-dump-lines buf 0 0 fl-sector-size)
+  end
+
+Section: Two Sectors
+
+ A compare reports the FIRST difference and both bytes, not a count. A
+ count says two sectors differ and leaves the operator to find where,
+ which is the thing they were about to go looking for. This is the same
+ shape the memory compare uses, deliberately: two commands that answer the
+ same question about different address spaces should not answer it in two
+ formats.
+
+  di-compare-line : Integer, Integer -> [Device.Block] Text
+  di-compare-line (x) (y) = act
+    bx <- (block-read-sector x)
+    by <- (block-read-sector y)
+    (di-compare-loop bx by 0)
+  end
+
+  di-compare-loop : Integer, Integer, Integer -> Text
+  di-compare-loop (x) (y) (i) =
+    if i >= fl-sector-size then "identical over " & show fl-sector-size & " bytes"
+    else if peek-byte x i /= peek-byte y i then di-compare-diff x y i
+    else di-compare-loop x y (i + 1)
+
+  di-compare-diff : Integer, Integer, Integer -> Text
+  di-compare-diff (x) (y) (i) =
+    "differ at +" & show i & ": " & hexfmt-byte-to-hex (peek-byte x i) & " vs " & hexfmt-byte-to-hex (peek-byte y i)
+
+Section: The Superblock
+
+  di-superblock-line : Superblock -> Text
+  di-superblock-line (sb) =
+    "log-head " & show (sb.log-head) & ", facts " & show (sb.fact-count) & ", gen " & show (sb.index-gen)
+
+  di-superblock-lines : DiskRegion -> List Text
+  di-superblock-lines (r) =
+    if r.dr-base == fact-base-refuse then [di-region-line r]
+    else when read-superblock (r.dr-base)
+      is None -> [di-region-line r, "no superblock at base " & show (r.dr-base)]
+      is Just (sb) -> [di-region-line r, di-superblock-line sb]
+
+  di-superblock-report : List Text
+  di-superblock-report = di-superblock-lines fact-store-region
+
+Section: The Fact Log
+
+ The walk reads HEADERS and never entry content. `scan-fact-at` is the
+ obvious primitive and it is the wrong one here: it calls
+ `disk-read-entry-content`, which allocates a buffer the size of the whole
+ fact and materialises it, so listing a log would cost the log. Kind,
+ length and timestamp are all in the entry's first sector, which the walk
+ has already paid for.
+
+ THE KIND IS REPORTED AS A RAW INTEGER. `int-to-fact-kind` answers
+ CapabilityFact for every value of four or above, so a corrupt or unknown
+ kind would be displayed as a legitimate one. An inspector that renamed
+ the thing it was inspecting would be worth less than no inspector.
+
+ A zero content length ends the walk. That is what `scan-fact-at` treats
+ as no-entry-here, and past the log head there is nothing to describe.
+
+  di-fact-line : Integer, Integer, Integer, Integer -> Text
+  di-fact-line (sector) (buf) (clen) (nsec) =
+    "+" & show sector & "  kind " & show (fl-entry-kind buf) & "  len " & show clen & "  " & show nsec & " sec  ts " & show (fl-entry-timestamp buf)
+
+  di-facts-lines : DiskRegion, Integer, Integer, Integer -> List Text
+  di-facts-lines (r) (sector) (end-sector) (fuel) =
+    if fuel <= 0 then ["(truncated at sector " & show sector & ": fuel exhausted)"]
+    else if sector >= end-sector then []
+    else let buf = fact-read-at (r.dr-base) sector
+    in let clen = fl-entry-content-len buf
+    in if clen == 0 then []
+    else let nsec = sectors-for-fact clen
+    in [di-fact-line sector buf clen nsec] & di-facts-lines r (sector + nsec) end-sector (fuel - 1)
+
+  di-facts-report : Integer -> List Text
+  di-facts-report (fuel) =
+    let r = fact-store-region
+    in if r.dr-base == fact-base-refuse then [di-region-line r]
+    else when read-superblock (r.dr-base)
+      is None -> [di-region-line r, "no superblock at base " & show (r.dr-base)]
+      is Just (sb) -> [di-region-line r] & di-facts-lines r fl-fact-log-start (sb.log-head) fuel

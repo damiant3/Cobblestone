@@ -1,7 +1,7 @@
 # codex-vm Simulated UEFI Firmware
 
 **Created**: 2026-05-23
-**Status**: Active — analysis complete, implementation not started
+**Status**: Active -- analysis complete, implementation not started
 **Motivation**: The UEFI dev console boots on QEMU+OVMF and on the
 ASUS TUF board (intermittently), but codex-vm's UEFI trap-page
 emulation is too minimal to test the full application. Source browsing
@@ -58,13 +58,13 @@ Real AMI Aptio V on this hardware reports:
 
 | Range | Type | Notes |
 |-------|------|-------|
-| 0x0 — 0x3FF | Reserved | Interrupt Vector Table |
-| 0x400 — 0x4FF | Reserved | BIOS Data Area |
-| 0x500 — 0x9FBFF | EfiConventionalMemory | Low conventional memory (~639 KB) |
-| 0x9FC00 — 0x9FFFF | Reserved | Extended BIOS Data Area (EBDA) |
-| 0xA0000 — 0xBFFFF | Reserved | VGA framebuffer |
-| 0xC0000 — 0xFFFFF | Reserved | ROM / firmware shadow |
-| 0x100000 — ~0x7EFFFFFF | EfiConventionalMemory | Main RAM (up to ~2 GB) |
+| 0x0 -- 0x3FF | Reserved | Interrupt Vector Table |
+| 0x400 -- 0x4FF | Reserved | BIOS Data Area |
+| 0x500 -- 0x9FBFF | EfiConventionalMemory | Low conventional memory (~639 KB) |
+| 0x9FC00 -- 0x9FFFF | Reserved | Extended BIOS Data Area (EBDA) |
+| 0xA0000 -- 0xBFFFF | Reserved | VGA framebuffer |
+| 0xC0000 -- 0xFFFFF | Reserved | ROM / firmware shadow |
+| 0x100000 -- ~0x7EFFFFFF | EfiConventionalMemory | Main RAM (up to ~2 GB) |
 | 0xF0000000+ | Reserved | PCI MMIO / firmware tables |
 
 Key differences from OVMF:
@@ -85,7 +85,7 @@ QEMU/OVMF (where the first Block I/O is the NVRAM flash).
 
 The PE stub uses `AllocatePages(AllocateMaxAddress, EfiLoaderCode,
 N, &0x100000)` to place code below 1 MB. On ASUS TUF, this sometimes
-fails for larger binaries — the region is small and fragmented by
+fails for larger binaries -- the region is small and fragmented by
 EBDA and legacy structures. CL 2019 added status checks (`test rax,
 rax; jz ok; hlt`) that halt cleanly on failure.
 
@@ -151,7 +151,7 @@ access. Wire this into UEFI:
 
 **Implementation**: ~60 lines C (trap handlers + protocol setup).
 
-**This alone fixes source browsing** — `fat16-read-text` uses
+**This alone fixes source browsing** -- `fat16-read-text` uses
 `LocateProtocol` to find Block I/O, reads sectors, parses FAT16.
 If codex-vm returns the disk image's Block I/O as the first protocol
 match, the dev console reads SOURCE.SRC correctly.
@@ -180,15 +180,15 @@ builtin to work, which requires fixing its assembly helper anyway.
 
 ### Phase 4: Loaded Image Protocol + Device Path
 
-1. **Loaded Image**: returns a struct describing the loaded UEFI app —
+1. **Loaded Image**: returns a struct describing the loaded UEFI app --
    image base, image size, device handle (the boot disk handle from
    Phase 2), file path.
 
-2. **Device Path**: minimal — a single EndEntire node is sufficient
+2. **Device Path**: minimal -- a single EndEntire node is sufficient
    for our purposes.
 
 3. **Install Loaded Image on the image handle** (passed as RCX to the
-   UEFI entry point — currently 0, should be a real handle).
+   UEFI entry point -- currently 0, should be a real handle).
 
 **Implementation**: ~40 lines C.
 
@@ -226,27 +226,27 @@ In UEFI mode, the canonical way is RuntimeServices.GetTime.
 
 ## Priority Order
 
-1. **Phase 1 + Phase 2** — unlocks source browsing in codex-vm via
+1. **Phase 1 + Phase 2** -- unlocks source browsing in codex-vm via
    the existing `fat16-read-text` path. No changes to the Codex
    compiler needed.
-2. **Phase 5** — realistic memory map catches allocation bugs before
+2. **Phase 5** -- realistic memory map catches allocation bugs before
    they hit real hardware.
-3. **Phase 4** — Loaded Image gives the guest a proper boot device
+3. **Phase 4** -- Loaded Image gives the guest a proper boot device
    handle for future use.
-4. **Phase 6** — GetTime replaces CMOS hacking.
-5. **Phase 3** — Simple File System only matters if/when the
+4. **Phase 6** -- GetTime replaces CMOS hacking.
+5. **Phase 3** -- Simple File System only matters if/when the
    `uefi-read-file` assembly helper is debugged.
 
 ## Estimated Size
 
 | Phase | Lines C | Depends On |
 |-------|---------|------------|
-| 1 (Handles + LocateProtocol) | ~100 | — |
+| 1 (Handles + LocateProtocol) | ~100 | -- |
 | 2 (Block I/O) | ~60 | Phase 1 |
 | 3 (Simple File System) | ~200 | Phase 2 |
 | 4 (Loaded Image + DevPath) | ~40 | Phase 1 |
-| 5 (Memory map) | ~50 | — |
-| 6 (GetTime) | ~20 | — |
+| 5 (Memory map) | ~50 | -- |
+| 6 (GetTime) | ~20 | -- |
 | **Total** | **~470** | |
 
 The VM is currently ~2600 lines. This adds ~18% to reach ~3070 lines,
@@ -255,7 +255,7 @@ keeping it well within the "small C program" design goal.
 ## What We Don't Build
 
 - **Full UEFI firmware (EDK2/OVMF)**: 500K+ lines of code. We don't
-  need a conforming implementation — we need enough to test our app.
+  need a conforming implementation -- we need enough to test our app.
 
 - **USB stack emulation**: not needed. The `-disk` flag already gives
   us a virtual boot disk.
@@ -281,10 +281,10 @@ keeping it well within the "small C program" design goal.
 
 ## References
 
-- `tools/codex-vm.c` — current VM implementation
-- `docs/Designs/Done/CODEX-VM-UEFI.md` — original UEFI trap-page design
-- `docs/Reference/UEFI_Spec_Summary.md` — PE32+ header and protocol layout
-- `docs/Designs/Active/Hardware/REAL-HARDWARE-BRINGUP.md` — broader hardware plan
+- `tools/codex-vm.c` -- current VM implementation
+- `docs/Designs/Done/CODEX-VM-UEFI.md` -- original UEFI trap-page design
+- `docs/Reference/UEFI_Spec_Summary.md` -- PE32+ header and protocol layout
+- `docs/Designs/Active/Hardware/REAL-HARDWARE-BRINGUP.md` -- broader hardware plan
 - UEFI Spec 2.10 Boot Services: https://uefi.org/specs/UEFI/2.10/07_Services_Boot_Services.html
 - UEFI Spec 2.10 Media Protocols: https://uefi.org/specs/UEFI/2.10/13_Protocols_Media_Access.html
 - AMI Aptio V architecture: commercial UEFI firmware on ASUS TUF boards

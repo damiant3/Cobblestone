@@ -9,7 +9,7 @@ RealBitcast cross-arch parity, PatchEntry.value bound, and more), and
 tracked just because it is written down.
 
 The successor to `docs/FabledTreasureMap.md`, drawn for a different
-purpose. The old map recorded treasure found in passing — deferred
+purpose. The old map recorded treasure found in passing -- deferred
 wins an agent tripped over while digging for something else. This map
 is deliberate: work that is **scoped well enough to delegate**, so
 senior agents stay on the high-level, high-risk features. The
@@ -18,7 +18,7 @@ quartermaster divides the work; the crew digs.
 Every entry is a dig another agent can execute end-to-end: the
 coordinates are precise, the acceptance gates are named, and the
 standing policies that govern it are linked. If an entry needs a
-ruling mid-dig, stop and ask Damian — do not improvise past a policy.
+ruling mid-dig, stop and ask Damian -- do not improvise past a policy.
 
 Entry format: what / the win / the dig / crew notes / pointers.
 
@@ -28,10 +28,10 @@ Entry format: what / the win / the dig / crew notes / pointers.
    before you start, so two agents don't dig the same hole.
 2. Follow the gates. Anything touching `codex/` runs the full dance:
    one-pass fixed point, battery, self-verify if a seed ships
-   (`build/test-self-verify.ps1` — the verify chain is NOT in the
+   (`build/test-self-verify.ps1` -- the verify chain is NOT in the
    battery surface). Plug work rebuilds the plug and runs the
    cross-arch tests. Doc/harness work still gets a review.
-3. Standing policies bind every dig — do not re-litigate:
+3. Standing policies bind every dig -- do not re-litigate:
    - Bounds are contracts. Never delete or widen a bound to silence a
      diagnostic; prove the range or assert it with `__narrow`.
    - No regex search-replace. Grep selects candidate lines; every
@@ -68,7 +68,7 @@ CDX2051 hit: read the site, then either prove the range (bound the
 source, use a provable expression) or assert it with `__narrow` at
 the store. Never delete the bound. Expect mostly-mechanical fixes;
 the CoAP precedent needed exactly one `__narrow` (CL 6759). Note the
-batch REPL timeout class (entry 12) — a timeout is not a CDX2051
+batch REPL timeout class (entry 12) -- a timeout is not a CDX2051
 failure; compile stubborn tests individually via `build/compile.ps1`.
 
 **Crew notes:** Junior-friendly, parallelizable by app/foreword
@@ -83,12 +83,12 @@ family. No seed change expected (source-level fixes only).
 giving constructor parameters real bounds: declare the bound on the
 ctor param, drop the `__narrow` off the store, and make every caller
 prove. The CAMPAIGN RULE is binding: **convert a constructor only
-when its ENTIRE caller set — apps included — proves or is swept in
+when its ENTIRE caller set -- apps included -- proves or is swept in
 the same CL.** A 30-site app survey exists (GopRender 14, CvmmTheme
 6, ...) showing which chapters receive computed values and therefore
 need their app sweep bundled.
 
-**The win:** Constructor boundaries stop being cosmetic — the same
+**The win:** Constructor boundaries stop being cosmetic -- the same
 stage-A/stage-B enforcement functions get at fields and function
 boundaries, extended to construction. Each converted chapter is a
 permanent contract.
@@ -101,7 +101,7 @@ whose callers all pass literals are quick wins; compositor-new /
 widget-custom-class need their app sweeps bundled.
 
 **Crew notes:** Mechanical once the rule is internalized, but the
-caller-set enumeration must be exhaustive — a missed caller is a
+caller-set enumeration must be exhaustive -- a missed caller is a
 runtime trap (stage-B guards are callee-side). Parallelizable by
 chapter with claimed-chapter coordination. Compiler-source chapters
 change the seed: full gates + self-verify.
@@ -110,36 +110,36 @@ change the seed: full gates + self-verify.
 
 ### 6. Known-defect tests (two standalone digs)
 
-From `docs/ExaminersAssay.md` Known Defects — each independent.
-(6a duplicate-`Event` and 6b historian-test are RESOLVED — see Claimed.)
+From `docs/ExaminersAssay.md` Known Defects -- each independent.
+(6a duplicate-`Event` and 6b historian-test are RESOLVED -- see Claimed.)
 
-- **6c. db-full-test — mystery SOLVED, test repaired, un-skip
+- **6c. db-full-test -- mystery SOLVED, test repaired, un-skip
   blocked on BulkLoader + expected adjudication (blu, 2026-07-09).**
   The "CDX1000 token
   mismatch in Server.codex only when concatenated" note was a
   misattribution from stale line-mapping: the real errors were (a)
   CDX1070 multi-line applications in the TEST itself (query args on
-  following lines — pre-dates the newline-application rule), (b)
+  following lines -- pre-dates the newline-application rule), (b)
   btree-insert/btree-range-scan/page-insert API rot (test used old
   record-result fields .bt-tree/.page/.rs-count; current APIs return
-  tuples — rewrote with the depot's `let (x, _) =` idiom), (c)
+  tuples -- rewrote with the depot's `let (x, _) =` idiom), (c)
   sha256-hex name rot (never existed in the Sha256 foreword; added a
   Text->Text helper to Security composing
   sha256-to-hex/sha256/text-to-bytes, same composition Backup line 94
   already uses), (d) CDX2000 chained generic-field access in
-  Backup.codex backup-count-pages `((e.value).cat-heap)` — fixed by
+  Backup.codex backup-count-pages `((e.value).cat-heap)` -- fixed by
   binding first, the file's own idiom. Also converted 48 print-line
   calls to print-line-uni (output was raw CCE). Test now compiles and
   runs all 48 sections; after the entry-16 miscompile fix (Claimed)
   the plan-cache line matches too, so 39/48 lines match `.expected`.
   Adjudication of the 9 remaining divergences: the `.expected` was
-  HAND-AUTHORED (test never compiled, so never ran) — several
+  HAND-AUTHORED (test never compiled, so never ran) -- several
   "divergences" are correct current behavior (nl-join 12 = 4 Eng
   emps x 3 depts; left-join is by-design first-match-per-left-row;
   bp evictions=0 because bp-fetch pins and the test never unpins so
   no victim exists). Remaining blockers before un-skip: bulk-import
   loading 0 rows + bulk-insert clobbering bi-ok=True over inner
-  failure (BulkLoader.codex bulk-insert always returns bi-ok=True —
+  failure (BulkLoader.codex bulk-insert always returns bi-ok=True --
   real defect), and final `.expected` refresh after that fix plus a
   per-line semantics verdict on joins/mvcc/colstore/backup.
 
@@ -186,7 +186,7 @@ RISC-V bitcast mirrors the same week the map was drawn (main CL 6728,
 pending Renode"). `real-bitcast.codex` + `.expected` exist in the
 battery tree, `rv-fmv-x-d` / FMOV forms are live in both codegens.
 Residual dig: run the ARM64 + RISC-V cross batteries and confirm
-real-bitcast passes on Renode — that closes the entry for good.
+real-bitcast passes on Renode -- that closes the entry for good.
 
 **What (historical):** IEEE-754 bit-pattern intrinsics for Real landed
 on x86-64 (acceptance 5/5 f64, 5/5 f32). The ARM64 and RISC-V plugs do
@@ -199,14 +199,14 @@ float-serialization-shaped.
 **The dig:** Mirror the x86-64 emission in each plug (FMOV
 general<->vector on ARM64; fmv.x.d / fmv.d.x on RISC-V), port the
 acceptance test to the cross harness, run the cross battery. Plug
-rebuild only — no seed.
+rebuild only -- no seed.
 
 **Crew notes:** Medium; ideal for an agent already fluent in the
 plug codegen files (the val/reek pattern).
 
 **Pointers:** `codex/plugs/arm64/`, `codex/plugs/riscv/`.
 
-### 8. ARM64 register allocator — local recycling
+### 8. ARM64 register allocator -- local recycling
 
 **Status: OVERTAKEN (audit blu, 2026-07-09).** Arm64CodeGen already
 carries the pressure-site recycling shape: `peak-local` +
@@ -214,7 +214,7 @@ carries the pressure-site recycling shape: `peak-local` +
 `a64-compute-save-pairs` sized from peak, and next-local recycle at
 the user-call staging site (~line 1116). CAUTION for any future work
 here: the RISC-V PER-EXPRESSION recycling variant was reverted as
-unsound (val 6875/6909/6928, main 6939 — TCO frameless-mode leak
+unsound (val 6875/6909/6928, main 6939 -- TCO frameless-mode leak
 clobbered caller locals); the pressure-site variant is the standing
 design. Residual dig: a regstress-style bench + ARM64 cross battery
 run to pin the behavior, if anyone wants the receipt.
@@ -226,7 +226,7 @@ template (peak-local tracking + recycling at the binary/user-call
 pressure sites, CL 6401, main 6409).
 
 **The win:** Same as RISC-V: call-valued-argument staging stops
-spilling past the callee-saved set — a real app-code win even
+spilling past the callee-saved set -- a real app-code win even
 though the 8 micro-benches won't move (they didn't on RISC-V;
 that's expected, not failure).
 
@@ -252,13 +252,13 @@ ARM64/RISC-V backends.
 **The win:** Multi-core Codex on every architecture we emit; unblocks
 cross-arch parity for the scheduler/channel test family.
 
-**The dig:** Two phases per arch: (1) atomic builtins — LDAXR/STLXR
+**The dig:** Two phases per arch: (1) atomic builtins -- LDAXR/STLXR
 or LSE on ARM64, LR/SC + AMO on RISC-V, mapped from the same six
-builtin facts; (2) AP boot — PSCI or spin-table on ARM64, HART start
+builtin facts; (2) AP boot -- PSCI or spin-table on ARM64, HART start
 via SBI/CLINT on RISC-V, mirroring the x86 INIT/SIPI + stack-table
 shape. Gate on Renode/QEMU SMP boots plus the channel tests.
 
-**Crew notes:** Large — the biggest dig on the map; split by arch,
+**Crew notes:** Large -- the biggest dig on the map; split by arch,
 or atomics-first (useful alone) then boot. Needs plug + OS-layer
 fluency. Not tracked anywhere else.
 
@@ -266,9 +266,9 @@ fluency. Not tracked anywhere else.
 `codex/os/sched/` + `docs/ArchitectsSketchbook.md` (SMP Memory
 Model).
 
-### 10. DynamicSurvey Phase 1 — auto-retry on deck overflow
+### 10. DynamicSurvey Phase 1 -- auto-retry on deck overflow
 
-**Status: CLOSED — OBSOLETE (blu, 2026-07-07).** The entire survey
+**Status: CLOSED -- OBSOLETE (blu, 2026-07-07).** The entire survey
 system (multipliers, SurveyConfig, the `-Survey` knob, the Phase-1
 retry) was deleted when the demand-paged arena shipped (blu 7190-7198,
 seed DDAB0BD2...). Decks are fixed generous floors; physical memory
@@ -281,7 +281,7 @@ ARM64/RISC-V boards, and an adversarial +86KB growth pingpong are
 green on it. If your stream carries a diverged seed, REBUILD from
 merged source per PerforceProcess (do not resolve -at a seed). New
 invariant if you write spawn/stack code: a stack must never point
-into a not-present page — pre-touch in-heap stack carves (see the
+into a not-present page -- pre-touch in-heap stack carves (see the
 Page Fault Handler prose in X86_64Boot).
 
 Original entry (historical):
@@ -290,9 +290,9 @@ multipliers. What remained was Phase 2 (sidecar measure-and-feed-back)
 and Phase 3 (compiler-internal proportional survey).
 
 **What:** Survey multipliers are static; unusually dense source
-overflows a phase deck (CDX9002, now a clean error halt). Phase 1 —
+overflows a phase deck (CDX9002, now a clean error halt). Phase 1 --
 catch CDX9002 in the harness and retry with raised multipliers via
-the existing `-Survey` override — is designed and unbuilt. Related
+the existing `-Survey` override -- is designed and unbuilt. Related
 annoyance: `MEASURE`/measure-survey overflows
 in TEXT mode on the full self-source, which blocked measuring the
 ctor-packing win (old map #1).
@@ -312,12 +312,12 @@ no seed change for Phase 1.
 **Pointers:** `build/compile.ps1` `-Survey` flag, CDX9002 in
 `docs/ArchitectsSketchbook.md` (CHECK Deck Overflow).
 
-### 11. GPU Globe bundle — PTX ABI fix and scene completion
+### 11. GPU Globe bundle -- PTX ABI fix and scene completion
 
 **RE-SCOPED (audit blu, 2026-07-09):** shelved CL 6166 no longer
 exists (the shelf is gone; the app files must be re-created or
 recovered from whoever holds them). The PTX plug was reworked since
-the entry was drawn — Real-is-f64 (blu 7319, main 7321), entry-drop
+the entry was drawn -- Real-is-f64 (blu 7319, main 7321), entry-drop
 index fix, `kernel-`/`gpu-` prefixes now emit `.entry`. Whether the
 `%lv_` cross-call corruption survives that rework is UNKNOWN: the
 first step of this dig is now to re-run the minimal two-function
@@ -345,12 +345,12 @@ Then the three follow-ups in order.
 
 **Crew notes:** Medium-high; natural fit for the agent already in
 the GPU/PTX files (reek's FontExplorer stream uses the same plug).
-Coordinate before unshelving 6166 — it is blu's shelf.
+Coordinate before unshelving 6166 -- it is blu's shelf.
 
 **Pointers:** `codex/plugs/` PTX emitter, shelved
 CL 6166, `apps/globe/run.ps1`.
 
-### 13. Spark WebGPU Studio — wat2wasm blocker
+### 13. Spark WebGPU Studio -- wat2wasm blocker
 
 **What:** CurrentPlan gap 8: Spark WebGPU Studio is blocked on
 `wat2wasm` reporting an undefined function `$AbsorbedDose`. A unit-
@@ -380,7 +380,7 @@ write). Deliberately left as fester's call.
 **The win:** One more honest contract; consistency with the ruling
 that bounds are documentation + store checks.
 
-**The dig:** Tiny — bound the field, prove/`__narrow` the writers,
+**The dig:** Tiny -- bound the field, prove/`__narrow` the writers,
 gates. Belongs to fester by prior claim; anyone else coordinate
 first.
 
@@ -427,7 +427,7 @@ updates before its logic.
 
 ## Conditional digs (armed, not urgent)
 
-These have explicit trigger conditions from prior verdicts — do not
+These have explicit trigger conditions from prior verdicts -- do not
 dig early:
 
 - **Scoped-effect TEXT printing + round-trip probe harness** (old
@@ -445,27 +445,27 @@ dig early:
 
 ## Held back (not for the crew)
 
-Deliberately NOT on this map — high-risk, fixed-point-critical, or
+Deliberately NOT on this map -- high-risk, fixed-point-critical, or
 awaiting a Damian ruling. Listed so nobody claims them by accident:
 
 - **Emit-side range propagation** (`ir-expr-proven-range` trusting
-  bounded params to elide downstream checks) — fixed-point-critical
+  bounded params to elide downstream checks) -- fixed-point-critical
   emitter surgery; BoundedSignatures design section 7.
 - **C2 register family bounding** (reg/slot/ptr-loc, the hottest
-  emitter functions; inliner-exclusion perf interaction) — flagged
+  emitter functions; inliner-exclusion perf interaction) -- flagged
   HIGHER RISK in the workplan.
 - **Full effect-row subtyping** (effect variables in unification,
-  polarity threading) — a compiler item; touches the unifier's
+  polarity threading) -- a compiler item; touches the unifier's
   core.
 - **Vision-check adversarial probe DESIGN** ("fulfill
-  the vision check") — designing probes that try to break the
+  the vision check") -- designing probes that try to break the
   by-construction claims is senior work; executing a designed probe
   catalog is delegatable and will be mapped when the designs exist.
   Status: the LINEAR leg's stage 0 is done (blu CL 6819, nine open
   routes); capabilities and punctual legs remain. The LinearOwnership
   FIX campaign stays held back until its design is ruled.
 - **CDX2051-class promotion decisions** and any change to what the
-  bounds-contract policy means — rulings, not digs.
+  bounds-contract policy means -- rulings, not digs.
 
 ---
 
@@ -600,13 +600,13 @@ awaiting a Damian ruling. Listed so nobody claims them by accident:
   rebuilt + self-verifies; full default battery 294/0/15. Memory + time: O(1)
   added comparison, no allocation.
 - **6d. db-test heap overflow** -- blu, RESOLVED 2026-07-09. The 2 GB heap-scan
-  overflow is GONE under the demand-paged arena — compiles, runs in
+  overflow is GONE under the demand-paged arena -- compiles, runs in
   the standard 3072 MB VM, and is UN-SKIPPED in the default battery
   (new baseline 341/327/0/14). The old `.expected` was captured from
-  a buggy run that silently dropped row 2 ("Bob") — select-all showed
+  a buggy run that silently dropped row 2 ("Bob") -- select-all showed
   2 of 3 rows and group sums matched the loss; current output has all
   3 rows with correct arithmetic; `.expected` refreshed to the
-  verified-correct output. No code change — sidecar-only.
+  verified-correct output. No code change -- sidecar-only.
 - **12. Batch REPL scalability (-Apps timeouts)** -- blu, CLOSED-OBSOLETE
   2026-07-09. The ~118-timeout class
   no longer exists. A fresh full `-Apps -Jobs 8` sweep (post CL 7415,

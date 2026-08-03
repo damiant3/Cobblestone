@@ -85,7 +85,17 @@ function Get-Gray([int]$x, [int]$y) {
 function Get-Otsu([int[]]$hist, [int]$total) {
   $sum = 0.0
   for ($i = 0; $i -lt 256; $i++) { $sum += $i * $hist[$i] }
-  $sumB = 0.0; $wB = 0; $best = 0.0; $thr = 128
+  # Keep the RANGE of thresholds that achieve the maximum, and answer its
+  # midpoint. A screenshot is perfectly bimodal -- every sample is 0 or 255
+  # and nothing lands in between -- so every t in 0..254 splits the histogram
+  # the same way and scores identically. Keeping the first maximum (a strict
+  # -gt and nothing else) answered 0, the module test `gray < 0` was never
+  # true, every module read light, and a pixel-perfect capture decoded as
+  # nothing while a blurry photo of the same screen decoded fine: noise
+  # populates the valley and drags the maximum to a sane place. The midpoint
+  # is that sane place by construction, and on a photo the maximum is a
+  # single sharp t, where lo = hi and this is what it always was.
+  $sumB = 0.0; $wB = 0; $best = -1.0; $lo = 128; $hi = 128
   for ($t = 0; $t -lt 256; $t++) {
     $wB += $hist[$t]
     if ($wB -eq 0) { continue }
@@ -95,9 +105,10 @@ function Get-Otsu([int[]]$hist, [int]$total) {
     $mB = $sumB / $wB
     $mF = ($sum - $sumB) / $wF
     $between = [double]$wB * $wF * ($mB - $mF) * ($mB - $mF)
-    if ($between -gt $best) { $best = $between; $thr = $t }
+    if ($between -gt $best) { $best = $between; $lo = $t; $hi = $t }
+    elseif ($between -eq $best) { $hi = $t }
   }
-  return $thr
+  return [int](($lo + $hi) / 2)
 }
 
 $hist = New-Object int[] 256

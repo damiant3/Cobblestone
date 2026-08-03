@@ -1,0 +1,182 @@
+Chapter: MacroRunTest
+  cites Works chapter DevConsole
+  cites Works chapter DevConsoleBoot
+  cites Works chapter DevConsoleMenu
+  cites Works chapter UefiConsole
+  cites Works chapter KeyManager
+  cites Kernel chapter DiskFacts
+  cites Foreword chapter FactStore
+  cites Foreword chapter Sha256
+  cites Dev chapter Macro
+  cites Dev chapter PortTrace
+
+ Macros through the console's own door, which is the only way to prove the
+ commands in a body actually RAN. `macro-table` next door tests the table
+ and the splitter as pure functions and cannot tell a body that executed
+ from one that was merely stored.
+
+ THE PROOF THAT A BODY RAN IS A SIDE EFFECT THE MACRO LEAVES BEHIND. The
+ macro here ends with a command that moves the debugger's cursor, so the
+ cursor's value after `macro.run` is evidence no status line could give:
+ the runner's own summary would read the same whether it executed three
+ commands or none.
+
+ THE NESTING REFUSAL IS THE ONE BOUND ON RECURSION and is exercised
+ directly, because a macro that runs a macro is the failure that hangs the
+ machine rather than reporting anything. It is checked two ways: a body
+ containing `macro.run` is refused mid-run, and the flag is confirmed
+ CLEAR afterwards -- a refusal that left the flag set would refuse every
+ macro for the rest of the session, which is a worse defect than the one
+ being prevented and would pass a test that only checked the refusal.
+
+ REPEAT IS COUNTED BY EFFECT, not by its summary. The repeated command
+ moves the cursor by a fixed step, so running it three times lands
+ somewhere only three executions could reach.
+
+ We say:
+
+Section: Fixtures
+
+  bare-console : UefiConsoleState
+  bare-console = UefiConsoleState {
+    sys-table = 0,
+    con-out = 0,
+    con-in = 0,
+    rows = 25,
+    cols = 80,
+    cursor-row = 0,
+    cursor-col = 0
+  }
+
+  bare-disk : DiskFactStore
+  bare-disk = DiskFactStore { superblock = empty-superblock, mem = fact-store-empty, base = 0, limit = 0 }
+
+  bare-keys : Keypair
+  bare-keys = generate-keypair (sha256 (text-to-bytes "codex-macro-run-test"))
+
+Section: Reporting
+
+  report : Text, DevConsoleState -> [Console] Nothing
+  report (label) (s) = act
+    print-line-uni (label & ": " & s.status)
+  end
+
+  cursor : Text, DevConsoleState -> [Console] Nothing
+  cursor (label) (s) = act
+    print-line-uni (label & ": cursor=" & show (s.debugger.last-address) & " running=" & show (s.debugger.macro-running))
+  end
+
+Section: Body
+
+  opening : [Console, Device.Port, Device.Block] Nothing = act
+    let s0 = dev-console-init bare-console bare-disk bare-keys
+    in let d0 = dispatch-main-menu "debug" s0
+    in act
+
+      a <- handle-console-input d0 "1000"
+      cursor "start" a
+
+      d1 <- handle-console-input a "macro.def"
+      report "def-armed" d1
+      d2 <- handle-console-input d1 "step"
+      report "name-taken" d2
+      d3 <- handle-console-input d2 "2000 ; 3000"
+      report "defined" d3
+
+      l <- handle-console-input d3 "macro.list"
+      print-line-uni ("list: " & list-at (l.debugger.report-lines) 0)
+
+      r1 <- handle-console-input l "macro.run"
+      report "run-armed" r1
+      r2 <- handle-console-input r1 "step"
+      report "ran" r2
+      cursor "after-run" r2
+
+      m1 <- handle-console-input r2 "macro.run"
+      m2 <- handle-console-input m1 "nope"
+      report "absent" m2
+
+      n1 <- handle-console-input m2 "macro.def"
+      n2 <- handle-console-input n1 "loop"
+      n3 <- handle-console-input n2 "4000 ; macro.run ; loop"
+      report "nest-defined" n3
+      n4 <- handle-console-input n3 "macro.run"
+      n5 <- handle-console-input n4 "loop"
+      report "nest-ran" n5
+      cursor "after-nest" n5
+
+      p1 <- handle-console-input n5 "5000"
+      p2 <- handle-console-input p1 "repeat"
+      report "repeat-armed" p2
+      p3 <- handle-console-input p2 "3 $ + 100"
+      report "repeated" p3
+      cursor "after-repeat" p3
+
+      q1 <- handle-console-input p3 "repeat"
+      q2 <- handle-console-input q1 "99 mem"
+      report "repeat-over" q2
+
+ The CPU commands go through the same door, and the leaf cursor is
+ checked the way the others are: a refused leaf must leave it where it
+ was, so the `$` after a refusal still means the last leaf that existed.
+
+      u1 <- handle-console-input q2 "cpu.cr"
+      report "cpu-cr" u1
+      print-line-uni ("cpu-cr-lines: " & show (list-length (u1.debugger.report-lines)))
+
+      u2 <- handle-console-input u1 "cpu.feat"
+      report "cpu-feat" u2
+      print-line-uni ("cpu-feat-lines: " & show (list-length (u2.debugger.report-lines)))
+
+      u3 <- handle-console-input u2 "cpu.cpuid"
+      report "cpuid-armed" u3
+      u4 <- handle-console-input u3 "1"
+      report "cpuid-leaf1" u4
+      print-line-uni ("leaf-cursor: " & show (u4.debugger.last-leaf))
+
+      u5 <- handle-console-input u4 "cpu.cpuid"
+      u6 <- handle-console-input u5 "4096"
+      report "cpuid-refused" u6
+      print-line-uni ("leaf-cursor-after-refusal: " & show (u6.debugger.last-leaf))
+
+ The port commands go through the same door too, and NOTHING HERE PRINTS
+ A BYTE THAT CAME OFF THE WIRE. COM1's line status differs between hosts
+ and between boots, so the status line after a read is not shown and the
+ trace line is cut before its value: what is asserted is that the access
+ was recorded, at the port asked for, and that the ring empties on
+ command.
+
+      v1 <- handle-console-input u6 "io.trace"
+      report "trace-on" v1
+      v2 <- handle-console-input v1 "io.r"
+      report "read-armed" v2
+      v3 <- handle-console-input v2 "0x3fd"
+      print-line-uni ("trace-count: " & show (pt-count (v3.debugger.port-trace)))
+
+      v4 <- handle-console-input v3 "io.trace.show"
+      print-line-uni ("trace-header: " & list-at (v4.debugger.report-lines) 0)
+      print-line-uni ("trace-line: " & substring (list-at (v4.debugger.report-lines) 1) 0 10)
+
+      v5 <- handle-console-input v4 "io.trace.clear"
+      report "trace-cleared" v5
+      print-line-uni ("count-after-clear: " & show (pt-count (v5.debugger.port-trace)))
+
+      v6 <- handle-console-input v5 "io.trace.off"
+      v7 <- handle-console-input v6 "io.r"
+      v8 <- handle-console-input v7 "0x3fd"
+      print-line-uni ("disarmed-records-nothing: " & show (pt-count (v8.debugger.port-trace)))
+
+      w1 <- handle-console-input v8 "io.watch"
+      report "watch-armed" w1
+      w2 <- handle-console-input w1 "0x3f6"
+      report "watched" w2
+      w3 <- handle-console-input w2 "io.r"
+      w4 <- handle-console-input w3 "0x1ffff"
+      report "port-refused" w4
+
+      c <- handle-console-input w4 "macro.clear"
+      report "cleared" c
+      cl <- handle-console-input c "macro.list"
+      print-line-uni ("list-after-clear: " & list-at (cl.debugger.report-lines) 0)
+    end
+  end

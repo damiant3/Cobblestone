@@ -1,4 +1,4 @@
-# 10 — Engineering Principles
+# 10 -- Engineering Principles
 
 ## The Rules We Follow
 
@@ -14,11 +14,11 @@ Every milestone produces a system that does something real. Not a library that w
 
 The bootstrap compiler does not need to be fast. It needs to be correct. A type checker that takes 10 seconds but produces correct results is infinitely more valuable than one that takes 100ms but has edge cases. Performance optimization comes after correctness is proven by tests.
 
-Exception: if performance makes development painful (> 30 seconds to type-check a small program), we fix it — but we fix it by profiling and targeted optimization, not by compromising correctness.
+Exception: if performance makes development painful (> 30 seconds to type-check a small program), we fix it -- but we fix it by profiling and targeted optimization, not by compromising correctness.
 
 ### 3. Types Are the Specification
 
-The type system is the most important design artifact. Everything else — the syntax, the prose model, the backends — serves the type system. If a design decision weakens the type system, it is probably wrong. If it strengthens the type system, it is probably right.
+The type system is the most important design artifact. Everything else -- the syntax, the prose model, the backends -- serves the type system. If a design decision weakens the type system, it is probably wrong. If it strengthens the type system, it is probably right.
 
 ### 4. Diagnostics Are a Feature
 
@@ -32,7 +32,7 @@ A type error that says `cannot unify ?a with Integer` is a bug. A type error tha
 
 ### 5. Immutability by Default
 
-All data representations are immutable. AST nodes, IR nodes, types, facts — all immutable. Builders and accumulators are mutable during construction, then frozen. This eliminates entire categories of bugs and makes parallel processing safe.
+All data representations are immutable. AST nodes, IR nodes, types, facts -- all immutable. Builders and accumulators are mutable during construction, then frozen. This eliminates entire categories of bugs and makes parallel processing safe.
 
 ### 6. Test What Matters
 
@@ -52,7 +52,7 @@ The temptation in a compiler project is to over-abstract everything (visitor pat
 
 ### 8. The Vision Documents Are North Stars, Not Specifications
 
-`NewRepository.txt` and `IntelligenceLayer.txt` describe the destination. These planning documents describe the route. When the vision says something that is impractical to implement in the current milestone, we defer it — we do not compromise the current milestone trying to reach the vision prematurely.
+`NewRepository.txt` and `IntelligenceLayer.txt` describe the destination. These planning documents describe the route. When the vision says something that is impractical to implement in the current milestone, we defer it -- we do not compromise the current milestone trying to reach the vision prematurely.
 
 ### 9. One Thing at a Time
 
@@ -82,7 +82,7 @@ This project builds on decades of programming language research. Before implemen
 - Use `ImmutableArray<T>` for collections in immutable types
 - Use `readonly record struct` for small value types (Span, ContentHash)
 - Pattern matching (`switch` expressions) over visitor pattern where possible
-- `nullable` annotations enabled — no null surprises
+- `nullable` annotations enabled -- no null surprises
 - No `var` for complex types where the type is not obvious from context
 
 ### File Organization
@@ -94,7 +94,7 @@ This project builds on decades of programming language research. Before implemen
 ### Project References
 
 - Projects reference only what they need (no transitive dependency assumptions)
-- `Codex.Core` is referenced by everything — keep it small
+- `Codex.Core` is referenced by everything -- keep it small
 - Test projects reference their subject + `Codex.Core`
 
 ---

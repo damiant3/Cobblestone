@@ -37,10 +37,10 @@ the bytecode count.
 | fact     | 13    | 16    | 15    | 16     | 15     | 16 bc   |
 | gcd      | 11    | 18    | 14    | 11     | 9      | 15 bc   |
 | sum      | 8     | 20    | 23    | 9      | 4      | 17 bc   |
-| ack      | 24    | 28    | 21    | —      | —      | —       |
-| tak      | 42    | 35    | 39    | —      | —      | —       |
-| collatz  | 14    | 28    | 18    | —      | —      | —       |
-| locals   | 54    | 47    | 73    | —      | —      | —       |
+| ack      | 24    | 28    | 21    | --      | --      | --       |
+| tak      | 42    | 35    | 39    | --      | --      | --       |
+| collatz  | 14    | 28    | 18    | --      | --      | --       |
+| locals   | 54    | 47    | 73    | --      | --      | --       |
 
 Tier 2 (CL pending): pure-leaf arg-register allocation. A no-call
 self-recursive tail loop with one or two parameters and no locals beyond
@@ -119,21 +119,21 @@ Starting point (CL 3091): fib 107, fact 79, gcd 79, sum 82.
 | 3746 | IrRemInt + leaf inliner (math-mod inline) | 23 | 17 | 23 | 14 | +20346 B |
 | 3839 | tails-all-direct TCO temp elision | 23 | 17 | 23 | 14 | +1426 B |
 | 3845 | commutative both-complex shortcut (pop+op) | 21 | 17 | 23 | 14 | +408 B |
-| 6205 | emit-and-push for multi-arg calls | 21 | 15 | 17 | 14 | — |
-| 6206 | reg-reg comparison fusion in dest-driven if | 21 | 15 | 17 | 14 | — |
-| 6207 | direct arg-reg emission for simple args | 21 | 15 | 17 | 14 | — |
-| 6210 | power-of-2 div/rem strength reduction | 21 | 15 | 17 | 14 | — |
-| 6212 | left-literal commute + test-mask fusion | 21 | 15 | 17 | 14 | — |
-| 6216 | tco-max-complex match/act traversal | 21 | 15 | 17 | 14 | — |
-| 6220 | dead jump elimination after TCO branches | 21 | 15 | 17 | 14 | — |
-| 6222 | TCO direct div/rem pow2 | 21 | 15 | 17 | 14 | — |
-| 6227 | dest-driven TCO fallback + relaxed direct-tail-binop | 21 | 15 | 17 | 14 | — |
-| 6229 | single-complex TCO routing (no temp-locals guard) | 21 | 15 | 17 | 14 | — |
-| 6233 | tco-max-complex temp reduction with safety nets | 21 | 15 | 17 | 14 | — |
-| 6236 | merge adjacent unused-push NOPs into 4-byte NOP | 21 | 15 | 17 | 14 | — |
-| 6243 | relax leaf-args-all-bound (name+/-literal accepted) | 21 | 15 | 17 | 14 | — |
-| 6356 | Tier 1: in-place reg-left/reg-right folds + TCO spill-to-param | 21 | 13 | 17 | 14 | — |
-| pend | Tier 2: pure-leaf arg-register allocation (no push/pop) | 21 | 13 | 11 | 8 | — |
+| 6205 | emit-and-push for multi-arg calls | 21 | 15 | 17 | 14 | -- |
+| 6206 | reg-reg comparison fusion in dest-driven if | 21 | 15 | 17 | 14 | -- |
+| 6207 | direct arg-reg emission for simple args | 21 | 15 | 17 | 14 | -- |
+| 6210 | power-of-2 div/rem strength reduction | 21 | 15 | 17 | 14 | -- |
+| 6212 | left-literal commute + test-mask fusion | 21 | 15 | 17 | 14 | -- |
+| 6216 | tco-max-complex match/act traversal | 21 | 15 | 17 | 14 | -- |
+| 6220 | dead jump elimination after TCO branches | 21 | 15 | 17 | 14 | -- |
+| 6222 | TCO direct div/rem pow2 | 21 | 15 | 17 | 14 | -- |
+| 6227 | dest-driven TCO fallback + relaxed direct-tail-binop | 21 | 15 | 17 | 14 | -- |
+| 6229 | single-complex TCO routing (no temp-locals guard) | 21 | 15 | 17 | 14 | -- |
+| 6233 | tco-max-complex temp reduction with safety nets | 21 | 15 | 17 | 14 | -- |
+| 6236 | merge adjacent unused-push NOPs into 4-byte NOP | 21 | 15 | 17 | 14 | -- |
+| 6243 | relax leaf-args-all-bound (name+/-literal accepted) | 21 | 15 | 17 | 14 | -- |
+| 6356 | Tier 1: in-place reg-left/reg-right folds + TCO spill-to-param | 21 | 13 | 17 | 14 | -- |
+| pend | Tier 2: pure-leaf arg-register allocation (no push/pop) | 21 | 13 | 11 | 8 | -- |
 
 Tier 1 (CL 6356) drops a redundant `mov` in three spots: commutative
 local-OP-complex folds into the dead temp (`emit-binary-reg-left`), the
@@ -533,17 +533,17 @@ See `docs/Reference/AiComp/OPPORTUNITIES.md` for the full assessment.
 
 That document is the direct sequel to this one, and it answers the question this
 file has been circling for thirty CLs. This file's "Priority for Next
-Optimization Work" ends at **item 5, the linear-scan register allocator —
+Optimization Work" ends at **item 5, the linear-scan register allocator --
 "the full solution... largest effort but largest reward."** The ai-comp reading
 says that item is mispriced, and says why:
 
 **A linear-scan allocator assigns registers to live intervals over a linear
 instruction list. We have no linear instruction list.** `IRExpr`
-(`IR/IRChapter.codex:23`) is a name-based expression *tree* — `IrLet (Text)
-(CodexType) (IRExpr) (IRExpr)`, `IrIf` with subexpression arms — with no basic
+(`IR/IRChapter.codex:23`) is a name-based expression *tree* -- `IrLet (Text)
+(CodexType) (IRExpr) (IRExpr)`, `IrIf` with subexpression arms -- with no basic
 blocks, no SSA, and shadowing `Text` bindings. The linear sequence first exists
 as machine bytes, far too late to allocate over. So Option A is not "add a pass";
-it is **"add an IR level"** — the equivalent of ai-comp's `hir-to-lir` —
+it is **"add an IR level"** -- the equivalent of ai-comp's `hir-to-lir` --
 and that flattening is the bulk of the work, not the allocator on top of it.
 
 This also explains the plateau recorded above (fib/fact/gcd/sum unchanged from
@@ -553,7 +553,7 @@ missing peephole, and twenty CLs of evidence say so.
 
 The cheap half is real, though: nine of ai-comp's sixteen passes run on a
 *structured tree* much like our IRExpr (their HIR is also `ForLoop`/`If`, not a
-CFG), and are portable to the IR we have today — simplify, CSE, DCE, load-elim,
+CFG), and are portable to the IR we have today -- simplify, CSE, DCE, load-elim,
 range analysis. The sleeper is the range analysis: our bounds prover
 `aexpr-proven-range` (`Types/TypeCheckerInference.codex:742`) is a degenerate
 version of theirs, with no loop fixpoint, no widening, and no branch refinement.
@@ -563,13 +563,13 @@ Filed as the middle-end campaign.
 
 See `docs/Reference/IRISA_Research_Harvest.md` for full context.
 
-### PACAP — WCET Analysis Beyond Instruction Count
+### PACAP -- WCET Analysis Beyond Instruction Count
 
 The PACAP team (IRISA D3) studies Worst-Case Execution Time analysis
 for real-time systems. Our instruction-count metric (this document) is
 a proxy for execution time but misses pipeline effects, cache behavior,
 and instruction latency variation. PACAP's techniques give
-cycle-accurate bounds on specific hardware — this would let the
+cycle-accurate bounds on specific hardware -- this would let the
 punctual budget (CDX6011) express "wall-clock microseconds on target X"
 rather than just instruction count.
 
@@ -580,12 +580,12 @@ in a tight loop). A WCET-style analysis would capture the real cost,
 including the stack guard overhead (cmp rsp, r10 + jb) that our
 benchmarks consistently pay but C compilers don't.
 
-### EPICURE — Verified Security Through Codegen
+### EPICURE -- Verified Security Through Codegen
 
 The EPICURE team (IRISA D4) proves that compilation preserves security
 properties (constant-time execution, information flow control). Their
 approach would verify that our punctual codegen doesn't introduce
-timing side-channels — e.g., that a punctual function with no
+timing side-channels -- e.g., that a punctual function with no
 data-dependent branches at the IR level also has no data-dependent
 branches in the emitted x86-64. This extends the codegen quality
 analysis from "correct and compact" to "correct, compact, and

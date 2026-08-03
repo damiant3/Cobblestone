@@ -13,9 +13,9 @@ of `r10` at function prologue, stored per-function at
 The reset is gated by `emit-list-checks` (X86_64Compound.codex:229-256). Three
 per-live-list runtime checks; all must pass for reset to fire:
 
-1. `temp_ptr == param_ptr` — pointer unchanged since tail-arg eval.
-2. `new_ptr < heap-mark` — list was allocated before the function entered.
-3. `*(new_ptr) == snapshot_length` — length word unchanged since the
+1. `temp_ptr == param_ptr` -- pointer unchanged since tail-arg eval.
+2. `new_ptr < heap-mark` -- list was allocated before the function entered.
+3. `*(new_ptr) == snapshot_length` -- length word unchanged since the
    `snapshot-list-counts` taken at the top of the current tail-call.
 
 **All three can pass while `r10`'s rewind target is inside a live list's
@@ -74,20 +74,20 @@ copied most times through successive path-3 reallocs). `lookup-type-bsearch`
 fails on 598 names.
 
 Evidence artifacts (raw pointers only, safe to read):
-- `build-output/bare-metal/acc-moves-dump.txt` — acc/cap/len/r10 per
+- `build-output/bare-metal/acc-moves-dump.txt` -- acc/cap/len/r10 per
   iteration; shows the r10 step from `0xd680cf0` to `0xd67ccf0` at i=1706.
-- `build-output/bare-metal/first-garbage-dump.txt` — first iteration where
+- `build-output/bare-metal/first-garbage-dump.txt` -- first iteration where
   corruption appears in the list (i=4589).
-- `build-output/bare-metal/probe-*.sh` — the probe scripts.
+- `build-output/bare-metal/probe-*.sh` -- the probe scripts.
 
 ## Why the check is unsound
 
-Check 3's snapshot is taken at the current tail-call's setup — **not** at
+Check 3's snapshot is taken at the current tail-call's setup -- **not** at
 function entry. Growth from prior iterations is invisible. The check answers
 "did acc grow during THIS iteration?" but the question that matters for
 soundness is "does acc's current payload fit within `[list_base, heap-mark)`?"
 
-Check 2 (`acc < heap-mark`) is not sufficient either — it constrains only the
+Check 2 (`acc < heap-mark`) is not sufficient either -- it constrains only the
 header, not the end of the payload. Path-2 grow-in-place extends the payload
 past heap-mark while leaving the pointer below it.
 
@@ -114,7 +114,7 @@ aliasing with reclaimable space.
 
 - One memcpy per live param per iteration. For sort-bindings-loop's acc that's
   ~16 KB copied per reset. Across ~3000 dedup resets in this one call that's
-  ~48 MB of memory traffic — non-trivial but still bandwidth, not latency.
+  ~48 MB of memory traffic -- non-trivial but still bandwidth, not latency.
 - A bounds check on each live param (payload size) before emitting the copy.
 - Code size: the reset block grows; each tracked param adds a memcpy loop.
 
@@ -123,7 +123,7 @@ aliasing with reclaimable space.
 - Skip compaction entirely for a param when its pointer ≥ heap-mark (it was
   allocated inside the iteration and will be reclaimed anyway; no live data
   below mark to save). This is the common case for non-accumulator recursion.
-- Skip compaction when the payload already ends at `<= heap-mark` — no growth
+- Skip compaction when the payload already ends at `<= heap-mark` -- no growth
   happened, current reset is sound.
 - For same-pointer lists (the accumulator case), compact to `len`, not `cap`;
   capacity is recoverable on next grow.
@@ -136,7 +136,7 @@ of accumulator loops but exactly the case where the current code is wrong.
 
 "Disable reset when any tracked param's pointer is below mark AND its cap
 might have grown." This would be correct but would disable the optimization
-for *every* accumulator pattern — defeating the reason the mechanism exists.
+for *every* accumulator pattern -- defeating the reason the mechanism exists.
 Compaction preserves the optimization for the pattern it was built for.
 
 ## Open design questions
@@ -148,7 +148,7 @@ Compaction preserves the optimization for the pattern it was built for.
 - **Cap vs len compaction.** Compacting to `len` loses headroom; next insert
   immediately triggers path-2/3. Probably worth measuring both under
   pingpong's heap hwm.
-- **Multiple live params.** Order matters — copy in address order to avoid
+- **Multiple live params.** Order matters -- copy in address order to avoid
   overwriting sources. Need a pass to sort live param pointers before
   emitting the copies.
 - **Instrumentation.** Before landing, add a `#[debug]`-gated counter of
@@ -163,7 +163,7 @@ Compaction preserves the optimization for the pattern it was built for.
    gate).
 2. Implement the two short-circuits (skip when safe) without compaction.
    Re-run: the BS3 bug disappears *if and only if* resets that formerly fired
-   on accumulators now get short-circuited — verify via instrumentation.
+   on accumulators now get short-circuited -- verify via instrumentation.
    This is a correctness-only CL.
 3. Add the compaction path for resets that don't short-circuit. Verify
    pingpong heap hwm doesn't regress; measure BS3 memory traffic.

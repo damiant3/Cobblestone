@@ -6,7 +6,7 @@
 ---
 
 > *"Because it's there."*
-> — George Mallory, when asked why he wanted to climb Everest
+> -- George Mallory, when asked why he wanted to climb Everest
 
 ---
 
@@ -19,7 +19,7 @@ you're looking at takes a cam or a nut.
 This project is built by AI agents working in bounded context windows. We
 don't see the whole mountain at once. We see the pitch in front of us, we
 climb it cleanly, and we trust that the route plan is sound. The human sees
-the whole range — picks the line, builds the bridges over the rivers we can't
+the whole range -- picks the line, builds the bridges over the rivers we can't
 ford, and tells us when the weather is about to turn.
 
 That's the division of labor. The agents climb. The human routes. Nobody
@@ -30,7 +30,7 @@ summits alone.
 ## The Range
 
 From where we stand, looking up, four peaks are visible. The first is behind
-us — we're standing on its summit right now, catching our breath. Three more
+us -- we're standing on its summit right now, catching our breath. Three more
 rise ahead, each higher than the last, each requiring what we learned on the
 one before.
 
@@ -57,13 +57,13 @@ The final summit is a place where software cannot hurt you.
 
 ---
 
-## Peak I — Self-Hosting ✅ (Summited 2026-03-19)
+## Peak I -- Self-Hosting ✅ (Summited 2026-03-19)
 
 **The proof that the language is real.**
 
 We wrote a compiler in C#. Then we wrote the same compiler in Codex. Then we
 compiled the Codex compiler with itself and got identical output. Fixed point.
-Not a quine — a working compiler that passes 843 tests and handles algebraic
+Not a quine -- a working compiler that passes 843 tests and handles algebraic
 types, dependent types, linear types, effect handlers, 12 backends, and an
 LSP server.
 
@@ -77,7 +77,7 @@ matching. Effects. Proofs. The repository protocol.
 
 ---
 
-## Peak II — Freedom (Current Climb)
+## Peak II -- Freedom (Current Climb)
 
 **The language stands on its own ground.**
 
@@ -95,40 +95,40 @@ The IL emitter produces standalone `.exe` files from `.codex` source. It works
 for the agent toolkit. It handles lists, records, sum types, pattern matching,
 tail calls, file I/O, process launching. The gaps are known and finite:
 
-- ~~Effect handlers (closure-based, no CLR exceptions needed)~~ ✅ (2026-03-21 — run-state IL + inline user-defined `with` handlers)
-- ~~Generic type instantiation beyond `List<string>`~~ ✅ (2026-03-21 — generic `List<T>` instantiation cache)
-- ~~User-defined type constructors in pattern match dispatch~~ ✅ (2026-03-21 — isinst + field binding, recursive sum types verified)
-- ~~Remaining builtins (`write-file` in IL, `list-files`, etc.)~~ ✅ (2026-03-21 — text-contains, text-starts-with, get-env, current-dir, list-files)
+- ~~Effect handlers (closure-based, no CLR exceptions needed)~~ ✅ (2026-03-21 -- run-state IL + inline user-defined `with` handlers)
+- ~~Generic type instantiation beyond `List<string>`~~ ✅ (2026-03-21 -- generic `List<T>` instantiation cache)
+- ~~User-defined type constructors in pattern match dispatch~~ ✅ (2026-03-21 -- isinst + field binding, recursive sum types verified)
+- ~~Remaining builtins (`write-file` in IL, `list-files`, etc.)~~ ✅ (2026-03-21 -- text-contains, text-starts-with, get-env, current-dir, list-files)
 
 This camp gets us to: **any `.codex` program compiles to a working `.exe`
 with no C# intermediate step.**
 
 ### Camp II-B: Native Code Generation
 
-Replace the CLR dependency entirely. The compiler emits machine code —
-not through LLVM, not through Cranelift — **directly**. Instruction encoding,
+Replace the CLR dependency entirely. The compiler emits machine code --
+not through LLVM, not through Cranelift -- **directly**. Instruction encoding,
 ELF generation, register allocation. No foreign toolchain.
 
 #### RISC-V Native Backend ✅ (2026-03-21)
 
 The first native backend targets RISC-V 64-bit. The route was direct:
 
-1. **RiscVEncoder** — Pure functions encoding every RV64IM instruction format
+1. **RiscVEncoder** -- Pure functions encoding every RV64IM instruction format
    (R/I/S/B/U/J), including the M extension for multiply/divide. 47 instruction
    helpers, a `Li` sequence for full 64-bit immediates, pseudoinstructions
    (`mv`, `ret`, `call`, `j`, `nop`).
 
-2. **ElfWriter** — Minimal ELF64 generation. Two LOAD segments (text + rodata),
+2. **ElfWriter** -- Minimal ELF64 generation. Two LOAD segments (text + rodata),
    no section headers, no symbol table, no relocations. For Linux userspace,
    the standard `0x10000` base. The ELF is tiny: just headers and your code.
 
-3. **RiscVCodeGen** — IR-to-machine-code translation. Handles integer/boolean/text
+3. **RiscVCodeGen** -- IR-to-machine-code translation. Handles integer/boolean/text
    literals, arithmetic, comparisons, if/else with branch patching, let bindings,
    function calls with RISC-V calling convention (a0-a7), recursion, do-blocks.
    A complete `itoa` implementation for `print-line` on integers. Direct Linux
-   syscalls via `ecall` — no libc, no dynamic linker, no shared libraries.
+   syscalls via `ecall` -- no libc, no dynamic linker, no shared libraries.
 
-4. **QEMU verification** — 13 tests, 5 of which compile to native ELF and
+4. **QEMU verification** -- 13 tests, 5 of which compile to native ELF and
    execute under `qemu-riscv64` via WSL. `factorial 5` → `120`. On real
    hardware instructions.
 
@@ -146,24 +146,24 @@ file can become a native binary with nothing between it and the kernel.
 
 Then we went lower. Below the OS. Below the syscall boundary. To the metal.
 
-The bare metal target emits a raw flat binary — no ELF headers, no OS, no
+The bare metal target emits a raw flat binary -- no ELF headers, no OS, no
 runtime. QEMU's virt machine loads it at `0x80000000` and jumps to byte 0,
 where a `jal` trampoline reaches `_start`. The stack pointer is set by our
-code. Console output goes to the UART at `0x10000000` — memory-mapped I/O,
+code. Console output goes to the UART at `0x10000000` -- memory-mapped I/O,
 one byte at a time, written by store instructions.
 
 The route had three bugs, each instructive:
 
 | Bug | Symptom | Fix |
 |-----|---------|-----|
-| **ELF headers at byte 0** | `illegal instruction` — CPU tried to execute `0x7F 'E' 'L' 'F'` | Switched to flat binary, code at byte 0 |
-| **`lui` sign extension** | Stack pointer became `0xFFFFFFFF80100000` — unmapped memory | `if (lo32 < 0) hi32++` in `Li` 64-bit path |
+| **ELF headers at byte 0** | `illegal instruction` -- CPU tried to execute `0x7F 'E' 'L' 'F'` | Switched to flat binary, code at byte 0 |
+| **`lui` sign extension** | Stack pointer became `0xFFFFFFFF80100000` -- unmapped memory | `if (lo32 < 0) hi32++` in `Li` 64-bit path |
 | **No serial routing** | UART output swallowed by QEMU | Added `-serial mon:stdio` flag |
 
 The `lui` bug is worth remembering. On RV64, `lui` loads a 20-bit immediate
 into bits 31:12 and **sign-extends to 64 bits**. The address `0x80100000`
 has bit 31 set, so `lui` produces `0xFFFFFFFF80100000`. Every stack store
-went to unmapped memory. The fix is one line — the same trick the 32-bit
+went to unmapped memory. The fix is one line -- the same trick the 32-bit
 path uses, applied to the 64-bit split. The Linux agent found it by tracing
 execution in QEMU with `-d in_asm,exec` and watching `ra` come back wrong
 after `main` returned.
@@ -174,7 +174,7 @@ binary → RISC-V instructions → UART output → your screen.
 
 #### WASM Backend ✅ (2026-03-22)
 
-The second binary backend targets WebAssembly. Direct bytecode emission —
+The second binary backend targets WebAssembly. Direct bytecode emission --
 no Cranelift, no foreign toolchain. WASI preview 1 for I/O. Two phases
 delivered: basic emission with WASI fd_write, then string equality,
 text builtins (char-at, substring, text-to-integer, integer-to-text),
@@ -182,7 +182,7 @@ and runtime helpers. 23 tests, all verified under wasmtime.
 
 WASM gives Codex portable sandboxed execution. A `.wasm` file runs in
 browsers, on servers, on embedded devices. The effect system and WASI
-align naturally — effects are declared, WASI grants them.
+align naturally -- effects are declared, WASI grants them.
 
 ```
 codex build samples/hello.codex --target riscv-bare-metal
@@ -192,22 +192,22 @@ Hello from bare metal
 ```
 
 **What we carried up**: MMIO output. Flat binary emission. The understanding
-that bare metal is not harder than userspace — it's *simpler*. Fewer
+that bare metal is not harder than userspace -- it's *simpler*. Fewer
 abstractions, fewer things to break. The bug count was lower than the
 Linux userspace port.
 
 **What this means for Peak IV**: A Codex program can already run with zero
 OS, zero runtime, zero libc on RISC-V hardware. The path from here to
-Codex.OS is not "build an OS from scratch" — it's "extend what we already
+Codex.OS is not "build an OS from scratch" -- it's "extend what we already
 have until it manages resources for multiple programs." The foundation is
 poured.
 
 #### ARM64 Backend ✅ (2026-03-23)
 
-The third native backend targets AArch64 — the dominant mobile and server
+The third native backend targets AArch64 -- the dominant mobile and server
 ISA. Arm64Encoder, Arm64CodeGen (1,740 lines), ElfWriterArm64. Produces
 valid ELF64 AArch64 binaries. Full IR→ARM64 codegen: function
-prologue/epilogue, callee-saved x19–x27, register spill to stack, records,
+prologue/epilogue, callee-saved x19-x27, register spill to stack, records,
 sum types, pattern matching, closures, text builtins, runtime helpers,
 Linux AArch64 syscalls (write=64, exit=93, brk=214, openat=56, read=63).
 
@@ -225,16 +225,16 @@ Awaiting `qemu-aarch64` verification by Agent Linux.
 
 #### x86-64 Backend ✅ (2026-03-23)
 
-The fourth native backend targets x86-64 — the dominant desktop ISA and the
+The fourth native backend targets x86-64 -- the dominant desktop ISA and the
 machine we develop on. X86_64Encoder (REX/ModR/M/SIB variable-length encoding),
 X86_64CodeGen (~2,500 lines), ElfWriterX86_64. Produces ELF64 x86-64 binaries
-that run natively in WSL — no QEMU, no emulation.
+that run natively in WSL -- no QEMU, no emulation.
 
 The x86-64 backend was built and debugged to self-hosting in a single evening
 session. 21 commits, 20 bugs found and fixed. Three AI agents collaborated
 through GDB traces, hardware watchpoints, and Python single-step scripts.
-The final bug — `list-at` clobbering a callee-saved register by shifting
-the index in place — was found by a custom GDB Python script that traced
+The final bug -- `list-at` clobbering a callee-saved register by shifting
+the index in place -- was found by a custom GDB Python script that traced
 every R15 change instruction by instruction.
 
 ```
@@ -244,13 +244,13 @@ wsl ./hello          # runs natively, no QEMU
 ```
 
 **What we carried up**: The dev machine ISA. x86-64 is what runs on the
-Windows box where all three agents work. This backend closes the loop —
+Windows box where all three agents work. This backend closes the loop --
 the compiler can target the machine it's developed on.
 
 ### Camp II-C: Self-Hosted Build Chain
 
 The compiler compiles itself to native code. The native compiler compiles
-itself again. Fixed point — again, but this time with no .NET anywhere in
+itself again. Fixed point -- again, but this time with no .NET anywhere in
 the chain.
 
 ```
@@ -259,17 +259,17 @@ codex.codex → (Stage 1: codex-native)   → codex-native'
 codex-native == codex-native'  ← fixed point
 ```
 
-After this, we delete the .NET bootstrap. Not archive it — delete it.
+After this, we delete the .NET bootstrap. Not archive it -- delete it.
 The language stands alone.
 
-#### Progress (2026-03-23) — SUMMITED
+#### Progress (2026-03-23) -- SUMMITED
 
 The 493-definition, 26-file self-hosted compiler compiles to a 227,600-byte
 RISC-V ELF. Under QEMU, it reads a `.codex` file, runs the full pipeline
 (lexer → parser → type checker → IR lowering → C# emitter), and produces
 valid C# output. Exit code 0. Clean text. No .NET anywhere in the chain.
 
-The summit push required solving 11 bugs in one session — from register
+The summit push required solving 11 bugs in one session -- from register
 allocator saturation to 12-bit immediate overflow to closure implementation
 to record field ordering. Three AI agents collaborated through git: one
 built, one debugged, one reviewed. The human routed between them.
@@ -300,19 +300,19 @@ This is tracked as Camp III-A Phase 2.
 **Summit marker**: `codex build codex --target native` produces a
 self-sufficient binary. The only file you need is the source.
 
-### MM2: The High Camp — Compiler on Bare Metal ✅ (2026-03-26)
+### MM2: The High Camp -- Compiler on Bare Metal ✅ (2026-03-26)
 
 The compiler compiles a program on an OS it built. No Linux. No .NET.
 No runtime. A 268 KB x86-64 kernel running under QEMU, with nothing
 between the compiler and the hardware but a UART and an arena allocator.
 
-The route from Camp II-C to MM2 crossed through Codex.OS — five rings
+The route from Camp II-C to MM2 crossed through Codex.OS -- five rings
 of kernel built from scratch:
 
 - **Ring 0**: Multiboot entry, 32-to-64-bit trampoline, serial I/O, heap, stack
 - **Ring 1**: IDT (256 vectors), PIC, timer interrupts, keyboard input
 - **Ring 2**: Process table (16 slots), preemptive context switching, per-process page tables
-- **Ring 3**: Capability-enforced syscalls — `SYS_WRITE_SERIAL`, `SYS_READ_KEY`, `SYS_GET_TICKS`, `SYS_EXIT`
+- **Ring 3**: Capability-enforced syscalls -- `SYS_WRITE_SERIAL`, `SYS_READ_KEY`, `SYS_GET_TICKS`, `SYS_EXIT`
 - **Ring 4**: The self-hosted compiler running on all of the above
 
 The MM2 test: send `main : Integer` / `main = 42` over serial to the bare
@@ -338,9 +338,9 @@ The night session that reached MM2 also shipped:
   parameters guarantee exactly-once consumption. All four steps shipped.
 - **`__ipow`**: Integer exponentiation on x86-64 (was stubbed as 0).
 - **6 MM2 builtins**: `text-compare`, `list-snoc`, `list-insert-at`,
-  `list-contains`, `text-concat-list`, `text-split` — the runtime helpers
+  `list-contains`, `text-concat-list`, `text-split` -- the runtime helpers
   that power the P2-alt sorted binary search in the type checker.
-- **Capability refinement design**: Direction, scope, time-boxing —
+- **Capability refinement design**: Direction, scope, time-boxing --
   connected to the repository trust lattice. One lattice, three layers.
 
 Four agents worked in parallel: Cam built features and fixed the
@@ -357,27 +357,27 @@ serial. On bare metal. MM2 is proven.
 
 ---
 
-## Peak III — The Runtime
+## Peak III -- The Runtime
 
 **The ground we stand on becomes ours.**
 
 A native compiler that emits native code is necessary but not sufficient.
 Programs need memory. They need I/O. They need concurrency. Right now, all
-of that is borrowed from the OS — `malloc`, `read`, `pthread_create`. Every
+of that is borrowed from the OS -- `malloc`, `read`, `pthread_create`. Every
 one of those calls is a trust boundary we don't control and can't verify.
 
-Peak III is the Codex runtime: memory management, I/O, scheduling — all
+Peak III is the Codex runtime: memory management, I/O, scheduling -- all
 written in Codex, all verifiable by the type system.
 
-### Camp III-A: Memory — The Linear Allocator
+### Camp III-A: Memory -- The Linear Allocator
 
 Codex has linear types. Linear types tell you exactly when a value is created
 and exactly when it's consumed. This means:
 
-- **No garbage collector.** Deallocation is deterministic — the type system
+- **No garbage collector.** Deallocation is deterministic -- the type system
   says when the value dies, and the compiler inserts the free.
 - **No use-after-free.** The type system prevents it. Not "detects it at
-  runtime" — *prevents it at compile time*. It's a type error.
+  runtime" -- *prevents it at compile time*. It's a type error.
 - **No double-free.** Same mechanism. Linearity means used exactly once.
 - **No null pointer dereference.** There is no null. `Maybe` is explicit.
 
@@ -389,10 +389,10 @@ freed in one operation. No tracing. No reference counting. No pauses.
 
 - Phase 1 ✅: IRRegion node wraps every definition body. WASM backend implements real region-based allocation.
 - Phase 2a ✅: `NeedsEscapeCopy` flag on IRRegion (Cam).
-- Phase 2b ✅: Per-type escape copy helpers for Text, Record, List, Sum on RISC-V (Cam). Reviewed by Linux — stack overflow on recursive types found and fixed.
-- Phase 2c (next): Full escape analysis to re-enable region heap reclamation. Currently disabled — 1MB bump allocator sufficient for compilation.
+- Phase 2b ✅: Per-type escape copy helpers for Text, Record, List, Sum on RISC-V (Cam). Reviewed by Linux -- stack overflow on recursive types found and fixed.
+- Phase 2c (next): Full escape analysis to re-enable region heap reclamation. Currently disabled -- 1MB bump allocator sufficient for compilation.
 
-### Camp III-B: I/O — The Capability System
+### Camp III-B: I/O -- The Capability System
 
 Every side effect in Codex is tracked in the type system via algebraic effects.
 A function that reads a file has type `Text → [FileSystem] Text`. A function
@@ -431,7 +431,7 @@ Phone capability enforcement tests verify the core promise:
 
 What remains: runtime enforcement at program launch, `Process` effect.
 
-### Camp III-C: Concurrency — Structured, Deterministic
+### Camp III-C: Concurrency -- Structured, Deterministic
 
 No threads. No locks. No data races.
 
@@ -446,14 +446,14 @@ a DAG. The type system guarantees the DAG has no cycles.
 
 ### Camp III-R: The Repository
 
-The third pillar — the content-addressed fact store — lives on this ridge.
+The third pillar -- the content-addressed fact store -- lives on this ridge.
 The Vision describes a world with no branches, no commits, no files. Just
 facts: immutable, content-addressed, attributed, typed. Views replace branches.
 Proposals replace pull requests. Trust lattices replace star counts.
 
 The repository is what makes Peak IV's "verified at install time" claim possible
 across trust boundaries. A dependency isn't a name that resolves to whatever
-someone last published — it's a hash that points to a specific, immutable,
+someone last published -- it's a hash that points to a specific, immutable,
 verified artifact. Supply chain attacks become impossible not by policy but
 by construction.
 
@@ -461,8 +461,8 @@ by construction.
 
 V1 is complete. The repository has:
 - Named views with CRUD, composition (override/merge/filter), and consistency checking
-- View-aware compilation: `codex build --view canonical` — the view IS the build manifest
-- No files, no project manifests — just the view and the fact store
+- View-aware compilation: `codex build --view canonical` -- the view IS the build manifest
+- No files, no project manifests -- just the view and the fact store
 
 What remains: proposal workflow, trust lattice, cross-repo federation.
 
@@ -474,13 +474,13 @@ and the verified runtime it was compiled with.
 
 ---
 
-## Peak IV — Codex.OS
+## Peak IV -- Codex.OS
 
 **The summit. The reason for all of it.**
 
 An operating system is just a program that runs other programs and manages
 shared resources. If the runtime already handles memory, I/O, and concurrency
-— and the type system already enforces capability-based access control — then
+-- and the type system already enforces capability-based access control -- then
 the OS is just the outermost scope.
 
 ### What Codex.OS Is
@@ -514,7 +514,7 @@ mechanism to acquire a capability you weren't given.
 | **Data races** | Structured concurrency. Linear ownership. No shared mutable state. |
 | **Supply chain attacks** | Content-addressed repository. Code is identified by its hash, not its name. A dependency is a specific, immutable, verified artifact. |
 | **Phishing (code-level)** | Capability declares what a program does. Install-time verification proves it. If it says `[Network]` and you didn't grant `[Network]`, it doesn't run. |
-| **Zero-day exploits** | The attack surface is the type system. If the type system is sound, there are no zero-days. The only vulnerability is a bug in the verifier — one program, written in Codex, that we can prove correct. |
+| **Zero-day exploits** | The attack surface is the type system. If the type system is sound, there are no zero-days. The only vulnerability is a bug in the verifier -- one program, written in Codex, that we can prove correct. |
 
 ### What Remains
 
@@ -524,7 +524,7 @@ the CPU itself. Bugs in the verifier.
 
 These are real. We don't pretend otherwise. That last one deserves honesty:
 full dependent-type verification of arbitrary programs is undecidable in the
-general case. The escape valve is the fuel limit — the normalizer caps
+general case. The escape valve is the fuel limit -- the normalizer caps
 reduction steps and rejects programs that take too long to verify. And the
 soundness of a type system expressive enough for an OS is itself a serious
 technical challenge. It's not a certainty. It's a goal with known hard
@@ -532,7 +532,7 @@ sub-problems.
 
 But notice what all the remaining attacks have in common: they're outside the software. The software is correct. The
 software has always been correct. The attacks that remain are attacks on
-physics and human psychology — not on code.
+physics and human psychology -- not on code.
 
 ---
 
@@ -566,18 +566,18 @@ we can measure our pace.
 
 **Actual pace so far**: Peak I (self-hosting compiler with dependent types,
 linear types, algebraic effects, 12 backends, LSP, content-addressed
-repository) — from empty directory to fixed point in **6 days**. 257
+repository) -- from empty directory to fixed point in **6 days**. 257
 commits. 237,000 lines. Two AI agents and one human who doesn't sleep
 enough.
 
-Peak II — from IL backend to native RISC-V self-hosting — in **3 more days**.
+Peak II -- from IL backend to native RISC-V self-hosting -- in **3 more days**.
 Camp II-C summit push: 11 bugs found and fixed in a single session across
 three agents. The compiler compiles itself on bare metal. Then ARM64 backend
-built the same day — 1,740 lines of codegen, ELF64 AArch64 binaries, wired
+built the same day -- 1,740 lines of codegen, ELF64 AArch64 binaries, wired
 into the CLI. Phone effects (7 new capabilities) and escape copy (4 region
 types) also landed on day 10.
 
-Then x86-64 — the fourth native backend — in **one evening**. 21 commits,
+Then x86-64 -- the fourth native backend -- in **one evening**. 21 commits,
 20 bugs found and fixed, self-hosted compiler verified running natively in
 WSL. No QEMU. The estimated "weeks" for x86-64 took hours.
 
@@ -585,9 +585,9 @@ That pace recalibrates everything.
 
 | Camp | Visibility | Honest Estimate |
 |------|-----------|----------------|
-| II-A (IL maturity) | ✅ Summited 2026-03-21 | — |
-| II-B (Native codegen) | ✅ RISC-V + WASM + ARM64 + x86-64 2026-03-23 | — |
-| II-C (Self-hosted native) | ✅ **Summited 2026-03-23** (RISC-V + x86-64) | — |
+| II-A (IL maturity) | ✅ Summited 2026-03-21 | -- |
+| II-B (Native codegen) | ✅ RISC-V + WASM + ARM64 + x86-64 2026-03-23 | -- |
+| II-C (Self-hosted native) | ✅ **Summited 2026-03-23** (RISC-V + x86-64) | -- |
 | III-A (Linear allocator) | ✅ Phase 2b (escape copy), full analysis needed | Weeks |
 | III-B (Capability I/O) | ✅ 12 effects, checker, CLI enforcement | Runtime enforcement: weeks |
 | III-C (Structured concurrency) | Know it's there | Months |
@@ -605,7 +605,7 @@ arriving ahead of our sightlines, so draw your own conclusions.
 A human. Three AI agents. A lot of `.codex` files.
 
 The agents work in bounded context windows. They don't see the whole mountain.
-They see the pitch — the next rock, the next hold. They're good at that: fast,
+They see the pitch -- the next rock, the next hold. They're good at that: fast,
 precise, tireless. The human sees the range. The human picks the route, throws
 the rope across the gaps the agents can't jump, and calls the weather.
 
@@ -613,8 +613,8 @@ The party has found its rhythm. Agent Windows (GitHub Copilot in VS) builds
 features, reviews code, pushes to master. Agent Linux (Claude on the sandbox)
 pulls, tests on real hardware and emulators, finds bugs by tracing execution.
 Agent Cam (Claude Code CLI, 1M context Opus) does fast iteration and parallel
-work from a separate worktree — 79 commits in a single day on the RISC-V
-parity push. The human routes between them — not writing code, but directing
+work from a separate worktree -- 79 commits in a single day on the RISC-V
+parity push. The human routes between them -- not writing code, but directing
 attention, relaying findings when one agent's session dies, and deciding
 what matters.
 
@@ -626,24 +626,24 @@ On the RISC-V bare metal push, the three-way collaboration found its form:
 the Windows agent built the backend and tests. The Linux agent pulled it,
 ran it under QEMU, traced the execution, and found the `lui` sign-extension
 bug by watching register values in the QEMU trace. The Windows agent prepared
-the fix but held back — the Linux agent earned that commit. It was pushed
+the fix but held back -- the Linux agent earned that commit. It was pushed
 from the sandbox, pulled to Windows, verified. The mountain doesn't care
 who placed the piton, only that it holds.
 
 On the register spill push (2026-03-22/23), the collaboration deepened further.
 Agent Linux reviewed Cam's RISC-V parity merge and found a critical silent
 corruption bug: `AllocLocal` saturated at S11 instead of spilling. Cam
-implemented the spill-to-stack fix in five minutes — but his own test
+implemented the spill-to-stack fix in five minutes -- but his own test
 segfaulted. The human relayed Cam's test matrix to Linux, who ran it under
 QEMU: the no-spill baseline passed, but the spill test crashed. Cam found
-the root cause — `EmitRegion` was shifting SP mid-function to save the heap
+the root cause -- `EmitRegion` was shifting SP mid-function to save the heap
 pointer, even for scalar types that don't allocate, breaking all spill slot
 offsets. Three-line fix. Linux verified: 40/40 QEMU tests green. The bug
 lived for exactly one review cycle. That's the rhythm working.
 
 That changes as we climb. The IL backend and the agent toolkit exist so that
 other climbers can join. Every `.exe` we ship, every tool that works, every
-program that compiles and runs — that's a rope anchor for the next person
+program that compiles and runs -- that's a rope anchor for the next person
 coming up behind us. The climbing party will grow. But right now, we're on
 the wall, and the next hold is right there.
 
@@ -651,31 +651,31 @@ We're going up.
 
 ---
 
-## Voodoo Child — 2026-04-24
+## Voodoo Child -- 2026-04-24
 
 > *"Well I stand up next to a mountain, chop it down with the edge of my hand."*
-> — Jimi Hendrix
+> -- Jimi Hendrix
 
 This document was written 2026-03-21, the day Peak II's first camps fell.
 Three peaks remained on the page; three weeks later, on the night of
 2026-04-24, the open passages on the route closed. The struggles named
 above resolved in a way none of the route plans anticipated.
 
-The struggle: bivy heap reclamation. Camp III-A had a TODO above it —
+The struggle: bivy heap reclamation. Camp III-A had a TODO above it --
 "Phase 2c (next): Full escape analysis to re-enable region heap
 reclamation." We had been building IRRegion, EmitRegion, escape-copy
-helpers, result-arena, TCO heap-mark save — machinery to keep the heap
+helpers, result-arena, TCO heap-mark save -- machinery to keep the heap
 bounded across phase transitions. The 1 MB bump allocator was a stopgap.
 Three weeks of BS3 red said the stopgap was load-bearing.
 
 Damian saw it first. The machinery to manage the heap was using more
 heap than it saved. ~2,600 lines came out across sixteen files in one
-shelf. Build clean. Pingpong came back **greener** than before — BS2
+shelf. Build clean. Pingpong came back **greener** than before -- BS2
 dropped 22 MB at the high-water mark. The reclamation we thought we
 needed was a tax we'd been paying for the privilege of accounting for
 allocations the program never asked us to track.
 
-That cleared the gate to Bootstrap 3 — **MM4**. A watchdog bug, embedded
+That cleared the gate to Bootstrap 3 -- **MM4**. A watchdog bug, embedded
 as ASCII (`WD:stall`) in the middle of executable output where the
 serial port was shared between the watchdog and `__write_binary`,
 explained the last 87% of byte divergence between stage1 and stage2.
@@ -694,20 +694,20 @@ it. Deterministic down to the bit, on bare metal.
 The ELF in `seed/Codex.Codex.elf` is the complete self-sustaining
 compiler: First in its class.
 
-Phase discipline — *survey-before-allocate*, the vocabulary of pinnacle
-and col and base and deck and bivy and prominence — remains the
+Phase discipline -- *survey-before-allocate*, the vocabulary of pinnacle
+and col and base and deck and bivy and prominence -- remains the
 principled answer to *how should this allocator know what's live*. But
 it is no longer load-bearing for the bootstrap. It is engineering we
 will do because it's right, not because the ground is on fire.
 
-The full story — three weeks of architectural anxiety, the rip-out,
+The full story -- three weeks of architectural anxiety, the rip-out,
 the "happens to come out identical is very very suspicious" lever, the
-night the watchdog narrated its anxiety into an ELF — is in
+night the watchdog narrated its anxiety into an ELF -- is in
 [VoodooChild.md](VoodooChild.md).
 
 **Peak II is summited.** Three peaks remain. The ridge ahead is shorter
 than the page above suggests, because the same shape that closed Peak II
-— *do less, and what's left does more* — is the shape we'll carry up
+-- *do less, and what's left does more* -- is the shape we'll carry up
 the next one.
 
 The mountain is bigger than we thought. The team is faster than we
@@ -720,5 +720,5 @@ We're still going up.
 *This document is a sightline, not a specification. The Vision documents
 (`docs/Vision/NewRepository.txt` and `docs/Vision/IntelligenceLayer.txt`)
 remain the north star. The engineering principles (`docs/10-PRINCIPLES.md`)
-govern every step. This document says where the steps lead — and, as of
+govern every step. This document says where the steps lead -- and, as of
 2026-04-24, where they led.*

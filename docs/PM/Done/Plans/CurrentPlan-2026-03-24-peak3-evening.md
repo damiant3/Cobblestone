@@ -32,7 +32,7 @@ backend fork/await with GDB-verified x86-64 execution.
 
 ## Active Work
 
-### Codex Phone — Phase 1 (Human)
+### Codex Phone -- Phase 1 (Human)
 
 Bootloader signature verification blocking all custom recovery images.
 9 flash attempts documented. Official TWRP downloaded. USB state diagnosis
@@ -44,7 +44,7 @@ in progress. See `docs/Active/Projects/PHONE-WIPE.md` for full attempt log.
 
 ## What Got Done Today (2026-03-24, Cam session)
 
-### Camp III-C — Structured Concurrency: DONE through Phase 4
+### Camp III-C -- Structured Concurrency: DONE through Phase 4
 
 | Phase | What | Status |
 |-------|------|--------|
@@ -57,7 +57,7 @@ in progress. See `docs/Active/Projects/PHONE-WIPE.md` for full attempt log.
 | 4d | x86-64 native fork/await (sequential, GDB-verified) | Done |
 | 4e | ARM64 + RISC-V native fork/await (compilation verified) | Done, Agent Linux testing execution |
 
-### V3 — Repository Federation: Phases 1-3 DONE
+### V3 -- Repository Federation: Phases 1-3 DONE
 
 | Phase | What | Status |
 |-------|------|--------|
@@ -66,7 +66,7 @@ in progress. See `docs/Active/Projects/PHONE-WIPE.md` for full attempt log.
 | 3 | Proposal workflow (view diffs, consensus, apply) | Done (9 tests) |
 | 4 | Network sync protocol | Not started |
 
-### Camp III-A — Memory
+### Camp III-A -- Memory
 
 - CDX2043 closure capture warning: Done (2 tests)
 - Heap-returning reclamation: Not started (code exists in `#if false`)
@@ -111,8 +111,8 @@ in progress. See `docs/Active/Projects/PHONE-WIPE.md` for full attempt log.
 
 ## Process
 
-- **Reference compiler lock lifted** (2026-03-24) — `src/` freely modifiable.
-- **Principles**: `docs/10-PRINCIPLES.md` — unchanged, still governing.
+- **Reference compiler lock lifted** (2026-03-24) -- `src/` freely modifiable.
+- **Principles**: `docs/10-PRINCIPLES.md` -- unchanged, still governing.
 - **Four-agent workflow**: Git is the coordination protocol. Any agent can push to master.
   - Windows (Copilot/VS): builds features, reviews code
   - Linux (Claude/sandbox): tests on real hardware/emulators, finds bugs by tracing

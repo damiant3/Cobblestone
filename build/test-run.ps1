@@ -16,6 +16,7 @@ param(
     [string]$StdinFile = '',
     [string]$KeysFile = '',
     [string]$DiskFile = '',
+    [string]$Disk2File = '',
     # Extra codex-vm flags for tests whose subject is the MACHINE rather than
     # the program: a bus topology, a disabled timer, a device that has to be
     # absent. Without a per-test knob such a test can only be a .skip, and a
@@ -59,6 +60,14 @@ try {
         $diskWork = [System.IO.Path]::GetTempFileName()
         [System.IO.File]::WriteAllBytes($diskWork, [System.IO.File]::ReadAllBytes($DiskFile))
         $vmArgs += @('-disk', $diskWork)
+    }
+    if ($Disk2File -and (Test-Path -PathType Leaf $Disk2File)) {
+        # The primary channel's slave. Copied to a writable temp for the same
+        # reason as the master, and it matters more here: the case this exists
+        # for is one drive writing to another.
+        $disk2Work = [System.IO.Path]::GetTempFileName()
+        [System.IO.File]::WriteAllBytes($disk2Work, [System.IO.File]::ReadAllBytes($Disk2File))
+        $vmArgs += @('-disk2', $disk2Work)
     }
     if ($Smp -gt 1) { $vmArgs += @('-smp', "$Smp") }
     if ($VmArgsFile -and (Test-Path -PathType Leaf $VmArgsFile)) {

@@ -1,0 +1,91 @@
+Chapter: MscAlignProbe
+  cites Works chapter GopUsb
+  cites Works chapter GopUsbMsc
+  cites Works chapter GopDraw
+  cites Kernel chapter BitmapFont
+  cites Works chapter GopHandoff
+
+ Does a bulk TRB whose data buffer crosses a 64 KB boundary work on a
+ spec-strict controller? xHCI is believed to forbid it, and msc-read-into
+ pushes a single 32 KB Normal TRB at whatever address the caller passed,
+ so on most boots the seed read issues about thirty crossing TRBs.
+
+ The same LBA is read twice: once into a buffer on a 64 KB boundary,
+ where a 32 KB transfer cannot cross, and once into a buffer starting
+ 1024 bytes below one, where it must. Both the return code and a
+ checksum of the delivered bytes are reported, because a controller that
+ accepts the TRB and moves the wrong bytes is the outcome a return code
+ alone would hide.
+
+ A third read at an out-of-range LBA is the liveness check on the
+ failure channel: if that does not report failure, then a pass on the
+ other two says nothing, because nothing here can report anything.
+
+ We say:
+
+  probe-halt : Integer -> Integer
+  probe-halt (n) = probe-halt (n + 1)
+
+  pnib : Integer -> Text
+  pnib (n) =
+    if n == 0 then "0" else if n == 1 then "1" else if n == 2 then "2"
+    else if n == 3 then "3" else if n == 4 then "4" else if n == 5 then "5"
+    else if n == 6 then "6" else if n == 7 then "7" else if n == 8 then "8"
+    else if n == 9 then "9" else if n == 10 then "a" else if n == 11 then "b"
+    else if n == 12 then "c" else if n == 13 then "d" else if n == 14 then "e"
+    else "f"
+
+  phx : Integer, Integer -> Text
+  phx (v) (sh) = pnib (bit-and (bit-shru v sh) 15)
+
+  phw : Integer -> Text
+  phw (v) = phx v 28 & phx v 24 & phx v 20 & phx v 16 & phx v 12 & phx v 8 & phx v 4 & phx v 0
+
+  ph64 : Integer -> Text
+  ph64 (v) = "#" & phw (bit-shru v 32) & "_" & phw v
+
+  pyn : Integer -> Text
+  pyn (v) = if v == 0 then "n" else "y"
+
+ Sixty-four dwords spread across the 32 KB at a 512-byte stride. Enough
+ to catch a short, shifted or absent transfer without walking every byte.
+
+  chk : Integer, Integer, Integer -> Integer
+  chk (a) (i) (acc) =
+    if i >= 64 then acc
+    else chk a (i + 1) (acc + peek-32 a (i * 512))
+
+  prow : Integer, Integer, CbfFont, Integer, Integer, Text, Integer -> Integer
+  prow (base) (stride) (font) (y) (scale) (s) (col) =
+    gop-draw-text base stride font 40 y s col scale 0
+
+  opening : [Device.Port, Device.Mmio] Integer
+  opening =
+    let base = boot-fb-base 0
+    in let w = boot-fb-w 0
+    in let h = boot-fb-h 0
+    in let stride = boot-fb-stride 0
+    in let font = cbf-init
+    in let scale = if w >= 1024 then 2 else 1
+    in act
+      ri <- runtime-init 0
+      att <- usb-attach
+      let hp = __heap-save
+      in let adv = __heap-advance 262144
+      in let al = hp + (65536 - int-mod hp 65536)
+      in let xa = al + 64512
+      in let d = att.ua-disk
+      in let ra = msc-read-into d 0 64 al
+      in let cha = chk al 0 0
+      in let rc = msc-read-into d 0 64 xa
+      in let chc = chk xa 0 0
+      in let ro = msc-read-into d 100000 64 al
+      in let bg = gop-fill-rect base stride 0 0 w h 1710638
+      in let t0 = prow base stride font 40 scale "MSC 64K BOUNDARY PROBE" 65535
+      in let t1 = prow base stride font 80 scale ("disk=" & pyn (if (d.md-ok) then 1 else 0) & " sectors=" & show (d.md-sectors) & "  heap=" & ph64 hp & " heap mod 64K=" & show (int-mod hp 65536)) 9474192
+      in let t2 = prow base stride font 110 scale ("ALIGNED  addr=" & ph64 al & " off=" & show (int-mod al 65536) & " ok=" & pyn ra & " chk=" & phw cha) 65280
+      in let t3 = prow base stride font 140 scale ("CROSSING addr=" & ph64 xa & " off=" & show (int-mod xa 65536) & " ok=" & pyn rc & " chk=" & phw chc) 65280
+      in let t4 = prow base stride font 170 scale ("data identical=" & pyn (if cha == chc then 1 else 0) & "   (same LBA, both 64 sectors)") 16776960
+      in let t5 = prow base stride font 200 scale ("LIVENESS out-of-range lba=100000 ok=" & pyn ro & "  (must be n, or this probe proves nothing)") 16776960
+      in probe-halt 0
+    end

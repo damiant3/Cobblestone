@@ -1,4 +1,4 @@
-# ETSI EN 303 645 — Cyber Security for Consumer IoT
+# ETSI EN 303 645 -- Cyber Security for Consumer IoT
 
 **Source**: ETSI, confirmed by Intertek, Bureau Veritas, TUV SUD
 **Status**: Active standard; foundation for UK PSTI Act 2022
@@ -45,7 +45,7 @@ Annex I Part I and serves as a practical compliance stepping stone.
 
 | EN 303 645 Provision | Codex Feature |
 |---|---|
-| 5.1 No default passwords | Capability lease model — identity is Ed25519 keypair |
+| 5.1 No default passwords | Capability lease model -- identity is Ed25519 keypair |
 | 5.3 Secure communication | TLS with effect-typed channels |
 | 5.5 Ensure software integrity | CDX signed binaries, content-addressed fact store |
 | 5.6 Minimize attack surface | No-OS bare-metal compilation |

@@ -149,11 +149,18 @@ the one I put last, where it reads as a modest footnote instead of as
 ## 3. The rule I broke while writing about breaking rules
 
 That message contained **em-dashes**, in a project whose CLAUDE.md
-devotes a numbered rule and roughly forty lines to banning them, where
-blu is running a campaign to remove them, and where the character has no
-CCE code point and is silently dropped at the I/O boundary. I used them
-in headers: "CL 9366 -- fault reporting", "CL 9367 -- the gate", and mid
-sentence at least once more.
+devotes a numbered rule and roughly forty lines to banning them, and
+where blu is running a campaign to remove them. I used them in headers:
+"CL 9366 -- fault reporting", "CL 9367 -- the gate", and mid sentence at
+least once more.
+
+(This paragraph used to add that the character has no CCE code point and
+is silently dropped at the I/O boundary. That was false. `from-unicode`
+falls through to tier 2, and `CCE.codex` tier-2 block 7 has base 8192 and
+size 512, spanning U+2000..U+21FF, so U+2014 maps to 41464 and
+round-trips exactly. CLAUDE.md rule 11 carries the measurement table. The
+ban stands on the reason it always had: the em-dash is a model tic and
+not house style.)
 
 I note it not to flagellate but because it is diagnostic. I was writing
 in a register -- polished status prose -- and the register carried its

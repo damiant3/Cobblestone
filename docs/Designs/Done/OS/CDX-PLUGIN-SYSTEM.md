@@ -1,4 +1,4 @@
-# CDX Plugin System — Loadable Modules
+# CDX Plugin System -- Loadable Modules
 
 **Status**: Design sketch
 **Date**: 2026-05-01
@@ -11,12 +11,12 @@
 The CDX binary format is currently standalone-only. Every program is
 self-contained. But the compiler (and eventually the OS) needs
 extensibility: forewords pre-compiled to native code, user-defined
-optimization passes, lint rules, custom backends — all loadable at
+optimization passes, lint rules, custom backends -- all loadable at
 runtime with the same trust guarantees as standalone binaries.
 
 Traditional dynamic linking (GOT, PLT, ld.so) is explicitly rejected.
 It relies on symbol names, lacks capability gating, and has no integrity
-verification. What we want is **trust-verified module loading** — a CDX
+verification. What we want is **trust-verified module loading** -- a CDX
 binary that declares exports, imports capabilities from its host, and
 runs within the host's capability budget.
 
@@ -29,11 +29,11 @@ runs within the host's capability budget.
 New header flag: `CDX_FLAG_PLUGIN = 16`. When set, the binary includes
 two additional sections:
 
-1. **Export table** — list of named entry points with type signatures.
+1. **Export table** -- list of named entry points with type signatures.
    Each export: name (CCE string), offset into text section, type hash.
    The host looks up exports by name after verification passes.
 
-2. **Import table** — list of host-provided functions the plugin expects.
+2. **Import table** -- list of host-provided functions the plugin expects.
    Each import: name, expected type hash. The host provides a vtable
    pointer at load time. The plugin calls imports through this vtable.
 
@@ -73,12 +73,12 @@ or loads it at runtime (dynamic plugin).
 
 | Step | What | Effort |
 |------|------|--------|
-| 1 | `--target cdx` standalone emitter | Small — wrap existing x86-64 output in CDX header using `cdx-encode` |
-| 2 | Export table in CDX header | Small — extend `cdx-encode` with export entries |
-| 3 | CDX loader (bare-metal) | Medium — map sections, verify, return exports |
-| 4 | Import table + vtable resolution | Medium — plugin-side trampoline stubs |
-| 5 | Compiler foreword pre-compilation | Medium — type signature extraction + link-time embedding |
-| 6 | Runtime plugin loading (OS-level) | Large — capability delegation, process isolation |
+| 1 | `--target cdx` standalone emitter | Small -- wrap existing x86-64 output in CDX header using `cdx-encode` |
+| 2 | Export table in CDX header | Small -- extend `cdx-encode` with export entries |
+| 3 | CDX loader (bare-metal) | Medium -- map sections, verify, return exports |
+| 4 | Import table + vtable resolution | Medium -- plugin-side trampoline stubs |
+| 5 | Compiler foreword pre-compilation | Medium -- type signature extraction + link-time embedding |
+| 6 | Runtime plugin loading (OS-level) | Large -- capability delegation, process isolation |
 
 Step 1 is immediate. Steps 2-4 are the plugin MVP. Steps 5-6 are the
 full vision.
@@ -118,4 +118,4 @@ by a host that only has `[Console]`.
 3. **Versioning?** Plugins are identified by content hash. A new version
    is a new hash. The host either pins a specific hash or accepts
    any version above a trust threshold. No semver, no compatibility
-   matrix — just trust.
+   matrix -- just trust.

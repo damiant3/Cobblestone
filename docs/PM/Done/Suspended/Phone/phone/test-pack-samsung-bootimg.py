@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-test-pack-samsung-bootimg.py — Self-test for the Samsung boot image packer.
+test-pack-samsung-bootimg.py -- Self-test for the Samsung boot image packer.
 
 Creates synthetic kernel, ramdisk, and DTB blobs, packs them, then validates
 the output with inspect-bootimg.py logic. No real device files needed.

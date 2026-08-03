@@ -9,18 +9,18 @@ NO per-test output (no `.exitcode`, no `build.log` in
 FAIL_WRONG_DIAGNOSTIC (empty log matches no codes). The same test
 compiles clean in an exact positional re-run of the same batch list.
 
-## Status: OPEN — root cause unknown
+## Status: OPEN -- root cause unknown
 
 Not load-related: sighting 3 occurred with no other VM work running.
 
 ## Sightings
 
-1. 2026-06-10 — `erp-db-test` failed its first compile, passed on
+1. 2026-06-10 -- `erp-db-test` failed its first compile, passed on
    retry at identical effective memory (the pre-CL-3732 `-mem 4096`
    "retry" was a clamped-to-2GB placebo, so memory did not change).
-2. 2026-06-10 — `erp-server-test` FAIL_COMPILE at position 52 of
+2. 2026-06-10 -- `erp-server-test` FAIL_COMPILE at position 52 of
    battery batch-3; compiled clean in an exact positional re-run.
-3. 2026-06-11 — `multiline-app-continuation` (errors test) at
+3. 2026-06-11 -- `multiline-app-continuation` (errors test) at
    position 49 of 51 in batch-1 during the CL 3787 gate run:
    output directory entirely empty (no exitcode, no log) →
    FAIL_WRONG_DIAGNOSTIC. Exact batch re-run produced the correct
@@ -35,7 +35,7 @@ build/test-compile-batch.ps1 -ListFile test-output/_batches/batch-N.txt -OutRoot
 ```
 
 If the re-run passes, it was this flake. Note the failing test's
-POSITION in the batch — all three sightings are mid-to-tail of their
+POSITION in the batch -- all three sightings are mid-to-tail of their
 batch (52, 49), consistent with a per-iteration REPL state or serial
 stream issue rather than a per-test one.
 

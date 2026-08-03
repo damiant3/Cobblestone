@@ -33,13 +33,13 @@ docs/PM/IoT/
 
 ## Key Upstream Documents
 
-- `docs/PM/Stories/Vision/CodexIoTPlan.md` — the strategic prospectus
-- `docs/VisionAndVirtues.md` — founding vision and non-negotiables
-- `docs/DevelopersGuide.md` — language features and syntax
-- `docs/ArchitectsSketchbook.md` — memory model and register conventions
-- `docs/PM/Stories/Vision/DistributedAgentOS.md` — agent-centric OS vision
+- `docs/PM/Stories/Vision/CodexIoTPlan.md` -- the strategic prospectus
+- `docs/VisionAndVirtues.md` -- founding vision and non-negotiables
+- `docs/DevelopersGuide.md` -- language features and syntax
+- `docs/ArchitectsSketchbook.md` -- memory model and register conventions
+- `docs/PM/Stories/Vision/DistributedAgentOS.md` -- agent-centric OS vision
 
 ## Existing Backend Implementations (in old/, read-only)
 
-- `old/src/Codex.Emit.RiscV/` — RISC-V encoder, emitter, codegen (FIRST backend)
-- `old/src/Codex.Emit.Arm64/` — ARM64 encoder, emitter, codegen, ELF writer
+- `old/src/Codex.Emit.RiscV/` -- RISC-V encoder, emitter, codegen (FIRST backend)
+- `old/src/Codex.Emit.Arm64/` -- ARM64 encoder, emitter, codegen, ELF writer

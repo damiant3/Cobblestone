@@ -1,4 +1,4 @@
-# Escape Copy Attempt 2 — Post-Mortem
+# Escape Copy Attempt 2 -- Post-Mortem
 
 **Date:** 2026-04-01
 **Agent:** Cam
@@ -10,7 +10,7 @@
 The C# x86-64 codegen (`X86_64CodeGen.cs`) has a bail-out at `EmitRegion`
 line ~1328: when target is bare metal, heap-returning regions skip two-space
 escape copy entirely. The bail-out comment says "2 MB heap too small for
-512 KB forwarding table" — but the heap grew to 128 MB long ago. The
+512 KB forwarding table" -- but the heap grew to 128 MB long ago. The
 bail-out is obsolete in principle, but removing it has never worked in
 practice.
 
@@ -40,8 +40,8 @@ every region site, factor it into shared callable functions:
 | Configuration | ELF size | Wrappers | Helpers | Notes |
 |---|---|---|---|---|
 | Baseline (bail-out active) | 606 KB | 0 | 0 | No escape copy at all |
-| All regions, no factoring (attempt #1 from prompt) | 1.2 MB | — | — | Per-region inline bloat |
-| Function-boundary only, no factoring (attempt #2) | 807 KB | — | — | Still too much inline |
+| All regions, no factoring (attempt #1 from prompt) | 1.2 MB | -- | -- | Per-region inline bloat |
+| Function-boundary only, no factoring (attempt #2) | 807 KB | -- | -- | Still too much inline |
 | Factored wrappers, all regions | 852 KB | 146 (11 KB) | 194 (89 KB) | Per-region inline ~150 KB from ~3000 regions |
 | Factored wrappers, function-boundary only | 749 KB | 113 (9 KB) | 194 (89 KB) | Helpers dominate |
 | Post-revert baseline | 570 KB | 0 | 0 | Phase 6 .codex helpers also reverted |
@@ -122,11 +122,11 @@ change. Biggest bang for the buck.
 **Single reclamation point.** Instead of per-function regions, add one
 explicit reclamation call in the compiler's main processing loop (between
 definitions in `emit-defs-streaming`). The compiler already processes
-definitions one at a time — each iteration could reclaim.
+definitions one at a time -- each iteration could reclaim.
 
 **In-place compaction.** Instead of two-space (working → result), compact
 within working space by sliding live data down. Avoids the result-space
-sizing problem entirely. Harder to implement — needs careful overlap
+sizing problem entirely. Harder to implement -- needs careful overlap
 handling (memmove semantics).
 
 **Accept the bail-out.** Escape copy isn't needed until memory pressure

@@ -1,23 +1,54 @@
 Chapter: KeyInput
+  cites Foreword chapter CCE
 
  One keyboard read, translated once. `uefi-read-key` returns the raw
  PS/2 Set-1 make code the IRQ1 handler left in the key cell (0 when no
- key is waiting). `poll-key` turns that into a canonical key identity so
- every app agrees on what a key value means:
+ key is waiting). A make code is a key POSITION: the hardware has no
+ opinion about characters and performs no encoding of any kind. `poll-key`
+ turns that position into a canonical key identity so every app agrees on
+ what a key value means:
 
-   - a letter is its ASCII code, cased by shift XOR caps: lowercase
-     (a-z = 97-122) or uppercase (A-Z = 65-90)
-   - a digit is its ASCII code (0-9 = 48-57) unshifted, its shifted symbol
-     when shift is held; other punctuation likewise
-   - Enter is 13, Backspace 8, Tab 9, Escape 27, Delete 127, Space 32
-   - the arrow and navigation keys are their DOM-style key codes
-     (Left 37, Up 38, Right 39, Down 40, Home 36, End 35, PageUp 33,
-     PageDown 34), and F5 is 116
+   - a character is its **CCE code point**, which is the encoding
+     everything inside Codex uses. Compare against a character literal:
+     `k == char-code 'q'`. Do not write a number.
+   - a letter is cased by shift XOR caps, so text entry is faithful
+   - every key that is not a character is a **named key**, a value at or
+     above `key-named-base` with a name in this chapter: `key-enter`,
+     `key-backspace`, `key-tab`, `key-escape`, `key-delete`, the four
+     arrows, `key-home` / `key-end` / `key-pgup` / `key-pgdn`, and
+     `key-f1` through `key-f12`
    - the shift, ctrl and alt state at the time of the key is read with
      `poll-mods` (shift 1, ctrl 2, alt 4), for chords like Ctrl+S
 
  `0` means no key, which is the idle value every event loop already
  tests.
+
+ **This chapter used to emit ASCII, and two things were wrong with that.**
+
+ The first was the encoding. The keyboard is an input boundary, and rule 5
+ of this project says conversion happens at boundaries and everything
+ inside is CCE. This chapter converted the wrong way: it turned a scancode
+ into ASCII and handed that to application code, which is inside. Two
+ character alphabets then circulated at once, kept apart by warnings in
+ prose rather than by anything a compiler could check, and the warnings
+ were real: `key-upper` carried one, `apps/browser` had CCE tokenizer
+ values sitting beside ASCII key values, and every chapter crossing the
+ seam wrote its own conversion. There is one alphabet now.
+
+ The second was that characters and named keys shared one integer space.
+ The named keys were DOM key codes, and DOM key codes land on printable
+ characters: **Up was 38 and so was shift+7, Right was 39 and so was the
+ apostrophe**, F1 through F10 were 112-121 which are the letters `p`
+ through `y`, and F5 was 116 which is `t`. Measured, not reasoned: a
+ `-keys-file` timeline typing shift+7, Up, apostrophe and Right returned
+ 38, 38, 39, 39. The old contract stated both halves of that collision on
+ adjacent lines of this very prose and nobody noticed, because no test
+ typed a character and its colliding named key in the same timeline.
+ `codex/test/keys-collision` is that test now.
+
+ A named key is deliberately outside anything CCE can represent, so if one
+ ever leaks into text it renders as the replacement character rather than
+ as a plausible wrong letter. `codex/test/keys-collision` pins that too.
 
  The modifiers are decoded through a latch, because a keyboard hands you a
  modifier and the key as two separate events and the cell only ever holds
@@ -41,8 +72,7 @@ Chapter: KeyInput
  reads a letter as a command shortcut (`== 81` for Q) needs `key-upper`
  (below). Text entry is the winner: a passphrase read through poll-key is
  case-sensitive, which is why every identity provisioned before the shift
- change stops unlocking (BACKLOG 7.17, the migration was chosen
- deliberately).
+ change stops unlocking (the migration was chosen deliberately).
 
  `poll-mods` reports the held modifiers -- shift 1, ctrl 2, alt 4, the same
  bit values `UI chapter Event` uses (`mod-shift`, `mod-ctrl`, `mod-alt`) --
@@ -66,12 +96,128 @@ Chapter: KeyInput
 
  We say:
 
+Section: Named Keys
+
+ A named key is not a character and must never be confused with one, so it
+ lives above every value CCE can produce. CCE is allocated densely from
+ zero: tier 0 fills 0-127, tier 1 runs to 2175, and tier 2's ten blocks sum
+ to 41060 more, so 43235 is the highest code point that exists today and
+ `to-unicode` answers the replacement character above it. `key-named-base`
+ sits far enough above that band that CCE growth cannot reach it: CCE is a
+ compaction of Unicode's assigned code points, of which there are roughly
+ 150000, so a base of 2^20 has an order of magnitude of headroom.
+
+ The margin is a claim, so it is tested rather than asserted:
+ `codex/test/keys-collision` requires `to-unicode key-f1` to answer the
+ replacement character, which fails the day the two spaces meet.
+
+  key-named-base : Integer = 1048576
+
+  key-is-named : Integer -> Boolean
+  key-is-named (k) = k >= key-named-base
+
+  key-enter : Integer = 1048577
+  key-backspace : Integer = 1048578
+  key-tab : Integer = 1048579
+  key-escape : Integer = 1048580
+  key-delete : Integer = 1048581
+
+  key-left : Integer = 1048583
+  key-up : Integer = 1048584
+  key-right : Integer = 1048585
+  key-down : Integer = 1048586
+  key-home : Integer = 1048587
+  key-end : Integer = 1048588
+  key-pgup : Integer = 1048589
+  key-pgdn : Integer = 1048590
+
+  key-f1 : Integer = 1048597
+  key-f2 : Integer = 1048598
+  key-f3 : Integer = 1048599
+  key-f4 : Integer = 1048600
+  key-f5 : Integer = 1048601
+  key-f6 : Integer = 1048602
+  key-f7 : Integer = 1048603
+  key-f8 : Integer = 1048604
+  key-f9 : Integer = 1048605
+  key-f10 : Integer = 1048606
+  key-f11 : Integer = 1048607
+  key-f12 : Integer = 1048608
+
 Section: Poll
+
+ Two sources, and the firmware one has to be asked first because on a large
+ class of machines the other cannot answer at all. uefi-read-key reads the cell
+ the IRQ1 handler fills from PS/2 port 0x60; a board with no PS/2 port -- which
+ includes the ASUS TUF this project targets -- can never put anything in it, and
+ no amount of USB work changes that. uefi-read-key-ex asks the firmware through
+ EFI_SIMPLE_TEXT_INPUT_EX and works wherever boot services are live. It answers
+ -1 when there is no key AND when there is no SystemTable, so a bare-metal boot
+ with no firmware falls through to the cell for free.
+
+ ScanCode and UnicodeChar are the two halves of EFI_INPUT_KEY and exactly one of
+ them is meaningful per keystroke: a printable character arrives in UnicodeChar
+ with ScanCode zero, and a function or arrow key the other way round.
+
+ Cost worth knowing: uefi-read-key-ex performs a LocateProtocol on every call,
+ so this is a slower poll than reading a cell. Correctness first; caching the
+ interface is a later change and belongs in the helper, not here.
+
+ The test is `== -1` and not `> 0` deliberately. -1 is the helper's documented
+ and only failure value, for both "no key" and "no SystemTable", so testing it
+ directly says exactly what is meant. A sign test additionally MEASURED WRONG
+ on 2026-08-02: with the shift-state fold corrected, a probe confirmed the
+ returned key has bit 63 clear and is neither 0 nor -1, which makes `k > 0`
+ necessarily true, and `k > 0` still took the false branch across five runs on
+ two independently built images. That is an open question about the comparison
+ rather than about the keyboard, recorded in red-workplan; `== -1` is correct
+ regardless of how it resolves.
 
   poll-key : Integer
   poll-key =
-    let sc = uefi-read-key
-    in poll-key-decode sc (atomic-load kbd-mod-addr)
+    let ek = uefi-read-key-ex
+    in if ek == -1 then
+      (let sc = uefi-read-key
+       in poll-key-decode sc (atomic-load kbd-mod-addr))
+    else efi-key-decode ek
+
+  efi-key-decode : Integer -> Integer
+  efi-key-decode (ek) =
+    let ch = bit-and ek 65535
+    in if ch == 0 then efi-scan-decode (bit-and (bit-shru ek 16) 65535)
+    else if ch == 13 then key-enter
+    else if ch == 8 then key-backspace
+    else if ch == 9 then key-tab
+    else ch
+
+ EFI_INPUT_KEY.ScanCode values, UEFI spec table 12-3. They are not Set-1
+ scancodes and share no numbering with poll-key-decode's input.
+
+  efi-scan-decode : Integer -> Integer
+  efi-scan-decode (sc) =
+    if sc == 1 then key-up
+    else if sc == 2 then key-down
+    else if sc == 3 then key-right
+    else if sc == 4 then key-left
+    else if sc == 5 then key-home
+    else if sc == 6 then key-end
+    else if sc == 8 then key-delete
+    else if sc == 9 then key-pgup
+    else if sc == 10 then key-pgdn
+    else if sc == 11 then key-f1
+    else if sc == 12 then key-f2
+    else if sc == 13 then key-f3
+    else if sc == 14 then key-f4
+    else if sc == 15 then key-f5
+    else if sc == 16 then key-f6
+    else if sc == 17 then key-f7
+    else if sc == 18 then key-f8
+    else if sc == 19 then key-f9
+    else if sc == 20 then key-f10
+    else if sc == 21 then key-f11
+    else if sc == 22 then key-f12
+    else if sc == 23 then key-escape
+    else 0
 
   poll-key-decode : Integer, Integer -> Integer
   poll-key-decode (sc) (mods) =
@@ -89,7 +235,27 @@ Section: Poll
     else if sc == 69 then let d = atomic-store kbd-mod-addr (bit-xor mods 16) in 0
     else if sc == 197 then 0
     else if sc == 224 then mod-set mods 32
-    else decode-key sc mods
+    else key-emit (decode-key sc mods)
+
+ The translation tables below still work in ASCII, because ASCII is the
+ alphabet a PS/2 layout is written in and rewriting a hundred table entries
+ by hand is a way to introduce errors, not to remove them. `key-emit` is
+ the single point where a character crosses into CCE, which is what makes
+ this a boundary rather than a smear: one conversion, through
+ `from-unicode`, which is the mapping the encoding chapter already tests.
+
+ A named key passes through untouched, and so does the idle zero. Every
+ printable ASCII character has a CCE code point (tier 0 carries exactly the
+ thirty-two punctuation slots ASCII needs, which is not a coincidence), so
+ the conversion cannot lose one; `codex/test/keys-collision` walks the
+ printable range and requires every answer to be non-negative rather than
+ taking that on trust.
+
+  key-emit : Integer -> Integer
+  key-emit (k) =
+    if k <= 0 then 0
+    else if k >= key-named-base then k
+    else from-unicode k
 
   poll-mods : Integer
   poll-mods = bit-and (atomic-load kbd-mod-addr) 7
@@ -153,24 +319,30 @@ Section: Modifiers
 
  `key-upper` folds a `poll-key` letter back to its uppercase command
  identity, for a call site that reads a letter as a keyboard SHORTCUT
- rather than as text. Since poll-key went case-sensitive, `k == 78` (`N`)
- no longer fires on an unshifted `n` (110); wrapping the key in `key-upper`
- makes the shortcut case-insensitive again, which is what a command key
- wants. It operates on poll-key's ASCII/Unicode code points, NOT on CCE:
- 97-122 is `a`-`z` in ASCII, and this is only ever handed a poll-key
- result. Do not point it at a `char-code` value, which is CCE.
+ rather than as text: `key-upper k == char-code 'N'` fires on either case.
+
+ It operates on CCE now, where lowercase is 13-38 and uppercase 39-64, so
+ it is the same `+26` that `Foreword chapter CCE`'s own `to-upper` performs
+ rather than a second implementation of casing in a different alphabet.
+ That divergence was the thing the old warning here existed to manage, and
+ the warning is gone because the divergence is. A named key is not a letter
+ and passes through.
 
   key-upper : Integer -> Integer
   key-upper (k) =
-    if k >= 97 then if k <= 122 then k - 32 else k
+    if k >= 13 then if k <= 38 then k + 26 else k
     else k
 
  A letter is cased by shift XOR caps; a non-letter takes its shifted symbol
- only when shift is held (caps does not shift punctuation).
+ only when shift is held (caps does not shift punctuation). This still runs
+ in ASCII, before `key-emit` converts, because the shifted-symbol table is
+ a property of the keyboard layout rather than of the encoding. A named key
+ takes neither: there is no shifted Up arrow.
 
   apply-mods : Integer, Integer -> Integer
   apply-mods (k) (mods) =
-    if k >= 65 then if k <= 90 then apply-letter k mods else apply-symbol k mods
+    if k >= key-named-base then k
+    else if k >= 65 then if k <= 90 then apply-letter k mods else apply-symbol k mods
     else apply-symbol k mods
 
   apply-letter : Integer, Integer -> Integer
@@ -222,9 +394,9 @@ Section: Translation
 
   sk-low : Integer -> Integer
   sk-low (sc) =
-    if sc == 1 then 27
-    else if sc == 14 then 8
-    else if sc == 15 then 9
+    if sc == 1 then key-escape
+    else if sc == 14 then key-backspace
+    else if sc == 15 then key-tab
     else if sc == 12 then 45
     else if sc == 13 then 61
     else if sc == 11 then 48
@@ -232,7 +404,7 @@ Section: Translation
 
   sk-row1 : Integer -> Integer
   sk-row1 (sc) =
-    if sc == 28 then 13
+    if sc == 28 then key-enter
     else if sc == 26 then 91
     else if sc == 27 then 93
     else if sc == 29 then 0
@@ -290,23 +462,29 @@ Section: Translation
     else if sc == 49 then 78
     else 77
 
+ The navigation block and the function row are named keys. They used to be
+ DOM key codes, which is where the collision with the character space came
+ from: 36 is `$`, 38 is `&`, 39 is the apostrophe, and 112-123 are the
+ letters `p` through `{`. The numpad `-` and `+` stay characters, because
+ that is what they are.
+
   sk-high : Integer -> Integer
   sk-high (sc) =
-    if sc == 71 then 36
-    else if sc == 72 then 38
-    else if sc == 73 then 33
-    else if sc == 75 then 37
-    else if sc == 77 then 39
-    else if sc == 79 then 35
-    else if sc == 80 then 40
-    else if sc == 81 then 34
-    else if sc == 83 then 127
-    else if sc == 87 then 122
-    else if sc == 88 then 123
+    if sc == 71 then key-home
+    else if sc == 72 then key-up
+    else if sc == 73 then key-pgup
+    else if sc == 75 then key-left
+    else if sc == 77 then key-right
+    else if sc == 79 then key-end
+    else if sc == 80 then key-down
+    else if sc == 81 then key-pgdn
+    else if sc == 83 then key-delete
+    else if sc == 87 then key-f11
+    else if sc == 88 then key-f12
     else if sc == 74 then 45
     else if sc == 78 then 43
     else if sc >= 59 then sk-fkey sc
     else 0
 
   sk-fkey : Integer -> Integer
-  sk-fkey (sc) = if sc <= 68 then sc + 53 else 0
+  sk-fkey (sc) = if sc <= 68 then key-f1 + (sc - 59) else 0

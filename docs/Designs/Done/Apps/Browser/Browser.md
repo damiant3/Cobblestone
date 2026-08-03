@@ -3,7 +3,7 @@
 A web browser built from first principles inside the Codex stack.
 No HTML, no CSS, no JavaScript, no backward compatibility. A new web
 built on compiled documents, typed data channels, and capability-verified
-code — running bare-metal inside codex-vm today, on real hardware
+code -- running bare-metal inside codex-vm today, on real hardware
 tomorrow.
 
 ---
@@ -20,13 +20,13 @@ made of string-matching heuristics (CSP, CORS, SameSite cookies).
 Codex has the tools to do this properly:
 
 - **One language** for structure, style, and behavior (Codex)
-- **Compile-time capability verification** via effect types — the
+- **Compile-time capability verification** via effect types -- the
   browser knows what a page can do before it runs
-- **Content-addressed documents** — integrity is intrinsic, not
+- **Content-addressed documents** -- integrity is intrinsic, not
   bolted on with certificates
-- **Trust lattice** — identity and authority without certificate
+- **Trust lattice** -- identity and authority without certificate
   authorities
-- **Typed data channels** — the server sends compiled frames, then
+- **Typed data channels** -- the server sends compiled frames, then
   streams typed data into declared slots
 
 A page is not a string of markup interpreted at runtime. A page is
@@ -37,10 +37,10 @@ a widget tree.
 
 The Codex Browser is three things:
 
-1. **A document viewer** — renders compiled Codex pages
-2. **An app runtime** — executes capability-gated Codex programs
+1. **A document viewer** -- renders compiled Codex pages
+2. **An app runtime** -- executes capability-gated Codex programs
    with live data binding
-3. **A navigation shell** — address bar, tabs, history, trust
+3. **A navigation shell** -- address bar, tabs, history, trust
    decisions
 
 The boundary between "document" and "app" is not a mode switch.
@@ -48,7 +48,7 @@ Every page is a compiled program. A static article is a program
 with `[Display]` effects that returns a widget tree from inline
 data. An interactive dashboard is a program with `[Display, Network]`
 effects that binds to live data channels. The capability profile is
-the only difference — the architecture is the same.
+the only difference -- the architecture is the same.
 
 ---
 
@@ -114,7 +114,7 @@ Chapter: MyPage
   cites Foreword chapter RichText
   cites Foreword chapter Layout
 
- A simple article page. No network access, no storage — just
+ A simple article page. No network access, no storage -- just
  a widget tree built from inline data.
 
 Section: Page
@@ -138,9 +138,9 @@ Every page must export one of these typed entry points:
 
 | Entry Point | Type | Use Case |
 |-------------|------|----------|
-| `page` | `PageContext -> [Display] WidgetNode` | Static document — widget tree from inline data |
-| `app` | `PageContext -> [Display, Network] WidgetNode` | Live app — can open data channels |
-| `frame` | `FrameSpec -> [Display] WidgetNode` | Data-driven frame — widget tree with typed binding slots |
+| `page` | `PageContext -> [Display] WidgetNode` | Static document -- widget tree from inline data |
+| `app` | `PageContext -> [Display, Network] WidgetNode` | Live app -- can open data channels |
+| `frame` | `FrameSpec -> [Display] WidgetNode` | Data-driven frame -- widget tree with typed binding slots |
 
 `PageContext` provides the page's environment:
 
@@ -159,7 +159,7 @@ Every page must export one of these typed entry points:
 This is the core architectural innovation. A frame separates the
 compiled UI structure from the live data that populates it.
 
-**Step 1 — Serve the frame.** The server sends a compiled CDX that
+**Step 1 -- Serve the frame.** The server sends a compiled CDX that
 declares typed data slots:
 
 ```
@@ -189,7 +189,7 @@ Section: Frame
     ]
 ```
 
-**Step 2 — Stream data.** Once the frame is loaded and verified,
+**Step 2 -- Stream data.** Once the frame is loaded and verified,
 the browser opens a typed data channel to the server. The server
 streams `Product` records. The frame's bindings update, the widget
 tree rebuilds, and the renderer repaints the dirty region.
@@ -211,13 +211,13 @@ tree rebuilds, and the renderer repaints the dirty region.
 **Why this is better than HTML + SSE:**
 
 - The frame is compiled and type-verified before any data arrives
-- The data stream is typed — a malformed record is a type error,
+- The data stream is typed -- a malformed record is a type error,
   not a DOM injection
-- No runtime parsing of markup — the frame is machine code that
+- No runtime parsing of markup -- the frame is machine code that
   produces widget nodes
-- Layout is pre-determined by the frame — data arrival triggers
+- Layout is pre-determined by the frame -- data arrival triggers
   a constrained rebuild, not a full reflow
-- The capability profile is fixed — the frame declared `[Display]`
+- The capability profile is fixed -- the frame declared `[Display]`
   only, so even with a data channel it cannot make outbound network
   calls, touch the filesystem, or access the camera
 
@@ -234,7 +234,7 @@ Pages can be delivered as:
 Source delivery is the default for the open web. The browser compiles
 the page locally, so it can verify every type, every effect, every
 capability claim. Pre-compiled CDX is for trusted publishers who want
-faster load times — the signature proves the CDX was compiled from
+faster load times -- the signature proves the CDX was compiled from
 the claimed source.
 
 ---
@@ -263,11 +263,11 @@ capability profile before the page runs.
 
 | Tier | Effects | User Consent | Description |
 |------|---------|-------------|-------------|
-| **Static** | `[Display]` | None | Pure rendering — inline data only. Safe by construction. |
+| **Static** | `[Display]` | None | Pure rendering -- inline data only. Safe by construction. |
 | **Connected** | `[Display, Network]` | Implicit for trusted publishers | Can open data channels to its origin server. |
 | **Interactive** | `[Display, Network, Storage]` | Prompt | Can persist state locally (bookmarks, preferences). |
-| **Sensor** | `[Display, Network, Camera]` or `[..., Microphone]` | Explicit per-device | Hardware access — always prompted, never remembered. |
-| **System** | `[Display, Network, FileSystem]` | Explicit + trust threshold | Local file access — requires high trust level. |
+| **Sensor** | `[Display, Network, Camera]` or `[..., Microphone]` | Explicit per-device | Hardware access -- always prompted, never remembered. |
+| **System** | `[Display, Network, FileSystem]` | Explicit + trust threshold | Local file access -- requires high trust level. |
 
 ### 4.3 Compile-Time Verification
 
@@ -285,8 +285,8 @@ This eliminates entire classes of web vulnerabilities:
 | CSRF (cross-site request forgery) | Effect type mismatch | A `[Display]` page cannot make network calls |
 | Data exfiltration | Capability gate | Camera/mic require declared effects + consent |
 | Supply chain attack | Trust lattice verification | Every dependency is content-addressed and signed |
-| Cookie theft | No ambient authority | No cookies — sessions are capability tokens |
-| DOM clobbering | No DOM | Widget tree is typed — no string-based lookup |
+| Cookie theft | No ambient authority | No cookies -- sessions are capability tokens |
+| DOM clobbering | No DOM | Widget tree is typed -- no string-based lookup |
 
 ### 4.4 Ambient Authority Is Dead
 
@@ -298,7 +298,7 @@ Authentication is explicit:
 
 1. The user holds an Ed25519 identity (from the trust lattice)
 2. To authenticate to a server, the user signs a challenge
-3. The signed token is a capability — scoped, expiring, revocable
+3. The signed token is a capability -- scoped, expiring, revocable
 4. The page must declare `[Network]` to even receive the token
 5. The token is passed explicitly, not attached to every request
 
@@ -327,7 +327,7 @@ human-readable names to content hashes, signed by the publisher:
 
 Resolution:
 
-1. Look up `damian` in the trust lattice — find the Ed25519 public key
+1. Look up `damian` in the trust lattice -- find the Ed25519 public key
 2. Query the publisher's name server for `my-page`
 3. Receive a signed record: `{ name: "my-page", hash: "sha256:3a7b...", version: 42 }`
 4. Verify the signature against the publisher's key
@@ -350,7 +350,7 @@ Named addresses can include version constraints:
   codex://sha256:3a7b.../                 -- immutable, forever
 ```
 
-`@latest` is the default. The publisher signs a version chain —
+`@latest` is the default. The publisher signs a version chain --
 each version record points to the content hash and the previous
 version. The browser can verify the entire history.
 
@@ -358,13 +358,13 @@ version. The browser can verify the entire history.
 
 How do you find pages without a search engine? Three mechanisms:
 
-1. **Direct link** — someone sends you an address
-2. **Publisher index** — a publisher signs an index of their pages
+1. **Direct link** -- someone sends you an address
+2. **Publisher index** -- a publisher signs an index of their pages
    (itself a page with `[Display]` effects)
-3. **Lattice walk** — browse the trust lattice to find publishers
+3. **Lattice walk** -- browse the trust lattice to find publishers
    vouched by people you trust
 
-Search is a page too — a search service is just a page with
+Search is a page too -- a search service is just a page with
 `[Display, Network]` that queries an index server. The browser
 does not have a built-in search engine. Search is an app, not a
 platform feature.
@@ -394,7 +394,7 @@ Channel Protocol (over WebSocket or raw TCP):
 
 Channel data is encoded in a binary format derived from the Codex
 type system. The frame's compiled type signature serves as the
-schema — no external schema registry, no version negotiation.
+schema -- no external schema registry, no version negotiation.
 
 | Type | Wire Encoding |
 |------|--------------|
@@ -449,16 +449,16 @@ declared binding type, the channel handshake fails.
 ### 7.1 Layout Engine
 
 Built on the existing UI foreword. The layout model is flexbox-only
-— no float, no position:absolute, no grid (initially). Flexbox
+-- no float, no position:absolute, no grid (initially). Flexbox
 covers 95% of real layouts and is well-understood.
 
 | Concept | Implementation |
 |---------|---------------|
-| Box model | `BoxModel.codex` — margin, border, padding, content |
-| Flex layout | `Layout.codex` — row/column, flex weights, min-size |
-| Scrolling | `Scroll.codex` — viewport + scrollbar |
-| Text layout | `Font.codex` + `RichText.codex` — runs, styles, wrapping |
-| Theming | `Theme.codex` + `Render.codex` — themed painting |
+| Box model | `BoxModel.codex` -- margin, border, padding, content |
+| Flex layout | `Layout.codex` -- row/column, flex weights, min-size |
+| Scrolling | `Scroll.codex` -- viewport + scrollbar |
+| Text layout | `Font.codex` + `RichText.codex` -- runs, styles, wrapping |
+| Theming | `Theme.codex` + `Render.codex` -- themed painting |
 
 ### 7.2 Rendering Pipeline
 
@@ -486,7 +486,7 @@ When data arrives on a channel:
    changed)
 4. Render repaints the dirty region (tracked by Surface)
 
-Full-page reflow is never needed for data updates — the frame's
+Full-page reflow is never needed for data updates -- the frame's
 structure is fixed, only data-bound leaf values change. This is
 a fundamental advantage over HTML, where a DOM mutation can trigger
 arbitrary reflow.
@@ -497,11 +497,11 @@ Current: bitmap font (5x7, CCE codes 0-96 in `Font.codex`).
 
 Target: scalable font rendering. Two options:
 
-1. **Bitmap font atlas** — pre-rendered at common sizes (12, 14, 16,
+1. **Bitmap font atlas** -- pre-rendered at common sizes (12, 14, 16,
    18, 24, 32px). Simple, fast, sufficient for UI text. Can be
    generated offline and shipped as a CDX asset.
 
-2. **Outline font renderer** — parse TrueType/OpenType, rasterize
+2. **Outline font renderer** -- parse TrueType/OpenType, rasterize
    glyphs with Bezier curve evaluation. The foreword already has
    `Bezier.codex` and `Rasterizer.codex`. This is substantial work
    but achievable.
@@ -561,7 +561,7 @@ a separate workstream.
 
 ### 9.1 Publisher Identity
 
-A publisher is an Ed25519 keypair. The public key IS the identity —
+A publisher is an Ed25519 keypair. The public key IS the identity --
 no registration, no authority, no namespace collision. Publishers
 sign their pages, their name mappings, and their version chains.
 
@@ -616,7 +616,7 @@ is compromised, a tampered page fails the hash check.
 The original design envisioned five sequential phases: Static Pages,
 Network Fetch + Trust, Data Channels, Interactive Pages, Rich Content.
 Each phase was framed as a feature slab that blocked on the previous
-one. Implementation revealed a different natural order — the browser
+one. Implementation revealed a different natural order -- the browser
 shell, trust model, data channels, and address scheme could all be
 built in parallel because they share types but not control flow.
 
@@ -648,13 +648,13 @@ widget tree → layout → VBE framebuffer.
 | `History.codex` | 112 | Visit recording, dedup, prefix search for autocomplete |
 | `PageSandbox.codex` | 98 | Capability gate, source size gate, EROS embedding axioms |
 | `opening.codex` | 73 | Entry point with DiskFacts persistence loop |
-| 4 sample pages | — | hello, about, dashboard, media-demo |
+| 4 sample pages | -- | hello, about, dashboard, media-demo |
 
 ### What Changed From the Original Plan
 
 1. **App, not quire.** The original plan placed the browser in
    `codex/browser/` as a quire. It lives in `apps/browser/` instead
-   — it is an application with an `opening` entry point, not a
+   -- it is an application with an `opening` entry point, not a
    library. If shared components emerge (e.g., the content address
    scheme), they can be extracted to a foreword module later.
 
@@ -668,7 +668,7 @@ widget tree → layout → VBE framebuffer.
    programming environment.
 
 3. **Trust prompt is built, not deferred.** The original plan
-   deferred trust UI to Phase 2. It is built now — the full
+   deferred trust UI to Phase 2. It is built now -- the full
    allow-once / trust-publisher / deny flow with pending trust
    state, keyboard handling, and rendering.
 
@@ -684,16 +684,16 @@ widget tree → layout → VBE framebuffer.
 
 The original five-phase plan collapsed into three:
 
-**Phase A — Bare-metal integration — DONE.** Keyboard via
+**Phase A -- Bare-metal integration -- DONE.** Keyboard via
 `uefi-read-key`, GOP framebuffer via `Display.codex` → `gfx-put-pixel`,
 CCE via foreword primitives. All resolved (Section 15.1-15.5).
 
-**Phase B — Network fetch — DONE.** `fetch-page-tcp` wires
+**Phase B -- Network fetch -- DONE.** `fetch-page-tcp` wires
 PageFetcher to the live TCP/IP stack via NetIO/NetworkStack.
 Creates NE2K session, connects, sends HTTP request, accumulates
 response segments, parses via `http-parse-response` (Section 15.6).
 
-**Phase C — In-browser compilation — DONE.** `PageCompiler.codex`
+**Phase C -- In-browser compilation -- DONE.** `PageCompiler.codex`
 (~400 lines) implements a lightweight page compiler: tokenizer,
 recursive descent parser, and tree-walking evaluator for the subset
 of Codex used in pages (let bindings, function application, literals,
@@ -701,7 +701,7 @@ lists, field access, conditionals, text concatenation). The evaluator
 dispatches known widget/layout function calls to their native
 implementations via a built-in function table. The full compiler
 cannot be embedded because its internal `Codex chapter` dependencies
-are part of the seed binary — the page compiler is purpose-built
+are part of the seed binary -- the page compiler is purpose-built
 for the browser's use case.
 
 Supported page constructs: `let`/`in` bindings, function application
@@ -800,12 +800,12 @@ Client: UNBIND products
 |---------|---------|
 | HTML/CSS parser | We have our own document format |
 | JavaScript engine | Pages are compiled Codex |
-| Cookie jar | No ambient authority — capability tokens instead |
-| DOM | Widget tree is the model — typed, not string-indexed |
+| Cookie jar | No ambient authority -- capability tokens instead |
+| DOM | Widget tree is the model -- typed, not string-indexed |
 | CORS | Capability effects replace origin-based restrictions |
-| Service workers | The page IS compiled code — no need for a script layer |
-| Web extensions | Browser features are Codex modules — extend by writing code |
-| PDF viewer | PDFs are a legacy format — build a Codex document viewer |
+| Service workers | The page IS compiled code -- no need for a script layer |
+| Web extensions | Browser features are Codex modules -- extend by writing code |
+| PDF viewer | PDFs are a legacy format -- build a Codex document viewer |
 | Developer tools | The Codex debugger serves this role directly |
 | Bookmarks sync | Trust lattice + fact store replaces cloud sync |
 
@@ -820,8 +820,8 @@ browser from scratch is viable but surface key lessons:
 
 - **Hit testing is hard.** Ladybird replaced naive hit-testing with
   a pre-computed AccumulatedVisualContext tree. Our flex-only layout
-  simplifies this significantly — no z-index stacking contexts, no
-  position:absolute — but we still need efficient point-in-rect
+  simplifies this significantly -- no z-index stacking contexts, no
+  position:absolute -- but we still need efficient point-in-rect
   lookup for event routing.
 
 - **Profiling-driven optimization matters.** Servo found garbage
@@ -831,7 +831,7 @@ browser from scratch is viable but surface key lessons:
 
 - **IPC security hardening.** Both projects emphasize process
   isolation. On bare metal we don't have processes yet (structured
-  concurrency is in design — see CAMP-IIIC). For Phase 1 we run
+  concurrency is in design -- see CAMP-IIIC). For Phase 1 we run
   pages in-process with effect-type isolation only. Hardware-level
   isolation (page tables per tab) is a future milestone.
 
@@ -839,7 +839,7 @@ browser from scratch is viable but surface key lessons:
 
 IPFS reached production viability in 2025-2026:
 
-- **Service Worker Gateway** enables HTTP gateway retirement — content
+- **Service Worker Gateway** enables HTTP gateway retirement -- content
   verification moves client-side. Analogous to our model where the
   browser verifies content hashes directly.
 
@@ -868,7 +868,7 @@ String encoding prepends a multibase prefix: `b` (base32lower),
 
 **Adaptation for Codex:** Our `ContentAddress` uses a simplified
 variant: version byte `0x01`, codec `0xC0` (codex source) or
-`0xC1` (cdx binary), SHA-256 multihash. No multibase — addresses
+`0xC1` (cdx binary), SHA-256 multihash. No multibase -- addresses
 are always binary internally, hex-encoded for display. This gives
 us self-describing addresses with room for future hash algorithms.
 
@@ -896,11 +896,11 @@ including the publisher's public key, making records self-verifying.
 #### Delegated Routing (Research Complete)
 
 IPFS delegated routing is a simple HTTP API:
-- `GET /routing/v1/providers/{cid}` — find who has content
-- `GET /routing/v1/ipns/{name}` — resolve a name to content
+- `GET /routing/v1/providers/{cid}` -- find who has content
+- `GET /routing/v1/ipns/{name}` -- resolve a name to content
 - Streaming via `application/x-ndjson` (one JSON object per line)
 
-**Adaptation for Codex:** Our initial fetch uses plain HTTP — the
+**Adaptation for Codex:** Our initial fetch uses plain HTTP -- the
 server IS the content provider. Delegated routing becomes relevant
 when we add peer-to-peer content distribution (post-Phase 5).
 
@@ -915,12 +915,12 @@ seL4 organizes capabilities in CNodes (capability nodes) forming a
 hierarchical namespace. Key mechanisms:
 
 - **Mint**: Derive a new capability with reduced rights (never
-  expanded). Supports badging — a 28-64 bit data word for recipient
+  expanded). Supports badging -- a 28-64 bit data word for recipient
   identification without exposing the original capability.
 - **Copy**: Duplicate capabilities between slots, enabling delegation
   while maintaining provenance.
 - **Revoke**: `seL4_CNode_Revoke` recursively deletes all
-  capabilities derived from a target. Cascading — invalidating an
+  capabilities derived from a target. Cascading -- invalidating an
   inner node immediately invalidates its entire subtree.
 
 #### EROS/KeyKOS Factory Pattern
@@ -944,12 +944,12 @@ pattern combined with seL4's cascading revocation:
 
 1. **Factory isolation**: The outer page creates the inner page via
    a factory function. The inner page receives only the capabilities
-   explicitly passed — it cannot discover or access the outer page's
+   explicitly passed -- it cannot discover or access the outer page's
    capabilities.
 
 2. **Capability ceiling**: The inner page's declared effects must be
    a subset of the outer page's effects. A `[Display]` page cannot
-   embed a `[Display, Network]` page — the factory rejects it.
+   embed a `[Display, Network]` page -- the factory rejects it.
 
 3. **Cascading revocation**: If the user revokes the outer page's
    `Network` capability, all inner pages that received `Network`
@@ -985,13 +985,13 @@ type agreement:
 Our data channel protocol adopts WIT's structural/nominal split:
 
 - **Data types** (records, variants, lists flowing through channels)
-  use **structural matching** — the frame declares `Product = record
+  use **structural matching** -- the frame declares `Product = record
   { name : Text, price : Integer }` and the server sends records
   with matching field names and types. No registration, no schema
   ID. Shape is the contract.
 
 - **Capabilities** (channel handles, auth tokens) use **nominal
-  matching** — a capability token is opaque, identified by its
+  matching** -- a capability token is opaque, identified by its
   mint origin, and cannot be forged by constructing a same-shaped
   record.
 
@@ -1027,7 +1027,7 @@ OS/2, name, post.
    contour data → list of quadratic Bezier curves.
 3. **Rasterization**: Feed Bezier curves into our existing
    `Rasterizer.codex` (`fb-polygon` or scanline fill). stb_truetype
-   uses scanline rasterization with winding-number fill — ~1500
+   uses scanline rasterization with winding-number fill -- ~1500
    lines for the core rasterizer, reducible to ~500 since we already
    have Bezier evaluation.
 4. **Bitmap caching**: Pre-render glyphs at target sizes into a
@@ -1045,32 +1045,32 @@ to the existing Bezier and Rasterizer modules. Estimated: ~1500
 lines of Codex, no external dependencies.
 
 A CCE-native font format (glyph outlines indexed by CCE code, no
-Unicode tables) would be simpler still — ~800 lines — but limits
+Unicode tables) would be simpler still -- ~800 lines -- but limits
 us to fonts designed specifically for Codex.
 
-### 14.6 Page Embedding (Frames — Design Complete)
+### 14.6 Page Embedding (Frames -- Design Complete)
 
 A page embedding another page uses the EROS factory pattern
 (Section 14.3). The formal model:
 
-**Axiom 1 — Capability ceiling.** An embedded page's declared
+**Axiom 1 -- Capability ceiling.** An embedded page's declared
 effects must be a subset of the embedding page's granted effects.
 A `[Display]` page cannot embed a `[Display, Network]` page.
 
-**Axiom 2 — Factory isolation.** The embedded page is created via
+**Axiom 2 -- Factory isolation.** The embedded page is created via
 a factory that provides only the capabilities explicitly listed in
 the embed declaration. The embedded page cannot discover the
 embedding page's other capabilities.
 
-**Axiom 3 — Communication via channels.** The embedding page and
+**Axiom 3 -- Communication via channels.** The embedding page and
 embedded page communicate only through typed data channels. No
 shared widget tree, no shared memory.
 
-**Axiom 4 — Cascading revocation.** Revoking a capability from
+**Axiom 4 -- Cascading revocation.** Revoking a capability from
 the embedding page cascades to all embedded pages that received
 that capability (seL4 derivation tree).
 
-**Axiom 5 — Independent consent.** If the embedded page requests
+**Axiom 5 -- Independent consent.** If the embedded page requests
 capabilities not held by the embedding page (e.g., Camera), the
 browser prompts the user independently. The embedding page never
 learns whether consent was granted.
@@ -1084,17 +1084,17 @@ learns whether consent was granted.
 ```
 
 The embed function returns a WidgetNode subtree rendered by the
-embedded page. The embedding page treats it as an opaque widget —
+embedded page. The embedding page treats it as an opaque widget --
 it can position and size it, but cannot inspect or modify its
 contents.
 
 ---
 
-## 15. Integration Stubs — Status
+## 15. Integration Stubs -- Status
 
 All six original integration stubs are resolved.
 
-### 15.1 Event Polling (browser-poll-event) — RESOLVED
+### 15.1 Event Polling (browser-poll-event) -- RESOLVED
 
 **Location:** `BrowserEvent.codex:156-163`
 **Status:** Wired to `uefi-read-key` for keyboard input. Returns
@@ -1103,17 +1103,17 @@ key code when a key is pressed. `scan-to-key-code` handles
 printable ASCII (32-126), Enter, Backspace, Tab, Escape.
 
 Mouse support is not yet integrated (requires kernel
-`Mouse.codex` — `mouse-poll` returns `MouseState` with
+`Mouse.codex` -- `mouse-poll` returns `MouseState` with
 position/button deltas). Not blocking for MVP.
 
-### 15.2 Character Encoding (char-from-code) — RESOLVED
+### 15.2 Character Encoding (char-from-code) -- RESOLVED
 
 **Location:** `Browser.codex:592-594`
 **Status:** Chains `from-unicode` → `code-to-char` → `char-to-text`
 (foreword CCE primitives). Converts UEFI key codes (Unicode) to CCE
 and then to Text for address bar input.
 
-### 15.3 Text-to-Bytes Conversion (payload-to-text) — RESOLVED
+### 15.3 Text-to-Bytes Conversion (payload-to-text) -- RESOLVED
 
 **Location:** `DataChannel.codex:286-294`
 **Status:** `DataChannel` cites `Foreword chapter CCE`. The
@@ -1121,14 +1121,14 @@ accumulator `payload-to-text-acc` iterates bytes, calling
 `code-to-char` → `char-to-text` per byte. `bytes-to-text-range`
 extracts a slice via `list-slice` and delegates to `payload-to-text`.
 
-### 15.4 Integer Parsing (parse-ver) — RESOLVED
+### 15.4 Integer Parsing (parse-ver) -- RESOLVED
 
 **Location:** `PageFetcher.codex:177-182`
 **Status:** `PageFetcher` cites `Foreword chapter Parse`. Calls
 `parse-decimal-full` from the Parse foreword module. Returns 0 if
 the `X-Codex-Version` header is absent.
 
-### 15.5 Framebuffer Presentation — RESOLVED
+### 15.5 Framebuffer Presentation -- RESOLVED
 
 **Location:** `Browser.codex:656-666`, `Display.codex:54-74`
 **Status:** Full pipeline wired. `browser-render-frame` builds the
@@ -1138,7 +1138,7 @@ pixel and writes to the VBE hardware framebuffer via
 `gfx-put-pixel`. Dirty-rect optimization (`display-present-rect`)
 is also implemented for incremental updates.
 
-### 15.6 Network Session Integration — RESOLVED
+### 15.6 Network Session Integration -- RESOLVED
 
 **Location:** `PageFetcher.codex:82-134`, `PageRuntime.codex:79-106`
 **Status:** Full TCP fetch pipeline wired. `fetch-page-tcp` creates
@@ -1186,7 +1186,7 @@ A media player on the Codex web is not a special browser element
 or a plugin. It is a **compiled Codex page with `[Display, Network,
 Audio]` effects** that receives compressed media over typed data
 channels and decodes locally. The capability model naturally handles
-media permissions — a page must declare `Audio` effects to play
+media permissions -- a page must declare `Audio` effects to play
 sound, and the browser verifies this at compile time.
 
 ```
@@ -1234,7 +1234,7 @@ HDA driver:
 2. **Allocate** DMA buffer (64 KB) and BDL (4 entries x 16 bytes)
 3. **Configure** stream format: 48 kHz, 16-bit, stereo
 4. **Write** decoded PCM samples to the DMA buffer
-5. **Start** stream — controller DMA-reads and outputs via waveOut
+5. **Start** stream -- controller DMA-reads and outputs via waveOut
 
 Buffer provides ~340ms of audio at 48kHz stereo, sufficient to
 absorb network jitter.
@@ -1266,7 +1266,7 @@ The `MediaPlayer.codex` module (340 lines) handles:
 | Container | AVI | `Avi.codex` | Full encode |
 
 The foreword currently has encoders for most formats. Decoders are
-the main gap — MP3 decode and JPEG decode are the priorities for
+the main gap -- MP3 decode and JPEG decode are the priorities for
 rich media playback. For the MVP, PCM audio and Codex Native video
 (keyframe + delta) work end-to-end without additional decoders.
 
@@ -1275,16 +1275,16 @@ rich media playback. For the MVP, PCM audio and Codex Native video
 The legacy web:
 - HTML5 `<video>` element with codec negotiation (`canPlayType`)
 - MSE (Media Source Extensions) for adaptive streaming
-- EME (Encrypted Media Extensions) for DRM — opaque binary blobs
+- EME (Encrypted Media Extensions) for DRM -- opaque binary blobs
 - Codec wars (H.264 vs VP8 vs AV1) driven by patent licensing
 - Flash plugin (retired 2020, 25 years of security holes)
 
 Codex Browser:
-- Media player IS a compiled page — no special element, no plugin
-- Codecs are foreword modules — compiled into the page, verified
+- Media player IS a compiled page -- no special element, no plugin
+- Codecs are foreword modules -- compiled into the page, verified
 - Capability gate: `[Audio]` effect required, compile-time checked
-- No DRM — content is content-addressed and trust-verified
-- No codec negotiation — the frame's type signature declares what
+- No DRM -- content is content-addressed and trust-verified
+- No codec negotiation -- the frame's type signature declares what
   it needs, the browser structurally matches
 
 ---
@@ -1295,8 +1295,8 @@ Working name: **Codex Browser** (or just "the browser" in context).
 
 Candidates for a proper name:
 
-- **Lens** — you look through it to see the web
-- **Scroll** — reading a document, unrolling content
-- **Folio** — a page, a leaf, a collection
-- **Quill** — the tool that reads what was written
-- **Beacon** — trust-verified signals in the dark
+- **Lens** -- you look through it to see the web
+- **Scroll** -- reading a document, unrolling content
+- **Folio** -- a page, a leaf, a collection
+- **Quill** -- the tool that reads what was written
+- **Beacon** -- trust-verified signals in the dark

@@ -99,17 +99,15 @@ Section: Boot Protocol
   usb-set-protocol (xh) (dev) (iface) (proto) =
     xhci-ctrl-nodata xh dev 33 11 proto iface
 
- SET_IDLE is the companion HID class request every host issues after
- SET_PROTOCOL: bmRequestType 33 (host-to-device, class, interface),
- bRequest 10, wValue 0 (duration 0 = report only on change, no
- periodic idle reports), wIndex the interface. Without it a keyboard
- left with a nonzero idle rate streams duplicate reports on a timer
- instead of reporting key changes. Some keyboards STALL the request;
- a stall is not fatal, so the result is not gated on.
-
-  usb-set-idle : XhciHost, UsbDev, Integer -> Boolean
-  usb-set-idle (xh) (dev) (iface) =
-    xhci-ctrl-nodata xh dev 33 10 0 iface
+ SET_IDLE (HID 1.11 7.2.4) is deliberately NOT sent. HID 1.11 F.3
+ requires a boot keyboard to send a report on EVERY interrupt poll BY
+ DEFAULT; Set_Idle duration 0 is the one request that overrides that
+ guarantee into report-only-on-change silence. A driver that re-arms
+ its ring continuously wants the every-poll default -- duplicate
+ reports cost one compare in the drain -- and a quirky device may
+ over-honor duration 0 as "never report", which is the shape the
+ 2026-08-03 ASUS flights measured (interrupt polls NAKed for 90 s
+ with a key held while the firmware polled the same device fine).
 
 Section: Connect
 
@@ -159,12 +157,13 @@ Section: Connect
     in if sc == False then kbd-no-kbd
     else let bp = usb-set-protocol xh dev iface 0
     in if bp == False then kbd-no-kbd
-    else let si = usb-set-idle xh dev iface
-    in let dci = epnum * 2 + 1
+    else let dci = epnum * 2 + 1
     in let ring = xhci-ring-new
     in let r0 = xhci-set-ep-ring (dev.ud-ctx) dci (xhci-ring-trbs ring) (xh.xh-ctxsz)
-    in let ictx = xhci-ictx-single dci 7 maxpkt (xhci-ring-trbs ring) (xhci-ep-interval (dev.ud-speed) binterval) (xh.xh-ctxsz) (dev.ud-ctx)
+    in let ivl = xhci-ep-interval (dev.ud-speed) binterval
+    in let ictx = xhci-ictx-single dci 7 maxpkt (xhci-ring-trbs ring) ivl (xh.xh-ctxsz) (dev.ud-ctx)
     in let ce = xhci-configure-endpoint xh dev ictx
+    in let nt = xhci-ep-note dev epnum maxpkt binterval ivl (xhci-ep-status ce)
     in if ce.xe-ok == False then kbd-no-kbd
     else if ce.xe-code /= trb-cc-success then kbd-no-kbd
     else UsbKbd { uk-ok = True, uk-host = xh, uk-dev = dev, uk-dci = dci, uk-ring = ring, uk-report = alloc-zeroed 64 64, uk-prev = alloc-zeroed 64 64, uk-state = alloc-zeroed 64 64 }

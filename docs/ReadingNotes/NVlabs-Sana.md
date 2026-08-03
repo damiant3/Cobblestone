@@ -1,4 +1,4 @@
-# NVlabs/Sana — Linear Diffusion Transformers
+# NVlabs/Sana -- Linear Diffusion Transformers
 
 **Date**: 2026-05-23
 **Source**: https://github.com/NVlabs/Sana (Apache 2.0)
@@ -15,7 +15,7 @@ Sana trains an autoencoder that compresses images 32x (vs. the standard
 8x). This reduces the token count fed to the transformer by 16x.
 Because attention is at least O(n) and usually O(n^2), compressing
 the input by 4x in each spatial dimension makes everything downstream
-cheaper — not by a constant factor, but quadratically.
+cheaper -- not by a constant factor, but quadratically.
 
 **The general principle**: if your pipeline has a stage whose cost
 grows super-linearly with input size, the highest-leverage optimization
@@ -41,11 +41,11 @@ applies to:
   context before it hits attention is the single most impactful
   optimization for bounded-memory hardware with no GC.
 
-### 2. Linear attention — O(n) instead of O(n^2)
+### 2. Linear attention -- O(n) instead of O(n^2)
 
 Standard transformer self-attention materializes an n x n matrix
 (queries x keys). Sana replaces this with linear attention: instead
-of computing softmax(QK^T)V, it computes Q(K^T V) — changing the
+of computing softmax(QK^T)V, it computes Q(K^T V) -- changing the
 associativity so the inner product is keys x values (d x d, fixed
 size) rather than queries x keys (n x n, grows with input).
 
@@ -56,7 +56,7 @@ targets, the loss is negligible.
 **Where this applies in Codex**:
 
 - **Agent inference on bare metal.** Standard attention requires
-  O(n^2) memory — on a 2 GB machine with no GC, that's a hard wall.
+  O(n^2) memory -- on a 2 GB machine with no GC, that's a hard wall.
   Linear attention keeps memory O(n), which is the difference between
   "works" and "impossible" for long-context inference on the Codex
   memory model.
@@ -78,12 +78,12 @@ to optimize, simpler to reason about resource consumption.
 
 **The general principle**: when two architectures produce comparable
 results, prefer the one with fewer distinct computational patterns.
-Uniformity is a resource — it reduces the number of code paths,
+Uniformity is a resource -- it reduces the number of code paths,
 simplifies scheduling, and makes worst-case analysis tractable.
 
 **Where this applies in Codex**:
 
-- **Compiler pipeline philosophy.** Codex already follows this — every
+- **Compiler pipeline philosophy.** Codex already follows this -- every
   phase is "read IR, produce IR, allocate from bivy, persist to deck."
   The uniformity is load-bearing: phase-compact works because every
   phase follows the same allocation discipline. Sana validates this
@@ -109,5 +109,5 @@ simplifies scheduling, and makes worst-case analysis tractable.
 
 Compress hard at the front, keep the core computation linear and
 uniform, and the whole system fits on small hardware. Codex already
-does this for compilation — Sana shows the same pattern works for
+does this for compilation -- Sana shows the same pattern works for
 neural inference.

@@ -1,0 +1,144 @@
+Chapter: VecMaskHazards
+  cites Foreword chapter Console
+
+ Adversarial probe for the mask query builtins, and the pin for the
+ movmskpd REX omission.
+
+ movmskpd was encoded with no REX byte, so a destination in R8-R15 lost
+ its high bit and encoded the low-three-bits register instead. alloc-temp
+ rotates [RAX, RCX, RDX, RSI, RDI, R11] and R11 is the only extended
+ register in that pool, so a mask query whose temp landed there wrote its
+ bits to RBX while the test-rr that follows read R11, and sete answered
+ from whatever R11 held.
+
+ Two things are needed to reach it, and every existing vector test in the
+ tree has neither. The operands must have DISTINCT LANES, because
+ vec-splat writes the same value to both and movmskpd can then only answer
+ 0 or 3 -- under which mask-any and mask-all are the same function and
+ mask-count is never asked for 1. And several queries must sit in ONE
+ arithmetic expression, because which temp a query is handed depends on
+ how many the surrounding expression has already consumed. mk2 builds a
+ distinct-lane vector by writing two doubles into a buffer, which is the
+ only way to express one.
+
+ The lane-uniform variants are the controls: they answer correctly even on
+ a compiler carrying the defect, which is precisely why splat-only tests
+ could not see it.
+
+ This is a WITNESS rather than a guarantee. It reaches R11 through the
+ temp rotation, and a future codegen change that shifts the rotation could
+ stop reaching it while leaving the encoder wrong. If this test is ever
+ suspected of having gone quiet, re-derive it by dumping the emitted bytes
+ and checking that every movmskpd names the same register as the test-rr
+ that follows it.
+
+Section: Build
+
+  b2i : Boolean -> Integer
+  b2i (t) = if t then 1 else 0
+
+  poke-bits : Integer, Integer, Integer, Integer -> Integer
+  poke-bits (base) (off) (bits) (i) =
+   if i >= 8 then 0
+   else let b = bit-and (bit-shru bits (i * 8)) 255
+   in let w = poke-byte base (off + i) b
+   in poke-bits base off bits (i + 1)
+
+  mk2 : Real, Real -> Vector 2 Real
+  mk2 (x) (y) =
+   let base = alloc-bytes 16
+   in let a = poke-bits base 0 (real-to-bits x) 0
+   in let b = poke-bits base 8 (real-to-bits y) 0
+   in vec-load-at base
+
+Section: Operands
+
+  p1 : Real
+  p1 = 1.0
+
+  n2 : Real
+  n2 = -2.0
+
+  p20 : Real
+  p20 = 20.0
+
+  p10 : Real
+  p10 = 10.0
+
+  p2 : Real
+  p2 = 2.0
+
+Section: Probes
+
+ An empty mask: every lane clear, so none is True and any and all are
+ False.
+
+ The operands arrive as PARAMETERS, not as chapter constants. A top-level
+ constant is a zero-argument function and so a call, which consumes a
+ different number of temps and moves the rotation; written against
+ constants these same probes answer correctly on a compiler carrying the
+ defect. Four parameters also fill the local registers, so the queries
+ allocate against a spilled frame.
+
+  empty-mixed : Real, Real, Real, Real -> Integer
+  empty-mixed (x0) (x1) (y0) (y1) =
+   let v = mk2 x0 x1
+   in let w = mk2 y0 y1
+   in let m = v < w
+   in b2i (mask-any m) + 2 * b2i (mask-all m) + 4 * b2i (mask-none m)
+
+  empty-same : Real, Real, Real, Real -> Integer
+  empty-same (x0) (x1) (y0) (y1) =
+   let v = mk2 x0 x1
+   in let w = mk2 y0 y1
+   in let m = v < w
+   in b2i (mask-none m) + 2 * b2i (mask-none m) + 4 * b2i (mask-none m)
+
+ A mixed mask: lane zero set, lane one clear. This is the pattern
+ vec-splat cannot produce, and the only one under which count is 1.
+
+  mixed-all-four : Real, Real, Real, Real -> Integer
+  mixed-all-four (x0) (x1) (y0) (y1) =
+   let v = mk2 x0 x1
+   in let w = mk2 y0 y1
+   in let m = v < w
+   in b2i (mask-any m) + 2 * b2i (mask-all m) + 4 * b2i (mask-none m) + 8 * mask-count m
+
+  mixed-count : Real, Real, Real, Real -> Integer
+  mixed-count (x0) (x1) (y0) (y1) =
+   let v = mk2 x0 x1
+   in let w = mk2 y0 y1
+   in let m = v < w
+   in mask-count m + 2 * mask-count m + 4 * mask-count m
+
+Section: Controls
+
+ Lane-uniform operands. These answer correctly with or without the fix,
+ so a run where these pass and the probes above fail is the signature of
+ the defect rather than of vectors being broken generally.
+
+  splat-empty : Real, Real -> Integer
+  splat-empty (x) (y) =
+   let v = vec-splat x
+   in let w = vec-splat y
+   in let m = v < w
+   in b2i (mask-any m) + 2 * b2i (mask-all m) + 4 * b2i (mask-none m)
+
+  splat-full : Real, Real -> Integer
+  splat-full (x) (y) =
+   let v = vec-splat x
+   in let w = vec-splat y
+   in let m = v < w
+   in b2i (mask-any m) + 2 * b2i (mask-all m) + 4 * b2i (mask-none m) + 8 * mask-count m
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+   print-line-uni ("empty-mixed: " & show (empty-mixed p1 n2 p1 n2))
+   print-line-uni ("empty-same: " & show (empty-same p1 n2 p1 n2))
+   print-line-uni ("mixed-all-four: " & show (mixed-all-four p1 p20 p10 p2))
+   print-line-uni ("mixed-count: " & show (mixed-count p1 p20 p10 p2))
+   print-line-uni ("splat-empty: " & show (splat-empty p1 p1))
+   print-line-uni ("splat-full: " & show (splat-full p1 p20))
+  end

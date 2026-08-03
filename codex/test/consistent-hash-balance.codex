@@ -1,0 +1,64 @@
+Chapter: ConsistentHashBalance
+  cites Foreword chapter ConsistentHash
+
+ A hash ring exists to spread keys over nodes, so that is what this
+ measures. The chapter's only previous test printed a fixed string,
+ which is why a ring that sent 993 of 1000 keys to one node survived:
+ a function that always answers the same thing looks exactly like one
+ that works.
+
+ Four nodes of sixteen vnodes, 200 keys, so 50 each is even. Sixteen
+ rather than eight because a ring's load variance goes as one over the
+ square root of the vnode count, and at eight the honest spread is wide
+ enough to read as a defect when it is not.
+
+ The counts are exact because the mixer is deterministic; the min and
+ max lines say what the counts are FOR, so a reader can see the intent
+ without recomputing the mixer.
+
+Section: Ring
+
+  ring : ConsistentHashRing
+  ring = build-ring (chr-new 16) 0 4
+
+  build-ring : ConsistentHashRing, Integer, Integer -> ConsistentHashRing
+  build-ring (r) (i) (n) =
+    if i >= n then r
+    else build-ring (chr-add-node r i) (i + 1) n
+
+Section: Counting
+
+  count-for : Integer, Integer, Integer, Integer -> Integer
+  count-for (node) (k) (n) (acc) =
+    if k >= n then acc
+    else count-for node (k + 1) n (acc + (if chr-get-node ring k == node then 1 else 0))
+
+  tally : Integer, Integer, Text -> Text
+  tally (node) (n) (acc) =
+    if node >= n then acc
+    else tally (node + 1) n (acc & " " & show (count-for node 0 200 0))
+
+  lowest : Integer, Integer, Integer -> Integer
+  lowest (node) (n) (acc) =
+    if node >= n then acc
+    else let c = count-for node 0 200 0
+    in lowest (node + 1) n (if c < acc then c else acc)
+
+  highest : Integer, Integer, Integer -> Integer
+  highest (node) (n) (acc) =
+    if node >= n then acc
+    else let c = count-for node 0 200 0
+    in highest (node + 1) n (if c > acc then c else acc)
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni ("nodes=" & show (chr-node-count ring))
+    print-line-uni ("entries=" & show (chr-entry-count ring))
+    print-line-uni ("per-node=" & tally 0 4 "")
+    print-line-uni ("min-share=" & show (lowest 0 4 1000))
+    print-line-uni ("max-share=" & show (highest 0 4 0))
+    print-line-uni ("every-node-used=" & (if lowest 0 4 1000 > 0 then "yes" else "no"))
+  end
+
+Page 1

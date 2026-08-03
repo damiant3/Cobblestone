@@ -1,4 +1,4 @@
-# ai-comp — Provenance and Terms of Use
+# ai-comp -- Provenance and Terms of Use
 
 ## What this is
 
@@ -8,17 +8,17 @@ configuration from **fiigii/ai-comp**, taken 2026-07-14.
 | | |
 |---|---|
 | Source | `https://github.com/fiigii/ai-comp` |
-| Author | Fei Peng (`fiigii`) — GPU and compiler engineer, NVIDIA |
+| Author | Fei Peng (`fiigii`) -- GPU and compiler engineer, NVIDIA |
 | Created | 2026-02-05 |
 | Snapshot taken | 2026-07-14, from `main` (upstream last pushed 2026-07-12) |
 | Upstream size | ~875 KB, Python, 95 commits, 77 stars, 11 forks |
-| **License** | **NONE — no LICENSE file, no license metadata** |
+| **License** | **NONE -- no LICENSE file, no license metadata** |
 
 It is an optimizing compiler written for Anthropic's published
 [performance take-home](https://github.com/anthropics/original_performance_takehome):
 optimize a kernel (tree traversal + hash) on a simulated VLIW SIMD virtual
 machine, minimizing cycle count. Rather than hand-tune the kernel, the author
-wrote a compiler — `HIR -> LIR -> MIR -> VLIW`, sixteen passes over three IRs —
+wrote a compiler -- `HIR -> LIR -> MIR -> VLIW`, sixteen passes over three IRs --
 and had it generate the kernel.
 
 We archived it because it is a complete, well-documented, *working* middle-end,
@@ -34,7 +34,7 @@ What that permits and forbids, concretely:
 
 - **Permitted, and the entire point:** reading the design documents and
   reimplementing the *algorithms* from scratch in Codex. Every algorithm
-  described in `upstream/` is published, decades-old compiler literature —
+  described in `upstream/` is published, decades-old compiler literature --
   list scheduling, linear-scan allocation, SLP (Larsen & Amarasinghe, PLDI
   2000), SROA, straight-line strength reduction, interval-domain range
   analysis with widening. None of it is his invention and none of it is
@@ -74,11 +74,11 @@ copy is a hyperlink waiting to break.
 | `sroa.md` | Scalar replacement of aggregates; local-memory contract; read-only windows |
 | `mad_optimization.md` | Multiply-add synthesis, and the cross-pass shaping that feeds it |
 | `hir_load_elimination_design.md` | Store-to-load forwarding with base+offset alias analysis |
-| `load_store_optimizations.md` | **Superseded by `sroa.md`** — the author marks it historical. Kept for the reasoning, not the conclusions |
+| `load_store_optimizations.md` | **Superseded by `sroa.md`** -- the author marks it historical. Kept for the reasoning, not the conclusions |
 | `compiler-pass_config.json` | The pipeline as data: 27 ordered pass names + per-pass options |
 | `compiler-pass_manager.py` | The pass manager that consumes it |
 | `aicomp-Readme.md` | Upstream README |
-| `aicomp-CLAUDE.md` | Upstream agent instructions — a peer artifact of our own `CLAUDE.md` |
+| `aicomp-CLAUDE.md` | Upstream agent instructions -- a peer artifact of our own `CLAUDE.md` |
 
 ## Our reading of it
 

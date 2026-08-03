@@ -2,28 +2,38 @@ Chapter: StatusBadge
   cites UI chapter Widget
   cites UI chapter Theme
 
- Color-coded status badges and priority indicators. Provides a
- standard visual language for status across all apps: filled dot
- for done/cancelled, outlined dot for in-progress, colored pill
- for labels, priority bars for urgency.
-
- Used by: TrackerApp, Helm, Explorer, WorkflowHtml, Collab.
-
- We say:
-
 Section: Types
+
+ A badge carries both a colour and a tone because they answer different
+ questions. The colour is a literal hex value for a caller that paints one
+ itself; the tone is what the badge MEANS, which is what a widget tree can
+ carry and a theme can resolve. Deriving one from the other is what this
+ chapter must not do: the constructors below know the meaning at the moment
+ they pick the colour, and recovering it afterwards from a hex value would
+ be reading intent back out of appearance.
+
   BadgeStyle =
-    | BsDot (Integer)
-    | BsDotFilled (Integer)
-    | BsPill (Text) (Integer)
-    | BsPriorityBar (Integer) (Integer)
-    | BsIcon (Text) (Integer)
+    | BsDot (Integer) (Integer)
+    | BsDotFilled (Integer) (Integer)
+    | BsPill (Text) (Integer) (Integer)
+    | BsPriorityBar (Integer) (Integer) (Integer)
+    | BsIcon (Text) (Integer) (Integer)
 
 Section: Standard Status Dots
   badge-status : Integer -> BadgeStyle
   badge-status (status) =
     let color = badge-status-color status
-    in if status >= 4 then BsDotFilled color else BsDot color
+    in let tone = badge-status-tone status
+    in if status >= 4 then BsDotFilled color tone else BsDot color tone
+
+  badge-status-tone : Integer -> Integer
+  badge-status-tone (s) =
+    if s == 0 then tone-muted
+    else if s == 1 then tone-primary
+    else if s == 2 then tone-warning
+    else if s == 3 then tone-primary
+    else if s == 4 then tone-success
+    else tone-muted
 
   badge-status-color : Integer -> Integer
   badge-status-color (s) =
@@ -41,11 +51,26 @@ Section: Standard Status Dots
     else if s == 4 then "Done" else "Cancelled"
 
 Section: Standard Priority Bars
+
+ Four bars is Urgent and none is None, so the count is the whole of what a
+ priority bar says. It is the maximum a BsPriorityBar can carry and the
+ denominator the widget renders against.
+
+  badge-priority-bars-max : Integer = 4
+
   badge-priority : Integer -> BadgeStyle
   badge-priority (pri) =
     let color = badge-priority-color pri
     in let bars = if pri == 0 then 4 else if pri == 1 then 3 else if pri == 2 then 2 else if pri == 3 then 1 else 0
-    in BsPriorityBar bars color
+    in BsPriorityBar bars color (badge-priority-tone pri)
+
+  badge-priority-tone : Integer -> Integer
+  badge-priority-tone (p) =
+    if p == 0 then tone-error
+    else if p == 1 then tone-warning
+    else if p == 2 then tone-warning
+    else if p == 3 then tone-primary
+    else tone-muted
 
   badge-priority-color : Integer -> Integer
   badge-priority-color (p) =
@@ -62,7 +87,20 @@ Section: Standard Priority Bars
 
 Section: Label Pills
   badge-label : Text -> BadgeStyle
-  badge-label (label) = BsPill label (badge-label-color label)
+  badge-label (label) = BsPill label (badge-label-color label) (badge-label-tone label)
+
+  badge-label-tone : Text -> Integer
+  badge-label-tone (label) =
+    if label == "bug" then tone-error
+    else if label == "critical" then tone-error
+    else if label == "security" then tone-error
+    else if label == "perf" then tone-warning
+    else if label == "feature" then tone-primary
+    else if label == "improve" then tone-primary
+    else if label == "enhancement" then tone-primary
+    else if label == "question" then tone-primary
+    else if label == "docs" then tone-success
+    else tone-muted
 
   badge-label-color : Text -> Integer
   badge-label-color (label) =
@@ -77,27 +115,36 @@ Section: Widget Rendering
   badge-widget : Text, BadgeStyle -> WidgetNode
   badge-widget (id) (style) =
     when style
-      is BsDot (color) -> widget-custom id "status-dot" 10 10
-      is BsDotFilled (color) -> widget-custom id "status-dot-filled" 10 10
-      is BsPill (text) (color) -> widget-set-min (widget-label id text) 48 14
-      is BsPriorityBar (bars) (color) -> widget-custom id "priority-bar" 12 12
-      is BsIcon (icon) (color) -> widget-set-min (widget-label id icon) 16 16
+      is BsDot (color) (tone) -> widget-set-tone (widget-custom id "status-dot" 10 10) tone
+      is BsDotFilled (color) (tone) -> widget-set-tone (widget-custom id "status-dot-filled" 10 10) tone
+      is BsPill (text) (color) (tone) -> widget-set-tone (widget-set-min (widget-label id text) 48 14) tone
+      is BsPriorityBar (bars) (color) (tone) -> widget-set-tone (widget-set-min (widget-gauge id bars badge-priority-bars-max) 12 12) tone
+      is BsIcon (icon) (color) (tone) -> widget-set-tone (widget-set-min (widget-label id icon) 16 16) tone
+
+  badge-tone : BadgeStyle -> Integer
+  badge-tone (style) =
+    when style
+      is BsDot (color) (tone) -> tone
+      is BsDotFilled (color) (tone) -> tone
+      is BsPill (text) (color) (tone) -> tone
+      is BsPriorityBar (bars) (color) (tone) -> tone
+      is BsIcon (icon) (color) (tone) -> tone
 
 Section: Workflow Status (maps ProcessStatus to badge)
   badge-process-status : Text -> BadgeStyle
   badge-process-status (status) =
-    if status == "active" then BsDot #F59E0B
-    else if status == "completed" then BsDotFilled #22C55E
-    else if status == "suspended" then BsDot #F59E0B
-    else if status == "cancelled" then BsDotFilled #6B7280
-    else BsDot #EF4444
+    if status == "active" then BsDot #F59E0B tone-warning
+    else if status == "completed" then BsDotFilled #22C55E tone-success
+    else if status == "suspended" then BsDot #F59E0B tone-warning
+    else if status == "cancelled" then BsDotFilled #6B7280 tone-muted
+    else BsDot #EF4444 tone-error
 
 Section: Severity Badges (for alerts, errors, warnings)
   badge-severity : Text -> BadgeStyle
   badge-severity (sev) =
-    if sev == "critical" then BsPill "CRIT" #DC2626
-    else if sev == "warning" then BsPill "WARN" #F59E0B
-    else if sev == "info" then BsPill "INFO" #3B82F6
-    else BsPill sev #6B7280
+    if sev == "critical" then BsPill "CRIT" #DC2626 tone-error
+    else if sev == "warning" then BsPill "WARN" #F59E0B tone-warning
+    else if sev == "info" then BsPill "INFO" #3B82F6 tone-primary
+    else BsPill sev #6B7280 tone-muted
 
 Page 1

@@ -2,23 +2,19 @@ Chapter: UefiReadKeyNoFirmware
 
   cites Foreword chapter Console
 
- Every uefi-* helper used to read the UEFI system table pointer
- from GPA 0x8000. That address is the PML4: the boot code builds the page
- tables there and loads CR3 with it. So a helper read page-table entry zero,
- dereferenced it as a system table, took a function pointer out of the result
- and CALLED it -- an invalid-opcode fault at a low address, on every boot, in
- every mode. It could never have worked, and it went unfound for months
- because an app has to COMPILE before anyone can discover that its keyboard
- is fatal, and the keyboard-driven apps did not compile.
+ With no UEFI stub beneath us there is no system table at any address, and
+ after ExitBootServices there is none on real firmware either. A helper that
+ cannot reach firmware must SAY SO rather than jump into it: an earlier body
+ took a function pointer out of page-table entry zero and called it, which
+ faulted on every boot in every mode and went unfound for months.
 
- The boot code now snapshots the pointer into uefi-systab-addr before the page
- tables overwrite it, and every helper reads the snapshot. With no UEFI stub
- beneath us the snapshot is zero, and a helper that cannot reach firmware must
- SAY SO rather than jump into it.
+ 0 is the idle answer, not -1. uefi-read-key reads the PS/2 key cell the IRQ1
+ handler fills from port 0x60, and an empty cell reads back 0, which is what
+ poll-key-decode in Foreword chapter KeyInput already tests for.
 
  So this test asserts the boring thing, which is the whole point: the guest is
- still alive afterwards. It survived a crash for months precisely because
- nothing ever asserted that. -1 is "no key", and returning is the contract.
+ still alive afterwards. It survived that crash for months precisely because
+ nothing ever asserted that.
 
 Section: Entry
 
@@ -28,6 +24,6 @@ Section: Entry
     in act
       print-line-uni ("scan=" & show k)
     end
-    if k == -1 then print-line-uni "PASS no-firmware read returns -1 and returns"
-    else print-line-uni "FAIL expected -1 with no UEFI firmware"
+    if k == 0 then print-line-uni "PASS no-firmware read is idle and returns"
+    else print-line-uni "FAIL expected idle 0 with no UEFI firmware"
   end

@@ -1,0 +1,258 @@
+Chapter: CloudRender
+  cites Clouds chapter CloudModel
+  cites Water chapter OceanModel
+  cites Foreword chapter Console
+
+ Draws the cloud model to the GOP framebuffer: one ray per traced sample,
+ composited over a sky gradient.
+
+ It traces at HALF resolution and writes 2x2 blocks. That is not laziness,
+ it is the cost class. The ocean renderer evaluates its model once per grid
+ vertex and fills the triangles between them, so its shading cost is set by
+ the grid and not by the screen. A raymarch has no such structure: every
+ pixel walks the volume itself, and each step of that walk evaluates a
+ fractal sum which is eight lattice hashes per octave. At full resolution
+ with the light march included that is a few billion hashes for one frame.
+ Halving each axis is a factor of four for a picture whose content is
+ low-frequency anyway, which is the right trade and is why real engines
+ trace clouds at quarter resolution and upscale.
+
+ What keeps it tractable at all is that most rays do almost nothing. A step
+ below the density floor never runs the light march, and `c-density` returns
+ before evaluating the detail sum whenever the base shape has already lost.
+ The expensive path is only paid inside cloud.
+
+Section: Framebuffer
+
+ The standing GOP surface codex-vm renders at 0xBF000000: one 32-bit XRGB
+ pixel per cell, row-major, no pitch padding. A write outside the bounds is
+ dropped rather than wrapped. The resolution here must match the
+ `-gop-width` and `-gop-height` the machine is booted with; the command in
+ the README passes both.
+
+  cr-fb-base : Integer
+  cr-fb-base = #BF000000
+
+  cr-width : Integer
+  cr-width = 640
+
+  cr-height : Integer
+  cr-height = 400
+
+ The traced grid. Each traced sample fills a 2x2 block.
+
+  cr-tw : Integer
+  cr-tw = 320
+
+  cr-th : Integer
+  cr-th = 200
+
+  cr-half-w : Real
+  cr-half-w = 160.0
+
+  cr-half-h : Real
+  cr-half-h = 100.0
+
+  cr-focal : Real
+  cr-focal = 240.0
+
+  cr-pack : Real, Real, Real -> Integer
+  cr-pack (r) (g) (b) =
+    let ri = real-to-int (w-sat r * 255.0 + 0.5)
+    in let gi = real-to-int (w-sat g * 255.0 + 0.5)
+    in let bi = real-to-int (w-sat b * 255.0 + 0.5)
+    in ri * 65536 + gi * 256 + bi
+
+  cr-put : Integer, Integer, Integer -> Integer
+  cr-put (x) (y) (color) =
+    if x < 0 then 0
+    else if y < 0 then 0
+    else if x >= cr-width then 0
+    else if y >= cr-height then 0
+    else poke-32 cr-fb-base ((y * cr-width + x) * 4) color
+
+ The buffer is cleared to a flat colour before drawing. The GOP surface
+ comes up as whatever was in RAM, which is zeros, and zeros are black; a
+ capture that fires before the last row is drawn then shows a black band
+ that is indistinguishable from a rendered night sky. Clearing to a colour
+ that appears nowhere else in the image makes an unfinished frame obvious
+ instead of plausible. That is not hypothetical -- the first capture of this
+ scene was a partial draw and read as a horizon.
+
+  cr-clear-color : Integer
+  cr-clear-color = #FF00FF
+
+  cr-clear-row : Integer, Integer -> Integer
+  cr-clear-row (x) (y) =
+    if x >= cr-width then 0
+    else let d = cr-put x y cr-clear-color
+    in cr-clear-row (x + 1) y
+
+  cr-clear : Integer -> Integer
+  cr-clear (y) =
+    if y >= cr-height then 0
+    else let d = cr-clear-row 0 y
+    in cr-clear (y + 1)
+
+  cr-put-block : Integer, Integer, Integer -> Integer
+  cr-put-block (tx) (ty) (color) =
+    let x = tx * 2
+    in let y = ty * 2
+    in let a = cr-put x y color
+    in let b = cr-put (x + 1) y color
+    in let c = cr-put x (y + 1) color
+    in cr-put (x + 1) (y + 1) color
+
+Section: Camera
+
+ A right-handed basis built from a forward direction. The camera looks
+ along +z and a little above the horizon, turned toward the sun so the
+ forward-scattering rim the phase function produces is actually in frame.
+ A cloud shader pointed away from its own sun looks like nothing at all.
+
+  Cam = record { cf : V3, cr : V3, cu : V3 }
+
+  cr-cross : V3, V3 -> V3
+  cr-cross (a) (b) =
+    V3 {
+      x = a.y * b.z - a.z * b.y,
+      y = a.z * b.x - a.x * b.z,
+      z = a.x * b.y - a.y * b.x
+    }
+
+ The pitch matters more than anything else in this file. A camera looking
+ along the slab rather than up into it sends every ray through kilometres of
+ cloud, and a 2500 m deck seen edge-on saturates to opaque everywhere: the
+ first framing here used a pitch of 0.15 and produced a flat grey wall with
+ no shape in it at all. Looking up puts the ray across the slab instead of
+ along it, which is where the height gradient and the erosion become
+ visible.
+
+  cr-eye : V3
+  cr-eye = V3 { x = 0.0, y = 300.0, z = 0.0 }
+
+  cr-world-up : V3
+  cr-world-up = V3 { x = 0.0, y = 1.0, z = 0.0 }
+
+  cr-forward : V3
+  cr-forward = V3 { x = 0.30, y = 0.50, z = 0.81 }
+
+  cr-camera : Cam
+  cr-camera =
+    let f = v-norm cr-forward
+    in let r = v-norm (cr-cross cr-world-up f)
+    in Cam { cf = f, cr = r, cu = cr-cross f r }
+
+  cr-ray : Cam, Integer, Integer -> V3
+  cr-ray (cam) (tx) (ty) =
+    let sx = (real-from-int tx - cr-half-w + 0.5) / cr-focal
+    in let sy = (cr-half-h - real-from-int ty - 0.5) / cr-focal
+    in let a = v-add (cam.cf) (v-scale (cam.cr) sx)
+    in v-norm (v-add a (v-scale (cam.cu) sy))
+
+Section: Sky
+
+ The background the clouds are composited over. Zenith to horizon by
+ height, plus the sun's disc and its halo.
+
+ The disc and the halo are the same term at two exponents. `w-powi` is a
+ chain of multiplies, so the exponents are kept small deliberately: 64 is a
+ tight enough disc at this focal length and costs 64 multiplies, where the
+ 200 a sharper edge would want costs 200 on every pixel of the sky.
+
+  cr-ground : V3
+  cr-ground = V3 { x = 0.21, y = 0.23, z = 0.19 }
+
+  cr-sun-glow : Real
+  cr-sun-glow = 0.22
+
+  cr-sky : V3 -> V3
+  cr-sky (dir) =
+    if dir.y < 0.0 then cr-ground
+    else let t = w-sat (dir.y * 1.6)
+    in let base = v-lerp cloud-horizon-color cloud-sky-color t
+    in let s = w-sat (v-dot dir (v-norm cloud-sun))
+    in let disc = w-powi s 64
+    in let halo = w-powi s 8 * cr-sun-glow
+    in v-add base (v-scale cloud-sun-color (disc + halo))
+
+Section: The Frame
+
+ One traced sample: trace the clouds, composite over the sky. The march
+ already carries premultiplied scattered light, so the composite is the
+ straight `scattered + background * transmittance` and needs no divide.
+
+  cr-sample : Cam, Integer, Integer -> Integer
+  cr-sample (cam) (tx) (ty) =
+    let dir = cr-ray cam tx ty
+    in let sky = cr-sky dir
+    in let m = c-trace-at cr-eye dir (c-jitter-at tx ty)
+    in let cr = m.r + sky.x * m.trans
+    in let cg = m.g + sky.y * m.trans
+    in let cb = m.b + sky.z * m.trans
+    in cr-pack cr cg cb
+
+  cr-row : Cam, Integer, Integer -> Integer
+  cr-row (cam) (tx) (ty) =
+    if tx >= cr-tw then 0
+    else let c = cr-put-block tx ty (cr-sample cam tx ty)
+    in cr-row cam (tx + 1) ty
+
+  cr-rows : Cam, Integer -> Integer
+  cr-rows (cam) (ty) =
+    if ty >= cr-th then 0
+    else let d = cr-row cam 0 ty
+    in cr-rows cam (ty + 1)
+
+Section: Holding the Frame
+
+ `-screenshot` captures at `-screenshot-delay` and ends the run there. Both
+ ways of missing it were hit while building this, and they fail in opposite
+ directions, so the window matters more than the delay does:
+
+   delay SHORTER than the draw -- the capture lands mid-frame. Rows are
+     written top to bottom, so the result is a plausible-looking image with
+     the bottom missing. This is what `cr-clear-color` exists to expose.
+   delay LONGER than the run -- the guest exits first and NO file is
+     written at all.
+
+ So the guest has to still be alive, with a finished frame, when the timer
+ fires. The hold watches the PIT tick count in low memory and spins to hold
+ the frame up, and it is deliberately long enough that the delay does not
+ have to be guessed precisely. The fuel cap means a machine booted without a
+ running timer still terminates instead of hanging the harness.
+
+  cr-tick-addr : Integer
+  cr-tick-addr = 28672
+
+  cr-hold-ticks : Integer
+  cr-hold-ticks = 220
+
+  cr-hold-fuel : Integer
+  cr-hold-fuel = 40000000000
+
+  cr-hold : Integer, Integer -> Integer
+  cr-hold (until) (fuel) =
+    if fuel <= 0 then 0
+    else if peek-32 cr-tick-addr 0 >= until then 1
+    else cr-hold until (fuel - 1)
+
+  cr-hold-frame : Integer
+  cr-hold-frame = cr-hold (peek-32 cr-tick-addr 0 + cr-hold-ticks) cr-hold-fuel
+
+Section: Driver
+
+  opening : [Console] Nothing
+  opening = act
+    print-line-uni "Cloud render (raymarched, Beer-Powder, Henyey-Greenstein)"
+    print-line-uni ("resolution = " & show cr-width & "x" & show cr-height & ", traced at " & show cr-tw & "x" & show cr-th)
+    print-line-uni ("view steps = " & show cloud-steps & ", light steps = " & show cloud-light-steps)
+    print-line-uni ("coverage = " & show cloud-coverage & ", extinction = " & show cloud-extinction)
+    let cam = cr-camera
+    in let c0 = cr-clear 0
+    in let d = cr-rows cam 0
+    in act
+      print-line-uni "drawn"
+      print-line-uni ("held = " & show cr-hold-frame)
+    end
+  end

@@ -35,6 +35,7 @@ Section: Protocol Constants
   msc-flag-out : Integer = 0
 
   scsi-op-test-ready : Integer = 0
+  scsi-op-request-sense : Integer = 3
   scsi-op-inquiry : Integer = 18
   scsi-op-capacity : Integer = 37
   scsi-op-read10 : Integer = 40
@@ -55,11 +56,12 @@ Section: Disk State
     md-cbw : Integer,
     md-csw : Integer,
     md-buf : Integer,
-    md-sectors : Integer
+    md-sectors : Integer,
+    md-iface : Integer
   }
 
   msc-no-disk : MscDisk
-  msc-no-disk = MscDisk { md-ok = False, md-host = xhci-no-host, md-dev = xhci-no-dev, md-dci-in = 0, md-dci-out = 0, md-ring-in = 0, md-ring-out = 0, md-cbw = 0, md-csw = 0, md-buf = 0, md-sectors = 0 }
+  msc-no-disk = MscDisk { md-ok = False, md-host = xhci-no-host, md-dev = xhci-no-dev, md-dci-in = 0, md-dci-out = 0, md-ring-in = 0, md-ring-out = 0, md-cbw = 0, md-csw = 0, md-buf = 0, md-sectors = 0, md-iface = 0 }
 
 Section: Configuration Descriptor Walk
 
@@ -148,10 +150,10 @@ Section: Connect
     in let out-off = msc-find-bulk-off cfg (iface + skip) total False
     in if in-off < 0 then msc-no-disk
     else if out-off < 0 then msc-no-disk
-    else msc-open-endpoints xh dev (msc-ep-num cfg in-off * 2 + 1) (msc-ep-maxpkt cfg in-off) (msc-ep-num cfg out-off * 2) (msc-ep-maxpkt cfg out-off)
+    else msc-open-endpoints xh dev (msc-ep-num cfg in-off * 2 + 1) (msc-ep-maxpkt cfg in-off) (msc-ep-num cfg out-off * 2) (msc-ep-maxpkt cfg out-off) (peek-byte cfg (iface + 2))
 
-  msc-open-endpoints : XhciHost, UsbDev, Integer, Integer, Integer, Integer -> MscDisk
-  msc-open-endpoints (xh) (dev) (dci-in) (pkt-in) (dci-out) (pkt-out) =
+  msc-open-endpoints : XhciHost, UsbDev, Integer, Integer, Integer, Integer, Integer -> MscDisk
+  msc-open-endpoints (xh) (dev) (dci-in) (pkt-in) (dci-out) (pkt-out) (iface-num) =
     let sc = usb-set-configuration xh dev 1
     in if sc == False then msc-no-disk
     else let ring-in = xhci-ring-new
@@ -162,8 +164,10 @@ Section: Connect
     in let ce = xhci-configure-endpoint xh dev ictx
     in if ce.xe-ok == False then msc-no-disk
     else if ce.xe-code /= trb-cc-success then msc-no-disk
-    else let disk = MscDisk { md-ok = True, md-host = xh, md-dev = dev, md-dci-in = dci-in, md-dci-out = dci-out, md-ring-in = ring-in, md-ring-out = ring-out, md-cbw = alloc-zeroed 64 64, md-csw = alloc-zeroed 64 64, md-buf = alloc-zeroed 64 64, md-sectors = 0 }
-    in let cap = msc-read-capacity disk
+    else let disk = MscDisk { md-ok = True, md-host = xh, md-dev = dev, md-dci-in = dci-in, md-dci-out = dci-out, md-ring-in = ring-in, md-ring-out = ring-out, md-cbw = alloc-zeroed 64 64, md-csw = alloc-zeroed 64 64, md-buf = alloc-zeroed 64 64, md-sectors = 0, md-iface = iface-num }
+    in let rdy = msc-wait-ready disk msc-ready-tries
+    in if rdy == False then __record-set disk "md-ok" False
+    else let cap = msc-read-capacity disk
     in if cap == 0 then __record-set disk "md-ok" False
     else __record-set disk "md-sectors" cap
 
@@ -220,13 +224,20 @@ Section: BOT Transfer
  short completion -- the device sent fewer bytes than asked, as a
  capacity read invites -- still counts as success.
 
-  msc-xfer : MscDisk, Integer, Integer, Integer, Integer -> Boolean
-  msc-xfer (d) (ring) (dci) (buf) (len) =
+  msc-xfer-code : MscDisk, Integer, Integer, Integer, Integer -> Integer
+  msc-xfer-code (d) (ring) (dci) (buf) (len) =
     let w = xhci-ring-push ring buf 0 len (bit-or (bit-shl trb-t-normal 10) trb-flag-ioc)
     in let db = xhci-ring-doorbell (d.md-host) ((d.md-dev).ud-slot) dci
-    in let code = xhci-wait-xfer (d.md-host) ((d.md-dev).ud-slot) xhci-fuel
-    in if code == trb-cc-success then True
+    in xhci-wait-xfer (d.md-host) ((d.md-dev).ud-slot) xhci-fuel
+
+  msc-code-ok : Integer -> Boolean
+  msc-code-ok (code) =
+    if code == trb-cc-success then True
     else code == trb-cc-short
+
+  msc-xfer : MscDisk, Integer, Integer, Integer, Integer -> Boolean
+  msc-xfer (d) (ring) (dci) (buf) (len) =
+    msc-code-ok (msc-xfer-code d ring dci buf len)
 
  A BOT command is three bulk transfers, each awaited on its own
  transfer event: the CBW out, an optional data phase in the command's
@@ -238,19 +249,95 @@ Section: BOT Transfer
  indefinitely. The CSW's signature and tag are checked before its
  status byte is trusted.
 
+ A stalled data phase is a REFUSAL, not a broken pipe: the device has
+ declined this command and is still waiting to report why. BOT says the
+ host clears the halt and then reads the status, because the CSW is what
+ carries the reason and the next command cannot be trusted until it has
+ been collected. Treating a data stall as a dead transfer instead leaves
+ the CSW queued on the device, and the following command reads THAT as
+ its own status -- every later answer off by one command.
+
+ A stall on the status phase itself is the one retry: clear the halt and
+ ask again, once. A device that stalls its CSW twice is not answering.
+
+  msc-recover : MscDisk, Integer, Integer -> Boolean
+  msc-recover (d) (dci) (ring) =
+    xhci-recover-endpoint (d.md-host) (d.md-dev) dci ring
+
+  msc-recover-then-fail : MscDisk, Integer, Integer -> Boolean
+  msc-recover-then-fail (d) (dci) (ring) =
+    let r = msc-recover d dci ring
+    in False
+
+  msc-read-csw : MscDisk -> Boolean
+  msc-read-csw (d) =
+    let s = msc-xfer-code d (d.md-ring-in) (d.md-dci-in) (d.md-csw) 13
+    in if s == trb-cc-stall then
+      let r = msc-recover d (d.md-dci-in) (d.md-ring-in)
+      in if r == False then False
+      else msc-code-ok (msc-xfer-code d (d.md-ring-in) (d.md-dci-in) (d.md-csw) 13)
+    else msc-code-ok s
+
   msc-issue : MscDisk, Integer, Boolean, Integer, Integer -> Boolean
   msc-issue (d) (tag) (dir-in) (data-buf) (data-len) =
     let z = poke-32 (d.md-csw) 0 0
-    in let c = msc-xfer d (d.md-ring-out) (d.md-dci-out) (d.md-cbw) 31
-    in if c == False then False
-    else let dd = if data-len == 0 then True
-      else if dir-in then msc-xfer d (d.md-ring-in) (d.md-dci-in) data-buf data-len
-      else msc-xfer d (d.md-ring-out) (d.md-dci-out) data-buf data-len
-    in if dd == False then False
-    else let s = msc-xfer d (d.md-ring-in) (d.md-dci-in) (d.md-csw) 13
+    in let ccode = msc-xfer-code d (d.md-ring-out) (d.md-dci-out) (d.md-cbw) 31
+    in if ccode == trb-cc-stall then msc-recover-then-fail d (d.md-dci-out) (d.md-ring-out)
+    else if msc-code-ok ccode == False then False
+    else let dcode = if data-len == 0 then trb-cc-success
+      else if dir-in then msc-xfer-code d (d.md-ring-in) (d.md-dci-in) data-buf data-len
+      else msc-xfer-code d (d.md-ring-out) (d.md-dci-out) data-buf data-len
+    in if dcode == trb-cc-stall then msc-stalled-data d tag dir-in
+    else if msc-code-ok dcode == False then False
+    else msc-finish d tag
+
+  msc-stalled-data : MscDisk, Integer, Boolean -> Boolean
+  msc-stalled-data (d) (tag) (dir-in) =
+    let r = if dir-in then msc-recover d (d.md-dci-in) (d.md-ring-in)
+      else msc-recover d (d.md-dci-out) (d.md-ring-out)
+    in if r == False then False
+    else msc-finish d tag
+
+ Two answers mean the device and the host no longer agree about where
+ they are in the protocol, and BOT names one cure for both: Reset
+ Recovery. A CSW status of 2 is Phase Error, the device saying so
+ outright. A CSW whose signature or tag is wrong is the same disorder
+ found the other way -- the bytes that came back are not the status of
+ the command that was sent, so the pipe is carrying someone else's
+ answer.
+
+ Reset Recovery is the class's own Bulk-Only Mass Storage Reset on the
+ interface, then the halt cleared on BOTH bulk endpoints. Returning a
+ plain failure instead leaves the disagreement in place, and the next
+ command inherits it.
+
+  msc-req-bot-reset : Integer = 255
+
+  msc-bot-reset : MscDisk -> Boolean
+  msc-bot-reset (d) =
+    xhci-ctrl-nodata (d.md-host) (d.md-dev) 33 msc-req-bot-reset 0 (d.md-iface)
+
+  msc-reset-recovery : MscDisk -> Boolean
+  msc-reset-recovery (d) =
+    let b = msc-bot-reset d
+    in if b == False then False
+    else let ri = msc-recover d (d.md-dci-in) (d.md-ring-in)
+    in let ro = msc-recover d (d.md-dci-out) (d.md-ring-out)
+    in if ri == False then False
+    else ro
+
+  msc-reset-then-fail : MscDisk -> Boolean
+  msc-reset-then-fail (d) =
+    let r = msc-reset-recovery d
+    in False
+
+  msc-finish : MscDisk, Integer -> Boolean
+  msc-finish (d) (tag) =
+    let s = msc-read-csw d
     in if s == False then False
-    else if peek-32 (d.md-csw) 0 /= msc-sig-csw then False
-    else if peek-32 (d.md-csw) 4 /= tag then False
+    else if peek-32 (d.md-csw) 0 /= msc-sig-csw then msc-reset-then-fail d
+    else if peek-32 (d.md-csw) 4 /= tag then msc-reset-then-fail d
+    else if peek-byte (d.md-csw) 12 == 2 then msc-reset-then-fail d
     else peek-byte (d.md-csw) 12 == 0
 
 Section: SCSI Operations
@@ -261,6 +348,35 @@ Section: SCSI Operations
     in let h = msc-stamp-cbw d tag 0 msc-flag-out 6
     in let c = poke-byte (d.md-cbw) 15 scsi-op-test-ready
     in msc-issue d tag False 0 0
+
+ A SCSI target answers the FIRST command after a power-on or a bus reset
+ with CHECK CONDITION and sense key UNIT ATTENTION (0x29, power on /
+ reset occurred), and keeps answering it until the host reads the sense
+ data. REQUEST SENSE is that read, and it is the one command the
+ condition does not apply to. So a freshly configured device is not
+ usable until TEST UNIT READY passes, and a host that skips this sees its
+ first real command fail on every conforming target.
+
+ The retry budget is a count of BOT rounds, not a spin: each round is
+ three bulk transfers already bounded by the transfer fuel, so the loop
+ needs no wait of its own.
+
+  msc-ready-tries : Integer = 16
+
+  msc-request-sense : MscDisk -> Boolean
+  msc-request-sense (d) =
+    let tag = msc-next-tag d
+    in let h = msc-stamp-cbw d tag 18 msc-flag-in 6
+    in let c0 = poke-byte (d.md-cbw) 15 scsi-op-request-sense
+    in let c1 = poke-byte (d.md-cbw) 19 18
+    in msc-issue d tag True (d.md-buf) 18
+
+  msc-wait-ready : MscDisk, Integer -> Boolean
+  msc-wait-ready (d) (fuel) =
+    if msc-test-ready d then True
+    else if fuel <= 0 then False
+    else let s = msc-request-sense d
+    in msc-wait-ready d (fuel - 1)
 
  INQUIRY answers 36 bytes: device type, removability, and the vendor,
  product, and revision strings. The caller reads them from `dest`.
@@ -380,6 +496,7 @@ Section: Published Handle
     in let c10 = msc-put 23 (dv.ud-route)
     in let c11 = msc-put 24 (dv.ud-tt-slot)
     in let c12 = msc-put 25 (dv.ud-tt-port)
+    in let c13 = msc-put 26 (d.md-iface)
     in msc-put 0 msc-cells-magic
 
   msc-published : MscDisk
@@ -397,7 +514,9 @@ Section: Published Handle
         xh-cmd-ring = msc-get 6,
         xh-evt-ring = msc-get 7,
         xh-state = msc-get 8,
-        xh-ctxsz = msc-get 22
+        xh-ctxsz = msc-get 22,
+        xh-cap = 0,
+        xh-xecp = 0
       },
       md-dev = UsbDev {
         ud-ok = True,
@@ -417,7 +536,8 @@ Section: Published Handle
       md-cbw = msc-get 18,
       md-csw = msc-get 19,
       md-buf = msc-get 20,
-      md-sectors = msc-get 21
+      md-sectors = msc-get 21,
+      md-iface = msc-get 26
     }
 
 Section: Stateless Facade

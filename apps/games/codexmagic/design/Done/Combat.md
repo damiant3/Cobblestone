@@ -1,4 +1,4 @@
-# Combat — Attack, Block, and Damage
+# Combat -- Attack, Block, and Damage
 
 ## Combat Phase Flow
 
@@ -24,7 +24,7 @@ AttackDeclaration = record {
 }
 ```
 
-The General is always a valid attack target — it cannot be removed
+The General is always a valid attack target -- it cannot be removed
 from the battlefield. Creatures can also be directed to attack other
 creatures if an ability permits, but the default target is always the
 opposing General.
@@ -52,7 +52,7 @@ BlockDeclaration = record {
 Before damage is dealt from any single combat source to a creature,
 the engine checks the target's **defense** value. If the source's
 power is less than or equal to the target's defense, the damage is
-**fully absorbed** — zero damage is dealt. Defense is not subtracted
+**fully absorbed** -- zero damage is dealt. Defense is not subtracted
 from damage; it is a threshold. A creature either pierces the defense
 or bounces off entirely.
 
@@ -64,7 +64,7 @@ combat-damage-applies power defense =
 
 Defense applies per-source, not per-total. Ten 1/1 creatures
 attacking into a 0/5/2 blocker each fail the defense check
-independently — none of them deal any damage regardless of how many
+independently -- none of them deal any damage regardless of how many
 there are. To kill a defense-2 creature in combat, you need at least
 one attacker with power 3 or greater.
 
@@ -77,7 +77,7 @@ Defense does NOT apply to:
 
 For each attacker:
 1. If unblocked → deals damage to the defending **General**. The
-   General has its own defense value — if the attacker's power ≤ the
+   General has its own defense value -- if the attacker's power ≤ the
    General's defense, zero damage is dealt. Otherwise, the full power
    is dealt as damage to the General's life total.
 2. If blocked by one creature:
@@ -90,7 +90,7 @@ For each attacker:
      check applies: if the attacker's power > that blocker's defense,
      damage is assigned normally (must assign lethal before moving to
      next). If the attacker's power ≤ that blocker's defense, damage
-     assigned to it is absorbed — it takes zero, but the attacker
+     assigned to it is absorbed -- it takes zero, but the attacker
      still must "assign lethal" (which is impossible) and cannot
      proceed to the next blocker.
    - Each blocker deals damage to attacker individually, each
@@ -101,7 +101,7 @@ defense still applies to each blocker. If the attacker's power
 exceeds the blocker's defense, damage assignment proceeds normally
 (assign lethal, excess tramples through). If the attacker's power
 does not exceed a blocker's defense, the attacker cannot assign
-lethal to that blocker, and no damage tramples through — the defense
+lethal to that blocker, and no damage tramples through -- the defense
 wall holds.
 
 **First strike / Double strike:**
@@ -116,14 +116,14 @@ wall holds.
 
 | Keyword | Interaction with defense |
 |---------|------------------------|
-| Deathtouch | Pierces defense — deathtouch damage is always dealt regardless of defense value |
+| Deathtouch | Pierces defense -- deathtouch damage is always dealt regardless of defense value |
 | Trample | Defense blocks trample-through (see above) |
 | First strike | Defense applies in both damage steps |
 | Lifelink | No life gained if defense absorbs the damage (zero damage dealt = zero life) |
 | Protection | Protection prevents damage before defense is checked; both are independent shields |
 
 Deathtouch is the primary answer to high-defense creatures. A 1/1
-with deathtouch kills a 0/10/8 — deathtouch bypasses the defense
+with deathtouch kills a 0/10/8 -- deathtouch bypasses the defense
 threshold entirely, and 1 point of deathtouch damage is lethal.
 
 ## Damage Record
@@ -161,16 +161,16 @@ for the purpose of:
 The General participates in combat as both attack target and potential
 blocker:
 
-- **As attack target** — unblocked creatures deal damage to the
+- **As attack target** -- unblocked creatures deal damage to the
   General's life total, subject to the General's defense value. The
   General's toughness limits how much damage it absorbs per combat
-  step — damage beyond toughness still reduces life but the General
+  step -- damage beyond toughness still reduces life but the General
   remains on the battlefield.
-- **As blocker** — the General can block like a creature. It uses its
+- **As blocker** -- the General can block like a creature. It uses its
   power to deal damage to the attacker (subject to the attacker's
   defense) and takes damage from the attacker (subject to its own
   defense). Damage to a blocking General reduces its life total.
-- **The General cannot die from combat** — it stays on the battlefield
+- **The General cannot die from combat** -- it stays on the battlefield
   regardless of damage. Only reaching 0 life ends the game.
 
 The General's behavioral modifiers may influence whether the AI uses
@@ -180,9 +180,9 @@ threshold.
 
 ## Combat Triggers
 
-- "Whenever [this creature] attacks" — triggers on declare attackers
-- "Whenever [this creature] blocks" — triggers on declare blockers
-- "Whenever [this creature] deals combat damage to a player" — triggers on damage resolution
+- "Whenever [this creature] attacks" -- triggers on declare attackers
+- "Whenever [this creature] blocks" -- triggers on declare blockers
+- "Whenever [this creature] deals combat damage to a player" -- triggers on damage resolution
 
 ## Keyword Power and Costing
 

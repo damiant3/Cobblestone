@@ -1,4 +1,4 @@
-# GitHub Update 5 — CL 707 to CL 739 (2026-05-03)
+# GitHub Update 5 -- CL 707 to CL 739 (2026-05-03)
 
 Previous update: CL 706 (GitHubUpdate4).
 This update: CL 739.
@@ -19,7 +19,7 @@ paths at the crossover point:
 Text output is byte-identical across CDX and ELF paths (946,094 bytes),
 proving semantic equivalence of the two binary formats.
 
-## Preemptive Scheduler — Complete
+## Preemptive Scheduler -- Complete
 
 Full preemptive process scheduler shipped (CLs 668-735):
 
@@ -40,7 +40,7 @@ Full preemptive process scheduler shipped (CLs 668-735):
 Process table: 256-byte entries, 16 slots, full GPR save/restore
 via proc table + iretq. Shared `__process_resume` helper.
 
-## IPC Channels — Kernel Syscalls
+## IPC Channels -- Kernel Syscalls
 
 4 kernel-level IPC builtins (CL 725): `chan-kern-create`,
 `chan-kern-send`, `chan-kern-recv`, `chan-kern-close`. 16-slot channel

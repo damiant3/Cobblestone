@@ -1,0 +1,49 @@
+Chapter: ParticleSpread
+  cites Sim chapter ParticleSystem
+
+ An emitter's three velocity components must be independent draws. They
+ used to come from one hash read at s, s + 1000 and s + 2000, and since
+ psys-noise takes a remainder, adding a constant to the hash added a
+ constant to the answer: every particle got the same y minus x offset,
+ and at a spread of 100 that offset was exactly zero.
+
+ This reads the EMITTED particles rather than recomposing the helpers,
+ which is the only way to measure what the emitter does. Recomposing
+ them by hand is how the first version of this probe kept reporting the
+ old behaviour after the fix had landed.
+
+ A marginal histogram cannot see this and did not: the spread of vx
+ alone was even both before and after. The measurement has to be joint.
+
+Section: Emitting
+
+  sys-for : Integer -> ParticleSystem
+  sys-for (spread) =
+    psys-emit (psys-new 400) (emitter-new 0 0 0 0 0 0 spread 100 0) 200 12345
+
+  dy-at : ParticleSystem, Integer -> Integer
+  dy-at (sys) (i) =
+    let p = list-at (sys.particles) i
+    in p.part-vy - p.part-vx
+
+  share : ParticleSystem, Integer, Integer, Integer, Integer -> Integer
+  share (sys) (target) (i) (n) (acc) =
+    if i >= n then acc
+    else share sys target (i + 1) n (acc + (if dy-at sys i == target then 1 else 0))
+
+  modal : Integer -> Integer
+  modal (spread) =
+    let s = sys-for spread
+    in share s (dy-at s 0) 0 200 0
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni ("emitted=" & show (psys-count (sys-for 100)))
+    print-line-uni ("modal-dy-share-sp64=" & show (modal 64))
+    print-line-uni ("modal-dy-share-sp100=" & show (modal 100))
+    print-line-uni ("sample-dy=" & show (dy-at (sys-for 100) 0) & " " & show (dy-at (sys-for 100) 1) & " " & show (dy-at (sys-for 100) 2))
+    print-line-uni ("independent=" & (if modal 100 < 20 then "yes" else "no"))
+  end
+
+Page 1

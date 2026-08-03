@@ -9,15 +9,15 @@
 
 | Milestone | Status | Notes |
 |-----------|--------|-------|
-| M0–M11 | ✅ Complete | See ITERATION-11-HANDOFF.md |
+| M0-M11 | ✅ Complete | See ITERATION-11-HANDOFF.md |
 | **M12: Additional Backends** | **✅ Complete** | JavaScript and Rust emitters |
 
 ### M12 Deliverables
 
 | Deliverable | Status |
 |-------------|--------|
-| `Codex.Emit.JavaScript` — JavaScript emitter | ✅ |
-| `Codex.Emit.Rust` — Rust emitter | ✅ |
+| `Codex.Emit.JavaScript` -- JavaScript emitter | ✅ |
+| `Codex.Emit.Rust` -- Rust emitter | ✅ |
 | Backend capability validation (ICodeEmitter interface) | ✅ |
 | CLI `--target js|rust` routing | ✅ |
 
@@ -27,7 +27,7 @@
 
 ### JavaScript Emitter (`Codex.Emit.JavaScript`)
 
-- **575 lines** — full-featured JavaScript backend
+- **575 lines** -- full-featured JavaScript backend
 - Emits `"use strict"` ES6+ JavaScript
 - Sum types → factory functions returning `Object.freeze({ tag, ...fields })`
 - Record types → factory functions returning `Object.freeze({ ...fields })`
@@ -41,7 +41,7 @@
 
 ### Rust Emitter (`Codex.Emit.Rust`)
 
-- **613 lines** — full-featured Rust backend
+- **613 lines** -- full-featured Rust backend
 - Emits `#![allow(non_snake_case, unused_variables, dead_code)]` for Codex naming
 - Sum types → `enum` with `#[derive(Debug, Clone, PartialEq)]`
 - Record types → `struct` with `#[derive(Debug, Clone, PartialEq)]`
@@ -64,9 +64,9 @@
 ### ICodeEmitter Interface
 
 ```
-TargetName   — display name ("JavaScript", "Rust", "C#")
-FileExtension — output extension (".js", ".rs", ".cs")
-Emit(IRModule) → string — the core emission method
+TargetName   -- display name ("JavaScript", "Rust", "C#")
+FileExtension -- output extension (".js", ".rs", ".cs")
+Emit(IRModule) → string -- the core emission method
 ```
 
 All three backends implement the same interface; new backends are plug-and-play.
@@ -77,7 +77,7 @@ All three backends implement the same interface; new backends are plug-and-play.
 
 **229 tests, all passing** (16 Core + 11 Ast + 63 Syntax + 10 Semantics + 92 Types + 14 LSP + 23 Repository)
 
-No new test project was added for M12 — the emitters are validated by the existing integration test infrastructure and by manual compilation of all sample programs.
+No new test project was added for M12 -- the emitters are validated by the existing integration test infrastructure and by manual compilation of all sample programs.
 
 ---
 
@@ -121,32 +121,32 @@ Self-hosting requires writing the Codex compiler in Codex. The approach:
 
 1. **Stage 0**: The current C# compiler (what we have now)
 2. **Stage 1**: Codex source files implementing the compiler, compiled by Stage 0
-3. **Stage 2**: Stage 1 compiles itself — output must match Stage 1's output
+3. **Stage 2**: Stage 1 compiles itself -- output must match Stage 1's output
 
 The plan is to start bottom-up:
-- `codex-src/Core/` — ContentHash, Name, Span, Diagnostic, Map, Set
-- `codex-src/Syntax/` — TokenKind, Token, Lexer, Parser
-- `codex-src/Ast/` — AST nodes, Desugarer
-- `codex-src/Semantics/` — NameResolver
-- `codex-src/Types/` — TypeChecker
-- `codex-src/IR/` — IRModule, Lowering
-- `codex-src/Emit/` — CSharpEmitter (emit C# so it can compile itself)
-- `codex-src/Cli/` — main entry point
+- `codex-src/Core/` -- ContentHash, Name, Span, Diagnostic, Map, Set
+- `codex-src/Syntax/` -- TokenKind, Token, Lexer, Parser
+- `codex-src/Ast/` -- AST nodes, Desugarer
+- `codex-src/Semantics/` -- NameResolver
+- `codex-src/Types/` -- TypeChecker
+- `codex-src/IR/` -- IRModule, Lowering
+- `codex-src/Emit/` -- CSharpEmitter (emit C# so it can compile itself)
+- `codex-src/Cli/` -- main entry point
 
 ### M13 Phase 1 Complete: String Built-ins & First Codex Sources
 
 **String/character primitives added** (needed before the lexer can be self-hosted):
-- `char-at`, `text-length`, `substring` — string indexing
-- `is-letter`, `is-digit`, `is-whitespace` — character classification
-- `text-to-integer`, `char-code`, `code-to-char` — conversion
+- `char-at`, `text-length`, `substring` -- string indexing
+- `is-letter`, `is-digit`, `is-whitespace` -- character classification
+- `text-to-integer`, `char-code`, `code-to-char` -- conversion
 
 Wired through all four layers: NameResolver → TypeEnvironment → Lowering → all 3 emitters (C#, JS, Rust).
 
 **First self-hosting source files created:**
-- `codex-src/Syntax/TokenKind.codex` — token kind sum type (60 constructors)
-- `codex-src/Syntax/Token.codex` — token record type
-- `codex-src/Syntax/Lexer.codex` — functional lexer with state threading
-- `samples/string-ops.codex` — sample exercising the new built-ins
+- `codex-src/Syntax/TokenKind.codex` -- token kind sum type (60 constructors)
+- `codex-src/Syntax/Token.codex` -- token record type
+- `codex-src/Syntax/Lexer.codex` -- functional lexer with state threading
+- `samples/string-ops.codex` -- sample exercising the new built-ins
 
 **Bootstrap plan documented:** `docs/M13-BOOTSTRAP-PLAN.md`
 

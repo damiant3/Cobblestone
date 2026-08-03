@@ -1,10 +1,10 @@
-# Code Review Nits — master @ 2109fe7
+# Code Review Nits -- master @ 2109fe7
 
 **Reviewer**: linux agent (claude.ai sandbox)
 **Date**: 2026-03-18
 **Scope**: Hot-path compiler files on master
 
-These are minor issues — nothing blocking. Fix at convenience.
+These are minor issues -- nothing blocking. Fix at convenience.
 
 ---
 
@@ -25,7 +25,7 @@ no compile-time check that they agree.
 
 `TypeEnvironment.WithBuiltins()` uses hardcoded IDs (0, 100, 101, 102, 200, 201, 202) for
 type variables in builtin signatures. The `Unifier.FreshVar()` counter starts at some value
-and increments — if it ever reaches these IDs, unification will silently confuse builtin
+and increments -- if it ever reaches these IDs, unification will silently confuse builtin
 type parameters with user-inferred variables.
 
 **Suggestion**: Reserve a negative range or a high-offset range for builtins, or allocate
@@ -64,7 +64,7 @@ handles save/restore internally: `WithTypeParamScope(env => { ... })`.
 
 ## 5. `n` type parameter in Desugarer
 
-`DesugarTypeDefinition` uses `List<n>` for type parameters — `n` is `Name` but the
+`DesugarTypeDefinition` uses `List<n>` for type parameters -- `n` is `Name` but the
 single-letter type alias is jarring and inconsistent with the rest of the codebase which
 spells out `Name`.
 
@@ -79,7 +79,7 @@ spells out `Name`.
 `Lowering` uses a primary constructor `(Map<string, CodexType> typeMap, ...)` but then
 manually copies each parameter into an `m_` field. The primary constructor parameters
 are still in scope and could be accidentally used instead of the `m_` fields. This is a
-style nit but a real hazard — the C# compiler won't warn if you use `typeMap` instead
+style nit but a real hazard -- the C# compiler won't warn if you use `typeMap` instead
 of `m_typeMap`.
 
 **Suggestion**: Either drop the primary constructor and use a regular constructor, or
@@ -94,12 +94,12 @@ style deviation). Pick one pattern and be consistent.
 
 | # | Severity | Effort |
 |---|----------|--------|
-| 1 | Medium — correctness risk on next builtin addition | Small |
-| 2 | Low — theoretical collision, hasn't happened yet | Small |
-| 3 | Low — only matters if emitter is reused | Trivial |
-| 4 | Low — fragility, not a current bug | Small-Medium |
-| 5 | Trivial — readability | Trivial |
-| 6 | Low — style/hazard | Small |
+| 1 | Medium -- correctness risk on next builtin addition | Small |
+| 2 | Low -- theoretical collision, hasn't happened yet | Small |
+| 3 | Low -- only matters if emitter is reused | Trivial |
+| 4 | Low -- fragility, not a current bug | Small-Medium |
+| 5 | Trivial -- readability | Trivial |
+| 6 | Low -- style/hazard | Small |
 
 None of these are blocking. They should be addressed incrementally as the relevant files
 are touched for other reasons.

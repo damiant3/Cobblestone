@@ -9,7 +9,7 @@ Section: Memory Address Map
  Sorted by address. To add a new entry, find the gap and confirm
  the preceding allocation has ended.
 
- LOAD-BEARING CONSTANTS — every value in this section is compiled
+ LOAD-BEARING CONSTANTS -- every value in this section is compiled
  into the seed as a hardcoded x86-64 immediate (via `li`, `cmp-ri`,
  `add-ri` in emit functions). Changing any value here WITHOUT a seed
  rebuild causes the old seed to silently emit code with the old values.
@@ -79,8 +79,8 @@ Section: Memory Address Map
  low-memory band above the AP idle stacks and below the EBDA
  ([0x60000, 0x9FC00)). They were originally placed at 36160 and
  560464, where the profiler buffer sat inside the PML4 page and grew
- across the live PDPT and PDs — enabling the profiler destroyed the
- page tables after ~88 samples — and the trace buffer grew across the
+ across the live PDPT and PDs -- enabling the profiler destroyed the
+ page tables after ~88 samples -- and the trace buffer grew across the
  EBDA and VGA text memory. Control cells (enabled/cursor) are 8-byte
  slots and stay in the metadata band; only the buffers needed moving.
  codex-vm's -trace-file reader mirrors the trace addresses.
@@ -538,7 +538,8 @@ Section: CPU Exception Dump
    let st0a = st-append-code st (mov-rr reg-r11 reg-rsp)
    in let st0a1 = st-append-code st0a (li reg-rdi ram-size-addr)
    in let st0b = st-append-code st0a1 (mov-load reg-rsp reg-rdi 0)
-   in let st0c = st-append-code st0b (mov-rr reg-rbp reg-rsp)
+   in let st0b1 = st-append-code st0b (push-r reg-rbp)
+   in let st0c = st-append-code st0b1 (mov-rr reg-rbp reg-rsp)
    in let st0d = st-append-code st0c (push-r reg-r15)
    in let st0 = st-append-code st0d (mov-rr reg-rdi reg-rax)
    in let st1 = emit-serial-wait-and-send st0 33
@@ -626,9 +627,17 @@ Section: CPU Exception Dump
    in let st-r15e = emit-serial-wait-and-send st-r15d 61
    in let st-r15f = st-append-code st-r15e (mov-load reg-rdi reg-rbp (-8))
    in let st-r15g = emit-print-hex-qword-rdi st-r15f
-   in let st14 = emit-serial-wait-and-send st-r15g 10
+   in let st-rbpa = emit-serial-wait-and-send st-r15g 32
+   in let st-rbpb = emit-serial-wait-and-send st-rbpa 82
+   in let st-rbpc = emit-serial-wait-and-send st-rbpb 66
+   in let st-rbpd = emit-serial-wait-and-send st-rbpc 80
+   in let st-rbpe = emit-serial-wait-and-send st-rbpd 61
+   in let st-rbpf = st-append-code st-rbpe (mov-load reg-rdi reg-rbp 0)
+   in let st-rbpg = emit-print-hex-qword-rdi st-rbpf
+   in let st14 = emit-serial-wait-and-send st-rbpg 10
    in let st14a = emit-exc-stack-dump st14
-   in let st14b = emit-serial-drain-delay st14a
+   in let st14w = emit-exc-frame-walk st14a
+   in let st14b = emit-serial-drain-delay st14w
    in let st15 = st-append-code st14b cli
    in let halt-pos = st15.code-len
    in let st16 = st-append-code st15 hlt
@@ -657,6 +666,99 @@ Section: Exception Stack Dump
    in let st15 = st-append-code st14 (sub-ri reg-rcx 1)
    in let cur = st15.code-len
    in st-append-code st15 (jcc cc-ne (loop-top - (cur + 6)))
+
+Section: Exception Frame Walk
+
+ The frame chain, walked exactly, printed as F[n]= lines. The S[] dump
+ above cannot distinguish a return address from a saved register or a
+ stale slot, so the host filters it by asking which values resolve to a
+ symbol, and any integer that lands inside a function's byte range
+ passes. This walk answers the same question without guessing: every
+ address it prints is the return slot of a frame reached by following
+ the chain, so a value that fails to resolve is evidence the chain
+ broke rather than noise to be dropped.
+
+ It walks RBP because RBP is trustworthy here. emit-prologue pushes RBP
+ and sets it to RSP for every standard-tier function, and
+ omit-frame-pointer is initialized False with nothing in the tree
+ setting it True. The frameless minimal-leaf tier never touches RBP at
+ all, which makes a frameless activation MISSING from the chain rather
+ than corrupting it: its caller's RBP is still what RBP holds, so the
+ walk resumes correctly one frame out, and RIP already names the
+ function that faulted. A fault between push rbp and mov rbp,rsp has
+ the same shape and the same harmless outcome. If omit-frame-pointer is
+ ever turned on, this walk degrades to skipping those frames, not to
+ printing wrong ones.
+
+ Four of the five exits keep a walk inside a fault handler from itself
+ faulting: a zero link, a misaligned link, a link whose frame would
+ reach past the top of RAM, and a link that does not strictly increase.
+ The last is the one that matters, because the stack grows down, so a
+ chain that fails to climb is a corrupted or self-referential frame and
+ would otherwise spin until the depth budget ran out. A nested fault
+ here would be a double fault and then a triple fault, which is a dead
+ machine and an empty serial log, so these are load-bearing rather than
+ decorative. The fifth exit, a zero return address, is not a safety
+ check but the ordinary end of the chain at the outermost frame; it is
+ tested before anything is printed so the terminator does not appear as
+ a frame whose address resolves to nothing.
+
+ One limit worth stating because it looks like a bug when first seen.
+ The handler switches RSP to the top of RAM, which is also where the
+ boot stack lives, so it pushes over the shallowest frames of whatever
+ faulted. A fault raised directly out of opening therefore has its one
+ frame trampled before the walk can read it. Faults that happen a few
+ calls down, which is every fault worth debugging, sit far below
+ anything the handler touches. codex/test/exc-deep-frames.codex is the
+ sample that exercises a real chain for this reason.
+
+  emit-exc-frame-walk : CodegenState -> CodegenState
+  emit-exc-frame-walk (st) =
+   let st0 = st-append-code st (mov-load reg-rbx reg-rbp 0)
+   in let st1 = st-append-code st0 (li reg-rcx 16)
+   in let st2 = st-append-code st1 (xor-rr reg-rsi reg-rsi)
+   in let loop-top = st2.code-len
+   in let v0 = st-append-code st2 (test-rr reg-rbx reg-rbx)
+   in let j-zero = v0.code-len
+   in let v1 = st-append-code v0 (jcc cc-e 0)
+   in let v2 = st-append-code v1 (mov-rr reg-rdi reg-rbx)
+   in let v3 = st-append-code v2 (and-ri reg-rdi 7)
+   in let j-align = v3.code-len
+   in let v4 = st-append-code v3 (jcc cc-ne 0)
+   in let v5 = st-append-code v4 (li reg-rdi ram-size-addr)
+   in let v6 = st-append-code v5 (mov-load reg-rdi reg-rdi 0)
+   in let v7 = st-append-code v6 (sub-ri reg-rdi 16)
+   in let v8 = st-append-code v7 (cmp-rr reg-rbx reg-rdi)
+   in let j-high = v8.code-len
+   in let v9 = st-append-code v8 (jcc cc-a 0)
+   in let r0 = st-append-code v9 (mov-load reg-rdi reg-rbx 8)
+   in let r1 = st-append-code r0 (test-rr reg-rdi reg-rdi)
+   in let j-noret = r1.code-len
+   in let r2 = st-append-code r1 (jcc cc-e 0)
+   in let p0 = emit-serial-wait-and-send r2 70
+   in let p1 = emit-serial-wait-and-send p0 91
+   in let p2 = st-append-code p1 (mov-rr reg-rdi reg-rsi)
+   in let p3 = emit-print-hex-byte-rdi p2
+   in let p4 = emit-serial-wait-and-send p3 93
+   in let p5 = emit-serial-wait-and-send p4 61
+   in let p6 = st-append-code p5 (mov-load reg-rdi reg-rbx 8)
+   in let p7 = emit-print-hex-qword-rdi p6
+   in let p8 = emit-serial-wait-and-send p7 10
+   in let a0 = st-append-code p8 (mov-load reg-rdi reg-rbx 0)
+   in let a1 = st-append-code a0 (cmp-rr reg-rdi reg-rbx)
+   in let j-nonmono = a1.code-len
+   in let a2 = st-append-code a1 (jcc cc-be 0)
+   in let a3 = st-append-code a2 (mov-rr reg-rbx reg-rdi)
+   in let a4 = st-append-code a3 (add-ri reg-rsi 1)
+   in let a5 = st-append-code a4 (sub-ri reg-rcx 1)
+   in let cur = a5.code-len
+   in let a6 = st-append-code a5 (jcc cc-ne (loop-top - (cur + 6)))
+   in let done-pos = a6.code-len
+   in let f1 = patch-jcc-at a6 j-zero done-pos
+   in let f2 = patch-jcc-at f1 j-align done-pos
+   in let f3 = patch-jcc-at f2 j-high done-pos
+   in let f4 = patch-jcc-at f3 j-noret done-pos
+   in patch-jcc-at f4 j-nonmono done-pos
 
 Section: Serial Drain Delay
 
@@ -775,7 +877,16 @@ Section: Page Fault Handler
  not-present fault may grow: the vector-14 stub preserves the CPU error
  code, and a fault with the present bit set (a protection or
  reserved-bit violation) is a real bug, so the handler normalizes the
- frame and falls through to the exception dump. The mapped entry
+ frame and falls through to the exception dump. Normalizing restores
+ RAX to 14 as its last act, because the dump reports the vector from
+ live RAX and this handler has already spent that register: the
+ error-code test leaves it holding the present bit, and the range
+ tests leave it holding CR2 shifted down by 21. Without the restore
+ every page fault reaching the dump announces itself as vector 00 or
+ 01, and the host report then names it a divide error and suppresses
+ CR2, which it shows for vector 14 alone. That is the one field a
+ page fault is worth reading, and it was suppressed by the report's
+ own correctness check. The mapped entry
  carries NX (bit 63) because everything above the code boundary was NX
  in the boot mapping and demand pages must match. Each mapping
  increments the touched-page counter, the honest physical-consumption
@@ -846,8 +957,9 @@ Section: Page Fault Handler
    in let fx9 = st-append-code fx8 (mov-load reg-rax reg-rsp 0)
    in let fx10 = st-append-code fx9 (mov-store reg-rsp reg-rax 8)
    in let fx11 = st-append-code fx10 (add-ri reg-rsp 8)
-   in let dump-pos = fx11.code-len
-   in let st29 = patch-jcc-at fx11 j-notpf dump-pos
+   in let fx12 = st-append-code fx11 (li reg-rax 14)
+   in let dump-pos = fx12.code-len
+   in let st29 = patch-jcc-at fx12 j-notpf dump-pos
    in let st30 = patch-jcc-at st29 j-prot fix-pos
    in let st31 = patch-jcc-at st30 j-lo fix-pos
    in patch-jcc-at st31 j-hi fix-pos
@@ -857,7 +969,7 @@ Section: Page Fault Handler
  page faults into the handler above. The top is computed from the
  actual RAM size the host wrote to the ram-size cell, capped at
  demand-heap-hi-page, minus a 32-page (64 MB) reserve that keeps the
- top of RAM present for the boot stack — the stack must never point
+ top of RAM present for the boot stack -- the stack must never point
  into a not-present page. With 3 GB of RAM the computed top equals the
  cap and behavior is unchanged; with 2 GB or less the reserve is what
  makes the machine bootable at all. If the reserve consumes the whole
@@ -2173,12 +2285,13 @@ Section: Process Management
    in let st3 = st-append-code st2 (li reg-rax 0)
    in st-append-code st3 [72, 243, 171]
 
-  emit-pd-entries : CodegenState, Integer, Integer, Boolean -> CodegenState
-  emit-pd-entries (st) (i) (n) (nx) =
+  emit-pd-entries : CodegenState, Integer, Integer, Boolean, Boolean -> CodegenState
+  emit-pd-entries (st) (i) (n) (nx) (pcd) =
    let count = n - i
    in if count <= 0 then st
    else let phys-start = i * 2097152
-   in let st1 = st-append-code st (li reg-rax (phys-start + 131))
+   in let flags = if pcd then 147 else 131
+   in let st1 = st-append-code st (li reg-rax (phys-start + flags))
    in let st2 = if nx
      then let st1a = st-append-code st1 (li reg-r11 1)
        in let st1b = st-append-code st1a (shl-ri reg-r11 63)
@@ -2202,15 +2315,37 @@ Section: Process Management
     in emit-pdpt-entries st3 pdpt-addr pml4-addr (i + 1)
 
  The device directory maps the gigabyte above RAM identity, present and
- read-write, with NX set on every entry -- nothing up there is code. It
- is filled by the same routine as the RAM directories; only the page
- range differs.
+ read-write, with NX set on every entry -- nothing up there is code -- and
+ with PCD set, which is the bit that matters and was missing until
+ 2026-08-02.
+
+ The flag words are 131 (0x83) and 147 (0x93): bit 0 present, bit 1
+ writable, bit 7 the 2 MB page-size bit, and in 147 additionally bit 4,
+ PCD, cache-disable. Intel SDM 3A 4.5: a page mapped with PCD clear is
+ write-back cacheable, so the processor may satisfy a read from cache and
+ may hold a write there. That is correct for RAM and wrong for everything
+ this directory covers, because the gigabyte above RAM identity is MMIO:
+ device registers whose value changes underneath the processor, and on a
+ UEFI boot the linear framebuffer, which a display controller scans out of
+ memory independently of our caches.
+
+ Both failures were observed on the ASUS TUF before the bit was set. The
+ framebuffer at 0xC0000000 -- the first address in this directory --
+ rendered with rows missing and stale content persisting, while the
+ geometry the payload computed was measured correct and identical to a bed
+ that renders it perfectly. A cached MMIO mapping is also a mechanism by
+ which a driver polling a status register reads a value that cannot
+ change.
+
+ No emulator we own can observe either one: codex-vm's framebuffer is host
+ RAM read coherently, and WHP traps MMIO regardless of the cache
+ attributes the guest asked for.
 
   emit-fill-device-pd : CodegenState, Integer -> CodegenState
   emit-fill-device-pd (st) (pml4-addr) =
    let pd-addr = pml4-addr + 8192 + bare-metal-device-pd-index * 4096
    in let st1 = st-append-code st (li reg-rdi pd-addr)
-   in emit-pd-entries st1 bare-metal-device-page-start bare-metal-device-page-end True
+   in emit-pd-entries st1 bare-metal-device-page-start bare-metal-device-page-end True True
 
   emit-fill-pds : CodegenState, Integer, Integer -> CodegenState
   emit-fill-pds (st) (pml4-addr) (i) =
@@ -2222,11 +2357,11 @@ Section: Process Management
       else if bare-metal-nx-boundary > page-end then page-end
       else bare-metal-nx-boundary
     in let st1 = st-append-code st (li reg-rdi pd-addr)
-    in let st2 = emit-pd-entries st1 page-start code-end False
+    in let st2 = emit-pd-entries st1 page-start code-end False False
     in let nx-start-offset = (code-end - page-start) * 8
     in let st3 = if code-end < page-end
       then let st2a = st-append-code st2 (li reg-rdi (pd-addr + nx-start-offset))
-        in emit-pd-entries st2a code-end page-end True
+        in emit-pd-entries st2a code-end page-end True False
       else st2
     in emit-fill-pds st3 pml4-addr (i + 1)
 
@@ -2359,7 +2494,7 @@ Section: Device Seed
 
 Section: Capabilities
 
- emit-grant-cap-mask writes a whole capability mask in one or-store —
+ emit-grant-cap-mask writes a whole capability mask in one or-store --
  the boot path grants proc 0 exactly the mask derived from the
  binary's own manifest (stage 4 of the capability wiring: authority
  comes from the declared effect rows, not a grant-all list).
@@ -2456,25 +2591,25 @@ Section: Capabilities
   emit-ata-read-sector-zero : CodegenState -> CodegenState
   emit-ata-read-sector-zero (st) =
    let st1 = st-append-code st (li reg-rax 0)
-   in let st2 = st-append-code st1 (li reg-rdx ata-sector-count-port)
+   in let st2 = emit-ata-port st1 ata-off-sector-count
    in let st3 = st-append-code st2 (li reg-rax 1)
    in let st4 = st-append-code st3 out-dx-al
-   in let st5 = st-append-code st4 (li reg-rdx ata-lba-low-port)
+   in let st5 = emit-ata-port st4 ata-off-lba-low
    in let st6 = st-append-code st5 (li reg-rax 0)
    in let st7 = st-append-code st6 out-dx-al
-   in let st8 = st-append-code st7 (li reg-rdx ata-lba-mid-port)
+   in let st8 = emit-ata-port st7 ata-off-lba-mid
    in let st9 = st-append-code st8 out-dx-al
-   in let st10 = st-append-code st9 (li reg-rdx ata-lba-high-port)
+   in let st10 = emit-ata-port st9 ata-off-lba-high
    in let st11 = st-append-code st10 out-dx-al
-   in let st12 = st-append-code st11 (li reg-rdx ata-drive-head-port)
-   in let st13 = st-append-code st12 (li reg-rax 224)
+   in let st12 = emit-ata-port st11 ata-off-drive-head
+   in let st13 = emit-ata-select-al st12
    in let st14 = st-append-code st13 out-dx-al
    in let st15 = st-append-code st14 (li reg-rax ata-read-cmd)
-   in let st16 = st-append-code st15 (li reg-rdx ata-command-port)
+   in let st16 = emit-ata-port st15 ata-off-status
    in let st17 = st-append-code st16 out-dx-al
    in let st18 = emit-ata-wait-drq st17
    in let st19 = st-append-code st18 (li reg-rdi ata-identify-buf-addr)
-   in let st20 = st-append-code st19 (li reg-rdx ata-data-port)
+   in let st20 = emit-ata-port st19 0
    in let st21 = st-append-code st20 (li reg-rcx 256)
    in let st22 = st-append-code st21 [252]
    in st-append-code st22 rep-insw
@@ -2613,11 +2748,11 @@ Section: MSR and Syscall
 
  emit-check-capability tests one named capability bit of the current
  process's grant word (bt r64, imm8) and leaves the answer in CF. It
- previously tested bit RDX — the syscall ARGUMENT (the character
- being written), taken mod 64 — so the console-write gate passed or
+ previously tested bit RDX -- the syscall ARGUMENT (the character
+ being written), taken mod 64 -- so the console-write gate passed or
  failed by character value, not by authority. The required bit is an
  emit-time constant now. The entry address multiplies proc-entry-size
- by the current-proc index held in R11 — an earlier encoding
+ by the current-proc index held in R11 -- an earlier encoding
  hardcoded imul rcx, rbx, so the check read a cap word offset by
  whatever the interrupted program left in RBX and only worked when
  RBX happened to be zero.
@@ -2717,7 +2852,7 @@ Section: MSR and Syscall
  consults the capability word before touching the device: a process
  without the block-device bit branches to the handler's not-match
  target, falls through the dispatch chain unmatched, and returns -1
- from the common exit — the device is never driven.
+ from the common exit -- the device is never driven.
 
  The block-authority gate widens the plain cap-block-device test so that a
  syscall also proceeds when the fs-elevated cell is non-zero -- the
@@ -2759,12 +2894,12 @@ Section: MSR and Syscall
    in let st4 = st-append-code st3 (push-r reg-rcx)
    in let st5 = emit-ata-setup-lba st4
    in let st6 = st-append-code st5 (li reg-rax ata-read-cmd)
-   in let st7 = st-append-code st6 (li reg-rdx ata-command-port)
+   in let st7 = emit-ata-port st6 ata-off-status
    in let st8 = st-append-code st7 out-dx-al
    in let st9 = emit-ata-wait-drq st8
    in let st10 = st-append-code st9 (pop-r reg-rcx)
    in let st11 = st-append-code st10 (pop-r reg-rdi)
-   in let st12 = st-append-code st11 (li reg-rdx ata-data-port)
+   in let st12 = emit-ata-port st11 0
    in let st13 = st-append-code st12 (li reg-rcx 256)
    in let st13a = st-append-code st13 [252]
    in let st14 = st-append-code st13a rep-insw
@@ -2787,19 +2922,19 @@ Section: MSR and Syscall
    in let st4 = st-append-code st3 (push-r reg-rcx)
    in let st5 = emit-ata-setup-lba st4
    in let st6 = st-append-code st5 (li reg-rax ata-write-cmd)
-   in let st7 = st-append-code st6 (li reg-rdx ata-command-port)
+   in let st7 = emit-ata-port st6 ata-off-status
    in let st8 = st-append-code st7 out-dx-al
    in let st9 = emit-ata-wait-drq st8
    in let st10 = st-append-code st9 (pop-r reg-rcx)
    in let st11 = st-append-code st10 (pop-r reg-rsi)
-   in let st12 = st-append-code st11 (li reg-rdx ata-data-port)
+   in let st12 = emit-ata-port st11 0
    in let st13 = st-append-code st12 (li reg-rcx 256)
    in let st13b = st-append-code st13 [252]
    in let st14 = st-append-code st13b rep-outsw
    in let st14a = emit-ata-400ns-delay st14
    in let st14b = emit-ata-wait-ready st14a
    in let st14c = st-append-code st14b (li reg-rax ata-flush-cmd)
-   in let st14d = st-append-code st14c (li reg-rdx ata-command-port)
+   in let st14d = emit-ata-port st14c ata-off-status
    in let st14e = st-append-code st14d out-dx-al
    in let st15 = emit-ata-wait-ready (emit-ata-400ns-delay st14e)
    in let st19 = st-append-code st15 (li reg-rax 0)
@@ -2875,7 +3010,8 @@ Section: MSR and Syscall
    in let st26 = st-append-code st25 (mov-store reg-rsi reg-rax 0)
    in let st27 = st-append-code st26 (li reg-rsi ata-active-ctrl-addr)
    in let st28 = st-append-code st27 (mov-store reg-rsi reg-rcx 0)
-   in let st29 = st-append-code st28 (li reg-rax 0)
+   in let st28a = emit-ata-detect-identify st28
+   in let st29 = st-append-code st28a (li reg-rax 0)
    in let done = st29.code-len
    in let st30 = st-append-code st29 (jmp 0)
    in let st31 = patch-jcc-at st30 not-block-select (st30.code-len)
@@ -2957,13 +3093,55 @@ Section: MSR and Syscall
 
   ata-control-port : Integer = 1014
 
+ Every port below is reached through the ACTIVE drive's base rather than through
+ the primary channel's literal address, and the drive is selected with the
+ active select byte rather than a hardcoded master.
+
+ It was the other way around, and that is what made block-select inert. The
+ three cells it writes -- ata-active-drive-addr, ata-active-base-addr,
+ ata-active-select-addr -- had **no reader anywhere in the compiler**: nine
+ mentions, three of them the definitions, three the initialisation, three the
+ writes in block-select itself. Meanwhile emit-ata-setup-lba put the literal 224
+ on the drive-head port before every read and every write, so the whole block
+ layer addressed the primary master forever. `dm-enumerate-drives` reported four
+ drives, `dm-exec-install` partitioned whichever one it was handed, and all four
+ were the disk the machine booted from.
+
+ Nothing could see it, because with one image behind every position a working
+ selector and a missing one produce identical output. The test that pins it
+ attaches two images with different bytes at LBA 0 and reads sector zero from
+ each drive; before this change both answered with the first image's bytes.
+
+  emit-ata-port : CodegenState, Integer -> CodegenState
+  emit-ata-port (st) (off) =
+   let st1 = st-append-code st (li reg-rdx ata-active-base-addr)
+   in let st2 = st-append-code st1 (mov-load reg-rdx reg-rdx 0)
+   in if off == 0 then st2 else st-append-code st2 (add-ri reg-rdx off)
+
+  emit-ata-ctrl-port : CodegenState -> CodegenState
+  emit-ata-ctrl-port (st) =
+   let st1 = st-append-code st (li reg-rdx ata-active-ctrl-addr)
+   in st-append-code st1 (mov-load reg-rdx reg-rdx 0)
+
+  emit-ata-select-al : CodegenState -> CodegenState
+  emit-ata-select-al (st) =
+   let st1 = st-append-code st (li reg-rax ata-active-select-addr)
+   in st-append-code st1 (mov-load reg-rax reg-rax 0)
+
+  ata-off-sector-count : Integer = 2
+  ata-off-lba-low : Integer = 3
+  ata-off-lba-mid : Integer = 4
+  ata-off-lba-high : Integer = 5
+  ata-off-drive-head : Integer = 6
+  ata-off-status : Integer = 7
+
   emit-ata-soft-reset : CodegenState -> CodegenState
   emit-ata-soft-reset (st) =
-   let st1 = st-append-code st (li reg-rdx ata-control-port)
+   let st1 = emit-ata-ctrl-port st
    in let st2 = st-append-code st1 (li reg-rax 4)
    in let st3 = st-append-code st2 out-dx-al
    in let st4 = emit-ata-400ns-delay st3
-   in let st5 = st-append-code st4 (li reg-rdx ata-control-port)
+   in let st5 = emit-ata-ctrl-port st4
    in let st6 = st-append-code st5 (li reg-rax 2)
    in let st7 = st-append-code st6 out-dx-al
    in emit-ata-400ns-delay st7
@@ -2971,29 +3149,29 @@ Section: MSR and Syscall
   emit-ata-setup-lba : CodegenState -> CodegenState
   emit-ata-setup-lba (st) =
    let st1 = emit-ata-wait-ready st
-   in let st2 = st-append-code st1 (li reg-rdx ata-drive-head-port)
-   in let st3 = st-append-code st2 (li reg-rax 224)
+   in let st2 = emit-ata-port st1 ata-off-drive-head
+   in let st3 = emit-ata-select-al st2
    in let st4 = st-append-code st3 out-dx-al
    in let st5 = emit-ata-400ns-delay st4
    in let st6 = emit-ata-wait-ready st5
-   in let st7 = st-append-code st6 (li reg-rdx ata-sector-count-port)
+   in let st7 = emit-ata-port st6 ata-off-sector-count
    in let st8 = st-append-code st7 (li reg-rax 1)
    in let st9 = st-append-code st8 out-dx-al
-   in let st10 = st-append-code st9 (li reg-rdx ata-lba-low-port)
+   in let st10 = emit-ata-port st9 ata-off-lba-low
    in let st11 = st-append-code st10 (mov-rr reg-rax reg-rdi)
    in let st12 = st-append-code st11 out-dx-al
-   in let st13 = st-append-code st12 (li reg-rdx ata-lba-mid-port)
+   in let st13 = emit-ata-port st12 ata-off-lba-mid
    in let st14 = st-append-code st13 (mov-rr reg-rax reg-rdi)
    in let st15 = st-append-code st14 [72, 193, 232, 8]
    in let st16 = st-append-code st15 out-dx-al
-   in let st17 = st-append-code st16 (li reg-rdx ata-lba-high-port)
+   in let st17 = emit-ata-port st16 ata-off-lba-high
    in let st18 = st-append-code st17 (mov-rr reg-rax reg-rdi)
    in let st19 = st-append-code st18 [72, 193, 232, 16]
    in st-append-code st19 out-dx-al
 
   emit-ata-400ns-delay : CodegenState -> CodegenState
   emit-ata-400ns-delay (st) =
-   let st1 = st-append-code st (li reg-rdx ata-control-port)
+   let st1 = emit-ata-ctrl-port st
    in let st2 = st-append-code st1 in-al-dx
    in let st3 = st-append-code st2 in-al-dx
    in let st4 = st-append-code st3 in-al-dx
@@ -3002,7 +3180,7 @@ Section: MSR and Syscall
   emit-ata-wait-ready : CodegenState -> CodegenState
   emit-ata-wait-ready (st) =
    let loop-top = st.code-len
-   in let st1 = st-append-code st (li reg-rdx ata-status-port)
+   in let st1 = emit-ata-port st ata-off-status
    in let st2 = st-append-code st1 in-al-dx
    in let st3 = st-append-code st2 [168, ata-status-bsy]
    in let st4 = patch-jcc-at (st-append-code st3 (jcc cc-ne 0)) (st3.code-len) loop-top
@@ -3013,7 +3191,7 @@ Section: MSR and Syscall
   emit-ata-wait-drq (st) =
    let st1 = emit-ata-400ns-delay st
    in let loop-top = st1.code-len
-   in let st2 = st-append-code st1 (li reg-rdx ata-status-port)
+   in let st2 = emit-ata-port st1 ata-off-status
    in let st3 = st-append-code st2 in-al-dx
    in let st4 = st-append-code st3 [168, ata-status-bsy]
    in let st5 = patch-jcc-at (st-append-code st4 (jcc cc-ne 0)) (st4.code-len) loop-top
@@ -3024,7 +3202,7 @@ Section: MSR and Syscall
   emit-ata-spin-delay (st) (count) =
    let st1 = st-append-code st (li reg-rcx count)
    in let loop-top = st1.code-len
-   in let st2 = st-append-code st1 (li reg-rdx ata-control-port)
+   in let st2 = emit-ata-ctrl-port st1
    in let st3 = st-append-code st2 in-al-dx
    in let st4 = st-append-code st3 (sub-ri reg-rcx 1)
    in patch-jcc-at (st-append-code st4 (jcc cc-ne 0)) (st4.code-len) loop-top
@@ -3033,7 +3211,7 @@ Section: MSR and Syscall
   emit-ata-wait-bsy-clear-bounded (st) =
    let st0 = st-append-code st (li reg-rcx 1000000)
    in let loop-top = st0.code-len
-   in let st1 = st-append-code st0 (li reg-rdx ata-control-port)
+   in let st1 = emit-ata-ctrl-port st0
    in let st2 = st-append-code st1 in-al-dx
    in let st3 = st-append-code st2 [168, ata-status-bsy]
    in let done-pos = st3.code-len
@@ -3046,7 +3224,7 @@ Section: MSR and Syscall
   emit-ata-wait-ready-bounded (st) =
    let st0 = st-append-code st (li reg-rcx 1000000)
    in let loop-top = st0.code-len
-   in let st1 = st-append-code st0 (li reg-rdx ata-control-port)
+   in let st1 = emit-ata-ctrl-port st0
    in let st2 = st-append-code st1 in-al-dx
    in let st3 = st-append-code st2 [168, ata-status-bsy]
    in let bsy-set-pos = st3.code-len
@@ -3069,32 +3247,50 @@ Section: MSR and Syscall
    in if st.vm-profile.skip-ata-bring-up then st-z3
    else emit-ata-bring-up st-z3
 
+ Bring-up is a channel reset followed by a detect. Only the reset is a
+ once-per-boot thing: it is a soft reset of the whole channel, so re-running it
+ on every drive change would clear the other drive's state mid-operation. The
+ detect is what block-select needs and it is factored out for that.
+
   emit-ata-bring-up : CodegenState -> CodegenState
   emit-ata-bring-up (st-z3) =
-   let st-r1 = st-append-code st-z3 (li reg-rdx ata-control-port)
+   let st-r1 = emit-ata-ctrl-port st-z3
    in let st-r2 = st-append-code st-r1 (li reg-rax 4)
    in let st-r3 = st-append-code st-r2 out-dx-al
    in let st-r4 = emit-ata-spin-delay st-r3 100
-   in let st-r5 = st-append-code st-r4 (li reg-rdx ata-control-port)
+   in let st-r5 = emit-ata-ctrl-port st-r4
    in let st-r6 = st-append-code st-r5 (li reg-rax 2)
    in let st-r7 = st-append-code st-r6 out-dx-al
    in let st-r8 = emit-ata-spin-delay st-r7 100
    in let st-r9 = emit-ata-wait-bsy-clear-bounded st-r8
-   in let st1 = st-append-code st-r9 (li reg-rdx ata-drive-head-port)
-   in let st2 = st-append-code st1 (li reg-rax 160)
+   in emit-ata-detect-identify st-r9
+
+ Detect the ACTIVE drive and record ITS sector count. The count is zeroed first,
+ so a position with nothing behind it reports zero rather than inheriting the
+ last drive's geometry. That inheritance is what made block-sector-count answer
+ drive 0's size for every drive, and dm-exec-install would have written a GPT
+ sized for the source onto the target.
+
+  emit-ata-detect-identify : CodegenState -> CodegenState
+  emit-ata-detect-identify (st-in) =
+   let st-c1 = st-append-code st-in (li reg-rdi ata-sector-count-addr)
+   in let st-c2 = st-append-code st-c1 (li reg-rax 0)
+   in let st-c3 = st-append-code st-c2 (mov-store reg-rdi reg-rax 0)
+   in let st1 = emit-ata-port st-c3 ata-off-drive-head
+   in let st2 = emit-ata-select-al st1
    in let st3 = st-append-code st2 out-dx-al
    in let st4 = emit-ata-400ns-delay st3
-   in let st-mid = st-append-code st4 (li reg-rdx ata-lba-mid-port)
+   in let st-mid = emit-ata-port st4 ata-off-lba-mid
    in let st-mid1 = st-append-code st-mid in-al-dx
    in let st-mid2 = st-append-code st-mid1 (cmp-ri reg-rax 0)
    in let no-drive-sig = st-mid2.code-len
    in let st-mid3 = st-append-code st-mid2 (jcc cc-ne 0)
-   in let st-hi = st-append-code st-mid3 (li reg-rdx ata-lba-high-port)
+   in let st-hi = emit-ata-port st-mid3 ata-off-lba-high
    in let st-hi1 = st-append-code st-hi in-al-dx
    in let st-hi2 = st-append-code st-hi1 (cmp-ri reg-rax 0)
    in let no-drive-sig2 = st-hi2.code-len
    in let st-hi3 = st-append-code st-hi2 (jcc cc-ne 0)
-   in let st5 = st-append-code st-hi3 (li reg-rdx ata-status-port)
+   in let st5 = emit-ata-port st-hi3 ata-off-status
    in let st6 = st-append-code st5 in-al-dx
    in let st7 = st-append-code st6 (cmp-ri reg-rax 0)
    in let no-drive-1 = st7.code-len
@@ -3103,12 +3299,12 @@ Section: MSR and Syscall
    in let no-drive-2 = st9.code-len
    in let st10 = st-append-code st9 (jcc cc-e 0)
    in let st11 = emit-ata-wait-ready-bounded st10
-   in let st12 = st-append-code st11 (li reg-rdx ata-command-port)
+   in let st12 = emit-ata-port st11 ata-off-status
    in let st13 = st-append-code st12 (li reg-rax ata-identify-cmd)
    in let st14 = st-append-code st13 out-dx-al
    in let st14a = emit-ata-400ns-delay st14
    in let st14b = emit-ata-wait-bsy-clear-bounded st14a
-   in let st14c = st-append-code st14b (li reg-rdx ata-status-port)
+   in let st14c = emit-ata-port st14b ata-off-status
    in let st14d = st-append-code st14c in-al-dx
    in let st14e = st-append-code st14d [168, ata-status-err]
    in let no-drive-err = st14e.code-len
@@ -3116,7 +3312,7 @@ Section: MSR and Syscall
    in let st14g = st-append-code st14f [168, ata-status-drq]
    in let no-drive-drq = st14g.code-len
    in let st14h = st-append-code st14g (jcc cc-e 0)
-   in let st16 = st-append-code st14h (li reg-rdx ata-data-port)
+   in let st16 = emit-ata-port st14h 0
    in let st17 = st-append-code st16 (li reg-rcx 256)
    in let st18 = st-append-code st17 (li reg-rdi ata-identify-buf-addr)
    in let st19 = st-append-code st18 [252]

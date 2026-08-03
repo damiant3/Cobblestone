@@ -1,0 +1,60 @@
+Chapter: DhcpRenew
+  cites Net chapter DhcpIO
+  cites Net chapter NetDriver
+  cites Net chapter NetworkConfig
+  cites Kernel chapter Hpet
+
+ A lease is a loan, and this is the test that it is asked for again. The
+ acquisition test proves an address arrives; nothing in it would notice a
+ client that took one and held it forever, which is what this tree did
+ until 2026-07-30.
+
+ IT NEEDS A SHORT LEASE TO BE A TEST AT ALL. Renewal happens at half the
+ lease, so against the default hour nothing observable happens inside a
+ run: the sidecar asks codex-vm for a four-second lease, T1 is two
+ seconds, and the spin below covers it several times over.
+
+ THE ROWS ARE CHOSEN SO A CLIENT THAT DOES NOTHING FAILS THEM. `due
+ before` must be no, because a lease taken a moment ago is not due, and a
+ test whose first row was already yes would pass on a broken clock. `due
+ after wait` must be yes, or the spin did not outlast T1 and the renewal
+ that follows proves nothing. `renewed` compares lease-start, which only
+ an accepted ACK moves.
+
+Section: Waiting
+
+ The wait is a spin on the clock rather than a count of turns, because
+ what has to elapse is SECONDS and the turns-per-second of this loop is
+ whatever the machine happens to give. Each turn reads the HPET, which
+ is a VM exit, so the host advances its models and can answer.
+
+  spin-until : Integer, Integer -> Integer
+  spin-until (deadline) (fuel) =
+    if fuel <= 0 then hpet-seconds
+    else if hpet-seconds >= deadline then hpet-seconds
+    else spin-until deadline (fuel - 1)
+
+Section: Entry
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  opening : [Console, Network.Read, Network.Write] Nothing = act
+    let card = net-driver-bring-up
+    in let mac = net-driver-mac
+    in act
+      cfg <- dhcp-io-configure mac "codex" 305419896 200000 hpet-seconds
+      print-line-uni ("leased      : " & yn (net-is-configured cfg))
+      print-line-uni ("lease time  : " & show (cfg.lease-time))
+      print-line-uni ("due before  : " & yn (net-lease-due cfg hpet-seconds))
+      let waited = spin-until (cfg.lease-start + cfg.lease-time / 2 + 1) 20000000
+      in act
+        print-line-uni ("due after   : " & yn (net-lease-due cfg waited))
+        cfg2 <- dhcp-io-maybe-renew cfg 305419897 200000 waited
+        print-line-uni ("renewed     : " & yn (cfg2.lease-start /= cfg.lease-start))
+        print-line-uni ("address held: " & yn (net-is-configured cfg2))
+      end
+    end
+  end
+
+Page 1

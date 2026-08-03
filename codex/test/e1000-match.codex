@@ -1,0 +1,111 @@
+Chapter: E1000Match
+  cites Foreword chapter Maybe
+  cites Kernel chapter E1000e
+  cites Kernel chapter Pci
+
+ What this test covers and what it does NOT.
+
+ There is no e1000 device under codex-vm -- the only NIC it emulates is
+ an ISA NE2000 -- so nothing here touches a register, a descriptor ring
+ or a frame. Every function in E1000e that reads or writes the device is
+ UNTESTED and stays untested until the driver meets real hardware. This
+ file pins the part of the driver that is decidable without the part:
+ which PCI devices it claims, and the alignment arithmetic its rings
+ depend on.
+
+ Saying so matters more than the rows below. A green result here is
+ evidence about device selection and nothing else, and reading it as
+ evidence the driver works would be the exact failure this project keeps
+ recording.
+
+ The negative rows are the test. A matcher that answered True to
+ everything would pass a positive-only suite, so each of the three ways
+ a device can fail to be ours gets its own row: wrong vendor, wrong
+ class, wrong subclass. The expected values are written as literals
+ rather than computed, because a judge built out of the subject cannot
+ fail with it.
+
+Section: Fixtures
+
+  mk : Integer, Integer, Integer, Integer -> PciDevice
+  mk (vendor) (did) (cls) (sub) =
+    PciDevice { pci-bus = 0, pci-dev = 0, pci-func = 0, pci-vendor = __narrow vendor, pci-device-id = __narrow did, pci-class = __narrow cls, pci-subclass = __narrow sub, pci-header-type = 0 }
+
+ Each fixture carries its OWN device id so that find-present names which
+ device was selected rather than merely that something was. With one id
+ shared across the fixtures, a matcher that claimed every device would
+ still answer find-present correctly, and the row would be decoration.
+
+  intel-eth : PciDevice
+  intel-eth = mk 32902 5560 2 0
+
+  realtek-eth : PciDevice
+  realtek-eth = mk 4332 33625 2 0
+
+  intel-storage : PciDevice
+  intel-storage = mk 32902 41112 1 6
+
+  intel-other-net : PciDevice
+  intel-other-net = mk 32902 4181 2 128
+
+Section: BAR Window Fixtures
+
+ The two failing addresses are measured rather than invented: OVMF was
+ observed placing a NIC BAR at 0x81060000, which is below the mapped
+ device window and inside the heap and stack arena, and placing an xHCI
+ window above four gigabytes, where nothing is mapped. 0xF7C00000 stands
+ for the case that works.
+
+  bar-at : Integer, Boolean -> PciBar
+  bar-at (base) (io) =
+    PciBar { bar-index = 0, bar-base = base, bar-is-io = io, bar-is-64bit = False }
+
+Section: Judges
+
+  yn : Boolean -> Text
+  yn (b) = if b then "T" else "F"
+
+  found : PciScanResult -> Text
+  found (scan) =
+    when e1000-find scan
+      is Just (d) -> show (d.pci-device-id)
+      is None -> "none"
+
+  scan-of : List PciDevice -> PciScanResult
+  scan-of (ds) = PciScanResult { devices = ds, count = list-length ds }
+
+ e1000-poll-raw is the entry the network stack calls, and its absent
+ guard is the only part of it reachable without a device: a zero window
+ must answer no-frame rather than reading descriptor memory at zero.
+
+  poll-raw-hit : Integer -> Boolean
+  poll-raw-hit (mmio) =
+    let r = e1000-poll-raw mmio 0 0 0
+    in r.r-has-frame
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni ("intel-eth=" & yn (e1000-is-candidate intel-eth))
+    print-line-uni ("realtek-eth=" & yn (e1000-is-candidate realtek-eth))
+    print-line-uni ("intel-storage=" & yn (e1000-is-candidate intel-storage))
+    print-line-uni ("intel-other-net=" & yn (e1000-is-candidate intel-other-net))
+    print-line-uni ("find-present=" & found (scan-of [realtek-eth, intel-eth]))
+    print-line-uni ("find-absent=" & found (scan-of [realtek-eth, intel-storage]))
+    print-line-uni ("align-0=" & show (e1000-align 0 16))
+    print-line-uni ("align-1=" & show (e1000-align 1 16))
+    print-line-uni ("align-16=" & show (e1000-align 16 16))
+    print-line-uni ("align-17=" & show (e1000-align 17 16))
+    print-line-uni ("align-4095=" & show (e1000-align 4095 16))
+    print-line-uni ("tx-cmd=" & show e1000-tx-cmd-all)
+    print-line-uni ("bar-in-window=" & show (e1000-bar-verdict (bar-at 4156555264 False)))
+    print-line-uni ("bar-ovmf-nic=" & show (e1000-bar-verdict (bar-at 2164326400 False)))
+    print-line-uni ("bar-above-4g=" & show (e1000-bar-verdict (bar-at 4294967296 False)))
+    print-line-uni ("bar-window-lo=" & show (e1000-bar-verdict (bar-at 3221225472 False)))
+    print-line-uni ("bar-window-top=" & show (e1000-bar-verdict (bar-at 4294967295 False)))
+    print-line-uni ("bar-io=" & show (e1000-bar-verdict (bar-at 49152 True)))
+    print-line-uni ("bar-zero=" & show (e1000-bar-verdict (bar-at 0 False)))
+    print-line-uni ("poll-raw-absent=" & yn (poll-raw-hit 0))
+  end
+
+Page 1

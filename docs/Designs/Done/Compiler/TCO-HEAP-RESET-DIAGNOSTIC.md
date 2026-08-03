@@ -1,7 +1,7 @@
 # TCO Heap Reset Diagnostic Instrumentation
 
 **Date:** 2026-04-01
-**Status:** Design — not yet implemented
+**Status:** Design -- not yet implemented
 **Goal:** Identify why TCO heap reset crashes the self-compile when list
 parameters are present, so the `hasListArg` bandaid can be replaced with
 a proper fix.
@@ -10,13 +10,13 @@ a proper fix.
 
 **The bandaid fires first in `tokenize-loop`.** Diagnostic instrumentation
 (print function name + continue on bandaid) shows `@BANDAID:tokenize-loop`
-on every iteration — thousands of times for a 362 KB source file. The
+on every iteration -- thousands of times for a 362 KB source file. The
 tokenizer is a TCO loop that accumulates tokens into a `List Token` via
 `list-snoc`. This is THE function that makes the bandaid necessary: removing
 the `hasListArg` check lets the TCO reset reclaim the just-snoced tokens,
 corrupting the token list.
 
-This means the fix is NOT about escape copy at all — it's about making
+This means the fix is NOT about escape copy at all -- it's about making
 `tokenize-loop` (and similar accumulator patterns) safe for TCO heap reset.
 Options:
 1. **Copy-on-write list-snoc**: never mutate in-place, always allocate new.
@@ -32,7 +32,7 @@ Options:
 
 Option 4 is the original "last-element check" approach but applied
 selectively. The crash wasn't from `tokenize-loop` (the bandaid protected
-it) — it was from removing the bandaid for ALL functions simultaneously.
+it) -- it was from removing the bandaid for ALL functions simultaneously.
 
 ## The Problem
 
@@ -43,7 +43,7 @@ bail-out is removed (allowing reset for functions WITH list params), the
 bare-metal self-compile produces zero output and hangs until timeout.
 
 The bail-out was added to make TCO work at all. It masks a real bug.
-Small programs work fine — the crash only manifests at self-compile scale,
+Small programs work fine -- the crash only manifests at self-compile scale,
 making it impossible to diagnose without instrumentation.
 
 ## What We Know
@@ -52,7 +52,7 @@ making it impossible to diagnose without instrumentation.
    passes pingpong with it)
 2. Removing `hasListArg` and adding last-element safety checks (correct
    on paper) causes the self-compile to produce zero serial output
-3. Zero output means the crash happens early — before the first
+3. Zero output means the crash happens early -- before the first
    `print-line` in `emit-defs-streaming`
 4. Small bare-metal programs with escape copy work fine (greeting, person,
    mini-bootstrap all produce correct output)
@@ -72,7 +72,7 @@ is a heap pointer allocated this iteration (above mark), resetting
 HeapReg reclaims the element's target while the list retains a dangling
 pointer to it.
 
-The last-element check should catch this — but it might miss cases where
+The last-element check should catch this -- but it might miss cases where
 the element type doesn't trigger `TypeNeedsHeapEscape` but IS a pointer,
 or where structural sharing causes an element to be checked against the
 wrong mark.
@@ -82,7 +82,7 @@ wrong mark.
 `__str_concat` (line 2464) has a similar in-place fast path: if the
 first string is at the heap top, it appends in-place. A below-mark string
 could contain content that references above-mark data (though strings
-are flat byte arrays, not pointer-containing — so this is unlikely).
+are flat byte arrays, not pointer-containing -- so this is unlikely).
 
 ### 3. Mark saved at wrong point
 
@@ -106,10 +106,10 @@ Some of these might genuinely snoc lists during iteration, and the
 last-element check might not catch all cases. Candidates in the
 self-compiler:
 
-- `register-def-headers` — tail-recursive, modifies state per iteration
-- `check-defs-streaming` — uses `list-snoc acc entry` (the exact case
+- `register-def-headers` -- tail-recursive, modifies state per iteration
+- `check-defs-streaming` -- uses `list-snoc acc entry` (the exact case
   the last-element check was designed for, but needs verification)
-- `collect-ctor-bindings` — likely uses list-snoc for accumulation
+- `collect-ctor-bindings` -- likely uses list-snoc for accumulation
 - Any TCO function in Lexer, Parser, TypeChecker, Lowering, or Emitter
 
 ### 6. List capacity layout crossing the mark boundary
@@ -132,7 +132,7 @@ Codegen: bool m_diagnostic  (passed through from X86_64Emitter)
 ```
 
 When `m_diagnostic` is true, the codegen emits serial print instrumentation
-at key points. When false (default), zero overhead — identical ELF to
+at key points. When false (default), zero overhead -- identical ELF to
 today.
 
 ### Halt-on-Bandaid (Priority Zero)
@@ -141,7 +141,7 @@ Before implementing full instrumentation, add a single trap: in
 diagnostic mode, when the `hasListArg` bail-out would fire, print the
 function name to serial and HLT. This tells us exactly which TCO
 function first triggers the bail-out during the self-compile. Everything
-before that point worked — the bug happened before the halt.
+before that point worked -- the bug happened before the halt.
 
 ```
 @BANDAID:<function-name>\n
@@ -339,7 +339,7 @@ main = list-length (build 100 [])
 ```
 Expected: `@TM` once. `@LS` with IP/GROW/COPY per iteration. `@TR`
 should show SKIP (last element above mark) on every iteration because
-`n` (scalar) is snoced — wait, n is scalar, not heap. So last-element
+`n` (scalar) is snoced -- wait, n is scalar, not heap. So last-element
 check doesn't fire. Pointer check: after first snoc, list might be
 reallocated above mark → SKIP. Or might be in-place → pointer below
 mark, reset fires, CRASH.
@@ -371,9 +371,9 @@ main = let xs = "alpha" :: "beta" :: "gamma" :: [] in count-items xs 0 3
 ```
 Expected: `@TR` with RESET (list is read-only, pointer below mark,
 elements below mark). Should work. If it doesn't, the bug is NOT
-about snoc — it's about the reset mechanism itself.
+about snoc -- it's about the reset mechanism itself.
 
-#### Level 8: Mixed — read-only lists + heap let-bindings
+#### Level 8: Mixed -- read-only lists + heap let-bindings
 ```codex
 process : List Text -> Integer -> Integer -> Text
 process (items) (i) (n) =
@@ -462,7 +462,7 @@ The crash level identifies where the bug lives.
 - Normal build (`--diagnostic` off): zero overhead, identical ELF
 - Diagnostic build: ~2-5 KB additional code per instrumentation point,
   plus `__diag_hex` helper (~100 bytes). Total: ~50-100 KB overhead.
-  Doesn't matter — diagnostic builds aren't for production.
+  Doesn't matter -- diagnostic builds aren't for production.
 
 ### Estimated effort
 

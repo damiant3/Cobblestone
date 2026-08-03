@@ -10,7 +10,7 @@
 
 `Map<K,V>` and `Set<T>` are the two most-used data structures in the Codex compiler.
 Every type environment, every symbol table, every substitution map, every lowering
-context — they all flow through `Map<K,V>`. Today, both are thin wrappers around
+context -- they all flow through `Map<K,V>`. Today, both are thin wrappers around
 `System.Collections.Immutable.ImmutableDictionary<K,V>`:
 
 ```csharp
@@ -26,14 +26,14 @@ This means:
 1. **Every project in the solution** depends on `System.Collections.Immutable` (31 files
    reference it directly).
 2. **We don't control the data structure.** When we compile to JavaScript, Python, Rust,
-   Go, Ada, Fortran, COBOL, or Babbage — there is no `ImmutableDictionary`. Each backend
+   Go, Ada, Fortran, COBOL, or Babbage -- there is no `ImmutableDictionary`. Each backend
    must provide its own equivalent, or we emit `Dictionary` and lose immutability.
-3. **The self-hosted compiler** uses `List` with linear search for all its "maps" —
-   O(n) lookup everywhere — because there's no immutable trie in Codex.
+3. **The self-hosted compiler** uses `List` with linear search for all its "maps" --
+   O(n) lookup everywhere -- because there's no immutable trie in Codex.
 
 Replacing `ImmutableDictionary` with a **Hash Array Mapped Trie (HAMT)** written in
 Codex solves all three problems. The HAMT is the same data structure that Clojure,
-Scala, Haskell, and .NET's own `ImmutableDictionary` use internally — but we own it,
+Scala, Haskell, and .NET's own `ImmutableDictionary` use internally -- but we own it,
 we can compile it to all 12 backends, and the self-hosted compiler gets O(log₃₂ n)
 lookups instead of O(n).
 
@@ -70,7 +70,7 @@ To find child at logical index `i`:
    `popcount(bitmap & ((1 << i) - 1))`
 3. Index into the compact array.
 
-This gives O(1) lookup per level, O(log₃₂ n) total — effectively O(1) for any
+This gives O(1) lookup per level, O(log₃₂ n) total -- effectively O(1) for any
 realistic collection size (log₃₂(1,000,000) ≈ 4).
 
 ### Structure Sharing
@@ -81,7 +81,7 @@ When inserting a key:
 3. Copy only the **path** from root to the changed node (O(log₃₂ n) nodes).
 4. All other subtrees are shared with the old version.
 
-This is what makes it persistent/immutable — the old map still exists, unchanged,
+This is what makes it persistent/immutable -- the old map still exists, unchanged,
 sharing almost all its structure with the new map.
 
 ---
@@ -115,7 +115,7 @@ HamtMap a = record {
 
 ### Key Type Restriction
 
-For Tier 0, keys are `Text` (strings). This is what the compiler needs — all our
+For Tier 0, keys are `Text` (strings). This is what the compiler needs -- all our
 maps are `Map<string, T>`. We use a simple FNV-1a or DJB2 hash, implementable in
 pure Codex with integer arithmetic.
 
@@ -169,7 +169,7 @@ and `popcount` as built-in functions (or we implement `popcount` as a loop).
 ### Implementation Plan
 
 **Tier 0** (this task): Implement the HAMT in pure Codex as a prelude module.
-Use a simplified approach — if bit operations aren't available yet, use
+Use a simplified approach -- if bit operations aren't available yet, use
 integer division and modulo to extract hash chunks:
 - `extract-chunk hash level` = `(hash / (32 ^ level)) mod 32`
 - `popcount` via loop (count set bits)
@@ -204,10 +204,10 @@ going from O(n²) to O(n log n) for type checking. Real speedup.
 
 Once Tier 2 is complete:
 
-- ❌ `System.Collections.Immutable` — removed from all 31 files
-- ❌ `ImmutableDictionary` — replaced by `HamtMap`
-- ❌ `ImmutableArray` — replaced by Codex `List` (already happening)
-- ❌ `ImmutableHashSet` — replaced by `HamtSet` (HAMT with unit values)
+- ❌ `System.Collections.Immutable` -- removed from all 31 files
+- ❌ `ImmutableDictionary` -- replaced by `HamtMap`
+- ❌ `ImmutableArray` -- replaced by Codex `List` (already happening)
+- ❌ `ImmutableHashSet` -- replaced by `HamtSet` (HAMT with unit values)
 - ✅ All 12 backends get the same persistent map implementation
 - ✅ Self-hosted compiler gets O(log₃₂ n) lookups
 - ✅ One less BCL dependency in the entire solution
@@ -218,7 +218,7 @@ Once Tier 2 is complete:
 
 The HAMT's hash function operates on text. If text is stored as CCE bytes
 internally (per CCE-DESIGN.md), the hash function operates on CCE byte
-sequences — which are denser and more uniformly distributed than UTF-8 for
+sequences -- which are denser and more uniformly distributed than UTF-8 for
 multilingual keys. This is a natural synergy.
 
 ---
@@ -226,7 +226,7 @@ multilingual keys. This is a natural synergy.
 ## The Razor
 
 .NET asked: how do we provide a general-purpose immutable dictionary?
-They answered with `ImmutableDictionary<K,V>` — excellent, battle-tested.
+They answered with `ImmutableDictionary<K,V>` -- excellent, battle-tested.
 
 We ask: how do we provide an immutable dictionary that compiles to 12 backends,
 runs in the self-hosted compiler, and has zero external dependencies?

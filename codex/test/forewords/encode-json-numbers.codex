@@ -1,0 +1,100 @@
+Chapter: EncodeJsonNumbers
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Encode chapter Json
+
+ RFC 8259 section 6 gives the number grammar as minus? int frac? exp?,
+ where frac and exp each require at least one digit after their marker.
+ Before this chapter carried a decimal it accepted the int production only,
+ so every reference figure below that contains a dot or an e was a document
+ this parser could not read at all.
+
+ The reverse direction is written first and deliberately: an emitter
+ checked only against its own parser agrees with itself whatever both do.
+ Every emit row below is compared against the literal text the RFC
+ requires, and every parse row against a value derived from the grammar
+ rather than from what the emitter happens to produce.
+
+Section: Body
+
+  e : Text, Text, Text -> Text
+  e (what) (got) (want) = "  " & what & " = " & got & "  want " & want
+
+  n : Text, Integer, Text -> Text
+  n (what) (got) (want) = "  " & what & " = " & show got & "  want " & want
+
+ A round trip that starts from TEXT, not from a value: parse the literal,
+ emit it again, and require the same characters back. Trailing zeros are
+ the case that separates carrying the digits from carrying a quantity.
+
+  round : Text -> Text
+  round (src) =
+    let parsed = json-parse src
+    in when parsed
+      is Just (v) -> json-emit v
+      is None -> "REFUSED"
+
+  parsed-int : Text -> Integer
+  parsed-int (src) =
+    let parsed = json-parse src
+    in when parsed
+      is Just (v) -> json-get-int (json-object [json-pair "k" v]) "k" (0 - 999999)
+      is None -> 0 - 111111
+
+  refused : Text -> Text
+  refused (src) =
+    let parsed = json-parse src
+    in when parsed
+      is Just (v) -> "ACCEPTED " & json-emit v
+      is None -> "refused"
+
+Section: Report
+
+  opening : [Console] Nothing = act
+    print-line-uni "Emitting. json-num carries mantissa and decimal places, so"
+    print-line-uni "the places are part of the value and survive the trip:"
+    print-line-uni (e "json-num 2000 3" (json-emit (json-num 2000 3)) "2.000")
+    print-line-uni (e "json-num 1500 3" (json-emit (json-num 1500 3)) "1.500")
+    print-line-uni (e "json-num 15 1" (json-emit (json-num 15 1)) "1.5")
+    print-line-uni (e "json-num 5 3" (json-emit (json-num 5 3)) "0.005")
+    print-line-uni (e "json-num -5 3" (json-emit (json-num (0 - 5) 3)) "-0.005")
+    print-line-uni (e "json-num -1500 3" (json-emit (json-num (0 - 1500) 3)) "-1.500")
+    print-line-uni (e "json-num 7 0" (json-emit (json-num 7 0)) "7, no point when there are no places")
+    print-line-uni (e "json-int 7" (json-emit (json-int 7)) "7, the control: an integer is untouched")
+    print-line-uni ""
+    print-line-uni "Parsing, from the RFC grammar. A number whose places cancel"
+    print-line-uni "against its exponent is an integer and is answered as one, so"
+    print-line-uni "a document of plain integers reads exactly as it did before:"
+    print-line-uni (e "parse 1.5" (round "1.5") "1.5")
+    print-line-uni (e "parse 2.000" (round "2.000") "2.000")
+    print-line-uni (e "parse -0.005" (round "-0.005") "-0.005")
+    print-line-uni (e "parse 1e3" (round "1e3") "1000")
+    print-line-uni (e "parse 1E3" (round "1E3") "1000")
+    print-line-uni (e "parse 1.5e1" (round "1.5e1") "15")
+    print-line-uni (e "parse 1.5e-1" (round "1.5e-1") "0.15")
+    print-line-uni (e "parse 15e-3" (round "15e-3") "0.015")
+    print-line-uni (e "parse -7" (round "-7") "-7, the control")
+    print-line-uni (e "parse 0" (round "0") "0, the control")
+    print-line-uni ""
+    print-line-uni "Malformed numbers must be refused, not half-read. Each of these"
+    print-line-uni "is a production the grammar does not admit:"
+    print-line-uni (e "1." (refused "1.") "refused, frac needs a digit")
+    print-line-uni (e "1e" (refused "1e") "refused, exp needs a digit")
+    print-line-uni (e "1e+" (refused "1e+") "refused, exp needs a digit after the sign")
+    print-line-uni (e ".5" (refused ".5") "refused, int is not optional")
+    print-line-uni (e "1e99" (refused "1e99") "refused, past the bound this chapter states")
+    print-line-uni ""
+    print-line-uni "A number reached through the object accessors. json-get-int on a"
+    print-line-uni "decimal truncates toward zero rather than answering the default,"
+    print-line-uni "because a present numeric field is not a missing one:"
+    print-line-uni (n "get-int of 2.7" (parsed-int "2.7") "2")
+    print-line-uni (n "get-int of -2.7" (parsed-int "-2.7") "-2")
+    print-line-uni (n "get-int of 5" (parsed-int "5") "5, the control")
+    print-line-uni ""
+    print-line-uni "Nesting, so the emitter is exercised through the array and object"
+    print-line-uni "walks and not only at the top level:"
+    print-line-uni (e "array" (json-emit (json-array [json-num 2000 3, json-int 4, json-num (0 - 15) 1])) "[2.000,4,-1.5]")
+    print-line-uni (e "object" (json-emit (json-object [json-pair "min" (json-num 0 3), json-pair "max" (json-num 2000 3)])) "{\"min\":0.000,\"max\":2.000}")
+  end
+
+Page 1

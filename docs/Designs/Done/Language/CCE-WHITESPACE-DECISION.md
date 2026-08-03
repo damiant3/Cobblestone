@@ -1,8 +1,8 @@
-# CCE Whitespace Decision — TAB and CR
+# CCE Whitespace Decision -- TAB and CR
 
 **Date**: 2026-03-26
 **Author**: Agent Linux + Damian (morning design session)
-**Status**: Open decision — needs team input before implementation
+**Status**: Open decision -- needs team input before implementation
 
 ---
 
@@ -30,7 +30,7 @@ file silently loses tabs and carriage returns.
 | Thin space | 8201   | 6       | unmapped | Typography only |
 | Narrow NBSP | 8239  | 7       | unmapped | Typography only |
 
-NBSP, thin space, and narrow NBSP are clean cuts — no working code depends on
+NBSP, thin space, and narrow NBSP are clean cuts -- no working code depends on
 them. TAB and CR are the question.
 
 ---
@@ -42,7 +42,7 @@ them. TAB and CR are the question.
 **TAB → two spaces** on input. **CR → stripped** on input.
 
 The `_Cce.FromUnicode` boundary layer normalizes before encoding. Codex
-programs never see tabs or CRs internally. On output, we don't reverse it —
+programs never see tabs or CRs internally. On output, we don't reverse it --
 two spaces stay as two spaces.
 
 Pros:
@@ -51,11 +51,11 @@ Pros:
 - TAB is a rendering hint, not a character. Two spaces *is* the content.
 - CR is half of a Windows line ending. Strip it. Nobody wants bare CRs.
 - Programs that genuinely need to emit a tab byte for interop can use
-  `code-to-char 9` through the Unicode boundary — intentional and explicit.
+  `code-to-char 9` through the Unicode boundary -- intentional and explicit.
 
 Cons:
 - **Lossy.** Round-trip fidelity is broken for tab-containing files. Read a
-  TSV, write it back — tabs are now spaces. The file is semantically different.
+  TSV, write it back -- tabs are now spaces. The file is semantically different.
 - Makefile generation requires explicit Unicode interop for the tab character.
 - Any format that distinguishes tabs from spaces (TSV, Makefiles, some YAML)
   needs special handling at the boundary.
@@ -77,15 +77,15 @@ put TAB and CR at positions 126-127.
 Pros:
 - Full fidelity for tabs and CRs. No silent conversion.
 - Escape sequences `\t` and `\r` work as expected.
-- No encoding shifts — everything else keeps its byte value.
+- No encoding shifts -- everything else keeps its byte value.
 
 Cons:
 - **Evicts living letters in favor of dead machine instructions.** This is
-  the ASCII mistake — prioritizing American teletype mechanics over the
+  the ASCII mistake -- prioritizing American teletype mechanics over the
   world's writing systems. The whole point of frequency-sorted encoding is
   that people's letters matter more than machines' habits.
 - Sets a precedent: every future compat concern can evict another letter.
-- п (pe) and у (u) are not rare — they're common Russian letters.
+- п (pe) and у (u) are not rare -- they're common Russian letters.
   п appears in practically every Russian sentence.
 - The whitespace classification range breaks: `is-whitespace(b) = b <= 2`
   no longer catches TAB and CR at 126-127. Becomes a disjunction.
@@ -105,7 +105,7 @@ Cons:
   needs to handle variable width, or Tier 1 is boundary-only.
 - The self-hosted compiler's string processing (lexer, parser, emitter) all
   assume `char-at s i` gives you one character. Multi-byte breaks this.
-- Not needed today for the compiler's own operation — only for arbitrary
+- Not needed today for the compiler's own operation -- only for arbitrary
   text processing.
 
 ### Option D: Loud failure instead of silent NUL
@@ -117,25 +117,25 @@ Pros:
 - Buys time. No encoding changes needed.
 - The data loss is visible, not silent. Programmer sees `?` instead of
   mysterious NULs.
-- Independent of the TAB/CR decision — this should probably happen regardless.
+- Independent of the TAB/CR decision -- this should probably happen regardless.
 
 Cons:
 - Still lossy. Doesn't solve the round-trip problem.
 - `?` is already a valid character (CCE 68). Need a different sentinel or
   a side-channel diagnostic.
 
-### Option E: Two compilation modes — forward-looking and backward-looking
+### Option E: Two compilation modes -- forward-looking and backward-looking
 
 Same compiler, same source language, one flag:
 
-**`codex build --encoding unicode`** — backward-looking. Unicode on the inside,
+**`codex build --encoding unicode`** -- backward-looking. Unicode on the inside,
 no CCE conversion, no I/O boundaries, full fidelity for every character on earth.
 `"\t"` is a tab. `read-file` returns the bytes as-is. `is-letter` calls
 `char.IsLetter`. This is the mode for programs that live in the barbarian world:
 data pipelines reading CSVs, code generators emitting Go/Python/YAML, anything
 that processes external text.
 
-**`codex build --encoding cce`** — forward-looking. CCE on the inside, boundaries
+**`codex build --encoding cce`** -- forward-looking. CCE on the inside, boundaries
 at I/O, frequency-sorted classification, the full vision. This is the mode for
 programs that live in the Codex world: the self-hosted compiler, Codex.OS, agents,
 anything that doesn't need to care about the outside.
@@ -147,7 +147,7 @@ The difference is entirely in the emitter layer:
   `char.IsLetter`)
 - Whether I/O builtins wrap in conversion calls
 
-The source language, parser, type checker, IR — all identical. The flag affects
+The source language, parser, type checker, IR -- all identical. The flag affects
 code generation only.
 
 Pros:
@@ -158,7 +158,7 @@ Pros:
   A data processing tool compiles in unicode mode. Each gets the right tradeoffs.
 - TAB and CR aren't a birth defect we carry forward OR a capability we lose.
   They're just irrelevant in one mode and available in the other.
-- Relatively low maintenance cost — the emitter already has the CCE and non-CCE
+- Relatively low maintenance cost -- the emitter already has the CCE and non-CCE
   code paths from the migration. This is formalizing what was previously a
   before/after into a side-by-side.
 - The compiler can default to one mode and evolve: maybe unicode today (safe),
@@ -180,7 +180,7 @@ Open questions:
   the vision)?
 - Does the flag live in `codex.project.json` per-project, or is it per-invocation?
 - Can a CCE-mode program call into a unicode-mode library, or vice versa? (Probably
-  not without boundary conversion — but is that a real use case?)
+  not without boundary conversion -- but is that a real use case?)
 - How much of the emitter is actually duplicated? The CCE migration touched ~30
   builtin emission sites. That's the maintenance surface.
 
@@ -204,7 +204,7 @@ After reviewing all five options and Cam's Janus reflection, the decision is:
    diagnostic for string literals containing characters outside Tier 0.
 
 3. **Option E is rejected.** Dual encoding mode is structural debt that compounds
-   forever. The 34% CCE overhead is temporary — it disappears when native backends
+   forever. The 34% CCE overhead is temporary -- it disappears when native backends
    become primary. Two encoding paths in the compiler would split the fixed point,
    double the emitter surface area, and carry forward indefinitely. The cost of
    the transition is paid once; the cost of dual encoding is paid every day.
@@ -217,7 +217,7 @@ After reviewing all five options and Cam's Janus reflection, the decision is:
 
 6. **Backward compatibility with Unicode is someone else's rope.** A barbarian
    intelligence layer that bridges Unicode-native programs to Codex is legitimate
-   future work — but it's not our work. We're building the AI intelligence layer,
+   future work -- but it's not our work. We're building the AI intelligence layer,
    not the 1999 compatibility layer. The bridge gets built when someone needs it,
    by the person who needs it.
 

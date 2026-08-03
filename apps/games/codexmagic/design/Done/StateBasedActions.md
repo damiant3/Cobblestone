@@ -47,14 +47,14 @@ legend rule). The engine detects this:
 check-state-based-actions : GameState -> GameState
 ```
 
-The SBA loop maintains a **state fingerprint** — a hash of the
+The SBA loop maintains a **state fingerprint** -- a hash of the
 subset of game state that SBAs inspect (life totals, creature
 toughness values, legendary permanent sets, aura attachments, token
 zone positions). If the same fingerprint recurs within a single SBA
 pass sequence, a cycle has been detected.
 
 On cycle detection:
-1. The loop clamps at the current state — no further SBA iterations
+1. The loop clamps at the current state -- no further SBA iterations
 2. The cycle is logged in the match record with the repeating
    fingerprint and iteration count
 3. Triggered abilities accumulated during the cycle are clamped to

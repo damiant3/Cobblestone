@@ -3,11 +3,11 @@
 Two SILENT miscompiles in the bare-metal (CDX) self-host compiler, surfaced
 while building `codex/os/net/Accounts.codex`. Both produce wrong behavior with
 NO compile error. Both have workarounds in Accounts; root-cause fixes are open.
-The html plug (JS) compiled the same patterns fine — these are specific to the
+The html plug (JS) compiled the same patterns fine -- these are specific to the
 bare-metal codegen / type path. Repro trail: `p4 filelog` on Accounts.codex +
 apps/explorer/AuthDemo.codex; tested via apps/explorer/_authtest.ps1.
 
-## Bug 1 — FIXED (CL 2937, val, 2026-06-01). Root cause: deck-bound CHECK corrupted desugar ADef records.
+## Bug 1 -- FIXED (CL 2937, val, 2026-06-01). Root cause: deck-bound CHECK corrupted desugar ADef records.
 
 The original "empty-list cross-chapter call" diagnosis below is **WRONG** and was
 a coincidence of the Accounts code shape. Re-bisected from scratch with minimal
@@ -28,7 +28,7 @@ return type is itself a function.** Minimal, single chapter, no cites, no lists:
 ```
 Compiling this emits 2-3 spurious `CDX2001 Type mismatch: Fun vs Integer` /
 `Integer vs Fun`, located in callers / unrelated defs, never on the lambda line
-— and the set/count shifts with surrounding code (state corruption), which is
+-- and the set/count shifts with surrounding code (state corruption), which is
 exactly the "floating error" the original report saw. `make-adder n` is inferred
 as `Integer` instead of `Integer -> Integer`, i.e. the def-body lambda is typed
 as a non-`Fun`.
@@ -37,15 +37,15 @@ as a non-`Fun`.
 CODEGEN-ERRORS and emits no binary. (Different severity class from Bug 2.)
 
 **What was ruled OUT (each reproduced or cleared in isolation):**
-- `[]` is irrelevant — `[0]` (non-empty) fails identically.
-- cross-chapter is irrelevant — fails in a single chapter with no `cites`.
-- operator precedence is irrelevant — `\y -> (x + y)` with parens still fails.
+- `[]` is irrelevant -- `[0]` (non-empty) fails identically.
+- cross-chapter is irrelevant -- fails in a single chapter with no `cites`.
+- operator precedence is irrelevant -- `\y -> (x + y)` with parens still fails.
 - it is NOT a parser lambda-param absorption (parser keeps `LambdaExpr`; desugar
   keeps the 1-param def + `ALambdaExpr` body, verified by reading Desugarer).
 
 **Confirmed-CLEAN idioms (use these; all compile + run):**
 - multi-param def: `make-adder (x) (y) = x + y` : `Integer, Integer -> Integer`
-  (then `make-adder n` is a normal partial application — also clean).
+  (then `make-adder n` is a normal partial application -- also clean).
 - partial-application body: `make-adder (x) = add2 x` (body returns a function
   WITHOUT being a lambda). Clean.
 
@@ -56,7 +56,7 @@ a curried `\a -> \b -> ...` comparator had to be rewritten as partial applicatio
 
 **Root cause not yet pinned to a line.** `infer-lambda`
 (TypeCheckerInference.codex:217) and `check-def` / `bind-def-params`
-(TypeChecker.codex:271,389) all READ correct for this case — a 1-param def with a
+(TypeChecker.codex:271,389) all READ correct for this case -- a 1-param def with a
 2-arrow declared type peels one arrow and checks the lambda body against the
 remaining `FunTy`. Yet empirically the body is inferred as the collapsed scalar
 return. Next step: instrument the type printer (or add a temporary trace) to dump
@@ -90,7 +90,7 @@ Workaround: a local copy of the recursive byte builder (str-bytes-loop), so the
 of a cross-chapter call instantiated with a polymorphic empty list corrupts a
 shared type var.
 
-## Bug 2 — FIXED (reek, CL 2814). Root cause was NOT records — it was text-append `&`.
+## Bug 2 -- FIXED (reek, CL 2814). Root cause was NOT records -- it was text-append `&`.
 
 The "record field" framing was a red herring. The real cause: `__str_concat`
 (the `&` runtime helper) had a fast in-place path that, when the left operand `a`'s
@@ -98,7 +98,7 @@ bytes end exactly at the heap-top bump pointer R10, appended the right operand i
 a's buffer and **overwrote a's length field**, then returned a aliased to the result.
 The heap-top check does NOT imply a is dead, so any `a & y` where a is reused
 afterward corrupts a. It only fires when a is a heap string with SPARE CAPACITY
-(sha256-to-hex output has it; string literals are exact-sized) — which is exactly
+(sha256-to-hex output has it; string literals are exact-sized) -- which is exactly
 why plain-literal repros passed and digest-valued fields failed.
 
 In Accounts: `hash-pw (salt) (pw) = digest (salt & ":" & pw)`. The `salt & ":"`
@@ -113,7 +113,7 @@ MINIMAL REPRO (3 lines, deterministic):
 ```
 FIX: force `__str_concat` to always take the safe fresh-alloc path (the slow path
 already copies a then b into a new buffer, never mutating a). The fast in-place
-path is fundamentally unsafe — a runtime helper cannot know if a is aliased.
+path is fundamentally unsafe -- a runtime helper cannot know if a is aliased.
 Build timing unchanged (~195s); most compilation was already on the always-fresh
 `__deck_str_concat`. Regression gate: codex/test/text-append-alias.codex.
 
@@ -122,7 +122,7 @@ with a stored salt works), though it is harmless to leave.
 
 --- ORIGINAL REPORT (kept for history) ---
 
-## Bug 2 (original) — record field miscompiled to the previous field's value
+## Bug 2 (original) -- record field miscompiled to the previous field's value
 
 A 5-field record read its last text field as the PREVIOUS field's value, with
 no error:
@@ -150,7 +150,7 @@ Still present on seed #157/#158 (re-tested 2026-05-30 after merging that seed:
 restoring the salt field made login fail again; reverting to id-derived salt
 fixed it). So the recent X86_64Compound/IRTextEmitter changes did NOT fix it.
 
-UPDATE — a plain 5-field record does NOT reproduce it. This compiled and ran
+UPDATE -- a plain 5-field record does NOT reproduce it. This compiled and ran
 CORRECTLY on seed #157/#158 (printed `a=1 b=B c=C d=D e=E`):
 ```
   RecFive = record { a : Integer, b : Text, c : Text, d : Text, e : Text }

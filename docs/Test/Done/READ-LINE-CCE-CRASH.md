@@ -22,7 +22,7 @@ from the ASCII `__read_line` helper, which skips carriage returns with
 natively, and **CCE byte 13 is `'e'`** (the CCE table is
 frequency-ordered: e is the most common letter, lowest letter code).
 So feeding CCE `"hello world\x01"` returned `"hllo world"`. CCE has no
-carriage return at all, so the CR-skip is meaningless — the fix removes
+carriage return at all, so the CR-skip is meaningless -- the fix removes
 it from `emit-read-line-cce-helper` (X86_64Helpers.codex). The newline
 terminator check correctly uses CCE newline (`cmp rdx, 1`).
 
@@ -31,7 +31,7 @@ full `"hello world"`.
 
 ---
 
-## Original Report (superseded — kept for history)
+## Original Report (superseded -- kept for history)
 
 **Status:** Active. Discovered 2026-05-29 by val.
 
@@ -76,7 +76,7 @@ build/compile.ps1 -Src test.codex -Out test.cdx
 - `read-line` resolves to `__read_line` at 0x101263 (correct)
 - `read-line-cce` resolves to 0x1089B6 = `__unresolved_trap + 1`
 - Renaming `__read_line_cce` to `__rlcce` produces the same crash
-  at the same address — it's not a name-specific issue
+  at the same address -- it's not a name-specific issue
 - Hash slots are non-colliding: CCE hash of `__read_line_cce`
   → slot 5808, `__read_line` → slot 8372 (table size 16384)
 - The seed compiles itself correctly (all gates green, fixed
@@ -89,7 +89,7 @@ The offset table (`OffsetTable` hash table built by
 retrieve `__read_line_cce`. Possible causes:
 
 1. **Hash table capacity overflow.** The table has 16384 slots
-   and 122 entries. Load factor is 0.7% — should be fine. But
+   and 122 entries. Load factor is 0.7% -- should be fine. But
    if the insertion loop has an off-by-one in the linear probing,
    entries near the end of a probe chain might not be found.
 
@@ -97,7 +97,7 @@ retrieve `__read_line_cce`. Possible causes:
    in emission order. `build-offset-table-parallel` iterates
    from 0 to len. If inserting entry N evicts entry M (probe
    chain collision), and M is looked up later, it won't be found.
-   But open-addressing with linear probing doesn't evict — it
+   But open-addressing with linear probing doesn't evict -- it
    probes to the next empty slot.
 
 3. **Text comparison bug in CCE.** `offset-table-get` uses
@@ -133,7 +133,7 @@ This needs a GDB watchpoint on the hash table entry for
    the call target at 0x109437.
 
 3. **Self-compile doesn't exercise this.** The seed never calls
-   `__read_line_cce` internally — it's emitted as a helper but
+   `__read_line_cce` internally -- it's emitted as a helper but
    no compiler code references it. The fixed-point test doesn't
    catch lookup failures for unused functions.
 
@@ -142,7 +142,7 @@ This needs a GDB watchpoint on the hash table entry for
    helper added to the chain fails the same way.
 
 5. **`-Break` re-added to compile.ps1** (CL pending) but MAP
-   addresses may be unreliable — `apply-call-patches-direct` at
+   addresses may be unreliable -- `apply-call-patches-direct` at
    0x1D6949 points to `00 00` (middle of a jump displacement,
    not a valid function entry). Breakpoint patching at MAP
    addresses corrupts instructions.
@@ -171,9 +171,9 @@ against what `build-offset-table-parallel` inserted.
 
 ## Files
 
-- `codex/compiler/Emit/X86_64Helpers.codex` — `emit-read-line-cce-helper`
-- `codex/compiler/Emit/X86_64Builtins.codex` — `emit-read-line-cce-builtin`
-- `codex/compiler/Core/OffsetTable.codex` — hash table implementation
-- `codex/compiler/Emit/X86_64Chapter.codex:707` — `build-offset-table-parallel`
-- `codex/compiler/Emit/X86_64State.codex:524` — `check-call-patch-targets`
-- `build/compile.ps1` — `-Break` parameter re-added
+- `codex/compiler/Emit/X86_64Helpers.codex` -- `emit-read-line-cce-helper`
+- `codex/compiler/Emit/X86_64Builtins.codex` -- `emit-read-line-cce-builtin`
+- `codex/compiler/Core/OffsetTable.codex` -- hash table implementation
+- `codex/compiler/Emit/X86_64Chapter.codex:707` -- `build-offset-table-parallel`
+- `codex/compiler/Emit/X86_64State.codex:524` -- `check-call-patch-targets`
+- `build/compile.ps1` -- `-Break` parameter re-added

@@ -1,0 +1,71 @@
+Chapter: JWT Decode Test
+  cites Foreword chapter Console
+  cites Encode chapter Jwt
+
+ A token minted outside this compiler, so the expected claim values
+ come from the host that built it rather than from the code under
+ test.
+
+ The base64url deliberately contains both characters that distinguish
+ base64url from base64. That is not automatic: with printable ASCII
+ input those two only ever arise from the fourth six-bit group, which
+ needs a byte of greater-than, question mark or tilde at a position
+ two modulo three. Twenty thousand ordinary payloads produced none, so
+ the nonce carries a tilde and a question mark on purpose. A token
+ that avoids them never exercises the alphabet substitution at all.
+
+ Three of the four lines are controls. A two-segment token must be
+ refused for its shape; a three-segment token whose payload is not
+ JSON must be refused for its content, which is the case that used to
+ come back as a success carrying empty claims; and the expiry pair
+ must answer differently on either side of the deadline, which is what
+ proves the exp claim was really read. When claims silently failed to
+ parse, exp was zero, zero means no expiry stated, and every expired
+ token passed validation.
+
+Section: Vector
+
+  token : Text = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImsxIn0.eyJpc3MiOiJodHRwczovL2NvZGV4LnRlc3QiLCJzdWIiOiJ1c2VyLTQyIiwiYXVkIjoiY29kZXgtYXVkIiwiZXhwIjoxMzAwODE5MzgwLCJpYXQiOjEzMDA4MTkzMDAsIm5vbmNlIjoiZWZ-ZmE_YyIsImVtYWlsIjoiYUBiLnRlc3QiLCJuYW1lIjoiQWRhIEwifQ.ZmFrZS1zaWduYXR1cmU"
+
+  two-segments : Text = "eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJqb2UifQ"
+
+  bad-payload : Text = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImsxIn0.bm90IGpzb24gYXQgYWxs.ZmFrZS1zaWc"
+
+  issued-exp : Integer = 1300819380
+
+Section: Report
+
+  show-tok : JwtToken -> Text
+  show-tok (t) =
+    let h = t.jt-header
+    in let p = t.jt-payload
+    in let s1 = "alg=" & h.jh-alg & " kid=" & h.jh-kid
+    in let s2 = " iss=" & p.jp-iss & " sub=" & p.jp-sub
+    in let s3 = " aud=" & p.jp-aud & " exp=" & show (p.jp-exp)
+    in let s4 = " nonce=" & p.jp-nonce & " email=" & p.jp-email
+    in let s5 = " name=" & p.jp-name
+    in s1 & s2 & s3 & s4 & s5
+
+  report : JwtError -> Text
+  report (d) =
+    when d
+      is JwtOk (t) -> show-tok t
+      is JwtMalformed (m) -> "malformed: " & m
+
+  valid-at : Integer -> Text
+  valid-at (now) =
+    when jwt-decode token
+      is JwtOk (t) -> if jwt-validate-claims t "" "" now then "yes" else "no"
+      is JwtMalformed (m) -> "malformed"
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("good=" & report (jwt-decode token))
+    print-line-uni ("short=" & report (jwt-decode two-segments))
+    print-line-uni ("nonjson=" & report (jwt-decode bad-payload))
+    print-line-uni ("before-exp=" & valid-at (issued-exp - 1))
+    print-line-uni ("after-exp=" & valid-at (issued-exp + 1))
+  end
+
+Page 1

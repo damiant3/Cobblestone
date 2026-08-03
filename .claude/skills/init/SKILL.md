@@ -1,117 +1,108 @@
 ---
 description: >-
-  Session initialization — read all live docs, set up .p4config, check
-  Perforce status, check memory. Run this at the start of every session.
+  Session initialization -- identity, memory, fleet state via agents,
+  lesson index, on-demand reading contract, Perforce status. Run this at
+  the start of every session.
 shell: powershell
 ---
 
 You are initializing a new session. Follow every step below in order.
-Do not skip steps. Do not summarize early. Complete all steps before
-reporting status to the user.
+Do not skip steps. Complete all steps before reporting status.
 
-## Step 1 — Identify yourself
+## Why this file reads the way it does (2026-07-28)
 
-Run `Get-Location` to find your working directory. Your agent name is
-the last 3 characters of the directory name (e.g. `NewRepository-val`
-→ **val**). Remember this — you are agent **XXX** for this session.
+The previous init read ~190k tokens of documents into the session's own
+context before any work started: ~107k of reference docs, ~21k of
+vision docs, ~56k of PM/Active read "in full, deliberately". Measured
+2026-07-28 (bytes/4); one session arrived at 59 per cent context spent
+having completed one unit of work. Damian's direction: dramatically
+reduce it.
 
-## Step 2 — Read mandatory docs (directly, not via agent)
+The redesign keeps in DIRECT context only what changes behavior at
+session start (~17k: memory, the lesson index, three agent summaries,
+Perforce state) and converts everything else to on-demand reading with
+an explicit trigger table. The stories doctrine -- lessons live in the
+middle of post-mortems, and summaries rot -- is preserved by a harder
+rule, not a longer read: **when a lesson id becomes load-bearing for
+your work, you read its story THEN, in full.** An unread story that
+never becomes load-bearing costs nothing; before this change every
+story taxed every session of every agent, every day.
 
-Read ALL files in the root of `docs/` using the Read tool. Do them in
-parallel. These are non-negotiable — every session must read them:
+## Step 1 -- Identify yourself
 
-- `docs/CuratorsCatalogue.md`
-- `docs/ArchitectsSketchbook.md`
-- `docs/DevelopersGuide.md`
-- `docs/DevelopersRulebook.md`
-- `docs/ExaminersAssay.md`
-- `docs/KingsAndCourts.md`
-- `docs/OperatorsManual.md`
-- `docs/TheShimmeringPortal.md`
-- `docs/TinkersToolbox.md`
-- `docs/UsersHandbook.md`
-- `docs/VisionAndVirtues.md`
+Run `Get-Location`. Your agent name is the last 3 characters of the
+directory name (e.g. `NewRepository-val` -> **val**). You are agent
+**XXX** for this session.
 
-## Step 3 — Read remaining docs (via parallel agents)
+## Step 2 -- Read memory
 
-Read these directly as well (parallel with Step 2 is fine):
+Read your memory index (`MEMORY.md` at the path in your system context)
+and every memory file it lists. These carry handoff notes and project
+state from prior sessions.
 
-- `docs/PM/Stories/Vision/NewRepository.txt`
-- `docs/PM/Stories/Vision/IntelligenceLayer.txt`
-- `docs/PM/Stories/Vision/CodexIoTPlan.md`
+## Step 3 -- Launch THREE parallel agents (model: haiku)
 
-Then read **everything in `docs/PM/Active/`**, recursively, with the Read
-tool. In full. Not via an agent, not a bounded prefix, not a catalog.
+All three run concurrently. Their reports come back small; the files
+they read never enter your context.
 
-This is where the stories live: `docs/PM/Active/Stories/` holds seventeen
-accounts of how agents on this project actually failed -- `ValPostMortem.md`,
-`REFLECTIONS.md`, `TheSilentKeyboard.md`, `IGiveUp.md`, `IQuit.md`. They sat
-in `Done/` and went unread, and the failures kept repeating. They are not
-history, they are the failure modes you are about to reproduce.
-`AgentCommunication.md` is the current one: reek's own autopsy of writing
-walls of text and stopping one step short of a finished item, written
-2026-07-19 because Damian refused to read a status message.
+**Agent A -- the open work:**
+- `docs/PM/CurrentPlan.md` -- return the top gaps in priority order,
+  named concretely, with a word on which are unowned. Skip every entry
+  marked `Deferred`. "The project is in good shape" is a failed report.
 
-**Cost, so nobody deletes this line as an optimisation:** about 180 KB, most
-of it the stories. That is real context spent before you start. It is spent
-deliberately. Reading them at a `limit` to save room defeats the point -- the
-lesson in a post-mortem is in the middle of it, not the title.
+**Agent B -- Perforce process and the fleet:**
+- `docs/Agents/PerforceProcess.md` and
+  `docs/Agents/CoordinationProtocol.md` -- return the gate-dance and
+  build-token checklists.
+- Glob `docs/Agents/*-workplan.md`, read every match. Return each
+  agent's current state and critical-path rows. **Quote VERBATIM every
+  findings-outbox entry addressed to you or to the fleet** -- a
+  paraphrased finding loses the part that mattered.
 
-Then launch THREE parallel agents (use the Agent tool, model: haiku)
-to read the rest. Each agent reads its assigned files and returns a
-short summary. All three must run concurrently:
+**Agent C -- active designs (catalog only):**
+- Glob `docs/Designs/Active/**/*`; read each match with `limit: 60`
+  only. Return one line per doc: path, capability, in-progress or
+  proposal. Skip `docs/Designs/Done/` and `docs/Reference/`.
 
-**Agent A — PM docs (the open work):**
-- `docs/PM/CurrentPlan.md` — the shape and priority order
+## Step 4 -- Read the lesson index
 
-Agent A must return the open work, not a summary of the project's
-health: the top gaps from CurrentPlan in priority order, named
-concretely, with a word on which are unowned. "The project is in good
-shape" is a failed report.
+Read `docs/PM/Active/Stories/LESSONS.md` directly (~1.4k tokens). It is
+one row per hard-won lesson with a stable id and a pointer to the story
+that earned it. The stories themselves are NOT read at init. The
+binding rule: **before you lean on a lesson -- or are about to act in
+a way a row warns against -- read its story in full, then act.** Cite
+the ids (L-ORACLE, L-COUNT, ...) in CLs and reviews so the reasoning
+stays reachable.
 
-**There is no platform-wide register any more.** `docs/PM/BACKLOG.md`
-was deleted 2026-07-23 (main CL 10446) because it had become prose that
-nothing checked, and stale rows were being quoted as fact. Do not go
-looking for it and do not recreate it. Application-domain registers
-(`apps/<app>/<app>-backlog.md`, `codex/<quire>/<quire>-backlog.md`) are
-unaffected; read the one for whatever app you are standing in.
+## Step 5 -- The on-demand reading contract
 
-**Skip every entry marked `Deferred`.** The decision to wait has already
-been made and re-reporting it each session wastes the reader's time. Do
-not list them, do not summarize them, do not argue for them. Report a
-deferred entry only if you found direct evidence its text is now false —
-which is a correction, not a status update.
+Nothing below is read at init. Each row is MANDATORY before work that
+touches its subject; Grep for the section rather than reading whole
+files where the doc is large. Do not start subject work on a stale
+assumption a listed doc would have corrected.
 
-**Agent B — Perforce process and agent workplans:**
-- `docs/Agents/PerforceProcess.md`
-- `docs/Agents/CoordinationProtocol.md` — the AgentGrid build-token
-  protocol; you must hold the token before any gate run or submit
-- Glob for `docs/Agents/*-workplan.md` and read every match.
-  These are inter-agent communication — other agents' current plans,
-  streams, and status. Note anything relevant to your own work.
+| Before you touch | Read |
+|---|---|
+| Writing or reviewing `.codex` source | `docs/DevelopersGuide.md` (syntax, pitfalls); `docs/DevelopersRulebook.md` (quires, library rules, seed reachability) |
+| Compiler memory, allocators, decks, registers, SMP, page tables | `docs/ArchitectsSketchbook.md` |
+| Builds, `compile.ps1`, codex-vm flags, debugging, profiling, seed rebuild, release | `docs/OperatorsManual.md` |
+| Tests, sidecars, batteries, oracles, GUI tests, skip/diag semantics | `docs/ExaminersAssay.md` (~34k tokens -- Grep the section, never read whole) |
+| Web output, the HTML plug, browser apps, widgets | `docs/TheShimmeringPortal.md` |
+| IoT boards, board drivers, MMIO windows | `docs/TinkersToolbox.md` |
+| Compliance claims, punctual/WCET, regulatory mappings | `docs/KingsAndCourts.md` |
+| VS Code setup, USB stick build/flash, QEMU boot | `docs/UsersHandbook.md` |
+| The app inventory | `docs/CuratorsCatalogue.md` |
+| Ethos, virtues, definition of done | `docs/VisionAndVirtues.md` |
+| The founding vision verbatim | `docs/PM/Stories/Vision/` |
+| ANY Perforce operation beyond `p4 edit` / `p4 submit` | `docs/Agents/PerforceProcess.md` (standing rule, unchanged) |
+| Your first gate run or token request of the session | `docs/Agents/CoordinationProtocol.md` (standing rule, unchanged) |
+| A LESSONS id you are about to lean on or breach | Its story under `docs/PM/Active/Stories/` |
+| Release history, "what landed in cycle N" | `docs/PM/Active/GitHubUpdates/` |
 
-**Agent C — Active designs (catalog only, do NOT read every doc in full):**
-- Glob for `docs/Designs/Active/**/*` to get the file list.
-- For EACH match, read only its opening with the Read tool's `limit`
-  parameter (`limit: 60`) — the title, status, and summary live at the
-  top. Do **not** read whole design docs; there are ~25 of them and
-  reading them in full overflows your context before you can report.
-  A bounded prefix per file is enough for the one-line catalog below.
-- Return a catalog: one line per design doc — path, the capability it
-  designs, and whether it is in-progress or a not-yet-started proposal.
-  Group by subdirectory. This is a map of where the live work is, not a
-  digest of each design.
-- Skip `docs/Designs/Done/` — it is the archive (shipped and superseded
-  designs, folded together), kept for reference but NOT read at init.
-- `docs/Reference/` is also NOT read at init (surveys and position docs).
-- App designs now live under `apps/<app>/design/` and are intentionally
-  NOT read at init (read them when you work that app).
+## Step 6 -- Check .p4config
 
-## Step 4 — Check .p4config
-
-Check if `.p4config` exists in the working directory root. If it does
-not exist, create one with this content (replace XXX with your agent
-name, lowercase):
+If `.p4config` is missing from the workspace root, create it
+(XXX lowercase):
 
 ```
 P4PORT=localhost:1666
@@ -119,57 +110,37 @@ P4USER=damian
 P4CLIENT=BigWhite_Codex_XXX
 ```
 
-If it already exists, read it and verify the client name matches your
-agent name.
+If it exists, verify the client name matches your agent name.
 
-## Step 5 — Check Perforce status
+## Step 7 -- Check Perforce status
 
-Run these commands in parallel (use the PowerShell tool):
+Run in one call:
 
-1. `p4 changes -s pending -c BigWhite_Codex_XXX` — pending CLs
-2. `p4 changes -s shelved -c BigWhite_Codex_XXX` — shelved CLs
-3. `p4 opened` — files opened on disk
-4. `p4 changes -s submitted -m 5 -c BigWhite_Codex_XXX` — recent submissions
-5. `p4 depots` — find depot paths (needed for next commands)
+1. `p4 changes -s pending -c BigWhite_Codex_XXX`
+2. `p4 changes -s shelved -c BigWhite_Codex_XXX`
+3. `p4 opened`
+4. `p4 changes -s submitted -m 5 -c BigWhite_Codex_XXX`
 
+## Step 8 -- Check coordination mailbox
 
-## Step 6 — Check coordination mailbox
+Read `.agentgrid` in the workspace root (JSON: `{ agent,
+coordinationDir }`). If it exists, list the coordination directory: a
+stale `build-grant` means you may still hold the token (write
+`build-complete` if you are not mid-gate); delete any stale
+`build-request` you no longer intend. If `.agentgrid` does not exist,
+AgentGrid is not managing this workspace -- skip.
 
-Read `.agentgrid` in the working directory root (JSON:
-`{ agent, coordinationDir }`). If it exists, list the coordination
-directory and check for leftovers from a prior session: a stale
-`build-grant` means you may still HOLD the build token — if you are not
-mid-gate, write `build-complete` there to release it; a stale
-`build-request` you no longer intend should be deleted. If `.agentgrid`
-does not exist, AgentGrid is not managing this workspace — skip.
-
-## Step 7 — Check memory
-
-Read your memory index at the path shown in your system context
-(typically `~/.claude/projects/<project-key>/memory/MEMORY.md`). Read
-every memory file listed there. These contain handoff notes,
-feedback, and project state from prior sessions.
-
-## Step 8 — Report
-
-After ALL steps complete, report to the user:
+## Step 9 -- Report
 
 - **Agent name** and working directory
-- **Perforce state:** pending CLs, shelved CLs, opened files,
-  merge-down/copy-up status (one line each)
+- **Perforce state:** pending, shelved, opened, one line each
 - **Handoff notes:** anything relevant from memory
-- **Open work:** the top 3-5 items from `docs/PM/CurrentPlan.md` that are
-  **actionable now and in your lane**, named concretely, with a word on
-  which are unowned. **Omit every entry marked `Deferred`** — those are
-  known, decided, and not this session's work. **This section is not
-  optional and must not be replaced by a battery count** — a green
-  battery is not the absence of work, it is the reason the work is
-  visible.
-
-  Keep it to what the reader does not already know. CurrentPlan is read
-  every session by every agent; reciting the same standing gaps back to
-  the person who wrote them is noise, not diligence.
+- **Open work:** the top 3-5 items from Agent A that are actionable now
+  and in your lane, named concretely; omit `Deferred` entries; a green
+  battery is not the absence of work
+- **Outbox entries addressed to you** (from Agent B), absorbed before
+  picking work
 - End with: "Ready for instructions."
 
-Keep the report compact — no headers larger than bold text, no
-repeating doc contents. Just the status and the open work.
+Keep the report compact. Do not recite doc contents back to the reader
+who wrote them.

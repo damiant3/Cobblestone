@@ -1,4 +1,4 @@
-# Iteration 5 — Handoff Summary
+# Iteration 5 -- Handoff Summary
 
 **Date**: 2026-03-14 Pi Day
 **Commits**: `3d21ed2` (algebraic types), `e403956` (type params + exhaustiveness)
@@ -46,20 +46,20 @@
 
 ### Bug Fixes This Iteration
 
-1. **`TypeNode` / `PatternNode` lost from `SyntaxNodes.cs`** — a stash/restore cycle during a previous session left both abstract base records missing; restored in correct order before concrete subtypes.
-2. **Broken string interpolation in `CSharpEmitter`** — `{EmitType(x.Type}>)` had missing `)` inside interpolation; rewritten using local `string funcType = …` variable to avoid the issue.
-3. **`True`/`False` vs `true`/`false`** — Codex keywords are `True`/`False` (capital); test used lowercase and hit CDX3002 undefined name errors. Fixed in test.
-4. **`show` built-in not emitted** — `show n` was calling a non-existent C# method; now emitted as `Convert.ToString(n)`.
-5. **`PatternNode` ordering** — abstract base record appeared after its concrete subclasses; fixed to appear before.
+1. **`TypeNode` / `PatternNode` lost from `SyntaxNodes.cs`** -- a stash/restore cycle during a previous session left both abstract base records missing; restored in correct order before concrete subtypes.
+2. **Broken string interpolation in `CSharpEmitter`** -- `{EmitType(x.Type}>)` had missing `)` inside interpolation; rewritten using local `string funcType = …` variable to avoid the issue.
+3. **`True`/`False` vs `true`/`false`** -- Codex keywords are `True`/`False` (capital); test used lowercase and hit CDX3002 undefined name errors. Fixed in test.
+4. **`show` built-in not emitted** -- `show n` was calling a non-existent C# method; now emitted as `Convert.ToString(n)`.
+5. **`PatternNode` ordering** -- abstract base record appeared after its concrete subclasses; fixed to appear before.
 
 ### New Tests (+17 vs iteration 4 baseline of 107)
 
 | Project | Tests | Delta |
 |---------|-------|-------|
-| Codex.Core.Tests | 16 | — |
+| Codex.Core.Tests | 16 | -- |
 | Codex.Syntax.Tests | 44 | +5 (type def parsing) |
-| Codex.Ast.Tests | 11 | — |
-| Codex.Semantics.Tests | 10 | — |
+| Codex.Ast.Tests | 11 | -- |
+| Codex.Semantics.Tests | 10 | -- |
 | Codex.Types.Tests | 43 | +12 (integration + exhaustiveness + parametric) |
 | **Total** | **124** | **+17** |
 
@@ -100,7 +100,7 @@ Applying `Just x` → `Instantiate` peels `ForAllType`, unification resolves the
 
 ### Parametric Types
 
-- `Maybe (a) = | Just (a) | None` — `a` bound as a fresh `TypeVariable` scoped to the definition
+- `Maybe (a) = | Just (a) | None` -- `a` bound as a fresh `TypeVariable` scoped to the definition
 - `TypeParamIds` stored on `SumType`/`RecordType` so `InstantiateParametricType` can substitute args
 - `ResolveAppliedType` handles `Maybe Integer` → looks up `Maybe` in `m_typeDefMap`, calls `InstantiateParametricType`
 - `SubstituteVar` traverses into `SumType`/`RecordType` fields recursively
@@ -110,7 +110,7 @@ Applying `Just x` → `Instantiate` peels `ForAllType`, unification resolves the
 After all branches of a `MatchExpr` are type-checked, `CheckExhaustiveness` runs:
 - Only fires on `SumType` scrutinees
 - Skipped if any branch is a `VarPattern` or `WildcardPattern` (catch-all)
-- Collects `CtorPattern` names across all branches; reports missing ones as CDX2020 **warning** (not error — doesn't block compilation)
+- Collects `CtorPattern` names across all branches; reports missing ones as CDX2020 **warning** (not error -- doesn't block compilation)
 
 ### C# Emission of Algebraic Types
 
@@ -138,13 +138,13 @@ public sealed record Point(decimal x, decimal y);
 ## Known Limitations / Not Yet Done
 
 - **Pattern matching exhaustiveness** is a warning only (CDX2020), not an error. This is correct for now since wildcards / var patterns are valid catch-alls.
-- **No nested ctor patterns** — `if Just (Just (n)) ->` is not handled in `EmitCtorPatternBody` (only `IRVarPattern` sub-patterns are destructured; nested ctor sub-patterns are silently ignored).
-- **Type parameter arity checking** — `Maybe Integer Text` (too many args) is not reported as an error.
-- **No effect system** — all functions are pure.
+- **No nested ctor patterns** -- `if Just (Just (n)) ->` is not handled in `EmitCtorPatternBody` (only `IRVarPattern` sub-patterns are destructured; nested ctor sub-patterns are silently ignored).
+- **Type parameter arity checking** -- `Maybe Integer Text` (too many args) is not reported as an error.
+- **No effect system** -- all functions are pure.
 - **ProseParser source spans** are relative to notation blocks, not the original file.
-- **`codex run` overhead** — shells out to `dotnet build` + `dotnet run` (~2s).
+- **`codex run` overhead** -- shells out to `dotnet build` + `dotnet run` (~2s).
 - **`Codex.Proofs`**, **`Codex.Repository`**, **`Codex.Narration`** are empty stubs (added to solution, not implemented).
-- **`show` only works at application site** — `show` as a first-class value (e.g. passed to `map`) won't emit correctly.
+- **`show` only works at application site** -- `show` as a first-class value (e.g. passed to `map`) won't emit correctly.
 
 ---
 
@@ -169,7 +169,7 @@ public sealed record Point(decimal x, decimal y);
 - [ ] Inline code references in prose (backtick-delimited)
 
 ### Milestone 7: Repository (Local)
-- [ ] Implement `Codex.Repository` — content-addressed fact store
+- [ ] Implement `Codex.Repository` -- content-addressed fact store
 - [ ] `codex init`, `codex publish`, `codex history`
 - [ ] Import resolution from local store
 
@@ -178,12 +178,12 @@ public sealed record Point(decimal x, decimal y);
 ## Environment Notes
 
 - **Solution file**: `Codex.sln` (root)
-- **Build**: `dotnet build Codex.sln` — zero warnings
-- **Test**: `dotnet test Codex.sln` — 124 tests, all pass
+- **Build**: `dotnet build Codex.sln` -- zero warnings
+- **Test**: `dotnet test Codex.sln` -- 124 tests, all pass
 - **TreatWarningsAsErrors**: `true`
-- **Boolean literals**: `True` / `False` (capital) — not `true`/`false`
-- **No XML doc comments** — ruled out in `.github/copilot-instructions.md`
+- **Boolean literals**: `True` / `False` (capital) -- not `true`/`false`
+- **No XML doc comments** -- ruled out in `.github/copilot-instructions.md`
 - **No `var` when type is non-obvious**; use `new()` where target type is declared
-- **`Map<K,V>`** (in `Codex.Core`) — use instead of `ImmutableDictionary` + `TryGetValue`
+- **`Map<K,V>`** (in `Codex.Core`) -- use instead of `ImmutableDictionary` + `TryGetValue`
 - **Agent instructions**: `.github/copilot-instructions.md` and `copilot-instructions.md`
 - **New projects added to solution**: `Codex.Proofs`, `Codex.Repository`, `Codex.Narration` (all stubs)

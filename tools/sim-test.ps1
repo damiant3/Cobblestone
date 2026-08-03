@@ -1,4 +1,4 @@
-# sim-test.ps1 — Parameterized simulation test driver for CodexMagic
+# sim-test.ps1 -- Parameterized simulation test driver for CodexMagic
 # Runs single games with different configurations, logs results to CSV.
 #
 # Usage: tools/sim-test.ps1 [-Games 10] [-OutFile sim-results.csv]

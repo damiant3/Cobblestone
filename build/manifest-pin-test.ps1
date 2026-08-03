@@ -6,7 +6,13 @@
 # emission was verified only by inspection, because nothing inside a guest can
 # read its own manifest -- so a regression was caught by no test.
 #
-# This closes it. The subject is compiled FRESH by the current compiler (so a
+# THE BATTERY NOW GATES THIS. codex/test/manifest-pin.disk-src names
+# manifest-subject, and build/test.ps1 attaches that test's freshly compiled CDX
+# as the reader's disk, so the pin runs on every battery run against the compiler
+# under test. This script remains for the one thing the battery cannot do: point
+# the pin at some OTHER compiler with -Kernel.
+#
+# The subject is compiled FRESH by the given compiler (so a
 # regression is in the bytes we check, not frozen away), its CDX is attached as
 # the reader's disk, and the reader parses the header at offset 136 (manifest
 # offset, le64) and 144 (size), walks the entries, and prints the id, direction,

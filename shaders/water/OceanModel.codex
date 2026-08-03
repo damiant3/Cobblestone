@@ -1,0 +1,343 @@
+Chapter: OceanModel
+
+ A runnable model of a real-time ocean surface. This is the simulation
+ the water shader would evaluate on the GPU, expressed as a program that
+ samples the surface at discrete points and reports displacement, normal,
+ foam, and shaded colour. A point goes in, a lit sample comes out.
+
+ The model has four parts, each a self-contained section below:
+
+   1. A small Real math kernel (range-reduced sine/cosine, Newton sqrt),
+      because the foreword only carries near-zero Taylor approximations.
+   2. The wave field: a sum of Gerstner (sum-of-sines) waves that
+      displaces the surface and yields an analytic normal and the
+      horizontal-fold Jacobian used for foam.
+   3. Shading: GGX specular for the sun highlight, Schlick Fresnel,
+      and a wave-facing subsurface-scattering term.
+   4. A driver that samples the surface and prints each result.
+
+Section: Real Math Kernel
+
+ Constants and a range-reduced sine good across the whole real line, not
+ just near zero. Wave phases grow without bound, so reduction is not
+ optional.
+
+  ocean-pi : Real
+  ocean-pi = 3.14159265358979
+
+  ocean-two-pi : Real
+  ocean-two-pi = 6.28318530717959
+
+  ocean-half-pi : Real
+  ocean-half-pi = 1.5707963267949
+
+  w-trunc : Real -> Real
+  w-trunc (x) = real-from-int (real-to-int x)
+
+  w-floor : Real -> Real
+  w-floor (x) =
+    let t = w-trunc x
+    in if t > x then t - 1.0 else t
+
+  w-reduce : Real -> Real
+  w-reduce (x) =
+    let k = w-floor ((x + ocean-pi) / ocean-two-pi)
+    in x - k * ocean-two-pi
+
+  w-sin-poly : Real -> Real
+  w-sin-poly (x) =
+    let x2 = x * x
+    in x * (1.0 - x2 / 6.0 * (1.0 - x2 / 20.0 * (1.0 - x2 / 42.0)))
+
+  w-sin : Real -> Real
+  w-sin (x) =
+    let r = w-reduce x
+    in let folded = w-fold-quadrant r
+    in w-sin-poly folded
+
+  w-fold-quadrant : Real -> Real
+  w-fold-quadrant (r) =
+    if r > ocean-half-pi then ocean-pi - r
+    else if r < (0.0 - ocean-half-pi) then (0.0 - ocean-pi) - r
+    else r
+
+  w-cos : Real -> Real
+  w-cos (x) = w-sin (x + ocean-half-pi)
+
+  w-sqrt : Real -> Real
+  w-sqrt (n) = if n <= 0.0 then 0.0 else w-sqrt-loop n (n / 2.0 + 1.0)
+
+  w-sqrt-loop : Real, Real -> Real
+  w-sqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2.0
+    in if next ~ guess then next else w-sqrt-loop n next
+
+  w-powi : Real, Integer -> Real
+  w-powi (x) (n) = if n <= 0 then 1.0 else x * w-powi x (n - 1)
+
+  w-sat : Real -> Real
+  w-sat (x) = if x < 0.0 then 0.0 else if x > 1.0 then 1.0 else x
+
+Section: Vectors
+
+ A flat 3-vector reused for positions, normals, and colours.
+
+  V3 = record { x : Real, y : Real, z : Real }
+
+  v-add : V3, V3 -> V3
+  v-add (a) (b) = V3 { x = a.x + b.x, y = a.y + b.y, z = a.z + b.z }
+
+  v-sub : V3, V3 -> V3
+  v-sub (a) (b) = V3 { x = a.x - b.x, y = a.y - b.y, z = a.z - b.z }
+
+  v-scale : V3, Real -> V3
+  v-scale (a) (s) = V3 { x = a.x * s, y = a.y * s, z = a.z * s }
+
+  v-neg : V3 -> V3
+  v-neg (a) = V3 { x = 0.0 - a.x, y = 0.0 - a.y, z = 0.0 - a.z }
+
+  v-dot : V3, V3 -> Real
+  v-dot (a) (b) = a.x * b.x + a.y * b.y + a.z * b.z
+
+  v-len : V3 -> Real
+  v-len (a) = w-sqrt (v-dot a a)
+
+  v-norm : V3 -> V3
+  v-norm (a) =
+    let l = v-len a
+    in if l ~ 0.0 then V3 { x = 0.0, y = 1.0, z = 0.0 }
+    else v-scale a (1.0 / l)
+
+  v-lerp : V3, V3, Real -> V3
+  v-lerp (a) (b) (t) = v-add a (v-scale (v-sub b a) t)
+
+Section: The Wave Field
+
+ A Gerstner wave carries a horizontal direction, amplitude, wavelength,
+ crest speed, and steepness. A sum of these both raises the surface (sine
+ of the phase) and pulls crests forward (cosine of the phase), which is
+ what gives ocean waves their sharpened peaks.
+
+  Wave = record {
+    dx : Real,
+    dy : Real,
+    amp : Real,
+    wavelen : Real,
+    speed : Real,
+    steep : Real
+  }
+
+ The accumulator gathers, across all waves at one point: the three
+ displacement components, the surface gradient used to build the normal,
+ and the three Jacobian terms of the horizontal displacement (the fold
+ measure that tells us where crests pinch and throw foam).
+
+  SurfAcc = record {
+    disp-x : Real,
+    disp-y : Real,
+    disp-z : Real,
+    grad-x : Real,
+    grad-y : Real,
+    grad-z : Real,
+    j-xx : Real,
+    j-zz : Real,
+    j-xz : Real
+  }
+
+  surf-zero : SurfAcc
+  surf-zero = SurfAcc {
+    disp-x = 0.0, disp-y = 0.0, disp-z = 0.0,
+    grad-x = 0.0, grad-y = 0.0, grad-z = 0.0,
+    j-xx = 0.0, j-zz = 0.0, j-xz = 0.0
+  }
+
+  add-wave : Wave, Real, Real, Real, SurfAcc -> SurfAcc
+  add-wave (w) (x) (z) (t) (acc) =
+    let dlen = w-sqrt (w.dx * w.dx + w.dy * w.dy)
+    in let dnx = w.dx / dlen
+    in let dnz = w.dy / dlen
+    in let k = ocean-two-pi / w.wavelen
+    in let phase = k * (dnx * x + dnz * z) + t * w.speed * k
+    in let s = w-sin phase
+    in let c = w-cos phase
+    in let a = w.amp
+    in let q = w.steep
+    in let wa = k * a
+    in SurfAcc {
+      disp-x = acc.disp-x + q * a * dnx * c,
+      disp-y = acc.disp-y + a * s,
+      disp-z = acc.disp-z + q * a * dnz * c,
+      grad-x = acc.grad-x + dnx * wa * c,
+      grad-y = acc.grad-y + q * wa * s,
+      grad-z = acc.grad-z + dnz * wa * c,
+      j-xx = acc.j-xx + q * wa * dnx * dnx * s,
+      j-zz = acc.j-zz + q * wa * dnz * dnz * s,
+      j-xz = acc.j-xz + q * wa * dnx * dnz * s
+    }
+
+  accum-waves : List Wave, Integer, Real, Real, Real, SurfAcc -> SurfAcc
+  accum-waves (ws) (i) (x) (z) (t) (acc) =
+    if i >= list-length ws then acc
+    else let w = list-at ws i
+    in let acc2 = add-wave w x z t acc
+    in accum-waves ws (i + 1) x z t acc2
+
+ A sampled surface point: the displaced world position, the unit normal,
+ the Jacobian, and the foam coverage derived from it.
+
+  Surface = record {
+    px : Real,
+    py : Real,
+    pz : Real,
+    nx : Real,
+    ny : Real,
+    nz : Real,
+    jac : Real,
+    foam : Real
+  }
+
+  eval-surface : List Wave, Real, Real, Real -> Surface
+  eval-surface (ws) (x) (z) (t) =
+    let a = accum-waves ws 0 x z t surf-zero
+    in let ny-raw = 1.0 - a.grad-y
+    in let nlen = w-sqrt (a.grad-x * a.grad-x + ny-raw * ny-raw + a.grad-z * a.grad-z)
+    in let jac = (1.0 - a.j-xx) * (1.0 - a.j-zz) - a.j-xz * a.j-xz
+    in Surface {
+      px = x + a.disp-x,
+      py = a.disp-y,
+      pz = z + a.disp-z,
+      nx = (0.0 - a.grad-x) / nlen,
+      ny = ny-raw / nlen,
+      nz = (0.0 - a.grad-z) / nlen,
+      jac = jac,
+      foam = w-sat ((ocean-foam-threshold - jac) * ocean-foam-sharpness)
+    }
+
+Section: Shading
+
+ The specular highlight uses the Cook-Torrance GGX microfacet BRDF:
+ normal-distribution D, Smith geometry G, and Schlick Fresnel F. Water is
+ a dielectric, so F0 is small (~0.02) and most of its brightness at
+ grazing angles comes from Fresnel reflection, not the specular lobe.
+
+  ggx-spec : V3, V3, V3, Real, Real -> Real
+  ggx-spec (n) (v) (l) (rough) (f0) =
+    let h = v-norm (v-add l v)
+    in let ndoth = w-sat (v-dot n h)
+    in let ndotv = w-sat (v-dot n v)
+    in let ndotl = w-sat (v-dot n l)
+    in let vdoth = w-sat (v-dot v h)
+    in let a = rough * rough
+    in let a2 = a * a
+    in let denom = ndoth * ndoth * (a2 - 1.0) + 1.0
+    in let d-term = a2 / (ocean-pi * denom * denom + 0.0000001)
+    in let kk = (rough + 1.0) * (rough + 1.0) / 8.0
+    in let gv = ndotv / (ndotv * (1.0 - kk) + kk)
+    in let gl = ndotl / (ndotl * (1.0 - kk) + kk)
+    in let g-term = gv * gl
+    in let f-term = f0 + (1.0 - f0) * w-powi (1.0 - vdoth) 5
+    in d-term * g-term * f-term / (4.0 * ndotv * ndotl + 0.0001) * ndotl
+
+  fresnel-view : V3, V3, Real -> Real
+  fresnel-view (n) (v) (f0) =
+    let ndotv = w-sat (v-dot n v)
+    in f0 + (1.0 - f0) * w-powi (1.0 - ndotv) 5
+
+ Subsurface scattering: light that enters a wave crest and scatters
+ toward the eye. Strongest when the view looks back along a
+ normal-distorted light direction, i.e. through a lit crest toward the
+ sun. Purely view-and-light driven, no volume integration.
+
+  subsurface : V3, V3, V3 -> Real
+  subsurface (n) (v) (l) =
+    let sss-dir = v-norm (v-add (v-neg l) (v-scale n ocean-sss-distort))
+    in w-powi (w-sat (v-dot v (v-neg sss-dir))) ocean-sss-power * ocean-sss-scale
+
+  shade-point : Surface, V3, V3 -> V3
+  shade-point (s) (eye) (sun) =
+    let n = V3 { x = s.nx, y = s.ny, z = s.nz }
+    in let p = V3 { x = s.px, y = s.py, z = s.pz }
+    in let v = v-norm (v-sub eye p)
+    in let l = v-norm sun
+    in let ndotv = w-sat (v-dot n v)
+    in let fres = fresnel-view n v ocean-f0
+    in let spec = ggx-spec n v l ocean-roughness ocean-f0
+    in let sss = subsurface n v l
+    in let base = v-lerp ocean-deep-color ocean-shallow-color ndotv
+    in let sky = v-lerp ocean-deep-color ocean-sky-color fres
+    in let water = v-lerp base sky fres
+    in let with-sss = v-add water (v-scale ocean-sss-color sss)
+    in let with-sun = v-add with-sss (v-scale ocean-sun-color spec)
+    in v-lerp with-sun ocean-foam-color (w-sat (s.foam * ocean-foam-strength))
+
+Section: Scene Configuration
+
+  ocean-waves : List Wave
+  ocean-waves = [
+    Wave { dx = 1.0, dy = 0.0, amp = 1.2, wavelen = 18.0, speed = 3.2, steep = 0.55 },
+    Wave { dx = 0.8, dy = 0.6, amp = 0.7, wavelen = 11.0, speed = 2.6, steep = 0.5 },
+    Wave { dx = 0.0 - 0.6, dy = 0.8, amp = 0.42, wavelen = 6.5, speed = 2.0, steep = 0.45 },
+    Wave { dx = 0.2, dy = 0.0 - 0.98, amp = 0.25, wavelen = 3.8, speed = 1.5, steep = 0.4 }
+  ]
+
+  ocean-time : Real
+  ocean-time = 3.0
+
+  ocean-eye : V3
+  ocean-eye = V3 { x = 0.0, y = 12.0, z = 0.0 - 30.0 }
+
+  ocean-sun : V3
+  ocean-sun = V3 { x = 0.4, y = 0.7, z = 0.3 }
+
+  ocean-roughness : Real
+  ocean-roughness = 0.08
+
+  ocean-f0 : Real
+  ocean-f0 = 0.02
+
+  ocean-sss-distort : Real
+  ocean-sss-distort = 0.35
+
+  ocean-sss-scale : Real
+  ocean-sss-scale = 1.4
+
+  ocean-sss-power : Integer
+  ocean-sss-power = 4
+
+  ocean-foam-threshold : Real
+  ocean-foam-threshold = 0.55
+
+  ocean-foam-sharpness : Real
+  ocean-foam-sharpness = 1.6
+
+  ocean-foam-strength : Real
+  ocean-foam-strength = 1.2
+
+  ocean-deep-color : V3
+  ocean-deep-color = V3 { x = 0.0, y = 0.08, z = 0.16 }
+
+  ocean-shallow-color : V3
+  ocean-shallow-color = V3 { x = 0.1, y = 0.42, z = 0.5 }
+
+  ocean-sky-color : V3
+  ocean-sky-color = V3 { x = 0.55, y = 0.7, z = 0.9 }
+
+  ocean-sun-color : V3
+  ocean-sun-color = V3 { x = 1.0, y = 0.95, z = 0.85 }
+
+  ocean-sss-color : V3
+  ocean-sss-color = V3 { x = 0.12, y = 0.55, z = 0.5 }
+
+  ocean-foam-color : V3
+  ocean-foam-color = V3 { x = 0.95, y = 0.98, z = 1.0 }
+
+Section: Where the drivers went
+
+ This chapter is a library and carries no entry point. It had one, back
+ when it was the only file here: a driver that sampled four points and
+ printed them. A chapter with an `opening` cannot be cited by a program
+ that has its own, so keeping it here would have meant every reader of
+ the model duplicating it instead.
+
+ The four-sample driver is `OceanSamples`, unchanged in what it prints.
+ `OceanRender` draws the same model as an image.

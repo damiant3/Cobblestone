@@ -1,0 +1,273 @@
+Chapter: FlexLayoutGeometry
+  cites UI chapter Layout
+  cites UI chapter BoxModel
+  cites UI chapter Widget
+  cites UI chapter Theme
+
+ The layout engine every GuiOS screen is arranged by. `widget-layout`
+ resolves a style, insets the container to a content box, turns each child
+ into a `LayoutItem` and hands the list to `flex-layout`; `GuiShell`,
+ `TrackerApp`, `DiffusionApp` and all six of the small guios apps reach it
+ through `widget-layout`, `widget-set-flex` and `widget-set-min`.
+
+ The GuiOS golden frames DO exercise this, unlike the AppRunner frame loop
+ next door, which is why it is asked second. What a golden cannot do is say
+ WHICH rule produced a frame: a proportional split and an equal split of a
+ two-child row differ by pixels a recorded image compares without
+ interpreting. This chapter asks for the numbers.
+
+ Section A drives `flex-layout` directly with hand-built items, so the
+ theme's padding is not standing between the reading and the rule.
+ Section B drives `widget-layout` the way an app does, and the inset the
+ theme adds is measured there rather than assumed here.
+
+ The operands are chosen so that the wrong answers are DIFFERENT answers,
+ which is the part that took three tries to learn elsewhere in this lane:
+
+ - The container sits at **(50, 30)**, not at the origin. Every rect below
+   must carry that offset. A placement that ignored `container.lr-x` reads
+   as correct against a container at zero, and every existing caller in the
+   tree lays out from a full-screen rect.
+ - The container is **400 wide and 100 tall**, so the two axes disagree. A
+   column layout that distributed along width would answer 100 and 300
+   where 25 and 75 are right, and a row/column mixup is otherwise silent.
+ - The flex weights are **1 and 3**, never 1 and 1. An engine that split
+   evenly and one that split proportionally agree on equal weights and on
+   nothing else.
+ - One flex item declares a minimum **larger than its share**, so honouring
+   the minimum and ignoring it give different widths.
+
+ Measured 2026-07-28 against seed 104567BE: every reading is CORRECT, and
+ the tree row closes by hand -- content 386 wide, the label's theme margin
+ 4, so the fixed child's outer width is 84 and the flexing child takes
+ 386 - 84 = 302, which the margin inset renders as the 298 printed. The
+ chapter is pinned rather than repaired.
+
+ Three sabotages fired, and each one maps to one of the operand choices
+ above, which is the point of listing them:
+
+ - `flex-row` starting its cursor at 0 instead of `container.lr-x` moves
+   all six row rows and the tree row, and leaves both column rows and the
+   control standing. That is the non-zero origin earning its place.
+ - `flex-col` taking `container.lr-w` for its available space answers 100
+   and 300 where 25 and 75 are right, and moves nothing else. That is the
+   400x100 container earning its place; `col fixed` correctly does not
+   move, because fixed items never consult the available space.
+ - `flex-row-place` dropping `item.li-flex` from the share answers 100 and
+   100, and moves that row alone. That is the 1:3 weighting earning its
+   place; at 1:1 the correct and the broken engine agree exactly.
+
+ **Scope, so the green is not read as wider than it is.** This measures the
+ FLEX path and nothing else. `grid-cell-rect`, `grid-layout`, `stack-layout`,
+ `split-layout`, `split-first` and `split-second` live in the same chapter
+ and are referenced nowhere outside it, so they are unmeasured here and
+ have no consumer to be wrong for.
+
+ We say:
+
+Section: Reading
+
+  rect-txt : LayoutRect -> Text
+  rect-txt (r) =
+    let a = show (r.lr-x)
+    in let b = show (r.lr-y)
+    in let c = show (r.lr-w)
+    in let d = show (r.lr-h)
+    in a & "," & b & " " & c & "x" & d
+
+  nth : LayoutResult, Integer -> Text
+  nth (res) (i) = rect-txt (list-at (res.lrs) i)
+
+  box : LayoutRect
+  box = layout-rect 50 30 400 100
+
+Section: A row of fixed items
+
+ Two items that do not flex take exactly their declared minimum, and the
+ second begins where the first ended. The heights are the cross axis: a row
+ stretches its children to the container, so 20 becomes 100.
+
+  row-fixed : LayoutResult
+  row-fixed = flex-layout box DirRow 0 [layout-item 100 20 0, layout-item 100 20 0] 2
+
+  line-row-fixed : Text =
+    let a = nth row-fixed 0
+    in let b = nth row-fixed 1
+    in let n = show (row-fixed.lr-count)
+    in "row fixed: a=" & a & " b=" & b & " count=" & n
+
+Section: A row split by weight
+
+ Weights 1 and 3 over 400 available give 100 and 300. An engine that
+ divided the row equally would answer 200 and 200 for both, which is why
+ the weights are not equal.
+
+  row-weighted : LayoutResult
+  row-weighted = flex-layout box DirRow 0 [layout-item 0 0 1, layout-item 0 0 3] 2
+
+  line-row-weighted : Text =
+    let a = nth row-weighted 0
+    in let b = nth row-weighted 1
+    in "row weighted 1:3: a=" & a & " b=" & b
+
+Section: A fixed item beside a flexing one
+
+ The fixed 100 comes off the top and the remainder goes to the flex item,
+ so the flex item must answer 300 and not 400.
+
+  row-mixed : LayoutResult
+  row-mixed = flex-layout box DirRow 0 [layout-item 100 0 0, layout-item 0 0 1] 2
+
+  line-row-mixed : Text =
+    let a = nth row-mixed 0
+    in let b = nth row-mixed 1
+    in "row fixed+flex: a=" & a & " b=" & b
+
+Section: The gap
+
+ Three items and two gaps of ten. The gap is charged between the items and
+ not after the last one, so the cursor advances 50 then 10, and an engine
+ charging a trailing gap would move the third item.
+
+  row-gap : LayoutResult
+  row-gap = flex-layout box DirRow 10 [layout-item 50 0 0, layout-item 50 0 0, layout-item 50 0 0] 3
+
+  line-row-gap : Text =
+    let a = nth row-gap 0
+    in let b = nth row-gap 1
+    in let c = nth row-gap 2
+    in "row gap 10: a=" & a & " b=" & b & " c=" & c
+
+Section: A minimum larger than the share
+
+ Both items flex equally, so each share is 200. The first declares a
+ minimum of 300 and must get 300; the second keeps its 200 and the row
+ overflows its container rather than shrinking a child below what it asked
+ for. An engine that took the share unconditionally answers 200 twice.
+
+  row-min : LayoutResult
+  row-min = flex-layout box DirRow 0 [layout-item 300 0 1, layout-item 0 0 1] 2
+
+  line-row-min : Text =
+    let a = nth row-min 0
+    in let b = nth row-min 1
+    in "row min over share: a=" & a & " b=" & b
+
+Section: Fixed items wider than the container
+
+ 600 of fixed width in a 400 container. The available space clamps at zero
+ rather than going negative, and both items still take their minimum.
+
+  row-over : LayoutResult
+  row-over = flex-layout box DirRow 0 [layout-item 300 0 0, layout-item 300 0 0] 2
+
+  line-row-over : Text =
+    let a = nth row-over 0
+    in let b = nth row-over 1
+    in "row overflow: a=" & a & " b=" & b
+
+Section: A column split by weight
+
+ The same weights down a container that is 400 wide and 100 tall. The
+ answers are 25 and 75 because a column distributes along HEIGHT. If it
+ reached for the width the answers would be 100 and 300, and the cross axis
+ would be wrong in the same breath.
+
+  col-weighted : LayoutResult
+  col-weighted = flex-layout box DirColumn 0 [layout-item 0 0 1, layout-item 0 0 3] 2
+
+  line-col-weighted : Text =
+    let a = nth col-weighted 0
+    in let b = nth col-weighted 1
+    in "col weighted 1:3: a=" & a & " b=" & b
+
+Section: A column of fixed items
+
+ Stacked down from y=30, each taking its own height, each stretched to the
+ container width.
+
+  col-fixed : LayoutResult
+  col-fixed = flex-layout box DirColumn 0 [layout-item 40 20 0, layout-item 40 30 0] 2
+
+  line-col-fixed : Text =
+    let a = nth col-fixed 0
+    in let b = nth col-fixed 1
+    in "col fixed: a=" & a & " b=" & b
+
+Section: What a widget tree gets
+
+ The integration, driven as an app drives it. The parent's own bounds must
+ be the container it was handed; the children are placed inside the content
+ box, which the panel's theme padding and border inset. That inset is
+ printed rather than predicted -- the point of this line is that the
+ children land inside the parent and in order, and that a flexing child is
+ wider than a fixed one.
+
+  leaf-a : WidgetNode
+  leaf-a = widget-set-min (widget-label "la" "A") 80 20
+
+  leaf-b : WidgetNode
+  leaf-b = widget-set-flex (widget-set-min (widget-label "lb" "B") 40 20) 1
+
+  tree : WidgetNode
+  tree = widget-panel "root" DirRow 0 [leaf-a, leaf-b]
+
+  laid : WidgetNode
+  laid = widget-layout tree theme-terminal box
+
+  kid : WidgetNode, Integer -> WidgetNode
+  kid (w) (i) = list-at (w.wn-children) i
+
+  line-tree : Text =
+    let p = rect-txt (laid.wn-bounds)
+    in let a = rect-txt ((kid laid 0).wn-bounds)
+    in let b = rect-txt ((kid laid 1).wn-bounds)
+    in "tree: parent=" & p & " a=" & a & " b=" & b
+
+ The inset and the label's own contribution, printed so the row above
+ closes arithmetically instead of being taken on trust. The flexing child's
+ width must be the content width less the fixed child's OUTER width, and
+ the outer width is the declared minimum plus whatever margin the theme
+ resolves for a label. Without these two the tree row is a number nobody
+ can check.
+
+  panel-content : LayoutRect
+  panel-content = box-content-from-style box (widget-resolve-style tree theme-terminal)
+
+  label-style : WidgetStyle
+  label-style = widget-resolve-style leaf-a theme-terminal
+
+  line-inset : Text =
+    let c = rect-txt panel-content
+    in let mw = show (label-style.ws-min-width)
+    in let mh = show (edges-h (label-style.ws-margin))
+    in "inset: content=" & c & " label-minw=" & mw & " label-marg-h=" & mh
+
+ The control. The parent's bounds are the container verbatim, so this row
+ cannot move when a distribution rule changes, and a run in which it DID
+ move would mean the harness rather than the engine.
+
+  line-control : Text =
+    let p = laid.wn-bounds
+    in let same = if p.lr-x == 50 then if p.lr-y == 30 then if p.lr-w == 400 then p.lr-h == 100 else False else False else False
+    in let n = show (laid.wn-child-count)
+    in "control: parent-is-container=" & (if same then "yes" else "no") & " kids=" & n
+
+Section: Body
+
+  report-a : Text =
+    line-row-fixed & "\n" & line-row-weighted & "\n" & line-row-mixed
+    & "\n" & line-row-gap
+
+  report-b : Text =
+    line-row-min & "\n" & line-row-over & "\n" & line-col-weighted
+    & "\n" & line-col-fixed
+
+  report-c : Text =
+    line-tree & "\n" & line-inset & "\n" & line-control
+
+  opening : [Console] Nothing = act
+    print-line-uni report-a
+    print-line-uni report-b
+    print-line-uni report-c
+  end

@@ -79,6 +79,10 @@ Section: Expression Parsing
    in if is-app-start (current-kind st1) then
      let arg-result = parse-atom st1
      in unwrap-expr-ok arg-result (continue-app app-col func)
+   else if is-abutted-negation st1 then
+     let neg-op = current st1
+     in let arg-result = parse-atom (advance st1)
+     in unwrap-expr-ok arg-result (continue-neg-app app-col func neg-op)
    else let st2 = check-multiline-app app-col func st1
    in parse-field-access func st2
 
@@ -107,6 +111,15 @@ Section: Expression Parsing
   continue-app : Integer, Expr, Expr, ParseState -> ParseExprResult
   continue-app (app-col) (func) (arg) (st) =
    parse-app-loop app-col (deck-record (AppExpr func arg)) st
+
+ A negated argument wraps ONE atom. Handing the minus to parse-unary would
+ read a whole application after it, so `f a -b c` would come out as
+ `f a (-(b c))` and quietly lose an argument. The negation binds exactly as
+ tightly as the atom it abuts.
+
+  continue-neg-app : Integer, Expr, Token, Expr, ParseState -> ParseExprResult
+  continue-neg-app (app-col) (func) (op) (atom) (st) =
+   parse-app-loop app-col (deck-record (AppExpr func (deck-record (UnaryExpr op atom)))) st
 
   parse-atom : ParseState -> ParseExprResult
   parse-atom (st) =
@@ -889,7 +902,7 @@ Section: Compound Expression Parsing
  statement node, so the heap climbed while the stack sank, and the compile
  double-faulted with no diagnostic rather than reporting anything.
  Any arm that reports ExprOk without moving the position
- is that bug again — a parser must consume a token or say why.
+ is that bug again -- a parser must consume a token or say why.
 
  The trigger is ordinary prose. An unterminated act block makes the
  statement loop swallow the chapter beneath it, and prose sentences end in

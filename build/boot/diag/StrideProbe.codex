@@ -1,0 +1,61 @@
+Chapter: StrideProbe
+
+ One boot, one photograph, one question: what is this panel's real scanline
+ pitch?
+
+ The payload is told PixelsPerScanLine by the firmware and steps rows by it.
+ On the ASUS TUF that value is 2048 against a visible width of 1920, and the
+ symptoms there -- glyphs stretched, scanlines skipped, later text landing on
+ top of earlier text, content running off the bottom -- are what you get when
+ the pitch you STEP BY is larger than the pitch the display SCANS OUT. The same
+ payload renders correctly in every bed we own, where the two are equal, so no
+ emulator here can tell them apart.
+
+ So draw two vertical bars into the same framebuffer, each stepping rows by a
+ different candidate pitch. Exactly one of them can be vertical.
+
+ - CYAN bar, stepped by the firmware's PixelsPerScanLine.
+ - YELLOW bar, stepped by the visible width.
+
+ If the CYAN bar is straight, the reported stride is right and the fault is
+ elsewhere. If the YELLOW bar is straight, the panel scans at its visible width
+ and the reported stride is the wrong number to step by. A sheared bar walks
+ diagonally across the screen; there is no ambiguous outcome, and it needs no
+ font, no text and no working renderer to read.
+
+ Drawn with gop-fill-rect, which takes the row pitch as an ordinary argument,
+ so this needs no emulator feature and no new drawing code.
+
+  cites Works chapter GopHandoff
+  cites Works chapter GopDraw
+
+Section: Probe
+
+  sp-bg : Integer = 2105376
+  sp-cyan : Integer = 65535
+  sp-yellow : Integer = 16776960
+  sp-white : Integer = 16777215
+
+  opening : Nothing -> [Console] Nothing
+  opening (dummy) =
+    let base = boot-fb-base 0
+    in let w = boot-fb-w 0
+    in let h = boot-fb-h 0
+    in let stride = boot-fb-stride 0
+
+ Clear using the larger of the two candidates so the whole aperture is covered
+ whichever one is real, otherwise the leftover contains the previous payload's
+ pixels and reads as a rendering fault of its own.
+
+    in let clear = gop-fill-rect base stride 0 0 w h sp-bg
+
+ A solid band across the top, stepped by the reported stride. If the reported
+ stride is wrong this band alone will already be ragged.
+
+    in let top = gop-fill-rect base stride 0 0 w 40 sp-white
+
+    in let bar-a = gop-fill-rect base stride 200 0 24 h sp-cyan
+
+    in let bar-b = gop-fill-rect base w 600 0 24 h sp-yellow
+
+    in print-line "strideprobe done"

@@ -1,0 +1,321 @@
+Chapter: PciProbe
+  cites Kernel chapter Pci
+  cites Works chapter GopDraw
+  cites Works chapter GopQr
+  cites Kernel chapter BitmapFont
+  cites Works chapter GopHandoff
+
+ Option A GOP probe: walk the PCI bus, render every device's vendor and
+ device ID on the framebuffer and as QR codes, then halt.
+
+ A chipset-integrated part (the PCH's own Ethernet, SATA and xHCI) sits on
+ bus 0. A discrete one sits behind a PCI-to-PCI bridge, on a bus whose
+ number only that bridge knows, so bus 0 alone answers the question on
+ some boards and silently answers nothing on others.
+
+ We say:
+
+Section: Halt
+
+  pp-halt : Integer -> Integer
+  pp-halt (n) = pp-halt (n + 1)
+
+Section: Hex
+
+  pp-nib : Integer -> Text
+  pp-nib (n) =
+    if n == 0 then "0" else if n == 1 then "1" else if n == 2 then "2"
+    else if n == 3 then "3" else if n == 4 then "4" else if n == 5 then "5"
+    else if n == 6 then "6" else if n == 7 then "7" else if n == 8 then "8"
+    else if n == 9 then "9" else if n == 10 then "a" else if n == 11 then "b"
+    else if n == 12 then "c" else if n == 13 then "d" else if n == 14 then "e"
+    else "f"
+
+  pp-hx : Integer, Integer -> Text
+  pp-hx (v) (sh) = pp-nib (bit-and (bit-shru v sh) 15)
+
+  pp-hex2 : Integer -> Text
+  pp-hex2 (v) = pp-hx v 4 & pp-hx v 0
+
+  pp-hex4 : Integer -> Text
+  pp-hex4 (v) = pp-hx v 12 & pp-hx v 8 & pp-hx v 4 & pp-hx v 0
+
+  pp-hex8 : Integer -> Text
+  pp-hex8 (v) = pp-hex4 (bit-shru v 16) & pp-hex4 v
+
+Section: Config Reads
+
+  pp-cfg : PciDevice, Integer -> Integer
+  pp-cfg (d) (off) = pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) off
+
+ Register 8 carries the revision in its low byte and the programming
+ interface in the next one up; the class and subclass above them are
+ already on the record. Prog-if is what separates an AHCI controller from
+ the same silicon in IDE mode, and xHCI (48) from EHCI (32).
+
+  pp-progif : PciDevice -> Integer
+  pp-progif (d) = bit-and (bit-shru (pp-cfg d 8) 8) 255
+
+  pp-rev : PciDevice -> Integer
+  pp-rev (d) = bit-and (pp-cfg d 8) 255
+
+ Register 24 on a bridge holds the primary bus in its low byte and the
+ SECONDARY bus in the next one: the number of the bus on the far side,
+ which is the one to walk.
+
+  pp-sec-bus : PciDevice -> Integer
+  pp-sec-bus (d) = bit-and (bit-shru (pp-cfg d 24) 8) 255
+
+Section: The Bus Walk
+
+  pp-collect : Integer, Integer, List PciDevice -> List PciDevice
+  pp-collect (bus) (depth) (acc) =
+    if depth > 3 then acc
+    else let s = pci-scan-bus bus
+    in pp-bridges (s.devices) (s.count) 0 bus depth (acc & s.devices)
+
+  pp-bridges : List PciDevice, Integer, Integer, Integer, Integer, List PciDevice -> List PciDevice
+  pp-bridges (devs) (n) (i) (bus) (depth) (acc) =
+    if i >= n then acc
+    else if (list-at devs i).pci-header-type == 1 then pp-bridge-one (list-at devs i) devs n i bus depth acc
+    else pp-bridges devs n (i + 1) bus depth acc
+
+ A secondary bus at or below the bus being walked is either an unconfigured
+ bridge or a malformed one, and following it would not terminate. The depth
+ cap above is the second guard on the same hazard.
+
+  pp-bridge-one : PciDevice, List PciDevice, Integer, Integer, Integer, Integer, List PciDevice -> List PciDevice
+  pp-bridge-one (d) (devs) (n) (i) (bus) (depth) (acc) =
+    let sec = pp-sec-bus d
+    in if sec > bus then pp-bridges devs n (i + 1) bus depth (pp-collect sec (depth + 1) acc)
+    else pp-bridges devs n (i + 1) bus depth acc
+
+Section: Classification
+
+  pp-is-net : PciDevice -> Boolean
+  pp-is-net (d) = d.pci-class == 2
+
+  pp-is-storage : PciDevice -> Boolean
+  pp-is-storage (d) = d.pci-class == 1
+
+  pp-is-usb : PciDevice -> Boolean
+  pp-is-usb (d) = if d.pci-class == 12 then d.pci-subclass == 3 else False
+
+  pp-kind-of : PciDevice -> Integer
+  pp-kind-of (d) =
+    if pp-is-net d then 2
+    else if pp-is-storage d then 1
+    else if pp-is-usb d then 12
+    else 0
+
+  pp-colour : PciDevice -> Integer
+  pp-colour (d) =
+    if pp-is-net d then 16776960
+    else if pp-is-storage d then 65535
+    else if pp-is-usb d then 65280
+    else 9474192
+
+  pp-find : List PciDevice, Integer, Integer, Integer -> Integer
+  pp-find (devs) (n) (i) (kind) =
+    if i >= n then -1
+    else if pp-kind-of (list-at devs i) == kind then i
+    else pp-find devs n (i + 1) kind
+
+Section: Formatting
+
+  pp-bdf : PciDevice -> Text
+  pp-bdf (d) = pp-hex2 (d.pci-bus) & ":" & pp-hex2 (d.pci-dev) & "." & show (d.pci-func)
+
+  pp-ids : PciDevice -> Text
+  pp-ids (d) = pp-hex4 (d.pci-vendor) & ":" & pp-hex4 (d.pci-device-id)
+
+  pp-cls : PciDevice -> Text
+  pp-cls (d) = pp-hex2 (d.pci-class) & "." & pp-hex2 (d.pci-subclass) & "." & pp-hex2 (pp-progif d)
+
+  pp-line : PciDevice -> Text
+  pp-line (d) = pp-bdf d & " " & pp-ids d & " " & pp-cls d
+
+ The subsystem pair is what names the board variant of a part whose
+ vendor:device is shared across a whole family, and the BARs are raw
+ rather than parsed: a one-shot reading should carry what the register
+ held, not this chapter's reading of it.
+
+  pp-tail-a : PciDevice -> Text
+  pp-tail-a (d) =
+    let sub = pp-cfg d 44
+    in " r" & pp-hex2 (pp-rev d) & " s" & pp-hex4 (bit-and sub 65535) & ":" & pp-hex4 (bit-shru sub 16)
+
+ BAR0 is where a NIC and an xHCI put their register window, and BAR5 is
+ where an AHCI controller puts its: on an ICH9 in AHCI mode BAR0 through
+ BAR4 are the vestigial IDE bars and read back zero, so a reading that
+ took BAR0 alone would report a storage controller at address nothing.
+ BAR1 is carried because it holds the high half of a 64-bit BAR0.
+
+  pp-tail-b : PciDevice -> Text
+  pp-tail-b (d) =
+    " i" & pp-hex2 (bit-and (pp-cfg d 60) 255) & " B0=" & pp-hex8 (pp-cfg d 16) & " B1=" & pp-hex8 (pp-cfg d 20) & " B5=" & pp-hex8 (pp-cfg d 36)
+
+ Whether the register window is REACHABLE, which is a different question
+ from where it is. The runtime page tables map exactly one gigabyte above
+ RAM for devices, 3 GB to 4 GB. A BAR the firmware placed in that range
+ can be read as soon as the device is enabled; a 64-bit BAR placed above
+ 4 GB is not mapped at all, and a driver would need another page
+ directory before it could read a single register. Both are ordinary
+ outcomes of firmware assignment, so the probe answers it rather than
+ leaving the arithmetic to be done at the machine.
+
+  pp-bar-base : PciDevice, Integer -> Integer
+  pp-bar-base (d) (off) =
+    let lo = pp-cfg d off
+    in if bit-and lo 1 == 1 then bit-and lo 65532
+    else if bit-and (bit-shru lo 1) 3 == 2 then bit-or (bit-and lo 4294967280) (bit-shl (bit-and (pp-cfg d (off + 4)) 4294967295) 32)
+    else bit-and lo 4294967280
+
+  pp-map-note : PciDevice -> Text
+  pp-map-note (d) =
+    let b = pp-bar-base d (if pp-is-storage d then 36 else 16)
+    in if b == 0 then " MAP=none"
+    else if b < 3221225472 then " MAP=BELOW3G"
+    else if b < 4294967296 then " MAP=ok"
+    else " MAP=ABOVE4G"
+
+  pp-tail : PciDevice -> Text
+  pp-tail (d) = pp-tail-a d & pp-tail-b d & pp-map-note d
+
+Section: The Body
+
+  pp-body : List PciDevice, Integer -> Text
+  pp-body (devs) (n) = "PCIPROBE1 n=" & show n & ";" & pp-body-loop devs n 0 ""
+
+  pp-body-loop : List PciDevice, Integer, Integer, Text -> Text
+  pp-body-loop (devs) (n) (i) (acc) =
+    if i >= n then acc
+    else let d = list-at devs i
+    in let one = pp-line d & (if pp-kind-of d == 0 then "" else pp-tail d) & ";"
+    in pp-body-loop devs n (i + 1) (acc & one)
+
+Section: Rendering
+
+  pp-row : Integer, Integer, CbfFont, Integer, Integer, Integer, Text, Integer -> Integer
+  pp-row (base) (stride) (font) (x) (y) (scale) (s) (col) =
+    gop-draw-text base stride font x y s col scale 0
+
+ gop-draw-text does not stop at the right edge: an overrun wraps to column
+ zero of the row below and lands on top of whatever is there. That is why
+ the identity and the detail are two lines at two scales rather than one.
+
+  pp-callout : Integer, Integer, CbfFont, Integer, Integer, Text, List PciDevice, Integer, Integer -> Integer
+  pp-callout (base) (stride) (font) (hs) (y) (label) (devs) (n) (kind) =
+    let i = pp-find devs n 0 kind
+    in if i < 0 then pp-row base stride font 40 y hs (label & "  NONE FOUND ON ANY BUS") 16711680
+    else pp-callout-hit base stride font hs y label (list-at devs i)
+
+  pp-callout-hit : Integer, Integer, CbfFont, Integer, Integer, Text, PciDevice -> Integer
+  pp-callout-hit (base) (stride) (font) (hs) (y) (label) (d) =
+    let a = pp-row base stride font 40 y hs (label & "  " & pp-line d) (pp-colour d)
+    in pp-row base stride font 40 (y + 20 * hs) 1 (pp-tail d) (pp-colour d)
+
+  pp-list : Integer, Integer, CbfFont, List PciDevice, Integer, Integer, Integer, Integer, Integer -> Integer
+  pp-list (base) (stride) (font) (devs) (n) (i) (y0) (rows) (lcols) =
+    if i >= n then 0
+    else if i >= rows * lcols then 0
+    else let d = list-at devs i
+    in let x = 40 + (i / rows) * 300
+    in let t = pp-row base stride font x (y0 + (int-mod i rows) * 18) 1 (pp-line d) (pp-colour d)
+    in pp-list base stride font devs n (i + 1) y0 rows lcols
+
+Section: The Codes
+
+ A module rendered two pixels wide does not survive a photograph: at
+ scale 2 on a 1280x800 screen the decoder found the finder patterns and
+ read none of the codes. So scale 2 is not offered, and the codes are
+ sized before the screen is divided rather than squeezed into a fixed
+ band afterwards: the block takes the largest of 6, 5, 4, 3 that fits
+ the space below the callouts, and the device list gets whatever is
+ left. A fixed half-screen band cost two scale steps and silently
+ truncated the list to four rows on a six-device machine.
+
+  pp-fits : Integer, Integer, Integer, Integer -> Boolean
+  pp-fits (w) (avail) (cn) (s) =
+    let pitch = 45 * s + 24
+    in let cols = (w - 40) / pitch
+    in if cols < 1 then False
+    else ((cn + cols - 1) / cols) * pitch <= avail
+
+  pp-qh : Integer, Integer, Integer -> Integer
+  pp-qh (w) (cn) (s) =
+    let pitch = 45 * s + 24
+    in let cols = (w - 40) / pitch
+    in if cols < 1 then 0
+    else ((cn + cols - 1) / cols) * pitch
+
+  pp-qs : Integer, Integer, Integer -> Integer
+  pp-qs (w) (avail) (cn) =
+    if pp-fits w avail cn 6 then 6
+    else if pp-fits w avail cn 5 then 5
+    else if pp-fits w avail cn 4 then 4
+    else 3
+
+  pp-qr : Integer, Integer, Integer, Integer, Integer, CbfFont, Text, Integer, Integer -> Integer
+  pp-qr (base) (stride) (w) (qy) (qs) (font) (body) (total) (cn) =
+    let cols = (w - 40) / (45 * qs + 24)
+    in let warn = if qs < 4 then "  SCALE 3: SHOOT CLOSE AND SQUARE" else ""
+    in let t = pp-row base stride font 40 (qy - 22) 1 ("QR: " & show cn & " codes, " & show total & " bytes, scale " & show qs & ". Photograph every one." & warn) (if qs < 4 then 16776960 else 16777215)
+    in pp-qr-chunks base stride qy qs cols body total cn 0
+
+  pp-qr-chunks : Integer, Integer, Integer, Integer, Integer, Text, Integer, Integer, Integer -> Integer
+  pp-qr-chunks (base) (stride) (qy) (qs) (cols) (body) (total) (cn) (i) =
+    if i >= cn then 0
+    else let from = i * 100
+    in let len = if total - from > 100 then 100 else total - from
+    in let m = qr5-encode-part (show (i + 1) & "/" & show cn & ";") body from len
+    in let d = qr-draw base stride (40 + (int-mod i cols) * (45 * qs + 24)) (qy + (i / cols) * (45 * qs + 24)) qs m
+    in pp-qr-chunks base stride qy qs cols body total cn (i + 1)
+
+Section: The Screen
+
+  pp-count-line : Integer, Integer -> Text
+  pp-count-line (n) (shown) =
+    if shown >= n then "devices=" & show n & "  all listed  bus 0 and every bridge below"
+    else "devices=" & show n & "  ONLY " & show shown & " FIT ON SCREEN -- THE QR CODES CARRY ALL " & show n
+
+  pp-draw : Integer, Integer, Integer, Integer, CbfFont, List PciDevice, Integer -> Integer
+  pp-draw (base) (w) (h) (stride) (font) (devs) (n) =
+    let hs = if w >= 1024 then 2 else 1
+    in let y0 = 100 + 3 * (24 * hs + 22) + 10
+    in let body = pp-body devs n
+    in let total = text-length body
+    in let cn = (total + 99) / 100
+    in let qs = pp-qs w (h - y0 - 40) cn
+    in let qh = pp-qh w cn qs
+    in let qyr = h - qh - 10
+    in let qy = if qyr < y0 + 26 then y0 + 26 else qyr
+    in let space = qy - 26 - y0
+    in let rows = if space < 18 then 0 else space / 18
+    in let lcols = (w - 40) / 300
+    in let cap = rows * lcols
+    in let shown = if n > cap then cap else n
+    in let bg = gop-fill-rect base stride 0 0 w h 1710638
+    in let t0 = pp-row base stride font 40 40 hs "PCI PROBE" 65535
+    in let t1 = pp-row base stride font 40 70 hs (pp-count-line n shown) (if shown < n then 16711680 else 16777215)
+    in let c1 = pp-callout base stride font hs 100 "NIC    " devs n 2
+    in let c2 = pp-callout base stride font hs (100 + 24 * hs + 22) "STORAGE" devs n 1
+    in let c3 = pp-callout base stride font hs (100 + 2 * (24 * hs + 22)) "USB    " devs n 12
+    in let l = pp-list base stride font devs n 0 y0 rows lcols
+    in pp-qr base stride w qy qs font body total cn
+
+Section: Entry
+
+  opening : [Device.Port, Device.Mmio] Integer
+  opening =
+    let base = boot-fb-base 0
+    in let w = boot-fb-w 0
+    in let h = boot-fb-h 0
+    in let stride = boot-fb-stride 0
+    in let font = cbf-init
+    in act
+      ri <- runtime-init 0
+      let devs = pp-collect 0 0 []
+      in let d = pp-draw base w h stride font devs (list-length devs)
+      in pp-halt 0
+    end

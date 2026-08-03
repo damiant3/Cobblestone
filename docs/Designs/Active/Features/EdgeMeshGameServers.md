@@ -1,8 +1,8 @@
-# Edge Mesh Game Servers — Auto-Spawning Distributed Game Infrastructure
+# Edge Mesh Game Servers -- Auto-Spawning Distributed Game Infrastructure
 
 ## Status
 
-**Phase 1 is shipped — as a self-contained simulation.**
+**Phase 1 is shipped -- as a self-contained simulation.**
 `codex/foreword/engine/EdgeMesh.codex` implements the queue, Elo
 pairing, aggregate-latency region selection, fleet lifecycle, and reward
 computation, with test coverage.
@@ -12,12 +12,12 @@ chapter cites exactly four things: `Engine/HelmBridge`,
 `Engine/GameplayTags`, `Game/Netcode`, and `Foreword/Maybe`. It cites
 **nothing from `codex/os/net` and nothing from `codex/os/trust`**. There
 is no SWIM discovery, no real traffic routing, no authenticated session,
-and no on-chain reward posting — the regions, the servers, and the mesh
+and no on-chain reward posting -- the regions, the servers, and the mesh
 are all models inside the chapter. What Phase 1 proves is that the
 *orchestration logic* is right, which is worth proving on its own. It is
 not a running edge mesh.
 
-**Next: Phase 2 — wire it to the real infrastructure.** GroupMembership
+**Next: Phase 2 -- wire it to the real infrastructure.** GroupMembership
 (SWIM), EdgeRouter, and TrustNode all exist and are the three
 connections that turn the simulation into a system.
 
@@ -35,12 +35,12 @@ Infrastructure Used" table as *available and intended*, not as
 In 1996, a company called RTime Inc. (Resonant Reality) tried to build
 real-time game server infrastructure with Microsoft DirectPlay. They
 wanted "LAN and head-to-head services" that auto-connected players.
-The technology didn't exist yet — broadband was rare, cloud computing
+The technology didn't exist yet -- broadband was rare, cloud computing
 was a decade away, and edge computing was two decades away. RTime
 faded out.
 
-The concept they were reaching for — auto-spawning dedicated game
-servers near players on demand — became real in the 2010s with
+The concept they were reaching for -- auto-spawning dedicated game
+servers near players on demand -- became real in the 2010s with
 Multiplay, Edgegap, Amazon GameLift, i3D.net, and Google Agones. But
 all of those are services built on other people's infrastructure:
 Linux, Kubernetes, AWS, Vulkan, etc.
@@ -110,7 +110,7 @@ find matches quickly.
 ### 3. Region Selection (The RTime Insight)
 
 `em-best-shared-region` picks the region with the lowest *aggregate*
-latency across both players — not just closest to one. If Alice has
+latency across both players -- not just closest to one. If Alice has
 20ms to us-east and Bob has 25ms to us-east, the aggregate is 45ms.
 If Alice has 80ms to us-west and Bob has 30ms to us-west, the
 aggregate is 110ms. us-east wins.
@@ -137,14 +137,14 @@ server-authoritative state), Physics, and the rollback Netcode module.
 The `HelmBridge` creates an `EngineSession` and maps players to Helm
 voice slots. Player roles (leader, member) derive Helm ranks (admiral,
 crew). The River gets a match chat room. Voice hierarchy wires
-automatically — no manual channel setup.
+automatically -- no manual channel setup.
 
 ### 6. Game Runs
 
 Rollback netcode handles game ticks. The trust lattice authenticates
 every packet (replay protection via sequence numbers). Game events
 (kills, objectives, team wipes) flow through the HelmBridge to Helm's
-event stream — critical events (team wipe, victory) trigger emergency
+event stream -- critical events (team wipe, victory) trigger emergency
 voice broadcasts.
 
 ### 7. Match Ends, Rewards Post
@@ -160,7 +160,7 @@ score formula:
 ```
 
 K-factor is 32 for ranked, 0 for casual. Reward transactions are
-posted to `ChainCore` — the permissioned ManaCoin blockchain. The
+posted to `ChainCore` -- the permissioned ManaCoin blockchain. The
 `MintAuthority` handles the minting, with anti-abuse flags for
 suspicious patterns (win-trading, rating manipulation).
 
@@ -264,14 +264,14 @@ draining idle servers when below 30%.
 
 ## Phasing
 
-### Phase 1: Core Orchestration — DONE (simulation only)
+### Phase 1: Core Orchestration -- DONE (simulation only)
 
 - EdgeMesh chapter with queue, pairing, region selection, fleet management
 - ManaCoin reward computation (Elo-based)
 - Integration with HelmBridge for voice/chat
 - Test coverage for all EdgeMesh operations
 
-### Phase 2: Live Mesh Integration — NEXT (the real work)
+### Phase 2: Live Mesh Integration -- NEXT (the real work)
 
 This is what turns Phase 1 from a model into infrastructure:
 

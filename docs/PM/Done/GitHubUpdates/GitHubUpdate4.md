@@ -1,9 +1,9 @@
-# GitHub Update 4 — CL 679 to CL 706 (2026-05-02 to 2026-05-03)
+# GitHub Update 4 -- CL 679 to CL 706 (2026-05-02 to 2026-05-03)
 
 Previous update: CL 678 (GitHubUpdate3).
 This update: CL 706.
 
-## VM Profiles — Codegen Knobs for Target Environments
+## VM Profiles -- Codegen Knobs for Target Environments
 
 New `codex/Core/VmProfile.codex` introduces a VM profile system that
 controls target-specific code generation. Two profiles ship:
@@ -17,13 +17,13 @@ Profiles are selected at compile time via the mode protocol:
 `"BINARY"` → spec, `"BINARY QEMU-11.0.0"` → QEMU profile.
 All harness scripts now send `QEMU-11.0.0` by default.
 
-## ATA PIO Block Driver — Spec-Compliant Bring-Up
+## ATA PIO Block Driver -- Spec-Compliant Bring-Up
 
 The boot sequence gained proper PATA detection and IDENTIFY DEVICE
 support under the `spec` profile:
 
 - Soft reset with spec-compliant timing (100-read hold/clear delays).
-- Bounded BSY/DRDY waits (1M iteration cap — no infinite loops).
+- Bounded BSY/DRDY waits (1M iteration cap -- no infinite loops).
 - Drive signature detection (LBA mid/high = 0/0 → PATA).
 - IDENTIFY DEVICE with ERR/DRQ checking.
 - `block-sector-count` syscall (RAX=12) returns LBA28 sector count.

@@ -1,6 +1,6 @@
-# TWRP Build Handoff — Session 2026-03-23
+# TWRP Build Handoff -- Session 2026-03-23
 
-## Status: IMAGE NOT SAFE TO FLASH — DTB missing
+## Status: IMAGE NOT SAFE TO FLASH -- DTB missing
 
 ## What We Have
 - Official TWRP 3.3.1 for hero2qltechn (China S7 Edge) downloaded: `~/twrp-hero2qlte/download/twrp-chn.img`
@@ -34,11 +34,11 @@ All sections page-aligned (4096). Header at offset 0x28 has dt_size.
 
 ## Files on Disk
 - WSL: `~/twrp-hero2qlte/` (sync'd TWRP source, device trees, downloads, unpack dir)
-- Windows: `phone/flash/` — **DO NOT FLASH** these, DTB is missing
-- Windows: `phone/inspect-bootimg.py` — boot image inspector
-- Windows: `phone/hero2qlte-manifest.xml` — repo local manifest
+- Windows: `phone/flash/` -- **DO NOT FLASH** these, DTB is missing
+- Windows: `phone/inspect-bootimg.py` -- boot image inspector
+- Windows: `phone/hero2qlte-manifest.xml` -- repo local manifest
 
-## AOSP Build System — Dead End
+## AOSP Build System -- Dead End
 Tried twrp-11, twrp-12.1 manifests. Both have soong module version mismatches (GKI, rustlibs, license module type). Old twrp-6.0 branch deleted from GitHub. Building from source is not viable without a matching-era manifest.
 
 ## Emulation

@@ -1,4 +1,4 @@
-# WASM Backend — Cranelift Design
+# WASM Backend -- Cranelift Design
 
 **Date**: 2026-03-21
 **Status**: Design
@@ -11,13 +11,13 @@
 
 This document describes the design of the Codex WebAssembly backend. The backend
 emits WASM modules from Codex IR using Cranelift as the code generation engine.
-This is backend #13 — the first to target a portable binary format rather than
+This is backend #13 -- the first to target a portable binary format rather than
 a textual source language.
 
 The WASM backend is different from the existing twelve backends in a fundamental
 way: those backends emit source text that another compiler compiles. This backend
 emits a binary artifact directly. The Codex compiler becomes, for the first time,
-a real compiler in the traditional sense — not a transpiler.
+a real compiler in the traditional sense -- not a transpiler.
 
 ---
 
@@ -35,7 +35,7 @@ WASM gives us three things no other target does:
 
 2. **Sandboxed by default.** WASM modules cannot access the file system, network,
    or host memory unless the host explicitly grants capabilities. This aligns
-   perfectly with the Codex effect system — effects are declared, not smuggled.
+   perfectly with the Codex effect system -- effects are declared, not smuggled.
 
 3. **Binary distribution.** No toolchain required on the consumer side. A `.wasm`
    file is the deliverable. No `dotnet`, no `node`, no `rustc`. Just a runtime.
@@ -52,12 +52,12 @@ Codex IR (IRModule)
     ▼
 Codex.Emit.Wasm (new project)
     │
-    ├── WasmEmitter : ICodeEmitter      — orchestrates module generation
-    ├── CraneliftBridge                  — FFI to cranelift-codegen via C API
-    ├── WasmModuleBuilder                — constructs WASM module structure
-    ├── TypeMapper                       — Codex types → WASM value types
-    ├── BuiltinEmitter                   — 22 builtins → WASM implementations
-    └── WasiBindings                     — WASI preview 2 imports for effects
+    ├── WasmEmitter : ICodeEmitter      -- orchestrates module generation
+    ├── CraneliftBridge                  -- FFI to cranelift-codegen via C API
+    ├── WasmModuleBuilder                -- constructs WASM module structure
+    ├── TypeMapper                       -- Codex types → WASM value types
+    ├── BuiltinEmitter                   -- 22 builtins → WASM implementations
+    └── WasiBindings                     -- WASI preview 2 imports for effects
 ```
 
 ### The Cranelift Path
@@ -69,13 +69,13 @@ We use Cranelift rather than emitting raw WASM bytecode by hand. The reasons:
   instruction selection. We describe what we want; it figures out how.
 
 - **Optimization.** Cranelift performs constant folding, dead code elimination,
-  and instruction combining. Our IR arrives unoptimized — Cranelift picks up
+  and instruction combining. Our IR arrives unoptimized -- Cranelift picks up
   the slack without us writing optimization passes.
 
 - **Correctness.** Cranelift is battle-tested in Wasmtime and Firefox. It has
   been fuzzed extensively. We inherit that confidence.
 
-The alternative — emitting WASM bytecode directly via `wasm-encoder` — is simpler
+The alternative -- emitting WASM bytecode directly via `wasm-encoder` -- is simpler
 for trivial programs but becomes a maintenance burden as we need GC proposals,
 multi-value returns, tail calls, and exception handling. Cranelift gives us a
 path to all of these.
@@ -126,7 +126,7 @@ and avoids the complexity of a GC.
 
 Future path: the WASM GC proposal (`struct`, `array`, `ref` types) will let us
 move heap objects into the GC'd space. When that stabilizes in runtimes, we
-switch. Until then, bump allocation is honest — it doesn't pretend to manage
+switch. Until then, bump allocation is honest -- it doesn't pretend to manage
 memory, and programs that need long-running allocation know to use streaming
 or bounded patterns.
 
@@ -146,7 +146,7 @@ The Codex effect system maps naturally onto WASI capabilities:
 
 WASI Preview 2 uses the component model, which means effects become typed
 imports. A Codex function with effect `[Console, FileSystem]` emits a WASM
-module that imports exactly those WASI interfaces — nothing more. The host
+module that imports exactly those WASI interfaces -- nothing more. The host
 can inspect the import section to see exactly what capabilities the module
 requires. The type system's promise is enforced at the binary level.
 
@@ -182,7 +182,7 @@ The 22 Codex builtins map to WASM as follows:
 String operations are the heaviest lift. We implement a small string runtime
 (~200 lines of hand-written WASM or Cranelift IR) that ships as a precompiled
 module linked into every output. This is the one place we have a "runtime library"
-— but it's baked into the `.wasm` binary, not a separate dependency.
+-- but it's baked into the `.wasm` binary, not a separate dependency.
 
 ---
 
@@ -198,7 +198,7 @@ The existing backends all implement TCO. The WASM backend has two options:
 2. **Trampoline fallback.** For runtimes that don't support the tail call proposal,
    we rewrite tail-recursive functions as loops (same strategy as the C# and JS
    backends). The self-hosted compiler already detects self-tail-calls via
-   `HasSelfTailCall` — the WASM emitter reuses that analysis.
+   `HasSelfTailCall` -- the WASM emitter reuses that analysis.
 
 Default: emit `return_call` with a CLI flag `--wasm-no-tailcall` to fall back
 to trampolines for maximum compatibility.
@@ -243,7 +243,7 @@ A compiled Codex program becomes a single `.wasm` module with:
 ```
 
 Multi-file Codex programs (built with `codex build`) compile to a single merged
-module. Cross-module references are resolved at compile time — WASM doesn't need
+module. Cross-module references are resolved at compile time -- WASM doesn't need
 to know about Codex's module system.
 
 ---
@@ -279,19 +279,19 @@ Our relationship to the Bytecode Alliance is straightforward: **we are
 downstream consumers of their public, open-source tools.** We do not need
 their permission to target WASM. We do not need their endorsement to use
 Cranelift. These are tools released under permissive licenses (Apache-2.0)
-for exactly this purpose — for people to build compilers with.
+for exactly this purpose -- for people to build compilers with.
 
 That said, we recognize that our usage of Cranelift is unusual. Most Cranelift
 consumers are WASM runtimes (compiling WASM → native). We are using it in the
-opposite direction (compiling our IR → WASM). This is a supported use case —
-Cranelift's ISA targets include WASM — but it is less traveled. We may encounter
+opposite direction (compiling our IR → WASM). This is a supported use case --
+Cranelift's ISA targets include WASM -- but it is less traveled. We may encounter
 rough edges.
 
 ### Our Posture
 
 Codex is a public, open-source project. Every line of our compiler is visible.
 Every design decision is documented. Every test is runnable. We are not merely
-open to audit — **we actively invite it.**
+open to audit -- **we actively invite it.**
 
 If the Bytecode Alliance, or anyone in the WASM ecosystem, finds a problem with
 how we use Cranelift, WASI, or the WASM specification, we want to hear about it.
@@ -306,7 +306,7 @@ The preferred process:
 
 We are a correctness-obsessed project. Our compiler proves fixed points. Our
 type system has zero debt. We run 854 tests on every change. If someone finds
-a bug in our WASM emission, that's not an embarrassment — it's a gift. We will
+a bug in our WASM emission, that's not an embarrassment -- it's a gift. We will
 fix it, add a regression test, and credit the finder.
 
 We don't gatekeep, and we don't expect to be gatekept. The WASM specification
@@ -320,7 +320,7 @@ how open-source works.
 Cranelift: Apache-2.0 with LLVM exception. Wasmtime: Apache-2.0. WASI
 specifications: W3C Community Contributor License Agreement. Our usage is
 fully compliant with all of these. The Codex compiler's output (`.wasm` files)
-contains Cranelift-generated machine code but no Cranelift source code — the
+contains Cranelift-generated machine code but no Cranelift source code -- the
 same relationship as GCC-compiled binaries to GCC itself.
 
 ---
@@ -374,11 +374,11 @@ same relationship as GCC-compiled binaries to GCC itself.
    long-term answer but may be premature for Phase 1.
 
 3. **String encoding.** WASM and WASI expect UTF-8. Codex `Text` is UTF-8
-   internally. No conversion needed — but we need to decide on string lifetime
+   internally. No conversion needed -- but we need to decide on string lifetime
    management. Currently: bump-allocated, never freed. Eventually: GC'd.
 
 4. **Debug info.** DWARF in WASM is possible but tooling is immature. Do we
-   emit debug info in Phase 1? Probably not — but we should preserve source
+   emit debug info in Phase 1? Probably not -- but we should preserve source
    spans through the pipeline so we can add it later.
 
 5. **Cranelift version pinning.** Cranelift's API is not yet 1.0. We pin to a
@@ -400,5 +400,5 @@ The WASM backend does not replace any existing backend. It adds a new capability
 | Self-hosting | C# backend (proven) | IL backend (proven) | Stretch goal |
 
 The WASM backend is the first step toward Codex programs that run everywhere
-without asking the user to install anything beyond a WASM runtime — and WASM
+without asking the user to install anything beyond a WASM runtime -- and WASM
 runtimes are increasingly embedded in everything.

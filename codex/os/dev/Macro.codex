@@ -1,0 +1,267 @@
+Chapter: Macro
+  cites Foreword chapter Maybe
+
+ Named command sequences for the dev console: a table of macros, the
+ splitting of a body into commands, and the bounds that keep both finite.
+
+ THIS CHAPTER CANNOT RUN A MACRO AND THAT IS THE POINT. Executing one
+ means feeding commands back through the console's dispatch, which is
+ effectful and lives in the console; everything here is the pure half --
+ storing, finding, splitting, refusing. So the table and the splitter can
+ be tested without a machine, which is the same split `DevState` made for
+ the watch table and for the same reason.
+
+ THE DANGEROUS PART OF A MACRO IS NOT STORAGE, IT IS RECURSION. A macro
+ whose body runs a macro can reach itself, and on a machine with no
+ collector and no stack guard that is a hang at best. The bound is NOT
+ fuel and NOT a depth counter: the console refuses `macro.run` outright
+ while a macro is already running. A hard refusal is checkable by reading
+ one flag, where a depth limit has to be got right and then trusted, and
+ nothing a debugger macro is for needs nesting.
+
+ That refusal lives in the console because the flag does, but it is named
+ here because this is where someone reading about macros will look for it,
+ and a bound documented only at its enforcement site is a bound nobody
+ finds.
+
+ EVERY CAP REFUSES OUT LOUD. A macro silently truncated at its eighth
+ command is worse than one rejected: the operator watches it run, sees no
+ error, and believes the tail executed.
+
+ We say:
+
+Section: Bounds
+
+ Sixteen macros and sixteen commands each are round numbers with no
+ measurement behind them, and they are stated as such rather than dressed
+ up. What matters is that both are FINITE and that exceeding either is
+ refused rather than trimmed. The body cap is the one with a real argument:
+ a macro is typed at a console one line at a time, so a body beyond a
+ couple of screen widths is a mistake being made, not a program.
+
+  macro-max-entries : Integer = 16
+  macro-max-body : Integer = 240
+  macro-max-commands : Integer = 16
+
+ The repeat count is bounded for the reason the nesting refusal exists: a
+ repeat of a command that dumps a sector is a disk read per iteration, and
+ 512 bytes of heap that is never returned with it.
+
+  macro-max-repeat : Integer = 64
+
+Section: The Table
+
+  MacroEntry = record {
+   me-name : Text,
+   me-body : Text
+  }
+
+  MacroTable = record {
+   mt-entries : List MacroEntry
+  }
+
+  macro-table-new : MacroTable
+  macro-table-new = MacroTable { mt-entries = [] }
+
+  macro-count : MacroTable -> Integer
+  macro-count (tbl) = list-length (tbl.mt-entries)
+
+  macro-find : MacroTable, Text -> Maybe MacroEntry
+  macro-find (tbl) (name) = macro-find-loop (tbl.mt-entries) name 0 (list-length (tbl.mt-entries))
+
+  macro-find-loop : List MacroEntry, Text, Integer, Integer -> Maybe MacroEntry
+  macro-find-loop (es) (name) (i) (n) =
+    if i >= n then None
+    else let e = list-at es i
+    in if e.me-name == name then Just e
+    else macro-find-loop es name (i + 1) n
+
+  macro-body-of : MacroTable, Text -> Maybe Text
+  macro-body-of (tbl) (name) = when macro-find tbl name
+    is None -> None
+    is Just (e) -> Just (e.me-body)
+
+Section: Trimming And Splitting
+
+ A local trim rather than the console's. `text-trim` already exists twice
+ in the tree and each pair raises CDX3006; adding a third definition of
+ the name would mean the version a mention gets depends on which chapter
+ the mention sits in. The `macro-` prefix is the cheap way not to make
+ that worse.
+
+  macro-is-space : Integer -> Boolean
+  macro-is-space (c) = c == char-code ' '
+
+  macro-trim-left : Text -> Text
+  macro-trim-left (s) = macro-ltrim-loop s 0 (text-length s)
+
+  macro-ltrim-loop : Text, Integer, Integer -> Text
+  macro-ltrim-loop (s) (i) (len) =
+    if i >= len then ""
+    else if macro-is-space (char-code (char-at s i)) then macro-ltrim-loop s (i + 1) len
+    else substring s i (len - i)
+
+  macro-trim-right : Text -> Text
+  macro-trim-right (s) = macro-rtrim-loop s (text-length s)
+
+  macro-rtrim-loop : Text, Integer -> Text
+  macro-rtrim-loop (s) (n) =
+    if n <= 0 then ""
+    else if macro-is-space (char-code (char-at s (n - 1))) then macro-rtrim-loop s (n - 1)
+    else substring s 0 n
+
+  macro-trim : Text -> Text
+  macro-trim (s) = macro-trim-left (macro-trim-right s)
+
+ An EMPTY command is dropped rather than kept, so `mem ; ; perf` is two
+ commands and a trailing `;` is not a third. An empty command handed to
+ the dispatcher would fall through to the expression evaluator and answer
+ an error about a name nobody typed.
+
+  macro-emit : List Text, Text -> List Text
+  macro-emit (acc) (cur) =
+    let t = macro-trim cur
+    in if text-length t == 0 then acc else list-snoc acc t
+
+  macro-split : Text -> List Text
+  macro-split (body) = macro-split-loop body 0 (text-length body) "" []
+
+  macro-split-loop : Text, Integer, Integer, Text, List Text -> List Text
+  macro-split-loop (b) (i) (len) (cur) (acc) =
+    if i >= len then macro-emit acc cur
+    else if char-code (char-at b i) == char-code ';' then macro-split-loop b (i + 1) len "" (macro-emit acc cur)
+    else macro-split-loop b (i + 1) len (cur & char-to-text (char-at b i)) acc
+
+Section: Defining
+
+  MacroDefine = record {
+   md-table : MacroTable,
+   md-ok : Boolean,
+   md-message : Text
+  }
+
+ REDEFINING A NAME REPLACES IT rather than adding a second entry. Two
+ entries under one name would make `macro-find` answer whichever came
+ first, so a correction typed after a mistake would appear to do nothing;
+ and a table of sixteen would fill with retries of the same macro.
+
+ The full-table check is skipped when the name already exists, because a
+ replacement does not grow the table. Checking it anyway would refuse an
+ operator's fix to the sixteenth macro on the grounds that there are
+ sixteen macros.
+
+  macro-define : MacroTable, Text, Text -> MacroDefine
+  macro-define (tbl) (name) (body) =
+    if text-length (macro-trim name) == 0 then macro-refuse tbl "a macro needs a name"
+    else if text-length body > macro-max-body then
+      macro-refuse tbl ("body is " & show (text-length body) & " characters, over the " & show macro-max-body & " limit")
+    else macro-define-checked tbl (macro-trim name) body
+
+  macro-define-checked : MacroTable, Text, Text -> MacroDefine
+  macro-define-checked (tbl) (name) (body) =
+    let cmds = macro-split body
+    in let n = list-length cmds
+    in if n == 0 then macro-refuse tbl "no commands in body"
+    else if n > macro-max-commands then
+      macro-refuse tbl (show n & " commands, over the " & show macro-max-commands & " limit")
+    else macro-define-store tbl name body n
+
+  macro-define-store : MacroTable, Text, Text, Integer -> MacroDefine
+  macro-define-store (tbl) (name) (body) (n) =
+    let present = when macro-find tbl name is None -> False is Just (e) -> True
+    in if present then macro-accept (MacroTable { mt-entries = macro-replaced (tbl.mt-entries) name body 0 (list-length (tbl.mt-entries)) [] }) ("redefined " & name & " (" & show n & " commands)")
+    else if macro-count tbl >= macro-max-entries then
+      macro-refuse tbl ("macro table full (" & show macro-max-entries & ")")
+    else macro-accept (MacroTable { mt-entries = list-snoc (tbl.mt-entries) (MacroEntry { me-name = name, me-body = body }) }) ("defined " & name & " (" & show n & " commands)")
+
+  macro-replaced : List MacroEntry, Text, Text, Integer, Integer, List MacroEntry -> List MacroEntry
+  macro-replaced (es) (name) (body) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = list-at es i
+    in if e.me-name == name then macro-replaced es name body (i + 1) n (list-snoc acc (MacroEntry { me-name = name, me-body = body }))
+    else macro-replaced es name body (i + 1) n (list-snoc acc e)
+
+  macro-refuse : MacroTable, Text -> MacroDefine
+  macro-refuse (tbl) (msg) = MacroDefine { md-table = tbl, md-ok = False, md-message = "refused: " & msg }
+
+  macro-accept : MacroTable, Text -> MacroDefine
+  macro-accept (tbl) (msg) = MacroDefine { md-table = tbl, md-ok = True, md-message = msg }
+
+  macro-clear : MacroTable -> MacroTable
+  macro-clear (tbl) = macro-table-new
+
+Section: Listing
+
+ An empty table says so in words. A command that answers nothing when
+ there is nothing reads identically to one that failed.
+
+  macro-list-lines : MacroTable -> List Text
+  macro-list-lines (tbl) =
+    if macro-count tbl == 0 then ["(no macros defined)"]
+    else macro-list-loop (tbl.mt-entries) 0 (list-length (tbl.mt-entries)) []
+
+  macro-list-loop : List MacroEntry, Integer, Integer, List Text -> List Text
+  macro-list-loop (es) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = list-at es i
+    in macro-list-loop es (i + 1) n (list-snoc acc (e.me-name & ": " & e.me-body))
+
+Section: Repeat
+
+ `repeat` takes a count and a command on ONE line, which is the only
+ two-argument command in this console. Everything else takes at most one
+ argument because the cursor supplies the other, and a repeat has no
+ cursor to draw on: neither half of `3 mem` is a thing the console is
+ already pointing at.
+
+ The split is at the FIRST space, so the command may contain spaces and
+ the count may not. A missing space, a count that is not a number, and a
+ count outside the bounds are three different mistakes and each says which
+ it was.
+
+  MacroRepeat = record {
+   mr-ok : Boolean,
+   mr-count : Integer,
+   mr-command : Text,
+   mr-message : Text
+  }
+
+  macro-space-at : Text, Integer, Integer -> Integer
+  macro-space-at (s) (i) (len) =
+    if i >= len then 0 - 1
+    else if macro-is-space (char-code (char-at s i)) then i
+    else macro-space-at s (i + 1) len
+
+  macro-parse-repeat : Text -> MacroRepeat
+  macro-parse-repeat (line) =
+    let t = macro-trim line
+    in let cut = macro-space-at t 0 (text-length t)
+    in if cut < 0 then macro-repeat-refuse "expected a count and a command, as in 3 mem"
+    else macro-parse-repeat-parts (substring t 0 cut) (macro-trim (substring t cut (text-length t - cut)))
+
+  macro-parse-repeat-parts : Text, Text -> MacroRepeat
+  macro-parse-repeat-parts (head) (rest) =
+    if text-length rest == 0 then macro-repeat-refuse "expected a command after the count"
+    else if macro-all-digits head 0 (text-length head) == False then macro-repeat-refuse ("count is not a number: " & head)
+    else macro-repeat-bounded (text-to-integer head) rest
+
+  macro-repeat-bounded : Integer, Text -> MacroRepeat
+  macro-repeat-bounded (n) (cmd) =
+    if n <= 0 then macro-repeat-refuse ("count must be positive, got " & show n)
+    else if n > macro-max-repeat then macro-repeat-refuse ("count " & show n & " is over the " & show macro-max-repeat & " limit")
+    else MacroRepeat { mr-ok = True, mr-count = n, mr-command = cmd, mr-message = "" }
+
+  macro-all-digits : Text, Integer, Integer -> Boolean
+  macro-all-digits (s) (i) (len) =
+    if len == 0 then False
+    else if i >= len then True
+    else if macro-is-digit (char-code (char-at s i)) then macro-all-digits s (i + 1) len
+    else False
+
+  macro-is-digit : Integer -> Boolean
+  macro-is-digit (c) =
+    if c < char-code '0' then False else c <= char-code '9'
+
+  macro-repeat-refuse : Text -> MacroRepeat
+  macro-repeat-refuse (msg) =
+    MacroRepeat { mr-ok = False, mr-count = 0, mr-command = "", mr-message = "refused: " & msg }

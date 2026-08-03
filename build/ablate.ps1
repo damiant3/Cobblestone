@@ -12,7 +12,7 @@
 #      the historical tables in docs/ArchitectsSketchbook.md and
 #      the archived codegen analysis.
 #
-# What this does NOT measure — read before trusting a row:
+# What this does NOT measure -- read before trusting a row:
 #   - NO per-config fixed-point check. Only the shipping default pipeline is
 #     gate-verified (build/build.ps1). A non-default config that compiles and
 #     scores well here has NOT been shown to self-host to a fixed point.
@@ -67,7 +67,7 @@ $LogDir = Join-Path $OutDir 'logs'
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
-# Bench function mapping — same names bench/compare.ps1 uses ($benchConfig),
+# Bench function mapping -- same names bench/compare.ps1 uses ($benchConfig),
 # so counts line up with the historical tables. A source in bench/codex with
 # no entry here is reported as skipped, never silently dropped.
 $BenchFuncs = [ordered]@{
@@ -106,7 +106,7 @@ function Get-ConfigSlug {
 # --- Instruction counting: bench/compare.ps1's mechanism, replicated ---
 # (Make-CoffObj + dumpbin come from bench/disasm-cdx.ps1; Count-Instructions
 # and the per-function line filter from bench/compare.ps1. Do not change the
-# regexes — comparability with the historical tables depends on them.)
+# regexes -- comparability with the historical tables depends on them.)
 
 $vcvars = 'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat'
 $script:disasmBat = $null
@@ -201,7 +201,7 @@ function Get-FunctionInsnCount {
 }
 
 function Invoke-CompileTimed {
-    # Returns @{ Ok; Seconds; Bytes }. Never throws on a compile failure —
+    # Returns @{ Ok; Seconds; Bytes }. Never throws on a compile failure --
     # a failed config is a datum, not an abort.
     param([string]$Src, [string]$Out, [string]$Log, [string]$PassArg)
     $psArgs = @('-NoProfile', '-File', $Compile, '-Src', $Src, '-Out', $Out, '-Log', $Log, '-Kernel', $KernelPath)

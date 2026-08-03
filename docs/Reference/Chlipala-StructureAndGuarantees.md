@@ -1,7 +1,7 @@
-# Adam Chlipala — "Structure and Guarantees" and the Codex Thesis
+# Adam Chlipala -- "Structure and Guarantees" and the Codex Thesis
 
 **Author**: Adam Chlipala, Professor of CS, MIT CSAIL (MIT-PLV group)
-**Substack**: *Structure and Guarantees* — https://stng.substack.com/
+**Substack**: *Structure and Guarantees* -- https://stng.substack.com/
 **Reviewed**: 2026-06-30
 **Occasion**: The article *The Expensive Fictions of Low-Level Programming
 Languages* (2026-06-30) was brought to the project's attention; this note
@@ -15,21 +15,21 @@ concrete collaboration angles.
 Chlipala is already in the Codex canon: *Certified Programming with
 Dependent Types* is one of the named works in `VisionAndVirtues.md`
 rule #10 ("Read the Literature"). What the research below establishes is
-that this is not a single citation — **his entire public research agenda
+that this is not a single citation -- **his entire public research agenda
 and his current popular writing are, point for point, the Codex thesis
 stated by an academic who has shipped the proofs.**
 
 Codex says: a program is a proof (Vision Principle 2); effects are
 explicit; resources are linear; if we didn't build it we don't trust it;
 the fixed point is the specification. Chlipala has spent fifteen years
-building the machine-checked version of exactly those claims — and has
+building the machine-checked version of exactly those claims -- and has
 landed verified code into roughly half the world's browser HTTPS
 connections doing it. He is the strongest possible external validator,
 and a plausible collaborator.
 
 ---
 
-## Part 1 — The article: *The Expensive Fictions of Low-Level Programming Languages*
+## Part 1 -- The article: *The Expensive Fictions of Low-Level Programming Languages*
 
 URL: https://stng.substack.com/p/the-expensive-fictions-of-low-level (2026-06-30)
 
@@ -39,10 +39,10 @@ determines performance; too low-level because they offer no algebraic
 handles for formal reasoning or automated synthesis. They are built on
 two fictions inherited from 1970s hardware:
 
-1. **The sequential-execution fiction** — code reads as instructions run
+1. **The sequential-execution fiction** -- code reads as instructions run
    one-at-a-time, masking the massive parallelism of real hardware and
    making automatic rearrangement-for-optimization hard.
-2. **The unified-memory fiction** — code acts as if one flat memory
+2. **The unified-memory fiction** -- code acts as if one flat memory
    exists, hiding that access latency varies enormously with topology
    (cache vs. DRAM vs. NUMA vs. network), all bounded by speed-of-light
    wire delay across physical space.
@@ -51,7 +51,7 @@ Because real performance depends on *global* reasoning about the whole
 physical system (nodes connected by wires), and C/Rust abstract all of it
 away, **neither human engineers nor automated AI search can reliably
 optimize programs written in them**. The critical-path length of the
-computation — the quantity an automated optimizer most needs — becomes
+computation -- the quantity an automated optimizer most needs -- becomes
 invisible. He cites David Chisnall's "C Is Not a Low-Level Language."
 Three follow-up posts are promised: CPU abstractions in detail,
 hardware/software convergence, and GPUs as a partial answer.
@@ -61,8 +61,8 @@ hardware/software convergence, and GPUs as a partial answer.
 | Chlipala's complaint | Codex's existing response |
 |---|---|
 | Sequential fiction hides parallelism | Effect types make IO/parallelism explicit in signatures; SMP atomics and per-core heaps are first-class (`ArchitectsSketchbook.md`) |
-| Unified-memory fiction hides topology | No flat-malloc model — the deck/bivy phase allocator and explicit R10/RSP register convention expose where memory lives and what it costs |
-| Critical path is invisible | `punctual` reports per-function instruction counts (CDX6010/6011) — a static critical-path-length proxy in the type system |
+| Unified-memory fiction hides topology | No flat-malloc model -- the deck/bivy phase allocator and explicit R10/RSP register convention expose where memory lives and what it costs |
+| Critical path is invisible | `punctual` reports per-function instruction counts (CDX6010/6011) -- a static critical-path-length proxy in the type system |
 | No algebraic handles for reasoning | Dependent/linear/effect types; prose is load-bearing; the fixed point is a machine-checkable spec |
 
 The article is the clearest external statement of *why Codex's
@@ -71,30 +71,30 @@ asks why Codex didn't just emit C.
 
 ---
 
-## Part 2 — The Substack series (13 posts, Apr–Jun 2026)
+## Part 2 -- The Substack series (13 posts, Apr-Jun 2026)
 
 The blog is a single sustained argument. One-sentence synthesis: **the
 path to trustworthy, high-performance, AI-synthesizable software is to
 jointly redesign problems, languages, hardware abstractions, and
 social/economic structures so that end-to-end formal verification becomes
-tractable — not to scale deep learning on today's messy world.**
+tractable -- not to scale deep learning on today's messy world.**
 
 The posts most load-bearing for Codex:
 
 - **Intelligence Depends on Organizing Computation Correctly and
-  Efficiently** (2026-05-19) — correctness and efficiency must be *jointly*
+  Efficiently** (2026-05-19) -- correctness and efficiency must be *jointly*
   designed; verification should *enable* more aggressive optimization
   (a proof that a transform is semantics-preserving lets you optimize
   boldly). This is Codex Virtue #2 ("Correctness Over Performance") plus
   the fixed-point gate, stated as a research program.
-- **Simplifying Alignment by Expanding Scope** (2026-05-26) — prove the
+- **Simplifying Alignment by Expanding Scope** (2026-05-26) -- prove the
   *whole stack as one theorem*; demote ISA/language semantics to *lemmas*
   rather than trust assumptions; C's undefined behavior is the canonical
   failure of per-layer specs. This is "if we didn't build it, we don't
   trust it" recast as an alignment result. Cites a fully verified IoT
   lightbulb (FPGA→software) and a verified crypto server.
 - **Subversion-Resistance for Free from Formal Verification**
-  (2026-06-09) — a functional-correctness proof excludes injection
+  (2026-06-09) -- a functional-correctness proof excludes injection
   attacks *without enumerating attack vectors*, because any injected
   behavior would violate the proven spec. This is precisely the
   BY-CONSTRUCTION evidence class in `KingsAndCourts.md`, generalized:
@@ -102,16 +102,16 @@ The posts most load-bearing for Codex:
   automatically. Directly strengthens the CRA/ETSI/IEC-62443 story.
 - **Codesign for Legibility (to AI and Everyone Else)** (2026-05-05) and
   **Why Software Requirements Get Easier in an AI Economy** (2026-06-23)
-  — redesign the *problem and the language together* so verification is
+  -- redesign the *problem and the language together* so verification is
   tractable and code is legible to both AI and humans; specialize general
   functions into verified specialized ones on demand (his `power(x,13)`
   → synthesized `power13` example). This is the Codex founding vision and
   the `IntelligenceLayer.txt` manifesto, almost verbatim.
-- **Why "Deep" Often Means "Slow"** (2026-04-21) — deep-learning depth is
+- **Why "Deep" Often Means "Slow"** (2026-04-21) -- deep-learning depth is
   an irreducible sequential critical path (`depth × tokens × steps`);
   symbolic/verified methods can have far shorter critical paths. Same
   critical-path lens as the low-level-languages article.
-- **Simpler User Interfaces in an AI Future** (2026-06-16) — when the user
+- **Simpler User Interfaces in an AI Future** (2026-06-16) -- when the user
   is an AI with known source, UI usability can be *formally verified*
   rather than A/B tested. Relevant to Codex's `[Console]`/widget effect
   model and the prose-readable UI foreword.
@@ -122,16 +122,16 @@ legibility) round out the philosophy but are less directly actionable.
 
 ---
 
-## Part 3 — The research record (what he has actually built)
+## Part 3 -- The research record (what he has actually built)
 
 All of the following are machine-checked in Coq/Rocq. "Foundational"
 means the proof bottoms out at a formal machine model with no trusted
 assembler, linker, or unverified codegen.
 
-### 3.1 Fiat / Fiat Cryptography — one spec, many verified targets, in production
+### 3.1 Fiat / Fiat Cryptography -- one spec, many verified targets, in production
 
 - **Fiat** (POPL'15, Delaware, Pit-Claudel, Gross, Chlipala): *deductive
-  synthesis* — refine a declarative spec into an efficient program through
+  synthesis* -- refine a declarative spec into an efficient program through
   formally verified steps, each step a first-class Coq proof term; the
   chain composes into one end-to-end proof checked by the Coq kernel.
   Demonstrated on SQL-like query structures.
@@ -144,7 +144,7 @@ assembler, linker, or unverified codegen.
   the authors estimate ~half of all browser HTTPS connections ran on it.
   First verified high-performance P-256.
   - Follow-ons: **ITP'22** verified rewriting engine (~1000× faster tool,
-    simpler per-rule proofs); **CryptOpt** (PLDI'23 Distinguished Paper) —
+    simpler per-rule proofs); **CryptOpt** (PLDI'23 Distinguished Paper) --
     randomized assembly search with translation validation.
   - *Trusted base:* Coq kernel + the C stringifier + the C compiler. The
     C-printing step is **not** verified; no side-channel proof in the S&P'19
@@ -154,12 +154,12 @@ assembler, linker, or unverified codegen.
 Codex compiles one source to 50+ plug targets; Fiat-Crypto refines one
 spec to verified C for dozens of curves/targets that run in production.
 The gap Codex could close: Fiat-Crypto *trusts* its C printer and the C
-compiler — Codex emits machine code directly and is its own fixed point,
+compiler -- Codex emits machine code directly and is its own fixed point,
 so a Codex-style backend removes two items from that trusted base.
 
-### 3.2 Bedrock / Bedrock2 / Rupicola / Narcissus — verified low-level code
+### 3.2 Bedrock / Bedrock2 / Rupicola / Narcissus -- verified low-level code
 
-- **Bedrock** (ICFP'13): "C as a macro assembly language" — certified
+- **Bedrock** (ICFP'13): "C as a macro assembly language" -- certified
   low-level macros, each shipping its own Hoare-logic proof rule, over a
   computational separation logic. (Distinct codebase from Bedrock2.)
 - **Bedrock2**: a minimal K&R-C-like verified language (one data type: the
@@ -179,7 +179,7 @@ so a Codex-style backend removes two items from that trusted base.
   length field). Demonstrated on **Ethernet/ARP/IPv4/TCP/UDP**, dropped into
   the MirageOS unikernel with minimal perf loss.
   - *Caveat:* a strong cryptographic "nonmalleability" theorem is **not**
-    clearly stated in the retrieved material — the proven property is the
+    clearly stated in the retrieved material -- the proven property is the
     round-trip + out-of-spec rejection. Verify against the PDF if that
     exact property is ever cited.
 
@@ -187,12 +187,12 @@ so a Codex-style backend removes two items from that trusted base.
 foreword (`codex.foreword.encode`: PNG, JSON, MQTT, CoAP, protobuf, …) and
 the OS net stack should aspire to: derive parser+serializer from one
 format spec instead of hand-writing both and hoping they agree. Bedrock2's
-verified RISC-V compiler is the academic mirror of Codex's RISC-V plug —
+verified RISC-V compiler is the academic mirror of Codex's RISC-V plug --
 worth reading before the next plug-codegen campaign. Rupicola's
 "functional spec → verified imperative code" is the shape of a future
 Codex correctness story for hot paths.
 
-### 3.3 Kami / Kôika / Fjfj + end-to-end stacks — spec down to silicon
+### 3.3 Kami / Kôika / Fjfj + end-to-end stacks -- spec down to silicon
 
 - **Kami** (ICFP'17): Bluespec-style rule-based HDL embedded in Coq;
   modular refinement = trace containment via step-simulation; parameterized
@@ -200,9 +200,9 @@ Codex correctness story for hot paths.
   Verilog → FPGA. Verified a 4-stage pipelined RV32I core.
 - **Kôika** (PLDI'20), **Fjfj** (PLDI'25): cleaner Bluespec-derived HDLs
   with deterministic/sequential reasoning and verified compilation to
-  circuits — making concurrent hardware verification tractable.
+  circuits -- making concurrent hardware verification tractable.
 - **Lightbulb** (PLDI'21): **first** realistic embedded system verified
-  end-to-end as one Coq theorem — Kami processor ↔ riscv-coq ISA ↔ Bedrock2
+  end-to-end as one Coq theorem -- Kami processor ↔ riscv-coq ISA ↔ Bedrock2
   compiler ↔ application + drivers ↔ network I/O spec. *Physically runs* on
   a Xilinx VC707 FPGA driving a real bulb over Ethernet.
 - **Crypto Server / "Garage Door"** (PLDI'24): a bare-metal X25519 server on
@@ -219,13 +219,13 @@ Codex correctness story for hot paths.
 whole stack" doctrine. Codex owns source → CDX → bare metal and proves
 self-consistency by fixed point; Chlipala's group owns spec → ISA → gates
 and proves it by one Coq theorem on real silicon. The shared target is
-**RISC-V bare metal** — Codex has a production RISC-V plug (135/135 cross
+**RISC-V bare metal** -- Codex has a production RISC-V plug (135/135 cross
 tests; CL 6287/6409), his stack has riscv-coq + a verified RISC-V compiler
 on an FE310. That overlap is the most concrete technical meeting point.
 
 ### 3.4 Foundations and cost-in-types
 
-- **CPDT** (MIT Press, 2013): the Coq book. Philosophy — automation
+- **CPDT** (MIT Press, 2013): the Coq book. Philosophy -- automation
   *first*, proofs "not finished until fully automated… each theorem proved
   by a single tactic," so proofs survive refactoring. Ltac as a way to
   encode certified decision procedures in-language; dependent types let you
@@ -233,7 +233,7 @@ on an FE310. That overlap is the most concrete technical meeting point.
   proof."
 - **FRAP** (*Formal Reasoning About Programs*, MIT 6.512/6.822): operational
   semantics, invariants, model checking, abstract interpretation, type
-  soundness (progress + preservation), separation logic, concurrency —
+  soundness (progress + preservation), separation logic, concurrency --
   prose and machine-checked `.v` written together ("literate verification").
 - **TiML** (OOPSLA'17, Wang, Wang, Chlipala): an ML where **time-complexity
   bounds appear in function types**, with indexed types + refinement kinds
@@ -244,10 +244,10 @@ on an FE310. That overlap is the most concrete technical meeting point.
 
 > Citation hygiene: *A Cost-Aware Logical Framework* (calf, POPL'22) and
 > *QED at Large* are frequently associated with this circle but are **not**
-> Chlipala's — calf is Niu/Sterling/Grodin/Harper; QED-at-Large is
+> Chlipala's -- calf is Niu/Sterling/Grodin/Harper; QED-at-Large is
 > Ringer/Palmskog/Sergey/Gligoric/Tatlock. **TiML** is his own cost work.
 > (Also: one source gives the PLDI'24 author as "Ashley Lin," another
-> "Owen Lin" — check the PDF before quoting the name.)
+> "Owen Lin" -- check the PDF before quoting the name.)
 
 **Fit for Codex.** TiML is the academic precedent for `punctual`: putting a
 resource bound *in the type* and checking it statically. Codex enforces
@@ -255,51 +255,51 @@ five structural restrictions + an instruction-count budget; TiML proves a
 big-O bound via SMT. CLAUDE.md rule #8 (every review states a memory +
 time-complexity verdict) is the cultural version of the same instinct.
 CPDT's "automate until a theorem is one tactic" is good doctrine for any
-future Codex proof/verifier work — robustness against refactoring is
+future Codex proof/verifier work -- robustness against refactoring is
 exactly what the fixed-point gate gives at the binary level.
 
 ---
 
-## Part 4 — Collaboration angles (for the LinkedIn thread)
+## Part 4 -- Collaboration angles (for the LinkedIn thread)
 
 Ranked by concreteness:
 
 1. **RISC-V bare metal is the shared bench.** His group has riscv-coq + a
    foundationally verified RISC-V compiler running on a SiFive FE310;
-   Codex has a production RISC-V plug. A joint artifact — e.g. a Codex-built
+   Codex has a production RISC-V plug. A joint artifact -- e.g. a Codex-built
    bare-metal RISC-V program whose I/O behavior is stated as a
    Bedrock2-style spec, or running Codex output against riscv-coq's ISA
-   model — is a tangible first project that needs no Coq buy-in from Codex
+   model -- is a tangible first project that needs no Coq buy-in from Codex
    to start.
 2. **Codex is the empirical answer to "Expensive Fictions."** He's
    *arguing* for a language that exposes parallelism + memory topology and
    has verification-amenable semantics, and asking what it should look like.
    Codex is a working, self-hosting instance of that language. That is a
    genuinely interesting object to a researcher who just published the
-   open problem — lead the outreach with this framing, not with a feature
+   open problem -- lead the outreach with this framing, not with a feature
    list.
 3. **Verified codecs (Narcissus → Codex encode foreword).** Codex
    hand-writes encoder/decoder pairs across `codex.foreword.encode`. His
    Narcissus methodology derives both from one spec with a proof. A
-   pilot — pick one format (e.g. the MQTT or protobuf chapter) and derive
+   pilot -- pick one format (e.g. the MQTT or protobuf chapter) and derive
    it Narcissus-style, or formalize the round-trip property Codex already
-   relies on — is a paper-sized collaboration.
+   relies on -- is a paper-sized collaboration.
 4. **Shrinking Fiat-Crypto's trusted base.** Fiat-Crypto trusts its C
    printer + the C compiler. Codex emits machine code directly and is its
    own fixed point. A Codex backend for Fiat-Crypto-style field arithmetic
-   would remove two trusted components — interesting to him, and it would
+   would remove two trusted components -- interesting to him, and it would
    give Codex a formally-pedigreed crypto core (it already ships Ed25519,
    X25519, AES-GCM, etc., bare-metal).
 5. **`punctual` ↔ TiML / cost-in-types.** His TiML work and Codex's
    `punctual` are independent attacks on the same problem (resource bounds
-   as types). A comparison — or importing TiML's recurrence-solver idea to
-   turn `punctual`'s instruction count into a parameterized big-O bound —
+   as types). A comparison -- or importing TiML's recurrence-solver idea to
+   turn `punctual`'s instruction count into a parameterized big-O bound --
    is a clean, well-scoped topic.
 
 The opening move that respects his time: send him the *Expensive Fictions*
-rebuttal-by-existence — "you described the language; here is a
+rebuttal-by-existence -- "you described the language; here is a
 self-hosting one that already refuses both fictions and proves its own
-consistency by fixed point" — plus the RISC-V overlap. Everything else
+consistency by fixed point" -- plus the RISC-V overlap. Everything else
 follows from whether that lands.
 
 ---

@@ -1,4 +1,4 @@
-# IoT Master Plan — Agent Briefing
+# IoT Master Plan -- Agent Briefing
 
 You are the planning agent for the Codex IoT initiative. Your job is
 to produce the master plan-of-plans: the high-level engineering
@@ -10,7 +10,7 @@ compliance as its primary market differentiator.
 
 1. **Architecture Design Document**: How the self-hosted compiler
    gains ARM Cortex-M (Thumb-2), ARM Cortex-A (AArch64), and RISC-V
-   (RV32IMC) backends. This is a PORT, not greenfield — both RISC-V
+   (RV32IMC) backends. This is a PORT, not greenfield -- both RISC-V
    and ARM64 backends were built and proven in the C# reference
    compiler (old/src/Codex.Emit.RiscV/, old/src/Codex.Emit.Arm64/).
    RISC-V was the project's first backend. Read the existing
@@ -19,7 +19,7 @@ compliance as its primary market differentiator.
 2. **HAL Design**: How GPIO, UART, SPI, I2C, ADC, and power
    management integrate with Codex's effect type system and linear
    resources. Each peripheral should be a linear resource that the
-   type system tracks — leaving an SPI bus open should be a compile
+   type system tracks -- leaving an SPI bus open should be a compile
    error.
 
 3. **Protocol Implementation Plan**: MQTT v5.0, CoAP (RFC 7252),
@@ -41,7 +41,7 @@ compliance as its primary market differentiator.
    before any code runs.
 
 6. **Test Strategy**: How each phase gets validated. The project's
-   rule is "the build is the test" — every change must pass gates
+   rule is "the build is the test" -- every change must pass gates
    (fixed-point compilation) and battery (runtime output matching).
    How does this extend to cross-compiled ARM/RISC-V binaries that
    can't run on the x86 host?
@@ -52,37 +52,37 @@ Read ALL of these before writing anything (Rule 2: read before you
 write):
 
 ### Mandatory (direct reads)
-- `docs/PM/Stories/Vision/CodexIoTPlan.md` — the strategic prospectus
+- `docs/PM/Stories/Vision/CodexIoTPlan.md` -- the strategic prospectus
   you are implementing
-- `docs/VisionAndVirtues.md` — non-negotiables that constrain every
+- `docs/VisionAndVirtues.md` -- non-negotiables that constrain every
   design decision
-- `docs/DevelopersGuide.md` — language syntax and type system features
-- `docs/ArchitectsSketchbook.md` — memory layout, register conventions
-- `docs/OperatorsManual.md` — build process, test harness, VM setup
+- `docs/DevelopersGuide.md` -- language syntax and type system features
+- `docs/ArchitectsSketchbook.md` -- memory layout, register conventions
+- `docs/OperatorsManual.md` -- build process, test harness, VM setup
 
 ### IoT Reference Material (in docs/PM/IoT/)
-- `Compliance/` — EU CRA, ETSI EN 303 645, NISTIR 8259, IEC 62443
-- `Architecture/` — RISC-V and ARM spec indexes
-- `Protocols/` — MQTT v5, CoAP, LwM2M, Matter/Thread
-- `Hardware/` — STM32, ESP32-C6, Raspberry Pi target specs
-- `Reference/MarketData.md` — verified market data
+- `Compliance/` -- EU CRA, ETSI EN 303 645, NISTIR 8259, IEC 62443
+- `Architecture/` -- RISC-V and ARM spec indexes
+- `Protocols/` -- MQTT v5, CoAP, LwM2M, Matter/Thread
+- `Hardware/` -- STM32, ESP32-C6, Raspberry Pi target specs
+- `Reference/MarketData.md` -- verified market data
 
 ### Existing Implementations (read-only, do not edit)
-- `old/src/Codex.Emit.RiscV/` — the RISC-V backend (read all 3 .cs files)
-- `old/src/Codex.Emit.Arm64/` — the ARM64 backend (read all 4 .cs files)
-- `codex/compiler/Emit/X86_64.codex` — the current x86-64 emitter
+- `old/src/Codex.Emit.RiscV/` -- the RISC-V backend (read all 3 .cs files)
+- `old/src/Codex.Emit.Arm64/` -- the ARM64 backend (read all 4 .cs files)
+- `codex/compiler/Emit/X86_64.codex` -- the current x86-64 emitter
   (this is the pattern to follow for new backends)
-- `codex/compiler/Emit/X86_64Boot.codex` — boot infrastructure
+- `codex/compiler/Emit/X86_64Boot.codex` -- boot infrastructure
   (interrupt handling, process table, device I/O)
-- `codex/compiler/Emit/X86_64State.codex` — register allocation,
+- `codex/compiler/Emit/X86_64State.codex` -- register allocation,
   temp rotation, code state management
-- `codex/os/net/` — existing network stack (TCP, UDP, TLS, DNS, etc.)
-- `codex/foreword/core/` — crypto primitives (Sha256, Ed25519, Aes, etc.)
-- `codex/os/trust/` — trust lattice, capability model
-- `codex/os/verify/` — CDX binary verifier
+- `codex/os/net/` -- existing network stack (TCP, UDP, TLS, DNS, etc.)
+- `codex/foreword/core/` -- crypto primitives (Sha256, Ed25519, Aes, etc.)
+- `codex/os/trust/` -- trust lattice, capability model
+- `codex/os/verify/` -- CDX binary verifier
 
 ### Design Context
-- `docs/PM/Stories/Vision/DistributedAgentOS.md` — agent-centric OS
+- `docs/PM/Stories/Vision/DistributedAgentOS.md` -- agent-centric OS
 
 ## Constraints
 
@@ -106,7 +106,7 @@ write):
    be generated automatically, not written by hand for each product.
 
 6. **Read the existing backends.** The RISC-V encoder, the ARM64
-   encoder, the ELF writer — they exist. Do not redesign what is
+   encoder, the ELF writer -- they exist. Do not redesign what is
    already proven. Port the designs.
 
 ## Output Location

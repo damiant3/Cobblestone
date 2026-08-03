@@ -1,0 +1,71 @@
+Chapter: GopHandoff
+
+ The UEFI stub's handoff contract, in one place because two stubs disagree
+ about one address and every payload that reads it has to say which one it
+ was booted by.
+
+ handoff-magic is the eight ASCII bytes "CDXHANDF" read as one little-endian
+ quadword, which is how the stub stores them.
+
+ The legacy cell is option_a_stub.asm's CELL_FB at 0x8000, where that stub
+ writes base/width/height/stride as four quadwords. cdx-to-pe.ps1's stub puts
+ the UEFI SystemTable at the same address instead, so a payload that reads
+ 0x8000 unconditionally is correct under one stub and reads a SystemTable
+ pointer as a framebuffer base under the other. The magic is what tells them
+ apart; when it is absent the legacy cell is the answer.
+
+ We say:
+
+Section: Block
+
+  handoff-base : Integer = 126976
+
+  handoff-magic : Integer = 5063257923364865091
+
+  handoff-legacy-cell : Integer = 32768
+
+  handoff-present : Integer -> Boolean
+  handoff-present (dummy) = peek-qword handoff-base 0 == handoff-magic
+
+ The stub writes the header unconditionally but jumps over the framebuffer
+ body when LocateProtocol(GOP) returned nothing, so the magic alone does not
+ mean these four fields are real. A zero base is the signal for that, and it
+ is the same answer as no block at all. Width and height share the quadword
+ at +0x18, stride and pixel format the one at +0x20, because the stub stores
+ them as four 32-bit fields.
+
+  handoff-fb-base : Integer -> Integer
+  handoff-fb-base (dummy) =
+    if handoff-present 0 then peek-qword handoff-base 16
+    else 0
+
+  handoff-w : Integer -> Integer
+  handoff-w (dummy) = bit-and (peek-qword handoff-base 24) 4294967295
+
+  handoff-h : Integer -> Integer
+  handoff-h (dummy) = bit-shru (peek-qword handoff-base 24) 32
+
+  handoff-stride : Integer -> Integer
+  handoff-stride (dummy) = bit-and (peek-qword handoff-base 32) 4294967295
+
+Section: Boot Framebuffer
+
+  boot-fb-base : Integer -> Integer
+  boot-fb-base (dummy) =
+    let hb = handoff-fb-base 0
+    in if hb == 0 then peek-qword handoff-legacy-cell 0 else hb
+
+  boot-fb-w : Integer -> Integer
+  boot-fb-w (dummy) =
+    if handoff-fb-base 0 == 0 then peek-qword handoff-legacy-cell 8
+    else handoff-w 0
+
+  boot-fb-h : Integer -> Integer
+  boot-fb-h (dummy) =
+    if handoff-fb-base 0 == 0 then peek-qword handoff-legacy-cell 16
+    else handoff-h 0
+
+  boot-fb-stride : Integer -> Integer
+  boot-fb-stride (dummy) =
+    if handoff-fb-base 0 == 0 then peek-qword handoff-legacy-cell 24
+    else handoff-stride 0

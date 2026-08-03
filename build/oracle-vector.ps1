@@ -1,0 +1,360 @@
+# Differential oracle for the vector (SSE2 packed) operators.
+#
+# The companion to build/oracle-scalar.ps1, and it exists for the same reason
+# pointed at a different axis. Every answer is checked against the HOST's
+# arithmetic, never against another Codex answer.
+#
+# THE AXIS: LANE DISTINCTNESS.
+#
+# Every vector test in the tree builds its operands with vec-splat (or
+# vec4-splat), and splat writes the same value to both lanes. Measured
+# 2026-07-27 across vector-basic, vector-int, vector-f32, vec-array,
+# vec-arith-hazards, vec-extract-hazards, vec-nested-binop, vec-nest-probe,
+# vec-pattern, vec-select, vec-reduce-add and mask-ops: not one of them ever
+# produces a vector whose two lanes differ.
+#
+# With both lanes equal, whole classes of defect are INVISIBLE BY
+# CONSTRUCTION rather than merely untested:
+#
+#   - An emitter that computed lane zero and broadcast it (addsd where addpd
+#     was meant -- one prefix byte) gives the identical answer.
+#   - vec-extract v 0 and vec-extract v 1 read the same bytes, so lane
+#     indexing is never exercised.
+#   - movmskpd can only yield 0 or 3, so mask-any and mask-all are the SAME
+#     FUNCTION over every mask the tree has ever built, and mask-count is
+#     never asked for the answer 1.
+#   - vec-select blends per lane; under a uniform mask it is a whole-vector
+#     choice.
+#
+# This is the shape ExaminersAssay already names: "a function that always
+# answers the same thing looks exactly like one that works."
+#
+# THE SECOND AXIS: TEMP PRESSURE.
+#
+# alloc-temp rotates a six-register pool, so a temp allocated while an operand
+# is still live can be handed the operand's own register. X86_64State.codex
+# says so in its own prose, and adds that the collision "is phase-dependent
+# (it appears only when the surrounding expression has consumed the right
+# number of temps), which is how bit-xor of three calls shipped computing
+# x ^ x = 0". A one-shape oracle cannot see a phase-dependent hazard, so every
+# case here is asked TWICE: once lean, and once with three further vector
+# results and a mask computed from the same operands and held live across the
+# answer.
+#
+# Bits, not decimals. Every Real answer is compared as its IEEE bit pattern
+# through real-to-bits, so no print formatting sits between the guest's answer
+# and the host's.
+#
+# ON DEMAND. Not in build.ps1, not in test.ps1. It boots a VM. Run it when you
+# touch a vector emitter, a packed instruction, the mask builtins, alloc-temp,
+# or before a public push.
+#
+#   pwsh build/oracle-vector.ps1
+#   pwsh build/oracle-vector.ps1 -Kernel build/output/Sut.cdx
+#   pwsh build/oracle-vector.ps1 -Keep        # keep the generated source
+
+param(
+    [string]$Kernel = "seed/Codex.cdx",
+    [switch]$Keep
+)
+
+$ErrorActionPreference = 'Stop'
+$repo = Split-Path -Parent $PSScriptRoot
+Set-Location $repo
+[Environment]::CurrentDirectory = $repo
+
+$out = Join-Path $repo 'build-output'
+New-Item -ItemType Directory -Force $out | Out-Null
+$src = Join-Path $out 'oracle-vector.codex'
+$cdx = Join-Path $out 'oracle-vector.cdx'
+$log = Join-Path $out 'oracle-vector.log'
+$runOut = Join-Path $out 'oracle-vector.out'
+
+function Bits([double]$d) { [System.BitConverter]::DoubleToInt64Bits($d) }
+
+# A negative literal is the minus ABUTTED to the digits. The space is what
+# makes a minus subtraction (`x - 1` is an expression, `-1` is a literal), so
+# these are written with no space and need no parentheses. Operands are named
+# constants regardless, which is what keeps the call sites readable.
+function RealLit([double]$d) {
+    $d.ToString('0.0###############', [Globalization.CultureInfo]::InvariantCulture)
+}
+
+# ---------------------------------------------------------------- the lattice
+#
+# Five vectors. Four have DISTINCT lanes -- which is the whole point, and is
+# what nothing else in the tree produces -- and the fifth has equal lanes as
+# the control, so a failure appearing only on the distinct four is
+# attributable to the axis rather than to vectors in general. Between them the
+# lanes cover both signs, zero, and a magnitude spread wide enough that a lane
+# swap cannot coincide with a correct answer.
+$vecs = @(
+    @{ n = 'vA'; a =  1.0; b = -2.0 },
+    @{ n = 'vB'; a = -3.0; b =  4.0 },
+    @{ n = 'vC'; a =  0.0; b =  5.0 },
+    @{ n = 'vD'; a =  2.5; b =  2.5 },
+    @{ n = 'vE'; a = -1.5; b = -0.5 }
+)
+
+$arith = @(
+    @{ tag = 'add'; sym = '+' },
+    @{ tag = 'sub'; sym = '-' },
+    @{ tag = 'mul'; sym = '*' },
+    @{ tag = 'div'; sym = '/' }
+)
+
+$cmps = @(
+    @{ tag = 'lt'; sym = '<' },
+    @{ tag = 'le'; sym = '<=' },
+    @{ tag = 'gt'; sym = '>' },
+    @{ tag = 'ge'; sym = '>=' }
+)
+
+# ------------------------------------------------------------ generate source
+$sb = [System.Text.StringBuilder]::new()
+function W([string]$s) { $null = $script:sb.AppendLine($s) }
+
+W 'Chapter: OracleVector'
+W '  cites Foreword chapter Console'
+W ''
+W ' Generated by build/oracle-vector.ps1. Do not edit; regenerate.'
+W ''
+W ' mk2 is the only way in the tree to build a vector whose lanes differ: two'
+W ' doubles written byte by byte into a sixteen byte buffer, then one'
+W ' vec-load-at. vec-splat cannot express it, which is why no existing test'
+W ' does. Every answer is reported as an IEEE bit pattern so that no print'
+W ' formatting sits between the guest and the host that adjudicates it.'
+W ''
+W ' Each case is asked twice. The lean form uses the operands once. The loaded'
+W ' form computes three further vector results and a mask from the same'
+W ' operands first and holds them live across the answer, because the'
+W ' temp-register collision this is hunting is phase-dependent and shows only'
+W ' when the surrounding expression has consumed the right number of temps.'
+W ''
+W 'Section: Operands'
+W ''
+foreach ($v in $vecs) {
+    W "  $($v.n)0 : Real"
+    W "  $($v.n)0 = $(RealLit $v.a)"
+    W ''
+    W "  $($v.n)1 : Real"
+    W "  $($v.n)1 = $(RealLit $v.b)"
+    W ''
+}
+
+W 'Section: Build'
+W ''
+W '  b2i : Boolean -> Integer'
+W '  b2i (t) = if t then 1 else 0'
+W ''
+W '  poke-bits : Integer, Integer, Integer, Integer -> Integer'
+W '  poke-bits (base) (off) (bits) (i) ='
+W '   if i >= 8 then 0'
+W '   else let b = bit-and (bit-shru bits (i * 8)) 255'
+W '   in let w = poke-byte base (off + i) b'
+W '   in poke-bits base off bits (i + 1)'
+W ''
+W '  mk2 : Real, Real -> Vector 2 Real'
+W '  mk2 (x) (y) ='
+W '   let base = alloc-bytes 16'
+W '   in let a = poke-bits base 0 (real-to-bits x) 0'
+W '   in let b = poke-bits base 8 (real-to-bits y) 0'
+W '   in vec-load-at base'
+W ''
+W 'Section: Ballast'
+W ''
+W ' The loaded forms fold this in. It computes three vector results and a mask'
+W ' from the operands and reduces them to one Integer, so the values stay live'
+W ' without changing the answer under test.'
+W ''
+W '  ballast : Vector 2 Real, Vector 2 Real -> Integer'
+W '  ballast (v) (w) ='
+W '   let p = v * w'
+W '   in let q = v - w'
+W '   in let r = v / w'
+W '   in let m = v < w'
+W '   in real-to-bits (vec-extract p 0) + real-to-bits (vec-extract q 1) + real-to-bits (vec-extract r 0) + mask-count m'
+W ''
+W 'Section: Arithmetic'
+W ''
+foreach ($o in $arith) {
+    W "  ar-$($o.tag)-l : Real, Real, Real, Real, Integer -> Integer"
+    W "  ar-$($o.tag)-l (x0) (x1) (y0) (y1) (lane) ="
+    W '   let v = mk2 x0 x1'
+    W '   in let w = mk2 y0 y1'
+    W "   in real-to-bits (vec-extract (v $($o.sym) w) lane)"
+    W ''
+    W "  ar-$($o.tag)-h : Real, Real, Real, Real, Integer -> Integer"
+    W "  ar-$($o.tag)-h (x0) (x1) (y0) (y1) (lane) ="
+    W '   let v = mk2 x0 x1'
+    W '   in let w = mk2 y0 y1'
+    W '   in let sink = ballast v w'
+    W "   in if sink == 6023809217 then 0 else real-to-bits (vec-extract (v $($o.sym) w) lane)"
+    W ''
+}
+
+W 'Section: Comparison'
+W ''
+W ' Each comparison is reported as one packed Integer:'
+W ' any + 2 * all + 4 * none + 8 * count. Packing keeps the generated program'
+W ' small and loses nothing, because the four queries are recoverable from the'
+W ' sum.'
+W ''
+foreach ($c in $cmps) {
+    W "  cm-$($c.tag)-l : Real, Real, Real, Real -> Integer"
+    W "  cm-$($c.tag)-l (x0) (x1) (y0) (y1) ="
+    W '   let v = mk2 x0 x1'
+    W '   in let w = mk2 y0 y1'
+    W "   in let m = v $($c.sym) w"
+    W '   in b2i (mask-any m) + 2 * b2i (mask-all m) + 4 * b2i (mask-none m) + 8 * (mask-count m)'
+    W ''
+    W "  cm-$($c.tag)-h : Real, Real, Real, Real -> Integer"
+    W "  cm-$($c.tag)-h (x0) (x1) (y0) (y1) ="
+    W '   let v = mk2 x0 x1'
+    W '   in let w = mk2 y0 y1'
+    W '   in let sink = ballast v w'
+    W "   in let m = v $($c.sym) w"
+    W '   in if sink == 6023809217 then 0 else b2i (mask-any m) + 2 * b2i (mask-all m) + 4 * b2i (mask-none m) + 8 * (mask-count m)'
+    W ''
+}
+
+W 'Section: Reduction and Extraction'
+W ''
+W '  rd-l : Real, Real -> Integer'
+W '  rd-l (x0) (x1) = real-to-bits (vec-reduce-add (mk2 x0 x1))'
+W ''
+W '  rd-h : Real, Real, Real, Real -> Integer'
+W '  rd-h (x0) (x1) (y0) (y1) ='
+W '   let v = mk2 x0 x1'
+W '   in let w = mk2 y0 y1'
+W '   in let sink = ballast v w'
+W '   in if sink == 6023809217 then 0 else real-to-bits (vec-reduce-add v)'
+W ''
+W '  ex-l : Real, Real, Integer -> Integer'
+W '  ex-l (x0) (x1) (lane) = real-to-bits (vec-extract (mk2 x0 x1) lane)'
+W ''
+
+# ------------------------------------------------------------------ the report
+$expected = [System.Collections.Generic.List[object]]::new()
+W 'Section: Report'
+W ''
+W '  opening : [Console] Nothing'
+W '  opening = act'
+
+$pair = 0
+foreach ($x in $vecs) {
+    foreach ($y in $vecs) {
+        $pair++
+        $what = "$($x.n)($($x.a),$($x.b)) vs $($y.n)($($y.a),$($y.b))"
+        $a4 = "$($x.n)0 $($x.n)1 $($y.n)0 $($y.n)1"
+
+        foreach ($o in $arith) {
+            $key = "P$pair$($o.tag)"
+            $want = @()
+            $parts = @()
+            foreach ($lane in 0, 1) {
+                $xv = if ($lane -eq 0) { $x.a } else { $x.b }
+                $yv = if ($lane -eq 0) { $y.a } else { $y.b }
+                $r = switch ($o.sym) {
+                    '+' { $xv + $yv }
+                    '-' { $xv - $yv }
+                    '*' { $xv * $yv }
+                    '/' { $xv / $yv }
+                }
+                foreach ($ctx in 'l', 'h') {
+                    $parts += "show (ar-$($o.tag)-$ctx $a4 $lane)"
+                    $want += (Bits $r)
+                }
+            }
+            $expr = ($parts | ForEach-Object { "& `" `" & $_" }) -join ' '
+            W "    print-line-uni (`"$key`" $expr)"
+            $expected.Add([pscustomobject]@{ Key = $key; Want = ($want -join ' '); What = "$($o.tag) $what" })
+        }
+
+        $key = "P$pair" + "cmp"
+        $want = @()
+        $parts = @()
+        foreach ($c in $cmps) {
+            $bits = 0
+            foreach ($lane in 0, 1) {
+                $xv = if ($lane -eq 0) { $x.a } else { $x.b }
+                $yv = if ($lane -eq 0) { $y.a } else { $y.b }
+                $set = switch ($c.sym) {
+                    '<'  { [double]::op_LessThan($xv, $yv) }
+                    '<=' { [double]::op_LessThanOrEqual($xv, $yv) }
+                    '>'  { [double]::op_GreaterThan($xv, $yv) }
+                    '>=' { [double]::op_GreaterThanOrEqual($xv, $yv) }
+                }
+                if ($set) { $bits = $bits -bor (1 -shl $lane) }
+            }
+            $packed = [int]($bits -ne 0) + 2 * [int]($bits -eq 3) + 4 * [int]($bits -eq 0) + 8 * (($bits -band 1) + (($bits -shr 1) -band 1))
+            foreach ($ctx in 'l', 'h') {
+                $parts += "show (cm-$($c.tag)-$ctx $a4)"
+                $want += $packed
+            }
+        }
+        $expr = ($parts | ForEach-Object { "& `" `" & $_" }) -join ' '
+        W "    print-line-uni (`"$key`" $expr)"
+        $expected.Add([pscustomobject]@{ Key = $key; Want = ($want -join ' '); What = "compare $what" })
+    }
+}
+
+$i = 0
+foreach ($x in $vecs) {
+    $i++
+    $key = "M$i"
+    $y = $vecs[0]
+    $a2 = "$($x.n)0 $($x.n)1"
+    $a4 = "$($x.n)0 $($x.n)1 $($y.n)0 $($y.n)1"
+    $red = Bits ($x.a + $x.b)
+    W "    print-line-uni (`"$key`" & `" `" & show (rd-l $a2) & `" `" & show (rd-h $a4) & `" `" & show (ex-l $a2 0) & `" `" & show (ex-l $a2 1))"
+    $expected.Add([pscustomobject]@{ Key = $key; Want = "$red $red $(Bits $x.a) $(Bits $x.b)"; What = "reduce/extract $($x.n)($($x.a),$($x.b))" })
+}
+
+W '  end'
+
+Set-Content -Path $src -Value $sb.ToString() -Encoding UTF8
+Write-Host "generated $($expected.Count) report lines -> $src"
+
+# -------------------------------------------------------------- compile + run
+& (Join-Path $repo 'build/compile.ps1') -Src $src -Out $cdx -Log $log -Kernel $Kernel | Out-Null
+# compile.ps1 can exit 0 having written a zero-byte binary, so SIZE is the test
+$sz = if (Test-Path $cdx) { (Get-Item $cdx).Length } else { 0 }
+if ($sz -le 0) {
+    Write-Host "COMPILE FAILED (binary $sz bytes) - see $log" -ForegroundColor Red
+    Select-String -Path $log -Pattern 'error' | Select-Object -First 10 | ForEach-Object { $_.Line }
+    exit 1
+}
+& (Join-Path $repo 'tools/codex-vm.exe') -kernel $cdx -headless -input NUL -output $runOut -mem 3072 2>&1 | Out-Null
+
+# ----------------------------------------------------------------- adjudicate
+$got = @{}
+foreach ($line in (Get-Content $runOut)) {
+    $t = ($line -replace '[\x00-\x1F]', '').Trim()
+    if ($t -match '^([PM]\d+[a-z]*)\s+(.+)$') { $got[$matches[1]] = ($matches[2].Trim() -replace '\s+', ' ') }
+}
+
+$fail = 0
+foreach ($e in $expected) {
+    if (-not $got.ContainsKey($e.Key)) {
+        Write-Host "MISSING $($e.Key): $($e.What)" -ForegroundColor Red
+        $fail++
+        continue
+    }
+    if ($got[$e.Key] -ne $e.Want) {
+        Write-Host ("FAIL {0}: {1}" -f $e.Key, $e.What) -ForegroundColor Red
+        Write-Host ("   got  {0}" -f $got[$e.Key])
+        Write-Host ("   want {0}" -f $e.Want)
+        $fail++
+    }
+}
+
+if (-not $Keep) { Remove-Item $src -ErrorAction SilentlyContinue }
+
+$n = $expected.Count
+if ($fail -eq 0) {
+    Write-Host "oracle-vector: $n/$n agree with the host" -ForegroundColor Green
+    exit 0
+}
+Write-Host "oracle-vector: $($n - $fail)/$n agree with the host, $fail DISAGREE" -ForegroundColor Red
+exit 1

@@ -12,8 +12,8 @@ A weather dashboard for a single location showing current conditions, hourly for
 
 ## Completeness
 
-30% — Display structure is complete and visually polished. All data is hardcoded static (Portland, Oregon). No location search, no unit toggle, no live data fetch, no state-driven updates.
+30% -- Display structure is complete and visually polished. All data is hardcoded static (Portland, Oregon). No location search, no unit toggle, no live data fetch, no state-driven updates.
 
 ## Codex Conformance
 
-Full — Written in Codex with platform stubs. No interactivity means no stubs are left unimplemented. Live data would require a network plug.
+Full -- Written in Codex with platform stubs. No interactivity means no stubs are left unimplemented. Live data would require a network plug.

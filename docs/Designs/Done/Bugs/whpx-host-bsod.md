@@ -17,11 +17,11 @@ Running 8 short-lived QEMU guests in parallel under `-accel whpx` reliably blues
 - **CPU**: x86_64 (host VM-capable)
 - **QEMU (crashing)**: 11.0.0, build `v11.0.0-12122-ga4bb4b10c9` (Stefan Weil's 2026-04-22 Windows installer)
 - **QEMU (stable, slower)**: 9.1.0 `v9.1.0-12064-gc658eebf44` and 10.0.0 `v10.0.0-12080-g252feb9469-dirty`
-- **Driver Verifier**: Standard flags (0x1209BB) on `winhvr.sys`, `winhv.sys`, `Vid.sys`, `vmswitch.sys` — does NOT trip a verifier-specific bugcheck (0xC4)
+- **Driver Verifier**: Standard flags (0x1209BB) on `winhvr.sys`, `winhv.sys`, `Vid.sys`, `vmswitch.sys` -- does NOT trip a verifier-specific bugcheck (0xC4)
 
 ## Reproducer
 
-8 simultaneous QEMU instances launched in a tight harness loop. Each guest (this is the BSOD repro — without `kernel-irqchip=off`, which is now our canonical default but disabled here to make the bug observable):
+8 simultaneous QEMU instances launched in a tight harness loop. Each guest (this is the BSOD repro -- without `kernel-irqchip=off`, which is now our canonical default but disabled here to make the bug observable):
 
 ```
 qemu-system-x86_64.exe \
@@ -52,7 +52,7 @@ Primary `Microsoft-Windows-Kernel-Power` event 41:
 
 ```
 BugCheckCode (P1): 0xA  (IRQL_NOT_LESS_OR_EQUAL)
-Param1 (P2):       0xFFFFE500184C9CF8   (referenced address — kernel range)
+Param1 (P2):       0xFFFFE500184C9CF8   (referenced address -- kernel range)
 Param2 (P3):       0x2                  (IRQL = DISPATCH_LEVEL)
 Param3 (P4):       0x0                  (read access)
 Param4 (P5):       0xFFFFF805AA0F1B85   (faulting instruction address)
@@ -74,9 +74,9 @@ Each crash run produces a similar set; addresses change but the bugcheck mix is 
 
 ## What's happening (interpretation)
 
-The combination of `0xA` (IRQL violation reading kernel memory) followed by `0x13A` heap corruption and a `0x7F` double fault is a classic kernel-side use-after-free or buffer overrun — likely in WHPX kernel components (`winhvr.sys`/`Vid.sys`/`vmswitch.sys`) triggered by the QEMU 11.0 WHPX accelerator backend's API usage pattern under high create/destroy churn (8 partitions × ~100 creates/iter).
+The combination of `0xA` (IRQL violation reading kernel memory) followed by `0x13A` heap corruption and a `0x7F` double fault is a classic kernel-side use-after-free or buffer overrun -- likely in WHPX kernel components (`winhvr.sys`/`Vid.sys`/`vmswitch.sys`) triggered by the QEMU 11.0 WHPX accelerator backend's API usage pattern under high create/destroy churn (8 partitions × ~100 creates/iter).
 
-This is most likely a Microsoft kernel bug (guest workload should never BSOD the host) but is triggered by QEMU 11's WHPX backend specifically — 9.1.0 and 10.0.0 don't trip it.
+This is most likely a Microsoft kernel bug (guest workload should never BSOD the host) but is triggered by QEMU 11's WHPX backend specifically -- 9.1.0 and 10.0.0 don't trip it.
 
 ## Diagnostics gap
 
@@ -90,7 +90,7 @@ To resolve the faulting instruction:
 
 ## Workaround
 
-**Canonical (since 2026-04-29):** pass `-machine kernel-irqchip=off` to QEMU. Probed at the request of QEMU upstream. With the in-userspace IRQ path, the host BSOD does not reproduce within the validation window (40+ iterations under jobs=7 + full pinning, host uptime 4+ hours stable; reproduced on a second independent machine with the same numbers). Throughput cost ~95% per iteration under pinning (185-195s/iter vs ~100s baseline). Without pinning the cost balloons to ~7× and the host CPU sits at ~20% — the slowdown is dominated by guest↔WHPX context-switch latency, not compute. Cam's harness now passes this flag unconditionally.
+**Canonical (since 2026-04-29):** pass `-machine kernel-irqchip=off` to QEMU. Probed at the request of QEMU upstream. With the in-userspace IRQ path, the host BSOD does not reproduce within the validation window (40+ iterations under jobs=7 + full pinning, host uptime 4+ hours stable; reproduced on a second independent machine with the same numbers). Throughput cost ~95% per iteration under pinning (185-195s/iter vs ~100s baseline). Without pinning the cost balloons to ~7× and the host CPU sits at ~20% -- the slowdown is dominated by guest↔WHPX context-switch latency, not compute. Cam's harness now passes this flag unconditionally.
 
 If `kernel-irqchip=off` is not viable (latency cost too high, or working with a different reproducer), the prior workarounds remain valid:
 
@@ -100,9 +100,9 @@ If `kernel-irqchip=off` is not viable (latency cost too high, or working with a 
 
 **C) QEMU 11.0.0, jobs=7, with full mitigation stack, kernel-irqchip default.** 19+ iterations stable (~32 min) at ~100s/iter. Requires *all* of:
 
-1. **Pin each QEMU process to a full physical P-core** (both HT siblings) via `ProcessorAffinity = 3 << coreId`. Logical-core (1-bit) pinning is too tight — starves QEMU's IO/monitor threads and silently corrupts stdin bytes mid-compile. Cores 0+1 (P-core 0) reserved; guests use P-cores 1-7 (mask anchors 2,4,6,8,10,12,14).
+1. **Pin each QEMU process to a full physical P-core** (both HT siblings) via `ProcessorAffinity = 3 << coreId`. Logical-core (1-bit) pinning is too tight -- starves QEMU's IO/monitor threads and silently corrupts stdin bytes mid-compile. Cores 0+1 (P-core 0) reserved; guests use P-cores 1-7 (mask anchors 2,4,6,8,10,12,14).
 2. **Pin the harness orchestrator** (parent PowerShell + `ForEach-Object -Parallel` runspaces) to P-core 0 (mask = 3) so it doesn't compete with guest cores.
-3. **Turn off Windows Defender real-time scanning** (auto-reverts on every reboot — re-disable after each BSOD repro). Defender's on-create/on-access scan of fresh ELFs across 7 parallel workers steals cycles from WHPX vCPU threads and produces sporadic guest-never-READY soft wedges.
+3. **Turn off Windows Defender real-time scanning** (auto-reverts on every reboot -- re-disable after each BSOD repro). Defender's on-create/on-access scan of fresh ELFs across 7 parallel workers steals cycles from WHPX vCPU threads and produces sporadic guest-never-READY soft wedges.
 4. **Generous serial-READY timeouts** in the harness (30s on the compile side, 30s + 60s wall budget on the runtime side) plus a `taskkill /F /T` fallback to clean up wedged QEMUs that survive `Stop-Process`. Without these, transient host-scheduler hiccups bucket as fail-runtime; with them, they recover (iter-10 of the validation run took 219s vs the steady 100s but completed clean).
 
 Cam's harness ships with the hooks: `codex.build/sweep.ps1 -Pin -Jobs 7`, `codex.build/qemu-config.ps1` `-CoreId` parameter, `codex.build/stress-sweep.ps1` for repeated runs.
@@ -167,13 +167,13 @@ For reproducer correlation. Same machine repros all results above (jobs=8 BSOD, 
 | `Vid.sys` | 10.0.26100.7920 |
 | `vmswitch.sys` | 10.0.26100.8117 |
 
-(All from the 26100 servicing branch despite OS reporting build 26200 — this is normal for cumulative-update split.)
+(All from the 26100 servicing branch despite OS reporting build 26200 -- this is normal for cumulative-update split.)
 
 ### Crash dump configuration
 - **CrashDumpEnabled**: 3 (Kernel Memory Dump)
 - **DumpFile**: `C:\Windows\Memory.dmp`
 - **AutoReboot**: 1
-- **Driver Verifier** (during repro): Standard flags 0x1209BB on `winhv.sys`, `winhvr.sys`, `Vid.sys`, `vmswitch.sys` — did NOT trip a verifier-specific bugcheck (no 0xC4)
+- **Driver Verifier** (during repro): Standard flags 0x1209BB on `winhv.sys`, `winhvr.sys`, `Vid.sys`, `vmswitch.sys` -- did NOT trip a verifier-specific bugcheck (no 0xC4)
 - **No `Memory.dmp` was written** despite the configuration; the heap-corruption + double-fault cascade kills the dump path before flush
 
 ### Thresholds observed on this machine
@@ -185,19 +185,19 @@ See the configurations-tested matrix in the **Workaround** section above for the
 - **jobs=7 unpinned**: BSOD by iter 18 (slower repro but still hits).
 - **jobs=7 with full mitigation stack** (2-bit P-core pin + host orchestrator pinned off the guest cores + Defender off + 30s READY budgets): 19 iterations stable, no crash, no soft wedges.
 
-Hardware coupling is plausible (cores, RAM bandwidth, NVMe queue depth). Other reporters with different hosts may see BSOD thresholds shifted up or down. The qualitative finding — that guest pinning alone is insufficient and the harness orchestrator must also be evacuated from guest cores — is likely portable.
+Hardware coupling is plausible (cores, RAM bandwidth, NVMe queue depth). Other reporters with different hosts may see BSOD thresholds shifted up or down. The qualitative finding -- that guest pinning alone is insufficient and the harness orchestrator must also be evacuated from guest cores -- is likely portable.
 
 ---
 
 ## Where to file this
 
-### 1. QEMU upstream (GitLab) — PRIMARY
+### 1. QEMU upstream (GitLab) -- PRIMARY
 **URL**: https://gitlab.com/qemu-project/qemu/-/issues/new
 - Requires a GitLab account
 - Assign label `accel/WHPX` if available (existing WHPX issues are tagged)
-- Cross-reference: existing WHPX issues #2402, #2403, #2461 — none match this exactly (host BSOD under parallel load), so it's a fresh report
+- Cross-reference: existing WHPX issues #2402, #2403, #2461 -- none match this exactly (host BSOD under parallel load), so it's a fresh report
 
-### 2. Microsoft Feedback Hub — SECONDARY (Hyper-V/WHPX is MS code)
+### 2. Microsoft Feedback Hub -- SECONDARY (Hyper-V/WHPX is MS code)
 - Open Feedback Hub (Win+F)
 - Category: "Apps and Drivers" → "Hyper-V" (or "Virtualization")
 - Title: "WHPX: host bluescreen under parallel small guest workload (QEMU 11.0)"
@@ -215,7 +215,7 @@ subsequent to the canonical writeup above. Each shifts the operating
 theory of the bug. Per-incident detail (bugcheck codes, stack traces,
 crash timeline) is in the dedicated `bsodN_*.md` files in this folder.
 
-### 2026-04-30 — nib jobs=7 post-CL 552 (pinning removed)
+### 2026-04-30 -- nib jobs=7 post-CL 552 (pinning removed)
 
 **Trigger:** Nib running `sweep.ps1 -Jobs 7` on CL 553 head (post-CL
 552: `whpx,hyperv=off`, no CPU pinning).
@@ -242,7 +242,7 @@ widened the window.
 **Open question:** Is the trigger guest count (7 vs 4), lack of
 pinning, or both? Need to A/B: pinned at jobs=7 vs unpinned at jobs=4.
 
-### 2026-04-30 — cross-agent aggregate (~9–10 guests)
+### 2026-04-30 -- cross-agent aggregate (~9–10 guests)
 
 **Trigger:** Cam pingpong + Nib sweep running concurrently. Config:
 `-accel whpx,hyperv=off`, `-machine kernel-irqchip=off` (CL 555),
@@ -262,12 +262,12 @@ across all processes on the host. Two agents each running jobs=4 can
 still exceed the threshold. May need a system-wide semaphore or
 coordination to cap total guests.
 
-### 2026-05-02 — cam jobs=4 single agent
+### 2026-05-02 -- cam jobs=4 single agent
 
 **Trigger:** Cam running `sweep.ps1 -Jobs 4`. Single agent, no peer
 activity. Config: `-accel whpx,hyperv=off`, `-machine
 kernel-irqchip=off`, no CPU pinning. Depot head at CL 647 + local
-uncommitted changes in CL 633 (handler clause params plumbing — no
+uncommitted changes in CL 633 (handler clause params plumbing -- no
 codegen or runtime changes to QEMU interaction).
 
 **What was happening:** Iterating on CAMP-IIIC deferred items:
@@ -289,6 +289,6 @@ WHPX guests on a single agent is sufficient to trigger the bug.
 Jobs=4 is not safe. The BSOD correlates with any sustained parallel
 WHPX activity, not just high guest counts. Possible contributing
 factor: the host had been running multiple sequential QEMU sessions
-(rebuild + individual sample compile/run) before the parallel sweep —
+(rebuild + individual sample compile/run) before the parallel sweep --
 accumulated WHPX state or resource leaks may lower the bar for the
 race condition.

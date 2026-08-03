@@ -35,7 +35,6 @@ Section: Character Code Constants
   cc-lower-r : Integer = char-code 'r'
   cc-lower-t : Integer = char-code 't'
   cc-lower-z : Integer = char-code 'z'
-  cc-at : Integer = char-code '@'
   cc-hash : Integer = char-code '#'
   cc-left-brace : Integer = char-code '{'
   cc-pipe : Integer = char-code '|'
@@ -178,6 +177,27 @@ Section: Whitespace
       in st
 
 Section: Character Scanning
+
+ The minus binds to whatever it abuts, and that is what decides whether a
+ hyphen belongs to a name or is the subtraction operator. A hyphen touching
+ the character before it continues the name, whatever follows: `a-2` and
+ `a-b` are one name, and so is `a-`. A hyphen with a space before it is not
+ reached here at all, because the scan has already stopped at the space, so
+ `a - 2` is subtraction and `a -2` leaves the minus for the parser to read
+ as a negation.
+
+ This used to require a letter or digit AFTER the hyphen, which made `a-`
+ impossible and left `a- 2` lexing as subtraction. Four spacings then had
+ three meanings instead of four, and the missing one is the one a reader
+ assumes.
+
+ The single exception is `->`. A hyphen before `>` is the arrow, not a name
+ character, and consuming it here would turn `a->b` into `a-` `>` `b`. The
+ operator scanner makes the same exception a few hundred lines below. The
+ old `--` case is gone because it no longer needs saying: the first hyphen
+ is consumed, the second is consumed, and a name like `a--b` falls out of
+ the general rule.
+
   scan-ident-end : Text, Integer, Integer -> Integer
   scan-ident-end (source) (offset) (len) =
    if offset >= len then offset
@@ -189,19 +209,11 @@ Section: Character Scanning
         let cp = cce-decode-cp source offset
         in if is-tier1-letter-cp cp then scan-ident-end source (offset + cce-byte-len c) len
         else offset
-      else if c == cc-minus then if offset + 1 >= len then offset
-   else let nc = char-code-at source (offset + 1)
-   in if is-letter-code nc | is-digit-code nc then scan-ident-end source (offset + 1) len
-          else if is-tier1-start nc then
-            let cp = cce-decode-cp source (offset + 1)
-            in if is-tier1-letter-cp cp then scan-ident-end source (offset + 1 + cce-byte-len nc) len
-            else offset
-          else if nc == cc-minus then if offset + 2 >= len then offset
-   else let nnc = char-code-at source (offset + 2)
-   in if is-letter-code nnc | is-digit-code nnc then scan-ident-end source (offset + 2) len
-              else offset
-          else offset
-       else offset
+      else if c == cc-minus then
+        if offset + 1 >= len then scan-ident-end source (offset + 1) len
+        else if char-code-at source (offset + 1) == cc-greater then offset
+        else scan-ident-end source (offset + 1) len
+      else offset
 
   scan-ident-rest : LexState -> LexState
   scan-ident-rest (st) =
@@ -411,8 +423,7 @@ Section: Single Token Scanning
    else let c = peek-code s
    in if c == cc-cr then scan-token (advance-char s)
          else if s.column == 2 & c /= cc-newline then
-          if c == cc-at then LexToken (make-token (deck-record AtSign) 1 s) (advance-char s)
-          else if s.prose-mode then scan-prose-text s
+          if s.prose-mode then scan-prose-text s
           else skip-prose-line s
          else if c == cc-newline then LexToken (make-token (deck-record Newline) 1 s) (advance-char s)
          else if c == cc-double-quote then let start = s.offset + 1
@@ -461,8 +472,7 @@ Section: Single Token Scanning
   scan-operator (s) =
    let c = peek-code s
    in let next = advance-char s
-   in if c == cc-at then LexToken (make-token (deck-record AtSign) 1 s) next
-      else if c == cc-left-paren then LexToken (make-token (deck-record LeftParen) 1 s) next
+   in if c == cc-left-paren then LexToken (make-token (deck-record LeftParen) 1 s) next
       else if c == cc-right-paren then LexToken (make-token (deck-record RightParen) 1 s) next
       else if c == cc-left-bracket then LexToken (make-token (deck-record LeftBracket) 1 s) next
       else if c == cc-right-bracket then LexToken (make-token (deck-record RightBracket) 1 s) next

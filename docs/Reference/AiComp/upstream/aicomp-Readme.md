@@ -64,8 +64,8 @@ python programs/tree_hash.py --pass-config /path/to/my_config.json
 
 This allows multiple compiler instances to run concurrently with different configurations. The config file has two sections:
 
-- **`pipeline`** — ordered list of pass names to execute (passes can appear multiple times)
-- **`passes`** — per-pass `enabled` flag and `options` dict
+- **`pipeline`** -- ordered list of pass names to execute (passes can appear multiple times)
+- **`passes`** -- per-pass `enabled` flag and `options` dict
 
 ### Trace Viewer
 

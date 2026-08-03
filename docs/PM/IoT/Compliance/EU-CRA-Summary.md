@@ -14,7 +14,7 @@
 ## Scope
 
 Applies to all "products with digital elements" placed on the EU
-market — hardware and software with connectable digital components.
+market -- hardware and software with connectable digital components.
 Covers baby monitors, smart watches, apps, firmware, operating
 systems. Entire supply chain is in scope.
 
@@ -27,8 +27,8 @@ Medical devices (2017/745, 2017/746), vehicles (2019/2144), aviation
 
 - **Standard products**: Self-assessment (default)
 - **Important Class I**: Smart home, baby monitors, some network
-  devices — third-party assessment available
-- **Important Class II**: Firewalls, IDS, higher-risk products —
+  devices -- third-party assessment available
+- **Important Class II**: Firewalls, IDS, higher-risk products --
   third-party assessment required
 - **Critical products**: Subject to mandatory European cybersecurity
   certification
@@ -61,10 +61,10 @@ annual turnover (whichever is higher).
 |---|---|
 | Security by design | Linear types (no use-after-free), effect types (no unauthorized I/O) |
 | Integrity verification | Signed CDX binaries (Ed25519 + SHA-256 content hash) |
-| Capability scoping | CDX capabilities manifest — binary declares what it can access |
+| Capability scoping | CDX capabilities manifest -- binary declares what it can access |
 | Vulnerability tracking | Fact store (content-addressed, immutable audit trail) |
 | Secure updates | CDX verifier rejects unsigned or capability-escalating updates |
-| No default passwords | Capability lease model — identity IS the Ed25519 key |
+| No default passwords | Capability lease model -- identity IS the Ed25519 key |
 | Lifecycle management | Compiler-generated compliance evidence as build artifact |
 
 ## Full Legal Text

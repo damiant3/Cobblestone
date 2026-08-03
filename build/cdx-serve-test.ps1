@@ -29,7 +29,10 @@
 param(
     [string]$Kernel = 'seed/Codex.cdx',
     [int]$HostPort = 0,
-    [switch]$KeepArtifacts
+    [switch]$KeepArtifacts,
+    # Extra codex-vm flags, for running this same conversation over a
+    # different card. Empty is the NE2000 and every historical run.
+    [string[]]$VmArgs = @()
 )
 
 Set-StrictMode -Version Latest
@@ -81,8 +84,8 @@ if (-not $hash) { Write-Host "  FAIL  cdx-store did not report a hash; nothing t
 Write-Host "cdx-serve-test: booting server (host :$HostPort -> guest :9300)"
 $srvOut = "$out/cs-serve.out"
 $proc = Start-Process -FilePath $script:CodexVmBin -PassThru -WindowStyle Hidden `
-    -ArgumentList @('-kernel', "$out/cs-serve.cdx", '-disk', $disk, '-output', $srvOut,
-                    '-portfwd', "${HostPort}:9300", '-mem', '3072', '-headless') `
+    -ArgumentList (@('-kernel', "$out/cs-serve.cdx", '-disk', $disk, '-output', $srvOut,
+                     '-portfwd', "${HostPort}:9300", '-mem', '3072', '-headless') + $VmArgs) `
     -RedirectStandardError "$out/cs-serve.err"
 
 function Ask([string]$h, [int]$timeoutSec = 60) {

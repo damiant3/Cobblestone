@@ -16,7 +16,7 @@ closes into this workstream** (the ARM64 allocator is a register-file table
 entry here, not a separate build).
 **Literature base:** `docs/Reference/MiddleEndLiterature.md` §3 (register
 allocation). The algorithms are decades-old and public; the clean-room
-constraint of `docs/Reference/AiComp/PROVENANCE.md` applies — reimplement, never
+constraint of `docs/Reference/AiComp/PROVENANCE.md` applies -- reimplement, never
 transliterate.
 
 ---
@@ -24,15 +24,15 @@ transliterate.
 ## 1. Why this exists, in one paragraph
 
 The benchmark gap is register allocation of named bindings. `docs/Reference/
-CodegenAnalysis.md` records the ceiling — fib/fact/gcd/sum plateaued at CL 3400
-and twenty subsequent peephole CLs moved them by zero — and `docs/Architects
+CodegenAnalysis.md` records the ceiling -- fib/fact/gcd/sum plateaued at CL 3400
+and twenty subsequent peephole CLs moved them by zero -- and `docs/Architects
 Sketchbook.md` names the frontier in as many words: "the registers the JITs win
 through full linear-scan allocation of named bindings." The tree passes (WS-D,
 slices 1-3) bought seed density and one 15% dent in the `locals` benchmark from
 copy propagation, but they cannot reach the gap: gcd at 11 instructions has no
 redundancy left to fold, and its cost is entirely which values live in which
 registers across the recursion. That is an allocation decision, and the current
-emitter does not make it globally — it makes it greedily, one expression at a
+emitter does not make it globally -- it makes it greedily, one expression at a
 time. This document specifies the intermediate representation and the allocator
 that close the gap, and the staging that gets there without betting the seed on
 day one.
@@ -58,20 +58,20 @@ with no liveness analysis across a function body:
   idiv/imul clobber (`X86_64.codex:640` region).
 - `peak-local` and `peak-spill` are tracked to size the frame, and
   `restore-locals` scopes the name→register table lexically (the WS-2.22 fix),
-  but none of this is *allocation* in the global sense — it is a deterministic
+  but none of this is *allocation* in the global sense -- it is a deterministic
   assignment order.
 
 The consequence is exactly the CodegenAnalysis finding. A function with more
 live values than callee-saved registers spills in `next-local` order, not in
 value-of-keeping order; a value used once and a value used ten times compete on
 arrival order. Linear scan replaces arrival order with live-interval order and
-furthest-next-use eviction — the JITs' win, and the thing a tree cannot express
+furthest-next-use eviction -- the JITs' win, and the thing a tree cannot express
 because it has no linear order and no basic blocks to compute liveness over.
 
 **What does NOT change.** Only 6 of 18 `Emit/` files walk `IRExpr` (X86_64 2,380
-+ X86_64Compound 1,777 + X86_64Builtins 1,701 lines — `docs/Designs/Compiler/
-Active/MiddleEnd.md` correction 3). The other ~12,900 lines — Boot, Helpers,
-Text/List/IPC/Process helpers, IO, Encoder, State, Chapter, CdxWriter — emit
++ X86_64Compound 1,777 + X86_64Builtins 1,701 lines -- `docs/Designs/Compiler/
+Active/MiddleEnd.md` correction 3). The other ~12,900 lines -- Boot, Helpers,
+Text/List/IPC/Process helpers, IO, Encoder, State, Chapter, CdxWriter -- emit
 fixed runtime code or encode bytes and are reused unchanged beneath a LIR→x86
 instruction selector. This is a new IR level, not a rewrite of the emitter.
 
@@ -82,8 +82,8 @@ instruction selector. This is a new IR level, not a rewrite of the emitter.
 Per-function, a list of **basic blocks** over **virtual registers** (vregs).
 **Non-SSA, no phi nodes, destination-driven.** The justification is structural
 and load-bearing (`MiddleEnd.md` correction 5): the tree IR has **no loop
-construct** — `for` desugars to `list-map`, iteration is tail recursion, which
-is inter-procedural — so flattening a function body yields a **DAG**, never a
+construct** -- `for` desugars to `list-map`, iteration is tail recursion, which
+is inter-procedural -- so flattening a function body yields a **DAG**, never a
 cyclic CFG. The only join points are the arms of `if`/`match`, and those are
 handled the way the current emitter already handles them: both arms write the
 **same destination vreg**. Linear scan needs live intervals over a linear order,
@@ -122,8 +122,8 @@ compiler chapters, and if the LIR and its allocator live in `IR/` the ARM64 and
 RISC-V plugs can lower tree→LIR plug-side and reuse the same allocator over a
 different register-file table. Put it under `Emit/` and it fixes x86 only and
 leaves 3.1 to hand-roll a third allocation scheme. **The register file is
-data** — a table of allocatable registers, caller/callee-saved sets, and
-reserved roles — so a new target is a table entry, not a port.
+data** -- a table of allocatable registers, caller/callee-saved sets, and
+reserved roles -- so a new target is a table entry, not a port.
 
 ### 3.2 Lowering tree → LIR
 
@@ -134,28 +134,28 @@ and threading a destination:
   destination is forced.
 - **`IrName`** → the vreg the binding was lowered to (a name→vreg map threaded
   lexically, the same discipline `restore-locals` already enforces; shadowed
-  `Text` bindings resolve to distinct fresh vregs — trivial without back-edges).
+  `Text` bindings resolve to distinct fresh vregs -- trivial without back-edges).
 - **`IrBinary`** → lower both operands to vregs/imms, emit `LiBin`.
 - **`IrIf` / `IrMatch`** → destination-driven: allocate a result vreg, lower the
   condition, emit `LiBranch`, lower each arm into its own block writing the
-  **same** result vreg, both arms `LiJump` to a join block. No phi — the result
+  **same** result vreg, both arms `LiJump` to a join block. No phi -- the result
   vreg is defined on both paths, which is exactly the invariant the verifier
   checks (§4).
 - **`IrLet`** → lower the value into a vreg, bind name→vreg, lower the body.
 - **`IrApply`** (calls) → the selector pre-places arguments per the ABI
   (Codex's fixed convention, `docs/ArchitectsSketchbook.md`) as `LvFixed`
   operands, emits `LiCall`, result in a fresh vreg. **TCO stays in the emitter
-  for v1** (it is not a LIR back-edge yet — that is v2, §9).
+  for v1** (it is not a LIR back-edge yet -- that is v2, §9).
 
 Everything the current tree emitter does for effects, records, handlers, and the
 runtime-helper calls is unchanged; those lower to `LiCall`s and loads/stores. The
-LIR is about the *scalar/integer register-pressure* core — the benchmark shapes
-(literals, names, binary, if, let, apply) — and everything outside the migration
+LIR is about the *scalar/integer register-pressure* core -- the benchmark shapes
+(literals, names, binary, if, let, apply) -- and everything outside the migration
 whitelist (§8) falls back to the tree emitter until its lowering is written.
 
 ---
 
-## 4. The verifier comes first — before the allocator, not after
+## 4. The verifier comes first -- before the allocator, not after
 
 This is the single highest-priority instruction from the register-allocation
 survey (`MiddleEndLiterature.md` §3; regalloc2's discipline; the verified
@@ -166,7 +166,7 @@ The verifier is a symbolic checker over the *allocated* LIR: given the
 allocator's output (each vreg assigned a physical register or a spill slot, with
 inserted moves), it re-derives what each location holds and asserts every use
 reads the right vreg. State is `Map<Location, VRegSet>` where a **Location is a
-physical register OR a spill slot** — spill slots are first-class, which is the
+physical register OR a spill slot** -- spill slots are first-class, which is the
 property that would have caught the 2026 regalloc2 spill-slot-recycling
 corruption at the guilty reload in the same compile. On our loop-free DAG:
 
@@ -181,8 +181,8 @@ corruption at the guilty reload in the same compile. On our loop-free DAG:
 - A **join** intersects the incoming states pointwise.
 
 ~200 lines, and it **runs on every allocation of every compile, unconditionally**
-in the first implementation. The self-compile is a 36K-line fuzz corpus — every
-build exercises it — and the byte-identical fixed point is the end-to-end
+in the first implementation. The self-compile is a 36K-line fuzz corpus -- every
+build exercises it -- and the byte-identical fixed point is the end-to-end
 backstop behind it. It is cheap enough to leave on: one topological pass, set
 operations over a handful of locations per instruction.
 
@@ -199,7 +199,7 @@ stages later in the bytes.
 Formulation from Wimmer & Mössenböck (HotSpot client compiler, VEE 2005),
 reduced by our acyclicity (`MiddleEndLiterature.md` §3):
 
-- **Liveness** is one backward pass over blocks in **reverse topological order** —
+- **Liveness** is one backward pass over blocks in **reverse topological order** --
   no iterative dataflow, because there are no back-edges (Wimmer & Franz, CGO
   2010: SSA's main gift to linear scan is liveness-without-fixpoint, and
   acyclicity confers that independently).
@@ -207,8 +207,8 @@ reduced by our acyclicity (`MiddleEndLiterature.md` §3):
   (must-register / memory-ok).
 - **Fixed intervals** model every special constraint so the sweep has no special
   cases: the R8/R9 binary-staging windows, the caller-saved clobbers at each
-  `LiCall`, and the permanently-reserved roles — **R10** (the bump allocator),
-  **R15** (closure env), **RBP**, **RSP** — are pre-occupied intervals the sweep
+  `LiCall`, and the permanently-reserved roles -- **R10** (the bump allocator),
+  **R15** (closure env), **RBP**, **RSP** -- are pre-occupied intervals the sweep
   routes around. This is also what makes ARM64 a table swap: its reserved roles
   and caller/callee sets are a different table, same sweep.
 - **Eviction is Belady / furthest-next-use** (per-path optimal on straight-line
@@ -218,9 +218,9 @@ reduced by our acyclicity (`MiddleEndLiterature.md` §3):
 - **Spill discipline v1**: no interval splitting. Whole-interval spill with
   **lazy stores** (Traub/Holloway/Smith 1998; store once at the def, reload per
   use through the reserved staging registers), so **allocation is strictly
-  one-pass** — spill code never re-enters the allocator (HiPE's no-iteration
+  one-pass** -- spill code never re-enters the allocator (HiPE's no-iteration
   discipline, Sagonas & Stenman 2003). **One dedicated slot per spilled vreg, no
-  recycling** — frame waste is noise at ~870 bytes/function, and recycling
+  recycling** -- frame waste is noise at ~870 bytes/function, and recycling
   returns only later as checker-validated stack-slot coloring.
 - **Rematerialization** of cheap constants instead of reloading: later (Briggs).
 
@@ -228,7 +228,7 @@ Graph coloring is rejected on the merits (`MiddleEndLiterature.md` §3): the
 interference-graph build is ~72% of allocation time and quadratic, and coloring's
 precision premium lives in cyclic liveness our IR cannot express. HiPE measured
 linear scan at near-coloring quality several times faster and defaulted to it.
-Their one caveat — linear scan is mediocre at ~5-6 registers — is the reason we
+Their one caveat -- linear scan is mediocre at ~5-6 registers -- is the reason we
 take Belady eviction seriously: at ~10 allocatable integer registers we sit
 between HiPE's good and bad data points.
 
@@ -240,7 +240,7 @@ The acceptance test is byte-identity (the fixed point). Therefore **every
 internal ordering in the allocator is fully sorted, ties broken by vreg number**:
 interval start positions, eviction candidates at equal next-use distance, spill-
 slot assignment order. A correct-but-nondeterministic allocator is a **red gate**,
-not a passing one — it would break the fixed point even while producing valid
+not a passing one -- it would break the fixed point even while producing valid
 code. This is stated up front because it is the easiest invariant to violate by
 accident (iterating a set in hash order) and the most expensive to debug after
 the fact (an intermittent fixed-point break).
@@ -253,35 +253,35 @@ Four independent checks, weakest-to-strongest, because the whole campaign's
 method is *validate the result, not the transformer* (`MiddleEndLiterature.md`,
 the cross-cutting theme):
 
-1. **The verifier** (§4) on every allocation of every compile — catches a wrong
+1. **The verifier** (§4) on every allocation of every compile -- catches a wrong
    allocation at the guilty instruction.
-2. **The LIR structural invariant** (§4, destination-driven single-live-def) —
+2. **The LIR structural invariant** (§4, destination-driven single-live-def) --
    catches a wrong *lowering*.
-3. **The byte-identical fixed point** (both directions) — the end-to-end backstop:
+3. **The byte-identical fixed point** (both directions) -- the end-to-end backstop:
    if the allocated code miscompiles the compiler, the self-compile diverges.
-4. **The poison build** at milestones — uninitialized-field dependencies.
+4. **The poison build** at milestones -- uninitialized-field dependencies.
 
-The fixed point's known blind spot (a self-consistent miscompile passes it —
+The fixed point's known blind spot (a self-consistent miscompile passes it --
 the WS-2.22 and the WS-D3-capture lesson) is why 1 and 2 exist: they check
 properties the fixed point cannot see.
 
 ---
 
-## 8. Migration staging — the ratchet
+## 8. Migration staging -- the ratchet
 
 Single-owner workstream (compiler invariants, one thing at a time); a second
 agent joins for the ARM64 retarget after x86-64 v1 converges.
 
 - **Dual emitters behind a per-function dispatch.** A function whose body lies
-  entirely within a **construct whitelist** — literals, names, binary, if, let,
-  apply (the pure-arithmetic shapes, which are exactly the benchmark shapes) —
+  entirely within a **construct whitelist** -- literals, names, binary, if, let,
+  apply (the pure-arithmetic shapes, which are exactly the benchmark shapes) --
   is lowered tree→LIR→allocated→x86. Everything else falls back to the existing
   tree emitter, unchanged.
 - **The whitelist ratchets up one construct per CL**, each through the gate,
   each two-pass (a codegen change is two-pass: SUT ≠ stage1 on the first build;
   install NewSeed, rebuild, converge). The dispatch predicate is the ratchet: it
   starts tiny and grows only as each construct's lowering + selection is proven.
-- **The fallback is removed only at total coverage plus a soak** — the tree
+- **The fallback is removed only at total coverage plus a soak** -- the tree
   emitter stays as the safety net until every construct lowers and the fixed
   point has held across many builds.
 
@@ -292,12 +292,12 @@ ablation harness.
 
 ---
 
-## 9. v2 — filed, not built
+## 9. v2 -- filed, not built
 
 - **TCO self-calls as LIR back-edges.** This is what brings loop analysis into
   the LIR (and with it, the widening/fixpoint machinery the tree range analysis
   correctly did *not* need). v1 keeps TCO in the emitter.
-- **Interval splitting** — gated on measured spill counts in the 21KB lifted
+- **Interval splitting** -- gated on measured spill counts in the 21KB lifted
   lambdas; whole-interval spill until the data demands it. **It was argued on
   2026-07-19 that the data demanded it early, for a reason other than spills.
   Measurement said no**, and the argument is recorded here rather than in the
@@ -314,10 +314,10 @@ ablation harness.
   return saved. **What binds here is the entry moves, not the interval model.**
   Two attempts from the interval side were reverted after measurement; a third
   should start somewhere else.
-- **Stack-slot coloring** (spill-slot recycling) — returns only as a
+- **Stack-slot coloring** (spill-slot recycling) -- returns only as a
   checker-validated pass.
 - **Rematerialization** of cheap constants.
-- **Instruction scheduling** — only if an in-order target (Thumb-2)
+- **Instruction scheduling** -- only if an in-order target (Thumb-2)
   ever demands it; x86-64's out-of-order core schedules in hardware, so building
   a scheduler for it is `MiddleEnd.md`'s explicit "what not to build."
 
@@ -325,14 +325,14 @@ ablation harness.
 
 ## 10. Entry criteria status (the E-gates)
 
-- **E1** — pass manager + ablation harness live. **MET** (WS-B1 @7911, WS-B2
+- **E1** -- pass manager + ablation harness live. **MET** (WS-B1 @7911, WS-B2
   @7948, WS-B3 @7950).
-- **E2** — range analysis shipped *with its soundness fuzz harness*. **MET** by
+- **E2** -- range analysis shipped *with its soundness fuzz harness*. **MET** by
   WS-A1a (@7921): the interval kernel shipped with a width-4 exhaustive
   containment test, 4,887,840 checks with the concrete oracle being codex-vm's
-  own runtime semantics — the "analysis output checked against runtime ground
+  own runtime semantics -- the "analysis output checked against runtime ground
   truth" discipline proven once on a cheaper analysis, exactly as E2 requires.
-- **E3** — this document, reviewed by Damian. **MET** — Damian read and
+- **E3** -- this document, reviewed by Damian. **MET** -- Damian read and
   approved it on 2026-07-15 ("carry on with the LIR as you suggest"). All
   three entry criteria are now satisfied; step-5 implementation has begun.
 
@@ -484,12 +484,12 @@ verifiers standing on the emission path. That was the last step of the campaign;
   closure-call sites, so it is not preserved across a call.
 - **~10 allocatable integer registers is the hard case for linear scan** (HiPE's
   x86 caveat). Belady eviction is the mitigation, but this design does not
-  *prove* it reaches coloring quality at this register count — that is an
+  *prove* it reaches coloring quality at this register count -- that is an
   empirical question the ablation answers after the fact, and if the answer is
   "not close enough," interval splitting (v2) moves up the schedule.
 - **The verifier checks allocation, not selection.** A wrong instruction
   *selection* (emitting the wrong opcode for a LIR op) is caught by the fixed
-  point and the tests, not by the verifier — the verifier assumes the selected
+  point and the tests, not by the verifier -- the verifier assumes the selected
   instructions are the program and checks only that vregs live where uses read
   them.
 
@@ -580,11 +580,39 @@ quietly absorbed open gaps would be the one unrecoverable mistake in doc work:
   `lir-stack-guard`, the frame adjust) is raw x86 emitted outside the LIR, so no
   verifier sees it. The `col-hue` miscompile survived ten sessions of green
   benches behind exactly that kind of blind spot.
-- **`list-map` used to lower and no longer does.** That is
-  **coverage loss in the selector**, it is pre-existing rather than fallout from
-  this campaign, and **its cause is still not established.** A definition
-  dropping out of the whitelist is invisible to every instrument except the pin,
-  because the answer stays right.
+- **`list-map` used to lower and no longer does. The cause is established
+  (2026-07-26) and it is not a defect in the selector.** `inline-single-caller`
+  joined the default IR pipeline in CL 9461, and `map-list` has exactly one
+  caller, so the pass substitutes its body into `list-map`. What the selector
+  then sees is no longer the single `call map-list v0 v1` the pin recorded; it
+  is the inlined loop set-up, and the whitelist declines it.
+
+  Measured rather than reasoned. Against the current seed, `-Passes
+  '+lir-dump'` (the shipping pipeline
+  `fold-constants,inline-leaf-calls,inline-single-caller,lir-dump`) declines it,
+  while a bare `-Passes 'lir-dump'`, which ablates the defaults, restores
+  `LIR list-map(2) nvregs=3: b0: v2 = call map-list v0 v1 => v2 [check: ok]` --
+  the pin-revision-11 line exactly. Run one default pass at a time,
+  `inline-single-caller` alone reproduces the decline and `fold-constants` and
+  `inline-leaf-calls` alone do not. Seed bisection agrees independently: the
+  transition sits between `seed@9450` (lowers) and `seed@9500` (declines), and
+  CL 9461 is the only seed revision in that window.
+
+  **The pin revision is not the causing changelist, and reading it as one sent
+  this investigation to the wrong CL first.** The line changed at pin revision
+  12 (CL 10144, LirRetarget step 4d), which is merely the next time anyone
+  re-recorded the pin; the behaviour had already changed some 680 changelists
+  earlier. A snapshot dates when it was last taken, not when the thing it
+  snapshots moved.
+
+  What is NOT established is which gate in `lir-emit-try` rejects the inlined
+  body -- `lower-def-to-lir` returning not-ok and `lir-calls-ok` refusing a
+  builtin call target are both live candidates and neither has been isolated.
+  That would need an instrumented compiler, and it is only worth building if
+  someone intends to widen the whitelist. **Recovering this coverage is not
+  recommended:** it means admitting calls with call arguments, which is real
+  miscompile risk for one definition, and the codegen-quality frontier this
+  section closes is exactly the argument against paying it.
 - **Both LIR verifiers are pinned only in the affirmative;** the
   rejection paths run under no harness, blocked on compiler chapters having no
   quire.

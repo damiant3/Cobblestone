@@ -24,7 +24,7 @@ create seams; this document designs them together.
 | Timer | PIT at 18 Hz, tick counter at 0x7000 | `X86_64Boot.codex:49` |
 | Watchdog | Stall detection via RIP/heap sampling | `X86_64Boot.codex:220` |
 | Page tables | Identity-mapped PML4/PDPT/PD | `X86_64Boot.codex:513` |
-| Capability grant | `emit-grant-capability` — OR bit into proc table | `X86_64Boot.codex:554` |
+| Capability grant | `emit-grant-capability` -- OR bit into proc table | `X86_64Boot.codex:554` |
 | In-process concurrency | fork/await (sequential, CAMP-IIIC Phase 1) | `X86_64.codex` (CL 623) |
 | Fact store foreword | In-memory HAMT, 5 fact kinds | `foreword/FactStore.codex` |
 | FileSystem effect | open/read/write/close (interface only) | `foreword/FileSystem.codex` |
@@ -38,7 +38,7 @@ create seams; this document designs them together.
 The kernel boots and runs the compiler. A real OS needs an init
 sequence that loads facts from disk, starts the scheduler, establishes
 identity, and launches the shell. The boot sequence is the capability
-root — whoever runs first can grant everything. Getting this wrong is
+root -- whoever runs first can grant everything. Getting this wrong is
 a privilege escalation vulnerability.
 
 ### Design
@@ -47,13 +47,13 @@ The boot sequence has seven stages. Each stage runs with the minimum
 capabilities it needs. No stage runs with all capabilities.
 
 ```
-Stage 0: Hardware init         (existing — multiboot, long mode, PIC, IDT, serial)
-Stage 1: Block driver init     (new — detect storage device, read sectors)
-Stage 2: Fact store load       (new — read root hash, load fact HAMT from disk)
-Stage 3: Verifier load         (new — load verifier binary from fact store, self-verify)
-Stage 4: Scheduler start       (new — init process table, start idle process)
-Stage 5: Identity establish    (new — load or generate device/user keypairs)
-Stage 6: Shell launch          (new — start shell process with user's capabilities)
+Stage 0: Hardware init         (existing -- multiboot, long mode, PIC, IDT, serial)
+Stage 1: Block driver init     (new -- detect storage device, read sectors)
+Stage 2: Fact store load       (new -- read root hash, load fact HAMT from disk)
+Stage 3: Verifier load         (new -- load verifier binary from fact store, self-verify)
+Stage 4: Scheduler start       (new -- init process table, start idle process)
+Stage 5: Identity establish    (new -- load or generate device/user keypairs)
+Stage 6: Shell launch          (new -- start shell process with user's capabilities)
 ```
 
 **Capability root rule**: Stage 0 runs in Ring 0 with full hardware
@@ -75,8 +75,8 @@ an ATA/IDE device (the simplest interface, widely emulated by QEMU).
 PIO mode (port I/O, no DMA) is sufficient for boot.
 
 Syscalls added:
-- `block-read(sector, count, buffer)` — read sectors to buffer
-- `block-write(sector, count, buffer)` — write sectors from buffer
+- `block-read(sector, count, buffer)` -- read sectors to buffer
+- `block-write(sector, count, buffer)` -- write sectors from buffer
 
 Both require the `BlockDevice` capability (new bit 10).
 
@@ -150,7 +150,7 @@ Offset 216-255: reserved       (40B)
 ```
 
 This fits within the existing 256-byte entry. The current `state` at
-offset 0 moves to offset 184 (the old offset 0 is repurposed — or
+offset 0 moves to offset 184 (the old offset 0 is repurposed -- or
 aliased for backward compatibility during migration).
 
 **CPU quota**: Each process has a `max-ticks` field. The scheduler
@@ -277,7 +277,7 @@ sector 1). Writes alternate between the two copies. On boot, the
 kernel reads both and uses the one with the higher `index-gen` that
 has a valid `content-hash`. This ensures atomicity: either the new
 superblock is fully written (use it) or it isn't (use the old one).
-No journal needed — the append-only log and COW HAMT are inherently
+No journal needed -- the append-only log and COW HAMT are inherently
 crash-safe.
 
 **Wear leveling**: Not in scope for V1. The log is append-only, which
@@ -310,7 +310,7 @@ All require the appropriate `FileSystem` capability.
 
 ### The Problem
 
-The human-OS interface. Not bash — a typed, capability-aware prose
+The human-OS interface. Not bash -- a typed, capability-aware prose
 interface.
 
 ### Design
@@ -343,7 +343,7 @@ capabilities that the target program needs.
 2. Parse as a CPL command.
 3. Type-check against the current user's capabilities.
 4. If type-check fails, print the error (via the Clarifier if
-   the error is ambiguity — suggest a correction).
+   the error is ambiguity -- suggest a correction).
 5. If type-check succeeds, execute:
    - `install`: call the verifier on the CDX binary, add to fact store
    - `grant`: update capability table for the target process
@@ -418,7 +418,7 @@ Step 5 (boot) integrates them. Step 6 (shell) is the capstone.
 
 6. **Formal models for low-level isolation (IRISA, 2026-06-23):**
    The SUSHI team (IRISA D3) builds formal models for low-level
-   security mechanisms — proving that page table setups and VMX
+   security mechanisms -- proving that page table setups and VMX
    isolation actually prevent guest-to-host escapes. Relevant to
    Gap 5 (DevHypervisor): we run bare-metal with no OS mitigations
    (no ASLR, no KPTI), so the boot sequence's capability stage

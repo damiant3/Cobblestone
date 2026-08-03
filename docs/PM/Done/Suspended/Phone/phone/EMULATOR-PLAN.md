@@ -1,4 +1,4 @@
-# Emulator Testing Plan — Codex on Phone
+# Emulator Testing Plan -- Codex on Phone
 
 **Date**: 2026-03-23
 **Branch**: `windows/codex-phone`
@@ -30,7 +30,7 @@ via Odin, but still bad).
 **Test path** (no risk to phone):
 1. Write a Python script (`phone/pack-samsung-bootimg.py`) that creates a proper
    Samsung boot image with header, kernel, ramdisk, DTB, and SEANDROIDENFORCE
-2. Validate the output with `phone/inspect-bootimg.py` — `dt_size` must be non-zero
+2. Validate the output with `phone/inspect-bootimg.py` -- `dt_size` must be non-zero
 3. Byte-compare header fields against the known-good CHN image
 4. **Only after all validations pass** → flash to phone
 
@@ -67,7 +67,7 @@ qemu-aarch64 /tmp/hello-arm64
 
 If this works, ARM64 codegen is verified. Skip to Phase C.
 
-### Phase B: Android Emulator — adb workflow test
+### Phase B: Android Emulator -- adb workflow test
 
 ```powershell
 # Start emulator (headless for speed)
@@ -130,14 +130,14 @@ python3 phone/inspect-bootimg.py known-good-chn.img our-new-image.img
 ## Next Steps (This Session)
 
 1. ✅ Feature branch created: `windows/codex-phone`
-2. ✅ ARM64 binary under QEMU in WSL — hello=25, factorial=3628800, greeting=Hello World
+2. ✅ ARM64 binary under QEMU in WSL -- hello=25, factorial=3628800, greeting=Hello World
 3. ✅ Fixed ARM64 str_concat bug (byte copy + alloc sizing)
 4. ✅ Fixed ARM64 ELF section headers for Android (bionic linker requires .shstrtab)
 5. ✅ All 5 samples running on Android 15 emulator via adb push
-6. ✅ `pack-samsung-bootimg.py` with proper DTB support — self-test passes
-7. ✅ Packed real recovery image — dt_size=6414336, matches CHN reference exactly
+6. ✅ `pack-samsung-bootimg.py` with proper DTB support -- self-test passes
+7. ✅ Packed real recovery image -- dt_size=6414336, matches CHN reference exactly
 8. ✅ compare-headers.py confirms structural match to known-good image
-9. [ ] **Phase D: Flash to phone** — recovery-fixed.img.tar ready for Odin
+9. [ ] **Phase D: Flash to phone** -- recovery-fixed.img.tar ready for Odin
 
 ## Bugs Found and Fixed Along the Way
 

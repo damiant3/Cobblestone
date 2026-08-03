@@ -20,7 +20,11 @@ Address              Size       Region
 0x00005000 (20 KB)    4 KB      Process table (16 entries × 256 bytes)
 0x00006000 (24 KB)    4 KB      IDT (Interrupt Descriptor Table)
 0x00007000 (28 KB)    4 KB      Kernel metadata cells (see table below)
-0x00008000 (32 KB)   40 KB      Runtime page tables (PML4 + PDPT + 8 PDs)
+0x00008000 (32 KB)   24 KB      Runtime page tables (PML4 + PDPT + 4 PDs at
+                                  3 GB: (2 + bare-metal-total-pd-count) pages)
+0x00015000 (84 KB)    32 KB     IST stacks (ist-stacks-base, 16 x 2048)
+0x0001D000 (118 KB)   12 KB     Free hole -- xhci-diag lives at its head
+0x00020000 (128 KB)  256 KB     AP idle stacks (ap-stacks-base, 16 x 16 KB)
 0x00100000 (1 MB)     4 MB      Binary code segment (bare-metal-load-addr)
                                   Current seed: ~2.3 MB of 4 MB headroom
 0x00500000 (5 MB)     1 MB      Serial ring buffer (serial-ring-buf-addr)
@@ -76,15 +80,49 @@ Fixed addresses for runtime state. Defined in
 | 36240 | **devint-count-addr** | 8 | Interrupts taken on a vector that is neither the PIT's (32) nor the local timer's (48). `__interrupt_common` answers those two specially and used to return from every other vector without leaving a mark, so a delivered device interrupt and a dropped one were indistinguishable from inside the guest. Incremented with a locked add; the timer vectors branch away before reaching it, so the periodic tick cannot appear here |
 | 36248 | **devint-last-vec-addr** | 8 | The vector of the most recent such interrupt. A test programs a line, then demands that line answered rather than merely that something arrived. Read with 36240 by `codex/test/hpet-interrupt.codex` |
 | 36256 | **ap-id-next-addr** | 8 | The next core id to hand out. An application processor no longer arrives with its id in a register the host set -- it starts in real mode knowing nothing -- so the last act of its trampoline is a locked exchange-add here. The boot processor seeds it with 1 before the start-up IPI and keeps 0 for itself. A dense counter rather than the LAPIC id: the value indexes four arrays of `smp-max-cores` entries, and a LAPIC id is an identifier, not an index |
+| 36264 | **net-driver-cb** | 56 | Which NIC the network seam is bound to, and its six addresses: card selector at +0 (0 = NE2000, 1 = e1000), then mmio, rx-ring, rx-bufs, ctrl-blk, tx-ring, tx-bufs at +8 through +48. Written once by `net-driver-bind-e1000` (`codex/os/net/NetDriver.codex`) with the selector LAST, so a half-written block is never live. Zero until something binds, which is why a guest that never probes PCI keeps serving off the NE2000. The seam takes no device argument, and a module-level record binding is a recipe rather than a cell that allocates again on every reference, so this is the only place the bound card can live |
 
-**Do not claim a cell in this band without grepping `tools/codex-vm.c`
-first.** 36152 is a permanent booby trap (a legacy codex-vm output-ring
-write position), and 36160 / 36168 / 36176 are codex-vm's blit cells —
-the host writes them. 36200 was the first free slot above them, and the
-band has since grown upward through 36208 (uefi-systab), 36216
-(ap-preempt-count), 36224 (spawn-affinity), 36232 (fs-elevated),
-36240 / 36248 (the device-interrupt evidence above) and 36256
-(the AP core-id counter).
+**Do not claim a cell in this band without grepping `tools/codex-vm.c` AND
+`apps/works/**` AND `codex/compiler/Emit/**` AND `codex/foreword/**` first,
+and prefer a hole whose neighbours are bounded by something the layout
+already defends.** The host alone is half the question. All four are load
+bearing: the host claims 36152, 36160 and 36168; `apps/works` claims
+`xhci-diag`, `msc-cells` and `ptr-cells`; `Emit` claims the eight runtime
+cells; and the foreword READS `ptr-cells` at 36736 without claiming it, so a
+grep that skips it finds no writer and concludes the cell is free. Every runtime cell here carried a prose block naming
+only `codex-vm.c`, all of them grepped exactly that, and the app-level
+`xhci-diag` block sat on top of eight of them from 36200 to 36263 plus
+`net-driver-cb` above that. Measured 2026-07-29 under OVMF and again
+2026-07-30 under codex-vm: a USB bring-up wrote the diag magic into 36200,
+the PCI vendor id into 36208, CAPLENGTH into 36216, xECP into 36232 and
+maxports into 36256. `xhci-diag` now lives at 118784 (main 12283) and this
+band is its own again.
+
+**And the region a relocated block lands in has stack arrays in it, which is
+the other half nobody greps.** `ist-stacks-base` is 86016 with
+`smp-max-cores * ist-stack-size` = 32768 bytes above it, and
+`ap-stacks-base` is **131072**, sixteen 16 KB idle stacks running to 393216.
+So 0x20000 is not free space, it is core 0's idle stack, and the only hole
+between the two arrays is 118784-131071. A single-core payload cannot tell
+the difference: no application processor boots, nothing writes the idle
+stacks, and a block placed on top of them reads back perfectly. Check the
+stacks as well as the tables and the cells.
+
+36152 is a permanent booby trap (a legacy codex-vm output-ring write
+position), and 36160 / 36168 are codex-vm's blit cells -- the host writes
+them (`BLIT_ADDR_CELL` / `BLIT_LEN_CELL`; the host does not define a third
+at 36176). 36200 was the first free slot above them, and the band has
+since grown upward through 36208 (uefi-systab), 36216 (ap-preempt-count),
+36224 (spawn-affinity), 36232 (fs-elevated), 36240 / 36248 (the
+device-interrupt evidence above) and 36256 (the AP core-id counter).
+
+**The band is nearly out of room, and the ceiling is the PDPT at 36864.**
+Above `net-driver-cb` sit `msc-cells` at 36480-36587 (`GopUsbMsc`) and
+`ptr-cells` at 36736-36751 (the mouse mailbox, read by
+`codex/foreword/ui/InputSource.codex`). What is left is 36588-36735 and
+36752-36863. `kd-cell` at 37000 (`build/boot/diag/KbdDiagProbe.codex`) is
+already PAST the ceiling, inside the PDPT page: harmless for a UEFI-booted
+diag payload on firmware's own tables, not harmless for a bare-metal one.
 
 ### Derived Constants
 
@@ -104,7 +142,7 @@ The CDX header heap field and ELF segment memsz are both computed as
 ## Register Convention
 
 Codex uses a fixed register assignment on x86-64. There is no
-System V or Windows ABI — Codex owns the entire machine.
+System V or Windows ABI -- Codex owns the entire machine.
 
 | Register | Role | Lifetime | Notes |
 |----------|------|----------|-------|
@@ -122,7 +160,30 @@ System V or Windows ABI — Codex owns the entire machine.
 | **R15** | Closure environment pointer | Per-function | Callee-saved; loaded from caller's closure env at call sites |
 | **RBP** | Frame pointer | Per-function | Points to base of current stack frame; locals accessed as `[RBP - offset]` |
 | **RSP** | Stack pointer | Global | Grows downward; collision-checked against R10 in every prologue |
-| **R8, R9** | Unused | — | Not allocated by the register allocator |
+| **R8, R9** | Unused | -- | Not allocated by the register allocator |
+
+**"Codex owns the entire machine" stops being true the moment a helper
+calls firmware, and that boundary has produced the same bug three times.**
+A UEFI application runs under the Microsoft x64 convention, where
+RAX, RCX, RDX, R8, R9, R10 and R11 are volatile: firmware may destroy any
+of them and does. Four of those (R10, RCX, RDX, R11) are load-bearing
+here, and R10 is the bump allocator itself.
+
+So any emitted sequence that calls through a UEFI protocol pointer must
+save what this table calls callee-saved, plus R10, around that call. Two
+of the three failures were R10 (the guest entered `opening` with a
+firmware pointer in it and tripped the heap guard in its own prologue,
+which then reported OUT OF MEMORY with the heap untouched); the third was
+`uefi-call-conout` doing `mov rbx, rcx` with no `push rbx`, which handed
+every caller of the five UEFI console builtins a corrupted RBX. In
+`uefi-con-put-text` that was the live `Text`, and it came back holding the
+ConOut pointer.
+
+The symptom is never local to the cause. A destroyed register surfaces as
+a wrong pointer dereferenced somewhere else entirely, so the register dump
+is the instrument: a "length" of `0x56575441e5894855` is the byte pattern
+`55 48 89 e5 41 54 57 56`, a function prologue, which says a load read
+code and the pointer was garbage.
 
 Temp registers cycle: `alloc-temp` rotates through [RAX, RCX, RDX,
 RSI, RDI, R11] (mod 6). Local registers are assigned in order: [RBX,
@@ -171,10 +232,10 @@ phase is freed together when the phase ends.
 A structured allocator built on top of bivy. `build(size)` saves the
 heap position, sets `deck-pos-addr` to that position via `__deck-set`,
 and advances R10 past the reserved region. `seal(start)` is a no-op
-(`__heap-advance 0`) — it exists as a semantic marker.
+(`__heap-advance 0`) -- it exists as a semantic marker.
 
 Deck regions survive phase compaction because `phase-compact` rewinds
-R10 to `deck-pos` — everything below that address (the deck) is
+R10 to `deck-pos` -- everything below that address (the deck) is
 preserved; everything above it (bivy scratch) is reclaimed. The deck
 position cascades between phases: each phase's `build` starts its deck
 at the current R10, which is past the previous phase's sealed deck.
@@ -191,6 +252,32 @@ Bivy is used for scratch data within a phase.
 3. `phase-measure`: Captures `bivy-hwm` for diagnostics.
 4. `phase-compact`: Restores R10 to the current deck position,
    reclaiming all bivy scratch from the phase.
+
+### After a compact, the deck and the bivy hand out the same bytes
+
+Step 4 sets R10 to deck-pos, so on the far side of a compact the bivy
+frontier and `deck-pos-addr` are **equal**. Until something reserves a new
+deck, the next bivy allocation and the next `deck-record` are handed the
+same address, and whichever runs second overwrites the first.
+
+Measured 2026-07-28 in `compile-to-cdx-with-exit-mode`, between the
+frontend's compact and `emit-build`'s reservation: deck-pos `0x0ceb0acf`
+against a bivy frontier of `0x0ceb0adf`, with a live empty list at
+`0x0ceb0ad7`. Raising one diagnostic there ran a deck extent that wrote a
+91-character message across it; `__list_concat_many` then read CCE text as
+a list length and marched R10 off the top of RAM. Nothing was miscompiled
+-- the crash site was byte-identical to a working build.
+
+The trap is that **a diagnostic is deck-bound by design**, so "just warn
+here" is a deck allocation wherever you write it. Code added to a
+post-compact window must either allocate nothing, or run after a new deck
+is reserved. `phase-compact`'s own contract makes this reachable; it is
+not a defect in the allocator.
+
+The corollary is worth stating separately, because it is latent in
+shipping code: **a bivy value held live across a `deck-record` in that
+window is already exposed.** `proofs` in `compile-to-cdx-with-exit-mode`
+is one, and it survives only because nothing else allocates there.
 
 Phase boundaries are recorded in `PhaseMetrics` records and reported
 as `heap-marks` in the compile pipeline (`codex/compiler/opening.codex`).
@@ -212,7 +299,7 @@ Deck heights are fixed generous floors (`codex/compiler/Core/
 BuildSettings.codex`, Demand Decks section). The heap range
 [6 MB, 2 GB) boots with its PD entries not-present and a #PF handler
 commits identity 2 MB pages on first touch, so a floor costs address
-space, not memory — physical consumption is what a phase actually
+space, not memory -- physical consumption is what a phase actually
 writes. The survey-multiplier system that previously sized decks from
 source length was deleted 2026-07-07.
 The pipeline has 6 TEXT-mode frontend phases plus emit. CDX mode adds
@@ -267,12 +354,12 @@ moving those PatResult wrappers off the deck is the lever.
 | DESUGAR | 72 MB | 41.0 MB | 15.3x | 1.76x | reclaimed at frontend keep boundary |
 | SCOPE | 104 MB | 56.4 MB | 21.0x | 1.85x | standard |
 | CHECK | 648 MB | 200.2 MB | 74.6x | 3.24x | standard |
-| CHECK keep | 96 MB | not reported | — | — | reservation-copy |
-| Frontend keep | 192 MB | not reported | — | — | reservation-copy |
+| CHECK keep | 96 MB | not reported | -- | -- | reservation-copy |
+| Frontend keep | 192 MB | not reported | -- | -- | reservation-copy |
 | LOWER | 328 MB | 158.6 MB | 58.9x | 2.07x | reservation-copy |
 | RESOLVE | 200 MB (CDX only) | 19.4 MB | 7.2x | 10.3x | standard |
 | LIFT | 104 MB (CDX only) | 37.0 MB | 13.8x | 2.8x | standard |
-| EMIT | per-func | — | — | — | streaming (CL 3793) |
+| EMIT | per-func | -- | -- | -- | streaming (CL 3793) |
 
 **PARSE keep was 241 MB and is now 11.1 MB.** This row said 95.4x source and
 1.59x headroom, and it was measuring a defect rather than a workload:
@@ -367,14 +454,14 @@ list the caller still holds corrupts the entries after it -- tried
 2026-07-18, and it silently zeroed every phase after DESUGAR. Copy first.
 
 A phase that exceeds its floor halts with CDX9002 (DeckOverflow, now
-"deck floor exceeded") — retained as a hard guard, though the selfhost
+"deck floor exceeded") -- retained as a hard guard, though the selfhost
 runs at 2-6x headroom under every floor.
 
 ### Why the floors are flat, not derived
 
 The compiler used to size each phase deck from a formula over the source
 length (`survey-*-mul`). **That system is deleted.** The multipliers could
-not be sized honestly — they were non-monotonic (20 worked, 25 did not,
+not be sized honestly -- they were non-monotonic (20 worked, 25 did not,
 40 silently miscompiled a grown self-compile), and an under-reservation
 corrupted the heap rather than raising a diagnostic.
 
@@ -508,7 +595,7 @@ Emit deck
 ### Accumulator Capacity
 
 `accum-capacity` = **65536** (defined in `codex/compiler/Core/BuildSettings.codex`
-— this line said 32768 until it was re-measured; do not carry it forward).
+-- this line said 32768 until it was re-measured; do not carry it forward).
 
 All accumulator lists are pre-allocated via `__list-with-capacity`.
 `list-push` writes in-place with no allocation as long as the list
@@ -519,13 +606,13 @@ and halts with **CDX9002-band `CDX9005` (AccumOverflow)**.
 **Exceeding capacity corrupts the table; it does not merely cost heap.**
 A push past capacity doubles and reallocates like any other, and the new
 backing lands in the per-function bivy that `emit-all-defs` reclaims with
-`__heap-restore` — so the accumulator is left pointing at reclaimed memory.
+`__heap-restore` -- so the accumulator is left pointing at reclaimed memory.
 Measured, not assumed: built with `accum-capacity` at 16, the compiler
 emits a factorial whose call-patch target is the empty string, and the
 only complaint is `CDX2040: Unresolved call to ''`. This is why the
 accumulators are sized once on the deck and why the guard exists.
 
-**That guard was written and never called** until 2026-07-16 — this
+**That guard was written and never called** until 2026-07-16 -- this
 paragraph asserted it ran for as long as it did not. A guard defined and
 left unwired is worth exactly what no guard is worth.
 
@@ -570,11 +657,11 @@ Convention table above for the full register map.
 
 Spawned-process regions are slot-indexed, never carved from the
 spawner's R10: process slot N owns the fixed region
-`spawn-pool-base + N * spawn-slot-region-size` — 1 GB base, 32 MB per
+`spawn-pool-base + N * spawn-slot-region-size` -- 1 GB base, 32 MB per
 slot, 16 slots spanning [1 GB, 1.5 GB) of demand-paged address space.
 `__spawn_pool_carve` (X86_64ProcessHelpers) reads the claimed slot
 index from R12 and the region size from RDX, returning the heap base
-in RDI and the stack top in RSI — five instructions, no memory cell,
+in RDI and the stack top in RSI -- five instructions, no memory cell,
 no cursor.
 
 **The process table is the allocator.** A slot freed by exit or kill
@@ -588,7 +675,7 @@ through allocations). Pinned by `codex/test/spawn-reuse.codex`.
 
 Plain `process-spawn` regions hold `proc-spawn-heap-size` +
 `proc-spawn-stack-size` (1 MB + 1 MB); `process-spawn-with-heap`
-takes a caller-chosen heap size, bounds-checked at the call site —
+takes a caller-chosen heap size, bounds-checked at the call site --
 a request that cannot fit inside one slot region (heap + 1 MB stack
 > 32 MB) is refused with -1, never silently overlapped. The parent
 pre-touches the child's stack pages before the child first runs
@@ -599,9 +686,9 @@ above 1.5 GB (any `-mem` from ~1664 MB; the default is 3072).
 **Do not carve a spawn region from the spawner's own R10 frontier.** That
 is correct only for proc 0, which owns the whole heap; a spawned child
 owns a fixed region, so a child spawning a grandchild hands out memory
-overlapping its own stack. The slot table is the allocator — use it.
+overlapping its own stack. The slot table is the allocator -- use it.
 
-**Guest cell 36152 must never be claimed for metadata** — legacy codex-vm
+**Guest cell 36152 must never be claimed for metadata** -- legacy codex-vm
 builds read it as the retired 0x700000 output-ring write position.
 
 ### Collision Detection
@@ -625,14 +712,14 @@ compare on every function entry.
 
 ## Vector / SIMD Register Allocation
 
-Vector registers (XMM0–XMM15 on x86-64) are a separate allocation pool
+Vector registers (XMM0-XMM15 on x86-64) are a separate allocation pool
 from integer registers. The two domains never compete for the same
 physical register.
 
 | Role | Registers | Notes |
 |------|-----------|-------|
-| Vector temps | XMM0–XMM7 | Rotation scheme, like integer `alloc-temp` |
-| Vector locals | XMM8–XMM15 | Callee-saved in our convention |
+| Vector temps | XMM0-XMM7 | Rotation scheme, like integer `alloc-temp` |
+| Vector locals | XMM8-XMM15 | Callee-saved in our convention |
 | Scalar float | XMM0/XMM1 | Pre-SIMD usage for `Real` arithmetic |
 
 SSE2 packed instructions use 128-bit XMM registers. `Vector 2 Real`
@@ -644,7 +731,7 @@ SSE2 packed instructions use 128-bit XMM registers. `Vector 2 Real`
 Vector values carry natural alignment: `N * sizeof(T)` rounded up to
 the next power of two, minimum 16 bytes. The bump allocator (`__alloc`)
 rounds R10 up before allocation. Stack spill slots for vectors must also
-respect alignment — the prologue already aligns RSP to 16 bytes (SSE2
+respect alignment -- the prologue already aligns RSP to 16 bytes (SSE2
 minimum).
 
 Future AVX/AVX2 (YMM, 256-bit) requires 32-byte alignment. AVX-512
@@ -689,7 +776,7 @@ during `emit-process-setup`.
 
 #### The device gigabyte
 
-`emit-fill-device-pd` maps `[3 GB, 4 GB)` identity — present, read-write,
+`emit-fill-device-pd` maps `[3 GB, 4 GB)` identity -- present, read-write,
 NX (nothing up there is code). It costs one 4 KB page directory and
 nothing at runtime. `bare-metal-device-pd-index`, `-device-page-start`,
 `-device-page-end` and `-total-pd-count` are in `X86_64State.codex`.
@@ -698,7 +785,7 @@ This is where everything x86 puts above RAM lives: the LAPIC at
 0xFEE00000, the IOAPIC at 0xFEC00000, the HPET at 0xFED00000, and every
 PCI BAR codex-vm advertises. Until 2026-07-13 the tables stopped at
 `bare-metal-ram-size` and all of it was unmapped, which is why codex-vm's
-device model reaches almost everything through port I/O rather than MMIO —
+device model reaches almost everything through port I/O rather than MMIO --
 **the device model grew around a ceiling that is now gone.** Reach for
 MMIO first when adding a device.
 
@@ -710,13 +797,13 @@ only ever spans pages 3..1024, so it never reaches the device PD.
 
 The consequence to know: **a stray pointer above 3 GB now reaches the
 bus instead of faulting.** That is what it would do on real hardware,
-where those addresses are decoded by devices rather than by RAM — but it
+where those addresses are decoded by devices rather than by RAM -- but it
 does mean the page tables no longer catch a wild high pointer for you.
 
 ### Demand Paging (2026-07-07, hardened 2026-07-06 val CLs 7207-7210)
 
 Before the CR3 switch, boot clears the PD entries covering heap pages
-[6 MB, top) — the demand range. The top is computed from the actual
+[6 MB, top) -- the demand range. The top is computed from the actual
 RAM size (GPA 0xFE8): `min(1024, ram_pages - 32)` in 2 MB pages, so
 the top 64 MB of RAM always stays present for the boot stack and any
 `-mem` from ~128 MB boots. At 3 GB the top equals the 2 GB cap and
@@ -724,23 +811,23 @@ the stack/GOP region [2 GB, 3 GB) is present from boot.
 
 The first touch of each 2 MB page raises #PF (vector 14). The
 vector-14 stub preserves the CPU error code; the handler grows the
-heap only for not-present faults (error-code P=0) inside the range —
+heap only for not-present faults (error-code P=0) inside the range --
 it writes the identity PDE (`(CR2 & ~0x1FFFFF) | 0x83 | NX`),
 increments the touched-page counter (cell 30688, the honest physical
-metric — the R10 HWM reports floor reservations), invlpg, iretq.
+metric -- the R10 HWM reports floor reservations), invlpg, iretq.
 Protection or reserved-bit faults (P=1), out-of-range faults, and
 every other vector fall through to the exception dump. NX matters:
 everything above the code boundary is non-executable in the boot
 mapping, and demand pages match it.
 
-Invariant: a stack must never point into a not-present page — the CPU
-cannot deliver a #PF frame onto the faulting stack — so spawn helpers
+Invariant: a stack must never point into a not-present page -- the CPU
+cannot deliver a #PF frame onto the faulting stack -- so spawn helpers
 pre-touch every 2 MB page of the stacks they carve from the heap
 (`emit-spawn-stack-pretouch`, unrolled at emit time from
 `proc-spawn-stack-size`). When the invariant is violated anyway, the
 double fault is delivered on the TSS IST1 emergency stack (TSS at
 0x13000, GDT at 0x12800, 2 KB stack below 0x14800) and produces the
-standard `!EXC` dump instead of a silent triple fault. BSP only —
+standard `!EXC` dump instead of a silent triple fault. BSP only --
 an AP double fault is still fatal (per-core TSS is future work).
 
 ## SMP Memory Model
@@ -760,7 +847,7 @@ takes a core id with a locked exchange-add on cell 36256, takes its stack
 from the table by that index, loads the runtime GDT and IDT and its own
 task register, adds one to the ready count (cell 4080) with a locked add,
 and then goes to `__idle_dispatch` to look for work. The BSP spins on
-that count — on `pause`, not `hlt`: nothing sends the BSP an interrupt
+that count -- on `pause`, not `hlt`: nothing sends the BSP an interrupt
 when an AP checks in, so a halted BSP would never wake. The spin is fuel
 capped, so a core that never answers costs a delay and not the boot.
 
@@ -803,8 +890,8 @@ so the trampoline reads no MMIO at all.
 
 **Per-core TSS and emergency stacks.** A double fault is delivered on the
 stack named by IST1 in the TSS the task register points at. The task
-register is per-core and a TSS cannot be shared — two cores would fight
-over its busy bit and be handed the same emergency stack — so the GDT
+register is per-core and a TSS cannot be shared -- two cores would fight
+over its busy bit and be handed the same emergency stack -- so the GDT
 carries one TSS descriptor per core at selector `24 + core * 16`, the TSS
 array holds one 128-byte-strided entry per core at `0x13000`, and each
 core's IST1 points at its own 2 KB stack in `[0x15000, 0x1D000)`, below
@@ -819,9 +906,9 @@ the host throws away.
 
 **Per-core stacks.** Each AP gets an independent idle stack. The BSP
 stack starts at the actual RAM top (GPA 0xFE8). AP idle stacks live
-in always-present low memory — 16 KB each at
+in always-present low memory -- 16 KB each at
 `AP[i] stack = 0x20000 + i * 0x4000` ([0x20000, 0x60000), below the
-EBDA) — never in the demand-paged heap range, because an AP takes its
+EBDA) -- never in the demand-paged heap range, because an AP takes its
 first interrupt on this stack and the CPU cannot deliver a fault
 frame onto a not-present page. The guest writes these addresses to
 the stack table at GPA 0xF00 before SIPI; codex-vm falls back to
@@ -829,8 +916,8 @@ the stack table at GPA 0xF00 before SIPI; codex-vm falls back to
 work on an AP runs on scheduler-provided stacks.
 
 **Scheduling on an AP.** An application processor is not a special case.
-It goes to **`__idle_dispatch`** — the same routine the boot processor
-goes to when it runs out of work — walks the 16-slot process table,
+It goes to **`__idle_dispatch`** -- the same routine the boot processor
+goes to when it runs out of work -- walks the 16-slot process table,
 claims a READY slot with a `LOCK CMPXCHG` on the state word
 (READY → RUNNING), takes the time slice its priority is due, and resumes
 it. From that instant the core is running a real process, on that
@@ -842,7 +929,7 @@ booted and it owns the boot stack and the main heap.
 **A core that parks must leave the process's stack first.** This is the
 whole reason `__idle_dispatch` exists as a routine rather than a loop
 inlined at each site. A core with no work is still standing on the stack
-of the process it was last running — and `process-wait` marks itself
+of the process it was last running -- and `process-wait` marks itself
 BLOCKED, so the wake loop is about to mark it READY, another core will
 claim it, and resume it *on that stack*. Two cores, one stack; the parked
 core's next interrupt pushes a frame straight through the other core's
@@ -882,9 +969,9 @@ preempted exactly as one on the BSP is.
 
 Two clocks therefore arrive at `__interrupt_common`: **vector 32** (the
 PIT, on the BSP) and **vector 48** (an AP's local timer). They run the
-same scheduling path — it was always per-core-safe, deriving the running
+same scheduling path -- it was always per-core-safe, deriving the running
 process from the interrupted RSP and claiming a replacement with a
-CMPXCHG — and differ only in **which chip is told the interrupt is over**:
+CMPXCHG -- and differ only in **which chip is told the interrupt is over**:
 the 8259 for the PIT, the local APIC for the LAPIC timer
 (`emit-timer-eoi`). Send the wrong one and the raising chip believes the
 interrupt is still in service and never delivers another, which reads as a
@@ -941,6 +1028,20 @@ cross-core wake and TLB shootdown. Lock-free MPSC channels for
 message passing between cores.
 
 ## Known Platform Constraints
+
+### No exception record exists anywhere in the address map
+
+No handler stores a faulting vector, RIP or RSP. There is no cell to read
+"the last exception" from, and a debugger view that offers one is reading
+something else: three dev-console views did exactly that for months by
+reading `stdin-eof-settled-addr` and two scheduler cells, fixed in main
+11344.
+
+The only cells that ever hold a RIP are the watchdog's stall ring at
+`ii-wd-ring-buf-addr`: four 32-byte slots of RIP, RSP and heap pointer,
+written by the timer ISR when neither the heap pointer nor the saved RIP
+moved since the last tick. That is a STALL sample, not a trap frame, and
+anything reporting it must say so.
 
 ### 4 GB Barrier and MMIO Hole
 

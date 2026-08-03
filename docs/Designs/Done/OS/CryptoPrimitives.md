@@ -1,4 +1,4 @@
-# Crypto Primitives — Ed25519 and SHA-256 in Codex on Bare Metal
+# Crypto Primitives -- Ed25519 and SHA-256 in Codex on Bare Metal
 
 **Date**: 2026-03-31
 **Status**: Design
@@ -26,7 +26,7 @@ capability grant requires both primitives.
 
 The primitives must run on bare metal (x86-64, Ring 3, no OS, no libc).
 They must be implemented in Codex. They must be constant-time. There are
-no external dependencies to call — this is the bottom of the stack.
+no external dependencies to call -- this is the bottom of the stack.
 
 ---
 
@@ -45,12 +45,12 @@ no external dependencies to call — this is the bottom of the stack.
 
 3. **Auditable size.** Follow TweetNaCl's philosophy: small enough to
    audit by hand. TweetNaCl implements the full NaCl API in 100 tweets
-   (~770 lines of C). Our target is comparable — small enough that a
+   (~770 lines of C). Our target is comparable -- small enough that a
    single reviewer can read every line and verify correctness.
 
 4. **Test against published vectors.** SHA-256 tests against NIST
    FIPS 180-4 examples. Ed25519 tests against RFC 8032 Section 7.1
-   test vectors. No "it looks right" — either the output matches the
+   test vectors. No "it looks right" -- either the output matches the
    published vector byte-for-byte, or it's wrong.
 
 5. **Separation of concerns.** SHA-256 and Ed25519 are independent
@@ -61,7 +61,7 @@ no external dependencies to call — this is the bottom of the stack.
 
 ---
 
-## Data Representation — What `Bytes` Means
+## Data Representation -- What `Bytes` Means
 
 **Status: Decided.**
 
@@ -79,7 +79,7 @@ Codex has no dedicated byte-array primitive. The available types are:
 | `ConsList a` (prelude) | Linked list (cons cells) | O(n) traversal | 64-bit + pointer per cell | ~16x, no random access |
 
 **`List Integer` is the right choice.** The built-in `List a` type is array-
-backed on all native backends — heap-allocated with a pointer and length
+backed on all native backends -- heap-allocated with a pointer and length
 header, O(1) indexed access via `list-at`, O(1) length via `list-length`.
 This is NOT the prelude's `ConsList` (which is a linked cons list and would
 be catastrophic for crypto). Each element is a 64-bit machine word holding
@@ -95,7 +95,7 @@ unsafe reinterpretation of the encoding.
 ### Why not a new Bytes primitive?
 
 This is a post-MM4 feature. At implementation time, the self-hosted compiler
-is the only compiler — no C# reference compiler updates are needed. Adding
+is the only compiler -- no C# reference compiler updates are needed. Adding
 a packed `Bytes` primitive (1 byte per element, contiguous) is a language
 feature that can be added then if performance requires it. The implementation
 plan does not depend on it.
@@ -115,13 +115,13 @@ The 64-bit-per-byte representation affects cache utilization:
 
 - **SHA-256 block (64 bytes)**: 512 bytes in `List Integer` vs. 64 packed.
   Fits in L1 cache either way (typical L1 = 32KB). The compression function
-  operates on 32-bit words extracted from the block — `list-at` is O(1),
+  operates on 32-bit words extracted from the block -- `list-at` is O(1),
   so the algorithmic cost is unchanged. Cache line efficiency is ~8x worse
   per block read, but SHA-256 is compute-bound (64 rounds of arithmetic),
   not memory-bound.
 
 - **Ed25519 field elements**: Already represented as 5 × 64-bit limbs
-  (the `FieldElement` record). No `List Integer` involved — field arithmetic
+  (the `FieldElement` record). No `List Integer` involved -- field arithmetic
   operates on records of `Int64` values. The 8x overhead applies only to
   key/message/signature byte sequences, not to the inner loop.
 
@@ -212,7 +212,7 @@ sha-compress : ShaParams -> State -> Block -> State
 ```
 
 where `ShaParams` carries the word size, round count, constants, and
-rotation amounts. This is code reuse, not premature abstraction — both
+rotation amounts. This is code reuse, not premature abstraction -- both
 algorithms genuinely share the structure.
 
 ---
@@ -318,7 +318,7 @@ This gives us:
 Ed25519's security depends entirely on constant-time execution. The
 threat: an attacker measures how long sign or verify takes and extracts
 the private key from timing variations. On bare metal with no OS noise,
-timing signals are *cleaner* than on hosted systems — making this MORE
+timing signals are *cleaner* than on hosted systems -- making this MORE
 critical, not less.
 
 **Rules:**
@@ -374,7 +374,7 @@ critical, not less.
    - Do not strength-reduce multiplications in ways that create data-dependent timing
 
    This is a constraint on the x86-64 backend. Today the backend does minimal
-   optimization, which is actually a feature here — less optimization means
+   optimization, which is actually a feature here -- less optimization means
    fewer opportunities to break constant-time discipline. As the optimizer
    matures, it needs a `[ConstantTime]` annotation or effect that suppresses
    timing-sensitive optimizations.
@@ -407,7 +407,7 @@ From FIPS 180-4:
 
 From RFC 8032, Section 7.1:
 
-**Test 1 — zero key:**
+**Test 1 -- zero key:**
 ```
 Private key: 9d61b19deffd5a60ba844af492ec2cc4
               4449c5697b326919703bac031cae7f60
@@ -442,11 +442,11 @@ section.
 
 Beyond vector tests:
 
-1. **Round-trip**: Generate keypair, sign message, verify — must succeed.
-2. **Wrong key**: Sign with key A, verify with key B — must fail.
-3. **Tampered message**: Sign message M, verify with M' (one bit flipped) — must fail.
-4. **Tampered signature**: Flip one bit in signature, verify — must fail.
-5. **SHA-256 incremental**: Hash in one call vs. multiple update calls — must match.
+1. **Round-trip**: Generate keypair, sign message, verify -- must succeed.
+2. **Wrong key**: Sign with key A, verify with key B -- must fail.
+3. **Tampered message**: Sign message M, verify with M' (one bit flipped) -- must fail.
+4. **Tampered signature**: Flip one bit in signature, verify -- must fail.
+5. **SHA-256 incremental**: Hash in one call vs. multiple update calls -- must match.
 6. **SHA-256 block boundary**: Messages of length 55, 56, 63, 64, 119, 120, 127, 128 bytes (padding edge cases).
 7. **Field arithmetic**: Verify that multiply and reduce produce correct results for edge cases (0, 1, p-1, p, 2p-1).
 8. **Scalar arithmetic**: Verify reduction mod L for values near L, 2L, and 2^256.
@@ -490,7 +490,7 @@ test-constant-time op input1 input2 =
 5. Implement SHA-512 (same structure, different constants and word size)
 6. Verify against FIPS 180-4 vectors
 
-SHA-256 and SHA-512 are pure functions with no effects — they are ideal
+SHA-256 and SHA-512 are pure functions with no effects -- they are ideal
 early targets for bare-metal Codex because they exercise integer arithmetic,
 arrays, and loops, nothing else.
 
@@ -572,7 +572,7 @@ the Trust Network's per-message signature verification, this is well within
 the target: even at 1 GHz, an agent can verify ~800 messages per second.
 
 These are conservative estimates. The Codex backend currently does not
-optimize aggressively, which is acceptable — correctness and constant-time
+optimize aggressively, which is acceptable -- correctness and constant-time
 behavior are more important than speed. As the backend matures (register
 allocation improvements, instruction selection), performance will improve
 without changing the Codex source.
@@ -604,14 +604,14 @@ ed25519-verify : Bytes -> Bytes -> Bytes -> Bool  -- public key -> message -> si
 
 No key formats, no ASN.1, no PEM, no X.509. Raw 32-byte keys and 64-byte
 signatures. The CDX binary header (CodexBinary.md) stores them at fixed
-offsets — no parsing needed.
+offsets -- no parsing needed.
 
 **Note on sign API vs. TweetNaCl convention**: TweetNaCl concatenates the
 seed and public key into a single 64-byte "secret key" parameter. We pass
 them separately (`secret_key -> public_key -> message`) because:
 (a) the CDX binary header stores them at separate fixed offsets (0x28 for
 public key, secret key is never in the binary), so they arrive separately;
-(b) separating them makes the API self-documenting — a caller cannot
+(b) separating them makes the API self-documenting -- a caller cannot
 accidentally pass only a seed where a full 64-byte NaCl-style key is
 expected; (c) internally, sign concatenates them the same way TweetNaCl
 does, so there is no algorithmic difference.
@@ -665,27 +665,27 @@ streaming interface avoids buffering the entire binary in memory.
 
 ## Open Questions
 
-1. **Limb representation — DECIDED: 5x51-bit.** x86-64 is the only bare-
+1. **Limb representation -- DECIDED: 5x51-bit.** x86-64 is the only bare-
    metal target. We have 64-bit registers and efficient 64-bit multiply.
    The 5x51 representation (5 limbs, each ≤51 bits in a 64-bit word,
    ~13 bits of carry headroom) is the natural fit. TweetNaCl's 16x16-bit
    representation is more portable but wastes half the register width on
    x86-64. If other architectures are added post-Codex.OS, a 16x16
-   backend can be written then — it's a different module, not a change
+   backend can be written then -- it's a different module, not a change
    to the algorithm.
 
 2. **Batch verification.** Ed25519 supports batch verification (verify
    N signatures faster than N individual verifications via a random linear
    combination). This matters for the CDX loader verifying multiple proof
-   hashes. Defer to a follow-up — single verification first.
+   hashes. Defer to a follow-up -- single verification first.
 
 3. **`[ConstantTime]` effect or annotation.** Should the compiler track
    constant-time requirements in the type system? This would let the type
    checker reject `if secret-bit then ... else ...` patterns in crypto
-   code. Appealing but complex — defer until the optimizer is sophisticated
+   code. Appealing but complex -- defer until the optimizer is sophisticated
    enough to actually break constant-time patterns.
 
-4. **Wycheproof vectors — DECIDED: yes.** RFC 8032 vectors are necessary
+4. **Wycheproof vectors -- DECIDED: yes.** RFC 8032 vectors are necessary
    but not sufficient. Wycheproof's small-order point tests and non-
    canonical encoding tests catch exactly the class of bugs that produce
    "works in testing, broken in production" crypto. Implementation order:
@@ -693,12 +693,12 @@ streaming interface avoids buffering the entire binary in memory.
    Ed25519 suite as part of Phase E hardening. Any Wycheproof failure is
    a blocking bug.
 
-5. **128-bit multiply — DECIDED: add MUL r/m64 to encoder.** Field
+5. **128-bit multiply -- DECIDED: add MUL r/m64 to encoder.** Field
    multiplication in the 5x51 representation produces 102-bit intermediate
    products. The x86-64 `MUL r/m64` (unsigned, 128-bit result in RDX:RAX)
    is required. It is NOT in the encoder today (only 2-operand `IMUL r64,
    r/m64` exists, which truncates to 64 bits). `EncoderUpdates.md` specifies
-   the encoding: `[rex-w 0 rs, 0xF7, modrm 3 4 rs]` — same opcode group
+   the encoding: `[rex-w 0 rs, 0xF7, modrm 3 4 rs]` -- same opcode group
    as NEG and IDIV, trivial to add. Without this, field multiply degrades
    to 32-bit half-multiplies at roughly 4x the cost, making the Ed25519
    performance estimates invalid.
@@ -715,7 +715,7 @@ Phase D: Ed25519 sign + verify                [RFC 8032 vectors]
 Phase E: Integration + timing verification    [bare-metal harness, RDTSC]
 ```
 
-Phases A through D are pure computation — no effects, no I/O, no OS
+Phases A through D are pure computation -- no effects, no I/O, no OS
 interaction. They can be tested in the C# hosted environment (via the
 existing test infrastructure) before running on bare metal. Phase E is
 the bare-metal integration test.

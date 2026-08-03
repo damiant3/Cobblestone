@@ -172,7 +172,7 @@ function Extract-Kerning($b, $base, $cmap, $upem) {
                     }
                 }
             }
-            # Skip format 2 (class-based) for now — individual pairs are more precise
+            # Skip format 2 (class-based) for now -- individual pairs are more precise
         }
     }
     return $kernPairs
@@ -202,7 +202,7 @@ function Is-TextFont($b, $nt, $base) {
         if ($tag -eq "cmap") { $hasCmap = $true }
     }
     if (-not $hasGlyf -or -not $hasCmap) { return $false }
-    # Check 3: OS/2 sFamilyClass — reject class 12 (Symbolic) and 14 (Pictorial)
+    # Check 3: OS/2 sFamilyClass -- reject class 12 (Symbolic) and 14 (Pictorial)
     $os2o = Find-TableAt $b $nt "OS/2" $base
     if ($os2o -ge 0) {
         $familyClass = Read-I16 $b ($os2o+30)

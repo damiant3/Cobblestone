@@ -28,9 +28,18 @@ Chapter: Lz77
 
 Section: Constants
 
- The window and longest match are RFC 1951's, which is the tightest limit of the
- formats that read this matcher: Deflate allows 32768 and 258 exactly, and Brotli
- allows more, so these serve both.
+ The window is RFC 1951's. THE LONGEST MATCH IS NO LONGER A CONSTANT, because
+ serving both formats from the tighter of the two limits was costing Brotli most
+ of its ratio: 258 is Deflate's exact maximum and Brotli's is 16779333, so a
+ periodic input was being cut into a copy command every 258 bytes where one long
+ copy would do. Measured on the interop corpus, the 78000-byte cross-region case
+ came to 933 bytes against .NET's 170, and roughly 271 needless commands is where
+ that difference lived.
+
+ The cap is now a parameter of the search, and this constant is what Deflate's own
+ callers pass. Raising the constant instead would have been shorter and would have
+ emitted invalid Deflate, which nothing in the tree can currently catch: Deflate's
+ oracle harness was deleted with the compression stack.
 
   lz77-window-size : Integer = 32768
   lz77-window-mask : Integer = 32767
@@ -153,17 +162,17 @@ Section: Compression
   lz77-compress-loop : List Integer, Integer, Integer, List Integer, List Integer, List Integer -> List Integer
   lz77-compress-loop (input) (pos) (len) (acc) (head) (prev) =
     if pos >= len then acc
-    else when lz77-find-lazy input pos len head prev lz77-raw-lit-bits
+    else when lz77-find-lazy input pos len head prev lz77-raw-lit-bits lz77-max-match
       is Lz77Match (off) (mlen) ->
         lz77-compress-loop input (pos + mlen) len (acc & [1, off, mlen]) (lz77-insert-run input pos mlen len head prev) prev
       is Lz77Literal (b) ->
         lz77-compress-loop input (pos + 1) len (list-push acc 0 & [b]) (lz77-insert input pos len head prev) prev
 
-  lz77-find-match : List Integer, Integer, Integer, List Integer, List Integer, Integer -> Lz77Token
-  lz77-find-match (input) (pos) (len) (head) (prev) (lit-bits) =
+  lz77-find-match : List Integer, Integer, Integer, List Integer, List Integer, Integer, Integer -> Lz77Token
+  lz77-find-match (input) (pos) (len) (head) (prev) (lit-bits) (cap) =
     let h = lz77-hash-at input pos len
     in if h < 0 then Lz77Literal (list-at input pos)
-    else lz77-walk input pos len prev (list-at head h) 0 0 0 lit-bits
+    else lz77-walk input pos len prev (list-at head h) 0 0 0 lit-bits cap
 
  The walk stops on any of four things: the chain ends, it has looked at enough
  candidates, the next candidate is outside the window, or a link fails to point
@@ -173,18 +182,18 @@ Section: Compression
  Insisting each step move strictly earlier makes the walk finite whatever the
  tables hold.
 
-  lz77-walk : List Integer, Integer, Integer, List Integer, Integer, Integer, Integer, Integer, Integer -> Lz77Token
-  lz77-walk (input) (pos) (len) (prev) (cand) (steps) (best-off) (best-len) (lit-bits) =
+  lz77-walk : List Integer, Integer, Integer, List Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Lz77Token
+  lz77-walk (input) (pos) (len) (prev) (cand) (steps) (best-off) (best-len) (lit-bits) (cap) =
     if cand < 0 then lz77-settle input pos best-off best-len lit-bits
     else if steps >= lz77-chain-limit then lz77-settle input pos best-off best-len lit-bits
     else if pos - cand > lz77-window-size then lz77-settle input pos best-off best-len lit-bits
-    else let mlen = lz77-match-length input cand pos len 0
-    in if mlen >= lz77-max-match then Lz77Match (pos - cand) lz77-max-match
+    else let mlen = lz77-match-length input cand pos len 0 cap
+    in if mlen >= cap then Lz77Match (pos - cand) cap
     else let off2 = if mlen > best-len then cand else best-off
     in let len2 = if mlen > best-len then mlen else best-len
     in let nxt = list-at prev (bit-and cand lz77-window-mask)
     in if nxt >= cand then lz77-settle input pos off2 len2 lit-bits
-    else lz77-walk input pos len prev nxt (steps + 1) off2 len2 lit-bits
+    else lz77-walk input pos len prev nxt (steps + 1) off2 len2 lit-bits cap
 
  How many bits a literal is worth, guessed from the size of the alphabet the
  input uses. Two distinct bytes is one bit, sixteen is four, a full byte range is
@@ -246,27 +255,27 @@ Section: Compression
  chain being a hint again: the comparison is a little conservative and never
  wrong.
 
-  lz77-find-lazy : List Integer, Integer, Integer, List Integer, List Integer, Integer -> Lz77Token
-  lz77-find-lazy (input) (pos) (len) (head) (prev) (lit-bits) =
-    when lz77-find-match input pos len head prev lit-bits
+  lz77-find-lazy : List Integer, Integer, Integer, List Integer, List Integer, Integer, Integer -> Lz77Token
+  lz77-find-lazy (input) (pos) (len) (head) (prev) (lit-bits) (cap) =
+    when lz77-find-match input pos len head prev lit-bits cap
       is Lz77Literal (b) -> Lz77Literal b
       is Lz77Match (off) (mlen) ->
-        if mlen >= lz77-max-match then Lz77Match off mlen
+        if mlen >= cap then Lz77Match off mlen
         else if pos + 1 >= len then Lz77Match off mlen
-        else lz77-lazy-pick input pos len head prev off mlen lit-bits
+        else lz77-lazy-pick input pos len head prev off mlen lit-bits cap
 
-  lz77-lazy-pick : List Integer, Integer, Integer, List Integer, List Integer, Integer, Integer, Integer -> Lz77Token
-  lz77-lazy-pick (input) (pos) (len) (head) (prev) (off) (mlen) (lit-bits) =
-    when lz77-find-match input (pos + 1) len head prev lit-bits
+  lz77-lazy-pick : List Integer, Integer, Integer, List Integer, List Integer, Integer, Integer, Integer, Integer -> Lz77Token
+  lz77-lazy-pick (input) (pos) (len) (head) (prev) (off) (mlen) (lit-bits) (cap) =
+    when lz77-find-match input (pos + 1) len head prev lit-bits cap
       is Lz77Literal (b2) -> Lz77Match off mlen
       is Lz77Match (off2) (mlen2) ->
         if mlen2 > mlen then Lz77Literal (list-at input pos) else Lz77Match off mlen
 
-  lz77-match-length : List Integer, Integer, Integer, Integer, Integer -> Integer
-  lz77-match-length (input) (a) (b) (len) (count) =
-    if count >= lz77-max-match then count
+  lz77-match-length : List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  lz77-match-length (input) (a) (b) (len) (count) (cap) =
+    if count >= cap then count
     else if b + count >= len then count
-    else if list-at input (a + count) == list-at input (b + count) then lz77-match-length input a b len (count + 1)
+    else if list-at input (a + count) == list-at input (b + count) then lz77-match-length input a b len (count + 1) cap
     else count
 
 Section: Decompression

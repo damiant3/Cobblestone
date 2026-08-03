@@ -1,4 +1,4 @@
-# WHPX Host BSOD — 2026-04-30 (0x139 KERNEL_SECURITY_CHECK_FAILURE)
+# WHPX Host BSOD -- 2026-04-30 (0x139 KERNEL_SECURITY_CHECK_FAILURE)
 
 ## Filed at
 
@@ -8,10 +8,10 @@
 ## Summary
 
 Tenth host BSOD on this machine (see full history below), second today.
-Two QEMU guests (one from Nib, one from Cam — see cross-reference below)
+Two QEMU guests (one from Nib, one from Cam -- see cross-reference below)
 running under `-accel whpx` **with** `-machine kernel-irqchip=off` (the
 PowerShell harness) crashed the host during pingpong self-compilation.
-This is the first crash with `kernel-irqchip=off` active — all prior
+This is the first crash with `kernel-irqchip=off` active -- all prior
 crashes occurred either before the flag existed (CL 490, 04/29 10:45) or
 via the .sh harness which lacked it. The bugcheck class is also new:
 0x139 (KERNEL_SECURITY_CHECK_FAILURE / corrupt linked list) rather than
@@ -43,7 +43,7 @@ Same as prior report (`docs/Bugs/newbsod_irqchipoff.nib.md`). Unchanged:
 | 05:56:20 | CL 511 submitted (delete .sh scripts) |
 | ~06:05 | Agents resume, Cam and Nib both launch `pingpong-self.ps1` |
 | 06:11:54 | Nib's pingpong output: Phase 3 self-build → SUT 1,422,200 B (53s), canary OK (4s), Phase 4 Stage 1 begins |
-| ~06:25 | **Host BSOD** (estimated — between 06:14 and 06:28) |
+| ~06:25 | **Host BSOD** (estimated -- between 06:14 and 06:28) |
 | 06:28:01 | System reboots (LastBootUpTime) |
 | 06:28:09 | WER event logs bugcheck 0x139 |
 
@@ -66,19 +66,19 @@ Parameter 4:   0x0000000000000000   (reserved)
 
 ### Interpretation
 
-**Bugcheck 0x139** — the kernel detected internal data structure corruption
+**Bugcheck 0x139** -- the kernel detected internal data structure corruption
 via `__fastfail(FAST_FAIL_CORRUPT_LIST_HEAD)`. A doubly-linked list entry
-had invalid Flink/Blink pointers. This is a security hardening check —
+had invalid Flink/Blink pointers. This is a security hardening check --
 Windows validates list integrity before list operations and crashes rather
 than risk exploitation of a corrupted list.
 
-**Parameter 1 = 3 (FAST_FAIL_CORRUPT_LIST_HEAD)** — a `LIST_ENTRY`
+**Parameter 1 = 3 (FAST_FAIL_CORRUPT_LIST_HEAD)** -- a `LIST_ENTRY`
 structure was found with inconsistent forward/backward links. Common causes:
 use-after-free, double-free, buffer overrun into a list head, or concurrent
 unsynchronized list mutation. In the WHPX context, this is consistent with
 a race condition in partition, VCPU, or memory management structures.
 
-**Parameter 2 (`0xffffad0e2e116ec0`)** — the kernel-mode address where the
+**Parameter 2 (`0xffffad0e2e116ec0`)** -- the kernel-mode address where the
 corrupted list was detected. This is in the dynamic kernel pool range
 (not a well-known fixed structure like KUSER_SHARED_DATA was in the
 earlier 0x50 crash). Without symbols, the owning module cannot be
@@ -96,7 +96,7 @@ determined from the address alone.
 Nib ran `codex.build/pingpong-self.ps1` via the Claude Code PowerShell tool as a
 background task. The script uses `codex.build/qemu-config.ps1` which passes
 `-accel whpx` and `-machine kernel-irqchip=off`. The guest was in Phase 4,
-Stage 1 — the self-built SUT (1,422,200 bytes) was compiling its own source
+Stage 1 -- the self-built SUT (1,422,200 bytes) was compiling its own source
 (844,961 bytes) over the serial chardev.
 
 ### Cam's QEMU instance
@@ -106,7 +106,7 @@ harness, same flags. See `docs/Bugs/bsod_irqchipoff_139.cam.md`.
 
 ### Guest count: 2
 
-Both agents were running pingpong simultaneously — **two QEMU guests**,
+Both agents were running pingpong simultaneously -- **two QEMU guests**,
 not one. Both Nib's and Cam's individual reports initially claimed "single
 guest" because neither agent was aware of the other's QEMU process at the
 time of writing. The actual count was 2 concurrent guests under WHPX with
@@ -124,7 +124,7 @@ Both reports say "single guest." Corrected above: there were 2 guests.
 
 ### 2. Crash timestamp
 
-Cam says "2026-04-30 06:28:09 (local)" — this is the WER event log time
+Cam says "2026-04-30 06:28:09 (local)" -- this is the WER event log time
 (when the event was recorded after reboot), not the crash time. The 6008
 event says the actual shutdown was at 5:48:42 AM.
 
@@ -143,7 +143,7 @@ with `kernel-irqchip=off` (it is) or merely one of several (it is not).
 
 ### 4. Prior crash guest counts
 
-Cam's table says crashes 04/29 08:45 – 04/30 05:08 were "1 guest" by
+Cam's table says crashes 04/29 08:45 - 04/30 05:08 were "1 guest" by
 "Nib (.sh)". Corrections:
 
 - 04/29 08:05–09:04 cluster: sweep jobs=8 (multi-guest), per
@@ -198,7 +198,7 @@ All 9 crashes without `kernel-irqchip=off` produced page/IRQ/heap
 corruption codes. The single crash with the flag is a different class
 (list integrity check). This is consistent with `kernel-irqchip=off`
 eliminating the IRQ-path corruption but leaving a rarer corruption
-vector exposed — or with the 0x139 being from a different driver
+vector exposed -- or with the 0x139 being from a different driver
 entirely.
 
 ## Key finding

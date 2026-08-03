@@ -1,0 +1,70 @@
+Chapter: MixBitsTest
+  cites Foreword chapter Random
+
+ Pins the low-bit entropy of mix-bits, which is the property that was missing
+ from every hand-rolled mixer in the foreword and the reason a GA could not
+ initialise a binary genome.
+
+ The check is serial correlation, not balance, and the difference is the whole
+ point. Over 256 consecutive indices the OLD mixer
+ (bit-xor (seed * 2654435761) (idx * 40503)) produced 128 ones out of 256,
+ which is perfect balance, and 255 alternations out of 255, which is the comb
+ 0101010101... and carries no information whatever. A balance test certifies
+ that mixer. Only an alternation test can see it.
+
+ So the assertion here is that consecutive low bits are NOT a stripe, and the
+ old mixer is kept alongside as the negative control. A control that fails is
+ what makes the positive mean something, and this one fails by construction:
+ mix-old-alt is pinned at exactly 255.
+
+Section: The old mixer, kept as the control
+
+  mb-old : Integer, Integer -> Integer
+  mb-old (seed) (idx) = bit-xor (seed * 2654435761) (idx * 40503)
+
+Section: Counters
+
+  mb-ones : Integer, Integer, Integer, Integer -> Integer
+  mb-ones (seed) (i) (n) (acc) =
+    if i >= n then acc
+    else mb-ones seed (i + 1) n (acc + bit-and (mix-bits seed i) 1)
+
+  mb-alt : Integer, Integer, Integer, Integer -> Integer
+  mb-alt (seed) (i) (n) (acc) =
+    if i >= n then acc
+    else let a = bit-and (mix-bits seed i) 1
+    in let b = bit-and (mix-bits seed (i - 1)) 1
+    in mb-alt seed (i + 1) n (acc + (if a == b then 0 else 1))
+
+  mb-old-alt : Integer, Integer, Integer, Integer -> Integer
+  mb-old-alt (seed) (i) (n) (acc) =
+    if i >= n then acc
+    else let a = bit-and (mb-old seed i) 1
+    in let b = bit-and (mb-old seed (i - 1)) 1
+    in mb-old-alt seed (i + 1) n (acc + (if a == b then 0 else 1))
+
+ Range 2 is what the GA asked for and what the old mixer could not answer.
+ Counts how many of 256 seeds give a one, which must not be all or nothing.
+
+  mb-range2 : Integer, Integer, Integer -> Integer
+  mb-range2 (i) (n) (acc) =
+    if i >= n then acc
+    else mb-range2 (i + 1) n (acc + rand-in-range i 7 0 1)
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let ones = mb-ones 20260725 0 256 0
+    in let alt = mb-alt 20260725 1 256 0
+    in let oldalt = mb-old-alt 20260725 1 256 0
+    in let r2 = mb-range2 0 256 0
+    in act
+      print-line-uni ("ones/256:        " & show ones)
+      print-line-uni ("balanced:        " & show ((ones > 96) & (ones < 160)))
+      print-line-uni ("alternations:    " & show alt)
+      print-line-uni ("not a stripe:    " & show (alt < 200))
+      print-line-uni ("control alt:     " & show oldalt)
+      print-line-uni ("control striped: " & show (oldalt == 255))
+      print-line-uni ("range2 ones/256: " & show r2)
+      print-line-uni ("range2 spread:   " & show ((r2 > 96) & (r2 < 160)))
+    end

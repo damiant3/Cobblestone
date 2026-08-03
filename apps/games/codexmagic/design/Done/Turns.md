@@ -1,4 +1,4 @@
-# Turns — Phase Structure and Priority
+# Turns -- Phase Structure and Priority
 
 ## Turn Structure
 
@@ -6,27 +6,27 @@ A turn proceeds through these phases and steps in order:
 
 ```
 1. Beginning Phase
-   a. Untap step       — untap all permanents, no priority
-   b. Upkeep step      — triggered abilities, priority passes
-   c. Draw step        — active player draws, priority passes
+   a. Untap step       -- untap all permanents, no priority
+   b. Upkeep step      -- triggered abilities, priority passes
+   c. Draw step        -- active player draws, priority passes
 
 2. Pre-combat Main Phase
-   — play lands, cast sorceries/creatures/enchantments/artifacts
-   — priority passes
+   -- play lands, cast sorceries/creatures/enchantments/artifacts
+   -- priority passes
 
 3. Combat Phase
-   a. Beginning of combat step — priority
-   b. Declare attackers step   — active player declares, priority
-   c. Declare blockers step    — defending player declares, priority
-   d. Combat damage step       — damage dealt, priority
-   e. End of combat step       — priority
+   a. Beginning of combat step -- priority
+   b. Declare attackers step   -- active player declares, priority
+   c. Declare blockers step    -- defending player declares, priority
+   d. Combat damage step       -- damage dealt, priority
+   e. End of combat step       -- priority
 
 4. Post-combat Main Phase
-   — same as pre-combat main
+   -- same as pre-combat main
 
 5. Ending Phase
-   a. End step         — "at end of turn" triggers, priority
-   b. Cleanup step     — discard to hand size, remove damage, no priority (usually)
+   a. End step         -- "at end of turn" triggers, priority
+   b. Cleanup step     -- discard to hand size, remove damage, no priority (usually)
 ```
 
 ## Phase/Step Encoding

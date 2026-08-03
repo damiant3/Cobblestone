@@ -1,8 +1,8 @@
-# Camp II-C — Self-Hosted Native Build Chain on RISC-V
+# Camp II-C -- Self-Hosted Native Build Chain on RISC-V
 
 **Date**: 2026-03-22
 **Author**: Cam (Claude Code CLI, Opus 4.6, 1M context)
-**Status**: Design complete — ready to implement
+**Status**: Design complete -- ready to implement
 
 ---
 
@@ -68,7 +68,7 @@ Cons: [tag=1 : 8 bytes][head : 8 bytes][tail : 8 bytes]
 - `ConsList` = allocate Cons, store head + tail
 
 This matches sum type layout exactly: a list IS a sum type `Nil | Cons a (List a)`.
-The existing constructor/pattern-match machinery handles it — we just need to
+The existing constructor/pattern-match machinery handles it -- we just need to
 wire up the IR nodes.
 
 **Alternative considered**: Array-based (contiguous memory). Rejected because:
@@ -150,25 +150,25 @@ Currently falls through to `Reg.Zero`. Should:
 ## Implementation Plan
 
 ### Phase 1: Lists (~150 lines)
-1. Handle `IRList` in EmitExpr — emit Nil for empty, Cons chain for non-empty
-2. Add `ConsList` binary op — allocate Cons node
-3. Add `AppendList` binary op — walk to end, append
+1. Handle `IRList` in EmitExpr -- emit Nil for empty, Cons chain for non-empty
+2. Add `ConsList` binary op -- allocate Cons node
+3. Add `AppendList` binary op -- walk to end, append
 4. Add builtins: `list-length`, `list-at`, `list-head`, `list-tail`, `list-is-empty`
-5. Pattern matching already handles constructor patterns — lists are just sum types
+5. Pattern matching already handles constructor patterns -- lists are just sum types
 
 ### Phase 2: File I/O (~80 lines)
-1. `read-line` builtin — byte-at-a-time from fd 0
-2. `read-file` builtin — openat + read loop + close
-3. `write-file` builtin — openat + write + close
-4. `file-exists` builtin — openat attempt + close
+1. `read-line` builtin -- byte-at-a-time from fd 0
+2. `read-file` builtin -- openat + read loop + close
+3. `write-file` builtin -- openat + write + close
+4. `file-exists` builtin -- openat attempt + close
 5. `print-line` already works
 
 ### Phase 3: Lambdas / Closures (~200 lines)
-1. Free variable analysis — walk IRLambda body, find unbound names
-2. Lambda lifting — emit each lambda as a top-level function with closure param
-3. Closure allocation — heap-alloc [code_ptr][env...] at lambda creation site
-4. Indirect calls — `jalr` through function pointer for non-static calls
-5. Partial application — curried functions create intermediate closures
+1. Free variable analysis -- walk IRLambda body, find unbound names
+2. Lambda lifting -- emit each lambda as a top-level function with closure param
+3. Closure allocation -- heap-alloc [code_ptr][env...] at lambda creation site
+4. Indirect calls -- `jalr` through function pointer for non-static calls
+5. Partial application -- curried functions create intermediate closures
 
 ### Phase 4: IRError + Polish (~10 lines)
 1. IRError → print message to stderr, exit(1)
@@ -205,7 +205,7 @@ Currently falls through to `Reg.Zero`. Should:
 | Risk | Mitigation |
 |------|-----------|
 | Lambda lifting is complex | Start with non-capturing lambdas (just function pointers), add captures incrementally |
-| Register pressure with closures | Closure environment is on heap, loaded on demand — doesn't consume registers |
+| Register pressure with closures | Closure environment is on heap, loaded on demand -- doesn't consume registers |
 | Self-hosted compiler may use features we haven't audited | Run `codex build --target riscv` early to get error list, fix iteratively |
 | Stack overflow on deep recursion | Bootstrap runner already uses 256MB thread stack; RISC-V _start can set large stack |
 
@@ -257,7 +257,7 @@ is ~2 hours. The debugging is the unknown.
 
 The self-hosted compiler binary reads a file path from stdin, compiles
 the source, and writes C# to stdout. This is the same protocol as the
-bootstrap runner — it is not a test harness, it is the real compiler.
+bootstrap runner -- it is not a test harness, it is the real compiler.
 
 ### Prerequisites
 
@@ -308,7 +308,7 @@ RISC-V machine code, produces the same output as the C# bootstrap.
 
 ### Performance notes
 
-Under QEMU emulation the compiler is slow — the 493-definition binary
+Under QEMU emulation the compiler is slow -- the 493-definition binary
 does byte-by-byte string operations and recursive type checking. A
 simple test file may take 30-120+ seconds. Use `timeout 300` to avoid
 indefinite hangs. On real RISC-V hardware it would be significantly

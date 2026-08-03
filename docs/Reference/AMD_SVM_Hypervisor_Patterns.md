@@ -1,6 +1,6 @@
 # AMD SVM Hypervisor Patterns
 
-Source: [Type2-AMD-HV](https://github.com/whosstyler/Type2-AMD-HV) — a
+Source: [Type2-AMD-HV](https://github.com/whosstyler/Type2-AMD-HV) -- a
 hosted (Type-2) hypervisor for AMD Secure Virtual Machine (SVM) on
 Windows. Written in C + x86-64 assembly. Reviewed 2026-06-13.
 
@@ -31,7 +31,7 @@ pattern for execute-control on NPT hardware.
 
 Discovers unmapped DRAM gaps between firmware-reported physical memory
 ranges. These gaps exist on real hardware between E820/UEFI memory map
-entries — physical RAM that no OS memory manager knows about.
+entries -- physical RAM that no OS memory manager knows about.
 
 Algorithm:
 1. Scan gaps between known memory ranges; skip first two (legacy/main).
@@ -40,7 +40,7 @@ Algorithm:
 4. Skip past PE images (EFI runtime regions) rather than aborting.
 5. Bump-allocate sequentially from discovered regions.
 
-Used for VMCBs, host page tables, VMM stacks — all invisible to the OS.
+Used for VMCBs, host page tables, VMM stacks -- all invisible to the OS.
 
 Relevance: if Codex OS ever needs to reserve control structures that the
 guest cannot discover via its own memory map, this is the pattern. Also
@@ -69,8 +69,8 @@ Single PML4 entry covers the entire physical address space using 512
 PDPT entries with 2 MB large pages. Minimal TLB pressure, simple to
 construct, and sufficient for any machine with less than 512 GB RAM.
 
-Construction integrates MTRR (Memory Type Range Register) queries —
-both fixed-range and variable-range — to assign correct memory types
+Construction integrates MTRR (Memory Type Range Register) queries --
+both fixed-range and variable-range -- to assign correct memory types
 (WB, UC, WC) per physical address during page table construction.
 Uncacheable takes priority when ranges overlap.
 
@@ -82,10 +82,10 @@ bugs (especially around MMIO regions and framebuffers).
 
 The core loop in assembly:
 
-    VMLOAD  — restore guest hidden segment state from VMCB
-    VMRUN   — execute guest until exit
-    VMSAVE  — preserve guest segment state to VMCB
-    VMLOAD  — restore host hidden segment state
+    VMLOAD  -- restore guest hidden segment state from VMCB
+    VMRUN   -- execute guest until exit
+    VMSAVE  -- preserve guest segment state to VMCB
+    VMLOAD  -- restore host hidden segment state
 
 Context save/restore: 16 GPRs (0x80 bytes) + 16 XMM registers (0x100
 bytes) pushed to stack before calling the C exit handler. NRIP_SAVE

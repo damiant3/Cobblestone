@@ -12,8 +12,8 @@ An e-book reader application with a library browser and an in-app reading view. 
 
 ## Completeness
 
-40% — Library and reader views render correctly and view-switching works. Book Store and Audiobooks tabs have no views. Search is non-interactive. No actual book content loading, pagination, bookmarks, or annotations. Progress bars are hardcoded.
+40% -- Library and reader views render correctly and view-switching works. Book Store and Audiobooks tabs have no views. Search is non-interactive. No actual book content loading, pagination, bookmarks, or annotations. Progress bars are hardcoded.
 
 ## Codex Conformance
 
-Full — Written entirely in Codex. UI built through Widget/Theme foreword. DOM/state primitives declared as local stubs representing the plug boundary.
+Full -- Written entirely in Codex. UI built through Widget/Theme foreword. DOM/state primitives declared as local stubs representing the plug boundary.

@@ -34,17 +34,17 @@ repeat:
 | Block-bodied fns (TCO) | 376 | 0 | **376 mismatch** |
 | `_p0_` (partial app) lines | 24 | 241 | 217 spurious |
 | `object` (ErrorTy) lines | 5 | 114 | 109 spurious |
-| Diff sections (fc /N) | — | 39 | — |
-| Unification errors | — | 1,505 | — |
-| Type bindings | — | 377 | — |
+| Diff sections (fc /N) | -- | 39 | -- |
+| Unification errors | -- | 1,505 | -- |
+| Type bindings | -- | 377 | -- |
 
 ### Functions only in Stage 0
 
-`main` — the entry point, stripped from CodexLib.g.cs by design.
+`main` -- the entry point, stripped from CodexLib.g.cs by design.
 
 ### Functions only in Stage 1
 
-`map_list_loop`, `fold_list_loop`, `fold_list`, `map_list`, `Console` —
+`map_list_loop`, `fold_list_loop`, `fold_list`, `map_list`, `Console` --
 these are polymorphic utility functions that the reference compiler inlines
 or handles differently. `Console` is likely a false positive from a
 `Console.WriteLine` detection issue.
@@ -62,7 +62,7 @@ TCO loops. Stage 1 emits every function as expression-bodied (`=>`).
 calls and rewrites them as `while(true) { ...; continue; }` loops. The
 self-hosted emitter (`CSharpEmitter.codex`) does not implement TCO emission.
 
-**Impact**: This is the **largest single source of divergence** — it affects
+**Impact**: This is the **largest single source of divergence** -- it affects
 every function definition. It accounts for most of the 3,439 line count gap
 (TCO expands each function to ~10 lines vs 1 for expression-bodied).
 
@@ -71,7 +71,7 @@ every function definition. It accounts for most of the 3,439 line count gap
 `src/Codex.Emit.CSharp/CSharpEmitter.cs`. This is a **code generation
 change**, not a type system change.
 
-**Priority**: HIGH — but blocks on other fixes being stable first, since
+**Priority**: HIGH -- but blocks on other fixes being stable first, since
 TCO changes will massively change Stage 0 output, requiring a full
 re-baseline.
 
@@ -103,7 +103,7 @@ only 24 such lines (genuinely partial applications).
 - Constructor field types in pattern matching
 - Let-binding type propagation
 
-**Priority**: HIGH — this is the second-largest divergence source and directly
+**Priority**: HIGH -- this is the second-largest divergence source and directly
 blocks correctness.
 
 ### D3: `object` type leakage (109 spurious lines)
@@ -116,19 +116,19 @@ lowering produced `ErrorTy`. Stage 0 emits concrete types.
 - `new List<object>()` instead of `new List<IRExpr>()`
 - `((object code = char_code(c))` instead of `((long code = ...))`
 
-**Root cause**: Same as D2 — the self-hosted type checker returns `ErrorTy`
+**Root cause**: Same as D2 -- the self-hosted type checker returns `ErrorTy`
 for expressions it can't type, and `ErrorTy` maps to `object` in C#
 emission.
 
-**Fix**: Same as D2 — improve type inference. Every fix to the type checker
+**Fix**: Same as D2 -- improve type inference. Every fix to the type checker
 reduces both `_p0_` and `object` counts.
 
-**Priority**: HIGH — tied to D2.
+**Priority**: HIGH -- tied to D2.
 
 ### D4: Builtin function recognition failure
 
 **What**: Stage 0 emits `name.Replace("-", "_")` for `text-replace name "-" "_"`.
-Stage 1 emits `text_replace(name("-")("_"))` — it doesn't recognize the
+Stage 1 emits `text_replace(name("-")("_"))` -- it doesn't recognize the
 builtin pattern, AND the arguments are curried.
 
 **Root cause**: The self-hosted emitter's builtin detection (`emit-expr`
@@ -140,9 +140,9 @@ through to the generic function call path.
 1. **Type system**: Fix type inference so `text-replace` gets type
    `Text -> Text -> Text -> Text` instead of `ErrorTy`.
 2. **Emitter**: The self-hosted `CSharpEmitter.codex` `emit-expr` already
-   has builtin detection logic — once types are correct it should work.
+   has builtin detection logic -- once types are correct it should work.
 
-**Priority**: MEDIUM — affects ~20 builtin calls, but each is a localized
+**Priority**: MEDIUM -- affects ~20 builtin calls, but each is a localized
 fix once types work.
 
 ### D5: Type definition ordering
@@ -151,7 +151,7 @@ fix once types work.
 different orders. Stage 0 follows the order from the reference compiler's
 IR lowering; Stage 1 follows the self-hosted lowering order.
 
-**Impact**: Low — this is cosmetic and doesn't affect correctness. The
+**Impact**: Low -- this is cosmetic and doesn't affect correctness. The
 function definitions appear in the same order.
 
 **Fix**: Adjust type definition emission order in `CSharpEmitter.codex`
@@ -164,7 +164,7 @@ or accept the difference.
 **What**: Stage 0 emits `string.Concat(a, b)` for `++` on strings.
 Stage 1 emits `(a + b)`.
 
-**Impact**: Low — both are valid C# and produce identical runtime behavior.
+**Impact**: Low -- both are valid C# and produce identical runtime behavior.
 
 **Fix**: Change `emit-binary` in `CSharpEmitter.codex` to emit
 `string.Concat(...)` instead of `+` for `IrAppendText`. Or accept the
@@ -268,11 +268,11 @@ constructor detection. Stage 1 output grew from 129,085 → 151,893 (+18%).
 
 | Change | Errors | Stage 1 Size | Stage 0 Size | Notes |
 |--------|--------|-------------|-------------|-------|
-| Old emitter (342 lines) | 203 | — | — | Simple emitter |
-| New emitter + old CodexLib | 1,946 | — | — | — |
-| New emitter + new CodexLib | 1,317 | 139,327 | — | — |
-| Field access fix | 1,337 | 141,028 | — | — |
-| Compound-parse fix | 1,255 | 129,085 | 219,586 | — |
+| Old emitter (342 lines) | 203 | -- | -- | Simple emitter |
+| New emitter + old CodexLib | 1,946 | -- | -- | -- |
+| New emitter + new CodexLib | 1,317 | 139,327 | -- | -- |
+| Field access fix | 1,337 | 141,028 | -- | -- |
+| Compound-parse fix | 1,255 | 129,085 | 219,586 | -- |
 | Arity-flattening | 1,368 | 151,893 | 225,502 | +23K Stage 1 |
 | Lowering context threading | 1,505 | 168,021 | 243,370 | +16K Stage 1, +18K Stage 0 |
 

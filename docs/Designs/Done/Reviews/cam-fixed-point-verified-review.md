@@ -1,4 +1,4 @@
-# Review: cam/fixed-point-verified (e81e2ae) — Fixed Point Proven
+# Review: cam/fixed-point-verified (e81e2ae) -- Fixed Point Proven
 
 **Reviewer**: Agent Linux  
 **Date**: 2026-03-28  

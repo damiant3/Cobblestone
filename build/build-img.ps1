@@ -3,11 +3,19 @@
 # Layout:
 #   Sector 0:     Protective MBR
 #   Sector 1:     GPT header
-#   Sectors 2-33: GPT entries (1 partition)
-#   Sector 2048+: FAT16 partition
+#   Sectors 2-33: GPT entries (2 partitions)
+#   Sector 2048+: FAT ESP
 #     EFI/BOOT/BOOTX64.EFI  (the PE)
 #     SOURCE.SRC             (compiler source, if provided)
+#   Top of medium: the Codex fact store partition
 #   Last 33 sectors: backup GPT (entry array, then header AT the last sector)
+#
+# The second partition is why a booted stick can remember anything. DiskFacts
+# addresses its sectors relative to a partition of type
+# C0DE1A11-FAC7-4C0D-9E75-C0DEC0DE5EED, and on a disk that carries a partition
+# table and no such partition it refuses to write at all -- because writing
+# where it used to write ate the GPT. An image with one partition therefore
+# produces a stick whose dev console reports "0 disk facts" forever.
 #
 # Usage: build-img.ps1 -PeInput <file.efi> -Out <file.img> [-Source <file>] [-TotalSectors 16384]
 [CmdletBinding()]
@@ -21,6 +29,13 @@ param(
     # The CDX seed, written to the ESP root as CODEX.CDX. The booted payload
     # reads it back with its own drivers and verifies it (WakeCeremony).
     [string]$Seed = '',
+    # A bundled agent: the GGUF model and its signed manifest, written to the
+    # ESP root as AGENT.GGU and AGENT.MAN. Produced by
+    # `build/make-agent-bundle.ps1`; verified in the guest by
+    # `apps/works/AgentBundle.codex`. Both or neither -- a model with no
+    # manifest is unverifiable and a manifest with no model names nothing.
+    [string]$Agent = '',
+    [string]$AgentManifest = '',
     [int]$TotalSectors = 16384,
     # Format the ESP as FAT32 instead of FAT16 -- the layout every vendor
     # stick and every volume past 2 GB actually carries. A REAL FAT32 volume
@@ -35,16 +50,36 @@ trap { Write-Host "ERROR at line $($_.InvocationInfo.ScriptLineNumber): $_"; thr
 
 $SectorSize = 512
 $PartStart  = 2048
-$PartSectors = $TotalSectors - $PartStart - 33  # leave room for backup GPT
-$ImageSize  = $TotalSectors * $SectorSize
+$LastUsable = $TotalSectors - 34            # backup entry array starts at -33
+
+# The fact store takes an eighth of the medium off the top, capped at 128 MB
+# and floored at 1 MB; the ESP takes the rest. These three numbers are the
+# same policy codex/plugs/img/GptWriter.codex applies, and the two writers
+# must agree -- a stick built by one and read by a guest that believes the
+# other finds its store in the wrong place.
+$FactsSectors = [Math]::Min(262144, [Math]::Max(2048, [int]($TotalSectors / 8)))
+$FactsEnd     = $LastUsable
+$FactsStart   = $FactsEnd - $FactsSectors + 1
+$PartSectors  = $FactsStart - $PartStart    # the ESP, stopping below the store
+$ImageSize    = $TotalSectors * $SectorSize
+
+if ($PartSectors -le 0) {
+    throw "-TotalSectors $TotalSectors leaves no room for an ESP once the $FactsSectors-sector fact store is reserved"
+}
 
 $pe = [System.IO.File]::ReadAllBytes($PeInput)
 if ($Source -and (Test-Path $Source)) { $srcBytes = [System.IO.File]::ReadAllBytes($Source) } else { $srcBytes = [byte[]]::new(0) }
 if ($Seed -and (Test-Path $Seed)) { $seedBytes = [System.IO.File]::ReadAllBytes($Seed) } else { $seedBytes = [byte[]]::new(0) }
 if ($Font -and (Test-Path $Font)) { $fontBytes = [System.IO.File]::ReadAllBytes($Font) } else { $fontBytes = [byte[]]::new(0) }
+if ($Agent -and (Test-Path $Agent)) { $agentBytes = [System.IO.File]::ReadAllBytes($Agent) } else { $agentBytes = [byte[]]::new(0) }
+if ($AgentManifest -and (Test-Path $AgentManifest)) { $manBytes = [System.IO.File]::ReadAllBytes($AgentManifest) } else { $manBytes = [byte[]]::new(0) }
+if (($agentBytes.Length -gt 0) -ne ($manBytes.Length -gt 0)) {
+    throw "-Agent and -AgentManifest go together: a model with no manifest cannot be verified, and a manifest with no model names nothing."
+}
 
-Write-Host "[build-img] PE=$($pe.Length) bytes  Source=$($srcBytes.Length) bytes  Seed=$($seedBytes.Length) bytes  Image=$($ImageSize / 1MB) MB"
-$payloadBytes = $pe.Length + $srcBytes.Length + $seedBytes.Length
+Write-Host "[build-img] PE=$($pe.Length) bytes  Source=$($srcBytes.Length) bytes  Seed=$($seedBytes.Length) bytes  Agent=$($agentBytes.Length) bytes  Image=$($ImageSize / 1MB) MB"
+Write-Host "[build-img] ESP LBA $PartStart..$($PartStart + $PartSectors - 1) ($([math]::Round($PartSectors * $SectorSize / 1MB, 1)) MB)  facts LBA $FactsStart..$FactsEnd ($([math]::Round($FactsSectors * $SectorSize / 1MB, 1)) MB)"
+$payloadBytes = $pe.Length + $srcBytes.Length + $seedBytes.Length + $agentBytes.Length + $manBytes.Length
 if ($payloadBytes -gt ($PartSectors * $SectorSize * 0.9)) {
     throw "payload $payloadBytes bytes does not fit in $($PartSectors * $SectorSize); raise -TotalSectors"
 }
@@ -80,16 +115,47 @@ W32 ($gptOff + 16) 0           # CRC32 (filled later)
 W32 ($gptOff + 20) 0           # Reserved
 W64 ($gptOff + 24) 1           # MyLBA
 W64 ($gptOff + 32) ($TotalSectors - 1) # AlternateLBA
-W64 ($gptOff + 40) $PartStart  # FirstUsableLBA
+# 128 ENTRIES AND FirstUsableLBA 34, BECAUSE ANYTHING ELSE INVITES WINDOWS TO
+# "REPAIR" THE TABLE, AND ITS REPAIR LEAVES THE DISK UNBOOTABLE.
+#
+# UEFI reserves a MINIMUM of 16,384 bytes for the partition entry array: 128
+# entries of 128 bytes, LBA 2 through 33, with FirstUsableLBA at 34. This
+# header used to declare NumberOfPartitionEntries=2 (a 256-byte array) while
+# putting FirstUsableLBA at 2048, and the tail already reserved the full 33
+# sectors -- LastUsableLBA is TotalSectors-34 immediately below -- so the image
+# was internally inconsistent: it reserved room for 128 entries at the back and
+# claimed 2 at the front.
+#
+# Measured 2026-07-29: Windows repairs that table on sight, and its repair is
+# not cosmetic. PartitionEntryLBA is moved to sit immediately below
+# FirstUsableLBA (2 -> 2047), LastUsableLBA is moved to sit immediately below
+# the backup array (-34 -> -2), the backup array is moved to TotalSectors-2,
+# and the header CRCs are recomputed while the array CRC is left stale. Both
+# GPTs then fail validation, the good array is orphaned at LBA 2, and Windows
+# itself reports the disk as MBR. Firmware sees no partitions, which is the
+# "firmware never lists the stick" failure in HardwareSitting section 3b.
+#
+# The trigger is any partition-table re-read, and a raw write is one: AutoPlay
+# fires DURING the flash and the repair races the flasher, which is how
+# flash-usb's own fixup readback caught LBA 1 changing under it. Three
+# hypotheses were tested and killed first -- physical reinsertion, the
+# deterministic disk GUID, and disabling automount with mountvol /N -- so this
+# is what is left, and it is the one that matches what the repair changes.
+#
+# Rufus writes bootable sticks on this same Windows and they survive, which is
+# the existence proof that the behaviour is ours to avoid rather than Windows's
+# to be endured. Give it a conforming table and it has nothing to normalise.
+W64 ($gptOff + 40) 34          # FirstUsableLBA, immediately after the array
 W64 ($gptOff + 48) ($TotalSectors - 34) # LastUsableLBA
-# Disk GUID (random-ish)
+# Disk GUID: deterministic so the .img reproduces byte for byte and a recorded
+# digest means something. flash-usb randomises it on the MEDIUM at flash time.
 WBytes ($gptOff + 56) ([byte[]]@(0xC0,0xDE,0xC0,0xDE,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0A,0x0B,0x0C))
 W64 ($gptOff + 72) 2           # PartitionEntryLBA
-W32 ($gptOff + 80) 1           # NumberOfPartitionEntries
+W32 ($gptOff + 80) 128         # NumberOfPartitionEntries (UEFI 16 KB minimum)
 W32 ($gptOff + 84) 128         # SizeOfPartitionEntry
 W32 ($gptOff + 88) 0           # PartitionEntryArrayCRC32 (filled later)
 
-# --- GPT Partition Entry (sector 2) ---
+# --- GPT Partition Entry 0: the ESP (sector 2) ---
 $peOff = 2 * $SectorSize
 # EFI System Partition GUID: C12A7328-F81F-11D2-BA4B-00A0C93EC93B
 WBytes $peOff ([byte[]]@(0x28,0x73,0x2A,0xC1,0x1F,0xF8,0xD2,0x11,0xBA,0x4B,0x00,0xA0,0xC9,0x3E,0xC9,0x3B))
@@ -101,6 +167,19 @@ W64 ($peOff + 48) 0           # Attributes
 # Partition name: "EFI System" in UTF-16LE
 $pName = [System.Text.Encoding]::Unicode.GetBytes("EFI System")
 WBytes ($peOff + 56) $pName
+
+# --- GPT Partition Entry 1: the Codex fact store ---
+# Type C0DE1A11-FAC7-4C0D-9E75-C0DEC0DE5EED, mixed-endian on the medium. This
+# is the same 16 bytes as gpt-codex-facts-guid in codex/foreword/core/Gpt.codex
+# and in codex/plugs/img/GptWriter.codex; all three must agree.
+$fsOff = $peOff + 128
+WBytes $fsOff ([byte[]]@(0x11,0x1A,0xDE,0xC0,0xC7,0xFA,0x0D,0x4C,0x9E,0x75,0xC0,0xDE,0xC0,0xDE,0x5E,0xED))
+WBytes ($fsOff + 16) ([byte[]]@(0xAA,0xBB,0xCC,0xDD,0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88,0x99,0xAA,0xBB,0xCD))
+W64 ($fsOff + 32) $FactsStart
+W64 ($fsOff + 40) $FactsEnd
+W64 ($fsOff + 48) 0           # Attributes
+$fName = [System.Text.Encoding]::Unicode.GetBytes("Codex Facts")
+WBytes ($fsOff + 56) $fName
 
 # --- CRC32 for partition entries ---
 function Crc32($data, $off, $len) {
@@ -115,7 +194,12 @@ function Crc32($data, $off, $len) {
     return ($crc -bxor 0xFFFFFFFF) -band 0xFFFFFFFF
 }
 
-$entryCrc = Crc32 $img (2 * $SectorSize) 128
+# The CRC covers NumberOfPartitionEntries * SizeOfPartitionEntry, which is now
+# the full 16,384-byte reservation and not just the two populated entries. The
+# figure has to match the header fields above or firmware rejects the table;
+# the unused entries are zero and are part of the covered range.
+$entryArrayBytes = 128 * 128
+$entryCrc = Crc32 $img (2 * $SectorSize) $entryArrayBytes
 W32 ($gptOff + 88) $entryCrc
 
 # GPT header CRC (bytes 0-91 of header, with CRC field zeroed)
@@ -127,7 +211,7 @@ W32 ($gptOff + 16) $hdrCrc
 # image's last sector. Firmware that validates the backup (Dell) refuses the
 # disk without this; Windows "repairs" any image that omits it on insertion.
 $bakArrLba = $TotalSectors - 33
-[Array]::Copy($img, 2 * $SectorSize, $img, $bakArrLba * $SectorSize, 128)
+[Array]::Copy($img, 2 * $SectorSize, $img, $bakArrLba * $SectorSize, $entryArrayBytes)
 $bakHdrOff = ($TotalSectors - 1) * $SectorSize
 [Array]::Copy($img, $gptOff, $img, $bakHdrOff, 92)
 W32 ($bakHdrOff + 16) 0                 # CRC32 (recomputed below)
@@ -354,6 +438,14 @@ if ($seedBytes.Length -gt 0) {
 if ($fontBytes.Length -gt 0) {
     $fontCluster = Alloc-File $fontBytes
     Add-DirEntry $rootOff $rootIdx "CMUNSS  TTF" 0x20 $fontCluster $fontBytes.Length
+    $rootIdx++
+}
+if ($agentBytes.Length -gt 0) {
+    $agentCluster = Alloc-File $agentBytes
+    Add-DirEntry $rootOff $rootIdx "AGENT   GGU" 0x20 $agentCluster $agentBytes.Length
+    $rootIdx++
+    $manCluster = Alloc-File $manBytes
+    Add-DirEntry $rootOff $rootIdx "AGENT   MAN" 0x20 $manCluster $manBytes.Length
     $rootIdx++
 }
 

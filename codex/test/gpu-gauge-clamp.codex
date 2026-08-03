@@ -1,0 +1,76 @@
+Chapter: GpuGaugeClamp
+  cites Foreword chapter Console
+  cites UI chapter Theme
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter BoxModel
+  cites UI chapter GpuRender
+
+ A gauge fills the fraction of itself that its value is of its maximum,
+ so a value above that maximum is a fraction above one, and a fraction
+ above one is a rectangle wider than the widget it belongs to. The
+ framebuffer compositor has clamped since it was written. This backend
+ did not, so the same widget tree painted differently depending on which
+ renderer walked it, and on this one the difference lands on whatever
+ sits to the right.
+
+ Nothing already in the tree could see it. The triangle count cannot: an
+ over-wide rect is submitted and counted exactly as a correct one is, and
+ gpu-depth-tree already reads pixels but asks only whether the fill is
+ present at all, which it is in both cases. What distinguishes them is
+ WHERE the fill stops, so the instrument has to scan outside the widget.
+
+ The tree is a gauge pinned to a fixed width with an empty label taking
+ the rest of the row. A label emits text and no box, so nothing but the
+ root panel paints in the band to the gauge's right, and the root panel
+ paints its background and its border -- neither of which is pal-primary
+ in theme-terminal. A pal-primary pixel out there can only be gauge fill
+ that escaped.
+
+ Both readings are printed because either alone is uninformative. The
+ outside count answers the question; the inside count is the control that
+ says the gauge painted at all, without which a renderer that drew
+ nothing would report a clean outside and pass.
+
+Section: Body
+
+  fb-base : Integer = #BF000000
+  fb-w : Integer = 640
+  fb-h : Integer = 480
+
+  scan-row-band : Integer, Integer, Integer, Integer, Integer -> Integer
+  scan-row-band (y) (x) (xend) (target) (acc) =
+    if x >= xend then acc
+    else scan-row-band y (x + 4) xend target (acc + (if peek-32 fb-base ((y * fb-w + x) * 4) == target then 1 else 0))
+
+  scan-band : Integer, Integer, Integer, Integer, Integer -> Integer
+  scan-band (y) (x0) (x1) (target) (acc) =
+    if y >= fb-h then acc
+    else scan-band (y + 1) x0 x1 target (acc + scan-row-band y x0 x1 target 0)
+
+ The value is half again its maximum, so an unclamped fill runs half the
+ gauge's own width past its right edge.
+
+  probe-tree : WidgetNode
+  probe-tree =
+    widget-panel "root" DirRow 0 [
+      widget-set-flex (widget-set-min (widget-gauge "over" 150 100) 200 40) 0,
+      widget-set-flex (widget-label "pad" "") 1
+    ]
+
+  opening : [Gpu, Console] Nothing =
+    act
+      let th = theme-terminal
+      in let pal = th.th-palette
+      in let laid = widget-layout probe-tree th (layout-rect 0 0 fb-w fb-h)
+      in let g = list-at (laid.wn-children) 0
+      in let b = g.wn-bounds
+      in let gright = b.lr-x + b.lr-w
+      in act
+        c1 <- gr-clear (pal.pal-bg)
+        c2 <- gr-clear-depth
+        n <- gr-flush ((gr-render-tree (gf-new 4096) laid th gr-depth-scene).gf-idx)
+        print-line-uni ("inside: " & show (if scan-band 0 (b.lr-x) gright (pal.pal-primary) 0 > 0 then 1 else 0))
+        print-line-uni ("outside: " & show (if scan-band 0 (gright + 4) (fb-w - 8) (pal.pal-primary) 0 > 0 then 1 else 0))
+      end
+    end

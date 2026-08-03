@@ -42,7 +42,7 @@ Addressed by numeric path: /{ObjectID}/{InstanceID}/{ResourceID}
 | 6 | Location | Latitude, longitude, altitude, timestamp |
 | 7 | Connectivity Statistics | TX/RX bytes, packet counts |
 
-## Firmware Update (Object 5) — CRA Critical
+## Firmware Update (Object 5) -- CRA Critical
 
 State machine: Idle -> Downloading -> Downloaded -> Updating -> Idle
 Resources:
@@ -53,13 +53,13 @@ Resources:
 - Update Result (success/failure code)
 
 This object IS the OTA update mechanism that CRA requires. A Codex
-LwM2M client would serve Object 5 backed by the CDX verifier —
+LwM2M client would serve Object 5 backed by the CDX verifier --
 a firmware update that fails signature or capability verification
 reports Update Result = failure and stays on the current firmware.
 
 ## Implementation Notes for Codex
 
-- Built on CoAP — implement CoAP first, then LwM2M on top
+- Built on CoAP -- implement CoAP first, then LwM2M on top
 - Object model maps to Codex records (each object = a record type)
 - Resource operations (Read/Write/Execute/Observe) are effects
 - Bootstrap interface provisions device identity (Ed25519 keypair)

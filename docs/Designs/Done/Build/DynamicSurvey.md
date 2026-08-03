@@ -62,7 +62,7 @@ is perfectly sized.
 Move the measure-and-feed-back into the compiler itself:
 1. On first compilation of a source, use generous defaults.
 2. If a phase overflows, double the survey and restart that phase
-   (not the whole compilation — just `phase-compact` and re-pitch
+   (not the whole compilation -- just `phase-compact` and re-pitch
    with more deck).
 3. After compilation, persist the measured surveys in the CDX
    header or a companion fact.

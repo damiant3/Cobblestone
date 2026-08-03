@@ -1,4 +1,4 @@
-# Cross-architecture test harness — compile one test to ARM64/RISC-V,
+# Cross-architecture test harness -- compile one test to ARM64/RISC-V,
 # boot on Renode, compare UART output against .expected file.
 #
 # Usage:
@@ -53,7 +53,10 @@ $compileScript = Join-Path $Repo "codex\plugs\$plugName\compile-$plugName.ps1"
 # ── Locate test ──
 $testFile = Get-Item -Path "codex\test\$Test.codex" -ErrorAction SilentlyContinue
 if (-not $testFile) {
-    Write-Host "ERROR: test not found: codex\test\$Test.codex" -ForegroundColor Red
+    $testFile = Get-Item -Path "codex\test\ops\$Test.codex" -ErrorAction SilentlyContinue
+}
+if (-not $testFile) {
+    Write-Host "ERROR: test not found: codex\test\$Test.codex (or codex\test\ops\)" -ForegroundColor Red
     exit 1
 }
 

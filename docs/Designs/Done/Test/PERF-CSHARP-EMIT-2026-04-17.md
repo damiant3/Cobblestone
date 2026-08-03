@@ -1,4 +1,4 @@
-# C# emit-expr Profile — 2026-04-17
+# C# emit-expr Profile -- 2026-04-17
 
 Refresh of the C# emit profile now that the `emit-let`
 flatten fix has landed (commit `e939b91`). The earlier report
@@ -46,8 +46,8 @@ stable across runs; absolute times are inflated by JIT warmup vs.
 | IrList | 374 | 48,562 | 5.4 | 2.0 | 0.2% |
 | IrIf | 600 | 382,435 | 1.9 | 1.2 | 0.1% |
 | IrAct | 5 | 6,335 | 209.4 | 1.0 | 0.1% |
-| IrBoolLit / IrNegate / IrCharLit | 482 | 2,075 | — | 0.4 | 0.0% |
-| **Total** | 40,579 | 2.3 M | — | **901** | 100% |
+| IrBoolLit / IrNegate / IrCharLit | 482 | 2,075 | -- | 0.4 | 0.0% |
+| **Total** | 40,579 | 2.3 M | -- | **901** | 100% |
 
 ## Findings
 
@@ -62,12 +62,12 @@ effective; IrLet is no longer the hotspot.
 Same shape as the x86-side report. 8,869 calls × 51.8 µs/call = 459ms
 exclusive. Likely drivers (C# side, `CSharpEmitterExpressions.codex:458-474`):
 
-1. **`lookup-arity arities n`** — linear scan through all chapter defs
+1. **`lookup-arity arities n`** -- linear scan through all chapter defs
    (`lookup-arity-loop` at `CSharpEmitterExpressions.codex:93-102`).
    N ≈ 1,393 defs. Called once per IrApply whose root is IrName.
    `is-builtin-name` on the C# side is already a bsearch (line 229);
    `lookup-arity` is the remaining linear primitive.
-2. `collect-apply-chain` — recursive walk with per-level `[a] ++ acc`
+2. `collect-apply-chain` -- recursive walk with per-level `[a] ++ acc`
    concatenation. Quadratic in apply chain depth; chains are typically
    short (≤5).
 3. Dispatch cascade for constructor / direct / partial / curried paths.
@@ -93,7 +93,7 @@ table (same idiom as `is-builtin-name`).
 
 ## Fix targets, in priority order
 
-1. **`lookup-arity` linear-scan → bsearch.** Biggest leverage — touches
+1. **`lookup-arity` linear-scan → bsearch.** Biggest leverage -- touches
    both IrApply (8,869 calls) and IrName (2 × 18,905 = 37,810 calls)
    for a total of ~46K calls × O(1,393) → O(log 1,393). Existing
    precedent: `is-builtin-name` bsearch on `builtin-emitters` (line
@@ -105,12 +105,12 @@ table (same idiom as `is-builtin-name`).
 
 3. **IrName builtin-name cascade.** 10-way `n == "name"` chain for
    raw-reference builtins (`read-line`, `get-args`, `heap-save`, etc.).
-   Move to a small sorted table with bsearch. Secondary — only worth
+   Move to a small sorted table with bsearch. Secondary -- only worth
    doing after (1) and (2).
 
 4. **`collect-apply-chain` `[a] ++ acc`.** Quadratic in chain depth.
    Depth is bounded (~5) so small in absolute terms; skip unless
-   (1)–(3) land and IrApply is still hot.
+   (1)-(3) land and IrApply is still hot.
 
 ## Bare-metal extrapolation
 

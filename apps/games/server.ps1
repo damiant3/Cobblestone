@@ -1,4 +1,4 @@
-# server.ps1 — Codex game catalog and dashboard server.
+# server.ps1 -- Codex game catalog and dashboard server.
 # Usage: apps/games/server.ps1 [-Port 8080]
 [CmdletBinding()]
 param([int]$Port = 8080)
@@ -274,7 +274,7 @@ $script:GameBuf = New-Object byte[] 65536
 function Start-GameVm {
     $cdx = Join-Path $Repo 'build\output\GameServer.cdx'
     if (-not (Test-Path -PathType Leaf $cdx)) {
-        Write-Host "GameServer.cdx not found — compiling..." -ForegroundColor Yellow
+        Write-Host "GameServer.cdx not found -- compiling..." -ForegroundColor Yellow
         $src = Join-Path $Repo 'apps\games\GameServer.codex'
         $log = Join-Path $Repo 'build\output\game-server.log'
         New-Item -ItemType Directory -Force (Split-Path $cdx) | Out-Null
@@ -403,7 +403,7 @@ try {
             }
             elseif ($path -like '/api/*') {
                 if (-not $script:GameStream) {
-                    Write-Host "  Game VM down — restarting..." -ForegroundColor Yellow
+                    Write-Host "  Game VM down -- restarting..." -ForegroundColor Yellow
                     if ($script:GameVm) { Close-Vm -Conn $script:GameVm.Conn -Process $script:GameVm.Process 2>$null }
                     Start-GameVm
                 }
@@ -437,7 +437,7 @@ try {
                             $resp.OutputStream.Write($buf, 0, $buf.Length)
                         }
                     } else {
-                        Write-Host "  Game VM timeout — restarting..." -ForegroundColor Yellow
+                        Write-Host "  Game VM timeout -- restarting..." -ForegroundColor Yellow
                         if ($script:GameVm) { Close-Vm -Conn $script:GameVm.Conn -Process $script:GameVm.Process 2>$null }
                         $script:GameVm = $null; $script:GameStream = $null
                         Start-GameVm

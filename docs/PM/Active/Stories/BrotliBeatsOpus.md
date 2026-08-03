@@ -289,6 +289,43 @@ the first move.
 
 ---
 
+## What happened next -- 2026-07-27
+
+**It was rebuilt, and rule 1 was the first move.** Main CLs 10560-10624, closed by
+Damian on 2026-07-26. `Brotli`, `BrotliDict`, `BrotliDictIndex` and `Deflate` are
+back; `Fse`, `Gzip` and `Zstd` are not. So the present-tense sentence above --
+"Codex has no general-purpose compressor and no standard container format" -- was
+true when it was written and is not true now. **The narrative above is left exactly
+as it was**, because a post-mortem edited to match the present stops being evidence
+of anything. This section is the only correction.
+
+The reverse direction was written first, as instructed. READ is 5 of 5 against
+.NET-produced streams, including one carrying multiple meta-blocks, which is what a
+`Flush` makes and what an encoder that only ever emitted one would have failed.
+WRITE is 14 of 14 with a corrupted stream still refused. The encoder is frozen at
+105.7 per cent of .NET and ratio work is explicitly declined.
+
+**The rebuild found a second lesson this file did not contain, and it is worth more
+to a cold reader than the first.** Nobody had ever put the specification in the
+tree. RFC 7932 is free and has been since 2016, and instead five sessions of agents
+mined the format and its 122 KB of data tables out of .NET by observation -- which
+is a large part of how a decoder that only read its own output came to look
+reasonable for three days. When the RFC was finally downloaded to
+`docs/Reference/RFC7932-Brotli.txt`, all four extracted tables matched their
+published CRC-32 check values on the first try. So the archaeology had been right,
+and it had also been unnecessary. **Read the published specification before you
+point an oracle at anything.** An oracle exercises only the streams it happens to
+emit; a specification covers the ones it does not, which is why the remaining
+defensible item here is a decoder conformance pass rather than more oracle runs.
+
+The rule from this file is now quoted in `docs/DevelopersRulebook.md`, stated as
+applying to every codec rather than to Brotli, and it earned its keep again within
+the day: `fetch-tls` was recorded as "proven on loopback" while no test in the tree
+called it, and the harness written to point a foreign server at it found a defect on
+first contact.
+
+---
+
 *The founding document asks for a system that "exists for human reading and
 machine." A decoder that reads only its own encoder satisfies the machine and
 lies to the human. That is the whole story in one sentence.*

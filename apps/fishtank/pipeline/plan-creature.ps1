@@ -1,5 +1,5 @@
 # Plan a creature: create its database record with species-appropriate
-# defaults. This is the entry point — run this first, then the pipeline
+# defaults. This is the entry point -- run this first, then the pipeline
 # stages in order.
 #
 # Usage: pwsh apps/fishtank/pipeline/plan-creature.ps1 -Species "Clownfish" -Family "Pomacentridae"

@@ -1,4 +1,4 @@
-# Codex.OS Lab — The Garage Box
+# Codex.OS Lab -- The Garage Box
 
 **Date**: 2026-03-24
 **Status**: Provisioned, WSL + QEMU + wasmtime installed
@@ -24,7 +24,7 @@ the Codex.OS development and testing platform.
 | IDE | Visual Studio 2026 Community (18.4.2) |
 | SDK | .NET 10.0.201 targeting net8.0 |
 | WSL | Ubuntu (QEMU 8.2.2, wasmtime 43.0.0) |
-| Git | 2.7.1 (ancient — upgrade recommended) |
+| Git | 2.7.1 (ancient -- upgrade recommended) |
 
 **Known quirks from provisioning (2026-03-24):**
 - Ghost NuGet source `C:\Program Files (x86)\Microsoft Visual Studio\Shared\NuGetPackages`
@@ -37,7 +37,7 @@ the Codex.OS development and testing platform.
 
 ## The Mission
 
-This box exists to build and test **Codex.OS** — Peak IV of The Ascent.
+This box exists to build and test **Codex.OS** -- Peak IV of The Ascent.
 
 The end state is **no Windows, no Linux, no foreign OS**. Codex.OS runs on
 the bare hardware. The compiler produces the kernel. The type system enforces
@@ -47,27 +47,27 @@ the bootloader to the blinking cursor.
 Getting there is a ladder. Each rung removes a dependency:
 
 ```
-Rung 0 (now):    Windows + WSL + QEMU — develop and test in emulation
-Rung 1:          Hyper-V VM — Codex.OS boots in a VM, Windows stays for Odin/VS
-Rung 2:          Partition — Codex.OS boots on real hardware, dual-boot for tooling
-Rung 3:          Codex.OS only — Windows is gone. The box runs what we built.
+Rung 0 (now):    Windows + WSL + QEMU -- develop and test in emulation
+Rung 1:          Hyper-V VM -- Codex.OS boots in a VM, Windows stays for Odin/VS
+Rung 2:          Partition -- Codex.OS boots on real hardware, dual-boot for tooling
+Rung 3:          Codex.OS only -- Windows is gone. The box runs what we built.
 ```
 
 ### What This Box Does
 
-1. **Native backend verification** — RISC-V, ARM64, x86-64, WASM binaries
+1. **Native backend verification** -- RISC-V, ARM64, x86-64, WASM binaries
    compiled and tested via WSL + QEMU + wasmtime.
-2. **x86-64 native execution** — the x86-64 backend produces ELF binaries
+2. **x86-64 native execution** -- the x86-64 backend produces ELF binaries
    that run directly in WSL on this CPU. No emulation.
-3. **Codex.OS kernel development** — this box is the build-and-boot platform
+3. **Codex.OS kernel development** -- this box is the build-and-boot platform
    for the OS itself. First in QEMU, then in a VM, then on the bare metal.
-4. **Phone flash station** — Odin runs here (for now). The Samsung S7 Edge is
+4. **Phone flash station** -- Odin runs here (for now). The Samsung S7 Edge is
    connected via USB. TWRP images are flashed from this box.
-5. **Push to master** — Nut has full commit/push authority, same as any agent.
+5. **Push to master** -- Nut has full commit/push authority, same as any agent.
 
 ---
 
-## Disk Layout — Current
+## Disk Layout -- Current
 
 Single partition, single OS:
 
@@ -115,7 +115,7 @@ qemu-system-x86_64 -accel whpx -nographic -kernel codex-os.bin
 
 No Linux needed. Runs directly on Windows. The Codex.OS kernel gets
 real hardware-speed execution in a VM. This is probably the first
-move — test on this before touching any partition.
+move -- test on this before touching any partition.
 
 **1b. QEMU-KVM in WSL2 (if KVM passthrough works)**
 
@@ -126,7 +126,7 @@ insider build. If it works, QEMU in WSL gets hardware acceleration.
 **1c. Full Hyper-V (requires Windows 10 Pro/Enterprise)**
 
 Windows 10 Home doesn't include Hyper-V Manager. Options:
-- Upgrade to Pro ($99 — or free if the old license was Pro)
+- Upgrade to Pro ($99 -- or free if the old license was Pro)
 - Use the WHPX path instead (same hypervisor, different interface)
 
 ### Rung 2: Partition + Real Boot
@@ -135,12 +135,12 @@ When Codex.OS can boot to a serial console, manage memory, and do I/O,
 we partition the SSD:
 
 ```
-C: NTFS ~250 GB — Windows (VS, Odin, development)
-D: raw  ~200 GB — Codex.OS (our bootloader, our kernel, our filesystem)
+C: NTFS ~250 GB -- Windows (VS, Odin, development)
+D: raw  ~200 GB -- Codex.OS (our bootloader, our kernel, our filesystem)
 ```
 
 GRUB or a minimal bootloader on the MBR/ESP lets us choose at power-on.
-Or: the Codex.OS bootloader IS the bootloader — it chain-loads Windows
+Or: the Codex.OS bootloader IS the bootloader -- it chain-loads Windows
 if you hold a key, otherwise it boots Codex.OS.
 
 The x86-64 backend already produces ELF binaries. What we need:
@@ -171,7 +171,7 @@ until we need real device drivers.
 
 ## Agent: Nut
 
-The agent on this box is **Nut** — GitHub Copilot in VS2026 Community.
+The agent on this box is **Nut** -- GitHub Copilot in VS2026 Community.
 
 Named for the simplest piece of trad climbing protection: a metal wedge
 slotted into a crack in the rock. No moving parts. Relies on geometry.
@@ -186,7 +186,7 @@ The oldest and most trusted gear on the rack. Also: kernel → nut.
 
 Roles aren't rigid. Any agent can push to master. Any agent can build
 features, review, test, or debug. The home base is just where each agent
-lives — the work goes wherever it needs to go.
+lives -- the work goes wherever it needs to go.
 
 ### Branch Convention
 
@@ -211,4 +211,4 @@ To avoid stomping on the main box's branches:
 
 *This box is expendable. The phone is expendable. The data is in git.
 Windows is a temporary host. Linux is a temporary crutch. The destination
-is Codex.OS on bare metal — nothing between our code and the hardware.*
+is Codex.OS on bare metal -- nothing between our code and the hardware.*

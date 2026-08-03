@@ -11,8 +11,8 @@ A five-column Kanban board (Backlog, To Do, In Progress, Review, Done) with prio
 
 ## Completeness
 
-55% — Dynamic card rendering from state is the most fully realized data model of the single-file apps. New-task creation logic is complete on the Codex side, blocked only by the `show-prompt` stub. No drag-and-drop. Clicking existing cards does nothing.
+55% -- Dynamic card rendering from state is the most fully realized data model of the single-file apps. New-task creation logic is complete on the Codex side, blocked only by the `show-prompt` stub. No drag-and-drop. Clicking existing cards does nothing.
 
 ## Codex Conformance
 
-Partial — Codex source; `show-prompt` is stubbed as a platform call (consistent with plug model).
+Partial -- Codex source; `show-prompt` is stubbed as a platform call (consistent with plug model).

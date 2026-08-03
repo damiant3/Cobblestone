@@ -1,4 +1,4 @@
-# WHPX Host BSOD — 2026-04-30 (3 guests, no kernel-irqchip=off)
+# WHPX Host BSOD -- 2026-04-30 (3 guests, no kernel-irqchip=off)
 
 ## Filed at
 
@@ -12,7 +12,7 @@ Running **only 3** long-lived QEMU guests in parallel under `-accel whpx`
 after ~5 minutes of sustained self-compilation workload. This is well below
 the prior "safe" threshold of jobs=4 from the rapid-churn sweep scenario
 (CL 483/484), and proves that high create/destroy churn is NOT required to
-trigger the bug — sustained WHPX partition activity alone is sufficient.
+trigger the bug -- sustained WHPX partition activity alone is sufficient.
 
 The effective variable is `-machine kernel-irqchip=off`. All 4 BSODs on this
 host occurred without it. The cam validation run with `kernel-irqchip=off`
@@ -28,7 +28,7 @@ went 40+ iterations stable under jobs=7 with full pinning.
 - **Storage**: WD Blue SN5000 500GB NVMe (system), Seagate ST4000DX001 4TB SATA (data)
 - **QEMU**: 11.0.0, build `v11.0.0-12122-ga4bb4b10c9` (Stefan Weil's 2026-04-22 Windows installer)
 - **QEMU binary**: `D:\Program Files\qemu\qemu-system-x86_64.exe`
-- **WSL QEMU** (for reference): 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.16) — NOT used in this crash
+- **WSL QEMU** (for reference): 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.16) -- NOT used in this crash
 - **VBS**: Running (Base Virtualization Support, APIC Virtualization)
 
 ### Hyper-V / WHPX kernel drivers
@@ -46,10 +46,10 @@ went 40+ iterations stable under jobs=7 with full pinning.
 
 | Time | Event |
 |---|---|
-| 04:51:28 | Cam QEMU #1 (PID 23992) started — long-running self-compilation |
-| 04:53:25 | Nib QEMU (PID 26508) started — pingpong-self.sh stage 1 (TEXT mode) |
-| 04:58:33 | **Host BSOD** — unexpected shutdown |
-| 05:03:32 | Cam QEMU #2 (PID 24668) started — post-reboot (irrelevant, listed for completeness) |
+| 04:51:28 | Cam QEMU #1 (PID 23992) started -- long-running self-compilation |
+| 04:53:25 | Nib QEMU (PID 26508) started -- pingpong-self.sh stage 1 (TEXT mode) |
+| 04:58:33 | **Host BSOD** -- unexpected shutdown |
+| 05:03:32 | Cam QEMU #2 (PID 24668) started -- post-reboot (irrelevant, listed for completeness) |
 | 05:08:36 | System boot completed, event log entries written |
 
 Duration from first guest to crash: **~7 minutes** of sustained 2-3 guest activity.
@@ -70,7 +70,7 @@ Parameter 4:   0x0000000000000002   (reserved)
 
 **Parameter 1 (`0xfffff78000002004`)**: This is offset `+0x2004` into
 `KUSER_SHARED_DATA` (base `0xfffff78000000000`). This is a system-critical
-kernel page that is supposed to be permanently mapped — it contains the
+kernel page that is supposed to be permanently mapped -- it contains the
 `SharedDataFlags` and `TestRetInstruction` fields used by the kernel's
 self-test and timing infrastructure. A page fault on this address means the
 kernel's own page table mappings have been corrupted. This page is never
@@ -87,7 +87,7 @@ minidump to WinDbg with Microsoft symbols will resolve this to
 **A minidump was saved**: `C:\Windows\Minidump\043026-7656-01.dmp`
 **Report ID**: `c663560a-8606-4ab3-a014-de9c97b52479`
 
-This is notable — prior crashes in the 0xA/0x13A/0x7F cascade often killed
+This is notable -- prior crashes in the 0xA/0x13A/0x7F cascade often killed
 the dump-write path before flush. The 0x50 bugcheck alone (without the
 full cascade) apparently survived to disk. This dump should be attached to
 both upstream reports.
@@ -125,7 +125,7 @@ Effective command line (reconstructed from script source):
 - **Kernel ELF**: 1,422,200 bytes, self-built by the seed in Phase 3 (51s)
 - **Guest workload**: Compiling its own 844,961-byte source (full self-compilation)
 - **Protocol**: `TEXT\n` header + source bytes + `\x04` EOT pumped on COM1 data socket; output collected on COM1; READY received on COM2
-- **Expected duration**: ~48 seconds. Had been running 5+ minutes at crash time — likely in a hot emit loop.
+- **Expected duration**: ~48 seconds. Had been running 5+ minutes at crash time -- likely in a hot emit loop.
 - **No CPU affinity pinning** (bash harness doesn't support it)
 - **No `-machine kernel-irqchip=off`** (bash `qemu-config.sh` doesn't pass it)
 - **Port range**: nib agent slot uses ports 57600-64998 (stride 2)
@@ -181,9 +181,9 @@ unconditionally since CL 490's investigation.
 
 2. **`kernel-irqchip=off` is the effective discriminator.** Every crash on this host occurred without it. The 40+ iteration validation run with `kernel-irqchip=off` (same QEMU version, same host, jobs=7, full pinning) never crashed. The bash harness lacks this flag; the PowerShell harness has it.
 
-3. **The corruption is in kernel page management.** The progression from 0x4E (PFN list corrupt) to 0x50 (page fault in nonpaged area) on `KUSER_SHARED_DATA` indicates physical page tracking corruption — a page that should be permanently mapped lost its mapping. This is consistent with a use-after-free or double-free in the WHPX/Vid.sys virtual-to-physical page management path when the in-kernel IRQ chip is active.
+3. **The corruption is in kernel page management.** The progression from 0x4E (PFN list corrupt) to 0x50 (page fault in nonpaged area) on `KUSER_SHARED_DATA` indicates physical page tracking corruption -- a page that should be permanently mapped lost its mapping. This is consistent with a use-after-free or double-free in the WHPX/Vid.sys virtual-to-physical page management path when the in-kernel IRQ chip is active.
 
-4. **jobs=4 is not a safe threshold** without `kernel-irqchip=off`. The prior report stated jobs=4 was "indefinitely stable" — that was tested under the sweep pattern (rapid churn). Long-running compilations with only 3 guests still triggered it. The safe threshold is: use `kernel-irqchip=off`, regardless of guest count.
+4. **jobs=4 is not a safe threshold** without `kernel-irqchip=off`. The prior report stated jobs=4 was "indefinitely stable" -- that was tested under the sweep pattern (rapid churn). Long-running compilations with only 3 guests still triggered it. The safe threshold is: use `kernel-irqchip=off`, regardless of guest count.
 
 ## QEMU source: what `-machine kernel-irqchip=off` changes
 
@@ -193,7 +193,7 @@ Windows hypervisor's virtual APIC. With WHPX, the default `kernel-irqchip=on`
 routes interrupts through `WHvRequestInterrupt()` / the in-kernel virtual
 LAPIC provided by `winhvr.sys`. The hypothesis is that the WHPX kernel-mode
 interrupt delivery path (`winhvr.sys` or `Vid.sys`) has a memory management
-bug — likely a race condition in partition teardown or interrupt coalescing —
+bug -- likely a race condition in partition teardown or interrupt coalescing --
 that corrupts kernel page tables under sustained load.
 
 ## Reproducer (updated)
@@ -236,14 +236,14 @@ concurrent instances.
    - `042926-6875-01.dmp` (0x4E)
    - `042926-8031-01.dmp` (0x50)
    - `042926-7984-01.dmp` (0x50)
-   - `043026-7656-01.dmp` (0x50) — **this crash**
+   - `043026-7656-01.dmp` (0x50) -- **this crash**
 2. **Updated finding**: minimal reproducer is 3 long-lived guests, not 8 rapid-cycling. The bug is in sustained WHPX IRQ chip activity, not create/destroy churn.
-3. **`kernel-irqchip=off` is the confirmed workaround** — 40+ iterations stable under aggressive parallel load.
+3. **`kernel-irqchip=off` is the confirmed workaround** -- 40+ iterations stable under aggressive parallel load.
 4. **Request**: can QEMU's WHPX backend default to `kernel-irqchip=off` on Windows, or at least emit a warning when running multiple WHPX guests with the in-kernel IRQ chip?
 
 ### For Microsoft (Feedback Hub)
 
-1. Attach the minidumps — they should resolve the faulting instruction to a specific driver+offset.
+1. Attach the minidumps -- they should resolve the faulting instruction to a specific driver+offset.
 2. The `KUSER_SHARED_DATA` page fault (crash #4) is the strongest signal: this is a permanently-mapped page, so its mapping being torn indicates kernel-mode page table corruption.
 3. Affected drivers: `winhvr.sys` 10.0.26100.7309, `Vid.sys` 10.0.26100.7920, or `vmswitch.sys` 10.0.26100.8117.
 

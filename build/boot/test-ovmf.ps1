@@ -21,12 +21,12 @@ param(
     # payload a real legacy IDE controller at 0x1F0 for the post-EBS PIO path.
     [string]$Machine = 'q35',
     # -UsbDisk attaches the image as USB mass storage on a qemu-xhci
-    # controller instead of IDE/AHCI — the real-hardware topology, where
+    # controller instead of IDE/AHCI -- the real-hardware topology, where
     # the boot medium is reachable only through the USB stack. QEMU's
     # xHCI is a spec-strict implementation: this is the verdict bed for
     # the post-EBS USB drivers (GopXhci/GopUsbMsc).
     [switch]$UsbDisk,
-    # -UsbKbd attaches a USB HID keyboard to the same qemu-xhci controller —
+    # -UsbKbd attaches a USB HID keyboard to the same qemu-xhci controller --
     # the verdict bed for the post-EBS HID transport (GopUsbKbd). -Keys
     # sendkey lines then arrive as interrupt IN boot reports, not PS/2.
     [switch]$UsbKbd,
@@ -54,6 +54,13 @@ param(
     # the modern-laptop topology, where the internal disk is reachable only
     # through the NVMe queues. Verdict bed for GopNvme.
     [switch]$NvmeDisk,
+    # -MonCmds: semicolon-separated QEMU monitor lines sent just before the
+    # screendump, with the REPLY PRINTED. -MouseCmds already sent arbitrary
+    # monitor lines but threw the answer away, so the monitor's query commands
+    # were unreachable from this script: `info registers` at a spin or a halt
+    # reads out the state a payload with no serial port cannot tell you, and
+    # `xp/4gx <addr>` reads memory the payload never printed.
+    [string]$MonCmds = '',
     # -NecXhci uses QEMU's nec-usb-xhci controller model instead of the
     # default qemu-xhci: a different xHCI implementation (different PCI id,
     # capability layout, port count) that catches controller-model
@@ -73,18 +80,36 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path
 $imgAbs = if ([System.IO.Path]::IsPathRooted($Img)) { $Img } else { Join-Path $repo $Img }
 $outAbs = if ([System.IO.Path]::IsPathRooted($Out)) { $Out } else { Join-Path $repo $Out }
 $scratch = $env:TEMP   # no spaces (C:\Users\...\AppData\Local\Temp)
-$imgCopy = Join-Path $scratch 'ovmf-disk.img'
-$varsCopy = Join-Path $scratch 'ovmf-vars.fd'
-$codeCopy = Join-Path $scratch 'ovmf-code.fd'
-$ppm = Join-Path $scratch 'ovmf-shot.ppm'
-$ser = Join-Path $scratch 'ovmf-serial.log'
+# EVERY name below and the monitor port are per-WORKSPACE. They used to be
+# fixed, and $env:TEMP is per-USER while the whole fleet runs as one user, so
+# two agents gating at once shared one disk file and one monitor socket: the
+# second Copy-Item replaced the first agent's image under its running QEMU,
+# and Send-Mon's screendump went to whichever VM owned the port. Measured
+# 2026-07-29 by handing this script a PciProbe image and photographing another
+# agent's GopBoot welcome screen. A gate that can boot someone else's artifact
+# and report it as yours is worse than no gate.
+$tag = (Split-Path $repo -Leaf) -replace '[^A-Za-z0-9]',''
+$imgCopy = Join-Path $scratch "ovmf-disk-$tag.img"
+$varsCopy = Join-Path $scratch "ovmf-vars-$tag.fd"
+$codeCopy = Join-Path $scratch "ovmf-code-$tag.fd"
+$ppm = Join-Path $scratch "ovmf-shot-$tag.ppm"
+$ser = Join-Path $scratch "ovmf-serial-$tag.log"
+$errLog = Join-Path $scratch "qemu-err-$tag.log"
 Copy-Item $imgAbs $imgCopy -Force
 Copy-Item $code $codeCopy -Force            # firmware path has spaces; copy to space-free temp
 if (Test-Path $varsSrc) { Copy-Item $varsSrc $varsCopy -Force }
 $code = $codeCopy
 Remove-Item $ppm,$ser -ErrorAction SilentlyContinue
 
-$monPort = 55700
+# Deterministic per-workspace port in 55700..55899, so a stray QEMU is
+# attributable to the agent that left it rather than anonymous.
+$portHash = 0
+foreach ($ch in $tag.ToCharArray()) { $portHash = ($portHash * 31 + [int]$ch) % 200 }
+$monPort = 55700 + $portHash
+$inUse = @(Get-NetTCPConnection -LocalPort $monPort -State Listen -ErrorAction SilentlyContinue)
+if ($inUse.Count -gt 0) {
+    throw "monitor port $monPort (workspace '$tag') is already listening, PID $($inUse[0].OwningProcess). A previous run of THIS workspace is still alive. Refusing to start: continuing would screendump that VM and report its screen as this run's result."
+}
 $machineArg = if ($NoPs2) { "$Machine,i8042=off" } else { $Machine }
 # pflash ORDER MATTERS: OVMF expects CODE at unit 0 and VARS at unit 1.
 $qargs = @(
@@ -119,7 +144,7 @@ if ($UsbDisk) {
 }
 if ($Decoy) {
     $decoyAbs = if ([System.IO.Path]::IsPathRooted($Decoy)) { $Decoy } else { Join-Path $repo $Decoy }
-    $decoyCopy = Join-Path $scratch 'ovmf-decoy.img'
+    $decoyCopy = Join-Path $scratch "ovmf-decoy-$tag.img"
     Copy-Item $decoyAbs $decoyCopy -Force
     $qargs += @('-drive', "format=raw,file=$decoyCopy,if=ide,index=0")
 }
@@ -140,24 +165,36 @@ if ($Keys) {
 }
 
 Write-Host "[ovmf] booting $imgAbs ..."
-$proc = Start-Process -FilePath $qemu -ArgumentList $qargs -PassThru -WindowStyle Hidden -RedirectStandardError (Join-Path $scratch 'qemu-err.log')
+$proc = Start-Process -FilePath $qemu -ArgumentList $qargs -PassThru -WindowStyle Hidden -RedirectStandardError $errLog
 Start-Sleep -Seconds 3
 if ($proc.HasExited) {
     Write-Host "[ovmf] QEMU exited early. stderr:"
-    Get-Content (Join-Path $scratch 'qemu-err.log') -ErrorAction SilentlyContinue | Select-Object -First 20 | ForEach-Object { Write-Host "  $_" }
+    Get-Content $errLog -ErrorAction SilentlyContinue | Select-Object -First 20 | ForEach-Object { Write-Host "  $_" }
     return
 }
 
 # Optional keystrokes via monitor sendkey (Set-1 scancode names differ; use qcodes)
-function Send-Mon($lines, $gapMs = 250) {
+function Send-Mon($lines, $gapMs = 250, [switch]$Echo) {
     $c = [System.Net.Sockets.TcpClient]::new('127.0.0.1',$monPort)
     $s = $c.GetStream(); $s.ReadTimeout = 1000
     Start-Sleep -Milliseconds 200
     foreach ($ln in $lines) {
         $b = [System.Text.Encoding]::ASCII.GetBytes($ln + "`n"); $s.Write($b,0,$b.Length); $s.Flush(); Start-Sleep -Milliseconds $gapMs
     }
-    try { $buf = New-Object byte[] 4096; $s.Read($buf,0,4096) | Out-Null } catch {}
+    # Drain until the socket goes quiet rather than taking one 4 KB bite: an
+    # `info registers` reply arrives in several segments and a single Read
+    # truncates it mid-register.
+    $out = ''
+    try {
+        $buf = New-Object byte[] 8192
+        for ($i = 0; $i -lt 12; $i++) {
+            $n = $s.Read($buf,0,$buf.Length)
+            if ($n -le 0) { break }
+            $out += [System.Text.Encoding]::ASCII.GetString($buf,0,$n)
+        }
+    } catch {}
     $c.Close()
+    if ($Echo) { return $out }
 }
 
 Start-Sleep -Seconds ([Math]::Max(1,$Seconds-3))
@@ -177,12 +214,17 @@ if ($MouseCmds) {
     Send-Mon ($MouseCmds -split ';') 600
     Start-Sleep -Seconds 2
 }
+if ($MonCmds) {
+    Write-Host "[ovmf] --- monitor ---"
+    $reply = Send-Mon ($MonCmds -split ';') 400 -Echo
+    ($reply -split "`r?`n") | ForEach-Object { Write-Host "  $_" }
+}
 Send-Mon @("screendump $ppm")
 Start-Sleep -Milliseconds 800
 try { if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force } } catch {}
 
 if (Test-Path $ppm) {
-    python (Join-Path $PSScriptRoot 'ppm2png.py') $ppm $outAbs
+    & (Join-Path $PSScriptRoot 'ppm2png.ps1') $ppm $outAbs
     Write-Host "[ovmf] screenshot -> $outAbs"
 } else {
     Write-Host "[ovmf] no screendump produced"

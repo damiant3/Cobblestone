@@ -1,4 +1,4 @@
-# IoT Board Expansion — Addendum
+# IoT Board Expansion -- Addendum
 
 **Author**: Fester + Damian
 **Date**: 2026-06-16
@@ -19,12 +19,12 @@
 All four have GPIO, UART, SPI, I2C drivers with smoke tests passing
 on MMIO stubs. Board HAL in `codex/foreword/core/Board.codex`.
 
-## New Boards — Priority Order
+## New Boards -- Priority Order
 
 ### 1. Nordic nRF52840 (Cortex-M4F @ 64 MHz)
 
 **Why**: BLE is the missing connectivity story. The nRF52840 is the
-dominant BLE SoC — Adafruit Feather, Arduino Nano 33 BLE, Particle
+dominant BLE SoC -- Adafruit Feather, Arduino Nano 33 BLE, Particle
 Xenon, Raytac MDBT50Q. Every consumer IoT wearable, sensor tag, and
 beacon uses one.
 
@@ -47,7 +47,7 @@ beacon uses one.
 beacon (advertising-only, no connections) needs: clock init, radio
 config (BLE 1M PHY, access address 0x8E89BED6), advertising PDU
 construction, and timed TX. This is achievable without a full BLE
-stack — it demonstrates the radio works and the timing is correct.
+stack -- it demonstrates the radio works and the timing is correct.
 Full BLE host stack (GAP, GATT, L2CAP) is a later phase.
 
 **Test plan**: Same MMIO-stub pattern. GPIO/UART/SPI/I2C smoke tests
@@ -59,7 +59,7 @@ advertising packet format).
 
 **Why**: The Raspberry Pi Pico is $4 and has massive adoption in
 education and hobby markets. The PIO (Programmable I/O) subsystem is
-architecturally unique — a pair of small state machines that bit-bang
+architecturally unique -- a pair of small state machines that bit-bang
 arbitrary protocols at full clock speed. Demonstrating PIO support
 proves Codex can handle novel hardware, not just conventional
 peripherals.
@@ -115,7 +115,7 @@ commands or the nRF modem library API.
 **Modem**: The cellular modem is a separate core. Communication is
 via IPC channels with AT command strings. A minimal test: send
 `AT+CFUN=1` (enable modem), `AT+COPS?` (query network), and parse
-the response. This doesn't require a live cell network — the AT
+the response. This doesn't require a live cell network -- the AT
 command encoding/parsing can be tested with stubs.
 
 **Test plan**: GPIO/UART/SPI/I2C smoke tests (6). IPC register config
@@ -124,7 +124,7 @@ strength, CGDCONT APN config). No live cell network required.
 
 ### 4. STM32L4 (Cortex-M4F @ 80 MHz, ultra-low-power)
 
-**Why**: The battery IoT chip. STM32L4 is what ships in products —
+**Why**: The battery IoT chip. STM32L4 is what ships in products --
 STM32F4 is for prototyping. The L4 has the same Cortex-M4F core but
 adds low-power modes (Stop, Standby, Shutdown), a low-power timer
 (LPTIM), and an ultra-low-power comparator. Demonstrating power-mode
@@ -169,7 +169,7 @@ RISC-V silicon, not just QEMU.
 | GPIO | 0x10012000 | 32 pins, INPUT_EN/OUTPUT_EN/PORT/IOF_SEL |
 | UART0 | 0x10013000 | TXDATA/RXDATA with FIFO |
 | SPI0 | 0x10014000 | QSPI controller |
-| I2C | — | Not available (bitbang via GPIO or use QSPI) |
+| I2C | -- | Not available (bitbang via GPIO or use QSPI) |
 | PWM0 | 0x10015000 | 4-channel PWM |
 | PLIC | 0x0C000000 | Platform-Level Interrupt Controller |
 
@@ -195,7 +195,7 @@ silicon with a rich peripheral set.
 | **P3** | nRF9160 | 8 | GPIO, UART, SPI, TWIM, IPC config, AT command builder |
 | **P4** | STM32L4 | 8 | GPIO, UART, SPI, I2C, LPTIM, PWR modes, RCC config |
 | **P5** | FE310 | 5 | GPIO, UART, SPI, PWM, PLIC |
-| **P6** | D1 | — | Deferred |
+| **P6** | D1 | -- | Deferred |
 
 Each phase: one `.codex` file in `codex/boards/`, one smoke test in
 `codex/test/`, one `.expected` file. Same MMIO-stub pattern as existing
@@ -207,12 +207,12 @@ boards. Each board file cites `Foreword chapter Board` for the HAL types.
 
 Once the driver matrix is wider:
 
-1. **Board abstraction test** — a single test that exercises the Board
+1. **Board abstraction test** -- a single test that exercises the Board
    HAL effect interface against every board, proving the abstraction
    works (same code, different board backend).
-2. **Punctual board drivers** — rewrite the critical-path driver
+2. **Punctual board drivers** -- rewrite the critical-path driver
    functions (GPIO read/write, UART send byte) as `punctual`. They
    already avoid heap and recursion; the keyword makes it explicit.
-3. **Protocol-over-board integration** — wire MQTT packet builder to
+3. **Protocol-over-board integration** -- wire MQTT packet builder to
    a board's UART, proving the full sensor-to-packet-to-wire path
    compiles and runs.

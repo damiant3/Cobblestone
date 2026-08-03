@@ -1,9 +1,9 @@
-# Review: cam/fix-crlf-lexer — CCE Encoding Fixes (Consolidated)
+# Review: cam/fix-crlf-lexer -- CCE Encoding Fixes (Consolidated)
 
 **Reviewer**: Agent Linux  
 **Date**: 2026-03-28  
 **Final commit**: 4cc46b5  
-**Verdict**: ✅ Merge — full pipeline now produces compilable C# output
+**Verdict**: ✅ Merge -- full pipeline now produces compilable C# output
 
 ---
 

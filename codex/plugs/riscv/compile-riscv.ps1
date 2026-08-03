@@ -115,7 +115,7 @@ if ($nameByOffset.Count -gt 0) {
 if ($funcEntries.Count -gt 0) { $entryOffset = $funcEntries[0].Offset }
 
 # Build ELF64 for RISC-V
-$loadAddr = 2147483648  # 0x80000000 — QEMU virt RISC-V convention
+$loadAddr = 2147483648  # 0x80000000 -- QEMU virt RISC-V convention
 $headerSize = 64
 $phdrSize = 56
 $phdrCount = 1

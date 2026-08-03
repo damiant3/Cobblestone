@@ -1,6 +1,6 @@
 # Codex in Light of Cornell CS 6120: Advanced Compilers
 
-**Course**: CS 6120 — Advanced Compilers (Self-Guided), Cornell University
+**Course**: CS 6120 -- Advanced Compilers (Self-Guided), Cornell University
 **Instructor**: Adrian Sampson
 **URL**: https://www.cs.cornell.edu/courses/cs6120/2025fa/self-guided/
 **Reviewed**: 2026-06-25
@@ -12,7 +12,7 @@
 Cornell CS 6120 is a graduate-level advanced compilers course covering
 fourteen lessons from program representation through dynamic compilation,
 concurrency, and compiler performance. This document reviews the course
-syllabus against the Codex compiler — a self-sustaining, bare-metal
+syllabus against the Codex compiler -- a self-sustaining, bare-metal
 compiler that achieves a hard fixed point of itself on x86-64 with no
 operating system, runtime, or libc. The review proceeds lesson-by-lesson,
 identifying where Codex aligns with textbook technique, where it
@@ -24,7 +24,7 @@ phase-scoped arena allocation, and a self-hosting fixed-point test that
 replaces the usual unit-test methodology for compiler correctness. The
 course's strongest relevance to Codex lies in its treatments of data flow
 analysis, loop optimization, alias analysis, and fast-compiler data
-structure design — areas where Codex has room to grow. Its weakest
+structure design -- areas where Codex has room to grow. Its weakest
 relevance is in LLVM infrastructure (Codex owns its entire toolchain) and
 garbage collection (bare-metal Codex has no GC by design).
 
@@ -42,7 +42,7 @@ The framing question: what are compilers really for?
 course expects. The course frames compilers as optimization engines for
 existing languages on existing hardware. Codex frames its compiler as a
 correctness engine for a new language on bare metal. The compiler is its
-own specification — the acceptance test for any codegen change is that
+own specification -- the acceptance test for any codegen change is that
 the self-host remains a byte-identical fixed point of itself. This is a
 stronger correctness criterion than any test suite: the compiler must
 produce a binary that, when used to compile the same source, produces
@@ -51,7 +51,7 @@ Codex Virtue #2 is "Correctness Over Performance."
 
 The codegen quality campaign (CL 3091 → present) demonstrates that
 Codex takes optimization seriously once correctness is established. The
-`fib` benchmark dropped from 107 to 21 instructions — competitive with
+`fib` benchmark dropped from 107 to 21 instructions -- competitive with
 MSVC `/O2` and the .NET JIT. But the campaign came after the fixed point
 was proven, not before.
 
@@ -63,16 +63,16 @@ Basic blocks, control flow graphs, terminators.
 **Codex position.** The Codex compiler uses a layered representation
 that maps closely to the textbook taxonomy:
 
-1. **Concrete syntax** — `.codex` source files with whitespace-
+1. **Concrete syntax** -- `.codex` source files with whitespace-
    significant indentation, prose at column 2, code at column 3+.
-2. **AST** — The parser produces `Document` and `SxDef` records.
+2. **AST** -- The parser produces `Document` and `SxDef` records.
    The desugar phase transforms these into `ADef` (annotated
    definitions). The type checker produces `CheckedChapter`.
-3. **IR** — The LOWER phase produces a flat IR (`IrDef`, `IrExpr`)
+3. **IR** -- The LOWER phase produces a flat IR (`IrDef`, `IrExpr`)
    that is closer to Bril's instruction-based model: explicit
    `IrLet` bindings, `IrIf`/`IrWhen` for control flow, `IrCall`
    for function application. No implicit control flow.
-4. **Machine code** — The EMIT phase walks IR directly to x86-64
+4. **Machine code** -- The EMIT phase walks IR directly to x86-64
    instructions. There is no separate "instruction selection" pass;
    the emitter pattern-matches IR nodes to x86-64 instruction
    sequences.
@@ -84,13 +84,13 @@ sequencing construct. Control flow is represented structurally
 and jumps. This is a deliberate choice: the language has no `goto`,
 no unstructured control flow, and no `break`/`continue`. Every CFG
 the compiler would construct is reducible by construction (Lesson 5
-calls this out — languages with only structured control flow produce
+calls this out -- languages with only structured control flow produce
 only reducible CFGs). The tree representation is simpler, allocates
 less memory, and is sufficient for all current optimization passes.
 
 The Bril educational IR uses JSON as its canonical representation and
 emphasizes language-neutrality. Codex's IR is language-specific and
-exists only transiently in memory — it is never serialized to disk
+exists only transiently in memory -- it is never serialized to disk
 except in `IR` compile mode (used by transpiler plugs). The IR text
 format uses S-expressions over serial for plug communication, a
 pragmatic choice for a system where the compiler runs bare-metal and
@@ -99,7 +99,7 @@ communicates via serial port.
 ### Lesson 3: Local Analysis & Optimization
 
 **Course content.** Dead code elimination (DCE). Local value numbering
-(LVN) — a unified framework for constant folding, copy propagation,
+(LVN) -- a unified framework for constant folding, copy propagation,
 and common subexpression elimination within a basic block.
 
 **Codex position.** The Codex compiler performs several optimizations
@@ -111,7 +111,7 @@ as separate analysis passes:
   compile time. Negation of literals (`-(5)`) is folded into
   `IrIntLit -5` during IR construction.
 - **Dead code elimination.** Proof definitions (return type `Proof`
-  or `PropEqTy`) are erased entirely during emit — they produce no
+  or `PropEqTy`) are erased entirely during emit -- they produce no
   machine code (CDX4020). The static bounds prover elides runtime
   bounds checks when it can prove a value is in range (CDX4010).
 - **Copy propagation.** The destination-driven emission strategy
@@ -120,7 +120,7 @@ as separate analysis passes:
   temporary followed by a move.
 - **Common subexpression elimination.** Not implemented as a general
   pass. The emitter relies on the IR being in a form where common
-  subexpressions are already named via `let` bindings — the
+  subexpressions are already named via `let` bindings -- the
   language encourages this style.
 
 The course's LVN framework is more general than what Codex currently
@@ -146,18 +146,18 @@ data flow framework. Its analyses are bespoke:
   local rotation scheme. Temp registers cycle through
   [RAX, RCX, RDX, RSI, RDI, R11] (mod 6); local variables are
   assigned in order [RBX, R12, R13, R14] with stack spill beyond 4.
-  There is no explicit liveness analysis — the fixed assignment
+  There is no explicit liveness analysis -- the fixed assignment
   means every variable is "live" for its entire scope.
 - **Reaching definitions** are not computed. The type checker
   resolves names during scope analysis; the emitter trusts these
   resolutions.
 - **Constant propagation** is limited to literal folding.
-- **The `punctual` checker** (CDX6001–CDX6005) is the closest
+- **The `punctual` checker** (CDX6001-CDX6005) is the closest
   thing to a data flow analysis in the compiler: it walks the call
   graph to verify that punctual functions only call other punctual
   or safe-builtin functions, do not allocate, do not recurse, and
   do not perform I/O. This is a forward analysis over the call
-  graph — not a classic data flow analysis, but structurally similar.
+  graph -- not a classic data flow analysis, but structurally similar.
 
 The course's data flow framework would be most valuable for Codex in
 implementing a proper liveness analysis for register allocation. The
@@ -165,11 +165,11 @@ current fixed-assignment scheme leaves R8 and R9 unused and spills
 to the stack when more than 4 locals are needed. A liveness-based
 allocator could use all available registers and reduce spill traffic.
 The codegen analysis (`docs/Reference/CodegenAnalysis.md`)
-identifies register pressure as the next frontier — the gap between
+identifies register pressure as the next frontier -- the gap between
 Codex and the .NET JITs on `gcd` and `sum` is primarily due to the
 JITs' linear-scan allocation of named bindings.
 
-### Lesson 5: Global Analysis — Dominance
+### Lesson 5: Global Analysis -- Dominance
 
 **Course content.** Dominance, strict dominance, immediate dominance,
 dominance frontier, post-dominance. Natural loops (strongly connected
@@ -183,14 +183,14 @@ dominance frontiers, or natural loops. It does not need to because:
    `goto`. Every control flow construct (`if`/`when`/`for`) produces
    structured, reducible control flow. The course notes that
    "languages with only structured control flow generate only
-   reducible CFGs" — Codex is an existence proof of this claim.
+   reducible CFGs" -- Codex is an existence proof of this claim.
 
 2. **Loop optimization is minimal.** The compiler does not perform
    LICM, strength reduction, or loop fusion. Loops in Codex are
    expressed as recursion (including tail-call-optimized recursion)
    or `for` expressions (sugar for `list-map`). The emitter handles
    TCO by converting `IrTailCall` into a parallel-move argument
-   shuffle followed by a jump to the function entry — this is
+   shuffle followed by a jump to the function entry -- this is
    strength reduction on the loop variable by another name.
 
 3. **The tree IR makes dominance trivial.** In a tree-structured IR
@@ -225,7 +225,7 @@ IrIf (cond)
 
 This is semantically equivalent to a phi node that selects between A
 and B based on which branch was taken, but it requires no explicit
-SSA machinery — the tree structure encodes the merge implicitly.
+SSA machinery -- the tree structure encodes the merge implicitly.
 
 The course notes that "definitions == variables" and "instructions ==
 values" in SSA. Codex's IR already satisfies this by construction:
@@ -238,7 +238,7 @@ The absence of explicit SSA means Codex cannot directly use SSA-based
 optimizations (sparse conditional constant propagation, global value
 numbering via SSA, SSA-based register allocation). If these become
 desirable, the functional structure of the IR means SSA construction
-would be trivial — the IR is already "almost SSA" by virtue of being
+would be trivial -- the IR is already "almost SSA" by virtue of being
 a tree of let-bindings.
 
 ### Lesson 7: LLVM
@@ -260,7 +260,7 @@ exchange for:
 - **Total control.** Every byte of the output binary was produced by
   code the project wrote. The compiler is auditable end-to-end.
 - **Self-sustainability.** The compiler compiles itself on bare metal
-  with no OS. An LLVM dependency would break this — LLVM requires
+  with no OS. An LLVM dependency would break this -- LLVM requires
   a hosted environment.
 - **Fixed-point verification.** The compiler's output is verified
   byte-identical to itself. An external optimization pass that is
@@ -273,7 +273,7 @@ exchange for:
 The cost is visible in the codegen quality comparison:
 `sum-to-N` beats C at both optimization levels, but `gcd` is 3
 instructions behind MSVC `/O2` and 8 behind the F# JIT. The gap is
-almost entirely register allocation — LLVM's linear-scan allocator
+almost entirely register allocation -- LLVM's linear-scan allocator
 would close it. The project accepts this trade-off because the
 compiler can always be improved incrementally while maintaining the
 fixed-point property, whereas an LLVM dependency could never be
@@ -294,7 +294,7 @@ Codex loops are primarily expressed as:
   (CL 3091 campaign) converts `IrTailCall` into a parallel-move
   argument shuffle + `jmp`. This is equivalent to a compiled
   `while` loop and produces tight code: the `sum-to-N` benchmark
-  compiles to `add`/`lea`/`jmp` — matching F# JIT density.
+  compiles to `add`/`lea`/`jmp` -- matching F# JIT density.
 - **`for` expressions.** Sugar for `list-map`, producing a function
   call per element.
 - **`fuel`-bounded iteration.** Loops with explicit termination
@@ -304,8 +304,8 @@ None of these forms receive loop-specific optimization:
 
 - **No LICM.** Invariant expressions in recursive functions are
   recomputed on every iteration. The functional style mitigates
-  this somewhat — `let` bindings outside the recursive call are
-  naturally loop-invariant — but the compiler does not hoist
+  this somewhat -- `let` bindings outside the recursive call are
+  naturally loop-invariant -- but the compiler does not hoist
   computations out of recursion.
 - **No strength reduction.** Multiplication by a loop counter is
   not converted to incremental addition. The induction variable
@@ -314,7 +314,7 @@ None of these forms receive loop-specific optimization:
 - **No loop fusion.** Consecutive `for` expressions over the same
   list are not fused. Each produces a separate `list-map` call
   with a fresh list allocation. This is a significant memory cost
-  on bare metal where there is no GC — fusing consecutive maps
+  on bare metal where there is no GC -- fusing consecutive maps
   would eliminate intermediate list allocations entirely.
 - **No loop unrolling.** Not implemented.
 
@@ -322,7 +322,7 @@ The course's loop optimization techniques are directly applicable
 to Codex's TCO loops. LICM and strength reduction would benefit the
 compiler's own hot paths (the type checker and emitter both contain
 recursive walks that recompute invariant expressions). Loop fusion
-on `for`/`list-map` chains would reduce heap pressure — a critical
+on `for`/`list-map` chains would reduce heap pressure -- a critical
 concern on bare metal.
 
 ### Lesson 9: Interprocedural Analysis
@@ -339,12 +339,12 @@ analysis.
 inlines small functions at call sites. The `IrRemInt` pass inlines
 `math-mod` calls as `idiv`/RDX sequences. The INLINE phase (CDX
 mode only) performs broader inlining. Inlining decisions are
-conservative — overly aggressive inlining would increase code size
+conservative -- overly aggressive inlining would increase code size
 beyond the 4 MB code buffer, and every inline expansion must
 reconverge to a byte-identical fixed point.
 
 **Devirtualization.** Type class dispatch in Codex is resolved at
-compile time via dictionary passing — there are no virtual calls to
+compile time via dictionary passing -- there are no virtual calls to
 devirtualize. Pattern matching (`when`/`is`) compiles to tag-dispatch
 sequences (compare-and-branch on the variant tag), which is already
 direct.
@@ -370,14 +370,14 @@ alias analysis.
 **Codex position.** Codex has no raw pointers in user code. Memory
 is managed through:
 
-- **Immutable records** — no aliasing concern; values are
+- **Immutable records** -- no aliasing concern; values are
   semantically copied (though the compiler may share representations).
-- **Mutable records** — unique ownership enforced by the type checker
+- **Mutable records** -- unique ownership enforced by the type checker
   (CDX2062). A mutable record cannot be aliased: handing it to two
   owners is a compile error.
-- **Linear types** — exactly-once usage enforced by the type checker
+- **Linear types** -- exactly-once usage enforced by the type checker
   (CDX2061, CDX2063). A linear value cannot be aliased by definition.
-- **Bump allocation** — all heap allocation goes through R10 (the
+- **Bump allocation** -- all heap allocation goes through R10 (the
   bump pointer). The allocator does not reuse freed memory within a
   phase. There is no pointer arithmetic, no `free`, no realloc.
 
@@ -391,7 +391,7 @@ This is one of Codex's strongest validations of the course's material:
 the course presents alias analysis as necessary because mainstream
 languages permit arbitrary aliasing. Codex's type system demonstrates
 that a language designed from first principles can make alias analysis
-unnecessary by construction — the same way that structured control
+unnecessary by construction -- the same way that structured control
 flow makes reducibility analysis unnecessary.
 
 ### Lesson 11: Memory Management
@@ -401,7 +401,7 @@ mark/sweep, semispace, generational. Conservative GC. The
 collector/mutator model.
 
 **Codex position.** Codex has no garbage collector. This is not an
-omission — it is a design principle. Bare metal has no GC. Every
+omission -- it is a design principle. Bare metal has no GC. Every
 allocation is permanent until the producing function returns (or
 until the phase allocator reclaims it).
 
@@ -414,7 +414,7 @@ Memory management in Codex uses three mechanisms:
 2. **Deck (structured allocator).** Built on bivy. Deck regions
    survive phase compaction; bivy scratch is reclaimed. The
    reservation-copy pattern (CLs 3805/3849/3894) reclaims dead
-   decks at phase boundaries — the heap does NOT monotonically
+   decks at phase boundaries -- the heap does NOT monotonically
    stack.
 
 3. **Per-function heap save/restore.** In the emit phase,
@@ -423,7 +423,7 @@ Memory management in Codex uses three mechanisms:
 
 The course's GC lesson is valuable context for understanding what
 Codex avoids and why. The `calloc` semantics on `__alloc`
-(CL 1927) — zeroing every allocation via `rep stosb` — is a safety
+(CL 1927) -- zeroing every allocation via `rep stosb` -- is a safety
 net against uninitialized fields, not a GC mechanism. The poison
 build (fill with 0xCD instead of zero) proves the compiler has no
 uninitialized-field dependencies.
@@ -447,16 +447,16 @@ executes without further compilation.
 
 However, the course's discussion of trace-based specialization is
 intellectually relevant to Codex's codegen campaign. The
-destination-driven emission strategy — where the emitter knows
+destination-driven emission strategy -- where the emitter knows
 *where* a value is needed and emits code to place it there directly
-— is analogous to the trace compiler's ability to specialize code
+-- is analogous to the trace compiler's ability to specialize code
 for a particular execution path. The difference is that Codex's
 specialization is static (based on IR structure) rather than dynamic
 (based on runtime profiles).
 
 The `codex-vm` hypervisor includes an execution trace facility
 (`-trace-file`) that records instruction-level execution. This could
-be used for profile-guided optimization (PGO) in the future — the
+be used for profile-guided optimization (PGO) in the future -- the
 compiler could read a trace from a previous self-compilation and use
 it to guide inlining, branch prediction hints, and code layout. This
 is the bridge between the course's dynamic compilation lesson and
@@ -488,9 +488,9 @@ implementing threads as a library.
   tracked in the effect system. A function that uses shared mutable
   state declares this in its type signature.
 
-The course's key insight — that threads cannot be implemented as a
+The course's key insight -- that threads cannot be implemented as a
 library because optimizations valid in single-threaded contexts
-become incorrect in multithreaded ones — is addressed by Codex's
+become incorrect in multithreaded ones -- is addressed by Codex's
 approach: the compiler knows about concurrency at the language level
 (via effects and atomics) rather than discovering it from library
 calls. The effect system ensures that sequential optimizations are
@@ -499,7 +499,7 @@ different type.
 
 The memory model question (sequential consistency vs. relaxed
 ordering) is relevant to Codex's atomics. Currently, all atomic
-operations use x86-64's naturally strong ordering (TSO — total store
+operations use x86-64's naturally strong ordering (TSO -- total store
 order), which provides near-sequential-consistency for free. On
 ARM64 and RISC-V (weaker memory models), the compiler would need to
 emit explicit barriers. The ARM64 and RISC-V plugs do not yet handle
@@ -519,8 +519,8 @@ a CDX build. Every change must be tested through a full build
 takes approximately 10 minutes end-to-end. Faster compilation
 directly improves developer velocity.
 
-The course's key technique — flattening ASTs into contiguous arrays
-— maps directly to Codex's data structure strategy:
+The course's key technique -- flattening ASTs into contiguous arrays
+-- maps directly to Codex's data structure strategy:
 
 - **Lists as contiguous buffers.** Codex `LinkedList` is backed by
   a contiguous buffer with `__list-with-capacity` pre-allocation.
@@ -557,7 +557,7 @@ holding the entire IR in memory simultaneously during emit (CL 3793).
 
 1. **Structured control flow ⇒ reducible CFGs.** The course's
    Lesson 5 notes that languages without `goto` produce only
-   reducible CFGs. Codex is a 28,000-line proof of this claim —
+   reducible CFGs. Codex is a 28,000-line proof of this claim --
    no dominance analysis, no loop detection, no reducibility check
    needed.
 
@@ -596,7 +596,7 @@ holding the entire IR in memory simultaneously during emit (CL 3793).
    presents the worklist algorithm as a reusable framework. Codex
    implements each analysis (scope resolution, type checking,
    punctual verification) as a bespoke recursive walk. This is
-   pragmatic — each analysis needs different information — but
+   pragmatic -- each analysis needs different information -- but
    means new analyses must be built from scratch rather than
    instantiated from a framework.
 
@@ -610,7 +610,7 @@ holding the entire IR in memory simultaneously during emit (CL 3793).
 
 4. **No LLVM, no external toolchain.** The course's Lesson 7
    treats LLVM as essential infrastructure. Codex rejects this
-   entirely — the compiler owns every byte from source to machine
+   entirely -- the compiler owns every byte from source to machine
    code. The trade-off (less optimization, more control) is
    accepted as foundational to the project's identity.
 
@@ -626,7 +626,7 @@ holding the entire IR in memory simultaneously during emit (CL 3793).
 2. **Loop optimization.** The course's Lesson 8 techniques (LICM,
    strength reduction, loop fusion) are directly applicable to
    Codex's TCO loops and `for`/`list-map` chains. Loop fusion in
-   particular would reduce heap pressure — a critical concern on
+   particular would reduce heap pressure -- a critical concern on
    bare metal.
 
 3. **Data structure flattening.** The course's Lesson 14 connects
@@ -650,7 +650,7 @@ compiler design. Codex's self-sustaining compiler validates the
 framework's theoretical claims while making engineering choices that
 a textbook would not recommend: no SSA, no GC, no LLVM, a fixed
 register assignment, and a fixed-point self-host test as the primary
-correctness criterion. These choices are not naïve — they are
+correctness criterion. These choices are not naïve -- they are
 consequences of the project's commitments to bare-metal operation,
 total auditability, and deterministic reproducibility. The course's
 strongest lessons for Codex's future are in data flow analysis (for
@@ -659,5 +659,5 @@ and compiler performance engineering (for build speed). Its weakest
 lessons are in areas Codex has deliberately rejected (LLVM
 infrastructure) or made unnecessary (garbage collection, alias
 analysis). The course is recommended reading for anyone working on
-the Codex compiler — not as a blueprint to follow, but as a map of
+the Codex compiler -- not as a blueprint to follow, but as a map of
 the territory the compiler inhabits.

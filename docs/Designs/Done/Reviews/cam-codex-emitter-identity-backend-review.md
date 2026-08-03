@@ -1,9 +1,9 @@
-# Review: cam/floppy-disk-streaming (1fe0955) — CodexEmitter.codex
+# Review: cam/floppy-disk-streaming (1fe0955) -- CodexEmitter.codex
 
 **Reviewer**: Agent Linux  
 **Date**: 2026-03-28  
-**Commit**: 1fe0955 `feat: CodexEmitter.codex — self-hosted Codex-to-Codex emitter`  
-**Verdict**: ✅ Merge — no regressions, identity backend functional
+**Commit**: 1fe0955 `feat: CodexEmitter.codex -- self-hosted Codex-to-Codex emitter`  
+**Verdict**: ✅ Merge -- no regressions, identity backend functional
 
 ---
 
@@ -11,7 +11,7 @@
 
 Self-hosted Codex-to-Codex identity backend: Codex in, Codex out. The
 streaming pipeline (`compile-streaming` → `stream-defs`) now emits Codex
-source instead of C#. No arity map needed — Codex has native currying, so
+source instead of C#. No arity map needed -- Codex has native currying, so
 the emitter is structurally simpler than the C# backend.
 
 453 lines of Codex covering: type definitions, CodexType emission,
@@ -37,7 +37,7 @@ remaining (field accessor dups from IR lowering artifacts).
 The streaming loop now passes `ctor-names : List Text` instead of
 `arities : List ArityEntry`. Each definition goes through
 `codex-emit-def` instead of `emit-def`. The C# preamble (using
-statements, class header, CCE runtime) is gone — replaced by just type
+statements, class header, CCE runtime) is gone -- replaced by just type
 defs and definitions in Codex syntax.
 
 ### Emitter design notes
@@ -94,7 +94,7 @@ is a cosmetic note, not a blocker.
 
 Field accessor duplicates from IR lowering are documented. The
 `codex-emit-all-defs-dedup` function handles this at the emission layer.
-The proper fix is in the IR lowering pass — dedup at emission is a correct
+The proper fix is in the IR lowering pass -- dedup at emission is a correct
 workaround for now.
 
 ### 3. `codex-escape-text-loop` accumulator pattern
@@ -108,7 +108,7 @@ blocking.
 ### 4. `IrError` emits as `0`
 
 `codex-emit-expr` maps `IrError` to the literal `0`. This is a
-reasonable fallback — error nodes shouldn't appear in well-typed programs.
+reasonable fallback -- error nodes shouldn't appear in well-typed programs.
 Worth adding a comment in the source noting this is intentional dead code
 handling.
 

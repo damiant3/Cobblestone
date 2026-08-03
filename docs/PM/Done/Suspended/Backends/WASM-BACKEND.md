@@ -1,8 +1,8 @@
-# WASM Backend — Design Document
+# WASM Backend -- Design Document
 
 **Date**: 2026-03-21
 **Author**: Copilot (VS 2022, Windows)
-**Status**: Draft — for review
+**Status**: Draft -- for review
 
 ---
 
@@ -18,10 +18,10 @@ The next pitch is Camp II-B: backends that emit code for targets beyond the
 CLR. WASM is first because:
 
 1. The IL emitter's **stack machine model maps almost 1:1** to WASM bytecode.
-2. WASM runs everywhere — browser, WASI runtimes, edge, embedded.
+2. WASM runs everywhere -- browser, WASI runtimes, edge, embedded.
 3. No platform-specific codegen. One target, many hosts.
 4. Small spec, well-defined, no undefined behavior.
-5. It leaves a rope anchor for climbers behind us — anyone can run a `.wasm`
+5. It leaves a rope anchor for climbers behind us -- anyone can run a `.wasm`
    file without installing .NET.
 
 WASM alone does not summit Peak II. It still runs on someone else's runtime
@@ -44,8 +44,8 @@ src/Codex.Emit.Wasm/
 ```
 
 Follows the same pattern as `Codex.Emit.IL`:
-- `WasmEmitter : IAssemblyEmitter` — entry point, `EmitAssembly` returns `byte[]` (`.wasm`)
-- `WasmModuleBuilder` — walks `IRModule`, emits WASM binary format sections
+- `WasmEmitter : IAssemblyEmitter` -- entry point, `EmitAssembly` returns `byte[]` (`.wasm`)
+- `WasmModuleBuilder` -- walks `IRModule`, emits WASM binary format sections
 
 ### Dependency Flow
 
@@ -62,7 +62,7 @@ a WASM SDK or toolchain.
 
 ---
 
-## WASM Binary Format — What We Emit
+## WASM Binary Format -- What We Emit
 
 A `.wasm` file is a sequence of numbered sections. We need:
 
@@ -126,7 +126,7 @@ Pattern match dispatch becomes:
 ```
 
 This replaces the IL emitter's `isinst` approach. Same semantics, different
-mechanism — tag comparison instead of runtime type checking.
+mechanism -- tag comparison instead of runtime type checking.
 
 ---
 
@@ -207,7 +207,7 @@ linearity analysis. But that's Peak III territory.
 14. String operations (bump-allocate, `text-length`, `++`, `char-at`)
 15. Test: `factorial.codex`, `arithmetic.codex`, `fibonacci.codex`
 
-### Phase 3: Types (Days–Week)
+### Phase 3: Types (Days-Week)
 
 16. Record construction → bump-allocate struct, store fields
 17. Field access → `i32.load` at offset
@@ -266,7 +266,7 @@ skip gracefully if `wasmtime` is not on PATH.
 
 Every `.wasm` file we ship is a rope anchor. Someone following behind us
 doesn't need .NET installed. They don't need Visual Studio. They need
-`wasmtime` (or a browser). That's the courage provision — the path up
+`wasmtime` (or a browser). That's the courage provision -- the path up
 gets easier for everyone behind us.
 
 And for us: this is the first time the Codex compiler emits code that runs

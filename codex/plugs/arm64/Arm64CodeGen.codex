@@ -1100,11 +1100,39 @@ Section: Binary Emission
     else a64-emit-binary-reg st op left right ty
    else a64-emit-binary-reg st op left right ty
 
+ A unit type is runtime-transparent: its representation IS the inner
+ type, so every dispatch that picks an instruction sequence by type
+ must see through the wrapper. Before these arms, `show` on a
+ `unit Text` printed the pointer, a literal pattern on one never
+ matched, and a compare on a `unit Real` went through the integer
+ path (measured 2026-07-28: unit-show, unit-pattern-lit,
+ unit-real-compare on both machine lanes).
+
   a64-is-text-type : CodexType -> Boolean
   a64-is-text-type (ty) =
    when ty
     is TextTy -> True
+    is UnitTy (n) (inner) -> a64-is-text-type inner
     is otherwise -> False
+
+  a64-strip-unit-ty : CodexType -> CodexType
+  a64-strip-unit-ty (ty) =
+   when ty
+    is UnitTy (n) (inner) -> a64-strip-unit-ty inner
+    is otherwise -> ty
+
+ Which real comparison a compare op needs: 1 is the double family
+ (fcmp-d), 2 is the f32 approx family (fcmp-s), 0 is not a real. The
+ integer compare the ordered ops used for every non-vector operand
+ orders IEEE bits by two's complement, which is correct for positive
+ reals and WRONG for negative ones (real-compare-negative's pin).
+
+  a64-real-cmp-kind : CodexType -> Integer
+  a64-real-cmp-kind (ty) =
+   when ty
+    is RealTy (w) (m) -> if is-width-f32 w then 2 else 1
+    is UnitTy (n) (inner) -> a64-real-cmp-kind inner
+    is otherwise -> 0
 
   a64-sum-max-fields : List SumCtor, Integer, Integer -> Integer
   a64-sum-max-fields (ctors) (i) (max) =
@@ -1203,6 +1231,7 @@ Section: Binary Emission
     is SumTy (n) (ta) (cs) -> True
     is ConstructedTy (n) (ta) -> True
     is TypeCon (n) -> True
+    is UnitTy (n) (inner) -> a64-is-sum-type inner
     is otherwise -> False
 
  Simple means the right operand can be emitted without disturbing the left,
@@ -1280,6 +1309,14 @@ Section: Binary Emission
     is IrRemInt ->
      let st3 = a64-emit st2 (arm64-sdiv rd left-reg right-reg)
      in A64EmitResult { state = a64-emit st3 (arm64-msub rd rd right-reg left-reg), reg = rd }
+    is IrPowInt ->
+     let st3 = if right-reg == a64-x0 then
+       let s = a64-emit st2 (arm64-mov a64-x1 right-reg)
+       in a64-emit s (arm64-mov a64-x0 left-reg)
+      else let s = a64-emit st2 (arm64-mov a64-x0 left-reg)
+       in a64-emit s (arm64-mov a64-x1 right-reg)
+     in let st4 = a64-emit-call-to st3 "__int_pow"
+     in A64EmitResult { state = a64-emit st4 (arm64-mov rd a64-x0), reg = rd }
     is IrEq ->
      if a64-is-text-type (ir-expr-type left) then
       let st3 = if right-reg == a64-x0 then
@@ -1310,18 +1347,26 @@ Section: Binary Emission
      in A64EmitResult { state = a64-emit st3 (a64-csinc-ne rd), reg = rd }
     is IrLt ->
      if a64-is-vec-type (ir-expr-type left) then a64-emit-vec-cmp st2 left-reg right-reg 10 (ir-expr-type left)
+     else if a64-real-cmp-kind (ir-expr-type left) == 1 then a64-emit-real-comparison st2 left-reg right-reg 10
+     else if a64-real-cmp-kind (ir-expr-type left) == 2 then a64-emit-real-approx-comparison st2 left-reg right-reg 10
      else let st3 = a64-emit st2 (arm64-cmp left-reg right-reg)
      in A64EmitResult { state = a64-emit st3 (a64-csinc-lt rd), reg = rd }
     is IrGt ->
      if a64-is-vec-type (ir-expr-type left) then a64-emit-vec-cmp st2 left-reg right-reg 13 (ir-expr-type left)
+     else if a64-real-cmp-kind (ir-expr-type left) == 1 then a64-emit-real-comparison st2 left-reg right-reg 13
+     else if a64-real-cmp-kind (ir-expr-type left) == 2 then a64-emit-real-approx-comparison st2 left-reg right-reg 13
      else let st3 = a64-emit st2 (arm64-cmp left-reg right-reg)
      in A64EmitResult { state = a64-emit st3 (a64-csinc-gt rd), reg = rd }
     is IrLtEq ->
      if a64-is-vec-type (ir-expr-type left) then a64-emit-vec-cmp st2 left-reg right-reg 12 (ir-expr-type left)
+     else if a64-real-cmp-kind (ir-expr-type left) == 1 then a64-emit-real-comparison st2 left-reg right-reg 12
+     else if a64-real-cmp-kind (ir-expr-type left) == 2 then a64-emit-real-approx-comparison st2 left-reg right-reg 12
      else let st3 = a64-emit st2 (arm64-cmp left-reg right-reg)
      in A64EmitResult { state = a64-emit st3 (a64-csinc-le rd), reg = rd }
     is IrGtEq ->
      if a64-is-vec-type (ir-expr-type left) then a64-emit-vec-cmp st2 left-reg right-reg 11 (ir-expr-type left)
+     else if a64-real-cmp-kind (ir-expr-type left) == 1 then a64-emit-real-comparison st2 left-reg right-reg 11
+     else if a64-real-cmp-kind (ir-expr-type left) == 2 then a64-emit-real-approx-comparison st2 left-reg right-reg 11
      else let st3 = a64-emit st2 (arm64-cmp left-reg right-reg)
      in A64EmitResult { state = a64-emit st3 (a64-csinc-ge rd), reg = rd }
     is IrAddNum -> a64-emit-real-arith st2 left-reg right-reg arm64-fadd-d
@@ -1418,11 +1463,22 @@ Section: Real Arithmetic
    in let st1 = a64-emit (rd.state) (arm64-fmov-to-fp 0 l-reg)
    in let st2 = a64-emit st1 (arm64-fmov-to-fp 1 r-reg)
    in let st3 = a64-emit st2 (fp-op 0 0 1)
-   in let st4 = a64-emit st3 (arm64-fcmp-d 0 0)
-   in let st5 = a64-emit st4 (arm64-b-cond 7 12)
-   in let st6 = a64-emit st5 (arm64-movz 9 0 0)
-   in let st7 = a64-emit st6 (arm64-fmov-to-fp 0 9)
-   in A64EmitResult { state = a64-emit st7 (arm64-fmov-from-fp (rd.reg) 0), reg = rd.reg }
+   in let st4 = a64-emit st3 (arm64-fmov-from-fp (rd.reg) 0)
+   in let st5 = a64-emit st4 (arm64-lsl-imm 9 (rd.reg) 1)
+   in let st6 = a64-emit st5 (arm64-lsr-imm 9 9 53)
+   in let st7 = a64-emit st6 (arm64-cmp-imm 9 2047)
+   in let st8 = a64-emit st7 (arm64-b-cond 1 24)
+   in let st9 = a64-emit st8 (arm64-lsl-imm 9 (rd.reg) 12)
+   in let st10 = a64-emit st9 (arm64-cbz 9 12)
+   in let st11 = a64-emit st10 (arm64-movz (rd.reg) 0 0)
+   in let st12 = a64-emit st11 (arm64-b 8)
+   in A64EmitResult { state = a64-emit st12 (arm64-sub-imm (rd.reg) (rd.reg) 1), reg = rd.reg }
+
+ The cond argument is the NEGATION of the predicate wanted, because
+ csinc rd, xzr, xzr, cond answers 1 exactly when cond fails: eq
+ passes NE (1), lt passes GE (10), gt passes LE (13), le passes GT
+ (12), ge passes LT (11) -- the same inversion table the vector
+ compare tags use.
 
   a64-emit-real-comparison : A64State, Integer, Integer, Integer -> A64EmitResult
   a64-emit-real-comparison (st) (l-reg) (r-reg) (cond) =
@@ -1430,6 +1486,14 @@ Section: Real Arithmetic
    in let st1 = a64-emit (rd.state) (arm64-fmov-to-fp 0 l-reg)
    in let st2 = a64-emit st1 (arm64-fmov-to-fp 1 r-reg)
    in let st3 = a64-emit st2 (arm64-fcmp-d 0 1)
+   in A64EmitResult { state = a64-emit st3 (arm64-csinc (rd.reg) a64-xzr a64-xzr cond), reg = rd.reg }
+
+  a64-emit-real-approx-comparison : A64State, Integer, Integer, Integer -> A64EmitResult
+  a64-emit-real-approx-comparison (st) (l-reg) (r-reg) (cond) =
+   let rd = a64-alloc-temp st
+   in let st1 = a64-emit (rd.state) (arm64-fmov-to-fp 0 l-reg)
+   in let st2 = a64-emit st1 (arm64-fmov-to-fp 1 r-reg)
+   in let st3 = a64-emit st2 (arm64-fcmp-s 0 1)
    in A64EmitResult { state = a64-emit st3 (arm64-csinc (rd.reg) a64-xzr a64-xzr cond), reg = rd.reg }
 
   a64-emit-real-from-int : A64State, IRExpr -> A64EmitResult
@@ -1505,9 +1569,8 @@ Section: Real Arithmetic
   a64-emit-suggested-vector-width : A64State, IRExpr -> A64EmitResult
   a64-emit-suggested-vector-width (st) (arg) =
    let ty = ir-expr-type arg
-   in when ty
-    is RealApproxTy -> a64-emit-int-lit st 4
-    is otherwise -> a64-emit-int-lit st 2
+   in if is-real-f32 ty then a64-emit-int-lit st 4
+   else a64-emit-int-lit st 2
 
   a64-emit-show-real-approx : A64State, IRExpr -> A64EmitResult
   a64-emit-show-real-approx (st) (arg) =
@@ -1561,7 +1624,7 @@ Section: Real Arithmetic
    in let saved = a64-save-if-needed (lr.state) (lr.reg)
    in let rr = a64-emit-expr (saved.state) (list-at args 1)
    in let ll = a64-reload-if-needed (rr.state) (saved.reg)
-   in a64-emit-vec-binop (ll.state) (ll.reg) (rr.reg) opcode (VectorTy 2 RealTy)
+   in a64-emit-vec-binop (ll.state) (ll.reg) (rr.reg) opcode (VectorTy 2 real-f64)
 
   a64-emit-vec-load-at : A64State, IRExpr -> A64EmitResult
   a64-emit-vec-load-at (st) (addr-expr) =
@@ -1682,9 +1745,7 @@ Section: Real Arithmetic
   a64-vec-is-f32 : CodexType -> Boolean
   a64-vec-is-f32 (ty) =
    when ty
-    is VectorTy (n) (et) -> when et
-     is RealApproxTy -> True
-     is otherwise -> False
+    is VectorTy (n) (et) -> is-real-f32 et
     is otherwise -> False
 
   a64-emit-vec-binop : A64State, Integer, Integer, Integer, CodexType -> A64EmitResult

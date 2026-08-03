@@ -437,6 +437,17 @@ Section: Expression Emission
     is IrApply (f) (a) (ty) (sp) -> js-emit-expr f arities & "(" & js-emit-expr a arities & ")"
     is otherwise -> js-emit-expr e arities
 
+ The character predicates test CCE BANDS and must never be handed to a
+ JavaScript regular expression over `String.fromCharCode`. Codex text is
+ CCE, which numbers its code points by frequency: the letter a is 15, and
+ character 15 is a control character, so `/^[a-zA-Z]/` answers false. The
+ bands are 1..2 whitespace, 3..12 digit, and 13..64 or 97..127 letter,
+ the hole being CCE's punctuation at 65..96.
+
+ Each is an arrow applied immediately so the operand appears once. The
+ two-band letter test would otherwise repeat its argument four times, and
+ the argument is an arbitrary expression.
+
   js-try-builtin : Text , List IRExpr , List ArityEntry -> Text
   js-try-builtin (n) (args) (arities) =
    if n == "show" then "String(" & js-emit-expr (list-at args 0) arities & ")"
@@ -445,9 +456,9 @@ Section: Expression Emission
    else if n == "print-error-uni" then "console.error(" & js-emit-expr (list-at args 0) arities & ")"
    else if n == "text-length" then "BigInt(" & js-emit-expr (list-at args 0) arities & ".length)"
    else if n == "char-to-text" then "String.fromCharCode(Number(" & js-emit-expr (list-at args 0) arities & "))"
-   else if n == "is-letter" then "(/^[a-zA-Z]/.test(String.fromCharCode(Number(" & js-emit-expr (list-at args 0) arities & "))))"
-   else if n == "is-digit" then "(/^[0-9]/.test(String.fromCharCode(Number(" & js-emit-expr (list-at args 0) arities & "))))"
-   else if n == "is-whitespace" then "(/^\\s/.test(String.fromCharCode(Number(" & js-emit-expr (list-at args 0) arities & "))))"
+   else if n == "is-letter" then "((c)=>(c>=13&&c<=64)||(c>=97&&c<=127))(Number(" & js-emit-expr (list-at args 0) arities & "))"
+   else if n == "is-digit" then "((c)=>c>=3&&c<=12)(Number(" & js-emit-expr (list-at args 0) arities & "))"
+   else if n == "is-whitespace" then "((c)=>c>=1&&c<=2)(Number(" & js-emit-expr (list-at args 0) arities & "))"
    else if n == "text-to-integer" then "BigInt(" & js-emit-expr (list-at args 0) arities & ")"
    else if n == "integer-to-text" then "String(" & js-emit-expr (list-at args 0) arities & ")"
    else if n == "char-code" then js-emit-expr (list-at args 0) arities

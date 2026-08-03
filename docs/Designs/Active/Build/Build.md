@@ -18,14 +18,14 @@ not exist yet.
 
 | Component | Location | Status |
 |---|---|---|
-| Cite resolution (serial) | `codex/compiler/opening.codex` — `load-cited-foreword` | **Live.** Called on the serial path. (An older revision of this doc called it dead code. It is not.) |
-| Cite resolution (disk) | `codex/compiler/opening.codex` — `disk-resolve-forewords`, `disk-load-cite`, `disk-extract-cites` | **Live.** Resolves `cites` transitively from the FAT16 volume, deduplicating by a seen-set. |
-| DISK compile mode | `codex/compiler/opening.codex` — `emit-from-disk`, dispatched at `if cmd == "DISK"` | **Shipped.** Reads a path from stdin, mounts the FAT16 volume found from the disk's GPT (`fat16-boot-volume`), reads the source, resolves cites from disk, compiles. |
-| Quire-to-path mapping | `codex/compiler/opening.codex` — `quire-to-dir` | Works. |
+| Cite resolution (serial) | `codex/compiler/opening.codex` -- `load-cited-foreword` | **Live.** Called on the serial path. (An older revision of this doc called it dead code. It is not.) |
+| Cite resolution (disk) | `codex/compiler/opening.codex` -- `disk-resolve-forewords`, `disk-load-cite`, `disk-extract-cites` | **Live.** Resolves `cites` transitively from the FAT16 volume, deduplicating by a seen-set. |
+| DISK compile mode | `codex/compiler/opening.codex` -- `emit-from-disk`, dispatched at `if cmd == "DISK"` | **Shipped.** Reads a path from stdin, mounts the FAT16 volume found from the disk's GPT (`fat16-boot-volume`), reads the source, resolves cites from disk, compiles. |
+| Quire-to-path mapping | `codex/compiler/opening.codex` -- `quire-to-dir` | Works. |
 | FAT16 reader | `codex/foreword/core/Fat16.codex` | `fat16-init`, `fat16-read-file`, `fat16-file-exists`, `fat16-list-dir`, `fat16-read-text`. |
 | FAT32 | `codex/foreword/core/Fat32.codex` | Exists. |
 | GPT | `codex/foreword/core/Gpt.codex` | Exists. |
-| Block I/O | `codex/os/kernel/DiskFacts.codex` | `block-read-sector`, `block-write-sector` — raw 512-byte sectors. |
+| Block I/O | `codex/os/kernel/DiskFacts.codex` | `block-read-sector`, `block-write-sector` -- raw 512-byte sectors. |
 | Editor | `codex/foreword/ui/Editor.codex` | Exists. |
 | Shell | `codex/os/core/ShellCore.codex`, driven by `codex/test/apps/codex-shell.codex` | Exists. |
 | CDX signing | `codex/compiler/opening.codex` | Ed25519 sign via inline program. |
@@ -55,16 +55,16 @@ the console and report success, which is silent data loss.
 |---|---|---|
 | `build/concat-codex-self.ps1` | Concatenate compiler source with quire prefixes | Superseded on the disk path by `disk-resolve-forewords`; still used by the serial path. |
 | `build/compile.ps1` | Boot VM, resolve cites, feed source over serial | Keep the VM orchestration; the cite resolution is already in the compiler. |
-| `build/test.ps1` | Parallel test runner | On-disk test runner (Phase 4 below — not started). |
-| `build/build.ps1` | Fixed-point verification (text + CDX pingpong) | On-disk self-compile + byte-compare (Phase 5 below — not started). |
+| `build/test.ps1` | Parallel test runner | On-disk test runner (Phase 4 below -- not started). |
+| `build/build.ps1` | Fixed-point verification (text + CDX pingpong) | On-disk self-compile + byte-compare (Phase 5 below -- not started). |
 | `build/build-record.ps1` | Hash + JSON provenance | Sha256 + Json forewords exist. |
 | `build/gpu-dispatch` bridge | Serial-to-GPU dispatch | The polled serial bridge should become a virtqueue device. |
 
 ### What stays as PS1 forever
 
-- `build/vm-config.ps1` — VM process management, port allocation.
-- `build/clean-zombies.ps1` — kill orphaned VM processes.
-- `build/build-gpu-dispatch.ps1` — CUDA/nvcc invocation.
+- `build/vm-config.ps1` -- VM process management, port allocation.
+- `build/clean-zombies.ps1` -- kill orphaned VM processes.
+- `build/build-gpu-dispatch.ps1` -- CUDA/nvcc invocation.
 
 These launch or kill host processes. They are the boundary, not the
 work.
@@ -99,13 +99,13 @@ Serial-feed mode (the host resolves cites and sends everything):
 PS1: concat source + forewords -> serial -> compiler -> binary -> serial -> PS1
 ```
 
-Disk-compile mode — **shipped**:
+Disk-compile mode -- **shipped**:
 
 ```
 PS1: send "DISK path.codex\n" -> serial -> compiler reads disk -> binary -> serial
 ```
 
-On-device mode — the destination, not yet reached:
+On-device mode -- the destination, not yet reached:
 
 ```
 Shell: compile path.codex -> compiler reads disk -> binary -> disk
@@ -160,23 +160,23 @@ compilation, disk for on-device, selected by the mode header or by
 detecting a disk. That decision stands and is now implemented on the disk
 side.
 
-### Phase B: On-disk test runner — NOT STARTED
+### Phase B: On-disk test runner -- NOT STARTED
 
 A Codex app that lists `codex/test/*.codex` from FAT16, compiles and
 runs each, reads the `.expected` / `.failing` / `.skip` sidecars, diffs,
 and prints a summary.
 
 The open question is how one program runs another. Recommendation on
-record: in-process, with `heap-save` / `heap-restore` between tests —
+record: in-process, with `heap-save` / `heap-restore` between tests --
 the compiler already uses exactly that pattern at phase boundaries.
 
-### Phase C: Self-hosted pingpong — NOT STARTED
+### Phase C: Self-hosted pingpong -- NOT STARTED
 
 Read the compiler source from disk, compile to `stage1.cdx`, use
 `stage1` to compile the source again to `stage2.cdx`, byte-compare.
 
-Step 3 requires loading and executing a compiled CDX — a bare-metal
-binary — which means jumping to its entry point with a fresh stack and
+Step 3 requires loading and executing a compiled CDX -- a bare-metal
+binary -- which means jumping to its entry point with a fresh stack and
 heap. That is essentially a reboot into the new binary, and it is the
 hard part.
 
@@ -184,7 +184,7 @@ Simpler intermediate: TEXT round-trip twice (string comparison, no
 binary loading). That proves the emitter is a fixed point but not the
 binary.
 
-### Phase D: Editor and shell on the boot image — PARTIAL
+### Phase D: Editor and shell on the boot image -- PARTIAL
 
 Both exist as chapters (`codex/foreword/ui/Editor.codex`,
 `codex/os/core/ShellCore.codex`). What is missing is their integration

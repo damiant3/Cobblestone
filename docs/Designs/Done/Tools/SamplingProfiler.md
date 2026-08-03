@@ -8,7 +8,7 @@ dump processing not yet implemented.
 Interrupt-driven sampling profiler for the bare-metal compiler. Samples
 the interrupted RIP at ~1 KHz via the timer interrupt, accumulates
 samples in a fixed buffer, then dumps a function-level histogram over
-serial after compilation. No per-function instrumentation — zero
+serial after compilation. No per-function instrumentation -- zero
 overhead except one ISR per millisecond.
 
 ## Architecture
@@ -56,8 +56,8 @@ buffer at 5 MB).
      and RIP values over serial as `PROF:` lines
 
 2. **Builtins** in X86_64Builtins.codex:
-   - `prof-start : Nothing` — calls `__prof_start`
-   - `prof-dump : Nothing` — calls `__prof_dump`
+   - `prof-start : Nothing` -- calls `__prof_start`
+   - `prof-dump : Nothing` -- calls `__prof_dump`
 
 3. **Name resolver** in NameResolver.codex:
    - Add `prof-start`, `prof-dump` to known builtins
@@ -95,7 +95,7 @@ build/compile.ps1 -Src build/output/Codex.codex -Out out.cdx -Log out.log -Profi
 ## Design Notes
 
 - The timer fires at PIT rate (~1 KHz on codex-vm). With a 50s compile,
-  that's ~50000 samples — well within the 65536 buffer.
+  that's ~50000 samples -- well within the 65536 buffer.
 - Sampling only runs when `prof-enabled-addr` is set, so normal
   compilation has zero profiler overhead.
 - The ISR adds ~20 instructions to the timer path when profiling is

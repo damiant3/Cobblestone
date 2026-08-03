@@ -1,4 +1,4 @@
-# MM1 — Major Milestone 1 Archive
+# MM1 -- Major Milestone 1 Archive
 
 **Achieved**: 2026-03-19
 
@@ -23,7 +23,7 @@ development now happens in the Codex language itself.
 | `03-TYPE-SYSTEM.md` | Dependent types, linear types, effects |
 | `04-COMPILER-PIPELINE.md` | Lexer → Parser → AST → TypeChecker → IR → Emitter |
 | `05-REPOSITORY-MODEL.md` | Content-addressed store, facts, proposals, verdicts |
-| `06-ENVIRONMENT.md` | The unified IDE — Reader, Writer, Verifier, Explorer |
+| `06-ENVIRONMENT.md` | The unified IDE -- Reader, Writer, Verifier, Explorer |
 | `07-TRANSPILATION.md` | IR design and target backends |
 | `08-MILESTONES.md` | Original phased delivery plan |
 | `09-RISKS.md` | Technical risks and mitigations |

@@ -1,14 +1,14 @@
-# CVMM — Codex Virtual Machine Manager
+# CVMM -- Codex Virtual Machine Manager
 
 ## Status
 
 **Phase 1 is done. Every manager serves mock state.**
 
-The modules are all there — CvmmTypes, CvmmState, CvmmShell, CvmmTheme,
+The modules are all there -- CvmmTypes, CvmmState, CvmmShell, CvmmTheme,
 CvmmDashboard, FileExplorer, DriveManager, UsbManager, ProcessManager,
 ServiceManager, PortMonitor, NetworkManager, DisplayManager,
 ServerManager, FleetManager, DeployManager, CvmmServer, CvmmRoutes,
-CvmmDisplay — plus a productivity suite and 14 tests under
+CvmmDisplay -- plus a productivity suite and 14 tests under
 `apps/cvmm/tests/`.
 
 But the app's own README says it plainly: **"real OS data collection
@@ -16,13 +16,13 @@ But the app's own README says it plainly: **"real OS data collection
 drive manager mounts nothing. The network manager reads no NIC. Every
 view is a correctly-shaped widget tree over invented data, every route
 returns JSON assembled from a fixture, and every test asserts the
-transformation of fixtures — which is a real and useful guarantee about
+transformation of fixtures -- which is a real and useful guarantee about
 the *shape* of the system, and no guarantee at all about the system.
 
 Read the tables below as a specification that has been fully typed and
 routed, and not yet connected to a machine.
 
-**Next: Phase 2 — wire the managers to real syscalls.** That is the
+**Next: Phase 2 -- wire the managers to real syscalls.** That is the
 whole of the remaining substance. Until a manager reads the actual
 process table, the actual block devices, and the actual NIC, CVMM is a
 very well-organized mockup. (The deploy manager is additionally a stub
@@ -32,7 +32,7 @@ shell.)
 ## Vision
 
 CVMM is not a VM manager. CVMM is the operating system's graphical
-shell — the desktop environment, the system manager, the fleet
+shell -- the desktop environment, the system manager, the fleet
 controller. It happens to boot inside a VM today because codex-vm is
 our test bed. Tomorrow it runs on phones, on PCs with four monitors
 and discrete GPUs, on headless servers in racks. The abstractions must
@@ -46,20 +46,20 @@ foreword Render pipeline when the GPU driver lands.
 ## Core Principle: Everything Is a Managed Resource
 
 A file, a disk, a USB device, a network port, a running service, a
-deployed VM, a GPU — they are all resources with a lifecycle. CVMM
+deployed VM, a GPU -- they are all resources with a lifecycle. CVMM
 presents them through a unified resource model:
 
-- **Discover** — enumerate what exists
-- **Inspect** — show properties and status
-- **Act** — mount, unmount, start, stop, deploy, attach, detach
-- **Monitor** — watch for changes, alert on conditions
+- **Discover** -- enumerate what exists
+- **Inspect** -- show properties and status
+- **Act** -- mount, unmount, start, stop, deploy, attach, detach
+- **Monitor** -- watch for changes, alert on conditions
 
 Each manager module follows this pattern. The shell composes them into
 a coherent workspace.
 
 ## Port Assignment
 
-**Port 2682** — the CVMM management dashboard.
+**Port 2682** -- the CVMM management dashboard.
 
 IANA removed this port assignment on 2002-04-30. It remains unassigned
 (not "Reserved" like de-assigned ports, which RFC 6335 discourages
@@ -134,7 +134,7 @@ Same Codex code. Different render target.
 ### Server and Fleet
 | File | Purpose |
 |------|---------|
-| `ServerManager.codex` | Managed servers: web, proxy, DNS, DHCP — deploy/configure/monitor |
+| `ServerManager.codex` | Managed servers: web, proxy, DNS, DHCP -- deploy/configure/monitor |
 | `FleetManager.codex` | Device/VM fleet: discover, group, deploy to, health dashboard |
 | `DeployManager.codex` | Deployment pipeline: build, package, distribute, rollback |
 
@@ -201,22 +201,22 @@ All JSON over WebServer route dispatch.
 
 ## Phases
 
-### Phase 1 — Skeleton + Core Managers — DONE
+### Phase 1 -- Skeleton + Core Managers -- DONE
 All data models, all widget builders, all route stubs. File explorer,
 drive manager, USB manager, process manager, service manager working
 with mock data. Dashboard with system summary. Shell with navigation.
 
-### Phase 2 — Live Data + Display — THE WORK
+### Phase 2 -- Live Data + Display -- THE WORK
 Wire managers to real OS syscalls. Display protocol streaming. Input
 relay. Port and network monitors with real data.
 
 This is the phase that makes CVMM a system manager rather than a
 picture of one. Nothing in Phase 3 or 4 is worth starting first.
 
-### Phase 3 — Fleet + Deploy
+### Phase 3 -- Fleet + Deploy
 Multi-device discovery. Fleet dashboard. Deployment pipeline.
 Server management (proxy, web, DNS).
 
-### Phase 4 — Multi-Monitor + GPU
+### Phase 4 -- Multi-Monitor + GPU
 Native render path (bypass HTML, direct to GPU compositor). Multi-monitor
 layout. Phone/tablet responsive layouts. GPU acceleration.

@@ -23,11 +23,11 @@
 - **Memory model**: Flat (no MMU), optional MPU (8-16 regions)
 - **Registers**: R0-R12 general purpose, SP, LR, PC, xPSR
 - **Power modes**: Thread/Handler mode, privileged/unprivileged
-- **Boot**: Vector table at 0x0 — SP from [0], reset handler from [4]
+- **Boot**: Vector table at 0x0 -- SP from [0], reset handler from [4]
 
 ## Cortex-A Architecture (Raspberry Pi target)
 
-- **Instruction set**: AArch64 (A64) — 32-bit fixed-width encoding
+- **Instruction set**: AArch64 (A64) -- 32-bit fixed-width encoding
 - **Exception model**: GIC (Generic Interrupt Controller)
   - 4 exception levels (EL0-EL3)
   - IRQ, FIQ, SError, synchronous exceptions

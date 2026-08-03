@@ -1,0 +1,188 @@
+Chapter: DropdownOptions
+  cites Foreword chapter Console
+  cites UI chapter Dropdown
+  cites UI chapter Widget
+  cites UI chapter KeyInput
+
+ Dropdown is reached by DiffusionApp through SettingsPanel, which calls
+ dropdown-widget for every SfDropdown field, so the closed trigger is
+ live. Opening, filtering, highlighting and confirming are reached by
+ nothing, which is where the questions are: a control that cannot be
+ opened from the keyboard is the same shape of defect TextField and
+ TreeView both carried.
+
+ Eleven options against a visible cap of eight, so the cap is exercised
+ rather than assumed, and a filter that selects six of the eleven, so the
+ highlight is asked in a space that is NOT the full option list. Those two
+ are the cases where an index into the visible options and an index into
+ all of them stop coinciding.
+
+ We say:
+
+Section: Reading
+
+  at : WidgetNode, Integer -> WidgetNode
+  at (w) (i) = list-at (w.wn-children) i
+
+  payload : WidgetNode -> Text
+  payload (w) = when w.wn-kind
+    is WkLabel (t) -> "[" & t & "]"
+    is WkButton (t) -> "<" & t & ">"
+    is WkGauge (v) (m) -> "gauge"
+    is WkInput (t) (c) -> "input(" & t & ")"
+    is WkSeparator -> "sep"
+    is WkPanel -> "panel"
+    is WkCustom (tag) -> tag
+
+  join : List Text, Integer, Integer, Text -> Text
+  join (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else join xs (i + 1) n (acc & (if i > 0 then "," else "") & list-at xs i)
+
+  show-opts : List Text -> Text
+  show-opts (xs) = join xs 0 (list-length xs) ""
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+Section: The options under test
+
+  opts : Integer -> List Text
+  opts (x) = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot",
+              "golf", "hotel", "india", "juliet", "kilo"]
+
+  base : Integer -> DropdownState
+  base (x) = dropdown-new "dd" (opts 0)
+
+  opened : Integer -> DropdownState
+  opened (x) = dropdown-toggle (base 0)
+
+  navd : DropdownState, Integer -> DropdownState
+  navd (dd) (n) = if n <= 0 then dd else navd (dropdown-nav-down dd) (n - 1)
+
+Section: Selection text
+
+ A dropdown with nothing chosen must say so rather than naming an option,
+ and an index outside the option list must answer empty rather than
+ reading past the end.
+
+  line-selected : Text =
+    "selected: none=[" & dropdown-selected-text (base 0)
+    & "] index2=[" & dropdown-selected-text (dropdown-with-selected "dd" (opts 0) 2)
+    & "] beyond=[" & dropdown-selected-text (dropdown-with-selected "dd" (opts 0) 99)
+    & "] negative=[" & dropdown-selected-text (dropdown-with-selected "dd" (opts 0) (0 - 1)) & "]"
+
+Section: What is visible
+
+ Eleven options, a cap of eight. The filter takes every option containing
+ the letter o, which is six of the eleven and not a prefix of them.
+
+  line-cap : Text =
+    "cap: options=" & show (list-length (opts 0))
+    & " max-visible=" & show ((base 0).dd-max-visible)
+    & " visible=" & show (list-length (dropdown-visible-options (base 0)))
+
+  line-visible : Text =
+    "visible: " & show-opts (dropdown-visible-options (base 0))
+
+  line-filtered : Text =
+    "filtered o: " & show-opts (dropdown-visible-options (dropdown-set-filter (base 0) "o"))
+
+Section: Highlight and confirm
+
+ The highlight indexes the VISIBLE options, so confirming has to map it
+ back through the full list. Under a filter those two spaces differ, which
+ is the case that tells a correct mapping from one that returns the
+ highlight as an option index.
+
+  line-nav-clamp : Text =
+    "nav: down x3=" & show ((navd (opened 0) 3).dd-highlight)
+    & " down x20=" & show ((navd (opened 0) 20).dd-highlight)
+    & " of visible " & show (list-length (dropdown-visible-options (opened 0)))
+    & " up-from-zero=" & show ((dropdown-nav-up (opened 0)).dd-highlight)
+
+  line-confirm : Text =
+    "confirm: unfiltered down x3=[" & dropdown-selected-text (dropdown-confirm (navd (opened 0) 3)) & "]"
+
+ Filtered, the visible list is bravo echo foxtrot golf hotel kilo.
+ Setting a filter resets the highlight to zero, so one Down lands on echo,
+ which is option 4 of the full eleven and not option 1.
+
+  line-confirm-filtered : Text =
+    let dd = dropdown-nav-down (dropdown-set-filter (opened 0) "o")
+    in let done = dropdown-confirm dd
+    in "confirm filtered: highlight=" & show (dd.dd-highlight)
+    & " chosen=[" & dropdown-selected-text done & "] index=" & show (done.dd-selected)
+
+ A highlight past the end of the visible list must decline rather than
+ choose. dropdown-with-selected seeds the highlight from an index into the
+ FULL list, so a selection beyond the visible cap produces exactly that.
+
+  line-confirm-beyond : Text =
+    let dd = dropdown-toggle (dropdown-with-selected "dd" (opts 0) 10)
+    in "confirm beyond cap: highlight=" & show (dd.dd-highlight)
+    & " visible=" & show (list-length (dropdown-visible-options dd))
+    & " kept=[" & dropdown-selected-text (dropdown-confirm dd) & "]"
+
+Section: The keyboard
+
+ UI chapter KeyInput settles what a key is in this quire: a character is
+ its CCE code point and a named key is a constant at or above
+ key-named-base. A handler testing 13, 32, 27, 38 and 40 is reading ASCII
+ control codes and Windows virtual key codes, and in CCE those numbers are
+ ordinary letters.
+
+  line-key-open : Text =
+    "key open: enter-on-closed=" & yn ((dropdown-handle-key (base 0) key-enter).dd-open)
+    & " space-on-closed=" & yn ((dropdown-handle-key (base 0) (char-code ' ')).dd-open)
+    & " letter-on-closed=" & yn ((dropdown-handle-key (base 0) (char-code 'q')).dd-open)
+
+  line-key-nav : Text =
+    "key nav: down=" & show ((dropdown-handle-key (opened 0) key-down).dd-highlight)
+    & " then up=" & show ((dropdown-handle-key (dropdown-handle-key (opened 0) key-down) key-up).dd-highlight)
+
+  line-key-escape : Text =
+    "key escape: open-after=" & yn ((dropdown-handle-key (opened 0) key-escape).dd-open)
+
+  line-key-confirm : Text =
+    let dd = dropdown-handle-key (dropdown-handle-key (opened 0) key-down) key-enter
+    in "key confirm: chosen=[" & dropdown-selected-text dd & "] open=" & yn (dd.dd-open)
+
+Section: The widgets
+
+  line-widget-closed : Text =
+    "closed: none=" & payload (dropdown-widget (base 0))
+    & " index2=" & payload (dropdown-widget (dropdown-with-selected "dd" (opts 0) 2))
+
+  line-widget-open : Text =
+    let w = dropdown-widget (opened 0)
+    in "open: kids=" & show (w.wn-child-count)
+    & " filter=" & payload (at w 0)
+    & " items=" & show ((at w 1).wn-child-count)
+    & " first=" & payload (at (at w 1) 0)
+
+  line-format : Text =
+    "format: [" & format-dropdown (dropdown-with-selected "dd" (opts 0) 2)
+    & "] [" & format-dropdown (opened 0) & "]"
+
+Section: Body
+
+  report-a : Text =
+    line-selected & "\n" & line-cap & "\n" & line-visible & "\n" & line-filtered
+
+  report-b : Text =
+    line-nav-clamp & "\n" & line-confirm & "\n" & line-confirm-filtered
+    & "\n" & line-confirm-beyond
+
+  report-c : Text =
+    line-key-open & "\n" & line-key-nav & "\n" & line-key-escape & "\n" & line-key-confirm
+
+  report-d : Text =
+    line-widget-closed & "\n" & line-widget-open & "\n" & line-format
+
+  opening : [Console] Nothing = act
+    print-line-uni report-a
+    print-line-uni report-b
+    print-line-uni report-c
+    print-line-uni report-d
+  end

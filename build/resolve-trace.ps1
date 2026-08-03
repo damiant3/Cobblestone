@@ -39,7 +39,7 @@ function Resolve-Addr([long]$rip) {
     return "0x$($rip.ToString('X'))"
 }
 
-# Parse entries — supports both text (T:hex:hex per line) and binary (8-byte count + 16-byte entries) formats.
+# Parse entries -- supports both text (T:hex:hex per line) and binary (8-byte count + 16-byte entries) formats.
 $entries = [System.Collections.Generic.List[long[]]]::new()
 $firstLine = (Get-Content $TraceFile -First 1).Trim()
 

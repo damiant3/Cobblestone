@@ -1,0 +1,89 @@
+Chapter: PortTraceTest
+  cites Dev chapter PortTrace
+  cites Dev chapter HexFormat
+  grounds Device.Port
+
+ The port trace ring, pure half and live half.
+
+ THE LIVE READS ASSERT PORT AND DIRECTION, NEVER THE BYTE. COM1's line
+ status and the ATA alternate status answer whatever the machine has to
+ say, which differs between codex-vm and metal and between one boot and
+ the next. The recorded WRITE is different and its byte is asserted: a
+ write records the value it was handed rather than one it read back.
+
+ THE WRITE GOES TO PORT #80. That is the POST diagnostic port, which
+ exists to be written and is a sink on every PC-compatible machine, so
+ the one entry in this test that touches the machine cannot disturb
+ anything else in the battery.
+
+ We say:
+
+Section: Filling
+
+  fill : PortTrace, Integer, Integer -> PortTrace
+  fill (t) (i) (n) =
+    if i >= n then t
+    else fill (pt-record t pt-dir-in (256 + i) i) (i + 1) n
+
+Section: The Live Half
+
+  live-report : Text
+  live-report = act
+    r1 <- pt-read (pt-arm pt-new True) 1021
+    r2 <- pt-read (r1.pr-trace) 1014
+    t3 <- pt-write (r2.pr-trace) 128 90
+    live-verdict t3 (r1.pr-value)
+  end
+
+ THE LAST FIELD IS THE ONLY THING HERE THAT WATCHES THE WIRE. Port and
+ direction are recorded from the arguments, so every other assertion in
+ this test passes just as well against a `pt-read` that never issued the
+ `in` at all. THRE is bit 5 of the COM1 line status register and an idle
+ transmitter must report it; an absent UART reads #FF and reports it too,
+ so the bit holds on every machine that runs this while a read path
+ answering a constant zero does not.
+
+  live-verdict : PortTrace, Integer -> Text
+  live-verdict (t) (lsr) =
+    let e0 = pt-at t 0
+    in let e2 = pt-at t 2
+    in let a = "live: count " & show (pt-count t) & " total " & show (t.pt-total)
+    in let b = " first #" & u16-to-hex (pt-entry-port e0) & " dir " & show (pt-entry-dir e0)
+    in let c = " third #" & u16-to-hex (pt-entry-port e2) & " dir " & show (pt-entry-dir e2)
+    in let d = " byte #" & hexfmt-byte-to-hex (pt-entry-value e2)
+    in a & b & c & d & " lsr-thre " & show (bit-and lsr 32 /= 0)
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    let packed = pt-pack pt-dir-out 65535 255
+    in let three = fill (pt-arm pt-new True) 0 3
+    in let wrapped = fill (pt-arm pt-new True) 0 70
+    in let cleared = pt-clear wrapped
+    in act
+      print-line-uni ("pack-port: " & show (pt-entry-port packed))
+      print-line-uni ("pack-value: " & show (pt-entry-value packed))
+      print-line-uni ("pack-dir: " & show (pt-entry-dir packed))
+
+      print-line-uni ("disarmed-records-nothing: " & show (pt-count (pt-record pt-new pt-dir-in 100 1)))
+      print-line-uni ("armed-count: " & show (pt-count three) & " total: " & show (three.pt-total))
+      print-line-uni ("armed-first-port: " & show (pt-entry-port (pt-at three 0)))
+      print-line-uni ("armed-last-port: " & show (pt-entry-port (pt-at three 2)))
+
+      print-line-uni ("wrapped-count: " & show (pt-count wrapped) & " total: " & show (wrapped.pt-total))
+      print-line-uni ("wrapped-oldest-port: " & show (pt-entry-port (pt-at wrapped 0)))
+      print-line-uni ("wrapped-newest-port: " & show (pt-entry-port (pt-at wrapped 63)))
+
+      print-line-uni ("cleared-count: " & show (pt-count cleared) & " total: " & show (cleared.pt-total))
+      print-line-uni ("cleared-stays-armed: " & show (cleared.pt-armed))
+
+      print-line-uni ("empty-report: " & list-at (pt-report (pt-clear pt-new)) 1)
+      print-line-uni ("report-lines: " & show (list-length (pt-report three)))
+      print-line-uni ("report-header: " & list-at (pt-report three) 0)
+      print-line-uni ("report-line-0: " & list-at (pt-report three) 1)
+
+      print-line-uni live-report
+    end
+  end
+
+Page 1

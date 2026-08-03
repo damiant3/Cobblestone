@@ -1,17 +1,17 @@
-# GitHub Update 7 — CL 784 to CL 803+ (2026-05-04)
+# GitHub Update 7 -- CL 784 to CL 803+ (2026-05-04)
 
 Previous update: CL 783 (GitHubUpdate6).
 This update: CL 803+.
 
-## Verifier Phase 5 — Proof Verification
+## Verifier Phase 5 -- Proof Verification
 
 The CDX verifier now has all 5 phases (CLs 786-790):
 
-1. **Integrity** — SHA-256 content hash + Ed25519 signature
-2. **Author** — trust lattice score check
-3. **Capabilities** — policy evaluation per capability entry
-4. **Effects** — effect/capability consistency
-5. **Proofs** — fuel-bounded fact store lookup for proof hashes
+1. **Integrity** -- SHA-256 content hash + Ed25519 signature
+2. **Author** -- trust lattice score check
+3. **Capabilities** -- policy evaluation per capability entry
+4. **Effects** -- effect/capability consistency
+5. **Proofs** -- fuel-bounded fact store lookup for proof hashes
 
 `verify-cdx-full` is the 5-phase paranoid path. `verify-cdx` (4-phase
 fast path) is unchanged. CDX binaries carry proof hashes in a section
@@ -41,14 +41,14 @@ Supporting infrastructure:
   Immutable state threading with `ShellState` (registry + lattice +
   policy + fact store + fuel).
 
-## Clarifier — The Semantic Mirror
+## Clarifier -- The Semantic Mirror
 
 OS stack item #14 (CL 800). The Clarifier parses an utterance into
 solid nodes (understood) and unresolved nodes (ambiguous), sorts
 unresolved by priority, and reflects questions in the user's register.
 
 Priority order: Referent > Domain > Cardinality > Threshold > Temporal.
-Referents first — "he", "it", "that thing" must bind before anything
+Referents first -- "he", "it", "that thing" must bind before anything
 else resolves. Mirrors CPL Rule NP-1.
 
 Four output registers:
@@ -57,7 +57,7 @@ Four output registers:
 - **Technical**: "Unresolved referent: 'management' (which authority level)"
 - **Formal**: "NP-1: referent of 'management' is unresolved."
 
-ShellClarifier bridges the Clarifier to shell command failures —
+ShellClarifier bridges the Clarifier to shell command failures --
 install denials, missing programs, and policy violations get
 register-appropriate diagnostic questions instead of raw errors.
 
@@ -78,7 +78,7 @@ Layer 3-4 (CL 802): TCP segment build/parse, 9-state machine
 
 Layer 5 (CL 803): NetworkStack session API composing Ethernet + IP +
 TCP with ARP cache and outbound frame queue. TcpTransport adds
-length-prefixed message framing over TCP sessions — bridges
+length-prefixed message framing over TCP sessions -- bridges
 MessageFraming wire format to the network layer.
 
 ## Networking Quick Start
@@ -94,11 +94,11 @@ The NIC initializes at boot (before READY). Programs can check
 `net-status` (returns 1 if NIC present) and read MAC bytes via
 `net-get-hwaddr 0` through `net-get-hwaddr 5`.
 
-Networking forewords (all pure — no I/O, just byte construction):
-- `Ethernet.codex` — frame encode/decode, ARP, IPv4
-- `Tcp.codex` — segment encode/decode, state machine
-- `NetworkStack.codex` — session API, ARP cache, frame dispatch
-- `TcpTransport.codex` — framed messages over TCP
+Networking forewords (all pure -- no I/O, just byte construction):
+- `Ethernet.codex` -- frame encode/decode, ARP, IPv4
+- `Tcp.codex` -- segment encode/decode, state machine
+- `NetworkStack.codex` -- session API, ARP cache, frame dispatch
+- `TcpTransport.codex` -- framed messages over TCP
 
 Kernel-level `net-send-raw` / `net-recv` builtins are in progress
 (next CL from Nib). Once landed, the foreword stack drives real

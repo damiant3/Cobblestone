@@ -1,0 +1,60 @@
+Chapter: EncodeGltfBounds
+  cites Foreword chapter Console
+  cites Encode chapter Gltf
+
+ glTF 2.0 section 5.1: an accessor's min and max are the componentwise
+ bounds of the data the accessor describes, in the same units. The
+ validator compares them against the buffer, and renderers frame the
+ camera and cull with them, so a bound in the wrong units loads and draws
+ with a volume the wrong size rather than failing loudly.
+
+ This chapter carries positions at fixed-point scale 1000 and the buffer
+ writes them divided by 1000, so a vertex at x = 2.0 is held as 2000 and
+ the accessor must say 2.0.
+
+ The mesh below reaches 2.0 on x and -0.5 on y deliberately. A mesh at the
+ origin would have min [0,0,0], which is the one bound that reads correctly
+ whether or not the scale is applied, so an origin-only probe passes
+ against the defect this pins.
+
+Section: Body
+
+  v0 : GltfVertex = gltf-vertex 0 0 0 0 0 0 0 0
+  v1 : GltfVertex = gltf-vertex 2000 0 0 0 0 0 0 0
+  v2 : GltfVertex = gltf-vertex 0 (0 - 500) 1500 0 0 0 0 0
+
+  tri : GltfMesh = gltf-mesh [v0, v1, v2] [0, 1, 2]
+
+  json : Text = gltf-build-json tri 0
+
+ A substring search rather than a full-document compare: the assertion is
+ about the two bounds, and pinning the whole document would go red for any
+ unrelated field and hide which one moved.
+
+  has : Text -> Text
+  has (needle) = if text-contains json needle then "present" else "ABSENT"
+
+  r : Text, Text -> Text
+  r (what) (got) = "  " & what & " " & got
+
+Section: Report
+
+  opening : [Console] Nothing = act
+    print-line-uni "Accessor bounds, which must be the real coordinates and not"
+    print-line-uni "the scale-1000 integers the mesh carries:"
+    print-line-uni (r "min [0,-0.5,0]  " (has "\"min\":[0.000,-0.500,0.000]"))
+    print-line-uni (r "max [2,0,1.5]   " (has "\"max\":[2.000,0.000,1.500]"))
+    print-line-uni ""
+    print-line-uni "The defect this replaced emitted the raw fixed-point value, so"
+    print-line-uni "these must NOT appear:"
+    print-line-uni (r "raw min       " (has "\"min\":[0,-500,0]"))
+    print-line-uni (r "raw max       " (has "\"max\":[2000,0,1500]"))
+    print-line-uni ""
+    print-line-uni "Controls. Counts and indices are genuine integers and must stay"
+    print-line-uni "integers, so the decimal must not have leaked into them:"
+    print-line-uni (r "count 3       " (has "\"count\":3"))
+    print-line-uni (r "componentType " (has "\"componentType\":5126"))
+    print-line-uni (r "asset version " (has "\"version\":\"2.0\""))
+  end
+
+Page 1

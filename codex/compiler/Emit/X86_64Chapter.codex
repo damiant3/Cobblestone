@@ -12,7 +12,7 @@ Section: Bare-Metal Start
   emit-oom-string : CodegenState, List Integer, Integer -> CodegenState
   emit-oom-string (st) (chars) (i) =
    if i >= list-length chars then st
-   else emit-oom-string (emit-control-wait-and-send st (list-at chars i)) chars (i + 1)
+   else emit-oom-string (emit-serial-wait-and-send st (list-at chars i)) chars (i + 1)
 
   emit-out-of-memory-handler : CodegenState -> CodegenState
   emit-out-of-memory-handler (st) =
@@ -23,7 +23,9 @@ Section: Bare-Metal Start
    in let st4 = st-append-code st3a (mov-load reg-rsp reg-rdi 0)
    in let st5 = st-append-code st4 (mov-rr reg-rbp reg-rsp)
    in let st6 = emit-oom-string st5 [79, 85, 84, 32, 79, 70, 32, 77, 69, 77, 79, 82, 89, 10] 0
-   in let st7 = st-append-code st6 [244]
+   in let st6a = emit-serial-drain-delay st6
+   in let st6b = st-append-code st6a cli
+   in let st7 = st-append-code st6b hlt
    in st-append-code st7 (jmp (-6))
 
   emit-pet-watchdog-helper : CodegenState -> CodegenState
@@ -206,6 +208,24 @@ Section: Bare-Metal Start
    in if d.name == opening-entry-point then peel-effectful-ty-once (strip-fun-args (d.type-val))
       else opening-bare-print-type-loop defs (i + 1) len
 
+ `__real_to_text` reads sixty-four bits, so an f32 has to be widened
+ before the call or the helper reads a single-precision bit pattern as
+ double and prints a number nobody computed. This is the same convert
+ `emit-show-real-approx` does for `show`; that path takes an expression
+ and this one takes a value already in RAX, which is why the sequence is
+ written twice rather than shared.
+
+ Before the Real collapse these two walks matched `RealTy` alone and every
+ other Real fell to a tail that emits nothing, so an `opening` returning a
+ moded Real printed NO OUTPUT AT ALL and a record field of one printed its
+ bit pattern through the integer path.
+
+  widen-f32-in-rax : CodegenState, RealWidth -> CodegenState
+  widen-f32-in-rax (st) (w) =
+   if is-width-f32 w
+    then st-append-code st (movq-to-xmm 0 reg-rax & cvtss2sd-xmm 0 0 & movq-from-xmm reg-rax 0)
+   else st
+
   emit-opening-result-print : CodegenState -> CodegenState
   emit-opening-result-print (st) =
    when st.opening-ret-type
@@ -214,8 +234,9 @@ Section: Bare-Metal Start
      in emit-serial-wait-and-send st1 10
     is TextTy -> emit-print-text st reg-rax
     is BooleanTy -> emit-print-bool st reg-rax
-    is RealTy ->
-     let st1 = st-append-code st (mov-rr reg-rdi reg-rax)
+    is RealTy (w) (m) ->
+     let st0 = widen-f32-in-rax st w
+     in let st1 = st-append-code st0 (mov-rr reg-rdi reg-rax)
      in let st2 = emit-call-to st1 "__real_to_text"
      in emit-print-text st2 reg-rax
     is ConstructedTy (cname) (cargs) ->
@@ -294,8 +315,9 @@ Section: Bare-Metal Start
     is IntegerTy (lo) (hi) (mode) -> emit-inline-itoa-and-print st
     is TextTy -> emit-print-text-no-newline st reg-rax
     is BooleanTy -> emit-print-bool-no-newline st reg-rax
-    is RealTy ->
-     let st1 = st-append-code st (mov-rr reg-rdi reg-rax)
+    is RealTy (w) (m) ->
+     let st0 = widen-f32-in-rax st w
+     in let st1 = st-append-code st0 (mov-rr reg-rdi reg-rax)
      in let st2 = emit-call-to st1 "__real_to_text"
      in emit-print-text-no-newline st2 reg-rax
     is UnitTy (n) (inner) -> emit-opening-print-field st inner
@@ -325,7 +347,7 @@ Section: Bare-Metal Start
 
  emit-text-lit puts the string in the data buffer and leaves its
  address in a register through the ordinary rodata fixup, so the cell
- holds an honest Text — the same representation every other Text in the
+ holds an honest Text -- the same representation every other Text in the
  program has, and the one process-get-scope hands back.
 
  The value is copied to RAX before RDI is loaded because emit-text-lit
@@ -758,7 +780,7 @@ Section: Capability Manifest
  filesystem (a path PREFIX, checked at the three Fat16 gates) and the
  network (an AUTHORITY, checked at the fetch chokepoint against a
  runtime URL's host). A console channel is the third relation
- scope-admits knows about and is NOT carried — a channel is fixed at
+ scope-admits knows about and is NOT carried -- a channel is fixed at
  compile time by the builtin name and never becomes a runtime value,
  so there is nothing at runtime to check a stored channel against, and
  carrying it would be a promise the machine cannot keep.
@@ -787,7 +809,7 @@ Section: Capability Manifest
  `opening : [Console, FileSystem.Read "/config/"] Nothing` is a VALUE
  with an effect row, not a function, so its type is an EffectfulTy and
  not a FunTy. EffectfulTy's second field is the scope list, parallel to
- its name list — reading the names and ignoring that list is exactly
+ its name list -- reading the names and ignoring that list is exactly
  how the scope got dropped everywhere else in this pipeline.
 
   manifest-type-scope : CodexType, Text, Text -> Text
@@ -832,7 +854,7 @@ Section: Capability Manifest
 
  manifest-base-loop derives the dot's code from a literal because
  internal text is CCE: a bare 46 is ASCII thinking, and in CCE code
- 46 is the letter H — the comparison never matched, so a dotted
+ 46 is the letter H -- the comparison never matched, so a dotted
  effect (Device.Block) never resolved to its covering capability and
  the boot grant silently dropped it.
 
@@ -864,18 +886,25 @@ Section: Capability Manifest
  A program naming BOTH .Read and .Write gets readwrite, which is the
  union it asked for and not an escalation.
 
-  manifest-dir-read : Integer = 0
-  manifest-dir-write : Integer = 1
-  manifest-dir-readwrite : Integer = 2
+ The three VALUES were written out here as manifest-dir-read, -write and
+ -readwrite until 2026-07-27, and they were the compiler's copy of a
+ triple that also existed as cap-dir-* in Foreword chapter Capability and
+ as cdx-dir-* in the CDX format. Nothing checked that the three agreed.
+ The failure mode is not a mismatch that reports itself: cap-dir-bits is
+ the only thing that ever interprets a direction, and its last branch is
+ readwrite, so a renumbered write would have been read as readwrite and
+ the program would have earned an authority it did not declare. The
+ numbers are read from the table now, which is where the capability
+ identifiers and the kernel bits already come from.
 
   manifest-cap-direction : List Text, Text -> Integer
   manifest-cap-direction (effs) (cap) =
    let f = manifest-dir-flags effs cap 0 (list-length effs) 0
-   in if bit-and f 4 /= 0 then manifest-dir-readwrite
-      else if bit-and f 3 == 3 then manifest-dir-readwrite
-      else if bit-and f 1 /= 0 then manifest-dir-read
-      else if bit-and f 2 /= 0 then manifest-dir-write
-      else manifest-dir-readwrite
+   in if bit-and f 4 /= 0 then cap-dir-readwrite
+      else if bit-and f 3 == 3 then cap-dir-readwrite
+      else if bit-and f 1 /= 0 then cap-dir-read
+      else if bit-and f 2 /= 0 then cap-dir-write
+      else cap-dir-readwrite
 
   manifest-dir-flags : List Text, Text, Integer, Integer, Integer -> Integer
   manifest-dir-flags (effs) (cap) (i) (len) (acc) =
@@ -916,7 +945,7 @@ Section: Capability Manifest
  capability section records: each covered name contributes its kernel
  capability bits, and anything the manifest does not declare stays
  ungranted (Concurrent covers task spawn, channels, and process
- creation — the three faces of the concurrency authority in this
+ creation -- the three faces of the concurrency authority in this
  kernel). Identity and Capability are effect-row sources like the
  rest: a program that declares Identity earns cap-identity at boot,
  which is what every identity builtin's kernel helper now tests.
@@ -960,9 +989,9 @@ Section: Capability Manifest
  The capability section carries the scope, and until now it lied about
  having none: the length field was a hardcoded `cdx-le32 0`, so every
  binary this compiler emitted told the verifier its grants were
- unscoped. The verifier has always been able to read a scope —
+ unscoped. The verifier has always been able to read a scope --
  `CdxVerifier` decodes the bytes and strides `16 + scope-len`, and
- `CdxBinary` writes them the same way — so the format was never the
+ `CdxBinary` writes them the same way -- so the format was never the
  gap. One hardcoded zero was.
 
  Only the filesystem grant carries one, for the same reason
@@ -1197,10 +1226,17 @@ Section: Binary Debug Map (MAP1)
 
 
   x86-64-emit-cdx : IRChapter, List TypeBinding -> EmitChapterResult
-  x86-64-emit-cdx (m) (tdefs) = x86-64-emit-cdx-with-exit-mode m tdefs Exit False False WatchdogProgress
+  x86-64-emit-cdx (m) (tdefs) = x86-64-emit-cdx-with-exit-mode m tdefs Exit False False WatchdogProgress []
 
-  x86-64-emit-cdx-with-exit-mode : IRChapter, List TypeBinding, X86_64ExitMode, Boolean, Boolean, X86_64WatchdogMode -> EmitChapterResult
-  x86-64-emit-cdx-with-exit-mode (m) (tdefs) (exit-mode) (poison) (trace) (wd-mode) =
+ The last parameter is the definitions the caller's prune dropped that
+ declared an explicit WCET budget. It is a list and not a chapter because
+ the caller is the only place both the pre-prune and post-prune def lists
+ exist: ir-prune-unreachable-roots stores its result back into the chapter
+ it was given, so a callee holding one chapter cannot recover the other.
+ An empty list is the honest default for a caller that did not prune.
+
+  x86-64-emit-cdx-with-exit-mode : IRChapter, List TypeBinding, X86_64ExitMode, Boolean, Boolean, X86_64WatchdogMode, List IRDef -> EmitChapterResult
+  x86-64-emit-cdx-with-exit-mode (m) (tdefs) (exit-mode) (poison) (trace) (wd-mode) (unchecked) =
    let emit-deck = emit-build (list-length (m.defs) * 65536 + 25165824)
    in let de = __deck-enter
    in let tramp = bare-metal-trampoline
@@ -1215,7 +1251,8 @@ Section: Binary Debug Map (MAP1)
    in let st-ret = __record-set st-eo2 "opening-ret-type" ret-ty
    in let arities = build-x86-arities defs-lifted 0 (list-length defs-lifted) []
    in let st-ar = __record-set st-ret "user-arities" arities
-   in let st0a = emit-runtime-helpers st-ar
+   in let st-wc = emit-wcet-unchecked st-ar unchecked 0
+   in let st0a = emit-runtime-helpers st-wc
    in let dx = __deck-exit
    in let st1 = emit-all-defs st0a defs-lifted 0
    in x86-64-finalize-cdx st1 (tramp.far-jump-patch-pos) (manifest-opening-effects tdefs) (manifest-opening-fs-scope tdefs) (manifest-opening-net-scope tdefs)

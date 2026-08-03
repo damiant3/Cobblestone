@@ -4,9 +4,9 @@
 
 Vision, Helm, and the Clarifier are three separate apps that
 become something qualitatively different when integrated. Vision
-is the circulation — ideas and status flowing through the
-hierarchy. Helm is the senses — real-time chat and voice at
-scale. The Clarifier is the brain — AI that understands what's
+is the circulation -- ideas and status flowing through the
+hierarchy. Helm is the senses -- real-time chat and voice at
+scale. The Clarifier is the brain -- AI that understands what's
 being said and routes it to where it needs to go.
 
 Together they form a command stack where information percolates
@@ -21,12 +21,12 @@ AI does the routing so humans can focus on judgment.
 
 Workers are on the ground. They're chatting, talking, solving
 problems. Helm clusters their chat into currents and manages
-their voice hierarchy. This is the raw signal — hundreds of
+their voice hierarchy. This is the raw signal -- hundreds of
 conversations happening simultaneously.
 
 ### Layer 2: Clarifier (Understanding)
 
-The Clarifier watches the Helm streams. Not to surveil — to
+The Clarifier watches the Helm streams. Not to surveil -- to
 understand. It runs inference on the currents and voice
 transcripts, extracting:
 
@@ -46,7 +46,7 @@ not performing open-ended language understanding.
 
 When the Clarifier identifies something that should percolate
 upward, it creates or updates a Vision Signal. The signal enters
-the cascade at the appropriate tier — not at the top. A team's
+the cascade at the appropriate tier -- not at the top. A team's
 problem doesn't go to the general; it goes to their squad leader.
 If the squad leader can't resolve it, they escalate. Vision's
 cascade handles the routing.
@@ -99,21 +99,21 @@ Simultaneously, three other squads in different sectors report
 similar sightings. The Clarifier correlates: four contacts,
 converging on grid sector 7, estimated company-strength force.
 This correlation wouldn't be visible to any individual squad
-leader — they each see one contact. The Clarifier sees the
+leader -- they each see one contact. The Clarifier sees the
 pattern.
 
 ### What Happens in the Middle
 
 **Battalion level.** The battalion commander's Vision dashboard
 shows four alerts from four sectors, auto-correlated into a
-single assessed threat. The commander didn't ask for a report —
+single assessed threat. The commander didn't ask for a report --
 the reports found them. The Clarifier has already drafted a
 summary: "Company-strength force approaching from NW, converging
 on sector 7. Four independent contacts confirm. Estimated
 contact in 45 minutes."
 
 The commander can:
-- Tap "Acknowledge" — the alert shows green in the general's view
+- Tap "Acknowledge" -- the alert shows green in the general's view
 - Open a joint Helm voice channel between the four affected squads
 - Issue a directive via Vision: "All units in sector 5-9, prepare
   defensive positions"
@@ -131,7 +131,7 @@ portfolio of active situations, each with:
 
 ```
 ┌──────────────────────────────────────────────────┐
-│ FRONT COMMAND — Gen. Morrison                     │
+│ FRONT COMMAND -- Gen. Morrison                     │
 ├──────────────────────────────────────────────────┤
 │                                                  │
 │ ████ SECTOR 7: Company-strength approach          │
@@ -196,7 +196,7 @@ An unresolved node has a **kind** that determines question priority:
 
 ```
 QuestionKind =
-  | ReferentQuestion      -- "who/what is 'it'?" — always first
+  | ReferentQuestion      -- "who/what is 'it'?" -- always first
   | DomainQuestion        -- "what area are we talking about?"
   | CardinalityQuestion   -- "how many?"
   | ThresholdQuestion     -- "compared to what?"
@@ -205,12 +205,12 @@ QuestionKind =
 
 Referents first. Always. Until "it," "they," "that thing" bind
 to a specific entity, every other question is floating. This
-mirrors CPL Rule NP-1 exactly — the Clarifier enforces it
+mirrors CPL Rule NP-1 exactly -- the Clarifier enforces it
 conversationally instead of as a compile error.
 
 ### Register-Aware Output
 
-The Clarifier code-switches on **Register** — it reads the
+The Clarifier code-switches on **Register** -- it reads the
 complexity of the input and matches its clarifying questions:
 
 | Register | Example output |
@@ -230,8 +230,8 @@ automated alert gets technical.
 
 When a message enters Helm and the Clarifier finds unresolved
 nodes, it can prompt the speaker before the message flows upward.
-"You said 'the system is down' — which system? Auth, payments,
-or search?" The resolved version — "Auth service is down" — is
+"You said 'the system is down' -- which system? Auth, payments,
+or search?" The resolved version -- "Auth service is down" -- is
 what enters the cascade. This means signals that reach leadership
 are already disambiguated. No more "what did they mean by that?"
 
@@ -247,7 +247,7 @@ The Clarifier's solid nodes map directly to Vision signal types:
 | `risk : Claim` + `condition : Threshold` | Risk signal |
 | `completed : State` + `deliverable : Named` | Completion signal |
 
-The Clarifier doesn't guess — it classifies based on the same
+The Clarifier doesn't guess -- it classifies based on the same
 parse that the CPL compiler uses. If the parse has a solid
 `blocked` node with a resolved referent, that's a need. If it
 has unresolved referents, the Clarifier asks first.
@@ -286,7 +286,7 @@ even though they share no words.
 
 When multiple things are unresolved in a signal or report, the
 Clarifier doesn't bombard. It asks the question whose answer
-unblocks the most other resolutions. Referents first — because
+unblocks the most other resolutions. Referents first -- because
 until "it" binds, nothing else resolves. Then domain (what area),
 then cardinality (how many), then threshold (compared to what),
 then temporal (when).
@@ -312,30 +312,30 @@ two questions.
 
 ### The Model as Judgment, Not Processing
 
-The Clarifier parses at chat speed — formal grammar, deterministic,
+The Clarifier parses at chat speed -- formal grammar, deterministic,
 microseconds per message. The model never sees the firehose.
 
 But there's a class of things a parser can't catch: insight that
 looks like noise. A message with low traction, no upvotes, buried
-in a current of 400 people agreeing with each other — but it's
+in a current of 400 people agreeing with each other -- but it's
 the one person who identified the actual risk. The parser sees it
 as a fully-resolved utterance with no unresolved nodes. Structurally
 complete. Semantically unremarkable. Low attention score. It sinks.
 
-This is where the model enters. Not on every message — on the
+This is where the model enters. Not on every message -- on the
 structurally complete, low-attention messages that the parser has
 already resolved. The set is small. The model evaluates them for
 qualities that attention scoring misses:
 
 | Quality | What the model looks for |
 |---------|-------------------------|
-| **Insight** | "Good point" — a structurally sound observation that advances the discussion but isn't popular |
+| **Insight** | "Good point" -- a structurally sound observation that advances the discussion but isn't popular |
 | **Contrarian truth** | An unpopular claim that is well-formed and addresses a real risk others are avoiding |
 | **Novel framing** | A restatement of a known problem from an angle nobody else has taken |
 | **Unacknowledged risk** | A risk claim with resolved referents and a plausible causal chain, getting zero attention |
 | **Clever synthesis** | Connects two separate currents that nobody else has linked |
 
-The model doesn't flag these as "correct" — it flags them as
+The model doesn't flag these as "correct" -- it flags them as
 **worth attention**. The signal that surfaces is:
 
 ```
@@ -353,7 +353,7 @@ Model assessment: "Structurally sound risk claim with
 ```
 
 The model is the exception handler, not the main loop. It runs
-on the long tail — the messages that are structurally perfect
+on the long tail -- the messages that are structurally perfect
 but socially invisible. The parser did the work of understanding
 what was said. The model does the work of understanding whether
 anyone should have listened.
@@ -362,7 +362,7 @@ This inverts the usual AI-in-chat pattern. Most systems stream
 every message to a model and hope it finds something useful.
 Helm sends the model *only* the messages that are clear,
 unpopular, and potentially important. The model's job isn't
-comprehension — it's taste.
+comprehension -- it's taste.
 
 ### Confidence and Transparency
 
@@ -376,7 +376,7 @@ Parse:
     - service-down : Event (referent: "auth service")
     - team-blocked : State (referent: "deployment pipeline")
     - need-help : Desire (domain: "infrastructure")
-  UNRESOLVED: (none — all referents resolved)
+  UNRESOLVED: (none -- all referents resolved)
 Confidence: structural (parse complete, no unresolved nodes)
 ```
 
@@ -396,14 +396,14 @@ severity unknown, 4 engineers engaged.
 
 **9:22 AM.** The Clarifier correlates the Helm discussion with
 a spike in the error metrics from Vision's portfolio layer. Auto-
-generates a signal: "Production incident — auth service latency
+generates a signal: "Production incident -- auth service latency
 spike. 4 engineers investigating. Customer-facing impact
 unknown." Routes to the engineering director.
 
 **9:25 AM.** The director sees the signal. Opens a Helm joint
 channel between the on-call team and the infrastructure team.
 Listens in for 2 minutes, understands the situation. Adds context
-to the Vision signal: "Root cause identified — database
+to the Vision signal: "Root cause identified -- database
 connection pool exhaustion. Fix estimated 30 minutes." Pushes
 a summary to the VP.
 
@@ -449,9 +449,9 @@ Nobody made a slide. The stack handled it.
 ```
 
 Each layer can function independently. Helm works without
-Vision or the Clarifier — it's still a better chat and voice
-system. Vision works without Helm — signals can be manually
-entered. The Clarifier works without either — it can process
+Vision or the Clarifier -- it's still a better chat and voice
+system. Vision works without Helm -- signals can be manually
+entered. The Clarifier works without either -- it can process
 any text stream. But together, they form a closed loop where
 raw communication becomes structured intelligence becomes
 coordinated action.
@@ -496,14 +496,14 @@ Human-authored signals have `SrcHuman`. Clarifier-generated
 signals have `SrcClarifier` with a confidence score. Correlated
 signals reference their constituent source signals. Escalated
 signals reference the original. The provenance chain is always
-traceable — you can drill from the general's one-line summary
+traceable -- you can drill from the general's one-line summary
 all the way down to the specific chat messages that triggered it.
 
 ---
 
 ## Why This Matters
 
-The military has AWACS, JSTARS, and satellite feeds — sensors
+The military has AWACS, JSTARS, and satellite feeds -- sensors
 that watch the battlefield and present a common operating
 picture. But the link from individual soldier reports to the
 general's COP is still manual: radio calls transcribed by
@@ -519,7 +519,7 @@ already fixed or already a crisis.
 The Convergence stack eliminates the manual translation layer.
 Raw communication becomes structured intelligence in real time.
 The Clarifier is the translator. Vision is the routing. Helm is
-the pipe. The hierarchy is preserved — subordinates still report
+the pipe. The hierarchy is preserved -- subordinates still report
 to their leaders, leaders still make decisions. But the mechanics
 of "I need to tell my boss, who needs to tell their boss" are
 handled by infrastructure, not by humans spending hours in

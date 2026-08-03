@@ -1,14 +1,14 @@
 # USB Video Class (UVC) Kernel Driver
 
 **Created**: 2026-05-23
-**Status**: Active — design phase
+**Status**: Active -- design phase
 **File**: `codex/os/kernel/UsbVideo.codex`
 
 ## Motivation
 
 The Codex OS needs camera input for agent vision, identity verification,
 and UI applications. The USB Video Class (UVC) is a standard USB device
-class — no vendor-specific drivers needed. Most webcams, including the
+class -- no vendor-specific drivers needed. Most webcams, including the
 one on the test bench, speak UVC.
 
 The driver runs in the kernel, talks to xHCI directly, and receives
@@ -137,7 +137,7 @@ endpoint. Each isochronous packet has a UVC payload header:
 ```
 Byte 0: bHeaderLength (typically 2-12)
 Byte 1: bmHeaderInfo
-  Bit 0: FID (Frame ID — toggles between frames)
+  Bit 0: FID (Frame ID -- toggles between frames)
   Bit 1: EOF (End of Frame)
   Bit 2: PTS present
   Bit 3: SCR present
@@ -218,7 +218,7 @@ The Xhci.codex transfer stubs must be implemented:
 | `usb-get-config-desc` | Stub (returns []) | Descriptor parsing |
 | `usb-isoc-in` | Does not exist | Frame reception |
 
-`usb-isoc-in` is new — it submits isochronous IN TRBs and returns
+`usb-isoc-in` is new -- it submits isochronous IN TRBs and returns
 received data. The xHCI isochronous TRB (type 5) carries:
 
 - Bits 63:0 of TRB: data buffer pointer
@@ -243,17 +243,17 @@ is the pixel content.
 
 ## Implementation Plan
 
-1. **UsbVideo.codex** — device discovery, descriptor parsing, format
+1. **UsbVideo.codex** -- device discovery, descriptor parsing, format
    negotiation records and constants (~100 lines)
-2. **Probe/Commit** — control transfer sequences for stream setup
+2. **Probe/Commit** -- control transfer sequences for stream setup
    (~40 lines)
-3. **YUYV→RGB conversion** — fixed-point color space conversion
+3. **YUYV→RGB conversion** -- fixed-point color space conversion
    (~30 lines)
-4. **Frame assembly** — accumulate isochronous packets, detect frame
+4. **Frame assembly** -- accumulate isochronous packets, detect frame
    boundaries via FID bit (~60 lines)
-5. **Display integration** — blit converted frames to VgaGraphics
+5. **Display integration** -- blit converted frames to VgaGraphics
    framebuffer (~20 lines)
-6. **xHCI isoc support** — implement `usb-isoc-in` in Xhci.codex
+6. **xHCI isoc support** -- implement `usb-isoc-in` in Xhci.codex
    (~40 lines)
 
 Estimated total: ~290 lines across UsbVideo.codex and Xhci.codex.
@@ -269,8 +269,8 @@ Estimated total: ~290 lines across UsbVideo.codex and Xhci.codex.
 ## Format Selection: YUYV First
 
 Most webcams support both YUYV (uncompressed 4:2:2) and MJPEG. Start
-with YUYV — zero decode logic, raw pixels, 2 bytes/pixel. At 160x120,
-a frame is 38,400 bytes. At 640x480, it's 614,400 bytes — still within
+with YUYV -- zero decode logic, raw pixels, 2 bytes/pixel. At 160x120,
+a frame is 38,400 bytes. At 640x480, it's 614,400 bytes -- still within
 USB 2.0 high-speed isochronous bandwidth (~24 MB/s). MJPEG is only
 needed at higher resolutions where uncompressed exceeds bandwidth.
 
@@ -286,7 +286,7 @@ needed at higher resolutions where uncompressed exceeds bandwidth.
 
 - USB Video Class 1.5 spec: https://www.usb.org/document-library/video-class-v15-document-set
 - UVC payload header format: UVC 1.5 Table 2-6
-- `codex/os/kernel/UsbAudio.codex` — closest analog in the kernel
-- `codex/os/kernel/Xhci.codex` — xHCI transport layer
-- `codex/os/kernel/VgaGraphics.codex` — display target
-- `tools/codex-vm.c` — test pattern UVC device (CL 2040)
+- `codex/os/kernel/UsbAudio.codex` -- closest analog in the kernel
+- `codex/os/kernel/Xhci.codex` -- xHCI transport layer
+- `codex/os/kernel/VgaGraphics.codex` -- display target
+- `tools/codex-vm.c` -- test pattern UVC device (CL 2040)

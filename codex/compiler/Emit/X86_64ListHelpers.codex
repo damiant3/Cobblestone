@@ -400,7 +400,7 @@ Section: __deck_list_snoc
  paths is replaced with R14, and (c) every return is preceded by
  writing R14 back to the deck-pos cell and restoring R14 from the
  stack. R10 (bivy) is untouched throughout, so a snoc that fires
- path-3 leaves the bivy bump pointer where it was — only the deck
+ path-3 leaves the bivy bump pointer where it was -- only the deck
  grows. emit-apply for `list-push` dispatches here when
  st.deck-bound is True at the call site.
 
@@ -634,6 +634,22 @@ Section: __deck_list_append
    in emit-deck-list-append-copy-b st1
 
 Section: __list_insert_at
+
+ The index bound here is LOOSER than `list-at`'s and `list-set-at`'s by
+ one, in the opposite direction to the one `char-at` is tighter by.
+ Inserting at index length is an append and is legal on every path: the
+ shift loop starts at len-1 and stops as soon as it is below the index,
+ so index == len shifts nothing and stores into the slot the length is
+ about to grow into. `0 <= i` and `i <= len`.
+
+ Guarded on the strength of the shape rather than of a firing, which is
+ stated because it is the weaker evidence: `list-insert-at` reaches the
+ same unchecked scale-and-store as `list-set-at` and was never fired past
+ the end. The tests fire it now.
+
+ r12 holds the index and r14 the length by this point, and rax is not
+ live until the capacity arithmetic below.
+
   emit-list-insert-at-prologue : CodegenState -> HelpResult2
   emit-list-insert-at-prologue (st) =
     let st0 = record-func-offset st "__list_insert_at"
@@ -645,7 +661,10 @@ Section: __list_insert_at
    in let st6 = st-append-code st5 (mov-rr reg-r12 reg-rsi)
    in let st7 = st-append-code st6 (mov-rr reg-r13 reg-rdx)
    in let st8 = st-append-code st7 (mov-load reg-r14 reg-rbx 0)
-   in let st9 = st-append-code st8 (mov-load reg-rcx reg-rbx (-8))
+   in let trap = [15, 11]
+   in let g1 = st-append-code st8 (cmp-ri reg-r12 0 & jcc cc-ge (list-length trap) & trap)
+   in let g2 = st-append-code g1 (cmp-rr reg-r12 reg-r14 & jcc cc-le (list-length trap) & trap)
+   in let st9 = st-append-code g2 (mov-load reg-rcx reg-rbx (-8))
    in let st10 = st-append-code st9 (cmp-rr reg-r14 reg-rcx)
    in let in-place-pos = st10.code-len
    in let st11 = st-append-code st10 (jcc cc-l 0)
@@ -807,10 +826,27 @@ Section: __list_set_at
  selection runs on a copy in rcx because rdi must survive to be the
  return value.
 
+ The index is bounded first, and this is the sharpest of the indexing
+ guards because the defect it closes was a WRITE across an allocation
+ boundary rather than a disclosure. Measured before it existed, on a
+ three-element list with a marker list allocated after it:
+ `list-set-at t 5 424242` left the marker reading `424242 999 999`, with
+ no diagnostic and exit 0. `0 <= i` and `i < len`, as for `list-at`;
+ there is no slot at index length to store into.
+
+ The length is read from the header into rax before anything moves,
+ because rax is free at entry and is only wanted later -- eff-base takes
+ it as scratch and the epilogue loads the return value into it, both
+ after the guard has finished with it.
+
   emit-list-set-at : CodegenState -> CodegenState
   emit-list-set-at (st) =
-    let st0 = record-func-offset st "__list_set_at"
-   in let st0a = st-append-code st0 (mov-rr reg-rcx reg-rdi)
+    let trap = [15, 11]
+   in let st0 = record-func-offset st "__list_set_at"
+   in let g0 = st-append-code st0 (mov-load reg-rax reg-rdi 0)
+   in let g1 = st-append-code g0 (cmp-ri reg-rsi 0 & jcc cc-ge (list-length trap) & trap)
+   in let g2 = st-append-code g1 (cmp-rr reg-rsi reg-rax & jcc cc-l (list-length trap) & trap)
+   in let st0a = st-append-code g2 (mov-rr reg-rcx reg-rdi)
    in let st0b = emit-list-eff-base st0a reg-rcx reg-rax
    in let st1 = st-append-code st0b (shl-ri reg-rsi 3)
    in let st2 = st-append-code st1 (add-rr reg-rsi reg-rcx)

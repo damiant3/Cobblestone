@@ -3,6 +3,7 @@ Chapter: GpuRender
   cites UI chapter BoxModel
   cites UI chapter Widget
   cites UI chapter Overlay
+  cites UI chapter TextOverflow
 
  GPU-triangle rendering backend for bare-metal widget apps. Renders
  widgets, overlays, and chrome using gpu-rect / gpu-tri commands at
@@ -129,21 +130,30 @@ Section: Widget Rendering
     in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
     in let content = box-content-from-style (w.wn-bounds) style
     in let text-depth = if depth <= 2000 then gr-depth-top else depth - 1000
-    in gr-emit-text (gr-emit-box gf br (style.ws-bg) (style.ws-border) depth) txt (content.lr-x) (content.lr-y) (style.ws-fg) text-depth
+    in gr-emit-text (gr-emit-box gf br (style.ws-bg) (style.ws-border) depth) txt (content.lr-x) (content.lr-y) (theme-tone-fg th (w.wn-tone) (style.ws-fg)) text-depth (content.lr-w) text-overflow-default
 
   gr-render-label : GpuFrame, WidgetNode, Theme, Text, Integer -> [Gpu.Memory] GpuFrame
   gr-render-label (gf) (w) (th) (txt) (depth) =
     let style = theme-resolve-label th (w.wn-state)
     in let content = box-content-from-style (w.wn-bounds) style
     in let text-depth = if depth <= 2000 then gr-depth-top else depth - 1000
-    in gr-emit-text gf txt (content.lr-x) (content.lr-y) (style.ws-fg) text-depth
+    in gr-emit-text gf txt (content.lr-x) (content.lr-y) (theme-tone-fg th (w.wn-tone) (style.ws-fg)) text-depth (content.lr-w) text-overflow-default
+
+ The value is held inside its own bounds before the width is taken.
+ Without that, a gauge handed a value above its maximum emits a fill
+ wider than the box it was drawn in and paints over whatever sits
+ beside it, and one handed a negative value emits a negative width.
+ The framebuffer compositor has always clamped; this path had not, so
+ the same widget tree drew differently depending on which renderer
+ walked it.
 
   gr-render-gauge : GpuFrame, WidgetNode, Theme, Integer, Integer, Integer -> [Gpu.Memory] GpuFrame
   gr-render-gauge (gf) (w) (th) (val) (max-val) (depth) =
     let style = theme-resolve-gauge th (w.wn-state)
     in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
     in let content = box-content-from-style (w.wn-bounds) style
-    in let fill-w = if max-val > 0 then content.lr-w * val / max-val else 0
+    in let held = if val < 0 then 0 else if val > max-val then max-val else val
+    in let fill-w = if max-val > 0 then content.lr-w * held / max-val else 0
     in gr-emit-rect (gr-emit-box gf br (style.ws-bg) (style.ws-border) depth) (content.lr-x) (content.lr-y) fill-w (content.lr-h) (style.ws-fg) (depth - 1)
 
   gr-render-separator : GpuFrame, WidgetNode, Theme, Integer -> [Gpu.Memory] GpuFrame
@@ -152,14 +162,28 @@ Section: Widget Rendering
     in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
     in gr-emit-rect gf (br.lr-x) (br.lr-y + br.lr-h / 2) (br.lr-w) 1 (style.ws-bg) depth
 
+ The caret is held inside its own content box before it is drawn. Six
+ pixels per character of cursor index leaves the widget as soon as the
+ index passes the box width, and a caret drawn outside lands on whatever
+ sits to the right. That is the same failure the gauge fill had one
+ function above, and it is reachable the same way: `apps/cvmm` renders
+ through `bare-app-render` and every filter box there sets its cursor to
+ the length of the filter text, so the index grows with each keystroke.
+ The low end is held too, because a negative index would paint to the
+ left of the box. `codex/test/gpu-input-cursor` scans outside the widget,
+ which is the only place the difference shows.
+
   gr-render-input : GpuFrame, WidgetNode, Theme, Text, Integer, Integer -> [Gpu.Memory] GpuFrame
   gr-render-input (gf) (w) (th) (txt) (cursor) (depth) =
     let style = theme-resolve-input th (w.wn-state)
     in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
     in let content = box-content-from-style (w.wn-bounds) style
     in let text-depth = if depth <= 2000 then gr-depth-top else depth - 1000
-    in let cursor-x = content.lr-x + cursor * 6
-    in gr-emit-rect (gr-emit-text (gr-emit-box gf br (style.ws-bg) (style.ws-border) depth) txt (content.lr-x) (content.lr-y) (style.ws-fg) text-depth) cursor-x (content.lr-y) 1 7 (style.ws-fg) text-depth
+    in let cur-hi = content.lr-x + content.lr-w - 1
+    in let raw-x = content.lr-x + cursor * 6
+    in let capped = if raw-x > cur-hi then cur-hi else raw-x
+    in let cursor-x = if capped < content.lr-x then content.lr-x else capped
+    in gr-emit-rect (gr-emit-text (gr-emit-box gf br (style.ws-bg) (style.ws-border) depth) txt (content.lr-x) (content.lr-y) (style.ws-fg) text-depth (content.lr-w) text-overflow-default) cursor-x (content.lr-y) 1 7 (style.ws-fg) text-depth
 
 Section: Overlay Rendering
 
@@ -234,14 +258,27 @@ Section: Bordered Box
 
 Section: 5x7 Bitmap Text
 
-  gr-emit-text : GpuFrame, Text, Integer, Integer, Integer, Integer -> [Gpu.Memory] GpuFrame
-  gr-emit-text (gf) (txt) (x) (y) (color) (depth) =
-    gr-emit-text-loop gf txt x y color depth 0 (text-length txt)
+  gr-glyph-advance : Integer = 6
 
-  gr-emit-text-loop : GpuFrame, Text, Integer, Integer, Integer, Integer, Integer, Integer -> [Gpu.Memory] GpuFrame
-  gr-emit-text-loop (gf) (txt) (x) (y) (color) (depth) (i) (len) =
-    if i >= len then gf
-    else gr-emit-text-loop (gr-emit-glyph gf (gr-text-char-at txt i) (x + i * 6) y color depth) txt x y color depth (i + 1) len
+  gr-glyph-width : Integer = 5
+
+  gr-emit-text : GpuFrame, Text, Integer, Integer, Integer, Integer, Integer, TextOverflow -> [Gpu.Memory] GpuFrame
+  gr-emit-text (gf) (txt) (x) (y) (color) (depth) (avail) (mode) =
+    let len = text-length txt
+    in let start = text-overflow-start mode len avail gr-glyph-advance gr-glyph-width
+    in let count = text-overflow-count mode len avail gr-glyph-advance gr-glyph-width
+    in let dots = text-overflow-dots mode len avail gr-glyph-advance gr-glyph-width
+    in gr-emit-dots (gr-emit-text-loop gf txt x y color depth start (start + count) start) (x + count * gr-glyph-advance) y color depth 0 dots
+
+  gr-emit-text-loop : GpuFrame, Text, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Gpu.Memory] GpuFrame
+  gr-emit-text-loop (gf) (txt) (x) (y) (color) (depth) (i) (stop) (start) =
+    if i >= stop then gf
+    else gr-emit-text-loop (gr-emit-glyph gf (gr-text-char-at txt i) (x + (i - start) * gr-glyph-advance) y color depth) txt x y color depth (i + 1) stop start
+
+  gr-emit-dots : GpuFrame, Integer, Integer, Integer, Integer, Integer, Integer -> [Gpu.Memory] GpuFrame
+  gr-emit-dots (gf) (x) (y) (color) (depth) (k) (n) =
+    if k >= n then gf
+    else gr-emit-dots (gr-emit-glyph gf (gr-text-char-at "." 0) (x + k * gr-glyph-advance) y color depth) x y color depth (k + 1) n
 
   gr-emit-glyph : GpuFrame, Integer, Integer, Integer, Integer, Integer -> [Gpu.Memory] GpuFrame
   gr-emit-glyph (gf) (ch) (x) (y) (color) (depth) =

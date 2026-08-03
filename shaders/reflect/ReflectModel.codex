@@ -1,0 +1,361 @@
+Chapter: ReflectModel
+  cites Water chapter OceanModel
+
+ A runnable model of screen-space reflections with a GGX weighting. A
+ reflective point goes in, the colour arriving along its reflected
+ direction comes out.
+
+ Screen-space reflection is not a way of computing reflections. It is a way
+ of REUSING a frame that has already been drawn: the reflected ray is
+ marched against the depth buffer of the image on screen, and where it
+ crosses a surface, the colour already sitting in the framebuffer at that
+ pixel is the answer. That is the whole trick, and it is why it is cheap
+ enough to be everywhere in real-time rendering.
+
+ It is also why it is WRONG in specific, recognisable ways, and modelling it
+ honestly means modelling the failures rather than hiding them:
+
+   A reflected ray that leaves the screen has nothing to sample. Its
+   colour never existed in this frame.
+   A ray that passes BEHIND an on-screen surface cannot be distinguished
+   from one that hits it, because the depth buffer records one distance per
+   pixel and knows nothing about what is behind it. That is the thickness
+   problem, and it produces smeared streaks under any object with a
+   silhouette.
+   Anything not drawn this frame -- behind the camera, off screen, culled --
+   simply cannot appear in a reflection.
+
+ The first is handled by fading toward the screen edge, which is what makes
+ an SSR reflection dissolve near the borders instead of ending in a hard
+ line. The second is handled by a thickness bound: a crossing further
+ behind the stored surface than the bound is rejected as a pass-behind
+ rather than accepted as a hit. Neither is a fix; both are the standard
+ admissions of defeat, and naming them is more useful than pretending the
+ technique is exact.
+
+Section: The G-Buffer
+
+ Two screen-sized buffers in guest RAM below the framebuffer: one distance
+ per pixel and one packed normal. The colour buffer is the framebuffer
+ itself, which is the entire point -- SSR samples the image it is part of.
+
+ The base sits at 0xA0000000, comfortably inside guest RAM and far from
+ both the kernel at the bottom and the GOP surface, which codex-vm carves
+ out above 0xBE000000. The machine must be booted with enough memory to
+ have it; `-mem 3072` does.
+
+  gb-depth-base : Integer
+  gb-depth-base = #A0000000
+
+  gb-normal-base : Integer
+  gb-normal-base = #A0200000
+
+  gb-width : Integer
+  gb-width = 320
+
+  gb-height : Integer
+  gb-height = 200
+
+  gb-offset : Integer, Integer -> Integer
+  gb-offset (x) (y) = (y * gb-width + x) * 4
+
+ Depth is stored as the bit pattern of a single-precision Real rather than
+ as a fixed-point integer. `real-approx-to-bits` and `bits-to-real-approx`
+ are exact inverses, so the buffer holds the distance the march actually
+ computed and not a quantised version of it, and a 32-bit cell holds it
+ without a second word. A fixed-point encoding would have had to choose a
+ range and a precision, and both would have been wrong somewhere.
+
+  gb-store-depth : Integer, Integer, Real -> Integer
+  gb-store-depth (x) (y) (d) =
+    poke-32 gb-depth-base (gb-offset x y) (real-approx-to-bits (to-real-approx d))
+
+  gb-load-depth : Integer, Integer -> Real
+  gb-load-depth (x) (y) =
+    from-real-approx (bits-to-real-approx (peek-32 gb-depth-base (gb-offset x y)))
+
+ The normal packs into three bytes with the material flag in the fourth, so
+ one 32-bit cell carries everything the reflection pass needs to know about
+ a pixel. A byte per axis is about half a degree of angular resolution,
+ which is far finer than a reflection off a rough surface can show.
+
+  gb-byte-of : Real -> Integer
+  gb-byte-of (v) = real-to-int ((w-sat (v * 0.5 + 0.5)) * 254.0 + 0.5)
+
+  gb-real-of : Integer -> Real
+  gb-real-of (b) = real-from-int b / 127.0 - 1.0
+
+  gb-store-normal : Integer, Integer, V3, Integer -> Integer
+  gb-store-normal (x) (y) (n) (flag) =
+    let bx = gb-byte-of (n.x)
+    in let by = gb-byte-of (n.y)
+    in let bz = gb-byte-of (n.z)
+    in let w = flag * 16777216 + bx * 65536 + by * 256 + bz
+    in poke-32 gb-normal-base (gb-offset x y) w
+
+  gb-load-normal : Integer, Integer -> V3
+  gb-load-normal (x) (y) =
+    let w = peek-32 gb-normal-base (gb-offset x y)
+    in let bz = int-mod w 256
+    in let by = int-mod (w / 256) 256
+    in let bx = int-mod (w / 65536) 256
+    in v-norm (V3 { x = gb-real-of bx, y = gb-real-of by, z = gb-real-of bz })
+
+  gb-load-flag : Integer, Integer -> Integer
+  gb-load-flag (x) (y) =
+    int-mod (peek-32 gb-normal-base (gb-offset x y) / 16777216) 256
+
+ Clearing the depth buffer to a negative distance is what makes "nothing
+ was drawn here" a value the march can test rather than a state it has to
+ infer. Zero would not do: zero is a legal distance.
+
+  gb-clear-row : Integer, Integer -> Integer
+  gb-clear-row (x) (y) =
+    if x >= gb-width then 0
+    else let a = gb-store-depth x y (0.0 - 1.0)
+    in let b = gb-store-normal x y (V3 { x = 0.0, y = 1.0, z = 0.0 }) 0
+    in gb-clear-row (x + 1) y
+
+  gb-clear : Integer -> Integer
+  gb-clear (y) =
+    if y >= gb-height then 0
+    else let d = gb-clear-row 0 y
+    in gb-clear (y + 1)
+
+Section: Camera and Projection
+
+ The camera basis, and the projection that turns a world point back into
+ the pixel it was drawn at. The march needs this every step, and it is the
+ hinge the whole technique turns on: without a projection there is no way
+ to ask the depth buffer about a world position.
+
+  Cam = record { cf : V3, cr : V3, cu : V3, eye : V3 }
+
+  rf-cross : V3, V3 -> V3
+  rf-cross (a) (b) =
+    V3 {
+      x = a.y * b.z - a.z * b.y,
+      y = a.z * b.x - a.x * b.z,
+      z = a.x * b.y - a.y * b.x
+    }
+
+  rf-camera : V3, V3 -> Cam
+  rf-camera (eye) (forward) =
+    let f = v-norm forward
+    in let up = V3 { x = 0.0, y = 1.0, z = 0.0 }
+    in let r = v-norm (rf-cross up f)
+    in Cam { cf = f, cr = r, cu = rf-cross f r, eye = eye }
+
+  rf-half-w : Real
+  rf-half-w = 160.0
+
+  rf-half-h : Real
+  rf-half-h = 100.0
+
+  rf-focal : Real
+  rf-focal = 250.0
+
+  rf-ray : Cam, Integer, Integer -> V3
+  rf-ray (cam) (tx) (ty) =
+    let sx = (real-from-int tx - rf-half-w + 0.5) / rf-focal
+    in let sy = (rf-half-h - real-from-int ty - 0.5) / rf-focal
+    in let a = v-add (cam.cf) (v-scale (cam.cr) sx)
+    in v-norm (v-add a (v-scale (cam.cu) sy))
+
+ The inverse. `pz` is the distance ALONG THE VIEW AXIS and not the
+ distance from the eye, and that choice is load-bearing twice over. Both
+ sides of the depth comparison must mean the same thing, so the G-buffer
+ stores view-axis depth too; and only view-axis depth has the property the
+ screen-space march below depends on, which is that its RECIPROCAL varies
+ linearly across the screen along a straight world ray. Distance from the
+ eye does not, and interpolating it in screen space bends the ray.
+
+  Proj = record { px : Real, py : Real, pz : Real, ok : Boolean }
+
+  rf-project : Cam, V3 -> Proj
+  rf-project (cam) (p) =
+    let v = v-sub p (cam.eye)
+    in let z = v-dot v (cam.cf)
+    in if z < 0.05 then Proj { px = 0.0, py = 0.0, pz = 0.0, ok = False }
+    else let sx = v-dot v (cam.cr) / z * rf-focal + rf-half-w
+    in let sy = rf-half-h - v-dot v (cam.cu) / z * rf-focal
+    in Proj { px = sx, py = sy, pz = z, ok = True }
+
+Section: The Screen-Space March
+
+  Hit = record { hx : Integer, hy : Integer, found : Boolean, fade : Real }
+
+  rf-miss : Hit
+  rf-miss = Hit { hx = 0, hy = 0, found = False, fade = 0.0 }
+
+ The mirror direction. Everything else here is bookkeeping; this is the
+ physics.
+
+  rf-reflect : V3, V3 -> V3
+  rf-reflect (v) (n) = v-sub v (v-scale n (2.0 * v-dot v n))
+
+ The edge fade. A reflection that runs off the side of the screen has to
+ go somewhere, and stopping it abruptly draws a hard line along the border
+ that reads as a rendering error. Fading it out over a margin turns the
+ failure into something that looks like a reflection falling off with
+ distance, which is the conventional lie and a convincing one.
+
+  rf-edge-fade : Real, Real -> Real
+  rf-edge-fade (sx) (sy) =
+    let dx = if sx < rf-half-w then sx else real-from-int gb-width - sx
+    in let dy = if sy < rf-half-h then sy else real-from-int gb-height - sy
+    in let fx = w-sat (dx / rf-edge-margin)
+    in let fy = w-sat (dy / rf-edge-margin)
+    in fx * fy
+
+  rf-edge-margin : Real
+  rf-edge-margin = 26.0
+
+ One step of the march. The test is the crossing test that defines SSR:
+ the sample is behind the surface the depth buffer recorded for that pixel.
+
+ The THICKNESS bound is the second half of it, and leaving it out is the
+ classic first mistake. A depth buffer stores one distance per pixel and
+ says nothing about how deep that surface is, so a ray passing far behind a
+ foreground object registers as a hit against it and the object smears
+ across the reflection in long streaks. Rejecting crossings deeper than the
+ bound treats them as what they almost always are -- the ray passing behind
+ something, not striking it.
+
+ A single sample cannot decide this, and requiring one to land inside a
+ depth window is the second mistake this file made. Near the horizon a
+ step of under two pixels spans an enormous change in depth, because that
+ is what perspective does: the ray is in front of a distant ridge at one
+ sample and far behind it at the next, and never once inside a window of
+ any reasonable width. Hits collapse to a scatter of lucky pixels.
+
+ What decides it is the SIGN CHANGE between consecutive samples. If the
+ ray was in front of the recorded surface and is now behind it, it crossed
+ that surface somewhere in between, whatever the depths involved. The
+ thickness bound survives, demoted to what it should always have been: a
+ guard against a step so coarse that the crossing tells us nothing, rather
+ than the test itself.
+
+  rf-bias : Real
+  rf-bias = 0.4
+
+  rf-thickness : Real
+  rf-thickness = 260.0
+
+ The march, and the thing that makes this SCREEN-space rather than a world
+ march that happens to consult a depth buffer.
+
+ The first version here stepped through the world and projected each
+ sample. It works looking down at water and falls apart looking across it,
+ which is exactly the view worth rendering: at grazing incidence the
+ reflected ray runs nearly parallel to the surface, so a world-space step
+ of fixed length crawls across the screen in some places and leaps whole
+ mountains in others. Hits become erratic, and the reflection comes out as
+ salt-and-pepper noise rather than an image. Measured on this scene, that
+ version found a hit on 15% of water pixels and the hits it found were
+ scattered.
+
+ Stepping in screen space fixes it by construction. The ray's endpoints
+ are projected once, and the march walks the straight line BETWEEN THEM at
+ a fixed stride in pixels, so no pixel on the ray's path is skipped and
+ none is visited twice, whatever the angle. Depth comes along by
+ interpolating its reciprocal, which is linear in screen space for a
+ straight world ray and is the reason `pz` is view-axis depth.
+
+  rf-stride : Real
+  rf-stride = 1.6
+
+  rf-steps : Integer
+  rf-steps = 190
+
+ A floor on the step count, and it is not the same criterion as the
+ stride. The stride exists so no PIXEL on the ray's path is skipped;
+ this exists so no DEPTH is. A reflected ray running nearly parallel to
+ the water projects both its endpoints close together near the horizon,
+ so the pixel span is short and the stride rule asks for a handful of
+ steps -- while that same short span covers kilometres of world distance.
+ The crossing then falls between samples and is missed, which is the
+ grazing case this whole scene consists of.
+
+  rf-min-steps : Integer
+  rf-min-steps = 72
+
+  rf-length : Real
+  rf-length = 4200.0
+
+ `reject` names a material flag the march refuses to strike. It exists
+ because a reflective surface must not reflect ITSELF: the second-order
+ reflection that would require is not in the frame, and accepting the
+ crossing anyway samples the reflecting surface's own colour, which on
+ water reads as bright flecks scattered along every shallow contact. Real
+ implementations exclude the source surface for the same reason. Passing
+ zero rejects nothing.
+
+  rf-walk : Real, Real, Real, Real, Real, Real, Integer, Integer, Real, Integer -> Hit
+  rf-walk (x0) (y0) (iz0) (dx) (dy) (diz) (i) (n) (prev) (reject) =
+    if i > n then rf-miss
+    else let f = real-from-int i / real-from-int n
+    in let sx = x0 + dx * f
+    in let sy = y0 + dy * f
+    in let iz = iz0 + diz * f
+    in if iz < 0.0000001 then rf-miss
+    else let tx = real-to-int sx
+    in let ty = real-to-int sy
+    in if tx < 0 | ty < 0 | tx >= gb-width | ty >= gb-height then rf-miss
+    else let d = gb-load-depth tx ty
+    in if d < 0.0 then rf-walk x0 y0 iz0 dx dy diz (i + 1) n (0.0 - 1.0) reject
+    else let diff = 1.0 / iz - d - rf-bias
+    in let crossed = prev < 0.0 & diff >= 0.0 & diff < rf-thickness
+    in let same = reject /= 0 & gb-load-flag tx ty == reject
+    in if crossed & same == False
+      then Hit { hx = tx, hy = ty, found = True, fade = rf-edge-fade sx sy }
+    else rf-walk x0 y0 iz0 dx dy diz (i + 1) n diff reject
+
+ The endpoint is clamped in front of the camera rather than projected
+ blindly: a reflected ray that passes behind the eye has no screen-space
+ line at all, and shortening it until it does is what keeps the march
+ defined for rays that leave the frustum sideways.
+
+  rf-trace : Cam, V3, V3, Integer -> Hit
+  rf-trace (cam) (origin) (dir) (reject) =
+    let a = rf-project cam origin
+    in if a.ok == False then rf-miss
+    else let far = v-add origin (v-scale dir rf-length)
+    in let b0 = rf-project cam far
+    in let b = if b0.ok then b0 else rf-project cam (v-add origin (v-scale dir (rf-length * 0.12)))
+    in if b.ok == False then rf-miss
+    else let dx = b.px - a.px
+    in let dy = b.py - a.py
+    in let span = if (if dx < 0.0 then 0.0 - dx else dx) > (if dy < 0.0 then 0.0 - dy else dy)
+       then (if dx < 0.0 then 0.0 - dx else dx) else (if dy < 0.0 then 0.0 - dy else dy)
+    in let want = real-to-int (span / rf-stride) + 1
+    in let capped = if want > rf-steps then rf-steps else want
+    in let n = if capped < rf-min-steps then rf-min-steps else capped
+    in let iz0 = 1.0 / a.pz
+    in rf-walk (a.px) (a.py) iz0 dx dy (1.0 / b.pz - iz0) 1 n (0.0 - 1.0) reject
+
+Section: Weighting the Reflection
+
+ How much of the reflected colour to keep. Schlick's Fresnel against the
+ view: near-grazing angles reflect almost everything, head-on angles very
+ little, and for water that ratio runs from about 0.02 to 1.0 across the
+ image. Getting this wrong is what makes a rendered lake look like a
+ mirror laid flat on the ground.
+
+  rf-weight : V3, V3, Real -> Real
+  rf-weight (n) (v) (f0) = fresnel-view n (v-neg v) f0
+
+ Roughness perturbs the reflected direction. One sample, not a cone: a
+ proper GGX importance sample would take many rays per pixel and this
+ model takes one, so what it produces is a noisy estimate of the same
+ integral rather than a smooth one. Saying so is better than implying a
+ blur that is not there.
+
+  rf-perturb : V3, Real, Real, Real -> V3
+  rf-perturb (dir) (rough) (j1) (j2) =
+    if rough < 0.0001 then dir
+    else let o = V3 { x = j1 - 0.5, y = j2 - 0.5, z = (j1 * j2) - 0.25 }
+    in v-norm (v-add dir (v-scale o (rough * rf-rough-spread)))
+
+  rf-rough-spread : Real
+  rf-rough-spread = 0.30

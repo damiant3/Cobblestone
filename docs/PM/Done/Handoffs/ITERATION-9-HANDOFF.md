@@ -1,4 +1,4 @@
-# Iteration 9 — Handoff Summary
+# Iteration 9 -- Handoff Summary
 
 **Date**: 2026-03-15
 **Branch**: `master`
@@ -12,7 +12,7 @@
 
 | Milestone | Status | Notes |
 |-----------|--------|-------|
-| M0–M7 | ✅ Complete | See ITERATION-7-HANDOFF.md |
+| M0-M7 | ✅ Complete | See ITERATION-7-HANDOFF.md |
 | M9: LSP & Editor | ✅ Complete | See ITERATION-8-HANDOFF.md |
 | **M8: Dependent Types (Basic)** | **✅ Complete** | All deliverables met |
 
@@ -26,7 +26,7 @@
 | Simple proof discharge: literal evidence and context-based evidence | ✅ |
 | The `Vector` type with `append` having the correct dependent type | ✅ |
 
-### M8 — Implementation Details
+### M8 -- Implementation Details
 
 #### New Type System Types (`src/Codex.Types/CodexType.cs`)
 
@@ -116,7 +116,7 @@ safe-index (i) (n) = i
 main : Integer
 main = safe-index 3 5
 ```
-The compiler auto-discharges `{proof : 3 < 5}` — it's trivially true. ✓
+The compiler auto-discharges `{proof : 3 < 5}` -- it's trivially true. ✓
 
 ```codex
 main = safe-index 5 3
@@ -129,10 +129,10 @@ The compiler rejects this: `Cannot discharge proof obligation: 3 < 5` fails. ✓
 
 ### Stretch goals not in M8 Basic
 
-- **Implicit dependent arguments** — `{m : Integer}` syntax for auto-inferred type-level params
-- **Type-level function evaluation** — only arithmetic on constants; no user-defined type-level functions
-- **Totality checking** — not yet enforced for type-level expressions
-- **Context-based evidence** — proofs from pattern match branches not yet propagated
+- **Implicit dependent arguments** -- `{m : Integer}` syntax for auto-inferred type-level params
+- **Type-level function evaluation** -- only arithmetic on constants; no user-defined type-level functions
+- **Totality checking** -- not yet enforced for type-level expressions
+- **Context-based evidence** -- proofs from pattern match branches not yet propagated
 
 ### Next Milestones
 
@@ -151,4 +151,4 @@ The compiler rejects this: `Cannot discharge proof obligation: 3 < 5` fails. ✓
 | Type-level normalization | `TypeChecker.cs` (`NormalizeTypeLevelExpr`) and `Unifier.cs` |
 | Proof obligation generation | `TypeChecker.cs` → `TryDischargeProofParams` |
 | Dependent type parsing | `Parser.cs` (`ParseTypeAtom`, `IsDependentTypeLookahead`) |
-| Runtime erasure | `Lowering.cs` — dependent types erase to plain functions |
+| Runtime erasure | `Lowering.cs` -- dependent types erase to plain functions |

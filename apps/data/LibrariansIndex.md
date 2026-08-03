@@ -1,4 +1,4 @@
-# Codex DB — Librarian's Index
+# Codex DB -- Librarian's Index
 
 A how-to guide for the Codex database engine. 38 modules, one type
 system, bare-metal. No OS, no libc, no dependencies outside the
@@ -11,7 +11,7 @@ Codex foreword library.
 Codex DB is a multi-model database server written entirely in Codex.
 It runs on codex-vm or real x86-64 hardware. It supports relational
 (OLTP), columnar (OLAP), graph, spatial, time-series, full-text, and
-document storage — all under one transaction engine and one query
+document storage -- all under one transaction engine and one query
 language.
 
 The query language is native Codex. Queries are typed expressions
@@ -92,21 +92,21 @@ RelJoin (RelScan "employees") (RelScan "departments")
 | `Heap` | Unordered row storage, sequential scan, insert/delete/update |
 | `BufferPool` | LRU page cache with pin counting and dirty tracking |
 | `BTreeIndex` | B+ tree on typed composite keys, point lookup, range scan, rebalance |
-| `Wal` | Write-ahead log — redo records, crash recovery, checkpoint, truncation |
+| `Wal` | Write-ahead log -- redo records, crash recovery, checkpoint, truncation |
 
 ### Schema and Catalog
 
 | Module | Purpose |
 |--------|---------|
 | `Schema` | Column definitions, table definitions, constraints, DDL results |
-| `Catalog` | System catalog — create/drop table, create index, insert with auto index maintenance |
+| `Catalog` | System catalog -- create/drop table, create index, insert with auto index maintenance |
 
 ### Query Engine
 
 | Module | Purpose |
 |--------|---------|
-| `RelAlgebra` | Relational algebra IR — Scan, Filter, Project, Join, Group, Sort, Limit, Distinct, Union, Intersect, Except |
-| `Executor` | Volcano-style pull iterator — executes the RelOp tree against the catalog |
+| `RelAlgebra` | Relational algebra IR -- Scan, Filter, Project, Join, Group, Sort, Limit, Distinct, Union, Intersect, Except |
+| `Executor` | Volcano-style pull iterator -- executes the RelOp tree against the catalog |
 | `HashJoin` | Hash join, left hash join, semi join (EXISTS), anti join (NOT EXISTS) |
 | `SortMerge` | Sort-merge join and left join for pre-sorted data |
 | `Optimizer` | Cost model, selectivity estimation, predicate pushdown, join algorithm selection, EXPLAIN, plan cache |
@@ -118,35 +118,35 @@ RelJoin (RelScan "employees") (RelScan "departments")
 | `Transaction` | Begin/commit/abort state machine, WAL integration, isolation levels |
 | `LockManager` | 2PL with S/X/IS/IX modes, lock table, grant/wait, release + promotion |
 | `Deadlock` | Wait-for graph cycle detection via DFS, victim selection |
-| `Mvcc` | Multi-version concurrency — versioned rows, snapshot scans, garbage collection, optimistic concurrency validation |
-| `TwoPhaseCommit` | Distributed 2PC — coordinator/participant, prepare/vote/decide, WAL-backed recovery |
+| `Mvcc` | Multi-version concurrency -- versioned rows, snapshot scans, garbage collection, optimistic concurrency validation |
+| `TwoPhaseCommit` | Distributed 2PC -- coordinator/participant, prepare/vote/decide, WAL-backed recovery |
 
 ### Analytics
 
 | Module | Purpose |
 |--------|---------|
-| `ColumnStore` | Columnar storage — per-column chunks, bulk load, sum/min/max/avg, filtered scans, RLE encoding |
-| `MapReduce` | Map-reduce on columnar data — map/shuffle/reduce, sum-by/count-by/avg-by |
-| `StarSchema` | On-demand star/snowflake ETL — auto-discovers fact/dimension tables, materializes denormalized columnar views at query time, invalidates on write |
+| `ColumnStore` | Columnar storage -- per-column chunks, bulk load, sum/min/max/avg, filtered scans, RLE encoding |
+| `MapReduce` | Map-reduce on columnar data -- map/shuffle/reduce, sum-by/count-by/avg-by |
+| `StarSchema` | On-demand star/snowflake ETL -- auto-discovers fact/dimension tables, materializes denormalized columnar views at query time, invalidates on write |
 
 ### Multi-Model
 
 | Module | Purpose |
 |--------|---------|
-| `GraphStore` | Property graph — nodes, edges, adjacency, BFS shortest path, DFS traversal, pattern matching, PageRank, connected components |
+| `GraphStore` | Property graph -- nodes, edges, adjacency, BFS shortest path, DFS traversal, pattern matching, PageRank, connected components |
 | `SpatialIndex` | Dense grid (fixed cell), quadtree (adaptive 2D), octree (3D), range/radius/KNN queries |
-| `TimeSeries` | Append-optimized time-ordered storage — windowed aggregation, downsampling, rate of change, gap detection, retention, tag filtering |
+| `TimeSeries` | Append-optimized time-ordered storage -- windowed aggregation, downsampling, rate of change, gap detection, retention, tag filtering |
 | `FullText` | Inverted index, tokenizer, stop words, TF-IDF, BM25 ranking, boolean queries (AND/OR/NOT), phrase search, prefix search, document store |
 
 ### Server and Network
 
 | Module | Purpose |
 |--------|---------|
-| `Protocol` | Binary wire protocol — length-prefixed frames, auth challenge/response, query/result/error messages, 2PC coordination |
-| `Session` | Per-connection state machine — transaction tracking, query dispatch, result encoding |
+| `Protocol` | Binary wire protocol -- length-prefixed frames, auth challenge/response, query/result/error messages, 2PC coordination |
+| `Session` | Per-connection state machine -- transaction tracking, query dispatch, result encoding |
 | `Server` | Connection management, request routing, DDL operations, demo entry point |
-| `DbBoot` | Bare-metal boot — service state (running/paused/stopped), system catalog bootstrap, health status |
-| `Proxy` | Forward + reverse proxy — 5 load-balancing strategies, health checks, circuit breakers, sticky sessions, URL rewriting |
+| `DbBoot` | Bare-metal boot -- service state (running/paused/stopped), system catalog bootstrap, health status |
+| `Proxy` | Forward + reverse proxy -- 5 load-balancing strategies, health checks, circuit breakers, sticky sessions, URL rewriting |
 
 ### Security
 
@@ -161,9 +161,9 @@ RelJoin (RelScan "employees") (RelScan "departments")
 | `BulkLoader` | Batch insert, CSV/TSV/pipe-delimited import, table export |
 | `Backup` | Full backups, log backups, restore, roll-forward to LSN or transaction ID, backup chain validation |
 | `Replication` | WAL shipping to followers, follower apply, lag tracking, sync health checks |
-| `ChangeStream` | CDC — WAL-tailed event streaming, filtered subscriptions, consumer groups, event replay |
-| `SystemDb` | Cross-app system database — centralized logging, adaptive firewall, anomaly detection, shared deny lists, full-text log search |
-| `DbAdmin` | Web admin console — dashboard, table browser, query runner, transaction/lock/index/plan/backup/security/replication pages |
+| `ChangeStream` | CDC -- WAL-tailed event streaming, filtered subscriptions, consumer groups, event replay |
+| `SystemDb` | Cross-app system database -- centralized logging, adaptive firewall, anomaly detection, shared deny lists, full-text log search |
+| `DbAdmin` | Web admin console -- dashboard, table browser, query runner, transaction/lock/index/plan/backup/security/replication pages |
 
 ---
 

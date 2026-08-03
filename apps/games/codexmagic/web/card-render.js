@@ -1,4 +1,4 @@
-// card-render.js — CodexMagic card rendering (Prismatic System)
+// card-render.js -- CodexMagic card rendering (Prismatic System)
 
 const COLOR_BORDERS = {
   R: '#d32f2f', Y: '#e6a817', B: '#0e68ab', O: '#e65100', G: '#2e7d32',
@@ -85,8 +85,8 @@ const TYPE_DISPLAY = {
 };
 function formatTypeLine(card) {
   let line = TYPE_DISPLAY[card.type] || card.type || '';
-  if (card.type === 'Equipment' && card.slot) line += ' — ' + card.slot;
-  if (card.type === 'Gemstone' && card.gemColor) line += ' — ' + card.variety;
+  if (card.type === 'Equipment' && card.slot) line += ' -- ' + card.slot;
+  if (card.type === 'Gemstone' && card.gemColor) line += ' -- ' + card.variety;
   return line;
 }
 

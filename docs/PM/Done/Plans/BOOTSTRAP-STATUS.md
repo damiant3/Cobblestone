@@ -1,4 +1,4 @@
-# Bootstrap Status — Step 1b Complete
+# Bootstrap Status -- Step 1b Complete
 
 **Date:** March 16, 2026
 **State:** Stage 1 output (`stage1-output.cs`) successfully generated. Not yet at fixed point.
@@ -6,9 +6,9 @@
 
 ---
 
-## Gap #1 Fix Iteration — Round 3
+## Gap #1 Fix Iteration -- Round 3
 
-### Round 1 (6 fixes — TypeChecker.codex + Unifier.codex)
+### Round 1 (6 fixes -- TypeChecker.codex + Unifier.codex)
 
 1. **infer-name**: Instantiate `ForAllTy` wrappers with fresh vars (polymorphic builtins)
 2. **AFieldAccess/ARecordExpr**: Return fresh vars / `ConstructedTy` instead of `ErrorTy`
@@ -17,19 +17,19 @@
 5. **unify-structural**: Handle `ConstructedTy`, `SumTy`, `RecordTy`, `ForAllTy`, cross-matching
 6. **deep-resolve**: Recurse into `ConstructedTy`, `ForAllTy`, `SumTy`, `RecordTy`
 
-### Round 2 (3 fixes — TypeChecker.codex)
+### Round 2 (3 fixes -- TypeChecker.codex)
 
 7. **register-type-defs**: Register variant constructors + record types into the type env
 8. **bind-pattern for ACtorPat**: Decompose constructor function types for sub-pattern bindings
 9. **check-module**: Wire up type definition registration before definition registration
 
-### Round 3 (1 fix — Desugarer.codex) ← **THIS SESSION**
+### Round 3 (1 fix -- Desugarer.codex) ← **THIS SESSION**
 
 10. **desugar-def: Propagate type annotations.** The desugarer was setting
     `declared-type = []` for every definition, discarding all type annotations.
     Now it extracts the type expression from `d.ann` and desugars it, so annotated
     functions get their declared types propagated to the type checker. This was the
-    single biggest remaining issue — it caused all parameter types to be `object`.
+    single biggest remaining issue -- it caused all parameter types to be `object`.
 
 ### Results
 
@@ -42,8 +42,8 @@
 | `Func<` types | 2 | 2 | 2 | **16** | 636 |
 | `is var _` pattern | 321 | 330 | 346 | **348** | 1 |
 | `string.Concat` | 0 | 0 | 0 | **0** | 180 |
-| Output size (chars) | — | — | 121,615 | **126,459** | 207,587 |
-| Type bindings | 332 | 340 | 346 | **347** | — |
+| Output size (chars) | -- | -- | 121,615 | **126,459** | 207,587 |
+| Type bindings | 332 | 340 | 346 | **347** | -- |
 
 ### Key signatures now matching Stage 0
 
@@ -74,7 +74,7 @@ Down from 1,864 to 21. The last 21 errors are likely edge cases in:
 
 **Files:** `Codex.Codex/Types/TypeChecker.codex`, `Codex.Codex/Types/Unifier.codex`
 
-### Gap #2: Let Expression Emission — `is var _` vs Lambda (348 instances)
+### Gap #2: Let Expression Emission -- `is var _` vs Lambda (348 instances)
 
 Stage 1 emits `((Type x = expr) is var _ ? body : default)` (invalid C#).
 Stage 0 emits `((Func<T,R>)((x) => body))(expr)` (valid C#).
@@ -82,7 +82,7 @@ Stage 0 emits `((Func<T,R>)((x) => body))(expr)` (valid C#).
 **Impact:** This is the single biggest code-shape difference. Fixing it would
 make Stage 1 output compilable.
 
-### Gap #3: String Concatenation — `+` vs `string.Concat`
+### Gap #3: String Concatenation -- `+` vs `string.Concat`
 
 Stage 1 uses `+` for text append. Stage 0 uses `string.Concat`.
 **File:** `Codex.Codex/Emit/CSharpEmitter.codex`

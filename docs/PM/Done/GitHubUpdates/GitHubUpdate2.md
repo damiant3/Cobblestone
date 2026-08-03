@@ -1,4 +1,4 @@
-# GitHub Update 2 — CL 475 to CL 618 (2026-04-28 to 2026-05-01)
+# GitHub Update 2 -- CL 475 to CL 618 (2026-04-28 to 2026-05-01)
 
 Previous update: CL 475 (commit `3757c94`).
 This update: CL 618 (commit `2b38729`).
@@ -41,7 +41,7 @@ functions' type environments. A local `let pad-zeros = 55 - ...` in
 from ElfWriter, causing "Type mismatch: Integer vs Fun" errors in
 unrelated code.
 
-Fix: one line in `check-all-defs` — reset `env.locals` to `[]` before
+Fix: one line in `check-all-defs` -- reset `env.locals` to `[]` before
 each `check-def`.
 
 Bisected by adding the Sha256 foreword to the self-compile source and
@@ -57,7 +57,7 @@ conversion at the boundary. Eliminates O(n^2) total allocation for n
 tokens.
 
 **LinkedList diagnostic accumulator.** Same treatment for `LexState.errors`.
-`validate-escapes` renamed to `validate-escapes-into` — takes an existing
+`validate-escapes` renamed to `validate-escapes-into` -- takes an existing
 `LinkedList Diagnostic` and pushes onto it instead of returning a fresh
 list.
 
@@ -83,8 +83,8 @@ New `--target cdx` / mode `CDX`. Emits CDX1 binaries with:
 
 - 224-byte fixed header (magic `CDX1`, version, flags)
 - SHA-256 content hash over text + rodata
-- Capability table offset/size (currently 0 — stub)
-- Proof hash offset/size (currently 0 — stub)
+- Capability table offset/size (currently 0 -- stub)
+- Proof hash offset/size (currently 0 -- stub)
 - Text and rodata section offsets/sizes
 - Entry point offset, stack size (1 MB), heap size (512 MB)
 - Trust score (5000) and reserved fields
@@ -94,7 +94,7 @@ Implementation: `x86-64-finalize-cdx` in X86_64Chapter.codex (mirrors
 `cdx-zeros`, `cdx-hash-to-bytes` helpers. `CdxWriter.codex` provides
 the higher-level `build-cdx` / `build-cdx-bare-metal` API.
 
-`seed/Codex.cdx` — the compiler in its own binary format, checked in
+`seed/Codex.cdx` -- the compiler in its own binary format, checked in
 alongside the ELF seed.
 
 ## Foreword Library (15 new modules)
@@ -120,7 +120,7 @@ alongside the ELF seed.
 | Forensics | OS | Audit trail reasoning chains |
 | Concurrent | OS | Structured concurrency (fork/join/race/timeout) |
 
-CL 615 removed `cites Codex chapter` lines from all forewords — builtins
+CL 615 removed `cites Codex chapter` lines from all forewords -- builtins
 are globally available via TypeEnv without explicit cites.
 
 ## New Samples (29 new, 134 total)
@@ -183,14 +183,14 @@ Pingpong phases:
 After any change to compiler source (`Codex.Codex/**/*.codex`):
 
 ```powershell
-# 1. Run pingpong — builds SUT from current seed, verifies fixed point
+# 1. Run pingpong -- builds SUT from current seed, verifies fixed point
 tools/pingpong-self.ps1
 
 # 2. Copy SUT to seed
 p4 edit seed/Codex.Codex.elf
 Copy-Item build-output/bare-metal/Codex.Codex.elf seed/Codex.Codex.elf
 
-# 3. Re-run pingpong with new seed — verify hard fixed point
+# 3. Re-run pingpong with new seed -- verify hard fixed point
 #    (seed compiles source → SUT byte-identical to seed)
 tools/pingpong-self.ps1
 
@@ -273,8 +273,8 @@ seed/Codex.cdx          (new) CDX format   same compiler, Codex binary format
 
 | Gate | Status |
 |------|--------|
-| BS2 (pingpong) | PASS — stage1 === stage2 byte-identical |
-| BS3 (bootstrap3) | PASS — ELF === ELF byte-identical |
+| BS2 (pingpong) | PASS -- stage1 === stage2 byte-identical |
+| BS3 (bootstrap3) | PASS -- ELF === ELF byte-identical |
 | Sweep | 125 pass, 0 fail, 9 skip of 134 |
 
 ## Known Issues

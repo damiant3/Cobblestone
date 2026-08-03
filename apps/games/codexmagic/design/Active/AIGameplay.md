@@ -1,9 +1,9 @@
-# AI Gameplay — The General, Posture, and Auto-Play
+# AI Gameplay -- The General, Posture, and Auto-Play
 
 ## Overview
 
 Players in CodexMagic do not micromanage every game action. Each
-player's AI supervisor is embodied by their **General** — a card on
+player's AI supervisor is embodied by their **General** -- a card on
 the battlefield that serves as the player's avatar, carries the life
 total that determines win/loss, and shapes how the AI makes decisions
 through behavioral modifiers. The player sets posture and priorities;
@@ -11,7 +11,7 @@ the General executes.
 
 This design serves three goals: games resolve faster, strategic depth
 shifts from mechanical execution to high-level command, and the
-General card itself becomes a deckbuilding and collection axis — your
+General card itself becomes a deckbuilding and collection axis -- your
 General defines your playstyle at a fundamental level.
 
 ## The General Model
@@ -40,7 +40,7 @@ General defines your playstyle at a fundamental level.
 The AI supervisor's behavior is the product of two inputs: the
 player's posture (runtime orders) and the General's behavioral
 modifiers (baked into the card). The General biases the AI's
-decisions — a General with `AlwaysAttack` combat bias will push the
+decisions -- a General with `AlwaysAttack` combat bias will push the
 AI toward aggressive plays even in a `Balanced` posture. The player
 can always override, but fighting the General's tendencies costs
 attention and intervention.
@@ -134,10 +134,10 @@ Phase =
 ```
 
 Common freeze configurations:
-- **Full auto** — no freezes, AI plays everything
-- **Combat check** — freeze at DeclareAttackers to review attacks
-- **Main phase check** — freeze at PreCombatMain and PostCombatMain
-- **Full manual** — freeze at every phase (traditional play mode)
+- **Full auto** -- no freezes, AI plays everything
+- **Combat check** -- freeze at DeclareAttackers to review attacks
+- **Main phase check** -- freeze at PreCombatMain and PostCombatMain
+- **Full manual** -- freeze at every phase (traditional play mode)
 
 ### Mana Policy
 
@@ -182,30 +182,30 @@ The supervisor evaluates each decision point using a scoring model:
 
 These are played automatically without asking the player:
 
-- **Play a land** — if the player has a land in hand and hasn't used
+- **Play a land** -- if the player has a land in hand and hasn't used
   their land drop, play the best land (color-fixing priority)
-- **Mandatory triggers** — triggered abilities that must resolve
-- **Uncontested attacks** — attacking when the opponent has no blockers
+- **Mandatory triggers** -- triggered abilities that must resolve
+- **Uncontested attacks** -- attacking when the opponent has no blockers
   and stance is Aggressive or Balanced
-- **Lethal on board** — if the AI detects lethal damage, it takes it
-- **Forced blocks** — blocking to prevent lethal damage to the General
+- **Lethal on board** -- if the AI detects lethal damage, it takes it
+- **Forced blocks** -- blocking to prevent lethal damage to the General
   when life is critical
-- **General blocks** — using the General itself as a blocker when its
+- **General blocks** -- using the General itself as a blocker when its
   defense value makes it the optimal choice
 
 ### Escalated Decisions
 
 These are presented to the player as options:
 
-- **Combat gambles** — attacking or blocking where the outcome depends
+- **Combat gambles** -- attacking or blocking where the outcome depends
   on whether the opponent has a combat trick
-- **Sacrifice plays** — trading a valuable permanent for a strategic
+- **Sacrifice plays** -- trading a valuable permanent for a strategic
   advantage
-- **Multi-target choices** — removal with multiple valid targets where
+- **Multi-target choices** -- removal with multiple valid targets where
   the best choice is contextual
-- **Counter-or-not** — whether to counter a spell when counter magic
+- **Counter-or-not** -- whether to counter a spell when counter magic
   is limited
-- **Resource commitment** — spending most or all mana on a big play
+- **Resource commitment** -- spending most or all mana on a big play
   vs. holding back
 
 ### Decision Presentation
@@ -236,11 +236,11 @@ briefly away.
 
 Beyond posture settings, players can intervene at any time:
 
-- **Queue an action** — "play this land next," "cast this spell on
+- **Queue an action** -- "play this land next," "cast this spell on
   your next main phase"
-- **Freeze now** — pause the game at the current priority point
-- **Override** — cancel the AI's planned action and choose manually
-- **Mark a card** — flag a card in hand or on board as "do not play"
+- **Freeze now** -- pause the game at the current priority point
+- **Override** -- cancel the AI's planned action and choose manually
+- **Mark a card** -- flag a card in hand or on board as "do not play"
   or "play next"
 
 Interventions are processed immediately. If the AI was about to take
@@ -259,7 +259,7 @@ SkillLevel =
   | Master      -- near-optimal play, deep strategic evaluation
 ```
 
-In ranked play, both players' AIs run at Master level — the
+In ranked play, both players' AIs run at Master level -- the
 differentiator is the player's General choice, posture decisions,
 intervention timing, and deck construction. In casual play, skill
 level is adjustable for fun and learning.
@@ -269,16 +269,16 @@ level is adjustable for fun and learning.
 A typical turn with AI supervision (Balanced stance, combat-check
 freeze):
 
-1. **Upkeep** — AI handles untap, resolves upkeep triggers automatically
-2. **Draw** — AI draws, evaluates hand (no player input needed)
-3. **Pre-combat main** — AI plays a land (obvious), casts a creature
+1. **Upkeep** -- AI handles untap, resolves upkeep triggers automatically
+2. **Draw** -- AI draws, evaluates hand (no player input needed)
+3. **Pre-combat main** -- AI plays a land (obvious), casts a creature
    on curve (obvious per PlayOnCurve policy)
-4. **Declare attackers** — FREEZE. AI presents the board:
+4. **Declare attackers** -- FREEZE. AI presents the board:
    "You have a 3/3/0 and a 2/2/0. Opponent's General is a 2/5/1 at
    22 life. Recommended: attack with 3/3/0 only (pierces General's
    defense, 2/2/0 would bounce off). Override?"
 5. Player accepts or adjusts attackers
-6. **Blockers through end** — AI handles rest automatically, opponent's
+6. **Blockers through end** -- AI handles rest automatically, opponent's
    General may block based on its behavioral modifiers
 
 Total player interaction: one decision point, ~5 seconds. The turn

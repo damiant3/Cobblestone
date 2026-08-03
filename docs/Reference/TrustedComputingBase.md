@@ -21,12 +21,12 @@ every correctness claim the project makes.
 Codex has two distinct trusted bases, and conflating them overstates the
 guarantee. Keep them separate.
 
-- **Runtime TCB** — what must be correct for a *deployed* Codex binary to
+- **Runtime TCB** -- what must be correct for a *deployed* Codex binary to
   behave as specified, once it is running on bare metal.
-- **Toolchain TCB** — what must be correct for the *build* of that binary
+- **Toolchain TCB** -- what must be correct for the *build* of that binary
   (and of the seed itself) to be trustworthy.
 
-The runtime TCB is genuinely small — that is Codex's real structural
+The runtime TCB is genuinely small -- that is Codex's real structural
 advantage. The toolchain TCB is larger and is where the honest caveats
 live.
 
@@ -43,7 +43,7 @@ A signed CDX running on real hardware (not under `codex-vm`) depends on:
 | The boot trampoline + page tables | Hand-written machine code in `X86_64IO.codex` / `X86_64Boot.codex` | Trusted, small, audited |
 | The runtime helpers (`__alloc`, `__str_concat`, deck/bivy) | Hand-written codegen primitives | Trusted, small, audited |
 
-What is **not** in the runtime TCB, by construction — this is the win:
+What is **not** in the runtime TCB, by construction -- this is the win:
 
 - **No OS, no libc, no dynamic linker, no shell.** The attack surface is
   exactly the code we emitted. (`KingsAndCourts.md`, ETSI 5.6.)
@@ -59,13 +59,13 @@ The third is Section 3.
 
 **The capability/effect exemption boundary (ruled 2026-07-03,
 `CapabilityProbe.md` §7).** The "no undeclared I/O" discipline is
-enforced for `codex.foreword.*`, apps, and external user code — the
+enforced for `codex.foreword.*`, apps, and external user code -- the
 surface outsiders consume and the threat surface. The owned hardware
 stack (the compiler quire, `codex.kernel`, `codex.os.*`,
 `codex.boards`, `codex.plugs.*`) is quire-exempt: its defs route
 through effect inference (so effects still propagate to external
 callers) but are not required to declare rows. This exemption IS a TCB
-membership list — code inside it is trusted for the capability claim,
+membership list -- code inside it is trusted for the capability claim,
 not checked against it. Any audit of the "no undeclared I/O" claim
 starts from this list.
 
@@ -76,10 +76,10 @@ starts from this list.
 | Component | Role | Trusted because | Shrinkable? |
 |---|---|---|---|
 | **`seed/Codex.cdx`** | The compiler. Root of trust. | It is a hard fixed point of itself (Section 4) | Not removable; can be *re-derived* by independent paths |
-| **`codex-vm.exe` / `codex-vm.c`** | ~6000-line C/WHP hypervisor that boots the seed and carries the build over serial | Hand-written C; not Codex; not self-verified | **Yes** — pure-Codex VMX host (CurrentPlan gap 5) removes it from the self-host path |
-| **The build scripts** (`build/*.ps1`) | Concat, gate orchestration, signing invocation | PowerShell, hand-written | Partially — being migrated PS1→Codex |
-| **The project's Ed25519 signing key** | Authenticity of the seed and emitted CDX | Held out of band; signing is automatic | No — but its *scope* is auditable (one key, one purpose) |
-| **The plugs** (50+: ELF, PE, ARM64, RISC-V, HTML, PTX, …) | Container/format and cross-arch codegen | Each is a Codex program (so compiled by the trusted seed), but its codegen is **tested, not proven** | **Yes** — translation validation (Section 5) |
+| **`codex-vm.exe` / `codex-vm.c`** | ~6000-line C/WHP hypervisor that boots the seed and carries the build over serial | Hand-written C; not Codex; not self-verified | **Yes** -- pure-Codex VMX host (CurrentPlan gap 5) removes it from the self-host path |
+| **The build scripts** (`build/*.ps1`) | Concat, gate orchestration, signing invocation | PowerShell, hand-written | Partially -- being migrated PS1→Codex |
+| **The project's Ed25519 signing key** | Authenticity of the seed and emitted CDX | Held out of band; signing is automatic | No -- but its *scope* is auditable (one key, one purpose) |
+| **The plugs** (50+: ELF, PE, ARM64, RISC-V, HTML, PTX, …) | Container/format and cross-arch codegen | Each is a Codex program (so compiled by the trusted seed), but its codegen is **tested, not proven** | **Yes** -- translation validation (Section 5) |
 | **The host OS + WHP + dev hardware** | Where the build runs | Standard platform trust during build only | Out of scope; build-time only |
 
 The plugs deserve emphasis: they are written *in* Codex and therefore
@@ -96,7 +96,7 @@ silent toolchain-TCB bug.
 Codex's flagship correctness gate is the **hard fixed point**: the seed
 compiles the compiler source to a byte-identical seed (text round-trip +
 CDX byte-identity, `build/build.ps1`). This is a genuinely strong
-property — it proves the compiler is a stable fixed point of itself and
+property -- it proves the compiler is a stable fixed point of itself and
 that the emitter loses no information.
 
 It does **not** prove the compiler is *correct*. A compiler can be a
@@ -109,7 +109,7 @@ This is the same structural gap Thompson named in "Reflections on
 Trusting Trust": a self-reproducing toolchain reproduces its own
 behavior, including any latent miscompilation, and the reproduction
 itself offers no evidence the behavior is right. The historical lineage
-sharpens the point — the current seed descends (BS1/BS1.1) from the now-
+sharpens the point -- the current seed descends (BS1/BS1.1) from the now-
 retired C# reference compiler, so any bias baked in there could in
 principle persist undetected through the fixed point.
 
@@ -120,20 +120,26 @@ What actually backs correctness today, in descending order of strength:
    (CDX4010). These are real, mechanical checks.
 2. **The propositional-equality / proof layer** (`Refl`/`sym`/`trans`/
    `cong`/`app-cong`, normalizer, structural induction through the
-   flagship `reverse-reverse` — see `Induction.md`). Content checks
+   flagship `reverse-reverse` -- see `Induction.md`). Content checks
    are sound (false equations and unsound induction steps reject),
    proof definitions are acyclic by construction (circular proof
-   terms reject CDX4023 — probed and closed 2026-07-04,
+   terms reject CDX4023 -- probed and closed 2026-07-04,
    `ProofTotalityProbe.md`; the six laundering probes are
    `errors/proof-launder-*`), and `assume` axioms warn (CDX4021), so
    the axiom set of any program is visible in its diagnostics.
-3. **The test battery** (~430 with `-Apps`, cross-arch parity) — empirical,
+3. **The test battery** (~430 with `-Apps`, cross-arch parity) -- empirical,
    not exhaustive.
-4. **The fixed point** — consistency, per above.
+4. **The fixed point** -- consistency, per above.
 5. **Diverse re-derivation:** BS3 rebuilds the seed standalone from the
-   pingpong output on bare metal with no C# in the chain. This is the
-   strongest existing answer to trusting-trust — an independent path to
-   the same artifact — and it should be named as such.
+   pingpong output on bare metal with no C# in the chain. **This is NOT
+   an answer to trusting-trust and this item used to claim it was.** BS3
+   changes the substrate, not the implementation of the source-to-binary
+   function, and its input is the seed's own pingpong output, so every
+   byte in the chain was chosen by the compiler under suspicion. It is a
+   second fixed point, not a second opinion. The real answer requires a
+   compiler with unrelated lineage: see `docs/OperatorsManual.md`,
+   "Diverse Double-Compiling", for the procedure and for how far the
+   available witness actually reaches.
 
 The intellectually honest one-line statement: **Codex's correctness rests
 on a strong type system plus extensive testing plus self-consistency; it
@@ -184,9 +190,9 @@ The formal-methods tradition (Chlipala's Fiat Cryptography, Bedrock2,
 the Lightbulb and FE310 crypto-server stacks; CompCert; seL4) is judged
 almost entirely on TCB size and on what the top-level theorem actually
 quantifies over. Codex will be judged the same way the moment it is shown
-to that audience. The advantage Codex holds — a genuinely tiny *runtime*
-TCB with no OS/libc beneath it — is real and worth stating loudly. The
-gap Codex carries — *self-consistency is not a correctness proof* — is
+to that audience. The advantage Codex holds -- a genuinely tiny *runtime*
+TCB with no OS/libc beneath it -- is real and worth stating loudly. The
+gap Codex carries -- *self-consistency is not a correctness proof* -- is
 equally real and must be stated in the same breath, because claiming
 otherwise is the fastest way to lose a serious reader's trust. This doc
 exists so that both are always said together.

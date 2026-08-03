@@ -3,11 +3,6 @@ Chapter: SafeTensors
   cites Foreword chapter Maybe
   cites Encode chapter Json
 
- SafeTensors model file parser. Reads the header (JSON metadata)
- and provides random-access tensor loading by name. Dequantizes
- F16/BF16 to fixed-point (scale 1000). F32 conversion reuses
- the same pattern as Gguf.codex.
-
  Format:
    [8 bytes: header length N, little-endian u64]
    [N bytes: JSON header]
@@ -126,6 +121,7 @@ Section: Shape Parsing
     else let v = list-at items i
     in let n = when v
         is JsonInt (x) -> x
+        is JsonNum (x) -> json-num-to-int x
         is otherwise -> 0
     in st-extract-ints items (i + 1) len (list-push acc n)
 
@@ -150,6 +146,7 @@ Section: Offset Parsing
   st-json-to-int (v) =
     when v
       is JsonInt (n) -> n
+      is JsonNum (n) -> json-num-to-int n
       is otherwise -> 0
 
 Section: Text Extraction
@@ -177,9 +174,7 @@ Section: Tensor Loading (F32)
     let abs-start = file.st-data-offset + meta.stm-offset-start
     in let elements = st-element-count meta
     in let values = st-read-f32-loop data abs-start elements 0 []
-    in let rows = if meta.stm-ndim >= 1 then list-at (meta.stm-shape) 0 else 1
-    in let cols = if meta.stm-ndim >= 2 then list-at (meta.stm-shape) 1 else elements
-    in tensor-from rows cols values
+    in tensor-from (st-rows meta) (st-cols meta) values
 
   st-read-f32-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
   st-read-f32-loop (data) (off) (count) (i) (acc) =
@@ -206,9 +201,7 @@ Section: Tensor Loading (F16)
     let abs-start = file.st-data-offset + meta.stm-offset-start
     in let elements = st-element-count meta
     in let values = st-read-f16-loop data abs-start elements 0 []
-    in let rows = if meta.stm-ndim >= 1 then list-at (meta.stm-shape) 0 else 1
-    in let cols = if meta.stm-ndim >= 2 then list-at (meta.stm-shape) 1 else elements
-    in tensor-from rows cols values
+    in tensor-from (st-rows meta) (st-cols meta) values
 
   st-read-f16-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
   st-read-f16-loop (data) (off) (count) (i) (acc) =
@@ -238,9 +231,7 @@ Section: Tensor Loading (BF16)
     let abs-start = file.st-data-offset + meta.stm-offset-start
     in let elements = st-element-count meta
     in let values = st-read-bf16-loop data abs-start elements 0 []
-    in let rows = if meta.stm-ndim >= 1 then list-at (meta.stm-shape) 0 else 1
-    in let cols = if meta.stm-ndim >= 2 then list-at (meta.stm-shape) 1 else elements
-    in tensor-from rows cols values
+    in tensor-from (st-rows meta) (st-cols meta) values
 
   st-read-bf16-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
   st-read-bf16-loop (data) (off) (count) (i) (acc) =
@@ -281,6 +272,14 @@ Section: Auto-Load (dispatch on dtype)
 Section: Helpers
   st-element-count : StTensorMeta -> Integer
   st-element-count (meta) = st-product (meta.stm-shape) 0 (meta.stm-ndim) 1
+
+  st-rows : StTensorMeta -> Integer
+  st-rows (meta) = if meta.stm-ndim >= 1 then list-at (meta.stm-shape) 0 else 1
+
+  st-cols : StTensorMeta -> Integer
+  st-cols (meta) =
+    let r = st-rows meta
+    in if r <= 0 then 0 else st-element-count meta / r
 
   st-product : List Integer, Integer, Integer, Integer -> Integer
   st-product (dims) (i) (len) (acc) =

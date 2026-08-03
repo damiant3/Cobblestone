@@ -405,24 +405,43 @@ Section: Partition Layout
 
 Section: Write Partition Entries
 
+ Entries are packed four to a sector and the sector is written when the fourth
+ lands. A partition count that is not a multiple of four therefore leaves the
+ last few entries sitting in the buffer, and the zero-fill that follows stepped
+ straight over that sector to the next boundary -- so the buffer was discarded
+ and the entries never reached the disk.
+
+ Every realistic count is 1, 2 or 3, so **this wrote an empty partition table
+ every time it was called.** It survived because nothing called it: the shipped
+ boot images get their GPT from `build/build-img.ps1` on the host, and the one
+ caller in the tree is the drive installer, which could not run at all while
+ block-select selected nothing. The first time an install reached a real second
+ drive, the header and the protective MBR landed correctly and the entry sector
+ was 512 zero bytes.
+
+ The fix is the flush: when the real entries run out mid-sector, write what is
+ in the buffer before moving on. The tail of that sector is already zero,
+ because the buffer is zeroed at the start of each sector.
+
   gpt-write-entries : List GptPartEntry, Integer, Integer, Integer -> [Device.Block] Integer
   gpt-write-entries (parts) (buf) (start-lba) (i) =
-    if i >= 128 then
+    let entries-per-sector = 512 / 128
+    in let slot = i - (i / entries-per-sector) * entries-per-sector
+    in let sector = start-lba + i / entries-per-sector
+    in if i >= 128 then
       gpt-rt-crc32-sector start-lba 32 (32 * 512)
     else if i >= list-length parts then
-      let z = gpt-zero-sector buf
-      in let entries-per-sector = 512 / 128
-      in let sector = start-lba + i / entries-per-sector
-      in let off = (i - (i / entries-per-sector) * entries-per-sector) * 128
-      in if off == 0 then act
+      if slot /= 0 then act
+        block-write-sector sector buf
+        gpt-write-entries parts buf start-lba (i + (entries-per-sector - slot))
+      end
+      else let z = gpt-zero-sector buf
+      in act
         block-write-sector sector buf
         gpt-write-entries parts buf start-lba (i + entries-per-sector)
       end
-      else gpt-write-entries parts buf start-lba (i + 1)
     else let part = list-at parts i
-    in let entries-per-sector = 512 / 128
-    in let sector = start-lba + i / entries-per-sector
-    in let off = (i - (i / entries-per-sector) * entries-per-sector) * 128
+    in let off = slot * 128
     in let z = if off == 0 then gpt-zero-sector buf else 0
     in let w0 = gpt-write-guid buf off (part.ge-type-guid)
     in let w1 = gpt-write-guid buf (off + 16) (part.ge-unique-guid)
@@ -437,11 +456,35 @@ Section: Write Partition Entries
 
 Section: Well-Known GUIDs
 
+ A GPT type GUID is stored MIXED-ENDIAN: the first field is four bytes
+ little-endian, the second and third are two bytes little-endian each, and
+ the last eight are in the order they are written. So the byte lists below
+ do not read like their canonical text forms and are not supposed to. The
+ ESP's C12A7328-F81F-11D2-BA4B-00A0C93EC93B begins 40, 115, 42, 193, which
+ is 28 73 2A C1, which is C12A7328 with its bytes reversed.
+
   gpt-esp-type-guid : List Integer = [40, 115, 42, 193, 31, 248, 210, 17, 186, 75, 0, 160, 201, 62, 201, 59]
   gpt-basic-data-guid : List Integer = [160, 163, 192, 235, 181, 233, 51, 72, 135, 197, 38, 214, 19, 38, 97, 69]
 
+ The fact store's own partition type. Canonical form
+ C0DE1A11-FAC7-4C0D-9E75-C0DEC0DE5EED, so a person running diskpart or
+ lsblk on a Codex stick sees a type nobody else claims rather than the
+ generic basic-data GUID every filesystem on earth uses.
+
+ The distinctness is the point and not decoration. The store addresses its
+ sectors relative to a partition it has to FIND, and finding it by the
+ basic-data GUID would name whatever partition happened to be first --
+ which on a dual-boot disk is somebody's NTFS volume. A type GUID nobody
+ else writes is what makes "there is no fact store on this disk" a
+ different answer from "here is a partition, write into it".
+
+  gpt-codex-facts-guid : List Integer = [17, 26, 222, 192, 199, 250, 13, 76, 158, 117, 192, 222, 192, 222, 94, 237]
+
   gpt-is-esp : GptPartition -> Boolean
   gpt-is-esp (part) = gpt-guid-eq (part.gp-type-guid) gpt-esp-type-guid
+
+  gpt-is-codex-facts : GptPartition -> Boolean
+  gpt-is-codex-facts (part) = gpt-guid-eq (part.gp-type-guid) gpt-codex-facts-guid
 
   gpt-guid-eq : List Integer, List Integer -> Boolean
   gpt-guid-eq (a) (b) = gpt-guid-eq-loop a b 0
@@ -451,6 +494,24 @@ Section: Well-Known GUIDs
     if i >= 16 then True
     else if list-at a i /= list-at b i then False
     else gpt-guid-eq-loop a b (i + 1)
+
+Section: Finding A Partition By Type
+
+ Answers the FIRST partition carrying a given type GUID, or None. A disk
+ with two partitions of the same type is not an error here -- the caller
+ decides what that means -- but for the fact store it is why the installer
+ writes exactly one.
+
+  gpt-find-by-type : GptDisk, List Integer -> Maybe GptPartition
+  gpt-find-by-type (disk) (type-guid) =
+    gpt-find-by-type-loop (disk.gd-partitions) type-guid 0 (list-length (disk.gd-partitions))
+
+  gpt-find-by-type-loop : List GptPartition, List Integer, Integer, Integer -> Maybe GptPartition
+  gpt-find-by-type-loop (parts) (type-guid) (i) (len) =
+    if i >= len then None
+    else let p = list-at parts i
+    in if gpt-guid-eq (p.gp-type-guid) type-guid then Just p
+    else gpt-find-by-type-loop parts type-guid (i + 1) len
 
 Section: Quick Wipe
 

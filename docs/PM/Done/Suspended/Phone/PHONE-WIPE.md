@@ -1,4 +1,4 @@
-# ⚠️ PHONE WIPE — Flash TWRP to Samsung Galaxy S7 Edge
+# ⚠️ PHONE WIPE -- Flash TWRP to Samsung Galaxy S7 Edge
 
 **THIS PROCEDURE REPLACES THE RECOVERY PARTITION ON A REAL PHONE.**
 **IF SOMETHING GOES WRONG, YOU WILL NEED ODIN + STOCK FIRMWARE TO RECOVER.**
@@ -25,8 +25,8 @@
 | Header byte-match against known-good CHN image | ✅ Proven |
 | Kernel, ramdisk, DTB are real extracted components | ✅ Real files from TWRP build |
 | ARM64 Codex binaries run on Android emulator | ✅ Proven (adb push + execute) |
-| **This image actually boots on an S7 Edge** | ❌ **NOT PROVEN — cannot be emulated** |
-| **Odin flash to SM-G935T (T-Mobile)** | ❌ **FAILED — RQT_CLOSE after NAND write (2026-03-24)** |
+| **This image actually boots on an S7 Edge** | ❌ **NOT PROVEN -- cannot be emulated** |
+| **Odin flash to SM-G935T (T-Mobile)** | ❌ **FAILED -- RQT_CLOSE after NAND write (2026-03-24)** |
 
 The Samsung S7 Edge has a Qualcomm-specific bootloader, Samsung partition
 layout, and hardware-specific DTB. No emulator exists that can tell you
@@ -116,7 +116,7 @@ The top box turns **GREEN** with **PASS!**
 
 **Expected time: 5–15 seconds.** Recovery images are small.
 
-If the box turns **RED** with **FAIL!** — the phone is fine, it's still
+If the box turns **RED** with **FAIL!** -- the phone is fine, it's still
 in Download Mode. Read the error, do not panic.
 
 ### ☐ 6. Boot into TWRP
@@ -188,40 +188,40 @@ Don't do that.
 
 ## Flash Attempt Log (2026-03-24)
 
-**Result: FAILED** — multiple approaches tried, none successful yet.
+**Result: FAILED** -- multiple approaches tried, none successful yet.
 Phone boots to Android fine. No damage done.
 
 ### What Was Tried
 
 | # | Change | Result |
 |---|--------|--------|
-| 1 | `recovery-fixed.img.tar` (wrong internal filename) | FAIL — Odin doesn't recognize partition name `recovery-fixed` |
-| 2 | Rebuilt as `recovery.img.tar` (correct internal name) | FAIL — `RQT_CLOSE` after NAND write |
-| 3 | USB port change (white → black USB 2.0 on rear panel) | FAIL — same `RQT_CLOSE` |
-| 4 | Rebuilt with blank board name (was `SRPPA14B001RU` from CHN) | FAIL — same `RQT_CLOSE` |
-| 5 | Full reboot cycle (Android → clean shutdown → Download Mode) | FAIL — same `RQT_CLOSE` |
-| 6 | Heimdall via WSL2 (installed usbipd, attached USB to WSL) | FAIL — Heimdall 2.0.2 too old, `Failed to send handshake` |
-| 7 | Official TWRP 3.7.0 for hero2qltechn (stale USB state) | FAIL — `SetupConnection` failure |
-| 8 | Multiple retries after reboot cycles | FAIL — `SetupConnection` keeps failing |
-| 9 | **PC reboot + official TWRP 3.7.0** (clean USB, fresh Odin) | FAIL — `RQT_CLOSE` after NAND write (clean connection, same result) |
+| 1 | `recovery-fixed.img.tar` (wrong internal filename) | FAIL -- Odin doesn't recognize partition name `recovery-fixed` |
+| 2 | Rebuilt as `recovery.img.tar` (correct internal name) | FAIL -- `RQT_CLOSE` after NAND write |
+| 3 | USB port change (white → black USB 2.0 on rear panel) | FAIL -- same `RQT_CLOSE` |
+| 4 | Rebuilt with blank board name (was `SRPPA14B001RU` from CHN) | FAIL -- same `RQT_CLOSE` |
+| 5 | Full reboot cycle (Android → clean shutdown → Download Mode) | FAIL -- same `RQT_CLOSE` |
+| 6 | Heimdall via WSL2 (installed usbipd, attached USB to WSL) | FAIL -- Heimdall 2.0.2 too old, `Failed to send handshake` |
+| 7 | Official TWRP 3.7.0 for hero2qltechn (stale USB state) | FAIL -- `SetupConnection` failure |
+| 8 | Multiple retries after reboot cycles | FAIL -- `SetupConnection` keeps failing |
+| 9 | **PC reboot + official TWRP 3.7.0** (clean USB, fresh Odin) | FAIL -- `RQT_CLOSE` after NAND write (clean connection, same result) |
 
 ### Key Findings
 
-- **Heimdall 2.0.2** cannot handshake with the S7 Edge — protocol too new for the tool.
+- **Heimdall 2.0.2** cannot handshake with the S7 Edge -- protocol too new for the tool.
   Installed `usbipd-win` to pass USB from Windows to WSL2. Device detected by `lsusb`
   but Heimdall can't initialize the Samsung download protocol.
-- **TWRP build from source** is blocked — the TWRP minimal manifest repo only has
+- **TWRP build from source** is blocked -- the TWRP minimal manifest repo only has
   branches `twrp-11`, `twrp-12.1`, `twrp-14`, `twrp-14.1`. The device tree
   (`jcadduono/android_device_samsung_hero2qlte`) is on `android-6.0`. Massive
   version mismatch makes building from source a porting project, not a script run.
 - **Official TWRP builds exist** for `hero2qltechn` (China variant) but NOT for
   `hero2qlte` (T-Mobile). Downloaded `twrp-3.7.0_9-0-hero2qltechn.img.tar`
-  (26.7 MB, built by Jenkins) — available at `phone/flash/twrp-official-hero2qltechn.img.tar`.
+  (26.7 MB, built by Jenkins) -- available at `phone/flash/twrp-official-hero2qltechn.img.tar`.
 - **USB driver state degrades** after repeated failed flashes. Windows accumulates
   ghost Samsung USB device entries across multiple COM ports. Multiple stale
   `PID_685D` (download mode) and `PID_6860` (normal mode) entries in Device Manager.
   **PC reboot recommended** to clear USB driver cache before next attempt.
-- **Phone is fine** — boots to Android normally after all failed flash attempts.
+- **Phone is fine** -- boots to Android normally after all failed flash attempts.
 
 ### Files in phone/flash/
 
@@ -231,21 +231,21 @@ Phone boots to Android fine. No damage done.
 | `twrp-official-hero2qltechn.img.tar` | Official TWRP 3.7.0 from twrp.me. **Also fails `RQT_CLOSE`.** |
 | `dtb.img`, `Image.gz`, `initrd.img` | Source components of hand-packed image. |
 
-### Diagnosis — Bootloader Signature Verification
+### Diagnosis -- Bootloader Signature Verification
 
 Attempt 9 is conclusive. An official TWRP image built by TWRP's own Jenkins CI
 also fails at `RQT_CLOSE`. This eliminates our hand-packed image as the cause.
 
 **The T-Mobile SM-G935T bootloader is enforcing signature verification on the
 recovery partition.** The `OEM Unlock` toggle in Developer Options was enabled,
-but on Samsung devices that only *permits* unlocking — it doesn't *perform* it.
+but on Samsung devices that only *permits* unlocking -- it doesn't *perform* it.
 The bootloader must be explicitly unlocked before it will accept unsigned images.
 
 On Samsung Galaxy S7 Edge (T-Mobile), unlocking requires one of:
-- **`fastboot oem unlock`** — if the phone supports fastboot mode
-- **Stock firmware with unlocked bootloader flag** — some T-Mobile firmware
+- **`fastboot oem unlock`** -- if the phone supports fastboot mode
+- **Stock firmware with unlocked bootloader flag** -- some T-Mobile firmware
   versions ship with bootloader restrictions even after OEM Unlock toggle
-- **Combination firmware** — Samsung engineering firmware that disables
+- **Combination firmware** -- Samsung engineering firmware that disables
   signature verification for development purposes
 
 ### Next Steps
@@ -253,7 +253,7 @@ On Samsung Galaxy S7 Edge (T-Mobile), unlocking requires one of:
 1. **Check if the bootloader is actually unlocked.** In Download Mode, the
    screen should say `OEM LOCK: OFF` (or `CUSTOM: YES`). If it says
    `OEM LOCK: ON`, the bootloader was never unlocked despite the toggle.
-2. **If locked**: Research SM-G935T bootloader unlock procedure — may require
+2. **If locked**: Research SM-G935T bootloader unlock procedure -- may require
    `fastboot oem unlock`, a specific stock firmware version, or combination firmware.
 3. **If unlocked**: The `RQT_CLOSE` failure has another cause. Try Odin 3.14.4
    (newer version) or a different Odin fork (e.g., Odin4 or Society Odin).
@@ -261,4 +261,4 @@ On Samsung Galaxy S7 Edge (T-Mobile), unlocking requires one of:
    Codex ARM64 binaries to `/data/local/tmp/` and run them under Android.
    This achieves Phase 1 (Codex running on the phone) without flashing anything.
 
-The phone is fine — still boots into Android and Download Mode normally.
+The phone is fine -- still boots into Android and Download Mode normally.

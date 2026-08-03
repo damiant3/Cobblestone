@@ -44,8 +44,8 @@ Two consequences, both handled/planned:
 
 ## Where we are
 
-Codex boots on **real UEFI hardware** — ASUS TUF (2015 AMI Aptio V), Dell
-Inspiron 15 5000, and edk2/OVMF — and renders a keyboard-shaped GOP menu,
+Codex boots on **real UEFI hardware** -- ASUS TUF (2015 AMI Aptio V), Dell
+Inspiron 15 5000, and edk2/OVMF -- and renders a keyboard-shaped GOP menu,
 all compiled by itself, no OS beneath it. Two blockers fell: the FAT12/16
 mislabel (the real, years-long bug) and the ASUS CSM/Fast-Boot config. We
 now have a **real-firmware test bed** (OVMF in QEMU) so we never guess-and-
@@ -57,7 +57,7 @@ boot aspect of the project.
 A single USB stick you can *run to the hills* with: boot it on any UEFI
 machine, walk a first-boot ceremony (choose a model, set your private key,
 save it to the stick), and land in the full self-hosted Codex OS and
-compiler — everything drawn on the GOP framebuffer, everything a fixed
+compiler -- everything drawn on the GOP framebuffer, everything a fixed
 point of itself, the seed verifying itself from the stick before it acts.
 That is Ascent V ("the cord is cut") made physical.
 
@@ -366,6 +366,116 @@ gone. We own the machine and must drive the disk ourselves.
 - **B5.4 `seed/Codex.img` becomes the real artifact** - full compiler +
   source + first-boot, built through the Option A path (not the stale
   legacy image).
+
+### RULED 2026-07-30 (Damian delegated it permanently: "do whatever makes maximum flexibility, and maximum sense", and it must never come back to him)
+
+**One stub survives, and it is `cdx-to-pe.ps1`'s. `option_a_stub.asm` and its
+ml64 invocation are retired.** That single decision settles B5.3, most of
+B5.4, and the address question below at once, because two stubs is what
+created the address question in the first place. `cdx-to-pe.ps1` already
+emits its stub as machine code from PowerShell and already acquires GOP, so
+the surviving path has no MSVC in it. **MSVC is permitted for `codex-vm` and
+nothing else** (Damian, 2026-07-30); `build/boot/build-a1.ps1` carries the
+same ml64 call and goes with it.
+
+**0x8000 holds the UEFI SystemTable. It does not hold the framebuffer.**
+The compiler's own emitted `__start` reads the SystemTable from 0x8000, so
+that meaning is baked into codegen and is the expensive one to move;
+`cdx-to-pe.ps1:127` already agrees with it. `option_a_stub.asm`'s
+`CELL_FB EQU 08000h` was the other claimant and it is the one that loses.
+
+**The framebuffer moves into a versioned handoff block, not to another bare
+address.** A bare address is what let two builders mean two things with
+nothing detecting it: booted through the wrong stub, `GopBoot` read a
+SystemTable pointer as a framebuffer base, got control, and painted nothing
+(measured 2026-07-30 -- serial `s v c h g o`, solid `#104020`). The block
+carries a magic, a version, then the framebuffer base/width/height/stride and
+`PixelFormat`. **A payload that does not find the magic says so instead of
+drawing into a pointer**, which is the property that stops this recurring: new
+fields append, and a stub/payload mismatch is loud and specific rather than
+silent. `PixelFormat` being in the block also closes the standing gap where
+the stub never read it and channel order was assumed.
+
+**The block does NOT live at 0x8000, because 0x8000 is transient and cannot
+hold anything.** `X86_64Boot.codex:123-142` is explicit: 0x8000 is where
+`emit-build-process-page-tables` puts the PML4 and `emit-start` loads CR3 with
+it, so `emit-start` snapshots `[0x8000]` into `uefi-systab-addr` (36208)
+BEFORE `emit-process-setup` overwrites it. The slot is live only from
+stub-exit until paging is built, and reading it later gets page-table entry
+zero -- an invalid-opcode fault the chapter says "cannot ever have worked".
+That is why `cdx-to-pe.ps1` already writes the SystemTable to BOTH 0x8000 and
+36208: on the UEFI path the stub calls `opening` directly, `__start` never
+runs, and the snapshot never happens. **The framebuffer block therefore has to
+be durable low memory, written by the stub the same way, and 0x8000 stays a
+handoff slot for the SystemTable and nothing else.**
+
+**The block is at `0x1F000` (126976), 48 bytes**, in the hole red vetted for
+`xhci-diag`: bounded below by the IST stacks ending at 0x1D000 and above by
+the AP idle stacks at 0x20000, so nothing can grow into it without first
+overrunning a bound the layout already defends. It sits 8 KB clear of
+`xhci-diag` at 0x1D000 and 4 KB below the AP idle stacks. **Checked both
+authorities before claiming it, which is the rule those two collisions
+taught:** `0x1F000` and `126976` appear in neither `tools/codex-vm.c` nor
+`codex/compiler/Emit/**`, `codex/foreword/**` or `apps/works/*.codex`.
+
+    +0x00  magic     8   "CDXHANDF"
+    +0x08  version   4   = 1
+    +0x0C  size      4   = 48
+    +0x10  fb_base   8
+    +0x18  fb_width  4
+    +0x1C  fb_height 4
+    +0x20  fb_stride 4   pixels per scan line, NOT width
+    +0x24  fb_format 4   EFI_GRAPHICS_PIXEL_FORMAT, Info+0x0C
+    +0x28  acpi_rsdp 8   RSDP from SystemTable->ConfigurationTable
+
+**Step 1 is DONE and every field is measured, not asserted.** `cdx-to-pe.ps1`
+publishes the block from inside `GopAcquire`, where `rcx` still holds Info and
+`r12` the framebuffer base; the stub grew 774 -> 842 bytes. Read back live
+through `-hwwatch <addr> -hwwatch-log`, which was calibrated first against
+`0x8000` (fires, `now=0xf0000`, the UEFI tables the emulator reports) so a
+miss at the block would have meant something:
+
+| field | read back | bed reports |
+|---|---|---|
+| magic | `0x46444e4148584443` | "CDXHANDF" exactly |
+| fb_base | `0xbf000000` | `GOP: ... framebuffer at 0xbf000000` |
+| width, height | `0x280`, `0x1e0` | 640x480 |
+| stride, format | `0x280`, `1` | format 1 is BGR |
+
+`fb_format = 1` is BGR, which independently corroborates val's blue-cube /
+red-pyramid sitting result from the other end: the stub's long-standing
+assumption was right on this firmware, and now the payload is told rather than
+left to assume.
+
+**Step 1b is DONE too: the block carries the ACPI RSDP.** `AcpiPublish` walks
+`SystemTable->ConfigurationTable` (count at +0x68, array at +0x70, 24 bytes per
+entry) for `EFI_ACPI_20_TABLE_GUID` and stores its VendorTable. It runs
+unconditionally and OUTSIDE `GopAcquire`, because it needs `r15` and nothing
+from GOP, and that body is reached by a rel8 `jnz` with a 127-byte budget; the
+scan carries a build-time assertion on its own length so the hand-computed
+displacements cannot rot silently. Stub 842 -> 927 bytes.
+
+**The header is written unconditionally and zeroes every payload field before
+the scanners run**, which is what makes the magic worth having: read back live,
+`acpi_rsdp` takes `0` from the header and then `0xe0000` from the scan, and
+`fb_base` takes `0` and then `0xbf000000`, both matching what the bed prints.
+So a field left zero provably means "the stub looked and did not find one"
+rather than "nobody wrote here" -- the two are indistinguishable at a bare
+address, and telling them apart is the entire reason this block exists.
+
+`GopAcquire` in `cdx-to-pe.ps1` currently keeps only FrameBufferBase (R12) and
+`VRes * PixelsPerScanLine` (R13d), so it has to read HRes (Info+0x04), VRes
+(+0x08), PixelFormat (+0x0C) and PixelsPerScanLine (+0x20) to fill this in.
+Stride and width are separate fields on purpose: the real board reports stride
+2048 against a visible 1920, and conflating them is what leaves a stripe.
+
+Sequenced this way so no working path is disabled before its replacement is
+gated (L-FALLBACK): publish the block from `cdx-to-pe.ps1` alongside the
+existing writes; teach `GopBoot` to prefer the block and fall back to
+`gop-cell-base`; gate the GOP payload through `build-boot-img.ps1
+-BootSource apps\works\GopBoot.codex -Pet`; then make that the default and
+delete `option_a_stub.asm`, `build-option-a.ps1`'s ml64 call and
+`build-a1.ps1`.
 - **B5.5 Storage breadth** - NVMe, more AHCI controllers, USB mass storage.
 
 ## Test infrastructure (the discipline that makes this fast)
@@ -390,7 +500,13 @@ gone. We own the machine and must drive the disk ourselves.
 - **Post-EBS USB keyboard** on PS/2-less boards (B4.3) - the biggest
   unknown; a full xHCI HID path is real work.
 - **AHCI/NVMe variety** across boards (B3.1, B5.5).
-- **GOP Blt-only firmware** (no linear framebuffer) - rare but exists.
+- ~~**GOP Blt-only firmware** (no linear framebuffer)~~ **CLOSED.** The
+  Option A payload has no Blt path at all: it paints straight at the
+  handoff base after ExitBootServices. A `PixelBltOnly` firmware
+  publishes a meaningless `FrameBufferBase`, so a menu on the glass IS
+  the proof that the framebuffer is linear, and
+  `optiona-milestone.img` renders its menu on both the ASUS TUF and the
+  Dell. Neither box is Blt-only and no sitting question is needed.
 - **Secure Boot signing** logistics (B5.1).
 
 ## Why this serves the other priorities (IoT, codegen)

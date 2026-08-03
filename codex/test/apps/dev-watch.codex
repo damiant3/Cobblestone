@@ -1,0 +1,119 @@
+Chapter: DevWatchTest
+  cites Dev chapter DevState
+
+ The debugger's watch table, over memory this test controls.
+
+ A watch is change DETECTION, so the only readings that mean anything are
+ the transitions: unchanged when nothing was touched, changed when a byte
+ moved, and unchanged AGAIN straight after -- which is the one that proves
+ the check re-arms. Without the re-arm a single change makes a watch
+ report as changed forever, and two watches become impossible to tell
+ apart.
+
+ THE BUFFER IS ZEROED FIRST AND THAT IS NOT CEREMONY. `alloc-bytes` does
+ not zero what it returns; it hands back the heap pointer and bumps it, so
+ a fresh buffer holds whatever the last allocation left. The checksums
+ would still be self-consistent, but the test would be reading residue,
+ and a case that pokes a byte which happened to already hold that value
+ would report unchanged for a reason nobody could see.
+
+ The second watch is the discriminator. With one watch, a checker that
+ reports every watch as changed and a checker that works produce the same
+ line, so the poke touches ONLY the first region and the expected output
+ requires the second to say `same` in the same breath.
+
+ `origin-untouched` and `full-after-clear` READ A STATE THAT WAS HANDED TO
+ A TRANSITION AND NOT TAKEN BACK. They are here because every other line
+ in this test passes whether or not the transitions mutate their argument,
+ and the first cut of `DevState` did mutate it: `__record-set` stores into
+ the field and returns the same record, so a caller holding `st` found the
+ new watch in it.
+
+ The counts hid it exactly. `fill-watches s0` over a mutated `s0` starts at
+ two and adds thirty; over a clean one it starts at zero and adds
+ thirty-two; both answer `filled: 32`, because the cap is what that line
+ measures. So the table-full assertion was true under both, and nothing
+ else looked. These two lines are the only readings here that separate
+ them -- 0 against 2, and 32 against 0.
+
+ We say:
+
+Section: Fixtures
+
+  buf-len : Integer = 64
+
+  zero-fill : Integer, Integer, Integer -> Integer
+  zero-fill (buf) (i) (n) =
+   if i >= n then 0
+   else let w = poke-byte buf i 0
+   in zero-fill buf (i + 1) n
+
+Section: Reporting
+
+  say-add : Text, WatchAdd -> [Console] Nothing
+  say-add (label) (r) = act
+    print-line-uni (label & ": ok=" & show (r.wa-ok) & " " & r.wa-message)
+  end
+
+  say-check : Text, WatchCheck -> [Console] Nothing
+  say-check (label) (c) = act
+    print-line-uni (label & ": changed=" & show (c.wc-changed) & " [" & c.wc-report & "]")
+  end
+
+Section: Filling The Table
+
+  fill-watches : DevState, Integer, Integer, Integer -> DevState
+  fill-watches (st) (addr) (i) (n) =
+   if i >= n then st
+   else let r = dev-watch-add st ("w" & show i) addr 4
+   in fill-watches (r.wa-state) addr (i + 1) n
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    let a = alloc-bytes buf-len
+    in let za = zero-fill a 0 buf-len
+    in let b = alloc-bytes buf-len
+    in let zb = zero-fill b 0 buf-len
+
+    in let s0 = dev-state-new
+    in act
+      print-line-uni ("empty: " & show (dev-watch-count s0))
+      say-check "check-empty" (dev-watch-check s0)
+
+      let r1 = dev-watch-add s0 "alpha" a 16
+      in act
+        say-add "add-alpha" r1
+
+        let r2 = dev-watch-add (r1.wa-state) "beta" b 16
+        in act
+          say-add "add-beta" r2
+          print-line-uni ("count: " & show (dev-watch-count (r2.wa-state)))
+          print-line-uni ("origin-untouched: " & show (dev-watch-count s0))
+
+          let c1 = dev-watch-check (r2.wa-state)
+          in act
+            say-check "before-any-poke" c1
+
+            let p = poke-byte a 3 77
+            in let c2 = dev-watch-check (c1.wc-state)
+            in act
+              say-check "after-poke-alpha" c2
+              say-check "again-no-poke" (dev-watch-check (c2.wc-state))
+            end
+          end
+        end
+      end
+
+      say-add "too-long" (dev-watch-add s0 "big" a 70000)
+      say-add "zero-len" (dev-watch-add s0 "empty" a 0)
+
+      let full = fill-watches s0 a 0 32
+      in act
+        print-line-uni ("filled: " & show (dev-watch-count full))
+        say-add "thirty-third" (dev-watch-add full "over" a 4)
+        print-line-uni ("cleared: " & show (dev-watch-count (dev-watch-clear full)))
+        print-line-uni ("full-after-clear: " & show (dev-watch-count full))
+      end
+    end
+  end

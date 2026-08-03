@@ -2,7 +2,7 @@
 #
 # This is the uniform browser-facing check that needs no browser: each
 # web/<name>.html must carry the shared runtime the apps depend on.
-# One script, every app — a runtime regression cannot hide in an app
+# One script, every app -- a runtime regression cannot hide in an app
 # nobody hand-tested.
 #
 # Usage: build/check-apps.ps1            # all discovered artifacts

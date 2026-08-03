@@ -10,10 +10,7 @@ Section: Control Flow
   a64-negate-is-real : IRExpr -> Boolean
   a64-negate-is-real (operand) =
    when ir-expr-type operand
-    is RealTy -> True
-    is RealApproxTy -> True
-    is RealTrappingTy -> True
-    is RealSaturatingTy -> True
+    is RealTy (w) (m) -> True
     is otherwise -> False
 
   a64-emit-negate : A64State, IRExpr -> A64EmitResult
@@ -94,40 +91,33 @@ Section: Control Flow
    in let st5 = a64-emit st4 (arm64-csinc (result-r.reg) a64-xzr a64-xzr 2)
    in A64EmitResult { state = st5, reg = result-r.reg }
 
-  a64-emit-is-letter : A64State, IRExpr -> A64EmitResult
-  a64-emit-is-letter (st) (arg) =
-   let vr = a64-emit-expr st arg
-   in let tr = a64-alloc-temp (vr.state)
-   in let st1 = a64-emit (tr.state) (arm64-sub-imm (tr.reg) (vr.reg) 65)
-   in let hi-r = a64-alloc-temp st1
-   in let st2 = a64-emit-li (hi-r.state) (hi-r.reg) 26
-   in let result-r = a64-alloc-temp st2
-   in let st3 = a64-emit (result-r.state) (arm64-cmp (tr.reg) (hi-r.reg))
-   in let st4 = a64-emit st3 (arm64-csinc (result-r.reg) a64-xzr a64-xzr 2)
-   in let st5 = a64-emit st4 (arm64-sub-imm (tr.reg) (vr.reg) 97)
-   in let st6 = a64-emit st5 (arm64-cmp (tr.reg) (hi-r.reg))
-   in let lower-r = a64-alloc-temp st6
-   in let st7 = a64-emit (lower-r.state) (arm64-csinc (lower-r.reg) a64-xzr a64-xzr 2)
-   in A64EmitResult { state = a64-emit st7 (arm64-or (result-r.reg) (result-r.reg) (lower-r.reg)), reg = result-r.reg }
+ A letter is TWO bands, because CCE's punctuation sits between them: 13..64
+ is the ASCII lower and upper, 65..96 the punctuation and symbols, and
+ 97..127 the sixteen accented Latin letters and fifteen Cyrillic ones. One
+ band cannot express that, which is why is-letter needs this and is-digit
+ does not.
 
-  a64-emit-is-whitespace : A64State, IRExpr -> A64EmitResult
-  a64-emit-is-whitespace (st) (arg) =
+ The operand is read by the two subtracts and never again, and that ordering
+ is load-bearing rather than tidy. `a64-alloc-temp` rotates a pool of FOUR
+ registers, so a fourth allocation after the operand's own would be handed
+ the operand's register back; three temps is the budget that keeps the
+ result from landing on top of a value still to be read. The immediate
+ compare is what buys the third slot, since the band width never needs a
+ register of its own.
+
+  a64-emit-is-char-class2 : A64State, IRExpr, Integer, Integer, Integer, Integer -> A64EmitResult
+  a64-emit-is-char-class2 (st) (arg) (lo1) (hi1) (lo2) (hi2) =
    let vr = a64-emit-expr st arg
-   in let result-r = a64-alloc-temp (vr.state)
-   in let sp-r = a64-alloc-temp (result-r.state)
-   in let st1 = a64-emit-li (sp-r.state) (sp-r.reg) 32
-   in let st2 = a64-emit st1 (arm64-cmp (vr.reg) (sp-r.reg))
-   in let st3 = a64-emit st2 (arm64-csinc (result-r.reg) a64-xzr a64-xzr 0)
-   in let st4 = a64-emit-li st3 (sp-r.reg) 9
-   in let st5 = a64-emit st4 (arm64-cmp (vr.reg) (sp-r.reg))
-   in let tab-r = a64-alloc-temp st5
-   in let st6 = a64-emit (tab-r.state) (arm64-csinc (tab-r.reg) a64-xzr a64-xzr 0)
-   in let st7 = a64-emit st6 (arm64-or (result-r.reg) (result-r.reg) (tab-r.reg))
-   in let st8 = a64-emit-li st7 (sp-r.reg) 10
-   in let st9 = a64-emit st8 (arm64-cmp (vr.reg) (sp-r.reg))
-   in let lf-r = a64-alloc-temp st9
-   in let st10 = a64-emit (lf-r.state) (arm64-csinc (lf-r.reg) a64-xzr a64-xzr 0)
-   in A64EmitResult { state = a64-emit st10 (arm64-or (result-r.reg) (result-r.reg) (lf-r.reg)), reg = result-r.reg }
+   in let t1 = a64-alloc-temp (vr.state)
+   in let t2 = a64-alloc-temp (t1.state)
+   in let st1 = a64-emit (t2.state) (arm64-sub-imm (t1.reg) (vr.reg) lo1)
+   in let st2 = a64-emit st1 (arm64-sub-imm (t2.reg) (vr.reg) lo2)
+   in let rr = a64-alloc-temp st2
+   in let st3 = a64-emit (rr.state) (arm64-cmp-imm (t1.reg) (hi1 - lo1 + 1))
+   in let st4 = a64-emit st3 (arm64-csinc (rr.reg) a64-xzr a64-xzr 2)
+   in let st5 = a64-emit st4 (arm64-cmp-imm (t2.reg) (hi2 - lo2 + 1))
+   in let st6 = a64-emit st5 (arm64-csinc (t1.reg) a64-xzr a64-xzr 2)
+   in A64EmitResult { state = a64-emit st6 (arm64-or (rr.reg) (rr.reg) (t1.reg)), reg = rr.reg }
 
   a64-emit-abs : A64State, IRExpr -> A64EmitResult
   a64-emit-abs (st) (arg) =
@@ -334,6 +324,7 @@ Section: Control Flow
    in when cond
     is IrBinary (op) (left) (right) (ty) (s) ->
      if a64-is-text-type (ir-expr-type left) then a64-emit-if-val st saved-tail cond th el
+     else if a64-real-cmp-kind (ir-expr-type left) > 0 then a64-emit-if-val st saved-tail cond th el
      else if a64-is-zero-lit right then
       when op
        is IrEq -> if a64-is-rem-2 left then a64-emit-if-tbnz st saved-tail (a64-rem-2-operand left) 0 th el
@@ -651,6 +642,7 @@ Section: Targeted Expression Emission
    in when cond
     is IrBinary (op) (left) (right) (ty) (s) ->
      if a64-is-text-type (ir-expr-type left) then a64-emit-if-val-targeted st saved-tail cond th el target
+     else if a64-real-cmp-kind (ir-expr-type left) > 0 then a64-emit-if-val-targeted st saved-tail cond th el target
      else if a64-is-zero-lit right then
       when op
        is IrEq -> if a64-is-rem-2 left then a64-emit-if-tbnz-targeted st saved-tail (a64-rem-2-operand left) 0 th el target
@@ -867,15 +859,16 @@ Section: Targeted Expression Emission
    in let body-start-idx = st12.insn-count
    in let st13 = a64-patch-insn st12 jmp-over-idx (arm64-b ((body-start-idx - jmp-over-idx) * 4))
    in let st14 = a64-patch-insn st13 blt-retry-idx (arm64-b-cond 11 ((retry-idx - blt-retry-idx) * 4))
+   in let try-locals = list-length (st14.locals)
    in let body-result = a64-emit-try-body-stmts st14 body 0 (list-length body) body-failed-idx
    in let jmp-success-idx = (body-result.state).insn-count
-   in let st15 = a64-emit (body-result.state) arm64-nop
+   in let st15 = a64-emit (a64-restore-locals (body-result.state) try-locals) arm64-nop
    in let exhaust-idx = st15.insn-count
    in let st16 = a64-patch-insn st15 jmp-exhaust-idx (arm64-b ((exhaust-idx - jmp-exhaust-idx) * 4))
    in let st-fb = if list-length fb > 0
      then let fb-clear = a64-try-clear-flag st16
        in let fb-result = a64-emit-act-loop fb-clear fb 0 a64-xzr
-       in let st-fc = a64-emit-li (fb-result.state) a64-x9 a64-try-fail-flag-addr
+       in let st-fc = a64-emit-li (a64-restore-locals (fb-result.state) try-locals) a64-x9 a64-try-fail-flag-addr
        in let st-fl = a64-emit st-fc (arm64-ldr a64-x9 a64-x9 0)
        in let cbnz-fail-idx = st-fl.insn-count
        in let st-fj = a64-emit st-fl arm64-nop
@@ -888,7 +881,7 @@ Section: Targeted Expression Emission
        in let st-pfb = if list-length fb > 0 then a64-patch-insn st17 (jmp-end-fb-idx - 1) (arm64-cbnz a64-x9 ((fail-idx - (jmp-end-fb-idx - 1)) * 4)) else st17
        in let fail-clear = a64-try-clear-flag st-pfb
        in let fail-result = a64-emit-act-loop fail-clear fail 0 a64-xzr
-       in A64EmitResult { state = fail-result.state, reg = fail-result.reg }
+       in A64EmitResult { state = a64-restore-locals (fail-result.state) try-locals, reg = fail-result.reg }
      else st-fb
    in let end-idx = (st-fail.state).insn-count
    in let st18 = a64-patch-insn (st-fail.state) jmp-success-idx (arm64-b ((end-idx - jmp-success-idx) * 4))
@@ -943,14 +936,13 @@ Section: Apply
      in if name == "vec-splat" & list-length args == 1
       then a64-emit-vec-splat st-nt (list-at args 0) ty
      else if name == "show" & list-length args == 1
-      then when ir-expr-type (list-at args 0)
+      then when a64-strip-unit-ty (ir-expr-type (list-at args 0))
        is BooleanTy -> a64-emit-show-bool st-nt (list-at args 0)
        is TextTy -> a64-emit-expr st-nt (list-at args 0)
        is CharTy -> a64-emit-single-arg-call st-nt "char-to-text" (list-at args 0)
-       is RealTy -> a64-emit-single-arg-call st-nt "__real_to_text" (list-at args 0)
-       is RealApproxTy -> a64-emit-show-real-approx st-nt (list-at args 0)
-       is RealTrappingTy -> a64-emit-single-arg-call st-nt "__real_to_text" (list-at args 0)
-       is RealSaturatingTy -> a64-emit-single-arg-call st-nt "__real_to_text" (list-at args 0)
+       is RealTy (rw) (rm) ->
+        if is-width-f32 rw then a64-emit-show-real-approx st-nt (list-at args 0)
+        else a64-emit-single-arg-call st-nt "__real_to_text" (list-at args 0)
        is ListTy (et) -> a64-emit-text-lit st-nt "<list>"
        is RecordTy (rn) (ra) (rf) -> a64-emit-text-lit st-nt "<record>"
        is otherwise -> a64-emit-single-arg-call st-nt "integer-to-text" (list-at args 0)
@@ -1346,6 +1338,44 @@ Section: Apply
    let msg = "[UNSUPPORTED] " & name & ": x86 port I/O and the codex-vm gpu do not exist on this target (refused by design)"
    in a64-emit-int-lit (a64-add-shadow-warning st msg) 0
 
+ The x86 CPU-state builtins, refused for the same reason and named
+ separately because the reason is a different one to state. A control
+ register and CPUID are x86 architecture, not devices: AArch64 has system
+ registers reached through MRS and an ID register space that answers
+ different questions entirely, so there is no honest translation and no
+ value worth inventing. A refusal here is what stops a call to a symbol
+ this runtime has never heard of, which is how the list intrinsics failed
+ silently on this lane until main 11280.
+
+  a64-emit-unsupported-cpu : A64State, Text -> A64EmitResult
+  a64-emit-unsupported-cpu (st) (name) =
+   let msg = "[UNSUPPORTED] " & name & ": x86 control registers and CPUID do not exist on this target (refused by design)"
+   in a64-emit-int-lit (a64-add-shadow-warning st msg) 0
+
+ The builtin-List pattern intrinsics, refused for a third reason: they
+ are not implemented on this lane and there is no honest value to
+ answer with. A `when` on a builtin List desugars to a length test plus
+ __list-head and __list-tail over an O(1) tail view, and none of the
+ three exists in the arm64 runtime.
+
+ Before this arm they fell through the dispatch tail to a plain call to
+ an undefined symbol. Measured on codex/test/list-pattern: the compile
+ reported OK and every line of the program then faulted
+ (!A64FAULT ESR=0x02000000, an illegal instruction). That is worse than
+ the port hole it resembles, because a length that answers garbage
+ selects the wrong arm and the whole match is decided by it.
+
+ Refusing is the honest answer while the intrinsics are unimplemented.
+ The arms match on the name alone, no arity gate, so a partial
+ application refuses too. codex/test/list-pattern.cross-refusal pins
+ that the refusal fires; lose these arms and that test compiles clean
+ and the row goes red.
+
+  a64-emit-unsupported-list : A64State, Text -> A64EmitResult
+  a64-emit-unsupported-list (st) (name) =
+   let msg = "[UNSUPPORTED] " & name & ": builtin-List pattern matching is not implemented on arm64 (refused rather than miscompiled)"
+   in a64-emit-int-lit (a64-add-shadow-warning st msg) 0
+
   a64-check-builtin-collisions : A64State, List Text, Integer -> A64State
   a64-check-builtin-collisions (st) (names) (i) =
    if i >= list-length names then st
@@ -1399,8 +1429,8 @@ Section: Apply
    else if name == "print-error-uni" & list-length args == 1 then a64-emit-single-arg-call st "print-line-uni" (list-at args 0)
    else if name == "char-code-at" & list-length args == 2 then a64-emit-direct-call st "char-at" args
    else if name == "is-digit" & list-length args == 1 then a64-emit-is-char-class st (list-at args 0) 3 12
-   else if name == "is-letter" & list-length args == 1 then a64-emit-is-char-class st (list-at args 0) 13 64
-   else if name == "is-whitespace" & list-length args == 1 then a64-emit-is-char-class st (list-at args 0) 2 2
+   else if name == "is-letter" & list-length args == 1 then a64-emit-is-char-class2 st (list-at args 0) 13 64 97 127
+   else if name == "is-whitespace" & list-length args == 1 then a64-emit-is-char-class st (list-at args 0) 1 2
    else if name == "char-code" & list-length args == 1 then a64-emit-expr st (list-at args 0)
    else if name == "code-to-char" & list-length args == 1 then a64-emit-expr st (list-at args 0)
    else if name == "print-line" & list-length args == 1 then a64-emit-single-arg-call st "print-line-uni" (list-at args 0)
@@ -1431,7 +1461,7 @@ Section: Apply
    else if name == "vec-store-at" & list-length args == 2 then a64-emit-vec-store-at st (list-at args 0) (list-at args 1)
    else if name == "vec-extract" & list-length args == 2 then a64-emit-vec-extract st (list-at args 0) (list-at args 1)
    else if name == "vec-reduce-add" & list-length args == 1 then a64-emit-vec-reduce-add st (list-at args 0)
-   else if name == "vec-select" & list-length args == 3 then a64-emit-vec-select st (list-at args 0) (list-at args 1) (list-at args 2) (VectorTy 2 RealTy)
+   else if name == "vec-select" & list-length args == 3 then a64-emit-vec-select st (list-at args 0) (list-at args 1) (list-at args 2) (VectorTy 2 real-f64)
    else if name == "memory-fence" & list-length args == 1 then a64-emit-memory-fence st (list-at args 0)
    else if name == "atomic-load" & list-length args == 1 then a64-emit-atomic-load st (list-at args 0)
    else if name == "atomic-store" & list-length args == 2 then a64-emit-atomic-store st (list-at args 0) (list-at args 1)
@@ -1478,10 +1508,28 @@ Section: Apply
    else if name == "port-out-16" then a64-emit-unsupported-port st "port-out-16"
    else if name == "port-in-32" then a64-emit-unsupported-port st "port-in-32"
    else if name == "port-out-32" then a64-emit-unsupported-port st "port-out-32"
+   else if name == "cpu-read-cr0" then a64-emit-unsupported-cpu st "cpu-read-cr0"
+   else if name == "cpu-read-cr3" then a64-emit-unsupported-cpu st "cpu-read-cr3"
+   else if name == "cpu-cpuid-eax" then a64-emit-unsupported-cpu st "cpu-cpuid-eax"
+   else if name == "cpu-cpuid-ebx" then a64-emit-unsupported-cpu st "cpu-cpuid-ebx"
+   else if name == "cpu-cpuid-ecx" then a64-emit-unsupported-cpu st "cpu-cpuid-ecx"
+   else if name == "cpu-cpuid-edx" then a64-emit-unsupported-cpu st "cpu-cpuid-edx"
    else if name == "gpu-in" then a64-emit-unsupported-port st "gpu-in"
    else if name == "gpu-out" then a64-emit-unsupported-port st "gpu-out"
    else if name == "gpu-mem-read" then a64-emit-unsupported-port st "gpu-mem-read"
    else if name == "gpu-mem-write" then a64-emit-unsupported-port st "gpu-mem-write"
+   else if name == "__list-len" then a64-emit-unsupported-list st "__list-len"
+   else if name == "__list-head" then a64-emit-unsupported-list st "__list-head"
+   else if name == "__list-tail" then a64-emit-unsupported-list st "__list-tail"
+   else if name == "process-get-pid" then a64-emit-int-lit st 0
+   else if name == "process-get-scope" & list-length args == 1 then a64-emit-empty-text st
+   else if name == "process-get-network-scope" & list-length args == 1 then a64-emit-empty-text st
+   else if name == "process-set-scope" & list-length args == 2 then a64-emit-int-lit st (0 - 1)
+   else if name == "process-set-network-scope" & list-length args == 2 then a64-emit-int-lit st (0 - 1)
+   else if name == "process-get-cap" & list-length args == 1 then a64-emit-int-lit st 0
+   else if name == "process-restrict-cap" & list-length args == 2 then a64-emit-int-lit st (0 - 1)
+   else if name == "net-send-raw" & list-length args == 2 then a64-emit-int-lit st 0
+   else if name == "net-recv-raw" & list-length args == 1 then a64-emit-int-lit st 0
    else if name == "text-replace" & list-length args == 3 then a64-emit-three-arg-call st "text-replace" args
    else if name == "text-split" & list-length args == 2 then a64-emit-three-arg-call st "text-split" args
    else if name == "__buf-write-byte" & list-length args == 3 then a64-emit-three-arg-call st "__buf-write-byte" args
@@ -1501,7 +1549,7 @@ Section: Apply
    else if name == "text-to-unicode-bytes" & list-length args == 1 then a64-emit-single-arg-call st "text-to-unicode-bytes" (list-at args 0)
    else if name == "unicode-bytes-to-text" & list-length args == 1 then a64-emit-single-arg-call st "unicode-bytes-to-text" (list-at args 0)
    else if name == "list-tail" & list-length args == 1 then a64-emit-single-arg-call st "list-tail" (list-at args 0)
-   else if name == "vec4-splat" & list-length args == 1 then a64-emit-vec-splat st (list-at args 0) (VectorTy 4 RealApproxTy)
+   else if name == "vec4-splat" & list-length args == 1 then a64-emit-vec-splat st (list-at args 0) (VectorTy 4 real-f32)
    else if name == "vec4-extract" & list-length args == 2 then a64-emit-vec-extract st (list-at args 0) (list-at args 1)
    else if list-length args == 1 then a64-emit-single-arg-call st name (list-at args 0)
    else let saved-nl = st.next-local
@@ -1883,7 +1931,7 @@ Section: Field Layout
      if n.value == "Boolean" then BooleanTy
      else if n.value == "Text" then TextTy
      else if n.value == "Integer" then IntegerTy (0 - 4611686018427387904) 4611686018427387904 OvError
-     else if n.value == "Real" then RealTy
+     else if n.value == "Real" then real-f64
      else if n.value == "Char" then CharTy
      else ConstructedTy n []
     is otherwise -> IntegerTy (0 - 4611686018427387904) 4611686018427387904 OvError

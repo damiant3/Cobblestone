@@ -1,4 +1,5 @@
 Chapter: ConsistentHash
+  cites Foreword chapter Random
 
  A HashRingEntry is a record containing hr-hash and hr-node.
  A ConsistentHashRing is a record containing hr-entries, hr-count, and hr-vnodes.
@@ -68,19 +69,34 @@ Section: Lookup
     else chr-find-node entries h (i + 1) len
 
 Section: Hash Functions
+
+ Both hashes must land in the SAME range, and that is the whole requirement
+ here. A ring lookup walks entries until one hashes at or above the key and
+ otherwise wraps to the first, so if keys hash systematically higher than
+ vnodes, every lookup falls off the end and answers the same node.
+
+ That is what the previous pair did. chr-hash-key multiplied the key and
+ never bounded the product, so it grew with the key: 1.0e9 at key 0 and
+ 2.65e12 at key 999. chr-hash-pair, fed small node and vnode numbers,
+ reached only 1.87e10. Measured over 8 nodes of 16 vnodes and 1000 keys,
+ where 125 each is even, the split was 993 1 2 0 2 0 2 0.
+
+ Two mixers of the same width fix it, which is one call each. A vnode uses
+ vnode plus one and a key uses a constant well outside that range, so a key
+ whose value equals a node id cannot land exactly on that node's first vnode.
+ The constant is also why key zero is not special: mix-bits answers zero for
+ a zero seed AND a zero index, which would otherwise pin key zero to the
+ lowest entry on the ring.
+
   chr-hash-key : Integer -> Integer
   chr-hash-key (key) =
-    let h = bit-xor (key * 2654435761) 1013904223
-    in let h2 = bit-xor h (bit-shru h 16)
-    in let positive = if h2 < 0 then -h2 else h2
-    in positive
+    let h = mix-bits key 1013904223
+    in if h < 0 then -h else h
 
   chr-hash-pair : Integer, Integer -> Integer
   chr-hash-pair (node) (vnode) =
-    let h = bit-xor (node * 2654435761) (vnode * 40503 + 73244475)
-    in let h2 = bit-xor h (bit-shru h 13)
-    in let positive = if h2 < 0 then -h2 else h2
-    in positive
+    let h = mix-bits node (vnode + 1)
+    in if h < 0 then -h else h
 
 Section: Queries
   chr-node-count : ConsistentHashRing -> Integer

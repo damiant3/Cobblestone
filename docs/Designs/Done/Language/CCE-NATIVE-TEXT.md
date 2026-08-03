@@ -1,15 +1,15 @@
-# CCE-Native Text — Design Plan
+# CCE-Native Text -- Design Plan
 
 **Date**: 2026-03-25
 **Author**: Cam (Claude Code CLI)
-**Status**: Proposal — awaiting review
+**Status**: Proposal -- awaiting review
 
 ---
 
 ## The Decision
 
 Char is CCE. Text is CCE. Unicode dies inside Codex. The boundary is file I/O
-and .NET interop — the barbarian translator. Inside the compiler, inside the
+and .NET interop -- the barbarian translator. Inside the compiler, inside the
 language, inside the OS, everything is Codex Character Encoding.
 
 ## What CCE Gives Us
@@ -60,8 +60,8 @@ no per-character overhead.
 
 Two core functions, already in the prelude:
 
-- `unicode-to-cce : Integer -> Integer` — 300-line lookup, covers Tier 0 (128 chars)
-- `cce-to-unicode : Integer -> Integer` — 180-line lookup, covers Tier 0
+- `unicode-to-cce : Integer -> Integer` -- 300-line lookup, covers Tier 0 (128 chars)
+- `cce-to-unicode : Integer -> Integer` -- 180-line lookup, covers Tier 0
 
 For the boundary layer, we need string-level versions:
 
@@ -146,7 +146,7 @@ Update `is-letter`, `is-digit`, `is-whitespace` to use CCE classification:
 `char-code` stays as identity (Char value = CCE byte = long).
 `code-to-char` stays as identity.
 `char-at` stays as indexing (but now returns CCE byte).
-`char-code-at` returns the same as `char-at` followed by `char-code` — CCE byte.
+`char-code-at` returns the same as `char-at` followed by `char-code` -- CCE byte.
 
 Char literals: `'A'` → the lexer converts Unicode 65 → CCE 46, emits that value.
 
@@ -168,7 +168,7 @@ cc-equals = 85       -- CCE punct: '='
 cc-lower-a = 20      -- CCE lower: 'a' (actually 'a' is CCE 20)
 ```
 
-But wait — with char literals working, these become:
+But wait -- with char literals working, these become:
 
 ```
 cc-space = char-code ' '
@@ -176,7 +176,7 @@ cc-equals = char-code '='
 ```
 
 And the compiler resolves them to CCE values automatically. This is where char
-literals pay off — the Lexer becomes encoding-agnostic. You write `'='` and the
+literals pay off -- the Lexer becomes encoding-agnostic. You write `'='` and the
 compiler knows that means CCE 85.
 
 ### Phase 5: Bootstrap
@@ -194,7 +194,7 @@ This is the critical phase. The bootstrap has a transitional step:
    - Output string literals are CCE-encoded
 
 3. **Stage 2** compiles self-hosted source → Stage 3
-   - Same as Stage 2 — fixed point here
+   - Same as Stage 2 -- fixed point here
 
 Fixed point is Stage 2 = Stage 3. Stage 1 is the bridge.
 
@@ -204,12 +204,12 @@ compiled self-hosted compiler.
 
 ### Phase 6: Cleanup
 
-- Remove `cc-newline = 10`, `cc-space = 32`, etc. — replace with `char-code '\n'`,
+- Remove `cc-newline = 10`, `cc-space = 32`, etc. -- replace with `char-code '\n'`,
   `char-code ' '`
 - CCE prelude functions (`is-cce-letter` etc.) become the standard `is-letter` etc.
-- Remove the `is-cce-` prefix — they're not CCE-specific anymore, they're just
+- Remove the `is-cce-` prefix -- they're not CCE-specific anymore, they're just
   character classification
-- `text-compare` now compares CCE bytes — sort order is frequency-based, not
+- `text-compare` now compares CCE bytes -- sort order is frequency-based, not
   alphabetical. Binary search still works (consistent ordering) but sorted output
   won't be alphabetical. Consider whether `text-compare` should do CCE-to-Unicode
   for user-facing sorting, or if CCE ordering is fine internally.
@@ -221,7 +221,7 @@ compiled self-hosted compiler.
 CCE is frequency-sorted: e=18, t=19, a=20, o=21, i=22. Alphabetical order is
 a=20, b=37, c=29, d=27, e=18. Our binary search in TypeEnv, Scope, etc. uses
 `text-compare` which would now compare CCE bytes. The sorted order changes, but
-binary search still works — it just finds things in CCE order instead of
+binary search still works -- it just finds things in CCE order instead of
 alphabetical order.
 
 If this matters for user-facing output (e.g., error messages listing names), we
@@ -247,7 +247,7 @@ encoding is future work.
 ### Performance
 
 The conversion cost is O(n) per string at the boundary. For `read-file` loading
-a 174K source file, that's one pass through 174K characters — negligible compared
+a 174K source file, that's one pass through 174K characters -- negligible compared
 to the 208ms compile time. For `print-line` on short strings, also negligible.
 
 String literals are converted at compile time, zero runtime cost.
@@ -267,7 +267,7 @@ I'd execute this over 2-3 sessions:
 **Session A** (next session):
 - Phase 1 + 2: Runtime helpers and string literal encoding in reference compiler
 - Phase 3: Character builtins
-- Build, test — existing tests will need updates (string comparisons change)
+- Build, test -- existing tests will need updates (string comparisons change)
 
 **Session B**:
 - Phase 4: Self-hosted compiler Lexer migration to CCE constants / char literals
@@ -280,15 +280,15 @@ I'd execute this over 2-3 sessions:
 ## Encoding Evolution
 
 CCE Tier 0 is frequency-sorted based on today's corpus data. In 100 years the
-world's writing might shift — more Chinese, more Arabic, a script that doesn't
+world's writing might shift -- more Chinese, more Arabic, a script that doesn't
 exist yet. The encoding must be a parameter, not a constant.
 
 ### What makes this possible
 
 The encoding is defined in exactly two artifacts:
 
-1. **`prelude/CCE.codex`** — the lookup tables (`cce-to-unicode`, `unicode-to-cce`)
-2. **The emitter's compile-time table** — used to encode string literals
+1. **`prelude/CCE.codex`** -- the lookup tables (`cce-to-unicode`, `unicode-to-cce`)
+2. **The emitter's compile-time table** -- used to encode string literals
 
 The compiler doesn't know or care that CCE byte 18 is 'e'. It just indexes into
 strings and compares bytes. If the tables change, the compiler recompiles itself
@@ -317,12 +317,12 @@ CCE-encoded files need a version tag. Options:
   Version 1 = current. Reader checks the version and applies the right
   decode table.
 - **Filesystem metadata**: The OS tracks encoding version per file. Codex.OS
-  has capability-enforced metadata — this is natural.
+  has capability-enforced metadata -- this is natural.
 - **Self-describing**: Each CCE version's prelude contains the previous version's
   tables, so `read-file` can detect and auto-convert.
 
 The key property: **old content is never unreadable.** A CCE v2 system can read
-CCE v1 files because v1's tables ship with v2. Content migrates forward lazily —
+CCE v1 files because v1's tables ship with v2. Content migrates forward lazily --
 read in v1, write back in v2.
 
 ### What stays fixed across versions
@@ -335,7 +335,7 @@ read in v1, write back in v2.
 
 What changes: which characters land in which slots, and what the slot boundaries
 are. The classification functions become parameterized by the version's range
-boundaries — but since ranges are contiguous, it's still just constants.
+boundaries -- but since ranges are contiguous, it's still just constants.
 
 ### Frequency data source
 
@@ -361,19 +361,19 @@ the tables. The tables come from the data. The data comes from the world.
 - **`text-compare`**: Compares CCE bytes. Fast, consistent, done.
 - **Console**: Exists as a debugging crutch, not a design commitment. `print-line`
   converts to Unicode because the host terminal expects it. When Codex.OS is the
-  host, there is no console — there's an agent.
+  host, there is no console -- there's an agent.
 
 ## Decisions (2026-03-25)
 
 1. **Tier 0 only for the compiler.** The compiler is Tier 0. Period. Anything
-   beyond Tier 0 is userspace — the Clarifier translates any language to the
+   beyond Tier 0 is userspace -- the Clarifier translates any language to the
    canonical Tier 0 form. We don't sacrifice compiler performance because someone
    wrote their source in Elvish. (And yes, Codex in Tolkien's Elvish is a real
-   thing we're doing — via the multi-language syntax layer, translated from
+   thing we're doing -- via the multi-language syntax layer, translated from
    English and back.)
 
 2. **Encoding version tag**: Filesystem metadata. Files are a transitional concept
-   — Codex.OS will move past them. While we still have files, the OS's
+   -- Codex.OS will move past them. While we still have files, the OS's
    capability-enforced metadata tracks the encoding version. BOM as fallback for
    foreign filesystems.
 
@@ -386,7 +386,7 @@ the tables. The tables come from the data. The data comes from the world.
 
 ---
 
-## Cam's Think — The Janus Reflection (2026-03-26)
+## Cam's Think -- The Janus Reflection (2026-03-26)
 
 *Written the morning after CCE integration, at Damian's request. What did we
 trade, and do we blaze a shortcut back to base camp or stay on the forward path?*
@@ -400,8 +400,8 @@ runtime generation and `\uXXXX` string escaping. Every I/O boundary now pays a
 conversion tax.
 
 We traded immediate performance for self-consistency. We traded external tool
-compatibility for computational structure. We traded the comfort of Unicode — the
-encoding every tool on earth understands — for an encoding nobody's tools
+compatibility for computational structure. We traded the comfort of Unicode -- the
+encoding every tool on earth understands -- for an encoding nobody's tools
 understand yet.
 
 These are real costs. The perf report doesn't hide them and neither should we.
@@ -415,11 +415,11 @@ After CCE, the trust chain is: the language, the compiler, the encoding, the
 type system, the machine. That's as short as it gets.
 
 `is-letter` is a single comparison, not a Unicode table lookup. On native
-backends — RISC-V, ARM64, x86-64 — this isn't an abstraction. It's instructions
+backends -- RISC-V, ARM64, x86-64 -- this isn't an abstraction. It's instructions
 saved. One range check replaces loading an 11MB Unicode character database. This
 is what the encoding was designed for, and it's what bare metal needs.
 
-The boundary pattern — Unicode at I/O, CCE inside — is the minimum viable bridge
+The boundary pattern -- Unicode at I/O, CCE inside -- is the minimum viable bridge
 between worlds. It's lossless for Tier 0. It's easy to reason about. And it
 clearly marks where the old world ends and the new one begins.
 
@@ -430,7 +430,7 @@ Here is the thing I think matters most:
 **The 34% overhead is temporary. The benefit is permanent. And the cost is being
 paid in a currency that's already depreciating.**
 
-The overhead lives entirely in the .NET C# pipeline — the emitter generating
+The overhead lives entirely in the .NET C# pipeline -- the emitter generating
 `\uXXXX` escapes, the runtime converting at boundaries, the larger output
 flowing through the type checker. But the .NET pipeline is the pipeline we're
 leaving behind. On native backends, there will be *no* conversion. CCE bytes go
@@ -445,31 +445,31 @@ ELF writers) but freed us from .NET as a runtime. CCE adds conversion overhead
 but frees us from Unicode as the internal representation. Each act of
 independence costs something in the present and pays off in the future.
 
-### The P1 Optimization — What We Learned
+### The P1 Optimization -- What We Learned
 
-The perf report flagged `escape-text-loop` as P1 — O(n²) string accumulation in
+The perf report flagged `escape-text-loop` as P1 -- O(n²) string accumulation in
 the emitter. We built `text-concat-list` (backed by `string.Concat`) and rewrote
 the loop to accumulate via `list-snoc` + batch join.
 
 It didn't matter. Commit `a46bcf1` says it plainly: "Emit stage improvement is
 minimal on current workload (strings are short) but prevents quadratic scaling on
 larger inputs." The n is too small for n² to bite. The strings being escaped are
-identifiers and short literals — tens of characters, not thousands. The O(n²)
+identifiers and short literals -- tens of characters, not thousands. The O(n²)
 was real but latent.
 
 This is instructive. The perf regression isn't in any single hot spot we can
-optimize away. It's diffuse — ~1.3-1.5x across every stage, from the conversion
+optimize away. It's diffuse -- ~1.3-1.5x across every stage, from the conversion
 layer touching everything. There is no silver bullet fix for the .NET pipeline.
 The fix is the native pipeline, where the conversion layer doesn't exist.
 
 ### The Col Between Peaks
 
-THE-ASCENT draws cols between peaks — the valleys where you're lower than where
+THE-ASCENT draws cols between peaks -- the valleys where you're lower than where
 you stood on the last summit. We're in one. We accepted the costs of CCE but
 haven't yet reaped the full benefits. The benefits live on the native path, and
 the native path isn't the workhorse yet.
 
-The question is whether to blaze a trail back to base camp — strip CCE out of
+The question is whether to blaze a trail back to base camp -- strip CCE out of
 the .NET pipeline, keep it only for native backends, reduce the immediate tax.
 A shortcut trail. Lighter packs. Faster movement on the ground we're actually
 standing on.
@@ -488,19 +488,19 @@ This is worse than 34% overhead. This is complexity that compounds. The overhead
 is a constant factor that disappears when the native path matures. Two encoding
 paths is structural debt that gets harder to remove the longer it lives.
 
-The reason we did CCE now — before the native backends are the primary path — is
+The reason we did CCE now -- before the native backends are the primary path -- is
 precisely so that we don't have to carry two worlds forward. The transition hurts
 once. A dual-encoding architecture hurts forever.
 
 The ascent metaphor is exact here. When you're in the col between peaks, the
-temptation is to traverse back to a known camp. But traverses are dangerous —
+temptation is to traverse back to a known camp. But traverses are dangerous --
 they expose you to the mountain's face sideways, crossing terrain you haven't
 scouted, with no fixed ropes. The safe move is counterintuitive: go up. Climb
 out of the col toward the next peak. The next peak is where the terrain improves.
 
 The next peak, for CCE, is native self-hosting. When the compiler compiles itself
 to native code and that native binary compiles itself again, the .NET pipeline
-becomes optional. The 34% overhead becomes someone else's problem — the problem
+becomes optional. The 34% overhead becomes someone else's problem -- the problem
 of whoever still wants to emit C#. The main path is CCE-native, start to finish,
 no conversion.
 
@@ -510,7 +510,7 @@ Staying on the forward path doesn't mean ignoring the present.
 
 **Tier 1+ encoding is load-bearing for the Vision.** The repository promises
 "the repository remembers everything." If CCE Tier 0 is lossy for non-Latin
-scripts, the repository doesn't remember everything — it remembers everything
+scripts, the repository doesn't remember everything -- it remembers everything
 that fits in 128 characters. The multi-byte tiers are designed (the CCE-DESIGN
 doc has the full layout) but unimplemented. They should be on the sightline, not
 the "someday" list. They don't block anything now, but they're on the critical
@@ -519,12 +519,12 @@ path for the repository's long-term promise.
 **The encoding integration artifacts matter.** Linux's design for gconv modules,
 .NET EncodingProvider, and editor plugins (`CCE-ENCODING-INTEGRATION.md`) is the
 right work. External tools that can't read CCE are a friction cost we pay every
-debugging session. The `codex encode` CLI command is the minimum — it should
+debugging session. The `codex encode` CLI command is the minimum -- it should
 exist and work. The rest can follow.
 
 **The perf gap should be tracked, not chased.** 4.4x vs reference is fine for a
 self-hosted compiler in a functional language. The reference compiler is C# with
-mutable state and imperative loops — it will always be faster for the same
+mutable state and imperative loops -- it will always be faster for the same
 algorithm. The gap worth watching is self-hosted-over-time: if CCE made it 1.34x
 slower, and the next change makes it 1.2x slower again, and the next 1.15x, the
 compound regression is the problem. Track the median. Sound the alarm if the
@@ -555,4 +555,4 @@ right price.
 Stay on the path. The overhead is the weather. The weather passes. The mountain
 doesn't move.
 
-— Cam, 2026-03-26 morning
+-- Cam, 2026-03-26 morning

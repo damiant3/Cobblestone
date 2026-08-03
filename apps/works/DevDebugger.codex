@@ -2,12 +2,19 @@ Chapter: DevDebugger
   cites Works chapter DevConsoleMenu
   cites Works chapter HexFormat
   cites Works chapter CodeBrowser
+  cites Dev chapter HexFormat
   cites Dev chapter MemInspector
+  cites Dev chapter IdtInspector
+  cites Dev chapter CpuInspector
+  cites Dev chapter SerialBridge
+  cites Dev chapter Macro
+  cites Dev chapter DevState
+  cites Dev chapter PortTrace
   cites Foreword chapter Maybe
 
  Interactive debugger for the UEFI dev console. Memory inspector,
  port I/O probe, breakpoint table, stack walker, and perf counters.
- Operates on the live system — no GDB, no host-side tooling.
+ Operates on the live system -- no GDB, no host-side tooling.
 
  We say:
 
@@ -20,6 +27,8 @@ Section: Debugger Mode
     | DebugStack
     | DebugPerf
     | DebugRegisters
+    | DebugDisk
+    | DebugReport
 
 Section: Breakpoint
 
@@ -61,6 +70,69 @@ Section: Breakpoint
 
 Section: Debugger State
 
+ `watch-ports` and `dev` are different things and the names are close
+ enough to be worth separating here. `watch-ports` is the I/O port probe
+ list; `dev` holds the MEMORY watch table from `Dev chapter DevState`,
+ which is what `dbg watch` in the design means.
+
+ `last-address` stays the one home for the cursor and for what `$` reads.
+ The design's `DevState` record also lists a `last-result`; putting one
+ there would have made two fields holding the same number with nothing
+ checking they agree, so DevState carries the watch table and nothing
+ else. That reasoning is written out in the chapter itself.
+
+ `pending` is what lets a command need a SECOND word. The console
+ dispatches one line at a time, so a command that takes an argument has to
+ say it is waiting and the next line has to know it was expected. Before
+ this, `Memory Write` set a status that said "enter address value" and
+ nothing anywhere consumed the next line: it fell through to the address
+ evaluator, moved the cursor, and no write ever happened. The menu offered
+ a command the console could not perform.
+
+ A read acts at the cursor and answers immediately, the way `watch` does,
+ because the cursor is already how every address in this console is chosen
+ -- an expression moves it, and the command acts there. That keeps one
+ idiom instead of two.
+
+ THE THREE PENDING CASES DO NOT CONSUME THEIR LINE THE SAME WAY, and that
+ is the reason this is a variant rather than a Boolean. A write value is an
+ EXPRESSION and goes through `ExprEval`, so `0x2a` and `$ - 1` both work.
+ A symbol name and a breakpoint name are TEXT and must not: `main` is a
+ name, and an evaluator handed it would answer "unknown name" for
+ something that was never meant to be one. What the flag records is not
+ "a line is expected" but "which reader gets it".
+
+  DebugPending =
+   | PendingNone
+   | PendingWriteValue
+   | PendingSymName
+   | PendingBpName
+   | PendingSearchPattern
+   | PendingCompareAddr
+   | PendingDiskLba
+   | PendingDiskCmp
+   | PendingIdtVec
+   | PendingMacroName
+   | PendingMacroBody
+   | PendingMacroRun
+   | PendingRepeat
+   | PendingCpuLeaf
+   | PendingPortRead
+   | PendingPortWatch
+
+ THE DISK CURSOR IS SEPARATE FROM `last-address`, and it has to be. One is
+ an address in the flat physical space and the other is a sector number on
+ a medium; a single cursor meaning both would read the same number two
+ ways depending on which command was asked, which is the kind of thing
+ that is only noticed after it has dumped the wrong thing.
+
+ `disk-lines` HOLDS A RENDERED REPORT RATHER THAN THE VIEW RE-READING IT.
+ The memory dump can be produced during rendering because `peek-byte`
+ costs nothing, but a sector read is a disk transaction and 512 bytes of
+ heap that is never returned, so a view that produced one would perform
+ I/O and leak a buffer on every repaint. The disk commands read once, when
+ the operator asks, and store what they found.
+
   DebuggerState = record {
     mode : DebugMode,
     breakpoints : BreakpointTable,
@@ -68,8 +140,66 @@ Section: Debugger State
     dump-length : Integer,
     watch-ports : List Integer,
     status : Text,
-    map1 : Maybe Map1Info
+    map1 : Maybe Map1Info,
+    dev : DevState,
+    pending : DebugPending,
+    last-lba : Integer,
+    disk-lines : List Text,
+    last-vector : Integer,
+    report-lines : List Text,
+    serial-mirror : Boolean,
+    serial-remote : Boolean,
+    serial-line : Text,
+    macros : MacroTable,
+    macro-running : Boolean,
+    macro-name : Text,
+    last-leaf : Integer,
+    port-trace : PortTrace
   }
+
+ A FOURTH CURSOR, and the argument is the one the other three made. An
+ address, a sector, an interrupt vector and a CPUID leaf are four
+ different spaces, and a number from any one of them is meaningless in
+ the others; a single cursor would read the same number four ways
+ depending on which command asked. The leaf cursor earns its place the
+ same way the vector cursor did: `$ + 1` steps to the next leaf, which is
+ how anyone enumerates CPUID.
+
+ `macro-running` IS THE WHOLE RECURSION BOUND. A macro body that runs a
+ macro can reach itself, and under no collector and no stack guard that is
+ a hang. `macro.run` is refused outright while this is set, rather than
+ bounded by a depth counter: a flag is checkable by reading it, a depth
+ limit has to be got right and then trusted, and nothing a debugger macro
+ is for needs nesting.
+
+ `macro-name` carries the name from the first prompt to the second, since
+ defining a macro is the one command here that needs two lines of input.
+ It is not a cursor and nothing reads it outside that pair.
+
+ THE TWO SERIAL FLAGS ARE INDEPENDENT, and the design's command table
+ reads as though they are one mode with two positions (`serial.remote`
+ against `serial.local`). They are not, because they govern opposite
+ directions: mirroring is what the console SAYS on COM1 and remote is what
+ it LISTENS to there, and wanting the first without the second is the
+ ordinary case -- watching a console you are driving by keyboard.
+
+ `serial-remote` NEVER DISABLES THE KEYBOARD. The poll checks the serial
+ line in addition to `uefi-con-poll-key`, never instead of it, so the flag
+ cannot strand an operator in front of a console that has stopped
+ listening to them. That is a deliberate divergence from the `serial.local`
+ row, which reads as a switch back from a mode this does not enter.
+
+ `serial-line` is the PARTIAL line: bytes arrive one poll at a time and a
+ command is not a command until its terminator does.
+
+ A THIRD CURSOR, for the same reason there was a second. `last-address` is
+ an address in the flat physical space and `last-lba` is a sector on a
+ medium; a vector is an index into a 256-entry table, and it is the one of
+ the three where a number from either of the others is guaranteed
+ meaningless. `report-lines` is a rendered report for consistency with the
+ disk view rather than out of necessity: every read behind it is a `peek`
+ and costs nothing, so this one could safely be produced during rendering.
+ Two views built the same way is worth more here than one saved field.
 
   debugger-init : DebuggerState
   debugger-init = DebuggerState {
@@ -79,7 +209,21 @@ Section: Debugger State
     dump-length = 256,
     watch-ports = [],
     status = "Debugger ready",
-    map1 = None
+    map1 = None,
+    dev = dev-state-new,
+    pending = PendingNone,
+    last-lba = 0,
+    disk-lines = [],
+    last-vector = 0,
+    report-lines = [],
+    serial-mirror = False,
+    serial-remote = False,
+    serial-line = "",
+    macros = macro-table-new,
+    macro-running = False,
+    macro-name = "",
+    last-leaf = 0,
+    port-trace = pt-new
   }
 
 Section: Debugger Menu
@@ -89,7 +233,15 @@ Section: Debugger Menu
     menu-item "Memory Dump" "mem",
     menu-item "Memory Read (byte/word/dword/qword)" "read",
     menu-item "Memory Write" "write",
+    menu-item "Memory Search (hex pattern)" "mem.s",
+    menu-item "Compare Regions" "mem.cmp",
     menu-item "Port I/O" "io",
+    menu-item "Watch A Port" "io.watch",
+    menu-item "Read A Port (traced)" "io.r",
+    menu-item "Port Trace On" "io.trace",
+    menu-item "Port Trace Off" "io.trace.off",
+    menu-item "Show Port Trace" "io.trace.show",
+    menu-item "Clear Port Trace" "io.trace.clear",
     menu-item "Breakpoints" "bp",
     menu-item "Add Breakpoint (by name)" "bp-add",
     menu-item "Stack Walk" "stack",
@@ -97,8 +249,197 @@ Section: Debugger Menu
     menu-item "Perf Counters" "perf",
     menu-item "Symbol Lookup" "sym",
     menu-item "Address Lookup" "addr",
+    menu-item "Watch Here" "watch",
+    menu-item "Check Watches" "watch.check",
+    menu-item "Clear Watches" "watch.clear",
+    menu-item "Disk Sector Dump" "disk",
+    menu-item "Disk Superblock" "disk.sb",
+    menu-item "Disk Fact Log" "disk.facts",
+    menu-item "Disk Sector Count" "disk.sc",
+    menu-item "Compare Sectors" "disk.cmp",
+    menu-item "IDT Entry" "idt",
+    menu-item "Interrupt Counters" "idt.counts",
+    menu-item "Watchdog Stall Samples" "idt.fault",
+    menu-item "PIC IRQ Lines" "idt.irq",
+    menu-item "Serial Mirror On" "serial.on",
+    menu-item "Serial Mirror Off" "serial.off",
+    menu-item "Serial Remote Input On" "serial.remote",
+    menu-item "Serial Remote Input Off" "serial.local",
+    menu-item "Define Macro" "macro.def",
+    menu-item "Run Macro" "macro.run",
+    menu-item "List Macros" "macro.list",
+    menu-item "Clear Macros" "macro.clear",
+    menu-item "Repeat A Command" "repeat",
+    menu-item "Control Registers" "cpu.cr",
+    menu-item "CPUID Leaf" "cpu.cpuid",
+    menu-item "CPU Features" "cpu.feat",
     menu-item "Back" "back"
   ]
+
+Section: Reading And Writing One Cell
+
+ `Dev chapter MemInspector` already reads and writes memory, and these do
+ not call it, which is worth a sentence so nobody deletes one as a
+ duplicate. Every MemInspector entry point takes and returns a
+ `ConsoleState` from `Kernel chapter Console` -- it writes its answer to
+ the kernel console as a side effect. This console is a `DevConsoleState`
+ drawn through UEFI text-out, and it shows a command's answer by putting
+ it in `status`, which is a `Text`. So what is needed here is the same
+ arithmetic returning a value rather than performing an output.
+
+ These are PURE. `peek-byte` and `poke-byte` carry no effect row, so the
+ whole of the read and the whole of the write are ordinary functions, and
+ the console's use of them can be tested without a machine.
+
+  debug-read-u16 : Integer -> Integer
+  debug-read-u16 (a) = bit-or (peek-byte a 0) (bit-shl (peek-byte a 1) 8)
+
+  debug-read-u32 : Integer -> Integer
+  debug-read-u32 (a) =
+    let b2 = bit-shl (peek-byte a 2) 16
+    in let b3 = bit-shl (peek-byte a 3) 24
+    in bit-or (debug-read-u16 a) (bit-or b2 b3)
+
+  debug-read-u64 : Integer -> Integer
+  debug-read-u64 (a) =
+    let h1 = bit-shl (peek-byte a 5) 8
+    in let h2 = bit-shl (peek-byte a 6) 16
+    in let h3 = bit-shl (peek-byte a 7) 24
+    in let hi = bit-or (peek-byte a 4) (bit-or h1 (bit-or h2 h3))
+    in bit-or (debug-read-u32 a) (bit-shl hi 32)
+
+ All four widths on one line, because the menu item promises all four and
+ because the question an operator has at an address is usually "which of
+ these is it" rather than one width chosen in advance.
+
+  debug-mem-read-line : Integer -> Text
+  debug-mem-read-line (addr) =
+    let hb = "  b=#" & hex-byte (peek-byte addr 0)
+    in let hw = "  w=#" & hex-i32 (debug-read-u16 addr)
+    in let hd = "  d=#" & hex-i32 (debug-read-u32 addr)
+    in let hq = "  q=#" & hex-i64 (debug-read-u64 addr)
+    in "0x" & hex-i64 addr & hb & hw & hd & hq
+
+ A value outside a byte is REFUSED and nothing is written. `poke-byte`
+ would take the low eight bits and the operator would be told a byte had
+ been stored, which is a different byte from the one they typed. The
+ answer names the value it rejected so the refusal is not mistaken for a
+ write that happened to change nothing.
+
+  debug-mem-write-at : Integer, Integer -> Text
+  debug-mem-write-at (addr) (val) =
+    if val < 0 then "refused: " & show val & " is not a byte (0..255), nothing written"
+    else if val > 255 then "refused: " & show val & " is not a byte (0..255), nothing written"
+    else let old = peek-byte addr 0
+    in let w = poke-byte addr 0 val
+    in "0x" & hex-i64 addr & ": #" & hex-byte old & " -> #" & hex-byte val
+
+Section: Searching And Comparing
+
+ These are the last two commands the design specifies and the chapter did
+ not have. The specification writes them as `dbg mem.s <addr> <bytes>` and
+ `dbg mem.cmp <a1> <a2> <len>`, which read as commands needing two and
+ three arguments, and this console dispatches one line at a time. That
+ looked like a reason to build a multi-argument parser.
+
+ IT IS NOT, BECAUSE THE CONSOLE ALREADY ANSWERS THE QUESTION. Every
+ address here is chosen by moving the cursor with an expression, and every
+ command acts there; `watch` additionally takes its length from the dump
+ length, so the region it watches is the region `mem` would have shown.
+ Applying the same two rules leaves each command needing exactly ONE
+ argument: a search is a pattern at the cursor, and a compare is the
+ cursor against one other address. The parser was not needed.
+
+ THE PATTERN IS PARSED WITH `hex-char-val` FROM `Dev chapter HexFormat`
+ rather than a fourth spelling of the same table. That function is already
+ CCE-correct in the way this project keeps having to relearn: digits are
+ contiguous in CCE so the digit arm may do arithmetic, letters are ordered
+ by English frequency so the letter arm is a six-way comparison. Writing
+ `10 + c - 'a'` here would read `0xff` as 391, which is exactly what
+ ExprEval shipped and had to be repaired.
+
+  debug-pattern-len : Text -> Integer
+  debug-pattern-len (t) = text-length t / 2
+
+  debug-pattern-nibble : Text, Integer -> Integer
+  debug-pattern-nibble (t) (i) = hex-char-val (char-code (char-at t i))
+
+  debug-pattern-byte : Text, Integer -> Integer
+  debug-pattern-byte (t) (b) =
+    let hi = debug-pattern-nibble t (b * 2)
+    in let lo = debug-pattern-nibble t (b * 2 + 1)
+    in if hi < 0 then 0 - 1
+    else if lo < 0 then 0 - 1
+    else hi * 16 + lo
+
+ A pattern is refused rather than truncated. An odd number of characters
+ is a typo, not half a byte, and a non-hex character is a typo too; either
+ one silently dropped would search for something the operator did not ask
+ for and report an address they would then trust.
+
+  debug-pattern-fault : Text -> Text
+  debug-pattern-fault (t) =
+    if text-length t == 0 then "empty pattern"
+    else if int-rem (text-length t) 2 /= 0 then "pattern needs an even number of hex digits"
+    else debug-pattern-scan t 0 (debug-pattern-len t)
+
+  debug-pattern-scan : Text, Integer, Integer -> Text
+  debug-pattern-scan (t) (b) (n) =
+    if b >= n then ""
+    else if debug-pattern-byte t b < 0 then "not hex: " & t
+    else debug-pattern-scan t (b + 1) n
+
+  debug-pattern-at : Text, Integer, Integer, Integer -> Boolean
+  debug-pattern-at (t) (n) (addr) (off) =
+    if n <= 0 then True
+    else if peek-byte addr off /= debug-pattern-byte t 0 then False
+    else debug-pattern-rest t n addr off 1
+
+  debug-pattern-rest : Text, Integer, Integer, Integer, Integer -> Boolean
+  debug-pattern-rest (t) (n) (addr) (off) (b) =
+    if b >= n then True
+    else if peek-byte addr (off + b) /= debug-pattern-byte t b then False
+    else debug-pattern-rest t n addr off (b + 1)
+
+ The window is the dump length, and the answer names the ADDRESS as well
+ as the offset. An offset alone is a number the operator has to add to
+ something, and the thing they would add it to is the cursor they are
+ about to move.
+
+  debug-mem-search : Integer, Integer, Text -> Text
+  debug-mem-search (addr) (len) (pat) =
+    let fault = debug-pattern-fault pat
+    in if text-length fault > 0 then "refused: " & fault
+    else debug-search-loop pat (debug-pattern-len pat) addr len 0
+
+  debug-search-loop : Text, Integer, Integer, Integer, Integer -> Text
+  debug-search-loop (pat) (n) (addr) (len) (off) =
+    if off + n > len then "not found in " & show len & " bytes from 0x" & hex-i64 addr
+    else if debug-pattern-at pat n addr off then debug-search-hit addr off
+    else debug-search-loop pat n addr len (off + 1)
+
+  debug-search-hit : Integer, Integer -> Text
+  debug-search-hit (addr) (off) =
+    "found at 0x" & hex-i64 (addr + off) & " (cursor + " & show off & ")"
+
+ A compare reports the FIRST difference and both bytes, not a count. A
+ count says two regions differ and leaves the operator to find where; the
+ offset is the thing they were going to look for next.
+
+  debug-mem-compare : Integer, Integer, Integer -> Text
+  debug-mem-compare (a) (b) (len) = debug-compare-loop a b len 0
+
+  debug-compare-loop : Integer, Integer, Integer, Integer -> Text
+  debug-compare-loop (a) (b) (len) (i) =
+    if i >= len then "identical over " & show len & " bytes"
+    else if peek-byte a i /= peek-byte b i then debug-compare-diff a b i
+    else debug-compare-loop a b len (i + 1)
+
+  debug-compare-diff : Integer, Integer, Integer -> Text
+  debug-compare-diff (a) (b) (i) =
+    let av = "#" & hex-byte (peek-byte a i)
+    in let bv = "#" & hex-byte (peek-byte b i)
+    in "differ at +" & show i & ": 0x" & hex-i64 (a + i) & "=" & av & " 0x" & hex-i64 (b + i) & "=" & bv
 
 Section: Memory Commands
 
@@ -146,18 +487,45 @@ Section: MAP1 Debug Map
     strings-base : Integer
   }
 
-  map1-magic-le : Integer = 826361677
+ The emitter writes the magic as the four bytes `[77, 65, 80, 49]`, which
+ is "MAP1" (`map1-magic` in `codex/compiler/Emit/X86_64Chapter.codex`).
+ Read back little-endian that is 0x3150414D, and this constant is what
+ `peek-32` is compared against.
+
+ It was 826361677 until 2026-07-28, which is 0x3141474D, or "MGA1". No
+ emitted binary has ever contained those bytes, so `map1-find` answered
+ None every time it was called, in every binary, since it was written.
+
+  map1-magic-le : Integer = 827343181
 
   map1-find : Maybe Map1Info
   map1-find =
     map1-scan 1048576 5242880
 
+ THE STEP IS ONE BYTE AND IT HAS TO BE. This scanned by four until
+ 2026-07-28, on the assumption that the map is four-byte aligned, and it
+ is not: the emitter appends MAP1 wherever the preceding section ends.
+ Measured in three separately compiled binaries, the magic landed at an
+ address congruent to 3 modulo 4 every time, which a scan stepping by
+ four from an aligned base can never read. Correcting the magic alone
+ left this answering None, which is how the alignment came to light.
+
+ The cost is a byte-wise walk of the search window on the FIRST call
+ only. `map1` in `DebuggerState` caches the result, and every caller
+ already consults that field before calling here.
+
   map1-scan : Integer, Integer -> Maybe Map1Info
   map1-scan (addr) (limit) =
     if addr >= limit then None
     else let word = peek-32 addr 0
-    in if word == map1-magic-le then map1-validate addr
-    else map1-scan (addr + 4) limit
+    in if word == map1-magic-le then map1-scan-check addr limit
+    else map1-scan (addr + 1) limit
+
+  map1-scan-check : Integer, Integer -> Maybe Map1Info
+  map1-scan-check (addr) (limit) =
+    when map1-validate addr
+      is Just (info) -> Just info
+      is None -> map1-scan (addr + 1) limit
 
   map1-validate : Integer -> Maybe Map1Info
   map1-validate (addr) =
@@ -264,17 +632,28 @@ Section: Symbolic Breakpoints
     in let line = "  #" & show (bp.id) & " " & en & " 0x" & hex-i64 (bp.address) & " hits=" & show (bp.hit-count) & " " & bp.label
     in bp-list-format bps (i + 1) len (list-push acc line)
 
-Section: Exception Info
+Section: Where A RIP Actually Comes From
 
-  debug-exc-addr : Integer = 28928
-  debug-exc-vector-off : Integer = 0
-  debug-exc-rip-off : Integer = 8
-  debug-exc-rsp-off : Integer = 16
-  debug-exc-flags-off : Integer = 24
+ THIS SECTION USED TO READ THREE UNRELATED CELLS AND CALL THEM CPU STATE.
+ It declared an exception record at 28928 with a vector, a RIP and an RSP
+ at the first three offsets. There is no exception record on this machine
+ and there never was: 28928 is `stdin-eof-settled-addr`, and the two cells
+ the RIP and RSP were taken from are `cap-expiry-addr` and
+ `sched-ready-head-addr`. So the Registers, Stack and Backtrace views were
+ rendering the standard-input EOF flag as a fault vector and walking a
+ stack from whatever the scheduler's ready-list head happened to hold.
 
-  debug-read-exc-vector : Integer = peek-qword debug-exc-addr debug-exc-vector-off
-  debug-read-exc-rip : Integer = peek-qword debug-exc-addr debug-exc-rip-off
-  debug-read-exc-rsp : Integer = peek-qword debug-exc-addr debug-exc-rsp-off
+ It is the shape this project keeps meeting. Nothing was ever blank or
+ obviously wrong, so three menu items showed confident numbers and looked
+ like they worked. The address map in `X86_64Boot` is the referee, and it
+ records no faulting vector anywhere.
+
+ WHAT THE MACHINE DOES KEEP is the watchdog's ring: the timer ISR writes a
+ RIP, an RSP and a heap pointer into it when neither the heap pointer nor
+ the saved RIP has moved since the last tick. Those are real registers,
+ sampled at the moment worth looking at. They are NOT a trap frame, so
+ nothing below calls them one and no line reports a vector, because there
+ is no vector to report.
 
 Section: Backtrace
 
@@ -293,25 +672,30 @@ Section: Backtrace
     in let line = "  #" & show depth & " 0x" & hex-i64 ret-addr & " " & sym
     in debug-bt-walk dbg (rsp + 8) max (depth + 1) (list-push acc line)
 
-  debug-backtrace-from-exc : DebuggerState -> List Text
-  debug-backtrace-from-exc (dbg) =
-    let rsp = debug-read-exc-rsp
-    in let rip = debug-read-exc-rip
-    in let rip-sym = resolve-addr dbg rip
-    in let header = "  => 0x" & hex-i64 rip & " " & rip-sym
-    in [header] & debug-backtrace dbg rsp 16
+  debug-backtrace-from-stall : DebuggerState -> List Text
+  debug-backtrace-from-stall (dbg) =
+    if ii-stall-sampled then debug-backtrace-walk-stall dbg
+    else ["  No stall sample has been taken, so there is no stack to walk.",
+          "  This machine keeps no exception record; the watchdog ring is",
+          "  the only place a RIP is ever stored."]
+
+  debug-backtrace-walk-stall : DebuggerState -> List Text
+  debug-backtrace-walk-stall (dbg) =
+    let rip = ii-stall-rip
+    in let header = "  => 0x" & hex-i64 rip & " " & resolve-addr dbg rip
+    in ["  Newest watchdog stall sample:", header] & debug-backtrace dbg ii-stall-rsp 16
 
 Section: Register View
 
   debug-register-view : List Text
   debug-register-view =
-    let rip = debug-read-exc-rip
-    in let rsp = debug-read-exc-rsp
-    in let vec = debug-read-exc-vector
-    in ["  Registers (from last exception):",
-        "  RIP = 0x" & hex-i64 rip,
-        "  RSP = 0x" & hex-i64 rsp,
-        "  Vector = " & show vec]
+    if ii-stall-sampled then
+      ["  Newest watchdog stall sample (no exception record is kept):",
+       "  RIP = 0x" & hex-i64 ii-stall-rip,
+       "  RSP = 0x" & hex-i64 ii-stall-rsp]
+    else ["  No registers to show.",
+          "  The watchdog has taken no stall sample since boot, and this",
+          "  machine records no faulting vector, RIP or RSP anywhere."]
 
 Section: Perf View
 
@@ -323,6 +707,18 @@ Section: Perf View
         "  HPET counter = 0x" & hex-i32 hpet-hi & hex-i32 hpet-lo]
 
 Section: Port Watch
+
+ THE WATCH LIST HAD NO WAY TO GROW UNTIL `io.watch` LANDED. `watch-ports`
+ was initialised empty and no command anywhere added to it, so the Port
+ I/O view rendered an empty list on every repaint since it was written --
+ a menu item that drew a heading and nothing under it, which reads as a
+ machine with nothing to say rather than as a view with no input.
+
+ The cap is here rather than in the view because the view is a repaint:
+ every port in this list is read again on every frame, so the list's
+ length is a per-frame I/O cost and not merely storage.
+
+  debug-max-watch-ports : Integer = 16
 
   debug-port-watch : List Integer -> [Device.Port] List Text
   debug-port-watch (ports) = debug-port-watch-loop ports 0 (list-length ports) []

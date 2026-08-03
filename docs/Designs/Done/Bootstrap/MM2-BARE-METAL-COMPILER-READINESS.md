@@ -3,7 +3,7 @@
 **Date**: 2026-03-26  
 **Author**: Linux agent  
 **Purpose**: Gap analysis for the CurrentPlan near-term item:
-> *QEMU test: send .codex over serial, verify compilation — First real MM2 validation*
+> *QEMU test: send .codex over serial, verify compilation -- First real MM2 validation*
 
 ---
 
@@ -41,7 +41,7 @@ bare metal kernel.
   QEMU. CCE-native as of today's merge (`cam/ring4-cleanup`).
 - **Codex.OS Rings 0–3**: boot trampoline, IDT, PIC, timer, keyboard, process
   table, preemptive scheduling, capability-enforced syscalls. 7 KB kernel.
-- **Ring 4 REPL loop**: arena-based — compile, print, reset heap, repeat.
+- **Ring 4 REPL loop**: arena-based -- compile, print, reset heap, repeat.
   Verified under QEMU.
 - **Serial I/O with CCE conversion**: `__read_line` and `__bare_metal_read_serial`
   convert Unicode→CCE at input boundary. Print paths convert CCE→Unicode at
@@ -74,11 +74,11 @@ bare metal kernel.
 ### 1. Missing Builtins (blocking)
 
 The self-hosted compiler depends on builtins that the x86-64 backend does not
-yet implement. These are used pervasively — the compiler cannot run without them.
+yet implement. These are used pervasively -- the compiler cannot run without them.
 
 | Builtin | Used For | Difficulty |
 |---------|----------|------------|
-| `text-compare` | Binary search in TypeEnv, Scope, UnificationState — the P2-alt 9.2x speedup depends on this | Medium (strcmp-style loop over CCE bytes) |
+| `text-compare` | Binary search in TypeEnv, Scope, UnificationState -- the P2-alt 9.2x speedup depends on this | Medium (strcmp-style loop over CCE bytes) |
 | `list-snoc` | O(1) amortized append used across 30+ sites | Medium (append single element to list tail) |
 | `list-insert-at` | Sorted insertion for binary search structures | Medium |
 | `list-contains` | Membership checks in name resolution | Easy (linear scan with equality) |
@@ -102,17 +102,17 @@ main = do
 
 On bare metal there is no filesystem. Two options:
 
-**Option A — Serial bulk read**: `read-file` on bare metal reads from serial
+**Option A -- Serial bulk read**: `read-file` on bare metal reads from serial
 until a sentinel (e.g., `\x04` EOT). The REPL loop already does something
 similar with `__bare_metal_read_serial`. The host sends the .codex source
 directly, the kernel treats it as the "file contents."
 
-**Option B — Modify the entry point**: A bare-metal-specific `main` that reads
+**Option B -- Modify the entry point**: A bare-metal-specific `main` that reads
 source directly from serial without the path indirection. This is simpler but
 means the compiler source needs conditional compilation or a separate entry
 point for bare metal.
 
-Option A is cleaner — it preserves the compiler source unchanged and pushes
+Option A is cleaner -- it preserves the compiler source unchanged and pushes
 the adaptation to the runtime layer where it belongs.
 
 ### 3. Output Target (design decision needed)
@@ -121,7 +121,7 @@ When the bare metal compiler finishes compilation, what does `print-line` emit?
 
 The self-hosted compiler currently emits C# source code (the `emit-full-module`
 function generates C#). On bare metal, the serial output would be... C# code.
-Which is correct for MM2 validation — the goal is to prove the compiler *runs*,
+Which is correct for MM2 validation -- the goal is to prove the compiler *runs*,
 not that the output is directly executable on bare metal.
 
 Future options:
@@ -134,7 +134,7 @@ Future options:
 The compiler self-compiles its 5,100 lines in ~279ms on the host with managed
 GC. On bare metal with arena allocation:
 
-- The arena is a linear bump allocator — no GC, no free. Every allocation
+- The arena is a linear bump allocator -- no GC, no free. Every allocation
   (every cons cell, every string, every intermediate AST node) permanently
   consumes arena space until reset.
 - The compiler creates extensive intermediate structures: token lists, AST
@@ -163,12 +163,12 @@ For trivial test programs this is unlikely to be an issue.
 
 Implement the six missing builtins in `X86_64CodeGen.cs`. Priority order:
 
-1. `text-compare` — unblocks binary search, most critical
-2. `list-snoc` — unblocks list accumulation
-3. `list-insert-at` — unblocks sorted insertion
-4. `list-contains` — straightforward
-5. `text-concat-list` — needed for emitter output
-6. `text-split` — needed for tokenizer
+1. `text-compare` -- unblocks binary search, most critical
+2. `list-snoc` -- unblocks list accumulation
+3. `list-insert-at` -- unblocks sorted insertion
+4. `list-contains` -- straightforward
+5. `text-concat-list` -- needed for emitter output
+6. `text-split` -- needed for tokenizer
 
 Each can be tested independently with small .codex programs under the existing
 QEMU boot test harness.
@@ -176,7 +176,7 @@ QEMU boot test harness.
 ### Phase 2: read-file Serial Adapter
 
 Implement `__read_file` on bare metal as "read from serial until EOT sentinel."
-This requires minimal code — the `__bare_metal_read_serial` helper already
+This requires minimal code -- the `__bare_metal_read_serial` helper already
 does most of the work. Add EOT detection and return the buffer as a
 length-prefixed CCE string.
 
@@ -204,7 +204,7 @@ This is the MM2 validation test.
 
 The environment is ready. I can:
 
-- Run the existing QEMU boot tests (and they pass — verified today)
+- Run the existing QEMU boot tests (and they pass -- verified today)
 - Build any branch Cam pushes
 - Test new builtins as they land (compile + QEMU boot + serial capture)
 - Write the Phase 3 integration test once the builtins are in place
@@ -228,7 +228,7 @@ returns a length-prefixed CCE string from serial-until-EOT. Wire `read-file`
 to call it when `m_target == BareMetal`. One-liner adaptation.
 
 **Output target (Gap #3):** C# over serial is the right MM2 proof. The compiler
-emits C# — that doesn't change. Source in, valid C# out, on bare metal. MM3
+emits C# -- that doesn't change. Source in, valid C# out, on bare metal. MM3
 changes the output target, not MM2.
 
 **Memory (Gap #4):** Progressive complexity is the right approach. Arena size

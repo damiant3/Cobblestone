@@ -1,8 +1,8 @@
-# CL 1900 — Test Stub Implementations
+# CL 1900 -- Test Stub Implementations
 
 **Author**: reek
 **Date**: 2026-05-20
-**Status**: RESOLVED — verified 2026-05-29 (reek). All five tests
+**Status**: RESOLVED -- verified 2026-05-29 (reek). All five tests
 (carddeck, factstore, lz77, keyboard, http-client) are implemented with
 `.expected` sidecars, no `.skip`/`.failing`, and pass in the current
 battery (test-results.txt: total=176 pass=124 fail=0 skip=52). The
@@ -23,7 +23,7 @@ unbounded. The largest allocation is `deck-new` (52-element list) and
 `deck-shuffle` (52 in-place swaps). No heap blow-up risk.
 
 **Time**: All tests are O(n) or O(n log n) in small fixed inputs.
-`lz77-compress` on 20 bytes is the heaviest — O(n * w) where w=255
+`lz77-compress` on 20 bytes is the heaviest -- O(n * w) where w=255
 (window size), so ~5000 comparisons. No time-complexity risk.
 
 ---
@@ -55,7 +55,7 @@ module from `codex/foreword/game/CardDeck.codex`.
 
 **Expected output gap**: The existing `.expected` assumes a specific
 shuffle seed that produces `top3=3S JS KS`. The test uses seed 42 but
-the actual PRNG output has not been verified — the LCG
+the actual PRNG output has not been verified -- the LCG
 (`seed * 1103515245 + 12345`, abs) overflows 64-bit and wraps at the
 hardware level, making it impossible to predict from outside the
 compiler. **The `.expected` file will need updating after first compile
@@ -94,14 +94,14 @@ identical to the test format. Line 3 (shuffle) and lines 4-5
 **Setup section**: Creates two facts (`f1`=DefinitionFact "x = 42" by
 "alice", `f2`=VouchFact "trust bob" by "alice") and four store states
 (`s0`=empty, `s1`=one fact, `s2`=two facts, `s3`=duplicate of f1 into
-s2). All are top-level definitions — pure, no effects.
+s2). All are top-level definitions -- pure, no effects.
 
 **Expected output gap**: The existing `.expected` matches the test
 format exactly: `0, 1, 2, 2, True, False, x = 42, False, True,
 Definition, Vouch`. **This test should match the expected output
 as-written**, assuming `fact-content-hash` (SHA-256 based) and
 `hamt-contains` work correctly. The only risk is if the `fact-has`
-lookup fails due to a hash mismatch — the content hash is computed
+lookup fails due to a hash mismatch -- the content hash is computed
 internally by `fact-create` and used by `fact-store`/`fact-has`, so
 there is no external dependency on the hash value.
 
@@ -223,7 +223,7 @@ serialization of `http-serialize-request`. The serialization code in
 - Whether there are off-by-one differences in CRLF placement
 
 The test format matches the expected structure but **the exact byte
-counts may differ** — in particular:
+counts may differ** -- in particular:
 - `len=43` for GET /index to example.com: my manual calculation gives
   43 bytes (19 request-line + 2 CRLF + 18 host-header + 2 CRLF + 2
   CRLF = 43). Should match ✓
@@ -253,4 +253,4 @@ parser logic is deterministic.
 
 3. **`show-bool` is duplicated** across all 5 tests. This is a local
    helper since there is no foreword `show` instance for Booleans.
-   Each test is self-contained — no shared test-utility module exists.
+   Each test is self-contained -- no shared test-utility module exists.

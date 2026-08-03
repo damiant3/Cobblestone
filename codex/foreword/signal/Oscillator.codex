@@ -1,4 +1,5 @@
 Chapter: Oscillator
+  cites Foreword chapter Random
   cites Foreword chapter Units (Frequency)
 
  Multi-waveform oscillator bank with FM synthesis, ring modulation,
@@ -40,14 +41,33 @@ Section: Construction
     in OscBank { ob-oscs = list-push (bank.ob-oscs) osc, ob-count = bank.ob-count + 1, ob-sample-rate = bank.ob-sample-rate }
 
 Section: Sample Generation
-  osc-eval : OscState, Integer -> Integer
-  osc-eval (osc) (phase) =
+ osc-eval takes the sample index as well as the phase, and the reason is the
+ noise branch alone. Every other waveform here is a pure function of phase and
+ must be: repeating once per cycle is what pitch IS. Noise is the one
+ waveform for which that is the defect, and phase cannot express it, because
+ osc-phase-at wraps at 6283 so phase comes back around every
+ sample-rate/freq samples.
+
+ It used to take phase only and hand it to the noise branch like any other.
+ Measured before the change by `codex/test/osc-noise.codex`, at 8000 Hz and
+ 100 Hz, an 80-sample period: over 240 samples, 160 of 160 samples equalled
+ the sample one period earlier and only 80 distinct values appeared at all.
+ That is not a weak generator, it is a periodic waveform at the oscillator's
+ own pitch wearing the name noise, and no improvement to the mixer could have
+ fixed it because the input itself repeats.
+
+ osc-eval had no caller outside osc-mix-loop, so the shape changed rather than
+ a second entry point being added beside it; leaving a two-argument version
+ would have left the defect reachable.
+
+  osc-eval : OscState, Integer, Integer -> Integer
+  osc-eval (osc) (phase) (idx) =
     if osc.osc-type == osc-type-sine then osc-sine-val phase (osc.osc-amp)
     else if osc.osc-type == osc-type-square then osc-square-val phase (osc.osc-amp)
     else if osc.osc-type == osc-type-saw then osc-saw-val phase (osc.osc-amp)
     else if osc.osc-type == osc-type-tri then osc-tri-val phase (osc.osc-amp)
     else if osc.osc-type == osc-type-pulse then osc-pulse-val phase (osc.osc-amp) (osc.osc-param)
-    else if osc.osc-type == osc-type-noise then osc-noise-val phase (osc.osc-amp)
+    else if osc.osc-type == osc-type-noise then osc-noise-val idx (osc.osc-amp)
     else 0
 
   osc-sine-val : Integer, Integer -> Integer
@@ -73,9 +93,13 @@ Section: Sample Generation
     let threshold = duty * 6283 / 1000 - 3142
     in if phase < threshold then amp else -amp
 
+ Driven by the sample index, not the phase, and mixed through mix-bits rather
+ than a bare multiply-add. The old body was `phase * 1103515245 + 12345` then
+ a remainder by 2000: an LCG's low bits read directly as an audio sample.
+
   osc-noise-val : Integer, Integer -> Integer
-  osc-noise-val (phase) (amp) =
-    let hash = phase * 1103515245 + 12345
+  osc-noise-val (idx) (amp) =
+    let hash = mix-bits idx 9173
     in let positive = if hash < 0 then -hash else hash
     in let normalized = positive - positive / 2000 * 2000 - 1000
     in amp * normalized / 1000
@@ -107,7 +131,7 @@ Section: Bank Rendering
     if i >= n then acc
     else let osc = list-at oscs i
     in let phase = osc-phase-at (osc.osc-freq) idx sr
-    in let val = osc-eval osc phase
+    in let val = osc-eval osc phase idx
     in osc-mix-loop oscs sr idx (i + 1) n (acc + val)
 
 Section: FM Synthesis

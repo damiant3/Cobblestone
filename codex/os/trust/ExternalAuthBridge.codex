@@ -61,28 +61,43 @@ Section: Bridge State
 
 Section: Authentication
 
-  bridge-authenticate : OAuthTokens, Text -> ExternalIdentity
+ Authentication answers Maybe, and the reason is that the alternative was
+ unsound rather than merely untidy. This used to return an ExternalIdentity
+ from both arms: an unreadable id token produced a record with an empty
+ subject and the provider's REAL access and refresh tokens, which
+ bridge-add-identity then stored and bridge-get-access-token then handed out.
+ Nothing downstream could tell that identity from an authenticated one, and
+ bridge-provider-score vouches for its provider at 6000 either way. A token
+ the bridge could not read is not a user, so there is no identity to return.
+
+ An empty subject is refused for the same reason, and it is a separate case
+ from a malformed token. A well-formed id token carrying no sub claim decodes
+ cleanly and yields an identity whose bridge-identity-key is "<provider>:",
+ which collides with every other subject-less identity from that provider --
+ so the second such login REPLACES the first rather than joining it. OpenID
+ Connect Core section 2 makes sub REQUIRED in an id token, so a token without
+ one identifies nobody and is refused here rather than stored under a key
+ that is really the provider's name.
+
+  bridge-authenticate : OAuthTokens, Text -> Maybe ExternalIdentity
   bridge-authenticate (tokens) (provider) =
     let decoded = jwt-decode (tokens.ot-id-token)
     in when decoded
-      is JwtOk (jwt) -> ExternalIdentity {
-        ei-provider = provider,
-        ei-subject = jwt-get-sub jwt,
-        ei-email = jwt-get-email jwt,
-        ei-display-name = jwt-get-name jwt,
-        ei-access-token = tokens.ot-access-token,
-        ei-refresh-token = tokens.ot-refresh-token,
-        ei-token-expiry = tokens.ot-expires-in
-      }
-      is JwtMalformed (msg) -> ExternalIdentity {
-        ei-provider = provider,
-        ei-subject = "",
-        ei-email = "",
-        ei-display-name = "",
-        ei-access-token = tokens.ot-access-token,
-        ei-refresh-token = tokens.ot-refresh-token,
-        ei-token-expiry = tokens.ot-expires-in
-      }
+      is JwtOk (jwt) -> bridge-identity-of tokens provider jwt (jwt-get-sub jwt)
+      is JwtMalformed (msg) -> None
+
+  bridge-identity-of : OAuthTokens, Text, JwtToken, Text -> Maybe ExternalIdentity
+  bridge-identity-of (tokens) (provider) (jwt) (subject) =
+    if text-length subject == 0 then None
+    else Just (ExternalIdentity {
+      ei-provider = provider,
+      ei-subject = subject,
+      ei-email = jwt-get-email jwt,
+      ei-display-name = jwt-get-name jwt,
+      ei-access-token = tokens.ot-access-token,
+      ei-refresh-token = tokens.ot-refresh-token,
+      ei-token-expiry = tokens.ot-expires-in
+    })
 
   bridge-identity-key : ExternalIdentity -> Text
   bridge-identity-key (eid) = eid.ei-provider & ":" & eid.ei-subject

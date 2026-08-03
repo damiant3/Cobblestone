@@ -1,0 +1,60 @@
+Chapter: CSV RFC 4180 Test
+  cites Foreword chapter Console
+  cites Encode chapter Csv
+
+ Csv against RFC 4180, in both directions.
+
+ The grammar is record = field *(COMMA field). A separator is always
+ followed by a field and that field may be empty, so a record ending
+ in a comma has an empty last field and a record that is one comma
+ has two of them. Those two were the defect: the row loop ended at
+ the input without recording that it had just stepped over a
+ separator, so the final empty field was never pushed.
+
+ The other five parse lines are the control. They were correct before
+ the fix and must stay correct, which is what separates a repair from
+ a rewrite that moves everything.
+
+ The emit lines are checked the other way round. Each was fed to an
+ independent CSV parser on the host, which must recover exactly the
+ fields that went in; quoting only when required, and doubling an
+ embedded quote, are what that parser is being asked to confirm. A
+ round trip through this chapter's own two halves would prove neither,
+ because both halves can share an assumption and agree forever.
+
+Section: Render
+
+  render-fields : List Text, Integer, Integer, Text -> Text
+  render-fields (fs) (i) (n) (acc) =
+    if i >= n then acc
+    else render-fields fs (i + 1) n (acc & "[" & list-at fs i & "]")
+
+  render-row : List Text -> Text
+  render-row (fs) = "n=" & show (list-length fs) & " " & render-fields fs 0 (list-length fs) ""
+
+  render-table : List (List Text) -> Text
+  render-table (t) =
+    if list-length t == 0 then "rows=0"
+    else "rows=" & show (list-length t) & " " & render-row (list-at t 0)
+
+  probe : Text -> Text
+  probe (s) = render-table (csv-parse s)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("plain=" & probe "a,b,c")
+    print-line-uni ("trailing=" & probe "a,")
+    print-line-uni ("leading=" & probe ",a")
+    print-line-uni ("middle=" & probe "a,,b")
+    print-line-uni ("qcomma=" & probe "\"x,y\",z")
+    print-line-uni ("qquote=" & probe "\"he said \"\"hi\"\"\",z")
+    print-line-uni ("bare-comma=" & probe ",")
+    print-line-uni ("emit-plain=" & csv-emit-row ["a", "b"])
+    print-line-uni ("emit-comma=" & csv-emit-row ["x,y", "z"])
+    print-line-uni ("emit-quote=" & csv-emit-row ["he said \"hi\"", "z"])
+    print-line-uni ("emit-trailing=" & csv-emit-row ["a", ""])
+    print-line-uni ("emit-both-empty=" & csv-emit-row ["", ""])
+  end
+
+Page 1

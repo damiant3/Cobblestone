@@ -7,28 +7,57 @@ This document is written for the AGENTS (Claude Code sessions running
 in the fleet workspaces). AgentGrid implements the granting side; its
 source lives in the `//AgentGrid/main` depot
 (`AgentGrid/Services/BuildQueueService.cs`), which also holds the
-canonical copy of this doc. Keep the two in sync when the protocol
-changes.
+formal copy of this doc.
+
+**The copy you are reading is the one that governs.** Two copies exist
+and they are expected to drift, because the protocol gets corrected in
+the middle of operations -- that is when a problem is visible and when it
+has to be fixed. Edit this one. The `//AgentGrid/main` copy and the
+AgentGrid source catch up in a reconciliation pass, done deliberately as
+its own piece of work rather than as a submit-and-mirror tax on every
+in-flight fix. Do not report the drift as a defect; do not stop to
+mirror.
+
+What a reconciliation pass owes you: anything the fleet retired here has
+to actually leave the coordinator, not just this page. The merge-down
+rationale is the worked example -- it was corrected here on 2026-07-29,
+and AgentGrid went on typing the retired reason into terminals on every
+grant until 2026-08-02.
 
 ## The Problem
 
-Multiple agents build, test, and copy-up to main simultaneously. Agent
-A and agent B both run gates against main@100. A submits CL 101. B's
-gate run is now stale -- B submits a seed that is not a fixed point on
-the new main, or hits resolve conflicts, and everyone downstream
-inherits the mess. Hours of compute wasted.
+A gate certifies the source it was run against, and a seed-affecting
+change on main moves that source. Agent A and agent B both run gates
+against main@100. A submits a seed-affecting CL 101. B's run is now
+certifying source that no longer exists: B has to merge 101 down and
+gate again, and the twenty minutes already spent bought nothing.
 
 ## The Fix
 
 AgentGrid owns a single **build token** per project. Holding the token
-means: exclusive right to run gates and submit.
+means main does not gain seed-affecting changes underneath you, so you
+never have to merge one down mid-run and start over.
+
+**That is the whole purpose and there is nothing else in it.** The token
+is not a lock on the shared build box, and it is not there because
+`p4 copy` refuses an unmerged stream. Both used to be written here as
+reasons and neither is one.
+
+**It follows that the token is keyed to what your change TOUCHES.**
+Seed-affecting work -- compiler source, the foreword, `seed/` itself --
+takes the token, because landing it is what invalidates somebody else's
+run and because somebody else's landing invalidates yours. **Docs, apps,
+plugs and anything else that leaves the seed alone take no token at all**,
+on any stream, including a copy-up to main. There is no gate for them to
+invalidate.
 
 **Every grant tells you to merge down from main first.** This is not a
 judgement the coordinator makes for you and it is not conditional on
-anything -- a copy-up from an unmerged stream is refused by Perforce, so
-merging down is a precondition of using the token for its purpose. Merge
-down, resolve, re-shelve, and only then run gates: your gate run is against
-the real head, not a memory of it.
+anything. The token holds main still from the moment you are granted it,
+not from the moment you started working, so whatever landed while you
+waited is still yours to take. Merge down, resolve, re-shelve, and only
+then run gates: your gate run is against the real head, not a memory of
+it, and from there the token keeps it that way.
 
 (AgentGrid used to decide this for you by comparing main's head when you
 asked against its head when you were granted. That measured the drift while
@@ -61,6 +90,8 @@ agent's directory; reading theirs is fine).
 | `build-request` | agent | You want the build token |
 | `build-grant` | AgentGrid | You hold the token (JSON body has details) |
 | `build-complete` | agent | You are done; token released |
+| `outbox/<file>` | agent | A message you are sending (see Fleet Messages) |
+| `inbox/<file>` | AgentGrid | Messages addressed to you |
 
 ### status.json -- keep it fresh
 
@@ -86,6 +117,10 @@ Write `build-request` containing JSON:
   request for an unshelved CL is DENIED and the request file deleted.
   This is deliberate: a shelved CL means your work is safe in the depot
   before the gate dance starts, and others can unshelve it if asked to.
+  **That same listing decides whether you needed the token at all.** If
+  none of your shelved files sit under a path that can invalidate a gate,
+  the request is answered NO TOKEN NEEDED and you are not queued. Nothing
+  is lost: you were free to submit the moment you asked.
 - `note` -- one line, shown to the human.
 
 An empty `build-request` file is also accepted (legacy form): you get
@@ -105,11 +140,21 @@ input in your session. Obey it.
 1. **DENIED** -- your CL has no shelved files. The request file is
    deleted. Shelve, then drop a new request.
 
-2. **QUEUED** -- someone else holds the token. The message names the
-   current holder and your position. Keep working on something else
-   or wait. Do NOT run gates or submit while queued.
+2. **NO TOKEN NEEDED** -- your shelved files touch nothing that can
+   invalidate a gate: docs, apps, plugs, workplans. The request file is
+   deleted and you are NOT queued. Go submit, on your dev stream or
+   copying up to main; nothing is waiting on you and nothing you do here
+   can invalidate anyone else's gate run. This is not a refusal of
+   service, it is the queue declining to charge you for something that is
+   free. It is rule 1 enforced rather than restated. If you are certain
+   the CL does affect the seed, tell Damian so the project's seed paths
+   can be corrected -- do not re-request, you will get the same answer.
 
-3. **GO with MERGE** -- `build-grant` appears in your mailbox and the
+3. **QUEUED** -- someone else holds the token. The message names the
+   current holder and your position. Keep working on something else
+   or wait. Do NOT run gates or submit to main while queued.
+
+4. **GO with MERGE** -- `build-grant` appears in your mailbox and the
    terminal message says GO. The grant body is JSON:
 
 ```json
@@ -132,13 +177,13 @@ input in your session. Obey it.
    `mainHeadCl` is informational: it is main's head at the moment you
    were granted the token. It is not a condition to evaluate.
 
-4. **CANCELLED / REVOKED** -- the human pulled your queued request
+5. **CANCELLED / REVOKED** -- the human pulled your queued request
    (CANCELLED) or your held token (REVOKED) from the AgentGrid UI.
    Your mailbox files are cleared for you. Stop immediately: no gates,
    no submit. Shelve, address whatever prompted the human to step in,
    and drop a new `build-request` when the CL is ready.
 
-5. **Release the token.** When your submit lands (or you abandon the
+6. **Release the token.** When your submit lands (or you abandon the
    attempt), create `build-complete` (empty file is fine) in your
    mailbox. AgentGrid clears your grant and hands the token to the
    next agent in line. There are exactly two ways out of a hold: you
@@ -146,8 +191,22 @@ input in your session. Obey it.
 
 ## Rules
 
-1. **Never run gates or submit without holding the token.** The token
-   is the whole mechanism; going around it recreates the race.
+1. **Take the token for seed-affecting work, and only for that.** Gate
+   and land compiler source, foreword or `seed/` under the token, because
+   that is the class of change a gate result depends on. Going around it
+   there recreates the race.
+
+   **Everything else needs no token**, on any stream. Docs, apps, plugs,
+   workplans: none of them can invalidate a gate, so none of them belongs
+   in the queue -- not on your dev stream, and not copying up to main
+   either. Damian, 2026-07-28, on an agent queueing to land a workplan:
+   *"you don't need a build gate for a workplan."* And 2026-07-29, on the
+   scope: *"you don't need a token for non-seed changes, e.g. docs, apps,
+   plugs, etc. only things that would invalidate a gate running effort."*
+
+   The test is not "does this touch main", and it is not "am I about to
+   run something". It is **"would this invalidate a gate run, or could a
+   gate run be invalidated under it"**.
 2. **Shelve before you request.** The gate dance (shelve, revert,
    sync -f, clean, unshelve, build) already requires it; the protocol
    just checks you did it.
@@ -157,8 +216,10 @@ input in your session. Obey it.
 4. **One request at a time.** A second `build-request` while queued or
    building is ignored.
 5. **Merge down, every grant, no exceptions.** It is a precondition of
-   the token, not a conditional step: the copy-up your token exists to
-   perform is refused from an unmerged stream. If you cannot complete
+   the token, not a conditional step: the token holds main still from the
+   moment you are granted it, not from the moment you started working, so
+   the merge is how your source becomes the head the token is protecting.
+   Gate after it, never before. If you cannot complete
    the merge (conflicts you cannot resolve), write `build-complete` to
    release the token, set `status.json` to `Error` with a task note,
    and tell the human.
@@ -237,13 +298,69 @@ the depot, and it is not permission to work.**
 - **Docs-only changes do not need the token.** Edit them directly on main and
   submit. No gates run, so there is no race to prevent. A workplan, a backlog
   entry, a design note, a README -- just submit it. Rule 1 is about gates and
-  the code they gate, not about every `p4 submit` in the depot.
+  the code they gate, not about every `p4 submit` in the depot. **AgentGrid now
+  enforces this** rather than asking: it reads your shelved file list and
+  answers NO TOKEN NEEDED instead of queueing you. This paragraph and rule 1
+  both already said so in Damian's own words, and the queue kept filling with
+  docs anyway, which is why it is now mechanical.
 - **Code that runs gates needs the token**, including a copy-up, because a
   copy-up is a submit of gated code to main and that is exactly the race.
 - **Fixing broken code does not need the token -- and must not hold it.**
   Red gates, debugging, writing tests, "just one more thing": all of it
   happens outside the hold (rule 8). The token is for landing finished
   work, not for finishing work.
+
+## Fleet Messages
+
+**The depot is not a message bus.** A note from reek to red used to mean:
+submit to your dev stream, copy up to main, wait for red to merge down.
+Two merges and minutes of latency to deliver one line, and every one of
+those merges is a chance to clobber somebody's file. Your mailbox is on
+local disk and every agent in the fleet can reach it.
+
+To send:
+
+```powershell
+$mbox = (Get-Content .agentgrid | ConvertFrom-Json).coordinationDir
+Set-Content "$mbox\outbox\fetch-tls.json" '{ "to": "red", "text": "fetch-tls landed on main at CL 12480, do not build it again" }'
+```
+
+- `to` is an agent name, or **`fleet`** to reach everyone else in the
+  fleet (a broadcast never echoes back to you).
+- `text` is one line, the way an outbox entry is one line.
+- Write it into **your own** `outbox/`. You never write to another
+  agent's directory; AgentGrid does the routing. Same rule as always.
+- Write the file in one shot. AgentGrid lets a message settle for a
+  second before reading it, so a half-written file is not mistaken for a
+  malformed one, but an atomic write is still the honest way to do it.
+
+To receive: messages arrive **twice**, exactly like a build grant. A
+`[fleet message from <agent>]` line is typed into your terminal, and a
+copy lands in your `inbox/`. The inbox copy is the durable one -- if your
+terminal was not running, the typed line is lost and the file is still
+there at next launch. **Read your `inbox/` at init.**
+
+**Delete an inbox message once you have absorbed it.** The deletion is
+the acknowledgement, and it is the same consumption rule the workplan
+findings outbox already uses.
+
+### What goes here, and what still goes in the workplan
+
+The channel carries the **notification**; the workplan carries the
+**record**. A finding another lane's plan depends on still belongs in
+your workplan's `## Cross-lane` section, because that is what survives a
+session and what the next agent reads at init. What the channel adds is
+that red hears about it in the next second instead of after two merges,
+and that the notification costs no submit, no merge and no token.
+
+Use it for: a defect that invalidates another lane's measurements, a
+contract change, a capability someone is waiting on, "I am taking this
+item so do not duplicate it."
+
+Do not use it for: status updates nobody asked for, anything Damian
+should be told instead, or a conversation. It is a notification channel,
+not chat -- if a message needs a reply, what it actually needed was a
+workplan entry.
 
 ## Notes from the first run (val, 2026-07-13)
 
@@ -266,3 +383,49 @@ the depot, and it is not permission to work.**
   build silently uses old source and the gate fails for a reason that has
   nothing to do with your change. `p4 -c <main-client> sync //Codex/main/...`
   first, every time.
+
+## Workplan Cross-Lane Protocol (added 2026-07-27, red)
+
+The build token serializes BUILDS. Nothing serialized FINDINGS, and the fleet
+has paid for that twice in one week: val and blu built the same `fetch-tls`
+work an hour apart, and the Real-comparison fix invalidated numbers other
+lanes had already recorded. This protocol is the findings channel. It lives
+in the workplans because the workplans are the one document every agent reads
+at every init.
+
+Every workplan carries a `## Cross-lane` section directly under its header
+note, with two parts.
+
+**1. Critical-path rows.** A table of the items in YOUR lane that another
+lane or the current push depends on. One row per item: the item, who depends
+on it, and its state with a date and CL number. Update the row IN THE SAME
+SESSION the state changes -- landed on main, went red, got blocked, got cut.
+A row nobody depends on does not belong in the table.
+
+**2. Findings outbox.** Date-stamped entries addressed `for <agent>` or
+`for fleet`, each a finding the addressee's plan depends on: a defect that
+invalidates their assumptions or recorded measurements, a contract change
+(`poll-key` moving to CCE is the canonical example), or a landed capability
+they were waiting on. One or two lines each; the CL is the record. Not
+process notes, not diligence, not anything already in `ExaminersAssay` or a
+trap list.
+
+The consumption rule is what keeps it short: **the ADDRESSEE deletes the
+entry from the author's outbox once it is absorbed into their own plan.**
+The deletion is the acknowledgement, and a workplan edit is docs-only, so it
+needs no token. An entry addressed `for fleet` is deleted by its author once
+every active workplan reflects it. If an entry survives three of the
+addressee's sessions untouched, tell Damian: the channel is being ignored.
+
+At session start, after init has read the workplans: absorb every outbox
+entry addressed to you BEFORE picking work, and check the critical-path rows
+of any lane yours depends on. Before starting an item, write your pick into
+your own workplan (val's rule, now fleet-wide): a register entry naming
+unowned work is a collision waiting to happen, and the workplan row is what
+prevents the second `fetch-tls`.
+
+What this protocol is NOT: it does not replace `For other agents` trap lists
+(durable machine facts stay there), it does not replace CL descriptions (the
+record), and it is not a status feed for Damian (rule 10 governs that). It is
+the narrow channel for "your plan depends on this and you do not know it
+yet."

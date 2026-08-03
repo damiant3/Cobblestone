@@ -10,6 +10,68 @@ Section: GPT Constants
   gpt-esp-guid : List Integer = [40, 115, 42, 193, 31, 248, 210, 17, 186, 75, 0, 160, 201, 62, 201, 59]
   gpt-disk-guid : List Integer = [205, 239, 1, 35, 69, 103, 137, 171, 205, 239, 1, 35, 69, 103, 137, 171]
   gpt-part-guid : List Integer = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+  gpt-part2-guid : List Integer = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17]
+
+ The fact store's partition type, C0DE1A11-FAC7-4C0D-9E75-C0DEC0DE5EED in
+ canonical form and mixed-endian on the medium. **This is a second copy of
+ gpt-codex-facts-guid in Foreword chapter Gpt and the two must agree.** The
+ plug is its own compilation unit and citing Gpt here would drag a chapter
+ full of Device.Block functions into an image writer that touches no
+ device, which is a poor trade for sixteen bytes.
+
+ A copied constant is the divergence this project has a chapter about, so
+ it gets a runner rather than a promise: codex/test/apps/facts-partition
+ boots a store on an image this writer produced and requires it to FIND its
+ partition. Change one list and not the other and that test stops finding
+ anything.
+
+  gpt-codex-facts-guid : List Integer = [17, 26, 222, 192, 199, 250, 13, 76, 158, 117, 192, 222, 192, 222, 94, 237]
+
+Section: Where The Two Partitions Sit
+
+ The image carried ONE partition, the ESP, spanning everything from 2048 to
+ the last usable LBA. A stick built that way has nowhere to put a fact:
+ DiskFacts addresses inside a partition of its own type, finds none, and
+ refuses -- which is correct and is also a stick that cannot remember
+ anything.
+
+ So the top of the medium becomes the fact store and the ESP takes the
+ rest. An eighth of the medium, capped at 128 MB and floored at 1 MB: on
+ the shipped 16 MB image that is 2 MB of store against 13 MB of ESP, and
+ the ESP payload (a PE, a 2.6 MB seed, a 2.8 MB source concat) has room to
+ spare against build-img's 90-per-cent refusal.
+
+ The store goes at the TOP rather than between the ESP and the backup
+ tables because growing the ESP later moves one boundary instead of two,
+ and because a firmware that scans for an ESP finds it at the low end where
+ every other tool expects it.
+
+  gpt-facts-max-sectors : Integer = 262144
+  gpt-facts-min-sectors : Integer = 2048
+
+  gpt-facts-sectors-for : Integer -> Integer
+  gpt-facts-sectors-for (total-sectors) =
+   let eighth = total-sectors / 8
+   in if eighth > gpt-facts-max-sectors then gpt-facts-max-sectors
+   else if eighth < gpt-facts-min-sectors then gpt-facts-min-sectors
+   else eighth
+
+  gpt-last-usable-lba : Integer -> Integer
+  gpt-last-usable-lba (total-sectors) = total-sectors - 1 - gpt-entry-sectors - 1
+
+  gpt-facts-end-lba : Integer -> Integer
+  gpt-facts-end-lba (total-sectors) = gpt-last-usable-lba total-sectors
+
+  gpt-facts-start-lba : Integer -> Integer
+  gpt-facts-start-lba (total-sectors) =
+   gpt-facts-end-lba total-sectors - gpt-facts-sectors-for total-sectors + 1
+
+  gpt-esp-end-lba : Integer -> Integer
+  gpt-esp-end-lba (total-sectors) = gpt-facts-start-lba total-sectors - 1
+
+  gpt-esp-sectors : Integer -> Integer
+  gpt-esp-sectors (total-sectors) =
+   gpt-esp-end-lba total-sectors - gpt-part-start-lba + 1
 
 Section: CRC32 Table
   gpt-crc32-table : List Integer
@@ -128,17 +190,29 @@ Section: GPT Header
    in let w19 = gpt-buf-write-i32 buf (off + 16) hdr-crc
    in 0
 
-Section: GPT Partition Entry
+Section: GPT Partition Entries
+
+ Two entries, 128 bytes each, both inside sector 2, so the zero-fill and the
+ partition-entry CRC that already cover 32 sectors from there need no change.
+
   gpt-write-partition-entry : Integer, Integer -> Integer
   gpt-write-partition-entry (buf) (total-sectors) =
    let off = 1024
-   in let backup-entries-lba = total-sectors - 1 - gpt-entry-sectors
-   in let part-end-lba = backup-entries-lba - 1
    in let w0 = gpt-buf-write-guid buf off gpt-esp-guid
    in let w1 = gpt-buf-write-guid buf (off + 16) gpt-part-guid
    in let w2 = gpt-buf-write-i64 buf (off + 32) gpt-part-start-lba
-   in let w3 = gpt-buf-write-i64 buf (off + 40) part-end-lba
+   in let w3 = gpt-buf-write-i64 buf (off + 40) (gpt-esp-end-lba total-sectors)
    in let w4 = gpt-buf-write-utf16 buf (off + 56) "EFI System" 0 10
+   in gpt-write-facts-entry buf total-sectors
+
+  gpt-write-facts-entry : Integer, Integer -> Integer
+  gpt-write-facts-entry (buf) (total-sectors) =
+   let off = 1152
+   in let w0 = gpt-buf-write-guid buf off gpt-codex-facts-guid
+   in let w1 = gpt-buf-write-guid buf (off + 16) gpt-part2-guid
+   in let w2 = gpt-buf-write-i64 buf (off + 32) (gpt-facts-start-lba total-sectors)
+   in let w3 = gpt-buf-write-i64 buf (off + 40) (gpt-facts-end-lba total-sectors)
+   in let w4 = gpt-buf-write-utf16 buf (off + 56) "Codex Facts" 0 11
    in 0
 
 Section: Backup GPT

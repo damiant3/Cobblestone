@@ -84,19 +84,30 @@ Section: Types
 Section: Construction
 
  A client carries its X25519 private key, a 32-byte handshake random, the
- trust anchors it will accept, and the calendar time (14 ASCII digits) it
- checks certificate validity against. Entropy and clock enter from the
- caller and are never invented here.
+ trust anchors it will accept, the calendar time (14 ASCII digits) it
+ checks certificate validity against, and THE NAME IT DIALLED. Entropy and
+ clock enter from the caller and are never invented here.
 
-  tls-ep-client-new : List Integer, List Integer, List X509Anchor, List Integer -> TlsEp
-  tls-ep-client-new (priv) (random) (anchors) (cal-now) =
+ The name is a parameter and not a setter, and that is the whole point of
+ this signature. It used to be optional -- `tls-ep-expect-peer` set it
+ after the fact, an unset name meant "anything matches", and every caller
+ in the tree left it unset, so a certificate from any trusted authority
+ authenticated for every host. An optional security check that defaults to
+ permissive is not a check; it is a place where one could have gone. Made
+ required, the type checker visits every caller and asks the question.
+
+ It is ASCII, not CCE: it is compared against bytes out of a certificate,
+ and a certificate holds ASCII. Convert at the boundary.
+
+  tls-ep-client-new : List Integer, List Integer, List X509Anchor, List Integer, List Integer -> TlsEp
+  tls-ep-client-new (priv) (random) (anchors) (cal-now) (expected) =
     TlsEp { tep-server = False, tep-priv = priv, tep-pub = x25519-public-key priv,
             tep-random = random, tep-transcript = [], tep-hs-secret = [], tep-c-hs = [], tep-s-hs = [],
             tep-c-ap = [], tep-s-ap = [], tep-read-seq = 0, tep-write-seq = 0, tep-app-read-seq = 0,
             tep-app-write-seq = 0, tep-phase = 0, tep-cert-chain = [], tep-sign-priv = [], tep-sign-pub = [],
             tep-anchors = anchors, tep-cal-now = cal-now,
-            tep-peer-key = X509Key { xk-alg = KeyUnknown, xk-bytes = [] }, tep-auth-done = False,
-            tep-expected-peer = [], tep-done = False, tep-app-in = [] }
+            tep-peer-key = X509Key { xk-alg = KeyUnknown, xk-bytes = [], xk-mod = [], xk-exp = [] }, tep-auth-done = False,
+            tep-expected-peer = expected, tep-done = False, tep-app-in = [] }
 
  A server presents a certificate chain (leaf first) and the Ed25519 private
  key that matches the leaf, and signs the transcript with it.
@@ -108,11 +119,8 @@ Section: Construction
             tep-c-ap = [], tep-s-ap = [], tep-read-seq = 0, tep-write-seq = 0, tep-app-read-seq = 0,
             tep-app-write-seq = 0, tep-phase = 0, tep-cert-chain = chain, tep-sign-priv = sign-priv,
             tep-sign-pub = sign-pub, tep-anchors = [], tep-cal-now = [],
-            tep-peer-key = X509Key { xk-alg = KeyUnknown, xk-bytes = [] }, tep-auth-done = False,
+            tep-peer-key = X509Key { xk-alg = KeyUnknown, xk-bytes = [], xk-mod = [], xk-exp = [] }, tep-auth-done = False,
             tep-expected-peer = [], tep-done = False, tep-app-in = [] }
-
-  tls-ep-expect-peer : TlsEp, List Integer -> TlsEp
-  tls-ep-expect-peer (ep) (subject) = __record-set ep "tep-expected-peer" subject
 
 Section: Record And Message Helpers
 
@@ -273,19 +281,17 @@ Section: Client Receive
       is None -> ep
       is Just (certs) -> tep-cert-key-walk ep certs
 
+ The identity check is inside x509-chain-verify, which cannot be called
+ without saying who was expected. A chain that is genuine but belongs to
+ somebody else answers ChainWrongIdentity and leaves the peer key unset,
+ so the handshake goes no further: authentication is not "the certificate
+ is real", it is "the certificate is theirs".
+
   tep-cert-key-walk : TlsEp, List X509Cert -> TlsEp
   tep-cert-key-walk (ep) (certs) =
-    when x509-chain-verify certs (ep.tep-anchors) (ep.tep-cal-now)
-      is ChainOk ->
-        (if tep-peer-matches ep (list-at certs 0)
-         then __record-set ep "tep-peer-key" ((list-at certs 0).xc-key)
-         else ep)
+    when x509-verify-peer certs (ep.tep-anchors) (ep.tep-cal-now) (ep.tep-expected-peer)
+      is ChainOk -> __record-set ep "tep-peer-key" ((list-at certs 0).xc-key)
       is otherwise -> ep
-
-  tep-peer-matches : TlsEp, X509Cert -> Boolean
-  tep-peer-matches (ep) (leaf) =
-    if list-length (ep.tep-expected-peer) == 0 then True
-    else x509-name-eq (ep.tep-expected-peer) (leaf.xc-subject)
 
  CertificateVerify: the signature is checked over the transcript hash
  THROUGH the Certificate -- the transcript as it stands before this

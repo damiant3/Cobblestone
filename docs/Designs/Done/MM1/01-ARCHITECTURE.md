@@ -1,4 +1,4 @@
-# 01 — System Architecture
+# 01 -- System Architecture
 
 ## Design Philosophy
 
@@ -63,7 +63,7 @@ Codex.sln
 └── bootstrap/                       # Self-hosting artifacts
     ├── stage0/                      # C# compiler compiling Codex
     ├── stage1/                      # Stage0-compiled Codex compiler compiling itself
-    └── stage2/                      # Stage1-compiled compiler — should match stage1 output
+    └── stage2/                      # Stage1-compiled compiler -- should match stage1 output
 ```
 
 ---
@@ -106,7 +106,7 @@ Codex.sln
        │              │ │.Lsp   │ │            │
        └─────────────┘ └───────┘ └────────────┘
 
-       Codex.Repository is orthogonal — consumed by Cli, Lsp, DevEnv, 
+       Codex.Repository is orthogonal -- consumed by Cli, Lsp, DevEnv, 
        and by the Emit layer (for content addressing of compiled artifacts).
 ```
 
@@ -115,74 +115,74 @@ Codex.sln
 ## Layer Responsibilities
 
 ### Codex.Core
-- `ContentHash` — SHA-256 content addressing for all artifacts
-- `Name` / `QualifiedName` — identifier representation, hyphenated-lowercase convention
-- `Span` / `SourceLocation` — source position tracking for error reporting
-- `Diagnostic` — errors, warnings, suggestions with rich location info
-- `DiagnosticBag` — accumulator for diagnostics throughout compilation
+- `ContentHash` -- SHA-256 content addressing for all artifacts
+- `Name` / `QualifiedName` -- identifier representation, hyphenated-lowercase convention
+- `Span` / `SourceLocation` -- source position tracking for error reporting
+- `Diagnostic` -- errors, warnings, suggestions with rich location info
+- `DiagnosticBag` -- accumulator for diagnostics throughout compilation
 - No dependencies beyond .NET 8 BCL.
 
 ### Codex.Syntax
-- **Lexer** — hand-written, not generated. The prose-aware tokenization is too nuanced for a generator.
+- **Lexer** -- hand-written, not generated. The prose-aware tokenization is too nuanced for a generator.
   - Tokens include: prose blocks, notation blocks, keywords, operators, identifiers, literals, indentation
   - The lexer must understand the Codex indentation model (prose at one level, code indented beneath it)
-- **Parser** — recursive descent with Pratt parsing for expressions
+- **Parser** -- recursive descent with Pratt parsing for expressions
   - Produces a Concrete Syntax Tree (CST) that preserves all whitespace, comments, and prose
   - The CST is the basis for formatting, the Reader view, and round-trip fidelity
-- **Grammar** — defined in a formal notation in the docs, implemented in code
+- **Grammar** -- defined in a formal notation in the docs, implemented in code
 
 ### Codex.Ast
-- **Desugaring** — transforms CST into AST, removing syntactic sugar
-- **AST nodes** — algebraic data types representing the abstract structure
+- **Desugaring** -- transforms CST into AST, removing syntactic sugar
+- **AST nodes** -- algebraic data types representing the abstract structure
   - `Chapter`, `Section`, `Definition`, `Claim`, `Proof`
   - `Expression`, `Pattern`, `TypeExpression`, `EffectRow`
-  - `ProseBlock` — the English text that is load-bearing
-- **Visitor / Rewriter** — standard infrastructure for AST traversal and transformation
+  - `ProseBlock` -- the English text that is load-bearing
+- **Visitor / Rewriter** -- standard infrastructure for AST traversal and transformation
 
 ### Codex.Types
-- **Type representation** — algebraic types, dependent types, linear types, effect rows
-- **Type inference** — bidirectional type checking with unification
-- **Constraint solver** — solves type constraints generated during inference
-- **Linearity checker** — verifies that linear values are used exactly once
-- **Effect checker** — verifies that effects are properly declared and propagated
-- **Dependent type evaluator** — normalizes type-level expressions (e.g., `Vector (m + n)`)
+- **Type representation** -- algebraic types, dependent types, linear types, effect rows
+- **Type inference** -- bidirectional type checking with unification
+- **Constraint solver** -- solves type constraints generated during inference
+- **Linearity checker** -- verifies that linear values are used exactly once
+- **Effect checker** -- verifies that effects are properly declared and propagated
+- **Dependent type evaluator** -- normalizes type-level expressions (e.g., `Vector (m + n)`)
 
 ### Codex.Semantics
-- **Name resolution** — binds identifiers to their definitions across chapters/sections
-- **Scope analysis** — builds scope chains, detects shadowing, enforces visibility
-- **Module system** — chapters as modules, sections as sub-modules, import/export
-- **Semantic model** — the queryable model of a fully analyzed program (consumed by LSP, Narrator)
+- **Name resolution** -- binds identifiers to their definitions across chapters/sections
+- **Scope analysis** -- builds scope chains, detects shadowing, enforces visibility
+- **Module system** -- chapters as modules, sections as sub-modules, import/export
+- **Semantic model** -- the queryable model of a fully analyzed program (consumed by LSP, Narrator)
 
 ### Codex.IR
-- **IR nodes** — a typed, effect-annotated, linearity-annotated intermediate representation
-- **Lowering** — AST + types → IR
-- **Optimization passes** — dead code elimination, inlining, constant folding, effect erasure for pure contexts
-- **Monomorphization** — specializes generic definitions for specific types (needed for some backends)
+- **IR nodes** -- a typed, effect-annotated, linearity-annotated intermediate representation
+- **Lowering** -- AST + types → IR
+- **Optimization passes** -- dead code elimination, inlining, constant folding, effect erasure for pure contexts
+- **Monomorphization** -- specializes generic definitions for specific types (needed for some backends)
 
 ### Codex.Proofs
-- **Proof terms** — representation of proofs (induction, rewriting, case analysis)
-- **Proof checker** — verifies that a proof term inhabits its claimed type
-- **Tactics** — automated proof search strategies (simple cases only in bootstrap)
-- **Integration with types** — proof obligations generated by dependent type constraints
+- **Proof terms** -- representation of proofs (induction, rewriting, case analysis)
+- **Proof checker** -- verifies that a proof term inhabits its claimed type
+- **Tactics** -- automated proof search strategies (simple cases only in bootstrap)
+- **Integration with types** -- proof obligations generated by dependent type constraints
 
 ### Codex.Repository
-- **Fact store** — append-only, content-addressed storage
-- **Fact types** — Definition, Proposal, Verdict, Test, Benchmark, Discussion
-- **Views** — consistent selections of facts, branching without branches
-- **Trust lattice** — vouching, proof records, test records per definition
-- **Query engine** — search by type signature, capability, proof coverage
-- **Serialization** — facts stored as content-addressed blobs with metadata
+- **Fact store** -- append-only, content-addressed storage
+- **Fact types** -- Definition, Proposal, Verdict, Test, Benchmark, Discussion
+- **Views** -- consistent selections of facts, branching without branches
+- **Trust lattice** -- vouching, proof records, test records per definition
+- **Query engine** -- search by type signature, capability, proof coverage
+- **Serialization** -- facts stored as content-addressed blobs with metadata
 
 ### Codex.Emit
-- **Emitter interface** — each backend implements a common interface
-- **Capability model** — each backend declares what language features it supports
-- **Fallback strategy** — when a backend can't represent a feature, insert runtime check or reject
-- **Per-backend projects** — isolated, independently testable
+- **Emitter interface** -- each backend implements a common interface
+- **Capability model** -- each backend declares what language features it supports
+- **Fallback strategy** -- when a backend can't represent a feature, insert runtime check or reject
+- **Per-backend projects** -- isolated, independently testable
 
 ### Codex.Narration
-- **Explanation engine** — given a semantic model node, produce English explanation
-- **This is NOT an LLM** — it is a structured template system that reads the prose already in the source and composes it with type information, proof records, and history
-- **Used by** — the DevEnv (Narrator panel), the LSP (hover documentation), the CLI (explain command)
+- **Explanation engine** -- given a semantic model node, produce English explanation
+- **This is NOT an LLM** -- it is a structured template system that reads the prose already in the source and composes it with type information, proof records, and history
+- **Used by** -- the DevEnv (Narrator panel), the LSP (hover documentation), the CLI (explain command)
 
 ---
 
@@ -195,7 +195,7 @@ All long-running operations accept `CancellationToken` and report progress via `
 All AST, IR, type, and fact representations are immutable. We use `record` types and `ImmutableArray<T>` pervasively. Mutation happens only in builders during construction.
 
 ### Diagnostics
-Every phase produces diagnostics. Diagnostics are accumulated in a `DiagnosticBag` and surfaced uniformly. Diagnostics are never thrown as exceptions — they are values.
+Every phase produces diagnostics. Diagnostics are accumulated in a `DiagnosticBag` and surfaced uniformly. Diagnostics are never thrown as exceptions -- they are values.
 
 ### Testing Strategy
 - Unit tests per project, testing each phase in isolation
@@ -219,4 +219,4 @@ Every phase produces diagnostics. Diagnostics are accumulated in a `DiagnosticBa
 | CLI | System.CommandLine | Modern .NET CLI framework |
 | LSP | OmniSharp LSP libraries | Language Server Protocol |
 
-No external dependencies are added unless they solve a problem that would take more than a week to solve ourselves. We are building a language — we control our dependencies.
+No external dependencies are added unless they solve a problem that would take more than a week to solve ourselves. We are building a language -- we control our dependencies.

@@ -1,0 +1,170 @@
+Chapter: GopScene
+  cites Works chapter GopDraw
+  cites Works chapter GopUsbKbd
+  cites Kernel chapter BitmapFont
+  cites Engine chapter Renderer3D
+  cites Engine chapter Scene3D
+  cites Engine chapter Mesh
+  cites Engine chapter Material
+  cites Math chapter Matrix4
+  cites Math chapter Cordic
+  cites Game chapter Color
+
+ A software-rendered 3D scene running in the desktop's content pane, on
+ whatever framebuffer the firmware handed us. No host rasterizer and no
+ GPU: every triangle is projected, shaded and filled by Renderer3D, and
+ every pixel is a poke-32 into the panel.
+
+ It draws into the content rectangle rather than the whole panel, so the
+ sidebar, the top bar, the taskbar and the running clock stay on the glass
+ around a moving view.
+
+ The chrome sizes here are GopDesk's, and the two files have to agree by
+ hand because GopDesk cites this one and the dependency cannot run the
+ other way. `dk-bar-h` and `dk-task-h` are scaled by `ui-scale`; the
+ sidebar's 160 is a widget minimum and is not.
+
+ The scene is rendered into a back buffer and blitted to the pane in one
+ pass rather than rasterized straight at the framebuffer. Painting in
+ place is visible while it happens: the clear lands first, so a viewer
+ sees the pane flash to sky and refill on every frame, and a capture taken
+ mid-frame shows only the nodes drawn by then. The blit costs one read and
+ one write per pixel of the pane against the clear's one write, and that
+ is what the steady picture is bought with.
+
+ The target is built once. Rebuilding it would allocate a fresh colour and
+ depth buffer every frame, and at this size that is megabytes a frame that
+ never come back.
+
+ The camera orbits on the PIT tick, so the rotation runs at wall-clock
+ speed whatever the frame rate. The angle goes through Cordic rather
+ than Matrix4's mat4-sin-approx: that one is a two-term Taylor valid
+ only near zero, and at half a turn it answers -2.03 where the sine is
+ 0. Cordic quadrant-reduces and is honest all the way round.
+
+ We say:
+
+Section: Geometry
+
+  gsc-sidebar-w : Integer = 160
+  gsc-topbar-h : Integer = 22
+  gsc-taskbar-h : Integer = 28
+  gsc-tick-cell : Integer = 28672
+
+ Cordic answers on a scale of 1000 and takes milliradians, 6283 to the
+ turn. The orbit radius is 5200 world units, so the scaled cosine is
+ multiplied by 5.2 to land there.
+
+  gsc-radius : Real = 5.2
+  gsc-eye-height : Real = 2200.0
+  gsc-turn : Integer = 6283
+
+Section: Scene
+
+  gsc-camera : Integer -> Camera3D
+  gsc-camera (angle) =
+    let ca = real-from-int (cordic-cos angle)
+    in let sa = real-from-int (cordic-sin angle)
+    in camera3d-new (vec3-new (ca * gsc-radius) gsc-eye-height (sa * gsc-radius)) (vec3-new 0.0 300.0 0.0) 0.785
+
+ Built once. Only the camera changes per frame, through a record copy
+ that leaves the meshes alone -- rebuilding the scene would rebuild
+ every vertex and index list in it.
+
+  gsc-scene : Integer -> Scene3DState
+  gsc-scene (dummy) =
+    let scene = scene3d-new (gsc-camera 0)
+    in let ground = sn3-with-mesh "ground" (mesh-plane 3000 3000) (emat-flat (rgb 90 80 62))
+    in let cube = sn3-set-pos (sn3-with-mesh "cube" (mesh-cube 900) (emat-shiny (rgb 90 130 210) 32)) (-900.0) 450.0 0.0
+    in let pyr = sn3-set-pos (sn3-with-mesh "pyr" (mesh-pyramid 600 1100) emat-red) 1100.0 0.0 (-300.0)
+    in let s2 = scene3d-add (scene3d-add (scene3d-add scene ground) cube) pyr
+    in let key = dir-light (vec3-new (-400.0) 800.0 400.0) (rgb 255 250 235) 850
+    in scene3d-set-ambient (scene3d-add-light s2 key) 260
+
+Section: Loop
+
+ The blit is the one step that has to know both pitches: the pane's rows
+ sit stride apart on the panel and w apart in the back buffer.
+
+  gsc-blit-span : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gsc-blit-span (dst) (doff) (src) (soff) (w) (x) =
+    if x >= w then 0
+    else let d = poke-32 dst ((doff + x) * 4) (peek-32 src ((soff + x) * 4))
+    in gsc-blit-span dst doff src soff w (x + 1)
+
+  gsc-blit-rows : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gsc-blit-rows (dst) (stride) (src) (w) (h) (y) =
+    if y >= h then 0
+    else let d = gsc-blit-span dst (y * stride) src (y * w) w 0
+    in gsc-blit-rows dst stride src w h (y + 1)
+
+ One frame: clear the back buffer, point the camera, render, blit to the
+ pane, then the hint line. The hint goes onto the panel after the blit
+ because the blit covers it.
+
+  gsc-frame : R3dTriState, Scene3DState, Integer, Integer, Integer, Integer, CbfFont, Integer -> Integer
+  gsc-frame (tgt) (scene) (angle) (sky) (base) (stride) (font) (ch) =
+    let c = r3d-target-clear tgt sky
+    in let posed = scene3d-set-camera scene (gsc-camera angle)
+    in let d = r3d-render-into tgt posed
+    in let b = gsc-blit-rows (base + gsc-sidebar-w * 4) stride (tgt.r3t-base) (tgt.r3t-w) (tgt.r3t-h) 0
+    in gop-draw-text base stride font (gsc-sidebar-w + 8) (ch - 16) "3D: software pipeline, no GPU. Esc returns." 65280 1 0
+
+ Esc leaves. The self tail call keeps the loop constant-stack, and the
+ angle is derived from the tick counter rather than accumulated, so a
+ slow frame loses no rotation and a fast one gains none.
+
+ The frame is bracketed because there is no collector and this loop has
+ no bound: a frame makes about 20 KB permanent (geometry, not pixels),
+ which at the measured 36 fps is roughly 730 KB a second for as long as
+ anyone leaves the view open. Everything the bracket drops is built
+ inside the frame -- the posed camera, the Cordic reals, the render's
+ temporaries. The target and the scene are built once in gsc-run, below
+ the mark, so the restore cannot reach them, and the angle comes from
+ the tick cell rather than an accumulator, so no iteration reads what
+ the last one built.
+
+ The mark sits ABOVE the keyboard poll rather than below it, so the
+ bracket covers the whole iteration and not just the render. GopUsbKbd
+ argues its idle path allocates nothing, and reading it that is true
+ today; but on a board with a USB keyboard the pump runs a three-phase
+ state machine on every frame, and the cost of this loop should not
+ depend on a claim about another chapter that nothing re-checks. Only
+ the scancode has to cross the restore, and an Integer is not heap.
+ What the pump writes survives it either way: the ring, the report and
+ the phase cell are fields built before the loop, and the mailbox at
+ gk-cell is a fixed address.
+
+  gsc-loop : R3dTriState, Scene3DState, Integer, Integer, Integer, CbfFont, Integer, UsbKbd -> [Device.Port] Integer
+  gsc-loop (tgt) (scene) (sky) (base) (stride) (font) (ch) (kbd) = act
+    let mark = __heap-save
+    in act
+      sc <- kbd-take kbd
+      let ticks = peek-qword gsc-tick-cell 0
+      in let angle = int-mod (ticks * 40) gsc-turn
+      in let f = gsc-frame tgt scene angle sky base stride font ch
+      in let dropped = __heap-restore mark
+      in if sc == 1 then 0
+      else gsc-loop tgt scene sky base stride font ch kbd
+    end
+  end
+
+ The cursor is hidden for the whole run rather than saved under each
+ frame: the view repaints continuously, so a save-under patch would be
+ stale the instant it was taken and the first restore would stamp a
+ ghost onto the scene.
+
+  gsc-run : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, Integer -> [Device.Port] Integer
+  gsc-run (base) (w) (h) (stride) (font) (kbd) (cs) = act
+    hd <- cursor-hide cs base stride
+    let s = ui-scale w
+    in let sky = rgb-to-packed (rgb 20 20 30)
+    in let top = gsc-topbar-h * s
+    in let cw = w - gsc-sidebar-w
+    in let ch = h - gsc-taskbar-h * s - top
+    in let tgt = r3d-target-new cw ch sky
+    in let scene = gsc-scene 0
+    in gsc-loop tgt scene sky (base + top * stride * 4) stride font ch kbd
+  end
+
+Page 1

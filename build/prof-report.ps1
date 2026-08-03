@@ -1,4 +1,4 @@
-# prof-report.ps1 — resolve sampling-profiler output into a histogram
+# prof-report.ps1 -- resolve sampling-profiler output into a histogram
 #
 # The guest builtins prof-start/prof-dump (see OperatorsManual, Sampling
 # Profiler) emit PROF:<hex-rip> lines over serial, one per timer-tick

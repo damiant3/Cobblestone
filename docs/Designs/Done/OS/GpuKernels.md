@@ -1,8 +1,8 @@
-# GPU Kernels — Builder-Facing Compute via Codex-Native PTX
+# GPU Kernels -- Builder-Facing Compute via Codex-Native PTX
 
 **Author**: Pip
 **Date**: 2026-05-08
-**Status**: Proposal — for review
+**Status**: Proposal -- for review
 **Companion**: [GpuCompute.md](GpuCompute.md) (transport / proxy / firmware constraints)
 **Provoked by**: NVlabs/cuda-oxide, dropped 2026-05-08
 
@@ -12,8 +12,8 @@ cuda-oxide is NVIDIA Research's new (alpha, 2026-05-08) custom rustc backend
 that compiles `#[kernel]`-marked Rust functions to CUDA PTX, with a
 matching device-side intrinsic library (`thread`, `warp`, `shared`,
 `barrier`, `atomic`, `tma`, `cluster`, `tcgen05`, `wgmma`) and a
-host-side RAII runtime. It's a serious effort — 868 TFLOPS GEMM on B200,
-58% of cuBLAS SoL — and it answers a question Codex hasn't yet
+host-side RAII runtime. It's a serious effort -- 868 TFLOPS GEMM on B200,
+58% of cuBLAS SoL -- and it answers a question Codex hasn't yet
 answered: **how do builders write GPU kernels in their language?**
 
 The implementation cannot be ported. It depends on rustc, Pliron, LLVM 21,
@@ -27,11 +27,11 @@ pattern, GpuProxy/GpuBridge transport, the existing effect-row
 machinery).
 
 This doc proposes a **Codex-first GPU kernel programming surface** in
-which kernel-ness is carried by the type signature — specifically the
-`[Device]` effect — with no inline annotations. New: `[Device]` and
+which kernel-ness is carried by the type signature -- specifically the
+`[Device]` effect -- with no inline annotations. New: `[Device]` and
 `[Gpu]` effects, a `cap-gpu` capability, an 8th emit mode (PTX), a
 `codex.foreword.gpu` quire of intrinsics, and a phased integration path
-that augments — not replaces — the existing GpuCompute.md plan.
+that augments -- not replaces -- the existing GpuCompute.md plan.
 
 The name "Pliron" does not appear below this line. We are not adding an
 MLIR layer.
@@ -46,8 +46,8 @@ MLIR layer.
 | `codex.foreword.ai/GpuProxy.codex` | Guest-side fixed-op command serialization (matmul, matvec, relu, softmax, conv1d) | 183 |
 | `codex.kernel/GpuBridge.codex` | COM3 serial transport for command/response with the host proxy | 136 |
 | `codex.build/gpu-dispatch.cu` | Host-side cuBLAS / CUDA dispatcher; 17 fixed ops (matmul through clamp) | 744 |
-| `codex.kernel/Pci.codex` (Phase 0 ✅) | PCIe enumeration | — |
-| `codex.test/apps/gpu-{bridge,proxy}-test.codex` | End-to-end test samples | — |
+| `codex.kernel/Pci.codex` (Phase 0 ✅) | PCIe enumeration | -- |
+| `codex.test/apps/gpu-{bridge,proxy}-test.codex` | End-to-end test samples | -- |
 
 **The hard constraint from GpuCompute.md still applies and does not
 change here**: NVIDIA GPUs since Turing require signed firmware blobs
@@ -67,9 +67,9 @@ code into the UEFI console-driven app, and expose **VMs and the GPU**
 to end-users and builders.
 
 - **End-users** see the GPU as a capability granted by the trust
-  lattice — they run apps that need it.
+  lattice -- they run apps that need it.
 - **Builders** see the GPU as a *programming surface*. Today there
-  is none — they can only call into the closed enum of ops in
+  is none -- they can only call into the closed enum of ops in
   `GpuProxy`. To "expose the GPU to builders" we need a language-level
   way to write kernels in Codex.
 
@@ -136,7 +136,7 @@ after it's been frozen as a fixed-op shape.
 | `tcgen05.rs` | 2285 | Blackwell tensor cores: TMEM, MMA, cta_group::2 |
 | `wgmma.rs` | 329 | Hopper warpgroup MMA |
 | `fence.rs` | 54 | acq/rel/sc fences |
-| `cusimd.rs`, `clc.rs`, `cooperative_groups.rs`, `disjoint.rs`, `debug.rs`, `grid.rs` | — | misc + the `DisjointSlice` safety wrapper |
+| `cusimd.rs`, `clc.rs`, `cooperative_groups.rs`, `disjoint.rs`, `debug.rs`, `grid.rs` | -- | misc + the `DisjointSlice` safety wrapper |
 
 **Host runtime** (`crates/cuda-core/src/`, ~1700 LOC):
 
@@ -144,8 +144,8 @@ after it's been frozen as a fixed-op shape.
 |---|---|
 | `context.rs` | `CudaContext` (Arc<>, owns device, primary context) |
 | `module.rs` | `CudaModule::load_module_from_ptx_src(&str) -> CUmodule` (driver JIT) |
-| `device_buffer.rs` | `DeviceBuffer<T>` — typed device allocation + htod/dtoh |
-| `stream.rs` | `CudaStream` — async dispatch queue |
+| `device_buffer.rs` | `DeviceBuffer<T>` -- typed device allocation + htod/dtoh |
+| `stream.rs` | `CudaStream` -- async dispatch queue |
 | `event.rs`, `peer.rs`, `vmm.rs` | events, peer access, virtual memory mgmt |
 | `launch.rs` | `LaunchConfig { grid_dim, block_dim, shared_mem_bytes }` |
 
@@ -186,7 +186,7 @@ the driver loads the cubin. Both libNVVM and nvJitLink are loaded via
    `ThreadIndex`; `ThreadIndex` is constructible only by `index_1d()` /
    `index_2d()`; those derive from hardware special registers. The
    safety property is enforced at the type level rather than in
-   review. (cuda-oxide flags `index_2d` as currently unsound — a
+   review. (cuda-oxide flags `index_2d` as currently unsound -- a
    genuine open problem they're solving with witness types.)
 4. **Atomics with explicit scope and ordering in the type.**
    `DeviceAtomicU32` vs `BlockAtomicU32` vs `SystemAtomicU32` is a
@@ -197,8 +197,8 @@ the driver loads the cubin. Both libNVVM and nvJitLink are loaded via
    PTX entry, and the stream. Fits an algebraic-effect handler model
    one-to-one.
 6. **Device → host via libdevice + nvJitLink.** Math intrinsics resolve
-   through a well-known library. The mechanism — link-time-optimization
-   IR (LTOIR) — is the right primitive: kernel × library → cubin.
+   through a well-known library. The mechanism -- link-time-optimization
+   IR (LTOIR) -- is the right primitive: kernel × library → cubin.
 7. **Generic monomorphization at the codegen boundary.** The host is a
    single binary; the device gets one PTX entry per concrete instantiation.
    The naming convention is hashed and stable.
@@ -235,20 +235,20 @@ signature. The effect row IS the contract, and the contract is what
 the compiler reads. Anything that has to also be told about behavior
 out-of-band is a bug in the design. Adopting an inline annotation to
 mark kernels would let a kernel hide as a function and a function
-hide as a kernel — exactly the opposite of what we want.
+hide as a kernel -- exactly the opposite of what we want.
 
 **Two effects**, both declared in `codex.foreword.gpu/GpuEffect.codex`:
 
-- `[Device]` — the body runs *on* the GPU. Functions with `[Device]`
+- `[Device]` -- the body runs *on* the GPU. Functions with `[Device]`
   in their effect row are **kernels** (when the row also has no host
   effects), or **device functions** (callable from kernels). The
   compiler emits PTX for any `cites`-closure reachable from a
   `[Device]`-effected definition. The available intrinsics inside a
   `[Device]` body are exactly those declared in the
   `codex.foreword.gpu/{Thread,Warp,Block,Grid,Shared,Atomic,Barrier,
-  Cluster,Tma,Tcgen05,Wgmma}.codex` chapters — each of those carries
+  Cluster,Tma,Tcgen05,Wgmma}.codex` chapters -- each of those carries
   `[Device]` in its operation signatures.
-- `[Gpu]` — the *caller-side* effect of launching kernels and moving
+- `[Gpu]` -- the *caller-side* effect of launching kernels and moving
   buffers. `kernel-launch`, `device-buffer-from-host`,
   `device-buffer-zeroed`, `device-buffer-to-host` all carry `[Gpu]`.
   A function with `[Gpu]` in its effect row is host code talking to
@@ -257,7 +257,7 @@ hide as a kernel — exactly the opposite of what we want.
 A program needing to launch kernels has `[Gpu]` in `opening`'s
 effect row. A kernel definition has `[Device]` in its return type
 row. The two never appear in the same effect row on the same
-function — host functions are not kernels, kernels are not host
+function -- host functions are not kernels, kernels are not host
 functions. The launch operator is the bridge: it accepts a
 `[Device]`-typed function and discharges into `[Gpu]`.
 
@@ -269,11 +269,11 @@ this purpose. The type system carries it.**
 table). Granted at process spawn time; revocable via
 `process-restrict-cap`. The 5-phase verifier (Phase 3) refuses to
 load a CDX that uses `[Gpu]` without `cap-gpu` declared. `[Device]`
-does not need a capability check at the same level — it's never
+does not need a capability check at the same level -- it's never
 exercised host-side; reaching `[Device]` code from outside the
 kernel boundary is a type error.
 
-**Intrinsic shelf**: `codex.foreword.gpu/`, a new quire — chapters
+**Intrinsic shelf**: `codex.foreword.gpu/`, a new quire -- chapters
 mirror cuda-oxide's catalog where the hardware semantics are universal:
 
 | Chapter | Maps to cuda-oxide | Notes |
@@ -293,7 +293,7 @@ mirror cuda-oxide's catalog where the hardware semantics are universal:
 | `LaunchConfig.codex` | `cuda-core/launch.rs` | `LaunchConfig { grid : (Integer, Integer, Integer), block : (Integer, Integer, Integer), shared-bytes : Integer }` plus `for-num-elems n` helper |
 | `GpuEffect.codex` | (new) | `effect Gpu where ...`; `kernel-launch` op |
 
-**Worked example** — vecadd as a builder writes it:
+**Worked example** -- vecadd as a builder writes it:
 
 ```codex
 Chapter: VecAdd
@@ -332,7 +332,7 @@ Chapter: VecAdd
 ```
 
 The `[Device]` effect on `vecadd`'s return type is what marks it as
-a kernel — there is nothing else marking it. The type checker enforces
+a kernel -- there is nothing else marking it. The type checker enforces
 the contract: `vecadd`'s body may only use operations whose effect
 rows are subsets of `[Device]` (so `index-1d`, `disjoint-get-mut`,
 list-at on a CDX-resident input are fine; `print-line` is rejected
@@ -365,7 +365,7 @@ Source (.codex)
         ├─ IMG   (GPT disk)
         ├─ DISK  (ATA)
         ├─ MEASURE
-        └─ PTX   (NEW — device kernels only)
+        └─ PTX   (NEW -- device kernels only)
 ```
 
 A single source file produces:
@@ -385,12 +385,12 @@ x86-64/ARM64/RISC-V backends already use. PTX is a typed assembly with
 a small, stable surface; emitting it is a job the existing emitter
 generalizes to. Three PTX-specific pieces:
 
-- `codex/Emit/PtxRegisterAllocator.codex` — virtual-register style
+- `codex/Emit/PtxRegisterAllocator.codex` -- virtual-register style
   (PTX uses %rd<N>, %f<N> etc., effectively unbounded virtual regs;
   the driver does the real allocation at JIT time).
-- `codex/Emit/PtxOpEncoding.codex` — instruction encoding (PTX is
+- `codex/Emit/PtxOpEncoding.codex` -- instruction encoding (PTX is
   text, so this is text formatting, not bit-packing).
-- `codex/Emit/PtxIntrinsicLowering.codex` — maps the
+- `codex/Emit/PtxIntrinsicLowering.codex` -- maps the
   `codex.foreword.gpu` chapter calls to the corresponding PTX
   instruction sequences (e.g. `index-1d` → load `%tid.x`, `%ctaid.x`,
   `%ntid.x`, multiply-add).
@@ -402,13 +402,13 @@ type-checking, walk every definition whose effect row contains
 collect every `cites`-reachable definition whose effect row is also
 a subset of `[Device]`. That set is the device-reachable closure;
 emit it to PTX. Everything outside that closure is host code; emit
-it to CDX. The walker is a small TypeChecker post-pass — no separate
+it to CDX. The walker is a small TypeChecker post-pass -- no separate
 annotation collector is needed. (cuda-oxide does this with a MIR
 collector starting from `#[kernel]`-marked functions; we do it
 straight from the effect row.)
 
 **Subset rule.** A `[Device]` definition is rejected if any
-operation it transitively calls has an effect outside `[Device]` —
+operation it transitively calls has an effect outside `[Device]` --
 e.g., a kernel that calls `print-line` is a type error before it
 ever reaches the PTX backend. This is normal effect-row checking,
 not new machinery.
@@ -426,7 +426,7 @@ hash the type-instantiation, emit the suffixed PTX entry.
 - *libdevice path* (optional, opt-in): emit calls to `__nv_sin` etc.,
   then the host links libdevice via libNVVM at module-load time.
   Faster, but adds a host dependency (libdevice.10.bc from the CUDA
-  Toolkit). Behind a build flag — default off, default is "all-Codex."
+  Toolkit). Behind a build flag -- default off, default is "all-Codex."
 
 We start with the Codex pure path. CORDIC is already there. Adding
 libdevice is a future option, not the entry point.
@@ -450,12 +450,12 @@ shared-mem bytes, argument byte-blob, plus the PTX bytes themselves
 `gpu-dispatch.cu` adds a code path: receive PTX, call
 `cuModuleLoadData(ptx_src)`, find the kernel by name, call
 `cuLaunchKernel` with the marshaled args, copy output back. Existing
-fixed-op paths stay — they're cheaper and tested — until the PTX
+fixed-op paths stay -- they're cheaper and tested -- until the PTX
 path is benchmarked competitive.
 
 **Long-term**: the `direct-init` Phase 4 of GpuCompute.md is still
 gated on the firmware problem. If/when that opens, the same PTX
-modules drop straight into a Codex-native CUDA driver binding —
+modules drop straight into a Codex-native CUDA driver binding --
 nothing in the kernel-language layer changes.
 
 ### 4.4 Trust and Verification Integration
@@ -482,7 +482,7 @@ existing trust pattern applied to a new resource.
 
 PTX modules are signed using the same Ed25519 mechanism the seed CDX
 uses (CL 751). The signing key is whichever identity built the host
-binary — typically the same author that signed the CDX.
+binary -- typically the same author that signed the CDX.
 
 ### 4.5 Memory Model and Heap Discipline
 
@@ -492,7 +492,7 @@ wall). The PTX backend allocates its own per-kernel `emit-build`,
 emits the PTX text into the emitter deck, and `seal`s it before the
 next kernel emits.
 
-No retention of device-IR across phases — we are explicitly avoiding
+No retention of device-IR across phases -- we are explicitly avoiding
 the Pliron-shaped temptation to keep an extensible IR around. Each
 kernel goes IR → PTX text → CDX manifest entry, then its IR is
 struck.
@@ -511,11 +511,11 @@ GpuCompute.md is **augmented**, not replaced. Its phases:
 
 | Phase | Status | Effect of this design |
 |---|---|---|
-| **Phase 0** — PCIe enumeration foreword | ✅ done | Unchanged |
-| **Phase 1** — Shared-memory GPU proxy (closed enum of ops) | In progress | **Augmented**: the existing 17-op enum stays; a new `gpu-op-launch-ptx` op is added. Builders gain a PTX path; existing tensor ops remain the fast path for fixed shapes |
-| **Phase 2** — Virtio GPU compute device | Not started | **Augmented**: virtqueue command format gets a `launch-ptx` variant; the rest is unchanged |
-| **Phase 3** — UEFI GOP framebuffer | Not started | Orthogonal — display, not compute. Untouched |
-| **Phase 4** — Direct GPU init | Blocked (firmware) | Untouched. If it ever opens, the same PTX modules slot in |
+| **Phase 0** -- PCIe enumeration foreword | ✅ done | Unchanged |
+| **Phase 1** -- Shared-memory GPU proxy (closed enum of ops) | In progress | **Augmented**: the existing 17-op enum stays; a new `gpu-op-launch-ptx` op is added. Builders gain a PTX path; existing tensor ops remain the fast path for fixed shapes |
+| **Phase 2** -- Virtio GPU compute device | Not started | **Augmented**: virtqueue command format gets a `launch-ptx` variant; the rest is unchanged |
+| **Phase 3** -- UEFI GOP framebuffer | Not started | Orthogonal -- display, not compute. Untouched |
+| **Phase 4** -- Direct GPU init | Blocked (firmware) | Untouched. If it ever opens, the same PTX modules slot in |
 
 This design **adds** a parallel track of language-and-codegen phases
 that interleave with the transport phases above. They live entirely
@@ -529,19 +529,19 @@ add an op to `gpu-dispatch.cu`. They author kernels in Codex.
 
 What this design **diverges from**: nothing in GpuCompute.md is
 reversed. The fixed-op path stays as the small-shape fast path
-(CPU < tiny-GPU < cuBLAS, per Nib's perf budget table — those
+(CPU < tiny-GPU < cuBLAS, per Nib's perf budget table -- those
 crossover points are unchanged for the existing ops). The PTX path
 opens the long tail.
 
 ---
 
-## 6. Phasing — CL-Sized Chunks
+## 6. Phasing -- CL-Sized Chunks
 
-Numbered K0–K9. Each is a single thing per CLAUDE.md rule 3.
+Numbered K0-K9. Each is a single thing per CLAUDE.md rule 3.
 
 | CL | What | Gates |
 |---|---|---|
-| **K0** | `codex.foreword.gpu/` skeleton: chapter files with type signatures only, declaring `[Device]` and `[Gpu]` effects, no codegen lowering. `cites` graph valid. Pure types — no bodies that need PTX | sweep |
+| **K0** | `codex.foreword.gpu/` skeleton: chapter files with type signatures only, declaring `[Device]` and `[Gpu]` effects, no codegen lowering. `cites` graph valid. Pure types -- no bodies that need PTX | sweep |
 | **K1** | Effect-system support for `[Device]` and `[Gpu]`: register both effects, teach the type checker the subset rule (a `[Device]` body cannot call a non-`[Device]` operation), wire negative tests for the subset violation | pingpong + sweep |
 | **K2** | TypeChecker post-pass: walk effect rows, collect every definition with `[Device]` ∈ row, transitively close over `cites`. Partition the IR into device-reachable and host-only sets. Output both partitions ready for emit | pingpong + sweep |
 | **K3** | PTX emit mode (smallest viable subset): integer arith, simple memory access, function calls. Compile a hand-written `vecadd` Codex kernel, dump PTX text, eyeball-verify against cuda-oxide's `vecadd.ptx` reference | pingpong + sweep |
@@ -550,7 +550,7 @@ Numbered K0–K9. Each is a single thing per CLAUDE.md rule 3.
 | **K6** | `Warp.codex`, `Shared.codex`, `Atomic.codex` lowerings: the bread-and-butter intrinsics. Adds the Atomic scope/ordering type-encoding and warp shuffle PTX. Demonstrates with a warp-reduction sample | pingpong + sweep |
 | **K7** | Effect + capability integration: `[Gpu]` is a recognized effect, `cap-gpu` is a recognized capability, the verifier's Phase 3/4 checks fire. Negative tests for unverified `[Gpu]` | pingpong + sweep |
 | **K8** | Math intrinsic lowering via the existing `codex.foreword.math` quire: trig, exp, log, pow lowered as PTX call-and-inline of pure-Codex CORDIC (no libdevice yet) | sweep |
-| **K9** | Optional: libdevice path behind a build flag for users who want the perf. cuJitLink load via dlopen on host. Don't enter this CL until K0–K8 are stable | sweep |
+| **K9** | Optional: libdevice path behind a build flag for users who want the perf. cuJitLink load via dlopen on host. Don't enter this CL until K0-K8 are stable | sweep |
 
 A `Hopper+` block (TMA, cluster, wgmma, tcgen05) and an `Async` block
 (`DeviceOperation`-equivalent with structured-concurrency integration)
@@ -558,7 +558,7 @@ sit beyond K9 and don't need to be designed yet. The 4060 Ti is Ada
 Lovelace; many of those Hopper+ intrinsics literally cannot run on
 the dev hardware.
 
-Estimated effort across K0–K8: comparable to a new native ISA
+Estimated effort across K0-K8: comparable to a new native ISA
 backend. The x86-64 backend (per `THE-ASCENT.md`) was 21 commits and
 20 bugs in one evening; PTX is simpler than x86-64 (typed virtual
 registers, no encoding, no relocations) but the intrinsic surface is
@@ -572,12 +572,12 @@ larger. Expect somewhere in the same order of magnitude.
 
 - **Host-side CUDA driver**. We rely on the driver's PTX JIT
   (`cuModuleLoadData`). This is the same dependency GpuCompute.md
-  already accepts — it's already loaded by the proxy.
+  already accepts -- it's already loaded by the proxy.
 - **NVIDIA hardware**. PTX is NVIDIA-only. AMD/Intel/Apple GPUs need
-  their own backend (HIP/HSA, Level Zero, Metal) — a future
+  their own backend (HIP/HSA, Level Zero, Metal) -- a future
   conversation, parallel to this one.
 - **Effect system**. `[Device]` and `[Gpu]` are new effects on the
-  existing effect-row machinery — additive, no structural change. The
+  existing effect-row machinery -- additive, no structural change. The
   TypeChecker subset-rule and post-pass are new but small. *No*
   dependency on the inline annotation syntax.
 - **Phase 4/5 verifier (CLs 775–786)**. Effect-row and capability
@@ -595,7 +595,7 @@ larger. Expect somewhere in the same order of magnitude.
 ### Assumptions
 
 - The existing Codex IR is expressive enough to lower to PTX without
-  a separate device IR. We bet yes — PTX maps cleanly to typed-IR
+  a separate device IR. We bet yes -- PTX maps cleanly to typed-IR
   three-address operations.
 - Codex's bounded-integer subtypes (`Integer between L and H`) map to
   PTX register types (`.u8` / `.u16` / `.u32` / `.u64` / `.s8` / …).
@@ -615,7 +615,7 @@ larger. Expect somewhere in the same order of magnitude.
 
 ### Strategic
 
-- **cuda-oxide is alpha**. Their API will churn — they explicitly
+- **cuda-oxide is alpha**. Their API will churn -- they explicitly
   promise breakage. We lift *vocabulary* and *taxonomy*, not code or
   binary compatibility. Our intrinsic surface should track CUDA C++
   semantics, not cuda-oxide's Rust traits.
@@ -653,7 +653,7 @@ larger. Expect somewhere in the same order of magnitude.
   witness type (`ThreadIndex 'stride`) from day one. Adopt the fix
   cuda-oxide is planning, not the broken version.
 - **PTX text size in CDX**. Each kernel adds ~few-KB to the CDX.
-  Current seed is 1.99 MB; 50 kernels at 5 KB is 250 KB — meaningful
+  Current seed is 1.99 MB; 50 kernels at 5 KB is 250 KB -- meaningful
   but not catastrophic. Compress with the existing
   `codex.foreword.compress` quire (LZ77/Huffman) if it becomes a
   problem.
@@ -690,7 +690,7 @@ larger. Expect somewhere in the same order of magnitude.
 
 1. **Quire naming.** `codex.foreword.gpu/` (new top-level quire) vs.
    extending `codex.foreword.ai/` (where Tensor/NeuralNet/GGUF live)?
-   GPU is a transport, AI is a domain — they're not the same axis. I
+   GPU is a transport, AI is a domain -- they're not the same axis. I
    lean toward a new `gpu` quire but you may have stronger naming
    intuitions.
 2. ~~**Annotation vs effect.**~~ **Resolved 2026-05-08 (Damian)**:
@@ -698,7 +698,7 @@ larger. Expect somewhere in the same order of magnitude.
    knowing and type-checking the behavior, not hiding it. There is
    no `@kernel` annotation. Kernel-ness is borne by the `[Device]`
    effect row. (See section 4.1 above.) A separate broader question
-   remains for sidecar annotations as a kind — those would live
+   remains for sidecar annotations as a kind -- those would live
    outside the source, reference targets by section/function name,
    and never pepper the code itself. This design does not depend on
    sidecar annotations either way.
@@ -721,28 +721,28 @@ larger. Expect somewhere in the same order of magnitude.
 7. **Hardware test plan.** How do we run pingpong/sweep against
    `[Device]`-effected samples? `gpu-dispatch.exe` already exists
    for the fixed-op path; the K4 launch-ptx path is its successor.
-   Sweep currently boots samples in QEMU/codex-vm — kernels need a
+   Sweep currently boots samples in QEMU/codex-vm -- kernels need a
    real GPU on the host. Either skip samples that touch `[Gpu]` in
    default sweep and run them under a separate `sweep -Gpu` flag, or
    always route through gpu-dispatch.exe.
 
 ## 10. References
 
-- **NVlabs/cuda-oxide** — `https://github.com/NVlabs/cuda-oxide`. Apache-2.0 + NVIDIA license on bindings. Alpha as of 2026-05-08. Book: `https://nvlabs.github.io/cuda-oxide/`.
-- **GpuCompute.md** — Nib + Damian, 2026-05-05. The transport / firmware reality companion to this doc.
-- **`codex.foreword.ai/GpuProxy.codex`**, **`codex.kernel/GpuBridge.codex`**, **`codex.build/gpu-dispatch.cu`** — the existing closed-enum proxy that this design extends.
-- **`docs/Active/Compiler/PHASE-ARCHITECTURE.md`** — phase discipline + emit deck rules; the PTX backend lives inside the emitter wall.
-- **`docs/Designs/Codex.OS/Verifier.md`** — 5-phase verifier; effect + capability checks for `[Gpu]` ride here.
-- **`docs/Designs/Codex.OS/TrustAndRuntime.md`** — capability admission, trust lattice; `cap-gpu` joins the existing capability bits.
-- **`docs/Designs/Language/CAPABILITY-REFINEMENT.md`** — direction + scope on capabilities; relevant when GPU access is delegated to a child process.
-- **CLs 775–786** — verifier Phases 4 and 5; `[Gpu]` and `[Device]` extend this surface.
+- **NVlabs/cuda-oxide** -- `https://github.com/NVlabs/cuda-oxide`. Apache-2.0 + NVIDIA license on bindings. Alpha as of 2026-05-08. Book: `https://nvlabs.github.io/cuda-oxide/`.
+- **GpuCompute.md** -- Nib + Damian, 2026-05-05. The transport / firmware reality companion to this doc.
+- **`codex.foreword.ai/GpuProxy.codex`**, **`codex.kernel/GpuBridge.codex`**, **`codex.build/gpu-dispatch.cu`** -- the existing closed-enum proxy that this design extends.
+- **`docs/Active/Compiler/PHASE-ARCHITECTURE.md`** -- phase discipline + emit deck rules; the PTX backend lives inside the emitter wall.
+- **`docs/Designs/Codex.OS/Verifier.md`** -- 5-phase verifier; effect + capability checks for `[Gpu]` ride here.
+- **`docs/Designs/Codex.OS/TrustAndRuntime.md`** -- capability admission, trust lattice; `cap-gpu` joins the existing capability bits.
+- **`docs/Designs/Language/CAPABILITY-REFINEMENT.md`** -- direction + scope on capabilities; relevant when GPU access is delegated to a child process.
+- **CLs 775–786** -- verifier Phases 4 and 5; `[Gpu]` and `[Device]` extend this surface.
 
-## Appendix A — cuda-oxide Vocabulary, Mapped
+## Appendix A -- cuda-oxide Vocabulary, Mapped
 
 | cuda-oxide term | Codex equivalent | Notes |
 |---|---|---|
 | `#[kernel]` attribute | `[Device]` effect on the return-type row | the type signature *is* the marker; nothing inline. Compiler harvests kernels by walking effect rows |
-| `#[device]` attribute (callable from device) | `[Device]` effect on a non-entry function | identical mechanism — the subset rule lets device-reachable helpers compose |
+| `#[device]` attribute (callable from device) | `[Device]` effect on a non-entry function | identical mechanism -- the subset rule lets device-reachable helpers compose |
 | `cuda_launch! { ... }` macro | `kernel-launch` builtin | with the same field surface (kernel, config, args); `[Gpu]` effect on caller |
 | `LaunchConfig` | `LaunchConfig` record in `codex.foreword.gpu/LaunchConfig.codex` | identical shape |
 | `ThreadIndex` newtype | `ThreadIndex` opaque record | constructible only by `index-1d` / `index-2d`; same safety story |
@@ -757,23 +757,23 @@ larger. Expect somewhere in the same order of magnitude.
 | `cargo oxide doctor` | `codex.works/GpuDoctor.codex` | a small chapter that probes the host proxy and reports CUDA version, libdevice presence, sm target |
 | `cuda-bindings` (bindgen FFI) | `codex.kernel/CudaDriverBindings.codex` | thin Codex bindings to the CUDA Driver API; written by hand; not redistributed under NVIDIA license |
 
-## Appendix B — What This Doc Does NOT Propose
+## Appendix B -- What This Doc Does NOT Propose
 
 - Does not propose a Codex MLIR / extensible IR layer.
 - Does not propose adopting Pliron, LLVM, or any external Rust/C++ toolchain.
 - Does not propose retargeting AMD or Intel GPUs.
 - Does not propose breaking the existing GpuProxy fixed-op path.
-- Does not propose unblocking Phase 4 (direct-init) — the firmware
+- Does not propose unblocking Phase 4 (direct-init) -- the firmware
   constraint stands.
 - Does not propose committing to Hopper+ intrinsics (TMA, cluster,
   wgmma, tcgen05). Those are post-K9 if ever.
 - Does not propose async GPU compute. CAMP-IIIC integration is post-K9.
 - Does not propose changing the verifier's phase count or structure.
   We extend Phase 3 and Phase 4; we do not add Phase 6.
-- **Does not propose any inline annotation** — no `@kernel`, no
+- **Does not propose any inline annotation** -- no `@kernel`, no
   `@device`, no `@gpu`. Kernel-ness is borne by the type signature.
   Effects are the contract; the type system is the carrier; the
   compiler reads what it sees. A separate broader question about
   sidecar annotations (existing across-the-codebase, not specific to
-  this design) is unresolved — but this design does not depend on
+  this design) is unresolved -- but this design does not depend on
   any annotation form.

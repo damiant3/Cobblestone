@@ -11,8 +11,8 @@ A financial data dashboard covering stocks, bonds, commodities, and a personal w
 
 ## Completeness
 
-60% — All four views render with substantial realistic data and tab navigation is fully functional. Charts are placeholders. Period buttons, Add Symbol, Portfolio, and Alerts do nothing. All prices are static. No live data feed.
+60% -- All four views render with substantial realistic data and tab navigation is fully functional. Charts are placeholders. Period buttons, Add Symbol, Portfolio, and Alerts do nothing. All prices are static. No live data feed.
 
 ## Codex Conformance
 
-Full — Written entirely in Codex. Market data feed integration is a backend plug responsibility.
+Full -- Written entirely in Codex. Market data feed integration is a backend plug responsibility.

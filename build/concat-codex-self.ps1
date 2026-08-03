@@ -34,7 +34,7 @@ function Add-WithQuire {
     $lines.Add('')
 }
 
-# 1. Cited library chapters — scan compiler source for
+# 1. Cited library chapters -- scan compiler source for
 #    "cites <LibraryQuire> chapter X", then transitively resolve each
 #    pulled chapter's own library cites. The quire table must agree
 #    with compile.ps1's Resolve-CiteOrder (same quires, same

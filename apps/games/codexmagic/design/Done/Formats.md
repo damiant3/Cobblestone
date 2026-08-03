@@ -1,4 +1,4 @@
-# Formats — Deck Construction Rules and Play Modes
+# Formats -- Deck Construction Rules and Play Modes
 
 ## Design Principles
 
@@ -120,7 +120,7 @@ format-singleton = FormatDef {
 }
 ```
 
-- **General is central.** Color identity strictly enforced — every
+- **General is central.** Color identity strictly enforced -- every
   card in the deck must match the General's color identity.
 - **Starting life: 30** (higher than Modern's 20 to accommodate
   longer games).
@@ -184,7 +184,7 @@ format-unlimited = FormatDef {
 ## Limited Formats
 
 Limited formats use cards opened from packs, not pre-owned
-collections. They equalize collection depth — a new player and a
+collections. They equalize collection depth -- a new player and a
 veteran have the same card access within a limited event.
 
 ### Sealed: Base + Booster
@@ -216,7 +216,7 @@ format-sealed-base = FormatDef {
 **Why base + booster instead of 6 boosters:**
 - **Lower skill floor.** Building a 40-card deck from 90 random
   cards requires deep format knowledge. Building from 30 known + 15
-  random is approachable — you already have a deck, you're just
+  random is approachable -- you already have a deck, you're just
   upgrading it.
 - **Faster setup.** No 30-minute deckbuilding phase. Crack the
   booster, swap in the good cards, play.
@@ -243,7 +243,7 @@ Each General color has a matching base deck:
 | Green | 15 Forests | 8 (mix with trample) | 4 (growth, ramp) + 3 land |
 
 The base deck establishes the color identity. The booster can
-contain any color — the player decides whether to splash or stay
+contain any color -- the player decides whether to splash or stay
 mono.
 
 ### Sealed: Classic
@@ -294,7 +294,7 @@ accessible to new players while preserving depth for experts.
 
 ### Chaos Sealed
 
-Random format. Each player opens packs from random seasons — your
+Random format. Each player opens packs from random seasons -- your
 pool might span 3 different seasons with different mechanics. Build
 a 40-card deck from the chaos.
 
@@ -311,7 +311,7 @@ format-chaos-sealed = FormatDef {
 }
 ```
 
-This is the "fun" format — unpredictable, chaotic, great for casual
+This is the "fun" format -- unpredictable, chaotic, great for casual
 events. Cross-season synergies emerge that never existed in any
 single season's design.
 
@@ -320,7 +320,7 @@ single season's design.
 ### Swiss
 
 Round-robin-style with pairing by record. N rounds for 2^N players.
-No elimination — every player plays every round.
+No elimination -- every player plays every round.
 
 - 8 players: 3 rounds
 - 16 players: 4 rounds
@@ -433,12 +433,12 @@ slowly.
 Each format should be tested independently in the simulation
 harness. Key metrics per format:
 
-1. **Average game length** — must match format intent (Blitz: 4-6T,
+1. **Average game length** -- must match format intent (Blitz: 4-6T,
    Modern: 10-14T, Singleton: 14-20T, Sealed: 12-16T)
-2. **First-player win rate** — must be 45-55% with compensation
-3. **Archetype diversity** — no single archetype > 55% win rate
-4. **Mana screw rate** — must be under 5% with fixes
-5. **Sudden death rate** — should be under 20% (games should end
+2. **First-player win rate** -- must be 45-55% with compensation
+3. **Archetype diversity** -- no single archetype > 55% win rate
+4. **Mana screw rate** -- must be under 5% with fixes
+5. **Sudden death rate** -- should be under 20% (games should end
    naturally most of the time)
 
 ## Open Questions

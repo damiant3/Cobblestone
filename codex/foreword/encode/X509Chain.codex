@@ -2,6 +2,8 @@ Chapter: X509Chain
   cites Encode chapter X509
   cites Encode chapter Asn1
   cites Foreword chapter Ed25519
+  cites Foreword chapter Rsa
+  cites Foreword chapter EcdsaP256
   cites Foreword chapter Maybe
 
  The chain walk. X509 said what a certificate IS; this chapter says whether
@@ -55,6 +57,7 @@ Section: Verdict
     | ChainIssuerCannotSign
     | ChainNoAnchor
     | ChainTooLong
+    | ChainWrongIdentity
 
  A trust anchor is a name and a key. It is not a certificate: an anchor is
  trusted because the operator put it there, not because something signed
@@ -170,10 +173,110 @@ Section: Signature
  A certificate is signed over its tbsCertificate -- the bytes the parser
  kept, not a re-encoding of them. The key must be one that can sign at all.
 
+ The certificate says what it was signed with and the issuer's key says
+ what it can verify with, and BOTH have to agree before anything is
+ checked. Taking the algorithm from only one of them is how a signature
+ gets verified under a scheme its author never chose.
+
   x509-signed-by : X509Cert, X509Key -> Boolean
   x509-signed-by (c) (k) =
     if x509-can-verify k == False then False
-    else ed25519-verify (k.xk-bytes) (c.xc-tbs) (c.xc-sig)
+    else x509-verify-with (c.xc-sig-alg) c k
+
+ SHA-1 answers False and always will. The certificate parses, because a
+ root signed with it in 2006 is still a root we may choose to hold; but a
+ chain link resting on a SHA-1 signature is not verified here. Chosen-
+ prefix collisions have been practical since 2017, and an algorithm that
+ cannot distinguish two documents cannot attest to either.
+
+ SigEcdsaSha384 answered False until 2026-07-28, for a different cause: the
+ algorithm was sound and we had not implemented it. A P-256 key signing
+ under SHA-384 is legal and the elliptic-curve intermediates of both
+ Sectigo and Let's Encrypt are signed that way, so the refusal cost real
+ chains. The digest half is written now, in `ecdsa-p256-verify-sha384`.
+ The paragraph's warning survives its own fix and is the reason the
+ entry point is a separate name rather than a flag: a verifier that
+ quietly substituted SHA-256 would be checking a signature over a message
+ nobody computed.
+
+  x509-verify-with : X509SigAlg, X509Cert, X509Key -> Boolean
+  x509-verify-with (salg) (c) (k) =
+    when salg
+      is SigUnknown -> False
+      is SigRsaSha1 -> False
+      is SigEcdsaSha384 -> x509-verify-ecdsa384 c k
+      is SigEd25519 -> x509-verify-ed c k
+      is SigRsaSha256 -> x509-verify-rsa c k
+      is SigRsaSha384 -> x509-verify-rsa384 c k
+      is SigEcdsaSha256 -> x509-verify-ecdsa c k
+
+  x509-verify-ed : X509Cert, X509Key -> Boolean
+  x509-verify-ed (c) (k) =
+    when k.xk-alg
+      is KeyEd25519 -> ed25519-verify (k.xk-bytes) (c.xc-tbs) (c.xc-sig)
+      is otherwise -> False
+
+  x509-verify-rsa : X509Cert, X509Key -> Boolean
+  x509-verify-rsa (c) (k) =
+    when k.xk-alg
+      is KeyRsa -> rsa-verify-pkcs1-sha256 (k.xk-mod) (k.xk-exp) (c.xc-tbs) (c.xc-sig)
+      is otherwise -> False
+
+  x509-verify-rsa384 : X509Cert, X509Key -> Boolean
+  x509-verify-rsa384 (c) (k) =
+    when k.xk-alg
+      is KeyRsa -> rsa-verify-pkcs1-sha384 (k.xk-mod) (k.xk-exp) (c.xc-tbs) (c.xc-sig)
+      is otherwise -> False
+
+  x509-verify-ecdsa : X509Cert, X509Key -> Boolean
+  x509-verify-ecdsa (c) (k) =
+    when k.xk-alg
+      is KeyEcdsaP256 -> x509-ecdsa-go (k.xk-bytes) (c.xc-tbs) (x509-ecdsa-rs (c.xc-sig) 32)
+      is KeyEcdsaP384 -> x509-p384-sha256-go (k.xk-bytes) (c.xc-tbs) (x509-ecdsa-rs (c.xc-sig) 48)
+      is otherwise -> False
+
+  x509-ecdsa-go : List Integer, List Integer, Maybe (List Integer) -> Boolean
+  x509-ecdsa-go (pub) (tbs) (m) =
+    when m
+      is None -> False
+      is Just (rs) -> ecdsa-p256-verify pub tbs rs
+
+ The SHA-384 arm is the same walk against the other digest. It is written
+ out rather than folded into the one above with a flag, because the
+ digest a certificate declares and the digest we compute must be the same
+ one, and a boolean parameter is exactly how those come apart.
+
+  x509-verify-ecdsa384 : X509Cert, X509Key -> Boolean
+  x509-verify-ecdsa384 (c) (k) =
+    when k.xk-alg
+      is KeyEcdsaP256 -> x509-ecdsa384-go (k.xk-bytes) (c.xc-tbs) (x509-ecdsa-rs (c.xc-sig) 32)
+      is KeyEcdsaP384 -> x509-p384-sha384-go (k.xk-bytes) (c.xc-tbs) (x509-ecdsa-rs (c.xc-sig) 48)
+      is otherwise -> False
+
+  x509-ecdsa384-go : List Integer, List Integer, Maybe (List Integer) -> Boolean
+  x509-ecdsa384-go (pub) (tbs) (m) =
+    when m
+      is None -> False
+      is Just (rs) -> ecdsa-p256-verify-sha384 pub tbs rs
+
+ Four combinations of curve and digest, four named functions and no flag
+ between them. A P-384 root signed under SHA-384 is the case that matters;
+ P-384 under SHA-256 is legal and is wired rather than left to fall through
+ to a False that would read as a refusal on policy.
+
+  x509-p384-sha256-go : List Integer, List Integer, Maybe (List Integer) -> Boolean
+  x509-p384-sha256-go (pub) (tbs) (m) =
+    when m
+      is None -> False
+      is Just (rs) -> ecdsa-p384-verify pub tbs rs
+
+  x509-p384-sha384-go : List Integer, List Integer, Maybe (List Integer) -> Boolean
+  x509-p384-sha384-go (pub) (tbs) (m) =
+    when m
+      is None -> False
+      is Just (rs) -> ecdsa-p384-verify-sha384 pub tbs rs
+
+Section: Issuers
 
  An issuer must be a CA and must hold a signing key. Both, and the two
  failures are named separately because they are different mistakes.
@@ -197,6 +300,132 @@ Section: Names
     else if list-at a i /= list-at b i then False
     else x509-name-loop a b (i + 1) n
 
+Section: Peer Identity
+
+ A chain that walks to a trusted anchor says the certificate is genuine.
+ It does not say the certificate is THIS PEER'S. Until 2026-07-26 nothing
+ in the tree asked the second question and there was nowhere to ask it
+ from -- neither the client endpoint nor this function took the name that
+ had been dialled -- so any certificate from any trusted authority
+ authenticated for every host. That is the oldest mistake in transport
+ security (RFC 8446 s4.4.2.4, RFC 6125 s6) and it is why `expected` is a
+ parameter of x509-chain-verify rather than an option beside it: a caller
+ that cannot say who it expected cannot be told whether it got them.
+
+ Matching is on subjectAltName and nothing else. An IPv4 literal is
+ matched against iPAddress entries and a name against dNSName entries,
+ because a certificate for the name `10.0.2.2` is not a certificate for
+ the address 10.0.2.2 and treating them alike is how an attacker picks
+ which one to be. A wildcard matches exactly one label and only in the
+ leftmost position, so `*.example.com` covers `a.example.com` and covers
+ neither `example.com` nor `a.b.example.com`.
+
+  x509-identity-matches : X509Cert, List Integer -> Boolean
+  x509-identity-matches (leaf) (expected) =
+    if list-length expected == 0 then False
+    else when x509-ipv4-of expected
+      is Just (quad) -> x509-any-ip-eq (leaf.xc-ip-addrs) quad 0
+      is None -> x509-any-dns-match (leaf.xc-dns-names) expected 0
+
+  x509-any-ip-eq : List (List Integer), List Integer, Integer -> Boolean
+  x509-any-ip-eq (ips) (quad) (i) =
+    if i >= list-length ips then False
+    else if x509-id-bytes-eq (list-at ips i) quad then True
+    else x509-any-ip-eq ips quad (i + 1)
+
+  x509-id-bytes-eq : List Integer, List Integer -> Boolean
+  x509-id-bytes-eq (a) (b) =
+    if list-length a /= list-length b then False
+    else x509-id-bytes-loop a b 0
+
+  x509-id-bytes-loop : List Integer, List Integer, Integer -> Boolean
+  x509-id-bytes-loop (a) (b) (i) =
+    if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else x509-id-bytes-loop a b (i + 1)
+
+  x509-any-dns-match : List (List Integer), List Integer, Integer -> Boolean
+  x509-any-dns-match (names) (expected) (i) =
+    if i >= list-length names then False
+    else if x509-dns-match (list-at names i) expected then True
+    else x509-any-dns-match names expected (i + 1)
+
+  x509-dns-match : List Integer, List Integer -> Boolean
+  x509-dns-match (cert-name) (expected) =
+    if x509-is-wildcard cert-name then x509-wildcard-match cert-name expected
+    else x509-ci-eq cert-name expected
+
+  x509-is-wildcard : List Integer -> Boolean
+  x509-is-wildcard (n) =
+    if list-length n < 3 then False
+    else if list-at n 0 /= 42 then False
+    else list-at n 1 == 46
+
+  x509-wildcard-match : List Integer, List Integer -> Boolean
+  x509-wildcard-match (cert-name) (expected) =
+    let d = x509-first-dot expected 0
+    in if d < 1 then False
+       else x509-ci-eq (x509-id-drop cert-name 1) (x509-id-drop expected d)
+
+  x509-first-dot : List Integer, Integer -> Integer
+  x509-first-dot (bs) (i) =
+    if i >= list-length bs then -1
+    else if list-at bs i == 46 then i
+    else x509-first-dot bs (i + 1)
+
+  x509-id-drop : List Integer, Integer -> List Integer
+  x509-id-drop (bs) (n) = x509-id-drop-loop bs n []
+
+  x509-id-drop-loop : List Integer, Integer, List Integer -> List Integer
+  x509-id-drop-loop (bs) (i) (acc) =
+    if i >= list-length bs then acc
+    else x509-id-drop-loop bs (i + 1) (list-push acc (list-at bs i))
+
+  x509-ci-eq : List Integer, List Integer -> Boolean
+  x509-ci-eq (a) (b) =
+    if list-length a /= list-length b then False
+    else x509-ci-loop a b 0
+
+  x509-ci-loop : List Integer, List Integer, Integer -> Boolean
+  x509-ci-loop (a) (b) (i) =
+    if i >= list-length a then True
+    else if x509-lower (list-at a i) /= x509-lower (list-at b i) then False
+    else x509-ci-loop a b (i + 1)
+
+  x509-lower : Integer -> Integer
+  x509-lower (c) = if c < 65 then c else if c > 90 then c else c + 32
+
+ A dotted quad, or nothing. Four decimal numbers, each at most three
+ digits and at most 255, separated by exactly three dots, with no other
+ byte permitted -- so `10.0.2.2` is an address and `10.0.2.2.example.com`
+ is a name.
+
+  x509-ipv4-of : List Integer -> Maybe (List Integer)
+  x509-ipv4-of (bs) = x509-ip-scan bs 0 0 0 []
+
+  x509-ip-scan : List Integer, Integer, Integer, Integer, List Integer -> Maybe (List Integer)
+  x509-ip-scan (bs) (i) (val) (digits) (acc) =
+    if i >= list-length bs then x509-ip-end val digits acc
+    else if list-at bs i == 46 then x509-ip-dot bs i val digits acc
+    else if list-at bs i < 48 then None
+    else if list-at bs i > 57 then None
+    else if digits >= 3 then None
+    else x509-ip-scan bs (i + 1) (val * 10 + (list-at bs i - 48)) (digits + 1) acc
+
+  x509-ip-dot : List Integer, Integer, Integer, Integer, List Integer -> Maybe (List Integer)
+  x509-ip-dot (bs) (i) (val) (digits) (acc) =
+    if digits == 0 then None
+    else if val > 255 then None
+    else if list-length acc >= 3 then None
+    else x509-ip-scan bs (i + 1) 0 0 (list-push acc val)
+
+  x509-ip-end : Integer, Integer, List Integer -> Maybe (List Integer)
+  x509-ip-end (val) (digits) (acc) =
+    if digits == 0 then None
+    else if val > 255 then None
+    else if list-length acc /= 3 then None
+    else Just (list-push acc val)
+
 Section: The Walk
 
  The chain is leaf first. Each certificate is checked against the next one
@@ -208,6 +437,23 @@ Section: The Walk
     if list-length chain < 1 then ChainEmpty
     else if list-length chain > x509-max-chain then ChainTooLong
     else x509-walk chain anchors now 0
+
+ Path validation and identity are two procedures, not one: RFC 5280 says
+ whether a chain is genuine, RFC 6125 says whether it is the peer's. They
+ are kept apart here because they answer different questions and because a
+ walk has no opinion about hostnames.
+
+ **This is the one an endpoint calls.** x509-chain-verify above proves a
+ chain genuine and says nothing about whose it is; a transport that stops
+ there authenticates a stranger holding a real certificate. The name is a
+ parameter with no permissive value -- an empty expected name matches
+ nothing, because a peer you cannot name is a peer you cannot verify.
+
+  x509-verify-peer : List X509Cert, List X509Anchor, List Integer, List Integer -> X509Verdict
+  x509-verify-peer (chain) (anchors) (now) (expected) =
+    if list-length chain < 1 then ChainEmpty
+    else if x509-identity-matches (list-at chain 0) expected == False then ChainWrongIdentity
+    else x509-chain-verify chain anchors now
 
   x509-walk : List X509Cert, List X509Anchor, List Integer, Integer -> X509Verdict
   x509-walk (chain) (anchors) (now) (i) =

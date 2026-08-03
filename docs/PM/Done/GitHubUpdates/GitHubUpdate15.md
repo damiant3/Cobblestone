@@ -1,4 +1,4 @@
-# GitHub Update 15 — CL 1812 to CL 1845 (2026-05-19)
+# GitHub Update 15 -- CL 1812 to CL 1845 (2026-05-19)
 
 Previous update: CL 1811 (GitHubUpdate14).
 This update: CL 1845.
@@ -15,7 +15,7 @@ type pointers from the previous compilation's reclaimed heap, causing
 a GPF when the type walker (`occurs-in` / `lookup-expr-type`) followed
 the dangling pointer.
 
-**Root cause:** `if pos < len & (list-at entries pos).key == k` — the
+**Root cause:** `if pos < len & (list-at entries pos).key == k` -- the
 `&` operator is boolean AND, not short-circuit. Both sides evaluated
 regardless of `pos < len`.
 
@@ -23,7 +23,7 @@ regardless of `pos < len`.
 
 **Impact:** Fixes the handler-nested batch GPF (backlog item #3, open
 since the test was written). Also the likely root cause of the plug
-crash documented in `docs/Test/PLUG-CRASH-INVESTIGATION.md` — same
+crash documented in `docs/Test/PLUG-CRASH-INVESTIGATION.md` -- same
 function, same code path, same class of stale-heap read.
 
 **Sweep:** 105/105 pass, 0 fail, 52 skip. Up from 103/105 (handler-nested
@@ -43,7 +43,7 @@ records, CDX2061/2062 are planned for linearity tracking. Phase 3
 case: game engines and OS schedulers where copy-on-update has quadratic
 overhead on bare metal with no GC.
 
-### Codex.Spark — 3D Modeling Framework (CL 1715+)
+### Codex.Spark -- 3D Modeling Framework (CL 1715+)
 
 A complete 3D modeling framework built in Codex and running on bare
 metal via codex-vm: meshes, textures, UV mapping, armatures with
@@ -52,7 +52,7 @@ editor with PBR properties, asset browser, render passes, and an
 interactive app shell with real-time animated demo. Built in a single
 day session.
 
-### CodexMagic — Card Game Engine (ongoing)
+### CodexMagic -- Card Game Engine (ongoing)
 
 A collectible card game rules engine modeled on early Magic: The
 Gathering (Revised through Onslaught). Two-player duel with core card
@@ -62,7 +62,7 @@ zones (library, hand, battlefield, graveyard, stack, exile), eight
 state-based actions, and keyword abilities. Engine is a pure
 deterministic state machine. Design docs in `docs/Designs/Active/CodexMagic/`.
 
-### Codex.Data — Database Modules (CL 1842+)
+### Codex.Data -- Database Modules (CL 1842+)
 
 Relational database modules under `apps/data/`: Page (8 KB slotted
 pages), Row (tuple storage), BTreeIndex, BufferPool, Catalog, Schema,
@@ -79,9 +79,9 @@ game interfaces (Klondike, Sudoku, Tic-Tac-Toe, War, Yahtzee) via
 ### Documentation Reorganization
 
 Split `docs/OperatorsManual.md` into two documents:
-- **OperatorsManual.md** — build process, test harness, VM configuration,
+- **OperatorsManual.md** -- build process, test harness, VM configuration,
   seed management, debugging with GDB
-- **ArchitectsSketchbook.md** — memory layout, register conventions,
+- **ArchitectsSketchbook.md** -- memory layout, register conventions,
   deck/bivy allocators, phase maps, platform constraints
 
 ### Dev Stream Merge-Down

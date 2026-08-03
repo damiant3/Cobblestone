@@ -1,0 +1,139 @@
+Chapter: XhciSpeedPsi
+  cites Works chapter GopXhci
+  cites Works chapter GopUsb
+
+ xHCI 1.2c Table 7-13 is the DEFAULT speed id mapping and footnote 120
+ states the condition on it: "The Default Speed ID Values shall be
+ presented in PORTSC Port Speed field only if no PSI Dwords are defined
+ (PSIC = '0')." Table 7-8 says it from the other side, that a non-zero
+ PSIC means "no implied Speed ID mappings apply".
+
+ No emulator can express that. codex-vm reports the defaults, so a
+ controller that declares its own Protocol Speed IDs has never been in
+ front of this driver and cannot be, which is why the assumption
+ survived: every arm agreed with every other arm about what a PORTSC
+ speed of 1 means. The capability structure here is built by hand, so
+ the arms that fire are the ones the hardware would have to provide.
+
+ The PSI values chosen are deliberately NOT the defaults. A PORTSC
+ speed of 7 answering Full-speed, 8 answering High-speed and 9
+ answering Low-speed is a mapping no default table contains, so a
+ reader that ignores the PSI dwords and returns the raw value cannot
+ pass: it would answer 7, 8 and 9, which are not speeds at all.
+
+ The encode arms go the other way, and they exist because Table 6-4
+ bits 23:20 defines the Slot Context Speed field's valid values by
+ reference to the PORTSC Port Speed field, which Table 5-27 defines as
+ the Protocol Speed ID. That field therefore speaks the controller's
+ vocabulary: a full-speed device is written as the PSIV the controller
+ declared for 12 Mb/s, not as the class. A device behind a hub takes
+ its speed from the hub's port status, which carries no PSI value, so
+ the encode is a reverse lookup by rate rather than a pass-through.
+ `enc absent` asks for SuperSpeed, which these PSI dwords do not
+ declare, and must fall back to the class rather than answer zero:
+ zero is Undefined Speed and would have the Address Device refused.
+
+ The control arms are the ones that must NOT move. With no extended
+ capability pointer, with a capability that does not cover the port,
+ and with a capability declaring PSIC zero, the value must come back
+ UNCHANGED in both directions. That is the case footnote 120 permits
+ and it is every run this tree has ever made, so a change that got it
+ wrong would re-point every existing green.
+
+Section: Fixtures
+
+ Each check takes the buffer as a parameter. A nullary def is
+ re-evaluated at every mention, so a zero-argument buffer would hand
+ each check a fresh zeroed allocation and every arm would read its own
+ zeros.
+
+ Layout: an extended capability chain starting at dword offset 2. The
+ first link is capability id 1 (Legacy Support), whose next pointer of
+ 2 dwords carries the walk to the Supported Protocol capability at
+ dword offset 4. Hopping a foreign capability to reach the right one is
+ part of what is under test.
+
+ Within the Supported Protocol capability (Table 7-8): dword two holds
+ Compatible Port Offset in bits 7:0, Compatible Port Count in 15:8 and
+ PSIC in 31:28. The PSI dwords follow dword three (Table 7-10): PSIV in
+ 3:0, PSIE in 5:4, PSIM in 31:16.
+
+  psi-word : Integer, Integer, Integer -> Integer
+  psi-word (psiv) (psie) (psim) =
+    bit-or psiv (bit-or (bit-shl psie 4) (bit-shl psim 16))
+
+  build-psi : Integer -> Integer
+  build-psi (buf) =
+    let c0 = poke-32 buf 8 (bit-or 1 (bit-shl 2 8))
+    in let c1 = poke-32 buf 16 2
+    in let c2 = poke-32 buf 24 (bit-or 1 (bit-or (bit-shl 4 8) (bit-shl 3 28)))
+    in let p0 = poke-32 buf 32 (psi-word 7 2 12)
+    in let p1 = poke-32 buf 36 (psi-word 8 2 480)
+    in let p2 = poke-32 buf 40 (psi-word 9 1 1500)
+    in 0
+
+ The same chain with PSIC zero, which is the shape every controller
+ this tree has run against declares.
+
+  build-nopsi : Integer -> Integer
+  build-nopsi (buf) =
+    let c0 = poke-32 buf 8 (bit-or 1 (bit-shl 2 8))
+    in let c1 = poke-32 buf 16 2
+    in let c2 = poke-32 buf 24 (bit-or 1 (bit-shl 4 8))
+    in 0
+
+  think-buf : Integer, Integer -> Integer
+  think-buf (buf) (b) =
+    let w = poke-byte buf 3 b
+    in hub-think-time buf
+
+Section: Main
+
+  row : Text, Integer -> Text
+  row (name) (v) = name & show v
+
+  opening : [Console] Nothing = act
+    let buf = alloc-zeroed 128 64
+    in let b = build-psi buf
+    in print-line-uni (row "psi full    : " (xhci-speed-resolve buf 2 0 7))
+    let buf2 = alloc-zeroed 128 64
+    in let b2 = build-psi buf2
+    in print-line-uni (row "psi high    : " (xhci-speed-resolve buf2 2 0 8))
+    let buf3 = alloc-zeroed 128 64
+    in let b3 = build-psi buf3
+    in print-line-uni (row "psi low     : " (xhci-speed-resolve buf3 2 0 9))
+    let buf4 = alloc-zeroed 128 64
+    in let b4 = build-psi buf4
+    in print-line-uni (row "psi undef   : " (xhci-speed-resolve buf4 2 0 5))
+    let buf5 = alloc-zeroed 128 64
+    in let b5 = build-psi buf5
+    in print-line-uni (row "off port    : " (xhci-speed-resolve buf5 2 9 6))
+    let buf6 = alloc-zeroed 128 64
+    in let b6 = build-nopsi buf6
+    in print-line-uni (row "psic zero   : " (xhci-speed-resolve buf6 2 0 6))
+    print-line-uni (row "no xecp     : " (xhci-speed-resolve 0 0 0 6))
+    let bufe = alloc-zeroed 128 64
+    in let be = build-psi bufe
+    in print-line-uni (row "enc full    : " (xhci-speed-encode bufe 2 0 1))
+    let bufe2 = alloc-zeroed 128 64
+    in let be2 = build-psi bufe2
+    in print-line-uni (row "enc high    : " (xhci-speed-encode bufe2 2 0 3))
+    let bufe3 = alloc-zeroed 128 64
+    in let be3 = build-psi bufe3
+    in print-line-uni (row "enc low     : " (xhci-speed-encode bufe3 2 0 2))
+    let bufe4 = alloc-zeroed 128 64
+    in let be4 = build-psi bufe4
+    in print-line-uni (row "enc absent  : " (xhci-speed-encode bufe4 2 0 4))
+    let bufe5 = alloc-zeroed 128 64
+    in let be5 = build-nopsi bufe5
+    in print-line-uni (row "enc psic0   : " (xhci-speed-encode bufe5 2 0 1))
+    print-line-uni (row "enc no xecp : " (xhci-speed-encode 0 0 0 1))
+    let tb = alloc-zeroed 64 64
+    in print-line-uni (row "ttt 0x00    : " (think-buf tb 0))
+    let tb1 = alloc-zeroed 64 64
+    in print-line-uni (row "ttt 0x20    : " (think-buf tb1 32))
+    let tb2 = alloc-zeroed 64 64
+    in print-line-uni (row "ttt 0x40    : " (think-buf tb2 64))
+    let tb3 = alloc-zeroed 64 64
+    in print-line-uni (row "ttt 0x60    : " (think-buf tb3 96))
+  end

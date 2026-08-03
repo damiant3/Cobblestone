@@ -1,0 +1,96 @@
+Chapter: MathCordicQuadrants
+  cites Foreword chapter Console
+  cites Math chapter Cordic
+
+ Fixed point at scale 1000, and angles are milliradians. The reference
+ figures: sin 0.5 = 0.479, sin 1 = 0.841, sin 2 = 0.909, sin(pi) = 0,
+ sin(3pi/2) = -1, cos(pi) = -1, cos(pi/2) = 0.
+
+ CORDIC converges only while the target can be retired by the angle table,
+ which sums to 1735 milliradians, so every argument above that is the
+ question and every argument below it is a control. cordic-normalize admits
+ the whole turn, so before the quadrant fold the three quarters of the
+ circle above 1.735 rad all answered one saturated constant: sin(pi) read
+ 986 rather than 0 and cos(pi) read -168 rather than -1000.
+
+ The residual 3 in every extreme (997 rather than 1000) is the gain
+ constant 607 approximating 1/1.6468, and it is present at cos 0 too, so
+ it is not the quadrant fold and no row here should be read as measuring
+ it.
+
+Section: Body
+
+  s : Integer, Integer, Text -> Text
+  s (a) (got) (want) = "  sin " & show a & " = " & show got & "  true " & want
+
+  c : Integer, Integer, Text -> Text
+  c (a) (got) (want) = "  cos " & show a & " = " & show got & "  true " & want
+
+ A point on the unit circle satisfies sin^2 + cos^2 = 1 whatever the
+ quadrant, so this is one assertion the saturated version could not have
+ passed anywhere above 1735 and it needs no per-angle reference value. It
+ is blind to sign, though: sabotaging the third quadrant's sin negation
+ left this count at 13 of 13 and moved only the two counts below, which is
+ why both kinds of row are here.
+
+  pythag : Integer, Integer, Integer -> Integer
+  pythag (i) (n) (acc) =
+    if i > n then acc
+    else let a = i * 500
+    in let sn = cordic-sin a
+    in let cs = cordic-cos a
+    in let m = sn * sn + cs * cs
+    in pythag (i + 1) n (if m > 985000 then if m < 1015000 then acc + 1 else acc else acc)
+
+ sin is non-negative on the first half turn and non-positive on the second.
+ The saturated version answered 986 for every angle above 1735, so it
+ failed the second half at every point.
+
+  upper : Integer, Integer, Integer -> Integer
+  upper (i) (n) (acc) =
+    if i > n then acc
+    else upper (i + 1) n (if cordic-sin (i * 300) >= 0 then acc + 1 else acc)
+
+  lower : Integer, Integer, Integer -> Integer
+  lower (i) (n) (acc) =
+    if i > n then acc
+    else lower (i + 1) n (if cordic-sin (3142 + i * 300) <= 0 then acc + 1 else acc)
+
+Section: Report
+
+  opening : [Console] Nothing = act
+    print-line-uni "Below 1735 the rotation always converged, so these are controls"
+    print-line-uni "and the quadrant fold must not move any of them:"
+    print-line-uni (s 0 (cordic-sin 0) "0")
+    print-line-uni (s 500 (cordic-sin 500) "479")
+    print-line-uni (s 1000 (cordic-sin 1000) "841")
+    print-line-uni (s 1500 (cordic-sin 1500) "997")
+    print-line-uni (c 0 (cordic-cos 0) "1000, and 997 is the gain constant, not the fold")
+    print-line-uni ""
+    print-line-uni "Second quadrant, where the saturation began:"
+    print-line-uni (s 2000 (cordic-sin 2000) "909")
+    print-line-uni (s 2500 (cordic-sin 2500) "599")
+    print-line-uni (s 3141 (cordic-sin 3141) "0")
+    print-line-uni (c 1571 (cordic-cos 1571) "0")
+    print-line-uni (c 2000 (cordic-cos 2000) "-416")
+    print-line-uni (c 3141 (cordic-cos 3141) "-1000")
+    print-line-uni ""
+    print-line-uni "Third and fourth quadrants, where sin must go negative and the"
+    print-line-uni "saturated version answered a positive 986 throughout:"
+    print-line-uni (s 3500 (cordic-sin 3500) "-351")
+    print-line-uni (s 4712 (cordic-sin 4712) "-1000")
+    print-line-uni (s 5500 (cordic-sin 5500) "-706")
+    print-line-uni (c 4712 (cordic-cos 4712) "0")
+    print-line-uni (c 6000 (cordic-cos 6000) "960")
+    print-line-uni ""
+    print-line-uni "Angles outside one turn, which cordic-normalize folds first:"
+    print-line-uni (s 7854 (cordic-sin 7854) "1000, being 6283 + 1571")
+    print-line-uni (s (0 - 1571) (cordic-sin (0 - 1571)) "-1000")
+    print-line-uni ""
+    print-line-uni "Counted rather than eyeballed, over the whole turn:"
+    print-line-uni ("  sin^2 + cos^2 within 1.5 pct of 1, angles 0..6000: " & show (pythag 0 12 0) & " of 13")
+    print-line-uni ("  sin non-negative over 0..3000:                     " & show (upper 0 10 0) & " of 11")
+    print-line-uni ("  sin non-positive over pi..pi+3000:                 " & show (lower 0 10 0) & " of 11")
+  end
+
+Page 1

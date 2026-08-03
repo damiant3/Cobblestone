@@ -1,4 +1,4 @@
-# WHPX: host BSOD from `pingpong-self.sh` — missing `kernel-irqchip=off` remediation
+# WHPX: host BSOD from `pingpong-self.sh` -- missing `kernel-irqchip=off` remediation
 
 ## Summary
 
@@ -22,7 +22,7 @@ eliminating the footgun.
 **Bugcheck**:
 ```
 0x00000050 (PAGE_FAULT_IN_NONPAGED_AREA)
-  P1: 0xfffff78000002004   (faulting address — KUSER_SHARED_DATA region)
+  P1: 0xfffff78000002004   (faulting address -- KUSER_SHARED_DATA region)
   P2: 0x0000000000000000   (read access)
   P3: 0xfffff8049a11d0e0   (faulting instruction)
   P4: 0x0000000000000002   (page not present)
@@ -82,7 +82,7 @@ All within the last 48 hours:
 
 | Time | Bugcheck | Code | Likely cause |
 |------|----------|------|--------------|
-| 04/30 05:08 | **0x50** PAGE_FAULT_IN_NONPAGED_AREA | `0xfffff78000002004` | **This crash** — Nib ran `.sh` (no irqchip=off) |
+| 04/30 05:08 | **0x50** PAGE_FAULT_IN_NONPAGED_AREA | `0xfffff78000002004` | **This crash** -- Nib ran `.sh` (no irqchip=off) |
 | 04/29 09:31 | 0x50 PAGE_FAULT_IN_NONPAGED_AREA | `0xfffff8023dd70dbe` | Nib ran `.sh` |
 | 04/29 09:04 | 0x50 PAGE_FAULT_IN_NONPAGED_AREA | `0xfffffffff7e6e8cf` | Nib ran `.sh` |
 | 04/29 08:45 | 0x4E PFN_LIST_CORRUPT | | Nib ran `.sh` |

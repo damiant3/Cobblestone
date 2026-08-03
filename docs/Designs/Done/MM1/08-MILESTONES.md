@@ -1,8 +1,8 @@
-# 08 — Milestones
+# 08 -- Milestones
 
 ## Philosophy
 
-We build in vertical slices, not horizontal layers. Each milestone produces a working system that can do something real, even if that something is small. No milestone is "implement the type system" — instead it's "compile and run a program that uses type X."
+We build in vertical slices, not horizontal layers. Each milestone produces a working system that can do something real, even if that something is small. No milestone is "implement the type system" -- instead it's "compile and run a program that uses type X."
 
 Every milestone ends with a demo: a Codex program that exercises the new capability, compiled and executed.
 
@@ -63,7 +63,7 @@ Parse it. Print the CST. Print the AST. No type checking, no execution.
 - [x] Type error diagnostics with source locations
 - [x] Sum type definitions and pattern matching (exhaustiveness check)
 - [x] Record type definitions and field access
-- [x] `Codex.Types.Tests`: type checking tests — both success and failure cases
+- [x] `Codex.Types.Tests`: type checking tests -- both success and failure cases
 
 ### Demo Program
 ```
@@ -99,9 +99,9 @@ Type-check it. Report any errors. No execution yet.
 - [x] Integration tests (source → compile → run → verify output)
 
 ### Key Decisions
-- IR is not A-Normal Form — expressions nest freely. See [DECISIONS.md](DECISIONS.md).
+- IR is not A-Normal Form -- expressions nest freely. See [DECISIONS.md](DECISIONS.md).
 - Curried application: `IRApply(IRApply(f, a), b)`. See [DECISIONS.md](DECISIONS.md).
-- No separate runtime library — built-ins emitted inline. See [DECISIONS.md](DECISIONS.md).
+- No separate runtime library -- built-ins emitted inline. See [DECISIONS.md](DECISIONS.md).
 - `long` for Integer, `double` for Number. See [DECISIONS.md](DECISIONS.md).
 
 ### Demo
@@ -126,7 +126,7 @@ codex run hello.codex
 ### Status
 Chapter/Section parsing, prose-aware compilation, and template matching all work end-to-end.
 Templates desugar through the full pipeline (7 tests in `ProseTemplateTests`).
-The Reader and `Codex.Narration` are deferred — the project exists but is empty.
+The Reader and `Codex.Narration` are deferred -- the project exists but is empty.
 
 ### Demo Program
 ```codex
@@ -179,7 +179,7 @@ and the `run-state` effect handler all work. User-defined effect handlers and cu
 - [x] `FileHandle` as a linear type
 - [x] File system effect + linear file handles
 - [x] C# backend: linear types encoded as runtime checks
-- [x] **Linearity checker** (`LinearityChecker.cs`) — usage-counting pass with CDX2040 (never used), CDX2041 (used more than once), CDX2042 (inconsistent across branches)
+- [x] **Linearity checker** (`LinearityChecker.cs`) -- usage-counting pass with CDX2040 (never used), CDX2041 (used more than once), CDX2042 (inconsistent across branches)
 - [x] Let-forward tracking (rebinding a linear variable transfers linearity)
 - [x] If/match branch merging (linear variable must be used consistently in all branches)
 - [x] Wired into CLI compile pipeline and `Helpers.CheckWithLinearity` test harness
@@ -308,8 +308,8 @@ Sample: `samples/proofs.codex` (9 claims, 9 proofs, 0 errors).
 - [x] Property-based testing framework
 - [x] Integration test cases for each milestone (end-to-end)
 - [x] 628 tests across 7 test projects (all passing)
-- [x] **Corpus emission tests** — 15 samples × 11 backends = 165 theory tests + 1 full emission test
-- [x] **Generated output checked in** — `generated-output/` with 11 language subdirectories, 165 files
+- [x] **Corpus emission tests** -- 15 samples × 11 backends = 165 theory tests + 1 full emission test
+- [x] **Generated output checked in** -- `generated-output/` with 11 language subdirectories, 165 files
 - [ ] **Fuzz testing** for robustness
 - [ ] **CI configuration** for automated testing
 
@@ -329,7 +329,7 @@ Sample: `samples/proofs.codex` (9 claims, 9 proofs, 0 errors).
 ### Status
 Integration tests cover all milestones. Corpus emission tests compile every sample through every
 backend and write the output to `generated-output/` (checked in for git history). Fuzz testing and CI deferred.
-See [DECISIONS.md](DECISIONS.md) re: CI pipeline — deferred until there are users or funding.
+See [DECISIONS.md](DECISIONS.md) re: CI pipeline -- deferred until there are users or funding.
 
 ---
 
@@ -368,10 +368,10 @@ See [DECISIONS.md](DECISIONS.md) re: CI pipeline — deferred until there are us
 - [x] Stage 0 (C# compiler) compiles Stage 1 (Codex compiler)
 - [x] **Codex-side type checker** (Unifier, TypeEnvironment, TypeChecker)
 - [x] **Codex-side name resolver** (scope tracking, duplicate detection, built-ins)
-- [x] **Full pipeline in Codex** — `compile-checked` chains lex → parse → desugar → resolve → typecheck → lower → emit
-- [x] **C# generics support** — polymorphic functions emit as generic methods
-- [x] **Stage 1 compiles and runs** — `output.cs` compiles as a standalone .NET 8 program with zero errors
-- [x] **Stage 1 produces output** — the compiled Codex compiler successfully compiles a test Codex program
+- [x] **Full pipeline in Codex** -- `compile-checked` chains lex → parse → desugar → resolve → typecheck → lower → emit
+- [x] **C# generics support** -- polymorphic functions emit as generic methods
+- [x] **Stage 1 compiles and runs** -- `output.cs` compiles as a standalone .NET 8 program with zero errors
+- [x] **Stage 1 produces output** -- the compiled Codex compiler successfully compiles a test Codex program
 - [ ] Stage 1 output = Stage 2 output (full bootstrap fixed-point verification)
 
 ### Key Decisions
@@ -395,7 +395,7 @@ Remaining gap to full fixed-point: Stage 1 type checker must resolve concrete ty
 
 ## Post-Milestone Work (Completed)
 
-These were done after the original M0–M13 plan, not covered by numbered milestones.
+These were done after the original M0-M13 plan, not covered by numbered milestones.
 
 ### IDE / Syntax Highlighting ✅
 - [x] TextMate grammar (`codex.tmLanguage.json`) for VS 2022 + VS Code

@@ -1,0 +1,55 @@
+Chapter: CpuBuiltinsTest
+
+ The six CPU-state builtins, executed rather than merely declared.
+
+ A BUILTIN THAT COMPILES IS NOT A BUILTIN THAT RUNS. These are hand-
+ emitted machine code reached through a call by name; a wrong byte, a
+ missing registration or a clobbered callee-saved register all compile
+ perfectly and fail only when the instruction actually executes. So this
+ probe exists to make them execute.
+
+ THE ASSERTIONS ARE ARCHITECTURAL INVARIANTS, NOT CAPTURED VALUES. A CR3
+ or a CPUID brand string would pin this test to one host and one boot, and
+ the expected file would churn on a machine that is not this one. What
+ does not vary is what long mode REQUIRES: CR0 must have protected mode
+ and paging on, CR3 must be page-aligned and non-zero, CPUID leaf 0 must
+ answer a maximum leaf of at least one, and the four registers of a leaf
+ must not all be the same value.
+
+ THE RBX CHECK IS THE POINT OF THE WHOLE FILE. CPUID clobbers RBX, and
+ RBX is callee-saved in this ABI -- the prologue pushes it. If the helper
+ failed to restore it, the corruption would appear in whatever the CALLER
+ was holding, which is a value computed BEFORE the cpuid and used AFTER
+ it. So a live value is carried across every CPUID call below and compared
+ to itself at the end. The design's proposed sequence would fail this line
+ and pass every other one.
+
+ We say:
+
+Section: Bits
+
+  bit-set : Integer, Integer -> Text
+  bit-set (v) (b) = if bit-and v (bit-shl 1 b) /= 0 then "1" else "0"
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    let guard = 305419896
+    in let cr0 = cpu-read-cr0
+    in let cr3 = cpu-read-cr3
+    in let maxleaf = cpu-cpuid-eax 0
+    in let a1 = cpu-cpuid-eax 1
+    in let b1 = cpu-cpuid-ebx 1
+    in let c1 = cpu-cpuid-ecx 1
+    in let d1 = cpu-cpuid-edx 1
+    in act
+      print-line-uni ("cr0-pe: " & bit-set cr0 0 & " cr0-pg: " & bit-set cr0 31)
+      print-line-uni ("cr3-nonzero: " & show (cr3 /= 0) & " cr3-page-aligned: " & show (bit-and cr3 4095 == 0))
+      print-line-uni ("cpuid-maxleaf-at-least-1: " & show (maxleaf >= 1))
+      print-line-uni ("leaf1-eax-nonzero: " & show (a1 /= 0))
+      print-line-uni ("leaf1-fits-32-bits: " & show (a1 >= 0 & a1 <= 4294967295))
+      print-line-uni ("leaf1-edx-fpu: " & bit-set d1 0 & " leaf1-edx-tsc: " & bit-set d1 4)
+      print-line-uni ("leaf1-regs-differ: " & show (a1 /= b1 | b1 /= c1 | c1 /= d1))
+      print-line-uni ("rbx-preserved: " & show (guard == 305419896))
+    end
+  end

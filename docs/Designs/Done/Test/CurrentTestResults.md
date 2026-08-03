@@ -24,7 +24,7 @@ metal.
 
 ---
 
-## Bootstrap 1 — .NET, C# output
+## Bootstrap 1 -- .NET, C# output
 
 | Stage | Source | Size | Time |
 |-------|--------|------|------|
@@ -39,7 +39,7 @@ Artefacts: `bootstrap1-stage0.cs`, `bootstrap1-stage1.cs`,
 
 ---
 
-## Bootstrap 1.1 — .NET, Codex-text output
+## Bootstrap 1.1 -- .NET, Codex-text output
 
 | Stage | Source | Size | Time |
 |-------|--------|------|------|
@@ -52,14 +52,14 @@ Artefacts: `bootstrap1.1-stage1.codex`, `bootstrap1.1-stage2.codex`.
 
 ---
 
-## Bootstrap 2 (pingpong) — bare-metal ELF, Codex-text output
+## Bootstrap 2 (pingpong) -- bare-metal ELF, Codex-text output
 
 The reference compiler cross-compiles the self-host to `x86-64-bare`,
 producing a 1,040,752-byte ELF (`Codex.Codex.elf`). The ELF runs in
 QEMU under KVM with no OS, no libc, no dotnet. Source is fed over
 serial; Codex text is captured back.
 
-### Stage 1 — ELF compiles source
+### Stage 1 -- ELF compiles source
 
 | Metric | Value |
 |--------|-------|
@@ -81,7 +81,7 @@ serial; Codex text is captured back.
 | Sig mismatches | 5 (all `foreword--maybe`: `from-maybe`, `is-just`, `is-none`, `maybe-map`, `maybe-bind`) |
 
 **Root cause:** `Codex.Codex/Emit/CodexEmitter.codex:11-17`
-(`emit-type-def`) destructures `tparams` but never emits them — so
+(`emit-type-def`) destructures `tparams` but never emits them -- so
 `Maybe (a) =` round-trips to `Maybe =`. The same loss happens in type
 references: `Maybe a ->` round-trips to `Maybe ->`. Introduced at
 `4420b92` (Merge cam/self-host-maybe, 2026-04-15 22:05); the Maybe
@@ -94,7 +94,7 @@ Gated on sem-equiv. Not run. `bootstrap2-stage2.codex` does not exist.
 
 ---
 
-## Bootstrap 3 — bare-metal binary
+## Bootstrap 3 -- bare-metal binary
 
 Not exercised by `pingpong.sh`. Tracked as MM4 Phase 8
 (`docs/Active/Compiler/SECOND-BOOTSTRAP.md`). Self-host compiled as
@@ -114,7 +114,7 @@ reference-compiled binary. Not yet achieved.
 | Bootstrap 2 (pingpong) stage 1 heap HWM | 248,474,328 B | 1,011,859,392 B | **4.07×** |
 
 Heap HWM quadrupled because `CDX-C6` (`e9b4ee6`, 2026-04-14) disabled
-scalar-reclaim on bare-metal — heap never shrinks during a compile.
+scalar-reclaim on bare-metal -- heap never shrinks during a compile.
 That was a correctness fix (prior scheme corrupted records holding
 pointers into their own region), not a regression. The ≈1 GB bare-metal
 heap absorbs the growth.

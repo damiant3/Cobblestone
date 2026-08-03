@@ -120,8 +120,28 @@ Section: Glyph
     in gop-char-rows base stride font px py cce fg scale (row + 1)
 
   gop-draw-text : Integer, Integer, CbfFont, Integer, Integer, Text, Integer, Integer, Integer -> Integer
+ CLIPPED AT THE SCANLINE, and the clip is the whole point. The framebuffer
+ is linear, so a glyph drawn past the end of a row does not fall off the
+ screen: its pixels land on the NEXT row, on top of whatever is there. A
+ line one character too long therefore destroys itself AND its neighbour,
+ and it does it silently. Measured 2026-07-29 on two of the three sitting
+ rungs at 1280x800: MscAlignProbe's LIVENESS line came back reading
+ "ng)LIVENESS out-of-range" with its own tail sitting on its head, and
+ KbdDiagProbe's instruction line the same way.
+
+ Panel width is not ours to choose, and it is the one thing about the
+ target machine we do not know before the sitting. A line that fits the dev
+ box at 1280 wraps at 1024 and shreds the screen at 800, so without this
+ bound every probe's legibility is a bet on the panel.
+
+ Truncating at `stride` rather than at a visible width is deliberate: the
+ padded region beyond the visible pixels is invisible but harmless, while
+ the next scanline is not. Losing the tail of a long line is a failure the
+ reader can SEE; overwriting the line above it is one they cannot.
+
   gop-draw-text (base) (stride) (font) (px) (py) (s) (fg) (scale) (i) =
     if i >= text-length s then 0
+    else if px + (i + 1) * 8 * scale > stride then 0
     else let cce = char-code (char-at s i)
     in let c = gop-char-rows base stride font (px + i * 8 * scale) py cce fg scale 0
     in gop-draw-text base stride font px py s fg scale (i + 1)

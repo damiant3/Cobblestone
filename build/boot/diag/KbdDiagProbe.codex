@@ -9,6 +9,7 @@ Chapter: KbdDiagProbe
   cites Works chapter GopDraw
   cites Works chapter GopQr
   cites Kernel chapter BitmapFont
+  cites Works chapter GopHandoff
 
  Real-hardware keyboard diagnostic, v8: three phases, one boot.
 
@@ -50,14 +51,29 @@ Chapter: KbdDiagProbe
 
 Section: Counters
 
- The block sits at 37000, ABOVE every claimed cell region: the xHCI
- diag block (36200), the GopUsbMsc publish block (36480-36571 -- the
- v8.0 probe overlapped it at 36480, wiping the publish magic, so the
- first file write fell into msc-connect's controller reset and
- silently killed the keyboard endpoint it was instrumenting), and the
- pointer mailbox (36736).
+ The block sits at 37000, ABOVE every claimed cell region below it: the
+ GopUsbMsc publish block (36480-36571 -- the v8.0 probe overlapped it at
+ 36480, wiping the publish magic, so the first file write fell into
+ msc-connect's controller reset and silently killed the keyboard
+ endpoint it was instrumenting), and the pointer mailbox (36736). The
+ xHCI diag block was in that list until 2026-07-30, when it moved off
+ the PML4 page to 0x1D000; it no longer competes for this band.
 
   kd-cell : Integer = 37000
+
+ The EXPERIMENT cells moved off the 37000 band on 2026-08-03. Writes at
+ kd-cell offsets 132-140 (bytes 37132-37143) at pump time corrupt an
+ unnamed tenant: the same experiment writing the same values to bytes
+ 37400+ or here runs clean, and with 132-140 live the next QR encode
+ dies in qr-put-slice-bits with #UD -- bisected across variants A/B/C
+ under codex-vm -hid-nak, deterministic, same RIP every run. The band
+ boundary is measured, not derived: offset 128 is safe, 132 is not. The
+ tenant is NOT the publish block (36480-36571), the mouse mailbox
+ (36736-36751), or any greppable constant; finding it is an open item.
+ These cells live on the xhci-diag page (0x1D000), 1 KB past the 96
+ dwords xdiag claims, which this probe's own attach zeroes and owns.
+
+  kx-cell : Integer = 119808
 
   kd-inc : Integer -> Integer
   kd-inc (off) = poke-32 kd-cell off ((peek-32 kd-cell off) + 1)
@@ -88,6 +104,23 @@ Section: Counters
     in let al = poke-32 kd-cell 84 0
     in let am = poke-32 kd-cell 88 0
     in let an = poke-32 kd-cell 92 0
+    in let ao = poke-32 kx-cell 0 0
+    in let ap = poke-32 kx-cell 4 0
+    in let aq = poke-32 kx-cell 8 0
+    in let ar = poke-32 kx-cell 12 0
+    in let as0 = poke-32 kx-cell 16 0
+    in let at0 = poke-32 kx-cell 20 0
+    in let au = poke-32 kx-cell 24 0
+    in let av = poke-32 kx-cell 28 0
+    in let aw = poke-32 kx-cell 32 0
+    in let ax = poke-32 kx-cell 36 0
+    in let ay = poke-32 kx-cell 40 0
+    in let az = poke-32 kx-cell 44 0
+    in let ba = poke-32 kx-cell 48 0
+    in let bb = poke-32 kx-cell 52 0
+    in let bc = poke-32 kx-cell 56 0
+    in let bd = poke-32 kx-cell 60 0
+    in let be = poke-32 kx-cell 64 0
     in poke-32 kd-cell 96 #FFFFFFFF
 
   kd-mark-tick : Integer -> Integer
@@ -195,6 +228,133 @@ Section: Instrumented Pump
     in if i <= 0 then 0
     else kd-spin k (i - 1)
 
+Section: Schedule Experiment
+
+ Every arm below is a spec section, not a hunch; the derivation with
+ page numbers is docs/Reference/xHCI_ServiceModel_Notes.md, built from
+ docs/Reference/xHCI_Specification.pdf (rev 1.2). The guarantee under
+ test is 4.14.3 p.266: an idle interrupt ring's first transaction shall
+ be scheduled within IST + ESIT of the doorbell. The instruments, in
+ execution order:
+
+ PORTSC (5.4.8): PLS bits 8:5 must be U0(0); a U3(3) port is suspended
+ and starves exactly the periodic schedule while leaving the firmware's
+ later handback intact. Valid only if PP (bit 9) is set.
+
+ MFINDEX (5.5.1, halt rule 4.14.2 p.260): sampled twice across a ~110ms
+ PIT delay. Frozen means the controller believes every port is down and
+ no frames exist for any periodic pipe.
+
+ Stop Endpoint (4.6.9 p.133-134): forces the controller's INTERNAL
+ dequeue into the output context -- parked at base with the device
+ known-responsive (phase 2) means the schedule never issued the IN. The
+ spec also makes a Stopped Transfer Event (code 26, 27 or 28) MANDATORY
+ before the command completion, even on an idle ring; its code is taken
+ from the slot latch. An xHC that completes the command but skips that
+ event is not executing the transfer half of the stop.
+
+ Restart doorbell, ~220ms wait (far beyond IST + ESIT), Stop Endpoint
+ again: if dq moved between the stops, the restart scheduled and the
+ loss is downstream; if identical, the doorbell-to-schedule path is
+ dead. EP State reads around the restart are advisory only -- 4.8.3
+ p.165 makes the Running write-back mandatory only before the next
+ Transfer Event, so with no event it may lawfully read 3 forever (the
+ v13 re=3 was this, not a refused restart).
+
+ Runs ONCE, halfway through phase 1, from the pump path -- never from
+ the repaint chain, which the two withdrawn instruments proved kills
+ painting.
+
+ kx cells: 0 ran, 4 stop1 event (ok in bit 8, code in 7:0), 8 dq1 low
+ dword, 12 EP state post-stop1, 16 EP state after restart, 20 PORTSC
+ raw, 24 MFINDEX delta, 28 stop1 latch code (the Stopped Transfer
+ Event), 32 stop2 event, 36 stop2 latch code, 40 dq2. DEVX: 44 ran,
+ 48 device state (cfg byte, protocol byte, idle byte, ok-flag nibble),
+ 52-56 report sample 1, 60-64 report sample 2.
+
+ A LIVE pipe is never touched: the v15 flight delivered idle reports
+ for 48 s and then THIS experiment stopped the endpoint at its 45 s
+ trigger, and on the ASUS Intel the doorbell-restart after a Stop
+ Endpoint did not resume periodic delivery -- EPINT froze at 97 while
+ the pump ran on. The experiments exist to autopsy a dead pipe, so
+ they fire only when EPINT is still zero at trigger time.
+
+  kd-schedx : UsbKbd -> Integer
+  kd-schedx (k) =
+    if k.uk-ok == False then 0
+    else if peek-32 kd-cell 0 /= 0 then 0
+    else if peek-32 kx-cell 0 /= 0 then 0
+    else if peek-32 kd-cell 56 /= 1 then 0
+    else if kd-tick-delta 0 < 270 then 0
+    else let g = poke-32 kx-cell 0 1
+    in let xh = k.uk-host
+    in let slot = (k.uk-dev).ud-slot
+    in let dctx = bit-and (peek-32 (xh.xh-dcbaa) (slot * 8)) (-64)
+    in if dctx == 0 then poke-32 kx-cell 0 2
+    else let port = bit-and (bit-shru (peek-32 dctx 4) 16) 255
+    in let ps = poke-32 kx-cell 20 (if port > 0 then xhci-portsc xh (port - 1) else -1)
+    in let mf1 = bit-and (peek-32 (xh.xh-rt) 0) 16383
+    in let dl1 = xhci-delay-ticks 2
+    in let mf2 = bit-and (peek-32 (xh.xh-rt) 0) 16383
+    in let md = poke-32 kx-cell 24 (bit-and (mf2 - mf1) 16383)
+    in let e1 = xhci-stop-endpoint xh slot (k.uk-dci)
+    in let r1 = poke-32 kx-cell 4 (bit-or (if e1.xe-ok then 256 else 0) (e1.xe-code))
+    in let f1 = poke-32 kx-cell 28 (xhci-latch-take xh slot)
+    in let ep = dctx + (k.uk-dci) * (xh.xh-ctxsz)
+    in let r2 = poke-32 kx-cell 8 (peek-32 ep 8)
+    in let r3 = poke-32 kx-cell 12 (bit-and (peek-32 ep 0) 7)
+    in let db = xhci-ring-doorbell xh slot (k.uk-dci)
+    in let r4 = poke-32 kx-cell 16 (bit-and (peek-32 ep 0) 7)
+    in let dl2 = xhci-delay-ticks 4
+    in let e2 = xhci-stop-endpoint xh slot (k.uk-dci)
+    in let r5 = poke-32 kx-cell 32 (bit-or (if e2.xe-ok then 256 else 0) (e2.xe-code))
+    in let f2 = poke-32 kx-cell 36 (xhci-latch-take xh slot)
+    in let r6 = poke-32 kx-cell 40 (peek-32 ep 8)
+    in xhci-ring-doorbell xh slot (k.uk-dci)
+
+Section: Device State Experiment
+
+ The controller polls and the device NAKs (SCHEDX's verdict on metal),
+ so the remaining questions belong to the DEVICE, and every one is
+ askable over the control pipe that demonstrably works. HID 1.11:
+ GET_PROTOCOL 7.2.5 (expect 0, boot), GET_IDLE 7.2.3 (the silencer --
+ v14 and earlier SENT Set_Idle 0, v15's driver no longer does),
+ GET_REPORT 7.2.1 (MANDATORY: the current input report over EP0,
+ bypassing the interrupt pipe entirely). USB2 9.4.2 GET_CONFIGURATION
+ (expect the configured value, 1). Two GET_REPORT samples ~1 s apart:
+ a key held across them appears in sample 2 even if it was missed by
+ sample 1, and a nonzero sample is the existence proof for a
+ GET_REPORT-polling keyboard fallback. Fires once, after SCHEDX, from
+ the pump path. Interface number is taken as 0 (a boot keyboard's
+ interface on every board seen; a wrong guess answers STALL, which the
+ flag nibble records as a failed request rather than silence).
+
+  kd-devx : UsbKbd -> Integer
+  kd-devx (k) =
+    if k.uk-ok == False then 0
+    else if peek-32 kx-cell 44 /= 0 then 0
+    else if peek-32 kx-cell 0 == 0 then 0
+    else if kd-tick-delta 0 < 340 then 0
+    else let g = poke-32 kx-cell 44 1
+    in let xh = k.uk-host
+    in let dev = k.uk-dev
+    in let buf = alloc-zeroed 64 64
+    in let gc = xhci-ctrl-in xh dev 128 8 0 0 buf 1
+    in let cfg = peek-byte buf 0
+    in let gp = xhci-ctrl-in xh dev 161 3 0 0 buf 1
+    in let proto = peek-byte buf 0
+    in let gi = xhci-ctrl-in xh dev 161 2 0 0 buf 1
+    in let idle = peek-byte buf 0
+    in let g1 = xhci-ctrl-in xh dev 161 1 256 0 buf 8
+    in let s1a = poke-32 kx-cell 52 (peek-32 buf 0)
+    in let s1b = poke-32 kx-cell 56 (peek-32 buf 4)
+    in let dl = xhci-delay-ticks 18
+    in let g2 = xhci-ctrl-in xh dev 161 1 256 0 buf 8
+    in let s2a = poke-32 kx-cell 60 (peek-32 buf 0)
+    in let s2b = poke-32 kx-cell 64 (peek-32 buf 4)
+    in let fl = (if gc then 1 else 0) + (if gp then 2 else 0) + (if gi then 4 else 0) + (if g1 then 8 else 0) + (if g2 then 16 else 0)
+    in poke-32 kx-cell 48 (bit-or cfg (bit-or (bit-shl proto 8) (bit-or (bit-shl idle 16) (bit-shl fl 24))))
+
 Section: Ownership Handback
 
  The reverse of the driver's take-ownership, for the phase-2
@@ -296,7 +456,7 @@ Section: Findings File
  one write by resetting the stored signature.
 
   kd-sig : Integer -> Integer
-  kd-sig (d) = (peek-32 kd-cell 0) + (peek-32 kd-cell 16) * 7 + (peek-32 kd-cell 20) * 11 + (peek-32 kd-cell 24) * 13 + (peek-32 kd-cell 4) * 17 + (peek-32 kd-cell 60) * 19 + (peek-32 kd-cell 56) * 23
+  kd-sig (d) = (peek-32 kd-cell 0) + (peek-32 kd-cell 16) * 7 + (peek-32 kd-cell 20) * 11 + (peek-32 kd-cell 24) * 13 + (peek-32 kd-cell 4) * 17 + (peek-32 kd-cell 60) * 19 + (peek-32 kd-cell 56) * 23 + (peek-32 kx-cell 0) * 29 + (peek-32 kx-cell 4) * 31 + (peek-32 kx-cell 32) * 37 + (peek-32 kx-cell 40) * 41 + (peek-32 kx-cell 44) * 43 + (peek-32 kx-cell 60) * 47
 
   kd-put-text : Integer, Text, Integer -> Integer
   kd-put-text (buf) (s) (i) =
@@ -304,18 +464,52 @@ Section: Findings File
     else let w = poke-byte buf i (to-unicode (char-code (char-at s i)))
     in kd-put-text buf s (i + 1)
 
+ Cells 2 and 3 are the vendor and device id of the controller cells 0-39
+ describe, packed here the way cell 48 packs the per-controller table so
+ the two read as the same kind of number and can be compared by eye.
+
+  kd-host-id : Integer -> Integer
+  kd-host-id (z) = bit-or (bit-shl (xdiag-get 2) 16) (xdiag-get 3)
+
+ Cell 44 is the keyboard's controller as ordinal PLUS ONE, so zero means no
+ controller yielded one. Comparing that row's identity against cells 2-3
+ answers the only question that makes the rest of the HOST line worth
+ reading: whether it describes the keyboard's controller or another one.
+
+  kd-host-is-kbd : Integer -> Boolean
+  kd-host-is-kbd (z) =
+    let o = xdiag-get 44
+    in if o == 0 then False
+    else if o > 4 then False
+    else kd-host-id 0 == xdiag-get (48 + (o - 1) * 4)
+
   kd-file-body : UsbKbd -> Text
   kd-file-body (k) =
-    let l1 = "KBDDIAG v8\n"
+    let l1 = "KBDDIAG v16\n"
+    in let l1a = "HOST id=" & kh32 (kd-host-id 0) & " run=" & show (xdiag-get 17) & " cnr=" & show (xdiag-get 16) & " ports=" & show (xdiag-get 14) & " slots=" & show (xdiag-get 13) & " HCC=" & kh32 (xdiag-get 5) & " xECP=" & show (xdiag-get 8) & "\n"
+    in let l1b = "CTL n=" & show (xdiag-get 40) & " 0:" & kh32 (xdiag-get 48) & " 1:" & kh32 (xdiag-get 52) & " 2:" & kh32 (xdiag-get 56) & "\n"
+    in let l1c = "ATTR kbd=" & show (xdiag-get 44) & " disk=" & show (xdiag-get 43) & " up=" & show (xdiag-get 41) & " msk=" & kh8 (xdiag-get 42) & " BAR=" & show (xdiag-get 30) & " " & kh32 (xdiag-get 32) & kh32 (xdiag-get 31) & "\n"
     in let l2 = "uk-ok=" & kyn (if k.uk-ok then 1 else 0) & " slot=" & show ((k.uk-dev).ud-slot) & " dci=" & show (k.uk-dci) & " speed=" & show ((k.uk-dev).ud-speed) & "\n"
     in let l3 = "EPINT=" & show (peek-32 kd-cell 0) & " EP0=" & show (peek-32 kd-cell 16) & " OTH=" & show (peek-32 kd-cell 20) & " LATCH=" & show (peek-32 kd-cell 24) & "\n"
-    in let l4 = "code=" & kh8 (peek-32 kd-cell 8) & " resid=" & show (peek-32 kd-cell 36) & " ctl=" & kh32 (peek-32 kd-cell 28) & "\n"
+    in let l4 = "code=" & kh8 (peek-32 kd-cell 8) & " resid=" & show (peek-32 kd-cell 36) & " ctl=" & kh32 (peek-32 kd-cell 28) & kd-stopx-line 0 & kd-schedx-line 0 & kd-s2-line 0 & "\n" & (if peek-32 kx-cell 44 == 0 then "" else "R1: " & kd-rpt2 52 & " " & kd-rpt2 56 & " " & kd-devx-line 0 & "\n")
     in let l5 = "trb=" & kh32 (peek-32 kd-cell 32) & " ring=" & kh32 (peek-32 kd-cell 48) & "\n"
     in let l6 = "REPORT " & krpt (k.uk-report) & "\n"
     in let l7 = "SCANS=" & show (peek-32 kd-cell 4) & " last=" & kh8 (peek-32 kd-cell 12) & " st=" & show (if k.uk-ok then peek-32 (k.uk-state) 0 else 9) & "\n"
     in let l8 = "PHASE=" & show (peek-32 kd-cell 56) & " released=" & show (peek-32 kd-cell 68) & " reclaim=" & show (peek-32 kd-cell 72) & " ps2=" & show (peek-32 kd-cell 60) & " ps2last=" & kh8 (peek-32 kd-cell 64) & "\n"
     in let l9 = "reacq kbd=" & show (peek-32 kd-cell 80) & " disk=" & show (peek-32 kd-cell 84) & " mount=" & show (peek-32 kd-cell 88) & "\n"
-    in l1 & l2 & l3 & l4 & l5 & l6 & l7 & l8 & l9
+    in l1 & l1a & l1b & l1c & l2 & l3 & l4 & l5 & l6 & l7 & l8 & l9 & kd-ep-line 0
+
+ `st` is the three-valued status and it comes FIRST: at zero the numbers
+ after it were never taken, so they are not printed at all rather than
+ printed as zeros a reader would take for measurements.
+
+  kd-ep-line : Integer -> Text
+  kd-ep-line (z) =
+    let st = xdiag-get 64
+    in if st == 0 then "EP st=0 NOT-READ\n"
+    else let ask = xdiag-get 65
+    in let got = xdiag-get 66
+    in "EP st=" & show st & " bi=" & show (bit-and ask 65535) & " iv=" & show (bit-and got 65535) & " mp=" & show (bit-shru ask 16) & " es=" & show (bit-shru got 16) & " rt=" & show (xdiag-get 67) & " tt=" & show (bit-and (xdiag-get 68) 65535) & " sp=" & show (bit-and (xdiag-get 69) 255) & "\n"
 
   kd-file-write : GfatMount, UsbKbd, Integer -> [Device.Port] Integer
   kd-file-write (m) (k) (nbuf) = act
@@ -352,15 +546,30 @@ Section: Findings File
     let sig = kd-sig 0
     in if sig == peek-32 kd-cell 96 then 0
     else let s96 = poke-32 kd-cell 96 sig
-    in let base = peek-qword 32768 0
-    in let h = peek-qword 32768 16
-    in let stride = peek-qword 32768 24
+    in let base = boot-fb-base 0
+    in let w = boot-fb-w 0
+    in let h = boot-fb-h 0
+    in let stride = boot-fb-stride 0
     in let body = kd-file-body k
     in let total = text-length body
     in let n = (total + 99) / 100
-    in let qs = if h >= 700 then 6 else 2
-    in let qy = if h >= 700 then 380 else 348
+    in let qs = kd-qr-scale w n (if h >= 700 then 6 else 2)
+    in let qy = if h >= 700 then 430 else 368
+    in let clr = gop-fill-rect base stride 0 qy w (if h - qy < 310 then h - qy else 310) 1710638
     in kd-qr-chunks base stride qy qs body total n 0
+
+ The panel is ONE row of codes, so the scale is chosen to make all of them
+ fit rather than assumed. It used to be a constant 6 above 700 pixels, and
+ at 1280x800 a five-chunk body put the last code at x=1216 with 270 pixels
+ to draw: it ran off the glass and `qr-read.ps1` returned three chunks of
+ five. Nothing in the render could report that, because a code drawn past
+ the edge is not an error, it is just gone.
+
+  kd-qr-scale : Integer, Integer, Integer -> Integer
+  kd-qr-scale (w) (n) (s) =
+    if s <= 1 then 1
+    else if 40 + n * (45 * s + 24) <= w then s
+    else kd-qr-scale w n (s - 1)
 
   kd-qr-chunks : Integer, Integer, Integer, Integer, Text, Integer, Integer, Integer -> Integer
   kd-qr-chunks (base) (stride) (qy) (qs) (body) (total) (n) (i) =
@@ -405,31 +614,97 @@ Section: Rendering
   kd-phase-line : Integer -> Text
   kd-phase-line (d) =
     let ph = peek-32 kd-cell 56
-    in if ph == 1 then "PHASE 1/3 USB pump - handback test in " & show ((1620 - kd-tick-delta 0) / 18) & "s (hold keys NOW)"
-    else if ph == 2 then "PHASE 2/3 HANDBACK rel=" & kyn (peek-32 kd-cell 68) & " reclaim=" & kyn (peek-32 kd-cell 72) & " PS2=" & show (peek-32 kd-cell 60) & " last=" & kh8 (peek-32 kd-cell 64) & " - press keys (PS/2 test), " & show ((810 - kd-tick-delta 0) / 18) & "s"
+    in if ph == 1 then "PHASE 1/3 USB pump - handback test in " & show ((540 - kd-tick-delta 0) / 18) & "s (hold keys NOW)"
+    else if ph == 2 then "PHASE 2/3 HANDBACK rel=" & kyn (peek-32 kd-cell 68) & " reclaim=" & kyn (peek-32 kd-cell 72) & " PS2=" & show (peek-32 kd-cell 60) & " last=" & kh8 (peek-32 kd-cell 64) & " - press keys (PS/2 test), " & show ((360 - kd-tick-delta 0) / 18) & "s"
     else "PHASE 3/3 reacquired kbd=" & kyn (peek-32 kd-cell 80) & " disk=" & kyn (peek-32 kd-cell 84) & " mount=" & kyn (peek-32 kd-cell 88) & " - USB pump resumed (hold keys)"
+
+ One controller entry per ordinal, and ONLY the ordinals the count names:
+ the ASUS rendered a third entry of firmware leftovers because the row
+ printed fixed slots 0-2 whatever n said.
+
+  kd-ctl-ent : Integer -> Text
+  kd-ctl-ent (i) =
+    if i >= xdiag-get 40 then ""
+    else " " & show i & ":" & kh32 (xdiag-get (48 + i * 4)) & " " & kh32 (xdiag-get (48 + i * 4 + 1)) & " st=" & show (xdiag-get (48 + i * 4 + 2))
+
+ Two pump-time instruments were built here, bed-tested, and REMOVED, and
+ the removal is the record: a GET_STATUS control transfer from the paint
+ path, and a PORTSC read from the paint path. EACH ONE, independently,
+ stops the paint chain dead after the row before it while the pump's own
+ counters keep advancing -- measured on three builds at 1920x1080 under
+ codex-vm -uefi, with the no-instrument build rendering every row every
+ time. The pump path touches only RAM; these touched MMIO (and EP0) from
+ inside the repaint. Until the mechanism is named, no row painted by this
+ probe may read MMIO or issue a transfer.
+
+ The OUTPUT endpoint context is the controller's, not ours: xHCI 6.2.3
+ gives dword 0 bits 2:0 as EP State (0 disabled, 1 running, 2 halted,
+ 3 stopped, 4 error) and the qword at +8 as the current dequeue pointer
+ with the cycle bit in bit 0. The controller updates these as it works,
+ so on a board where the interrupt endpoint delivers nothing this row
+ says WHICH silence it is: running with a parked dequeue, halted, error,
+ or a context that was never copied out of the input at all.
+
+  kd-stopx-line : Integer -> Text
+  kd-stopx-line (z) =
+    if peek-32 kx-cell 0 == 0 then ""
+    else "  STOPX e=" & kyn (bit-shru (peek-32 kx-cell 4) 8) & " cc=" & show (bit-and (peek-32 kx-cell 4) 255) & " est=" & show (peek-32 kx-cell 12) & " dq=" & kh32 (bit-and (peek-32 kx-cell 8) (-16)) & " re=" & show (peek-32 kx-cell 16)
+
+  kd-schedx-line : Integer -> Text
+  kd-schedx-line (z) =
+    if peek-32 kx-cell 0 == 0 then ""
+    else "  SCHEDX p=" & kh32 (peek-32 kx-cell 20) & " pls=" & show (bit-and (bit-shru (peek-32 kx-cell 20) 5) 15) & " mf=+" & show (peek-32 kx-cell 24) & " f1=" & kh8 (peek-32 kx-cell 28)
+
+  kd-s2-line : Integer -> Text
+  kd-s2-line (z) =
+    if peek-32 kx-cell 0 == 0 then ""
+    else "  S2 e=" & kyn (bit-shru (peek-32 kx-cell 32) 8) & " cc=" & show (bit-and (peek-32 kx-cell 32) 255) & " dq2=" & kh32 (bit-and (peek-32 kx-cell 40) (-16)) & " f2=" & kh8 (peek-32 kx-cell 36)
+
+  kd-rpt2 : Integer -> Text
+  kd-rpt2 (base) = kh8 (bit-and (peek-32 kx-cell base) 255) & " " & kh8 (bit-and (bit-shru (peek-32 kx-cell base) 8) 255) & " " & kh8 (bit-and (bit-shru (peek-32 kx-cell base) 16) 255) & " " & kh8 (bit-and (bit-shru (peek-32 kx-cell base) 24) 255)
+
+  kd-devx-line : Integer -> Text
+  kd-devx-line (z) =
+    if peek-32 kx-cell 44 == 0 then ""
+    else let st = peek-32 kx-cell 48
+    in "DEVX f=" & kh8 (bit-shru st 24) & " cfg=" & show (bit-and st 255) & " p=" & show (bit-and (bit-shru st 8) 255) & " i=" & show (bit-and (bit-shru st 16) 255) & " R2: " & kd-rpt2 60 & " " & kd-rpt2 64
+
+  kd-epctx-line : UsbKbd -> Text
+  kd-epctx-line (k) =
+    if k.uk-ok == False then "EPCTX none"
+    else let dctx = bit-and (peek-32 ((k.uk-host).xh-dcbaa) (((k.uk-dev).ud-slot) * 8)) (-64)
+    in if dctx == 0 then "EPCTX dctx=0"
+    else let ep = dctx + (k.uk-dci) * ((k.uk-host).xh-ctxsz)
+    in let d0 = peek-32 ep 0
+    in let dq = peek-32 ep 8
+    in "EPCTX est=" & show (bit-and d0 7) & " dq=" & kh32 (bit-and dq (-16)) & " cyc=" & show (bit-and dq 1)
 
   kd-static : Integer, Integer, Integer, Integer, CbfFont, UsbAttach, GfatMount -> Integer
   kd-static (base) (w) (h) (stride) (font) (att) (m) =
     let k = att.ua-kbd
-    in let scale = if w >= 1024 then 2 else 1
+    in let scale = if w > 1280 then 2 else 1
     in let bg = gop-fill-rect base stride 0 0 w h 1710638
     in let rb = if k.uk-ok then poke-32 kd-cell 48 (bit-and (xhci-ring-trbs (k.uk-ring)) #FFFFFFFF) else 0
-    in let t0 = krow base stride font 40 scale "KEYBOARD DIAGNOSTIC v8 (endpoint attribution + PS/2 handback test)" 65535
-    in let t1 = krow base stride font 80 scale ("xHCI found=" & kyn (xdiag-get 1) & " CSZ=" & show (xdiag-get 6) & " PPC=" & show (xdiag-get 7) & " connected=" & show (xdiag-get 18) & " intel-route=" & kyn (xdiag-get 36)) 9474192
-    in let t2 = krow base stride font 100 scale ("kbd uk-ok=" & kyn (if k.uk-ok then 1 else 0) & " slot=" & show ((k.uk-dev).ud-slot) & " dci=" & show (k.uk-dci) & " speed=" & show ((k.uk-dev).ud-speed)) (if k.uk-ok then 65280 else 16755200)
-    in let t3 = krow base stride font 120 scale ("disk=" & kyn (if (att.ua-disk).md-ok then 1 else 0) & " mount=" & kyn (if m.gm-ok then 1 else 0) & "  findings -> KBDDIAG.TXT on the boot stick") (if m.gm-ok then 65280 else 16755200)
-    in krow base stride font 150 scale "Hold a key in EACH phase. When done: PHOTOGRAPH THE QR CODES (exact bytes, no transcribing)." 9474192
+    in let t0 = krow base stride font 40 scale ("KBDDIAG v16  GEO w=" & show w & " h=" & show h & " stride=" & show stride & " fb=" & kh32 base & " sc=" & show scale) 65535
+    in let t1 = krow base stride font 60 scale ("xHCI found=" & kyn (xdiag-get 1) & " CSZ=" & show (xdiag-get 6) & " PPC=" & show (xdiag-get 7) & " connected=" & show (xdiag-get 18) & " intel-route=" & kyn (xdiag-get 36)) 9474192
+    in let t1b = krow base stride font 80 scale ("HOST id=" & kh32 (kd-host-id 0) & " run=" & kyn (xdiag-get 17) & " cnr=" & kyn (xdiag-get 16) & " reset=" & kyn (xdiag-get 15) & " slots=" & show (xdiag-get 13) & " ports=" & show (xdiag-get 14) & " HCC=" & kh32 (xdiag-get 5) & " xECP=" & show (xdiag-get 8)) (if xdiag-get 17 == 0 then 16755200 else 65280)
+    in let t1c = krow base stride font 100 scale ("CTL n=" & show (xdiag-get 40) & kd-ctl-ent 0 & kd-ctl-ent 1 & kd-ctl-ent 2) 9474192
+    in let t1d = krow base stride font 120 scale ("ATTR kbd-ctl=" & show (xdiag-get 44) & " disk-ctl=" & show (xdiag-get 43) & " up=" & show (xdiag-get 41) & " walked=" & kh8 (xdiag-get 42) & "   BAR=" & show (xdiag-get 30) & " " & kh32 (xdiag-get 32) & kh32 (xdiag-get 31)) (if kd-host-is-kbd 0 then 65280 else 16755200)
+    in let t2 = krow base stride font 140 scale ("kbd uk-ok=" & kyn (if k.uk-ok then 1 else 0) & " slot=" & show ((k.uk-dev).ud-slot) & " dci=" & show (k.uk-dci) & " speed=" & show ((k.uk-dev).ud-speed)) (if k.uk-ok then 65280 else 16755200)
+    in let t3 = krow base stride font 160 scale ("disk=" & kyn (if (att.ua-disk).md-ok then 1 else 0) & " mount=" & kyn (if m.gm-ok then 1 else 0) & "  findings -> KBDDIAG.TXT on the boot stick") (if m.gm-ok then 65280 else 16755200)
+    in krow base stride font 180 scale "Hold a key in EACH phase. When done: PHOTOGRAPH THE QR CODES (exact bytes, no transcribing)." 9474192
 
   kd-paint : Integer, Integer, CbfFont, Integer, UsbKbd -> Integer
   kd-paint (base) (stride) (font) (scale) (k) =
-    let clr = gop-fill-rect base stride 40 180 1180 200 1710638
-    in let l1 = krow base stride font 180 scale ("p=" & show (peek-32 kd-cell 52) & " EPINT=" & show (peek-32 kd-cell 0) & "  EP0=" & show (peek-32 kd-cell 16) & "  OTH=" & show (peek-32 kd-cell 20) & "  LATCH=" & show (peek-32 kd-cell 24)) (if (peek-32 kd-cell 0) == 0 then 16755200 else 65280)
-    in let l2 = krow base stride font 210 scale ("st=" & show (if k.uk-ok then peek-32 (k.uk-state) 0 else 9) & " code=" & kh8 (peek-32 kd-cell 8) & " resid=" & show (peek-32 kd-cell 36) & " ctl=" & kh32 (peek-32 kd-cell 28)) 9474192
-    in let l3 = krow base stride font 240 scale ("trb=" & kh32 (peek-32 kd-cell 32) & " ring=" & kh32 (peek-32 kd-cell 48)) 9474192
-    in let l4 = krow base stride font 270 scale ("REPORT: " & krpt (k.uk-report)) 16776960
-    in let l5 = krow base stride font 300 scale ("SCANS=" & show (peek-32 kd-cell 4) & " last=" & kh8 (peek-32 kd-cell 12) & "  FILE-WRITES=" & show (peek-32 kd-cell 40)) 65535
-    in krow base stride font 330 scale ("p=" & show (peek-32 kd-cell 52) & " " & kd-phase-line 0) 16776960
+    let cw = if stride - 80 < 1180 then stride - 80 else 1180
+    in let clr = gop-fill-rect base stride 40 200 cw 220 1710638
+    in let l1 = krow base stride font 200 scale ("p=" & show (peek-32 kd-cell 52) & " EPINT=" & show (peek-32 kd-cell 0) & "  EP0=" & show (peek-32 kd-cell 16) & "  OTH=" & show (peek-32 kd-cell 20) & "  LATCH=" & show (peek-32 kd-cell 24)) (if (peek-32 kd-cell 0) == 0 then 16755200 else 65280)
+    in let l2 = krow base stride font 230 scale ("st=" & show (if k.uk-ok then peek-32 (k.uk-state) 0 else 9) & " code=" & kh8 (peek-32 kd-cell 8) & " resid=" & show (peek-32 kd-cell 36) & " ctl=" & kh32 (peek-32 kd-cell 28) & kd-stopx-line 0) 9474192
+    in let l3 = krow base stride font 260 scale ("trb=" & kh32 (peek-32 kd-cell 32) & " ring=" & kh32 (peek-32 kd-cell 48) & "  " & kd-epctx-line k) 9474192
+    in let l4 = krow base stride font 290 scale ("REPORT: " & krpt (k.uk-report) & kd-schedx-line 0) 16776960
+    in let l5 = krow base stride font 320 scale ("SCANS=" & show (peek-32 kd-cell 4) & " last=" & kh8 (peek-32 kd-cell 12) & "  FILE-WRITES=" & show (peek-32 kd-cell 40) & kd-s2-line 0) 65535
+    in let l6 = krow base stride font 350 scale ("p=" & show (peek-32 kd-cell 52) & " " & kd-phase-line 0) 16776960
+    in krow base stride font 380 scale (kd-devx-line 0) 65280
 
 Section: Phases
 
@@ -442,22 +717,36 @@ Section: Phases
   kd-phase1-done : Integer -> Boolean
   kd-phase1-done (d) =
     if peek-32 kd-cell 56 /= 1 then False
-    else if kd-tick-delta 0 >= 1620 then True
+    else if kd-tick-delta 0 >= 540 then True
     else peek-32 kd-cell 52 >= 20000
 
   kd-phase2-done : Integer -> Boolean
   kd-phase2-done (d) =
-    if kd-tick-delta 0 >= 810 then True
+    if kd-tick-delta 0 >= 360 then True
     else peek-32 kd-cell 52 >= 10000
 
   kd-loop1 : UsbAttach, GfatMount, Integer, Integer, Integer, CbfFont, Integer -> [Device.Port] Integer
+ Every iteration allocates ONLY transients -- row texts, the file body,
+ QR matrices, the write sector buffers -- and on bare metal nothing
+ frees them. Unbracketed, the loop exhausts the heap in about 2,400
+ paints: the v14 metal freeze at p=2428 and every bed #UD under
+ -hid-nak were this one OOM wearing two costumes (the #UD is the
+ bounds trap of QR code fed a failed allocation). Everything that
+ must survive an iteration -- att, m, nbuf, the counters -- was
+ allocated before the loop or lives in fixed cells, so the bracket is
+ total.
+
   kd-loop1 (att) (m) (nbuf) (base) (stride) (font) (scale) = act
-    let z = kd-spin (att.ua-kbd) 300000
+    let hp = __heap-save
+    in let z = kd-spin (att.ua-kbd) 300000
+    in let sx = kd-schedx (att.ua-kbd)
+    in let dx = kd-devx (att.ua-kbd)
     in act
       fw <- kd-file-write m (att.ua-kbd) nbuf
       let d = kd-paint base stride font scale (att.ua-kbd)
       in let q = kd-qr-refresh (att.ua-kbd)
       in let pc = kd-inc 52
+      in let hr = __heap-restore hp
       in if kd-phase1-done 0 then kd-phase2 att m nbuf base stride font scale
       else kd-loop1 att m nbuf base stride font scale
     end
@@ -476,13 +765,17 @@ Section: Phases
 
   kd-loop2 : UsbAttach, GfatMount, Integer, Integer, Integer, CbfFont, Integer -> [Device.Port] Integer
   kd-loop2 (att) (m) (nbuf) (base) (stride) (font) (scale) = act
-    s2 <- kd-spin2 300000
-    let rl = kd-reclaim-recheck 0
-    in let d = kd-paint base stride font scale (att.ua-kbd)
-    in let q = kd-qr-refresh (att.ua-kbd)
-    in let pc = kd-inc 52
-    in if kd-phase2-done 0 then kd-phase3 nbuf base stride font scale
-    else kd-loop2 att m nbuf base stride font scale
+    let hp = __heap-save
+    in act
+      s2 <- kd-spin2 300000
+      let rl = kd-reclaim-recheck 0
+      in let d = kd-paint base stride font scale (att.ua-kbd)
+      in let q = kd-qr-refresh (att.ua-kbd)
+      in let pc = kd-inc 52
+      in let hr = __heap-restore hp
+      in if kd-phase2-done 0 then kd-phase3 nbuf base stride font scale
+      else kd-loop2 att m nbuf base stride font scale
+    end
   end
 
   kd-phase3 : Integer, Integer, Integer, CbfFont, Integer -> [Device.Port] Integer
@@ -503,12 +796,12 @@ Section: Phases
 
   opening : [Device.Port, Device.Mmio] Integer
   opening =
-    let base = peek-qword 32768 0
-    in let w = peek-qword 32768 8
-    in let h = peek-qword 32768 16
-    in let stride = peek-qword 32768 24
+    let base = boot-fb-base 0
+    in let w = boot-fb-w 0
+    in let h = boot-fb-h 0
+    in let stride = boot-fb-stride 0
     in let font = cbf-init
-    in let scale = if w >= 1024 then 2 else 1
+    in let scale = if w > 1280 then 2 else 1
     in act
       ri <- runtime-init 0
       att <- usb-attach

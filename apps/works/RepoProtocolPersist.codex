@@ -183,7 +183,7 @@ Section: Definition Persistence (Kind 30)
       sd-timestamp = w.sdw-timestamp, sd-content = w.sdw-content
     }
 
-  source-def-to-text : SourceDefinition -> Text
+  source-def-to-text : SourceDefinition -> Maybe Text
   source-def-to-text (d) = sdw-encode (def-to-wire d)
 
   source-def-from-text : Text -> Maybe SourceDefinition
@@ -543,7 +543,8 @@ Section: Persisting The Index
   snap-works-enc : List SourceDefinition, Integer, Integer, Text -> Text
   snap-works-enc (works) (i) (len) (acc) =
     if i >= len then acc
-    else snap-works-enc works (i + 1) len (acc & seg-put (source-def-to-text (list-at works i)))
+    else let enc = when source-def-to-text (list-at works i) is Just (t) -> seg-put t is None -> ""
+    in snap-works-enc works (i + 1) len (acc & enc)
 
  The generation, read on its own and cheaply, so a rebuild can decide whether a
  snapshot is worth parsing before it parses the whole thing.
@@ -832,7 +833,9 @@ Section: Signing A Definition
 
   repo-persist-save-definition : DiskFactStore, SourceDefinition, Integer -> DiskFactStore
   repo-persist-save-definition (store) (def) (timestamp) =
-    app-write-and-checkpoint store persist-kind-definition (source-def-to-text def) timestamp
+    when source-def-to-text def
+    is Just (line) -> app-write-and-checkpoint store persist-kind-definition line timestamp
+    is None -> store
 
  Retire a path. The tombstone is a fact like any other -- appended, never
  overwriting -- whose content is the path it removes; the index reads it in

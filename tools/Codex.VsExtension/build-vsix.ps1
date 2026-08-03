@@ -94,7 +94,7 @@ if ($vsixInstaller) {
     }
 } else {
     Write-Output ""
-    Write-Output "VSIXInstaller.exe not found — install manually:"
+    Write-Output "VSIXInstaller.exe not found -- install manually:"
     Write-Output "  Double-click $vsixPath"
 }
 

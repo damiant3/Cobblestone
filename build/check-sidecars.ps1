@@ -25,8 +25,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $exts = @('.skip', '.slow', '.fatal', '.expected', '.stdin', '.keys',
-          '.disk', '.failing', '.diag', '.smp', '.vmargs', '.no-cross',
-          '.cross-refusal')
+          '.disk', '.disk2', '.disk-src', '.failing', '.diag', '.smp', '.vmargs',
+          '.no-cross', '.cross-refusal', '.cross-budget')
 
 $orphans = [System.Collections.Generic.List[string]]::new()
 $checked = 0
@@ -38,6 +38,21 @@ foreach ($ext in $exts) {
         if (-not (Test-Path -PathType Leaf $sibling)) {
             $orphans.Add($_.FullName.Substring((Split-Path -Parent $PSScriptRoot).Length + 1))
         }
+    }
+}
+
+# A .disk-src names a SECOND test -- the one whose freshly compiled CDX becomes
+# this test's disk -- so it has a second way to point at nothing. A typo there
+# does not fail until a battery run, which is the expensive place to find it.
+foreach ($f in (Get-ChildItem -Recurse -Path $TestRoot -Filter '*.disk-src' -File)) {
+    $peer = (Get-Content -TotalCount 1 $f.FullName)
+    $peer = if ($peer) { $peer.Trim() } else { '' }
+    if (-not $peer) {
+        $orphans.Add("$($f.Name) names no test")
+        continue
+    }
+    if (-not (Get-ChildItem -Recurse -Path $TestRoot -Filter "$peer.codex" -File)) {
+        $orphans.Add("$($f.Name) names '$peer', and no $peer.codex exists")
     }
 }
 

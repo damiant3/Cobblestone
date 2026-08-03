@@ -7,7 +7,7 @@ long `if ... else if ... else if ...` chain that dispatches on a Text
 name. Today it's ~35 branches (after the bit / heap / buf groups were
 collapsed). The remaining entries are one-offs with varied shapes.
 
-Ugly to read, and O(n) per dispatch — for ~35 names, roughly ~18 string
+Ugly to read, and O(n) per dispatch -- for ~35 names, roughly ~18 string
 compares on average per expression that references a builtin. Over
 millions of IR expressions compiled, that's real time.
 

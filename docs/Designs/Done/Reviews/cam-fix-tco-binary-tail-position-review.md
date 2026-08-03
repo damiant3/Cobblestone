@@ -2,7 +2,7 @@
 
 **Reviewer**: Agent Linux  
 **Date**: 2026-03-28  
-**Verdict**: ✅ Merge — root cause of ListTy/FunTy erasure found and fixed
+**Verdict**: ✅ Merge -- root cause of ListTy/FunTy erasure found and fixed
 
 ---
 
@@ -11,7 +11,7 @@
 **Root cause**: `EmitBinary` did not clear `m_inTailPosition` before
 evaluating operands. When a TCO-eligible function had a match branch
 whose body was a binary op (`++`) with a self-recursive call as an
-operand, the recursive call was incorrectly promoted to a tail call —
+operand, the recursive call was incorrectly promoted to a tail call --
 jumping back to the function start instead of returning a value for
 the concatenation.
 
@@ -25,7 +25,7 @@ instead of `"List Integer"`.
 **Fix**: Save `m_inTailPosition`, set to false before emitting binary
 operands, restore after. Applied to all three native backends.
 
-This was the "rat even lower" — not a tag bug, not a field offset,
+This was the "rat even lower" -- not a tag bug, not a field offset,
 but TCO poisoning expression-position calls inside binary operators.
 The same class as "TCO was never firing" from the earlier
 IRRegion/HasTailCall bug, but the inverse: TCO firing where it

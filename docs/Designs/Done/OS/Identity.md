@@ -1,6 +1,6 @@
 # Identity & Authentication
 
-> **Filed to Done 2026-07-15 (val):** the core shipped (Ed25519 identity, IdentityManager, trust lattice); the pending features — USB hotplug / stick-removal / configurable timeout — and the runtime test-coverage gap are tracked in BACKLOG 7.14. Moved out of Active to keep init light; reopen if those are picked up.
+> **Filed to Done 2026-07-15 (val):** the core shipped (Ed25519 identity, IdentityManager, trust lattice); the pending features -- USB hotplug / stick-removal / configurable timeout -- and the runtime test-coverage gap are tracked in BACKLOG 7.14. Moved out of Active to keep init light; reopen if those are picked up.
 
 **Date**: 2026-05-01
 **Status**: Core shipped -- Ed25519 identity, IdentityManager, trust lattice live. Pending: USB hotplug / stick-removal / configurable timeout.
@@ -20,8 +20,8 @@ IS its public key. Authentication IS signature verification.
 Authorization IS capability checking against the trust lattice.
 
 This is the simplest possible identity model: if you can sign with the
-private key, you are the identity. Everything else — biometrics, PINs,
-hardware tokens — is a mechanism for protecting the private key, not a
+private key, you are the identity. Everything else -- biometrics, PINs,
+hardware tokens -- is a mechanism for protecting the private key, not a
 mechanism for defining identity.
 
 ---
@@ -60,7 +60,7 @@ D1) researches post-quantum lattice-based cryptography. Ed25519 is
 not quantum-resistant. A future upgrade path should support hybrid
 signatures (Ed25519 + a lattice-based scheme) so that the trust
 lattice can transition without invalidating existing vouches. The
-RotationFact mechanism (below) supports this — a key rotation from
+RotationFact mechanism (below) supports this -- a key rotation from
 an Ed25519 identity to a hybrid identity preserves trust chains.
 CAPSULE also studies side-channel attacks on crypto implementations;
 their work could verify that our Ed25519 emitted code is
@@ -115,7 +115,7 @@ in a pinned memory region inside the kernel address space:
 
 - The region is allocated at a fixed address in the kernel's memory map
 - It is never mapped into any user-mode process's page tables
-- The `sign` syscall reads from this region — user processes invoke
+- The `sign` syscall reads from this region -- user processes invoke
   signing but never see the key bytes
 - On timeout (configurable, default 30 minutes of inactivity), the
   region is zeroed and the system drops to locked state
@@ -125,8 +125,8 @@ in a pinned memory region inside the kernel address space:
 The RuntimeDb (apps/data/RuntimeDb.codex) receives the **public key**
 and identity metadata (fingerprint, creation timestamp) in
 `sys_config` at boot. It never receives the private key. All runtime
-subsystems — trust lattice, capability grants, agent protocol, fact
-store — reference identity by public key. Signing is a kernel
+subsystems -- trust lattice, capability grants, agent protocol, fact
+store -- reference identity by public key. Signing is a kernel
 operation.
 
 #### Storage Decision Matrix
@@ -145,10 +145,10 @@ operation.
 TPM 2.0 support is deferred but the architecture accommodates it:
 the TPM would replace the passphrase-derived AES key with a
 hardware-sealed key. The `IdentityFact` format carries a version
-field — version 1 is passphrase-encrypted, version 2 would be
+field -- version 1 is passphrase-encrypted, version 2 would be
 TPM-sealed. The unlock flow checks the version and dispatches to
 the appropriate decryption path. The pinned-memory runtime layer
-is unchanged — the key arrives in RAM the same way regardless of
+is unchanged -- the key arrives in RAM the same way regardless of
 how it was decrypted.
 
 ### Rotation
@@ -172,7 +172,7 @@ inherits the old key's trust score and vouch relationships.
 
 A key that is compromised (private key leaked) is revoked by
 publishing a **revocation fact** signed by any key that vouched for
-the compromised key. This is a social recovery mechanism — your
+the compromised key. This is a social recovery mechanism -- your
 vouchers can revoke you.
 
 ### Destruction
@@ -234,7 +234,7 @@ The passphrase is zeroed from memory immediately after key derivation.
 
 The stick's identity becomes the root of the local trust lattice.
 The kernel writes a self-vouch fact (the identity vouches for itself
-at trust score 1.0). This is the seed — all future trust relationships
+at trust score 1.0). This is the seed -- all future trust relationships
 grow from this root.
 
 ### Step 6: Enter UEFI console
@@ -264,10 +264,10 @@ For users who already have a Codex identity on another stick:
 3. Select source stick, enter its passphrase
 4. Decrypt private key from source, re-encrypt with new passphrase
    (or same passphrase), write to destination stick
-5. The identity (public key) is the same — the user's trust lattice
+5. The identity (public key) is the same -- the user's trust lattice
    relationships carry over. Only the physical storage moves.
 
-### Step 7: Optional — connect to a peer
+### Step 7: Optional -- connect to a peer
 
 If the device has network access, it can connect to a trusted peer
 (another Codex.OS device or a repository server) and synchronize
@@ -283,7 +283,7 @@ trust lattice state. The peer's identity must be provided by the user
 A process authenticates to the kernel by virtue of its process table
 entry. The kernel knows which identity launched each process (the
 identity is stored in the process table at process creation). No
-signature verification is needed for local authentication — the
+signature verification is needed for local authentication -- the
 kernel mediates.
 
 ### Remote (network)
@@ -364,7 +364,7 @@ permissions.
 
 ## Open Questions
 
-1. **RDRAND trust** — RESOLVED: Yes, mix in user entropy. The
+1. **RDRAND trust** -- RESOLVED: Yes, mix in user entropy. The
    first-boot ceremony prompts the user to type a random sentence.
    SHA-256(RDRAND || keyboard timing) provides the seed. This
    defends against a compromised CPU RNG while still using RDRAND
@@ -376,7 +376,7 @@ permissions.
    relationship. The first-boot ceremony should encourage establishing
    a recovery vouch, but cannot require it (the first device has no
    peers yet). A second stick with a copy of the encrypted key is the
-   simplest backup — the import-identity flow supports this.
+   simplest backup -- the import-identity flow supports this.
 
 3. **Multiple identities per person**: A person may want separate
    identities for work and personal use. The system supports this
@@ -388,12 +388,12 @@ permissions.
    require agents that cannot be linked to a person. Codex's model
    (identity = public key) supports pseudonymity naturally, but the
    trust lattice makes de-anonymization possible via vouch graph
-   analysis. This is acceptable — anonymity is a spectrum, and
+   analysis. This is acceptable -- anonymity is a spectrum, and
    pseudonymous keys with no vouch history are unlinkable until the
    user chooses to establish trust relationships.
 
-5. **Hardware binding** — RESOLVED: No. The identity lives on the
-   USB stick, not the hardware. The stick is portable — plug it into
+5. **Hardware binding** -- RESOLVED: No. The identity lives on the
+   USB stick, not the hardware. The stick is portable -- plug it into
    any machine and your identity travels with you. Device-specific
    entropy (CPU serial) is mixed into key generation for additional
    randomness, but the key is not derived from it. A key generated
@@ -402,7 +402,7 @@ permissions.
 6. **Pinned memory region size and location**: The kernel needs a
    fixed address for the 32-byte private key that is excluded from
    all user-mode page tables. The current memory map
-   (X86_64Boot.codex) has reserved regions — one needs to be
+   (X86_64Boot.codex) has reserved regions -- one needs to be
    designated as the identity key slot. This is a small change to
    the boot codegen.
 

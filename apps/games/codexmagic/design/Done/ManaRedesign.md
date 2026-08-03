@@ -37,7 +37,7 @@ resulting color. The ray is spent, all stones in the chain tap.
 
 Based on subtractive color theory (RYB), mapped to spectral wavelengths.
 
-### Primary Colors — each has its own gemstone
+### Primary Colors -- each has its own gemstone
 
 | Gemstone  | Color  | Symbol | Wavelength |
 |-----------|--------|--------|------------|
@@ -45,7 +45,7 @@ Based on subtractive color theory (RYB), mapped to spectral wavelengths.
 | Topaz     | Yellow | Y      | 565-590 nm |
 | Sapphire  | Blue   | B      | 450-500 nm |
 
-### Secondary Colors — each is a mix of two primaries
+### Secondary Colors -- each is a mix of two primaries
 
 | Mix       | Color  | Symbol | Gemstone   | Wavelength |
 |-----------|--------|--------|------------|------------|
@@ -57,18 +57,18 @@ Orange and Green are real spectral wavelengths, so they have their
 own gemstones. Players can produce them directly (1 stone, 1 ray) OR
 by mixing two primaries (2 stones, 1 ray).
 
-**Purple is the only color with no gemstone.** It is non-spectral —
+**Purple is the only color with no gemstone.** It is non-spectral --
 it exists only when the two ends of the visible spectrum (Red + Blue)
 are combined. Purple always costs a minimum of 2 gemstones (Ruby +
 Sapphire), making it the most stone-hungry color in the game. This is
 the central deckbuilding tension for Purple decks.
 
-### White — Unfiltered Light
+### White -- Unfiltered Light
 
 A ray spent without any gemstone = 1 White mana. White is pure light,
 the absence of filtering. It costs 0 stones.
 
-### Diamond — Multiplier
+### Diamond -- Multiplier
 
 Diamond is not a color. It doubles the output of whatever chain it
 joins. It stacks as a 2x multiplier per Diamond.
@@ -78,7 +78,7 @@ joins. It stacks as a 2x multiplier per Diamond.
 - Diamond + Ruby + Sapphire + ray = 2 Purple
 - Diamond + Diamond + Ruby + ray = 4 Red
 
-### Obsidian — Fluorescence Toggle
+### Obsidian -- Fluorescence Toggle
 
 Obsidian produces UV/black light. Assigning a ray to an Obsidian
 activates Fluorescence for the rest of the turn. This is a toggle:
@@ -90,7 +90,7 @@ activates Fluorescence for the rest of the turn. This is a toggle:
 - Costs 1 ray and taps the Obsidian.
 - Resets at upkeep.
 
-Fluorescence is not a color — it is a modifier. It does not combine
+Fluorescence is not a color -- it is a modifier. It does not combine
 with other stones in a chain; it is its own separate ray assignment.
 
 ## Cost Structure
@@ -115,7 +115,7 @@ Every card cost has two dimensions:
 
 Cards may have an optional Fluorescence clause:
 
-> **Obsidian Shade** — 1R — Creature 2/2
+> **Obsidian Shade** -- 1R -- Creature 2/2
 > *With Fluorescence: +2/+0 and Deathtouch*
 
 If Fluorescence is active this turn, the creature enters as a 4/2
@@ -138,19 +138,19 @@ diverse deckbuilding.
 
 ## Turn Flow
 
-1. **Upkeep** — All gemstones untap. All rays refresh. Gain 1 new ray.
+1. **Upkeep** -- All gemstones untap. All rays refresh. Gain 1 new ray.
    Fluorescence toggle resets to off.
-2. **Draw** — Draw a card.
-3. **Main Phase 1** — Play a gemstone (optional, 1 per turn). Assign
+2. **Draw** -- Draw a card.
+3. **Main Phase 1** -- Play a gemstone (optional, 1 per turn). Assign
    rays to gemstone chains. Optionally activate Obsidian for
    Fluorescence. Cast spells.
 4. **Combat**
-5. **Main Phase 2** — Continue casting with remaining rays/stones.
+5. **Main Phase 2** -- Continue casting with remaining rays/stones.
 6. **End Step / Cleanup**
 
 ## Gemstone Types (Base Set)
 
-### Primary Stones (Basic — unlimited in deck)
+### Primary Stones (Basic -- unlimited in deck)
 
 | ID | Name      | Produces |
 |----|-----------|----------|
@@ -158,14 +158,14 @@ diverse deckbuilding.
 | 1  | Topaz     | Yellow   |
 | 2  | Sapphire  | Blue     |
 
-### Secondary Stones (Basic — unlimited in deck)
+### Secondary Stones (Basic -- unlimited in deck)
 
 | ID | Name      | Produces | Equivalent Mix  |
 |----|-----------|----------|-----------------|
 | 3  | Carnelian | Orange   | Ruby + Topaz    |
 | 4  | Emerald   | Green    | Topaz + Sapphire|
 
-### Special Stones (Basic — unlimited in deck)
+### Special Stones (Basic -- unlimited in deck)
 
 | ID | Name     | Effect                 |
 |----|----------|------------------------|
@@ -194,7 +194,7 @@ diverse deckbuilding.
 All 60 cards in the pool need new names, new costs, and Fluorescence
 clauses where appropriate. The W/U/B/R/G cost structure becomes
 R/Y/B/O/G/P with White as generic. Keywords stay (Haste, Flying,
-etc.) — those are combat mechanics, not color mechanics.
+etc.) -- those are combat mechanics, not color mechanics.
 
 ### Code Files Affected
 
@@ -234,13 +234,13 @@ Common rarity, unlimited in deck, no special ability.
 
 Diamond and Obsidian are their own families (no varieties in base set).
 
-### Hardness Hardness — Counter Resistance
+### Hardness Hardness -- Counter Resistance
 
 When a spell is targeted by a counterspell, the hardness of the
 gemstones used to cast it acts as a saving throw. Higher Hardness =
 harder to counter.
 
-Mechanic TBD — possible approaches:
+Mechanic TBD -- possible approaches:
 - Flat bonus to a counter-resistance roll
 - Threshold: if total Hardness across casting stones exceeds N, counter
   fails
@@ -254,25 +254,25 @@ stones for protection?
 ### Named Gem Abilities
 
 Specific gem varieties can have unique triggered abilities when used
-in a casting chain. These are like enchanted lands — same mana, extra
+in a casting chain. These are like enchanted lands -- same mana, extra
 effect.
 
 Example concepts (not finalized):
-- **Fire Opal** (Orange, Hardness 5.5) — when used to summon a creature,
+- **Fire Opal** (Orange, Hardness 5.5) -- when used to summon a creature,
   that creature gets a +1/+1 counter
-- **Star Sapphire** (Blue, Hardness 9) — when tapped, scry 1
-- **Amber** (Orange, Hardness 2.5) — very soft but preserves: when a
+- **Star Sapphire** (Blue, Hardness 9) -- when tapped, scry 1
+- **Amber** (Orange, Hardness 2.5) -- very soft but preserves: when a
   creature cast through Amber dies, return it to hand
-- **Moonstone** (White/Diamond family, Hardness 6) — doubles only at
+- **Moonstone** (White/Diamond family, Hardness 6) -- doubles only at
   night phases in campaign mode
 
 ### Pack Rarity
 
 Gem variety rarity in packs mirrors real-world scarcity:
-- Quartz varieties (Common) — baseline, easy to pull
-- Named semi-precious (Uncommon) — Garnet, Peridot, Aquamarine
-- Precious gems (Rare) — Ruby, Sapphire, Emerald, Topaz
-- Exceptional specimens (Mythic) — Star Sapphire, Padparadscha,
+- Quartz varieties (Common) -- baseline, easy to pull
+- Named semi-precious (Uncommon) -- Garnet, Peridot, Aquamarine
+- Precious gems (Rare) -- Ruby, Sapphire, Emerald, Topaz
+- Exceptional specimens (Mythic) -- Star Sapphire, Padparadscha,
   Fire Opal, Alexandrite
 
 This creates a gem economy: players trade for better varieties of
@@ -285,8 +285,8 @@ the Ruby is a strict upgrade.
 
 Drawn from deck, played as permanents (1 per turn). Dual purpose:
 
-1. **Mana production** — stays on the field, taps to channel rays
-2. **Socketing** — permanently inserted into an equipment socket,
+1. **Mana production** -- stays on the field, taps to channel rays
+2. **Socketing** -- permanently inserted into an equipment socket,
    removed from the mana field forever
 
 See Color Wheel and Gemstone Varieties sections above.
@@ -317,20 +317,20 @@ Every creature has 9 slots (Diablo-style):
 
 #### Equip Flow
 
-- **Equipping is free** — done during upkeep as creatures pick up
+- **Equipping is free** -- done during upkeep as creatures pick up
   and reassign gear
-- **On creature death** — all equipment drops to the battlefield,
+- **On creature death** -- all equipment drops to the battlefield,
   available for another creature to pick up next upkeep
-- **Socketed gems stay in the item** — they do not return to the
+- **Socketed gems stay in the item** -- they do not return to the
   mana field when equipment drops. The gem is permanently bound to
   the item, not the creature.
 
 ### Equipment (replaces Artifact)
 
 Permanents cast by spending rays. Each equipment has:
-- **Slot type** — which creature slot it occupies
-- **Stat bonuses** — +power, +toughness, +defense, keywords
-- **Socket** — 1 gem socket per item (may be empty)
+- **Slot type** -- which creature slot it occupies
+- **Stat bonuses** -- +power, +toughness, +defense, keywords
+- **Socket** -- 1 gem socket per item (may be empty)
 
 Equipment exists on the battlefield independently of creatures.
 During upkeep, creatures pick up equipment. When a creature dies,
@@ -342,8 +342,8 @@ Each equipment item has 1 socket (base set). A gemstone from the
 player's mana field can be permanently socketed into the item.
 
 **Socketing rules:**
-- Costs no rays — done during upkeep alongside equip
-- Permanent — the gem leaves the mana field forever
+- Costs no rays -- done during upkeep alongside equip
+- Permanent -- the gem leaves the mana field forever
 - The gem stays in the item even when the item drops (creature death)
 - If the equipment is destroyed, the socketed gem is destroyed too
 - Socket bonus scales with the gem: color-based effect + Hardness scaling
@@ -366,11 +366,11 @@ gives +2, Sapphire (9) gives +3. Exact scaling TBD.
 #### Equipment Subtypes
 
 **Weapons (Hand slot):**
-- Swords, daggers, axes (1H) — +power
-- Greatswords, halberds (2H) — more +power
-- Wands, orbs (1H) — +spell effects
-- Staves (2H) — +spell effects, bigger
-- Bows, crossbows (2H) — ranged keyword?
+- Swords, daggers, axes (1H) -- +power
+- Greatswords, halberds (2H) -- more +power
+- Wands, orbs (1H) -- +spell effects
+- Staves (2H) -- +spell effects, bigger
+- Bows, crossbows (2H) -- ranged keyword?
 
 **Shields (Hand slot, 1H):**
 - +defense, +toughness
@@ -411,7 +411,7 @@ or go through a single disruption window.
 | Summoning   | Yes         | Main phases only       | Creatures   |
 | Disruption  | No          | During disruption window only | Reactive |
 
-**Cantrips** resolve instantly — too quick for the opponent to
+**Cantrips** resolve instantly -- too quick for the opponent to
 interfere. They are the safe option: combat tricks, small heals,
 minor draw, buffs. Limited power as a tradeoff for safety.
 
@@ -431,9 +431,9 @@ opponent's slow spell through a contested Focus vs Disruption check.
 When a player casts a Summoning or Incantation:
 
 1. Caster assigns rays through gems, declares spell
-2. Opponent gets a **disruption window** — may cast ONE disruption
+2. Opponent gets a **disruption window** -- may cast ONE disruption
    spell (assigning their own rays and gems)
-3. **Contested check** — Focus vs Disruption (see below)
+3. **Contested check** -- Focus vs Disruption (see below)
 4. Spell resolves or fizzles. **Done.** No further responses.
    One layer deep, no chaining.
 
@@ -472,12 +472,12 @@ Both sides contribute gem hardness to a contested roll:
 | Equal everything | 14 | 14 | 0 | 90% |
 
 **Strategic implications:**
-- Disruption is strong by default — casting is inherently risky
+- Disruption is strong by default -- casting is inherently risky
 - Casters invest in better gems (higher Hardness) for protection
 - Disruptors invest in better gems for reliability
 - Guaranteeing disruption is expensive but possible (overcast by 3+)
 - Even a desperate cheap disruption has a 1-in-20 shot
-- Cantrips bypass all of this — safe but weak
+- Cantrips bypass all of this -- safe but weak
 
 #### Disruption Spell Tiers
 
@@ -508,17 +508,17 @@ available immediately.
 - The gems return to the caster's field (untap next upkeep)
 - The ray is lost for that turn (already spent)
 
-This means dispelling is not a pure win — the caster gets their
+This means dispelling is not a pure win -- the caster gets their
 gems back, potentially enabling a stronger follow-up cast.
 
 **Strategic implications:**
-- Early enchantments are very expensive — turn 3 with 3 rays,
+- Early enchantments are very expensive -- turn 3 with 3 rays,
   locking 1 means only 2 for everything else
-- Late game they're cheap — turn 10, 1 locked ray barely matters
-- Stacking enchantments drains fast — 3 enchantments on turn 6
+- Late game they're cheap -- turn 10, 1 locked ray barely matters
+- Stacking enchantments drains fast -- 3 enchantments on turn 6
   leaves only 3 free rays
 - Every upkeep is a decision: keep feeding or reclaim resources
-- Dispel gives the opponent their gems back — sometimes you don't
+- Dispel gives the opponent their gems back -- sometimes you don't
   WANT to dispel if it frees up their Sapphires
 
 ## Card Type Summary
@@ -536,32 +536,32 @@ gems back, potentially enabling a stronger follow-up cast.
 
 The game creates interlocking resource decisions:
 
-1. **Rays vs Stones** — two-axis casting. Run out of either and
+1. **Rays vs Stones** -- two-axis casting. Run out of either and
    you're stuck.
-2. **Mana vs Socket** — every gem socketed is one less for casting.
+2. **Mana vs Socket** -- every gem socketed is one less for casting.
    Early socket = weaker spells, stronger creature. Late socket =
    you had the mana when it mattered.
-3. **Equipment persistence** — gear outlives creatures. Invest in
+3. **Equipment persistence** -- gear outlives creatures. Invest in
    equipment and your board recovers faster from removal.
-4. **Purple tax** — always 2 stones per Purple mana, always
+4. **Purple tax** -- always 2 stones per Purple mana, always
    stone-hungry, but powerful effects justify the cost.
-5. **Fluorescence timing** — spend 1 ray + 1 Obsidian early in
+5. **Fluorescence timing** -- spend 1 ray + 1 Obsidian early in
    the turn to boost all eligible spells, or save the ray for
    casting?
-6. **Gem quality** — Quartz is free but counterable. Ruby is rare
+6. **Gem quality** -- Quartz is free but counterable. Ruby is rare
    but resilient. Fire Opal has an ability but low Hardness.
 
 ## Reserved Design Space
 
-- **Prism** — splits one ray into two weaker rays
-- **Magnifier** — triples instead of doubles
-- **Lens** — converts one primary to another
-- **Fracture** — destroys opponent's gemstones
-- **Eclipse** — blanket Fluorescence denial
-- **Spectrum** — a stone that counts as all three primaries
-- **Multi-socket equipment** — Mythic items with 2-3 sockets
-- **Set bonuses** — wearing matching equipment types (full plate
+- **Prism** -- splits one ray into two weaker rays
+- **Magnifier** -- triples instead of doubles
+- **Lens** -- converts one primary to another
+- **Fracture** -- destroys opponent's gemstones
+- **Eclipse** -- blanket Fluorescence denial
+- **Spectrum** -- a stone that counts as all three primaries
+- **Multi-socket equipment** -- Mythic items with 2-3 sockets
+- **Set bonuses** -- wearing matching equipment types (full plate
   set, mage set) grants bonus effects
-- **Creature size limits** — larger creatures get more/fewer slots?
-- **Weapon enchantments** — Instants/Sorceries that target equipment
-- **Gem cutting** — upgrade gem quality (Quartz → polished → faceted)
+- **Creature size limits** -- larger creatures get more/fewer slots?
+- **Weapon enchantments** -- Instants/Sorceries that target equipment
+- **Gem cutting** -- upgrade gem quality (Quartz → polished → faceted)

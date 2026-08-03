@@ -1,0 +1,521 @@
+Chapter: Inventory
+  cites Kernel chapter Pci
+  cites Kernel chapter E1000e
+  cites Kernel chapter BitmapFont
+  cites Works chapter GopDraw
+  cites Works chapter GopQr
+  cites Works chapter GopXhci
+  cites Works chapter GopUsb
+  cites Works chapter GopKey
+  cites Works chapter GopHandoff
+
+ Rung 1 of the attempt-2 ladder (docs/HardwareSitting.md section 4).
+ Walks the machine in three stages and paints each answer as it gets it,
+ so the last thing on the screen is where it stopped. It never returns.
+
+ Stage order is PCI, then USB, then PS/2 LAST, and that order is
+ load-bearing: PS/2 is the only stage that waits on a human and the only
+ one with no dev-box bed, so it is the stage most likely to end the run.
+ Last means a failure there costs nothing already gathered.
+
+ The screen carries the compact summary only. The full device list is
+ deliberately absent: a Z170 board presents far more rows than fit, and a
+ list that silently drops the tail is worse than no list. The codes carry
+ everything.
+
+ We say:
+
+Section: Hex
+
+  iv-nib : Integer -> Text
+  iv-nib (n) =
+    if n < 10 then show n
+    else if n == 10 then "a" else if n == 11 then "b"
+    else if n == 12 then "c" else if n == 13 then "d"
+    else if n == 14 then "e" else "f"
+
+  iv-hx : Integer, Integer -> Text
+  iv-hx (v) (digits) =
+    if digits <= 1 then iv-nib (bit-and v 15)
+    else iv-hx (bit-shru v 4) (digits - 1) & iv-nib (bit-and v 15)
+
+  iv-hex2 : Integer -> Text
+  iv-hex2 (v) = iv-hx v 2
+
+  iv-hex4 : Integer -> Text
+  iv-hex4 (v) = iv-hx v 4
+
+  iv-hex8 : Integer -> Text
+  iv-hex8 (v) = iv-hx v 8
+
+  iv-yn : Integer -> Text
+  iv-yn (v) = if v /= 0 then "y" else "n"
+
+Section: Config Reads
+
+  iv-cfg : PciDevice, Integer -> Integer
+  iv-cfg (d) (off) = pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) off
+
+  iv-progif : PciDevice -> Integer
+  iv-progif (d) = bit-and (bit-shru (iv-cfg d 8) 8) 255
+
+  iv-rev : PciDevice -> Integer
+  iv-rev (d) = bit-and (iv-cfg d 8) 255
+
+  iv-sec-bus : PciDevice -> Integer
+  iv-sec-bus (d) = bit-and (bit-shru (iv-cfg d 24) 8) 255
+
+Section: The Bus Walk
+
+ A chipset-integrated part sits on bus 0. A discrete one sits behind a
+ PCI-to-PCI bridge, on a bus whose number only that bridge knows, so bus
+ 0 alone answers the question on some boards and silently answers
+ nothing on others. Depth is capped at 3 and a bridge is only followed
+ when its secondary bus is greater than the current one, so a malformed
+ bridge cannot make the walk cycle.
+
+  iv-collect : Integer, Integer, List PciDevice -> List PciDevice
+  iv-collect (bus) (depth) (acc) =
+    if depth > 3 then acc
+    else let s = pci-scan-bus bus
+    in iv-bridges (s.devices) (s.count) 0 bus depth (acc & s.devices)
+
+  iv-bridges : List PciDevice, Integer, Integer, Integer, Integer, List PciDevice -> List PciDevice
+  iv-bridges (devs) (n) (i) (bus) (depth) (acc) =
+    if i >= n then acc
+    else if (list-at devs i).pci-header-type == 1 then iv-bridge-one (list-at devs i) devs n i bus depth acc
+    else iv-bridges devs n (i + 1) bus depth acc
+
+  iv-bridge-one : PciDevice, List PciDevice, Integer, Integer, Integer, Integer, List PciDevice -> List PciDevice
+  iv-bridge-one (d) (devs) (n) (i) (bus) (depth) (acc) =
+    let sec = iv-sec-bus d
+    in if sec > bus then iv-bridges devs n (i + 1) bus depth (iv-collect sec (depth + 1) acc)
+    else iv-bridges devs n (i + 1) bus depth acc
+
+Section: Classification
+
+  iv-is-net : PciDevice -> Boolean
+  iv-is-net (d) = d.pci-class == 2
+
+  iv-is-storage : PciDevice -> Boolean
+  iv-is-storage (d) = d.pci-class == 1
+
+  iv-is-usb : PciDevice -> Boolean
+  iv-is-usb (d) = if d.pci-class == 12 then d.pci-subclass == 3 else False
+
+  iv-kind-of : PciDevice -> Integer
+  iv-kind-of (d) =
+    if iv-is-net d then 2 else if iv-is-storage d then 1 else if iv-is-usb d then 12 else 0
+
+  iv-find : List PciDevice, Integer, Integer, Integer -> Integer
+  iv-find (devs) (n) (i) (kind) =
+    if i >= n then -1
+    else if iv-kind-of (list-at devs i) == kind then i
+    else iv-find devs n (i + 1) kind
+
+Section: Formatting
+
+  iv-bdf : PciDevice -> Text
+  iv-bdf (d) = iv-hex2 (d.pci-bus) & ":" & iv-hex2 (d.pci-dev) & "." & show (d.pci-func)
+
+  iv-ids : PciDevice -> Text
+  iv-ids (d) = iv-hex4 (d.pci-vendor) & ":" & iv-hex4 (d.pci-device-id)
+
+  iv-cls : PciDevice -> Text
+  iv-cls (d) = iv-hex2 (d.pci-class) & "." & iv-hex2 (d.pci-subclass) & "." & iv-hex2 (iv-progif d)
+
+  iv-line : PciDevice -> Text
+  iv-line (d) = iv-bdf d & " " & iv-ids d & " " & iv-cls d
+
+ BAR0 is where a NIC and an xHCI put their register window; BAR5 is where
+ an AHCI controller puts its, and an ICH9 in AHCI mode reads back zero for
+ BAR0 through BAR4. BAR1 carries the high half of a 64-bit BAR0. The
+ values are the raw config dwords: a one-shot measurement should carry
+ what the register held, not this chapter's reading of it.
+
+  iv-tail-a : PciDevice -> Text
+  iv-tail-a (d) =
+    " r" & iv-hex2 (iv-rev d) & " s" & iv-hex4 (bit-and (iv-cfg d 44) 65535)
+      & ":" & iv-hex4 (bit-shru (iv-cfg d 44) 16)
+      & " i" & iv-hex2 (bit-and (iv-cfg d 60) 255)
+
+  iv-tail-b : PciDevice -> Text
+  iv-tail-b (d) =
+    " B0=" & iv-hex8 (iv-cfg d 16) & " B1=" & iv-hex8 (iv-cfg d 20)
+      & " B5=" & iv-hex8 (iv-cfg d 36)
+
+  iv-bar-base : PciDevice, Integer -> Integer
+  iv-bar-base (d) (off) =
+    let lo = iv-cfg d off
+    in if bit-and lo 1 == 1 then bit-and lo 65532
+    else if bit-and (bit-shru lo 1) 3 == 2 then bit-or (bit-and lo 4294967280) (bit-shl (bit-and (iv-cfg d (off + 4)) 4294967295) 32)
+    else bit-and lo 4294967280
+
+ The runtime page tables map 0 to 3 GB identity as RAM (the arena
+ alloc-bytes hands out), one directory for 3 GB to 4 GB as devices, and
+ nothing above 4 GB. BELOW3G is the dangerous verdict and it reads like
+ the milder one: it does not fault, it aliases the heap.
+
+  iv-map-note : PciDevice -> Text
+  iv-map-note (d) =
+    let b = iv-bar-base d (if iv-is-storage d then 36 else 16)
+    in if b == 0 then " MAP=none"
+    else if b < 3221225472 then " MAP=BELOW3G"
+    else if b < 4294967296 then " MAP=ok"
+    else " MAP=ABOVE4G"
+
+  iv-tail : PciDevice -> Text
+  iv-tail (d) = iv-tail-a d & iv-tail-b d & iv-map-note d
+
+Section: Station Address
+
+ blu's N3. RAL and RAH at these offsets are Intel-specific, so this is
+ gated on the class-2 device's vendor being 0x8086 AND its window being
+ reachable: reading them off a Realtek yields six bytes that look exactly
+ like a MAC and are not one, and an unreachable window either faults or
+ returns arena bytes. Both callees are pure and live in E1000e.
+
+  iv-mac-ok : PciDevice -> Boolean
+  iv-mac-ok (d) =
+    if d.pci-vendor /= 32902 then False
+    else let b = iv-bar-base d 16
+    in if b < 3221225472 then False else b < 4294967296
+
+  iv-mac-bytes : List Integer, Integer, Integer, Text -> Text
+  iv-mac-bytes (m) (i) (n) (acc) =
+    if i >= n then acc
+    else iv-mac-bytes m (i + 1) n (acc & (if i == 0 then "" else ":") & iv-hex2 (list-at m i))
+
+  iv-mac-line : List PciDevice, Integer -> Text
+  iv-mac-line (devs) (n) =
+    let i = iv-find devs n 0 2
+    in if i < 0 then "MAC       no class-2 device"
+    else let d = list-at devs i
+    in if iv-mac-ok d then iv-mac-read d
+    else "MAC       not read: gated on vendor 8086 and MAP=ok (vendor="
+           & iv-hex4 (d.pci-vendor) & iv-map-note d & ")"
+
+  iv-mac-read : PciDevice -> Text
+  iv-mac-read (d) =
+    let mmio = iv-bar-base d 16
+    in "MAC       " & iv-mac-bytes (e1000-read-mac mmio) 0 6 ""
+         & "  AV=" & (if e1000-mac-present mmio then "1" else "0")
+
+Section: The Body
+
+ The codes are the record and the screen is the convenience, so the body
+ carries every device, not the summary.
+
+ The PCI half is captured BEFORE the USB stage runs and carried forward as
+ text, because the xHCI bring-up RELOCATES its own BAR. Read afterwards,
+ the controller reports the window our driver moved it to rather than the
+ one firmware assigned, and `MAP=ok` on a line that firmware had actually
+ placed above 4 GB is exactly the reassuring misreading this probe exists
+ to prevent. The xHCI's true firmware placement is the `judged=` field of
+ the USB stage.
+
+  iv-pci-body : List PciDevice, Integer -> Text
+  iv-pci-body (devs) (n) =
+    "INVENTORY1 n=" & show n & ";" & iv-body-loop devs n 0 ""
+
+  iv-body : Text, Integer, Integer, Integer -> Text
+  iv-body (pcibody) (irqn) (polln) (last) =
+    pcibody & iv-usb-body & iv-ps2-body irqn polln last
+
+  iv-body-loop : List PciDevice, Integer, Integer, Text -> Text
+  iv-body-loop (devs) (n) (i) (acc) =
+    if i >= n then acc
+    else let d = list-at devs i
+    in let one = iv-line d & (if iv-kind-of d == 0 then "" else iv-tail d) & ";"
+    in iv-body-loop devs n (i + 1) (acc & one)
+
+  iv-usb-body : Text
+  iv-usb-body =
+    "XHCI found=" & iv-yn (xdiag-get 1) & " " & iv-hex8 (xdiag-get 2) & ":" & iv-hex8 (xdiag-get 3)
+      & " caplen=" & show (xdiag-get 4) & " hcc=" & iv-hex8 (xdiag-get 5)
+      & " csz=" & show (xdiag-get 6) & " ppc=" & show (xdiag-get 7) & " xecp=" & show (xdiag-get 8)
+      & " legsup=" & iv-yn (xdiag-get 9) & " before=" & iv-hex8 (xdiag-get 10)
+      & " after=" & iv-hex8 (xdiag-get 11) & " released=" & iv-yn (xdiag-get 12)
+      & " slots=" & show (xdiag-get 13) & " ports=" & show (xdiag-get 14)
+      & " reset=" & iv-yn (xdiag-get 15) & " cnr=" & iv-yn (xdiag-get 16)
+      & " run=" & iv-yn (xdiag-get 17) & " connected=" & show (xdiag-get 18)
+      & " verdict=" & show (xdiag-get 30) & " judged=" & iv-hex8 (xdiag-get 32) & "_" & iv-hex8 (xdiag-get 31)
+      & " op=" & iv-hex8 (xdiag-get 19) & " route=" & iv-hex8 (xdiag-get 36)
+      & ";" & iv-ports-body 0 (xdiag-get 14) ""
+
+  iv-ports-body : Integer, Integer, Text -> Text
+  iv-ports-body (i) (n) (acc) =
+    if i >= n then acc
+    else if i >= 8 then acc
+    else iv-ports-body (i + 1) n (acc & "p" & show i & "=" & iv-hex8 (xdiag-get (20 + i)) & " ")
+
+  iv-ps2-body : Integer, Integer, Integer -> Text
+  iv-ps2-body (irqn) (polln) (last) =
+    ";PS2 irq1=" & show irqn & " poll60=" & show polln & " last=" & iv-hex2 last & ";"
+
+Section: Rendering
+
+  iv-row : Integer, Integer, CbfFont, Integer, Integer, Integer, Text, Integer -> Integer
+  iv-row (base) (stride) (font) (x) (y) (scale) (t) (colour) =
+    gop-draw-text base stride font x y t colour scale 0
+
+  iv-callout : Integer, Integer, CbfFont, Integer, Text, List PciDevice, Integer, Integer -> Integer
+  iv-callout (base) (stride) (font) (y) (label) (devs) (n) (kind) =
+    let i = iv-find devs n 0 kind
+    in if i < 0 then iv-row base stride font 40 y 1 (label & "   NONE FOUND ON ANY BUS") 16711680
+    else let d = list-at devs i
+    in let a = iv-row base stride font 40 y 1 (label & "   " & iv-line d) (if kind == 2 then 16776960 else 65535)
+    in iv-row base stride font 40 (y + 16) 1 ("          " & iv-tail d) 9474192
+
+Section: The Codes
+
+ Scale 2 is not offered: at scale 2 the decoder finds the finder patterns
+ and reads none of the codes, which is a failure that looks like success
+ on the glass. The chosen scale is printed so the operator knows to shoot
+ close and square when it lands on 3. If a real machine pushes this below
+ 3 the combined image must be split in two rather than shipped.
+
+  iv-fits : Integer, Integer, Integer, Integer -> Boolean
+  iv-fits (w) (avail) (cn) (s) =
+    let pitch = 45 * s + 24
+    in let cols = (w - 40) / pitch
+    in if cols < 1 then False
+    else ((cn + cols - 1) / cols) * pitch <= avail
+
+  iv-qh : Integer, Integer, Integer -> Integer
+  iv-qh (w) (cn) (s) =
+    let pitch = 45 * s + 24
+    in let cols = (w - 40) / pitch
+    in if cols < 1 then 0
+    else ((cn + cols - 1) / cols) * pitch
+
+  iv-qs : Integer, Integer, Integer -> Integer
+  iv-qs (w) (avail) (cn) =
+    if iv-fits w avail cn 6 then 6
+    else if iv-fits w avail cn 5 then 5
+    else if iv-fits w avail cn 4 then 4
+    else 3
+
+  iv-qr : Integer, Integer, Integer, Integer, Integer, CbfFont, Text, Integer, Integer, Integer -> Integer
+  iv-qr (base) (stride) (w) (qy) (qs) (font) (body) (total) (cn) (budget) =
+    let cols = (w - 40) / (45 * qs + 24)
+    in let warn = if qs < 4 then "  SCALE 3: SHOOT CLOSE AND SQUARE" else ""
+    in let cap = "QR: " & show cn & " codes, body " & show total & "B of " & show budget & "B budget for this mode, scale " & show qs & ". Photograph every one." & warn
+    in let ccol = if qs < 4 then 16776960 else 16777215
+    in let t = iv-row base stride font 40 (qy - 22) 1 cap ccol
+    in iv-qr-chunks base stride qy qs cols body total cn 0
+
+ The budget is a property of the PANEL before it is a property of the
+ device count, and that ordering was measured rather than assumed: with a
+ fixed summary slab the code space is 52 px at 640x480 (nothing decodes at
+ all), 172 px at 800x600 (4 codes, 400 bytes), and 372 px at 1280x800 (14
+ codes). A 765-byte body therefore fits one of those three modes and
+ overflows another with the same seven devices. So the budget is printed
+ next to the body size: the number that decides whether the record exists
+ is the mode, and the operator should be able to read both off the glass.
+
+  iv-budget : Integer, Integer, Integer -> Integer
+  iv-budget (w) (avail) (qs) =
+    let pitch = 45 * qs + 24
+    in let cols = (w - 40) / pitch
+    in (avail / pitch) * cols * 100
+
+  iv-qr-chunks : Integer, Integer, Integer, Integer, Integer, Text, Integer, Integer, Integer -> Integer
+  iv-qr-chunks (base) (stride) (qy) (qs) (cols) (body) (total) (cn) (i) =
+    if i >= cn then 0
+    else let from = i * 100
+    in let len = if total - from > 100 then 100 else total - from
+    in let m = qr5-encode-part (show (i + 1) & "/" & show cn & ";") body from len
+    in let d = qr-draw base stride (40 + (int-mod i cols) * (45 * qs + 24)) (qy + (i / cols) * (45 * qs + 24)) qs m
+    in iv-qr-chunks base stride qy qs cols body total cn (i + 1)
+
+ The scale floor is 3 and there is no scale 2, so on a machine with enough
+ devices the grid can need more height than there is. That is red's split
+ condition (`HardwareSitting.md` section 4 rung 1) and it must be LOUD:
+ codes drawn past the bottom edge are invisible, and a photograph of the
+ ones that fit decodes into a partial report, which is the one thing the
+ run sheet says not to read past. So the overflow is named on the glass
+ with the numbers needed to act on it.
+
+  iv-codes : Integer, Integer, Integer, Integer, CbfFont, Integer, Text -> Integer
+  iv-codes (base) (stride) (w) (h) (font) (top) (body) =
+    let total = text-length body
+    in let cn = (total + 99) / 100
+    in let avail = h - top - 40
+    in let qs = iv-qs w avail cn
+    in let qh = iv-qh w cn qs
+    in let budget = iv-budget w avail qs
+    in if qh > avail then iv-overflow base stride w font top body total cn qs avail
+    else iv-qr base stride w (h - qh - 10) qs font body total cn budget
+
+  iv-overflow : Integer, Integer, Integer, CbfFont, Integer, Text, Integer, Integer, Integer, Integer -> Integer
+  iv-overflow (base) (stride) (w) (font) (top) (body) (total) (cn) (qs) (avail) =
+    let pitch = 45 * qs + 24
+    in let cols = (w - 40) / pitch
+    in let rowsfit = avail / pitch
+    in let shown = rowsfit * cols
+    in let msg = "QR OVERFLOW: " & show cn & " codes need " & show ((cn + cols - 1) / cols * pitch) & "px, have " & show avail & "px. ONLY " & show shown & " DRAWN -- SPLIT THE IMAGE, DO NOT READ A PARTIAL REPORT."
+    in let t = iv-row base stride font 40 (top + 4) 1 msg 16711680
+    in iv-qr-chunks base stride (top + 26) qs cols body total shown 0
+
+Section: Stage C, PS/2
+
+ Both routes are counted because they fail differently. The IRQ1 mailbox
+ is what a real i8042 keyboard fills, or an SMM emulation that injects
+ through the i8042; the polled port is what a pure port-trap emulation
+ answers. The status read is floating-bus guarded: a machine with no
+ i8042 floats #FF on 0x64, which must read as absent rather than as
+ data-ready.
+
+  iv-poll-port : Integer -> [Device.Port] Integer
+  iv-poll-port (d) = act
+    st <- port-in-byte 100
+    if st == 255 then 0
+    else if bit-and st 1 == 0 then 0
+    else act
+      b <- port-in-byte 96
+      if b == 255 then 0 else b
+    end
+  end
+
+ The tick cell is the one the xHCI bring-up maintains, 18 ticks a second,
+ and the window matches KbdDiagProbe's precedent for a phase a human is
+ expected to type into.
+
+  iv-ps2-window : Integer = 1620
+
+  iv-tick : Integer -> Integer
+  iv-tick (d) = bit-and (peek-qword xhci-tick-cell 0) #FFFFFFFF
+
+  iv-ps2-line : Integer, Integer, Integer, Integer -> Text
+  iv-ps2-line (irqn) (polln) (last) (rem) =
+    let tail = if rem < 0 then "   CODES REFRESHED WITH THESE COUNTS -- photograph them now"
+               else "   PRESS KEYS NOW -- codes refresh in " & show rem & "s"
+    in "PS/2 post-EBS   irq1=" & show irqn & "  poll60=" & show polln & "  last=" & iv-hex2 last & tail
+
+  iv-ps2-paint : Integer, Integer, CbfFont, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  iv-ps2-paint (base) (stride) (font) (w) (y) (irqn) (polln) (last) (rem) =
+    let clr = gop-fill-rect base stride 40 y (w - 80) 16 1710638
+    in let ln = iv-ps2-line irqn polln last rem
+    in let col = if irqn + polln > 0 then 65280 else 9474192
+    in iv-row base stride font 40 y 1 ln col
+
+ THE CODES MUST CARRY THE PS/2 ANSWER, AND THE FIRST VERSION OF THIS FILE
+ DID NOT. It rendered the codes once with literal zeros and then only ever
+ repainted a text row, so the record went home reading `PS2 irq1=0
+ poll60=0 last=00` whatever the board did: a false negative that looks
+ like a measurement, on the one question the run sheet says OVMF cannot
+ pre-answer. It survived its own gate because that gate ran `-NoPs2`,
+ where the baked zero and the true count coincide exactly, so the only
+ configuration tested was the only one in which the defect is invisible
+ (L-FALSIF).
+
+ So the window is bounded, and when it expires the codes are re-rendered
+ ONCE with the final counts before the loop goes endless and glass-only.
+ One re-render allocates one body's worth of Text, once. Re-rendering per
+ keystroke would allocate without bound on a heap with no collector, and
+ an iteration that sees no key allocates nothing at all, which is what
+ makes the endless tail safe.
+
+  iv-ps2-loop : Integer, Integer, CbfFont, Integer, Integer, Integer, Integer, Text, Integer, Integer, Integer, Integer -> [Device.Port] Integer
+  iv-ps2-loop (base) (stride) (font) (w) (h) (top) (y) (pcibody) (t0) (irqn) (polln) (last) = act
+    p <- iv-poll-port 0
+    let sc = gk-take 0
+    in let ni = if sc /= 0 then irqn + 1 else irqn
+    in let np = if p /= 0 then polln + 1 else polln
+    in let nl = if sc /= 0 then sc else if p /= 0 then p else last
+    in let el = iv-tick 0 - t0
+    in let rem = (iv-ps2-window - el) / 18
+    in let t = if ni + np /= irqn + polln then iv-ps2-paint base stride font w y ni np nl rem else 0
+    in if el >= iv-ps2-window then iv-ps2-final base stride font w h top y pcibody ni np nl
+    else iv-ps2-loop base stride font w h top y pcibody t0 ni np nl
+  end
+
+  iv-ps2-final : Integer, Integer, CbfFont, Integer, Integer, Integer, Integer, Text, Integer, Integer, Integer -> [Device.Port] Integer
+  iv-ps2-final (base) (stride) (font) (w) (h) (top) (y) (pcibody) (irqn) (polln) (last) = act
+    let clr = gop-fill-rect base stride 0 top w (h - top) 1710638
+    in let q = iv-codes base stride w h font top (iv-body pcibody irqn polln last)
+    in let m = iv-ps2-paint base stride font w y irqn polln last (-1)
+    in iv-ps2-glass base stride font w y irqn polln last
+  end
+
+  iv-ps2-glass : Integer, Integer, CbfFont, Integer, Integer, Integer, Integer, Integer -> [Device.Port] Integer
+  iv-ps2-glass (base) (stride) (font) (w) (y) (irqn) (polln) (last) = act
+    p <- iv-poll-port 0
+    let sc = gk-take 0
+    in let ni = if sc /= 0 then irqn + 1 else irqn
+    in let np = if p /= 0 then polln + 1 else polln
+    in let nl = if sc /= 0 then sc else if p /= 0 then p else last
+    in let t = if ni + np /= irqn + polln then iv-ps2-paint base stride font w y ni np nl (-1) else 0
+    in iv-ps2-glass base stride font w y ni np nl
+  end
+
+Section: The Screen
+
+  iv-draw-pci : Integer, Integer, Integer, Integer, CbfFont, List PciDevice, Integer -> Integer
+  iv-draw-pci (base) (w) (h) (stride) (font) (devs) (n) =
+    let bg = gop-fill-rect base stride 0 0 w h 1710638
+    in let t0 = iv-row base stride font 40 40 (if w >= 1024 then 2 else 1) "INVENTORY" 65535
+    in let t1 = iv-row base stride font 40 76 1 ("devices=" & show n & "  bus 0 and every bridge below, depth 3.  Full list is in the codes, not on the glass.") 16777215
+    in let c1 = iv-callout base stride font 100 "NIC    " devs n 2
+    in let c2 = iv-callout base stride font 136 "STORAGE" devs n 1
+    in let c3 = iv-callout base stride font 172 "USB    " devs n 12
+    in iv-row base stride font 40 208 1 (iv-mac-line devs n) 16776960
+
+ Returns the y of the PS/2 row, so `top` for the codes is DERIVED from the
+ last thing actually painted rather than hardcoded. The summary used to eat
+ a fixed slab whatever the panel was, which is how a short mode ended up
+ with 52 px of code space; a machine with fewer root ports now gives that
+ space to the record instead.
+
+  iv-draw-usb : Integer, Integer, CbfFont, UsbAttach -> Integer
+  iv-draw-usb (base) (stride) (font) (att) =
+    let x1 = iv-row base stride font 40 232 1 ("XHCI      found=" & iv-yn (xdiag-get 1) & " " & iv-hex8 (xdiag-get 2) & ":" & iv-hex8 (xdiag-get 3) & " caplen=" & show (xdiag-get 4) & " hcc=" & iv-hex8 (xdiag-get 5)) 65280
+    in let x2 = iv-row base stride font 40 248 1 ("          legsup=" & iv-yn (xdiag-get 9) & " released=" & iv-yn (xdiag-get 12) & " slots=" & show (xdiag-get 13) & " ports=" & show (xdiag-get 14) & " run=" & iv-yn (xdiag-get 17) & " connected=" & show (xdiag-get 18)) 9474192
+    in let x3 = iv-row base stride font 40 264 1 ("          BAR verdict=" & show (xdiag-get 30) & " judged=#" & iv-hex8 (xdiag-get 32) & "_" & iv-hex8 (xdiag-get 31) & " op=" & iv-hex8 (xdiag-get 19) & "   (judged is where FIRMWARE put it)") 16777215
+    in let np = xdiag-get 14
+    in let shown = if np > 4 then 4 else np
+    in let p = iv-ports base stride font 280 0 np
+    in let eny = 284 + shown * 16
+    in let kb = if (att.ua-kbd).uk-ok then 1 else 0
+    in let mo = if (att.ua-mouse).um-ok then 1 else 0
+    in let dk = if (att.ua-disk).md-ok then 1 else 0
+    in let en = "ENUMERATED  kbd=" & iv-yn kb & "  mouse=" & iv-yn mo & "  disk=" & iv-yn dk
+    in let e = iv-row base stride font 40 eny 1 en 16776960
+    in eny + 20
+
+  iv-ports : Integer, Integer, CbfFont, Integer, Integer, Integer -> Integer
+  iv-ports (base) (stride) (font) (y0) (i) (n) =
+    if i >= n then 0
+    else if i >= 4 then 0
+    else let raw = xdiag-get (20 + i)
+    in let ccs = bit-and raw 1
+    in let ln = "          port" & show i & " PORTSC=" & iv-hex8 raw & " CCS=" & iv-yn ccs & " PED=" & iv-yn (bit-and (bit-shru raw 1) 1) & " PR=" & iv-yn (bit-and (bit-shru raw 4) 1) & " spd=" & show (bit-and (bit-shru raw 10) 15)
+    in let col = if ccs == 0 then 9474192 else 65280
+    in let t = iv-row base stride font 40 (y0 + i * 16) 1 ln col
+    in iv-ports base stride font y0 (i + 1) n
+
+Section: Entry
+
+  opening : [Device.Port, Device.Mmio] Integer
+  opening =
+    let base = boot-fb-base 0
+    in let w = boot-fb-w 0
+    in let h = boot-fb-h 0
+    in let stride = boot-fb-stride 0
+    in let font = cbf-init
+    in act
+      ri <- runtime-init 0
+      let devs = iv-collect 0 0 []
+      in let n = list-length devs
+      in let a = iv-draw-pci base w h stride font devs n
+      in let pcibody = iv-pci-body devs n
+      in act
+        att <- usb-attach
+        let ps2y = iv-draw-usb base stride font att
+        in let top = ps2y + 20
+        in let q = iv-codes base stride w h font top (iv-body pcibody 0 0 0)
+        in let p0 = iv-ps2-paint base stride font w ps2y 0 0 0 (iv-ps2-window / 18)
+        in iv-ps2-loop base stride font w h top ps2y pcibody (iv-tick 0) 0 0 0
+      end
+    end

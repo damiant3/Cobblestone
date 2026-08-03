@@ -1,0 +1,74 @@
+Chapter: InstallToDriveTest
+  cites Kernel chapter DriveManager
+  cites Foreword chapter Gpt
+  cites Foreword chapter Fat32
+  cites Foreword chapter Sha256
+
+ A Codex-on-Codex install: drive 0 is a boot stick carrying a FAT16 ESP with
+ EFI/BOOT/BOOTX64.EFI, CODEX.CDX and SOURCE.SRC on it, drive 1 is blank, and
+ the guest partitions, formats and installs onto drive 1 without leaving Codex.
+
+ This could not be attempted before 2026-07-27: block-select selected nothing,
+ every drive position was the same disk, and the install would have partitioned
+ and formatted the disk it was reading from.
+
+ The reading is a digest of each file on each side, not merely that it arrived.
+ The two reads go through different filesystems on different drives -- FAT16 on
+ the source, FAT32 on the target this program just created -- so equal digests
+ over equal lengths mean the bytes crossed intact rather than that one reader
+ agrees with itself. Lengths alone would pass on files of zeros.
+
+ All three files are checked because a stick that boots and cannot verify or
+ rebuild itself is not the promise. The boot image alone is what the install
+ used to copy.
+
+ We say:
+
+Section: Body
+
+  digest-of : List Integer -> Text
+  digest-of (bs) = sha256-to-hex (sha256 bs)
+
+  report-file : Text, Maybe (List Integer) -> [Console] Nothing
+  report-file (tag) (got) =
+    when got
+      is None -> print-line-uni (tag & ": MISSING")
+      is Just (data) ->
+        print-line-uni (tag & ": " & show (list-length data) & " " & digest-of data)
+
+  report-source : Text -> [Console, Device.Block] Nothing
+  report-source (path) = act
+    got <- dm-read-source-file 0 path
+    report-file ("source " & path) got
+  end
+
+  report-target : Text -> [Console, Device.Block] Nothing
+  report-target (path) = act
+    w <- block-select 1
+    gpt <- gpt-read
+    when gpt
+      is None -> print-line-uni ("target " & path & ": NO GPT")
+      is Just (disk) -> report-target-esp disk path
+  end
+
+  report-target-esp : GptDisk, Text -> [Console, Device.Block] Nothing
+  report-target-esp (disk) (path) =
+    when dm-find-esp disk
+      is None -> print-line-uni ("target " & path & ": NO ESP")
+      is Just (esp) -> act
+        vol <- fat32-init (esp.gp-start-lba)
+        got <- fat32-read-bytes vol path
+        report-file ("target " & path) got
+      end
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    report-source dm-boot-image-path
+    report-source dm-seed-path
+    report-source dm-source-path
+    code <- dm-install-to-drive 1 0
+    print-line-uni ("install: " & dm-install-status-text code)
+    report-target dm-boot-image-path
+    report-target dm-seed-path
+    report-target dm-source-path
+  end

@@ -17,6 +17,15 @@ Section: SubName
 Chapters = modules. Sections = sub-modules. `cites` = imports.
 Entry point: `opening` (not `main`).
 
+**Prose does not reach the CDX.** Two sources differing only in a prose
+block compile to a byte-identical CDX, at chapter level and at section
+level; changing a printed string literal in the same file does change it,
+which is the control that says the comparison is not blind. So a
+prose-only edit cannot move the seed, however many chapters it touches.
+Measured 2026-07-28 against seed `C28DA27668475BAD`, after the opposite
+was assumed from pingpong's byte-identical text round-trip and written
+into a changelist description.
+
 ### Quire Name Resolution for `cites`
 
 The quire name in `cites <QuireName> chapter <Chapter>` is the **last
@@ -53,6 +62,35 @@ Names may contain hyphens: `my-function`, `elf-ident-32`, `patch-4-loop`.
 A hyphen followed by a letter or digit continues the name. Subtraction
 requires spaces: `x - 1` (expression), not `x-1` (identifier).
 
+### A name may be written in any language
+
+A letter is a letter whatever its script. `café`, `año` and `дом` are
+identifiers, and so are names built from Greek, Arabic, Hebrew, Devanagari and
+Latin Extended letters. This is not a courtesy: the founding document asks for
+a language that exists for human reading, and a name a reader cannot write in
+their own alphabet fails that on the first line.
+
+**This was half true until 2026-07-27 and the half that was missing was the
+cheap one.** The lexer already accepted multi-byte characters through their own
+path, so Greek and Arabic names worked. What it refused were the **31 letters
+CCE carries in a single byte** -- sixteen accented Latin (`é è ê ë á à â ä ó ô
+ö ú ü ñ ç í`) and fifteen Cyrillic -- because `is-letter` tested one band,
+13..64, and those letters sit at 97..127. So `дом` compiled and `café` did not.
+
+The reason it is two bands and not one wider band is worth stating, because the
+obvious fix is wrong: **CCE's punctuation sits between the letters.** 13..38 is
+the ASCII lowercase, 39..64 the ASCII uppercase, **65..96 the punctuation and
+symbols**, then the accented and Cyrillic letters. Extending the top to 127
+would make `.` and `(` letters.
+
+`codex/test/ident-letters.codex` pins it and `build/oracle-cce.ps1` adjudicates
+the predicates against the host.
+
+**Case conversion does not follow.** `to-upper` is the identity on those 31
+letters, deliberately: the uppercase of `é` is a Tier 1 code point and
+`to-upper` answers a `Char`, which carries a Tier 0 byte, so the answer does not
+fit in the return type. It answers the letter unchanged rather than a wrong one.
+
 ## Types
 
 | Form | Example |
@@ -74,7 +112,7 @@ requires spaces: `x - 1` (expression), not `x-1` (identifier).
 | Vector mask | `VectorMask 4` |
 | Real (f64) | `Real` |
 | Real approx (f32) | `Real approximate` |
-| Real + safety | `Real trapping`, `Real saturating`, `Real checked` |
+| Real + safety | `Real trapping`, `Real saturating` |
 
 ## Definitions
 
@@ -124,7 +162,7 @@ It is a controlled concession, and the condition on it is real: it is
 sound only while a single owner is threaded linearly through the value
 (`VisionAndVirtues.md`, virtue 5). **A callee does not own a record its
 caller still holds.** When the caller keeps using the value afterwards,
-build a new record with the constructor and copy the fields — and copy
+build a new record with the constructor and copy the fields -- and copy
 any list you carry over, because `list-push` / `list-set-at` /
 `list-insert-at` are in-place under capacity and would be shared by both
 records (see Lists, below).
@@ -148,7 +186,7 @@ body and the statements sequence. The type checker rejects field
 assignment on immutable records (CDX2060). Mutable records use
 `__record-set` under the hood, and the compiler enforces **unique
 ownership**: a `mutable` record is read-free but may be passed on,
-aliased, or returned at most once per path — handing it to two owners
+aliased, or returned at most once per path -- handing it to two owners
 is an error (CDX2062). Borrow-vs-move is inferred from callee
 signatures (a function that only reads it borrows; one that threads it
 onward consumes). See the Linear Types section: `linear` is for
@@ -157,7 +195,7 @@ are orthogonal disciplines.
 
 `freeze : linear a -> a` converts a uniquely-owned value to an ordinary
 immutable one, consuming the source. Because the source is unique and
-spent, no copy is needed — `freeze` is the identity at runtime.
+spent, no copy is needed -- `freeze` is the identity at runtime.
 
 ## Variants (Sum Types)
 
@@ -176,12 +214,12 @@ apart.
    is Rect (w) (h) -> w * h
 ```
 
-**`Circle (radius : Integer)` does not compile** — it is CDX1000 at the
+**`Circle (radius : Integer)` does not compile** -- it is CDX1000 at the
 colon, because the parser is reading a type there and a colon is not one.
 This page carried exactly that example until 2026-07-16 and nothing caught
 it: the compiler is the only reader that would have, and no chapter in the
 tree writes a variant that way, so there was nothing to contradict. If you
-want the fields named, that is what a record is for — give the constructor
+want the fields named, that is what a record is for -- give the constructor
 one as its payload (`| Circle (CircleDims)`), or name the variables at each
 `when`. Records are where names live.
 
@@ -194,7 +232,7 @@ one as its payload (`| Circle (CircleDims)`), or name the variables at each
    is otherwise -> default
 ```
 
-`when` / `is` — not `match` / `case`. Wildcard: `is otherwise -> ...`
+`when` / `is` -- not `match` / `case`. Wildcard: `is otherwise -> ...`
 or `is _ -> ...`. Exhaustiveness checked. Patterns: `VarPat`, `LitPat`,
 `CtorPat`, `_` (wildcard). Literal patterns work too:
 
@@ -206,6 +244,24 @@ or `is _ -> ...`. Exhaustiveness checked. Patterns: `VarPat`, `LitPat`,
       is 1 -> "one"
       is otherwise -> "other"
 ```
+
+### Adding a variant: `is otherwise` absorbs it and no checker will say so
+
+Exhaustiveness is checked, so adding a constructor to a variant type raises
+CDX2070 at every `when` that ENUMERATES its arms. **A `when` ending in
+`is otherwise` is exhaustive by construction, so it takes the new variant
+silently down the default path** and the compiler has nothing to report.
+
+The cost is that the failure surfaces far from the cause. Adding
+`KeyEcdsaP384` to `X509KeyAlg` raised CDX2070 in four tests that listed their
+variants and nothing at all in `x509-key-params-ok`, whose EC arm ends in a
+catch-all: every P-384 certificate then stopped parsing three stages
+downstream. The same shape cost the tree its `^` operator, where
+`emit-binary-op` had no `IrPowInt` arm and the catch-all returned RAX
+untouched, so `^` compiled clean and answered garbage.
+
+**When you add a variant, grep every `when` on that type and read the
+catch-alls by hand.** The compiler covers only the enumerated ones.
 
 ## Let Bindings
 
@@ -255,7 +311,7 @@ branch, so `for x in xs do f x` is a parse error (CDX1000 at the `do`).
 ```
 
 Inside an act block, newlines separate statements. Outside, newlines
-are whitespace — multi-line function applications work everywhere.
+are whitespace -- multi-line function applications work everywhere.
 
 Effect declarations:
 
@@ -317,15 +373,43 @@ Reach for `int-mod` when the answer indexes something. Reach for
 
 ## Negation
 
-Negative literals in argument position must be parenthesized:
+**The minus binds to whatever it abuts.** One symbol carries two meanings, so
+the spaces around it are not optional -- they are what says which meaning you
+want, and they say it the way a reader already reads it.
+
+| written | the minus abuts | means |
+|---|---|---|
+| `a - 2` | neither side | subtraction |
+| `a -2` | the right | `a` applied to `-2` |
+| `a- 2` | the left | `a-` applied to `2` |
+| `a-2` | both sides | the single identifier `a-2` |
+
+So a negative works in argument position like any other literal, and needs no
+parentheses:
 
 ```
-  list-push acc (-1)       -- correct
-  list-push acc -1         -- WRONG: parsed as subtraction
+  list-push acc -1         -- correct: acc and -1 are two arguments
+  list-push acc (-1)       -- also correct, parens are never wrong
+  list-push acc - 1        -- subtraction: (list-push acc) - 1
   -5                       -- literal negative
-  -x                       -- negate a variable
+  -x                       -- negate a variable, in argument position too
   -(x + 1)                 -- negate a compound expression
+  f a -b c                 -- three arguments; the negation takes ONE atom
 ```
+
+`a-` is a legal name (a hyphen touching the name before it belongs to it), so
+`a- 2` is an application. If you did not define `a-`, that is CDX3002
+`Undefined name` and it names the thing you actually typed.
+
+The one exception is `->`. A hyphen before `>` is the arrow, so `a->b` is
+`a` `->` `b` and never the name `a-`.
+
+**This page said the opposite until 2026-07-27** -- "negative literals in
+argument position must be parenthesized", with `list-push acc -1` marked
+WRONG. It was an accurate description of the parser and an inaccurate
+description of the language: `is-signed-literal-atom` had implemented the
+abutment rule for TYPES since long before, so `Integer between -1 and 255`
+worked while the same literal in an expression did not.
 
 The compiler folds `-(literal)` into `IrIntLit` at IR level.
 There is also a `negate` builtin but the unary operator is preferred.
@@ -343,10 +427,10 @@ bit pattern. Underscores group digits. Case-insensitive.
 ```
 
 Up to 16 significant hex digits; more is CDX2071 (same code as a
-decimal literal beyond the 64-bit range — the compiler never silently
+decimal literal beyond the 64-bit range -- the compiler never silently
 truncates a literal). Hash literals work anywhere an integer literal
 does: expressions, pattern arms, `between` bounds. Use them for bit
-masks, magic numbers, and colors — domains whose references are
+masks, magic numbers, and colors -- domains whose references are
 written in hex. Plain quantities stay decimal.
 
 ## Bounded Integers
@@ -360,9 +444,22 @@ written in hex. Plain quantities stay decimal.
 Overflow modes: `wrapping` (mod), `clamping` (saturate), `error`
 (default, compile-time check on literals).
 
+**A `wrapping` band must be exactly its hardware width** (u8, i8, u16,
+i16, u32 or i32): `0 and 255`, `-128 and 127`, `0 and 4294967295`, and so
+on. Anything narrower is CDX1073. `wrapping` is the mode that asks for
+the modular arithmetic the machine already does, and the machine does it
+at the width of the store -- a one-byte store wraps mod 256 whatever the
+band says. Until 2026-07-28 a narrower band was accepted and quietly
+meant that instead, so `between 0 and 100 wrapping` held 200 and read
+`-1` back as 255. The static bounds prover reads the declared range off
+the declaration and elides checks on the strength of it, so an
+out-of-band value there puts a false range under every elision
+downstream. `clamping` is unaffected and IS band-relative: `between 0 and
+100 clamping` saturates at 100.
+
 Plain `Integer` arithmetic produces a plain `Integer`, which won't fit
 into a bounded slot. Use `__narrow` to assert the value is in range
-(checked at runtime — out-of-range traps):
+(checked at runtime -- out-of-range traps):
 
 ```
   make-byte : Integer -> Byte
@@ -372,18 +469,38 @@ into a bounded slot. Use `__narrow` to assert the value is in range
 Bounds are enforced at the **function boundary**, not just at record
 construction (BoundedSignatures, 2026-07-03). A bounded parameter or
 return type is a real contract: a literal argument outside the range is
-a static error (CDX2050), a wider source raises CDX2051, and where the
-value cannot be proven at compile time the callee inserts a
-precondition/postcondition guard that traps at runtime (Eiffel-style
-design-by-contract). Previously these were cosmetic — `inc-byte`
-declared `Integer between 0 and 255` could silently return 301. The
-static bounds prover elides the guard when it can prove the value fits
-(CDX2053).
+a static error (CDX2050), and a value whose range cannot be proven
+raises **CDX2051** and the compile stops. Previously these were cosmetic
+-- `inc-byte` declared `Integer between 0 and 255` could silently return
+301. The static bounds prover elides the check when it can prove the
+value fits (CDX2053).
+
+**The compiler does not insert a runtime guard behind your back, and this
+paragraph said it did until 2026-07-27.** It read "where the value cannot
+be proven at compile time the callee inserts a precondition/postcondition
+guard that traps at runtime (Eiffel-style design-by-contract)". Measured:
+it refuses instead. `feed (x) = inc-byte x`, with `feed` taking a plain
+`Integer`, does not compile:
+
+```
+error CDX2051: bounded parameter has bound 0..255 but the value's proven
+range is -9223372036854775808..9223372036854775807; prove the value's
+range or assert it with __narrow, which traps at runtime if violated
+```
+
+The runtime trap is real, and `__narrow` is how you ask for it: write
+`inc-byte (__narrow x)` and an out-of-range value dies on a `UD2` at the
+callee's entry guard, with a postcondition guard on the return in the
+mirror case. So the design is refuse-by-default with an explicit opt-in,
+not an implicit contract. Two tests written against the old reading
+(`codex/test/bounded-param-trap`, `bounded-return-trap`) stopped
+compiling when CDX2051 landed and nobody noticed, because both are
+`.fatal` and nothing runs those.
 
 ## Unit Types
 
 A `unit` declaration creates a distinct type wrapping another type.
-The compiler erases the wrapper at codegen — zero runtime overhead.
+The compiler erases the wrapper at codegen -- zero runtime overhead.
 
 ```
   Second = unit Integer
@@ -431,7 +548,7 @@ family name is the type; member constructors multiply by their factor.
 
 Each member becomes a constructor function: `Second 5` produces
 `5000000000` (5 * 1,000,000,000 nanoseconds). The family type
-(`Duration`) is a `unit Integer` at runtime — zero overhead.
+(`Duration`) is a `unit Integer` at runtime -- zero overhead.
 
 ```
   timeout : Duration
@@ -485,7 +602,7 @@ exceeded (CDX6011):
 
 Default budget is 256 instructions. Budget is architecture-independent
 (instruction count, not bytes or cycles). The compiler does not claim
-to know wall-clock time — that depends on clock speed and pipeline,
+to know wall-clock time -- that depends on clock speed and pipeline,
 which is the system integrator's responsibility.
 
 See `codex/test/examples/missile-warning.codex` for
@@ -558,7 +675,7 @@ via `PropEqTy`. The proof's body is checked against the annotation.
 ### Proof Erasure
 
 All definitions whose return type is `Proof` or `PropEqTy` are erased
-during emit — they produce no machine code. The compiler reports each
+during emit -- they produce no machine code. The compiler reports each
 erasure with CDX4020.
 
 ### Static Bounds Prover
@@ -594,7 +711,7 @@ The prover recognizes these expression patterns:
 
 ## Linear Types
 
-A `linear` value must be **used exactly once** on every path — not
+A `linear` value must be **used exactly once** on every path -- not
 dropped (leak, CDX2063) and not reused (CDX2061). It is the discipline
 for resources with a lifecycle: file handles, sockets, capabilities.
 
@@ -609,13 +726,13 @@ for resources with a lifecycle: file handles, sockets, capabilities.
 ```
 
 `linear` and `mutable` are orthogonal uniqueness disciplines: `linear`
-is exactly-once (resources — every mention counts); `mutable` is
-no-aliasing-with-free-reads (data — see Mutable Records). `freeze :
+is exactly-once (resources -- every mention counts); `mutable` is
+no-aliasing-with-free-reads (data -- see Mutable Records). `freeze :
 linear a -> a` bridges them, consuming a uniquely-owned value and
 returning a shareable immutable one (the identity at runtime).
 
 Diagnostics: CDX2061 (linear used more than once / inconsistent across
-branches / mentioned after a move), CDX2063 (linear never used — leak),
+branches / mentioned after a move), CDX2063 (linear never used -- leak),
 CDX2062 (mutable record aliased), CDX2065 (linear passed to a plain
 parameter), CDX2066 (linear returned with a plain return type),
 CDX2067 (linear captured by a handler clause or escaping closure).
@@ -623,19 +740,19 @@ CDX2067 (linear captured by a handler clause or escaping closure).
 **Current enforcement scope (2026-07-03, LinearOwnership complete).**
 The checker follows ownership through let-bound locals, across call
 boundaries, and into closures and containers. `let h = n` on a
-linear or mutable parameter is a *move* — `h` inherits the
+linear or mutable parameter is a *move* -- `h` inherits the
 exactly-once obligation, and any later mention of `n` is an error
 ("the original name is dead"). A linear value moves into a callee
-only through a parameter declared `linear` (CDX2065 — `freeze`'s
+only through a parameter declared `linear` (CDX2065 -- `freeze`'s
 own `linear a` parameter is what makes it the sanctioned exit); a
 bare linear return requires a `linear`-declared return type
 (CDX2066). A let-bound closure that captures a linear owns it and
 is call-once; a partial application through a linear parameter is
 the same discipline; a list or record literal stashing the bare
-value makes the container the owner (consume it whole — positional
+value makes the container the owner (consume it whole -- positional
 re-reads are double-uses or plain-boundary errors). A handler
 clause or an argument-escaping closure may not capture a linear at
-all (CDX2067 — clauses may run zero or many times). All nine
+all (CDX2067 -- clauses may run zero or many times). All nine
 adversarial laundering probes are enforced (`codex/test/errors/
 linear-launder-*`, `linear-capture-*`). Locals minted by a
 linear-returning call and locals minted by a call returning a
@@ -677,7 +794,7 @@ Scalar broadcast is explicit via `vec-splat`, not implicit.
 ```
 
 `vec-load-at`/`vec-store-at` move whole vectors at computed
-addresses — the primitives under `Math chapter VecArray`, a
+addresses -- the primitives under `Math chapter VecArray`, a
 contiguous vector array over one flat 16·N buffer (va-alloc /
 va-get / va-set / va-map2 / va-sum). `va-set` mutates in place and
 returns the same array, like `list-set-at`.
@@ -703,15 +820,25 @@ On vectors it produces a `VectorMask N`.
 ### Real Type
 
 `Real` is the floating-point type (f64). `Real approximate` is f32.
-Safety modes compose with precision:
+`trapping` and `saturating` choose what happens when a result has no
+representable value:
 
 ```
   Real                        -- f64, IEEE 754 default
   Real approximate            -- f32
   Real trapping               -- traps on NaN/Inf
   Real saturating             -- clamps to +-MAX
-  Real checked                -- returns Result Real
 ```
+
+Precision and safety are meant to compose on both widths, so
+`Real approximate trapping` should be legal. **It does not parse today**:
+the type carries one qualifier, so of the six combinations only these four
+can be spelled, and the two missing are both f32.
+
+There is no `Real checked`. Recovering from a bad result is a job for an
+operation you call where you care, not a property of every number you
+declare, because a type that returns a maybe-a-number makes `a + b + c`
+three unwrappings.
 
 ### Codegen
 
@@ -722,7 +849,7 @@ is natural (`N * sizeof(T)` rounded to next power of two, minimum 16).
 ## Type Classes
 
 `class` declares an interface; `instance` provides an implementation.
-Dispatch is resolved at compile time by dictionary passing — no runtime
+Dispatch is resolved at compile time by dictionary passing -- no runtime
 cost.
 
 ```
@@ -749,7 +876,7 @@ with a tuple pattern in `when`:
     is (x, y) -> (y, x)
 ```
 
-Tuples desugar to the foreword `Tup2`..`Tup5` variants — cite
+Tuples desugar to the foreword `Tup2`..`Tup5` variants -- cite
 `Foreword chapter Tuple`. Both `Tup2 A B` and `(A, B)` work in type
 signatures. `let (x, y) = expr in body` destructures in let-bindings.
 
@@ -769,8 +896,8 @@ signatures. `let (x, y) = expr in body` destructures in let-bindings.
 SAME list; `list-push` also writes in place while under capacity.
 Arguments evaluate left to right (pinned by
 `codex/test/wavelet-sort-aliasing.codex`). Code that needs value
-semantics — search that applies candidate moves, undo history, any
-caller that re-reads the old list — must copy first (a
+semantics -- search that applies candidate moves, undo history, any
+caller that re-reads the old list -- must copy first (a
 `list-push`-loop over `list-at`; see `ttt-copy-squares` in
 `apps/games/classic/TicTacToe.codex` for the idiom and the aliasing
 bug it fixed).
@@ -788,17 +915,56 @@ bug it fixed).
 ```
 
 Internal encoding: CCE (Codex Character Encoding). Unicode at I/O
-boundaries only. No `\t` or `\r` escapes — use spaces and `\n`.
+boundaries only. No `\t` or `\r` escapes -- use spaces and `\n`.
 
 ## Booleans
 
-`True` / `False` — capital T/F.
+`True` / `False` -- capital T/F.
 
 ## Comments
 
 Codex has no comments. No `//`, `--`, or `/* */`. Prose at column 2
 under `Section:` headers is the commentary layer. For machine-readable
-metadata, use `@annotations` (prose flag).
+metadata, use the annotation sidecars in `annotations/` (see below); the
+inline `@` form was removed from the language on 2026-07-27.
+
+### What prose must not contain
+
+**Never reference a document from source prose.** Not a path, not a section
+number, not a register entry. Nothing re-reads such a reference, so it rots
+silently, and the rot is fast. Measured across all 2,114 source chapters on
+2026-07-27: **24 document references, of which 24 are dead.**
+
+- `RiscVLir.codex` pointed at `docs/Designs/Active/Compiler/LirRetarget.md`,
+  which had been moved to `Done/` less than an hour earlier.
+- **22 point at `BACKLOG.md`, which was deleted on 2026-07-23** -- sixteen
+  naming a numbered entry (`BACKLOG 3.20`, `7.17`, `4.17`) and six saying "the
+  backlog" generically, across sixteen files. (`codex/tracker` and
+  `StatusBadge` are excluded: there "Backlog" is a domain word in an issue
+  tracker, not a reference.)
+- one cited `CLAUDE.md` by rule number.
+
+**The count in this paragraph was itself wrong when it was written**, and the
+way it was wrong is the lesson. It said "exactly two", because the sweep
+searched for `docs/` paths and `CL` numbers and did not search for the word
+`BACKLOG`. The single BACKLOG reference it did catch surfaced only because that
+line happened to also name an agent. **A survey is a claim too, and it is bounded
+by the pattern you gave it** -- so state the pattern beside the count, and expect
+the shape you forgot to look for.
+
+State the substance instead. If the reason a constant is 2032 matters, say why
+it is 2032; a reader who has the file does not need to be sent somewhere else,
+and a reader who follows the pointer may find nothing.
+
+**A changelist reference is different and is fine.** A CL is immutable and
+Perforce keeps it forever, so `(CL 6430)` beside a regression pin still resolves
+in a year. A document path is a location, and locations move.
+
+**Leave attribution and dates to Perforce.** "All three are gone now" carries
+everything the next reader needs; "(fester, 2026-07-16)" adds a name and a date
+that `p4 annotate` already answers precisely. A *measurement* date is the
+exception and worth keeping, because a number without a date cannot be judged
+stale, which is what `CLAUDE.md` means by never carrying a count forward.
 
 ## Reserved Keywords
 
@@ -833,22 +999,22 @@ Chapter: PaymentGateway
 
 A citation resolves through its quire to whatever file is currently on
 disk under that name. A quotation resolves through its digest to exactly
-one text — the text that hashes to it, or nothing at all. That is the
+one text -- the text that hashes to it, or nothing at all. That is the
 whole difference, and it is why a quotation can be trusted and a
 citation cannot.
 
 `trusting above N` declares the chapter's trust floor. Trust scores are
-fixed-point, `0`–`10000` (0.0–1.0), so `trusting above 5000` admits no
+fixed-point, `0`-`10000` (0.0–1.0), so `trusting above 5000` admits no
 definition the author trusts less than half. The floor applies to every
 quotation in the chapter and may be written before or after them. **A
-chapter that quotes a work must declare a floor** — an absent `trusting
+chapter that quotes a work must declare a floor** -- an absent `trusting
 above` is a compile error (CDX3026), because a floor defaulted by
 omission is not a choice. A declared `trusting above 0` remains legal.
 
 ## Grounding Hardware Effects
 
 `grounds` declares that a chapter is the SOURCE of specific hardware
-effects — the layer where the abstraction meets the metal. It is a
+effects -- the layer where the abstraction meets the metal. It is a
 chapter-level declaration, a sibling of `cites`/`quotes`/`trusting`:
 
 ```
@@ -858,7 +1024,7 @@ Chapter: Ne2k
 ```
 
 The functions in a grounding chapter may perform the named effects
-without declaring them in their signatures — the internal exemption, so
+without declaring them in their signatures -- the internal exemption, so
 a driver talking to the metal pays no per-function bookkeeping. A
 function that *does* declare the effect (`f : ... -> [Device.Mmio] ...`)
 publishes it to callers outside the chapter, who must then declare it in
@@ -867,7 +1033,7 @@ where the effect becomes visible to ordinary code.
 
 The exemption is **scoped to the named effects**. A chapter that
 `grounds Device.Port` but performs `Device.Mmio` is rejected with
-CDX2031 — a chapter cannot launder some other hardware effect through an
+CDX2031 -- a chapter cannot launder some other hardware effect through an
 exemption it took for a different one.
 
 `grounds` replaces a hardcoded quire-exemption list that lived inside the
@@ -875,8 +1041,12 @@ compiler: the module now declares its own status, in the file, three
 lines above the code that touches the hardware, rather than the compiler
 asserting it from afar. Effects erase at codegen, so `grounds` changes
 only what type-checks, never the emitted binary. See
-`docs/Designs/Active/Language/GroundsBoundary.md` for the full rationale
-and the migration that moves `codex/os/` onto it.
+`docs/Designs/Done/Language/GroundsBoundary.md` for the full rationale.
+The migration it describes is COMPLETE: `quire-effect-exempt` holds only
+the compiler's own quires and the plug backends, no `codex/os/` quire is
+exempt, and fourteen driver chapters carry `grounds`. Delete the `grounds`
+line from `Pci.codex` and it fails CDX2031 and CDX2033, which is the check
+that the declaration is load-bearing rather than decorative.
 
 ## Compile Modes
 
@@ -894,6 +1064,23 @@ Sent as first line on stdin:
 
 Append profile: `ELF QEMU-11.0.0`
 Append flags: `TEXT prose`
+
+### What TEXT mode actually emits
+
+**Without the `prose` flag, the text emitter reproduces the chapter header
+and the definitions, and drops the prose and the `cites` lines.** With
+`prose`, the prose is emitted and round-trips. Measured 2026-07-25 by
+compiling a small chapter both ways against the depot seed.
+
+That is by design and it is consistent with the Comments section above:
+outside `prose` mode, column-2 prose is the commentary layer and the
+compiler is not reading it. The consequence worth knowing is what it means
+for the gates. **The text fixed point compares emitter output against
+emitter output** (stage1 against stage2), and semantic equivalence compares
+definition bodies, so **no gate in `build/build.ps1` observes prose at
+all.** Prose cannot break the build and the build cannot vouch for the
+prose. If prose is load-bearing for a chapter, that chapter needs the
+`prose` flag and a test that runs it; nothing else will notice.
 
 ## Codex Prose Language (CPL)
 
@@ -928,7 +1115,7 @@ These are lexical errors inside `We say:` blocks (CDX1110):
 ### Transition Markers
 
 `We say:` opens a CPL block. Everything inside is parsed as CPL.
-Everything outside is prose commentary — human-readable, machine-ignored.
+Everything outside is prose commentary -- human-readable, machine-ignored.
 `This is written:` is an alternative marker.
 
 ### CPL Sentence Forms
@@ -940,19 +1127,32 @@ Everything outside is prose commentary — human-readable, machine-ignored.
 5. **Procedure step:** `first, let updated-balance be the balance plus amount.`
 6. **Quantified statement:** `for every transaction in the history, the amount is positive.`
 
-### Annotations
+### Annotations live in sidecars, not in the source
 
-At column 2, `@` introduces an annotation:
+**`@` is not Codex syntax and has not been since 2026-07-27.** This section
+documented an inline form:
 
 ```
  @rationale opening "Why this function exists"
  @invariant balance "Always non-negative after deposit"
- @warning compute-hash "O(n) in key length, hot path"
 ```
 
-Format: `@kind target body`
+It is removed from the language. `AtSign` is gone from the token set, the
+lexer no longer produces it, and `parse-annotation-line` is deleted. An `@`
+at column 2 is now ordinary prose; an `@` in code is a stray character and
+takes the same path as any other, which is `ErrorToken` and a failed compile.
+Measured: `@bad` and `$bad` in the same position produce byte-identical
+diagnostics.
 
-Kinds: `rationale`, `invariant`, `warning`, `discovery`, `doctrine`, `todo`
+Maintainer commentary belongs in `annotations/`, one JSON file per source
+chapter, mirroring the source path. See `annotations/README.md` for the
+format and `apps/works/AnnotationsQuery.codex` for reading them, which is an
+optional side query and deliberately not a build step.
+
+Note that `claim`, `punctual`'s budget and the `1 Minute = 60 Second`
+conversion declaration are carried internally by a record named
+`AnnotationNode`. They are directives, not annotations, and they are
+unaffected.
 
 ### Prose-Notation Consistency (Warnings)
 
@@ -995,6 +1195,32 @@ nested conditionals, let bindings are still clearer:
   in 64 + wv + rv
 ```
 
+**`alloc-bytes` does NOT zero the memory it returns.** It is three
+instructions -- `mov rax, r10; add r10, rdi; ret` -- so it hands back the
+current heap pointer and bumps it. That is a different primitive from
+`__alloc`, which does zero-fill and which the poison build is written
+about; the two are easy to conflate because the documentation for the
+zeroing one is prominent and there was none for this one.
+
+The consequence: **write every byte you intend to read.** A buffer is only
+as clean as whatever the heap pointer last passed over, so a partially
+filled buffer returns the residue of earlier allocations. Measured
+2026-07-28: a 64-byte buffer with only its top byte written read back the
+decimal text of the previous statement's `show`, and a 512-byte buffer
+taken after a discarded string held the bytes of that string
+(`100 105 114 116 45 108 101 110`, which is `dirt-len`).
+
+It is also invisible to the obvious probe. Allocating at the top of a
+program and finding zeros proves nothing, because fresh heap has never
+been written and looks identical to a zeroing allocator; the dirt has to
+be created, discarded, and only then allocated over. `zero-bytes` is the
+explicit fill, and `DiskFacts` calls it before packing a superblock for
+exactly this reason.
+
+The bump semantics are load-bearing elsewhere and must not be "fixed"
+casually: `PerfMonitor` allocates **zero** bytes purely to read the heap
+position, and `VecArray`'s prose already calls it a raw bump.
+
 **A list CONSTANT is rebuilt at every mention, and it is invisible in the
 source.** `xs : List Integer = [...]` is a definition, not storage: each
 reference re-materialises the whole list. Measured on a 121-element list, 100000
@@ -1032,7 +1258,7 @@ remains the clearest style:
 ```
 
 **`&` and function application.** Function application binds tighter than
-`&`, so `"text" & show x` parses correctly as `"text" & (show x)` — no
+`&`, so `"text" & show x` parses correctly as `"text" & (show x)` -- no
 parens needed. Add parens only when you want the other grouping.
 
 **No multi-line `&` chains.** A line starting with `& "more"` is a
@@ -1041,7 +1267,7 @@ new expression, not continuation. Keep all `&` on one line or use
 
 **Escapes in string literals.** `\"` (double quote) and `\n` (newline)
 are supported: `"she said \"hi\""` prints `she said "hi"`. `\t` and `\r`
-are rejected (CDX5/CDX6) — use spaces and `\n`.
+are rejected (CDX5/CDX6) -- use spaces and `\n`.
 
 **`None` vs `Nothing`.** `None` is the empty constructor of `Maybe`
 (a value). `Nothing` is a type (`NothingTy`) used as the return type
@@ -1066,7 +1292,13 @@ aliasing contract `list-set-at` already has; copying operations
 (`&`, `::`, `list-push`, `list-insert-at`) produce plain lists.
 Cross-arch note: the desugar targets the `__list-len`/`__list-head`/
 `__list-tail` intrinsics, which the ARM64/RISC-V plug lanes do not
-implement yet -- list matches are x86-64-only until they do.
+implement yet -- list matches are x86-64-only until they do. Both plugs
+**refuse** such a program rather than emitting one: the compile fails
+with `[UNSUPPORTED] __list-len` and the two others. Until 2026-07-28
+they compiled it clean and the call fell through to an undefined
+symbol, so a list match on those lanes produced a binary that printed
+nothing (riscv64) or faulted on every line (arm64), with no diagnostic
+anywhere.
 Proof arms were already structural: Stage 5 checks builtin-`List`
 induction against a synthesized `Nil`/`Cons` view, and the proof
 normalizer reduces `list-length`, `list-push`/`list-snoc`, and
@@ -1078,7 +1310,7 @@ is a type error (Integer * Real). `__narrow` does not convert Real
 to Integer. Use the explicit conversion builtins.
 
 **`sha256` returns WORDS, not bytes.** `sha256 : List Integer -> List
-Integer` gives the compressor's internal state — eight 32-bit words, not
+Integer` gives the compressor's internal state -- eight 32-bit words, not
 thirty-two bytes. `sha256-to-hex` renders it with `words-to-hex`, and
 `Hkdf` wraps every hash it touches in `hkdf-words-to-bytes` for exactly
 this reason. Feed the word list somewhere a byte string is wanted and you
@@ -1091,7 +1323,7 @@ schedule wrong below its first rung; see `Tls.codex`.)
 that is `16 0d 15 11 21 0d 16`, not the `64 65 72 69 76 65 64` that any
 wire protocol means. To emit Text as bytes on a wire, convert at the I/O
 boundary: `to-unicode (char-code (char-at s i))` (cite `Foreword chapter
-CCE`). This bug is invisible in a round-trip test — both sides agree —
+CCE`). This bug is invisible in a round-trip test -- both sides agree --
 and it shipped a TLS SNI hostname and every key-schedule label in CCE
 until 2026-07-13.
 
@@ -1110,9 +1342,34 @@ Before adding a chapter, grep the foreword for every helper name it
 defines, and prefix private helpers with the chapter's own short tag
 (`tlsc-`, `asn1-`, `x509-`) rather than a generic quire prefix.
 
+**Arithmetic on CCE code points is meaningless.** CCE orders letters by
+English frequency rather than alphabetically, so the usual hex-digit trick
+`10 + c - 'a'` is nonsense: it read `0xff` as 391. Digits 3..12 are
+contiguous and letters are not. Any letter-to-value conversion has to be a
+comparison table, which is the form `hex-char-val` in `Dev chapter
+HexFormat` already has.
+
+**`poll-key` answers CCE, and is not source-compatible with a scan-code
+reading.** A character is its CCE code point; every editing key is a named
+constant at or above `key-named-base` (1048576), three orders of magnitude
+above any character. Letters moved: `a` was 97 and is 15. Comparing a key
+against a literal number is wrong now, and the failure is silent -- code
+that collects `poll-key` output straight into bytes (`idm-rlb-loop` does)
+produces different bytes than it used to, so stored identities stop
+unlocking.
+
+**`sha256-compress` writes into the hash list it is handed and returns that
+same list**, because `list-set-at` is in place. That is deliberate and it is
+what makes a scan-and-rewind digest possible: allocate the eight words below
+a `__heap-save` mark and every block's schedule and buffers can be reclaimed
+while the words survive. The consequence is that `sha256-h0` must never be
+passed to it by anything expecting a constant to stay constant. `sha256`
+gets away with it only because a top-level list constant is rebuilt at every
+mention.
+
 ## Seed Rebuild Procedure
 
-The canonical seed is `seed/Codex.cdx` — the signed, self-sustaining CDX
+The canonical seed is `seed/Codex.cdx` -- the signed, self-sustaining CDX
 binary, bootable via codex-vm or QEMU multiboot.
 
 ### Pre-conditions
@@ -1167,14 +1424,59 @@ reproducing.
 
 ### Steps
 
-1. **Run full build** — `build/build.ps1`. All phases must PASS (text round-trip + CDX fixed-point + test battery).
-2. **Install new seed** — `Copy-Item build/output/Sut.cdx seed\Codex.cdx -Force`
-   The signed SUT is at `build/output/Sut.cdx`. Do NOT use
-   `build-output/bare-metal/Codex.cdx` — that is the unsigned boot
-   kernel, not the signed SUT.
-3. **Self-verify** — `build/test-self-verify.ps1`. Must print "THE SEED VERIFIES ITSELF".
-4. **Capture digest** — `Get-FileHash -Algorithm SHA256 seed\Codex.cdx`
-5. **Submit to Perforce** — `p4 submit -d "seed: rebuild for CL <N>"`
+1. **Run full build** -- `build/build.ps1`. All phases must PASS (text round-trip + CDX fixed-point + test battery).
+2. **Install new seed** -- `Copy-Item build/output/NewSeed.cdx seed\Codex.cdx -Force`
+
+   **Use `NewSeed.cdx`, not `Sut.cdx`.** This step said `Sut.cdx` until
+   2026-07-28 and that is correct only when the build printed
+   `hard fixed point in one pass`, because in that case they are the
+   same bytes. **When your change alters what the
+   compiler EMITS they are not**, and installing `Sut.cdx` installs a
+   compiler that is not the fixed point of itself.
+
+   The reason is what the two artifacts are. `Sut.cdx` is the OLD seed
+   compiling the new source, so its own binary was emitted by the old
+   codegen; `stage1.cdx` is the Sut compiling the new source, so it is
+   the first binary that both contains and produces the new codegen.
+   `build.ps1` copies `stage1` to `NewSeed.cdx` at the fixed-point step
+   for exactly this purpose, and the fixed point it proves is
+   `stage1 === stage2` -- a property of stage1, which is why stage1 is
+   the seed.
+
+   Measured 2026-07-28 adding six builtins that emit new helper
+   functions: `Sut.cdx` was 2701354 bytes and `stage1 === stage2` was
+   2701564. Installing the Sut would have shipped a seed missing the
+   helpers from its own body.
+
+   **`NewSeed.cdx` IS NOT SIGNED, so it is a step and not the destination.**
+   The `sign` phase signs the SUT that the build produced from the seed;
+   `stage1` is emitted later and nothing signs it. Install `NewSeed.cdx` and
+   run `build/test-self-verify.ps1` and it answers `SIGNATURE: False`,
+   `AUTHOR-KEY-PRESENT: False`, `SIGNATURE INVALID`. Measured 2026-07-28.
+
+   This page said "use NewSeed.cdx" and `red-workplan.md` said "the
+   installed seed is the SIGNED Sut.cdx", and **both were half right**. The
+   full procedure when the bytes move is three steps, not one:
+
+   1. `Copy-Item build/output/NewSeed.cdx seed\Codex.cdx -Force` -- the
+      fixed point, unsigned.
+   2. Run `build/build.ps1` again. It now prints `hard fixed point in one
+      pass`, and the `Sut.cdx` it just built has the same content AND
+      carries the signature.
+   3. `Copy-Item build/output/Sut.cdx seed\Codex.cdx -Force` -- same bytes
+      of program, now signed. Sizes match; only the signature differs.
+
+   **Then prove it**: run `build/build.ps1` once more and it must still say
+   `hard fixed point in one pass` with `Sut == seed`, and
+   `build/test-self-verify.ps1` must print `THE SEED VERIFIES ITSELF`. A
+   content-hash match cannot tell you the signature is there, which is
+   exactly why self-verify is a separate step and not a formality.
+
+   Do NOT use `build-output/bare-metal/Codex.cdx` -- that is the unsigned
+   boot kernel, and neither of the two above.
+3. **Self-verify** -- `build/test-self-verify.ps1`. Must print "THE SEED VERIFIES ITSELF".
+4. **Capture digest** -- `Get-FileHash -Algorithm SHA256 seed\Codex.cdx`
+5. **Submit to Perforce** -- `p4 submit -d "seed: rebuild for CL <N>"`
 
 ### Rules
 

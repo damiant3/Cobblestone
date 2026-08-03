@@ -1,24 +1,46 @@
 Chapter: ComplianceReportTest
   cites Foreword chapter ComplianceEvidence
 
- Verify the compliance evidence requirement counts match
- the actual lists in ComplianceEvidence.
+Section: Vocabulary
+
+  known-regulation : Text -> Boolean
+  known-regulation (r) =
+   r == "CRA" | r == "ETSI" | r == "NIST" | r == "IEC62443"
+
+  known-artifact : Text -> Boolean
+  known-artifact (a) =
+   a == "capability-manifest" | a == "cdx-binary" | a == "cdx-header" |
+   a == "compile-log" | a == "crypto-suite" | a == "effect-types" |
+   a == "fact-store" | a == "none" | a == "ota-design" |
+   a == "punctual-report" | a == "trust-lattice"
+
+Section: Row Validation
+
+  req-faults : Requirement -> Integer
+  req-faults (r) =
+   (if known-regulation (r.regulation) then 0 else 1) +
+   (if known-artifact (r.artifact) then 0 else 1) +
+   (if text-length (r.section) == 0 then 1 else 0) +
+   (if text-length (r.title) == 0 then 1 else 0) +
+   (if text-length (r.mechanism) < 40 then 1 else 0)
+
+  faults-in : List Requirement, Integer, Integer -> Integer
+  faults-in (rs) (i) (acc) =
+   if i == list-length rs then acc
+   else faults-in rs (i + 1) (acc + req-faults (list-at rs i))
+
+  faults-of : List Requirement -> Integer
+  faults-of (rs) = faults-in rs 0 0
 
 Section: Body
 
   opening : [Console] Nothing = act
-   let cra-count = list-length cra-requirements
-   in let etsi-count = list-length etsi-requirements
-   in let nist-count = list-length nist-requirements
-   in let iec-count = list-length iec-requirements
-   in let total = cra-count + etsi-count + nist-count + iec-count
-   in act
-    print-line-uni ("CRA: " & show cra-count & " requirements")
-    print-line-uni ("ETSI: " & show etsi-count & " requirements")
-    print-line-uni ("NIST: " & show nist-count & " requirements")
-    print-line-uni ("IEC62443: " & show iec-count & " requirements")
-    print-line-uni ("total: " & show total & " mapped")
-   end
+   print-line-uni ("CRA: " & show (faults-of cra-requirements) & " faulty rows of " & show (list-length cra-requirements))
+   print-line-uni ("ETSI: " & show (faults-of etsi-requirements) & " faulty rows of " & show (list-length etsi-requirements))
+   print-line-uni ("NIST: " & show (faults-of nist-requirements) & " faulty rows of " & show (list-length nist-requirements))
+   print-line-uni ("IEC62443: " & show (faults-of iec-requirements) & " faulty rows of " & show (list-length iec-requirements))
+   print-line-uni ("classes reachable: " & evidence-class-name ByConstruction & " " & evidence-class-name Mechanism & " " & evidence-class-name Deployment & " " & evidence-class-name Organizational)
+   print-line-uni ("format sample: " & format-requirement (list-at nist-requirements 0))
   end
 
 Page 1

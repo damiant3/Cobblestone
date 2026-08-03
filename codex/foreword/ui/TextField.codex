@@ -2,8 +2,9 @@ Chapter: TextField
   cites UI chapter Widget
   cites UI chapter Event
   cites UI chapter Selection
+  cites UI chapter KeyInput
 
- Text input widget — single-line and multi-line text fields with
+ Text input widget -- single-line and multi-line text fields with
  caret navigation, character insert/delete, selection via shift-
  arrows, and basic clipboard integration. Builds on Widget for
  tree placement and Event for keyboard input.
@@ -88,15 +89,42 @@ Section: Key Handling
     if tf.tf-focused == False then tf
     else tf-dispatch-key tf key mods
 
+ A key is a key identity as `KeyInput` defines one: a character is its CCE
+ code point, and an editing key is a named constant above
+ `key-named-base`. The two spaces cannot overlap, which is the whole
+ reason that chapter puts named keys at 2^20.
+
+ This dispatch used to mix three encodings and was unusable as a result.
+ It read 8 and 127 as ASCII control codes, 35 to 39 as Windows virtual
+ key codes, and everything from 32 up as a character to insert -- and a
+ character arrives here as CCE, where the printable range starts at 2.
+
+ The cost was measured rather than reasoned about. CCE orders letters by
+ English frequency, so `e` is 13, `t` is 14, `a` is 15 and only seven
+ lowercase letters reach 32 at all: the `key >= 32` gate silently
+ discarded `a c d e f g h i l m n o p r s t u w y`, every digit, and the
+ space bar. Of the seven that survived, four were then stolen by the
+ navigation codes, because 35 is `j`, 36 is `x`, 37 is `q` and 39 is `E`;
+ 8 is the digit `5`, so typing a five performed a backspace. A field
+ given the word "Hi" answered "H".
+
+ Named keys this field does not handle are ignored rather than inserted,
+ which is why the test against `key-is-named` comes before the printable
+ test: without it a function key would be typed into the text as a
+ character.
+
+  tf-first-printable : Integer = 2
+
   tf-dispatch-key : TextFieldState, Integer, Integer -> TextFieldState
   tf-dispatch-key (tf) (key) (mods) =
-    if key == 8 then tf-backspace tf
-    else if key == 127 then tf-delete tf
-    else if key == 37 then tf-move-left tf mods
-    else if key == 39 then tf-move-right tf mods
-    else if key == 36 then tf-move-home tf mods
-    else if key == 35 then tf-move-end tf mods
-    else if key >= 32 then tf-insert-char tf key
+    if key == key-backspace then tf-backspace tf
+    else if key == key-delete then tf-delete tf
+    else if key == key-left then tf-move-left tf mods
+    else if key == key-right then tf-move-right tf mods
+    else if key == key-home then tf-move-home tf mods
+    else if key == key-end then tf-move-end tf mods
+    else if key-is-named key then tf
+    else if key >= tf-first-printable then tf-insert-char tf key
     else tf
 
 Section: Insert

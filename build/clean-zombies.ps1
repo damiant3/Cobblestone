@@ -1,16 +1,16 @@
-# clean-zombies.ps1 — purge orphaned VM + WSL bridge processes.
+# clean-zombies.ps1 -- purge orphaned VM + WSL bridge processes.
 #
 # Use after a SIGKILL-style abort (taskkill /F, harness OOM, wedged
 # WSL VM) when traps in the test / build / 3stage harnesses
 # could not run. Safe between test runs; do NOT run while another test
-# is in progress — it kills any VM regardless of which agent
+# is in progress -- it kills any VM regardless of which agent
 # started it.
 #
 # Invoke directly:    powershell -NoProfile -File build/clean-zombies.ps1
 # Or from Git Bash:   build/clean-zombies.ps1   (file association)
 #
 # Fast-path: skip steps for processes that aren't running. In
-# particular, never call `wsl --shutdown` unless vmmemWSL is up —
+# particular, never call `wsl --shutdown` unless vmmemWSL is up --
 # wsl.exe spins the VM up to shut it down, costing minutes when
 # WSL was already idle.
 

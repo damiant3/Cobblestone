@@ -13,7 +13,7 @@ Section: Parsing
   csv-parse-rows : Text, Integer, Integer, List (List Text) -> List (List Text)
   csv-parse-rows (input) (i) (len) (rows) =
     if i >= len then rows
-    else let row-result = csv-parse-row input i len []
+    else let row-result = csv-parse-row input i len [] False
     in csv-parse-rows input (row-result.next-pos) len (list-push rows (row-result.fields))
 
   CsvRowResult = record {
@@ -21,24 +21,44 @@ Section: Parsing
     next-pos : Integer
   }
 
-  csv-parse-row : Text, Integer, Integer, List Text -> CsvRowResult
-  csv-parse-row (input) (i) (len) (fields) =
-    if i >= len then CsvRowResult { fields = fields, next-pos = len }
+ A record is a field followed by any number of comma-and-field pairs,
+ so a separator is always followed by a field and that field may be
+ empty. A record ending in a comma therefore has an empty last field,
+ and a record that is nothing but a comma has two of them.
+
+ The row loop used to end at the input or the line break without
+ recording whether it had just stepped over a separator, so the field
+ after a trailing comma was never pushed: "a," parsed as one field
+ rather than two, and "," as one rather than two. Interior empties
+ were always right, because there the loop meets the next comma
+ rather than the end. The after-sep flag is what the loop was
+ missing; csv-close-row is where it is spent.
+
+  csv-close-row : List Text, Boolean -> List Text
+  csv-close-row (fields) (after-sep) =
+    if after-sep then list-push fields "" else fields
+
+  csv-parse-row : Text, Integer, Integer, List Text, Boolean -> CsvRowResult
+  csv-parse-row (input) (i) (len) (fields) (after-sep) =
+    if i >= len then CsvRowResult { fields = csv-close-row fields after-sep, next-pos = len }
     else let ch = char-code (char-at input i)
-    in if ch == char-code (char-at "\n" 0) then CsvRowResult { fields = fields, next-pos = i + 1 }
+    in if ch == char-code (char-at "\n" 0) then CsvRowResult { fields = csv-close-row fields after-sep, next-pos = i + 1 }
     else if ch == char-code (char-at "\"" 0) then
       let qr = csv-parse-quoted input (i + 1) len ""
       in let fields2 = list-push fields (qr.value)
-      in let next = if qr.end-pos < len then
-        if char-code (char-at input (qr.end-pos)) == char-code (char-at "," 0) then qr.end-pos + 1 else qr.end-pos
-        else qr.end-pos
-      in csv-parse-row input next len fields2
+      in let saw-comma = csv-at-comma input (qr.end-pos) len
+      in let next = if saw-comma then qr.end-pos + 1 else qr.end-pos
+      in csv-parse-row input next len fields2 saw-comma
     else let ur = csv-parse-unquoted input i len ""
     in let fields2 = list-push fields (ur.value)
-    in let next = if ur.end-pos < len then
-      if char-code (char-at input (ur.end-pos)) == char-code (char-at "," 0) then ur.end-pos + 1 else ur.end-pos
-      else ur.end-pos
-    in csv-parse-row input next len fields2
+    in let saw-comma = csv-at-comma input (ur.end-pos) len
+    in let next = if saw-comma then ur.end-pos + 1 else ur.end-pos
+    in csv-parse-row input next len fields2 saw-comma
+
+  csv-at-comma : Text, Integer, Integer -> Boolean
+  csv-at-comma (input) (pos) (len) =
+    if pos >= len then False
+    else char-code (char-at input pos) == char-code (char-at "," 0)
 
   CsvFieldResult = record { value : Text, end-pos : Integer }
 

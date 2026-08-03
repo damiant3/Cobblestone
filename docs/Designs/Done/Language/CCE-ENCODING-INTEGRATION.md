@@ -1,8 +1,8 @@
-# CCE Encoding Integration — Platform Support
+# CCE Encoding Integration -- Platform Support
 
 **Date**: 2026-03-26
 **Author**: Agent Linux
-**Status**: Design — future work
+**Status**: Design -- future work
 
 ---
 
@@ -10,8 +10,8 @@
 
 Files produced by the Codex compiler's internal diagnostics (`type-diag.txt`,
 `unify-errors.txt`) contain raw CCE-encoded text. When Codex.OS becomes the
-host, all text on the system will be CCE-native. External tools — text editors,
-`cat`, `grep`, `diff`, hex editors, debuggers — display garbage unless they know
+host, all text on the system will be CCE-native. External tools -- text editors,
+`cat`, `grep`, `diff`, hex editors, debuggers -- display garbage unless they know
 about CCE.
 
 Today the blast radius is small: `.codex` source files and program output are
@@ -24,24 +24,24 @@ grows, CCE awareness needs to reach the host platform's encoding infrastructure.
 
 Linux encoding support is built on three layers:
 
-1. **`iconv`** — the standard command-line converter. Uses `-f` / `-t` to name
+1. **`iconv`** -- the standard command-line converter. Uses `-f` / `-t` to name
    encodings. Can also accept charmap file paths directly.
 
-2. **gconv modules** — shared libraries (`.so`) loaded by `iconv_open(3)` at
+2. **gconv modules** -- shared libraries (`.so`) loaded by `iconv_open(3)` at
    runtime. Live in `/usr/lib/gconv/` (or `/usr/lib64/gconv/`). Configured
    via `gconv-modules` text file. Custom modules can be loaded via the
    `GCONV_PATH` environment variable.
 
-3. **charmap files** — POSIX-defined text files that describe a character set.
+3. **charmap files** -- POSIX-defined text files that describe a character set.
    Map symbolic character names to byte values. Used by `localedef` and `iconv`.
    Live in `/usr/share/i18n/charmaps/`.
 
 **What we'd provide:**
 
-- `CCE.charmap` — POSIX charmap file mapping CCE byte 0-127 to Unicode names.
+- `CCE.charmap` -- POSIX charmap file mapping CCE byte 0-127 to Unicode names.
   Enables `iconv -f ./CCE.charmap -t UTF-8 < file.cce > file.txt`.
 
-- `cce_gconv.so` — gconv module that registers "CCE" as a named encoding.
+- `cce_gconv.so` -- gconv module that registers "CCE" as a named encoding.
   After installation: `iconv -f CCE -t UTF-8 < file.cce`. About 50 lines of C
   wrapping the 128-entry lookup table.
 
@@ -57,16 +57,16 @@ Linux encoding support is built on three layers:
 
 2. Call `Encoding.RegisterProvider(new CceEncodingProvider())` at startup.
 
-3. Now `Encoding.GetEncoding("CCE")` works throughout the .NET process —
+3. Now `Encoding.GetEncoding("CCE")` works throughout the .NET process --
    `StreamReader`, `StreamWriter`, `File.ReadAllText`, etc.
 
 **What we'd provide:**
 
-- `CceEncoding : Encoding` — custom `System.Text.Encoding` subclass. Implements
+- `CceEncoding : Encoding` -- custom `System.Text.Encoding` subclass. Implements
   `GetBytes`, `GetChars`, `GetByteCount`, `GetCharCount` using the 128-entry
   lookup table. Assigns a private-use code page number (e.g., 65400).
 
-- `CceEncodingProvider : EncodingProvider` — registers "CCE" and "codex" as
+- `CceEncodingProvider : EncodingProvider` -- registers "CCE" and "codex" as
   encoding names.
 
 - NuGet package: `Codex.Text.Encoding.CCE`. One-liner to enable:
@@ -129,8 +129,8 @@ in the Clarifier (translating between human languages).
 
 ## Design Constraint
 
-The lookup table is the single source of truth. Every integration artifact —
-charmap file, gconv module, .NET Encoding, editor plugin — is generated from
+The lookup table is the single source of truth. Every integration artifact --
+charmap file, gconv module, .NET Encoding, editor plugin -- is generated from
 the same 128-entry array. When the encoding evolves (CCE v2), regenerate all
 artifacts from the new table.
 
@@ -151,5 +151,5 @@ How does a tool know a file is CCE-encoded?
 
 For the compiler's diagnostic files, the simplest fix is adding the BOM or
 changing the compiler to write them as UTF-8 (converting at the boundary like
-everything else). The latter is probably the right short-term answer — these
+everything else). The latter is probably the right short-term answer -- these
 files exist for human debugging, not machine consumption.

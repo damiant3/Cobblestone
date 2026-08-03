@@ -1,0 +1,52 @@
+Chapter: GopTextClip
+  cites Foreword chapter Console
+  cites UI chapter Theme
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter BoxModel
+  cites UI chapter PixelBuf
+  cites Guios chapter GopRender
+  cites Guios chapter GuiDisplay
+  cites Guios chapter GuiTimer
+
+Section: Body
+  buf-w : Integer = 400
+  buf-h : Integer = 60
+
+  scan-row-band : GopBuf, Integer, Integer, Integer, Integer, Integer -> Integer
+  scan-row-band (gb) (y) (x) (xend) (target) (acc) =
+    if x >= xend then acc
+    else scan-row-band gb y (x + 1) xend target (acc + (if gop-buf-get gb x y == target then 1 else 0))
+
+  scan-band : GopBuf, Integer, Integer, Integer, Integer, Integer -> Integer
+  scan-band (gb) (y) (x0) (x1) (target) (acc) =
+    if y >= buf-h then acc
+    else scan-band gb (y + 1) x0 x1 target (acc + scan-row-band gb y x0 x1 target 0)
+
+  long-text : Text = "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+
+  label-tree : WidgetNode
+  label-tree =
+    widget-panel "root" DirRow 0 [
+      widget-set-flex (widget-set-min (widget-label "long" long-text) 200 40) 0,
+      widget-set-flex (widget-gauge "pad" 0 100) 1
+    ]
+
+  opening : [Console] Nothing =
+    act
+      let th = theme-terminal
+      in let pal = th.th-palette
+      in let laid = widget-layout label-tree th (layout-rect 0 0 buf-w buf-h)
+      in let lb = list-at (laid.wn-children) 0
+      in let b = lb.wn-bounds
+      in let bright = b.lr-x + b.lr-w
+      in let buf = gop-buf-new buf-w buf-h (pal.pal-bg)
+      in let d1 = gop-render-tree laid th buf mw-new
+      in let free = gop-buf-new buf-w buf-h (pal.pal-bg)
+      in let d2 = gop-buf-put-text-role free mw-new (b.lr-x) (b.lr-y) long-text (pal.pal-fg) font-role-sans
+      in act
+        print-line-uni ("inside: " & show (if scan-band buf 0 (b.lr-x) bright (pal.pal-fg) 0 > 0 then 1 else 0))
+        print-line-uni ("outside: " & show (if scan-band buf 0 (bright + 4) (buf-w - 8) (pal.pal-fg) 0 > 0 then 1 else 0))
+        print-line-uni ("unbounded: " & show (if scan-band free 0 (bright + 4) (buf-w - 8) (pal.pal-fg) 0 > 0 then 1 else 0))
+      end
+    end

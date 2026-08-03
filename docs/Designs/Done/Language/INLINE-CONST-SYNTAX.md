@@ -32,7 +32,7 @@ make-error (code) (msg) = Diagnostic { ... }
 
 The inline form is permitted only when there are no parameters between
 the `:` and the `=`. Mixing parameters on one line (`f : T -> T (x) = ...`)
-is not allowed — it reads badly and makes error recovery harder.
+is not allowed -- it reads badly and makes error recovery harder.
 
 ## Grammar
 
@@ -86,7 +86,7 @@ Mirror the same branch. Same size.
 
 Strictly additive. All existing source continues to parse. The
 pretty-printer / Codex text emitter can keep emitting the two-line form
-until we decide on a style rule — no forced migration.
+until we decide on a style rule -- no forced migration.
 
 ## Status
 

@@ -1,4 +1,4 @@
-# GitHub Update 14 — CL 1527 to CL 1811 (2026-05-18)
+# GitHub Update 14 -- CL 1527 to CL 1811 (2026-05-18)
 
 Previous update: CL 1526 (GitHubUpdate13).
 This update: CL 1811.
@@ -62,7 +62,7 @@ New `mutable` keyword with in-place field assignment:
   c.value = c.value + 1
 ```
 
-**Phase 1 (CL 1636)**: full pipeline — lexer, parser, AST, desugarer,
+**Phase 1 (CL 1636)**: full pipeline -- lexer, parser, AST, desugarer,
 type checker, IR, lowering, x86 codegen, emitters. Codegen reuses
 `__record-set` path. `IrFieldStore` IR node.
 
@@ -77,7 +77,7 @@ aliasing, `freeze` builtin) is pending.
 
 CL 1768 replaced the compiler's REPL exit logic (variant match on
 `exit-mode`) with a runtime flag at address 28936. That address
-collided with `cap-expiry-addr`, and the flag was never initialized —
+collided with `cap-expiry-addr`, and the flag was never initialized --
 the REPL broke in any CDX compiled from the current source. Every
 other test in the batch battery crashed ("connection aborted").
 
@@ -86,7 +86,7 @@ st.exit-mode is Exit -> halt | is otherwise -> jmp repl-loop`).
 The variant match codegen bug that CL 1768 was working around does
 not affect this particular pattern. Seed rebuilt. 103/105 pass.
 
-## Codex.Spark — 3D Modeling Framework (Db, CLs 1715-1811)
+## Codex.Spark -- 3D Modeling Framework (Db, CLs 1715-1811)
 
 New application framework in `apps/spark/`. Phases 1-9 in a single
 day:
@@ -103,7 +103,7 @@ day:
 
 Compiles and runs on bare metal via codex-vm.
 
-## CodexMagic — Game Engine (Gollum, CLs 1642-1780)
+## CodexMagic -- Game Engine (Gollum, CLs 1642-1780)
 
 Continued development of the Magic: The Gathering engine. Themed
 HTML pages for the web dashboard, copy-ups to main across multiple
@@ -111,11 +111,11 @@ CLs. 99/100 tests passing.
 
 ## Web Dashboard (Gollum, CL 1601 + CL 1762)
 
-`tools/web/server.ps1` — PowerShell HTTP server with game lobby,
+`tools/web/server.ps1` -- PowerShell HTTP server with game lobby,
 status page, and themed HTML pages for each game. Serves assets
 from `assets/games/`. Game catalog with 30+ playable games.
 
-`tools/status-server.ps1` — lightweight status endpoint.
+`tools/status-server.ps1` -- lightweight status endpoint.
 
 ## Compiler Limits Expanded (CL 1635)
 

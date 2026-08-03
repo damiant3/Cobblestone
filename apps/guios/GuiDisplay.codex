@@ -1,13 +1,10 @@
 Chapter: GuiDisplay
   cites Foreword chapter CCE
   cites Kernel chapter BitmapFont
+  cites UI chapter PixelBuf
+  cites UI chapter TextOverflow
   cites Guios chapter SystemFont
   cites Guios chapter GuiTimer
-
- GOP framebuffer presentation and flat off-screen pixel buffer.
- GopBuf is an alloc-bytes-backed XRGB buffer: O(1) per pixel read
- and write, no heap allocation after init. Blit to GOP via poke-32
- at the hardware framebuffer address.
 
 Section: Constants
   gop-fb-base : Integer
@@ -30,92 +27,6 @@ Section: Display Construction
       gd-stride = w,
       gd-fb-addr = gop-fb-base
     }
-
-Section: Flat Pixel Buffer
-  GopBuf = record {
-    gb-base : Integer,
-    gb-width : Integer,
-    gb-height : Integer
-  }
-
-  gop-buf-new : Integer, Integer, Integer -> GopBuf
-  gop-buf-new (w) (h) (bg) =
-    let size = w * h * 4
-    in let base = alloc-bytes size
-    in let dummy = gop-buf-fill-loop base bg 0 (w * h)
-    in GopBuf { gb-base = base, gb-width = w, gb-height = h }
-
-  gop-buf-fill-loop : Integer, Integer, Integer, Integer -> Integer
-  gop-buf-fill-loop (base) (color) (i) (total) =
-    if i >= total then 0
-    else let dummy = poke-32 base (i * 4) color
-    in gop-buf-fill-loop base color (i + 1) total
-
-  gop-buf-set : GopBuf, Integer, Integer, Integer -> Integer
-  gop-buf-set (gb) (x) (y) (color) =
-    if x < 0 then 0
-    else if y < 0 then 0
-    else if x >= gb.gb-width then 0
-    else if y >= gb.gb-height then 0
-    else poke-32 (gb.gb-base) ((y * gb.gb-width + x) * 4) color
-
-  gop-buf-get : GopBuf, Integer, Integer -> Integer
-  gop-buf-get (gb) (x) (y) =
-    if x < 0 then 0
-    else if y < 0 then 0
-    else if x >= gb.gb-width then 0
-    else if y >= gb.gb-height then 0
-    else peek-32 (gb.gb-base) ((y * gb.gb-width + x) * 4)
-
-  gop-buf-clear : GopBuf, Integer -> Integer
-  gop-buf-clear (gb) (color) =
-    gop-buf-fill-loop (gb.gb-base) color 0 (gb.gb-width * gb.gb-height)
-
-  gop-buf-rect : GopBuf, Integer, Integer, Integer, Integer, Integer -> Integer
-  gop-buf-rect (gb) (x) (y) (w) (h) (color) =
-    gop-buf-rect-rows gb x y w h color 0
-
-  gop-buf-rect-rows : GopBuf, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
-  gop-buf-rect-rows (gb) (x) (y) (w) (h) (color) (row) =
-    if row >= h then 0
-    else let dummy = gop-buf-hline gb x (x + w - 1) (y + row) color
-    in gop-buf-rect-rows gb x y w h color (row + 1)
-
-  gop-buf-hline : GopBuf, Integer, Integer, Integer, Integer -> Integer
-  gop-buf-hline (gb) (x0) (x1) (y) (color) =
-    if y < 0 then 0
-    else if y >= gb.gb-height then 0
-    else let cx0 = if x0 < 0 then 0 else x0
-    in let cx1 = if x1 >= gb.gb-width then gb.gb-width - 1 else x1
-    in gop-buf-hline-loop gb cx0 cx1 y color
-
-  gop-buf-hline-loop : GopBuf, Integer, Integer, Integer, Integer -> Integer
-  gop-buf-hline-loop (gb) (x) (x1) (y) (color) =
-    if x > x1 then 0
-    else let dummy = poke-32 (gb.gb-base) ((y * gb.gb-width + x) * 4) color
-    in gop-buf-hline-loop gb (x + 1) x1 y color
-
-Section: Outlined Rect
-  gop-buf-outline : GopBuf, Integer, Integer, Integer, Integer, Integer -> Integer
-  gop-buf-outline (gb) (x) (y) (w) (h) (color) =
-    let dummy = gop-buf-hline gb x (x + w - 1) y color
-    in let dummy2 = gop-buf-hline gb x (x + w - 1) (y + h - 1) color
-    in let dummy3 = gop-buf-vline gb x y (y + h - 1) color
-    in gop-buf-vline gb (x + w - 1) y (y + h - 1) color
-
-  gop-buf-vline : GopBuf, Integer, Integer, Integer, Integer -> Integer
-  gop-buf-vline (gb) (x) (y0) (y1) (color) =
-    if x < 0 then 0
-    else if x >= gb.gb-width then 0
-    else gop-buf-vline-loop gb x y0 y1 color
-
-  gop-buf-vline-loop : GopBuf, Integer, Integer, Integer, Integer -> Integer
-  gop-buf-vline-loop (gb) (x) (y) (y1) (color) =
-    if y > y1 then 0
-    else if y < 0 then gop-buf-vline-loop gb x (y + 1) y1 color
-    else if y >= gb.gb-height then 0
-    else let dummy = poke-32 (gb.gb-base) ((y * gb.gb-width + x) * 4) color
-    in gop-buf-vline-loop gb x (y + 1) y1 color
 
 Section: Text Rendering on GopBuf
   gop-buf-font : CbfFont
@@ -142,30 +53,69 @@ Section: Text Rendering on GopBuf
 
   gop-buf-put-text : GopBuf, Integer, Integer, Text, Integer -> Integer
   gop-buf-put-text (gb) (x) (y) (s) (fg) =
-    gop-buf-text-loop gb x y s fg 0 (text-length s)
+    gop-buf-put-text-clip gb x y (gb.gb-width) s fg
 
-  gop-buf-text-loop : GopBuf, Integer, Integer, Text, Integer, Integer, Integer -> Integer
-  gop-buf-text-loop (gb) (x) (y) (s) (fg) (i) (n) =
-    if i >= n then 0
+  gop-buf-advance : Integer = 9
+  gop-buf-glyph-w : Integer = 8
+
+  gop-buf-put-text-clip : GopBuf, Integer, Integer, Integer, Text, Integer -> Integer
+  gop-buf-put-text-clip (gb) (x) (y) (max-x) (s) (fg) =
+    gop-buf-put-text-fit gb x y max-x s fg text-overflow-default
+
+  gop-buf-put-text-fit : GopBuf, Integer, Integer, Integer, Text, Integer, TextOverflow -> Integer
+  gop-buf-put-text-fit (gb) (x) (y) (max-x) (s) (fg) (mode) =
+    let len = text-length s
+    in let avail = max-x - x
+    in let start = text-overflow-start mode len avail gop-buf-advance gop-buf-glyph-w
+    in let count = text-overflow-count mode len avail gop-buf-advance gop-buf-glyph-w
+    in let dots = text-overflow-dots mode len avail gop-buf-advance gop-buf-glyph-w
+    in gop-buf-text-loop gb x y s fg start (start + count) start + gop-buf-dots-loop gb (x + count * gop-buf-advance) y fg 0 dots
+
+  gop-buf-text-loop : GopBuf, Integer, Integer, Text, Integer, Integer, Integer, Integer -> Integer
+  gop-buf-text-loop (gb) (x) (y) (s) (fg) (i) (stop) (start) =
+    if i >= stop then 0
     else let code = char-code-at s i
-    in let dummy = gop-buf-put-char gb (x + i * 9) y code fg
-    in gop-buf-text-loop gb x y s fg (i + 1) n
+    in let dummy = gop-buf-put-char gb (x + (i - start) * gop-buf-advance) y code fg
+    in gop-buf-text-loop gb x y s fg (i + 1) stop start
+
+  gop-buf-dots-loop : GopBuf, Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-buf-dots-loop (gb) (x) (y) (fg) (k) (n) =
+    if k >= n then 0
+    else let dummy = gop-buf-put-char gb (x + k * gop-buf-advance) y (char-code-at "." 0) fg
+    in gop-buf-dots-loop gb x y fg (k + 1) n
 
 Section: SystemFont Text Rendering
   gop-sys-font : SysFont
   gop-sys-font = sysfont-init
 
+  gop-buf-sys-advance : Integer = 10
+
   gop-buf-put-text-sys : GopBuf, Integer, Integer, Text, Integer -> Integer
   gop-buf-put-text-sys (gb) (x) (y) (s) (fg) =
-    gop-buf-sys-loop gb x y s fg 0 (text-length s)
+    gop-buf-put-text-sys-fit gb x y (gb.gb-width) s fg text-overflow-default
 
-  gop-buf-sys-loop : GopBuf, Integer, Integer, Text, Integer, Integer, Integer -> Integer
-  gop-buf-sys-loop (gb) (x) (y) (s) (fg) (i) (n) =
-    if i >= n then 0
+  gop-buf-put-text-sys-fit : GopBuf, Integer, Integer, Integer, Text, Integer, TextOverflow -> Integer
+  gop-buf-put-text-sys-fit (gb) (x) (y) (max-x) (s) (fg) (mode) =
+    let len = text-length s
+    in let avail = max-x - x
+    in let start = text-overflow-start mode len avail gop-buf-sys-advance gop-buf-glyph-w
+    in let count = text-overflow-count mode len avail gop-buf-sys-advance gop-buf-glyph-w
+    in let dots = text-overflow-dots mode len avail gop-buf-sys-advance gop-buf-glyph-w
+    in gop-buf-sys-loop gb x y s fg start (start + count) start + gop-buf-sys-dots gb (x + count * gop-buf-sys-advance) y fg 0 dots
+
+  gop-buf-sys-loop : GopBuf, Integer, Integer, Text, Integer, Integer, Integer, Integer -> Integer
+  gop-buf-sys-loop (gb) (x) (y) (s) (fg) (i) (stop) (start) =
+    if i >= stop then 0
     else let cce = char-code-at s i
     in let unicode = to-unicode cce
-    in let dummy = gop-buf-sys-char gb (x + i * 10) y unicode fg
-    in gop-buf-sys-loop gb x y s fg (i + 1) n
+    in let dummy = gop-buf-sys-char gb (x + (i - start) * gop-buf-sys-advance) y unicode fg
+    in gop-buf-sys-loop gb x y s fg (i + 1) stop start
+
+  gop-buf-sys-dots : GopBuf, Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-buf-sys-dots (gb) (x) (y) (fg) (k) (n) =
+    if k >= n then 0
+    else let dummy = gop-buf-sys-char gb (x + k * gop-buf-sys-advance) y (to-unicode (char-code-at "." 0)) fg
+    in gop-buf-sys-dots gb x y fg (k + 1) n
 
   gop-buf-sys-char : GopBuf, Integer, Integer, Integer, Integer -> Integer
   gop-buf-sys-char (gb) (x) (y) (unicode) (fg) =
@@ -189,14 +139,22 @@ Section: Scaled Text Rendering
   gop-buf-put-text-scaled : GopBuf, Integer, Integer, Text, Integer, Integer -> Integer
   gop-buf-put-text-scaled (gb) (x) (y) (s) (fg) (scale) =
     if scale <= 1 then gop-buf-put-text gb x y s fg
-    else gop-buf-text-scaled-loop gb x y s fg scale 0 (text-length s)
+    else gop-buf-put-text-scaled-fit gb x y (gb.gb-width) s fg scale text-overflow-default
 
-  gop-buf-text-scaled-loop : GopBuf, Integer, Integer, Text, Integer, Integer, Integer, Integer -> Integer
-  gop-buf-text-scaled-loop (gb) (x) (y) (s) (fg) (scale) (i) (n) =
-    if i >= n then 0
+  gop-buf-put-text-scaled-fit : GopBuf, Integer, Integer, Integer, Text, Integer, Integer, TextOverflow -> Integer
+  gop-buf-put-text-scaled-fit (gb) (x) (y) (max-x) (s) (fg) (scale) (mode) =
+    let len = text-length s
+    in let avail = max-x - x
+    in let start = text-overflow-start mode len avail (gop-buf-advance * scale) (gop-buf-glyph-w * scale)
+    in let count = text-overflow-count mode len avail (gop-buf-advance * scale) (gop-buf-glyph-w * scale)
+    in gop-buf-text-scaled-loop gb x y s fg scale start (start + count) start
+
+  gop-buf-text-scaled-loop : GopBuf, Integer, Integer, Text, Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-buf-text-scaled-loop (gb) (x) (y) (s) (fg) (scale) (i) (stop) (start) =
+    if i >= stop then 0
     else let code = char-code-at s i
-    in let dummy = gop-buf-put-char-scaled gb (x + i * 9 * scale) y code fg scale
-    in gop-buf-text-scaled-loop gb x y s fg scale (i + 1) n
+    in let dummy = gop-buf-put-char-scaled gb (x + (i - start) * gop-buf-advance * scale) y code fg scale
+    in gop-buf-text-scaled-loop gb x y s fg scale (i + 1) stop start
 
   gop-buf-put-char-scaled : GopBuf, Integer, Integer, Integer, Integer, Integer -> Integer
   gop-buf-put-char-scaled (gb) (x) (y) (cce-code) (fg) (scale) =
@@ -218,7 +176,6 @@ Section: Scaled Text Rendering
     else gop-buf-cbf-bits-scaled gb x y byte fg scale (bit + 1)
 
 Section: GopBitmapFont Rendering (alloc-bytes backed TrueType fonts)
-
   gbf-put-char : GopBuf, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   gbf-put-char (gb) (base) (gw) (gh) (x) (y) (cce) (fg) =
     let unicode = to-unicode cce
@@ -240,51 +197,44 @@ Section: GopBitmapFont Rendering (alloc-bytes backed TrueType fonts)
     in let dummy = if alpha > 0 then gbf-blend-pixel gb (x + col) (y + row) fg alpha else 0
     in gbf-put-char-cols gb base gw gh x y idx fg row (col + 1)
 
-  gbf-blend-pixel : GopBuf, Integer, Integer, Integer, Integer -> Integer
-  gbf-blend-pixel (gb) (x) (y) (fg) (alpha) =
-    if alpha >= 240 then gop-buf-set gb x y fg
-    else let bg = gop-buf-get gb x y
-    in let fr = bit-and (bit-shru fg 16) 255
-    in let fg2 = bit-and (bit-shru fg 8) 255
-    in let fb = bit-and fg 255
-    in let br = bit-and (bit-shru bg 16) 255
-    in let bg2 = bit-and (bit-shru bg 8) 255
-    in let bb = bit-and bg 255
-    in let rr = br + (fr - br) * alpha / 255
-    in let rg = bg2 + (fg2 - bg2) * alpha / 255
-    in let rb = bb + (fb - bb) * alpha / 255
-    in gop-buf-set gb x y (bit-shl rr 16 + bit-shl rg 8 + rb)
-
   gbf-put-text : GopBuf, Integer, Integer, Integer, Integer, Integer, Text, Integer -> Integer
   gbf-put-text (gb) (base) (gw) (gh) (x) (y) (s) (fg) =
+    gbf-put-text-clip gb base gw gh x y (gb.gb-width) s fg
+
+  gbf-put-text-clip : GopBuf, Integer, Integer, Integer, Integer, Integer, Integer, Text, Integer -> Integer
+  gbf-put-text-clip (gb) (base) (gw) (gh) (x) (y) (max-x) (s) (fg) =
     let adv-table = base + 95 * gw * gh
     in let yoff-table = adv-table + 95
-    in gbf-put-text-loop gb base gw gh adv-table yoff-table x y s fg 0 (text-length s) 0
+    in gbf-put-text-loop gb base gw gh adv-table yoff-table x y max-x s fg 0 (text-length s) 0
 
-  gbf-put-text-loop : GopBuf, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Text, Integer, Integer, Integer, Integer -> Integer
-  gbf-put-text-loop (gb) (base) (gw) (gh) (adv-table) (yoff-table) (x) (y) (s) (fg) (i) (n) (cx) =
+  gbf-put-text-loop : GopBuf, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Text, Integer, Integer, Integer, Integer -> Integer
+  gbf-put-text-loop (gb) (base) (gw) (gh) (adv-table) (yoff-table) (x) (y) (max-x) (s) (fg) (i) (n) (cx) =
     if i >= n then 0
+    else if x + cx + gw > max-x then 0
     else let code = char-code-at s i
     in let unicode = to-unicode code
     in let idx = unicode - 32
     in let adv = if idx >= 0 then if idx < 95 then peek-byte adv-table idx else gw else gw
     in let yoff = if idx >= 0 then if idx < 95 then peek-byte yoff-table idx else 0 else 0
     in let dummy = gbf-put-char gb base gw gh (x + cx) (y + yoff) code fg
-    in gbf-put-text-loop gb base gw gh adv-table yoff-table x y s fg (i + 1) n (cx + adv)
+    in gbf-put-text-loop gb base gw gh adv-table yoff-table x y max-x s fg (i + 1) n (cx + adv)
 
 Section: Font Role Dispatch
-
   font-role-serif : Integer = 1
   font-role-sans : Integer = 2
   font-role-mono : Integer = 3
 
   gop-buf-put-text-role : GopBuf, MutWheel, Integer, Integer, Text, Integer, Integer -> Integer
   gop-buf-put-text-role (gb) (w) (x) (y) (s) (fg) (role) =
-    if mw-get-fonts-loaded w == 0 then gop-buf-put-text gb x y s fg
-    else gop-buf-put-text-role-loaded gb w x y s fg role
+    gop-buf-put-text-role-clip gb w x y (gb.gb-width) s fg role
 
-  gop-buf-put-text-role-loaded : GopBuf, MutWheel, Integer, Integer, Text, Integer, Integer -> Integer
-  gop-buf-put-text-role-loaded (gb) (w) (x) (y) (s) (fg) (role) =
+  gop-buf-put-text-role-clip : GopBuf, MutWheel, Integer, Integer, Integer, Text, Integer, Integer -> Integer
+  gop-buf-put-text-role-clip (gb) (w) (x) (y) (max-x) (s) (fg) (role) =
+    if mw-get-fonts-loaded w == 0 then gop-buf-put-text-clip gb x y max-x s fg
+    else gop-buf-put-text-role-loaded gb w x y max-x s fg role
+
+  gop-buf-put-text-role-loaded : GopBuf, MutWheel, Integer, Integer, Integer, Text, Integer, Integer -> Integer
+  gop-buf-put-text-role-loaded (gb) (w) (x) (y) (max-x) (s) (fg) (role) =
     let base = if role == 1 then mw-get-font-serif-base w
                else if role == 2 then mw-get-font-sans-base w
                else mw-get-font-mono-base w
@@ -292,8 +242,8 @@ Section: Font Role Dispatch
                 else if role == 2 then mw-get-font-sans-w w
                 else mw-get-font-mono-w w
     in let gh = mw-get-font-glyph-h w
-    in if base == 0 then gop-buf-put-text gb x y s fg
-    else gbf-put-text gb base gw gh x y s fg
+    in if base == 0 then gop-buf-put-text-clip gb x y max-x s fg
+    else gbf-put-text-clip gb base gw gh x y max-x s fg
 
   gop-role-text-width : MutWheel, Integer, Text -> Integer
   gop-role-text-width (w) (role) (s) =

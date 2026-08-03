@@ -1,4 +1,4 @@
-# QEMU IDE PIO: same-session write-then-read returns stale data — 2026-05-02
+# QEMU IDE PIO: same-session write-then-read returns stale data -- 2026-05-02
 
 **Reported:** 2026-05-02
 **Reporter:** Cam (during DiskFacts V0 bring-up, CL 665)
@@ -14,7 +14,7 @@ WHPX accel, bare-metal kernel.
 
 The read returns all zeros (the sector's pre-write content) instead of
 the just-written data. Reading a *different* sector after the write
-works correctly. The disk image file on the host IS modified — `xxd`
+works correctly. The disk image file on the host IS modified -- `xxd`
 confirms the written bytes are at the correct offset. A fresh QEMU
 boot reads the written data correctly.
 

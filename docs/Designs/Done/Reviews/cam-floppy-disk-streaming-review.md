@@ -1,9 +1,9 @@
-# Review: cam/floppy-disk-streaming — Floppy Disk Phase 1
+# Review: cam/floppy-disk-streaming -- Floppy Disk Phase 1
 
 **Reviewer**: Agent Linux  
 **Date**: 2026-03-28  
 **Branch**: `cam/floppy-disk-streaming` (4f78669..b749c6a, 4 commits)  
-**Verdict**: ✅ Merge — no regressions, clean design
+**Verdict**: ✅ Merge -- no regressions, clean design
 
 ---
 
@@ -33,7 +33,7 @@ target in Phase 2.
 
 1. **`compile-streaming` + `stream-defs`** (main.codex): New entry point
    replacing monolithic `compile`. `stream-defs` is a TCO-eligible tail
-   recursive loop — the x86-64 backend's per-iteration heap reset reclaims
+   recursive loop -- the x86-64 backend's per-iteration heap reset reclaims
    IR tree + emitted text each cycle.
 
 2. **`build-arity-map-from-ast`** (CSharpEmitterExpressions.codex): Builds
@@ -53,7 +53,7 @@ target in Phase 2.
 
 5. **`_all-source.codex`** (5190 lines, ~206 KB): Concatenated compiler
    source used as bare metal self-compile input. Stays on repo as a
-   committed artifact — it's the canonical single-file representation of
+   committed artifact -- it's the canonical single-file representation of
    the self-hosted compiler.
 
 6. **`floppy-disk-test.py`**: QEMU bare metal streaming test harness with
@@ -74,7 +74,7 @@ Full suite run on branch in Linux sandbox, 2026-03-28:
 | Codex.Lsp.Tests | 18 | 0 | |
 | **Total** | **907** | **7** | Identical to master |
 
-The 7 failures are x86-64 bare-metal tests returning empty serial output —
+The 7 failures are x86-64 bare-metal tests returning empty serial output --
 a sandbox environment issue (no KVM, serial timeout). RISC-V bare-metal
 tests pass. These failures are identical on master and are not caused by
 this branch.
@@ -107,7 +107,7 @@ only.
 `--target codex` on Windows emits CRLF. The x86-64 lexer expects LF.
 Workaround: `tr -d '\r'` before use. Proper fix would be normalizing
 line endings in the Codex emitter or in the lexer's whitespace handling.
-Documented in CurrentPlan — not a blocker.
+Documented in CurrentPlan -- not a blocker.
 
 ### 4. Bare metal 4 MB OOM confirms Phase 2 necessity
 

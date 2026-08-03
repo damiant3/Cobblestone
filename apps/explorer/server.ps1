@@ -1,4 +1,4 @@
-# server.ps1 — Explorer web server
+# server.ps1 -- Explorer web server
 # Boots the ExplorerServer CDX in a VM, bridges HTTP requests to
 # the CDX over TCP (via NE2K NIC NAT) or serial (fallback).
 # Usage: apps/explorer/server.ps1 [-Port 8889] [-Mode tcp]

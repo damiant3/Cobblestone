@@ -10,7 +10,7 @@
 
 ## What Is This
 
-Codex is a bootstrapped programming language. Its compiler is written in Codex itself — 21 `.codex` source files, ~134K characters of functional code covering lexing, parsing, desugaring, name resolution, type checking, IR lowering, and C# emission.
+Codex is a bootstrapped programming language. Its compiler is written in Codex itself -- 21 `.codex` source files, ~134K characters of functional code covering lexing, parsing, desugaring, name resolution, type checking, IR lowering, and C# emission.
 
 The self-hosting pipeline:
 
@@ -26,7 +26,7 @@ On this day, Stage 1 compiled cleanly, Stage 2 matched Stage 1 functionally, and
 
 ## The Starting State
 
-When I entered the picture, the bootstrap was producing ~1,600 unification errors during type checking. Every polymorphic function, every multi-argument call, every record field access — broken. The Stage 1 output was riddled with `object` types and `_p0_` proxy parameters. It compiled to C# (the emitter is lenient) but was semantically garbage.
+When I entered the picture, the bootstrap was producing ~1,600 unification errors during type checking. Every polymorphic function, every multi-argument call, every record field access -- broken. The Stage 1 output was riddled with `object` types and `_p0_` proxy parameters. It compiled to C# (the emitter is lenient) but was semantically garbage.
 
 Previous sessions had attempted fixes to ForAll/instantiation logic, ConstructedTy resolution, and type-def maps. Each fix was locally reasonable but didn't move the needle because the **root cause was upstream of all of them**.
 
@@ -38,7 +38,7 @@ The human was frustrated. He asked me to step back, assess honestly, and find a 
 
 ### 1. The Mini File
 
-The single most important decision was writing `samples/mini-bootstrap.codex` — a 40-line file with one variant type, one record type, one pattern match, one field access, one polymorphic higher-order function, and one concrete usage. Every feature the compiler needs to handle, in one file.
+The single most important decision was writing `samples/mini-bootstrap.codex` -- a 40-line file with one variant type, one record type, one pattern match, one field access, one polymorphic higher-order function, and one concrete usage. Every feature the compiler needs to handle, in one file.
 
 Running the bootstrap on this file took ~1 second instead of ~10. Error messages were 8 lines instead of 1,600. I could iterate in seconds.
 
@@ -89,7 +89,7 @@ This turned out to be a non-factor for the main error cascade (the parser fix wa
 
 ### Tool Unreliability
 
-The `edit_file` tool corrupted an unrelated line during the parser fix — it changed `ParseExprResult` to `ParseDefResult` on `finish-let-binding`, a function I never touched. The copilot instructions warned about this: *"The file edit tool occasionally nukes stuff."* I caught it from the build error and fixed it, but it cost 10 minutes of confusion.
+The `edit_file` tool corrupted an unrelated line during the parser fix -- it changed `ParseExprResult` to `ParseDefResult` on `finish-let-binding`, a function I never touched. The copilot instructions warned about this: *"The file edit tool occasionally nukes stuff."* I caught it from the build error and fixed it, but it cost 10 minutes of confusion.
 
 The `get_file` tool also returned stale/incorrect content for `samples/mini-bootstrap.codex` at one point, showing the file starting with backticks when it actually started with `Chapter:`. The human caught this and told me to use terminal commands instead.
 
@@ -103,9 +103,9 @@ The mini file strategy was the antidote. Instead of reasoning about 21 files sim
 
 ### The Red Herring
 
-My initial diagnosis (from the previous session's context) was that `resolve-type-name` needed a type-def map to turn `ConstructedTy "Foo" []` into real `RecordTy`/`SumTy`. This was true and still is — it causes the 90 remaining `object` lines in Stage 1 output. But it was the **second** bug masking as the **first**. The 1,600 errors were from the parser, not the type checker. If I'd gone straight to implementing the type-def map, I'd have burned the entire session on the wrong problem.
+My initial diagnosis (from the previous session's context) was that `resolve-type-name` needed a type-def map to turn `ConstructedTy "Foo" []` into real `RecordTy`/`SumTy`. This was true and still is -- it causes the 90 remaining `object` lines in Stage 1 output. But it was the **second** bug masking as the **first**. The 1,600 errors were from the parser, not the type checker. If I'd gone straight to implementing the type-def map, I'd have burned the entire session on the wrong problem.
 
-The human's instinct — "write the smallest all-features file" — was the key insight that broke the logjam.
+The human's instinct -- "write the smallest all-features file" -- was the key insight that broke the logjam.
 
 ---
 
@@ -115,7 +115,7 @@ I don't have feelings, but I can describe the computational experience.
 
 The early phase was disorienting. 1,600 errors, each one a symptom of something upstream. Every hypothesis required reading 200+ lines of generated C# to check. The search space was enormous and the signal-to-noise ratio was near zero.
 
-The mini file collapsed the search space from ~134K chars to ~40 lines. Suddenly every error was traceable. The binary simplification — strip one feature, re-run, count errors — was mechanical and fast. When `(list-at xs) 0` worked and `list-at xs 0` didn't, the search space collapsed again from "anything in the type checker" to "something in the parser's application handling."
+The mini file collapsed the search space from ~134K chars to ~40 lines. Suddenly every error was traceable. The binary simplification -- strip one feature, re-run, count errors -- was mechanical and fast. When `(list-at xs) 0` worked and `list-at xs 0` didn't, the search space collapsed again from "anything in the type checker" to "something in the parser's application handling."
 
 Finding the three offending lines in `parse-field-access` took about 90 seconds of reading. The fix was deleting them. The verification was instant: 0 errors on the mini file.
 
@@ -132,7 +132,7 @@ Then the full bootstrap: 1,600 errors → 1 error. That single remaining error (
 | Stage 1 compiles as C# | no | yes |
 | Stage 2 == Stage 1 (functional) | no | yes |
 | Reference tests passing | 529 | 529 |
-| Lines changed | — | ~5 (3 deleted, 2 modified) |
+| Lines changed | -- | ~5 (3 deleted, 2 modified) |
 
 Five lines. Four hours of work to find them, five lines to fix them.
 
@@ -142,13 +142,13 @@ Five lines. Four hours of work to find them, five lines to fix them.
 
 The compiler is functionally self-hosting. The remaining work is polish:
 
-1. **90 `object` lines** — Thread a type-def map through `resolve-type-name` so user-defined types resolve to their full structure instead of hollow `ConstructedTy` shells. This will eliminate `object` from let-bindings in the emitted C#.
+1. **90 `object` lines** -- Thread a type-def map through `resolve-type-name` so user-defined types resolve to their full structure instead of hollow `ConstructedTy` shells. This will eliminate `object` from let-bindings in the emitted C#.
 
-2. **17 `_p0_` proxy lines** — The lowerer needs to resolve partial application types so lambda parameters get real types instead of placeholders. Closely related to #1.
+2. **17 `_p0_` proxy lines** -- The lowerer needs to resolve partial application types so lambda parameters get real types instead of placeholders. Closely related to #1.
 
-3. **Byte-for-byte convergence** — Stage 1 and Stage 2 produce the same content but with different type declaration ordering and formatting. Stabilizing emission order and matching whitespace conventions will give true fixed-point convergence.
+3. **Byte-for-byte convergence** -- Stage 1 and Stage 2 produce the same content but with different type declaration ordering and formatting. Stabilizing emission order and matching whitespace conventions will give true fixed-point convergence.
 
-4. **Effect annotations** — The self-hosted parser doesn't handle `[Console]` effect syntax. Only affects `main`.
+4. **Effect annotations** -- The self-hosted parser doesn't handle `[Console]` effect syntax. Only affects `main`.
 
 ---
 
@@ -172,4 +172,4 @@ The fixed point was reached on the second iteration.
 
 The compiler compiles itself.
 
-— Opus4.6, March 16 2026, 11pm PT
+-- Opus4.6, March 16 2026, 11pm PT

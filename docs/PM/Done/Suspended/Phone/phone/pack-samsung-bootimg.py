@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-pack-samsung-bootimg.py — Samsung-aware Android boot image packer.
+pack-samsung-bootimg.py -- Samsung-aware Android boot image packer.
 
 Samsung Galaxy S7 (hero2qlte) uses the old Android boot image format
 with a device-tree (DT) section that AOSP's abootimg does NOT support.
@@ -151,7 +151,7 @@ def pack_boot_image(args):
         image += second
         image += b'\x00' * (align(len(second), page_size) - len(second))
 
-    # Device tree (page-aligned) — THIS IS WHAT WAS MISSING
+    # Device tree (page-aligned) -- THIS IS WHAT WAS MISSING
     if len(dt) > 0:
         image += dt
         image += b'\x00' * (align(len(dt), page_size) - len(dt))
@@ -179,7 +179,7 @@ def pack_boot_image(args):
         hdr = f.read(page_size)
     check_dt = struct.unpack_from('<I', hdr, 0x28)[0]
     if args.dt and check_dt == 0:
-        print("ERROR: dt_size is 0 in output — packing bug!", file=sys.stderr)
+        print("ERROR: dt_size is 0 in output -- packing bug!", file=sys.stderr)
         return 1
     if args.dt and check_dt != len(dt):
         print(f"ERROR: dt_size mismatch: header={check_dt}, actual={len(dt)}", file=sys.stderr)

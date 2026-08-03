@@ -10,7 +10,7 @@
 > is a proposal in full, and it has never been scheduled.
 >
 > **The acronym collides with a SHIPPED feature.** "CPL" already means
-> the **Codex Prose Language** — the controlled subset of English
+> the **Codex Prose Language** -- the controlled subset of English
 > opened by a `We say:` block, which is built, documented in
 > `docs/DevelopersGuide.md` ("Codex Prose Language (CPL)", sentence
 > forms and scope rules), and load-bearing in the language today.
@@ -18,7 +18,7 @@
 > **This document must be renamed before anyone builds it.** Two
 > different CPLs in one project is a defect that costs an afternoon
 > every time a new agent reads either doc. Whoever picks this work up
-> renames it first — the pattern language needs a name that is not
+> renames it first -- the pattern language needs a name that is not
 > "CPL", and every reference here follows the rename.
 
 ---

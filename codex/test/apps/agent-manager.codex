@@ -1,0 +1,146 @@
+Chapter: AgentManagerTest
+  cites Works chapter DevConsole
+  cites Works chapter DevConsoleBoot
+  cites Works chapter DevConsoleMenu
+  cites Works chapter DevAgent
+  cites Works chapter AgentCoordinator
+  cites Works chapter UefiConsole
+  cites Works chapter KeyManager
+  cites Kernel chapter DiskFacts
+  cites Foreword chapter FactStore
+  cites Foreword chapter Sha256
+
+ The dev console's Agent Manager, driven through the key handler the
+ console actually calls.
+
+ Every key here goes through `handle-console-input`, and that is the
+ point rather than a detail. ModeAgent was missing from its `when`, so it
+ fell to `is otherwise -> state` and the Agent Manager swallowed every
+ keystroke including Back: the only exit was a reboot. A test that called
+ `dispatch-agent-menu` directly would have passed against that bug with
+ nothing wired up, which is how the bug survived being written down in
+ CurrentPlan as a plain gap for months.
+
+ What the menu answered before was three literals. "Registry: 0 agents"
+ was the reply on a machine with a signed agent on its boot image and on
+ a machine with nothing, in identical words. So the load line below is
+ the load-bearing one: this runs against the same honest bundle disk as
+ `codex/test/apps/bundled-agent`, the registry count moves from empty to
+ one, and the agent's own name and version come back out of it. A console
+ still answering from a literal cannot produce "codex-demo-agent v0.1.0"
+ because it has never read the disk.
+
+ The role swap is checked by listing twice. `list` prints the role, the
+ two listings straddle a switch to code-review, and they differ. Without
+ the role on the line a swap that did nothing would print the same text
+ twice and read as success.
+
+ Both refusals matter as much as the successes. Switching a role with an
+ empty registry must say so rather than report the new role, or the
+ console would be telling the operator it had done something to nothing;
+ and an unknown key must leave the status untouched, or every stray
+ keystroke would overwrite the last real answer.
+
+ THE STRAY-KEY CHECK COMPARES TEXT, AND IT HAS TO. `__record-set` is an
+ in-place field store that hands back the SAME record, which the compiler
+ documents in `Types/TypeEnv.codex` and relies on itself, so every state
+ in this file is one object that each dispatch mutates as it passes
+ through. There is no earlier copy to hold a stray key against. Written
+ the obvious way -- dispatch the stray key, compare the result with the
+ state it came from -- the check would compare a record with itself and
+ pass unconditionally. It got written that way first and reported the
+ status of a LATER dispatch, which is what exposed this. Capturing the
+ status Text before the keystroke is the version that can fail, because
+ Text is a value and does not travel with the record.
+
+ We say:
+
+Section: Fixtures
+
+ A console state with no UEFI underneath it. Nothing in this test prints
+ through the console record, so its handles are zero rather than
+ something that must be pretended into existence, and the fact store is
+ empty rather than loaded off a disk.
+
+  bare-console : UefiConsoleState
+  bare-console = UefiConsoleState {
+    sys-table = 0,
+    con-out = 0,
+    con-in = 0,
+    rows = 25,
+    cols = 80,
+    cursor-row = 0,
+    cursor-col = 0
+  }
+
+  bare-disk : DiskFactStore
+  bare-disk = DiskFactStore { superblock = empty-superblock, mem = fact-store-empty, base = 0, limit = 0 }
+
+  bare-keys : Keypair
+  bare-keys = generate-keypair (sha256 (text-to-bytes "codex-agent-manager-test"))
+
+Section: Reporting
+
+  mode-name : ConsoleMode -> Text
+  mode-name (m) = when m
+    is ModeMainMenu -> "main"
+    is ModeAgent -> "agent"
+    is otherwise -> "other"
+
+  report : Text, DevConsoleState -> [Console] Nothing
+  report (label) (s) = act
+    print-line-uni (label & ": " & s.status)
+  end
+
+  report-where : Text, DevConsoleState -> [Console] Nothing
+  report-where (label) (s) = act
+    print-line-uni (label & ": mode=" & mode-name (s.mode) & " menu=" & s.menu.title)
+  end
+
+Section: Entry
+
+  opening : [Console, Device.Port, Device.Block] Nothing = act
+    let s0 = dev-console-init bare-console bare-disk bare-keys
+    in let s1 = dispatch-main-menu "agent" s0
+    in act
+      report-where "entered" s1
+
+      empty <- handle-console-input s1 "list"
+      report "list-empty" empty
+
+      rolemenu0 <- handle-console-input s1 "role"
+      no-agent <- handle-console-input rolemenu0 "review"
+      report "role-no-agent" no-agent
+
+      loaded <- handle-console-input s1 "load"
+      report "load" loaded
+
+      listed <- handle-console-input loaded "list"
+      report "list-loaded" listed
+
+      inspected <- handle-console-input listed "status"
+      report "status" inspected
+
+      rolemenu <- handle-console-input listed "role"
+      report-where "role-menu" rolemenu
+
+      swapped <- handle-console-input rolemenu "review"
+      report "swap" swapped
+      report-where "after-swap" swapped
+
+      relisted <- handle-console-input swapped "list"
+      report "list-swapped" relisted
+
+      let held = relisted.status
+      in act
+        stray <- handle-console-input relisted "nonsense"
+        print-line-uni ("stray-untouched: " & show (stray.status == held))
+      end
+
+      probed <- handle-console-input relisted "gpu"
+      report "gpu" probed
+
+      out <- handle-console-input relisted "back"
+      report-where "back" out
+    end
+  end

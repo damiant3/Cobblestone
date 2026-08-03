@@ -66,7 +66,7 @@ $sorted = $tally.GetEnumerator() | Sort-Object { -$_.Value }
 $barWidth = 40
 
 Write-Host ""
-Write-Host ("Profiler Histogram — {0:N0} samples, {1:N0} unique functions" -f $totalSamples, $tally.Count)
+Write-Host ("Profiler Histogram -- {0:N0} samples, {1:N0} unique functions" -f $totalSamples, $tally.Count)
 Write-Host ""
 Write-Host ("{0,7} {1,6}  {2,-$barWidth} {3}" -f 'Samples', '%', '', 'Function')
 Write-Host ("{0,7} {1,6}  {2,-$barWidth} {3}" -f '-------', '------', ('-' * $barWidth), ('--------'))

@@ -28,7 +28,7 @@ directly applicable.
 - Worst-case expected probe complexity: **O(log δ⁻¹)**
 - Worst-case expected insertion time: **O(log δ⁻¹)**
 
-This is optimal — matching lower bound Ω(log δ⁻¹) for any
+This is optimal -- matching lower bound Ω(log δ⁻¹) for any
 non-reordering scheme (Theorem 5).
 
 Prior belief: O(1) amortized probes required reordering (Robin Hood,
@@ -43,7 +43,7 @@ cuckoo). This shows reordering is unnecessary.
 Greedy means: each element is placed during its own insert, no
 deferred decisions. This directly disproves Yao's conjecture.
 
-### Yao's Conjecture (1985) — Tightened
+### Yao's Conjecture (1985) -- Tightened
 
 Conjecture: any greedy open-addressed hash table must have worst-case
 expected probe complexity at least (1 − o(1))δ⁻¹.
@@ -51,7 +51,7 @@ expected probe complexity at least (1 − o(1))δ⁻¹.
 Funnel hashing achieves O(log² δ⁻¹) = o(δ⁻¹), showing Yao's specific
 bound was too pessimistic. But the structural insight survives: greedy
 IS provably constrained. The tight greedy lower bound is Ω(log² δ⁻¹)
-vs Ω(log δ⁻¹) for non-greedy — greedy is worse by a log factor.
+vs Ω(log δ⁻¹) for non-greedy -- greedy is worse by a log factor.
 Yao overclaimed on the exact floor, not on the fundamental limitation
 of greedy strategies.
 
@@ -59,9 +59,9 @@ of greedy strategies.
 
 | Scheme class | Worst-case expected | Amortized expected |
 |---|---|---|
-| Non-reordering | Ω(log δ⁻¹) | — |
-| Greedy | Ω(log² δ⁻¹) | — |
-| Greedy high-prob | Ω(log² δ⁻¹) w.p. > 1/2 | — |
+| Non-reordering | Ω(log δ⁻¹) | -- |
+| Greedy | Ω(log² δ⁻¹) | -- |
+| Greedy high-prob | Ω(log² δ⁻¹) w.p. > 1/2 | -- |
 
 ## Comparison to Classical Schemes
 
@@ -83,7 +83,7 @@ A₁, A₂, …, A_{⌈log n⌉} where |A_{i+1}| = |Aᵢ|/2 ± 1.
 
 Two-dimensional probe sequence: hash functions h_{i,j}(x) mapped to 1D
 via injection φ(i,j) ≤ O(i·j²). This separates insertion cost from
-search cost — an element placed via many insertion probes still has a
+search cost -- an element placed via many insertion probes still has a
 short search probe sequence.
 
 Insertions organized into batches maintaining load balance across
@@ -103,7 +103,7 @@ If all α levels fail, the final array uses two-part fallback:
 - Part B: uniform probing with log log n probe limit
 - Part C: two-choice hashing with buckets of size 2 log log n
 
-This is greedy — each element placed on insert, no deferred work.
+This is greedy -- each element placed on insert, no deferred work.
 
 ## Proof Techniques
 

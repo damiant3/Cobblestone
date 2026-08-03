@@ -1,4 +1,4 @@
-# ESP32-C6 — RISC-V IoT Target
+# ESP32-C6 -- RISC-V IoT Target
 
 **Source**: Espressif official product page
 **Role**: Primary RISC-V development target for Codex IoT
@@ -17,10 +17,10 @@
 
 ## Wireless
 
-- WiFi 6 (802.11ax) 2.4 GHz — OFDMA, MU-MIMO, TWT (target wake time)
+- WiFi 6 (802.11ax) 2.4 GHz -- OFDMA, MU-MIMO, TWT (target wake time)
 - Also 802.11b/g/n backward compatible
-- Bluetooth 5 LE — advertising extensions, coded PHY (long range)
-- 802.15.4 — Thread and Zigbee support (Matter-compatible)
+- Bluetooth 5 LE -- advertising extensions, coded PHY (long range)
+- 802.15.4 -- Thread and Zigbee support (Matter-compatible)
 
 ## Peripherals
 
@@ -65,7 +65,7 @@ reduces radio power by scheduling wake windows with the AP.
   (RISC-V machine timer via CLINT mtime/mtimecmp)
   - Resolution at 160 MHz: 6.25 ns per tick
   - Used for `[HardRealtime]` deadline monitoring on HP core
-- Flash-mapped execution (XIP) — different from RAM-loaded x86
+- Flash-mapped execution (XIP) -- different from RAM-loaded x86
 - Memory-mapped peripherals (GPIO, UART, etc. at fixed addresses)
 - ESP32-C6 Technical Reference Manual needed for register maps
   (available from Espressif: https://www.espressif.com/en/support/documents/technical-documents)

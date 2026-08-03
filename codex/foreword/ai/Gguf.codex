@@ -98,6 +98,116 @@ Section: Header
     in if magic /= gguf-magic then GgufHeader { gh-version = 0, gh-tensor-count = 0, gh-metadata-count = 0, gh-valid = False }
     else GgufHeader { gh-version = gguf-read-u32 data 4, gh-tensor-count = gguf-read-u64 data 8, gh-metadata-count = gguf-read-u64 data 16, gh-valid = True }
 
+Section: Metadata Walk
+
+ A real model file carries a key-value block between the header and the tensor
+ table, so a parser that cannot step over that block cannot reach a single
+ tensor. Until this section existed the chapter could read a header and nothing
+ after it, and the tensor-info reader had to be handed an offset by a caller
+ that had no way to compute one.
+
+ Every value is self-describing: a type tag, then either a fixed width, a
+ length-prefixed string, or an array of one of those. An unrecognised shape
+ answers negative one and every caller propagates it, because a metadata block
+ walked wrongly lands the tensor table at an offset that parses into plausible
+ garbage rather than failing.
+
+  gguf-vtype-uint8 : Integer = 0
+  gguf-vtype-int8 : Integer = 1
+  gguf-vtype-uint16 : Integer = 2
+  gguf-vtype-int16 : Integer = 3
+  gguf-vtype-bool : Integer = 7
+  gguf-vtype-uint64 : Integer = 10
+  gguf-vtype-int64 : Integer = 11
+  gguf-vtype-float64 : Integer = 12
+
+  gguf-header-bytes : Integer = 24
+
+  gguf-scalar-width : Integer -> Integer
+  gguf-scalar-width (vtype) =
+    if vtype == 0 then 1
+    else if vtype == 1 then 1
+    else if vtype == 2 then 2
+    else if vtype == 3 then 2
+    else if vtype == 4 then 4
+    else if vtype == 5 then 4
+    else if vtype == 6 then 4
+    else if vtype == 7 then 1
+    else if vtype == 10 then 8
+    else if vtype == 11 then 8
+    else if vtype == 12 then 8
+    else -1
+
+  gguf-value-bytes : List Integer, Integer, Integer -> Integer
+  gguf-value-bytes (data) (off) (vtype) =
+    if vtype == gguf-vtype-string then 8 + gguf-read-u64 data off
+    else if vtype == gguf-vtype-array then gguf-array-bytes data off
+    else gguf-scalar-width vtype
+
+  gguf-array-bytes : List Integer, Integer -> Integer
+  gguf-array-bytes (data) (off) =
+    let elem-type = gguf-read-u32 data off
+    in let count = gguf-read-u64 data (off + 4)
+    in let w = gguf-scalar-width elem-type
+    in if w >= 0 then 12 + count * w
+    else if elem-type == gguf-vtype-string
+      then 12 + gguf-array-string-bytes data (off + 12) count 0
+    else -1
+
+  gguf-array-string-bytes : List Integer, Integer, Integer, Integer -> Integer
+  gguf-array-string-bytes (data) (off) (count) (acc) =
+    if count <= 0 then acc
+    else let n = 8 + gguf-read-u64 data (off + acc)
+    in gguf-array-string-bytes data off (count - 1) (acc + n)
+
+  gguf-kv-bytes : List Integer, Integer -> Integer
+  gguf-kv-bytes (data) (off) =
+    let key-len = gguf-read-u64 data off
+    in let vtype-off = off + 8 + key-len
+    in let vtype = gguf-read-u32 data vtype-off
+    in let vb = gguf-value-bytes data (vtype-off + 4) vtype
+    in if vb < 0 then -1 else 12 + key-len + vb
+
+  gguf-skip-metadata : List Integer, Integer, Integer -> Integer
+  gguf-skip-metadata (data) (off) (remaining) =
+    if remaining <= 0 then off
+    else if off >= list-length data then -1
+    else let n = gguf-kv-bytes data off
+    in if n < 0 then -1
+    else gguf-skip-metadata data (off + n) (remaining - 1)
+
+  gguf-tensor-info-offset : List Integer -> Integer
+  gguf-tensor-info-offset (data) =
+    let h = gguf-parse-header data
+    in if h.gh-valid == False then -1
+    else gguf-skip-metadata data gguf-header-bytes (h.gh-metadata-count)
+
+ A model announces what it is in its own metadata. gguf-metadata-text answers a
+ string-valued key, or the empty text when the key is absent or holds something
+ other than a string, so a caller reporting an architecture is quoting the file
+ rather than its own expectation.
+
+  gguf-metadata-text : List Integer, Text -> Text
+  gguf-metadata-text (data) (key) =
+    let h = gguf-parse-header data
+    in if h.gh-valid == False then ""
+    else gguf-md-scan data gguf-header-bytes (h.gh-metadata-count) key
+
+  gguf-md-scan : List Integer, Integer, Integer, Text -> Text
+  gguf-md-scan (data) (off) (remaining) (key) =
+    if remaining <= 0 then ""
+    else let k = gguf-read-string data off
+    in let vtype-off = off + k.gs-total-bytes
+    in let vtype = gguf-read-u32 data vtype-off
+    in let vb = gguf-value-bytes data (vtype-off + 4) vtype
+    in if vb < 0 then ""
+    else if k.gs-text == key
+      then if vtype == gguf-vtype-string
+        then let v = gguf-read-string data (vtype-off + 4)
+             in v.gs-text
+        else ""
+    else gguf-md-scan data (vtype-off + 4 + vb) (remaining - 1) key
+
 Section: Tensor Info
   GgufTensorInfo = record {
     gti-name : Text,

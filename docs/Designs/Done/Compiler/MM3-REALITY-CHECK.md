@@ -67,14 +67,14 @@ current 220 MB peak reflects:
 | Optimization | Estimated savings |
 |--------------|-------------------|
 | Capacity-aware lists (geometric doubling) | ~900 MB (O(N^2) to O(N)) |
-| Scalar region reclamation | Continuous — reclaims intermediate integers/booleans |
+| Scalar region reclamation | Continuous -- reclaims intermediate integers/booleans |
 | Bulk offset scanning (Phase 0) | ~4.3 MB dead LexState records |
 | In-place list-insert-at + min capacity 4 | ~96 bytes per small list |
 | TCO heap reset (Phase 2a) | Reclaims per-iteration garbage in scanner loops |
 | TCO record decomposition (Phase 2b) | Enables reset for tokenize-loop, parser loops |
 | ListType safety fix | Prevents use-after-free from in-place list-snoc |
 
-The 220 MB that remains is **live data** — it must exist simultaneously:
+The 220 MB that remains is **live data** -- it must exist simultaneously:
 
 - Token list: ~15K tokens with string data
 - Full AST: thousands of Expr/Pat/TypeExpr nodes

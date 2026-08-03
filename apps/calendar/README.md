@@ -12,8 +12,8 @@ A calendar application with sidebar mini-calendar, multi-calendar folder list, a
 
 ## Completeness
 
-55% — All four views render with plausible sample data and view-switching is live. Mini-calendar and folder list are complete. Date navigation (prev/next/today) declared but not implemented (month hardcoded as June 2026). Event creation, folder toggling, and event detail drill-down are absent. All event data is hardcoded.
+55% -- All four views render with plausible sample data and view-switching is live. Mini-calendar and folder list are complete. Date navigation (prev/next/today) declared but not implemented (month hardcoded as June 2026). Event creation, folder toggling, and event detail drill-down are absent. All event data is hardcoded.
 
 ## Codex Conformance
 
-Full — Pure Codex throughout. Theme, CSS, and widget tree follow the established foreword pattern.
+Full -- Pure Codex throughout. Theme, CSS, and widget tree follow the established foreword pattern.

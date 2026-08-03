@@ -2,14 +2,14 @@
 
 **Status**: Direction and time-boxing SHIPPED. Scope enforced on direct
 calls, computed paths, and callee narrowing (CDX4002, ring 1, 2026-07-13);
-the indirect route through an unscoped helper is OPEN — see below.
+the indirect route through an unscoped helper is OPEN -- see below.
 **Date**: 2026-03-26 (status refreshed 2026-07-13)
 
 | Axis | State |
 |---|---|
 | **1. Direction** (dotted sub-effects) | **SHIPPED.** `capability-vocabulary` in `codex/compiler/Types/TypeChecker.codex` (~3150) names `Console.Read`/`Console.Write`, `FileSystem.Read`/`FileSystem.Write`, `Network.Read`/`Network.Write`, `Gpu.Compute`/`Gpu.Memory`. The sub-effect lattice is `effect-covered-by` / `find-dot` (~812-827): a declared `FileSystem` covers a body's `FileSystem.Read`, but not the reverse. Violations are CDX2031. Tests: `codex/test/errors/effect-dotted-allow.codex` and `effect-dotted-deny.codex`. |
 | **2. Scope** (path/host parameterization) | **RING 1 SHIPPED.** CDX4002 fires on a direct call outside its grant, on a computed path, and on a callee declaring a wider scope. The indirect route through an unscoped helper is OPEN. Filesystem paths only; network host/port is not wired. See below. |
-| **3. Time-boxing** | **SHIPPED.** `with-timeout` is real syntax — `AWithTimeoutExpr` threads through 7 compiler files (Lexer, Parser, ParserCore, ParserExpressions, TypeChecker, CodexEmitter, IRTextEmitter). Test: `codex/test/with-timeout-test.codex`. |
+| **3. Time-boxing** | **SHIPPED.** `with-timeout` is real syntax -- `AWithTimeoutExpr` threads through 7 compiler files (Lexer, Parser, ParserCore, ParserExpressions, TypeChecker, CodexEmitter, IRTextEmitter). Test: `codex/test/with-timeout-test.codex`. |
 
 ## Scope enforcement: what CDX4002 now catches, and what it does not
 
@@ -23,7 +23,7 @@ claimed "there is no CDX4002 anywhere in the tree." That was wrong.
 in `CdxCodes.codex` all along, with the description "An effect
 operation's argument is outside the granted scope for that capability."
 It was simply never raised. A diagnostic that exists, reads correctly,
-and fires nowhere is worse than a missing one — it makes the grep for
+and fires nowhere is worse than a missing one -- it makes the grep for
 "is this enforced?" come back green.
 
 ### Closed
@@ -31,12 +31,12 @@ and fires nowhere is worse than a missing one — it makes the grep for
 | Route | Behaviour |
 |---|---|
 | **Direct call outside scope** | `file-exists "/etc/passwd"` under `[FileSystem.Read "/config/"]` is CDX4002. Pinned by `codex/test/errors/scope-violation`. |
-| **Computed path** | `file-exists (sneak "")` is CDX4002 — the compiler cannot prove where a path it did not read will point, and a scope that admits the unprovable is not a scope. Pass a literal, or widen the declaration. |
+| **Computed path** | `file-exists (sneak "")` is CDX4002 -- the compiler cannot prove where a path it did not read will point, and a scope that admits the unprovable is not a scope. Pass a literal, or widen the declaration. |
 | **Callee declares a wider scope** | A callee declared over `"/etc/"` called from a caller granted `"/config/"` is CDX4002. A scope may narrow, never widen; a caller cannot delegate authority it was never granted. |
 | **Narrowing** | `"/config/sub/deep.toml"` under a `"/config/"` grant compiles. Pinned by `codex/test/scope-allow`. |
 | **No scope declared** | Unaffected. An empty scope is unrestricted and covers everything; the whole check is gated on some label actually carrying a scope, so no existing program changes behaviour. |
 
-### The indirect route — closed 2026-07-13
+### The indirect route -- closed 2026-07-13
 
 The first cut of this check left one route open: a helper that declared
 no scope of its own laundered the access, because `read-file`,
@@ -68,14 +68,14 @@ end
 ```
 
 A callee with no scope may touch anything, and under a narrowed grant
-that is a widening — the caller cannot hand on authority it was never
+that is a widening -- the caller cannot hand on authority it was never
 given. So an unscoped callee is not skipped, it is *measured*, and its
 empty scope fails to sit inside a narrowed grant exactly as `"/etc/"`
 would. That is what makes a scope survive an indirect call.
 
 **A consequence worth knowing.** A scoped function may only reach its
 resources through *literal* paths. Threading a path parameter through a
-function that declares a scope is not provable and is refused — declare
+function that declares a scope is not provable and is refused -- declare
 the scope at the boundary where the literal is known, or widen the
 grant. This is a real restriction, and it is sound: a function that
 accepts an arbitrary path while promising `/config/` is promising
@@ -84,7 +84,7 @@ something it cannot keep.
 ### Implementation as built
 
 - `UnificationState.scope-grants` holds the labels the def under check
-  declares — per-def context set once at the def boundary, like
+  declares -- per-def context set once at the def boundary, like
   `effect-exempt`. It is never threaded through unification.
 - `lint-effect-scope` runs at every application in `infer-application`,
   and short-circuits on `row-any-scoped` before doing anything, so it
@@ -101,8 +101,8 @@ something it cannot keep.
 Runtime enforcement (scope data in the process capability table, checked
 at the syscall boundary) remains a later ring and is not blocking.
 
-Everything else in this document — the direction markers, the dotted
-vocabulary, `with-timeout` — is already in the compiler. Read the
+Everything else in this document -- the direction markers, the dotted
+vocabulary, `with-timeout` -- is already in the compiler. Read the
 sections below as background on *why* scope is shaped the way it is,
 not as a to-do list.
 
@@ -123,7 +123,7 @@ The Codex effect/capability system is operational at three levels:
    `CAP_CONCURRENT`. Denied syscalls return -1.
 
 (This section describes the 2026-03-26 starting point. Direction and
-time-boxing have since been built — see the status table at the top.)
+time-boxing have since been built -- see the status table at the top.)
 
 What was missing: the capabilities were **all-or-nothing**. If a process had
 `CAP_FILESYSTEM`, it could read and write any file. If it had `CAP_NETWORK`,
@@ -132,7 +132,7 @@ in `/data/` but not `/etc/`" or "this network call can only reach `api.example.c
 or "this capability expires after 30 seconds."
 
 Direction and expiry are now expressible. **Path and host scope still
-are not** — that is the one axis left.
+are not** -- that is the one axis left.
 
 ---
 
@@ -171,7 +171,7 @@ and the OS enforce the distinction at the syscall level.
 
 ### 2. Scope
 
-Capabilities should be **parameterized** — not "can access the filesystem"
+Capabilities should be **parameterized** -- not "can access the filesystem"
 but "can access these specific paths."
 
 **Current**: `[FileSystem] Text` grants access to all files.
@@ -213,7 +213,7 @@ call any API. Scope is how you say exactly what a capability allows.
 
 ### 3. Time-boxing
 
-Capabilities should **expire** — not "can write to the log forever" but
+Capabilities should **expire** -- not "can write to the log forever" but
 "can write to the log for the next 5 seconds."
 
 **Current**: Capabilities are granted at process creation and never change.
@@ -232,12 +232,12 @@ with-timeout 30 [Network] do
   Desugars to a capability grant + timer + revocation.
 - **Type level**: `EffectfulType` gains an optional `Timeout` field. The
   type checker ensures time-boxed capabilities don't escape their scope
-  (a closure capturing a time-boxed capability would be an error — connects
+  (a closure capturing a time-boxed capability would be an error -- connects
   to linear closure analysis).
 - **Runtime (bare metal)**: The process capability table gains a "valid until"
   tick count per capability bit. The syscall handler compares against the
   system tick counter. Expired capabilities are automatically denied.
-  `SYS_GET_TICKS` already exists — the infrastructure is in place.
+  `SYS_GET_TICKS` already exists -- the infrastructure is in place.
 
 **Why it matters**: Time-boxing prevents capability leaks. If a function is
 supposed to do one HTTP call, it shouldn't hold the network capability
@@ -259,14 +259,14 @@ with-timeout 10 [FileSystem.Read "/config/"] do
 This says: "for the next 10 seconds, this computation can read files under
 `/config/`, but not write, and not access anything outside that directory."
 
-The type of this expression is pure (no residual effects) — the `with-timeout`
+The type of this expression is pure (no residual effects) -- the `with-timeout`
 handler eliminates the `[FileSystem.Read "/config/"]` effect.
 
 ---
 
 ## Connection to Existing Systems
 
-**Linear closures (Step 4)**: A time-boxed capability is inherently linear —
+**Linear closures (Step 4)**: A time-boxed capability is inherently linear --
 it must be consumed before it expires. The closure escape analysis ensures
 that a closure capturing a time-boxed capability is used exactly once and
 within the time window. This is the same `linear` function type mechanism
@@ -303,9 +303,9 @@ Both lattices share the same properties:
 - **Multi-dimensional**: Trust is not a single number. A capability is not
   a single bit. Both are profiles across multiple axes.
 - **Transitive with decay**: If I trust Alice and Alice trusts Bob's code,
-  I have indirect trust in Bob's code — but less. If `main` grants
+  I have indirect trust in Bob's code -- but less. If `main` grants
   `[IO "/data/"]` and calls `process-file`, that function inherits a
-  narrower scope — never wider.
+  narrower scope -- never wider.
 - **Threshold-gated**: The repository rejects facts below a trust threshold
   at build time. The capability system rejects operations outside scope at
   compile time (CDX4002) or runtime (syscall denied).
@@ -331,7 +331,7 @@ The chain: **author vouches for code → code gets trust score → trust score
 determines granted capabilities → capabilities gate runtime operations.**
 
 This means the dotted-name problem (`FileSystem.Read.CDrive.Config`) dissolves.
-Capabilities aren't names in a hierarchy — they're **positions in the trust
+Capabilities aren't names in a hierarchy -- they're **positions in the trust
 lattice**. The lattice dimensions are:
 
 ```
@@ -361,20 +361,20 @@ One lattice. Three layers.
 
 | Step | What | State |
 |------|------|-------|
-| ~~1~~ | ~~Direction markers in effect syntax~~ | **DONE** — dotted names parse and type-check |
-| ~~2~~ | ~~Direction-aware capability checker~~ | **DONE** — `capability-vocabulary` + `effect-covered-by`, CDX2031 |
-| ~~3~~ | ~~Split bare metal CAP bits (Read/Write)~~ | **DONE** — the vocabulary maps to cap ids via `manifest-cap-id` |
+| ~~1~~ | ~~Direction markers in effect syntax~~ | **DONE** -- dotted names parse and type-check |
+| ~~2~~ | ~~Direction-aware capability checker~~ | **DONE** -- `capability-vocabulary` + `effect-covered-by`, CDX2031 |
+| ~~3~~ | ~~Split bare metal CAP bits (Read/Write)~~ | **DONE** -- the vocabulary maps to cap ids via `manifest-cap-id` |
 | 4 | Compile-time scope checking (CDX4002) | **RING 1 SHIPPED 2026-07-13.** Direct calls, computed paths, and callee narrowing are enforced. The indirect route through an unscoped helper is open and blocked on the builtins carrying honest effect rows. |
-| ~~5~~ | ~~Scope in EffectfulType~~ | **DONE (carried, not checked)** — `EffectfulTy effs scopes inner`, `EffectLabel.scope`. The slot is there; step 4 is what reads it. |
-| **6** | **Runtime scope enforcement** | Open. Depends on step 4. Not blocking — compile-time first. |
-| ~~7~~ | ~~`with-timeout` syntax + semantics~~ | **DONE** — `AWithTimeoutExpr` across 7 compiler files |
+| ~~5~~ | ~~Scope in EffectfulType~~ | **DONE (carried, not checked)** -- `EffectfulTy effs scopes inner`, `EffectLabel.scope`. The slot is there; step 4 is what reads it. |
+| **6** | **Runtime scope enforcement** | Open. Depends on step 4. Not blocking -- compile-time first. |
+| ~~7~~ | ~~`with-timeout` syntax + semantics~~ | **DONE** -- `AWithTimeoutExpr` across 7 compiler files |
 | ~~8~~ | ~~Runtime time-boxing (tick-based expiry)~~ | **DONE** |
 
 The whole remaining plan is step 4, then step 6.
 
 Note on step 5: it is listed done because the type *carries* the scope,
 which is what the step asked for. It is not enforcement. The
-distinction is exactly the trap this document's old status hid — a
+distinction is exactly the trap this document's old status hid -- a
 field that is populated and never read looks like a shipped feature
 from every angle except the one that matters.
 
@@ -446,9 +446,9 @@ main = with-timeout 5 [FileSystem.Read "/config/"] do
 
 See `docs/Reference/IRISA_Research_Harvest.md` for full context.
 
-### SOTERN — Intent-Based Security
+### SOTERN -- Intent-Based Security
 
-The SOTERN team (IRISA D2) studies "intent-based security" —
+The SOTERN team (IRISA D2) studies "intent-based security" --
 expressing security policies as high-level intents that the system
 enforces automatically. Instead of writing explicit capability
 grants, the user states an intent ("only signed code runs", "no
@@ -462,5 +462,5 @@ verifies against the capability lattice. Example: a CPL assertion
 `intent: no function with Network capability may access identity
 keys` would be checked against the capability refinement lattice at
 compile time. This connects the prose layer (V2 narration) to the
-capability system — security policies become load-bearing prose,
+capability system -- security policies become load-bearing prose,
 not comments.

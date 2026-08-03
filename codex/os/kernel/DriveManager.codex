@@ -1,6 +1,7 @@
 Chapter: DriveManager
   cites Foreword chapter Maybe
   cites Foreword chapter Gpt
+  cites Foreword chapter Fat16
   cites Foreword chapter Fat32
   grounds Device.Block
 
@@ -13,7 +14,8 @@ Chapter: DriveManager
  To dm-inspect-drive gives DriveInspection for a selected drive.
  To dm-format-partition formats a partition as FAT32 or Codex FS.
  To dm-partition-drive writes a fresh GPT with the given scheme.
- To dm-install-codex installs Codex to a target drive from the USB stick.
+ To dm-install-to-drive installs Codex from one drive onto another, answering
+ which link failed.
  To dm-wipe-quick zeros GPT headers on a drive.
 
  We say:
@@ -177,9 +179,33 @@ Section: Filesystem Detection
 
 Section: Partition Drive
 
+ The ESP was a flat 1048576 sectors, 512 MB, with no relation to the drive it
+ was being written to. On anything smaller than that the partition does not fit
+ in the medium it describes, and the install went ahead and formatted it
+ anyway. Half the drive, capped at the old 512 MB and floored at 4 MB, keeps
+ the layout the same on the sticks this was written for and gives a small
+ target something it can actually hold.
+
+  dm-esp-max-sectors : Integer = 1048576
+  dm-esp-min-sectors : Integer = 8192
+
+  dm-esp-sectors-for : Integer -> Integer
+  dm-esp-sectors-for (total-sectors) =
+    let half = total-sectors / 2
+    in if half > dm-esp-max-sectors then dm-esp-max-sectors
+    else if half < dm-esp-min-sectors then dm-esp-min-sectors
+    else half
+
+ The second partition carries the FACT STORE type GUID and not the generic
+ basic-data one. That is what DiskFacts looks for, and it is the whole
+ difference between a stick that can persist a fact and one where the store
+ refuses because it can find no region of its own. It was basic-data while
+ the store addressed absolute sectors, which is to say while it could not
+ use a partition at all.
+
   dm-partition-esp-plus-data : Integer, List Integer -> Boolean
   dm-partition-esp-plus-data (total-sectors) (disk-guid) =
-    let esp-sectors = 1048576
+    let esp-sectors = dm-esp-sectors-for total-sectors
     in let specs = [
       GptPartitionSpec {
         gs-type-guid = gpt-esp-type-guid,
@@ -187,8 +213,8 @@ Section: Partition Drive
         gs-size-sectors = esp-sectors
       },
       GptPartitionSpec {
-        gs-type-guid = gpt-basic-data-guid,
-        gs-name = "Codex Data",
+        gs-type-guid = gpt-codex-facts-guid,
+        gs-name = "Codex Facts",
         gs-size-sectors = 0
       }
     ]
@@ -198,8 +224,8 @@ Section: Partition Drive
   dm-partition-single (total-sectors) (disk-guid) =
     let specs = [
       GptPartitionSpec {
-        gs-type-guid = gpt-basic-data-guid,
-        gs-name = "Codex",
+        gs-type-guid = gpt-codex-facts-guid,
+        gs-name = "Codex Facts",
         gs-size-sectors = 0
       }
     ]
@@ -213,43 +239,180 @@ Section: Format Partition
 
 Section: Install Codex
 
-  dm-install-codex : DriveInfo, Integer, Fat32Volume -> Boolean
-  dm-install-codex (target) (stick-drive-index) (stick-vol) =
-    let w0 = block-select (target.di-index)
-    in let disk-guid = [42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42]
-    in let w1 = dm-partition-esp-plus-data (target.di-sector-count) disk-guid
-    in when gpt-read
-      is None -> False
-      is Just (disk) ->
-        if disk.gd-partition-count < 2 then False
-        else let esp = list-at (disk.gd-partitions) 0
-        in let esp-start = esp.gp-start-lba
-        in let esp-sectors = (esp.gp-end-lba) - esp-start + 1
-        in let w2 = fat32-format esp-start esp-sectors "CODEX OS"
-        in let target-vol = fat32-init esp-start
-        in let w3 = dm-copy-boot-files stick-drive-index stick-vol target-vol (target.di-index)
-        in True
+ There were two installers and neither could work. This one, which the chapter
+ header advertises, had no caller at all and read the source through FAT32,
+ which the images `build/build-boot-img.ps1` produces are not. The one the
+ DevConsole actually ran reimplemented it inline and parsed the SOURCE
+ volume's boot sector while the TARGET was still selected, one line before it
+ selected the source. Neither could be observed until 2026-07-27, because
+ `block-select` did nothing and every position on the bus was the same disk.
 
-  dm-copy-boot-files : Integer, Fat32Volume, Fat32Volume, Integer -> Integer
-  dm-copy-boot-files (src-drive) (src-vol) (dst-vol) (dst-drive) =
-    let w0 = block-select src-drive
-    in let kernel = fat32-read-bytes src-vol "EFI/BOOT/BOOTX64.EFI"
-    in let w1 = block-select dst-drive
-    in when kernel
-      is Just (data) ->
-        let w2 = fat32-mkdir dst-vol (dst-vol.f32-root-cluster) "EFI"
-        in let efi-entry = fat32-find-in-dir dst-vol (dst-vol.f32-root-cluster) "EFI"
-        in when efi-entry
-          is Just (efi-dir) ->
-            let w3 = fat32-mkdir dst-vol (efi-dir.de-cluster) "BOOT"
-            in let boot-entry = fat32-find-in-dir dst-vol (efi-dir.de-cluster) "BOOT"
-            in when boot-entry
-              is Just (boot-dir) ->
-                let w4 = fat32-write-file dst-vol "EFI/BOOT/BOOTX64.EFI" data
-                in 1
-              is None -> 0
-          is None -> 0
-      is None -> 0
+ So this is one function, it is the one the menu calls, and it says which link
+ failed rather than answering a bare Boolean. The old one discarded the result
+ of the copy and returned True regardless, which is the reading that would have
+ hidden all of this the moment the drives became real.
+
+ The source is read through whichever filesystem its ESP actually carries. A
+ stick built by `build-boot-img.ps1` is FAT16; one built with `-Fat32`, or any
+ volume past 2 GB, is not. Assuming either one is how the dead path stayed
+ plausible.
+
+  dm-install-ok : Integer = 1
+  dm-install-no-gpt : Integer = 0
+  dm-install-few-partitions : Integer = -1
+  dm-install-no-source : Integer = -2
+  dm-install-no-boot-file : Integer = -3
+  dm-install-no-target-dir : Integer = -4
+  dm-install-write-failed : Integer = -5
+
+  dm-install-status-text : Integer -> Text
+  dm-install-status-text (code) =
+    if code == dm-install-ok then "installed"
+    else if code == dm-install-no-gpt then "could not create a GPT on the target"
+    else if code == dm-install-few-partitions then "the new GPT has fewer than two partitions"
+    else if code == dm-install-no-source then "the source drive has no EFI system partition"
+    else if code == dm-install-no-boot-file then "the source has no EFI/BOOT/BOOTX64.EFI"
+    else if code == dm-install-no-target-dir then "could not create EFI/BOOT on the target"
+    else if code == dm-install-write-failed then "the boot image did not write to the target"
+    else "unknown install status " & show code
+
+  dm-esp-is-fat32 : Integer -> [Device.Block] Boolean
+  dm-esp-is-fat32 (start-lba) = act
+    buf <- block-read-sector start-lba
+    dm-read-oem buf == "FAT32   "
+  end
+
+  dm-boot-image-path : Text = "EFI/BOOT/BOOTX64.EFI"
+  dm-seed-path : Text = "CODEX.CDX"
+  dm-source-path : Text = "SOURCE.SRC"
+
+  dm-read-source-file : Integer, Text -> [Device.Block] Maybe (List Integer)
+  dm-read-source-file (src-drive) (path) = act
+    w <- block-select src-drive
+    gpt <- gpt-read
+    when gpt
+      is None -> None
+      is Just (disk) -> dm-read-source-from disk path
+  end
+
+  dm-read-source-from : GptDisk, Text -> [Device.Block] Maybe (List Integer)
+  dm-read-source-from (disk) (path) =
+    when dm-find-esp disk
+      is None -> None
+      is Just (esp) -> dm-read-source-at (esp.gp-start-lba) path
+
+  dm-read-source-at : Integer, Text -> [Device.Block] Maybe (List Integer)
+  dm-read-source-at (start-lba) (path) = act
+    is32 <- dm-esp-is-fat32 start-lba
+    if is32 then act
+      v32 <- fat32-init start-lba
+      fat32-read-bytes v32 path
+    end
+    else act
+      v16 <- fat16-init start-lba
+      fat16-read-bytes v16 path
+    end
+  end
+
+  dm-read-boot-image : Integer -> [Device.Block] Maybe (List Integer)
+  dm-read-boot-image (src-drive) = dm-read-source-file src-drive dm-boot-image-path
+
+ A stick that boots and cannot verify or rebuild itself is not what this
+ project promises anyone, so the install carries the seed and the source text
+ as well as the boot image. The boot image is required and its absence refuses
+ the install; the other two are copied when the source has them, because a
+ machine installing from a stick that was itself built without them should
+ still get a bootable target rather than nothing.
+
+  dm-install-to-drive : Integer, Integer -> [Device.Block] Integer
+  dm-install-to-drive (target-index) (src-index) = act
+    boot <- dm-read-boot-image src-index
+    when boot
+      is None -> dm-install-no-boot-file
+      is Just (data) -> dm-install-with-boot target-index src-index data
+  end
+
+  dm-install-with-boot : Integer, Integer, List Integer -> [Device.Block] Integer
+  dm-install-with-boot (target-index) (src-index) (data) = act
+    code <- dm-install-write-target target-index data
+    if code /= dm-install-ok then code
+    else dm-install-extras target-index src-index
+  end
+
+  dm-install-extras : Integer, Integer -> [Device.Block] Integer
+  dm-install-extras (target-index) (src-index) = act
+    seed <- dm-read-source-file src-index dm-seed-path
+    a <- dm-copy-optional target-index seed dm-seed-path
+    src <- dm-read-source-file src-index dm-source-path
+    b <- dm-copy-optional target-index src dm-source-path
+    if a & b then dm-install-ok else dm-install-write-failed
+  end
+
+  dm-copy-optional : Integer, Maybe (List Integer), Text -> [Device.Block] Boolean
+  dm-copy-optional (target-index) (payload) (path) =
+    when payload
+      is None -> True
+      is Just (data) -> dm-copy-to-target target-index data path
+
+  dm-copy-to-target : Integer, List Integer, Text -> [Device.Block] Boolean
+  dm-copy-to-target (target-index) (data) (path) = act
+    w <- block-select target-index
+    gpt <- gpt-read
+    when gpt
+      is None -> False
+      is Just (disk) -> dm-copy-to-esp disk data path
+  end
+
+  dm-copy-to-esp : GptDisk, List Integer, Text -> [Device.Block] Boolean
+  dm-copy-to-esp (disk) (data) (path) =
+    when dm-find-esp disk
+      is None -> False
+      is Just (esp) -> act
+        vol <- fat32-init (esp.gp-start-lba)
+        fat32-write-file vol path data
+      end
+
+ The source is read BEFORE the target is touched. Partitioning first and
+ discovering afterwards that there is nothing to install leaves the target
+ wiped, which is the worst answer available: the old inline path did exactly
+ that.
+
+  dm-install-write-target : Integer, List Integer -> [Device.Block] Integer
+  dm-install-write-target (target-index) (data) = act
+    w <- block-select target-index
+    count <- block-sector-count
+    let disk-guid = [42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42]
+    in act
+      part <- dm-partition-esp-plus-data count disk-guid
+      gpt <- gpt-read
+      when gpt
+        is None -> dm-install-no-gpt
+        is Just (disk) -> dm-install-format-and-write disk data
+    end
+  end
+
+  dm-install-format-and-write : GptDisk, List Integer -> [Device.Block] Integer
+  dm-install-format-and-write (disk) (data) =
+    if disk.gd-partition-count < 2 then dm-install-few-partitions
+    else let esp = list-at (disk.gd-partitions) 0
+    in let esp-start = esp.gp-start-lba
+    in let esp-sectors = (esp.gp-end-lba) - esp-start + 1
+    in act
+      fmt <- dm-format-fat32 esp-start esp-sectors "CODEX OS"
+      vol <- fat32-init esp-start
+      dm-install-place-file vol data
+    end
+
+ `fat32-write-file` walks the path and creates the directories it needs, so the
+ mkdir-then-find-then-mkdir dance both installers performed was redundant. It
+ was also the thing that failed: it is the older interface, from before
+ `fat32-ensure-parent-dirs` existed, and nothing had run it since.
+
+  dm-install-place-file : Fat32Volume, List Integer -> [Device.Block] Integer
+  dm-install-place-file (vol) (data) = act
+    ok <- fat32-write-file vol "EFI/BOOT/BOOTX64.EFI" data
+    if ok then dm-install-ok else dm-install-write-failed
+  end
 
 Section: Dual-Boot Install
 
@@ -357,11 +520,9 @@ Section: Dual-Boot Install
             in if free-secs < 2048 then DualBootFail ("Not enough free space: " & show (free-secs / 2048) & " MB")
             else let backup-start = disk.gd-total-sectors - 33
             in let codex-end = backup-start - 1
-            in let w0 = dm-add-gpt-partition free-start codex-end gpt-basic-data-guid "Codex Data"
+            in let w0 = dm-add-gpt-partition free-start codex-end gpt-codex-facts-guid "Codex Facts"
             in let esp-vol = fat32-init (esp.gp-start-lba)
-            in let w1 = block-select src-drive-index
-            in let src-vol = fat16-init uefi-partition-start
-            in let kernel = fat16-read-bytes src-vol "BOOTX64.EFI"
+            in let kernel = dm-read-boot-image src-drive-index
             in let w2 = block-select (drive.di-index)
             in when kernel
               is Just (data) ->

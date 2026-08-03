@@ -8,7 +8,7 @@ hierarchies as ad-hoc grouping functions. Every page duplicates the
 nav, the dropdown CSS, the state management pattern. Adding an item
 type means editing prompt strings. Adding a dimension means touching
 the controls, the state init, the pick callback, the prompt builder,
-and the CSS — in every page.
+and the CSS -- in every page.
 
 This is the same mistake as writing x86 by hand instead of going
 through IR. We need an intermediate representation for UI that the
@@ -29,7 +29,7 @@ Layer 2: UI IR (widget tree + theme, in codex.foreword.ui)
    WidgetNode tree built from data
    Theme applied for colors/borders/spacing
    Layout computed by flex/grid engine
-   No HTML, no CSS, no JS — pure structure + style
+   No HTML, no CSS, no JS -- pure structure + style
 
 Layer 3: Plug renderers (target-specific)
    HTML plug: WidgetNode -> DOM elements + CSS + event wiring

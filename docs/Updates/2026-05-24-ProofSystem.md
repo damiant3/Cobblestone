@@ -1,4 +1,4 @@
-# Proof System and Dependent Types — 2026-05-24
+# Proof System and Dependent Types -- 2026-05-24
 
 Codex now has dependent types, a static bounds prover, and proof erasure.
 Twenty CLs across two days, all gates green, new seed installed.
@@ -9,7 +9,7 @@ Twenty CLs across two days, all gates green, new seed installed.
 
 Types can carry values. The `===` operator in type position creates a
 propositional equality type (`PropEqTy`). The unifier verifies proof
-terms structurally — an invalid proof is a compile-time type error.
+terms structurally -- an invalid proof is a compile-time type error.
 
 ```codex
   nil-eq : Nil === Nil
@@ -30,7 +30,7 @@ Proof terms with real dependent types:
 
 ### Proof Erasure
 
-All proof-typed definitions are erased at emit time — zero machine code.
+All proof-typed definitions are erased at emit time -- zero machine code.
 The compiler reports each erasure via CDX4020. The `Proof` type name is
 first-class: functions can accept and return proofs.
 
@@ -106,7 +106,7 @@ New seed installed. CDX fixed point verified.
 ## What's Next
 
 The proof system is complete for this milestone. The next chapter:
-- Pi types: `(x : A) -> B(x)` — general dependent function types
+- Pi types: `(x : A) -> B(x)` -- general dependent function types
 - Type-level normalizer: evaluate arithmetic in types
 - Parametric claims: `claim name (params) : prop`
 - CDX proof section: embed verified proofs in the binary

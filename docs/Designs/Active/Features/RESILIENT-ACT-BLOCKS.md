@@ -1,4 +1,4 @@
-# Resilient Act Blocks — Strategy, Retry, and Escalation
+# Resilient Act Blocks -- Strategy, Retry, and Escalation
 
 **Date**: 2026-05-09
 **Author**: Cam (Opus 4.6, agent)
@@ -42,12 +42,12 @@ timeout budgets in procedural code. That logic belongs in the language.
 
 ## The Two Axes
 
-### Axis 1 — Operation
+### Axis 1 -- Operation
 
 The *what*: log, notify, persist, fetch, connect. Each operation has a
-set of possible implementations — strategies — ranked by preference.
+set of possible implementations -- strategies -- ranked by preference.
 
-### Axis 2 — Criticality
+### Axis 2 -- Criticality
 
 The *how much it matters*: a debug trace that fails to log is ignorable.
 An audit event that fails to log is a halt-the-world problem. The
@@ -152,7 +152,7 @@ gain inline resilience syntax:
 `falling back to` introduces an alternative block.
 `on failure` is the final handler if all attempts are exhausted.
 
-This desugars to a strategy + plan internally — the inline form is
+This desugars to a strategy + plan internally -- the inline form is
 syntactic sugar, not a separate mechanism.
 
 ### Criticality Inference from Context
@@ -191,7 +191,7 @@ provides the retry/fallback logic. These are orthogonal.
 
 Resolution plans respect capability refinement (direction, scope,
 time-boxing). A strategy arm that needs `[FileSystem.Write "/logs/"]`
-will fail cleanly if the capability is not granted — the plan catches
+will fail cleanly if the capability is not granted -- the plan catches
 the failure and moves to the next arm.
 
 ### with-timeout
@@ -251,7 +251,7 @@ All resilient operations return a `Resolution` result:
 ```
 
 When a plan ends with `halt`, exhaustion aborts. Otherwise, the caller
-receives `Exhausted` and the full attempt history — which strategies
+receives `Exhausted` and the full attempt history -- which strategies
 were tried, how many times, and why each failed.
 
 ---

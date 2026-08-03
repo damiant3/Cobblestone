@@ -1,0 +1,133 @@
+Chapter: GopCompositeStride
+  cites Foreword chapter Console
+  cites Works chapter GopDraw
+  cites Works chapter GopComposite
+  cites UI chapter Widget
+  cites UI chapter Theme
+  cites UI chapter Layout
+  cites UI chapter BoxModel
+  cites Kernel chapter BitmapFont
+
+ The panel pads its scanlines: the ASUS TUF reports 1920 visible against a
+ PixelsPerScanLine of 2048. `gop-stride` covers `gop-fill-rect` and
+ `gop-put`. This covers the three painters above them that the audit could
+ only read: `gop-draw-text`, `comp-draw-node` and `comp-render`.
+
+ 200 visible against a 264-pixel scanline is the same shape small, and no
+ emulator feature is involved because the stride is an ordinary argument.
+
+ The discriminator does not depend on which pixels a glyph happens to set,
+ which matters because a test that assumed a particular bitmap would be
+ asserting about the font instead of about the stride. Every painted pixel
+ is counted twice: once over the whole buffer, and once inside the box the
+ subject was asked to paint, addressed by stride. A stride-stepping walk
+ puts all of them inside the box. A width-stepping walk leaves row 0 there
+ and scatters every later row, because row r lands at r * 200 instead of
+ r * 264, so the two counts stop agreeing. Anything drawn at all satisfies
+ the first count, which is why the pair is the assertion and neither half
+ is.
+
+ The last row is the calibration and it is the reason to believe the rest:
+ the same text is drawn into a fresh buffer with the visible width handed
+ in as the pitch, and the counts are required to DISAGREE. Without it every
+ row above would be satisfied by a subject that painted nothing outside its
+ box because it painted almost nothing at all.
+
+ Sabotaged against seed 6671C19A0F78F630 by giving `comp-draw-node`'s
+ WkPanel arm the node's own width as the pitch: `draw-node rows by stride`
+ and `render inside the panel` go to `no`, and the three text rows and the
+ calibration hold. The painted rows stay `yes` under it, which is the point
+ of keeping them -- the defect moves where the pixels went, not whether
+ there were any.
+
+ We say:
+
+Section: Geometry
+
+  vis-w : Integer = 200
+  fb-stride : Integer = 264
+  fb-rows : Integer = 32
+  buf-bytes : Integer = 33792
+  fg : Integer = 16777215
+
+  sample : Text = "Mij"
+
+Section: Counting
+
+  zero-fill : Integer, Integer, Integer -> Integer
+  zero-fill (b) (i) (n) =
+    if i >= n then 0 else let p = poke-32 b i 0 in zero-fill b (i + 4) n
+
+  at : Integer, Integer, Integer, Integer -> Integer
+  at (b) (stride) (x) (y) = peek-32 b ((y * stride + x) * 4)
+
+ Every non-zero word in the buffer, wherever it landed. Walking the raw
+ extent rather than the rows on purpose: a width-stepping painter writes
+ outside every row this test knows about, and a counter that only visited
+ the rows would miss exactly the pixels that prove the defect.
+
+  count-all : Integer, Integer, Integer, Integer -> Integer
+  count-all (b) (i) (n) (acc) =
+    if i >= n then acc
+    else count-all b (i + 1) n (acc + (if peek-32 b (i * 4) /= 0 then 1 else 0))
+
+  count-cols : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  count-cols (b) (x) (xend) (y) (acc) (dummy) =
+    if x >= xend then acc
+    else count-cols b (x + 1) xend y (acc + (if at b fb-stride x y /= 0 then 1 else 0)) 0
+
+  count-box : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  count-box (b) (x0) (y0) (bw) (bh) (y) (acc) =
+    if y >= bh then acc
+    else count-box b x0 y0 bw bh (y + 1) (count-cols b x0 (x0 + bw) (y0 + y) acc 0)
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+Section: Tree
+
+  panel-tree : WidgetNode
+  panel-tree =
+    widget-panel "root" DirRow 0 [
+      widget-set-flex (widget-set-min (widget-label "cap" "Mij") 64 24) 0
+    ]
+
+Section: Main
+
+  opening : [Console] Nothing = act
+    let font = cbf-init
+    in let th = theme-terminal
+    in let b0 = __heap-save
+    in let adv = __heap-advance (buf-bytes + 256)
+    in act
+      let z0 = zero-fill b0 0 buf-bytes
+      in let t0 = gop-draw-text b0 fb-stride font 0 0 sample fg 1 0
+      in let all0 = count-all b0 0 (fb-stride * fb-rows) 0
+      in let box0 = count-box b0 0 0 (8 * text-length sample) 16 0 0
+      in let laid = widget-layout panel-tree th (layout-rect 0 0 vis-w fb-rows)
+      in let z1 = zero-fill b0 0 buf-bytes
+      in let n1 = comp-draw-node b0 fb-stride font laid th
+      in let rb = laid.wn-bounds
+      in let all1 = count-all b0 0 (fb-stride * fb-rows) 0
+      in let box1 = count-box b0 (rb.lr-x) (rb.lr-y) (rb.lr-w) (rb.lr-h) 0 0
+      in let z2 = zero-fill b0 0 buf-bytes
+      in let r2 = comp-render b0 fb-stride font panel-tree th vis-w fb-rows
+      in let all2 = count-all b0 0 (fb-stride * fb-rows) 0
+      in let box2 = count-box b0 0 0 vis-w fb-rows 0 0
+      in let z3 = zero-fill b0 0 buf-bytes
+      in let t3 = gop-draw-text b0 vis-w font 0 0 sample fg 1 0
+      in let all3 = count-all b0 0 (fb-stride * fb-rows) 0
+      in let box3 = count-box b0 0 0 (8 * text-length sample) 16 0 0
+      in act
+        print-line-uni ("draw-text painted        : " & yn (all0 > 0))
+        print-line-uni ("draw-text rows by stride : " & yn (box0 == all0))
+        print-line-uni ("draw-node painted        : " & yn (all1 > 0))
+        print-line-uni ("draw-node rows by stride : " & yn (box1 == all1))
+        print-line-uni ("render painted           : " & yn (all2 > 0))
+        print-line-uni ("render inside the panel  : " & yn (box2 == all2))
+        print-line-uni ("wrong pitch is visible   : " & yn (all3 > 0 & box3 /= all3))
+      end
+    end
+  end
+
+Page 1

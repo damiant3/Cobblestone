@@ -30,7 +30,7 @@
 [CmdletBinding()]
 param(
     [string]$Filter = '',         # substring match on the relative path
-    [int]$Jobs = 6,
+    [int]$Jobs = 8,
     [int]$TimeoutSec = 300,
     [string]$OutDir = '',
     [switch]$Check,               # exit non-zero when a unit regresses
@@ -171,6 +171,12 @@ if ($Check) {
     # compiled clean alone -- host contention between concurrent VMs. So
     # re-run those one at a time before believing them, or the pin is
     # flaky and gets ignored, which is worse than no pin.
+    #
+    # That measurement predates the fix for its own cause by two days: the
+    # box's DDR5 was on an XMP profile it was not stable at until 2026-07-22
+    # (ExaminersAssay "The parallelism default"). The default went 6 -> 8 on
+    # 2026-08-02 by Damian's ruling. This re-run stays regardless -- it is
+    # what makes any slot count safe, and it is cheap when nothing is dirty.
     $suspect = @($bad | Where-Object { $_.Errors -eq 0 -and $_.Exit -eq '4' })
     if ($suspect.Count) {
         Write-Host "`nCHECK: $($suspect.Count) unit(s) failed with no diagnostics; re-running alone"

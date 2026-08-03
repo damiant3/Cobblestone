@@ -1,0 +1,328 @@
+Chapter: CryptoBig
+
+ Big unsigned integers for public-key cryptography: enough to raise a
+ 2048-bit number to a power modulo another one, and nothing else.
+
+ THIS IS NOT `Foreword chapter BigInt` AND MUST NOT BECOME IT. BigInt
+ stores base-10000 limbs so that printing a decimal number is cheap, and
+ its division is `bigint-div-slow`, which subtracts the divisor one at a
+ time. For decimal arithmetic on human-sized numbers that is a reasonable
+ trade. For RSA it is not slow, it is impossible: reducing a 4096-bit
+ product modulo a 2048-bit modulus would take about 2^2048 subtractions.
+ A cryptographic modexp needs a different representation and a different
+ reduction, so it gets its own chapter rather than a flag on that one.
+
+ The base is 2^16. Two reasons, and both are about not lying to
+ ourselves. A limb pair is exactly one byte pair, so a certificate's
+ big-endian INTEGER converts to limbs and back with no arithmetic at all
+ -- base 10000 would need a division per digit and a rounding question at
+ every boundary. And the widest intermediate here is
+ `limb + limb*limb + carry`, which is under 2^33, so every step fits in a
+ 64-bit Integer with room to spare and there is no overflow to reason
+ about.
+
+ Reduction is Montgomery's, not division, because division is the thing
+ we cannot afford. The cost of that choice is that values must be carried
+ in Montgomery form between multiplications, which is why `cb-mod-exp`
+ converts in at the start and out at the end and nothing in between does.
+
+ We say:
+
+Section: Representation
+
+ A number is a List Integer of limbs, least significant first, each in
+ [0, 65536), and always exactly as long as the modulus. Fixed width means
+ no function has to decide what a shorter operand means.
+
+  cb-base : Integer = 65536
+  cb-mask : Integer = 65535
+  cb-shift : Integer = 16
+
+  cb-zeros : Integer -> List Integer
+  cb-zeros (n) = cb-zeros-loop n 0 []
+
+  cb-zeros-loop : Integer, Integer, List Integer -> List Integer
+  cb-zeros-loop (n) (i) (acc) =
+    if i >= n then acc
+    else cb-zeros-loop n (i + 1) (list-push acc 0)
+
+  cb-one : Integer -> List Integer
+  cb-one (n) = list-set-at (cb-zeros n) 0 1
+
+ Big-endian bytes in, limbs out, padded or truncated to n limbs. Bytes
+ are walked from the END, two at a time, which is what makes this
+ conversion exact: the low byte of a limb is the later byte on the wire.
+
+  cb-from-bytes : List Integer, Integer -> List Integer
+  cb-from-bytes (bs) (n) = cb-fb-loop bs (list-length bs - 1) 0 (cb-zeros n) n
+
+  cb-fb-loop : List Integer, Integer, Integer, List Integer, Integer -> List Integer
+  cb-fb-loop (bs) (bi) (li) (acc) (n) =
+    if li >= n then acc
+    else if bi < 0 then acc
+    else cb-fb-step bs bi li acc n
+
+  cb-fb-step : List Integer, Integer, Integer, List Integer, Integer -> List Integer
+  cb-fb-step (bs) (bi) (li) (acc) (n) =
+    let lo = list-at bs bi
+    in let hi = if bi - 1 >= 0 then list-at bs (bi - 1) else 0
+    in cb-fb-loop bs (bi - 2) (li + 1) (list-set-at acc li (lo + hi * 256)) n
+
+ Limbs out, big-endian bytes in, exactly nbytes of them. A signature and
+ an encoded message are both fixed-width byte strings, so the width is
+ the caller's and never inferred from how large the number happens to be.
+
+  cb-to-bytes : List Integer, Integer -> List Integer
+  cb-to-bytes (x) (nbytes) = cb-tb-loop x nbytes 0 []
+
+  cb-tb-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  cb-tb-loop (x) (nbytes) (i) (acc) =
+    if i >= nbytes then acc
+    else cb-tb-step x nbytes i acc
+
+  cb-tb-step : List Integer, Integer, Integer, List Integer -> List Integer
+  cb-tb-step (x) (nbytes) (i) (acc) =
+    let p = nbytes - 1 - i
+    in let li = p / 2
+    in let limb = if li < list-length x then list-at x li else 0
+    in let b = if int-rem p 2 == 0 then bit-and limb 255 else bit-and (bit-shru limb 8) 255
+    in cb-tb-loop x nbytes (i + 1) (list-push acc b)
+
+Section: Comparison And Subtraction
+
+  cb-cmp : List Integer, List Integer, Integer -> Integer
+  cb-cmp (a) (b) (n) = cb-cmp-loop a b (n - 1)
+
+  cb-cmp-loop : List Integer, List Integer, Integer -> Integer
+  cb-cmp-loop (a) (b) (i) =
+    if i < 0 then 0
+    else if list-at a i > list-at b i then 1
+    else if list-at a i < list-at b i then -1
+    else cb-cmp-loop a b (i - 1)
+
+ a := a - b, in place, assuming a >= b. The borrow is explicit because a
+ limb that goes negative must carry the borrow up rather than clamp: a
+ clamped borrow is the classic silent-wrong-answer in bignum subtraction.
+
+  cb-sub-into : List Integer, List Integer, Integer -> List Integer
+  cb-sub-into (a) (b) (n) = cb-sub-loop a b n 0 0
+
+  cb-sub-loop : List Integer, List Integer, Integer, Integer, Integer -> List Integer
+  cb-sub-loop (a) (b) (n) (i) (borrow) =
+    if i >= n then a
+    else cb-sub-step a b n i borrow (list-at a i - list-at b i - borrow)
+
+  cb-sub-step : List Integer, List Integer, Integer, Integer, Integer, Integer -> List Integer
+  cb-sub-step (a) (b) (n) (i) (borrow) (d) =
+    if d < 0 then cb-sub-loop (list-set-at a i (d + cb-base)) b n (i + 1) 1
+    else cb-sub-loop (list-set-at a i d) b n (i + 1) 0
+
+Section: The Montgomery Constant
+
+ n0inv is -m[0] inverse modulo 2^16. Newton's iteration doubles the
+ number of correct bits each time, so starting from 1 (correct modulo 2)
+ five rounds are more than the four needed to reach 16 bits.
+
+  cb-n0inv : List Integer -> Integer
+  cb-n0inv (m) = cb-n0inv-neg (cb-newton (list-at m 0) 1 0)
+
+  cb-newton : Integer, Integer, Integer -> Integer
+  cb-newton (n0) (inv) (k) =
+    if k >= 5 then inv
+    else cb-newton n0 (bit-and (inv * (2 - n0 * inv)) cb-mask) (k + 1)
+
+  cb-n0inv-neg : Integer -> Integer
+  cb-n0inv-neg (inv) = bit-and (cb-base - inv) cb-mask
+
+Section: Montgomery Multiplication
+
+ CIOS: for each limb of b, add a*b[i] into the accumulator, then add a
+ multiple of the modulus chosen to clear the bottom limb, then shift one
+ limb down. The accumulator is n+2 limbs because the running value can
+ exceed the modulus by two limbs before the shift.
+
+ The accumulator is mutated in place through list-set-at. That is the
+ concession this chapter needs and the reason it is threaded through
+ every helper rather than rebuilt: at 128 limbs and 34 multiplications a
+ fresh list per limb-step would allocate tens of megabytes to compute one
+ signature check.
+
+  cb-mont-mul : List Integer, List Integer, List Integer, Integer, Integer -> List Integer
+  cb-mont-mul (a) (b) (m) (n) (n0inv) =
+    cb-mont-outer a b m n n0inv (cb-zeros (n + 2)) 0
+
+  cb-mont-outer : List Integer, List Integer, List Integer, Integer, Integer, List Integer, Integer -> List Integer
+  cb-mont-outer (a) (b) (m) (n) (n0inv) (t) (i) =
+    if i >= n then cb-mont-final t m n
+    else cb-mont-round a b m n n0inv t i
+
+  cb-mont-round : List Integer, List Integer, List Integer, Integer, Integer, List Integer, Integer -> List Integer
+  cb-mont-round (a) (b) (m) (n) (n0inv) (t) (i) =
+    let t1 = cb-mul-add t a (list-at b i) n 0 0
+    in let mu = bit-and ((list-at t1 0) * n0inv) cb-mask
+    in let t2 = cb-red-add t1 m mu n 0 0
+    in cb-mont-outer a b m n n0inv (cb-shift-down t2 n 0) (i + 1)
+
+ t := t + a * bi, over n limbs, carrying into the two spare limbs.
+
+  cb-mul-add : List Integer, List Integer, Integer, Integer, Integer, Integer -> List Integer
+  cb-mul-add (t) (a) (bi) (n) (j) (carry) =
+    if j >= n then cb-mul-add-tail t n carry
+    else cb-mul-add-step t a bi n j ((list-at t j) + (list-at a j) * bi + carry)
+
+  cb-mul-add-step : List Integer, List Integer, Integer, Integer, Integer, Integer -> List Integer
+  cb-mul-add-step (t) (a) (bi) (n) (j) (v) =
+    cb-mul-add (list-set-at t j (bit-and v cb-mask)) a bi n (j + 1) (bit-shru v cb-shift)
+
+  cb-mul-add-tail : List Integer, Integer, Integer -> List Integer
+  cb-mul-add-tail (t) (n) (carry) =
+    let v = (list-at t n) + carry
+    in list-set-at (list-set-at t n (bit-and v cb-mask)) (n + 1) ((list-at t (n + 1)) + (bit-shru v cb-shift))
+
+ t := t + mu * m, which by the choice of mu leaves t[0] zero.
+
+  cb-red-add : List Integer, List Integer, Integer, Integer, Integer, Integer -> List Integer
+  cb-red-add (t) (m) (mu) (n) (j) (carry) =
+    if j >= n then cb-red-add-tail t n carry
+    else cb-red-add-step t m mu n j ((list-at t j) + (list-at m j) * mu + carry)
+
+  cb-red-add-step : List Integer, List Integer, Integer, Integer, Integer, Integer -> List Integer
+  cb-red-add-step (t) (m) (mu) (n) (j) (v) =
+    cb-red-add (list-set-at t j (bit-and v cb-mask)) m mu n (j + 1) (bit-shru v cb-shift)
+
+  cb-red-add-tail : List Integer, Integer, Integer -> List Integer
+  cb-red-add-tail (t) (n) (carry) =
+    let v = (list-at t n) + carry
+    in list-set-at (list-set-at t n (bit-and v cb-mask)) (n + 1) ((list-at t (n + 1)) + (bit-shru v cb-shift))
+
+ One limb down. t[0] is zero by construction, so dropping it is the
+ division by 2^16 that Montgomery reduction is named for.
+
+  cb-shift-down : List Integer, Integer, Integer -> List Integer
+  cb-shift-down (t) (n) (j) =
+    if j > n then list-set-at t (n + 1) 0
+    else cb-shift-down (list-set-at t j (list-at t (j + 1))) n (j + 1)
+
+ The result is under twice the modulus, so at most one subtraction is
+ needed. The spare limb is checked as well as the comparison: a value
+ that overflowed into it is larger than the modulus however the low
+ limbs compare.
+
+  cb-mont-final : List Integer, List Integer, Integer -> List Integer
+  cb-mont-final (t) (m) (n) =
+    let r = cb-take t n
+    in if (list-at t n) > 0 then cb-sub-into r m n
+       else if cb-cmp r m n >= 0 then cb-sub-into r m n
+       else r
+
+  cb-take : List Integer, Integer -> List Integer
+  cb-take (t) (n) = cb-take-loop t n 0 []
+
+  cb-take-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  cb-take-loop (t) (n) (i) (acc) =
+    if i >= n then acc
+    else cb-take-loop t n (i + 1) (list-push acc (list-at t i))
+
+Section: R Squared
+
+ Montgomery form needs R^2 mod m, and computing it is the one place a
+ division would otherwise be required. It is avoided by doubling: start
+ at 1 and double 32n times modulo m, which is 2^(32n) = R^2. Each
+ doubling is a shift and at most one subtraction, so the whole thing is
+ linear in the modulus size and needs no reduction primitive.
+
+  cb-r-squared : List Integer, Integer -> List Integer
+  cb-r-squared (m) (n) = cb-r2-loop (cb-one n) m n 0 (32 * n)
+
+  cb-r2-loop : List Integer, List Integer, Integer, Integer, Integer -> List Integer
+  cb-r2-loop (x) (m) (n) (k) (rounds) =
+    if k >= rounds then x
+    else cb-r2-loop (cb-dbl-mod x m n) m n (k + 1) rounds
+
+  cb-dbl-mod : List Integer, List Integer, Integer -> List Integer
+  cb-dbl-mod (x) (m) (n) = cb-dbl-fix x m n (cb-shl1 x n 0 0)
+
+  cb-dbl-fix : List Integer, List Integer, Integer, Integer -> List Integer
+  cb-dbl-fix (x) (m) (n) (carry) =
+    if carry > 0 then cb-sub-into x m n
+    else if cb-cmp x m n >= 0 then cb-sub-into x m n
+    else x
+
+  cb-shl1 : List Integer, Integer, Integer, Integer -> Integer
+  cb-shl1 (x) (n) (i) (carry) =
+    if i >= n then carry
+    else cb-shl1-step x n i ((list-at x i) * 2 + carry)
+
+  cb-shl1-step : List Integer, Integer, Integer, Integer -> Integer
+  cb-shl1-step (x) (n) (i) (v) =
+    cb-shl1 (list-set-at x i (bit-and v cb-mask)) n (i + 1) (bit-shru v cb-shift)
+
+Section: Modular Exponentiation
+
+ base^exp mod m, every operand a big-endian byte string, the answer a
+ byte string as wide as the modulus. Square and multiply over the
+ exponent's bits, most significant first, in Montgomery form throughout.
+
+ The exponent is NOT secret here and this is NOT constant time. That is
+ honest for what this chapter is for: verifying a signature with a public
+ exponent against a public key. Nothing private goes through it, and if
+ anything private ever does, this comment is the thing that was wrong.
+
+  cb-mod-exp : List Integer, List Integer, List Integer -> List Integer
+  cb-mod-exp (base-bytes) (exp-bytes) (mod-bytes) =
+    cb-exp-setup base-bytes exp-bytes mod-bytes ((list-length mod-bytes + 1) / 2)
+
+  cb-exp-setup : List Integer, List Integer, List Integer, Integer -> List Integer
+  cb-exp-setup (base-bytes) (exp-bytes) (mod-bytes) (n) =
+    let m = cb-from-bytes mod-bytes n
+    in cb-exp-go (cb-from-bytes base-bytes n) exp-bytes m n (cb-n0inv m) (cb-r-squared m n)
+
+  cb-exp-go : List Integer, List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  cb-exp-go (a) (exp-bytes) (m) (n) (n0inv) (r2) =
+    let a-mont = cb-mont-mul a r2 m n n0inv
+    in let one-mont = cb-mont-mul (cb-one n) r2 m n n0inv
+    in cb-exp-out (cb-exp-bits a-mont one-mont exp-bytes m n n0inv (cb-top-bit exp-bytes)) m n n0inv
+
+  cb-exp-out : List Integer, List Integer, Integer, Integer -> List Integer
+  cb-exp-out (acc) (m) (n) (n0inv) = cb-mont-mul acc (cb-one n) m n n0inv
+
+ The index of the highest set bit, or -1 for a zero exponent. Starting
+ the square-and-multiply below the top bit would square in leading zeros,
+ which is harmless but slow; starting above it is what makes an exponent
+ of zero answer one.
+
+  cb-top-bit : List Integer -> Integer
+  cb-top-bit (bs) = cb-top-loop bs (list-length bs * 8 - 1)
+
+  cb-top-loop : List Integer, Integer -> Integer
+  cb-top-loop (bs) (i) =
+    if i < 0 then -1
+    else if cb-bit-at bs i == 1 then i
+    else cb-top-loop bs (i - 1)
+
+  cb-bit-at : List Integer, Integer -> Integer
+  cb-bit-at (bs) (i) =
+    let byte-from-end = i / 8
+    in let idx = list-length bs - 1 - byte-from-end
+    in if idx < 0 then 0
+       else bit-and (bit-shru (list-at bs idx) (int-rem i 8)) 1
+
+  cb-exp-bits : List Integer, List Integer, List Integer, List Integer, Integer, Integer, Integer -> List Integer
+  cb-exp-bits (a-mont) (acc) (exp-bytes) (m) (n) (n0inv) (i) =
+    if i < 0 then acc
+    else cb-exp-step a-mont (cb-mont-mul acc acc m n n0inv) exp-bytes m n n0inv i
+
+  cb-exp-step : List Integer, List Integer, List Integer, List Integer, Integer, Integer, Integer -> List Integer
+  cb-exp-step (a-mont) (sq) (exp-bytes) (m) (n) (n0inv) (i) =
+    if cb-bit-at exp-bytes i == 1
+    then cb-exp-bits a-mont (cb-mont-mul sq a-mont m n n0inv) exp-bytes m n n0inv (i - 1)
+    else cb-exp-bits a-mont sq exp-bytes m n n0inv (i - 1)
+
+ The answer as bytes, as wide as the modulus, which is what every
+ signature format expects.
+
+  cb-mod-exp-bytes : List Integer, List Integer, List Integer -> List Integer
+  cb-mod-exp-bytes (base-bytes) (exp-bytes) (mod-bytes) =
+    cb-to-bytes (cb-mod-exp base-bytes exp-bytes mod-bytes) (list-length mod-bytes)
+
+Page 1

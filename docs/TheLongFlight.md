@@ -19,9 +19,9 @@ not set dates. We don't put dates on mountains.
 A child sits in an airplane and asks the plane to go flying.
 
 The plane's agent does not say yes because the request was phrased nicely.
-It walks a chain: does this person hold `[FlightControl]`? No — they are a
+It walks a chain: does this person hold `[FlightControl]`? No -- they are a
 minor, and that capability is gated behind parental grant. The child's agent
-escalates to the parent's agent. The parent approves — or their standing
+escalates to the parent's agent. The parent approves -- or their standing
 policy already answered: *he can fly the simulator on weekends, the real
 controls only when I'm beside him.* The plane's own agent checks its side:
 is the requester rated, is the airspace clear, is handoff safe. Three
@@ -44,8 +44,8 @@ most of them are systems we have built.
 
 ### Scene Two: The Probe That Wakes
 
-A trillion years from now — the sun long gone, the sky mostly red dwarfs
-and embers — a machine wakes up in the dark between stars.
+A trillion years from now -- the sun long gone, the sky mostly red dwarfs
+and embers -- a machine wakes up in the dark between stars.
 
 It has no network. There is no one to call. Every institution that existed
 when it was launched is dust; every key that was hot is cold; every server
@@ -54,16 +54,16 @@ rays have had opinions about its bits.
 
 So it does the only thing that still works: mathematics.
 
-It verifies its seed against its own embedded hash. It reads its source —
-prose, load-bearing, written to be read — and recompiles itself, and checks
+It verifies its seed against its own embedded hash. It reads its source --
+prose, load-bearing, written to be read -- and recompiles itself, and checks
 that the output is byte-identical to the binary that is running. It is its
 own proof of integrity; the fixed point is the checksum of the soul. It
-replays its mission policy — compiled in before launch, restrictive by
+replays its mission policy -- compiled in before launch, restrictive by
 default, every decision it has ever made recorded as a signed fact in an
-append-only store — and it knows three things with certainty: what it is,
+append-only store -- and it knows three things with certainty: what it is,
 what it is permitted to do, and why. If it has the means, it mines, refines,
-fabricates, and builds its successor from the repository it carries — the
-complete description of its own hardware, toolchain, and mind — and vouches
+fabricates, and builds its successor from the repository it carries -- the
+complete description of its own hardware, toolchain, and mind -- and vouches
 for the child in a trust lattice whose newest entry is a trillion years
 younger than its root.
 
@@ -80,7 +80,7 @@ separation from authority.**
 
 The child's plane is separated from the parent by a room, or by a dropped
 connection. The probe is separated from its makers by deep time. In both
-cases the naive answer — *ask the server* — is unavailable, and the correct
+cases the naive answer -- *ask the server* -- is unavailable, and the correct
 answer is the same:
 
 1. **The policy travels with the machine.** Compiled in, prose-readable,
@@ -116,13 +116,13 @@ changes; the stone does not.
 We are not starting this. We are continuing it. An honest inventory,
 verified against the code on 2026-07-07:
 
-**Bedrock — done and proven.**
+**Bedrock -- done and proven.**
 - The compiler is a hard fixed point of itself on bare metal. No C#, no OS,
   no libc anywhere in the chain. The seed verifies itself.
-- Linear types, effect types, bounded integers, capabilities — enforced,
+- Linear types, effect types, bounded integers, capabilities -- enforced,
   adversarially probed (the vision-check campaign closed the laundering
   routes with negative tests).
-- `punctual` — per-function bounded execution, the only shipping language
+- `punctual` -- per-function bounded execution, the only shipping language
   with it. The hard-realtime primitive the flight controller needs.
 - Constant-time crypto on bare metal: Ed25519, SHA-256/512, AES-GCM,
   ChaCha20, X25519, HKDF. Tested against published vectors.
@@ -130,26 +130,26 @@ verified against the code on 2026-07-07:
   codegen; boards from STM32 to nRF9160; MQTT/CoAP/LwM2M/OTA; compliance
   evidence as a build artifact.
 
-**Framed — real code, tested, incomplete.**
+**Framed -- real code, tested, incomplete.**
 - The trust stack (`codex/os/trust/`, 16 modules): lattice, handshake,
   transport, lease manager, peer discovery, the seven-message agent
   protocol, forensics chain. Core operations tested end-to-end in-process
   and over TCP.
 - The repository protocol (`apps/works/RepoProtocol` + FactStore): facts,
-  proposals, verdicts, signed annotations, disk persistence — tested.
+  proposals, verdicts, signed annotations, disk persistence -- tested.
   Views and federation sync are designed (V3), not yet wired.
 - The AI foreword (`codex/foreword/ai/`, 43 modules): transformer layers,
   tokenizer, sampling, KV cache, GGUF loader (tested), GPU proxy with a
   working PTX vector-add path. No end-to-end token loop yet.
 - The agent runtime (`apps/works/`): boot, console, editor, build driver,
-  agent coordinator — a solid skeleton awaiting a mind.
+  agent coordinator -- a solid skeleton awaiting a mind.
 
-**Sketched — types and intentions.**
+**Sketched -- types and intentions.**
 - Parental services (`apps/services/accounts/`): managed accounts, policy
   profiles, ParentalUI state machine. No enforcement loop, no tests yet.
 - The policy-prose compiler (grant/deny/quota/delegation templates → 
   `PolicyFact`): designed in full, CDX5001-5007 reserved, unimplemented.
-- The Clarifier: the feedback loop that closes the semantic gap —
+- The Clarifier: the feedback loop that closes the semantic gap --
   "I understood 3 grants and 2 denials; is this complete?" More
   load-bearing than its folder implies.
 - Circuits (`apps/circuits/`, 66 chapters): schematic capture, SPICE, PCB
@@ -165,15 +165,15 @@ It is a sequence of ascents, each of which ends in a working demo.
 
 Each ascent serves one of the scenes. Each has a demo at the summit,
 because Virtue 1 outranks everything: every milestone ships working
-software. The ascents overlap — they are arcs, not gates.
+software. The ascents overlap -- they are arcs, not gates.
 
-### Ascent I — The Voice
+### Ascent I -- The Voice
 *The machine that listens. Interface is inference.*
 
 The UX primitive of Codex.OS is not a window; it is a conversation. The
 user talks; the agent operates the machine. For that to be bedrock and not
 demo-ware, the mini-agent must run on **our** stack: our inference
-library, our GPU path, our bare metal — specialized, not generalized;
+library, our GPU path, our bare metal -- specialized, not generalized;
 offline-first, because an agent that needs the cloud to be useful is an
 agent that fails exactly when it matters.
 
@@ -187,17 +187,17 @@ The climb:
 2. Move the matmuls to the GPU path (PTX plug on the dev box; SPIR-V for
    the edge) behind the `[Device]` effect.
 3. Wire the loop into `AgentRuntime`: a REPL where the input is intent,
-   not syntax. The shell dispatch table becomes the agent's tool belt —
+   not syntax. The shell dispatch table becomes the agent's tool belt --
    every OS capability the agent can invoke is an effect it must hold.
 4. Speech at the edges: microphone in, audio out. The keyboard becomes
    optional.
 
-**Summit demo:** Boot a Codex machine with no network. Say — or type —
+**Summit demo:** Boot a Codex machine with no network. Say -- or type --
 "show me the photos from June and delete the blurry ones." Watch the agent
 do it, narrate what it did, and refuse what it doesn't have the capability
 to do.
 
-### Ascent II — The Permission
+### Ascent II -- The Permission
 *The chain of trust that can say no. The child and the plane, in miniature.*
 
 This is the scene we build first, end to end, in the safest possible
@@ -217,9 +217,9 @@ The climb:
    weekends between 10:00 and 17:00, for no more than 2 hours" compiles to
    a signed `PolicyFact` with time window, quota, and conditions.
    Diagnostics CDX5001-5007 come alive.
-2. Implement the Clarifier: the compiler reflects the policy back —
+2. Implement the Clarifier: the compiler reflects the policy back --
    grants, denials, and a simulation ("at Saturday 14:00 Jake can: …
-   cannot: …") — and the parent confirms. Promote it out of ForFun
+   cannot: …") -- and the parent confirms. Promote it out of ForFun
    forever. The semantic gap is the whole ballgame here.
 3. Wire enforcement: `ManagedAccounts` + `LeaseManager` + quota counters.
    Lease expiry without renewal restricts. Revocation propagates on next
@@ -233,7 +233,7 @@ The climb:
 
 **Summit demo:** Two machines. On one, a child asks the agent to fly.
 The parent's machine chimes; the parent grants two hours. The simulator
-unlocks. Mid-flight, the parent revokes — the sim lands itself and
+unlocks. Mid-flight, the parent revokes -- the sim lands itself and
 explains why, in prose, citing the policy by hash. Then unplug the network
 cable and watch the lease expire into safety on its own.
 
@@ -241,7 +241,7 @@ This ascent is also the product. It is the CRA/ETSI story, the IoT story,
 and the robot-plane story in one demo that a regulator, an investor, or a
 grandparent can watch and understand.
 
-### Ascent III — The Commons
+### Ascent III -- The Commons
 *The repository that remembers. Delete GitHub; begin the repository.*
 
 The founding prompt did not end at the language. The repository is half
@@ -257,55 +257,58 @@ What's missing: source-as-facts ingestion, views wired into the build, the
 sync protocol, and the nerve to dogfood it.
 
 The climb:
-1. Source-as-facts: ingest a quire into the fact store — every definition
+1. Source-as-facts: ingest a quire into the fact store -- every definition
    a fact with a hash, every chapter a view. Compile from the view and
    prove the output is byte-identical to compiling from files.
 2. Proposals in anger: a change to the compiler arrives as a Proposal
    carrying changed definitions; verdicts from the agent fleet
-   (type-check, battery, review — each a signed verdict fact); acceptance
+   (type-check, battery, review -- each a signed verdict fact); acceptance
    composes a new canonical view. The CL becomes a fact chain.
 3. Federation: two repositories exchange facts by hash over the trust
    transport. Trust thresholds gate what links. Delay-tolerant by
-   construction — a node offline for a year reconciles by set-union,
+   construction -- a node offline for a year reconciles by set-union,
    because identical facts have identical hashes.
-4. Dogfood: this project — fester, blu, val, reek, and Damian — moves its
+4. Dogfood: this project -- fester, blu, val, reek, and Damian -- moves its
    own coordination from Perforce onto the Codex repository, stream by
    stream. The day the compiler's own source lives as facts in its own
    repository, the founding prompt's second half begins.
 5. The Prompt Request: the public contribution model. We do not take
    code from outside; we take prose. A human reads the prompt, an agent
    cuts the change, the fixed point and the battery judge it. The xz
-   attack is not survivable here — there is no two-year trust-building
+   attack is not survivable here -- there is no two-year trust-building
    path to a backdoor when the code never comes from outside and the
    binary is re-derived from audited source on every gate.
 
 **Summit demo:** `p4` is not typed for a week and nobody misses it. A
 change flows prompt → proposal → verdicts → canonical view → seed rebuild,
-and the entire history of that change — who asked, who wrote, who judged,
-what the gates said — is one walk of a fact chain.
+and the entire history of that change -- who asked, who wrote, who judged,
+what the gates said -- is one walk of a fact chain.
 
-### Ascent IV — The Body
+### Ascent IV -- The Body
 *Hardware we made. The first organ of self-replication.*
 
 The probe cannot buy parts. Before that matters, the child's plane needs a
-flight controller we trust all the way down — and "all the way down" ends
+flight controller we trust all the way down -- and "all the way down" ends
 in copper and silicon, not in a PowerShell script. This ascent moves Codex
 from machines we borrowed to machines we made.
 
 What exists: nine boards with register-level drivers from official
-reference manuals, ARM64 and RISC-V backends at parity, power-management
+reference manuals, ARM64 and RISC-V backends that meet or beat GCC -O0 on
+four micro-benchmarks (speed on four programs, not feature parity: 421 of
+1403 tests run cross, and one is gated -- see `docs/ExaminersAssay.md`),
+power-management
 sketches, the UEFI/BIOS boot path, a real ASUS motherboard that has booted
-the seed — and circuits, 66 chapters of EDA architecture waiting to be
+the seed -- and circuits, 66 chapters of EDA architecture waiting to be
 real.
 
 The climb:
-1. Real metal, no VM: the battery green on physical hardware — the ASUS
+1. Real metal, no VM: the battery green on physical hardware -- the ASUS
    TUF over USB boot, then an STM32 and an nRF52840 on the bench with
    UART in hand. MMIO stubs retire; electrons vote.
 2. Self-host on ARM64 and RISC-V: the compiler compiles itself on the
    target. The day a Raspberry Pi builds a byte-identical seed with no
    x86 anywhere in its past, the toolchain is officially substrate-free.
-3. Power as an effect: sleep modes, duty cycling, wake-on-event —
+3. Power as an effect: sleep modes, duty cycling, wake-on-event --
    `[Power]` tracked in types, because the probe's ration book is joules
    and so is a sensor node's.
 4. Circuits becomes real, one organ at a time: schematic capture →
@@ -321,17 +324,17 @@ The climb:
 **Summit demo:** A photograph of a bench: a board we designed, running a
 seed it can rebuild, blinking a light because a policy said it may.
 
-### Ascent V — The Seed
+### Ascent V -- The Seed
 *The probe that wakes. Deep time as an engineering discipline.*
 
 Nobody funds a trillion-year mission. You fund the artifact that could
-survive one — and it turns out that artifact is useful this decade: it is
+survive one -- and it turns out that artifact is useful this decade: it is
 the archive, the air-gapped installer, the disaster-recovery root, the
 thing you hand a civilization when you want them to have computing without
 handing them a supply chain.
 
 We can build the software half of the von Neumann probe completely. The
-matter half — mining, refining, fabrication — is other people's rockets
+matter half -- mining, refining, fabrication -- is other people's rockets
 and robotics; our job is that the mind, the memory, and the meaning
 survive. Honest physics: at 10^12 years the sun is gone but the red dwarfs
 still burn; there is energy to be had. What there is not, is anyone to
@@ -343,7 +346,7 @@ The climb:
    x86-64 (later: anything with a plug), self-verifies, **recompiles
    itself from its own embedded source and proves the result
    byte-identical to the binary that is running**, runs the battery, and
-   then narrates what it is, who made it, and what it is for — with zero
+   then narrates what it is, who made it, and what it is for -- with zero
    network, forever. This is buildable now; it is `build-boot-img.ps1`
    grown a spine. It becomes the release artifact of the whole project.
 2. **The wake ceremony.** First-boot generalized: enumerate hardware,
@@ -353,13 +356,13 @@ The climb:
    woken 10^9 times can prove it.
 3. **Repair by re-derivation.** Bit-rot immune system: N copies of the
    seed and source, majority-vote on hash mismatch, and the deepest
-   repair — recompile from source and compare. The compiler is the error
+   repair -- recompile from source and compare. The compiler is the error
    corrector. Add erasure coding to DiskFacts; make `verify` a scheduled
    organ, not a build step.
 4. **Trust across deep time.** Leases assume renewal; missions cannot.
    Design mission policy as the degenerate lease: pre-granted, scoped,
    with escalation paths that tolerate light-years (delegate-to-self
-   under recorded justification — the forensic chain IS the parental
+   under recorded justification -- the forensic chain IS the parental
    notification, delivered whenever contact resumes, even if that is
    never). Algorithm agility in the CDX header (a signature-algorithm
    field, two lines now) so the lattice survives Ed25519's eventual
@@ -367,7 +370,7 @@ The climb:
    designed.
 5. **The successor.** Merge Ascent IV's fab loop with the capsule: the
    image carries not just its own source but its own schematics. A probe
-   that can wake, verify, explain, and — given a fab — hand over the
+   that can wake, verify, explain, and -- given a fab -- hand over the
    drawings for the next probe, and vouch for it in the lattice. The
    trust chain from the first seed Damian signed in 2026 to the machine
    that wakes in the dark is unbroken, and walkable, fact by fact.
@@ -393,16 +396,16 @@ deposit box, and publish the image. The drawer is the launch pad.
 - **IV (Body)** grounds it all in matter and begins replication. It can
   proceed in parallel; its early rungs (real-metal battery, ARM64
   self-host) are already recorded elsewhere.
-- **V (Seed)** is the integral of the other four. Its first rung — the
-  Time Capsule — is buildable early and should be, because it is the
+- **V (Seed)** is the integral of the other four. Its first rung -- the
+  Time Capsule -- is buildable early and should be, because it is the
   project's best artifact of intent: the book that compiles itself,
   bound for a very long shelf.
 
 The Rules do not change. The build is still the test. One thing at a
-time is still the law — these are arcs measured in seasons, walked in
+time is still the law -- these are arcs measured in seasons, walked in
 single-CL steps, every step gated by the fixed point and the battery.
-Correctness is absolute, because at sufficient distance — a plane in the
-air, a probe in the dark — **no patch is possible**. That sentence has
+Correctness is absolute, because at sufficient distance -- a plane in the
+air, a probe in the dark -- **no patch is possible**. That sentence has
 been in VisionAndVirtues all along. This document is just the distance
 made explicit.
 
@@ -412,15 +415,15 @@ made explicit.
 
 | Ascent | First rung | Ends with |
 |--------|-----------|-----------|
-| I — Voice | Close the GGUF → tokenizer → transformer → sampler token loop on codex-vm, CPU only, tiny model | `llm-token-test`: prompt in, deterministic tokens out, tokens/sec logged |
-| II — Permission | Policy template compiler v0: the Jake sentence → signed `PolicyFact`; CDX5003 (bad time window) firing | `policy-compile-test` with the Clarifier's reflection as `.expected` |
-| III — Commons | Source-as-facts: ingest one small quire, compile from the view, byte-compare to file-based compile | `view-compile-identity-test` |
-| IV — Body | USB-boot the current seed on the ASUS TUF; run a 10-test battery subset on real metal | A photo and a green log |
-| V — Seed | Time Capsule v0: extend the boot image to embed source + run self-verify + print the narration on boot | An `.img` that introduces itself with the cord cut |
+| I -- Voice | Close the GGUF → tokenizer → transformer → sampler token loop on codex-vm, CPU only, tiny model | `llm-token-test`: prompt in, deterministic tokens out, tokens/sec logged |
+| II -- Permission | Policy template compiler v0: the Jake sentence → signed `PolicyFact`; CDX5003 (bad time window) firing | `policy-compile-test` with the Clarifier's reflection as `.expected` |
+| III -- Commons | Source-as-facts: ingest one small quire, compile from the view, byte-compare to file-based compile | `view-compile-identity-test` |
+| IV -- Body | USB-boot the current seed on the ASUS TUF; run a 10-test battery subset on real metal | A photo and a green log |
+| V -- Seed | Time Capsule v0: extend the boot image to embed source + run self-verify + print the narration on boot | An `.img` that introduces itself with the cord cut |
 
 Any agent picking up a lane starts at a rung, not at a vision. The rungs
 are ordinary CLs with ordinary gates. The mountain is only visible if you
-step back — which is what this document is for.
+step back -- which is what this document is for.
 
 ---
 

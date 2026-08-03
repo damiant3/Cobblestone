@@ -1,0 +1,118 @@
+Chapter: GopSceneViewport
+  cites Foreword chapter Console
+  cites Engine chapter Renderer3D
+  cites Engine chapter Scene3D
+  cites Engine chapter Mesh
+  cites Engine chapter Material
+  cites Math chapter Matrix4
+  cites Math chapter Cordic
+  cites Game chapter Color
+
+ A render target can be pointed at a rectangle INSIDE a larger panel, by
+ offsetting its base address while keeping the panel's own stride. That is
+ what keeps a desktop's sidebar and taskbar on the glass around a moving
+ 3D view, and the risk is the whole of it: get it wrong by one and the
+ scene shears across the chrome, which on real hardware looks like a
+ corrupt display rather than a wrong number.
+
+ The subject here is `r3d-target-at`, not GopScene. GopScene reached the
+ pane this way until 2026-07-30 and now renders into a back buffer and
+ blits, so its own path is covered by `gop-scene-backbuffer` and this file
+ covers the primitive underneath both.
+
+ So this renders into a scratch panel pre-filled with a sentinel and
+ asks where the pixels landed. The sidebar columns and the taskbar rows
+ must still hold the sentinel and the content pane must not, on the same
+ frame. Checking only that the content changed would pass just as well
+ with a renderer that painted the entire panel.
+
+ The orbit is checked too. Cordic is used rather than Matrix4's
+ mat4-sin-approx because that one is a two-term Taylor: at half a turn
+ it answers -2.03 where the sine is 0, so a camera driven by it would
+ leave the scene entirely. Two positions half a turn apart must put the
+ eye on opposite sides of the origin, which is what an approximation
+ that has passed its turning point cannot do.
+
+ We say:
+
+Section: Panel
+
+  pw : Integer = 320
+  ph : Integer = 240
+  sidebar : Integer = 160
+  taskbar : Integer = 24
+  sentinel : Integer = 12648430
+
+  sky : Integer
+  sky = rgb-to-packed (rgb 20 20 30)
+
+Section: Scene
+
+  scene-camera : Integer -> Camera3D
+  scene-camera (angle) =
+    let ca = real-from-int (cordic-cos angle)
+    in let sa = real-from-int (cordic-sin angle)
+    in camera3d-new (vec3-new (ca * 5.2) 2200.0 (sa * 5.2)) (vec3-new 0.0 300.0 0.0) 0.785
+
+  build-scene : Integer -> Scene3DState
+  build-scene (dummy) =
+    let scene = scene3d-new (scene-camera 0)
+    in let ground = sn3-with-mesh "ground" (mesh-plane 3000 3000) (emat-flat (rgb 90 80 62))
+    in let cube = sn3-set-pos (sn3-with-mesh "cube" (mesh-cube 900) (emat-shiny (rgb 90 130 210) 32)) (-900.0) 450.0 0.0
+    in let s2 = scene3d-add (scene3d-add scene ground) cube
+    in let key = dir-light (vec3-new (-400.0) 800.0 400.0) (rgb 255 250 235) 850
+    in scene3d-set-ambient (scene3d-add-light s2 key) 260
+
+Section: Counting
+
+  fill-panel : Integer, Integer, Integer -> Integer
+  fill-panel (base) (i) (n) =
+    if i >= n then 0
+    else let d = poke-32 base (i * 4) sentinel
+    in fill-panel base (i + 1) n
+
+ Counts sentinel pixels inside an arbitrary rectangle of the panel, so
+ the same helper can ask about the sidebar, the taskbar and the content.
+
+  count-rows : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  count-rows (base) (x0) (y0) (rw) (rh) (y) (acc) (dummy) =
+    if y >= rh then acc
+    else count-rows base x0 y0 rw rh (y + 1) (count-cols base x0 y0 rw y 0 acc) 0
+
+  count-cols : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  count-cols (base) (x0) (y0) (rw) (y) (x) (acc) =
+    if x >= rw then acc
+    else if peek-32 base (((y0 + y) * pw + x0 + x) * 4) == sentinel then count-cols base x0 y0 rw y (x + 1) (acc + 1)
+    else count-cols base x0 y0 rw y (x + 1) acc
+
+  intact : Integer, Integer, Integer, Integer, Integer -> Boolean
+  intact (base) (x0) (y0) (rw) (rh) =
+    count-rows base x0 y0 rw rh 0 0 0 == rw * rh
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let panel = alloc-bytes (pw * ph * 4)
+    in let f = fill-panel panel 0 (pw * ph)
+    in let cw = pw - sidebar
+    in let ch = ph - taskbar
+    in let tgt = r3d-target-at (panel + sidebar * 4) pw cw ch sky
+    in let scene = build-scene 0
+    in let d = r3d-render-into tgt scene
+    in let side-ok = intact panel 0 0 sidebar ph
+    in let task-ok = intact panel sidebar ch cw taskbar
+    in let content-kept = count-rows panel sidebar 0 cw ch 0 0 0
+    in let near = scene-camera 0
+    in let far = scene-camera 3142
+    in act
+      print-line-uni ("sidebar untouched      : " & yn side-ok)
+      print-line-uni ("taskbar untouched      : " & yn task-ok)
+      print-line-uni ("content pane painted   : " & yn (content-kept == 0))
+      print-line-uni ("orbit crosses origin   : " & yn (near.c3-eye.vx > 0.0 & far.c3-eye.vx < 0.0))
+    end
+  end
+
+Page 1

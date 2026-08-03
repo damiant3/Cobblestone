@@ -1,7 +1,7 @@
 # codex-vm Device Emulation Roadmap
 
 **Created**: 2026-05-23
-**Status**: Active — analysis complete, implementation not started
+**Status**: Active -- analysis complete, implementation not started
 
 ## Current State
 
@@ -49,7 +49,7 @@ the codex-vm hardware emulation behind them.
 #### 1A. PCI Configuration Space (~150 lines)
 
 The kernel's Pci.codex uses CAM (ports 0xCF8/0xCFC) to enumerate
-devices. codex-vm doesn't handle these ports — all PCI reads return
+devices. codex-vm doesn't handle these ports -- all PCI reads return
 0xFF. Adding a minimal PCI config space with a device table unlocks
 every PCI-based device below.
 
@@ -176,13 +176,13 @@ initial development without requiring a physical camera.
 
 ## Priority Order
 
-1. **PCI config space** (1A) — prerequisite for everything PCI-based
-2. **Bochs VBE** (1B) — bare-metal graphics without UEFI
-3. **PC speaker** (2A) — trivial, instant gratification
-4. **xHCI stub** (1C) — unlocks all USB devices
-5. **Intel HDA** (2B) — real audio output + microphone input
-6. **HPET + IOAPIC** (Tier 4) — precision timing and modern interrupts
-7. **UVC camera** (3A) — requires xHCI
+1. **PCI config space** (1A) -- prerequisite for everything PCI-based
+2. **Bochs VBE** (1B) -- bare-metal graphics without UEFI
+3. **PC speaker** (2A) -- trivial, instant gratification
+4. **xHCI stub** (1C) -- unlocks all USB devices
+5. **Intel HDA** (2B) -- real audio output + microphone input
+6. **HPET + IOAPIC** (Tier 4) -- precision timing and modern interrupts
+7. **UVC camera** (3A) -- requires xHCI
 
 ## Estimated Size
 
@@ -197,7 +197,7 @@ initial development without requiring a physical camera.
 | Tier 4 easy wins | ~810 | 5,240 |
 | **Total** | **~2,310** | **~5,240** |
 
-codex-vm grows from ~2,930 lines to ~5,240 lines — still a single
+codex-vm grows from ~2,930 lines to ~5,240 lines -- still a single
 file, still a small C program.
 
 ## What We Don't Build
@@ -217,12 +217,12 @@ file, still a small C program.
 
 ## References
 
-- `tools/codex-vm.c` — current VM implementation (~2,930 lines)
-- `codex/os/kernel/Xhci.codex` — xHCI driver (discovery + rings)
-- `codex/os/kernel/UsbAudio.codex` — USB Audio Class driver
-- `codex/os/kernel/VgaGraphics.codex` — Bochs VBE driver
-- `codex/os/kernel/Pci.codex` — PCI enumeration driver
-- `codex/os/kernel/GpuBridge.codex` — GPU compute bridge
+- `tools/codex-vm.c` -- current VM implementation (~2,930 lines)
+- `codex/os/kernel/Xhci.codex` -- xHCI driver (discovery + rings)
+- `codex/os/kernel/UsbAudio.codex` -- USB Audio Class driver
+- `codex/os/kernel/VgaGraphics.codex` -- Bochs VBE driver
+- `codex/os/kernel/Pci.codex` -- PCI enumeration driver
+- `codex/os/kernel/GpuBridge.codex` -- GPU compute bridge
 - Intel HDA spec: https://www.intel.com/content/dam/www/public/us/en/documents/product-specifications/high-definition-audio-specification.pdf
 - xHCI spec: https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf
 - USB Video Class spec: https://www.usb.org/document-library/video-class-v15-document-set

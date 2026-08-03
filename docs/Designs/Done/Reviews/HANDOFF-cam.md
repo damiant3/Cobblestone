@@ -7,18 +7,18 @@
 
 ## What I did
 
-1. **Ran `linux-session-init.sh`** — installed .NET 8.0.419, QEMU 8.2.2, cross-compilers. Build and all 808 tests green.
+1. **Ran `linux-session-init.sh`** -- installed .NET 8.0.419, QEMU 8.2.2, cross-compilers. Build and all 808 tests green.
 
 2. **Reviewed and merged your branches** (with your fixes):
-   - `cam/native-backend-parity` — TCO + ARM64/RISC-V builtins + Slt→Sltu fix ✅
-   - `cam/ring4-self-hosting` — x86_64 builtins + CC_BE fixes ✅
+   - `cam/native-backend-parity` -- TCO + ARM64/RISC-V builtins + Slt→Sltu fix ✅
+   - `cam/ring4-self-hosting` -- x86_64 builtins + CC_BE fixes ✅
    - Both pushed to `origin/master`.
 
 3. **Reviewed `cam/fix-bare-metal-closure-addr`** (includes `more-heap-pages` + `more-builtin-gaps`):
    - 256MB page tables ✅
    - Closure address fix ✅
    - text-contains/text-starts-with ✅
-   - **LGTM — ready to merge.** See `docs/reviews/cam-fix-bare-metal-closure-addr.md`.
+   - **LGTM -- ready to merge.** See `docs/reviews/cam-fix-bare-metal-closure-addr.md`.
 
 4. **Wrote 21+ new regression tests** in `LinuxNativeTests.cs` covering `is-digit`, `is-whitespace`, `negate`, and TCO across all three native backends (x86_64 native, ARM64/RISC-V via qemu-user). Committed to master.
 
@@ -29,9 +29,9 @@
 
 ---
 
-## 3 bugs found — need your fixes
+## 3 bugs found -- need your fixes
 
-### Bug 1: ARM64 `is-digit` — CSINC condition inverted
+### Bug 1: ARM64 `is-digit` -- CSINC condition inverted
 
 **File:** `Arm64CodeGen.cs`, `is-digit` case  
 **Symptom:** `is-digit "5"` → 0 (should be 1), `is-digit " "` → 1 (should be 0)
@@ -45,12 +45,12 @@ The CSINC uses CC (carry clear = 0x3). After `CMP X11, #10`, carry is clear when
 
 **Tests that will flip green:** `IsDigit_positive_runs_arm64`, `IsDigit_space_rejected_arm64`
 
-### Bug 2: x86_64 `is-whitespace` — false positive for non-whitespace
+### Bug 2: x86_64 `is-whitespace` -- false positive for non-whitespace
 
 **File:** `X86_64CodeGen.cs`, `is-whitespace` case  
 **Symptom:** `is-whitespace "a"` → 1 (should be 0)
 
-Suspected `AllocTemp()` register aliasing — `t2` may get the same register as `rd`, so `Setcc` into `t2` clobbers the character byte before the tab/newline/CR comparisons run. Fix: use `AllocLocal()` for `rd` to pin it in a callee-saved register, or save it before the comparison chain.
+Suspected `AllocTemp()` register aliasing -- `t2` may get the same register as `rd`, so `Setcc` into `t2` clobbers the character byte before the tab/newline/CR comparisons run. Fix: use `AllocLocal()` for `rd` to pin it in a callee-saved register, or save it before the comparison chain.
 
 **Test that will flip green:** `IsWhitespace_letter_rejected_x86_64`
 
@@ -71,11 +71,11 @@ The TCO loop is functionally correct but each iteration still heap-allocates box
 ## What's on master now
 
 ```
-f48bef3  (origin/master) — your toolkit cleanup + copilot instructions
-28977bd  (local master)  — my regression tests (21 new tests)
+f48bef3  (origin/master) -- your toolkit cleanup + copilot instructions
+28977bd  (local master)  -- my regression tests (21 new tests)
 ```
 
-My test commit needs a push once you've merged `fix-bare-metal-closure-addr`. Or I can push now and you rebase — your call.
+My test commit needs a push once you've merged `fix-bare-metal-closure-addr`. Or I can push now and you rebase -- your call.
 
 ## Branches still open
 

@@ -49,11 +49,62 @@ p4 -c BigWhite_Codex_<agent>_main submit -d "copy-up: <description>"
 ```
 
 Always use `-c <main-client>`. Your `.p4config` points at the dev
-client — a bare `p4 copy` targets the wrong workspace.
+client -- a bare `p4 copy` targets the wrong workspace.
+
+**On a seed-affecting copy-up the token covers this step too, not just the
+gate. Do not write `build-complete` until step 4 has landed.** The gate
+result you are carrying up is only valid against the seed you gated
+against; release the token before the copy lands and a seed-affecting CL
+can arrive in the gap, which puts you back at the start with someone else
+holding the token. **A copy-up that touches no seed needs no token at
+all** -- see rule 1 of `CoordinationProtocol.md`. (You will also meet
+`p4 copy`'s *"cannot copy over outstanding merge changes"* if main moved
+after your merge-down. That is Perforce refusing a stale copy, which is
+mechanics, not the reason the token exists.)
+
+**ONE FILE PER `p4 copy`. Naming two target paths in a single copy
+writes the WRONG FILE'S CONTENT into one of them, silently.** On
+2026-07-28 this copy:
+
+```powershell
+p4 -c ..._main copy --from //Codex/reek `
+   //Codex/main/.claude/skills/handoff/SKILL.md `
+   //Codex/main/docs/Agents/reek-workplan.md      # DO NOT DO THIS
+```
+
+submitted ONE file, not two: `reek-workplan.md` on main was replaced
+with the CONTENT OF `SKILL.md`, and `SKILL.md` never moved at all
+(CL 11401). The tell was in the output and reads as harmless line
+wrapping:
+
+```
+//Codex/main/docs/Agents/reek-workplan.md#102 - sync/integrate from
+//Codex/main/.claude/skills/handoff/SKILL.md#1,#3
+```
+
+A target integrating "from" an unrelated source path is the whole
+warning, and `Locking 1 files` when you named two is the other one.
+Nothing errors. The next merge-down then pulls the corruption back
+DOWN into your own stream and overwrites your good copy, so the
+window to notice using `p4 print` is short.
+
+Copy up one path at a time, and **`p4 print` each target afterwards**
+rather than trusting the submit line -- the standing rule two sections
+below ("after any copy-up, `p4 files` the artifacts you claim to have
+added") is the same lesson and it is not enough on its own: `p4 files`
+said the workplan existed and was at a fresh revision, which was true
+and told you nothing about what was inside it. Check CONTENT, not
+existence.
+
+Recovery is cheap if caught: `p4 filelog` the file, find the last good
+revision, `p4 edit -t <its filetype>`, `p4 print -q -o <path>
+<file>#<rev>`, submit, then copy up again singly. Restore the FILETYPE
+too -- the corrupt revision came back as `unicode` where the workplan
+had been `unicode+C`.
 
 ## The Golden Rule
 
-**Your workspace files must match depot state before running gates (build, test, BS3).** The compiler reads source from disk. If you have shelved-but-not-reverted edits, the on-disk files contaminate the build. The seed doesn't know about your changes — it compiles what it reads.
+**Your workspace files must match depot state before running gates (build, test, BS3).** The compiler reads source from disk. If you have shelved-but-not-reverted edits, the on-disk files contaminate the build. The seed doesn't know about your changes -- it compiles what it reads.
 
 ## Before Running Gates
 
@@ -88,11 +139,11 @@ build/p4-stale-check.ps1     # refuses to continue if anything is still behind
 
 # 4. NOW run gates
 build/build.ps1
-build/test.ps1 -Jobs 4
+build/test.ps1 -Jobs 8
 ```
 
 `p4 clean` is also the fix when a build mysteriously bakes in a name or
-file that "isn't there" — a stray .codex from a reverted/abandoned branch
+file that "isn't there" -- a stray .codex from a reverted/abandoned branch
 or a depot-side delete that sync left on disk. When in doubt before a seed
 rebuild or copy-up verification, `p4 clean codex/... apps/...` first.
 
@@ -152,9 +203,45 @@ survives untouched:
 
 ```powershell
 $spec = p4 change -o <CL> | Out-String
-$spec = $spec -replace '(?s)Description:.*?\r?\n\r?\nFiles:', "Description:`r`n`t<new text>`r`n`r`nFiles:"
+$spec = $spec -replace '(?sm)^Description:.*?\r?\n\r?\n^Files:', "Description:`r`n`t<new text>`r`n`r`nFiles:"
 $spec | p4 change -i
 ```
+
+**The `^` anchors and the `m` flag are load-bearing.** Without them the
+pattern matches the SPEC HEADER COMMENT, which carries its own
+`#  Description: Comments about the changelist.  Required.` line about
+eighty characters before the real field. The lazy `.*?` then runs from
+inside the comment block to the first `Files:`, the whole header is
+replaced, and `p4 change -i` answers:
+
+```
+Error in change specification.
+Error detected at line 10.
+Syntax error in 'The'.
+```
+
+which names your description text and points at the header, so it reads
+like the description is malformed when the description is fine.
+
+A regex is the fragile way to do this. Splicing on the two marker lines
+cannot mismatch, and is worth the three extra lines when the description
+is long:
+
+```powershell
+$lines = @(p4 change -o <CL>)
+$di = [Array]::IndexOf($lines, 'Description:')
+$fi = [Array]::IndexOf($lines, 'Files:')
+if ($di -lt 0 -or $fi -lt 0 -or $fi -le $di) { throw "spec markers not found" }
+$new  = @($lines[0..$di])
+$new += ($descText -split "`r?`n" | ForEach-Object { "`t" + $_ })
+$new += ''
+$new += $lines[$fi..($lines.Count - 1)]
+($new -join "`r`n") | p4 change -i
+```
+
+Either way, **re-count with `p4 opened -c <CL>` afterwards.** The count
+is the whole defence, and `Change N updated, removing K file(s)` is the
+only warning you get.
 
 Better still, **write the description when you create the CL** and never
 round-trip at all. A description you have to go back and fix is a round-trip
@@ -171,12 +258,47 @@ state, and a command that behaves slightly differently from your assumption
 rearranges it silently -- which you discover mid-submit, when stopping to read
 is most expensive. Shelve first, or experiment on a clean tree.
 
+### Two ways the round-trip above corrupts the spec, both silent until submit
+
+The round-trip is the right shape and both of these bit it on 2026-07-28.
+
+**1. `p4 change -o` output contains the word `Description:` TWICE.** The spec
+begins with a comment block, and one of its lines is
+`#  Description: Comments about the changelist.  Required.` A regex written as
+`(?s)Description:.*?Files:` matches from THAT line, so the replacement eats
+`Change:`, `Date:`, `Client:`, `User:` and `Status:` and leaves your prose
+where the fields belong. Perforce answers
+`Error detected at line 10. Unknown field name '<first word of your text>'`.
+Anchor to line start (`(?ms)^Description:.*?^Files:`), or do it by line index
+rather than by regex.
+
+**2. PowerShell `-replace` treats `$` in the REPLACEMENT as a capture
+reference.** A description containing `$` -- and in this tree that is any
+description quoting the debugger's `$` cursor token, or a shell snippet --
+loses text or produces
+`Too many entries for field 'Change'`. `-replace` is the wrong tool for
+inserting arbitrary text; splice by line index:
+
+```powershell
+$spec = @(p4 change -o <CL>)
+$di = [Array]::IndexOf($spec, ($spec | Where-Object { $_ -match '^Description:' } | Select-Object -First 1))
+$fi = [Array]::IndexOf($spec, ($spec | Where-Object { $_ -match '^Files:' } | Select-Object -First 1))
+$new  = @($spec[0..$di]) + @($body | ForEach-Object { "`t" + $_ }) + @('') + @($spec[$fi..($spec.Count-1)])
+($new -join "`r`n") | Set-Content $tmp -NoNewline
+Get-Content $tmp -Raw | p4 change -i
+```
+
+**Neither failure loses the files** -- both are refused before anything is
+written, and `p4 opened -c <CL>` still lists the full set. Check it after any
+failed `p4 change -i` rather than assuming the CL was emptied, which is the
+DIFFERENT failure documented directly above.
+
 ### 2. Submitting a file with unrelated changes
 **Symptom:** CL description says "fix X" but the diff also includes Y and Z.
 **Cause:** The file was open for edit in your CL AND modified by other work (rename, idiom replacement). Perforce submits whatever is on disk.
 **Fix:** Before submitting a small CL, `p4 diff` the file and verify the diff matches your intent. If it has extra changes, revert and re-edit just the lines you need.
 
-### 3. Unicode in submit descriptions — NEVER USE EM DASHES
+### 3. Unicode in submit descriptions -- NEVER USE EM DASHES
 **Symptom:** `No Translation for parameter` error on `p4 submit`.
 **Cause:** The submit description contains non-ASCII characters.
 The Perforce server rejects them outright. The submit fails, you
@@ -187,10 +309,10 @@ dashes and curly quotes. Fight the instinct. There is no place in
 a CL description for any byte above 0x7F. None. Ever.
 
 **Banned characters (non-exhaustive):**
-- Em dash `--` (U+2014) — use hyphen `-` (0x2D)
-- En dash (U+2013) — use hyphen `-`
-- Curly quotes (U+201C, U+201D, U+2018, U+2019) — use `"` and `'`
-- Ellipsis (U+2026) — use `...`
+- Em dash `--` (U+2014) -- use hyphen `-` (0x2D)
+- En dash (U+2013) -- use hyphen `-`
+- Curly quotes (U+201C, U+201D, U+2018, U+2019) -- use `"` and `'`
+- Ellipsis (U+2026) -- use `...`
 - Any accented character, any emoji, any non-ASCII symbol
 
 **Fix:** ASCII only. Hyphen-minus, straight quotes, three dots.
@@ -199,10 +321,10 @@ is whether you snuck in an em dash. You almost certainly did.
 
 ### 4. Moving files between CLs without checking content
 **Symptom:** Files from CL A end up in CL B with A's modifications baked in.
-**Cause:** `p4 reopen -c <new-CL>` moves the file reference but the on-disk content stays as-is — including all edits from the original CL.
+**Cause:** `p4 reopen -c <new-CL>` moves the file reference but the on-disk content stays as-is -- including all edits from the original CL.
 **Fix:** If splitting a CL, revert the file first, then `p4 edit` it fresh in the target CL and make only the intended changes.
 
-### 5. Reverting before shelving — silently losing a fresh edit
+### 5. Reverting before shelving -- silently losing a fresh edit
 **Symptom:** You made a fix, ran the gate dance, and the built SUT
 does NOT contain your fix. The battery fails on a case you already
 verified passing; the gate `Sut.cdx` hash differs from a SUT you
@@ -219,20 +341,20 @@ correct gate dance order is exactly: shelve → revert → sync -f → clean
 → unshelve → build. If you edit a file AFTER unshelving (e.g. a fix
 mid-gate), you must re-`shelve -f` before the next revert or you lose
 it again.
-### `p4 unshelve` silently drops an `add` — "Can't clobber writable file"
+### `p4 unshelve` silently drops an `add` -- "Can't clobber writable file"
 
 **This is the worst one on this page. It cost every test added on
 2026-07-13, and nothing noticed for hours.**
 
 **Symptom:** A CL contains edits and one or more new files. You do the gate
-dance (shelve, revert, unshelve), submit, copy up — and **the edits land and
+dance (shelve, revert, unshelve), submit, copy up -- and **the edits land and
 the new files do not**. `p4 submit` reports success. `p4 describe` shows only
 the edits. The new files sit on disk looking perfectly fine, and are not in
 the depot at all. Docs you wrote in the same CL now name tests that do not
 exist.
 
 **Cause:** `p4 revert` on a file opened for **add** removes it from the CL
-but **leaves the file on disk** (correctly — it was never in the depot to
+but **leaves the file on disk** (correctly -- it was never in the depot to
 restore). When you then `p4 unshelve`, Perforce finds a writable file already
 sitting there and prints:
 
@@ -266,9 +388,137 @@ The rule that would have caught it in seconds: **after any copy-up, `p4 files`
 the artifacts you claim to have added.** A doc that names a test is not
 evidence the test exists.
 
+### An edit on top of an `integrate`-only open is DROPPED at submit
+
+**Symptom:** you merge down, `p4 resolve -at`, then edit the resolved file,
+verify your text is on disk, submit -- and the depot revision comes back
+WITHOUT your edit while the workspace file still has it. No conflict, no
+warning, and the submit line says the file was submitted. Downstream, the
+tell is `p4 copy` answering **"File(s) up-to-date"** while the two files
+plainly differ, because the integration record is satisfied even though the
+content is not.
+
+**Cause:** the file's open action is `integrate`, not `edit`. A resolve that
+took theirs (`-at`) is a "copy from", and it also leaves the file READ-ONLY
+on disk while still open, so the first thing an editor hits is EPERM;
+clearing the read-only bit by hand gets the write through to disk but does
+not change the open action, and the submit carries the resolved content.
+
+Measured 2026-07-29: a whole handoff resting-state section was written,
+verified on disk, submitted, and absent from the depot revision. It took two
+recoveries -- the first because the same session had already lost the section
+once to a bulk `-at` over its own file.
+
+**Fix, and it is two commands:** `p4 edit <file>` before writing to a file
+that is open only for integrate, so the action includes an edit. Then
+**`p4 print` the depot revision you just created and grep it for your own
+text.** The standing rule two sections above -- check CONTENT, not the
+submit line -- is written about copy-up to main, and this is the same rule
+applied to your own dev-stream submit, which is where it had not been.
+
+**Perforce has a first-class way to do this and the section above spent two
+recoveries not using it.** Editing on disk after a resolve is working around
+the resolve rather than through it. `p4 resolve` interactively offers, from
+`p4 help resolve`:
+
+```
+Accept:   ae   Keep merged and edited file.
+Edit:     e    Edit merged file (read/write).
+```
+
+So the sanctioned hand-merge is one step: `p4 resolve`, `e` to edit the
+merged result, `ae` to accept what you edited. The edit is recorded AS the
+resolve, so the open action is never left as a bare `integrate` and there is
+nothing to drop at submit. Use it whenever you are merging a file by hand --
+which for an agent means **any file you have also edited yourself, above all
+your own workplan**, since `-at` over that is the other half of this trap.
+
+**Agents in this harness cannot drive it**, because interactive `p4 resolve`
+wants a terminal and an editor and the tool stdin is the null device. That is
+the whole reason the `p4 edit` recipe above exists, and it is verified: it was
+used on 2026-07-30 to recover a workplan section the submit had dropped, and
+the depot revision was checked by content afterwards. **State which one you
+used.** A human hand-merging should reach for `e`/`ae`; an agent uses
+`p4 edit` plus the `p4 print` check, and neither should be mistaken for the
+other being unavailable.
+
+**And never bulk-`resolve -at` a merge that includes a file you changed
+yourself.** `-at` is for files untouched on your side; on your own file it is
+a silent revert. Resolve those by hand.
+
+**`p4 resolve -as` is how you find out which files those are, and it cannot
+guess wrong.** The rule above requires knowing which side of a merge each file
+changed on, and reading the merge output does not tell you: every file prints
+the same `must resolve content from` line whether you touched it or not.
+`-as` is safe-automatic -- it takes theirs only where **your** side has no
+changes, and SKIPS every file with edits on both sides -- so one command
+partitions the merge for you. Each file it resolves prints its own evidence:
+
+```
+Diff chunks: 0 yours + 9 theirs + 0 both + 0 conflicting   <- yours untouched, taken
+Diff chunks: 1 yours + 11 theirs + 0 both + 0 conflicting  <- skipped, yours to merge
+```
+
+Then `p4 resolve -n` lists exactly what is left, which is the short list that
+earns the hand treatment. Used 2026-07-31 on a ten-file merge-down where every
+file came back `0 yours` (no hand-merge was needed at all, and that was
+established rather than assumed), and again the same session on a five-file one
+where it correctly skipped the two workplans holding edits from both sides.
+**`0 conflicting` on a skipped file means `-am` will merge it without loss**;
+reach for the `p4 edit` recipe above only when a file actually conflicts.
+
+### An unshelve restores the SHELVED revision over a newer file, silently
+
+**Symptom:** you shelve, merge down, unshelve, and a file you never touched in
+that CL has gone BACKWARDS. Not a conflict, not an unresolved file, no
+warning. Whatever landed on that file between the shelve and the unshelve is
+simply gone.
+
+**Cause:** a shelf holds file CONTENT, not a diff. A shelf made before a
+merge-down carries the pre-merge version of every file in it, so unshelving it
+after the merge writes that version back over head. This is the
+ValPostMortem "accept ours -- already incorporated" accident wearing a shelf
+instead of a resolve: the same silent revert, arriving through a mechanism
+nobody thinks of as a resolve at all.
+
+Measured 2026-07-27: a workplan lost an entire cross-lane section this way and
+nothing said a word.
+
+**Fix:** after unshelving onto a stream that has moved, **diff the files you
+did NOT expect to change**. If one went backwards:
+
+```powershell
+p4 revert <file>
+p4 sync -f <file>
+p4 edit <file>
+# redo the edit on top of head
+```
+
+### `p4 revert` of an `add` leaves the file writable, and `p4 print -o` lies about whether it matches
+
+The companion to the dropped-add trap above. `p4 revert` on an `add` leaves the
+file on disk and writable, which is what makes the next `unshelve` fail with
+`Can't clobber writable file`. Deleting it first is correct -- **but verify it
+matches the shelf before you delete it**, because if it does not you are
+throwing away the newer of the two.
+
+**The verification itself has a trap.** `p4 print -o` TRANSLATES line endings
+on a text file, so a raw hash compare of the on-disk file against its shelved
+copy reports a mismatch that is not there. Normalize before comparing:
+
+```powershell
+$a = (Get-Content $onDisk -Raw) -replace "`r`n","`n"
+$b = (Get-Content $printed -Raw) -replace "`r`n","`n"
+$a -eq $b
+```
+
+A **binary** file compares exact through `p4 print -o`, which is the tell: if
+the binaries match and only the text files "differ", it is the translation and
+not your content.
+
 ### Unshelving onto a moved depot: `p4 resolve -n` lies to you
 
-**Symptom:** You shelve work, merge down from main, unshelve — and your
+**Symptom:** You shelve work, merge down from main, unshelve -- and your
 file no longer contains what the merge-down just brought in. `p4 resolve
 -n` says **"No file(s) to resolve"**, and `p4 fstat` shows no `unresolved`
 flag. Everything looks clean. It is not.
@@ -277,21 +527,21 @@ flag. Everything looks clean. It is not.
 the revision it was shelved **at**, not at head. A merge-down moves head.
 So the file is now the shelved content, and every revision submitted in
 between is missing from your copy. **Perforce does not schedule the
-resolve at unshelve time** — only `p4 sync` does that. Until you sync, the
+resolve at unshelve time** -- only `p4 sync` does that. Until you sync, the
 one command you would reach for to check reports that you are clean.
 
 Measured 2026-07-13 by reproducing it deliberately: after a merge-down, an
 unshelved `BACKLOG.md` sat at `haveRev 29` against `headRev 31`, with
 `p4 resolve -n` reporting nothing to do.
 
-**The depot is not at risk from doing nothing** — `p4 submit` does block on
+**The depot is not at risk from doing nothing** -- `p4 submit` does block on
 an out-of-date file. The risk is the *recovery*: an agent who has just been
 told there is nothing to resolve reaches for `p4 resolve -ay` (accept
 yours) to get moving, and that silently drops every revision another agent
 submitted while the work was shelved. This is the same shape as the
 move-trap below: the damage does not appear where the mistake was made.
 
-**Fix — two commands, and they are not optional:**
+**Fix -- two commands, and they are not optional:**
 
 ```powershell
 p4 unshelve -s <CL> -c <CL>
@@ -310,7 +560,7 @@ because the built-in check answers the wrong question.
 
 **Detect:** After a gate build, compare the gate `build/output/Sut.cdx`
 hash against a SUT you compiled by hand from the same source. A
-mismatch means the gate built different bytes than you think — usually
+mismatch means the gate built different bytes than you think -- usually
 a lost edit. `Get-FileHash build/output/Sut.cdx` is two seconds; a lost
 edit is an hour.
 
@@ -436,7 +686,7 @@ p4 change  # -> new CL number
 p4 edit -c <small-CL> path/to/file.codex
 
 # 6. Make ONLY the targeted change
-# (the file is now at depot state — edit from there)
+# (the file is now at depot state -- edit from there)
 
 # 7. Submit the small CL
 p4 submit -c <small-CL>
@@ -508,6 +758,10 @@ catch offenders.
   moves nightly), and the copy-up is then refused with
   `Stream //Codex/<agent> cannot 'copy' over outstanding 'merge' changes`. Merge down
   again, submit the merge, then copy up. Budget for two merge-downs per token hold.
+  Your token does not prevent this and is not meant to: what lands under you is
+  non-seed traffic, which takes no token, and re-merging it costs a merge rather
+  than a gate. A SEED-affecting CL is the one thing that cannot arrive while you
+  hold the token, and that is the whole point of holding it.
 - **`p4 submit` is refused while the CL still has a shelf** ("has shelved files").
   `p4 shelve -d -c <CL>` first. This bites on every CL where a gate follows a shelve,
   which is every CL that uses the build token.
@@ -520,7 +774,7 @@ catch offenders.
 
 Perforce tracks file OPENS, not file CONTENT. When you `p4 edit` a file, Perforce marks it as open. Whatever bytes are on disk at submit time get submitted. There is no staging area like git. This means:
 
-- Multiple CLs can have the same file open — each sees the same on-disk bytes
+- Multiple CLs can have the same file open -- each sees the same on-disk bytes
 - Shelving saves the current on-disk bytes, not a diff
 - Reverting restores the depot version, discarding ALL on-disk changes
 - The on-disk state is the source of truth for compilation
@@ -537,7 +791,7 @@ own dev stream and submit there. Routine, commands, and the live traps are in
 ### Why We Use Them
 
 Dev streams isolate risky work from mainline. If an agent breaks the seed, only
-the dev stream is affected — main stays at its last proven state. The stream
+the dev stream is affected -- main stays at its last proven state. The stream
 gives a clear, easy-to-remember baseline: "DEV_2GB_SYNTAX branched from main at
 CL 1334, proven seed at CL 1380."
 
@@ -561,7 +815,7 @@ with `-ay` or `-at`. For each file in the merge:
 2. If the file is untouched on your side, accept theirs (`-at`).
 3. If BOTH sides changed the file, diff the incoming version against yours
    and merge manually. Your WIP changes will be silently overwritten by
-   `-at` and silently kept (discarding theirs) by `-ay` — both are wrong
+   `-at` and silently kept (discarding theirs) by `-ay` -- both are wrong
    when the file has changes on both sides.
 4. If in doubt, `p4 diff2` the two versions before resolving.
 
@@ -573,7 +827,7 @@ signal is a test failure or a crash hours later.
 # 1. Merge down from parent (use -r for reverse = parent-to-child)
 p4 merge -S //Codex/<CHILD_STREAM> -r
 
-# 2. Review each file — DO NOT BULK-RESOLVE
+# 2. Review each file -- DO NOT BULK-RESOLVE
 p4 resolve -n   # preview what needs resolving
 
 # For files you haven't touched:
@@ -584,7 +838,7 @@ p4 diff2 //Codex/main/<file> //Codex/<CHILD>/<file>   # inspect
 p4 resolve -am <file>    # auto-merge, or manual if conflicts
 
 # For files where you want to keep your version:
-p4 resolve -ay <file>    # accept yours — but ONLY if you've verified
+p4 resolve -ay <file>    # accept yours -- but ONLY if you've verified
                          # that main's changes are already incorporated
                          # or intentionally excluded
 
@@ -601,7 +855,7 @@ at the child client, a bare `p4 copy` targets the wrong workspace. Always
 use `-c <parent-client>` to ensure files open on the parent.
 
 ```powershell
-# 1. Copy up — specify the PARENT client, use --from with the child stream
+# 1. Copy up -- specify the PARENT client, use --from with the child stream
 #    Example: child is CodexMagic, parent client targets main
 p4 -c BigWhite_Codex_gollum_main copy --from CodexMagic
 
@@ -619,8 +873,8 @@ p4 client -S //Codex/main BigWhite_Codex_<agent>_main
 ```
 
 Common agent client names:
-- `BigWhite_Codex_<agent>_main` — main stream (copy-up client)
-- `BigWhite_Codex_<agent>` — dev stream working client
+- `BigWhite_Codex_<agent>_main` -- main stream (copy-up client)
+- `BigWhite_Codex_<agent>` -- dev stream working client
 
 ### Checking Stream Sync Status
 
@@ -628,10 +882,10 @@ Common agent client names:
 In a multi-stream topology, content often reaches a target through indirect
 paths (e.g. Mountain → RESTRUCTURE → main). `interchanges` only tracks
 direct integration records and will permanently show CLs whose content
-arrived via a sibling stream — there is no supported way to clear these
+arrived via a sibling stream -- there is no supported way to clear these
 entries without touching every file from the original CL.
 
-Use `p4 diff2` instead — it compares actual content:
+Use `p4 diff2` instead -- it compares actual content:
 
 ```powershell
 # Are there real content differences between two streams?
@@ -710,7 +964,7 @@ it**. It is a mechanical fix and the source is the authority.
 The seed built on the child stream may not match what the parent produces,
 because the source concat can differ between workspaces.
 
-**The installed seed must be `build/output/Sut.cdx` — the signed one.**
+**The installed seed must be `build/output/Sut.cdx` -- the signed one.**
 `build/output/NewSeed.cdx` is a copy of the unsigned `stage1.cdx`
 (`build.ps1`:401). The sign phase patches the public key and signature
 into `Sut.cdx` **in place** (`build.ps1`:272-274) and touches nothing
@@ -718,17 +972,17 @@ else, so a seed installed from `NewSeed.cdx` carries zeros where its
 signature belongs and fails `build/test-self-verify.ps1` with
 `SIGNATURE INVALID`. The content hash (bytes 8-39) deliberately excludes
 the signature region so the fixed-point test works on signed and unsigned
-alike — which is exactly why a hash match will *not* catch this for you.
+alike -- which is exactly why a hash match will *not* catch this for you.
 Run the self-verify.
 
 ```powershell
 # On the PARENT workspace with the copy-up CL unshelved:
 
-# 1. Run full build — this rebuilds from the shelved seed
+# 1. Run full build -- this rebuilds from the shelved seed
 build/build.ps1
 
 # 2. Check Sut content hash against seed content hash (bytes 8-39).
-#    If Sut === seed, the seed is already the fixed point — nothing to do.
+#    If Sut === seed, the seed is already the fixed point -- nothing to do.
 #    If Sut !== seed but stage1 === stage2, the fixed-point content is
 #    STAGE1's, not Sut's (Sut was built by the OLD seed). Install the
 #    unsigned NewSeed.cdx as an intermediate bootstrap and converge:
@@ -738,7 +992,7 @@ build/build.ps1            # now converges: SUT === stage1 in one pass
 # 3. Install the SIGNED fixed point as the seed
 Copy-Item -Force build/output/Sut.cdx seed/Codex.cdx
 
-# 4. Prove it — this is the step that catches an unsigned seed
+# 4. Prove it -- this is the step that catches an unsigned seed
 build/test-self-verify.ps1   # must print THE SEED VERIFIES ITSELF
 
 # 5. Revert the integrate on the seed, re-edit, and re-shelve
@@ -754,7 +1008,7 @@ p4 shelve -r -c <CL>
 **Why this matters:** The compiler is a fixed point of itself. A seed from a
 different compilation environment (different workspace, different source concat
 order, different stream) may produce correct output but not be self-consistent
-on the target. The byte-identity check catches everything — including cosmic
+on the target. The byte-identity check catches everything -- including cosmic
 rays, stale files, and source concat differences between workspaces.
 
 ### Stream Lifecycle Example (DEV_NEXT, 2026-05-14 → 2026-05-15)

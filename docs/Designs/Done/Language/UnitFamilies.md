@@ -1,4 +1,4 @@
-# Unit Families — Domain-Polymorphic Physical Units
+# Unit Families -- Domain-Polymorphic Physical Units
 
 **Date**: 2026-06-13
 **Status**: Design, implementation starting
@@ -8,8 +8,8 @@
 Unit types (`Second = unit Integer`) prevent mixing unrelated domains
 (seconds vs meters). But they're too specific for function signatures.
 A geometry function shouldn't care whether you pass centimeters or
-inches — it takes a LENGTH. A physics function shouldn't care about
-Celsius vs Kelvin — it takes a TEMPERATURE.
+inches -- it takes a LENGTH. A physics function shouldn't care about
+Celsius vs Kelvin -- it takes a TEMPERATURE.
 
 Current approach requires explicit conversion at every call site:
 
@@ -40,7 +40,7 @@ opening = perimeter (Centimeter 20) (Inch 5)
 -- both auto-convert to base (millimeters), compute, result is Length
 ```
 
-The function takes `Length` — the family name. Any member unit is
+The function takes `Length` -- the family name. Any member unit is
 accepted. Values are stored internally in the BASE unit (first member,
 declared factor = 1). Conversion happens at CONSTRUCTION time, not at
 call sites.
@@ -65,8 +65,8 @@ Each member's factor is: how many base units in one member unit.
 1. `Length` is a type. Functions use it in signatures.
 2. `Centimeter 20` constructs a Length value = 20 * 10 = 200 (base units).
 3. `Inch 5` constructs a Length value = 5 * 25 = 125 (base units).
-4. `Length + Length -> Length` — arithmetic works on base values.
-5. `perimeter (Centimeter 20) (Inch 5)` — both are Length, no conversion needed.
+4. `Length + Length -> Length` -- arithmetic works on base values.
+5. `perimeter (Centimeter 20) (Inch 5)` -- both are Length, no conversion needed.
 6. Display: a Length value of 200 with no unit context displays as 200.
    To display as centimeters: `Length-to-Centimeter result` divides by 10.
 

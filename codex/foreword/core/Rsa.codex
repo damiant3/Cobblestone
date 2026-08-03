@@ -1,0 +1,346 @@
+Chapter: Rsa
+  cites Foreword chapter CryptoBig
+  cites Foreword chapter Sha256
+  cites Foreword chapter Sha512
+
+ RSA signature verification, PKCS#1 v1.5 with SHA-256. Verification
+ only: there is no signing here and no private key anywhere in the
+ chapter, because the only thing Codex needs from RSA is the ability to
+ believe somebody else's certificate.
+
+ THE SIGNATURE IS CHECKED BY CONSTRUCTION, NOT BY PARSING. The recovered
+ block is compared against an encoded message built here from the
+ message and the modulus width. The other way round -- recover, then
+ walk the padding looking for the digest -- is how Bleichenbacher's 2006
+ forgery worked: a lenient parser skips the padding it does not
+ understand, and a signature with room left over can be forged against a
+ small exponent without the private key. There is nothing to be lenient
+ with if the expected bytes are built up front and compared whole.
+
+ We say:
+
+Section: The DigestInfo Prefix
+
+ DER for `SEQUENCE { SEQUENCE { OID 2.16.840.1.101.3.4.2.1, NULL }, OCTET
+ STRING (32) }` -- the SHA-256 DigestInfo header, with the digest itself
+ appended after it. It is a constant because it is always the same
+ nineteen bytes, and writing it as a constant is what lets the comparison
+ above be a whole-block compare.
+
+  rsa-sha256-prefix : List Integer =
+    [48, 49, 48, 13, 6, 9, 96, 134, 72, 1, 101, 3, 4, 2, 1, 5, 0, 4, 32]
+
+Section: The Digest
+
+ `sha256` answers eight 32-bit WORDS, not thirty-two bytes. Feeding the
+ word list somewhere a byte string is meant produces plausible output
+ that is silently wrong, which is what once shipped a whole TLS key
+ schedule in the wrong units. The conversion is big-endian and it happens
+ here, once.
+
+  rsa-digest-bytes : List Integer -> List Integer
+  rsa-digest-bytes (msg) = rsa-words-bytes (sha256 msg) 0 []
+
+  rsa-words-bytes : List Integer, Integer, List Integer -> List Integer
+  rsa-words-bytes (ws) (i) (acc) =
+    if i >= list-length ws then acc
+    else rsa-words-bytes ws (i + 1) (rsa-push-word acc (list-at ws i))
+
+  rsa-push-word : List Integer, Integer -> List Integer
+  rsa-push-word (acc) (w) =
+    let a1 = list-push acc (bit-and (bit-shru w 24) 255)
+    in let a2 = list-push a1 (bit-and (bit-shru w 16) 255)
+    in let a3 = list-push a2 (bit-and (bit-shru w 8) 255)
+    in list-push a3 (bit-and w 255)
+
+Section: SHA-384
+
+ The same construction one digest wider. DigiCert Trusted Root G4 signs
+ with sha384WithRSAEncryption, so without this that root is an anchor
+ whose certificates could be parsed and never checked.
+
+ SHA-384's words are 64 bits, not 32, so the byte conversion is its own
+ function rather than the SHA-256 one reused -- eight bytes per word, big
+ endian, six words, forty-eight bytes.
+
+  rsa-sha384-prefix : List Integer =
+    [48, 65, 48, 13, 6, 9, 96, 134, 72, 1, 101, 3, 4, 2, 2, 5, 0, 4, 48]
+
+  rsa-digest384-bytes : List Integer -> List Integer
+  rsa-digest384-bytes (msg) = rsa-words64-bytes (sha384 msg) 0 []
+
+  rsa-words64-bytes : List Integer, Integer, List Integer -> List Integer
+  rsa-words64-bytes (ws) (i) (acc) =
+    if i >= list-length ws then acc
+    else rsa-words64-bytes ws (i + 1) (rsa-push-word64 acc (list-at ws i))
+
+  rsa-push-word64 : List Integer, Integer -> List Integer
+  rsa-push-word64 (acc) (w) =
+    let a1 = list-push acc (bit-and (bit-shru w 56) 255)
+    in let a2 = list-push a1 (bit-and (bit-shru w 48) 255)
+    in let a3 = list-push a2 (bit-and (bit-shru w 40) 255)
+    in let a4 = list-push a3 (bit-and (bit-shru w 32) 255)
+    in let a5 = list-push a4 (bit-and (bit-shru w 24) 255)
+    in let a6 = list-push a5 (bit-and (bit-shru w 16) 255)
+    in let a7 = list-push a6 (bit-and (bit-shru w 8) 255)
+    in list-push a7 (bit-and w 255)
+
+Section: The Encoded Message
+
+ EM = 0x00 || 0x01 || PS || 0x00 || T, where T is the DigestInfo and PS
+ is 0xFF repeated to fill the modulus width. RFC 8017 section 9.2
+ requires at least eight bytes of padding; a modulus too small to leave
+ room for them cannot carry this signature at all, and the answer to that
+ is an empty encoding that no recovered block can equal, rather than a
+ shorter padding that would verify.
+
+  rsa-em-sha256 : List Integer, Integer -> List Integer
+  rsa-em-sha256 (msg) (k) = rsa-em-build (rsa-sha256-prefix & rsa-digest-bytes msg) k
+
+  rsa-em-sha384 : List Integer, Integer -> List Integer
+  rsa-em-sha384 (msg) (k) = rsa-em-build (rsa-sha384-prefix & rsa-digest384-bytes msg) k
+
+  rsa-em-build : List Integer, Integer -> List Integer
+  rsa-em-build (t) (k) =
+    if k - 3 - list-length t < 8 then []
+    else [0, 1] & rsa-ff (k - 3 - list-length t) [] & [0] & t
+
+  rsa-ff : Integer, List Integer -> List Integer
+  rsa-ff (n) (acc) =
+    if n <= 0 then acc
+    else rsa-ff (n - 1) (list-push acc 255)
+
+Section: Verification
+
+ The signature is an integer strictly narrower than the modulus, and a
+ signature of a different width is refused before any arithmetic: a
+ shorter one would be left-padded into a different number, and a longer
+ one is not a signature under this key at all.
+
+  rsa-verify-pkcs1-sha256 : List Integer, List Integer, List Integer, List Integer -> Boolean
+  rsa-verify-pkcs1-sha256 (n-bytes) (e-bytes) (msg) (sig) =
+    if list-length sig /= list-length n-bytes then False
+    else rsa-check (cb-mod-exp-bytes sig e-bytes n-bytes) (rsa-em-sha256 msg (list-length n-bytes))
+
+  rsa-verify-pkcs1-sha384 : List Integer, List Integer, List Integer, List Integer -> Boolean
+  rsa-verify-pkcs1-sha384 (n-bytes) (e-bytes) (msg) (sig) =
+    if list-length sig /= list-length n-bytes then False
+    else rsa-check (cb-mod-exp-bytes sig e-bytes n-bytes) (rsa-em-sha384 msg (list-length n-bytes))
+
+  rsa-check : List Integer, List Integer -> Boolean
+  rsa-check (got) (want) =
+    if list-length want == 0 then False
+    else rsa-bytes-eq got want
+
+  rsa-bytes-eq : List Integer, List Integer -> Boolean
+  rsa-bytes-eq (a) (b) =
+    if list-length a /= list-length b then False
+    else rsa-bytes-loop a b 0
+
+  rsa-bytes-loop : List Integer, List Integer, Integer -> Boolean
+  rsa-bytes-loop (a) (b) (i) =
+    if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else rsa-bytes-loop a b (i + 1)
+
+Section: RSASSA-PSS
+
+ The other RSA signature scheme, RFC 8017 section 8.1. TLS 1.3 does not
+ offer a choice about it: RFC 8446 section 4.4.3 says a CertificateVerify
+ from an RSA certificate MUST use RSASSA-PSS, and rsa_pkcs1_sha256 is
+ permitted only in the certificate chain, never in the handshake
+ signature. So a TLS client that can do only PKCS#1 v1.5 cannot
+ authenticate an RSA server at all, which is the gap this section closes.
+
+ THIS ONE CANNOT BE CHECKED BY CONSTRUCTION, and that is the whole
+ difference from the section above. A PSS signature carries a random salt,
+ so the same key over the same message gives a different signature every
+ time and there is no expected block to build and compare whole. The
+ encoding has to be taken apart. Every step below is therefore a check
+ that has to be written down and can be left out, where v1.5 got them all
+ from a single comparison -- so the order here follows RFC 8017 section
+ 9.1.2 step for step rather than being rearranged for readability.
+
+ VERIFICATION ONLY, again. No salt is ever generated here, and nothing in
+ this chapter needs a random number, which is worth noticing: PSS SIGNING
+ needs a good one and gets weaker without it, and a verifier that shares
+ code with a signer is a verifier that has an entropy dependency it does
+ not need.
+
+  rsa-pss-hlen : Integer = 32
+
+ The salt is required to be exactly the digest length. RFC 8017 permits
+ other lengths and even permits recovering the length from the encoding,
+ and we do neither: rsa_pss_rsae_sha256 fixes it at 32, and a verifier
+ that accepts whatever salt length it happens to find will accept a
+ zero-length salt, which is a different scheme with a different security
+ argument. Anything else is refused.
+
+  rsa-pss-slen : Integer = 32
+
+  rsa-pss-trailer : Integer = #BC
+
+Section: MGF1
+
+ The mask generation function, RFC 8017 appendix B.2.1. It is a hash in a
+ counter loop: Hash(seed || 0, 1, 2, ...) concatenated until there are
+ enough bytes, then truncated.
+
+ The counter is four bytes big-endian, and it is I2OSP of an integer, not
+ a byte. A three-byte counter, or a native-order one, produces a mask that
+ is wrong from the first block and a verifier that rejects every genuine
+ signature -- which reads as "PSS does not work" rather than as one wrong
+ constant.
+
+  rsa-mgf1 : List Integer, Integer -> List Integer
+  rsa-mgf1 (seed) (want) = rsa-mgf1-loop seed want 0 []
+
+  rsa-mgf1-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  rsa-mgf1-loop (seed) (want) (c) (acc) =
+    if list-length acc >= want then rsa-take acc want
+    else rsa-mgf1-loop seed want (c + 1) (acc & rsa-digest-bytes (seed & rsa-counter c))
+
+  rsa-counter : Integer -> List Integer
+  rsa-counter (c) =
+    [bit-and (bit-shru c 24) 255, bit-and (bit-shru c 16) 255,
+     bit-and (bit-shru c 8) 255, bit-and c 255]
+
+Section: The Modulus Width In Bits
+
+ emBits is modBits - 1, and modBits is the bit length of the modulus --
+ not eight times its byte length. For every RSA key in ordinary use those
+ are the same number, because the top bit of the modulus is set; but
+ taking the byte length as the bit length is an assumption about somebody
+ else's key material, and the one free bit it gets wrong is exactly the
+ bit step 6 below checks.
+
+  rsa-mod-bits : List Integer -> Integer
+  rsa-mod-bits (n) =
+    if list-length n < 1 then 0
+    else (list-length n - 1) * 8 + rsa-top-bits (list-at n 0)
+
+  rsa-top-bits : Integer -> Integer
+  rsa-top-bits (b) = if b <= 0 then 0 else 1 + rsa-top-bits (bit-shru b 1)
+
+Section: EMSA-PSS-VERIFY
+
+ RFC 8017 section 9.1.2, in its order.
+
+  rsa-verify-pss-sha256 : List Integer, List Integer, List Integer, List Integer -> Boolean
+  rsa-verify-pss-sha256 (n-bytes) (e-bytes) (msg) (sig) =
+    if list-length sig /= list-length n-bytes then False
+    else if list-length n-bytes < 1 then False
+    else rsa-pss-em msg (cb-mod-exp-bytes sig e-bytes n-bytes) (rsa-mod-bits n-bytes)
+
+ emLen is ceil(emBits / 8), which is ceil((modBits - 1) / 8), which is
+ (modBits + 6) shifted right three times. The recovered block is as wide
+ as the modulus, so when emLen is narrower the leading bytes have to BE
+ zero rather than merely be ignored -- a nonzero byte there is a recovered
+ value too large for the encoding, and dropping it silently would accept
+ it.
+
+  rsa-pss-em : List Integer, List Integer, Integer -> Boolean
+  rsa-pss-em (msg) (m) (mod-bits) =
+    let em-len = bit-shru (mod-bits + 6) 3
+    in if em-len < rsa-pss-hlen + rsa-pss-slen + 2 then False
+       else if em-len > list-length m then False
+       else rsa-pss-lead msg m mod-bits em-len (list-length m - em-len)
+
+  rsa-pss-lead : List Integer, List Integer, Integer, Integer, Integer -> Boolean
+  rsa-pss-lead (msg) (m) (mod-bits) (em-len) (skip) =
+    if rsa-all-zero m 0 skip == False then False
+    else rsa-pss-trail msg (rsa-slice m skip em-len) mod-bits em-len
+
+ Step 4: the last byte is 0xBC. Step 5 splits the rest into the masked
+ data block and H.
+
+  rsa-pss-trail : List Integer, List Integer, Integer, Integer -> Boolean
+  rsa-pss-trail (msg) (em) (mod-bits) (em-len) =
+    if list-at em (em-len - 1) /= rsa-pss-trailer then False
+    else rsa-pss-bits msg em em-len (em-len - rsa-pss-hlen - 1) (8 * em-len - (mod-bits - 1))
+
+ Step 6, and it is the one that looks like bookkeeping and is not. The
+ encoded message is emBits wide, not a whole number of bytes, so the top
+ few bits of the first byte are not part of it and MUST be zero. A
+ verifier that skips this accepts a family of distinct encodings of the
+ same signature.
+
+  rsa-pss-bits : List Integer, List Integer, Integer, Integer, Integer -> Boolean
+  rsa-pss-bits (msg) (em) (em-len) (db-len) (free) =
+    if db-len < rsa-pss-slen + 1 then False
+    else if bit-and (list-at em 0) (rsa-pss-top-mask free) /= 0 then False
+    else rsa-pss-unmask msg (rsa-slice em 0 db-len) (rsa-slice em db-len rsa-pss-hlen) db-len free
+
+ The top `free` bits set, as a byte: 256 minus 256 shifted right that far.
+
+  rsa-pss-top-mask : Integer -> Integer
+  rsa-pss-top-mask (free) = 256 - bit-shru 256 free
+
+ Steps 7 and 8: unmask the data block with MGF1 seeded by H.
+
+  rsa-pss-unmask : List Integer, List Integer, List Integer, Integer, Integer -> Boolean
+  rsa-pss-unmask (msg) (masked) (h) (db-len) (free) =
+    rsa-pss-db msg h (rsa-xor masked (rsa-mgf1 h db-len) 0 []) db-len free
+
+ Step 9 clears the same top bits in the unmasked block, and then step 10
+ is the padding check: everything before the salt is zero except for a
+ single 0x01 immediately in front of it. The clearing happens BEFORE the
+ zero check rather than being folded into it, because when the block is at
+ its minimum width those top bits and the 0x01 separator are the same
+ byte, and a check that assumed otherwise would reject a legal encoding.
+
+  rsa-pss-db : List Integer, List Integer, List Integer, Integer, Integer -> Boolean
+  rsa-pss-db (msg) (h) (raw) (db-len) (free) =
+    let db = list-set-at raw 0 (bit-and (list-at raw 0) (bit-shru 255 free))
+    in rsa-pss-pad msg h db (db-len - rsa-pss-slen - 1) db-len
+
+  rsa-pss-pad : List Integer, List Integer, List Integer, Integer, Integer -> Boolean
+  rsa-pss-pad (msg) (h) (db) (ps) (db-len) =
+    if rsa-all-zero db 0 ps == False then False
+    else if list-at db ps /= 1 then False
+    else rsa-pss-final msg h (rsa-slice db (db-len - rsa-pss-slen) rsa-pss-slen)
+
+ Steps 12 to 14. M' is EIGHT zero bytes, then the message digest, then the
+ salt -- and the eight zeros are not padding to a boundary, they are a
+ domain separator that stops H' ever being the hash of a bare message.
+ Leaving them out still round-trips against a signer that also leaves them
+ out, which is the failure this tree has already had once in the TLS key
+ schedule.
+
+  rsa-pss-final : List Integer, List Integer, List Integer -> Boolean
+  rsa-pss-final (msg) (h) (salt) =
+    rsa-bytes-eq h (rsa-digest-bytes (rsa-zeros 8 [] & rsa-digest-bytes msg & salt))
+
+Section: PSS Helpers
+
+  rsa-zeros : Integer, List Integer -> List Integer
+  rsa-zeros (n) (acc) =
+    if n <= 0 then acc
+    else rsa-zeros (n - 1) (list-push acc 0)
+
+  rsa-take : List Integer, Integer -> List Integer
+  rsa-take (bs) (n) = rsa-slice bs 0 n
+
+  rsa-slice : List Integer, Integer, Integer -> List Integer
+  rsa-slice (bs) (off) (n) = rsa-slice-loop bs off n 0 []
+
+  rsa-slice-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  rsa-slice-loop (bs) (off) (n) (i) (acc) =
+    if i >= n then acc
+    else if off + i >= list-length bs then acc
+    else rsa-slice-loop bs off n (i + 1) (list-push acc (list-at bs (off + i)))
+
+  rsa-xor : List Integer, List Integer, Integer, List Integer -> List Integer
+  rsa-xor (a) (b) (i) (acc) =
+    if i >= list-length a then acc
+    else if i >= list-length b then acc
+    else rsa-xor a b (i + 1) (list-push acc (bit-xor (list-at a i) (list-at b i)))
+
+  rsa-all-zero : List Integer, Integer, Integer -> Boolean
+  rsa-all-zero (bs) (from) (n) =
+    if from >= n then True
+    else if from >= list-length bs then False
+    else if list-at bs from /= 0 then False
+    else rsa-all-zero bs (from + 1) n
+
+Page 1

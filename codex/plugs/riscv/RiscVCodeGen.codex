@@ -40,9 +40,17 @@ Section: Architecture Profile
 
 Section: Codegen State
 
+ The reg field holds real register numbers below rv-spill-base and
+ SPILL SLOT numbers (base 64, unbounded by function size) above it, so
+ its band must fit the largest spilled function, not a byte: at 255 the
+ __narrow in rv-bind-local trapped UD2 the moment a big function's
+ spill count crossed the band (gop-render-clamp and gop-text-clip,
+ measured 2026-07-28 -- exactly 1223 bytes of exception dump where the
+ wire should be, arm64 fine on identical source).
+
   RvLocal = record {
    name : Text,
-   reg : Integer between 0 and 255
+   reg : Integer between 0 and 1048575
   }
 
   RvTcoState = record {
@@ -988,6 +996,12 @@ Section: Binary Emission
     is IrIntLit (v) (s) -> if rv-is-pow2 v then v else 0
     is _ -> 0
 
+  rv-pow2-dividend-nonneg : IRExpr -> Boolean
+  rv-pow2-dividend-nonneg (e) =
+   when ir-expr-type e
+    is IntegerTy (lo) (hi) (m) -> lo >= 0
+    is otherwise -> False
+
   rv-emit-rem-pow2 : RvState, IRExpr, Integer -> RvEmitResult
   rv-emit-rem-pow2 (st) (left) (n) =
    let dest = st.tco.result-dest
@@ -1018,18 +1032,44 @@ Section: Binary Emission
    else let rd = rv-alloc-temp (lr.state)
    in RvEmitResult { state = rv-emit (rd.state) (rv-srai (rd.reg) (lr.reg) shift), reg = rd.reg }
 
+ A unit type is runtime-transparent: its representation IS the inner
+ type, so every dispatch that picks an instruction sequence by type
+ must see through the wrapper. Before the UnitTy arms here, a compare
+ on a `unit Real` took the integer path, `show` on a `unit Text`
+ printed the pointer, and a literal pattern on one never matched
+ (measured 2026-07-28: unit-real-compare, unit-show, unit-pattern-lit).
+
   rv-is-text-type : CodexType -> Boolean
   rv-is-text-type (ty) =
    when ty
     is TextTy -> True
+    is UnitTy (n) (inner) -> rv-is-text-type inner
     is otherwise -> False
 
   rv-is-real-type : CodexType -> Boolean
   rv-is-real-type (ty) =
    when ty
-    is RealTy -> True
-    is RealTrappingTy -> True
-    is RealSaturatingTy -> True
+    is RealTy (w) (m) -> True
+    is UnitTy (n) (inner) -> rv-is-real-type inner
+    is otherwise -> False
+
+  rv-strip-unit-ty : CodexType -> CodexType
+  rv-strip-unit-ty (ty) =
+   when ty
+    is UnitTy (n) (inner) -> rv-strip-unit-ty inner
+    is otherwise -> ty
+
+ Approx is the f32 half of the real family and compares through
+ flt.s/fle.s on w-moved bits, so it needs its own predicate and its
+ own comparison emitter; the d-width path above cannot read f32 bits
+ (reek's ops/real-mode-compare pinned the gap: approx neg lt neg
+ answered 00 on this lane, 2026-07-28).
+
+  rv-is-real-approx-type : CodexType -> Boolean
+  rv-is-real-approx-type (ty) =
+   when ty
+    is RealTy (w) (m) -> is-width-f32 w
+    is UnitTy (n) (inner) -> rv-is-real-approx-type inner
     is otherwise -> False
 
   rv-emit-sum-eq : RvState, Integer, Integer, Integer -> RvEmitResult
@@ -1091,8 +1131,12 @@ Section: Binary Emission
    let p2 = rv-pow2-lit right
    in if p2 > 1 then
     when op
-     is IrRemInt -> rv-emit-rem-pow2 st left p2
-     is IrDivInt -> rv-emit-div-pow2 st left p2
+     is IrRemInt ->
+      if rv-pow2-dividend-nonneg left then rv-emit-rem-pow2 st left p2
+      else rv-emit-binary-reg st op left right ty
+     is IrDivInt ->
+      if rv-pow2-dividend-nonneg left then rv-emit-div-pow2 st left p2
+      else rv-emit-binary-reg st op left right ty
      is IrMulInt -> rv-emit-mul-pow2 st left p2
      is otherwise ->
       let imm-val = rv-small-imm right
@@ -1190,19 +1234,27 @@ Section: Binary Emission
      in RvEmitResult { state = rv-emit st3 (rv-sltu rd rv-zero rd), reg = rd }
     is IrLt ->
      if rv-is-real-type (ir-expr-type left) then rv-emit-real-comparison st2 left-reg right-reg rv-flt-d
+     else if rv-is-real-approx-type (ir-expr-type left) then rv-emit-real-approx-comparison st2 left-reg right-reg rv-flt-s
      else RvEmitResult { state = rv-emit st2 (rv-slt rd left-reg right-reg), reg = rd }
     is IrGt ->
      if rv-is-real-type (ir-expr-type left) then rv-emit-real-comparison st2 right-reg left-reg rv-flt-d
+     else if rv-is-real-approx-type (ir-expr-type left) then rv-emit-real-approx-comparison st2 right-reg left-reg rv-flt-s
      else RvEmitResult { state = rv-emit st2 (rv-slt rd right-reg left-reg), reg = rd }
     is IrLtEq ->
      if rv-is-real-type (ir-expr-type left)
       then let cmp = rv-emit-real-comparison st2 right-reg left-reg rv-flt-d
+      in RvEmitResult { state = rv-emit (cmp.state) (rv-xori (cmp.reg) (cmp.reg) 1), reg = cmp.reg }
+     else if rv-is-real-approx-type (ir-expr-type left)
+      then let cmp = rv-emit-real-approx-comparison st2 right-reg left-reg rv-flt-s
       in RvEmitResult { state = rv-emit (cmp.state) (rv-xori (cmp.reg) (cmp.reg) 1), reg = cmp.reg }
      else let st3 = rv-emit st2 (rv-slt rd right-reg left-reg)
      in RvEmitResult { state = rv-emit st3 (rv-xori rd rd 1), reg = rd }
     is IrGtEq ->
      if rv-is-real-type (ir-expr-type left)
       then let cmp = rv-emit-real-comparison st2 left-reg right-reg rv-flt-d
+      in RvEmitResult { state = rv-emit (cmp.state) (rv-xori (cmp.reg) (cmp.reg) 1), reg = cmp.reg }
+     else if rv-is-real-approx-type (ir-expr-type left)
+      then let cmp = rv-emit-real-approx-comparison st2 left-reg right-reg rv-flt-s
       in RvEmitResult { state = rv-emit (cmp.state) (rv-xori (cmp.reg) (cmp.reg) 1), reg = cmp.reg }
      else let st3 = rv-emit st2 (rv-slt rd left-reg right-reg)
      in RvEmitResult { state = rv-emit st3 (rv-xori rd rd 1), reg = rd }
@@ -1300,16 +1352,29 @@ Section: Real Arithmetic
    in let st1 = rv-emit (rd.state) (rv-fmv-d-x rv-ft0 l-reg)
    in let st2 = rv-emit st1 (rv-fmv-d-x rv-ft1 r-reg)
    in let st3 = rv-emit st2 (fp-op rv-ft0 rv-ft0 rv-ft1)
-   in let st4 = rv-emit st3 (rv-feq-d rv-t0 rv-ft0 rv-ft0)
-   in let st5 = rv-emit st4 (rv-bne rv-t0 rv-zero 8)
-   in let st6 = rv-emit st5 (rv-fmv-d-x rv-ft0 rv-zero)
-   in RvEmitResult { state = rv-emit st6 (rv-fmv-x-d (rd.reg) rv-ft0), reg = rd.reg }
+   in let st4 = rv-emit st3 (rv-fmv-x-d (rd.reg) rv-ft0)
+   in let st5 = rv-emit st4 (rv-slli rv-t0 (rd.reg) 1)
+   in let st6 = rv-emit st5 (rv-srli rv-t0 rv-t0 53)
+   in let st7 = rv-emit st6 (rv-addi rv-t0 rv-t0 (0 - 2047))
+   in let st8 = rv-emit st7 (rv-bne rv-t0 rv-zero 24)
+   in let st9 = rv-emit st8 (rv-slli rv-t0 (rd.reg) 12)
+   in let st10 = rv-emit st9 (rv-beq rv-t0 rv-zero 12)
+   in let st11 = rv-emit st10 (rv-mv (rd.reg) rv-zero)
+   in let st12 = rv-emit st11 (rv-j 8)
+   in RvEmitResult { state = rv-emit st12 (rv-addi (rd.reg) (rd.reg) (0 - 1)), reg = rd.reg }
 
   rv-emit-real-comparison : RvState, Integer, Integer, (Integer, Integer, Integer -> List Integer) -> RvEmitResult
   rv-emit-real-comparison (st) (l-reg) (r-reg) (cmp-op) =
    let rd = rv-alloc-temp st
    in let st1 = rv-emit (rd.state) (rv-fmv-d-x rv-ft0 l-reg)
    in let st2 = rv-emit st1 (rv-fmv-d-x rv-ft1 r-reg)
+   in RvEmitResult { state = rv-emit st2 (cmp-op (rd.reg) rv-ft0 rv-ft1), reg = rd.reg }
+
+  rv-emit-real-approx-comparison : RvState, Integer, Integer, (Integer, Integer, Integer -> List Integer) -> RvEmitResult
+  rv-emit-real-approx-comparison (st) (l-reg) (r-reg) (cmp-op) =
+   let rd = rv-alloc-temp st
+   in let st1 = rv-emit (rd.state) (rv-fmv-w-x rv-ft0 l-reg)
+   in let st2 = rv-emit st1 (rv-fmv-w-x rv-ft1 r-reg)
    in RvEmitResult { state = rv-emit st2 (cmp-op (rd.reg) rv-ft0 rv-ft1), reg = rd.reg }
 
   rv-emit-real-from-int : RvState, IRExpr -> RvEmitResult
@@ -1385,9 +1450,8 @@ Section: Real Arithmetic
   rv-emit-suggested-vector-width : RvState, IRExpr -> RvEmitResult
   rv-emit-suggested-vector-width (st) (arg) =
    let ty = ir-expr-type arg
-   in when ty
-    is RealApproxTy -> rv-emit-int-lit st 4
-    is otherwise -> rv-emit-int-lit st 2
+   in if is-real-f32 ty then rv-emit-int-lit st 4
+   else rv-emit-int-lit st 2
 
   rv-emit-show-real-approx : RvState, IRExpr -> RvEmitResult
   rv-emit-show-real-approx (st) (arg) =
@@ -1427,21 +1491,14 @@ Section: Real Arithmetic
    when ty
     is VectorTy (n) (et) ->
      when et
-      is RealTy -> True
-      is RealTrappingTy -> True
-      is RealSaturatingTy -> True
-      is RealApproxTy -> True
+      is RealTy (w) (m) -> True
       is otherwise -> False
     is otherwise -> False
 
   rv-is-vec-f32 : CodexType -> Boolean
   rv-is-vec-f32 (ty) =
    when ty
-    is VectorTy (n) (et) ->
-     when et
-      is RealApproxTy -> True
-      is otherwise -> False
-    is otherwise -> False
+    is VectorTy (n) (et) -> is-real-f32 et
     is otherwise -> False
 
   rv-emit-vec-binop : RvState, Integer, Integer, Integer, (Integer, Integer, Integer -> List Integer) -> RvEmitResult
@@ -1775,19 +1832,6 @@ Section: Real Arithmetic
    in let rd = rv-alloc-temp (tr.state)
    in RvEmitResult { state = rv-emit (rd.state) (rv-ld (rd.reg) (tr.reg) 0), reg = rd.reg }
 
- rem keeps the sign of the dividend and int-mod answers the NON-NEGATIVE
- residue, which is what x86-64's emit-int-mod-reg-locals produces by adding the
- divisor's magnitude when idiv's remainder comes back negative. Without this,
- int-mod (-7) 3 is -1 here and 2 there, which is the whole of
- interval-exhaustive's failures, every one of them in mod, because iv-mod's
- transfer function is written for a non-negative result. Branchless, since
- RISC-V has no conditional select: |d| by sign-mask, then the corrected value
- chosen by the remainder's own sign mask.
-
- The power-of-two case needs no correction and must keep its shortcut:
- rv-emit-rem-pow2 emits `andi rd, x, n-1`, which is already the non-negative
- residue for a positive power of two.
-
   rv-emit-mod-correction : RvState, Integer, Integer -> RvEmitResult
   rv-emit-mod-correction (st) (rem-reg) (div-reg) =
    let t0 = rv-alloc-temp st
@@ -1836,8 +1880,8 @@ Section: Real Arithmetic
  **This is not the general fix and must not be read as one.** Two live
  temporaries either side of a binop can still collide in frameless mode,
  here and in `rv-emit-frameless-binop-reg`; what is fixed is the shape
- that occurs, where one side is a literal. The general defect belongs to
- BACKLOG 3.21.
+ that occurs, where one side is a literal. The general defect is open and
+ is not fixed here.
 
  The shift amount is bounded at 63 rather than trusted, because
  `rv-slli` MASKS an oversized shamt with #3F instead of refusing it: an

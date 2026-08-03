@@ -1,0 +1,290 @@
+Chapter: IdtInspector
+  cites Dev chapter HexFormat
+  grounds Device.Port
+
+ The interrupt half of the developer debugger: the dispatch table the
+ processor will actually use, the two counters the ISRs actually move, and
+ what the machine actually recorded the last time it stopped advancing.
+
+ THE TABLE IS AT A COMPILE-TIME CONSTANT AND IS NOT READ FROM IDTR. The
+ boot path builds 256 gates at `idt-base` and then points IDTR at that
+ same address, so the constant and the register agree by construction and
+ an `sidt` would answer what is written here. That is worth stating rather
+ than assuming, because it is the one thing this chapter cannot check: if
+ something ever loaded a SECOND table, every line below would describe the
+ table that is no longer installed. Reading IDTR needs a builtin that does
+ not exist, and inventing one for this was more compiler work than the
+ reading is worth.
+
+ THE ENTRY LAYOUT IS READ OFF THE EMITTER, not off a manual. `emit-idt-
+ entries` writes each gate as two stores: a qword at +0 carrying the low
+ offset word and selector 8, then a qword at +4 carrying `0x8E00` in its
+ low half, which is what puts the type in the nibble at +5 and the present
+ bit above it. Every vector therefore reads back type 14, DPL 0 and
+ present, and the stubs are twelve bytes apart, so vector N's handler is
+ vector zero's plus twelve N. Vector 8 is the single exception: the boot
+ path writes 1 to the IST field at +4 afterwards so a double fault lands
+ on the emergency stack. An inspector that showed all 256 gates identical
+ would be hiding the one gate whose difference is load-bearing.
+
+ THERE IS NO EXCEPTION RECORD ON THIS MACHINE, and `ii-fault-report` is
+ what exists instead. Nothing in the address map stores a faulting vector,
+ RIP or RSP; the only cells that ever hold a RIP are the watchdog's, and
+ the timer ISR writes them when neither the heap pointer nor the saved RIP
+ has moved since the last tick. So a slot is a sample of a system that had
+ stopped advancing, which is close to the question an operator asks after
+ a hang and is NOT the same as a trap frame. Naming it "the last fault"
+ would be inventing a record the machine does not keep.
+
+ THE RING IS FOUR SLOTS AND THE HEAD IS A FREE-RUNNING COUNTER. The
+ writer masks with three and scales by thirty-two, so the head is a total
+ count of samples and not an index; the newest slot is the one before it.
+ Reporting them oldest-first would put the sample that matters last.
+
+ EVERYTHING HERE EXCEPT THE PIC READ IS `peek`, WHICH COSTS NOTHING. That
+ is why these reports are built where they are asked for rather than
+ cached, and it is the opposite of the disk inspector next door, where
+ every read is 512 bytes of heap that is never returned.
+
+ We say:
+
+Section: The Table
+
+  ii-idt-base : Integer = 24576
+  ii-vector-count : Integer = 256
+  ii-entry-size : Integer = 16
+
+  ii-entry-addr : Integer -> Integer
+  ii-entry-addr (vec) = ii-idt-base + vec * ii-entry-size
+
+  ii-u16-at : Integer, Integer -> Integer
+  ii-u16-at (a) (off) = bit-or (peek-byte a off) (bit-shl (peek-byte a (off + 1)) 8)
+
+Section: One Gate
+
+ The offset is assembled from three fields the processor keeps apart, and
+ it is the field an operator is actually after: it is the address the
+ machine will jump to, and it is what a symbol lookup takes.
+
+  ii-gate-offset : Integer -> Integer
+  ii-gate-offset (a) =
+    let lo = ii-u16-at a 0
+    in let mid = bit-shl (ii-u16-at a 6) 16
+    in let hi = bit-shl (peek-32 a 8) 32
+    in bit-or lo (bit-or mid hi)
+
+  ii-gate-selector : Integer -> Integer
+  ii-gate-selector (a) = ii-u16-at a 2
+
+  ii-gate-ist : Integer -> Integer
+  ii-gate-ist (a) = bit-and (peek-byte a 4) 7
+
+  ii-gate-attr : Integer -> Integer
+  ii-gate-attr (a) = peek-byte a 5
+
+  ii-gate-type : Integer -> Integer
+  ii-gate-type (a) = bit-and (ii-gate-attr a) 15
+
+  ii-gate-dpl : Integer -> Integer
+  ii-gate-dpl (a) = bit-and (bit-shru (ii-gate-attr a) 5) 3
+
+  ii-gate-present : Integer -> Boolean
+  ii-gate-present (a) = bit-and (ii-gate-attr a) 128 /= 0
+
+ THE TYPE IS NAMED ONLY WHERE THE NAME IS CERTAIN. An unknown type is
+ reported as its number rather than guessed at, for the same reason the
+ fact log reports a raw kind: an inspector that renames the thing it is
+ inspecting is worth less than no inspector.
+
+  ii-gate-type-name : Integer -> Text
+  ii-gate-type-name (t) =
+    if t == 14 then "interrupt"
+    else if t == 15 then "trap"
+    else if t == 5 then "task"
+    else "type " & show t
+
+  ii-present-word : Integer -> Text
+  ii-present-word (a) = if ii-gate-present a then "present" else "NOT PRESENT"
+
+  ii-gate-attrs : Integer -> Text
+  ii-gate-attrs (a) =
+    let t = ii-gate-type-name (ii-gate-type a)
+    in t & " dpl " & show (ii-gate-dpl a) & " ist " & show (ii-gate-ist a) & " " & ii-present-word a
+
+  ii-gate-line : Integer -> Text
+  ii-gate-line (vec) =
+    let a = ii-entry-addr vec
+    in let head = "vec " & show vec & "  off " & addr-to-hex (ii-gate-offset a)
+    in head & "  sel #" & u16-to-hex (ii-gate-selector a) & "  " & ii-gate-attrs a
+
+ A vector outside the table is REFUSED and names the value it rejected.
+ `ii-entry-addr` of 300 is an address inside whatever follows the table,
+ and it would decode into a confident, entirely fictional gate.
+
+  ii-entry-report : Integer -> List Text
+  ii-entry-report (vec) =
+    if vec < 0 then [ii-vector-refusal vec]
+    else if vec >= ii-vector-count then [ii-vector-refusal vec]
+    else [ii-gate-line vec]
+
+  ii-vector-refusal : Integer -> Text
+  ii-vector-refusal (vec) =
+    "refused: vector " & show vec & " is not in 0.." & show (ii-vector-count - 1)
+
+Section: The Counters
+
+ Both cells are zeroed before `sti` and moved only by an ISR, so zero
+ means the handler has never run rather than that the count wrapped.
+ Naming the two states apart is the whole value of the command: a tick
+ count of zero on a running system says the timer never armed, and that
+ reads identically to a slow boot if the line just prints a number.
+
+  ii-tick-count-addr : Integer = 28672
+  ii-key-buffer-addr : Integer = 28680
+
+  ii-tick-line : Text
+  ii-tick-line =
+    let ticks = peek-qword ii-tick-count-addr 0
+    in if ticks == 0 then "ticks 0 -- the timer ISR has not run"
+    else "ticks " & show ticks
+
+ The keyboard cell holds the last scancode the ISR read from port 0x60,
+ zero-extended, and NOTHING CLEARS IT. The read syscall loads it without
+ zeroing, so this is the last key seen and not a queue depth; a stale
+ non-zero value is the normal resting state after any keypress.
+
+  ii-key-line : Text
+  ii-key-line =
+    let k = bit-and (peek-qword ii-key-buffer-addr 0) 255
+    in if k == 0 then "last scancode none -- the keyboard ISR has not run"
+    else "last scancode #" & hexfmt-byte-to-hex k & " (" & show k & ")"
+
+  ii-counts-report : List Text
+  ii-counts-report = [ii-tick-line, ii-key-line]
+
+Section: The Stall Ring
+
+  ii-wd-stale-tick-addr : Integer = 28744
+  ii-wd-ring-buf-addr : Integer = 28768
+  ii-wd-ring-head-addr : Integer = 28896
+  ii-wd-slots : Integer = 4
+  ii-wd-slot-size : Integer = 32
+
+  ii-fault-header : Integer -> Text
+  ii-fault-header (head) =
+    let stale = peek-qword ii-wd-stale-tick-addr 0
+    in show head & " stall samples taken, stale-tick counter " & show stale
+
+ Newest first. The slot is the head minus one minus the row, and the
+ whole table is offset by a multiple of the slot count before the modulo
+ so the arithmetic never reaches a negative index.
+
+  ii-fault-slot : Integer, Integer -> Integer
+  ii-fault-slot (head) (i) =
+    int-mod (head - 1 - i + ii-wd-slots * ii-wd-slots) ii-wd-slots
+
+  ii-fault-body : Integer, Integer -> Text
+  ii-fault-body (i) (a) =
+    let head = "-" & show i & "  rip " & addr-to-hex (peek-qword a 0)
+    in head & "  rsp " & addr-to-hex (peek-qword a 8) & "  heap " & addr-to-hex (peek-qword a 16)
+
+  ii-fault-line : Integer, Integer -> Text
+  ii-fault-line (head) (i) =
+    ii-fault-body i (ii-wd-ring-buf-addr + ii-fault-slot head i * ii-wd-slot-size)
+
+ A ring with fewer samples than slots must not print the slots it has not
+ written yet: `alloc-bytes` does not zero, and neither did anything else
+ pass over this band, so an unwritten slot holds whatever the firmware
+ left and would render as a plausible RIP.
+
+  ii-fault-lines : Integer, Integer -> List Text
+  ii-fault-lines (head) (i) =
+    if i >= ii-wd-slots then []
+    else if i >= head then []
+    else [ii-fault-line head i] & ii-fault-lines head (i + 1)
+
+  ii-fault-report : List Text
+  ii-fault-report =
+    let head = peek-qword ii-wd-ring-head-addr 0
+    in if head == 0 then ["no stall sample since boot -- the watchdog has not fired"]
+    else [ii-fault-header head] & ii-fault-lines head 0
+
+ The newest slot on its own, for the console views that want a RIP and an
+ RSP rather than a table. `ii-stall-sampled` GUARDS BOTH READERS and is
+ not decoration: with an empty ring the newest-slot arithmetic lands on
+ slot three, which has never been written, so an unguarded read answers
+ whatever the firmware left there. That is precisely the failure these
+ two functions were written to repair, and repeating it one address to
+ the left would not be an improvement.
+
+  ii-stall-sampled : Boolean
+  ii-stall-sampled = peek-qword ii-wd-ring-head-addr 0 /= 0
+
+  ii-stall-newest-addr : Integer
+  ii-stall-newest-addr =
+    ii-wd-ring-buf-addr + ii-fault-slot (peek-qword ii-wd-ring-head-addr 0) 0 * ii-wd-slot-size
+
+  ii-stall-rip : Integer
+  ii-stall-rip = if ii-stall-sampled then peek-qword ii-stall-newest-addr 0 else 0
+
+  ii-stall-rsp : Integer
+  ii-stall-rsp = if ii-stall-sampled then peek-qword ii-stall-newest-addr 8 else 0
+
+Section: The Interrupt Controller
+
+ Three registers and not two. The design names ISR and IRR, which answer
+ what is in service and what is pending; neither answers why a line that
+ should be firing is silent, and that is the mask. It is one more port
+ read on a register that needs no OCW3 at all.
+
+  ii-pic1-cmd : Integer = 32
+  ii-pic1-data : Integer = 33
+  ii-pic2-cmd : Integer = 160
+  ii-pic2-data : Integer = 161
+  ii-ocw3-irr : Integer = 10
+  ii-ocw3-isr : Integer = 11
+
+ An OCW3 write LATCHES which register the next read of the command port
+ returns, so the write and the read are a pair and cannot be separated or
+ reordered. Reading both PICs means four writes and four reads, in that
+ interleaving.
+
+  ii-pic-read : Integer, Integer -> Integer
+  ii-pic-read (cmd-port) (ocw3) =
+    let w = port-out-byte cmd-port ocw3
+    in port-in-byte cmd-port
+
+  ii-bits-line : Text, Integer -> Text
+  ii-bits-line (label) (v) =
+    let head = label & " #" & hexfmt-byte-to-hex v & " "
+    in head & ii-bit-names v 0 ""
+
+ The lines are named by bit rather than printed as a byte alone. An
+ operator reading `#04` has to count to know it is IRQ 2, and IRQ 2 on the
+ master is the cascade, which is the one line whose meaning is not its
+ number.
+
+  ii-bit-names : Integer, Integer, Text -> Text
+  ii-bit-names (v) (i) (acc) =
+    if i >= 8 then ii-bits-or-none acc
+    else if bit-and v (bit-shl 1 i) /= 0 then ii-bit-names v (i + 1) (ii-bit-join acc i)
+    else ii-bit-names v (i + 1) acc
+
+  ii-bit-join : Text, Integer -> Text
+  ii-bit-join (acc) (i) =
+    if text-length acc == 0 then show i else acc & " " & show i
+
+  ii-bits-or-none : Text -> Text
+  ii-bits-or-none (acc) = if text-length acc == 0 then "(none)" else acc
+
+  ii-irq-report : [Device.Port] List Text
+  ii-irq-report =
+    let m-irr = ii-pic-read ii-pic1-cmd ii-ocw3-irr
+    in let m-isr = ii-pic-read ii-pic1-cmd ii-ocw3-isr
+    in let m-imr = port-in-byte ii-pic1-data
+    in let s-irr = ii-pic-read ii-pic2-cmd ii-ocw3-irr
+    in let s-isr = ii-pic-read ii-pic2-cmd ii-ocw3-isr
+    in let s-imr = port-in-byte ii-pic2-data
+    in [ii-bits-line "master irr" m-irr, ii-bits-line "master isr" m-isr,
+        ii-bits-line "master imr" m-imr, ii-bits-line "slave  irr" s-irr,
+        ii-bits-line "slave  isr" s-isr, ii-bits-line "slave  imr" s-imr]

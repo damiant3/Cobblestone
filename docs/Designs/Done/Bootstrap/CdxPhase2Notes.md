@@ -2,7 +2,7 @@
 
 **Date**: 2026-03-31
 **Status**: Implementation
-**Context**: Second Bootstrap Phase 2 — ELF Writer + CDX Writer in Codex
+**Context**: Second Bootstrap Phase 2 -- ELF Writer + CDX Writer in Codex
 
 ---
 

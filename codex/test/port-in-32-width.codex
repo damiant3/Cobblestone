@@ -1,0 +1,74 @@
+Chapter: PortIn32Width
+  cites Kernel chapter Pci
+
+ A 32-bit `in` writes EAX, and on x86-64 any 32-bit register write
+ zero-extends into RAX. So `port-in-32` can never answer a negative
+ number, whatever the device put on the bus, and a PCI vendor-and-device
+ dword for an Intel part is exactly the case that tests it: vendor 0x8086
+ with a device id of 0x8000 or above sets bit 31.
+
+ This reads the dword RAW, without `pci-config-read-raw`'s mask, because
+ the mask is what a guest does to defend itself and the question here is
+ what the machine handed it in the first place. Masked, the answer is the
+ same on a correct machine and a broken one, which is the definition of an
+ arm that cannot fail.
+
+ It exists because codex-vm got this wrong until 2026-07-30 and nothing
+ could see it. The emulator computed the port result into a signed `int`
+ and assigned it to a 64-bit register with no mask, while its own 8-bit
+ and 16-bit arms masked correctly, so `0x8C318086` reached the guest as
+ `0xFFFFFFFF8C318086`. Two agents read the guest's emitted `xor eax, eax;
+ in eax, dx` and correctly concluded the builtin zero-extends; a third
+ measured a negative value coming out of it. Both were right, and the
+ defect was one layer below the thing they were reading.
+
+ It needs no sidecar and no flag, and the reason is worth stating because
+ the first version of this file claimed otherwise. An ABSENT PCI slot
+ answers `0xFFFFFFFF`, which is the bit-31 case, so every machine supplies
+ it and the probe finds one on the default bus. `-xhci-intel` adds a real
+ Intel part (0x8086:0x8C31) as a second instance, but it was never
+ load-bearing: the arm ran clean without it, which is how the claim was
+ caught.
+
+ The `bed not armed` branch below is therefore unreachable on any machine
+ with an empty slot. It is kept because a bus with no bit-31 dword at all
+ would make every other row vacuous, and a probe that cannot say "I was
+ never armed" reports the same thing whether it passed or never ran.
+
+Section: Probe
+
+ Walks device slots on bus 0 and answers the raw reading for the first
+ dword whose low half is a vendor id and whose high half sets bit 31.
+
+  raw-at : Integer -> [Device.Port] Integer
+  raw-at (dev) = act
+    w <- port-out-32 pci-config-addr (pci-address 0 dev 0 0)
+    v <- port-in-32 pci-config-data
+    v
+  end
+
+ Answers the first raw dword with bit 31 set, or zero if the bus carries
+ none. Self-recursive so the loop is a tail call.
+
+  scan : Integer, Integer -> [Device.Port] Integer
+  scan (dev) (found) = act
+    if dev >= 32 then found
+    else act
+      v <- raw-at dev
+      n <- scan (dev + 1) found
+      if bit-and v 2147483648 /= 0 then v else n
+    end
+  end
+
+Section: Entry
+
+  opening : [Console, Device.Port] Nothing = act
+    v <- scan 0 0
+    if v == 0 then print-line-uni "no bit-31 dword on the bus: bed not armed"
+    else act
+      print-line-uni ("bit-31 dword found : yes")
+      print-line-uni ("reads non-negative : " & (if v >= 0 then "yes" else "no"))
+    end
+  end
+
+Page 1

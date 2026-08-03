@@ -518,6 +518,87 @@ Section: Function Application
     order = order
    }
 
+ The shuffle verifier. The planner above decides an order and has
+ always been trusted to have decided it correctly; nothing checked the
+ order it produced, and two miscompiles have shipped out of this code.
+ The checks below are stated over the plan the emitter is about to
+ use, not over the search that built it, so a defect in the search is
+ visible to them. CDX9006, CDX9007 and CDX9008 stand on the LIR
+ emission path and cannot reach here, and the tree emitter is what
+ handles most of every compile.
+
+ Two properties, and they fail differently.
+
+ The first is that acceptance implies analysis. is-direct-tail-arg
+ decides which arguments are written straight into their parameter;
+ tco-arg-reads decides what those arguments read; the ordering is
+ sound only while the second sees everything the first admits. It has
+ been wrong once. is-direct-tail-binop accepted any left operand at
+ all when the right was a small literal, tco-arg-reads walks only
+ names, and `s.v + 1` was therefore scheduled after the parameter `s`
+ had already been overwritten -- a wrong number, silently.
+ tco-reads-visible answers True for exactly the shapes tco-arg-reads
+ can see through, so widening one without the other is a halt instead.
+
+ The second is the ordering itself: no direct argument may be written
+ after a parameter it reads has been replaced. An argument reading its
+ own target is fine, because that read and that write are the same
+ instruction, and it cannot appear in the written set anyway. The
+ complex arguments do not participate: they are evaluated into temps
+ before any parameter is written and copied out after.
+
+  tco-operand-visible : IRExpr -> Boolean
+  tco-operand-visible (e) =
+   when e
+    is IrIntLit (v) (sp) | IrBoolLit (v) (sp) | IrCharLit (v) (sp) -> True
+    is IrName (n) (ty) (sp) -> True
+    is otherwise -> False
+
+  tco-reads-visible : IRExpr -> Boolean
+  tco-reads-visible (arg) =
+   when arg
+    is IrIntLit (v) (sp) | IrBoolLit (v) (sp) | IrCharLit (v) (sp) -> True
+    is IrName (n) (ty) (sp) -> True
+    is IrBinary (op) (left) (right) (ty) (sp) ->
+     tco-operand-visible left & tco-operand-visible right
+    is otherwise -> False
+
+  tco-visibility-violation : CodegenState, List IRExpr, List Integer, Integer -> Integer
+  tco-visibility-violation (st) (args) (param-locals) (i) =
+   if i == list-length args then 0 - 1
+   else if is-direct-tail-arg st (list-at args i) (list-at param-locals i)
+         & tco-reads-visible (list-at args i) == False
+        then i
+   else tco-visibility-violation st args param-locals (i + 1)
+
+  tco-written-before : List Integer, Integer, Integer, Integer -> Boolean
+  tco-written-before (order) (k) (p) (j) =
+   if j == k then False
+   else if list-at order j == p then True
+   else tco-written-before order k p (j + 1)
+
+  tco-reads-clobbered : List Integer, List Integer, Integer, Integer -> Boolean
+  tco-reads-clobbered (reads) (order) (k) (ri) =
+   if ri == list-length reads then False
+   else if tco-written-before order k (list-at reads ri) 0 then True
+   else tco-reads-clobbered reads order k (ri + 1)
+
+  tco-order-violation : CodegenState, List IRExpr, List Integer, List Integer, Integer -> Integer
+  tco-order-violation (st) (args) (param-locals) (order) (k) =
+   if k == list-length order then 0 - 1
+   else let i = list-at order k
+   in if tco-reads-clobbered (tco-arg-reads st (list-at args i) param-locals) order k 0
+      then i
+   else tco-order-violation st args param-locals order (k + 1)
+
+  tco-verify-shuffle : CodegenState, List IRExpr, List Integer, List Integer -> Text
+  tco-verify-shuffle (st) (args) (param-locals) (order) =
+   let v = tco-visibility-violation st args param-locals 0
+   in if v >= 0 then "argument " & show v & " is written straight into its parameter, but tco-arg-reads cannot see through its shape, so the order was planned as though it read no parameters"
+   else let o = tco-order-violation st args param-locals order 0
+   in if o >= 0 then "argument " & show o & " is written after a parameter it reads has already been replaced"
+   else ""
+
   emit-direct-tail-binop : CodegenState, IRExpr, IRBinaryOp, IRExpr, IRExpr, Integer -> CodegenState
   emit-direct-tail-binop (st) (arg) (op) (left) (right) (target) =
    when left
@@ -614,12 +695,15 @@ Section: Function Application
   emit-tail-call (st) (func-expr) (arg-expr) =
    let args = flatten-tail-args func-expr [arg-expr]
    in let plan = tco-shuffle-plan st args (st.tco.param-locals)
-   in let st2 = if plan.ok then
-       let ci = tco-find-complex st args (st.tco.param-locals) 0
-       in if ci >= 0 & tco-find-complex st args (st.tco.param-locals) (ci + 1) < 0
-        then emit-tail-single-complex st args (st.tco.param-locals) (plan.order) ci
-       else emit-tail-call-general-shuffle st args (st.tco.temp-locals) (st.tco.param-locals) (plan.order)
-      else let fallback-temps = tco-ensure-temps st (st.tco.temp-locals) (list-length args)
+   in let viol = if plan.ok then tco-verify-shuffle st args (st.tco.param-locals) (plan.order) else ""
+   in let st0 = if text-length viol == 0 then st
+      else st-add-error st cdx-tco-shuffle-violation ("The tail-call shuffle verifier rejected the self-call in '" & (st.tco.current-func) & "': " & viol & ". The planned write order would hand the callee a wrong argument, with no fault and no other diagnostic; the build halts rather than emit it.") synthetic-span
+   in let st2 = if plan.ok & text-length viol == 0 then
+       let ci = tco-find-complex st0 args (st.tco.param-locals) 0
+       in if ci >= 0 & tco-find-complex st0 args (st.tco.param-locals) (ci + 1) < 0
+        then emit-tail-single-complex st0 args (st.tco.param-locals) (plan.order) ci
+       else emit-tail-call-general-shuffle st0 args (st.tco.temp-locals) (st.tco.param-locals) (plan.order)
+      else let fallback-temps = tco-ensure-temps st0 (st.tco.temp-locals) (list-length args)
        in let st1 = eval-tail-args (fallback-temps.alloc-state) args (fallback-temps.alloc-locals) 0
        in copy-temps-to-params st1 (fallback-temps.alloc-locals) (st.tco.param-locals) 0
    in let rel32 = st.tco.loop-top - (st2.code-len + 5)
@@ -873,32 +957,6 @@ Section: Record Emission
 
 Section: Narrow-store with overflow-mode dispatch
 
- Wraps emit-narrow-store with a runtime overflow check determined by
- the field type's OverflowMode. OvError emits a cmp+jcc+ud2 trap pair
- around the store; OvClamping saturates the value to [lo, hi] before
- the store; OvWrapping falls through to silent truncation (modular
- arithmetic, the user's explicit choice). Full-width fields (width
- >= 8) skip the check entirely — no narrowing happens there, so no
- overflow possible. Bounds that fit i32-signed use cmp-ri for a
- compact check; bounds outside i32-signed (e.g. u32 hi=4294967295)
- use a push-r9 / mov-ri64 / cmp-rr / pop-r9 sandwich. Both paths
- emit the same trap shape (jcc + ud2) for OvError; OvClamping uses
- cmp-ri + jcc + mov-ri32 to saturate when out of range.
-
- The prover takes the range environment `emit-let` maintains on the
- codegen state (see `RangeBind`, X86_64State). Two arms use it: a name
- answers whatever binding is in scope for it, and a let extends the
- environment for its own body -- the case the prover used to discard.
-
- `range-env-bind` COPIES before it pushes, and that is not ceremony.
- `list-push` writes in place while under capacity and returns the same
- list, and this environment is shared between siblings: an if hands the
- same one to both arms, a binary to both operands. Binding in place would
- leave a then-arm's let in scope while the else-arm was proved, which is a
- range for a name not bound on that path -- a wrongly ELIDED bounds check,
- which is a silent miscompile rather than a slow one. The copy is
- O(depth) over a depth measured in single digits.
-
   range-env-bind : List RangeBind, Text, CodexType -> List RangeBind
   range-env-bind (env) (n) (ty) =
    list-push (range-env-copy env 0 (list-length env) []) (RangeBind { rb-name = n, rb-ty = ty })
@@ -1096,18 +1154,19 @@ Section: Narrow-store with overflow-mode dispatch
   emit-narrow-store-checked : CodegenState, CodexType, Integer, Integer, Integer -> CodegenState
   emit-narrow-store-checked (st) (ty) (rd) (rs) (offset) =
    let width = field-byte-width ty
-   in if width >= 8 then st-append-code st (emit-narrow-store width rd rs offset)
-      else when ty
-       is IntegerTy (lo) (hi) (mode) ->
-        when mode
-         is OvError -> emit-error-checked-store st lo hi width rd rs offset
-         is OvClamping ->
-          if bound-fits-i32 lo & bound-fits-i32 hi
-          then emit-clamping-checked-store st lo hi width rd rs offset
-          else st-append-code st (emit-narrow-store width rd rs offset)
-         is otherwise -> st-append-code st (emit-narrow-store width rd rs offset)
-       is UnitTy (n) (inner) -> emit-narrow-store-checked st inner rd rs offset
-       is otherwise -> st-append-code st (emit-narrow-store width rd rs offset)
+   in when ty
+    is IntegerTy (lo) (hi) (mode) ->
+     if band-is-whole-i64 lo hi then st-append-code st (emit-narrow-store width rd rs offset)
+     else when mode
+      is OvError -> emit-error-checked-store st lo hi width rd rs offset
+      is OvClamping -> emit-clamping-checked-store st lo hi width rd rs offset
+      is otherwise -> st-append-code st (emit-narrow-store width rd rs offset)
+    is UnitTy (n) (inner) -> emit-narrow-store-checked st inner rd rs offset
+    is otherwise -> st-append-code st (emit-narrow-store width rd rs offset)
+
+  band-is-whole-i64 : Integer, Integer -> Boolean
+  band-is-whole-i64 (lo) (hi) =
+   lo <= i64-min & hi >= i64-max
 
   bound-fits-i32 : Integer -> Boolean
   bound-fits-i32 (n) =
@@ -1127,9 +1186,15 @@ Section: Narrow-store with overflow-mode dispatch
 
   emit-clamping-checked-store : CodegenState, Integer, Integer, Integer, Integer, Integer, Integer -> CodegenState
   emit-clamping-checked-store (st) (lo) (hi) (width) (rd) (rs) (offset) =
-   let st1 = st-append-code st (cmp-ri rs hi & jcc 14 7 & mov-ri32 rs hi)
-   in let st2 = st-append-code st1 (cmp-ri rs lo & jcc 13 7 & mov-ri32 rs lo)
+   let st1 = emit-clamp-to-bound st rs hi 14
+   in let st2 = emit-clamp-to-bound st1 rs lo 13
    in st-append-code st2 (emit-narrow-store width rd rs offset)
+
+  emit-clamp-to-bound : CodegenState, Integer, Integer, Integer -> CodegenState
+  emit-clamp-to-bound (st) (rs) (bound) (cc) =
+   if bound-fits-i32 bound
+   then st-append-code st (cmp-ri rs bound & jcc cc 7 & mov-ri32 rs bound)
+   else st-append-code st (push-r 9 & mov-ri64 9 bound & cmp-rr rs 9 & pop-r 9 & jcc cc 10 & mov-ri64 rs bound)
 
   emit-narrow-load : Integer, Boolean, Integer, Integer, Integer -> List Integer
   emit-narrow-load (width) (signed) (rd) (rs) (offset) =
@@ -1185,27 +1250,85 @@ Section: Narrow-store with overflow-mode dispatch
 Section: Pointer-Map Walk
 
  Precise typed traversal of a live heap object graph, driven by the
- pointer-maps — no per-object type tags needed: the static type says
+ pointer-maps -- no per-object type tags needed: the static type says
  which slots are pointers (record map / ctor map), and a variant's tag
  already sits at offset 0 (emit-sum-ctor). This is the precise
  replacement for scan-deck-dangling: rather than scanning raw deck slots
- (which cannot tell a pointer from an integer — the source of the SCOPE
+ (which cannot tell a pointer from an integer -- the source of the SCOPE
  false positives), it follows only real pointer slots from a typed root
  and counts those landing in the dead range [lo, hi). Fuel-bounded for
- safety. Handles RecordTy, SumTy, ListTy, and ConstructedTy (resolved by
- name against a TypeBinding table via lookup-type-binding, so the full
- named-type graph AChapter->ADef->AExpr is traversable given the table).
- FunTy / LinkedListTy are leaves for now (cons-cell layout is a later
+ safety. Handles RecordTy, ListTy, and ConstructedTy (resolved by name
+ against a TypeBinding table via lookup-type-binding). FunTy /
+ LinkedListTy are leaves for now (cons-cell layout is a later
  refinement). The TypeBinding table must be sorted by name (bsearch).
+
+ EVERY VARIANT WAS A LEAF UNTIL 2026-07-26, and this block claimed the
+ opposite. Found by running the walk over a range containing every pointer so
+ that each one reports: 7,161 hits on `codex/test/arithmetic` were 5,070
+ record fields, 2,091 list elements, and ZERO constructor fields, with no sum
+ type appearing as a location anywhere. `Def.body : Expr` was reported and
+ nothing beneath it ever was.
+
+ The cause was in the table rather than the walk, and it is fixed at
+ `emit-const-sumctor`: SumCtor has three pointer fields and the emitter wrote
+ two, so `c.fields` read one word past the end of the box. Four readings were
+ needed to get there and three of them refuted a guess -- the walk IS entered
+ (1,673 times on that file), `tag` is always in range, the constructor NAME
+ always decodes correctly, and the emitted field list is written with the
+ right length at the right offset (638 of 638 agreed on read-back). Only the
+ slot it was written INTO was wrong.
+
+ The lesson for the next person here: this hole was invisible from every
+ direction the instrument could look at itself. The always-on self-test passes
+ because PmTestRec is a record; a zero escape count reads as a clean phase;
+ and the constructor whose fields were lost still reported its own name. Ask
+ what a walk is not visiting before reading its silence as agreement.
 
   ptr-in-range : Integer, Integer, Integer -> Integer
   ptr-in-range (p) (lo) (hi) =
    if p >= lo then if p < hi then 1 else 0 else 0
 
-  pmap-escape-report : Integer, Text -> Integer
-  pmap-escape-report (q) (loc) =
+ THE WALK MUST ALLOCATE NOTHING. It is a read-only instrument, and it is
+ called from inside `deck-record` extents, so anything it allocates lands on
+ the phase deck it is measuring.
+
+ `pmap-walk-record` used to reach a field's offset through
+ `cce-byte-offset-and-type`, which builds a FieldOffsetType record to carry an
+ offset and a type the caller already holds in `f`. One small record per
+ POINTER FIELD VISITED. That was survivable while every variant was a leaf and
+ became 176 MB the moment they were not: measured on `db-full-test`, R10 climbed
+ 375,156,211 to 551,780,147 across the fourteen DECK-LIVE walks, roughly 25 MB
+ per walk against a reach of 2.4M. The deck overran its floor, and the merge
+ that follows read the corruption as a diagnostic list -- a `#GP` in
+ `bag-concat-loop` on a garbage element pointer, reported against `bag-concat`
+ because the map attributes a fault to the preceding symbol.
+
+ So the offset is computed in place from the field already in hand, which also
+ skips `find-target-type`'s scan for a type `f.type-val` already is. If you add
+ anything to this walk, check R10 across it before and after.
+
+ The location text is built INSIDE the quiet test, never at the call site.
+ Codex is strict, so `report q (loc & "." & name)` concatenates on every hit
+ before `report` can discard it -- one Text allocation per pointer visited.
+ That is affordable for hits against a dead range and ruinous for the
+ wide-range control walk, where every pointer is a hit.
+
+  pmap-escape-report-field : Integer, Text, Text -> Integer
+  pmap-escape-report-field (q) (loc) (fld) =
    if q == 1 then 1
-   else let w = print-line-uni ("CDX9003-AT: " & loc)
+   else let w = print-line-uni ("CDX9003-AT: " & loc & "." & fld)
+   in 1
+
+  pmap-escape-report-ctor : Integer, Text, Integer -> Integer
+  pmap-escape-report-ctor (q) (loc) (idx) =
+   if q == 1 then 1
+   else let w = print-line-uni ("CDX9003-AT: " & loc & "#" & show idx)
+   in 1
+
+  pmap-escape-report-elem : Integer, Text, Integer -> Integer
+  pmap-escape-report-elem (q) (loc) (idx) =
+   if q == 1 then 1
+   else let w = print-line-uni ("CDX9003-AT: " & loc & "[" & show idx & "]")
    in 1
 
   pmap-walk : Integer, CodexType, List TypeBinding, Integer, Integer, Integer, Integer, Text -> Integer
@@ -1224,9 +1347,8 @@ Section: Pointer-Map Walk
    if i == len then acc
    else let f = list-at fields i
    in if is-pointer-type (f.type-val)
-      then let fot = cce-byte-offset-and-type fields (f.name.value)
-           in let child = peek-qword ptr (fot.offset)
-           in let hit = if ptr-in-range child lo hi == 1 then pmap-escape-report q (loc & "." & (f.name.value)) else 0
+      then let child = peek-qword ptr (accumulate-offset-width-sort fields (f.name.value) (field-byte-width (f.type-val)) 0 0)
+           in let hit = if ptr-in-range child lo hi == 1 then pmap-escape-report-field q loc (f.name.value) else 0
            in let sub = hit + pmap-walk child (f.type-val) defs lo hi (fuel - 1) q (f.name.value)
            in pmap-walk-record ptr fields defs (i + 1) len lo hi fuel (acc + sub) q loc
       else pmap-walk-record ptr fields defs (i + 1) len lo hi fuel acc q loc
@@ -1244,7 +1366,7 @@ Section: Pointer-Map Walk
    else let ety = list-at tys i
    in if is-pointer-type ety
       then let child = peek-qword ptr (sum-ctor-field-offset tys i)
-           in let hit = if ptr-in-range child lo hi == 1 then pmap-escape-report q (loc & "#" & show i) else 0
+           in let hit = if ptr-in-range child lo hi == 1 then pmap-escape-report-ctor q loc i else 0
            in let sub = hit + pmap-walk child ety defs lo hi (fuel - 1) q loc
            in pmap-walk-ctor tys ptr defs (i + 1) len lo hi fuel (acc + sub) q loc
       else pmap-walk-ctor tys ptr defs (i + 1) len lo hi fuel acc q loc
@@ -1260,16 +1382,16 @@ Section: Pointer-Map Walk
    if j == count then acc
    else if fuel <= 0 then acc
    else let child = peek-qword ptr (8 + j * 8)
-   in let hit = if ptr-in-range child lo hi == 1 then pmap-escape-report q (loc & "[" & show j & "]") else 0
+   in let hit = if ptr-in-range child lo hi == 1 then pmap-escape-report-elem q loc j else 0
    in let sub = hit + pmap-walk child elem defs lo hi (fuel - 1) q loc
    in pmap-walk-list-elems ptr elem defs (j + 1) count lo hi fuel (acc + sub) q loc
 
  Runtime conformance check for pmap-walk (gated by -EscapeCheck at the call
  site; fires a diagnostic only on failure). This guards the pointer-map
- walker — the safety-critical machinery the escape check and copying
- compactor will drive — against silent breakage from layout or codegen
+ walker -- the safety-critical machinery the escape check and copying
+ compactor will drive -- against silent breakage from layout or codegen
  changes. `cap` = __heap-save captured just before the record's allocation
- is the record's address (a record's pointer is its alloc start — no cap
+ is the record's address (a record's pointer is its alloc start -- no cap
  word, unlike lists); the record is forced (rec.tr-num) so it is materialized
  at cap, then pmap-walk over [h0, cap) counts the in-range pointers. PmTestRec
  has tr-ptr (Text), a scalar tr-num, and tr-inner (a ConstructedTy "PmInner"
@@ -1282,7 +1404,7 @@ Section: Pointer-Map Walk
 
  The pointees MUST be runtime heap allocations: a bare string literal is
  emitted into rodata (emit-text-lit, X86_64.codex), so its pointer lands
- below the heap and would never fall in [h0, cap) — a real pointer the
+ below the heap and would never fall in [h0, cap) -- a real pointer the
  escape check correctly ignores. `show N` forces a runtime heap string.
 
   PmInner = record { in-ptr : Text }
@@ -1319,6 +1441,19 @@ Section: Pointer-Map Walk
    let defs = __self-type-defs
    in pmap-walk root-addr (ListTy (ConstructedTy (Name { value = elem-name }) [])) defs lo hi pmap-escape-fuel 1 elem-name
 
+ The control for every count above. The same root over a range that spans the
+ whole address space, so every pointer the walk reaches is counted: a working
+ traversal cannot answer zero, and a root that missed the self-type table
+ cannot answer anything else. Report it beside an escape count and a zero
+ becomes readable -- zero escapes with zero reach is a broken instrument,
+ zero escapes with a non-zero reach is a clean phase. Quiet, so it prints
+ nothing and allocates nothing.
+
+  pmap-escape-reached : Integer, Text -> Integer
+  pmap-escape-reached (root-addr) (type-name) =
+   let defs = __self-type-defs
+   in pmap-walk root-addr (lookup-type-binding defs type-name) defs 1 bare-metal-ram-size pmap-escape-fuel 1 type-name
+
 Section: Self-Type-Table Emission
 
  Emits the compiler's own type-defs (filtered to RecordTy/SumTy) into rodata
@@ -1329,7 +1464,7 @@ Section: Self-Type-Table Emission
  i*8]; record fields width-sorted (all 8B here, so name-sorted at 8*k); Text =
  [len][bytes][pad8]. pmap-walk/is-pointer-type read only a descriptor's tag and
  the pointer slots they recurse on (ListTy.elem, RecordTy.fields, SumTy.ctors,
- ConstructedTy.name), so unused scalar/pointer slots are emitted as 0 — EXCEPT
+ ConstructedTy.name), so unused scalar/pointer slots are emitted as 0 -- EXCEPT
  IntegerTy's lo/hi bounds, which field-byte-width reads to compute a record's
  field widths (and hence offsets), so those are emitted faithfully.
 
@@ -1398,7 +1533,13 @@ Section: Self-Type-Table Emission
  (live-type-tag: a boxed variant's value is its address; the first
  qword is its tag), so the tag class of drift is closed by
  construction. The always-on pmap self-test (opening.codex) is the
- tripwire for the layout class.
+ tripwire for the layout class ON RECORDS ONLY, and this line said
+ "the layout class" without that qualification while a sum-ctor layout
+ bug sat one function below it: PmTestRec is a record, so the self-test
+ walked records and lists and never a constructor field. A slot-order
+ error in `emit-const-sumctor` cost the walk every variant in the tree
+ and the self-test passed throughout. If a descriptor's slot order is
+ wrong for a shape the self-test does not contain, nothing here fires.
 
   live-type-tag : CodexType -> Integer
   live-type-tag (ty) = peek-qword (address-of ty) 0
@@ -1411,7 +1552,7 @@ Section: Self-Type-Table Emission
    if fuel <= 0 then const-box buf len (live-type-tag ErrorTy) []
    else when ty
     is IntegerTy (lo) (hi) (mode) -> const-box buf len (live-type-tag ty) [lo, hi, 0]
-    is RealTy -> const-box buf len (live-type-tag ty) []
+    is RealTy (w) (m) -> const-box buf len (live-type-tag ty) [0, 0]
     is TextTy -> const-box buf len (live-type-tag ty) []
     is BooleanTy -> const-box buf len (live-type-tag ty) []
     is CharTy -> const-box buf len (live-type-tag ty) []
@@ -1431,9 +1572,6 @@ Section: Self-Type-Table Emission
     is UnitTy (n) (inner) -> let nm = emit-const-name buf len vaddr n in let c = emit-const-codextype buf (nm.len) vaddr inner (fuel - 1) in const-box buf (c.len) (live-type-tag ty) [vaddr + nm.off, vaddr + c.off]
     is VectorTy (vn) (vt) -> const-box buf len (live-type-tag ty) [vn, 0]
     is VectorMaskTy (n) -> const-box buf len (live-type-tag ty) [n]
-    is RealApproxTy -> const-box buf len (live-type-tag ty) []
-    is RealTrappingTy -> const-box buf len (live-type-tag ty) []
-    is RealSaturatingTy -> const-box buf len (live-type-tag ty) []
     is TypeCon (n) -> let nm = emit-const-name buf len vaddr n in const-box buf (nm.len) (live-name-ref-tag n) [vaddr + nm.off, 0]
     is TypeApply (f) (a) -> const-box buf len (live-type-tag ErrorTy) []
     is LinearTy (linner) -> emit-const-codextype buf len vaddr linner (fuel - 1)
@@ -1452,12 +1590,29 @@ Section: Self-Type-Table Emission
    in let p1 = buf-write-i64 buf (tv.len) (vaddr + tv.off)
    in ConstEmit { len = buf-write-i64 buf p1 (vaddr + nm.off), off = tv.len }
 
+ SumCtor has THREE pointer fields, not two, and this function wrote two. CCE
+ orders letters by English frequency, so the name-sorted slot order is
+ name(n=18), return-type(r=21), fields(f=28) -- `fields` is LAST, at offset
+ 16. Writing [name][fields] put the fields list in the return-type slot and
+ left `c.fields` reading one word past the end of the box, where it found a
+ zero length. Every constructor in the table therefore looked nullary, which
+ is a silent hole rather than a crash: `pmap-walk-sum` resolved the right
+ constructor by tag, read its correct name, found no fields to follow, and
+ returned 0. The whole expression graph went unwalked and the escape check
+ reported clean on the spine it could still see.
+
+ `return-type` is emitted faithfully rather than as a zero. The walk does not
+ read it, but a null in a `List` slot is a fault waiting for the first reader
+ that does, and the honest list is two words.
+
   emit-const-sumctor : Integer, Integer, Integer, SumCtor, Integer -> ConstEmit
   emit-const-sumctor (buf) (len) (vaddr) (ct) (fuel) =
    let fs = emit-const-typelist buf len vaddr (ct.fields) fuel
-   in let nm = emit-const-name buf (fs.len) vaddr (ct.name)
+   in let rt = emit-const-typelist buf (fs.len) vaddr (ct.return-type) fuel
+   in let nm = emit-const-name buf (rt.len) vaddr (ct.name)
    in let p1 = buf-write-i64 buf (nm.len) (vaddr + nm.off)
-   in ConstEmit { len = buf-write-i64 buf p1 (vaddr + fs.off), off = nm.len }
+   in let p2 = buf-write-i64 buf p1 (vaddr + rt.off)
+   in ConstEmit { len = buf-write-i64 buf p2 (vaddr + fs.off), off = nm.len }
 
   emit-const-type-elems : Integer, Integer, Integer, List CodexType, Integer, Integer, List Integer, Integer -> ConstList
   emit-const-type-elems (buf) (len) (vaddr) (tys) (i) (n) (acc) (fuel) =
@@ -1944,9 +2099,19 @@ Section: Pattern Matching
  `emit-text-lit` evicts RAX, so materialising the literal while the
  field value is still live in a temp loses the field.
 
+ The unit wrapper is stripped for the reason the paragraph above
+ already gives, one indirection out. Without the strip a `unit Text`
+ scrutinee misses the TextTy arm and falls to the otherwise arm, which
+ cmps the register against `pat-lit-to-integer` of the spelling -- and
+ the register holds a pointer, so the arm can NEVER match. Measured on
+ seed 759D3E0F: `when (Name "sin") is "sin"` took the catchall, with a
+ plain Text scrutinee matching correctly beside it. It is silent, which
+ makes it worse than the same hole in `show`: nothing is printed
+ oddly, the program simply takes the wrong branch.
+
   emit-pattern-lit-test : CodegenState, Integer, Text, CodexType -> LitTestResult
   emit-pattern-lit-test (st) (val-reg) (value) (ty) =
-   when resolve-constructed-ty st ty
+   when strip-unit-ty (resolve-constructed-ty st ty)
     is TextTy ->
      let val-loc = alloc-local st
      in let st0 = store-local (val-loc.state) (val-loc.reg) val-reg

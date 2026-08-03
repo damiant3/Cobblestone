@@ -1,4 +1,4 @@
-# import-hyg.ps1 — Import HYG v4.2 CSV + deep-sky + constellations
+# import-hyg.ps1 -- Import HYG v4.2 CSV + deep-sky + constellations
 #
 # Reads hyg_v42.csv, writes starmap.dat with three sections:
 #   1. Stars (from HYG CSV)

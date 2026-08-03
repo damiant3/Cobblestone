@@ -53,6 +53,29 @@ Section: Resolve Type Expression
       is otherwise -> ErrorTy
     is otherwise -> ErrorTy
 
+ PRECISION AND SAFETY ARE INDEPENDENT, so the qualifiers are a set rather
+ than a choice and they are folded one at a time. `Real approximate
+ trapping` and `Real approximate saturating` are the two combinations the
+ old single-qualifier grammar could not spell, and both are f32.
+
+ A word that is not a qualifier makes the whole application an ordinary
+ constructed type, which is what carries `Real` applied to a genuine type
+ argument through unchanged. That is why the walk tracks whether every
+ word so far was a qualifier rather than failing on the first one that is
+ not.
+
+  resolve-real-quals : Name, List ATypeExpr, List TypeBinding, Integer, RealWidth, RealMode, Boolean -> CodexType
+  resolve-real-quals (name) (args) (tdm) (i) (w) (m) (all-quals) =
+   if list-length args == 0 then real-f64
+   else if i >= list-length args then
+    (if all-quals then deck-record (RealTy w m)
+     else deck-record (ConstructedTy name (for a in args -> resolve-type-expr tdm a)))
+   else let word = when (list-at args i) is ANamedType (qt) (qs) -> qt.value is otherwise -> ""
+    in if word == "approximate" then resolve-real-quals name args tdm (i + 1) RwF32 m all-quals
+    else if word == "trapping" then resolve-real-quals name args tdm (i + 1) w RmTrapping all-quals
+    else if word == "saturating" then resolve-real-quals name args tdm (i + 1) w RmSaturating all-quals
+    else resolve-real-quals name args tdm (i + 1) w m False
+
   resolve-applied-type : List TypeBinding, ATypeExpr, List ATypeExpr -> CodexType
   resolve-applied-type (tdm) (ctor) (args) =
    when ctor
@@ -61,13 +84,7 @@ Section: Resolve Type Expression
        else deck-record (ListTy ErrorTy)
       else if name.value == "LinkedList" then if list-length args == 1 then deck-record (LinkedListTy (resolve-type-expr tdm (list-at args 0)))
        else deck-record (LinkedListTy ErrorTy)
-      else if name.value == "Real" then if list-length args == 1 then
-       let qual = when (list-at args 0) is ANamedType (qt) (qs) -> qt.value is otherwise -> ""
-       in if qual == "approximate" then RealApproxTy
-       else if qual == "trapping" then RealTrappingTy
-       else if qual == "saturating" then RealSaturatingTy
-       else deck-record (ConstructedTy name (for a in args -> resolve-type-expr tdm a))
-       else deck-record (ConstructedTy name (for a in args -> resolve-type-expr tdm a))
+      else if name.value == "Real" then resolve-real-quals name args tdm 0 RwF64 RmDefault True
       else if name.value == "Vector" then if list-length args == 2 then
        let n-text = when (list-at args 0) is ANamedType (nt) (ns) -> nt.value is otherwise -> "0"
        in deck-record (VectorTy (lit-text-to-integer n-text) (resolve-type-expr tdm (list-at args 1)))
@@ -80,7 +97,7 @@ Section: Resolve Type Expression
   resolve-type-name : List TypeBinding, Text -> CodexType
   resolve-type-name (tdm) (name) =
    if name == "Integer" then int-ty-default
-   else if name == "Real" then RealTy
+   else if name == "Real" then real-f64
    else if name == "Text" then TextTy
    else if name == "Boolean" then BooleanTy
    else if name == "Char" then CharTy
@@ -664,7 +681,7 @@ Section: Parameterize Type
   parameterize-walk : UnificationState, List ParamEntry, CodexType -> WalkResult
   parameterize-walk (st) (entries) (ty) =
    when ty
-    is IntegerTy (lo) (hi) (mode) | RealTy | TextTy | BooleanTy | NothingTy | VoidTy | ProofTy | ErrorTy ->
+    is IntegerTy (lo) (hi) (mode) | RealTy (rw) (rm) | TextTy | BooleanTy | NothingTy | VoidTy | ProofTy | ErrorTy ->
      WalkResult { walked = ty, entries = entries, state = st }
     is ConstructedTy (name) (args) ->
      if is-value-name (name.value)
@@ -701,9 +718,9 @@ Section: Parameterize Type
  row without a tail name passes through untouched (the interned
  empty-row included); a tail already carrying an id passes through
  (parameterization runs once per signature). A named tail either
- reuses the id of an earlier occurrence in the same signature — that
+ reuses the id of an earlier occurrence in the same signature -- that
  sharing is what makes map's argument row and result row the SAME
- variable — or mints a fresh id from the unifier's shared counter and
+ variable -- or mints a fresh id from the unifier's shared counter and
  records a row-kind entry for the ForAllEff wrap.
 
   parameterize-row : UnificationState, List ParamEntry, EffectRow -> (EffectRow, List ParamEntry, UnificationState)
@@ -910,7 +927,7 @@ Section: Check Definition
  A type variable in a signature is universally quantified: it is the
  CALLER's to choose, so the body must work for every choice. The body
  is checked against an instantiation of the declared type, which hands
- each of those variables a fresh unification variable — the right
+ each of those variables a fresh unification variable -- the right
  treatment at a call site and the wrong one here, because a fresh
  variable is solvable and the body will happily solve it. That is how
  `h : a -> b` with the body `[x]` type-checked: the body decided
@@ -921,7 +938,7 @@ Section: Check Definition
  signature quantified must still be unbound. resolve-declared-type
  mints them before the body is inferred, so they carry lower ids than
  anything the body allocates, and unify-resolved binds the higher id to
- the lower — a declared variable therefore survives unification with
+ the lower -- a declared variable therefore survives unification with
  another variable, and can only become bound by meeting a structural
  type. Bound means the body chose, and the body does not get to choose.
 
@@ -976,7 +993,7 @@ Section: Check Definition
  signature declares on the def's performing arrow (the arrow consumed
  by the last parameter), or against the effect set of an effectful
  VALUE signature. Coverage uses the dotted sub-effect lattice via
- effect-covered-by; row tails are ignored here — a body tail that is
+ effect-covered-by; row tails are ignored here -- a body tail that is
  the signature's own row variable is trivially allowed, and any other
  unsolved tail absorbed nothing, so it defaults to empty. Scope
  literals ride the labels but are not checked at this boundary; scope
@@ -1001,7 +1018,7 @@ Section: Check Definition
 
  collect-effect-names gathers every declared effect name reachable on
  a type's performing spine: arrow-row labels down the curried chain
- (never into parameter types — a parameter's effects are the
+ (never into parameter types -- a parameter's effects are the
  caller's) plus the effect set of an effectful value type. The
  punctual bare-I/O check and the opening capability check read
  declared effects through this, row and value forms alike.
@@ -1111,6 +1128,7 @@ Section: Capability Scope
   console-channel-op (n) =
    if n == "print-line" then "stdout"
    else if n == "print-line-raw" then "stdout"
+   else if n == "print-text" then "stdout"
    else if n == "print-line-uni" then "stdout"
    else if n == "print-uni" then "stdout"
    else if n == "print-error" then "stderr"
@@ -2175,7 +2193,7 @@ Section: Proof Acyclicity
  A zero-parameter def whose body is an integer literal is a constant
  with a known value; its [n, n] range is recorded in the env's
  const-range table for the narrowing lint. The registered TYPE stays
- the declared one — refining it would make two distinct constants
+ the declared one -- refining it would make two distinct constants
  disjoint under unification.
 
   register-const-range : TypeEnv, Text, ADef -> TypeEnv
@@ -2611,13 +2629,13 @@ Section: Linearity Checking
  Two disciplines share this machinery, because they spring from one
  idea: a uniquely owned value may not be duplicated.
 
- A value typed `linear T` (a non-mutable resource — a file handle, a
+ A value typed `linear T` (a non-mutable resource -- a file handle, a
  socket) must be used *exactly once* along every path: not zero times
  (leak, CDX2063), not two or more (CDX2061). Every mention is a use, so
  `lin-of` counts them all; branches must use it an equal number of times.
 
  A `mutable` record is the other face of uniqueness. It is a stable
- container you own and may *read* as often as you like — reading a field
+ container you own and may *read* as often as you like -- reading a field
  does not spend it. What you may not do is hand the same record to two
  owners. So for a mutable parameter `consume-of` counts only the
  *consuming* positions (passing it on, storing it, returning it) and
@@ -3900,7 +3918,7 @@ Section: Capability Checker
 
  This list is the capability VOCABULARY, not a grant. It names every
  effect the manifest emitter can map to a capability id, and the
- check below rejects an opening that declares an effect outside it —
+ check below rejects an opening that declares an effect outside it --
  an effect no policy could ever inspect and no boot grant could ever
  satisfy. The authority itself comes from the binary's own manifest
  at boot (emit-grant-cap-mask) and from the trust policy at load

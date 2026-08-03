@@ -1,4 +1,4 @@
-# test-boards.ps1 — Cross-architecture board tests via Renode.
+# test-boards.ps1 -- Cross-architecture board tests via Renode.
 #
 # Compiles a hello-world program for each target architecture,
 # boots the ELF on the matching Renode virtual board, captures

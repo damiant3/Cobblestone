@@ -1,14 +1,14 @@
 # IoT Threat Model: Adversarial Analysis
 
 **Created**: 2026-06-12 (reek)
-**Status**: Design — not yet started
+**Status**: Design -- not yet started
 **Upstream**: All six IoT design docs, `docs/PM/IoT/Compliance/`
 
 ## Purpose
 
 The other six IoT design docs describe what Codex builds. This
 document describes what the adversary does and maps each attack
-class to the specific mechanism that defeats it — or honestly names
+class to the specific mechanism that defeats it -- or honestly names
 the residual exposure where one exists. A compliance evidence
 package (`ComplianceEvidence.md`) that claims "memory safety by
 construction" without identifying what memory safety *prevents* is
@@ -20,7 +20,7 @@ argument.
 The threat model covers a Codex IoT device from silicon power-on
 through decommissioning. It does not model threats to the cloud
 backend, the manufacturer's build infrastructure, or the supply
-chain of silicon itself — those are real but outside the toolchain's
+chain of silicon itself -- those are real but outside the toolchain's
 enforcement boundary. Where the boundary matters, it is stated.
 
 ## Adversary Classes (IEC 62443 security levels)
@@ -48,10 +48,10 @@ bodies.
 configuration blob) triggers a write past an allocated buffer. The
 attacker controls the overwritten bytes and redirects execution to
 injected payload or a ROP chain built from existing code gadgets.
-This is the dominant IoT vulnerability class — ~70% of critical
+This is the dominant IoT vulnerability class -- ~70% of critical
 firmware CVEs (Forescout 2024, Microsoft MSRC historical data).
 
-**Defense — BY CONSTRUCTION**:
+**Defense -- BY CONSTRUCTION**:
 - **Linear types** (CDX2061/CDX2063): every resource handle is used
   exactly once on every code path. Use-after-free is a static type
   error. Double-free is a static type error. Resource leak (never
@@ -67,15 +67,15 @@ firmware CVEs (Forescout 2024, Microsoft MSRC historical data).
   access is bounds-checked. There is no `unsafe` escape hatch.
 - **Region-based allocation**: the bump allocator (R10) with
   phase-scoped `heap-save`/`heap-restore` means there is no
-  free-list to corrupt. Heap metadata corruption — the classic
-  escalation from heap overflow to arbitrary write — is
+  free-list to corrupt. Heap metadata corruption -- the classic
+  escalation from heap overflow to arbitrary write -- is
   structurally impossible because there is no heap metadata.
   Allocation is `mov rax, r10; add r10, rdi; ret` (calloc
   variant: plus `rep stosb`). No linked list, no bins, no
   coalescing.
 - **Stack collision check**: every function prologue compares RSP
   against R10 (`cmp rsp, r10; jb __out_of_memory`). Stack overflow
-  does not silently corrupt the heap — it traps.
+  does not silently corrupt the heap -- it traps.
 
 **Residual exposure**: the compiler itself runs on bare metal with
 the same allocator. A bug in the compiler's own code (not the
@@ -89,11 +89,11 @@ fixed point.
 ### 1.2 Code injection / arbitrary code execution
 
 **The attack**: attacker gets the device to execute instructions
-they control — either by overwriting code in memory, by loading a
+they control -- either by overwriting code in memory, by loading a
 malicious firmware image, or by abusing a code-loading mechanism
 (dynamic linking, JIT, eval).
 
-**Defense — BY CONSTRUCTION**:
+**Defense -- BY CONSTRUCTION**:
 - **No dynamic linking**: CDX binaries are statically linked. There
   is no GOT, no PLT, no ld.so, no dlopen. The attack surface of
   dynamic linker exploitation does not exist.
@@ -116,7 +116,7 @@ known gap in the x86 boot infrastructure (the page tables in
 `X86_64Boot.codex` are minimal). Adding NX to data/stack pages is
 straightforward (bit 63 of the PTE) but is not yet implemented.
 For the IoT targets this must be a Phase B1/B3 deliverable, not a
-someday item — the Cortex-M MPU and the Cortex-A MMU both support
+someday item -- the Cortex-M MPU and the Cortex-A MMU both support
 it and it is table stakes for CRA compliance.
 
 ### 1.3 Return-oriented programming (ROP) / code reuse attacks
@@ -126,13 +126,13 @@ controls the stack (via a buffer overflow) can chain existing code
 fragments ("gadgets") that end in `ret` to perform arbitrary
 computation. This bypasses W^X because no new code is introduced.
 
-**Defense — BY CONSTRUCTION (mostly)**:
+**Defense -- BY CONSTRUCTION (mostly)**:
 - The prerequisite for ROP is a stack buffer overflow, which
   requires either an unchecked write to a stack buffer or control
   of an index into a stack-allocated array. Codex has neither:
   local variables are register-allocated or spilled to fixed stack
   slots by the compiler; there are no user-controlled stack buffers.
-  The compiler's own stack layout is entirely compiler-determined —
+  The compiler's own stack layout is entirely compiler-determined --
   the programmer cannot declare a local array on the stack.
 - The stack collision check prevents stack pivot (redirecting RSP
   into the heap) because the first function call after the pivot
@@ -141,7 +141,7 @@ computation. This bypasses W^X because no new code is introduced.
 **Residual**: the bare-metal model with identity-mapped memory
 means an attacker with an arbitrary-write primitive could
 overwrite return addresses on the stack. The defense relies on
-not having the arbitrary-write primitive in the first place —
+not having the arbitrary-write primitive in the first place --
 which the type system ensures for compiled Codex code. If a bug
 exists in the compiler's own runtime helpers (the 17+ inline
 assembly-level functions like `__str_concat`, `__alloc`,
@@ -156,7 +156,7 @@ a value the program did not intend. Classic exploitation: a length
 calculation wraps to a small value, a small buffer is allocated,
 then a large copy overflows it.
 
-**Defense — BY CONSTRUCTION**:
+**Defense -- BY CONSTRUCTION**:
 - `Integer` is 64-bit with no implicit wrapping. Overflow on
   unbounded `Integer` is not possible short of exhausting the
   64-bit range.
@@ -165,7 +165,7 @@ then a large copy overflows it.
   dynamic values), `wrapping` (explicit modular arithmetic),
   `clamping` (saturation). The programmer must choose. Silent
   wrapping is impossible unless explicitly requested via the
-  `wrapping` keyword — and even then, the type signature
+  `wrapping` keyword -- and even then, the type signature
   documents it.
 - `__narrow` traps on out-of-range. CDX2071 rejects literal
   values that exceed the type's range. The static prover
@@ -183,13 +183,13 @@ then a large copy overflows it.
 physical access, or compromised update server) that contains
 malicious code.
 
-**Defense — MECHANISM** (see `OTAFirmwareUpdate.md`):
+**Defense -- MECHANISM** (see `OTAFirmwareUpdate.md`):
 - Gate A (streaming, during download): SHA-256 content hash
   verified, Ed25519 signature verified against the author public
   key embedded in the header. Image with wrong hash or invalid
   signature is rejected before any byte is written to the
   primary flash bank.
-- Gate B (pre-activation): full 5-phase verification —
+- Gate B (pre-activation): full 5-phase verification --
   integrity, author trust (must meet trust-lattice threshold),
   capability policy (requested capabilities must be granted by
   device policy), effect coverage (every declared effect must
@@ -211,7 +211,7 @@ being correctly provisioned. A device with a trust lattice that
 trusts the attacker's key will accept the attacker's firmware.
 This is a deployment concern (the Identity design's first-boot
 ceremony and the provisioning flow own this). The toolchain cannot
-prevent a manufacturer from provisioning a bad trust lattice — it
+prevent a manufacturer from provisioning a bad trust lattice -- it
 can only ensure the lattice is consulted and the decision is
 recorded as a fact.
 
@@ -222,11 +222,11 @@ recorded as a fact.
 ### 2.1 Unauthenticated connection / default credentials
 
 **The attack**: attacker connects to the device using default or
-no credentials. The Mirai botnet family exploits exactly this —
+no credentials. The Mirai botnet family exploits exactly this --
 SSH/Telnet with factory-default username/password across millions
 of devices.
 
-**Defense — BY CONSTRUCTION + MECHANISM**:
+**Defense -- BY CONSTRUCTION + MECHANISM**:
 - There are no passwords in the Codex identity model. Identity is
   an Ed25519 keypair generated at first boot. There is no
   username, no default password, no password database, no
@@ -247,8 +247,8 @@ of devices.
 a weaker protocol version or cipher suite. Classic: TLS 1.3
 downgrade to TLS 1.0, then exploit known weaknesses.
 
-**Defense — MECHANISM** (see `ProtocolStack.md`):
-- MQTT v5.0 only — no 3.1.1 compatibility mode. There is no older
+**Defense -- MECHANISM** (see `ProtocolStack.md`):
+- MQTT v5.0 only -- no 3.1.1 compatibility mode. There is no older
   version to downgrade to.
 - TLS 1.3 only (when implemented). The design does not include
   TLS 1.2 or earlier. The cipher suite is fixed: X25519 key
@@ -257,7 +257,7 @@ downgrade to TLS 1.0, then exploit known weaknesses.
   not implemented.
 - DTLS: the design recommends 1.3-style handshake with 1.2
   compatibility only if interop requires it. If 1.2 is needed, the
-  cipher suite is still restricted to AEAD ciphers — no CBC, no
+  cipher suite is still restricted to AEAD ciphers -- no CBC, no
   RC4, no MD5.
 - The CoAP token and message ID are not security mechanisms and
   are not treated as such; security is at the DTLS layer.
@@ -265,7 +265,7 @@ downgrade to TLS 1.0, then exploit known weaknesses.
 **Residual**: if a deployment requires DTLS 1.2 for LwM2M server
 interop (Eclipse Leshan), the 1.2 handshake has known weaknesses
 (no encrypted SNI, weaker key schedule). The evidence package must
-classify this deployment choice honestly — the device is as strong
+classify this deployment choice honestly -- the device is as strong
 as its weakest negotiated session.
 
 ### 2.3 Replay attacks
@@ -274,7 +274,7 @@ as its weakest negotiated session.
 "unlock door" command) and retransmits it later to re-execute the
 action.
 
-**Defense — MECHANISM**:
+**Defense -- MECHANISM**:
 - Agent protocol messages carry sequence numbers; the trust node
   tracks the last-seen sequence per peer and rejects duplicates
   (TrustNode.codex, replay dedup).
@@ -294,7 +294,7 @@ action.
 replay protection beyond the message ID cache, which is bounded in
 time and space. For security-critical commands, only CON messages
 over DTLS should be used. The protocol stack design should enforce
-this via effect typing — a command that mutates device state
+this via effect typing -- a command that mutates device state
 requires `[Network, Authenticated]`, not just `[Network]`.
 
 ### 2.4 Denial of service / resource exhaustion
@@ -303,12 +303,12 @@ requires `[Network, Authenticated]`, not just `[Network]`.
 payloads, or malformed packets to exhaust memory, CPU, or network
 buffers and make the device unresponsive.
 
-**Defense — MECHANISM**:
+**Defense -- MECHANISM**:
 - **Connection-level**: the trust handshake requires proof-of-work
   before the device allocates any session state. A SYN-flood
   equivalent costs the attacker computation per attempt
   (Handshake.codex, proof-of-work challenge).
-- **Memory**: bounded allocation everywhere — CoAP retransmit
+- **Memory**: bounded allocation everywhere -- CoAP retransmit
   queue bounded by NSTART (1), MQTT packet-identifier table
   bounded by 65535 entries (fixed-capacity pre-allocated), all
   accumulator lists pre-allocated via `__list-with-capacity`.
@@ -320,14 +320,14 @@ buffers and make the device unresponsive.
 - **Network buffers**: NE2K receive buffer is fixed (1536 bytes,
   kernel metadata). Packets larger than the buffer are truncated
   at the NIC layer. There is no reassembly buffer an attacker can
-  exhaust (CoAP Block transfer reassembles to flash, not RAM —
+  exhaust (CoAP Block transfer reassembles to flash, not RAM --
   see OTA design).
 
 **Residual**: the proof-of-work difficulty is not dynamically
 adjustable per the current trust-handshake design. Under sustained
 attack, the device cannot increase the cost of first contact. This
 is a named gap in the trust layer. Additionally, the NE2K is the
-only NIC — it has no hardware filtering, no RSS, no interrupt
+only NIC -- it has no hardware filtering, no RSS, no interrupt
 coalescing. On real hardware with a real NIC (ESP32-C6 WiFi,
 Pi gigabit Ethernet), the hardware capabilities differ and the
 driver must expose them.
@@ -339,7 +339,7 @@ ceremony), an attacker intercepts the communication between the
 device and the provisioning system and substitutes their own
 identity or trust configuration.
 
-**Defense — MECHANISM + DEPLOYMENT**:
+**Defense -- MECHANISM + DEPLOYMENT**:
 - The first-boot ceremony (Identity design) generates the keypair
   locally on the device. The private key never traverses a
   network.
@@ -352,7 +352,7 @@ identity or trust configuration.
 
 **Residual**: if provisioning happens over a network without a
 pre-shared trust anchor, the bootstrapping is vulnerable to MitM.
-The design assumes a factory root key exists — its provisioning
+The design assumes a factory root key exists -- its provisioning
 is a manufacturing-line concern outside the toolchain's scope.
 The compliance evidence classifies this as DEPLOYMENT.
 
@@ -363,14 +363,14 @@ source IP to a Codex device. The device sends a large response to
 the victim. CoAP's typical amplification factor is 10-30x for
 resource discovery (/.well-known/core).
 
-**Defense — MECHANISM**:
+**Defense -- MECHANISM**:
 - CoAP DTLS (coaps://) authenticates the peer before responding,
   eliminating spoofed-source amplification entirely.
 - For cleartext CoAP (bring-up mode only): rate-limit responses to
   unknown peers; the trust layer's proof-of-work applies to first
   contact; resource discovery responses should be bounded in size.
 - The compliance evidence design gates cleartext CoAP out of any
-  compliance-evidence build — if the firmware ships cleartext CoAP,
+  compliance-evidence build -- if the firmware ships cleartext CoAP,
   the evidence package's ETSI 5.5 claim degrades from MECHANISM to
   DEPLOYMENT(conditional).
 
@@ -385,7 +385,7 @@ port (often exposed as test pads on the PCB) and reads/writes
 arbitrary memory, dumps firmware, modifies execution state, or
 extracts cryptographic keys from SRAM.
 
-**Defense — DEPLOYMENT + MECHANISM (where hardware supports it)**:
+**Defense -- DEPLOYMENT + MECHANISM (where hardware supports it)**:
 - STM32: read-out protection levels (RDP). Level 1 prevents
   flash readout via debug but allows debug otherwise. Level 2
   permanently disables JTAG/SWD (irreversible fuse). The board
@@ -411,7 +411,7 @@ target board is known to have no debug-disable mechanism.
 or electromagnetic emissions during cryptographic operations and
 uses statistical analysis (DPA/DEMA) to recover secret keys.
 
-**Defense — BY CONSTRUCTION (partial)**:
+**Defense -- BY CONSTRUCTION (partial)**:
 - All cryptographic primitives are constant-time: no branching on
   secret data, no data-dependent memory access, no early exit.
   This eliminates simple power analysis (SPA) where the power
@@ -423,7 +423,7 @@ uses statistical analysis (DPA/DEMA) to recover secret keys.
 - SHA-256 compression is data-independent in control flow (the
   round function is the same regardless of input).
 
-**Residual — significant at SL 3+**:
+**Residual -- significant at SL 3+**:
 - **Differential power analysis (DPA)**: constant-time code
   defeats SPA but not DPA. DPA uses statistical correlation across
   many traces to recover key bits even when the control flow is
@@ -451,7 +451,7 @@ uses statistical analysis (DPA/DEMA) to recover secret keys.
   accelerator that implements its own side-channel protections.
   When available, the HAL should prefer the hardware path over
   software crypto for operations that handle long-term keys.
-  This is future work — the current crypto chapters are
+  This is future work -- the current crypto chapters are
   software-only.
 
 **Honest assessment**: constant-time software crypto is necessary
@@ -460,7 +460,7 @@ compliance evidence for IEC 62443 SL 3+ should state this
 explicitly: "software cryptographic operations are constant-time
 but do not include DPA countermeasures. For SL 3 deployments,
 hardware crypto acceleration or external secure elements are
-recommended." This is not a failure of the design — it is a
+recommended." This is not a failure of the design -- it is a
 correct scoping of what a compiler can provide.
 
 ### 3.3 Cold boot / SRAM remanence
@@ -469,7 +469,7 @@ correct scoping of what a compiler can provide.
 contents before they decay. Cryptographic keys in SRAM are
 recoverable for seconds to minutes depending on temperature.
 
-**Defense — MECHANISM (partial)**:
+**Defense -- MECHANISM (partial)**:
 - The Identity design specifies that kernel-pinned keys are zeroed
   on timeout/lock (`memset` equivalent with volatile qualifier to
   prevent elision). On power loss, zeroing does not happen.
@@ -491,12 +491,12 @@ with physical access and a freezer.
 interfaces to extract the firmware binary for reverse engineering
 or cloning.
 
-**Defense — DEPLOYMENT**:
+**Defense -- DEPLOYMENT**:
 - ESP32-C6: AES-256-XTS flash encryption at the hardware level.
   The firmware is encrypted at rest; readout yields ciphertext.
 - STM32: RDP Level 2 prevents debug readout. Flash encryption
   is available on some STM32 variants (STM32H7 with OTFDEC).
-- CDX binaries are signed but not encrypted — the code is
+- CDX binaries are signed but not encrypted -- the code is
   readable if extracted. The signing prevents *modification* but
   not *inspection*.
 
@@ -518,7 +518,7 @@ or distribution channel and injects malicious firmware that is
 signed with a legitimate key (because the attacker has access to
 the signing infrastructure).
 
-**Defense — MECHANISM (strong)**:
+**Defense -- MECHANISM (strong)**:
 - The fixed-point property: the compiler reproduces itself
   byte-identically. A compromised build that modifies the compiler
   would break the fixed point. Any build environment can verify
@@ -537,7 +537,7 @@ the signing infrastructure).
 the signatures are valid for attacker-produced binaries. This
 reduces to the key-compromise scenario (OTAFirmwareUpdate.md §Key
 compromise and revocation). The trust-lattice key rotation
-mechanism is the response — but the current FactStore lacks a
+mechanism is the response -- but the current FactStore lacks a
 supersession/revocation primitive, which is a named gap.
 
 ### 4.2 Counterfeit device (cloning)
@@ -546,7 +546,7 @@ supersession/revocation primitive, which is a named gap.
 identical to a legitimate device but runs modified firmware or
 exfiltrates data.
 
-**Defense — MECHANISM**:
+**Defense -- MECHANISM**:
 - Device identity is a locally-generated Ed25519 keypair. The
   first-boot ceremony creates a unique identity that is
   cryptographically bound to that physical device's trust-store
@@ -555,7 +555,7 @@ exfiltrates data.
 - Where the SoC has a hardware unique ID (STM32 96-bit UID at
   0x1FFF7A10, ESP32-C6 eFuse MAC), the identity ceremony can
   bind the Ed25519 key to the hardware ID as an additional fact.
-  This makes the identity non-transferable — the key only works
+  This makes the identity non-transferable -- the key only works
   on the device it was generated on.
 
 **Residual**: hardware ID binding is optional and depends on the
@@ -571,7 +571,7 @@ personal data, or fleet access. An attacker acquires the device
 (e-waste, resale) and uses the retained credentials to access
 the fleet or extract data.
 
-**Defense — MECHANISM + DEPLOYMENT**:
+**Defense -- MECHANISM + DEPLOYMENT**:
 - Capability leases have explicit expiry. A device that has not
   renewed its leases (because it is powered off / decommissioned)
   loses all granted capabilities. The fleet server observes the
@@ -580,7 +580,7 @@ the fleet or extract data.
 - Secure erase of identity material: a decommissioning procedure
   (product-level, not toolchain) zeros the identity keypair and
   trust store from persistent storage. On ESP32-C6, eFuse-based
-  keys cannot be erased (by design — they are one-time
+  keys cannot be erased (by design -- they are one-time
   programmable); the device should be physically destroyed.
 - ETSI 5.11 (easy personal-data deletion) is classified as
   DEPLOYMENT in the compliance evidence; the toolchain provides
@@ -598,7 +598,7 @@ catastrophically leaks the authentication key. With 96-bit random
 nonces, the birthday bound is ~2^32 messages per key before
 collision probability becomes dangerous.
 
-**Defense — MECHANISM**:
+**Defense -- MECHANISM**:
 - The HKDF-based key derivation (foreword Hkdf) supports key
   rotation: derive per-session or per-epoch keys from a master
   key, limiting the number of messages encrypted under any single
@@ -624,7 +624,7 @@ application code that makes security decisions based on secret data
 may not be. Example: a custom authentication check that returns
 early on the first mismatched byte of a token.
 
-**Defense — MECHANISM (partial)**:
+**Defense -- MECHANISM (partial)**:
 - The constant-time comparison function (`ct-compare` or
   equivalent) should be a foreword builtin, not left to the
   application programmer.
@@ -642,7 +642,7 @@ developer's responsibility.
 
 **Research lead (IRISA, 2026-06-23):** The EPICURE team (IRISA D4)
 has built static analysis tools that prove constant-time execution
-survives compilation — they verify that CompCert-style codegen
+survives compilation -- they verify that CompCert-style codegen
 preserves information flow properties to machine code. Their work
 on RIOT OS (an IoT kernel) directly parallels our bare-metal
 kernel. Applying their approach to our emitter could close R8 by
@@ -653,7 +653,7 @@ values. See `docs/Reference/IRISA_Research_Harvest.md` item 3.
 The GnuZero tool (SPICY team, IRISA D1, DSN'25 Best Paper) detects
 when compilers optimize away security-critical memory clearing. Since
 we own the emitter, we can make zeroization a semantic guarantee
-immune to dead-store elimination — a `secure-erase` annotation or
+immune to dead-store elimination -- a `secure-erase` annotation or
 effect that the emitter enforces unconditionally.
 
 ---
@@ -673,7 +673,7 @@ effect that the emitter enforces unconditionally.
 
 ## Consolidated Residual Risk Register
 
-These are the honest gaps — things the toolchain cannot fully
+These are the honest gaps -- things the toolchain cannot fully
 address and that the compliance evidence must classify honestly:
 
 | ID | Gap | SL impact | Mitigation path |

@@ -1,0 +1,138 @@
+Chapter: RankedTextSetSurface
+  cites Foreword chapter Console
+  cites Foreword chapter RankedTextSet
+
+Section: Operands
+
+  words : List Text
+  words = ["abstract", "as", "base", "bool", "break",
+   "case", "catch", "class", "continue", "decimal",
+   "default", "delegate", "do", "double", "else",
+   "event", "false", "finally", "for", "if",
+   "in", "int", "internal", "is", "long",
+   "namespace", "new", "null", "object", "out",
+   "override", "params", "private", "protected", "public",
+   "ref", "return", "sealed", "static", "string",
+   "switch", "this", "throw", "true", "try",
+   "typeof", "using", "virtual", "void", "while",
+   "byte", "char", "checked", "const", "enum",
+   "explicit", "extern", "fixed", "float", "foreach",
+   "goto", "implicit", "interface", "lock", "operator",
+   "readonly", "sbyte", "short", "sizeof", "stackalloc",
+   "struct", "uint", "ulong", "unchecked", "unsafe",
+   "ushort", "volatile"]
+
+Section: Cross Checks
+
+  sorted-violations : List Text, Integer, Integer -> Integer
+  sorted-violations (xs) (i) (n) =
+   if i + 1 >= n then 0
+   else (if text-compare (list-at xs i) (list-at xs (i + 1)) < 0 then 0 else 1) + sorted-violations xs (i + 1) n
+
+  has-false : RankedTextSet, List Text, Integer, Integer -> Integer
+  has-false (s) (xs) (i) (n) =
+   if i >= n then 0
+   else (if ranked-text-has s (list-at xs i) then 0 else 1) + has-false s xs (i + 1) n
+
+  at-mismatch : RankedTextSet, List Text, Integer, Integer -> Integer
+  at-mismatch (s) (xs) (i) (n) =
+   if i >= n then 0
+   else (if ranked-text-at s i == list-at xs i then 0 else 1) + at-mismatch s xs (i + 1) n
+
+  rank-mismatch : RankedTextSet, List Text, Integer, Integer -> Integer
+  rank-mismatch (s) (xs) (i) (n) =
+   if i >= n then 0
+   else (if ranked-text-rank-of s (list-at xs i) == i then 0 else 1) + rank-mismatch s xs (i + 1) n
+
+Section: Every Prefix
+
+  take-prefix : List Text, Integer, Integer, List Text -> List Text
+  take-prefix (xs) (i) (k) (acc) =
+   if i >= k then acc
+   else take-prefix xs (i + 1) k (list-push acc (list-at xs i))
+
+  first-bad-prefix : List Text, Integer, Integer -> Text
+  first-bad-prefix (xs) (k) (n) =
+   if k > n then "none"
+   else let p = take-prefix xs 0 k []
+   in let s = ranked-text-from-list p
+   in if has-false s p 0 k == 0 then first-bad-prefix xs (k + 1) n
+      else "k=" & show k
+
+Section: Cost
+
+  null-loop : Integer, Integer, Integer -> Integer
+  null-loop (i) (n) (acc) =
+   if i >= n then acc
+   else null-loop (i + 1) n (acc + 1)
+
+  kw : RankedTextSet
+  kw = ranked-text-from-list ["alpha", "beta", "gamma", "delta"]
+
+  hammer-nullary : Integer, Integer, Text -> Integer
+  hammer-nullary (i) (n) (w) =
+   if i >= n then 0
+   else (if ranked-text-has kw w then 1 else 0) + hammer-nullary (i + 1) n w
+
+  hammer-bound : RankedTextSet, Integer, Integer, Text -> Integer
+  hammer-bound (s) (i) (n) (w) =
+   if i >= n then 0
+   else (if ranked-text-has s w then 1 else 0) + hammer-bound s (i + 1) n w
+
+Section: Aliasing
+
+  walk-text : RankedTextSet -> Text
+  walk-text (s) = let l = ranked-text-to-list s in show-list l 0 (list-length l) ""
+
+  show-list : List Text, Integer, Integer, Text -> Text
+  show-list (xs) (i) (n) (acc) =
+   if i >= n then acc
+   else show-list xs (i + 1) n (if i == 0 then list-at xs i else acc & "," & list-at xs i)
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    act
+      let ws = words
+      in let n = list-length ws
+      in let s = ranked-text-from-list ws
+      in let lst = ranked-text-to-list s
+      in let m = list-length lst
+      in let c0 = alloc-bytes 0
+      in let cn = null-loop 0 10 0
+      in let c1 = alloc-bytes 0
+      in let bs = kw
+      in let b0 = alloc-bytes 0
+      in let bh = hammer-bound bs 0 10 "beta"
+      in let b1 = alloc-bytes 0
+      in let u0 = alloc-bytes 0
+      in let uh = hammer-nullary 0 10 "beta"
+      in let u1 = alloc-bytes 0
+      in let orig = ranked-text-from-list ["pear", "apple", "cherry"]
+      in let grown = ranked-text-insert orig "fig"
+      in let base = ranked-text-from-list ["pear", "apple", "cherry"]
+      in let copy = ranked-text-clone base
+      in let copy-grown = ranked-text-insert copy "fig"
+      in act
+        print-line-uni ("input " & show n & " size " & show (ranked-text-size s) & " walk " & show m)
+        print-line-uni ("sorted-violations " & show (sorted-violations lst 0 m))
+        print-line-uni ("members not found " & show (has-false s ws 0 n))
+        print-line-uni ("at disagrees with walk " & show (at-mismatch s lst 0 m))
+        print-line-uni ("rank disagrees with walk " & show (rank-mismatch s lst 0 m))
+        print-line-uni ("first bad prefix " & first-bad-prefix ws 1 n)
+        print-line-uni ("absent " & show (ranked-text-has s "qqzz") & " prefix-of-member " & show (ranked-text-has s "abstrac") & " member-plus " & show (ranked-text-has s "abstractx"))
+        print-line-uni ("absent rank " & show (ranked-text-rank-of s "qqzz") & " at -1 len " & show (text-length (ranked-text-at s (0 - 1))) & " at n len " & show (text-length (ranked-text-at s m)))
+        print-line-uni ("empty size " & show (ranked-text-size ranked-text-empty) & " has " & show (ranked-text-has ranked-text-empty "x") & " rank " & show (ranked-text-rank-of ranked-text-empty "x"))
+        print-line-uni ("duplicate insert size " & show (ranked-text-size (ranked-text-insert (ranked-text-from-list ["a", "b"]) "a")))
+        print-line-uni ("null control allocates " & show (c1 - c0) & " calls " & show cn)
+        print-line-uni ("ten lookups, set bound once, allocate " & show (b1 - b0) & " hits " & show bh)
+        print-line-uni ("ten lookups, set named nullary, allocate more " & show (u1 - u0 > b1 - b0) & " hits " & show uh)
+        print-line-uni ("PINS A DEFECT insert returns size " & show (ranked-text-size grown) & " walk " & walk-text grown)
+        print-line-uni ("PINS A DEFECT original size " & show (ranked-text-size orig) & " walk " & walk-text orig)
+        print-line-uni ("clone equals its source walk " & walk-text (ranked-text-clone base))
+        print-line-uni ("THE ESCAPE HATCH inserting into the clone gives size " & show (ranked-text-size copy-grown) & " walk " & walk-text copy-grown)
+        print-line-uni ("THE ESCAPE HATCH the source is untouched size " & show (ranked-text-size base) & " walk " & walk-text base)
+        print-line-uni ("is-empty on empty " & show (ranked-text-is-empty ranked-text-empty) & " on a member set " & show (ranked-text-is-empty base))
+        print-line-uni ("max-height " & show ranked-text-max-height)
+      end
+    end

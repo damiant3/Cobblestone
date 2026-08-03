@@ -9,6 +9,8 @@ Chapter: DiskFacts
 
   cites Foreword chapter FactLog
 
+  cites Foreword chapter Gpt
+
   grounds Device.Block
 
 
@@ -339,23 +341,23 @@ Section: Superblock
 
 
 
-  write-superblock : Superblock -> Integer
+  write-superblock : Integer, Superblock -> Integer
 
-  write-superblock (sb) =
+  write-superblock (base) (sb) =
 
     let buf = alloc-bytes sector-size
 
     in let off = pack-superblock buf sb
 
-    in block-write-sector (int-mod (sb.index-gen) 2) buf
+    in fact-write-at base (int-mod (sb.index-gen) 2) buf
 
 
 
-  read-superblock-at : Integer -> Maybe Superblock
+  read-superblock-at : Integer, Integer -> Maybe Superblock
 
-  read-superblock-at (sector) =
+  read-superblock-at (base) (sector) =
 
-    let buf = block-read-sector sector
+    let buf = fact-read-at base sector
 
     in unpack-superblock buf
 
@@ -379,13 +381,13 @@ Section: Superblock
 
 
 
-  read-superblock : Maybe Superblock
+  read-superblock : Integer -> Maybe Superblock
 
-  read-superblock =
+  read-superblock (base) =
 
-    let sb0 = read-superblock-at 0
+    let sb0 = read-superblock-at base 0
 
-    in let sb1 = read-superblock-at 1
+    in let sb1 = read-superblock-at base 1
 
     in pick-superblock sb0 sb1
 
@@ -465,15 +467,211 @@ Section: Fact Log Entries
 
 
 
-  write-fact-sectors : Integer, Integer, Integer, Integer -> Integer
+  write-fact-sectors : Integer, Integer, Integer, Integer, Integer -> Integer
 
-  write-fact-sectors (buf) (start-sector) (count) (i) =
+  write-fact-sectors (base) (buf) (start-sector) (count) (i) =
 
     if i >= count then 0
 
-    else let w = block-write-sector (start-sector + i) (buf + i * sector-size)
+    else let w = fact-write-at base (start-sector + i) (buf + i * sector-size)
 
-         in write-fact-sectors buf start-sector count (i + 1)
+         in write-fact-sectors base buf start-sector count (i + 1)
+
+
+
+Section: Where The Store Lives On The Disk
+
+
+
+ Every sector number in this chapter is RELATIVE to the store's base LBA.
+ The superblock is at relative 0 and 1, the log runs from relative 2, and
+ the base is added exactly once, in fact-read-at and fact-write-at. On a
+ raw disk the base is 0 and every address is what it always was.
+
+ It has to be relative because of what absolute addressing did. This store
+ owns sectors 0 and 1 for its superblock and everything from sector 2
+ upward for its log; on a partitioned disk those are the protective MBR,
+ the GPT header and the partition entry array. Measured 2026-07-27: a
+ 16 MB boot image the firmware read as "extracted BOOTX64.EFI (327680
+ bytes, FAT16) from partition at LBA 2048" was, after a single
+ disk-write-fact, read as "ESP at LBA 0 has an unusable BPB". It did not
+ boot, and nothing warned anyone. Codex's own stick is such a disk, and
+ the dev console it boots opens this store at startup.
+
+ So the store gets its own partition, type C0DE1A11-FAC7-4C0D-9E75-
+ C0DEC0DE5EED, and addresses inside it. The installer creates it; the
+ store finds it by its type GUID; a disk that carries a partition table
+ and no such partition is refused rather than eaten.
+
+
+
+Section: Resolving The Base
+
+
+
+ Three answers, and the middle one is the one worth naming: a base of zero
+ means the whole medium is the store, which is what a raw disk and every
+ test fixture in this tree is. It is a legitimate base and not a failure,
+ so refusal cannot be encoded as zero. It is negative one.
+
+  fact-base-whole-disk : Integer = 0
+
+  fact-base-refuse : Integer = 0 - 1
+
+
+
+ A disk is partitioned if it carries a GPT header at LBA 1 or merely an
+ MBR boot signature at sector 0. The second half is the residual case and
+ it was the remaining hole: a disk with an MBR partition table and no GPT
+ was still written straight through, because the old guard looked only for
+ "EFI PART". The same test also catches a bare FAT volume with no
+ partition table at all, whose boot sector ends in the same two bytes, and
+ refusing that is right for the same reason -- the store would write over
+ somebody's filesystem.
+
+ The GPT signature is compared as RAW BYTES and not through Text.
+ "EFI PART" is written by whatever partitioned the disk, so it is ASCII on
+ the medium, while this chapter's own magic goes through pack-text and is
+ therefore CCE. Reading those eight bytes as Text and comparing them
+ against a literal is the CCE boundary bug this project has shipped more
+ than once; it would answer False on every real GPT and the guard would
+ never fire at all.
+
+ Our own superblock cannot trip the MBR test. pack-superblock zeroes the
+ sector and writes a magic and three counters into its first 32 bytes, so
+ bytes 510 and 511 of a store's own sector 0 are zero.
+
+
+
+  gpt-signature : List Integer
+
+  gpt-signature = [69, 70, 73, 32, 80, 65, 82, 84]
+
+
+
+  gpt-sig-matches : Integer, Integer -> Boolean
+
+  gpt-sig-matches (buf) (i) =
+
+    if i >= 8 then True
+
+    else if peek-byte buf i /= list-at gpt-signature i then False
+
+    else gpt-sig-matches buf (i + 1)
+
+
+
+  disk-has-gpt-header : Boolean
+
+  disk-has-gpt-header =
+
+    let hdr = block-read-sector 1
+
+    in gpt-sig-matches hdr 0
+
+
+
+  disk-has-mbr-signature : Boolean
+
+  disk-has-mbr-signature =
+
+    let mbr = block-read-sector 0
+
+    in peek-byte mbr 510 == 85 & peek-byte mbr 511 == 170
+
+
+
+  disk-is-partitioned : Boolean
+
+  disk-is-partitioned = disk-has-gpt-header | disk-has-mbr-signature
+
+
+
+ A fact partition starting below LBA 2 is refused rather than believed. A
+ GPT's own header and entry array live there, so an entry claiming that
+ start is a malformed table, and taking it at its word would put the base
+ back on top of the partition table -- the exact failure this addressing
+ exists to prevent, arriving through the mechanism that prevents it.
+
+  fact-base-min-lba : Integer = 2
+
+
+
+  DiskRegion = record {
+
+    dr-base : Integer,
+
+    dr-limit : Integer
+
+  }
+
+
+
+  fact-store-region : DiskRegion
+
+  fact-store-region =
+
+    if disk-is-partitioned == False then
+
+      DiskRegion { dr-base = fact-base-whole-disk, dr-limit = 0 }
+
+    else when gpt-read
+
+      is None -> DiskRegion { dr-base = fact-base-refuse, dr-limit = 0 }
+
+      is Just (disk) -> fact-region-from-gpt disk
+
+
+
+  fact-region-from-gpt : GptDisk -> DiskRegion
+
+  fact-region-from-gpt (disk) =
+
+    when gpt-find-by-type disk gpt-codex-facts-guid
+
+      is None -> DiskRegion { dr-base = fact-base-refuse, dr-limit = 0 }
+
+      is Just (part) ->
+
+        if part.gp-start-lba < fact-base-min-lba then
+
+          DiskRegion { dr-base = fact-base-refuse, dr-limit = 0 }
+
+        else DiskRegion {
+
+          dr-base = part.gp-start-lba,
+
+          dr-limit = (part.gp-end-lba) - (part.gp-start-lba) + 1
+
+        }
+
+
+
+Section: Relative Sector Access
+
+
+
+ The only two functions in this chapter that name an absolute sector. A
+ limit of zero means the whole medium, which is what a raw disk gets; any
+ other limit is the partition's sector count and is checked before a write
+ rather than after it, because a write past the end of the partition lands
+ in whatever partition follows.
+
+  fact-read-at : Integer, Integer -> Integer
+
+  fact-read-at (base) (rel) = block-read-sector (base + rel)
+
+
+
+  fact-write-at : Integer, Integer, Integer -> Integer
+
+  fact-write-at (base) (rel) (buf) = block-write-sector (base + rel) buf
+
+
+
+  region-admits : Integer, Integer -> Boolean
+
+  region-admits (limit) (end-rel) = if limit == 0 then True else end-rel <= limit
 
 
 
@@ -481,11 +679,47 @@ Section: Disk Operations
 
 
 
+ A store carries the region it was opened against. It is captured once, at
+ disk-init or disk-load, rather than resolved per access: resolving means
+ reading the GPT, which is three sector reads and a list of partition
+ records, and a log walk touches thousands of sectors. Per access it would
+ be the heap blow-up this project has a review rule about.
+
+ It also means the region belongs to the store rather than to the machine,
+ which is what idm-copy-to-drive needs -- two stores, two drives, two
+ bases, each store still addressing its own.
+
   DiskFactStore = record {
 
     superblock : Superblock,
 
-    mem : BareFactStore
+    mem : BareFactStore,
+
+    base : Integer,
+
+    limit : Integer
+
+  }
+
+
+
+  disk-usable : DiskFactStore -> Boolean
+
+  disk-usable (store) = store.base >= 0
+
+
+
+  disk-empty-in : DiskRegion -> DiskFactStore
+
+  disk-empty-in (region) = DiskFactStore {
+
+    superblock = empty-superblock,
+
+    mem = fact-store-empty,
+
+    base = region.dr-base,
+
+    limit = region.dr-limit
 
   }
 
@@ -493,19 +727,39 @@ Section: Disk Operations
 
   disk-init : DiskFactStore
 
-  disk-init = DiskFactStore {
+  disk-init = disk-empty-in fact-store-region
 
-    superblock = empty-superblock,
 
-    mem = fact-store-empty
 
-  }
+ Two ways to refuse, and they are different failures. A base below zero is
+ "this disk carries a partition table and no fact store"; a write that
+ would run past dr-limit is "the fact store is full". Neither is allowed to
+ reach the medium, and both come back as the store UNCHANGED rather than
+ with its fact-count incremented over a write that did not happen. A caller
+ that checks disk-fact-count sees it fail to rise, which is the only signal
+ these writers can carry; a store that counted a fact it never wrote would
+ be the same class of lie as the superblock that went on reporting a full
+ count over a truncated log, two sections above.
 
 
 
   disk-write-fact : DiskFactStore, FactKind, Text, Integer -> DiskFactStore
 
   disk-write-fact (store) (kind) (content) (timestamp) =
+
+    if disk-usable store == False then store
+
+    else let nsec = sectors-for-fact (text-length content)
+
+    in if region-admits (store.limit) (store.superblock.log-head + nsec) == False then store
+
+    else disk-write-fact-unguarded store kind content timestamp
+
+
+
+  disk-write-fact-unguarded : DiskFactStore, FactKind, Text, Integer -> DiskFactStore
+
+  disk-write-fact-unguarded (store) (kind) (content) (timestamp) =
 
     let sb = store.superblock
 
@@ -517,7 +771,7 @@ Section: Disk Operations
 
     in let packed = pack-fact-entry buf kind content timestamp
 
-    in let written = write-fact-sectors buf (sb.log-head) nsec 0
+    in let written = write-fact-sectors (store.base) buf (sb.log-head) nsec 0
 
     in let new-sb = Superblock {
 
@@ -537,7 +791,11 @@ Section: Disk Operations
 
       superblock = new-sb,
 
-      mem = new-mem
+      mem = new-mem,
+
+      base = store.base,
+
+      limit = store.limit
 
     }
 
@@ -546,6 +804,16 @@ Section: Disk Operations
   disk-checkpoint : DiskFactStore -> DiskFactStore
 
   disk-checkpoint (store) =
+
+    if disk-usable store == False then store
+
+    else disk-checkpoint-unguarded store
+
+
+
+  disk-checkpoint-unguarded : DiskFactStore -> DiskFactStore
+
+  disk-checkpoint-unguarded (store) =
 
     let sb = store.superblock
 
@@ -559,13 +827,17 @@ Section: Disk Operations
 
     }
 
-    in let written = write-superblock new-sb
+    in let written = write-superblock (store.base) new-sb
 
     in DiskFactStore {
 
       superblock = new-sb,
 
-      mem = store.mem
+      mem = store.mem,
+
+      base = store.base,
+
+      limit = store.limit
 
     }
 
@@ -619,35 +891,35 @@ Section: Disk Load (Boot-Time Recovery)
 
          in disk-copy-sector src dst dst-off (i + 1)
 
-  disk-load-sectors : Integer, Integer, Integer, Integer -> Integer
+  disk-load-sectors : Integer, Integer, Integer, Integer, Integer -> Integer
 
-  disk-load-sectors (start) (count) (dst) (i) =
+  disk-load-sectors (base) (start) (count) (dst) (i) =
 
     if i >= count then 0
 
-    else let src = block-read-sector (start + i)
+    else let src = fact-read-at base (start + i)
 
          in let c = disk-copy-sector src dst (i * sector-size) 0
 
-         in disk-load-sectors start count dst (i + 1)
+         in disk-load-sectors base start count dst (i + 1)
 
-  disk-read-entry-content : Integer, Integer -> Text
+  disk-read-entry-content : Integer, Integer, Integer -> Text
 
-  disk-read-entry-content (sector) (clen) =
+  disk-read-entry-content (base) (sector) (clen) =
 
     let nsec = sectors-for-fact clen
 
     in let buf = alloc-bytes (nsec * sector-size)
 
-    in let loaded = disk-load-sectors sector nsec buf 0
+    in let loaded = disk-load-sectors base sector nsec buf 0
 
     in unpack-text buf fact-entry-header-size clen
 
-  scan-fact-at : Integer, Integer -> FactScan
+  scan-fact-at : Integer, Integer, Integer -> FactScan
 
-  scan-fact-at (sector) (end-sector) =
+  scan-fact-at (base) (sector) (end-sector) =
 
-    let buf = block-read-sector sector
+    let buf = fact-read-at base sector
 
     in let content-len = fl-entry-content-len buf
 
@@ -661,7 +933,7 @@ Section: Disk Load (Boot-Time Recovery)
 
     in let timestamp = fl-entry-timestamp buf
 
-    in let content = disk-read-entry-content sector content-len
+    in let content = disk-read-entry-content base sector content-len
 
     in let stored-hash = unpack-sha256-hex buf 0
 
@@ -681,43 +953,61 @@ Section: Disk Load (Boot-Time Recovery)
 
 
 
-  disk-load-facts : Integer, Integer, BareFactStore -> BareFactStore
+  disk-load-facts : Integer, Integer, Integer, BareFactStore -> BareFactStore
 
-  disk-load-facts (sector) (end-sector) (mem) =
+  disk-load-facts (base) (sector) (end-sector) (mem) =
 
     if sector >= end-sector then mem
 
-    else let s = scan-fact-at sector end-sector
+    else let s = scan-fact-at base sector end-sector
 
          in when (s.fs-fact)
 
-           is Just (f) -> disk-load-facts (sector + (s.fs-nsec)) end-sector (fact-store mem f)
+           is Just (f) -> disk-load-facts base (sector + (s.fs-nsec)) end-sector (fact-store mem f)
 
-           is None -> disk-load-facts (sector + (s.fs-nsec)) end-sector mem
-
-
-
-  disk-load-with-sb : Superblock -> DiskFactStore
-
-  disk-load-with-sb (sb) =
-
-    let mem = disk-load-facts fact-log-start (sb.log-head) fact-store-empty
-
-    in DiskFactStore { superblock = sb, mem = mem }
+           is None -> disk-load-facts base (sector + (s.fs-nsec)) end-sector mem
 
 
+
+  disk-load-with-sb : DiskRegion, Superblock -> DiskFactStore
+
+  disk-load-with-sb (region) (sb) =
+
+    let mem = disk-load-facts (region.dr-base) fact-log-start (sb.log-head) fact-store-empty
+
+    in DiskFactStore {
+
+      superblock = sb,
+
+      mem = mem,
+
+      base = region.dr-base,
+
+      limit = region.dr-limit
+
+    }
+
+
+
+ A refused disk is not read either. Reading it would mean walking a log
+ that is really somebody else's partition entries, and every sector of it
+ would be scanned for a fact header, which at best finds nothing and at
+ worst finds a length field that sends the walk off the end. The region is
+ resolved before the superblock is looked for, not after.
 
   disk-load : DiskFactStore
 
   disk-load =
 
-    let sb-maybe = read-superblock
+    let region = fact-store-region
 
-    in when sb-maybe
+    in if region.dr-base < 0 then disk-empty-in region
 
-      is Just (sb) -> disk-load-with-sb sb
+    else when read-superblock (region.dr-base)
 
-      is None -> disk-init
+      is Just (sb) -> disk-load-with-sb region sb
+
+      is None -> disk-empty-in region
 
 
 
@@ -827,7 +1117,7 @@ Section: System DB Disk Operations
   sysdb-scan-for-kind : DiskFactStore, Integer, Integer -> Maybe IdentityRecord
   sysdb-scan-for-kind (store) (target-kind) (sector) =
     if sector >= store.superblock.log-head then None
-    else let buf = block-read-sector sector
+    else let buf = fact-read-at (store.base) sector
     in let kind-int = unpack-u16-le buf 32
     in if kind-int == target-kind then sysdb-unpack-identity buf
     else sysdb-scan-for-kind store target-kind (sector + 1)
@@ -835,7 +1125,7 @@ Section: System DB Disk Operations
   sysdb-scan-config : DiskFactStore, Integer, Integer -> Maybe SysBootConfig
   sysdb-scan-config (store) (target-kind) (sector) =
     if sector >= store.superblock.log-head then None
-    else let buf = block-read-sector sector
+    else let buf = fact-read-at (store.base) sector
     in let kind-int = unpack-u16-le buf 32
     in if kind-int == target-kind then
       let content-len = unpack-u32-le buf 74

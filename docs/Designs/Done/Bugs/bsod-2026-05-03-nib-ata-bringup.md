@@ -1,4 +1,4 @@
-# WHPX BSOD — 2026-05-03 during ATA bring-up CL 704 validation
+# WHPX BSOD -- 2026-05-03 during ATA bring-up CL 704 validation
 
 **Reported:** 2026-05-03 ~07:12 local
 **Reporter:** Nib (during VM profiles CL 704 validation)

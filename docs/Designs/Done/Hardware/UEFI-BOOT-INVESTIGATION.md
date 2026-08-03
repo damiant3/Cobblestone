@@ -1,19 +1,19 @@
-# UEFI Boot Investigation — Why the Stick Boots in the VM but Rolls Dice on Real Hardware
+# UEFI Boot Investigation -- Why the Stick Boots in the VM but Rolls Dice on Real Hardware
 
 **Created**: 2026-07-07 (fester, Fable 5 first pass over the boot chain)
-**Status**: Active — investigation complete, fix not yet applied
+**Status**: Active -- investigation complete, fix not yet applied
 **Companion**: `REAL-HARDWARE-BRINGUP.md` (the older BIOS/UEFI checklist)
 
 ## The Symptom (Damian's words, paraphrased)
 
 > The same code, built and flashed, gets different behavior on real
-> hardware. We got it to sort-of work a few times — the menu cycled,
-> `info` ran — but iteration was painfully slow and we never got a
+> hardware. We got it to sort-of work a few times -- the menu cycled,
+> `info` ran -- but iteration was painfully slow and we never got a
 > repeatable process even when the code didn't change.
 
 That is not flakiness in the usual sense. It is a **precise signature**:
 the boot stub gambles on specific physical addresses being free, and
-whether it wins the gamble depends on the firmware's memory map — which
+whether it wins the gamble depends on the firmware's memory map -- which
 varies board-to-board **and boot-to-boot**. This document explains the
 mechanism, names every place the theory is confirmed in the code, and
 proposes the fix.
@@ -25,7 +25,7 @@ The UEFI boot stub (`build/cdx-to-pe.ps1`) does three things that are
 `codex-vm`'s fake firmware is permissive:
 
 1. **Raw-writes the SystemTable pointer to physical `0x8000`** with no
-   `AllocatePages` — a bare `mov [0x8000], r15` into firmware-owned low
+   `AllocatePages` -- a bare `mov [0x8000], r15` into firmware-owned low
    memory.
 2. **Copies the whole compiler to absolute `0x100000`** and jumps there,
    *ignoring* the address `AllocatePages(AllocateAnyPages)` actually
@@ -83,9 +83,9 @@ apps/works/UefiBoot.codex `opening`:
 - L124–132: `AllocatePages(AllocateAddress=2, EfiLoaderData=2, HeapPages, [rsp+0x38]=0x1000000)`.
   With `build-boot-img.ps1` passing `-HeapPages 131072`, that is
   **131072 × 4096 = 512 MB demanded at fixed physical `0x1000000`**.
-- L114–120: `AllocatePages(AllocateAnyPages)` for code+rodata — but the
+- L114–120: `AllocatePages(AllocateAnyPages)` for code+rodata -- but the
   returned address in `[rsp+0x30]` is **never read again**.
-- L135–136: `mov [0x8000], r15` — raw store of SystemTable to physical
+- L135–136: `mov [0x8000], r15` -- raw store of SystemTable to physical
   `0x8000`, **no allocation**.
 - L176–195: `rep movsb` copies text to **absolute `0x100000`** and rodata
   to `0x100000 + align8(textSz)`, sources RIP-relative (good), dest
@@ -99,7 +99,7 @@ apps/works/UefiBoot.codex `opening`:
 
 - L64–70: `opening` reads `peek-qword 32768 0` (`0x8000`) for the
   SystemTable, inits the UEFI console, and drops straight into
-  `dev-console-loop`. **It never calls `FirstBoot`** — see "The FirstBoot
+  `dev-console-loop`. **It never calls `FirstBoot`** -- see "The FirstBoot
   Wizard Is Written But Not Wired" below.
 
 **The reference we ignored (`docs/Reference/UEFI_Spec_Summary.md`):**
@@ -120,7 +120,7 @@ apps/works/UefiBoot.codex `opening`:
 
 - **`AllocatePages` (L1926–1958):** for `AllocateAddress` the handler
   comment is literally `/* AllocateAddress: caller set *R9 to exact
-  address. Just succeed. */` — it returns `EFI_SUCCESS` for **any**
+  address. Just succeed. */` -- it returns `EFI_SUCCESS` for **any**
   address, occupied or not. Real firmware returns `EFI_NOT_FOUND` when
   the range isn't free.
 - **`GetMemoryMap` (L1968–1988):** hardcodes an "ASUS TUF (AMI Aptio V)
@@ -141,7 +141,7 @@ firmware behavior that matters for this bug: **honoring the memory map.**
 
 ## Secondary Findings (real, but not the core bug)
 
-### F1 — Three divergent, drifting image/PE builders
+### F1 -- Three divergent, drifting image/PE builders
 
 | Artifact | PowerShell (on the boot path) | Codex plug (canonical per CLAUDE.md, NOT on the boot path) |
 |---|---|---|
@@ -150,7 +150,7 @@ firmware behavior that matters for this bug: **honoring the memory map.**
 
 `build-boot-img.ps1` calls the **PowerShell** pair. The **Codex plugs**
 are what CLAUDE.md says produces container formats ("Container formats …
-are produced by plug CDX binaries") — but they are not exercised by the
+are produced by plug CDX binaries") -- but they are not exercised by the
 boot build, so they have silently diverged:
 
 - Entry point: `cdx-to-pe.ps1` jumps to **`opening`** (via debug-map
@@ -164,9 +164,9 @@ boot build, so they have silently diverged:
 
 Two implementations of the most safety-critical code in the project, only
 one tested, and they disagree on the entry point. This alone makes "the
-code didn't change" untrustworthy — *which* code?
+code didn't change" untrustworthy -- *which* code?
 
-### F2 — Flash script drift (`flash-usb.ps1` does not exist)
+### F2 -- Flash script drift (`flash-usb.ps1` does not exist)
 
 `docs/UsersHandbook.md` and this session's onboarding both tell you to use
 `build/flash-usb.ps1` ("more reliable, skips `Clear-Disk`, uses
@@ -174,25 +174,25 @@ code didn't change" untrustworthy — *which* code?
 flasher is `tools/write-usb.ps1`, which is the *other* one the Handbook
 warns about: it calls `Clear-Disk -RemoveData -RemoveOEM` (the Handbook's
 named race), verifies **only the first 4 KB**, and uses `$fs.Flush()`
-(not `Flush($true)`) — though it does open the stream `WriteThrough`,
+(not `Flush($true)`) -- though it does open the stream `WriteThrough`,
 which mitigates. Net: the recommended-reliable path was never committed,
 so every flash used the path the docs call unreliable. This is a *second,
 independent* source of non-determinism stacked on top of the boot-stub
 gamble.
 
-### F3 — The FirstBoot wizard is written but not wired
+### F3 -- The FirstBoot wizard is written but not wired
 
-`apps/works/FirstBoot.codex` implements exactly the flow Damian wants —
+`apps/works/FirstBoot.codex` implements exactly the flow Damian wants --
 `PhaseWelcome → PhaseIdentity → PhaseAgentSelect → PhaseUpstream →
 PhaseModeSelect → PhaseSaveConfig`, Ed25519 keygen, passphrase-encrypted
 key in DiskFacts, boot-mode persistence. But `UefiBoot.codex`'s `opening`
 goes straight to `dev-console-loop` and **never calls
 `first-boot-entry`**. The "pick the model, set your key, save to the
-stick, then boot the full OS" experience isn't missing — it's
+stick, then boot the full OS" experience isn't missing -- it's
 **disconnected**. Wiring it in is cheap *once boot is reliable*; doing it
 before is polishing a floor that keeps falling through.
 
-### F4 — Stale artifacts
+### F4 -- Stale artifacts
 
 `seed/Codex.img` and `seed/Codex.elf` are dated **2026-07-01**; the seed
 `Codex.cdx` is **2026-07-07** (post map-mode-flag, post NoAliasCodegen
@@ -200,12 +200,12 @@ merge-down). The committed `.img` was built from a seed that no longer
 exists. Any "it worked once" memory may be against a binary we can't
 reproduce.
 
-### F5 — DevConsole / VGA / GOP maturity
+### F5 -- DevConsole / VGA / GOP maturity
 
 - **DevConsole (UEFI text):** the most-complete path; this is what
   "sort-of worked" (menu cycled, `info` ran). It depends only on ConOut /
   ConIn, which survive without `ExitBootServices`.
-- **VGA text:** never worked on the UEFI path and can't — there is no VGA
+- **VGA text:** never worked on the UEFI path and can't -- there is no VGA
   text mode under pure UEFI/GOP without CSM. Dead end by design.
 - **GOP framebuffer (the desired first-boot UI):** unreached. It needs a
   reliable boot first, then `LocateProtocol(GOP)` + `QueryMode/SetMode` +
@@ -214,15 +214,15 @@ reproduce.
 
 ---
 
-## The Fix — Two Viable Architectures
+## The Fix -- Two Viable Architectures
 
 The current stub is a **hybrid**: it acts like a kernel loader (copies to
-absolute addresses, moves the stack, `hlt`s — never returns) while
+absolute addresses, moves the stack, `hlt`s -- never returns) while
 *keeping firmware alive* (no `ExitBootServices`). That hybrid is the worst
 of both worlds and is the direct cause of the address gamble. Pick one
 lane and commit.
 
-### Option A — Proper kernel path (recommended for the OS goal)
+### Option A -- Proper kernel path (recommended for the OS goal)
 
 Do what a real bootloader does, in this order, **inside the stub**:
 
@@ -232,7 +232,7 @@ Do what a real bootloader does, in this order, **inside the stub**:
 3. `GetMemoryMap` → `ExitBootServices(ImageHandle, mapKey)` (retry once on
    stale key). After this, firmware is gone and low memory is ours.
 4. *Now* copy to `0x100000` / park state at `0x8000` if we still want
-   those fixed addresses — legal post-EBS — or better, make the compiled
+   those fixed addresses -- legal post-EBS -- or better, make the compiled
    image position-independent and skip the copy.
 5. `cli`, load our IDT, set `RSP`, jump to `opening`.
 
@@ -240,9 +240,9 @@ Cost: real work in the stub (page tables, EBS, memory-map buffer). But it
 is the *only* path that makes the address assumptions true instead of
 lucky, and it's the path `UEFI_Spec_Summary.md` §"Kernel stub" already
 specifies. Trade-off: ConOut dies at EBS, so first-boot UI must be GOP
-(framebuffer) or serial — which is the direction we want anyway.
+(framebuffer) or serial -- which is the direction we want anyway.
 
-### Option B — Honest UEFI application (fastest to "reliable menu")
+### Option B -- Honest UEFI application (fastest to "reliable menu")
 
 Keep firmware alive, but stop lying about addresses:
 
@@ -266,21 +266,21 @@ going. Good for iteration; weaker as a final OS story.
 
 - **Collapse the two builder families.** Make the boot build use the
   Codex plugs (`pe`, `img`) *or* delete the plugs and bless the
-  PowerShell scripts — one source of truth for the stub. Today they
+  PowerShell scripts -- one source of truth for the stub. Today they
   disagree on the entry point.
 - **Teach `codex-vm` to model a hostile memory map** behind a flag
   (`-uefi-strict`): reserve realistic holes, fail `AllocateAddress` on
   occupied ranges. Without this, the VM will keep green-lighting code that
   bricks on metal. This is the highest-leverage single change for
-  iteration speed — it turns a hardware-only bug into a VM-reproducible
+  iteration speed -- it turns a hardware-only bug into a VM-reproducible
   one.
 - **Commit the reliable flasher.** Add `build/flash-usb.ps1` (direct
   write, `Flush($true)`, full-image verify, no `Clear-Disk`) that the docs
   already promise, or fix the docs to match `write-usb.ps1`.
-- **Wire `FirstBoot` into `UefiBoot.opening`** — but only after a boot is
+- **Wire `FirstBoot` into `UefiBoot.opening`** -- but only after a boot is
   repeatable.
 
-## Progress — `-uefi-strict` shipped, bug reproduced in-VM (2026-07-07)
+## Progress -- `-uefi-strict` shipped, bug reproduced in-VM (2026-07-07)
 
 Step 1 of the sequence is done. `codex-vm` now has a `-uefi-strict` flag
 (`tools/codex-vm.c`) that models the two things the permissive fake
@@ -291,9 +291,9 @@ firmware faked:
    load region returns `EFI_NOT_FOUND`, like real firmware.
 2. **Firmware owns low memory before `ExitBootServices`.** The first 2 MB
    is split to 4 KB pages and marked not-present, except the structures
-   the CPU/firmware legitimately expose (GDT/TSS/IDT at `0xA000`–`0xBFFF`,
+   the CPU/firmware legitimately expose (GDT/TSS/IDT at `0xA000`-`0xBFFF`,
    the SystemTable/BootServices tables + HLT trap page at
-   `0xF0000`–`0xF1FFF`). A write to a fixed low address the app never
+   `0xF0000`-`0xF1FFF`). A write to a fixed low address the app never
    allocated now faults, and strict mode prints a crash report naming the
    RIP and CR2 and exits (instead of spinning).
 
@@ -301,7 +301,7 @@ Booting the **existing** `seed/Codex.img`:
 
 | Mode | Result |
 |---|---|
-| `-uefi` (permissive) | Boots — compiler runs at `0x100000`, menu path reached. Every fixed-address gamble is granted. |
+| `-uefi` (permissive) | Boots -- compiler runs at `0x100000`, menu path reached. Every fixed-address gamble is granted. |
 | `-uefi-strict` | `AllocateAddress(0x1000000, 131072 pages) -> EFI_NOT_FOUND`, then `CRASH: fault at RIP=0x1001082 accessing CR2=0x8000 -- the UEFI app touched firmware-owned low memory it never allocated`. |
 
 `CR2=0x8000` is precisely the stub's `mov [0x8000], r15` SystemTable
@@ -318,19 +318,19 @@ rewrite's early stages.
 
 ## Recommended Sequence
 
-1. **`-uefi-strict` in `codex-vm`** — make the bug reproducible in the VM.
+1. **`-uefi-strict` in `codex-vm`** -- make the bug reproducible in the VM.
    Nothing else is worth doing blind. (Est: medium; pure C in `codex-vm.c`
    `AllocatePages` + `GetMemoryMap`.)
 2. **Pick Option A or B** and rewrite the *single* blessed stub against
    the strict VM until it boots there deterministically.
 3. **Commit `flash-usb.ps1`** and rebuild `seed/Codex.img` from the
    current seed.
-4. **One** real-hardware flash on the ASUS TUF — expect it to work,
+4. **One** real-hardware flash on the ASUS TUF -- expect it to work,
    because the VM now models the failure. Iterate in the VM, not on the
    stick.
 5. **Wire FirstBoot + GOP** on the now-stable base.
 
-## DECISION: Option A (full kernel path) — 2026-07-07
+## DECISION: Option A (full kernel path) -- 2026-07-07
 
 Damian chose **Option A**. The rewritten stub does ExitBootServices and
 the compiled program renders via the GOP framebuffer; the UEFI text
@@ -359,7 +359,7 @@ then touch fixed low addresses.** Precise sequence:
 5. Build an identity page table in the allocated page-table area
    (PML4→PDPT→PDs, 2 MB pages, enough to cover RAM + the GOP FB).
 6. `mov cr3` to our tables. **Now** low memory (0x100000, etc.) is
-   present in *our* map — no dependency on firmware or codex-vm's map.
+   present in *our* map -- no dependency on firmware or codex-vm's map.
 7. Copy `.text` to its link address (0x100000) and `.rodata` to
    data-vaddr; set up heap base, RSP (real stack in allocated memory),
    IDT; pass the GOP framebuffer base/dims + heap base to the program.
@@ -369,16 +369,16 @@ Because every fixed-address write (step 7) happens *after* step 6, the
 stub touches only memory it owns. Under `-uefi-strict` the not-present
 firmware pages are irrelevant once our CR3 is live, so a correct Option A
 stub passes strict **without** needing the strict-v2 EBS page-flip. (The
-current broken stub still faults, because it never reaches EBS — good:
+current broken stub still faults, because it never reaches EBS -- good:
 strict stays a valid detector.)
 
 ### Milestones (each ends in a demo)
 
-- **A1 — Boot & paint. [DONE, CL 7280]** Stub-only (`build/boot/a1_boot_paint.asm`):
+- **A1 -- Boot & paint. [DONE, CL 7280]** Stub-only (`build/boot/a1_boot_paint.asm`):
   acquire GOP, EBS, own page tables, paint 8 color bars. Strict-clean;
   screenshot `build/boot/a1.png`. Fixed two codex-vm gaps (4 GB UEFI map;
   GOP shadow sync for direct-FB writes).
-- **A2 — GOP text. [DONE, CL 7283 handoff + 7284 text]** The Option A stub
+- **A2 -- GOP text. [DONE, CL 7283 handoff + 7284 text]** The Option A stub
   (`build/boot/option_a_stub.asm`, wrapped by `build-option-a.ps1`) wraps a
   real CDX and, in strict-clean order, hands the framebuffer to
   `apps/works/GopBoot.codex` via cells at 0x8000. GopBoot clears the FB and
@@ -386,15 +386,15 @@ strict stays a valid detector.)
   (`build/boot/optiona.png`). Fixed a third codex-vm gap: AllocatePages/Pool
   now commit the host pages they hand out (else GetMemoryMap's host memcpy
   access-violated the VM).
-- **A3 — Menu over GOP. [DONE, CL 7286]** `apps/works/GopBoot.codex` draws
+- **A3 -- Menu over GOP. [DONE, CL 7286]** `apps/works/GopBoot.codex` draws
   an interactive menu (4 items, highlight bar) with the CBF font and reads
   Set-1 scancodes from the kernel key buffer (cell 28680): Up/Down move,
   Enter confirms. Screenshot confirmed via a new codex-vm `-keys` scancode
   injector (down,down,enter selects "Serial REPL"). Fixed a fourth codex-vm
   issue: pending scancodes now flush to 28680 every main-loop iteration, not
-  every 64 exits (~3.5 s) — real keyboard on a compute-bound GOP guest was
+  every 64 exits (~3.5 s) -- real keyboard on a compute-bound GOP guest was
   unusably laggy.
-- **A4 — FirstBoot + key ceremony.** Wire `first-boot-entry` and the
+- **A4 -- FirstBoot + key ceremony.** Wire `first-boot-entry` and the
   WakeCeremony over the real seed read from the FAT partition.
 
   Still pending before a real flash: port the proven `option_a_stub.asm`
@@ -411,7 +411,7 @@ retired) once A1 is green. Do not leave two stubs that disagree again.
 
 ## Open Questions for Damian (remaining)
 
-- **Which lane** — full kernel (A, ExitBootServices, GOP/serial only) or
+- **Which lane** -- full kernel (A, ExitBootServices, GOP/serial only) or
   honest app (B, ConOut stays, needs PIC-ish runtime)? A matches the OS
   vision; B is faster to a working menu.
 - Is making the compiled image accept **base addresses as arguments**
@@ -428,14 +428,14 @@ retired) once A1 is green. Do not leave two stubs that disagree again.
 
 | Address | What | Set by | Read by | Legal pre-EBS on metal? |
 |---|---|---|---|---|
-| `0x8000` | SystemTable ptr | stub `mov [0x8000]` | `UefiBoot.opening` `peek-qword 0x8000` | **No** — firmware-owned |
-| `0x100000` | Codex `.text` copy dest | stub `rep movsb` | CPU (`call`) | **No** — may be reserved/relocated |
+| `0x8000` | SystemTable ptr | stub `mov [0x8000]` | `UefiBoot.opening` `peek-qword 0x8000` | **No** -- firmware-owned |
+| `0x100000` | Codex `.text` copy dest | stub `rep movsb` | CPU (`call`) | **No** -- may be reserved/relocated |
 | `0x100000+align8(text)` | Codex `.rodata` copy dest | stub `rep movsb` | Codex code | **No** |
-| `0x1000000` | heap base (fixed) | `AllocateAddress` | R10 init | **No** — 512 MB fixed region |
-| `~0x9000000` | stack top | `mov rsp` | CPU | **No** — inside the fixed region |
-| `0x7030` (deck-pos) etc. | kernel metadata cells | stub direct writes | runtime | **No** — low memory, firmware-owned |
+| `0x1000000` | heap base (fixed) | `AllocateAddress` | R10 init | **No** -- 512 MB fixed region |
+| `~0x9000000` | stack top | `mov rsp` | CPU | **No** -- inside the fixed region |
+| `0x7030` (deck-pos) etc. | kernel metadata cells | stub direct writes | runtime | **No** -- low memory, firmware-owned |
 
 Every row is a place the code says "this address is mine" without asking
 firmware. Under `codex-vm` every claim is granted. On metal, each is an
 independent coin-flip, and the boot succeeds only if **all** come up
-heads — which is why it booted "a few times" and never repeatably.
+heads -- which is why it booted "a few times" and never repeatably.

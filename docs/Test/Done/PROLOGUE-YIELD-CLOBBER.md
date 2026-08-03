@@ -1,12 +1,12 @@
 # Prologue Yield-Path Argument Clobber
 
-**Status:** FIXED — CL 2671 (2026-05-29, reek). `emit-prologue` now pushes
+**Status:** FIXED -- CL 2671 (2026-05-29, reek). `emit-prologue` now pushes
 RDI/RSI on entry to the yield body and pops them after the `__task_yield`
 call, balanced on every path (the skip-jumps retarget past the pop). Seed
 rebuilt: hard fixed point (stage1 === stage2), self-verifies, full sweep
 green.
 
-The bug was latent — the yield flag is only set by the timer ISR when
+The bug was latent -- the yield flag is only set by the timer ISR when
 `sched-current-task-addr != 0`, which never happens during a headless
 compile (single process, no scheduler; the clobber path also needs a
 non-empty ready queue), so the compiler self-compiled cleanly. The fix is
@@ -38,11 +38,11 @@ long enough for a timer interrupt to set the yield flag.
 CRASH in finish-unary+0x110 (page fault)
   RIP   0x002C2850
   RBX   0x00B5EA98    (valid heap pointer)
-  R12   0xB534600000  (non-canonical — corrupt)
+  R12   0xB534600000  (non-canonical -- corrupt)
   R13   0xB534600000  (same corrupt value)
-  RSI   0xB534600000  (arg1 — corrupt)
-  RDI   0x00B5EA98    (arg0 — valid)
-  R10   0x00CEC1F8    (heap @ 6.9 MB — normal)
+  RSI   0xB534600000  (arg1 -- corrupt)
+  RDI   0x00B5EA98    (arg0 -- valid)
+  R10   0x00CEC1F8    (heap @ 6.9 MB -- normal)
   callR 0x7FFFF0B0    (actually old RSP, not a return address)
 ```
 
@@ -52,7 +52,7 @@ tag. RSI contains a non-canonical address, causing a page fault.
 
 Note: `callR` in the crash dump is printed from `[R11+64]` in
 `emit-cpu-exception-dump` (X86_64Boot.codex:341). R11 holds the
-interrupt frame, and offset 64 is the CPU-saved RSP — NOT a return
+interrupt frame, and offset 64 is the CPU-saved RSP -- NOT a return
 address.
 
 ## Root Cause
@@ -138,7 +138,7 @@ yield flag is never set.
 
 1. **normalize-whitespace O(n²):** The runtime uses `__str_replace`
    (native x86 helper emitted by X86_64TextHelpers.codex:2143-2399),
-   which is O(n) — single scan, one heap allocation. The foreword
+   which is O(n) -- single scan, one heap allocation. The foreword
    `str-replace-loop` is never invoked at runtime.
 
 2. **Stack overflow:** RSP at crash time is 0x7FFFF0B0 (only ~4KB used).
@@ -190,8 +190,8 @@ Section: Types
 
 ## Test Plan
 
-1. `codex/test/variant-record-payload.codex` — new test with `.expected`
-2. `build/test.ps1 -Jobs 4` — full battery regression
-3. CrossPlaneItems compilation — must not GPF (type errors OK)
-4. IntegrationTest compilation — the original 307KB case
-5. `build/build.ps1` — fixed point must hold
+1. `codex/test/variant-record-payload.codex` -- new test with `.expected`
+2. `build/test.ps1 -Jobs 4` -- full battery regression
+3. CrossPlaneItems compilation -- must not GPF (type errors OK)
+4. IntegrationTest compilation -- the original 307KB case
+5. `build/build.ps1` -- fixed point must hold

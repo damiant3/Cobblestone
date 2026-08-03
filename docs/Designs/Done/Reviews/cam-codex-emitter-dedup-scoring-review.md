@@ -1,9 +1,9 @@
-# Review: cam/floppy-disk-streaming (caeab7d) — Dedup Score-Based Selection
+# Review: cam/floppy-disk-streaming (caeab7d) -- Dedup Score-Based Selection
 
 **Reviewer**: Agent Linux  
 **Date**: 2026-03-28  
-**Commit**: caeab7d `fix: Codex emitter dedup — score-based definition selection`  
-**Verdict**: ✅ Merge — no regressions, correct approach
+**Commit**: caeab7d `fix: Codex emitter dedup -- score-based definition selection`  
+**Verdict**: ✅ Merge -- no regressions, correct approach
 
 ---
 
@@ -26,14 +26,14 @@ pick artifacts over real defs depending on IR ordering.
   For duplicate names, higher-scoring def replaces lower.
 
 - **`codex-def-score`**: `params * 100 + body_depth`. Weights params
-  heavily — a 2-param function with trivial body (score 201) still beats
+  heavily -- a 2-param function with trivial body (score 201) still beats
   a 0-param accessor artifact (score 2).
 
 - **`codex-body-depth`**: Structural depth scoring. Match: 10, let/if/
   lambda/do: 5, apply: 3+recursive, field access: 2, literals/names: 1.
 
 - **`codex-replace-def` / `codex-list-set`**: Immutable list update by
-  rebuilding with replacement at index. O(n) per replacement — fine for
+  rebuilding with replacement at index. O(n) per replacement -- fine for
   the ~800 def count.
 
 ## Remaining issues (documented in commit)

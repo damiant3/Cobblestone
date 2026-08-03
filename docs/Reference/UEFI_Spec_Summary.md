@@ -47,7 +47,7 @@ relocates.
 | +16 | 4 | AddressOfEntryPoint | RVA of entry (e.g. `0x1000`) |
 | +20 | 4 | BaseOfCode | RVA of .text (e.g. `0x1000`) |
 | +24 | 8 | ImageBase | Preferred load address, 64KB-aligned |
-| +32 | 4 | SectionAlignment | `0x1000` (4096) — MUST be page-aligned |
+| +32 | 4 | SectionAlignment | `0x1000` (4096) -- MUST be page-aligned |
 | +36 | 4 | FileAlignment | `0x200` (512) minimum |
 | +40 | 2 | MajorOSVersion | 0 |
 | +42 | 2 | MinorOSVersion | 0 |
@@ -267,20 +267,20 @@ them, firmware corrupts your locals.
 Physical addresses like 0x7000, 0x8000, 0x100000 are NOT guaranteed
 available before ExitBootServices. They may be reserved, MMIO, or
 firmware-owned. Use AllocatePages to get memory, then use the RETURNED
-address — don't assume specific physical addresses are free.
+address -- don't assume specific physical addresses are free.
 
 ---
 
 ## Architecture: Kernel Stub vs. UEFI App Stub
 
 ### Kernel stub (ExitBootServices path)
-- Calls ExitBootServices — firmware releases all memory
+- Calls ExitBootServices -- firmware releases all memory
 - After EBS, we own everything: write to 0x100000, 0x7000, etc. freely
 - Absolute addresses are fine
 - No ConOut available after EBS (firmware services gone)
 
 ### UEFI app stub (ConOut alive, no EBS)
-- Firmware owns memory — must allocate before using
+- Firmware owns memory -- must allocate before using
 - Image is at arbitrary firmware-chosen address
 - All self-references must be RIP-relative
 - ConOut is alive for printing
@@ -305,7 +305,7 @@ Our compiled Codex programs expect:
 
 For a UEFI app, we need to either:
 1. Allocate those addresses with AllocatePages(AllocateAddress) and copy
-   (works if addresses are free — may fail on some boards)
+   (works if addresses are free -- may fail on some boards)
 2. Or make the compiled program position-independent (big change)
 3. Or AllocatePages(AllocateAnyPages) and patch all references (needs relocs)
 
@@ -368,16 +368,16 @@ saved across the entire stub for the EBS call.
 
 ```
 EFI_STATUS GetMemoryMap(
-    UINTN *MemoryMapSize,       // RCX: in/out — buffer size
+    UINTN *MemoryMapSize,       // RCX: in/out -- buffer size
     EFI_MEMORY_DESCRIPTOR *Map, // RDX: output buffer
-    UINTN *MapKey,              // R8: out — key for EBS
-    UINTN *DescriptorSize,      // R9: out — size of each desc
+    UINTN *MapKey,              // R8: out -- key for EBS
+    UINTN *DescriptorSize,      // R9: out -- size of each desc
     UINT32 *DescriptorVersion   // [RSP+0x20]: out
 )
 ```
 
 Typical buffer: 16KB is generous. DescriptorSize is usually 48 bytes.
-MapKey changes on any memory operation — call GetMemoryMap and EBS
+MapKey changes on any memory operation -- call GetMemoryMap and EBS
 back-to-back with no intervening allocations.
 
 ---
@@ -405,7 +405,7 @@ If writing AFTER EBS: any physical memory not marked Runtime is yours.
 
 ---
 
-## ConIn — Reading Keyboard Input
+## ConIn -- Reading Keyboard Input
 
 `EFI_SIMPLE_TEXT_INPUT_PROTOCOL` = SystemTable->ConIn (offset +0x30)
 
@@ -427,7 +427,7 @@ For printable keys, ScanCode=0 and UnicodeChar has the character.
 
 ---
 
-## RuntimeServices — ResetSystem
+## RuntimeServices -- ResetSystem
 
 After or before EBS, RuntimeServices remains available.
 RS = SystemTable + 0x58.

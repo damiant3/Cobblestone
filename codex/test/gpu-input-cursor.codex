@@ -1,0 +1,79 @@
+Chapter: GpuInputCursor
+  cites Foreword chapter Console
+  cites UI chapter Theme
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter BoxModel
+  cites UI chapter GpuRender
+
+ An input draws a caret one pixel wide at its content origin plus six
+ pixels per character of cursor index. Nothing holds that index inside the
+ widget, so a cursor far enough along the text paints the caret outside the
+ box it belongs to, over whatever sits to the right. This is the same shape
+ as the gauge fill `gpu-gauge-clamp` pins, in the same chapter, one
+ function away.
+
+ It is reachable from a shipping program rather than hypothetical.
+ `apps/cvmm` renders through `bare-app-render`, which is `gr-render-tree`,
+ which dispatches `WkInput` here; and every filter box in that application
+ sets its cursor to the LENGTH of the filter text, so the index grows with
+ each character typed.
+
+ The instrument has to scan outside the widget, because a caret one pixel
+ wide is submitted and counted exactly as a correct one is, and a reading
+ that asks only whether the caret is present answers yes in both worlds.
+
+ The input carries no text, deliberately. The caret and the text are drawn
+ in the same colour, so an outside hit against a non-empty input could be
+ either; with the text empty, `pal-fg` outside the box can only be the
+ caret. The sibling label is empty for the reason `gpu-gauge-clamp` gives:
+ a label emits text and no box, so it paints nothing at all.
+
+ Three readings, because no two of them can agree by accident. `box` is
+ the control: the input's own border, which says the widget painted, and
+ without which a renderer that drew nothing would report a clean outside
+ and pass. `inside` and `outside` are where the caret landed.
+
+Section: Body
+
+  fb-base : Integer = #BF000000
+  fb-w : Integer = 640
+  fb-h : Integer = 480
+
+  scan-row-band : Integer, Integer, Integer, Integer, Integer -> Integer
+  scan-row-band (y) (x) (xend) (target) (acc) =
+    if x >= xend then acc
+    else scan-row-band y (x + 1) xend target (acc + (if peek-32 fb-base ((y * fb-w + x) * 4) == target then 1 else 0))
+
+  scan-band : Integer, Integer, Integer, Integer, Integer -> Integer
+  scan-band (y) (x0) (x1) (target) (acc) =
+    if y >= fb-h then acc
+    else scan-band (y + 1) x0 x1 target (acc + scan-row-band y x0 x1 target 0)
+
+ Sixty characters at six pixels each is 360, which is past the right edge
+ of a widget pinned to 200.
+
+  probe-tree : WidgetNode
+  probe-tree =
+    widget-panel "root" DirRow 0 [
+      widget-set-flex (widget-set-min (widget-input "far" "" 60) 200 40) 0,
+      widget-set-flex (widget-label "pad" "") 1
+    ]
+
+  opening : [Gpu, Console] Nothing =
+    act
+      let th = theme-terminal
+      in let pal = th.th-palette
+      in let laid = widget-layout probe-tree th (layout-rect 0 0 fb-w fb-h)
+      in let inp = list-at (laid.wn-children) 0
+      in let b = inp.wn-bounds
+      in let bright = b.lr-x + b.lr-w
+      in act
+        c1 <- gr-clear (pal.pal-bg)
+        c2 <- gr-clear-depth
+        n <- gr-flush ((gr-render-tree (gf-new 4096) laid th gr-depth-scene).gf-idx)
+        print-line-uni ("box: " & show (if scan-band 0 (b.lr-x) bright (pal.pal-muted) 0 > 0 then 1 else 0))
+        print-line-uni ("inside: " & show (if scan-band 0 (b.lr-x) bright (pal.pal-fg) 0 > 0 then 1 else 0))
+        print-line-uni ("outside: " & show (if scan-band 0 (bright + 4) (fb-w - 8) (pal.pal-fg) 0 > 0 then 1 else 0))
+      end
+    end

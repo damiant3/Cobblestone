@@ -50,6 +50,41 @@ Section: __str_eq
    in let i = a64-patch-insn-raw i bge-idx (arm64-b-cond 10 ((equal-label - bge-idx) * 4))
    in a64-patch-insn-raw i bne-byte (arm64-b-cond 1 ((not-eq-label - bne-byte) * 4))
 
+Section: __int_pow
+
+ A negative exponent answers 0, matching x86's emit-ipow, which patches that
+ branch to its own li rax, 0. It is the truncation of a reciprocal toward
+ zero and agrees with what integer division does. The guard has to be a
+ signed test before the loop: the exponent is shifted right logically, so a
+ negative one never reaches the zero test and would run 63 squaring rounds.
+
+  a64-rt-int-pow : List Integer
+  a64-rt-int-pow =
+   let i = []
+   in let i = a64-rt-emit i (arm64-cmp-imm 1 0)
+   in let blt-neg = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let i = i & arm64-movz 9 1 0
+   in let loop-start = list-length i / 4
+   in let cbz-done = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let tbz-skip = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let i = a64-rt-emit i (arm64-mul 9 9 0)
+   in let skip-label = list-length i / 4
+   in let i = a64-rt-emit i (arm64-mul 0 0 0)
+   in let i = i & arm64-lsr-imm 1 1 1
+   in let i = a64-rt-emit i (arm64-b ((loop-start - list-length i / 4) * 4))
+   in let done-label = list-length i / 4
+   in let i = a64-rt-emit i (arm64-mov 0 9)
+   in let i = a64-rt-emit i arm64-ret
+   in let neg-label = list-length i / 4
+   in let i = i & arm64-movz 0 0 0
+   in let i = a64-rt-emit i arm64-ret
+   in let i = a64-patch-insn-raw i blt-neg (arm64-b-cond 11 ((neg-label - blt-neg) * 4))
+   in let i = a64-patch-insn-raw i cbz-done (arm64-cbz 1 ((done-label - cbz-done) * 4))
+   in a64-patch-insn-raw i tbz-skip (arm64-tbz 1 0 ((skip-label - tbz-skip) * 4))
+
 Section: __str_concat
 
   a64-rt-str-concat : List Integer
@@ -148,7 +183,7 @@ Section: __itoa
    in let beq-done = list-length i / 4
    in let i = a64-rt-emit i arm64-nop
    in let i = i & arm64-movz 9 10 0
-   in let i = a64-rt-emit i (arm64-sdiv 10 19 9)
+   in let i = a64-rt-emit i (arm64-udiv 10 19 9)
    in let i = a64-rt-emit i (arm64-mul 11 10 9)
    in let i = a64-rt-emit i (arm64-sub 12 19 11)
    in let i = a64-rt-emit i (arm64-add-imm 12 12 3)
@@ -2019,7 +2054,10 @@ Section: Emit All Runtime Helpers
    in let st10 = a64-record-func st9 "__str_eq"
    in let seq = a64-rt-str-eq
    in let st11 = a64-emit-block st10 seq 0 (list-length seq)
-   in let st12 = a64-record-func st11 "__str_concat"
+   in let st11a = a64-record-func st11 "__int_pow"
+   in let ipw = a64-rt-int-pow
+   in let st11b = a64-emit-block st11a ipw 0 (list-length ipw)
+   in let st12 = a64-record-func st11b "__str_concat"
    in let scc = a64-rt-str-concat
    in let st13 = a64-emit-block st12 scc 0 (list-length scc)
    in let st14 = a64-record-func st13 "__itoa"
@@ -2069,17 +2107,21 @@ Section: Emit All Runtime Helpers
    in let st52 = a64-record-func st51 "bit-shru"
    in let f52 = arm64-lsr 0 0 1 & arm64-ret in let st53 = a64-emit-block st52 f52 0 (list-length f52)
    in let st54 = a64-record-func st53 "peek-byte"
-   in let f54 = a64-rt-peek-byte in let st55 = a64-emit-block st54 f54 0 (list-length f54)
+   in let st54m = a64-record-func st54 "read-mmio"
+   in let f54 = a64-rt-peek-byte in let st55 = a64-emit-block st54m f54 0 (list-length f54)
    in let st56 = a64-record-func st55 "poke-byte"
-   in let f56 = a64-rt-poke-byte in let st57 = a64-emit-block st56 f56 0 (list-length f56)
+   in let st56m = a64-record-func st56 "poke-mmio"
+   in let f56 = a64-rt-poke-byte in let st57 = a64-emit-block st56m f56 0 (list-length f56)
    in let st57a = a64-record-func st57 "peek-16"
    in let f57a = a64-rt-peek-16 in let st57b = a64-emit-block st57a f57a 0 (list-length f57a)
    in let st57c = a64-record-func st57b "poke-16"
    in let f57c = a64-rt-poke-16 in let st57d = a64-emit-block st57c f57c 0 (list-length f57c)
    in let st58 = a64-record-func st57d "peek-32"
-   in let f58 = a64-rt-peek-32 in let st59 = a64-emit-block st58 f58 0 (list-length f58)
+   in let st58m = a64-record-func st58 "read-mmio-32"
+   in let f58 = a64-rt-peek-32 in let st59 = a64-emit-block st58m f58 0 (list-length f58)
    in let st60 = a64-record-func st59 "poke-32"
-   in let f60 = a64-rt-poke-32 in let st61 = a64-emit-block st60 f60 0 (list-length f60)
+   in let st60m = a64-record-func st60 "poke-mmio-32"
+   in let f60 = a64-rt-poke-32 in let st61 = a64-emit-block st60m f60 0 (list-length f60)
    in let st62 = a64-record-func st61 "peek-qword"
    in let f62 = a64-rt-peek-qword in let st63 = a64-emit-block st62 f62 0 (list-length f62)
    in let st64 = a64-record-func st63 "poke-qword"

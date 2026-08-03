@@ -1,0 +1,106 @@
+Chapter: SourceDefWireFormat
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Foreword chapter SourceDefWire
+
+Section: Records
+
+  sig : List Integer
+  sig = [0, 1, 15, 16, 127, 128, 200, 255]
+
+  mk : Text, Text, List Integer, Integer -> SourceDefWire
+  mk (path) (content) (s) (ts) =
+   SourceDefWire {
+    sdw-hash = "cafe00",
+    sdw-path = path,
+    sdw-quire = "Foreword",
+    sdw-chapter = "Probe",
+    sdw-signer = "fp01",
+    sdw-signature = s,
+    sdw-author = "val",
+    sdw-timestamp = ts,
+    sdw-content = content
+   }
+
+Section: Comparison
+
+  show-bytes : List Integer, Integer, Integer, Text -> Text
+  show-bytes (bs) (i) (n) (acc) =
+   if i >= n then acc
+   else show-bytes bs (i + 1) n (acc & " " & show (list-at bs i))
+
+  same-bytes : List Integer, List Integer, Integer, Integer -> Boolean
+  same-bytes (a) (b) (i) (n) =
+   if i >= n then True
+   else if list-at a i /= list-at b i then False
+   else same-bytes a b (i + 1) n
+
+  compare-back : SourceDefWire, SourceDefWire -> Text
+  compare-back (d) (w) =
+   (if w.sdw-content == d.sdw-content then "content" else "CONTENT")
+   & (if w.sdw-path == d.sdw-path then " path" else " PATH")
+   & (if w.sdw-quire == d.sdw-quire then " quire" else " QUIRE")
+   & (if w.sdw-chapter == d.sdw-chapter then " chapter" else " CHAPTER")
+   & (if w.sdw-hash == d.sdw-hash then " hash" else " HASH")
+   & (if w.sdw-signer == d.sdw-signer then " signer" else " SIGNER")
+   & (if w.sdw-author == d.sdw-author then " author" else " AUTHOR")
+   & (if w.sdw-timestamp == d.sdw-timestamp then " ts" else " TS")
+   & (if list-length (w.sdw-signature) == list-length (d.sdw-signature) then " siglen" else " SIGLEN")
+   & (if same-bytes (w.sdw-signature) (d.sdw-signature) 0 (list-length (d.sdw-signature)) then " sigbytes" else " SIGBYTES")
+
+  roundtrip : SourceDefWire -> Text
+  roundtrip (d) =
+   when sdw-encode d
+   is None -> "ENCODE REFUSED"
+   is Just (line) -> decode-back d line
+
+  decode-back : SourceDefWire, Text -> Text
+  decode-back (d) (line) =
+   when sdw-decode line
+   is None -> "DECODED NONE"
+   is Just (w) -> compare-back d w
+
+  wire-of : SourceDefWire -> Text
+  wire-of (d) =
+   when sdw-encode d
+   is None -> "REFUSED"
+   is Just (t) -> t
+
+  decode-tag : Text -> Text
+  decode-tag (line) =
+   when sdw-decode line
+   is None -> "None"
+   is Just (w) -> "Just content=[" & w.sdw-content & "]"
+
+  newline-text : Text
+  newline-text = char-to-text (code-to-char 1)
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    act
+      print-line-uni ("wire [" & wire-of (mk "a/b.codex" "hello" sig 1700000000) & "]")
+      print-line-uni ("wire empty content [" & wire-of (mk "a/b.codex" "" [] 0) & "]")
+      print-line-uni ("hex [" & sdw-bytes-to-hex sig & "]")
+      print-line-uni ("hex back " & show-bytes (sdw-hex-decode (sdw-bytes-to-hex sig)) 0 8 "")
+      print-line-uni ("plain      " & roundtrip (mk "a/b.codex" "hello world" sig 1700000000))
+      print-line-uni ("pipes      " & roundtrip (mk "a/b.codex" "Foo = A | B | C" sig 42))
+      print-line-uni ("empty      " & roundtrip (mk "a/b.codex" "" sig 0))
+      print-line-uni ("no sig     " & roundtrip (mk "a/b.codex" "body" [] 7))
+      print-line-uni ("newline    " & roundtrip (mk "a/b.codex" ("line1" & newline-text & "line2") sig 9))
+      print-line-uni ("ends pipe  " & roundtrip (mk "a/b.codex" "ends with |" sig 3))
+      print-line-uni ("negative   " & roundtrip (mk "a/b.codex" "neg" sig (0 - 5)))
+      print-line-uni ("empty path " & roundtrip (mk "" "x" sig 1))
+      print-line-uni ("long sig   " & roundtrip (mk "a/b.codex" "x" [255, 255, 0, 0, 128, 64, 32, 16, 8, 4, 2, 1] 1))
+      print-line-uni ("eight pipes " & decode-tag "a|b|c|d|e|f|g|h")
+      print-line-uni ("ninth empty " & decode-tag "a|b|c|d|e|f|g|h|")
+      print-line-uni ("not the format " & decode-tag "some old pointer record")
+      print-line-uni ("refuse pipe in path    " & wire-of (mk "a|b" "x" sig 1))
+      print-line-uni ("refuse pipe in author  " & wire-of (SourceDefWire { sdw-hash = "cafe00", sdw-path = "a/b.codex", sdw-quire = "Foreword", sdw-chapter = "Probe", sdw-signer = "fp01", sdw-signature = sig, sdw-author = "va|l", sdw-timestamp = 1, sdw-content = "x" }))
+      print-line-uni ("refuse pipe in chapter " & wire-of (SourceDefWire { sdw-hash = "cafe00", sdw-path = "a/b.codex", sdw-quire = "Foreword", sdw-chapter = "Pro|be", sdw-signer = "fp01", sdw-signature = sig, sdw-author = "val", sdw-timestamp = 1, sdw-content = "x" }))
+      print-line-uni ("refuse pipe in hash    " & wire-of (SourceDefWire { sdw-hash = "cafe|00", sdw-path = "a/b.codex", sdw-quire = "Foreword", sdw-chapter = "Probe", sdw-signer = "fp01", sdw-signature = sig, sdw-author = "val", sdw-timestamp = 1, sdw-content = "x" }))
+      print-line-uni ("refuse pipe in quire   " & wire-of (SourceDefWire { sdw-hash = "cafe00", sdw-path = "a/b.codex", sdw-quire = "Fore|word", sdw-chapter = "Probe", sdw-signer = "fp01", sdw-signature = sig, sdw-author = "val", sdw-timestamp = 1, sdw-content = "x" }))
+      print-line-uni ("refuse pipe in signer  " & wire-of (SourceDefWire { sdw-hash = "cafe00", sdw-path = "a/b.codex", sdw-quire = "Foreword", sdw-chapter = "Probe", sdw-signer = "fp|01", sdw-signature = sig, sdw-author = "val", sdw-timestamp = 1, sdw-content = "x" }))
+      print-line-uni ("CONTROL content pipes still encode " & roundtrip (mk "a/b.codex" "Foo = A | B | C" sig 42))
+      print-line-uni ("CONTROL clean record still encodes " & roundtrip (mk "a/b.codex" "x" sig 1))
+    end

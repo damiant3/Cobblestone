@@ -1,0 +1,76 @@
+Chapter: FactsPartition
+  cites Kernel chapter DiskFacts
+  cites Foreword chapter FactStore
+  cites Foreword chapter Hamt
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+  cites Foreword chapter FactLog
+
+ The fact store on a disk that HAS a partition of its own. The refusal side
+ is codex/test/apps/disk-facts-gpt-guard (a GPT with no fact partition) and
+ codex/test/apps/disk-facts-mbr-guard (an MBR-only disk); this is the side
+ where the store finds its region and writes inside it.
+
+ The fixture is 128 KB with an ESP at LBA 34..127 and a fact-store partition
+ at 128..222. The ESP is there so a lookup by type GUID has to pick the
+ SECOND entry: with one partition on the disk, a lookup that finds the right
+ type and a lookup that takes whatever is first produce the same answer, and
+ the test would pass for a store that had never learned to read a GUID.
+
+ Five readings, and each one fails differently:
+
+   base    must be 128. This is the whole change. A store that still
+           addressed absolutely would answer 0, and 0 is also what a raw
+           disk legitimately answers -- which is why the fixture puts the
+           partition somewhere a wrong answer cannot coincide with a right
+           one.
+   limit   must be 95, the partition's sector count. Without it the store
+           has no idea where its region ends and a full log writes into
+           whatever partition follows.
+   count   must reach 1. The refusal tests require it to STAY 0, so this is
+           the reading that separates "addresses its partition" from
+           "refuses everything", which is the failure mode a guard slides
+           into.
+   read    the fact must come back through a fresh disk-load, which is the
+           only thing that proves the bytes reached the medium at the
+           relative address the loader then reads from. A store that wrote
+           to the wrong sectors and kept an in-memory copy answers this
+           correctly from memory, so the reload is not ceremony.
+   sig     sector 1 must still read EFI PART. This is the byte the old
+           absolute-addressing store destroyed on Codex's own boot stick,
+           and it is checked AFTER a successful write rather than after a
+           refusal -- a store that refuses also leaves it intact.
+
+ We say:
+
+Section: Readings
+
+  sig-intact : Integer, Integer -> Boolean
+  sig-intact (buf) (i) =
+    if i >= 8 then True
+    else if peek-byte buf i /= list-at [69, 70, 73, 32, 80, 65, 82, 84] i then False
+    else sig-intact buf (i + 1)
+
+  shown : Maybe Fact -> Text
+  shown (m) =
+    when m
+      is Just (f) -> f.content
+      is None -> "MISSING"
+
+Section: Body
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    let store = disk-load
+    in let written = disk-write-fact store DefinitionFact "in-partition" 7
+    in let flushed = disk-checkpoint written
+    in let reloaded = disk-load
+    in act
+      hdr <- block-read-sector 1
+      print-line-uni ("base " & show (store.base))
+      print-line-uni ("limit " & show (store.limit))
+      print-line-uni ("count " & show (disk-fact-count flushed))
+      print-line-uni ("read " & shown (disk-read-fact reloaded (fact-content-hash "in-partition")))
+      print-line-uni ("sig " & (if sig-intact hdr 0 then "intact" else "GONE"))
+    end
+  end

@@ -1,4 +1,4 @@
-# 09 — Risks & Open Questions
+# 09 -- Risks & Open Questions
 
 ## Technical Risks
 
@@ -25,7 +25,7 @@ The prose/notation mode switching depends on indentation and transition phrases.
 - Unrecognized prose is preserved as documentation, not rejected
 - Provide clear error messages when a prose pattern is *almost* recognized
 - Expand the template catalog based on user feedback, not speculation
-- The notation blocks are always the source of truth — prose is sugar
+- The notation blocks are always the source of truth -- prose is sugar
 
 ### Risk 3: Effect System Complexity
 **Severity**: Medium
@@ -49,7 +49,7 @@ Writing a compiler in a language that the compiler is still being designed in is
 - Write small programs in Codex as soon as the language is usable (Milestone 3)
 - Use the experience of writing in Codex to inform language design decisions
 - Accept that the language will evolve during self-hosting and plan for iteration
-- The C# bootstrap doesn't need to be perfect — it needs to be correct
+- The C# bootstrap doesn't need to be perfect -- it needs to be correct
 
 ### Risk 5: Adoption & Ecosystem Bootstrap
 **Severity**: High
@@ -61,7 +61,7 @@ A new language with no ecosystem, no libraries, no community faces a cold-start 
 - Transpilation is the bridge: Codex can call C#/.NET libraries via FFI from day one
 - The C# backend means the entire .NET ecosystem is available
 - Focus initial standard library on compiler needs (we are our own first user)
-- The repository model is the long-term answer — but it needs content first
+- The repository model is the long-term answer -- but it needs content first
 
 ### Risk 6: Scope Creep
 **Severity**: High
@@ -73,7 +73,7 @@ The vision is enormous: a language, a type system, a proof engine, a repository,
 - Milestones are non-negotiable: each one delivers a working system
 - Features not in the current milestone are written down and deferred
 - "No" is a complete sentence when evaluating feature requests before the current milestone is done
-- The planning documents (these documents) are the scope — work not described here doesn't happen until it is
+- The planning documents (these documents) are the scope -- work not described here doesn't happen until it is
 
 ### Risk 7: C# Backend Limitations
 **Severity**: Low-Medium
@@ -83,7 +83,7 @@ C# cannot natively express linear types, dependent types, or algebraic effects. 
 
 **Mitigation**:
 - Accept that the C# backend is a bootstrap target, not the final target
-- Runtime checks are fine for correctness — performance is a later concern
+- Runtime checks are fine for correctness -- performance is a later concern
 - The Rust backend (Milestone 12) will be the high-fidelity target
 - If C# encoding is too painful for a specific feature, defer that feature to after bootstrap
 
@@ -122,9 +122,9 @@ These are questions without answers yet. They will be resolved during implementa
 
 ### Q4: Recursion Syntax
 **Options**:
-- Implicit recursion (function can call itself by name — like Haskell)
+- Implicit recursion (function can call itself by name -- like Haskell)
 - Explicit `rec` keyword (like OCaml's `let rec`)
-- Structural recursion only (no explicit recursion — patterns like fold/unfold)
+- Structural recursion only (no explicit recursion -- patterns like fold/unfold)
 
 **Decision deadline**: Before Milestone 1 (affects basic function definitions).
 
@@ -132,12 +132,12 @@ These are questions without answers yet. They will be resolved during implementa
 **Options**:
 - Direct FFI to the target language (different per backend)
 - Universal FFI through the IR (one FFI mechanism, backends adapt)
-- No FFI — all external interaction through effects
+- No FFI -- all external interaction through effects
 
 **Decision deadline**: Before Milestone 3 (we need to call .NET libraries).
 
 ### Q6: Error Messages Quality
-This is not a question with options — it's a commitment. Error messages in Codex must be *excellent*. They must:
+This is not a question with options -- it's a commitment. Error messages in Codex must be *excellent*. They must:
 - Explain what went wrong in plain English
 - Show the relevant source location
 - Suggest a fix where possible
@@ -160,14 +160,14 @@ This is an ongoing quality requirement for every milestone.
 ## Dependencies & External Risks
 
 ### .NET 8 Longevity
-.NET 8 is an LTS release (supported until November 2026). We should plan to move to .NET 10 (the next LTS) when available. This should be straightforward — we avoid platform-specific APIs.
+.NET 8 is an LTS release (supported until November 2026). We should plan to move to .NET 10 (the next LTS) when available. This should be straightforward -- we avoid platform-specific APIs.
 
 ### Library Dependencies
 We minimize external dependencies (see Architecture doc). The ones we plan to use:
-- `System.Collections.Immutable` — ships with .NET, no risk
-- `System.CommandLine` — Microsoft-maintained, stable
-- `xUnit` + `FluentAssertions` — standard testing, stable
-- Any LSP library — need to evaluate options
+- `System.Collections.Immutable` -- ships with .NET, no risk
+- `System.CommandLine` -- Microsoft-maintained, stable
+- `xUnit` + `FluentAssertions` -- standard testing, stable
+- Any LSP library -- need to evaluate options
 
 ### Tooling
 We develop in Visual Studio / VS Code with C# dev kit. Standard .NET tooling. No exotic build systems.

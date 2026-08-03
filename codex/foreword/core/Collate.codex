@@ -1,0 +1,154 @@
+Chapter: Collate
+
+ Collation is not encoding, and this chapter exists so the two cannot be
+ mistaken for each other.
+
+ Three orders exist in Codex and each has its own name. Identity is `==`,
+ which asks whether two texts are the same. Encoding order is
+ `text-compare`, which is fast, total and consistent, and is what an
+ ordered container wants; it ranks by CCE code point, and CCE numbers the
+ letters by English frequency, so `d` comes before `b` and `t` before `a`.
+ Collation is this chapter: the order a human reads, where `b` comes
+ before `d` and `zebra` comes after `Apple`. Both of those are the other
+ way round in encoding order, the second because CCE's lowercase band
+ sits entirely below its uppercase band, so `z` at 38 outranks `A` at 41.
+
+ The ordering operators are refused on Text and on Char precisely so that
+ neither of the other two can impersonate this one.
+
+Section: What a key is
+
+ `collate-key` answers a Text whose ENCODING order is collation order on
+ the text it was built from. That is the whole design: it means
+ `text-compare (collate-key a) (collate-key b)` is the collation of `a`
+ and `b`, so a caller sorts by extracting one key per element and then
+ comparing keys with the primitive it already had. No comparator type
+ changes, and the rank tables below are consulted once per character per
+ element rather than once per comparison.
+
+ A key is two runs with a zero byte between them. The first run carries
+ one primary weight per character, which is the script and the base
+ letter with case and accent removed. The second carries the case and
+ accent distinctions. Because the separator is lower than every weight, a
+ primary difference anywhere decides the comparison before the second run
+ is reached, and two texts that differ only in case or accent are
+ separated by the second run alone.
+
+Section: The bands and their weights
+
+ CCE tier 0 is laid out in bands: whitespace 0-2, digits 3-12, lowercase
+ 13-38, uppercase 39-64, punctuation 65-96, accented Latin 97-112,
+ Cyrillic 113-127. The weights below place whitespace first, then
+ punctuation, then digits in numeric order, then the Latin letters in
+ alphabetical order with both cases and every accented form folded onto
+ the same weight, then Cyrillic.
+
+ Beyond tier 0 every character takes one weight above all of these, so
+ order falls back to encoding order within that group rather than
+ pretending to a ranking this chapter does not have.
+
+  collate-weight-space : Integer = 1
+  collate-weight-punct : Integer = 4
+  collate-weight-digit : Integer = 36
+  collate-weight-latin : Integer = 46
+  collate-weight-cyrillic : Integer = 72
+  collate-weight-other : Integer = 100
+
+ CCE orders the lowercase letters by English frequency:
+ e t a o i n s h r d l c u m w f g y p b v k j x q z. This table is the
+ alphabetical index of each of them, in that order, so entry 0 is 4
+ because `e` is the fifth letter of the alphabet. The uppercase band at
+ 39-64 carries the same letters in the same order and reuses it.
+
+ A table that restates an encoding is the kind of thing that drifts away
+ from what it describes, so `codex/test/collate-order` checks every entry
+ against `to-unicode`, which is the mapping CCE itself publishes. A test
+ can afford that call once per character; a comparison loop cannot, which
+ is why the table is here at all.
+
+  collate-alpha-index : List Integer
+  collate-alpha-index = [4, 19, 0, 14, 8, 13, 18, 7, 17, 3, 11, 2, 20,
+                         12, 22, 5, 6, 24, 15, 1, 21, 10, 9, 23, 16, 25]
+
+ The sixteen accented forms at 97-112 are e-acute, e-grave, e-circumflex,
+ e-diaeresis, a-acute, a-grave, a-circumflex, a-diaeresis, o-acute,
+ o-circumflex, o-diaeresis, u-acute, u-diaeresis, n-tilde, c-cedilla and
+ i-acute. This table is the alphabetical index of each one's BASE letter,
+ which is what folding an accent means.
+
+  collate-accent-base : List Integer
+  collate-accent-base = [4, 4, 4, 4, 0, 0, 0, 0, 14, 14, 14, 20, 20, 13, 2, 8]
+
+Section: Weighing one character
+
+ Both tables are parameters rather than names inside the loop. A list
+ constant is a definition and not storage, so naming one at a recursion
+ site re-materialises the whole thing on every character; `CCE.codex`
+ documents that in its own prose about `from-unicode-tier0` and this is
+ the same shape.
+
+  collate-primary : List Integer, List Integer, Integer -> Integer
+  collate-primary (alpha) (accents) (cp) =
+    if cp < 3 then collate-weight-space + cp
+    else if cp < 13 then collate-weight-digit + (cp - 3)
+    else if cp < 39 then collate-weight-latin + list-at alpha (cp - 13)
+    else if cp < 65 then collate-weight-latin + list-at alpha (cp - 39)
+    else if cp < 97 then collate-weight-punct + (cp - 65)
+    else if cp < 113 then collate-weight-latin + list-at accents (cp - 97)
+    else if cp < 128 then collate-weight-cyrillic + (cp - 113)
+    else collate-weight-other
+
+ The second run folds accent and case together. Nothing in the tree needs
+ to tell an accent difference from a case difference, and a reader
+ comparing two words wants one tie-break rather than two. An unaccented
+ lowercase letter weighs 1, an uppercase letter 2, and each accented form
+ takes its own weight above both so that a base letter sorts before every
+ accented form of itself.
+
+  collate-secondary : Integer -> Integer
+  collate-secondary (cp) =
+    if cp < 39 then 1
+    else if cp < 65 then 2
+    else if cp < 97 then 1
+    else if cp < 113 then 3 + (cp - 97)
+    else 1
+
+Section: Building the key
+
+  collate-char : Integer -> Text
+  collate-char (cp) = char-to-text (code-to-char cp)
+
+  collate-key : Text -> Text
+  collate-key (s) =
+    let n = text-length s
+    in let primaries = collate-primary-run collate-alpha-index collate-accent-base s 0 n ""
+    in let seconds = collate-secondary-run s 0 n ""
+    in primaries & collate-char 0 & seconds
+
+  collate-primary-run : List Integer, List Integer, Text, Integer, Integer, Text -> Text
+  collate-primary-run (alpha) (accents) (s) (i) (n) (out) =
+    if i >= n then out
+    else let w = collate-char (collate-primary alpha accents (char-code-at s i))
+    in collate-primary-run alpha accents s (i + 1) n (out & w)
+
+  collate-secondary-run : Text, Integer, Integer, Text -> Text
+  collate-secondary-run (s) (i) (n) (out) =
+    if i >= n then out
+    else let w = collate-char (collate-secondary (char-code-at s i))
+    in collate-secondary-run s (i + 1) n (out & w)
+
+ For a one-off comparison, where building two keys and throwing them away
+ costs less than the plumbing to keep them. A sort should extract keys
+ once per element instead and compare those with `text-compare`.
+
+  text-collate : Text, Text -> Integer
+  text-collate (a) (b) = text-compare (collate-key a) (collate-key b)
+
+Section: What this is not
+
+ This is Codex collation: one deterministic, locale-free order, and an
+ approximation rather than a claim of correctness for any language.
+ Swedish files o-diaeresis after z and German files it with o, and both
+ are right; neither is what this does. A locale-tailored order, if it is
+ ever wanted, arrives as a parameter to `collate-key` and never as a
+ change to what the default answers.

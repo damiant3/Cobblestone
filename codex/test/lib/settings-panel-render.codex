@@ -1,0 +1,213 @@
+Chapter: SettingsPanelRender
+  cites UI chapter SettingsPanel
+  cites UI chapter Widget
+  cites UI chapter Validation
+
+ The settings panel is what DiffusionApp draws its whole left column
+ from, and what ItemDesignerApp, CallPage and WorkflowHtml build their
+ forms with. Nothing had ever asked it what it renders.
+
+ A panel is the wrong thing to grade by eye. Every field kind lowers to
+ a widget carrying a payload -- a gauge carries a value and a maximum, an
+ input carries its text, a button carries its label -- and the payload is
+ where a wrong answer hides. So this chapter walks the built tree and
+ prints the payload of every field, rather than counting nodes.
+
+ The spec below is DiffusionApp's own shape: two dropdowns (one with a
+ selection, one without), sliders, numbers, a toggle, a heading and a
+ separator. Four extra rows are here to ask questions DiffusionApp does
+ not: a slider whose value sits at its maximum, a slider whose lower
+ bound is zero, a second separator, and an id that no field carries.
+
+ A slider's three numbers are the ones to watch. A range of 1 to 50
+ holding 20 is nineteen fiftieths of the way along, not twenty
+ forty-ninths, and the difference is invisible in any test whose ranges
+ all start at zero.
+
+ We say:
+
+Section: Reading a widget
+
+ The kind name alone cannot fail informatively -- every field kind that
+ lowers to a gauge prints "gauge" whatever numbers it holds. The payload
+ is the assertion.
+
+  at : WidgetNode, Integer -> WidgetNode
+  at (w) (i) = list-at (w.wn-children) i
+
+  payload : WidgetNode -> Text
+  payload (w) = when w.wn-kind
+    is WkLabel (t) -> "label[" & t & "]"
+    is WkButton (t) -> "button[" & t & "]"
+    is WkGauge (v) (m) -> "gauge[" & show v & "/" & show m & "]"
+    is WkInput (t) (c) -> "input[" & t & "]"
+    is WkSeparator -> "separator"
+    is WkPanel -> "panel"
+    is WkCustom (tag) -> "custom[" & tag & "]"
+
+ A field's widget sits at child 1 of its labelled row, and the row sits
+ two past the panel's title and title separator.
+
+  row : WidgetNode, Integer -> WidgetNode
+  row (t) (i) = at t (i + 2)
+
+  row-label : WidgetNode, Integer -> Text
+  row-label (t) (i) = payload (at (row t i) 0)
+
+  row-field : WidgetNode, Integer -> WidgetNode
+  row-field (t) (i) = at (row t i) 1
+
+ A text and a number field are wrapped with their error label, so the
+ input is one level deeper than a dropdown or a gauge.
+
+  row-input : WidgetNode, Integer -> WidgetNode
+  row-input (t) (i) = at (row-field t i) 0
+
+  row-error : WidgetNode, Integer -> WidgetNode
+  row-error (t) (i) = at (row-field t i) 1
+
+Section: The spec under test
+
+  probe-form : FormValidation
+  probe-form = form-validation [
+    field-validation "width" [VrRequired, VrPattern "number", VrRange 64 2048]
+  ]
+
+  probe-spec : SettingsSpec
+  probe-spec =
+    let s = settings-spec "sp" "Generation Settings" [
+      sf-dropdown-sel "model" "Model" ["realistic", "cyber", "dream"] 1,
+      sf-dropdown "vae" "VAE" ["auto", "none"],
+      sf-slider "steps" "Steps" 20 1 50,
+      sf-slider "cfg" "CFG Scale" 7 1 20,
+      sf-slider "wt" "LoRA Weight" 100 0 200,
+      sf-slider "full" "At Maximum" 50 1 50,
+      sf-number "width" "Width" 512,
+      sf-text "name" "Name" "portrait",
+      sf-toggle "hires" "Hires Fix" False,
+      sf-readonly "fmt" "Format" "png",
+      sf-sep,
+      sf-heading "Post-Processing",
+      sf-sep
+    ]
+    in settings-with-validation s probe-form
+
+Section: Shape
+
+ Thirteen fields, a title and a separator above them.
+
+  line-shape : WidgetNode -> Text
+  line-shape (t) =
+    "shape: fields=" & show (probe-spec.sp-field-count)
+    & " children=" & show (t.wn-child-count)
+    & " labelwidth=" & show (probe-spec.sp-label-width)
+
+  line-title : WidgetNode -> Text
+  line-title (t) =
+    let title = at t 0
+    in let sep = at t 1
+    in "title: " & payload title & " id=" & title.wn-id & " sep=" & sep.wn-id
+
+Section: The dropdowns
+
+ A dropdown with no selection must say so rather than naming an option,
+ and one built with a selection must name that option. Both directions,
+ because a trigger that always printed the placeholder would look
+ identical to one that always printed the first option on the other row.
+
+  line-dropdowns : WidgetNode -> Text
+  line-dropdowns (t) =
+    "dropdown: selected=" & payload (row-field t 0)
+    & " unselected=" & payload (row-field t 1)
+
+  line-getters : WidgetNode -> Text
+  line-getters (t) =
+    "get-dropdown: model=[" & settings-get-dropdown probe-spec "model"
+    & "] vae=[" & settings-get-dropdown probe-spec "vae"
+    & "] absent=[" & settings-get-dropdown probe-spec "nosuch" & "]"
+
+Section: The sliders
+
+ Four ranges. A value of 20 in 1 to 50, a value of 7 in 1 to 20, a value
+ of 100 in 0 to 200, and a value sitting exactly on its upper bound.
+ The third is the control: its lower bound is zero, so it is the one row
+ a dropped lower bound cannot move.
+
+  line-sliders : WidgetNode -> Text
+  line-sliders (t) =
+    "slider: steps=" & payload (row-field t 2)
+    & " cfg=" & payload (row-field t 3)
+    & " wt=" & payload (row-field t 4)
+    & " atmax=" & payload (row-field t 5)
+
+ A gauge fills value over maximum. A value above its own maximum is
+ therefore a fill past the end of the widget, and the GPU renderer does
+ not clamp it, so this is asked as its own question.
+
+  gauge-over : WidgetNode -> Text
+  gauge-over (w) = when w.wn-kind
+    is WkGauge (v) (m) -> if v > m then "yes" else "no"
+    is otherwise -> "not-a-gauge"
+
+  line-overflow : WidgetNode -> Text
+  line-overflow (t) =
+    "overfill: steps=" & gauge-over (row-field t 2)
+    & " cfg=" & gauge-over (row-field t 3)
+    & " wt=" & gauge-over (row-field t 4)
+    & " atmax=" & gauge-over (row-field t 5)
+
+Section: The fields that carry text
+
+  line-inputs : WidgetNode -> Text
+  line-inputs (t) =
+    "input: width=" & payload (row-input t 6)
+    & " name=" & payload (row-input t 7)
+    & " readonly=" & payload (row-field t 9)
+
+  line-toggle : WidgetNode -> Text
+  line-toggle (t) = "toggle: off=" & payload (row-field t 8)
+
+ The width field is the one the form validates, and an untouched field
+ withholds its message, so this error must be empty. It is printed
+ because an error label that was never empty would show up here and
+ nowhere else.
+
+  line-errors : WidgetNode -> Text
+  line-errors (t) =
+    "error: width=" & payload (row-error t 6) & " name=" & payload (row-error t 7)
+
+Section: The rows that are not rows
+
+ A separator and a heading lower to a bare widget rather than a labelled
+ row, so they are read at the top level. There are two separators in this
+ spec on purpose: a widget identifier is what every lookup in the tree
+ keys on, so two of them answering to one name is worth printing.
+
+  line-bare : WidgetNode -> Text
+  line-bare (t) =
+    let sep1 = at t 12
+    in let head = at t 13
+    in let sep2 = at t 14
+    in "bare: sep1=" & sep1.wn-id & " heading=" & head.wn-id & "[" & payload head
+    & "] sep2=" & sep2.wn-id
+
+  line-ids : WidgetNode -> Text
+  line-ids (t) =
+    let sep1 = at t 12
+    in let sep2 = at t 14
+    in "ids: sep-collide=" & (if sep1.wn-id == sep2.wn-id then "yes" else "no")
+    & " row0=" & (row t 0).wn-id
+    & " label0=" & row-label t 0
+
+Section: Body
+
+  report : WidgetNode -> Text
+  report (t) =
+    line-shape t & "\n" & line-title t & "\n" & line-dropdowns t
+    & "\n" & line-getters t & "\n" & line-sliders t & "\n" & line-overflow t
+    & "\n" & line-inputs t & "\n" & line-toggle t & "\n" & line-errors t
+    & "\n" & line-bare t & "\n" & line-ids t
+
+  opening : [Console] Nothing = act
+    print-line-uni (report (settings-widget probe-spec))
+  end

@@ -12,7 +12,7 @@
 
 Every "software cannot hurt you" claim in the Codex vision depends on
 a single program that type-checks untrusted code at install time. Not
-sandboxed — verified. A bug in the verifier IS a zero-day. Every other
+sandboxed -- verified. A bug in the verifier IS a zero-day. Every other
 design implicitly assumes it exists and works.
 
 The verifier reads a CDX binary and proves four invariants before the
@@ -136,7 +136,7 @@ rejected with a "verification timeout" error.
 The fuel budget scales with binary size: `base_fuel + (text_size *
 fuel_per_byte)`. The constants are compile-time parameters of the
 verifier. A program that exhausts the budget is either pathologically
-complex or adversarial — either way, rejection is correct.
+complex or adversarial -- either way, rejection is correct.
 
 Proof normalization consumes fuel from the same budget. A binary that
 carries complex proofs must request a proportionally larger budget via
@@ -215,7 +215,7 @@ first, using a hardcoded trust anchor (the device's root key).
 - **Monitor runtime behavior.** Verification is at install time. The
   capability system and hardware isolation enforce at runtime.
 - **Replace the type system.** The verifier re-runs the type checker.
-  It is not a separate analysis — it is the same analysis, on untrusted
+  It is not a separate analysis -- it is the same analysis, on untrusted
   input, with a fuel limit.
 - **Handle network I/O.** The verifier reads a CDX binary from memory.
   How the binary arrived (network, USB, repository) is not its concern.
@@ -333,7 +333,7 @@ Steps 1 and 2 are independent of each other. Step 3 composes them.
 
 ## Background reading
 
-- **Versioned E-Graphs** (Cesario, Zakhour, Weisenburger, Salvaneschi —
+- **Versioned E-Graphs** (Cesario, Zakhour, Weisenburger, Salvaneschi --
   Univ. St. Gallen, *Proc. ACM Program. Lang.* PLDI 2026, doi
   10.1145/3808249). Local copy:
   `docs/Reference/2026-Cesario-Zakhour-Weisenburger-Salvaneschi-Versioned-EGraphs-PLDI.pdf`.

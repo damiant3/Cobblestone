@@ -3,7 +3,7 @@
 **Date**: 2026-03-26
 **Reviewer**: Agent Linux
 **Branch**: `cam/cce-native-text` (7 commits)
-**Verdict**: LGTM — merged to master
+**Verdict**: LGTM -- merged to master
 
 ---
 
@@ -66,7 +66,7 @@ in both the reference and self-hosted emitters:
 ### Lexer Migration
 
 All magic numbers replaced with `char-code 'X'` expressions. The Lexer is now
-encoding-agnostic — works with whatever values the compiler resolves char
+encoding-agnostic -- works with whatever values the compiler resolves char
 literals to. `is-letter-code` and `is-digit-code` delegate to the builtin
 char-level functions.
 
@@ -76,7 +76,7 @@ char-level functions.
 `\uXXXX` escaping. Necessary because CCE byte values (0-127) are mostly
 non-printable in ASCII, so the old replace-based approach won't work.
 
-`emit-cce-runtime` added — emits the `_Cce` static class with lookup tables
+`emit-cce-runtime` added -- emits the `_Cce` static class with lookup tables
 and conversion functions. Identical logic to the reference emitter version.
 
 ### Bootstrap
@@ -89,15 +89,15 @@ Debug token dump converts back to Unicode for readability.
 
 The CCE-to-Unicode lookup table exists in three places:
 
-1. `src/Codex.Emit.CSharp/CSharpEmitter.cs` — `EmitCceRuntime()` (emits table
+1. `src/Codex.Emit.CSharp/CSharpEmitter.cs` -- `EmitCceRuntime()` (emits table
    as C# source into runtime preamble)
-2. `src/Codex.Emit.CSharp/CSharpEmitter.Utilities.cs` — `s_cceToUnicode`
+2. `src/Codex.Emit.CSharp/CSharpEmitter.Utilities.cs` -- `s_cceToUnicode`
    (compile-time table for string literal encoding)
-3. `Codex.Codex/Emit/CSharpEmitter.codex` — `emit-cce-runtime` (self-hosted
+3. `Codex.Codex/Emit/CSharpEmitter.codex` -- `emit-cce-runtime` (self-hosted
    emitter's copy, emitted as string concatenation)
 
 The commit history shows this was already a bug source: commit `c180d8c` is
-"fix: update third copy of CCE table in EmitCceRuntime" — the self-hosted copy
+"fix: update third copy of CCE table in EmitCceRuntime" -- the self-hosted copy
 got out of sync during development.
 
 **Recommendation**: Extract the table to a single source of truth. Options:
@@ -107,7 +107,7 @@ got out of sync during development.
 - Or accept the triple-copy and add a build-time assertion that all three are
   identical (e.g., a test that parses all three and compares).
 
-This isn't a blocker — the fixed point proves the self-hosted copy is
+This isn't a blocker -- the fixed point proves the self-hosted copy is
 self-consistent with the reference copy right now. But the next person who
 changes the encoding will hit the same sync bug.
 

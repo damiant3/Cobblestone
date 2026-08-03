@@ -1,0 +1,208 @@
+Chapter: DevState
+  cites Foreword chapter Maybe
+
+ The debugger's own state: what it is watching, and what the last
+ expression came to.
+
+ `docs/Designs/Active/Tools/DEVELOPER-DEBUGGER.md` names this and
+ `ExprEval` as the two Phase-1 modules that never landed, and says watches
+ have nowhere to live without it. This is that place.
+
+ WHAT IT DELIBERATELY DOES NOT CARRY, AND WHY THAT IS THREE THINGS.
+
+ `macros`, `serial-mirror` and `serial-remote` are in the design's record.
+ This chapter used to say they would move in here once their modules
+ existed. Both modules landed on 2026-07-28 and neither field did, and
+ that is a decision rather than an omission.
+
+ `Macro.codex` owns its own `MacroTable`, because a macro table is data
+ with its own bounds, refusals and splitter, and a chapter that owns them
+ can be tested as a unit -- which is the same argument that put the watch
+ table here rather than in `MemInspector`. The two serial flags stayed in
+ the console's own record because they are not debugger DATA at all: they
+ govern how the console does I/O, and nothing pure has an opinion about
+ them.
+
+ So the design's single unified record is now three chapters, each holding
+ what it can test. This chapter is the watch table, and that is still the
+ whole of it.
+
+ `last-result` is in the design's record too, and it is left out for a
+ different and stronger reason: **the console already has it.** The
+ debugger's `last-address` is what an evaluated expression sets and what
+ `$` reads, and it has been that since ExprEval landed. Adding a second
+ field holding the same number would make two places that must agree and
+ nothing that checks they do -- which is the shape of the three direction
+ constants, the three partition GUIDs, and every other duplicated fact
+ this project has had to go back and derive instead. One value, one home.
+
+ So this chapter is the watch table, and that is the whole of it.
+
+ THE WHOLE THING IS PURE. `peek-byte` carries no effect row, so taking a
+ snapshot and comparing one are ordinary functions and this chapter can be
+ tested without a machine. That is not an accident of the builtin: it is
+ why the watch logic lives here rather than in the console, which cannot
+ be tested without one.
+
+ PURE INCLUDES NOT MUTATING THE STATE HANDED IN, and the first cut of this
+ chapter failed that while claiming it. Every state transition built its
+ result with `__record-set st "ds-watches" ...`, which stores into the
+ field and returns THE SAME record, so a caller that kept its own `st`
+ found the new watch in it. Two CDX6020 warnings said so, at the two
+ constructors.
+
+ It is a fresh `DevState` at all three sites now. The record has exactly
+ one field, so constructing one costs less than the argument for keeping
+ the mutation would, and the purity claim above is true rather than
+ aspirational.
+
+ Nothing in the console depended on the aliasing -- `debug-watch-here` and
+ `debug-watch-check` both thread the returned state forward, which is the
+ single-owner discipline that made the mutation survivable in the first
+ place. What it was costing was the ability to reason about this chapter
+ without knowing that.
+
+ We say:
+
+Section: Bounds
+
+ Both caps exist because there is no collector under this. Thirty-two is
+ the design's figure. The length cap is mine and is about TIME rather than
+ space -- a snapshot is a checksum, so its storage does not grow with the
+ region, but every check re-reads every byte, and a watch over a gigabyte
+ would hang the console with no way back.
+
+ A refusal says which cap was hit. Silently dropping the thirty-third
+ watch would leave an operator watching something they believe they are
+ not.
+
+  dev-max-watches : Integer = 32
+  dev-max-watch-len : Integer = 65536
+
+Section: The Snapshot
+
+ FNV-1a, 32-bit. It answers "did these bytes change", which is what the
+ design asks of a watch, and it answers it in constant storage however
+ long the region is.
+
+ IT CANNOT SAY WHAT CHANGED, and that is a real limit rather than an
+ oversight. Storing the bytes would allow an old-against-new diff and cost
+ the region's length per watch; a checksum costs one integer. The dump is
+ one command away (`dbg mem <addr>`), so the pairing is: this tells you
+ THAT it moved, and MemInspector shows you what it is now. If a future
+ reader wants the diff, the honest change is storing bytes under a small
+ per-watch cap, not widening this.
+
+ The 64-bit basis and prime do not fit a signed 64-bit Integer, which is
+ why this is the 32-bit variant and every step masks back to 32 bits.
+
+  fnv-offset-32 : Integer = 2166136261
+  fnv-prime-32 : Integer = 16777619
+  fnv-mask-32 : Integer = 4294967295
+
+  dev-region-sum : Integer, Integer -> Integer
+  dev-region-sum (addr) (len) = dev-region-sum-loop addr len 0 fnv-offset-32
+
+  dev-region-sum-loop : Integer, Integer, Integer, Integer -> Integer
+  dev-region-sum-loop (addr) (len) (i) (acc) =
+   if i >= len then acc
+   else let x = bit-xor acc (peek-byte addr i)
+   in dev-region-sum-loop addr len (i + 1) (bit-and (x * fnv-prime-32) fnv-mask-32)
+
+Section: The State
+
+  WatchEntry = record {
+   we-label : Text,
+   we-addr : Integer,
+   we-len : Integer,
+   we-sum : Integer
+  }
+
+  DevState = record {
+   ds-watches : List WatchEntry
+  }
+
+  dev-state-new : DevState
+  dev-state-new = DevState { ds-watches = [] }
+
+  dev-watch-count : DevState -> Integer
+  dev-watch-count (st) = list-length (st.ds-watches)
+
+Section: Adding A Watch
+
+ The result carries a message either way, because every path here has
+ something the operator needs: which watch was added, or which cap
+ refused it.
+
+  WatchAdd = record {
+   wa-state : DevState,
+   wa-ok : Boolean,
+   wa-message : Text
+  }
+
+  dev-watch-add : DevState, Text, Integer, Integer -> WatchAdd
+  dev-watch-add (st) (label) (addr) (len) =
+   if len <= 0 then WatchAdd { wa-state = st, wa-ok = False, wa-message = "watch length must be positive" }
+   else if len > dev-max-watch-len then
+     WatchAdd { wa-state = st, wa-ok = False, wa-message = "watch length " & show len & " exceeds " & show dev-max-watch-len }
+   else if dev-watch-count st >= dev-max-watches then
+     WatchAdd { wa-state = st, wa-ok = False, wa-message = "watch table full (" & show dev-max-watches & ")" }
+   else let e = WatchEntry {
+     we-label = label,
+     we-addr = addr,
+     we-len = len,
+     we-sum = dev-region-sum addr len
+   }
+   in WatchAdd {
+     wa-state = DevState { ds-watches = list-snoc (st.ds-watches) e },
+     wa-ok = True,
+     wa-message = "watching " & label & " at " & show addr & " for " & show len & " bytes"
+   }
+
+  dev-watch-clear : DevState -> DevState
+  dev-watch-clear (st) = DevState { ds-watches = [] }
+
+Section: Checking
+
+ A check RE-SNAPSHOTS every watch it reports. Without that, one change
+ makes a watch report as changed on every check for the rest of the
+ session, and an operator watching two regions cannot tell which one moved
+ this time. Re-arming means each report answers "since the last check",
+ which is the question being asked.
+
+ The report names the unchanged watches too. A checker that prints only
+ what moved is silent when nothing does, and silence reads the same as a
+ watch list that was never armed.
+
+  WatchCheck = record {
+   wc-state : DevState,
+   wc-changed : Integer,
+   wc-report : Text
+  }
+
+  dev-watch-check : DevState -> WatchCheck
+  dev-watch-check (st) =
+   let n = dev-watch-count st
+   in if n == 0 then WatchCheck { wc-state = st, wc-changed = 0, wc-report = "no watches" }
+   else dev-check-loop st 0 n [] 0 ""
+
+  dev-check-loop : DevState, Integer, Integer, List WatchEntry, Integer, Text -> WatchCheck
+  dev-check-loop (st) (i) (n) (acc) (changed) (report) =
+   if i >= n then WatchCheck {
+     wc-state = DevState { ds-watches = acc },
+     wc-changed = changed,
+     wc-report = report
+   }
+   else let e = list-at (st.ds-watches) i
+   in let now = dev-region-sum (e.we-addr) (e.we-len)
+   in let moved = now /= (e.we-sum)
+   in let line = (e.we-label) & (if moved then " CHANGED" else " same")
+   in let re-armed = WatchEntry {
+        we-label = e.we-label,
+        we-addr = e.we-addr,
+        we-len = e.we-len,
+        we-sum = now
+      }
+   in let next-changed = if moved then changed + 1 else changed
+   in let next-report = if text-length report == 0 then line else report & ", " & line
+   in dev-check-loop st (i + 1) n (list-snoc acc re-armed) next-changed next-report

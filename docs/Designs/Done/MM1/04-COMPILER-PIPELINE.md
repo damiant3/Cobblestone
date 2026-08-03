@@ -1,4 +1,4 @@
-# 04 — Compiler Pipeline
+# 04 -- Compiler Pipeline
 
 ## Overview
 
@@ -59,7 +59,7 @@ Source Text (.codex)
     Output
 ```
 
-Each phase also feeds into the **Diagnostic System** — errors, warnings, and suggestions accumulate and are reported at the end (or incrementally in IDE mode).
+Each phase also feeds into the **Diagnostic System** -- errors, warnings, and suggestions accumulate and are reported at the end (or incrementally in IDE mode).
 
 ---
 
@@ -78,7 +78,7 @@ A flat list of `Token` values, each with:
 
 **Hand-written lexer**, not a generator (Flex, ANTLR, etc.). Reasons:
 1. The prose/notation mode switching requires context-sensitive tokenization
-2. Error recovery in the lexer is critical for IDE support — a generated lexer gives up too easily
+2. Error recovery in the lexer is critical for IDE support -- a generated lexer gives up too easily
 3. The Codex-in-Codex lexer is also hand-written (functional, character-by-character)
 
 **Prose-aware tokenization**: The `ProseParser` in `Codex.Syntax` handles mode switching:
@@ -93,7 +93,7 @@ A flat list of `Token` values, each with:
 ### Implementation
 
 ```csharp
-// Actual API — Codex.Syntax/Lexer.cs
+// Actual API -- Codex.Syntax/Lexer.cs
 public sealed class Lexer(SourceText source)
 {
     public IReadOnlyList<Token> Tokenize();
@@ -110,7 +110,7 @@ The lexer produces the complete token list eagerly (not pull-based). The parser 
 Token stream from the lexer.
 
 ### Output
-Concrete Syntax Tree (CST) — a lossless representation of the source. The CST preserves:
+Concrete Syntax Tree (CST) -- a lossless representation of the source. The CST preserves:
 - All whitespace and formatting
 - All prose text
 - All trivia
@@ -181,7 +181,7 @@ The parser must be **error-tolerant**. A syntax error in one definition should n
 2. **Error nodes**: insert `ErrorNode` in the CST containing the skipped tokens
 3. **Partial parse**: if a definition's signature parses but its body doesn't, keep the signature
 
-This is essential for IDE support — the user is always in the middle of typing, and the parser must produce useful output from incomplete/incorrect input.
+This is essential for IDE support -- the user is always in the middle of typing, and the parser must produce useful output from incomplete/incorrect input.
 
 ---
 
@@ -191,7 +191,7 @@ This is essential for IDE support — the user is always in the middle of typing
 CST from the parser.
 
 ### Output
-AST — a clean, normalized representation with:
+AST -- a clean, normalized representation with:
 - Prose blocks preserved but separated from notation
 - Syntactic sugar expanded
 - All structure explicit
@@ -220,7 +220,7 @@ During desugaring, recognized prose templates are matched and converted to AST n
   → DependentConstraint { ... }
 ```
 
-Unrecognized prose becomes `ProseBlock` nodes in the AST — preserved for documentation, but not semantically analyzed.
+Unrecognized prose becomes `ProseBlock` nodes in the AST -- preserved for documentation, but not semantically analyzed.
 
 ---
 
@@ -298,7 +298,7 @@ This requires tracking dependencies between definitions at the type-checking lev
 Type-checked AST with resolved names and inferred types.
 
 ### Output
-`IRModule` — a typed intermediate representation suitable for code generation.
+`IRModule` -- a typed intermediate representation suitable for code generation.
 
 ### IR Design
 
@@ -374,7 +374,7 @@ public interface ICodeEmitter
 
 | Backend | Project | Extension | Status |
 |---------|---------|-----------|--------|
-| **C#** | `Codex.Emit.CSharp` | `.cs` | ✅ Primary — used for bootstrap |
+| **C#** | `Codex.Emit.CSharp` | `.cs` | ✅ Primary -- used for bootstrap |
 | **JavaScript** | `Codex.Emit.JavaScript` | `.js` | ✅ All samples run under Node.js |
 | **Rust** | `Codex.Emit.Rust` | `.rs` | ✅ All samples produce valid Rust |
 

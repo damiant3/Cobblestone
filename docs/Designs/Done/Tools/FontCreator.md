@@ -1,4 +1,4 @@
-# Font Creator — AI Model to TrueType Font Pipeline
+# Font Creator -- AI Model to TrueType Font Pipeline
 
 **Date**: 2026-06-22
 **Status**: Design
@@ -82,16 +82,16 @@ glyph contours (quadratic Bezier control points), character mappings,
 and metrics, emit a valid TrueType binary.
 
 Required TrueType tables:
-- `head` — font header (units-per-em, bounds, flags)
-- `hhea` — horizontal header (ascent, descent, line gap)
-- `maxp` — maximum profile (num glyphs, max points, max contours)
-- `OS/2` — OS metrics (weight class, width class, panose)
-- `name` — font name records (family, style, unique ID)
-- `cmap` — character-to-glyph mapping (format 4 for BMP)
-- `loca` — glyph offset table (short or long format)
-- `glyf` — glyph outlines (contour endpoints, flags, x/y deltas)
-- `hmtx` — horizontal metrics (advance width, left side bearing)
-- `post` — PostScript name mapping
+- `head` -- font header (units-per-em, bounds, flags)
+- `hhea` -- horizontal header (ascent, descent, line gap)
+- `maxp` -- maximum profile (num glyphs, max points, max contours)
+- `OS/2` -- OS metrics (weight class, width class, panose)
+- `name` -- font name records (family, style, unique ID)
+- `cmap` -- character-to-glyph mapping (format 4 for BMP)
+- `loca` -- glyph offset table (short or long format)
+- `glyf` -- glyph outlines (contour endpoints, flags, x/y deltas)
+- `hmtx` -- horizontal metrics (advance width, left side bearing)
+- `post` -- PostScript name mapping
 
 **Input:** `TtfBuildSpec` record with font name, units-per-em,
 ascent/descent, and a list of `GlyphSpec` records (codepoint, advance,
@@ -101,7 +101,7 @@ records with x, y, on-curve flag).
 **Output:** `List Integer` (byte sequence) that can be written to disk
 as a `.ttf` file or fed directly to `fb-parse-ttf`.
 
-Estimated size: ~400-600 lines of Codex. No new dependencies — just
+Estimated size: ~400-600 lines of Codex. No new dependencies -- just
 byte-level packing using `__buf-write-byte` / `__buf-write-bytes`.
 
 ### Phase 2: Glyph Generation from Templates
@@ -150,7 +150,7 @@ Train or distill a small model (~20-50M params) for font generation:
 **Recommendation:** Option 1 (autoregressive). It maps directly to
 the existing GGUF transformer inference in `foreword/ai/`. Each glyph
 is a sequence of ~50-200 tokens. At 95 ASCII glyphs, generation takes
-~5000-19000 tokens total — feasible in seconds on bare metal.
+~5000-19000 tokens total -- feasible in seconds on bare metal.
 
 **Training data:** Google Fonts (5000+ open fonts, all with vector
 outlines). Extract quadratic Bezier contours, normalize to
@@ -197,11 +197,11 @@ for preview.
 
 | Phase | Est. Lines | Blocks | Risk |
 |-------|-----------|--------|------|
-| 1. TrueType Writer | 400-600 | 1 CL | Low — table format is well-documented |
-| 2. Procedural Fonts | 600-900 | 1-2 CLs | Low — geometric shapes only |
-| 3. Model Training | External | Offline | Medium — need quality training data + hyperparameter tuning |
-| 3b. GGUF Integration | 100-200 | 1 CL | Low — existing inference stack |
-| 4. Font Creator App | 300-500 | 1-2 CLs | Low — standard GuiOS app pattern |
+| 1. TrueType Writer | 400-600 | 1 CL | Low -- table format is well-documented |
+| 2. Procedural Fonts | 600-900 | 1-2 CLs | Low -- geometric shapes only |
+| 3. Model Training | External | Offline | Medium -- need quality training data + hyperparameter tuning |
+| 3b. GGUF Integration | 100-200 | 1 CL | Low -- existing inference stack |
+| 4. Font Creator App | 300-500 | 1-2 CLs | Low -- standard GuiOS app pattern |
 
 ## Open Questions
 
@@ -217,7 +217,7 @@ for preview.
 
 3. **Model hosting?** The GGUF file needs to be on the font disk or
    a separate model disk. At ~80MB Q4, it fits alongside the 13 CC0
-   fonts on the 8MB font disk — but only if we increase the disk
+   fonts on the 8MB font disk -- but only if we increase the disk
    size or use a separate model disk.
 
 4. **Quality bar?** The procedural fonts (Phase 2) are immediately

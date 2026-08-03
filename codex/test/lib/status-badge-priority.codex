@@ -1,0 +1,80 @@
+Chapter: StatusBadgePriority
+  cites Foreword chapter Console
+  cites UI chapter StatusBadge
+  cites UI chapter Widget
+
+ A priority badge says one thing: how many bars out of four. BsPriorityBar
+ has carried that count since it was written, and badge-widget bound it and
+ then emitted a fixed 12 by 12 custom node, so Urgent and None rendered
+ identically. Nothing in the tree matches the kind string "priority-bar"
+ either, so no renderer could have recovered the count downstream.
+
+ A gauge is the shape that already carries a quantity against a maximum,
+ and every renderer in the tree draws one, so the count now reaches pixels
+ instead of stopping at the widget.
+
+Section: Body
+
+ Read the count back out of the built widget rather than out of the style,
+ because the style was never the thing that was broken.
+
+  gauge-value : WidgetNode -> Integer
+  gauge-value (w) =
+    when w.wn-kind
+      is WkGauge (v) (m) -> v
+      is otherwise -> 0 - 1
+
+  gauge-max : WidgetNode -> Integer
+  gauge-max (w) =
+    when w.wn-kind
+      is WkGauge (v) (m) -> m
+      is otherwise -> 0 - 1
+
+  built : Integer -> WidgetNode
+  built (pri) = badge-widget "p" (badge-priority pri)
+
+  row : Integer -> Text
+  row (pri) =
+    "  " & badge-priority-name pri & " bars " & show (gauge-value (built pri)) & " of " & show (gauge-max (built pri)) & "  tone " & show ((built pri).wn-tone)
+
+ Count the distinct bar values across the five priorities. Before the fix
+ every one of them was the same node and this read 1.
+
+  distinct : Integer, Integer, Integer -> Integer
+  distinct (i) (n) (acc) =
+    if i > n then acc
+    else if i == 0 then distinct 1 n 1
+    else if gauge-value (built i) == gauge-value (built (i - 1)) then distinct (i + 1) n acc
+    else distinct (i + 1) n (acc + 1)
+
+Section: Report
+
+  opening : [Console] Nothing = act
+    print-line-uni "Priority badges, which must differ from each other in the count"
+    print-line-uni "and not only in the tone:"
+    print-line-uni (row 0)
+    print-line-uni (row 1)
+    print-line-uni (row 2)
+    print-line-uni (row 3)
+    print-line-uni (row 4)
+    print-line-uni ""
+    print-line-uni "High and Medium are both tone-warning, so the count is the ONLY"
+    print-line-uni "thing that separates them and this row is the one that fails if"
+    print-line-uni "the bars stop being carried:"
+    print-line-uni ("  High bars " & show (gauge-value (built 1)) & " against Medium bars " & show (gauge-value (built 2)))
+    print-line-uni ""
+    print-line-uni ("  distinct bar counts over the five priorities: " & show (distinct 0 4 0) & " of 5")
+    print-line-uni ""
+    print-line-uni "Controls. A status dot carries no quantity and must stay a custom"
+    print-line-uni "node, so these read -1 and no gauge leaked into them:"
+    print-line-uni ("  status 0 gauge value " & show (gauge-value (badge-widget "s" (badge-status 0))))
+    print-line-uni ("  status 4 gauge value " & show (gauge-value (badge-widget "s" (badge-status 4))))
+    print-line-uni ("  label pill gauge value " & show (gauge-value (badge-widget "l" (badge-label "bug"))))
+    print-line-uni ""
+    print-line-uni "The tone must survive the change of kind, since that is what the"
+    print-line-uni "renderers resolve the colour through:"
+    print-line-uni ("  Urgent tone " & show ((built 0).wn-tone) & "  must be tone-error " & show tone-error)
+    print-line-uni ("  None tone   " & show ((built 4).wn-tone) & "  must be tone-muted " & show tone-muted)
+  end
+
+Page 1

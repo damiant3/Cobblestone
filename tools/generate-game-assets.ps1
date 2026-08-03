@@ -1,4 +1,4 @@
-# generate-game-assets.ps1 — Generate game thumbnails via Stable Diffusion Forge.
+# generate-game-assets.ps1 -- Generate game thumbnails via Stable Diffusion Forge.
 # Usage: tools/generate-game-assets.ps1 [-Force]
 # Requires Forge running at http://127.0.0.1:7860
 [CmdletBinding()]

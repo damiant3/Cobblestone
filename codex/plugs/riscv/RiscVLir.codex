@@ -4,16 +4,13 @@ Chapter: RiscV LIR Register File
  routes a function through the LIR when `rv-lir-selects` admits every
  construct in it; anything else falls back to `rv-emit-function`. The
  allocator and both verifiers are the compiler's own, bundled by `-WithLir`
- and not reimplemented here. Campaign staging and the ARM64 parallel live
- in `docs/Designs/Active/Compiler/LirRetarget.md`.
+ and not reimplemented here.
 
 Section: The Register File
 
- @invariant rv-lir-phys "s0/s1 are callee-saved but excluded: s1 is rv-heap-reg and s0 the memo base, both owned by the tree emitter for the same program. t3 (index ncallee) is the non-crosser pick, not a0, because a0 is both return and arg-zero and one register cannot hold two abstract indices; t0-t2 are the tree emitter's helper temps. a0-a7 sit in arg order so a leaf's entry moves elide."
 
   rv-lir-phys : List Integer = [18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 10, 11, 12, 13, 14, 15, 16, 17]
 
- @warning lir-target-rv "budget 26 > 19 allocatable regs on purpose: it sizes the verifier's occupant array, and slack is cheaper than an overflow. diva/divb -1 because rem/div are three-operand and fix no register."
 
   lir-target-rv : LirTarget = LirTarget {
    ncallee = 10,
@@ -24,7 +21,6 @@ Section: The Register File
    budget = 26
   }
 
- @invariant rv-lir-scratch-reg "t5/t6 are never allocated, consumed within one instruction's selection (t5 spilled dest or oversized imm, t6 second operand). Reusing the tree emitter's temp tail is safe: a function is emitted entirely by one path or the other."
 
   rv-lir-scratch-reg : Integer = 30
 
@@ -35,8 +31,6 @@ Section: The Register File
 
 Section: The Construct Whitelist
 
- @invariant rv-lir-result-ok "a zero-instruction function has every vreg a parameter, so a LvReg result is an arg-register index and must be < 8"
- @warning rv-lir-selects "the >8-param decline is the ABI: a ninth parameter arrives on the caller's stack, not in a register"
 
   rv-lir-zero-insn : LirFunc -> Boolean
   rv-lir-zero-insn (f) =
@@ -89,8 +83,6 @@ Section: The Construct Whitelist
 
 Section: Dispatch
 
- @warning rv-lir-emit-try "opening is declined BY NAME: rv-emit-function-framed appends a print-result epilogue for it, a special case attached to a name that an instruction-shape whitelist cannot see. A selector claiming opening emits a correct function and a silent program."
- @warning rv-lir-emit-try "a verifier violation DECLINES, not halts: the wire is the only output, there is no diagnostic channel, and the tree emitter is the fallback"
 
   RvLirTry = record {
    handled : Boolean,
@@ -106,7 +98,6 @@ Section: Dispatch
     is LvImm (k) -> rv-emit-li st rv-a0 k
     is LvReg (r) -> if r == 0 then st else rv-emit st (rv-mv rv-a0 (rv-a0 + r))
 
- @invariant rv-lir-phys-of "answers -1 for a slot: called only where the location is known to be a register, and -1 keeps a mislabelled slot visible rather than plausible"
 
   rv-lir-phys-of : Location -> Integer
   rv-lir-phys-of (loc) =
@@ -127,7 +118,6 @@ Section: Dispatch
      is LocReg (pr) -> RvLirSrc { state = st, reg = list-at rv-lir-phys pr }
      is LocSlot (k) -> RvLirSrc { state = rv-emit st (rv-ld scratch rv-sp (rv-lir-slot-off k)), reg = scratch }
 
- @warning rv-lir-emit-alu "LoRem/LoDiv emit NOTHING, not a substitute instruction: they cannot arrive (rv-lir-op-ok excludes them), and a missing instruction makes a whitelist slip visible where a plausible substitute would be a silent miscompile"
 
   rv-lir-emit-alu : RvState, LirOp, Integer, Integer, Integer -> RvState
   rv-lir-emit-alu (st) (op) (rd) (rs1) (rs2) =
@@ -138,7 +128,6 @@ Section: Dispatch
     is LoRem -> st
     is LoDiv -> st
 
- @invariant rv-lir-emit-bin "a slot destination computes into t5 then stores; t5 may also hold the loaded left operand, safe because the three-operand ALU reads both sources before it writes"
 
   rv-lir-dst-reg : Location -> Integer
   rv-lir-dst-reg (loc) =
@@ -180,8 +169,6 @@ Section: Dispatch
       in if p == rv-a0 then st else rv-emit st (rv-mv rv-a0 p)
      is LocSlot (k) -> rv-emit st (rv-ld rv-a0 rv-sp (rv-lir-slot-off k))
 
- @warning rv-lir-alloc-ok "frame capped at 2032: the largest 16-aligned size the signed-12 addi/ld/sd offset fields encode. A larger frame would encode wrong, not diagnose, so it is refused."
- @invariant rv-lir-frame-of "slots at [0, nslots*8), used callee-saved above them; no ra cell, the whitelist admits no call"
 
   RvLirFrame = record {
    nslots : Integer,
@@ -219,7 +206,6 @@ Section: Dispatch
   rv-lir-save-off : Integer, Integer -> Integer
   rv-lir-save-off (nslots) (i) = (nslots * 8) + (i * 8)
 
- @invariant rv-lir-save-regs "the callee-saved pool is handed out lowest-free, so used indices are a prefix and saving [0, nused) saves exactly what the body writes"
 
   rv-lir-save-regs : RvState, Integer, Integer, Integer -> RvState
   rv-lir-save-regs (st) (i) (nused) (nslots) =
@@ -243,7 +229,6 @@ Section: Dispatch
    in if frame == 0 then st
       else rv-emit (rv-lir-restore-regs st 0 (fr.nused) (fr.nslots)) (rv-addi rv-sp rv-sp frame)
 
- @invariant rv-lir-emit-entry "the plan is the compiler's (lir-emv-for); this only maps abstract index to register. A cycle stages through nregs -> t5, safe because entry moves precede instruction selection. Runs AFTER the prologue: a slot store needs the frame, a callee-saved move must not precede its save."
 
   rv-lir-emv-phys : Integer -> Integer
   rv-lir-emv-phys (i) =
@@ -273,7 +258,6 @@ Section: Dispatch
    if rv-lir-zero-insn f then True
    else rv-lir-frame-bytes (rv-lir-frame-of f assign) <= 2032
 
- @invariant rv-lir-emit-func "the result is read into a0 BEFORE the epilogue: a callee-saved result must be copied out before the restore overwrites it, a slot result loaded before sp is popped past it"
 
   rv-lir-emit-func : RvState, IRDef, LirFunc, List Location -> RvState
   rv-lir-emit-func (st) (def) (f) (assign) =
@@ -287,7 +271,6 @@ Section: Dispatch
       in let str = rv-lir-emit-result-alloc sti (f.result) assign
       in rv-emit (rv-lir-emit-epilogue str fr) rv-ret
 
- @warning rv-lir-emit-try "emits [WCET] lir-handled per selected function: the only signal separating selector from tree output, which answer alike when both are correct"
 
   rv-lir-emit-try : RvState, IRDef -> RvLirTry
   rv-lir-emit-try (st) (def) =

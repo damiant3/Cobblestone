@@ -179,7 +179,7 @@ foreach ($p in $builtPlugs) {
         if ($missing.Count -gt 0) {
             Write-Host "  WARN  $p/$t (${size}B, ${elapsed}s) missing: $($missing -join ', ')"
             $results += "$p/$t`tWARN`tmissing markers: $($missing -join ', ')"
-            $passCount++  # still counts as pass — output was generated
+            $passCount++  # still counts as pass -- output was generated
         } else {
             Write-Host "  PASS  $p/$t (${size}B, ${elapsed}s)"
             $passCount++

@@ -295,7 +295,7 @@ namespace CodexGlobe
             if (_autoRotateCheck != null) _autoRotateCheck.Checked = true;
             switch (s) { case Scene.Earth: _zoom = 2.8; _camPitch = 0.2; _yaw = 3.5; break; case Scene.BlackHole: _zoom = 4.4; _camPitch = 0.35; break; case Scene.Sosaria: _zoom = 2.8; _camPitch = 0.3; break; }
             _zoomSlider.Value = Math.Clamp((int)(_zoom * 10), 15, 100);
-            Text = "Codex Globe — " + s;
+            Text = "Codex Globe -- " + s;
         }
 
         private void Reorient() => SwitchScene(_scene);

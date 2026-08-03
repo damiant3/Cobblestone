@@ -9,7 +9,7 @@
 ## Why
 
 The self-hosted Codex compiler is **28x slower** than the C# bootstrap. 85% of the
-gap is in the lexer, where `char-at` returns `Text` — allocating a new string for
+gap is in the lexer, where `char-at` returns `Text` -- allocating a new string for
 every character examined. On 163K chars of input, this produces billions of bytes
 of garbage (192x more memory than the reference compiler).
 
@@ -20,7 +20,7 @@ type system doesn't know about characters, and the workaround leaks integer code
 where character semantics belong.
 
 The CCE design (`docs/Designs/CCE-DESIGN.md`) defines characters as codepoints with
-computational structure — classification, case conversion, and script identification
+computational structure -- classification, case conversion, and script identification
 encoded in bit patterns. A `Char` type is the natural home for these operations.
 
 ---
@@ -46,7 +46,7 @@ implicit mixing. At runtime, `Char` has the same representation as `Integer`:
 ### Relationship to Text
 
 `Text` is **not** `Array<Char>`. Text is a variable-width encoded byte stream
-(CCE-encoded, self-synchronizing). `Char` is the decoded form — what you get after
+(CCE-encoded, self-synchronizing). `Char` is the decoded form -- what you get after
 resolving the framing.
 
 For Tier 0 CCE (the vast majority of Codex source), `Char` and byte are the same
@@ -78,8 +78,8 @@ to `char-code (char-at text idx)`. It will be deprecated in a future release.
 ### Character Literals
 
 No character literal syntax (e.g., `'a'`) in this phase. Characters are created via:
-- `char-at "a" 0` — extract from a string
-- `code-to-char 65` — from an integer code
+- `char-at "a" 0` -- extract from a string
+- `code-to-char 65` -- from an integer code
 
 Character literal syntax is a follow-up.
 
@@ -96,8 +96,8 @@ not numeric identity.
 
 | Backend | char-at cost |
 |---------|-------------|
-| C# | `text[(int)idx].ToString()` — heap alloc per call |
-| IL | `String.get_Chars()` + `Char.ToString()` — heap alloc |
+| C# | `text[(int)idx].ToString()` -- heap alloc per call |
+| IL | `String.get_Chars()` + `Char.ToString()` -- heap alloc |
 | Wasm | ~20 ops: bump-alloc 5 bytes, copy byte, return ptr |
 | x86-64 | 16-byte heap alloc + store length + store byte |
 | ARM64 | heap alloc + `strb` |
@@ -107,12 +107,12 @@ not numeric identity.
 
 | Backend | char-at cost |
 |---------|-------------|
-| C# | `(long)text[(int)idx]` — zero alloc, one array index |
-| IL | `String.get_Chars()` + `Conv_i8` — zero alloc |
+| C# | `(long)text[(int)idx]` -- zero alloc, one array index |
+| IL | `String.get_Chars()` + `Conv_i8` -- zero alloc |
 | Wasm | ~3 ops: load byte, extend to i64 |
-| x86-64 | `movzx` byte into register — one instruction |
-| ARM64 | `ldrb` into register — one instruction |
-| RISC-V | `lbu` into register — one instruction |
+| x86-64 | `movzx` byte into register -- one instruction |
+| ARM64 | `ldrb` into register -- one instruction |
+| RISC-V | `lbu` into register -- one instruction |
 
 Projected lexer improvement: **800x -> ~5x** of reference (from the performance
 report's analysis, the per-character string allocation is the dominant cost).
@@ -139,7 +139,7 @@ returns integer code instead of string. Add `char-to-text` case.
 
 ### Commit 3: Native emitters (the performance win)
 
-Update Wasm, x86-64, ARM64, RISC-V. `char-at` returns byte value in register —
+Update Wasm, x86-64, ARM64, RISC-V. `char-at` returns byte value in register --
 no heap allocation.
 
 ### Commit 4: Self-hosted compiler
@@ -152,7 +152,7 @@ and name resolver in the self-hosted compiler.
 ## Relationship to CCE
 
 This change adds the **type** that CCE operations live on. The CCE prelude
-(`prelude/CCE.codex`) currently operates on `Integer` — every function takes and
+(`prelude/CCE.codex`) currently operates on `Integer` -- every function takes and
 returns `Integer`. With `Char`, these functions gain their proper types:
 
 ```

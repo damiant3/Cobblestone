@@ -6,8 +6,8 @@
 
 ## MM2 IS PROVEN
 
-The self-hosted Codex compiler — running on bare metal x86-64 under QEMU,
-268 KB kernel, no OS, no runtime, just the UART — received `main : Integer`
+The self-hosted Codex compiler -- running on bare metal x86-64 under QEMU,
+268 KB kernel, no OS, no runtime, just the UART -- received `main : Integer`
 / `main = 42` over serial, compiled it through the full pipeline (tokenize,
 parse, desugar, resolve, typecheck, lower, emit), and emitted valid C# back
 over serial. Complete with CCE runtime preamble, using directives, and entry
@@ -27,7 +27,7 @@ metal. MM2: The High Camp is reached.**
 | Fixed point | **Proven** (Stage 2 = Stage 3 at 298,752 chars, CCE-native) |
 | Language features | Lambda, fork/await/par/race, Char, CCE-native text, linear closures, linear function types, CCE Tier 0-3 (full Unicode) |
 | Codex.OS | 268 KB kernel, Rings 0-4, arena REPL, preemptive multitasking, capability-enforced syscalls, **compiles programs on bare metal** |
-| CCE encoding | Full Unicode coverage — Tier 0 (1B, 128 chars), Tier 1 (2B, 500+ chars, 7 scripts), Tier 2 (3B, all BMP), Tier 3 (4B, emoji/supplementary) |
+| CCE encoding | Full Unicode coverage -- Tier 0 (1B, 128 chars), Tier 1 (2B, 500+ chars, 7 scripts), Tier 2 (3B, all BMP), Tier 3 (4B, emoji/supplementary) |
 | Agents | 4 (Windows/Copilot, Linux/sandbox, Cam/CLI, Nut/garage-box) |
 
 **History**: `docs/OldStatus/CurrentPlan-2026-03-26-evening.md`
@@ -45,7 +45,7 @@ metal. MM2: The High Camp is reached.**
 ### CCE Full Unicode (Cam)
 - Tier 1 multi-byte: Latin Extended (128), Cyrillic (77), Greek (49+),
   Arabic (44), Devanagari (53), CJK (~150), Japanese (176), Korean (96)
-- Tier 2/3 pass-through: any Unicode character roundtrips — 3 bytes for BMP,
+- Tier 2/3 pass-through: any Unicode character roundtrips -- 3 bytes for BMP,
   4 bytes for supplementary (emoji). No data loss. Ever.
 - 70 core encoding tests
 
@@ -55,7 +55,7 @@ metal. MM2: The High Camp is reached.**
 - 25 linearity tests, all 4 steps shipped
 
 ### x86-64 Fixes (Cam)
-- `__ipow` runtime helper (was stubbed as 0) — exponentiation by squaring
+- `__ipow` runtime helper (was stubbed as 0) -- exponentiation by squaring
 - `list-contains` registered across full pipeline (bug found by Linux)
 - 6 MM2 builtins merged (text-compare, list-snoc, list-insert-at,
   list-contains, text-concat-list, text-split)
@@ -84,7 +84,7 @@ metal. MM2: The High Camp is reached.**
 | 1 | IDT (256 vectors), PIC, timer interrupts, keyboard input | Done |
 | 2 | Process table (16 slots), preemptive context switch, per-process page tables | Done |
 | 3 | Capability-enforced syscalls | Done |
-| 4 | Self-hosting compiler on bare metal, arena REPL, CCE-native | **MM2 PROVEN** — compiles `.codex` programs on bare metal |
+| 4 | Self-hosting compiler on bare metal, arena REPL, CCE-native | **MM2 PROVEN** -- compiles `.codex` programs on bare metal |
 
 ---
 
@@ -92,7 +92,7 @@ metal. MM2: The High Camp is reached.**
 
 ### The path to MM3: Summit
 
-MM3 is the self-hosted compiler compiling *itself* on bare metal — the
+MM3 is the self-hosted compiler compiling *itself* on bare metal -- the
 ultimate fixed point. The compiler that compiled the compiler, on hardware
 it built the OS for.
 

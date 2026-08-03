@@ -1,4 +1,4 @@
-**Goal:** Achieve bootstrap fixed-point — Stage 1 (compiled Codex compiler)
+**Goal:** Achieve bootstrap fixed-point -- Stage 1 (compiled Codex compiler)
 produces identical output to Stage 0 (C# compiler) when given the same
 Codex source. This is the last unchecked item in Milestone 13.
 
@@ -17,7 +17,7 @@ that must be catalogued, understood, and either accepted or fixed.
 ## Context from Previous Session
 
 The typed-lowering handoff (`HANDOFF-TYPED-LOWERING.md`) is complete.
-`Codex.Codex/out/Codex.Codex.cs` now has concrete types everywhere —
+`Codex.Codex/out/Codex.Codex.cs` now has concrete types everywhere --
 `string`, `long`, `List<Token>`, `Func<…>` instead of `object`.
 Only 5 `object` references remain (all correct).
 
@@ -37,11 +37,11 @@ Only 5 `object` references remain (all correct).
 
 ## Files You Do NOT Need to Read
 
-- `Codex.Codex/IR/Lowering.codex` — already fixed, don't touch
-- `Codex.Codex/Types/TypeChecker.codex` — working, don't touch
-- `Codex.Codex/Types/TypeEnv.codex` — already has all builtins
-- `Codex.Codex/main.codex` — already wired, don't touch
-- `src/Codex.IR/Lowering.cs` — Stage 0 reference, read-only
+- `Codex.Codex/IR/Lowering.codex` -- already fixed, don't touch
+- `Codex.Codex/Types/TypeChecker.codex` -- working, don't touch
+- `Codex.Codex/Types/TypeEnv.codex` -- already has all builtins
+- `Codex.Codex/main.codex` -- already wired, don't touch
+- `src/Codex.IR/Lowering.cs` -- Stage 0 reference, read-only
 - Any emitter other than `Codex.Emit.CSharp`
 - `src/Codex.Lsp/`, `src/Codex.Proofs/`, `src/Codex.Repository/`
 - `docs/00-OVERVIEW.md` through `docs/10-PRINCIPLES.md`
@@ -50,7 +50,7 @@ Only 5 `object` references remain (all correct).
 dotnet run --project tools/Codex.Bootstrap -- build Codex.Codex
 ```
 
-This produces `Codex.Codex/stage1-output.cs` — the Stage 2 output.
+This produces `Codex.Codex/stage1-output.cs` -- the Stage 2 output.
 
 ### Step 3: Diff Stage 0 vs Stage 2
 
@@ -58,7 +58,7 @@ Compare `Codex.Codex/out/Codex.Codex.cs` (Stage 0 output) against
 `Codex.Codex/stage1-output.cs` (Stage 2 output).
 
 **Expected differences (from M13-BOOTSTRAP-PLAN.md):**
-- Curried calls: Stage 1 emits `f(a)(b)`, Stage 0 emits `f(a, b)` — Stage 1 is Codex-native curried application
+- Curried calls: Stage 1 emits `f(a)(b)`, Stage 0 emits `f(a, b)` -- Stage 1 is Codex-native curried application
 - Extra `_loop` helpers: Stage 0 inlines some recursion as lambdas, Stage 1 may emit named helpers
 - Whitespace/formatting differences
 
@@ -69,7 +69,7 @@ off the M13 item. Update `08-MILESTONES.md` and `FORWARD-PLAN.md`.
 Stage 0 or Stage 1 that must be diagnosed and fixed. The most likely
 sources:
 - Type resolution differences (Stage 0 has `ConstructorMap`/`TypeDefMap`
-  that Stage 1 doesn't use — sum type and record types may emit as
+  that Stage 1 doesn't use -- sum type and record types may emit as
   `object` instead of their named types)
 - Missing type information for `when`/match expressions
 - Lambda parameter types not flowing through
@@ -84,11 +84,11 @@ sources:
 
 ## Known Risks
 
-2. **Stack overflow** — The Bootstrap project already allocates a 256 MB
+2. **Stack overflow** -- The Bootstrap project already allocates a 256 MB
    stack (`new Thread(() => ..., 256 * 1024 * 1024)`). If Stage 1 with
    typed lowering is more recursive, it might still overflow. Monitor.
 
-3. **`when` expressions emitting `object` casts** — The Codex `when`
+3. **`when` expressions emitting `object` casts** -- The Codex `when`
    keyword compiles to C# `switch` expressions. When branches return
    different types (e.g., `CodexType` subtypes), C# infers `object`.
    This is a known Codex→C# limitation, not a bug in typed lowering.
@@ -97,9 +97,9 @@ sources:
 
 ## How to Verify
 
-1. `dotnet build Codex.sln` — zero warnings
-2. `dotnet test Codex.sln` — all tests pass
-3. Diff `Codex.Codex/out/Codex.Codex.cs` vs `Codex.Codex/stage1-output.cs` — differences are cosmetic only
+1. `dotnet build Codex.sln` -- zero warnings
+2. `dotnet test Codex.sln` -- all tests pass
+3. Diff `Codex.Codex/out/Codex.Codex.cs` vs `Codex.Codex/stage1-output.cs` -- differences are cosmetic only
 
 ---
 

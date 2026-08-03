@@ -1,4 +1,4 @@
-# Build Verification Test — minimal confidence gate.
+# Build Verification Test -- minimal confidence gate.
 #
 # The compiler self-compile (fixed point) already proves: pattern matching,
 # variants, records, let/if/when, function application, closures, text ops,
@@ -9,12 +9,27 @@
 #   - type classes, effects/handlers, linear types, mutable state
 #   - try/retry, for-loops, concurrency (fork/await)
 #   - a handful of error-rejection tests (diagnostic path)
-#   - one library smoke (hamt — the backing store for Set/KvStore)
+#   - one library smoke (hamt -- the backing store for Set/KvStore)
+#   - the signature and certificate path, which the compiler never calls
+#   - the TLS/DTLS handshake path: what we OFFER, not only what we accept.
+#     The certificate tests are about an inbound chain; the two hello tests
+#     pin the bytes we put on the wire, which nothing else reads back
 #   - codegen stress (noise-test): arithmetic-heavy pure leaves whose
 #     register/temp pressure differs from the compiler's own shape, so
 #     the self-compile cannot catch a miscompile there
 #
-# ~16 tests, runs in under 30 seconds after a fresh build.
+# 73 tests. Count them; the file is the register.
+#
+# There is deliberately no headline time here any more. Three consecutive
+# 8-slot runs of THIS unchanged list measured 20.4s, 22.8s and 32.6s
+# (2026-07-29, other agents working the same box). A 12-second spread on a
+# list that did not change is larger than every increment the line that used
+# to sit here attributed to added tests: it read 16.2s at 59, 18.7s at 66,
+# 20.3s at 67, 22.1s at 71, each a SINGLE reading taken before and after an
+# addition. Two of those deltas are smaller than the noise, so the
+# progression was measuring contention and calling it cost. Adding the two
+# hello tests below moved the count by 2 and did not move any time I can
+# distinguish from noise. If you need a time, say how many runs it came from.
 #
 # Usage:
 #   build/bvt.ps1                 # uses seed from build-output
@@ -36,6 +51,7 @@ $BvtTests = @(
     'codex\test\handler-smoke.codex'           # effect handlers
     'codex\test\handler-dotted-discharge.codex' # a family handler (with Store) discharges its dotted members (Store.Read, Store.Write) via the sub-effect lattice; probe declares NO row, so a discharge failure surfaces as CDX2031/CDX2033, not a wrong answer
     'codex\test\cap-gpu-family.codex'          # a bare [Gpu] row is a FAMILY grant and must survive the manifest: it compiled clean and was then DENIED at the window guard (write: -1) because manifest-cap-id did not know the name "Gpu". Pins the row -> manifest -> process-cap-word path end to end
+    'codex\test\network-effect.codex'          # the Network effect has an IMPLEMENTATION. fetch/post/resolve-dns were effect operations nothing implemented: a call type-checked clean and died at the end of emit with CDX2040, and no test called one so the battery could not see it. This runs headless (resolve-dns on a dotted quad never touches the wire) and still has to LINK, so a removed implementation stops it compiling. It also pins the https refusal TEXT, which is a diagnostic and therefore a feature: the old one said "TLS is not implemented here" thirty lines above a working TLS 1.3 handshake in the same chapter
     'codex\test\linear-smoke.codex'            # linear types (consume, freeze)
     'codex\test\mutable-smoke.codex'           # mutable records, field mutation
     'codex\test\try-smoke.codex'               # try/retry/fallback
@@ -44,9 +60,28 @@ $BvtTests = @(
     'codex\test\unit-smoke.codex'              # unit type
 
     # --- Library correctness (not exercised by self-compile) ---
-    'codex\test\hamt-test.codex'               # HAMT — backs Set and KvStore
+    'codex\test\hamt-test.codex'               # HAMT -- backs Set and KvStore
     'codex\test\sort-test.codex'               # sort with custom comparators
     'codex\test\crypto-test.codex'             # AES, ChaCha20
+
+    # --- The authentication the release advertises ---
+    # None of this is reachable from the compiler, so the fixed point cannot
+    # see any of it. Until these landed here the whole claim -- TLS 1.3 with
+    # X.509 authentication, two curves, two digests, a real chain verified to
+    # its root -- rested on tests run BY HAND, once, by whoever wrote them.
+    # Every one of these is a signature check, and a signature check that
+    # wrongly answers True is the one bug in the tree with no blast radius
+    # short of the whole trust story.
+    'codex\test\ecdsa-p256.codex'              # P-256 against published vectors
+    'codex\test\ecdsa-p384.codex'              # P-384 curve arithmetic, the second curve
+    'codex\test\ecdsa-sha384.codex'            # the CURVE and the DIGEST are independent choices. This asserts a signature must VERIFY, and requires the wrong-digest entry point to FAIL -- without that second half the file passes unchanged if both entry points quietly hash SHA-256, which is how the FIPS 186-4 defect it found (z is the leftmost min(N,outlen) bits, not the digest reduced mod n) stayed invisible
+    'codex\test\x509-parse.codex'              # the certificate parser, including the key-algorithm arms whose catch-all silently absorbed KeyEcdsaP384 and stopped every P-384 certificate parsing three stages downstream
+    'codex\test\ecdsa-cert.codex'              # the REAL github.com chain, verified through its P-384 root. A fixture chain proves the arithmetic; a chain somebody else issued proves the parser agrees with the world
+    'codex\test\real-cert.codex'               # RFC 6125 hostname matching, with no commonName fallback
+    'codex\test\tls-cv-schemes.codex'          # CertificateVerify under every scheme the ClientHello offers, signed by OpenSSL and checked here. Also the only thing making the offered set and the accepted set agree: they are written in two places and nothing else compares them
+    'codex\test\tls-test.codex'                # the ClientHello we SEND, decoded back and pinned by SIZE (len 169, size 174). Everything above checks what we ACCEPT; nothing checked what we OFFER, and the offered set has no other reader. Adding one signature scheme to tls-ext-sig-algs is one extra uint16, so the P-384 scheme point at main 11688 moved both numbers and left this red on main while the gate that shipped it stayed green. Also the only BVT coverage of x25519 and of the record layer
+    'codex\test\dtls-hello.codex'              # the same size pins on the other transport (ch1 146, ch2 160, and ch2 must be the LONGER -- the second hello echoes the server's cookie), moved by the same 2 bytes and red for the same reason. The assertion that earns its keep is dtls-is-hrr: in DTLS 1.3 a HelloRetryRequest is not a message type, it is a ServerHello carrying a magic random, so a receiver that switches on message type never sees one and the cookie exchange -- the whole DoS defence -- silently never engages. It also requires an extension list truncated past its own length to be REFUSED rather than read, because garbage read there becomes a shared secret
+    'codex\test\web-chain.codex'               # the seven shipped trust anchors, and a live www.digicert.com chain walked to one of them with the hostname checked. Runs offline -- the chain is embedded. It asserts supplied, parsed AND can-verify separately, because a root that parses is not a root that can be used: both P-384 roots parsed cleanly for the whole time they were deliberately excluded, typing KeyEcdsaOther with x509-can-verify False. Sabotaging that predicate moves the can-verify line alone and leaves supplied/parsed at 7
 
     # --- Codegen stress (caught regressions the fixed point misses) ---
     'codex\test\lir-selector-smoke.codex'      # the LIR selector's correctness shapes, one boot: a shadowed-global call that must go indirect not direct (answered -1 for 7), a join-into-join coalesce that must refuse or the structural verifier halts a valid program (CDX9007), a compound-accumulator tail call the tree emitter miscompiles and the selector gets right (9 for 8), the 5-param col-hue parallel-move clash (red as yellow), and the result-is-a-use coalesce (RAX garbage for the result). Every one is a wrong ANSWER the fixed point cannot see; pinned by .expected
@@ -54,7 +89,11 @@ $BvtTests = @(
     'codex\test\tco-nested-if.codex'           # TCO if-chain with a nested-if arm body; guards the jmp-end elision miscompile that silently skipped the arm (CL 6430)
     'codex\test\tco-shuffle-spill.codex'       # the tree emitter's tail-call shuffle with a SPILLED parameter. Repro of the miscompile fixed at main 10065; the program hung forever and the fixed point, all nine benches and the BVT stayed green through it. The shuffle planner has no verifier and roughly three quarters of every compile is emitted by it, so these two repros are the only thing standing under it
     'codex\test\tco-direct-arg-reads.codex'    # the same planner, the other bug: an argument that reads a parameter the shuffle has already overwritten. Repro of the miscompile fixed at main 10099, which answered 1001 where 101 is correct, with no diagnostic and no fault
-    'codex\test\real-negate.codex'             # unary minus on a Real: the compiler does no float math, so the fixed point cannot see this. -(f x) where f returns Real was typed Integer, which broke foreword math Matrix4 and with it the whole 3D stack (engine quire, globe, spark)
+    'codex\test\ops\real-approx-equality.codex' # `~` and `~0` on an f32. Real has no `==` (CDX2085 refuses it), so these two ARE its equality, and neither took a type: the ordinal transform broadcasts the sign with `sar 63` while an f32's sign sits at bit 31, so every single looked positive. Measured before the fix: f32 `-0 ~ +0` answered False while the identical f64 pair answered True. The f64 lines are the control -- they are what says the defect was about width rather than about the comparison
+    'codex\test\ops\real-mode-opening.codex'   # an `opening` that RETURNS a moded Real. emit-opening-result-print matched RealTy alone and its tail emits nothing, so such a program printed NO OUTPUT for as long as the modes existed. real-mode-show cannot see it: `show` inside an act block is a different walk that was always right, so a test that PRINTS a moded Real is not a test that RETURNS one
+    'codex\test\ops\real-mode-fields.codex'    # the sibling walk, emit-opening-print-field, whose tail is emit-inline-itoa-and-print -- so a moded Real field printed its BIT PATTERN, a plausible number in the right place. Must be a constructor, not a record: emit-opening-result-print has no RecordTy arm, so a record-returning opening prints nothing whatever its fields are (measured). FIRED: removing the f32 widen makes the approximate field print 0.0 instead of 2.5 and leaves the three f64 fields untouched
+    'codex\test\ops\real-approx-modes.codex'   # the two combinations the type could not spell before the Real collapse: f32 SATURATING and f32 trapping. Precision and safety are independent, and the emitter's finite-range test uses four constants that differ by width (shl 1/shr 53 against 2047 for a double, shl 33/shr 56 against 255 for a single). Run f32 through the f64 constants and the exponent read is nonsense, the guard never fires, and saturating silently stops saturating. FIRED: forcing the f64 constant moves both overflow lines from 2139095039 (largest finite single) to 2139095040 (infinity) and moves nothing else. Both modes already shipped once ignoring infinity entirely because every operand in their tests was finite
+    'codex\test\ops\real-negate.codex'         # unary minus on a Real: the compiler does no float math, so the fixed point cannot see this. -(f x) where f returns Real was typed Integer, which broke foreword math Matrix4 and with it the whole 3D stack (engine quire, globe, spark). Lives in ops\, the operator-correctness axis
 
     # --- Proof system (normalizer soundness) ---
     'codex\test\normalize-eq.codex'            # Stage 3 defeq normalizer: delta/iota reduce flip On -> Off, id-bit On -> On (proofs check by Refl)
@@ -122,7 +161,7 @@ if ($CodexCdx) {
 
 $stage0 = Join-Path (Resolve-Path .).Path 'build-output\bare-metal\Codex.cdx'
 if (-not (Test-Path $stage0)) {
-    Write-Host "ERROR: No kernel at $stage0 — run build/build.ps1 first." -ForegroundColor Red
+    Write-Host "ERROR: No kernel at $stage0 -- run build/build.ps1 first." -ForegroundColor Red
     exit 1
 }
 

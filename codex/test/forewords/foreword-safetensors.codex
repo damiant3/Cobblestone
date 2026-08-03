@@ -1,0 +1,130 @@
+Chapter: SafeTensorsFormat
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites AI chapter Tensor
+  cites AI chapter SafeTensors
+
+Section: Byte Building
+
+  text-bytes : Text, Integer, Integer, List Integer -> List Integer
+  text-bytes (s) (i) (n) (acc) =
+   if i >= n then acc
+   else text-bytes s (i + 1) n (list-push acc (to-unicode (char-code (char-at s i))))
+
+  u64-le : Integer, Integer, Integer, List Integer -> List Integer
+  u64-le (v) (i) (n) (acc) =
+   if i >= n then acc
+   else u64-le (v / 256) (i + 1) n (list-push acc (v - v / 256 * 256))
+
+  append : List Integer, List Integer, Integer, Integer -> List Integer
+  append (a) (b) (i) (n) =
+   if i >= n then a
+   else append (list-push a (list-at b i)) b (i + 1) n
+
+  wide-le : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  wide-le (vals) (i) (n) (width) (acc) =
+   if i >= n then acc
+   else wide-le vals (i + 1) n width (u64-le (list-at vals i) 0 width acc)
+
+  build-file : Text, List Integer -> List Integer
+  build-file (header) (payload) =
+   let hb = text-bytes header 0 (text-length header) []
+   in let hlen = list-length hb
+   in let prefix = u64-le hlen 0 8 []
+   in let withhdr = append prefix hb 0 hlen
+   in append withhdr payload 0 (list-length payload)
+
+Section: Operands
+
+  f32-raw : List Integer
+  f32-raw = [1065353216, 1056964608, 1073741824, 3212836864, 1069547520]
+
+  f16-raw : List Integer
+  f16-raw = [15360, 14336, 16384, 48128, 15872]
+
+  bf16-raw : List Integer
+  bf16-raw = [16256, 16128, 16384, 49024, 16320]
+
+  hdr-f32 : Text
+  hdr-f32 = "{\"t\":{\"dtype\":\"F32\",\"shape\":[5],\"data_offsets\":[0,20]}}"
+
+  hdr-f16 : Text
+  hdr-f16 = "{\"t\":{\"dtype\":\"F16\",\"shape\":[5],\"data_offsets\":[0,10]}}"
+
+  hdr-bf16 : Text
+  hdr-bf16 = "{\"t\":{\"dtype\":\"BF16\",\"shape\":[5],\"data_offsets\":[0,10]}}"
+
+  hdr-2d : Text
+  hdr-2d = "{\"t\":{\"dtype\":\"F32\",\"shape\":[2,2],\"data_offsets\":[0,16]}}"
+
+  hdr-3d : Text
+  hdr-3d = "{\"t\":{\"dtype\":\"F32\",\"shape\":[2,2,2],\"data_offsets\":[0,32]}}"
+
+  hdr-4d : Text
+  hdr-4d = "{\"t\":{\"dtype\":\"F32\",\"shape\":[2,3,2,2],\"data_offsets\":[0,96]}}"
+
+  hdr-i8 : Text
+  hdr-i8 = "{\"t\":{\"dtype\":\"I8\",\"shape\":[4],\"data_offsets\":[0,4]}}"
+
+  hdr-meta : Text
+  hdr-meta = "{\"__metadata__\":{\"fmt\":\"pt\"},\"a\":{\"dtype\":\"F16\",\"shape\":[2],\"data_offsets\":[0,4]},\"b\":{\"dtype\":\"F32\",\"shape\":[2],\"data_offsets\":[4,12]}}"
+
+Section: Rendering
+
+  show-ints : List Integer, Integer, Integer, Text -> Text
+  show-ints (xs) (i) (n) (acc) =
+   if i >= n then acc
+   else show-ints xs (i + 1) n (if i == 0 then show (list-at xs i) else acc & "," & show (list-at xs i))
+
+  ones : Integer, Integer, List Integer -> List Integer
+  ones (i) (n) (acc) = if i >= n then acc else ones (i + 1) n (list-push acc 1065353216)
+
+  load-values : Text, List Integer, Integer, Integer -> Text
+  load-values (hdr) (raw) (count) (width) =
+   let f = build-file hdr (wide-le raw 0 count width [])
+   in let t = st-load-by-name f (st-parse-file f) "t"
+   in show-ints (t.data) 0 (list-length (t.data)) ""
+
+  shape-line : Text, Integer -> Text
+  shape-line (hdr) (count) =
+   let f = build-file hdr (wide-le (ones 0 count []) 0 count 4 [])
+   in let p = st-parse-file f
+   in let t = st-load-by-name f p "t"
+   in let n = list-length (t.data)
+   in "rows=" & show (t.rows) & " cols=" & show (t.cols) & " cells=" & show (t.rows * t.cols) & " values=" & show n
+      & (if t.rows * t.cols == n then " ok" else " BAD")
+
+  meta-line : SafeTensorFile, Text -> Text
+  meta-line (f) (name) =
+   when st-find-tensor f name
+   is None -> "MISSING"
+   is Just (m) -> format-st-tensor m & " off=" & show (m.stm-offset-start) & ".." & show (m.stm-offset-end)
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    act
+      let fm = build-file hdr-meta (wide-le [15360, 14336] 0 2 2 (wide-le [1065353216, 1073741824] 0 2 4 []))
+      in let pm = st-parse-file fm
+      in let fi = build-file hdr-i8 [1, 2, 3, 4]
+      in let pi = st-parse-file fi
+      in act
+        print-line-uni ("F32  " & load-values hdr-f32 f32-raw 5 4 & "  want 1000,500,2000,-1000,1500")
+        print-line-uni ("F16  " & load-values hdr-f16 f16-raw 5 2 & "  want 1000,500,2000,-1000,1500")
+        print-line-uni ("BF16 " & load-values hdr-bf16 bf16-raw 5 2 & "  want 1000,500,2000,-1000,1500")
+        print-line-uni ("shape 1d [5]     " & shape-line hdr-f32 5)
+        print-line-uni ("shape 2d [2,2]   " & shape-line hdr-2d 4)
+        print-line-uni ("shape 3d [2,2,2] " & shape-line hdr-3d 8)
+        print-line-uni ("shape 4d [2,3,2,2] " & shape-line hdr-4d 24)
+        print-line-uni ("header len " & show (pm.st-header-len) & " data-off " & show (pm.st-data-offset) & " tensors " & show (pm.st-tensor-count) & " valid " & show (pm.st-valid))
+        print-line-uni ("metadata key is not a tensor " & show (pm.st-tensor-count == 2))
+        print-line-uni ("meta a " & meta-line pm "a")
+        print-line-uni ("meta b " & meta-line pm "b")
+        print-line-uni ("absent " & meta-line pm "nope")
+        print-line-uni ("short file " & format-st-file (st-parse-file [1, 2, 3]))
+        print-line-uni ("garbage header " & format-st-file (st-parse-file (build-file "not json" [])))
+        print-line-uni ("dtype names " & st-dtype-name st-dtype-f32 & " " & st-dtype-name st-dtype-f16 & " " & st-dtype-name st-dtype-bf16 & " " & st-dtype-name st-dtype-i32 & " " & st-dtype-name st-dtype-i8 & " " & st-dtype-name st-dtype-unknown)
+        print-line-uni ("PINS A DEFECT I8 parses " & meta-line pi "t")
+        print-line-uni ("PINS A DEFECT I8 loads " & show (list-length ((st-load-by-name fi pi "t").data)) & " values of 4")
+      end
+    end

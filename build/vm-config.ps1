@@ -210,12 +210,20 @@ function Format-CrashReport {
     $report.Add($header)
     $report.Add("  RIP   0x$($rip.ToString('X8').PadLeft(8,'0'))  $ripSym")
 
-    foreach ($regName in @('callR','RBX','R12','R13','R14','R10','RDI','RSI','R15')) {
+    # callR and RBP are stack addresses, not code addresses. callR in particular
+    # is the interrupted RSP despite its name, read from offset 64 of the
+    # handler's stack. Resolving either to a symbol can only ever be the value
+    # landing inside some function's byte range by coincidence, and printing
+    # that coincidence is the same failure the CR2 guard above exists to stop.
+    foreach ($regName in @('callR','RBP','RBX','R12','R13','R14','R10','RDI','RSI','R15')) {
         if ($excLine -match "$regName=([0-9a-fA-F]+)") {
             $val = [Convert]::ToInt64($matches[1], 16)
-            $sym = Resolve-Rip -Rip $val -Kernel $Kernel
+            $isStackPtr = $regName -eq 'callR' -or $regName -eq 'RBP'
+            $sym = if ($isStackPtr) { $null } else { Resolve-Rip -Rip $val -Kernel $Kernel }
             $hex = "0x$($val.ToString('X8').PadLeft(8,'0'))"
             $extra = ''
+            if ($regName -eq 'callR') { $extra = '  (interrupted RSP)' }
+            if ($regName -eq 'RBP')   { $extra = '  (frame chain root)' }
             if ($regName -eq 'R10') {
                 $heapMB = [math]::Round(($val - 0x600000) / 1048576.0, 1)
                 $extra = "  (heap @ $heapMB MB)"
@@ -224,6 +232,29 @@ function Format-CrashReport {
             else { $report.Add("  $($regName.PadRight(5)) $hex$extra") }
         }
     }
+    # F[] lines are an exact walk of the RBP frame chain, emitted by the guest
+    # (emit-exc-frame-walk). Every address is the return slot of a frame reached
+    # by following the chain, so unlike the S[] scan below there is nothing to
+    # filter: an entry that fails to resolve means the chain broke there, which
+    # is a finding rather than noise, and saying so beats dropping it silently.
+    $frames = [System.Collections.Generic.List[string]]::new()
+    foreach ($sl in $ExcLines) {
+        if ($sl -match 'F\[([0-9a-fA-F]+)\]=([0-9a-fA-F]+)') {
+            $fidx = [Convert]::ToInt32($matches[1], 16)
+            $fval = [Convert]::ToInt64($matches[2], 16)
+            $fsym = Resolve-Rip -Rip $fval -Kernel $Kernel
+            if (-not $fsym) { $fsym = '<unresolved -- frame chain broke here>' }
+            $frames.Add("    #$fidx 0x$($fval.ToString('X8').PadLeft(8,'0'))  $fsym")
+        }
+    }
+    if ($frames.Count -gt 0) {
+        $report.Add("  Stack trace (frame chain):")
+        foreach ($f in $frames) { $report.Add($f) }
+        return $report
+    }
+    # No frame chain in this dump, so fall back to the old scan. It prints any
+    # stack qword that lands inside some function's byte range, which a stale
+    # local or a plain integer can do by coincidence. Hence the label.
     for ($i = 1; $i -lt $ExcLines.Count; $i++) {
         $sl = $ExcLines[$i]
         if ($sl -match 'S\[([0-9a-fA-F]+)\]=([0-9a-fA-F]+)') {

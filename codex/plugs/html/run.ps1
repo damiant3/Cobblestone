@@ -24,7 +24,7 @@ Write-Host "[html-run] IR: $((Get-Item $IrFile).Length) bytes (CCE)"
 # Unicode round-trip, no external DCE step.
 $irBytes = [System.IO.File]::ReadAllBytes($IrFile)
 
-# Phase 3: Build input — CCE mode header + CCE IR + null terminator
+# Phase 3: Build input -- CCE mode header + CCE IR + null terminator
 $inputFile = [System.IO.Path]::GetTempFileName()
 $hdrList = [System.Collections.Generic.List[byte]]::new()
 foreach ($ch in "IR-CCE".ToCharArray()) {
@@ -57,7 +57,7 @@ $raw = [System.IO.File]::ReadAllText($outFile)
 $lines = $raw -split "`n" | Where-Object { $_ -notmatch '^(HEAP|WD|STACK|PM):' -and $_.Trim().Length -gt 0 }
 $html = ($lines -join "`n")
 # Strip any leading control bytes the plug emits before the document
-# (e.g. a stray CCE newline 0x01) — they render as .notdef glyphs in browsers.
+# (e.g. a stray CCE newline 0x01) -- they render as .notdef glyphs in browsers.
 $html = $html -replace '^[\x00-\x1f]+', ''
 [System.IO.File]::WriteAllText($Out, $html, [System.Text.UTF8Encoding]::new($false))
 Write-Host "[html-plug] OK: $Out ($($html.Length) chars)"

@@ -12,8 +12,8 @@ A screenshot and image annotation tool with a left-side tool palette, central ca
 
 ## Completeness
 
-35% — Shell and layout are well-defined. Only the Capture button toggles the canvas between empty-state and placeholder. All annotation tools, zoom, save, copy, share, and format selection are structurally present but return 0.
+35% -- Shell and layout are well-defined. Only the Capture button toggles the canvas between empty-state and placeholder. All annotation tools, zoom, save, copy, share, and format selection are structurally present but return 0.
 
 ## Codex Conformance
 
-Full — Entirely Codex. Pixel/OS capture operations would be backend plug responsibilities.
+Full -- Entirely Codex. Pixel/OS capture operations would be backend plug responsibilities.
