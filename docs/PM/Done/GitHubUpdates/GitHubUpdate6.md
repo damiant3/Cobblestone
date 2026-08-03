@@ -1,4 +1,4 @@
-# GitHub Update 6 — CL 745 to CL 783 (2026-05-03)
+# GitHub Update 6 -- CL 745 to CL 783 (2026-05-03)
 
 Previous update: CL 739 (GitHubUpdate5).
 This update: CL 783.
@@ -25,7 +25,7 @@ the blocking semantics end-to-end.
 - `process-status` + `process-count` builtins (CL 745)
 - Mini-shell sample: interactive process management (CL 746)
 - `process-spawn-with-heap`: spawn a child with a user-specified heap
-  size (CL 770) — child gets `[heap_size bytes][stack]` carved from
+  size (CL 770) -- child gets `[heap_size bytes][stack]` carved from
   the parent's heap frontier
 
 ## Identity Infrastructure
@@ -43,7 +43,7 @@ Full per-process identity system (CLs 755-768):
 - Integration tests: capability gating, mutual authentication,
   set-proc without admin cap (CLs 767-768, 781)
 
-## Verifier Phase 4 — Effect Metadata
+## Verifier Phase 4 -- Effect Metadata
 
 CDX binary format extended with effect metadata section (CL 775).
 The previously-reserved header fields at offsets 152-167 are now
@@ -83,7 +83,7 @@ O(n² log n) intermediate lists via list-snoc copies; the new quicksort
 allocates O(1).
 
 Also removed dead `ProvLowered` provenance variant and the
-`lowered-span` function from the lowering phase — set on every IR node
+`lowered-span` function from the lowering phase -- set on every IR node
 but never matched anywhere.
 
 Lower phase deck usage: **103.6 MB → 78.9 MB** (24% reduction).
@@ -99,7 +99,7 @@ All three gates green at CL 783:
 | BS3 (fixed point) | 1,918,472 bytes CDX, byte-identical |
 | Sweep | 174 pass / 0 fail / 16 skip / 192 total |
 
-Seed: `seed/Codex.cdx` — 1,918,472 bytes, signed.
+Seed: `seed/Codex.cdx` -- 1,918,472 bytes, signed.
 
 ## CL Summary
 
@@ -109,20 +109,20 @@ Seed: `seed/Codex.cdx` — 1,918,472 bytes, signed.
 | 746 | Cam | mini-shell sample |
 | 747 | Nib | blocking IPC channels |
 | 748 | Cam | blocking producer-consumer test |
-| 751 | Nib | signed CDX — Ed25519 in build pipeline |
+| 751 | Nib | signed CDX -- Ed25519 in build pipeline |
 | 752 | Nib | docs refresh |
 | 754 | Cam | bootable disk image + PIT timer |
 | 755 | Nib | identity infrastructure |
 | 756 | Nib | seed rebuild for identity |
 | 757 | Nib | first-boot ceremony |
-| 760 | — | doc: record and replay |
+| 760 | -- | doc: record and replay |
 | 761 | Nib | identity-set-proc builtin |
 | 762 | Nib | identity-get-proc builtin |
 | 763 | Nib | trust lattice + identity tests |
 | 764 | Nib | boot stage markers on COM2 |
 | 765 | Nib | seed rebuild for CLs 757-764 |
 | 766 | Nib | milestone history update |
-| 767 | Nib | identity integration — cap gate test |
+| 767 | Nib | identity integration -- cap gate test |
 | 768 | Nib | verifier + identity integration |
 | 769 | Nib | verifier service test |
 | 770 | Nib | process-spawn-with-heap + in-place Ed25519 |
@@ -130,7 +130,7 @@ Seed: `seed/Codex.cdx` — 1,918,472 bytes, signed.
 | 772 | Nib | ge-from-bytes copy fix |
 | 773 | Nib | verifier-identity-test expected fix |
 | 774 | Nib | seed rebuild for CLs 766-773 |
-| 775 | Nib | verifier Phase 4 — effect metadata |
+| 775 | Nib | verifier Phase 4 -- effect metadata |
 | 776 | Nib | cdx-binary-test expected fix |
 | 777 | Nib | verifier Phase 4 test |
 | 778 | Nib | Fuel foreword |

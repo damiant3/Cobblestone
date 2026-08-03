@@ -45,7 +45,7 @@ function Add-Chapter {
     $lines.Add(''); $lines.Add('')
 }
 
-# App chapters — only the ones needed for the HTML page
+# App chapters -- only the ones needed for the HTML page
 $AppChapters = @(
     'CvmmTypes',
     'ProductivityDb',
@@ -74,7 +74,7 @@ $body = (($preLines + $lines) -join "`n") + "`n"
 [System.IO.File]::WriteAllText($BundleSrc, $body, [System.Text.UTF8Encoding]::new($false))
 Write-Host "[cvmm-app] bundled $($preLines.Count + $lines.Count) lines, $($body.Length) bytes"
 
-# Compile through HTML plug — compile to IR, then run through plug
+# Compile through HTML plug -- compile to IR, then run through plug
 $compileScript = Join-Path $Repo 'build\compile.ps1'
 $irFile = Join-Path $OutDir 'app-ir.txt'
 & pwsh -NoProfile -File $compileScript -Src $BundleSrc -Out $irFile -Log $LogFile -IrUni

@@ -10,7 +10,7 @@ The Codex compiler is self-hosting with a proven fixed point, a proven quine dis
 and zero type debt. The reference C# compiler is **locked** (`REFERENCE-COMPILER-LOCK.md`).
 All language development now happens in `.codex` source.
 
-The L1–L4 feature port to the self-hosted pipeline is **complete**: effects, modules,
+The L1-L4 feature port to the self-hosted pipeline is **complete**: effects, modules,
 prelude, and do-notation are all wired from parser through C# emission in `.codex` source.
 
 **P1 (built-in expansion) is RESOLVED.** The root cause was a bootstrap prose-extraction
@@ -31,7 +31,7 @@ and recovered ~30 missing functions in Stage 1 output including `is_builtin_name
 | Bootstrap | Stage 1: 247,997 chars, 0 unification errors, 0 ErrorTy |
 | Type debt | **0** (filtered), 0 ErrorTy bindings |
 | Prelude | 11 modules: Maybe, Result, Either, Pair, CCE, Hamt, List, StringBuilder, Set, Queue, TextSearch |
-| Quine disproof | `samples/expr-calculator.codex` — 10/10 PASS |
+| Quine disproof | `samples/expr-calculator.codex` -- 10/10 PASS |
 | Ref compiler | 🔒 Locked at `6d8bb2c` on 2026-03-19 |
 
 ### Self-Hosted Pipeline Coverage
@@ -59,18 +59,18 @@ The `.codex` compiler now handles:
 | # | Task | Status | What |
 |---|------|--------|------|
 | P1 | **Self-hosted built-in expansion** | ✅ Done | Root cause: bootstrap `ExtractCodeBlocks` required `indent >= 4` but source uses 2-space indent. Fix: `indent >= 2`. Stage 1 now inlines all built-ins. Fixed point verified. |
-| L7 | **Better error messages** | ✅ Done | "Did you mean X?" via `StringDistance.FindClosest` ✅. Readable type formatting ✅. Related spans ✅. Error cap at 20 ✅. ErrorType cascade suppression ✅. Parser error recovery with 18 tests (CDX1021–CDX1032) ✅. |
+| L7 | **Better error messages** | ✅ Done | "Did you mean X?" via `StringDistance.FindClosest` ✅. Readable type formatting ✅. Related spans ✅. Error cap at 20 ✅. ErrorType cascade suppression ✅. Parser error recovery with 18 tests (CDX1021-CDX1032) ✅. |
 | R5 | **Build system** | ✅ Done | `codex build <dir>` compiles multi-file projects via `codex.project.json`. Dependency resolution ✅. Multi-target (`--targets cs,js,rust`) ✅. Incremental builds (`--incremental`) ✅. Verified: `codex build Codex.Codex` compiles 26 files successfully. |
 | M1 | **Self-hosted import/module system** | ✅ Done | CST `ImportDecl`, parser `parse-imports`, AST `AImportDecl`, desugarer threading, `resolve-module-with-imports` for cross-file name resolution, `compile-with-imports` pipeline entry point. Bootstrap verified: 458 defs, 0 errors. |
 | R2 | **Standard library** | ✅ Done | 11 prelude modules (1,208 lines): Maybe, Result, Either, Pair, List, CCE (character encoding), Hamt (persistent map), StringBuilder, Set, Queue, TextSearch. Auto-discovered by `PackageResolver`. |
 | R4 | **Package management** | ✅ Done | `PackageResolver` with local cache, version constraints (`*`, exact, prefix, `>=`). CLI: `codex add/remove/pack/packages`. Lock files. Auto-prelude for non-prelude projects. |
-| E1 | **Exit criterion: real programs** | ✅ Done | `samples/word-freq/` — 3-file word frequency counter (139 lines). Multi-file build, cross-file defs, records, variants, pattern matching, effects, do-notation. Compiles and runs correctly via `codex build`. |
+| E1 | **Exit criterion: real programs** | ✅ Done | `samples/word-freq/` -- 3-file word frequency counter (139 lines). Multi-file build, cross-file defs, records, variants, pattern matching, effects, do-notation. Compiles and runs correctly via `codex build`. |
 
 ### Near Term: Make the Language Practical
 
 | # | Task | Status | What |
 |---|------|--------|------|
-| E1 | **Exit criterion: real programs** | ✅ Done | `samples/word-freq/` — 3-file word frequency counter (139 lines). Multi-file build, cross-file defs, records, variants, pattern matching, effects, do-notation. Compiles and runs correctly via `codex build`. |
+| E1 | **Exit criterion: real programs** | ✅ Done | `samples/word-freq/` -- 3-file word frequency counter (139 lines). Multi-file build, cross-file defs, records, variants, pattern matching, effects, do-notation. Compiles and runs correctly via `codex build`. |
 | Perf-P1 | **Lexer zero-alloc optimization** | ✅ Done | Added `char-code-at` builtin (reference compiler lock override, user-authorized). Rewrote self-hosted lexer: `peek-char` (Text, alloc) → `peek-code` (Integer, zero-alloc). All character comparisons now integer ==. Projected: lexer 800× → ~5×, overall 28× → ~4×. |
 
 ### Medium Term: Library & Runtime
@@ -78,7 +78,7 @@ The `.codex` compiler now handles:
 | # | Task | Status | What |
 |---|------|--------|------|
 | R2 | **Standard library** | ✅ Done | 11 modules (1,208 lines): Maybe, Result, Either, Pair, List, CCE, Hamt, StringBuilder, Set, Queue, TextSearch. Covers option types, error handling, persistent maps, string building, text search, functional queues and sets. |
-| R3 | **FFI / host interop** | ⏭️ Scratched | Deferred — exercise for the user. Per-backend with common interface. |
+| R3 | **FFI / host interop** | ⏭️ Scratched | Deferred -- exercise for the user. Per-backend with common interface. |
 | R4 | **Package management** | ✅ Done | `PackageResolver` with local cache (`~/.codex/packages/`), version matching (`*`, exact, prefix, `>=`). CLI: `codex add/remove/pack/packages`. Lock files. Auto-prelude discovery for all non-prelude projects. |
 | R6 | **Native executable bootstrap** | ⬜ Unblocked | Compile Codex compiler to native `.exe` via IL emitter. P1 resolved; depends on R2. |
 
@@ -108,7 +108,7 @@ Now ──→ E1 (real program)
                     │
                     └──→ V1-V7 (the vision)
 
-Scratched: R3 (FFI) — exercise for the user
+Scratched: R3 (FFI) -- exercise for the user
 ```
 
 **R6 is now unblocked.** P1, L7, R2, R4, R5, and M1 are resolved. The remaining
@@ -146,9 +146,9 @@ Reviewed the other agent's branch. Accepted orthogonal fixes, rejected regressio
 ## Process Notes
 
 - **Reference compiler is LOCKED.** New features go in `.codex` source only. See `REFERENCE-COMPILER-LOCK.md`.
-- **Agent toolkit**: `tools/agent/` — PowerShell + Bash: `peek`, `fstat`, `sdiff`, `trun`, `gstat`.
+- **Agent toolkit**: `tools/agent/` -- PowerShell + Bash: `peek`, `fstat`, `sdiff`, `trun`, `gstat`.
 - **Cognitive dashboard**: `tools/codex-dashboard.ps1` (Windows) or `tools/codexdashboard.sh` (Linux).
 - **Session init**: `bash tools/linux-session-init.sh` for fresh Linux sessions.
 - **Dates**: Always `checkdate()` before writing dates. Never trust training data.
 - **Commits**: Working branches (`windows/<topic>`, `linux/<topic>`), review before merge.
-- **Archived history**: `docs/OldStatus/` contains M0–M13 iteration handoffs.
+- **Archived history**: `docs/OldStatus/` contains M0-M13 iteration handoffs.

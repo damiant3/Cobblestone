@@ -3,7 +3,7 @@ Chapter: Pbkdf
 
  Password-based key derivation with memory passes. Iterates
  SHA-256 over an expanding block array to resist brute-force
- attacks. NOT Argon2id — does not use BLAKE2b or the Argon2
+ attacks. NOT Argon2id -- does not use BLAKE2b or the Argon2
  G permutation. Provides memory-hard-ish password hashing using
  only primitives already in the Codex foreword. Cross-incompatible
  with RFC 9106 verifiers. A real Argon2id requires BLAKE2b which
@@ -16,9 +16,16 @@ Chapter: Pbkdf
 
 Section: Types
 
+ The second parameter is a count of blocks and each block is 32 bytes,
+ so the default 4096 is 128 KB and not 4 MB. It was called pb-memory-kb,
+ which overstated the memory this function uses by a factor of 32 to
+ anyone sizing it against a published cost. The value was always right;
+ only the name was wrong, and the note further down had the arithmetic
+ correct the whole time.
+
   PbkdfParams = record {
     pb-time-cost : Integer,
-    pb-memory-kb : Integer,
+    pb-block-count : Integer,
     pb-hash-length : Integer
   }
 
@@ -32,7 +39,7 @@ Section: Defaults
 
   pbkdf-default-params : PbkdfParams = PbkdfParams {
     pb-time-cost = 3,
-    pb-memory-kb = 4096,
+    pb-block-count = 4096,
     pb-hash-length = 32
   }
 
@@ -52,7 +59,7 @@ Section: Initial Hash
   pbkdf-initial-hash : List Integer, List Integer, PbkdfParams -> List Integer
   pbkdf-initial-hash (pw) (salt) (params) =
     let input = pb-le32 (params.pb-hash-length)
-      & pb-le32 (params.pb-memory-kb)
+      & pb-le32 (params.pb-block-count)
       & pb-le32 (params.pb-time-cost)
       & pb-le32 (list-length pw) & pw
       & pb-le32 (list-length salt) & salt
@@ -62,15 +69,34 @@ Section: Block Operations
 
   pbkdf-init-blocks : List Integer, PbkdfParams -> List Integer
   pbkdf-init-blocks (h0) (params) =
-    let block-count = params.pb-memory-kb
+    let block-count = params.pb-block-count
     in pb-expand-blocks h0 block-count 0 []
+
+ The block array is grown with list-push and NOT with `&`. Append copies the
+ whole accumulator every time, so building the array a block at a time was
+ quadratic in the block count: at the default 4096 blocks one hash needed
+ between two and three gigabytes of heap and died silently below that, with
+ exit zero and truncated output. The array itself is 4096 times 32 bytes,
+ which is 128 KB, so essentially all of that was transient copies on a heap
+ with no collector. list-push writes in place while the list is under
+ capacity and doubles when it is not, so the same array now costs its own
+ size and the default parameters run in a few hundred megabytes.
+
+ The bytes are unchanged. This is a change of how the array is assembled and
+ not of what it contains, which is what makes it safe for a function whose
+ output is a stored password hash.
 
   pb-expand-blocks : List Integer, Integer, Integer, List Integer -> List Integer
   pb-expand-blocks (seed) (count) (i) (acc) =
     if i >= count then acc
     else let block-seed = seed & pb-le32 i
     in let block = sha256-to-bytes (sha256 block-seed)
-    in pb-expand-blocks seed count (i + 1) (acc & block)
+    in pb-expand-blocks seed count (i + 1) (pb-push-block acc block 0)
+
+  pb-push-block : List Integer, List Integer, Integer -> List Integer
+  pb-push-block (acc) (block) (i) =
+    if i >= 32 then acc
+    else pb-push-block (list-push acc (list-at block i)) block (i + 1)
 
   pbkdf-fill-passes : List Integer, PbkdfParams, Integer -> List Integer
   pbkdf-fill-passes (blocks) (params) (pass) =

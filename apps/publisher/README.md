@@ -10,8 +10,8 @@ A three-column content-authoring tool for writing, formatting, and publishing lo
 
 ## Completeness
 
-40% — Layout and visual design are complete. No toolbar action does anything. Navigation does not switch documents. Publish button fires nothing. No text input is wired. Stats are hardcoded.
+40% -- Layout and visual design are complete. No toolbar action does anything. Navigation does not switch documents. Publish button fires nothing. No text input is wired. Stats are hardcoded.
 
 ## Codex Conformance
 
-Partial — Codex source; text editing and publishing would require DOM contenteditable or network plugs.
+Partial -- Codex source; text editing and publishing would require DOM contenteditable or network plugs.

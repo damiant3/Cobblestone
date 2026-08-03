@@ -7,9 +7,9 @@ Syntax highlighting, project templates, and build integration for `.codex` files
 - **Syntax highlighting** for all Codex constructs (keywords, types, operators, strings, etc.)
 - **Bracket matching** and **auto-closing pairs**
 - **Smart indentation** for `let`, `if`, `when`, `act`, `where` blocks
-- **Project template** — File > New > Project > search "Codex" > **Codex Project**
-- **Build menu integration** — Ctrl+Shift+B compiles `.codex` files via the Codex CLI
-- **Multi-target compilation** — C#, JavaScript, Rust, Python, C++, Go, Java, Ada, Fortran, COBOL, Babbage
+- **Project template** -- File > New > Project > search "Codex" > **Codex Project**
+- **Build menu integration** -- Ctrl+Shift+B compiles `.codex` files via the Codex CLI
+- **Multi-target compilation** -- C#, JavaScript, Rust, Python, C++, Go, Java, Ada, Fortran, COBOL, Babbage
 
 ## Install in Visual Studio 2022
 
@@ -45,7 +45,7 @@ dotnet tool install -g codex
 3. Select **Codex Project**
 4. Choose a name and location, click **Create**
 5. Edit `main.codex`
-6. Press **Ctrl+Shift+B** to compile — output appears in the Output window
+6. Press **Ctrl+Shift+B** to compile -- output appears in the Output window
 
 ### From the command line
 

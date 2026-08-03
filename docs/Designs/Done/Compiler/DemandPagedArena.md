@@ -1,17 +1,17 @@
-# Demand-Paged Arena — retiring the survey
+# Demand-Paged Arena -- retiring the survey
 
 **Status:** SHIPPED, 2026-07-07 (blu CLs 7190-7198, seed DDAB0BD288C93AAB).
 As built: identity demand paging over [6MB, 2GB), a ~40-instruction #PF
 handler in the common interrupt path, phase decks as fixed generous
-floors (BuildSettings, Demand Decks section), and the survey system —
+floors (BuildSettings, Demand Decks section), and the survey system --
 SurveyConfig, every survey-*-mul, the -Survey knob, the DynamicSurvey
-retry — deleted. `check-deck-overflow`/CDX9002 survive as floor guards.
+retry -- deleted. `check-deck-overflow`/CDX9002 survive as floor guards.
 One invariant discovered post-ship and recorded in the Page Fault
 Handler prose: a stack must never point into a not-present page, so
 spawn helpers pre-touch their in-heap stack carves. Stage 3 (frame
 pool, non-identity mapping, decks beyond RAM) remains future work.
 The blocking "corruption" that shelved the first attempt was never
-demand paging at all — see `DemandPagingVictory.md`.
+demand paging at all -- see `DemandPagingVictory.md`.
 **Author:** blu, 2026-07-05.
 **Supersedes (on success):** the survey multipliers, `check-deck-overflow`
 / `CDX9002`, DynamicSurvey retry, the reservation-copy dance, AND the
@@ -32,7 +32,7 @@ choice generates every memory pathology we have:
 
 - **Over-reservation waste.** CHECK reserves `S * check-mul * 1.2`.
   Measured 2026-07-05: at `check-mul=200` the CHECK bivy-hwm peaks at
-  **978 MB while CHECK actually touches a flat 156 MB** — a ~6x
+  **978 MB while CHECK actually touches a flat 156 MB** -- a ~6x
   over-commit that sets the whole compile's peak. Every phase does this
   to some degree.
 - **The overflow minefield.** Reservations are *advisory*, not walls.
@@ -68,7 +68,7 @@ resumes the faulting instruction. Consequences:
   estimates, no `headroom`. You cannot under-reserve something you do
   not reserve. Decks grow by being written.
 - **Overflow becomes impossible.** There is no ceiling to cross. The
-  arena grows until *physical frames* run out — a single, honest OOM,
+  arena grows until *physical frames* run out -- a single, honest OOM,
   detected cleanly at the one place a frame is handed out.
 - **Peak = touched, not reserved.** CHECK commits ~156 MB, not 978 MB.
   The survey over-commit stops costing memory entirely.
@@ -82,7 +82,7 @@ identity-ish substrate.
 
 ---
 
-## 3. Current system — the exact parts we touch
+## 3. Current system -- the exact parts we touch
 
 Grounding for the impl session (all verified 2026-07-05):
 
@@ -109,13 +109,13 @@ Grounding for the impl session (all verified 2026-07-05):
   `ArchitectsSketchbook.md`). `__alloc` (`X86_64Helpers.codex`
   `emit-alloc-helper`) = `mov rax,r10; add r10,rdi; <zero-fill via rep
   stosb>; ret`. Lists bump R10 inline (`X86_64Builtins.codex`); records
-  via `__alloc`. **No single alloc choke point** — which is why the
+  via `__alloc`. **No single alloc choke point** -- which is why the
   fault (hardware, catches every write) is the right layer, not
   instrumenting alloc sites.
 - **REPL heap reset** (`X86_64Chapter.codex`): between batch compiles,
   resets R10/deck-pos/heap-hwm to arena base WITHOUT zeroing (calloc in
   `__alloc` covers reuse). Demand paging must re-arm here (decommit or
-  keep-committed-and-reuse — see §5.4).
+  keep-committed-and-reuse -- see §5.4).
 - **Kernel metadata cells** at `0x7000+`; free slots at 30688/30696
   (confirmed unused) if cells are needed.
 
@@ -125,12 +125,12 @@ Grounding for the impl session (all verified 2026-07-05):
 
 Two variants; they differ in whether virtual == physical.
 
-### 4a. Identity demand-paging (Stage 1 — safety + survey death, no
+### 4a. Identity demand-paging (Stage 1 -- safety + survey death, no
 physical reduction)
 
 Keep VA == PA. Leave heap-range PDs **not-present** at boot. On a #PF
 in the heap range, set that 2 MB PD entry = `(CR2 & ~0x1FFFFF) | 0x83`
-(the identity phys) and IRETQ. No frame allocator — the frame *is* the
+(the identity phys) and IRETQ. No frame allocator -- the frame *is* the
 address.
 
 - **Gains:** overflow impossible; survey retired; HWM = touched pages;
@@ -143,7 +143,7 @@ address.
 
 This is the low-risk first landing and it already deletes the survey.
 
-### 4b. Frame-pool demand-paging (Stage 2 — physical reduction, run in
+### 4b. Frame-pool demand-paging (Stage 2 -- physical reduction, run in
 less RAM than the address space)
 
 Decouple VA from PA. Reserve a large **virtual** arena (can exceed
@@ -171,7 +171,7 @@ a 6-instruction #PF case"), prove it, then layer 4b's frame pool. 4a's
   `[1 MB..~5 MB]`, serial ring (5 MB), the page tables themselves, the
   0x7000 metadata, VGA/GOP/MMIO holes, LAPIC/IOAPIC/HPET, device DMA
   buffers (NIC rx/tx, xHCI, etc.). **These MUST stay identity+present**
-  — DMA and MMIO cannot fault-in. Enumerate them from `X86_64Boot.codex`
+  -- DMA and MMIO cannot fault-in. Enumerate them from `X86_64Boot.codex`
   cell/addr table and the MMIO map in `OperatorsManual.md`.
 - The **heap arena** `[heap-base .. ram-size]` (or a higher virtual
   top in 4b): PDs **not-present** (or present-but-reserved sentinel).
@@ -197,7 +197,7 @@ In `__interrupt_common`, in the vector<32 branch, add a vector==14 case
 BEFORE the generic dump:
 
 1. `mov rax, cr2` (fault address). Account for the CPU-pushed #PF error
-   code on the stack frame (the ISR stub / frame layout must match —
+   code on the stack frame (the ISR stub / frame layout must match --
    #PF and other error-code exceptions push an extra qword; verify the
    stub in `emit-isr-stub` handles or normalizes this).
 2. Range-check CR2 against `[heap-base, arena-top)`. If OUTSIDE →
@@ -207,7 +207,7 @@ BEFORE the generic dump:
    - 4a: `pd_entry_addr = pd_base + ((cr2 >> 21) * 8)` within the right
      PD page; store `(cr2 & ~0x1FFFFF) | 0x83`.
    - 4b: `frame = frame_pool_pop()`; if none → OOM halt; else zero the
-     2 MB frame (or rely on write-zeroed frames / defer — see §6
+     2 MB frame (or rely on write-zeroed frames / defer -- see §6
      zeroing), store `frame | 0x83` at the PD entry.
    - `invlpg [cr2]` (or reload cr3) for the mapped page.
    - IRETQ → the faulting instruction re-executes and now succeeds.
@@ -216,7 +216,7 @@ BEFORE the generic dump:
    treat as real fault → dump. Only not-present (P=0) faults grow.
 
 Keep this handler **allocation-free and re-entrant-safe** (it runs with
-interrupts off in the exception frame; it must not itself fault — touch
+interrupts off in the exception frame; it must not itself fault -- touch
 only present memory: the pool array and page tables must be
 identity+present).
 
@@ -235,7 +235,7 @@ identity+present).
 - The **reservation-copy pattern becomes unnecessary** for reclaim: you
   no longer need keep-below/scratch-above to compact scratch, because
   decommit reclaims arbitrary dead ranges directly. (Keep it only if
-  it still helps locality; likely delete it — a `Less Is More` win.)
+  it still helps locality; likely delete it -- a `Less Is More` win.)
 - **REPL reset:** decommit the whole arena back to base between batch
   compiles (4b returns all frames; 4a clears all heap PDs). One cr3
   reload. Removes the stale-data concern entirely (fresh faults zero).
@@ -245,7 +245,7 @@ identity+present).
 `__alloc` currently `rep stosb`-zeroes every block (calloc semantics,
 CL 1927) to prevent stale-data bugs. With demand-zero pages (§6), a
 freshly committed 2 MB page is already zero, so **per-alloc zeroing is
-redundant for first-touch allocations** and could be dropped — a real
+redundant for first-touch allocations** and could be dropped -- a real
 hot-path win (the poison-alloc infrastructure proves all fields are
 initialized, so zero-fill is a safety net, not a dependency). CAUTION:
 reused pages (post-compact re-commit, REPL) must still be zeroed on
@@ -254,24 +254,24 @@ measure. This is a *bonus* the design unlocks, not a requirement.
 
 ---
 
-## 6. Performance — perf matters (safety first, but not at any cost)
+## 6. Performance -- perf matters (safety first, but not at any cost)
 
 - **TLB:** keep **2 MB pages**. A compile touches hundreds of MB; 2 MB
   entries cover it in ~hundreds of TLB slots, 4 KB would thrash (512x
   more entries than the TLB holds). Do NOT globally switch to 4 KB.
 - **Fault cost:** a 2 MB demand fault happens once per 2 MB of growth.
-  For a ~1 GB peak that is ~500 faults per compile — negligible vs.
+  For a ~1 GB peak that is ~500 faults per compile -- negligible vs.
   millions of allocations. Minor faults are ~hundreds of cycles; ~500
   of them is invisible. (Contrast: the prologue check would have paid 3
-  instructions on *every call*, forever — this pays ~500 faults total.)
+  instructions on *every call*, forever -- this pays ~500 faults total.)
 - **Zeroing cost:** committing a 2 MB page zeroes 2 MB. ~500 pages = ~1
-  GB zeroed once — but we ALREADY zero every alloc in `__alloc`, so net
+  GB zeroed once -- but we ALREADY zero every alloc in `__alloc`, so net
   zeroing likely *drops* (see §5.5). If zeroing on fault is too spiky,
   zero lazily / use non-temporal stores / rely on `__alloc`'s existing
   zero for sub-page and demand-zero only reused frames.
 - **A/D bits, huge-page split:** not needed initially. If a future
   feature needs 4 KB protection (e.g. W^X on the code buffer), split
-  that one 2 MB PD into a PT on demand — localized, doesn't affect the
+  that one 2 MB PD into a PT on demand -- localized, doesn't affect the
   heap's 2 MB mapping.
 - **SMP:** `CoreHeap` splits the arena per core today. Demand paging is
   per-core-friendly: each core faults its own range; the frame pool
@@ -289,7 +289,7 @@ huge reservations).
 - **Overflow:** structurally impossible. There is no reservation to
   exceed; growth is commit-on-touch until frames exhaust.
 - **OOM:** exactly one detection site (frame pool empty), clean halt
-  with a diagnostic — not a corruption, not a silent over-run.
+  with a diagnostic -- not a corruption, not a silent over-run.
 - **Real bugs still crash loudly:** faults OUTSIDE the arena, or
   protection faults (P=1 error code), fall through to the existing
   `!EXC` dump unchanged. We do not weaken genuine fault detection.
@@ -298,7 +298,7 @@ huge reservations).
   frame, and never grow a protection fault. A bug here bricks boot with
   no diagnostic (double-fault). Treat it like the interrupt code it is:
   minimal, audited, tested first in isolation (see §8).
-- **DMA/MMIO must stay identity+present** — a device writing to a
+- **DMA/MMIO must stay identity+present** -- a device writing to a
   not-present page faults in a context that cannot be resumed. Enumerate
   and pin every device buffer.
 
@@ -307,34 +307,34 @@ huge reservations).
 ## 8. Staged implementation plan (for the fresh session)
 
 Each stage is independently gateable (build + fixed point + battery +
-poison + escape + old/new corpus binary-differential — the rigor that
+poison + escape + old/new corpus binary-differential -- the rigor that
 vetted the LOWER cut).
 
-1. **Stage 0 — instrument & prove the hook.** Add the vector-14
+1. **Stage 0 -- instrument & prove the hook.** Add the vector-14
    intercept that, for now, just *logs* CR2 and falls through (no
    mapping). Confirm the error-code frame layout is right and we can
    read CR2 in the handler without disturbing the existing dump. Boot,
    run battery. (No behavior change yet.)
-2. **Stage 1 — identity demand paging (4a).** Stop pre-filling heap
+2. **Stage 1 -- identity demand paging (4a).** Stop pre-filling heap
    PDs; make the vector-14 case map the identity 2 MB PD entry +
    resume. Delete NOTHING yet (survey still reserves, but reservations
    are now just address bumps over demand-mapped space). Verify: the
-   `check-mul` minefield is gone (25/15/10 all just work — faults grow
+   `check-mul` minefield is gone (25/15/10 all just work -- faults grow
    the deck). Full gate. This alone makes low `check-mul` safe and lets
    us delete the guard-page / prologue-check ideas.
-3. **Stage 2 — retire the survey.** Remove `survey-*-mul` inputs from
+3. **Stage 2 -- retire the survey.** Remove `survey-*-mul` inputs from
    `build`/phases; reserve address space liberally (or grow purely on
    write). Delete `check-deck-overflow`/`CDX9002`, DynamicSurvey retry
    in `compile.ps1`, the plug `check-mul:200` offset, and the
-   `check-mul=40` change (CL 7130) — all obsolete. Full gate.
-4. **Stage 3 — frame pool (4b) + decommit.** Add the per-core 2 MB
+   `check-mul=40` change (CL 7130) -- all obsolete. Full gate.
+4. **Stage 3 -- frame pool (4b) + decommit.** Add the per-core 2 MB
    frame allocator; `phase-compact` and REPL reset decommit + return
    frames. Measure peak *physical* RAM (should drop to touched-peak).
    Consider dropping `__alloc` zero-fill for first-touch (§5.5),
    measured. Full gate + a real "compile in `-mem 512`" test.
-5. **Stage 4 — simplify.** Delete the reservation-copy pattern where it
+5. **Stage 4 -- simplify.** Delete the reservation-copy pattern where it
    only existed for reclaim; re-evaluate hash-consing/memo copiers (they
-   were fighting retention that decommit now handles — some may become
+   were fighting retention that decommit now handles -- some may become
    unnecessary; keep the ones that also cut *touched* pages). `Less Is
    More`.
 
@@ -342,7 +342,7 @@ Stop after any stage with a shippable win; each is a milestone.
 
 ---
 
-## 8b. Cross-architecture & IoT — build it arch-parameterized
+## 8b. Cross-architecture & IoT -- build it arch-parameterized
 
 This design must NOT ship as "x86 demand paging." It is one instance of
 a general principle: **commit-on-fault where the hardware has an MMU;
@@ -352,7 +352,7 @@ is per-target.
 
 **Scope now:** the compiler runs bare-metal only on x86-64 (codex-vm).
 The plug pipeline that cross-compiles FOR arm64/riscv/IoT (x86 seed ->
-IR -> plug -> ELF) is UNAFFECTED — this changes the compiler's own
+IR -> plug -> ELF) is UNAFFECTED -- this changes the compiler's own
 runtime, not how it emits target code. So near-term impact on
 ARM/RISC-V/IoT targets is zero.
 
@@ -391,13 +391,13 @@ only implementation.
 
 ## 9. References (modern practice, confirmed 2026-07-05)
 
-- Ryan Fleury, "Untangling Lifetimes: The Arena Allocator" — reserve
+- Ryan Fleury, "Untangling Lifetimes: The Arena Allocator" -- reserve
   large, commit on demand; the canonical modern arena design.
   https://www.dgtlgrove.com/p/untangling-lifetimes-the-arena-allocator
-- MS Win32 `VirtualAlloc` — `MEM_RESERVE` vs `MEM_COMMIT`; physical
+- MS Win32 `VirtualAlloc` -- `MEM_RESERVE` vs `MEM_COMMIT`; physical
   backing deferred until touch.
   https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualalloc
-- "Virtual Memory Tricks" (gamedeveloper.com) — reserve-commit arena
+- "Virtual Memory Tricks" (gamedeveloper.com) -- reserve-commit arena
   idioms. https://www.gamedeveloper.com/programming/virtual-memory-tricks
 - Demand paging / #PF mechanics + minor-vs-major faults:
   https://kindatechnical.com/operating-systems/lesson-59-demand-paging.html
@@ -412,7 +412,7 @@ If Stages 1-3 land: `survey-headroom`, `survey-check-mul`,
 `survey-lift-mul`, `survey-inline-mul`, all the `-base`/`-keep-mul`
 constants, `SurveyConfig`, `check-deck-overflow`, `CDX9002`, the
 `compile.ps1` DynamicSurvey retry loop + `$surveyDefaultMul` mirror, the
-plug `check-mul:200` offset, and the reservation-copy machinery — all
+plug `check-mul:200` offset, and the reservation-copy machinery -- all
 deleted. The "survey before you allocate" virtue
 (`VisionAndVirtues.md` #12) gets rewritten: **don't survey; commit on
 demand.** The compiler stops guessing how much memory it needs and
@@ -420,7 +420,7 @@ simply uses what it touches.
 
 ---
 
-## Appendix — session context (2026-07-05, blu)
+## Appendix -- session context (2026-07-05, blu)
 
 This design fell out of the IR-bloat campaign (`ir-bloat-campaign.md`):
 - The LOWER transient cut (main CL 7127) landed the 66 MB retained win.

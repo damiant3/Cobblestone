@@ -1,4 +1,4 @@
-# Game Balance — Critical Analysis and Design Responses
+# Game Balance -- Critical Analysis and Design Responses
 
 ## Purpose
 
@@ -15,8 +15,8 @@ pace, meaningful player decisions, and blockchain-auditable state.
 
 **The problem:** Approximately 20% of MTG games are meaningfully
 affected by drawing too many lands (flood) or too few (screw). The
-mana system forces a deckbuilding tension — adding lands reduces
-screw but increases flood — that no ratio fully resolves. Games
+mana system forces a deckbuilding tension -- adding lands reduces
+screw but increases flood -- that no ratio fully resolves. Games
 decided by resource variance feel like coin flips.
 
 **Community defense:** The mana system creates meaningful deckbuilding
@@ -64,7 +64,7 @@ prefer drawing second for the extra card.
 ### 1.3 Non-Games
 
 **The problem:** Games where one player never meaningfully
-participates — kept a marginal hand, drew poorly, or faced an
+participates -- kept a marginal hand, drew poorly, or faced an
 unanswerable opening. Community estimates: 10-15% of competitive MTG
 games are effectively decided before either player makes a meaningful
 choice.
@@ -77,7 +77,7 @@ variance being essential to MTG's appeal.
 **Counter-argument:** Professional players express frustration that at
 the highest levels, too many matches hinge on draw quality rather
 than decision-making. Frank Karsten's statistical analysis shows top
-players maintain 60-65% win rates — well above chance, but well below
+players maintain 60-65% win rates -- well above chance, but well below
 what a purely skill-based game would produce.
 
 ### 1.4 Game Length and Pace
@@ -109,7 +109,7 @@ players rises continuously.
 **Community defense:** Wizards uses "New World Order" to keep commons
 simple. Complexity at higher rarities serves enfranchised players.
 
-**Design insight:** Digital games can hide complexity — the system
+**Design insight:** Digital games can hide complexity -- the system
 handles triggers and interactions automatically. The AI supervisor
 model is uniquely positioned here: the AI resolves the complex
 interactions, the player sees the outcome.
@@ -119,7 +119,7 @@ interactions, the player sees the outcome.
 **The problem:** The stack (LIFO resolution) and priority system are
 powerful but intimidating. Casual players frequently misunderstand
 interaction timing. Digital implementations (Arena, MTGO) handle it
-imperfectly — auto-pass telegraphs information, manual control is
+imperfectly -- auto-pass telegraphs information, manual control is
 clunky.
 
 **Community defense:** The stack is what makes MTG's interaction model
@@ -156,7 +156,7 @@ of matches. The smaller the skill gap, the more luck dominates.
 **Design goal:** Increase the skill component by making decisions
 more impactful and reducing the number of games decided by draw
 variance. The AI supervisor helps by ensuring the "execution" layer
-(tapping mana, ordering triggers) is always optimal — the remaining
+(tapping mana, ordering triggers) is always optimal -- the remaining
 variance is strategic, not mechanical.
 
 ## Part 2: Design Lessons from Competitors
@@ -176,14 +176,14 @@ variance is strategic, not mechanical.
 
 - Separate the "thinking phase" from the "resolution phase."
 - Let players feel clever during setup.
-- Make resolution readable — players must understand *why* they won
+- Make resolution readable -- players must understand *why* they won
   or lost.
 - Continuous reinvention through meta rotation keeps engagement.
 
 ### 2.3 Commander Design
 
 - A single identity card defines your deck and strategy.
-- The identity card must remain accessible — taxing players out of
+- The identity card must remain accessible -- taxing players out of
   their own identity is punishing (commander tax problem).
 - Color identity restrictions feel natural when the identity card
   earns them.
@@ -198,9 +198,9 @@ variance is strategic, not mechanical.
 
 ### 2.5 Input vs. Output Randomness
 
-- **Input randomness** (what options you receive — drawing cards) is
+- **Input randomness** (what options you receive -- drawing cards) is
   satisfying because the player has agency over what to do with them.
-- **Output randomness** (whether your action succeeds — coin flips)
+- **Output randomness** (whether your action succeeds -- coin flips)
   creates "I did everything right and still lost" frustration.
 - CodexMagic should maximize input randomness (card draw, pack
   cracking) and minimize output randomness (combat resolution is
@@ -221,7 +221,7 @@ Card games are watchable when:
 
 **Problem addressed:** Mana screw and mana flood.
 
-**Status: EXPLORE — requires simulation testing before adoption.**
+**Status: EXPLORE -- requires simulation testing before adoption.**
 
 Two complementary mechanics, one for each side of the problem:
 
@@ -241,7 +241,7 @@ the current turn and empties at cleanup like normal.
 **Why unlimited is self-balancing:**
 
 The cost is the card itself. Cards are worth far more than 1 mana.
-A card is an entire action — a creature, a removal spell, a draw
+A card is an entire action -- a creature, a removal spell, a draw
 engine. Trading a card for 1 colorless mana is a terrible rate that
 nobody does voluntarily. You only do it because the alternative
 (doing nothing with a hand full of uncastable spells) is worse.
@@ -257,7 +257,7 @@ Opening hand, 0 lands. Discard 5 cards for 5 colorless mana. Play
 your one remaining spell (if colorless-castable). You now have a
 tempo burst (5-mana creature on turn 1) but 0 cards in hand. Your
 opponent with a normal hand has 6 cards and will grind you out. The
-mechanic punishes itself — the player who "goes all-in" must win
+mechanic punishes itself -- the player who "goes all-in" must win
 fast or die to card advantage.
 
 **Interaction with Generals:**
@@ -269,7 +269,7 @@ axis tied to the General's behavioral modifiers.
 
 **Archetype implications:**
 
-A hyper-aggro deck could be built to exploit this — run fewer lands,
+A hyper-aggro deck could be built to exploit this -- run fewer lands,
 plan to discard early for a huge opener, try to kill the opposing
 General before card advantage matters. This is a valid glass-cannon
 archetype. The counter is high-defense creatures (which bounce cheap
@@ -291,13 +291,13 @@ Discard 2 land cards from your hand to draw 1 card. Once per turn.
 - During your main phase, if you have 2+ lands in hand, you may
   discard 2 of them to your graveyard.
 - Draw 1 card from your library.
-- This is a 2-for-1 trade — you are behind on raw card count.
+- This is a 2-for-1 trade -- you are behind on raw card count.
 - Once per turn to prevent cycling through the entire deck.
 
 **Why 2-for-1:** You are converting dead draws (lands you can't use)
 into live draws (anything else). The 2-for-1 rate ensures this is
 a *mitigation*, not an advantage. A player who floods is still
-behind — they just aren't locked out.
+behind -- they just aren't locked out.
 
 **Interaction with deckbuilding:** This slightly reduces the cost
 of running more lands. A deck with 28 lands (normally a flood risk)
@@ -308,14 +308,14 @@ doesn't make high-land-count decks dominant.**
 
 **Interaction with graveyard mechanics:** Pitched lands go to the
 graveyard, which could matter for future graveyard-matters cards.
-This is intentional — it creates a secondary resource pathway.
+This is intentional -- it creates a secondary resource pathway.
 
 #### 3.1c Combined Effect
 
 Together, these two mechanics ensure:
 - A hand with 0 lands is playable (discard spells for colorless mana)
 - A hand with 5+ lands is playable (pitch 2 for a draw)
-- Neither mechanic is *good* — both cost significant resources
+- Neither mechanic is *good* -- both cost significant resources
 - Players with normal draws (2-4 lands in 7) never use either
 - The AI supervisor detects screw/flood states and offers the
   conversion, or auto-applies it based on posture
@@ -344,9 +344,9 @@ actual creature on board).
 - Life and loyalty are existing resources, not new mechanics.
 - The numbers are tunable per season based on win-rate data from
   on-chain match records.
-- The AI factors the advantage into its strategy — a second-player
+- The AI factors the advantage into its strategy -- a second-player
   General with 35 life plays more patiently.
-- Combined with our defense stat, +5 life is significant — it may
+- Combined with our defense stat, +5 life is significant -- it may
   absorb an entire extra attack from a mid-size creature.
 
 **Tuning knob:** If data shows 55% first-player win rate, increase
@@ -358,7 +358,7 @@ Season balance patches adjust this number, not card text.
 **Problem addressed:** Non-games, wasted time.
 
 Conceding in the first 3 turns costs **no rating and no ManaCoin**.
-The match is voided — it doesn't appear in either player's history.
+The match is voided -- it doesn't appear in either player's history.
 
 **AI detection:** The supervisor detects "non-game" states and offers
 a free restart prompt:
@@ -367,7 +367,7 @@ a free restart prompt:
 - Player's General has lost 50%+ life by turn 3 with no board
   presence
 
-**Why this works:** It doesn't eliminate variance — it eliminates
+**Why this works:** It doesn't eliminate variance -- it eliminates
 wasted *time* from variance. Over a session, players play more real
 games. The blockchain records only completed matches, so match
 history reflects genuine contests.
@@ -443,7 +443,7 @@ doubling cube). At any point during a game, either player can
 - War Cry is a read on confidence. You signal "I think I'm winning."
 - The opponent must evaluate: is this a bluff or does their board
   actually justify confidence?
-- Retreat is not a full loss — you lose at the current stakes, which
+- Retreat is not a full loss -- you lose at the current stakes, which
   is less than you'd lose if you played it out and lost at doubled
   stakes.
 - The AI supervisor can auto-War-Cry when it detects a dominant
@@ -451,7 +451,7 @@ doubling cube). At any point during a game, either player can
 
 **Why this works for CodexMagic:**
 - Fast games (5-8 min) mean War Cry decisions come quickly and
-  frequently — one per game on average.
+  frequently -- one per game on average.
 - Retreat-and-requeue is painless in short games.
 - Spectators love the drama: "Will they snap back or fold?"
 - Rating climbers can gain ELO efficiently by War Crying when ahead
@@ -470,7 +470,7 @@ points:
 - "Three triggers fire simultaneously. Order?"
   → Options shown with outcomes, AI recommends optimal ordering
 
-The stack, priority, APNAP ordering — all of it runs in the engine.
+The stack, priority, APNAP ordering -- all of it runs in the engine.
 The player experience is: "Here's what's happening. Do you want to
 intervene?" This preserves the strategic depth of instant-speed
 interaction without requiring the player to understand LIFO
@@ -505,26 +505,26 @@ or not?" decision is presented as a choice, not a timing puzzle.
 
 ## Part 4: What We Keep from MTG
 
-1. **The stack** — but only for the AI. Players see decision points.
-2. **Color pie** — with defense-based differentiation.
-3. **Mana as a resource** — lands in deck, tap for colored mana.
-4. **Deckbuilding** — 60-card constructed with 4-copy limit.
-5. **Draft and Sealed** — limited formats with 40-card minimums.
-6. **Combat math** — attacking, blocking, damage assignment.
-7. **Triggered abilities** — ETB, death, attack, combat damage.
+1. **The stack** -- but only for the AI. Players see decision points.
+2. **Color pie** -- with defense-based differentiation.
+3. **Mana as a resource** -- lands in deck, tap for colored mana.
+4. **Deckbuilding** -- 60-card constructed with 4-copy limit.
+5. **Draft and Sealed** -- limited formats with 40-card minimums.
+6. **Combat math** -- attacking, blocking, damage assignment.
+7. **Triggered abilities** -- ETB, death, attack, combat damage.
 
 ## Part 5: What We Change
 
-1. **Resource conversion** — discard any card for 1 colorless mana
+1. **Resource conversion** -- discard any card for 1 colorless mana
    (screw fix); pitch 2 lands for 1 draw (flood fix). [EXPLORE]
-2. **First-player compensation** — +5 life, +1 loyalty for second.
-3. **Turn cap** — 12 turns, then Sudden Death.
-4. **Free early concession** — first 3 turns cost nothing.
-5. **General leveling** — loyalty thresholds unlock abilities.
-6. **War Cry** — doubling cube for ranked stakes.
-7. **No direct stack interaction** — AI resolves, player decides.
-8. **Defense stat** — per-source damage threshold.
-9. **Army loyalty** — CMC-based, tokens excluded.
+2. **First-player compensation** -- +5 life, +1 loyalty for second.
+3. **Turn cap** -- 12 turns, then Sudden Death.
+4. **Free early concession** -- first 3 turns cost nothing.
+5. **General leveling** -- loyalty thresholds unlock abilities.
+6. **War Cry** -- doubling cube for ranked stakes.
+7. **No direct stack interaction** -- AI resolves, player decides.
+8. **Defense stat** -- per-source damage threshold.
+9. **Army loyalty** -- CMC-based, tokens excluded.
 
 Items marked [EXPLORE] require simulation testing before adoption.
 
@@ -533,7 +533,7 @@ Items marked [EXPLORE] require simulation testing before adoption.
 1. **Simultaneous play?** Marvel Snap's simultaneous model eliminates
    first-player advantage entirely. Should CodexMagic adopt
    simultaneous turns? This conflicts with the stack and instant-speed
-   interaction — but since the AI handles the stack, maybe the
+   interaction -- but since the AI handles the stack, maybe the
    "turns" are really just planning phases followed by simultaneous
    resolution?
 
@@ -640,7 +640,7 @@ A mechanic is **degenerate** if:
 - The mechanic fires in 80%+ of games (it's not an escape valve,
   it's the default strategy).
 - Average cards-in-hand-at-game-end drops below 1 (everyone is
-  discarding everything — the mechanic is too strong).
+  discarding everything -- the mechanic is too strong).
 - Game length drops below 5 turns consistently (the mechanic
   enables too-fast kills).
 

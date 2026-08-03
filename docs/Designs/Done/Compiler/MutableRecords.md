@@ -11,7 +11,7 @@
 
 Every record "update" in Codex allocates a new copy. A game loop that
 runs 500 turns updating a 15-field `GameState` record allocates 500
-complete copies — one per turn, none freed (bare metal has no GC).
+complete copies -- one per turn, none freed (bare metal has no GC).
 In practice this means:
 
 - **Heap blowup.** A 200-byte record updated 500 times = 100KB of
@@ -26,7 +26,7 @@ In practice this means:
   `__record-set` (a raw intrinsic with no safety checks) or restructure
   code to avoid intermediate states. Both are error-prone.
 
-The current workaround — `__record-set` — is the right mechanism at
+The current workaround -- `__record-set` -- is the right mechanism at
 the wrong abstraction level. It does in-place field mutation. It's
 fast. But it has no ownership check: if anyone else holds a reference
 to the old record, they silently see the new value. This is exactly
@@ -37,7 +37,7 @@ the aliasing bug that immutability was designed to prevent.
 Add a `mutable` qualifier for record types. A mutable record:
 
 1. **Must be linearly owned.** Exactly one binding holds the record at
-   any point. The compiler tracks this — passing a mutable record to
+   any point. The compiler tracks this -- passing a mutable record to
    two call sites is a compile error.
 
 2. **Supports in-place field assignment.** `record.field = expr` emits
@@ -45,7 +45,7 @@ Add a `mutable` qualifier for record types. A mutable record:
    without allocating a new record.
 
 3. **Cannot be aliased.** Assigning a mutable record to a second
-   binding moves it — the original binding is consumed. Reading from
+   binding moves it -- the original binding is consumed. Reading from
    a consumed binding is a compile error.
 
 4. **Can be frozen.** `freeze record` produces an immutable copy. The
@@ -95,7 +95,7 @@ The compiler must track a "liveness" flag per mutable binding:
 | Use after consume | **Compile error CDX2050** |
 | Two live aliases | **Compile error CDX2051** |
 
-This is strictly simpler than full linear type checking — it only
+This is strictly simpler than full linear type checking -- it only
 applies to bindings of mutable record type, not all values.
 
 ## Compiler Changes
@@ -125,7 +125,7 @@ applies to bindings of mutable record type, not all values.
 - Lower `freeze` to `IrRecordCopy(source)`.
 - Mutable record construction lowers to same heap alloc as immutable.
 
-### Phase 4: Codegen (small — mostly reuse __record-set)
+### Phase 4: Codegen (small -- mostly reuse __record-set)
 
 - `IrFieldStore` emits the same code as `emit-record-set-builtin`:
   load record pointer, compute field byte offset, store value.
@@ -147,7 +147,7 @@ applies to bindings of mutable record type, not all values.
 
 **Option A**: Reuse `linear`. `linear` on a record type means mutable +
 linearly owned. Pro: no new keyword. Con: conflates two concepts (a
-linear immutable record is a valid thing — consumed exactly once but
+linear immutable record is a valid thing -- consumed exactly once but
 never mutated).
 
 **Option B**: New `mutable` keyword. A mutable record is implicitly
@@ -159,7 +159,7 @@ programmer's intent. Add it to the lexer alongside `linear`.
 
 ### Effects
 
-Mutable field assignment is not an effect — it's a local operation on
+Mutable field assignment is not an effect -- it's a local operation on
 an owned value, like `list-snoc`. No effect annotation needed. This
 is consistent with SAFE-MUTATION.md: "mutation is safe when ownership
 is linear."
@@ -168,19 +168,19 @@ is linear."
 
 A mutable record can contain immutable fields (Integer, Text, etc)
 and immutable sub-records. A mutable record CANNOT contain another
-mutable record as a field — that would create nested ownership
+mutable record as a field -- that would create nested ownership
 tracking. Mutable records contain values, not references to other
 mutable records.
 
 Lists inside mutable records are still immutable lists. Updating a
 list field requires `list-snoc` or constructing a new list. This is
-a limitation — future work could add `mutable List` as well.
+a limitation -- future work could add `mutable List` as well.
 
 ### `heap-save` / `heap-restore`
 
 Mutable records live on the heap like all records. `heap-restore`
 resets the heap pointer, invalidating all records allocated after
-the save point — including mutable ones. Mutable records do not
+the save point -- including mutable ones. Mutable records do not
 extend object lifetime beyond `heap-restore`. This is consistent
 with current behavior.
 
@@ -189,7 +189,7 @@ with current behavior.
 ### Step 1: Compiler internals
 
 Use mutable records for `CodegenState`, `NameResolverScope`, and
-`TypeCheckState` — the three largest records in the compiler that
+`TypeCheckState` -- the three largest records in the compiler that
 currently use `__record-set` pervasively. This validates the feature
 on the compiler's own codebase before exposing it to users.
 
@@ -206,10 +206,10 @@ limits game complexity on bare metal.
 
 ## Risk Assessment
 
-**Memory**: No change — mutable records use the same heap bytes as
+**Memory**: No change -- mutable records use the same heap bytes as
 immutable ones. The difference is fewer dead copies.
 
-**Time complexity**: Strictly better — O(1) field update instead of
+**Time complexity**: Strictly better -- O(1) field update instead of
 O(fields) copy. No regression case exists.
 
 **Correctness**: The linearity check is the critical safety net. If
@@ -225,7 +225,7 @@ check should be exhaustively tested with error-case samples.
 
 2. **Pattern matching on mutable records.** Can you `when` match on a
    mutable record? Matching would need to borrow (not consume) it.
-   Simplest answer: no pattern matching on mutable records — use
+   Simplest answer: no pattern matching on mutable records -- use
    field access.
 
 3. **Mutable records in act blocks.** Field assignment looks like a

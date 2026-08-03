@@ -1,4 +1,4 @@
-# Plug Compiler Crash — Investigation Handoff (Session 2)
+# Plug Compiler Crash -- Investigation Handoff (Session 2)
 
 ## The Bug
 
@@ -21,10 +21,10 @@ codex.build/test-compile.ps1 -Src "plugs/csharp/build-output/plug-source.codex" 
 ```
 
 - **Exception 0x0e** = page fault
-- **CR2** = the corrupt pointer value being dereferenced (varies slightly: 0x2ee56a, 0x2ee7af, 0x2eeef7 — always a seed code-section address shifted left ~24 bits)
+- **CR2** = the corrupt pointer value being dereferenced (varies slightly: 0x2ee56a, 0x2ee7af, 0x2eeef7 -- always a seed code-section address shifted left ~24 bits)
 - **R15 = 0x1a6f7c5** = the TypeBinding record pointer (STABLE every run)
 - **[R15+0]** = the `.name` field = the corrupt value = CR2
-- **Faulting instruction** at RIP: `mov (%rax), %rcx` — dereferencing the corrupt text pointer loaded from the TypeBinding
+- **Faulting instruction** at RIP: `mov (%rax), %rcx` -- dereferencing the corrupt text pointer loaded from the TypeBinding
 
 ## Key Facts
 
@@ -38,15 +38,15 @@ codex.build/test-compile.ps1 -Src "plugs/csharp/build-output/plug-source.codex" 
 
 1. **Timer interrupt register corruption.** The ISR takes the no-pre1 fast path (slice==0, process table zeroed). Callee-saved registers are never touched. A fix was submitted (CL 1557) to restore registers on the preemption path, but it doesn't help because preemption never triggers. The fix is harmless but irrelevant.
 
-2. **Out-of-bounds code buffer writes.** Added bounds checks to `apply-func-addr-patches-direct`, `apply-call-patches-direct`, `apply-rodata-patches-direct` — none fired. Patch offsets are all within `text-buf-size` (4MB). The code buffer is at the heap base (~0x600000) and TypeBindings are at ~0x1a6f7c5 (much higher). You'd need offset ~20MB to reach them.
+2. **Out-of-bounds code buffer writes.** Added bounds checks to `apply-func-addr-patches-direct`, `apply-call-patches-direct`, `apply-rodata-patches-direct` -- none fired. Patch offsets are all within `text-buf-size` (4MB). The code buffer is at the heap base (~0x600000) and TypeBindings are at ~0x1a6f7c5 (much higher). You'd need offset ~20MB to reach them.
 
 3. **List capacity overflow.** Global patch lists (`fa-offsets` etc.) are pre-allocated to 32768 via `__list-with-capacity`. The plug is small (~130KB source, ~64KB output). It doesn't approach 32768 patches. Lists never grow.
 
-4. **The `list-push` heap-save/restore interaction.** I theorized that `list-push` growing a list past `__heap-save` would leave dangling entries after `__heap-restore`. WRONG — the lists don't grow (pre-allocated capacity), and the per-function `emit-all-defs` loop only does heap-save/restore around temporary per-function state, not the global lists.
+4. **The `list-push` heap-save/restore interaction.** I theorized that `list-push` growing a list past `__heap-save` would leave dangling entries after `__heap-restore`. WRONG -- the lists don't grow (pre-allocated capacity), and the per-function `emit-all-defs` loop only does heap-save/restore around temporary per-function state, not the global lists.
 
 5. **GDB watchpoints.** WHPX doesn't support hardware watchpoints through GDB. TCG supports them but doesn't reproduce the bug. Conditional breakpoints at the faulting instruction are impractical (text-compare is called thousands of times).
 
-6. **codex-vm.exe.** Crashes on MMIO at 0x7ffffff0 during boot — not ready for this workload yet.
+6. **codex-vm.exe.** Crashes on MMIO at 0x7ffffff0 during boot -- not ready for this workload yet.
 
 ## The Corrupt Value Pattern
 
@@ -61,9 +61,9 @@ The value `0x002EEEF7` is `bare-metal-load-addr + func_offset` = `0x100000 + 0x1
 ## What Writes Seed Function Addresses?
 
 The ONLY things that write seed function addresses during compilation:
-1. **`apply-func-addr-patches-direct`** — writes `text-base + resolved` to the code buffer. But bounds checks confirm all offsets are valid.
-2. **Return addresses pushed by `call` instructions** — these go on the STACK (at 0x7FFFxxxx), not the heap.
-3. **The `fa-offsets`/`fa-targets` lists** — these store the OFFSET positions (where to patch), not the actual addresses.
+1. **`apply-func-addr-patches-direct`** -- writes `text-base + resolved` to the code buffer. But bounds checks confirm all offsets are valid.
+2. **Return addresses pushed by `call` instructions** -- these go on the STACK (at 0x7FFFxxxx), not the heap.
+3. **The `fa-offsets`/`fa-targets` lists** -- these store the OFFSET positions (where to patch), not the actual addresses.
 
 NONE of these should write to heap address 0x1a6f7c8.
 
@@ -84,7 +84,7 @@ If the serial I/O delivers source bytes differently (partial reads, different ch
 
 **The fundamental question:** What operation writes 4 bytes to address 0x1a6f7c8 during plug emission that doesn't happen during self-compilation? It's writing a value that looks like a seed function address. The only seed function addresses that exist at runtime are in the code section itself and as return addresses on the stack. Something is copying a return address (or code pointer) from the stack to the heap at the wrong location.
 
-## Session 5 — 2026-05-17 (agent gollum)
+## Session 5 -- 2026-05-17 (agent gollum)
 
 ### New Crash Signature (depot seed CL 1606)
 
@@ -97,7 +97,7 @@ CR2=00002ef19c000000 R15=0000000001a6f7c5
 
 - **RIP = 0x274B54**: Inside `skip-to-next-line` (parser function, 0x274A57+253 of 310 bytes)
 - **R15 = 0x1A6F7C5**: Still the same misaligned pointer from sessions 2-4
-- **Crash is IDENTICAL between codex-vm (with shadow register file) and QEMU WHPX** — same RIP, same CR2, same R15, same R10, same everything. This proves the bug is in GUEST CODE, not the VM.
+- **Crash is IDENTICAL between codex-vm (with shadow register file) and QEMU WHPX** -- same RIP, same CR2, same R15, same R10, same everything. This proves the bug is in GUEST CODE, not the VM.
 
 ### Machine Code at Crash Site
 
@@ -112,8 +112,8 @@ Pattern: load element from list → load .name field → dereference. The list e
 ### Critical Discovery: Corrupt Value Is a CODE Address
 
 CDX header analysis:
-- **Code section**: 0x100000 – 0x2FA408 (2,073,608 bytes)
-- **Data section**: 0x2FA408 – 0x304690 (41,608 bytes)
+- **Code section**: 0x100000 - 0x2FA408 (2,073,608 bytes)
+- **Data section**: 0x2FA408 - 0x304690 (41,608 bytes)
 - **0x2EF19C is in the CODE section** (trampoline/helper area)
 
 The symbol map's last function (`__start`) ends at ~0x2C7D75. Between 0x2C7D75 and 0x2FA408 are 206 KB of unmapped runtime helpers (partial-application trampolines, ISR stubs, syscall handler).
@@ -128,7 +128,7 @@ E9 1E 00 00 00   jmp +30       ; skip to actual code
 48 B8 xx xx xx xx movabs rax, <target>  ; load function address
 ```
 
-The corrupt 8-byte value at [R15+0] = 0x00002EF19C000000. In LE memory: `00 00 00 9C F1 2E 00 00`. Bytes 3-6 contain `9C F1 2E 00` = LE for 0x002EF19C — the trampoline address. This is the low 4 bytes of a movabs immediate or a function-address patch.
+The corrupt 8-byte value at [R15+0] = 0x00002EF19C000000. In LE memory: `00 00 00 9C F1 2E 00 00`. Bytes 3-6 contain `9C F1 2E 00` = LE for 0x002EF19C -- the trampoline address. This is the low 4 bytes of a movabs immediate or a function-address patch.
 
 ### Crash Phase: LOWER (confirmed)
 
@@ -154,9 +154,9 @@ The 4-byte code address is written at the aligned address 0x1A6F7C8 (= R15+3). C
 
 1. **Trace closure allocation**: In the lower phase's `sort-bindings` call, the comparator `\a b -> text-compare (a.name) (b.name)` is a closure. Check how it's allocated and whether its code-ptr write could overflow into adjacent memory.
 2. **Check `emit-load-known-func-offset`**: This function creates movabs patches at specific code offsets. If the offset is wrong, the patch writes to the wrong location.
-3. **Heap layout analysis**: Determine what's allocated immediately before 0x1A6F7C8 and immediately after. If a closure record starts at 0x1A6F7C0 (8-aligned), its code-ptr at +0 would be at 0x1A6F7C0, overlapping bytes 0-7 — NOT 0x1A6F7C8. The 3-byte offset doesn't match a simple adjacency.
+3. **Heap layout analysis**: Determine what's allocated immediately before 0x1A6F7C8 and immediately after. If a closure record starts at 0x1A6F7C0 (8-aligned), its code-ptr at +0 would be at 0x1A6F7C0, overlapping bytes 0-7 -- NOT 0x1A6F7C8. The 3-byte offset doesn't match a simple adjacency.
 
-## Session 6 — 2026-05-20 (agent eek): RESOLVED
+## Session 6 -- 2026-05-20 (agent eek): RESOLVED
 
 ### Root Cause
 
@@ -168,7 +168,7 @@ in if pos < len & (list-at entries pos).key == k
 
 `&` on Booleans compiles to `IrAnd`, which evaluates BOTH operands
 unconditionally. When `pos >= len`, the right side executes
-`list-at entries pos` — an out-of-bounds read past the end of the
+`list-at entries pos` -- an out-of-bounds read past the end of the
 `expr-types` list. This reads whatever is adjacent on the heap:
 stale data, a partial record, or a code-section address.
 

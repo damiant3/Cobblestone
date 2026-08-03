@@ -1,4 +1,4 @@
-# Mana — Pool, Costs, and Color
+# Mana -- Pool, Costs, and Color
 
 ## The Five Colors
 
@@ -29,7 +29,7 @@ ManaPool = record {
 ```
 
 Mana pools empty at the end of each step/phase (mana burn was removed
-in the rules era we're targeting, so no life loss — it just vanishes).
+in the rules era we're targeting, so no life loss -- it just vanishes).
 
 ## Mana Cost
 

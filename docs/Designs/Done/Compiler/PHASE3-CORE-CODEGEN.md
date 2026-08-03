@@ -1,4 +1,4 @@
-# Phase 3: Core Codegen — Expressions in Codex
+# Phase 3: Core Codegen -- Expressions in Codex
 
 **Date**: 2026-03-31
 **Status**: SHIPPED. Self-host bare-metal codegen lives in `Codex.Codex/Emit/X86_64*.codex`. Bootstrap 3 runs the full compile pipeline end-to-end on bare metal. Archived for rationale; current work tracked in `Active/Compiler/SECOND-BOOTSTRAP.md` and `CurrentPlan.md`.
@@ -10,7 +10,7 @@
 ## What This Phase Does
 
 Phase 3 ports the expression-emission core of `X86_64CodeGen.cs` (6,075 lines C#)
-to Codex. Not all 6K lines — only the subset needed for core expressions. Runtime
+to Codex. Not all 6K lines -- only the subset needed for core expressions. Runtime
 helpers (Phase 4), builtins (Phase 5), escape copy (Phase 6), and the boot
 sequence (Phase 7) come later.
 
@@ -52,13 +52,13 @@ via the Phase 2 writer, and produce a bootable binary.
 
 | What | Phase | Why deferred |
 |------|-------|-------------|
-| Runtime helpers (__str_concat, __itoa, etc.) | 4 | 22 helpers, ~800 lines — separate concern |
-| Builtins (text-length, list-at, etc.) | 5 | 50+ operations — separate concern |
-| Escape copy & regions | 6 | Two-space GC with forwarding table — most complex subsystem |
-| Boot sequence (multiboot, trampoline, IDT) | 7 | Constant byte sequences, ISR stubs — infrastructure |
+| Runtime helpers (__str_concat, __itoa, etc.) | 4 | 22 helpers, ~800 lines -- separate concern |
+| Builtins (text-length, list-at, etc.) | 5 | 50+ operations -- separate concern |
+| Escape copy & regions | 6 | Two-space GC with forwarding table -- most complex subsystem |
+| Boot sequence (multiboot, trampoline, IDT) | 7 | Constant byte sequences, ISR stubs -- infrastructure |
 | EmitRegion | 6 | Depends on escape copy machinery |
-| EmitHandle | Post-MM4 | Algebraic effect handlers — not needed for self-compile |
-| EmitFork/EmitAwait | Post-MM4 | Concurrency — not needed for self-compile |
+| EmitHandle | Post-MM4 | Algebraic effect handlers -- not needed for self-compile |
+| EmitFork/EmitAwait | Post-MM4 | Concurrency -- not needed for self-compile |
 
 ---
 
@@ -103,7 +103,7 @@ a result register. The state record replaces all of C#'s `m_` fields.
 
 ### Register Allocation
 
-Identical to C# — the scheme is already simple enough to translate directly:
+Identical to C# -- the scheme is already simple enough to translate directly:
 
 | Pool | Registers | Allocation | Codex equivalent |
 |------|-----------|-----------|-----------------|
@@ -199,7 +199,7 @@ The minimum viable codegen. Requires:
 - Function emission (prologue/epilogue for `main`)
 - `EmitIntegerLit` (load immediate into RAX)
 - Serial output of integer result (temporary: inline `__itoa` + serial write
-  just for `main`'s return value — full runtime helpers come in Phase 4)
+  just for `main`'s return value -- full runtime helpers come in Phase 4)
 - ELF writer (done, Phase 2)
 
 This proves the chain: Codex IR → encoder → ELF → QEMU boots → serial output.

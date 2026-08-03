@@ -1,4 +1,4 @@
-# Kings and Courts — Hard Real-Time, EU Compliance, and IoT
+# Kings and Courts -- Hard Real-Time, EU Compliance, and IoT
 
 How Codex meets regulatory requirements for safety-critical and IoT
 deployments by construction, not by audit.
@@ -8,7 +8,7 @@ deployments by construction, not by audit.
 ## The Claim
 
 Most firmware vendors demonstrate compliance by producing paperwork
-after the fact — SBOM spreadsheets, manual test reports, third-party
+after the fact -- SBOM spreadsheets, manual test reports, third-party
 audits. The paperwork describes the system; it does not constrain it.
 A compliant system and its evidence can drift apart the moment the
 next commit lands.
@@ -19,13 +19,39 @@ type system, the effect system, the capability model, and the
 errors. If the code compiles, the evidence is valid. If the evidence
 would be invalid, the code does not compile.
 
+**That claim is only worth what the list of actual compile errors is
+worth, and the list has been checked.** On 2026-07-27 every row in the
+three mapping documents that asserted a refusal was fired at the compiler.
+The refusals that survived are CDX6001-6005 (a `punctual` function that
+allocates, recurses, captures or performs an effect), CDX2031/CDX2033 (an
+undeclared effect, and one laundered through a plain `let`),
+CDX2050/CDX2051 (a bounded field given an out-of-range literal, and a value
+whose range cannot be proven), CDX2061/CDX2063 (a linear value used twice
+or never) and CDX4001 (an effect outside the capability vocabulary). Those
+are real, and each is pinned by a test in `codex/test/errors/` that fails
+if the refusal stops happening.
+
+Twenty-one other claims did not survive, and they are withdrawn in place
+rather than reworded. The ones worth knowing here, because they are the
+ones a reader of this page would most reasonably assume: **a `punctual`
+function that exceeds its instruction budget does not fail the build** (it
+warns, and `build/wcet-validate.ps1` is the gate); **plain `Integer`
+arithmetic wraps silently**, so overflow safety extends exactly as far as
+declared bounds do; and **there is no `[Audit]` effect and no erasure of
+memory on scope exit**. The mapping documents carry the measurement for
+each.
+
+This is the same correction ETSI 5.5 received below, applied to the rest of
+the surface: a compliance row is a claim, and a claim with no runner behind
+it decays in the reassuring direction.
+
 This document consolidates the three regulatory frameworks Codex
 targets, the language features that satisfy each requirement, and the
 hard real-time story that ties them together.
 
 ---
 
-## 1. Hard Real-Time — The `punctual` Keyword
+## 1. Hard Real-Time -- The `punctual` Keyword
 
 ### The Problem
 
@@ -33,7 +59,7 @@ Safety-critical systems (IEC 62443, EU CRA Article 6, IEC 62304)
 require bounded worst-case execution time (WCET). Traditional
 approaches rely on external tools (aiT, RapiTime for Ada Ravenscar)
 or coding standards enforced by linters (MISRA-C). Neither is part of
-the language — the guarantee lives outside the compiler and can be
+the language -- the guarantee lives outside the compiler and can be
 violated silently.
 
 ### The Solution
@@ -43,7 +69,7 @@ The compiler enforces five structural restrictions at compile time:
 
 | CDX Code | Restriction | Why |
 |----------|------------|-----|
-| CDX6001 | Cannot call non-punctual or non-safe-builtin functions | Transitivity — one unbounded callee breaks the guarantee |
+| CDX6001 | Cannot call non-punctual or non-safe-builtin functions | Transitivity -- one unbounded callee breaks the guarantee |
 | CDX6002 | Cannot use heap allocation | Bare-metal has no GC; heap allocation is unbounded in time |
 | CDX6003 | Cannot use closures or lambdas | Unpredictable allocation from capture |
 | CDX6004 | Must be effect-free (any effect rejected) | A handler's latency is unbounded from the caller's seat; I/O is only the worst case |
@@ -59,7 +85,7 @@ fast-handler (n) = n + 1
 
 Default budget: 256 instructions. The count is architecture-independent
 (instruction count, not bytes or cycles). The compiler does not claim
-wall-clock time — that depends on clock speed and pipeline, which is the
+wall-clock time -- that depends on clock speed and pipeline, which is the
 system integrator's responsibility.
 
 ### The Punctual Foreword
@@ -68,14 +94,14 @@ system integrator's responsibility.
 is `punctual`. It provides the primitives for real-time code without
 breaking the bounded-execution guarantee:
 
-- **IntOps** — clamped add/sub/mul, abs, min, max
-- **BitOps** — and, or, xor, shift, rotate, popcount
-- **Saturate** — saturating arithmetic for fixed-point DSP
-- **FastMath** — reciprocal, inverse sqrt, fast floor/ceil
-- **Trig** — CORDIC-based sin, cos, atan2
-- **ColorOps** — RGB/HSL conversion, blend, gamma
-- **Kinematic** — velocity, acceleration, interpolation
-- **Endian** — byte-swap, network-order conversion
+- **IntOps** -- clamped add/sub/mul, abs, min, max
+- **BitOps** -- and, or, xor, shift, rotate, popcount
+- **Saturate** -- saturating arithmetic for fixed-point DSP
+- **FastMath** -- reciprocal, inverse sqrt, fast floor/ceil
+- **Trig** -- CORDIC-based sin, cos, atan2
+- **ColorOps** -- RGB/HSL conversion, blend, gamma
+- **Kinematic** -- velocity, acceleration, interpolation
+- **Endian** -- byte-swap, network-order conversion
 
 ### Prior Art Comparison
 
@@ -85,9 +111,9 @@ compile-time bounded-execution enforcement:
 | Language | Mechanism | Scope | Compile-time? |
 |----------|-----------|-------|:-------------:|
 | **Codex** | `punctual` keyword | Per-function | Yes |
-| Ada Ravenscar | Ravenscar profile | Global (entire partition) | Partial — needs aiT/RapiTime for WCET |
-| Rust | None | — | No |
-| MISRA-C | External linter rules | Coding standard | No — advisory, not enforced by compiler |
+| Ada Ravenscar | Ravenscar profile | Global (entire partition) | Partial -- needs aiT/RapiTime for WCET |
+| Rust | None | -- | No |
+| MISRA-C | External linter rules | Coding standard | No -- advisory, not enforced by compiler |
 | Zig | `@setEvalBranch` | Comptime only | N/A |
 | Erlang | `max_heap_size` | Per-process runtime limit | No |
 
@@ -115,19 +141,19 @@ construction.
 
 | CRA Req | What | Codex Feature | Evidence Class |
 |---------|------|---------------|:--------------:|
-| 1(a) | No exploitable vulnerabilities | Linear types (no UAF/double-free), bounded integers (no overflow), effect types (no undeclared I/O) | BY-CONSTRUCTION |
+| 1(a) | No exploitable vulnerabilities | Linear types (no UAF/double-free), declared integer bounds (no overflow where declared), effect types (no undeclared I/O) | BY-CONSTRUCTION |
 | 1(b) | Secure by default | Empty capability tables, effect types enforce invariants | BY-CONSTRUCTION |
 | 1(c) | Data protection | AES-GCM-256, ChaCha20-Poly1305, TLS 1.3, linear types prevent key aliasing | MECHANISM |
-| 1(d) | Denial-of-service resilience | `punctual` instruction-count bounds, bounded integers, fuel-capped recursion, preemptive scheduler | BY-CONSTRUCTION |
+| 1(d) | Denial-of-service resilience | `punctual` structural restrictions (CDX6001-6005), declared integer bounds, fuel-capped recursion, preemptive per-core scheduler | BY-CONSTRUCTION |
 | 1(e) | Attack surface minimization | No OS/libc/dynamic linker, effect types restrict capabilities, dead-code elimination | BY-CONSTRUCTION |
-| 1(f) | Logging and monitoring | Effect-typed `[Audit]` channel, append-only FactStore with CRC framing | MECHANISM |
+| 1(f) | Logging and monitoring | Append-only FactStore with CRC framing | MECHANISM + DEPLOYMENT |
 | 2(a) | Component identification | Content-addressed CDX, Ed25519 signatures, trust lattice provenance | MECHANISM |
 | 2(b) | Vulnerability handling | OTA dual-gate verification, anti-rollback counter, capability lease revocation | MECHANISM |
 
 ### The Compile-Time Argument
 
 Requirements 1(a), 1(b), 1(d), and 1(e) are satisfied BY-CONSTRUCTION.
-This means no test, audit, or runtime check is needed — the compiler
+This means no test, audit, or runtime check is needed -- the compiler
 rejects programs that would violate these requirements. The compliance
 evidence is the fact that the code compiled.
 
@@ -138,6 +164,35 @@ prevents the relevant vulnerability classes:
 
 - **Buffer overflow**: No raw pointers. Bounded integers with compile-time
   range checking. `__narrow` for explicit narrowing with runtime trap.
+  `substring` traps on an out-of-range start or length, and `char-at` /
+  `char-code-at` trap on an index outside the text.
+
+  **That last sentence is here because the row was false until 2026-07-27,
+  and the way it was false is the reason this document is audited at all.**
+  `substring` took its start and length on trust and copied that many bytes,
+  with no clamp against the source and no non-negative check. It was an
+  unchecked heap read: with a second text allocated after the first,
+  `substring a 0 40` on a five-byte string returned the whole of the next
+  allocation verbatim, password and all. A negative start read BEFORE the
+  string; a negative length minted a Text whose length field was -1.
+
+  The 2026-07-27 sweep of this document withdrew twenty-one rows and left
+  this one standing, because it fired every REFUSAL the compiler performs
+  and never fired a bounds READ. A compliance claim about buffer overflow,
+  checked by nothing that could have seen a buffer overflow. The lesson is
+  narrower than "audit harder": **an audit is bounded by the shape of probe
+  it brings**, and a refusal and a read are different shapes.
+
+  `char-at` and `char-code-at` had the same hole and were fixed straight
+  after, which is the part that says the lesson was learned rather than
+  noted: the first fix was to the builtin that had been demonstrated, and
+  the second came from asking which OTHER builtins index into a text. The
+  bound there is tighter by one -- there is no byte at index length, though
+  a zero-length slice at that position is legal.
+
+  Still unswept, and named so it is not mistaken for cleared: every other
+  builtin that takes an index or a length. This row now rests on three
+  measurements, not on the absence of a counter-example.
 - **Use-after-free**: `linear` types enforce exactly-once usage. Double-use
   is CDX2061. Leak is CDX2063.
 - **Integer overflow**: `Integer between L and H` with `wrapping`,
@@ -162,16 +217,58 @@ technical control.
 
 | Category | Provisions | Codex Coverage |
 |----------|:----------:|:--------------:|
-| 5.1 No default passwords | 3 | Satisfied — per-device Ed25519 identity, trust lattice |
-| 5.2 Vulnerability disclosure | 1 | Organizational — FactStore audit trail supports process |
-| 5.3 Software updates | 4 | Satisfied — OTA via LwM2M, signed CDX, anti-rollback |
-| 5.4 Credential storage | 4 | Satisfied — linear types, bare-metal (no OS-level leaks) |
-| 5.5 Secure communication | 3 | Satisfied — effect types enforce channels, TLS 1.3 |
-| 5.6 Attack surface | 5 | Satisfied — capability whitelisting, no OS/libc/shell |
-| 5.7 Software integrity | 2 | Satisfied — signed CDX, 5-phase verifier at boot |
-| 5.8 Personal data | 2 | Satisfied — linear types, effect-typed data flows |
-| 5.9 Resilience | 3 | Satisfied — `punctual` WCET, bounded integers, effect partitioning |
-| 5.10-5.13 | 6 | Mixed — some organizational, some mechanism |
+| 5.1 No default passwords | 3 | Satisfied -- per-device Ed25519 identity, trust lattice |
+| 5.2 Vulnerability disclosure | 1 | Organizational -- FactStore audit trail supports process |
+| 5.3 Software updates | 4 | Satisfied -- OTA via LwM2M, signed CDX, anti-rollback |
+| 5.4 Credential storage | 4 | Satisfied -- linear types, bare-metal (no OS-level leaks) |
+| 5.5 Secure communication | 3 | Satisfied -- effect types enforce channels, TLS 1.3 with peer authentication |
+| 5.6 Attack surface | 5 | Satisfied -- capability whitelisting, no OS/libc/shell |
+| 5.7 Software integrity | 2 | Satisfied -- signed CDX, 5-phase verifier at boot |
+| 5.8 Personal data | 2 | Satisfied -- linear types, effect-typed data flows |
+| 5.9 Resilience | 3 | Partial -- `punctual` structural bounds, declared integer bounds, effect partitioning |
+| 5.10-5.13 | 6 | Mixed -- some organizational, some mechanism, one withdrawn |
+
+**Five ETSI provisions were withdrawn on 2026-07-27** and this table's
+counts are the standard's, not a tally of what is met. The withdrawn set is
+5.4-2, 5.5-4, 5.5-6, 5.6-4 and 5.11-1; each named a mechanism that does not
+exist, and `docs/Reference/ETSI-303645-Mapping.md` records the measurement
+beside each one. Read that file before quoting a coverage figure from this
+one.
+
+### 5.5, withdrawn and re-earned on the same day
+
+This row is worth its own note because it was withdrawn on 2026-07-26
+and restored later the same day, and the reason is the point of this
+whole document.
+
+The claim had been "Satisfied -- effect types enforce channels, TLS
+1.3". The handshake was real, the record protection was real, the
+Ed25519 chain validation was real. **Nothing checked that the
+certificate belonged to the host the client dialled.** The client
+endpoint was never told which host it had dialled, so no code path
+could perform the check, and `tls-ep-authenticated` meant "validly
+signed by an anchor I trust" rather than "the server I asked for". A
+certificate issued by any trusted CA authenticated for every host in
+the world (RFC 8446 s4.4.2.4, RFC 6125). There was a check, of a sort:
+it compared a DER-encoded subject DN rather than a hostname, it was
+opt-in through a setter, it defaulted to "anything matches", and every
+caller in the tree left it unset.
+
+The claim was withdrawn, because a regulator reading "Satisfied"
+against a provision about secure communication is being told the
+transport authenticates its peer. Then it was fixed rather than
+reworded: `subjectAltName` is parsed, dNSName and iPAddress are matched
+per RFC 6125 with single-label wildcards, the expected name is a
+required parameter of the client endpoint, and `x509-verify-peer` --
+the function the transports call -- has no permissive mode, because an
+empty name matches nothing. There is no commonName fallback: a
+certificate that asserts no subjectAltName asserts no identity.
+
+The negative is the evidence. `codex/test/apps/tls-fetch-loopback`
+hands a client a genuine, unexpired, correctly signed certificate for
+`device.codex.test` while it is expecting `evil.codex.test`, and
+requires that it fail to authenticate. Sabotaged so the matcher always
+answers yes, that line reads True, which is what the old code did.
 
 ### The Bare-Metal Advantage
 
@@ -183,7 +280,7 @@ vendor forgot to disable.
 Codex firmware is a single signed CDX binary. There is no OS beneath
 it that you did not compile yourself. There is no C runtime. There is
 no dynamic linker. There is no shell. The attack surface is the code
-you wrote plus the code the compiler generated — and the compiler
+you wrote plus the code the compiler generated -- and the compiler
 itself is a fixed point of itself, so you can verify the toolchain too.
 
 ETSI 5.6 (minimize attack surface) is not an aspiration for Codex.
@@ -204,10 +301,10 @@ process requirements of IEC 62443-4-1.
 
 | SL | Meaning | Codex Posture |
 |----|---------|---------------|
-| SL 1 | Prevent casual or coincidental violation | Default — effect types, capability model |
+| SL 1 | Prevent casual or coincidental violation | Default -- effect types, capability model |
 | SL 2 | Prevent intentional violation using simple means | Signed CDX, trust lattice, linear resource discipline |
-| SL 3 | Prevent intentional violation using sophisticated means | Full: WCET proofs, formal verification path (dependent types), content-addressed binaries |
-| SL 4 | Prevent state-sponsored attack | Partial — requires hardware security module integration (future) |
+| SL 3 | Prevent intentional violation using sophisticated means | Full: `punctual` instruction-count bounds, formal verification path (dependent types), content-addressed binaries |
+| SL 4 | Prevent state-sponsored attack | Partial -- requires hardware security module integration (future) |
 
 ---
 
@@ -252,7 +349,7 @@ requirements across CRA Annex I (8), ETSI EN 303 645 (40), NISTIR
 8259A (5), and IEC 62443 (7) to the Codex features that satisfy each
 one. The
 `generate-evidence-report` function produces a text compliance summary
-as a build artifact — not a separate document that can drift, but a
+as a build artifact -- not a separate document that can drift, but a
 function that reads the actual compiler state and produces the actual
 evidence.
 
@@ -263,13 +360,13 @@ evidence.
 PTX is the right target for the dev box (RTX 4060 Ti) and NVIDIA data
 center GPUs. SPIR-V is the right target for the IoT edge:
 
-- **ARM Mali GPUs** (IoT gateways, Raspberry Pi) — Vulkan compute
-- **Qualcomm Adreno** (mobile/edge SoCs) — Vulkan compute
-- **Intel integrated GPUs** (industrial PCs) — Vulkan/OpenCL
-- **Imagination PowerVR** (automotive, embedded) — Vulkan compute
+- **ARM Mali GPUs** (IoT gateways, Raspberry Pi) -- Vulkan compute
+- **Qualcomm Adreno** (mobile/edge SoCs) -- Vulkan compute
+- **Intel integrated GPUs** (industrial PCs) -- Vulkan/OpenCL
+- **Imagination PowerVR** (automotive, embedded) -- Vulkan compute
 
 The dual-target approach means a single Codex source file produces
-firmware that runs GPU compute on whatever hardware is available —
+firmware that runs GPU compute on whatever hardware is available --
 NVIDIA in the data center, ARM Mali on the gateway, CPU on the sensor
 node. Same signed CDX, same trust chain, same effect-typed safety
 guarantees.
@@ -278,10 +375,10 @@ guarantees.
 
 ## Cross-References
 
-- `docs/Reference/CRA-Compliance-Matrix.md` — CRA requirement mapping
-- `docs/Reference/ETSI-303645-Mapping.md` — ETSI provision mapping
-- `docs/Reference/IEC62443-Evidence.md` — IEC 62443 evidence mapping
-- `docs/PM/IoT/` — compliance summaries, protocol references, hardware specs
-- `docs/PM/Stories/Vision/CodexIoTPlan.md` — IoT strategic prospectus
-- `codex/foreword/punctual/` — the punctual library (8 chapters)
-- `codex/foreword/core/ComplianceEvidence.codex` — automated evidence report
+- `docs/Reference/CRA-Compliance-Matrix.md` -- CRA requirement mapping
+- `docs/Reference/ETSI-303645-Mapping.md` -- ETSI provision mapping
+- `docs/Reference/IEC62443-Evidence.md` -- IEC 62443 evidence mapping
+- `docs/PM/IoT/` -- compliance summaries, protocol references, hardware specs
+- `docs/PM/Stories/Vision/CodexIoTPlan.md` -- IoT strategic prospectus
+- `codex/foreword/punctual/` -- the punctual library (8 chapters)
+- `codex/foreword/core/ComplianceEvidence.codex` -- automated evidence report

@@ -1,0 +1,356 @@
+Chapter: TerrainModel
+  cites Clouds chapter CloudModel
+  cites Water chapter OceanModel
+
+ A runnable model of triplanar-mapped terrain with height-blended layers.
+ A world position goes in, a lit surface colour comes out.
+
+ It cites both earlier waves, which is the pattern this library has settled
+ into rather than an accident: `OceanModel` carries the Real math kernel and
+ `V3`, `CloudModel` carries the lattice noise, the fractal sum, and `c-remap`.
+ Each wave adds only what it genuinely needs that no earlier one had, and
+ whole-program dead-code elimination drops the rest. Terrain adds a RIDGED
+ fractal sum, the triplanar projection itself, and the height blend.
+
+ The two techniques worth the name:
+
+   **Triplanar mapping** solves a problem that only exists because a
+   heightfield has no texture coordinates. Projecting a pattern straight
+   down works until the ground tilts, and on a cliff face a downward
+   projection smears into vertical streaks. Triplanar projects the pattern
+   three times, once down each axis, and blends the three by how much the
+   surface faces that axis. Nothing is ever stretched, because whichever
+   projection would stretch is exactly the one whose weight is near zero.
+
+   **Height blending** replaces a linear fade between two materials. A
+   lerp between rock and grass gives a soft grey band that looks like
+   neither, and it is the single most recognisable tell of a first terrain
+   shader. Blending on a per-material HEIGHT instead lets the taller
+   material win locally, so grass appears first in the hollows of the rock
+   and the boundary interlocks the way a real one does.
+
+Section: Ridged Noise
+
+ Mountains are not made of the same signal as hills. A plain fractal sum is
+ symmetric about its mean and gives rolling dunes; folding it about its
+ midpoint and squaring puts a CREASE at every ridge line, which is what
+ reads as a mountain. Both are summed here, because a landscape that is all
+ ridges is as wrong as one that is all dunes.
+
+  t-abs : Real -> Real
+  t-abs (x) = if x < 0.0 then 0.0 - x else x
+
+  t-ridge-one : V3, Real -> Real
+  t-ridge-one (p) (freq) =
+    let n = c-noise (v-scale p freq)
+    in let r = 1.0 - t-abs (2.0 * n - 1.0)
+    in r * r
+
+  t-ridge-acc : V3, Integer, Real, Real, Real, Real -> Real
+  t-ridge-acc (p) (octaves) (freq) (amp) (sum) (norm) =
+    if octaves <= 0 then (if norm ~ 0.0 then 0.0 else sum / norm)
+    else let s2 = sum + amp * t-ridge-one p freq
+    in let n2 = norm + amp
+    in t-ridge-acc p (octaves - 1) (freq * 2.0) (amp * 0.5) s2 n2
+
+  t-ridged : V3, Integer -> Real
+  t-ridged (p) (octaves) = t-ridge-acc p octaves 1.0 1.0 0.0 0.0
+
+Section: The Height Field
+
+ The noise is three-dimensional and the terrain is a function of two
+ coordinates, so the sample point rides the y = 0 plane. That is not a
+ workaround: a slice of a 3-D lattice noise is a perfectly good 2-D noise,
+ and reusing one implementation is worth more than a second one that only
+ takes two arguments.
+
+  t-at : Real, Real -> V3
+  t-at (x) (z) = V3 { x = x, y = 0.0, z = z }
+
+  t-height : Real, Real -> Real
+  t-height (x) (z) =
+    let p = t-at (x * terrain-freq) (z * terrain-freq)
+    in let ridges = t-ridged p terrain-ridge-octaves
+    in let rolling = c-fbm p terrain-roll-octaves
+    in let h = ridges * terrain-ridge-weight + rolling * terrain-roll-weight
+    in h * terrain-amplitude
+
+ The normal by central differences. The cross product of the two tangents
+ of a heightfield reduces to this, and taking the difference across the
+ sample rather than forward from it keeps the normal centred on the point
+ it belongs to.
+
+ The epsilon is a real parameter and not a formality. Too small and the
+ difference is lost in the noise of the fractal sum; too large and the
+ normal is an average over ground the shading is not standing on.
+
+  t-normal : Real, Real -> V3
+  t-normal (x) (z) =
+    let e = terrain-normal-eps
+    in let hl = t-height (x - e) z
+    in let hr = t-height (x + e) z
+    in let hd = t-height x (z - e)
+    in let hu = t-height x (z + e)
+    in v-norm (V3 { x = hl - hr, y = 2.0 * e, z = hd - hu })
+
+Section: Triplanar Projection
+
+ The blend weights. Each is how much the surface faces that axis, raised to
+ a sharpness and normalised so the three sum to one.
+
+ The sharpness is what makes the technique work rather than merely average.
+ At sharpness 1 all three projections contribute almost everywhere and the
+ result is a mush of three misaligned copies of the pattern. Raising it
+ concentrates the weight on the dominant axis, so a nearly flat surface is
+ nearly pure top projection and only genuinely diagonal ground blends.
+
+  t-tri-weights : V3 -> V3
+  t-tri-weights (n) =
+    let ax = w-powi (t-abs (n.x)) terrain-tri-sharpness
+    in let ay = w-powi (t-abs (n.y)) terrain-tri-sharpness
+    in let az = w-powi (t-abs (n.z)) terrain-tri-sharpness
+    in let s = ax + ay + az
+    in if s ~ 0.0 then V3 { x = 0.0, y = 1.0, z = 0.0 }
+    else V3 { x = ax / s, y = ay / s, z = az / s }
+
+ The pattern being projected. A procedural fractal sum stands in for what
+ would be a texture read on a GPU; the projection is the same either way,
+ and the point of the model is the projection.
+
+  t-pattern : Real, Real, Real -> Real
+  t-pattern (u) (v) (scale) =
+    let p = t-at (u * scale) (v * scale)
+    in c-fbm p terrain-detail-octaves
+
+ The projection itself. Note WHICH pair of coordinates each plane uses: the
+ x-facing projection is indexed by z and y, and drops x. Getting these
+ wrong is silent -- the image still looks textured -- and shows up only as a
+ pattern that slides along a cliff as the camera moves.
+
+  t-triplanar : V3, V3, Real -> Real
+  t-triplanar (p) (w) (scale) =
+    let sx = t-pattern (p.z) (p.y) scale
+    in let sy = t-pattern (p.x) (p.z) scale
+    in let sz = t-pattern (p.x) (p.y) scale
+    in sx * w.x + sy * w.y + sz * w.z
+
+Section: Height-Blended Layers
+
+ A material is a colour and a height. The height is what the blend competes
+ on, and it is why this is not a lerp.
+
+  Mat = record { col : V3, hgt : Real }
+
+ The blend. Add each material's height to its weight, take the larger, and
+ cut a threshold a fixed depth below it; whatever still stands above the
+ threshold contributes in proportion.
+
+ The consequence is that at an equal 50/50 weight the two materials do NOT
+ produce an even mix. Wherever material A's height texture is locally
+ higher it wins outright, and wherever B's is, B does, so the boundary
+ becomes an interlocking edge with the shape of the height textures rather
+ than a straight soft band. `terrain-splat-width` sets how wide the
+ contested zone is: at zero the transition is a hard cut following the
+ height fields, and widening it fades the edge back toward a lerp.
+
+  t-height-blend : Mat, Real, Mat, Real -> V3
+  t-height-blend (a) (wa) (b) (wb) =
+    let ka = wa + a.hgt * terrain-splat-depth
+    in let kb = wb + b.hgt * terrain-splat-depth
+    in let m = if ka > kb then ka else kb
+    in let d = m - terrain-splat-width
+    in let ba = if ka - d > 0.0 then ka - d else 0.0
+    in let bb = if kb - d > 0.0 then kb - d else 0.0
+    in let s = ba + bb
+    in if s ~ 0.0 then a.col
+    else let mixed = v-add (v-scale (a.col) ba) (v-scale (b.col) bb)
+    in v-scale mixed (1.0 / s)
+
+ The surface. Two blends, not one: rock against grass by SLOPE, and then
+ snow against that result by ALTITUDE. Both use the same operator, which is
+ the point -- the technique composes.
+
+ Slope comes from the normal's y component directly, which is the cosine of
+ the ground's tilt. Grass on shallow ground, rock where it steepens, and
+ the height blend puts the grass into the rock's hollows instead of drawing
+ a contour line between them.
+
+  t-surface : V3, V3 -> V3
+  t-surface (p) (n) =
+    let w = t-tri-weights n
+    in let detail = t-triplanar p w terrain-detail-scale
+    in let coarse = t-triplanar p w terrain-coarse-scale
+    in let splat = t-triplanar p w terrain-splat-scale
+    in let rock-col = v-lerp terrain-rock-dark terrain-rock-light detail
+    in let grass-col = v-lerp terrain-grass-dark terrain-grass-light coarse
+    in let rock = Mat { col = rock-col, hgt = splat }
+    in let grass = Mat { col = grass-col, hgt = 1.0 - splat }
+    in let slope = c-remap (n.y) terrain-slope-lo terrain-slope-hi 0.0 1.0
+    in let ground = t-height-blend grass slope rock (1.0 - slope)
+    in let alt = c-remap (p.y) terrain-snow-lo terrain-snow-hi 0.0 1.0
+    in let snow = Mat { col = terrain-snow-color, hgt = 1.0 - splat }
+    in let below = Mat { col = ground, hgt = splat }
+    in t-height-blend snow alt below (1.0 - alt)
+
+Section: Shading
+
+ Lambert against the sun plus a flat sky ambient. Deliberately plain: the
+ subject of this wave is what colour the surface IS, and a more elaborate
+ light would only make it harder to see whether the projection and the
+ blend are right.
+
+  t-shade : V3, V3 -> V3
+  t-shade (p) (n) =
+    let albedo = t-surface p n
+    in let ndl = w-sat (v-dot n (v-norm terrain-sun))
+    in let direct = v-scale terrain-sun-color ndl
+    in let light = v-add direct (v-scale terrain-sky-color terrain-ambient)
+    in V3 {
+      x = albedo.x * light.x,
+      y = albedo.y * light.y,
+      z = albedo.z * light.z
+    }
+
+Section: Scene Configuration
+
+ The field. Frequency is per metre, so it is small; amplitude is in metres.
+
+  terrain-freq : Real
+  terrain-freq = 0.0016
+
+  terrain-amplitude : Real
+  terrain-amplitude = 260.0
+
+  terrain-ridge-octaves : Integer
+  terrain-ridge-octaves = 5
+
+  terrain-roll-octaves : Integer
+  terrain-roll-octaves = 3
+
+  terrain-ridge-weight : Real
+  terrain-ridge-weight = 0.72
+
+  terrain-roll-weight : Real
+  terrain-roll-weight = 0.28
+
+  terrain-normal-eps : Real
+  terrain-normal-eps = 1.5
+
+ Projection and pattern.
+
+  terrain-tri-sharpness : Integer
+  terrain-tri-sharpness = 4
+
+  terrain-detail-octaves : Integer
+  terrain-detail-octaves = 2
+
+  terrain-detail-scale : Real
+  terrain-detail-scale = 0.09
+
+  terrain-coarse-scale : Real
+  terrain-coarse-scale = 0.021
+
+ The splat. Depth is how much a material's height counts against its
+ weight; width is how wide the contested zone is.
+
+  terrain-splat-depth : Real
+  terrain-splat-depth = 0.85
+
+  terrain-splat-width : Real
+  terrain-splat-width = 0.55
+
+ The scale of the height texture the blend competes on.
+
+ These three numbers, and the two ramp widths below, are the whole of the
+ TERRACING problem, which is worth setting down in full because the first
+ four attempts at it were wrong.
+
+ The symptom was stair-step contours across every slope. Two experiments
+ located it, and they are the useful part: rendering with a CONSTANT albedo
+ gave a perfectly smooth surface, which clears the height field, the
+ normals, and the march; rendering with the blends intact but FLAT material
+ colours kept the terraces, which clears the colour textures. What was left
+ was the blend itself.
+
+ The mechanism, once cornered, is arithmetic. A material wins where
+ `weight + depth * height` is larger, so the boundary lies where the
+ difference crosses zero. The weights here are slope and altitude, which
+ vary smoothly and slowly, so their zero crossing is a smooth contour of
+ the terrain -- a terrace -- unless the height term is large enough to
+ push the crossing around. A 2-octave normalised sum sits in roughly
+ [0.35, 0.65], so at the original depth of 0.5 it moved the boundary by
+ about +/-0.15 against weights spanning the full [-1, 1]. Far too little.
+
+ Raising the depth breaks the contour, and then two further things go
+ wrong in turn. Too fine a texture ALIASES: at 0.45 the features are about
+ two metres, a pixel two kilometres out covers eight, and the boundary
+ dissolves into per-pixel speckle. Too much depth OVERRIDES the weight
+ entirely, and snow appears in patches on low ground because its height
+ beat the altitude that was supposed to decide the matter. The settled
+ values keep the feature size above the pixel footprint at the distances
+ this scene actually renders, and keep the perturbation comparable to,
+ not larger than, the weight it perturbs.
+
+ The last piece is the ramps: `terrain-slope-lo/hi` and
+ `terrain-snow-lo/hi` were originally wide enough that most of the
+ landscape sat permanently in the contested zone, so the blend mottled
+ everything instead of acting at a boundary. Narrowing them puts most
+ ground decisively in one material and leaves the blend a thin band to
+ work in, which is where an interlocking edge is worth having.
+
+  terrain-splat-scale : Real
+  terrain-splat-scale = 0.05
+
+ Where the layers change hands.
+
+  terrain-slope-lo : Real
+  terrain-slope-lo = 0.76
+
+  terrain-slope-hi : Real
+  terrain-slope-hi = 0.88
+
+  terrain-snow-lo : Real
+  terrain-snow-lo = 178.0
+
+  terrain-snow-hi : Real
+  terrain-snow-hi = 208.0
+
+ Palette.
+
+  terrain-rock-dark : V3
+  terrain-rock-dark = V3 { x = 0.24, y = 0.22, z = 0.20 }
+
+  terrain-rock-light : V3
+  terrain-rock-light = V3 { x = 0.52, y = 0.49, z = 0.45 }
+
+  terrain-grass-dark : V3
+  terrain-grass-dark = V3 { x = 0.16, y = 0.26, z = 0.11 }
+
+  terrain-grass-light : V3
+  terrain-grass-light = V3 { x = 0.34, y = 0.46, z = 0.20 }
+
+  terrain-snow-color : V3
+  terrain-snow-color = V3 { x = 0.92, y = 0.94, z = 0.97 }
+
+ Light.
+
+  terrain-sun : V3
+  terrain-sun = V3 { x = 0.55, y = 0.62, z = 0.56 }
+
+  terrain-sun-color : V3
+  terrain-sun-color = V3 { x = 1.06, y = 0.99, z = 0.88 }
+
+  terrain-sky-color : V3
+  terrain-sky-color = V3 { x = 0.42, y = 0.55, z = 0.78 }
+
+  terrain-ambient : Real
+  terrain-ambient = 0.34
+
+Section: Where the drivers went
+
+ This chapter is a library and carries no entry point, for the same reason
+ `OceanModel` and `CloudModel` carry none: a chapter with an `opening`
+ cannot be cited by a program that has its own.
+
+ `TerrainSamples` reports the field and the blends at chosen points.
+ `TerrainRender` raymarches the heightfield into an image.

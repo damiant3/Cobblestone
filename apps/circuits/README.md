@@ -7,7 +7,7 @@ via codex-vm with GPU-accelerated routing and rendering, DiskFacts
 persistence, trust-lattice-signed design packages, and compile-time
 safety guarantees that no existing EDA tool can offer.
 
-Inspired by KiCad 10, Altium Designer, and OrCAD — but rebuilt from
+Inspired by KiCad 10, Altium Designer, and OrCAD -- but rebuilt from
 first principles in Codex, leveraging dependent types for electrical
 rule enforcement, linear types for resource-safe hardware interfaces,
 effect types for simulation isolation, and the full Codex platform
@@ -52,7 +52,7 @@ apps/circuits/
 - Interactive waveform viewer with cursors, measurements, FFT
 - SPICE model library with manufacturer device models
 - Effect-typed simulation: `[Simulate]` effect isolates simulation
-  state from design state — impossible to accidentally mutate the
+  state from design state -- impossible to accidentally mutate the
   schematic during a sim run
 - GPU-accelerated matrix solve for large circuits via `[Device]` effect
 
@@ -72,7 +72,7 @@ apps/circuits/
 
 ### Design Rule Checking (DRC)
 - Dependent-type net constraints: `NetClass "USB" { impedance = Ohm 90,
-  differential = True, max-skew = Picosecond 5 }` — violations are
+  differential = True, max-skew = Picosecond 5 }` -- violations are
   compile errors, not post-layout warnings
 - Clearance, width, via size, annular ring, hole-to-hole, silk-to-pad
 - Signal integrity: return path continuity, split plane crossing
@@ -114,7 +114,7 @@ apps/circuits/
 ### Workspace and Collaboration
 - Project manager with schematic, PCB, library, sim, output panes
 - Content-addressed version control via Codex repository protocol
-  (facts, proposals, verdicts — not file-based diffs)
+  (facts, proposals, verdicts -- not file-based diffs)
 - Real-time multi-user editing via gossip protocol mesh
 - Design review with inline annotations (CPL prose, not comments)
 - Change proposals with ERC/DRC gate (proposal cannot be accepted
@@ -131,7 +131,7 @@ in a list that you can ignore.
 In Codex Circuits, critical design rules are expressed as dependent
 types. A `Net` carries its electrical constraints in its type. A
 `Trace` that violates its net's impedance constraint cannot be
-constructed — it is a compile error, not a warning.
+constructed -- it is a compile error, not a warning.
 
 ```
 NetClass "DDR4-DQ" {
@@ -150,7 +150,7 @@ net class satisfies these constraints. A trace that is too narrow for
 ### 2. Simulation Isolation (Effect Types)
 
 A SPICE simulation reads the schematic but must never modify it. In
-traditional tools, simulation and editing share mutable state — a
+traditional tools, simulation and editing share mutable state -- a
 category of bugs that has plagued EDA software for decades.
 
 In Codex Circuits, simulation runs under the `[Simulate]` effect.
@@ -195,7 +195,7 @@ Components in the library are immutable, content-addressed facts in
 the Codex repository. When you place a 100nF 0402 capacitor, you are
 placing a specific, hash-identified version of that component. If
 someone publishes a corrected footprint, it is a new fact that
-supersedes the old one — but your design still references the version
+supersedes the old one -- but your design still references the version
 you placed, not the latest. Library updates are explicit proposals
 with engineering review, not silent overwrites.
 
@@ -232,7 +232,7 @@ the compliance evidence pipeline. The design package includes:
 Codex Circuits and the Codex compiler share the same platform. A
 board designed in Circuits with an STM32F4 MCU can have its firmware
 written in Codex, compiled by the seed, and flashed via the OTA
-update mechanism — all within one signed trust chain. The pin
+update mechanism -- all within one signed trust chain. The pin
 assignments in the schematic are available as typed constants in the
 firmware source. Change a pin assignment in the schematic, and the
 firmware sees a type error if it uses the old pin.
@@ -271,70 +271,70 @@ not compile. You must convert explicitly:
 ## Module Plan (50+ chapters)
 
 ### Core/ (8 chapters)
-- **CircuitUnits** — Physical unit types (mm, mil, ohm, farad, etc.)
-- **NetlistModel** — Net, pin, connection, netlist graph
-- **DesignRules** — DRC rule types, net class constraints, clearances
-- **StackUp** — PCB layer stack definition with material properties
-- **ComponentModel** — Unified component (symbol + footprint + model)
-- **DesignVariants** — Variant management (shared base, property deltas)
-- **ProjectModel** — Project, sheet hierarchy, cross-references
-- **CircuitSerializer** — JSON/binary serialization for all types
+- **CircuitUnits** -- Physical unit types (mm, mil, ohm, farad, etc.)
+- **NetlistModel** -- Net, pin, connection, netlist graph
+- **DesignRules** -- DRC rule types, net class constraints, clearances
+- **StackUp** -- PCB layer stack definition with material properties
+- **ComponentModel** -- Unified component (symbol + footprint + model)
+- **DesignVariants** -- Variant management (shared base, property deltas)
+- **ProjectModel** -- Project, sheet hierarchy, cross-references
+- **CircuitSerializer** -- JSON/binary serialization for all types
 
 ### SchematicEditor/ (7 chapters)
-- **SchematicModel** — Sheet, wire, bus, junction, label, power symbol
-- **SchematicRenderer** — Wire rendering, symbol painting, hop-overs
-- **SchematicRouter** — Auto-wire routing with junction insertion
-- **SchematicErc** — Electrical rules check (pin compatibility, floating nets)
-- **SchematicAnnotate** — Reference designator assignment and renumbering
-- **SchematicVariants** — Variant overlay on schematic properties
-- **SchematicEditor** — Editor state machine, tools, keyboard shortcuts
+- **SchematicModel** -- Sheet, wire, bus, junction, label, power symbol
+- **SchematicRenderer** -- Wire rendering, symbol painting, hop-overs
+- **SchematicRouter** -- Auto-wire routing with junction insertion
+- **SchematicErc** -- Electrical rules check (pin compatibility, floating nets)
+- **SchematicAnnotate** -- Reference designator assignment and renumbering
+- **SchematicVariants** -- Variant overlay on schematic properties
+- **SchematicEditor** -- Editor state machine, tools, keyboard shortcuts
 
 ### SymbolEditor/ (3 chapters)
-- **SymbolModel** — Pin geometry, body graphics, alternate styles
-- **SymbolRenderer** — Pin rendering, body shapes, text labels
-- **SymbolEditor** — Editor state, pin table, CSV import/export
+- **SymbolModel** -- Pin geometry, body graphics, alternate styles
+- **SymbolRenderer** -- Pin rendering, body shapes, text labels
+- **SymbolEditor** -- Editor state, pin table, CSV import/export
 
 ### Simulator/ (8 chapters)
-- **SpiceNetlist** — SPICE netlist generation from schematic
-- **SpiceModels** — Device model library (MOSFET, BJT, diode, etc.)
-- **DcAnalysis** — DC operating point and DC sweep solver
-- **AcAnalysis** — AC small-signal frequency response
-- **TransientAnalysis** — Time-domain transient solver (Gear/Trapezoidal)
-- **MonteCarloSim** — Statistical variation analysis
-- **WaveformViewer** — Interactive plot with cursors, FFT, measurements
-- **SimKernels** — GPU-accelerated sparse matrix solve (`[Device]` effect)
+- **SpiceNetlist** -- SPICE netlist generation from schematic
+- **SpiceModels** -- Device model library (MOSFET, BJT, diode, etc.)
+- **DcAnalysis** -- DC operating point and DC sweep solver
+- **AcAnalysis** -- AC small-signal frequency response
+- **TransientAnalysis** -- Time-domain transient solver (Gear/Trapezoidal)
+- **MonteCarloSim** -- Statistical variation analysis
+- **WaveformViewer** -- Interactive plot with cursors, FFT, measurements
+- **SimKernels** -- GPU-accelerated sparse matrix solve (`[Device]` effect)
 
 ### PcbEditor/ (10 chapters)
-- **PcbModel** — Board outline, layers, tracks, vias, zones, footprints
-- **PcbRenderer** — Multi-layer rendering with alpha blending, ratsnest
-- **InteractiveRouter** — Push-and-shove router with DRC-aware shove
-- **AutoRouter** — GPU-accelerated topological + A* hybrid router
-- **DifferentialPairs** — Diff pair routing, length matching, skew tuning
-- **CopperPour** — Zone fill with thermal relief, priority, hatching
-- **LengthTuning** — Serpentine/trombone tuning with time-domain targets
-- **PcbDrc** — Full design rule check engine (clearance, width, impedance)
-- **DesignBlocks** — Reusable board layout fragments
-- **PcbEditor** — Editor state, tool palette, layer manager
+- **PcbModel** -- Board outline, layers, tracks, vias, zones, footprints
+- **PcbRenderer** -- Multi-layer rendering with alpha blending, ratsnest
+- **InteractiveRouter** -- Push-and-shove router with DRC-aware shove
+- **AutoRouter** -- GPU-accelerated topological + A* hybrid router
+- **DifferentialPairs** -- Diff pair routing, length matching, skew tuning
+- **CopperPour** -- Zone fill with thermal relief, priority, hatching
+- **LengthTuning** -- Serpentine/trombone tuning with time-domain targets
+- **PcbDrc** -- Full design rule check engine (clearance, width, impedance)
+- **DesignBlocks** -- Reusable board layout fragments
+- **PcbEditor** -- Editor state, tool palette, layer manager
 
 ### FootprintEditor/ (3 chapters)
-- **FootprintModel** — Pad geometry, courtyard, fab layer, 3D anchor
-- **IpcLandPatterns** — IPC-7351 automatic footprint generation
-- **FootprintEditor** — Editor state, pad table, courtyard calculator
+- **FootprintModel** -- Pad geometry, courtyard, fab layer, 3D anchor
+- **IpcLandPatterns** -- IPC-7351 automatic footprint generation
+- **FootprintEditor** -- Editor state, pad table, courtyard calculator
 
 ### BoardViewer/ (4 chapters)
-- **BoardMesh** — PCB-to-3D mesh conversion (layer extrusion, vias)
-- **ComponentMesh** — 3D component models (parametric + imported)
-- **BoardRenderer3D** — GPU-accelerated 3D rendering with lighting
-- **MechanicalFit** — Enclosure overlay and interference detection
+- **BoardMesh** -- PCB-to-3D mesh conversion (layer extrusion, vias)
+- **ComponentMesh** -- 3D component models (parametric + imported)
+- **BoardRenderer3D** -- GPU-accelerated 3D rendering with lighting
+- **MechanicalFit** -- Enclosure overlay and interference detection
 
 ### Manufacturing/ (7 chapters)
-- **GerberWriter** — RS-274X Gerber generation per layer
-- **DrillWriter** — Excellon drill file generation
-- **OdbWriter** — ODB++ archive generation
-- **Ipc2581Writer** — IPC-2581 single-file package generation
-- **BomGenerator** — BOM with grouping, cross-reference, multi-format
-- **PickAndPlace** — Centroid file with rotation and side assignment
-- **Panelizer** — Step-and-repeat, V-score, tab-route panelization
+- **GerberWriter** -- RS-274X Gerber generation per layer
+- **DrillWriter** -- Excellon drill file generation
+- **OdbWriter** -- ODB++ archive generation
+- **Ipc2581Writer** -- IPC-2581 single-file package generation
+- **BomGenerator** -- BOM with grouping, cross-reference, multi-format
+- **PickAndPlace** -- Centroid file with rotation and side assignment
+- **Panelizer** -- Step-and-repeat, V-score, tab-route panelization
 
 ## Dependencies
 
@@ -354,15 +354,15 @@ not compile. You must convert explicitly:
 ```
 
 Key foreword usage:
-- **LinearAlgebra / Matrix4** — coordinate transforms, 3D projection
-- **Geometry / Bezier / Spline** — curve rendering, trace smoothing
-- **Quadtree / Octree** — spatial indexing for component lookup
-- **Rasterizer / Scene3D** — 3D board rendering
-- **Fft** — waveform FFT in simulator viewer
-- **GpuEffect / DeviceBuffer** — GPU autorouter and SPICE solver
-- **Json / Csv** — import/export
-- **Sha256 / Ed25519** — signed manufacturing packages
-- **FactStore** — content-addressed component library
+- **LinearAlgebra / Matrix4** -- coordinate transforms, 3D projection
+- **Geometry / Bezier / Spline** -- curve rendering, trace smoothing
+- **Quadtree / Octree** -- spatial indexing for component lookup
+- **Rasterizer / Scene3D** -- 3D board rendering
+- **Fft** -- waveform FFT in simulator viewer
+- **GpuEffect / DeviceBuffer** -- GPU autorouter and SPICE solver
+- **Json / Csv** -- import/export
+- **Sha256 / Ed25519** -- signed manufacturing packages
+- **FactStore** -- content-addressed component library
 
 ## Rendering Targets
 
@@ -375,11 +375,11 @@ Key foreword usage:
 
 ## Completeness
 
-0% — This is the design document. No code has been written yet.
+0% -- This is the design document. No code has been written yet.
 
 ## Codex Conformance
 
-Full — Will be written entirely in Codex. UI via Widget/Theme foreword.
+Full -- Will be written entirely in Codex. UI via Widget/Theme foreword.
 Simulation engine native (no ngspice dependency). GPU compute via
 `[Device]` effect. Persistence via DiskFacts. Manufacturing output
 via native writers (no external libraries).

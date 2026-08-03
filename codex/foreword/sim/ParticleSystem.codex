@@ -1,4 +1,5 @@
 Chapter: ParticleSystem
+  cites Foreword chapter Random
 
  Particle emitter and update system. Fixed-point (scale 1000).
  Particles have position, velocity, lifetime, and color. Emitter
@@ -46,19 +47,29 @@ Section: Emit
   psys-emit-loop (sys) (em) (num) (seed) (i) =
     if i >= num then sys
     else if sys.count >= sys.max-particles then sys
-    else let s = psys-hash seed i
-    in let spread = em.emit-spread
-    in let svx = em.emit-vx + psys-noise s spread
-    in let svy = em.emit-vy + psys-noise (s + 1000) spread
-    in let svz = em.emit-vz + psys-noise (s + 2000) spread
+    else let spread = em.emit-spread
+    in let svx = em.emit-vx + psys-noise (psys-hash seed (i * 3)) spread
+    in let svy = em.emit-vy + psys-noise (psys-hash seed (i * 3 + 1)) spread
+    in let svz = em.emit-vz + psys-noise (psys-hash seed (i * 3 + 2)) spread
     in let p = Particle { part-x = em.emit-x, part-y = em.emit-y, part-z = em.emit-z, part-vx = svx, part-vy = svy, part-vz = svz, part-life = em.emit-life, part-max-life = em.emit-life, part-color = em.emit-color }
     in psys-emit-loop (ParticleSystem { particles = list-push (sys.particles) p, count = __narrow (sys.count + 1), max-particles = sys.max-particles }) em num seed (i + 1)
 
+ Three velocity components used to come from ONE hash read at s, s + 1000 and
+ s + 2000. psys-noise takes a remainder, so adding a constant to the hash adds
+ a constant to the answer, and every particle emitted got the SAME y minus x
+ offset: measured at a spread of 100, 200 particles out of 200 shared it, and
+ at a spread of 64, 168 of 200. Particles fanned along a line rather than a
+ cone. Each component now draws its own hash.
+
+ The marginal spread was FINE throughout, at 24 24 24 24 26 25 27 26 across
+ eight buckets, so a distribution check could not have found this and did not.
+ The defect was in the joint distribution. That is the general warning: an even
+ histogram says nothing about whether two draws are independent.
+
   psys-hash : Integer, Integer -> Integer
   psys-hash (seed) (i) =
-    let h = bit-xor (seed * 2654435761) (i * 40503)
-    in let positive = if h < 0 then -h else h
-    in positive
+    let h = mix-bits seed i
+    in if h < 0 then -h else h
 
   psys-noise : Integer, Integer -> Integer
   psys-noise (hash-val) (spread) =

@@ -1,0 +1,76 @@
+Chapter: GopStrideTest
+  cites Works chapter GopDraw
+
+ A framebuffer scanline can be wider than the visible width. Damian's ASUS
+ TUF reports HorizontalResolution 1920 with PixelsPerScanLine 2048, so 128
+ pixels of every row are off-screen padding, and firmware chooses that
+ number rather than the payload. Measured on the glass 2026-07-29, rung 1 of
+ the hardware sitting.
+
+ 800 visible against a 928-pixel scanline reproduces the same geometry
+ small: 128 pixels of padding, the ASUS's own figure, at a size that fits a
+ test buffer.
+
+ The discriminator is the first padding pixel of row 0, at scanline offset
+ 800. Stepping rows by the stride never touches it. Stepping rows by the
+ visible width puts the start of row 1 exactly there, because 1 * 800 = 800.
+ So one pixel tells the two implementations apart, and the last row's origin
+ at 7 * 928 is unreachable by a width-stepping walk at all.
+
+ The final case is the instrument's calibration and it is the reason to
+ trust the rows above it: the same fill is asked for the wrong pitch, and
+ the discriminator has to flip. Without it every assertion here would be
+ satisfied by a buffer nothing had written to.
+
+Section: Geometry
+
+  vis-w : Integer = 800
+  fb-stride : Integer = 928
+  fb-rows : Integer = 8
+  fill-colour : Integer = 11189196
+  buf-bytes : Integer = 29696
+
+Section: Helpers
+
+  zero-fill : Integer, Integer, Integer -> Integer
+  zero-fill (b) (i) (n) =
+    if i >= n then 0 else let p = poke-32 b i 0 in zero-fill b (i + 4) n
+
+  at : Integer, Integer, Integer, Integer -> Integer
+  at (b) (stride) (x) (y) = peek-32 b ((y * stride + x) * 4)
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+Section: Main
+
+  opening : [Console] Nothing = act
+    let b = __heap-save
+    in let adv = __heap-advance (buf-bytes + 256)
+    in act
+      let z = zero-fill b 0 buf-bytes
+      in let good = gop-fill-rect b fb-stride 0 0 vis-w fb-rows fill-colour
+      in act
+        print-line-uni ("stride fill: row0 last visible = "
+          & yn (at b fb-stride (vis-w - 1) 0 == fill-colour))
+        print-line-uni ("stride fill: row0 first padding untouched = "
+          & yn (at b fb-stride vis-w 0 == 0))
+        print-line-uni ("stride fill: last row origin painted = "
+          & yn (at b fb-stride 0 (fb-rows - 1) == fill-colour))
+        print-line-uni ("stride fill: last row padding untouched = "
+          & yn (at b fb-stride vis-w (fb-rows - 1) == 0))
+      end
+      let z2 = zero-fill b 0 buf-bytes
+      in let pt = gop-put b fb-stride 5 3 fill-colour
+      in print-line-uni ("stride put: lands at stride offset = "
+          & yn (at b fb-stride 5 3 == fill-colour))
+      let z3 = zero-fill b 0 buf-bytes
+      in let bad = gop-fill-rect b vis-w 0 0 vis-w fb-rows fill-colour
+      in act
+        print-line-uni ("CALIBRATION width-pitch fill clobbers the padding = "
+          & yn (at b fb-stride vis-w 0 == fill-colour))
+        print-line-uni ("CALIBRATION width-pitch fill misses the last row = "
+          & yn (at b fb-stride 0 (fb-rows - 1) == 0))
+      end
+    end
+  end

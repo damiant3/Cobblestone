@@ -51,41 +51,32 @@ Section: Control Flow
    in let st9 = rv-patch-insn st8 j-end (rv-j ((end-label - j-end) * 4))
    in RvEmitResult { state = st9, reg = result-r.reg }
 
-  rv-emit-is-letter : RvState, IRExpr -> RvEmitResult
-  rv-emit-is-letter (st) (arg) =
-   let vr = rv-emit-expr st arg
-   in let tr = rv-alloc-temp (vr.state)
-   in let st1 = rv-emit (tr.state) (rv-addi (tr.reg) (vr.reg) (0 - 65))
-   in let hi-r = rv-alloc-temp st1
-   in let st2 = rv-emit-li (hi-r.state) (hi-r.reg) 26
-   in let upper-r = rv-alloc-temp st2
-   in let st3 = rv-emit (upper-r.state) (rv-sltu (upper-r.reg) (tr.reg) (hi-r.reg))
-   in let st4 = rv-emit st3 (rv-addi (tr.reg) (vr.reg) (0 - 97))
-   in let lower-r = rv-alloc-temp st4
-   in let st5 = rv-emit (lower-r.state) (rv-sltu (lower-r.reg) (tr.reg) (hi-r.reg))
-   in RvEmitResult { state = rv-emit st5 (rv-or (upper-r.reg) (upper-r.reg) (lower-r.reg)), reg = upper-r.reg }
+ A letter is TWO bands, because CCE's punctuation sits between them: 13..64
+ is the ASCII lower and upper, 65..96 the punctuation and symbols, and
+ 97..127 the sixteen accented Latin letters and fifteen Cyrillic ones. One
+ band cannot express that, which is why is-letter needs this and is-digit
+ does not.
 
-  rv-emit-is-whitespace : RvState, IRExpr -> RvEmitResult
-  rv-emit-is-whitespace (st) (arg) =
+ The operand is read by the two adds and never again. `rv-alloc-temp` rotates
+ a pool of FOUR registers, so a fourth allocation after the operand's own
+ would be handed the operand's register back; three temps is the budget that
+ keeps the result from landing on a value still to be read. RV64 has no
+ set-less-than-immediate-unsigned here, so the width takes the third temp and
+ is loaded twice rather than held in a fourth.
+
+  rv-emit-is-char-class2 : RvState, IRExpr, Integer, Integer, Integer, Integer -> RvEmitResult
+  rv-emit-is-char-class2 (st) (arg) (lo1) (hi1) (lo2) (hi2) =
    let vr = rv-emit-expr st arg
-   in let result-r = rv-alloc-temp (vr.state)
-   in let sp-r = rv-alloc-temp (result-r.state)
-   in let st1 = rv-emit-li (sp-r.state) (sp-r.reg) 32
-   in let st2 = rv-emit st1 (rv-sub (result-r.reg) (vr.reg) (sp-r.reg))
-   in let st3 = rv-emit st2 (rv-sltu (result-r.reg) rv-zero (result-r.reg))
-   in let st4 = rv-emit st3 (rv-xori (result-r.reg) (result-r.reg) 1)
-   in let tab-r = rv-alloc-temp st4
-   in let st5 = rv-emit-li (tab-r.state) (tab-r.reg) 9
-   in let st6 = rv-emit st5 (rv-sub (tab-r.reg) (vr.reg) (tab-r.reg))
-   in let st7 = rv-emit st6 (rv-sltu (tab-r.reg) rv-zero (tab-r.reg))
-   in let st8 = rv-emit st7 (rv-xori (tab-r.reg) (tab-r.reg) 1)
-   in let st9 = rv-emit st8 (rv-or (result-r.reg) (result-r.reg) (tab-r.reg))
-   in let lf-r = rv-alloc-temp st9
-   in let st10 = rv-emit-li (lf-r.state) (lf-r.reg) 10
-   in let st11 = rv-emit st10 (rv-sub (lf-r.reg) (vr.reg) (lf-r.reg))
-   in let st12 = rv-emit st11 (rv-sltu (lf-r.reg) rv-zero (lf-r.reg))
-   in let st13 = rv-emit st12 (rv-xori (lf-r.reg) (lf-r.reg) 1)
-   in RvEmitResult { state = rv-emit st13 (rv-or (result-r.reg) (result-r.reg) (lf-r.reg)), reg = result-r.reg }
+   in let t1 = rv-alloc-temp (vr.state)
+   in let t2 = rv-alloc-temp (t1.state)
+   in let st1 = rv-emit (t2.state) (rv-addi (t1.reg) (vr.reg) (0 - lo1))
+   in let st2 = rv-emit st1 (rv-addi (t2.reg) (vr.reg) (0 - lo2))
+   in let wr = rv-alloc-temp st2
+   in let st3 = rv-emit-li (wr.state) (wr.reg) (hi1 - lo1 + 1)
+   in let st4 = rv-emit st3 (rv-sltu (t1.reg) (t1.reg) (wr.reg))
+   in let st5 = rv-emit-li st4 (wr.reg) (hi2 - lo2 + 1)
+   in let st6 = rv-emit st5 (rv-sltu (t2.reg) (t2.reg) (wr.reg))
+   in RvEmitResult { state = rv-emit st6 (rv-or (t1.reg) (t1.reg) (t2.reg)), reg = t1.reg }
 
   rv-emit-abs : RvState, IRExpr -> RvEmitResult
   rv-emit-abs (st) (arg) =
@@ -416,6 +407,8 @@ Section: Control Flow
    in when cond
     is IrBinary (op) (left) (right) (ty) (s) ->
      if rv-is-text-type (ir-expr-type left) then rv-emit-if-val st saved-tail cond th el
+     else if rv-is-real-type (ir-expr-type left) then rv-emit-if-val st saved-tail cond th el
+     else if rv-is-real-approx-type (ir-expr-type left) then rv-emit-if-val st saved-tail cond th el
      else if rv-is-zero-lit right then
       when op
        is IrEq ->
@@ -514,10 +507,11 @@ Section: Try-Fail
    in let st0b = rv-emit-li st0a rv-t4 ctr-addr
    in let st1 = rv-emit st0b (rv-sd rv-t4 rv-t3 0)
    in let retry-loop = st1.insn-count
+   in let try-locals = st1.locals
    in let st2 = rv-emit-li st1 rv-t3 flag-addr
    in let st3 = rv-emit st2 (rv-sd rv-t3 rv-zero 0)
    in let body-r = rv-emit-act st3 body
-   in let st4 = rv-emit-li (body-r.state) rv-t3 flag-addr
+   in let st4 = rv-emit-li (__record-set (body-r.state) "locals" try-locals) rv-t3 flag-addr
    in let st5 = rv-emit st4 (rv-ld rv-t3 rv-t3 0)
    in let beq-done-idx = st5.insn-count
    in let st6 = rv-emit st5 rv-nop
@@ -529,8 +523,9 @@ Section: Try-Fail
    in let st8 = rv-emit st7a rv-nop
    in let fb-r = if list-length fb > 0 then rv-emit-act st8 fb
     else RvEmitResult { state = st8, reg = rv-zero }
-   in let done-idx = (fb-r.state).insn-count
-   in let st9 = rv-patch-insn (fb-r.state) beq-done-idx (rv-beq rv-t3 rv-zero ((done-idx - beq-done-idx) * 4))
+   in let fb-st = __record-set (fb-r.state) "locals" try-locals
+   in let done-idx = fb-st.insn-count
+   in let st9 = rv-patch-insn fb-st beq-done-idx (rv-beq rv-t3 rv-zero ((done-idx - beq-done-idx) * 4))
    in let st10 = rv-patch-insn st9 bne-retry-idx (rv-bne rv-t4 rv-zero ((retry-loop - bne-retry-idx) * 4))
    in RvEmitResult { state = st10, reg = rv-zero }
 
@@ -553,14 +548,13 @@ Section: Apply
      else if name == "vec4-extract" & list-length args == 2
       then rv-emit-vec-extract st-nt (list-at args 0) (list-at args 1)
      else if name == "show" & list-length args == 1
-      then when ir-expr-type (list-at args 0)
+      then when rv-strip-unit-ty (ir-expr-type (list-at args 0))
        is BooleanTy -> rv-emit-show-bool st-nt (list-at args 0)
        is TextTy -> rv-emit-expr st-nt (list-at args 0)
        is CharTy -> rv-emit-single-arg-call st-nt "char-to-text" (list-at args 0)
-       is RealTy -> rv-emit-single-arg-call st-nt "__real_to_text" (list-at args 0)
-       is RealApproxTy -> rv-emit-show-real-approx st-nt (list-at args 0)
-       is RealTrappingTy -> rv-emit-single-arg-call st-nt "__real_to_text" (list-at args 0)
-       is RealSaturatingTy -> rv-emit-single-arg-call st-nt "__real_to_text" (list-at args 0)
+       is RealTy (rw) (rm) ->
+        if is-width-f32 rw then rv-emit-show-real-approx st-nt (list-at args 0)
+        else rv-emit-single-arg-call st-nt "__real_to_text" (list-at args 0)
        is ListTy (et) -> rv-emit-text-lit st-nt "<list>"
        is RecordTy (rn) (ra) (rf) -> rv-emit-text-lit st-nt "<record>"
        is otherwise -> rv-emit-single-arg-call st-nt "integer-to-text" (list-at args 0)
@@ -848,7 +842,7 @@ Section: Apply
   rv-emit-direct-call (st) (name) (args) =
    if name == "math-mod" & list-length args == 2 then
     let p2mm = rv-pow2-lit (list-at args 1)
-    in if p2mm > 1 then rv-emit-rem-pow2 st (list-at args 0) p2mm
+    in if p2mm > 1 & rv-pow2-dividend-nonneg (list-at args 0) then rv-emit-rem-pow2 st (list-at args 0) p2mm
     else rv-emit-two-arg-binop st (list-at args 0) (list-at args 1) rv-rem
    else if name == "int-mod" & list-length args == 2 then rv-emit-int-mod st (list-at args 0) (list-at args 1)
    else let user-fn = rv-find-func-offset (st.func-names) (st.func-offsets) name 0
@@ -890,8 +884,8 @@ Section: Apply
    else if name == "bit-shl" & list-length args == 2 then rv-emit-bit-binop st (list-at args 0) (list-at args 1) "shl"
    else if name == "bit-shru" & list-length args == 2 then rv-emit-bit-binop st (list-at args 0) (list-at args 1) "shru"
    else if name == "is-digit" & list-length args == 1 then rv-emit-is-char-class st (list-at args 0) 3 12
-   else if name == "is-letter" & list-length args == 1 then rv-emit-is-char-class st (list-at args 0) 13 64
-   else if name == "is-whitespace" & list-length args == 1 then rv-emit-is-char-class st (list-at args 0) 2 2
+   else if name == "is-letter" & list-length args == 1 then rv-emit-is-char-class2 st (list-at args 0) 13 64 97 127
+   else if name == "is-whitespace" & list-length args == 1 then rv-emit-is-char-class st (list-at args 0) 1 2
    else if name == "real-from-int" & list-length args == 1 then rv-emit-real-from-int st (list-at args 0)
    else if name == "real-to-int" & list-length args == 1 then rv-emit-real-to-int st (list-at args 0)
    else if name == "real-approx-from-int" & list-length args == 1 then rv-emit-real-approx-from-int st (list-at args 0)
@@ -960,6 +954,12 @@ Section: Apply
    else if name == "prof-dump" then rv-emit-int-lit st 0
    else if name == "__self-type-defs" then rv-emit-int-lit st 0
    else if name == "uefi-read-file" & list-length args == 1 then rv-emit-unsupported-read st "uefi-read-file"
+   else if name == "cpu-read-cr0" then rv-emit-unsupported-cpu st "cpu-read-cr0"
+   else if name == "cpu-read-cr3" then rv-emit-unsupported-cpu st "cpu-read-cr3"
+   else if name == "cpu-cpuid-eax" then rv-emit-unsupported-cpu st "cpu-cpuid-eax"
+   else if name == "cpu-cpuid-ebx" then rv-emit-unsupported-cpu st "cpu-cpuid-ebx"
+   else if name == "cpu-cpuid-ecx" then rv-emit-unsupported-cpu st "cpu-cpuid-ecx"
+   else if name == "cpu-cpuid-edx" then rv-emit-unsupported-cpu st "cpu-cpuid-edx"
    else if name == "port-in-byte" then rv-emit-unsupported-port st "port-in-byte"
    else if name == "port-out-byte" then rv-emit-unsupported-port st "port-out-byte"
    else if name == "port-in-16" then rv-emit-unsupported-port st "port-in-16"
@@ -970,6 +970,18 @@ Section: Apply
    else if name == "gpu-out" then rv-emit-unsupported-port st "gpu-out"
    else if name == "gpu-mem-read" then rv-emit-unsupported-port st "gpu-mem-read"
    else if name == "gpu-mem-write" then rv-emit-unsupported-port st "gpu-mem-write"
+   else if name == "__list-len" then rv-emit-unsupported-list st "__list-len"
+   else if name == "__list-head" then rv-emit-unsupported-list st "__list-head"
+   else if name == "__list-tail" then rv-emit-unsupported-list st "__list-tail"
+   else if name == "process-get-pid" then rv-emit-int-lit st 0
+   else if name == "process-get-scope" & list-length args == 1 then rv-emit-empty-text st
+   else if name == "process-get-network-scope" & list-length args == 1 then rv-emit-empty-text st
+   else if name == "process-set-scope" & list-length args == 2 then rv-emit-int-lit st (0 - 1)
+   else if name == "process-set-network-scope" & list-length args == 2 then rv-emit-int-lit st (0 - 1)
+   else if name == "process-get-cap" & list-length args == 1 then rv-emit-int-lit st 0
+   else if name == "process-restrict-cap" & list-length args == 2 then rv-emit-int-lit st (0 - 1)
+   else if name == "net-send-raw" & list-length args == 2 then rv-emit-int-lit st 0
+   else if name == "net-recv-raw" & list-length args == 1 then rv-emit-int-lit st 0
    else if name == "text-replace" & list-length args == 3 then rv-emit-three-arg-call st "text-replace" args
    else if name == "text-split" & list-length args == 2 then rv-emit-two-arg-call st "text-split" (list-at args 0) (list-at args 1)
    else if name == "__buf-write-byte" & list-length args == 3 then rv-emit-three-arg-call st "__buf-write-byte" args
@@ -988,7 +1000,7 @@ Section: Apply
    else if name == "mask-count" & list-length args == 1 then rv-emit-mask-count st (list-at args 0)
    else if name == "text-to-unicode-bytes" & list-length args == 1 then rv-emit-single-arg-call st "__text_to_unicode_bytes" (list-at args 0)
    else if name == "unicode-bytes-to-text" & list-length args == 1 then rv-emit-single-arg-call st "__unicode_bytes_to_text" (list-at args 0)
-   else if name == "vec4-splat" & list-length args == 1 then rv-emit-vec-splat st (list-at args 0) (VectorTy 4 RealApproxTy)
+   else if name == "vec4-splat" & list-length args == 1 then rv-emit-vec-splat st (list-at args 0) (VectorTy 4 real-f32)
    else if name == "vec4-extract" & list-length args == 2 then rv-emit-vec-extract st (list-at args 0) (list-at args 1)
    else if list-length args == 1 then rv-emit-single-arg-call st name (list-at args 0)
    else if list-length args == 2 then rv-emit-two-arg-call st name (list-at args 0) (list-at args 1)

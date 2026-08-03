@@ -11,8 +11,8 @@ A podcast client with a subscription sidebar, a main content area showing subscr
 
 ## Completeness
 
-35% — UI layout is fully specified and visually detailed. No handler logic is wired: play/pause does not toggle, episode selection does not update the player, navigation tabs do not switch views. Progress bar is a hardcoded CSS width.
+35% -- UI layout is fully specified and visually detailed. No handler logic is wired: play/pause does not toggle, episode selection does not update the player, navigation tabs do not switch views. Progress bar is a hardcoded CSS width.
 
 ## Codex Conformance
 
-Partial — Codex source with platform stubs. Audio playback would require a media plug.
+Partial -- Codex source with platform stubs. Audio playback would require a media plug.

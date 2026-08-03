@@ -1,0 +1,146 @@
+Chapter: TextFieldTyping
+  cites UI chapter TextField
+  cites UI chapter KeyInput
+
+ A text field must give back what was typed into it. That is the whole
+ identity, it needs no external oracle, and nothing in the tree had ever
+ asked for it. Four chapters cite UI chapter TextField -- AddressBar,
+ Browser, DiffusionApp and TrackerApp -- and not one of them calls a
+ single function from it, so every function compiled and none was run.
+
+ Keys are typed as the code points of a real Text, read out with
+ char-code, because that is what a key identity IS: KeyInput settles the
+ contract, a character is its CCE code point and an editing key is a
+ named constant above two to the twentieth.
+
+ The stolen line is the regression pin. CCE orders letters by English
+ frequency, so before the dispatch was fixed the printable gate at 32
+ discarded nineteen of the twenty-six lowercase letters, every digit and
+ the space bar, and the four characters whose code points collided with
+ the old navigation numbers were stolen outright: j was end, x was home,
+ q was left, E was right and the digit five was a backspace. Those six
+ characters are typed here and must come back.
+
+ The ascii line is kept as the boundary statement. Feeding the ASCII
+ numbers for H and i inserts two characters that are not H and i,
+ because the field reads a key as CCE, and a caller that hands it ASCII
+ gets plausible text that is silently wrong.
+
+ The unfocused line is the control. A field nobody focused must still be
+ empty after the same keys, so a run where every line came back populated
+ would be reporting a dispatch that ignores focus.
+
+ We say:
+
+Section: Helpers
+
+  type-text : TextFieldState, Text, Integer, Integer -> TextFieldState
+  type-text (tf) (s) (i) (n) =
+    if i >= n then tf
+    else type-text (text-field-handle-key tf (char-code (char-at s i)) 0) s (i + 1) n
+
+  codes-of : Text, Integer, Integer, Text -> Text
+  codes-of (s) (i) (n) (acc) =
+    if i >= n then acc
+    else codes-of s (i + 1) n (acc & " " & show (char-code (char-at s i)))
+
+Section: The round trip
+
+  test-typed : Text =
+    let tf = text-field-focus (text-field-new "f")
+    in let out = type-text tf "Hi" 0 2
+    in let v = text-field-value out
+    in "typed=" & v & " len=" & show (text-length v) & " cursor=" & show (text-field-cursor out)
+
+  test-sentence : Text =
+    let tf = text-field-focus (text-field-new "f")
+    in let out = type-text tf "the quick brown fox 42" 0 22
+    in let v = text-field-value out
+    in "sentence=" & v & " len=" & show (text-length v)
+
+Section: The characters the old dispatch ate
+
+  test-stolen : Text =
+    let tf = text-field-focus (text-field-new "f")
+    in let out = type-text tf "jxqE5" 0 5
+    in let v = text-field-value out
+    in "stolen=" & v & " len=" & show (text-length v)
+
+  test-space-digits : Text =
+    let tf = text-field-focus (text-field-new "f")
+    in let out = type-text tf "a 1" 0 3
+    in let v = text-field-value out
+    in "space-digits=" & v & " len=" & show (text-length v) & " codes=" & codes-of v 0 (text-length v) ""
+
+Section: An ASCII key number is not a character here
+
+  test-ascii : Text =
+    let tf = text-field-focus (text-field-new "f")
+    in let a = text-field-handle-key tf 72 0
+    in let b = text-field-handle-key a 105 0
+    in let v = text-field-value b
+    in "ascii-len=" & show (text-length v) & " ascii-codes=" & codes-of v 0 (text-length v) "" & " want-Hi=" & codes-of "Hi" 0 2 ""
+
+Section: A named key is not typed into the text
+
+  test-named-ignored : Text =
+    let tf = text-field-focus (text-field-new "f")
+    in let typed = type-text tf "ok" 0 2
+    in let out = text-field-handle-key typed key-f1 0
+    in let v = text-field-value out
+    in "named-ignored=" & v & " len=" & show (text-length v)
+
+Section: Focus is the gate
+
+  test-unfocused : Text =
+    let tf = text-field-new "f"
+    in let out = type-text tf "Hi" 0 2
+    in let v = text-field-value out
+    in "unfocused-len=" & show (text-length v) & " cursor=" & show (text-field-cursor out)
+
+Section: Editing
+
+  test-backspace : Text =
+    let tf = text-field-focus (text-field-new "f")
+    in let typed = type-text tf "Hi" 0 2
+    in let out = text-field-handle-key typed key-backspace 0
+    in "backspace=" & text-field-value out & " cursor=" & show (text-field-cursor out)
+
+Section: Navigation
+
+ The cursor is read into a Text the moment each key lands. TextFieldState
+ is updated with __record-set, which stores into the field and returns the
+ SAME record, so a binding made before a later edit is not a snapshot of
+ the state before it -- reading home's cursor after end had been pressed
+ reported the end position, which is the aliasing contract and not a
+ navigation defect.
+
+  test-navigation : Text =
+    let tf = text-field-focus (text-field-with-text "f" "abc")
+    in let start = show (text-field-cursor tf)
+    in let h = show (text-field-cursor (text-field-handle-key tf key-home 0))
+    in let e = show (text-field-cursor (text-field-handle-key tf key-end 0))
+    in "start=" & start & " home=" & h & " end=" & e
+
+Section: The length bound holds
+
+  test-maxlen : Text =
+    let tf = text-field-set-max-length (text-field-focus (text-field-new "f")) 2
+    in let out = type-text tf "abc" 0 3
+    in let v = text-field-value out
+    in "maxlen=" & v & " len=" & show (text-length v)
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni test-typed
+    print-line-uni test-sentence
+    print-line-uni test-stolen
+    print-line-uni test-space-digits
+    print-line-uni test-ascii
+    print-line-uni test-named-ignored
+    print-line-uni test-unfocused
+    print-line-uni test-backspace
+    print-line-uni test-navigation
+    print-line-uni test-maxlen
+  end

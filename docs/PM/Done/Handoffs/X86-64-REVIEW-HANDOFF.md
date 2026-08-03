@@ -1,4 +1,4 @@
-# x86-64 Backend Review & Merge — Handoff Summary
+# x86-64 Backend Review & Merge -- Handoff Summary
 
 **Date**: 2026-03-23 (verified via `Get-Date`)
 **Agent**: Copilot (VS 2022, Windows)
@@ -43,7 +43,7 @@ Spill offset math (`StoreLocal`/`LoadLocal`) confirmed correct:
 
 - **Build**: zero warnings, zero errors on x86-64 project and all dependencies.
 - **Tests**: 414/414 passed in main suite. 1 pre-existing failure in `Codex.AgentToolkit.Tests`
-  (`Peek_non_numeric_start_does_not_crash` — `ArgumentOutOfRangeException` in `format_lines_loop`,
+  (`Peek_non_numeric_start_does_not_crash` -- `ArgumentOutOfRangeException` in `format_lines_loop`,
   completely unrelated to x86-64 changes).
 
 ### Task 3: Cleanup
@@ -61,21 +61,21 @@ Merged `cam/x86-64-backend` into `master` via `--no-ff` and pushed to `origin/ma
 ## x86-64 Backend Status
 
 ### Working
-- **Encoder** (`X86_64Encoder.cs`): Full instruction set — MOV, ADD, SUB, IMUL, IDIV, CMP, TEST,
+- **Encoder** (`X86_64Encoder.cs`): Full instruction set -- MOV, ADD, SUB, IMUL, IDIV, CMP, TEST,
   Jcc, CALL, RET, PUSH, POP, LEA, SYSCALL, SETCC, MOVZX, shifts, bitwise ops.
 - **ELF writer** (`ElfWriterX86_64.cs`): Generates Linux x86-64 ELF binaries (~4KB).
-- **Codegen** (`X86_64CodeGen.cs`): All IR nodes — literals, binary ops, if/else, let, do, apply,
+- **Codegen** (`X86_64CodeGen.cs`): All IR nodes -- literals, binary ops, if/else, let, do, apply,
   records, field access, pattern matching (wildcard, var, literal, ctor), lists, regions, escape copy.
 - **Frame layout**: Fixed. Callee-saved pushes before `sub rsp`.
 - **Runtime helpers**: `__itoa`, `__str_concat`, `__str_eq`, `__escape_text` (stubs wired).
 - **CLI wiring**: `--target x86-64` flag in `Program.Build.cs`.
 
 ### Stubbed / TODO
-- `__read_file`, `__text_to_int` — wired but return 0.
-- Per-type escape copy helpers (record/list/sum) — architecture wired, drain-queue emits stubs.
-- Closures / partial application — not yet implemented.
-- Large frame sizes (>127 bytes spill space) — needs imm32 encoding in prologue patch.
-- `__str_concat` / `__str_eq` — stubs, need byte-level implementation.
+- `__read_file`, `__text_to_int` -- wired but return 0.
+- Per-type escape copy helpers (record/list/sum) -- architecture wired, drain-queue emits stubs.
+- Closures / partial application -- not yet implemented.
+- Large frame sizes (>127 bytes spill space) -- needs imm32 encoding in prologue patch.
+- `__str_concat` / `__str_eq` -- stubs, need byte-level implementation.
 
 ### Next Steps
 1. **QEMU verification**: `qemu-x86_64 ./hello` on Linux sandbox (or native WSL).
@@ -89,7 +89,7 @@ Merged `cam/x86-64-backend` into `master` via `--no-ff` and pushed to `origin/ma
 
 ## Native WSL Verification (2026-03-23)
 
-First correct x86-64 execution on real hardware — verified natively in WSL, no QEMU needed.
+First correct x86-64 execution on real hardware -- verified natively in WSL, no QEMU needed.
 
 | Program | Expected | Result |
 |---------|----------|--------|
@@ -100,15 +100,15 @@ First correct x86-64 execution on real hardware — verified natively in WSL, no
 
 ### Bugs Found and Fixed
 
-1. **Frame layout collision** — Callee-saved pushes after `sub rsp` overlapped spill slots.
+1. **Frame layout collision** -- Callee-saved pushes after `sub rsp` overlapped spill slots.
    Spill slot writes clobbered saved registers when functions had >5 locals.
    *Fix*: Reordered prologue to push callee-saved regs *before* `sub rsp,spillFrame`.
 
-2. **EFLAGS clobbering** — `xor` used to zero a register before `setcc` destroyed the
+2. **EFLAGS clobbering** -- `xor` used to zero a register before `setcc` destroyed the
    comparison flags set by the preceding `cmp`/`test` instruction.
    *Fix*: Use `movzx` or reorder to avoid clearing flags before `setcc`.
 
-3. **Register pool aliasing** — `LoadLocal` and `AllocTemp` both handed out RAX/RCX,
+3. **Register pool aliasing** -- `LoadLocal` and `AllocTemp` both handed out RAX/RCX,
    causing the second operand of a binary op to clobber the first.
    *Fix*: Separated the register pools so temporaries don't alias local-load destinations.
 

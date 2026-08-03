@@ -3,6 +3,7 @@ Chapter: GopFiles
   cites Works chapter GopDraw
   cites Works chapter GopUsbKbd
   cites Works chapter GopUsbMouse
+  cites Works chapter SyntaxHighlight
   cites Kernel chapter BitmapFont
   cites Foreword chapter Fat16
   cites Foreword chapter CCE
@@ -46,7 +47,7 @@ Section: Palette and Geometry
   gfl-py (h) (s) = 30 * s
 
   gfl-pw : Integer, Integer -> Integer
-  gfl-pw (w) (s) = w - 120 * s
+  gfl-pw (w) (s) = w - 100 * s
 
   gfl-ph : Integer, Integer -> Integer
   gfl-ph (h) (s) = h - 74 * s
@@ -126,8 +127,22 @@ Section: Formatting
     else if c > 126 then "."
     else char-to-text (code-to-char (from-unicode c))
 
- One preview line: sixteen bytes as hex then the same sixteen as
- printable ASCII, the shape every hex viewer trains an eye for.
+ One preview line: n bytes as hex then the same n as printable ASCII,
+ the shape every hex viewer trains an eye for.
+
+ A byte costs four character cells on the line -- two hex digits and a
+ space in the run, one more in the ASCII column -- plus one cell for the
+ single space between the two halves. Sixteen bytes is therefore 65 cells,
+ which at an 8-pixel advance is 1040 pixels and wider than the panel was:
+ the ASCII column ran out past the right frame and painted on the desktop
+ behind it. The count is derived from the panel rather than fixed so a
+ narrower mode drops to twelve or eight instead of overflowing.
+
+  gfl-hex-n : Integer, Integer -> Integer
+  gfl-hex-n (w) (s) =
+    let cells = (gfl-pw w s - 20 * s) / (8 * s)
+    in let fit = (cells - 1) / 4
+    in if fit > 16 then 16 else if fit < 1 then 1 else fit
 
   gfl-hex-line : Integer, Integer, Integer -> Text
   gfl-hex-line (buf) (off) (n) =
@@ -188,23 +203,100 @@ Section: Drawing
     in let none = if list-length entries == 0 then gop-draw-text base stride font (px + 10 * s) (gfl-rows-y0 h s) "(empty directory)" gfl-col-dim s 0 else 0
     in gop-draw-text base stride font (px + 10 * s) (py + gfl-ph h s - 18 * s) "Up/Down move   Enter open   Esc back" gfl-col-green s 0
 
+ A Codex source file gets its source drawn and coloured; everything else
+ gets the hex dump. The stick carries its own source as SOURCE.SRC, so
+ this is the screen on which a person reads the machine's own text on
+ the machine, and reading it as sixteen bytes of hex per line was a poor
+ way to do that.
+
+ The test is the 8.3 EXTENSION and not the name, because FAT16 has no
+ other place to put the answer: a `.codex` file cannot survive 8.3 with
+ its extension intact, and the extension is the only field a directory
+ entry has that says what kind of thing this is.
+
+  gfl-is-source : Fat16DirEntry -> Boolean
+  gfl-is-source (e) = gfl-ext-is (e.de-name) "SRC"
+
+  gfl-ext-is : Text, Text -> Boolean
+  gfl-ext-is (name) (ext) =
+    let n = text-length name
+    in let m = text-length ext
+    in if n < m then False
+    else substring name (n - m) m == ext
+
   gfl-draw-preview : Integer, Integer, Integer, Integer, Integer, CbfFont, Fat16DirEntry, Integer, Integer -> Integer
   gfl-draw-preview (base) (w) (h) (stride) (s) (font) (e) (buf) (got) =
     let f = gfl-draw-frame base w h stride s font ("File  " & e.de-name)
     in let px = gfl-px w s
     in let py = gfl-py h s
     in let sz = gop-draw-text base stride font (px + 10 * s) (py + 26 * s) (show (e.de-size) & " bytes") gfl-col-bright s 0
-    in let n = if got > 128 then 128 else got
-    in let lines = gfl-preview-lines base w h stride s font buf 0 n
+    in let body = if gfl-is-source e
+      then gfl-source-lines base w h stride s font buf 0 got 0
+      else gfl-preview-lines base w h stride s font buf 0 (if got > 128 then 128 else got)
     in gop-draw-text base stride font (px + 10 * s) (py + gfl-ph h s - 18 * s) "Esc back" gfl-col-green s 0
+
+Section: Source Preview
+
+ The sector's bytes are ASCII on the medium -- the image writer converts
+ each CCE code point out through `to-unicode` on the way in -- so each
+ byte comes back through `from-unicode` to become a Codex character
+ again. Reading them as CCE directly is the boundary bug this project
+ has shipped more than once, and here it would render every letter as
+ the wrong glyph.
+
+ A line ends at byte 10, or at the end of what was read. The preview
+ holds one sector, so the last line is usually cut mid-way; that is
+ honest for a preview and the classifier is written to tolerate it,
+ including a string left unterminated by the cut.
+
+  gfl-lf : Integer
+  gfl-lf = 10
+
+  gfl-src-line-end : Integer, Integer, Integer -> Integer
+  gfl-src-line-end (buf) (off) (n) =
+    if off >= n then off
+    else if peek-byte buf off == gfl-lf then off
+    else gfl-src-line-end buf (off + 1) n
+
+  gfl-src-text : Integer, Integer, Integer, Text -> Text
+  gfl-src-text (buf) (off) (stop) (acc) =
+    if off >= stop then acc
+    else let b = peek-byte buf off
+    in let ch = if b < 32 then " " else char-to-text (code-to-char (from-unicode b))
+    in gfl-src-text buf (off + 1) stop (acc & ch)
+
+ One drawn line per source line, and one `gop-draw-text` per RUN rather
+ than per character: a run is already a contiguous span of one colour,
+ which is exactly what the text primitive draws, so the colouring costs
+ no more calls than the number of tokens on the line.
+
+  gfl-source-lines : Integer, Integer, Integer, Integer, Integer, CbfFont, Integer, Integer, Integer, Integer -> Integer
+  gfl-source-lines (base) (w) (h) (stride) (s) (font) (buf) (off) (n) (row) =
+    if off >= n then 0
+    else if row >= gfl-rows-vis h s then 0
+    else let stop = gfl-src-line-end buf off n
+    in let line = gfl-src-text buf off stop ""
+    in let y = gfl-rows-y0 h s + row * gfl-row-h s
+    in let d = gfl-draw-runs base w h stride s font line (syn-line line) 0 y
+    in gfl-source-lines base w h stride s font buf (stop + 1) n (row + 1)
+
+  gfl-draw-runs : Integer, Integer, Integer, Integer, Integer, CbfFont, Text, List SynRun, Integer, Integer -> Integer
+  gfl-draw-runs (base) (w) (h) (stride) (s) (font) (line) (runs) (i) (y) =
+    if i >= list-length runs then 0
+    else let r = list-at runs i
+    in let t = substring line (r.sr-start) (r.sr-len)
+    in let x = gfl-px w s + 10 * s + (r.sr-start) * 8 * s
+    in let d = gop-draw-text base stride font x y t (syn-colour (r.sr-class)) s 0
+    in gfl-draw-runs base w h stride s font line runs (i + 1) y
 
   gfl-preview-lines : Integer, Integer, Integer, Integer, Integer, CbfFont, Integer, Integer, Integer -> Integer
   gfl-preview-lines (base) (w) (h) (stride) (s) (font) (buf) (off) (n) =
     if off >= n then 0
-    else let take = if n - off > 16 then 16 else n - off
-    in let y = gfl-rows-y0 h s + (off / 16) * gfl-row-h s
+    else let per = gfl-hex-n w s
+    in let take = if n - off > per then per else n - off
+    in let y = gfl-rows-y0 h s + (off / per) * gfl-row-h s
     in let t = gop-draw-text base stride font (gfl-px w s + 10 * s) y (gfl-hex-line buf off take) gfl-col-text s 0
-    in gfl-preview-lines base w h stride s font buf (off + 16) n
+    in gfl-preview-lines base w h stride s font buf (off + per) n
 
 Section: Navigation State
 

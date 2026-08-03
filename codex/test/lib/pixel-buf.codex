@@ -1,0 +1,207 @@
+Chapter: PixelBufTest
+  cites UI chapter PixelBuf
+
+ The flat pixel buffer GuiOS draws every frame through. It had no test
+ for as long as it lived in `apps/guios/GuiDisplay.codex`; moving it into
+ the foreword is the moment to give it one, because a chapter any
+ application can now reach is a chapter whose clipping had better hold.
+
+ The buffer is **8 wide and 4 tall**, never square. Every index here is
+ `y * width + x`, so a version that reached for the height instead would
+ still produce plausible pixels in a square buffer and wrong ones in this
+ one.
+
+ The last section pins the property the chapter exists for rather than
+ any pixel: a write costs **no heap**. `alloc-bytes 0` advances the bump
+ allocator by nothing and answers the current heap pointer, so the
+ difference across a loop is the bytes that loop made permanent. The
+ alternative in the tree, `Game chapter Rasterizer`'s `fb-set`, costs 24
+ bytes per pixel because it returns a fresh record; at 1024x768 that is
+ 18.9 MB per full-screen pass with no collector under it. That is the
+ whole reason there are two framebuffers, so it is measured here and not
+ merely asserted in prose.
+
+ Measured 2026-07-28 against seed B9875136: every reading below is
+ CORRECT, and the chapter is pinned rather than repaired. Two sabotages
+ fired, each on exactly its own row:
+
+ - `gop-buf-set` striding by the height instead of the width moves the
+   `set` row alone, and the pixels land in the wrong rows. In a square
+   buffer that sabotage is invisible, which is why this one is 8 by 4.
+   The rect and line rows correctly do NOT move, because they write
+   through their own loops rather than through `gop-buf-set`.
+ - The blend's opaque shortcut moved from 240 to 200 changes the `a239`
+   reading from 15724527 to 16777215 and nothing else, which is the
+   239/240 pair doing the job it was chosen for.
+
+ We say:
+
+Section: Reading
+
+  row : GopBuf, Integer -> Text
+  row (gb) (y) = row-loop gb y 0 ""
+
+  row-loop : GopBuf, Integer, Integer, Text -> Text
+  row-loop (gb) (y) (x) (acc) =
+    if x >= 8 then acc
+    else let v = gop-buf-get gb x y
+    in let c = if v == 0 then "." else if v == 1 then "1" else if v == 2 then "2" else "#"
+    in row-loop gb y (x + 1) (acc & c)
+
+  grid : GopBuf -> Text
+  grid (gb) =
+    let a = row gb 0
+    in let b = row gb 1
+    in let c = row gb 2
+    in let d = row gb 3
+    in a & "/" & b & "/" & c & "/" & d
+
+Section: Construction and the single pixel
+
+ A new buffer is filled, not merely reserved: `alloc-bytes` is a bare bump
+ and hands back whatever the heap last held, so a constructor that skipped
+ the fill would read as residue rather than as background.
+
+  line-new : Text =
+    let gb = gop-buf-new 8 4 0
+    in "new: " & grid gb
+
+  line-set : Text =
+    let gb = gop-buf-new 8 4 0
+    in let d = gop-buf-set gb 3 1 3
+    in let e = gop-buf-set gb 7 3 3
+    in "set: " & grid gb
+
+Section: Clipping
+
+ Four writes outside the buffer and one inside. The inside one is the
+ control: a clip that rejected everything would leave an empty grid and
+ look exactly like a clip that works.
+
+  line-clip : Text =
+    let gb = gop-buf-new 8 4 0
+    in let a = gop-buf-set gb -1 0 3
+    in let b = gop-buf-set gb 0 -1 3
+    in let c = gop-buf-set gb 8 0 3
+    in let d = gop-buf-set gb 0 4 3
+    in let e = gop-buf-set gb 0 0 3
+    in "clip: " & grid gb
+
+ Reading outside answers 0 rather than a neighbouring row, which is what
+ an unclipped read would do: index -1 in a flat buffer is the pixel above
+ and to the left, not nothing.
+
+  line-clip-read : Text =
+    let gb = gop-buf-new 8 4 0
+    in let d = gop-buf-set gb 7 0 3
+    in let a = show (gop-buf-get gb -1 1)
+    in let b = show (gop-buf-get gb 8 0)
+    in let c = show (gop-buf-get gb 7 0)
+    in "clip read: left=" & a & " right=" & b & " inside=" & c
+
+Section: Rect and line
+
+ A rect must fill exactly its own area. Asking for one that starts at
+ (2,1) and is 3 by 2 leaves the row above, the column to the left and the
+ bottom row untouched, and a rect off by one in either axis moves a
+ character in this grid.
+
+  line-rect : Text =
+    let gb = gop-buf-new 8 4 0
+    in let d = gop-buf-rect gb 2 1 3 2 3
+    in "rect: " & grid gb
+
+ A horizontal line clamps both ends instead of wrapping into the next
+ row. Asked for -2 to 99 on row 2 it fills that row and nothing else.
+
+  line-hline : Text =
+    let gb = gop-buf-new 8 4 0
+    in let d = gop-buf-hline gb -2 99 2 3
+    in "hline: " & grid gb
+
+ A vertical line skips the rows above the buffer and still draws the part
+ inside it, which is a different behaviour from refusing the whole line.
+
+  line-vline : Text =
+    let gb = gop-buf-new 8 4 0
+    in let d = gop-buf-vline gb 5 -2 2 3
+    in "vline: " & grid gb
+
+Section: Outline
+
+ Four edges and a hollow middle. A 6 by 4 outline at (1,0) must leave the
+ interior at (2,1) and (3,1) untouched; a version that filled would show
+ no gap.
+
+  line-outline : Text =
+    let gb = gop-buf-new 8 4 0
+    in let d = gop-buf-outline gb 1 0 6 4 3
+    in "outline: " & grid gb
+
+Section: Blend
+
+ Alpha runs 0 to 255. Black under white: at 0 the result is the
+ background, at 128 the midpoint, at 239 nearly the foreground, and at
+ 240 the shortcut returns the foreground exactly. 239 and 240 are asked
+ as a pair because they are the two sides of that boundary and nothing
+ else in the range can show it.
+
+  blended : Integer -> Text
+  blended (alpha) =
+    let gb = gop-buf-new 8 4 0
+    in let d = gop-buf-set gb 0 0 0
+    in let e = gbf-blend-pixel gb 0 0 16777215 alpha
+    in show (gop-buf-get gb 0 0)
+
+  line-blend : Text =
+    let a = blended 0
+    in let b = blended 128
+    in let c = blended 239
+    in let d = blended 240
+    in let e = blended 255
+    in "blend: a0=" & a & " a128=" & b & " a239=" & c & " a240=" & d & " a255=" & e
+
+Section: What a write costs
+
+ The reason this chapter is in the foreword. A thousand writes must make
+ no heap permanent, and the control loop establishes that a reading of
+ zero is the allocator and not the instrument.
+
+  heap-now : Integer
+  heap-now = alloc-bytes 0
+
+  spin : Integer, Integer -> Integer
+  spin (i) (n) = if i >= n then 0 else spin (i + 1) n
+
+  write-loop : GopBuf, Integer, Integer -> Integer
+  write-loop (gb) (i) (n) =
+    if i >= n then 0
+    else let d = gop-buf-set gb 0 0 i
+    in write-loop gb (i + 1) n
+
+  line-cost : Text =
+    let gb = gop-buf-new 8 4 0
+    in let c0 = heap-now
+    in let cd = spin 0 1000
+    in let c1 = heap-now
+    in let w0 = heap-now
+    in let wd = write-loop gb 0 1000
+    in let w1 = heap-now
+    in "cost: control=" & show (c1 - c0) & " thousand-writes=" & show (w1 - w0)
+
+Section: Body
+
+  report-a : Text =
+    line-new & "\n" & line-set & "\n" & line-clip & "\n" & line-clip-read
+
+  report-b : Text =
+    line-rect & "\n" & line-hline & "\n" & line-vline & "\n" & line-outline
+
+  report-c : Text =
+    line-blend & "\n" & line-cost
+
+  opening : [Console] Nothing = act
+    print-line-uni report-a
+    print-line-uni report-b
+    print-line-uni report-c
+  end

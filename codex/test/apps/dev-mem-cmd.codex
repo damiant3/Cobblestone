@@ -1,0 +1,127 @@
+Chapter: DevMemCmdTest
+  cites Works chapter DevConsole
+  cites Works chapter DevConsoleBoot
+  cites Works chapter DevConsoleMenu
+  cites Works chapter UefiConsole
+  cites Works chapter KeyManager
+  cites Kernel chapter DiskFacts
+  cites Foreword chapter FactStore
+  cites Foreword chapter Sha256
+
+ Memory read and write reach the debugger through the key handler the
+ console actually calls.
+
+ `read` and `write` were menu items the console could not perform. Both
+ set a status saying "enter address" and nothing consumed the next line:
+ it fell through to the address evaluator, moved the cursor, and no read
+ or write ever happened. So this test is about the WIRING, and it is
+ driven entirely through `handle-console-input` for the same reason
+ `debug-expr` is -- calling the helpers directly would pass against the
+ old arms too.
+
+ THE TEST OWNS THE MEMORY IT WRITES TO, and that is not a nicety. The
+ debugger's cursor starts at 0x100000, which is the code segment; a test
+ that wrote a byte there would corrupt the running program to prove a
+ command works. It allocates a buffer instead and moves the cursor to it
+ by typing its address, which is also the honest demonstration of the
+ idiom: an expression chooses the address, the command acts there.
+
+ The buffer is zeroed first because `alloc-bytes` does not zero what it
+ returns -- it hands back the heap pointer and bumps it -- so the "before"
+ byte would otherwise be whatever the last allocation left, and the first
+ reading would differ run to run.
+
+ The discriminating readings are the ones AFTER a refusal. A status line
+ can say anything, so each refusal is followed by a read that shows what
+ the byte really is:
+
+ - an out-of-range value must leave the byte UNCHANGED, not store its low
+   eight bits;
+ - a bad expression while the write is armed must cancel it, and the NEXT
+   line must be treated as an address again rather than as a value. That
+   second half is what proves the pending flag is cleared on the failure
+   path; if it were not, the following expression would be written into
+   memory instead of moving the cursor.
+
+ We say:
+
+Section: Fixtures
+
+  bare-console : UefiConsoleState
+  bare-console = UefiConsoleState {
+    sys-table = 0,
+    con-out = 0,
+    con-in = 0,
+    rows = 25,
+    cols = 80,
+    cursor-row = 0,
+    cursor-col = 0
+  }
+
+  bare-disk : DiskFactStore
+  bare-disk = DiskFactStore { superblock = empty-superblock, mem = fact-store-empty, base = 0, limit = 0 }
+
+  bare-keys : Keypair
+  bare-keys = generate-keypair (sha256 (text-to-bytes "codex-dev-mem-cmd-test"))
+
+  buf-len : Integer = 32
+
+  zero-fill : Integer, Integer, Integer -> Integer
+  zero-fill (buf) (i) (n) =
+   if i >= n then 0
+   else let w = poke-byte buf i 0
+   in zero-fill buf (i + 1) n
+
+Section: Reporting
+
+  report : Text, DevConsoleState -> [Console] Nothing
+  report (label) (s) = act
+    print-line-uni (label & ": " & s.status)
+  end
+
+Section: Body
+
+  opening : [Console, Device.Port, Device.Block] Nothing = act
+    let a = alloc-bytes buf-len
+    in let za = zero-fill a 0 buf-len
+    in let s0 = dev-console-init bare-console bare-disk bare-keys
+    in let d0 = dispatch-main-menu "debug" s0
+    in act
+
+      at <- handle-console-input d0 (show a)
+      report "cursor-to-buffer" at
+
+      r0 <- handle-console-input at "read"
+      report "read-zeroed" r0
+
+      w0 <- handle-console-input r0 "write"
+      report "write-armed" w0
+
+      w1 <- handle-console-input w0 "0xAB"
+      report "wrote-ab" w1
+
+      r1 <- handle-console-input w1 "read"
+      report "read-back" r1
+
+      b0 <- handle-console-input r1 "write"
+      report "armed-again" b0
+
+      b1 <- handle-console-input b0 "300"
+      report "refused-not-a-byte" b1
+
+      r2 <- handle-console-input b1 "read"
+      report "byte-unchanged" r2
+
+      c0 <- handle-console-input r2 "write"
+      report "armed-for-cancel" c0
+
+      c1 <- handle-console-input c0 "nosuch + 1"
+      report "write-cancelled" c1
+
+      c2 <- handle-console-input c1 "$ + 1"
+      report "next-line-is-an-address-again" c2
+
+      r3 <- handle-console-input c2 "read"
+      report "cursor-moved-nothing-written" r3
+    end
+  end

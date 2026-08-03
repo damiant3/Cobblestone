@@ -51,18 +51,18 @@ localhost:8888                          localhost:7860       localhost:8188
 
 ### Component Roles
 
-**SdExplorer.codex** (`apps/works/SdExplorer.codex`) — the CDX binary
+**SdExplorer.codex** (`apps/works/SdExplorer.codex`) -- the CDX binary
 running bare-metal in codex-vm. Handles request routing, parameter
 validation, state management, and JSON response construction. All six
 tools share this single server; the tool is determined by the URL path.
 
-**server.ps1** (`tools/web/explorer/server.ps1`) — PowerShell HTTP
+**server.ps1** (`tools/web/explorer/server.ps1`) -- PowerShell HTTP
 bridge. Accepts browser requests on port 8888, translates them into
 serial-line protocol for the CDX, proxies SD/ComfyUI/TTS API calls,
 manages the image/audio cache on disk, and serves static HTML/CSS/JS
 for each tool's page.
 
-**Cache** — `D:\Projects\CodexMagic\explorer\cache\{prompt_hash}\{params}.png`
+**Cache** -- `D:\Projects\CodexMagic\explorer\cache\{prompt_hash}\{params}.png`
 (or `.wav` for voice). Prompt hash is the first 12 hex chars of SHA-256
 of the prompt text. Parameter encoding in the filename captures model,
 sampler, steps, CFG, seed, and LoRA so the same prompt with different
@@ -146,7 +146,7 @@ item icons suitable for inventory UI on transparent or dark backgrounds.
 
 ### Controls
 
-**Item Type** — determines silhouette and prompt framing:
+**Item Type** -- determines silhouette and prompt framing:
 
 | Type | Prompt Prefix | Aspect |
 |------|---------------|--------|
@@ -159,7 +159,7 @@ item icons suitable for inventory UI on transparent or dark backgrounds.
 | Potion | `game icon, glowing potion bottle,` | 2:3 |
 | Scroll | `game icon, ancient magic scroll,` | 2:3 |
 
-**Rarity** — controls color accent, glow intensity, and detail level:
+**Rarity** -- controls color accent, glow intensity, and detail level:
 
 | Rarity | Color | Glow | Detail Boost |
 |--------|-------|------|--------------|
@@ -169,7 +169,7 @@ item icons suitable for inventory UI on transparent or dark backgrounds.
 | Mythic | Orange (#FF9800) | Strong | +10 steps, +2 CFG |
 | Legendary-Mythic | Red (#F44336) | Intense | +15 steps, +3 CFG, upscale |
 
-**Material** — injected into the prompt as a material descriptor:
+**Material** -- injected into the prompt as a material descriptor:
 
 | Material | Prompt Fragment |
 |----------|-----------------|
@@ -179,7 +179,7 @@ item icons suitable for inventory UI on transparent or dark backgrounds.
 | Bone | `carved bone, ivory, skeletal,` |
 | Living Wood | `living wood, vines, bark texture, druidic,` |
 
-**Enchantment Glow** — optional colored glow overlay. Applied as an
+**Enchantment Glow** -- optional colored glow overlay. Applied as an
 additional prompt fragment (`magical glow, enchanted aura, {color}
 energy`) and as a post-processing compositing step (radial gradient
 overlay in the glow color at 30% opacity).
@@ -235,7 +235,7 @@ expression sheets, and (future) voice profiles.
 | Rogue | `hooded, leather armor, shadows,` | Daggers, cloak, lockpicks |
 | Cleric | `holy vestments, divine light,` | Mace, holy symbol, shield |
 
-**Personality Traits** — three sliders (or discrete pickers), each a
+**Personality Traits** -- three sliders (or discrete pickers), each a
 spectrum:
 
 | Trait | Low | High |
@@ -248,12 +248,12 @@ Personality traits affect expression rendering (brow angle, mouth set,
 eye intensity) and future voice profile generation (pitch, cadence,
 tone).
 
-**Backstory** — free-text textarea. Injected into the art prompt as
+**Backstory** -- free-text textarea. Injected into the art prompt as
 thematic context. A backstory mentioning "raised by wolves in the
 frozen north" shifts the palette toward cool blues and adds fur/wild
 elements.
 
-**Appearance** — structured fields for hair color, eye color, skin tone,
+**Appearance** -- structured fields for hair color, eye color, skin tone,
 distinguishing features (scars, tattoos, jewelry), age bracket
 (young/mature/elder).
 
@@ -284,15 +284,15 @@ AgeBracket = | Young | Mature | Elder
 
 Three renders per character, all cached under the same prompt hash:
 
-1. **Portrait** (2:3) — head and shoulders, card-frame style, suitable
+1. **Portrait** (2:3) -- head and shoulders, card-frame style, suitable
    for General avatar or card art. Background matches class/backstory
    theme.
 
-2. **Full-body concept** (2:3) — full figure with equipment, neutral
+2. **Full-body concept** (2:3) -- full figure with equipment, neutral
    pose, showing costume and silhouette. Background: gradient or
    environment hint.
 
-3. **Expression sheet** (3:1 or grid) — 4-6 facial expressions:
+3. **Expression sheet** (3:1 or grid) -- 4-6 facial expressions:
    neutral, happy, angry, sad, surprised, determined. Same face,
    different expressions. Useful for dialogue UI.
 
@@ -342,7 +342,7 @@ battlefield themes, loading screens, and dungeon crawl backdrops.
 
 | Weather | Visual Effect |
 |---------|---------------|
-| Clear | None — pure biome/time rendering |
+| Clear | None -- pure biome/time rendering |
 | Rain | Wet surfaces, puddles, falling rain, overcast |
 | Fog | Reduced visibility, atmospheric depth, mystery |
 | Storm | Lightning, dark clouds, wind-blown elements |
@@ -402,10 +402,10 @@ Metadata JSON records all parameters for reproducibility.
 
 **Example outputs:**
 
-- *Castle Blackstone at dusk, storm, epic, tense* — a vast fortress on
+- *Castle Blackstone at dusk, storm, epic, tense* -- a vast fortress on
   volcanic cliffs, lightning splitting the sky, dark spires against
   purple-orange clouds.
-- *Elvish Tree City, day, clear, medium, peaceful* — sunlit platforms
+- *Elvish Tree City, day, clear, medium, peaceful* -- sunlit platforms
   woven through ancient trees, bridges of living wood, dappled green
   light.
 
@@ -430,7 +430,7 @@ A TCG card has distinct visual regions with different requirements:
 | Rarity Border Glow | Edge glow effect | Post-processing (Gaussian + color) |
 
 Generating all of this in one pass conflates "paint a dragon" with
-"render crisp text" — two tasks that want different settings. The
+"render crisp text" -- two tasks that want different settings. The
 workflow engine separates them.
 
 ### Workflow Structure
@@ -507,7 +507,7 @@ ability callouts.
 
 ### Backend
 
-Local TTS model — Coqui XTTS or Bark, running as an HTTP API (port
+Local TTS model -- Coqui XTTS or Bark, running as an HTTP API (port
 TBD). The PS1 bridge proxies requests the same way it proxies SD API
 calls.
 
@@ -535,9 +535,9 @@ VoiceTone =
   | Ethereal | Commanding | Sly | Gentle
 ```
 
-**Text Input** — the dialogue or narration text to speak.
+**Text Input** -- the dialogue or narration text to speak.
 
-**Emotion Selector** — modifies delivery:
+**Emotion Selector** -- modifies delivery:
 
 | Emotion | Effect |
 |---------|--------|
@@ -651,7 +651,7 @@ The PS1 bridge proxies all SD API calls through a single function
 
 1. Builds the prompt from parameters.
 2. Computes the prompt hash.
-3. Checks cache — if hit, returns cached image path immediately.
+3. Checks cache -- if hit, returns cached image path immediately.
 4. If miss, calls SD API (`/sdapi/v1/txt2img` or `/sdapi/v1/img2img`).
 5. Saves result to cache directory.
 6. Returns the cached path.
@@ -718,13 +718,13 @@ final asset permanently.
 2. **TTS API port.** No standard. Need to pick a port and document it.
    Candidate: `localhost:7862` (one above SD img2img default).
 
-3. **ComfyUI availability.** ComfyUI is optional — not every developer
+3. **ComfyUI availability.** ComfyUI is optional -- not every developer
    will have it running. The Workflow Engine tab should degrade
    gracefully: show a "ComfyUI not detected" message and offer to
    export workflow JSON for later use.
 
 4. **Frame templates.** Who designs the card frame PNGs? These are not
-   AI-generated — they need pixel-perfect edges and transparency. Either
+   AI-generated -- they need pixel-perfect edges and transparency. Either
    hand-designed or generated once and frozen.
 
 5. **Voice profile sharing.** Should voice profiles be exportable and
@@ -732,7 +732,7 @@ final asset permanently.
    clip need a bundle format.
 
 6. **Batch generation.** The Item Designer and Setting Designer would
-   benefit from batch mode — generate all rarities of a sword, or all
+   benefit from batch mode -- generate all rarities of a sword, or all
    times-of-day for a forest. Requires a queue system in the PS1 bridge.
 
 7. **Upscaling pipeline.** Mythic+ items and epic-scale settings want

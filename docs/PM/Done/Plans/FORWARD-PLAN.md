@@ -48,9 +48,9 @@ All of the following are ✅. See [08-MILESTONES.md](08-MILESTONES.md) for deliv
 | M12 | JS & Rust backends | 3 backends total, 39 integration tests, TCO in all three |
 | M13 | Self-hosting | Stage 0 → output.cs → Stage 1 → compiles Codex. C# generics in both stages. |
 | M10 | Proofs | Refl, sym, trans, cong (bidirectional), induction with IH, lemma application |
-| — | 8 more backends | Python, C++, Go, Java, Ada, Babbage, Fortran, COBOL. 165 integration tests. |
-| — | IDE / syntax | TextMate grammar, VS 2022 `.pkgdef`, `codex.project.json`, `codex init` |
-| — | Incremental builds | SHA256 content hashing, parallel front-end, parallel multi-target emission |
+| -- | 8 more backends | Python, C++, Go, Java, Ada, Babbage, Fortran, COBOL. 165 integration tests. |
+| -- | IDE / syntax | TextMate grammar, VS 2022 `.pkgdef`, `codex.project.json`, `codex init` |
+| -- | Incremental builds | SHA256 content hashing, parallel front-end, parallel multi-target emission |
 
 ## What's Partially Done
 
@@ -63,7 +63,7 @@ All of the following are ✅. See [08-MILESTONES.md](08-MILESTONES.md) for deliv
 | M8 | Dependent Types | Dependent function types, type-level arithmetic, proof obligations | Full `Vector` type with `append` end-to-end |
 | M10 | Proofs | Induction, cong, lemma application, IH registration, 9 proofs in sample | Type-level function reduction (needed for non-trivial inductive steps), arithmetic induction with Peano encoding |
 | M11 | Tests | Property-based tests, integration tests (689 total), corpus emission (165 per-sample-per-backend) | Fuzz testing, CI configuration |
-| — | IL Emitter | `Codex.Emit.IL` project, `IAssemblyEmitter` interface, CLI wired (`--target il`). Emits working `.exe`/`.dll` via `System.Reflection.Metadata`. Handles: integer/text/boolean/number literals, static methods with parameters, if/else branching, let bindings, negation, binary ops, function application (including recursive/forward calls, curried multi-arg, nested composition), **records (IL classes with fields + constructors), sum types (abstract base + sealed subclasses), field access (`ldfld`), pattern matching (`isinst` branch chains with sub-pattern binding)**. 38 integration tests (emission + PE validation + runtime execution). Verified: hello→25, factorial→3628800, arithmetic→37, person→"Hello, Alice!", shapes with field extraction. | Generics, TCO (`tail.` prefix), full bootstrap (`codex build codex-src --target il`) |
+| -- | IL Emitter | `Codex.Emit.IL` project, `IAssemblyEmitter` interface, CLI wired (`--target il`). Emits working `.exe`/`.dll` via `System.Reflection.Metadata`. Handles: integer/text/boolean/number literals, static methods with parameters, if/else branching, let bindings, negation, binary ops, function application (including recursive/forward calls, curried multi-arg, nested composition), **records (IL classes with fields + constructors), sum types (abstract base + sealed subclasses), field access (`ldfld`), pattern matching (`isinst` branch chains with sub-pattern binding)**. 38 integration tests (emission + PE validation + runtime execution). Verified: hello→25, factorial→3628800, arithmetic→37, person→"Hello, Alice!", shapes with field extraction. | Generics, TCO (`tail.` prefix), full bootstrap (`codex build codex-src --target il`) |
 
 ---
 
@@ -129,12 +129,12 @@ fields. Nested `when`/match expressions emit all branches. The full pipeline
 errors, causing most function parameters and return types to remain as
 `object` or unresolved `T{id}`. Root causes to investigate:
 
-1. **Record field access** — `d.name`, `tok.text`, etc. require the type
+1. **Record field access** -- `d.name`, `tok.text`, etc. require the type
    checker to know the record type of the scrutinee to resolve field types.
    The self-hosted checker may not have `ConstructorMap`/`TypeDefMap` wired.
-2. **Curried function application** — `f(a)(b)` requires peeling `FunTy`
+2. **Curried function application** -- `f(a)(b)` requires peeling `FunTy`
    layers. If the function's type isn't resolved, all downstream types fail.
-3. **`deep-resolve` coverage** — May not be called on all type bindings
+3. **`deep-resolve` coverage** -- May not be called on all type bindings
    before emission, leaving `TypeVar(id)` as `T{id}` in output.
 
 **Next step for bootstrap:** Fix the self-hosted type checker's unification
@@ -147,7 +147,7 @@ against `TypeChecker.cs` to find the gaps.
 
 ### Tier 1: Solidify What Exists
 
-**1. Error recovery in parser** — ✅ Done.
+**1. Error recovery in parser** -- ✅ Done.
 Parser now recovers from errors at all levels: type definitions produce
 `ErrorTypeBody` instead of backtracking, definitions with missing `=`
 produce partial `DefinitionNode` with `ErrorExpressionNode`, record bodies
@@ -173,7 +173,7 @@ Estimated: medium.
 **3. The Reader (M4)**
 `codex read <file>` renders a prose-mode document to the terminal with
 formatted prose, highlighted notation blocks, and structured layout.
-`Codex.Narration` is the project for this — currently empty.
+`Codex.Narration` is the project for this -- currently empty.
 Estimated: small-medium.
 
 **4. Type-level function reduction (M10)**
@@ -184,7 +184,7 @@ also depends on this. Estimated: medium.
 
 ### Tier 3: New Capabilities
 
-**5. Direct IL emission (`Codex.Emit.IL`) — native .exe without C# transpile**
+**5. Direct IL emission (`Codex.Emit.IL`) -- native .exe without C# transpile**
 The C# emitter produces text that must be fed to `dotnet build` to get an
 executable. This means Codex always depends on the C# toolchain at build time.
 A direct IL backend would emit a .NET PE assembly (`.exe` / `.dll`) from the
@@ -212,7 +212,7 @@ directly. The existing `--target cs` continues to work for transpile scenarios.
 
 **Bootstrap significance:** Once the IL emitter can compile the full Codex
 source, the compiler can produce its own `.exe` without any C# toolchain
-dependency. That's the final step to true self-hosting — Codex compiles itself
+dependency. That's the final step to true self-hosting -- Codex compiles itself
 to an executable with no external compiler involved. At that point,
 `Codex.Codex` can build with a previously-built copy of itself rather than
 round-tripping through C# and MSBuild.
@@ -245,7 +245,7 @@ step 8 is integration/debugging).
 
 **6. Package manager / dependency resolution**
 The repository stores facts but there's no transitive dependency resolution
-across modules. `import` currently resolves one level deep — it needs to
+across modules. `import` currently resolves one level deep -- it needs to
 resolve transitively, handle version conflicts, and support views.
 Estimated: large.
 
@@ -270,9 +270,9 @@ These were open questions. Damian answered them; decisions are recorded in
    repository's fact store. The prose-import design is an open question.
 
 2. **Mutable state** → **Named-purpose mutability.** No general `ref` types.
-   Mutable values must declare their purpose by naming convention —
+   Mutable values must declare their purpose by naming convention --
    `UnificationState`, not `MutableRef`. See [DECISIONS.md](DECISIONS.md):
-   "Codex-Side Type Checker — Threaded UnificationState."
+   "Codex-Side Type Checker -- Threaded UnificationState."
 
 3. **Type classes / traits** → **No explicit type classes.** Polymorphism is
    the compiler's problem. Prose handles subtyping naturally. Design work needed.
@@ -302,21 +302,21 @@ These were open questions. Damian answered them; decisions are recorded in
 
 ## Open Questions (Remaining)
 
-1. **Prose-import syntax** — What exactly does a prose import look like?
+1. **Prose-import syntax** -- What exactly does a prose import look like?
    `I need: access to the filesystem` implies capability-based imports rather
    than module-based. How does this interact with the effect system?
    (See [NewRepository.txt](Vision/NewRepository.txt) Chapter 4.)
 
-2. **Auto-memoization** — Which functions get memoized? All recursive pure
+2. **Auto-memoization** -- Which functions get memoized? All recursive pure
    functions? Only those marked? Only those with primitive arguments? What's
    the eviction policy? This needs a design doc before implementation.
    (See the Named-purpose mutability decision.)
 
-3. **Subtype-inference for prose polymorphism** — "Add this fish to the list
+3. **Subtype-inference for prose polymorphism** -- "Add this fish to the list
    of animals" implies structural subtyping or coercion. Codex currently has
    nominal sum types. How do we bridge the gap?
 
-4. **Heap-allocated stack frames** — For non-tail recursive functions, should
+4. **Heap-allocated stack frames** -- For non-tail recursive functions, should
    we offer CPS transform + trampoline? TCO covers the tail-call case;
    this would cover general deep recursion.
 
@@ -330,7 +330,7 @@ These were open questions. Damian answered them; decisions are recorded in
 | JS uses `BigInt` (`42n`) for integers | `JavaScriptEmitter.cs` | Can't mix with `number` in arithmetic without explicit conversion | Low | Intentional |
 | `output.cs` is tracked in git | `codex-src/output.cs` | Large generated file in version control | Low | Convenient for now |
 | Iteration handoff docs are stale | `docs/ITERATION-*-HANDOFF.md` | 10 docs from old iteration model, superseded by this plan | Low | Archive or delete |
-| `Codex.Narration` project is empty | `src/Codex.Narration/` | No prose rendering capability | Low | Deferred — see "The Reader (M4)" above |
+| `Codex.Narration` project is empty | `src/Codex.Narration/` | No prose rendering capability | Low | Deferred -- see "The Reader (M4)" above |
 | `TypeVariable emits as object` decision is superseded | `DECISIONS.md` | Superseded by "C# Generics for Polymorphic Functions" | None | Marked in DECISIONS.md |
 
 ---

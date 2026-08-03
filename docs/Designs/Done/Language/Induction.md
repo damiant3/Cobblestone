@@ -1,4 +1,4 @@
-# Induction — General Structural Induction Over Variants
+# Induction -- General Structural Induction Over Variants
 
 **Status:** Design. No code yet. Supersedes the `induction`-keyword
 portions of `ProofSystemSurvey.md` (2026-05-23) with a concrete,
@@ -23,7 +23,7 @@ staged implementation plan.
 >    annotated-def form (`name : prop` / `name = term`) checks
 >    correctly. **FIXED** (2026-06-30, CL 6425 parser workaround, then
 >    CL 6430 the real root cause). The root cause was NOT the parser:
->    it was an x86 **codegen** bug — `emit-if-to-local` unsoundly elided
+>    it was an x86 **codegen** bug -- `emit-if-to-local` unsoundly elided
 >    an if's terminating jmp when the then-branch was a nested-if whose
 >    else ended in a tail-call jmp, so inside the tail-recursive
 >    `parse-top-level` if-chain the whole `claim` arm was silently
@@ -61,7 +61,7 @@ substituted in. Sound, not a skeleton.
 
 ## 2. Current State (verified against the seed, 2026-06-29)
 
-What works *after this CL* (was vacuous before — see the note above):
+What works *after this CL* (was vacuous before -- see the note above):
 
 - `Refl : forall a. a === a` (`TypeEnv.codex:283`). With the unifier
   fix, `refl-bad : Integer === Text; refl-bad = Refl` now fails CDX2001
@@ -76,7 +76,7 @@ What works *after this CL* (was vacuous before — see the note above):
   `codex/test/proof-smoke.codex` (cong-list) and
   `codex/test/errors/cong-mismatch.codex`.
 - `assume : ProofTy` (`TypeEnv.codex:284`) and `ProofTy` unifies with
-  any `PropEqTy` both directions (`Unifier.codex:304-312`) — the
+  any `PropEqTy` both directions (`Unifier.codex:304-312`) -- the
   intended axiom escape hatch (unchanged).
 - Proofs erase to no code (CDX4020), checked-or-not.
 - **Both forms now check.** As of CL 6430 the `claim/proof/qed` sugar
@@ -89,15 +89,15 @@ What works *after this CL* (was vacuous before — see the note above):
 What is absent:
 
 - **`induction` is a reserved keyword (CLAUDE.md:687) with zero
-  implementation** — no lexer-beyond-reserved, no parser rule, no
+  implementation** -- no lexer-beyond-reserved, no parser rule, no
   TypeEnv binding.
 - **`cong` is degenerate**: `forall a. (a -> a) -> (Proof -> Proof)`
-  returning bare `ProofTy` (`TypeEnv.codex:287`) — proves nothing
+  returning bare `ProofTy` (`TypeEnv.codex:287`) -- proves nothing
   structurally.
 - **Propositions are type-level only.** `PropEqTy (CodexType)
   (CodexType)` (`CodexType.codex:28`); `===` parses both sides via
   `parse-type` (`Parser.codex:99`). The only substitution that exists
-  is `subst-type-var` — *type-variable* substitution
+  is `subst-type-var` -- *type-variable* substitution
   (`TypeCheckerInference.codex:123`).
 - **No definitional-equality normalizer.** Nothing reduces `reverse
   (reverse xs)` to `xs`. `AppType (TypeExpr) (List TypeExpr)` exists in
@@ -114,7 +114,7 @@ dependent-type foundation that does not exist:
 2. A **definitional-equality normalizer** must reduce those terms
    (β for application, δ for unfolding a function's definition,
    ι for `when`/constructor reduction) under a **fuel cap** (bare
-   metal, no GC — Rule 8 and Virtue 12).
+   metal, no GC -- Rule 8 and Virtue 12).
 
 Induction is the *top* of the stack; the normalizer and value-level
 proposition terms are the *bottom*. Implementing the keyword first
@@ -123,7 +123,7 @@ first.
 
 This matches the type-system roadmap (`03-TYPE-SYSTEM.md`, Phase 4:
 "proof obligations depend on dependent types … type-level computation
-via normalizer") — the normalizer is the long-deferred piece.
+via normalizer") -- the normalizer is the long-deferred piece.
 
 ---
 
@@ -148,13 +148,13 @@ Term =
 `PropEqTy` is widened (or a sibling `TermEqTy (Term) (Term)` added) so
 equality can hold terms. Surface `===` over value expressions lowers
 to `TermEqTy`; the existing type-level `PropEqTy` stays for
-type-equality proofs (`Nil === Cons`). Keep both — do not break the
+type-equality proofs (`Nil === Cons`). Keep both -- do not break the
 working reflexivity path.
 
 Open question: reuse `PropEqTy` by letting `CodexType` embed a `Term`
 (a `TermTy (Term)` leaf), or add a parallel `TermEqTy`. Leaning toward
 `TermTy` leaf so the unifier's existing `PropEqTy` arm extends
-naturally — one structural-equality path, not two.
+naturally -- one structural-equality path, not two.
 
 ### B. Definitional-equality normalizer
 
@@ -165,7 +165,7 @@ defeq    : NormEnv, Term, Term, Fuel -> Boolean
 
 - **δ (delta):** unfold a `TApp f args` by looking up `f`'s definition
   (already available post-desugar) and substituting args. Requires the
-  proof checker to see function bodies as `Term`s — a lowering from
+  proof checker to see function bodies as `Term`s -- a lowering from
   `Expr` to `Term` for the (small) set of functions referenced in
   proofs. Do not lower the whole program; lower on demand, memoized.
 - **ι (iota):** reduce `when (TCtor c args) is c (xs) -> body` to the
@@ -208,7 +208,7 @@ own CL.
 
 ### E. Erasure
 
-No new work — induction proofs return `Proof`/`PropEqTy`, already
+No new work -- induction proofs return `Proof`/`PropEqTy`, already
 erased at emit (CDX4020). Confirm the new `Term`-carrying props are on
 the erasure path.
 
@@ -228,7 +228,7 @@ proof name =
   identifier naming a bound variable of the `claim`'s `for all`.
 - Requires the claim to be a quantified proposition `for all (x : T),
   P`. This pulls in minimal `for all` proof syntax (today `forall` is
-  reserved but unused at the proof level) — scope it to exactly what
+  reserved but unused at the proof level) -- scope it to exactly what
   induction needs, not general first-order quantification.
 - Branch heads reuse the `when`/`is` lexical machinery.
 
@@ -243,10 +243,10 @@ checked.
 | Stage | Deliverable | Risk |
 |-------|-------------|------|
 | 0 | This design + negative/positive test scaffolding in `codex/test/` (`.failing` for unsound proofs) | none | **DONE** |
-| 1 | **Soundness fix**: PropEqTy unifier arm uses `unify-at` (was `unify-resolved`, accepting any equality); un-degenerate `cong` to `(a===b)->(f a === f b)`; proof-smoke + cong-mismatch + refl-mismatch tests | low — `Unifier.codex` + `TypeEnv.codex`, one-pass fixed point | **DONE** |
+| 1 | **Soundness fix**: PropEqTy unifier arm uses `unify-at` (was `unify-resolved`, accepting any equality); un-degenerate `cong` to `(a===b)->(f a === f b)`; proof-smoke + cong-mismatch + refl-mismatch tests | low -- `Unifier.codex` + `TypeEnv.codex`, one-pass fixed point | **DONE** |
 | 1b | **Thread claim type to proof body** (bug #2): the `claim/proof/qed` sugar must attach the claim's declared type to the `proof` def. Root cause was an x86 codegen jmp-end elision bug (CL 6430), not the parser. `proof-qed-vacuous.codex` un-skipped (rejects CDX2001); `tco-nested-if.codex` added to BVT | done (CL 6425/6430) | **DONE** |
-| 2 | Value-level `===` with syntactic equality. **DONE** (CL pending) — but NOT via a new `TermTy` leaf. Probing showed the existing `TypeCon`/`TypeApply`/`TypeVar` machinery (set up by the cong un-degeneration, Stage 1) already serves as the term language: `reverse (reverse xs) === reverse (reverse xs)`, `Cons h t === Cons h t`, `xs === xs` all parse (via `parse-type`) and check soundly through the `PropEqTy` unifier arm; mismatches reject CDX2001 (`value-eq.codex`, `errors/term-mismatch.codex`). No CodexType change needed, so none of the medium-risk blast radius. **Deferred to Stage 3:** integer/text *literals* and arithmetic operators in `===` (parse-type rejects `1 + 1`); low value without the normalizer, and the flagship `reverse-reverse` is all names/application, so literals are not on its path | none (reuse) | **DONE** |
-| 3 | Normalizer (δ/ι/β) with Fuel cap; `defeq`; integrate at the proof-check path | **high** — theory core; soundness-critical; heap/time scrutiny | **DONE** (CL 6447) |
+| 2 | Value-level `===` with syntactic equality. **DONE** (CL pending) -- but NOT via a new `TermTy` leaf. Probing showed the existing `TypeCon`/`TypeApply`/`TypeVar` machinery (set up by the cong un-degeneration, Stage 1) already serves as the term language: `reverse (reverse xs) === reverse (reverse xs)`, `Cons h t === Cons h t`, `xs === xs` all parse (via `parse-type`) and check soundly through the `PropEqTy` unifier arm; mismatches reject CDX2001 (`value-eq.codex`, `errors/term-mismatch.codex`). No CodexType change needed, so none of the medium-risk blast radius. **Deferred to Stage 3:** integer/text *literals* and arithmetic operators in `===` (parse-type rejects `1 + 1`); low value without the normalizer, and the flagship `reverse-reverse` is all names/application, so literals are not on its path | none (reuse) | **DONE** |
+| 3 | Normalizer (δ/ι/β) with Fuel cap; `defeq`; integrate at the proof-check path | **high** -- theory core; soundness-critical; heap/time scrutiny | **DONE** (CL 6447) |
 | 4a | `for all (x:T), P` claim syntax + `induction on x` proof body PARSE; accepted UNVERIFIED (CDX4022, erased) | **DONE** (CL 6455) |
 | 4b/5 | Real induction node + principle generation (subgoals + IH) + subgoal checking via `defeq`; **add-zero (Nat) green** | **DONE** (CL 6460) |
 | 5a | **N-ary constructor congruence** (unifier curried peel); **append-nil (binary ctor) green** | **DONE** (CL 6462) |
@@ -357,7 +357,7 @@ GOTCHA: `token-text` = `substring(t.source, offset, length)` and
 `.source` is the WHOLE file -- synthetic tokens need offset 0, and peeks
 must call `token-text`, never raw `.source`.
 
-### 6.1 Stage 3 — decided architecture (IMPLEMENTED, CL 6447)
+### 6.1 Stage 3 -- decided architecture (IMPLEMENTED, CL 6447)
 
 > **Implemented (2026-06-30, CL 6447).** Built as described below, with
 > one correction: the integration point is **`register-all-defs`**
@@ -392,12 +392,12 @@ intermediate (which has `AMatchExpr`/`AApplyExpr`/`ALitExpr`/`AIfExpr`;
 but it can hold the closed-constructor normal form).
 
 Pipeline (`normalize-prop-eq : DefMap, CodexType, Fuel -> CodexType`):
-1. `codextype-to-aterm : CodexType -> Maybe AExpr` — `TypeCon n` ->
+1. `codextype-to-aterm : CodexType -> Maybe AExpr` -- `TypeCon n` ->
    `ANameExpr n`; `TypeApply f a` -> `AApplyExpr`; `TypeVar i` ->
    a stuck free name `?tvN`. Returns None for non-term-shaped types
    (e.g. `IntegerTy` from `Integer === Integer`), left untouched
    (type-equality path, unchanged).
-2. `normalize-aterm : DefMap, AExpr, Fuel -> AExpr` — collect the
+2. `normalize-aterm : DefMap, AExpr, Fuel -> AExpr` -- collect the
    application spine; **delta** unfold a saturated call to a def-map
    function (substitute args into its body); **iota** reduce
    `AMatchExpr` whose normalized scrutinee is a constructor application
@@ -406,14 +406,14 @@ Pipeline (`normalize-prop-eq : DefMap, CodexType, Fuel -> CodexType`):
    `ABinaryExpr` on two literals. Decrement Fuel per delta/iota step.
    **Fuel exhaustion returns the partial form** -> `defeq` fails ->
    proof reported *unproven* (never a silent pass). The soundness valve.
-3. `aterm-to-codextype` — the normal form (closed constructor tree) maps
+3. `aterm-to-codextype` -- the normal form (closed constructor tree) maps
    back: `ANameExpr` -> `TypeCon`, `AApplyExpr` -> `TypeApply`.
 
 Integration: in `resolve-declared-type` (`TypeChecker.codex:353`), when
 the declared type is `PropEqTy (l) (r)`, replace it with
 `PropEqTy (normalize l) (normalize r)` before the existing unify runs.
 **Soundness reduces to "the normalizer performs only valid reductions"**
-— the proven unifier and the rest of the proof path are unchanged. Guard
+-- the proven unifier and the rest of the proof path are unchanged. Guard
 with negatives (`not True === True` must still reject).
 
 DefMap: build `name -> ADef` once in `check-all-defs` from `mod.defs`
@@ -432,15 +432,15 @@ program. Measure pingpong heap-hwm before/after on the implementing CL.
 ## 7. Memory & Time-Complexity (Rule 8 / Virtue 12)
 
 - **Normalizer is the only heap/time risk.** It allocates `Term`s per
-  reduction step. Mitigations: (a) hard Fuel cap — bounded steps, so
+  reduction step. Mitigations: (a) hard Fuel cap -- bounded steps, so
   bounded allocation; (b) normalization runs in the CHECK phase deck,
   reclaimed at phase boundary; (c) lower only proof-referenced function
-  bodies, memoized — not the whole program.
+  bodies, memoized -- not the whole program.
 - **`Term` leaf in `CodexType`** adds one variant; every phase that
   walks types gains one arm. No size change to existing types (variant
-  tag widens only if it crosses a byte boundary — verify against
+  tag widens only if it crosses a byte boundary -- verify against
   field-byte-width).
-- Proofs erase, so **zero runtime/codegen cost** — this is all
+- Proofs erase, so **zero runtime/codegen cost** -- this is all
   compile-time.
 - Every implementing CL states its own memory/time verdict; Stage 3's
   is the one that matters and will be measured (pingpong heap-hwm
@@ -470,10 +470,10 @@ program. Measure pingpong heap-hwm before/after on the implementing CL.
 
 ## 9. Cross-References
 
-- `docs/Designs/Language/Active/ProofSystemSurvey.md` — prior survey
-- `docs/Designs/Language/Active/03-TYPE-SYSTEM.md` — Phase 4 dependent types
-- `docs/PM/Stories/Vision/NewRepository.txt` — the flagship example
-- `codex/compiler/Types/Unifier.codex:304-313` — PropEqTy/ProofTy arms
-- `codex/compiler/Types/TypeEnv.codex:283-287` — proof builtin bindings
-- `codex/compiler/Types/CodexType.codex:27-28` — ProofTy/PropEqTy
-- `codex/compiler/Syntax/Parser.codex:357-401, 1011-1015` — claim/proof parsing
+- `docs/Designs/Language/Active/ProofSystemSurvey.md` -- prior survey
+- `docs/Designs/Language/Active/03-TYPE-SYSTEM.md` -- Phase 4 dependent types
+- `docs/PM/Stories/Vision/NewRepository.txt` -- the flagship example
+- `codex/compiler/Types/Unifier.codex:304-313` -- PropEqTy/ProofTy arms
+- `codex/compiler/Types/TypeEnv.codex:283-287` -- proof builtin bindings
+- `codex/compiler/Types/CodexType.codex:27-28` -- ProofTy/PropEqTy
+- `codex/compiler/Syntax/Parser.codex:357-401, 1011-1015` -- claim/proof parsing

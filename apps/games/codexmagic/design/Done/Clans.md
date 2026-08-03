@@ -1,4 +1,4 @@
-# Clans — Organizations, Economies, and Custom Rules
+# Clans -- Organizations, Economies, and Custom Rules
 
 ## Overview
 
@@ -6,7 +6,7 @@ Clans are player-run organizations within CodexMagic. A clan is a
 group of players with shared identity, a private economy, a card
 library, custom formats, and the ability to run their own tournaments
 and challenge other clans. Clans transform CodexMagic from a single
-card game into a **card game construction kit** — any clan can
+card game into a **card game construction kit** -- any clan can
 define its own rules, restrictions, and play experience.
 
 The global game (Modern, Legacy, etc.) is just the "default clan"
@@ -83,7 +83,7 @@ Every clan mints its own currency. Clan coin is used for:
 - Clan store purchases
 
 Clan coin is separate from global ManaCoin. It circulates only
-within the clan. The clan sets its own monetary policy — mint rate,
+within the clan. The clan sets its own monetary policy -- mint rate,
 burn rules, reward amounts.
 
 ```
@@ -102,7 +102,7 @@ ClanEconomy = record {
 
 If `exchange-enabled` is True, members can convert between clan coin
 and ManaCoin at the clan's exchange rate. The clan treasury acts as
-the counterparty — buying ManaCoin from members adds to the treasury,
+the counterparty -- buying ManaCoin from members adds to the treasury,
 selling ManaCoin to members deducts from it.
 
 The exchange fee (percentage) is burned, creating deflationary
@@ -147,7 +147,7 @@ LibraryCheckout = record {
   returned by the due date, the deposit is forfeited and the card
   is flagged for recovery.
 - Officers can recall cards at any time (with notice period).
-- The library card's `provenance` records clan ownership — it is
+- The library card's `provenance` records clan ownership -- it is
   not the borrower's card, it is the clan's.
 
 **Acquisition:**
@@ -167,7 +167,7 @@ LibraryCheckout = record {
 
 Clans can define **house rules** that modify game mechanics for
 intra-clan play. House rules are overlays on top of the base game
-rules — they add restrictions or change parameters but cannot add
+rules -- they add restrictions or change parameters but cannot add
 new mechanics (that requires a code change).
 
 ```
@@ -199,7 +199,7 @@ HouseRule =
 - "No Deathtouch" clan: `BanKeyword Deathtouch`. Tests whether
   defense becomes dominant without its primary counter.
 
-House rules create **emergent metagames** — each clan's rule set
+House rules create **emergent metagames** -- each clan's rule set
 produces a different game. Players who enjoy a particular playstyle
 gravitate to clans that share it.
 
@@ -398,7 +398,7 @@ formats. The global game evolves based on what clans discover.
 
 ### The Idea
 
-Clans don't just play the game — they can **skin it**. A clan
+Clans don't just play the game -- they can **skin it**. A clan
 configures its own pack product: what mechanics are included, what
 art style is generated, what flavor and tone the cards carry. The
 underlying game engine is the same. The presentation, theme, and
@@ -414,7 +414,7 @@ stat. But the *experience* is theirs.
 Kids play in a walled garden of age-appropriate content that their
 parents chose. Teens get more expressive themes. Adults get whatever
 they want. And they can all play against each other when they choose
-to — the cards are mechanically interchangeable, just themed
+to -- the cards are mechanically interchangeable, just themed
 differently.
 
 ### Clan Pack Definition
@@ -487,7 +487,7 @@ MechanicFilter = record {
 
 ### Content Theme
 
-The theme defines the flavor layer — names, flavor text, creature
+The theme defines the flavor layer -- names, flavor text, creature
 types, and art prompts. The AI content generator uses the theme
 to produce cards that fit the clan's aesthetic.
 
@@ -600,7 +600,7 @@ art-direction = ArtDirection {
 
 ### Pack Economics
 
-Clan packs cost ManaCoin to crack — this is where the platform
+Clan packs cost ManaCoin to crack -- this is where the platform
 monetizes. The revenue splits:
 
 | Recipient | Share | Notes |
@@ -616,7 +616,7 @@ decides whether the price is fair.
 **Global market listing:** If `public = True`, the clan's packs
 appear in the global store alongside the platform's standard packs.
 Anyone can buy them. Cards from clan packs are fully tradeable on
-the global market — they are standard tokens with clan provenance
+the global market -- they are standard tokens with clan provenance
 in their metadata.
 
 **Cross-clan compatibility:** All cards use the same game engine.
@@ -658,11 +658,11 @@ the game, build decks, and compete in the clan's weekly Swiss
 tournament.
 
 At 13, they graduate to a TeenClan. They join "Knights of the
-Round" with Arthurian themes — Heroic tone, Stylized art, slightly
+Round" with Arthurian themes -- Heroic tone, Stylized art, slightly
 more complex mechanics. They play in teen tournaments, start
 drafting, and build a collection.
 
-At 18, they go Adult. They join "Neon Abyss" — a cyberpunk clan
+At 18, they go Adult. They join "Neon Abyss" -- a cyberpunk clan
 with Dark tone, Realistic art, full keyword complexity. They play
 in open tournaments, trade on the global market, and their cards
 from every phase of their life are still in their collection, still
@@ -734,7 +734,7 @@ analysis before delivery. The system checks for:
 - Profanity and slurs (blocked)
 - Harassment, threats, bullying (blocked, flagged for review)
 - Attempts to circumvent filters (creative spelling, unicode
-  substitution, etc.) — detected and treated as violations
+  substitution, etc.) -- detected and treated as violations
 - Persistent negative sentiment (not a single bad word, but a
   pattern of hostility)
 
@@ -895,7 +895,7 @@ The matchmaking system respects age brackets:
 
 4. **Ranked ladders:** Separate ladders per age bracket with the
    option to view a combined leaderboard. A Child's #1 rank is just
-   as valid as an Adult's #1 rank — they just play in different
+   as valid as an Adult's #1 rank -- they just play in different
    pools.
 
 ### Reporting and Trust
@@ -926,7 +926,7 @@ TrustLevel =
   | Banned             -- permanent
 ```
 
-Trust scores are not visible to other players — only the
+Trust scores are not visible to other players -- only the
 consequences are (e.g., a Restricted player appears as EmotesOnly
 to others, indistinguishable from someone who chose that setting).
 

@@ -12,7 +12,7 @@ HTML plug) each carried a verbatim copy of:
 - the eight theme builders (22/22 identical),
 - the style-injection plumbing (22/22 identical shape),
 - wk-attach / widget-box / widget-box-click (19/22 identical),
-- id-num trailing-number parsing (16 apps, two variants — one of
+- id-num trailing-number parsing (16 apps, two variants -- one of
   which silently breaks past index 9),
 - no-pick (21/22).
 
@@ -20,7 +20,7 @@ Consequences: every new runtime primitive (button clicks CL 3629,
 clickable boxes CL 3630, text input CL 3635, audio CL 3640) had to be
 stubbed into N files by hand, and nothing proved the copies agreed
 with the runtime HtmlEmitter actually ships. A fix could not be
-verified once — it had to be checked per app. With one person testing
+verified once -- it had to be checked per app. With one person testing
 44 apps, that is the difference between a generic fix and no fix.
 
 ## Design
@@ -48,7 +48,7 @@ end
 ### What stays per-app, deliberately
 
 CSS strings and Theme palettes (brand identity), widget trees, handler
-logic, domain data helpers. No attempt to abstract the tree shape —
+logic, domain data helpers. No attempt to abstract the tree shape --
 17/22 apps share a view-branching pattern, but forcing a generic
 page-shell would couple unrelated apps to one layout's churn.
 
@@ -61,7 +61,7 @@ page-shell would couple unrelated apps to one layout's churn.
 - FishTankPage: print-line HTML generator, not a widget app. Out of
   scope.
 - Multi-file apps carry the same stub block in their *Theme.codex
-  chapters (ChatTheme, ExplorerTheme, MagicTheme, MobileTheme) — port
+  chapters (ChatTheme, ExplorerTheme, MagicTheme, MobileTheme) -- port
   in the per-app pass.
 
 ## Test story (the point of the exercise)
@@ -72,7 +72,7 @@ page-shell would couple unrelated apps to one layout's churn.
 2. The build is the test: build/build-apps.ps1 across the manifest is
    the compile gate for every port CL.
 3. A post-build assertion script greps every generated web/*.html for
-   runtime invariants (handler wiring present, theme injected) — the
+   runtime invariants (handler wiring present, theme injected) -- the
    browser-facing check that does not need a browser, applied
    uniformly.
 
@@ -88,7 +88,7 @@ page-shell would couple unrelated apps to one layout's churn.
 ## Memory and time-complexity verdict
 
 The quire moves existing definitions; it adds none. Bundles gain three
-chapter headers and lose the same definitions from the root chapter —
+chapter headers and lose the same definitions from the root chapter --
 net source size per app DECREASES (ports delete more than the cites
 add). No new loops, no new accumulation, no recursion without a base
 case (wk-attach/id-num-loop are the existing bounded recursions).

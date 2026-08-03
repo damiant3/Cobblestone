@@ -1,6 +1,6 @@
 # Current Plan
 
-**Date**: 2026-03-26 morning (Ring 4 push — all before 8:15 AM)
+**Date**: 2026-03-26 morning (Ring 4 push -- all before 8:15 AM)
 
 ---
 
@@ -13,7 +13,7 @@ paid in a depreciating currency. Decision: stay on the forward path. No shortcut
 trail back to Unicode internals.
 
 The CCE whitespace decision (`docs/Designs/CCE-WHITESPACE-DECISION.md`) is
-**open** — Options A through E on the table. Option E (dual compilation modes:
+**open** -- Options A through E on the table. Option E (dual compilation modes:
 `--encoding cce` vs `--encoding unicode`) is the leading candidate. Cam's action
 items from that doc are partially resolved (see below).
 
@@ -38,7 +38,7 @@ items from that doc are partially resolved (see below).
 
 ## What Got Done (2026-03-26)
 
-### CCE-Native Text — Complete, Merged, Reflected
+### CCE-Native Text -- Complete, Merged, Reflected
 
 - All 6 phases complete. Branch `cam/cce-native-text` merged to master.
 - Tier 0 revision: 128 chars, frequency-sorted, 3 whitespace + 10 digits +
@@ -46,20 +46,20 @@ items from that doc are partially resolved (see below).
 - Self-hosted emitter fully CCE-native: `_Cce` runtime, I/O wrapping, escape
   rewrite, char-literal-based classification.
 - Fixed point proven at 298,328 chars.
-- Perf report: `docs/reviews/CCE-PERF-IMPACT.md` — 34% overhead, no algorithmic
+- Perf report: `docs/reviews/CCE-PERF-IMPACT.md` -- 34% overhead, no algorithmic
   regression.
 - P1 optimization done (`text-concat-list`, commit `a46bcf1`): O(n²) escape-text
-  fixed but didn't move the needle — n too small. Confirms overhead is diffuse.
+  fixed but didn't move the needle -- n too small. Confirms overhead is diffuse.
 - Janus reflection: `docs/Designs/CCE-NATIVE-TEXT.md`, "Cam's Think" section.
   Conclusion: forward path, no dual-encoding retreat.
 
-### CCE Whitespace Decision — Open
+### CCE Whitespace Decision -- Open
 
 - Linux + Damian identified TAB/CR silent NUL corruption.
 - Five options documented. Option E (dual compilation modes) leading.
 - **Cam's action items resolved**:
   - `\t` and `\r` in `.codex` source: only in `Lexer.codex` escape handler
-    (lines 230-231). This is correct — the Lexer processes escape sequences in
+    (lines 230-231). This is correct -- the Lexer processes escape sequences in
     string literals. No `.codex` source uses literal tabs.
   - Go/Python emitter indentation: **spaces, not tabs.** The emitters do have
     `Replace("\t", "\\t")` for string escaping in output, but indentation is
@@ -75,7 +75,7 @@ items from that doc are partially resolved (see below).
 - README refreshed: 15 backends, CCE, Codex.OS, 926 tests.
 - Milestones named: MM2 The High Camp, MM3 Summit.
 - CCE encoding integration design (Linux): gconv, EncodingProvider, editor
-  plugins — the rope from the col back to base camp.
+  plugins -- the rope from the col back to base camp.
 
 ---
 

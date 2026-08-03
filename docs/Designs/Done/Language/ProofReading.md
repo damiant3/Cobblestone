@@ -1,23 +1,23 @@
-# ProofReading — Document Structure Reform
+# ProofReading -- Document Structure Reform
 
 The compiler's internal concept of "module" is being replaced with the
 language's natural document structure. The word "module" is out of theme
 and out of character for a language called Codex. The source files already
-use Chapter headers — the compiler internals should reflect that.
+use Chapter headers -- the compiler internals should reflect that.
 
 ## Document Hierarchy
 
     Chapter > Page > Section > Definition
 
-- **Chapter** — the compilation unit. What was called "module." One logical
+- **Chapter** -- the compilation unit. What was called "module." One logical
   grouping of related definitions sharing a single namespace. A chapter may
   span multiple files (pages).
-- **Page** — one .codex file. A chapter with one file has one page. A chapter
+- **Page** -- one .codex file. A chapter with one file has one page. A chapter
   split across files has numbered pages. Pages of the same chapter share
-  scope — no name mangling between them.
-- **Section** — organizational grouping within a page. Already exists in
+  scope -- no name mangling between them.
+- **Section** -- organizational grouping within a page. Already exists in
   the syntax (`Section: Name`). No semantic effect today.
-- **Definition** — a function, type, or value binding.
+- **Definition** -- a function, type, or value binding.
 
 ## Page Markers
 
@@ -52,7 +52,7 @@ markers, and enforces:
 ## Prose Preservation
 
 The current build pipeline strips prose from compiled output, leaving only
-code. This is wrong. The prose is part of the source — it describes the
+code. This is wrong. The prose is part of the source -- it describes the
 functionality and will eventually be validated against the code.
 
 With prose preserved, the `Chapter:` header in the source IS the chapter
@@ -69,15 +69,15 @@ original prose.
 ### Minimal approach (pre-MM4)
 
 Thread prose through the IR as opaque metadata. Do not parse or compile
-the prose — just carry it and reproduce it.
+the prose -- just carry it and reproduce it.
 
-1. **Parser** — capture Chapter title, Section titles, and prose text
+1. **Parser** -- capture Chapter title, Section titles, and prose text
    between headers as raw strings.
-2. **AST** — store prose blocks on the Module and on section boundaries
+2. **AST** -- store prose blocks on the Module and on section boundaries
    within definitions (or as a parallel list of prose segments).
-3. **Lowering** — carry prose strings onto IRModuleSection as metadata
+3. **Lowering** -- carry prose strings onto IRModuleSection as metadata
    fields: `ChapterTitle`, `SectionTitle`, `Prose` (raw text).
-4. **CodexEmitter** — emit Chapter/Section headers and prose text before
+4. **CodexEmitter** -- emit Chapter/Section headers and prose text before
    each section's definitions, reproducing the original document structure.
 
 This gets Chapter and Section headers into stage1 output without requiring
@@ -100,7 +100,7 @@ goal but not required for the current milestone.
 
 Export declarations control which names from a chapter are visible to
 chapters that cite it. If no export declarations exist, everything is
-exported. In practice, zero .codex files use export — every chapter
+exported. In practice, zero .codex files use export -- every chapter
 already exports everything.
 
 There is no compiler optimization benefit. The export machinery is
@@ -121,7 +121,7 @@ Dead code to remove:
 
 The standard library ("prelude") contains definitions that exist before
 any user code. In books, the foreword is material at the front that the
-author didn't write — exactly what the standard library is. Definitions
+author didn't write -- exactly what the standard library is. Definitions
 provided by the language itself, before your chapter begins.
 
 | Old                  | New                    |
@@ -132,12 +132,12 @@ provided by the language itself, before your chapter begins.
 
 ## Rename: Import to Cite
 
-The keyword `import` is out of theme. Books don't import — they cite.
+The keyword `import` is out of theme. Books don't import -- they cite.
 The replacement is `Cites:`, used as a declarative header:
 
     Cites: Lexer, Collections
 
-All document headers are declarative — Chapter:, Section:, Cites: —
+All document headers are declarative -- Chapter:, Section:, Cites: --
 each describes what something is, not what to do. "Cite:" would be
 the only imperative. "Cites:" reads as "[this chapter] cites..."
 
@@ -192,5 +192,5 @@ Across the compiler internals:
 - [x] Rename import to cites
 - [x] Rename prelude to foreword
 - [x] Remove export declarations
-- [x] Preserve prose in emitter output (structure — Chapter/Section titles flow through both pipelines; prose content dropped for now)
+- [x] Preserve prose in emitter output (structure -- Chapter/Section titles flow through both pipelines; prose content dropped for now)
 - [x] Update ChapterScoper to treat same-chapter pages as shared namespace

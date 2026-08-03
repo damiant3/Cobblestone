@@ -1,6 +1,6 @@
 # Kernel Filesystem Servicer (BACKLOG 1.14)
 
-**Status:** DONE — closed 2026-07-14 (fester). Filed 2026-07-14 (fester);
+**Status:** DONE -- closed 2026-07-14 (fester). Filed 2026-07-14 (fester);
 route chosen by Damian 2026-07-14: *build the kernel FS servicer* (not
 "reframe", not a vacuous effect-op guard). All three increments landed:
 the elevation gate, the default servicer install, and the enforcement
@@ -15,7 +15,7 @@ while holding no `Device.Block`). No regressions: `fs-layer`,
 
 **One-line goal:** make `cap-filesystem-read` (bit 6) and
 `cap-filesystem-write` (bit 7) load-bearing at runtime, so a program that
-declared `[FileSystem.Read]` **cannot** write a file — enforced by the
+declared `[FileSystem.Read]` **cannot** write a file -- enforced by the
 running machine, not only by the type checker.
 
 ---
@@ -28,7 +28,7 @@ kill the easy answers, and every increment below is shaped by them.
 1. **The runtime disk chokepoint already exists, and it is `Device.Block`.**
    `fat16-*` does not poke IDE ports in-process. `block-read-sector` and
    `block-write-sector` (`X86_64Helpers.codex`) emit `li rax, 10|11 ;
-   syscall`. Syscalls are real `SYSCALL` instructions — boot writes the
+   syscall`. Syscalls are real `SYSCALL` instructions -- boot writes the
    handler into `IA32_LSTAR` (`X86_64Boot.codex:1578`, MSR 0xC0000082).
    `emit-block-read-syscall` / `emit-block-write-syscall`
    (`X86_64Boot.codex:2334–2394`) each call
@@ -49,7 +49,7 @@ kill the easy answers, and every increment below is shaped by them.
    and `opening` carries only `[Console, Device.Block]`. The process that
    reaches the disk holds `Device.Block`, not the filesystem bits. A guard
    at `emit-effect-op-call` would test that same residual process and pass
-   trivially — **vacuous**.
+   trivially -- **vacuous**.
 
 The consequence: for the direction bit to mean something at runtime, the
 **app must remain a process that holds only `FileSystem.Read` (never
@@ -62,7 +62,7 @@ kernel.
 ## The threat model, stated plainly
 
 The type checker already stops an *honestly compiled* `[FileSystem.Read]`
-program from performing `write-file` — the row would not type. The
+program from performing `write-file` -- the row would not type. The
 runtime hole is a **binary whose manifest lies**: a hand-crafted or
 tampered CDX whose declared caps say `FileSystem.Read` (so the loader
 grants bit 6 only) but whose code performs a write. Nothing today reads
@@ -76,7 +76,7 @@ the source.
 A `[FileSystem.Read]` program holds bit 6 and **not** bit 10. It performs
 `read-text` / `write-file` as ordinary `FileSystem` effect ops. With no
 user `with FileSystem` in scope, the ops are serviced by a
-**compiler-installed default handler** — the servicer — that the kernel
+**compiler-installed default handler** -- the servicer -- that the kernel
 owns:
 
 ```
@@ -109,7 +109,7 @@ campaign builds it.
 ### 2. Elevation: the servicer drives the disk without the app holding `Device.Block`
 
 The servicer reuses `fat16-*` wholesale, and `fat16-*` bottoms out in the
-`cap-block-device`-gated block syscalls against the *current process* —
+`cap-block-device`-gated block syscalls against the *current process* --
 which is the app, without bit 10. So the block-syscall gate is widened:
 
 > `emit-block-read-syscall` / `emit-block-write-syscall` proceed when the
@@ -122,35 +122,35 @@ on every path including the deny/absent path. `fs-elevated` is ambient
 authority, deliberately contained: it is written only by kernel-emitted
 servicer code, only around one `fat16-*` call, only once the app's FS cap
 and scope have been checked. It is a save/restore (not a bare set/clear)
-so a re-entrant servicer call — a handler that itself performs an FS op —
+so a re-entrant servicer call -- a handler that itself performs an FS op --
 does not clear elevation out from under its caller.
 
 **Alternative considered and rejected for the first cut:** factor the raw
 ATA read/write core out of the block syscalls into an ungated helper the
 servicer calls directly, so no ambient cell exists. Cleaner in principle,
 but it forks the sector primitives or forces a second `fat16` that uses
-the raw path — far more surface for a first increment. Revisit if
+the raw path -- far more surface for a first increment. Revisit if
 `fs-elevated` proves fragile.
 
 ---
 
 ## What already exists and is reused
 
-- `process-get-cap` (runtime helper, `X86_64Helpers.codex`) — reads the
+- `process-get-cap` (runtime helper, `X86_64Helpers.codex`) -- reads the
   current proc's capability word. The servicer's bit-6/7 test.
-- `process-get-scope` (runtime helper) — reads the current proc's scope
+- `process-get-scope` (runtime helper) -- reads the current proc's scope
   string; the boot ring (1.5) already writes it at `proc-scope-offset`
   (=64) and `process-spawn` copies it. `fat16-scope-admits` already uses
   it. The servicer's path check reuses `fat16-scope-admits` (do **not**
-  re-derive the prefix relation — 1.4's lesson).
-- `emit-check-capability` (`X86_64Boot.codex:2237`) — `bt`-tests one cap
+  re-derive the prefix relation -- 1.4's lesson).
+- `emit-check-capability` (`X86_64Boot.codex:2237`) -- `bt`-tests one cap
   bit of the current proc, answer in CF. Used by the block syscalls and
   the widened gate.
-- `fat16-read-text` / `fat16-write-file` / `fat16-list-root` — the disk
+- `fat16-read-text` / `fat16-write-file` / `fat16-list-root` -- the disk
   logic, unchanged.
 - Handler-table machinery (`emit-push-handler-slots`,
   `emit-store-to-handler-table`, `find-effect-op-addr`,
-  `emit-effect-op-call`, `X86_64.codex` / `X86_64Compound.codex`) — the
+  `emit-effect-op-call`, `X86_64.codex` / `X86_64Compound.codex`) -- the
   slots the default closures install into and that a user `with`
   overrides.
 
@@ -172,8 +172,8 @@ the raw path — far more surface for a first increment. Revisit if
 - **Handlers here are strictly tail-resumptive, one-shot, and compile to
   a plain call.** `emit-handle-one-clause` (`X86_64.codex:1162`) builds a
   `resume` trampoline that is literally the identity (`mov rax, rdi;
-  ret`), binds it, and stores the clause body's value — a lambda over the
-  op's args — into the slot. `emit-effect-op-call` then calls that lambda
+  ret`), binds it, and stores the clause body's value -- a lambda over the
+  op's args -- into the slot. `emit-effect-op-call` then calls that lambda
   with the op args and takes its return as the op's result. **So the
   default handler needs no continuation capture:** it is just a callable
   `\path -> <result>` (and `\path content -> <bool>`), installed as a
@@ -182,7 +182,7 @@ the raw path — far more surface for a first increment. Revisit if
 
 - **`fs-elevated` must NOT be reachable as a builtin or callable.** If
   `__fs-elevate` were an ordinary builtin, any program could call it and
-  then `block-write-sector` and bypass every gate — a universal capability
+  then `block-write-sector` and bypass every gate -- a universal capability
   bypass. Therefore the set/clear of `fs-elevated` is **inline machine
   code emitted only inside the compiler-generated servicer body**, never a
   named function in `fo-names`, never in any builtin table, never
@@ -199,12 +199,12 @@ the raw path — far more surface for a first increment. Revisit if
 1. **Elevation gate. [SOURCE-COMPLETE 2026-07-14]** Added `fs-elevated-addr`
    = 36224 and `emit-block-elev-gate` (returns `CheckExpiryResult`), and
    routed all four block syscalls (read 10, write 11, sector-count 12,
-   select 13) through it — they now proceed on `cap-block-device OR
+   select 13) through it -- they now proceed on `cap-block-device OR
    fs-elevated`. Verified register-safe: the gate only clobbers `rax`,
    which every disk path overwrites before reading (`emit-ata-setup-lba`
    opens with `li rax, 224`), and `rdi`/`rsi` (LBA/buffer) are untouched.
    **Inert until increment 2** (cell is 0 at boot), so it is not landed
-   alone — it ships with the servicer, whose test demonstrates it.
+   alone -- it ships with the servicer, whose test demonstrates it.
 
 2. **Default handler installation.** Concrete plan, verified feasible:
 
@@ -217,11 +217,11 @@ the raw path — far more surface for a first increment. Revisit if
      `Fat16.codex`): `fat16-servicer-read (path) = when fat16-read-text
      (fat16-init fat16-boot-partition-start) path is Just t -> t; None ->
      ""` and `fat16-servicer-write (path) (content) = fat16-write-file
-     path content`. Nothing special — they are the fat16 work the handler
+     path content`. Nothing special -- they are the fat16 work the handler
      would otherwise inline.
 
    - **Two hand-emitted servicer stubs** (runtime helpers, NOT in
-     `fo-names`/builtin tables — the elevation must have no callable
+     `fo-names`/builtin tables -- the elevation must have no callable
      surface). Each: `emit-check-capability cap-filesystem-{read|write}`
      → on deny return the empty answer (`""` for read via an empty-Text
      constant; `xor rax,rax` = `False` for write); else set `fs-elevated`
@@ -235,13 +235,13 @@ the raw path — far more surface for a first increment. Revisit if
      closure whose `[0]` is the stub address and store the closure pointer
      into the slot. A user `with FileSystem` still pushes/pops over it.
 
-   **Footguns to respect:** (a) **stack alignment** — the stub calls a
+   **Footguns to respect:** (a) **stack alignment** -- the stub calls a
    non-leaf Codex worker; keep RSP 16-byte aligned at the `call` (the
    op-call path + the stub's own push/pop must net to alignment, or the
    worker's SSE spills fault). (b) **`emit-check-capability` clobbers
-   rcx/r11 (saved/restored) and reads the current proc** — confirm `rdi`
+   rcx/r11 (saved/restored) and reads the current proc** -- confirm `rdi`
    (path) survives it; it does (only rcx/r11 touched). (c) the empty-Text
-   constant for the read deny path — reuse whatever `process-get-scope`
+   constant for the read deny path -- reuse whatever `process-get-scope`
    returns as its static empty (it "never answers null").
 
 3. **Enforcement tests + docs. [DONE 2026-07-14]** `codex/test/fs-servicer`
@@ -251,12 +251,12 @@ the raw path — far more surface for a first increment. Revisit if
    **denial** twin from the Tests section below is deliberately NOT added:
    `write-file` is an effect op, so an out-of-scope or wrong-direction
    literal is a compile error (CDX4002 / row rejection), not a runtime
-   refusal — an honestly compiled program cannot exercise it, and the
+   refusal -- an honestly compiled program cannot exercise it, and the
    runtime scope path is already pinned by `scope-runtime-deny`. The stub
    checks `cap-filesystem-{read,write}` before it elevates, so the deny
    path exists and is correct by inspection (see the residual note above).
    BACKLOG 1.14 removed (closed). (KingsAndCourts carries no specific
-   filesystem-enforcement claim to correct — it speaks of capabilities by
+   filesystem-enforcement claim to correct -- it speaks of capabilities by
    construction generally, which remains accurate.)
 
 The increments may collapse if 1 cannot be demonstrated without 2; in
@@ -266,35 +266,35 @@ reachable surface.
 ## Built and validated (2026-07-14)
 
 Increments 1 and 2 are implemented and validated **as a self-compiled
-fixed point** — the seed rebuilt from this source (`build/build.ps1`)
+fixed point** -- the seed rebuilt from this source (`build/build.ps1`)
 round-trips byte-identically and passes the BVT, so the servicer is in
 the compiler that compiles itself, not only a one-pass dev SUT. (The
 earlier interim note used dev SUT B7A4F972 before the fixed point was
 taken.)
 
-- **`codex/test/fs-servicer`** — a program with `[Console,
+- **`codex/test/fs-servicer`** -- a program with `[Console,
   FileSystem.Read "OK", FileSystem.Write "OK"]` and **no Device.Block**
   performs `write-file` then `read-text` as bare ops. Output: `write
   True` / `read hello servicer`. The write landed and read back through
-  the kernel servicer with the app holding no block authority — proving
+  the kernel servicer with the app holding no block authority -- proving
   the default handler installed (no null-slot crash), the direction bits
   were checked and passed, elevation let the block syscalls through, and
   fat16 round-tripped. Deterministic across runs.
 - **No regressions**: `fs-layer` (own `with FileSystem` handler + a
   `Device.Block` layer), `scope-runtime-open` / `scope-runtime-deny`
-  (direct fat16 + `Device.Block`), and `fat16-write` all still PASS — the
+  (direct fat16 + `Device.Block`), and `fat16-write` all still PASS -- the
   block-gate widening and the boot-time slot seed leave the
   `cap-block-device` path and the user-handler path untouched.
 
 **What the test does NOT cover, stated plainly (as 1.5 did):** the
-direction *denial* — a `[FileSystem.Read]`-only program's write being
-refused — cannot be exercised by an honestly compiled program, because
+direction *denial* -- a `[FileSystem.Read]`-only program's write being
+refused -- cannot be exercised by an honestly compiled program, because
 `write-file` is an effect op and a read-only row that performs it is a
 compile error (CDX4002 fires on an out-of-scope literal; the effect row
 rejects the op outright). The runtime bit test in the stub is
 defence-in-depth against a binary whose *manifest* and *code* disagree (a
 forged or restricted-grant CDX); closing that honestly needs a spawn/load
-that grants a subset of the code's declared caps — a harness this CL does
+that grants a subset of the code's declared caps -- a harness this CL does
 not build. The stub does `emit-check-capability cap-filesystem-{read,
 write}` before it elevates, so the deny path exists and is correct by
 inspection; the positive path is battery-pinned by `fs-servicer`.
@@ -309,17 +309,17 @@ one declaration apart, so a denial is not confused with a broken
 filesystem.
 
 - **fs-read-only-denies-write** (the 1.14 poster child): `opening :
-  [Console, FileSystem.Write "..."]`? No — declare `[Console,
+  [Console, FileSystem.Write "..."]`? No -- declare `[Console,
   FileSystem.Read "OK"]` and **no `Device.Block`**. `read-text "OK.TXT"`
   succeeds; `write-file "OK.TXT" ...` is **refused** (bit 7 absent). The
   refusal must be legible (the op returns `False` / a sentinel, not a
   crash).
-- **fs-write-lands**: `[FileSystem.Write "OK"]` — the write lands and
+- **fs-write-lands**: `[FileSystem.Write "OK"]` -- the write lands and
   reads back, proving the servicer is not simply denying everything.
 - **fs-scope-holds**: out-of-scope path refused even with the right
   direction bit (scope reuse pinned).
 - **direct-block-still-gated**: a program without `Device.Block` calling
-  `block-write-sector` directly still gets `-1` — elevation did not leak.
+  `block-write-sector` directly still gets `-1` -- elevation did not leak.
 - **fs-spawn-inherits**: a spawned child performs the FS op and the cap +
   scope came with it (mirror `scope-runtime-spawn`: the child attempts
   **both** directions and reports `10*in + out` so a wrong-reason pass is
@@ -327,7 +327,7 @@ filesystem.
 
 ## Memory / time-complexity verdict (to fill per CL)
 
-Elevation is one cell write/read per FS op — O(1), no allocation. The
+Elevation is one cell write/read per FS op -- O(1), no allocation. The
 servicer allocates exactly what `fat16-*` already allocates (one 512-byte
 sector buffer per `block-read-sector`, bump-freed with the op). No new
 retention across phases. State it explicitly in each CL.
@@ -337,13 +337,13 @@ retention across phases. State it explicitly in each CL.
 ## Confirmed feasible
 
 - **The slots already exist.** `effect-op-names` is collected from every
-  op in the cited `effect` *definitions* (`Lowering.codex:1187,1195` —
+  op in the cited `effect` *definitions* (`Lowering.codex:1187,1195` --
   `for op in (e.ops)`), not only handled ops. `assign-effect-op-addrs`
   (`X86_64Chapter.codex:1211`) gives each a slot at
   `handler-table-base-addr + i*8`. So whenever a program cites
   `FileSystem`, `read-text`/`write-file` have slots regardless of any
   `with`. The default install stores the servicer closure into the slot
-  `find-effect-op-addr (st.effect-op-addrs) "read-text"` returns — no new
+  `find-effect-op-addr (st.effect-op-addrs) "read-text"` returns -- no new
   slot allocation needed.
 
 ## Open questions to resolve during increment 1/2
@@ -360,6 +360,6 @@ retention across phases. State it explicitly in each CL.
 - **`fat16-init` cost per op.** The servicer calls `fat16-init
   boot-part` per op (as `scope-runtime-*` already do). Acceptable; note it.
 - **Interaction with a user `with FileSystem`.** A program that *does*
-  provide its own handler (the `fs-layer` model) must be unchanged — the
+  provide its own handler (the `fs-layer` model) must be unchanged -- the
   push overrides the default slot, the pop restores it. Verify `fs-layer`
   still passes.

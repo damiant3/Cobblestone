@@ -1,4 +1,4 @@
-# MM3 Summit Session — Findings
+# MM3 Summit Session -- Findings
 
 **Date**: 2026-03-26 evening
 **Agent**: Cam
@@ -8,7 +8,7 @@
 
 ## What We Proved
 
-1. **The compiler works on bare metal.** 30 of 32 feature tests pass —
+1. **The compiler works on bare metal.** 30 of 32 feature tests pass --
    every builtin the self-hosted compiler uses (text ops, list ops, char
    ops, closures, records, higher-order functions) produces valid C# output.
 
@@ -30,7 +30,7 @@
 **Stack overflow during compilation of large modules.**
 
 - 489 functions (22KB source) compiles successfully.
-- 712 functions (32KB source) crashes (QEMU exits — triple fault).
+- 712 functions (32KB source) crashes (QEMU exits -- triple fault).
 - The crash occurs AFTER receiving all data (verified with paced sending).
 - The crash occurs during compilation, not during serial I/O.
 - The kernel stack is 448KB (0x10000-0x7FFFF, growing down from 0x80000).
@@ -45,14 +45,14 @@ exhausts the stack.
 
 Two options:
 
-**A: Increase the stack.** Move the stack base higher — e.g., from 0x80000
+**A: Increase the stack.** Move the stack base higher -- e.g., from 0x80000
 to 0x180000 (1.5MB of stack). This requires updating the stack pointer
 initialization in `EmitStart` and ensuring the memory layout doesn't
 conflict with the ring buffer or other structures.
 
 **B: Reduce stack usage.** The self-hosted compiler's recursive functions
 could be converted to iterative loops with explicit stacks (on the heap).
-This is the TCO approach — but many of the recursive calls aren't in tail
+This is the TCO approach -- but many of the recursive calls aren't in tail
 position (the type checker pattern-matches and then recurses on children).
 
 Option A is the pragmatic fix. Option B is the correct long-term fix.
@@ -61,8 +61,8 @@ Option A is the pragmatic fix. Option B is the correct long-term fix.
 
 | Commit | What |
 |--------|------|
-| `25dd27b` | Gap analysis revision — hard gap eliminated |
-| `9fe1aa8` | Gap analysis collapses — may already work |
+| `25dd27b` | Gap analysis revision -- hard gap eliminated |
+| `9fe1aa8` | Gap analysis collapses -- may already work |
 | `19b0b43` | UART init + busy-wait poll (pause instead of hlt) |
 | `7ccae0f` | MM3 test suite (32 tests) + --dump-source flag |
 | `3fdda43` | Sum type REPL print diagnosis |
@@ -85,19 +85,19 @@ Option A is the pragmatic fix. Option B is the correct long-term fix.
 
 | Test | Result |
 |------|--------|
-| main = 42 (24B) | PASS — compiles on bare metal |
+| main = 42 (24B) | PASS -- compiles on bare metal |
 | 153B (3 functions) | PASS |
 | 525B (10 functions) | PASS |
 | 966B (20 functions) | PASS |
 | 2KB (44 functions) | PASS |
 | 11KB (250 functions) | PASS |
 | 22KB (489 functions) | PASS |
-| 32KB (712 functions) | FAIL — stack overflow |
-| 180KB (full compiler) | FAIL — stack overflow |
+| 32KB (712 functions) | FAIL -- stack overflow |
+| 180KB (full compiler) | FAIL -- stack overflow |
 
 ## Next Steps
 
 1. Increase kernel stack to 1.5MB (change 0x80000 to 0x180000)
 2. Verify 32KB compiles with larger stack
 3. Attempt full 180KB self-compilation
-4. Compare output with Stage 1 — if it matches, MM3 is proven
+4. Compare output with Stage 1 -- if it matches, MM3 is proven

@@ -16,12 +16,12 @@
 **Camp III-A Phase 2a complete.** IRRegion `NeedsEscapeCopy` annotation (Cam).
 **Camp III-A Phase 2b complete.** RISC-V escape copy for Text, Record, List, Sum regions (Cam). Reviewed, merged.
 **Camp III-A Phase 2c complete (2026-03-24).** Sub-expression regions: each let binding's initializer wrapped in its own region. Scalar-returning expressions reclaim intermediates immediately at the let boundary. Heap-returning expressions skip reclamation (value survives in bound variable). Four lines in Lowering.cs. Verified by Agent Linux: self-hosted RISC-V compiler produces correct C# under QEMU.
-**Register spill verified (2026-03-23).** AllocLocal saturation bug found by Linux review, spill-to-stack + IRRegion SP fix verified under QEMU — 40/40 RISC-V tests green.
+**Register spill verified (2026-03-23).** AllocLocal saturation bug found by Linux review, spill-to-stack + IRRegion SP fix verified under QEMU -- 40/40 RISC-V tests green.
 **Camp II-C (Self-Hosted Native) SUMMITED (2026-03-23).** The Codex compiler, compiled to a 227KB RISC-V ELF, compiles Codex source to valid C# under QEMU. No .NET, no CLR, no JIT. Native machine code, start to finish.
-**ARM64 backend complete (2026-03-23).** Arm64Encoder, Arm64CodeGen (1,740 lines), ElfWriterArm64. `codex build --target arm64` produces ELF64 AArch64 binaries. **QEMU-verified (2026-03-24)** — 33/33 tests green under qemu-aarch64. Two bugs found and fixed by Agent Linux: `__escape_text` null guard (CBZ→CBNZ), `__str_concat` byte copy. ELF section headers added for Android bionic compatibility.
+**ARM64 backend complete (2026-03-23).** Arm64Encoder, Arm64CodeGen (1,740 lines), ElfWriterArm64. `codex build --target arm64` produces ELF64 AArch64 binaries. **QEMU-verified (2026-03-24)** -- 33/33 tests green under qemu-aarch64. Two bugs found and fixed by Agent Linux: `__escape_text` null guard (CBZ→CBNZ), `__str_concat` byte copy. ELF section headers added for Android bionic compatibility.
 **Phone effects complete (2026-03-23).** 7 new effects: Network, Display, Camera, Microphone, Location, Sensors, Identity. 7 prelude files, 13 new tests, capability enforcement verified.
-**Phone hardware ready (2026-03-23).** Samsung SM-G935T (T-Mobile S7 Edge) backed up, SIM removed, OEM unlock enabled, Odin connected. TWRP build handed off to Agent Linux — no pre-built images exist for hero2qlte.
-**x86-64 backend SUMMITED (2026-03-23).** X86_64Encoder, X86_64CodeGen (~2,500 lines), ElfWriterX86_64. Self-hosted compiler compiles to 248KB x86-64 ELF and produces correct C# output running natively in WSL. 20 bugs found and fixed in one evening session (Cam + Agent Linux). No QEMU — native execution on the dev machine.
+**Phone hardware ready (2026-03-23).** Samsung SM-G935T (T-Mobile S7 Edge) backed up, SIM removed, OEM unlock enabled, Odin connected. TWRP build handed off to Agent Linux -- no pre-built images exist for hero2qlte.
+**x86-64 backend SUMMITED (2026-03-23).** X86_64Encoder, X86_64CodeGen (~2,500 lines), ElfWriterX86_64. Self-hosted compiler compiles to 248KB x86-64 ELF and produces correct C# output running natively in WSL. 20 bugs found and fixed in one evening session (Cam + Agent Linux). No QEMU -- native execution on the dev machine.
 
 The C# bootstrap compiler is locked. All forward development happens in `.codex` source.
 
@@ -37,47 +37,47 @@ The C# bootstrap compiler is locked. All forward development happens in `.codex`
 | Fixed point | Proven (Stage 1 = Stage 3 at 255,344 chars) |
 | Reference compiler | 🔒 Locked |
 | Binary targets | RISC-V 64 (Linux user + bare metal), WASM/WASI, ARM64 (Linux), x86-64 (Linux) |
-| RiscVCodeGen | 2,248 lines — register spill, closures, lists, file I/O, runtime helpers |
-| Arm64CodeGen | 1,740 lines — full IR→ARM64 codegen, callee-saved regs, heap pointer |
-| X86_64CodeGen | ~2,500 lines — closures, builtins, 7+ param stack passing, self-hosted verified |
+| RiscVCodeGen | 2,248 lines -- register spill, closures, lists, file I/O, runtime helpers |
+| Arm64CodeGen | 1,740 lines -- full IR→ARM64 codegen, callee-saved regs, heap pointer |
+| X86_64CodeGen | ~2,500 lines -- closures, builtins, 7+ param stack passing, self-hosted verified |
 | Agents | 3 (Windows/Copilot, Linux/sandbox, Cam/CLI) |
-| Phone | Samsung SM-G935T — OEM unlocked, awaiting TWRP build |
+| Phone | Samsung SM-G935T -- OEM unlocked, awaiting TWRP build |
 
 ---
 
-## Completed Work (this cycle — 2026-03-22)
+## Completed Work (this cycle -- 2026-03-22)
 
-### V1 — Repository Views ✅ COMPLETE
+### V1 -- Repository Views ✅ COMPLETE
 
 Four phases delivered in one day:
-- **Phase 1**: Named views — CRUD, legacy bridge, name validation, existence guards (27 tests)
-- **Phase 2**: View consistency — type-check all definitions in a view together (5 tests)
-- **Phase 3**: View composition — Override, Merge (with conflict detection), Filter (14 tests)
-- **Phase 4**: View-aware compilation — `codex build --view <n>` (the view IS the build manifest)
+- **Phase 1**: Named views -- CRUD, legacy bridge, name validation, existence guards (27 tests)
+- **Phase 2**: View consistency -- type-check all definitions in a view together (5 tests)
+- **Phase 3**: View composition -- Override, Merge (with conflict detection), Filter (14 tests)
+- **Phase 4**: View-aware compilation -- `codex build --view <n>` (the view IS the build manifest)
 
 69 total ViewTests. The repository model is now a working build system.
 
-### R2b — Formalize Effects ✅
+### R2b -- Formalize Effects ✅
 
 Effect definitions moved from hard-coded TypeEnvironment to parsed `.codex` source:
 `Console`, `FileSystem`, `State`, `Time`, `Random` (5 prelude files).
 `BuiltinEffects.Load()` parses once, caches forever. 8 new prelude tests.
 
-### Camp III-B — Capability System (Phase 1) ✅
+### Camp III-B -- Capability System (Phase 1) ✅
 
 `CapabilityChecker`: post-type-check pass that extracts effect annotations
 and optionally enforces capability grants. `CDX4001` diagnostic when a
 required capability is missing. Wired into all compile pipelines.
 `CapabilityReport` carried on `IRCompilationResult`. 9 tests.
 
-### Camp III-B — Capability System (Phase 2) ✅
+### Camp III-B -- Capability System (Phase 2) ✅
 
 CLI `--capabilities Console,FileSystem` flag wired into `codex build` and
 `codex check`. Enforcement at compile time: `CDX4001` fires when a required
 capability isn't granted. `PrintCapabilityReport` shows required capabilities
 in build/check output. Merged from `linux/camp3b-capability-checker`.
 
-### Camp III-A — Linear Allocator (Phase 1) ✅
+### Camp III-A -- Linear Allocator (Phase 1) ✅
 
 `IRRegion` IR node wraps every definition body. WASM backend implements real
 region-based allocation: push heap pointer on enter, restore on exit (bulk free).
@@ -93,7 +93,7 @@ length-prefixed strings, runtime helpers (print i64/bool). 10 tests.
 (text-to-integer, integer-to-text, char-at, substring, negate), f64.neg opcode.
 13 new tests (23 total WASM, all wasmtime-verified).
 
-### Camp II-B — RISC-V Native Backend ✅ (2026-03-21)
+### Camp II-B -- RISC-V Native Backend ✅ (2026-03-21)
 
 RiscVEncoder, ElfWriter, RiscVCodeGen, bare metal UART. 13 + 5 QEMU tests.
 
@@ -114,16 +114,16 @@ Design: `docs/Designs/RISCV-PARITY.md`. Review: `docs/Reviews/RISCV-PARITY-PHASE
 
 ### Previously Completed
 
-- P1 — Self-Hosted Builtin Expansion ✅
-- P2 — File Input & Stage 1 Verification ✅
-- R6 — IL Native Executable Bootstrap ✅
+- P1 -- Self-Hosted Builtin Expansion ✅
+- P2 -- File Input & Stage 1 Verification ✅
+- R6 -- IL Native Executable Bootstrap ✅
 
 ---
 
-### V2 — Narration Layer (CPL Implementation) ✅
+### V2 -- Narration Layer (CPL Implementation) ✅
 
 All 6 CPL sentence forms implemented in one session (2026-03-22):
-- **Form 1**: Type declarations (record/variant) — V1, extended with constraints
+- **Form 1**: Type declarations (record/variant) -- V1, extended with constraints
 - **Form 2**: Constraint templates (`such that`, `where`, `provided that`)
 - **Form 3**: Function templates (`To V (x : T) gives Y, failing if P`)
 - **Form 4**: Proof assertions (`Claim:` / `Proof:` with CDX1105 validation)
@@ -134,13 +134,13 @@ Also: prose-notation consistency checking (CDX1101/CDX1102), inline code
 refs (backtick), inline type refs (PascalCase), transition markers (`We say:`).
 44 prose template tests. Design: `docs/Designs/V2-NARRATION-LAYER.md`.
 
-### IL Emitter — maxstack fix ✅
+### IL Emitter -- maxstack fix ✅
 
 Fixed `InvalidProgramException` caused by hardcoded `maxStack=32`. Now scales
 with `max(16, max(locals.Count, exprDepth) + 16)` using `EstimateStackDepth`
 recursive IR walker. Found by dogfooding codex-agent.
 
-### codex-agent — per-agent cognitive check ✅
+### codex-agent -- per-agent cognitive check ✅
 
 `check cam` uses 800K budget (1M context), `check windows`/`check linux` use
 60K. Agent name, label, and budget-appropriate load assessment in output.
@@ -149,7 +149,7 @@ recursive IR walker. Found by dogfooding codex-agent.
 
 ## Active Work
 
-### Codex Phone — Phase 1 (In Progress)
+### Codex Phone -- Phase 1 (In Progress)
 
 **Goal**: A Codex program running on the Samsung S7 Edge (SM-G935T).
 
@@ -160,7 +160,7 @@ recursive IR walker. Found by dogfooding codex-agent.
 - V4 proof-carrying facts: proofs verified at view composition time
 
 **Blocked on:**
-- Phase D: Flash to phone — recovery image packed and validated, awaiting human go/no-go
+- Phase D: Flash to phone -- recovery image packed and validated, awaiting human go/no-go
 
 **After TWRP:**
 1. Flash TWRP via Odin
@@ -175,7 +175,7 @@ recursive IR walker. Found by dogfooding codex-agent.
 **Camp II-C x86-64**: Self-hosted Codex compiler runs natively on x86-64.
 
 248KB ELF binary, running in WSL (no QEMU). Compiles Codex source to valid C#.
-Built in one evening session — 21 commits, 20 bugs found and fixed:
+Built in one evening session -- 21 commits, 20 bugs found and fixed:
 
 - X86_64Encoder (REX/ModR/M/SIB), ElfWriterX86_64, X86_64CodeGen (~2,500 lines)
 - Closures, sum constructors, partial application, 7+ parameter stack passing
@@ -210,7 +210,7 @@ Built in one evening session — 21 commits, 20 bugs found and fixed:
 
 Three-agent collaboration: Cam built + debugged (GDB in WSL), Agent Linux traced with GDB on sandbox, Human routed between agents.
 
-### Camp III-A Phase 2 — Escape Analysis ✅ Phase 2a+2b+2c (Cam)
+### Camp III-A Phase 2 -- Escape Analysis ✅ Phase 2a+2b+2c (Cam)
 
 Escape copy and region reclamation across all backends:
 - Phase 2a: `NeedsEscapeCopy` flag on `IRRegion` node
@@ -222,7 +222,7 @@ Escape copy and region reclamation across all backends:
 
 Remaining: closure escape (capture types unknown), WASM deep copy for nested heap types.
 
-### Camp II-C — Self-Hosted on RISC-V ✅ SUMMITED (2026-03-23)
+### Camp II-C -- Self-Hosted on RISC-V ✅ SUMMITED (2026-03-23)
 
 The Codex compiler, compiled to a 227,600-byte RISC-V ELF, successfully
 compiles Codex source to valid C# under QEMU. No .NET, no CLR, no JIT.
@@ -251,7 +251,7 @@ Output: clean C# (`public static long main() => 42;`). Exit code 0.
 | 5 missing builtins | text-replace, char-code-at, char-code, code-to-char, is-letter | Implemented in TryEmitBuiltin + __str_replace helper |
 
 **Three-agent collaboration:** Windows agent built features. Cam (1M Opus)
-debugged at full speed — 10 fix commits in one session, closures included.
+debugged at full speed -- 10 fix commits in one session, closures included.
 Linux agent reviewed, ran QEMU traces, verified each fix, found the initial
 AllocLocal saturation bug. Human routed between agents across session boundaries.
 
@@ -259,7 +259,7 @@ AllocLocal saturation bug. Human routed between agents across session boundaries
 
 ---
 
-## Forward Direction — Next Rocks to Climb
+## Forward Direction -- Next Rocks to Climb
 
 ### Ready Now
 | Task | What | Why |
@@ -276,15 +276,15 @@ AllocLocal saturation bug. Human routed between agents across session boundaries
 | ~~Camp III-A Phase 2c~~ | ~~Full escape analysis for region reclamation~~ | ✅ Done (2026-03-24) |
 
 ### Medium Term
-- **Camp III-C**: Structured concurrency — `par`, `race`, work-stealing
-- **V3**: Repository federation — multi-repo sync, cross-repo trust
-- **Phone Phase 2**: Replace Android — postmarketOS, framebuffer, touch input, UI toolkit
+- **Camp III-C**: Structured concurrency -- `par`, `race`, work-stealing
+- **V3**: Repository federation -- multi-repo sync, cross-repo trust
+- **Phone Phase 2**: Replace Android -- postmarketOS, framebuffer, touch input, UI toolkit
 
 ### Long Term
-- **V5 — Intelligence layer**: AI agents as first-class participants
-- **V6 — Trust lattice**: vouching with degrees, trust-ranked search
-- **Phone Phase 3 — Codex.OS**: ARM64 bare metal on the phone. No Linux. The summit.
-- **Peak IV — Codex.OS**: The summit
+- **V5 -- Intelligence layer**: AI agents as first-class participants
+- **V6 -- Trust lattice**: vouching with degrees, trust-ranked search
+- **Phone Phase 3 -- Codex.OS**: ARM64 bare metal on the phone. No Linux. The summit.
+- **Peak IV -- Codex.OS**: The summit
 
 ---
 
@@ -294,7 +294,7 @@ AllocLocal saturation bug. Human routed between agents across session boundaries
 - **Stdlib design**: `docs/Designs/STDLIB-AND-CONCURRENCY.md`
 - **RISC-V parity plan**: `docs/Designs/RISCV-PARITY.md`
 - **V2 narration design**: `docs/Designs/V2-NARRATION-LAYER.md`
-- **Agent toolkit**: `tools/codex-agent/` — peek, snap, build, test, handoff, doctor
-- **MCP server**: `tools/Codex.Mcp/` — compiler-as-a-tool for agents
-- **Principles**: `docs/10-PRINCIPLES.md` — unchanged, still governing.
+- **Agent toolkit**: `tools/codex-agent/` -- peek, snap, build, test, handoff, doctor
+- **MCP server**: `tools/Codex.Mcp/` -- compiler-as-a-tool for agents
+- **Principles**: `docs/10-PRINCIPLES.md` -- unchanged, still governing.
 - **Three-agent workflow**: Windows (Copilot/VS) builds + pushes, Linux (Claude/sandbox) tests + reviews, Cam (Claude Code CLI, 1M Opus) fast iteration + parallel work. Git is the coordination protocol. Cam works from `D:\Projects\NewRepository-cam` worktree. Linux reviews are pushed to `docs/reviews/`.

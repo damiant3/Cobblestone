@@ -1,0 +1,110 @@
+Chapter: UnitRealCompare
+
+ Ordering comparisons on a `unit` type wrapping a `Real`.
+
+ A unit type is erased at codegen, so a comparison has to dispatch on what
+ is inside the wrapper. `emit-ord-comparison` matched `RealTy` directly,
+ and a `unit Real` resolves to `UnitTy(RealTy)`, which matched neither
+ floating arm and fell through to the integer comparator. That is the same
+ defect the four scalar ordering operators carried until 2026-07-27, one
+ type wrapper deeper, on a path nothing in the tree exercised: no test
+ declared a unit over a Real, and the compiler declares none itself.
+
+ It never shipped a wrong answer. `cdx-int-compare-on-float`, added the
+ same day the scalar defect was fixed, refused the emit and halted the
+ build. The guard was written for a future operator that forgot to
+ dispatch; what it actually caught was a future TYPE that did.
+
+ The negative-negative pairs are the ones that matter. Comparing two
+ IEEE-754 bit patterns as signed integers is right for two non-negatives
+ and right for mixed signs, and reverses for two negatives, so a test that
+ only compared positive quantities would pass against the broken emitter.
+
+Section: Units
+
+  Metre = unit Real
+
+  Hertz = unit Real
+
+Section: Operands
+
+  m-neg-big : Metre
+  m-neg-big = Metre (0.0 - 2.9)
+
+  m-neg-small : Metre
+  m-neg-small = Metre (0.0 - 1.5)
+
+  m-zero : Metre
+  m-zero = Metre 0.0
+
+  m-pos-small : Metre
+  m-pos-small = Metre 1.5
+
+  m-pos-big : Metre
+  m-pos-big = Metre 2.9
+
+  h-lo : Hertz
+  h-lo = Hertz 0.0016
+
+  h-hi : Hertz
+  h-hi = Hertz 0.0045
+
+Section: The Two Paths
+
+ Asked twice, because a comparison in condition position is fused into the
+ branch and one whose result is handed on as a value is materialised. The
+ two fused guards already unwrapped the unit and declined it correctly, so
+ only the value path was wrong; asking both is what shows that.
+
+  b2i : Boolean -> Integer
+  b2i (b) = if b then 1 else 0
+
+  mf-lt : Metre, Metre -> Integer
+  mf-lt (a) (b) = if a < b then 1 else 0
+
+  mv-lt : Metre, Metre -> Integer
+  mv-lt (a) (b) = b2i (a < b)
+
+  mf-gt : Metre, Metre -> Integer
+  mf-gt (a) (b) = if a > b then 1 else 0
+
+  mv-gt : Metre, Metre -> Integer
+  mv-gt (a) (b) = b2i (a > b)
+
+  mf-le : Metre, Metre -> Integer
+  mf-le (a) (b) = if a <= b then 1 else 0
+
+  mv-le : Metre, Metre -> Integer
+  mv-le (a) (b) = b2i (a <= b)
+
+  mf-ge : Metre, Metre -> Integer
+  mf-ge (a) (b) = if a >= b then 1 else 0
+
+  mv-ge : Metre, Metre -> Integer
+  mv-ge (a) (b) = b2i (a >= b)
+
+  hv-lt : Hertz, Hertz -> Integer
+  hv-lt (a) (b) = b2i (a < b)
+
+Section: Report
+
+  opening : [Console] Nothing
+  opening = act
+    print-line-uni ("neg-big lt neg-small want 11 got " & show (mf-lt m-neg-big m-neg-small) & show (mv-lt m-neg-big m-neg-small))
+    print-line-uni ("neg-big gt neg-small want 00 got " & show (mf-gt m-neg-big m-neg-small) & show (mv-gt m-neg-big m-neg-small))
+    print-line-uni ("neg-big le neg-small want 11 got " & show (mf-le m-neg-big m-neg-small) & show (mv-le m-neg-big m-neg-small))
+    print-line-uni ("neg-big ge neg-small want 00 got " & show (mf-ge m-neg-big m-neg-small) & show (mv-ge m-neg-big m-neg-small))
+    print-line-uni ("neg-small lt neg-big want 00 got " & show (mf-lt m-neg-small m-neg-big) & show (mv-lt m-neg-small m-neg-big))
+    print-line-uni ("neg-small gt neg-big want 11 got " & show (mf-gt m-neg-small m-neg-big) & show (mv-gt m-neg-small m-neg-big))
+    print-line-uni ("neg-big lt neg-big want 00 got " & show (mf-lt m-neg-big m-neg-big) & show (mv-lt m-neg-big m-neg-big))
+    print-line-uni ("neg-big le neg-big want 11 got " & show (mf-le m-neg-big m-neg-big) & show (mv-le m-neg-big m-neg-big))
+    print-line-uni ("neg-big ge neg-big want 11 got " & show (mf-ge m-neg-big m-neg-big) & show (mv-ge m-neg-big m-neg-big))
+    print-line-uni ("pos-small lt pos-big want 11 got " & show (mf-lt m-pos-small m-pos-big) & show (mv-lt m-pos-small m-pos-big))
+    print-line-uni ("pos-big lt pos-small want 00 got " & show (mf-lt m-pos-big m-pos-small) & show (mv-lt m-pos-big m-pos-small))
+    print-line-uni ("neg-big lt pos-small want 11 got " & show (mf-lt m-neg-big m-pos-small) & show (mv-lt m-neg-big m-pos-small))
+    print-line-uni ("pos-big lt neg-small want 00 got " & show (mf-lt m-pos-big m-neg-small) & show (mv-lt m-pos-big m-neg-small))
+    print-line-uni ("neg-small lt zero want 11 got " & show (mf-lt m-neg-small m-zero) & show (mv-lt m-neg-small m-zero))
+    print-line-uni ("neg-small gt zero want 00 got " & show (mf-gt m-neg-small m-zero) & show (mv-gt m-neg-small m-zero))
+    print-line-uni ("hertz lo lt hi want 1 got " & show (hv-lt h-lo h-hi))
+    print-line-uni ("hertz hi lt lo want 0 got " & show (hv-lt h-hi h-lo))
+  end

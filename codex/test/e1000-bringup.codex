@@ -1,0 +1,72 @@
+Chapter: E1000Bringup
+  cites Foreword chapter Maybe
+  cites Kernel chapter E1000e
+  cites Kernel chapter Pci
+
+ This test runs the driver against the emulated e1000 in the Device
+ Emulation Catalog, so unlike e1000-match it DOES touch registers, both
+ descriptor rings and a frame. Its `.vmargs` selects the model and the
+ fault, if any.
+
+ What a green result here is evidence of, and it is worth being exact:
+ that the driver's own state machine advances and that it survives each
+ refusal the model can produce. The model and the driver were written by
+ the same agent from the same datasheet reading, so a misreading passes
+ both. It is not evidence about silicon, and the hardware sitting stays
+ the referee.
+
+ The received frame is reported byte for byte rather than as a count.
+ A length alone would be satisfied by any sixty bytes, including sixty
+ bytes of uninitialised buffer, and the canned frame carries a broadcast
+ destination with an unassigned EtherType precisely so that its bytes
+ could not have come from anywhere else.
+
+Section: Fixtures
+
+  bring-up : PciScanResult -> E1000Device
+  bring-up (scan) =
+    when e1000-find scan
+      is Just (d) -> e1000-init d
+      is None -> e1000-absent
+
+  mk-frame : Integer, Integer, List Integer -> List Integer
+  mk-frame (i) (n) (acc) =
+    if i >= n then acc else mk-frame (i + 1) n (list-push acc i)
+
+Section: Judges
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  bytes-of : List Integer, Integer, Integer, Text -> Text
+  bytes-of (l) (i) (n) (acc) =
+    if i >= n then acc
+    else bytes-of l (i + 1) n (acc & " " & show (list-at l i))
+
+  head-of : List Integer, Integer -> Text
+  head-of (l) (n) =
+    if list-length l < n then "short" else bytes-of l 0 n ""
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let d = bring-up (pci-scan-bus 0)
+    in let r = e1000-poll-frame d
+    in let frame = r.r-frame
+    in let empty = e1000-poll-frame d
+    in let sent = e1000-send-frame d (mk-frame 0 64 [])
+    in act
+      print-line-uni ("present      : " & yn (d.e-present))
+      print-line-uni ("mmio in window: " & yn ((d.e-mmio) >= 3221225472 & (d.e-mmio) < 4294967296))
+      print-line-uni ("mac valid    : " & yn (d.e-mac-valid))
+      print-line-uni ("mac          :" & bytes-of (d.e-mac) 0 (list-length (d.e-mac)) "")
+      print-line-uni ("link up      : " & yn (e1000-has-link d))
+      print-line-uni ("recv happened: " & yn (r.r-has-frame))
+      print-line-uni ("recv length  : " & show (list-length frame))
+      print-line-uni ("recv header  :" & head-of frame 14)
+      print-line-uni ("second poll  : " & yn (empty.r-has-frame))
+      print-line-uni ("send accepted: " & show sent)
+    end
+  end
+
+Page 1

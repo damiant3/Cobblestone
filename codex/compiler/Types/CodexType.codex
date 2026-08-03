@@ -5,10 +5,7 @@ Chapter: Codex Types
 Section: Primitive Types
   CodexType =
    | IntegerTy (Integer) (Integer) (OverflowMode)
-   | RealTy
-   | RealApproxTy
-   | RealTrappingTy
-   | RealSaturatingTy
+   | RealTy (RealWidth) (RealMode)
    | TextTy
    | BooleanTy
    | CharTy
@@ -59,7 +56,7 @@ Section: Effect Rows
  never resolve to a row, so a kind confusion is unrepresentable.
  Labels are kept name-then-scope sorted and duplicate-free by
  construction; rows are idempotent sets, never multisets. Through
- stage 2 rows remain inert — concrete effects still ride in
+ stage 2 rows remain inert -- concrete effects still ride in
  EffectfulTy until stage 3 migrates them onto the arrow and enforces
  the row at declared boundaries. All pure arrows share the single
  interned empty-row; do not allocate a fresh empty row per arrow.
@@ -101,12 +98,44 @@ Section: Overflow Modes
  incoming value falls outside the field's declared range. Set on a
  type at declaration time; consulted by codegen at every
  narrow-store site for that type. Mode is irrelevant for full-width
- (`i64-min..i64-max`) integers — narrow-store does not fire.
+ (`i64-min..i64-max`) integers -- narrow-store does not fire.
 
   OverflowMode =
    | OvError
    | OvWrapping
    | OvClamping
+
+Section: Real Width And Mode
+
+ Precision and safety are INDEPENDENT choices and the type used to carry
+ exactly one of them, so of the six combinations only four could be
+ spelled and both missing ones were f32. They are two fields here for
+ that reason rather than for symmetry with IntegerTy.
+
+ RmDefault is IEEE 754: an overflow yields an infinity and a caller who
+ wants to know must ask. RmTrapping halts instead. RmSaturating clamps
+ to the largest finite value of the width, so the answer stays a number
+ the next operation can use.
+
+  RealWidth =
+   | RwF64
+   | RwF32
+
+  RealMode =
+   | RmDefault
+   | RmTrapping
+   | RmSaturating
+
+ The spellings that existed before the collapse, named once so the
+ hundred-odd mentions across the compiler do not each spell out a pair.
+ `int-ty-default` is the same idea for integers and the precedent.
+
+  real-f64 : CodexType = RealTy RwF64 RmDefault
+  real-f32 : CodexType = RealTy RwF32 RmDefault
+  real-f64-trapping : CodexType = RealTy RwF64 RmTrapping
+  real-f64-saturating : CodexType = RealTy RwF64 RmSaturating
+  real-f32-trapping : CodexType = RealTy RwF32 RmTrapping
+  real-f32-saturating : CodexType = RealTy RwF32 RmSaturating
 
 Section: Integer Bounds
   i64-max : Integer = 9223372036854775807
@@ -114,6 +143,93 @@ Section: Integer Bounds
   i64-min : Integer = 0 - 9223372036854775807 - 1
 
   int-ty-default : CodexType = IntegerTy i64-min i64-max OvError
+
+Section: Unit Stripping
+
+ A `unit` type is a wrapper codegen erases, so anything dispatching on what
+ a value IS at runtime has to look through it. This is that one look, and it
+ lives here rather than in a back end because it is a question about the
+ type, not about a machine.
+
+ It recurses, because nothing prevents a unit wrapping a unit.
+
+ There were four hand-maintained answers to this question and they did not
+ agree. `emit-ord-comparison` stripped recursively; `is-fusable-int-comparison`
+ and `cmp-answers-operand` stripped one level; `lower-bin-op` stripped nothing
+ at all, so every arithmetic operator on a `unit Real` fell past the floating
+ arms to the integer one and added two IEEE-754 bit patterns. That is wrong on
+ every input rather than on a quarter of them, and it emitted no diagnostic
+ because `CDX9010` guards the comparison emitter and arithmetic does not go
+ through it.
+
+ The lesson is the one this tree keeps relearning: a predicate copied is a
+ predicate that will drift. Derive it once and let every caller read it.
+
+  strip-unit-ty : CodexType -> CodexType
+  strip-unit-ty (ty) =
+   when ty
+    is UnitTy (n) (inner) -> strip-unit-ty inner
+    is otherwise -> ty
+
+Section: Real Mode Classification
+
+  is-real-type : CodexType -> Boolean
+  is-real-type (ty) =
+   when ty
+    is RealTy (w) (m) -> True
+    is otherwise -> False
+
+  is-real-f32 : CodexType -> Boolean
+  is-real-f32 (ty) =
+   when ty
+    is RealTy (w) (m) -> is-width-f32 w
+    is otherwise -> False
+
+  is-width-f32 : RealWidth -> Boolean
+  is-width-f32 (w) =
+   when w
+    is RwF32 -> True
+    is otherwise -> False
+
+  real-mode-of : CodexType -> RealMode
+  real-mode-of (ty) =
+   when ty
+    is RealTy (w) (m) -> m
+    is otherwise -> RmDefault
+
+  real-width-of : CodexType -> RealWidth
+  real-width-of (ty) =
+   when ty
+    is RealTy (w) (m) -> w
+    is otherwise -> RwF64
+
+ A variant carries no structural equality, so the two fields need their
+ own comparisons before a unifier can ask whether two Real types agree.
+
+  real-width-eq : RealWidth, RealWidth -> Boolean
+  real-width-eq (a) (b) = is-width-f32 a == is-width-f32 b
+
+  real-mode-eq : RealMode, RealMode -> Boolean
+  real-mode-eq (a) (b) = real-mode-rank a == real-mode-rank b
+
+  real-mode-rank : RealMode -> Integer
+  real-mode-rank (m) =
+   when m
+    is RmDefault -> 0
+    is RmTrapping -> 1
+    is RmSaturating -> 2
+
+  real-mode-is-trapping : RealMode -> Boolean
+  real-mode-is-trapping (m) =
+   when m
+    is RmTrapping -> True
+    is otherwise -> False
+
+  real-mode-is-saturating : RealMode -> Boolean
+  real-mode-is-saturating (m) =
+   when m
+    is RmSaturating -> True
+    is otherwise -> False
 
 Section: Pointer Classification
 
@@ -130,7 +246,7 @@ Section: Pointer Classification
  underlying value type. LinearTy is the stage-1 ownership marker:
  it survives resolution so later stages
  can read declared linearity, but it is representation-transparent
- everywhere — width, layout, unification, and the IR wire all see
+ everywhere -- width, layout, unification, and the IR wire all see
  the inner type.
 
  TypeVar is the one undecidable case: a polymorphic field's runtime
@@ -141,7 +257,7 @@ Section: Pointer Classification
   is-pointer-type : CodexType -> Boolean
   is-pointer-type (ty) =
    when ty
-    is IntegerTy (lo) (hi) (mode) | RealTy | RealApproxTy | RealTrappingTy | RealSaturatingTy | BooleanTy | CharTy | VoidTy | NothingTy | ErrorTy | ProofTy | PropEqTy (a) (b) -> False
+    is IntegerTy (lo) (hi) (mode) | RealTy (rw) (rm) | BooleanTy | CharTy | VoidTy | NothingTy | ErrorTy | ProofTy | PropEqTy (a) (b) -> False
     is TextTy | ListTy (e) | LinkedListTy (e) | RecordTy (n) (a) (f) | SumTy (n) (a) (c) | ConstructedTy (n) (a) | FunTy (p) (row) (r) | VectorTy (vn) (vt) | VectorMaskTy (mn) -> True
     is EffectfulTy (e) (s) (r) -> is-pointer-type r
     is ForAllTy (i) (b) -> is-pointer-type b

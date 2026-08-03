@@ -62,7 +62,7 @@ the `make-efi.ps1` script with the Codex-native `PeWriter.codex`.
 
 - x86-64 CPU with UEFI firmware
 - USB boot support
-- Serial port (COM1, 0x3F8) for program I/O — USB-to-serial works
+- Serial port (COM1, 0x3F8) for program I/O -- USB-to-serial works
 - No BIOS/CSM required (pure UEFI)
 
 ## Image Size

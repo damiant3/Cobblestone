@@ -1,0 +1,97 @@
+Chapter: AnnotationsQuery
+  cites Works chapter Annotation
+  cites Works chapter AnnotationsSidecar
+  cites Foreword chapter Maybe
+
+ Asking a sidecar a question. `AnnotationsSidecar` loads the JSON and folds
+ it into a store; this is the other half, the one a maintainer runs on
+ purpose.
+
+ It is deliberately a SIDE QUERY and not a build step. Not every annotation
+ is worth reading, and none is worth reading every time -- a rationale
+ attached to a function nobody is touching is noise on a build that would
+ otherwise say nothing. So nothing here is wired to a gate, to `build.ps1`,
+ or to the compiler. It answers when asked.
+
+ It works on the flat `List Annotation` that `parse-sidecar` returns rather
+ than on `AnnotationFact`. The fact's store is a HamtMap keyed by hash and
+ by target, which answers "what is on this target" well and cannot be walked
+ to answer "what invariants exist in this chapter" at all. The list can.
+
+ Kinds are compared through `annotation-kind-name` rather than by matching
+ the variant, so a new kind costs one line in `Annotation` and none here.
+
+Section: Loading
+
+ A sidecar that fails to parse answers the empty list rather than a
+ diagnostic. That is the right shape for a query: the caller asked what is
+ annotated, and the answer for an unreadable file is "nothing I can show
+ you". A caller who needs to tell an empty sidecar from a broken one calls
+ `parse-sidecar` directly and reads the Maybe.
+
+  annq-parse : Text, Text -> List Annotation
+  annq-parse (chapter) (json-text) =
+    when parse-sidecar chapter json-text
+      is None -> []
+      is Just (xs) -> xs
+
+Section: Filters
+
+  annq-by-kind : List Annotation, Text -> List Annotation
+  annq-by-kind (xs) (kind-name) =
+    annq-by-kind-loop xs kind-name 0 (list-length xs) []
+
+  annq-by-kind-loop : List Annotation, Text, Integer, Integer, List Annotation -> List Annotation
+  annq-by-kind-loop (xs) (kind-name) (i) (len) (acc) =
+    if i >= len then acc
+    else annq-by-kind-step xs kind-name i len acc (list-at xs i)
+
+  annq-by-kind-step : List Annotation, Text, Integer, Integer, List Annotation, Annotation -> List Annotation
+  annq-by-kind-step (xs) (kind-name) (i) (len) (acc) (a) =
+    if annotation-kind-name (a.kind) == kind-name
+      then annq-by-kind-loop xs kind-name (i + 1) len (list-push acc a)
+      else annq-by-kind-loop xs kind-name (i + 1) len acc
+
+  annq-by-target : List Annotation, Text -> List Annotation
+  annq-by-target (xs) (path) =
+    annq-by-target-loop xs path 0 (list-length xs) []
+
+  annq-by-target-loop : List Annotation, Text, Integer, Integer, List Annotation -> List Annotation
+  annq-by-target-loop (xs) (path) (i) (len) (acc) =
+    if i >= len then acc
+    else annq-by-target-step xs path i len acc (list-at xs i)
+
+  annq-by-target-step : List Annotation, Text, Integer, Integer, List Annotation, Annotation -> List Annotation
+  annq-by-target-step (xs) (path) (i) (len) (acc) (a) =
+    if (a.target).path == path
+      then annq-by-target-loop xs path (i + 1) len (list-push acc a)
+      else annq-by-target-loop xs path (i + 1) len acc
+
+Section: Rendering
+
+ One line per annotation: the target it is anchored to, its kind, and its
+ body. The author and the timestamp are deliberately absent. Perforce
+ answers both precisely for the sidecar file, and a maintainer reading an
+ invariant wants the invariant.
+
+  annq-line : Annotation -> Text
+  annq-line (a) =
+    (a.target).path & "  [" & annotation-kind-name (a.kind) & "] " & (a.body)
+
+  annq-render : List Annotation -> Text
+  annq-render (xs) = annq-render-loop xs 0 (list-length xs) ""
+
+  annq-render-loop : List Annotation, Integer, Integer, Text -> Text
+  annq-render-loop (xs) (i) (len) (acc) =
+    if i >= len then acc
+    else annq-render-loop xs (i + 1) len (acc & annq-line (list-at xs i) & "\n")
+
+Section: Counting
+
+  annq-count : List Annotation -> Integer
+  annq-count (xs) = list-length xs
+
+  annq-count-of-kind : List Annotation, Text -> Integer
+  annq-count-of-kind (xs) (kind-name) = list-length (annq-by-kind xs kind-name)
+
+Page 1

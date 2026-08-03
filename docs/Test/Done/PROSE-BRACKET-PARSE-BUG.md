@@ -1,6 +1,6 @@
 # Prose Bracket Parse Bug
 
-## Status: RESOLVED — CANNOT REPRODUCE (2026-06-11, reek)
+## Status: RESOLVED -- CANNOT REPRODUCE (2026-06-11, reek)
 
 Re-verified against the current compiler (seed at CL 3784). None of
 these reproduce the documented failure; all compile clean:
@@ -53,7 +53,7 @@ Section: Example
 
 The parser reads ` [0] field-a   i32` as an attempted list expression
 `[0]` followed by `field-a`, which doesn't parse. The error does not
-surface immediately — it corrupts the parser's state and manifests as
+surface immediately -- it corrupts the parser's state and manifests as
 CDX1000 ("Expected token kind mismatch, got ':'") on a later
 definition's type annotation, often far from the actual bracket line.
 
@@ -62,7 +62,7 @@ definition's type annotation, often far from the actual bracket line.
 - CDX1000 at a valid type annotation (e.g. `name : Integer`)
 - The error persists regardless of renaming the function or
   simplifying its body
-- The error follows the function — changing code above shifts
+- The error follows the function -- changing code above shifts
   the error line number
 - Removing bracket prose lines from earlier in the file fixes it
 
@@ -74,7 +74,7 @@ The lexer does not distinguish prose context (column 2, under a
 tokenizes `[0]` as `ListOpen IntLit(0) ListClose`, and the parser
 tries to parse a list expression in definition position. This fails
 and leaves the parser in a confused state, but the error is not
-immediately fatal — subsequent definitions parse with accumulated
+immediately fatal -- subsequent definitions parse with accumulated
 corruption until one triggers CDX1000.
 
 ## Workaround
@@ -95,7 +95,7 @@ Or move memory layout documentation to a separate non-Codex file.
 The lexer (codex/compiler/Syntax/Lexer.codex) should skip `[` tokens
 when the current column is 2 or less (prose position). Alternatively,
 the prose scanner should consume entire prose lines without tokenizing
-their content — prose at column 2 is human-readable commentary, not
+their content -- prose at column 2 is human-readable commentary, not
 code, per the language specification.
 
 ## Discovery
@@ -109,5 +109,5 @@ the errors entirely, confirming the root cause.
 
 The compiler's own source (33K lines, 1.3MB) has no bracket prose
 and is unaffected. The X86_64 chapter (10+ pages) compiles without
-issue, proving the parser has no inherent size limit — the apparent
+issue, proving the parser has no inherent size limit -- the apparent
 ~300KB ceiling was bracket prose corruption, not a capacity constraint.

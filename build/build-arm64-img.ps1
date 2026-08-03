@@ -106,7 +106,7 @@ $rootDirSectors = [int][Math]::Ceiling($rootEntries * 32 / $bytesPerSector)
 $fatSectors = [int][Math]::Ceiling(($PartSectors / $sectorsPerCluster + 2) / 256)
 $dataSector0 = $reservedSectors + $numFats * $fatSectors + $rootDirSectors
 
-# BPB (BIOS Parameter Block) — must match UEFI FAT16 expectations exactly
+# BPB (BIOS Parameter Block) -- must match UEFI FAT16 expectations exactly
 WBytes $fatBase ([byte[]]@(0xEB, 0x3C, 0x90))  # Jump + NOP
 WStr ($fatBase + 3) "CODEX   " 8               # OEM name
 W16 ($fatBase + 11) $bytesPerSector

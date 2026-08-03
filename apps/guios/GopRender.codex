@@ -4,11 +4,6 @@ Chapter: GopRender
   cites UI chapter Widget
   cites Guios chapter GuiDisplay
 
- Render a laid-out widget tree to a GopBuf. Mirrors the structure of
- foreword Render but uses GopBuf drawing primitives (poke-32 backed,
- O(1) per pixel) instead of Framebuf (List-backed). This is the
- bridge between the UI foreword widget system and the GOP framebuffer.
-
 Section: Render Widget Tree
   gop-render-tree : WidgetNode, Theme, GopBuf, MutWheel -> Integer
   gop-render-tree (w) (th) (gb) (wh) =
@@ -45,7 +40,7 @@ Section: Label
   gop-render-label (w) (th) (txt) (gb) (wh) =
     let style = theme-resolve-label th (w.wn-state)
     in let content = box-content-from-style (w.wn-bounds) style
-    in gop-buf-put-text-role gb wh (content.lr-x) (content.lr-y) txt (style.ws-fg) font-role-sans
+    in gop-buf-put-text-role-clip gb wh (content.lr-x) (content.lr-y) (content.lr-x + content.lr-w) txt (theme-tone-fg th (w.wn-tone) (style.ws-fg)) font-role-sans
 
 Section: Button
   gop-render-button : WidgetNode, Theme, Text, GopBuf, MutWheel -> Integer
@@ -54,7 +49,7 @@ Section: Button
     in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
     in let d1 = gop-render-styled-rect gb br style
     in let content = box-content-from-style (w.wn-bounds) style
-    in gop-buf-put-text-role gb wh (content.lr-x) (content.lr-y) txt (style.ws-fg) font-role-sans
+    in gop-buf-put-text-role-clip gb wh (content.lr-x) (content.lr-y) (content.lr-x + content.lr-w) txt (theme-tone-fg th (w.wn-tone) (style.ws-fg)) font-role-sans
 
 Section: Gauge
   gop-render-gauge : WidgetNode, Theme, Integer, Integer, GopBuf -> Integer
@@ -64,7 +59,8 @@ Section: Gauge
     in let d1 = gop-render-filled-rect gb br (style.ws-bg)
     in let d2 = gop-render-border gb br (style.ws-border)
     in let content = box-content-from-style (w.wn-bounds) style
-    in let fill-w = if max-val > 0 then content.lr-w * val / max-val else 0
+    in let held = if val < 0 then 0 else if val > max-val then max-val else val
+    in let fill-w = if max-val > 0 then content.lr-w * held / max-val else 0
     in let fill-rect = layout-rect (content.lr-x) (content.lr-y) fill-w (content.lr-h)
     in gop-render-filled-rect gb fill-rect (style.ws-fg)
 
@@ -84,8 +80,11 @@ Section: Input
     in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
     in let d1 = gop-render-styled-rect gb br style
     in let content = box-content-from-style (w.wn-bounds) style
-    in let d2 = gop-buf-put-text-role gb wh (content.lr-x) (content.lr-y) txt (style.ws-fg) font-role-mono
-    in let cursor-x = content.lr-x + cursor * 6
+    in let d2 = gop-buf-put-text-role-clip gb wh (content.lr-x) (content.lr-y) (content.lr-x + content.lr-w) txt (theme-tone-fg th (w.wn-tone) (style.ws-fg)) font-role-mono
+    in let cur-hi = content.lr-x + content.lr-w - 1
+    in let raw-x = content.lr-x + cursor * 6
+    in let capped = if raw-x > cur-hi then cur-hi else raw-x
+    in let cursor-x = if capped < content.lr-x then content.lr-x else capped
     in gop-buf-rect gb cursor-x (content.lr-y) 1 8 (style.ws-fg)
 
 Section: Custom Widgets

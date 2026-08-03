@@ -1,4 +1,4 @@
-# Handoff: Bootstrap Self-Compilation — Stage 1 Runs But Output Is Broken
+# Handoff: Bootstrap Self-Compilation -- Stage 1 Runs But Output Is Broken
 
 **Date:** Session ended after Codex.Codex successfully compiled its own source.
 **Status:** Stage 1 pipeline runs end-to-end. Output is syntactically broken C#.
@@ -16,7 +16,7 @@
    (zero errors, warnings-only). Running it compiles the hardcoded test source and produces
    valid C# output.
 
-3. **Created `tools/Codex.Bootstrap/`** — a harness project that:
+3. **Created `tools/Codex.Bootstrap/`** -- a harness project that:
    - Reads all 21 `.codex` files from `Codex.Codex/`
    - Concatenates them into a single source string
    - Calls `Codex_Codex_Codex.compile(combined, "Codex_Codex")`
@@ -51,7 +51,7 @@ unresolved type variables. Since the emitter calls `emit-type-expr-tp` which use
 `when_type_name` to convert Codex type names to C# type names, but the type info on the
 *definition* records is lost because `ATypeDef` nodes are passed through from the AST
 *without being lowered through the type checker*. The `emit-full-module` function receives
-`ast.type-defs` directly — these are desugared AST nodes, not IR nodes. The type defs
+`ast.type-defs` directly -- these are desugared AST nodes, not IR nodes. The type defs
 should flow correctly *if* the desugarer preserved the field info. This means the
 desugarer's output is fine in Stage 0 but the Stage 1 desugarer is losing fields.
 
@@ -76,7 +76,7 @@ for all inferred types. When the emitter sees `TypeVar(id)`, it emits `T{id}` an
 generic type parameter. The Stage 0 C# type checker uses `deep_resolve` to collapse all
 `TypeVar`s to concrete types before emission, but the self-hosted checker's type information
 is not flowing correctly. The Stage 0 `Lowering.cs` has access to `ConstructorMap` and
-`TypeDefMap` which provide concrete types for sum/record constructors — the self-hosted
+`TypeDefMap` which provide concrete types for sum/record constructors -- the self-hosted
 lowering in `Lowering.codex` receives `check_result.types` and `check_result.state` but
 these don't contain the same richness.
 
@@ -106,13 +106,13 @@ that the parser is not correctly handling type definition blocks.
 The `.codex` format has prose paragraphs between `Chapter:` / `Section:` headers and the
 indented code. The self-hosted parser in `Parser.codex` must skip lines that are not
 indented (prose) and only parse indented lines as definitions. Check `parse_document` and
-`parse_top_level` — they may be feeding prose tokens into the definition parser.
+`parse_top_level` -- they may be feeding prose tokens into the definition parser.
 
 **Where to look:**
-- `Codex.Codex/Syntax/Parser.codex` — `parse-document`, `parse-top-level`
-- `Codex.Codex/Syntax/Lexer.codex` — how `ChapterHeader`, `SectionHeader`, `ProseText`
+- `Codex.Codex/Syntax/Parser.codex` -- `parse-document`, `parse-top-level`
+- `Codex.Codex/Syntax/Lexer.codex` -- how `ChapterHeader`, `SectionHeader`, `ProseText`
   tokens are emitted and whether the parser consumes them
-- Compare with `src/Codex.Syntax/Parser.cs` — `ParseDocument()`, `ParseSection()`
+- Compare with `src/Codex.Syntax/Parser.cs` -- `ParseDocument()`, `ParseSection()`
 
 ### Fix 2: Type definition parsing must handle `record { ... }` and `| Ctor` syntax
 
@@ -121,22 +121,22 @@ Sum types (`LiteralKind = | IntLit | NumLit ...`) and record types
 output shows the parser is failing on the `|` pipe syntax for sum type variants.
 
 **Where to look:**
-- `Codex.Codex/Syntax/Parser.codex` — type definition parsing functions
-- `Codex.Codex/out/Codex.Codex.cs` — search for `try_parse_type_def`,
+- `Codex.Codex/Syntax/Parser.codex` -- type definition parsing functions
+- `Codex.Codex/out/Codex.Codex.cs` -- search for `try_parse_type_def`,
   `parse_record_body`, `parse_variant_body`
-- Compare with `src/Codex.Syntax/Parser.cs` — `TryParseTypeDef()`
+- Compare with `src/Codex.Syntax/Parser.cs` -- `TryParseTypeDef()`
 
 ### Fix 3: Type resolution must produce concrete types, not TypeVars
 
 After Fixes 1 and 2, the parser will produce correct AST. Then the type checker must
 resolve all `TypeVar`s to concrete types before emission. The key function is
-`deep_resolve` in `Unifier.codex` — verify it is called on all types in the final IR.
+`deep_resolve` in `Unifier.codex` -- verify it is called on all types in the final IR.
 
 **Where to look:**
-- `Codex.Codex/IR/Lowering.codex` — `lower-module`, `lower-def` — check if `deep-resolve`
+- `Codex.Codex/IR/Lowering.codex` -- `lower-module`, `lower-def` -- check if `deep-resolve`
   is called on inferred types
-- `Codex.Codex/Types/TypeChecker.codex` — `check-module`, `check-def`
-- Compare with `src/Codex.IR/Lowering.cs` — how it calls `Unifier.DeepResolve()`
+- `Codex.Codex/Types/TypeChecker.codex` -- `check-module`, `check-def`
+- Compare with `src/Codex.IR/Lowering.cs` -- how it calls `Unifier.DeepResolve()`
 
 ---
 
@@ -144,9 +144,9 @@ resolve all `TypeVar`s to concrete types before emission. The key function is
 
 | # | File | Why |
 |---|------|-----|
-| 1 | `Codex.Codex/stage1-output.cs` | The broken output — look at lines 1-120 and 3230-3268 |
-| 2 | `Codex.Codex/Syntax/Parser.codex` | The self-hosted parser — find prose handling |
-| 3 | `src/Codex.Syntax/Parser.cs` | The Stage 0 parser — compare prose/type-def handling |
+| 1 | `Codex.Codex/stage1-output.cs` | The broken output -- look at lines 1-120 and 3230-3268 |
+| 2 | `Codex.Codex/Syntax/Parser.codex` | The self-hosted parser -- find prose handling |
+| 3 | `src/Codex.Syntax/Parser.cs` | The Stage 0 parser -- compare prose/type-def handling |
 | 4 | `Codex.Codex/Syntax/Lexer.codex` | How prose/chapter/section tokens are produced |
 | 5 | `src/Codex.Syntax/Lexer.cs` | Stage 0 lexer for comparison |
 | 6 | `Codex.Codex/IR/Lowering.codex` | Check if deep-resolve is applied |
@@ -154,20 +154,20 @@ resolve all `TypeVar`s to concrete types before emission. The key function is
 
 ## Files You Should NOT Read or Modify
 
-- `Codex.Codex/out/Codex.Codex.cs` — **DO NOT EDIT THIS FILE WITH edit_file.** It is
+- `Codex.Codex/out/Codex.Codex.cs` -- **DO NOT EDIT THIS FILE WITH edit_file.** It is
   3700+ lines. The edit_file tool will mangle it. If you need to fix something in this
   file, tell the user the exact line number and exact replacement text and let them do it.
-- `docs/00-OVERVIEW.md` through `docs/10-PRINCIPLES.md` — architecture spec, read-only
-- `src/Codex.Types/Unifier.cs` — reference only
+- `docs/00-OVERVIEW.md` through `docs/10-PRINCIPLES.md` -- architecture spec, read-only
+- `src/Codex.Types/Unifier.cs` -- reference only
 - Any emitter other than `Codex.Emit.CSharp`
 
 ## Files You CAN Modify
 
-- `Codex.Codex/Syntax/Parser.codex` — to fix prose handling and type def parsing
-- `Codex.Codex/Syntax/Lexer.codex` — if lexer changes needed
-- `Codex.Codex/IR/Lowering.codex` — to add deep-resolve calls
-- `Codex.Codex/Types/TypeChecker.codex` — if type resolution needs fixing
-- `tools/Codex.Bootstrap/Program.cs` — the bootstrap harness
+- `Codex.Codex/Syntax/Parser.codex` -- to fix prose handling and type def parsing
+- `Codex.Codex/Syntax/Lexer.codex` -- if lexer changes needed
+- `Codex.Codex/IR/Lowering.codex` -- to add deep-resolve calls
+- `Codex.Codex/Types/TypeChecker.codex` -- if type resolution needs fixing
+- `tools/Codex.Bootstrap/Program.cs` -- the bootstrap harness
 
 ## How to Rebuild and Test After Changes
 

@@ -1,0 +1,70 @@
+Chapter: AiUnetTimestep
+  cites Foreword chapter Console
+  cites AI chapter UNet
+
+ The sinusoidal timestep embedding. unet-freq-scale builds the frequency
+ ladder by calling unet-exp-approx with i * 9210 / half, and 9210 is
+ ln(10000) at scale 1000, so the argument runs the whole way to 9.21 and the
+ exponential has to be right across that span rather than near zero.
+
+ The readings below are exp(x / 1000) * 1000 to five figures: 2718.3, 7389.1,
+ 20086, 54598, 403429, 2980958, 9999790. They are the oracle, and they are
+ what makes this a test of the answer rather than of the current output.
+
+ Two rows are controls that no error in the exponential can move: exp(0) is
+ exactly 1000 by definition, and at half = 4 the argument never exceeds
+ 3 * 9210 / 4 = 6907, so a chapter that only misbehaves at large arguments
+ still reports four distinct bands there.
+
+ What this test does NOT distinguish: the low-frequency tail. freq is
+ t * 1000 / scale in integer arithmetic, so once scale exceeds t * 1000 the
+ argument truncates to zero and every remaining band reads (0, 1000). At
+ t = 500 that is the bands above i = 108. Those bands are degenerate at
+ scale 1000 whatever the exponential answers, and carrying them would need a
+ finer scale through the whole chapter, so the count below is asserted at
+ the frequency ladder and not at the embedding.
+
+Section: Body
+
+  distinct-scales : Integer, Integer, Integer, Integer -> Integer
+  distinct-scales (i) (half) (prev) (acc) =
+    if i >= half then acc
+    else let s = unet-freq-scale i half
+    in distinct-scales (i + 1) half s (if s == prev then acc else acc + 1)
+
+  rising : Integer, Integer, Integer, Integer -> Integer
+  rising (i) (half) (prev) (acc) =
+    if i >= half then acc
+    else let s = unet-freq-scale i half
+    in rising (i + 1) half s (if s > prev then acc + 1 else acc)
+
+  band : List Integer, Integer -> Text
+  band (e) (i) =
+    "(" & show (list-at e (i * 2)) & "," & show (list-at e (i * 2 + 1)) & ")"
+
+  opening : [Console] Nothing = act
+    print-line-uni "exp-approx, scale 1000:"
+    print-line-uni ("  0    -> " & show (unet-exp-approx 0) & "  true 1000")
+    print-line-uni ("  1000 -> " & show (unet-exp-approx 1000) & "  true 2718")
+    print-line-uni ("  2000 -> " & show (unet-exp-approx 2000) & "  true 7389")
+    print-line-uni ("  3000 -> " & show (unet-exp-approx 3000) & "  true 20086")
+    print-line-uni ("  4000 -> " & show (unet-exp-approx 4000) & "  true 54598")
+    print-line-uni ("  6000 -> " & show (unet-exp-approx 6000) & "  true 403429")
+    print-line-uni ("  8000 -> " & show (unet-exp-approx 8000) & "  true 2980958")
+    print-line-uni ("  9210 -> " & show (unet-exp-approx 9210) & "  true 9999790")
+    print-line-uni ""
+    print-line-uni "monotonic across the old guard at 8000:"
+    print-line-uni ("  " & show (unet-exp-approx 7999) & " " & show (unet-exp-approx 8000) & " " & show (unet-exp-approx 8001) & " " & show (unet-exp-approx 8002))
+    print-line-uni ""
+    print-line-uni "frequency ladder, half=160:"
+    print-line-uni ("  distinct scales: " & show (distinct-scales 0 160 (0 - 1) 0) & " of 160")
+    print-line-uni ("  strictly rising: " & show (rising 0 160 (0 - 1) 0) & " of 160")
+    print-line-uni ("  half=4 control:  " & show (distinct-scales 0 4 (0 - 1) 0) & " of 4")
+    print-line-uni ""
+    let e = unet-time-embed 500 320
+    in print-line-uni ("bands 0..3 at t=500 dim=320: " & band e 0 & band e 1 & band e 2 & band e 3)
+    let e2 = unet-time-embed 500 320
+    in print-line-uni ("band 159 (below scale resolution): " & band e2 159)
+  end
+
+Page 1

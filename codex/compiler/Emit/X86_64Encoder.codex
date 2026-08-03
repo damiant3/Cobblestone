@@ -10,9 +10,22 @@ Section: Arithmetic Helpers
    in let r = n - n / d * d
    in if r < 0 then r + abs-d else r
 
+ The obvious spelling of a floor division biases the dividend before
+ dividing: `if n >= 0 then n / d else (n - d + 1) / d`. That form
+ underflows. For n = i64-min and d = 256, `n - d + 1` wraps positive,
+ the quotient comes back +2^55 instead of -2^55, and write-bytes below
+ emits FF FF FF FF FF FF 7F for the top seven bytes of a literal whose
+ value is i64-min. A hex literal in the band i64-min..i64-min+254
+ compiled to the wrong constant with no diagnostic.
+
+ Correcting the truncating quotient by the remainder's sign cannot
+ overflow, because |q * d| <= |n| by construction.
+
   floor-div : Integer, Integer -> Integer
   floor-div (n) (d) =
-   if n >= 0 then n / d else (n - d + 1) / d
+   let q = n / d
+   in let r = n - q * d
+   in if r /= 0 & (r < 0) /= (d < 0) then q - 1 else q
 
   to-byte : Integer -> Integer
   to-byte (n) =
@@ -530,6 +543,10 @@ Section: SSE2 Instructions
   ucomisd-xmm (a) (b) =
    [102, 15, 46, modrm 3 a b]
 
+  ucomiss-xmm : Integer, Integer -> List Integer
+  ucomiss-xmm (a) (b) =
+   [15, 46, modrm 3 a b]
+
   cvtsi2sd : Integer, Integer -> List Integer
   cvtsi2sd (xmm) (gpr) =
    [242, rex-w xmm gpr, 15, 42, modrm 3 xmm gpr]
@@ -626,9 +643,27 @@ Section: SSE2 Instructions
   psubq-xmm (dst) (src) =
    [102, 15, 251, modrm 3 dst src]
 
+ The GPR here is the ModRM.reg field, so a destination in R8-R15 needs
+ REX.R, and the XMM is the rm field, so REX.B. This carried no REX byte at
+ all until 2026-07-27, and modrm masks its operands to three bits, so
+ movmskpd into R11 silently encoded RBX. alloc-temp rotates
+ [RAX, RCX, RDX, RSI, RDI, R11] and R11 is the only extended register in
+ that pool, so about one mask query in six wrote its bits to RBX while the
+ test-rr that follows -- which does emit REX -- read R11. The two named
+ different registers, sete answered from whatever R11 held, and the query
+ returned a wrong Boolean with no diagnostic. It also clobbered RBX, a
+ callee-saved local register.
+
+ The condition is kept rather than emitting REX unconditionally so that
+ every encoding without an extended register is byte-identical to before.
+ This is the same form movd-from-xmm uses four definitions above; movmskpd
+ was the only GPR-taking encoder in this chapter that had been left out.
+
   movmskpd : Integer, Integer -> List Integer
   movmskpd (gpr) (xmm) =
-   [102, 15, 80, modrm 3 gpr xmm]
+   if (gpr >= 8) | (xmm >= 8)
+   then [102, rex False (gpr >= 8) False (xmm >= 8), 15, 80, modrm 3 gpr xmm]
+   else [102, 15, 80, modrm 3 gpr xmm]
 
   unpcklpd-xmm : Integer, Integer -> List Integer
   unpcklpd-xmm (dst) (src) =

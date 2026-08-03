@@ -100,7 +100,7 @@ try {
     $tcpStream.WriteByte(1)  # tag = 1 (IR)
     # Throttle: blasting all 9.7MB at once overruns the emulated NE2000 RX
     # ring (256 frames); the guest falls behind, drops the gateway ARP, and
-    # its ACKs go to broadcast — TCP wedges partway through. Feed it in small
+    # its ACKs go to broadcast -- TCP wedges partway through. Feed it in small
     # chunks so the guest's recv loop always keeps pace with the ring.
     $chunk = 16384
     $off = 0

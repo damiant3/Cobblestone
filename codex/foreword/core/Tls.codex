@@ -94,12 +94,24 @@ Section: Constants
   tls-ext-supported-groups : Integer = 10
   tls-ext-signature-algorithms : Integer = 13
 
- The one signature scheme this stack can verify. The X.509 chain walker
- is Ed25519-only, so advertising anything else would invite a server to
- present a certificate we would then refuse -- the extension says what we
- can actually check.
+ The signature schemes this stack can verify. The extension says what we
+ can actually check, and it has to stay honest in both directions:
+ advertising a scheme we cannot verify invites a server to present a
+ signature we then refuse, and omitting one we CAN verify turns a server
+ we could have talked to into a handshake failure.
+
+ RFC 8446 section 4.4.3 forbids PKCS#1 v1.5 in a CertificateVerify however
+ the certificate chain itself was signed, which is why the RSA entry is
+ rsa_pss_rsae_sha256 and 0x0401 appears nowhere here.
+
+ ecdsa_secp384r1_sha384 names the curve and the digest together because
+ RFC 8446 section 4.2.3 defines the code point that way. The digest is
+ not a free choice made alongside the curve; it is half of the scheme.
 
   tls-sig-ed25519 : Integer = 2055
+  tls-sig-ecdsa-p256-sha256 : Integer = 1027
+  tls-sig-ecdsa-p384-sha384 : Integer = 1283
+  tls-sig-rsa-pss-sha256 : Integer = 2052
 
   tls-group-x25519 : Integer = 29
 
@@ -202,9 +214,14 @@ Section: Extensions
  abort with no alert -- which from the client's seat is indistinguishable
  from a server that simply never answered.
 
+ The list is in descending order of preference (RFC 8446 section 4.2.3),
+ though a server chooses by what its certificate can do and not by what we
+ prefer, so the order costs nothing either way.
+
   tls-ext-sig-algs : List Integer
   tls-ext-sig-algs =
-    let list-data = tls-be16 2 & tls-be16 tls-sig-ed25519
+    let schemes = tls-be16 tls-sig-ed25519 & tls-be16 tls-sig-ecdsa-p256-sha256 & tls-be16 tls-sig-ecdsa-p384-sha384 & tls-be16 tls-sig-rsa-pss-sha256
+    in let list-data = tls-be16 (list-length schemes) & schemes
     in tls-be16 tls-ext-signature-algorithms & tls-be16 (list-length list-data) & list-data
 
   tls-ext-key-share-client : List Integer -> List Integer

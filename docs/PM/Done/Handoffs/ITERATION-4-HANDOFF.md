@@ -1,4 +1,4 @@
-# Iteration 4 — Handoff Summary
+# Iteration 4 -- Handoff Summary
 
 > **Date correction (2026-03-18)**: The original date `2025-06-22` was hallucinated
 > by the agent from training data. The actual date of this work was `2026-03-14`
@@ -35,7 +35,7 @@
 
 ### Bug Fixes / Cleanup This Iteration
 
-1. **Let-in lowering triple-lowering** — Rewrote `Lowering.LowerLet` to do a single pass: lower each binding in order, add to local env, lower the body, wrap in nested `IRLet`s. Was doing the work three times.
+1. **Let-in lowering triple-lowering** -- Rewrote `Lowering.LowerLet` to do a single pass: lower each binding in order, add to local env, lower the body, wrap in nested `IRLet`s. Was doing the work three times.
 2. **Stripped all `///` XML doc comments** from all source files. Updated `copilot-instructions.md`, `.github/copilot-instructions.md`, and `CONTRIBUTING.md` to codify "no XML doc comments" as a rule.
 3. **`.gitignore`** updated to exclude generated `samples/*.cs` files.
 
@@ -56,10 +56,10 @@ codex parse samples/prose-greeting.codex → chapter/prose/notation structure
 
 | Project | Tests | Status | Delta |
 |---------|-------|--------|-------|
-| Codex.Core.Tests | 16 | ✅ All pass | — |
+| Codex.Core.Tests | 16 | ✅ All pass | -- |
 | Codex.Syntax.Tests | 39 | ✅ All pass | +10 (prose parser) |
-| Codex.Ast.Tests | 11 | ✅ All pass | — |
-| Codex.Semantics.Tests | 10 | ✅ All pass | — |
+| Codex.Ast.Tests | 11 | ✅ All pass | -- |
+| Codex.Semantics.Tests | 10 | ✅ All pass | -- |
 | Codex.Types.Tests | 31 | ✅ All pass | +9 (integration) |
 | **Total** | **107** | **✅ All pass** | **+19** |
 
@@ -78,7 +78,7 @@ Source (.codex)
         → for each notation block:
             → Lexer + Parser           standard notation-mode parsing
     → DocumentNode                    unified CST with Chapters + Definitions
-    → Desugarer                       (unchanged — uses document.Definitions)
+    → Desugarer                       (unchanged -- uses document.Definitions)
     → ... rest of pipeline unchanged
 ```
 
@@ -115,10 +115,10 @@ For notation-only files, the existing `Lexer → Parser` path is used directly.
 
 ### Known Limitations
 - **No sum types or record types** in the type system yet
-- **No effect system** — all functions are pure
+- **No effect system** -- all functions are pure
 - **ProseParser source spans** are offset relative to notation blocks, not the original file
 - **`codex run`** shells out to `dotnet build` + `dotnet run` (~2s overhead)
-- **Prose template matching** not implemented — prose is captured as raw text
+- **Prose template matching** not implemented -- prose is captured as raw text
 - **`Codex.Proofs`** and **`Codex.Narration`** are still placeholder projects
 
 ---
@@ -128,7 +128,7 @@ For notation-only files, the existing `Lexer → Parser` path is used directly.
 - **Solution file**: `Codex.sln` (in repo root)
 - **Build**: `dotnet build Codex.sln`
 - **Test**: `dotnet test Codex.sln`
-- **TreatWarningsAsErrors**: `true` — don't leave unused variables
-- **No XML doc comments** — stripped and ruled out in `copilot-instructions.md`
+- **TreatWarningsAsErrors**: `true` -- don't leave unused variables
+- **No XML doc comments** -- stripped and ruled out in `copilot-instructions.md`
 - **Agent instructions**: `copilot-instructions.md` and `.github/copilot-instructions.md`
 - **Contributing rules**: `CONTRIBUTING.md`

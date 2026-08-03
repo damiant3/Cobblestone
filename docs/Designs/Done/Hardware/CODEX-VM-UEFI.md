@@ -25,7 +25,7 @@ mov rcx, [rax + 64]  ; ConOut protocol (SimpleTextOutput)
 
 ### UEFI protocols used
 
-**ConOut (Simple Text Output) — SystemTable offset 64:**
+**ConOut (Simple Text Output) -- SystemTable offset 64:**
 | Offset | Function          | Signature                                    |
 |--------|-------------------|----------------------------------------------|
 | 0      | Reset             | (This, ExtVerify) → Status                   |
@@ -35,19 +35,19 @@ mov rcx, [rax + 64]  ; ConOut protocol (SimpleTextOutput)
 | 56     | SetCursorPosition | (This, Column, Row) → Status                 |
 | 64     | EnableCursor      | (This, Visible) → Status                     |
 
-**ConIn (Simple Text Input) — SystemTable offset 48:**
+**ConIn (Simple Text Input) -- SystemTable offset 48:**
 | Offset | Function       | Signature                              |
 |--------|----------------|----------------------------------------|
 | 0      | Reset          | (This, ExtVerify) → Status             |
 | 8      | ReadKeyStroke  | (This, Key) → Status                   |
 
-**ConIn Extended (Simple Text Input Ex) — SystemTable offset 96:**
+**ConIn Extended (Simple Text Input Ex) -- SystemTable offset 96:**
 | Offset | Function              | Signature                          |
 |--------|-----------------------|------------------------------------|
 | 248    | ReadKeyStrokeEx       | (This, KeyData) → Status           |
 
-**Boot Services — SystemTable offset 96 (for ExitBootServices):**
-Not needed — the DevConsole stays in UEFI mode.
+**Boot Services -- SystemTable offset 96 (for ExitBootServices):**
+Not needed -- the DevConsole stays in UEFI mode.
 
 ### Call convention
 
@@ -75,16 +75,16 @@ to the guest.
   +64  → 0x70200 (ConOut protocol)
 
 0x70100: ConIn protocol
-  +0   → 0x71000 (Reset — stub, return 0)
-  +8   → 0x71008 (ReadKeyStroke — handle in VM)
+  +0   → 0x71000 (Reset -- stub, return 0)
+  +8   → 0x71008 (ReadKeyStroke -- handle in VM)
 
 0x70200: ConOut protocol
-  +0   → 0x71020 (Reset — stub)
-  +8   → 0x71028 (OutputString — render to VGA window)
-  +40  → 0x71050 (SetAttribute — update current color)
-  +48  → 0x71058 (ClearScreen — clear VGA window)
-  +56  → 0x71060 (SetCursorPosition — move cursor)
-  +64  → 0x71068 (EnableCursor — toggle cursor visibility)
+  +0   → 0x71020 (Reset -- stub)
+  +8   → 0x71028 (OutputString -- render to VGA window)
+  +40  → 0x71050 (SetAttribute -- update current color)
+  +48  → 0x71058 (ClearScreen -- clear VGA window)
+  +56  → 0x71060 (SetCursorPosition -- move cursor)
+  +64  → 0x71068 (EnableCursor -- toggle cursor visibility)
 ```
 
 0x71000-0x71FFF: **Not mapped** in guest address space. Any CALL to
@@ -129,7 +129,7 @@ Otherwise, pop from keyboard queue, write to Key struct, return 0.
 4. Store 0x70000 at guest address 0x8000
 5. Map 0x70000-0x70FFF as guest memory (the tables)
 6. Leave 0x71000-0x71FFF unmapped (the trap page)
-7. Boot the guest — it reads [0x8000] → 0x70000, calls protocol
+7. Boot the guest -- it reads [0x8000] → 0x70000, calls protocol
    functions → faults into trap page → VM handles
 
 ### Complexity

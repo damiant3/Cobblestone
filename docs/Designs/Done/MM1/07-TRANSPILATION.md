@@ -1,8 +1,8 @@
-# 07 — Transpilation & Code Generation
+# 07 -- Transpilation & Code Generation
 
 ## Overview
 
-Codex compiles to a semantic intermediate representation (IR) and then lowers to target languages. The targets are not equal — some can represent the full Codex type system, others can only represent a subset. The emission framework manages this gracefully.
+Codex compiles to a semantic intermediate representation (IR) and then lowers to target languages. The targets are not equal -- some can represent the full Codex type system, others can only represent a subset. The emission framework manages this gracefully.
 
 This document defines the IR, the emission framework, and the design of each backend.
 
@@ -16,7 +16,7 @@ This document defines the IR, the emission framework, and the design of each bac
 2. **Curried**: function application is single-argument (`IRApply` takes one arg)
 3. **Explicit closures**: `IRLambda` captures are implicit (closed-over by .NET runtime)
 4. **Target-agnostic**: no target-specific constructs in the IR
-5. **Minimal**: no optimization passes yet — the IR is a direct lowering of the AST
+5. **Minimal**: no optimization passes yet -- the IR is a direct lowering of the AST
 
 ### Actual IR Node Types (as implemented in `Codex.IR/IRModule.cs`)
 
@@ -119,7 +119,7 @@ The user is always informed. Safety is never silently lost.
 
 ## Backend Designs
 
-### C# Backend (Bootstrap Target) — `Codex.Emit.CSharp`
+### C# Backend (Bootstrap Target) -- `Codex.Emit.CSharp`
 
 **Status**: ✅ Complete. Primary backend. Used for self-hosting bootstrap.
 
@@ -139,7 +139,7 @@ The user is always informed. Safety is never silently lost.
 | Linear types | Runtime checks |
 | Dependent types | Runtime assertions |
 
-### JavaScript Backend — `Codex.Emit.JavaScript`
+### JavaScript Backend -- `Codex.Emit.JavaScript`
 
 **Status**: ✅ Complete. All samples compile and execute under Node.js.
 
@@ -159,7 +159,7 @@ The user is always informed. Safety is never silently lost.
 | Linear types | Not enforced |
 | Dependent types | Not enforced |
 
-### Rust Backend — `Codex.Emit.Rust`
+### Rust Backend -- `Codex.Emit.Rust`
 
 **Status**: ✅ Complete. All samples compile to valid Rust with typed signatures.
 
@@ -239,7 +239,7 @@ See [M13-BOOTSTRAP-PLAN.md](M13-BOOTSTRAP-PLAN.md) for details.
 
 ## Resolved Design Questions
 
-1. **Number representation** — `double` for Number, `long` for Integer. Arbitrary precision deferred.
-2. **Effect encoding in C#** — Direct I/O (Console, File). No monadic encoding. Simple and working.
-3. **Runtime library** — No separate runtime library. Built-in functions are emitted inline by each backend.
-4. **Source maps** — Not yet implemented. Source spans are carried through the pipeline but not emitted.
+1. **Number representation** -- `double` for Number, `long` for Integer. Arbitrary precision deferred.
+2. **Effect encoding in C#** -- Direct I/O (Console, File). No monadic encoding. Simple and working.
+3. **Runtime library** -- No separate runtime library. Built-in functions are emitted inline by each backend.
+4. **Source maps** -- Not yet implemented. Source spans are carried through the pipeline but not emitted.

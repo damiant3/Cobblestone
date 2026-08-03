@@ -41,6 +41,61 @@ Section: Object Identifiers
 
   x509-oid-x25519 : List Integer = [43, 101, 110]
 
+ rsaEncryption, 1.2.840.113549.1.1.1, and sha256WithRSAEncryption,
+ 1.2.840.113549.1.1.11. Every certificate on Google's chain is signed
+ with the second one, which is why they are here.
+
+  x509-oid-rsa : List Integer = [42, 134, 72, 134, 247, 13, 1, 1, 1]
+  x509-oid-sha256-rsa : List Integer = [42, 134, 72, 134, 247, 13, 1, 1, 11]
+
+ sha384WithRSAEncryption, 1.2.840.113549.1.1.12, and
+ sha1WithRSAEncryption, 1.2.840.113549.1.1.5.
+
+ SHA-1 is here so that certificates signed with it can be READ, and for
+ no other reason. Two of the five roots Codex ships are from 2006 and are
+ self-signed with SHA-1; refusing to parse them would mean refusing to
+ hold them as anchors, even though an anchor's own signature is never
+ checked by anybody. The chain walk answers False for a SHA-1 signature
+ unconditionally -- collisions have been practical since 2017 -- so
+ reading one and trusting one remain different things.
+
+  x509-oid-sha384-rsa : List Integer = [42, 134, 72, 134, 247, 13, 1, 1, 12]
+  x509-oid-sha1-rsa : List Integer = [42, 134, 72, 134, 247, 13, 1, 1, 5]
+
+ id-ecPublicKey, 1.2.840.10045.2.1. An elliptic-curve key names its curve
+ in the AlgorithmIdentifier's parameters, and the curve is the whole
+ question: the arithmetic that checks a P-256 signature is not the
+ arithmetic that checks a P-384 one, and handing the second to the first
+ does not fail loudly -- it computes in the wrong field and answers
+ something. So the curve is read, and it decides which of the two
+ elliptic-curve key kinds this is.
+
+  x509-oid-ec-public-key : List Integer = [42, 134, 72, 206, 61, 2, 1]
+
+ prime256v1, 1.2.840.10045.3.1.7 -- the curve NIST calls P-256 and SEC
+ calls secp256r1. It was the only curve this tree could verify on until
+ 2026-07-28; secp384r1 below is the second. Every other named curve still
+ parses into a key that says so about itself.
+
+  x509-oid-p256 : List Integer = [42, 134, 72, 206, 61, 3, 1, 7]
+
+ secp384r1, 1.3.132.0.34. The two arcs are encoded differently and that is
+ the whole content of the constant: 132 needs two base-128 bytes and 34
+ does not.
+
+  x509-oid-p384 : List Integer = [43, 129, 4, 0, 34]
+
+ ecdsa-with-SHA256, 1.2.840.10045.4.3.2, and ecdsa-with-SHA384,
+ 1.2.840.10045.4.3.3. The Sectigo and Let's Encrypt elliptic-curve
+ hierarchies sign their intermediates with the second one, which is why
+ both are here. **Both are verified now**, as of 2026-07-28; this note
+ said only the first was, and that a P-256 key signing under SHA-384 was
+ read but never trusted. The digest half is written and the chain walk
+ routes all four combinations of curve and digest.
+
+  x509-oid-ecdsa-sha256 : List Integer = [42, 134, 72, 206, 61, 4, 3, 2]
+  x509-oid-ecdsa-sha384 : List Integer = [42, 134, 72, 206, 61, 4, 3, 3]
+
  basicConstraints, 2.5.29.19.
 
   x509-oid-basic-constraints : List Integer = [85, 29, 19]
@@ -51,14 +106,51 @@ Section: Key
  and not a byte string, because the whole point is that a caller cannot
  hand an X25519 key to a signature check.
 
+ The elliptic-curve kinds are separate variants and not one variant with a
+ curve field beside it, for the same reason X25519 is separate from
+ Ed25519: a field can be ignored and a variant cannot.
+
+ This paragraph used to add that x509-can-verify answers True for exactly
+ one of them, "so a P-384 key cannot reach P-256 arithmetic by any route,
+ including a route somebody adds later without reading this paragraph".
+ That route was added on 2026-07-28 and the paragraph was read. What
+ changed is the count and not the property: P-384 now verifies too, on
+ P-384 arithmetic, because `KeyEcdsaP384` selects the P-384 field. The
+ variant is still what carries the curve, so the only way to reach the
+ wrong arithmetic is to write the wrong variant on the wrong key, which is
+ one decision in one place -- `x509-curve-of` -- rather than a length that
+ could be mistaken anywhere. `KeyEcdsaOther` keeps its meaning exactly:
+ a curve we cannot compute on, and False.
+
   X509KeyAlg =
     | KeyEd25519
     | KeyX25519
+    | KeyRsa
+    | KeyEcdsaP256
+    | KeyEcdsaP384
+    | KeyEcdsaOther
     | KeyUnknown
+
+ What a certificate says it was signed WITH, which is a different
+ question from what its own key is FOR. It used to be a Boolean called
+ xc-sig-ed25519 that was set to True without reading anything, so every
+ certificate in the world claimed to be Ed25519-signed and the one
+ branch that consulted it refused all the ones that were not.
+
+  X509SigAlg =
+    | SigEd25519
+    | SigRsaSha256
+    | SigRsaSha384
+    | SigRsaSha1
+    | SigEcdsaSha256
+    | SigEcdsaSha384
+    | SigUnknown
 
   X509Key = record {
     xk-alg : X509KeyAlg,
-    xk-bytes : List Integer
+    xk-bytes : List Integer,
+    xk-mod : List Integer,
+    xk-exp : List Integer
   }
 
  SubjectPublicKeyInfo ::= SEQUENCE { algorithm AlgorithmIdentifier,
@@ -84,19 +176,81 @@ Section: Key
 
  Parameters absent means the AlgorithmIdentifier has exactly one child.
 
+ An AlgorithmIdentifier is an OID and OPTIONAL parameters. The Edwards
+ OIDs carry none, and RFC 8410 section 3 says they must not; RSA carries
+ an explicit NULL, and RFC 4055 says it must. So one child or two, and
+ the second has to be that NULL rather than anything a sender fancies.
+ Requiring exactly one child is what made every RSA key in the world
+ unparseable here.
+
   x509-spki-oid : List Integer, List Asn1Tlv, Asn1Tlv -> Maybe X509Key
   x509-spki-oid (buf) (algkids) (key) =
-    if list-length algkids /= 1 then None
-    else x509-spki-bits buf (x509-alg-of buf (list-at algkids 0)) key
+    if list-length algkids < 1 then None
+    else x509-spki-shape buf algkids (x509-alg-of buf algkids) key
 
-  x509-alg-of : List Integer, Asn1Tlv -> X509KeyAlg
-  x509-alg-of (buf) (o) =
-    if asn1-oid-is buf o x509-oid-ed25519 then KeyEd25519
-    else if asn1-oid-is buf o x509-oid-x25519 then KeyX25519
+  x509-spki-shape : List Integer, List Asn1Tlv, X509KeyAlg, Asn1Tlv -> Maybe X509Key
+  x509-spki-shape (buf) (algkids) (alg) (key) =
+    if x509-key-params-ok buf algkids alg == False then None
+    else x509-spki-bits buf alg key
+
+ The parameter, when present, is NULL for RSA and a named-curve OID for
+ an elliptic-curve key. The elliptic-curve case has already been settled
+ by x509-curve-of, which insists on the OID rather than tolerating it;
+ everything else carries either nothing (RFC 8410 section 3, the Edwards
+ curves) or an explicit NULL (RFC 4055, RSA). A parameter of any other
+ shape is a certificate this chapter does not understand, and guessing is
+ what a parser must never do.
+
+ Every elliptic-curve variant belongs on the True side here, because an EC
+ key's parameter IS a named-curve OID and `x509-alg-params-ok` below admits
+ only absent-or-NULL. This arm is written out per variant rather than as a
+ catch-all, and the reason is worth the line: when `KeyEcdsaP384` was added
+ on 2026-07-28 it fell into `is otherwise`, `x509-alg-params-ok` refused the
+ curve OID, and every P-384 CERTIFICATE STOPPED PARSING -- not just its key.
+ The exhaustiveness checker caught the same omission in a test that listed
+ its variants (CDX2070) and could not catch it here, because a catch-all arm
+ is exhaustive by construction. **A new variant is silently absorbed by
+ every `is otherwise` in the tree.**
+
+  x509-key-params-ok : List Integer, List Asn1Tlv, X509KeyAlg -> Boolean
+  x509-key-params-ok (buf) (kids) (alg) =
+    when alg
+      is KeyEcdsaP256 -> True
+      is KeyEcdsaP384 -> True
+      is KeyEcdsaOther -> True
+      is otherwise -> x509-alg-params-ok buf kids
+
+ This one is now the signature AlgorithmIdentifier's check and nothing
+ else. It used to admit an OID parameter too, because it was shared with
+ the key path, and that shared leniency was the hole: an elliptic-curve
+ key could carry ANY named curve and the curve was never read.
+
+  x509-alg-params-ok : List Integer, List Asn1Tlv -> Boolean
+  x509-alg-params-ok (buf) (kids) =
+    if list-length kids == 1 then True
+    else if list-length kids /= 2 then False
+    else (list-at kids 1).tlv-tag == asn1-null
+
+  x509-alg-of : List Integer, List Asn1Tlv -> X509KeyAlg
+  x509-alg-of (buf) (kids) =
+    if asn1-oid-is buf (list-at kids 0) x509-oid-ed25519 then KeyEd25519
+    else if asn1-oid-is buf (list-at kids 0) x509-oid-x25519 then KeyX25519
+    else if asn1-oid-is buf (list-at kids 0) x509-oid-rsa then KeyRsa
+    else if asn1-oid-is buf (list-at kids 0) x509-oid-ec-public-key then x509-curve-of buf kids
     else KeyUnknown
 
- Both Edwards keys are 32 bytes. A key of any other length is not one of
- these keys, whatever the OID claims.
+ RFC 5480 section 2.1.1: for id-ecPublicKey the parameters are NOT
+ optional. A key that omits them names no curve, and a key that names one
+ we cannot compute on is a key we say so about rather than one we hope
+ about.
+
+  x509-curve-of : List Integer, List Asn1Tlv -> X509KeyAlg
+  x509-curve-of (buf) (kids) =
+    if list-length kids /= 2 then KeyUnknown
+    else if (list-at kids 1).tlv-tag /= asn1-oid then KeyUnknown
+    else if asn1-oid-is buf (list-at kids 1) x509-oid-p256 then KeyEcdsaP256
+    else if asn1-oid-is buf (list-at kids 1) x509-oid-p384 then KeyEcdsaP384
+    else KeyEcdsaOther
 
   x509-spki-bits : List Integer, X509KeyAlg, Asn1Tlv -> Maybe X509Key
   x509-spki-bits (buf) (alg) (key) =
@@ -104,17 +258,117 @@ Section: Key
       is None -> None
       is Just (bs) -> x509-mk-key alg bs
 
+ Both Edwards keys are 32 bytes. A key of any other length is not one of
+ these keys, whatever the OID claims. An RSA key is not a byte string at
+ all: it is RSAPublicKey ::= SEQUENCE { modulus INTEGER, publicExponent
+ INTEGER }, carried inside the BIT STRING, so it is parsed rather than
+ measured.
+
   x509-mk-key : X509KeyAlg, List Integer -> Maybe X509Key
   x509-mk-key (alg) (bs) =
     when alg
       is KeyUnknown -> None
-      is otherwise -> if list-length bs /= 32 then None else Just (X509Key { xk-alg = alg, xk-bytes = bs })
+      is KeyRsa -> x509-rsa-key bs
+      is KeyEcdsaP256 -> x509-p256-key bs
+      is KeyEcdsaP384 -> x509-p384-key bs
+      is KeyEcdsaOther -> x509-ec-other-key bs
+      is otherwise -> x509-mk-edwards alg bs
+
+ A P-256 public key is an uncompressed SEC1 point: the byte 0x04 and then
+ two 32-byte coordinates, sixty-five bytes exactly. The compressed forms,
+ 0x02 and 0x03, are legal SEC1 and are refused: decompressing one is a
+ square root in the field, which is arithmetic we would be performing on
+ an attacker's behalf before anything has been decided to be trustworthy.
+ Whether the point lies ON the curve is not asked here -- that is curve
+ arithmetic and it belongs with the curve arithmetic, in
+ ecdsa-p256-verify, which asks it before it does anything else.
+
+  x509-p256-key : List Integer -> Maybe X509Key
+  x509-p256-key (bs) =
+    if list-length bs /= 65 then None
+    else if list-at bs 0 /= 4 then None
+    else Just (X509Key { xk-alg = KeyEcdsaP256, xk-bytes = bs, xk-mod = [], xk-exp = [] })
+
+ A P-384 point is ninety-seven bytes on the same reasoning, and the length
+ is checked against the CURVE the OID named rather than against whichever
+ length the byte string happens to have. A sixty-five byte point under the
+ P-384 OID is not a short P-384 key, it is a P-256 key wearing the wrong
+ label, and the two are told apart here rather than in the arithmetic.
+
+  x509-p384-key : List Integer -> Maybe X509Key
+  x509-p384-key (bs) =
+    if list-length bs /= 97 then None
+    else if list-at bs 0 /= 4 then None
+    else Just (X509Key { xk-alg = KeyEcdsaP384, xk-bytes = bs, xk-mod = [], xk-exp = [] })
+
+ A key on any other named curve is kept whole and unexamined, because
+ nothing here can do anything with it and pretending otherwise would be
+ the whole problem in miniature. It parses so that the certificates
+ carrying it can be read -- most elliptic-curve roots are P-384 -- and
+ x509-can-verify answers False for it, so it can never sit in an issuer
+ position.
+
+  x509-ec-other-key : List Integer -> Maybe X509Key
+  x509-ec-other-key (bs) =
+    if list-length bs < 33 then None
+    else Just (X509Key { xk-alg = KeyEcdsaOther, xk-bytes = bs, xk-mod = [], xk-exp = [] })
+
+  x509-mk-edwards : X509KeyAlg, List Integer -> Maybe X509Key
+  x509-mk-edwards (alg) (bs) =
+    if list-length bs /= 32 then None
+    else Just (X509Key { xk-alg = alg, xk-bytes = bs, xk-mod = [], xk-exp = [] })
+
+  x509-rsa-key : List Integer -> Maybe X509Key
+  x509-rsa-key (bs) =
+    when asn1-read-tag bs 0 asn1-sequence
+      is None -> None
+      is Just (s) -> x509-rsa-parts bs (asn1-children bs s)
+
+  x509-rsa-parts : List Integer, List Asn1Tlv -> Maybe X509Key
+  x509-rsa-parts (bs) (kids) =
+    if list-length kids /= 2 then None
+    else if (list-at kids 0).tlv-tag /= asn1-integer then None
+    else if (list-at kids 1).tlv-tag /= asn1-integer then None
+    else x509-rsa-mk (x509-unsign (asn1-content bs (list-at kids 0))) (x509-unsign (asn1-content bs (list-at kids 1)))
+
+  x509-rsa-mk : List Integer, List Integer -> Maybe X509Key
+  x509-rsa-mk (m) (e) =
+    if list-length m < 64 then None
+    else if list-length e < 1 then None
+    else Just (X509Key { xk-alg = KeyRsa, xk-bytes = [], xk-mod = m, xk-exp = e })
+
+ A DER INTEGER is signed, so a modulus whose top bit is set carries a
+ leading zero byte to keep it positive. That byte is part of the encoding
+ and not part of the number, and leaving it on makes the modulus 257
+ bytes wide -- which then does not match the 256-byte signature it is
+ supposed to verify, and the failure looks like a bad signature rather
+ than a bad parse.
+
+  x509-unsign : List Integer -> List Integer
+  x509-unsign (bs) =
+    if list-length bs < 2 then bs
+    else if list-at bs 0 /= 0 then bs
+    else x509-drop-first bs
+
+  x509-drop-first : List Integer -> List Integer
+  x509-drop-first (bs) = x509-drop-loop bs 1 []
+
+  x509-drop-loop : List Integer, Integer, List Integer -> List Integer
+  x509-drop-loop (bs) (i) (acc) =
+    if i >= list-length bs then acc
+    else x509-drop-loop bs (i + 1) (list-push acc (list-at bs i))
 
  The question the chain walk asks, and the reason the algorithm is typed:
  an X25519 key must never be handed to a signature verification.
 
   x509-can-verify : X509Key -> Boolean
-  x509-can-verify (k) = when k.xk-alg is KeyEd25519 -> True is otherwise -> False
+  x509-can-verify (k) =
+    when k.xk-alg
+      is KeyEd25519 -> True
+      is KeyRsa -> True
+      is KeyEcdsaP256 -> True
+      is KeyEcdsaP384 -> True
+      is otherwise -> False
 
 Section: The Certificate
 
@@ -125,7 +379,7 @@ Section: The Certificate
   X509Cert = record {
     xc-tbs : List Integer,
     xc-sig : List Integer,
-    xc-sig-ed25519 : Boolean,
+    xc-sig-alg : X509SigAlg,
     xc-version : Integer,
     xc-serial : List Integer,
     xc-issuer : List Integer,
@@ -133,7 +387,9 @@ Section: The Certificate
     xc-not-before : List Integer,
     xc-not-after : List Integer,
     xc-key : X509Key,
-    xc-is-ca : Boolean
+    xc-is-ca : Boolean,
+    xc-dns-names : List (List Integer),
+    xc-ip-addrs : List (List Integer)
   }
 
   x509-parse : List Integer -> Maybe X509Cert
@@ -154,27 +410,57 @@ Section: The Certificate
   x509-outer-sig (buf) (tbs) (alg) (sig) =
     when asn1-bit-string buf (sig.tlv-hdr)
       is None -> None
-      is Just (sb) -> x509-tbs buf tbs (x509-alg-is-ed25519 buf alg) sb
+      is Just (sb) -> x509-tbs buf tbs (x509-sig-alg-of buf alg) sb
 
- An Ed25519 signature is 64 bytes, always. Anything else is refused here
- rather than handed to the verifier to puzzle over.
+ An Ed25519 signature is 64 bytes, always, and one of any other length is
+ refused here rather than handed to the verifier to puzzle over. An RSA
+ signature is as wide as the modulus, which this certificate does not
+ carry -- the ISSUER's does -- so its width is checked where the issuer's
+ key is known, in the chain walk, and not here.
 
-  x509-tbs : List Integer, Asn1Tlv, Boolean, List Integer -> Maybe X509Cert
-  x509-tbs (buf) (tbs) (is-ed) (sig) =
-    if is-ed == False then None
-    else if list-length sig /= 64 then None
+ An ECDSA signature has no fixed width at all: it is DER, SEQUENCE of two
+ INTEGERs, and both are variable because a leading zero appears exactly
+ when the top bit would otherwise make the value negative. Eight bytes is
+ the smallest structure that could possibly be one. The real check is not
+ a width -- it is the decode, in x509-ecdsa-rs, and a signature that does
+ not decode verifies nothing.
+
+ A signature algorithm we do not recognise refuses the whole certificate.
+ That is deliberate and it is the conservative direction: an unparsed
+ algorithm must never reach a verifier that would then pick one.
+
+  x509-tbs : List Integer, Asn1Tlv, X509SigAlg, List Integer -> Maybe X509Cert
+  x509-tbs (buf) (tbs) (salg) (sig) =
+    when salg
+      is SigUnknown -> None
+      is SigEd25519 -> x509-tbs-sized buf tbs salg sig (list-length sig == 64)
+      is SigRsaSha256 -> x509-tbs-sized buf tbs salg sig (list-length sig >= 64)
+      is SigRsaSha384 -> x509-tbs-sized buf tbs salg sig (list-length sig >= 64)
+      is SigRsaSha1 -> x509-tbs-sized buf tbs salg sig (list-length sig >= 64)
+      is SigEcdsaSha256 -> x509-tbs-sized buf tbs salg sig (list-length sig >= 8)
+      is SigEcdsaSha384 -> x509-tbs-sized buf tbs salg sig (list-length sig >= 8)
+
+  x509-tbs-sized : List Integer, Asn1Tlv, X509SigAlg, List Integer, Boolean -> Maybe X509Cert
+  x509-tbs-sized (buf) (tbs) (salg) (sig) (ok) =
+    if ok == False then None
     else if tbs.tlv-tag /= asn1-sequence then None
-    else x509-fields buf tbs sig (asn1-children buf tbs)
+    else x509-fields buf tbs sig salg (asn1-children buf tbs)
 
-  x509-alg-is-ed25519 : List Integer, Asn1Tlv -> Boolean
-  x509-alg-is-ed25519 (buf) (alg) =
-    if alg.tlv-tag /= asn1-sequence then False
-    else x509-alg-oid-ed buf (asn1-children buf alg)
+  x509-sig-alg-of : List Integer, Asn1Tlv -> X509SigAlg
+  x509-sig-alg-of (buf) (alg) =
+    if alg.tlv-tag /= asn1-sequence then SigUnknown
+    else x509-sig-alg-kids buf (asn1-children buf alg)
 
-  x509-alg-oid-ed : List Integer, List Asn1Tlv -> Boolean
-  x509-alg-oid-ed (buf) (kids) =
-    if list-length kids /= 1 then False
-    else asn1-oid-is buf (list-at kids 0) x509-oid-ed25519
+  x509-sig-alg-kids : List Integer, List Asn1Tlv -> X509SigAlg
+  x509-sig-alg-kids (buf) (kids) =
+    if x509-alg-params-ok buf kids == False then SigUnknown
+    else if asn1-oid-is buf (list-at kids 0) x509-oid-ed25519 then SigEd25519
+    else if asn1-oid-is buf (list-at kids 0) x509-oid-sha256-rsa then SigRsaSha256
+    else if asn1-oid-is buf (list-at kids 0) x509-oid-sha384-rsa then SigRsaSha384
+    else if asn1-oid-is buf (list-at kids 0) x509-oid-sha1-rsa then SigRsaSha1
+    else if asn1-oid-is buf (list-at kids 0) x509-oid-ecdsa-sha256 then SigEcdsaSha256
+    else if asn1-oid-is buf (list-at kids 0) x509-oid-ecdsa-sha384 then SigEcdsaSha384
+    else SigUnknown
 
 Section: The TBSCertificate
 
@@ -187,17 +473,17 @@ Section: The TBSCertificate
  whether it is a CA, and a chain walk over v1 certificates is a chain walk
  that cannot tell a leaf from an authority.
 
-  x509-fields : List Integer, Asn1Tlv, List Integer, List Asn1Tlv -> Maybe X509Cert
-  x509-fields (buf) (tbs) (sig) (kids) =
+  x509-fields : List Integer, Asn1Tlv, List Integer, X509SigAlg, List Asn1Tlv -> Maybe X509Cert
+  x509-fields (buf) (tbs) (sig) (salg) (kids) =
     if list-length kids < 7 then None
     else if (list-at kids 0).tlv-tag /= asn1-ctx0 then None
-    else x509-version buf tbs sig kids
+    else x509-version buf tbs sig salg kids
 
-  x509-version : List Integer, Asn1Tlv, List Integer, List Asn1Tlv -> Maybe X509Cert
-  x509-version (buf) (tbs) (sig) (kids) =
+  x509-version : List Integer, Asn1Tlv, List Integer, X509SigAlg, List Asn1Tlv -> Maybe X509Cert
+  x509-version (buf) (tbs) (sig) (salg) (kids) =
     when asn1-small-int buf ((list-at kids 0).tlv-off)
       is None -> None
-      is Just (v) -> if v /= 2 then None else x509-body buf tbs sig kids v
+      is Just (v) -> if v /= 2 then None else x509-body buf tbs sig salg kids v
 
  With the version present the field order is fixed: serial, signature,
  issuer, validity, subject, spki. The inner signature AlgorithmIdentifier
@@ -205,27 +491,41 @@ Section: The TBSCertificate
  algorithm fields disagree is one where the signed statement and the thing
  being checked are not the same statement.
 
-  x509-body : List Integer, Asn1Tlv, List Integer, List Asn1Tlv, Integer -> Maybe X509Cert
-  x509-body (buf) (tbs) (sig) (kids) (v) =
-    if x509-alg-is-ed25519 buf (list-at kids 2) == False then None
-    else x509-serial buf tbs sig kids v
+  x509-body : List Integer, Asn1Tlv, List Integer, X509SigAlg, List Asn1Tlv, Integer -> Maybe X509Cert
+  x509-body (buf) (tbs) (sig) (salg) (kids) (v) =
+    if x509-sig-alg-eq (x509-sig-alg-of buf (list-at kids 2)) salg == False then None
+    else x509-serial buf tbs sig salg kids v
 
-  x509-serial : List Integer, Asn1Tlv, List Integer, List Asn1Tlv, Integer -> Maybe X509Cert
-  x509-serial (buf) (tbs) (sig) (kids) (v) =
+  x509-sig-alg-eq : X509SigAlg, X509SigAlg -> Boolean
+  x509-sig-alg-eq (a) (b) = x509-sig-alg-code a == x509-sig-alg-code b
+
+  x509-sig-alg-code : X509SigAlg -> Integer
+  x509-sig-alg-code (a) =
+    when a
+      is SigEd25519 -> 1
+      is SigRsaSha256 -> 2
+      is SigRsaSha384 -> 3
+      is SigRsaSha1 -> 4
+      is SigEcdsaSha256 -> 5
+      is SigEcdsaSha384 -> 6
+      is SigUnknown -> 0
+
+  x509-serial : List Integer, Asn1Tlv, List Integer, X509SigAlg, List Asn1Tlv, Integer -> Maybe X509Cert
+  x509-serial (buf) (tbs) (sig) (salg) (kids) (v) =
     when asn1-int-bytes buf ((list-at kids 1).tlv-hdr)
       is None -> None
-      is Just (sn) -> x509-validity buf tbs sig kids v sn
+      is Just (sn) -> x509-validity buf tbs sig salg kids v sn
 
  Validity ::= SEQUENCE { notBefore Time, notAfter Time }. The times are
  kept as their raw bytes. This chapter has no clock and does not want one:
  comparing certificate times is the chain walk's job, and it takes the
  current time from its caller.
 
-  x509-validity : List Integer, Asn1Tlv, List Integer, List Asn1Tlv, Integer, List Integer -> Maybe X509Cert
-  x509-validity (buf) (tbs) (sig) (kids) (v) (sn) =
+  x509-validity : List Integer, Asn1Tlv, List Integer, X509SigAlg, List Asn1Tlv, Integer, List Integer -> Maybe X509Cert
+  x509-validity (buf) (tbs) (sig) (salg) (kids) (v) (sn) =
     when x509-times buf (list-at kids 4)
       is None -> None
-      is Just (tt) -> x509-key-of buf tbs sig kids v sn tt
+      is Just (tt) -> x509-key-of buf tbs sig salg kids v sn tt
 
   X509Times = record {
     xt-not-before : List Integer,
@@ -243,17 +543,17 @@ Section: The TBSCertificate
     else Just (X509Times { xt-not-before = asn1-content buf (list-at kids 0),
                            xt-not-after = asn1-content buf (list-at kids 1) })
 
-  x509-key-of : List Integer, Asn1Tlv, List Integer, List Asn1Tlv, Integer, List Integer, X509Times -> Maybe X509Cert
-  x509-key-of (buf) (tbs) (sig) (kids) (v) (sn) (tt) =
+  x509-key-of : List Integer, Asn1Tlv, List Integer, X509SigAlg, List Asn1Tlv, Integer, List Integer, X509Times -> Maybe X509Cert
+  x509-key-of (buf) (tbs) (sig) (salg) (kids) (v) (sn) (tt) =
     when x509-spki buf ((list-at kids 6).tlv-hdr)
       is None -> None
-      is Just (k) -> Just (x509-mk buf tbs sig kids v sn tt k)
+      is Just (k) -> Just (x509-mk buf tbs sig salg kids v sn tt k)
 
-  x509-mk : List Integer, Asn1Tlv, List Integer, List Asn1Tlv, Integer, List Integer, X509Times, X509Key -> X509Cert
-  x509-mk (buf) (tbs) (sig) (kids) (v) (sn) (tt) (k) =
+  x509-mk : List Integer, Asn1Tlv, List Integer, X509SigAlg, List Asn1Tlv, Integer, List Integer, X509Times, X509Key -> X509Cert
+  x509-mk (buf) (tbs) (sig) (salg) (kids) (v) (sn) (tt) (k) =
     X509Cert { xc-tbs = asn1-raw buf tbs,
                xc-sig = sig,
-               xc-sig-ed25519 = True,
+               xc-sig-alg = salg,
                xc-version = v,
                xc-serial = sn,
                xc-issuer = asn1-raw buf (list-at kids 3),
@@ -261,7 +561,93 @@ Section: The TBSCertificate
                xc-not-before = tt.xt-not-before,
                xc-not-after = tt.xt-not-after,
                xc-key = k,
-               xc-is-ca = x509-ca-flag buf kids }
+               xc-is-ca = x509-ca-flag buf kids,
+               xc-dns-names = x509-alt-names buf kids x509-gn-dns,
+               xc-ip-addrs = x509-alt-names buf kids x509-gn-ip }
+
+Section: subjectAltName
+
+ The names a certificate actually asserts. Until 2026-07-26 nothing here
+ read them, and nothing anywhere asked whether a certificate belonged to
+ the host that was dialled -- so a leaf issued by a trusted authority
+ authenticated for every host in the world. That is the hole this section
+ exists to close, and the check that consumes it is x509-identity-matches
+ in X509Chain.
+
+ subjectAltName is OID 2.5.29.17 and its extnValue wraps GeneralNames ::=
+ SEQUENCE OF GeneralName. GeneralName is a CHOICE of context-tagged
+ alternatives; the two that name a network peer are dNSName [2], an
+ IA5String, and iPAddress [7], four bytes for IPv4. Both are PRIMITIVE
+ context tags, so the tag byte is #82 and #87 rather than the constructed
+ #A2 and #A7 -- reading them as constructed finds no children and answers
+ that a certificate carrying names carries none.
+
+ The commonName is deliberately NOT read. RFC 6125 deprecated it as an
+ identity in 2011 and every browser stopped honouring it years ago; a
+ certificate that asserts no subjectAltName asserts no identity, and the
+ honest answer to "does this name my peer" is then No. Accepting the CN as
+ a fallback would mean the old fixtures kept passing, which is exactly the
+ wrong reason to accept anything.
+
+  x509-oid-subject-alt-name : List Integer = [85, 29, 17]
+
+  x509-gn-dns : Integer = #82
+  x509-gn-ip : Integer = #87
+
+ The walk mirrors x509-ca-flag's: the extensions live in the [3] EXPLICIT
+ member of the TBS, wrapped in a SEQUENCE, and each extension is a
+ SEQUENCE of OID, optional critical flag, and an OCTET STRING holding the
+ real DER.
+
+  x509-alt-names : List Integer, List Asn1Tlv, Integer -> List (List Integer)
+  x509-alt-names (buf) (kids) (want) = x509-find-san buf kids 7 want
+
+  x509-find-san : List Integer, List Asn1Tlv, Integer, Integer -> List (List Integer)
+  x509-find-san (buf) (kids) (i) (want) =
+    if i >= list-length kids then []
+    else if (list-at kids i).tlv-tag == asn1-ctx3 then x509-san-exts buf (list-at kids i) want
+    else x509-find-san buf kids (i + 1) want
+
+  x509-san-exts : List Integer, Asn1Tlv, Integer -> List (List Integer)
+  x509-san-exts (buf) (ctx) (want) =
+    when asn1-nth (asn1-children buf ctx) 0
+      is None -> []
+      is Just (seq) -> x509-scan-san buf (asn1-children buf seq) 0 want
+
+  x509-scan-san : List Integer, List Asn1Tlv, Integer, Integer -> List (List Integer)
+  x509-scan-san (buf) (exts) (i) (want) =
+    if i >= list-length exts then []
+    else if x509-ext-is-san buf (list-at exts i) then x509-san-value buf (list-at exts i) want
+    else x509-scan-san buf exts (i + 1) want
+
+  x509-ext-is-san : List Integer, Asn1Tlv -> Boolean
+  x509-ext-is-san (buf) (e) =
+    when asn1-nth (asn1-children buf e) 0
+      is None -> False
+      is Just (o) -> asn1-oid-is buf o x509-oid-subject-alt-name
+
+  x509-san-value : List Integer, Asn1Tlv, Integer -> List (List Integer)
+  x509-san-value (buf) (e) (want) =
+    when asn1-last (asn1-children buf e)
+      is None -> []
+      is Just (v) -> x509-san-inner buf v want
+
+  x509-san-inner : List Integer, Asn1Tlv, Integer -> List (List Integer)
+  x509-san-inner (buf) (v) (want) =
+    if v.tlv-tag /= asn1-octet-string then []
+    else x509-san-seq buf (asn1-read-tag buf (v.tlv-off) asn1-sequence) want
+
+  x509-san-seq : List Integer, Maybe Asn1Tlv, Integer -> List (List Integer)
+  x509-san-seq (buf) (m) (want) =
+    when m
+      is None -> []
+      is Just (s) -> x509-san-collect buf (asn1-children buf s) 0 want []
+
+  x509-san-collect : List Integer, List Asn1Tlv, Integer, Integer, List (List Integer) -> List (List Integer)
+  x509-san-collect (buf) (gns) (i) (want) (acc) =
+    if i >= list-length gns then acc
+    else if (list-at gns i).tlv-tag /= want then x509-san-collect buf gns (i + 1) want acc
+    else x509-san-collect buf gns (i + 1) want (list-push acc (asn1-content buf (list-at gns i)))
 
 Section: basicConstraints
 
@@ -344,3 +730,105 @@ Section: basicConstraints
   asn1-last (ts) =
     if list-length ts < 1 then None
     else Just (list-at ts (list-length ts - 1))
+
+Section: An ECDSA Signature As DER
+
+ A certificate does not carry the fixed sixty-four bytes that TLS and the
+ JOSE family use for a P-256 signature. It carries DER: SEQUENCE { INTEGER
+ r, INTEGER s }, and both integers are variable width because a leading
+ zero appears exactly when the top bit would otherwise make the value
+ negative. So the two forms are not the same bytes, and this is where one
+ becomes the other.
+
+ It lives in this chapter rather than in the chain walk because it is DER
+ decoding and this is the DER-decoding chapter, and because it has two
+ callers: a certificate's signatureValue and a TLS CertificateVerify
+ signature are the same encoding, and RFC 8446 section 4.4.3 says so
+ explicitly for ecdsa_secp256r1_sha256. It was written in X509Chain first,
+ when the chain walk was its only caller.
+
+ It is a decode and not a reshuffle. Every rule the Asn1 chapter enforces
+ about a DER INTEGER applies here, and the reason it matters is that a
+ signature is the one field an attacker chooses freely: a decoder that
+ accepts several spellings of one signature has made a signature into a
+ value with several names.
+
+  x509-ecdsa-rs : List Integer, Integer -> Maybe (List Integer)
+  x509-ecdsa-rs (sig) (w) =
+    when asn1-read-tag sig 0 asn1-sequence
+      is None -> None
+      is Just (t) -> x509-ecdsa-whole sig t w
+
+ The SEQUENCE must be the WHOLE signature. Trailing bytes are bytes nobody
+ signed and nobody accounted for, and ignoring them is how one signature
+ acquires unboundedly many encodings.
+
+  x509-ecdsa-whole : List Integer, Asn1Tlv, Integer -> Maybe (List Integer)
+  x509-ecdsa-whole (sig) (t) (w) =
+    if asn1-end t /= list-length sig then None
+    else x509-ecdsa-parts sig (asn1-children sig t) w
+
+  x509-ecdsa-parts : List Integer, List Asn1Tlv, Integer -> Maybe (List Integer)
+  x509-ecdsa-parts (sig) (kids) (w) =
+    if list-length kids /= 2 then None
+    else x509-ecdsa-two (x509-ecdsa-int sig (list-at kids 0)) (x509-ecdsa-int sig (list-at kids 1)) w
+
+  x509-ecdsa-two : Maybe (List Integer), Maybe (List Integer), Integer -> Maybe (List Integer)
+  x509-ecdsa-two (mr) (ms) (w) =
+    when mr
+      is None -> None
+      is Just (r) -> x509-ecdsa-join r ms w
+
+  x509-ecdsa-join : List Integer, Maybe (List Integer), Integer -> Maybe (List Integer)
+  x509-ecdsa-join (r) (ms) (w) =
+    when ms
+      is None -> None
+      is Just (s) -> x509-ecdsa-fit r s w
+
+ One INTEGER, as thirty-two big-endian bytes. asn1-int-bytes has already
+ refused a non-minimal encoding, so a leading zero here is present for
+ exactly one reason -- to keep a value whose top bit is set positive --
+ and dropping it is safe. A top byte with the sign bit set and no zero in
+ front of it is a NEGATIVE integer, which no ECDSA component ever is, and
+ a value still wider than thirty-two bytes afterwards is not a scalar on
+ this curve.
+
+  x509-ecdsa-int : List Integer, Asn1Tlv -> Maybe (List Integer)
+  x509-ecdsa-int (sig) (t) =
+    if t.tlv-tag /= asn1-integer then None
+    else x509-ecdsa-bytes (asn1-int-bytes sig (t.tlv-hdr))
+
+  x509-ecdsa-bytes : Maybe (List Integer) -> Maybe (List Integer)
+  x509-ecdsa-bytes (m) =
+    when m
+      is None -> None
+      is Just (bs) -> x509-ecdsa-positive bs
+
+  x509-ecdsa-positive : List Integer -> Maybe (List Integer)
+  x509-ecdsa-positive (bs) =
+    if list-length bs < 1 then None
+    else if bit-and (list-at bs 0) #80 == #80 then None
+    else Just (x509-unsign bs)
+
+ Left-padded to the width the verifier takes. A short r or s is not
+ malformed: a scalar whose top byte happens to be zero is encoded in
+ thirty-one bytes, which occurs about once in every two hundred and
+ fifty-six signatures. Refusing those, or truncating instead of padding,
+ is a verifier that rejects a valid signature at a rate low enough to
+ reach production and high enough to be seen there.
+
+ The width is the CURVE's, passed in, not a constant. It was 32 until
+ 2026-07-28, which would have refused every P-384 signature on the length
+ test below rather than on anything to do with the signature: r and s are
+ forty-eight bytes there, and `> 32` is None.
+
+  x509-ecdsa-fit : List Integer, List Integer, Integer -> Maybe (List Integer)
+  x509-ecdsa-fit (r) (s) (w) =
+    if list-length r > w then None
+    else if list-length s > w then None
+    else Just (x509-zeros (w - list-length r) [] & r & x509-zeros (w - list-length s) [] & s)
+
+  x509-zeros : Integer, List Integer -> List Integer
+  x509-zeros (n) (acc) =
+    if n <= 0 then acc
+    else x509-zeros (n - 1) (list-push acc 0)

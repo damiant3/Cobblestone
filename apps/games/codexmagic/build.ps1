@@ -34,7 +34,7 @@ function Add-File {
 }
 
 # Topologically sort CodexMagic chapters. Entry file goes last.
-# Find all files that define 'opening' — these are alternate entry points, exclude them
+# Find all files that define 'opening' -- these are alternate entry points, exclude them
 $entryFiles = [System.Collections.Generic.HashSet[string]]::new()
 [void]$entryFiles.Add($Entry)
 foreach ($f in Get-ChildItem $AppDir -Filter '*.codex' -File) {

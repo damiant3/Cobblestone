@@ -1,0 +1,106 @@
+Chapter: DebugExprTest
+  cites Works chapter DevConsole
+  cites Works chapter DevConsoleBoot
+  cites Works chapter DevConsoleMenu
+  cites Works chapter UefiConsole
+  cites Works chapter KeyManager
+  cites Kernel chapter DiskFacts
+  cites Foreword chapter FactStore
+  cites Foreword chapter Sha256
+
+ Address expressions reach the debugger through the key handler the
+ console actually calls.
+
+ Every line goes through `handle-console-input` in ModeDebug, and that is
+ the point rather than a detail: `expr-eval` has its own test as a pure
+ function, so what is left to prove is the WIRING -- that a line which is
+ not a menu key reaches the evaluator, that a good one moves
+ last-address, and that a bad one does not. Calling `expr-eval` directly
+ here would pass against the arm that used to be `else state` and swallow
+ the line, which is exactly the bug this closes.
+
+ The last-address readings are the load-bearing ones. A status line can
+ say anything; `$` is read back out of the state on the NEXT expression,
+ so `$ + 16` proves the previous value was actually stored rather than
+ printed and dropped.
+
+ The refusal has to be checked the same way. After a bad expression the
+ status changes -- so a test watching only the status would pass -- and
+ what must NOT change is last-address. So the bad case is followed by a
+ bare `$`, which reports what the cursor really is.
+
+ The watch commands are here for the same reason and not to re-test
+ `DevState`, which has its own test over memory it controls. What this
+ half proves is that the console THREADS the returned table back into its
+ own state: `watch.check` re-arms, and a dispatch that dropped the
+ returned `DevState` would still print a plausible line while every later
+ check reported against a stale snapshot. `armed-at-cursor` naming the
+ address the expressions left behind is what ties the two features
+ together -- the cursor an expression set is the region a watch arms on.
+
+ We say:
+
+Section: Fixtures
+
+  bare-console : UefiConsoleState
+  bare-console = UefiConsoleState {
+    sys-table = 0,
+    con-out = 0,
+    con-in = 0,
+    rows = 25,
+    cols = 80,
+    cursor-row = 0,
+    cursor-col = 0
+  }
+
+  bare-disk : DiskFactStore
+  bare-disk = DiskFactStore { superblock = empty-superblock, mem = fact-store-empty, base = 0, limit = 0 }
+
+  bare-keys : Keypair
+  bare-keys = generate-keypair (sha256 (text-to-bytes "codex-debug-expr-test"))
+
+Section: Reporting
+
+  report : Text, DevConsoleState -> [Console] Nothing
+  report (label) (s) = act
+    print-line-uni (label & ": " & s.status)
+  end
+
+Section: Body
+
+  opening : [Console, Device.Port, Device.Block] Nothing = act
+    let s0 = dev-console-init bare-console bare-disk bare-keys
+    in let d0 = dispatch-main-menu "debug" s0
+    in act
+
+      m <- handle-console-input d0 "mem"
+      report "menu-key-still-works" m
+
+      a <- handle-console-input d0 "heap-base + 0x100"
+      report "named-plus-hex" a
+
+      b <- handle-console-input a "$ + 16"
+      report "dollar-reads-back" b
+
+      bad <- handle-console-input b "nosuch + 1"
+      report "refused" bad
+
+      after <- handle-console-input bad "$"
+      report "cursor-after-refusal" after
+
+      w0 <- handle-console-input after "watch.check"
+      report "no-watches-yet" w0
+
+      w1 <- handle-console-input w0 "watch"
+      report "armed-at-cursor" w1
+
+      w2 <- handle-console-input w1 "watch.check"
+      report "unchanged" w2
+
+      w3 <- handle-console-input w2 "watch.clear"
+      report "cleared" w3
+
+      w4 <- handle-console-input w3 "watch.check"
+      report "empty-again" w4
+    end
+  end

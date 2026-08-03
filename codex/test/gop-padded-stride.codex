@@ -1,0 +1,116 @@
+Chapter: GopPaddedStride
+  cites Foreword chapter Console
+  cites Engine chapter Renderer3D
+  cites Game chapter Color
+
+ A real panel pads its scanlines. The ASUS TUF sitting on 2026-07-29
+ reported 1920x1080 with a PixelsPerScanLine of 2048, so a row is 128
+ pixels wider in memory than anything the eye can see. Every bed we
+ owned had stride equal to width, which means a renderer stepping rows
+ by the visible width produced byte-identical output to a correct one
+ and no test in the tree could tell them apart.
+
+ `-gop-stride` is the machine option that makes them differ, so this
+ test's subject is the MACHINE and its `.vmargs` sidecar is the test.
+ The geometry is read from the cells codex-vm publishes rather than
+ written here: reading them is what proves the option reached the guest
+ at all, and a hardcoded 512 would pass just as well with the bed
+ switched off.
+
+ Painting w columns per row into a stride-wide buffer with the wrong
+ multiplier writes one contiguous run of w*h pixels: the run spills into
+ the invisible pad of the early rows, and it runs out before the bottom
+ row is reached. A test that checked only that something got painted
+ would pass with either renderer.
+
+ The three assertions cover two independent paths, which the sabotage is
+ what established -- the first attempt set `r3t-stride` to the width and
+ only two rows moved, because `r3d-target-at` hands `r3d-fill-rows` the
+ stride argument directly and never reads the field back. So the pad and
+ the plot answer for `r3d-plot`, the bottom row answers for
+ `r3d-fill-rows`, and they are not one defect seen from two ends.
+
+ Measured against seed 6671C19A0F78F630 with both arms sabotaged to step
+ by the width: the pad, the bottom row and the plot all go from `yes` to
+ `no`, and `stride exceeds width` stays `yes`.
+
+ `stride exceeds width` is the control. It is a property of the bed and
+ not of the renderer, so it holds under sabotage; if it ever reads `no`
+ the machine option is off and the other three rows are answering a
+ question nobody asked. Running without the sidecar is what shows that,
+ and it reads `no` exactly as it should.
+
+ We say:
+
+Section: Geometry
+
+ Published by codex-vm at boot. The stride sits at 0x7E0, the offset
+ PixelsPerScanLine occupies in a UEFI mode-info block, so the UEFI and
+ bare `-gop` paths agree on where it lives.
+
+  fb-base : Integer = 3204448256
+  cell-width : Integer = 1988
+  cell-height : Integer = 1992
+  cell-stride : Integer = 2016
+
+  sentinel : Integer = 12648430
+  probe : Integer = 16711935
+
+  sky : Integer
+  sky = rgb-to-packed (rgb 20 20 30)
+
+Section: Counting
+
+  fill-fb : Integer, Integer, Integer -> Integer
+  fill-fb (base) (i) (n) =
+    if i >= n then 0
+    else let d = poke-32 base (i * 4) sentinel
+    in fill-fb base (i + 1) n
+
+ Counts surviving sentinel pixels in the invisible pad of one row, then
+ across every row. Indexing here is by stride deliberately: this walks
+ the buffer as the hardware scans it, which is the frame of reference
+ the question is asked in.
+
+  pad-cols : Integer, Integer, Integer, Integer, Integer -> Integer
+  pad-cols (base) (stride) (y) (x) (acc) =
+    if x >= stride then acc
+    else if peek-32 base ((y * stride + x) * 4) == sentinel then pad-cols base stride y (x + 1) (acc + 1)
+    else pad-cols base stride y (x + 1) acc
+
+  pad-rows : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  pad-rows (base) (stride) (w) (h) (y) (acc) =
+    if y >= h then acc
+    else pad-rows base stride w h (y + 1) (pad-cols base stride y w acc)
+
+  row-painted : Integer, Integer, Integer, Integer, Integer -> Integer
+  row-painted (base) (stride) (w) (y) (x) =
+    if x >= w then 0
+    else if peek-32 base ((y * stride + x) * 4) == sentinel then row-painted base stride w y (x + 1)
+    else 1
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let w = peek-32 cell-width 0
+    in let h = peek-32 cell-height 0
+    in let stride = peek-32 cell-stride 0
+    in let pad = (stride - w) * h
+    in let f = fill-fb fb-base 0 (stride * h)
+    in let tgt = r3d-target-at fb-base stride w h sky
+    in let plotted = r3d-plot tgt (w - 1) (h - 1) 1 probe
+    in let corner = peek-32 fb-base (((h - 1) * stride + w - 1) * 4)
+    in let pad-kept = pad-rows fb-base stride w h 0 0
+    in let bottom = row-painted fb-base stride w (h - 1) 0
+    in act
+      print-line-uni ("stride exceeds width   : " & yn (stride > w))
+      print-line-uni ("invisible pad untouched: " & yn (pad-kept == pad))
+      print-line-uni ("bottom row painted     : " & yn (bottom == 1))
+      print-line-uni ("plot lands at stride   : " & yn (corner == probe))
+    end
+  end
+
+Page 1

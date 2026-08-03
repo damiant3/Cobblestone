@@ -1,4 +1,4 @@
-# Native Backend — RISC-V Design
+# Native Backend -- RISC-V Design
 
 **Date**: 2026-03-21
 **Author**: Copilot (VS 2022, Windows)
@@ -20,8 +20,8 @@ that requires a 2,000-page manual. Building a native codegen against x86-64
 first means debugging the *architecture of the codegen* and the *madness of the
 ISA* simultaneously. That's two problems at once. We don't do that.
 
-RISC-V lets us build the codegen architecture — register allocation, instruction
-selection, stack frames, ELF emission — against a clean, fixed-width, load/store
+RISC-V lets us build the codegen architecture -- register allocation, instruction
+selection, stack frames, ELF emission -- against a clean, fixed-width, load/store
 ISA with 32 general-purpose registers and an instruction encoding you can fit
 on one page. Once the architecture works, retargeting to x86-64 (or ARM64, or
 anything else) is a swap of the instruction selection layer. The rest stays.
@@ -63,7 +63,7 @@ ARM64 (AArch64) is also a clean RISC-ish ISA and runs on hardware we can touch
 - ARM has licensing complexity and a more nuanced encoding than RISC-V.
 - RISC-V is fully open. The ISA spec is public domain. No IP entanglements.
 - RISC-V hardware is cheap and available (SiFive, Milk-V, ~$8 dev boards).
-- The simplicity delta between RV64I and AArch64 is real — RISC-V is simpler.
+- The simplicity delta between RV64I and AArch64 is real -- RISC-V is simpler.
 
 x86-64 is saved for later because it's genuinely harder to emit correctly, and
 fighting encoding bugs while also debugging register allocation is a recipe for
@@ -78,7 +78,7 @@ misery. We'll get there. CISC madness comes after we have a proven codegen.
 ```
 src/Codex.Emit.RiscV/
 ├── Codex.Emit.RiscV.csproj     (net8.0, refs Codex.Emit + Codex.IR + Codex.Types)
-├── RiscVEmitter.cs              (IAssemblyEmitter — entry point, returns ELF bytes)
+├── RiscVEmitter.cs              (IAssemblyEmitter -- entry point, returns ELF bytes)
 ├── RiscVCodeGen.cs              (IR → RISC-V instruction selection)
 ├── RegisterAllocator.cs         (Linear scan over virtual registers)
 ├── StackFrame.cs                (Calling convention, locals, spills)
@@ -101,12 +101,12 @@ Codex.IR → Codex.Emit → Codex.Emit.RiscV
 ```
 
 No external dependencies. We emit ELF bytes the same way we emit WASM bytes
-and PE/IL bytes — `BinaryWriter` on a `MemoryStream`. No linker. No assembler.
+and PE/IL bytes -- `BinaryWriter` on a `MemoryStream`. No linker. No assembler.
 No toolchain. The output is a ready-to-run ELF64 binary for Linux/RISC-V.
 
 ---
 
-## RISC-V RV64I — What We Need
+## RISC-V RV64I -- What We Need
 
 RV64I is the base 64-bit integer instruction set. It has:
 
@@ -178,7 +178,7 @@ Same model as the WASM backend but with real registers instead of a stack.
 
 The code generator first translates IR into instructions using **virtual
 registers** (unlimited supply). This separates instruction selection from
-register allocation — two hard problems solved independently.
+register allocation -- two hard problems solved independently.
 
 ```
 IRIntegerLit(42)     →  li   v0, 42
@@ -219,7 +219,7 @@ Frame pointer:  s0 (optional but we use it for simplicity)
 ```
 
 Codex functions with ≤8 parameters pass all args in registers (covers nearly
-everything — Codex functions are curried and typically take 1-3 args after
+everything -- Codex functions are curried and typically take 1-3 args after
 flattening). Overflow args go on the stack.
 
 ---
@@ -258,7 +258,7 @@ Program Header: PT_LOAD for .data + .bss (rw-)
 ```
 
 No section headers needed for execution (only for debugging). No symbol table
-needed. No relocations — we resolve everything at emit time. The resulting
+needed. No relocations -- we resolve everything at emit time. The resulting
 binary is as small as physically possible: headers + code + data.
 
 A hello-world should be well under 1KB.
@@ -348,7 +348,7 @@ tests/Codex.Types.Tests/
 
 Integration tests use `qemu-riscv64` (user-mode emulation). Tests skip
 gracefully if QEMU is not on PATH, same pattern as the WASM tests with
-wasmtime. On CI, we install QEMU — it's a single apt package.
+wasmtime. On CI, we install QEMU -- it's a single apt package.
 
 ---
 
@@ -368,7 +368,7 @@ That's freedom.
 
 When we retarget to x86-64 and ARM64, the same binary runs without QEMU.
 On a Raspberry Pi. On a laptop. On a server. On anything with a CPU and
-a Linux kernel. And eventually, without the kernel too — but that's Peak IV.
+a Linux kernel. And eventually, without the kernel too -- but that's Peak IV.
 
 ---
 

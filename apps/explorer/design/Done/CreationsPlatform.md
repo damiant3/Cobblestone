@@ -1,4 +1,4 @@
-# Creations Platform — per-user, account-owned content
+# Creations Platform -- per-user, account-owned content
 
 **Status: SHIPPED & verified end-to-end** (val, 2026-05-30, CLs 2836-2849).
 App-level only; compiler seed untouched. A working multi-user content layer on
@@ -38,7 +38,7 @@ Three layers, all over the existing framed-TCP / NE2K stack (no serial):
 
 | Path | Auth | Effect |
 |---|---|---|
-| `/api/<table>` | no | catalog rows (biomes, races, items, ... — `table-json`) |
+| `/api/<table>` | no | catalog rows (biomes, races, items, ... -- `table-json`) |
 | `/api/save?kind=&name=&data=` | yes | append a creation owned by the caller |
 | `/api/mine` | yes | the caller's creations |
 | `/api/delete?name=` | yes | remove the caller's creation by name |
@@ -48,11 +48,11 @@ Three layers, all over the existing framed-TCP / NE2K stack (no serial):
 
 Query-param values are URL-decoded server-side (`url-decode`, done in Unicode
 space via `to-unicode`/`from-unicode` so the frequency-ordered CCE table is never
-assumed ASCII-contiguous) — content with spaces/punctuation round-trips.
+assumed ASCII-contiguous) -- content with spaces/punctuation round-trips.
 
 ## Clients
 
-- `apps/explorer/creations.html` — login SPA. Kind-aware composer (setting =
+- `apps/explorer/creations.html` -- login SPA. Kind-aware composer (setting =
   biomes/times/weathers/moods, character = races/classes/genders/personalities,
   item = items/materials/rarities; name = joined display names, data = joined
   prompt fragments). My-Creations list (open-in-designer + delete), Community
@@ -79,13 +79,13 @@ Regression harness: `apps/explorer/_creationstest.ps1` (TCP, save/mine isolation
 - **Per-request heap growth** in the WebServer/auth-loop (no-GC bump heap, no
   per-request reset): ~50-175K requests of headroom. A real fix is heap-save/
   heap-restore around request handling, but `TcpTransportState` is an immutable
-  record reallocated per request, so a naive reset reclaims the live transport —
+  record reallocated per request, so a naive reset reclaims the live transport --
   this is reek's escape-invariant / DeckCopy work, not a quick app-level fix.
 - `cr-max=50` is a SHARED cap across all users (single region). Per-user regions
   or a growable directory would scale further.
 - A "proper" in-plug Save button (a `widget-btnbar` button + a CCE-safe plug
   `encode-uri` builtin + `local-storage-get`) would remove the bridge inject, but
-  is a lateral move — the inject works today across all three designers.
+  is a lateral move -- the inject works today across all three designers.
 - Designer reopen currently restores only the prompt text, not the pip
   selections (those aren't stored). Storing selection indices would restore full
   state.

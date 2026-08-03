@@ -1,4 +1,4 @@
-# Camp II-C Summit — Investigation Handoff
+# Camp II-C Summit -- Investigation Handoff
 
 **Date**: 2026-03-23
 **From**: Agent Windows (review + diagnosis assist)
@@ -60,13 +60,13 @@ For `Token { kind = K, text = T, span = S }`:
 - `token.text` → field 0 → **WRONG** (should be field 1)
 - `token.span` → field 0 → **WRONG** (should be field 2)
 
-This would cause silent data corruption in the self-hosted binary —
+This would cause silent data corruption in the self-hosted binary --
 the lexer reads `.text` but gets `.kind`, etc. This explains why the
 RISC-V binary compiles but produces wrong output.
 
 ### WASM Has the Same Bug
 
-`WasmModuleBuilder.Emit.cs:743` — identical pattern. Both native
+`WasmModuleBuilder.Emit.cs:743` -- identical pattern. Both native
 backends default field index to 0 when RecordType is unavailable.
 
 ---
@@ -87,7 +87,7 @@ Check:
 
 ---
 
-## Defensive Fix (Optional — doesn't fix root cause)
+## Defensive Fix (Optional -- doesn't fix root cause)
 
 Add a warning in `EmitFieldAccess` when type is not RecordType:
 

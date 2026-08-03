@@ -7,7 +7,7 @@ Three days, 88 copy-ups from four agent streams (val, reek, fester, blu).
 
 Codex now has first-class SIMD. `Vector N T` is a type-level construct
 where N is a compile-time lane count and T is a numeric element type.
-The type checker enforces matching widths — `Vector 2 Real` is not
+The type checker enforces matching widths -- `Vector 2 Real` is not
 `Vector 4 Real`, and mixing them is a type error, not a silent bug.
 
 What shipped:
@@ -17,7 +17,7 @@ What shipped:
   element-wise, with SSE2 packed codegen (ADDPD, SUBPD, MULPD, DIVPD)
 - Comparison operators (`<`, `>`, `<=`, `>=`) produce `VectorMask N`
 - `vec-splat`, `vec-extract`, `vec-reduce-add`, `vec-select` builtins
-- Vector operator overloading — `v1 + v2` emits ADDPD directly
+- Vector operator overloading -- `v1 + v2` emits ADDPD directly
 - Bounded integers in vector lanes: `Vector 16 (Integer between 0 and 255)`
   is a valid type with per-lane range guarantees
 
@@ -32,15 +32,15 @@ selects the right lane count per target at compile time.
 `Number` is renamed to `Real` across the entire compiler, all 53 plugs,
 and all tests. The qualifier communicates confidence level:
 
-- `Real` — f64, ~15 significant digits
-- `Real approximate` — f32, ~7 digits (doubles SIMD lane density)
-- `Real guess` — f16, ~3 digits (future, ML inference)
+- `Real` -- f64, ~15 significant digits
+- `Real approximate` -- f32, ~7 digits (doubles SIMD lane density)
+- `Real guess` -- f16, ~3 digits (future, ML inference)
 
 The `~` operator replaces `==` for floating-point comparison:
 
-- `x ~ y` — approximately equal (4 ULP tolerance, covers typical
+- `x ~ y` -- approximately equal (4 ULP tolerance, covers typical
   accumulated rounding)
-- `x ~0 y` — bitwise exact (zero tolerance, for hash keys and
+- `x ~0 y` -- bitwise exact (zero tolerance, for hash keys and
   serialization round-trips)
 
 `==` and `/=` on Real types are now compile errors (CDX2085). The
@@ -51,24 +51,24 @@ choose between "close enough" and "intentionally exact."
 Safety modes compose with precision: `Real trapping` (trap on NaN/Inf),
 `Real saturating` (clamp to +-MAX), `Real checked` (return Result).
 
-## GPU plugs — dual-target compilation
+## GPU plugs -- dual-target compilation
 
 The compiler's plug architecture extends to GPUs. Two new plugs:
 
-- **ptx-plug** — translates device IR to NVIDIA PTX (target: sm_89,
+- **ptx-plug** -- translates device IR to NVIDIA PTX (target: sm_89,
   Ada Lovelace)
-- **spirv-plug** — translates device IR to Vulkan/OpenCL SPIR-V
+- **spirv-plug** -- translates device IR to Vulkan/OpenCL SPIR-V
   (target: Vulkan 1.2+)
 
 Both plugs are built and compiling as standalone CDX binaries (157KB
-and 152KB). They share the same device IR input — the compiler's
+and 152KB). They share the same device IR input -- the compiler's
 type-checker post-pass partitions host and device code, and the
 IRTextEmitter serializes the device-reachable closure to S-expressions
 that the plugs parse and translate.
 
 The dual-target approach means a single Codex source file can produce
 firmware for NVIDIA (via PTX), ARM Mali, Qualcomm Adreno, and Intel
-GPUs (via SPIR-V) — same signed CDX, same trust chain. For IoT edge
+GPUs (via SPIR-V) -- same signed CDX, same trust chain. For IoT edge
 deployments where the GPU vendor varies, SPIR-V reaches hardware that
 PTX cannot.
 
@@ -76,7 +76,7 @@ Design: `docs/Designs/Backends/Active/DualTargetGpuCompilation.md`.
 
 ## Game engine foreword (21 chapters)
 
-New `codex.foreword.engine` quire — a 3D game engine library:
+New `codex.foreword.engine` quire -- a 3D game engine library:
 
 Renderer3D, Scene3D, Material, Texture, Mesh, Skinning, LOD, Culling,
 PostProcess, Audio3D, AudioBus, Input, GameLoop, GameplayTags,
@@ -90,13 +90,13 @@ Each chapter has a smoke test.
 
 ## Punctual foreword (8 chapters)
 
-New `codex.foreword.punctual` quire — a library where every function
+New `codex.foreword.punctual` quire -- a library where every function
 is `punctual` (no heap, no recursion, bounded instruction count):
 
 IntOps, BitOps, Saturate, FastMath, Trig, ColorOps, Kinematic, Endian.
 
 These are the building blocks for real-time code: saturating arithmetic,
-CORDIC trig, byte-swap, color blending, kinematic interpolation — all
+CORDIC trig, byte-swap, color blending, kinematic interpolation -- all
 proven bounded at compile time. Safe for interrupt handlers, sensor
 drivers, and hard real-time control loops.
 
@@ -104,7 +104,7 @@ drivers, and hard real-time control loops.
 
 ARM64 and RISC-V backends now meet or beat GCC -O0 on all four
 micro-benchmarks (fib, fact, gcd, sum). Twenty-four optimization CLs
-from agent reek, all emitter-level — no optimizer pass:
+from agent reek, all emitter-level -- no optimizer pass:
 
 - Destination-driven emission (result goes directly to target register)
 - Selective prologue/epilogue (frameless for leaf functions)
@@ -115,7 +115,7 @@ from agent reek, all emitter-level — no optimizer pass:
 - Mixed TCO (some paths tail-call, others return normally)
 
 On RISC-V, sum beats GCC -O0 by 33%. On ARM64, fact beats GCC by 24%.
-No optimizer — the code generator emits these sequences directly.
+No optimizer -- the code generator emits these sequences directly.
 
 ## Poisoned compact
 
@@ -149,12 +149,12 @@ support.
 
 ## Compiler internals
 
-- **IrRemInt** — remainder via rdx-direct (avoids extra mov)
-- **Compact TCO temps** — temp registers freed before tail calls
-- **Temp-free single-arg** — single-argument functions skip temp alloc
-- **Desugar bivy fix** — fixes a parser/desugar interaction that
+- **IrRemInt** -- remainder via rdx-direct (avoids extra mov)
+- **Compact TCO temps** -- temp registers freed before tail calls
+- **Temp-free single-arg** -- single-argument functions skip temp alloc
+- **Desugar bivy fix** -- fixes a parser/desugar interaction that
   corrupted bivy scratch on certain patterns
-- **LOWER scratch reclamation revert** — CL 3805's LOWER reclamation
+- **LOWER scratch reclamation revert** -- CL 3805's LOWER reclamation
   caused a seed crash (stale pointer after compact); reverted in
   CL 4454, root-caused, documented
 

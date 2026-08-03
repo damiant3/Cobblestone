@@ -1,0 +1,44 @@
+Emitting. json-num carries mantissa and decimal places, so
+the places are part of the value and survive the trip:
+  json-num 2000 3 = 2.000  want 2.000
+  json-num 1500 3 = 1.500  want 1.500
+  json-num 15 1 = 1.5  want 1.5
+  json-num 5 3 = 0.005  want 0.005
+  json-num -5 3 = -0.005  want -0.005
+  json-num -1500 3 = -1.500  want -1.500
+  json-num 7 0 = 7  want 7, no point when there are no places
+  json-int 7 = 7  want 7, the control: an integer is untouched
+
+Parsing, from the RFC grammar. A number whose places cancel
+against its exponent is an integer and is answered as one, so
+a document of plain integers reads exactly as it did before:
+  parse 1.5 = 1.5  want 1.5
+  parse 2.000 = 2.000  want 2.000
+  parse -0.005 = -0.005  want -0.005
+  parse 1e3 = 1000  want 1000
+  parse 1E3 = 1000  want 1000
+  parse 1.5e1 = 15  want 15
+  parse 1.5e-1 = 0.15  want 0.15
+  parse 15e-3 = 0.015  want 0.015
+  parse -7 = -7  want -7, the control
+  parse 0 = 0  want 0, the control
+
+Malformed numbers must be refused, not half-read. Each of these
+is a production the grammar does not admit:
+  1. = refused  want refused, frac needs a digit
+  1e = refused  want refused, exp needs a digit
+  1e+ = refused  want refused, exp needs a digit after the sign
+  .5 = refused  want refused, int is not optional
+  1e99 = refused  want refused, past the bound this chapter states
+
+A number reached through the object accessors. json-get-int on a
+decimal truncates toward zero rather than answering the default,
+because a present numeric field is not a missing one:
+  get-int of 2.7 = 2  want 2
+  get-int of -2.7 = -2  want -2
+  get-int of 5 = 5  want 5, the control
+
+Nesting, so the emitter is exercised through the array and object
+walks and not only at the top level:
+  array = [2.000,4,-1.5]  want [2.000,4,-1.5]
+  object = {"min":0.000,"max":2.000}  want {"min":0.000,"max":2.000}

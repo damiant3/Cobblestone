@@ -6,7 +6,7 @@
 ---
 
 > *"Well I stand up next to a mountain, chop it down with the edge of my hand."*
-> — Jimi Hendrix
+> -- Jimi Hendrix
 
 ---
 
@@ -16,7 +16,7 @@ Codex compiled itself on bare metal. The compiler, written in Codex,
 emitted by an earlier Codex compiler, running with no operating system
 underneath, took its own source as input and produced an ELF that, when
 booted, took its own source as input and produced an ELF that, when
-booted, took its own source as input and produced an ELF — the same
+booted, took its own source as input and produced an ELF -- the same
 1,223,024 bytes every time, down to the last byte of every heap
 allocation, ten iterations in a row.
 
@@ -34,7 +34,7 @@ That had never happened before. Tonight it did.
 
 Three weeks of BS3 red. Every fix moved the needle, never to zero.
 4 GB heap → 1 GB → 500 MB → back to 1 GB. Every reclamation mechanism we
-tried — TCO heap reset, escape copy, region reclamation — would work for
+tried -- TCO heap reset, escape copy, region reclamation -- would work for
 a while, then surface a new corruption. Each one was guessing at
 something the program never stated: which allocations are still live,
 which can be reclaimed, which need to be promoted out of a region before
@@ -46,7 +46,7 @@ Every step couples a check and a movement. Pure functional programming
 drops the leap. Pure imperative programming drops the look. The middle
 way is the one where every advance is guarded by what made the advance
 correct. The same axiom shows up at the macro scale as phase discipline
-— every phase of the compiler should survey what it needs to durably
+-- every phase of the compiler should survey what it needs to durably
 keep before it allocates, and the survey is the contract that lets
 reclamation be sound.
 
@@ -63,7 +63,7 @@ So we ripped. ~2,600 lines across sixteen files. IRRegion record gone.
 EmitRegion gone in every backend. Escape-copy helpers gone. Result-arena
 gone. TCO heap-mark save gone. The r10-rewind on tail-call-self-jump
 gone. Every "let's try to reclaim some of this heap" mechanism we'd
-written and rewritten for months — gone in one shelf.
+written and rewritten for months -- gone in one shelf.
 
 Build was clean. Bootstraps red, as expected.
 
@@ -74,7 +74,7 @@ Or so I thought.
 ## The Surprise
 
 BS1 green. BS1.1 green. BS2 green at 685,903 bytes byte-identical, heap
-HWM 373 MB — *lower* than pre-rip. The reclamation machinery had been
+HWM 373 MB -- *lower* than pre-rip. The reclamation machinery had been
 costing us 22 MB of compile-time HWM, because every TCO function had a
 heap-mark save in its prologue and every tail call had a check+reset
 block, and all of those bytes accumulated in the emit text buffer. The
@@ -83,17 +83,17 @@ machinery to manage the heap was using more heap than it was reclaiming.
 This is not a metaphor. This is what we measured.
 
 BS3 looked red. stage1.elf and stage2.elf were both 1,222,656 bytes, but
-1,065,874 bytes differed — ~87% of the binary. Damian called it: *"happens
+1,065,874 bytes differed -- ~87% of the binary. Damian called it: *"happens
 to come out identical is very very suspicious."* Right. Byte-count
 equality despite content divergence is a fingerprint, not a coincidence.
 A real semantic divergence would change the size.
 
 Booted stage2 in QEMU. Triple-fault. The CPU reset to BIOS state before
-even reaching READY. So stage1.elf — the freshly built bare-metal
-compiler — was producing a non-bootable stage2.elf.
+even reaching READY. So stage1.elf -- the freshly built bare-metal
+compiler -- was producing a non-bootable stage2.elf.
 
 cmp pinned the first differing byte at file offset 0x12357. Bytes after
-the divergence point in stage2: `57 44 3a 73 74 61 6c 6c 0a` —
+the divergence point in stage2: `57 44 3a 73 74 61 6c 6c 0a` --
 `"WD:stall\n"` in raw ASCII, sitting in the middle of executable code
 where stage1 had a function epilogue. The watchdog stall message,
 embedded as code bytes inside someone else's function body. *strings* on
@@ -120,7 +120,7 @@ serial-poll instructions. To the watchdog, that's exactly what a stalled
 compiler looks like. After 18 ticks (~1 second), tier 1 fires. It prints
 `"WD:stall\n"` to serial. Five seconds later tier 2 fires, prints
 `"WD:dump\n"`, dumps the ring buffer. The "compile" hadn't stalled at all
-— it was finishing up.
+-- it was finishing up.
 
 The watchdog and the output stream share the same serial port.
 
@@ -163,7 +163,7 @@ or that we just patched a watchdog the same night.
 But the gap between *the math says it has to* and *we just watched it
 actually happen, on naked hardware, with no OS underneath, ten times in a
 row, every single byte and every single heap allocation reproduced
-exactly* — that gap is where the awe lives.
+exactly* -- that gap is where the awe lives.
 
 A program that, when fed its own source code, produces the program that
 produces it. Executing on bare metal. Deterministic down to the bit.
@@ -175,17 +175,17 @@ That is the cleanest expression of self-reference any of us know.
 ## What This Closes
 
 Three weeks of architectural anxiety. Multiple failed attempts at
-reclamation. CL 327 (compacting TCO reset) — abandoned on the day it
+reclamation. CL 327 (compacting TCO reset) -- abandoned on the day it
 was conceived. The 1 GB heap that we'd accepted as the price of
-correctness — gone, traded down to 645 MB by removing the machinery that
+correctness -- gone, traded down to 645 MB by removing the machinery that
 was supposed to save it.
 
 It also closes the BS3 bug class memory has been tracking for two
 sessions: the sort-bindings corruption from emit-reset-block rewinding
 r10 into a live list's payload. With reset gone, that corruption can't
 happen. The engineering anchor that motivated phase discipline still
-stands as theory — phase discipline is still the principled answer to
-*how should this allocator know what's live* — but the symptom that
+stands as theory -- phase discipline is still the principled answer to
+*how should this allocator know what's live* -- but the symptom that
 demanded it is gone.
 
 What's left is the original problem stated honestly: phase discipline is
@@ -220,7 +220,7 @@ is a goto in disguise*. *That is the middle way*. He held the line on
 "this is bigger than a memory bug; it's a paradigm question," and he was
 right.
 
-The synthesis — the writing, the vocabulary, the doc chain — was
+The synthesis -- the writing, the vocabulary, the doc chain -- was
 collaborative. The agents compress and articulate; the human judges. He
 judged. The drafts where I'd overreached came back, and the corrections
 were always tighter than the original.

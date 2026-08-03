@@ -1,8 +1,8 @@
-# MM3 Memory Optimization Plan — Self-Compile in < 512 MB
+# MM3 Memory Optimization Plan -- Self-Compile in < 512 MB
 
 **Date**: 2026-03-28 (updated 2026-03-28)
 **Author**: Agent Windows
-**Status**: Design — ready for implementation
+**Status**: Design -- ready for implementation
 **Assignee**: Cam (implementation), Agent Windows (review)
 **Depends on**: Region reclamation fix (Cam, assumed done)
 **Branch**: `cam/mm3-memory-opts`
@@ -25,11 +25,11 @@ with `-m 128`.
   Working space grows monotonically.
 - **`list-snoc` is capacity-aware** with 3 paths (O(1) in-place, O(1) heap-top
   grow, O(N) copy-with-doubling). Amortized O(1). **Done.**
-- **`list-insert-at` always copies** — allocates a fresh `[capacity | count | ...]`,
+- **`list-insert-at` always copies** -- allocates a fresh `[capacity | count | ...]`,
   copies before, inserts, copies after. O(N) per call.
 - **Result-space-aware escape-copy exists** (both backends) but is **disabled**
   because region reclamation was corrupting TCO loop pointers.
-- **Cam indicates region reclamation is fixed** — assume the liveness/safety
+- **Cam indicates region reclamation is fixed** -- assume the liveness/safety
   issue is resolved for both x86-64 and RISC-V.
 
 ---
@@ -55,13 +55,13 @@ With the optimizations below we should hit ~5–10x.
 
 ---
 
-## The Kill Chain — Seven Phases
+## The Kill Chain -- Seven Phases
 
 ### Phase 0: Source-Level Scalar Rewrites (Cam, in progress)
 
 **The insight**: Many hot loops in the self-hosted `.codex` source allocate
 heap records on every iteration when only the *final* record matters. Rewriting
-these loops to work with scalar values (Integer — lives in a register, zero
+these loops to work with scalar values (Integer -- lives in a register, zero
 heap allocation) and constructing the record once at the end eliminates the
 allocations entirely. No runtime or backend changes needed.
 
@@ -117,20 +117,20 @@ allocations that never happen.**
 
 - **`process-escapes`** (line 326): builds text with `++` per character. Could
   accumulate into a list of char codes (scalars) and convert once at end.
-- **`escape-text-loop`** (line 4733): same pattern — `list-snoc` per character
+- **`escape-text-loop`** (line 4733): same pattern -- `list-snoc` per character
   building a `List Text` of single-char strings.
 - **Parser `expect`/`skip-newlines` chains**: multiple `advance` calls creating
   intermediate `ParseState` records. Could batch-skip with offset arithmetic.
 
 **Why this is safe**: Pure refactor of `.codex` source. No semantic change. No
-runtime modification. Scalar TCO loop params live in registers — zero heap
+runtime modification. Scalar TCO loop params live in registers -- zero heap
 pressure. The line/column tracking becomes approximate (computed from offset
 delta instead of per-character), which is acceptable since the self-hosted
 compiler doesn't emit source positions in its output.
 
 **Impact**: ~3–6 MB direct savings. More importantly, reduces the *number of
 heap allocations per TCO iteration* which compounds with Phase 2 (TCO heap
-reset) — fewer objects to worry about surviving across iterations.
+reset) -- fewer objects to worry about surviving across iterations.
 
 **Files**: `Codex.Codex/Syntax/Lexer.codex`, `Codex.Codex/Syntax/Parser.codex`,
 and their concatenated form in `_all-source.codex`.
@@ -150,7 +150,7 @@ With the fix:
 The 7-stage pipeline no longer accumulates all stages' garbage. Only live
 inter-stage data persists.
 
-**Estimated heap after Phase 1: ~2–4 GB** (still too much — hot loops within
+**Estimated heap after Phase 1: ~2–4 GB** (still too much -- hot loops within
 stages still accumulate).
 
 **Files**: `X86_64CodeGen.cs` (EmitRegion), `RiscVCodeGen.cs` (EmitRegion).
@@ -162,7 +162,7 @@ stages still accumulate).
 **The problem**: TCO loops (`tokenize-loop`, `parse-binary-loop`, every `*-loop`
 function) run inside a single function body. Region reclamation only fires at
 `let` boundaries. A TCO loop that runs 15,000 iterations with `list-snoc`
-allocates inside a *single region body* — the region never closes until the
+allocates inside a *single region body* -- the region never closes until the
 function returns.
 
 **The fix**: At the top of every TCO loop iteration, after evaluating tail-call
@@ -180,11 +180,11 @@ TCO loop top:
 
 **Why this is safe**: TCO param values are in *stack slots*, not heap. Heap
 objects they *point to* are either:
-1. Accumulator lists — `list-snoc` with capacity extends in-place (Path 1/2).
+1. Accumulator lists -- `list-snoc` with capacity extends in-place (Path 1/2).
    The list pointer doesn't move. The list's backing memory is below the mark
    (allocated before the function entered TCO), or the list was the most recent
    allocation and sits at heap top.
-2. Records from the current iteration's arg evaluation — these were just
+2. Records from the current iteration's arg evaluation -- these were just
    evaluated above and are referenced by stack-slot pointers.
 
 **Problem case**: A TCO arg that is a *newly allocated record* gets reclaimed
@@ -204,14 +204,14 @@ This reclaims per-arg temporaries while preserving the arg values themselves
 in result space.
 
 **Simpler alternative**: If the arg is a scalar (Integer, Boolean, Char), skip
-escape-copy — it's in a register. Only heap-typed args need the mini-region.
+escape-copy -- it's in a register. Only heap-typed args need the mini-region.
 Most TCO loops pass scalars (indices, counters) and one accumulator list. The
 list is extended in-place by `list-snoc` and doesn't need escape-copy either
 (its pointer doesn't change). Check: is the arg a `list-snoc` call? If so,
-the returned pointer equals the input pointer — no escape needed.
+the returned pointer equals the input pointer -- no escape needed.
 
 **Impact**: Tokenize-loop drops from O(N) heap per iteration to O(1). Parse
-loops, type-check loops, all `fold-list` loops — same.
+loops, type-check loops, all `fold-list` loops -- same.
 
 **Estimated heap after Phase 2: ~200–500 MB.**
 
@@ -288,12 +288,12 @@ left operand is at heap top and has spare capacity, `memcpy` the right operand
 into the spare space and bump length.
 
 This makes `a & b` amortized O(|b|) instead of O(|a|+|b|) when `a` is at
-heap top — the same trick as `list-snoc` Path 1/2.
+heap top -- the same trick as `list-snoc` Path 1/2.
 
 **Alternative (no runtime change)**: Add `text-builder-new`,
 `text-builder-append`, `text-builder-to-text` builtins. The self-hosted emitter
 would need rewriting to use them. More work, same effect. Prefer the runtime
-fix — it's invisible to the Codex language.
+fix -- it's invisible to the Codex language.
 
 **Impact**: Emitter stage drops from ~50 MB to ~2 MB.
 
@@ -310,7 +310,7 @@ word at `[-8]`, matching the list layout.
 **The problem**: After tokenization completes, the `LexState` intermediates are
 dead, but the token list must survive for parsing. After parsing, the CST is
 dead. After desugaring, the concrete `Document` is dead. Each pipeline stage's
-*input* is dead after the stage completes — but it's in *result space*, which
+*input* is dead after the stage completes -- but it's in *result space*, which
 is never reclaimed.
 
 **The fix**: Ping-pong between two result spaces. After Stage N's result is
@@ -327,11 +327,11 @@ HeapReg = working_space_base      // reset working space
 ```
 
 **Complexity**: Higher than Phases 1–4. Requires an extra dedicated register
-(tight on x86-64 — only 4 callee-saved locals remain). May need to use a
+(tight on x86-64 -- only 4 callee-saved locals remain). May need to use a
 global memory location instead of a register.
 
 **Defer**: Only implement if Phases 1–4 don't bring us under 512 MB. The
-`compile` function in `_all-source.codex` has 7 nested `let`s — if region
+`compile` function in `_all-source.codex` has 7 nested `let`s -- if region
 reclamation works at those boundaries, each stage's working garbage is already
 reclaimed. The *result-space* accumulation is only ~15 MB total (the live data
 table above). It may not matter.
@@ -381,12 +381,12 @@ Quick wins, no algorithmic changes:
 | 5 | Dead-stage reclamation (ping-pong) | 2x | ~30–50 MB |
 | 6 | Capacity tuning | ~1.3x | ~25–40 MB |
 
-**Phase 0 is safe to land immediately** — pure source refactor, no backend
+**Phase 0 is safe to land immediately** -- pure source refactor, no backend
 risk, compounds with every subsequent phase. **Phases 1–3 are critical path.**
 Phases 4–6 are polish to get comfortably under 64 MB
 for bare-metal QEMU with `-m 128`.
 
-**Implementation order**: Phase 0 (Cam, in progress — safe to land immediately) →
+**Implementation order**: Phase 0 (Cam, in progress -- safe to land immediately) →
 Phase 1 (prereq: Cam's region reclamation fix) → Phase 3 (independent,
 pure runtime change) → Phase 2 (depends on understanding TCO arg liveness) →
 Phase 4 → Phase 6 → Phase 5 (only if needed).
@@ -422,9 +422,9 @@ lines) produces valid C# output with peak heap < 512 MB (user mode) and
 |------|-----------|
 | TCO heap reset reclaims a live record arg | Mini-region escape-copy per arg (Phase 2 detailed design) |
 | In-place `list-insert-at` shift corrupts during self-referential insert | The Codex compiler never inserts into a list that references itself; sorted-list invariant guarantees single-owner |
-| Text capacity word breaks existing text layout assumptions | Audit all `__text_*` helpers for offset assumptions; text length is at `[ptr+0]`, bytes at `[ptr+8]` — capacity at `[ptr-8]` is invisible to readers |
+| Text capacity word breaks existing text layout assumptions | Audit all `__text_*` helpers for offset assumptions; text length is at `[ptr+0]`, bytes at `[ptr+8]` -- capacity at `[ptr-8]` is invisible to readers |
 | Result-space ping-pong needs a third register (Phase 5) | Use a global memory location instead of a register; or defer Phase 5 entirely |
-| Geometric doubling wastes ~50% capacity on average | Acceptable — 1.5x growth factor is an option if 2x wastes too much |
+| Geometric doubling wastes ~50% capacity on average | Acceptable -- 1.5x growth factor is an option if 2x wastes too much |
 
 ---
 
@@ -432,7 +432,7 @@ lines) produces valid C# output with peak heap < 512 MB (user mode) and
 
 This plan takes the self-hosted compiler from "compiles small programs on bare
 metal" (MM2) to "compiles *itself* on bare metal" (MM3). The memory
-optimizations are not throwaway — they become the permanent allocator strategy
+optimizations are not throwaway -- they become the permanent allocator strategy
 for Codex.OS Ring 4 and above. Every Codex program benefits from capacity-aware
 lists, in-place insert, and region reclamation.
 

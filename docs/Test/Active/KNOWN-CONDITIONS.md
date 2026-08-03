@@ -2,7 +2,7 @@
 
 **Live conditions only.** This file exists to stop agents
 re-investigating things that are already understood. It records what is
-*currently true and surprising* — not history.
+*currently true and surprising* -- not history.
 
 Three rules for this file:
 
@@ -23,18 +23,18 @@ Last full audit: 2026-07-13.
 
 ## Apps
 
-### CVMM "type checker bug" (2026-06-22) — it was never a compiler bug
+### CVMM "type checker bug" (2026-06-22) -- it was never a compiler bug
 
 App builds are two-stage: the app's own `build.ps1` bundles chapters,
 then `build/compile.ps1` **re-resolves all `cites` and silently prepends
 anything the bundle missed**. If the bundle's chapter list is
 incomplete, the compiler sees a LARGER source than the bundle file on
-disk — so errors reference "phantom" code and look exactly like
+disk -- so errors reference "phantom" code and look exactly like
 type-environment corruption.
 
 It is a build-list gap, not corruption. The 14 original errors were
 genuine type errors in silently-prepended chapters. `compile.ps1` prints
-the extra chapters it prepends — **read that output before suspecting
+the extra chapters it prepends -- **read that output before suspecting
 the type checker.** The sort/bsearch/text-compare machinery was audited
 and is correct.
 
@@ -53,7 +53,7 @@ read as its decremented value); `probe 5 (-2)` answers `-2` where the
 correct value is `-7`. Reproduces on the depot seed (the tree is what
 compiles it there).
 
-**Scope is narrow, and shrinking — this is why the note is here and not
+**Scope is narrow, and shrinking -- this is why the note is here and not
 filed as work.**
 
 - The tree's **general multi-arg TCO path is correct.** A 7-parameter
@@ -82,17 +82,17 @@ correct) is possible -- mirror the selector's `@8449` ordering in the
 tree TCO -- but it is low value while the selector covers the reachable
 cases, and may never be worth doing.
 
-### `ConOut->ClearScreen` and the Asus/Dell UEFI heap corruption — cause UNIDENTIFIED
+### `ConOut->ClearScreen` and the Asus/Dell UEFI heap corruption -- cause UNIDENTIFIED
 
 CL 1223 removed `uefi-clear-screen` from the dev-console redraw path
 after observing heap corruption on Asus/Dell UEFI boards.
 
-The standing suspect — the heap base pointer at `0x7580` — is
+The standing suspect -- the heap base pointer at `0x7580` -- is
 **EXONERATED (2026-07-15)**. `uefi-heap-base-addr` (30080 = `0x7580`) was
 read in exactly one place, `emit-uefi-start`, which had **no caller
 anywhere** in the tree, and was **written nowhere**. The live UEFI stub
 (`build/cdx-to-pe.ps1`) sets R10 = `0x1000000` directly, stores it to
-`deck-pos` / `heap-hwm`, and calls `opening` directly — it never enters
+`deck-pos` / `heap-hwm`, and calls `opening` directly -- it never enters
 `__start` and never touches `0x7580`. The prior "STILL LIVE" note had only
 re-checked that the constant still equalled 30080, not that any live path
 read it. The dead `emit-uefi-start` and the `uefi-heap-base-addr` constant
@@ -101,32 +101,32 @@ have been deleted.
 So `0x7580` cannot be the cause, and **the actual corruption cause on
 those boards is unidentified.** The EDK2 reference
 `GraphicsConsoleConOutClearScreen` touches only the framebuffer and
-protocol-internal cursor state — no heap writes — and R10 is saved across
+protocol-internal cursor state -- no heap writes -- and R10 is saved across
 the call by `uefi-call-conout` (`X86_64Helpers.codex:607`), so neither
 ClearScreen nor R10-clobber is an obvious culprit either.
 
 **What to do:** default to row-fill (`uefi-con-fill-row` +
-`uefi-con-blank-rows`) for screen clearing — it is safe regardless of the
+`uefi-con-blank-rows`) for screen clearing -- it is safe regardless of the
 unknown cause. Do not reintroduce ClearScreen without a clean repro probe
 (allocate, pattern-fill, ClearScreen, verify the pattern survives) on the
 suspect hardware. The corruption cause is open work, untracked,
 reproducible only on OVMF or the suspect hardware. The UEFI boot surface
 is fester's arena (`BootRoadmap.md`).
 
-## Type System — linearity / mutable-aliasing checker
+## Type System -- linearity / mutable-aliasing checker
 
 The checker in `Types/TypeChecker.codex` (`lin-of` for `linear`,
 `consume-of` for `mutable`) is sound for current code. What follows is
 one deliberate design constraint that **must be preserved**, and one
 accepted imprecision.
 
-### The field walk stays sum/list-blind — do not "fix" it
+### The field walk stays sum/list-blind -- do not "fix" it
 
 `apply-threads` decides a call consumes its bare mutable argument by
 asking whether the callee's return type hands the record onward.
-`return-mentions-mut` recurses through *parametric* structure —
+`return-mentions-mut` recurses through *parametric* structure --
 `ListTy`/`LinkedListTy` elements and a `SumTy`'s instantiated type
-arguments — and delegates named types to `type-mentions-mut`, the
+arguments -- and delegates named types to `type-mentions-mut`, the
 record-FIELD walk. So `-> List MutRec`, `-> Maybe MutRec`, and
 `-> (T, MutRec)` all count as consumption. Pinned by
 `errors/mutable-launder-{sum,tuple,list}-return`.
@@ -134,21 +134,21 @@ record-FIELD walk. So `-> List MutRec`, `-> Maybe MutRec`, and
 **Do NOT add `SumTy` ctor-payload or `ListTy` arms to
 `type-mentions-mut` itself.** This was tried in CL 2710 and reverted. A
 return type like `Token`, whose field chain reaches the mutable record
-only through a list or sum field, merely *reads* the state — completing
+only through a list or sum field, merely *reads* the state -- completing
 that transitive chain rejects legitimate borrow-twice callers
 (`make-token`'s shape). The split is structural:
 
 - parametric wrapping at return position = **threading** (consumption)
 - nominal field chains through sum/list boundaries = **borrowing**
 
-Pinned by `codex/test/mut-borrow-transitive.codex` — a positive battery
+Pinned by `codex/test/mut-borrow-transitive.codex` -- a positive battery
 test that CL 2710's approach would reject. If you are about to "complete
 the transitive chain," that test is why you should not.
 
 ### Remaining accepted imprecision
 
 A callee that returns a *fresh* wrapped record while only borrowing its
-argument is still counted as threading — type-level analysis cannot see
+argument is still counted as threading -- type-level analysis cannot see
 the body. This is the same imprecision the direct-return `CheckResult`
 pattern has always had, and no current code trips it.
 

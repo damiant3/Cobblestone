@@ -1,0 +1,57 @@
+Chapter: IntMinLiteral
+
+ A 64-bit immediate in the band i64-min..i64-min+254 was emitted as the
+ wrong constant, with no diagnostic.
+
+ `#8000000000000000` evaluated to 9223372036854775552, which is
+ `0x7FFFFFFFFFFFFF00`. The front end was never at fault: lit-text-to-integer
+ computes the value correctly, and the IR dump for such a definition reads
+ `(int-lit i64-min)`. The loss happened one leaf function deep in the
+ encoder. `write-bytes` extracts the eight little-endian bytes of an
+ immediate through `floor-div`, which biased the dividend before dividing:
+
+   if n >= 0 then n / d else (n - d + 1) / d
+
+ For n = i64-min and d = 256 the subexpression `n - d + 1` underflows and
+ wraps positive. The low byte still comes out right, because i64-min is
+ divisible by 256; the quotient does not, so the remaining seven bytes are
+ FF FF FF FF FF FF 7F. Reconstructing that little-endian gives exactly
+ 0x7FFFFFFFFFFFFF00, which is how the diagnosis was confirmed before the
+ fix was written rather than after.
+
+ The band ends where the underflow does. i64-min+255 subtracts to exactly
+ i64-min and is representable, so it was always correct, and so was
+ i64-min+256. Both are included here: a test that only covered the broken
+ values would not have shown that the boundary is where the arithmetic says
+ it is.
+
+ The last three lines are the same defect seen through IEEE-754. The bit
+ pattern of negative zero IS i64-min, so `bits-to-real` of that literal was
+ handed a different double entirely, and every ordering answer about
+ negative zero was an answer about some other number. That is what makes
+ this worth a test rather than a curiosity: the wrong value is silent, and
+ it reaches float code through the one pattern floats care about.
+
+Section: Boundary
+
+  b2i : Boolean -> Integer
+  b2i (x) = if x then 1 else 0
+
+Section: Report
+
+  opening : [Console] Nothing
+  opening = act
+    print-line-uni ("min       want -9223372036854775808 got " & show #8000000000000000)
+    print-line-uni ("min+1     want -9223372036854775807 got " & show #8000000000000001)
+    print-line-uni ("min+254   want -9223372036854775554 got " & show #80000000000000FE)
+    print-line-uni ("min+255   want -9223372036854775553 got " & show #80000000000000FF)
+    print-line-uni ("min+256   want -9223372036854775552 got " & show #8000000000000100)
+    print-line-uni ("max       want 9223372036854775807 got " & show #7FFFFFFFFFFFFFFF)
+    print-line-uni ("allf      want -1 got " & show #FFFFFFFFFFFFFFFF)
+    print-line-uni ("c000      want -4611686018427387904 got " & show #C000000000000000)
+    print-line-uni ("minusinf  want -4503599627370496 got " & show #FFF0000000000000)
+    print-line-uni ("shl63     want 1 got " & show (b2i (#8000000000000000 == bit-shl 1 63)))
+    print-line-uni ("negzero   want 1 got " & show (b2i (real-to-bits (bits-to-real #8000000000000000) == bit-shl 1 63)))
+    print-line-uni ("negzero>= want 1 got " & show (b2i (bits-to-real #8000000000000000 >= 0.0)))
+    print-line-uni ("negzero<= want 1 got " & show (b2i (bits-to-real #8000000000000000 <= 0.0)))
+  end

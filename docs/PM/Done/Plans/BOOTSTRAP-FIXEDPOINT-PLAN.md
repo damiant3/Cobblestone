@@ -16,7 +16,7 @@ Everything you need is in this document.
 A previous agent wasted its entire context window fixing syntax errors.
 **Read this section first.** Codex is NOT C#, NOT Haskell, NOT ML.
 
-### Operators — THE #1 MISTAKE
+### Operators -- THE #1 MISTAKE
 
 | What you want | Codex syntax | NOT this |
 |--------------|-------------|----------|
@@ -66,7 +66,7 @@ When emitting C# code that contains `&&`, `||`, etc., those appear inside
 **string literals** (inside `"..."`) and are fine. The operator restriction
 only applies to Codex-level boolean logic.
 
-Example — this is CORRECT:
+Example -- this is CORRECT:
 ```
 "(" ++ emit-expr a ++ ".Length > 0 && char.IsLetter(" ++ emit-expr a ++ "[0]))"
 ```
@@ -192,7 +192,7 @@ MUST fix the operator syntax when transcribing. Do NOT copy it verbatim.
 
 ---
 
-## Phase 1: Parser — Right-associative operators
+## Phase 1: Parser -- Right-associative operators
 
 **File:** `Codex.Codex/Syntax/Parser.codex`
 
@@ -235,7 +235,7 @@ The `op` variable is already bound as `let op = current st` on the line above.
 **Problem:** `emit-def` emits `=> expr;` (expression-bodied). The reference
 emitter emits `{ return expr; }` (block body).
 
-**Change `emit-def`** — replace the string that ends with:
+**Change `emit-def`** -- replace the string that ends with:
 ```
 ++ ") => " ++ emit-expr d.body ++ ";\n"
 ```
@@ -280,7 +280,7 @@ a `List ArityEntry` parameter so they can look up definition arities.
 4. **Add `emit-argument`** that wraps function-typed names in
    `new Func<T,R>(name)` (matching reference `EmitArgument`).
 
-5. **Record emission** — drop field names, use positional args.
+5. **Record emission** -- drop field names, use positional args.
 
 ### WATCH OUT for `&`
 
@@ -301,7 +301,7 @@ Similarly, multi-arg builtin checks use `&`:
 ### Reference
 
 See `CSharpEmitter.codex.new` lines 85–391 for the full implementation.
-The logic is correct — just fix `&&` → `&` on lines 112, 309, 311, 313,
+The logic is correct -- just fix `&&` → `&` on lines 112, 309, 311, 313,
 315, 330, 332.
 
 ---
@@ -393,7 +393,7 @@ The logic is correct.
     is-self-call : IRExpr -> Text -> Boolean
 ```
 
-WATCH OUT — `expr-has-tail-call` uses `|` (not `||`):
+WATCH OUT -- `expr-has-tail-call` uses `|` (not `||`):
 ```
     expr-has-tail-call (e) (name) =
       when e
@@ -480,9 +480,9 @@ Output: `FC: no differences encountered`
 - Do NOT modify `docs/00-OVERVIEW.md` through `docs/10-PRINCIPLES.md`
 - Do NOT read `BOOTSTRAP-STATUS.md`, `HANDOFF-*.md`, `M13-*.md`, `FORWARD-PLAN.md`
 - Do NOT attempt multiple phases without verifying between each one
-- Do NOT use `&&` or `||` as Codex operators — use `&` and `|`
+- Do NOT use `&&` or `||` as Codex operators -- use `&` and `|`
 - Do NOT delete the `Chapter:` line at the top of any `.codex` file
-- Do NOT attempt to write the entire CSharpEmitter.codex from scratch —
+- Do NOT attempt to write the entire CSharpEmitter.codex from scratch --
   edit the existing file incrementally, phase by phase
 - Clean up `CSharpEmitter.codex.bak` and `CSharpEmitter.codex.new` when done
 
@@ -491,16 +491,16 @@ Output: `FC: no differences encountered`
 1. Removed duplicate is-upper-char from CSharpEmitter.codex
 The function was defined in both NameResolver.codex and CSharpEmitter.codex. Since all .codex files in Codex.Codex compile as a single module, this caused a CDX3001: Duplicate definition error. Removed lines 109-112 from CSharpEmitter.codex; the usage in is-ctor-name resolves to the NameResolver.codex copy.
 2. Added FileName to SourceSpan (diagnostic improvement)
-src/Codex.Core/SourceText.cs — SourceSpan now has a required FileName parameter (no default). ToString() includes the file name when non-empty. Through() preserves the file name.
-src/Codex.Syntax/Lexer.cs — Stores m_fileName from SourceText, threads it through MakeSpan and SourceSpan.Single calls.
-src/Codex.Syntax/ProseParser.cs — MakeSpan passes m_source.FileName.
-tools/Codex.Cli/Program.Compile.cs, Program.Incremental.cs — Fallback spans use "<combined>".
-tests/Codex.Core.Tests/CoreTests.cs — Updated test to pass "test.codex".
+src/Codex.Core/SourceText.cs -- SourceSpan now has a required FileName parameter (no default). ToString() includes the file name when non-empty. Through() preserves the file name.
+src/Codex.Syntax/Lexer.cs -- Stores m_fileName from SourceText, threads it through MakeSpan and SourceSpan.Single calls.
+src/Codex.Syntax/ProseParser.cs -- MakeSpan passes m_source.FileName.
+tools/Codex.Cli/Program.Compile.cs, Program.Incremental.cs -- Fallback spans use "<combined>".
+tests/Codex.Core.Tests/CoreTests.cs -- Updated test to pass "test.codex".
 3. Fixed the actual parser bug in Parser.Expressions.cs
-src/Codex.Syntax/Parser.Expressions.cs — ParseAtom now consumes .field chains after parenthesized expressions, just like it already did for identifiers. Without this, (list-at branches i).body was parsed as a field access on the outer function application instead of on the parenthesized sub-expression, causing the type checker to see IRBranch where IRExpr was expected.
+src/Codex.Syntax/Parser.Expressions.cs -- ParseAtom now consumes .field chains after parenthesized expressions, just like it already did for identifiers. Without this, (list-at branches i).body was parsed as a field access on the outer function application instead of on the parenthesized sub-expression, causing the type checker to see IRBranch where IRExpr was expected.
 Verification
-•	✅ dotnet build Codex.sln — 0 errors (excluding pre-existing Codex.Codex.csproj entry point issue)
-•	✅ dotnet test Codex.sln — 689 tests pass
-•	✅ codex build Codex.Codex — produces Codex.Codex/out/Codex.Codex.cs with no errors
+•	✅ dotnet build Codex.sln -- 0 errors (excluding pre-existing Codex.Codex.csproj entry point issue)
+•	✅ dotnet test Codex.sln -- 689 tests pass
+•	✅ codex build Codex.Codex -- produces Codex.Codex/out/Codex.Codex.cs with no errors
 •	✅ Stage 1 generated via Codex.Bootstrap
 •	The remaining Stage 0 vs Stage 1 differences are the expected bootstrap fixedpoint gaps (phases 2-7 in the plan)

@@ -10,4 +10,83 @@ Section: Definitions
   effect Random where
     random-integer : Integer, Integer -> [Random] Integer
 
+Section: Deterministic Mixing
+
+ This chapter declared the effect and supplied no way to compute anything, so
+ every chapter that wanted pseudo-randomness wrote its own mixer in place.
+ Measured 2026-07-25, ten of them, and all the same shape: a multiply by an
+ odd constant, sometimes an add, sometimes an xor of two such products.
+
+ Multiplication and addition carry entropy UPWARD only. Bit i of a product
+ depends on bits 0..i of its inputs and on nothing above them, so the low bits
+ of every one of those mixers are a function of the low bits of the inputs.
+ Any caller that then takes a remainder by a small range, or masks off low
+ bits, gets structure rather than noise.
+
+ The GA's was the measured case. ga-rand-range at range 2 reduced to
+ lowbit(seed) XOR lowbit(idx), so ga-random-population produced thirty
+ chromosomes with an identical alternating gene pattern and identical fitness.
+
+ The failure is invisible to the obvious test. Over 256 consecutive indices
+ the old mixer's low bit is 128 ones out of 256 -- perfectly balanced -- and
+ 255 alternations out of 255, which is the comb 0101... and carries no
+ information at all. Only a serial-correlation check can see it; a balance
+ check certifies it.
+
+ mix-bits is the standard remedy: multiply to spread, then xor-shift the high
+ bits back down so the low ones inherit them. Same construction as the
+ SplitMix64 finalizer. Deterministic and pure, which is what a seeded
+ simulation, a hash table and a reproducible test all need. True entropy is a
+ different problem and belongs to the Random EFFECT above, not here.
+
+ THE MISSING FOLD IS ONLY A DEFECT WHERE THE CONSUMER READS LOW BITS, and
+ that qualification is worth more than the rule it qualifies. Measure the
+ consumer, never the mixer.
+
+ A remainder by a power of two, or a bit-and against a mask, reads the low
+ bits and nothing else, so an unfolded mixer is degenerate there. A small
+ modulus is nearly as bad. But a remainder by a large non-power-of-two
+ samples the whole word and pulls the high bits back in by itself, and an
+ unfolded mixer can be perfectly adequate.
+
+ Measured 2026-07-25, same unfolded shape, opposite verdicts:
+
+   CountMinSketch  mod 64 (a power of two)   24 of 40 keys overestimated
+   Reservoir       mod n, n small            item counts 12 against 78
+   CardDeck        mod (i+1), i descending   a two-card deck striped 255/255
+   Steering        mod 6283                  bins 26 33 32 31 31 32 33 38
+   ImageTensor     / 2147484                 bins 31 32 30 31 25 42 31 34
+
+ The last two are FINE and were both recorded as broken on the strength of
+ their expressions before anyone ran them. Steering's modulus is not a power
+ of two, so the remainder samples the whole word. ImageTensor's
+ `bit-and raw 2147483647` is the LCG's MODULUS rather than its output
+ extraction -- the output is `next / 2147484`, which reads the high bits, and
+ an LCG's high bits are its good ones.
+
+ Four chapters were graded broken by reading them. Two of the four were
+ wrong. Reading a mixer and grading it is a guess; running the consumer and
+ counting is the answer, and the guess was wrong half the time.
+
+  mix-bits : Integer, Integer -> Integer
+  mix-bits (seed) (idx) =
+    let z = seed * 2654435769 + idx * 1442695040888963407
+    in let a = bit-xor z (bit-shru z 30)
+    in let b = a * 6364136223846793005
+    in let c = bit-xor b (bit-shru b 27)
+    in let d = c * 1442695040888963407
+    in bit-xor d (bit-shru d 31)
+
+ rand-in-range answers a value in [lo, hi] inclusive. The absolute value is
+ taken after mixing, not before, because it is the mixed bits that need to be
+ uniform.
+
+  rand-in-range : Integer, Integer, Integer, Integer -> Integer
+  rand-in-range (seed) (idx) (lo) (hi) =
+    let h = mix-bits seed idx
+    in let positive = if h < 0 then -h else h
+    in let range = hi - lo + 1
+    in if range <= 0 then lo
+    else lo + (positive - (positive / range) * range)
+
 Page 1

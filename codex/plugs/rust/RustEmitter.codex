@@ -31,10 +31,7 @@ Section: Type Mapping
   rs-type (ty) =
    when ty
     is IntegerTy (lo) (hi) (mode) -> "i64"
-    is RealTy -> "f64"
-    is RealApproxTy -> "f64"
-    is RealTrappingTy -> "f64"
-    is RealSaturatingTy -> "f64"
+    is RealTy (w) (m) -> "f64"
     is TextTy -> "String"
     is BooleanTy -> "bool"
     is CharTy -> "i64"
@@ -369,6 +366,17 @@ Section: Builtin Dispatch
   sort-rs-emitters : List RsBuiltinEmitter -> List RsBuiltinEmitter
   sort-rs-emitters (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
 
+ The character predicates test CCE BANDS and must never be handed to
+ `char::is_alphabetic` or its siblings. Codex text is CCE, which numbers
+ its code points by frequency: the letter a is 15, and `char::from_u32(15)`
+ is a control character, so the predicate answers False. The bands are
+ 1..2 whitespace, 3..12 digit, and 13..64 or 97..127 letter, the hole
+ being CCE's punctuation at 65..96.
+
+ `matches!` is used rather than a chain of comparisons because it names
+ the operand once, which keeps the two-band letter test from evaluating
+ its argument twice.
+
   rs-builtin-emitters : List RsBuiltinEmitter = sort-rs-emitters [
    RsBuiltinEmitter { name = "show", emit = \args arities cm -> "format!(\"{}\", " & emit-rs-expr (list-at args 0) arities cm & ")" },
    RsBuiltinEmitter { name = "negate", emit = \args arities cm -> "(-" & emit-rs-expr (list-at args 0) arities cm & ")" },
@@ -379,9 +387,9 @@ Section: Builtin Dispatch
    RsBuiltinEmitter { name = "print-error-uni", emit = \args arities cm -> "eprintln!(\"{}\", " & emit-rs-expr (list-at args 0) arities cm & ")" },
    RsBuiltinEmitter { name = "fail", emit = \args arities cm -> "panic!(\"{}\", " & emit-rs-expr (list-at args 0) arities cm & ")" },
    RsBuiltinEmitter { name = "text-length", emit = \args arities cm -> emit-rs-expr (list-at args 0) arities cm & ".len() as i64" },
-   RsBuiltinEmitter { name = "is-letter", emit = \args arities cm -> "char::from_u32(" & emit-rs-expr (list-at args 0) arities cm & " as u32).unwrap().is_alphabetic()" },
-   RsBuiltinEmitter { name = "is-digit", emit = \args arities cm -> "char::from_u32(" & emit-rs-expr (list-at args 0) arities cm & " as u32).unwrap().is_ascii_digit()" },
-   RsBuiltinEmitter { name = "is-whitespace", emit = \args arities cm -> "char::from_u32(" & emit-rs-expr (list-at args 0) arities cm & " as u32).unwrap().is_whitespace()" },
+   RsBuiltinEmitter { name = "is-letter", emit = \args arities cm -> "matches!(" & emit-rs-expr (list-at args 0) arities cm & ", 13..=64 | 97..=127)" },
+   RsBuiltinEmitter { name = "is-digit", emit = \args arities cm -> "matches!(" & emit-rs-expr (list-at args 0) arities cm & ", 3..=12)" },
+   RsBuiltinEmitter { name = "is-whitespace", emit = \args arities cm -> "matches!(" & emit-rs-expr (list-at args 0) arities cm & ", 1..=2)" },
    RsBuiltinEmitter { name = "text-to-integer", emit = \args arities cm -> emit-rs-expr (list-at args 0) arities cm & ".parse::<i64>().unwrap()" },
    RsBuiltinEmitter { name = "integer-to-text", emit = \args arities cm -> emit-rs-expr (list-at args 0) arities cm & ".to_string()" },
    RsBuiltinEmitter { name = "char-code", emit = \args arities cm -> emit-rs-expr (list-at args 0) arities cm },

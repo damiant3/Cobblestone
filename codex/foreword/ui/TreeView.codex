@@ -1,6 +1,7 @@
 Chapter: TreeView
   cites UI chapter Widget
   cites UI chapter Layout
+  cites UI chapter KeyInput
 
  Hierarchical tree view with expand/collapse semantics. Each node
  carries an id, label, icon, children, and expanded/selected state.
@@ -85,6 +86,16 @@ Section: Tree View State
     in tv-set-depths-loop nodes d (i + 1) n (list-push acc updated)
 
 Section: Actions
+
+ Everything in this section threads one owner: the state handed in is the
+ state handed back, with the nodes inside it written through. Measured
+ 2026-07-27 rather than assumed -- opening a branch and reading the tree
+ that was passed in shows it opened. That is the `__record-set` concession
+ the developer's guide describes, and it is sound here because a single
+ owner is threaded linearly through the value. Building is the exception:
+ `tree-view-new` writes fresh nodes through the constructor, so a tree
+ built from shared node lists is not entangled with them. A caller that
+ wants a before and an after must build twice.
 
   tree-view-toggle : TreeViewState, Text -> TreeViewState
   tree-view-toggle (tv) (target-id) =
@@ -185,19 +196,33 @@ Section: Keyboard Navigation
     else let prev-node = list-at visible prev
     in __record-set tv "tv-focused-id" (prev-node.tn-id)
 
+ Not found answers -1 rather than 0. A fresh tree has no focused id, so
+ the search misses, and answering 0 made moving down compute one past the
+ first row: the first Down keypress landed on the SECOND node and the
+ first was unreachable from the keyboard, because moving up from no focus
+ does nothing. With -1 the same arithmetic lands on the first node, and
+ moving up from no focus still does nothing.
+
   tv-find-focused-idx : List TreeNode, Text, Integer, Integer -> Integer
   tv-find-focused-idx (nodes) (target) (i) (n) =
-    if i >= n then 0
+    if i >= n then 0 - 1
     else if (list-at nodes i).tn-id == target then i
     else tv-find-focused-idx nodes target (i + 1) n
 
+ A key is what `UI chapter KeyInput` says it is: a character is its CCE
+ code point and a named key is a constant at or above `key-named-base`.
+ These arms used to test 38, 40, 39, 37 and 13, which are Windows virtual
+ key codes and, read as CCE, are ordinary letters. Under the contract the
+ quire actually publishes every arrow and Enter fell through to the final
+ `else` and the tree could not be driven at all.
+
   tree-view-handle-key : TreeViewState, Integer -> TreeViewState
   tree-view-handle-key (tv) (key) =
-    if key == 38 then tree-view-nav-up tv
-    else if key == 40 then tree-view-nav-down tv
-    else if key == 39 then tree-view-toggle tv (tv.tv-focused-id)
-    else if key == 37 then tv-collapse-or-parent tv
-    else if key == 13 then tree-view-select tv (tv.tv-focused-id)
+    if key == key-up then tree-view-nav-up tv
+    else if key == key-down then tree-view-nav-down tv
+    else if key == key-right then tree-view-toggle tv (tv.tv-focused-id)
+    else if key == key-left then tv-collapse-or-parent tv
+    else if key == key-enter then tree-view-select tv (tv.tv-focused-id)
     else tv
 
   tv-collapse-or-parent : TreeViewState -> TreeViewState
@@ -215,10 +240,22 @@ Section: Keyboard Navigation
     in if node.tn-id == target then node
     else tv-find-node-by-id nodes target (i + 1) n
 
+ The bounds check is deliberate and it does not change any answer today,
+ which is worth stating rather than leaving for someone to discover and
+ delete. Removing it moves no line of `codex/test/tree-view-nav`, because
+ `tv-find-parent` below refuses a `from` of -1 on its own and hands back
+ the state anyway. What it stops is the read on the way there: `list-at`
+ at index -1 fetches the word below element zero, which is the list's own
+ capacity cell, and the walk would then take `tn-depth` of whatever that
+ integer points at. The answer survives by accident; the read does not
+ deserve to happen. The other door into this walk cannot reach a -1 at all,
+ because a node that was not found carries depth zero and is refused above.
+
   tv-go-parent : TreeViewState, List TreeNode -> TreeViewState
   tv-go-parent (tv) (visible) =
     let cur-idx = tv-find-focused-idx visible (tv.tv-focused-id) 0 (list-length visible)
-    in let cur-depth = (list-at visible cur-idx).tn-depth
+    in if cur-idx < 0 then tv
+    else let cur-depth = (list-at visible cur-idx).tn-depth
     in let parent-idx = tv-find-parent visible cur-idx (cur-depth - 1)
     in if parent-idx < 0 then tv
     else __record-set tv "tv-focused-id" ((list-at visible parent-idx).tn-id)

@@ -1,0 +1,192 @@
+Chapter: CpuInspector
+  cites Dev chapter HexFormat
+  cites Foreword chapter CCE
+
+ What the processor says about itself: the two control registers this
+ machine actually depends on, a raw CPUID leaf, and the feature bits
+ decoded into names.
+
+ THE WHOLE CHAPTER IS PURE, and that is a statement about the builtins
+ rather than about the code. `cpu-read-cr0`, `cpu-read-cr3` and the four
+ `cpu-cpuid-*` carry no effect row: they read processor state and change
+ nothing, so reading them is an ordinary function call and every report
+ below can be built during rendering rather than cached. That is the
+ opposite of the disk inspector, where every read costs 512 bytes of heap
+ that is never returned.
+
+ A CPUID CALL IS NOT FREE THOUGH, and the difference matters once. CPUID
+ is a serializing instruction: it drains the pipeline, so it is orders of
+ magnitude more expensive than the `peek` behind every other inspector
+ here. Four calls per leaf, and the feature report reads three leaves, so
+ `cpu.feat` is a dozen serializing instructions. That is nothing on a
+ command driven by a keypress and would be ruinous in a loop, which is why
+ nothing here loops over leaves.
+
+ THE FEATURE TABLE NAMES ONLY BITS WORTH NAMING. A full decode of every
+ defined CPUID bit is hundreds of rows that go stale as vendors add more,
+ and an inspector that renamed or mis-numbered one would be worse than no
+ inspector. What is here is the set this project's own code depends on or
+ asks about: long mode and NX because the boot path requires them, the SSE
+ family because the vector types lower to it, RDRAND because the identity
+ code wants entropy, and HYPERVISOR because it answers "am I under
+ codex-vm" in one bit.
+
+ THE VENDOR STRING CROSSES THE CCE BOUNDARY IN THE INBOUND DIRECTION.
+ CPUID returns twelve ASCII bytes packed across three registers, and Codex
+ Text is CCE, so a byte appended directly would build a Text whose
+ characters are numerically ASCII. `from-unicode` is what converts, and it
+ answers negative one for a byte it cannot map, which is refused rather
+ than appended. This is the same trap that put a TLS hostname on the wire
+ in CCE until 2026-07-13, running the other way.
+
+ We say:
+
+Section: Control Register Zero
+
+ The bits that decide what mode the processor is in. PE and PG are the two
+ that MUST be set on this machine: long mode requires paging, and paging
+ requires protected mode, so a zero in either is not a configuration
+ choice but a machine that should not be executing this code.
+
+  ci-cr0-line : Text
+  ci-cr0-line =
+    let v = cpu-read-cr0
+    in "CR0 #" & u32-to-hex v & "  " & ci-cr0-flags v
+
+  ci-cr0-flags : Integer -> Text
+  ci-cr0-flags (v) =
+    let a = "PE=" & bit-flag v 0 & " MP=" & bit-flag v 1 & " EM=" & bit-flag v 2
+    in let b = " TS=" & bit-flag v 3 & " NE=" & bit-flag v 5 & " WP=" & bit-flag v 16
+    in a & b & " AM=" & bit-flag v 18 & " NW=" & bit-flag v 29 & " CD=" & bit-flag v 30 & " PG=" & bit-flag v 31
+
+Section: Control Register Three
+
+ CR3 is the physical address of the top-level page table plus two cache
+ bits in its low half. The address is reported separately from the raw
+ value because the raw value is not an address: the low twelve bits are
+ flags, and an operator who took CR3 as a pointer would be off by whatever
+ those bits happen to be.
+
+  ci-cr3-line : Text
+  ci-cr3-line =
+    let v = cpu-read-cr3
+    in "CR3 #" & addr-to-hex v & "  PML4 #" & addr-to-hex (bit-and v (bit-not 4095)) & "  PWT=" & bit-flag v 3 & " PCD=" & bit-flag v 4
+
+  ci-cr-report : List Text
+  ci-cr-report = [ci-cr0-line, ci-cr3-line]
+
+Section: One Leaf
+
+ The four registers of one leaf, raw. This is the command that answers a
+ question the decode below cannot, because the decode only knows the bits
+ it was taught: a leaf nobody has named still shows its four words here.
+
+ Every leaf is read with subleaf zero, which the builtins enforce by
+ zeroing ECX. A leaf whose meaning depends on the subleaf therefore shows
+ only its first, and that is stated rather than left to surprise someone
+ reading leaf 4 or leaf 0x0D.
+
+  ci-leaf-line : Integer -> Text
+  ci-leaf-line (leaf) =
+    let a = "eax #" & u32-to-hex (cpu-cpuid-eax leaf) & "  ebx #" & u32-to-hex (cpu-cpuid-ebx leaf)
+    in "leaf #" & u32-to-hex leaf & "  " & a & "  ecx #" & u32-to-hex (cpu-cpuid-ecx leaf) & "  edx #" & u32-to-hex (cpu-cpuid-edx leaf)
+
+ The maximum leaf comes from leaf zero, and asking beyond it is not an
+ error the processor reports: it answers the highest leaf it does know, or
+ zeroes, with nothing to distinguish that from a real answer. So the
+ refusal is here rather than left to the reader.
+
+  ci-max-leaf : Integer
+  ci-max-leaf = cpu-cpuid-eax 0
+
+  ci-leaf-report : Integer -> List Text
+  ci-leaf-report (leaf) =
+    if leaf < 0 then ["refused: leaf " & show leaf & " is not a leaf"]
+    else if leaf > ci-max-leaf then
+      ["refused: leaf #" & u32-to-hex leaf & " is above the maximum this processor reports (#" & u32-to-hex ci-max-leaf & ")",
+       "extended leaves start at #80000000 and are not covered by that maximum"]
+    else [ci-leaf-line leaf]
+
+Section: The Vendor
+
+  ci-char-for : Integer -> Text
+  ci-char-for (b) =
+    let cce = from-unicode b
+    in if cce < 0 then "" else char-to-text (code-to-char cce)
+
+  ci-word-text : Integer -> Text
+  ci-word-text (w) =
+    let a = ci-char-for (bit-and w 255) & ci-char-for (bit-and (bit-shru w 8) 255)
+    in a & ci-char-for (bit-and (bit-shru w 16) 255) & ci-char-for (bit-and (bit-shru w 24) 255)
+
+ EBX then EDX then ECX, which is not a typo and not alphabetical: it is
+ the order the twelve bytes are defined in. Reading them in register order
+ spells `GenuntelineI` on an Intel part, which looks enough like a working
+ decode to be believed.
+
+  ci-vendor : Text
+  ci-vendor = ci-word-text (cpu-cpuid-ebx 0) & ci-word-text (cpu-cpuid-edx 0) & ci-word-text (cpu-cpuid-ecx 0)
+
+Section: Features
+
+  ci-feat-name : Integer, Integer, Text -> Text
+  ci-feat-name (v) (bit) (nm) = if bit-and v (bit-shl 1 bit) /= 0 then nm else ""
+
+  ci-join : Text, Text -> Text
+  ci-join (acc) (nm) =
+    if text-length nm == 0 then acc
+    else if text-length acc == 0 then nm
+    else acc & " " & nm
+
+ A word for an empty set, because an empty feature line reads as a decode
+ that failed rather than as a register that is genuinely zero. This is not
+ hypothetical: leaf 1 ECX reads zero under codex-vm, so the line for it is
+ empty on the machine this is most often run on, and a reader would
+ reasonably suspect the inspector before suspecting the host.
+
+  ci-or-none : Text -> Text
+  ci-or-none (t) = if text-length t == 0 then "(none)" else t
+
+ Leaf 1 EDX is the original feature word and holds the things the compiler
+ assumes rather than checks: SSE2 is where the vector types land, and TSC
+ is what the profiler reads.
+
+  ci-leaf1-edx : Text
+  ci-leaf1-edx =
+    let v = cpu-cpuid-edx 1
+    in let a = ci-join (ci-join "" (ci-feat-name v 0 "FPU")) (ci-feat-name v 4 "TSC")
+    in let b = ci-join (ci-join a (ci-feat-name v 5 "MSR")) (ci-feat-name v 6 "PAE")
+    in let c = ci-join (ci-join b (ci-feat-name v 9 "APIC")) (ci-feat-name v 15 "CMOV")
+    in let d = ci-join (ci-join c (ci-feat-name v 23 "MMX")) (ci-feat-name v 24 "FXSR")
+    in ci-join (ci-join d (ci-feat-name v 25 "SSE")) (ci-feat-name v 26 "SSE2")
+
+ Leaf 1 ECX is the later word. HYPERVISOR is bit 31 and is the one bit
+ here that answers a question about the ENVIRONMENT rather than the
+ processor: it is set under codex-vm and clear on metal, so it separates
+ the two cases a bare-metal debugger most needs to tell apart.
+
+  ci-leaf1-ecx : Text
+  ci-leaf1-ecx =
+    let v = cpu-cpuid-ecx 1
+    in let a = ci-join (ci-join "" (ci-feat-name v 0 "SSE3")) (ci-feat-name v 9 "SSSE3")
+    in let b = ci-join (ci-join a (ci-feat-name v 19 "SSE4.1")) (ci-feat-name v 20 "SSE4.2")
+    in let c = ci-join (ci-join b (ci-feat-name v 25 "AES")) (ci-feat-name v 28 "AVX")
+    in ci-join (ci-join c (ci-feat-name v 30 "RDRAND")) (ci-feat-name v 31 "HYPERVISOR")
+
+ The extended leaf, and the two bits the boot path depends on: LM is long
+ mode itself, and NX is the no-execute page bit. A processor answering
+ zero for LM cannot be running this code, so a blank here means the leaf
+ was not read rather than that the feature is missing.
+
+  ci-ext-edx : Text
+  ci-ext-edx =
+    let v = cpu-cpuid-edx 2147483649
+    in let a = ci-join (ci-join "" (ci-feat-name v 20 "NX")) (ci-feat-name v 26 "1GB-PAGES")
+    in ci-join a (ci-feat-name v 29 "LONG-MODE")
+
+  ci-feat-report : List Text
+  ci-feat-report =
+    ["vendor " & ci-vendor & "  max leaf #" & u32-to-hex ci-max-leaf,
+     "leaf1.edx " & ci-or-none ci-leaf1-edx,
+     "leaf1.ecx " & ci-or-none ci-leaf1-ecx,
+     "ext.edx   " & ci-or-none ci-ext-edx]

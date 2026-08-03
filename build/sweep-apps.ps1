@@ -1,4 +1,4 @@
-# sweep-apps.ps1 — compile every .codex under apps/ to verify no crashes.
+# sweep-apps.ps1 -- compile every .codex under apps/ to verify no crashes.
 # Compile failures (missing entry point, unresolved names) are expected
 # for library modules. The sweep checks for compiler crashes (timeout,
 # GPF, non-zero exit without clean diagnostic).

@@ -11,26 +11,26 @@
 
 Two commits implementing RISC-V escape copy for heap types returned from regions: Text (via runtime helper), Record (field-by-field deep copy), List (loop with element copy), and Sum types (tag-dispatched per-constructor copy). Also adds `Slli`/`Srli` to the encoder and cleans up 7 placeholder prelude effect files with their tests.
 
-**Verdict:** Architecture is sound — the region save/restore pattern, the type-dispatch, and the recursive deep copy design are all correct in principle. Two bugs block merge: one critical (stack overflow on recursive types), one high (register lifetime in sum copy).
+**Verdict:** Architecture is sound -- the region save/restore pattern, the type-dispatch, and the recursive deep copy design are all correct in principle. Two bugs block merge: one critical (stack overflow on recursive types), one high (register lifetime in sum copy).
 
 ---
 
 ## What's Good
 
-- **`__escape_text` helper** — Clean leaf function. Alignment formula `(length + 15) & ~7` is correct. Byte copy loop properly structured with patched branch.
-- **`EmitRecordEscapeCopy` / `EmitListEscapeCopy`** — Both correctly use `AllocLocal()` for pointers that must survive across `EmitEscapeCopy` subcalls. This is the right pattern.
-- **List copy loop** — Correctly reloads `idxLocal` and `savedLen` from locals each iteration (handles spilled registers). Jump-back target is before the loads. Branch patch offset arithmetic is correct.
-- **`Slli`/`Srli` encoder** — Correctly masks to 6-bit shift amounts (`& 0x3F`) for RV64I.
-- **Closure skip** — `if (region.Type is FunctionType) return EmitExpr(region.Body)` is correct; capture types are unknown at region exit.
-- **Region entry/exit** — Saving S1 to a local before the body and restoring after is the right pattern.
-- **ConstructedType resolution** via `m_typeDefs` — Returns null safely on missing key (Map indexer doesn't throw). The `is CodexType resolved` guard handles the miss gracefully.
-- **Cleanup** — Removing Camera, Display, Identity, Location, Microphone, Network, Sensors stubs and their tests is clean housekeeping.
+- **`__escape_text` helper** -- Clean leaf function. Alignment formula `(length + 15) & ~7` is correct. Byte copy loop properly structured with patched branch.
+- **`EmitRecordEscapeCopy` / `EmitListEscapeCopy`** -- Both correctly use `AllocLocal()` for pointers that must survive across `EmitEscapeCopy` subcalls. This is the right pattern.
+- **List copy loop** -- Correctly reloads `idxLocal` and `savedLen` from locals each iteration (handles spilled registers). Jump-back target is before the loads. Branch patch offset arithmetic is correct.
+- **`Slli`/`Srli` encoder** -- Correctly masks to 6-bit shift amounts (`& 0x3F`) for RV64I.
+- **Closure skip** -- `if (region.Type is FunctionType) return EmitExpr(region.Body)` is correct; capture types are unknown at region exit.
+- **Region entry/exit** -- Saving S1 to a local before the body and restoring after is the right pattern.
+- **ConstructedType resolution** via `m_typeDefs` -- Returns null safely on missing key (Map indexer doesn't throw). The `is CodexType resolved` guard handles the miss gracefully.
+- **Cleanup** -- Removing Camera, Display, Identity, Location, Microphone, Network, Sensors stubs and their tests is clean housekeeping.
 
 ---
 
 ## Issues
 
-### 1. CRITICAL — Stack overflow on recursive sum types
+### 1. CRITICAL -- Stack overflow on recursive sum types
 
 **Repro:**
 ```bash
@@ -51,7 +51,7 @@ m_escapeCopyHelpers: Dictionary<string, int>   // typeKey → instruction offset
 EmitEscapeCopy(srcLocal, type):
     typeKey = canonical key for type
     if typeKey in m_escapeCopyHelpers:
-        // Already emitted (or in progress) — emit call
+        // Already emitted (or in progress) -- emit call
         emit: mv a0, srcLocal
         emit: call __escape_{typeKey}
         emit: mv result, a0
@@ -65,7 +65,7 @@ The "in progress" sentinel handles mutual recursion: when type A contains type B
 
 ---
 
-### 2. HIGH — Register lifetime bug in `EmitSumCtorCopy`
+### 2. HIGH -- Register lifetime bug in `EmitSumCtorCopy`
 
 **File:** `RiscVCodeGen.cs`, `EmitSumCtorCopy` method
 
@@ -79,13 +79,13 @@ But it's used *after* `EmitEscapeCopy` subcalls that allocate their own temps:
 ```csharp
 if (IRRegion.TypeNeedsHeapEscape(fieldType))
 {
-    // EmitEscapeCopy internally calls AllocTemp() — may recycle newPtr's register
+    // EmitEscapeCopy internally calls AllocTemp() -- may recycle newPtr's register
     fieldVal = EmitEscapeCopy(fieldLocal, fieldType);
 }
 Emit(RiscVEncoder.Sd(newPtr, fieldVal, (1 + i) * 8));  // newPtr may be stale
 ```
 
-`EmitRecordEscapeCopy` gets this right — it uses `AllocLocal()` + `StoreLocal`/`LoadLocal` for `newPtr`. `EmitSumCtorCopy` should do the same.
+`EmitRecordEscapeCopy` gets this right -- it uses `AllocLocal()` + `StoreLocal`/`LoadLocal` for `newPtr`. `EmitSumCtorCopy` should do the same.
 
 **Fix:** Change to the local pattern:
 ```csharp
@@ -112,6 +112,6 @@ Emit(RiscVEncoder.Sd(LoadLocal(newPtrLocal), LoadLocal(savedTag), 0));
 
 ## Test Results
 
-- `dotnet build tools/Codex.Cli` — **pass** (0 warnings, 0 errors)
-- Simple RISC-V compilation (`hello.codex`, `greeting.codex`) — **pass**, runs correctly under QEMU
-- Self-hosted compilation (`Codex.Codex --target riscv-bare`) — **FAIL: stack overflow** (Bug #1)
+- `dotnet build tools/Codex.Cli` -- **pass** (0 warnings, 0 errors)
+- Simple RISC-V compilation (`hello.codex`, `greeting.codex`) -- **pass**, runs correctly under QEMU
+- Self-hosted compilation (`Codex.Codex --target riscv-bare`) -- **FAIL: stack overflow** (Bug #1)

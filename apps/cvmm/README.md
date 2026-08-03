@@ -1,47 +1,47 @@
-# CVMM — Codex Virtual Machine Manager
+# CVMM -- Codex Virtual Machine Manager
 
 CVMM is the desktop management shell for codex.OS: a web-served, browser-rendered control panel that exposes system, hardware, network, fleet, and productivity tools for a bare-metal Codex VM instance.
 
 ## Modules
 
 ### Shell / Framework
-- **CvmmApp** — HTML plug entry point: mounts the widget tree, registers fetch callbacks
-- **CvmmServer** — CDX entry point: boots web server, initializes all manager states, enters request loop
-- **CvmmRoutes** — Full API route table mapping `/api/*` paths to JSON responses
-- **CvmmTheme** — Dark/light palettes, widget styles, semantic color constants
-- **CvmmPersist** — JSON-over-DiskFacts persistence for all 11 productivity domains
-- **CvmmDisplay** — Display-streaming protocol: dirty-rect tracker, frame encoding, input event decode
+- **CvmmApp** -- HTML plug entry point: mounts the widget tree, registers fetch callbacks
+- **CvmmServer** -- CDX entry point: boots web server, initializes all manager states, enters request loop
+- **CvmmRoutes** -- Full API route table mapping `/api/*` paths to JSON responses
+- **CvmmTheme** -- Dark/light palettes, widget styles, semantic color constants
+- **CvmmPersist** -- JSON-over-DiskFacts persistence for all 11 productivity domains
+- **CvmmDisplay** -- Display-streaming protocol: dirty-rect tracker, frame encoding, input event decode
 
 ### System Managers
-- **FileExplorer, DriveManager, UsbManager** — Filesystem, disk, and xHCI device management
-- **ProcessManager, ServiceManager** — Process table and service registry
-- **PortMonitor, NetworkManager** — TCP/UDP listeners, NICs, routing
-- **DisplayManager, ServerManager** — GPUs/monitors and managed server inventory
-- **LogViewer, Terminal** — Structured log buffer and scrollback terminal emulator
+- **FileExplorer, DriveManager, UsbManager** -- Filesystem, disk, and xHCI device management
+- **ProcessManager, ServiceManager** -- Process table and service registry
+- **PortMonitor, NetworkManager** -- TCP/UDP listeners, NICs, routing
+- **DisplayManager, ServerManager** -- GPUs/monitors and managed server inventory
+- **LogViewer, Terminal** -- Structured log buffer and scrollback terminal emulator
 
 ### Fleet / Mesh
-- **FleetManager** — Fleet node discovery, group membership, health summary
-- **DeployManager** — Deployment tracking
-- **MeshBridge** — Translates mesh primitives into FleetManager state
+- **FleetManager** -- Fleet node discovery, group membership, health summary
+- **DeployManager** -- Deployment tracking
+- **MeshBridge** -- Translates mesh primitives into FleetManager state
 
 ### Monitoring
-- **Monitor** — Grafana-style composable monitor: 40+ data sources, multiple panel viz types, preset layouts
-- **DataBinding** — Reactive binding layer with transform pipeline
-- **ResourceModel** — Abstract resource lifecycle with property system
+- **Monitor** -- Grafana-style composable monitor: 40+ data sources, multiple panel viz types, preset layouts
+- **DataBinding** -- Reactive binding layer with transform pipeline
+- **ResourceModel** -- Abstract resource lifecycle with property system
 
 ### Productivity Mini-Apps
-- **Notes, Recipes, Contacts, Calendar, TodoList** — Personal information management
-- **Budget, CarMaintenance, Fitness, Garden, HomeProjects, ReadingList** — Lifestyle tracking
-- **ProductivityDb** — Relational schema for all 11 domains (28 tables)
-- **SyncProvider** — Abstract provider/sync framework with conflict resolution
+- **Notes, Recipes, Contacts, Calendar, TodoList** -- Personal information management
+- **Budget, CarMaintenance, Fitness, Garden, HomeProjects, ReadingList** -- Lifestyle tracking
+- **ProductivityDb** -- Relational schema for all 11 domains (28 tables)
+- **SyncProvider** -- Abstract provider/sync framework with conflict resolution
 
 ### Tests
 14 test modules covering all major subsystems.
 
 ## Completeness
 
-75% — All 17 views are structurally defined and routed. Every manager has types, state, actions, widget builders, and JSON serialization. The productivity suite has 11 domain modules with full serialization and a relational schema. The monitor, data-binding, and mesh-bridge layers are fully elaborated. What is incomplete: real OS data collection (all state is mock), deploy manager is a stub, several utility modules are not wired into the shell.
+75% -- All 17 views are structurally defined and routed. Every manager has types, state, actions, widget builders, and JSON serialization. The productivity suite has 11 domain modules with full serialization and a relational schema. The monitor, data-binding, and mesh-bridge layers are fully elaborated. What is incomplete: real OS data collection (all state is mock), deploy manager is a stub, several utility modules are not wired into the shell.
 
 ## Codex Conformance
 
-Partial — Server-side logic, all manager state machines, widget trees, routing, persistence, and the monitor/binding engine are written entirely in Codex. However, `web/app.js` (~520 lines of hand-written JavaScript), `web/index.html`, and `web/style.css` are non-Codex client implementations that duplicate the widget tree rather than being emitted by a plug from Codex source. Until the web/ artifacts are generated by the HTML plug rather than manually maintained, conformance is Partial.
+Partial -- Server-side logic, all manager state machines, widget trees, routing, persistence, and the monitor/binding engine are written entirely in Codex. However, `web/app.js` (~520 lines of hand-written JavaScript), `web/index.html`, and `web/style.css` are non-Codex client implementations that duplicate the widget tree rather than being emitted by a plug from Codex source. Until the web/ artifacts are generated by the HTML plug rather than manually maintained, conformance is Partial.

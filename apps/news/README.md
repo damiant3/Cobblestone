@@ -11,8 +11,8 @@ An RSS/news-feed reader with a two-column layout: a categorized sidebar and a ma
 
 ## Completeness
 
-45% — UI structure and navigation skeleton are complete. Article data is hardcoded static; reading view always shows the same article regardless of which row was clicked. No feed-fetching, no RSS parsing, no saved/recent persistence, no search.
+45% -- UI structure and navigation skeleton are complete. Article data is hardcoded static; reading view always shows the same article regardless of which row was clicked. No feed-fetching, no RSS parsing, no saved/recent persistence, no search.
 
 ## Codex Conformance
 
-Partial — Written in Codex with platform stubs. No backend or client plug wired yet.
+Partial -- Written in Codex with platform stubs. No backend or client plug wired yet.

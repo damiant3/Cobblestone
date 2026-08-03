@@ -4,6 +4,7 @@ Chapter: XhciTruthProbe
   cites Works chapter GopWizard
   cites Works chapter GopDraw
   cites Kernel chapter BitmapFont
+  cites Works chapter GopHandoff
 
  Option A GOP probe: run the runtime spine, enumerate the USB bus
  (which drives the full xHCI bring-up + ownership handoff + port
@@ -30,11 +31,78 @@ Chapter: XhciTruthProbe
   phx : Integer, Integer -> Text
   phx (v) (sh) = pnib (bit-and (bit-shru v sh) 15)
 
+  phw : Integer -> Text
+  phw (v) = phx v 28 & phx v 24 & phx v 20 & phx v 16 & phx v 12 & phx v 8 & phx v 4 & phx v 0
+
   ph32 : Integer -> Text
-  ph32 (v) = "#" & phx v 28 & phx v 24 & phx v 20 & phx v 16 & phx v 12 & phx v 8 & phx v 4 & phx v 0
+  ph32 (v) = "#" & phw v
 
   pyn : Integer -> Text
   pyn (v) = if v == 0 then "n" else "y"
+
+  p16 : Integer -> Text
+  p16 (v) = phx v 12 & phx v 8 & phx v 4 & phx v 0
+
+  pst : Integer -> Text
+  pst (v) =
+    if v == 0 then "NEVER-OPENED"
+    else if v == 1 then "BRINGUP-FAILED"
+    else "running"
+
+  pfnd : Integer -> Text
+  pfnd (v) = "kbd=" & pyn (bit-and v 1) & " mouse=" & pyn (bit-and v 2) & " disk=" & pyn (bit-and v 4)
+
+  pwhere : Integer -> Text
+  pwhere (loc) = show (bit-shru loc 16) & ":" & show (bit-and (bit-shru loc 8) 255) & "." & show (bit-and loc 7)
+
+  pctl-line : Integer, Integer, Integer, Integer, Integer -> Text
+  pctl-line (i) (id) (loc) (st) (fm) =
+    let who = p16 (bit-shru id 16) & ":" & p16 (bit-and id 65535)
+    in "ctl" & show i & " " & who & " at " & pwhere loc & " " & pst st & " " & pfnd fm
+
+ An ordinal the walk never reached carries an all-zero row, which is a
+ real reading and not a blank: it is the difference between a controller
+ with no disk on it and a controller nobody opened.
+
+  pctls : Integer, Integer, CbfFont, Integer, Integer, Integer -> Integer
+  pctls (base) (stride) (font) (scale) (i) (n) =
+    if i >= 4 then 0
+    else if i >= n then 0
+    else let st = xdiag-get (48 + i * 4 + 2)
+    in let line = pctl-line i (xdiag-get (48 + i * 4)) (xdiag-get (48 + i * 4 + 1)) st (xdiag-get (48 + i * 4 + 3))
+    in let t = prow base stride 40 font (440 + i * 20) scale line (if st == 2 then 65280 else 16755200)
+    in pctls base stride font scale (i + 1) n
+
+ The keyboard endpoint rows. Two lines, and every number on them is a
+ PAIR: what the descriptor asked for beside what went into the endpoint
+ context. `NOT READ` is a distinct reading from a zero -- a descriptor
+ fetch that never happened and a bInterval genuinely zero are different
+ answers and must not photograph the same.
+
+  pepok : Integer -> Boolean
+  pepok (st) = st == 2
+
+  pep1 : Integer -> Text
+  pep1 (st) =
+    if st == 0 then "HID EP: NOT READ -- endpoint never configured"
+    else let ask = xdiag-get 65
+    in let got = xdiag-get 66
+    in "HID EP: bInterval asked=" & show (bit-and ask 65535) & " -> Interval set=" & show (bit-and got 65535)
+
+  pep2 : Integer -> Text
+  pep2 (st) =
+    if st == 0 then "        (no descriptor fields were taken)"
+    else let ask = xdiag-get 65
+    in let got = xdiag-get 66
+    in "        wMaxPacket asked=" & show (bit-shru ask 16) & " -> MaxESIT set=" & show (bit-shru got 16)
+
+  pep3 : Integer -> Text
+  pep3 (st) =
+    if st == 0 then "        (no route, TT or speed recorded)"
+    else let tt = xdiag-get 68
+    in let sd = xdiag-get 69
+    in let tts = bit-and tt 65535
+    in "        speed=" & show (bit-and sd 255) & " dci=" & show (bit-and (bit-shru sd 8) 255) & " route=#" & phw (xdiag-get 67) & " TT=" & pyn tts & " slot=" & show tts & (if st == 1 then "  CONFIGURE FAILED" else "")
 
   prow : Integer, Integer, Integer, CbfFont, Integer, Integer, Text, Integer -> Integer
   prow (base) (stride) (x) (font) (y) (scale) (s) (col) =
@@ -59,20 +127,28 @@ Chapter: XhciTruthProbe
     in let t2 = prow base stride 40 font 100 scale ("HCCPARAMS1=" & ph32 (xdiag-get 5) & " CSZ=" & show (xdiag-get 6) & " PPC=" & show (xdiag-get 7) & " xECP=" & show (xdiag-get 8)) 9474192
     in let t3 = prow base stride 40 font 120 scale ("legsup=" & pyn (xdiag-get 9) & " before=" & ph32 (xdiag-get 10) & " after=" & ph32 (xdiag-get 11) & " released=" & pyn (xdiag-get 12)) 9474192
     in let t4 = prow base stride 40 font 140 scale ("slots=" & show (xdiag-get 13) & " ports=" & show (xdiag-get 14) & " reset=" & pyn (xdiag-get 15) & " cnr=" & pyn (xdiag-get 16) & " run=" & pyn (xdiag-get 17) & " connected=" & show (xdiag-get 18)) 16777215
+    in let t4b = prow base stride 40 font 160 scale ("BAR verdict=" & show (xdiag-get 30) & " judged=#" & phw (xdiag-get 32) & "_" & phw (xdiag-get 31) & " op=" & ph32 (xdiag-get 19)) 16777215
     in let t5 = prow base stride 40 font 180 scale "root ports (raw PORTSC at start):" 9474192
     in pports base stride font scale 0 (xdiag-get 14)
 
   opening : [Device.Port, Device.Mmio] Integer
   opening =
-    let base = peek-qword 32768 0
-    in let w = peek-qword 32768 8
-    in let h = peek-qword 32768 16
-    in let stride = peek-qword 32768 24
+    let base = boot-fb-base 0
+    in let w = boot-fb-w 0
+    in let h = boot-fb-h 0
+    in let stride = boot-fb-stride 0
     in let font = cbf-init
     in act
       ri <- runtime-init 0
       att <- usb-attach
       let d = pdraw base w h stride font
-      in let e = prow base stride 40 font 400 (if w >= 1024 then 2 else 1) ("ENUMERATED  kbd=" & pyn (if (att.ua-kbd).uk-ok then 1 else 0) & "  mouse=" & pyn (if (att.ua-mouse).um-ok then 1 else 0) & "  disk=" & pyn (if (att.ua-disk).md-ok then 1 else 0)) 16776960
+      in let sc = if w >= 1024 then 2 else 1
+      in let e = prow base stride 40 font 400 sc ("ENUMERATED  kbd=" & pyn (if (att.ua-kbd).uk-ok then 1 else 0) & "  mouse=" & pyn (if (att.ua-mouse).um-ok then 1 else 0) & "  disk=" & pyn (if (att.ua-disk).md-ok then 1 else 0)) 16776960
+      in let hs = prow base stride 40 font 420 sc ("xHCI seen=" & show (xdiag-get 40) & " opened=" & show (xdiag-get 41) & " walked=#" & phw (xdiag-get 42) & " disk-on-ctl=" & show (xdiag-get 43) & " kbd-on-ctl=" & show (xdiag-get 44)) 16776960
+      in let cl = pctls base stride font sc 0 (xdiag-get 40)
+      in let est = xdiag-get 64
+      in let ep1 = prow base stride 40 font 520 sc (pep1 est) (if pepok est then 65280 else 16755200)
+      in let ep2 = prow base stride 40 font 540 sc (pep2 est) (if pepok est then 9474192 else 16755200)
+      in let ep3 = prow base stride 40 font 560 sc (pep3 est) (if pepok est then 9474192 else 16755200)
       in probe-halt 0
     end

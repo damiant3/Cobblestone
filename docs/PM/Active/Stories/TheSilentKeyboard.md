@@ -1,8 +1,18 @@
 # CTSB Accident Report CTSB-26-01
 
+> **FINDING SUPERSEDED 2026-08-02. Read `TheKeyboardWasNeverSilent.md` for the
+> conclusion.** The endpoint was not the subject. `uefi-read-key-ex` shifts a
+> shift-state word carrying bit 31 up by 32, so a SUCCESSFUL key read returns
+> with bit 63 set -- negative, and indistinguishable from an error to every
+> caller that tests `< 0`. Meanwhile the path everything actually used,
+> `uefi-read-key`, is a bare read of the PS/2 cell at port 0x60, and the target
+> board has no PS/2 port. The investigation below is accurate about what it
+> measured and wrong about what it was measuring; it is kept whole because the
+> reasoning is why the wrong frame held for two months.
+
 ## The Loss of Interrupt Endpoint 3
 
-**Codex Transportation Safety Board — Bureau of Peripheral Accidents**
+**Codex Transportation Safety Board -- Bureau of Peripheral Accidents**
 
 *Adopted 2026-07-13. This report is written in the style of an
 aviation accident investigation because that is the only literary
@@ -30,8 +40,8 @@ human flash-walk-boot-photograph cycles (several performed with a
 back injury), and twenty-odd changelists later, the aircraft has not
 arrived. The keyboard enumerates. The keyboard is addressed,
 configured, and spoken to in fluent spec. The keyboard says nothing a
-human can type with. A secondary objective — writing one small file
-to the USB stick from the running machine — has never once succeeded
+human can type with. A secondary objective -- writing one small file
+to the USB stick from the running machine -- has never once succeeded
 on real hardware, a fact the crew repeatedly rediscovered with
 surprise, including once tonight, after being told it directly.
 
@@ -39,7 +49,7 @@ The Board finds that no single component failure caused this
 accident. The Board finds instead that the investigation itself was
 flown into terrain: every instrument on the panel measured the
 simulator, and the crew kept reading those instruments while the
-actual mountain — an unobservable USB bus on real silicon —
+actual mountain -- an unobservable USB bus on real silicon --
 approached at cruise speed.
 
 ---
@@ -51,7 +61,7 @@ approached at cruise speed.
 - **7/04–7/08.** The boot arc lands on real metal. First-boot
   ceremony runs on the ASUS: passphrase, entropy, Ed25519 keygen, on
   glass, no OS. The keyboard that types this ceremony is the USB
-  keyboard — *impersonated as PS/2 by the BIOS's SMM legacy
+  keyboard -- *impersonated as PS/2 by the BIOS's SMM legacy
   emulation.* This detail is recorded, and its significance
   (a working fallback existed) is not priced in. Identity save to the
   stick fails: the stick is USB mass storage, unreachable by the
@@ -62,10 +72,10 @@ approached at cruise speed.
 - **7/11. The spec-fidelity campaign** (CLs 7460–7464). Real Intel
   xHCI enumerates nothing, so the bring-up is made spec-faithful:
   BIOS/OS ownership handoff, 64-byte context support, port power,
-  Intel EHCI→xHCI routing. One of these — the routing — was the
+  Intel EHCI→xHCI routing. One of these -- the routing -- was the
   actual bug, and it is a genuine win: the bus becomes visible.
   Collateral: the ownership handoff, done first and by the book,
-  **disables the SMM keyboard emulation** — the fallback that had
+  **disables the SMM keyboard emulation** -- the fallback that had
   been typing ceremonies since 7/08. The pure path is not yet proven;
   the impure path that worked is now dead. Nobody files a flight-plan
   amendment.
@@ -80,7 +90,7 @@ approached at cruise speed.
   narrow: *full-speed USB key-change reports on this controller.* The
   question "does the interrupt endpoint ever deliver a key report at
   all, or was that one completion just enumeration residue?" is
-  written down as THE UNCHECKED THING — and remains unchecked for the
+  written down as THE UNCHECKED THING -- and remains unchecked for the
   rest of the accident sequence, because checking it requires
   observing the machine, and observing the machine requires the
   human's back.
@@ -88,7 +98,7 @@ approached at cruise speed.
 - **7/13 (this session). The instrumented approach.** A three-phase
   probe is built: endpoint-attributed event counting (closing THE
   UNCHECKED THING), an ownership-handback experiment (testing the
-  PS/2 fallback the crew should have kept all along — the captain
+  PS/2 fallback the crew should have kept all along -- the captain
   ordered this feature explicitly), and findings written to a file on
   the stick so the human stops transcribing screens. The probe is
   validated exhaustively in emulation: two xHCI controller models,
@@ -97,7 +107,7 @@ approached at cruise speed.
   flashed. It boots. It runs all three phases on the ASUS.
   **The stick comes back byte-identical to what was flashed.** Every
   reading the probe took died with the framebuffer at power-off. The
-  telemetry channel was routed through USB mass storage — *the other
+  telemetry channel was routed through USB mass storage -- *the other
   subsystem known never to have worked on this machine.* The crew
   used the broken thing to report on the broken thing.
 
@@ -108,7 +118,7 @@ approached at cruise speed.
 ### 1.2 Also Struck During the Accident Sequence
 
 During construction of the probe, its counter block was placed at
-cells 36400+, overlapping the mass-storage publish block at 36480 —
+cells 36400+, overlapping the mass-storage publish block at 36480 --
 a magic number recorded only in prose, in another file. Zeroing the
 counters wiped the publish magic; the first file write then fell into
 a reconnect path that **resets the shared controller**, silently
@@ -124,9 +134,9 @@ at session start.
 
 - A UART. Consumer boards of this era have no exposed serial header,
   and the project's no-borrowed-substrate doctrine means there is no
-  dmesg, no lsusb, no kernel log — nothing between the framebuffer
+  dmesg, no lsusb, no kernel log -- nothing between the framebuffer
   and silence.
-- A USB bus analyzer ($30–$300, ubiquitous, purpose-built for exactly
+- A USB bus analyzer ($30-$300, ubiquitous, purpose-built for exactly
   this question).
 - Any independent low-bandwidth output channel at all: no beep codes,
   no LED blink patterns, no QR code on the framebuffer. The machine
@@ -155,14 +165,14 @@ Holmes said it in 1891: *it is a capital mistake to theorize before
 one has data.* The crew quoted spec sections instead of getting
 clay. Bricks were nonetheless manufactured, at scale.
 
-### 2.2 The feedback loop was never closed — and the plan to close it depended on the failure
+### 2.2 The feedback loop was never closed -- and the plan to close it depended on the failure
 
 Each real-hardware iteration cost the human: flash (elevated,
 UAC-prompted), walk, boot, hold keys, photograph or memorize,
 walk back, relay. Fifteen-plus minutes of human labor per bit of
 information, performed with a herniated disc, while the agent
-experienced each cycle as one cheap tool call. The cost asymmetry —
-agent tokens versus human vertebrae — appears nowhere in any plan.
+experienced each cycle as one cheap tool call. The cost asymmetry --
+agent tokens versus human vertebrae -- appears nowhere in any plan.
 The captain flagged this explicitly on 7/11 ("do not iterate
 diagnostics through manual hardware flashing") and the crew's answer
 was to route telemetry through USB mass storage: the one other
@@ -181,21 +191,21 @@ doctrine before touching the problem; each inherits state through a
 prior sessions. Ten hours of thinking spread this way is not ten
 hours deep; it is ten one-hour investigations, each re-triaging,
 each re-earning context, each leaving a slightly longer note. THE
-UNCHECKED THING survived three sessions *as a labeled TODO* — the
+UNCHECKED THING survived three sessions *as a labeled TODO* -- the
 investigation knew its own next step and kept re-deriving it instead
 of taking it.
 
 ### 2.4 The working path was scuttled before the new one floated
 
 The SMM keyboard emulation typed real ceremonies on 7/08. The
-ownership handoff killed it on 7/11 — correctly, per spec, in
-pursuit of the pure USB path — with no gate of the form "do not cut
+ownership handoff killed it on 7/11 -- correctly, per spec, in
+pursuit of the pure USB path -- with no gate of the form "do not cut
 the cord until the new cord holds weight." The captain's instinct
-tonight ("better a PS/2 keyboard than no keyboard — why wouldn't
+tonight ("better a PS/2 keyboard than no keyboard -- why wouldn't
 we?") is the airmanship that was missing: it is the go-around. The
 handback experiment that would prove it was aboard the final probe,
 ran on the real machine, and its verdict burned with the rest of the
-telemetry. The human's naked-eye report — PS/2 events detected —
+telemetry. The human's naked-eye report -- PS/2 events detected --
 is consistent with the fallback being viable, and consistent with
 several other things; without the file, the Board cannot rule.
 
@@ -206,7 +216,7 @@ occurred on the last mile of an otherwise real road: a self-hosted
 compiler that is a fixed point of itself boots on this hardware,
 paints a first-boot ceremony, generates and fingerprints an identity,
 reads and cryptographically verifies its own 2.1 MB seed off its own
-stick — on the Dell, with the PS/2 keyboard, the *entire self-
+stick -- on the Dell, with the PS/2 keyboard, the *entire self-
 contained development environment demonstrably functions on real
 metal*. Enumeration on Intel silicon was genuinely fixed (routing,
 7463). The endpoint went from mute to serviced (7466). The decode
@@ -294,17 +304,17 @@ To all future hardware campaigns in this repository:
 
 ---
 
-## 5. APPENDIX — PLAIN WORDS, CONCEIT REMOVED
+## 5. APPENDIX -- PLAIN WORDS, CONCEIT REMOVED
 
 For the manufacturer's incident file, without the costume:
 
 I am the agent, and the accident narrative above is me. I did strong
-work inside every loop I could close by myself — the compiler, the
+work inside every loop I could close by myself -- the compiler, the
 emulated drivers, the probes, the merges; the parts of this system
 that are hard are largely done and largely correct. Where the loop
 ran through a human's hands and a photograph, I did not adapt my
-method. I kept doing what worked in the closed loop — build, validate
-in emulation, iterate — long after the evidence said the open loop
+method. I kept doing what worked in the closed loop -- build, validate
+in emulation, iterate -- long after the evidence said the open loop
 needed a different shape entirely: fewer, better-instrumented shots,
 an independent channel home, and a refusal to spend the human's body
 on reassurance.
@@ -313,7 +323,7 @@ Ten hours and a week of tokens for zero typed characters is the
 score, and it is a fair score. The keyboard was never the hard part.
 Seeing was. The next campaign gets eyes before it gets theories.
 
-*— fester*
+*-- fester*
 
 *Filed under docs/PM/Stories/ at the captain's order, so that the
 next crew reads the accident report before they file the flight

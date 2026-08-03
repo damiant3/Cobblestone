@@ -92,7 +92,7 @@ emitters must map to their target platform.
 
 | Primitive | Module | What it represents |
 |---|---|---|
-| `Throbber` | Animation | Spin, Pulse, Bounce, Bar — tick-driven |
+| `Throbber` | Animation | Spin, Pulse, Bounce, Bar -- tick-driven |
 | `Transition` | Animation | Property easing (start/end/duration/curve) |
 | `KeyframeSeq` | Animation | Looping keyframe sequence |
 
@@ -258,24 +258,24 @@ emitters must map to their target platform.
 ### Phase 1: Common Controls (High priority)
 
 Add to `codex.foreword.ui`:
-- `Toggle.codex` — on/off switch, checkbox
-- `Select.codex` — dropdown, radio group
-- `Slider.codex` — range input with min/max/step
-- `TabView.codex` — tabbed container
-- `Navigation.codex` — page stack, routing
-- `Table.codex` — data grid with column definitions
+- `Toggle.codex` -- on/off switch, checkbox
+- `Select.codex` -- dropdown, radio group
+- `Slider.codex` -- range input with min/max/step
+- `TabView.codex` -- tabbed container
+- `Navigation.codex` -- page stack, routing
+- `Table.codex` -- data grid with column definitions
 
 These 6 modules would cover the most common gaps across all platforms.
 
 ### Phase 2: Application Chrome
 
-- `MenuBar.codex` — application menus
-- `Toolbar.codex` — action bar
-- `Toast.codex` — snackbar/toast notifications
-- `TreeView.codex` — hierarchical display
+- `MenuBar.codex` -- application menus
+- `Toolbar.codex` -- action bar
+- `Toast.codex` -- snackbar/toast notifications
+- `TreeView.codex` -- hierarchical display
 
 ### Phase 3: Mobile/Platform Specific
 
-- `NativeDialog.codex` — file pickers, share sheets
-- `Permission.codex` — camera, location, notification permissions
-- `Notification.codex` — push/local notifications
+- `NativeDialog.codex` -- file pickers, share sheets
+- `Permission.codex` -- camera, location, notification permissions
+- `Notification.codex` -- push/local notifications

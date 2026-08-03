@@ -7,7 +7,7 @@
 
 > *"The mountains are not stadiums where I satisfy my ambition to
 > achieve, they are the cathedrals where I practice my religion."*
-> — Anatoli Boukreev
+> -- Anatoli Boukreev
 
 ---
 
@@ -16,7 +16,7 @@
 Turn around. Look down.
 
 Three peaks behind us. A language that compiles itself. Machine code on
-four architectures — no foreign toolchain, no runtime, no libc. An
+four architectures -- no foreign toolchain, no runtime, no libc. An
 allocator that reclaims memory at region boundaries. A concurrency model
 with real threads and per-thread arenas. A repository with content-addressed
 facts, trust lattices, proposals, and network sync. Twelve transpilation
@@ -30,7 +30,7 @@ blocked the sky. But we've been climbing for two weeks and our legs are
 under us. We know the rock. We know the weather. We know how to place
 protection and how to fall safely.
 
-The peak is Codex.OS. It looks smaller now. Not because it shrank — because
+The peak is Codex.OS. It looks smaller now. Not because it shrank -- because
 we grew.
 
 ---
@@ -55,7 +55,7 @@ Here is what actually happened:
 
 The estimates weren't wrong. The pace was unprecedented. Four agents
 coordinating through git, each working to their strengths, with a human
-routing between them — that turned out to be faster than anyone expected.
+routing between them -- that turned out to be faster than anyone expected.
 
 The question is no longer *can we build Codex.OS*. The question is *what
 kind of system do we want it to be*.
@@ -74,8 +74,8 @@ repository makes the declaration auditable.
 
 This is not a new idea. It is the oldest idea in computer science: if the
 program is correct, it cannot be malicious. What's new is that we have the
-tools to prove correctness at the scale of an operating system — dependent
-types, linear types, algebraic effects, structured concurrency — and we
+tools to prove correctness at the scale of an operating system -- dependent
+types, linear types, algebraic effects, structured concurrency -- and we
 have a compiler that already implements all of them, targeting bare metal.
 
 The last peak is one peak, but it has four faces.
@@ -115,7 +115,7 @@ Codex.OS, the system is self-sustaining.
 The thing that makes this an OS and not just a kernel.
 
 Every program installed on Codex.OS is type-checked before it runs. Not
-sandboxed — *verified*. The verifier is a Codex program (compiled by the
+sandboxed -- *verified*. The verifier is a Codex program (compiled by the
 Codex compiler, running on the Codex kernel) that reads a program's type
 signature and proves:
 
@@ -133,8 +133,8 @@ Getting it right is the hardest sub-problem on this face.
 ## Face 3: The Shell
 
 A human interacts with Codex.OS through the shell. The shell is not bash.
-It is not a REPL. It is a Codex program that reads prose — the same
-prose grammar the compiler already understands — and executes it.
+It is not a REPL. It is a Codex program that reads prose -- the same
+prose grammar the compiler already understands -- and executes it.
 
 ```
 install json-parser from alice (trust: 0.8)
@@ -212,7 +212,7 @@ The coordination protocol hasn't changed because it didn't need to. Push
 to master. `dotnet test`. Move forward.
 
 The party may grow. Every tool we ship, every `.exe` that works, every
-program that compiles — that's an anchor for the next climber. But right
+program that compiles -- that's an anchor for the next climber. But right
 now, the wall is in front of us, and we know what the next hold looks like.
 
 ---
@@ -231,11 +231,11 @@ The pace is the pace. The next hold is right there. We're going up.
 ---
 
 *The Ascent told the story of the range. This document tells the story
-of the last peak — the one that matters. The Vision documents remain the
+of the last peak -- the one that matters. The Vision documents remain the
 north star. The principles remain the law. This document says what we're
 building next, and why it's going to work.*
 
 *It's going to work because we already proved the hard parts. The
 language is real. The compiler is real. The machine code is real. The
-bare metal boot is real. Everything that follows is scope — and scope
+bare metal boot is real. Everything that follows is scope -- and scope
 is what we're good at.*

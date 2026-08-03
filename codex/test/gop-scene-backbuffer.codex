@@ -1,0 +1,138 @@
+Chapter: GopSceneBackbuffer
+  cites Foreword chapter Console
+  cites Works chapter GopScene
+
+ GopScene renders into a back buffer and blits it to the desktop's content
+ pane. The blit is the only step that reads both pitches -- destination
+ rows sit stride apart on the panel, source rows sit w apart in the back
+ buffer -- so it is the one place in the chapter a padded scanline can
+ shear, and the ASUS TUF pads its scanlines: 1920 visible against a
+ PixelsPerScanLine of 2048.
+
+ 200 visible against a 264-pixel scanline is the same shape small. No
+ emulator feature is involved, because both pitches are ordinary
+ arguments.
+
+ Every source pixel carries its own row and column, so the assertion is
+ where a pixel LANDED and not merely that something was painted. A
+ width-stepping blit puts row 0 in the right place and every later row at
+ r * 160 instead of r * 264, which is why row 0 is not evidence and the
+ count over all 24 rows is.
+
+ The sidebar columns, the taskbar rows and the 64 pad columns beyond the
+ visible width are pre-filled with a sentinel and must still hold it. A
+ blit that painted the whole panel would satisfy the landing count just as
+ well, and the containment rows are what separate the two.
+
+ The last row is the calibration and it is the reason to believe the rest:
+ the same blit is asked for the visible pane width as the destination
+ pitch, into a fresh panel, and the landing count is required to DISAGREE.
+ Without it every row above would be satisfied by an instrument that could
+ not tell the two pitches apart.
+
+ Sabotaged against seed 6671C19A0F78F630 by stepping the destination rows
+ by w: landing goes to 1 of 24, and the pane, sidebar and pad rows go to
+ no. **The taskbar row does NOT move, and it is worth knowing why rather
+ than reading it as a control that held.** A short-pitch blit writes no
+ further than pixel 23 * 160 + 199, which is inside row 15 of a 264-pitch
+ panel, so it cannot reach row 24 whatever it gets wrong. That row is a
+ control against a blit that paints too MUCH, not against one that picks
+ the wrong pitch, and the pad row is the one that catches the pitch on the
+ containment side.
+
+ We say:
+
+Section: Geometry
+
+  vis-w : Integer = 200
+  fb-stride : Integer = 264
+  fb-rows : Integer = 32
+  sidebar : Integer = 40
+  taskbar : Integer = 8
+  cw : Integer = 160
+  ch : Integer = 24
+  sentinel : Integer = 12648430
+
+Section: Panel
+
+  fill-panel : Integer, Integer, Integer -> Integer
+  fill-panel (b) (i) (n) =
+    if i >= n then 0
+    else let d = poke-32 b (i * 4) sentinel
+    in fill-panel b (i + 1) n
+
+ Row r, column c carries r * 1000 + c + 1, so no payload value collides
+ with another and none of them is the sentinel.
+
+  payload : Integer, Integer -> Integer
+  payload (r) (c) = r * 1000 + c + 1
+
+  fill-src-cols : Integer, Integer, Integer -> Integer
+  fill-src-cols (b) (r) (c) =
+    if c >= cw then 0
+    else let d = poke-32 b ((r * cw + c) * 4) (payload r c)
+    in fill-src-cols b r (c + 1)
+
+  fill-src : Integer, Integer -> Integer
+  fill-src (b) (r) =
+    if r >= ch then 0
+    else let d = fill-src-cols b r 0
+    in fill-src b (r + 1)
+
+Section: Counting
+
+ A row has landed when its first and its last pixel are both where the
+ stride says they should be. One of the two alone would be satisfied by a
+ blit that got the row origin right and the run length wrong.
+
+  rows-landed : Integer, Integer, Integer -> Integer
+  rows-landed (p) (r) (acc) =
+    if r >= ch then acc
+    else if peek-32 p ((r * fb-stride + sidebar) * 4) == payload r 0 & peek-32 p ((r * fb-stride + sidebar + cw - 1) * 4) == payload r (cw - 1) then rows-landed p (r + 1) (acc + 1)
+    else rows-landed p (r + 1) acc
+
+  count-cols : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  count-cols (p) (x0) (y0) (rw) (y) (x) =
+    if x >= rw then 0
+    else let here = if peek-32 p (((y0 + y) * fb-stride + x0 + x) * 4) == sentinel then 1 else 0
+    in here + count-cols p x0 y0 rw y (x + 1)
+
+  count-rows : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  count-rows (p) (x0) (y0) (rw) (rh) (y) (acc) =
+    if y >= rh then acc
+    else count-rows p x0 y0 rw rh (y + 1) (acc + count-cols p x0 y0 rw y 0)
+
+  intact : Integer, Integer, Integer, Integer, Integer -> Boolean
+  intact (p) (x0) (y0) (rw) (rh) = count-rows p x0 y0 rw rh 0 0 == rw * rh
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let src = alloc-bytes (cw * ch * 4)
+    in let fs = fill-src src 0
+    in let panel = alloc-bytes (fb-stride * fb-rows * 4)
+    in let fp = fill-panel panel 0 (fb-stride * fb-rows)
+    in let b1 = gsc-blit-rows (panel + sidebar * 4) fb-stride src cw ch 0
+    in let landed = rows-landed panel 0 0
+    in let side-ok = intact panel 0 0 sidebar fb-rows
+    in let task-ok = intact panel sidebar ch cw taskbar
+    in let pad-ok = intact panel vis-w 0 (fb-stride - vis-w) fb-rows
+    in let pane-kept = count-rows panel sidebar 0 cw ch 0 0
+    in let bad = alloc-bytes (fb-stride * fb-rows * 4)
+    in let fb2 = fill-panel bad 0 (fb-stride * fb-rows)
+    in let b2 = gsc-blit-rows (bad + sidebar * 4) cw src cw ch 0
+    in let landed-bad = rows-landed bad 0 0
+    in act
+      print-line-uni ("rows land by stride    : " & integer-to-text landed & " of " & integer-to-text ch)
+      print-line-uni ("pane fully painted     : " & yn (pane-kept == 0))
+      print-line-uni ("sidebar untouched      : " & yn side-ok)
+      print-line-uni ("taskbar untouched      : " & yn task-ok)
+      print-line-uni ("pad columns untouched  : " & yn pad-ok)
+      print-line-uni ("calibration disagrees  : " & yn (landed-bad < ch))
+    end
+  end
+
+Page 1

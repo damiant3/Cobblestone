@@ -124,7 +124,7 @@ Section: Construction
              ep-random = random, ep-peer-pub = [], ep-transcript = [], ep-ch1 = [], ep-cookie-secret = cookie-secret,
              ep-addr = addr, ep-send-seq = 0, ep-msg-seq = 0, ep-c-hs = [], ep-s-hs = [], ep-done = False,
              ep-cert-chain = [], ep-sign-priv = [], ep-sign-pub = [], ep-anchors = [], ep-cal-now = [],
-             ep-peer-key = X509Key { xk-alg = KeyUnknown, xk-bytes = [] }, ep-auth-done = False,
+             ep-peer-key = X509Key { xk-alg = KeyUnknown, xk-bytes = [], xk-mod = [], xk-exp = [] }, ep-auth-done = False,
              ep-expected-peer = [], ep-hs-secret = [], ep-c-ap = [], ep-s-ap = [],
              ep-app-read-seq = 0, ep-app-write-seq = 0, ep-app-in = [] }
 
@@ -159,9 +159,9 @@ Section: Construction
  any differently than before. The anchors are the client's whole security
  policy in one field.
 
-  dtls-ep-with-anchors : DtlsEp, List X509Anchor, List Integer -> DtlsEp
-  dtls-ep-with-anchors (ep) (anchors) (cal-now) =
-    __record-set (__record-set ep "ep-anchors" anchors) "ep-cal-now" cal-now
+  dtls-ep-with-anchors : DtlsEp, List X509Anchor, List Integer, List Integer -> DtlsEp
+  dtls-ep-with-anchors (ep) (anchors) (cal-now) (expected) =
+    __record-set (__record-set (__record-set ep "ep-anchors" anchors) "ep-cal-now" cal-now) "ep-expected-peer" expected
 
  Anchors say the peer's certificate must chain to a CA the client runs.
  They do not say WHICH peer. A chain that walks to a trusted anchor proves
@@ -170,13 +170,14 @@ Section: Construction
  that is the difference between "a valid device" and "the device I dialed":
  without this, a holder of any valid certificate impersonates any other,
  and the man-in-the-middle simply presents a real certificate of his own.
- A client that pins an expected peer refuses a leaf whose subject is not
- that exact name. An empty expected peer keeps the anchors-only behaviour,
- so this is opt-in and additive -- an existing client is unchanged.
 
-  dtls-ep-expect-peer : DtlsEp, List Integer -> DtlsEp
-  dtls-ep-expect-peer (ep) (subject) =
-    __record-set ep "ep-expected-peer" subject
+ That paragraph was here before the check was, and underneath it sat
+ `dtls-ep-expect-peer`, which set the name AFTER the fact and defaulted to
+ "anything matches" when nobody called it -- and nobody did. The name is
+ now the third argument of dtls-ep-with-anchors, because the moment a
+ client decides to verify a chain it has to say whose chain it wanted.
+ Anonymous DTLS is untouched: an endpoint that never takes anchors never
+ verifies a certificate and never needs a name.
 
 Section: Client
 
@@ -512,23 +513,16 @@ Section: Client Receive
       is Just (certs) -> dtls-ep-cert-key-walk ep certs
 
  The chain proved the leaf is trusted; this proves it is the RIGHT leaf.
- An empty expected peer means the client pinned no identity and keeps the
- anchors-only policy. A set one is matched against the leaf's subject with
- the very comparator the chain walk uses for issuer and subject
- (x509-name-eq), so "who signed this" and "who is this" are decided the
- same way, over the same DER-encoded Name bytes.
-
-  dtls-ep-peer-matches : DtlsEp, X509Cert -> Boolean
-  dtls-ep-peer-matches (ep) (leaf) =
-    if list-length (ep.ep-expected-peer) == 0 then True
-    else x509-name-eq (ep.ep-expected-peer) (leaf.xc-subject)
+ The identity is checked inside x509-chain-verify, against the leaf's
+ subjectAltName. It used to be checked here, against the leaf's subject
+ DN, and only when the caller had opted in. Both halves of that were
+ wrong: a DN is not the name anybody dials, and a check nobody switches on
+ is a check nobody has.
 
   dtls-ep-cert-key-walk : DtlsEp, List X509Cert -> DtlsEp
   dtls-ep-cert-key-walk (ep) (certs) =
-    when x509-chain-verify certs (ep.ep-anchors) (ep.ep-cal-now)
-      is ChainOk -> if dtls-ep-peer-matches ep (list-at certs 0)
-                    then __record-set ep "ep-peer-key" ((list-at certs 0).xc-key)
-                    else ep
+    when x509-verify-peer certs (ep.ep-anchors) (ep.ep-cal-now) (ep.ep-expected-peer)
+      is ChainOk -> __record-set ep "ep-peer-key" ((list-at certs 0).xc-key)
       is otherwise -> ep
 
  CertificateVerify. The signature is checked over the transcript hash

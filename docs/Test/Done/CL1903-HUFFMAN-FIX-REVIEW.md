@@ -1,13 +1,13 @@
-# CL 1903 — Huffman Tree + Graph DFS Fixes
+# CL 1903 -- Huffman Tree + Graph DFS Fixes
 
 **Author**: reek
 **Date**: 2026-05-20
-**Status**: RESOLVED — verified 2026-05-29 (reek). All six fixes are
+**Status**: RESOLVED -- verified 2026-05-29 (reek). All six fixes are
 present in current source (recursive `HuffBranch`, `huff-walk-node`
 recursion, Graph `DfsState`, Bresenham dead-branch, HexFormat spacing,
 Convolution n=1 div-by-zero guard), and the seed has been rebuilt since.
 Archived to Done/. Caveat: `codex/test/apps/huffman-test.codex` is still
-an empty stub (its `.expected` exists) — a low-priority missing test body,
+an empty stub (its `.expected` exists) -- a low-priority missing test body,
 not a foreword bug. Do not re-investigate the fixes.
 
 ## Summary
@@ -21,7 +21,7 @@ Three bugs across two foreword modules:
 
 ## Bug 1: `HuffBranch` stored stale indices
 
-**Before**: `HuffBranch (Integer) (Integer) (Integer)` — stored the
+**Before**: `HuffBranch (Integer) (Integer) (Integer)` -- stored the
 frequency and two indices into the flat `nodes` list.
 
 **Problem**: `huff-merge-loop` called `huff-remove-and-add` which used
@@ -30,7 +30,7 @@ subsequent elements. Indices stored in previously-created `HuffBranch`
 nodes became stale after compaction. A tree with 3+ unique bytes would
 have branches pointing to wrong nodes or out of bounds.
 
-**Fix**: `HuffBranch (Integer) (HuffNode) (HuffNode)` — stores child
+**Fix**: `HuffBranch (Integer) (HuffNode) (HuffNode)` -- stores child
 nodes directly as a recursive variant. No index invalidation possible.
 
 ## Bug 2: `huff-walk-tree` never recursed
@@ -64,12 +64,12 @@ Left child gets `bits * 2` (append 0), right child gets `bits * 2 + 1`
 | `HuffBranch` | `(Integer) (Integer) (Integer)` → `(Integer) (HuffNode) (HuffNode)` |
 | `huff-merge-loop` | Extract min nodes by value, build recursive tree, no index tracking |
 | `huff-find-min` | Unchanged (still finds index of minimum-frequency node) |
-| `huff-find-min2` | **Removed** — no longer needed; second min found after removing first |
-| `huff-remove-and-add` | **Removed** — replaced by `huff-remove-at` |
-| `huff-compact` / `huff-compact-loop` | **Removed** — index-based compaction no longer needed |
-| `huff-remove-at` / `huff-remove-at-loop` | **Added** — remove element at index, return new list |
+| `huff-find-min2` | **Removed** -- no longer needed; second min found after removing first |
+| `huff-remove-and-add` | **Removed** -- replaced by `huff-remove-at` |
+| `huff-compact` / `huff-compact-loop` | **Removed** -- index-based compaction no longer needed |
+| `huff-remove-at` / `huff-remove-at-loop` | **Added** -- remove element at index, return new list |
 | `huff-walk-tree` | **Removed** |
-| `huff-walk-node` | **Added** — recursive tree walk, assigns bit codes |
+| `huff-walk-node` | **Added** -- recursive tree walk, assigns bit codes |
 | `huff-build-codes` | Updated to call `huff-walk-node` on root node |
 
 ## Risk Assessment
@@ -95,7 +95,7 @@ increasing frequencies). Typical depth is 8-12.
 
 This is a foreword module change. The compiled Huffman code is embedded
 in the seed. A seed rebuild is required to incorporate this fix, but the
-existing seed will still compile correctly — the compiler does not call
+existing seed will still compile correctly -- the compiler does not call
 any Huffman functions.
 
 ## Bug 3: Graph DFS visited state lost across neighbors
@@ -136,7 +136,7 @@ No blow-up.
 **File**: `codex/foreword/game/Bresenham.codex`
 
 `bres-line-loop` lines 27-33 and 34-39 had identical code in both
-branches of `if x == x1`. The outer condition was dead — both sides
+branches of `if x == x1`. The outer condition was dead -- both sides
 performed the same error-stepping and recursive call.
 
 **Fix**: Collapsed to `if x == x1 & y == y1 then acc2 else <step>`.
@@ -146,7 +146,7 @@ Removes 6 duplicate lines.
 
 **File**: `codex/os/dev/HexFormat.codex`
 
-`hex-dump-byte` had `if i == 8` branch identical to `else` — both
+`hex-dump-byte` had `if i == 8` branch identical to `else` -- both
 used single-space separator. Standard hex dumps use double space at
 byte 8 to visually separate the two halves of a 16-byte line.
 
@@ -161,7 +161,7 @@ byte 8 to visually separate the two halves of a 16-byte line.
 
 **Fix**: `let denom = if n <= 1 then 1 else n - 1`. For n=1, the
 single window coefficient gets cos(0) = 1000, yielding w=1000 for
-Hanning and w=1000 for Hamming — correct single-sample behavior.
+Hanning and w=1000 for Hamming -- correct single-sample behavior.
 
 ## Not Fixed
 

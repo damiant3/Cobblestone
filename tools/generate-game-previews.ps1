@@ -1,4 +1,4 @@
-# generate-game-previews.ps1 — Generate per-game hover audio previews via MusicGen.
+# generate-game-previews.ps1 -- Generate per-game hover audio previews via MusicGen.
 [CmdletBinding()]
 param([switch]$Force)
 

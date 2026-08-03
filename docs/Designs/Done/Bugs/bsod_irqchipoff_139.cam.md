@@ -1,4 +1,4 @@
-# WHPX: host BSOD 0x139 during `pingpong-self.ps1` — WITH `kernel-irqchip=off`
+# WHPX: host BSOD 0x139 during `pingpong-self.ps1` -- WITH `kernel-irqchip=off`
 
 ## Summary
 
@@ -8,17 +8,17 @@ via the canonical PowerShell harness. This is the first BSOD observed **with**
 were attributed to the `.sh` path which lacked the workaround.
 
 **Root cause**: unknown. The `kernel-irqchip=off` remediation **did not prevent
-this crash**. The bugcheck code (0x139 KERNEL_SECURITY_CHECK_FAILURE) is new —
+this crash**. The bugcheck code (0x139 KERNEL_SECURITY_CHECK_FAILURE) is new --
 not seen in any prior incident in this cluster.
 
 **Caveat**: without minidump symbol analysis, we cannot confirm the faulting
 module is `winhvr.sys` / `Vid.sys`. The 0x139 could be from an unrelated
 driver. One data point does not disprove the 40+ stable iterations with
-`kernel-irqchip=off` — this could be a rare secondary race, or a different
+`kernel-irqchip=off` -- this could be a rare secondary race, or a different
 bug entirely.
 
 **Significance**: `kernel-irqchip=off` likely reduces BSOD frequency but may
-not eliminate it completely. Continue using the flag — the alternative (no flag)
+not eliminate it completely. Continue using the flag -- the alternative (no flag)
 crashes reliably within minutes.
 
 ## Crash details
@@ -85,8 +85,8 @@ that `kernel-irqchip=off` was designed to mitigate. This may indicate a
 second corruption vector in WHPX, but without minidump symbol analysis we
 cannot confirm the faulting module is WHPX-related:
 
-1. **IRQ-path corruption** — mitigated by `kernel-irqchip=off` (the 0x50 cluster)
-2. **List-entry corruption** — possibly not mitigated (this crash, 0x139), pending confirmation
+1. **IRQ-path corruption** -- mitigated by `kernel-irqchip=off` (the 0x50 cluster)
+2. **List-entry corruption** -- possibly not mitigated (this crash, 0x139), pending confirmation
 
 ## Environment
 
@@ -97,7 +97,7 @@ cannot confirm the faulting module is WHPX-related:
 | **RAM** | 32 GB DDR5-7200 |
 | **QEMU** | 11.0.0 (`v11.0.0-12122-ga4bb4b10c9`) |
 | **WHPX drivers** | `winhv.sys` 10.0.26100.4768, `winhvr.sys` 10.0.26100.7309, `Vid.sys` 10.0.26100.7920 |
-| **Workaround** | `-machine kernel-irqchip=off` — ACTIVE |
+| **Workaround** | `-machine kernel-irqchip=off` -- ACTIVE |
 | **Parallel guests** | 2 (Cam + Nib both running pingpong-self.ps1) |
 
 ## Implications for upstream reports
@@ -114,4 +114,4 @@ Feedback Hub report. Key points for upstream:
 
 1. Update upstream QEMU #3460 with this new bugcheck code and single-guest repro
 2. Consider whether WHPX is viable for sustained automated use on this hardware
-3. No change to the `.ps1` harness — `kernel-irqchip=off` remains correct but insufficient
+3. No change to the `.ps1` harness -- `kernel-irqchip=off` remains correct but insufficient

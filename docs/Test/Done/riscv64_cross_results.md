@@ -68,7 +68,7 @@ so it never hits this.
 
 | CL | Fix | Impact |
 |----|-----|--------|
-| 6132 | `alloc-bytes` runtime helper (was missing — heap pointer never bumped, buffers aliased) | German umlauts fixed |
+| 6132 | `alloc-bytes` runtime helper (was missing -- heap pointer never bumped, buffers aliased) | German umlauts fixed |
 | 6133 | `__cce_to_unicode` / `__unicode_to_cce` table lookup helpers | CCE round-trip correct |
 | 6134 | `unicode-bytes-to-text` list stride fix (8-byte elements, was reading at stride 1) | +1 test (arm64-http) |
 
@@ -76,7 +76,7 @@ so it never hits this.
 
 Zero-argument functions whose body is a list literal (like
 `cce-to-unicode-table` with 128 elements) were re-allocated on
-every reference — ~1 KB per call, 128 calls per `from-unicode`,
+every reference -- ~1 KB per call, 128 calls per `from-unicode`,
 30+ `from-unicode` per layout builder = ~7 MB per keyboard layout.
 
 The memo mechanism caches return values of pure zero-arg functions

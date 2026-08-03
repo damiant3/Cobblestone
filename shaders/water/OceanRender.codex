@@ -1,0 +1,491 @@
+Chapter: OceanRender
+  cites Water chapter OceanModel
+
+ The ocean model, drawn. `OceanModel` samples the surface at four points
+ and prints them; four numbers are enough to check that a normal is unit
+ and that foam appears where the Jacobian folds, and they are not enough
+ to see whether the thing looks like water. This chapter evaluates the
+ same model over a grid, projects the displaced points through a camera,
+ and fills the triangles into the GOP framebuffer, so the output is an
+ image rather than a reading.
+
+ Nothing here changes the model. Every surface point still comes from
+ `eval-surface` and every colour still comes from `shade-point`. What is
+ added is a camera, a scanline filler, and distance haze.
+
+ Three choices worth stating, because each had an alternative.
+
+ The framebuffer is written directly with `poke-32` rather than through
+ `Game chapter Rasterizer`. That chapter carries the same scanline math
+ and is the obvious thing to cite, but its `Framebuf` is a `List Integer`
+ and `fb-set` builds a fresh `Framebuf` record for every pixel it writes.
+ On a heap with no collector that is a record per pixel for a quarter of
+ a million pixels, to produce an intermediate that would then have to be
+ copied into the framebuffer anyway. The filler below is the same
+ algorithm without the copy or the garbage.
+
+ There is no depth buffer. The grid is drawn one band at a time from the
+ far edge toward the camera, which is a painter's ordering and is exact
+ for a heightfield. Gerstner displacement can fold a crest over the
+ trough in front of it, and where it does the near band wins by drawing
+ later, which is the wrong answer for those pixels. It costs a few pixels
+ at a crest lip and it saves sorting every triangle.
+
+ The wave list is bound once in `opening` and threaded through every
+ call. A list constant is rebuilt at each mention, so naming
+ `ocean-waves` inside the per-vertex path would rebuild four `Wave`
+ records for every vertex on the grid.
+
+Section: Framebuffer
+
+ The standing GOP surface codex-vm renders at 0xBF000000: one 32-bit XRGB
+ pixel per cell, row-major, no pitch padding. A write outside the bounds
+ is dropped rather than wrapped. The resolution here must match the
+ `-gop-width` and `-gop-height` the machine is booted with; the sidecar
+ in the README passes both.
+
+  or-fb-base : Integer
+  or-fb-base = #BF000000
+
+  or-width : Integer
+  or-width = 640
+
+  or-height : Integer
+  or-height = 400
+
+  or-half-w : Real
+  or-half-w = 320.0
+
+  or-half-h : Real
+  or-half-h = 200.0
+
+  or-min : Integer, Integer -> Integer
+  or-min (a) (b) = if a < b then a else b
+
+  or-max : Integer, Integer -> Integer
+  or-max (a) (b) = if a > b then a else b
+
+  or-pack : Real, Real, Real -> Integer
+  or-pack (r) (g) (b) =
+    let ri = real-to-int (w-sat r * 255.0 + 0.5)
+    in let gi = real-to-int (w-sat g * 255.0 + 0.5)
+    in let bi = real-to-int (w-sat b * 255.0 + 0.5)
+    in ri * 65536 + gi * 256 + bi
+
+  or-put : Integer, Integer, Integer -> Integer
+  or-put (x) (y) (color) =
+    if x < 0 then 0
+    else if y < 0 then 0
+    else if x >= or-width then 0
+    else if y >= or-height then 0
+    else poke-32 or-fb-base ((y * or-width + x) * 4) color
+
+  or-span : Integer, Integer, Integer, Integer -> Integer
+  or-span (x) (x1) (y) (color) =
+    if x > x1 then 0
+    else let d = or-put x y color
+    in or-span (x + 1) x1 y color
+
+Section: Sky
+
+ A vertical gradient, dark at the zenith and pale at the bottom, so the
+ water has something to fog into and the image has a horizon. The water
+ is drawn over the lower part of it.
+
+  or-sky-zenith : V3
+  or-sky-zenith = V3 { x = 0.26, y = 0.45, z = 0.72 }
+
+  or-sky-haze : V3
+  or-sky-haze = V3 { x = 0.72, y = 0.82, z = 0.9 }
+
+  or-sky-at : Integer -> Integer
+  or-sky-at (y) =
+    let t = real-from-int y / real-from-int (or-height - 1)
+    in let c = v-lerp or-sky-zenith or-sky-haze t
+    in or-pack c.x c.y c.z
+
+  or-clear : Integer -> Integer
+  or-clear (y) =
+    if y >= or-height then 0
+    else let d = or-span 0 (or-width - 1) y (or-sky-at y)
+    in or-clear (y + 1)
+
+Section: Camera
+
+ A look-at frame built from the eye the model already carries. Right is
+ the cross product of world up with forward, which is what puts world +x
+ on the right of the image for a camera looking along +z; up is then
+ forward crossed with right. A point is projected by measuring it along
+ the three axes and dividing the two lateral components by the forward
+ one.
+
+  v-cross : V3, V3 -> V3
+  v-cross (a) (b) = V3 {
+    x = a.y * b.z - a.z * b.y,
+    y = a.z * b.x - a.x * b.z,
+    z = a.x * b.y - a.y * b.x
+  }
+
+  Cam = record { cf : V3, cr : V3, cu : V3 }
+
+  or-world-up : V3
+  or-world-up = V3 { x = 0.0, y = 1.0, z = 0.0 }
+
+  or-target : V3
+  or-target = V3 { x = 0.0, y = 0.0, z = 22.0 }
+
+  or-focal : Real
+  or-focal = 520.0
+
+  or-near : Real
+  or-near = 0.5
+
+  or-camera : Cam
+  or-camera =
+    let f = v-norm (v-sub or-target ocean-eye)
+    in let r = v-norm (v-cross or-world-up f)
+    in Cam { cf = f, cr = r, cu = v-cross f r }
+
+Section: Distance Haze
+
+ Aerial perspective. Without it the grid ends in a hard line across the
+ image where the last band stops, which reads as a cut sheet rather than
+ a sea. Fogging the far water into the same colour the sky reaches at the
+ horizon hides the edge for the same reason it does outdoors.
+
+  or-fog-start : Real
+  or-fog-start = 35.0
+
+  or-fog-end : Real
+  or-fog-end = 145.0
+
+  or-fog : V3, Real -> V3
+  or-fog (c) (dist) =
+    let t = w-sat ((dist - or-fog-start) / (or-fog-end - or-fog-start))
+    in v-lerp c or-sky-haze t
+
+Section: Vertices
+
+ One grid vertex: where the displaced surface point lands on screen,
+ whether it is in front of the camera at all, and the colour the model
+ shades it. Colour is carried per vertex and averaged per triangle, so a
+ facet takes the mean of its three corners rather than one sample.
+
+  Vtx = record {
+    vx : Real,
+    vy : Real,
+    vok : Integer,
+    vr : Real,
+    vg : Real,
+    vb : Real
+  }
+
+  or-vtx-behind : Vtx
+  or-vtx-behind = Vtx { vx = 0.0, vy = 0.0, vok = 0, vr = 0.0, vg = 0.0, vb = 0.0 }
+
+  or-vtx-visible : Surface, Cam, V3, Real -> Vtx
+  or-vtx-visible (s) (cam) (d) (cz) =
+    let cx = v-dot d (cam.cr)
+    in let cy = v-dot d (cam.cu)
+    in let lit = or-fog (shade-point s ocean-eye ocean-sun) cz
+    in Vtx {
+      vx = or-half-w + cx * or-focal / cz,
+      vy = or-half-h - cy * or-focal / cz,
+      vok = 1,
+      vr = lit.x,
+      vg = lit.y,
+      vb = lit.z
+    }
+
+  or-vertex : List Wave, Cam, Real, Real -> Vtx
+  or-vertex (ws) (cam) (x) (z) =
+    let s = eval-surface ws x z ocean-time
+    in let p = V3 { x = s.px, y = s.py, z = s.pz }
+    in let d = v-sub p ocean-eye
+    in let cz = v-dot d (cam.cf)
+    in if cz < or-near then or-vtx-behind else or-vtx-visible s cam d cz
+
+Section: The Grid
+
+ The grid is shaped like the view frustum, not like a rectangle of water.
+
+ A rectangular slab is the obvious thing to sample and it is wrong here,
+ for a reason worth writing down because the picture it produces does not
+ look like a domain problem. Fix the width and the near rows are as wide
+ as the far ones while sitting a few units from the eye, so they project
+ to thousands of pixels across and arrive as slivers spanning the screen,
+ while the far rows shrink below a pixel and contribute nothing. The
+ first render of this chapter was that image.
+
+ Making each row's half-width proportional to its distance ahead of the
+ eye gives every row roughly the same width on screen and every quad
+ roughly the same screen area, which is where the samples are worth
+ spending. The margin carries the row edges past the frame so the sides
+ are covered.
+
+ Rows are spaced quadratically in depth, so the near water, which fills
+ most of the image, gets most of the rows.
+
+  or-nx : Integer
+  or-nx = 120
+
+  or-nz : Integer
+  or-nz = 90
+
+  or-z0 : Real
+  or-z0 = 0.0 - 26.0
+
+  or-z1 : Real
+  or-z1 = 260.0
+
+  or-margin : Real
+  or-margin = 1.8
+
+  or-half-width-at : Real -> Real
+  or-half-width-at (z) =
+    let ahead = z - ocean-eye.z
+    in let d = if ahead < 1.0 then 1.0 else ahead
+    in d * or-half-w / or-focal * or-margin
+
+  or-x-at : Real, Integer -> Real
+  or-x-at (z) (i) =
+    let hw = or-half-width-at z
+    in ocean-eye.x - hw + 2.0 * hw * real-from-int i / real-from-int or-nx
+
+  or-z-at : Integer -> Real
+  or-z-at (j) =
+    let t = real-from-int j / real-from-int or-nz
+    in or-z0 + (or-z1 - or-z0) * t * t
+
+  or-row : List Wave, Cam, Integer, Real, List Vtx -> List Vtx
+  or-row (ws) (cam) (i) (z) (acc) =
+    if i > or-nx then acc
+    else or-row ws cam (i + 1) z (list-push acc (or-vertex ws cam (or-x-at z i) z))
+
+Section: Wavelength Level of Detail
+
+ A frustum-shaped grid holds the screen density constant, which means the
+ world-space spacing between samples grows without bound with distance.
+ The far rows of this grid sit 4 units apart and the shortest wave in the
+ set is 3.8 units long, so out there the wave field is sampled below its
+ Nyquist rate. An undersampled sine does not fade out, it returns an
+ arbitrary phase per vertex, and the model faithfully reports what those
+ phases imply: gradients that are nonsense, a Jacobian that folds, and
+ foam. The first frustum render came back 99 per cent foam-white for
+ exactly this reason, and nothing was wrong with the model.
+
+ So each row gets its own copy of the wave set with the waves it cannot
+ resolve attenuated out. A wave is at full strength when its wavelength
+ is four or more times the row spacing and gone by twice it, faded rather
+ than dropped so that a wave does not pop as a row crosses the threshold.
+ Amplitude and steepness are attenuated together, which keeps the crest
+ sharpening in proportion to the height it sharpens.
+
+ This is the same thing a mip-mapped displacement map does on a GPU, and
+ the same thing an eye does: distant water is smooth because its small
+ structure is below the resolution looking at it.
+
+  or-spacing-at : Real -> Real
+  or-spacing-at (z) = 2.0 * or-half-width-at z / real-from-int or-nx
+
+  or-lod-wave : Wave, Real -> Wave
+  or-lod-wave (w) (spacing) =
+    let f = w-sat ((w.wavelen / spacing - 2.0) / 2.0)
+    in Wave {
+      dx = w.dx,
+      dy = w.dy,
+      amp = w.amp * f,
+      wavelen = w.wavelen,
+      speed = w.speed,
+      steep = w.steep * f
+    }
+
+  or-lod-waves : List Wave, Real, Integer, List Wave -> List Wave
+  or-lod-waves (ws) (spacing) (i) (acc) =
+    if i >= list-length ws then acc
+    else or-lod-waves ws spacing (i + 1) (list-push acc (or-lod-wave (list-at ws i) spacing))
+
+  or-row-at : List Wave, Cam, Integer -> List Vtx
+  or-row-at (ws) (cam) (j) =
+    let z = or-z-at j
+    in or-row (or-lod-waves ws (or-spacing-at z) 0 []) cam 0 z []
+
+Section: Triangle Fill
+
+ Scanline fill of a screen triangle, sorted by y and swept in two halves
+ across the long edge. The same shape as the one in `Game chapter
+ Rasterizer`, writing pixels instead of building a framebuffer record.
+
+  Tri3 = record {
+    tax : Integer, tay : Integer,
+    tbx : Integer, tby : Integer,
+    tcx : Integer, tcy : Integer
+  }
+
+  or-sort3 : Integer, Integer, Integer, Integer, Integer, Integer -> Tri3
+  or-sort3 (x0) (y0) (x1) (y1) (x2) (y2) =
+    if y0 <= y1 then
+      if y1 <= y2 then Tri3 { tax = x0, tay = y0, tbx = x1, tby = y1, tcx = x2, tcy = y2 }
+      else if y0 <= y2 then Tri3 { tax = x0, tay = y0, tbx = x2, tby = y2, tcx = x1, tcy = y1 }
+      else Tri3 { tax = x2, tay = y2, tbx = x0, tby = y0, tcx = x1, tcy = y1 }
+    else if y0 <= y2 then Tri3 { tax = x1, tay = y1, tbx = x0, tby = y0, tcx = x2, tcy = y2 }
+    else if y1 <= y2 then Tri3 { tax = x1, tay = y1, tbx = x2, tby = y2, tcx = x0, tcy = y0 }
+    else Tri3 { tax = x2, tay = y2, tbx = x1, tby = y1, tcx = x0, tcy = y0 }
+
+  or-edge-x : Integer, Integer, Integer, Integer, Integer -> Integer
+  or-edge-x (x0) (y0) (x1) (y1) (y) =
+    let dy = y1 - y0
+    in if dy == 0 then x0
+    else x0 + (x1 - x0) * (y - y0) / dy
+
+  or-half : Tri3, Integer, Integer, Integer -> Integer
+  or-half (t) (y-start) (y-end) (color) =
+    if y-start > y-end then 0
+    else if y-start >= or-height then 0
+    else or-half-step t y-start y-end color
+
+  or-half-step : Tri3, Integer, Integer, Integer -> Integer
+  or-half-step (t) (y) (y-end) (color) =
+    let xac = or-edge-x (t.tax) (t.tay) (t.tcx) (t.tcy) y
+    in let xside = if y < t.tby then or-edge-x (t.tax) (t.tay) (t.tbx) (t.tby) y
+                   else or-edge-x (t.tbx) (t.tby) (t.tcx) (t.tcy) y
+    in let lo = or-max (or-min xac xside) 0
+    in let hi = or-min (or-max xac xside) (or-width - 1)
+    in let d = if y >= 0 then or-span lo hi y color else 0
+    in or-half t (y + 1) y-end color
+
+  or-fill : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  or-fill (x0) (y0) (x1) (y1) (x2) (y2) (color) =
+    let t = or-sort3 x0 y0 x1 y1 x2 y2
+    in let d = or-half t (t.tay) (t.tby) color
+    in or-half t (t.tby) (t.tcy) color
+
+Section: Drawing the Bands
+
+ A facet is drawn only when all three of its corners are in front of the
+ camera. A partially visible triangle is dropped rather than clipped: the
+ grid starts well in front of the eye, so the only facets this discards
+ are behind the camera entirely.
+
+  or-tri : Vtx, Vtx, Vtx -> Integer
+  or-tri (a) (b) (c) =
+    if a.vok + b.vok + c.vok < 3 then 0
+    else or-tri-draw a b c
+
+  or-tri-draw : Vtx, Vtx, Vtx -> Integer
+  or-tri-draw (a) (b) (c) =
+    let col = or-pack ((a.vr + b.vr + c.vr) / 3.0) ((a.vg + b.vg + c.vg) / 3.0) ((a.vb + b.vb + c.vb) / 3.0)
+    in or-fill (real-to-int a.vx) (real-to-int a.vy) (real-to-int b.vx) (real-to-int b.vy) (real-to-int c.vx) (real-to-int c.vy) col
+
+  or-band : List Vtx, List Vtx, Integer -> Integer
+  or-band (far) (near) (i) =
+    if i >= or-nx then 0
+    else or-band-cell far near i
+
+  or-band-cell : List Vtx, List Vtx, Integer -> Integer
+  or-band-cell (far) (near) (i) =
+    let a = list-at far i
+    in let b = list-at far (i + 1)
+    in let c = list-at near i
+    in let e = list-at near (i + 1)
+    in let t1 = or-tri a b c
+    in let t2 = or-tri b e c
+    in or-band far near (i + 1)
+
+  or-rows : List Wave, Cam, Integer, List Vtx -> Integer
+  or-rows (ws) (cam) (j) (far) =
+    if j < 0 then 0
+    else or-rows-step ws cam j far
+
+  or-rows-step : List Wave, Cam, Integer, List Vtx -> Integer
+  or-rows-step (ws) (cam) (j) (far) =
+    let near = or-row-at ws cam j
+    in let d = or-band far near 0
+    in or-rows ws cam (j - 1) near
+
+Section: Reading the Result Back
+
+ The image is the deliverable, but a run that only paints tells you
+ nothing on a terminal. These two counts are read back out of the
+ framebuffer after the draw, and both are numbers that move when the
+ render breaks: covered counts pixels that no longer hold the sky
+ gradient their row was cleared to, so it goes to zero if the mesh fails
+ to draw, and foam counts near-white pixels, which is the model's own
+ Jacobian criterion arriving on screen.
+
+  or-is-foam : Integer -> Integer
+  or-is-foam (px) =
+    let r = int-mod (px / 65536) 256
+    in let g = int-mod (px / 256) 256
+    in let b = int-mod px 256
+    in if r >= 217 then (if g >= 217 then (if b >= 217 then 1 else 0) else 0) else 0
+
+  or-scan-row : Integer, Integer, Integer, Integer, Integer -> Integer
+  or-scan-row (y) (x) (sky) (want-foam) (acc) =
+    if x >= or-width then acc
+    else or-scan-row y (x + 1) sky want-foam (acc + or-scan-px (peek-32 or-fb-base ((y * or-width + x) * 4)) sky want-foam)
+
+  or-scan-px : Integer, Integer, Integer -> Integer
+  or-scan-px (px) (sky) (want-foam) =
+    if want-foam == 1 then or-is-foam px
+    else if px == sky then 0
+    else 1
+
+  or-scan : Integer, Integer, Integer -> Integer
+  or-scan (y) (want-foam) (acc) =
+    if y >= or-height then acc
+    else or-scan (y + 1) want-foam (acc + or-scan-row y 0 (or-sky-at y) want-foam 0)
+
+Section: Holding the Frame
+
+ codex-vm captures the framebuffer on a timer while the guest is still
+ running, so a program that draws and exits inside a second is already
+ gone when the capture fires. The driver holds after drawing.
+
+ The hold counts PIT ticks at cell 28672 rather than spinning a fixed
+ number of iterations, so it is a duration and not a guess about how fast
+ this machine retires instructions. The fuel cap is not decoration: on a
+ machine booted with the timer disabled the tick never advances, and
+ without the cap the hold would be permanent.
+
+ In a run that takes a screenshot the capture ends the guest partway
+ through this hold, so the last line the driver prints does not appear.
+ That absence is the capture working.
+
+  or-tick-addr : Integer
+  or-tick-addr = 28672
+
+  or-hold-ticks : Integer
+  or-hold-ticks = 90
+
+  or-hold-fuel : Integer
+  or-hold-fuel = 40000000000
+
+  or-hold : Integer, Integer -> Integer
+  or-hold (until) (fuel) =
+    if fuel <= 0 then 0
+    else if peek-32 or-tick-addr 0 >= until then 1
+    else or-hold until (fuel - 1)
+
+  or-hold-frame : Integer
+  or-hold-frame = or-hold (peek-32 or-tick-addr 0 + or-hold-ticks) or-hold-fuel
+
+Section: Driver
+
+  opening : [Console] Nothing
+  opening = act
+    print-line-uni "Ocean render (Gerstner grid, painter bands, GGX + SSS shading)"
+    print-line-uni ("resolution = " & show or-width & "x" & show or-height)
+    print-line-uni ("grid = " & show or-nx & "x" & show or-nz & " cells, time = " & show ocean-time)
+    let ws = ocean-waves
+    in let cam = or-camera
+    in let c0 = or-clear 0
+    in let d0 = or-rows ws cam (or-nz - 1) (or-row-at ws cam or-nz)
+    in let cov = or-scan 0 0 0
+    in let fm = or-scan 0 1 0
+    in act
+      print-line-uni ("covered = " & show cov)
+      print-line-uni ("foam = " & show fm)
+      print-line-uni ("held = " & show or-hold-frame)
+    end
+  end

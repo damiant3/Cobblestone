@@ -1,15 +1,15 @@
-# 03 — Type System
+# 03 -- Type System
 
 ## Overview
 
 The type system is the heart of Codex. Every design decision in the language traces back to what the type system can express. This document defines the type system in enough detail to implement it.
 
 We are building a type system that combines:
-- **Hindley-Milner inference** (for the common case — you don't annotate everything)
-- **Bidirectional type checking** (for dependent types — some annotations are required)
-- **Linear type checking** (for resource safety — tracked via a separate pass or integrated)
-- **Effect row typing** (for purity tracking — effects are part of function types)
-- **Dependent types** (for precision — types can depend on values)
+- **Hindley-Milner inference** (for the common case -- you don't annotate everything)
+- **Bidirectional type checking** (for dependent types -- some annotations are required)
+- **Linear type checking** (for resource safety -- tracked via a separate pass or integrated)
+- **Effect row typing** (for purity tracking -- effects are part of function types)
+- **Dependent types** (for precision -- types can depend on values)
 
 This is not a toy. This is approximately the type system of Idris 2, with linear types from Linear Haskell, effect rows from Koka/Eff, and a novel prose integration layer on top.
 
@@ -95,7 +95,7 @@ Amount = newtype Number
   where value ≥ 0
 ```
 
-A newtype wraps an existing type with a new identity and optional constraints. `Amount` is not `Number` — you cannot pass an `Amount` where a `Number` is expected without explicit conversion. The `where` clause adds a runtime-checked (or proof-discharged) constraint.
+A newtype wraps an existing type with a new identity and optional constraints. `Amount` is not `Number` -- you cannot pass an `Amount` where a `Number` is expected without explicit conversion. The `where` clause adds a runtime-checked (or proof-discharged) constraint.
 
 ---
 
@@ -114,7 +114,7 @@ append : Vector m a → Vector n a → Vector (m + n) a
 index  : (i : Integer) → Vector n a → {proof : i < n} → a
 ```
 
-The type of `append`'s result contains `m + n` — an arithmetic expression over values. The type checker must evaluate this expression during compilation.
+The type of `append`'s result contains `m + n` -- an arithmetic expression over values. The type checker must evaluate this expression during compilation.
 
 ### Type-Level Computation
 
@@ -130,7 +130,7 @@ The normalizer runs during type checking. It must terminate. Functions used at t
 
 ### Proof Obligations
 
-Dependent types generate **proof obligations** — things the programmer must prove for the program to type-check.
+Dependent types generate **proof obligations** -- things the programmer must prove for the program to type-check.
 
 ```
 index (i : Integer) (v : Vector n a) {i < n} → a
@@ -169,7 +169,7 @@ read-all   : FileHandle → [FileSystem] (Text, FileHandle)  -- returns the hand
 close-file : FileHandle → [FileSystem] Nothing              -- consumes the handle
 ```
 
-Note: `read-all` returns the handle as part of its result — this is the standard linear pattern. You "thread" the resource through operations.
+Note: `read-all` returns the handle as part of its result -- this is the standard linear pattern. You "thread" the resource through operations.
 
 ### Linearity Checking
 
@@ -186,7 +186,7 @@ Linear types and effects are complementary:
 - Effects tell you *what kind* of side effect a function has
 - Linear types tell you that *resources are properly managed*
 
-A function with signature `FileHandle → [FileSystem] Text` reads from a file (effect) and does not return the handle (consumes it — linearity).
+A function with signature `FileHandle → [FileSystem] Text` reads from a file (effect) and does not return the handle (consumes it -- linearity).
 
 ---
 
@@ -199,7 +199,7 @@ An effect row is a set of effect labels:
 ```
 [FileSystem]                    -- single effect
 [FileSystem, Network]           -- multiple effects
-[]                              -- pure (no effects) — written by omitting the brackets
+[]                              -- pure (no effects) -- written by omitting the brackets
 [FileSystem, State Counter]     -- effects can be parameterized
 ```
 
@@ -323,12 +323,12 @@ Each phase produces a usable language. Phase 1 alone is roughly ML or a simple H
 
 ## Open Questions
 
-1. ~~**Instance resolution**~~ — RESOLVED (CL 4722/4724). Dictionary-passing with implicit resolution from concrete argument types. Polymorphic forwarding threads dictionaries through call chains.
+1. ~~**Instance resolution**~~ -- RESOLVED (CL 4722/4724). Dictionary-passing with implicit resolution from concrete argument types. Polymorphic forwarding threads dictionaries through call chains.
 
-2. **Totality checking** — How aggressive? Idris requires totality for everything by default. We probably want totality for type-level functions and proofs, with general recursion (via `[Diverge]`) for runtime code.
+2. **Totality checking** -- How aggressive? Idris requires totality for everything by default. We probably want totality for type-level functions and proofs, with general recursion (via `[Diverge]`) for runtime code.
 
-3. **Type-level computation limits** — The normalizer must terminate. How do we bound it? Fuel-based? (Give it N reduction steps and give up?) Or require all type-level functions to be structurally recursive?
+3. **Type-level computation limits** -- The normalizer must terminate. How do we bound it? Fuel-based? (Give it N reduction steps and give up?) Or require all type-level functions to be structurally recursive?
 
-4. ~~**Higher-kinded types**~~ — RESOLVED (CL 4730/4735/4736). TypeCon + TypeApply constructors with symmetric unification. Scope: `* -> *`. Enables Functor, Monad over type constructors.
+4. ~~**Higher-kinded types**~~ -- RESOLVED (CL 4730/4735/4736). TypeCon + TypeApply constructors with symmetric unification. Scope: `* -> *`. Enables Functor, Monad over type constructors.
 
-5. **Row polymorphism for records** — Desired for expressiveness but complex to implement with dependent types. May be a Phase 5+ feature.
+5. **Row polymorphism for records** -- Desired for expressiveness but complex to implement with dependent types. May be a Phase 5+ feature.

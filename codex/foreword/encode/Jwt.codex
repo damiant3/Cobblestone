@@ -41,51 +41,55 @@ Section: Types
 
 Section: Decoding
 
+ A segment whose JSON does not parse is a malformed token and now says
+ so. It used to answer JwtOk carrying the empty payload, which is the
+ worst of the three possible behaviours: a caller cannot tell a token
+ that carried no email from a token that was never read, and because
+ jwt-check-expiry treats a zero exp as "no expiry stated", a token
+ whose claims all failed to parse PASSED validation.
+
   jwt-decode : Text -> JwtError
   jwt-decode (raw) =
     let parts = text-split raw "."
     in if list-length parts /= 3 then JwtMalformed "expected 3 dot-separated segments"
-    else let header-b64 = list-at parts 0
-    in let payload-b64 = list-at parts 1
-    in let sig-b64 = list-at parts 2
-    in let header-json = b64url-decode-text header-b64
-    in let payload-json = b64url-decode-text payload-b64
-    in let header = jwt-parse-header header-json
-    in let payload = jwt-parse-payload payload-json
-    in JwtOk (JwtToken { jt-header = header, jt-payload = payload, jt-signature = sig-b64, jt-raw = raw })
+    else let header-json = b64url-decode-text (list-at parts 0)
+    in let payload-json = b64url-decode-text (list-at parts 1)
+    in jwt-assemble raw (list-at parts 2) (json-parse header-json) (json-parse payload-json)
 
-  jwt-parse-header : Text -> JwtHeader
-  jwt-parse-header (s) =
-    let parsed = json-parse s
-    in when parsed
-      is Just (v) -> JwtHeader {
-        jh-alg = json-get-str v "alg" "",
-        jh-typ = json-get-str v "typ" "",
-        jh-kid = json-get-str v "kid" ""
-      }
-      is None -> JwtHeader { jh-alg = "", jh-typ = "", jh-kid = "" }
+  jwt-assemble : Text, Text, Maybe JsonValue, Maybe JsonValue -> JwtError
+  jwt-assemble (raw) (sig) (hp) (pp) =
+    when hp
+      is None -> JwtMalformed "header segment is not JSON"
+      is Just (hv) -> jwt-assemble-payload raw sig hv pp
 
-  jwt-parse-payload : Text -> JwtPayload
-  jwt-parse-payload (s) =
-    let parsed = json-parse s
-    in when parsed
-      is Just (v) -> JwtPayload {
-        jp-iss = json-get-str v "iss" "",
-        jp-sub = json-get-str v "sub" "",
-        jp-aud = json-get-str v "aud" "",
-        jp-exp = json-get-int v "exp" 0,
-        jp-iat = json-get-int v "iat" 0,
-        jp-nonce = json-get-str v "nonce" "",
-        jp-email = json-get-str v "email" "",
-        jp-name = json-get-str v "name" ""
-      }
-      is None -> jwt-empty-payload
+  jwt-assemble-payload : Text, Text, JsonValue, Maybe JsonValue -> JwtError
+  jwt-assemble-payload (raw) (sig) (hv) (pp) =
+    when pp
+      is None -> JwtMalformed "payload segment is not JSON"
+      is Just (pv) -> JwtOk (JwtToken {
+        jt-header = jwt-header-of hv,
+        jt-payload = jwt-payload-of pv,
+        jt-signature = sig,
+        jt-raw = raw
+      })
 
-  jwt-empty-payload : JwtPayload
-  jwt-empty-payload = JwtPayload {
-    jp-iss = "", jp-sub = "", jp-aud = "",
-    jp-exp = 0, jp-iat = 0, jp-nonce = "",
-    jp-email = "", jp-name = ""
+  jwt-header-of : JsonValue -> JwtHeader
+  jwt-header-of (v) = JwtHeader {
+    jh-alg = json-get-str v "alg" "",
+    jh-typ = json-get-str v "typ" "",
+    jh-kid = json-get-str v "kid" ""
+  }
+
+  jwt-payload-of : JsonValue -> JwtPayload
+  jwt-payload-of (v) = JwtPayload {
+    jp-iss = json-get-str v "iss" "",
+    jp-sub = json-get-str v "sub" "",
+    jp-aud = json-get-str v "aud" "",
+    jp-exp = json-get-int v "exp" 0,
+    jp-iat = json-get-int v "iat" 0,
+    jp-nonce = json-get-str v "nonce" "",
+    jp-email = json-get-str v "email" "",
+    jp-name = json-get-str v "name" ""
   }
 
 Section: Validation
@@ -131,11 +135,27 @@ Section: Claim Accessors
 
 Section: Base64url
 
+ The decoded bytes are turned back into Text by Base64's own
+ base64-decode-text, which crosses the encoding boundary with
+ from-unicode. This chapter used to carry a private copy of that loop
+ which did not, so every decoded byte was read as a CCE code point
+ rather than converted to one. The JSON handed to the parser was
+ therefore never JSON, the parse failed on every token, and every
+ claim came back empty. The correct loop was in the chapter this one
+ already cites.
+
+ The private copy is deleted rather than repaired. It was named
+ bytes-to-text, which is a generic name in a namespace where foreword
+ definitions are visible to everything that cites them.
+
   b64url-decode-text : Text -> Text
-  b64url-decode-text (s) =
-    let padded = b64url-pad (b64url-to-std s)
-    in let bytes = base64-decode padded
-    in bytes-to-text bytes 0 (list-length bytes) ""
+  b64url-decode-text (s) = base64-decode-text (b64url-pad (b64url-to-std s))
+
+ The four numbers below are CCE code points and not ASCII, and they
+ are right: 73 is the hyphen, 76 the plus, 85 the underscore, 81 the
+ solidus. They read like a transposition of the ASCII values and were
+ suspected on that basis; measuring them cleared the substitution and
+ left the boundary conversion above as the only defect here.
 
   b64url-to-std : Text -> Text
   b64url-to-std (s) = b64url-replace s 0 (text-length s) ""
@@ -156,11 +176,6 @@ Section: Base64url
     else if rem == 2 then s & "=="
     else if rem == 3 then s & "="
     else s
-
-  bytes-to-text : List Integer, Integer, Integer, Text -> Text
-  bytes-to-text (bs) (i) (n) (acc) =
-    if i >= n then acc
-    else bytes-to-text bs (i + 1) n (acc & char-to-text (code-to-char (list-at bs i)))
 
 Section: Formatting
 

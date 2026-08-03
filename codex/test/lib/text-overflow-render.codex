@@ -1,0 +1,58 @@
+Chapter: TextOverflowRender
+  cites Foreword chapter Console
+  cites UI chapter PixelBuf
+  cites UI chapter TextOverflow
+  cites Guios chapter GuiDisplay
+
+ The behaviour is arithmetic and is pinned on its own in lib/text-overflow.
+ What this asserts is that the renderer OBEYS it: that the walk stops at the
+ bound, and that the three modes put different glyphs on the screen rather
+ than merely computing different numbers.
+
+ The subject string is sixteen 'w' followed by eight 'i'. A 'w' lights many
+ pixels and an 'i' lights few, so clip (which keeps the head) and scroll
+ (which keeps the tail) are told apart by ink alone, without reading glyphs.
+
+Section: Body
+
+  buf-w : Integer = 200
+  buf-h : Integer = 20
+  bound : Integer = 80
+
+  subject : Text = "wwwwwwwwwwwwwwwwiiiiiiii"
+
+  ink-row : GopBuf, Integer, Integer, Integer, Integer, Integer -> Integer
+  ink-row (gb) (y) (x) (xend) (bg) (acc) =
+    if x >= xend then acc
+    else ink-row gb y (x + 1) xend bg (acc + (if gop-buf-get gb x y == bg then 0 else 1))
+
+  ink : GopBuf, Integer, Integer, Integer, Integer, Integer -> Integer
+  ink (gb) (y) (x0) (x1) (bg) (acc) =
+    if y >= buf-h then acc
+    else ink gb (y + 1) x0 x1 bg (acc + ink-row gb y x0 x1 bg 0)
+
+  render : TextOverflow -> Integer
+  render (mode) =
+    let gb = gop-buf-new buf-w buf-h 0
+    in let d = gop-buf-put-text-fit gb 0 2 bound subject 16777215 mode
+    in ink gb 0 0 bound 0 0
+
+  spill : TextOverflow -> Integer
+  spill (mode) =
+    let gb = gop-buf-new buf-w buf-h 0
+    in let d = gop-buf-put-text-fit gb 0 2 bound subject 16777215 mode
+    in ink gb 0 bound buf-w 0 0
+
+  opening : [Console] Nothing = act
+    print-line-uni "nothing may be drawn past the bound, whatever the mode:"
+    print-line-uni ("  clip     spill=" & show (spill OverflowClip))
+    print-line-uni ("  ellipsis spill=" & show (spill OverflowEllipsis))
+    print-line-uni ("  scroll   spill=" & show (spill OverflowScroll))
+    print-line-uni ""
+    print-line-uni "and the three modes must draw DIFFERENT glyphs, not just differ on paper:"
+    print-line-uni ("  clip     ink=" & show (render OverflowClip))
+    print-line-uni ("  ellipsis ink=" & show (render OverflowEllipsis))
+    print-line-uni ("  scroll   ink=" & show (render OverflowScroll))
+  end
+
+Page 1

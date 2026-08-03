@@ -1,6 +1,6 @@
 # Quires: Structural Units of a Codex
 
-> **Filed to Done 2026-07-15 (val):** the cite/quire syntax, vocabulary, mapping and scoping shipped; the remaining enforcement — duplicate-chapter detection and `Page N of M` coherence — is tracked in BACKLOG 2.7. Moved out of Active to keep init light; reopen if that enforcement is picked up.
+> **Filed to Done 2026-07-15 (val):** the cite/quire syntax, vocabulary, mapping and scoping shipped; the remaining enforcement -- duplicate-chapter detection and `Page N of M` coherence -- is tracked in BACKLOG 2.7. Moved out of Active to keep init light; reopen if that enforcement is picked up.
 
 **Status: cite/quire syntax SHIPPED. The originating bug is still
 reachable.**
@@ -8,7 +8,7 @@ reachable.**
 What shipped: the `cites <Quire> chapter <Chapter Title> (…)` form
 parses (`codex/compiler/Syntax/Parser.codex` ~792-806), quires load
 lazily per-cite in `codex/compiler/opening.codex`, and two diagnostics
-back it — **CDX3010** (`MissingCite`: a cited chapter is not on disk)
+back it -- **CDX3010** (`MissingCite`: a cited chapter is not on disk)
 and **CDX3003** (`DuplicateCite`: two cites in one chapter select the
 same name). Negative test: `codex/test/errors/missing-cite.codex`. The
 vocabulary, the filesystem mapping, the scoping rule, and the call-site
@@ -20,7 +20,7 @@ unenforced:
 
 1. **No duplicate-chapter diagnostic.** Two files declaring the same
    `Chapter: X` in the same quire still merge silently. This is the
-   exact `Chapter: Hamt` bug described under Problem, below — it is
+   exact `Chapter: Hamt` bug described under Problem, below -- it is
    not fixed. There is no diagnostic code for it anywhere in
    `codex/compiler/Core/CdxCodes.codex`.
 2. **`Page N of M` coherence is unenforced.** The markers parse, and
@@ -50,7 +50,7 @@ compiler emitted *this* `hamt-get` or *that* `hamt-get` at any given
 call site was undefined.
 
 Silent merging of same-named chapters is a bug class the language
-has to close. It is also the cause of downstream behavior drift —
+has to close. It is also the cause of downstream behavior drift --
 adding an unrelated top-level def today can change which function a
 call resolves to, because the name-resolution tiebreaker depends on
 source-order, which depends on what else is in the bag.
@@ -60,7 +60,7 @@ of files that intentionally split one chapter across multiple files
 (today: `Parser` ×3 in `Syntax/`, `X86-64 Code Generator` ×3 in
 `Emit/`, `Type Checker` ×2 in `Types/`, `Lowering` ×2 in `IR/`,
 `CSharp Emitter` ×2 in `Emit/`). These markers are parsed but not
-enforced — decoration only.
+enforced -- decoration only.
 
 ## The vocabulary
 
@@ -75,7 +75,7 @@ medieval-codex terms:
 | **Page**    | A file's portion of a multi-file chapter                | A `Page N of M` marker inside a file |
 
 A *codex* (pre-binding book form) is a loose collection of
-gatherings. A *quire* is one such gathering — a stack of pages about
+gatherings. A *quire* is one such gathering -- a stack of pages about
 to become part of the larger work. That matches what we are doing:
 the repo is a codex, each top-level directory is a quire, quires
 hold chapters, chapters span pages.
@@ -83,12 +83,12 @@ hold chapters, chapters span pages.
 ## Filesystem mapping
 
 - The **root directory** is the codex. It is the composition root.
-  `main.codex` sits directly in the root — it is part of the codex
+  `main.codex` sits directly in the root -- it is part of the codex
   itself, not of any named quire.
 - Every **top-level subdirectory** of the root is a quire. The
   quire's name is the subdirectory's basename.
 - **Only one level of subdivision.** A quire may contain deeper
-  subdirectories, but the compiler **ignores** them — `.codex` files
+  subdirectories, but the compiler **ignores** them -- `.codex` files
   inside sub-subdirectories are not scanned. Quires do not nest.
 - Every `.codex` file must declare a `Chapter: <name>` header.
   (Today's 39 source files all do; this formalizes the convention.)
@@ -117,13 +117,13 @@ the compiler sees.
 reference other defs, type defs, and effect defs declared in the
 same chapter (whether on the same page or a different page of that
 chapter) without any qualification. Every other reference requires
-a cite — even to a chapter in the same quire.
+a cite -- even to a chapter in the same quire.
 
 Rationale: this makes `cites` the single, uniform mechanism for
 expressing cross-chapter dependencies. A file's cites are its
 complete inbound-dependency list, readable at a glance, regardless
 of whether the dependency is in-quire or cross-quire. It also closes
-the source-order-tiebreaker class of bugs — no unqualified name
+the source-order-tiebreaker class of bugs -- no unqualified name
 can silently bind to a different chapter's def because someone
 reordered the file walk.
 
@@ -144,7 +144,7 @@ reordered the file walk.
 
 ## Cite syntax
 
-Every cross-chapter reference — same quire or not — requires an
+Every cross-chapter reference -- same quire or not -- requires an
 explicit cite:
 
 ```
@@ -187,7 +187,7 @@ cites Syntax chapter Lexer (tokenize)
 ```
 
 There is no abbreviated same-quire form. Uniformity wins over
-brevity — every cite looks the same whether it crosses a quire
+brevity -- every cite looks the same whether it crosses a quire
 boundary or not.
 
 ### The root is not a cite target
@@ -245,7 +245,7 @@ Closed (shipped):
   codex (the root directory). Files, pages, chapters, and quires are
   all sub-structure of it.
 - **The short-name-vs-title ambiguity.** Cites use the exact title.
-- **Cross-quire chapter names.** Well-defined — different quires mean
+- **Cross-quire chapter names.** Well-defined -- different quires mean
   different chapters.
 
 Still open:
@@ -256,15 +256,15 @@ Still open:
 
 ## Migration
 
-Steps 2-4 are done — the cite parser requires the full form, the source
+Steps 2-4 are done -- the cite parser requires the full form, the source
 tree is migrated, and pingpong is green. Step 1 is not.
 
 1. ⬜ **Scanner enforcement. THE REMAINING WORK.** Two checks, each
    needing a new diagnostic code in `CdxCodes.codex`:
-   - within-quire chapter-name uniqueness — error on a second
+   - within-quire chapter-name uniqueness -- error on a second
      `Chapter: X` in the same quire, naming both files and suggesting
      either a rename or page markers;
-   - `Page N of M` coherence — all M pages present in the same quire,
+   - `Page N of M` coherence -- all M pages present in the same quire,
      each integer in `1..M` exactly once, every page agreeing on M.
 
    Note the ordering hazard: the page check must run *before* the
@@ -278,14 +278,14 @@ tree is migrated, and pingpong is green. Step 1 is not.
 
 ## Not in scope
 
-- **Nested quires.** Intentionally excluded — quires do not nest,
+- **Nested quires.** Intentionally excluded -- quires do not nest,
   to keep the metaphor flat and the filesystem walk predictable.
 - **Inline cross-chapter call syntax.** Cites are the only
   cross-chapter mechanism.
 - **Cross-codex references.** A codex is the unit of compilation and
   distribution. There is no syntax for reaching into a *different*
   codex. If you need code from elsewhere, bring it in as source.
-  We are not building a library/linker model — that pushes us into
+  We are not building a library/linker model -- that pushes us into
   versioning, ABI stability, and the rest of the 16-bit-era
   complexity that Codex is deliberately avoiding.
 - **Changing the chapter/page vocabulary.** Chapters and pages stay.
@@ -297,7 +297,7 @@ internals. Anything outside CCE Tier 0 is normalized to `?` at the
 I/O boundary on the way in. Name a folder in Chinese and you will
 get `????????`, and your cites will have to match the
 `????????` the scanner produced. That is working as intended
-until the compiler learns to handle tiers above T0 — at which point
+until the compiler learns to handle tiers above T0 -- at which point
 the normalization layer is replaced, not the design.
 
 ## Open questions

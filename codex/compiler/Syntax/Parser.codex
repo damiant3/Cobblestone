@@ -177,8 +177,27 @@ Section: Type Parsing
    let (lo, st-lo) = parse-bound-int st
    in let st-and = expect-and-keyword st-lo
    in let (hi, st-hi) = parse-bound-int st-and
+   in let mode-tok = current st-hi
    in let (mode, st-mode) = parse-overflow-mode st-hi
-   in parse-type-continue (deck-record (BoundedIntType base lo hi mode)) st-mode
+   in let st-mode-ok = check-wrapping-band lo hi mode mode-tok st-mode
+   in parse-type-continue (deck-record (BoundedIntType base lo hi mode)) st-mode-ok
+
+ A wrapping band promises modular arithmetic the machine performs for
+ free, and the machine performs it at the width of the store. When the
+ band is the width the two agree; when it is narrower they do not, and
+ the store truncates at the width and leaves a value outside the band in
+ a field whose declared range the bounds prover goes on to trust. That
+ makes an elided check rest on a false range, so the band is refused here
+ rather than silently meaning something else. The token blamed is the
+ mode keyword, because that is the word to delete.
+
+  check-wrapping-band : Integer, Integer, OverflowMode, Token, ParseState -> ParseState
+  check-wrapping-band (lo) (hi) (mode) (tok) (st) =
+   when mode
+    is OvWrapping ->
+     if bounds-are-hw-width lo hi then st
+     else __record-set st "bag" (bag-add (st.bag) (make-error cdx-wrapping-band-not-hw-width ("a wrapping band must be exactly its hardware width, and " & show lo & " to " & show hi & " is not: the store wraps at the width, so the field can hold a value outside the declared range while the bounds prover still trusts that range. Widen the band to the whole width, or use clamping or error") (span-at (tok.line) (tok.column) (tok.offset) (tok.length) (tok.file-id))))
+    is otherwise -> st
 
   expect-and-keyword : ParseState -> ParseState
   expect-and-keyword (st) =
@@ -385,7 +404,7 @@ Section: Type Parsing
  Inside effect brackets the identifier case is load-bearing:
  a PascalCase identifier is a concrete
  effect name; a lowercase identifier is the row's tail variable. A
- row names at most one tail (CDX1120), and a tail is bare — no scope
+ row names at most one tail (CDX1120), and a tail is bare -- no scope
  literal, no dotted sub-effect (CDX1121).
 
   parse-effect-names : ParseState, List Token, List Token, List Token -> (List Token, ParseState, List Token, List Token)
@@ -1418,7 +1437,6 @@ Section: Chapter Pagination
   collect-prose-with-text (st) (acc) (blk-acc) =
    let st2 = skip-newlines st
    in if is-done st2 then CollectProseResult { state = st2, lines = acc, blocks = blk-acc }
-      else if is-at-sign st2 then CollectProseResult { state = st2, lines = acc, blocks = blk-acc }
       else if is-prose-token st2 then let txt = token-text (current st2)
         in let block = classify-prose-line txt ((current st2).offset)
         in collect-prose-with-text (skip-to-next-line (advance st2)) (__linked-list-push acc (txt & "\n")) (__linked-list-push blk-acc block)
@@ -1432,19 +1450,6 @@ Section: Chapter Pagination
    else when current-kind st
     is Newline -> advance st
     is otherwise -> skip-to-next-line (advance st)
-
-  is-at-sign : ParseState -> Boolean
-  is-at-sign (st) = current-kind st == AtSign
-
-  parse-annotation-line : ParseState -> AnnotationNode
-  parse-annotation-line (st) =
-   let st1 = advance st
-   in let kind-text = if is-done st1 then "" else token-text (current st1)
-   in let st2 = if is-done st1 then st1 else advance st1
-   in let target-text = if is-done st2 then "" else token-text (current st2)
-   in let st3 = if is-done st2 then st2 else advance st2
-   in let body-text = if is-done st3 then "" else token-text (current st3)
-   in deck-record (AnnotationNode { kind = kind-text, target = target-text, body = body-text })
 
   is-conversion-decl : ParseState -> Boolean
   is-conversion-decl (st) =
@@ -1553,8 +1558,6 @@ Section: Chapter Pagination
     in let st-i3 = advance st-i2
     in let st-i4 = if is-where-keyword (current-kind st-i3) then skip-newlines (advance st-i3) else st-i3
     in parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns (skip-body-lines st-i4)
-   else if is-at-sign st then let ann = parse-annotation-line st
-     in parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks (__linked-list-push anns ann) (skip-to-next-line st)
    else if is-claim-keyword (current-kind st) then parse-claim-arm defs type-defs effect-defs imports ch-title sec-titles prose blocks anns st
    else if is-proof-keyword (current-kind st) then try-top-level-def defs type-defs effect-defs imports ch-title sec-titles prose blocks anns (advance st)
    else if is-punctual-keyword (current-kind st) then let pst = advance st

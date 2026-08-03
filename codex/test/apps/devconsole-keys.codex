@@ -1,0 +1,73 @@
+Chapter: DevConsoleKeysTest
+  cites Works chapter UefiConsole
+  cites UI chapter KeyInput
+  cites UI chapter Event
+  cites Foreword chapter Console
+
+ Proof that the dev console's key predicates fire at all.
+
+ Every one of them was dead. `UefiKey` is built from `poll-key`, but the
+ predicates compared against UEFI's own encoding: its scan-code numbering for
+ the navigation keys and its left/right shift-state layout for the modifiers.
+ Worse, all three constructors set `shift-state = 0`, so `uefi-key-shift-valid`
+ was always False and `uefi-key-is-ctrl-alt-del` could not return True however
+ the keys were held. The Ctrl chords compared against ASCII control codes
+ (Ctrl+C as 3) that `poll-key` has never produced.
+
+ None of that could be seen by compiling, and none of it could be seen by the
+ keyboard tests either, because a predicate that always answers False looks
+ exactly like a key that was not pressed. So this test builds `UefiKey` values
+ directly, which needs no keyboard, and requires each predicate to answer True
+ for its own key and False for a neighbour. The negative half is the half that
+ matters: a predicate hard-wired to True would pass the positive line alone.
+
+ We say:
+
+Section: Reporting
+
+  yn : Boolean -> Text
+  yn (b) = if b then "y" else "n"
+
+  probe : Text, Boolean, Boolean -> [Console] Nothing
+  probe (label) (hit) (miss) = act
+    print-line-uni (label & " " & yn hit & yn miss)
+  end
+
+Section: Fixtures
+
+ A key with no modifiers, and the same key with ctrl (and with ctrl+alt).
+ mod-ctrl is 2 and mod-alt is 4, the values poll-mods reports.
+
+  plain : Integer -> UefiKey
+  plain (c) = UefiKey { scan-code = c, char-code = c, shift-state = uefi-shift-valid }
+
+  with-ctrl : Integer -> UefiKey
+  with-ctrl (c) = UefiKey {
+    scan-code = c,
+    char-code = c,
+    shift-state = bit-or uefi-shift-valid mod-ctrl
+  }
+
+  with-ctrl-alt : Integer -> UefiKey
+  with-ctrl-alt (c) = UefiKey {
+    scan-code = c,
+    char-code = c,
+    shift-state = bit-or (bit-or uefi-shift-valid mod-ctrl) mod-alt
+  }
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    probe "char" (uefi-key-is-char (plain (char-code 'a'))) (uefi-key-is-char (plain key-up))
+    probe "enter" (uefi-key-is-enter (plain key-enter)) (uefi-key-is-enter (plain key-tab))
+    probe "escape" (uefi-key-is-escape (plain key-escape)) (uefi-key-is-escape (plain key-enter))
+    probe "up" (uefi-key-is-arrow-up (plain key-up)) (uefi-key-is-arrow-up (plain key-down))
+    probe "left" (uefi-key-is-arrow-left (plain key-left)) (uefi-key-is-arrow-left (plain key-right))
+    probe "home" (uefi-key-is-home (plain key-home)) (uefi-key-is-home (plain key-end))
+    probe "delete" (uefi-key-is-delete (plain key-delete)) (uefi-key-is-delete (plain key-backspace))
+    probe "pgdn" (uefi-key-is-page-down (plain key-pgdn)) (uefi-key-is-page-down (plain key-pgup))
+    probe "ctrl" (uefi-key-has-ctrl (with-ctrl (char-code 'c'))) (uefi-key-has-ctrl (plain (char-code 'c')))
+    probe "ctrl-c" (uefi-key-is-ctrl-c (with-ctrl (char-code 'c'))) (uefi-key-is-ctrl-c (plain (char-code 'c')))
+    probe "ctrl-s" (uefi-key-is-ctrl-s (with-ctrl (char-code 'S'))) (uefi-key-is-ctrl-s (with-ctrl (char-code 'z')))
+    probe "ctrl-alt-del" (uefi-key-is-ctrl-alt-del (with-ctrl-alt key-delete)) (uefi-key-is-ctrl-alt-del (with-ctrl key-delete))
+  end

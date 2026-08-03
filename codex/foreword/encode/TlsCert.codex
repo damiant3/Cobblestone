@@ -2,6 +2,8 @@ Chapter: TlsCert
   cites Encode chapter X509
   cites Foreword chapter Tls
   cites Foreword chapter Ed25519
+  cites Foreword chapter Rsa
+  cites Foreword chapter EcdsaP256
   cites Foreword chapter Maybe
 
  The two handshake messages that turn an anonymous key agreement into an
@@ -47,24 +49,30 @@ Chapter: TlsCert
 
 Section: Signature Schemes
 
- ed25519, 0x0807 (RFC 8446 section 4.2.3). Two bytes on the wire.
+ ed25519, 0x0807 (RFC 8446 section 4.2.3). Two bytes on the wire, and the
+ only scheme this chapter can PRODUCE -- tls-cv-encode signs with Ed25519
+ because that is the only private-key operation in the tree.
 
   tls-scheme-ed25519-hi : Integer = #08
   tls-scheme-ed25519-lo : Integer = #07
 
- signature_algorithms, extension type 13. A ClientHello that omits it is
- telling the server it cannot do certificate authentication at all, which
- is why the anonymous handshake never needed it.
+ THE SET WE ACCEPT AND THE SET WE OFFER MUST BE THE SAME SET, and the
+ numbers therefore live once, in Tls, beside the extension that advertises
+ them. Accepting a scheme we never offered is accepting a signature we
+ never agreed to; offering one we will not accept is a handshake that dies
+ at its last message.
 
-  tls-ext-signature-algorithms : Integer = #0D
+ This chapter used to carry a second, hand-written copy of the extension
+ called tls-sigalgs-ext. Nothing on the wire ever read it -- the
+ ClientHello is built from Tls's tls-ext-sig-algs -- and its only reader
+ was a test, which therefore asserted the contents of a constant no server
+ ever sees. Two spellings of one fact is a drift waiting to happen, and
+ this one had already drifted into being decorative.
 
- The extension body: a two-byte list length, then the schemes. We offer
- exactly one, because we implement exactly one, and offering a scheme we
- cannot perform is how a handshake dies late instead of early.
+ The scheme as a single number, which is how Tls names them.
 
-  tls-sigalgs-ext : List Integer =
-    [#00, tls-ext-signature-algorithms, #00, #04, #00, #02,
-     tls-scheme-ed25519-hi, tls-scheme-ed25519-lo]
+  tls-cv-scheme-of : List Integer -> Integer
+  tls-cv-scheme-of (body) = list-at body 0 * 256 + list-at body 1
 
 Section: The Signed Content
 
@@ -114,17 +122,7 @@ Section: CertificateVerify
   tls-cv-verify (expect-server) (key) (body) (transcript-hash) =
     if x509-can-verify key == False then False
     else if list-length body < 4 then False
-    else tls-cv-scheme expect-server key body transcript-hash
-
- An unexpected scheme is refused rather than ignored. A verifier that skips
- the algorithm field is a verifier that can be handed a signature of a kind
- it did not agree to.
-
-  tls-cv-scheme : Boolean, X509Key, List Integer, List Integer -> Boolean
-  tls-cv-scheme (expect-server) (key) (body) (transcript-hash) =
-    if list-at body 0 /= tls-scheme-ed25519-hi then False
-    else if list-at body 1 /= tls-scheme-ed25519-lo then False
-    else tls-cv-sig expect-server key body transcript-hash (tls-cv-len body)
+    else tls-cv-sized expect-server key body transcript-hash (tls-cv-len body)
 
   tls-cv-len : List Integer -> Integer
   tls-cv-len (body) = list-at body 2 * 256 + list-at body 3
@@ -132,11 +130,90 @@ Section: CertificateVerify
  The declared length must match what is actually there. A length field
  nobody checks is a length field an attacker writes.
 
-  tls-cv-sig : Boolean, X509Key, List Integer, List Integer, Integer -> Boolean
-  tls-cv-sig (expect-server) (key) (body) (transcript-hash) (n) =
-    if n /= 64 then False
-    else if list-length body /= 4 + n then False
-    else ed25519-verify (key.xk-bytes) (tls-cv-content expect-server transcript-hash) (tlsc-slice body 4 n)
+  tls-cv-sized : Boolean, X509Key, List Integer, List Integer, Integer -> Boolean
+  tls-cv-sized (expect-server) (key) (body) (transcript-hash) (n) =
+    if list-length body /= 4 + n then False
+    else tls-cv-pick expect-server key (tlsc-slice body 4 n) transcript-hash (tls-cv-scheme-of body)
+
+ An unexpected scheme is refused rather than ignored. A verifier that skips
+ the algorithm field is a verifier that can be handed a signature of a kind
+ it did not agree to.
+
+  tls-cv-pick : Boolean, X509Key, List Integer, List Integer, Integer -> Boolean
+  tls-cv-pick (expect-server) (key) (sig) (transcript-hash) (scheme) =
+    if scheme == tls-sig-ed25519 then tls-cv-ed key sig (tls-cv-content expect-server transcript-hash)
+    else if scheme == tls-sig-ecdsa-p256-sha256 then tls-cv-ecdsa key sig (tls-cv-content expect-server transcript-hash)
+    else if scheme == tls-sig-ecdsa-p384-sha384 then tls-cv-ecdsa384 key sig (tls-cv-content expect-server transcript-hash)
+    else if scheme == tls-sig-rsa-pss-sha256 then tls-cv-pss key sig (tls-cv-content expect-server transcript-hash)
+    else False
+
+ THE SCHEME AND THE KEY MUST AGREE, and each arm below says so about its
+ own key type rather than trusting the dispatch above. The scheme is the
+ PEER's claim about what it did; the key type is what the certificate --
+ which a chain walk has already decided to trust -- says the peer holds.
+ Only one of those two is evidence, so a scheme that names an algorithm
+ the key cannot perform is refused here rather than passed to arithmetic
+ that would have to guess what to do with it.
+
+  tls-cv-ed : X509Key, List Integer, List Integer -> Boolean
+  tls-cv-ed (key) (sig) (content) =
+    when key.xk-alg
+      is KeyEd25519 -> tls-cv-ed-sized key sig content
+      is otherwise -> False
+
+ An Ed25519 signature is 64 bytes, always.
+
+  tls-cv-ed-sized : X509Key, List Integer, List Integer -> Boolean
+  tls-cv-ed-sized (key) (sig) (content) =
+    if list-length sig /= 64 then False
+    else ed25519-verify (key.xk-bytes) content sig
+
+ ecdsa_secp256r1_sha256 carries the same DER the certificate does, not the
+ fixed sixty-four bytes -- RFC 8446 section 4.4.3 says so, and it is the
+ one place TLS does not use the flat form. So the decoder is the X509
+ chapter's, unchanged and shared, rather than a second one written here to
+ the same spec.
+
+  tls-cv-ecdsa : X509Key, List Integer, List Integer -> Boolean
+  tls-cv-ecdsa (key) (sig) (content) =
+    when key.xk-alg
+      is KeyEcdsaP256 -> tls-cv-ecdsa-rs (key.xk-bytes) content (x509-ecdsa-rs sig 32)
+      is otherwise -> False
+
+  tls-cv-ecdsa-rs : List Integer, List Integer, Maybe (List Integer) -> Boolean
+  tls-cv-ecdsa-rs (pub) (content) (m) =
+    when m
+      is None -> False
+      is Just (rs) -> ecdsa-p256-verify pub content rs
+
+ ecdsa_secp384r1_sha384 is the same shape one curve up: DER in, forty-eight
+ bytes per integer rather than thirty-two, and SHA-384 rather than SHA-256.
+ The digest is not a separate decision here. RFC 8446 section 4.2.3 binds it
+ into the code point, so a P-384 key under a SHA-256 digest is a scheme this
+ verifier was never offered and never accepts.
+
+  tls-cv-ecdsa384 : X509Key, List Integer, List Integer -> Boolean
+  tls-cv-ecdsa384 (key) (sig) (content) =
+    when key.xk-alg
+      is KeyEcdsaP384 -> tls-cv-ecdsa384-rs (key.xk-bytes) content (x509-ecdsa-rs sig 48)
+      is otherwise -> False
+
+  tls-cv-ecdsa384-rs : List Integer, List Integer, Maybe (List Integer) -> Boolean
+  tls-cv-ecdsa384-rs (pub) (content) (m) =
+    when m
+      is None -> False
+      is Just (rs) -> ecdsa-p384-verify-sha384 pub content rs
+
+ rsa_pss_rsae_sha256, and PSS is not a preference here: RFC 8446 section
+ 4.4.3 forbids PKCS#1 v1.5 in a CertificateVerify no matter how the
+ certificate chain itself was signed. rsa-verify-pss-sha256 checks the
+ width against the modulus, so there is no length test to repeat.
+
+  tls-cv-pss : X509Key, List Integer, List Integer -> Boolean
+  tls-cv-pss (key) (sig) (content) =
+    when key.xk-alg
+      is KeyRsa -> rsa-verify-pss-sha256 (key.xk-mod) (key.xk-exp) content sig
+      is otherwise -> False
 
 Section: Certificate
 

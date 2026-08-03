@@ -1,4 +1,4 @@
-# Codex DB — A Relational Database Server in Codex
+# Codex DB -- A Relational Database Server in Codex
 
 ## Vision
 
@@ -20,18 +20,18 @@ This is that extension.
 
 **Codex DB** is:
 
-1. A **relational database server** — tables, indexes, joins, ACID
+1. A **relational database server** -- tables, indexes, joins, ACID
    transactions, query plans, an optimizer. The RDBMS fundamentals done
    right.
-2. A **query language dialect** of Codex — set-based operations embedded
+2. A **query language dialect** of Codex -- set-based operations embedded
    in `.codex` source as first-class expressions. Not SQL with Codex
    syntax; Codex with relational algebra as native operations.
-3. A **multi-model engine** — relational (OLTP), columnar (OLAP),
+3. A **multi-model engine** -- relational (OLTP), columnar (OLAP),
    key-value, document, and map-reduce, unified under one type system
    and one transaction engine.
-4. A **distributed transaction coordinator** — two-phase commit,
+4. A **distributed transaction coordinator** -- two-phase commit,
    multi-server messaging, partition-aware routing.
-5. A **network server** — RFC-compliant TCP protocol with Ed25519
+5. A **network server** -- RFC-compliant TCP protocol with Ed25519
    public-key authentication and TLS 1.3 encryption.
 
 ## Where It Lives
@@ -79,7 +79,7 @@ Dependency order: `codex.foreword` -> `codex.data` (peer to
 `codex.works`; does not depend on compiler or OS internals beyond
 what foreword exposes).
 
-## The Query Language — Codex Relational Expressions
+## The Query Language -- Codex Relational Expressions
 
 Not a string DSL. Not embedded SQL. Native Codex syntax for
 set-based operations, using new operators that compose with the
@@ -91,9 +91,9 @@ existing type system.
    is a record type. The type system knows the schema.
 2. **Queries are expressions.** A query is a Codex expression that
    produces a `Relation`. It composes with let bindings, functions,
-   pattern matching — everything.
+   pattern matching -- everything.
 3. **Set operators are first-class.** Select, project, join, aggregate,
-   group — these are functions with types that the compiler checks.
+   group -- these are functions with types that the compiler checks.
 4. **Effects mark mutation.** Pure queries are pure. Inserts, updates,
    deletes carry a `[Database]` effect. Read-only queries can be
    `[ReadOnly Database]`.
@@ -173,7 +173,7 @@ Queries chain naturally with pipe:
   transact : [Database] a -> [Database] a
 ```
 
-### Example — Complete Query
+### Example -- Complete Query
 
 ```codex
 Chapter: SalesReport
@@ -329,11 +329,11 @@ by youngest transaction (lowest cost to abort).
 For distributed transactions across multiple Codex DB servers.
 
 ```
-Phase 1 — Prepare:
+Phase 1 -- Prepare:
   Coordinator sends PREPARE to all participants.
   Each participant writes WalPrepare, replies VOTE-COMMIT or VOTE-ABORT.
 
-Phase 2 — Commit/Abort:
+Phase 2 -- Commit/Abort:
   If all vote COMMIT: coordinator sends GLOBAL-COMMIT, participants commit.
   If any votes ABORT: coordinator sends GLOBAL-ABORT, participants abort.
   Coordinator writes decision to its own WAL before sending phase 2.
@@ -438,59 +438,59 @@ lattice model.
 
 ## Implementation Order
 
-### Phase 1 — Storage Foundation
-1. `Page.codex` — page format, read/write primitives
-2. `Row.codex` — row serialization/deserialization
-3. `Heap.codex` — heap file (sequential scan)
-4. `Wal.codex` — append WAL records, replay
-5. `BufferPool.codex` — page cache with LRU
-6. `BTreeIndex.codex` — generalized B+ tree on pages
-7. `Catalog.codex` — system tables (pg_class, pg_attribute style)
-8. `Schema.codex` — DDL: create table, create index
+### Phase 1 -- Storage Foundation
+1. `Page.codex` -- page format, read/write primitives
+2. `Row.codex` -- row serialization/deserialization
+3. `Heap.codex` -- heap file (sequential scan)
+4. `Wal.codex` -- append WAL records, replay
+5. `BufferPool.codex` -- page cache with LRU
+6. `BTreeIndex.codex` -- generalized B+ tree on pages
+7. `Catalog.codex` -- system tables (pg_class, pg_attribute style)
+8. `Schema.codex` -- DDL: create table, create index
 
-### Phase 2 — Query Engine
-9. `RelAlgebra.codex` — logical algebra nodes
-10. `Parser.codex` — parse Codex relational expressions
-11. `Planner.codex` — logical plan builder
-12. `Executor.codex` — volcano iterator
-13. `Aggregate.codex` — group-by, sum, count, avg
-14. `Optimizer.codex` — predicate pushdown, index selection
+### Phase 2 -- Query Engine
+9. `RelAlgebra.codex` -- logical algebra nodes
+10. `Parser.codex` -- parse Codex relational expressions
+11. `Planner.codex` -- logical plan builder
+12. `Executor.codex` -- volcano iterator
+13. `Aggregate.codex` -- group-by, sum, count, avg
+14. `Optimizer.codex` -- predicate pushdown, index selection
 
-### Phase 3 — Transactions
-15. `Transaction.codex` — begin/commit/abort state machine
-16. `LockManager.codex` — lock table, grant/wait
-17. `Deadlock.codex` — wait-for graph, cycle detection
-18. `Mvcc.codex` — snapshot isolation
+### Phase 3 -- Transactions
+15. `Transaction.codex` -- begin/commit/abort state machine
+16. `LockManager.codex` -- lock table, grant/wait
+17. `Deadlock.codex` -- wait-for graph, cycle detection
+18. `Mvcc.codex` -- snapshot isolation
 
-### Phase 4 — Server
-19. `Protocol.codex` — wire format encode/decode
-20. `Session.codex` — per-connection state machine
-21. `Server.codex` — accept loop, dispatch
+### Phase 4 -- Server
+19. `Protocol.codex` -- wire format encode/decode
+20. `Session.codex` -- per-connection state machine
+21. `Server.codex` -- accept loop, dispatch
 
-### Phase 5 — Analytics & Distribution
-22. `ColumnStore.codex` — columnar pages, encoding
-23. `HashJoin.codex` — hash join operator
-24. `SortMerge.codex` — sort-merge join operator
-25. `MapReduce.codex` — map-reduce on column data
-26. `TwoPhaseCommit.codex` — 2PC coordinator/participant
-27. `Replication.codex` — WAL shipping
+### Phase 5 -- Analytics & Distribution
+22. `ColumnStore.codex` -- columnar pages, encoding
+23. `HashJoin.codex` -- hash join operator
+24. `SortMerge.codex` -- sort-merge join operator
+25. `MapReduce.codex` -- map-reduce on column data
+26. `TwoPhaseCommit.codex` -- 2PC coordinator/participant
+27. `Replication.codex` -- WAL shipping
 
 ## Testing Strategy
 
 Each phase adds test programs in `codex.test/`:
-- `db-page-test` — page read/write/slot management
-- `db-btree-test` — insert, lookup, range scan, split
-- `db-heap-test` — sequential scan, insert, delete
-- `db-wal-test` — write records, crash, replay, verify
-- `db-query-test` — parse, plan, execute sample queries
-- `db-txn-test` — concurrent transactions, deadlock, isolation
-- `db-protocol-test` — wire format round-trip
-- `db-join-test` — nested loop, hash, sort-merge correctness
+- `db-page-test` -- page read/write/slot management
+- `db-btree-test` -- insert, lookup, range scan, split
+- `db-heap-test` -- sequential scan, insert, delete
+- `db-wal-test` -- write records, crash, replay, verify
+- `db-query-test` -- parse, plan, execute sample queries
+- `db-txn-test` -- concurrent transactions, deadlock, isolation
+- `db-protocol-test` -- wire format round-trip
+- `db-join-test` -- nested loop, hash, sort-merge correctness
 
 ## Memory and Time Complexity
 
 **Page buffer pool**: Fixed at startup. Default 256 pages = 2 MB.
-Bounded. No GC needed — frames are recycled via LRU eviction.
+Bounded. No GC needed -- frames are recycled via LRU eviction.
 
 **B+ tree operations**: O(log_B n) where B = page fan-out (~200 for
 8 KB pages with 40-byte keys). 10M rows = ~4 levels.
@@ -500,7 +500,7 @@ Bounded by checkpoint interval.
 
 **Lock table**: O(1) hash lookup. Lock entries freed on txn commit/abort.
 
-**Query execution**: Volcano iterators — O(1) memory per operator
+**Query execution**: Volcano iterators -- O(1) memory per operator
 (except hash join which buffers the build side, and sort which
 materializes). Streaming results, not materializing.
 

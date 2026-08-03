@@ -1,10 +1,10 @@
-# Web Client & Server — UI, Store, Game, Economy
+# Web Client & Server -- UI, Store, Game, Economy
 
 ## Overview
 
 The CodexMagic web client follows the same architecture as the classic
 games: a PowerShell HTTP server bridges the browser to a Codex VM
-running the game server binary. The browser is a thin client — all
+running the game server binary. The browser is a thin client -- all
 game logic, AI decisions, economy operations, and matchmaking run
 server-side. The client renders state and captures player input.
 
@@ -42,26 +42,26 @@ The client has six main pages, accessible from a top navigation bar:
 
 The landing page. Shows:
 
-- **Player profile** — name, rank badge, rating, win/loss record,
+- **Player profile** -- name, rank badge, rating, win/loss record,
   subscription tier
-- **General portrait** — current equipped General with P/T/D, life,
+- **General portrait** -- current equipped General with P/T/D, life,
   and behavioral modifier summary
-- **Daily rewards** — claim button for first-win bonus, weekly pack
-- **Season banner** — current season name, days remaining, rank
+- **Daily rewards** -- claim button for first-win bonus, weekly pack
+- **Season banner** -- current season name, days remaining, rank
   progress bar toward next tier
-- **Quick play** — buttons for "Play Ranked", "Play Casual",
+- **Quick play** -- buttons for "Play Ranked", "Play Casual",
   "Enter Tournament"
-- **News feed** — latest season notes, ban announcements, patch notes
+- **News feed** -- latest season notes, ban announcements, patch notes
 
 Layout: centered column, dark theme consistent with the classic games
-portal. General portrait is the visual centerpiece — a large card
+portal. General portrait is the visual centerpiece -- a large card
 rendering with glow effect based on army loyalty.
 
 ### 2. Collection & Deck Builder (`collection.html`)
 
 Two-panel layout:
 
-**Left panel — Collection browser:**
+**Left panel -- Collection browser:**
 - Grid of owned cards, rendered as card images (art + stat overlay)
 - Filter by: color, type, rarity, cost, keyword, season
 - Sort by: name, cost, power, prominence, acquisition date
@@ -70,7 +70,7 @@ Two-panel layout:
   gem, prominence badge, copy count
 - Click card to see full detail (rules text, provenance, match history)
 
-**Right panel — Deck builder:**
+**Right panel -- Deck builder:**
 - Deck list with card counts, sorted by cost
 - Mana curve bar chart (visual cost distribution)
 - Deck stats: total cards, creature count, spell count, average CMC,
@@ -81,7 +81,7 @@ Two-panel layout:
 - "Auto-fill" button: AI suggests remaining cards based on General
   and color identity
 
-Deck validation runs on every change — the server checks via
+Deck validation runs on every change -- the server checks via
 `/api/magic/deck/validate` and returns the result. Invalid states
 show the reason inline.
 
@@ -174,7 +174,7 @@ overlay appears:
 └─────────────────────────────────────┘
 ```
 
-Timer counts down — if the player doesn't choose, the AI takes its
+Timer counts down -- if the player doesn't choose, the AI takes its
 recommended action.
 
 **Game flow:**
@@ -205,9 +205,9 @@ The in-game store for spending Mana Coin:
 **Pack Opening Experience:**
 Full-screen modal with card reveal animation:
 1. Pack appears centered, sealed
-2. Click/tap to open — pack tears open with animation
+2. Click/tap to open -- pack tears open with animation
 3. Cards fan out face-down
-4. Click each card to flip it — rarity determines flip animation:
+4. Click each card to flip it -- rarity determines flip animation:
    - Common: simple flip
    - Uncommon: flip with blue shimmer
    - Rare: flip with gold burst
@@ -240,7 +240,7 @@ The match queue screen:
 - **Format selector**: Standard, Vintage, Draft, Sealed
 - **Competition tier**: Open (sub bonuses active) / Fair (no bonuses)
 - **Deck selector**: dropdown of saved decks (validates on selection)
-- **Queue button**: "Find Match" — enters queue, shows spinner
+- **Queue button**: "Find Match" -- enters queue, shows spinner
 - **Queue status**: "Searching... (12s)" with estimated wait time
 - **Match found**: opponent preview (rank, General name) with
   "Accept" / "Decline" buttons
@@ -436,25 +436,25 @@ tools/web/
 
 ## Implementation Phases
 
-**Phase 1 — Playable game:**
+**Phase 1 -- Playable game:**
 - `game.html` with auto-play, step, posture controls
 - Server API: `/game/new`, `/game/step`, `/game/state`
 - Card rendering in JS
 - Basic game state JSON serialization
 
-**Phase 2 — Collection and store:**
+**Phase 2 -- Collection and store:**
 - `collection.html` with deck builder
 - `store.html` with pack cracking
 - Server API: `/store/crack`, `/deck/validate`, `/deck/generate`
 - Pack opening animation
 
-**Phase 3 — Matchmaking and accounts:**
+**Phase 3 -- Matchmaking and accounts:**
 - `queue.html` with format/tier selection
 - `profile.html` with stats and history
 - `index.html` dashboard
 - Server API: `/account/*`, `/queue/*`, `/season/*`
 
-**Phase 4 — Economy:**
+**Phase 4 -- Economy:**
 - Trading UI in store
 - Ubiquitous market
 - Mana Coin balance integration

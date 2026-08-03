@@ -6,10 +6,10 @@
 
 | Type | Code | Semantics |
 |---|---|---|
-| CON | 0 | Confirmable — requires ACK, exponential backoff retry |
-| NON | 1 | Non-confirmable — unreliable, no ACK needed |
+| CON | 0 | Confirmable -- requires ACK, exponential backoff retry |
+| NON | 1 | Non-confirmable -- unreliable, no ACK needed |
 | ACK | 2 | Acknowledgement of CON message |
-| RST | 3 | Reset — unable to process message |
+| RST | 3 | Reset -- unable to process message |
 
 ## Method Codes
 
@@ -91,7 +91,7 @@
 
 ## Implementation Notes for Codex
 
-- CoAP runs on UDP — requires Codex UDP foreword (exists)
+- CoAP runs on UDP -- requires Codex UDP foreword (exists)
 - 4-byte header + options = minimal memory footprint
 - CON/ACK state machine maps to effect-typed state tracking
 - DTLS security via existing crypto stack (ChaCha20/AES-GCM)

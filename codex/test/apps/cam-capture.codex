@@ -1,0 +1,46 @@
+Chapter: CamCaptureTest
+  cites Works chapter CamCapture
+
+ The Camera effect performed, end to end, through the effect row alone.
+
+ codex/test/apps/usb-cam-frame proves the isochronous transfer against
+ the driver directly, holding an XhciHost and a UsbDev of its own. This
+ proves the layer above it: `opening` declares Camera and nothing else,
+ and the port reset, the enumeration, the descriptor walk and the TRB
+ all happen behind the effect. Device.Port and Device.Mmio are grounded
+ in Works chapter CamCapture, and if that grounding is wrong this file
+ does not compile.
+
+ The pixels are what make it a capture rather than a call that returned.
+ codex-vm's UVC device delivers eight vertical colour bars twenty pixels
+ wide, luma alternating 16 and 235 by bar, so x=0, x=20 and x=40 sample
+ three consecutive bars and pin both the content and the stride. A frame
+ of zeroes -- a buffer nobody wrote -- fails all three, and so does a
+ capture that timed out, because cf-ok would be False and every pixel
+ read would answer zero.
+
+ The two refusals are the other half. capture-raw at 320x240 must answer
+ not-ok: this device publishes one format and the chapter refuses rather
+ than resizing, so a caller asking for a size it cannot have is told.
+ capture-raw at the size it CAN have must succeed, or the refusal above
+ would be indistinguishable from a camera that never works.
+
+Section: Entry
+
+  report : CamFrame -> Text
+  report (f) =
+    if f.cf-ok == False then "capture: not ok"
+    else "capture: ok " & show (f.cf-width) & "x" & show (f.cf-height)
+      & "\nluma: " & show (frame-luma f 0 0) & " " & show (frame-luma f 20 0) & " " & show (frame-luma f 40 0)
+      & "\nchroma: " & show (frame-chroma f 0 0) & " " & show (frame-chroma f 20 0) & " " & show (frame-chroma f 40 0)
+      & "\nrow1: " & show (frame-luma f 0 1) & " " & show (frame-luma f 20 1)
+      & "\noutside: " & show (frame-luma f 160 0) & " " & show (frame-luma f 0 120)
+
+  opening : [Console, Camera] Nothing = act
+    f <- capture
+    print-line-uni (report f)
+    wrong <- capture-raw 320 240
+    print-line-uni ("raw 320x240 ok " & show (wrong.cf-ok))
+    right <- capture-raw 160 120
+    print-line-uni ("raw 160x120 ok " & show (right.cf-ok))
+  end

@@ -21,20 +21,16 @@ Section: Sigmoid Approximation
 
   act-sigmoid-val : Integer -> Integer
   act-sigmoid-val (x) =
-    if x > 6000 then 1000
-    else if x < (0 - 6000) then 0
-    else 500 + x * 250 / 1000 - x * x * x / 48000000
+    if x > 16000 then 1000
+    else if x < (0 - 16000) then 0
+    else 1000000 / (1000 + act-exp-approx (0 - x))
 
 Section: Tanh Approximation
   act-tanh : Tensor -> Tensor
   act-tanh (t) = Tensor { data = for v in (t.data) -> act-tanh-val v, rows = t.rows, cols = t.cols }
 
   act-tanh-val : Integer -> Integer
-  act-tanh-val (x) =
-    if x > 4000 then 1000
-    else if x < (0 - 4000) then 0 - 1000
-    else let x2 = x * x / 1000
-    in x - x * x2 / 3000
+  act-tanh-val (x) = act-sigmoid-val (x * 2) * 2 - 1000
 
 Section: GELU Approximation
   act-gelu : Tensor -> Tensor
@@ -55,11 +51,24 @@ Section: Softmax
     in let normed = if total == 0 then exps else for v in exps -> v * 1000 / total
     in Tensor { data = normed, rows = t.rows, cols = t.cols }
 
+ 2718 is e at scale 1000 and 485165195 is exp(20) at the same scale, the
+ value the argument is clamped to.
+
   act-exp-approx : Integer -> Integer
   act-exp-approx (x) =
-    if x > 3000 then 20000
-    else if x < (0 - 3000) then 0
-    else 1000 + x + x * x / 2000
+    if x < 0 then 1000000 / act-exp-approx (0 - x)
+    else if x > 20000 then 485165195
+    else let k = x / 1000
+    in act-exp-int k * act-exp-frac (x - k * 1000) / 1000
+
+  act-exp-int : Integer -> Integer
+  act-exp-int (k) =
+    if k <= 0 then 1000
+    else act-exp-int (k - 1) * 2718 / 1000
+
+  act-exp-frac : Integer -> Integer
+  act-exp-frac (r) =
+    1000 + r + r * r / 2000 + r * r * r / 6000000 + r * r * r * r / 24000000000 + r * r * r * r * r / 120000000000000
 
   act-sum-list : List Integer, Integer, Integer, Integer -> Integer
   act-sum-list (data) (i) (len) (acc) =

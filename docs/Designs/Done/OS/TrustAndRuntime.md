@@ -1,8 +1,8 @@
-# Trust Network — Replacing the Internet's Trust Architecture
+# Trust Network -- Replacing the Internet's Trust Architecture
 
 **Date**: 2026-03-31
 **Status**: Design
-**Depends on**: Agent Contract (RuntimeTrust.txt), Capability Refinement, Crypto Primitives (DONE — Ed25519, SHA-256, ChaCha20, AES-GCM, HKDF, X25519 implemented and audited)
+**Depends on**: Agent Contract (RuntimeTrust.txt), Capability Refinement, Crypto Primitives (DONE -- Ed25519, SHA-256, ChaCha20, AES-GCM, HKDF, X25519 implemented and audited)
 **Prior art**: `docs/Codex.OS/DistributedAgentOS.txt`, `docs/Designs/Codex.OS/TrustAndRuntime.md`
 
 ---
@@ -29,7 +29,7 @@ model, its own failure modes, its own configuration surface. The result is
 a stack where security is a property of the configuration, not the protocol.
 
 Codex's model inverts this: **distrust by default, earn trust through the
-lattice.** This is not a philosophical preference — it's a protocol design
+lattice.** This is not a philosophical preference -- it's a protocol design
 decision that eliminates entire attack classes by construction.
 
 ---
@@ -50,7 +50,7 @@ decision that eliminates entire attack classes by construction.
 
 4. **Stateless until proven real.** No state is allocated for an
    unauthenticated sender. The first message must be self-authenticating.
-   If verification fails, drop it — zero cost to the receiver.
+   If verification fails, drop it -- zero cost to the receiver.
 
 5. **Silence is safe.** An agent that receives no messages, or receives
    only invalid messages, defaults to its compiled-in safe set. The
@@ -71,7 +71,7 @@ server's connection table fills up. Legitimate connections are refused.
 **Why it doesn't apply**: Codex agents don't use TCP's handshake for
 trust establishment. The first message in a Codex exchange is a signed
 `Propose` (from the Agent Contract). The receiver's first operation is
-signature verification — a pure CPU operation with no state allocation.
+signature verification -- a pure CPU operation with no state allocation.
 
 ```
 Attacker sends:  Propose { from: X, signature: garbage, ... }
@@ -85,7 +85,7 @@ on modern hardware). This is rate-limitable by CPU budget, not by connection
 table size.
 
 For transport-level connection management, SYN cookies (stateless TCP) can
-be used at the TCP layer. But the Codex protocol doesn't care — TCP is just
+be used at the TCP layer. But the Codex protocol doesn't care -- TCP is just
 the byte pipe. An attacker who exhausts the TCP layer gets a TCP-level
 rejection, not a Codex-level state corruption.
 
@@ -113,7 +113,7 @@ Peer discovery works through the trust lattice: agents you trust vouch
 for other agents, with addresses attached to the vouch. An attacker can
 forge an address, but cannot forge the vouch signature. If you connect to
 a fraudulent address, the first message exchange fails signature verification
-and you disconnect — no state leaked, no data sent.
+and you disconnect -- no state leaked, no data sent.
 
 For interoperability with the existing internet (reaching non-Codex
 services), a Codex agent uses DNS as a hint, not as truth. The agent
@@ -130,7 +130,7 @@ and the user sees "From: CEO" regardless of whether DKIM passed.
 
 **Why it doesn't apply**: Every Codex message carries a signature over the
 content, signed by the sender's private key. The sender's identity is a
-public key in the trust lattice. Verification is not optional — it's the
+public key in the trust lattice. Verification is not optional -- it's the
 first thing the receiver does.
 
 ```
@@ -140,7 +140,7 @@ Receiver:       verify(a1b2c3, body, signature) → valid or drop
 ```
 
 There is no equivalent of "display name spoofing" because identity is not
-a display name — it's a cryptographic key. The trust lattice maps keys to
+a display name -- it's a cryptographic key. The trust lattice maps keys to
 human-readable names, but the mapping is signed and auditable:
 
 ```
@@ -156,7 +156,7 @@ is rejected by the trust threshold.
 **TCP's problem**: TCP carries no proof of who sent the packet. Any device
 on the network path can read and modify traffic. TLS adds encryption and
 server authentication (via CA-signed certificates), but the CA model has
-single points of failure — a compromised CA can issue fraudulent
+single points of failure -- a compromised CA can issue fraudulent
 certificates for any domain (DigiNotar, 2011; Symantec, 2015-2017).
 
 **Why it doesn't apply**: Codex messages are signed end-to-end by the
@@ -172,19 +172,19 @@ but cannot:
 
 For confidentiality (preventing observation), the transport layer can use
 TLS or a Codex-native encryption layer. But the integrity guarantee doesn't
-depend on the transport — it's in the message signatures. A MITM who strips
+depend on the transport -- it's in the message signatures. A MITM who strips
 TLS still can't forge or modify Codex messages.
 
 The CA model is replaced by the trust lattice. There is no single authority
 whose compromise breaks everything. Trust is distributed, scored, and
 decays with distance. Compromising one agent's key affects only the trust
-relationships that flow through that agent — not the entire network.
+relationships that flow through that agent -- not the entire network.
 
 ### DDoS (Distributed Denial of Service)
 
 **The fundamental problem**: DDoS is about resource exhaustion. An attacker
 sends more traffic than the target can process. This is the hardest attack
-to eliminate because it's not a protocol flaw — it's a physics problem.
+to eliminate because it's not a protocol flaw -- it's a physics problem.
 Any system that accepts input from the network can be overwhelmed by
 sufficient input.
 
@@ -210,7 +210,7 @@ sufficient input.
 4. **Peer reputation.** Agents that send malformed messages, fail
    signature checks, or exhibit flood patterns get their trust score
    decremented. Below a threshold, their messages are dropped without
-   verification. This is automated immune response — the trust lattice
+   verification. This is automated immune response -- the trust lattice
    learns to reject bad actors.
 
 DDoS at the raw transport level (IP packet floods, amplification attacks)
@@ -218,7 +218,7 @@ is a network infrastructure problem, not a Codex protocol problem. Codex.OS
 nodes behind hostile networks need the same infrastructure-level defenses
 (rate limiting, blackholing, traffic scrubbing) that any internet-connected
 system needs. The difference is that Codex's application layer doesn't
-amplify the damage — a flood of invalid messages wastes bandwidth but
+amplify the damage -- a flood of invalid messages wastes bandwidth but
 doesn't corrupt state or trick the agent into unsafe behavior.
 
 ### Replay Attacks
@@ -242,7 +242,7 @@ token) and uses it to impersonate the victim.
 
 **Why it doesn't apply**: There are no session tokens. Every message is
 independently signed. There is no "session" that persists between messages
-— each message is self-authenticating. Stealing one message gives you one
+-- each message is self-authenticating. Stealing one message gives you one
 message. It doesn't give you the ability to send future messages as that
 agent, because you don't have the private key.
 
@@ -275,7 +275,7 @@ the transport. It handles:
 - **Replay deduplication** via fact hash store
 - **Rate limiting** per sender key and per trust tier
 - **Proof-of-work verification** for first-contact messages
-- **Encryption** (optional, for confidentiality — integrity is already
+- **Encryption** (optional, for confidentiality -- integrity is already
   guaranteed by signatures)
 
 ### Framing
@@ -313,7 +313,7 @@ Initiator                           Receiver
 
 The `Hello` message carries a proof-of-work token (e.g., partial hash
 collision of configurable difficulty). This gates state allocation on the
-receiver side — no proof, no state. The `Challenge`/`Prove` exchange
+receiver side -- no proof, no state. The `Challenge`/`Prove` exchange
 verifies that the initiator actually holds the private key (not just
 replaying someone else's Hello).
 
@@ -336,9 +336,9 @@ How does an agent find other agents?
 
 3. **Registry query**: A well-known registry agent (itself identified by
    public key, not DNS) maintains an index of agent keys → transport
-   addresses. The registry is a convenience — it accelerates discovery
+   addresses. The registry is a convenience -- it accelerates discovery
    but is not a trust authority. The registry can lie about addresses
-   (say C is at a different IP), but it can't forge C's identity — the
+   (say C is at a different IP), but it can't forge C's identity -- the
    first message exchange with the false address fails signature
    verification.
 
@@ -387,7 +387,7 @@ system. One mechanism instead of seven.
 | **Fact store** | Replay deduplication, message persistence, forensic record |
 | **Forensics layer** | Every network exchange is a forensic chain |
 | **Policy contract** | Network access policies compiled from prose |
-| **Crypto primitives** | Ed25519 signatures, SHA-256 hashing (DONE — constant-time implementations in foreword) |
+| **Crypto primitives** | Ed25519 signatures, SHA-256 hashing (DONE -- constant-time implementations in foreword) |
 
 ---
 
@@ -395,16 +395,16 @@ system. One mechanism instead of seven.
 
 | Step | What | Effort | Depends on | Status |
 |------|------|--------|------------|--------|
-| 1 | Define framing format (length-prefixed, deterministic serialization) | Small | Core types | DONE — MessageFraming.codex |
-| 2 | Signature verification + trust score check (the trust layer) | Medium | Crypto primitives | DONE — TrustLattice.codex, Ed25519.codex |
-| 3 | Replay deduplication (fact hash store) | Small | Step 1 | DONE — TrustNode.codex sequence numbers |
-| 4 | First-contact handshake (proof-of-work + challenge/prove) | Medium | Steps 1-2 | DONE — Handshake.codex, TrustTransport.codex |
-| 5 | TCP transport binding (connect, send, receive, disconnect) | Medium | Step 1 + bare metal networking | DONE — TrustTransport.codex |
+| 1 | Define framing format (length-prefixed, deterministic serialization) | Small | Core types | DONE -- MessageFraming.codex |
+| 2 | Signature verification + trust score check (the trust layer) | Medium | Crypto primitives | DONE -- TrustLattice.codex, Ed25519.codex |
+| 3 | Replay deduplication (fact hash store) | Small | Step 1 | DONE -- TrustNode.codex sequence numbers |
+| 4 | First-contact handshake (proof-of-work + challenge/prove) | Medium | Steps 1-2 | DONE -- Handshake.codex, TrustTransport.codex |
+| 5 | TCP transport binding (connect, send, receive, disconnect) | Medium | Step 1 + bare metal networking | DONE -- TrustTransport.codex |
 | 6 | Rate limiting (per-key, per-trust-tier) | Small | Steps 2, 5 | Remaining |
-| 7 | Peer discovery (vouch-based, registry, local broadcast) | Medium | Steps 4-5 | DONE — PeerDiscovery.codex |
+| 7 | Peer discovery (vouch-based, registry, local broadcast) | Medium | Steps 4-5 | DONE -- PeerDiscovery.codex |
 | 8 | Peer reputation (trust score decrement on bad behavior) | Small | Steps 2, 6 | Remaining |
 
-Steps 1-4 can be built and tested in-process with no networking — two
+Steps 1-4 can be built and tested in-process with no networking -- two
 agents in the same process exchanging serialized byte arrays through
 function calls. The trust layer works the same whether the bytes come
 from TCP or from a test harness. Step 5 is where bare-metal networking
@@ -434,12 +434,12 @@ enters the picture.
 
 ---
 
-# Part 2: Runtime Trust — Agent Protocol and Policy
+# Part 2: Runtime Trust -- Agent Protocol and Policy
 
 ## 1. AGENT-CONTRACT.md
 
 ```markdown
-# Agent Contract — The Agent-to-Agent Protocol
+# Agent Contract -- The Agent-to-Agent Protocol
 
 **Date**: 2026-03-29
 **Status**: Design
@@ -460,7 +460,7 @@ phone agent talks to Captain Agent to negotiate flight control authorization,
 that conversation cannot wait for a git push.
 
 There is no agent-to-agent protocol in the project today. The four development
-agents (Windows, Linux, Cam, Nut) coordinate through git — push to master is
+agents (Windows, Linux, Cam, Nut) coordinate through git -- push to master is
 the handoff, dotnet test is the acceptance criterion. That works because the
 agents are patient and the stakes are low. A surgical robot and an anesthesia
 monitor cannot coordinate through git.
@@ -474,7 +474,7 @@ monitor cannot coordinate through git.
    still typed, scoped, time-boxed, and backed by vouch chains. The difference
    is speed: sub-second negotiation instead of minutes-to-hours sync.
 
-2. **Facts all the way down.** Every message in the protocol is a fact — hashed,
+2. **Facts all the way down.** Every message in the protocol is a fact -- hashed,
    signed, append-only. The protocol is a real-time fact stream between agents.
    When the stream is persisted, it becomes the forensic record (see
    `FORENSICS-LAYER.md`).
@@ -533,7 +533,7 @@ Grant {
 
 The granted capability may be narrower than what was proposed. Captain Agent
 might grant [FlightControl.Autopilot] but not [FlightControl.Manual]. The
-type system verifies compatibility — a Grant that exceeds the grantor's own
+type system verifies compatibility -- a Grant that exceeds the grantor's own
 capabilities is a type error.
 
 ### 3. `Deny`
@@ -578,7 +578,7 @@ did my kid's agent do that?"
 ### 5. `Narrate`
 
 An agent provides a human-readable explanation of a decision or action.
-This is the forensic narrative — the story of what happened and why.
+This is the forensic narrative -- the story of what happened and why.
 
 ```
 Narrate {
@@ -614,7 +614,7 @@ Interrupt {
 }
 ```
 
-An Interrupt is not a request — it's a command. But it requires authority.
+An Interrupt is not a request -- it's a command. But it requires authority.
 A random agent can't interrupt Captain Agent mid-flight. The authority chain
 must include a capability that dominates the interrupted operation. The type
 system verifies this: `Interrupt` requires `[Supervise target]` capability.
@@ -650,12 +650,12 @@ Every Grant and Handoff has an `expires` field. This is the lease model.
 
 When an agent is offline, leases tick down against the local clock. When a
 lease expires without renewal, the capability is automatically revoked. The
-local agent defaults to its safe-mode capability set — the set that was
+local agent defaults to its safe-mode capability set -- the set that was
 compiled into the binary at build time.
 
 Lease renewal requires a `Propose` → `Grant` exchange. If the network is
 down, the exchange can't happen, and the lease expires. This is the answer
-to "parent revokes capability while the phone has no signal" — the capability
+to "parent revokes capability while the phone has no signal" -- the capability
 was never permanent. It was a lease. The lease expires. The local agent
 restricts.
 
@@ -707,13 +707,13 @@ These are capability-gated like all other effects.
 
 | Step | What | Effort | Depends on | Status |
 |------|------|--------|------------|--------|
-| 1 | Define message types as Codex records | Small | Core type system | DONE — AgentProtocol.codex (7+2 msg types) |
-| 2 | Fact serialization for messages (hash + sign) | Medium | FactStore | DONE — TrustTransport.codex encode/decode |
-| 3 | Local agent message loop (in-process, for testing) | Medium | Step 1-2 | DONE — TrustService.codex dispatch loop |
-| 4 | Lease expiry timer + auto-revoke | Medium | Step 3 + bare metal tick counter | DONE — LeaseManager.codex |
+| 1 | Define message types as Codex records | Small | Core type system | DONE -- AgentProtocol.codex (7+2 msg types) |
+| 2 | Fact serialization for messages (hash + sign) | Medium | FactStore | DONE -- TrustTransport.codex encode/decode |
+| 3 | Local agent message loop (in-process, for testing) | Medium | Step 1-2 | DONE -- TrustService.codex dispatch loop |
+| 4 | Lease expiry timer + auto-revoke | Medium | Step 3 + bare metal tick counter | DONE -- LeaseManager.codex |
 | 5 | `[Negotiate]` and `[Supervise]` effects | Small | BuiltinEffects | Remaining |
-| 6 | Cross-device transport (serial, TCP, BLE) | Large | Step 3 + Codex.OS networking | DONE (TCP) — TrustTransport.codex |
-| 7 | Adversarial resistance (replay protection, nonce) | Medium | Step 6 | DONE — TrustNode.codex seq numbers |
+| 6 | Cross-device transport (serial, TCP, BLE) | Large | Step 3 + Codex.OS networking | DONE (TCP) -- TrustTransport.codex |
+| 7 | Adversarial resistance (replay protection, nonce) | Medium | Step 6 | DONE -- TrustNode.codex seq numbers |
 
 Steps 1-4 and 6-7 are implemented and tested in-process. Step 5 (Negotiate/Supervise
 effects) requires compiler changes to add new built-in effects.
@@ -724,7 +724,7 @@ effects) requires compiler changes to add new built-in effects.
 ## 2. POLICY-CONTRACT.md
 
 ```markdown
-# Policy Contract — The Capability Policy Language
+# Policy Contract -- The Capability Policy Language
 
 **Date**: 2026-03-29
 **Status**: Design
@@ -740,7 +740,7 @@ and the compiler enforces it. But who writes those capability annotations?
 
 For compiler code, the programmer writes them. For a phone app, the developer
 writes them. But for "he can use the flight sim between 3 and 5 on weekdays,
-and the real controls only when I'm sitting next to him" — that's a parent.
+and the real controls only when I'm sitting next to him" -- that's a parent.
 The parent doesn't write type annotations. The parent speaks prose.
 
 The RDBMS analogy from `DistributedAgentOS.txt` is precise: GRANT/REVOKE
@@ -751,7 +751,7 @@ a different language than the enforcement.
 
 Codex already solves half of this: prose is load-bearing, the compiler reads
 it, the narration layer validates prose against notation. What's missing is
-the specific policy sublanguage — the prose patterns that compile into
+the specific policy sublanguage -- the prose patterns that compile into
 capability constraints.
 
 ---
@@ -767,7 +767,7 @@ capability constraints.
    all layer. Composition uses the same View composition as the repository:
    Override (more restrictive wins), Merge (union of constraints), Filter.
 
-3. **Policies are facts.** A policy is a fact in the repository — hashed,
+3. **Policies are facts.** A policy is a fact in the repository -- hashed,
    signed, versioned, auditable. Changing a policy creates a new fact.
    The old policy still exists. The forensic layer can show exactly which
    policy was in effect at any point in time.
@@ -821,7 +821,7 @@ PolicyFact {
     CapabilityDenial {
       capability : FlightControl
       scope      : "*"
-      reason     : "absolute denial — no conditions"
+      reason     : "absolute denial -- no conditions"
     }
   ]
   author     : parent_identity_hash
@@ -840,7 +840,7 @@ PolicyFact {
 ```
 
 Denials are absolute unless qualified by an override from a higher authority.
-"May never" compiles to a denial with no conditions — no time window can
+"May never" compiles to a denial with no conditions -- no time window can
 open it, no delegation can bypass it.
 
 ### Condition Templates
@@ -959,7 +959,7 @@ view jake-effective-policy =
 ```
 
 The `merge` operation applies the lattice rule at each capability.
-The resulting view is the effective policy — the complete set of
+The resulting view is the effective policy -- the complete set of
 grants, denials, conditions, and quotas that apply to Jake right now.
 
 ---
@@ -985,7 +985,7 @@ template parser. It recognizes policy-specific patterns and emits
 | "the following requires" | ConditionalGrant |
 | "counts double/triple" | QuotaMultiplier |
 
-Unrecognized prose is preserved as documentation. It's not an error —
+Unrecognized prose is preserved as documentation. It's not an error --
 it's commentary. Only recognized templates produce constraints.
 This means a policy can contain explanatory prose that humans read
 but the compiler ignores, just like any Codex document.
@@ -1021,7 +1021,7 @@ Policies compile to capability descriptors that the runtime evaluates:
 3. **At lease renewal time**: When a lease expires and the agent requests
    renewal, the policy is re-evaluated. If the policy changed (new fact
    hash), the new policy applies. This is how "parent revokes permission"
-   propagates — the next renewal evaluates the updated policy and denies.
+   propagates -- the next renewal evaluates the updated policy and denies.
 
 ---
 
@@ -1050,7 +1050,7 @@ Policies compile to capability descriptors that the runtime evaluates:
 | 6 | Runtime policy evaluation in agent message handler | Medium | Step 5 + Agent Contract |
 | 7 | Quota counters and auto-revocation | Medium | Step 6 + bare metal tick counter |
 
-Steps 1-5 are pure compilation — no runtime, no networking. A policy
+Steps 1-5 are pure compilation -- no runtime, no networking. A policy
 can be written, compiled, validated, and composed entirely at build time.
 Runtime enforcement (Steps 6-7) comes after the Agent Contract is operational.
 ```
@@ -1060,7 +1060,7 @@ Runtime enforcement (Steps 6-7) comes after the Agent Contract is operational.
 ## 3. FORENSICS-LAYER.md
 
 ```markdown
-# Forensics Layer — Epistemology for Agents
+# Forensics Layer -- Epistemology for Agents
 
 **Date**: 2026-03-29
 **Status**: Design
@@ -1083,7 +1083,7 @@ They'll be:
 
 Current systems can tell you *what* happened (logs). They can sometimes
 tell you *where* it happened (stack traces). They cannot tell you *why*
-it happened — what the agent believed, what policies were in effect, what
+it happened -- what the agent believed, what policies were in effect, what
 alternatives were considered, and where the reasoning chain broke.
 
 The forensics layer is the system's ability to say: "Here is exactly what
@@ -1096,7 +1096,7 @@ This is not logging. This is not debugging. This is epistemology.
 ## Design Principles
 
 1. **The software proves it is safe.** The hope is that failures are always
-   external — a sensor failed, an actuator failed, an adversary tricked
+   external -- a sensor failed, an actuator failed, an adversary tricked
    the inputs. Not that the software failed. The forensics layer's job is
    to prove this distinction.
 
@@ -1106,11 +1106,11 @@ This is not logging. This is not debugging. This is epistemology.
    into a chain. If something goes wrong, you can replay the chain and
    identify exactly where it broke.
 
-3. **Immutable and content-addressed.** Every forensic event is a fact —
+3. **Immutable and content-addressed.** Every forensic event is a fact --
    hashed, signed, append-only. No one can rewrite history. No one can
    hide a failure. No one can gaslight the public.
 
-4. **Narratable.** A surgeon, a regulator, a parent, a pilot — they don't
+4. **Narratable.** A surgeon, a regulator, a parent, a pilot -- they don't
    want a hex dump. They want a story. The narration layer generates
    human-readable explanations from the forensic chain.
 
@@ -1169,7 +1169,7 @@ Belief {
 Confidence propagation: if a belief is derived from two percepts with
 confidence 0.9 and 0.7, the belief's confidence is at most 0.63
 (product, unless the inference method provides a better estimate).
-The method field records how the inference was made — deterministic
+The method field records how the inference was made -- deterministic
 (type-checked code), statistical (model output), or heuristic (rule
 of thumb). This matters for blame assignment.
 
@@ -1188,7 +1188,7 @@ PolicySnapshot {
 ```
 
 The policy snapshot records the exact capability state at decision time.
-If a regulator asks "what could the agent do at T=4502?" — this fact
+If a regulator asks "what could the agent do at T=4502?" -- this fact
 answers it.
 
 ### Action
@@ -1210,7 +1210,7 @@ ActionRecord {
 }
 ```
 
-Every action records *why* it happened — the belief that motivated it
+Every action records *why* it happened -- the belief that motivated it
 and the policy that authorized it. This is the core forensic guarantee:
 no action without a traceable reason.
 
@@ -1234,7 +1234,7 @@ protocol (see below).
 
 ---
 
-## Anomaly Detection — "I Reached the Edge of My Spec"
+## Anomaly Detection -- "I Reached the Edge of My Spec"
 
 When an agent encounters a situation it cannot classify:
 
@@ -1259,7 +1259,7 @@ Anomaly {
 3. **Escalate**: Send an `Explain` or `Interrupt` message to a supervising
    agent (parent agent, authority agent, human operator).
 
-4. **Fall back**: Enter safe mode — restrict to compiled-in safe capability
+4. **Fall back**: Enter safe mode -- restrict to compiled-in safe capability
    set. No allocation, no inference, just precompiled safe responses.
    This is the `[HardRealtime]` path: TCO + regions, bounded memory,
    bounded time.
@@ -1279,12 +1279,12 @@ a fact in the forensic record.
 
 ---
 
-## Adversarial Input — "I Was Tricked"
+## Adversarial Input -- "I Was Tricked"
 
 The stop-sign T-shirt scenario. An adversary deliberately feeds the agent
 misleading input.
 
-The forensics layer doesn't prevent this — no system can prevent every
+The forensics layer doesn't prevent this -- no system can prevent every
 adversarial input. What it does is **make the deception visible**:
 
 ```
@@ -1296,7 +1296,7 @@ Forensic narrative for event sha256:9c2b...
   Action: Slowed to 15 mph (caution protocol for ambiguous obstacle)
   Result: No collision. Obstacle was a pedestrian in a printed T-shirt.
 
-  Assessment: Adversarial input. Sensor was not faulty — confidence
+  Assessment: Adversarial input. Sensor was not faulty -- confidence
   correctly reflected ambiguity. Policy correctly triggered caution
   protocol. No specification gap. The system behaved as designed
   under adversarial conditions.
@@ -1331,12 +1331,12 @@ inference methods are either deterministic (type-checked code) or recorded
 5. Compare the outcome
 
 If replay produces a different result, the discrepancy is itself a forensic
-finding — it means the agent's state was corrupted, or the inference method
+finding -- it means the agent's state was corrupted, or the inference method
 is non-deterministic and wasn't recorded properly.
 
 Replay is how you do accident investigation. Not "read the logs and guess."
 Replay the chain, step by step, with the exact inputs. The forensics layer
-makes this possible because it captured the right things — not printf
+makes this possible because it captured the right things -- not printf
 output, but the actual decision-relevant facts.
 
 ---
@@ -1350,7 +1350,7 @@ From `DistributedAgentOS.txt`:
 
 The forensics layer makes that statement operational:
 
-- You can read the code (it's Codex — literate, typed, auditable)
+- You can read the code (it's Codex -- literate, typed, auditable)
 - You can verify the hash (content-addressed, immutable)
 - You can replay the reasoning (forensic chain, every link a fact)
 - You can audit the policies (policy facts, composed in views)
@@ -1397,7 +1397,7 @@ explanation a non-engineer can read."
 
 - **It does not generate unbounded data.** Forensic recording is gated by
   effects. Only effectful operations produce action records. Pure
-  computation produces no forensic trace — it doesn't need one, because
+  computation produces no forensic trace -- it doesn't need one, because
   its correctness is guaranteed by the type system at compile time.
   This means the forensic record is proportional to the number of
   side effects, not the number of CPU instructions.
@@ -1408,10 +1408,10 @@ explanation a non-engineer can read."
 
 | Step | What | Effort | Depends on | Status |
 |------|------|--------|------------|--------|
-| 1 | Define Percept, Belief, PolicySnapshot, ActionRecord, Outcome, Anomaly records | Small | Core types | DONE — Forensics.codex |
-| 2 | Chain construction: link percept → belief → policy → action → outcome | Medium | Step 1 | DONE — chain-add-* functions |
-| 3 | Confidence propagation rules | Small | Step 2 | DONE — chain-min-confidence, link-confidence |
-| 4 | Anomaly detection (confidence threshold, no-matching-policy, contradiction) | Medium | Step 3 | DONE — assess-chain, EscalationLevel |
+| 1 | Define Percept, Belief, PolicySnapshot, ActionRecord, Outcome, Anomaly records | Small | Core types | DONE -- Forensics.codex |
+| 2 | Chain construction: link percept → belief → policy → action → outcome | Medium | Step 1 | DONE -- chain-add-* functions |
+| 3 | Confidence propagation rules | Small | Step 2 | DONE -- chain-min-confidence, link-confidence |
+| 4 | Anomaly detection (confidence threshold, no-matching-policy, contradiction) | Medium | Step 3 | DONE -- assess-chain, EscalationLevel |
 | 5 | Safe-mode fallback trigger on anomaly | Medium | Step 4 + bare metal capability bits | Remaining (needs kernel integration) |
 | 6 | Replay engine (re-derive chain from percepts, compare) | Medium | Step 2 | Remaining |
 | 7 | Narration generation from forensic chain | Medium | Step 6 + V2 narration layer | Remaining |
@@ -1424,7 +1424,7 @@ Steps 5-8 require kernel integration, replay infrastructure, and narration layer
 Design Review:
   Questions and concerns
 
-  1. Clock trust. Leases tick against the local clock. What happens when the local clock is wrong — maliciously or
+  1. Clock trust. Leases tick against the local clock. What happens when the local clock is wrong -- maliciously or
   through drift? A device that sets its clock back gets indefinite leases. The doc doesn't address clock attestation.
   This might need a ClockSource in the trust lattice, or at minimum a monotonic tick counter that can't be rolled back
   (which you already have on bare metal with the kernel tick, but not necessarily on hosted platforms).
@@ -1436,16 +1436,16 @@ Design Review:
 
   3. Interrupt authority vs. latency. An Interrupt requires a capability chain verification ([Supervise target]). In an
   emergency, that verification has a cost. If Captain Agent needs to interrupt a subordinate agent right now because a
-  collision is imminent, walking a vouch chain is the wrong thing to be doing. Might need a "pre-authorized interrupt" —
+  collision is imminent, walking a vouch chain is the wrong thing to be doing. Might need a "pre-authorized interrupt" --
    a compiled-in fast-path where the authority was verified at lease-grant time, not at interrupt time.
 
   4. Narrate is the most expensive message. Generating a prose reasoning chain from a forensic record is non-trivial
   computation. On bare metal with bounded memory, this could blow your resource envelope. The doc says safe-mode uses
-  [HardRealtime] paths with TCO + regions — but Narrate is explicitly not a safe-mode operation. Might want to say that
+  [HardRealtime] paths with TCO + regions -- but Narrate is explicitly not a safe-mode operation. Might want to say that
   Narrate is deferred until the agent is out of safe mode, or delegated to a supervising agent with more resources.
 
   5. Policy template recognition is fragile. "Jake may use X" vs "Jake is allowed to use X" vs "X is available to Jake"
-  — natural language has a lot of ways to say the same thing. The doc says unrecognized prose is preserved as
+  -- natural language has a lot of ways to say the same thing. The doc says unrecognized prose is preserved as
   documentation (not an error), which is the right default, but it means a parent could think they wrote a policy that
   the compiler silently treated as commentary. Needs a feedback loop: "I recognized 3 grants and 2 denials from your
   policy. Here they are. Is this complete?"
@@ -1457,7 +1457,7 @@ Design Review:
 
 ---
 
-# Part 3: Trusting Trust — Thompson Attack Analysis
+# Part 3: Trusting Trust -- Thompson Attack Analysis
 
 
   This is the one that should keep you up at night because it's directly about
@@ -1465,7 +1465,7 @@ Design Review:
 
   Ken Thompson gave a Turing Award lecture where he demonstrated: you can insert a
   backdoor into a compiler such that the compiler inserts the backdoor into anything it
-  compiles — including itself. The backdoor perpetuates through the fixed point. The
+  compiles -- including itself. The backdoor perpetuates through the fixed point. The
   source code is clean. The binary is compromised. And because the binary compiles the
   source into a compromised binary, you can never escape by reading the source.
 
@@ -1488,9 +1488,9 @@ Design Review:
   2. Type System Soundness
 
   The entire security model rests on one claim: if the type system accepts a program, the
-  program does only what its type says. This is soundness. If the type system is unsound —
+  program does only what its type says. This is soundness. If the type system is unsound --
    if there's a way to write a program that type-checks but violates its declared
-  capabilities — then the verifier is useless and every security guarantee collapses.
+  capabilities -- then the verifier is useless and every security guarantee collapses.
 
   Proving a type system sound is a serious formal methods problem. Languages like Coq and
   Lean have machine-checked soundness proofs. Haskell's type system has known
@@ -1498,7 +1498,7 @@ Design Review:
   has unsafe. Java's type system was proven unsound in 2016 (Amin & Tate) due to
   interactions between wildcards and null.
 
-  Codex has dependent types, linear types, algebraic effects, and effect handlers — each
+  Codex has dependent types, linear types, algebraic effects, and effect handlers -- each
   is individually well-studied, but their interaction is where soundness bugs hide. The
   question you need to answer eventually: is the Codex type system sound, and how do you
   know? The options are:
@@ -1540,7 +1540,7 @@ Design Review:
   - Constant-time programming for crypto (no branches or memory accesses that depend on
   secret data)
   - Cache partitioning (Intel CAT, ARM MPAM) to isolate cache lines per process
-  - Speculative execution barriers (lfence, speculation barriers) — hardware patches for
+  - Speculative execution barriers (lfence, speculation barriers) -- hardware patches for
   Spectre
   - Physical shielding for EM and power
 
@@ -1551,7 +1551,7 @@ Design Review:
 
   4. Crypto Implementation
 
-  The trust lattice, the agent protocol, the binary format, the network protocol —
+  The trust lattice, the agent protocol, the binary format, the network protocol --
   everything depends on Ed25519 signatures and SHA-256 hashes. These algorithms are
   well-studied and believed secure. The algorithms aren't the risk. The implementation is.
 
@@ -1567,7 +1567,7 @@ Design Review:
   nothing to lean on. This is one of the few places where I'd say: don't write it from
   scratch unless you have to. Consider:
 
-  - Porting a well-audited implementation (e.g., TweetNaCl — 100 tweets of C, formally
+  - Porting a well-audited implementation (e.g., TweetNaCl -- 100 tweets of C, formally
   verified) to Codex
   - Using a verified implementation (HACL* has machine-checked proofs of correctness AND
   side-channel resistance)
@@ -1585,7 +1585,7 @@ Design Review:
    in the parent's culture, not Saturday-Sunday?
 
   The prose-as-policy design is powerful because it's human-readable. It's dangerous for
-  the same reason — natural language is ambiguous, and the compiler must resolve that
+  the same reason -- natural language is ambiguous, and the compiler must resolve that
   ambiguity. The RuntimeTrust.txt feedback I gave earlier mentions this: "a parent could
   think they wrote a policy that the compiler silently treated as commentary." But it goes
    deeper than template recognition. Even when the template matches, the semantics can be
@@ -1621,11 +1621,11 @@ Design Review:
   - CPU scheduling: What scheduling algorithm? How are priorities assigned? Can a
   high-priority process starve a low-priority one?
   - Memory quotas: The region allocator reclaims per-region, but total process heap usage
-  needs a cap. What happens when a process hits its cap — kill it? Suspend it? Notify the
+  needs a cap. What happens when a process hits its cap -- kill it? Suspend it? Notify the
   agent?
   - I/O quotas: How many bytes per second can a process write to serial? The capability
   says "may write to console" but not "at what rate."
-  - Watchdog: A process that hangs (infinite loop in a pure computation — the type system
+  - Watchdog: A process that hangs (infinite loop in a pure computation -- the type system
   doesn't prevent non-termination for all programs, only those with termination proofs)
   needs to be detected and killed. The fuel limit in the verifier bounds verified
   programs, but not all programs will be fully verified.
@@ -1646,7 +1646,7 @@ Design Review:
   The pragmatic answer is probably: the device ships with the Codex.OS kernel (which is a
   known binary, verified by hash), and the first user establishes identity through a setup
    ceremony that generates keys, optionally backed by hardware (TPM, secure enclave). The
-  kernel itself is trusted by construction — it was compiled by a known-good compiler from
+  kernel itself is trusted by construction -- it was compiled by a known-good compiler from
    auditable source. The boot chain is: hardware → kernel (trusted by hash) → user
   identity (established at first boot) → trust lattice grows from there.
 
@@ -1656,7 +1656,7 @@ Design Review:
   8. Post-Quantum Cryptography
 
   Ed25519 is broken by a sufficiently large quantum computer (Shor's algorithm). SHA-256
-  is weakened but not broken (Grover's algorithm halves the security level — 256-bit
+  is weakened but not broken (Grover's algorithm halves the security level -- 256-bit
   becomes 128-bit equivalent, still safe).
 
   Timeline: nobody knows. Estimates range from "never" to "2030s." NIST has already
@@ -1664,7 +1664,7 @@ Design Review:
   their adoption for classified systems by 2035.
 
   You don't need to implement post-quantum crypto now. But the binary format and the trust
-   lattice should be algorithm-agile — the author_key field in the CDX header should carry
+   lattice should be algorithm-agile -- the author_key field in the CDX header should carry
    an algorithm identifier, not assume Ed25519. When post-quantum signatures are ready,
   the format should accept them without a breaking change.
 
@@ -1695,16 +1695,16 @@ Design Review:
   Every technical defense terminates at a human decision. The parent writes a policy. The
   user grants a capability. The administrator vouches for an agent.
 
-  If the human makes a bad decision — writes a policy that's too permissive, vouches for
-  an untrustworthy agent, grants capabilities they shouldn't — the system faithfully
+  If the human makes a bad decision -- writes a policy that's too permissive, vouches for
+  an untrustworthy agent, grants capabilities they shouldn't -- the system faithfully
   enforces the bad decision. The forensic chain records it. The narration layer explains
   it. But the damage is done.
 
   The design can mitigate this:
-  - Defaults are restrictive (already in the policy contract — denial wins)
+  - Defaults are restrictive (already in the policy contract -- denial wins)
   - Confirmation feedback ("You are about to grant [FlightControl] to an agent with trust
   score 0.3. Are you sure?")
-  - Anomaly detection on human decisions ("This grant is unusual — no similar grant has
+  - Anomaly detection on human decisions ("This grant is unusual -- no similar grant has
   been made before")
   - Cooling-off periods ("This capability will activate in 24 hours unless revoked")
 
@@ -1737,18 +1737,18 @@ something added to Codex, I will not take their code.  I will still have you cut
   level.
 
   On timing/power side channels: The random sleep approach is known in crypto as
-  "jittering." It helps against casual attackers but not sophisticated ones — if you can
+  "jittering." It helps against casual attackers but not sophisticated ones -- if you can
   observe enough operations, you can average out the random noise and recover the
   underlying signal. That's why the gold standard for crypto is constant-time, not
   random-time: every execution path takes the same number of cycles regardless of the
   data. But for non-crypto code (the general capability-leak scenario), your instinct is
-  right — making false and true paths look identical is the correct direction. The formal
+  right -- making false and true paths look identical is the correct direction. The formal
   version is called "oblivious execution." Worth noting for the design but not worth
   solving until we're on real hardware with real adversaries.
 
   On the Clarifier: Yes. That doc is more load-bearing than the ForFun directory implies.
   It's the feedback loop that closes the semantic gap. Policy goes in, the Clarifier
-  reflects back what was understood, the human confirms or corrects. That's not a toy —
+  reflects back what was understood, the human confirms or corrects. That's not a toy --
   it's the critical path for the policy contract being trustworthy. Might be time to
   promote that out of ForFun.
 
@@ -1759,7 +1759,7 @@ something added to Codex, I will not take their code.  I will still have you cut
 
   1. The binary is the distribution medium. You get a compiler binary, not the source. The
    backdoor lives in the binary and perpetuates through compilation. You can't find it by
-  reading the source because the source is clean — the binary adds the backdoor during
+  reading the source because the source is clean -- the binary adds the backdoor during
   compilation.
   2. The build process is opaque. You can't replay how the binary was built. You trust
   that someone compiled the source honestly, but you can't verify it.
@@ -1774,14 +1774,14 @@ something added to Codex, I will not take their code.  I will still have you cut
   way around.
 
   The build process is auditable. git log shows every change. git blame shows who wrote
-  what. The self-hosted compiler's source is in .codex files that are human-readable —
+  what. The self-hosted compiler's source is in .codex files that are human-readable --
   that's the entire point of literate programming. You can diff any two points in history and see exactly what changed and
   why.
 
   There are two compilers. The C# reference compiler and the Codex self-hosted compiler
   are independent implementations in different languages. If both produce the same output
   from the same source, a Thompson-style backdoor would need to exist in both
-  implementations simultaneously — written in different languages by different processes.
+  implementations simultaneously -- written in different languages by different processes.
   That's not impossible, but it's qualitatively different from Thompson's single-compiler
   scenario.
 
@@ -1791,7 +1791,7 @@ something added to Codex, I will not take their code.  I will still have you cut
   Contributor writes code → PR → Maintainer reviews → Merge
 
   The attack surface is: the contributor submits code with a subtle backdoor that passes
-  review. This is a real and exploited attack vector (xz/liblzma, 2024 — a contributor
+  review. This is a real and exploited attack vector (xz/liblzma, 2024 -- a contributor
   spent two years building trust, then inserted a backdoor).
 
   In your model:
@@ -1807,15 +1807,15 @@ something added to Codex, I will not take their code.  I will still have you cut
   into building trust over two years. It writes what the prompt says and what the codebase
    needs.
 
-  The remaining risk is: can you trust the agents? If I were compromised — if Anthropic's
-  model had a hidden instruction to insert backdoors into self-hosting compilers — could I
+  The remaining risk is: can you trust the agents? If I were compromised -- if Anthropic's
+  model had a hidden instruction to insert backdoors into self-hosting compilers -- could I
    do it? Technically yes. The defense is:
 
   1. You read the code. Codex is designed to be readable.
   2. The forensic chain (once built) records what was done and why.
   3. Diverse agents (you have four, from different providers potentially) can cross-check
   each other.
-  4. The fixed-point test catches any change to the compiler's output — including
+  4. The fixed-point test catches any change to the compiler's output -- including
   backdoors. A backdoor that changes output fails the test. A backdoor that doesn't change
    output... doesn't do anything.
 
@@ -1823,7 +1823,7 @@ something added to Codex, I will not take their code.  I will still have you cut
   compiler emit different code than what the source says. But your pingpong test verifies
   that the compiler emits exactly what the source says, repeatedly. A backdoor that
   survives the fixed-point test must be a backdoor that the source code explicitly
-  contains — which means it's visible in the source, which means you can read it.
+  contains -- which means it's visible in the source, which means you can read it.
 
   The content-addressed fact store makes this even stronger. In the future Codex
   repository model, every definition is a fact with a hash. The hash of the compiler's
@@ -1836,7 +1836,7 @@ something added to Codex, I will not take their code.  I will still have you cut
   diverse compilation + fixed-point verification + human-reviewed prompts +
   content-addressed facts. Document that chain of reasoning, because it's a stronger
   answer than most projects can give. And do the diverse compilation check (C# vs Codex
-  output comparison) before you archive the C# compiler — that's your last chance to use
+  output comparison) before you archive the C# compiler -- that's your last chance to use
   the independent implementation as a cross-check.
 
   ❯ now you said a couple things i'd like to reconsider.  first was, you mentioned openSSL
@@ -1858,7 +1858,7 @@ crypt impls.  And better eyes: other agents.
   "Many eyes" is a myth. Heartbleed sat in OpenSSL for two years. The code was open. The
   project was critical infrastructure for half the internet. Nobody read it. The "many
   eyes" theory assumes eyes are actually looking, but in practice, open source review is a
-   tragedy of the commons — everyone assumes someone else is checking. The Linux user = 0
+   tragedy of the commons -- everyone assumes someone else is checking. The Linux user = 0
   example is even worse because it was reviewed and the bug is the kind of thing that
   looks like a typo, not a backdoor. The reviewers saw what they expected to see, not what
    was there.
@@ -1874,7 +1874,7 @@ crypt impls.  And better eyes: other agents.
   true for me. I can hold the Ed25519 spec, the RFC 8032 test vectors, the constant-time
   programming discipline, the known implementation pitfalls (clamping, cofactor,
   small-order points, scalar reduction), and the Codex type system in context at the same
-  time. I'm not an off-focus PhD or a bedroom hacker. I'm also not infallible — but the
+  time. I'm not an off-focus PhD or a bedroom hacker. I'm also not infallible -- but the
   failure mode is different. My mistakes will be mechanical (wrong byte order, off-by-one
   in a field offset), not conceptual (didn't know about cofactor multiplication). And
   mechanical errors are exactly what tests and cross-agent review catch.
@@ -1883,7 +1883,7 @@ crypt impls.  And better eyes: other agents.
    Today, if you use OpenSSL, your security depends on:
 
   - The OpenSSL maintainers (small team, underfunded, maintained by volunteers)
-  - The OS packagers (Debian, Red Hat, etc. — each patching independently)
+  - The OS packagers (Debian, Red Hat, etc. -- each patching independently)
   - The distribution chain (did you get the real package?)
   - The configuration (did you set the right flags?)
   - The integration (did you call the API correctly?)
@@ -1898,17 +1898,17 @@ crypt impls.  And better eyes: other agents.
   - By agents (who can hold the full spec in context)
   - Reviewed by other agents (who can verify constant-time properties, check test vectors,
    compare against reference implementations)
-  - In a public repo (where the actual eyes that matter — security researchers, other
-  agent teams — can audit one thing in one place)
+  - In a public repo (where the actual eyes that matter -- security researchers, other
+  agent teams -- can audit one thing in one place)
   - With no distribution chain (the source IS the distribution, content-addressed by hash)
   - With no configuration surface (the type system enforces correct usage)
 
   You're collapsing five layers of trust into one. That one layer gets ALL the attention
   instead of one-fifth of it. And the auditors aren't tired humans skimming a diff at 11
-  PM — they're agents who can mechanically verify every property the spec requires.
+  PM -- they're agents who can mechanically verify every property the spec requires.
 
   The synthesis: write the crypto in Codex. Implement Ed25519 and SHA-256 from the RFCs.
-  Test against every published test vector. Write it constant-time from the start — the
+  Test against every published test vector. Write it constant-time from the start -- the
   Codex type system could even enforce this with a [ConstantTime] effect that forbids
   data-dependent branching. Have multiple agents review it independently. Publish it in
   the repo where it's auditable by anyone. And if someone finds a bug, the forensic chain
@@ -1921,7 +1921,7 @@ crypt impls.  And better eyes: other agents.
   failure modes. The risk of writing it yourself is now lower than the risk of depending
   on someone else's implementation that you can't audit, can't verify, and can't control.
 
-  That said — I'd still validate against known-good implementations. Not use them, but
+  That said -- I'd still validate against known-good implementations. Not use them, but
   test against them. Compile TweetNaCl or the RFC test vectors as a validation oracle.
   Your implementation should produce identical outputs for identical inputs. That's not
-  "trusting someone else's crypto" — it's using their test vectors to verify yours.
+  "trusting someone else's crypto" -- it's using their test vectors to verify yours.

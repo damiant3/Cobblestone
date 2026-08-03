@@ -1,0 +1,147 @@
+Chapter: EngineRenderHeap
+  cites Foreword chapter Console
+  cites Engine chapter Renderer3D
+  cites Engine chapter Scene3D
+  cites Engine chapter Mesh
+  cites Engine chapter Material
+  cites Math chapter Matrix4
+  cites Game chapter Color
+
+ What makes a software 3D pipeline usable on a real display is not its
+ speed, it is that a frame costs a bounded amount of heap. There is no
+ collector, so anything a frame allocates is permanent, and a per-pixel
+ allocation at panel resolution exhausts the heap within a few frames.
+
+ The property asserted here is that the cost of rendering a frame does
+ not depend on how many pixels it covers. That is what a per-pixel
+ allocation would break, and it is checked rather than the byte counts
+ themselves, which move with unrelated allocator work and would make
+ this a brittle golden instead of a claim.
+
+ Coverage is checked against a band rather than an exact multiple.
+ Doubling each axis does not quadruple the covered pixels exactly,
+ because the pixels a triangle's edges land on are rounded independently
+ at each resolution; the measured shortfall is 84 pixels in 194460. A
+ test asserting exact proportionality would be asserting something
+ rasterization does not promise.
+
+ alloc-bytes 0 advances the bump allocator by nothing and answers the
+ current pointer, so a difference across a call is the bytes that call
+ made permanent. The control row is the guard on the instrument: a loop
+ that allocates nothing must read 0, and if it does not then nothing
+ else measured here means anything.
+
+ We say:
+
+Section: Scene
+
+  sky : Integer
+  sky = rgb-to-packed (rgb 20 20 30)
+
+  test-scene : Scene3DState
+  test-scene =
+    let cam = camera3d-new (vec3-new 0.0 2200.0 5200.0) (vec3-new 0.0 300.0 0.0) 0.785
+    in let scene = scene3d-new cam
+    in let ground = sn3-with-mesh "ground" (mesh-plane 3000 3000) (emat-flat (rgb 90 80 62))
+    in let cube = sn3-set-pos (sn3-with-mesh "cube" (mesh-cube 900) (emat-shiny (rgb 90 130 210) 32)) (-900.0) 450.0 0.0
+    in let pyr = sn3-set-pos (sn3-with-mesh "pyr" (mesh-pyramid 600 1100) emat-red) 1100.0 0.0 (-300.0)
+    in let s2 = scene3d-add (scene3d-add (scene3d-add scene ground) cube) pyr
+    in let key = dir-light (vec3-new (-400.0) 800.0 400.0) (rgb 255 250 235) 850
+    in scene3d-set-ambient (scene3d-add-light s2 key) 260
+
+Section: Instrument
+
+  spin : Integer, Integer -> Integer
+  spin (i) (n) =
+    if i >= n then 0
+    else spin (i + 1) n
+
+  tally : Integer, Integer, Integer, Integer -> Integer
+  tally (base) (i) (n) (acc) =
+    if i >= n then acc
+    else if peek-32 base (i * 4) == sky then tally base (i + 1) n acc
+    else tally base (i + 1) n (acc + 1)
+
+ render-cost answers the heap a single frame makes permanent at the
+ given size, with the target built and therefore excluded beforehand.
+
+  render-cost : Scene3DState, Integer, Integer -> Integer
+  render-cost (scene) (w) (h) =
+    let tgt = r3d-target-new w h sky
+    in let a = alloc-bytes 0
+    in let d = r3d-render-into tgt scene
+    in let b = alloc-bytes 0
+    in b - a
+
+  render-drawn : Scene3DState, Integer, Integer -> Integer
+  render-drawn (scene) (w) (h) =
+    let tgt = r3d-target-new w h sky
+    in let d = r3d-render-into tgt scene
+    in tally (tgt.r3t-base) 0 (w * h) 0
+
+ A bounded frame cost is not the same property as a bounded LOOP, and
+ only the first of the two was ever asserted here. A view left open
+ renders into one target over and over, so what decides whether it
+ survives is what a frame leaves behind after the next one starts, not
+ what one frame costs. These two run the same render the same number of
+ times and differ only in the bracket.
+
+ The unbracketed row is the control on the instrument. If it does not
+ grow, the loop is not allocating and the bracketed row's flatness
+ means nothing.
+
+  loop-plain : Scene3DState, R3dTriState, Integer, Integer -> Integer
+  loop-plain (scene) (tgt) (i) (n) =
+    if i >= n then 0
+    else let d = r3d-render-into tgt scene
+    in loop-plain scene tgt (i + 1) n
+
+  loop-bracketed : Scene3DState, R3dTriState, Integer, Integer -> Integer
+  loop-bracketed (scene) (tgt) (i) (n) =
+    if i >= n then 0
+    else let mark = __heap-save
+    in let d = r3d-render-into tgt scene
+    in let dropped = __heap-restore mark
+    in loop-bracketed scene tgt (i + 1) n
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let scene = test-scene
+    in let c0 = alloc-bytes 0
+    in let ctl = spin 0 200000
+    in let c1 = alloc-bytes 0
+    in let small = render-cost scene 320 240
+    in let large = render-cost scene 640 480
+    in let dsmall = render-drawn scene 320 240
+    in let dlarge = render-drawn scene 640 480
+    in let ratio = dlarge * 1000 / (dsmall * 4)
+    in let tgt-p = r3d-target-new 320 240 sky
+    in let p0 = alloc-bytes 0
+    in let pl = loop-plain scene tgt-p 0 8
+    in let p1 = alloc-bytes 0
+    in let tgt-b = r3d-target-new 320 240 sky
+    in let b0 = alloc-bytes 0
+    in let bl = loop-bracketed scene tgt-b 0 8
+    in let b1 = alloc-bytes 0
+    in let tp = tally (tgt-p.r3t-base) 0 76800 0
+    in let tb = tally (tgt-b.r3t-base) 0 76800 0
+    in act
+      print-line-uni ("control allocates nothing   : " & yn (c1 - c0 == 0))
+      print-line-uni ("frame cost is pixel-free    : " & yn (small == large))
+      print-line-uni ("frame cost is nonzero       : " & yn (small > 0))
+      print-line-uni ("coverage tracks area        : " & yn (ratio > 990 & ratio < 1010))
+      print-line-uni ("drawn at 320x240            : " & show dsmall)
+      print-line-uni ("coverage ratio in permille  : " & show ratio)
+      print-line-uni ("8 plain frames grow         : " & yn (p1 - p0 > 0))
+      print-line-uni ("8 plain frames cost 8 frames: " & yn (p1 - p0 == small * 8))
+      print-line-uni ("8 bracketed frames are flat : " & yn (b1 - b0 == 0))
+      print-line-uni ("plain loop drew the frame   : " & yn (tp == dsmall))
+      print-line-uni ("bracketed drew the same     : " & yn (tb == dsmall))
+    end
+  end
+
+Page 1

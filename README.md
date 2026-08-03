@@ -4,7 +4,7 @@
 
 A *self-sustaining compiler* is a single artifact that, on its own,
 runs on bare metal, takes its own source as input, and produces another
-instance of itself — with no external host, no separate operating system,
+instance of itself -- with no external host, no separate operating system,
 no runtime to install. The compiler *is* the runtime. The compiler *is*
 the OS. They are not two things cohabiting; they are one entity.
 
@@ -22,320 +22,135 @@ The operational test:
 | **Codex.cdx** | **Yes.** Boot it. Compile its own source. Get another copy of itself. |
 | **Codex.img** | **Yes.** Write it to a USB stick. Put it in your computer. It runs. |
 
-That property — *the artifact alone is sufficient* — has not been
+That property -- *the artifact alone is sufficient* -- has not been
 achieved by any prior compiler. Self-hosting (the compiler can compile
 itself) has been done thousands of times. Self-sustainment of a *system*
 (TempleOS, Native Oberon, Lisp Machines) has been done a handful of
-times — but in each case the compiler is one component within an
+times -- but in each case the compiler is one component within an
 operating system, not the whole. Codex collapses that distinction. The
 compiler-as-binary *is* the OS, not because they're packaged together,
 but because there is no internal seam between them.
 
 Built solo by one human in collaboration with a fleet of AI agents, in
-41 days (2026-03-14 → 2026-04-24).
+41 days (2026-03-14 to 2026-04-24).
 
 ---
 
 ## Verified
 
-As of 2026-07-04:
+Measured 2026-08-03.
 
-- **CDX fixed point**: pingpong all phases green — text round-trip
-  (stage1 === stage2) + CDX fixed-point (stage1.cdx === stage2.cdx),
-  byte-identical. The compiler reproduces itself on bare metal.
-- **Safety claims are compiler-enforced, not aspirational**: the
-  "by-construction" promises are now compile errors. Effect rows are
-  first-class inferred data enforced at every boundary (CDX2031/2033/
-  2090/2092/2094); linear ownership follows through moves, call
-  boundaries, captures, and containers with all nine laundering routes
-  closed (CDX2061/2063/2065/2066/2067); bounded-integer parameters and
-  returns are statically and dynamically checked at the function boundary
-  (CDX2050/2051/2053, self-host CDX2051 count driven to zero); hardware
-  access carries `Device.Port`/`Device.Block`/`Device.Mmio` capability
-  effects. Each was landed by writing the program that *should* be
-  rejected, confirming the hole, then closing it and pinning the
-  rejection as a `.failing` test.
-- **533 library modules** (396 foreword + 137 OS) across 28 quires: data structures, crypto,
-  networking (full TCP/IP + UDP/ICMP/DNS/DHCP/NTP/Syslog/TFTP), game
-  engine (A*, hex maps, ECS, physics, Voronoi, Perlin), 3D engine
-  (renderer, scene graph, LOD, culling, materials, skinning, audio,
-  input, post-processing), AI inference (tensors, neural nets, GGUF
-  model loading, genetic algorithms), encoding (JSON, Base64, Protobuf,
-  CSV), math (quaternions, matrices, Bezier, FFT), compression (LZ77,
-  Huffman, RLE), UI toolkit (themeable widgets, compositor, layout engine,
-  event system, orchestrator), hard real-time primitives (punctual integer,
-  bit, saturating, trig, color, and kinematic ops), and more.
-- **OS stack**: preemptive scheduler, IPC channels, identity (Ed25519),
-  trust lattice, 5-phase CDX verifier, interactive shell, VGA console,
-  developer debugger, HTTP server, process management, UEFI boot path,
-  diagnostic shell.
-- **GUI OS**: graphical operating system shell on bare metal via GOP
-  framebuffer. GuiShell compositor with sidebar launcher, status bar,
-  RTC clock. Resolution support: 640x480, 800x600, 1024x768 (32-bit
-  XRGB8888). Multi-monitor management (extended, mirror, single modes)
-  with default 1920x1080. Working apps: Calculator, Calendar, Notepad,
-  Timer, Diffusion, Tracker, Piano. MutWheel scheduler for mutable GUI
-  state via peek/poke (no GC, no closures). SMP-aware: work-stealing
-  scheduler drives app rendering across cores.
-- **UI foreword**: 28-chapter toolkit with themeable primitives
-  (swap one Theme record to get LCARS, cockpit, or terminal look),
-  flex layout, compositor with z-order and alpha blending, event dispatch,
-  reactive bindings, animations/throbbers, multi-size bitmap icons,
-  TrueType font rendering (14 CC0 fonts, 4x4 AA rasterizer), overlays,
-  sound effects, and a central orchestrator loop.
-- **Agent lifecycle**: local AI runtime (GGUF loader, inference),
-  agent acquisition (bundled/USB/network, verification), coordinator
-  (local/upstream escalation, role dispatch), first-boot wizard.
-- **GPU compute**: multi-target compilation via plugs — PTX (NVIDIA),
-  SPIR-V (Vulkan/OpenCL), and WGSL (WebGPU/browser) plugs, each walking
-  the same `[Device]` IR so a GPU target is a plug, not a compiler change.
-  Shared-memory proxy protocol for host-side dispatch. Device IR
-  emission from compiler; plugs parse IR and emit target format.
-  Kernels K5-K8 complete: warp primitives, shared memory, atomics,
-  math intrinsics, and a kernel verifier. New `codex.foreword.gpu`
-  quire (10 modules). End-to-end vecadd test passes.
-  Design: `docs/Designs/Backends/Active/DualTargetGpuCompilation.md`.
-- **SMP (symmetric multiprocessing)**: all 5 phases complete for x86-64
-  — atomics (lock-prefixed CAS/XADD/XCHG), per-core bootstrap (AP
-  startup via SIPI), work-stealing scheduler, per-core heap isolation,
-  and IPI + lock-free channels for cross-core communication. codex-vm
-  supports `-smp N` flag for multi-core guests.
-- **Cross-architecture test parity**: ARM64 135/135 verified tests on
-  Renode (Cortex-A53 cycle-accurate simulation) -- 100% match with the
-  x86-64 battery. RISC-V (RV64GC) is at ~132 on the committed Renode
-  board after a plug-repair campaign (boot stack pointer, string-literal
-  drop, register-allocation lifetime bugs); parity work is ongoing. The
-  battery now runs on both Renode and QEMU and they agree. Tests cover arithmetic,
-  crypto, collections, TrueType font rendering, HTTP request/response
-  parsing, effect handlers, pattern matching, closures, vectors, mutable
-  records, and all foreword modules. Full battery:
-  `build/test-cross-batch.ps1 -Arch arm64 -Jobs 4 -RenoTimeout 10`.
-- **Signed CDX seed**: Ed25519-signed, self-verified, UEFI-bootable
-  GPT disk image.
-- **VMX hypervisor**: codex-vm.exe (WHP-based VM host), DevHypervisor,
-  VmSerial, VmIde — Codex can host and manage virtual machines.
-- **UEFI dev console**: interactive colored menus via ConOut/ConIn,
-  source tree indexing, keyboard navigation. Hold Escape at UEFI boot.
-- **Resilient act blocks**: `trying N times … falling back to … on
-  failure … end` — retry loops with bivy-reclaim between attempts,
-  optional fallback path, and explicit failure handler. New `fail`
-  builtin sets a flag the body's tail checks.
-- **Plug architecture**: emitters as standalone CDX programs. Compiler
-  emits IR text; plug consumes IR via file I/O, emits target source.
-  **53 plugs (all building clean)** -- across languages (Ada, Babbage, C#,
-  Clojure, COBOL, D, Elixir, Fortran, Go, Groovy, Haskell, Java,
-  JavaScript, Julia, Kotlin, Lua, Nim, Objective-C, OCaml, Pascal,
-  Perl, PHP, Python, Ruby, Rust, Scala, Scheme, Swift, TypeScript,
-  WASM, Zig), UI frameworks (Angular, Electron, Flutter, GTK, HTML,
-  Jetpack Compose, MAUI, Qt, React, Svelte, SwiftUI, Vue, WinForms,
-  WPF), GPU (PTX, SPIR-V, WGSL), and binary formats (CDX, ELF, PE, IMG).
-  Port forwarding in codex-vm enables host-to-guest TCP for plug data
-  exchange.
-- **SIMD / Vector types**: `Vector N T` as a first-class type with
-  dependent lane count. SSE2 packed codegen (ADDPD, SUBPD, MULPD,
-  DIVPD, CMPPD, MOVUPD). Vector arithmetic operators (`+`, `-`, `*`, `/`)
-  and comparison operators (`<`, `>`, `<=`, `>=`) overloaded for vectors.
-  `vec-splat`, `vec-extract`, `vec-reduce-add`, `vec-select` builtins.
-  `VectorTy(N, T)` and `VectorMaskTy(N)` type constructors in the type
-  checker; mismatched widths are type errors. Bounded integers in vector
-  lanes.
-  Design: `docs/Designs/Features/Active/SIMD.md`.
-- **Real type + approximate equality**: `Number` renamed to `Real`.
-  The `~` operator provides approximate equality (4 ULP default),
-  `~0` for bitwise exact. `==` and `/=` on Real types are compile
-  errors (CDX2085). Safety modes: `Real trapping`, `Real saturating`,
-  `Real checked`. `Real approximate` (f32) for SIMD lane density.
-- **Game engine foreword**: 21-chapter `codex.foreword.engine` quire
-  — Renderer3D, Scene3D, Material, Texture, Mesh, Skinning, LOD,
-  Culling, PostProcess, Audio3D, AudioBus, Input, GameLoop, GameplayTags,
-  AbilitySystem, Signal, DebugDraw, TimeOfDay, AssetTable, EdgeMesh,
-  HelmBridge.
-- **Punctual foreword**: 8-chapter `codex.foreword.punctual` quire —
-  IntOps, BitOps, Saturate, FastMath, Trig, ColorOps, Kinematic, Endian.
-  Every function is `punctual`: no heap, no recursion, bounded instruction
-  count. Safe for real-time, embedded, and interrupt contexts.
-- **Dependent types + machine-checked proofs**: `PropEqTy` — types
-  carrying value information. `===` in type position produces propositional
-  equality; `Refl` verified by the unifier (invalid proofs are type errors).
-  `Proof` as first-class type name. Proof erasure at emit (zero machine
-  code for proof definitions). `claim`/`proof`/`qed` syntax with
-  `induction` keyword. Structural induction over user-defined types with
-  per-constructor subgoal verification. Builtins: Refl, sym, trans, cong,
-  app-cong, assume. Definitional equality normalizer (delta/iota/beta
-  reduction). Flagship proof: `reverse (reverse xs) === xs` machine-checked
-  by induction with a four-lemma chain (append-nil, append-assoc,
-  reverse-append, reverse-reverse). All proofs erase -- zero runtime cost.
-  Proof definitions are acyclic by construction: a circular proof term is
-  rejected (CDX4023), so recursion in proofs is only sound through
-  structural induction; explicit `assume` axioms warn (CDX4021).
-- **Static bounds prover**: compiler proves bounded-integer range safety
-  at compile time and elides runtime bounds checks (CDX4010). Handles
-  literals, field access, int-mod, bit-and, negation. O(1) shallow
-  analysis per narrow store (10x compile speedup over prior deep walker).
-- **Lazy evaluation with memoization**: `lazy` keyword defers computation;
-  `force` builtin evaluates the thunk. Memoizing cell ensures the body
-  executes at most once. Desugars to a closure over a mutable cell with
-  done-flag check.
-- **Type classes (phase 1-2)**: `class`/`instance` keywords, dictionary-
-  passing desugaring. `class Show where show : Integer -> Text` generates
-  `ShowDict` record type; `instance Show Integer` generates a dict
-  constructor and per-instance specialized methods (`show-Integer`).
-- **Escape invariant (CDX9003)**: seal-time scan of deck pointers for
-  bivy references. Compile with `-EscapeCheck` to detect deck-to-bivy
-  violations before phase-compact reclaims bivy scratch. PARSE and SCOPE
-  compact disabled pending violation fixes (127K violations identified).
-- **Demand-paged heap**: the compiler pages its own arena in on first
-  touch — a not-present-PDE trick plus a compact `#PF` handler that maps
-  the faulting page (NX preserved above the code boundary) and retries.
-  The survey system it replaced — per-phase worst-case deck reservation,
-  the `CDX9002` overflow warning, and `compile.ps1`'s 4 GB auto-retry — is
-  deleted: physical cost is now *measured* by a touched-page counter, not
-  predicted by a formula that had a silent, non-monotonic sizing cliff.
-  Deck allocation and `phase-compact` remain; only the prediction is gone.
-- **Fuzz corpus**: 44 adversarial inputs (binary garbage, huge
-  identifiers, deep nesting, unclosed syntax, 100KB lines, recursive
-  types, keyword abuse) — 0 crashes.
-- **Punctual functions (hard real-time)**: `punctual` keyword enforces
-  bounded execution at compile time. No heap (CDX6002), no recursion
-  (CDX6005), no unsafe calls (CDX6001), no closures (CDX6003), no bare
-  I/O (CDX6004). Instruction count reported at CDX6010; optional budget
-  with CDX6011 warning. No production language has this combination --
-  Ada Ravenscar is global and needs external WCET tools; Rust has nothing;
-  MISRA-C is external linters. See `docs/Designs/OS/Active/HardRealtime.md`.
-- **Unit types**: `Second = unit Integer` declares a distinct type with
-  zero runtime overhead (erased at codegen). Arithmetic preserves units
-  (`Second + Second = Second`, `Second * Integer = Second`). Cross-unit
-  assignment is a type error. Bounded + unit composition
-  (`Second between 0 and 3600`). Conversion declarations parsed
-  (`1 Minute = 60 Second`).
-- **Mutable records**: `mutable` keyword with in-place field
-  assignment, type-checked immutability enforcement (CDX2060).
-- **Repository restructure**: 31 top-level dirs to 8. codex-vm
-  replaces QEMU as default VM (WHP-based, ~4500 lines C: PCI, xHCI USB,
-  Intel HDA audio, HPET, IOAPIC, ACPI, SMBIOS, UEFI firmware, Bochs VBE).
-- **Tuples**: `(A, B)` sugar in type position, `let (x, y) = e`
-  destructuring. Desugars to foreword `Tup2`..`Tup5`; all 15 transpiler
-  plugs emit idiomatic tuple syntax for their target language.
-- **Scoped constraint dispatch**: `show`/`compare` inside class-
-  constrained functions dispatches through the dictionary only for
-  parameter-typed arguments; let-bound locals use direct dispatch.
-- **C# plug full-compiler emit**: the emitted full compiler (2376 defs)
-  now compiles under `dotnet build` with 0 errors.
-- **Durable disk writes**: codex-vm IDE WRITE SECTORS + flush to host
-  image file. Accounts and SystemDb persist across restarts.
-- **Interactive debugger**: `-debug -break <fn> -map <file>` with
-  command shell, guest `!EXC=03` serial interception, symbol resolution,
-  conditional breakpoints.
-- **For-expressions**: `for x in xs do f x` syntactic sugar for map
-  loops. Desugars to `list-map` with a lambda. Dogfooded across ~50
-  call sites in 19 files.
-- **Sample battery**: 294 tests; 294 pass, 0 fail, 15 skip --
-  run against stage1, the self-applied compiler. BVT mode: 24-test
-  subset, full build in ~130s.
-- **Native-class codegen**: three parallel optimization campaigns across
-  x86-64, ARM64, and RISC-V. 8 micro-benchmarks (fib, fact, gcd, sum,
-  ack, tak, collatz, locals). ARM64: 176 insns total, beats GCC -Os by
-  24%. RISC-V: 141 insns total, gcd matches GCC -Os exactly. x86-64
-  (seed C0B74DBE, LIR selector live): 143 insns total, sum-to-N at 7
-  instructions (below C /O2 at 23, a 70% reduction), gcd at 10 (below
-  /O2 at 14), fact at 13 (below /O2 at 15); fib is +2 over /O2.
-  Key techniques: destination-driven emission, TCO with dependency
-  analysis, pow2 strength reduction, peephole MOV/NOP compaction,
-  dead-branch elimination, frame elision, IrRemInt.
-- **ERP suite**: 23 modules -- GL/AP/AR/Materials/HR/Treasury/
-  Controlling/Sales/Production/Maintenance/Quality/Warehouse/Projects/
-  BW plus Real Estate, Banking, Insurance, Utilities, and Healthcare
-  verticals.
-- **57 apps (27/27 web apps building clean)** -- see Applications below.
-- **Codex.Spark creative suite**: 85-module application (3D modeling,
-  image editor, animation, audio/DAW, video compositor, skeletal
-  animation, particles, procedural noise, interactive UI shell) running
-  on bare metal with GOP framebuffer display via codex-vm.
-- **Codex.DB**: relational database server (42 modules). Typed schemas,
-  pipe-forward queries (`RelScan |> RelFilter |> RelSort |> query`),
-  MVCC transactions, WAL, B-tree indexes, hash joins, full-text search,
-  replication, graph store, column store, time series, spatial indexes.
-- **SystemDb**: on-device persistent store (DiskFacts format) for
-  identity, boot config, trust vouches, and drive registry. Lives on
-  the boot stick as `CODEX/SYSDB.BIN`.
-- **CodexMagic game server**: 56 game modules with web portal.
-- **Codex Circuits**: interactive EDA suite on bare metal. GPU
-  rasterizer at ~950 FPS (8500+ triangles/frame), mouse panning,
-  keyboard zoom, toolbar/sidebar chrome, demo circuit.
-- **Explorer app**: 17-module parameter explorer with web UI (card
-  designer, character designer, item designer, settings editor,
-  workflow exporter). CDX server + PS1 bridge + HTML/JS frontend.
+1. **The compiler is a hard fixed point of itself on bare metal.** Text
+   round-trip (stage1 === stage2) and CDX fixed point (stage1.cdx ===
+   stage2.cdx), byte-identical, with no OS and no libc beneath it. The
+   self-hosted compiler is **63 chapters, 57,498 lines** of Codex and
+   compiles itself in 22 seconds.
+2. **The safety claims are compiler-enforced, not aspirational.** Effect
+   rows are first-class inferred data checked at every boundary; linear
+   ownership follows through moves, calls, captures and containers with
+   all nine laundering routes closed; bounded-integer parameters and
+   returns are checked statically and dynamically at the function
+   boundary; hardware access carries `Device.Port`/`Device.Block`/
+   `Device.Mmio` capability effects. Each was landed by writing the
+   program that *should* be rejected, confirming the hole, then closing
+   it and pinning the rejection as a `.failing` test.
+3. **Dependent types with machine-checked proofs.** `===` in type
+   position produces propositional equality; `Refl` is verified by the
+   unifier. Structural induction with per-constructor subgoals; the
+   flagship proof is `reverse (reverse xs) === xs` through a four-lemma
+   chain. All proofs erase at emit -- zero machine code, zero runtime cost.
+4. **Punctual functions: compile-time bounded execution.** The
+   `punctual` keyword rejects heap allocation, recursion, closures, bare
+   I/O and calls to non-punctual functions, and reports an instruction
+   count per function against an optional budget. No production language
+   has this combination -- Ada Ravenscar is global and needs external WCET
+   tools, Rust has nothing, MISRA-C is external linters.
+5. **588 library modules across 22 quires** (430 foreword + 158 OS): data
+   structures, crypto, a full TCP/IP stack with TLS 1.3 and X.509 peer
+   verification, 3D and game engines, AI inference, encoding, math,
+   compression, a themeable UI toolkit, and hard real-time primitives.
+6. **A bare-metal OS and GUI.** Preemptive scheduler, IPC, Ed25519
+   identity, trust lattice, 5-phase CDX verifier, shell and debugger;
+   a GOP-framebuffer desktop with a compositor, TrueType rendering and
+   SMP-aware app rendering across cores. SMP is complete for x86-64:
+   atomics, AP bootstrap via SIPI, work-stealing scheduler, per-core heap
+   isolation, IPI and lock-free channels.
+7. **53 plugs, all building clean.** Emitters are standalone CDX programs
+   that consume the compiler's IR text: 31 languages, 14 UI frameworks,
+   three GPU targets (PTX, SPIR-V, WGSL) and four binary formats (CDX,
+   ELF, PE, IMG). A new target is a plug, not a compiler change.
+8. **Cross-architecture parity.** ARM64 and RISC-V backends run the test
+   battery on Renode and QEMU, and the two agree. This is a claim of
+   *parity*, not correctness: a known failure residue remains on both
+   lanes, and the per-lane counts have not been re-measured since June.
+9. **Nine target boards with register-level drivers**, addresses taken
+   from official reference manuals, each with a smoke test on the hosted
+   VM: STM32F4, STM32L4, ESP32-C6, Raspberry Pi 4, nRF52840, nRF9160,
+   RP2040, FE310 and QEMU virt. Above them sits an industrial protocol
+   library -- MQTT v5, CoAP, LwM2M and OTA update, plus Modbus, DNP3,
+   BACnet/IP, KNX, J1939, CANopen, OPC UA, LoRaWAN, Zigbee and more --
+   each with byte-exact known-answer tests against an independent
+   reference encoder.
+10. **EU compliance evidence is a build artifact.** `ComplianceEvidence`
+    maps 60 regulatory requirements across CRA Annex I, ETSI EN 303 645,
+    NISTIR 8259A and IEC 62443 to the language features that satisfy
+    each, and `generate-evidence-report` emits the summary. Codex is
+    aimed at being the first platform where the compiler proves firmware
+    meets Cyber Resilience Act requirements by construction.
 
-The compiler is a hard fixed point of itself on bare metal.
+**66 applications, 1,010 modules**, all written in Codex and compiled by
+the seed; 33 carry a web front end through the HTML plug. Catalog:
+[docs/CuratorsCatalogue.md](docs/CuratorsCatalogue.md).
 
-**`seed/Codex.cdx`** (2,605,339 bytes, ~2.48 MB) — the canonical seed:
+**Test battery: 1,403 tests across six tiers, 1,359 pass, 0 fail, 44
+skip.** The BVT subset that `build/build.ps1` gates on is 73 tests in
+19.6s.
+
+---
+
+## Distribution artifacts
+
+**`seed/Codex.cdx`** (2,710,900 bytes) -- the canonical seed, and the root
+of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `43EE85E3` |
-| SHA-256 | `2288668D4A89313C20E534770A983E3E2872ECDF3C401F4D402D94CFB4682F3C` |
-| MD5 | `95D4D94818CD9EECDDA1C3CC98480DDF` |
+| Content hash prefix | `9DCE330256566B2A` |
+| SHA-256 | `9DCE330256566B2ADFED366C702EA5540F92520487342DDB55C94228BAC945A5` |
+| MD5 | `20D4B5891E831DDD6506DC32FD907B82` |
 
-The seed grew from ~1.83 MB to ~1.88 MB on 2026-07-01, absorbing the
-CCE output boundary (tier0/1/2 UTF-8 conversion), the proof infrastructure
-(induction, normalizer, app-cong), and val's syntax cleanup (removed ++
-operator, chained arrows, vestigial tokens). The seed now carries full
-Unicode output support and machine-checked proof verification. By
-2026-07-04 it reached ~1.97 MB as the by-construction safety campaign
-landed (effect rows, linear ownership, bounded signatures, capability
-effects) along with the industrial IoT protocol library. By 2026-07-06
-it reached ~2.01 MB, absorbing blu's compiler memory-discipline campaign
-(memoized/hash-consed deep type copy, phase-memory escape invariant,
-CHECK/LOWER reservation-copy reclaim, survey-multiplier tightening) and
-the itoa most-negative-integer fix — self-compile heap dropped sharply
-(post-CHECK ~585 → ~372 MB) while the output stayed a byte-identical
-hard fixed point. On 2026-07-07 it reached ~2.01 MB (2,112,715 bytes) as
-the survey system was retired outright: the compiler now demand-pages its
-own heap (`DemandPagedArena`), followed by a hardening series (P-bit
-faults, TSS/IST double-fault dumps, RAM-derived demand top) and a
-sampling profiler — all byte-identical one-pass fixed points. Since then
-the seed has absorbed the boot arc (effect-loop TCO fix, WatchdogPet mode,
-foreword FAT16 fixes) and blu's capability enforcement (real syscall
-capability checks), then blu's spawn-region work — nested process-spawn
-fixed via slot-indexed regions (process slot N owns a fixed 32 MB region;
-the process table is the allocator, so spawn loops reclaim by reuse) and
-the process-kill honest [Capability] row — reaching ~2.05 MB as a
-byte-identical one-pass fixed point. The mutable-aliasing checker then
-closed its documented List-return laundering gap (a callee returning
-List-of-mutable now counts as taking ownership, while record-field
-chains crossing list/sum boundaries stay borrows), bringing the seed
-to 2,146,577 bytes. On 2026-07-17 it reached 2,551,486 bytes (~2.43 MB),
-absorbing the flat LIR with linear-scan register allocation and the
-proof-totality positive-grammar check (CDX4024, which rejects a proof
-term built from a non-proof expression form), a byte-identical one-pass
-fixed point.
-
-**`seed/Codex.img`** (5,242,880 bytes, 5 MB) — bootable GPT disk image,
-the first-boot ceremony:
+**`seed/Codex.img`** (16,777,216 bytes) -- bootable GPT disk image, the
+first-boot ceremony.
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `5262EEC94C1B8FD225F29544B9FC7659E5C1379A37E0AA97A1B1B6C171E412B4` |
+| SHA-256 | `7123F976C1F789BF520CBD158C127E81A2B8EAE11707FBF47077C530DD3ABE7B` |
 
-Boot it on a UEFI machine and it runs its own first-boot ceremony, drawn on
-the GOP framebuffer with no OS beneath it: choose an interface, walk the
+Boot it on a UEFI machine and it runs its own first-boot ceremony on the
+GOP framebuffer with no OS beneath it: choose an interface, walk the
 identity wizard (Ed25519 keypair from hardware entropy, wrapped under a
-passphrase you type), and watch the machine read its own 2.4 MB seed back off
-the stick and verify its own signature before it acts. (The image is
-right-sized to its payload -- the boot stub, the embedded `CODEX.CDX`
-seed, and the desktop font -- so it is 5 MB, not a mostly-empty disk.)
-Everything is
+passphrase you type), and watch the machine read its own seed back off
+the stick and verify its own signature before it acts. Everything is
 compiled by the seed embedded on the image (`CODEX.CDX`); the loader stub
-hands off after `ExitBootServices` and the payload drives the GOP display,
-the PS/2 keyboard, and the AHCI/IDE disk itself. Confirmed booting and
-running the full wizard on real hardware and under edk2/OVMF.
+hands off after `ExitBootServices` and the payload drives the display,
+the keyboard and the disk itself.
 
 Real-UEFI boot needs Secure Boot off, Fast Boot off, and CSM/Legacy off
-(UEFI-only) — the image is pure GPT. Persisting the identity to the stick
-needs a USB mass-storage driver (the boot stick is USB, which the current
-AHCI/IDE drivers cannot reach); that is the next frontier.
+(UEFI-only) -- the image is pure GPT.
 
-Flash to USB (requires elevated PowerShell):
+**`build/boot/kbd-diag-v16.img`** (16,777,216 bytes) -- the bootable USB
+keyboard diagnostic that closed the ASUS hardware bring-up campaign. The
+method it anchors is written down for other people's hardware in
+[docs/Designs/Active/Tools/HardwareBringUpPlaybook.md](docs/Designs/Active/Tools/HardwareBringUpPlaybook.md).
+
+| Algorithm | Digest |
+|---|---|
+| SHA-256 | `8916020E555F49BF3FAB7B67A36C06F5F36679AADDDF4C7BFC0870D7B35745C8` |
+| MD5 | `7FBD48F4FDAD41A99862E6EB62187AAA` |
+
+Flash to USB from an elevated PowerShell. **Pull the stick out when it is
+done -- do not eject it.** Windows rewrites the partition table when the
+device re-enumerates, which destroys the GPT the flasher just verified.
 
 ```powershell
 # Find your USB disk number:  Get-Disk | Where-Object BusType -eq USB
@@ -346,35 +161,30 @@ build\flash-usb.ps1 -Image seed\Codex.img -DiskNumber <N>
 
 ## Why
 
-Most software is built on borrowed trust — someone else's OS, someone
-else's runtime, someone else's certificate authority. Every dependency
-is an assumption you can't verify. Codex is the project that stops
-assuming.
+Most software is built on borrowed trust -- someone else's OS, someone
+else's runtime, someone else's certificate authority. Every dependency is
+an assumption you can't verify. Codex is the project that stops assuming.
 
-- **Single-artifact substrate.** Boot `Codex.cdx`. There is no
-  layer beneath it that you didn't compile yourself.
+- **Single-artifact substrate.** Boot `Codex.cdx`. There is no layer
+  beneath it that you didn't compile yourself.
 - **Literate by design.** Chapters and Sections aren't comments. They're
   structure. The compiler parses prose alongside code.
-- **Own character encoding.** CCE (Codex Character Encoding) is
-  frequency-sorted: `is-letter` is one comparison, not a table lookup.
-  Unicode at I/O boundaries: UTF-8 input decodes to CCE (all tiers
-  including CJK, Arabic, emoji); CCE output emits proper UTF-8.
-- **Multiple backends.** The same compiler can target managed runtimes
-  (C#, IL, JavaScript, Wasm) and native code (x86-64 bare metal, CDX).
-  The bare-metal target is the perf and trust target; the others are
-  ergonomic.
+- **Own character encoding.** CCE is frequency-sorted, so `is-letter` is
+  one comparison rather than a table lookup. Unicode exists only at I/O
+  boundaries: UTF-8 in decodes to CCE across all three tiers, CCE out
+  emits proper UTF-8.
 - **Algebraic effects.** Side effects are declared in types and handled
   explicitly. No surprise mutations.
-- **Capability model.** Trust lattice, direction markers, and scoped
+- **Capability model.** Trust lattice, direction markers and scoped
   capabilities designed in from the substrate, not bolted on after.
+- **Seven trust anchors, not a root program.** Each was taken from two
+  independent distribution paths and compared byte for byte. A list of a
+  hundred authorities, any one of which can issue for any name in the
+  world, is the trust model this project exists to replace.
 
 ```codex
 Chapter: Greeting
   cites Foreword chapter Console
-
-  A small program that greets the user by name. The opening declares
-  [Console] in its type — the effect is part of the contract, not a
-  surprise that happens at runtime.
 
 Section: Functions
 
@@ -390,284 +200,55 @@ Section: Functions
 Page 1
 ```
 
+The `[Console]` in the type is the effect. It is part of the contract,
+not a surprise that happens at runtime.
+
 ---
 
 ## Quick Start
 
 **Prerequisites**: `codex-vm.exe` (build via `tools/build-vm.ps1`) or
-QEMU (with WHPX) for the bare-metal path.
+QEMU with WHPX.
 
 ```powershell
-# Sample battery (bare-metal selfhost, ~2-5s per sample; -Jobs N for parallel)
-build/test.ps1 -Jobs 4
-
-# Full build: text round-trip + CDX fixed-point + test battery
-build/build.ps1
+build/build.ps1        # text round-trip + CDX fixed point + BVT. The gate.
+build/test.ps1 -Jobs 8 # full sample battery
 ```
 
-### Try it without building (just codex-vm + the seed CDX)
+### Try it without building
 
 The CDX in `seed/Codex.cdx` is a complete compiler. Boot it under
-codex-vm, feed it source via a file, and it hands back CDX or
-Codex-text — the output format is selected by the mode line.
-Container formats (ELF, PE, GPT/FAT images) are produced by plug
-CDX binaries in `codex/plugs/`. The `compile.ps1` helper wraps
-the protocol:
+codex-vm, feed it source, and it hands back CDX or Codex text; the output
+format is selected by the mode line. Container formats (ELF, PE, GPT/FAT
+images) come from plug CDX binaries in `codex/plugs/`.
 
 ```powershell
-# Stage the seed where the helper expects it.
 New-Item -ItemType Directory -Force build-output/bare-metal
 Copy-Item seed/Codex.cdx build-output/bare-metal/Codex.cdx
 
-# Compile a sample (boots codex-vm, loads source into guest memory, captures output).
 build/compile.ps1 -Src codex/test/arithmetic.codex -Out build-output/arith.cdx -Log build-output/arith.log
-
-# Boot the compiled program and capture its output.
 build/test-run.ps1 -Kernel build-output/arith.cdx -OutFile build-output/arith.out
 Get-Content build-output/arith.out
 ```
 
-Memory-mapped I/O: source is pre-loaded into the guest ring buffer
-at boot; output is captured from guest UART writes. No TCP sockets.
+Source is pre-loaded into the guest ring buffer at boot and output is
+captured from guest UART writes. No TCP sockets.
 
 ---
 
-## Language Examples
+## The language, briefly
 
-The following is real Codex source — the same syntax the compiler parses.
+Full syntax and semantics: [docs/DevelopersGuide.md](docs/DevelopersGuide.md).
 
-```codex
-Chapter: Feature Tour
-  cites Foreword chapter Console
-
-Section: Sum Types
-
-  Shape =
-    | Circle (Integer)
-    | Rectangle (Integer) (Integer)
-
-Section: Records
-
-  Person = record {
-    name : Text,
-    age : Integer
-  }
-
-Section: Mutable Records
-
-  mutable Counter = record {
-    value : Integer
-  }
-
-  increment : Counter -> Counter
-  increment (c) =
-    c.value = c.value + 1
-    c
-
-Section: Pattern Matching
-
-  area : Shape -> Integer
-  area (s) = when s
-    is Circle (r) -> r * r * 3
-    is Rectangle (w) (h) -> w * h
-
-  classify : Integer -> Text
-  classify (n) = when n
-    is 0 -> "zero"
-    is 1 -> "one"
-    is otherwise -> "other"
-
-Section: Effects and Act Blocks
-
-  greet : Text -> [Console] Nothing
-  greet (name) = act
-    print-line ("Hello, " & name & "!")
-  end
-
-  ask-name : [Console] Text
-  ask-name = act
-    print-line "What is your name?"
-    result <- read-line
-    when result
-      is Just (name) -> name
-      is None -> "stranger"
-  end
-
-Section: Effect Handlers
-
-  effect Counter where
-    tick : [Counter] Integer
-
-  counted : Integer
-  counted = with Counter (tick + tick + tick)
-    tick (resume) = resume 1
-
-Section: Resilient Act Blocks
-
-  fetch-config : [Console, FileSystem] Text
-  fetch-config = trying 3 times
-    act
-      content <- read-file "config.cdx"
-      content
-    end
-  falling back to
-    act
-      print-line "Using default config"
-      "{}"
-    end
-  on failure
-    act
-      print-line "All attempts failed"
-      ""
-    end
-
-Section: Polymorphism
-
-  identity : f -> f
-  identity (x) = x
-
-Section: Multi-Parameter Types
-
-  add : Integer, Integer -> Integer
-  add (x) (y) = x + y
-
-  apply : (Integer, Integer -> Integer), Integer, Integer -> Integer
-  apply (f) (x) (y) = f x y
-
-Section: Linear Types
-
-  open-file : Text -> [FileSystem] linear FileHandle
-  close-file : linear FileHandle -> [FileSystem] Nothing
-
-  freeze : linear a -> a
-
-Section: Database Queries (Codex.DB)
-
-  employees-table : TableDef
-  employees-table = table-def-with-pk "employees" [
-    col-def-not-null "id" ColInteger,
-    col-def-not-null "name" ColText,
-    col-def-not-null "department" ColText,
-    col-def "salary" ColInteger
-  ] ["id"]
-
-  engineering-roster : Catalog -> QueryResult
-  engineering-roster (cat) =
-    RelScan "employees"
-      |> RelFilter (PredColCmp "department" CmpEq (ValText "Engineering"))
-      |> RelProject (proj-columns ["name", "salary"])
-      |> RelSort [SortSpec { sort-col = "salary", sort-dir = SortDesc }]
-      |> query cat
-
-  department-summary : Catalog -> QueryResult
-  department-summary (cat) =
-    RelScan "employees"
-      |> RelGroup ["department"] [
-        AggSpec { agg-func = AggCount, agg-alias = "headcount" },
-        AggSpec { agg-func = AggSum "salary", agg-alias = "total-salary" }
-      ]
-      |> query cat
-
-Section: System Database (SystemDb)
-
-  SysBootConfig = record {
-    sbc-boot-mode : Integer,
-    sbc-boot-drive-serial : Text,
-    sbc-boot-partition : Integer
-  }
-
-Section: Lazy Evaluation
-
-  expensive-computation : Integer -> Integer
-  expensive-computation (x) = x * x * x + 7
-
-  opening : [Console] Nothing = act
-    let thunk = lazy (expensive-computation 42)
-    in let r1 = force thunk
-    in let r2 = force thunk
-    in print-line (show r1 & " " & show r2)
-  end
-
-Section: Type Classes
-
-  class Showable where
-    to-text : Integer -> Text
-
-  instance Showable Integer where
-    to-text (x) = show x
-
-Section: Vector Types (SIMD)
-
-  dot-product : Vector 2 Real, Vector 2 Real -> Real
-  dot-product (a) (b) = vec-reduce-add (a * b)
-
-  pixel-blend : Vector 4 (Integer between 0 and 255), Integer -> Vector 4 (Integer between 0 and 255)
-  pixel-blend (color) (alpha) =
-    let scale = vec-splat alpha
-    in (color * scale) / vec-splat 255
-
-Section: Approximate Equality
-
-  almost-zero : Real -> Boolean
-  almost-zero (x) = x ~ 0.0
-
-Section: For Expressions
-
-  double-all : List Integer -> List Integer
-  double-all (xs) = for x in xs do x * 2
-
-Section: Web Emitter (HTML/JS Plugs)
-
-  effect UI where
-    render : Widget -> [UI] Nothing
-
-  dashboard : [Console, UI] Nothing = act
-    let chart = Charts.bar-chart sales-data
-    in render (Window "Dashboard" (layout-vertical [chart, status-bar]))
-  end
-
-Section: Proofs and Dependent Types
-
-  nil-eq : Nil === Nil
-  nil-eq = Refl
-
-  sym-proof : Nil === Nil
-  sym-proof = sym Refl
-
-  chain-proof : Nil === Nil
-  chain-proof = trans Refl Refl
-
-  wrap-proof : Proof
-  wrap-proof = assume
-
-Page 1
-```
-
-### Linear types and safe mutation
-
-Codex pulls apart two ideas that most languages tangle together:
-**`linear` is for resources, `mutable` is for data** — two orthogonal
-uniqueness disciplines, neither implying the other.
-
-A `linear` value must be **used exactly once** along every path. It can't
-be silently dropped — a file you forgot to close is a leak (CDX2063) — and
-it can't be used twice — a handle you closed and then read is a
-double-use (CDX2061). Every mention counts. This is the discipline for
-resources with a lifecycle: file handles, sockets, capabilities.
-
-```codex
-  consume : linear Integer -> Integer
-  consume (n) = n * 2          -- OK: used exactly once
-  -- leak (n)  = 0             -- REJECTED CDX2063: linear value never used
-  -- twice (n) = n + n         -- REJECTED CDX2061: used twice
-```
-
-A `mutable` record is the other face of uniqueness: **data you own and
-update in place**. You may read its fields as often as you like, but you
-may not *alias* it — handing the same record to two owners is a compile
-error (CDX2062). In-place field assignment (`r.field = v`) is safe
-*precisely because* the record is uniquely owned: no GC, no copy, no
-hidden sharing.
+**`linear` is for resources, `mutable` is for data** -- two orthogonal
+uniqueness disciplines, neither implying the other. A `linear` value must
+be used exactly once on every path: dropping it is a leak (CDX2063),
+using it twice is a double-use (CDX2061). A `mutable` record is data you
+own and update in place; you may read its fields freely but may not alias
+it (CDX2062), and in-place assignment is safe *precisely because* the
+record is uniquely owned -- no GC, no copy, no hidden sharing. `freeze :
+linear a -> a` is the one-way door between them, and is the identity at
+runtime because the source is unique and is spent there.
 
 ```codex
   mutable GameState = record { turn : Integer, score : Integer }
@@ -679,114 +260,50 @@ hidden sharing.
     gs
 ```
 
-`freeze : linear a -> a` is the one-way door between the two worlds. It
-consumes a uniquely-owned value and hands back an ordinary immutable one
-that can be shared freely. Because the source is unique and is spent here,
-no copy is needed — `freeze` is the identity, and its whole meaning lives
-in the type.
-
-Borrow-vs-move is inferred from signatures: pass a mutable record to a
-function that only reads it (returns a plain value) and you *borrow* it;
-pass it to one that threads it onward and you *consume* it. The compiler
-itself is the proof — its hottest state records (the type-checker's
-unification state, the lexer, the name-resolver scope) carry the `mutable`
-discipline, and the self-compile reports zero aliasing violations.
-
-### Type classes
-
-`class`/`instance` give ad-hoc polymorphism through dictionary passing,
-fully resolved at compile time — zero runtime dispatch:
+**Bounded integers instead of width types.** There is no `Int8` or
+`UInt32`; there is one `Integer` and a range constraint, from which width
+and signedness are *derived* rather than spelled:
 
 ```codex
-  class Showable where
-    to-text : Integer -> Text
-
-  instance Showable Integer where
-    to-text (x) = show x
+Byte       = Integer between 0 and 255 wrapping   -- modular arithmetic
+Percentage = Integer between 0 and 100 clamping   -- saturates at bounds
+SafeIndex  = Integer between 0 and 1024           -- default `error` (traps)
 ```
 
-Multiple instances, **return-type polymorphism** (the result type selects
-the instance), generic functions constrained by a class, and instances
-over parametric types all work. A missing instance is a static error
-(CDX2040), never a runtime crash.
+Record fields pack tight -- three `0..65535` fields take 6 bytes, not 24.
+Out-of-range values are static errors, and where the compiler can prove a
+value fits, the runtime check is elided outright.
 
-### Pattern matching: multi-pattern arms and exhaustiveness
-
-One `when`/`is` arm can match several shapes with `|`, and the compiler
-checks that every match is **exhaustive** — a forgotten constructor is a
-compile error, not a silent fall-through.
+**Effects, handlers and resilient act blocks.**
 
 ```codex
-  describe : Shape -> Text
-  describe (s) = when s
-    is Circle (r) | Rectangle (w) (h) -> "has area"
-    -- dropping a constructor here is a static non-exhaustiveness error
+  effect Counter where
+    tick : [Counter] Integer
+
+  counted : Integer
+  counted = with Counter (tick + tick + tick)
+    tick (resume) = resume 1
+
+  fetch-config : [Console, FileSystem] Text
+  fetch-config = trying 3 times
+    act
+      content <- read-file "config.cdx"
+      content
+    end
+  falling back to
+    act
+      "{}"
+    end
 ```
 
-### Proofs and dependent types
-
-Codex has dependent types — types that carry values. The `===` operator
-in type position creates a *propositional equality type*. The proof term
-`Refl` inhabits `a === a` for any `a`; the unifier rejects it when both
-sides differ.
-
-```codex
-  nil-eq : Nil === Nil
-  nil-eq = Refl              -- TYPE-CHECKS: both sides are Nil
-
-  -- bad : Nil === Cons
-  -- bad = Refl              -- REJECTED: Nil /= Cons
-```
-
-Proof terms: `Refl` (reflexivity), `sym` (symmetry: `a === b -> b === a`),
-`trans` (transitivity: `a === b -> b === c -> a === c`), `assume` (axiom).
-All proofs are **erased at emit time** — they generate zero machine code.
-The `claim`/`proof`/`qed` syntax declares and discharges proof obligations:
-
-```codex
-  claim id-nil : Nil === Nil
-  proof id-nil = Refl
-  qed
-
-  claim chain : 5 === 5
-  proof chain = trans Refl Refl
-  qed
-```
-
-The compiler also statically proves bounded-integer range safety. When it
-can prove a value fits within a field's declared bounds, the runtime check
-is elided (CDX4010). The bounds prover handles literals, field access,
-arithmetic, `int-mod`, `bit-and`, `bit-shru`, negation, if/else, and
-let-bound values.
-
-### Bounded integers (subtypes + auto-narrowing)
-
-Codex doesn't have `Int8` / `UInt16` / `Int32` / `UInt64`. It has one
-`Integer` and a *range constraint*:
-
-- `Integer between 0 and 255` — compiler picks 8-bit unsigned storage
-- `Integer between -32768 and 32767` — 16-bit signed
-- `Integer between 1 and 1048576` — 24-bit, unsigned (no negatives)
-- bare `Integer` — 64-bit machine word
-
-The width and signedness are *derived* from the declared range, not
-spelled by the author. Record fields pack tight: three `0..65535`
-fields take 6 bytes, not 24.
-
-Out-of-range values are a static error (CDX2050: literal out of bound,
-CDX2051: wider type than bound). At assignment sites where the
-compiler can't statically prove the value fits, the field's
-**overflow mode** decides what happens at runtime:
-
-```codex
-Byte       = Integer between 0 and 255 wrapping     -- modular arithmetic
-Percentage = Integer between 0 and 100 clamping     -- saturates at bounds
-SafeIndex  = Integer between 0 and 1024             -- default `error` (traps)
-```
-
-`__narrow expr` is the explicit-narrow primitive: write it at a
-narrowing site to acknowledge the intent. The downstream check still
-runs — `__narrow` is intent, not a cast.
+**Also in the language:** sum types and records; exhaustive pattern
+matching with multi-pattern arms, where a forgotten constructor is a
+compile error; type classes via dictionary passing with return-type
+polymorphism, fully resolved at compile time; `Vector N T` as a
+first-class type with SSE2 packed codegen and dependent lane count;
+`Real` with approximate equality (`==` on a Real is a compile error) and
+declared safety modes; unit types erased at codegen; tuples; lazy
+evaluation with memoization; and `for x in xs do f x`.
 
 ---
 
@@ -794,330 +311,129 @@ runs — `__narrow` is intent, not a cast.
 
 ```
                             Source (.codex)
-                                  │
-                 ┌────────────────┼────────────────┐
-                 │          FRONTEND               │
-                 │                                 │
-                 │  Lexer ─────── token stream     │
-                 │  Parser ────── syntax tree      │
-                 │  Desugarer ─── abstract syntax   │
-                 │  ChapterScoper namespace scope   │
-                 │  NameResolver  resolved names    │
-                 │  TypeChecker ─ typed AST         │
-                 │  Lowering ──── IR                │
-                 │                                 │
-                 └────────────────┼────────────────┘
-                                  │
-            ┌─────────────────────┼─────────────────────┐
-            │                     │                     │
+                                  |
+                 +----------------+----------------+
+                 |          FRONTEND               |
+                 |  Lexer ------- token stream     |
+                 |  Parser ------ syntax tree      |
+                 |  Desugarer --- abstract syntax  |
+                 |  ChapterScoper namespace scope  |
+                 |  NameResolver  resolved names   |
+                 |  TypeChecker -- typed AST       |
+                 |  Lowering ---- IR               |
+                 +----------------+----------------+
+                                  |
+            +---------------------+---------------------+
+            |                     |                     |
        Codex text            IR text               CDX path
        emitter               emitter               (Resolve +
-            │                     │                LambdaLifting)
-            ▼                     │                     │
-       Codex source               │                CDX emitter
-       (bootstrap                 │                (x86-64)
-        round-trip)               │                     │
-                                  │        ┌──────┬─────┼──────┐
-                                  │        │      │     │      │
-                                  │        ▼      ▼     ▼      ▼
-                                  │      CDX    ELF   PE    IMG
-                                  │    (boot-  (x86  (UEFI (GPT/
-                                  │     able)   -64)  PE+)  FAT)
-                                  │
-                 ┌──────────┬─────┼─────┬──────────┐
-                 │          │     │     │          │
-                 ▼          ▼     ▼     ▼          ▼
+            |                     |                LambdaLifting)
+            v                     |                     |
+       Codex source               |                CDX emitter
+       (bootstrap                 |                (x86-64)
+        round-trip)               |                     |
+                                  |        +------+-----+------+
+                                  |        v      v     v      v
+                                  |      CDX    ELF   PE     IMG
+                                  |
+                 +----------+-----+-----+----------+
+                 v          v     v     v          v
               ARM64      RISC-V  WASM  Transpilers GPU plugs
-              ELF64      ELF     WAT   (29 langs)  ├─ PTX
-              (AArch64)  (RV32/  (brow- ├─ Ada,Go, │  (NVIDIA)
-                          RV64)  ser)   │  Java,Py, └─ SPIR-V
-                                        │  Rust,TS     (Vulkan)
-                                        └─ React,
-                                           Svelte,
-                                           Vue,WPF
-
+              ELF64      ELF     WAT   (31 langs)  (PTX, SPIR-V,
+              (AArch64)  (RV32/  (brow-             WGSL)
+                          RV64)   ser)
 ```
 
-The compiler frontend (lexer through lowering) is shared across all
-targets. From IR, three paths fan out:
+The frontend is shared across every target. From IR, three paths fan out:
+**Codex text** re-emits the compiler's own source for bootstrap
+verification; **IR text** serializes the typed IR as S-expressions, which
+every plug consumes as a standalone CDX binary receiving IR over TCP; the
+**CDX path** adds Resolve and LambdaLifting and emits x86-64 machine code
+as a signed CDX binary, from which container plugs derive ELF, PE and GPT
+disk images.
 
-- **Codex text** re-emits the compiler's own source for bootstrap
-  verification (byte-identical round-trip).
-- **IR text** serializes the typed IR as S-expressions. All plugs
-  consume this: ARM64, RISC-V, WASM, the 29 transpiler plugs, and
-  the GPU plugs (PTX for NVIDIA, SPIR-V for Vulkan, WGSL for WebGPU). Each plug is
-  a standalone CDX binary that receives IR over TCP.
-- **CDX path** adds Resolve (concrete types) and LambdaLifting,
-  then emits x86-64 machine code as a signed CDX binary. Container
-  plugs derive ELF, PE, and GPT disk images from the CDX.
-
-The pipeline lives in `codex/` — the self-hosted compiler,
-~28,000 lines across 54 `.codex` files. Each phase has its own deck
-allocation and `phase-compact` cycle; cumulative deck ~208 MB, peak
-working set ~210 MB for selfhost.
+Each phase has its own deck allocation and `phase-compact` cycle;
+cumulative deck is about 208 MB and peak working set about 210 MB for the
+selfhost. The compiler pages its own arena in on first touch through a
+not-present-PDE trick and a compact `#PF` handler, so physical cost is
+measured by a touched-page counter rather than predicted by a formula.
 
 ---
 
-## IoT Platform
+## Codegen benchmarks
 
-Codex targets the IoT market as the first platform where the compiler
-proves firmware meets EU Cyber Resilience Act requirements by
-construction. The IoT stack is orthogonal to the cross-architecture
-codegen plugs — it runs on the hosted VM today and cross-compiles to
-real hardware via the ARM64 (100% test parity) and RISC-V (~132 on the
-committed Renode board, repair campaign ongoing) backends.
+Function-body instruction counts from disassembly, against C compilers.
+Source: `bench/`.
 
-### Board Drivers
+| Benchmark | Codex x86-64 | MSVC /O2 | Codex ARM64 | GCC -O0 | Codex RV64 | GCC -O0 |
+|---|---:|---:|---:|---:|---:|---:|
+| fib(35) | 21 | 20 | 22 | 20 | 20 | 19 |
+| fact(20) | 13 | 15 | 13 | 17 | 14 | 14 |
+| gcd(a,b) | 17 | 14 | 22 | 21 | 22 | 22 |
+| sum(1M) | 14 | 23 | 13 | 13 | 8 | 12 |
 
-Nine target boards with register-level drivers using the Board HAL's
-`mmio-read-32`/`mmio-write-32` primitives. Each driver has a smoke test
-on the hosted VM (MMIO stubs; fuel-bounded polling terminates immediately).
-Full details: `docs/TinkersToolbox.md`.
-
-| Board | MCU | Arch | Sub-tests | Highlights |
-|-------|-----|------|----------:|-----------|
-| **STM32F4** | Cortex-M4F 168 MHz | ARM | 6 | GPIO, USART2, SPI1, I2C1 |
-| **ESP32-C6** | RV32IMC 160 MHz | RISC-V | 6 | GPIO, UART0, SPI2, I2C0 |
-| **Raspberry Pi 4** | Cortex-A72 1.5 GHz | ARM | 6 | GPIO, PL011, SPI0, BSC1 |
-| **QEMU virt** | AArch64 + RV | Both | 6 | PL011 + 16550 UART |
-| **nRF52840** | Cortex-M4F 64 MHz | ARM | 17 | CLOCK, SAADC, RADIO, **BLE beacon PDU** |
-| **RP2040 (Pico)** | Dual M0+ 133 MHz | ARM | 14 | Atomic GPIO, ADC, PIO, **WS2812 NeoPixel** |
-| **nRF9160** | Cortex-M33 64 MHz | ARM | 17 | IPC (modem), **AT command/response round-trip** |
-| **STM32L4** | Cortex-M4F 80 MHz | ARM | 9 | MSI clock, **PWR modes**, LPTIM |
-| **FE310 (HiFive1)** | RV32IMAC 320 MHz | RISC-V | 7 | IOF select, PWM, **PLIC** |
-
-88 sub-tests. Register addresses from official reference manuals.
-
-### IoT Protocol Stack
-
-| Protocol | Module | Status | Coverage |
-|----------|--------|--------|----------|
-| **MQTT v5.0** | `codex/foreword/encode/Mqtt.codex` | Implemented | CONNECT, PUBLISH, SUBSCRIBE, PINGREQ, DISCONNECT, QoS 0-2, variable-byte encoding. Test: PASS (7). |
-| **CoAP (RFC 7252)** | `codex/foreword/encode/Coap.codex` | Implemented | GET, POST, PUT, DELETE, ACK, 13 content-formats, option encoding with delta/length nibbles. Test: PASS (6). |
-| **LwM2M** | `codex/foreword/encode/Lwm2m.codex` | Implemented | Object/resource IDs (Device/3, Firmware/5, Temperature/3303), TLV encoding, registration, URI builders. Test: PASS (9). |
-| **OTA Update** | `codex/foreword/core/OtaUpdate.codex` | Implemented | Two-gate verification (Gate A streaming, Gate B 5-phase), A/B boot slots, anti-rollback, abort/rollback state machine. Test: PASS (11, 6 paths). |
-
-Beyond the core four, the encode quire now carries a broad industrial-
-and building-automation protocol library, each a leaf module with
-byte-exact known-answer tests against an independent reference encoder:
-**Modbus** (RTU/TCP/ASCII), **DNP3**, **BACnet/IP**, **KNX**, **J1939**
-(CAN), **CANopen**, **M-Bus**, **OPC UA** (SecureConversation),
-**IEC 104**, **EtherNet/IP**, **S7comm**, **Melsec**, **FINS**,
-**GOOSE**, **HART**, **LoRaWAN** (uplink + OTAA join + downlink),
-**Zigbee**, **IEEE 802.15.4**, **6LoWPAN**, **BLE ATT/GATT**,
-**MQTT-SN**, **Sparkplug B** (float/double via IEEE-754 bitcast),
-**SNTP**, and **AES-CMAC**. A RS485/RS232 SerialLine HAL models the
-half-duplex bus grant as a linear token released exactly once — a shared-
-bus violation is a compile error, not a runtime fault.
-
-### EU Compliance (CRA / ETSI / NIST)
-
-The `ComplianceEvidence` module maps 60 regulatory requirements across
-CRA Annex I (8), ETSI EN 303 645 (40), NISTIR 8259A (5), and IEC 62443
-(7) to the Codex features that satisfy each one -- linear types, effect
-types, signed CDX binaries, capability manifests, LwM2M OTA, punctual
-bounded execution, and the fact-store audit trail. The
-`generate-evidence-report` function produces a text compliance summary
-as a build artifact. Test: PASS (8).
-
-### Punctual Functions (Hard Real-Time)
-
-The `punctual` keyword enforces bounded execution at compile time --
-per-function, opt-in, with instruction-count reporting. Five
-structural checks fire as compile errors:
-
-| Check | CDX Code | Enforces |
-|-------|----------|----------|
-| No heap allocation | CDX6002 | No `list-push`, no record construction in hot path |
-| No recursion | CDX6005 | Tail calls only (proven termination) |
-| No unsafe calls | CDX6001 | Cannot call non-punctual functions |
-| No closures | CDX6003 | No lambda capture (unpredictable allocation) |
-| No bare I/O | CDX6004 | I/O must go through `with-timeout` |
-
-The emitter counts instructions per punctual function and reports
-them (CDX6010). An optional `@budget N` annotation warns when the
-count exceeds the threshold (CDX6011).
-
-```
-punctual classify-threat : SensorReading -> ThreatLevel
-```
-
-The compiler reports: `classify-threat: 115 instructions (44% of
-budget 256)`. No production language has this combination -- Ada
-Ravenscar restricts globally and needs external WCET tools (aiT,
-RapiTime); Rust and MISRA-C have no compile-time execution bound
-mechanism. A full survey of 10 languages and frameworks is in
-`docs/Designs/OS/Active/HardRealtime.md`.
-
-### Codegen Performance
-
-The self-hosted compiler compiles itself (28,000 lines, 54 files) in
-22 seconds on bare metal (codex-vm, x86-64, 8 GB RAM). The full gate
-run -- CDX build, sign, canary, text round-trip, semantic equivalence,
-CDX fixed point, and BVT -- completes in under 140 seconds. The BVT
-(16 tests exercising language features beyond the self-compile) runs
-in 18 seconds.
-
-| Phase | Time |
-|-------|-----:|
-| CDX build (seed to SUT) | 22s |
-| Sign (Ed25519) | 3s |
-| Canary (factorial) | 3s |
-| Text stage 1 + 2 | 48s |
-| Semantic equivalence | 20s |
-| CDX fixed point | 22s |
-| BVT (16 tests) | 18s |
-| **Total** | **~140s** |
-
-The seed is a 2.43 MB CDX binary (content hash
-`6C6873493429A78CE9CE3E39F96080B9E9A7B3C49918AB1BB2B1E3D2B6F7157C`).
-The compiler is a hard fixed point of itself -- the output of
-self-compilation compiled by itself is byte-identical to itself.
-
-### Codegen vs C — Instruction Count Benchmarks
-
-Four micro-benchmarks comparing Codex codegen output against C
-compilers. Counts are function-body instructions only, from
-disassembly of compiled output. Source: `bench/`.
-
-**x86-64** (Codex bare-metal vs MSVC):
-
-| Benchmark | Codex | C /Od | C /O2 | vs /O2 |
-|-----------|------:|------:|------:|--------|
-| fib(35) — tree-recursive Fibonacci | 21 | 19 | 20 | +1 (+5%) |
-| fact(20) — recursive factorial | 13 | 16 | 15 | **-2 (-13%)** |
-| gcd(a,b) — Euclidean GCD (TCO loop) | 17 | 18 | 14 | +3 (+21%) |
-| sum(1M) — accumulator loop (TCO) | 14 | 20 | 23 | **-9 (-39%)** |
-
-**ARM64** (Codex cross-compile via plug vs GCC aarch64 -O0):
-
-| Benchmark | Codex | GCC -O0 | vs -O0 |
-|-----------|------:|--------:|--------|
-| fib | 22 | 20 | +2 (+10%) |
-| fact | 13 | 17 | **-4 (-24%)** |
-| gcd | 22 | 21 | +1 (+5%) |
-| sum | 13 | 13 | tie |
-
-**RISC-V RV64** (Codex cross-compile via plug vs GCC riscv64 -O0):
-
-| Benchmark | Codex | GCC -O0 | vs -O0 |
-|-----------|------:|--------:|--------|
-| fib | 20 | 19 | +1 (+5%) |
-| fact | 14 | 14 | tie |
-| gcd | 22 | 22 | tie |
-| sum | 8 | 12 | **-4 (-33%)** |
-
-Codex generates competitive code on all three architectures without
-an optimizer -- the code generator emits these sequences directly.
-On x86-64, sum beats C /O2 by 39% (tight TCO loop vs MSVC unroll);
-gcd beats C /Od and closes on /O2 (frame overhead is the
-remaining gap). On ARM64 and RISC-V, all four benchmarks meet or
-beat GCC -O0 -- fact and sum beat GCC on both cross-targets.
-ARM64 passes 135/135 cross-architecture tests (100% parity with
-x86-64); RISC-V is at ~132 on the committed Renode board with a
-plug-repair campaign ongoing.
+Codex has no optimizer -- the code generator emits these sequences
+directly. On x86-64, sum beats MSVC /O2 by 39 per cent (a tight TCO loop
+against an unroll) and fact beats it by 13. On ARM64 and RISC-V all four
+meet or beat GCC -O0.
 
 ---
 
-## CCE — Codex Character Encoding
+## CCE -- Codex Character Encoding
 
 Codex has its own character encoding, designed for computation rather
-than compatibility. Three tiers are implemented:
+than compatibility.
 
-### Tier 0 (128 codepoints, 1 byte each)
+**Tier 0** is 128 codepoints in one byte, frequency-sorted so that
+classification is arithmetic rather than a table lookup: `is-letter (c)`
+is `char-code c >= 13 && char-code c <= 64`, and `to-upper` is `+26`.
 
-Frequency-sorted for fast arithmetic classification:
+**Tier 1** is 2,048 codepoints in two bytes, framed exactly like UTF-8,
+covering every character needed for all 27 EU member state languages --
+required for IoT deployment under the Cyber Resilience Act, where literate
+source must be readable by non-English regulatory reviewers. Latin
+Extended, Cyrillic, Greek, Arabic, Hebrew, Devanagari, Thai, Lao, Hangul
+jamo, top CJK, kana and math symbols. Conversion uses a 16-entry
+block-offset table of about 48 bytes: `unicode = slice-base[offset >> 7]
++ (offset & 127)`.
 
-| Range | Category | Count |
-|-------|----------|------:|
-| 0-2 | Whitespace | 3 |
-| 3-12 | Digits | 10 |
-| 13-38 | Lowercase (frequency-sorted) | 26 |
-| 39-64 | Uppercase (frequency-sorted) | 26 |
-| 65-96 | Punctuation | 32 |
-| 97-112 | Accented Latin | 16 |
-| 113-127 | Cyrillic | 15 |
+**Tier 2** is three bytes and covers CJK unified ideographs, full Hangul
+syllables, kana extensions and emoji, accepted in string literals and
+prose; identifiers stay Tier 0 and Tier 1.
 
-Classification is arithmetic, not table lookup:
-- `is-letter (c)` = `char-code c >= 13 && char-code c <= 64`
-- `is-digit (c)` = `char-code c >= 3 && char-code c <= 12`
-- `to-upper (c)` = `code-to-char (char-code c + 26)` (case shift is `+26`)
-
-### Tier 1 (2048 codepoints, 2 bytes each)
-
-Multi-byte framing identical to UTF-8 (`110xxxxx 10xxxxxx`). Covers
-every character needed for all 27 EU member state languages — required
-for IoT deployment under the Cyber Resilience Act, where literate
-source must be readable by non-English regulatory reviewers.
-
-| Slice | CCE Range | Script | Coverage |
-|-------|-----------|--------|----------|
-| 0-1 | 128-383 | Latin Extended | FR DE ES PT IT PL CZ SK HU HR TR RO SE NO DK |
-| 2 | 384-511 | Cyrillic Extended | RU UK BG SR MK |
-| 3 | 512-639 | Greek | EL |
-| 4 | 640-767 | Arabic | AR FA UR |
-| 5 | 768-895 | Hebrew | HE YI |
-| 6 | 896-1023 | Devanagari | HI SA MR NE |
-| 7 | 1024-1151 | Thai + Lao | TH LA |
-| 8 | 1152-1279 | Korean Hangul jamo | KO |
-| 9-12 | 1280-1791 | Top CJK | ZH (75% coverage) |
-| 13-14 | 1792-2047 | Japanese kana | JA |
-| 15 | 2048-2175 | Math symbols | Technical |
-
-Unicode conversion uses a 16-entry block-offset table (~48 bytes
-rodata). Lookup: `unicode = slice-base[offset >> 7] + (offset & 127)`.
-No large tables. The lexer accepts Tier 1 characters in identifiers
-and prose with one extra branch per byte (fast path unchanged for
-Tier 0).
-
-### Tier 2 (3-byte encoding)
-
-CJK unified ideographs, full Hangul syllables, Japanese kana extensions,
-and Emoji. 3-byte framing (`1110xxxx 10xxxxxx 10xxxxxx`) covers the
-remaining scripts needed for global deployment. Tier 2 characters are
-accepted in string literals and prose; identifiers remain Tier 0 + Tier 1.
-
-### Design Principles
-
-Unicode exists only at I/O boundaries. Internally, everything is CCE.
-The compiler's own source uses only Tier 0 — the fixed-point property
-is preserved because the input is identical regardless of Tier 1
-support. Existing source files remain valid; new source with Tier 1
-characters requires the updated compiler.
+Unicode exists only at I/O boundaries. Internally everything is CCE, and
+the compiler's own source uses only Tier 0, so the fixed-point property
+is preserved regardless of Tier 1 and 2 support.
 
 ---
 
 ## Library Quires
 
-Code outside the compiler is organized into **28 quires** (library namespaces)
-with **533 library modules** (396 foreword + 137 OS); the depot includes the 54-file compiler, 143 plug files, and 57 applications:
+Code outside the compiler is organized into **22 quires** (library
+namespaces) holding **588 modules** (430 foreword, 158 OS). Quires cite
+each other as `cites Game chapter AStar`; the quire name is the last
+segment of the directory name, capitalized. Full catalog:
+[docs/DevelopersRulebook.md](docs/DevelopersRulebook.md).
 
-| Quire | Directory | Count | Highlights |
-|-------|-----------|------:|------------|
-| **Foreword** | `codex/foreword/core/` | 111 | Hamt, Sort, PriorityQueue, Trie, LruCache, UnionFind, Graph, B+Tree, Deque, Rope, IntervalTree, ConsistentHash, BloomFilter, Regex, DateTime, Ed25519, SHA-256/512, Cmac, CCE, MathLib, Path, Format, Hkdf, NumberTheory, Probability, Locale, SerialLine |
-| **Game** | `codex/foreword/game/` | 26 | A*, Dijkstra, DiamondSquare, HexMap, Voronoi, FloodFill, Octree, Quadtree, Bresenham, CellularAutomata, ECS, StateMachine, Tween, TileMap, CardDeck, Rasterizer, Sprite, Scene2D, Color, Raytracer, Klondike, Camera |
-| **AI** | `codex/foreword/ai/` | 43 | Tensor, NeuralNet, Transformer, GGUF, SparseLattice, KNN, DecisionTree, GeneticAlgorithm, Tokenizer, KvCache, Sampling, Optimizer, Attention, Embedding, Loss, DiffusionScheduler |
-| **UI** | `codex/foreword/ui/` | 47 | Theme (3 built-in), Widget, Layout, Render, Surface, Event, Binding, Animation, Icon (5 sizes), Overlay, Sound, Font (CCE), Cursor, Scroll, Focus, Dialog, Orchestrator, Selection, TextField, Clipboard, RichText, Charts, Accessibility |
-| **Signal** | `codex/foreword/signal/` | 14 | FFT, Perlin, Convolution, ADSR Envelope, Resample, Wavelet, Pitch |
-| **Compress** | `codex/foreword/compress/` | 8 | LZ77, Huffman, RLE, Deflate, Gzip, Lz4, Zstd, Brotli |
-| **Encode** | `codex/foreword/encode/` | 63 | JSON, Base64, Hex, URI, UUID, CSV, CRC32, Protobuf, Toml, Cbor, Yaml, MessagePack, Bencode, GrayCode, JWT, image/audio/video codecs (PNG, JPEG, GIF, WAV, MP3, MP4, ...), and a full IoT/industrial protocol suite (Mqtt, MqttSn, Coap, Lwm2m, Modbus, Dnp3, Bacnet, Knx, J1939, Canopen, Mbus, OpcUa, Iec104, Enip, S7comm, Zigbee, Ieee802154, Sixlowpan, BleAtt, Lorawan, Sparkplug, Sntp) |
-| **Math** | `codex/foreword/math/` | 12 | Quaternion, Matrix4, Bezier, CORDIC, Complex, Spline, Geodesic, LinearAlgebra, Numeric, Decimal |
-| **Sim** | `codex/foreword/sim/` | 7 | Verlet Physics, Collision, ParticleSystem, Steering, SpatialHash |
-| **Punctual** | `codex/foreword/punctual/` | 8 | IntOps, BitOps, Saturate, FastMath, Trig, ColorOps, Kinematic, Endian — every function is `punctual` (no heap, no recursion, bounded instruction count) |
-| **Engine** | `codex/foreword/engine/` | 42 | Renderer3D, Scene3D, Material, Texture, Mesh, Skinning, LOD, Culling, PostProcess, Audio3D, AudioBus, Input, GameLoop, GameplayTags, AbilitySystem, Signal, DebugDraw, TimeOfDay, AssetTable, EdgeMesh, HelmBridge, NavMesh, Terrain, Water, Fog, ClothSim, SoftBody, HairSim |
-| **GPU** | `codex/foreword/gpu/` | 10 | Warp primitives, shared memory, atomics, math intrinsics, kernel verifier, vecadd end-to-end test |
-| **Boards** | `codex/foreword/boards/` | 38 | STM32F4, ESP32-C6, RPi4, nRF52840, RP2040, nRF9160, STM32L4, FE310, QEMU virt — register-level HAL drivers |
-| **Net** | `codex/os/net/` | 16 | Ethernet, ARP, IPv4, TCP, UDP, ICMP, DNS, DHCP, NTP, Syslog, TFTP, HttpClient, Tls (AesGcm + X25519) |
-| **Kernel** | `codex/os/kernel/` | 24 | DiskFacts, DriveManager, Vga, VgaGraphics, Pci, Keyboard, Mouse, BitmapFont, Console, DiagnosticShell, GpuBridge, IdentityManager, Ivshmem, Ne2k, SystemDb, Usb, UsbAudio, UsbMassStorage, UsbVideo, Xhci, VmSerial, VmIde |
-| **OS** | `codex/os/*/` | 81 | Trust lattice, verifier, scheduler, IPC, identity, shell, clarifier, replay, observability, dev tools |
-| **Works** | `apps/works/` | 54 | DevConsole, UefiConsole, ConsoleEditor, FirstBoot, AgentRuntime, AgentCoordinator, AgentAcquisition, VmCompile, VmPingpong, VmSweep, Http, WebServer, AnnotationDriver |
-| **Spark** | `apps/spark/` | 89 | 3D modeling, software rasterizer, image editor, animation/skeletal IK, audio/DAW, video compositor, procedural noise, interactive GOP framebuffer UI |
-| **Games** | `apps/games/` | 128 | CodexMagic card game engine, classic board games, game server, AI opponents, web portal |
-| **Data** | `apps/data/` | 42 | Relational database server, B-tree indexes, query planner, WAL, transactions, deadlock detection |
-
-Quires cite each other via `cites Game chapter AStar` or
-`cites Net chapter Tcp`. The quire name is the last segment
-of the directory name, capitalized.
+| Quire | Directory | Count |
+|---|---|---:|
+| Foreword | `codex/foreword/core/` | 127 |
+| Encode | `codex/foreword/encode/` | 75 |
+| UI | `codex/foreword/ui/` | 50 |
+| AI | `codex/foreword/ai/` | 43 |
+| Engine | `codex/foreword/engine/` | 42 |
+| Game | `codex/foreword/game/` | 26 |
+| Signal | `codex/foreword/signal/` | 14 |
+| Math | `codex/foreword/math/` | 14 |
+| GPU | `codex/foreword/gpu/` | 11 |
+| Compress | `codex/foreword/compress/` | 8 |
+| Punctual | `codex/foreword/punctual/` | 8 |
+| Sim | `codex/foreword/sim/` | 7 |
+| Shell | `codex/foreword/shell/` | 5 |
+| Boards | `codex/boards/` | 9 |
+| OS (excl. net, kernel) | `codex/os/*/` | 84 |
+| Net | `codex/os/net/` | 38 |
+| Kernel | `codex/os/kernel/` | 36 |
 
 ---
 
@@ -1125,187 +441,45 @@ of the directory name, capitalized.
 
 ```
 codex/
-  compiler/               Self-hosted compiler (54 files, ~28K lines)
-  foreword/
-    core/                 Core forewords — data structures, crypto (106 modules)
-    ai/                   AI — tensors, neural nets, GGUF, transformer (19 modules)
-    compress/             Compression — LZ77, Huffman, RLE, Deflate, Zstd, Brotli (8 modules)
-    encode/               Encoding — JSON, Base64, Protobuf, Toml, Cbor, Yaml, MQTT, CoAP (35 modules)
-    engine/               3D Engine — renderer, scene, materials, LOD, culling, audio (21 modules)
-    game/                 Game — A*, hex, ECS, physics, terrain (26 modules)
-    math/                 Math — quaternions, matrices, Bezier, CORDIC (12 modules)
-    punctual/             Real-time primitives — int, bit, saturate, trig, color (8 modules)
-    signal/               Signal — FFT, Perlin, convolution, wavelet (14 modules)
-    sim/                  Simulation — physics, collision, particles (7 modules)
-    ui/                   UI — themeable widgets, layout, compositor (28 modules)
-  os/
-    core/                 OS core — shell, registry, clarifier (4 modules)
-    dev/                  Developer tools — debugger, inspectors (5 modules)
-    kernel/               Kernel — disk, VGA, USB, PCI, audio, video (24 modules)
-    net/                  Networking — full TCP/IP + protocols (16 modules)
-    observe/              Observability — metrics, health, journal (7 modules)
-    replay/               Replay — deterministic record/replay (3 modules)
-    sched/                Scheduler — process groups, watchdog (6 modules)
-    trust/                Trust — lattice, policy, sessions (11 modules)
-    verify/               Verification — 5-phase CDX verifier (5 modules)
-  plugs/                  Plug architecture — IR-text-driven emitters
-  test/                   Compiler samples + OS integration tests (742 tests)
-apps/                     57 applications, 767 modules (see Applications)
-  works/                  Console, agents, VM tools, first boot (54 modules)
-  games/                  CodexMagic — card platform, classic games, web portal (128 modules)
-  spark/                  Codex.Spark — 3D, CAD, image, animation, audio, video (89 modules)
-  cvmm/                   OS desktop environment (66 modules)
-  data/                   Codex.DB — relational database server (42 modules)
-  erp/                    ERP suite + industry verticals (23 modules)
-  browser/ explorer/ market/ mathbook/ fishtank/ vision/ helm/ diagram/
-  secrets/ fileshare/ collab/ globe/ starmap/ workflow/ nettool/ radio/
-  webapp/ + 20 page apps (chat, mail, music, notes, weather, tasks, ...)
-annotations/              On-disk annotation sidecars (JSON facts)
-build/                    Build/test harness (PowerShell)
-tools/                    codex-vm, status server, USB writer, VS extensions
-seed/                     Bootstrap seed CDX (2.43 MB) + UEFI disk image (5 MB)
-docs/                     Design documents, plans, stories
-old/                      Retired C# reference compiler — historical only
+  compiler/      Self-hosted compiler (63 files, 57.5K lines)
+  foreword/      430 library modules across 13 quires
+  boards/        Board HAL drivers -- 9 target boards
+  os/            Kernel, net, trust, verify, sched, dev, observe (158 modules)
+  plugs/         53 plugs, 134 source modules -- IR-text-driven emitters
+  test/          Compiler samples + OS integration tests (1,403 across 6 tiers)
+apps/            66 applications, 1,010 modules
+annotations/     On-disk annotation sidecars (JSON facts)
+build/           Build and test harness (PowerShell)
+tools/           codex-vm, status server, USB writer, VS extensions
+seed/            Bootstrap seed CDX + UEFI disk image
+docs/            Design documents, plans, stories, reference specs
+old/             Retired C# reference compiler -- historical only
 ```
-
----
-
-## The Road
-
-| Milestone | What | Date |
-|-----------|------|------|
-| Foundation | Reference compiler in C#, type system, IR, transpiler backends | 2026-03-14 |
-| Self-hosting (BS1) | Fixed point — stage 1 === stage 3 | 2026-03-16 |
-| Bare metal | x86-64 ELF on bare-metal VM, no OS, no libc | 2026-03-23 |
-| Pingpong (BS2) | Bare-metal semantic equivalence | 2026-04-07 |
-| **Self-sustaining (BS3)** | **Bare-metal CDX reproduces itself byte-identical** | **2026-04-24** |
-| CDX binary format | Signed CDX with SHA-256, capability tables, effect metadata | 2026-04-30 |
-| Codex.OS kernel | Preemptive scheduler, IPC, identity, trust lattice, 5-phase verifier | 2026-05-03 |
-| **Networking** | **Full TCP/IP: Ethernet, ARP, IPv4, TCP, UDP, ICMP, DNS, DHCP, NTP, TLS** | **2026-05-05** |
-| **Real hardware boot** | **"Welcome to Codex" on Asus x86-64 — UEFI PE stub, pure-PS1 toolchain** | **2026-05-07** |
-| **codex-vm** | **WHP VM host (~4500 lines C): PCI, xHCI USB, Intel HDA, HPET, IOAPIC, ACPI, SMBIOS, Bochs VBE, GOP framebuffer, NE2K NIC** | **2026-05-07** |
-| **Plug architecture** | **53 transpiler plugs (Ada → Zig, 14 UI frameworks, GPU PTX + SPIR-V, 4 binary formats)** | **2026-05-09** |
-| **Codex.Spark** | **85-module creative suite on GOP framebuffer** | **2026-05-18** |
-| **Static bounds prover** | **Compiler proves bounded-integer range safety, elides runtime checks** | **2026-05-23** |
-| **Dependent types** | **PropEqTy, Refl, proof erasure, claim/proof/qed** | **2026-05-23** |
-| **Type classes** | **`class`/`instance` via dictionary passing, return-type polymorphism** | **2026-05-29** |
-| **Linear types** | **`linear` (resources) + `mutable` (data) as orthogonal disciplines** | **2026-05-29** |
-| **Tuples + debugger** | **`(A, B)` sugar, `let (x, y) = e`, C# full-compiler emit (0 errors), interactive debugger** | **2026-05-31** |
-| **For-exprs + phase heap** | **`for x in xs do f x` sugar, CHECK/LOWER heap reduction (~80 MB saved), EOF settle counter, 201/211 tests pass** | **2026-06-02** |
-| **x86-64 codegen optimization** | **Comparison folding, preamble elision, store-load elimination, immediate ops, single-arg mov — fib(35) cut from 107 to 53 instructions. WASM backend + WebGPU 3D. Spark Studio. CodexMagic web platform.** | **2026-06-06** |
-| **Native-class codegen** | **TCO parallel-move shuffle, R8/R9-staged operands, leaf/near-leaf frame elision, IrRemInt + inliner — sum 14 insns (beats C /O2), fact 17, fib 23, gcd 23. Self-verifying fixed point at every step.** | **2026-06-10** |
-| **Application wave** | **630 app modules across 47 apps: ERP suite + 5 verticals, Market e-commerce, Browser, FileShare, Secrets, Diagram, Globe GIS, Star Atlas, MathBook CAS, CVMM desktop, mesh OS (Raft/SWIM), 20 page apps on WebApp template.** | **2026-06-10** |
-| **punctual + unit types + cross-arch** | **Per-function bounded-execution keyword (novel -- no production language has this). Unit types with zero-overhead erasure. ARM64 + RISC-V backend plugs (Hello World on QEMU). IoT protocol stack (MQTT v5, CoAP). Test consolidation (232 -> 137 tests, BVT in 113s).** | **2026-06-13** |
-| **Cross-arch GCC parity** | **ARM64 + RISC-V codegen meets or beats GCC -O0 on all 4 micro-benchmarks. 24 optimization CLs: dest-driven emission, selective pro/epilogue, fused cmp+branch, frameless TCO, identity-return base-chain, 2-arg direct call, mixed TCO. No optimizer -- all emitter-level.** | **2026-06-15** |
-| **SIMD / Vector types** | **`Vector N T` first-class type, SSE2 packed codegen (ADDPD/SUBPD/MULPD/DIVPD), `~` approximate equality operator, CDX2085 (no == on Real), vec-splat/extract/reduce-add builtins, vector operator overloading.** | **2026-06-15** |
-| **GPU plugs** | **Dual-target GPU compilation: PTX plug (NVIDIA) + SPIR-V plug (Vulkan/OpenCL) built and compiling. Device IR emission from compiler. 53 total plugs.** | **2026-06-15** |
-| **Punctual foreword** | **8-chapter `codex.foreword.punctual` quire: IntOps, BitOps, Saturate, FastMath, Trig, ColorOps, Kinematic, Endian. Every function is `punctual`.** | **2026-06-15** |
-| **Game engine foreword** | **21-chapter `codex.foreword.engine` quire: Renderer3D, Scene3D, Material, Texture, Mesh, Skinning, LOD, Culling, PostProcess, Audio3D, AudioBus, Input, GameLoop, GameplayTags, AbilitySystem, DebugDraw, EdgeMesh.** | **2026-06-16** |
-| **Poisoned compact** | **`__memset` builtin + per-phase poison bytes. Reclaimed memory is poisoned to catch stale-pointer reads immediately instead of silently reading garbage.** | **2026-06-16** |
-| **Number → Real rename** | **`Number` renamed to `Real` across compiler, all plugs, and tests. Qualifier communicates confidence (`Real`, `Real approximate`, `Real guess`), not bit width.** | **2026-06-16** |
-| **VectorMaskTy + comparisons** | **`VectorMask N` type, vector comparison operators (`<`, `>`, `<=`, `>=`), `vec-select` (per-lane conditional). SSE2 CMPPD/MOVMSKPD codegen.** | **2026-06-16** |
-| **SMP + GPU kernels** | **SMP all 5 phases (atomics, per-core bootstrap, work-stealing scheduler, per-core heap, IPI + lock-free channels). GPU K5-K8 (warp, shared memory, atomics, math intrinsics, verifier). `codex.foreword.gpu` quire (10 modules). CCE Tier 2 (CJK/Hangul/Kana/Emoji, 3-byte encoding). Browser all 3 phases (network fetch + page compiler, 19 modules, 5162 lines). 742 tests.** | **2026-06-17** |
-| **Update 25** | **Seed 2.30 MB, 425 library modules across 28 quires (added gpu, boards). VM default 8 GB RAM. Public push.** | **2026-06-18** |
-| **GUI OS + cross-arch** | **GUI shell on bare metal (GuiShell compositor, 7 apps, MutWheel state scheduler, multi-monitor 640x480-1024x768). TrueType font engine (14 CC0 fonts, 4x4 AA). 27 keyboard layouts. ARM64 62 Renode tests, RISC-V 44 Renode tests. All 52 plugs building, 27/27 web apps building, 507 library modules. Mutable records merged. SMP-aware GUI rendering.** | **2026-06-22** |
-| **ARM64 full parity** | **ARM64 backend reaches 135/135 verified cross-tests (100% match with x86-64 battery). Three codegen bugs fixed: record constructor heap corruption (spill-slot register encoding wrap), boot stub EL3/EL1 compatibility, unicode-bytes-to-text byte stride. RISC-V at 122/133 (92%). QEMU aarch64 boot enabled. HTTP request/response round-trip test on ARM64. f64 GPU kernels.** | **2026-06-26** |
-| **Machine-checked proofs** | **`reverse (reverse xs) === xs` proved by structural induction: definitional-equality normalizer (delta/iota/beta), `forall`/`induction` AST nodes, per-constructor subgoals, N-ary + function-position congruence, applicable lemmas, capture-avoiding substitution. All proofs erase at emit. CCE output boundary completes full UTF-8 (tiers 0-2).** | **2026-07-01** |
-| **The Vision Check** | **The by-construction safety claims become compiler errors: effect rows enforced at every boundary, linear ownership through moves/boundaries/captures (nine laundering routes closed), bounded-integer signatures checked statically + dynamically (self-host CDX2051 -> 0), hardware-access capability effects (Device.Port/Block/Mmio), tightened punctual real-time walk. Every binary now carries a derived capability manifest — effects and covering capabilities read from the program's own type, inside the signed content — so the verifier's capability and effect phases judge real data. Industrial IoT protocol suite (Modbus/DNP3/BACnet/OPC UA/LoRaWAN/Zigbee/... + AES-CMAC). RealBitcast intrinsics. RISC-V plug repair 0 -> 132 on the committed board; `build.ps1` gains a plug-binary backend gate.** | **2026-07-04** |
-
-Full detailed milestone history: [docs/PM/Milestones.md](docs/PM/Milestones.md)
 
 ---
 
 ## Documentation
 
-- [docs/VisionAndVirtues.md](docs/VisionAndVirtues.md) — **Read this first**
-- [docs/PM/CurrentPlan.md](docs/PM/CurrentPlan.md) — Active plan and direction
-- [docs/DevelopersGuide.md](docs/DevelopersGuide.md) — Language syntax, types, how to write Codex
-- [docs/UsersHandbook.md](docs/UsersHandbook.md) — Boot the IMG, first steps, using the system
-- [docs/OperatorsManual.md](docs/OperatorsManual.md) — Build process, test harness, VM setup, debugging
-- [docs/ArchitectsSketchbook.md](docs/ArchitectsSketchbook.md) — Memory layout, registers, allocators, phase maps
-- [docs/DevelopersRulebook.md](docs/DevelopersRulebook.md) — Foreword quire catalog, library rules
-- [docs/ExaminersAssay.md](docs/ExaminersAssay.md) — Test infrastructure, coverage, known results
-- [docs/TheShimmeringPortal.md](docs/TheShimmeringPortal.md) — Web developer's guide to the UI-to-browser pipeline
-- [docs/KingsAndCourts.md](docs/KingsAndCourts.md) — Hard real-time, EU compliance (CRA/ETSI/IEC), IoT regulatory story
-- [docs/TinkersToolbox.md](docs/TinkersToolbox.md) — Board support package: 9 boards, peripheral drivers, connectivity coverage
-- [docs/Apps.md](docs/Apps.md) — Application catalog with descriptions and READMEs
-
----
-
-## Apps
-
-**57 apps**, all written in Codex, all compiled by the seed. 27/27
-web apps build clean through the HTML plug. Bare-metal apps render
-via the GOP framebuffer UI foreword. Each app has a `README.md` with module
-inventory, completeness estimate, and conformance assessment.
-
-**Conformance key**: *Full* = pure Codex, emits through plugs for any
-external format. *Partial* = mostly Codex but has hand-written non-Codex
-client code or unconnected wiring gaps.
-
-### Flagship (75-90%)
-
-| App | Mod | What | Done | Conf |
-|-----|----:|------|:----:|:----:|
-| [data](apps/data/) | 42 | Multi-model database server (OLTP, OLAP, graph, spatial, time-series, full-text) | 90% | Full |
-| [games](apps/games/) | 128 | CodexMagic card platform + 35 classic board/card games with AI opponents | 90% | Full |
-| [spark](apps/spark/) | 89 | Creative suite: 3D modeling, image editing, animation/IK, audio/DAW, video -- WebGPU via WASM | 85% | Full |
-| [workflow](apps/workflow/) | 4 | Long-running business process engine with SLA, doc gates, industry templates | 85% | Full |
-| [diagram](apps/diagram/) | 13 | Diagramming editor (flowcharts, ERDs, UML, state machines) with undo/redo | 82% | Full |
-| [designer](apps/designer/) | 4 | WYSIWYG UI widget tree builder compiled to WASM | 80% | Full |
-| [weather](apps/weather/) | 1 | Weather dashboard: current, hourly, 7-day, wind chill, heat index, atmospheric | 78% | Full |
-| [notes](apps/notes/) | 1 | Two-pane note-taking with formatting toolbar, tag cycling, archive, duplicate | 78% | Full |
-| [tasks](apps/tasks/) | 1 | Five-column Kanban board with overdue detection, priority/tag editing, delete | 78% | Full |
-| [mail](apps/mail/) | 1 | Three-pane email client with compose, reply, draft save, dynamic unread counts | 78% | Full |
-| [fitness](apps/fitness/) | 1 | Activity rings, workout log, calorie estimation, goal progress, streak counter | 78% | Full |
-| [news](apps/news/) | 1 | RSS/news reader with reading time estimates, share, unread counts, word count | 78% | Full |
-| [books](apps/books/) | 1 | E-book reader with progress bars, reading time, bookmarks, 1-5 star ratings | 78% | Full |
-| [helm](apps/helm/) | 12 | Scalable comms: The River (auto-clustering chat) + The Bridge (ranked voice) | 78% | Full |
-| [music](apps/music/) | 1 | Spotify-style player with now-playing indicator, shuffle/repeat, liked filter | 76% | Full |
-| [calendar](apps/calendar/) | 1 | Month/Week/Day/Agenda with working event creation, input fields, active views | 76% | Full |
-| [capture](apps/capture/) | 1 | Screenshot tool with dynamic annotations, undo/redo stack, tool selection | 76% | Full |
-| [imagetools](apps/imagetools/) | 1 | Image editor with widget-gauge sliders, quality control, active presets | 76% | Full |
-| [piano](apps/piano/) | 1 | Two-octave piano with keyboard input (a-k), ADSR display, metronome, scales | 76% | Full |
-| [maps](apps/maps/) | 1 | Map viewer with cosine-adjusted distance, route summary, layer indicators | 76% | Full |
-| [photos](apps/photos/) | 1 | Photo gallery with slideshow auto-advance, delete confirmation, batch select | 76% | Full |
-| [publisher](apps/publisher/) | 1 | Long-form authoring with word count, TOC, auto-save, version history, tags | 76% | Full |
-| [pomodoro](apps/pomodoro/) | 1 | Focus timer with custom duration, daily goals, break reminders, stats | 76% | Full |
-| [podcasts](apps/podcasts/) | 1 | Podcast client with episode progress, 5-speed playback, download tracking | 76% | Full |
-| [recorder](apps/recorder/) | 1 | Voice recorder with ticking timer, waveform bars, size estimate, rename | 76% | Full |
-| [cvmm](apps/cvmm/) | 66 | Desktop management shell: system managers, fleet/mesh, 11 productivity mini-apps | 75% | Partial |
-| [collab](apps/collab/) | 8 | Video collaboration: calls, screen share, meetings, whiteboard, recording | 75% | Full |
-| [mathbook](apps/mathbook/) | 17 | Symbolic CAS and interactive math notebook (parse, simplify, differentiate, integrate) | 75% | Full |
-
-| [explorer](apps/explorer/) | 25 | World-building and game-asset design suite with CDX server, workflow export | 75% | Full |
-| [fishtank](apps/fishtank/) | 14 | WebGPU aquarium: boids AI, procedural 3D fish, particles, WASM exports wired | 75% | Full |
-| [nettool](apps/nettool/) | 6 | Network admin toolkit: packet capture, port scanning, mesh admin | 75% | Full |
-| [browser](apps/browser/) | 19 | Bare-metal web browser: TCP fetch, page compiler, content-addressed pages | 75% | Full |
-| [erp](apps/erp/) | 23 | Enterprise resource planning with HTTP server: GL, AP/AR, HR, manufacturing | 75% | Full |
-| [market](apps/market/) | 17 | Self-hosted e-commerce: catalog, cart, checkout, sample DB, multi-vendor | 75% | Full |
-| [radio](apps/radio/) | 3 | Two-deck radio station with transport controls, chat, mixer/EQ | 75% | Full |
-| [secrets](apps/secrets/) | 8 | Encrypted password manager: AES-GCM encrypt/decrypt wired, PBKDF2, DH sharing | 75% | Full |
-| [vision](apps/vision/) | 13 | Organizational intelligence with HTTP API: signal cascade, portfolio health | 75% | Full |
-| [chat](apps/chat/) | 3 | E2E-encrypted messaging with ChatServer API (7 endpoints) | 75% | Full |
-| [starmap](apps/starmap/) | 7 | 3D star map with camera controls: orbit, zoom, fly-to, 80+ celestial objects | 75% | Full |
-| [globe](apps/globe/) | 8 | Earth visualization with routing (extract-path + turn maneuvers), 16 overlays | 75% | Full |
-| [fileshare](apps/fileshare/) | 8 | P2P file sharing with TCP I/O: Merkle pieces, Kademlia DHT, Ed25519 announce | 75% | Full |
-| [works](apps/works/) | 54 | Developer environment with source indexing: UEFI console, repo protocol, agents | 75% | Full |
-| [markets](apps/markets/) | 1 | Financial data dashboard with chart bars: stocks, bonds, commodities, watchlist | 75% | Full |
-| [services](apps/services/) | 5 | Shared system services with account persistence: time, revocation, parental | 75% | Full |
-
-### Growing (55%)
-
-| App | Mod | What | Done | Conf |
-|-----|----:|------|:----:|:----:|
-| [codexmagic-mobile](apps/codexmagic-mobile/) | 8 | .NET MAUI companion app for CodexMagic | 55% | Partial |
+- [docs/VisionAndVirtues.md](docs/VisionAndVirtues.md) -- **Read this first**
+- [docs/PM/CurrentPlan.md](docs/PM/CurrentPlan.md) -- Active plan and direction
+- [docs/DevelopersGuide.md](docs/DevelopersGuide.md) -- Language syntax, types, how to write Codex
+- [docs/UsersHandbook.md](docs/UsersHandbook.md) -- Boot the IMG, first steps, using the system
+- [docs/OperatorsManual.md](docs/OperatorsManual.md) -- Build process, test harness, VM setup, debugging
+- [docs/ArchitectsSketchbook.md](docs/ArchitectsSketchbook.md) -- Memory layout, registers, allocators, phase maps
+- [docs/DevelopersRulebook.md](docs/DevelopersRulebook.md) -- Foreword quire catalog, library rules
+- [docs/ExaminersAssay.md](docs/ExaminersAssay.md) -- Test infrastructure, coverage, known results
+- [docs/TheShimmeringPortal.md](docs/TheShimmeringPortal.md) -- Web developer's guide to the UI-to-browser pipeline
+- [docs/KingsAndCourts.md](docs/KingsAndCourts.md) -- Hard real-time, EU compliance, IoT regulatory story
+- [docs/TinkersToolbox.md](docs/TinkersToolbox.md) -- Board support package, peripheral drivers
+- [docs/CuratorsCatalogue.md](docs/CuratorsCatalogue.md) -- Application catalog
 
 ---
 
 ## No Dates
 
-Every estimate has been wrong by orders of magnitude, in both
-directions. We don't put dates on mountains. The critical path is
-ordered. That's all we need to know.
+Every estimate has been wrong by orders of magnitude, in both directions.
+We don't put dates on mountains. The critical path is ordered. That's all
+we need to know.
 
 ---
 
@@ -1319,20 +493,21 @@ ordered. That's all we need to know.
 
 ## Kudos
 
-To Anthropic and the Claude team — Codex's bootstrap was built with Claude
-Opus 4.6/4.7 (1M context) running as a small team of parallel agents
-under Claude Code. The 1M-token window made it tractable to review thousand-line
+To Anthropic and the Claude team -- Codex's bootstrap was built with Claude
+Opus 4.6/4.7 (1M context) running as a small team of parallel agents under
+Claude Code. The 1M-token window made it tractable to review thousand-line
 codegen diffs against IR invariants in a single pass. The Agent SDK's
 parallel-agent model let multiple agents work distinct CLs simultaneously
 without cross-contaminating their reasoning. The harness's permission model
-and sandboxing made it safe to give the agents direct access to git, p4, WSL,
-codex-vm, and gdb without supervising every command. Persistent memory across
-sessions meant context compounded instead of evaporating between runs.
+and sandboxing made it safe to give the agents direct access to git, p4,
+WSL, codex-vm, and gdb without supervising every command. Persistent memory
+across sessions meant context compounded instead of evaporating between
+runs.
 
-Forty-one days from project start to a self-sustaining bare-metal compiler is
-not a thing one human plus one shell does. It's a thing one human plus a team
-of disciplined agents does. Codex stands on the shoulders of the C# self-host,
-which stands on the shoulders of Claude. Thank you.
+Forty-one days from project start to a self-sustaining bare-metal compiler
+is not a thing one human plus one shell does. It's a thing one human plus a
+team of disciplined agents does. Codex stands on the shoulders of the C#
+self-host, which stands on the shoulders of Claude. Thank you.
 
 ---
 

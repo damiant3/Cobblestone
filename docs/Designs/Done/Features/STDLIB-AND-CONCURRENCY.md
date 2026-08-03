@@ -22,7 +22,7 @@ tracking and pure functions, the answers reinforce each other.
 
 ### Design Principle: Small Core, Deep Foundations
 
-The standard library should be **small** — but the things it includes should be
+The standard library should be **small** -- but the things it includes should be
 **complete within their scope**. This is the OCaml/Haskell model, not the Java/Python
 model. The reasoning:
 
@@ -32,13 +32,13 @@ model. The reasoning:
    small stdlib with clean abstractions lets each backend map to its native
    equivalents.
 
-2. **Codex has a repository model.** The vision (V1–V4) is that libraries are
+2. **Codex has a repository model.** The vision (V1-V4) is that libraries are
    published as facts, searched by type signature, and verified by proof. A bloated
    stdlib competes with this model. The stdlib should provide the vocabulary for
    *writing* libraries, not *replacing* them.
 
 3. **Codex is self-hosting.** The compiler is our first and most demanding user.
-   The stdlib must include everything the compiler needs — and nothing the compiler
+   The stdlib must include everything the compiler needs -- and nothing the compiler
    doesn't. This is a natural size constraint.
 
 4. **The prelude already exists.** We have 7 modules (821 lines). The question is
@@ -51,7 +51,7 @@ on sum types, record construction, integer arithmetic, and console output. The
 built-ins (`text-length`, `char-at`, `substring`, `text-replace`, `list-length`,
 `list-at`, `integer-to-text`, `print-line`, etc.) cover this.
 
-What the compiler does NOT need — and therefore what can wait — is: file I/O
+What the compiler does NOT need -- and therefore what can wait -- is: file I/O
 beyond simple read/write, networking, date/time, floating-point math, regular
 expressions, database access, GUI, and concurrency. These belong in the
 repository, not the stdlib.
@@ -69,19 +69,19 @@ Layer 0: Built-ins (compiler-inlined, always available)
 
 Layer 1: Core Types (pure, no effects, no dependencies)
          Maybe, Result, Either, Pair
-         — "What every function returns when it might fail or have options"
+         -- "What every function returns when it might fail or have options"
 
 Layer 2: Collections (pure, depends on Layer 1)
          List, Hamt (persistent map), Set, Queue
-         — "How you hold groups of things"
+         -- "How you hold groups of things"
 
 Layer 3: Text (pure, depends on Layers 1-2)
          CCE (character classification/encoding), StringBuilder, TextSearch
-         — "How you work with text beyond concatenation"
+         -- "How you work with text beyond concatenation"
 
 Layer 4: Effects (effect definitions, depends on Layers 1-2)
          Console, FileSystem, State, Time, Random
-         — "How you interact with the world"
+         -- "How you interact with the world"
 ```
 
 That's it. Four layers above built-ins. Everything else goes in the repository.
@@ -125,12 +125,12 @@ These are complete. No changes needed.
 
 The existing List module provides cons-list operations. The Hamt module provides
 a persistent hash-array-mapped trie (the workhorse data structure for functional
-languages — O(log32 n) lookup/insert/delete, effectively constant).
+languages -- O(log32 n) lookup/insert/delete, effectively constant).
 
 To add:
 
-- `Set a` — built on Hamt (keys with unit values). Intersection, union, difference.
-- `Queue a` — Okasaki-style two-list queue. O(1) amortized enqueue/dequeue.
+- `Set a` -- built on Hamt (keys with unit values). Intersection, union, difference.
+- `Queue a` -- Okasaki-style two-list queue. O(1) amortized enqueue/dequeue.
 
 Both are pure, ~100 lines each, and needed by the compiler for name resolution
 (Set) and work-queue patterns (Queue). These can be written in Codex itself,
@@ -142,10 +142,10 @@ CCE handles character classification (is-letter, is-digit, etc.) and encoding.
 
 To add:
 
-- `StringBuilder` — accumulate text efficiently. The compiler's emitter
+- `StringBuilder` -- accumulate text efficiently. The compiler's emitter
   currently builds output via `&` (string concatenation), which is O(1) amortized
   when the accumulator is at heap top (fast-path in `__str_concat`). ~150 lines.
-- `TextSearch` — `contains`, `starts-with`, `ends-with`, `index-of`, `split`.
+- `TextSearch` -- `contains`, `starts-with`, `ends-with`, `index-of`, `split`.
   These are needed for any real program and are currently missing. ~100 lines.
 
 **Layer 4: Effects** (existing: Console, State, FileSystem built-in; formalize)
@@ -228,7 +228,7 @@ effect Concurrent where
 
 `Task` is opaque. `fork` takes a thunk. `await` blocks until the result
 is ready. Structured scoping ensures child tasks cannot outlive their
-parent — no orphans, no fire-and-forget.
+parent -- no orphans, no fire-and-forget.
 
 A function passed to `fork` must be pure or have only `Concurrent`
 effects. The type system enforces this. The capability system gates
@@ -276,10 +276,10 @@ implementation plan targeting x86-64 bare metal:
 
 In priority order:
 
-1. `Set.codex` — built on Hamt, ~100 lines. Needed for name resolution.
-2. `Queue.codex` — Okasaki two-list queue, ~80 lines. Needed for BFS patterns.
-3. `TextSearch.codex` — contains, starts-with, ends-with, split, ~100 lines.
-4. `StringBuilder.codex` — efficient text accumulation, ~150 lines.
+1. `Set.codex` -- built on Hamt, ~100 lines. Needed for name resolution.
+2. `Queue.codex` -- Okasaki two-list queue, ~80 lines. Needed for BFS patterns.
+3. `TextSearch.codex` -- contains, starts-with, ends-with, split, ~100 lines.
+4. `StringBuilder.codex` -- efficient text accumulation, ~150 lines.
 5. Formalize effect definitions in `.codex` source, ~50 lines.
 
 Total: ~480 lines of Codex to complete R2. All pure except the effect

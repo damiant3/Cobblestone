@@ -8,7 +8,7 @@ running the program a million times; you reproduce it by *forcing* the
 interleaving.
 
 This is the technique that proved the channel-block
-lost-wakeup — was real and that the fix closes it. It is a general tool for
+lost-wakeup -- was real and that the fix closes it. It is a general tool for
 any "commit-then-someone-runs" TOCTOU in the scheduler.
 
 ## The idea
@@ -40,11 +40,11 @@ falls through to the block path, before the context save:
    in let blk2 = emit-load-current-proc rblkMut reg-rax    ; was: ... st16 reg-rax
 ```
 
-`process-yield` saves the full callee-saved context (rbx, rbp, r12–r15) and
+`process-yield` saves the full callee-saved context (rbx, rbp, r12-r15) and
 the return address, so a mid-function `call process-yield` is transparent:
 the victim resumes at the instruction after the call with its live registers
 intact and walks straight into the block commit. It only switches when there
-is a READY replacement — which is exactly the racing counterparty — so no
+is a READY replacement -- which is exactly the racing counterparty -- so no
 test scaffolding is needed beyond arranging for that counterparty to exist.
 
 ## The drivers
@@ -52,9 +52,9 @@ test scaffolding is needed beyond arranging for that counterparty to exist.
 Two functional tests set up the race and report completion, so a hang is
 observable as missing output:
 
-- `codex/test/apps/chan-lost-wakeup.codex` — a producer blocks on a full
+- `codex/test/apps/chan-lost-wakeup.codex` -- a producer blocks on a full
   capacity-1 channel; a separate consumer drains it. Prints `done`.
-- `codex/test/apps/chan-recv-wakeup.codex` — a consumer blocks on an empty
+- `codex/test/apps/chan-recv-wakeup.codex` -- a consumer blocks on an empty
   capacity-1 channel; a separate producer fills it. Prints `rdone`.
 
 Both use two *separate* spawned processes (not proc 0 as the counterparty),
@@ -89,7 +89,7 @@ The mutant-only hang proves the race is real; the mutant+fix completion
 proves the fix closes it *even with the window forced wide open*. That is
 strictly stronger than "it passes without the mutant," which only proves
 the fix does not break the cooperative path (the fix's new code is not even
-reached cooperatively — the counterparty rendezvous-wakes the blocker before
+reached cooperatively -- the counterparty rendezvous-wakes the blocker before
 the recheck matters).
 
 ## Instrumenting inside the mutant
@@ -111,7 +111,7 @@ The first fix hand-computed a backward `jmp` offset as
 `target - (jmp_pos + 5)`. It was wrong: `st-append-code` buffers into a
 flush cache, so `code-len` on an un-flushed state is not the instruction's
 final position. **Use `patch-jmp-at` / `patch-jcc-at` for every non-trivial
-jump** — they call `fc-flush` first and compute the offset against the
+jump** -- they call `fc-flush` first and compute the offset against the
 flushed layout. Emit the jump as a placeholder (`jmp 0`), capture its
 position, and patch it once the target is known. The block/yield paths in
 the emitter already follow this rule; a directly-computed backward offset is

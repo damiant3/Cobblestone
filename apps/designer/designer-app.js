@@ -120,7 +120,7 @@ function dupWidget(idx){
 function deleteSelected(){const dv=new DataView(wasmMem.buffer);const s=rd(dv,STATE_ADDR+4);if(s>=0)call('delete_widget',s);renderAll();}
 function clearAll(){const dv=new DataView(wasmMem.buffer);dv.setInt32(STATE_ADDR,0,true);dv.setInt32(STATE_ADDR+4,-1,true);dv.setInt32(STATE_ADDR+8,0,true);renderAll();}
 
-// ---- Palette (static — the only JS-rendered UI) ----
+// ---- Palette (static -- the only JS-rendered UI) ----
 function buildPalette(){
   let h='<div class="dsg-pal-head">WIDGETS</div>';
   TYPE_NAMES.forEach((n,i)=>{h+=`<button class="dsg-pal-item" draggable="true" data-type="${i}"><span class="dsg-pal-icon" style="border-color:${TYPE_COLORS[i]};color:${TYPE_COLORS[i]}">${TYPE_ICONS[i]}</span>${n}</button>`;});

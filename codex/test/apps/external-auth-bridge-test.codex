@@ -1,0 +1,78 @@
+Chapter: External Auth Bridge Test
+  cites Foreword chapter Console
+  cites Trust chapter ExternalAuthBridge
+
+ The live consumer of jwt-decode, which had no test of its own.
+
+ While the decoder returned every claim empty, this function answered
+ JwtOk and built an ExternalIdentity whose subject and email were the
+ empty string, for every token from every provider.
+
+ bridge-authenticate answers Maybe now, so the three cases below are
+ genuinely different answers rather than three records that differ only
+ in how empty they are. The refusals are the point: an unreadable token
+ used to produce an identity carrying the provider's real access and
+ refresh tokens, and a token with no sub used to produce one whose key
+ was "<provider>:" and therefore collided with every other such login.
+
+ The good token is the control. Without it the two refusals would be
+ evidence that this function always says no, which is exactly as useless
+ as always saying yes.
+
+Section: Vector
+
+  good-token : Text = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImsxIn0.eyJpc3MiOiJodHRwczovL2NvZGV4LnRlc3QiLCJzdWIiOiJ1c2VyLTQyIiwiYXVkIjoiY29kZXgtYXVkIiwiZXhwIjoxMzAwODE5MzgwLCJpYXQiOjEzMDA4MTkzMDAsIm5vbmNlIjoiZWZ-ZmE_YyIsImVtYWlsIjoiYUBiLnRlc3QiLCJuYW1lIjoiQWRhIEwifQ.ZmFrZS1zaWduYXR1cmU"
+
+  junk-token : Text = "not-a-token"
+
+ Well formed, decodes cleanly, carries an email and a name, and has no
+ sub claim. OpenID Connect Core section 2 makes sub REQUIRED in an id
+ token, so this identifies nobody.
+
+  no-sub-token : Text = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImsxIn0.eyJpc3MiOiJodHRwczovL2NvZGV4LnRlc3QiLCJhdWQiOiJjb2RleC1hdWQiLCJleHAiOjEzMDA4MTkzODAsImlhdCI6MTMwMDgxOTMwMCwiZW1haWwiOiJhQGIudGVzdCIsIm5hbWUiOiJBZGEgTCJ9.ZmFrZS1zaWduYXR1cmU"
+
+Section: Helpers
+
+  toks-for : Text -> OAuthTokens
+  toks-for (id) = OAuthTokens {
+    ot-access-token = "acc",
+    ot-refresh-token = "ref",
+    ot-id-token = id,
+    ot-expires-in = 3600,
+    ot-token-type = "Bearer",
+    ot-scope = "openid email"
+  }
+
+  describe : Text -> Text
+  describe (id-token) =
+    when bridge-authenticate (toks-for id-token) "codex"
+      is Just (id) -> describe-identity id
+      is None -> "refused"
+
+  describe-identity : ExternalIdentity -> Text
+  describe-identity (id) =
+    let a = "subject=" & id.ei-subject & " email=" & id.ei-email
+    in a & " name=" & id.ei-display-name & " key=" & bridge-identity-key id
+
+ A refused login must leave the store untouched. Adding the Maybe to the
+ signature is only worth something if nothing downstream can still reach
+ an identity that was never authenticated, and the count is what says so.
+
+  stored-after : Text -> Integer
+  stored-after (id-token) =
+    when bridge-authenticate (toks-for id-token) "codex"
+      is Just (id) -> (bridge-add-identity auth-bridge-new id).ab-identity-count
+      is None -> auth-bridge-new.ab-identity-count
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("good=" & describe good-token)
+    print-line-uni ("junk=" & describe junk-token)
+    print-line-uni ("nosub=" & describe no-sub-token)
+    print-line-uni ("stored-good=" & show (stored-after good-token))
+    print-line-uni ("stored-junk=" & show (stored-after junk-token))
+    print-line-uni ("stored-nosub=" & show (stored-after no-sub-token))
+  end
+
+Page 1

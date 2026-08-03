@@ -1,4 +1,4 @@
-# SpellStack — Stack Mechanics and Resolution
+# SpellStack -- Stack Mechanics and Resolution
 
 ## The Stack
 
@@ -26,7 +26,7 @@ StackEntryType =
 4. Determine total cost (mana cost + additional costs - reductions)
 5. Activate mana abilities (these don't use the stack)
 6. Pay costs
-7. Spell is now "cast" — triggers "whenever a player casts a spell"
+7. Spell is now "cast" -- triggers "whenever a player casts a spell"
 
 ## Resolution
 

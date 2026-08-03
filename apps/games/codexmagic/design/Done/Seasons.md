@@ -1,10 +1,10 @@
-# Seasons — Content Schedule, Mechanic Invention, Approval
+# Seasons -- Content Schedule, Mechanic Invention, Approval
 
 ## Overview
 
 CodexMagic content is released on a seasonal schedule. Each season
 introduces new mechanics, a new card pool, a visual theme, and a
-competitive cycle. Seasons are the heartbeat of the game — they keep
+competitive cycle. Seasons are the heartbeat of the game -- they keep
 the metagame fresh, drive pack sales, and give players a reason to
 return.
 
@@ -58,43 +58,43 @@ part of the pipeline.
 
 New mechanics must satisfy all of:
 
-1. **Expressible** — implementable in the rules engine's effect type
+1. **Expressible** -- implementable in the rules engine's effect type
    system without new primitives (unless a new primitive is approved
    as a platform upgrade)
-2. **Bounded** — no unbounded loops, no infinite combos without
+2. **Bounded** -- no unbounded loops, no infinite combos without
    specific counterplay
-3. **Interactive** — creates meaningful decisions for both players,
+3. **Interactive** -- creates meaningful decisions for both players,
    not just the controller
-4. **Composable** — plays well with existing mechanics without creating
+4. **Composable** -- plays well with existing mechanics without creating
    degenerate interactions
-5. **Learnable** — a new player can understand the mechanic from one
+5. **Learnable** -- a new player can understand the mechanic from one
    game of seeing it in action
 
 ### Invention Process
 
-1. **Theme selection** — the creative AI proposes 3-5 season themes
+1. **Theme selection** -- the creative AI proposes 3-5 season themes
    based on what hasn't been explored recently, color pie gaps, and
    player engagement data. Human selects one.
 
-2. **Mechanic generation** — the AI proposes 8-12 new keyword abilities
+2. **Mechanic generation** -- the AI proposes 8-12 new keyword abilities
    and mechanic patterns within the chosen theme. Each proposal includes:
    - Rules text template
    - 3 example cards using the mechanic
    - Interaction analysis with the top 20 current-meta cards
    - Complexity rating (1-5 scale)
 
-3. **Mechanic playtest** — the AI simulates 10,000 games using the
+3. **Mechanic playtest** -- the AI simulates 10,000 games using the
    proposed mechanics against the existing card pool. Metrics:
    - Game length distribution
    - Win rate by archetype
    - Decision density (how often the mechanic creates a choice)
    - Feel score (does the mechanic lead to interesting board states?)
 
-4. **Mechanic selection** — from the 8-12 proposals, 2-4 are selected
+4. **Mechanic selection** -- from the 8-12 proposals, 2-4 are selected
    for the season based on playtest results and thematic fit. Human
    approval required.
 
-5. **Mechanic finalization** — selected mechanics get their effect
+5. **Mechanic finalization** -- selected mechanics get their effect
    code templates locked and documented. These become the palette
    for card assembly.
 
@@ -102,15 +102,15 @@ New mechanics must satisfy all of:
 
 **Season: "Age of Embers"**
 
-- **Smolder** (keyword) — "At the beginning of your end step, if this
+- **Smolder** (keyword) -- "At the beginning of your end step, if this
   creature dealt damage this turn, it deals 1 damage to each opponent."
   *Theme: sustained pressure, aggressive decks.*
 
-- **Forge** (activated ability pattern) — "Exile a card from your hand:
+- **Forge** (activated ability pattern) -- "Exile a card from your hand:
   Put a +1/+1 counter on this creature." *Theme: converting cards to
   power, hand-size tradeoffs.*
 
-- **Eruption** (triggered ability pattern) — "When the third land
+- **Eruption** (triggered ability pattern) -- "When the third land
   enters the battlefield this turn, [effect]." *Theme: land-drop
   counting, ramp payoffs.*
 
@@ -118,13 +118,13 @@ New mechanics must satisfy all of:
 
 Cards are never edited after minting. Balance is maintained through:
 
-1. **Bans** — a card is banned from a format (cannot be played, but
+1. **Bans** -- a card is banned from a format (cannot be played, but
    retains trade value and can be played in Vintage)
-2. **Restrictions** — a card is restricted to 1 copy per deck instead
+2. **Restrictions** -- a card is restricted to 1 copy per deck instead
    of the usual 4
-3. **Counter-printing** — next season's card pool includes specific
+3. **Counter-printing** -- next season's card pool includes specific
    answers to dominant strategies
-4. **Format rotation** — Standard format rotates out older seasons,
+4. **Format rotation** -- Standard format rotates out older seasons,
    naturally pruning the meta
 
 Ban decisions are posted on-chain with justification. The community
@@ -134,13 +134,13 @@ can see the game data that motivated the ban.
 
 Each season offers rewards for participation:
 
-- **Daily rewards** — small Mana Coin for first win, first 3 games
-- **Weekly rewards** — bonus pack for 7 wins in a week
-- **Season pass** — tiered rewards for cumulative play (free track
+- **Daily rewards** -- small Mana Coin for first win, first 3 games
+- **Weekly rewards** -- bonus pack for 7 wins in a week
+- **Season pass** -- tiered rewards for cumulative play (free track
   and premium track)
-- **Rank rewards** — Mana Coin and exclusive card variants at season
+- **Rank rewards** -- Mana Coin and exclusive card variants at season
   end based on final rank
-- **Tournament prizes** — Mana Coin pool, exclusive cards, Signature
+- **Tournament prizes** -- Mana Coin pool, exclusive cards, Signature
   variants
 
 Season-exclusive card variants (alternate art, borders) are only

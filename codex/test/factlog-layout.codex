@@ -1,0 +1,192 @@
+Chapter: FactLogLayout
+  cites Foreword chapter FactLog
+
+ FactLog is the on-disk shape of the fact log, in one place, so that the
+ kernel writer and the compiler reader cannot drift apart. It is the
+ chapter that exists BECAUSE a divergence once made a work read back as
+ garbage, and until now nothing executed any of it: the compiler reaches
+ it through FactDisk from `opening.codex`, DiskFacts and AppPersist write
+ through it, and no test had ever asked whether a field reader reads the
+ field its own constant names.
+
+ The decoders are checked twice, deliberately. First against explicit
+ literal bytes with a hand-computed answer, because a round trip through
+ my own writer would share any byte-order assumption with the reader and
+ could not see a swapped pair. Then as a round trip, which is what catches
+ an offset the two halves disagree about. The first is the oracle, the
+ second is the consistency check, and they answer different questions.
+
+ Every byte of each pattern is distinct so a transposition cannot survive:
+ 0x1234 read from a swapped pair is 0x3412 and not 0x1234.
+
+ The magic is asserted in both directions. Packed the way DiskFacts packs
+ it -- one CCE code point per byte -- it must verify; with a single byte
+ corrupted it must NOT, because a magic check that always answers yes is
+ the function that always answers the same thing.
+
+ One measured limit is reported rather than asserted as a defect. The
+ format stores a character as one byte holding its CCE code point, so it
+ can only carry code points 0 to 255. CCE tier 1 begins above that, which
+ is every accented letter in the twenty-seven EU languages. The last line
+ prints what a tier 1 code point does on the way through, so the boundary
+ is a number somebody can act on rather than a worry.
+
+ We say:
+
+Section: Writing test patterns
+
+  poke-le : Integer, Integer, Integer, Integer -> Integer
+  poke-le (buf) (off) (v) (n) = poke-le-loop buf off v 0 n
+
+  poke-le-loop : Integer, Integer, Integer, Integer, Integer -> Integer
+  poke-le-loop (buf) (off) (v) (i) (n) =
+    if i >= n then 0
+    else let b = bit-and (bit-shru v (i * 8)) 255
+    in let p = poke-byte buf (off + i) b
+    in poke-le-loop buf off v (i + 1) n
+
+  pack-cce : Integer, Integer, Text, Integer, Integer -> Integer
+  pack-cce (buf) (off) (txt) (i) (n) =
+    if i >= n then 0
+    else let p = poke-byte buf (off + i) (char-code-at txt i)
+    in pack-cce buf off txt (i + 1) n
+
+Section: The decoders against literal bytes
+
+ The answers are hand-computed from the pattern and do not come from any
+ Codex function: 0x1234 is 4660, 0x12345678 is 305419896, and
+ 0x0123456789ABCDEF is 81985529216486895.
+
+  test-u16 : Text =
+    let buf = alloc-bytes 64
+    in let a = poke-byte buf 0 52
+    in let b = poke-byte buf 1 18
+    in "u16=" & show (fl-u16 buf 0) & " want=4660"
+
+  test-u32 : Text =
+    let buf = alloc-bytes 64
+    in let a = poke-byte buf 0 120
+    in let b = poke-byte buf 1 86
+    in let c = poke-byte buf 2 52
+    in let d = poke-byte buf 3 18
+    in "u32=" & show (fl-u32 buf 0) & " want=305419896"
+
+  test-u64 : Text =
+    let buf = alloc-bytes 64
+    in let p = poke-le buf 0 81985529216486895 8
+    in "u64=" & show (fl-u64 buf 0) & " want=81985529216486895"
+
+ A u64 whose top byte has the high bit set. Two's complement makes this
+ negative, which is what a 64-bit machine word does and is worth pinning
+ so nobody reads a negative timestamp as a decoder fault.
+
+ All eight bytes are written, including the seven zeros, and that is
+ deliberate rather than tidy. `alloc-bytes` is a bare bump -- it returns
+ the heap pointer and advances it, with no zero fill -- so a buffer is
+ only as clean as the memory underneath it, and a test that poked one
+ byte and trusted the rest to be zero read the previous statement's
+ discarded text and reported a wrong number. Write every byte you intend
+ to read.
+
+  test-u64-high : Text =
+    let buf = alloc-bytes 64
+    in let p = poke-le buf 0 (bit-shl 128 56) 8
+    in "u64-high=" & show (fl-u64 buf 0)
+
+Section: A field reader reads the offset its constant names
+
+ Distinct values at each documented offset, read back through the named
+ accessors. This is the identity the chapter exists to hold: kind at 32,
+ timestamp at 66, content length at 74.
+
+  test-entry-fields : Text =
+    let buf = alloc-bytes 512
+    in let k = poke-le buf fl-off-kind 30 2
+    in let t = poke-le buf fl-off-timestamp 1234567890123 8
+    in let c = poke-le buf fl-off-content-len 4321 4
+    in "kind=" & show (fl-entry-kind buf) & " ts=" & show (fl-entry-timestamp buf) & " clen=" & show (fl-entry-content-len buf)
+
+  test-superblock-fields : Text =
+    let buf = alloc-bytes 512
+    in let h = poke-le buf fl-off-sb-log-head 777 8
+    in let g = poke-le buf fl-off-sb-index-gen 42 8
+    in "log-head=" & show (fl-sb-log-head buf) & " index-gen=" & show (fl-sb-index-gen buf)
+
+ The offsets must not overlap and must sit inside the header. Printed as
+ numbers so a reader can check the layout prose against the constants
+ without recomputing the widths.
+
+ This line, and not the round trip above it, is what pins the layout.
+ Measured: drifting fl-off-content-len from 74 to 75 leaves `clen=4321`
+ completely unmoved, because the test writes and reads through the same
+ constant and a change moves both sides together. That is the same shape
+ as a renumbered direction constant in Foreword chapter Capability, and
+ it is the reason the raw values are printed at all. A round trip cannot
+ see a shared constant drift; only a literal can.
+
+ A byte-order fault IS visible to the round trip, because the writer is
+ little-endian by construction: making fl-u16 big-endian moves both this
+ chapter's `u16` line and the `kind` field. Two different faults, two
+ different instruments.
+
+  test-offsets : Text =
+    "off kind=" & show fl-off-kind & " ts=" & show fl-off-timestamp & " clen=" & show fl-off-content-len & " hdr=" & show fl-header-size & " sec=" & show fl-sector-size
+
+Section: The magic, both directions
+
+  test-magic-ok : Text =
+    let buf = alloc-bytes 512
+    in let p = pack-cce buf 0 fl-magic 0 8
+    in "magic-ok=" & (if fl-magic-ok buf then "yes" else "no")
+
+  test-magic-bad : Text =
+    let buf = alloc-bytes 512
+    in let p = pack-cce buf 0 fl-magic 0 8
+    in let corrupt = poke-byte buf 3 99
+    in "magic-corrupt=" & (if fl-magic-ok buf then "yes" else "no")
+
+Section: Sector arithmetic at the boundary
+
+ The header is 78 bytes and a sector is 512, so a content length of 434
+ exactly fills one sector and 435 must need two. An off-by-one in the
+ round-up shows here and nowhere else.
+
+  test-sectors : Text =
+    "sectors 0=" & show (fl-sectors-for 0) & " 434=" & show (fl-sectors-for 434) & " 435=" & show (fl-sectors-for 435) & " 1024=" & show (fl-sectors-for 1024)
+
+Section: Text round trip across the whole byte range
+
+ fl-text reads one byte as one CCE code point, so the identity is that a
+ byte goes in and the same number comes back out. The high byte matters
+ as much as the low one: a reader that sign-extended, or that stopped at
+ 127, would pass on "hello" and fail here.
+
+  test-text : Text =
+    let buf = alloc-bytes 512
+    in let p = pack-cce buf 16 "hello" 0 5
+    in "text=" & fl-text buf 16 5
+
+  test-text-bytes : Text =
+    let buf = alloc-bytes 512
+    in let a = poke-byte buf 0 200
+    in let b = poke-byte buf 1 1
+    in let c = poke-byte buf 2 255
+    in let s = fl-text buf 0 3
+    in "text-cps=" & show (char-code-at s 0) & " " & show (char-code-at s 1) & " " & show (char-code-at s 2) & " len=" & show (text-length s)
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni test-u16
+    print-line-uni test-u32
+    print-line-uni test-u64
+    print-line-uni test-u64-high
+    print-line-uni test-entry-fields
+    print-line-uni test-superblock-fields
+    print-line-uni test-offsets
+    print-line-uni test-magic-ok
+    print-line-uni test-magic-bad
+    print-line-uni test-sectors
+    print-line-uni test-text
+    print-line-uni test-text-bytes
+  end

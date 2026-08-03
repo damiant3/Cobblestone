@@ -1,7 +1,7 @@
 # Text-Mode Emit Regression Investigation
 
 **Status:** RESOLVED (2026-05-29, reek). The regression no longer exists.
-It was never a code bug — it was an artifact of the old TCP-socket serial
+It was never a code bug -- it was an artifact of the old TCP-socket serial
 transport this investigation was measured on. The harness has since moved
 to codex-vm's memory-mapped I/O, which eliminated the bottleneck.
 Original investigation (Cam, 2026-04-30) preserved below for the record.
@@ -48,7 +48,7 @@ The **text fixed-point gate currently passes**: today's gate run produced
 No code change was needed. The fix arrived for free with the transport
 migration; that is why no fix CL was ever recorded against this bug. None of
 the bisected suspects (CL 381 bounded integers, CL 387 deck-record wrapping)
-was ever the cause — they were correlated only because the CL 387 seed was the
+was ever the cause -- they were correlated only because the CL 387 seed was the
 first one whose pingpong was run over the slow TCP path. Do not re-investigate
 the bounded-record layout or deck-record paths on account of this report.
 
@@ -83,7 +83,7 @@ seed(source) === seed at every tested CL. Binary compilation is correct.
 
 ### The 221K non-streaming output IS complete
 
-The non-streaming text path (`emit-text CtCodexText`) at CL 506 produced 221,809 bytes containing 632 function definitions. This is the CORRECT output: `skip-def` filters to only lowercase-starting names (CCE 13-38), and 632 of the 1849 total defs pass this filter. The remaining 1217 defs are constructors or names starting with uppercase/punctuation, correctly skipped. The output is not truncated — it is complete.
+The non-streaming text path (`emit-text CtCodexText`) at CL 506 produced 221,809 bytes containing 632 function definitions. This is the CORRECT output: `skip-def` filters to only lowercase-starting names (CCE 13-38), and 632 of the 1849 total defs pass this filter. The remaining 1217 defs are constructors or names starting with uppercase/punctuation, correctly skipped. The output is not truncated -- it is complete.
 
 ### Serial throughput is the bottleneck
 
@@ -105,25 +105,25 @@ CL 387 text mode fails under both KVM and WHPX. CL 376 text mode works under bot
 
 The CL 387 SUT was compiled from source that includes CLs 377-387. Seed refreshes: CL 376, CL 387 (no intermediate).
 
-### CL 377 — bounded SourcePosition (TESTED, PASS)
+### CL 377 -- bounded SourcePosition (TESTED, PASS)
 - SourceText.codex: line:u16, column:u16, offset:u32
 - Text mode verified: 710,950 B, 94s combined
 
-### CL 378 — bounded Token (TESTED, PASS)
+### CL 378 -- bounded Token (TESTED, PASS)
 - Token.codex: offset:u32, length:u32, line:u16, column:u16, file-id:u16
 - Text mode verified: 711,049 B
 
-### CL 381 — bounded Integer across 18 files (NOT TESTED)
+### CL 381 -- bounded Integer across 18 files (NOT TESTED)
 - Annotation-only changes (Integer -> Integer between lo and hi)
 - 18 files including CodegenState (X86_64State.codex), SkipListText, EmitResult, PatchEntry, TcoState, LocalBinding, FieldLocal, and many helper result types
 - **Explicitly skipped pingpong**: "Confidence-only shelve... skipping per-CL pingpong on shape-repeats"
 - Changed record layouts at machine-code level via width-sort (CL 374) + narrow-store (CL 372)
 
-### CL 384 — revert ExprTypeEntry.key bound (NOT TESTED)
+### CL 384 -- revert ExprTypeEntry.key bound (NOT TESTED)
 - Fixed CL 381 overflow on ExprTypeEntry.key
 - "Verification: pending"
 
-### CL 387 — deck-record in Lexer + codegen deck-bound (TESTED, reportedly PASS)
+### CL 387 -- deck-record in Lexer + codegen deck-bound (TESTED, reportedly PASS)
 - Lexer.codex: 50 deck-record wrapping sites for token kinds
 - X86_64.codex: emit-nullary-ctor deck-bound branch
 - X86_64Compound.codex: emit-sum-ctor deck-bound branch
@@ -132,15 +132,15 @@ The CL 387 SUT was compiled from source that includes CLs 377-387. Seed refreshe
 
 ## Code Inspection Results
 
-### Text emitter (CodexEmitter.codex) — READ IN FULL
+### Text emitter (CodexEmitter.codex) -- READ IN FULL
 
 - No quadratic string concatenation patterns. Every accumulation uses `list-snoc` + `text-concat-list` (O(n)).
-- `emit-apply` processes ~410 extra `deck-record` IrApply nodes — trivial per-node overhead (~10 instructions each).
+- `emit-apply` processes ~410 extra `deck-record` IrApply nodes -- trivial per-node overhead (~10 instructions each).
 - `skip-def` correctly filters constructor names. Output size difference (710K vs 221K) is due to different source sizes and constructor counts at different CLs, not a bug.
-- TypeVarMap (only bounded record in text emitter): 2 fields, entries(8B)@0 + next-id(2B)@8. No layout ambiguity — safe regardless of by-type vs by-list path.
+- TypeVarMap (only bounded record in text emitter): 2 fields, entries(8B)@0 + next-id(2B)@8. No layout ambiguity -- safe regardless of by-type vs by-list path.
 - ApplyChain: 2 pointer fields, no narrowing. Safe.
 
-### Record layout store/load paths — INSPECTED
+### Record layout store/load paths -- INSPECTED
 
 - `emit-record` (X86_64Compound.codex:696-720): Two paths:
   - **by-type**: When `resolve-constructed-ty` returns RecordTy. Uses `emit-narrow-store-checked` at width-sorted offsets. Correct.
@@ -149,7 +149,7 @@ The CL 387 SUT was compiled from source that includes CLs 377-387. Seed refreshe
 - **Layout mismatch risk**: If `emit-record` takes by-list but `emit-field-access` uses by-type, offsets don't match for records with mixed-width fields.
 - **Finding**: All examined record types resolve to RecordTy correctly. Type names are unmangled. `lookup-type-binding` finds them. No mismatch found for any specific record.
 
-### Serial output paths — INSPECTED
+### Serial output paths -- INSPECTED
 
 - `__write_binary` (X86_64Helpers.codex:414-452): Per-byte poll-wait-write. **Resets wd-stale-tick-addr to 0 on every iteration** (line 424-426).
 - `emit-print-text-loop` (X86_64IO.codex:273-296): Per-byte CCE-to-Unicode lookup + poll-wait-write. **Does NOT reset wd-stale-tick-addr.**
@@ -157,22 +157,22 @@ The CL 387 SUT was compiled from source that includes CLs 377-387. Seed refreshe
 - ISR overhead: ~50 instructions per tick for the stale-counter path. 18.2 Hz = negligible overhead.
 - ISR saves/restores RAX via trampoline push/pop. No register clobbering.
 
-### SkipListText layout — VERIFIED CORRECT
+### SkipListText layout -- VERIFIED CORRECT
 
 - Fields: head(8B)@0, size(4B)@8, max-level(1B)@12. Width-sort layout.
 - Construction via record literals → by-type path → narrow stores at correct offsets.
 - No `__record-set` usage on SkipListText fields.
 - `skip-list-text-has` reads max-level from offset 12 via movzx-byte. Consistent with store.
 
-### CodegenState layout — VERIFIED SAFE
+### CodegenState layout -- VERIFIED SAFE
 
 - 23 eight-byte fields, 4 four-byte fields, 3 two-byte fields, 1 one-byte field.
 - Width-sort produces consistent offsets used by both `emit-field-access` (load) and `__record-set` (store).
 - `emit-record-set-builtin` resolves CodegenState to RecordTy and uses `emit-narrow-store-checked`. Correct.
 
-### IR types — NO BOUNDED FIELDS
+### IR types -- NO BOUNDED FIELDS
 
-- IRDef, IRExpr, IRParam, IRFieldVal, IRBranch, IRPat — all pointer-typed fields. No narrowing. No layout risk.
+- IRDef, IRExpr, IRParam, IRFieldVal, IRBranch, IRPat -- all pointer-typed fields. No narrowing. No layout risk.
 
 ## What I Cannot Determine By Code Inspection
 
@@ -188,7 +188,7 @@ The CL 387 SUT was compiled from source that includes CLs 377-387. Seed refreshe
 
 The harness reports total stage time but not the split between frontend, emit, and serial I/O. Before disassembly, establish the split empirically.
 
-0a. **MEASURE mode on the SUT.** The SUT's `dispatch-on-mode` accepts "MEASURE" which calls `compile-text` + `format-heap-marks` + reports emit byte count. This runs the full frontend + text emit but does NOT print the full text body — only the heap-marks summary line. Comparing MEASURE wall time to TEXT wall time isolates serial I/O cost from compilation + emit.
+0a. **MEASURE mode on the SUT.** The SUT's `dispatch-on-mode` accepts "MEASURE" which calls `compile-text` + `format-heap-marks` + reports emit byte count. This runs the full frontend + text emit but does NOT print the full text body -- only the heap-marks summary line. Comparing MEASURE wall time to TEXT wall time isolates serial I/O cost from compilation + emit.
   - Send "MEASURE\n" + source + EOT via the same serial harness (modify `Invoke-TextStage` or write a one-off script).
   - If MEASURE completes in ~40s (same as binary), the frontend+emit is fast and the bottleneck is serial I/O.
   - If MEASURE takes 200+s, the bottleneck is in the frontend or text emit, not serial.
@@ -218,7 +218,7 @@ Both ELFs exist on disk: seed at `seed/Codex.Codex.elf` (CL 506, 1,401,512 B) an
 
 5. **CL 376 seed + CL 381 source (pre-deck-record, bounded only).** If text mode works, CL 381's bounded annotations are safe. If broken, CL 381 is the culprit regardless of CL 387's changes.
    - Requires: sync Codex.Codex/ to CL 381, keep seed at CL 376 (no seed refresh at CL 381).
-   - Note: CL 381 source was never compiled standalone — it was submitted as a confidence-only shelve folded into CL 387.
+   - Note: CL 381 source was never compiled standalone -- it was submitted as a confidence-only shelve folded into CL 387.
 
 6. **CL 376 seed + CL 384 source (bounded + key revert).** Same as #5 but includes the ExprTypeEntry.key fix. Isolates whether the key overflow matters for text mode.
 
@@ -243,5 +243,5 @@ Both ELFs exist on disk: seed at `seed/Codex.Codex.elf` (CL 506, 1,401,512 B) an
 ## Open Questions
 
 - Why did CL 387's verification reportedly pass text mode? Either the claim was inaccurate, or the test environment was different.
-- The watchdog stale-counter reset difference between `__write_binary` and `emit-print-text-loop` — while the threshold is too high to trigger, could the growing stale counter interact with the ISR in an unexpected way under QEMU/WHPX?
+- The watchdog stale-counter reset difference between `__write_binary` and `emit-print-text-loop` -- while the threshold is too high to trigger, could the growing stale counter interact with the ISR in an unexpected way under QEMU/WHPX?
 - Could there be a QEMU-level difference in how serial port I/O is virtualized when the guest has bounded-integer-narrowed records in memory (different TLB/cache behavior due to different allocation patterns)?

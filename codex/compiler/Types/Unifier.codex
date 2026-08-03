@@ -4,7 +4,7 @@ Chapter: Unification
   cites Foreword chapter Tuple
 
  Type unification for the Codex type checker. The UnificationState
- is threaded through all operations — it tracks type variable
+ is threaded through all operations -- it tracks type variable
  substitutions, effect-row substitutions, a counter for generating
  fresh variables, and accumulated diagnostics.
 
@@ -12,8 +12,8 @@ Chapter: Unification
  table: rows are not CodexTypes, so a type position can never resolve
  to a row nor a row to a type, and a row id can never be confused
  with a type-variable id because no operation accepts both. The table
- is dense — slot i holds the binding for row id i, unbound slots hold
- the self-row (row-var i), mirroring the TypeVar self-slot trick — so
+ is dense -- slot i holds the binding for row id i, unbound slots hold
+ the self-row (row-var i), mirroring the TypeVar self-slot trick -- so
  lookup is a direct index. Stage 3 mints a row variable per
  application site; an association list here would make resolution
  quadratic in program size. Row ids share the 32-bit bound ruling
@@ -304,7 +304,7 @@ Section: Effect Row Substitution
    else let bound = resolve-row-at st slot (depth + 1)
    in make-row ((row.labels) & (bound.labels)) (bound.tail-name) (bound.tail-id)
 
- The row occurs check is a walk of the tail substitution chain — rows
+ The row occurs check is a walk of the tail substitution chain -- rows
  do not nest, so there is no recursion into types. Binding a tail to
  a row whose resolved chain reaches that same tail would create an
  infinite row.
@@ -343,12 +343,12 @@ Section: Row Unification
 
  unify-row implements the ACI1 set-row algorithm: resolve both
  rows, cancel shared labels with one sorted
- merge, then case on the tails. Label equality is EXACT — the dotted
+ merge, then case on the tails. Label equality is EXACT -- the dotted
  sub-effect lattice lives only in the directed row-le check (stage
  3), never in symmetric unification. Under payload-free labels and
  at most one tail per row this produces a unifier that is most
- general up to ACI1 equivalence: the only candidate divergence —
- re-adding a shared label into both tails — is collapsed by
+ general up to ACI1 equivalence: the only candidate divergence --
+ re-adding a shared label into both tails -- is collapsed by
  idempotence.
 
   rows-identical : EffectRow, EffectRow -> Boolean
@@ -394,12 +394,12 @@ Section: Row Unification
  row-union joins two ambient rows (the effects a compound expression
  performs = the union of what its parts perform). A representable
  row has at most one tail, so joining two open rows with distinct
- tails EQUATES them (bind t1 := {| t2}) — the Koka shared-ambient
+ tails EQUATES them (bind t1 := {| t2}) -- the Koka shared-ambient
  move: every performing site inside one body ends up sharing one
  effect variable. That over-approximates (sound direction, section
  2) and never fails: both tails are unbound after resolution and
  distinct, so no occurs violation is possible. An empty operand
- returns the other unchanged — the all-pure case allocates nothing.
+ returns the other unchanged -- the all-pure case allocates nothing.
 
   row-union : UnificationState, EffectRow, EffectRow -> (EffectRow, UnificationState)
   row-union (st) (r1) (r2) =
@@ -417,7 +417,7 @@ Section: Row Unification
 
  Open against open with distinct tails: each tail absorbs the other
  side's leftovers, sharing one fresh remainder. Both binding targets
- end in the fresh tail, so a cycle is impossible by construction —
+ end in the fresh tail, so a cycle is impossible by construction --
  the occurs check stands as defense in depth.
 
   unify-row-open-open : UnificationState, EffectRow, EffectRow, List EffectLabel, List EffectLabel, SourceSpan -> (Boolean, UnificationState)
@@ -435,8 +435,8 @@ Section: Unify
    unify-at st a b span 0
 
  The EffectfulTy stripping arms are gone (stage 3b): an effectful
- VALUE type unifies structurally — set-equal effect names and
- unifiable inner types — and never silently sheds its effects
+ VALUE type unifies structurally -- set-equal effect names and
+ unifiable inner types -- and never silently sheds its effects
  against a bare type. Concrete effects on ARROWS live in the row and
  unify through unify-row inside unify-fun.
 
@@ -470,17 +470,8 @@ Section: Unify
     is IntegerTy (a-lo) (a-hi) (a-mode) -> when b
      is IntegerTy (b-lo) (b-hi) (b-mode) -> a-lo == b-lo & a-hi == b-hi
      is otherwise -> False
-    is RealTy -> when b
-     is RealTy -> True
-     is otherwise -> False
-    is RealApproxTy -> when b
-     is RealApproxTy -> True
-     is otherwise -> False
-    is RealTrappingTy -> when b
-     is RealTrappingTy -> True
-     is otherwise -> False
-    is RealSaturatingTy -> when b
-     is RealSaturatingTy -> True
+    is RealTy (a-w) (a-m) -> when b
+     is RealTy (b-w) (b-m) -> real-width-eq a-w b-w & real-mode-eq a-m b-m
      is otherwise -> False
     is TextTy -> when b
      is TextTy -> True
@@ -532,6 +523,22 @@ Section: Unify
       else (True, add-subst st id-b a)
     is otherwise -> unify-structural st a b span depth
 
+ A `unit` wrapper is transparent to its inner type at a boundary: the
+ guide's example is passing a `Second` where an `Integer` is expected, and
+ that has always worked because the `IntegerTy` arm below unwraps a
+ `UnitTy` on the right. The `UnitTy` arm handles the mirror direction
+ generically, so a unit on the LEFT unwraps against anything.
+
+ The Real family did not, and the asymmetry was invisible for as long as
+ nobody wrote `unit Real`: passing a `Metre` where a `Real` was expected
+ raised CDX2001 while the identical Integer program compiled. Half a
+ feature, and the half that was missing is the one a shader wants, since
+ every physical quantity in one is a Real.
+
+ Every Real takes the arm whatever its width and mode, not only the
+ default one. Fixing the case with a failing example and leaving the
+ others is how a defect grows a long tail.
+
   unify-structural : UnificationState, CodexType, CodexType, SourceSpan, Integer -> (Boolean, UnificationState)
   unify-structural (st) (a) (b) (span) (depth) =
    when a
@@ -544,17 +551,12 @@ Section: Unify
      is UnitTy (nb) (inner-b) -> unify-at st a inner-b span (depth + 1)
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
-    is RealTy -> when b
-     is RealTy | ErrorTy -> (True, st)
-     is otherwise -> unify-mismatch st a b span
-    is RealApproxTy -> when b
-     is RealApproxTy | ErrorTy -> (True, st)
-     is otherwise -> unify-mismatch st a b span
-    is RealTrappingTy -> when b
-     is RealTrappingTy | ErrorTy -> (True, st)
-     is otherwise -> unify-mismatch st a b span
-    is RealSaturatingTy -> when b
-     is RealSaturatingTy | ErrorTy -> (True, st)
+    is RealTy (a-w) (a-m) -> when b
+     is RealTy (b-w) (b-m) ->
+      if real-width-eq a-w b-w & real-mode-eq a-m b-m then (True, st)
+      else unify-mismatch st a b span
+     is ErrorTy -> (True, st)
+     is UnitTy (nb) (inner-b) -> unify-at st a inner-b span (depth + 1)
      is otherwise -> unify-mismatch st a b span
     is TextTy -> when b
      is TextTy | ErrorTy -> (True, st)
@@ -749,10 +751,7 @@ Section: Unify
   type-desc (ty) =
    when ty
     is IntegerTy (lo) (hi) (mode) -> "Integer"
-    is RealTy -> "Real"
-    is RealApproxTy -> "Real approximate"
-    is RealTrappingTy -> "Real trapping"
-    is RealSaturatingTy -> "Real saturating"
+    is RealTy (w) (m) -> "Real" & real-width-suffix w & real-mode-suffix m
     is TextTy -> "Text"
     is BooleanTy -> "Boolean"
     is CharTy -> "Char"
@@ -789,7 +788,7 @@ Section: Unify
 
 Section: Deep Resolve
 
- Most types reaching deep-resolve are already fully resolved — the
+ Most types reaching deep-resolve are already fully resolved -- the
  checker ran first and unified everything. Short-circuit when the
  input has no TypeVars: a single fold-only pass that allocates
  nothing and returns the original tree. Otherwise fall through to
@@ -967,6 +966,34 @@ Section: Deep Type Copy
     is OvError -> 1
     is OvWrapping -> 2
     is OvClamping -> 3
+
+  real-width-ordinal : RealWidth -> Integer
+  real-width-ordinal (w) =
+   if address-of w == 0 then 0
+   else when w
+    is RwF64 -> 1
+    is RwF32 -> 2
+
+  real-mode-ordinal : RealMode -> Integer
+  real-mode-ordinal (m) =
+   if address-of m == 0 then 0
+   else when m
+    is RmDefault -> 1
+    is RmTrapping -> 2
+    is RmSaturating -> 3
+
+  real-width-suffix : RealWidth -> Text
+  real-width-suffix (w) =
+   when w
+    is RwF32 -> " approximate"
+    is otherwise -> ""
+
+  real-mode-suffix : RealMode -> Text
+  real-mode-suffix (m) =
+   when m
+    is RmTrapping -> " trapping"
+    is RmSaturating -> " saturating"
+    is otherwise -> ""
 
   mcopy-sat : MemoCtx, a -> a
   mcopy-sat (mc) (x) =
@@ -1146,6 +1173,21 @@ Section: Deep Type Copy
     is OvWrapping -> OvWrapping
     is OvClamping -> OvClamping
 
+  mcopy-real-width : RealWidth -> RealWidth
+  mcopy-real-width (w) =
+   if address-of w == 0 then w
+   else when w
+    is RwF64 -> RwF64
+    is RwF32 -> RwF32
+
+  mcopy-real-mode : RealMode -> RealMode
+  mcopy-real-mode (m) =
+   if address-of m == 0 then m
+   else when m
+    is RmDefault -> RmDefault
+    is RmTrapping -> RmTrapping
+    is RmSaturating -> RmSaturating
+
   mcopy-types : List CodexType, Integer, MemoCtx -> List CodexType
   mcopy-types (ts) (depth) (mc) =
    let a = address-of ts
@@ -1319,10 +1361,7 @@ Section: Deep Type Copy
   mkey-type (ty) (depth) (mc) =
    when ty
     is IntegerTy (lo) (hi) (mode) -> cons-mix (cons-mix (cons-mix 1 lo) hi) (mode-ordinal mode)
-    is RealTy -> 2
-    is RealApproxTy -> 3
-    is RealTrappingTy -> 4
-    is RealSaturatingTy -> 5
+    is RealTy (w) (m) -> cons-mix (cons-mix 2 (real-width-ordinal w)) (real-mode-ordinal m)
     is TextTy -> 6
     is BooleanTy -> 7
     is CharTy -> 8
@@ -1352,10 +1391,7 @@ Section: Deep Type Copy
   mcopy-type-node (ty) (depth) (mc) =
    when ty
     is IntegerTy (lo) (hi) (mode) -> IntegerTy lo hi (mcopy-mode mode)
-    is RealTy -> RealTy
-    is RealApproxTy -> RealApproxTy
-    is RealTrappingTy -> RealTrappingTy
-    is RealSaturatingTy -> RealSaturatingTy
+    is RealTy (w) (m) -> RealTy (mcopy-real-width w) (mcopy-real-mode m)
     is TextTy -> TextTy
     is BooleanTy -> BooleanTy
     is CharTy -> CharTy

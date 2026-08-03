@@ -1,0 +1,75 @@
+Chapter: SceneProbe
+  cites Works chapter GopDraw
+  cites Kernel chapter BitmapFont
+  cites Engine chapter Renderer3D
+  cites Engine chapter Scene3D
+  cites Engine chapter Mesh
+  cites Engine chapter Material
+  cites Math chapter Matrix4
+  cites Math chapter Cordic
+  cites Game chapter Color
+  cites Works chapter GopHandoff
+
+ A standalone Option A payload that renders the 3D scene on whatever
+ framebuffer the firmware actually reported, and then sits so it can be
+ photographed. It exists to separate the renderer from the first-boot
+ ceremony: the desktop is reached through a wizard, and a wizard that
+ stops taking keys hides whether the pipeline works at all.
+
+ It fills the whole panel with a band colour first and renders into a
+ rectangle inset by the sidebar width, so the untouched band down the
+ left is itself the containment proof, visible on the glass.
+
+ We say:
+
+Section: Panel
+  sidebar : Integer = 160
+  taskbar : Integer = 24
+  band : Integer = 8405024
+
+  sky : Integer
+  sky = rgb-to-packed (rgb 20 20 30)
+
+Section: Scene
+
+  probe-camera : Integer -> Camera3D
+  probe-camera (angle) =
+    let ca = real-from-int (cordic-cos angle)
+    in let sa = real-from-int (cordic-sin angle)
+    in camera3d-new (vec3-new (ca * 5.2) 2200.0 (sa * 5.2)) (vec3-new 0.0 300.0 0.0) 0.785
+
+  probe-scene : Integer -> Scene3DState
+  probe-scene (dummy) =
+    let scene = scene3d-new (probe-camera 900)
+    in let ground = sn3-with-mesh "ground" (mesh-plane 3000 3000) (emat-flat (rgb 90 80 62))
+    in let cube = sn3-set-pos (sn3-with-mesh "cube" (mesh-cube 900) (emat-shiny (rgb 90 130 210) 32)) (-900.0) 450.0 0.0
+    in let pyr = sn3-set-pos (sn3-with-mesh "pyr" (mesh-pyramid 600 1100) emat-red) 1100.0 0.0 (-300.0)
+    in let s2 = scene3d-add (scene3d-add (scene3d-add scene ground) cube) pyr
+    in let key = dir-light (vec3-new (-400.0) 800.0 400.0) (rgb 255 250 235) 850
+    in scene3d-set-ambient (scene3d-add-light s2 key) 260
+
+Section: Entry
+
+  spin : Integer -> Integer
+  spin (i) = if i >= 2000000000 then 0 else spin (i + 1)
+
+  opening : Integer
+  opening =
+    let base = boot-fb-base 0
+    in let w = boot-fb-w 0
+    in let h = boot-fb-h 0
+    in let stride = boot-fb-stride 0
+    in let font = cbf-init
+    in let wash = gop-fill-rect base stride 0 0 w h band
+    in let cw = w - sidebar
+    in let ch = h - taskbar
+    in let tgt = r3d-target-at (base + sidebar * 4) stride cw ch sky
+    in let scene = probe-scene 0
+    in let d = r3d-render-into tgt scene
+    in let l1 = gop-draw-text base stride font 8 8 "SCENE" 65535 1 0
+    in let l2 = gop-draw-text base stride font 8 24 (show w & "x" & show h) 65535 1 0
+    in let l3 = gop-draw-text base stride font 8 40 ("stride " & show stride) 65535 1 0
+    in let l4 = gop-draw-text base stride font (sidebar + 8) (ch + 4) "software 3D, no GPU" 65280 1 0
+    in spin 0
+
+Page 1

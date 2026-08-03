@@ -1,0 +1,128 @@
+Chapter: AiExpApproximations
+  cites Foreword chapter Console
+  cites AI chapter Attention
+  cites AI chapter Embedding
+  cites AI chapter FluxPipeline
+  cites AI chapter Sampler
+  cites AI chapter Sampling
+
+ Fixed point at scale 1000, so every "true" figure is the real value times
+ 1000: exp(-1)=0.368, exp(-2)=0.135, exp(-3)=0.0498, exp(-4)=0.0183,
+ exp(2)=7.389, exp(8)=2980.958.
+
+ Every argument here is chosen past the point where a truncated Taylor
+ series turns over, because near zero a truncated one and a correct one
+ agree and no operand there can tell them apart. Measured before the fix:
+ attn-exp(-3000) answered 1375, larger than its own attn-exp(-2000) of 333,
+ and samp-exp(-2000) answered -333.
+
+ The last three rows pinned a defect when this test was written: pos-enc-value
+ handed cordic-sin an argument a thousand times too small, so the sine half
+ of every positional encoding read zero. Both halves are fixed now, the
+ scale here and the quadrant fold in Math/Cordic, and the rows carry the
+ correct answers. sin 4 is the row that needed both: it is past the
+ interval the rotation could reach, so the scale fix alone would have moved
+ it from zero to another wrong number.
+
+Section: Body
+
+  r : Text, Integer, Integer, Text -> Text
+  r (what) (x) (got) (want) =
+    "  " & what & " " & show x & " = " & show got & "  true " & want
+
+  attn-mono : Integer, Integer, Integer, Integer -> Integer
+  attn-mono (i) (n) (prev) (acc) =
+    if i > n then acc
+    else let v = attn-exp (0 - i * 500)
+    in attn-mono (i + 1) n v (if v <= prev then acc + 1 else acc)
+
+  samp-mono : Integer, Integer, Integer, Integer -> Integer
+  samp-mono (i) (n) (prev) (acc) =
+    if i > n then acc
+    else let v = samp-exp (0 - i * 500)
+    in samp-mono (i + 1) n v (if v <= prev then acc + 1 else acc)
+
+  dpmpp-mono : Integer, Integer, Integer, Integer -> Integer
+  dpmpp-mono (i) (n) (prev) (acc) =
+    if i > n then acc
+    else let v = dpmpp-exp (0 - i * 500)
+    in dpmpp-mono (i + 1) n v (if v <= prev then acc + 1 else acc)
+
+  emb-mono : Integer, Integer, Integer, Integer -> Integer
+  emb-mono (i) (n) (prev) (acc) =
+    if i > n then acc
+    else let v = emb-exp-range (i * 700)
+    in emb-mono (i + 1) n v (if v >= prev then acc + 1 else acc)
+
+  attn-pos : Integer, Integer, Integer -> Integer
+  attn-pos (i) (n) (acc) =
+    if i > n then acc
+    else attn-pos (i + 1) n (if attn-exp (0 - i * 500) >= 0 then acc + 1 else acc)
+
+  samp-pos : Integer, Integer, Integer -> Integer
+  samp-pos (i) (n) (acc) =
+    if i > n then acc
+    else samp-pos (i + 1) n (if samp-exp (0 - i * 500) >= 0 then acc + 1 else acc)
+
+Section: Report
+
+  opening : [Console] Nothing = act
+    print-line-uni "attention-softmax shifts by the max before exponentiating, so"
+    print-line-uni "every argument it passes attn-exp is at or below zero:"
+    print-line-uni (r "attn-exp" 0 (attn-exp 0) "1000 exact, the control: no truncation can move it")
+    print-line-uni (r "attn-exp" (0 - 1000) (attn-exp (0 - 1000)) "368")
+    print-line-uni (r "attn-exp" (0 - 2000) (attn-exp (0 - 2000)) "135")
+    print-line-uni (r "attn-exp" (0 - 3000) (attn-exp (0 - 3000)) "50")
+    print-line-uni (r "attn-exp" (0 - 4000) (attn-exp (0 - 4000)) "18")
+    print-line-uni (r "attn-exp" (0 - 5000) (attn-exp (0 - 5000)) "7")
+    print-line-uni ""
+    print-line-uni "samp-exp, which samp-cand-exp asks the same way:"
+    print-line-uni (r "samp-exp" 0 (samp-exp 0) "1000 exact, the control")
+    print-line-uni (r "samp-exp" (0 - 1000) (samp-exp (0 - 1000)) "368")
+    print-line-uni (r "samp-exp" (0 - 2000) (samp-exp (0 - 2000)) "135")
+    print-line-uni (r "samp-exp" (0 - 3000) (samp-exp (0 - 3000)) "50")
+    print-line-uni (r "samp-exp" (0 - 4000) (samp-exp (0 - 4000)) "18")
+    print-line-uni ""
+    print-line-uni "dpmpp-exp, asked for exp(-h) by both DPM++ orders, and"
+    print-line-uni "flux-exp-approx, which flux-pow asks on the positive side:"
+    print-line-uni (r "dpmpp-exp" 0 (dpmpp-exp 0) "1000 exact, the control")
+    print-line-uni (r "dpmpp-exp" (0 - 2000) (dpmpp-exp (0 - 2000)) "135")
+    print-line-uni (r "dpmpp-exp" (0 - 3000) (dpmpp-exp (0 - 3000)) "50")
+    print-line-uni (r "dpmpp-exp" 2000 (dpmpp-exp 2000) "7389")
+    print-line-uni (r "dpmpp-exp" 8000 (dpmpp-exp 8000) "2980958, at the top of its own guarded range")
+    print-line-uni (r "flux-exp" (0 - 2000) (flux-exp-approx (0 - 2000)) "135")
+    print-line-uni (r "flux-exp" 2000 (flux-exp-approx 2000) "7389")
+    print-line-uni ""
+    print-line-uni "emb-exp-range reduces by 693, which is ln 2 at this scale. It"
+    print-line-uni "was already correct and is untouched, so it is the control:"
+    print-line-uni (r "emb-exp" 0 (emb-exp-range 0) "1000 exact, the control")
+    print-line-uni (r "emb-exp" 693 (emb-exp-range 693) "2000")
+    print-line-uni (r "emb-exp" 2303 (emb-exp-range 2303) "10000")
+    print-line-uni (r "emb-exp" 4605 (emb-exp-range 4605) "100000")
+    print-line-uni (r "emb-exp" 9210 (emb-exp-range 9210) "10000000")
+    print-line-uni ""
+    print-line-uni "Counted rather than eyeballed. exp is strictly decreasing on"
+    print-line-uni "the negative axis and never negative, so a correct row reads"
+    print-line-uni "13 of 13 for each of the first three and 14 of 14 for emb:"
+    print-line-uni ("  attn-exp non-increasing over z=0..-6:  " & show (attn-mono 0 12 1001 0) & " of 13")
+    print-line-uni ("  samp-exp non-increasing over z=0..-6:  " & show (samp-mono 0 12 1001 0) & " of 13")
+    print-line-uni ("  dpmpp-exp non-increasing over z=0..-6: " & show (dpmpp-mono 0 12 1001 0) & " of 13")
+    print-line-uni ("  attn-exp non-negative over z=0..-6:    " & show (attn-pos 0 12 0) & " of 13")
+    print-line-uni ("  samp-exp non-negative over z=0..-6:    " & show (samp-pos 0 12 0) & " of 13")
+    print-line-uni ("  emb-exp-range non-decreasing 0..9100:  " & show (emb-mono 0 13 (0 - 1) 0) & " of 14")
+    print-line-uni ""
+    print-line-uni "Positional encoding, at dim 8 where the divisor for d=0 is 1 so"
+    print-line-uni "the argument is the raw position. Even d is sin, odd d is cos:"
+    print-line-uni (r "pos-enc-value pos=1 d=0 dim=8" 1 (pos-enc-value 1 0 8) "841, sin 1")
+    print-line-uni (r "pos-enc-value pos=2 d=0 dim=8" 2 (pos-enc-value 2 0 8) "909, sin 2")
+    print-line-uni (r "pos-enc-value pos=4 d=0 dim=8" 4 (pos-enc-value 4 0 8) "-757, sin 4, and it needed both fixes")
+    print-line-uni (r "pos-enc-value pos=1 d=1 dim=8" 1 (pos-enc-value 1 1 8) "540, cos 1")
+    print-line-uni ""
+    print-line-uni "One row still asserts nothing and says so: at d=6 the divisor is"
+    print-line-uni "1000, so the true value is sin 0.001 = 0.001, which is one unit"
+    print-line-uni "at this scale and reads 0. That is the bottom of the fixed point,"
+    print-line-uni "not the scale defect, and no fix here can move it:"
+    print-line-uni (r "pos-enc-value pos=1 d=6 dim=8" 1 (pos-enc-value 1 6 8) "1, and 0 is the representable floor")
+  end
+
+Page 1

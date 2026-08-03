@@ -1,4 +1,4 @@
-# Punctual Enforcement — Stage-0 Probe Results + Fix Campaign
+# Punctual Enforcement -- Stage-0 Probe Results + Fix Campaign
 
 **Status:** FIX CAMPAIGN SHIPPED (blu CL 6970, 2026-07-04). All four
 stage-0 laundering routes closed; the probes flipped to
@@ -29,7 +29,7 @@ recursion, direct or mutual).
 a **syntax-directed AST walk over a fixed set of node shapes**:
 `AApplyExpr`, `AIfExpr`, `ALetExpr`, `ABinaryExpr`, and `AMatchExpr`
 arms. The mutual-recursion cycle check (`check-rt-cycles`,
-`collect-rt-mentions`) is more thorough — it walks nearly every node
+`collect-rt-mentions`) is more thorough -- it walks nearly every node
 shape and is correctly rejected (`errors/punctual-mutual-recursion`,
 `errors/punctual-match-recursion`). The *other four* walks are not:
 they share the same five-shape skeleton and fall through `otherwise`
@@ -59,16 +59,16 @@ Two distinct deficits:
 
 1. **Incomplete AST coverage.** `check-rt-calls`, `check-rt-no-alloc`,
    and `check-rt-no-lambda` each cover only {Apply, If, Let, Binary,
-   Match}. Any construct outside that set — unary, act blocks, try,
+   Match}. Any construct outside that set -- unary, act blocks, try,
    handle, list/record literals (for the *call* and *lambda* walks),
-   field access, timeout — is a blind spot. The cycle checker
+   field access, timeout -- is a blind spot. The cycle checker
    (`collect-rt-mentions`) already demonstrates the exhaustive shape
    list these walks need; the fix is to bring the four safety walks up
    to that same coverage (and to resolve non-name application heads).
 
 2. **Semantic blocklists/allowlists instead of type-directed
    judgment.** CDX6004 names three effects rather than asking whether
-   the return type carries ANY effect row — so a fourth effect
+   the return type carries ANY effect row -- so a fourth effect
    launders. `is-rt-safe-builtin` names builtins believed cheap, but
    `show` and `list-length` are neither constant-time nor
    allocation-free, so the WCET report understates unboundedly.
@@ -100,17 +100,17 @@ direction:
 
 - **(a) Coverage.** `check-rt-calls`, `check-rt-no-alloc`, and
   `check-rt-no-lambda` now walk every expression shape the cycle
-  collector walks — unary, list/record literals, field access, act
+  collector walks -- unary, list/record literals, field access, act
   statements, try blocks, handle bodies, with-timeout, field assign,
-  lazy — PLUS match-arm GUARDS and HANDLER CLAUSE BODIES, two shapes
+  lazy -- PLUS match-arm GUARDS and HANDLER CLAUSE BODIES, two shapes
   even `collect-rt-mentions` was missing on the clause side (the
   cycle checker walked handle bodies but skipped clauses; fixed in
-  the same CL — a punctual function can discharge internal effects
+  the same CL -- a punctual function can discharge internal effects
   through a handler, so clause bodies are reachable punctual code).
   Non-name application heads are now rejected outright with CDX6001
   ("calls through a computed head"): a spine of AApplyExpr recurses,
   ANameExpr is checked against punctual names + the allowlist, and
-  any other head shape is an error before the callee question —
+  any other head shape is an error before the callee question --
   indirect dispatch is unbounded from the checker's seat.
 - **(b) Any-effect-row.** `check-rt-effects` errors on EVERY effect
   name in the punctual signature (was: Console/FileSystem/Network by
@@ -120,7 +120,7 @@ direction:
 - **(c) Allowlist.** Dropped `show`, `integer-to-text` (both allocate
   fresh Text), `text-starts-with`, `text-compare` (O(n) helper-call
   loops). **PROBE CORRECTION:** the stage-0 doc accused `list-length`
-  of walking a linked list — the x86 emitter refutes it. Runtime
+  of walking a linked list -- the x86 emitter refutes it. Runtime
   lists are length-prefixed contiguous vectors: `list-length` is a
   single header load and `list-at` is shift+add+load, both O(1) and
   allocation-free, so both STAY. `text-length` is likewise one header
@@ -130,7 +130,7 @@ direction:
   effects.
   The WRITE side is the sharp edge of the vector model (Damian,
   2026-07-04): `__list_snoc` (list-push/list-snoc/vec-cons) has THREE
-  paths — (1) len < cap: in-place store, O(1), no allocation; (2) at
+  paths -- (1) len < cap: in-place store, O(1), no allocation; (2) at
   capacity with the buffer end exactly at the bump pointer (R10, or
   deck-pos in deck mode): extend in place by advancing the pointer,
   capacity doubled, still O(1) and copy-free; (3) at capacity and

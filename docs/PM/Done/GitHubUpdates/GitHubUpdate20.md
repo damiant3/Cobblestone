@@ -6,12 +6,12 @@
 
 ## Compiler
 
-- **CHECK phase heap reduction.** Eliminated 40.8 MB redundant `expr-type` resolution in CHECK post-processing — LOWER already deep-resolves after lookup. Combined with CHECK deck-exit pattern (inference scratch to bivy), net saving ~80 MB peak heap on selfhost.
+- **CHECK phase heap reduction.** Eliminated 40.8 MB redundant `expr-type` resolution in CHECK post-processing -- LOWER already deep-resolves after lookup. Combined with CHECK deck-exit pattern (inference scratch to bivy), net saving ~80 MB peak heap on selfhost.
 - **CDX RESOLVE optimization.** Reuses pre-resolved `all-bindings` from CHECK, eliminating a redundant `resolve-all-bindings` pass in the CDX path.
 - **Dead field removal.** Removed unused `types` and `type-env` fields from `CompileChecked` record.
 - **Bivy escape fix.** `deck-record` wrapper on `pre-sorted-ust` fixes a latent bivy escape where sorted UST data survived on bivy past phase-compact.
 - **Fixed-point restoration.** CL 2975 (reek): restored `deck-record` on `lower-chapter` (accidentally reverted by a merge-down conflict resolution) and reverted `resolve-ty-deep` address-of short-circuit that leaked bivy pointers into deck data. Hard fixed point restored.
-- **EOF settle counter.** Serial EOF detection now requires 64 consecutive empty polls before declaring EOF, replacing the single-shot boolean flag. Gives the UART FIFO adequate time to drain between compilations in REPL batch mode. Codegen change — seed rebuilt (two-pass convergence).
+- **EOF settle counter.** Serial EOF detection now requires 64 consecutive empty polls before declaring EOF, replacing the single-shot boolean flag. Gives the UART FIFO adequate time to drain between compilations in REPL batch mode. Codegen change -- seed rebuilt (two-pass convergence).
 - **Unused cites cleanup.** 609 unused `cites` directives removed across 246 files. Lint tool identifies unused chapter references; 6 Tuple cites in compiler retained (needed for tuple syntax desugaring).
 
 ## Testing
@@ -23,12 +23,12 @@
 
 ## Apps
 
-- **ExaminersAssay.md** — new design document for the code examination framework.
-- **Backup.codex** — fixed sha256 API to use `sha256-to-hex(sha256(text-to-bytes(...)))` instead of retired `sha256-hex`.
-- **Row.codex** — fixed column encoding order (was reversed due to prepend instead of append in `row-encode-values`).
-- **db-test.codex** — switched to `print-line-uni` for Unicode output matching; restructured act-block nesting.
-- **DevConsole** — UEFI responsiveness improvements, code browser integration.
-- **lint-unused-cites** — new tool for identifying unused chapter references.
+- **ExaminersAssay.md** -- new design document for the code examination framework.
+- **Backup.codex** -- fixed sha256 API to use `sha256-to-hex(sha256(text-to-bytes(...)))` instead of retired `sha256-hex`.
+- **Row.codex** -- fixed column encoding order (was reversed due to prepend instead of append in `row-encode-values`).
+- **db-test.codex** -- switched to `print-line-uni` for Unicode output matching; restructured act-block nesting.
+- **DevConsole** -- UEFI responsiveness improvements, code browser integration.
+- **lint-unused-cites** -- new tool for identifying unused chapter references.
 
 ## README
 

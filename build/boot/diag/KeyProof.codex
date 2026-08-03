@@ -1,0 +1,109 @@
+Chapter: KeyProof
+
+ The smallest thing that can demonstrate a keystroke arriving from firmware.
+
+ It draws no text and loads no font, because the instrument must not depend on
+ the subsystem it is meant to report on: on the ASUS TUF the text renderer is
+ currently wrong, and a probe that answers in glyphs answers in the one
+ language that panel cannot currently speak. This one answers in whole-screen
+ colour, which survives any font, scale, stride or layout defect.
+
+ It calls uefi-read-key-ex, which is the only input path in the tree that asks
+ the firmware for a key. The path everything else uses, uefi-read-key, is four
+ instructions that swap a value out of the PS/2 key cell filled by the IRQ1
+ handler from port 0x60. The target board has no PS/2 port, so that path cannot
+ deliver a key on it however correct the USB stack is.
+
+ It does not call ExitBootServices. Boot services own ConIn, and a payload that
+ exits them before reading a key has thrown away the working keyboard to go and
+ build one.
+
+ Colours: blue means running and waiting. Green means a key arrived. Red means
+ the firmware refused the InputEx protocol, which is a different answer from
+ "no key" and must look different.
+
+  cites Works chapter GopHandoff
+  cites Works chapter GopDraw
+
+Section: Proof
+
+  kp-blue : Integer = 2105408
+  kp-green : Integer = 1073920
+  kp-red : Integer = 8388608
+  kp-yellow : Integer = 16776960
+
+ uefi-read-key-ex answers -1 for BOTH "the SystemTable snapshot cell is zero"
+ and "LocateProtocol refused", which are different faults with different fixes.
+ uefi-systab-addr is cell 36208, filled by emit-start from whatever the booting
+ stub left at 0x8000 -- and the two stubs disagree about what lives there, so a
+ zero is a stub problem and not a firmware one. Reading it directly is what
+ makes the two answers look different.
+
+  kp-systab : Integer -> Integer
+  kp-systab (dummy) = peek-qword 36208 0
+
+  kp-magenta : Integer = 16711935
+
+ A CONTROL ARM, and without it a red result cannot be attributed. uefi-read-key-ex
+ failing tells us nothing on its own: it could be InputEx specifically, or it
+ could be that NO call into firmware survives emit-start loading CR3 with our
+ own page tables. uefi-clear-screen reaches firmware the same way -- systab,
+ ConOut at +64, call -- so if it fails too the fault is structural and the
+ keyboard is not the subject at all. Magenta means firmware calls are dead
+ generally; that is a different bug with a different fix.
+
+  kp-fw : Integer -> Integer
+  kp-fw (dummy) = uefi-clear-screen
+
+ uefi-read-key-ex answers 0 for "no key yet" and a negative value when the
+ protocol could not be located, so the two failures are distinguishable.
+
+ uefi-read-key-ex answers -1 for EFI_NOT_READY as well as for a genuine
+ failure, and EFI_NOT_READY is simply "no key pending", which is the normal
+ answer on almost every poll. So a loop that treats a negative as fatal exits
+ on its first iteration having waited for nothing. Only a POSITIVE answer is a
+ key; everything else means keep asking until the fuel runs out.
+
+ The fuel has to be small enough that the loop ENDS inside the screenshot
+ window. At 60 million it never did, so every run photographed the initial blue
+ and "still polling" was the only answer the instrument could give -- which is
+ not an answer. Two million finishes in a few seconds, and the terminal colour
+ reports the LAST value seen rather than merely that we were still asking:
+ red for negative (error or NOT_READY), cyan for zero, green for a real key.
+
+  kp-cyan : Integer = 65535
+
+ A terminal verdict was the wrong shape. Any fuel large enough to still be
+ polling when a key is injected at t+19s is also large enough that the loop
+ never ends inside the screenshot window, so every run photographed the initial
+ blue and "still polling" was the only answer available -- which is not an
+ answer about what the call returns.
+
+ So report CONTINUOUSLY instead, and repaint only when the category changes,
+ because filling the panel on every iteration would cost more than the poll.
+ Whatever is on the glass is then the live state: red negative, cyan zero,
+ green a real key.
+
+  kp-loop : Integer, Integer, Integer, Integer, Integer -> Integer
+  kp-loop (base) (w) (h) (stride) (last) =
+    let k = uefi-read-key-ex
+    in let cat = if k == 0 then 2 else if k == -1 then 1 else 3
+    in if cat == last then kp-loop base w h stride last
+    else let col = if cat == 3 then kp-green else if cat == 4 then kp-magenta else if cat == 2 then kp-cyan else kp-red
+      in let f = gop-fill-rect base stride 0 0 w h col
+      in if cat == 3 then 3 else if cat == 4 then 4
+      else kp-loop base w h stride cat
+
+  opening : Nothing -> [Console] Nothing
+  opening (dummy) =
+    let base = boot-fb-base 0
+    in let w = boot-fb-w 0
+    in let h = boot-fb-h 0
+    in let stride = boot-fb-stride 0
+    in let fw = kp-fw 0
+    in let start = gop-fill-rect base stride 0 0 w h kp-blue
+    in let done = if kp-systab 0 == 0
+      then gop-fill-rect base stride 0 0 w h kp-yellow
+      else if fw < 0 then gop-fill-rect base stride 0 0 w h kp-magenta
+      else kp-loop base w h stride 0
+    in print-line "keyproof done"

@@ -19,7 +19,7 @@ cluster against the belief this sentence encouraged. When
 you relocate a foreword definition, budget a `cites` line for each
 caller of the old chapter.
 
-### codex.foreword (119 modules) — Core
+### codex.foreword (127 modules, measured 2026-07-31) -- Core
 
 The standard library. Core types, collections, cryptography, text,
 data structures, networking, and system utilities.
@@ -29,16 +29,26 @@ data structures, networking, and system utilities.
 | Core types | List, Maybe, Result, Either, Pair, State |
 | Collections | Set, Deque, Queue, PriorityQueue, RingBuffer, CircularBuffer, Hamt, BPlusTree, SkipListText, Trie, IntervalTree, Graph, UnionFind, ElasticHash, FunnelHash, ElasticBloom |
 | Text | StringBuilder, StringUtils, TextScan, TextSearch, TextWrap, TabComplete, Format, Parse, Pattern, Regex, EditDistance |
-| Crypto | Aes, Aes256, AesGcm, ChaCha20, Poly1305, ChaCha20Poly1305, Sha256, Sha512, Hmac, Hkdf, Pbkdf, Cmac, Ed25519, DiffieHellman, ProofOfWork |
+| Crypto | Aes, Aes256, AesGcm, ChaCha20, Poly1305, ChaCha20Poly1305, Sha256, Sha512, Hmac, Hkdf, Pbkdf, Cmac, Ed25519, DiffieHellman, ProofOfWork, CryptoBig, Rsa |
 | Math/Stats | MathLib, Decimal, NumberTheory, Probability, Statistics |
 | Time | DateTime, Time, Schedule, Scheduler, TimingWheel |
 | Encoding | CCE, Unicode, Locale |
 | IO/System | Console, FileSystem, Path, Fat16, Fat32, Gpt, Network, Channel, Concurrent, EventBus, Pipeline, SerialLine |
 | Probabilistic | BloomFilter, BitSet, CountMinSketch, ConsistentHash |
 | Identity/Trust | Identity, FactStore, History, KvStore |
-| Misc | Audio, Camera, Display, Fuel, Iterate, Location, Logger, LruCache, Microphone, Random, RateLimiter, Rope, Sensors, Sort, Tls |
+| Misc | Audio, Camera, Display, Fuel, Iterate, Location, LocationStub, Logger, LruCache, Microphone, Random, RateLimiter, Rope, Sensors, SensorsStub, Sort, Tls |
 
-### codex.foreword.ai (43 modules) — Machine Learning
+`Camera`, `Location`, `Microphone` and `Sensors` are effect declarations
+and nothing else: an `effect X where` marker with no operations. The
+operations live elsewhere, because an operation declared with no handler
+is not neutral -- it type-checks and then dies at emit with CDX2040, so a
+program that merely MENTIONS it cannot be built. `LocationStub` and
+`SensorsStub` answer their effects with named constants and publish
+`location-is-fixed` / `sensors-are-fixed`, both False, so a caller can
+always tell a placeholder from a reading. `Camera` is answered over real
+hardware by `Works chapter CamCapture`.
+
+### codex.foreword.ai (43 modules) -- Machine Learning
 
 Neural networks, tensors, transformers, sampling, and model utilities.
 
@@ -47,12 +57,19 @@ Sampling, KNearestNeighbor, DecisionTree, GeneticAlgorithm, Gguf,
 GpuProxy, Tokenizer, Reservoir, KvCache, DiffusionScheduler,
 Activation, SparseLattice
 
-### codex.foreword.compress (4 modules) -- Compression
+### codex.foreword.compress (8 modules, measured 2026-07-27) -- Compression
 
-**The compression stack was DELETED on 2026-07-19.** `Brotli`, `BrotliDict`,
-`BrotliDictIndex`, `Deflate`, `Fse`, `Gzip` and `Zstd` are gone, with their
-tests, their generators and their format notes. Codex has no general-purpose
-compressor and no standard container format.
+**Four of the seven came back.** `Brotli`, `BrotliDict`, `BrotliDictIndex`
+and `Deflate` were rebuilt from the spec by val and landed on main 10560,
+and the decoder now reads other implementations' streams -- the thing the
+original never did. `docs/Agents/val-workplan.md` is the live account; this
+catalog is not, so do not quote the paragraphs below as current status.
+Still gone: `Fse`, `Gzip` and `Zstd`.
+
+The history stands, and it is why the rebuild was held to a foreign-stream
+oracle. **The compression stack was DELETED on 2026-07-19.** All seven were
+removed, with their tests, their generators and their format notes, leaving
+Codex with no general-purpose compressor and no standard container format.
 
 The reason is in `docs/PM/Active/Stories/BrotliBeatsOpus.md` and it is worth reading
 before rebuilding any of it. The short version: the encoders were real and an
@@ -66,8 +83,8 @@ zero bytes for all four.
 round-trip through our own halves cannot tell a compressor from a pipe, and it
 cannot tell a decoder from a decoder that only reads itself.
 
-What survives are the four primitives, which stand alone and never depended on
-the deleted set.
+What survived the deletion untouched are the four primitives, which stand alone
+and never depended on the deleted set.
 
 | Module | Compresses? | What it is |
 |---|---|---|
@@ -76,7 +93,7 @@ the deleted set.
 | Huffman | **yes** | Frequency-built optimal prefix codes. Own format. |
 | Rle | **yes**, weakly | Run-length only. |
 
-### codex.foreword.encode (74 modules, measured 2026-07-23) — Encoding and Codecs
+### codex.foreword.encode (75 modules, measured 2026-07-26) -- Encoding and Codecs
 
 Data formats, image codecs, audio codecs, video codecs, protocols.
 
@@ -89,11 +106,12 @@ Data formats, image codecs, audio codecs, video codecs, protocols.
 | 3D/Font | Gltf, TrueType, TrueTypeWriter, FontGen |
 | Web/mail | WebSocket, Smtp |
 | Transport security | Dtls (record layer), DtlsHandshake (flights, retransmission, cookie), DtlsMessage (framing, transcript, Finished, ACK), DtlsHello (hello bodies, cookie ext) - RFC 9147 |
+| Certificates | X509 (parse), X509Chain (path validation and peer identity), TlsEndpoint, TrustAnchors (the five roots Codex ships: DigiCert and Let's Encrypt) |
 | IoT / MQTT | Mqtt (encode **and decode**), MqttEndpoint (client session: CONNACK, SUBACK, QoS 1 with DUP retransmit, inbound delivery), MqttSn, Coap, CoapEndpoint (RFC 7252 client), Lwm2m, Sparkplug, Sntp |
 | Industrial bus | Modbus, Dnp3, Bacnet, Knx, J1939, Canopen, Mbus, OpcUa, Iec104, Enip, S7comm, Melsec, Fins, Goose, Hart |
 | Wireless / mesh | Lorawan, Zigbee, Ieee802154, Sixlowpan, BleAtt |
 
-### codex.foreword.game (26 modules) — Game Development
+### codex.foreword.game (26 modules) -- Game Development
 
 Rendering, spatial structures, procedural generation, ECS, input.
 
@@ -102,23 +120,23 @@ AStar, FloodFill, Raytracer, Rasterizer, ECS, CardDeck, Klondike,
 Inventory, SaveSlot, CellularAutomata, DiamondSquare, Bresenham,
 Voronoi, StateMachine, Tween, Easing, GameCamera, Color
 
-### codex.foreword.math (14 modules) — Mathematics
+### codex.foreword.math (14 modules) -- Mathematics
 
 LinearAlgebra, Geometry, Matrix3, Matrix4, Quaternion, Complex,
 Numeric, Optimize, Bezier, Cordic, Spline, Geodesic, VecArray,
 Interval
 
-### codex.foreword.signal (14 modules) — Signal Processing
+### codex.foreword.signal (14 modules) -- Signal Processing
 
 Fft, AudioAnalysis, AudioEffect, Synth, Oscillator, Filter, Envelope,
 MusicTheory, Noise, Perlin, Pitch, Resample, Convolution, Wavelet
 
-### codex.foreword.sim (7 modules) — Simulation
+### codex.foreword.sim (7 modules) -- Simulation
 
 Physics, Kinematics, Collision, Constraint, ParticleSystem,
 SpatialHash, Steering
 
-### codex.foreword.punctual (8 modules) — Real-Time Primitives
+### codex.foreword.punctual (8 modules) -- Real-Time Primitives
 
 IntOps, BitOps, Saturate, FastMath, Trig, ColorOps, Kinematic, Endian
 
@@ -126,7 +144,7 @@ Every function is `punctual`: no heap, no recursion, bounded
 instruction count. Safe to call from real-time, embedded, and
 interrupt contexts.
 
-### codex.foreword.engine (42 modules) — 3D Game Engine
+### codex.foreword.engine (42 modules) -- 3D Game Engine
 
 AbilitySystem, AnimBlend, AssetTable, Audio3D, AudioBus, Biome,
 ClothSim, Collision3D, Culling, Cutscene, DamageSystem, DebugDraw,
@@ -140,7 +158,7 @@ Terrain, Texture, TimeOfDay, Water, WorldGen, WorldHUD
 post-processing, spatial audio, input handling, gameplay systems,
 physics, procedural generation, and edge mesh networking.
 
-### codex.foreword.ui (47 modules) — User Interface
+### codex.foreword.ui (50 modules) -- User Interface
 
 Accessibility, Animation, AppRunner, Binding, BoxModel, Canvas, Charts,
 Clipboard, CommandPalette, Cursor, DataTable, DetailPane, Dialog, Drag,
@@ -150,7 +168,7 @@ Orchestrator, Overlay, Render, RichText, Scroll, SearchBar, Selection,
 SettingsPanel, Sound, StatusBadge, Surface, TextField, Theme, Touch,
 TreeView, TrueTypeFont, Validation, Vector, Widget, Window
 
-### codex.foreword.gpu (11 modules) — GPU Kernel Programming
+### codex.foreword.gpu (11 modules) -- GPU Kernel Programming
 
 DeviceEffect, GpuEffect, DeviceBuffer, DeviceMath, LaunchConfig, Thread,
 Warp, Shared, Atomic, Barrier, DisjointSlice
@@ -161,7 +179,7 @@ management. Type-safe thread indexing via `ThreadIndex` witness type,
 scope-encoded atomics, warp shuffles, shared memory, and
 `DisjointSlice` for provably-disjoint parallel writes.
 
-### codex.foreword.shell (5 modules) — Shell Script Emission
+### codex.foreword.shell (5 modules) -- Shell Script Emission
 
 BashEmit, KshEmit, PowerShellEmit, ShellBuild, ShellTypes
 
@@ -173,31 +191,34 @@ Emit chapters render that model to Bash, Ksh, or PowerShell.
 
 These are not auto-loaded. User code must `cites` them explicitly.
 
-### codex (60 modules) — The Compiler
+### codex (63 modules) -- The Compiler
 
 The self-hosted compiler, in `codex/compiler/`. Subdirectories: Ast,
 Core, Emit, IR, Semantics, Syntax, Types. Do not modify without reading
 the code first and passing both gates (sample battery + pingpong).
 
-### codex.os (147 modules) — Operating System
+### codex.os (158 modules) -- Operating System
 
-Split across sub-quires. Re-measured 2026-07-23; the previous total
-(143) was stale, and the row that read `codex.os | 4` was really
-`codex.os.core`.
+Split across sub-quires. Re-measured 2026-07-29, when adding one kernel
+chapter turned `check-doc-counts.ps1` red and showed the table had
+drifted well beyond that one row: the header said 147 against a measured
+156, and `codex.os.dev` said 28 against 36. The sub-rows must sum to the
+header, so both were re-measured together rather than leaving the table
+internally inconsistent.
 
 | Sub-quire | Modules | Purpose |
 |-----------|---------|---------|
 | codex.os.core | 4 | Core OS abstractions |
-| codex.os.dev | 28 | Device management |
-| codex.os.kernel | 33 | Hardware drivers (PCI, xHCI, NE2K, VGA, IDE, HDA, USB HID, etc.) |
-| codex.os.net | 37 | Networking stack (incl. HttpFetch — the Network effect — DtlsEndpoint, and UdpIO, the datagram send/poll pair) |
+| codex.os.dev | 36 | Device management |
+| codex.os.kernel | 36 | Hardware drivers (PCI, xHCI, NE2K, e1000e, VGA, IDE, HDA, USB HID, and Hpet, the monotonic clock) |
+| codex.os.net | 38 | Networking stack (incl. HttpFetch -- the Network effect -- DtlsEndpoint, UdpIO, the datagram send/poll pair, and DhcpIO, which acquires an address) |
 | codex.os.observe | 8 | Observability |
 | codex.os.replay | 3 | Deterministic replay |
 | codex.os.sched | 10 | Scheduling |
 | codex.os.trust | 16 | Trust lattice |
 | codex.os.verify | 7 | Verification |
 
-### codex.plugs (53 plugs, all building clean) — Transpiler Plugs
+### codex.plugs (53 plugs, all building clean) -- Transpiler Plugs
 
 48 transpiler plugs (Ada to Zig, 14 UI frameworks, GPU PTX + SPIR-V +
 WGSL) plus 5 native backends (ARM64, RISC-V, ELF, PE, IMG). Each plug
@@ -233,13 +254,49 @@ directory under `codex/plugs/` with a `build.ps1`; `common/` and
    Library authors must document allocation behavior for hot-path
    functions.
 
-7. **New foreword modules require a seed rebuild.** Adding or removing
-   a module from a foreword quire changes what the compiler bakes in.
-   Follow the seed rebuild procedure in the Developer's Guide.
+7. **A seed rebuild is decided by REACHABILITY, and a new foreword
+   module is not automatically reachable.** This rule read "New foreword
+   modules require a seed rebuild. Adding or removing a module from a
+   foreword quire changes what the compiler bakes in." **Measured
+   2026-07-26 and it is false**: `CryptoBig` and `Rsa` were added to
+   `codex/foreword/core` in one changelist and `build/output/Sut.cdx`
+   came out byte-identical to `seed/Codex.cdx`.
 
-   Adding a *definition* to a module that already exists is a different
-   question, and the answer is reachability: whole-program dead-code
-   elimination drops what the compiler never calls, so a new function in a
-   cited chapter may leave the binary byte-identical. Measured both ways in
-   the Developer's Guide. Compare `build/output/Sut.cdx` against
-   `seed/Codex.cdx` after the gate rather than reasoning about it.
+   The reason is mechanical rather than lucky. `concat-codex-self.ps1`
+   assembles the compiler's unit by walking `cites` transitively from
+   `codex/compiler`, so a foreword chapter nobody cites is never in the
+   unit at all -- it is not dead code the emitter prunes, it is source the
+   compiler never sees. A new module changes the seed when something in
+   that closure cites it, and not before.
+
+   Removing or renaming a module IS different, because something already
+   cites it. So is adding a `cites` line anywhere in the closure.
+
+   The rule underneath all of it is the same one as for a new definition
+   in an existing chapter: reachability, not directory. Compare
+   `build/output/Sut.cdx` against `seed/Codex.cdx` after the gate rather
+   than reasoning about it, every time, in both directions. Predicting
+   this has now been wrong in both directions on the record -- CL 9432
+   predicted a seed and did not need one, and this rule predicted one for
+   every new foreword module since it was written.
+
+8. **Prose is exactly one space of indent, and a word is a keyword the
+   moment it is not.** `scan-token` in `codex/compiler/Syntax/Lexer.codex`
+   decides on `s.column == 2`: a line starting there is prose and its
+   contents are never tokenized. One more space and the same line is code,
+   where `cites`, `grounds`, `quotes` and `trusting` are reserved words
+   (`classify-word`, same file).
+
+   The way this bites is reflowing a paragraph. Re-wrapping can push a
+   sentence's leading word onto a fresh line and give the line an extra
+   space, and if that word happens to be `cites`, the sentence becomes a
+   cite directive and the compiler reports a chapter name made of English:
+   `error 3010: Unresolvable cite: Foreword chapter 'LocationStub and gets
+   fixed constants that say'`. Nothing about the message points at the
+   indentation, which is the whole cost of it.
+
+   The fix is to not start a prose line with one of those words -- move it
+   mid-line and the sentence reads the same. After editing prose in a
+   chapter, `^\s+(cites|grounds|quotes|trusting)\s` over the files you
+   touched finds every one of these in a second, and the directives it
+   legitimately matches are all in the header block where you can see them.

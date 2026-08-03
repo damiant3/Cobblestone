@@ -1,4 +1,4 @@
-# GitHub Update 13 — CL 1300 to CL 1518 (2026-05-16)
+# GitHub Update 13 -- CL 1300 to CL 1518 (2026-05-16)
 
 Previous update: CL 1300 (GitHubUpdate12).
 This update: CL 1518.
@@ -7,8 +7,8 @@ One week, ~220 changes across main and DEV_2GB_SYNTAX. The headline
 is that Codex has a new syntax: `&` replaces `++` for text/list
 concatenation, and multi-parameter function types use commas
 (`Integer, Integer -> Integer`) instead of chained arrows. The
-entire codebase — compiler, forewords, kernel, OS, works, and 245
-test files — has been converted. A new 2GB seed is in progress.
+entire codebase -- compiler, forewords, kernel, OS, works, and 245
+test files -- has been converted. A new 2GB seed is in progress.
 
 ## New Syntax (Cam CL 1315, Gollum CLs 1481-1499, 1505)
 
@@ -38,21 +38,21 @@ merged down or confirmed subsumed.
 
 Three new library modules to reduce boilerplate across the codebase:
 
-- **Iterate** — `list-map-generic`, `list-filter-generic`,
+- **Iterate** -- `list-map-generic`, `list-filter-generic`,
   `list-find-index`, `list-any-generic`, `list-all-generic`,
   `list-take-generic`, `list-drop-generic`, `list-zip-with-generic`,
   `list-count-where`. Polymorphic versions of what Pipeline provides
   only for Integer.
-- **TextScan** — `text-fold-indexed`, `text-fold-back`,
+- **TextScan** -- `text-fold-indexed`, `text-fold-back`,
   `text-map-chars`, `text-find-char`, `text-match-at`, `text-join`,
   `text-repeat`, `text-pad-left`.
-- **Parse** — `parse-decimal`, `parse-hex`, `parse-decimal-full`,
+- **Parse** -- `parse-decimal`, `parse-hex`, `parse-decimal-full`,
   `parse-hex-full`, `is-hex-digit`, `hex-digit-value`. CCE-aware
   numeric parsing via `to-unicode` conversion.
 
 ## Performance Fix: pipe-unique O(n log n) (Gollum, CL 1514)
 
-`pipe-unique` was O(n²) — linear search of accumulator per element.
+`pipe-unique` was O(n²) -- linear search of accumulator per element.
 Now uses `pipe-sort` + adjacent dedup for O(n log n). Verified with
 test coverage (`pipe-unique-test`).
 
@@ -90,24 +90,24 @@ message. ModeVerify and ModeAnnotations show their submenus.
 
 ## Compiler Work (Main, CLs 1335-1351)
 
-- **Structural sum type equality** (Nib, CL 1335) — field-by-field
+- **Structural sum type equality** (Nib, CL 1335) -- field-by-field
   comparison for constructors with fields.
-- **Address map coordination** (Nib, CL 1337) — sort addresses for
+- **Address map coordination** (Nib, CL 1337) -- sort addresses for
   deterministic layout.
-- **Helper file split** (Nib, CL 1338) — X86_64Helpers split into
+- **Helper file split** (Nib, CL 1338) -- X86_64Helpers split into
   X86_64IO, X86_64IPCHelpers, X86_64ListHelpers, X86_64ProcessHelpers.
-- **Builtin list split** (Nib, CL 1341) — `&` split workaround for
+- **Builtin list split** (Nib, CL 1341) -- `&` split workaround for
   list-literal ceiling.
-- **Text buffer doubled** (Nib, CL 1342) — 2MB → 4MB.
-- **Syntax conversion** (Cam, CL 1343) — full compiler source
+- **Text buffer doubled** (Nib, CL 1342) -- 2MB → 4MB.
+- **Syntax conversion** (Cam, CL 1343) -- full compiler source
   converted to comma-separated type syntax.
-- **Plug fixes** (Cam, CLs 1345-1346) — rename collisions, extract
+- **Plug fixes** (Cam, CLs 1345-1346) -- rename collisions, extract
   PlugTypes.
-- **BuildSettings centralization** (Nib, CL 1348) — compiler
+- **BuildSettings centralization** (Nib, CL 1348) -- compiler
   constants into one chapter.
-- **Ed25519 constant-time** (Cam, CL 1349) — fix 7 timing leaks in
+- **Ed25519 constant-time** (Cam, CL 1349) -- fix 7 timing leaks in
   the signing code.
-- **Exception handler stack dump** (Nib, CLs 1350-1351) — save RSP to
+- **Exception handler stack dump** (Nib, CLs 1350-1351) -- save RSP to
   R11, reset to stack-top before printing. Serial drain wired in.
 
 ## Documentation (Gollum, CLs 1516, 1518)

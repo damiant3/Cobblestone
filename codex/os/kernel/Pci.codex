@@ -67,6 +67,56 @@ Section: Device Scanning
       else pci-scan-loop bus (dev + 1) 0 (list-push acc entry) (count + 1)
     else pci-scan-loop bus dev (func + 1) (list-push acc entry) (count + 1)
 
+Section: The Whole Bus Tree
+
+ `pci-scan-bus` answers ONE bus. A chipset-integrated part sits on bus 0
+ and is found by it; a discrete part sits behind a PCI-to-PCI bridge, on a
+ bus number only that bridge knows, and is not. Measured by fester under
+ OVMF and recorded in `build/boot/diag/README.md`: with the only NIC behind
+ a `pcie-root-port` the part is at `01:00.0` and bus 0 holds nothing but
+ the bridge itself at `1b36:000c`. Scanning bus 0 alone returns an answer
+ that looks complete and is empty, so anything asking "is there a NIC"
+ must ask this instead.
+
+ A header type of 1 is a bridge, and byte 24 bits 8..15 of its config
+ space is the secondary bus it forwards to.
+
+ Depth is capped, and a bridge is followed only when its secondary bus is
+ GREATER than the bus the bridge was found on. Both bounds are about a
+ malformed or hostile bridge rather than a real one: a bridge that reports
+ its own bus, or a lower one, would otherwise make the walk cycle forever.
+
+  pci-scan-max-depth : Integer = 3
+
+  pci-sec-bus : PciDevice -> Integer
+  pci-sec-bus (d) =
+   bit-and (bit-shru (pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) 24) 8) 255
+
+  pci-scan-all : PciScanResult
+  pci-scan-all =
+   let devs = pci-collect 0 0 []
+   in PciScanResult { devices = devs, count = list-length devs }
+
+  pci-collect : Integer, Integer, List PciDevice -> List PciDevice
+  pci-collect (bus) (depth) (acc) =
+   if depth > pci-scan-max-depth then acc
+   else let s = pci-scan-bus bus
+   in pci-bridges (s.devices) (s.count) 0 bus depth (acc & s.devices)
+
+  pci-bridges : List PciDevice, Integer, Integer, Integer, Integer, List PciDevice -> List PciDevice
+  pci-bridges (devs) (n) (i) (bus) (depth) (acc) =
+   if i >= n then acc
+   else if (list-at devs i).pci-header-type == 1
+   then pci-bridge-one (list-at devs i) devs n i bus depth acc
+   else pci-bridges devs n (i + 1) bus depth acc
+
+  pci-bridge-one : PciDevice, List PciDevice, Integer, Integer, Integer, Integer, List PciDevice -> List PciDevice
+  pci-bridge-one (d) (devs) (n) (i) (bus) (depth) (acc) =
+   let sec = pci-sec-bus d
+   in if sec > bus
+   then pci-bridges devs n (i + 1) bus depth (pci-collect sec (depth + 1) acc)
+   else pci-bridges devs n (i + 1) bus depth acc
+
 Section: Config Space Reads
   pci-read-config : Integer, Integer, Integer, Integer -> Integer
   pci-read-config (bus) (dev) (func) (offset) =
@@ -133,6 +183,28 @@ Section: Device Queries
     in if d.pci-class == cls then if d.pci-subclass == subcls then Just d
       else pci-find-class-loop devs cls subcls (i + 1) len
     else pci-find-class-loop devs cls subcls (i + 1) len
+
+  pci-index-class : PciScanResult, Integer, Integer, Integer -> Integer
+  pci-index-class (scan) (cls) (subcls) (from) = pci-index-class-loop (scan.devices) cls subcls from (scan.count)
+
+  pci-index-class-loop : List PciDevice, Integer, Integer, Integer, Integer -> Integer
+  pci-index-class-loop (devs) (cls) (subcls) (i) (len) =
+    if i >= len then -1
+    else let d = list-at devs i
+    in if d.pci-class == cls then if d.pci-subclass == subcls then i
+      else pci-index-class-loop devs cls subcls (i + 1) len
+    else pci-index-class-loop devs cls subcls (i + 1) len
+
+  pci-count-class : PciScanResult, Integer, Integer -> Integer
+  pci-count-class (scan) (cls) (subcls) = pci-count-class-loop (scan.devices) cls subcls 0 (scan.count) 0
+
+  pci-count-class-loop : List PciDevice, Integer, Integer, Integer, Integer, Integer -> Integer
+  pci-count-class-loop (devs) (cls) (subcls) (i) (len) (n) =
+    if i >= len then n
+    else let d = list-at devs i
+    in if d.pci-class == cls then if d.pci-subclass == subcls then pci-count-class-loop devs cls subcls (i + 1) len (n + 1)
+      else pci-count-class-loop devs cls subcls (i + 1) len n
+    else pci-count-class-loop devs cls subcls (i + 1) len n
 
 Section: Device ID Search
   pci-find-device : PciScanResult, Integer, Integer -> Maybe PciDevice

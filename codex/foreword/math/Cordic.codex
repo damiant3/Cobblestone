@@ -11,6 +11,10 @@ Section: Constants
   cordic-scale : Integer = 1000
   cordic-iterations : Integer = 16
   cordic-gain : Integer = 607
+  cordic-half-pi : Integer = 1571
+  cordic-pi : Integer = 3142
+  cordic-three-half-pi : Integer = 4712
+  cordic-two-pi : Integer = 6283
 
 Section: Angle Table
   cordic-atan-table : List Integer
@@ -22,10 +26,19 @@ Section: Rotation Mode (cos/sin)
     sin-val : Integer
   }
 
+ The angle table above sums to 1735 milliradians, and the rotation cannot
+ retire a target larger than that, so nothing outside [0, 1735] converges.
+
   cordic-sincos : Integer -> CordicResult
   cordic-sincos (angle-milli) =
     let a = cordic-normalize angle-milli
-    in cordic-rotate a cordic-scale 0 0
+    in if a <= cordic-half-pi then cordic-rotate a cordic-scale 0 0
+    else if a <= cordic-pi then let q = cordic-rotate (cordic-pi - a) cordic-scale 0 0
+    in CordicResult { cos-val = 0 - q.cos-val, sin-val = q.sin-val }
+    else if a <= cordic-three-half-pi then let q = cordic-rotate (a - cordic-pi) cordic-scale 0 0
+    in CordicResult { cos-val = 0 - q.cos-val, sin-val = 0 - q.sin-val }
+    else let q = cordic-rotate (cordic-two-pi - a) cordic-scale 0 0
+    in CordicResult { cos-val = q.cos-val, sin-val = 0 - q.sin-val }
 
   cordic-normalize : Integer -> Integer
   cordic-normalize (a) =

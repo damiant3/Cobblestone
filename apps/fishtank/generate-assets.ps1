@@ -1,4 +1,4 @@
-# generate-assets.ps1 — Generate fish tank textures via DiffusionForge.
+# generate-assets.ps1 -- Generate fish tank textures via DiffusionForge.
 # Usage: apps/fishtank/generate-assets.ps1 [-Force]
 # Requires Forge running at http://127.0.0.1:7860 with --api flag
 [CmdletBinding()]
@@ -18,7 +18,7 @@ $FishNeg = 'blurry, low quality, multiple fish, text, watermark, deformed, carto
 $CoralNeg = 'blurry, low quality, text, watermark, fish, cartoon, drawing'
 
 $Assets = @(
-    # Fish — side-view, on solid green/blue for easy background removal
+    # Fish -- side-view, on solid green/blue for easy background removal
     @{ Id='fish-clownfish'; W=512; H=320; Steps=20; CFG=5
        Prompt=$FishStyle + 'clownfish swimming, orange white black stripes, amphiprion ocellaris, isolated on solid dark blue background, clear profile view'
        Neg=$FishNeg }
@@ -38,7 +38,7 @@ $Assets = @(
        Prompt=$FishStyle + 'male guppy fish, tiny colorful fantail, iridescent rainbow colors purple green orange, poecilia reticulata, isolated on solid dark blue background, macro'
        Neg=$FishNeg }
 
-    # Corals and plants — on black background (additive blend in renderer)
+    # Corals and plants -- on black background (additive blend in renderer)
     @{ Id='coral-brain'; W=512; H=512; Steps=6; CFG=2
        Prompt=$CoralStyle + 'brain coral underwater, spherical with maze-like ridges, warm orange and green bioluminescence, isolated on solid black background'
        Neg=$CoralNeg }

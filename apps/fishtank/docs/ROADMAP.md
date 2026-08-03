@@ -1,4 +1,4 @@
-# Codex Vivarium — Roadmap
+# Codex Vivarium -- Roadmap
 
 From aquarium to terrarium to game content pipeline.
 
@@ -7,19 +7,19 @@ From aquarium to terrarium to game content pipeline.
 The FishTank is the proof of concept for a general-purpose creature
 content pipeline. Today it does:
 
-- **Structured scene data in Codex** — species, body profiles, shaders,
+- **Structured scene data in Codex** -- species, body profiles, shaders,
   tank bounds, spawn orders all defined as typed records in `.codex`
   files, compiled through the CDX pipeline to generate HTML pages.
-- **AI asset generation** — Stable Diffusion Forge generates reference
+- **AI asset generation** -- Stable Diffusion Forge generates reference
   images and textures via API; TripoSR converts reference images to
   3D GLB meshes in ~2 seconds.
-- **Creature database** — JSON-backed record store keyed by species
+- **Creature database** -- JSON-backed record store keyed by species
   name, tracking pipeline state per creature (planned → reference →
   mesh → texture → rig → bake → export → ready).
-- **WebGPU rendering** — GLB meshes load into the browser with
+- **WebGPU rendering** -- GLB meshes load into the browser with
   ABZU-style vertex-shader swim animation, normal-based lighting,
   depth fog. 8 species at 120fps.
-- **Pipeline automation** — `run-pipeline.ps1` orchestrates plan →
+- **Pipeline automation** -- `run-pipeline.ps1` orchestrates plan →
   reference → mesh → texture with zero manual steps. Forge and
   ComfyUI auto-launch.
 
@@ -37,15 +37,15 @@ content pipeline. Today it does:
 
 ### What's Next (immediate)
 
-1. **Mesh scale normalization** — TripoSR outputs in [0,1] space;
+1. **Mesh scale normalization** -- TripoSR outputs in [0,1] space;
    need to normalize + scale to species dimensions during upload.
-2. **Vertex color rendering** — TripoSR bakes color into vertices;
+2. **Vertex color rendering** -- TripoSR bakes color into vertices;
    re-enable by fixing the CPU/CUDA device mismatch in the texture
    baking path, then read vertex colors in the shader.
-3. **Better reference images** — regenerate all 8 species from proper
+3. **Better reference images** -- regenerate all 8 species from proper
    Forge prompts (isolated specimen on white), feed through TripoSR
    for clean 3D shapes instead of the current embossed-sprite GLBs.
-4. **Texture atlas from vertex colors** — project TripoSR's vertex
+4. **Texture atlas from vertex colors** -- project TripoSR's vertex
    colors onto a UV atlas so the existing texture pipeline works.
 
 ## Phase 2: The Terrarium
@@ -77,14 +77,14 @@ Same pipeline, different biome. A glass terrarium with:
 
 ### What Changes From the Aquarium
 
-- **Locomotion** replaces boids. Geckos don't school — they patrol,
+- **Locomotion** replaces boids. Geckos don't school -- they patrol,
   bask, hunt, hide. Need a state machine (idle → explore → bask →
   hunt → sleep) instead of flocking.
-- **Terrain interaction** — creatures walk ON surfaces, not through
+- **Terrain interaction** -- creatures walk ON surfaces, not through
   volume. Need collision/navmesh on the terrarium floor and walls.
-- **Legs and IK** — fish are spine-only; reptiles need inverse
+- **Legs and IK** -- fish are spine-only; reptiles need inverse
   kinematics for foot placement on uneven substrate.
-- **Day/night cycle** drives behavior — basking under the lamp by
+- **Day/night cycle** drives behavior -- basking under the lamp by
   day, hiding in cork bark at night.
 
 ### What Stays the Same
@@ -112,27 +112,27 @@ A multi-level hamster cage with tubes, wheels, and bedding.
 
 - Exercise wheel (procedural rotation synced to hamster run cycle)
 - Tube system (spline-follow pathfinding through connected segments)
-- Bedding heap (deformable — hamster digs, creates tunnels)
+- Bedding heap (deformable -- hamster digs, creates tunnels)
 - Food dish + water bottle (hamster approaches, eats, cheek-stuffs)
 - Nesting area (hamster gathers bedding, builds nest shape)
 
 ### New Technical Challenges
 
-- **Procedural fur** — short-hair shell rendering or fin-like alpha
+- **Procedural fur** -- short-hair shell rendering or fin-like alpha
   planes for hamster fluff.
-- **Deformable terrain** — bedding that responds to digging.
-- **Tube pathfinding** — spline-follow through arbitrary tube
+- **Deformable terrain** -- bedding that responds to digging.
+- **Tube pathfinding** -- spline-follow through arbitrary tube
   connections (graph traversal + spline interpolation).
-- **Object interaction** — pick up food, stuff in cheeks (morph
+- **Object interaction** -- pick up food, stuff in cheeks (morph
   target for cheek pouch), carry to nest.
 
 ## Phase 4: The Game Content Pipeline
 
 At this point we have:
 
-1. **A creature definition schema** that works across biomes — fish,
+1. **A creature definition schema** that works across biomes -- fish,
    reptiles, mammals, invertebrates.
-2. **An automated asset pipeline** — text description → reference
+2. **An automated asset pipeline** -- text description → reference
    image → 3D mesh → textured model → rigged + animated → deployed.
 3. **A real-time renderer** capable of dozens of animated creatures
    with environment interaction.
@@ -158,7 +158,7 @@ to "game asset factory" is:
 The aquarium search box becomes the game's creature spawner:
 
 1. Player types "mandarin dragonet"
-2. DB lookup — miss
+2. DB lookup -- miss
 3. LLM generates CreatureRecord (species data, prompts, body plan,
    behavior params) in ~2 seconds
 4. Pipeline runs: reference image (~10s) → mesh (~2s) → texture
@@ -195,7 +195,7 @@ the same species is instant on second request.
 - ComfyUI is installed but not yet integrated into the pipeline
   (Forge API is used directly). ComfyUI would enable multi-step
   workflows (reference → depth → normal → texture in one graph).
-- No mesh decimation step — TripoSR outputs ~30K vertex meshes,
+- No mesh decimation step -- TripoSR outputs ~30K vertex meshes,
   should be reduced to ~600 for instanced rendering at scale.
 
 ## File Map
@@ -203,29 +203,29 @@ the same species is instant on second request.
 ```
 apps/fishtank/
   pipeline/
-    creature-db.ps1         — DB helpers (save/load/find/plan)
-    plan-creature.ps1       — Create a creature record
-    generate-reference.ps1  — Forge API → reference images
-    generate-mesh.ps1       — TripoSR → GLB mesh
-    generate-textures.ps1   — Forge API → per-sub-unit textures
-    run-pipeline.ps1        — Full pipeline orchestrator
-    batch-aquarium.ps1      — Run all 12 default species
-    launch-and-run.ps1      — Auto-start Forge + ComfyUI + run
+    creature-db.ps1         -- DB helpers (save/load/find/plan)
+    plan-creature.ps1       -- Create a creature record
+    generate-reference.ps1  -- Forge API → reference images
+    generate-mesh.ps1       -- TripoSR → GLB mesh
+    generate-textures.ps1   -- Forge API → per-sub-unit textures
+    run-pipeline.ps1        -- Full pipeline orchestrator
+    batch-aquarium.ps1      -- Run all 12 default species
+    launch-and-run.ps1      -- Auto-start Forge + ComfyUI + run
   creature-db/
-    index.json              — Species index for search
+    index.json              -- Species index for search
     <species>/
-      reference/            — side.png, top.png, front.png
-      mesh/                 — GLB from TripoSR
-      textures/             — Per-sub-unit texture maps
-  FishTankTypes.codex       — CreatureRecord schema + scene types
-  FishTankScene.codex       — 8 species instances
-  FishTankEmit.codex        — CDX page emitter
-  FishTankShaders.codex     — WGSL shaders (bg, sprite, particle, fish3d)
+      reference/            -- side.png, top.png, front.png
+      mesh/                 -- GLB from TripoSR
+      textures/             -- Per-sub-unit texture maps
+  FishTankTypes.codex       -- CreatureRecord schema + scene types
+  FishTankScene.codex       -- 8 species instances
+  FishTankEmit.codex        -- CDX page emitter
+  FishTankShaders.codex     -- WGSL shaders (bg, sprite, particle, fish3d)
   web/
-    fishtank.html           — Generated HTML (from CDX pipeline)
-    fishtank.js             — WebGPU runtime (GLB loader, boids, render)
-    models/                 — GLB meshes per species
-    assets/                 — Sprite textures (v2 renderer)
+    fishtank.html           -- Generated HTML (from CDX pipeline)
+    fishtank.js             -- WebGPU runtime (GLB loader, boids, render)
+    models/                 -- GLB meshes per species
+    assets/                 -- Sprite textures (v2 renderer)
 ```
 
 ## No Dates

@@ -1,0 +1,54 @@
+Chapter: DiskFactsMbrGuard
+  cites Kernel chapter DiskFacts
+  cites Foreword chapter FactStore
+  cites Foreword chapter Hamt
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+  cites Foreword chapter FactLog
+
+ The residual case. The first guard looked for "EFI PART" at sector 1, so it
+ caught a GPT disk and missed a disk carrying only an MBR partition table --
+ which was still written straight through, and its partition table still
+ eaten, by a store that believed it had been made safe. A bare FAT volume
+ with no partition table at all lands here too: its boot sector ends in the
+ same two bytes, and the store overwriting a filesystem is the same damage
+ as the store overwriting a partition table.
+
+ The fixture is 32 KB whose sector 0 carries nothing but the 0x55AA boot
+ signature and whose sector 1 is filled with a sentinel.
+
+   count  must stay 0, so the refusal happens BEFORE the write and not as a
+          report after it.
+   sig    sector 0 must still end 85, 170. The superblock the store would
+          have written there zeroes the sector, so a store that wrote would
+          take these two bytes with it.
+   entry  sector 1 must still be the sentinel. This is the sector the
+          store's second superblock copy lands on, so it is the one that
+          moves if a checkpoint got through when the write did not.
+
+ We say:
+
+Section: Readings
+
+  byte-at : Integer, Integer -> [Device.Block] Integer
+  byte-at (sector) (i) = act
+    buf <- block-read-sector sector
+    peek-byte buf i
+  end
+
+Section: Body
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    let store = disk-load
+    in let attempted = disk-write-fact store DefinitionFact "hello" 0
+    in let flushed = disk-checkpoint attempted
+    in act
+      lo <- byte-at 0 510
+      hi <- byte-at 0 511
+      ent <- byte-at 1 0
+      print-line-uni ("count " & show (disk-fact-count attempted))
+      print-line-uni ("sig " & (if lo == 85 & hi == 170 then "intact" else "GONE"))
+      print-line-uni ("entry " & (if ent == 165 then "intact" else "GONE"))
+    end
+  end

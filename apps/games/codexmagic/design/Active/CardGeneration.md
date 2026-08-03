@@ -1,4 +1,4 @@
-# Card Generation — AI Content Pipeline
+# Card Generation -- AI Content Pipeline
 
 ## Overview
 
@@ -90,7 +90,7 @@ Card assembly balances the set mathematically:
 - Removal density
 - Keyword ability saturation
 - Cross-color synergy density
-- P/T/D distribution — defense values are scarce at common rarity
+- P/T/D distribution -- defense values are scarce at common rarity
   and more available at rare+. High defense (4+) is a premium stat
   that commands higher mana costs. Most creatures have defense 0.
 - Deathtouch density must be sufficient to answer high-defense
@@ -99,15 +99,15 @@ Card assembly balances the set mathematically:
 ### Stage 3: Effect Codegen
 
 Each card's abilities are compiled into executable effect code that the
-rules engine can run. This is the critical safety boundary — generated
+rules engine can run. This is the critical safety boundary -- generated
 code must be:
 
-1. **Deterministic** — same inputs produce same outputs
-2. **Pure** — no side effects outside the game state monad
-3. **Type-safe** — validated against the rules engine's effect type system
+1. **Deterministic** -- same inputs produce same outputs
+2. **Pure** -- no side effects outside the game state monad
+3. **Type-safe** -- validated against the rules engine's effect type system
 
 Infinite loops are **allowed by design**. Card interactions can and
-will produce cycles — a triggered ability fires an effect that triggers
+will produce cycles -- a triggered ability fires an effect that triggers
 another ability that fires the first again. This is a feature, not a
 bug. The rules engine handles this via cycle detection and clamping
 (see [CycleDetection.md](CycleDetection.md)). Effect code does not
@@ -144,9 +144,9 @@ process, never by individual card generation.
 Art is generated per-card using the `art-prompt` from card assembly.
 Art generation produces:
 
-- **Card art** — the main illustration (fixed aspect ratio)
-- **Full art** — extended illustration for premium/foil versions
-- **Token art** — for creature tokens the card creates
+- **Card art** -- the main illustration (fixed aspect ratio)
+- **Full art** -- extended illustration for premium/foil versions
+- **Token art** -- for creature tokens the card creates
 
 Art style is consistent within a season but varies between seasons.
 Each season establishes a visual identity: color palette, rendering
@@ -166,7 +166,7 @@ automated and human-in-the-loop validation:
 - Effect code compiles and type-checks
 - Cycle-producing interactions are identified and annotated with
   expected clamp behavior (does the loop converge? what does clamping
-  produce — a board full of tokens? lethal damage? draw?)
+  produce -- a board full of tokens? lethal damage? draw?)
 - Stat line falls within rarity-appropriate power budget
 - Mana cost is consistent with color identity
 - Rules text parses and matches the compiled effect
@@ -185,7 +185,7 @@ automated and human-in-the-loop validation:
 - Final approval or rejection with feedback to the generator
 
 Rejected cards are fed back to the generator with rejection reasons,
-improving future output. The pipeline is a flywheel — each season's
+improving future output. The pipeline is a flywheel -- each season's
 QA feedback tunes the generator for the next.
 
 ## Card Identity
@@ -205,13 +205,13 @@ CardIdentity = record {
 
 Card identity is immutable once minted. The template (stats, abilities,
 art) is frozen at mint time. Balance adjustments happen through bans,
-format restrictions, or new counter-cards — never by editing existing
+format restrictions, or new counter-cards -- never by editing existing
 cards. What you pull from a pack is what it is forever.
 
 ## Legendary-Mythic Cards
 
 The rarest tier. A Legendary-Mythic card has a `total-supply` of 1.
-It is unique in the entire game world. These are the crown jewels —
+It is unique in the entire game world. These are the crown jewels --
 their value comes from absolute scarcity, guaranteed uniqueness of
 art, and their tournament history. Pulling one from a pack is a
 headline event.
@@ -227,7 +227,7 @@ cards matching the clan's specifications and routes them through the
 same QA gate.
 
 Clan packs are sold for Mana Coin (30% platform, 40-60% clan
-treasury). Cards from clan packs are standard tokens — mechanically
+treasury). Cards from clan packs are standard tokens -- mechanically
 identical to global cards, just themed differently. A "Shepherd of
 the Valley" from a church clan plays the same as an "Iron Sentinel"
 from the global pool if they share the same stats and keywords.

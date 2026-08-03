@@ -1,11 +1,11 @@
-# Cycle Detection — Infinite Loop Handling
+# Cycle Detection -- Infinite Loop Handling
 
 ## Philosophy
 
 Infinite loops are a legitimate consequence of card interactions.
 Two cards whose triggered abilities feed each other, a replacement
 effect that undoes the condition it replaces, a state-based action
-that creates the state it removes — these are not bugs. They emerge
+that creates the state it removes -- these are not bugs. They emerge
 naturally from a rich card interaction space, and banning them would
 cripple card design.
 
@@ -17,18 +17,18 @@ game continues from the clamped state.
 
 ## Where Cycles Can Occur
 
-Automatic game events — events that fire without player input — are
+Automatic game events -- events that fire without player input -- are
 the only source of infinite loops. Player-driven actions are
 inherently bounded (a player can only take one action per priority
 window). Automatic events include:
 
-1. **Triggered abilities** — "When X happens, do Y." If Y causes X,
+1. **Triggered abilities** -- "When X happens, do Y." If Y causes X,
    the trigger re-fires.
-2. **State-based actions** — SBAs loop until stable. If an SBA's
+2. **State-based actions** -- SBAs loop until stable. If an SBA's
    resolution recreates the condition, it loops.
-3. **Replacement effects** — "If X would happen, do Y instead." If Y
+3. **Replacement effects** -- "If X would happen, do Y instead." If Y
    causes X, the replacement re-applies.
-4. **Delayed triggers** — "At the beginning of the next end step, do
+4. **Delayed triggers** -- "At the beginning of the next end step, do
    X." If X sets up another delayed trigger, the chain continues.
 
 ## Detection Mechanism
@@ -50,7 +50,7 @@ StateFingerprint = record {
 }
 ```
 
-The fingerprint is cheap to compute — it hashes the parts of game
+The fingerprint is cheap to compute -- it hashes the parts of game
 state that automatic events can mutate, not the full state.
 
 ### Cycle Detection Algorithm
@@ -80,7 +80,7 @@ At each automatic event step:
 ### Floyd's or Brent's?
 
 For the common case (short cycles of 2-4 steps), linear history scan
-is fast enough — the history rarely exceeds a few dozen entries before
+is fast enough -- the history rarely exceeds a few dozen entries before
 detection. For adversarial cases where the cycle length is long, we
 use Brent's algorithm (tortoise-and-hare variant) on the fingerprint
 sequence to detect cycles in O(1) space without storing full history.
@@ -114,13 +114,13 @@ times."
 
 Note: some clamped results will immediately trigger game-ending SBAs
 (e.g., infinite damage kills the target, infinite draw empties the
-library). This is correct — the cycle's natural consequence is that
+library). This is correct -- the cycle's natural consequence is that
 the affected player loses, and the clamp produces the same outcome.
 
 ### Player-Choice Cycles
 
 Some cycles include a point where a player can choose to continue or
-stop — an optional activated ability, a "you may" trigger, or any
+stop -- an optional activated ability, a "you may" trigger, or any
 decision node inside the loop. These are **bailout cycles**: the
 loop is infinite only if the player keeps choosing to continue.
 
@@ -154,7 +154,7 @@ tokens to establish a lethal board").
 #### Multi-Player Contested Cycles
 
 When multiple players have decision points inside the same cycle,
-the loop becomes a **contested cycle** — a back-and-forth where each
+the loop becomes a **contested cycle** -- a back-and-forth where each
 player's choice at their decision node determines whether the cycle
 continues. Neither player can unilaterally set a count; the cycle
 resolves through interactive negotiation.
@@ -175,7 +175,7 @@ DecisionPoint = record {
 }
 
 ChoiceType =
-  | ContinueOrStop              -- "you may" — player decides to keep going
+  | ContinueOrStop              -- "you may" -- player decides to keep going
   | ChooseTarget (targets : List Target)  -- pick a target within the loop
   | ChooseMode (modes : List Mode)        -- modal choice inside the loop
 ```
@@ -198,7 +198,7 @@ deals 3 damage per iteration, but Player B has a triggered "you may
 gain 2 life" in the same loop. Each iteration, both are prompted:
 A decides whether to keep looping (dealing 3 more), B decides whether
 to keep responding (gaining 2 more). The net is -1 life per iteration
-for B, so B will eventually stop responding — but exactly when depends
+for B, so B will eventually stop responding -- but exactly when depends
 on board state, life totals, and what happens after the cycle resolves.
 
 #### Shortcutting Contested Cycles
@@ -222,7 +222,7 @@ to change their choice at a specific iteration, or they have
 information the engine doesn't model), the cycle runs step by step.
 
 The AI supervisor can accept shortcuts on the player's behalf based
-on posture — in `Aggressive` stance with a clear advantage, the AI
+on posture -- in `Aggressive` stance with a clear advantage, the AI
 accepts. In `Control` stance, the AI may decline to keep options open
 for a surprise play mid-cycle.
 
@@ -234,7 +234,7 @@ player doesn't respond:
 - Their AI supervisor makes the choice based on posture
 - Aggressive stance: continue if the cycle is favorable
 - Defensive stance: stop if the cycle is unfavorable
-- The timeout applies per-decision, not per-cycle — a player can
+- The timeout applies per-decision, not per-cycle -- a player can
   let the AI handle some iterations and intervene on others
 
 #### More Than Two Players (Future)
@@ -333,7 +333,7 @@ CycleEvent = record {
 
 This data is available in replays. Viewers can see exactly where
 the cycle occurred, what caused it, and what the clamped result was.
-This is also valuable for card balance — if a specific card appears
+This is also valuable for card balance -- if a specific card appears
 in cycle events frequently, it may be a ban candidate.
 
 ## QA Interaction
@@ -346,7 +346,7 @@ does not reject cards that produce cycles. Instead it:
 3. **Flags for review** any cycle whose clamped outcome is
    game-ending (e.g., infinite damage → lethal) to ensure this is an
    intentional power-level decision, not an accident
-4. **Measures** cycle frequency in Monte Carlo simulation — a card
+4. **Measures** cycle frequency in Monte Carlo simulation -- a card
    that produces cycles in >10% of games is flagged for balance review
 
 Some cycles are desirable (a two-card combo that wins the game if

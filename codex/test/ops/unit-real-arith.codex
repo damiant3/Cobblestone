@@ -1,0 +1,78 @@
+Chapter: UnitRealArith
+
+ Arithmetic on a `unit` type wrapping a `Real`.
+
+ A unit is erased at codegen, so `lower-bin-op` has to dispatch on what is
+ inside the wrapper. It stripped nothing, so `UnitTy(RealTy)` matched none of
+ the floating arms and fell through to `IrAddInt`: `Metre 1.5 + Metre 2.5`
+ emitted an INTEGER add of two IEEE-754 bit patterns and returned
+ 9222246136947933184, which is exactly bits(1.5) + bits(2.5).
+
+ This was wrong on EVERY input, not on a quarter of the operand plane like
+ the ordering defect beside it, and it emitted no diagnostic. `CDX9010`
+ guards the comparison emitter; arithmetic never reaches it. The companion
+ `unit-real-compare` covers the ordering half.
+
+ `Tick` is the control, and it is why the hole survived: `unit Integer` wants
+ `IrAddInt` anyway, so it was right by accident. A test written over the
+ obvious unit type would have passed against the broken compiler.
+
+ `Span` wraps `Metre`, which already wraps `Real`. Stripping has to recurse
+ to reach the `Real`, and three of the four unit-stripping predicates in the
+ compiler used to stop after one level. This arm is what holds the recursion.
+
+ Bits, not a rendered decimal: a decimal render cannot show a wrong low
+ mantissa, and the integer-add answer differs so wildly that only an exact
+ comparison states what happened.
+
+Section: Units
+
+  Metre = unit Real
+
+  Span = unit Metre
+
+  Tick = unit Integer
+
+Section: Ops
+
+  ma : Metre, Metre -> Integer
+  ma (a) (b) = real-to-bits (a + b)
+
+  ms : Metre, Metre -> Integer
+  ms (a) (b) = real-to-bits (a - b)
+
+  mm : Metre, Metre -> Integer
+  mm (a) (b) = real-to-bits (a * b)
+
+  md : Metre, Metre -> Integer
+  md (a) (b) = real-to-bits (a / b)
+
+  sa : Span, Span -> Integer
+  sa (a) (b) = real-to-bits (a + b)
+
+  sm : Span, Span -> Integer
+  sm (a) (b) = real-to-bits (a * b)
+
+  ta : Tick, Tick -> Integer
+  ta (a) (b) = a + b
+
+  ts : Tick, Tick -> Integer
+  ts (a) (b) = a - b
+
+Section: Report
+
+  opening : [Console] Nothing
+  opening = act
+    print-line-uni ("add " & show (ma (Metre 1.5) (Metre 2.5)))
+    print-line-uni ("addneg " & show (ma (Metre (0.0 - 2.9)) (Metre (0.0 - 1.5))))
+    print-line-uni ("sub " & show (ms (Metre 1.5) (Metre 2.5)))
+    print-line-uni ("subneg " & show (ms (Metre (0.0 - 2.9)) (Metre (0.0 - 1.5))))
+    print-line-uni ("mul " & show (mm (Metre 2.5) (Metre 2.0)))
+    print-line-uni ("mulneg " & show (mm (Metre (0.0 - 2.5)) (Metre 2.0)))
+    print-line-uni ("div " & show (md (Metre 5.0) (Metre 2.0)))
+    print-line-uni ("divneg " & show (md (Metre (0.0 - 5.0)) (Metre 2.0)))
+    print-line-uni ("nestadd " & show (sa (Span (Metre 1.5)) (Span (Metre 2.5))))
+    print-line-uni ("nestmul " & show (sm (Span (Metre 2.5)) (Span (Metre 2.0))))
+    print-line-uni ("tadd " & show (ta (Tick 7) (Tick 5)))
+    print-line-uni ("tsub " & show (ts (Tick 7) (Tick 5)))
+  end

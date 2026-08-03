@@ -36,7 +36,7 @@ pwsh build\build-apps.ps1 -Only notes
 artifact `apps/<dir>/web/<name>.html` pairs with the chapter
 `apps/<dir>/<Name>Page.codex` (or `<Name>WebPage.codex`) whose base
 name, minus the suffix and lowercased, equals `<name>`. **74 pages are
-built this way today** — mail, notes, maps, music, markets, globe,
+built this way today** -- mail, notes, maps, music, markets, globe,
 fishtank, cvmm, the 40-odd gpushow demos, and the rest. Adding an app is
 adding a Page chapter and an (initially empty) `web/<name>.html` under
 Perforce. No script edit.
@@ -53,7 +53,7 @@ pwsh codex\plugs\html\run.ps1 -Src apps\notes\NotesPage.codex -Out build-output\
 
 `compile.ps1` resolves `cites` itself (via `build/quire-map.ps1`), so
 `run.ps1` takes a chapter directly. `build-apps.ps1` bundles first
-anyway — `bundle-app.ps1` inlines the transitive cites into one file, and
+anyway -- `bundle-app.ps1` inlines the transitive cites into one file, and
 the compiler then warns if it had to resolve a chapter the bundle
 missed. That check is the reason for the extra step; it is not required
 to get a page out.
@@ -91,11 +91,11 @@ apps/games/
   app.js          Tab switching, filtering, hover audio (hand-written)
   games.json      34-entry game catalog
   server.ps1      HTTP server: dashboard, catalog, static files, /api/* bridge
-  GameServer.codex  The engine — compiled to build/output/GameServer.cdx and
+  GameServer.codex  The engine -- compiled to build/output/GameServer.cdx and
                     booted by server.ps1; every /api/* request is forwarded
                     to it over the serial link
   classic/web/    34 game pages (33 named + rungame.html fallback)
-  codexmagic/web/ CodexMagic SPA — a mix (see below)
+  codexmagic/web/ CodexMagic SPA -- a mix (see below)
   magic/          Magic engine sources (no web assets)
 ```
 
@@ -128,7 +128,7 @@ pwsh apps\games\codexmagic\web\build-pages.ps1        # admin + marketplace only
 
 The **47-module** UI foreword (`codex/foreword/ui`, quire `UI`) defines
 a platform-agnostic widget system. These types are the contract between
-application code and any rendering backend — browser, framebuffer, GPU.
+application code and any rendering backend -- browser, framebuffer, GPU.
 
 ### The Core Types
 
@@ -162,15 +162,15 @@ Build trees with the constructors: `widget-panel`, `widget-label`,
 `WkCustom` is the escape hatch, and the browser apps lean on it. The
 `WebWidgets` chapter (Path A, see Chapter 3) wraps it: `widget-box id
 cls children` emits a `WkCustom` tagged `box:<cls>`, which the plug
-renders as a `<div class="<cls>">`; `widget-box-click` emits `boxc:` —
+renders as a `<div class="<cls>">`; `widget-box-click` emits `boxc:` --
 the same div, wired to the click handler.
 
 ### The Box Model
 
 `BoxModel.codex` owns `LayoutRect { lr-x, lr-y, lr-w, lr-h }` and the
 integer-pixel decomposition (`box-margin-rect`, `box-border-rect`,
-`box-content-rect`). The *style* records it decomposes —
-`Edges`, `BorderSide`, `Border`, `CornerStyle` — live in `Theme.codex`.
+`box-content-rect`). The *style* records it decomposes --
+`Edges`, `BorderSide`, `Border`, `CornerStyle` -- live in `Theme.codex`.
 
 ```
 Outer rect
@@ -243,7 +243,7 @@ This is the chapter that tells you what you are allowed to call.
 
 The HTML plug transpiles your chapter to JavaScript. Most Codex
 functions become JS functions. But a handful of names are **not**
-transpiled — they are *bound to the plug's JS runtime*. The list lives
+transpiled -- they are *bound to the plug's JS runtime*. The list lives
 in one function: `is-html-builtin` in
 `codex/plugs/html/HtmlEmitter.codex`. If a name is in that list, the
 plug skips your definition and calls its own JavaScript instead.
@@ -273,29 +273,29 @@ tree, its data helpers, and its click/input handlers.
 
 ### What the runtime gives you
 
-- **DOM** — `dom-get`, `dom-create`, `dom-set-text`, `dom-set-html`,
+- **DOM** -- `dom-get`, `dom-create`, `dom-set-text`, `dom-set-html`,
   `dom-set-attr`, `dom-get-value`, `dom-set-value`, `dom-append`,
   `dom-prepend`, `dom-add-class`, `dom-remove-class`, `dom-set-style`
-- **Widget mount** — `mount-widget`, `mount-widget-themed theme tree`
+- **Widget mount** -- `mount-widget`, `mount-widget-themed theme tree`
   (styles from the `Theme`, appends into `#app`), `mount-widget-into id tree`
-  (re-mounts a subtree in place — this is how a designer rebuilds one row)
-- **Events** — `register-handlers pick click`, `register-input-handler`,
+  (re-mounts a subtree in place -- this is how a designer rebuilds one row)
+- **Events** -- `register-handlers pick click`, `register-input-handler`,
   `dom-on-click`, `dom-on-input`, `dom-on-key`. `WkButton` nodes wire
   their own click to the registered click handler, keyed by `wn-id`;
   `WkInput` nodes wire `input` the same way.
-- **State + render loop** — `state-get/set`, `state-get-text/set-text`,
+- **State + render loop** -- `state-get/set`, `state-get-text/set-text`,
   `set-render f`, `request-render`, `state-set-render` (set a key and
   schedule a repaint on the next animation frame)
-- **AJAX** — `fetch-json`, `fetch-then`, `fetch-get-then url cb`,
+- **AJAX** -- `fetch-json`, `fetch-then`, `fetch-get-then url cb`,
   `json-parse-obj`, `json-obj-field`, `json-stringify`, `url-encode`
-- **Dialogs** — `show-alert`, `show-confirm`, `show-prompt`,
+- **Dialogs** -- `show-alert`, `show-confirm`, `show-prompt`,
   `close-dialog` (real `<dialog>` elements, `showModal()`)
-- **A11y** — `dom-set-aria`, `dom-set-role`
-- **Animation** — `css-animate-spin/pulse/bounce`, `css-transition`
+- **A11y** -- `dom-set-aria`, `dom-set-role`
+- **Animation** -- `css-animate-spin/pulse/bounce`, `css-transition`
   (`@keyframes wk-spin`, `wk-pulse`, `wk-bounce` are injected)
-- **Persistence** — `local-storage-get/set`, `save-theme`, `load-theme`,
+- **Persistence** -- `local-storage-get/set`, `save-theme`, `load-theme`,
   `save-layout`, `load-layout`, `download-text`
-- **Misc** — `random-int`, `play-tone`, `set-timeout`, `next-card-id`,
+- **Misc** -- `random-int`, `play-tone`, `set-timeout`, `next-card-id`,
   `generate-image`, `check-sd-status`
 
 ### Adding a runtime primitive
@@ -323,7 +323,7 @@ Two recipes, one per compiled path.
 
 Everything ships in the HTML file; no server.
 
-**Step 1 — the chapter.** Create `apps/pomodoro/PomodoroPage.codex`
+**Step 1 -- the chapter.** Create `apps/pomodoro/PomodoroPage.codex`
 (any app dir; `apps/notes/NotesPage.codex` is the reference to copy):
 
 ```codex
@@ -362,7 +362,7 @@ Section: Entry
   end
 ```
 
-**Step 2 — the artifact.** Create the (empty) output file so the build
+**Step 2 -- the artifact.** Create the (empty) output file so the build
 discovers the app, and put it under Perforce:
 
 ```powershell
@@ -374,7 +374,7 @@ p4 add apps\pomodoro\PomodoroPage.codex apps\pomodoro\web\pomodoro.html
 The pairing is by name: `PomodoroPage` minus `Page`, lowercased, equals
 `pomodoro`, so `web/pomodoro.html` is its artifact.
 
-**Step 3 — build.**
+**Step 3 -- build.**
 
 ```powershell
 pwsh build\build-apps.ps1 -Only pomodoro
@@ -388,19 +388,19 @@ Open the file in a browser. That is the whole loop.
 
 The page is compiled; the content and the API come from a CDX server.
 
-**Step 1 — content.** Add your dimension lists to
+**Step 1 -- content.** Add your dimension lists to
 `apps/explorer/ExplorerData.codex` (the single source of truth), then
 add a table row to the `$spec` table in
 `apps/explorer/build-explorer-db.ps1` naming the table and the list.
 
-**Step 2 — the disk image.**
+**Step 2 -- the disk image.**
 
 ```powershell
 pwsh apps\explorer\build-explorer-db.ps1
 # -> build-output\explorer.db.img  (1 MB, 31 tables today)
 ```
 
-**Step 3 — the page chapter.** Create `apps/explorer/MyDesignerApp.codex`
+**Step 3 -- the page chapter.** Create `apps/explorer/MyDesignerApp.codex`
 modelled on `CharDesignerApp.codex`. It cites `Explorer chapter
 ExplorerTheme` (the `dark-gold` theme, the layout CSS, the shared
 `designer-page-tree`, `widget-dimsel`, `widget-dim-flat`,
@@ -418,17 +418,17 @@ shape is fixed:
 - `on-pick group idx` updates the selection and re-mounts the row.
 - `on-click "gen"` builds the prompt and calls `generate-image`.
 
-**Step 4 — compile the page.**
+**Step 4 -- compile the page.**
 
 ```powershell
 pwsh codex\plugs\html\run.ps1 -Src apps\explorer\MyDesignerApp.codex `
     -Out build-output\mydesigner.html
 ```
 
-(Explorer pages go through `run.ps1` directly — `compile.ps1` resolves
+(Explorer pages go through `run.ps1` directly -- `compile.ps1` resolves
 the `Explorer` and `UI` cites from the quire map. No bundle step.)
 
-**Step 5 — the server.** Compile the CDX once:
+**Step 5 -- the server.** Compile the CDX once:
 
 ```powershell
 pwsh build\compile.ps1 -Src apps\explorer\ExplorerServer.codex `
@@ -437,7 +437,7 @@ pwsh build\compile.ps1 -Src apps\explorer\ExplorerServer.codex `
 
 `-Log` is mandatory; without it the compile hangs on a parameter prompt.
 
-**Step 6 — route and run.** Add your page to the `$pageFiles` and
+**Step 6 -- route and run.** Add your page to the `$pageFiles` and
 `$pageSrc` maps at the top of `apps/explorer/run-designers-demo.ps1`,
 then:
 
@@ -474,14 +474,14 @@ sets the same properties inline on each element as it is created.
 Each StateStyles emits five rules: the base selector plus `:hover`,
 `:active`, `:disabled`, `:focus`.
 
-`WkCustom "box:card"` becomes `<div class="card">` — so an app's own CSS
+`WkCustom "box:card"` becomes `<div class="card">` -- so an app's own CSS
 text (the `<name>-css` chapter constant, injected by
 `inject-app-style theme css`) styles its own class names, and the `wk-*`
 classes only cover the six themed widget families. That is the division:
 **theme records own the widget chrome, the app's CSS string owns the
 page layout.**
 
-`apps/games/style.css` is independent of all of this — it is the
+`apps/games/style.css` is independent of all of this -- it is the
 hand-written stylesheet for the games portal and the classic game pages
 (Path C), which never touch the widget system.
 
@@ -507,12 +507,12 @@ construction:
 `/api/config` have no implementation in the depot today:
 `ExplorerServer.codex` serves the DB tables, the creations API
 (`/api/save`, `/api/mine`, `/api/delete`, `/api/remix`, `/api/export`,
-`/api/export-workflow`) and auth — not generation.
+`/api/export-workflow`) and auth -- not generation.
 `apps/explorer/server.ps1` *defines* `Invoke-SdGenerate` and
 `Feed-SdConfig` against a local SD WebUI on port 7860, but never
 dispatches to them, and it serves its pages from a directory outside the
-depot. Chapter 7 tracks both. The prompt-building half — the part that
-is Codex — works and is testable without SD: the prompt string is
+depot. Chapter 7 tracks both. The prompt-building half -- the part that
+is Codex -- works and is testable without SD: the prompt string is
 visible in the page.
 
 ---
@@ -527,38 +527,38 @@ gap that is still open stays on this list until it is closed.
 | Module | Foreword | Web emission | Verdict |
 |--------|----------|--------------|---------|
 | Widget tree to DOM | `Widget.codex` | `mount-widget-themed` / `mount-widget-into` build real `div`/`span`/`button`/`input`/`progress`/`hr` | **CLOSED** |
-| Dialog | `Dialog.codex` (DialogConfig/Result) | `show-alert/confirm/prompt`, `close-dialog` emit `<dialog>` + `showModal()` | **CLOSED** — the foreword's `DialogConfig` record is still not the input type; the runtime takes plain text |
-| Event routing | `Event.codex` (HandlerTable, EventPath) | Plug has its own two-callback registry (`register-handlers`, `register-input-handler`, `dom-on-*`) | **OPEN** — the foreword event model is not what gets emitted. Bind `HandlerTable`/`EventPath` to `addEventListener` |
-| Binding | `Binding.codex` (Observable, BindingTable) | `set-render` / `request-render` / `state-set-render` rAF dirty-loop | **OPEN** — a render loop exists, but `Observable`/`BindingTable` are not lowered |
-| Accessibility | `Accessibility.codex` (Role/Label/LiveRegion) | `dom-set-aria`, `dom-set-role` builtins | **OPEN** — nothing is emitted automatically from the widget tree; a11y is opt-in, per call |
-| Animation | `Animation.codex` (Throbber/Transition/KeyframeSeq) | `css-animate-spin/pulse/bounce`, `css-transition`, three `@keyframes` | **OPEN** — fixed set only; `KeyframeSeq` does not lower to `@keyframes` |
-| Overlay | `Overlay.codex` (Tooltip/Popup/ContextMenu/Modal) | none (grep: no tooltip/popup/context-menu in `HtmlEmitter`) | **OPEN** — modal is reachable only via the dialog builtins |
-| Scroll | `Scroll.codex` (ScrollState) | none | **OPEN** — no `overflow` CSS; apps hand-write it in their CSS string |
-| Charts | `Charts.codex` (Bar/Line/Pie/Area) | none | **OPEN** — no SVG and no canvas emission at all |
-| Vector | `Vector.codex` (paths) | none | **OPEN** — no `<svg>` emission |
-| Shadow / Gradient / AccentBorder | `Theme.codex` `WidgetStyle` fields | none | **OPEN (new)** — `theme-to-css` and `_wkStyle` lower bg, fg, padding, margin, border, radius, min-w/h only |
-| Grid / Split layouts | `Layout.codex` | none | **OPEN (new)** — only `.wk-row` / `.wk-col` are emitted; grid and split compute rects for the framebuffer backend only |
+| Dialog | `Dialog.codex` (DialogConfig/Result) | `show-alert/confirm/prompt`, `close-dialog` emit `<dialog>` + `showModal()` | **CLOSED** -- the foreword's `DialogConfig` record is still not the input type; the runtime takes plain text |
+| Event routing | `Event.codex` (HandlerTable, EventPath) | Plug has its own two-callback registry (`register-handlers`, `register-input-handler`, `dom-on-*`) | **OPEN** -- the foreword event model is not what gets emitted. Bind `HandlerTable`/`EventPath` to `addEventListener` |
+| Binding | `Binding.codex` (Observable, BindingTable) | `set-render` / `request-render` / `state-set-render` rAF dirty-loop | **OPEN** -- a render loop exists, but `Observable`/`BindingTable` are not lowered |
+| Accessibility | `Accessibility.codex` (Role/Label/LiveRegion) | `dom-set-aria`, `dom-set-role` builtins | **OPEN** -- nothing is emitted automatically from the widget tree; a11y is opt-in, per call |
+| Animation | `Animation.codex` (Throbber/Transition/KeyframeSeq) | `css-animate-spin/pulse/bounce`, `css-transition`, three `@keyframes` | **OPEN** -- fixed set only; `KeyframeSeq` does not lower to `@keyframes` |
+| Overlay | `Overlay.codex` (Tooltip/Popup/ContextMenu/Modal) | none (grep: no tooltip/popup/context-menu in `HtmlEmitter`) | **OPEN** -- modal is reachable only via the dialog builtins |
+| Scroll | `Scroll.codex` (ScrollState) | none | **OPEN** -- no `overflow` CSS; apps hand-write it in their CSS string |
+| Charts | `Charts.codex` (Bar/Line/Pie/Area) | none | **OPEN** -- no SVG and no canvas emission at all |
+| Vector | `Vector.codex` (paths) | none | **OPEN** -- no `<svg>` emission |
+| Shadow / Gradient / AccentBorder | `Theme.codex` `WidgetStyle` fields | none | **OPEN (new)** -- `theme-to-css` and `_wkStyle` lower bg, fg, padding, margin, border, radius, min-w/h only |
+| Grid / Split layouts | `Layout.codex` | none | **OPEN (new)** -- only `.wk-row` / `.wk-col` are emitted; grid and split compute rects for the framebuffer backend only |
 
 ### Explorer
 
 | Item | Verdict |
 |------|---------|
-| Character explorer | **CLOSED** — `apps/explorer/CharDesignerApp.codex`, compiled, routed at `/character` by `run-designers-demo.ps1` |
-| Setting explorer | **CLOSED** — `apps/explorer/SettingDesignerApp.codex`, routed at `/` and `/setting` |
-| Item explorer | **CLOSED** — `apps/explorer/ItemDesignerApp.codex`, routed at `/item` |
-| Card explorer | **OPEN (new)** — `CardDesignerApp.codex` + `CardEmitter.codex` exist and compile, but no server routes them: `run-designers-demo.ps1`'s page map has no `card` key |
-| `/api/generate`, `/api/config` | **OPEN (new)** — every designer page calls them; no server in the depot answers them (see Chapter 6) |
-| `apps/explorer/server.ps1` | **OPEN (new)** — serves pages from `D:\Projects\CodexMagic\explorer\pages`, a path outside the depot, so it cannot work from a fresh sync. `run-designers-demo.ps1` is the working server; fold the SD generation code into it and retire the out-of-repo path |
-| `build/build-explorer-pages.ps1` | **OPEN (new)** — stale. It runs `build-output\{carddesigner,characterdesigner,settingdesigner,voicestudio}.cdx`, which nothing produces, and writes outside the depot. Delete it or rewrite it over `codex\plugs\html\run.ps1` |
-| "Save to My Creations" bar | **OPEN (new)** — injected as hand-written JS by `run-designers-demo.ps1` (`$inject`) into the three designer pages. It should be an `AuthClient` widget in the page chapters, the way `CreationsApp` already does it |
+| Character explorer | **CLOSED** -- `apps/explorer/CharDesignerApp.codex`, compiled, routed at `/character` by `run-designers-demo.ps1` |
+| Setting explorer | **CLOSED** -- `apps/explorer/SettingDesignerApp.codex`, routed at `/` and `/setting` |
+| Item explorer | **CLOSED** -- `apps/explorer/ItemDesignerApp.codex`, routed at `/item` |
+| Card explorer | **OPEN (new)** -- `CardDesignerApp.codex` + `CardEmitter.codex` exist and compile, but no server routes them: `run-designers-demo.ps1`'s page map has no `card` key |
+| `/api/generate`, `/api/config` | **OPEN (new)** -- every designer page calls them; no server in the depot answers them (see Chapter 6) |
+| `apps/explorer/server.ps1` | **OPEN (new)** -- serves pages from `D:\Projects\CodexMagic\explorer\pages`, a path outside the depot, so it cannot work from a fresh sync. `run-designers-demo.ps1` is the working server; fold the SD generation code into it and retire the out-of-repo path |
+| `build/build-explorer-pages.ps1` | **OPEN (new)** -- stale. It runs `build-output\{carddesigner,characterdesigner,settingdesigner,voicestudio}.cdx`, which nothing produces, and writes outside the depot. Delete it or rewrite it over `codex\plugs\html\run.ps1` |
+| "Save to My Creations" bar | **OPEN (new)** -- injected as hand-written JS by `run-designers-demo.ps1` (`$inject`) into the three designer pages. It should be an `AuthClient` widget in the page chapters, the way `CreationsApp` already does it |
 | VoiceStudio, WorkflowExporter, StoryGraph, WorldForge, NameForge | Chapters exist and compile; no page is routed by `run-designers-demo.ps1`. **OPEN** |
 
 ### Games portal
 
 | Item | Verdict |
 |------|---------|
-| Portal chrome (`apps/games/app.js`, `index.html`, `style.css`) | **OPEN** — hand-written; not compiled from Codex. The 34 classic game pages are hand-written too (their engines are not) |
-| CodexMagic web (`magic.js`, `card-render.js`) | **OPEN** — the `*Page.codex` chapters are compiled, but the pages are post-processed to inject two hand-written JS files |
+| Portal chrome (`apps/games/app.js`, `index.html`, `style.css`) | **OPEN** -- hand-written; not compiled from Codex. The 34 classic game pages are hand-written too (their engines are not) |
+| CodexMagic web (`magic.js`, `card-render.js`) | **OPEN** -- the `*Page.codex` chapters are compiled, but the pages are post-processed to inject two hand-written JS files |
 
 Design references: `docs/Reference/UICapabilityMap.md`
 (cross-platform coverage matrix), `apps/webapp/design/Done/BaseTemplate.md`
@@ -590,9 +590,9 @@ build/
   compile.ps1                Source -> CDX or IR (-IrCce). -Log is mandatory
   build-magic-pages.ps1      CodexMagic *Page.codex -> apps/games/codexmagic/web/*.html
   quire-map.ps1              Quire name -> directory (UI, WebApp, Explorer, Games, ...)
-  build-explorer-pages.ps1   STALE — see Chapter 7
+  build-explorer-pages.ps1   STALE -- see Chapter 7
 
-codex/foreword/ui/           47 modules, quire UI (the source of truth)
+codex/foreword/ui/           50 modules, quire UI (the source of truth)
   Widget.codex               WidgetNode, WidgetKind, constructors, queries
   Theme.codex                Palette, Edges, Border, CornerStyle, WidgetStyle,
                              StateStyles, Theme; theme-terminal/lcars/minimal

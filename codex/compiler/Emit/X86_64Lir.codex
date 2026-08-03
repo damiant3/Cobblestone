@@ -111,7 +111,7 @@ Section: LIR Register File (x86-64)
 
  The number of callee-saved registers this function must save and restore --
  one past the highest `LocReg` index that is a callee-saved register (an
- abstract index below `list-length local-regs`). RAX, the caller-saved fifth
+ abstract index below `ncallee`). RAX, the caller-saved fifth
  register (`lir-phys` index 4), is deliberately excluded: the callee may
  clobber it freely, so it is never pushed. Because the allocator hands out
  the callee pool lowest-free, the used callee indices are a prefix, so
@@ -123,7 +123,7 @@ Section: LIR Register File (x86-64)
   lir-nused-callee (assign) (i) (n) (acc) =
    if i >= n then acc
    else when (list-at assign i)
-    is LocReg (r) -> lir-nused-callee assign (i + 1) n (if (r < list-length local-regs) & ((r + 1) > acc) then r + 1 else acc)
+    is LocReg (r) -> lir-nused-callee assign (i + 1) n (if (r < (lir-target-x86.ncallee)) & ((r + 1) > acc) then r + 1 else acc)
     is LocSlot (s) -> lir-nused-callee assign (i + 1) n acc
 
   lir-nslots : List Location, Integer, Integer, Integer -> Integer
@@ -931,15 +931,29 @@ Section: LIR Function Emission (x86-64)
    in let st2 = st-append-code st1 (jcc cc-b 0)
    in __record-set st2 "stack-overflow-checks" (list-push (st2.stack-overflow-checks) check-pos)
 
+ These index `lir-phys`, not `local-regs`, and the difference is the whole
+ point. What must be saved is whatever physical register the allocator
+ handed out, and the allocator reaches its registers through `lir-phys`:
+ `LocReg (r)` means `lir-phys[r]`. Pushing `local-regs[i]` instead was
+ correct only for as long as the two lists agreed on their first four
+ entries, which they did, by hand, from two different files. Reorder
+ either prefix and the prologue saves one register while the body uses
+ another: the caller's value in the register nobody saved is gone, the
+ saved register is restored over nothing, and there is no fault and no
+ diagnostic to say so. The prose above already makes this argument for
+ `nregs` against `lir-phys` and puts them adjacent so they are read
+ together; the callee-save list is the same hazard and was split across
+ files instead. Deriving costs nothing and cannot drift.
+
   lir-push-saved : CodegenState, Integer, Integer -> CodegenState
   lir-push-saved (st) (i) (nused) =
    if i >= nused then st
-   else lir-push-saved (st-append-code st (push-r (list-at local-regs i))) (i + 1) nused
+   else lir-push-saved (st-append-code st (push-r (list-at lir-phys i))) (i + 1) nused
 
   lir-pop-saved : CodegenState, Integer -> CodegenState
   lir-pop-saved (st) (i) =
    if i < 0 then st
-   else lir-pop-saved (st-append-code st (pop-r (list-at local-regs i))) (i - 1)
+   else lir-pop-saved (st-append-code st (pop-r (list-at lir-phys i))) (i - 1)
 
  Move each parameter from the register it arrives in (`arg-regs[i]`) to the
  location the allocator gave its vreg -- a register, or a store into its spill

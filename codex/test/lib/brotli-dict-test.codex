@@ -1,0 +1,148 @@
+Chapter: BrotliDictTest
+  cites Compress chapter BrotliDict
+  cites Compress chapter BrotliDictIndex
+  cites Compress chapter Brotli
+
+ The RFC 7932 corpus survives the trip into Codex source and back out.
+
+ THE SIZE ALONE PROVES NOTHING. A corpus of the right length with the wrong
+ bytes in it is exactly the failure this chapter exists to catch, and it is the
+ one failure our own round-trip can never see: the encoder and the decoder would
+ look the word up in the same wrong copy and agree with each other perfectly. So
+ the pin is a SUM over every byte as well as a length, and four words read out at
+ known offsets -- the first two four-byte words, the first six-byte word, and the
+ first of the longest length, which sits at the far end of the corpus and is what
+ a walk that ran short would miss.
+
+ The words are pinned as BYTES, not as text. Comparing rendered text would put
+ the CCE boundary in the middle of the assertion, and a word full of punctuation
+ (&quot; and a script tag are two of the four) is exactly where that conversion
+ is least trustworthy. These are the bytes a decoder copies; they are what the
+ test should be about.
+
+ The counts are pinned by multiplying them back to the total, which is the same
+ check the extractor makes against the oracle. A count wrong in one length and
+ compensating in another still fails a word read at a known offset.
+
+ We say:
+
+Section: Helpers
+
+  sum-bytes : List Integer, Integer, Integer, Integer -> Integer
+  sum-bytes (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else sum-bytes xs (i + 1) n (acc + list-at xs i)
+
+ The counts multiplied by their own lengths. If the walk stopped early at any
+ length this does not reach 122784.
+
+  counts-bytes : Integer, Integer -> Integer
+  counts-bytes (len) (acc) =
+    if len > brdict-max-len then acc
+    else counts-bytes (len + 1) (acc + brdict-count len * len)
+
+  bytes-equal : List Integer, Integer, List Integer, Integer, Integer -> Boolean
+  bytes-equal (d) (off) (want) (i) (n) =
+    if i >= n then True
+    else if list-at d (off + i) == list-at want i then bytes-equal d off want (i + 1) n
+    else False
+
+  say : Text, Integer, Integer -> Text
+  say (label) (got) (want) =
+    label & "=" & if got == want then "pass" else "fail(" & show got & ")"
+
+  say-word : Text, List Integer, Integer, Integer, List Integer -> Text
+  say-word (label) (d) (len) (idx) (want) =
+    label & "=" & if bytes-equal d (brdict-word-at len idx) want 0 len then "pass" else "fail"
+
+Section: Body
+
+ The four words, as the bytes a decoder would copy: "time", "down", "&quot;",
+ and the opening of a script tag.
+
+  want-w4-0 : List Integer = [116, 105, 109, 101]
+  want-w4-1 : List Integer = [100, 111, 119, 110]
+  want-w6-0 : List Integer = [38, 113, 117, 111, 116, 59]
+  want-w24-0 : List Integer = [60, 115, 99, 114, 105, 112, 116, 32, 116, 121, 112, 101, 61, 34, 116, 101, 120, 116, 47, 106, 97, 118, 97, 115]
+
+ One load, threaded into every check. Every reference to a list constant rebuilds
+ it, so loading per check would allocate a megabyte eight times over.
+
+
+ THE TRANSFORM DECODER HAS NOTHING OF OURS TO EXERCISE IT: our encoder emits
+ transform zero and nothing else, so a round-trip cannot reach the other 120. The
+ streams below were therefore built by an INDEPENDENT implementation
+ (build/brotli-xform-cases.ps1) and the bytes each must decode to are what .NET
+ decodes them to. That makes this a comparison against the oracle rather than
+ against ourselves, which is the only kind that can fail here.
+
+ The last case is the one worth keeping. RFC 7932's case transform is defined on
+ UTF-8 BYTES: a two-byte character has bit 5 of its SECOND byte flipped, not its
+ first. That word goes 216,177,... to 216,145,... -- and a decoder that upper-cased
+ by character instead of by byte would leave it untouched and pass every ASCII
+ case above.
+
+  xs-suffix-space : List Integer = [130, 0, 0, 0, 4, 64, 8, 18, 32, 1]
+  want-suffix-space : List Integer = [116, 105, 109, 101, 32]
+  xs-ferment-first : List Integer = [98, 0, 0, 0, 4, 64, 8, 18, 38, 1, 1]
+  want-ferment-first : List Integer = [84, 105, 109, 101]
+  xs-suffix-the : List Integer = [2, 1, 0, 0, 4, 64, 8, 18, 36, 1, 1]
+  want-suffix-the : List Integer = [116, 105, 109, 101, 32, 116, 104, 101, 32]
+  xs-ferment-all : List Integer = [162, 0, 0, 0, 4, 64, 16, 18, 44, 1, 24]
+  want-ferment-all : List Integer = [38, 81, 85, 79, 84, 59]
+  xs-ferment-utf8 : List Integer = [162, 0, 0, 0, 4, 64, 16, 18, 232, 157, 2]
+  want-ferment-utf8 : List Integer = [216, 145, 216, 175, 217, 136]
+
+  same-bytes : List Integer, List Integer, Integer -> Boolean
+  same-bytes (a) (b) (i) =
+    if i >= list-length a then True
+    else if list-at a i == list-at b i then same-bytes a b (i + 1)
+    else False
+
+  say-decode : Text, List Integer, List Integer -> Text
+  say-decode (label) (stream) (want) =
+    let got = brotli-decompress stream
+    in label & "=" & if list-length got == list-length want then
+         (if same-bytes want got 0 then "pass" else "fail(bytes)")
+       else "fail(len " & show (list-length got) & ")"
+  report : List Integer -> [Console] Nothing
+  report (d) = act
+    print-line-uni (say "dict-total" (list-length d) brdict-total)
+    print-line-uni (say "dict-words" brdict-words 13504)
+    print-line-uni (say "dict-counts-multiply" (counts-bytes brdict-min-len 0) brdict-total)
+    print-line-uni (say "dict-sum" (sum-bytes d 0 brdict-total 0) 14054652)
+    print-line-uni (say-word "dict-w4-0" d 4 0 want-w4-0)
+    print-line-uni (say-word "dict-w4-1" d 4 1 want-w4-1)
+    print-line-uni (say-word "dict-w6-0" d 6 0 want-w6-0)
+    print-line-uni (say-word "dict-w24-0" d 24 0 want-w24-0)
+  end
+
+ The index finds a word where one is and does not find one where none is. "xx"
+ in front and "yy" behind put the word off the start of the input, because a
+ matcher that only ever looks at position zero passes a test built at position
+ zero.
+
+ The negative case is the half that matters. A lookup that answered a slot for
+ every position would pass every positive case here and corrupt every stream.
+
+  probe-hit : List Integer = [120, 120, 112, 111, 115, 105, 116, 105, 111, 110, 121, 121]
+  probe-miss : List Integer = [120, 120, 122, 113, 106, 118, 119, 107, 120, 122, 121, 121]
+
+  report-index : BrDictIx -> [Console] Nothing
+  report-index (ix) = act
+    print-line-uni (say "dict-index-slots" (ix.bx-n) brdict-words)
+    print-line-uni (say "dict-find-len" (brdix-slot-len ix (brdix-find ix probe-hit 2 8)) 8)
+    print-line-uni (say "dict-find-idx" (brdix-slot-idx ix (brdix-find ix probe-hit 2 8)) 0)
+    print-line-uni (say "dict-find-miss" (brdix-find ix probe-miss 2 8) (0 - 1))
+    print-line-uni (say "dict-find-short" (brdix-find ix probe-hit 2 5) (0 - 1))
+  end
+
+  opening : [Console] Nothing = act
+    report (brdict-load 0)
+    report-index (brdix-build (brdict-load 0))
+    print-line-uni (say-decode "xf-suffix-space" xs-suffix-space want-suffix-space)
+    print-line-uni (say-decode "xf-ferment-first" xs-ferment-first want-ferment-first)
+    print-line-uni (say-decode "xf-suffix-the" xs-suffix-the want-suffix-the)
+    print-line-uni (say-decode "xf-ferment-all" xs-ferment-all want-ferment-all)
+    print-line-uni (say-decode "xf-ferment-utf8" xs-ferment-utf8 want-ferment-utf8)
+  end

@@ -12,8 +12,8 @@ A full-viewport map viewer with a simulated tile background, search bar, zoom/lo
 
 ## Completeness
 
-25% — Visual chrome of a map application is present and layer toggle is functional. Map itself is a pure CSS gradient with no tile loading, no coordinate system, no pan/zoom. Pins are fixed-position. Search, locate, and routing are absent.
+25% -- Visual chrome of a map application is present and layer toggle is functional. Map itself is a pure CSS gradient with no tile loading, no coordinate system, no pan/zoom. Pins are fixed-position. Search, locate, and routing are absent.
 
 ## Codex Conformance
 
-Full — Codex only. Map tile fetching and geolocation are backend/plug concerns.
+Full -- Codex only. Map tile fetching and geolocation are backend/plug concerns.

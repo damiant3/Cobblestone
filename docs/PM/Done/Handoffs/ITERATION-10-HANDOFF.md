@@ -1,4 +1,4 @@
-# Iteration 10 — Handoff Summary
+# Iteration 10 -- Handoff Summary
 
 **Date**: 2026-03-15
 **Branch**: `master`
@@ -12,7 +12,7 @@
 
 | Milestone | Status | Notes |
 |-----------|--------|-------|
-| M0–M9 | ✅ Complete | See ITERATION-9-HANDOFF.md |
+| M0-M9 | ✅ Complete | See ITERATION-9-HANDOFF.md |
 | **M10: Proofs** | **✅ Complete** | Claims, proof terms, induction, rewriting, reverse-reverse demo |
 
 ### M10 Deliverables
@@ -78,7 +78,7 @@ proof rev-rev (xs) =
 - `ParseProofExpr`: dispatches Refl, assume, sym, trans, cong, induction
 - `ParseProofAtom`: proof names and lemma applications with arguments
 - `ParseProofSimpleAtom`: simple atoms for trans (avoids greedy argument consumption)
-- **`ParseTypeAtomSimple`**: new method — type atom without application loop, called by the type application loop for arguments. Fixes `Cons head tail` parsing.
+- **`ParseTypeAtomSimple`**: new method -- type atom without application loop, called by the type application loop for arguments. Fixes `Cons head tail` parsing.
 
 ### ProofChecker (`src/Codex.Proofs/ProofChecker.cs`)
 
@@ -102,7 +102,7 @@ proof rev-rev (xs) =
 
 - `codex check` runs proof checking after linearity checking
 - `codex build` runs proof checking before lowering to IR
-- Proofs are erased at compile time — they exist only for verification
+- Proofs are erased at compile time -- they exist only for verification
 
 ### Bug Fix: Type Application Parsing
 
@@ -165,9 +165,9 @@ Compiler verifies the induction structure. Base case and inductive step are acce
 
 ## Known Limitations
 
-- **`assume` is trusted**: base reduction rules (e.g., `reverse Nil = Nil`) require `assume` — the checker cannot evaluate function definitions at the type level yet
+- **`assume` is trusted**: base reduction rules (e.g., `reverse Nil = Nil`) require `assume` -- the checker cannot evaluate function definitions at the type level yet
 - **No totality checking**: induction doesn't verify the cases are exhaustive for the datatype
-- **No universe hierarchy**: `Type : Type` — no stratification
+- **No universe hierarchy**: `Type : Type` -- no stratification
 - **No implicit arguments**: proof parameters must be explicit
 
 ---

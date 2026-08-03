@@ -254,7 +254,7 @@ function Strip-RedundantParens([System.Collections.Generic.List[string]]$tokens)
             $innerLen = $close - $i - 1
             if ($innerLen -le 0) { $tokens.RemoveAt($close); $tokens.RemoveAt($i); $changed = $true; break }
             if ($innerLen -eq 1) { $tokens.RemoveAt($close); $tokens.RemoveAt($i); $changed = $true; break }
-            # ( [ ... ] ) — parens around a bracketed expression are always redundant
+            # ( [ ... ] ) -- parens around a bracketed expression are always redundant
             if ($tokens[$i+1] -eq '[') {
                 $bracketClose = Find-MatchingClose $tokens $i  # finds the ) not ]
                 # check if inner is exactly one [...] group

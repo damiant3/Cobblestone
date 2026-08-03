@@ -6,14 +6,14 @@ promoted to error) and the residual plug-run timeout are now closed. The
 foreword-cites migration (`cites UI chapter`) works end to end. Nothing here
 blocks; this file is kept for history only.
 
-## Residual timeout — RESOLVED (2026-05-30, val)
+## Residual timeout -- RESOLVED (2026-05-30, val)
 
 Re-measured the whole pipeline on the current seed and the 6.2 MB timeout
-**no longer reproduces** — two independent reasons:
+**no longer reproduces** -- two independent reasons:
 
 1. **The IR shrank ~18x.** `ExplorerTheme.codex` (same `cites UI chapter
    Theme/BoxModel/Layout/Widget`) now emits **336,625 bytes** of IR-CCE, not
-   6.2 MB — intervening seed work (DCE / dead-phase reclamation) cut the
+   6.2 MB -- intervening seed work (DCE / dead-phase reclamation) cut the
    cited closure dramatically. The plug renders it in ~1.5 s (480 defs →
    70,572 B valid HTML, exit 0). A 13-UI-chapter stress source (1.37 MB IR,
    ~1500 defs) renders in ~2.8 s → 225 KB HTML. Plug time scales **linearly**
@@ -27,7 +27,7 @@ Re-measured the whole pipeline on the current seed and the 6.2 MB timeout
    real super-linear cost was the emitter's right-nested `&` chains:
    `emit-js-defs`/`emit-js-type-defs` pushed the entire output through a
    D-deep concat (O(L·D), worse since CL 2814 made `&` always fresh-alloc).
-   Converted both to the compiler's own idiom — accumulate piece strings with
+   Converted both to the compiler's own idiom -- accumulate piece strings with
    `list-push`, concat once with `text-concat-list` (O(L), single len-pass +
    one alloc + copy-once, as in `opening.codex:606`). Byte-identical output
    verified on ExplorerTheme (480 defs), the 1.37 MB stress (1500 defs), and
@@ -36,7 +36,7 @@ Re-measured the whole pipeline on the current seed and the 6.2 MB timeout
    def's local size and were left as `&` (Rule 4).
 
 `lookup-arity` already uses bsearch (O(log D)); not a factor. Profiling /
-prof-dump proved unnecessary — the IR-size sweep above settled scaling.
+prof-dump proved unnecessary -- the IR-size sweep above settled scaling.
 
 **Original status:** Active. Discovered 2026-05-27 by val.
 **Severity:** Blocks HTML plug growth past ~75KB source.
@@ -71,11 +71,11 @@ CallR=000000007fffcc48 CR2=0x0
 - **Exception:** 0x0d (General Protection Fault)
 - **Function:** `parameterize-walk-children+0x52A`
   (TypeChecker.codex:139)
-- **Phase:** Frontend (CHECK) — `DBG:frontend src=76331` is the
+- **Phase:** Frontend (CHECK) -- `DBG:frontend src=76331` is the
   last debug line before the crash
 - **Stack depth at crash:** 13,240 bytes from stack top
   (0x80000000 - 0x7fffcc48 = 13,240). Stack is nearly exhausted.
-- **CR2 = 0:** Not a page fault — the GPF is from accessing an
+- **CR2 = 0:** Not a page fault -- the GPF is from accessing an
   unmapped address after the stack collided with the heap.
 
 ## Root Cause Analysis
@@ -130,7 +130,7 @@ it.
 [html-plug] OK: html-plug.cdx (210961 bytes)
 ```
 
-### Failed build (76,339 bytes — 892 bytes more)
+### Failed build (76,339 bytes -- 892 bytes more)
 
 ```
 [html-plug] bundled 1870 lines, 76339 bytes
@@ -138,7 +138,7 @@ it.
 FAIL: compile errors
 ```
 
-The delta is 892 bytes / 17 lines — adding 4 short functions
+The delta is 892 bytes / 17 lines -- adding 4 short functions
 (`save_theme`, `load_theme`, `save_layout`, `load_layout`). The
 extra definitions add just enough type-walking depth to overflow
 the stack.
@@ -148,14 +148,14 @@ the stack.
 Increasing RAM from 2048MB to 4096MB does not help. The crash
 address (CallR = 0x7fffcc48) shows the stack is at its ceiling,
 not that the heap has grown into it. R10 (heap pointer) is at
-0x02cd9e81 (~45MB) — well below the stack. This is pure stack
+0x02cd9e81 (~45MB) -- well below the stack. This is pure stack
 depth, not heap pressure.
 
 ## Affected Code
 
-- `codex/compiler/Types/TypeChecker.codex:139-198` —
+- `codex/compiler/Types/TypeChecker.codex:139-198` --
   `parameterize-walk-children` (recursive type walker)
-- `codex/compiler/Types/TypeChecker.codex:107-137` —
+- `codex/compiler/Types/TypeChecker.codex:107-137` --
   `parameterize-walk` (calls `parameterize-walk-children`)
 
 ## Potential Fixes
@@ -187,7 +187,7 @@ depth for function-type chains.
 
 Change `bare-metal-stack-top` or reduce `bare-metal-heap-base` to
 give more stack room. Current stack region is 0x80000000 downward,
-heap starts at 0x600000 — there's ~2GB of gap. The issue is that
+heap starts at 0x600000 -- there's ~2GB of gap. The issue is that
 the stack starts at the very top and only has ~2GB of virtual
 address space total. With 4GB RAM the stack top would be at
 0x100000000, giving much more room. But this hits the 4GB barrier
@@ -196,7 +196,7 @@ address space total. With 4GB RAM the stack top would be at
 A simpler variant: the prologue collision check (`cmp rsp, r10`)
 should catch this before the GPF. If RSP descends past R10, the
 `__out_of_memory` handler fires. But in this case the stack hasn't
-reached R10 (heap at 45MB, stack at ~2GB - 13KB) — the GPF
+reached R10 (heap at 45MB, stack at ~2GB - 13KB) -- the GPF
 happens because the stack frame writes to an address that triggers
 a protection fault, likely from hitting a page boundary that
 isn't mapped.
@@ -235,7 +235,7 @@ approach is approximately 75KB.
 
 ## Fix History
 
-### CL 2586 — Ground-type early-out (fester)
+### CL 2586 -- Ground-type early-out (fester)
 
 Added `| IntegerTy | NumberTy | TextTy | BooleanTy | NothingTy |
 VoidTy | ProofTy | ErrorTy -> WalkResult { walked = ty, ... }` as
@@ -275,7 +275,7 @@ is FunTy (param) (ret) ->
 Where `parameterize-walk-funty-chain` iteratively accumulates the
 chain. This is the highest-impact remaining fix.
 
-### CL 2586 v2 — FunTy inline handling (fester)
+### CL 2586 v2 -- FunTy inline handling (fester)
 
 Added `FunTy(param, ret)` as a direct branch in `parameterize-walk`,
 eliminating the bounce through `parameterize-walk-children`. Per-level
@@ -341,7 +341,7 @@ requires three fixes, two of which are done:
 |---|-------|--------|
 | 1 | CHECK deck overflow | **Fixed** (survey-check-mul=400) |
 | 2 | VM output buffer (4MB cap) | **Fixed** (codex-vm.c: 4MB→16MB) |
-| 3 | Plug IR parse speed | **BLOCKER** — plug CDX times out on 6.5MB IR |
+| 3 | Plug IR parse speed | **BLOCKER** -- plug CDX times out on 6.5MB IR |
 
 **Evidence:**
 
@@ -349,7 +349,7 @@ requires three fixes, two of which are done:
 - IR-CCE compilation produces 6,587,796 bytes (6.5MB) of IR text
 - With 16MB VM output buffer, compile.ps1 correctly captures all 6.5MB
 - But the HTML plug CDX times out (>300s) parsing 6.5MB of IR S-expressions
-- The plug's `parse-ir-chapter` is the bottleneck — it wasn't designed
+- The plug's `parse-ir-chapter` is the bottleneck -- it wasn't designed
   for IR streams this large
 
 **Path forward:** Either (A) optimize the IR text parser in the plug,

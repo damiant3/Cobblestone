@@ -9,7 +9,7 @@ Chapter: IR Text Emitter
  Format is positional S-expressions: every node is a paren-delimited
  list whose first element is a tag atom. Strings are double-quoted
  with backslash escapes for backslash, double-quote, and newline.
- Identifiers are bare atoms. Spans are elided — the plug fills
+ Identifiers are bare atoms. Spans are elided -- the plug fills
  synthetic-span on parse since downstream emitters don't read span.
 
 Section: Identifier Atoms
@@ -74,7 +74,7 @@ Section: Identifier Atoms
 Section: String Escaping
 
  Strings use double quotes. Backslash, double-quote, newline get
- backslash-escaped. Other CCE bytes pass through literally — the
+ backslash-escaped. Other CCE bytes pass through literally -- the
  plug parser scans byte-by-byte and reverses the escape mapping.
 
   ir-quote : Text -> Text
@@ -188,14 +188,37 @@ Section: CodexType Emission
    if i >= list-length ids then ""
    else " (tvar " & integer-to-text (list-at ids i) & ")" & ir-emit-tvar-args ids (i + 1)
 
+ THE FOUR ATOMS THAT ALREADY EXISTED KEEP THEIR EXACT SPELLINGS. A plug
+ reading this wire matches on the text, so changing "real-approx" to a
+ composed form would break every plug for a combination it already
+ handles. Only the two f32 modes that could not be spelled before are new
+ surface, and a plug that does not know them must refuse rather than fall
+ through to ErrorTy.
+
+  ir-emit-real-ty : RealWidth, RealMode -> Text
+  ir-emit-real-ty (w) (m) =
+   if is-width-f32 w then ir-emit-real-f32-ty m
+   else ir-emit-real-f64-ty m
+
+  ir-emit-real-f32-ty : RealMode -> Text
+  ir-emit-real-f32-ty (m) =
+   when m
+    is RmDefault -> "real-approx"
+    is RmTrapping -> "real-approx-trapping"
+    is RmSaturating -> "real-approx-saturating"
+
+  ir-emit-real-f64-ty : RealMode -> Text
+  ir-emit-real-f64-ty (m) =
+   when m
+    is RmDefault -> "real"
+    is RmTrapping -> "real-trapping"
+    is RmSaturating -> "real-saturating"
+
   ir-emit-type : CodexType -> Text
   ir-emit-type (ty) =
    when ty
     is IntegerTy (lo) (hi) (mode) -> ir-emit-int-bounds lo hi mode
-    is RealTy -> "real"
-    is RealApproxTy -> "real-approx"
-    is RealTrappingTy -> "real-trapping"
-    is RealSaturatingTy -> "real-saturating"
+    is RealTy (w) (m) -> ir-emit-real-ty w m
     is TextTy -> "text"
     is BooleanTy -> "boolean"
     is CharTy -> "char"
@@ -377,7 +400,7 @@ Section: IRPattern Emission
 Section: IRExpr Emission
 
  The expression printer. Each variant fits a single (atom ...) form.
- Type tags follow the structural arguments — match the IRExpr
+ Type tags follow the structural arguments -- match the IRExpr
  constructor order so a parser can read positionally.
 
   ir-emit-expr : IRExpr -> Text
@@ -410,7 +433,7 @@ Section: IRExpr Emission
 
  Let-chains are the deepest structure in real Codex (every `in` nests
  the rest), so emitting `IrLet` by naive recursion makes each level
- concatenate the entire inner body — the left operand is never at the
+ concatenate the entire inner body -- the left operand is never at the
  heap bump pointer, so __str_concat takes the copy path every level,
  giving O(depth^2) copies. Flatten the chain instead: collect each
  level's "(let name ty val " prefix into one list, emit the innermost
@@ -517,7 +540,7 @@ Section: IR Dead Code Elimination
 
  Reachability pruning of the chapter's def list. A def is kept when it
  is reachable, through referenced names, from the entry point. Operates
- on the structured IR — no text, no Unicode. The collected name set is
+ on the structured IR -- no text, no Unicode. The collected name set is
  every atom the text emitter would quote, so the kept set matches a
  substring reachability over the emitted IR text. Type defs, ctors, and
  effect-op names live in the chapter header and are untouched.
@@ -709,6 +732,81 @@ Section: IR Dead Code Elimination
    in let w = ir-dce-flood defs tbl 0 (ir-dce-add-names roots 0 (list-length roots) tbl w0)
    in __record-set m "defs" (ir-dce-filter defs (w.visited) 0 n [])
 
+ This stores the filtered list back into the chapter it was given and
+ hands back THE SAME record. Making it build a fresh chapter instead
+ looks like the obvious correction -- a callee does not own a record its
+ caller still holds -- and it is NOT a safe change: measured 2026-07-28,
+ it makes `keep-proof-defs` collect from the unpruned list and every
+ surviving definition gets appended back a second time by
+ `ir-chapter-with-proofs`. A punctual function that survives the prune
+ was emitted TWICE, at two addresses in the symbol map, and reported its
+ WCET line twice. Callers that need the pre-prune list must bind it
+ before calling, which is the same discipline `keep-proof-defs` above
+ already follows and says so.
+
+ A punctual definition that declares an EXPLICIT budget and does not
+ survive the prune is a budget nothing checks. The instruction count is
+ taken per emitted body (emit-all-defs), so a definition the inliner
+ absorbed into its callers, or one nothing ever calls, reaches
+ emit-wcet-check never and both CDX6010 and CDX6011 go silent. Measured
+ against seed EFC7FCD0: a five-instruction body declaring a budget of two
+ raises CDX6011 with the inliner off and nothing at all under the default
+ pipeline, so the declared budget was unenforced in the shipping
+ configuration and the author had no way to tell.
+
+ Only an EXPLICIT budget is reported. A wcet-budget of zero means the
+ author declared none and emit-wcet-check substitutes the default 256;
+ that is not a claim anyone made, so a pruned punctual without a budget
+ is ordinary dead code and says nothing.
+
+ The walk takes two cursors rather than an index because ir-dce-filter
+ preserves order, so the kept list is a subsequence of the original. That
+ costs one pass and no allocation beyond the result. It assumes
+ definition names are unique, which is no stronger an assumption than the
+ prune already makes -- ir-dce-build-index keys the reachability table by
+ the same name.
+
+ It takes two def LISTS and not two chapters, and that is the whole
+ correctness of it. ir-prune-roots-flood ends in `__record-set m "defs"`,
+ which stores into the field and hands back THE SAME record, so the
+ chapter a caller passed in and the chapter it got back are one object.
+ Written to take chapters, this function compared the pruned list against
+ itself, every name matched, and it reported nothing on a program whose
+ budget was demonstrably being dropped. The caller must therefore bind
+ the def list BEFORE calling the prune. The old list is safe to hold:
+ ir-dce-filter builds a fresh one and `__record-set` only swaps the field.
+
+ Do not try to fix that by making the prune functional instead. It was
+ tried and it duplicates every surviving definition -- the note on
+ ir-prune-roots-flood has the measurement.
+
+  ir-dropped-budgeted-punctuals : List IRDef, List IRDef -> List IRDef
+  ir-dropped-budgeted-punctuals (all-defs) (kept) =
+   ir-dbp-loop all-defs kept 0 0 []
+
+  ir-dbp-loop : List IRDef, List IRDef, Integer, Integer, List IRDef -> List IRDef
+  ir-dbp-loop (all-defs) (kept) (i) (j) (acc) =
+   if i == list-length all-defs then acc
+   else let d = list-at all-defs i
+   in if j < list-length kept
+      then if (list-at kept j).name == d.name
+           then ir-dbp-loop all-defs kept (i + 1) (j + 1) acc
+           else ir-dbp-take all-defs kept i j acc d
+      else ir-dbp-take all-defs kept i j acc d
+
+ The arms are nested rather than joined with `&` so the bounds test
+ guards the subscript by control flow. A conjunction would leave
+ `list-at kept j` reachable at j equal to the length whenever the last
+ definition in the chapter is the pruned one.
+
+  ir-dbp-take : List IRDef, List IRDef, Integer, Integer, List IRDef, IRDef -> List IRDef
+  ir-dbp-take (all-defs) (kept) (i) (j) (acc) (d) =
+   if d.is-punctual
+    then if d.wcet-budget > 0
+         then ir-dbp-loop all-defs kept (i + 1) j (list-push acc d)
+         else ir-dbp-loop all-defs kept (i + 1) j acc
+    else ir-dbp-loop all-defs kept (i + 1) j acc
+
 Section: IRDef Emission
 
   ir-emit-def : IRDef -> Text
@@ -769,11 +867,47 @@ Section: IRChapter Emission
   emit-ir-chapter (m) (meta) (type-defs) =
    emit-ir-chapter-prefix m meta type-defs & ir-emit-defs (m.defs) 0 & "))\n"
 
- The chapter header up to and including the "(defs" opener — everything
- except the per-def list and the closing "))". emit-ir-cce streams each
- def out separately (reclaiming heap between defs) rather than building
- the whole chapter as one value, so it emits this prefix, the defs one
- at a time, then the "))" footer.
+ The chapter header up to and including the "(defs" opener -- everything
+ except the per-def list and the closing "))". emit-ir-cce (opening)
+ does not call emit-ir-chapter: building the whole chapter as one value
+ exhausted the allocator on a wide-citation program (a 17-cite test hit
+ the heap floor under the framebuffer at the same address at -MemMB
+ 3072 and 6144, measured 2026-07-28 -- with no collector every interior
+ & of the expression walk is a permanent copy, ir-cat then duplicates
+ the payload, and the top-level & copies it again). It uses the two
+ helpers below instead: one pass to learn the SIZE the wire frame
+ announces before the first payload byte, one pass to print, each def
+ bracketed in __heap-save/__heap-restore so peak heap is the largest
+ single def. Emission is pure, so the passes agree. emit-ir-uni still
+ builds the monolith; it has no SIZE frame and no known large caller.
+
+ The pieces go out through print-text, and only print-text: a payload
+ newline is the CCE byte inside the Text, and print-line's appended
+ terminator is the raw serial 10, which compile.ps1's byte slice would
+ count against SIZE. Delegating the joiners to print-line was tried
+ 2026-07-28 and corrupted exactly those bytes; the account is in
+ red-workplan's outbox. So every "\n  " joiner stays inside its piece,
+ the footer keeps its own newline, and the one raw linefeed after the
+ payload is print-line's, exactly as the monolith's print-line emitted
+ it.
+
+  ir-defs-wire-size : List IRDef, Integer, Integer, Integer -> Integer
+  ir-defs-wire-size (xs) (i) (len) (acc) =
+   if i == len then acc
+   else let h = __heap-save
+   in let n = text-length (ir-emit-def (list-at xs i))
+   in let restored = __heap-restore h
+   in ir-defs-wire-size xs (i + 1) len (acc + n + 3)
+
+  ir-print-defs : List IRDef, Integer, Integer -> [Console] Nothing
+  ir-print-defs (xs) (i) (len) =
+   if i == len then print-text "))\n"
+   else let h = __heap-save
+   in act
+    print-text ("\n  " & ir-emit-def (list-at xs i))
+    let restored = __heap-restore h
+    in ir-print-defs xs (i + 1) len
+   end
 
   emit-ir-chapter-prefix : IRChapter, IRTextMeta, List ATypeDef -> Text
   emit-ir-chapter-prefix (m) (meta) (type-defs) =

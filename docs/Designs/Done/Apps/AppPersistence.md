@@ -21,12 +21,12 @@ App opening.codex
   │  runs event loop with DiskFactStore threaded alongside app state
   │  detects state changes and calls app-write-and-checkpoint
   ▼
-AppPersist.codex (codex.os.kernel) — shared helpers
+AppPersist.codex (codex.os.kernel) -- shared helpers
   │  app-write-fact: multi-sector fact writer (no 434-byte limit)
   │  app-scan-last: find most recent fact of a kind
   │  app-scan-all: find all facts of a kind
   ▼
-DiskFacts.codex (codex.os.kernel) — log-structured storage
+DiskFacts.codex (codex.os.kernel) -- log-structured storage
   │  block-read-sector / block-write-sector (builtins)
   │  dual-superblock crash recovery
   ▼
@@ -67,7 +67,7 @@ IDE disk (codex-vm)
 DiskFacts' built-in `disk-write-fact` limits content to 434 bytes
 (one sector minus the 78-byte header). `AppPersist.app-write-fact`
 lifts this limit by allocating `ceil((78 + len) / 512)` sectors and
-writing the full entry. The fact format is identical — the same
+writing the full entry. The fact format is identical -- the same
 78-byte header (SHA-256 hash, kind u16, padding, timestamp u64,
 content-length u32) followed by raw text content.
 
@@ -120,24 +120,24 @@ the event loop:
 ## Files
 
 ### New modules (CL 3506: 6, CL 3519: 3)
-- `codex/os/kernel/AppPersist.codex` — shared multi-sector helpers
-- `apps/diagram/DiagramPersist.codex` — diagram save/load
-- `apps/browser/BrowserPersist.codex` — history + trust save/load
-- `apps/secrets/SecretsPersist.codex` — vault + audit save/load
-- `apps/fileshare/FileSharePersist.codex` — transfer save/load
-- `apps/services/ServicesPersist.codex` — revocation save/load
-- `apps/cvmm/CvmmPersist.codex` — 11 mini-utility domains (JSON)
-- `apps/mathbook/MathbookPersist.codex` — notebook cells save/load
-- `apps/nettool/NetToolPersist.codex` — scan results + hosts save/load
+- `codex/os/kernel/AppPersist.codex` -- shared multi-sector helpers
+- `apps/diagram/DiagramPersist.codex` -- diagram save/load
+- `apps/browser/BrowserPersist.codex` -- history + trust save/load
+- `apps/secrets/SecretsPersist.codex` -- vault + audit save/load
+- `apps/fileshare/FileSharePersist.codex` -- transfer save/load
+- `apps/services/ServicesPersist.codex` -- revocation save/load
+- `apps/cvmm/CvmmPersist.codex` -- 11 mini-utility domains (JSON)
+- `apps/mathbook/MathbookPersist.codex` -- notebook cells save/load
+- `apps/nettool/NetToolPersist.codex` -- scan results + hosts save/load
 
 ### Modified modules (9 in CL 3506, 3 in CL 3519)
-- `apps/diagram/opening.codex` — persistent event loop
-- `apps/diagram/Diagram.codex` — diagram-save simplified
-- `apps/browser/opening.codex` — persistent event loop
-- `apps/browser/Browser.codex` — bs-history field + history-visit wiring
-- `apps/secrets/opening.codex` — persistent event loop
-- `apps/fileshare/opening.codex` — persistent event loop
-- `apps/*/codex.project.json` (5 files) — added codex.os.kernel dependency
+- `apps/diagram/opening.codex` -- persistent event loop
+- `apps/diagram/Diagram.codex` -- diagram-save simplified
+- `apps/browser/opening.codex` -- persistent event loop
+- `apps/browser/Browser.codex` -- bs-history field + history-visit wiring
+- `apps/secrets/opening.codex` -- persistent event loop
+- `apps/fileshare/opening.codex` -- persistent event loop
+- `apps/*/codex.project.json` (5 files) -- added codex.os.kernel dependency
 
 ## Memory Assessment
 
@@ -154,11 +154,11 @@ saves are smaller (1-2 sectors typically). All saves are user-triggered
 entries. `disk-compact` (AppPersist.codex) reclaims space by scanning
 the log, keeping only the latest entry per kind, and rewriting the
 log from sector 2. Called at app startup or on demand. Example: the
-browser re-saves all history on every navigation — after 100
+browser re-saves all history on every navigation -- after 100
 navigations with 50-entry history (~2.5KB each), the log holds 500
 sectors (250KB) of duplicate data. After compaction: 5 sectors.
 
 Compaction rewrites the log in-place and updates the superblock
 atomically (dual-superblock). The window between rewrite and
-superblock update is a crash risk — mitigated by only compacting at
+superblock update is a crash risk -- mitigated by only compacting at
 safe points (startup, explicit save).

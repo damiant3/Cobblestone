@@ -238,7 +238,7 @@ The compiler may optionally emit:
 
 ## 8. File format
 
-**Replay Log Format (CRF – Codex Replay Format)**
+**Replay Log Format (CRF - Codex Replay Format)**
 
 - **Header**
   - `magic = "CRF1"`

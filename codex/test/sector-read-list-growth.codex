@@ -1,0 +1,52 @@
+Chapter: SectorReadListGrowth
+  cites Foreword chapter List
+
+ A sector read whose destination is a page the guest has never touched. This
+ program killed the emulator outright before codex-vm learned to commit the
+ destination of a host-performed store, and it is here so that it cannot
+ happen again quietly.
+
+ The mechanism is worth stating, because nothing about the symptom pointed at
+ it. `block-read-sector` allocates its 512-byte buffer at the top of the bump
+ heap and asks the disk to fill it, and the fill is `rep insw`, which codex-vm
+ services by storing into guest RAM from the HOST side. Guest RAM is reserved
+ and committed lazily on a guest fault, and a store the guest never performs
+ raises no such fault, so the destination stayed reserved and the host process
+ died on it: a Windows access violation with no diagnostic from the emulator
+ and no chance for the guest to write one either. Not an `!EXC`, and not the
+ heap running into the stack.
+
+ That is why it takes both halves to see it, and why each half alone looks
+ innocent. Six thousand sector reads with no list finish in seconds, because a
+ function returning resets the bump heap and every buffer lands back in the
+ same already-committed page. A list grown to well over a million elements
+ with no disk finishes too, because the guest touches every page it writes.
+ Only a read whose result is RETAINED marches the heap top into fresh pages,
+ and then the next buffer is allocated somewhere the guest has not been.
+
+ The disk sidecar is 64 KB, far smaller than the 1.5 MB read below, so most of
+ these reads are refused by the controller for being out of range. It failed
+ anyway when it failed: the defect was in where the answer was written, never
+ in whether there was an answer to write.
+
+Section: Entry
+
+  copy-bytes : Integer, Integer, Integer, List Integer -> List Integer
+  copy-bytes (buf) (off) (count) (acc) =
+    if count <= 0 then acc
+    else copy-bytes buf (off + 1) (count - 1) (list-push acc (peek-byte buf off))
+
+  loop-sectors : Integer, Integer, List Integer -> [Device.Block] List Integer
+  loop-sectors (i) (n) (acc) =
+    if i >= n then acc
+    else act
+      buf <- block-read-sector i
+      loop-sectors (i + 1) n (copy-bytes buf 0 512 acc)
+    end
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    print-line-uni "start"
+    xs <- loop-sectors 0 3000 []
+    print-line-uni ("len " & show (list-length xs))
+  end

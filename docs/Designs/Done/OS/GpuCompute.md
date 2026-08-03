@@ -38,7 +38,7 @@ compute on Ada Lovelace without NVIDIA's firmware.
 
 - **UEFI GOP framebuffer**: GPU VBIOS includes a UEFI GOP driver. If
   booting via UEFI, call GOP for a linear framebuffer (address + stride +
-  pixel format) before ExitBootServices. The framebuffer persists — write
+  pixel format) before ExitBootServices. The framebuffer persists -- write
   pixels directly. No acceleration, but a working display. Replaces VGA
   text mode with high-res graphics.
 
@@ -147,7 +147,7 @@ For small operations (< 256 elements), CPU is faster.
 - Boot Codex.OS via UEFI (currently uses multiboot/BIOS)
 - Acquire GOP framebuffer before ExitBootServices
 - High-res pixel framebuffer replaces VGA 80x25 text
-- Independent of compute path — display only
+- Independent of compute path -- display only
 
 ### Phase 4: Direct GPU Init (Long-Term)
 - Requires either:

@@ -1,4 +1,4 @@
-# emit-expr Profile — 2026-04-16
+# emit-expr Profile -- 2026-04-16
 
 Goal: find the next C# emit hotspot after the P9 + P13 +
 csharp-emit-defs-list wins. Emit is still 71% of compile time (1035ms of
@@ -87,7 +87,7 @@ emit-let (name) (ty) (val) (body) (arities) =
    ++ emit-expr val arities ++ ")"
 ```
 
-When `body` is itself another let (which is the **norm** in the self-host —
+When `body` is itself another let (which is the **norm** in the self-host --
 the whole compiler is written in long `let ... in let ... in ...` chains),
 each level wraps the already-large inner result with ~60 chars of `Func<>`
 boilerplate and re-concats. For a chain of N nested lets, total concat
@@ -105,7 +105,7 @@ Three secondary hotspots, roughly 6–11% each. Each also uses recursive
 - `emit-if`: `"(" ++ emit-expr c ++ " ? " ++ emit-expr t ++ " : " ++ emit-expr e ++ ")"`
 - `emit-apply`: args concatenated via `emit-apply-args` (recursive `++`)
 
-The IrIf nesting is often deep — `if-else` chains translated from
+The IrIf nesting is often deep -- `if-else` chains translated from
 `when ... is X -> … is Y -> …` patterns produce towers of ternary.
 
 ### Leaf variants are fine
@@ -118,8 +118,8 @@ string work there. Not a fix target.
 
 ### 1. Flatten let chains in `emit-let` (biggest win)
 
-The quadratic wrapper pattern — `((Func<T,R>)((name) => body))(val)` with
-`body` being another let — can be collapsed at emit time. Options:
+The quadratic wrapper pattern -- `((Func<T,R>)((name) => body))(val)` with
+`body` being another let -- can be collapsed at emit time. Options:
 
 - **A. Turn chained lets into a single C# block**: emit
   `{ var x = val1; var y = val2; ...; return body; }` when `body` is a
@@ -132,7 +132,7 @@ The quadratic wrapper pattern — `((Func<T,R>)((name) => body))(val)` with
   at the chapter level would eliminate all per-level concat work. Massive
   refactor of ~30 emit-* functions.
 
-Start with **A** — scoped change to `emit-let`, biggest payoff, smallest
+Start with **A** -- scoped change to `emit-let`, biggest payoff, smallest
 diff. Estimated saving: 200–400ms (most of the 67% IrLet share).
 
 ### 2. Same collapse for `emit-if` (-40ms) and `emit-apply-args` (-20ms)
@@ -147,7 +147,7 @@ are still worth chasing.
 emit phase. Something besides raw concat is eating the time:
 
 - Debug-mode Func<> delegate dispatch (the emitter is written in
-  heavily curried style — `((Func<T, string>)((x) => ...))(arg)` per
+  heavily curried style -- `((Func<T, string>)((x) => ...))(arg)` per
   pattern arm).
 - Per-call object allocations for Func<> instances, boxed patterns,
   etc.

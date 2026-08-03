@@ -5,6 +5,7 @@ Chapter: DevConsole
   cites Works chapter ConsoleEditor
   cites Works chapter DevDebugger
   cites Works chapter DevAgent
+  cites Works chapter AgentAcquisition
   cites Works chapter DevHypervisor
   cites Works chapter DevUiLauncher
   cites Works chapter AnnotationPersistDriver
@@ -61,7 +62,8 @@ Section: Console State
     status : Text,
     running : Boolean,
     ann-persist : AnnotationPersistState,
-    disk-store : DiskFactStore
+    disk-store : DiskFactStore,
+    agents : AgentRegistry
   }
 
   dev-console-init : UefiConsoleState, DiskFactStore, Keypair -> DevConsoleState
@@ -83,7 +85,8 @@ Section: Console State
       status = "Codex Dev Console",
       running = True,
       ann-persist = ann-st,
-      disk-store = disk
+      disk-store = disk,
+      agents = agent-registry-empty
     }
 
 Section: Main Menu
@@ -244,9 +247,11 @@ Section: Debugger Dispatch
       is DebugMemory -> debug-mem-dump dbg (dbg.last-address) (dbg.dump-length)
       is DebugIO -> debug-port-watch (dbg.watch-ports)
       is DebugBreakpoints -> bp-list-text (dbg.breakpoints)
-      is DebugStack -> debug-backtrace-from-exc dbg
+      is DebugStack -> debug-backtrace-from-stall dbg
       is DebugPerf -> debug-perf-view
       is DebugRegisters -> debug-register-view
+      is DebugDisk -> dbg.disk-lines
+      is DebugReport -> dbg.report-lines
 
   render-breakpoint-list : List Breakpoint, Integer, Integer, List Text -> List Text
   render-breakpoint-list (bps) (i) (len) (acc) =
@@ -281,14 +286,84 @@ Section: Sweep Dispatch
 
 Section: Agent Dispatch
 
-  dispatch-agent-menu : Text, DevConsoleState -> DevConsoleState
+ Every line of this used to be a literal. "Agent: no agent loaded",
+ "Registry: 0 agents" and "GPU Bridge: not initialized" were the answers
+ whatever the machine held, so an operator who had put a signed agent on
+ the boot image was told there was none, in the same words as an operator
+ who had not. Worse, none of it ran: `handle-console-input` did not route
+ ModeAgent at all, so the menu drew and then swallowed every key, Back
+ included, and the only way out of the Agent Manager was to reboot.
+
+ The registry lives in the console state rather than in a global, so
+ registering an agent is a state transition like any other and the whole
+ dispatch stays a function from state to state.
+
+ The role sub-menu shares ModeAgent, so the title decides which of the
+ two key sets a keystroke belongs to. This is `dispatch-drive-menu`'s
+ arrangement and it is here for the same reason: a mode per sub-menu
+ would multiply ConsoleMode by every menu depth.
+
+  dispatch-agent-menu : Text, DevConsoleState -> [Device.Block] DevConsoleState
   dispatch-agent-menu (key) (state) =
-    if key == "status" then __record-set state "status" "Agent: no agent loaded"
-    else if key == "list" then __record-set state "status" "Registry: 0 agents"
+    if state.menu.title == role-switch-title then dispatch-role-key key state
+    else if key == "load" then agent-do-load state
+    else if key == "status" then __record-set state "status" (agent-status-text state)
+    else if key == "list" then __record-set state "status" (format-agent-registry (state.agents))
     else if key == "role" then __record-set (__record-set state "menu" role-switch-menu) "status" "Select role"
-    else if key == "gpu" then __record-set state "status" "GPU Bridge: not initialized"
+    else if key == "gpu" then __record-set state "status" (agent-gpu-probe gpu-bridge-init)
     else if key == "back" then __record-set (__record-set (__record-set state "mode" ModeMainMenu) "menu" main-menu) "status" "Codex Dev Console"
     else state
+
+ Loading is the bundled path and only the bundled path. It asks
+ `verify-bundled-agent`, which is the signature-then-digest-then-format
+ chain in `Works chapter AgentBundle`, and registers nothing when that
+ chain refuses. The refusal is reported with the reason the chain gave,
+ because "could not load agent" would hide which link broke, and which
+ link broke is the whole content of the answer.
+
+  agent-do-load : DevConsoleState -> [Device.Block] DevConsoleState
+  agent-do-load (state) = act
+    v <- verify-bundled-agent
+    when v
+      is PackageInvalid (why) -> __record-set state "status" ("Agent refused: " & why)
+      is PackageValid (pkg) -> agent-do-register state pkg
+  end
+
+  agent-do-register : DevConsoleState, AgentPackage -> DevConsoleState
+  agent-do-register (state) (pkg) =
+    let reg = agent-register (state.agents) (pkg.manifest) dev-console-role
+    in let note = "Registered " & pkg.manifest.name & " v" & pkg.manifest.version & " (" & show (reg.count) & " in registry)"
+    in let s = __record-set state "agents" reg
+    in __record-set s "status" note
+
+  agent-status-text : DevConsoleState -> Text
+  agent-status-text (state) =
+    let names = agent-names (state.agents)
+    in if list-length names == 0 then "Agent: none registered (Load Agent reads the boot image)"
+    else when agent-lookup (state.agents) (list-at names 0)
+      is None -> "Agent: registry disagrees with itself"
+      is Just (a) -> format-agent-info a
+
+ A role switch with no agent to switch says so rather than reporting the
+ new role, which would be a console telling the operator it had done
+ something to nothing.
+
+  dispatch-role-key : Text, DevConsoleState -> DevConsoleState
+  dispatch-role-key (key) (state) =
+    if key == "back" then __record-set (__record-set state "menu" agent-menu) "status" "Agent Manager"
+    else when role-config-for-key key
+      is None -> state
+      is Just (rc) -> agent-do-switch-role state rc
+
+  agent-do-switch-role : DevConsoleState, RoleConfig -> DevConsoleState
+  agent-do-switch-role (state) (rc) =
+    let names = agent-names (state.agents)
+    in let back = __record-set state "menu" agent-menu
+    in if list-length names == 0 then __record-set back "status" "No agent registered; role not switched"
+    else let name = list-at names 0
+    in let reg = agent-switch-role (state.agents) name rc
+    in let s = __record-set back "agents" reg
+    in __record-set s "status" (name & " role -> " & agent-role-label (rc.role))
 
 Section: Hypervisor Dispatch
 
@@ -330,7 +405,7 @@ Section: Rendering
     in when state.mode
       is ModeMainMenu -> header & render-menu (state.menu)
       is ModeBrowse -> header & render-menu (state.menu)
-      is ModeViewSource -> header & ["  (source viewer — see draw-console-screen)"]
+      is ModeViewSource -> header & ["  (source viewer -- see draw-console-screen)"]
       is ModeSearch ->
         let result-lines = for r in (state.search-results) -> "  " & format-search-result r
         in header & ["  Search: " & state.search-query, ""] & result-lines

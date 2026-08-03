@@ -423,15 +423,28 @@ Section: Builtin Dispatch
   sort-py-emitters : List PyBuiltinEmitter -> List PyBuiltinEmitter
   sort-py-emitters (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
 
+ The character predicates test CCE BANDS and must never be handed to a
+ Python character function. Codex text is CCE, which numbers its code
+ points by frequency: the letter a is 15 and the digits are 3..12, so
+ `chr(15).isalpha()` asks Python about a control character and answers
+ False. These three emitted exactly that until 2026-07-28, and the
+ measured result was worse than a few wrong letters: is-digit and
+ is-whitespace answered False for EVERY input, because no CCE code in
+ their range is a Unicode digit or space.
+
+ The bands are 1..2 whitespace, 3..12 digit, and 13..64 or 97..127
+ letter. The letter band has a hole because CCE's punctuation sits at
+ 65..96, between the two halves.
+
   py-builtin-emitters : List PyBuiltinEmitter = sort-py-emitters [
    PyBuiltinEmitter { name = "show", emit = \args arities -> "str(" & emit-py-expr (list-at args 0) arities & ")" },
    PyBuiltinEmitter { name = "negate", emit = \args arities -> "(-" & emit-py-expr (list-at args 0) arities & ")" },
    PyBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "print(" & emit-py-expr (list-at args 0) arities & ")" },
    PyBuiltinEmitter { name = "print-error-uni", emit = \args arities -> "__import__('sys').stderr.write(" & emit-py-expr (list-at args 0) arities & " + \"\\n\")" },
    PyBuiltinEmitter { name = "text-length", emit = \args arities -> "len(" & emit-py-expr (list-at args 0) arities & ")" },
-   PyBuiltinEmitter { name = "is-letter", emit = \args arities -> "chr(" & emit-py-expr (list-at args 0) arities & ").isalpha()" },
-   PyBuiltinEmitter { name = "is-digit", emit = \args arities -> "chr(" & emit-py-expr (list-at args 0) arities & ").isdigit()" },
-   PyBuiltinEmitter { name = "is-whitespace", emit = \args arities -> "chr(" & emit-py-expr (list-at args 0) arities & ").isspace()" },
+   PyBuiltinEmitter { name = "is-letter", emit = \args arities -> "(13 <= " & emit-py-expr (list-at args 0) arities & " <= 64 or 97 <= " & emit-py-expr (list-at args 0) arities & " <= 127)" },
+   PyBuiltinEmitter { name = "is-digit", emit = \args arities -> "(3 <= " & emit-py-expr (list-at args 0) arities & " <= 12)" },
+   PyBuiltinEmitter { name = "is-whitespace", emit = \args arities -> "(1 <= " & emit-py-expr (list-at args 0) arities & " <= 2)" },
    PyBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "int(" & emit-py-expr (list-at args 0) arities & ")" },
    PyBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "str(" & emit-py-expr (list-at args 0) arities & ")" },
    PyBuiltinEmitter { name = "char-code", emit = \args arities -> emit-py-expr (list-at args 0) arities },

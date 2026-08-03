@@ -28,7 +28,7 @@ produces an ordering where:
   `parse-type`
 
 In repl mode (which `build.ps1` uses via `-Repl`), scope accumulates
-forward — chapter N can see definitions from chapters 1..N-1 but not
+forward -- chapter N can see definitions from chapters 1..N-1 but not
 N+1. So ordering matters.
 
 ### 3. Structural inconsistency: the compiler uses subdirectories, nothing else does
@@ -43,7 +43,7 @@ directories** (`codex.foreword`, `codex.foreword.ai`,
 `codex.foreword.game`, `codex.os`, `codex.os.net`, `codex.os.trust`,
 `codex.games`, `codex.magic`, etc.). Each is a flat bag of `.codex`
 files. The naming convention `codex.foreword.game` implies hierarchy
-but the filesystem doesn't express it — they're all siblings.
+but the filesystem doesn't express it -- they're all siblings.
 
 ## Current Repository Layout
 
@@ -159,7 +159,7 @@ tools\                           # unchanged
 **Top-level reduction**: 31 directories -> 7 (`annotations`, `apps`,
 `build`, `codex`, `docs`, `old`, `seed`, `tools`).
 
-### Phase 1b: New `cites` syntax — explicit quire path
+### Phase 1b: New `cites` syntax -- explicit quire path
 
 The current `cites` syntax is ambiguous. `cites Foreword chapter Sort`
 works only because there's a flat lookup table mapping `Foreword` to a
@@ -221,7 +221,7 @@ becomes a two-level map keyed by `(family, quire)` instead of a flat
 quire name. `concat-codex-self.ps1` changes `$CodexDir` to
 `codex/compiler`. The `build/` rename from `codex.build/` requires
 updating every script that dot-sources `vm-config.ps1`. Apps and plugs
-get full subdirectory quire resolution — each leaf dir under `apps/`
+get full subdirectory quire resolution -- each leaf dir under `apps/`
 and `codex/plugs/` is a quire.
 
 ### Phase 2: Fix compiler scoping for self-compilation
@@ -234,11 +234,11 @@ Two changes needed in the compiler and build tooling:
 current alphabetical sort is wrong. The fix (partially implemented on
 the current default changelist):
 
-1. **Subdirectories before root** — `opening.codex` is the top-level
+1. **Subdirectories before root** -- `opening.codex` is the top-level
    orchestrator and must come last.
-2. **Directory order follows the dependency graph** — hardcoded:
+2. **Directory order follows the dependency graph** -- hardcoded:
    `Core → Ast → Syntax → Types → Semantics → IR → Emit`.
-3. **Topological sort within each directory** — files that declare
+3. **Topological sort within each directory** -- files that declare
    `cites` dependencies are placed after the files they cite.
 
 This is sufficient for non-repl mode compilation. For repl mode, the
@@ -310,9 +310,9 @@ Other changes:
 
 - `$QuireDirs` map in `test-compile.ps1` and `test-compile-batch.ps1`
   becomes a two-level `(family, quire)` -> path map
-- `concat-codex-self.ps1` — `$CodexDir` -> `codex/compiler`,
+- `concat-codex-self.ps1` -- `$CodexDir` -> `codex/compiler`,
   `$ForewordDir` -> `codex/foreword/core`
-- `build/` rename — every script that dot-sources `vm-config.ps1`
+- `build/` rename -- every script that dot-sources `vm-config.ps1`
   updates from `codex.build` to `build`; plugs scripts update their
   relative paths (now under `codex/plugs/`)
 - `build/build.ps1` references like `codex.test\factorial.codex`
@@ -325,10 +325,10 @@ preserved. Agent workspaces (`BigWhite_Codex_cam`, etc.) need a
 
 ## Priority
 
-1. **Fix the concat ordering** — unblocks the build immediately
-2. **Fix repl scope accumulation** — makes the build robust
-3. **Rebuild the seed** — restores the bootstrap chain
-4. **Restructure directories** — do it right after the seed is green,
+1. **Fix the concat ordering** -- unblocks the build immediately
+2. **Fix repl scope accumulation** -- makes the build robust
+3. **Rebuild the seed** -- restores the bootstrap chain
+4. **Restructure directories** -- do it right after the seed is green,
    while the codebase is at a natural boundary; the longer we wait
    the more files accumulate in the flat layout and the bigger the
    move CL becomes
@@ -349,5 +349,5 @@ preserved. Agent workspaces (`BigWhite_Codex_cam`, etc.) need a
 - The `tools/` directory contains `codex-vm.c`, `status-server.ps1`,
   etc. Should it move under `build/tools`? It's not Codex source so
   it doesn't belong under `codex/`. Recommendation: keep `tools/`
-  at top level — it contains binaries and host utilities, not Codex
+  at top level -- it contains binaries and host utilities, not Codex
   language source.

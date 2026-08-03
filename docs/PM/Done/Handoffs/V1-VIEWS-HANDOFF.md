@@ -1,6 +1,6 @@
 **Date**: 2026-03-22
 **Branch**: `master`
-**Commit**: `2f6392c` — fix: apply linux review — view name validation, existence guards, edge-case tests
+**Commit**: `2f6392c` -- fix: apply linux review -- view name validation, existence guards, edge-case tests
 **For**: Linux Agent (Phase 3 implementation)
 
 ---
@@ -9,17 +9,17 @@
 
 ### Phase 1: Named Views ✅
 
-`src/Codex.Repository/FactStore.Views.cs` — all CRUD ops:
-- `CreateView(name, copyFromCurrent)` — with `ValidateViewName` + canonical guard
-- `ListViews()` — legacy bridge + `Map.Count`
+`src/Codex.Repository/FactStore.Views.cs` -- all CRUD ops:
+- `CreateView(name, copyFromCurrent)` -- with `ValidateViewName` + canonical guard
+- `ListViews()` -- legacy bridge + `Map.Count`
 - `SwitchView(name)` / `DeleteView(name)` / `GetCurrentViewName()`
 - `GetNamedView(name)` / `UpdateNamedView(name, def, hash)` / `RemoveFromView(name, def)`
-- `ViewExists(name)` — checks both `views/` dir and legacy `view.json`
+- `ViewExists(name)` -- checks both `views/` dir and legacy `view.json`
 
 Design decisions:
 - Legacy `view.json` serves as canonical until explicitly migrated
 - `ResolveViewFile` handles the two-path resolution
-- All read/write methods guard on existence (the I/O APIs are forgiving — silent
+- All read/write methods guard on existence (the I/O APIs are forgiving -- silent
   corruption is worse than an exception here)
 - `ValidateViewName` trusts the non-nullable type contract, uses `Trim()` + length
 
@@ -32,7 +32,7 @@ Design decisions:
 - Validates each is a Definition (not Trust, Supersession, etc.)
 - Delegates to checker for semantic validation
 
-`tools/Codex.Cli/ViewConsistencyChecker.cs` — full pipeline implementation:
+`tools/Codex.Cli/ViewConsistencyChecker.cs` -- full pipeline implementation:
 - Parse (with prose detection) → Desugar → NameResolve → TypeCheck → LinearityCheck
 - Combines all view definitions into a single `Module` for joint checking
 
@@ -40,7 +40,7 @@ Design decisions:
 
 ---
 
-## What's Next: Phase 3 — View Composition
+## What's Next: Phase 3 -- View Composition
 
 Three operations to add to `FactStore.Views.cs`:
 
@@ -98,7 +98,7 @@ Add to `ViewTests.cs`:
 
 - `m_` prefix on private fields, PascalCase on methods/types
 - No `var` when type isn't obvious from RHS
-- No XML doc comments — code should be self-documenting
+- No XML doc comments -- code should be self-documenting
 - Use `Map<K,V>` / `ValueMap<K,V>` from `Codex.Core`, not `ImmutableDictionary`
 - Existence guards on source views (they'd silently return empty otherwise)
 - `ValidateViewName` on any user-provided view name

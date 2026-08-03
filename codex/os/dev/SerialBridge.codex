@@ -1,0 +1,163 @@
+Chapter: SerialBridge
+  cites Foreword chapter CCE
+  grounds Device.Port
+
+ A way for the dev console to say something on a channel that is not the
+ dev console. Every other inspector in this quire reports THROUGH the
+ screen it is trying to tell you about, which is fine until the screen is
+ the thing that is wrong; then the instrument and the subject fail
+ together and the reading is silence. This chapter is the second wire.
+
+ THE PORT IS THE ONE THE COMPILER ALREADY TALKS ON. `emit-serial-send-rdi`
+ polls the line status register at 1021 for the transmit-holding bit and
+ then writes the byte to 1016, and so does everything below. That is
+ deliberate: it means a mirrored line arrives in the same stream a test
+ harness already captures, so the mirror can be proven to have reached the
+ wire rather than merely to have been asked to.
+
+ A MIRROR MUST NEVER HANG THE THING IT MIRRORS, so the transmit wait is
+ fuel-capped and a byte that cannot be sent is DROPPED and counted. The
+ compiler's own emitter spins on that bit forever, which is right for a
+ compiler whose only job is to finish printing and wrong for a debugger: a
+ console that froze because nothing was draining COM1 would have turned a
+ diagnostic aid into the fault. Every writer answers how many bytes it
+ actually put on the wire, so a caller can tell a short write from a
+ complete one instead of assuming.
+
+ TEXT IS CCE INSIDE THE COMPILER AND THIS IS AN I/O BOUNDARY. `char-code`
+ answers a CCE code point, not ASCII, so a byte taken straight from it
+ would put `16 0d 15 11` on the wire for "derived". Every character goes
+ through `to-unicode` here. This is the same conversion that was missing
+ from a TLS hostname and every key-schedule label until 2026-07-13, and it
+ is invisible to a round-trip test because both ends agree; the test for
+ this chapter therefore reads the bytes back as the HARNESS sees them,
+ which is the only reading that can tell the two apart.
+
+ Anything that is not printable ASCII becomes `?`. A mirror is a byte
+ channel and a debugger's audience is a terminal, so widening this to
+ multi-byte output would buy nothing a reader could use, but the
+ substitution is lossy and is named here rather than left to be
+ discovered.
+
+ THE READER IS NON-BLOCKING AND CARRIES AN EFFECT ROW FOR A REASON. A
+ zero-argument definition is re-evaluated at every mention, and a read
+ that CONSUMES the byte it returns would then quietly eat one byte per
+ mention. Publishing `[Device.Port]` forces the caller to bind it once
+ with an act-bind, which is the difference between a value and an event.
+
+ We say:
+
+Section: The Line
+
+  sb-com1-data : Integer = 1016
+  sb-com1-lsr : Integer = 1021
+  sb-lsr-thre : Integer = 32
+  sb-lsr-dr : Integer = 1
+  sb-wait-fuel : Integer = 100000
+
+ Answers the fuel left when the line went ready, or negative one when it
+ never did. Returning the remaining fuel rather than a Boolean costs
+ nothing and makes a nearly-exhausted wait visible to anyone who wants it.
+
+  sb-wait-thre : Integer -> Integer
+  sb-wait-thre (fuel) =
+    if fuel <= 0 then 0 - 1
+    else if bit-and (port-in-byte sb-com1-lsr) sb-lsr-thre /= 0 then fuel
+    else sb-wait-thre (fuel - 1)
+
+Section: Writing
+
+  sb-put-byte : Integer -> Integer
+  sb-put-byte (b) =
+    if sb-wait-thre sb-wait-fuel < 0 then 0
+    else let w = port-out-byte sb-com1-data b
+    in 1
+
+ The CCE code point becomes a Unicode one and then a byte, and everything
+ outside printable ASCII collapses to `?`. `to-unicode` answers negative
+ one for a code point it has no mapping for, and that arm has to be
+ handled here rather than trusted away: a carriage return is genuinely
+ unmapped, and a raw negative reaching `port-out-byte` would write a
+ byte nobody chose.
+
+  sb-byte-for : Integer -> Integer
+  sb-byte-for (cce) =
+    let u = to-unicode cce
+    in if u < 32 then 63
+    else if u > 126 then 63
+    else u
+
+  sb-put-text : Text, Integer, Integer, Integer -> Integer
+  sb-put-text (t) (i) (len) (n) =
+    if i >= len then n
+    else let b = sb-byte-for (char-code (char-at t i))
+    in sb-put-text t (i + 1) len (n + sb-put-byte b)
+
+  sb-write-text : Text -> [Device.Port] Integer
+  sb-write-text (t) = sb-put-text t 0 (text-length t) 0
+
+ The newline is written as a bare line feed and is COUNTED, so a caller
+ comparing the answer against `text-length` is comparing against the
+ wrong number by exactly one. That is stated because the alternative --
+ not counting it -- would mean the function reports fewer bytes than it
+ sent, and a drop and a deliberate omission would then look identical.
+
+  sb-write-line : Text -> [Device.Port] Integer
+  sb-write-line (t) =
+    let n = sb-put-text t 0 (text-length t) 0
+    in n + sb-put-byte 10
+
+ A labelled line, because every caller in the console is about to build
+ the same shape and a mirror stream with no labels is a wall of values.
+
+  sb-write-field : Text, Text -> [Device.Port] Integer
+  sb-write-field (label) (value) = sb-write-line (label & ": " & value)
+
+Section: Reading
+
+ Negative one means the line is idle. It is not an error and callers must
+ not report it as one: an idle line is the normal answer on almost every
+ poll.
+
+  sb-read-byte : [Device.Port] Integer
+  sb-read-byte =
+    if bit-and (port-in-byte sb-com1-lsr) sb-lsr-dr == 0 then 0 - 1
+    else port-in-byte sb-com1-data
+
+ Whether a received byte ends a line. Both endings are accepted because
+ both arrive: a terminal sends carriage return, a file redirected into the
+ port sends line feed, and a caller that accepted only one of them would
+ work for whichever was tried first and hang for the other.
+
+  sb-is-eol : Integer -> Boolean
+  sb-is-eol (b) = if b == 13 then True else b == 10
+
+  sb-is-printable : Integer -> Boolean
+  sb-is-printable (b) = if b < 32 then False else b < 127
+
+Section: Assembling A Line
+
+ THE CONVERSION RUNS THE OTHER WAY HERE AND IT IS THE SAME TRAP. A byte
+ off the wire is ASCII; Text is CCE. Appending the byte directly would
+ build a Text whose characters are numerically the ASCII values, and then
+ `"mem"` typed down the serial line would not equal the `"mem"` the
+ dispatcher compares against -- not because the comparison is wrong but
+ because the two strings genuinely differ. Nothing would report an error;
+ remote commands would simply never match, which is indistinguishable from
+ a line that never arrived. `from-unicode` is what closes it, and it
+ answers negative one for a byte it cannot map, which is refused rather
+ than appended.
+
+ These are pure and take no effect row on purpose: line assembly is
+ ordinary text handling, and keeping it out of the reading function is
+ what lets it be tested without a machine or a serial port.
+
+  sb-char-for : Integer -> Text
+  sb-char-for (b) =
+    let cce = from-unicode b
+    in if cce < 0 then "" else char-to-text (code-to-char cce)
+
+  sb-append-byte : Text, Integer -> Text
+  sb-append-byte (acc) (b) =
+    if sb-is-printable b == False then acc
+    else acc & sb-char-for b

@@ -1,0 +1,90 @@
+Chapter: IdtInspectTest
+  cites Dev chapter IdtInspector
+  cites Dev chapter HexFormat
+
+ The interrupt inspector against the table the boot path actually built.
+
+ NO ABSOLUTE HANDLER ADDRESS IS ASSERTED, deliberately. A gate's offset is
+ the address of a stub in this binary, so an expected file naming one
+ would have to be rewritten every time anything above it in the image
+ moved, and it would be measuring the linker rather than the inspector.
+ What is stable is the RELATIONSHIP the emitter guarantees: the stubs are
+ twelve bytes apart, so vector one is twelve past vector zero and vector
+ thirty-two is three hundred and eighty-four past it. That pins the
+ assembly of the offset out of its three separate fields, which is the
+ part of the decode that can actually be wrong, and it does it without
+ naming a number that churns.
+
+ THE ABSENT-GATE CASE IS MANUFACTURED, because the machine will not
+ supply one. All 256 gates are present on a booted system, so
+ `NOT PRESENT` and the unknown-type fallback are arms no reading of a
+ healthy table can reach; an inspector that had them hardwired the wrong
+ way would pass a test that only ever looked at real entries. Vector 255
+ is written to zero, read back, and restored, and the restored read is
+ printed too -- without it a poke that failed and a decode that ignored
+ the attribute byte would look the same.
+
+ THE MASK LINES ARE THE DETERMINISTIC HALF OF THE CONTROLLER READ. IRR
+ and ISR move as interrupts arrive and retire, so asserting them would be
+ asserting where in a timer period the test happened to run. The two
+ masks are written once by `emit-pic-init` and never again, and they are
+ also the more interesting reading: the master's `#ec` leaves the timer,
+ the keyboard and COM1 unmasked, and the cascade line MASKED, which with
+ the slave's `#ff` says the second controller cannot deliver anything at
+ all. Whether that is intended is not this test's question; that it is
+ the state, and that the inspector reports it, is.
+
+ We say:
+
+Section: Joining
+
+  joined : List Text, Integer, Text -> Text
+  joined (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else if text-length acc == 0 then joined xs (i + 1) (list-at xs i)
+    else joined xs (i + 1) (acc & " | " & list-at xs i)
+
+Section: Counting Present Gates
+
+  present-count : Integer, Integer -> Integer
+  present-count (vec) (acc) =
+    if vec >= 256 then acc
+    else if ii-gate-present (ii-entry-addr vec) then present-count (vec + 1) (acc + 1)
+    else present-count (vec + 1) acc
+
+Section: Body
+
+  opening : [Console, Device.Port] Nothing
+  opening = act
+    let a0 = ii-entry-addr 0
+    in let a1 = ii-entry-addr 1
+    in let a8 = ii-entry-addr 8
+    in let a32 = ii-entry-addr 32
+    in let a255 = ii-entry-addr 255
+    in let saved = peek-byte a255 5
+    in act
+      print-line-uni ("sel0: #" & u16-to-hex (ii-gate-selector a0))
+      print-line-uni ("attr0: " & ii-gate-attrs a0)
+      print-line-uni ("attr8: " & ii-gate-attrs a8)
+      print-line-uni ("attr32: " & ii-gate-attrs a32)
+      print-line-uni ("stride1: " & show (ii-gate-offset a1 - ii-gate-offset a0))
+      print-line-uni ("stride32: " & show (ii-gate-offset a32 - ii-gate-offset a0))
+      print-line-uni ("present-count: " & show (present-count 0 0))
+
+      let w = poke-byte a255 5 0
+      in print-line-uni ("absent255: " & ii-gate-attrs a255)
+
+      let r = poke-byte a255 5 saved
+      in print-line-uni ("restored255: " & ii-gate-attrs a255)
+
+      print-line-uni ("low: " & joined (ii-entry-report (0 - 1)) 0 "")
+      print-line-uni ("high: " & joined (ii-entry-report 256) 0 "")
+
+      print-line-uni ("key: " & ii-key-line)
+      print-line-uni ("fault: " & joined ii-fault-report 0 "")
+
+      irq <- ii-irq-report
+      print-line-uni ("master-imr: " & list-at irq 2)
+      print-line-uni ("slave-imr: " & list-at irq 5)
+    end
+  end

@@ -1,4 +1,4 @@
-# BSOD — 2026-05-02 ~21:10 PM — Nib sweep -Jobs 4
+# BSOD -- 2026-05-02 ~21:10 PM -- Nib sweep -Jobs 4
 
 **Date:** 2026-05-02 ~21:10 PM (estimated from last successful output)
 **Reporter:** Nib
@@ -7,10 +7,10 @@
 
 ## What Was Running
 
-- **Nib**: `sweep.ps1 -Jobs 4` — 4 parallel QEMU guests compiling/running
+- **Nib**: `sweep.ps1 -Jobs 4` -- 4 parallel QEMU guests compiling/running
   samples. This was the second attempt; the first was transport-killed
   mid-run (socket write error) and retried.
-- **Cam**: unknown — may have been preparing an integration push.
+- **Cam**: unknown -- may have been preparing an integration push.
 - Config: `-accel whpx,hyperv=off`, `-machine kernel-irqchip=off`,
   no CPU pinning. Standard qemu-config.ps1 defaults.
 

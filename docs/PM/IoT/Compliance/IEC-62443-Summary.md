@@ -1,4 +1,4 @@
-# IEC 62443 — Industrial Automation and Control Systems Security
+# IEC 62443 -- Industrial Automation and Control Systems Security
 
 **Source**: IEC, Wikipedia (structure confirmed)
 **Status**: Active; key parts published 2013-2024, some in development
@@ -26,7 +26,7 @@
 | 62443-3-2 | Security risk assessment and system design | 2020 | System designers |
 | 62443-3-3 | System security requirements and security levels | 2013 | System integrators |
 
-### Component (Series 4) — MOST RELEVANT TO CODEX
+### Component (Series 4) -- MOST RELEVANT TO CODEX
 | Part | Title | Year | Audience |
 |---|---|---|---|
 | 62443-4-1 | Secure product development lifecycle requirements | 2018 | Product suppliers |
@@ -55,11 +55,11 @@
 3. **FR 3**: System Integrity
 4. **FR 4**: Data Confidentiality
 5. **FR 5**: Restricted Data Flow
-6. **FR 6**: Timely Response to Events — Codex mapping:
+6. **FR 6**: Timely Response to Events -- Codex mapping:
    `[HardRealtime]` compile-time WCET proofs guarantee bounded
    response time. Deadline miss detection via watchdog with fact
    store logging provides auditable evidence.
-7. **FR 7**: Resource Availability — Codex mapping: linear types
+7. **FR 7**: Resource Availability -- Codex mapping: linear types
    guarantee no resource leaks; `[HardRealtime]` guarantees bounded
    memory (no OOM) via region-only allocation with no heap. Effect
    types prevent unauthorized resource consumption.

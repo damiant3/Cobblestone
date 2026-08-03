@@ -1,4 +1,4 @@
-# GameState — Zone Model and Game Record
+# GameState -- Zone Model and Game Record
 
 ## Zones
 
@@ -47,7 +47,7 @@ GeneralState = record {
 }
 ```
 
-The General is always on the battlefield — it cannot be exiled,
+The General is always on the battlefield -- it cannot be exiled,
 bounced to hand, or destroyed. Effects that would remove the General
 from the battlefield are negated. The General can be tapped and
 untaps normally during the untap step.
@@ -56,9 +56,9 @@ Damage dealt to the General reduces its `life`, not its toughness.
 The General's toughness determines how much damage it can absorb in
 a single combat step before excess carries over (see
 [Combat.md](Combat.md)), but the General is never destroyed by
-damage — it stays on the battlefield until `life` reaches 0.
+damage -- it stays on the battlefield until `life` reaches 0.
 
-**Army Loyalty** is derived, not stored — it is the sum of CMC of all
+**Army Loyalty** is derived, not stored -- it is the sum of CMC of all
 non-token creatures the player controls. It changes as creatures enter
 and leave the battlefield. See [Cards.md](Cards.md) for how the
 General's abilities consume and scale with army loyalty.

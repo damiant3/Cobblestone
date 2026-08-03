@@ -1,4 +1,4 @@
-# STM32F4/H7 — ARM Cortex-M IoT MCU Target
+# STM32F4/H7 -- ARM Cortex-M IoT MCU Target
 
 **Source**: STMicroelectronics (page timed out; specs from datasheet knowledge)
 **Role**: Primary ARM Cortex-M target for Codex IoT
@@ -55,7 +55,7 @@
   - Max period: 2^24 / 168 MHz = 99.86 ms
   - Used as OS tick source and `[HardRealtime]` deadline timer
 - MPU: 8 or 16 regions (configurable protection)
-- No MMU — flat address space (similar to Codex's bare-metal model)
+- No MMU -- flat address space (similar to Codex's bare-metal model)
 - Flash starts at 0x08000000, SRAM at 0x20000000
 - Peripheral registers at 0x40000000-0x5FFFFFFF
 - Boot sequence: SP from vector[0], PC from vector[1] (reset handler)
@@ -65,7 +65,7 @@
 
 ## Key Difference from x86
 
-Cortex-M has NO MMU — the address space is flat, which is actually
+Cortex-M has NO MMU -- the address space is flat, which is actually
 closer to Codex's bare-metal model than x86 with page tables. The
 MPU provides protection regions but not virtual memory. This simplifies
 the boot infrastructure significantly: no page table setup, no long

@@ -10,7 +10,7 @@ Theme/Render enrichment (done CL 5611), system modules (done)
 ## Current State (CL 5660)
 
 The GUI OS has strong system utilities, a rich widget framework, and
-good device management — but lacks the desktop shell and settings
+good device management -- but lacks the desktop shell and settings
 panels that make it feel like an OS to use.
 
 **Completeness: ~45% of a standard desktop OS.**
@@ -52,12 +52,12 @@ have no home in the UI.
 
 Persistent bar at the bottom (or top) of the screen. Sections:
 
-- **App launcher button** (left) — opens the start menu
-- **Pinned apps** — icon buttons for favorites
-- **Running apps** — buttons for open windows, click to focus
-- **System tray** (right) — clock, volume icon, network icon, battery
+- **App launcher button** (left) -- opens the start menu
+- **Pinned apps** -- icon buttons for favorites
+- **Running apps** -- buttons for open windows, click to focus
+- **System tray** (right) -- clock, volume icon, network icon, battery
   icon, notification bell with unread count, keyboard layout indicator
-- **Workspace indicator** — dots/numbers for virtual desktops
+- **Workspace indicator** -- dots/numbers for virtual desktops
 
 State: pinned app list, running app list, tray icon states, clock
 text, taskbar position (top/bottom), auto-hide toggle.
@@ -68,11 +68,11 @@ Widget: WkPanel DirRow with left/center/right sections.
 
 Overlay that opens on taskbar button click or keyboard shortcut.
 
-- **Search bar** at top — filters apps by name
-- **Pinned section** — grid of favorite app icons
-- **All apps list** — alphabetical, scrollable
-- **Recent apps** — last 5 launched
-- **Power menu** — shutdown, restart, lock, sleep
+- **Search bar** at top -- filters apps by name
+- **Pinned section** -- grid of favorite app icons
+- **All apps list** -- alphabetical, scrollable
+- **Recent apps** -- last 5 launched
+- **Power menu** -- shutdown, restart, lock, sleep
 
 App registry: list of `AppEntry` records with id, name, icon, command,
 category (System, Productivity, Development, Media, Games).
@@ -81,11 +81,11 @@ category (System, Productivity, Development, Media, Games).
 
 Background image/color behind all windows.
 
-- **Solid color** — pick from palette or custom
-- **Gradient** — top-to-bottom or side-to-side with two colors
-- **Pattern** — tiled procedural patterns (grid, dots, stripes)
-- **Image** — load from file (future: when image decode is wired)
-- **Slideshow** — rotate through a folder of images on a timer
+- **Solid color** -- pick from palette or custom
+- **Gradient** -- top-to-bottom or side-to-side with two colors
+- **Pattern** -- tiled procedural patterns (grid, dots, stripes)
+- **Image** -- load from file (future: when image decode is wired)
+- **Slideshow** -- rotate through a folder of images on a timer
 
 State: mode, color1, color2, pattern-id, image-path, slideshow-interval.
 The compositor draws the wallpaper as the bottommost surface.
@@ -94,11 +94,11 @@ The compositor draws the wallpaper as the bottommost surface.
 
 When a window is dragged to a screen edge, snap it to a zone.
 
-- **Left half / right half** — drag to left/right edge
-- **Top half / bottom half** — drag to top/bottom edge  
-- **Quarters** — drag to corners
-- **Maximize** — drag to top center
-- **Custom zones** — power user grid layout (future)
+- **Left half / right half** -- drag to left/right edge
+- **Top half / bottom half** -- drag to top/bottom edge  
+- **Quarters** -- drag to corners
+- **Maximize** -- drag to top center
+- **Custom zones** -- power user grid layout (future)
 
 State: snap zones per monitor, active snap preview, snap history for
 undo. Keyboard shortcuts: Super+Left/Right/Up/Down.
@@ -108,9 +108,9 @@ undo. Keyboard shortcuts: Super+Left/Right/Up/Down.
 Unified search across files, apps, settings, and commands.
 
 - **Search bar** overlay (keyboard shortcut to open)
-- **Result categories** — Apps, Files, Settings, Commands
-- **Inline preview** — show file contents or setting location
-- **Fuzzy matching** — substring and prefix matching
+- **Result categories** -- Apps, Files, Settings, Commands
+- **Inline preview** -- show file contents or setting location
+- **Fuzzy matching** -- substring and prefix matching
 
 State: query, results by category, selected index, history.
 

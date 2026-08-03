@@ -1,4 +1,4 @@
-# MathBook — Symbolic Math Notebook
+# MathBook -- Symbolic Math Notebook
 
 ## Vision
 
@@ -32,7 +32,7 @@ with operator precedence.
 ## Notebook Model
 
 A notebook is a list of cells. Each cell has an input, a parsed
-expression, and a computed result. Cells share a symbol table — define
+expression, and a computed result. Cells share a symbol table -- define
 `f(x) = x^2` in one cell, differentiate it in the next. The widget
 builder produces the notebook UI. The LaTeX printer feeds MathJax in
 the browser.

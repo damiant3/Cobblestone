@@ -84,9 +84,9 @@ first check.
 ## The Problem
 
 The CRA mandates secure update mechanisms; ETSI 5.3 and NISTIR
-8259A "software update" say the same. The pieces exist — signed
+8259A "software update" say the same. The pieces exist -- signed
 CDX binaries, a 5-phase verifier, a network stack, LwM2M Object 5
-specified in the protocol design — but no end-to-end flow connects
+specified in the protocol design -- but no end-to-end flow connects
 them, and the existing verifier assumes the whole binary sits in
 memory, which a 192 KB-SRAM device cannot do for a multi-hundred-KB
 image.
@@ -94,12 +94,12 @@ image.
 The hard requirement, stated in the agent prompt and restated here
 as the design's invariant: **a firmware image that fails signature
 or capability verification is rejected before any byte of it
-executes.** Not quarantined after boot — never booted.
+executes.** Not quarantined after boot -- never booted.
 
 ## Constraints
 
 1. The unit of update is a signed CDX. No delta/patch formats in
-   the first design (deltas mutate an image before verification —
+   the first design (deltas mutate an image before verification --
    exactly the wrong place for cleverness; revisit only with a
    verify-after-reconstruct design and a real bandwidth need).
 2. Verification uses the existing verifier phases unmodified:
@@ -109,7 +109,7 @@ executes.** Not quarantined after boot — never booted.
 3. Power loss at any instant must leave the device bootable into
    exactly one of: the old firmware, or the fully-verified new
    firmware. Nothing in between.
-4. Every state transition is recorded as a fact — the update
+4. Every state transition is recorded as a fact -- the update
    history is compliance evidence (`ComplianceEvidence.md`).
 5. Memory honesty: download and verification must work in
    streaming fashion on the smallest target (STM32F4, 192 KB SRAM,
@@ -128,7 +128,7 @@ executes.** Not quarantined after boot — never booted.
 - **Device**: LwM2M client + verifier + boot selector.
 
 A device accepts an image only if the *author* key meets the trust
-threshold for the firmware-update capability — the transport
+threshold for the firmware-update capability -- the transport
 (server) merely carries bytes. Compromising the fleet server gains
 distribution, not execution.
 
@@ -142,7 +142,7 @@ distribution, not execution.
 
 The HAL grows a `Flash` effect (linear bank handle: open-bank →
 write-page* → seal-bank) used only by the updater; the capability
-manifest of ordinary firmware need not include it — firmware that
+manifest of ordinary firmware need not include it -- firmware that
 cannot rewrite flash *by type* is itself an evidence claim.
 
 ### The flow
@@ -184,7 +184,7 @@ cannot rewrite flash *by type* is itself an evidence claim.
 Gate A on-stream plus Gate B from staging satisfies the invariant
 with bounded RAM: at no point does the device hold the image in
 memory, and no instruction from the new image executes before
-both gates have passed — the boot selector's re-check closes the
+both gates have passed -- the boot selector's re-check closes the
 TOCTOU window between Gate B and the bank swap.
 
 ### Anti-rollback
@@ -193,7 +193,7 @@ The release fact carries a monotonic sequence number per device
 model, signed by the publisher. The device persists the highest
 *committed* sequence (a fact, surviving updates) and refuses lower
 ones at Gate B. This is deliberately a fact-layer rule, not a CDX
-header field — the header stays architecture-truth, the release
+header field -- the header stays architecture-truth, the release
 fact carries deployment-truth. Rollback to a known-good *older*
 image after a failed boot is not a violation: the candidate never
 committed, so the sequence never advanced.
@@ -238,9 +238,9 @@ evidence claim is "key rotation by full trust-store reprovision."
 Streaming hash is constant-heap (`sha256-buf`); block writes are
 page-buffer sized (the one persistent buffer, flash-page bytes).
 Gate B reads header + capability/effect/proof tables from staging
-— KBs, not the image. Ed25519 verify ~1M cycles: sub-second at
+-- KBs, not the image. Ed25519 verify ~1M cycles: sub-second at
 MCU clocks, twice per update (Gate A, selector re-check) plus once
-at Gate B if re-hashed — acceptable; re-use Gate A's stored hash
+at Gate B if re-hashed -- acceptable; re-use Gate A's stored hash
 where the staging bank is write-sealed. The boot selector must be
 small (it lives in every boot path): hash + signature + bank
 select only, no policy engine. Verdict: low risk; the selector's
@@ -264,7 +264,7 @@ the device's policy does not grant (e.g., Network + Flash on an
 air-gapped sensor that only grants Gpio + Uart). Gate B's
 capability policy check (verifier phase 3) rejects the image.
 The capability manifest in the CDX header is inside the signed
-content range — the attacker cannot strip capabilities without
+content range -- the attacker cannot strip capabilities without
 invalidating the signature.
 
 **Replay of older firmware** (rollback attack): attacker captures
@@ -276,7 +276,7 @@ sequence is lower; the update is rejected. The committed sequence
 is a fact persisted across updates, not a volatile counter.
 
 **Compromised fleet server**: the fleet server distributes images
-but does not sign them — the publisher (with the author key)
+but does not sign them -- the publisher (with the author key)
 signs. A compromised fleet server can distribute any image, but
 the device only accepts images whose author key meets the trust
 threshold in the device's own trust lattice. The attacker must
@@ -295,7 +295,7 @@ where the device has a partially-marked candidate.
 **Fault injection during signature verification**: an attacker
 with physical access and a voltage glitcher attempts to skip the
 Ed25519 verification in the boot selector (step 6). The boot
-selector re-runs Gate A (hash + signature) — a single glitch must
+selector re-runs Gate A (hash + signature) -- a single glitch must
 corrupt both the hash comparison and the signature verification
 to succeed. Countermeasure: the boot selector should verify the
 signature, then verify it again with a different register
@@ -307,7 +307,7 @@ not yet designed but is noted as a Phase B3 hardening item.
 1. **Boot selector placement per board.** STM32 option-byte bank
    swap vs a tiny Codex first-stage; ESP32-C6 sits behind
    Espressif's ROM+bootloader (their secure boot verifies *their*
-   format — our selector runs inside the app slot); Pi tryboot.
+   format -- our selector runs inside the app slot); Pi tryboot.
    Per-board appendices needed during implementation.
 2. **Health-check definition.** Re-registration is necessary;
    what application-level probe is sufficient, and who declares

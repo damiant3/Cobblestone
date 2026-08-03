@@ -156,7 +156,7 @@ try {
     }
     Start-Sleep -Seconds 2
     if (-not $gdbProc.HasExited) {
-        Write-Host "GDB timed out — killing."
+        Write-Host "GDB timed out -- killing."
         Stop-Process -Id $gdbProc.Id -Force -ErrorAction SilentlyContinue
     }
 

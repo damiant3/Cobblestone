@@ -1,4 +1,5 @@
-Chapter: Bezier
+Chapter: Bezier
+  cites Foreword chapter MathLib
 
  Bezier curves (quadratic and cubic) using fixed-point (scale 1000).
  Evaluates points along curves, computes arc length approximations,
@@ -15,28 +16,42 @@ Section: Types
     vz : Integer
   }
 
+ These evaluate by de Casteljau's construction, repeated linear interpolation,
+ rather than by summing basis weights. The reason is exactness at the cases a
+ curve is defined by, and it took two attempts to get there.
+
+ The weights cannot be represented. At a t of 250 the true cubic weights are
+ .421875, .421875, .140625 and .015625, whose fractional parts sum to exactly
+ three; at scale 1000 truncating each loses those three and rounding each gains
+ one, so no per-weight rounding makes them sum to 1000. Computed as they were,
+ they summed to 996 and every point on the curve was pulled four parts in a
+ thousand toward the origin. Summing the products before dividing, which was
+ the first fix, removes one truncation per control point and leaves this one:
+ the degenerate curve was still 99, 199, 298 at a t of 250.
+
+ A lerp has no such problem. Interpolating between two EQUAL points answers
+ that point for any t, because the difference is zero before it is scaled, so a
+ curve whose control points coincide is exact by construction rather than by
+ arithmetic luck. Endpoints and evenly spaced collinear points are exact for
+ the same reason.
+
+Section: Interpolation
+  bez-lerp : BezVec, BezVec, Integer -> BezVec
+  bez-lerp (p) (q) (t) =
+    BezVec { vx = p.vx + (q.vx - p.vx) * t / 1000, vy = p.vy + (q.vy - p.vy) * t / 1000, vz = p.vz + (q.vz - p.vz) * t / 1000 }
+
 Section: Quadratic
   bezier2-eval : BezVec, BezVec, BezVec, Integer -> BezVec
   bezier2-eval (p0) (p1) (p2) (t) =
-    let inv = 1000 - t
-    in let a = inv * inv / 1000
-    in let b = 2 * inv * t / 1000
-    in let c = t * t / 1000
-    in BezVec { vx = a * p0.vx / 1000 + b * p1.vx / 1000 + c * p2.vx / 1000, vy = a * p0.vy / 1000 + b * p1.vy / 1000 + c * p2.vy / 1000, vz = a * p0.vz / 1000 + b * p1.vz / 1000 + c * p2.vz / 1000 }
+    bez-lerp (bez-lerp p0 p1 t) (bez-lerp p1 p2 t) t
 
 Section: Cubic
   bezier3-eval : BezVec, BezVec, BezVec, BezVec, Integer -> BezVec
   bezier3-eval (p0) (p1) (p2) (p3) (t) =
-    let inv = 1000 - t
-    in let inv2 = inv * inv / 1000
-    in let inv3 = inv2 * inv / 1000
-    in let t2 = t * t / 1000
-    in let t3 = t2 * t / 1000
-    in let a = inv3
-    in let b = 3 * inv2 * t / 1000
-    in let c = 3 * inv * t2 / 1000
-    in let d = t3
-    in BezVec { vx = a * p0.vx / 1000 + b * p1.vx / 1000 + c * p2.vx / 1000 + d * p3.vx / 1000, vy = a * p0.vy / 1000 + b * p1.vy / 1000 + c * p2.vy / 1000 + d * p3.vy / 1000, vz = a * p0.vz / 1000 + b * p1.vz / 1000 + c * p2.vz / 1000 + d * p3.vz / 1000 }
+    let ab = bez-lerp p0 p1 t
+    in let bc = bez-lerp p1 p2 t
+    in let cd = bez-lerp p2 p3 t
+    in bez-lerp (bez-lerp ab bc t) (bez-lerp bc cd t) t
 
 Section: Sampling
   bezier3-sample : BezVec, BezVec, BezVec, BezVec, Integer -> List BezVec
@@ -59,19 +74,8 @@ Section: Arc Length Approximation
     in let curr = bezier3-eval p0 p1 p2 p3 t
     in let dx = curr.vx - prev.vx
     in let dy = curr.vy - prev.vy
-    in let dist = bezier-isqrt (dx * dx + dy * dy)
+    in let dist = math-isqrt (dx * dx + dy * dy)
     in bezier3-arc-loop p0 p1 p2 p3 (i + 1) segments (total + dist) curr
-
-  bezier-isqrt : Integer -> Integer
-  bezier-isqrt (n) =
-    if n <= 0 then 0
-    else bezier-isqrt-loop n (n / 2 + 1)
-
-  bezier-isqrt-loop : Integer, Integer -> Integer
-  bezier-isqrt-loop (n) (guess) =
-    let next = (guess + n / guess) / 2
-    in if next >= guess then guess
-    else bezier-isqrt-loop n next
 
 Section: Formatting
   format-bezier-point : BezVec -> Text

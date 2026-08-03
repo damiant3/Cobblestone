@@ -1,6 +1,6 @@
 # MM3 Gap Analysis: Self-Compile on Bare Metal
 
-**Status**: ✅ MM3 PROVEN — self-hosted compiler self-compiles on bare metal x86-64 (64MB heap)
+**Status**: ✅ MM3 PROVEN -- self-hosted compiler self-compiles on bare metal x86-64 (64MB heap)
 **Date**: 2026-03-26 (analysis), 2026-03-28 (proven)
 
 ---
@@ -10,11 +10,11 @@
 MM3 is the self-hosted compiler compiling **itself** on bare metal. The 26
 `.codex` files (~5,000 lines, 493 definitions) go in over serial. Valid C#
 comes out over serial. The output matches what the hosted compiler produces.
-The ultimate fixed point — on hardware.
+The ultimate fixed point -- on hardware.
 
 ## What MM2 Proved
 
-MM2 compiled `main : Integer / main = 42` — a 2-line program using 0 of the
+MM2 compiled `main : Integer / main = 42` -- a 2-line program using 0 of the
 42 builtins the self-hosted compiler needs. MM3 needs all 42, plus enough
 memory, I/O bandwidth, and multi-file support.
 
@@ -28,7 +28,7 @@ all, any) as the critical blocker requiring function pointers on bare metal.
 **This was wrong.** Investigation revealed:
 
 1. The self-hosted compiler does NOT use the `map` builtin. It uses
-   `map-list` defined in `Collections.codex` — a pure Codex function
+   `map-list` defined in `Collections.codex` -- a pure Codex function
    that loops with `list-at`/`list-snoc` (both already implemented).
 
 2. `map-list` and `fold-list` DO pass function parameters (`f`) and call
@@ -49,7 +49,7 @@ and boot protocol. No hard design decisions needed.**
 
 The bootstrap pipeline (`tools/Codex.Bootstrap/Program.cs`) concatenates all
 26 `.codex` files into one combined source string, then compiles it as a single
-module. This means MM3 on bare metal is the same as MM2 — send one (large)
+module. This means MM3 on bare metal is the same as MM2 -- send one (large)
 source string over serial. The self-hosted compiler's `main` function calls
 `read-file path`, gets one string, and compiles it.
 
@@ -73,7 +73,7 @@ serial output`. If the output matches Stage 1, MM3 is proven.
 
 ---
 
-## ~~Gap 1: Missing Builtins (13 of 42)~~ — REVISED
+## ~~Gap 1: Missing Builtins (13 of 42)~~ -- REVISED
 
 The self-hosted compiler uses 42 builtins. The x86-64 backend implements 35.
 **13 are missing** (some are defined in .codex, some need runtime support):
@@ -89,7 +89,7 @@ The self-hosted compiler uses 42 builtins. The x86-64 backend implements 35.
 | `fold` | 25 | Higher-order | **Hard** | Reduce list with accumulator. Requires function pointer calls. |
 | `all` | 230 | Higher-order | **Hard** | Check if predicate holds for all elements. Requires function pointer calls. |
 | `any` | 11 | Higher-order | **Hard** | Check if predicate holds for any element. Requires function pointer calls. |
-| `abs` | 75 | Math | Trivial | `if x < 0 then -x else x` — one comparison + negate |
+| `abs` | 75 | Math | Trivial | `if x < 0 then -x else x` -- one comparison + negate |
 | `get-env` | 4 | Environment | Easy | Return empty string on bare metal |
 | `list-files` | 4 | Environment | Easy | Return empty list on bare metal |
 | `run-process` | 2 | I/O | Easy | Return empty string on bare metal (not meaningful on bare metal) |
@@ -108,7 +108,7 @@ trivial (lambdas are delegates). On bare metal x86-64, this requires:
    (function pointer in `rax`, argument in `rdi`).
 
 The self-hosted compiler uses `map` 145 times and `all` 230 times. These are
-**load-bearing** — the compiler cannot function without them.
+**load-bearing** -- the compiler cannot function without them.
 
 **Possible approaches**:
 
@@ -181,7 +181,7 @@ The self-hosted compiler's C# output is ~300K characters. Over serial at
 Not a blocker, just slow.
 
 **Mitigation**: Increase baud rate, or accept the wait. For verification,
-we only need to hash the output and compare — don't need to capture all 300K
+we only need to hash the output and compare -- don't need to capture all 300K
 over serial. Could emit a SHA-256 hash of the output instead.
 
 **Difficulty**: Trivial (patience) or Easy (hash comparison).
@@ -215,10 +215,10 @@ check for bare metal mode and use serial input instead of file arguments.
 | 7 | `map` / higher-order functions | **Hard** | Core design decision |
 | 8 | `fold`, `filter`, `all`, `any` | Hard | Step 7 pattern |
 | 9 | Boot protocol (`get-args` alternative) | Easy | Step 5 |
-| 10 | Integration test: compile full self-hosted compiler | — | Steps 1-9 |
-| 11 | Fixed-point verification: output matches hosted | — | Step 10 |
+| 10 | Integration test: compile full self-hosted compiler | -- | Steps 1-9 |
+| 11 | Fixed-point verification: output matches hosted | -- | Step 10 |
 
-**Steps 1-6** are straightforward — maybe a session or two.
+**Steps 1-6** are straightforward -- maybe a session or two.
 **Step 7** is the crux. The approach chosen for `map` determines the
 architecture for all higher-order bare metal execution.
 
@@ -251,7 +251,7 @@ is Step 7. Everything else is straightforward.
 
 - **Linear closures (Step 4)**: The closure representation for `map` connects
   directly to the linear closure analysis. A closure passed to `map` is
-  consumed once per element — not linear in the strict sense, but the
+  consumed once per element -- not linear in the strict sense, but the
   captured environment must live for the duration of the `map` call.
 
 - **Regions (Camp III-A)**: If closures are allocated in a region, `map`'s

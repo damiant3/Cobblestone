@@ -1,0 +1,70 @@
+Chapter: KeysCollision
+  cites UI chapter KeyInput
+  cites Foreword chapter CCE
+
+ The test that would have caught it. `poll-key` used to answer named keys
+ with DOM key codes while answering characters with ASCII, and DOM key codes
+ land on printable characters, so Up and shift+7 were both 38 and Right and
+ the apostrophe were both 39. Every existing keyboard test typed one side or
+ the other. None typed both, so the suite could not express the failure, and
+ the contract prose stated both halves of the collision on adjacent lines
+ without anybody seeing it.
+
+ The timeline types each colliding pair back to back: shift+7 then Up, then
+ the apostrophe then Right, then `t` then F5. Each pair must come back as two
+ DIFFERENT values, and the character half must be the CCE code point of that
+ character rather than a number this test made up.
+
+ The last two readings are the guard on the named-key space itself.
+ `to-unicode key-f1` must answer 65533, the replacement character, which is
+ what CCE returns for a code point it cannot represent: that is the
+ assertion that named keys live outside the character space, and it fails
+ the day CCE grows into them. And every printable ASCII character must have
+ a CCE code point, because `key-emit` converts through `from-unicode` and a
+ gap there would silently turn a typed character into negative one.
+
+ We say:
+
+Section: Collection
+
+  kc-collect : List Integer -> List Integer
+  kc-collect (acc) =
+    let ch = poll-key
+    in if ch == 0 then kc-collect acc
+    else if ch == key-enter then acc
+    else kc-collect (list-push acc ch)
+
+  kc-show : List Integer, Integer, Integer -> [Console] Integer
+  kc-show (xs) (i) (len) =
+    if i >= len then 0
+    else act
+      print-line-uni (integer-to-text (list-at xs i))
+      kc-show xs (i + 1) len
+    end
+
+Section: The Printable Range
+
+ Walks ASCII 32 through 126 and answers the count that `from-unicode`
+ refuses. It must be zero: tier 0 carries exactly the punctuation ASCII
+ needs, and if that ever stops being true a typed character becomes -1 and
+ this is the reading that says so.
+
+  kc-unmapped : Integer, Integer -> Integer
+  kc-unmapped (u) (acc) =
+    if u > 126 then acc
+    else if from-unicode u < 0 then kc-unmapped (u + 1) (acc + 1)
+    else kc-unmapped (u + 1) acc
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let ks = kc-collect []
+    in act
+      kc-show ks 0 (list-length ks)
+      print-line-uni ("amp " & integer-to-text (char-code '&'))
+      print-line-uni ("apos " & integer-to-text (char-code '\''))
+      print-line-uni ("t " & integer-to-text (char-code 't'))
+      print-line-uni ("named-outside-cce " & integer-to-text (to-unicode key-f1))
+      print-line-uni ("unmapped-printable " & integer-to-text (kc-unmapped 32 0))
+    end
+  end

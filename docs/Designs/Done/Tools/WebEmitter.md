@@ -1,4 +1,4 @@
-# Web Emitter — UI-to-Platform Rendering Layer
+# Web Emitter -- UI-to-Platform Rendering Layer
 
 **Status:** Partially shipped (2026-05-24). UI-to-platform emitters are live -- HtmlEmitter (theme_to_css / render_widget_html), MauiEmitter, WinFormsEmitter. Pending: broader widget/feature coverage.
 
@@ -13,7 +13,7 @@ backend.
 We want to write applications in Codex using these same UI primitives
 and emit them as web pages (HTML/CSS/JS), desktop apps (WPF, WinForms),
 or framework-specific output (React, SwiftUI). The UI code should be
-target-agnostic — write once, emit to any platform.
+target-agnostic -- write once, emit to any platform.
 
 ## Architecture
 
@@ -35,13 +35,13 @@ IR text (S-expression) ─── existing plug protocol
 
 Each plug is a standalone CDX binary (like the existing transpiler
 plugs). It reads IR text on stdin, walks the IR tree, and emits
-platform-specific output on stdout. No new compiler changes needed —
+platform-specific output on stdout. No new compiler changes needed --
 the existing `IR-CCE` compile mode + plug protocol is sufficient.
 
 ## UI IR Contract
 
 The plug receives the full IR including type definitions. It recognizes
-UI types by name — these are the foreword types the plug knows how to
+UI types by name -- these are the foreword types the plug knows how to
 render:
 
 ### Widget Tree → DOM
@@ -202,7 +202,7 @@ Each is an independent plug CDX:
 ## The UI Intermediate Layer
 
 The key insight: the Codex UI foreword already IS the intermediate
-layer. `WidgetNode`, `Theme`, `LayoutDir`, `BoxModel`, `Event` — these
+layer. `WidgetNode`, `Theme`, `LayoutDir`, `BoxModel`, `Event` -- these
 are platform-agnostic descriptions of UI. The framebuffer renderer
 (`render-tree`) is just one backend. Each plug is another backend that
 reads the same IR types and emits platform-specific output.
@@ -210,7 +210,7 @@ reads the same IR types and emits platform-specific output.
 No new IR types are needed. The plug recognizes foreword UI types by
 name in the IR text stream and translates them. A program that builds a
 `WidgetNode` tree, applies a `Theme`, and handles `Event`s can be
-emitted as HTML, React, WPF, or bare-metal framebuffer — same source,
+emitted as HTML, React, WPF, or bare-metal framebuffer -- same source,
 different plug.
 
 ## File Structure
@@ -239,7 +239,7 @@ codex/plugs/
 
 2. **CSS strategy**: Utility classes (Tailwind-like), BEM, CSS modules,
    or inline styles? Answer: semantic classes with CSS custom properties
-   for theming — matches the Theme record structure.
+   for theming -- matches the Theme record structure.
 
 3. **Routing**: How do multi-window apps map to web navigation?
    Answer: each Window → `<dialog>` for modals, or hash-routing for

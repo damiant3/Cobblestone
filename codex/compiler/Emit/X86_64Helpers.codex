@@ -1704,7 +1704,19 @@ Section: I/O Boundary Helpers
 
    in let st36g = emit-flush-tlb-helper st36f
 
-   in let st37 = emit-alloc-bytes-helper st36g
+   in let st36h = emit-cpu-read-cr0-helper st36g
+
+   in let st36i = emit-cpu-read-cr3-helper st36h
+
+   in let st36j = emit-cpu-cpuid-eax-helper st36i
+
+   in let st36k = emit-cpu-cpuid-ebx-helper st36j
+
+   in let st36l = emit-cpu-cpuid-ecx-helper st36k
+
+   in let st36m = emit-cpu-cpuid-edx-helper st36l
+
+   in let st37 = emit-alloc-bytes-helper st36m
 
    in let st37a = emit-block-sector-count-helper st37
 
@@ -2561,11 +2573,17 @@ Section: UEFI Console Helpers
 
 
 
+ The Microsoft x64 convention firmware is called under requires 32 bytes of
+ shadow space and RSP 16-byte aligned at the call. RBX is saved because it is
+ callee-saved on OUR side and this sequence overwrites it with the protocol
+ pointer; the shadow space is 32 rather than 40 because the second push already
+ supplies the 8 bytes that kept the alignment before it existed.
+
   uefi-call-conout : Integer -> List Integer
 
   uefi-call-conout (func-offset) =
 
-    [65, 82, 72, 137, 203, 72, 131, 236, 40] & [255, 83, func-offset] & [72, 131, 196, 40, 65, 90]
+    [65, 82, 83, 72, 137, 203, 72, 131, 236, 32] & [255, 83, func-offset] & [72, 131, 196, 32, 91, 65, 90]
 
 
 
@@ -2706,6 +2724,39 @@ Section: UEFI Console Helpers
 
 
 
+ Reads ConIn, which is EFI_SIMPLE_TEXT_INPUT_PROTOCOL at SystemTable+48, and
+ calls ReadKeyStroke at vtable offset 8 into an EFI_INPUT_KEY at [rsp+72].
+
+ It used to LocateProtocol EFI_SIMPLE_TEXT_INPUT_EX instead. That protocol is
+ UEFI 2.x and OPTIONAL: it worked under OVMF and returned nothing on the ASUS
+ TUF's AMI Aptio V, where the probe reported a live SystemTable and a
+ succeeding uefi-clear-screen alongside a permanently failing key read. ConIn
+ is UEFI 1.x and mandatory, ReadKeyStroke sits at the same offset 8, and the
+ first four bytes it writes have the same layout, so the extraction below is
+ unchanged.
+
+ The result is ScanCode << 16 | UnicodeChar and nothing else. The Ex path also
+ folded EFI_KEY_STATE.KeyShiftState in at bit 32, and that word carries
+ EFI_SHIFT_STATE_VALID at bit 31 (0x80000000), which landed on bit 63 -- so
+ every SUCCESSFUL read came back negative, indistinguishable from the mov
+ rax,-1 failure value below, and callers testing `< 0` read real keystrokes as
+ errors for two months. Dropping the field removes the collision by
+ construction rather than by masking it. Plain ConIn reports no key state, so
+ there is nothing to lose. Account:
+ docs/PM/Active/Stories/TheKeyboardWasNeverSilent.md.
+
+ The deck pointer lives in r10 and the firmware call clobbers it (caller-saved
+ under the Microsoft x64 ABI), so it is parked in callee-saved r15 across the
+ call. That pair was written as raw bytes and the entry half encoded
+ `mov r15, rdx`: REX.R clear, so it saved RDX and the exit restored r10 from a
+ register that never held it. Every call left the deck pointing at whatever rdx
+ happened to be. It was latent while poll-key read the PS/2 cell first and only
+ asked the firmware as a fallback; when poll-key was reordered to ask the
+ firmware FIRST, it ran on every poll and took six keyboard tests down with it
+ (measured 2026-08-03: the raw cell delivered 42/30/170/30 and poll-key-decode
+ translated them correctly, while poll-key itself returned zero forever).
+ Encoded through mov-rr now, which cannot get the REX bit wrong.
+
   emit-uefi-read-key-ex-helper : CodegenState -> CodegenState
 
   emit-uefi-read-key-ex-helper (st) =
@@ -2716,17 +2767,9 @@ Section: UEFI Console Helpers
 
    in let st2 = st-append-code st1 [72, 129, 236, 88, 0, 0, 0]
 
-   in let st3 = st-append-code st2 [73, 137, 215]
+   in let st3 = st-append-code st2 (mov-rr reg-r15 reg-r10)
 
-   in let st4 = st-append-code st3 [199, 68, 36, 48, 52, 117, 158, 221]
-
-   in let st5 = st-append-code st4 [199, 68, 36, 52, 98, 119, 152, 70]
-
-   in let st6 = st-append-code st5 [199, 68, 36, 56, 140, 20, 245, 133]
-
-   in let st7 = st-append-code st6 [199, 68, 36, 60, 23, 166, 37, 170]
-
-   in let st8 = st-append-code st7 ([72, 139, 4, 37] & write-i32 uefi-systab-addr)
+   in let st8 = st-append-code st3 ([72, 139, 4, 37] & write-i32 uefi-systab-addr)
 
    in let st8a = st-append-code st8 [72, 133, 192]
 
@@ -2742,19 +2785,9 @@ Section: UEFI Console Helpers
 
    in let st9 = patch-jcc-at st8d have-sys-pos (st8d.code-len)
 
-   in let st10 = st-append-code st9 (mov-load reg-rbx reg-rax 96)
+   in let st10 = st-append-code st9 [76, 139, 104, 48]
 
-   in let st11 = st-append-code st10 [72, 141, 76, 36, 48]
-
-   in let st12 = st-append-code st11 [72, 49, 210]
-
-   in let st13 = st-append-code st12 [76, 141, 68, 36, 64]
-
-   in let st14 = st-append-code st13 [72, 255, 147, 64, 1, 0, 0]
-
-   in let st15 = st-append-code st14 [76, 139, 108, 36, 64]
-
-   in let st16 = st-append-code st15 [76, 137, 233]
+   in let st16 = st-append-code st10 [76, 137, 233]
 
    in let st17 = st-append-code st16 [72, 141, 84, 36, 72]
 
@@ -2776,17 +2809,11 @@ Section: UEFI Console Helpers
 
    in let st25 = st-append-code st24 [72, 9, 200]
 
-   in let st26 = st-append-code st25 [139, 76, 36, 76]
-
-   in let st27 = st-append-code st26 [72, 193, 225, 32]
-
-   in let st28 = st-append-code st27 [72, 9, 200]
-
-   in let st29 = patch-jcc-at st28 jnz-pos (st28.code-len)
+   in let st29 = patch-jcc-at st25 jnz-pos (st25.code-len)
 
    in let st29b = patch-jmp-at st29 nosys-jmp (st29.code-len)
 
-   in let st30 = st-append-code st29b [77, 137, 250]
+   in let st30 = st-append-code st29b (mov-rr reg-r10 reg-r15)
 
    in let st31 = st-append-code st30 [72, 129, 196, 88, 0, 0, 0]
 
@@ -4072,6 +4099,126 @@ Section: Binary Output
    in let st3 = st-append-code st2 (li reg-rax 0)
 
    in st-append-code st3 x86-ret
+
+
+
+  emit-cpu-read-cr0-helper : CodegenState -> CodegenState
+
+  emit-cpu-read-cr0-helper (st) =
+
+   let fn-off = st.code-len
+
+   in let n = list-push (st.fo-names) "cpu-read-cr0"
+
+   in let o = list-push (st.fo-offsets) fn-off
+
+   in let st0 = __record-set (__record-set st "fo-names" n) "fo-offsets" o
+
+   in let st1 = st-append-code st0 [15, 32, 192]
+
+   in st-append-code st1 x86-ret
+
+
+
+  emit-cpu-read-cr3-helper : CodegenState -> CodegenState
+
+  emit-cpu-read-cr3-helper (st) =
+
+   let fn-off = st.code-len
+
+   in let n = list-push (st.fo-names) "cpu-read-cr3"
+
+   in let o = list-push (st.fo-offsets) fn-off
+
+   in let st0 = __record-set (__record-set st "fo-names" n) "fo-offsets" o
+
+   in let st1 = st-append-code st0 [15, 32, 216]
+
+   in st-append-code st1 x86-ret
+
+
+
+  emit-cpuid-prologue : CodegenState -> CodegenState
+
+  emit-cpuid-prologue (st) =
+
+   let st1 = st-append-code st [83]
+
+   in let st2 = st-append-code st1 [137, 248]
+
+   in let st3 = st-append-code st2 [49, 201]
+
+   in st-append-code st3 [15, 162]
+
+
+
+  emit-cpuid-epilogue : CodegenState -> CodegenState
+
+  emit-cpuid-epilogue (st) =
+
+   let st1 = st-append-code st [91]
+
+   in st-append-code st1 x86-ret
+
+
+
+  emit-cpuid-named : CodegenState, Text -> CodegenState
+
+  emit-cpuid-named (st) (nm) =
+
+   let fn-off = st.code-len
+
+   in let n = list-push (st.fo-names) nm
+
+   in let o = list-push (st.fo-offsets) fn-off
+
+   in __record-set (__record-set st "fo-names" n) "fo-offsets" o
+
+
+
+  emit-cpu-cpuid-eax-helper : CodegenState -> CodegenState
+
+  emit-cpu-cpuid-eax-helper (st) =
+
+   let st0 = emit-cpuid-named st "cpu-cpuid-eax"
+
+   in emit-cpuid-epilogue (emit-cpuid-prologue st0)
+
+
+
+  emit-cpu-cpuid-ebx-helper : CodegenState -> CodegenState
+
+  emit-cpu-cpuid-ebx-helper (st) =
+
+   let st0 = emit-cpuid-named st "cpu-cpuid-ebx"
+
+   in let st1 = emit-cpuid-prologue st0
+
+   in emit-cpuid-epilogue (st-append-code st1 [72, 137, 216])
+
+
+
+  emit-cpu-cpuid-ecx-helper : CodegenState -> CodegenState
+
+  emit-cpu-cpuid-ecx-helper (st) =
+
+   let st0 = emit-cpuid-named st "cpu-cpuid-ecx"
+
+   in let st1 = emit-cpuid-prologue st0
+
+   in emit-cpuid-epilogue (st-append-code st1 [72, 137, 200])
+
+
+
+  emit-cpu-cpuid-edx-helper : CodegenState -> CodegenState
+
+  emit-cpu-cpuid-edx-helper (st) =
+
+   let st0 = emit-cpuid-named st "cpu-cpuid-edx"
+
+   in let st1 = emit-cpuid-prologue st0
+
+   in emit-cpuid-epilogue (st-append-code st1 [72, 137, 208])
 
 
 

@@ -1,10 +1,10 @@
-# 06 — The Environment
+# 06 -- The Environment
 
 ## Overview
 
 The Codex Environment is a unified application that replaces the editor, terminal, compiler, debugger, package manager, and repository browser. It is not a plugin for VS Code. It is not an IDE with a bolt-on terminal. It is a single coherent tool designed from scratch for reading, writing, verifying, and exploring Codex programs.
 
-The bootstrap implementation is more modest — an LSP server that works with existing editors, plus a CLI. The full environment is a later milestone. But the design is here because it shapes decisions in every other layer.
+The bootstrap implementation is more modest -- an LSP server that works with existing editors, plus a CLI. The full environment is a later milestone. But the design is here because it shapes decisions in every other layer.
 
 > **Current status (March pi++ 2026)**: The bootstrap environment is operational:
 > - **CLI** (`tools/Codex.Cli`): `codex run`, `codex build` (C#/JS/Rust), `codex check`, `codex parse`, `codex version`, plus repository commands (`init`, `publish`, `propose`, `verdict`, `vouch`, `history`)
@@ -20,7 +20,7 @@ The bootstrap implementation is more modest — an LSP server that works with ex
 
 ### The Reader
 
-**Purpose**: Present Codex source as formatted prose — like reading a book.
+**Purpose**: Present Codex source as formatted prose -- like reading a book.
 
 **What it does**:
 - Renders chapters, sections, and definitions as typeset prose
@@ -76,7 +76,7 @@ For the full environment, it means a custom rendering engine.
 
 ### The Explorer
 
-**Purpose**: Navigate the repository — definitions, proposals, verdicts, trust records.
+**Purpose**: Navigate the repository -- definitions, proposals, verdicts, trust records.
 
 **What it does**:
 - Browse all definitions in the current view
@@ -141,17 +141,17 @@ The full environment is a major undertaking. For bootstrap, we build:
 A command-line tool with subcommands:
 
 ```
-codex check <file.codex>         — type-check a file, report diagnostics
-codex build <file.codex>         — compile to C# and build
-codex run <file.codex>           — compile, build, and execute
-codex repl                       — interactive REPL
-codex explain <name>             — Narrator explains a definition
-codex search <type-signature>    — search repository by type
-codex history <name>             — show version history
-codex propose <file.codex>       — create a proposal
-codex verdict <proposal-hash>    — issue a verdict
-codex init                       — initialize a new Codex project
-codex sync                       — synchronize with remote stores
+codex check <file.codex>         -- type-check a file, report diagnostics
+codex build <file.codex>         -- compile to C# and build
+codex run <file.codex>           -- compile, build, and execute
+codex repl                       -- interactive REPL
+codex explain <name>             -- Narrator explains a definition
+codex search <type-signature>    -- search repository by type
+codex history <name>             -- show version history
+codex propose <file.codex>       -- create a proposal
+codex verdict <proposal-hash>    -- issue a verdict
+codex init                       -- initialize a new Codex project
+codex sync                       -- synchronize with remote stores
 ```
 
 ### Phase 2: LSP Server (`Codex.Lsp`)
@@ -184,7 +184,7 @@ A thin VS Code extension that:
 
 ### Phase 4: Full Environment
 
-The standalone Codex Environment application. Technology TBD — likely Avalonia UI (.NET cross-platform desktop) or a web-based application (Blazor).
+The standalone Codex Environment application. Technology TBD -- likely Avalonia UI (.NET cross-platform desktop) or a web-based application (Blazor).
 
 ---
 
@@ -196,7 +196,7 @@ The standalone Codex Environment application. Technology TBD — likely Avalonia
 
 3. **No modes**. There is no "build mode" or "debug mode" or "review mode." All capabilities are always available.
 
-4. **Prose is prominent**. The prose is not gray comment text — it is the primary content. Code blocks are secondary, set in a different visual style.
+4. **Prose is prominent**. The prose is not gray comment text -- it is the primary content. Code blocks are secondary, set in a different visual style.
 
 5. **Everything is linked**. Every name is a hyperlink. Every type is explorable. Every fact is traceable to its source.
 
@@ -204,10 +204,10 @@ The standalone Codex Environment application. Technology TBD — likely Avalonia
 
 ## Open Questions
 
-1. **Full environment technology** — Avalonia (native .NET desktop), Blazor (web-based), Electron (cross-platform), or something else? Trade-offs between reach, performance, and development speed.
+1. **Full environment technology** -- Avalonia (native .NET desktop), Blazor (web-based), Electron (cross-platform), or something else? Trade-offs between reach, performance, and development speed.
 
-2. **Collaborative editing** — should the environment support real-time collaborative editing (like Google Docs)? This is orthogonal to the proposal protocol but might be useful during co-authoring.
+2. **Collaborative editing** -- should the environment support real-time collaborative editing (like Google Docs)? This is orthogonal to the proposal protocol but might be useful during co-authoring.
 
-3. **AI integration** — should the environment integrate with LLMs for prose generation, proof search, and code suggestion? The Narrator is explicitly NOT an LLM, but other components might benefit. This is a philosophical question as much as a technical one.
+3. **AI integration** -- should the environment integrate with LLMs for prose generation, proof search, and code suggestion? The Narrator is explicitly NOT an LLM, but other components might benefit. This is a philosophical question as much as a technical one.
 
-4. **Accessibility** — the environment must be accessible (screen readers, keyboard navigation, high contrast). This should be designed in from the start, not bolted on.
+4. **Accessibility** -- the environment must be accessible (screen readers, keyboard navigation, high contrast). This should be designed in from the start, not bolted on.

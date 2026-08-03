@@ -1,52 +1,177 @@
 Chapter: NetDriver
   cites Kernel chapter Ne2k
+  cites Kernel chapter E1000e
+  cites Kernel chapter Pci
+  cites Foreword chapter Maybe
 
- The one place the I/O loop names a NIC.
+ The one place the I/O loop names a NIC. NetIO, HttpFetch and WebServer
+ call net-driver-send-frame and net-driver-recv-frame; those choose a
+ card.
 
- NetIO used to call ne2k-send-frame and ne2k-recv-frame directly, at six
- sites across four loops. That made the NE2000 not the default network
- card but the only one the stack could express: adding a second card
- meant editing every loop that moves a frame, and every one of those
- loops is fuel-capped, self-tail-recursive and bracketed by
- __heap-save/__heap-restore, so they are the last functions in the stack
- anyone should be editing for a reason unrelated to what they do.
+ The NE2000 is the default and stays the default. Nothing binds the
+ Intel part unless net-driver-bind-e1000 is called at bring-up, so a
+ guest that never probes PCI behaves exactly as it did before this
+ chapter learned a second card.
 
- So the name moves here. NetIO calls net-driver-send-frame and
- net-driver-recv-frame; those call the NE2000. The loops no longer
- mention a card.
+Section: The Bound Card
 
- THERE IS ONE DRIVER BEHIND THIS SEAM AND IT IS THE NE2000. This
- chapter is not a registry, it does not probe, and it does not choose --
- saying otherwise would be a capability this project has not built.
- What it is, is the single edit point: a second card becomes a branch in
- the two functions below, and nothing above them changes.
+ Cells 36264 through 36319 of the low-memory band documented in
+ ArchitectsSketchbook. The seam takes no device argument and there is
+ nowhere else to keep one: a module-level record binding is a recipe
+ rather than a cell, and referencing it allocates the record again on
+ every reference, which on a path polled tens of millions of times per
+ accept is the leak the control block exists to avoid.
 
- What a second card costs, stated so nobody rediscovers it: the NE2000
- is not really driven from Codex at all. ne2k-send-frame and
- ne2k-recv-frame delegate to the net-send-raw / net-recv-raw builtins,
- whose register programming is hand-emitted machine code in the
- compiler (Emit/X86_64IPCHelpers.codex) against a fixed port base. A
- driver for real hardware does not follow that route and should not:
- VirtioNet is the shape that works from here, a chapter of ordinary
- Codex over peek-32 and poke-32 against a BAR, needing no builtin and
- no compiler change. That is why this seam sits above the builtins
- rather than beside them.
+ Every value here fits in 32 bits. The heap arena ends at 3 GB and a
+ device BAR is refused unless it lands between 3 and 4 GB, so no address
+ the seam stores can exceed the low word.
+
+  net-driver-cb : Integer = 36264
+
+  net-driver-off-card : Integer = 0
+  net-driver-off-mmio : Integer = 8
+  net-driver-off-rx-ring : Integer = 16
+  net-driver-off-rx-bufs : Integer = 24
+  net-driver-off-ctrl-blk : Integer = 32
+  net-driver-off-tx-ring : Integer = 40
+  net-driver-off-tx-bufs : Integer = 48
+
+  net-card-ne2k : Integer = 0
+  net-card-e1000 : Integer = 1
+
+  net-driver-cell : Integer -> Integer
+  net-driver-cell (off) = bit-and (peek-32 (net-driver-cb + off) 0) #FFFFFFFF
+
+  net-driver-active : Integer
+  net-driver-active = net-driver-cell net-driver-off-card
+
+Section: Bind
+
+ The card selector is written LAST. Until it is, a half-written control
+ block is never the live one, so a bind that faults partway through
+ leaves the NE2000 serving rather than a card with three of its six
+ addresses set.
+
+ A card whose station address is absent is REFUSED, and that is the
+ reason the bind takes a device rather than six integers. RAH bit 31 is
+ the address-valid bit and E1000e reports a clear one rather than
+ inventing an address; a card the network cannot answer is worse than no
+ card, because the frames leave and the replies are filtered out by the
+ card itself, which reads as a dead link.
+
+  net-driver-bind-e1000 : E1000Device -> Integer
+  net-driver-bind-e1000 (d) =
+   if (d.e-present) == False then net-card-ne2k
+   else if (d.e-mac-valid) == False then net-card-ne2k
+   else let w1 = poke-32 (net-driver-cb + net-driver-off-mmio) 0 (d.e-mmio)
+   in let w2 = poke-32 (net-driver-cb + net-driver-off-rx-ring) 0 (d.e-rx-ring)
+   in let w3 = poke-32 (net-driver-cb + net-driver-off-rx-bufs) 0 (d.e-rx-bufs)
+   in let w4 = poke-32 (net-driver-cb + net-driver-off-ctrl-blk) 0 (d.e-ctrl-blk)
+   in let w5 = poke-32 (net-driver-cb + net-driver-off-tx-ring) 0 (d.e-tx-ring)
+   in let w6 = poke-32 (net-driver-cb + net-driver-off-tx-bufs) 0 (d.e-tx-bufs)
+   in let sel = poke-32 (net-driver-cb + net-driver-off-card) 0 net-card-e1000
+   in net-card-e1000
+
+Section: Bring-up
+
+ The one call a program makes to get a real card. Nothing else in the tree
+ has to know a NIC exists: probe the bus, find the part, initialise it,
+ bind it, and answer which card is now live.
+
+ The SHAPE here is card-independent and the finder behind it is not. If
+ the sitting reports a part that is not Intel, `e1000-find` and
+ `e1000-init` are what change and this function does not. That is the
+ reason it holds no device knowledge of its own: no device-ID table, no
+ quirk, no register.
+
+ It scans the whole bus TREE, not bus 0. This asked `pci-scan-bus 0` when
+ it was written, which finds a chipset-integrated part and silently misses
+ a discrete one behind a bridge, and a silent miss here lands on a NE2000
+ that does not exist outside the emulator. Measured under OVMF, the NIC is
+ at `01:00.0` with only the bridge on bus 0, so the firmware we gate
+ against is a case that bus 0 alone gets wrong.
+
+ Every refusal lands on the NE2000. A bus with no matching part answers
+ None; a part that fails reset comes back from `e1000-init` as
+ `e1000-absent`; a part whose station address is invalid is refused by
+ `net-driver-bind-e1000`. In all three the selector is never written, so a
+ program that calls this on a machine it does not recognise behaves
+ exactly as it did before the call existed.
+
+  net-driver-bring-up : Integer
+  net-driver-bring-up =
+   when e1000-find pci-scan-all
+     is Just (d) -> net-driver-bind-e1000 (e1000-init d)
+     is None -> net-card-ne2k
+
+  net-driver-card-name : Integer -> Text
+  net-driver-card-name (c) = if c == net-card-e1000 then "e1000" else "ne2000"
+
+Section: Station Address
+
+ The address every outgoing frame is sourced from, and the one the card's
+ own receive filter is programmed with. They have to be the same value or
+ the card discards the replies before the driver is called.
+
+ It is read live off RAL/RAH rather than cached in the control block. A
+ cached copy would be one more thing that can disagree with the hardware,
+ and the two register reads cost less than the six-byte list they answer.
+
+ The NE2000 answer is a declared constant because there is nothing to
+ read: the part exists only inside codex-vm, and this is the address its
+ NAT is built to expect. That is why the value was never wrong while the
+ NE2000 was the only card.
+
+  net-driver-ne2k-mac : List Integer = [82, 84, 0, 18, 52, 86]
+
+  net-driver-mac : List Integer
+  net-driver-mac =
+   if net-driver-active == net-card-e1000
+   then e1000-read-mac (net-driver-cell net-driver-off-mmio)
+   else net-driver-ne2k-mac
 
 Section: Send
 
+ e1000-send-at reads four addresses off an E1000Device and never reads
+ the station address, so the record rebuilt here carries an empty MAC.
+ It is rebuilt per FRAME SENT rather than per poll, which is the reason
+ this side may spend an allocation the receive side may not.
+
+  net-driver-e1000-device : E1000Device
+  net-driver-e1000-device =
+   E1000Device {
+     e-mmio = net-driver-cell net-driver-off-mmio,
+     e-rx-ring = net-driver-cell net-driver-off-rx-ring,
+     e-tx-ring = net-driver-cell net-driver-off-tx-ring,
+     e-rx-bufs = net-driver-cell net-driver-off-rx-bufs,
+     e-tx-bufs = net-driver-cell net-driver-off-tx-bufs,
+     e-ctrl-blk = net-driver-cell net-driver-off-ctrl-blk,
+     e-present = True,
+     e-mac = [],
+     e-mac-valid = False
+   }
+
   net-driver-send-frame : List Integer -> [Network.Write] Integer
-  net-driver-send-frame (frame) = ne2k-send-frame frame
+  net-driver-send-frame (frame) =
+   if net-driver-active == net-card-e1000
+   then e1000-send-frame net-driver-e1000-device frame
+   else ne2k-send-frame frame
 
 Section: Receive
 
- The receive path allocates a list on every miss and is polled up to
- fifty million times per accept, so this delegation must stay a plain
- call that returns what it is given. It adds a frame to the stack and
- allocates nothing of its own; the __heap-save/__heap-restore pair that
- makes those polls survivable stays in NetIO, wrapped around this call
- exactly as it was wrapped around the driver's.
+ The receive path is polled up to fifty million times per accept, so it
+ takes the raw entry point and builds no device record. The
+ __heap-save / __heap-restore pair that makes those polls survivable
+ stays in the callers, wrapped around this call.
 
   net-driver-recv-frame : [Network.Read] List Integer
-  net-driver-recv-frame = ne2k-recv-frame
+  net-driver-recv-frame =
+   if net-driver-active == net-card-e1000
+   then (e1000-poll-raw
+          (net-driver-cell net-driver-off-mmio)
+          (net-driver-cell net-driver-off-rx-ring)
+          (net-driver-cell net-driver-off-rx-bufs)
+          (net-driver-cell net-driver-off-ctrl-blk)).r-frame
+   else ne2k-recv-frame
 
 Page 1

@@ -1,4 +1,4 @@
-// fishtank-v2.js — Codex Aquarium: Photorealistic Reef Tank
+// fishtank-v2.js -- Codex Aquarium: Photorealistic Reef Tank
 // Panoramic reef backdrop + billboarded fish sprites + foreground parallax.
 // Designed to look like a video of a real reef aquarium.
 
@@ -23,9 +23,9 @@ const SPECIES = [
   { name:'Shrimp',     tex:'creature-shrimp',   w:1.4,h:0.7, speed:1.0,turn:4.0,school:2, sep:1.0,align:2.0,coh:3.0,solo:false },
 ];
 
-// Foreground decoration sprites (parallax layers) — big, lush, overlapping
+// Foreground decoration sprites (parallax layers) -- big, lush, overlapping
 const FG_SPRITES = [
-  // Far edges — tall coral framing the scene
+  // Far edges -- tall coral framing the scene
   { tex:'fg-coral-left',   x:-5.5, y:-0.5, z:1.8, w:4.0, h:6.0 },
   { tex:'fg-coral-right',  x: 5.5, y:-0.5, z:1.8, w:4.0, h:6.0 },
   // Side rocks
@@ -89,7 +89,7 @@ struct U { time:f32, resX:f32, resY:f32, lightOn:f32, tod:f32, p1:f32, p2:f32, p
 @fragment fn fs(@builtin(position) pos:vec4f) -> @location(0) vec4f {
   let uv = pos.xy / vec2f(u.resX, u.resY);
 
-  // Sample the reef backdrop panorama — scroll very slowly for life
+  // Sample the reef backdrop panorama -- scroll very slowly for life
   let scroll = u.time * 0.003;
   let backUV = vec2f(fract(uv.x * 0.8 + 0.1 + scroll), uv.y);
   var col = textureSample(tex, smp, backUV).rgb;
@@ -166,7 +166,7 @@ struct VOut { @builtin(position) pos:vec4f, @location(0) uv:vec2f, @location(1) 
   let c = textureSample(tex, smp, uv);
   if (c.a < 0.2) { discard; }
 
-  // Keep fish vivid — boost colors slightly, subtle underwater tint
+  // Keep fish vivid -- boost colors slightly, subtle underwater tint
   var fc = c.rgb * 1.1;
 
   // Very gentle depth fog for far-away fish only
@@ -651,7 +651,7 @@ function uploadGLBMesh(device, glb) {
   return { vertBuf, idxBuf, indexCount, indexFormat, vertexCount: vc };
 }
 
-// (old GLB mesh vars removed — now using procedural meshes above)
+// (old GLB mesh vars removed -- now using procedural meshes above)
 
 // ============================================================
 // 4. MATH
@@ -692,7 +692,7 @@ function buildAtlas(device, imgs) {
   const canvas = document.createElement('canvas');
   canvas.width = SIZE; canvas.height = SIZE;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  // Clear to fully transparent black — NOT opaque black
+  // Clear to fully transparent black -- NOT opaque black
   ctx.clearRect(0, 0, SIZE, SIZE);
 
   let sx = 0, sy = 0, sh = 0;
@@ -761,7 +761,7 @@ function updateFish(dt) {
       if (dist<sp.align&&sp.align>0){ax+=fishVX[j];ay+=fishVY[j];az+=fishVZ[j];nc++;}
       if (dist<sp.coh&&sp.coh>0){cx+=fishX[j];cy+=fishY[j];cz+=fishZ[j];}
     }
-    // Cross-species collision avoidance — must be larger than fish size
+    // Cross-species collision avoidance -- must be larger than fish size
     const mySize = sp.w * 0.6;
     for (let j = 0; j < fishCount; j++) {
       if (i===j || fishSpecies[j]===fishSpecies[i]) continue;
@@ -1005,7 +1005,7 @@ function frame(timestamp) {
   // 1. Background (reef panorama + god rays)
   pass.setPipeline(bgPipeline); pass.setBindGroup(0,bgBindGroup); pass.draw(3);
 
-  // 2. Fish — 3D procedural meshes with ABZU-style animation
+  // 2. Fish -- 3D procedural meshes with ABZU-style animation
   if (use3DMeshes) {
     device.queue.writeBuffer(fish3dUniformBuf, 0, su);
     pass.setPipeline(fish3dPipeline);

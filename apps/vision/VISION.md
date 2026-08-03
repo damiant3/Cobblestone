@@ -3,9 +3,9 @@
 **Ideas flow down. Responses flow up. Meetings disappear.**
 
 Vision is an organizational intelligence platform that replaces
-the machinery of corporate communication — the status meetings,
+the machinery of corporate communication -- the status meetings,
 the vision statements, the cascading email chains, the "can you
-put together a deck on this?" — with a structured conversation
+put together a deck on this?" -- with a structured conversation
 about values and implementation.
 
 An executive posts an idea at 3am. Nobody gets woken up. But by
@@ -107,7 +107,7 @@ CEO reads response. No meeting. Decision made or deferred.
 ```
 
 Every step is recorded. Every handoff is explicit. If the signal
-sits at any tier for too long, Vision nudges the holder — not the
+sits at any tier for too long, Vision nudges the holder -- not the
 originator. The originator never has to ask "whatever happened
 with...?" because they can see exactly where the signal is.
 
@@ -116,7 +116,7 @@ with...?" because they can see exactly where the signal is.
 Signals are asynchronous. A musing posted at 3am doesn't trigger
 notifications. It appears in tier-1 holders' Vision feed when they
 next check. Only mandates trigger immediate notifications, and
-only to the direct tier — not the whole chain.
+only to the direct tier -- not the whole chain.
 
 The notification model:
 
@@ -140,7 +140,7 @@ holder is accountable for one of two things:
    pushed it to them.
 
 If they do neither within the signal's response window, Vision
-escalates — not with punishment, but with visibility. The signal
+escalates -- not with punishment, but with visibility. The signal
 shows "awaiting response from [holder] for 3 days" in the
 originator's view.
 
@@ -185,7 +185,7 @@ Signal = record {
 ### Cascade
 
 A cascade is the chain of handoffs for a signal. Each node in the
-cascade is a **Hold** — someone picked up the signal and is either
+cascade is a **Hold** -- someone picked up the signal and is either
 responding or pushing down.
 
 ```
@@ -265,7 +265,7 @@ Domain = record {
 ## Domain Routing
 
 When a signal has a domain hint, Vision suggests which tier-1
-person should pick it up. This isn't automatic assignment — it's
+person should pick it up. This isn't automatic assignment -- it's
 a suggestion based on domain ownership. The routing considers:
 
 1. **Domain match**: Which VP owns the domain mentioned in the
@@ -291,7 +291,7 @@ auto-assigned. The VP decides whether to pick it up.
 - Weight: Musing
 - Content: "I think resumes suck. Nobody reads them. The
   entire concept of summarizing yourself on paper is broken."
-- Domain hint: (none — Vision infers "hiring")
+- Domain hint: (none -- Vision infers "hiring")
 
 **Nothing happens.** No notifications. The signal sits in the
 system. Vision tags it with inferred domain "hiring" and
@@ -300,7 +300,7 @@ suggests VP People as the likely holder.
 **8:15 AM, Wednesday.** VP People opens Vision, sees the signal
 highlighted in her feed. She reads it, thinks about it. She has
 three options:
-- **Pass**: "Not actionable right now" — signal shows as read.
+- **Pass**: "Not actionable right now" -- signal shows as read.
 - **Pick up as Suggestion**: She escalates the weight and pushes
   to Dir Recruiting: "CEO is thinking about resume reform. Can
   you assess our current process and come back with 2-3
@@ -404,7 +404,7 @@ structured communication.**
 - Weight: Musing
 - Content: "What are the three things we should stop doing?"
 
-Every VP picks up. They don't push down — this is a values
+Every VP picks up. They don't push down -- this is a values
 question for their level. Each responds with their three things.
 CEO reads 6 responses (6 VPs × 3 items = 18 things). Patterns
 emerge: 4 VPs independently say "stop requiring approval for
@@ -450,7 +450,7 @@ records the outcome.
 **Not a surveillance tool.** Vision doesn't track keystrokes,
 monitor Slack, or measure "productivity." It tracks signal flow
 and response times. An IC who never touches Vision because their
-lead handles the cascade is invisible to the system — and that's
+lead handles the cascade is invisible to the system -- and that's
 fine.
 
 **Not mandatory at every level.** A team that doesn't want to use
@@ -463,7 +463,7 @@ response directly. Vision works whether 10 people use it or
 ## The Portfolio Layer
 
 Vision's second mode: project tracking. This runs alongside the
-signal cascade but serves a different need — understanding where
+signal cascade but serves a different need -- understanding where
 projects stand across the organization.
 
 ### Projects, Milestones, Dependencies
@@ -558,7 +558,7 @@ Vision Server (CDX, JSON API)
 Not every signal is strategy. A director wants to host a BBQ for
 the team. A VP wants someone to represent the company at a
 conference. An IC has an idea for a hack day project and needs
-three people. These are **Open Signals** — signals where the
+three people. These are **Open Signals** -- signals where the
 response isn't pushed down through the hierarchy but offered up
 by volunteers.
 
@@ -572,9 +572,9 @@ Signal enters (author: Dir Engineering, weight: Musing)
     v
 Signal appears in team feed with volunteer slots
     |
-    +--> "Grill master" — Alice volunteers
-    +--> "Bring sides" — Bob, Carol volunteer
-    +--> "Setup/cleanup" — Dave volunteers
+    +--> "Grill master" -- Alice volunteers
+    +--> "Bring sides" -- Bob, Carol volunteer
+    +--> "Setup/cleanup" -- Dave volunteers
     |
     v
 Director sees slots filling. No assignments needed.
@@ -591,7 +591,7 @@ Director sees slots filling. No assignments needed.
 
 ### How It Works
 
-An open signal has **slots** — named roles that people can
+An open signal has **slots** -- named roles that people can
 volunteer for. Slots can have a capacity (1 person, 3 people,
 unlimited). When someone volunteers, they appear on the slot.
 The author can accept, waitlist, or adjust.
@@ -607,11 +607,11 @@ OpenSlot = record {
 
 Open signals don't cascade. They sit in the team's feed and
 people opt in. No nudging, no deadlines (unless the author
-sets one), no escalation. The accountability is social — if
+sets one), no escalation. The accountability is social -- if
 you volunteered to bring sides, your team knows.
 
 This is the same system handling "I think resumes suck" and
-"who wants burgers Friday" — the difference is the weight,
+"who wants burgers Friday" -- the difference is the weight,
 the type, and whether the flow is push-down or volunteer-up.
 The infrastructure serves both.
 
@@ -621,7 +621,7 @@ The infrastructure serves both.
 
 The insight is that most corporate communication failures are
 routing failures, not communication failures. The information
-exists — the CEO had the idea, the team had the expertise to
+exists -- the CEO had the idea, the team had the expertise to
 respond. What was missing was the pipe: a structured channel
 that carries the idea to the right people, sets expectations
 about urgency, and carries the response back without requiring

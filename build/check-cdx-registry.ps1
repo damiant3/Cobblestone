@@ -15,7 +15,8 @@
 # two, because the instrument that would say is the one that did not exist.
 #
 # This is that instrument. It reads the catalogue -- the constant->code table,
-# the registry rows, and every raise site across codex/compiler -- and fails
+# the registry rows, every raise site across codex/compiler (code lines only,
+# never column-2 prose) and the host's own "error <N>:" raises -- and fails
 # the build on the three ways they can disagree:
 #
 #   REGISTERED-BUT-NEVER-RAISED  a row describes a code no site emits, so it
@@ -80,11 +81,21 @@ foreach ($line in $codesLines) {
 # 3. Raise sites: any reference to a cdx-* constant anywhere under
 #    codex/compiler EXCEPT its own declaration and registry row in CdxCodes.
 #    A referenced constant is one an emitter actually raises.
+#
+#    COLUMN-2 PROSE IS SKIPPED, and that is not tidiness. Codex has no
+#    comments; prose at column 2 is the commentary layer, and this scan used
+#    to read it as code. CDX3010 passed for thirteen days on the strength of
+#    one prose line in codex/compiler/opening.codex which SAID the only raise
+#    site had been deleted -- the sentence reporting the absence was counted
+#    as the presence. An instrument that reads a comment as a raise cannot
+#    fail in the direction it exists to detect.
 $raised = @{}
 $compilerFiles = Get-ChildItem -Recurse -Path (Join-Path $Root 'codex/compiler') -Filter '*.codex' -File
 foreach ($f in $compilerFiles) {
     $isCodesFile = ($f.FullName -eq (Resolve-Path $codesFile).Path)
     foreach ($line in (Get-Content $f.FullName)) {
+        # Column-2 prose is commentary, never a raise site.
+        if ($line -match '^ [^ ]') { continue }
         # In CdxCodes.codex, a bare "cdx-foo :" declaration and a "mk-cdx cdx-foo"
         # row are not raises; skip those two shapes there.
         if ($isCodesFile) {
@@ -95,6 +106,24 @@ foreach ($f in $compilerFiles) {
             $name = $m.Value
             if ($constToCode.ContainsKey($name)) { $raised[$name] = $true }
         }
+    }
+}
+
+# 3b. Host raise sites. The catalogue documents the whole compiler's
+#     diagnostic surface, and not all of it is emitted from Codex: the build
+#     resolver raises 3010 (cdx-missing-cite) because an unresolvable cite is a
+#     condition the compiler never sees -- the host splices cited chapters in
+#     before the compiler reads a byte. The host spells a raise "error <N>:",
+#     so scan for that rather than carrying an allowlist, which would be a
+#     second thing to drift.
+$codeToConst = @{}
+foreach ($kv in $constToCode.GetEnumerator()) { $codeToConst[$kv.Value] = $kv.Key }
+$hostFiles = Get-ChildItem -Recurse -Path (Join-Path $Root 'build'), (Join-Path $Root 'tools') `
+                           -Include '*.ps1', '*.psm1' -File -ErrorAction SilentlyContinue
+foreach ($f in $hostFiles) {
+    foreach ($m in [regex]::Matches((Get-Content -Raw $f.FullName), 'error\s+(\d{3,4})\s*:')) {
+        $n = [int]$m.Groups[1].Value
+        if ($codeToConst.ContainsKey($n)) { $raised[$codeToConst[$n]] = $true }
     }
 }
 

@@ -1,4 +1,4 @@
-# The Magician's Spellbook — Codex.Spark
+# The Magician's Spellbook -- Codex.Spark
 
 A complete guide to the 82-module creative suite written in pure Codex.
 No floating point. No OS. No GPU driver. Just integers, logic, and a
@@ -42,7 +42,7 @@ bare-metal framebuffer.
 ## What Is Spark
 
 Codex.Spark is a creative suite written entirely in the Codex language.
-It runs on bare metal — no operating system, no libc, no floating point
+It runs on bare metal -- no operating system, no libc, no floating point
 unit. All math uses fixed-point integers with a scale factor of 1000
 (so `1.0` is represented as `1000`, `0.5` as `500`, etc.).
 
@@ -62,7 +62,7 @@ Spark covers:
 - **Application shell**: panel layout, command palette, property
   inspector, scene outliner, asset browser, undo/redo
 
-Everything renders to a `Framebuf` — a flat list of packed RGB integers.
+Everything renders to a `Framebuf` -- a flat list of packed RGB integers.
 That `Framebuf` can be blitted to VGA graphics hardware via the
 `SparkDisplay` bridge module, or exported as raw pixel data.
 
@@ -1213,12 +1213,12 @@ let w3 = display-hud dt [
 
 The `SparkGfxDemo` entry point demonstrates the full pipeline:
 
-1. `gfx-640x480` — set VGA to 640x480 32-bit
+1. `gfx-640x480` -- set VGA to 640x480 32-bit
 2. Build scene (cube, sphere, ground plane)
-3. `scene-render` — rasterize to Framebuf
-4. `display-blit` — copy pixels to VGA hardware
-5. `particle-pool-render` — overlay particle effects
-6. `display-hud` — draw status text
+3. `scene-render` -- rasterize to Framebuf
+4. `display-blit` -- copy pixels to VGA hardware
+5. `particle-pool-render` -- overlay particle effects
+6. `display-hud` -- draw status text
 
 To run it, compile `SparkGfxDemo.codex` as a CDX or ELF target and
 boot it in codex-vm. The VM's VGA display window shows the rendered

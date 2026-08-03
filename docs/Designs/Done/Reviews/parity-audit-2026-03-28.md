@@ -13,7 +13,7 @@ The CCE encoding change reordered character bytes by frequency (e=13,
 t=14, a=15, ..., E=39, T=40, A=41, ..., Z=64). The C#, x86-64, and
 RISC-V backends were updated. Two native backends were NOT:
 
-### ARM64 — ASCII ranges (BROKEN for bare metal)
+### ARM64 -- ASCII ranges (BROKEN for bare metal)
 
 `src/Codex.Emit.Arm64/Arm64CodeGen.cs` lines 1121-1160:
 - `is-letter`: checks `'a'-'z'` and `'A'-'Z'` (ASCII 97-122, 65-90)
@@ -21,7 +21,7 @@ RISC-V backends were updated. Two native backends were NOT:
 - `is-whitespace`: checks `== 32` (ASCII space), `== 9` (tab)
 - **Should be**: letters 13-64, digits 3-12, whitespace 0-2 (CCE)
 
-### WASM — ASCII ranges (BROKEN for bare metal)
+### WASM -- ASCII ranges (BROKEN for bare metal)
 
 `src/Codex.Emit.Wasm/WasmModuleBuilder.Builtins.cs` lines 81-130:
 - `is-letter`: checks `'a'` and `'A'` ranges (ASCII)
@@ -29,14 +29,14 @@ RISC-V backends were updated. Two native backends were NOT:
 - `is-whitespace`: checks `' '`, `'\t'`, `'\n'`, `'\r'` (ASCII)
 - **Should be**: CCE ranges matching x86-64 and RISC-V
 
-### IL — Unicode via .NET (VERIFY)
+### IL -- Unicode via .NET (VERIFY)
 
 `src/Codex.Emit.IL/ILAssemblyBuilder.cs` uses `Char.IsLetter`,
-`Char.IsDigit`, `Char.IsWhiteSpace` — .NET Unicode methods. If the IL
+`Char.IsDigit`, `Char.IsWhiteSpace` -- .NET Unicode methods. If the IL
 backend only targets .NET (Unicode strings), this is correct. If IL
 binaries will ever process CCE-encoded data, these need CCE ranges.
 
-### Transpiler backends (Go, JS, Python, Rust, etc.) — CORRECT
+### Transpiler backends (Go, JS, Python, Rust, etc.) -- CORRECT
 
 These emit source code for platforms that use Unicode natively. ASCII/
 Unicode character classification is correct for their use case.
@@ -93,8 +93,8 @@ remain in stage1-output.cs. Tracked in docs/BUGS.md.
 | **P1** | Add AHandleExpr to resolve-expr | ~10 min | ✅ Fixed (f77d98a) |
 | **P1** | Add AHandleExpr to infer-expr | ~10 min | ✅ Fixed (f77d98a) |
 | **P1** | Add EffectfulTy to type-tag | ~5 min | ✅ Fixed (c6bb1ab) |
-| **P2** | Regenerate _all-source.codex | ~5 min | Open — see `docs/BACKLOG.md` |
-| **P2** | Verify IL backend CCE assumptions | ~15 min | Open — see `docs/BACKLOG.md` |
+| **P2** | Regenerate _all-source.codex | ~5 min | Open -- see `docs/BACKLOG.md` |
+| **P2** | Verify IL backend CCE assumptions | ~15 min | Open -- see `docs/BACKLOG.md` |
 | **P2** | BUG-001: return null in string functions | ~1 hr | ✅ Fixed (see docs/BUGS.md) |
 
 ---

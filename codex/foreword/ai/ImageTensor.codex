@@ -3,14 +3,6 @@ Chapter: ImageTensor
   cites Game chapter Color
   cites Encode chapter Png
 
- Image-tensor conversion for neural network image processing.
- Fixed-point (scale 1000). Converts between pixel arrays (List Rgb)
- and NCHW tensor layout (channels-first, flat List Integer).
-
- Image pixels are [0,255] integer RGB. Tensor values are fixed-point
- [-1000, 1000] (normalized to [-1, 1]) or [0, 1000] depending on
- the model. NCHW layout: all R values, then all G, then all B.
-
  We say:
 
 Section: Types
@@ -29,9 +21,8 @@ Section: Image to Tensor (NCHW, normalize to [-1,1])
   image-to-tensor (img) =
     let n = img.img-width * img.img-height
     in let reds = img-extract-channel (img.img-pixels) 0 n 0 []
-    in let greens = img-extract-channel (img.img-pixels) 1 n 0 []
-    in let blues = img-extract-channel (img.img-pixels) 2 n 0 []
-    in reds & greens & blues
+    in let with-greens = img-extract-channel (img.img-pixels) 1 n 0 reds
+    in img-extract-channel (img.img-pixels) 2 n 0 with-greens
 
   img-extract-channel : List Rgb, Integer, Integer, Integer, List Integer -> List Integer
   img-extract-channel (pixels) (ch) (n) (i) (acc) =
@@ -46,9 +37,8 @@ Section: Image to Tensor (NCHW, normalize to [0,1])
   image-to-tensor-unit (img) =
     let n = img.img-width * img.img-height
     in let reds = img-extract-unit (img.img-pixels) 0 n 0 []
-    in let greens = img-extract-unit (img.img-pixels) 1 n 0 []
-    in let blues = img-extract-unit (img.img-pixels) 2 n 0 []
-    in reds & greens & blues
+    in let with-greens = img-extract-unit (img.img-pixels) 1 n 0 reds
+    in img-extract-unit (img.img-pixels) 2 n 0 with-greens
 
   img-extract-unit : List Rgb, Integer, Integer, Integer, List Integer -> List Integer
   img-extract-unit (pixels) (ch) (n) (i) (acc) =
@@ -76,7 +66,7 @@ Section: Tensor to Image (NCHW, denormalize from [-1,1])
   img-denormalize : Integer -> Integer between 0 and 255
   img-denormalize (v) =
     let clamped = if v < (0 - 1000) then 0 - 1000 else if v > 1000 then 1000 else v
-    in (clamped + 1000) * 255 / 2000
+    in ((clamped + 1000) * 255 + 1000) / 2000
 
 Section: Tensor to Image (NCHW, denormalize from [0,1])
   tensor-to-image-unit : List Integer, Integer, Integer -> ImageData
@@ -96,7 +86,7 @@ Section: Tensor to Image (NCHW, denormalize from [0,1])
   img-denorm-unit : Integer -> Integer between 0 and 255
   img-denorm-unit (v) =
     let clamped = if v < 0 then 0 else if v > 1000 then 1000 else v
-    in clamped * 255 / 1000
+    in (clamped * 255 + 500) / 1000
 
 Section: Image to PNG Bytes
   image-to-png : ImageData -> List Integer

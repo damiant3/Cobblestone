@@ -1,5 +1,6 @@
 Chapter: UefiConsole
   cites Foreword chapter Maybe
+  cites UI chapter Event
   cites UI chapter KeyInput
 
  Abstraction over UEFI Simple Text Output and Simple Text Input
@@ -83,21 +84,35 @@ Section: Text Attributes
 
 Section: Scan Codes
 
-  uefi-scan-up : Integer = 38
-  uefi-scan-down : Integer = 40
-  uefi-scan-right : Integer = 39
-  uefi-scan-left : Integer = 37
-  uefi-scan-home : Integer = 36
-  uefi-scan-end : Integer = 35
-  uefi-scan-insert : Integer = 45
-  uefi-scan-delete : Integer = 127
-  uefi-scan-page-up : Integer = 33
-  uefi-scan-page-down : Integer = 34
-  uefi-scan-f5 : Integer = 116
-  uefi-scan-f12 : Integer = 123
-  uefi-scan-escape : Integer = 27
+ The UEFI scan-code table that stood here is deleted. It was a third copy
+ of the DOM key numbering (up 38, right 39, delete 127, F12 123), nothing
+ in this chapter is fed a UEFI scan code, and every comparison against it
+ was dead. `UI chapter KeyInput` owns the named keys.
+
 
 Section: Key Input
+
+ **This chapter is named for UEFI and has not read a UEFI key in a long
+ time.** After ExitBootServices there is no system table, so every one of
+ the three constructors below fills a UefiKey from `poll-key`, which speaks
+ the keyboard contract in `UI chapter KeyInput`. The predicates, however,
+ were still written against UEFI's own encoding: its scan-code numbering
+ for the navigation keys, and its shift-state bit layout for the
+ modifiers. Neither has ever matched what poll-key hands over, so this
+ whole block was dead code that reads exactly like working code.
+
+ The modifiers were worse than dead. All three constructors set
+ `shift-state = 0`, so `uefi-key-shift-valid` was always False, which made
+ `uefi-key-is-ctrl-alt-del` return False unconditionally: **Ctrl+Alt+Del
+ in the dev console has never once fired.** The Ctrl chords below it
+ compared `char-code` against ASCII control codes (Ctrl+C as 3), which
+ poll-key does not produce and never did -- it answers the letter and sets
+ a ctrl bit in `poll-mods`.
+
+ The record keeps its shape because callers use it, but the fields now
+ mean what the producer actually puts in them: `scan-code` and `char-code`
+ are both the poll-key value (a CCE code point, or a named key), and
+ `shift-state` is `poll-mods` with the validity bit set.
 
   UefiKey = record {
     scan-code : Integer,
@@ -105,29 +120,34 @@ Section: Key Input
     shift-state : Integer
   }
 
+ A character is anything that is not a named key. The old test was
+ `32 <= c <= 126`, which was an ASCII printable-range check on a value
+ that is no longer ASCII: in CCE that range is a slice through the middle
+ of the punctuation and accented blocks and excludes every letter.
+
   uefi-key-is-char : UefiKey -> Boolean
   uefi-key-is-char (k) =
-    if k.char-code < 32 then False
-    else if k.char-code > 126 then False
+    if k.char-code <= 0 then False
+    else if key-is-named (k.char-code) then False
     else True
 
   uefi-key-is-enter : UefiKey -> Boolean
-  uefi-key-is-enter (k) = k.char-code == 13
+  uefi-key-is-enter (k) = k.char-code == key-enter
 
   uefi-key-is-backspace : UefiKey -> Boolean
-  uefi-key-is-backspace (k) = k.char-code == 8
+  uefi-key-is-backspace (k) = k.char-code == key-backspace
 
   uefi-key-is-escape : UefiKey -> Boolean
-  uefi-key-is-escape (k) = k.scan-code == uefi-scan-escape
+  uefi-key-is-escape (k) = k.char-code == key-escape
 
   uefi-key-is-tab : UefiKey -> Boolean
-  uefi-key-is-tab (k) = k.char-code == 9
+  uefi-key-is-tab (k) = k.char-code == key-tab
 
   uefi-key-is-arrow-up : UefiKey -> Boolean
-  uefi-key-is-arrow-up (k) = k.scan-code == uefi-scan-up
+  uefi-key-is-arrow-up (k) = k.char-code == key-up
 
   uefi-key-is-arrow-down : UefiKey -> Boolean
-  uefi-key-is-arrow-down (k) = k.scan-code == uefi-scan-down
+  uefi-key-is-arrow-down (k) = k.char-code == key-down
 
 Section: Shift State
 
@@ -149,14 +169,19 @@ Section: Shift State
 
 Section: Modifier Predicates
 
+ These read `poll-mods` bits (shift 1, ctrl 2, alt 4), not UEFI's
+ left/right pairs. The `uefi-any-*` masks above describe a shift-state
+ word this chapter is not given and are kept only for `uefi-key-has-logo`,
+ which has no poll-key equivalent and is honestly always False.
+
   uefi-key-has-shift : UefiKey -> Boolean
-  uefi-key-has-shift (k) = bit-and (k.shift-state) uefi-any-shift > 0
+  uefi-key-has-shift (k) = bit-and (k.shift-state) mod-shift > 0
 
   uefi-key-has-ctrl : UefiKey -> Boolean
-  uefi-key-has-ctrl (k) = bit-and (k.shift-state) uefi-any-ctrl > 0
+  uefi-key-has-ctrl (k) = bit-and (k.shift-state) mod-ctrl > 0
 
   uefi-key-has-alt : UefiKey -> Boolean
-  uefi-key-has-alt (k) = bit-and (k.shift-state) uefi-any-alt > 0
+  uefi-key-has-alt (k) = bit-and (k.shift-state) mod-alt > 0
 
   uefi-key-has-logo : UefiKey -> Boolean
   uefi-key-has-logo (k) = bit-and (k.shift-state) uefi-any-logo > 0
@@ -167,70 +192,80 @@ Section: Modifier Predicates
 Section: Key Predicates
 
   uefi-key-is-arrow-left : UefiKey -> Boolean
-  uefi-key-is-arrow-left (k) = k.scan-code == uefi-scan-left
+  uefi-key-is-arrow-left (k) = k.char-code == key-left
 
   uefi-key-is-arrow-right : UefiKey -> Boolean
-  uefi-key-is-arrow-right (k) = k.scan-code == uefi-scan-right
+  uefi-key-is-arrow-right (k) = k.char-code == key-right
 
   uefi-key-is-home : UefiKey -> Boolean
-  uefi-key-is-home (k) = k.scan-code == uefi-scan-home
+  uefi-key-is-home (k) = k.char-code == key-home
 
   uefi-key-is-end : UefiKey -> Boolean
-  uefi-key-is-end (k) = k.scan-code == uefi-scan-end
+  uefi-key-is-end (k) = k.char-code == key-end
+
+ Insert has no poll-key value: `sk-high` maps no scancode to it, so this
+ is honestly False rather than a comparison that cannot fire. Wiring
+ Insert means giving it a named key in KeyInput first.
 
   uefi-key-is-insert : UefiKey -> Boolean
-  uefi-key-is-insert (k) = k.scan-code == uefi-scan-insert
+  uefi-key-is-insert (k) = False
 
   uefi-key-is-delete : UefiKey -> Boolean
-  uefi-key-is-delete (k) = k.scan-code == uefi-scan-delete
+  uefi-key-is-delete (k) = k.char-code == key-delete
 
   uefi-key-is-page-up : UefiKey -> Boolean
-  uefi-key-is-page-up (k) = k.scan-code == uefi-scan-page-up
+  uefi-key-is-page-up (k) = k.char-code == key-pgup
 
   uefi-key-is-page-down : UefiKey -> Boolean
-  uefi-key-is-page-down (k) = k.scan-code == uefi-scan-page-down
+  uefi-key-is-page-down (k) = k.char-code == key-pgdn
 
   uefi-key-char : UefiKey -> Integer
   uefi-key-char (k) = k.char-code
 
 Section: Combo Predicates
 
+ A Ctrl chord is the letter plus the ctrl bit, which is what poll-key
+ answers. These compared `char-code` against ASCII control codes -- Ctrl+C
+ as 3, Ctrl+S as 19 -- and poll-key has never produced one, so not a single
+ chord below has ever fired. `key-upper` folds the case so the chord works
+ whether or not shift or caps is in play.
+
   uefi-key-is-ctrl-alt-del : UefiKey -> Boolean
   uefi-key-is-ctrl-alt-del (k) =
     if uefi-key-shift-valid k == False then False
     else if uefi-key-has-ctrl k == False then False
     else if uefi-key-has-alt k == False then False
-    else k.scan-code == uefi-scan-delete
+    else k.char-code == key-delete
 
   uefi-key-is-ctrl-c : UefiKey -> Boolean
   uefi-key-is-ctrl-c (k) =
     if uefi-key-has-ctrl k == False then False
-    else k.char-code == 3
+    else key-upper (k.char-code) == char-code 'C'
 
   uefi-key-is-ctrl-s : UefiKey -> Boolean
   uefi-key-is-ctrl-s (k) =
     if uefi-key-has-ctrl k == False then False
-    else k.char-code == 19
+    else key-upper (k.char-code) == char-code 'S'
 
   uefi-key-is-ctrl-z : UefiKey -> Boolean
   uefi-key-is-ctrl-z (k) =
     if uefi-key-has-ctrl k == False then False
-    else k.char-code == 26
+    else key-upper (k.char-code) == char-code 'Z'
 
   uefi-key-is-ctrl-f : UefiKey -> Boolean
   uefi-key-is-ctrl-f (k) =
     if uefi-key-has-ctrl k == False then False
-    else k.char-code == 6
+    else key-upper (k.char-code) == char-code 'F'
 
   uefi-key-is-ctrl-g : UefiKey -> Boolean
   uefi-key-is-ctrl-g (k) =
     if uefi-key-has-ctrl k == False then False
-    else k.char-code == 7
+    else key-upper (k.char-code) == char-code 'G'
 
   uefi-key-is-ctrl-y : UefiKey -> Boolean
   uefi-key-is-ctrl-y (k) =
     if uefi-key-has-ctrl k == False then False
-    else k.char-code == 25
+    else key-upper (k.char-code) == char-code 'Y'
 
 Section: Pointer Input
 
@@ -331,15 +366,26 @@ Section: Console Operations
     in let w1 = uefi-con-move 0 row
     in print-uni "                                                                               "
 
+ uefi-key-of is the one place a UefiKey is built, so the modifier state is
+ captured with the key rather than left at zero. poll-mods must be read in
+ the same breath as the key: it is a latch, and a second read later would
+ answer whatever is held by then rather than what was held when the key
+ arrived. uefi-shift-valid marks that the state is real, which is the bit
+ uefi-key-is-ctrl-alt-del gates on and which no constructor ever set.
+
+  uefi-key-of : Integer -> UefiKey
+  uefi-key-of (raw) =
+    UefiKey {
+      scan-code = raw,
+      char-code = raw,
+      shift-state = bit-or poll-mods uefi-shift-valid
+    }
+
   uefi-con-wait-key-spin : Integer -> UefiKey
   uefi-con-wait-key-spin (n) =
     let raw = poll-key
     in if raw == 0 then uefi-con-wait-key-spin (n + 1)
-    else UefiKey {
-      scan-code = raw,
-      char-code = raw,
-      shift-state = 0
-    }
+    else uefi-key-of raw
 
   uefi-con-wait-key : UefiKey
   uefi-con-wait-key = uefi-con-wait-key-spin 0
@@ -348,11 +394,7 @@ Section: Console Operations
   uefi-con-wait-key-ex-spin (n) =
     let raw = poll-key
     in if raw == 0 then uefi-con-wait-key-ex-spin (n + 1)
-    else UefiKey {
-      scan-code = raw,
-      char-code = raw,
-      shift-state = 0
-    }
+    else uefi-key-of raw
 
   uefi-con-wait-key-ex : UefiKey
   uefi-con-wait-key-ex = uefi-con-wait-key-ex-spin 0
@@ -361,10 +403,6 @@ Section: Console Operations
   uefi-con-poll-key =
     let raw = poll-key
     in if raw == 0 then None
-    else Just (UefiKey {
-      scan-code = raw,
-      char-code = raw,
-      shift-state = 0
-    })
+    else Just (uefi-key-of raw)
 
 Page 1

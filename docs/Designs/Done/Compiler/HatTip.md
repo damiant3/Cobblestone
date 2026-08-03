@@ -3,7 +3,7 @@
 Threaded-state records that update one field at a time used to allocate
 a fresh record per update, creating a chain of dead objects on the heap.
 The `record-set` builtin compiles to a single `mov [rec+off], val` on
-bare metal and returns the same pointer — no allocation, no copy.
+bare metal and returns the same pointer -- no allocation, no copy.
 
 ## What landed
 
@@ -19,7 +19,7 @@ bare metal and returns the same pointer — no allocation, no copy.
 
 `advance-char` (Lexer) and `advance` (Parser). Their callers use
 patterns like `make-token … s` next to `advance st` in the same
-expression — in-place mutation would change the captured position
+expression -- in-place mutation would change the captured position
 read. Evaluation-order-dependent safety is not worth it.
 
 ## Heap HWM trajectory (bare-metal pingpong, stage 1 / stage 2)
@@ -33,6 +33,6 @@ read. Evaluation-order-dependent safety is not worth it.
 
 TypeEnv was the sleeper: `env-bind` fires per builtin, per def header,
 per lambda param, per let binding, and per pattern bind during
-typecheck — thousands of calls, each previously allocating a fresh
+typecheck -- thousands of calls, each previously allocating a fresh
 TypeEnv wrapper around a rebuilt bindings list. Eliminating the
 wrapper compounded to −40 MB per stage.

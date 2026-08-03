@@ -1,0 +1,122 @@
+Chapter: GopHandoffTest
+  cites Works chapter GopAcpi
+  cites Works chapter GopHandoff
+
+ Three arms over the magic gate on the 0x1F000 handoff block. The block is
+ written here rather than by a stub, so the arms differ only in the magic
+ quadword and the middle arm is the one that must move. Nothing outside
+ 0x1F000..0x1F02F is written: acpi-cell is 0x8000, where the PML4 lives, and
+ a write there would take the page tables with it.
+
+Section: Fixture
+
+ The magic bytes are ASCII "CDXHANDF" and the sentinel is 0x000E0000, the
+ value the real bed reports for the RSDP, little-endian in both cases.
+
+  gh-write-magic : Integer -> [Device.Mmio] Integer
+  gh-write-magic (dummy) = act
+    poke-byte handoff-base 0 67
+    poke-byte handoff-base 1 68
+    poke-byte handoff-base 2 88
+    poke-byte handoff-base 3 72
+    poke-byte handoff-base 4 65
+    poke-byte handoff-base 5 78
+    poke-byte handoff-base 6 68
+    poke-byte handoff-base 7 70
+  end
+
+  gh-clear-magic : Integer -> [Device.Mmio] Integer
+  gh-clear-magic (dummy) = act
+    poke-byte handoff-base 0 0
+    poke-byte handoff-base 1 0
+    poke-byte handoff-base 2 0
+    poke-byte handoff-base 3 0
+    poke-byte handoff-base 4 0
+    poke-byte handoff-base 5 0
+    poke-byte handoff-base 6 0
+    poke-byte handoff-base 7 0
+  end
+
+  gh-write-rsdp : Integer -> [Device.Mmio] Integer
+  gh-write-rsdp (dummy) = act
+    poke-byte handoff-base 40 0
+    poke-byte handoff-base 41 0
+    poke-byte handoff-base 42 14
+    poke-byte handoff-base 43 0
+    poke-byte handoff-base 44 0
+    poke-byte handoff-base 45 0
+    poke-byte handoff-base 46 0
+    poke-byte handoff-base 47 0
+  end
+
+ Width 1920 and height 1080 share the quadword at +0x18, stride 2048 and
+ format 1 the one at +0x20. Those are the real board's numbers, and the
+ padded stride is the case that shears if the halves are read the wrong way
+ round.
+
+  gh-write-mode : Integer -> [Device.Mmio] Integer
+  gh-write-mode (dummy) = act
+    poke-byte handoff-base 24 128
+    poke-byte handoff-base 25 7
+    poke-byte handoff-base 26 0
+    poke-byte handoff-base 27 0
+    poke-byte handoff-base 28 56
+    poke-byte handoff-base 29 4
+    poke-byte handoff-base 30 0
+    poke-byte handoff-base 31 0
+    poke-byte handoff-base 32 0
+    poke-byte handoff-base 33 8
+    poke-byte handoff-base 34 0
+    poke-byte handoff-base 35 0
+    poke-byte handoff-base 36 1
+    poke-byte handoff-base 37 0
+    poke-byte handoff-base 38 0
+    poke-byte handoff-base 39 0
+  end
+
+  gh-write-fb : Integer -> [Device.Mmio] Integer
+  gh-write-fb (dummy) = act
+    poke-byte handoff-base 16 0
+    poke-byte handoff-base 17 0
+    poke-byte handoff-base 18 0
+    poke-byte handoff-base 19 191
+    poke-byte handoff-base 20 0
+    poke-byte handoff-base 21 0
+    poke-byte handoff-base 22 0
+    poke-byte handoff-base 23 0
+  end
+
+  gh-clear-fb : Integer -> [Device.Mmio] Integer
+  gh-clear-fb (dummy) = act
+    poke-byte handoff-base 16 0
+    poke-byte handoff-base 17 0
+    poke-byte handoff-base 18 0
+    poke-byte handoff-base 19 0
+    poke-byte handoff-base 20 0
+    poke-byte handoff-base 21 0
+    poke-byte handoff-base 22 0
+    poke-byte handoff-base 23 0
+  end
+
+Section: Main
+
+  opening : [Console, Device.Mmio] Nothing
+  opening =
+    let old = peek-qword acpi-cell 40
+    in act
+      gh-clear-magic 0
+      print-line-uni ("absent: " & show (handoff-present 0) & " " & show (acpi-boot-rsdp 0 == old))
+      gh-write-magic 0
+      gh-write-rsdp 0
+      print-line-uni ("present: " & show (handoff-present 0) & " " & show (acpi-boot-rsdp 0))
+      gh-write-mode 0
+      gh-write-fb 0
+      print-line-uni ("mode: " & show (handoff-w 0) & " " & show (handoff-h 0) & " " & show (handoff-stride 0))
+      print-line-uni ("fb: " & show (handoff-fb-base 0))
+      gh-clear-fb 0
+      print-line-uni ("nofb: " & show (handoff-present 0) & " " & show (handoff-fb-base 0))
+      poke-byte handoff-base 7 71
+      print-line-uni ("corrupt: " & show (handoff-present 0) & " " & show (acpi-boot-rsdp 0 == old))
+      gh-clear-magic 0
+      print-line-uni "done"
+    end

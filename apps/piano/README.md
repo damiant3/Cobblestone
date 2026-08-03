@@ -11,8 +11,8 @@ A two-octave virtual piano keyboard playable from the computer keyboard, with wa
 
 ## Completeness
 
-35% — Visual structure is thorough and keyboard layout is correct. The click handler is a stub returning 0 for all inputs. No note plays, no state changes, no waveform selection takes effect. Audio synthesis entirely absent. Black keys exist in CSS but not as interactive widget nodes.
+35% -- Visual structure is thorough and keyboard layout is correct. The click handler is a stub returning 0 for all inputs. No note plays, no state changes, no waveform selection takes effect. Audio synthesis entirely absent. Black keys exist in CSS but not as interactive widget nodes.
 
 ## Codex Conformance
 
-Partial — Written in Codex; all audio would need a plug. Handler section present but unimplemented.
+Partial -- Written in Codex; all audio would need a plug. Handler section present but unimplemented.

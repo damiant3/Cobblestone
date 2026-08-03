@@ -1,4 +1,4 @@
-# Perf Hotspot Re-Evaluation — 2026-04-16
+# Perf Hotspot Re-Evaluation -- 2026-04-16
 
 Purpose: verify which `BACKLOG.md` quadratic-hotspot entries
 are still real on the *current* self-host workload, vs. stale claims from
@@ -48,10 +48,10 @@ Typecheck + emit = **87.5%** of total time.
 |---|---|---|---|---|---|---|---|
 | **P9 (real)** | `add-subst` | 20,394 | 10,196 | **20,393** | **207,947,421** | **~400ms** | **biggest hotspot** |
 | P2 | `env-bind` | 10,493 | 1,641 | 1,877 | 17,219,440 | ~35ms | real, small (~2% of typecheck) |
-| P7 | `build-tdm` | 142 | 70 | 141 | 10,011 | ~0ms | negligible — drop |
-| P3 | `set-insert` | **0** | — | — | 0 | 0 | not a typecheck hotspot — drop |
-| P9 (as written) | `resolve` chain walk | 409,337 | **0** avg-hops | **2** max-depth | 23,675 hops | 0 | **misdiagnosed** — chains flat |
-| P13-tail | `replace-def` | **0** | — | — | 0 | 0 | Codex-emit only, not on bench — drop from typecheck list |
+| P7 | `build-tdm` | 142 | 70 | 141 | 10,011 | ~0ms | negligible -- drop |
+| P3 | `set-insert` | **0** | -- | -- | 0 | 0 | not a typecheck hotspot -- drop |
+| P9 (as written) | `resolve` chain walk | 409,337 | **0** avg-hops | **2** max-depth | 23,675 hops | 0 | **misdiagnosed** -- chains flat |
+| P13-tail | `replace-def` | **0** | -- | -- | 0 | 0 | Codex-emit only, not on bench -- drop from typecheck list |
 
 "Total work" = Σ N at entry. Each unit = one list-reference copy or shift
 (~2ns on .NET `List<T>` over ref-typed entries). "Est. ms" = total work × 2ns.
@@ -75,12 +75,12 @@ substitution table can be a dense `List<SubstEntry>` indexed by `var_id`
 ### P2 is real but small
 
 17M ops ≈ 35ms = ~2% of typecheck. The 9.2x speedup from `85cfa4d`
-(sorted binary search + `list-snoc`) is still mostly holding — the quadratic
+(sorted binary search + `list-snoc`) is still mostly holding -- the quadratic
 is there but the constant (tight ref-memcpy) is modest. Worth eventually,
 not urgent.
 
 Also: the backlog cites HAMT-partial commits `88e056a` / `1a90eeb` as
-"partial mitigation", but those were **reverted** in `f85d031` ("P2 HAMT —
+"partial mitigation", but those were **reverted** in `f85d031` ("P2 HAMT --
 regression, not improvement, 2.3s vs 3.2s"). HAMT lost; sorted-list won.
 The wording should be corrected.
 

@@ -1,8 +1,8 @@
-# IL Effect Handlers — Design Notes
+# IL Effect Handlers -- Design Notes
 
 **Date**: 2026-03-21
 **Author**: Claude (Opus 4.6, Linux)
-**Status**: Phase 1 complete, Phase 2 complete (Approach A — inline-only handlers)
+**Status**: Phase 1 complete, Phase 2 complete (Approach A -- inline-only handlers)
 
 ---
 
@@ -11,7 +11,7 @@
 The IL emitter now handles `IRRunState`, `IRGetState`, and `IRSetState`:
 
 - `EmitRunState` declares a `__state` local, stores the initial value, then
-  inlines the do-block statements directly (no closure needed — IL methods
+  inlines the do-block statements directly (no closure needed -- IL methods
   already have local scope).
 - `IRGetState` → `ldloc __state`
 - `IRSetState` → emit new value, `stloc __state`
@@ -21,7 +21,7 @@ The IL emitter now handles `IRRunState`, `IRGetState`, and `IRSetState`:
 **Lowering fix**: Added `m_currentStateType` field to the lowerer, set during
 `run-state` computation lowering. This ensures `get-state` returns the correct
 type (e.g. `TextType`) instead of `ErrorType`, which was causing `s ++ " world"`
-to lower as `AppendList` instead of `AppendText` — producing invalid IL.
+to lower as `AppendList` instead of `AppendText` -- producing invalid IL.
 
 6 new runtime-verified tests: simple get, set-then-get, increment, arithmetic
 chain, text concatenation, plus 1 emit validation test.
@@ -66,10 +66,10 @@ main = with Logger program
   log (msg) (resume) = resume 0
 ```
 
-After lowering, the `IRHandle` node's computation is `IRName("program")` — a
+After lowering, the `IRHandle` node's computation is `IRName("program")` -- a
 reference to a top-level static method. Inside `program`, the call to `log` is
 an `IRApply(IRName("log"), IRTextLit("hello"))`. But `log` is not a real
-method — it's an effect operation that only has meaning within a handler scope.
+method -- it's an effect operation that only has meaning within a handler scope.
 
 The C# emitter generates:
 
@@ -82,7 +82,7 @@ The C# emitter generates:
 }))()
 ```
 
-**This doesn't actually work at runtime** — the existing C# tests only verify
+**This doesn't actually work at runtime** -- the existing C# tests only verify
 type-checking and string presence (`Assert.Contains("_handle_log_", cs)`), not
 execution. The handler closure is defined but never called because `program` is
 a pre-compiled static method that has no way to reach the local `_handle_log_`.
@@ -132,7 +132,7 @@ static int program(ILogger __effect_Logger) => __effect_Logger.log("hello");
 ```
 
 **Pros**: Natural on CLR, efficient dispatch, no continuation overhead.
-**Cons**: Doesn't support `resume` (one-shot continuations) — the handler
+**Cons**: Doesn't support `resume` (one-shot continuations) -- the handler
 body can't "resume" back into the computation. Only works for simple
 handlers that immediately return a value.
 
@@ -167,16 +167,16 @@ The IL emitter now handles `IRHandle` via inline-only handler emission.
 
 Three new fields on `ILAssemblyBuilder`:
 
-- `m_definitions` — stores all module `IRDefinition` entries so named
+- `m_definitions` -- stores all module `IRDefinition` entries so named
   computations can be resolved to their bodies for inlining.
-- `m_activeHandlerClauses` — operation name → `IRHandleClause` map, active
+- `m_activeHandlerClauses` -- operation name → `IRHandleClause` map, active
   during emission of a handled computation. Checked in `EmitExpr` (`IRName`
   for zero-arg ops) and `EmitApply` (ops with arguments).
-- `m_activeResumeName` — the resume parameter name, active during clause body
+- `m_activeResumeName` -- the resume parameter name, active during clause body
   emission. When `EmitApply` sees a call to this name, it emits just the
   argument (one-shot resume: `resume x` = `x`).
 
-**`EmitHandle` method** — the core orchestrator:
+**`EmitHandle` method** -- the core orchestrator:
 
 1. Builds a clause map from the `IRHandle.Clauses`.
 2. Saves the current handler context (supports nesting).
@@ -185,7 +185,7 @@ Three new fields on `ILAssemblyBuilder`:
 4. Emits the resolved computation with interception active.
 5. Restores the previous handler context.
 
-**`EmitHandlerClauseInline` method** — emits a single clause body:
+**`EmitHandlerClauseInline` method** -- emits a single clause body:
 
 1. Evaluates each operation argument and stores it as a local bound to the
    clause parameter name.
@@ -211,9 +211,9 @@ Three new fields on `ILAssemblyBuilder`:
 
 ### Limitations (Approach A)
 
-- **Named computations with parameters** are not inlined — the handler
+- **Named computations with parameters** are not inlined -- the handler
   context won't intercept operations inside a called method.
-- **Multi-shot resume** is not supported — `resume` can only be called once.
+- **Multi-shot resume** is not supported -- `resume` can only be called once.
 - **Higher-order computations** (passing effectful functions around) won't
   have their operations intercepted.
 

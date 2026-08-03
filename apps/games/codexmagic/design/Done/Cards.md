@@ -1,4 +1,4 @@
-# Cards — Data Model, Types, Abilities
+# Cards -- Data Model, Types, Abilities
 
 ## Card Types
 
@@ -20,7 +20,7 @@ stored as a list. Supertypes: Legendary, Basic.
 
 The General is a special card type that embodies the AI supervisor
 and serves as the player's avatar on the battlefield. Each player
-selects a General during deck construction — it is not part of the
+selects a General during deck construction -- it is not part of the
 deck but starts the game on the battlefield in the **command zone**.
 
 ```
@@ -41,7 +41,7 @@ GeneralTemplate = record {
 }
 ```
 
-The General's `life` total is the win condition — when a General
+The General's `life` total is the win condition -- when a General
 reaches 0 life, that player loses the game. Players do not have
 their own life total. The General IS the player for the purposes
 of damage, life gain, and life loss.
@@ -49,7 +49,7 @@ of damage, life gain, and life loss.
 The General has P/T/D like a creature and can be attacked in combat.
 Combat damage dealt to the General reduces the General's life total.
 The General can also block. However, the General cannot be destroyed
-by conventional means — if it would receive lethal damage (damage >=
+by conventional means -- if it would receive lethal damage (damage >=
 toughness), it takes the damage to its life total but remains on the
 battlefield. The General is removed from the game only when its life
 reaches 0 (game over).
@@ -58,7 +58,7 @@ reaches 0 (game over).
 
 Generals carry **behavioral modifiers** that shape how the AI
 supervisor plays. These are abilities unique to the General card type
-— they don't produce game effects directly but modify the AI's
+-- they don't produce game effects directly but modify the AI's
 decision-making:
 
 ```
@@ -83,7 +83,7 @@ CombatBias =
   | Cautious           -- only attack when guaranteed favorable
 ```
 
-Behavioral modifiers are visible to both players — you can read your
+Behavioral modifiers are visible to both players -- you can read your
 opponent's General and understand how their AI will tend to behave.
 This creates a mind-game layer: the player can override the AI's
 behavioral tendencies at any time, but the opponent doesn't know
@@ -108,7 +108,7 @@ are part of the AI layer. Both are printed on the card.
 The General's power scales with its army. **Army Loyalty** is a
 dynamic value computed from the combined converted mana cost (CMC)
 of all non-token creatures the General's controller has on the
-battlefield. Token creatures do not contribute — only creatures that
+battlefield. Token creatures do not contribute -- only creatures that
 were cast from hand and paid for with real mana count toward loyalty.
 
 ```
@@ -117,7 +117,7 @@ army-loyalty state player =
   sum (map cmc (non-token-creatures state player))
 ```
 
-Army Loyalty functions like planeswalker loyalty in MTG — it is the
+Army Loyalty functions like planeswalker loyalty in MTG -- it is the
 resource that powers the General's activated abilities. Generals have
 abilities that cost loyalty to activate:
 
@@ -138,7 +138,7 @@ GeneralAbility =
 - "[Scale]: All creatures you control get +X/+0 where X is your army
   loyalty divided by 5."
 
-Loyalty is not spent permanently — it is recalculated each time it's
+Loyalty is not spent permanently -- it is recalculated each time it's
 checked, based on current board state. "Spending" loyalty on an
 ability means the ability checks that you have enough, then the
 effect resolves. If creatures die before the ability resolves (in
@@ -146,7 +146,7 @@ response), the loyalty check may fail and the ability fizzles.
 
 This creates a natural army-building incentive: casting real creatures
 (not just spawning tokens) powers up your General. It also creates
-interesting tension — do you cast a big creature to boost loyalty, or
+interesting tension -- do you cast a big creature to boost loyalty, or
 hold mana for removal? Opponents can weaken your General by killing
 your army, reducing your loyalty and locking out your best abilities.
 
@@ -204,7 +204,7 @@ Stats are displayed as P/T/D (e.g., a 3/4/2 creature has 3 power,
 **Defense** is the damage absorption threshold per attacking source.
 Any single source of combat damage with power at or below the
 creature's defense value deals zero damage to it. Defense does not
-reduce damage — it either blocks it entirely or has no effect. See
+reduce damage -- it either blocks it entirely or has no effect. See
 [Combat.md](Combat.md) for full rules.
 
 ## Mana Cost
@@ -229,9 +229,9 @@ Converted mana cost (CMC) = sum of all fields.
 
 Abilities come in three kinds:
 
-1. **Static** — continuous effect while on battlefield (e.g., "Other creatures you control get +1/+1")
-2. **Triggered** — fires when a condition is met (e.g., "When this enters the battlefield...")
-3. **Activated** — player pays a cost to use (e.g., "{T}: Add {G}")
+1. **Static** -- continuous effect while on battlefield (e.g., "Other creatures you control get +1/+1")
+2. **Triggered** -- fires when a condition is met (e.g., "When this enters the battlefield...")
+3. **Activated** -- player pays a cost to use (e.g., "{T}: Add {G}")
 
 ```
 Ability =

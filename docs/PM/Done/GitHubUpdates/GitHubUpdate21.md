@@ -11,7 +11,7 @@
 
 ## Bug Fix: i32 Sign-Extension Truncation
 
-- **Root cause.** CL 3217's `emit-binary-sub-imm` passed values > INT32_MAX through `alu-ri`, which truncates to sign-extended i32. The expression `0 - 2147483648` compiled as `SUB reg, sign_ext(0x80000000)` = `reg + 2147483648` instead of `reg - 2147483648`. This broke `bound-fits-i32` (always returned False), forcing all bounds checks into a push/pop R9 codepath that produced `cmp r9, r9` (always equal) when the value register was also R9 — silently disabling `OvClamping` and `OvError` runtime bounds checks.
+- **Root cause.** CL 3217's `emit-binary-sub-imm` passed values > INT32_MAX through `alu-ri`, which truncates to sign-extended i32. The expression `0 - 2147483648` compiled as `SUB reg, sign_ext(0x80000000)` = `reg + 2147483648` instead of `reg - 2147483648`. This broke `bound-fits-i32` (always returned False), forcing all bounds checks into a push/pop R9 codepath that produced `cmp r9, r9` (always equal) when the value register was also R9 -- silently disabling `OvClamping` and `OvError` runtime bounds checks.
 - **Fix.** Range-check immediates in `emit-binary` (add/sub) and `emit-if` (comparison folding) dispatchers; fall back to register-register path when outside `[-2^31, 2^31-1]`.
 - **Symptom.** `Integer between 0 and 100 clamping` stored 150 unclamped. The `arithmetic` test was the sole failure (200/201).
 
@@ -19,7 +19,7 @@
 
 - **Bulk text/bytes builtins.** `text-to-unicode-bytes` and `unicode-bytes-to-text` runtime helpers for bulk CCE-to-UTF8 conversion. HTTP parser throughput improved to ~529K req/s on the TechEmpower benchmark.
 - **codex-vm crash diagnostics.** On any crash, codex-vm now dumps: all 16 GP registers with symbol resolution, x86-64 disassembly around RIP, RBP-chain backtrace, stack dump (24 slots), and memory at fault address. Built-in mini-disassembler, auto-loads `.map` from kernel path. Interactive debugger on crash when not headless.
-- **Bench harness.** `bench/compare.ps1` — compile C (/Od + /O2) and Codex, extract CDX disassembly, produce comparison report. Four micro-benchmarks: fib, factorial, GCD, sum-to-N.
+- **Bench harness.** `bench/compare.ps1` -- compile C (/Od + /O2) and Codex, extract CDX disassembly, produce comparison report. Four micro-benchmarks: fib, factorial, GCD, sum-to-N.
 - **survey-check-mul.** Raised from 10 to 400 to handle type-dense plug source (PlugTypes.codex: ~40 types in 368 lines).
 
 ## Apps

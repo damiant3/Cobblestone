@@ -1,4 +1,4 @@
-# Dual-Target GPU Compilation — PTX + SPIR-V via Plugs
+# Dual-Target GPU Compilation -- PTX + SPIR-V via Plugs
 
 **Author**: Blu + Damian
 **Date**: 2026-06-15
@@ -26,7 +26,7 @@ change.
 The insight: PTX and SPIR-V are both typed virtual ISAs with
 unbounded virtual registers, structured control flow, and explicit
 memory spaces. The same device IR serves both. The compiler doesn't
-need to know which GPU vendor the binary targets — that's the plug's
+need to know which GPU vendor the binary targets -- that's the plug's
 job.
 
 ---
@@ -35,7 +35,7 @@ job.
 
 | Asset | Role |
 |---|---|
-| `docs/Designs/OS/Active/GpuKernels.md` | `[Device]` / `[Gpu]` effects, capability, type-checker post-pass, kernel detection, intrinsic shelf — the full language surface |
+| `docs/Designs/OS/Active/GpuKernels.md` | `[Device]` / `[Gpu]` effects, capability, type-checker post-pass, kernel detection, intrinsic shelf -- the full language surface |
 | `docs/Designs/OS/Active/GpuCompute.md` | Transport: shared-memory proxy, virtio, UEFI GOP, firmware constraints |
 | `codex/plugs/` (53 plugs) | Proven plug architecture: receive IR over TCP, parse S-expressions, emit target format |
 | `codex/plugs/common/IRTextParser.codex` | S-expression IR parser shared by all plugs |
@@ -44,7 +44,7 @@ job.
 
 **This design changes nothing in GpuKernels.md's language surface.**
 Effects, capabilities, type-checker post-pass, kernel detection,
-intrinsic shelf — all unchanged. What changes is the backend: instead
+intrinsic shelf -- all unchanged. What changes is the backend: instead
 of a monolithic PTX emitter in `codex/compiler/Emit/`, the compiler
 emits a device IR that plugs consume.
 
@@ -76,7 +76,7 @@ The device IR carries:
 - Type annotations on every node (the IR is fully typed)
 - Effect rows (so the plug can validate the subset rule)
 - Intrinsic references (`index-1d`, `shuffle-xor`, `mbarrier-init`, etc.)
-  as named atoms — the plug maps these to target instructions
+  as named atoms -- the plug maps these to target instructions
 
 What the device IR does **not** carry:
 - Host-side code (filtered out by the post-pass)
@@ -88,11 +88,11 @@ What the device IR does **not** carry:
 
 ```
 codex/plugs/ptx/
-  PtxPlug.codex       — entry: connect TCP, receive device IR, dispatch
-  PtxEmitter.codex    — IR walk → PTX text emission
-  PtxIntrinsics.codex — intrinsic name → PTX instruction sequence mapping
-  PtxRegisters.codex  — virtual register allocation (%rd0, %f0, etc.)
-  PtxTypes.codex      — Codex type → PTX type mapping (.u32, .f32, .pred, etc.)
+  PtxPlug.codex       -- entry: connect TCP, receive device IR, dispatch
+  PtxEmitter.codex    -- IR walk → PTX text emission
+  PtxIntrinsics.codex -- intrinsic name → PTX instruction sequence mapping
+  PtxRegisters.codex  -- virtual register allocation (%rd0, %f0, etc.)
+  PtxTypes.codex      -- Codex type → PTX type mapping (.u32, .f32, .pred, etc.)
   build.ps1
   run.ps1
 ```
@@ -118,12 +118,12 @@ general use.
 
 ```
 codex/plugs/spirv/
-  SpirvPlug.codex       — entry: connect TCP, receive device IR, dispatch
-  SpirvEmitter.codex    — IR walk → SPIR-V binary emission
-  SpirvIntrinsics.codex — intrinsic name → SPIR-V instruction mapping
-  SpirvRegisters.codex  — SSA ID allocation
-  SpirvTypes.codex      — Codex type → SPIR-V type mapping
-  SpirvBinary.codex     — SPIR-V binary format writer (magic, headers, sections)
+  SpirvPlug.codex       -- entry: connect TCP, receive device IR, dispatch
+  SpirvEmitter.codex    -- IR walk → SPIR-V binary emission
+  SpirvIntrinsics.codex -- intrinsic name → SPIR-V instruction mapping
+  SpirvRegisters.codex  -- SSA ID allocation
+  SpirvTypes.codex      -- Codex type → SPIR-V type mapping
+  SpirvBinary.codex     -- SPIR-V binary format writer (magic, headers, sections)
   build.ps1
   run.ps1
 ```
@@ -139,7 +139,7 @@ The SPIR-V plug:
    - `shared-load` → `OpLoad` with `Workgroup` storage class
    - Atomics: `OpAtomicLoad` / `OpAtomicStore` / `OpAtomicExchange` with
      scope (`Device` / `Workgroup`) and semantics (`Relaxed` / `Acquire` / `Release`)
-5. Emits binary SPIR-V (not text) — the format is a binary word stream:
+5. Emits binary SPIR-V (not text) -- the format is a binary word stream:
    magic `0x07230203`, version, generator ID, bound, schema, then
    instruction words
 6. Returns SPIR-V binary over TCP
@@ -185,7 +185,7 @@ S-expressions for the existing 53 plugs. For GPU, it:
 2. Serializes the device-reachable closure via IRTextEmitter
 3. Sends to whichever plug(s) the build requests
 
-This is a small addition to `CodexEmitter.codex` — a new dispatch
+This is a small addition to `CodexEmitter.codex` -- a new dispatch
 case alongside the existing TEXT/CDX/ELF/EFI/IMG/DISK/MEASURE modes.
 
 ### 3.2 What Does NOT Change in the Compiler
@@ -216,10 +216,10 @@ The plug approach:
    separate CDX binaries compiled against the plug seed. They do not
    participate in the self-compile gate.
 2. **Adding a target is adding a plug.** Metal IR, HIP, Intel
-   oneAPI — each is a new directory under `codex/plugs/`, not a
+   oneAPI -- each is a new directory under `codex/plugs/`, not a
    change to the compiler.
 3. **The pattern is proven.** 53 plugs already work this way. The
-   WASM plug, the ARM64 plug, the RISC-V plug, the ELF plug — all
+   WASM plug, the ARM64 plug, the RISC-V plug, the ELF plug -- all
    receive IR and emit a target format.
 4. **Independent development.** The PTX plug and SPIR-V plug can be
    built and tested independently, by different agents, without
@@ -295,18 +295,18 @@ data center GPUs. SPIR-V is the right target for the IoT edge:
 
 - **ARM Mali GPUs** (prevalent in IoT gateways, Raspberry Pi) support
   Vulkan compute via SPIR-V, not PTX
-- **Qualcomm Adreno** (mobile/edge SoCs) — Vulkan compute via SPIR-V
-- **Intel integrated GPUs** (industrial PCs, edge servers) — Vulkan
+- **Qualcomm Adreno** (mobile/edge SoCs) -- Vulkan compute via SPIR-V
+- **Intel integrated GPUs** (industrial PCs, edge servers) -- Vulkan
   compute or OpenCL SPIR-V via oneAPI/Level Zero
-- **Imagination PowerVR** (automotive, embedded) — Vulkan compute
-- **Samsung Xclipse** (Exynos, RDNA2-based) — Vulkan compute
+- **Imagination PowerVR** (automotive, embedded) -- Vulkan compute
+- **Samsung Xclipse** (Exynos, RDNA2-based) -- Vulkan compute
 
 For the European IoT deployment, many edge devices will have ARM Mali
 or Qualcomm Adreno GPUs, not NVIDIA. SPIR-V reaches them. PTX does
 not.
 
 The dual-target approach means a single Codex source file produces
-firmware that runs GPU compute on whatever hardware is available —
+firmware that runs GPU compute on whatever hardware is available --
 NVIDIA in the data center, ARM Mali on the gateway, CPU on the
 sensor node. Same signed CDX, same trust chain, same effect-typed
 safety guarantees.
@@ -336,20 +336,20 @@ NVIDIA, SPIR-V on Vulkan-only hardware).
 
 ## 8. Phasing
 
-This design layers on top of GpuKernels.md's K0–K9 phasing. The
-kernel CLs (K0–K2: effects, type-checker, IR partition) are
+This design layers on top of GpuKernels.md's K0-K9 phasing. The
+kernel CLs (K0-K2: effects, type-checker, IR partition) are
 prerequisites. The plug work starts at K3:
 
 | CL | GpuKernels.md | This design |
 |---|---|---|
-| K0–K2 | Effects, type-checker post-pass, IR partition | Unchanged — these are compiler-side, not plug-side |
+| K0-K2 | Effects, type-checker post-pass, IR partition | Unchanged -- these are compiler-side, not plug-side |
 | **K3** | PTX emit (in compiler) | **Replaced**: PTX emit moves to `ptx-plug`. Device IR emission added to compiler. PTX plug built and tested against hand-written vecadd |
 | K4 | Proxy extension (`gpu-op-launch-ptx`) | **Extended**: add `gpu-op-launch-spirv` alongside |
 | K5 | End-to-end vecadd | **Extended**: vecadd runs on both PTX and SPIR-V paths |
 | **K5.1** | (new) | SPIR-V plug: binary emitter, intrinsic mapping, vecadd through Vulkan compute |
-| K6–K8 | Warp/shared/atomic intrinsics, capabilities, math | Unchanged in scope; intrinsic lowering lives in plugs not compiler |
+| K6-K8 | Warp/shared/atomic intrinsics, capabilities, math | Unchanged in scope; intrinsic lowering lives in plugs not compiler |
 | **K6.1** | (new) | SPIR-V intrinsic coverage: subgroup ops, shared memory, atomics |
-| K9 | Optional libdevice | Unchanged — PTX-only optimization |
+| K9 | Optional libdevice | Unchanged -- PTX-only optimization |
 
 ### New plug CLs (interleaved with K-series)
 
@@ -401,11 +401,11 @@ The plug architecture makes adding GPU targets mechanical:
 
 | Target | Plug | Hardware | Priority |
 |---|---|---|---|
-| PTX | `ptx-plug` | NVIDIA (Turing through Blackwell) | **Now** — dev box is RTX 4060 Ti |
-| SPIR-V | `spirv-plug` | ARM Mali, Qualcomm Adreno, Intel, Samsung, Imagination | **Now** — IoT edge GPUs |
-| Metal IR | `metal-plug` | Apple M1/M2/M3/M4 | Later — if Apple hardware enters scope |
-| HIP | `hip-plug` | AMD RDNA/CDNA | Later — if AMD hardware enters scope |
-| DXIL | `dxil-plug` | Windows DirectX 12 compute | Later — if Windows desktop GPU compute needed |
+| PTX | `ptx-plug` | NVIDIA (Turing through Blackwell) | **Now** -- dev box is RTX 4060 Ti |
+| SPIR-V | `spirv-plug` | ARM Mali, Qualcomm Adreno, Intel, Samsung, Imagination | **Now** -- IoT edge GPUs |
+| Metal IR | `metal-plug` | Apple M1/M2/M3/M4 | Later -- if Apple hardware enters scope |
+| HIP | `hip-plug` | AMD RDNA/CDNA | Later -- if AMD hardware enters scope |
+| DXIL | `dxil-plug` | Windows DirectX 12 compute | Later -- if Windows desktop GPU compute needed |
 
 Each plug is ~500–1500 lines of Codex (comparable to existing
 language plugs). The intrinsic mapping table (§2.4) is the
@@ -432,7 +432,7 @@ encoding (mechanical).
    lines of C (create instance, find compute queue, create pipeline,
    dispatch, read back). Should it be a separate executable
    (`gpu-dispatch-vk.c`) or integrated into `gpu-dispatch.cu`?
-   Recommendation: separate executable — keeps CUDA and Vulkan
+   Recommendation: separate executable -- keeps CUDA and Vulkan
    dependencies isolated.
 
 4. **Fallback ordering.** When the CDX carries both PTX and SPIR-V,
@@ -444,9 +444,9 @@ encoding (mechanical).
 
 ## References
 
-- [GpuKernels.md](../../OS/Active/GpuKernels.md) — Codex-native kernel language surface (Pip, 2026-05-08)
-- [GpuCompute.md](../../OS/Active/GpuCompute.md) — transport/proxy/firmware (Nib + Damian, 2026-05-05)
-- [299bytes.com/Helix](https://299bytes.com) — dual-target x86-64 + PTX compilation, provoked this design
+- [GpuKernels.md](../../OS/Active/GpuKernels.md) -- Codex-native kernel language surface (Pip, 2026-05-08)
+- [GpuCompute.md](../../OS/Active/GpuCompute.md) -- transport/proxy/firmware (Nib + Damian, 2026-05-05)
+- [299bytes.com/Helix](https://299bytes.com) -- dual-target x86-64 + PTX compilation, provoked this design
 - SPIR-V spec: Khronos SPIR-V 1.6 (2022-02-18)
 - Vulkan compute: Khronos Vulkan 1.3 §14 (Compute Shaders)
 - PTX ISA: NVIDIA PTX ISA 8.5 (CUDA 12.6)

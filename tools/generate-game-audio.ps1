@@ -1,4 +1,4 @@
-# generate-game-audio.ps1 — Generate UI sounds and ambient music via MusicGen.
+# generate-game-audio.ps1 -- Generate UI sounds and ambient music via MusicGen.
 # Usage: tools/generate-game-audio.ps1 [-Force]
 # Requires MusicGen running at http://localhost:7861
 [CmdletBinding()]

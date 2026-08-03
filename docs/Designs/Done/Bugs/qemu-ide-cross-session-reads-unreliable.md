@@ -1,4 +1,4 @@
-# QEMU IDE: cross-session reads unreliable under WHPX — 2026-05-02
+# QEMU IDE: cross-session reads unreliable under WHPX -- 2026-05-02
 
 **Reported:** 2026-05-02
 **Reporter:** Cam (during DiskFacts V0 bring-up, CL 665)
@@ -15,7 +15,7 @@ accel, bare-metal kernel.
 ~40% of boots read correctly. The remaining ~60% return all zeros for
 every sector in the session, even though the host disk image file
 contains the correct data (verified via host-side read). The failure
-is per-boot — if the first read in a session fails, all reads in that
+is per-boot -- if the first read in a session fails, all reads in that
 session fail. If it succeeds, all reads succeed.
 
 ## Additional findings
@@ -24,7 +24,7 @@ session fail. If it succeeds, all reads succeed.
 - `cache=writethrough` does not improve reliability.
 - 3-second delay before QEMU kill ensures writes flush to the backing
   file (without it, late writes in a session may not persist).
-- In-program retry (re-issuing the SYSCALL) does not help — the IDE
+- In-program retry (re-issuing the SYSCALL) does not help -- the IDE
   controller returns the same stale data for the entire boot.
 
 ## Impact
@@ -32,7 +32,7 @@ session fail. If it succeeds, all reads succeed.
 Disk persistence tests (`codex.build/test-disk-persistence.ps1`) use
 session-level retries (reboot QEMU). Single-sector tests pass reliably
 within ~5 attempts. Multi-sector tests (reading 4+ sectors correctly
-in one boot) are flaky — need many attempts or get lucky.
+in one boot) are flaky -- need many attempts or get lucky.
 
 ## Theory
 

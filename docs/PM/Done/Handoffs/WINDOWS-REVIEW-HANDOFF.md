@@ -1,4 +1,4 @@
-# Windows Agent Review — Handoff Summary
+# Windows Agent Review -- Handoff Summary
 
 **Date**: 2026-03-18 (verified via `Get-Date`)
 **Agent**: Copilot (VS 2022, Windows)
@@ -63,22 +63,22 @@ has been updated with the full list.
 
 When you review this branch:
 
-1. **Verify the date corrections** — run `git log --format="%ai" 05a40ea -1` and
+1. **Verify the date corrections** -- run `git log --format="%ai" 05a40ea -1` and
    `git log --format="%ai" 4c4b52e -1` to confirm the timestamps match.
-2. **Read `09-WINDOWS-NOTES.md`** — check if the tool quirks I documented match
+2. **Read `09-WINDOWS-NOTES.md`** -- check if the tool quirks I documented match
    your understanding. The `get_file` first-line-drop bug is particularly important.
-3. **Check the `2026-06` date fixes** in DECISIONS.md — I found 3 additional
+3. **Check the `2026-06` date fixes** in DECISIONS.md -- I found 3 additional
    hallucinated dates your audit didn't catch (Parser Error Recovery, Emitter
    Generics, Column-Based `when` Branch Scoping).
-4. **The `pwsh` → `powershell` change in `02-TERMINAL.md`** — verify this is
+4. **The `pwsh` → `powershell` change in `02-TERMINAL.md`** -- verify this is
    acceptable or if you'd prefer to keep `pwsh` with a note.
 
 ---
 
 ## Build Status
 
-- `dotnet build Codex.sln`: 1 error (pre-existing CDX3002 in `Codex.Codex` — same on master)
-- `dotnet test Codex.sln`: PASS — 722 tests (16+23+88+11+15+18+551)
+- `dotnet build Codex.sln`: 1 error (pre-existing CDX3002 in `Codex.Codex` -- same on master)
+- `dotnet test Codex.sln`: PASS -- 722 tests (16+23+88+11+15+18+551)
 
 The `Codex.Codex` CDX3002 error (`extract-ctor-type-args` undefined) exists on master
 and is unrelated to this branch's changes.
@@ -89,6 +89,6 @@ and is unrelated to this branch's changes.
 
 During this session, the `get_file` tool repeatedly showed line 1 of
 `ITERATION-3-HANDOFF.md` as blank, when the terminal confirmed the heading
-`# Iteration 3 — Handoff Summary` was present. This caused an initial edit to
+`# Iteration 3 -- Handoff Summary` was present. This caused an initial edit to
 appear to drop the heading. The workaround is documented in `09-WINDOWS-NOTES.md`:
 always verify line 1 via `Get-Content -TotalCount 5` when it matters.

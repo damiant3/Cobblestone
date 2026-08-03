@@ -3,7 +3,7 @@
 **Date:** 2026-04-16
 **Compiler version:** master @ `e84f674`
 **Result:** Bootstrap 1 and 1.1 green. **Bootstrap 2 (pingpong) RED**
-since `4420b92` (2026-04-15 22:05) — parametric type emission
+since `4420b92` (2026-04-15 22:05) -- parametric type emission
 regression in the Codex-text emitter. Bootstrap 3 (bare-metal binary)
 not yet green by design.
 
@@ -49,10 +49,10 @@ produce itself byte-identically.
 - Stage 1's emitter emits Codex text → bootstrap 1.1 stage 2.
 - Fixed point: **bootstrap 1.1 stage 1 === bootstrap 1.1 stage 2**.
 
-### Bootstrap 2 (pingpong) — bare-metal ELF, Codex-text output
+### Bootstrap 2 (pingpong) -- bare-metal ELF, Codex-text output
 
 - Ref compiler produces the bare-metal ELF (`Codex.Codex.elf`, target
-  `x86-64-bare`). ELF runs under QEMU — no OS, no libc, no dotnet.
+  `x86-64-bare`). ELF runs under QEMU -- no OS, no libc, no dotnet.
 - QEMU sends the ELF `TEXT\n` + source over serial, captures Codex
   text output → bootstrap 2 (pingpong) stage 1.
 - sem-equiv(source, bootstrap 2 (pingpong) stage 1) must PASS. Without this,
@@ -77,19 +77,19 @@ produce itself byte-identically.
 | 1 | stage 1 === stage 3 | 946,826 chars | ~11s | PASS |
 | 1.1 | stage 1 === stage 2 | 549,881 chars | ~5s | PASS |
 | 2 | bootstrap 2 (pingpong) stage 1 produced | 562,740 B | 39s | produced |
-| 2 | sem-equiv(source, stage 1) | — | ~1s | **FAIL** |
-| 2 | stage 1 === stage 2 | — | — | **SKIPPED** (gated on sem-equiv) |
-| 3 | self-compiled binary byte-identical | — | — | not green by design |
+| 2 | sem-equiv(source, stage 1) | -- | ~1s | **FAIL** |
+| 2 | stage 1 === stage 2 | -- | -- | **SKIPPED** (gated on sem-equiv) |
+| 3 | self-compiled binary byte-identical | -- | -- | not green by design |
 
 Bootstrap 2 (pingpong) stage 1 bare-metal metrics:
 - Stack HWM: 2,497,152 B
 - Heap HWM: 1,011,859,392 B (≈965 MB of the ≈1 GB bare-metal heap)
 
-### Bootstrap 2 (pingpong) regression — root cause
+### Bootstrap 2 (pingpong) regression -- root cause
 
 Sem-equiv(source, bootstrap 2 (pingpong) stage 1) reports:
 
-- **Dropped (1)**: `foreword--maybe: Maybe (a) (line 1)` — source has
+- **Dropped (1)**: `foreword--maybe: Maybe (a) (line 1)` -- source has
   `Maybe (a) =`, stage 1 has `Maybe =`. Type parameter dropped from
   the parametric type definition.
 - **Extra (2)**: `?: Maybe :` (orphan, no chapter attribution);
@@ -114,7 +114,7 @@ Regression introduced at `4420b92` (Merge cam/self-host-maybe,
 2026-04-15 22:05). The Maybe merge added parametric Maybe records to
 self-host but did not update the Codex-text emitter to carry type
 parameters through definition or reference emission. Bootstrap 1 and
-1.1 pass because they don't reparse their own Codex-text output —
+1.1 pass because they don't reparse their own Codex-text output --
 Bootstrap 2 (pingpong) fails because pingpong does.
 
 ---
@@ -159,7 +159,7 @@ Expected output at master 2026-04-16:
 Stage 1: 562740 bytes (39s)
 Verdict: FAIL
 sem-equiv: FAIL (exit 1)
-Skipping stage 2 — semantic equivalence failed.
+Skipping stage 2 -- semantic equivalence failed.
 ```
 
 The first two ✅ are bootstraps 1 and 1.1. The FAIL is bootstrap 2 (pingpong).
@@ -169,7 +169,7 @@ Do not report "pingpong green" based on the two ✅.
 
 ## Trust Chain
 
-1. Ref compiler (`src/`) is hand-written, auditable C# — the trust root.
+1. Ref compiler (`src/`) is hand-written, auditable C# -- the trust root.
 2. Ref → bootstrap 1 stage 0 (self-host as C#).
 3. Stage 0 → stage 1 via `dotnet`. Stage 1 → stage 3. Stage 1 === stage
    3 proves .NET self-consistency for C# emission. **Bootstrap 1.**
@@ -180,9 +180,9 @@ Do not report "pingpong green" based on the two ✅.
    PASS. **Currently failing.**
 7. Same ELF → bootstrap 2 (pingpong) stage 2 (from stage 1). stage 1 === stage 2.
    Gated on step 6; blocked.
-8. Bare-metal binary self-compile byte-identical. **Bootstrap 3** — not
+8. Bare-metal binary self-compile byte-identical. **Bootstrap 3** -- not
    green by design.
 
 Step 1 is the only trust assumption. After that, the fixed-point
-algebra closes the loop — but only when every step is green.
+algebra closes the loop -- but only when every step is green.
 Bootstraps 1 and 1.1 being green does not imply bootstrap 2 (pingpong) is green.

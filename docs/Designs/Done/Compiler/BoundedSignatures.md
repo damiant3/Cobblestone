@@ -8,7 +8,7 @@ implementation.
 
 Status: SHIPPED (2026-07-03, blu). All stages complete and on main:
 A (static boundary lint), B (runtime callee guards), C1-C2 (checker
-propagation + four adoption families), and the endgame — CDX2051 is
+propagation + four adoption families), and the endgame -- CDX2051 is
 an ERROR. The selfhost went 66 -> 0 across the campaign, the battery
 surface was swept clean, and an unproven flow into any bounded
 position now fails the build. Successor scope to
@@ -32,7 +32,7 @@ make-level (n) = n
 But the boundary is neither statically checked nor runtime-enforced.
 `inc-byte 300` compiles with no diagnostic and evaluates to 301;
 `make-level 99` evaluates to 99. A literal `300` flowing into an
-`Integer between 0 and 255` PARAMETER is silently accepted — while the
+`Integer between 0 and 255` PARAMETER is silently accepted -- while the
 identical literal flowing into an `Integer between 0 and 255` RECORD
 FIELD is a CDX2050 hard error plus a runtime trap. The parameter and
 return positions are the one hole in an otherwise-sound refinement
@@ -88,13 +88,13 @@ This is the caller/callee contract split of Findler & Felleisen
 1. **Precondition (argument -> parameter).** At a call `f a`, the
    argument `a` must inhabit `[L,H]`. Discharge: prove `range(a) ⊆
    [L,H]` (elide) else guard `a` at runtime. A violation is blamed on
-   the CALL SITE — the caller supplied a bad argument. This is the
+   the CALL SITE -- the caller supplied a bad argument. This is the
    caller's obligation.
 
 2. **Postcondition (body result -> return type).** The body of `f`
    must produce a value in `[P,Q]`. Discharge: prove `range(body) ⊆
    [P,Q]` (elide) else guard the result before RET. A violation is
-   blamed on the FUNCTION BODY — it returned a bad result. This is the
+   blamed on the FUNCTION BODY -- it returned a bad result. This is the
    callee's obligation.
 
 The two obligations compose, and the composition is the payoff:
@@ -112,7 +112,7 @@ This composition is what finally discharges the ~24 internal
 parameter-pass-through warnings from the reach campaign: once
 `codegen-carry-forward (st) (new-code-len : Integer between 0 and 4294967295) ...`
 declares its parameter bounded, the store `code-len = new-code-len`
-proves — new-code-len's range IS `[0, 2^32-1]`, exactly the field's
+proves -- new-code-len's range IS `[0, 2^32-1]`, exactly the field's
 bound.
 
 ## 4. The soundness-of-propagation dependency (the crux)
@@ -125,7 +125,7 @@ and stores `n` into a `[0,255]` record field, and the prover ELIDES
 that field's runtime check on the strength of the parameter bound. If
 the parameter boundary itself is NOT runtime-enforced, a caller passing
 `300` yields `n = 300`, an elided field check, and a silent
-out-of-range store — a corruption that did NOT exist before `n` was
+out-of-range store -- a corruption that did NOT exist before `n` was
 declared bounded (previously `n` was plain `Integer` and the field
 check fired). Trusting an unenforced refinement to elide a downstream
 check REGRESSES soundness.
@@ -134,7 +134,7 @@ Therefore:
 
 > **The prover may treat a parameter's or return's declared range as a
 > fact for elision purposes if and only if that range is guaranteed at
-> the boundary — statically discharged or runtime-guarded. Until the
+> the boundary -- statically discharged or runtime-guarded. Until the
 > boundary is enforced, a bounded parameter is `⊤` (unknown) to the
 > prover, exactly as a plain `Integer` is.**
 
@@ -175,7 +175,7 @@ models, each an interval transfer function:
   sub-4GB addresses).
 - Application of a bounded-RETURN function (Stage B): range is the
   declared return interval, sound because the postcondition guard (or
-  static discharge) guarantees the returned value inhabits it — this is
+  static discharge) guarantees the returned value inhabits it -- this is
   the propagation of Section 4, valid only behind the guard.
 - `if c then t else e`: range is the join (interval union) of
   `range(t)` and `range(e)`; `v` comes from one branch, contained in
@@ -212,7 +212,7 @@ violating `L <= v <= H`.
 a bounded store (already enforced), a bounded parameter (precondition
 guard), or a bounded return (postcondition guard). Each position either
 statically proves containment (Section 5 corollary) or traps a
-violating value before it proceeds. No other introduction exists —
+violating value before it proceeds. No other introduction exists --
 integers are immutable and `IntegerTy` unification is
 overlap-permissive but does not fabricate values. Hence the invariant
 holds at every bounded position, inductively over evaluation.
@@ -253,7 +253,7 @@ The design occupies the same point as Flanagan's Hybrid Type Checking
 
 Each stage is independently sound and passes all gates before the next.
 
-### Stage A — Static boundary enforcement (type-checker only, one-pass)
+### Stage A -- Static boundary enforcement (type-checker only, one-pass)
 
 Run the existing narrowing lint at the two boundary positions.
 
@@ -275,14 +275,14 @@ Soundness of Stage A: it only ADDS diagnostics and never elides any
 pre-existing runtime check, so it cannot regress. It does NOT yet
 propagate parameter/return ranges into the prover (Section 4 gate:
 unsound before Stage B's guards). `inc-byte 300` becomes a CDX2050
-error immediately — matching fields — and provable call sites report
+error immediately -- matching fields -- and provable call sites report
 CDX2053. This is the static layer of the discipline, uniform with the
 static layer fields already have.
 
 Gate: type-checker-only, so a one-pass hard fixed point; full battery;
 new tests. No seed codegen change.
 
-### Stage B — Runtime boundary guards (codegen, seed rebuild) — IMPLEMENTED
+### Stage B -- Runtime boundary guards (codegen, seed rebuild) -- IMPLEMENTED
 
 Placement decided with Damian: **callee-entry (Eiffel/DbC)** for the
 precondition, the lowest-risk sound option, directly implementable
@@ -304,10 +304,10 @@ As built (`X86_64.codex`):
   (`return-bound-of`) to the declared return; if that is an `OvError`
   bounded `IntegerTy`, it elides when `value-fits-field def.body`
   proves the body result in range (the emit prover's interval
-  elision, CDX4010 — the exact static/dynamic correspondence a bounded
+  elision, CDX4010 -- the exact static/dynamic correspondence a bounded
   field store has), else emits `emit-range-trap` on `reg-rax`.
 - **`emit-range-trap`** is `emit-error-bound-trap` against `hi` (trap
-  if greater) then `lo` (trap if less) — the same two conditional
+  if greater) then `lo` (trap if less) -- the same two conditional
   traps `emit-error-checked-store` uses, minus the store: a parameter
   or return value stays a full register, so only its RANGE is checked,
   not a storage width. This is deliberately more complete than the
@@ -315,7 +315,7 @@ As built (`X86_64.codex`):
   holds the value losslessly but a narrow *bound* in a wide slot still
   needs a range check); the boundary check has no width exemption.
 
-Stage B does not yet propagate bounds into the prover — that is
+Stage B does not yet propagate bounds into the prover -- that is
 Stage C, sound now that the guards exist.
 
 **Deferred within Stage B (sound-preserving gaps, closed in Stage C or later):**
@@ -332,7 +332,7 @@ Stage C, sound now that the guards exist.
   `aexpr-proven-range`. This discharges the ~24 internal
   parameter-pass-through warnings and strengthens the prover globally.
 
-**Guard placement — call-site vs callee-entry.** Two sound options:
+**Guard placement -- call-site vs callee-entry.** Two sound options:
 
 - *Callee-entry:* one guard per bounded parameter in the prologue.
   DRY (independent of call-site count); blame is "argument to f out of
@@ -344,7 +344,7 @@ Stage C, sound now that the guards exist.
   per-store); precise per-call blame; costs code size at unprovable
   calls.
 
-The call-site placement is the principled choice — it makes the
+The call-site placement is the principled choice -- it makes the
 parameter boundary literally the same elide-or-guard operation as a
 field store, and it is zero-cost exactly when the refinement is proven,
 honouring "correctness over performance, but zero-cost when provable."
@@ -358,15 +358,15 @@ rebuild rules; full battery; runtime tests that a violating argument
 and a violating return each TRAP (`.fatal` sidecars), and that in-range
 values pass unguarded where proven.
 
-### Stage C — Propagation and adoption
+### Stage C -- Propagation and adoption
 
-**C1 (checker propagation + first adoption) — SHIPPED.** With the
+**C1 (checker propagation + first adoption) -- SHIPPED.** With the
 boundary now runtime-enforced (Stage B), a bounded parameter's range
 is a sound fact inside the body (Section 4 gate satisfied):
 `bind-def-params` records it into `local-ranges`, so the narrowing
 lint proves a store of the parameter into an equal-or-wider bounded
 field (CDX2051 -> CDX2053). First adoption: `mk-cdx` (the diagnostics
-registry constructor) declares its real domains — `code 0..65535`,
+registry constructor) declares its real domains -- `code 0..65535`,
 `severity 0..3`, `phase 0..15`. It is called only by the registry,
 whose entries pass literal `cdx-*`/`sev-*`/`phase-*` constants that
 prove at the call boundary, so no caller cascade; the internal stores
@@ -378,7 +378,7 @@ the build stays one-pass.
 scratch, exactly like `locals`; both must reset at each definition
 boundary. `check-all-defs` reset `locals` per def but not
 `local-ranges`, so a bounded parameter's range (or a slice-3
-let-local's) leaked into the next definition that reused the name — a
+let-local's) leaked into the next definition that reused the name -- a
 false CDX2053 (e.g. `make-level (n) = n` proving `n` in `0..15`
 because the preceding `clamp-level` bound its own `n`). The per-def
 reset now clears `local-ranges` alongside `locals`. This also closes
@@ -388,7 +388,7 @@ battery never exercised.
 **Dedup (Stage A defect fixed in C1).** A constructor is a function
 whose payload is a parameter, so Stage A's `lint-param-narrowing`
 fired on constructor applications that `lint-ctor-narrowing`
-(FabledTreasureMap entry 11) already covered — a duplicate CDX2051 at
+(FabledTreasureMap entry 11) already covered -- a duplicate CDX2051 at
 every bounded-payload constructor site (e.g. `TypeVar (...)`). The two
 are the same operation; they are merged into one `lint-arg-narrowing`
 that names a constructor field or a bounded parameter by the head,
@@ -401,19 +401,19 @@ unless they are bounded too. `make-diagnostic` is reached through
 would cascade; it is deferred until the chain is bounded together.
 Adopt domains inward-out from self-contained constructors.
 
-**C2+ — remaining families.** The register params (`0..31`, the
+**C2+ -- remaining families.** The register params (`0..31`, the
 largest bucket), the length/position params (`0..2^32-1`), the
 remaining diagnostic chain. The inliner exclusion (Stage B) means a
-bounded hot signature will not inline — watch self-compile timing when
+bounded hot signature will not inline -- watch self-compile timing when
 adopting a hot family; a measurable cost motivates the deferred
 call-site precondition elision (Section 7 Stage B), which restores
 zero-cost at proven call sites.
 
-**C2 length/position family — SHIPPED (checker CL 6682, adoption CL
+**C2 length/position family -- SHIPPED (checker CL 6682, adoption CL
 6691, seed 6693).** Two gated CLs, as built:
 
 - *Checker prover reach (CL 6682, one-pass, checker-only).*
-  `aexpr-proven-range` gained an `ABinaryExpr` arm — interval
+  `aexpr-proven-range` gained an `ABinaryExpr` arm -- interval
   arithmetic over proven operand ranges (`binary-proven-range` +
   `range-arith-add/sub/mul/div`), the checker-side twin of the emit
   prover's `proven-*-range` with the same non-negative and
@@ -422,7 +422,7 @@ zero-cost at proven call sites.
   Test `arith-narrow-proven` pins all four arms in both directions.
   Selfhost CDX2051 42 -> 39.
 
-- *Adoption (CL 6691, one-pass — a source-level change; the stage-B
+- *Adoption (CL 6691, one-pass -- a source-level change; the stage-B
   seed already emits the guards).* Nineteen signatures declare their
   domains: the span chain (make-position line `0..131071`,
   column/offset `0..2^32-1`; make-span/span-at/tokenize/tokenize-into
@@ -434,7 +434,7 @@ zero-cost at proven call sites.
   effect-op-addrs (index `0..65535`), pitch (return), and
   gen-unique-name-loop (counter). Five stores where a bound cannot
   flow took the `__narrow` assertion idiom: make-i32-patch pos
-  (accumulator-list positions — no list-element bounds), emit-isr-
+  (accumulator-list positions -- no list-element bounds), emit-isr-
   stubs first-stub-vaddr (const + code-len statically exceeds the
   interval), build-x86-arities arity (list-length into `0..255`),
   emit-record byte-size (list-length * 8), install-new-node max-level
@@ -453,15 +453,15 @@ needed when the LEFT operand is a plain constant or literal. A
 bounded param with a tuple return (`gen-unique-name-loop`) parses
 fine. Residual 16: 9 register/slot, 3 diagnostics chain, 4 TypeVar
 payload (from `tvar-map-lookup`, whose `-1`-on-miss return defeats a
-return bound — those sites are structurally non-miss and will need
+return bound -- those sites are structurally non-miss and will need
 `__narrow` or a miss-free lookup shape).
 
 **Endgame.** With the boundaries enforced and propagated and the
 residual CDX2051 count driven to zero, promote CDX2051 from warning to
-error — the campaign endgame — so a future unbounded flow into a
+error -- the campaign endgame -- so a future unbounded flow into a
 bounded position fails the build rather than warning.
 
-**C2 families 2-3 + endgame — SHIPPED (CLs 6711, 6721, 6732, 6745,
+**C2 families 2-3 + endgame -- SHIPPED (CLs 6711, 6721, 6732, 6745,
 6747; seed 6748).** As built:
 
 - *Register/slot family (CL 6711).* The emitter's location encoding
@@ -469,7 +469,7 @@ bounded position fails the build rather than warning.
   spill slot), so the truthful location domain is the 0..65535
   already declared on slot/ptr-loc fields. Eight stores draw from
   list-at register pools, spill arithmetic, or reads of the wider
-  EmitResult.reg — statically unprovable without tightening
+  EmitResult.reg -- statically unprovable without tightening
   EmitResult.reg itself, which changes record layout and cascades
   across every construction site. Those took `__narrow`;
   load-local-scratch-for declared a provable 0..15 return (constant
@@ -485,7 +485,7 @@ bounded position fails the build rather than warning.
   four TypeVar/ForAllTy payload stores took `__narrow`
   (tvar-map-lookup returns -1 on miss, so a return bound would be
   dishonest; the sites are structurally non-miss).
-- *TEXT-emitter bug (CL 6732) — found by the promotion gate.*
+- *TEXT-emitter bug (CL 6732) -- found by the promotion gate.*
   emit-type printed every IntegerTy as bare "Integer", so bounded
   SIGNATURES lost their bounds in TEXT emission: stage1 compiled
   unbounded, silently shedding the stage-B guards from the text
@@ -497,8 +497,8 @@ bounded position fails the build rather than warning.
 - *Promotion + library sweep (CL 6745) + verify tail (CL 6747).*
   lint-narrowing-prove mints make-error; the registry entry is
   sev-error with prove-or-__narrow guidance. The battery exposed the
-  real blast radius — 29 tests compiling foreword/kernel chapters
-  with their own unproven narrowings — swept with ~70 `__narrow`
+  real blast radius -- 29 tests compiling foreword/kernel chapters
+  with their own unproven narrowings -- swept with ~70 `__narrow`
   assertions across 21 files (UI constructors, color math, sprite
   animation, envelope, DateTime, OTA, TCP/transport, PCI/USB/xHCI
   descriptor parsers, CdxBinary proof decoding). Zero behavior
@@ -507,7 +507,7 @@ bounded position fails the build rather than warning.
   params because param bounds would cascade the new error into every
   app call site; per-chapter constructor param contracts are the
   follow-up. col-clamp8 gained a provable bounded return (its body
-  is a top-level `__narrow` of the clamp — note a bounded return
+  is a top-level `__narrow` of the clamp -- note a bounded return
   needs the `__narrow` at the BODY top level; under a let-chain the
   suppression does not reach it). Six deliberate-warning tests kept
   their proven halves; the unproven members moved to
@@ -520,11 +520,11 @@ the entry guard) is a separate zero-cost optimization, deferred; it is
 not needed to clear a warning, only to remove a redundant runtime
 check.
 
-**Post-campaign follow-ups — SHIPPED (CLs 6783, 6787, 6790; seed
+**Post-campaign follow-ups -- SHIPPED (CLs 6783, 6787, 6790; seed
 6791).** As built:
 
 - *Two more prover doors (CL 6783).* `apply-proven-range` consults
-  the head's declared bounded return after the builtin facts miss —
+  the head's declared bounded return after the builtin facts miss --
   the deferred propagation half of Section 7, sound because the
   stage-B postcondition guard enforces the declared return at every
   call. `record-local-range` falls back to the value's resolved
@@ -533,7 +533,7 @@ check.
   letting locals join the arithmetic arms. `text-length` joined the
   structural builtin facts. A field-access arm was considered and
   REJECTED: the AST does not carry receiver types, and re-inferring
-  inside the lint would mutate unification state — field-heavy
+  inside the lint would mutate unification state -- field-heavy
   proving stays with the emit prover, whose IR carries types.
 - *EmitResult.reg declares the location domain (CL 6787).* 0..65535,
   matching LocalBinding.slot / FieldLocal.slot / BivyAlloc.ptr-loc.
@@ -548,7 +548,7 @@ check.
   `sustain 0..1000`; the store's `__narrow` came off (the declared
   param type carries it) and every caller proves. The campaign rule
   for the remaining sweep sites: convert a constructor only when its
-  ENTIRE caller set — apps included — proves or is swept in the same
+  ENTIRE caller set -- apps included -- proves or is swept in the same
   CL. The 30-site app survey shows constructors like compositor-new
   receive computed values; those chapters take their app sweep
   together with the contract, per chapter, as an on-demand stream.
@@ -558,13 +558,13 @@ check.
 Reuse the field codes for uniformity; no new codes needed at the
 boundary:
 
-- CDX2050 NarrowingRecordSetLiteral (error) — a literal argument/result
+- CDX2050 NarrowingRecordSetLiteral (error) -- a literal argument/result
   provably outside the bounded parameter/return.
-- CDX2051 NarrowingRecordSet (warning) — a wider unprovable value at a
+- CDX2051 NarrowingRecordSet (warning) -- a wider unprovable value at a
   bounded parameter/return; a runtime guard will enforce it (Stage B).
-- CDX2053 NarrowingProven (info) — the argument/result range proves
+- CDX2053 NarrowingProven (info) -- the argument/result range proves
   within the bound; guard elided.
-- CDX4010 BoundsProven (info, emit side) — the runtime guard was elided
+- CDX4010 BoundsProven (info, emit side) -- the runtime guard was elided
   in codegen.
 
 The message wording is generalized from "field" to "bounded position"
@@ -587,21 +587,21 @@ so parameter and return sites read correctly.
 
 ## 10. Literature
 
-- Freeman & Pfenning, "Refinement types for ML", PLDI 1991 — subset
+- Freeman & Pfenning, "Refinement types for ML", PLDI 1991 -- subset
   types over a base language.
 - Xi & Pfenning, "Dependent types in practical programming", POPL 1999
-  — integer index refinements with decidable constraint checking; our
+  -- integer index refinements with decidable constraint checking; our
   interval bounds are a restricted, SMT-free case.
-- Rondon, Kawaguchi, Jhala, "Liquid Types", PLDI 2008 — inference of
+- Rondon, Kawaguchi, Jhala, "Liquid Types", PLDI 2008 -- inference of
   refinements; we propagate/check intervals rather than infer arbitrary
   predicates, trading completeness for decidability and speed.
-- Flanagan, "Hybrid Type Checking", POPL 2006 — static where provable,
+- Flanagan, "Hybrid Type Checking", POPL 2006 -- static where provable,
   dynamic where not; the exact enforcement model here.
 - Findler & Felleisen, "Contracts for higher-order functions", ICFP
   2002; Wadler & Findler, "Well-typed programs can't be blamed", ESOP
-  2009 — the precondition/postcondition obligation split and blame.
-- Cousot & Cousot, "Abstract interpretation", POPL 1977 — the interval
+  2009 -- the precondition/postcondition obligation split and blame.
+- Cousot & Cousot, "Abstract interpretation", POPL 1977 -- the interval
   domain and the soundness frame for `aexpr-proven-range`.
-- Meyer, "Object-Oriented Software Construction" (Design by Contract) —
+- Meyer, "Object-Oriented Software Construction" (Design by Contract) --
   require/ensure as precondition/postcondition; we elide the assertion
   when statically discharged.

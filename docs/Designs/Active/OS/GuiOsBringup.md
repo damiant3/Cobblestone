@@ -84,19 +84,54 @@ shared app-state slots (offsets 220-240) reused per active app.
 
 ## M2 Plan
 
-### SMP: diagnose the black screen
+### SMP: the black screen was a stale artifact (closed 2026-07-28)
 
 GuiShell is single-core today. It does not read a core count, does not
-display one, and does nothing with the APs. The one SMP fact that
-matters is a bug: **booting with `-smp N` produces `frames=0` (black
-screen)**. The AP halt loop or the SMP init sequence interferes with
-the BSP event loop. This affects both old and new CDX builds — it is
-not a regression.
+display one, and does nothing with the APs.
 
-Root-causing that is M2's first item; everything else on the SMP side
-(BSP renders while APs run background tasks, per-core gauges in the
-Monitor view, work-stealing visualization) is blocked behind it and
-behind the kernel-loop wiring tracked in
+**There is no black-screen bug. This item is closed and nothing on the
+SMP side is blocked behind it.** Measured on a rebuilt `guios.cdx`:
+`-smp 4` starts every AP at `0100:0000 (0x1000)`, renders `frames=15`
+against 16 single-core, exits clean, and paints the full desktop
+(sidebar, panels, clock, status bar), pixel-identical to the
+single-core capture on distinct-colour and non-black-sample counts.
+
+What this section used to say was that `-smp N` produces `frames=0`,
+that the AP halt loop or the SMP init sequence interferes with the BSP
+event loop, and that it **affects both old and new CDX builds and is
+therefore not a regression.** Every part of that is wrong, and the last
+part is what made it expensive: it told anyone who read it that
+rebuilding was pointless.
+
+The real failure was a **triple fault**, not a stalled renderer, and it
+belonged to one stale local binary:
+
+- `RDI=0xfee00300` (the LAPIC ICR) with `RAX=0x000C4600`. The low byte
+  of a SIPI is its vector, and that vector is **0**, so the APs began
+  executing at physical `0000:0000`, ran through low memory, and died
+  at `0x990`. The BSP then triple-faulted writing `0x6080`, and the
+  bytes at that address differed run to run -- the fingerprint of the
+  wild APs scribbling, not a fixed corruption.
+- `codex/compiler/Emit/X86_64Boot.codex` declares `ap-sipi-vector = 1`,
+  giving ICR `0xC4601` and a trampoline at `0x1000`. Compiled against
+  the current seed, `codex/test/smp-cores` starts all three APs at
+  `0x1000`, checks them all in, and exits clean.
+
+So the emitted boot code has been correct; the binary under test was
+built 2026-07-21 by a seed that emitted vector 0.
+**`apps/guios/build-output/` is not in the depot**, so this was one
+workspace's leftover, which is also why it could look like it survived
+a rebuild to anyone who never did one.
+
+The lesson is cheaper than the debugging: an artifact that is not in
+the depot has no provenance unless the build pins it.
+`apps/guios/build.ps1` now takes `-Kernel` for that reason. When a
+bare-metal symptom smells like boot code, **rebuild before diagnosing**
+(L-SELF, L-OUTPUT).
+
+Everything else on the SMP side (BSP renders while APs run background
+tasks, per-core gauges in the Monitor view, work-stealing
+visualization) is gated only by the kernel-loop wiring tracked in
 `docs/Designs/Active/OS/SMP.md`.
 
 ### Interactive Desktop

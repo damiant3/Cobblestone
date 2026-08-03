@@ -12,8 +12,8 @@ A three-pane email client (folder sidebar, message list, reading/compose pane) w
 
 ## Completeness
 
-50% — Three-pane layout and folder structure are solid. Sample data loads and compose open/close cycle works. Clicking a message item does not set active-mail (reading pane always shows empty state). Folder switching does not filter. Reply/Forward return 0. Encryption claim has no implementation. Compose panel lacks a body textarea.
+50% -- Three-pane layout and folder structure are solid. Sample data loads and compose open/close cycle works. Clicking a message item does not set active-mail (reading pane always shows empty state). Folder switching does not filter. Reply/Forward return 0. Encryption claim has no implementation. Compose panel lacks a body textarea.
 
 ## Codex Conformance
 
-Full — Codex throughout with DOM/state stubs correctly declared at the plug boundary.
+Full -- Codex throughout with DOM/state stubs correctly declared at the plug boundary.

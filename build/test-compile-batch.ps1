@@ -15,6 +15,7 @@ Set-Location (Join-Path $PSScriptRoot '..')
 
 $sources = @(Get-Content -Path $ListFile | Where-Object { $_.Trim() -ne '' })
 if ($sources.Count -eq 0) { exit 0 }
+$resolveSw = [System.Diagnostics.Stopwatch]::StartNew()
 
 . (Join-Path $PSScriptRoot 'quire-map.ps1')
 
@@ -57,6 +58,10 @@ for ($i = 0; $i -lt $sources.Count; $i++) {
     }
     $testNames.Add($name)
     $regionsByName[$name] = $resolved.Regions
+    # Census instrumentation: the resolved concat size is the best host-side
+    # proxy for a test's compile cost inside a batch (the VM's output file
+    # flushes on exit, so per-test wall time is not observable from here).
+    "$($resolved.Text.Length)" | Set-Content -Path (Join-Path $testOut '.src-bytes') -Encoding UTF8
     $flagsFile = Join-Path ([System.IO.Path]::GetDirectoryName($sources[$i])) "$name.flags"
     $extraFlags = if (Test-Path -PathType Leaf $flagsFile) { ' ' + (Get-Content -TotalCount 1 $flagsFile).Trim() } else { '' }
     # Plain CDX: the batch session loops because the SEED is repl-built.
@@ -78,22 +83,33 @@ $stderrFile = [System.IO.Path]::GetTempFileName()
 $Stage0 = Join-Path (Split-Path $PSScriptRoot) 'build-output\bare-metal\Codex.cdx'
 if (-not (Test-Path -PathType Leaf $Stage0)) { Write-Error "MISSING: $Stage0"; exit 2 }
 
+$resolveSw.Stop()
+$batchSw = [System.Diagnostics.Stopwatch]::StartNew()
 $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @(
     '-kernel', $Stage0, '-input', $inputFile, '-output', $outputFile, '-mem', '3072', '-headless'
 ) -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
 $proc.WaitForExit(1800000)
 if (-not $proc.HasExited) { Stop-VmGraceful -ProcessId $proc.Id }
+$batchSw.Stop()
+$parseSw = [System.Diagnostics.Stopwatch]::StartNew()
 
-# Parse output byte-by-byte: text lines interleaved with binary CDX blocks.
+# Parse output: text lines interleaved with binary CDX blocks. Newlines are
+# found with a native string scan, not a PowerShell byte loop: when a batch
+# VM dies mid-binary the framing is lost and the remainder of the output is
+# walked as "lines", which the per-byte loop turned into 17-23 MINUTES on a
+# crashed batch (census 2026-07-27). The Latin-1 shadow string maps chars to
+# bytes 1:1, so positions in it are byte positions; line TEXT is still
+# decoded from the bytes as UTF-8.
 $raw = if (Test-Path $outputFile) { [System.IO.File]::ReadAllBytes($outputFile) } else { [byte[]]::new(0) }
+$rawStr = [System.Text.Encoding]::GetEncoding(28591).GetString($raw)
 $pos = 0; $testIdx = 0
 
 function NextLine {
     if ($script:pos -ge $raw.Length) { return $null }
     $start = $script:pos
-    while ($script:pos -lt $raw.Length -and $raw[$script:pos] -ne 10) { $script:pos++ }
-    $end = $script:pos
-    if ($script:pos -lt $raw.Length) { $script:pos++ }
+    $nl = $rawStr.IndexOf([char]10, $start)
+    $end = if ($nl -lt 0) { $raw.Length } else { $nl }
+    $script:pos = if ($nl -lt 0) { $raw.Length } else { $nl + 1 }
     $len = $end - $start
     if ($len -gt 0 -and $raw[$start + $len - 1] -eq 13) { $len-- }
     if ($len -le 0) { return '' }
@@ -103,6 +119,50 @@ function NextLine {
 function SkipBytes { param([int]$n); $script:pos = [Math]::Min($script:pos + $n, $raw.Length) }
 
 $vmDead = $false
+$LogCap = 2000
+
+# Decode a [Start,End) byte span into kept log lines: UTF-8, CR stripped,
+# empty and WD:/HEAP: telemetry dropped, capped. The cap matters on a dead
+# batch, where a span is misframed binary rather than a log.
+function Add-LogSpan {
+    param($Lines, [int]$Start, [int]$End)
+    if ($End -le $Start) { return }
+    $text = [System.Text.Encoding]::UTF8.GetString($raw, $Start, $End - $Start)
+    foreach ($l in $text.Split("`n")) {
+        if ($l.EndsWith("`r")) { $l = $l.Substring(0, $l.Length - 1) }
+        if (-not $l) { continue }
+        if ($l.StartsWith('WD:') -or $l.StartsWith('HEAP:')) { continue }
+        if ($Lines.Count -lt $script:LogCap) { $Lines.Add($l) }
+        else { $Lines.Add('(build.log truncated by harness at 2000 lines)'); return }
+    }
+}
+
+# Next newline-preceded occurrence of a marker at or after From, or -1.
+# Ordinal: the default IndexOf(string) is culture-sensitive and an order
+# of magnitude slower over megabytes. The anchored-at-pos case (a marker
+# standing exactly at the current position, e.g. directly after a skipped
+# binary block with no separating newline) is handled by the caller, not
+# here -- position 0 included.
+function Get-NextMarkerAt {
+    param([string]$Marker, [int]$From)
+    $j = $rawStr.IndexOf("`n$Marker", [Math]::Max(0, $From - 1), [System.StringComparison]::Ordinal)
+    if ($j -ge 0) { return $j + 1 } else { return -1 }
+}
+
+# One native marker search per test instead of a per-line walk. A test's
+# region ends at the next protocol marker standing at a line start: SIZE:
+# (binary follows, success), CODEGEN-HALTED/CODEGEN-ERRORS (diagnostics,
+# exit 7), !EXC (VM death), STACK: (compiler stack report, failure). The
+# lines before the marker are the test's log. On a dead batch the stream
+# between markers is megabytes of binary; IndexOf skips it natively, where
+# the per-line walk (a PowerShell function call per garbage line) burned
+# 865 s of host CPU per crashed batch even with fast line-finding. The
+# memo keeps each marker's search monotonic: one pass over the output per
+# marker for the whole batch, not per test. -2 = not yet searched, -1 =
+# no occurrence remains.
+$markerList = @('SIZE:', 'CODEGEN-HALTED', 'CODEGEN-ERRORS', '!EXC', 'STACK:')
+$markerMemo = @{}
+foreach ($m in $markerList) { $markerMemo[$m] = -2 }
 
 while ($testIdx -lt $testNames.Count -and $pos -lt $raw.Length -and -not $vmDead) {
     $name = $testNames[$testIdx]
@@ -110,11 +170,38 @@ while ($testIdx -lt $testNames.Count -and $pos -lt $raw.Length -and -not $vmDead
     $logLines = [System.Collections.Generic.List[string]]::new()
     $exitCode = '4'
 
-    :testloop while ($pos -lt $raw.Length) {
-        $line = NextLine
-        if ($null -eq $line) { break }
+    # A marker standing exactly at $pos wins outright: $pos is always a
+    # logical line start (position 0, after a consumed line, or after a
+    # skipped binary block), and no later occurrence can beat it. The
+    # memoized newline-preceded search cannot see this case, because the
+    # byte before $pos may be the tail of a binary block, not a newline.
+    # Substring + -ceq, NOT [string]::CompareOrdinal(a, i, b, j, len):
+    # PowerShell's binding of that 5-argument static ran at ~2 s per call
+    # (measured 2026-07-27), which put 214 of a 214 s profile in this loop.
+    $mkAt = -1; $mkKind = $null
+    foreach ($m in $markerList) {
+        if ($rawStr.Length - $pos -ge $m.Length -and $rawStr.Substring($pos, $m.Length) -ceq $m) { $mkAt = $pos; $mkKind = $m; break }
+    }
+    if ($null -eq $mkKind) {
+        foreach ($m in $markerList) {
+            $at = $markerMemo[$m]
+            if ($at -ne -1 -and $at -lt $pos) {
+                $at = Get-NextMarkerAt $m $pos
+                $markerMemo[$m] = $at
+            }
+            if ($at -ge 0 -and ($mkAt -lt 0 -or $at -lt $mkAt)) { $mkAt = $at; $mkKind = $m }
+        }
+    }
 
-        if ($line.StartsWith('SIZE:')) {
+    if ($null -eq $mkKind) {
+        # Stream ended with no terminator for this test: keep what there is.
+        Add-LogSpan $logLines $pos $raw.Length
+        $pos = $raw.Length
+    } else {
+        Add-LogSpan $logLines $pos $mkAt
+        $pos = $mkAt
+        $line = NextLine
+        if ($mkKind -eq 'SIZE:') {
             $binSize = 0
             if ($line.Substring(5) -match '^\d+') { $binSize = [int]$matches[0] }
             if ($binSize -gt 0 -and $pos + $binSize -le $raw.Length) {
@@ -124,36 +211,37 @@ while ($testIdx -lt $testNames.Count -and $pos -lt $raw.Length -and -not $vmDead
                 SkipBytes $binSize
                 $exitCode = '0'
             }
-            break testloop
         }
-        elseif ($line.StartsWith('CODEGEN-HALTED') -or $line.StartsWith('CODEGEN-ERRORS')) {
+        elseif ($mkKind -eq 'CODEGEN-HALTED' -or $mkKind -eq 'CODEGEN-ERRORS') {
             $logLines.Add($line)
-            while ($pos -lt $raw.Length) {
-                $el = NextLine; if ($null -eq $el) { break }
-                if ($el.StartsWith('CODEGEN-HALTED')) { $logLines.Add($el); break }
-                if ($el -ne '') { $logLines.Add($el) }
+            $close = Get-NextMarkerAt 'CODEGEN-HALTED' $pos
+            $markerMemo['CODEGEN-HALTED'] = $close
+            if ($close -ge 0) {
+                Add-LogSpan $logLines $pos $close
+                $pos = $close
+                $logLines.Add((NextLine))
+            } else {
+                Add-LogSpan $logLines $pos $raw.Length
+                $pos = $raw.Length
             }
             $exitCode = '7'
-            break testloop
         }
-        elseif ($line.StartsWith('!EXC')) {
-            # The VM is gone. Keep the whole dump on the test that crashed --
-            # the register/stack lines that follow are its diagnostic, not the
-            # next test's output -- and stop attributing anything after this.
+        elseif ($mkKind -eq '!EXC') {
+            # The VM is gone. Keep the dump on the test that crashed -- the
+            # register/stack lines are its diagnostic, not the next test's
+            # output -- and stop attributing anything after it. The dump is
+            # under a hundred lines; 64 KB bounds it comfortably.
             $logLines.Add($line)
-            while ($pos -lt $raw.Length) {
-                $el = NextLine; if ($null -eq $el) { break }
-                if ($el -ne '') { $logLines.Add($el) }
-            }
-            $exitCode = '4'; $vmDead = $true; break testloop
+            Add-LogSpan $logLines $pos ([Math]::Min($pos + 65536, $raw.Length))
+            $exitCode = '4'; $vmDead = $true
         }
-        elseif ($line.StartsWith('WD:') -or $line.StartsWith('HEAP:') -or $line.StartsWith('STACK:')) {
-            if ($line.StartsWith('STACK:')) { break testloop }
-        }
-        else { if ($line) { $logLines.Add($line) } }
+        # STACK: needs nothing more: the marker line is consumed and dropped,
+        # the log span before it is kept, and the exit stays 4.
     }
 
-    [System.IO.File]::WriteAllLines((Join-Path $testOut 'build.log'), ($logLines | ForEach-Object { Convert-DiagLine -Line $_ -Regions $regionsByName[$name] }), [System.Text.UTF8Encoding]::new($false))
+    $mapped = [System.Collections.Generic.List[string]]::new($logLines.Count)
+    foreach ($l in $logLines) { $mapped.Add((Convert-DiagLine -Line $l -Regions $regionsByName[$name])) }
+    [System.IO.File]::WriteAllLines((Join-Path $testOut 'build.log'), $mapped, [System.Text.UTF8Encoding]::new($false))
     $exitCode | Set-Content -Path (Join-Path $testOut '.exitcode') -Encoding UTF8
     $testIdx++
 }
@@ -166,5 +254,6 @@ while ($testIdx -lt $testNames.Count) {
     $testIdx++
 }
 
+$parseSw.Stop()
 Remove-Item -Force $inputFile, $outputFile, $stderrFile -ErrorAction SilentlyContinue
-Write-SweepLog "batch-done pcore=$PCore compiled=$($sources.Count)"
+Write-SweepLog "batch-done pcore=$PCore compiled=$($sources.Count) resolvems=$($resolveSw.ElapsedMilliseconds) vmms=$($batchSw.ElapsedMilliseconds) parsems=$($parseSw.ElapsedMilliseconds)"

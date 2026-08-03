@@ -1,5 +1,6 @@
 Chapter: GopUsb
   cites Works chapter GopXhci
+  cites Kernel chapter Pci
   cites Works chapter GopUsbKbd
   cites Works chapter GopUsbMouse
   cites Works chapter GopUsbMsc
@@ -49,12 +50,94 @@ Section: Attachment
     uf-disk : MscDisk
   }
 
+ A machine may carry more than one xHCI, and the boot stick is not
+ obliged to be on the first: the ASUS has an Intel PCH controller whose
+ four ports are all Full or Low speed and an ASMedia 1b21:1242 behind a
+ bridge, and the stick is on the ASMedia one. Taking the first controller
+ and stopping reports no disk while looking at a controller the disk was
+ never on -- an answer that reads as "our storage stack fails on real
+ hardware" and means "we did not look there". So every xHCI function in
+ the bus tree is brought up and walked until the keyboard, the mouse and
+ the disk have all been found, and each controller records its own
+ outcome rather than overwriting the last one's.
+
+  usb-max-hosts : Integer = 8
+
   usb-attach : [Device.Port] UsbAttach
   usb-attach = act
-    xh <- xhci-connect
-    if xh.xh-ok then usb-done (usb-walk xh 0 (UsbFound { uf-kbd = kbd-no-kbd, uf-mouse = mouse-no-mouse, uf-disk = msc-no-disk }))
-    else UsbAttach { ua-kbd = kbd-no-kbd, ua-mouse = mouse-no-mouse, ua-disk = msc-no-disk }
+    scan <- pci-scan-all
+    usb-attach-all scan
   end
+
+  usb-attach-all : PciScanResult -> [Device.Port] UsbAttach
+  usb-attach-all (scan) = act
+    z <- xdiag-zero 0 96
+    c <- xdiag-put 40 (pci-count-class scan xhci-pci-class xhci-pci-subclass)
+    usb-attach-with scan (alloc-zeroed (xdiag-span * 4) 64)
+  end
+
+  usb-attach-with : PciScanResult, Integer -> [Device.Port] UsbAttach
+  usb-attach-with (scan) (shadow) = act
+    f <- usb-hosts scan 0 0 shadow (UsbFound { uf-kbd = kbd-no-kbd, uf-mouse = mouse-no-mouse, uf-disk = msc-no-disk })
+    let r = if xdiag-get 44 == 0 then 0 else xdiag-load shadow
+    in usb-done f
+  end
+
+  usb-hosts : PciScanResult, Integer, Integer, Integer, UsbFound -> [Device.Port] UsbFound
+  usb-hosts (scan) (from) (ord) (shadow) (found) = act
+    if ord >= usb-max-hosts then found
+    else if usb-found-all found then found
+    else usb-hosts-at scan (pci-index-class scan xhci-pci-class xhci-pci-subclass from) ord shadow found
+  end
+
+  usb-hosts-at : PciScanResult, Integer, Integer, Integer, UsbFound -> [Device.Port] UsbFound
+  usb-hosts-at (scan) (idx) (ord) (shadow) (found) = act
+    if idx < 0 then found
+    else usb-hosts-step scan idx ord shadow found
+  end
+
+  usb-hosts-step : PciScanResult, Integer, Integer, Integer, UsbFound -> [Device.Port] UsbFound
+  usb-hosts-step (scan) (idx) (ord) (shadow) (found) = act
+    f2 <- usb-host-one (list-at (scan.devices) idx) ord shadow found
+    usb-hosts scan (idx + 1) (ord + 1) shadow f2
+  end
+
+  usb-host-one : PciDevice, Integer, Integer, UsbFound -> [Device.Port] UsbFound
+  usb-host-one (d) (ord) (shadow) (found) = act
+    xh <- xhci-connect-one d ord
+    if xh.xh-ok == False then found
+    else usb-host-walk xh ord shadow found
+  end
+
+  usb-host-walk : XhciHost, Integer, Integer, UsbFound -> UsbFound
+  usb-host-walk (xh) (ord) (shadow) (found) =
+    let o = xdiag-put 41 (xdiag-get 41 + 1)
+    in let w = xdiag-put 42 (bit-or (xdiag-get 42) (bit-shl 1 ord))
+    in let after = usb-walk xh 0 found
+    in let m = xhci-ctl-put ord 3 (bit-xor (usb-found-mask after) (usb-found-mask found))
+    in let c1 = usb-credit 43 ((found.uf-disk).md-ok) ((after.uf-disk).md-ok) ord
+    in let c2 = usb-credit 44 ((found.uf-kbd).uk-ok) ((after.uf-kbd).uk-ok) ord
+    in let s = if ((found.uf-kbd).uk-ok == False) & ((after.uf-kbd).uk-ok) then xdiag-save shadow else 0
+    in after
+
+  usb-credit : Integer, Boolean, Boolean, Integer -> Integer
+  usb-credit (cell) (was) (now) (ord) =
+    if was then 0
+    else if now == False then 0
+    else xdiag-put cell (ord + 1)
+
+  usb-found-mask : UsbFound -> Integer
+  usb-found-mask (found) =
+    let k = if (found.uf-kbd).uk-ok then 1 else 0
+    in let m = if (found.uf-mouse).um-ok then 2 else 0
+    in let d = if (found.uf-disk).md-ok then 4 else 0
+    in bit-or k (bit-or m d)
+
+  usb-found-all : UsbFound -> Boolean
+  usb-found-all (found) =
+    if (found.uf-kbd).uk-ok == False then False
+    else if (found.uf-mouse).um-ok == False then False
+    else (found.uf-disk).md-ok
 
 Section: The Walk
 
@@ -132,7 +215,7 @@ Section: Configuration
     in let out-off = msc-find-bulk-off cfg (iface + skip) total False
     in if in-off < 0 then msc-no-disk
     else if out-off < 0 then msc-no-disk
-    else msc-open-endpoints xh dev (msc-ep-num cfg in-off * 2 + 1) (msc-ep-maxpkt cfg in-off) (msc-ep-num cfg out-off * 2) (msc-ep-maxpkt cfg out-off)
+    else msc-open-endpoints xh dev (msc-ep-num cfg in-off * 2 + 1) (msc-ep-maxpkt cfg in-off) (msc-ep-num cfg out-off * 2) (msc-ep-maxpkt cfg out-off) (peek-byte cfg (iface + 2))
 
 Section: Hub Requests
 
@@ -160,6 +243,14 @@ Section: Hub Requests
   hub-port-count (xh) (dev) (buf) =
     let g = xhci-ctrl-in xh dev 160 6 10496 0 buf 9
     in if g == False then 0 else peek-byte buf 2
+
+ wHubCharacteristics is bytes 3 and 4 of the same descriptor, and its
+ TT Think Time sub-field is bits 6:5 of the low byte (USB2 Table 11-13):
+ 0, 1, 2 and 3 mean the translator needs at most 8, 16, 24 or 32
+ full-speed bit times of inter-transaction gap.
+
+  hub-think-time : Integer -> Integer
+  hub-think-time (buf) = bit-and (bit-shru (peek-byte buf 3) 5) 3
 
   hub-set-feature : XhciHost, UsbDev, Integer, Integer -> Boolean
   hub-set-feature (xh) (dev) (port) (feat) =
@@ -193,8 +284,22 @@ Section: Hub Bring-Up
  pipe every hub carries -- which keeps the command fully formed even
  though this driver polls port status by control request instead.
 
-  hub-declare : XhciHost, UsbDev, Integer, Integer, Integer, Integer -> Boolean
-  hub-declare (xh) (dev) (cfg) (iface) (total) (ports) =
+ xHCI 1.2c 6.2.2.2: "If Hub = '1' and Speed = High-Speed, then the TT
+ Think Time (TTT) and Multi-TT (MTT) fields shall be initialized." TTT
+ is Slot Context dword two bits 17:16 (Table 6-6) and 4.5.2 names its
+ source as the hub descriptor's wHubCharacteristics. Zero is not a
+ neutral default there: it asserts the tightest gap the field can
+ express, and the xHC schedules split transactions to that claim.
+
+ MTT stays zero, and that is the required value rather than an
+ omission: Table 6-4 bit 25 and 4.5.2 both condition MTT = '1' on the
+ hub's Multi-TT interface having been enabled by a Set Interface
+ request, which nothing here issues, so the hub is operating its
+ single translator. If Set Interface is ever added, MTT must be raised
+ here AND on every child's slot context in the same change.
+
+  hub-declare : XhciHost, UsbDev, Integer, Integer, Integer, Integer, Integer -> Boolean
+  hub-declare (xh) (dev) (cfg) (iface) (total) (ports) (ttt) =
     let ep = kbd-find-int-in cfg (iface + peek-byte cfg iface) total
     in if ep < 0 then False
     else let epn = bit-and (peek-byte cfg (ep + 2)) 15
@@ -205,6 +310,8 @@ Section: Hub Bring-Up
     in let sb = xh.xh-ctxsz
     in let h0 = poke-32 ictx sb (bit-or (peek-32 ictx sb) (bit-shl 1 26))
     in let h1 = poke-32 ictx (sb + 4) (bit-or (bit-and (peek-32 ictx (sb + 4)) #00FFFFFF) (bit-shl ports 24))
+    in let tt = if (dev.ud-speed) == 3 then ttt else 0
+    in let h2 = poke-32 ictx (sb + 8) (bit-or (bit-and (peek-32 ictx (sb + 8)) #FFFCFFFF) (bit-shl tt 16))
     in let ce = xhci-configure-endpoint xh dev ictx
     in if ce.xe-ok == False then False
     else ce.xe-code == trb-cc-success
@@ -251,7 +358,7 @@ Section: Hub Walk
     else let buf = alloc-zeroed 64 64
     in let count = hub-port-count xh dev buf
     in if count == 0 then found
-    else let hb = hub-declare xh dev cfg iface total count
+    else let hb = hub-declare xh dev cfg iface total count (hub-think-time buf)
     in if hb == False then found
     else let pw = hub-power-all xh dev 1 count
     in hub-walk xh dev buf 1 count route depth found

@@ -10,8 +10,8 @@ A lightweight image editing utility with a workspace canvas and a right-panel co
 
 ## Completeness
 
-35% — All five operation categories have complete UI skeletons. Only the open/empty-state toggle is live. No crop, resize, rotate, or adjustment controls apply any transformation. Sliders are labels, not range inputs. Export emits nothing.
+35% -- All five operation categories have complete UI skeletons. Only the open/empty-state toggle is live. No crop, resize, rotate, or adjustment controls apply any transformation. Sliders are labels, not range inputs. Export emits nothing.
 
 ## Codex Conformance
 
-Full — Pure Codex. Image processing operations belong to a backend plug.
+Full -- Pure Codex. Image processing operations belong to a backend plug.

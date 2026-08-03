@@ -1,4 +1,4 @@
-# GitHub Update 3 — CL 619 to CL 678 (2026-05-01 to 2026-05-02)
+# GitHub Update 3 -- CL 619 to CL 678 (2026-05-01 to 2026-05-02)
 
 Previous update: CL 618 (commit `2b38729`).
 This update: CL 678.
@@ -7,7 +7,7 @@ This update: CL 678.
 
 The structured concurrency runtime shipped end-to-end across 13 CLs
 (621–651). The compiler now emits cooperative green threads with
-fork/await, effect handlers, and parallel combinators — all running
+fork/await, effect handlers, and parallel combinators -- all running
 on bare metal under QEMU with no OS, no libc, no runtime library.
 
 | Feature | CL | What |
@@ -30,9 +30,9 @@ Bare-metal disk I/O landed from the ground up:
 
 | CL | What |
 |----|------|
-| 655 | `block-read` / `block-write` syscalls — ATA PIO via INT 13h-style syscall dispatch |
+| 655 | `block-read` / `block-write` syscalls -- ATA PIO via INT 13h-style syscall dispatch |
 | 658–664 | Bring-up tests, sector-level I/O buffer, `block-read-sector` / `block-write-sector` helpers |
-| 665 | **DiskFacts V0** — `foreword/DiskFacts.codex` with superblock, fact-log entries, pack/unpack u8–u64, disk-init/write/checkpoint/load. 5 samples + `tools/test-disk-persistence.ps1` harness with session-level retries for WHPX IDE flakiness |
+| 665 | **DiskFacts V0** -- `foreword/DiskFacts.codex` with superblock, fact-log entries, pack/unpack u8-u64, disk-init/write/checkpoint/load. 5 samples + `tools/test-disk-persistence.ps1` harness with session-level retries for WHPX IDE flakiness |
 
 Two QEMU IDE PIO bugs documented during bring-up (same-session
 write-then-read stale cache; cross-session boot-time read failure
@@ -107,7 +107,7 @@ New `docs/Reference/` directory (CL 670) for archiving external
 research papers that post-date the agents' training cutoffs. First
 entry:
 
-- Cesario, Zakhour, Weisenburger, Salvaneschi — *Versioned E-Graphs*
+- Cesario, Zakhour, Weisenburger, Salvaneschi -- *Versioned E-Graphs*
   (PLDI 2026). Cited from `Verifier.md` as candidate data structure
   for branch-search proof checking.
 
@@ -133,8 +133,8 @@ Self-host: 52 `.codex` files, ~20,900 lines. 39 foreword modules.
 
 | Gate | Status |
 |------|--------|
-| BS2 (pingpong) | PASS — stage1 === stage2 byte-identical (881,527 B) |
-| BS3 (bootstrap3) | PASS — ELF === ELF byte-identical |
+| BS2 (pingpong) | PASS -- stage1 === stage2 byte-identical (881,527 B) |
+| BS3 (bootstrap3) | PASS -- ELF === ELF byte-identical |
 | Sweep | 139 pass, 0 fail, 13 skip of 152 |
 
 ## Known Issues

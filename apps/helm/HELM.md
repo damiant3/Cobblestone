@@ -4,7 +4,7 @@
 
 Helm is two tools in one shell: a chat system that makes massive
 rooms readable, and a voice system that makes large groups
-audible. Both solve the same problem — when hundreds of people
+audible. Both solve the same problem -- when hundreds of people
 talk at once, how do you hear what matters?
 
 Chat rooms today scale to about 30 active participants before
@@ -18,7 +18,7 @@ they become crosstalk. Helm pushes both numbers to thousands.
 ### The Problem
 
 A thousand people in a chat room watching a live event. A goal
-is scored. 400 people type some variant of "GOOOAL!" — 400
+is scored. 400 people type some variant of "GOOOAL!" -- 400
 individual messages that say the same thing. Meanwhile, 30 people
 are having a tactical discussion about the formation change that
 led to the goal. And 8 people are arguing about the referee. And
@@ -32,7 +32,7 @@ Nobody can read anything.
 ### The Solution: Statement Clustering
 
 Helm doesn't show individual messages in a flood. It clusters
-semantically similar statements into **Currents** — named groups
+semantically similar statements into **Currents** -- named groups
 that represent a single sentiment or topic within a time window.
 
 ```
@@ -54,7 +54,7 @@ that represent a single sentiment or topic within a time window.
 │   ● Split: 5 offside / 3 clean                  │
 │                                                 │
 │ ░ dinner plans (2 people)                       │
-│   ░ barely visible — low relevance              │
+│   ░ barely visible -- low relevance              │
 │                                                 │
 └─────────────────────────────────────────────────┘
 ```
@@ -75,12 +75,12 @@ Every message enters a pipeline:
    A burst of "GOAL!" messages fades in 30 seconds. A sustained
    discussion stays visible for minutes.
 
-4. **Rank**: Currents are sorted by attention score — a combination
+4. **Rank**: Currents are sorted by attention score -- a combination
    of participant count, recency, and explicit clicks.
 
 ### Attention Sorting
 
-Not all currents are equal. Helm ranks them by **attention** —
+Not all currents are equal. Helm ranks them by **attention** --
 how many people are engaging with a topic relative to the room
 size.
 
@@ -95,7 +95,7 @@ AttentionScore = record {
 
 - **Participants**: How many unique people contributed to this
   current. 412 > 34 > 8 > 2.
-- **Clicks**: Users click a current to "tune in" — they want to
+- **Clicks**: Users click a current to "tune in" -- they want to
   see its messages expanded. Clicks are explicit attention signals.
 - **Recency**: When was the last message in this current? Recent
   currents rank higher.
@@ -103,20 +103,20 @@ AttentionScore = record {
   ranks higher than a steady trickle.
 
 The dinner conversation between 2 people has near-zero attention.
-It's still there — you can find it — but it's visually minimized.
+It's still there -- you can find it -- but it's visually minimized.
 The 412-person goal reaction dominates the view. The 34-person
 tactical discussion is the second thing you see.
 
 ### Expanding a Current
 
 Click a current to expand it. You see individual messages, newest
-first. You can reply directly — your reply joins that current.
+first. You can reply directly -- your reply joins that current.
 You can also "break out" a sub-topic into its own current.
 
 ### Sentiment Hierarchy
 
 Within a current, Helm detects sentiment splits. The referee
-current shows "5 offside / 3 clean" — two sub-sentiments. You
+current shows "5 offside / 3 clean" -- two sub-sentiments. You
 can expand either sub-sentiment to see the individual arguments.
 
 ```
@@ -145,7 +145,7 @@ Sentiment =
 ### Time Bands
 
 Currents exist within time bands. A time band is a window
-(configurable — 1 minute, 5 minutes, 15 minutes) that groups
+(configurable -- 1 minute, 5 minutes, 15 minutes) that groups
 activity. When you scroll back in time, you see bands:
 
 ```
@@ -160,7 +160,7 @@ activity. When you scroll back in time, you see bands:
 ```
 
 This makes a 3-hour chat session browseable in seconds. You see
-the shape of the conversation — what topics dominated when, how
+the shape of the conversation -- what topics dominated when, how
 the crowd's attention moved. History becomes a timeline of
 collective attention, not a scroll of individual messages.
 
@@ -169,7 +169,7 @@ collective attention, not a scroll of individual messages.
 In a room with 5 people, clustering is unnecessary. Helm detects
 room size and falls back to traditional sequential chat. The
 clustering activates when message velocity exceeds a threshold
-(configurable — default: 10 messages per minute from 10+ unique
+(configurable -- default: 10 messages per minute from 10+ unique
 senders). Below that, it's just chat.
 
 ---
@@ -313,7 +313,7 @@ A captain sees their squad and the command channel:
 ### Joint Deployments
 
 The killer feature. Two captains from different admirals need to
-coordinate a joint operation. They create a **Joint Channel** —
+coordinate a joint operation. They create a **Joint Channel** --
 a temporary voice link between specific squads.
 
 ```
@@ -328,7 +328,7 @@ In a joint channel:
 - Their crews hear their own captain + the other captain (one
   level up).
 - Crews from different wings still cannot hear each other
-  directly — only through their captains.
+  directly -- only through their captains.
 - Both admirals can listen in but are not required to.
 
 ```
@@ -381,7 +381,7 @@ The chat and voice systems share infrastructure:
 
 - **Identity**: Same user, same presence, same permissions.
 - **Hierarchy**: The voice rank structure can inform chat
-  current visibility — a commander's message in chat is
+  current visibility -- a commander's message in chat is
   highlighted, not buried.
 - **Attention**: Voice activity feeds into chat attention
   scoring. If the admiral speaks, and 50 people type about
@@ -471,9 +471,9 @@ Helm Server (CDX, JSON API + WebSocket)
 ## Why "Helm"
 
 The helm is where you steer. In a storm of voices, you need
-the helm to keep course. The chat view is the radar — showing
+the helm to keep course. The chat view is the radar -- showing
 you the shape of the conversation so you can navigate it. The
-voice system is the comm — giving orders and receiving reports
+voice system is the comm -- giving orders and receiving reports
 through a chain that doesn't devolve into noise.
 
 At scale, communication isn't about talking more. It's about

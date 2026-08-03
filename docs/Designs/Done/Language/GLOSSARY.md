@@ -15,7 +15,7 @@ Terms used throughout the Codex project documentation.
 | **Canonical View** | The view of the repository that all stakeholders have agreed to. The "main branch" equivalent. |
 | **Chapter** | The top-level organizational unit in Codex source. Corresponds to a module. |
 | **Content-Addressed** | A storage scheme where data is identified by the hash of its content, not by a name or location. |
-| **Dependent Type** | A type that depends on a value. Example: `Vector 5 Integer` — a vector whose type includes its length. |
+| **Dependent Type** | A type that depends on a value. Example: `Vector 5 Integer` -- a vector whose type includes its length. |
 | **Diagnostic** | An error, warning, or suggestion produced by the compiler, with source location and optional fix suggestion. |
 | **Effect Row** | The set of effects declared in a function's type. Example: `[FileSystem, Network]`. |
 | **Elaboration** | The process of filling in implicit arguments, inserting coercions, and resolving proof obligations during type checking. |

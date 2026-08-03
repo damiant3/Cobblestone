@@ -1,0 +1,34 @@
+[
+  {
+    "target": "chapter:DeviceMath",
+    "kind": "warning",
+    "author": "val",
+    "date": "2026-07-28",
+    "body": "The transpiler plugs do not all replace the same set. WgslEmitter substitutes real-sin, real-cos and real-sqrt with the native instruction. PtxEmitter substitutes real-sqrt, real-abs, real-min, real-max, real-floor and real-ceil, and does NOT list real-sin or real-cos, so on the PTX path those two compile as ordinary calls and the bodies below execute on the device. Callers outside a kernel run the bodies unconditionally; apps/spark/MeshPrimitives is one. The bodies are the answer, not a placeholder, on every path except WGSL.",
+    "thread": "device-math-accuracy"
+  },
+  {
+    "target": "function:dm-sqrt-scaled",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-07-28",
+    "body": "Newton from a seed of x/2 is globally convergent but only halves the error ratio per step while far from the root, so a fixed five steps is correct only near 1. Measured 2026-07-28 with that seed: sqrt 10000 answered 177.0, sqrt 1e6 answered 15646.3, sqrt 1e-6 answered 0.0156. Scaling by powers of four first is exact in binary floating point and lands the argument in [0.25, 4), where the same five steps reach full double precision. The fuel bound of 700 covers the whole double range with room to spare and exists so a non-finite argument cannot spin.",
+    "thread": "device-math-accuracy"
+  },
+  {
+    "target": "function:dm-sin-poly",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-07-28",
+    "body": "The series stops at the eleventh power deliberately. Folded into [-pi/2, pi/2] the worst case is the fold boundary, where the partial sums are 0.99984311 through r^7, 1.00000355 through r^9 and 0.99999995 through r^11: an error of 5.6e-8, which is f32 precision. A thirteenth term would buy about 1e-9, which an f32 result cannot hold, and costs a multiply and a divide in a body that runs per invocation on the PTX path.",
+    "thread": "device-math-accuracy"
+  },
+  {
+    "target": "function:dm-fold-quadrant",
+    "kind": "invariant",
+    "author": "val",
+    "date": "2026-07-28",
+    "body": "Reducing to [-pi, pi] is not enough on its own: a Taylor series about zero is at its worst at the ends of that interval, and cos shifts its argument by a quarter turn, which drives it there. Measured before the fold: sin 3.0 answered 0.0911 against 0.1411, thirty-five per cent wrong, and cos 1.0 answered 0.5276 against 0.5403. The fold uses sin x = sin (pi - x) above pi/2 and sin x = sin (-pi - x) below -pi/2, so no argument reaching the series exceeds a quarter turn.",
+    "thread": "device-math-accuracy"
+  }
+]

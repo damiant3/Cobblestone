@@ -11,7 +11,7 @@
 The self-hosted Codex compiler is **28× slower** than the reference C# compiler on
 the large workload (compiling itself: 163K chars, 458 definitions). Nearly **85%** of
 that gap is in a single stage: the **lexer**, which takes 1,504ms vs the reference's
-1.89ms — an **800× difference**. The remaining stages range from 4–39× slower, with
+1.89ms -- an **800× difference**. The remaining stages range from 4–39× slower, with
 clear algorithmic causes in every case.
 
 The good news: every bottleneck is a known pattern with a known fix. The compiler
@@ -61,23 +61,23 @@ The self-hosted compiler allocates **192× more memory** than the reference comp
 
 ## Root Cause Analysis
 
-### 1. LEXER — 800× slower (84.7% of total time)
+### 1. LEXER -- 800× slower (84.7% of total time)
 
 **The #1 problem.** The self-hosted lexer is character-by-character with
 `char-at source offset` on every step. In the generated C# this becomes
-`source.Substring(offset, 1)` — a **heap allocation per character** for a 163K-char
+`source.Substring(offset, 1)` -- a **heap allocation per character** for a 163K-char
 input.
 
 The reference compiler's `Lexer` uses `source[offset]` (a single char index, zero
 allocation) and `ReadOnlySpan<char>` for string slicing.
 
-**Root cause**: The Codex language has no `Char` type — only `Text`. So `char-at`
+**Root cause**: The Codex language has no `Char` type -- only `Text`. So `char-at`
 returns a `Text` (string), and every character comparison allocates a new string.
 
 **Impact on memory**: 163K chars × multiple passes × string allocations = billions
 of bytes of garbage, explaining the 192× allocation ratio.
 
-### 2. EMITTER — 39× slower (9.7% of total time)
+### 2. EMITTER -- 39× slower (9.7% of total time)
 
 The C# emitter builds output via string concatenation (`++`). In the generated C#
 this becomes `string.Concat(a, b)` chains. For 458 definitions producing ~248K chars
@@ -88,17 +88,17 @@ The reference compiler uses `StringBuilder` internally through its emit methods.
 **Root cause**: No `StringBuilder` or buffer type in self-hosted code. Pure functional
 string concat is O(n²) for building large outputs.
 
-### 3. PARSE — 12× slower
+### 3. PARSE -- 12× slower
 
 The parser uses `list-at tokens pos` for every token access. In the generated C# this
 is `tokens[pos]` which is fine for `List<T>`, but the `ParseState` record is recreated
 on every `advance` call: `ParseState { tokens = st.tokens, pos = st.pos + 1 }`. This
 allocates a new record for every token consumed.
 
-The reference compiler's parser uses a mutable `m_position` field — zero allocation
+The reference compiler's parser uses a mutable `m_position` field -- zero allocation
 per token advance.
 
-### 4. TYPE CHECKER — 4.5× slower (the closest!)
+### 4. TYPE CHECKER -- 4.5× slower (the closest!)
 
 The type checker is actually the most competitive stage. Its 4.5× gap comes from:
 
@@ -109,10 +109,10 @@ The type checker is actually the most competitive stage. Its 4.5× gap comes fro
 - **Record recreation**: Every `add-subst`, `env-bind`, etc. creates a new record with
   the full list copied.
 
-4.5× is impressively close given these structural disadvantages — the algorithmic
+4.5× is impressively close given these structural disadvantages -- the algorithmic
 logic itself is well-written.
 
-### 5. NAME RESOLVER — 7.9× slower
+### 5. NAME RESOLVER -- 7.9× slower
 
 **Scope** is `{ names : List Text }` with `scope-has-loop` doing O(n) linear scan.
 The reference uses `Set<string>` (hash-based, O(1) lookup).
@@ -120,12 +120,12 @@ The reference uses `Set<string>` (hash-based, O(1) lookup).
 With 458 top-level names + builtins + constructors, every name lookup during resolution
 scans hundreds of entries.
 
-### 6. LOWERING — 10.7× slower
+### 6. LOWERING -- 10.7× slower
 
 The lowering pass has the same `List`-as-map pattern. Every type lookup, constructor
 lookup, and arity table access is O(n). The reference uses `Map<K,V>` throughout.
 
-### 7. DESUGAR — 6.3× slower
+### 7. DESUGAR -- 6.3× slower
 
 The desugarer is mostly straight traversal, so its gap comes primarily from record
 allocation overhead (every `map-list` creates a new list via `acc ++ [item]` which
@@ -144,7 +144,7 @@ map-list-loop f xs (i + 1) len (acc ++ [f (list-at xs i)])
 ```
 
 Each `acc ++ [item]` copies the entire accumulator. For n items this is O(n²).
-In the generated C#: `Enumerable.Concat(acc, new List<T> { item }).ToList()` —
+In the generated C#: `Enumerable.Concat(acc, new List<T> { item }).ToList()` --
 allocates a new list every iteration.
 
 **Occurrences**: `map-list`, `fold-list`, `collect-top-level-names`, `resolve-list-elems`,
@@ -175,16 +175,16 @@ each character at least once, plus keyword lookups and whitespace skipping.
 
 ### Priority 1: Fix the Lexer (would eliminate 85% of slowdown)
 
-**Option A — Add a `Char` type to the language.**
+**Option A -- Add a `Char` type to the language.**
 
 Add a `Char` primitive type that maps to `char` in C# emission. Change `char-at`
 to return `Char` instead of `Text`. Character comparisons become value comparisons
-(zero allocation). This is a language change but a small one — affects only the
+(zero allocation). This is a language change but a small one -- affects only the
 lexer and character-processing code.
 
 **Estimated impact**: 800× → ~5× (lexer would go from 1,504ms to ~10ms).
 
-**Option B — Emit `source[offset]` for `char-at` as a builtin optimization.**
+**Option B -- Emit `source[offset]` for `char-at` as a builtin optimization.**
 
 Recognize `char-at` in the emitter and emit `source[offset]` instead of
 `source.Substring(offset, 1)`. Requires the emitter to understand that single-char
@@ -197,11 +197,11 @@ operations can use `char` under the hood while presenting `Text` to the type sys
 The `acc ++ [item]` pattern needs to become a proper builder pattern.
 Options:
 
-1. **Use the Hamt prelude module** — it already exists. Migrate `TypeEnv`, `Scope`,
+1. **Use the Hamt prelude module** -- it already exists. Migrate `TypeEnv`, `Scope`,
    and `UnificationState` to use `Hamt` for O(log n) lookups.
-2. **Add a `MutableBuilder` builtin** — a mutable list builder that the emitter
+2. **Add a `MutableBuilder` builtin** -- a mutable list builder that the emitter
    translates to `List<T>.Add()` instead of `Concat + ToList`.
-3. **Compiler optimization** — detect `acc ++ [x]` in the lowering pass and emit
+3. **Compiler optimization** -- detect `acc ++ [x]` in the lowering pass and emit
    `List<T>.Add` instead of `Concat`.
 
 **Estimated impact**: Would bring parse, resolve, typecheck, lower, and emit
@@ -212,9 +212,9 @@ stages to within 2–4× of reference.
 Change `ParseState` from a record recreated on every advance to a design where
 `pos` is mutated in place. Options:
 
-1. **Emit optimization** — recognize the pattern `{ ...record, pos = pos + 1 }`
+1. **Emit optimization** -- recognize the pattern `{ ...record, pos = pos + 1 }`
    and emit an in-place mutation.
-2. **Ref-cell pattern** — add a `Ref a` type that wraps a mutable reference.
+2. **Ref-cell pattern** -- add a `Ref a` type that wraps a mutable reference.
 
 ### Priority 4: StringBuilder for Emitter
 
@@ -229,12 +229,12 @@ The emitter's string concat pattern needs a buffer:
 
 | Fix | Current total | After fix | Projected ratio |
 |-----|--------------|-----------|-----------------|
-| Baseline | 1,775ms | — | 28× |
-| P1: Fix lexer | — | ~270ms | ~4.3× |
-| P2: Hash-based lookups | — | ~150ms | ~2.4× |
-| P3: Mutable parser state | — | ~140ms | ~2.2× |
-| P4: StringBuilder emitter | — | ~100ms | ~1.6× |
-| **All fixes** | — | **~100ms** | **~1.6×** |
+| Baseline | 1,775ms | -- | 28× |
+| P1: Fix lexer | -- | ~270ms | ~4.3× |
+| P2: Hash-based lookups | -- | ~150ms | ~2.4× |
+| P3: Mutable parser state | -- | ~140ms | ~2.2× |
+| P4: StringBuilder emitter | -- | ~100ms | ~1.6× |
+| **All fixes** | -- | **~100ms** | **~1.6×** |
 
 Getting to **1.6× of the reference compiler** is realistic with these four changes.
 The remaining gap would be inherent overhead from the functional compilation style

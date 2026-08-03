@@ -1,4 +1,4 @@
-# Plug Compiler Crash — Test Plan (Session 3)
+# Plug Compiler Crash -- Test Plan (Session 3)
 
 Companion to `PLUG-CRASH-INVESTIGATION.md`. That file documents the bug
 and what has been ruled out. This file proposes new angles and concrete
@@ -13,7 +13,7 @@ under-weighted.
 
 R15 ends in `5`. Bivy/deck records always come off R10, which is
 8-aligned (bumped by 8 or 16). So R15 cannot be the start of a real
-TypeBinding — it is 3 bytes low of one. The "corrupt value at +3"
+TypeBinding -- it is 3 bytes low of one. The "corrupt value at +3"
 re-reads as the *aligned* first 4 bytes of the real record at
 `0x1a6f7c8`, with 3 bytes of preceding noise sampled at `0x1a6f7c5–7`.
 
@@ -24,7 +24,7 @@ may be intact.
 
 Heap layout is deterministic for a given build. The contents written
 into a fixed slot should not drift. Drift implies the value comes from
-something non-deterministic across runs — and on this machine, the
+something non-deterministic across runs -- and on this machine, the
 only such source is a **return address pushed on the stack** at a
 slightly different call site per run (WHPX scheduling jitter).
 
@@ -45,12 +45,12 @@ likely:
 
 WHPX and TCG should execute the same instructions on the same data.
 The serial-chunking difference changes heap layout slightly, so the
-corruption likely happens under TCG too — but lands somewhere
+corruption likely happens under TCG too -- but lands somewhere
 harmless. The bug is latent under TCG, not absent.
 
 ## Test Plan
 
-### Probe A — Sentinel-fill the heap, run under TCG
+### Probe A -- Sentinel-fill the heap, run under TCG
 
 **Goal**: Convert TCG into a reproducer by detecting silent corruption.
 
@@ -71,7 +71,7 @@ fill `[0x600000 .. stack_min]` with `0xCDCDCDCDCDCDCDCD`.
 **Why first**: cheapest probe that gives you a reproducer in the
 debuggable environment.
 
-### Probe B — Identify the corrupt value's identity
+### Probe B -- Identify the corrupt value's identity
 
 **Goal**: Name the perpetrator function.
 
@@ -82,16 +82,16 @@ debuggable environment.
    what is being captured (return address, closure code-ptr, or PC
    at the moment of write).
 4. If they straddle several functions: cluster by section
-   (lowering / sort / ISR / serial) — the cluster identifies the
+   (lowering / sort / ISR / serial) -- the cluster identifies the
    subsystem.
 
 **Why second**: ten minutes. Dramatically narrows the search.
 
-### Probe C — Closure-record collision hypothesis
+### Probe C -- Closure-record collision hypothesis
 
 **Hypothesis**: `sort-by xs compare-binding-names` materializes a
 closure record `(code-ptr, env-ptr)`. The 8 bytes of `name : Text` and
-the first 8 bytes of a closure record have the same shape — a code
+the first 8 bytes of a closure record have the same shape -- a code
 address followed by something. If a closure record allocated by
 `sort-by` lands adjacent to (or is being mistaken for) a TypeBinding,
 the `code-ptr` would naturally be a seed function address. A 32-bit
@@ -105,7 +105,7 @@ code-ptr write with 32-bit pad would match the observed 4-byte stride.
 3. Confirm whether `sort-by`'s comparator wrap allocates a closure
    at all (vs. inlining the function reference).
 
-### Probe D — In-place sort + `&` aliasing
+### Probe D -- In-place sort + `&` aliasing
 
 **Hypothesis**: `lower-chapter` runs:
 
@@ -119,7 +119,7 @@ referenced again later (or threaded back via `__record-set ust`),
 corruption follows.
 
 **Procedure**:
-1. Read the implementation of `&` for `List a` — does it build a new
+1. Read the implementation of `&` for `List a` -- does it build a new
    spine or alias the right operand?
 2. Walk every use of `env.bindings` after `lower-chapter` to see
    whether the original is reachable post-sort.
@@ -127,7 +127,7 @@ corruption follows.
    `sort-bindings (list-copy (types & env.bindings))` (or an explicit
    spine copy). If the crash disappears, aliasing is the cause.
 
-### Probe E — `__record-set ust "expr-types"` linearity violation
+### Probe E -- `__record-set ust "expr-types"` linearity violation
 
 **Hypothesis**: `lower-chapter` calls
 `__record-set ust "expr-types" (sort-expr-types …)`. Known Condition:
@@ -141,7 +141,7 @@ otherwise shared, the linearity invariant is broken.
 3. If reused: rewrite `__record-set` use as a deck-record
    reconstruction of `ust` and retest.
 
-### Probe F — Isolated `sort-by` probe sample
+### Probe F -- Isolated `sort-by` probe sample
 
 **Goal**: Reproduce the bug without the rest of lowering.
 
@@ -152,11 +152,11 @@ otherwise shared, the linearity invariant is broken.
 3. Walk the result; assert each `.name` equals what was inserted and
    the list is monotone under `text-compare`.
 4. If this repros on the seed: bug is in `sort-by`, `list-set-at`,
-   `list-at`, or `text-compare` — not in the rest of lowering.
+   `list-at`, or `text-compare` -- not in the rest of lowering.
 
-### Probe G — Post-sort invariant scan
+### Probe G -- Post-sort invariant scan
 
-**Hypothesis**: `sort-bindings` corrupted only the list spine — two
+**Hypothesis**: `sort-bindings` corrupted only the list spine -- two
 entries became aliases of the same physical TypeBinding, or a
 TypeBinding pointer was replaced by garbage. The bsearch hits the
 midpoint and dereferences.
@@ -170,7 +170,7 @@ midpoint and dereferences.
 
 First failing assertion names the failure mode.
 
-### Probe H — In-binary watchpoint
+### Probe H -- In-binary watchpoint
 
 **Goal**: A watchpoint that works under WHPX (where GDB hardware
 watchpoints don't).
@@ -181,11 +181,11 @@ TypeBindings and assert `.name` points into the heap and is
 printable CCE. The first phase that fires the assertion is the
 perpetrator. Cheaper than a GDB session and works under WHPX.
 
-### Probe I — Re-check the ISR rule-out
+### Probe I -- Re-check the ISR rule-out
 
 **Hypothesis**: The doc rules out the timer ISR because slot 0 has
 `slice=0`. But the ISR also fires for serial RX, ATA completion, and
-any other IRQ. WHPX vs TCG deliver interrupts differently —
+any other IRQ. WHPX vs TCG deliver interrupts differently --
 interrupts may arrive under WHPX that TCG never delivers. A leaked
 interrupt frame is exactly the shape of "seed PC copied somewhere."
 
@@ -197,11 +197,11 @@ interrupt frame is exactly the shape of "seed PC copied somewhere."
 
 ## Recommended Order
 
-1. **B** (10 min) — name the perpetrator function from the three
+1. **B** (10 min) -- name the perpetrator function from the three
    drifting addresses.
-2. **A** (medium) — sentinel-fill + TCG scan, to make the bug
+2. **A** (medium) -- sentinel-fill + TCG scan, to make the bug
    debuggable without WHPX.
-3. **F** (medium) — isolated `sort-by` probe, to confirm or eliminate
+3. **F** (medium) -- isolated `sort-by` probe, to confirm or eliminate
    the lowering-sort hypothesis.
 4. Branch on what A/B/F reveal: C/D/E/G/I as applicable.
 

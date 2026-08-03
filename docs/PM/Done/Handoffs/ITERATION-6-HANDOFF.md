@@ -1,4 +1,4 @@
-# Iteration 6 — Handoff Summary
+# Iteration 6 -- Handoff Summary
 
 **Date**: 2026-03-14  Pi Day
 **Branch**: `master`  
@@ -41,31 +41,31 @@
 
 ### Bug Fixes This Iteration
 
-1. **`Advanced()` typo in Parser** — `ParseRecordTypeBody` called `Advanced()` instead of `Advance()`, blocking record type parsing.
-2. **`start` vs `startSpan`** — `ParseVariantTypeBody` referenced undefined `start` instead of `startSpan`.
-3. **Builtins missing from Lowering** — `print-line`/`read-line` not in `m_typeMap` caused them to resolve as `ErrorType` during lowering, breaking string concat type inference in do-blocks. Fixed by adding `s_builtinTypes` static map.
-4. **Void-returning effectful functions** — `return Console.WriteLine(...)` generated invalid C# (`void` can't be returned as `object`). Fixed by emitting effectful function bodies as statements + `return null;`.
-5. **Cast paren bug in `EmitVarBindingsAndBody`** — `((Func<T,R>((` was missing `)` for the cast. Fixed to `((Func<T,R>)((`.
+1. **`Advanced()` typo in Parser** -- `ParseRecordTypeBody` called `Advanced()` instead of `Advance()`, blocking record type parsing.
+2. **`start` vs `startSpan`** -- `ParseVariantTypeBody` referenced undefined `start` instead of `startSpan`.
+3. **Builtins missing from Lowering** -- `print-line`/`read-line` not in `m_typeMap` caused them to resolve as `ErrorType` during lowering, breaking string concat type inference in do-blocks. Fixed by adding `s_builtinTypes` static map.
+4. **Void-returning effectful functions** -- `return Console.WriteLine(...)` generated invalid C# (`void` can't be returned as `object`). Fixed by emitting effectful function bodies as statements + `return null;`.
+5. **Cast paren bug in `EmitVarBindingsAndBody`** -- `((Func<T,R>((` was missing `)` for the cast. Fixed to `((Func<T,R>)((`.
 
 ### New Features
 
-1. **Effect row types** — `[Console] Nothing`, `[Console, FileSystem] Nothing` parsed and type-checked
-2. **Do notation** — `do` blocks with bind (`name <- expr`) and expression statements
-3. **Built-in effects** — `Console` effect with `print-line` and `read-line`
-4. **Effect checking** — Pure functions calling effectful functions produce CDX2031 error
-5. **Effect propagation** — Do-blocks collect effects from all statements
-6. **Type parameter arity checking** — CDX2032 error for wrong number of type args
-7. **Nested constructor patterns** — `if Just (Just (n)) ->` now destructures correctly
-8. **`show`/`negate` as first-class values** — Emit as lambdas when used standalone
+1. **Effect row types** -- `[Console] Nothing`, `[Console, FileSystem] Nothing` parsed and type-checked
+2. **Do notation** -- `do` blocks with bind (`name <- expr`) and expression statements
+3. **Built-in effects** -- `Console` effect with `print-line` and `read-line`
+4. **Effect checking** -- Pure functions calling effectful functions produce CDX2031 error
+5. **Effect propagation** -- Do-blocks collect effects from all statements
+6. **Type parameter arity checking** -- CDX2032 error for wrong number of type args
+7. **Nested constructor patterns** -- `if Just (Just (n)) ->` now destructures correctly
+8. **`show`/`negate` as first-class values** -- Emit as lambdas when used standalone
 
 ### New Tests (+17 vs iteration 5 baseline of 124 → 141 total)
 
 | Project | Tests | Delta |
 |---------|-------|-------|
-| Codex.Core.Tests | 16 | — |
+| Codex.Core.Tests | 16 | -- |
 | Codex.Syntax.Tests | 49 | +5 (effectful types, do expressions) |
-| Codex.Ast.Tests | 11 | — |
-| Codex.Semantics.Tests | 10 | — |
+| Codex.Ast.Tests | 11 | -- |
+| Codex.Semantics.Tests | 10 | -- |
 | Codex.Types.Tests | 55 | +12 (effects integration, M2 gaps) |
 | **Total** | **141** | **+17** |
 
@@ -120,7 +120,7 @@ CodexType
 
 - Each function definition extracts its allowed effects from its declared return type via `ExtractEffects`
 - The `m_currentEffects` field tracks what effects are available in the current context
-- `CheckEffectAllowed` fires on function application results — if the return type is `EffectfulType` and any effect is not in `m_currentEffects`, CDX2031 is reported
+- `CheckEffectAllowed` fires on function application results -- if the return type is `EffectfulType` and any effect is not in `m_currentEffects`, CDX2031 is reported
 - Do-blocks collect effects from all contained statements via `UnwrapEffectful`
 - Effect subtyping in unification: `EffectfulType` unifies with its return type (effects are transparent to unification)
 
@@ -158,13 +158,13 @@ public static object greet(string name) {
 
 ## Known Limitations / Not Yet Done
 
-- **Effect polymorphism** not implemented — `map` doesn't propagate effects from the mapped function
-- **Effect handlers** not implemented — no `run-state` or similar
-- **`State` effect** not implemented — only `Console` is built-in
-- **No nested ctor patterns in type checker** — nested patterns work in the emitter but the type checker doesn't deeply check field types for nested ctors
+- **Effect polymorphism** not implemented -- `map` doesn't propagate effects from the mapped function
+- **Effect handlers** not implemented -- no `run-state` or similar
+- **`State` effect** not implemented -- only `Console` is built-in
+- **No nested ctor patterns in type checker** -- nested patterns work in the emitter but the type checker doesn't deeply check field types for nested ctors
 - **ProseParser source spans** are relative to notation blocks, not the original file
-- **`codex run` overhead** — shells out to `dotnet build` + `dotnet run` (~2s)
-- **Sample files `shapes.codex`, `safe-divide.codex`, `person.codex`** have pre-existing parsing issues with named variant fields and multi-line definitions — the inline test equivalents work fine
+- **`codex run` overhead** -- shells out to `dotnet build` + `dotnet run` (~2s)
+- **Sample files `shapes.codex`, `safe-divide.codex`, `person.codex`** have pre-existing parsing issues with named variant fields and multi-line definitions -- the inline test equivalents work fine
 - **`Codex.Proofs`**, **`Codex.Repository`**, **`Codex.Narration`** are empty stubs
 
 ---
@@ -188,7 +188,7 @@ public static object greet(string name) {
 - [ ] Fix samples that currently don't parse: `shapes.codex`, `safe-divide.codex`, `person.codex`
 
 ### Milestone 7: Repository (Local)
-- [ ] Implement `Codex.Repository` — content-addressed fact store
+- [ ] Implement `Codex.Repository` -- content-addressed fact store
 - [ ] `codex init`, `codex publish`, `codex history`
 - [ ] Import resolution from local store
 
@@ -197,12 +197,12 @@ public static object greet(string name) {
 ## Environment Notes
 
 - **Solution file**: `Codex.sln` (root)
-- **Build**: `dotnet build Codex.sln` — zero warnings
-- **Test**: `dotnet test Codex.sln` — 141 tests, all pass
+- **Build**: `dotnet build Codex.sln` -- zero warnings
+- **Test**: `dotnet test Codex.sln` -- 141 tests, all pass
 - **TreatWarningsAsErrors**: `true`
 - **Boolean literals**: `True` / `False` (capital)
 - **Effect syntax**: `[Console] Nothing`, `Text -> [Console] Nothing`
 - **Do syntax**: `do` + newline-separated statements, bind with `<-`
 - **No XML doc comments**
 - **`m_` prefix** for private instance fields
-- **`Map<K,V>`** in `Codex.Core` — use instead of `ImmutableDictionary` + `TryGetValue`
+- **`Map<K,V>`** in `Codex.Core` -- use instead of `ImmutableDictionary` + `TryGetValue`

@@ -1,4 +1,4 @@
-# build.ps1 — full compiler build, verification, and test.
+# build.ps1 -- full compiler build, verification, and test.
 #
 # On success, prints only a story. On failure, prints technical details.
 # Phases: clean → source → CDX build → sign → canary → sem-equiv →
@@ -20,6 +20,39 @@ $Concat    = Join-Path $PSScriptRoot 'concat-codex-self.ps1'
 $Compile   = Join-Path $PSScriptRoot 'compile.ps1'
 $BuildLog  = Join-Path $OutDir 'build.log'
 
+# A compile log ENDS in hundreds of `info CDX4010: bounds proven` lines, so
+# its tail is the one slice guaranteed to say nothing about why a build
+# failed. Show the lines that decide the build, and keep the log: on
+# 2026-07-28 a red cdx-build printed ten blank lines and deleted its only
+# evidence, and reconstructing what it had already known cost an hour.
+function Show-CompileFailure {
+    param([string]$LogFile, [string]$Kept)
+    $diag = @()
+    if (Test-Path $LogFile) {
+        $diag = @(Get-Content $LogFile | Where-Object { $_ -match 'error CDX|CODEGEN-ERRORS|CODEGEN-HALTED' } | Select-Object -First 15)
+    }
+    if ($diag.Count -gt 0) {
+        $diag | ForEach-Object { Write-Host "  $_" }
+    } else {
+        $tail = @()
+        if (Test-Path $LogFile) { $tail = @(Get-Content $LogFile | Select-Object -Last 10) }
+        if ($tail.Count -eq 0) {
+            Write-Host '  the compile log is EMPTY: the compiler produced no output at all.'
+            Write-Host '  That points at the VM or the machine (memory, a killed process)'
+            Write-Host '  rather than at a rejected program, which would have left a'
+            Write-Host '  diagnostic here. Re-run the same compile by hand before assuming'
+            Write-Host '  the source is at fault.'
+        } else {
+            Write-Host '  no diagnostic in the log. Its last 10 lines:'
+            $tail | ForEach-Object { Write-Host "  $_" }
+        }
+    }
+    if ((Test-Path $LogFile) -and $Kept) {
+        Copy-Item -Force $LogFile $Kept -ErrorAction SilentlyContinue
+        Write-Host "  full log kept at: $Kept"
+    }
+}
+
 function Invoke-BuildCdx {
     param([string]$InputFile, [string]$Kernel, [string]$Output, [int]$MemMB = 3072)
     $logFile = [System.IO.Path]::GetTempFileName()
@@ -34,7 +67,7 @@ function Invoke-BuildCdx {
     if (-not $ok) {
         Write-Host ''
         Write-Host 'FAIL: CDX build failed'
-        Get-Content $logFile -ErrorAction SilentlyContinue | Select-Object -Last 10 | ForEach-Object { Write-Host "  $_" }
+        Show-CompileFailure -LogFile $logFile -Kept (Join-Path (Split-Path $Output) 'build-cdx-fail.log')
     } else {
         Move-Item -Force $tmpOut $Output
     }
@@ -144,7 +177,7 @@ Measure-Phase 'source-concat' {
     # *.codex under codex/compiler/, so an untracked stray there (e.g.
     # leftover WIP) is silently baked into the seed, producing a binary that
     # does not match the depot source and is not reproducible. Scope the
-    # check to codex/compiler/ ONLY — plug build-output dirs (codex/plugs/*/
+    # check to codex/compiler/ ONLY -- plug build-output dirs (codex/plugs/*/
     # build-output/*.codex) hold legitimate untracked artifacts the concat
     # never reads. Match the reconcile ACTION (" - ... add"), not "add"
     # anywhere, so editing a tracked file like list-add.codex does not
@@ -164,7 +197,7 @@ Measure-Phase 'source-concat' {
     }
 }
 
-# Check if source constants match the seed — warn if they differ.
+# Check if source constants match the seed -- warn if they differ.
 $chkConst = Join-Path $PSScriptRoot 'check-constants.ps1'
 if (Test-Path $chkConst) {
     & pwsh -NoProfile -File $chkConst 2>&1 | ForEach-Object { Write-Host "  $_" }
@@ -257,6 +290,40 @@ if (Test-Path $chkCdx) {
     & pwsh -NoProfile -File $chkCdx 2>&1 | ForEach-Object { Write-Host "  $_" }
     if ($LASTEXITCODE -ne 0) {
         Write-Host 'FAIL: the diagnostic catalogue disagrees with the code that raises it'
+        exit 1
+    }
+}
+
+# The fact store's partition type GUID is written by three producers -- the
+# reader in Foreword chapter Gpt, the IMG plug, and build/build-img.ps1 -- and
+# a disagreement is silent: the stick carries one type, the guest looks for
+# another, and the store refuses every write while reporting nothing.
+$chkFactsGuid = Join-Path $PSScriptRoot 'check-facts-guid.ps1'
+if (Test-Path $chkFactsGuid) {
+    & pwsh -NoProfile -File $chkFactsGuid 2>&1 | ForEach-Object { Write-Host "  $_" }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host 'FAIL: the fact-store partition type GUID disagrees across writers'
+        exit 1
+    }
+}
+
+# Counts in the docs go stale, and "never carry a count forward" is written in
+# three places and enforced in none. check-doc-counts.ps1 is the reader; on a
+# clean tree it found six false claims, one of them wrong by thirty tests.
+#
+# OPT-IN, and deliberately so. Turning it on for everyone is a decision about
+# everyone's gate. It is on when either is true:
+#   $env:CODEX_CHECK_DOC_COUNTS = '1'      per run
+#   a file named .doc-counts in the repo root   per agent, per workspace
+# The second is what makes an A/B arm: one workspace carries the file, another
+# does not, and the difference is visible in what comes out.
+$chkCounts = Join-Path $PSScriptRoot 'check-doc-counts.ps1'
+$countsOn = ($env:CODEX_CHECK_DOC_COUNTS -eq '1') -or (Test-Path (Join-Path $Repo '.doc-counts'))
+if ($countsOn -and (Test-Path $chkCounts)) {
+    & pwsh -NoProfile -File $chkCounts -Quiet 2>&1 | ForEach-Object { Write-Host "  $_" }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host 'FAIL: a doc states a count the tree no longer produces'
+        Write-Host '      Run build/check-doc-counts.ps1 for the per-claim table.'
         exit 1
     }
 }
@@ -368,7 +435,7 @@ $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
 & pwsh -NoProfile -File $compileScript -Src $canarySrc -Out $canaryCdx -Log $canaryLog 2>&1 | Out-Null
 $ErrorActionPreference = $prev
 if ($LASTEXITCODE -ne 0) {
-    Write-Host 'FAIL: canary compile — SUT cannot compile factorial.codex'
+    Write-Host 'FAIL: canary compile -- SUT cannot compile factorial.codex'
     Get-Content $canaryLog -TotalCount 20 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $_" }
     exit 1
 }
@@ -415,7 +482,7 @@ Measure-Phase 'sem-equiv' {
     $ErrorActionPreference = $prev
     if ($LASTEXITCODE -ne 0) {
         Write-Host ''
-        Write-Host 'FAIL: semantic equivalence — stage1 does not match source'
+        Write-Host 'FAIL: semantic equivalence -- stage1 does not match source'
         & pwsh -NoProfile -File $semEquivScript -Source $CodexSrc -Stage1 $textStage1
         exit 1
     }
@@ -433,7 +500,7 @@ Measure-Phase 'text-fixedpoint' {
     $th1 = (Get-FileHash -Algorithm SHA256 $textStage1).Hash
     $th2 = (Get-FileHash -Algorithm SHA256 $textStage2).Hash
     if ($th1 -ne $th2) {
-        Write-Host 'FAIL: text round-trip — stage1 !== stage2'
+        Write-Host 'FAIL: text round-trip -- stage1 !== stage2'
         Write-Host "  stage1: $((Get-Item $textStage1).Length) bytes  $th1"
         Write-Host "  stage2: $((Get-Item $textStage2).Length) bytes  $th2"
         exit 1
@@ -457,12 +524,12 @@ Measure-Phase 'cdx-fixedpoint' {
     $sutHash = Get-CdxContentHash $SutCdx
     $ch1 = Get-CdxContentHash $cdxStage1
     if ($sutHash -eq $ch1) {
-        Write-Host '(SUT === stage1 — hard fixed point in one pass)'
+        Write-Host '(SUT === stage1 -- hard fixed point in one pass)'
     } else {
         if (-not (Invoke-BuildCdx -InputFile $CodexSrc -Kernel $cdxStage1 -Output $cdxStage2)) { exit 1 }
         $ch2 = Get-CdxContentHash $cdxStage2
         if ($ch1 -ne $ch2) {
-            Write-Host 'FAIL: CDX fixed point — stage1 !== stage2'
+            Write-Host 'FAIL: CDX fixed point -- stage1 !== stage2'
             Write-Host "  stage1: $((Get-Item $cdxStage1).Length) bytes  $ch1"
             Write-Host "  stage2: $((Get-Item $cdxStage2).Length) bytes  $ch2"
             exit 1
@@ -488,6 +555,29 @@ Measure-Phase 'test-bvt' {
         Write-Host 'FAIL: BVT'
         Get-Content $testOut | ForEach-Object { Write-Host "  $_" }
         exit 1
+    }
+}
+
+# -- the differential oracles: operator correctness against the HOST. The
+# fixed point cannot see an operator that is uniformly wrong, because it
+# only requires the compiler to agree with itself -- which is how Real
+# ordering shipped inverted for three months. Damian's call 2026-07-27:
+# the pin goes wherever it helps, and the gate is where every codegen
+# change passes. Cost measured at 2s + 1s against a 170s gate. The
+# collections stay author-owned (reek: oracle-scalar, blu: oracle-vector
+# and oracle-cce -- cce joined 2026-07-28 once G1 closed and every gap
+# carried a verdict, 1485/1516 with 31 in ruled gaps, 0 unexplained);
+# this leg only runs them against the just-proven fixed point.
+Measure-Phase 'oracles' {
+    foreach ($o in 'oracle-scalar', 'oracle-vector', 'oracle-cce') {
+        $olog = Join-Path $OutDir "$o-results.txt"
+        & pwsh -NoProfile -File (Join-Path $PSScriptRoot "$o.ps1") -Kernel $testKernel > $olog 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host ''
+            Write-Host "FAIL: $o disagrees with the host"
+            Get-Content $olog | Select-Object -Last 20 | ForEach-Object { Write-Host "  $_" }
+            exit 1
+        }
     }
 }
 
@@ -542,7 +632,7 @@ Measure-Phase 'cross-smoke' {
 # -- transpiler plug smoke: a representative subset must RUN end-to-end
 # (SUT IR -> framed TCP wire -> plug VM -> non-empty target text). The binary
 # leg above proves plugs BUILD; this proves the wire protocol and plug runtime
-# stay alive — the class that dark-shipped when 20 run.ps1 senders went
+# stay alive -- the class that dark-shipped when 20 run.ps1 senders went
 # unframed (CL 7372). Missing plug CDX builds once and caches; a failing run
 # gets one rebuild-and-retry (stale binary after IR drift), then fails loudly.
 Measure-Phase 'plug-smoke' {

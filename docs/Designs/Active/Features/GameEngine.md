@@ -1,4 +1,4 @@
-# Codex Game Engine — General-Purpose, Bare-Metal, Self-Hosted
+# Codex Game Engine -- General-Purpose, Bare-Metal, Self-Hosted
 
 ## Status
 
@@ -11,7 +11,7 @@ dependencies. Every byte is Codex.
 Four chapters from later phases landed early and are also in the tree:
 `Culling`, `Skinning`, `PostProcess`, and `DebugDraw`.
 
-**Next: Phase 2 — shadow mapping.** The `DepthBuffer` type Phase 1 built
+**Next: Phase 2 -- shadow mapping.** The `DepthBuffer` type Phase 1 built
 for the main pass is exactly what a light-space depth pass needs; the
 work is a second render target rendered from the light's point of view
 and a light-space compare in the shading stage. See "Shadow Mapping
@@ -44,7 +44,7 @@ design fills those gaps.
 1. **Bare metal.** No OS, no driver stack, no GPU API. The engine talks
    directly to hardware (VBE framebuffer, port I/O, MMIO) or dispatches
    GPU kernels through the serial-bridge protocol. There is no Vulkan,
-   no DirectX, no OpenGL — those are other people's abstractions. We own
+   no DirectX, no OpenGL -- those are other people's abstractions. We own
    the metal.
 
 2. **Self-hosted.** The engine, the compiler that compiles the engine,
@@ -63,7 +63,7 @@ design fills those gaps.
    the compiler proves bounds at compile time.
 
 5. **Linear types for resources.** GPU buffers, textures, and render
-   targets are `linear` — the type system guarantees they are consumed
+   targets are `linear` -- the type system guarantees they are consumed
    exactly once (no leak, no use-after-free), with no GC.
 
 6. **Effect system for I/O.** Drawing, input, audio, and network are
@@ -121,7 +121,7 @@ design fills those gaps.
 
 All new code lives under `codex/foreword/engine/` as quire `Engine`.
 
-### 1. Mesh — Vertex Buffers and Index Buffers
+### 1. Mesh -- Vertex Buffers and Index Buffers
 
 ```
 Chapter: Mesh
@@ -155,14 +155,14 @@ Types:
 Vertex positions, normals, and UVs are fixed-point (scale 1000).
 Color is packed XRGB8888 (same as framebuffer). Index buffer stores
 triangle indices (3 per triangle). Mesh is immutable after construction
-— transform the scene node, not the mesh.
+-- transform the scene node, not the mesh.
 
 Primitive generators: `mesh-cube`, `mesh-sphere` (icosphere subdivision),
 `mesh-plane`, `mesh-cylinder`, `mesh-cone`, `mesh-torus`. These are
-the engine's built-in test meshes — enough to prototype any game
+the engine's built-in test meshes -- enough to prototype any game
 without external assets.
 
-### 2. Scene3D — 3D Scene Graph
+### 2. Scene3D -- 3D Scene Graph
 
 ```
 Chapter: Scene3D
@@ -206,7 +206,7 @@ by walking up the parent chain (recursive mat4-mul). Frustum culling
 using AABB-against-frustum test (6-plane extraction from
 view-projection matrix).
 
-### 3. Renderer3D — Software 3D Rasterization Pipeline
+### 3. Renderer3D -- Software 3D Rasterization Pipeline
 
 ```
 Chapter: Renderer3D
@@ -221,13 +221,13 @@ Chapter: Renderer3D
 The pipeline:
 
 ```
-  1. CULL      — frustum-cull scene nodes against camera
-  2. TRANSFORM — multiply each vertex by model × view × projection
-  3. CLIP      — clip triangles against the near plane (w > 0)
-  4. PROJECT   — perspective divide (x/w, y/w) → screen coords
-  5. RASTERIZE — scanline fill with per-pixel depth test
-  6. SHADE     — per-pixel lighting (Phong), material color
-  7. WRITE     — write pixel to framebuffer
+  1. CULL      -- frustum-cull scene nodes against camera
+  2. TRANSFORM -- multiply each vertex by model × view × projection
+  3. CLIP      -- clip triangles against the near plane (w > 0)
+  4. PROJECT   -- perspective divide (x/w, y/w) → screen coords
+  5. RASTERIZE -- scanline fill with per-pixel depth test
+  6. SHADE     -- per-pixel lighting (Phong), material color
+  7. WRITE     -- write pixel to framebuffer
 ```
 
 Types:
@@ -260,17 +260,17 @@ Types:
 ```
 
 The depth buffer stores fixed-point depth values (scale 1000000 for
-precision at distance). Depth test is `less-than` — closer fragments
+precision at distance). Depth test is `less-than` -- closer fragments
 win. The rasterizer reuses the existing `fb-tri` scanline infrastructure
 but adds per-pixel interpolation for depth, normal, UV, and color using
 barycentric coordinates.
 
 Lighting: directional, point, and spot lights. The shading model
 extends the existing Raytracer's Phong implementation to work with
-interpolated normals (Gouraud for speed, Phong for quality — selectable
+interpolated normals (Gouraud for speed, Phong for quality -- selectable
 per material).
 
-### 4. Material — Surface Properties
+### 4. Material -- Surface Properties
 
 ```
 Chapter: Material
@@ -302,7 +302,7 @@ texture sampler does nearest-neighbor (integer UV lookup) or bilinear
 interpolation (4-tap with fixed-point weights). Texture coordinates
 wrap (modulo) by default.
 
-### 5. Texture — Software Texture Sampling
+### 5. Texture -- Software Texture Sampling
 
 ```
 Chapter: Texture
@@ -329,10 +329,10 @@ Chapter: Texture
 
 Texture sampling: UV coordinates (0-1000 range) map to pixel
 coordinates. Bilinear interpolation blends the four nearest texels
-using fixed-point weights. This is the hot path of the renderer —
+using fixed-point weights. This is the hot path of the renderer --
 future SIMD (Vector 4 Integer for RGBA channels) will accelerate it.
 
-### 6. GameLoop — Fixed-Timestep Game Loop
+### 6. GameLoop -- Fixed-Timestep Game Loop
 
 ```
 Chapter: GameLoop
@@ -373,10 +373,10 @@ accumulator time. This gives deterministic simulation with smooth
 visuals.
 
 Frame timing uses the HPET tick counter (kernel metadata cell at
-`tick-count-addr`, 28672). No OS timer API — we read the hardware
+`tick-count-addr`, 28672). No OS timer API -- we read the hardware
 directly.
 
-### 7. Input — Unified Input System
+### 7. Input -- Unified Input System
 
 ```
 Chapter: Input
@@ -433,7 +433,7 @@ Action mapping layer: game code reads actions, not raw keys. Rebindable
 at runtime. Reads from the kernel key buffer (metadata cell at
 `key-buffer-addr`, 28680) and PS/2 mouse port.
 
-### 8. AssetTable — Format-Agnostic Asset Registry
+### 8. AssetTable -- Format-Agnostic Asset Registry
 
 ```
 Chapter: AssetTable
@@ -469,15 +469,15 @@ Chapter: AssetTable
 
 Assets are registered by name and loaded on demand. Meshes can be
 constructed procedurally (built-in generators) or loaded from Codex
-mesh literals (vertex/index lists in source). Textures similarly —
+mesh literals (vertex/index lists in source). Textures similarly --
 procedural (checkerboard, gradient, noise) or literal pixel data.
 
-No external file formats (OBJ, FBX, PNG, etc.) in Phase 1 — those are
+No external file formats (OBJ, FBX, PNG, etc.) in Phase 1 -- those are
 other people's formats. Phase 2 adds a CDX asset container (facts in
 the repository protocol) for binary mesh and texture data, with the
 trust lattice guaranteeing asset integrity.
 
-### 9. Audio3D — Spatial Audio
+### 9. Audio3D -- Spatial Audio
 
 ```
 Chapter: Audio3D
@@ -524,7 +524,7 @@ only.
 
 G-buffer pass writes position, normal, albedo, and material ID to
 separate render targets. Lighting pass reads the G-buffer and
-accumulates light contributions. Decouples geometry from lighting —
+accumulates light contributions. Decouples geometry from lighting --
 many lights at constant geometry cost.
 
 ### GPU-Accelerated Rendering (Phase 4)
@@ -534,7 +534,7 @@ SPIR-V plugs. The compiler emits `[Device]` functions as GPU kernels
 (GpuKernels.md K0-K2). The host sends vertex data over the GPU bridge,
 the kernel transforms and rasterizes in parallel, and the result is
 read back to the VBE framebuffer. This is where the dual-target GPU
-compilation (DualTargetGpuCompilation.md) pays off — the same Codex
+compilation (DualTargetGpuCompilation.md) pays off -- the same Codex
 shader code targets NVIDIA and Vulkan hardware.
 
 ---
@@ -566,7 +566,7 @@ principles still apply to our internal pipeline:
    state changes (shader/texture rebinding in GPU mode).
 
 2. **Persistent mapped buffers.** In GPU mode, vertex data lives in
-   a pre-allocated region the GPU kernel reads directly — no
+   a pre-allocated region the GPU kernel reads directly -- no
    copy-per-frame.
 
 3. **Indirect draw.** The scene culler produces a draw list (node ID +
@@ -587,32 +587,32 @@ principles still apply to our internal pipeline:
 
 | Engine Need | Existing Chapter | Gap |
 |-------------|-----------------|-----|
-| ECS | `Game/ECS` | None — use directly |
-| 2D rendering | `Game/Rasterizer`, `Game/Scene2D` | None — 2D overlay on 3D |
-| 3D math | `Math/Matrix4`, `Math/Quaternion`, `Math/Geometry` | None — use directly |
-| Trig | `Math/Cordic` | None — CORDIC gives sin/cos |
-| Color | `Game/Color` | None — RGB/HSL/pack/unpack |
-| Sprites | `Game/Sprite` | None — 2D billboards |
-| Physics | `Sim/Physics` (Verlet) | None — integrate directly |
+| ECS | `Game/ECS` | None -- use directly |
+| 2D rendering | `Game/Rasterizer`, `Game/Scene2D` | None -- 2D overlay on 3D |
+| 3D math | `Math/Matrix4`, `Math/Quaternion`, `Math/Geometry` | None -- use directly |
+| Trig | `Math/Cordic` | None -- CORDIC gives sin/cos |
+| Color | `Game/Color` | None -- RGB/HSL/pack/unpack |
+| Sprites | `Game/Sprite` | None -- 2D billboards |
+| Physics | `Sim/Physics` (Verlet) | None -- integrate directly |
 | Collision | `Sim/Collision` (AABB, sphere) | Add mesh-AABB generator |
 | Particles | `Sim/ParticleSystem` | Add 3D particle emitter |
-| Spatial | `Game/Quadtree`, `Game/Octree`, `Sim/SpatialHash` | None — use Octree for 3D |
+| Spatial | `Game/Quadtree`, `Game/Octree`, `Sim/SpatialHash` | None -- use Octree for 3D |
 | Camera | `Game/GameCamera` | Extend to 3D (look-at, orbit) |
-| Pathfinding | `Game/AStar`, `Game/Pathfinding` | None — 3D navmesh future |
+| Pathfinding | `Game/AStar`, `Game/Pathfinding` | None -- 3D navmesh future |
 | Terrain | `Game/DiamondSquare`, `Game/CellularAutomata` | Heightmap → Mesh converter |
 | Audio | `Signal/Synth`, `Signal/AudioEffect`, `Signal/FFT` | Add 3D spatial panning |
 | Animation | `Game/Easing`, `Game/Tween` | Add skeletal animation |
-| Netcode | `Game/Netcode` | None — rollback works for any game |
-| Save/Load | `Game/SaveSlot` | None — serialize game state |
-| UI | `UI/Surface`, `UI/Render`, `UI/Widget` | None — overlay compositor |
+| Netcode | `Game/Netcode` | None -- rollback works for any game |
+| Save/Load | `Game/SaveSlot` | None -- serialize game state |
+| UI | `UI/Surface`, `UI/Render`, `UI/Widget` | None -- overlay compositor |
 | GPU | `Kernel/GpuBridge`, PTX/SPIR-V plugs | Wire kernel dispatch |
-| Framebuffer | `Kernel/VgaGraphics` | None — VBE linear FB |
-| Font | `Kernel/BitmapFont` | None — CBF glyph rendering |
+| Framebuffer | `Kernel/VgaGraphics` | None -- VBE linear FB |
+| Font | `Kernel/BitmapFont` | None -- CBF glyph rendering |
 | Input | `Kernel/Keyboard` | Add mouse, action mapping |
-| State machine | `Game/StateMachine` | None — game states |
-| Tiles/Hex | `Game/TileMap`, `Game/HexMap` | None — 2D map layers |
-| Noise | `Signal/Perlin`, `Signal/Noise` | None — procedural gen |
-| Curves | `Math/Bezier`, `Math/Spline` | None — animation paths |
+| State machine | `Game/StateMachine` | None -- game states |
+| Tiles/Hex | `Game/TileMap`, `Game/HexMap` | None -- 2D map layers |
+| Noise | `Signal/Perlin`, `Signal/Noise` | None -- procedural gen |
+| Curves | `Math/Bezier`, `Math/Spline` | None -- animation paths |
 
 **26 of 30 engine needs are already implemented.** The four gaps are:
 Scene3D, Renderer3D, Mesh, and AssetTable. Everything else is wiring.
@@ -621,29 +621,29 @@ Scene3D, Renderer3D, Mesh, and AssetTable. Everything else is wiring.
 
 ## Phasing
 
-### Phase 1: Software 3D Pipeline — COMPLETE
+### Phase 1: Software 3D Pipeline -- COMPLETE
 
-- `Engine/Mesh` — vertex/index types, primitive generators
-- `Engine/Scene3D` — 3D scene graph with transforms
-- `Engine/Renderer3D` — transform → clip → project → rasterize → shade
-- `Engine/Material` — surface properties, shading model selection
-- `Engine/Texture` — software texture sampling
-- `Engine/GameLoop` — fixed-timestep loop with frame timing
-- `Engine/Input` — unified input with action mapping
-- `Engine/AssetTable` — asset registry
-- `Engine/Audio3D` — spatial audio
+- `Engine/Mesh` -- vertex/index types, primitive generators
+- `Engine/Scene3D` -- 3D scene graph with transforms
+- `Engine/Renderer3D` -- transform → clip → project → rasterize → shade
+- `Engine/Material` -- surface properties, shading model selection
+- `Engine/Texture` -- software texture sampling
+- `Engine/GameLoop` -- fixed-timestep loop with frame timing
+- `Engine/Input` -- unified input with action mapping
+- `Engine/AssetTable` -- asset registry
+- `Engine/Audio3D` -- spatial audio
 
 Deliverable: a spinning textured cube with Phong lighting, depth
 buffer, camera control (WASD + mouse look), running as a bootable CDX.
 
-### Phase 2: SIMD + Shadows + Skeletal Animation — NEXT
+### Phase 2: SIMD + Shadows + Skeletal Animation -- NEXT
 
-- **Shadow mapping (directional light depth pass) — the next item.**
+- **Shadow mapping (directional light depth pass) -- the next item.**
   Reuse the existing `DepthBuffer`: render depth from the light, then
   compare in light-space during the main pass.
-- SIMD math (Vector 4 Real approximate) for transforms — waits on
+- SIMD math (Vector 4 Real approximate) for transforms -- waits on
   SIMD.md Phase 2
-- Skeletal animation (bone hierarchy, skinning) — `Engine/Skinning`
+- Skeletal animation (bone hierarchy, skinning) -- `Engine/Skinning`
   already landed
 - Heightmap terrain from DiamondSquare → Mesh
 - SIMD-accelerated texture sampling and pixel blend
@@ -662,7 +662,7 @@ buffer, camera control (WASD + mouse look), running as a bootable CDX.
 - Screen-space ambient occlusion (SSAO)
 - Bloom (downsample + Gaussian blur + composite)
 - Tone mapping (ACES filmic)
-- Anti-aliasing (FXAA — post-process edge detection)
+- Anti-aliasing (FXAA -- post-process edge detection)
 
 ---
 
@@ -679,7 +679,7 @@ buffer, camera control (WASD + mouse look), running as a bootable CDX.
 | Textures | ~1 MB typical | 256×256 × 4 bytes × 4 textures |
 | **Total** | **~10 MB** | Fits easily in 3 GB bare-metal |
 
-At 640x480 (default): framebuffer 1.2 MB, depth 2.4 MB — lighter still.
+At 640x480 (default): framebuffer 1.2 MB, depth 2.4 MB -- lighter still.
 
 **Time:** Per-frame budget at 60 FPS = 16.67 ms.
 
@@ -691,10 +691,10 @@ At 640x480 (default): framebuffer 1.2 MB, depth 2.4 MB — lighter still.
 | Rasterize + Shade | O(P pixels), ~5 ms for 307K pixels |
 | Depth clear | O(W×H), ~300 μs |
 | FB present | O(W×H), ~300 μs (VBE MMIO writes) |
-| **Total** | **~6 ms** — well within 16.67 ms |
+| **Total** | **~6 ms** -- well within 16.67 ms |
 
 The bottleneck is rasterization (fill rate). SIMD (Phase 2) and GPU
-(Phase 3) directly attack this. The software renderer is the baseline —
+(Phase 3) directly attack this. The software renderer is the baseline --
 it proves correctness before we optimize.
 
 **Heap:** All per-frame allocations use bivy scratch (reclaimed every
@@ -709,8 +709,8 @@ deck. No allocation in the render hot path.
 |---------------|-------------|
 | Renderer pipeline | 7-stage software pipeline with depth buffer |
 | SIMD math library | Designed (SIMD.md), 12 math chapters exist |
-| ECS system | Done — `Game/ECS`, BitSet masks, 256 entities |
-| Asset manager | `Engine/AssetTable` — meshes, textures, materials |
+| ECS system | Done -- `Game/ECS`, BitSet masks, 256 entities |
+| Asset manager | `Engine/AssetTable` -- meshes, textures, materials |
 | Renderer abstraction | Software baseline, GPU via plugs (Phase 3) |
 | Lighting | Phong shading with directional + point lights |
 | Shaders | GPU shaders via PTX/SPIR-V plugs |
@@ -718,13 +718,13 @@ deck. No allocation in the render hot path.
 | CPU-GPU communication | `GpuBridge` (serial COM3→CUDA proxy) |
 | AZDO principles | No driver = zero overhead by construction |
 | Specific API | We are the API. No Vulkan, no DX, no GL. |
-| Frustum culling | `Engine/Culling` — 6-plane extraction, AABB test |
+| Frustum culling | `Engine/Culling` -- 6-plane extraction, AABB test |
 | Backface culling | Screen-space winding order test |
 | Near-plane clipping | Sutherland-Hodgman in homogeneous coords |
-| Skeletal animation | `Engine/Skinning` — bones, keyframes, 4-weight LBS |
-| Post-processing | `Engine/PostProcess` — bloom, ACES tonemap, FXAA |
-| Debug visualization | `Engine/DebugDraw` — wireframe, AABB, grid, axes, stats |
-| Texture sampling | `Engine/Texture` — nearest/bilinear, wrap/clamp/mirror |
-| Game loop | `Engine/GameLoop` — fixed timestep, accumulator pattern |
-| Input system | `Engine/Input` — 3-state keys, mouse, action mapping |
-| Multiplayer bridge | `Engine/HelmBridge` — voice hierarchy, game events |
+| Skeletal animation | `Engine/Skinning` -- bones, keyframes, 4-weight LBS |
+| Post-processing | `Engine/PostProcess` -- bloom, ACES tonemap, FXAA |
+| Debug visualization | `Engine/DebugDraw` -- wireframe, AABB, grid, axes, stats |
+| Texture sampling | `Engine/Texture` -- nearest/bilinear, wrap/clamp/mirror |
+| Game loop | `Engine/GameLoop` -- fixed timestep, accumulator pattern |
+| Input system | `Engine/Input` -- 3-state keys, mouse, action mapping |
+| Multiplayer bridge | `Engine/HelmBridge` -- voice hierarchy, game events |

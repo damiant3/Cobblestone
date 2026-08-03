@@ -1,4 +1,4 @@
-# __record-set field 19+ silent fail — RESOLVED, NO LONGER REPRODUCIBLE
+# __record-set field 19+ silent fail -- RESOLVED, NO LONGER REPRODUCIBLE
 
 **Original report:** 2026-06-15 (CL 4395)
 **Investigated:** 2026-06-18 (CL 4727 seed)

@@ -89,6 +89,7 @@ Section: Capability and Operational Registers
   xh-hcc-ppc-shift : Integer = 3
 
   xhci-xecp-legsup : Integer = 1
+  xhci-xecp-protocol : Integer = 2
   xhci-legsup-bios : Integer = #10000
   xhci-legsup-os : Integer = #1000000
   xhci-legctl-keep : Integer = #E1FEE
@@ -143,6 +144,9 @@ Section: TRB Vocabulary
   trb-t-enable-slot : Integer = 9
   trb-t-address-dev : Integer = 11
   trb-t-config-ep : Integer = 12
+  trb-t-reset-ep : Integer = 14
+  trb-t-stop-ep : Integer = 15
+  trb-t-set-deq : Integer = 16
   trb-t-xfer-event : Integer = 32
   trb-t-cmd-complete : Integer = 33
 
@@ -151,6 +155,7 @@ Section: TRB Vocabulary
 
   trb-cc-success : Integer = 1
   trb-cc-short : Integer = 13
+  trb-cc-stall : Integer = 6
 
 Section: Producer Rings
 
@@ -193,6 +198,18 @@ Section: Producer Rings
     in let w3 = poke-32 (ring + 64) (off + 12) (bit-or ctl cyc)
     in poke-32 ring 0 (enq + 1)
 
+ A halted endpoint is restarted by pointing the controller back at the
+ ring, and the only position it may be given is one the producer has not
+ yet filled: the current enqueue slot, carrying the producer's own cycle
+ state as the dequeue cycle. Anything behind that is a TRB the controller
+ has already consumed, and anything ahead of it is not written yet.
+
+  xhci-ring-enq-addr : Integer -> Integer
+  xhci-ring-enq-addr (ring) = ring + 64 + (peek-32 ring 0) * 16
+
+  xhci-ring-cycle : Integer -> Integer
+  xhci-ring-cycle (ring) = peek-32 ring 4
+
 Section: Host State
 
  The host record holds register bases and ring addresses fixed at
@@ -218,11 +235,13 @@ Section: Host State
     xh-cmd-ring : Integer,
     xh-evt-ring : Integer,
     xh-state : Integer,
-    xh-ctxsz : Integer
+    xh-ctxsz : Integer,
+    xh-cap : Integer,
+    xh-xecp : Integer
   }
 
   xhci-no-host : XhciHost
-  xhci-no-host = XhciHost { xh-ok = False, xh-op = 0, xh-db = 0, xh-rt = 0, xh-ports = 0, xh-dcbaa = 0, xh-cmd-ring = 0, xh-evt-ring = 0, xh-state = 0, xh-ctxsz = 32 }
+  xhci-no-host = XhciHost { xh-ok = False, xh-op = 0, xh-db = 0, xh-rt = 0, xh-ports = 0, xh-dcbaa = 0, xh-cmd-ring = 0, xh-evt-ring = 0, xh-state = 0, xh-ctxsz = 32, xh-cap = 0, xh-xecp = 0 }
 
   UsbDev = record {
     ud-ok : Boolean,
@@ -271,17 +290,148 @@ Section: Diagnostics
  first-boot ceremony, which waits for a key long after the bring-up
  returned) can still return the machine to firmware. Indices 28 and
  29 record that decision. Occupied: 0-19 identity and bring-up,
- 20-27 the per-port snapshot, 28-29 the handback, 36-39 the Intel
- routing and the saved control word.
+ 20-27 the per-port snapshot, 28-29 the handback, 30-32 the BAR window
+ verdict and the address it judged, 36-39 the Intel routing and the
+ saved control word.
 
-  xhci-diag : Integer = 36200
+ Index 30 is 1 for used-as-written and 2 for relocated, never 0, so a
+ zero distinguishes "the judgement was never reached" from either
+ verdict. A two-valued cell cannot make that distinction, and on a
+ board where the firmware places the controller at xhci-reloc-base the
+ two branches are otherwise indistinguishable from the outside.
+
+ 31 and 32 are the LOW and HIGH dwords of the address judged, and both
+ are needed. A BAR above 4 GB carries no address bits at all in its low
+ dword -- the ASUS answers 00000004 there, all of the address being the
+ c0 in the high one -- so a reading that shows only the low dword shows
+ a zero and invites the conclusion that the BAR was never read.
+
+ Indices 0 to 39 describe ONE controller and are overwritten by the next
+ bring-up, so after a full walk they describe the controller the keyboard
+ was found on, or the last one brought up when no keyboard was found. 40
+ upwards are the per-machine cells. 40 is how many xHCI
+ functions the whole bus tree holds, 41 how many were brought up, 42 a
+ bitmask of which ordinals were walked. 43 and 44 name the controller the
+ disk and the keyboard came from as ordinal PLUS ONE, so zero means no
+ controller yielded one rather than controller zero did.
+
+ 48 upwards is four dwords per controller for the first four: identity,
+ location, outcome, and what was found there. The outcome is three-valued
+ for the reason index 30 is -- 0 "never reached" must not read the same as
+ 1 "opened, bring-up failed" or 2 "running and walked".
+
+ 64-69 are the boot keyboard's interrupt endpoint, and they exist to be a
+ COMPARISON: what the device's descriptor asked for beside what we
+ programmed into its endpoint context. A value alone is satisfied by any
+ plausible number, so a mismatch is the finding and a lone reading is not.
+ 64 is three-valued for the same reason 30 and the outcome above are: a
+ bInterval of zero because the descriptor was never fetched must not read
+ the same as a bInterval genuinely zero.
+
+ 69 is the last index in use, so the block spans 280 bytes from its base.
+
+ The base is 0x1D000: the hole between the IST emergency stacks
+ ([0x15000, 0x1D000), sixteen 2 KB stacks) and the AP idle stacks at
+ 0x20000. Nothing can grow into it without first overrunning the AP idle
+ stacks, which is a bound the layout already defends.
+
+ The hole has TWO tenants and this block no longer owns it to the top.
+ fester's GOP handoff block took 0x1F000 (126976), 48 bytes, on
+ 2026-07-30. So the map is: this block 118784 to 119063, then 7912 free
+ bytes, then the handoff block, then 4048 free bytes below the AP idle
+ stacks. Growth here stops at 0x1F000, not at 0x20000.
+
+ It was at 36200 until 2026-07-30, inside the PML4 page, where indices
+ 0-15 aliased eight X86_64Boot runtime cells at 36200-36263: a bring-up
+ wrote the PCI vendor id over uefi-systab, raised fs-elevated, and
+ disturbed ap-id-next. 36200 was picked by grepping tools/codex-vm.c,
+ which answers half the question -- the host does claim 36152, 36160 and
+ 36168 in that band, but this collision was with the GUEST. Grep both
+ sides before claiming a fixed cell.
+
+  xhci-diag : Integer = 118784
   xhci-diag-magic : Integer = #58444731
+
+  xhci-ctl-max : Integer = 4
+  xhci-ctl-base : Integer = 48
+  xhci-ctl-failed : Integer = 1
+  xhci-ctl-running : Integer = 2
+
+  xhci-ep-base : Integer = 64
+  xhci-ep-failed : Integer = 1
+  xhci-ep-ok : Integer = 2
+
+  xhci-ep-status : XhciEvent -> Integer
+  xhci-ep-status (ce) =
+    if ce.xe-ok == False then xhci-ep-failed
+    else if ce.xe-code /= trb-cc-success then xhci-ep-failed
+    else xhci-ep-ok
+
+ The status goes in LAST, so a bring-up that faults midway leaves it zero
+ and the reading says the fields were never taken rather than showing the
+ residue of whatever the firmware left.
+
+  xhci-ep-note : UsbDev, Integer, Integer, Integer, Integer, Integer -> Integer
+  xhci-ep-note (dev) (epnum) (maxpkt) (binterval) (interval) (status) =
+    let a = xdiag-put (xhci-ep-base + 1) (bit-or (bit-and binterval 65535) (bit-shl (bit-and maxpkt 65535) 16))
+    in let b = xdiag-put (xhci-ep-base + 2) (bit-or (bit-and interval 65535) (bit-shl (bit-and maxpkt 65535) 16))
+    in let c = xdiag-put (xhci-ep-base + 3) (dev.ud-route)
+    in let d = xdiag-put (xhci-ep-base + 4) (bit-or (bit-and (dev.ud-tt-slot) 65535) (bit-shl (bit-and (dev.ud-tt-port) 65535) 16))
+    in let e = xdiag-put (xhci-ep-base + 5) (bit-or (bit-and (dev.ud-speed) 255) (bit-or (bit-shl (bit-and (epnum * 2 + 1) 255) 8) (bit-shl (bit-and epnum 255) 16)))
+    in xdiag-put xhci-ep-base status
 
   xdiag-put : Integer, Integer -> Integer
   xdiag-put (i) (v) = poke-32 xhci-diag (i * 4) v
 
   xdiag-get : Integer -> Integer
   xdiag-get (i) = peek-32 xhci-diag (i * 4)
+
+ Metal RAM is not zeroed. A cell whose feature never ran holds whatever
+ the firmware left at this address, and on the ASUS that read as
+ disk-ctl=2760958976 walked=7f BAR=672 -- garbage wearing the costume of
+ a measurement. Every emulator bed zero-fills guest RAM, so a zero there
+ reads as an honest "never written" and the difference was invisible
+ until a real board rendered its leftovers.
+
+  xdiag-zero : Integer, Integer -> Integer
+  xdiag-zero (i) (n) =
+    if i >= n then 0
+    else let w = poke-32 xhci-diag (i * 4) 0
+    in xdiag-zero (i + 1) n
+
+ Which controller 0-39 describe is not a presentation question. The
+ handback in KbdDiagProbe computes the capability base as the KEYBOARD
+ host's operational base minus cell 4, then scans from there for the
+ legacy-support capability using cell 8 and writes cell 39 back into it.
+ On a machine with one controller those agree by accident. On a machine
+ with two they name different controllers, and the handback then walks a
+ capability list at an address derived from mismatched halves.
+
+ So the walk keeps a copy of 0-39 taken at the moment the keyboard is
+ credited and puts it back once every controller is up. A copy is exact
+ where a re-read is not: cell 39 is the firmware's pre-handoff control
+ word and 20-27 are the port snapshot taken the instant the controller
+ started, and neither exists to be read a second time.
+
+  xdiag-span : Integer = 40
+
+  xdiag-save : Integer -> Integer
+  xdiag-save (buf) = xdiag-save-at buf 0
+
+  xdiag-save-at : Integer, Integer -> Integer
+  xdiag-save-at (buf) (i) =
+    if i >= xdiag-span then 0
+    else let v = poke-32 buf (i * 4) (xdiag-get i)
+    in xdiag-save-at buf (i + 1)
+
+  xdiag-load : Integer -> Integer
+  xdiag-load (buf) = xdiag-load-at buf 0
+
+  xdiag-load-at : Integer, Integer -> Integer
+  xdiag-load-at (buf) (i) =
+    if i >= xdiag-span then 0
+    else let v = xdiag-put i (peek-32 buf (i * 4))
+    in xdiag-load-at buf (i + 1)
 
 Section: MMIO Hole Mapping
 
@@ -354,6 +504,129 @@ Section: Controller Bring-Up
     in if bit-and cap 255 == xhci-xecp-legsup then addr
     else if nxt == 0 then 0
     else xhci-find-legsup base (offdw + nxt) (fuel - 1)
+
+ Capability id 2 is Supported Protocol, and it is what says whether the
+ PORTSC Port Speed field may be read as a number we already know. Dword
+ two carries Compatible Port Offset in bits 7:0, Compatible Port Count in
+ 15:8 and Protocol Speed ID Count (PSIC) in 31:28. Each of the PSIC
+ dwords that follow dword three carries PSIV in bits 3:0, PSIE in 5:4 and
+ the mantissa PSIM in 31:16, the bit rate being PSIM scaled by PSIE as
+ bits, kilobits, megabits or gigabits per second (xHCI 1.2c, Table 7-8,
+ Table 7-10).
+
+ Table 7-13's speed ids are the DEFAULT mapping and footnote 120 states
+ the condition on them: "The Default Speed ID Values shall be presented
+ in PORTSC Port Speed field only if no PSI Dwords are defined
+ (PSIC = '0')." Table 7-8 says the same from the other side: a non-zero
+ PSIC means "no implied Speed ID mappings apply". So a controller that
+ declares its own PSI dwords may report any PSIV it likes for a
+ Full-speed port, and reading that value as Table 7-13's 1 is a guess.
+
+  xhci-protocol-covers : Integer, Integer -> Boolean
+  xhci-protocol-covers (addr) (port) =
+    let d2 = peek-32 addr 8
+    in let first = bit-and d2 255
+    in let count = bit-and (bit-shru d2 8) 255
+    in if port < first then False
+    else port < first + count
+
+  xhci-find-protocol : Integer, Integer, Integer, Integer -> Integer
+  xhci-find-protocol (base) (offdw) (port) (fuel) =
+    if offdw == 0 then 0
+    else if fuel <= 0 then 0
+    else let addr = base + offdw * 4
+    in let cap = peek-32 addr 0
+    in let nxt = bit-and (bit-shru cap 8) 255
+    in if bit-and cap 255 /= xhci-xecp-protocol then xhci-find-protocol-next base offdw nxt port fuel
+    else if xhci-protocol-covers addr port then addr
+    else xhci-find-protocol-next base offdw nxt port fuel
+
+  xhci-find-protocol-next : Integer, Integer, Integer, Integer, Integer -> Integer
+  xhci-find-protocol-next (base) (offdw) (nxt) (port) (fuel) =
+    if nxt == 0 then 0
+    else xhci-find-protocol base (offdw + nxt) port (fuel - 1)
+
+  xhci-psi-scale : Integer -> Integer
+  xhci-psi-scale (e) =
+    if e == 0 then 1
+    else if e == 1 then 1000
+    else if e == 2 then 1000000
+    else 1000000000
+
+ The thresholds separate the four rates Table 7-13 defines, at gaps wide
+ enough that a controller rounding its mantissa (7.2.1 permits it, "the
+ PSIM should be rounded to the closest value") cannot cross one: 1.5 Mb/s
+ low, 12 Mb/s full, 480 Mb/s high, 5 Gb/s and above SuperSpeed.
+
+  xhci-rate-speed : Integer -> Integer
+  xhci-rate-speed (rate) =
+    if rate < 3000000 then 2
+    else if rate < 100000000 then 1
+    else if rate < 1000000000 then 3
+    else 4
+
+  xhci-psi-lookup : Integer, Integer, Integer, Integer -> Integer
+  xhci-psi-lookup (addr) (n) (raw) (i) =
+    if i >= n then 0
+    else let psi = peek-32 addr (i * 4)
+    in if bit-and psi 15 /= raw then xhci-psi-lookup addr n raw (i + 1)
+    else xhci-rate-speed ((bit-and (bit-shru psi 16) 65535) * xhci-psi-scale (bit-and (bit-shru psi 4) 3))
+
+ A port with no Supported Protocol capability covering it, or one whose
+ capability declares PSIC zero, is the case footnote 120 permits and the
+ raw value stands. A declared PSIV that no PSI dword defines is the
+ controller contradicting itself, and the answer is zero -- the same
+ answer a port with nothing attached gives, which every caller already
+ treats as "do not open this". Guessing a speed there would put a
+ Full-speed device on the high-speed paths silently.
+
+  xhci-speed-resolve : Integer, Integer, Integer, Integer -> Integer
+  xhci-speed-resolve (base) (xecp) (port) (raw) =
+    if xecp == 0 then raw
+    else if raw == 0 then 0
+    else let cap = xhci-find-protocol base xecp (port + 1) 256
+    in if cap == 0 then raw
+    else let psic = bit-and (bit-shru (peek-32 cap 8) 28) 15
+    in if psic == 0 then raw
+    else xhci-psi-lookup (cap + 16) psic raw 0
+
+ The resolved class is for OUR decisions. The Slot Context Speed field is
+ not one of them: Table 6-4 bits 23:20 says of it "Refer to the PORTSC Port
+ Speed field in Table 5-27 for the definition of the valid values", and
+ Table 5-27 defines PORTSC values 1 to 15 as "Protocol Speed ID (PSI)".
+ So that field speaks the CONTROLLER's vocabulary, not ours, and on a
+ controller declaring PSI dwords the class and the id are different
+ numbers. The field is live rather than vestigial: 4.10.2.8 forbids CErr
+ of zero "when the Slot Context Speed field indicates a Full- or Low-speed
+ device", and 4.23.5.2 reads it for PING scheduling.
+
+ A device behind a hub gets its speed from the hub's port status, which
+ has no PSI value in it at all, so the encode is a reverse lookup by rate
+ rather than a pass-through of what PORTSC said. Where no declared PSI
+ dword carries the class, the class itself is written: that is a
+ controller whose vocabulary cannot express the device, and it is what
+ this driver did before it read PSI dwords at all, so it is a guess that
+ is no worse rather than a new refusal.
+
+  xhci-psi-encode : Integer, Integer, Integer, Integer -> Integer
+  xhci-psi-encode (addr) (n) (cls) (i) =
+    if i >= n then 0
+    else let psi = peek-32 addr (i * 4)
+    in let rate = (bit-and (bit-shru psi 16) 65535) * xhci-psi-scale (bit-and (bit-shru psi 4) 3)
+    in if xhci-rate-speed rate /= cls then xhci-psi-encode addr n cls (i + 1)
+    else bit-and psi 15
+
+  xhci-speed-encode : Integer, Integer, Integer, Integer -> Integer
+  xhci-speed-encode (base) (xecp) (port) (cls) =
+    if xecp == 0 then cls
+    else if cls == 0 then 0
+    else let cap = xhci-find-protocol base xecp (port + 1) 256
+    in if cap == 0 then cls
+    else let psic = bit-and (bit-shru (peek-32 cap 8) 28) 15
+    in if psic == 0 then cls
+    else let v = xhci-psi-encode (cap + 16) psic cls 0
+    in if v == 0 then cls
+    else v
 
   xhci-wait-legsup : Integer, Integer -> Integer
   xhci-wait-legsup (addr) (fuel) =
@@ -533,12 +806,46 @@ Section: Ownership Handback
     in let m = xdiag-put 0 xhci-diag-magic
     in xhci-no-host
 
+  xhci-ctl-put : Integer, Integer, Integer -> Integer
+  xhci-ctl-put (ord) (slot) (v) =
+    if ord >= xhci-ctl-max then 0
+    else xdiag-put (xhci-ctl-base + ord * 4 + slot) v
+
+ The identity and location are recorded BEFORE the bring-up, with the
+ outcome pre-set to failed, so a bring-up that faults partway leaves a row
+ naming the controller it died on instead of an empty one.
+
+  xhci-ctl-note : PciDevice, Integer -> Integer
+  xhci-ctl-note (d) (ord) =
+    let i = xhci-ctl-put ord 0 (bit-or (bit-shl (d.pci-vendor) 16) (d.pci-device-id))
+    in let l = xhci-ctl-put ord 1 (bit-or (bit-shl (d.pci-bus) 16) (bit-or (bit-shl (d.pci-dev) 8) (d.pci-func)))
+    in xhci-ctl-put ord 2 xhci-ctl-failed
+
+ The scan is taken once and handed in. `pci-scan-all` walks the bridge
+ tree and allocates as it goes, and there is no collector, so a caller
+ that re-scanned per controller would pay for the whole tree again on
+ every round.
+
+  xhci-connect-at : PciScanResult, Integer, Integer -> [Device.Port] XhciHost
+  xhci-connect-at (scan) (from) (ord) = act
+    idx <- pci-index-class scan xhci-pci-class xhci-pci-subclass from
+    if idx < 0 then xhci-connect-none
+    else xhci-connect-one (list-at (scan.devices) idx) ord
+  end
+
+  xhci-connect-one : PciDevice, Integer -> [Device.Port] XhciHost
+  xhci-connect-one (d) (ord) = act
+    n <- xhci-ctl-note d ord
+    xh <- xhci-init-device d ord
+    let s = xhci-ctl-put ord 2 (if xh.xh-ok then xhci-ctl-running else xhci-ctl-failed)
+    in xh
+  end
+
   xhci-connect : [Device.Port] XhciHost
   xhci-connect = act
-    scan <- pci-scan-bus 0
-    when pci-find-class scan xhci-pci-class xhci-pci-subclass
-      is None -> xhci-connect-none
-      is Just (d) -> xhci-init-device d
+    scan <- pci-scan-all
+    let c = xdiag-put 40 (pci-count-class scan xhci-pci-class xhci-pci-subclass)
+    in xhci-connect-at scan 0 0
   end
 
  Real firmware may place a 64-bit BAR above 4 GB (OVMF parks the xHCI
@@ -559,10 +866,50 @@ Section: Ownership Handback
  read is garbage -- a keyboard that vanishes the moment an NVMe disk
  is plugged in.
 
+ Above 4 GB is not the only unusable place a BAR can be, and it is the
+ SAFE one: it is outside every page table the runtime installs, so the
+ first register read faults and says so. A BAR BELOW 3 GB does not fault
+ at all. The runtime maps 0 to 3 GB identity as RAM, which is the arena
+ `alloc-bytes` hands out, so the controller's registers and the heap
+ become the same bytes and the damage surfaces somewhere with no BAR in
+ it. red measured OVMF placing a NIC at 0x81060000, 2.16 GB, squarely
+ inside the arena, and the exposure belongs to any driver that reads a
+ BAR rather than to that one (`e1000-bar-verdict`, `E1000e`).
+
+ So the test is membership of the device window, not the height of one
+ dword. A BAR is used where it lies only when it is memory, non-zero,
+ 32-bit-addressable and inside [3 GB, 4 GB); everything else relocates,
+ which this driver can do and a NIC driver cannot. The verdict and the
+ address it judged are recorded, because a board that lands somewhere
+ unexpected should say so rather than be inferred from a dead screen.
+
+  xhci-window-lo : Integer = 3221225472
+  xhci-window-hi : Integer = 4294967296
+
+  xhci-bar-usable : PciBar, Integer -> Boolean
+  xhci-bar-usable (bar) (high) =
+    if bar.bar-is-io then False
+    else if high /= 0 then False
+    else if bar.bar-base == 0 then False
+    else if bar.bar-base >= xhci-window-hi then False
+    else bar.bar-base >= xhci-window-lo
+
   xhci-reloc-base : Integer = #FE800000
 
-  xhci-init-device : PciDevice -> [Device.Port] XhciHost
-  xhci-init-device (d) = act
+ A machine with two xHCIs relocates twice, so the target cannot be one
+ constant: the second controller would land on the first and every
+ register pointer the first one handed out would address the second.
+ The stride is 64 KB against a 16 KB register window, which keeps each
+ controller on its own page and leaves room below the HD Audio BAR at
+ #FE000000.
+
+  xhci-reloc-stride : Integer = 65536
+
+  xhci-reloc-base-for : Integer -> Integer
+  xhci-reloc-base-for (ord) = xhci-reloc-base + ord * xhci-reloc-stride
+
+  xhci-init-device : PciDevice, Integer -> [Device.Port] XhciHost
+  xhci-init-device (d) (ord) = act
     en <- xhci-enable-device d
     bar <- pci-parse-bar (d.pci-bus) (d.pci-dev) (d.pci-func) 0
     hi <- pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) 20
@@ -572,28 +919,59 @@ Section: Ownership Handback
     in let d3 = xdiag-put 0 xhci-diag-magic
     in let rt = xhci-intel-route d
     in let high = if bar.bar-is-64bit then hi else 0
-    in if bar.bar-base /= 0 then
-      if high == 0 then xhci-bring-up (bar.bar-base)
-      else xhci-init-relocated d
-    else xhci-init-relocated d
+    in let usable = xhci-bar-usable bar high
+    in let vg = xdiag-put 30 (if usable then 1 else 2)
+    in let vb = xdiag-put 31 (bar.bar-base)
+    in let vh = xdiag-put 32 high
+    in if usable then xhci-bring-up (bar.bar-base)
+    else xhci-init-relocated d (bar.bar-is-64bit) ord
   end
 
-  xhci-init-relocated : PciDevice -> [Device.Port] XhciHost
-  xhci-init-relocated (d) = act
-    moved <- xhci-relocate-bar d
+  xhci-init-relocated : PciDevice, Boolean, Integer -> [Device.Port] XhciHost
+  xhci-init-relocated (d) (is64) (ord) = act
+    if is64 then xhci-init-relocated-64 d ord
+    else xhci-init-relocated-32 d ord
+  end
+
+  xhci-init-relocated-64 : PciDevice, Integer -> [Device.Port] XhciHost
+  xhci-init-relocated-64 (d) (ord) = act
+    moved <- xhci-relocate-bar-64 d ord
     if moved == 0 then xhci-no-host
-    else xhci-bring-up xhci-reloc-base
+    else xhci-bring-up (xhci-reloc-base-for ord)
   end
 
-  xhci-relocate-bar : PciDevice -> [Device.Port] Integer
-  xhci-relocate-bar (d) = act
+  xhci-init-relocated-32 : PciDevice, Integer -> [Device.Port] XhciHost
+  xhci-init-relocated-32 (d) (ord) = act
+    moved <- xhci-relocate-bar-32 d ord
+    if moved == 0 then xhci-no-host
+    else xhci-bring-up (xhci-reloc-base-for ord)
+  end
+
+ Memory decoding goes off before the base moves and back on after, and
+ nothing is trusted until the readback agrees. Only a 64-bit BAR owns
+ the dword at offset 20: on a 32-bit BAR0 that offset is BAR1, another
+ device register entirely, and zeroing it would relocate this controller
+ by breaking something else.
+
+  xhci-relocate-bar-64 : PciDevice, Integer -> [Device.Port] Integer
+  xhci-relocate-bar-64 (d) (ord) = act
     cmd <- pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) 4
     w0 <- pci-write-config (d.pci-bus) (d.pci-dev) (d.pci-func) 4 (bit-and cmd (-3))
-    w1 <- pci-write-config (d.pci-bus) (d.pci-dev) (d.pci-func) 16 xhci-reloc-base
+    w1 <- pci-write-config (d.pci-bus) (d.pci-dev) (d.pci-func) 16 (xhci-reloc-base-for ord)
     w2 <- pci-write-config (d.pci-bus) (d.pci-dev) (d.pci-func) 20 0
     w3 <- pci-write-config (d.pci-bus) (d.pci-dev) (d.pci-func) 4 (bit-or cmd 6)
     rb <- pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) 16
-    if bit-and rb (-16) == xhci-reloc-base then 1 else 0
+    if bit-and rb 4294967280 == xhci-reloc-base-for ord then 1 else 0
+  end
+
+  xhci-relocate-bar-32 : PciDevice, Integer -> [Device.Port] Integer
+  xhci-relocate-bar-32 (d) (ord) = act
+    cmd <- pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) 4
+    w0 <- pci-write-config (d.pci-bus) (d.pci-dev) (d.pci-func) 4 (bit-and cmd (-3))
+    w1 <- pci-write-config (d.pci-bus) (d.pci-dev) (d.pci-func) 16 (xhci-reloc-base-for ord)
+    w3 <- pci-write-config (d.pci-bus) (d.pci-dev) (d.pci-func) 4 (bit-or cmd 6)
+    rb <- pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) 16
+    if bit-and rb 4294967280 == xhci-reloc-base-for ord then 1 else 0
   end
 
  Some controllers demand private scratchpad pages: HCSPARAMS2 states
@@ -688,7 +1066,7 @@ Section: Ownership Handback
     in let ps = xhci-diag-ports op 0 maxports 0
     in let gmg = xdiag-put 0 xhci-diag-magic
     in if g1 == 0 then xhci-no-host
-    else XhciHost { xh-ok = True, xh-op = op, xh-db = db, xh-rt = rt, xh-ports = maxports, xh-dcbaa = dcbaa, xh-cmd-ring = cmd-ring, xh-evt-ring = evt-ring, xh-state = state, xh-ctxsz = if csz == 0 then 32 else 64 }
+    else XhciHost { xh-ok = True, xh-op = op, xh-db = db, xh-rt = rt, xh-ports = maxports, xh-dcbaa = dcbaa, xh-cmd-ring = cmd-ring, xh-evt-ring = evt-ring, xh-state = state, xh-ctxsz = if csz == 0 then 32 else 64, xh-cap = base, xh-xecp = xecp }
 
 Section: Event Ring
 
@@ -818,7 +1196,8 @@ Section: Ports
     else xhci-wait-ped xh port (fuel - 1)
 
   xhci-port-speed : XhciHost, Integer -> Integer
-  xhci-port-speed (xh) (port) = bit-and (bit-shru (xhci-portsc xh port) 10) 15
+  xhci-port-speed (xh) (port) =
+    xhci-speed-resolve (xh.xh-cap) (xh.xh-xecp) port (bit-and (bit-shru (xhci-portsc xh port) 10) 15)
 
   xhci-reset-port : XhciHost, Integer -> Integer
   xhci-reset-port (xh) (port) =
@@ -991,7 +1370,8 @@ Section: Slot and Device
     in let d0 = poke-32 (xh.xh-dcbaa) (slot * 8) ctx
     in let d1 = poke-32 (xh.xh-dcbaa) (slot * 8 + 4) 0
     in let e0 = xhci-set-ep-ring ctx 1 (xhci-ring-trbs ep0-ring) (xh.xh-ctxsz)
-    in let ictx = xhci-ictx-address route rootport speed (xhci-ep0-maxpkt speed) (xhci-ring-trbs ep0-ring) ttslot ttport (xh.xh-ctxsz)
+    in let ctxspeed = xhci-speed-encode (xh.xh-cap) (xh.xh-xecp) rootport speed
+    in let ictx = xhci-ictx-address route rootport ctxspeed (xhci-ep0-maxpkt speed) (xhci-ring-trbs ep0-ring) ttslot ttport (xh.xh-ctxsz)
     in let av = xhci-command xh ictx 0 0 (bit-or (bit-shl trb-t-address-dev 10) (bit-shl slot 24))
     in if av.xe-ok == False then xhci-no-dev
     else if av.xe-code /= trb-cc-success then xhci-no-dev
@@ -1008,6 +1388,69 @@ Section: Doorbells
 
   xhci-ring-doorbell : XhciHost, Integer, Integer -> Integer
   xhci-ring-doorbell (xh) (slot) (dci) = poke-32 (xh.xh-db) (slot * 4) dci
+
+Section: Endpoint Recovery
+
+ A device that refuses a command answers its bulk endpoint with STALL
+ (completion code 6), and the endpoint stops there: the controller puts
+ it in the Halted state and every later doorbell on it is ignored. Two
+ halves have to be undone, and doing either alone leaves a pipe that
+ looks recovered and moves nothing.
+
+ The controller half is Reset Endpoint, which takes the endpoint out of
+ Halted, followed by Set TR Dequeue Pointer -- mandatory after a reset,
+ because the controller's saved position is the TRB that stalled and it
+ will not resume past it on its own. The device half is CLEAR_FEATURE
+ ENDPOINT_HALT on endpoint zero, which clears the condition and resets
+ the data toggle at the far end; skip it and the device stalls again on
+ the next packet.
+
+ The endpoint address the device wants is not the device context index
+ the controller wants: the DCI is the endpoint number doubled, plus one
+ for an IN endpoint, while the wire address is the number with bit seven
+ set for IN.
+
+  xhci-reset-endpoint : XhciHost, Integer, Integer -> XhciEvent
+  xhci-reset-endpoint (xh) (slot) (dci) =
+    xhci-command xh 0 0 0 (bit-or (bit-shl trb-t-reset-ep 10) (bit-or (bit-shl dci 16) (bit-shl slot 24)))
+
+ Stop Endpoint is the one command that makes the controller publish its
+ true position: xHCI 4.6.9 requires it to write the internal dequeue
+ pointer back into the output endpoint context and park the state at
+ Stopped. Ringing the doorbell afterwards resumes from exactly there --
+ no Set TR Dequeue needed unless the position is to CHANGE.
+
+  xhci-stop-endpoint : XhciHost, Integer, Integer -> XhciEvent
+  xhci-stop-endpoint (xh) (slot) (dci) =
+    xhci-command xh 0 0 0 (bit-or (bit-shl trb-t-stop-ep 10) (bit-or (bit-shl dci 16) (bit-shl slot 24)))
+
+  xhci-set-tr-dequeue : XhciHost, Integer, Integer, Integer -> XhciEvent
+  xhci-set-tr-dequeue (xh) (slot) (dci) (ring) =
+    xhci-command xh (bit-or (xhci-ring-enq-addr ring) (xhci-ring-cycle ring)) 0 0 (bit-or (bit-shl trb-t-set-deq 10) (bit-or (bit-shl dci 16) (bit-shl slot 24)))
+
+  xhci-dci-to-ep-addr : Integer -> Integer
+  xhci-dci-to-ep-addr (dci) =
+    if bit-and dci 1 == 1 then bit-or (bit-shru (dci - 1) 1) 128
+    else bit-shru dci 1
+
+  usb-clear-halt : XhciHost, UsbDev, Integer -> Boolean
+  usb-clear-halt (xh) (dev) (ep-addr) =
+    xhci-ctrl-nodata xh dev 2 1 0 ep-addr
+
+ Both halves, in the order the spec requires: the controller is taken
+ out of Halted and repositioned first, so that the control transfer
+ clearing the device half runs on a controller that can carry the
+ endpoint again afterwards.
+
+  xhci-recover-endpoint : XhciHost, UsbDev, Integer, Integer -> Boolean
+  xhci-recover-endpoint (xh) (dev) (dci) (ring) =
+    let r = xhci-reset-endpoint xh (dev.ud-slot) dci
+    in if r.xe-ok == False then False
+    else if r.xe-code /= trb-cc-success then False
+    else let q = xhci-set-tr-dequeue xh (dev.ud-slot) dci ring
+    in if q.xe-ok == False then False
+    else if q.xe-code /= trb-cc-success then False
+    else usb-clear-halt xh dev (xhci-dci-to-ep-addr dci)
 
 Section: Control Transfers
 

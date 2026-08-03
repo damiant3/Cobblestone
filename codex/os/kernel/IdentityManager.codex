@@ -71,8 +71,8 @@ Section: First-Boot Ceremony
         when passphrase
          is None -> IdmOutcome { idm-store = store, idm-result = IdmError "Passphrase mismatch" }
          is Just (pp-bytes) ->
-        let salt = idm-read-random-bytes 16
-        in let iv = idm-read-random-bytes 16
+        let salt = idm-derive-random 1 timestamp 16
+        in let iv = idm-derive-random 2 timestamp 16
         in let derived-bytes = idm-derive-key salt pp-bytes
         in let encrypted = aes256-cbc-encrypt (aes256-pkcs7-pad priv-key) derived-bytes iv
         in let rec = IdentityRecord {
@@ -205,8 +205,8 @@ Section: Passphrase Change
             in let z2 = idm-zero-list decrypted 0
             in IdmOutcome { idm-store = store, idm-result = IdmError "Passphrase mismatch" }
           is Just (new-pp-bytes) ->
-            let new-salt = idm-read-random-bytes 16
-            in let new-iv = idm-read-random-bytes 16
+            let new-salt = idm-derive-random 1 timestamp 16
+            in let new-iv = idm-derive-random 2 timestamp 16
             in let new-derived-bytes = idm-derive-key new-salt new-pp-bytes
             in let new-encrypted = aes256-cbc-encrypt (aes256-pkcs7-pad decrypted) new-derived-bytes new-iv
             in let new-rec = IdentityRecord {
@@ -277,10 +277,15 @@ Section: Entropy Collection
     if i >= len then acc
     else idm-peek-bytes addr len (i + 1) (list-push acc (peek-byte addr i))
 
-  idm-read-random-bytes : Integer -> List Integer
-  idm-read-random-bytes (count) =
-    let seed-addr = 30576
-    in idm-peek-bytes seed-addr count 0 []
+  idm-int-to-bytes : Integer, Integer, List Integer -> List Integer
+  idm-int-to-bytes (v) (i) (acc) =
+    if i >= 8 then acc
+    else idm-int-to-bytes v (i + 1) (list-push acc (bit-and (bit-shru v (i * 8)) 255))
+
+  idm-derive-random : Integer, Integer, Integer -> List Integer
+  idm-derive-random (tag) (timestamp) (count) =
+    let material = idm-read-device-seed & (list-push (idm-int-to-bytes timestamp 0 []) tag)
+    in idm-take-bytes (sha256 material) count
 
   idm-collect-keyboard-entropy : [Console] List Integer
   idm-collect-keyboard-entropy = act
@@ -343,12 +348,26 @@ Section: Console I/O Helpers
  the bug the skip reason "blocks waiting for keyboard input" was
  describing.
 
- `poll-key` has no shift latch yet, so a letter arrives as its UPPERCASE
- ASCII code whatever the typist did. A passphrase is therefore folded to
- uppercase before it is ever hashed. This is a property of the stored
- identity, not of this loop: teaching `poll-key` to decode shift would
- change what these bytes are, and every passphrase created before that day
- would stop unlocking its key. Fold here deliberately, or migrate, but do
+ **These bytes are CCE code points now, and that is the second migration of
+ this loop.** A passphrase is whatever `poll-key` hands over, so the day
+ `poll-key` stopped answering ASCII and started answering CCE, every stored
+ identity stopped unlocking: `a` used to arrive as 97 and now arrives as 15.
+ That is the same cost the shift migration paid and it was accepted for the
+ same reason, which is that the alternative is a keyboard that lies about
+ what was typed. There is no compatibility path worth having here; a
+ passphrase is a hash of bytes and the bytes changed.
+
+ Nothing in this loop had to change for it, which is the point of doing the
+ conversion at the boundary: the loop collects what the keyboard says and
+ never interprets it. Only the terminator moved, from the ASCII carriage
+ return to `key-enter`, because Enter is not a character and never was.
+
+ (historical) `poll-key` had no shift latch, so a letter arrived as its
+ UPPERCASE ASCII code whatever the typist did, and a passphrase was folded
+ to uppercase before it was ever hashed. This is a property of the stored
+ identity, not of this loop: teaching `poll-key` to decode shift changed
+ what these bytes are, and every passphrase created before that day stopped
+ unlocking its key. Fold here deliberately, or migrate, but do
  not let it change by accident.
 
   idm-show-lines : List Text -> [Console] Integer
@@ -395,8 +414,7 @@ Section: Console I/O Helpers
   idm-rlb-loop (acc) =
     let ch = poll-key
     in if ch == 0 then idm-rlb-loop acc
-    else if ch == 13 then acc
-    else if ch == 10 then acc
+    else if ch == key-enter then acc
     else idm-rlb-loop (list-push acc ch)
 
 Section: Byte Utilities

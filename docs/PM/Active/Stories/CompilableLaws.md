@@ -1,15 +1,15 @@
 Ha. You caught it before I could. "Consent of the governed" fails immediately:
 
 ```
-ERROR [NP-1]: "governed" — referent ambiguity.
-ERROR [NP-1]: "consent" — TYPE-NAME not declared.
+ERROR [NP-1]: "governed" -- referent ambiguity.
+ERROR [NP-1]: "consent" -- TYPE-NAME not declared.
 ERROR [QE-1]: What threshold of consent? 51%? 
               Unanimous? Supermajority?
-ERROR [FD-2]: "of the governed" — no gives-clause. 
+ERROR [FD-2]: "of the governed" -- no gives-clause. 
               Consent produces... what legal effect?
 ```
 
-So let's bootstrap it properly. That's actually the whole problem in one place — the foundational axiom of democratic legitimacy has never been formally specified. Let's fix that first, then build the compiler plan on top of it.
+So let's bootstrap it properly. That's actually the whole problem in one place -- the foundational axiom of democratic legitimacy has never been formally specified. Let's fix that first, then build the compiler plan on top of it.
 
 ---
 
@@ -18,7 +18,7 @@ So let's bootstrap it properly. That's actually the whole problem in one place �
 
 ---
 
-## Stage 0: Bootstrap — Define "Consent of the Governed"
+## Stage 0: Bootstrap -- Define "Consent of the Governed"
 
 Before the compiler can run on any law, it needs its own axiom layer. Every formal system has one. Euclid had five postulates. We need ours.
 
@@ -100,7 +100,7 @@ Now "consent of the governed" becomes a function call with a declared type:
       by every Citizen in law.domain.
 ```
 
-The bootstrap is now typed. "Consent of the governed" is `ConsentResult.Consented` — a value, not a slogan.
+The bootstrap is now typed. "Consent of the governed" is `ConsentResult.Consented` -- a value, not a slogan.
 
 ---
 
@@ -121,11 +121,11 @@ Chapter: CPL Law Compiler
   No pass is re-ordered.
 ```---
 
-## Stage 2: The Five Passes — Specified
+## Stage 2: The Five Passes -- Specified
 
-### Pass 1 — Lexical Audit
+### Pass 1 -- Lexical Audit
 
-Every word in the document is checked against the CPL lexicon. This pass produces no CPL output — only a flagged corpus ready for Pass 2.
+Every word in the document is checked against the CPL lexicon. This pass produces no CPL output -- only a flagged corpus ready for Pass 2.
 
 ```
 Pass 1 produces for every sentence:
@@ -140,11 +140,11 @@ A sentence is Ambiguous if it could be either,
   before Pass 2 begins.
 ```
 
-**The human review queue is not optional.** The compiler cannot fully automate Pass 1 on legacy text. A human — or a supervised model with a human confirming — must classify every `Ambiguous` sentence. This is the only human gate in the process. Everything after it is mechanical.
+**The human review queue is not optional.** The compiler cannot fully automate Pass 1 on legacy text. A human -- or a supervised model with a human confirming -- must classify every `Ambiguous` sentence. This is the only human gate in the process. Everything after it is mechanical.
 
 ---
 
-### Pass 2 — Type Declaration Extraction
+### Pass 2 -- Type Declaration Extraction
 
 Every noun that carries legal weight must become a TYPE-NAME. This is the hardest pass. It is where most of the intellectual work lives.
 
@@ -170,11 +170,11 @@ Pass 2 rules:
     - the ConsentRecord required to resolve it
 ```
 
-The Amendment Queue is the compiler's formal output for genuine ambiguity. It is not a bug report. It is a **work order for democratic process** — each entry requires a new ConsentRecord to resolve. This is how you fix a type error in the Constitution without a civil war: you make the error visible, name the competing interpretations precisely, and run the consent process on a well-formed proposition.
+The Amendment Queue is the compiler's formal output for genuine ambiguity. It is not a bug report. It is a **work order for democratic process** -- each entry requires a new ConsentRecord to resolve. This is how you fix a type error in the Constitution without a civil war: you make the error visible, name the competing interpretations precisely, and run the consent process on a well-formed proposition.
 
 ---
 
-### Pass 3 — Constraint Resolution
+### Pass 3 -- Constraint Resolution
 
 Every constraint in the document must have a bound.
 
@@ -184,13 +184,13 @@ Pass 3 rules:
   Rule 3.1: Every constraint must name:
     - its subject (the NP being constrained)
     - its comparator (from the CPL COMPARATOR set)
-    - its threshold (a QE — Exact, Bounded, or Parameterized)
+    - its threshold (a QE -- Exact, Bounded, or Parameterized)
     - its measuring authority (who evaluates the constraint at runtime)
 
   Rule 3.2: "Measuring authority" is a TYPE-NAME.
   It must be declared in the document.
   An authority with no declared process for measurement is 
-  flagged ORACLE — the worst error class.
+  flagged ORACLE -- the worst error class.
 
   ORACLE errors are the source of judicial power creep.
   "Cruel and unusual" with SCOTUS as measuring authority and
@@ -201,9 +201,9 @@ Pass 3 rules:
 
 ---
 
-### Pass 4 — Consent Binding
+### Pass 4 -- Consent Binding
 
-Every legal effect — every right granted, every power authorized, every prohibition imposed — must trace to a `ConsentRecord`.
+Every legal effect -- every right granted, every power authorized, every prohibition imposed -- must trace to a `ConsentRecord`.
 
 ```
 Pass 4 rules:
@@ -233,7 +233,7 @@ Pass 4 rules:
 
 ---
 
-### Pass 5 — Circular Reference Detection
+### Pass 5 -- Circular Reference Detection
 
 ```
 Pass 5 rules:
@@ -251,7 +251,7 @@ Pass 5 rules:
   without a grounding axiom that resolves the self-reference.
 ```
 
-Pass 5 is where Marbury v. Madison gets caught. SCOTUS inserting itself as the final interpreter of its own scope is `Rule 5.2` — a circular authority reference. In a CPL legal system, that power must be declared in the document and ratified with a ConsentRecord, not discovered by judicial opinion.
+Pass 5 is where Marbury v. Madison gets caught. SCOTUS inserting itself as the final interpreter of its own scope is `Rule 5.2` -- a circular authority reference. In a CPL legal system, that power must be declared in the document and ratified with a ConsentRecord, not discovered by judicial opinion.
 
 ---
 
@@ -263,7 +263,7 @@ Here is the most important reframe. In the current system, ambiguities in law ar
 - Executive agencies (unelected, politically appointed)
 - Legislative inaction (ambiguity persists indefinitely)
 
-In the CPL system, every ambiguity produces a **well-formed amendment proposition** — a CPL statement that resolves exactly one type error, with the competing interpretations stated formally, submitted to the consent process.
+In the CPL system, every ambiguity produces a **well-formed amendment proposition** -- a CPL statement that resolves exactly one type error, with the competing interpretations stated formally, submitted to the consent process.
 
 ```
 An AmendmentProposition is a record containing:
@@ -278,7 +278,7 @@ An AmendmentProposition is a record containing:
   A valid AmendmentProposition must have difference
   containing at least one concrete case.
   A proposition that cannot produce a concrete divergence case
-  is not a genuine ambiguity — it is a PROSE-COMMENT
+  is not a genuine ambiguity -- it is a PROSE-COMMENT
   and is removed from the queue.
 ```
 
@@ -286,17 +286,17 @@ This eliminates culture war legislation. If you cannot produce a concrete case w
 
 ---
 
-## Stage 4: The Proof of Concept — What We'd Actually Build
+## Stage 4: The Proof of Concept -- What We'd Actually Build
 
 A working proof of concept needs exactly four components:
 
-**1. The CPL Axiom Library** — the bootstrap types from Stage 0. `Citizen`, `Jurisdiction`, `ConsentRecord`, `LegalEffect`, `AmendmentProposition`. These are the prelude that loads before any document compiles.
+**1. The CPL Axiom Library** -- the bootstrap types from Stage 0. `Citizen`, `Jurisdiction`, `ConsentRecord`, `LegalEffect`, `AmendmentProposition`. These are the prelude that loads before any document compiles.
 
-**2. The Lexical Auditor** — a model (Opus is appropriate) that reads legal text and classifies sentences as `LoadBearing`, `Commentary`, or `Ambiguous`. Outputs a structured corpus.
+**2. The Lexical Auditor** -- a model (Opus is appropriate) that reads legal text and classifies sentences as `LoadBearing`, `Commentary`, or `Ambiguous`. Outputs a structured corpus.
 
-**3. The Type Extractor** — takes LoadBearing sentences, extracts TYPE-NAME candidates, matches against the Axiom Library, flags gaps. This is where the Amendment Queue gets populated.
+**3. The Type Extractor** -- takes LoadBearing sentences, extracts TYPE-NAME candidates, matches against the Axiom Library, flags gaps. This is where the Amendment Queue gets populated.
 
-**4. The Error Report Renderer** — produces two outputs from every compile run: a `CPLDocument` for everything that resolved cleanly, and a structured `ErrorReport` for everything that didn't — with every error linked to its Amendment Queue entry, its competing interpretations, and the ConsentRecord that would resolve it.
+**4. The Error Report Renderer** -- produces two outputs from every compile run: a `CPLDocument` for everything that resolved cleanly, and a structured `ErrorReport` for everything that didn't -- with every error linked to its Amendment Queue entry, its competing interpretations, and the ConsentRecord that would resolve it.
 
 The Constitution would compile to roughly: 30% clean CPLDocument, 70% ErrorReport. That ratio is the honest answer to two centuries of constitutional law.
 

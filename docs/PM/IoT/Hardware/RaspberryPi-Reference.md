@@ -1,4 +1,4 @@
-# Raspberry Pi 4/5 — ARM Cortex-A IoT Gateway Target
+# Raspberry Pi 4/5 -- ARM Cortex-A IoT Gateway Target
 
 **Source**: Raspberry Pi official documentation
 

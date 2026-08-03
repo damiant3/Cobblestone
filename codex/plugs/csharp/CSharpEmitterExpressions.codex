@@ -54,10 +54,7 @@ Section: Identifier Helpers
   cs-type (ty) =
    when ty
     is IntegerTy (lo) (hi) (mode) -> "long"
-    is RealTy -> "double"
-    is RealApproxTy -> "double"
-    is RealTrappingTy -> "double"
-    is RealSaturatingTy -> "double"
+    is RealTy (w) (m) -> "double"
     is TextTy -> "string"
     is BooleanTy -> "bool"
     is CharTy -> "long"
@@ -359,7 +356,7 @@ Section: Apply Chain
    BuiltinEmitter { name = "text-length", emit = \args -> \arities -> \ty -> "((long)" & emit-expr (list-at args 0) arities & ".Length)" },
    BuiltinEmitter { name = "is-letter", emit = \args -> \arities -> \ty -> emit-builtin-is-letter args arities },
    BuiltinEmitter { name = "is-digit", emit = \args -> \arities -> \ty -> emit-builtin-is-digit args arities },
-   BuiltinEmitter { name = "is-whitespace", emit = \args -> \arities -> \ty -> "(" & emit-expr (list-at args 0) arities & " <= 2L)" },
+   BuiltinEmitter { name = "is-whitespace", emit = \args -> \arities -> \ty -> "(" & emit-expr (list-at args 0) arities & " is >= 1L and <= 2L)" },
    BuiltinEmitter { name = "text-to-integer", emit = \args -> \arities -> \ty -> emit-builtin-text-to-integer args arities },
    BuiltinEmitter { name = "text-to-double-bits", emit = \args -> \arities -> \ty -> emit-builtin-text-to-double-bits args arities },
    BuiltinEmitter { name = "integer-to-text", emit = \args -> \arities -> \ty -> emit-builtin-integer-to-text args arities },
@@ -554,15 +551,27 @@ Section: Apply Chain
    let a0 = emit-expr (list-at args 0) arities
    in "((Func<object>)(() => { Console.Error.WriteLine(" & a0 & "); return null; }))()"
 
+ The character predicates test CCE BANDS and must never be handed to
+ `char.IsLetter` or its siblings. Codex text is CCE, which numbers its
+ code points by frequency: the letter a is 15, and `(char)15` is a
+ control character, so the predicate answers false. The bands are 1..2
+ whitespace, 3..12 digit, and 13..64 or 97..127 letter, the hole being
+ CCE's punctuation at 65..96.
+
+ Written as a relational pattern rather than a comparison chain so the
+ operand is named once; `and` binds tighter than `or` inside a pattern,
+ and the two letter bands are parenthesised anyway so the grouping is
+ not left to that rule.
+
   emit-builtin-is-letter : List IRExpr, List ArityEntry -> Text
   emit-builtin-is-letter (args) (arities) =
    let a0 = emit-expr (list-at args 0) arities
-   in "char.IsLetter((char)" & a0 & ")"
+   in "(" & a0 & " is (>= 13L and <= 64L) or (>= 97L and <= 127L))"
 
   emit-builtin-is-digit : List IRExpr, List ArityEntry -> Text
   emit-builtin-is-digit (args) (arities) =
    let a0 = emit-expr (list-at args 0) arities
-   in "char.IsDigit((char)" & a0 & ")"
+   in "(" & a0 & " is >= 3L and <= 12L)"
 
   emit-builtin-text-to-integer : List IRExpr, List ArityEntry -> Text
   emit-builtin-text-to-integer (args) (arities) =
@@ -869,7 +878,7 @@ Section: Expression Emission
   ty-is-concrete-value (ty) =
    when ty
     is IntegerTy (lo) (hi) (mode) -> True
-    is RealTy -> True
+    is RealTy (w) (m) -> True
     is TextTy -> True
     is BooleanTy -> True
     is CharTy -> True

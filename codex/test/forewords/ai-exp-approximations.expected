@@ -1,0 +1,56 @@
+attention-softmax shifts by the max before exponentiating, so
+every argument it passes attn-exp is at or below zero:
+  attn-exp 0 = 1000  true 1000 exact, the control: no truncation can move it
+  attn-exp -1000 = 367  true 368
+  attn-exp -2000 = 135  true 135
+  attn-exp -3000 = 49  true 50
+  attn-exp -4000 = 18  true 18
+  attn-exp -5000 = 6  true 7
+
+samp-exp, which samp-cand-exp asks the same way:
+  samp-exp 0 = 1000  true 1000 exact, the control
+  samp-exp -1000 = 367  true 368
+  samp-exp -2000 = 135  true 135
+  samp-exp -3000 = 49  true 50
+  samp-exp -4000 = 18  true 18
+
+dpmpp-exp, asked for exp(-h) by both DPM++ orders, and
+flux-exp-approx, which flux-pow asks on the positive side:
+  dpmpp-exp 0 = 1000  true 1000 exact, the control
+  dpmpp-exp -2000 = 135  true 135
+  dpmpp-exp -3000 = 49  true 50
+  dpmpp-exp 2000 = 7387  true 7389
+  dpmpp-exp 8000 = 2978115  true 2980958, at the top of its own guarded range
+  flux-exp -2000 = 135  true 135
+  flux-exp 2000 = 7387  true 7389
+
+emb-exp-range reduces by 693, which is ln 2 at this scale. It
+was already correct and is untouched, so it is the control:
+  emb-exp 0 = 1000  true 1000 exact, the control
+  emb-exp 693 = 2000  true 2000
+  emb-exp 2303 = 10000  true 10000
+  emb-exp 4605 = 99840  true 100000
+  emb-exp 9210 = 10010624  true 10000000
+
+Counted rather than eyeballed. exp is strictly decreasing on
+the negative axis and never negative, so a correct row reads
+13 of 13 for each of the first three and 14 of 14 for emb:
+  attn-exp non-increasing over z=0..-6:  13 of 13
+  samp-exp non-increasing over z=0..-6:  13 of 13
+  dpmpp-exp non-increasing over z=0..-6: 13 of 13
+  attn-exp non-negative over z=0..-6:    13 of 13
+  samp-exp non-negative over z=0..-6:    13 of 13
+  emb-exp-range non-decreasing 0..9100:  14 of 14
+
+Positional encoding, at dim 8 where the divisor for d=0 is 1 so
+the argument is the raw position. Even d is sin, odd d is cos:
+  pos-enc-value pos=1 d=0 dim=8 1 = 841  true 841, sin 1
+  pos-enc-value pos=2 d=0 dim=8 2 = 908  true 909, sin 2
+  pos-enc-value pos=4 d=0 dim=8 4 = -756  true -757, sin 4, and it needed both fixes
+  pos-enc-value pos=1 d=1 dim=8 1 = 538  true 540, cos 1
+
+One row still asserts nothing and says so: at d=6 the divisor is
+1000, so the true value is sin 0.001 = 0.001, which is one unit
+at this scale and reads 0. That is the bottom of the fixed point,
+not the scale defect, and no fix here can move it:
+  pos-enc-value pos=1 d=6 dim=8 1 = 0  true 1, and 0 is the representable floor

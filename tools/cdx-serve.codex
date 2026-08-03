@@ -5,9 +5,13 @@ Chapter: CdxServe
   cites Trust chapter AgentProtocol
   cites Trust chapter TrustTransport
   cites Kernel chapter DiskFacts
+  cites Kernel chapter Hpet
   cites Works chapter KeyManager
   cites Works chapter RepoProtocolPersist
   cites Works chapter WorkServer
+  cites Net chapter NetDriver
+  cites Net chapter DhcpIO
+  cites Net chapter NetworkConfig
   cites Net chapter NetIO
   cites Net chapter TcpTransport
   cites Net chapter NetworkStack
@@ -61,33 +65,37 @@ Section: The Socket
 
   serve-port : Integer = 9300
 
- These four addresses are codex-vm's NAT constants. Three of them
- (`local-mac` / `local-ip` / `gateway-ip`) already exist in `Net chapter
- WebServer`, which is where `apps/ideas` reads them from, and citing that chapter
- is how this one first tried to get them. At the time it could not: WebServer's
- loops let-bound effectful `net-io-*` calls in signatures declaring `[Console]`
- and nothing else, which is CDX2031/CDX2033 undeclared-effect-row breakage
- sitting in `codex/os/net` rather than in an app. Those rows are declared now --
- `web-loop-http` and `web-loop-framed` both carry
- `[Console, Network.Read, Network.Write]` -- so WebServer compiles and the
- reason for the copy is gone.
+ The MAC now comes from the seam, which answers the bound card's own station
+ address off RAL/RAH and falls back to the NE2000 constant when nothing is
+ bound. That is the one of these four that had to move: a service sourcing
+ frames from the emulator's address on real hardware has its replies dropped by
+ the card's receive filter, which presents as a dead link rather than as a
+ mismatch.
 
- They are still spelled again here, and that is a real cost -- a fourth copy of an
- address that should have one home, and the home is not an HTTP chapter anyway.
- These belong in `NetworkStack`, where the NIC's own addresses belong; move them
- there and cite them.
+ The other three were codex-vm's NAT constants spelled here, and they are gone.
+ `10.0.2.15` and `10.0.2.2` are the emulator's subnet, which nothing on a real
+ LAN answers to, and the pre-seeded gateway MAC was the ARP resolution this
+ machine is meant to perform. **The address is now acquired by DHCP**, which is
+ how the box this serves from is configured (Damian, 2026-07-30). Under
+ codex-vm the NAT answers with the same 10.0.2.15 it always assumed, so the
+ emulated runs are unchanged in their values and changed in where they come
+ from.
 
-  local-mac : List Integer = [82, 84, 0, 18, 52, 86]
-  local-ip : List Integer = [10, 0, 2, 15]
-  gateway-ip : List Integer = [10, 0, 2, 2]
+ A REFUSED LEASE IS NOT SERVED FROM. `dhcp-io-configure` answers a config whose
+ state is not NetConfigured when nothing replies, and the entry point stops
+ there rather than falling back to an address it invented: a service that
+ transmits into a subnet it does not belong to is harder to diagnose at a
+ sitting than one that says it has no address.
 
-  nat-gw-mac : List Integer = [82, 85, 10, 0, 2, 2]
+ The gateway MAC is no longer seeded into the ARP cache. `resolve-dst-mac`
+ broadcasts until the cache is filled and `net-process-arp` learns from any ARP
+ frame that arrives, so resolution happens the way it will have to happen on
+ the LAN.
 
-  fresh-transport : Integer -> TcpTransportState
-  fresh-transport (x) =
-    let sess = net-session-new local-mac local-ip gateway-ip serve-port 0 gateway-ip 1000
-    in let sess2 = set-arp sess (arp-cache-add (sess.arp) gateway-ip nat-gw-mac)
-    in transport-new sess2
+  fresh-transport : NetworkConfig -> TcpTransportState
+  fresh-transport (cfg) =
+    let sess = net-session-new (cfg.local-mac) (cfg.local-ip) (cfg.gateway) serve-port 0 (cfg.gateway) 1000
+    in transport-new sess
 
 Section: Answering
 
@@ -125,9 +133,9 @@ Section: Answering
     else answer ix (r.transport) (decode-agent-msg (r.tag) (r.body))
   end
 
-  serve-one : WorkIndex -> [Network.Read, Network.Write] Text
-  serve-one (ix) = act
-    ts <- net-io-accept (net-io-listen (fresh-transport 0)) 0
+  serve-one : WorkIndex, NetworkConfig -> [Network.Read, Network.Write] Text
+  serve-one (ix) (cfg) = act
+    ts <- net-io-accept (net-io-listen (fresh-transport cfg)) 0
     when (ts.session).conn.state
       is TcpEstablished -> handle-conn ix ts
       is otherwise -> "no-conn"
@@ -135,18 +143,66 @@ Section: Answering
 
 Section: Entry
 
-  serve-loop : WorkIndex, Integer -> [Network.Read, Network.Write, Console.Write] Integer
-  serve-loop (ix) (count) = act
-    diag <- serve-one ix
+ THE LEASE IS RENEWED BETWEEN CONNECTIONS, which is the only place this
+ program is ever not blocked. `net-io-accept` gives up after fifty million
+ empty polls and answers a transport that never established, so a quiet
+ server comes back around here on its own and a busy one comes back after
+ each answer. Both are the top of this loop.
+
+ The clock is the HPET, read in seconds. It is a MONOTONIC count from the
+ machine starting rather than a wall clock, and that is the right one:
+ a lease is an interval, and a wall clock that a time sync steps forward
+ would expire one early or hold one past its end.
+
+ The renewal poll is deliberately short. This runs between connections on
+ a service loop, so a renewal that polled the way the acquisition does
+ would stall answering for as long as it took to give up.
+
+  renew-fuel : Integer = 20000
+
+  serve-loop : WorkIndex, NetworkConfig, Integer -> [Network.Read, Network.Write, Console.Write] Integer
+  serve-loop (ix) (cfg) (count) = act
+    cfg2 <- dhcp-io-maybe-renew cfg (305419896 + count) renew-fuel hpet-seconds
+    renewed <- report-renewal cfg cfg2
+    diag <- serve-one ix cfg2
     print-line-uni ("serve " & show count & " " & diag)
-    serve-loop ix (count + 1)
+    serve-loop ix cfg2 (count + 1)
+  end
+
+ A renewal is reported only when it moved the lease, so a quiet server
+ does not print a line per pass. The comparison is on lease-start, which
+ is the field an accepted ACK writes and the one an unanswered renewal
+ leaves alone.
+
+  report-renewal : NetworkConfig, NetworkConfig -> [Console.Write] Integer
+  report-renewal (before) (after) =
+    if before.lease-start == after.lease-start then 0
+    else act
+      print-line-uni ("cdx-serve: lease renewed, " & format-net-config after)
+      let r = 0 in r
+    end
+
+ The bring-up runs BEFORE the index is built, so the card it reports is the one
+ the socket will use. It is printed rather than assumed: every refusal path in
+ the seam falls back to the NE2000 silently and by design, so a line naming the
+ card that won is the only way an operator learns a real one was declined.
+
+  serve-configured : WorkIndex, NetworkConfig -> [Network.Read, Network.Write, Console.Write] Nothing
+  serve-configured (ix) (cfg) = act
+    if net-is-configured cfg == False then print-line-uni "cdx-serve: no DHCP lease, nothing to serve from"
+    else act
+      print-line-uni ("cdx-serve: " & format-net-config cfg & ", " & show (list-length (ix.wi-paths)) & " paths indexed, listening on guest port " & show serve-port)
+      served <- serve-loop ix cfg 0
+      print-line-uni ("cdx-serve closed after " & show served)
+    end
   end
 
   opening : [Device.Block, Network.Read, Network.Write, Console.Write] Nothing = act
-    let ix = repo-index-from-disk disk-load
+    let card = net-driver-bring-up
+    in let ix = repo-index-from-disk disk-load
     in act
-      print-line-uni ("cdx-serve: " & show (list-length (ix.wi-paths)) & " paths indexed, listening on guest port " & show serve-port)
-      served <- serve-loop ix 0
-      print-line-uni ("cdx-serve closed after " & show served)
+      cfg <- dhcp-io-configure net-driver-mac "cdx-serve" 305419896 200000 hpet-seconds
+      print-line-uni ("cdx-serve: NIC " & net-driver-card-name card)
+      serve-configured ix cfg
     end
   end

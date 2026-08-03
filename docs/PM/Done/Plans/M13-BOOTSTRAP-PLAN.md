@@ -1,4 +1,4 @@
-# M13 — Self-Hosting Bootstrap Plan
+# M13 -- Self-Hosting Bootstrap Plan
 
 ## Goal
 
@@ -20,31 +20,31 @@ to produce a Stage 1 binary that can compile its own source.
 ```
 codex-src/
   Core/
-    ContentHash.codex     — SHA-256 hashing, hex encoding
-    Name.codex            — Name and QualifiedName types
-    SourceText.codex      — SourcePosition, SourceSpan, SourceText
-    Diagnostic.codex      — DiagnosticSeverity, Diagnostic, DiagnosticBag
-    Collections.codex     — List operations, Map, Set (functional)
+    ContentHash.codex     -- SHA-256 hashing, hex encoding
+    Name.codex            -- Name and QualifiedName types
+    SourceText.codex      -- SourcePosition, SourceSpan, SourceText
+    Diagnostic.codex      -- DiagnosticSeverity, Diagnostic, DiagnosticBag
+    Collections.codex     -- List operations, Map, Set (functional)
   Syntax/
-    TokenKind.codex       — Token kind enumeration
-    Token.codex           — Token record
-    Lexer.codex           — Lexer (functional, character-by-character)
-    SyntaxNodes.codex     — CST node types
-    Parser.codex          — Recursive descent parser
+    TokenKind.codex       -- Token kind enumeration
+    Token.codex           -- Token record
+    Lexer.codex           -- Lexer (functional, character-by-character)
+    SyntaxNodes.codex     -- CST node types
+    Parser.codex          -- Recursive descent parser
   Ast/
-    AstNodes.codex        — AST node types
-    Desugarer.codex       — CST → AST transformation
+    AstNodes.codex        -- AST node types
+    Desugarer.codex       -- CST → AST transformation
   Semantics/
-    NameResolver.codex    — Scope analysis, name resolution
+    NameResolver.codex    -- Scope analysis, name resolution
   Types/
-    CodexType.codex       — Type representations
-    TypeChecker.codex     — Bidirectional type checking
+    CodexType.codex       -- Type representations
+    TypeChecker.codex     -- Bidirectional type checking
   IR/
-    IRModule.codex        — IR node types
-    Lowering.codex        — AST → IR transformation
+    IRModule.codex        -- IR node types
+    Lowering.codex        -- AST → IR transformation
   Emit/
-    CSharpEmitter.codex   — IR → C# source text
-  Main.codex              — Entry point, CLI dispatch
+    CSharpEmitter.codex   -- IR → C# source text
+  Main.codex              -- Entry point, CLI dispatch
 ```
 
 ## Language Features Required
@@ -67,11 +67,11 @@ The Codex compiler needs these features to express itself:
 ## Phase 1: Core Types (Current)
 
 Express the fundamental types that everything else depends on:
-- `TokenKind` — a large sum type (enum)
-- `Token` — a record
-- `SourcePosition`, `SourceSpan` — records
-- `Name` — a record with predicates
-- `Diagnostic` — a record with severity
+- `TokenKind` -- a large sum type (enum)
+- `Token` -- a record
+- `SourcePosition`, `SourceSpan` -- records
+- `Name` -- a record with predicates
+- `Diagnostic` -- a record with severity
 
 These files exercise sum types, record types, and simple functions.
 They can be compiled by Stage 0 right now with no new features.
@@ -92,7 +92,7 @@ emitted as inline code by all backends).
 
 ## Phase 3: Lexer in Codex
 
-The lexer is a natural starting point — it's a state machine that
+The lexer is a natural starting point -- it's a state machine that
 consumes characters and produces tokens. In functional style:
 
 ```
@@ -112,7 +112,7 @@ The lexer becomes a series of functions that thread `LexState` through.
 
 ## Phase 4: Parser, AST, Desugarer
 
-Recursive descent parsing expressed functionally — each parse function
+Recursive descent parsing expressed functionally -- each parse function
 takes a token list + position, returns a (node, new-position) pair.
 
 ## Phase 5: Type Checker, IR, Emitter
@@ -125,7 +125,7 @@ The emitter needs StringBuilder-like text accumulation.
 **Completed**: IR node types (`IRModule.codex`), Lowering (`Lowering.codex`),
 CodexType representations (`CodexType.codex`), and C# Emitter (`CSharpEmitter.codex`).
 
-The type checker is NOT written in Codex — it requires mutable environments and
+The type checker is NOT written in Codex -- it requires mutable environments and
 unification state that would need monadic threading. The Stage 0 type checker
 handles all codex-src code. The Lowering and Emitter in Codex produce simplified
 output (no full type propagation; uses `ErrorTy` placeholders for types not
@@ -147,7 +147,7 @@ available without a Codex-side type checker).
 1. Stage 0 compiles `codex-src/` → `output.cs` ✅ (105KB, 264 records, 222 defs)
 2. Compile `output.cs` with `dotnet` → Stage 1 exe ✅
 3. Stage 1 compiles `codex-src/` → `stage1-output.cs` ✅ (69KB, 264 records, 220 defs)
-4. Verify `output.cs` ≡ `stage1-output.cs` — structural parity achieved
+4. Verify `output.cs` ≡ `stage1-output.cs` -- structural parity achieved
 
 ### Structural Parity
 
@@ -156,13 +156,13 @@ available without a Codex-side type checker).
 | Records | 264 | 264 | **0** |
 | Definitions | 222 | 220 | **2** (Stage 1 leaner) |
 | Unique names | 213 | 219 | +6 (_loop helpers split out) |
-| Missing functions | — | 0 | **0** |
-| Empty records | — | 0 | **0** |
+| Missing functions | -- | 0 | **0** |
+| Empty records | -- | 0 | **0** |
 
 The Stage 1 compiler now produces a structurally complete copy of itself.
 Every type definition, record, variant, and function from Stage 0 appears
 in Stage 1 output. The 6 extra unique names are `_loop` helper functions
-that Stage 0 inlines as lambdas but Stage 1 emits as named functions —
+that Stage 0 inlines as lambdas but Stage 1 emits as named functions --
 both are correct.
 
 Byte-for-byte identity is not expected because:

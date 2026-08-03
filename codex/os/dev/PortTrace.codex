@@ -1,0 +1,151 @@
+Chapter: PortTrace
+  cites Foreword chapter RingBuffer
+  cites Dev chapter HexFormat
+  grounds Device.Port
+
+ A ring of port accesses, newest kept and oldest overwritten.
+
+ IT SEES ONLY WHAT GOES THROUGH IT, AND ON THIS MACHINE NOTHING ELSE
+ CAN. `pt-read` and `pt-write` record; a port access made anywhere else
+ does not appear here, and an operator reading this report without
+ knowing that would conclude a silent wire from a driver this ring never
+ had a way to see.
+
+ The usual mechanism for catching another module's `in` or `out` is the
+ I/O permission bitmap in the TSS, and it does not apply here. The
+ processor consults that bitmap only when CPL is greater than IOPL;
+ when CPL is less than or equal to IOPL it permits the access outright
+ and never reads the bitmap. Every instruction in this system runs at
+ CPL 0, so the test always passes and the bitmap is never consulted.
+ Both GDTs agree: the one codex-vm installs and the runtime one
+ `X86_64Boot` builds carry DPL0 code and data and no ring-3 descriptor
+ at all, and both TSSes have limit 103, which is a 104-byte TSS with no
+ bitmap in it.
+
+ So this is not a gap waiting on a later phase. Trapping another
+ module's port access needs a ring 3 to trap FROM, which means a user
+ mode this operating system does not have.
+
+ We say:
+
+Section: One Entry
+
+ An entry is one Integer: the byte in bits 0-7, the port number in bits
+ 8-23, the direction in bit 24. A port number is sixteen bits and a port
+ byte is eight, so all three fit one machine word with room to spare,
+ and the ring can be the foreword's ring of Integers rather than a
+ second implementation of one.
+
+  pt-dir-in : Integer = 0
+  pt-dir-out : Integer = 1
+
+  pt-pack : Integer, Integer, Integer -> Integer
+  pt-pack (dir) (port) (value) =
+    let lo = bit-and value 255
+    in let mid = bit-shl (bit-and port 65535) 8
+    in bit-or lo (bit-or mid (bit-shl (bit-and dir 1) 24))
+
+  pt-entry-value : Integer -> Integer
+  pt-entry-value (e) = bit-and e 255
+
+  pt-entry-port : Integer -> Integer
+  pt-entry-port (e) = bit-and (bit-shru e 8) 65535
+
+  pt-entry-dir : Integer -> Integer
+  pt-entry-dir (e) = bit-and (bit-shru e 24) 1
+
+Section: The Trace
+
+ Sixty-four entries is one screen of report and sixty-four integers of
+ storage, allocated once by `ring-new` and written in place after that.
+ There is no collector under this, and a trace records on every access
+ rather than on a keypress, so a ring that allocated per entry would be
+ a leak with a slow fuse.
+
+  pt-capacity : Integer = 64
+
+  PortTrace = record {
+    pt-ring : RingBuffer,
+    pt-armed : Boolean,
+    pt-total : Integer
+  }
+
+  pt-new : PortTrace
+  pt-new = PortTrace { pt-ring = ring-new pt-capacity, pt-armed = False, pt-total = 0 }
+
+  pt-arm : PortTrace, Boolean -> PortTrace
+  pt-arm (t) (on) = PortTrace { pt-ring = t.pt-ring, pt-armed = on, pt-total = t.pt-total }
+
+  pt-clear : PortTrace -> PortTrace
+  pt-clear (t) =
+    let rb = t.pt-ring
+    in let empty = RingBuffer { storage = rb.storage, capacity = rb.capacity, head = 0, tail = 0, count = 0 }
+    in PortTrace { pt-ring = empty, pt-armed = t.pt-armed, pt-total = 0 }
+
+  pt-count : PortTrace -> Integer
+  pt-count (t) = ring-count (t.pt-ring)
+
+  pt-record : PortTrace, Integer, Integer, Integer -> PortTrace
+  pt-record (t) (dir) (port) (value) =
+    if t.pt-armed then PortTrace {
+      pt-ring = ring-push (t.pt-ring) (pt-pack dir port value),
+      pt-armed = True,
+      pt-total = t.pt-total + 1
+    }
+    else t
+
+  pt-at : PortTrace, Integer -> Integer
+  pt-at (t) (i) =
+    let rb = t.pt-ring
+    in list-at (rb.storage) (ring-wrap (rb.head + i) (rb.capacity))
+
+Section: The Report
+
+ The header names the total as well as the count, because a ring that
+ has wrapped and one that has not look the same from the entries alone,
+ and the difference is whether the oldest access an operator is looking
+ for is still there.
+
+  pt-header : PortTrace -> Text
+  pt-header (t) =
+    let state = if t.pt-armed then "ON" else "off"
+    in let kept = show (pt-count t) & " kept of " & show (t.pt-total)
+    in "Port trace " & state & ": " & kept & ", capacity " & show pt-capacity
+
+  pt-line : PortTrace, Integer -> Text
+  pt-line (t) (i) =
+    let e = pt-at t i
+    in let arrow = if pt-entry-dir e == pt-dir-out then " <- #" else " = #"
+    in "  #" & u16-to-hex (pt-entry-port e) & arrow & hexfmt-byte-to-hex (pt-entry-value e)
+
+  pt-lines : PortTrace, Integer, Integer -> List Text
+  pt-lines (t) (i) (n) =
+    if i >= n then []
+    else [pt-line t i] & pt-lines t (i + 1) n
+
+  pt-report : PortTrace -> List Text
+  pt-report (t) =
+    if pt-count t == 0 then [pt-header t, "  (nothing recorded)"]
+    else [pt-header t] & pt-lines t 0 (pt-count t)
+
+Section: Traced Access
+
+  PortRead = record {
+    pr-trace : PortTrace,
+    pr-value : Integer
+  }
+
+  pt-read : PortTrace, Integer -> [Device.Port] PortRead
+  pt-read (t) (port) = act
+    v <- port-in-byte port
+    let next = pt-record t pt-dir-in port v
+    in PortRead { pr-trace = next, pr-value = v }
+  end
+
+  pt-write : PortTrace, Integer, Integer -> [Device.Port] PortTrace
+  pt-write (t) (port) (value) = act
+    w <- port-out-byte port value
+    pt-record t pt-dir-out port value
+  end
+
+Page 1

@@ -1,4 +1,4 @@
-# V2 — Narration Layer Design
+# V2 -- Narration Layer Design
 
 **Date**: 2026-03-22
 **Author**: Cam (Claude Code CLI)
@@ -39,7 +39,7 @@ starts with `To `, contains parenthesized `(name : Type)` parameters, ends
 with `:`. Optional `gives Type` clause for return type.
 
 Store extracted info on `ProseBlockNode` via new `FunctionTemplateInfo` record.
-Do NOT generate synthetic definitions — the notation block below is the real
+Do NOT generate synthetic definitions -- the notation block below is the real
 definition. Template info is used for consistency checking in Phase 5.
 
 **AST additions**:
@@ -128,7 +128,7 @@ New file: `ProseParser.Validation.cs`
 Update CLI `read` to render function templates, transitions, inline refs,
 claims/proofs with distinct formatting.
 
-Create `samples/prose-banking.codex` — a full banking domain example
+Create `samples/prose-banking.codex` -- a full banking domain example
 exercising all V2 features: chapters, sections, prose templates for records,
 variants, functions, claims, proofs, transition markers, inline refs.
 
@@ -146,7 +146,7 @@ Highest value, most tractable. ~90 minutes.
 ## Scope
 
 All changes are in `src/Codex.Syntax/` (parser) and `tools/Codex.Cli/` (CLI).
-They extend the prose parser — a forward-looking feature for `.codex` authoring.
+They extend the prose parser -- a forward-looking feature for `.codex` authoring.
 No changes to notation parser, desugarer, type checker, or emitters. All new
 AST properties have default values (backward compatible). No existing tests break.
 
@@ -170,7 +170,7 @@ should be the program." From `docs/ForFun/Clarifier.txt`: a system that reflects
 utterances back showing what was successfully communicated and what wasn't.
 
 V2 is the foundation. The prose templates are the first step toward a compiler
-that understands English structure — not through NLP, but through recognized
+that understands English structure -- not through NLP, but through recognized
 patterns that map to formal constructs. The compiler checks the mapping.
 The prose is the human interface. The notation is the machine interface.
 The type signature is the bridge between them.

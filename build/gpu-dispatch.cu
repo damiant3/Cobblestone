@@ -1,4 +1,4 @@
-// gpu-dispatch.cu — cuBLAS/CUDA dispatch for the Codex GPU proxy.
+// gpu-dispatch.cu -- cuBLAS/CUDA dispatch for the Codex GPU proxy.
 // Reads a shared-memory command file, executes on GPU, writes results.
 // Build: nvcc -O2 -lcublas -o gpu-dispatch.exe gpu-dispatch.cu
 // Usage: gpu-dispatch.exe <shared-file> [--once]

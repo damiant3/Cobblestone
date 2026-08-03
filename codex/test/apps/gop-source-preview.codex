@@ -1,0 +1,68 @@
+Chapter: GopSourcePreviewProbe
+  cites Works chapter GopFiles
+  cites Works chapter GopDraw
+  cites Works chapter SyntaxHighlight
+  cites Kernel chapter BitmapFont
+  cites Foreword chapter CCE
+
+ The smallest program that puts highlighted Codex source on a real
+ framebuffer through the real drawing path.
+
+ The file manager's source preview is otherwise reachable only behind a
+ first-boot wizard that wants a typed passphrase and an Ed25519 keypair,
+ which is a great deal of machine to drive in order to look at one
+ screen. This calls `gfl-source-lines` directly, with a buffer of ASCII
+ source bytes exactly as a sector read would hand it over, so every line
+ between the bytes and the pixels is the shipping one: the classifier,
+ the run walk, `syn-colour`, and `gop-draw-text`.
+
+ The bytes are built the way the medium holds them -- one ASCII byte per
+ character, through `to-unicode` -- because that is what the image writer
+ puts there and what the preview must read back. Filling the buffer with
+ CCE code points instead would make the probe agree with a reader that
+ was wrong.
+
+ We say:
+
+Section: The Source Under Glass
+
+ Five lines, chosen so the frame cannot pass by accident: a header, a
+ prose line whose first word is `cites`, the same word as a real
+ directive one space further in, a keyword-and-number line, and a string.
+ If the classifier were bypassed and the whole buffer drawn in one
+ colour, the prose and directive lines would be indistinguishable, which
+ is precisely what the previous hex view could not tell you either.
+
+  probe-src : Text
+  probe-src = "Chapter: Demo\n cites is an ordinary word\n  cites Foreword chapter CCE\n  let x = 42\n  msg = \"hi\" & show x\n"
+
+  probe-fill : Integer, Text, Integer, Integer, Integer -> Integer
+  probe-fill (buf) (t) (i) (len) (o) =
+    if i >= len then o
+    else let u = to-unicode (char-code (char-at t i))
+    in let b = if u >= 256 then 63 else u
+    in let p = poke-byte buf o b
+    in probe-fill buf t (i + 1) len (o + 1)
+
+Section: Entry
+
+  probe-fb : Integer
+  probe-fb = 3204448256
+
+  opening : [Device.Port, Device.Mmio] Integer
+  opening =
+    let buf = alloc-bytes 1024
+    in let n = probe-fill buf probe-src 0 (text-length probe-src) 0
+    in let font = cbf-init
+    in let bg = gop-fill-rect probe-fb 640 0 0 640 480 2107448
+    in let d = gfl-source-lines probe-fb 640 480 640 1 font buf 0 n 0
+    in probe-spin 0
+
+ The probe has to still be running when the frame is taken, because
+ codex-vm captures the framebuffer at the delay and a guest that has
+ already exited leaves nothing to capture. A short spin ran out in under
+ a second and produced no screenshot at all, which reads exactly like a
+ drawing path that wrote nothing.
+
+  probe-spin : Integer -> Integer
+  probe-spin (i) = if i >= 0 then probe-spin (i + 1) else 0

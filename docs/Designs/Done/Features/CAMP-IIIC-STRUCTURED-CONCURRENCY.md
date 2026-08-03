@@ -1,4 +1,4 @@
-# Camp III-C — Structured Concurrency
+# Camp III-C -- Structured Concurrency
 
 **Original**: 2026-03-24
 **Revised**: 2026-05-01
@@ -18,7 +18,7 @@ concurrency primitives (C# Task, JS Promise, Go goroutines). Since then:
   **x86-64 bare metal**.
 - The self-host compiles itself end-to-end on bare metal (MM4 proven,
   CL 340). The cord is cut.
-- Effect handlers (`IrHandle`) have no x86-64 codegen — they fall
+- Effect handlers (`IrHandle`) have no x86-64 codegen -- they fall
   through silently.
 - The bare-metal runtime has a process table (16 slots, page tables,
   capability bits) but no scheduler.
@@ -103,7 +103,7 @@ single-threaded. Correct API shape, no actual parallelism.
 ### Sample
 
 `samples/MM4-Deferred/fork-basic.codex`: Minimal test (`fork compute`,
-`await t`, `r`). Skipped — "NOT IMPLEMENTED on bare metal."
+`await t`, `r`). Skipped -- "NOT IMPLEMENTED on bare metal."
 
 ---
 
@@ -119,7 +119,7 @@ effect Concurrent where
 
 `Task` is opaque. `fork` takes a thunk, returns a handle. `await`
 blocks until the result is ready. The handler scope joins all tasks
-before returning — no orphans, no fire-and-forget.
+before returning -- no orphans, no fire-and-forget.
 
 ### The Primitives (unchanged)
 
@@ -160,7 +160,7 @@ offset 0: state  (8 bytes)  0 = pending, 1 = complete
 offset 8: value  (8 bytes)  result (valid when state = 1)
 ```
 
-Phase 1 (sequential): state is always 1 — immediate evaluation.
+Phase 1 (sequential): state is always 1 -- immediate evaluation.
 Phase 2 (green threads): state transitions 0 → 1 when the task's
 green thread completes. `await` on a pending task yields the current
 thread.
@@ -202,7 +202,7 @@ Load the value at offset 8. Return it.
 mov  <out>, [<reg>+8]   ; load value
 ```
 
-Phase 1 ignores the state field — sequential evaluation means every
+Phase 1 ignores the state field -- sequential evaluation means every
 Task is complete at construction time.
 
 **Sample changes**:
@@ -250,7 +250,7 @@ the child (a contiguous region starting at the current R10). The child
 bumps R10 within its arena. On context switch, R10 is saved/restored
 per task. On join, the parent reclaims the child's arena after copying
 the result. This is the same transactional model as `heap-save`/
-`heap-restore` — each task is a "phase" from the allocator's
+`heap-restore` -- each task is a "phase" from the allocator's
 perspective.
 
 **Scheduler** (round-robin, ~100 lines of emit helpers):
@@ -274,7 +274,7 @@ perspective.
   and R10 to current task descriptor.
 - Restore: load RSP and R10 from next task descriptor, pop callee-saved
   registers, ret into the resumed task.
-- No page-table switch — all tasks share the address space. This is
+- No page-table switch -- all tasks share the address space. This is
   in-process concurrency, not OS process isolation.
 
 **Structured scoping**: A forked task's `parent-ptr` points to the
@@ -292,7 +292,7 @@ sweep, pingpong byte-identical.
 ### Phase 3: Effect Handler Codegen on x86-64
 
 **Goal**: Make `IrHandle` emit real code. Enables handler-based
-strategy selection — the programmer writes `with Concurrent` and the
+strategy selection -- the programmer writes `with Concurrent` and the
 handler determines sequential vs. parallel.
 
 **Prerequisites**: Phase 1 (ABI established). Independent of Phase 2.
@@ -314,8 +314,8 @@ encounters `IrHandle(eff, body, clauses, ty, sp)`:
 - Multi-shot continuations are not supported (no CPS).
 - Higher-order effect passing is not supported.
 
-These limitations are acceptable because the primary use case —
-`with Concurrent { fork ... await ... }` — uses inline do-blocks.
+These limitations are acceptable because the primary use case --
+`with Concurrent { fork ... await ... }` -- uses inline do-blocks.
 
 **Complexity**: ~200 lines. No new runtime primitives.
 
@@ -342,7 +342,7 @@ mutually untrusted.
 
 ---
 
-## Known Limitations — Revisit
+## Known Limitations -- Revisit
 
 ### Fork pool is a bump allocator with no reclaim
 
@@ -372,7 +372,7 @@ reset (strike the pool after a structured join), or per-scope arenas.
 - **Multi-shot continuations**: Require CPS transform. Not needed for
   fork/await. Deferred indefinitely.
 - **Transpilation backend mappings**: C# Task, JS Promise, Rust Tokio,
-  Go goroutines — all dead code. If transpilation backends revive,
+  Go goroutines -- all dead code. If transpilation backends revive,
   they get their own design.
 
 ---
@@ -403,7 +403,7 @@ reset (strike the pool after a structured join), or per-scope arenas.
 | 3 | Effect handler codegen (x86-64) | Medium (~200 lines) | Phase 1 |
 | 4 | OS-level processes | Large (separate doc) | Phase 2 |
 
-Phases 2 and 3 are independent of each other — both depend on Phase 1
+Phases 2 and 3 are independent of each other -- both depend on Phase 1
 but not on each other. Phase 3 lets the programmer choose a handler;
 Phase 2 lets the runtime actually schedule. They compose when both land.
 
@@ -415,10 +415,10 @@ Phase 1 is ready to implement now.
 
 | Area | How It Connects |
 |------|----------------|
-| Phase discipline (PHASE-ARCHITECTURE.md) | Green threads need per-task heap regions. The deck/bivy/strike model provides this — each forked task gets its own build/strike cycle. |
-| Capability refinement (CAPABILITY-REFINEMENT.md) | `Concurrent` is bit 3 in the process capability mask. Direction (R/W) and scope don't apply — `Concurrent` is a binary grant. Time-boxing applies: `with-timeout 10 [Concurrent]` limits fork lifetime. |
+| Phase discipline (PHASE-ARCHITECTURE.md) | Green threads need per-task heap regions. The deck/bivy/strike model provides this -- each forked task gets its own build/strike cycle. |
+| Capability refinement (CAPABILITY-REFINEMENT.md) | `Concurrent` is bit 3 in the process capability mask. Direction (R/W) and scope don't apply -- `Concurrent` is a binary grant. Time-boxing applies: `with-timeout 10 [Concurrent]` limits fork lifetime. |
 | OS scheduler (needs design doc) | Phase 4. In-process green threads inform but don't constrain the OS scheduler. |
-| Agent protocol (TrustAndRuntime.md) | Agents are OS-level processes that communicate via the 7-message protocol. In-process concurrency is below this layer — an agent's internal parallelism is invisible to other agents. |
+| Agent protocol (TrustAndRuntime.md) | Agents are OS-level processes that communicate via the 7-message protocol. In-process concurrency is below this layer -- an agent's internal parallelism is invisible to other agents. |
 | Compiler self-use | The selfhost compiler is the first candidate for `par`-based parallelism: parallel file parsing, parallel type checking of independent chapters. This motivates Phase 2. |
 
 ---

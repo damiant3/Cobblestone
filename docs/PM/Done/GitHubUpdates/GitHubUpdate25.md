@@ -23,7 +23,7 @@ Symmetric multiprocessing for x86-64, from zero to done in one day:
 
 - **Phase 4 -- Per-core heap.** `CoreHeap` module: bivy arena split
   equally among cores (8 GB / N cores). Each core gets an
-  independent bump allocator — no contention on R10.
+  independent bump allocator -- no contention on R10.
 
 - **Phase 5 -- IPI + lock-free channels.** Inter-processor
   interrupts for cross-core wake, TLB shootdown. Lock-free MPSC

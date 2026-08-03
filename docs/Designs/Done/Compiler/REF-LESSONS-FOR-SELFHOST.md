@@ -1,34 +1,34 @@
 # REF lessons applied to the self-host (live audit log)
 
 Running notes originally collected while chasing REF-side correctness bugs.
-Lifting-scope items (C# target — the selfhost-cs sweep surface) are now
+Lifting-scope items (C# target -- the selfhost-cs sweep surface) are now
 CLEARED as of CL 209. What remains in this doc is **bare-metal-target work**
-for the MM4 path (bootstrap 2 / bootstrap 3 — pingpong and bare-metal emit).
+for the MM4 path (bootstrap 2 / bootstrap 3 -- pingpong and bare-metal emit).
 Keep here while those targets are still red; cut to Done when MM4 closes.
 
 ## Baseline: self-host sweep status
 
-### selfhost-cs (C# target — lifting complete, CL 209)
+### selfhost-cs (C# target -- lifting complete, CL 209)
 
 `tools/ref-sweep.sh --compiler=selfhost-cs` runs each sample through
 `Codex.Bootstrap --emit-sample`, builds the emitted C# via dotnet, and runs
 it. Current: **75 pass / 54 verified / 20 expected-to-fail / 11 skip / 3 fail**
 of 89. The 3 fails (`effectful-hello`, `shapes`, `w3`) are all **target-semantic
-divergence** — REF bare-metal vs selfhost-cs differ on stdin EOF handling,
-Number-to-text formatting, and record ToString — not compiler correctness
+divergence** -- REF bare-metal vs selfhost-cs differ on stdin EOF handling,
+Number-to-text formatting, and record ToString -- not compiler correctness
 bugs. Out of lifting scope.
 
-### selfhost (bare-metal target — audit surface)
+### selfhost (bare-metal target -- audit surface)
 
 `tools/ref-sweep.sh --compiler=selfhost` boots `build-output/bare-metal/Codex.Codex.elf`
-via QEMU. This is the MM4 critical path — the bare-metal selfhost has its
+via QEMU. This is the MM4 critical path -- the bare-metal selfhost has its
 own correctness gaps (most of the Lessons below). Re-audit when the bare-metal
 selfhost can produce ELFs for the full battery.
 
 ### 14. Type-aware bare-metal REPL print
 
 **REF site**: `X86_64CodeGen.EmitStart` / `EmitCallMainAndPrint`. REF picks a
-formatter for `opening`'s result based on the declared return type — Integer
+formatter for `opening`'s result based on the declared return type -- Integer
 via `__itoa`, Text via `EmitPrintText`, Boolean via `True`/`False` rodata
 strings, etc.
 
@@ -60,7 +60,7 @@ hot loop that doesn't read a predicate result.
 - `Codex.Codex/Emit/X86_64IO.codex` (EmitIntegerLit, string/char ops).
 - `Codex.Codex/Emit/X86_64Helpers.codex` (likely has the predicate emit).
 - Any `emit-is-letter`, `emit-is-digit`, `emit-is-whitespace`, `emit-char-at`
-  equivalents — look for the pattern "EmitExpr → op-on-returned-reg" without an
+  equivalents -- look for the pattern "EmitExpr → op-on-returned-reg" without an
   intervening fresh-temp copy.
 
 Audit procedure: grep for `emit-expr` followed within 3 lines by `sub-ri` /
@@ -73,7 +73,7 @@ first.
 `IRApply(IRApply(f, a), b)` into a single call with two args, regardless of
 `f`'s arity. Caught `(make-adder 10) 5` treating `make-adder` as arity-2.
 
-**Self-host candidates**: the selfhost emitter's apply flattener — find where
+**Self-host candidates**: the selfhost emitter's apply flattener -- find where
 `IrApply` chains are unwrapped. Probably `Codex.Codex/Emit/X86_64Compound.codex`
 around `flatten-apply`. Verify it stops at the function's arity and emits an
 indirect call for the remainder.
@@ -82,7 +82,7 @@ indirect call for the remainder.
 
 **REF site**: `X86_64CodeGen.EmitApply`, same function. An `IRApply` whose
 function is an `IRFieldAccess` or `IRApply` result (a closure value) emitted no
-call at all — `funcName == null` fell through with nothing. Fix: evaluate the
+call at all -- `funcName == null` fell through with nothing. Fix: evaluate the
 function expression, save as closure local, indirect-call.
 
 **Self-host candidates**: same emit-apply site. Specifically the path that
@@ -91,7 +91,7 @@ handles `func` = anything-but-`IrName`.
 ### 4. Lambda lifting
 
 **REF site**: `src/Codex.Emit.X86_64/X86_64CodeGen.cs` had no `IRLambda` case at
-all — lambda expressions silently returned 0 via `EmitUnhandled`. Fixed with a
+all -- lambda expressions silently returned 0 via `EmitUnhandled`. Fixed with a
 new lambda-lifting pass in `src/Codex.IR/LambdaLifting.cs` that rewrites every
 `IRLambda` into a synthesized top-level `IRDefinition` with free-variable
 captures applied.
@@ -108,11 +108,11 @@ post-pass equivalent to `LambdaLifting.Lift`.
 call site. The IRRegion-wrapping from lowering has to be peeled through
 transparently.
 
-**Self-host candidates**: same place — if the selfhost emits `f 7` and `f` was
+**Self-host candidates**: same place -- if the selfhost emits `f 7` and `f` was
 lowered as `f : FunctionType, Parameters=[], Body=IRLambda`, it'll have the
 same "returns closure pointer, caller doesn't indirect-call" bug.
 
-### 6. `SubstituteTypeVarsFromArg` missing type shapes — DONE
+### 6. `SubstituteTypeVarsFromArg` missing type shapes -- DONE
 
 **REF site**: `src/Codex.IR/Lowering.cs`. The helper only handled `TypeVariable`,
 `ListType`, `FunctionType` paramTypes. Adding `LinkedListType`, `ConstructedType`,
@@ -125,7 +125,7 @@ necessary to propagate type args through polymorphic calls like
 CL 196 (AFieldAccess ConstructedTy rargs-vs-cargs instantiation). Verified
 by `poly-runtime` sample passing and BS1 byte-identical.
 
-### 7. `ExprTypes` deeply-resolved types threaded to lowering — DONE (CL 209)
+### 7. `ExprTypes` deeply-resolved types threaded to lowering -- DONE (CL 209)
 
 **REF site**: `src/Codex.IR/Lowering.cs` constructor gained an optional
 `IReadOnlyDictionary<Ast.Expr, CodexType>? exprTypes` parameter. `LowerApply`
@@ -135,11 +135,11 @@ prefers this authoritative type over its own re-derivation when available.
 O(log N) bsearch) populated by `record-expr-type` in narrow inference sites
 only: `infer-name` and the `ARecordExpr` arm. Broader population wrongly
 overrides match result-ty (prior attempt reverted). `lower-name` consults
-first, deep-resolves the recorded type, and uses directly — bypasses the
+first, deep-resolves the recorded type, and uses directly -- bypasses the
 `prefer-applied-ty` heuristic for ExprTypes-hit cases. Fixed `list-test`
 polymorphic-function-ref type-var escape (flip_cons T19 bleeding into
 list_reverse's body as `new Nil<T19>()`). Also the CS0266 Nil→ConsList
-up-cast (via `emit-ctor-upcast` — three emit sites) and CS0411 on
+up-cast (via `emit-ctor-upcast` -- three emit sites) and CS0411 on
 zero-arg `nil<T>()` (via ArityEntry.generic-count + `extract-fn-type-args`).
 All 15 list-test checks now PASS.
 
@@ -168,17 +168,17 @@ and `Codex.Codex/Types/TypeEnv.codex`. Pingpong/bootstrap 1/bootstrap 3 all
 expected red until this catches up. When it does, the selfhost needs the
 equivalent of `BuiltinChapters` + a cite-interception in its name-resolver.
 
-### 10. State effect emit — DONE for C# target (CL 208); bare-metal still open
+### 10. State effect emit -- DONE for C# target (CL 208); bare-metal still open
 
 **REF site**: `X86_64CodeGen.EmitExpr`. Three IR nodes (`IRRunState` /
 `IRGetState` / `IRSetState`) existed and Lowering produced them, but the
-emitter had **no case for any of them** — all fell through to `EmitUnhandled`
+emitter had **no case for any of them** -- all fell through to `EmitUnhandled`
 (returns 0). REF fix: dedicated emit methods, state lives in a single stack
 slot scoped dynamically around the run-state body. Integer-width only.
 
 **Self-host status**:
 - **C# target (DONE)**: CL 208 adds `_State` runtime class + builtin emitters.
-  No new IR nodes — `run-state`/`get-state`/`set-state` recognized as builtin
+  No new IR nodes -- `run-state`/`get-state`/`set-state` recognized as builtin
   names at emit, run-state wraps init/try/finally inline around the act body.
   TypeEnv collapses the state ops from polymorphic ForAll to concrete
   IntegerTy (matches REF's Integer-only stance). Verified via state-demo PASS.
@@ -208,7 +208,7 @@ migrating, rename across:
 - `Codex.Codex/Semantics/NameResolver.codex` builtin-names list.
 - `Codex.Codex/Types/TypeEnv.codex` builtin-type-env.
 - Every call site in `Codex.Codex/Emit/*.codex` that emits `record-set` /
-  `heap-save` / `buf-*` / `linked-list-*` calls — the string has to match REF's
+  `heap-save` / `buf-*` / `linked-list-*` calls -- the string has to match REF's
   new name.
 
 ### 13. `True`/`False`/`Nothing` as lexer reserved words
@@ -223,14 +223,14 @@ lexer treats `Nothing` as a plain identifier, user code can shadow it locally.
 
 ## Things still to check
 
-- **Self-host emitter's `record-set` call shape** — the selfhost source still
+- **Self-host emitter's `record-set` call shape** -- the selfhost source still
   writes plain `record-set`; REF would now reject this until the selfhost gets
   the `__` rename and the Codex chapter Runtime cite. (Lesson 12, open.)
-- **Effect handlers** in the self-host — `handle…is` is entirely absent from
+- **Effect handlers** in the self-host -- `handle…is` is entirely absent from
   samples. handler-basic in the sweep is .skipped. Worth verifying the
   handler-emit path has test coverage somewhere once bare-metal state-demo
   is sorted.
-- **Polymorphism coverage** — selfhost-cs covers this via poly-runtime PASS +
+- **Polymorphism coverage** -- selfhost-cs covers this via poly-runtime PASS +
   list-test PASS (CL 209). Bare-metal coverage still needs re-audit.
 
 ## Polymorphism-coverage false alarm
@@ -239,7 +239,7 @@ The original `samples/polymorphism-coverage.codex` #PF was misdiagnosed as a
 polymorphism miscompile. Turned out the sample had no `opening` and the
 bare-metal trampoline was jumping to a missing symbol. Lesson: distinguish
 "sample has no runtime entry point" from "runtime ran and crashed" in the
-battery — an `.expected` file present should require an `opening`, and missing
+battery -- an `.expected` file present should require an `opening`, and missing
 one should be either a skip-with-reason or an explicit compile-only sidecar.
 
 ## Test-battery methodology (to mirror on the self-host)
@@ -248,6 +248,6 @@ The REF test battery (`tools/ref-sweep.sh`) with `.expected` / `.failing` /
 `.skip` sidecars caught four real bugs on day one (two compiler, one
 sample-author mistake, plus two still-open as of this CL). The same
 methodology should be set up for the self-host once it can produce correct
-output again — run pingpong + bootstrap3 with a fixed set of known-good
+output again -- run pingpong + bootstrap3 with a fixed set of known-good
 outputs, and diff. "Byte-identical between stages" is a weaker check than
 "output matches a hand-verified expected value."

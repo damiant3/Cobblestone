@@ -34,10 +34,16 @@ param(
     # readback, so a stick that silently drops tail writes fails loudly here
     # instead of mysteriously at boot. Supersedes -FixupDir (no Python).
     [switch]$SpecFit,
-    [switch]$Force
+    [switch]$Force,
+    # Transcript of the whole run. This is how a non-elevated caller (an agent
+    # session) reads the result back out of the elevated window: pass -Log,
+    # check the process exit code, read the file. It exists so nobody writes a
+    # one-off wrapper script around this file again.
+    [string]$Log = ''
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if ($Log) { Start-Transcript -Path $Log -Force | Out-Null }
 
 if (-not (Test-Path -PathType Leaf $Image)) { throw "Image not found: $Image" }
 $imgPath = (Resolve-Path $Image).Path
@@ -60,6 +66,58 @@ if (-not $Force) {
 
 # Take the disk offline so Windows does not fight the raw write (no Clear-Disk).
 try { Set-Disk -Number $DiskNumber -IsOffline $true -ErrorAction Stop } catch { Write-Host "  (could not offline disk: $_)" }
+
+# LOCK AND DISMOUNT EVERY VOLUME ON THE TARGET, AND HOLD THE HANDLES.
+#
+# This is what Rufus does and what we were missing. Removable media refuses
+# -IsOffline (above), and Dismount-Volume does not exist in this PowerShell, so
+# until now we had NO exclusion at all: AutoPlay fired in the middle of a raw
+# write and partmgr repaired the partition table underneath us, which is how
+# the fixup readback below caught LBA 1 changing between write and verify.
+#
+# It became load-bearing the moment the image geometry was corrected. While our
+# GPT was malformed Windows could not mount the ESP, so raw writes went through
+# unopposed; a conforming table gets mounted, and the write then fails outright
+# with "Access to the path is denied". Being denied is the honest version of
+# what was previously happening silently.
+#
+# FSCTL_LOCK_VOLUME (0x00090018) then FSCTL_DISMOUNT_VOLUME (0x00090020). The
+# handles stay open for the whole write and are closed in the finally block, so
+# Windows cannot remount and inspect the disk while we are laying it down.
+Add-Type -Namespace Win32 -Name Vol -MemberDefinition @'
+[DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+public static extern IntPtr CreateFileW(string lpFileName, uint dwDesiredAccess, uint dwShareMode,
+    IntPtr lpSecurityAttributes, uint dwCreationDisposition, uint dwFlagsAndAttributes, IntPtr hTemplateFile);
+[DllImport("kernel32.dll", SetLastError=true)]
+public static extern bool DeviceIoControl(IntPtr hDevice, uint dwIoControlCode, IntPtr lpInBuffer,
+    uint nInBufferSize, IntPtr lpOutBuffer, uint nOutBufferSize, out uint lpBytesReturned, IntPtr lpOverlapped);
+[DllImport("kernel32.dll", SetLastError=true)]
+public static extern bool CloseHandle(IntPtr hObject);
+'@ -ErrorAction SilentlyContinue
+
+# Locked by ACCESS PATH, not by drive letter. An EFI System Partition is
+# mounted without a letter -- Get-Partition reports DriveLetter blank and
+# AccessPaths \\?\Volume{GUID}\ -- so a letter-based loop finds nothing and
+# silently locks nothing, which is exactly what the first version of this did.
+# CreateFileW wants the volume path with the trailing backslash removed.
+$volHandles = @()
+foreach ($p in @(Get-Partition -DiskNumber $DiskNumber -ErrorAction SilentlyContinue)) {
+    foreach ($ap in @($p.AccessPaths)) {
+        if (-not $ap) { continue }
+        $vpath = $ap.TrimEnd('\')
+        if ($vpath -notmatch '^\\\\[\?\.]\\') { continue }
+        # GENERIC_READ|GENERIC_WRITE cast explicitly: PowerShell parses
+        # 0xC0000000 as a signed int and refuses to marshal it as UInt32.
+        $vh = [Win32.Vol]::CreateFileW($vpath, ([uint32]3221225472), 3, [IntPtr]::Zero, 3, 0, [IntPtr]::Zero)
+        if ($vh -eq [IntPtr]::new(-1)) { Write-Host "  (could not open $vpath)"; continue }
+        $br = 0
+        $lk = [Win32.Vol]::DeviceIoControl($vh, 0x00090018, [IntPtr]::Zero, 0, [IntPtr]::Zero, 0, [ref]$br, [IntPtr]::Zero)
+        $dm = [Win32.Vol]::DeviceIoControl($vh, 0x00090020, [IntPtr]::Zero, 0, [IntPtr]::Zero, 0, [ref]$br, [IntPtr]::Zero)
+        Write-Host "  part $($p.PartitionNumber) $vpath : locked=$lk dismounted=$dm"
+        $volHandles += $vh
+    }
+}
+if ($volHandles.Count -eq 0) { Write-Host "  (no volumes to lock on disk $DiskNumber)" }
 Start-Sleep -Milliseconds 300
 
 $diskPath = "\\.\PhysicalDrive$DiskNumber"
@@ -100,9 +158,21 @@ try {
         }
         $diskSectors = [int64]($disk.Size / 512)
         $last = $diskSectors - 1
-        $arrLba = $last - 33
         $peCount = [BitConverter]::ToUInt32($imgBytes, 512 + 80)
         $peSize  = [BitConverter]::ToUInt32($imgBytes, 512 + 84)
+        # The backup entry array ends immediately below the backup header, so it
+        # starts at last - (its size in sectors). This was hardcoded to
+        # $last - 33, while build-img places its own backup array at
+        # TotalSectors - 33, which is last - 32. The two writers disagreed by one
+        # sector, so even a conforming image was laid down non-conformingly.
+        #
+        # Windows supplied the answer rather than the other way round: once the
+        # image geometry was fixed it stopped mangling the table and made exactly
+        # this one adjustment, moving the array from last-33 to last-32 and
+        # LastUsableLBA with it. Deriving the position from the array size leaves
+        # nothing for it to correct.
+        $arrSectors = [int][Math]::Ceiling(($peCount * $peSize) / 512.0)
+        $arrLba = $last - $arrSectors
         $arrLen  = [int]($peCount * $peSize)
         # protective MBR: 0xEE entry spans the reported disk
         $mbr = New-Object byte[] 512
@@ -113,6 +183,53 @@ try {
         [Array]::Copy($imgBytes, 512, $hdr, 0, 512)
         [BitConverter]::GetBytes([uint64]$last).CopyTo($hdr, 32)
         [BitConverter]::GetBytes([uint64]($arrLba - 1)).CopyTo($hdr, 48)
+        # A fresh disk GUID per flash. THIS DOES NOT FIX THE REINSERTION REWRITE
+        # AND IT WAS SUPPOSED TO. Kept for forensics only; read on before
+        # believing it does anything else.
+        #
+        # OsHardwareRoadmap's Loop B has carried "randomize the disk GUID at flash
+        # time" as a pending patch since 2026-07-10, on the theory that Windows
+        # partmgr caches its GPT repair ruling BY DISK GUID, so a ruling made
+        # against one of our sticks applies to every stick we write, because
+        # build-img stamps a deterministic GUID for image reproducibility.
+        #
+        # MEASURED 2026-07-29, AND THE THEORY IS WRONG. Two facts, in order:
+        #
+        # 1. -SpecFit does NOT stop Windows rewriting the GPT. A stick flashed and
+        #    verified clean by this script's own readback, then ejected and
+        #    reinserted once, came back with LBA 1 rewritten: PartitionEntryLBA
+        #    moved from 2 to 2047, which holds 512 bytes of ZEROS, header CRC
+        #    recomputed, array CRC left stale. The good array is orphaned at LBA
+        #    2. The backup is repointed 60506078 -> 60506110 the same way. Both
+        #    GPTs then fail validation, so firmware sees NO partitions: this is
+        #    the "firmware never lists the stick" failure arriving silently after
+        #    a successful flash. The claim that a conformant GPT means Windows
+        #    "finds nothing to fix" is false.
+        #
+        # 2. The disk GUID is not the mechanism. With this randomisation in place
+        #    the stick was flashed with GUID 6222f486-5f70-4c24-9007-62b2537617f6,
+        #    a value partmgr had provably never seen, and ONE eject-and-reinsert
+        #    produced byte-for-byte the same rewrite. The GUID on the medium was
+        #    untouched afterwards, so nothing cached by GUID can explain it.
+        #
+        # What is left is that Windows normalises the entry-array POSITIONS to its
+        # own convention: primary array immediately below FirstUsableLBA, backup
+        # immediately below the backup header. Untested, and it is a hypothesis
+        # rather than the next patch -- the candidate worth checking first is that
+        # our header declares NumberOfPartitionEntries=2 where UEFI reserves a
+        # 16 KB minimum, which would make our table non-conformant and invite the
+        # repair. Do not implement that on this note alone; measure it.
+        #
+        # THE OPERATIONAL ANSWER IS UNCHANGED AND IT WORKS: flash, verify, PULL.
+        # A stick that has not been reinserted is correct on the medium.
+        #
+        # Randomising here rather than in build-img keeps the .img byte-identical
+        # so recorded digests still reproduce. The reason to keep three lines that
+        # fixed nothing is that each written stick is now individually
+        # identifiable, which is exactly what let the above be measured.
+        $diskGuid = [Guid]::NewGuid()
+        $diskGuid.ToByteArray().CopyTo($hdr, 56)
+        Write-Host "  specfit: fresh disk GUID $diskGuid"
         $hdr[16] = 0; $hdr[17] = 0; $hdr[18] = 0; $hdr[19] = 0
         [BitConverter]::GetBytes([int](Crc32 $hdr 0 92)).CopyTo($hdr, 16)
         # backup entry array (copy of primary's), padded to whole sectors
@@ -167,18 +284,79 @@ try {
     if ($bad -ge 0) { throw "VERIFY FAILED at byte $bad (wrote $($imgBytes[$bad]), read back $($rbuf[$bad - $off]))" }
     Write-Host "Verified: all $($imgBytes.Length) bytes match."
 
-    foreach ($b in $blobs) {
-        $off = $b.Lba * 512
-        $fs.Seek($off, 'Begin') | Out-Null
-        $vb = New-Object byte[] $b.Bytes.Length
-        $got = 0
-        while ($got -lt $vb.Length) { $n = $fs.Read($vb, $got, $vb.Length - $got); if ($n -le 0) { break }; $got += $n }
-        for ($i = 0; $i -lt $vb.Length; $i++) { if ($vb[$i] -ne $b.Bytes[$i]) { throw "FIXUP VERIFY FAILED blob-$($b.Lba) at +$i" } }
-        Write-Host "  fixup: verified blob at LBA $($b.Lba)"
+    # Read the blobs back through a SEPARATE, unbuffered handle. $fs carries a
+    # 1 MB FileStream buffer, and on a raw device a buffered Read near the last
+    # sector issues a 1 MB ReadFile that runs past the end of the medium: the
+    # SpecFit blobs at the disk's tail then fail with "The drive cannot find the
+    # sector requested" after writing and flushing perfectly well. That reads as
+    # a bad stick during a sitting, which is the worst possible time for it.
+    $vfs = [System.IO.FileStream]::new($diskPath, [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite, 512,
+        [System.IO.FileOptions]::None)
+    try {
+        foreach ($b in $blobs) {
+            $off = $b.Lba * 512
+            $vfs.Seek($off, 'Begin') | Out-Null
+            $vb = New-Object byte[] $b.Bytes.Length
+            $got = 0
+            while ($got -lt $vb.Length) { $n = $vfs.Read($vb, $got, $vb.Length - $got); if ($n -le 0) { break }; $got += $n }
+            if ($got -ne $vb.Length) { throw "FIXUP VERIFY FAILED blob-$($b.Lba): read $got of $($vb.Length) bytes" }
+            for ($i = 0; $i -lt $vb.Length; $i++) { if ($vb[$i] -ne $b.Bytes[$i]) { throw "FIXUP VERIFY FAILED blob-$($b.Lba) at +$i" } }
+            Write-Host "  fixup: verified blob at LBA $($b.Lba)"
+        }
     }
+    finally { $vfs.Close() }
 }
 finally {
     $fs.Close()
+    # Release the volume locks only after the physical write is closed, so
+    # Windows cannot remount and inspect the disk mid-operation.
+    foreach ($vh in $volHandles) { [void][Win32.Vol]::CloseHandle($vh) }
     try { Set-Disk -Number $DiskNumber -IsOffline $false -ErrorAction SilentlyContinue } catch {}
 }
-Write-Host "DONE. Eject the stick, then boot the target from USB (UEFI, CSM/Legacy off)."
+Write-Host ""
+Write-Host "DONE. Pull the stick out when you are ready." -ForegroundColor Yellow
+Write-Host "Then boot the target from USB (UEFI, CSM/Legacy off)."
+Write-Host "Everything is already flushed and read back byte for byte, so there is"
+Write-Host "nothing for Safely Remove to finish."
+# On a throw the transcript is finalized by process exit instead; the log is
+# written either way when this runs as its own pwsh -File process.
+if ($Log) { Stop-Transcript | Out-Null }
+
+# THE HAZARD BELOW IS FIXED AT THE CAUSE (2026-08-02) AND THE INSTRUCTION IS
+# RETIRED. The disk is taken offline and every volume on it is locked and
+# dismounted for the whole write (see the block above), so Explorer does not
+# offer Eject on this stick at all and the action that destroyed the GPT is
+# not reachable. Pull it when you are ready. The account is kept because the
+# failure it describes was real, was measured with a control, and is what the
+# offline-and-lock code exists to prevent -- delete the history and the next
+# person re-derives it from a corrupted stick.
+#
+# WHY IT WAS SHOUTED, MEASURED 2026-07-29.
+#
+# This line used to read "Eject the stick, then boot the target", and following
+# it destroys the GPT that the lines above just verified. Explorer's Eject
+# re-enumerates the device, and on arrival Windows rewrites the partition table:
+# PartitionEntryLBA moves from 2 to 2047, a sector of ZEROS, LastUsableLBA moves
+# 60506077 -> 60506109, the backup array is repointed 60506078 -> 60506110, and
+# the header CRCs are recomputed over the new values while the array CRC is left
+# stale. Both GPTs then fail validation and Windows itself reports the disk as
+# MBR. Firmware sees no partitions, which is the "firmware never lists the
+# stick" failure in docs/HardwareSitting.md section 3b.
+#
+# Isolated with a control rather than inferred. Same stick, one flash: three
+# consecutive raw reads returned byte-identical, correct GPTs (EntryLBA=2,
+# header CRC c25e02bc). The operator then used Explorer's Eject and nothing
+# else -- the stick was never unplugged -- and the next read showed the rewrite.
+# Reads are harmless; the eject is not.
+#
+# Two things it is NOT, both ruled out by measurement the same day: it is not
+# physical reinsertion, and it is not the deterministic disk GUID that
+# OsHardwareRoadmap blamed. A stick flashed with a freshly randomised GUID that
+# partmgr had never seen was rewritten identically.
+#
+# This is a strong candidate for why attempt 1 did not boot on 2026-07-29. That
+# stick was flashed, verified, and then ejected exactly as this script
+# instructed, and "the firmware never listed it" is precisely what an invalid
+# GPT produces. Not provable now -- that medium has been overwritten -- but the
+# mechanism is proven and the procedure that triggers it was followed.

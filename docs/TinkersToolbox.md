@@ -1,4 +1,4 @@
-# Tinker's Toolbox — Board Support and IoT Hardware
+# Tinker's Toolbox -- Board Support and IoT Hardware
 
 The board support package for Codex IoT. Nine target boards with
 register-level drivers, all written in Codex, all compiled by the
@@ -19,17 +19,17 @@ fields, and default configs. Board-specific implementations live in
 
 Every driver follows the same pattern:
 
-1. **Register constants** — base addresses and offsets from the
+1. **Register constants** -- base addresses and offsets from the
    official reference manual, named as `<board>-<peripheral>-<register>`.
-2. **Init function** — enables clocks, configures pins (alternate
+2. **Init function** -- enables clocks, configures pins (alternate
    function or GPIO), sets baud/frequency/timing registers.
-3. **Transfer functions** — send/receive with fuel-bounded polling
+3. **Transfer functions** -- send/receive with fuel-bounded polling
    loops that terminate immediately on MMIO stubs.
-4. **Smoke test** — exercises every driver function, returns a
+4. **Smoke test** -- exercises every driver function, returns a
    sub-test count. Expected output verified against `.expected` file.
 
 No dynamic allocation. No interrupts (polling only). No OS
-dependencies. Each board file is standalone — cite it, call its
+dependencies. Each board file is standalone -- cite it, call its
 functions, done.
 
 ---
@@ -41,7 +41,7 @@ functions, done.
 | **STM32F4 Discovery** | Cortex-M4F | ARM | 168 MHz | 192 KB | 6 |
 | **ESP32-C6 DevKit** | RV32IMC | RISC-V | 160 MHz | 512 KB | 6 |
 | **Raspberry Pi 4** | Cortex-A72 | ARM | 1.5 GHz | 1-8 GB | 6 |
-| **QEMU virt** | AArch64 + RV | Both | — | — | 6 |
+| **QEMU virt** | AArch64 + RV | Both | -- | -- | 6 |
 | **nRF52840 DK** | Cortex-M4F | ARM | 64 MHz | 256 KB | 23 |
 | **RP2040 (Pico)** | Dual M0+ | ARM | 133 MHz | 264 KB | 24 |
 | **nRF9160 DK** | Cortex-M33 | ARM | 64 MHz | 256 KB | 17 |
@@ -86,7 +86,7 @@ a test, it is in the default battery, and it returns 6.
 | | **BLE Beacon** | Complete BLE advertising PDU builder per Bluetooth Core Spec Vol 6 Part B. ADV_NONCONN_IND with Flags (general discoverable), Complete Local Name, TX Power Level. `ble-build-beacon "Codex"` produces a well-formed advertising packet ready for RADIO.PACKETPTR |
 | | **GATT Services** | Attribute table construction per Bluetooth Core Spec Vol 3 Part G. Service/characteristic/descriptor builders with UUIDs from Bluetooth SIG Assigned Numbers. Three pre-built services: Heart Rate (measurement + body sensor location + CCC), Battery (level), Temperature (measurement + CCC). `gatt-service-attr-count` verifies table structure |
 | **RP2040** | Reset | Peripheral unreset with done-wait (RP2040 boots with peripherals held in reset) |
-| | GPIO (atomic) | SIO SET/CLR/XOR aliases — atomic bit manipulation without read-modify-write races |
+| | GPIO (atomic) | SIO SET/CLR/XOR aliases -- atomic bit manipulation without read-modify-write races |
 | | ADC | 12-bit SAR, 4 channels, 500 ksps. Channel select, start conversion, wait ready |
 | | PIO | Programmable I/O state machine configuration: instruction memory write, clock divider, pin control, shift control, exec control, enable |
 | | **WS2812 NeoPixel** | Complete WS2812B LED strip driver via PIO. 4-instruction PIO program (OUT with side-set, conditional JMP, NOP timing). GRB color packing (`ws2812-grb-pack r g b`), single-pixel FIFO write, strip send loop. Timing: T0H=400ns, T1H=800ns at 800 kHz bit rate |
@@ -95,11 +95,11 @@ a test, it is in the default battery, and it returns 6.
 | | IPC | Inter-processor communication for app↔modem. Send signal, check/clear events, read/write shared memory (GPMEM) |
 | | **AT Commands** | Build: `AtCfun 1` → `"AT+CFUN=1"`, `AtCops` → `"AT+COPS?"`, `AtCesq` → `"AT+CESQ"`, `AtCgdcont 1 "internet"` → `"AT+CGDCONT=1,\"IP\",\"internet\""` |
 | | **AT Parser** | Parse: `"+COPS: 0,0,\"Telia\",7"` → `AtCopsResponse 0 "Telia"`, `"+CESQ: 99,99,255,255,28,47"` → `AtCesqResponse 28 47`, `"+CGDCONT: 1,\"IP\",\"internet\""` → `AtCgdcontResponse 1 "internet"`. Round-trip: build command, parse response, extract fields |
-| **STM32L4** | RCC | MSI clock range selection (100 kHz–48 MHz), MSIRGSEL bit for runtime range switching |
+| **STM32L4** | RCC | MSI clock range selection (100 kHz-48 MHz), MSIRGSEL bit for runtime range switching |
 | | PWR | Low-power mode register config: Stop 0/1/2 (1.1 μA), Standby, Shutdown. Mode read-back |
 | | LPTIM1 | Low-power timer that runs in Stop mode. Auto-reload, compare match, single-shot start |
 | | **Sleep Entry** | Full sleep preparation per RM0351 §5.3: select LPMS mode, clear wakeup flags (PWR_SCR), set SCB SLEEPDEEP bit, configure LPTIM wakeup, restore clock on wake. Everything except the final WFI instruction (which would halt the VM). Sleep-restore resets SLEEPDEEP and re-selects MSI clock range |
-| **FE310** | GPIO (IOF) | I/O Function select — pins 16/17 are UART0 via IOF0, pin 5 is SPI SCK. IOF_SEL + IOF_EN register pair |
+| **FE310** | GPIO (IOF) | I/O Function select -- pins 16/17 are UART0 via IOF0, pin 5 is SPI SCK. IOF_SEL + IOF_EN register pair |
 | | PWM | 4-channel PWM with configurable scale. CMP0-CMP3 comparators. Always-on + zero-compare mode |
 | | PLIC | Platform-Level Interrupt Controller. Per-IRQ priority (3-bit), enable bits, global threshold, claim/complete cycle |
 
@@ -137,7 +137,7 @@ libraries.
 Combined with the protocol stack (MQTT v5, CoAP, LwM2M, OTA), this
 covers the three IoT connectivity tiers: short-range (BLE), medium-range
 (WiFi), and wide-area (cellular). The same Codex source compiles for
-any board — swap the `cites Boards chapter` line and rebuild.
+any board -- swap the `cites Boards chapter` line and rebuild.
 
 ---
 
@@ -156,7 +156,7 @@ any board — swap the `cites Boards chapter` line and rebuild.
   aligned 32-bit or 8-bit load/store, not a stub. Six of the nine board
   batteries exercise genuine memory-mapped read/write under codex-vm
   (write a register, read it back). The register addresses come from the
-  reference manuals, but the *electrical* behaviour is still untested —
+  reference manuals, but the *electrical* behaviour is still untested --
   no silicon has been in the loop.
 
   Until 2026-07-13 this was much worse than "untested": `mmio-read-32
@@ -165,9 +165,9 @@ any board — swap the `cites Boards chapter` line and rebuild.
   because a stub always agrees with itself.
 
 - **All nine boards run on codex-vm** (since 2026-07-13). Three of them
-  put their registers above the 3 GB RAM ceiling — the Pi4
+  put their registers above the 3 GB RAM ceiling -- the Pi4
   (`0xFE000000`), the RP2040 (`0xD0000000`), and the STM32L4's Cortex-M
-  SCB (`0xE000ED00`) — and for a while they were skipped as unfixable.
+  SCB (`0xE000ED00`) -- and for a while they were skipped as unfixable.
   That was wrong on both counts. The guest page tables now map the
   device gigabyte, and `codex-vm -board-mmio` backs those three windows
   with RAM, so the drivers read back what they write. The Pi4's base
@@ -178,9 +178,9 @@ any board — swap the `cites Boards chapter` line and rebuild.
 
   What this buys is read-back fidelity, the same the other six already
   had. It is still not peripheral behaviour. Renode remains the real
-  target — and for the Cortex-M parts it is the only option until
+  target -- and for the Cortex-M parts it is the only option until
   Thumb-2 codegen exists.
-- **Power management — WFI instruction.** STM32L4 now has the full
+- **Power management -- WFI instruction.** STM32L4 now has the full
   sleep preparation sequence (LPMS mode select, wakeup flag clear,
   SCB SLEEPDEEP, LPTIM wakeup, clock restore). The only missing
   step is the WFI instruction itself, which halts the CPU. On
@@ -203,8 +203,8 @@ any board — swap the `cites Boards chapter` line and rebuild.
 
 ## Cross-References
 
-- `codex/foreword/core/Board.codex` — HAL types and default configs
-- `codex/boards/` — 9 board implementations
-- `codex/test/*-drivers.codex` — smoke tests
-- `docs/KingsAndCourts.md` — regulatory compliance story
-- `docs/PM/IoT/` — compliance summaries, protocol references, hardware specs
+- `codex/foreword/core/Board.codex` -- HAL types and default configs
+- `codex/boards/` -- 9 board implementations
+- `codex/test/*-drivers.codex` -- smoke tests
+- `docs/KingsAndCourts.md` -- regulatory compliance story
+- `docs/PM/IoT/` -- compliance summaries, protocol references, hardware specs

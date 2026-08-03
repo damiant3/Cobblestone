@@ -1,4 +1,4 @@
-# check-constants.ps1 — verify seed constants match source
+# check-constants.ps1 -- verify seed constants match source
 #
 # Extracts load-bearing constant values from the compiler source
 # (X86_64Boot.codex Memory Address Map + BuildSettings.codex) and
@@ -59,7 +59,7 @@ if ($Update) {
 }
 
 if (-not (Test-Path $HashFile)) {
-    Write-Host "WARNING: seed/constants.hash not found — run 'check-constants.ps1 -Update' after seed rebuild"
+    Write-Host "WARNING: seed/constants.hash not found -- run 'check-constants.ps1 -Update' after seed rebuild"
     exit 1
 }
 
@@ -68,7 +68,7 @@ if ($hexHash -eq $savedHash) {
     Write-Host "Constants MATCH seed ($($constants.Count) constants)"
     exit 0
 } else {
-    Write-Host "WARNING: Constants MISMATCH — source constants differ from seed"
+    Write-Host "WARNING: Constants MISMATCH -- source constants differ from seed"
     Write-Host "  Source hash: $hexHash"
     Write-Host "  Seed hash:   $savedHash"
     Write-Host "  A seed rebuild is required before the changes take effect."

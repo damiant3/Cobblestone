@@ -14,6 +14,27 @@
 # is the battery and stays out-of-band, because 363 tests do not belong in a
 # gate that runs every few minutes.
 #
+# A SILENT LANE IS RETRIED ONCE, ALONE; A WRONG ANSWER NEVER IS.
+# test-cross-batch.ps1 learned this and this leg had not, which is backwards:
+# the batch is out-of-band and this runs inside build.ps1 every few minutes,
+# across several agents' workspaces on one box. Renode gets a 3 second budget
+# here, and a busy box makes a healthy lane miss it -- observed 2026-07-28,
+# both lanes reported `no uart output` in a gate run and both passed standalone
+# seconds later at the same 3 second budget.
+#
+# The distinction is the whole design and it is the batch harness's: silence
+# under load is the machine's fault, a wrong answer is the program's.
+# `FAIL (no uart output)` means the emulator wrote no log at all, which is what
+# contention looks like. `FAIL (output mismatch)` is a deterministic wrong
+# answer; re-running one would spend time and, worse, let a genuine
+# intermittent defect be dismissed as a flake. Compile failures are not
+# retried either -- they are not this class.
+#
+# The retry line is printed even when nothing was retried. A run that silently
+# absorbed a flake would otherwise read identically to a run that never had
+# one, and that difference is the only thing that makes a returning flake
+# visible.
+#
 # Usage: check-cross-smoke.ps1 [-Tests a,b] [-TimeoutSec N]
 
 param(
@@ -36,33 +57,72 @@ if (-not (Test-Path $crossScript)) {
 $fail    = @()
 $ran     = 0
 $skipped = @()
+$silent  = @()
+$retried = 0
+$recovered = 0
+
+function Invoke-CrossTest([string]$arch, [string]$t) {
+    $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    $out = & pwsh -NoProfile -File $script:crossScript -Arch $arch -Test $t -TimeoutSec $script:TimeoutSec 2>&1
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = $prev
+    return @{ Code = $code; Text = ($out | Out-String) }
+}
+
+function Write-CrossFailDetail([string]$text) {
+    foreach ($line in ($text -split "`r?`n")) {
+        if ($line -match 'FAIL|exp=|act=') { Write-Host "    $($line.Trim())" }
+    }
+}
 
 foreach ($arch in @('arm64','riscv64')) {
     foreach ($t in $Tests) {
-        $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-        $out = & pwsh -NoProfile -File $crossScript -Arch $arch -Test $t -TimeoutSec $TimeoutSec 2>&1
-        $code = $LASTEXITCODE
-        $ErrorActionPreference = $prev
-        $text = ($out | Out-String)
+        $r = Invoke-CrossTest $arch $t
 
         # test-cross.ps1 exits 0 when Renode or the board file is absent. A
         # missing emulator is not a passing lane, and letting it read as one
         # would rebuild the exact blind spot this leg exists to remove.
-        if ($text -match 'SKIP') {
+        if ($r.Text -match 'SKIP') {
             $skipped += "$arch/$t"
             continue
         }
 
         $ran++
-        if ($code -ne 0) {
-            $fail += "$arch/$t"
+        if ($r.Code -ne 0) {
             Write-Host "check-cross-smoke: FAIL $arch/$t"
-            foreach ($line in ($text -split "`r?`n")) {
-                if ($line -match 'FAIL|exp=|act=') { Write-Host "    $($line.Trim())" }
+            Write-CrossFailDetail $r.Text
+            # Only a lane that produced NO log is contention-shaped. A wrong
+            # answer is the program's and is never re-run.
+            if ($r.Text -match 'no uart output') {
+                $silent += "$arch/$t"
+            } else {
+                $fail += "$arch/$t"
             }
         }
     }
 }
+
+# ---- Retry pass: no output at all is the box being busy, not a dead lane ----
+if ($silent.Count -gt 0) {
+    Write-Host "check-cross-smoke: $($silent.Count) silent lane(s), retrying one at a time"
+    foreach ($name in $silent) {
+        $parts = $name -split '/', 2
+        $r = Invoke-CrossTest $parts[0] $parts[1]
+        $retried++
+        if ($r.Code -eq 0) {
+            $recovered++
+            Write-Host "  $name -- passed on serial retry (no output under load)"
+        } else {
+            $fail += $name
+            Write-Host "  $name -- still failing alone"
+            Write-CrossFailDetail $r.Text
+        }
+    }
+}
+
+# Stated even when zero, so a run that absorbed a flake does not read like a
+# run that never had one.
+Write-Host "check-cross-smoke: serial retries $recovered/$retried recovered (silent lanes only; a wrong answer is never re-run)"
 
 if ($skipped.Count -gt 0) {
     Write-Host "check-cross-smoke: NOT EXECUTED: $($skipped -join ', ')"

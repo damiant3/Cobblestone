@@ -28,7 +28,7 @@ Set-Location $root
 if (-not (Test-Path -PathType Leaf $Src)) { Write-Host "FAIL: source not found: $Src" -ForegroundColor Red; exit 1 }
 
 # Metadata: the path is the store key. Quire defaults to the parent directory,
-# chapter to the file's `Chapter:` header — the same conventions the tree uses.
+# chapter to the file's `Chapter:` header -- the same conventions the tree uses.
 $srcItem = Get-Item $Src
 if (-not $Path)  { $Path = (Resolve-Path $Src).Path.Substring($root.Length + 1).Replace('\','/') }
 if (-not $Quire) { $Quire = (Split-Path (Split-Path $Src -Parent) -Leaf); if ($Quire) { $Quire = $Quire.Substring(0,1).ToUpper() + $Quire.Substring(1) } else { $Quire = 'Unknown' } }

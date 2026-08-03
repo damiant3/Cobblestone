@@ -35,6 +35,14 @@ Section: Infrastructure
 
   cdx-lir-allocation-violation : Integer = 9008
 
+  cdx-tco-shuffle-violation : Integer = 9009
+
+  cdx-int-compare-on-float : Integer = 9010
+
+  cdx-pow-on-float : Integer = 9011
+
+  cdx-order-compare-on-text : Integer = 9012
+
 Section: Lexer
   cdx-invalid-tab-escape : Integer = 5
 
@@ -66,6 +74,8 @@ Section: Parser
   cdx-leading-dot-continuation : Integer = 1071
 
   cdx-chained-arrow-type : Integer = 1072
+
+  cdx-wrapping-band-not-hw-width : Integer = 1073
 
   cdx-prose-function-name-mismatch : Integer = 1101
   cdx-prose-parameter-mismatch : Integer = 1102
@@ -110,13 +120,13 @@ Section: Type checker and Codegen
  x86-builtin-emitters, so the emitter refuses rather than quietly doing
  something else and reporting success. write-file used to print its
  content to the console and return 0, so a program that believed it had
- saved a file had saved nothing and was told it had — worse than not
+ saved a file had saved nothing and was told it had -- worse than not
  having the builtin at all, because there is no error to notice.
 
  CDX2043 was a second code for that same refusal, raised by
  emit-no-target-impl. Both are gone: emit-no-target-impl had no call
  site, so 2043 could not be raised by any program, and a code that
- cannot fire is a promise the compiler does not keep — the same thing
+ cannot fire is a promise the compiler does not keep -- the same thing
  this paragraph exists to forbid. CDX2042 covers the case and is live.
 
   cdx-narrowing-record-set-literal : Integer = 2050
@@ -153,6 +163,10 @@ Section: Type checker and Codegen
 
   cdx-list-pattern-shape : Integer = 2088
 
+  cdx-text-ordering-banned : Integer = 2089
+
+  cdx-vec-lane-out-of-range : Integer = 2093
+
   cdx-row-mismatch : Integer = 2090
 
   cdx-row-infinite : Integer = 2091
@@ -160,6 +174,8 @@ Section: Type checker and Codegen
   cdx-handler-unused : Integer = 2092
 
   cdx-effectful-arrow-value : Integer = 2094
+
+  cdx-field-on-unit-type : Integer = 2095
 
   cdx-non-exhaustive-match : Integer = 2070
 
@@ -259,6 +275,8 @@ Section: Hard Realtime
 
   cdx-rt-wcet-opaque : Integer = 6012
 
+  cdx-rt-wcet-unchecked : Integer = 6013
+
 Section: Registry entry constructor
   mk-cdx : Integer between 0 and 65535, Text, Integer between 0 and 3, Integer between 0 and 15, Text -> CdxCodeInfo
   mk-cdx (code) (name) (sev) (phase) (summary) =
@@ -289,6 +307,9 @@ Section: Registry
     mk-cdx cdx-lir-prologue-violation "LirPrologueViolation" sev-error phase-codegen "The entry moves a function's prologue emits do not deliver every parameter to the register the allocator assigned it. The moves are emitted before block emission and are not LIR instructions, so the allocation verifier never sees them; this check simulates the planned moves against the state the parameters actually arrive in and fails the build when a parameter would be read from the wrong place. A sequential move order clobbering a later parameter's arrival register is the shape that reaches here.",
     mk-cdx cdx-lir-structural-violation "LirStructuralViolation" sev-error phase-codegen "The lowered LIR the selector was about to emit failed the structural verifier: a use reads a vreg no path defines, a block is malformed, or the result operand is undefined. The lowering or a rewrite pass (coalescing) produced LIR that does not compute the program; the build halts rather than emit it. The verifier runs on the emission path for every selector-handled function, not only under lir-dump.",
     mk-cdx cdx-lir-allocation-violation "LirAllocationViolation" sev-error phase-codegen "The register allocation the emitter was about to use failed the allocation verifier: at some use, the vreg's assigned location holds a different value -- clobbered by a call or division the allocator failed to account for, or never established. The checked assignment is the one being emitted, not a re-derived one; the build halts rather than write bytes that read the wrong register.",
+    mk-cdx cdx-tco-shuffle-violation "TcoShuffleViolation" sev-error phase-codegen "The tree emitter's direct tail-argument shuffle failed its verifier. Either an argument the planner writes straight into its parameter has a shape tco-arg-reads cannot see through, so the write order was planned as though it read no parameters, or the planned order writes an argument after a parameter it reads has already been replaced. Both produce a wrong argument value with no fault and no other diagnostic; the build halts rather than emit it. Widening the direct shapes means teaching tco-arg-reads the new shape in the same change.",
+    mk-cdx cdx-int-compare-on-float "IntCompareOnFloat" sev-error phase-codegen "The integer comparison emitter was handed a floating-point operand. A machine cmp on two IEEE-754 bit patterns orders correctly for two non-negatives and for mixed signs, because a double's sign bit lands where the integer sign bit lands, and REVERSES for two negatives. That is what Real < > <= >= did from the initial import until 2026-07-27: emit-binary-op routed all four ordering operators to the integer path without consulting the operand type, while IrEq and IrNotEq beside them already dispatched Real to ucomisd. This guard exists so the omission cannot be made again silently -- a comparison whose operand type the integer path cannot answer halts the build instead of emitting a reversed compare. Route the operand to emit-ord-comparison, which selects ucomisd or ucomiss with unsigned condition codes.",
+    mk-cdx cdx-pow-on-float "PowOnFloat" sev-error phase-codegen "The exponentiation operator was given a floating-point operand, and the only exponentiation routine in the runtime is the integer one. Raising two IEEE-754 bit patterns by square-and-multiply computes nothing; the build halts rather than emit it. Multiply explicitly, or convert with real-to-int if an integer power is what was meant.",
     mk-cdx cdx-emit-not-implemented "EmitNotImplemented" sev-error phase-codegen "The requested emit option is not implemented yet; compile aborted before machine-code emission.",
     mk-cdx cdx-duplicate-definition "DuplicateDefinition" sev-error phase-name-resolver "The same name is introduced twice at chapter scope.",
     mk-cdx cdx-undefined-name "UndefinedName" sev-error phase-name-resolver "A name was referenced but is not in any visible scope.",
@@ -343,6 +364,7 @@ Section: Registry
     mk-cdx cdx-prose-banned-word "ProseBannedWord" sev-warning phase-parser "A banned word was used in load-bearing prose; replace it with the suggested substitute.",
     mk-cdx cdx-multiline-application "MultilineApplication" sev-error phase-parser "Application ends at newline but the next line begins with an indented '(' or '['. The continuation would be silently dropped from the application. Place all arguments on one line, wrap the whole application in parentheses, or bind the bracketed value with a let.",
     mk-cdx cdx-chained-arrow-type "ChainedArrowType" sev-error phase-parser "A type uses chained '->' (A -> B -> C); write multi-parameter types with commas: A, B -> C.",
+    mk-cdx cdx-wrapping-band-not-hw-width "WrappingBandNotHwWidth" sev-error phase-parser "A wrapping band is not exactly its hardware width. The store wraps at the width, not at the band, so a narrower band can hold a value outside its declared range while the bounds prover still trusts that range.",
     mk-cdx cdx-row-two-tails "RowTwoTails" sev-error phase-parser "An effect row may name at most one row variable (lowercase identifier); a row like [e, f] is ill-formed.",
     mk-cdx cdx-row-tail-decorated "RowTailDecorated" sev-error phase-parser "A row variable is a bare lowercase identifier; scopes and dotted sub-effects attach to concrete PascalCase effects only.",
     mk-cdx cdx-body-fixes-declared-var "BodyFixesDeclaredVar" sev-error phase-type-checker "A definition's body decided a type variable its own signature leaves to the caller. A signature variable is universally quantified: the caller chooses it, so the body must work for every choice. A body that answers one concrete type must declare that type.",
@@ -351,6 +373,7 @@ Section: Registry
     mk-cdx cdx-row-infinite "RowInfinite" sev-error phase-type-checker "Row occurs check failed - a row variable would absorb a row that already contains it, producing an infinite effect row.",
     mk-cdx cdx-handler-unused "HandlerUnused" sev-warning phase-type-checker "A handler encloses a body whose effect row cannot perform the handled effect; the handler is legal but discharges nothing.",
     mk-cdx cdx-effectful-arrow-value "EffectfulArrowValue" sev-error phase-type-checker "An effect bracket cannot wrap a function type in a value signature; effects belong on the arrow they decorate: write A -> [E] B.",
+    mk-cdx cdx-field-on-unit-type "FieldOnUnitType" sev-error phase-type-checker "A field access or assignment names a field through a unit wrapper. The wrapper is a distinct type and has no fields, and a unit over a record has no accessor and is not accepted where the record is expected, so the field cannot be reached through it.",
     mk-cdx cdx-rt-calls-unsafe "RtCallsUnsafe" sev-error phase-type-checker "A [HardRealtime] function calls a function that is not [HardRealtime]-safe.",
     mk-cdx cdx-rt-heap-alloc "RtHeapAlloc" sev-error phase-type-checker "A [HardRealtime] function uses heap allocation.",
     mk-cdx cdx-rt-closure "RtClosure" sev-error phase-type-checker "A [HardRealtime] function uses a closure or lambda.",
@@ -359,6 +382,7 @@ Section: Registry
     mk-cdx cdx-rt-wcet-report "RtWcetReport" sev-info phase-codegen "WCET report for a punctual function.",
     mk-cdx cdx-rt-wcet-exceeded "RtWcetExceeded" sev-warning phase-codegen "A punctual function exceeds its WCET instruction budget.",
     mk-cdx cdx-rt-wcet-opaque "RtWcetOpaque" sev-warning phase-codegen "A punctual function's instruction count is unavailable: the emitted bytes contain an encoding outside the WCET decode vocabulary.",
+    mk-cdx cdx-rt-wcet-unchecked "RtWcetUnchecked" sev-warning phase-codegen "A punctual function declares an explicit WCET budget but emits no body, so no instruction count is taken and the budget is unchecked.",
     mk-cdx cdx-mutation-in-constructor "MutationInConstructor" sev-warning phase-type-checker "A record constructor field calls __record-set, which mutates in place. Other fields reading the same record see the mutated value. Bind the mutation result to a let before the constructor.",
     mk-cdx cdx-if-no-then "IfNoThen" sev-error phase-parser "An if expression has no 'then'. Every if requires both then and else -- there is no dangling if.",
     mk-cdx cdx-if-no-else "IfNoElse" sev-error phase-parser "An if expression has no 'else'. else is mandatory: an if with no else has no value on the false path.",
@@ -372,7 +396,10 @@ Section: Registry
     mk-cdx cdx-missing-record-field "MissingRecordField" sev-error phase-type-checker "A record literal is built without a value for one of the type's fields. A field left out of a literal is not left alone -- it is zero.",
     mk-cdx cdx-field-assign-immutable "FieldAssignImmutable" sev-error phase-type-checker "A field assignment (r.f = v) targets a record whose type is not declared mutable. Prefix the record type with 'mutable', or build a new record with the constructor.",
     mk-cdx cdx-field-assign-unobservable "FieldAssignUnobservable" sev-error phase-type-checker "A field assignment targets a name that resolves to a definition, not a binding, so each mention rebuilds the record and the write is discarded. Bind the record with a let and thread it, or pass it as a parameter.",
-    mk-cdx cdx-real-equality-banned "RealEqualityBanned" sev-error phase-type-checker "== or /= was applied to a Real value; floating-point equality is not safe. Use ~ (approximately equal, 4 ULP tolerance) or ~0 (bitwise exact)."
+    mk-cdx cdx-real-equality-banned "RealEqualityBanned" sev-error phase-type-checker "== or /= was applied to a Real value; floating-point equality is not safe. Use ~ (approximately equal, 4 ULP tolerance) or ~0 (bitwise exact).",
+    mk-cdx cdx-text-ordering-banned "TextOrderingBanned" sev-error phase-type-checker "< > <= >= was applied to a Text or character operand. Encoding order is not collation and neither is a pointer: on Text these compared the operands by address. Use text-collate for alphabetical order, or text-compare for code-point order; for a character compare char-code c as an Integer.",
+    mk-cdx cdx-order-compare-on-text "OrderCompareOnText" sev-error phase-codegen "The ordering comparator was handed a Text or character operand. On Text a machine cmp compares ADDRESSES, so the answer depends on allocation order and not on content; the build halts rather than emit it.",
+    mk-cdx cdx-vec-lane-out-of-range "VecLaneOutOfRange" sev-error phase-type-checker "A literal lane index is outside the vector. vec-extract takes a Vector 2 and vec4-extract a Vector 4, so the lane count is fixed by the builtin's own type and the index is decidable here rather than at runtime."
   ]
 
 Section: Lookup

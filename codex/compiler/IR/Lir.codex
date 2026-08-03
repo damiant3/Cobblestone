@@ -6,7 +6,7 @@ Chapter: Lir
  will happen (middle-end
  campaign step 5). The tree `IRExpr` has no linear order and no basic
  blocks, so linear-scan allocation cannot be expressed over it; the LIR is
- that linear order. This chapter is the second increment — it adds basic
+ that linear order. This chapter is the second increment -- it adds basic
  blocks and branches so that `if` lowers, on top of the first increment's
  straight-line whitelist. It is still deliberately dead to the shipping
  compiler: it lowers nothing in the default pipeline, emits no machine
@@ -33,8 +33,8 @@ Chapter: Lir
  phi-free: a result vreg is allocated, the condition is lowered into the
  current block ending in a conditional branch, each arm is lowered into its
  own block that moves its value into the shared result vreg and jumps to a
- join block, and lowering continues in the join. There are no loops — the
- tree IR has none — so flattening a body yields a DAG and the join is the
+ join block, and lowering continues in the join. There are no loops -- the
+ tree IR has none -- so flattening a body yields a DAG and the join is the
  only merge point, exactly as the LIR design specifies. A `match` over
  a scalar scrutinee with literal, variable, and wildcard patterns lowers
  the same way: the scrutinee becomes an operand, and the arms become a
@@ -81,7 +81,7 @@ Section: Representation
 
  A virtual register is an integer id. Parameters take ids `0 ..
  nparams-1`; every intermediate value defined by an instruction takes the
- next fresh id. There is no recycling and no allocation here — that is the
+ next fresh id. There is no recycling and no allocation here -- that is the
  allocator's job, later; lowering only assigns distinct ids.
 
  An operand is either a virtual register or an immediate. Immediates flow
@@ -92,7 +92,7 @@ Section: Representation
    | LvReg (Integer)
    | LvImm (Integer)
 
- The binary operators this increment lowers as values — the three that
+ The binary operators this increment lowers as values -- the three that
  need no flags register and no idiv: add, subtract, multiply. Division
  (fixed register pair, can trap) arrives with the construct that needs it.
 
@@ -113,7 +113,7 @@ Section: Representation
    | LoDiv
 
  The six comparison conditions a branch tests. A comparison sets flags
- (`LiCmp`) and the following conditional branch reads them — the fused
+ (`LiCmp`) and the following conditional branch reads them -- the fused
  compare-and-branch shape x86 emits directly. Comparisons appear only in
  an `if` condition in this increment; a comparison in value position (a
  `let`-bound boolean) needs `setcc` materialisation and is deferred.
@@ -127,12 +127,12 @@ Section: Representation
    | LcGe
 
  The instructions. `LiBin` computes an arithmetic result into a fresh
- vreg. `LiMove` copies an operand into a vreg — the destination-driven
+ vreg. `LiMove` copies an operand into a vreg -- the destination-driven
  join uses it to write the shared result vreg from each arm. `LiLoad`
  reads a value from memory into a fresh vreg: `LiLoad dst base off width
  signed` loads `width` bytes from `[base + off]`, sign- or zero-extending a
  narrow field to 64 bits. It is the first LIR memory instruction, added for
- constructor patterns — the tag load at offset 0 and each variable field
+ constructor patterns -- the tag load at offset 0 and each variable field
  load at its packed offset. `LiCmp` sets flags from two operands and
  defines nothing. `LiTest` is its sibling: it sets flags from the bitwise
  AND of two operands and likewise defines nothing, which is the whole of
@@ -166,7 +166,7 @@ Section: Representation
  instruction; the one exit block ends without a terminator and its final
  value is the function result. Blocks carry dense ids `0 .. nblocks-1`
  assigned in creation order, and creation order is a topological order of
- the DAG — a block is finished before any block it jumps to is built — so
+ the DAG -- a block is finished before any block it jumps to is built -- so
  the verifier and the future allocator can walk `blocks` in list order
  without a separate sort.
 
@@ -238,7 +238,7 @@ Section: Lowering
  blocks, the current block being built (its id and accumulating
  instructions), the next free block id, and a flag that is False the
  moment any construct outside the whitelist is met. A False anywhere
- propagates to the top and the whole function is declared not lowerable —
+ propagates to the top and the whole function is declared not lowerable --
  this increment never lowers a partial function.
 
   LirEnvEntry = record {
@@ -377,15 +377,24 @@ Section: Lowering
  branch condition. Any other operator in condition position falls to the
  value path (compare the materialised boolean against zero).
 
- Equality is whitelisted only for the operand types a machine `cmp` answers
- correctly. `IrEq` on Text is a call to `__str_eq`, not a compare of the two
- values, and a fused branch would compare the two POINTERS instead -- two
- equal strings at different addresses would take the else arm. The tree
+ Every comparison is whitelisted only for the operand types a machine `cmp`
+ answers correctly. `IrEq` on Text is a call to `__str_eq`, not a compare of
+ the two values, and a fused branch would compare the two POINTERS instead --
+ two equal strings at different addresses would take the else arm. The tree
  emitter has always guarded this in `is-fusable-int-comparison`; this is the
  same guard, and its absence here is what made
  `if a == b then 1 else 0` over Text answer 0 while the identical comparison
  with Text-typed branches answered correctly, because only the first shape
  was LIR-eligible.
+
+ The four ORDERING operators answered `True` here unconditionally until
+ 2026-07-27, and so did their arm in the tree emitter's guard. A fused Real
+ comparison is a `cmp` of two IEEE-754 bit patterns with a signed condition
+ code, which reverses whenever both operands are negative -- so `w-floor`'s
+ `t > x` and any other test between two negative Reals answered backwards. The
+ equality arm beside them had the guard the whole time. Declining here sends a
+ Real comparison to the value path, where `emit-ord-comparison` gives it
+ `ucomisd` and unsigned condition codes.
 
  The type is not resolved through the definition table here (that needs a
  CodegenState this pass does not have), so an alias for Integer is declined
@@ -404,8 +413,7 @@ Section: Lowering
   lir-cmp-whitelisted : IRBinaryOp, CodexType -> Boolean
   lir-cmp-whitelisted (op) (left-ty) =
    when op
-    is IrEq | IrNotEq -> lir-cmp-operand-fusable left-ty
-    is IrLt | IrGt | IrLtEq | IrGtEq -> True
+    is IrEq | IrNotEq | IrLt | IrGt | IrLtEq | IrGtEq -> lir-cmp-operand-fusable left-ty
     is otherwise -> False
 
   lir-cond-of : IRBinaryOp -> LirCond
@@ -1383,7 +1391,7 @@ Section: Structural Verifier
  for the allocator to rely on, generalised from a straight line to a DAG
  of blocks: every vreg is defined exactly once, and every use reads a vreg
  that is defined on every path reaching it. A violation here is a lowering
- bug — the LIR is malformed before any allocation happens — and it is
+ bug -- the LIR is malformed before any allocation happens -- and it is
  reported, not tolerated, so a bad lowering is caught at the instruction
  that made it rather than three stages downstream. The allocation verifier
  (a map from physical location to vreg-set) is a separate, later checker;
@@ -1398,7 +1406,7 @@ Section: Structural Verifier
 
  The walk processes blocks in list order, which is topological, so every
  predecessor of a block is processed before it. Each block is entered with
- a definedness set — the pointwise intersection of the exit sets of its
+ a definedness set -- the pointwise intersection of the exit sets of its
  predecessors, because a vreg is defined on entry only if it is defined on
  every incoming edge. That intersection at the join is what catches a use
  of a vreg that only one arm defined. Definedness is a flat boolean vector
@@ -1425,10 +1433,29 @@ Section: Structural Verifier
    if i >= n then acc
    else lir-vec-intersect a b (i + 1) n (list-push acc (if list-at a i then list-at b i else False))
 
-  lir-init-entries : Integer, Integer, List (List Boolean) -> List (List Boolean)
-  lir-init-entries (i) (n) (acc) =
+ Every entry set is born nvregs wide with nothing defined, because that is
+ what both of its readers assume: `lir-vec-copy` and `lir-vec-intersect` are
+ each asked for exactly nvregs elements. This filled the table with EMPTY
+ lists until 2026-07-28, and a block no predecessor ever propagated into was
+ therefore walked with a definedness vector read from past the end of an
+ empty list -- whatever the heap held next.
+
+ That is not hypothetical and it is not rare: every function with a loop
+ ends in a result pseudo-block that nothing jumps to (`b3: => #0` in the
+ dumps), so its entry set is still the initial one when the walk reaches it.
+ `lir-check-func` then takes `last-defined` from that block, which means the
+ "result operand uses an undefined vreg" check has been reading heap residue
+ as its evidence. It answered `check: ok` throughout, which is what a check
+ with no evidence behind it looks like.
+
+ Found by the `list-at` bounds guard, which is the general argument for the
+ guard: the compiler had been quietly reading past a list end for as long as
+ the verifier has existed, and nothing else could see it.
+
+  lir-init-entries : Integer, Integer, Integer, List (List Boolean) -> List (List Boolean)
+  lir-init-entries (i) (n) (nv) (acc) =
    if i >= n then acc
-   else lir-init-entries (i + 1) n (list-push acc [])
+   else lir-init-entries (i + 1) n nv (list-push acc (lir-make-vec 0 nv []))
 
   lir-val-defined : LirValue, List Boolean, Integer -> Boolean
   lir-val-defined (v) (defined) (nvregs) =
@@ -1566,7 +1593,7 @@ Section: Structural Verifier
   lir-check-func (f) =
    let nb = list-length (f.blocks)
    in let nv = f.nvregs
-   in let entries0 = lir-init-entries 0 nb []
+   in let entries0 = lir-init-entries 0 nb nv []
    in let pv = lir-mark-params (lir-make-vec 0 nv []) 0 (f.nparams)
    in let entries1 = list-set-at entries0 0 pv
    in let seen1 = list-set-at (lir-make-vec 0 nb []) 0 True
@@ -2881,9 +2908,19 @@ Section: Allocation Verifier
   lir-occ-intersect (a) (b) (i) (n) (acc) =
    if i >= n then acc else lir-occ-intersect a b (i + 1) n (list-push acc (if (list-at a i) == (list-at b i) then list-at a i else 0 - 1))
 
-  lir-alloc-init-entries : Integer, Integer, List (List Integer) -> List (List Integer)
-  lir-alloc-init-entries (i) (n) (acc) =
-   if i >= n then acc else lir-alloc-init-entries (i + 1) n (list-push acc [])
+ Born nloc wide with every location unoccupied, for the same reason the
+ definedness table is born nvregs wide: `lir-occ-copy` and
+ `lir-occ-intersect` each ask for exactly nloc elements, and a block no
+ predecessor propagated into would otherwise be walked with an occupancy
+ vector read from past the end of an empty list. This is the allocation
+ checker's copy of the defect fixed in `lir-init-entries` above, and it is
+ the more consequential of the two: CDX9008 is the verifier that catches a
+ call-crossing value left in a caller-saved register, and its
+ `lir-alloc-result-msg` reads `last-occ` off exactly that block.
+
+  lir-alloc-init-entries : Integer, Integer, Integer, List (List Integer) -> List (List Integer)
+  lir-alloc-init-entries (i) (n) (nloc) (acc) =
+   if i >= n then acc else lir-alloc-init-entries (i + 1) n nloc (list-push acc (lir-occ-make 0 nloc []))
 
   lir-assigned-loc : List Location, Integer, Integer -> Integer
   lir-assigned-loc (assign) (vreg) (budget) =
@@ -3069,7 +3106,7 @@ Section: Allocation Verifier
    let nb = list-length (f.blocks)
    in let budget = tgt.budget
    in let nloc = budget + lir-assign-max-slot assign 0 (list-length assign) 0
-   in let entries0 = lir-alloc-init-entries 0 nb []
+   in let entries0 = lir-alloc-init-entries 0 nb nloc []
    in let occ0 = lir-alloc-seed-params assign 0 (f.nparams) budget (lir-occ-make 0 nloc [])
    in let entries1 = list-set-at entries0 0 occ0
    in let seen1 = list-set-at (lir-make-vec 0 nb []) 0 True
@@ -3081,7 +3118,7 @@ Section: Dump and Pass
  A textual rendering of a lowered function: the signature, the vreg count,
  the blocks (each `bN:` then its instructions, joined by ` | `), and the
  result operand. It exists so the lowering can be driven over real IR and
- read back from the compile log, before any allocator consumes it — the
+ read back from the compile log, before any allocator consumes it -- the
  same way the occurrence analyser's `occ-report` proved that analysis over
  real lowered IR.
 

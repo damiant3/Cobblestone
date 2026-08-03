@@ -1,0 +1,169 @@
+Chapter: CapabilityDoors
+  cites Foreword chapter Capability
+
+ A binary reaches the kernel through two doors, and the chapter under test
+ exists to make both doors grant it the same authority. The boot grant
+ expands a capability by NAME: boot-cap-mask-for calls cap-bits-for-name.
+ The verified loader expands one by ID: cdx-cap-to-kern-bits calls
+ cap-bits-for-id, and the id it holds is whatever the manifest stored,
+ which is cap-id-for-name. So a real binary travels name, then id, then
+ bits, and the claim is that it arrives where the boot path arrives in one
+ step. That claim was written down and never executed.
+
+ Nothing had ever called any of this. Foreword chapter Capability was
+ cited by exactly one test, the compile smoke test, so all twenty-four
+ names resolved, every function type-checked, and none was asked an
+ answer.
+
+ An agreement count on its own is satisfied by two doors that both answer
+ zero, which is the shape this project is repeatedly caught by, so the
+ count of rows granting a NON-ZERO mask is reported beside it. A table
+ that expanded to no authority at all would agree perfectly and show up
+ here as zero.
+
+ The three masks printed at the end are the re-checkable part. They are
+ readable straight off the table: Console holds base bit 0 with read 4 and
+ write 5, so read is 1 plus 16, write is 1 plus 32, and readwrite is 1
+ plus 16 plus 32. FileSystem has no base bit and read 6 and write 7, so it
+ is 64, 128, and their union. Concurrent has no direction and carries ipc
+ and process-create as extra bits, so all three directions answer alike.
+
+ We say:
+
+Section: Both doors, every row, every direction
+
+  doors-agree : List CapSpec, Integer, Integer, Integer, Integer -> Integer
+  doors-agree (ts) (i) (len) (dir) (acc) =
+    if i >= len then acc
+    else let s = list-at ts i
+    in let by-name = cap-bits-for-name (s.cs-name) dir
+    in let by-id = cap-bits-for-id (cap-id-for-name (s.cs-name)) dir
+    in doors-agree ts (i + 1) len dir (acc + (if by-name == by-id then 1 else 0))
+
+  doors-nonzero : List CapSpec, Integer, Integer, Integer, Integer -> Integer
+  doors-nonzero (ts) (i) (len) (dir) (acc) =
+    if i >= len then acc
+    else let s = list-at ts i
+    in let by-name = cap-bits-for-name (s.cs-name) dir
+    in doors-nonzero ts (i + 1) len dir (acc + (if by-name /= 0 then 1 else 0))
+
+  test-doors : Text =
+    let ts = capability-table
+    in let n = list-length ts
+    in let ar = doors-agree ts 0 n cap-dir-read 0
+    in let aw = doors-agree ts 0 n cap-dir-write 0
+    in let arw = doors-agree ts 0 n cap-dir-readwrite 0
+    in "agree=" & show (ar + aw + arw) & "/" & show (n * 3)
+
+  test-nonzero : Text =
+    let ts = capability-table
+    in let n = list-length ts
+    in let zr = doors-nonzero ts 0 n cap-dir-read 0
+    in let zw = doors-nonzero ts 0 n cap-dir-write 0
+    in let zrw = doors-nonzero ts 0 n cap-dir-readwrite 0
+    in "granting=" & show (zr + zw + zrw) & "/" & show (n * 3)
+
+Section: A direction is a refinement, never a third thing
+
+ For a family that has a direction, asking for read and asking for write
+ must together be exactly what asking for both gives, and neither alone
+ may be all of it. For a family that has no direction the answer cannot
+ depend on the direction at all. cap-dir-bits ends in an unguarded
+ readwrite branch, so a direction constant that drifted would not fail a
+ comparison, it would fall through and hand out both bits.
+
+  dir-union-ok : List CapSpec, Integer, Integer, Integer -> Integer
+  dir-union-ok (ts) (i) (len) (acc) =
+    if i >= len then acc
+    else let s = list-at ts i
+    in let r = cap-bits-for-name (s.cs-name) cap-dir-read
+    in let w = cap-bits-for-name (s.cs-name) cap-dir-write
+    in let rw = cap-bits-for-name (s.cs-name) cap-dir-readwrite
+    in dir-union-ok ts (i + 1) len (acc + (if bit-or r w == rw then 1 else 0))
+
+  cd-both : Boolean, Boolean -> Boolean
+  cd-both (a) (b) = if a then b else False
+
+  dir-distinct-ok : List CapSpec, Integer, Integer, Integer -> Integer
+  dir-distinct-ok (ts) (i) (len) (acc) =
+    if i >= len then acc
+    else let s = list-at ts i
+    in let r = cap-bits-for-name (s.cs-name) cap-dir-read
+    in let w = cap-bits-for-name (s.cs-name) cap-dir-write
+    in let rw = cap-bits-for-name (s.cs-name) cap-dir-readwrite
+    in let directional = s.cs-read-bit >= 0
+    in let ok = if directional then cd-both (r /= rw) (w /= rw) else cd-both (r == rw) (w == rw)
+    in dir-distinct-ok ts (i + 1) len (acc + (if ok then 1 else 0))
+
+  test-directions : Text =
+    let ts = capability-table
+    in let n = list-length ts
+    in "union=" & show (dir-union-ok ts 0 n 0) & "/" & show n & " refines=" & show (dir-distinct-ok ts 0 n 0) & "/" & show n
+
+Section: A capability that was not granted must not verify
+
+ A miss answers negative one for an identifier and zero for a mask. Zero
+ is the honest answer for an unknown capability: no authority. An unknown
+ name and an unknown id are both asked, because the loader is reached by
+ id and a manifest carrying a number nobody assigned is exactly the case
+ that must not open a door.
+
+  test-ungranted : Text =
+    let bad-id = cap-id-for-name "NotACapability"
+    in let r = cap-bits-for-name "NotACapability" cap-dir-read
+    in let w = cap-bits-for-name "NotACapability" cap-dir-write
+    in let rw = cap-bits-for-name "NotACapability" cap-dir-readwrite
+    in let by-id = cap-bits-for-id 999 cap-dir-readwrite
+    in "unknown-id=" & show bad-id & " unknown-name-bits=" & show (r + w + rw) & " unknown-id-bits=" & show by-id
+
+Section: The vocabulary is derived, not stored
+
+ Eighteen rows give twenty-four names, because Console, FileSystem and
+ Network each admit a dotted refinement in an effect row. A dotted name is
+ a direction on a capability and not a capability of its own, so exactly
+ the eighteen undotted names may resolve to a row and the six dotted ones
+ must not. That is the derivation stated as an arithmetic anyone can
+ re-check, and it needs no string search to say it.
+
+  vocab-resolving : List Text, Integer, Integer, Integer -> Integer
+  vocab-resolving (ns) (i) (len) (acc) =
+    if i >= len then acc
+    else vocab-resolving ns (i + 1) len (acc + (if cap-id-for-name (list-at ns i) >= 0 then 1 else 0))
+
+  test-vocab : Text =
+    let ns = capability-names
+    in let n = list-length ns
+    in let rows = list-length capability-table
+    in "names=" & show n & " rows=" & show rows & " resolving=" & show (vocab-resolving ns 0 n 0)
+
+Section: The masks themselves
+
+  test-masks : Text =
+    let cr = cap-bits-for-name "Console" cap-dir-read
+    in let cw = cap-bits-for-name "Console" cap-dir-write
+    in let crw = cap-bits-for-name "Console" cap-dir-readwrite
+    in "console=" & show cr & "," & show cw & "," & show crw
+
+  test-masks-fs : Text =
+    let fr = cap-bits-for-name "FileSystem" cap-dir-read
+    in let fw = cap-bits-for-name "FileSystem" cap-dir-write
+    in let frw = cap-bits-for-name "FileSystem" cap-dir-readwrite
+    in "filesystem=" & show fr & "," & show fw & "," & show frw
+
+  test-masks-conc : Text =
+    let kr = cap-bits-for-name "Concurrent" cap-dir-read
+    in let krw = cap-bits-for-name "Concurrent" cap-dir-readwrite
+    in "concurrent=" & show kr & "," & show krw
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni test-doors
+    print-line-uni test-nonzero
+    print-line-uni test-directions
+    print-line-uni test-ungranted
+    print-line-uni test-vocab
+    print-line-uni test-masks
+    print-line-uni test-masks-fs
+    print-line-uni test-masks-conc
+  end

@@ -1,0 +1,154 @@
+Chapter: CamCapture
+  cites Works chapter GopXhci
+  cites Works chapter GopUsbCam
+  grounds Device.Port
+  grounds Device.Mmio
+
+ This is the implementation of the Camera effect.
+
+ capture and capture-raw were declared as operations of the Camera
+ effect in Foreword chapter Camera with no handler, so a call died at
+ emit with CDX2040. They are real here, over the isochronous endpoint
+ Works chapter GopUsbCam drives: a frame that arrives is a frame the
+ controller delivered, not a constant. Unlike Location and Sensors,
+ nothing about this chapter is a placeholder.
+
+ They are not in the foreword because reading the camera means resetting
+ a root port, enumerating a device, walking a configuration descriptor
+ and queueing an isochronous TRB, and none of that is a foreword
+ concern. Device.Port and Device.Mmio are grounded here so a caller
+ declares Camera and nothing else, which is the same arrangement Kernel
+ chapter MicInput uses for the microphone.
+
+Section: One Format, Refused Rather Than Resized
+
+ capture-raw takes a width and a height because the effect declared it
+ that way. This device publishes exactly one format, 160 by 120 YUYV,
+ and this chapter refuses any other size instead of scaling to it.
+
+ That is the load-bearing decision in the chapter, so it is worth the
+ sentence. A resize would answer every request successfully while
+ quietly changing what the sensor saw, and a caller asking for 640 by
+ 480 would receive an upscaled 160 by 120 frame with no way to tell.
+ Refusing is the answer a caller can act on: cf-ok is False and the
+ dimensions it can have are readable from cam-frame-width and
+ cam-frame-height.
+
+Section: The Captured Frame
+
+ A frame is the buffer plus the shape of what is in it, so a caller
+ reads pixels rather than an address, and a failed capture is a value
+ rather than a convention about a sentinel.
+
+  CamFrame = record {
+    cf-ok : Boolean,
+    cf-width : Integer,
+    cf-height : Integer,
+    cf-cam : UsbCam
+  }
+
+  cam-no-frame : CamFrame
+  cam-no-frame = CamFrame { cf-ok = False, cf-width = 0, cf-height = 0, cf-cam = cam-no-cam }
+
+ The camera sits on root port 3, which is PORTSC index 2: the slot
+ context turns the zero-based index into the one-based root port number.
+
+  cam-port-index : Integer = 2
+  cam-cfg-descriptor-bytes : Integer = 256
+
+Section: Capture
+
+ The sequence is the one codex/test/apps/usb-cam-frame proves: connect
+ to the controller, reset the port, open the device, fetch its
+ configuration descriptor, find the streaming interface at the alternate
+ setting that HAS an endpoint, open that endpoint, queue one frame.
+
+ Every step answers cam-no-frame on failure rather than a partly-built
+ frame, because a CamFrame whose cf-ok is True must mean the pixels were
+ delivered. cam-read-frame answers zero for success and a negative for a
+ timeout, and the difference matters: a timeout leaves the buffer
+ holding whatever it held before, which would read as a picture.
+
+  cam-capture-frame : [Camera] CamFrame
+  cam-capture-frame = act
+    xh <- xhci-connect
+    if xh.xh-ok == False then cam-no-frame
+    else let speed = xhci-reset-port xh cam-port-index
+    in let dev = xhci-open-device xh cam-port-index speed
+    in if dev.ud-ok == False then cam-no-frame
+    else let cfg = alloc-zeroed cam-cfg-descriptor-bytes 64
+    in let got = usb-get-descriptor xh dev 2 0 cfg (cam-cfg-descriptor-bytes - 1)
+    in if got == False then cam-no-frame
+    else cam-capture-configured xh dev cfg
+  end
+
+  cam-capture-configured : XhciHost, UsbDev, Integer -> [Camera] CamFrame
+  cam-capture-configured (xh) (dev) (cfg) =
+    let total = cam-cfg-total cfg
+    in let iface = cam-find-stream-iface cfg 0 total
+    in if iface < 0 then cam-no-frame
+    else let cam = cam-open xh dev cfg iface total
+    in if cam.uc-ok == False then cam-no-frame
+    else if cam-read-frame cam /= 0 then cam-no-frame
+    else CamFrame {
+      cf-ok = True,
+      cf-width = cam-frame-width,
+      cf-height = cam-frame-height,
+      cf-cam = cam
+    }
+
+Section: What A Capture Costs
+
+ Every call does the whole sequence: reset, enumerate, descriptor,
+ configure, one frame. That is what an effect operation taking no handle
+ forces -- capture's declared shape has nowhere to keep a camera between
+ calls -- and it is honest about the price rather than caching a device
+ behind the caller's back.
+
+ The price is worth naming because this heap has no collector. Each call
+ allocates a 256-byte descriptor buffer and a 38400-byte frame buffer,
+ and both live until the function that called capture returns. Three
+ captures in one function is a little over a hundred kilobytes still
+ held; a loop taking a frame a second is a leak with a camera attached
+ to it, which is the phrase GopUsbCam already uses about the per-frame
+ allocation it was written to avoid.
+
+ So a caller that wants ONE frame uses capture, and a caller that wants a
+ STREAM does not: it cites Works chapter GopUsbCam, holds the UsbCam
+ itself, and calls cam-read-frame, which reuses the buffer opened once.
+ The effect is the convenient door, not the fast one.
+
+Section: The Effect Operations
+
+  capture : [Camera] CamFrame
+  capture = cam-capture-frame
+
+  capture-raw : Integer, Integer -> [Camera] CamFrame
+  capture-raw (w) (h) =
+    if w /= cam-frame-width then cam-no-frame
+    else if h /= cam-frame-height then cam-no-frame
+    else cam-capture-frame
+
+Section: Reading Pixels
+
+ YUYV packs one luma byte per pixel and shares chroma across a pair.
+ A frame that is not ok answers zero everywhere rather than reading an
+ address it does not own.
+
+  frame-luma : CamFrame, Integer, Integer -> Integer
+  frame-luma (f) (x) (y) =
+    if f.cf-ok == False then 0
+    else if x < 0 then 0
+    else if y < 0 then 0
+    else if x >= f.cf-width then 0
+    else if y >= f.cf-height then 0
+    else cam-luma (f.cf-cam) x y
+
+  frame-chroma : CamFrame, Integer, Integer -> Integer
+  frame-chroma (f) (x) (y) =
+    if f.cf-ok == False then 0
+    else if x < 0 then 0
+    else if y < 0 then 0
+    else if x >= f.cf-width then 0
+    else if y >= f.cf-height then 0
+    else cam-chroma (f.cf-cam) x y

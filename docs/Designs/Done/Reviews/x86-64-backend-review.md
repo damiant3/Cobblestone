@@ -19,13 +19,13 @@ Implement the builtins and add an unresolved-call warning.
 
 ---
 
-## Bug 1 — FIXED: Register conflict in closure allocation clobbers heap pointer
+## Bug 1 -- FIXED: Register conflict in closure allocation clobbers heap pointer
 
 *Fixed by Cam in `834657e`.* Verified: `apply double 21` → exit 42. ✓
 
 ---
 
-## Bug 2 — FIXED: 5 missing builtins → unresolved calls
+## Bug 2 -- FIXED: 5 missing builtins → unresolved calls
 
 Fixed by Cam in `296e359`. Verified: zero unresolved call warnings on self-hosted compile.
 
@@ -34,7 +34,7 @@ were ported from the RISC-V backend and `PatchCalls()` now warns on unresolved t
 
 ---
 
-## Bug 3 — BLOCKER: ConstructedType not resolved in record allocation → undersized heap object
+## Bug 3 -- BLOCKER: ConstructedType not resolved in record allocation → undersized heap object
 
 **Root cause of the REMAINING self-hosted segfault** (after Bug 1 and Bug 2 fixes).
 
@@ -60,7 +60,7 @@ Heap pointer R10 = 0x43b058 = record_addr + 8
 ```
 
 `LexState` has 4 fields (`source : Text, offset : Integer, line : Integer, column : Integer`)
-requiring 32 bytes. But R10 only advanced 8 bytes past the record base — the allocation
+requiring 32 bytes. But R10 only advanced 8 bytes past the record base -- the allocation
 treated the record as having 1 field instead of 4.
 
 **Root cause:** `LexState` is a `ConstructedType` at the IR level. The codegen's record
@@ -71,9 +71,9 @@ allocated space into uninitialized heap, and reads return zeros.
 
 **Where to fix:** Check every place that reads field count or field list from a type:
 
-1. `EmitRecord` (line ~580) — computes allocation size from field count
-2. `EmitFieldAccess` (line 604) — `fa.Record.Type is RecordType rt` misses ConstructedType
-3. `EmitConstructor` — same pattern for sum types
+1. `EmitRecord` (line ~580) -- computes allocation size from field count
+2. `EmitFieldAccess` (line 604) -- `fa.Record.Type is RecordType rt` misses ConstructedType
+3. `EmitConstructor` -- same pattern for sum types
 
 All need a ConstructedType resolution step, same as exists in escape copy at line 2001:
 ```csharp
@@ -86,14 +86,14 @@ The x86-64 backend needs the same resolution, either at the IR level or in the c
 
 ---
 
-## Bug 2 — KNOWN: `p_align = 16` in ELF writer
+## Bug 2 -- KNOWN: `p_align = 16` in ELF writer
 
-**File:** `ElfWriterX86_64.cs` — same issue as ARM64/RISC-V (see `arm64-qemu-verification.md`).
+**File:** `ElfWriterX86_64.cs` -- same issue as ARM64/RISC-V (see `arm64-qemu-verification.md`).
 
 Linux x86-64 kernel happens to be lenient about this (binaries run), but it's technically
 wrong and may fail on other loaders. Fix: `(ulong)16` → `(ulong)0x1000` in both PHDR entries.
 
-Not blocking — x86-64 binaries run natively despite the wrong alignment.
+Not blocking -- x86-64 binaries run natively despite the wrong alignment.
 
 ---
 
@@ -108,7 +108,7 @@ Not blocking — x86-64 binaries run natively despite the wrong alignment.
 - **Prologue/epilogue** uses RBP frame, pushes callee-saved in correct order, restores via
   `lea rsp, [rbp-0x28]` then pops. Solid.
 - **Spill infrastructure** (R8/R9 scratch, RBP-relative offsets) matches the RISC-V pattern.
-- Self-hosted compiler compiles successfully to 235KB — the entire pipeline works except for
+- Self-hosted compiler compiles successfully to 235KB -- the entire pipeline works except for
   this one register conflict at runtime.
 
 ---
@@ -126,4 +126,4 @@ Not blocking — x86-64 binaries run natively despite the wrong alignment.
 | List length | ✓ exit 5 |
 | String equality | ✓ exit 1 |
 | Text-length | ✓ exit 5 |
-| Self-hosted → x86-64 (239KB) | Compiles ✓, SIGSEGV at runtime — Bug 2 |
+| Self-hosted → x86-64 (239KB) | Compiles ✓, SIGSEGV at runtime -- Bug 2 |

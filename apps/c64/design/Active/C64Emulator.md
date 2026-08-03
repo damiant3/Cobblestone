@@ -1,4 +1,4 @@
-# Commodore 64 Emulator — Design and Plan
+# Commodore 64 Emulator -- Design and Plan
 
 A cycle-approximate Commodore 64 emulator written entirely in Codex,
 compiled to CDX, and running on bare metal inside codex-vm. No
@@ -28,7 +28,7 @@ standard CDX binary, booted with `codex-vm -kernel c64.cdx -gop
 
 ---
 
-## Phase 1 — CPU and Memory (the core loop)
+## Phase 1 -- CPU and Memory (the core loop)
 
 ### MOS 6502 CPU
 
@@ -48,7 +48,7 @@ Addressing modes:
 - Zero page,X / Zero page,Y ($nn,X / $nn,Y)
 - Absolute ($nnnn)
 - Absolute,X / Absolute,Y ($nnnn,X / $nnnn,Y)
-- Indirect ($nnnn) — JMP only
+- Indirect ($nnnn) -- JMP only
 - Indexed indirect (($nn,X))
 - Indirect indexed (($nn),Y)
 - Relative (branches, signed 8-bit offset)
@@ -112,16 +112,16 @@ copy the rest to that address in C64 RAM, set the PC.
 Phase 1 is done when: a .prg containing hand-assembled 6502 that
 writes characters to screen RAM ($0400) and color RAM ($D800)
 produces visible colored text on the GOP framebuffer. No sprites,
-no scrolling, no audio — just the CPU, memory, bank switching,
+no scrolling, no audio -- just the CPU, memory, bank switching,
 and a minimal VIC-II that reads screen RAM and renders characters
 using the character ROM font.
 
 ---
 
-## Phase 2 — VIC-II Display
+## Phase 2 -- VIC-II Display
 
 The VIC-II (MOS 6569 PAL / 6567 NTSC) generates the C64's video
-output. It operates in lockstep with the CPU — the VIC-II steals
+output. It operates in lockstep with the CPU -- the VIC-II steals
 cycles from the CPU during badlines (character pointer fetches) and
 sprite fetches.
 
@@ -143,7 +143,7 @@ are Phase 4.
 
 The VIC-II draws 312 lines (PAL) or 263 lines (NTSC) per frame.
 Visible area is lines 51-250 (200 lines). Each line takes 63
-CPU cycles (PAL). The CPU and VIC-II share the bus — on "badlines"
+CPU cycles (PAL). The CPU and VIC-II share the bus -- on "badlines"
 (every 8th line in the visible area), the VIC-II stalls the CPU
 for ~40 cycles to fetch character pointers.
 
@@ -178,7 +178,7 @@ GOP framebuffer:
  7 Yellow      $B8C76F   15 Light grey  $959595
 ```
 
-(Pepto's palette — the standard-bearer for accurate C64 colors.)
+(Pepto's palette -- the standard-bearer for accurate C64 colors.)
 
 ### Rendering to GOP
 
@@ -201,7 +201,7 @@ simple BASIC programs).
 
 ---
 
-## Phase 3 — Keyboard and Joystick
+## Phase 3 -- Keyboard and Joystick
 
 ### CIA 1 Keyboard Matrix
 
@@ -229,7 +229,7 @@ and joystick-controlled games respond to arrow keys + fire.
 
 ---
 
-## Phase 4 — SID Audio
+## Phase 4 -- SID Audio
 
 The MOS 6581/8580 SID is the soul of the C64. Three independent
 voice channels, each with:
@@ -261,7 +261,7 @@ should sound recognizable.
 
 ---
 
-## Phase 5 — Full Compatibility
+## Phase 5 -- Full Compatibility
 
 Everything needed for real games:
 
@@ -287,7 +287,7 @@ Boulder Dash, Maniac Mansion, Archon) are playable with sound.
 
 ---
 
-## Phase 6 — The Plug (Codex → 6502)
+## Phase 6 -- The Plug (Codex → 6502)
 
 Once the emulator works, build the reverse path: a Codex-to-6502
 compiler plug that emits .prg files.
@@ -355,8 +355,8 @@ pwsh apps/c64/build.ps1 -Game games/boulder-dash.prg
 ## Why This Matters
 
 The Codex project claims to be a complete computational substrate.
-Running a Commodore 64 inside it — with display, audio, and keyboard
-input — is a concrete demonstration that the claim is real. The 6502
+Running a Commodore 64 inside it -- with display, audio, and keyboard
+input -- is a concrete demonstration that the claim is real. The 6502
 is the simplest interesting CPU to emulate. The C64 is the most
 beloved machine that used it. The combination tests every layer of
 the stack: the compiler (building the emulator), the OS (GOP, HDA,

@@ -21,7 +21,7 @@ removal, and all-capabilities revocation.
 Key properties:
 - Records are signed by the revoking authority (Ed25519)
 - Content-addressed (SHA-256 hash is the record ID)
-- Verified on add — unsigned/invalid records are rejected
+- Verified on add -- unsigned/invalid records are rejected
 - Key compromise records specify an effective-since date,
   allowing signatures made before compromise to remain valid
 - Wire format for transmission over data channels or fact store

@@ -1,4 +1,4 @@
-# Cinematic Engine — CodexMagic Scene Renderer
+# Cinematic Engine -- CodexMagic Scene Renderer
 
 ## Status
 
@@ -9,7 +9,7 @@ system. There is no `Scene` or `Camera` chapter in `codex.foreword.ui`.
 The CSS parallax stand-in described below as "what we build now" was
 never built either: `apps/games/codexmagic/web/welcome.html` exists, but
 it contains no parallax, no canvas, no `translateZ`, and no
-`perspective` — only the Ashenvale lore text. The design is a design.
+`perspective` -- only the Ashenvale lore text. The design is a design.
 
 The WASM renderer remains blocked on the Spark WASM backend.
 
@@ -18,10 +18,10 @@ The WASM renderer remains blocked on the Spark WASM backend.
 A WASM-compiled scene renderer that produces layered parallax
 landscapes with simple animations and narration overlays. Used for:
 
-- **Landing page** — first thing a visitor sees before login
-- **Cutscenes** — story beats between game events
-- **Card reveals** — dramatic pack-opening sequences
-- **World building** — environment art that establishes tone
+- **Landing page** -- first thing a visitor sees before login
+- **Cutscenes** -- story beats between game events
+- **Card reveals** -- dramatic pack-opening sequences
+- **World building** -- environment art that establishes tone
 
 The renderer is built in Codex, compiled through the WASM backend
 (Spark project), and embedded in the web client via a canvas element.
@@ -61,7 +61,7 @@ foreground tree at depth 10 with scrollFactor 0.9 moves almost 1:1.
 
 ### Camera
 
-The camera follows a **rail** — a sequence of keyframes:
+The camera follows a **rail** -- a sequence of keyframes:
 
 ```
 CameraKeyframe = record {
@@ -121,11 +121,11 @@ similar) that:
 6. Renders narration text with fade timing
 
 Until Spark WASM is ready, the landing page uses CSS parallax as a
-stand-in — same visual language, implemented with `transform:
+stand-in -- same visual language, implemented with `transform:
 translateZ()` and `perspective` in pure CSS/JS. The scene description
 format is the same; only the renderer differs.
 
-## Opening Scene — "Descent to Ashenvale Harbor"
+## Opening Scene -- "Descent to Ashenvale Harbor"
 
 ### Layers (back to front)
 
@@ -161,7 +161,7 @@ format is the same; only the renderer differs.
 | 9s | "...to the harbor where mages gather." | center |
 | 13s | "Your story begins here." | bottom |
 
-## Interim CSS Parallax (the proposed first step — NOT built)
+## Interim CSS Parallax (the proposed first step -- NOT built)
 
 The intent was: the landing page (`welcome.html`) uses CSS `perspective`
 and `translateZ` on nested divs to simulate the same parallax effect with
@@ -170,7 +170,7 @@ gradient/CSS-painted layers. Each layer is a full-viewport div with
 S compensates for perspective shrinkage. Scroll drives the camera.
 
 None of that is in `welcome.html` today. This remains the cheapest way
-to start — it needs no compiler work and no Spark — and it is the
+to start -- it needs no compiler work and no Spark -- and it is the
 recommended first move if this design is picked up.
 
 When WASM Spark is ready, the CSS layers are replaced with a single
@@ -179,8 +179,8 @@ description doesn't change.
 
 ## Dependencies
 
-- **Spark WASM backend** — the design doc for this does not exist; Gap 9
+- **Spark WASM backend** -- the design doc for this does not exist; Gap 9
   in CurrentPlan is the live reference.
-- **Codex UI library** — would need new `Scene` and `Camera` chapters in
+- **Codex UI library** -- would need new `Scene` and `Camera` chapters in
   `codex.foreword.ui` (only `Animation.codex` exists there today).
-- **Asset pipeline** — SVG or procedural generation for layer images.
+- **Asset pipeline** -- SVG or procedural generation for layer images.

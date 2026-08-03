@@ -1,4 +1,4 @@
-# P2 HAMT Revert — Post-Mortem
+# P2 HAMT Revert -- Post-Mortem
 
 **Date**: 2026-03-25
 **Agent**: Cam (Claude Code CLI)
@@ -13,7 +13,7 @@ identified O(n) linear scans in TypeEnv, Scope, and UnificationState as the P2
 bottleneck. The recommendation was to replace `List TypeBinding` with hash-based
 lookup structures.
 
-I implemented a HAMT (Hash-Array Mapped Trie) — a functional persistent hash map —
+I implemented a HAMT (Hash-Array Mapped Trie) -- a functional persistent hash map --
 monomorphized as `TypeMap` for `CodexType` values. Migrated TypeEnv, Scope,
 UnificationState, LowerCtx, and all TypeChecker type resolution to use it.
 
@@ -22,7 +22,7 @@ UnificationState, LowerCtx, and all TypeChecker type resolution to use it.
 | Metric | Before P2 | With HAMT | After revert |
 |--------|-----------|-----------|--------------|
 | Stage 1 (self-compile) | ~1,775ms (baseline) | 3,233ms | 2,323ms |
-| Stage 2 (fixed-point) | — | 4,572ms | 3,669ms |
+| Stage 2 (fixed-point) | -- | 4,572ms | 3,669ms |
 | Output size | 255,344 chars | 268,236 chars | 258,626 chars |
 
 **The HAMT made the compiler 82% slower, not faster.**
@@ -70,7 +70,7 @@ Fixed with `tm-pow2` during the investigation, but reverted with the rest of P2.
 
 ### 4. Polymorphic records not supported by reference parser
 
-The HAMT prelude uses `HamtMap a = record { root : HamtNode a, size : Integer }` —
+The HAMT prelude uses `HamtMap a = record { root : HamtNode a, size : Integer }` --
 a polymorphic record. The reference C# parser doesn't support type parameters on
 record definitions. Required monomorphizing to `TypeMap` with `CodexType` values
 only, which added complexity and reduced generality.
@@ -78,7 +78,7 @@ only, which added complexity and reduced generality.
 ## The Right Fix
 
 The performance report's diagnosis was correct: O(n) lookups are a bottleneck. But
-the prescription — a persistent hash map — was wrong for a language without:
+the prescription -- a persistent hash map -- was wrong for a language without:
 
 1. **Mutable arrays** (HAMT children need O(1) array update)
 2. **Bitwise operations** (bitmap math via division is 10x slower than shifts)

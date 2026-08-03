@@ -5,7 +5,7 @@ Detailed development timeline. See [README.md](../../README.md) for highlights.
 | Milestone | What | Date |
 |-----------|------|------|
 | Foundation | Reference compiler in C#, type system, IR, transpiler backends | 2026-03-14 |
-| Self-hosting (BS1) | Fixed point — stage 1 === stage 3 | 2026-03-16 |
+| Self-hosting (BS1) | Fixed point -- stage 1 === stage 3 | 2026-03-16 |
 | Bare metal | x86-64 ELF on bare-metal VM, no OS, no libc | 2026-03-23 |
 | Pingpong (BS2) | Bare-metal semantic equivalence | 2026-04-07 |
 | **Self-sustaining (BS3)** | **Bare-metal CDX reproduces itself byte-identical** | **2026-04-24** |
@@ -92,20 +92,20 @@ Detailed development timeline. See [README.md](../../README.md) for highlights.
 | **237 foreword modules** | **24 quires, 54 compiler files, 208 test samples, seed `3C624969`** | **2026-05-31** |
 | **For-expressions** | **`for x in xs do f x` sugar for map loops; dogfooded across ~50 call sites** | **2026-06-02** |
 | CHECK/LOWER heap reduction | Phase-aware deck sizing, EOF settle counter; ~80 MB saved | 2026-06-02 |
-| x86-64 codegen optimization | Comparison folding, preamble elision, store-load elimination, immediate ops — fib(35) cut from 107 to 53 instructions | 2026-06-06 |
+| x86-64 codegen optimization | Comparison folding, preamble elision, store-load elimination, immediate ops -- fib(35) cut from 107 to 53 instructions | 2026-06-06 |
 | Spark WebGPU Studio | 161KB WASM, 400+ exports, 28s build. WASM TCO: 255 functions. CAD workbench. UV editor. KvStore. Codex Designer. | 2026-06-06 |
 | CodexMagic web platform | Card game server + web portal, game engine, economy, clans, seasons | 2026-06-06 |
-| **Native-class codegen** | **TCO parallel-move shuffle, R8/R9-staged operands, leaf/near-leaf frame elision, IrRemInt + inliner — sum 14 insns (beats C /O2), fact 17, fib 23, gcd 23** | **2026-06-10** |
+| **Native-class codegen** | **TCO parallel-move shuffle, R8/R9-staged operands, leaf/near-leaf frame elision, IrRemInt + inliner -- sum 14 insns (beats C /O2), fact 17, fib 23, gcd 23** | **2026-06-10** |
 | **Application wave** | **630 app modules across 47 apps: ERP + 5 verticals, Market, Browser, FileShare, Secrets, Diagram, Globe, Star Atlas, MathBook, CVMM, 20 page apps on WebApp template** | **2026-06-10** |
 | **Punctual functions** | **`punctual` keyword: per-function bounded-execution enforcement (novel). CDX6001-6005 compile errors. Instruction count reporting (CDX6010). Optional budget (CDX6011).** | **2026-06-13** |
-| **Unit types** | **`Second = unit Integer` — distinct types with zero runtime overhead. Arithmetic preserves units. Cross-unit is a type error. Bounded + unit composition.** | **2026-06-13** |
+| **Unit types** | **`Second = unit Integer` -- distinct types with zero runtime overhead. Arithmetic preserves units. Cross-unit is a type error. Bounded + unit composition.** | **2026-06-13** |
 | IoT protocol stack | MQTT v5, CoAP (RFC 7252), LwM2M, OTA updates with A/B slots and anti-rollback | 2026-06-13 |
-| Board drivers | STM32F4, ESP32-C6, Raspberry Pi 4 — GPIO, UART, SPI, I2C with smoke tests | 2026-06-13 |
+| Board drivers | STM32F4, ESP32-C6, Raspberry Pi 4 -- GPIO, UART, SPI, I2C with smoke tests | 2026-06-13 |
 | EU compliance evidence | ComplianceEvidence module: 17 CRA/ETSI/NIST requirements mapped to Codex features | 2026-06-13 |
 | CCE Tier 1 | 2048 two-byte codepoints covering all 27 EU languages; block-offset table (~48 bytes rodata) | 2026-06-14 |
 | Test consolidation | 232 → 137 samples; BVT in 113s | 2026-06-13 |
 | **Cross-arch GCC parity** | **ARM64 + RISC-V meet or beat GCC -O0 on all 4 micro-benchmarks. 24 optimization CLs: dest-driven emission, selective pro/epilogue, fused cmp+branch, frameless TCO. No optimizer.** | **2026-06-15** |
-| Prism IDE | Compiler integration for web IDE — dynamic compile, plug facade, syntax highlighting, error display | 2026-06-15 |
+| Prism IDE | Compiler integration for web IDE -- dynamic compile, plug facade, syntax highlighting, error display | 2026-06-15 |
 | **SIMD / Vector types** | **`Vector N T` first-class type with dependent lane count. SSE2 packed codegen (ADDPD/SUBPD/MULPD/DIVPD). `~` approximate equality (4 ULP). CDX2085 (no == on Real). vec-splat/extract/reduce-add builtins.** | **2026-06-15** |
 | **GPU plugs (PTX + SPIR-V)** | **Dual-target GPU compilation via plugs. PTX plug (NVIDIA sm_89) + SPIR-V plug (Vulkan 1.2+) built and compiling. Device IR emission. Design: DualTargetGpuCompilation.md.** | **2026-06-15** |
 | **Punctual foreword quire** | **8 chapters: IntOps, BitOps, Saturate, FastMath, Trig, ColorOps, Kinematic, Endian. Every function is `punctual`. Compiler whitelist fix for builtins.** | **2026-06-15** |

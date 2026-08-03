@@ -1,0 +1,299 @@
+Chapter: DataTableRows
+  cites UI chapter DataTable
+  cites UI chapter Widget
+  cites UI chapter Theme
+  cites UI chapter KeyInput
+
+ TrackerApp's issue list is a DataTable, and TrackerApp is one of the two
+ GuiOS apps named on the bar. CallPage, WorkflowHtml, RiverPage and
+ Notebook build tables too. None of them had a test.
+
+ The chapter is called a sortable table, so the sort is asked for even
+ though nothing outside this chapter calls it: an unused function that is
+ wrong is a trap laid for the first caller, and the sort rests on
+ comparing two Texts with the ordering operators, which is a primitive
+ worth adjudicating on its own before believing anything built on it.
+
+ The rows are seeded out of order and their first cells are single
+ letters, so a lexicographic sort has exactly one right answer and an
+ insertion-order pass-through is visibly different from it. The third
+ column is built with table-column-fixed, which nothing in the tree calls
+ either, so that the non-sortable path has a row that must NOT move under
+ a sort request.
+
+ Selection is asked on two rows and not one. The table stripes alternate
+ rows by setting a widget state, and a selected row carries a state too,
+ so a row's parity is exactly the axis on which the two can collide. Ask
+ only about row zero and the question is never put.
+
+ We say:
+
+Section: Reading a widget
+
+  at : WidgetNode, Integer -> WidgetNode
+  at (w) (i) = list-at (w.wn-children) i
+
+  payload : WidgetNode -> Text
+  payload (w) = when w.wn-kind
+    is WkLabel (t) -> t
+    is WkButton (t) -> t
+    is WkGauge (v) (m) -> "gauge"
+    is WkInput (t) (c) -> t
+    is WkSeparator -> "sep"
+    is WkPanel -> "panel"
+    is WkCustom (tag) -> tag
+
+  state-name : Integer -> Text
+  state-name (s) =
+    if s == state-normal then "normal"
+    else if s == state-hover then "hover"
+    else if s == state-pressed then "pressed"
+    else if s == state-disabled then "disabled"
+    else if s == state-focused then "focused"
+    else "unknown"
+
+ A built table is a header, then one panel per visible row, then a footer.
+
+  row-of : WidgetNode, Integer -> WidgetNode
+  row-of (t) (i) = at t (i + 1)
+
+  cell-of : WidgetNode, Integer, Integer -> Text
+  cell-of (t) (r) (c) = payload (at (row-of t r) c)
+
+Section: The table under test
+
+  probe-cols : List TableColumn
+  probe-cols = [
+    table-column "n" "Name" 100,
+    table-column "v" "Value" 60,
+    table-column-fixed "x" "Fixed" 40
+  ]
+
+  probe-rows : List TableRow
+  probe-rows = [
+    table-row "r1" ["c", "three", "-"],
+    table-row "r2" ["a", "one", "-"],
+    table-row "r3" ["e", "five", "-"],
+    table-row "r4" ["b", "two", "-"],
+    table-row "r5" ["d", "four", "-"]
+  ]
+
+  fresh : Integer -> DataTableState
+  fresh (x) = data-table-new "tbl" probe-cols probe-rows
+
+  empty : Integer -> DataTableState
+  empty (x) = data-table-new "none" probe-cols []
+
+Section: The comparison the sort rests on
+
+ Before asking whether the sort orders rows, ask what the primitive it
+ sorts with orders by. A sort checked only against its own comparison is
+ checked against nothing.
+
+ The pair a/b cannot answer this, because a and b sit the same way round
+ in the alphabet and in CCE. The pairs below are chosen so the two orders
+ disagree: CCE numbers letters by English frequency, so e is 13, t is 14,
+ a is 15, d is 22, c is 24 and b is 32. Every answer here is code-point
+ order, and the ones marked in the expected output as differing from the
+ alphabet are the reason a sorted column does not read alphabetically.
+
+  cmp : Text, Text -> Text
+  cmp (a) (b) = show (text-compare a b)
+
+  line-compare : Text =
+    "compare (code point): a/b=" & cmp "a" "b" & " b/c=" & cmp "b" "c"
+    & " c/d=" & cmp "c" "d" & " e/c=" & cmp "e" "c" & " t/a=" & cmp "t" "a"
+
+  line-compare-prefix : Text =
+    "compare (prefix): ab/abc=" & cmp "ab" "abc" & " ab/b=" & cmp "ab" "b"
+    & " empty/a=" & cmp "" "a" & " a/a=" & cmp "a" "a"
+
+Section: Shape and pagination
+
+  line-format : Text =
+    "format: [" & format-data-table (fresh 0) & "]"
+
+  line-pages : Text =
+    "pages: five-rows=" & show (data-table-page-count (fresh 0))
+    & " empty=" & show (data-table-page-count (empty 0))
+    & " visible=" & show (list-length (data-table-visible-rows (fresh 0)))
+
+  line-shape : Text =
+    let t = data-table-widget (fresh 0)
+    in let first = at t 0
+    in let last = at t (t.wn-child-count - 1)
+    in "shape: children=" & show (t.wn-child-count)
+    & " first=" & first.wn-id & " last=" & last.wn-id
+
+  line-header : Text =
+    let h = at (data-table-widget (fresh 0)) 0
+    in "header: [" & payload (at h 0) & "] [" & payload (at h 1) & "] [" & payload (at h 2) & "]"
+
+  line-cells : Text =
+    let t = data-table-widget (fresh 0)
+    in "cells row0: [" & cell-of t 0 0 & "] [" & cell-of t 0 1 & "] [" & cell-of t 0 2 & "]"
+
+  line-footer : Text =
+    let t = data-table-widget (fresh 0)
+    in "footer: [" & payload (at (at t (t.wn-child-count - 1)) 1) & "]"
+
+  line-footer-empty : Text =
+    let t = data-table-widget (empty 0)
+    in "footer-empty: [" & payload (at (at t (t.wn-child-count - 1)) 1) & "]"
+
+Section: Sorting
+
+ Seeded c a e b d. Ascending is a b c d e and descending is e d c b a;
+ either is plainly different from the seeded order, so a sort that did
+ nothing cannot pass as either.
+
+  order : DataTableState -> Text
+  order (dt) =
+    let t = data-table-widget dt
+    in cell-of t 0 0 & cell-of t 1 0 & cell-of t 2 0 & cell-of t 3 0 & cell-of t 4 0
+
+  line-seeded : Text = "sort: seeded=" & order (fresh 0)
+
+ Seeded c a e b d. The sort goes through Collate, so ascending is
+ alphabetical -- a b c d e -- and toggling gives the reverse. Encoding
+ order would have answered e a d c b, since CCE ranks the letters e(13)
+ t(14) a(15) d(22) c(24) b(32); that is printed beside it, so this line
+ fails if the sort ever falls back to comparing cells directly.
+
+  encoding-order : Text =
+    let e1 = text-compare "e" "a"
+    in let e2 = text-compare "d" "c"
+    in show e1 & show e2
+
+  line-sorted : Text =
+    "sort: asc=" & order (data-table-sort (fresh 0) 0)
+    & " toggled=" & order (data-table-sort (data-table-sort (fresh 0) 0) 0)
+    & " encoding-would-say=" & encoding-order
+
+ The sort copies the rows before reordering them, so a caller still
+ holding the table it handed in finds it in the order it built.
+
+  line-sort-aliasing : Text =
+    let t = fresh 0
+    in let rows-before = t.dt-rows
+    in let sorted = dt-sort-rows rows-before 0 True 5
+    in "sort-aliasing: input=" & spell rows-before & " result=" & spell sorted
+
+  spell : List TableRow -> Text
+  spell (rs) =
+    dt-cell-at (list-at rs 0) 0 & dt-cell-at (list-at rs 1) 0
+    & dt-cell-at (list-at rs 2) 0 & dt-cell-at (list-at rs 3) 0
+    & dt-cell-at (list-at rs 4) 0
+
+  line-sort-indicator : Text =
+    let asc = data-table-sort (fresh 0) 0
+    in let h = at (data-table-widget asc) 0
+    in "sort-indicator: [" & payload (at h 0) & "]"
+
+ The third column declares itself unsortable, so a sort request on it must
+ leave the order exactly as seeded.
+
+  line-sort-fixed : Text =
+    let same = data-table-sort (fresh 0) 2
+    in "sort-fixed: order=" & order same & " col=" & show (same.dt-sort-col)
+
+  line-sort-oob : Text =
+    "sort-oob: below=" & order (data-table-sort (fresh 0) (0 - 1))
+    & " above=" & order (data-table-sort (fresh 0) 99)
+
+Section: Selection and striping
+
+ Row zero is an even stripe and row one is an odd stripe. A selected row
+ must read as selected whichever it lands on.
+
+  sel-states : Integer -> Text
+  sel-states (idx) =
+    let t = data-table-widget (data-table-select-row (fresh 0) idx)
+    in "row0=" & state-name ((row-of t 0).wn-state)
+    & " row1=" & state-name ((row-of t 1).wn-state)
+    & " row2=" & state-name ((row-of t 2).wn-state)
+
+  line-sel-even : Text = "select 0: " & sel-states 0
+  line-sel-odd : Text = "select 1: " & sel-states 1
+
+  line-sel-flag : Text =
+    let dt = data-table-select-row (fresh 0) 1
+    in let r = list-at (dt.dt-rows) 1
+    in "select 1 flag: selected=" & (if r.tr-selected then "true" else "false")
+    & " index=" & show (dt.dt-selected-row)
+
+Section: The keyboard
+
+ UI chapter KeyInput settles what a key is in this quire. Paging needs
+ more rows than one page holds and dt-page-size is 20 with no setter, so
+ this table carries twenty-five rows and two pages. The probe table above
+ has five and one page, which cannot tell a working PgDn from a dead one.
+
+  wide-rows : Integer, Integer, List TableRow -> List TableRow
+  wide-rows (i) (n) (acc) =
+    if i >= n then acc
+    else wide-rows (i + 1) n (list-push acc (table-row ("r" & show i) ["v" & show i]))
+
+  wide : Integer -> DataTableState
+  wide (x) = data-table-new "w" [table-column "n" "Name" 80] (wide-rows 0 25 [])
+
+  k : DataTableState, Integer -> DataTableState
+  k (dt) (key) = data-table-handle-key dt key
+
+  flag-of : DataTableState, Integer -> Text
+  flag-of (dt) (i) = if (list-at (dt.dt-rows) i).tr-selected then "true" else "false"
+
+  line-key-shape : Text =
+    "key shape: rows=" & show ((wide 0).dt-row-count)
+    & " pages=" & show (data-table-page-count (wide 0))
+    & " start-row=" & show ((wide 0).dt-selected-row)
+
+  line-key-nav : Text =
+    "key nav: down=" & show ((k (wide 0) key-down).dt-selected-row)
+    & " down-twice=" & show ((k (k (wide 0) key-down) key-down).dt-selected-row)
+    & " up-at-top=" & show ((k (k (wide 0) key-down) key-up).dt-selected-row)
+
+ Enter selects the row navigation has reached, and does nothing on a table
+ nobody has moved in yet. Both halves are asked: a handler that always
+ selected row zero would pass the first and fail the second.
+
+  line-key-enter : Text =
+    "key enter: after-down=" & flag-of (k (k (wide 0) key-down) key-enter) 0
+    & " on-fresh=" & flag-of (k (wide 0) key-enter) 0
+
+  line-key-page : Text =
+    "key page: pgdn=" & show ((k (wide 0) key-pgdn).dt-page)
+    & " pgdn-then-pgup=" & show ((k (k (wide 0) key-pgdn) key-pgup).dt-page)
+    & " pgup-at-first=" & show ((k (wide 0) key-pgup).dt-page)
+
+  line-key-other : Text =
+    "key other: letter=" & show ((k (wide 0) (char-code 'q')).dt-selected-row)
+    & " escape=" & show ((k (wide 0) key-escape).dt-selected-row)
+
+Section: Body
+
+  report-a : Text =
+    line-compare & "\n" & line-compare-prefix & "\n" & line-format
+    & "\n" & line-pages & "\n" & line-shape
+
+  report-b : Text =
+    line-header & "\n" & line-cells & "\n" & line-footer & "\n" & line-footer-empty
+
+  report-c : Text =
+    line-seeded & "\n" & line-sorted & "\n" & line-sort-aliasing
+    & "\n" & line-sort-indicator & "\n" & line-sort-fixed & "\n" & line-sort-oob
+
+  report-d : Text =
+    line-sel-even & "\n" & line-sel-odd & "\n" & line-sel-flag
+
+  report-e : Text =
+    line-key-shape & "\n" & line-key-nav & "\n" & line-key-enter
+    & "\n" & line-key-page & "\n" & line-key-other
+
+  opening : [Console] Nothing = act
+    print-line-uni report-a
+    print-line-uni report-b
+    print-line-uni report-c
+    print-line-uni report-d
+    print-line-uni report-e
+  end

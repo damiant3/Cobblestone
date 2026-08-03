@@ -2,7 +2,7 @@
 # Logs each iteration (start, duration, pass/fail counts) to a stress log.
 [CmdletBinding()]
 param(
-    [int]$Jobs = 7,
+    [int]$Jobs = 8,
     [switch]$Pin,
     [switch]$ContinueOnFailure,
     [string]$LogPath = 'build-output\stress-sweep.log',

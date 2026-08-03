@@ -31,43 +31,33 @@ document is in the file above.
 ## Session Start
 
 **On session start, run `/init`.** This is non-negotiable. The `/init`
-skill reads all live docs, sets up `.p4config`, checks Perforce status,
-and loads memory. Do not skip it. Do not substitute your own init
-sequence. The skill is at `.claude/skills/init/SKILL.md`.
+skill loads memory, gathers fleet state through parallel agents, reads
+the lesson index, and checks Perforce. Do not skip it. Do not
+substitute your own init sequence. The skill is at
+`.claude/skills/init/SKILL.md`.
 
 If the user's first message asks you to initialize, run `/init`. If
 you are unsure whether init has been done, run `/init`.
 
-### Docs Reference
+### The reading model (redesigned 2026-07-28, Damian's direction)
 
-These are the docs that `/init` reads. Listed here for reference only --
-you do not need to read them manually if you ran `/init`.
-
-**Mandatory (read directly -- all docs in root of `docs/`):**
-- `docs/CuratorsCatalogue.md`
-- `docs/ArchitectsSketchbook.md`
-- `docs/DevelopersGuide.md`
-- `docs/DevelopersRulebook.md`
-- `docs/ExaminersAssay.md`
-- `docs/KingsAndCourts.md`
-- `docs/OperatorsManual.md`
-- `docs/TheShimmeringPortal.md`
-- `docs/TinkersToolbox.md`
-- `docs/UsersHandbook.md`
-- `docs/VisionAndVirtues.md`
-
-**Read in full, directly (not via an agent):**
-- `docs/PM/Active/` -- everything in it, recursively. The stories live in
-  `docs/PM/Active/Stories/`: seventeen accounts of how agents on this
-  project actually failed. They were in `Done/` and went unread, and the
-  failures kept repeating. About 180 KB, spent deliberately.
-
-**Via parallel agents:**
-- `docs/PM/CurrentPlan.md` -- current plan
-- `docs/Agents/PerforceProcess.md` -- shelve/revert/sync protocol
-- `docs/Designs/Active/` -- ALL active designs (skip `docs/Designs/Done/`, the archive)
-- `docs/PM/Stories/Vision/` -- founding prompts
-- `docs/PM/Stories/Vision/` -- founding prompts (read directly, not via agent)
+Init used to read ~190k tokens of documents directly into context
+before any work started; measured, one session arrived at 59 per cent
+spent after one unit of work. Init now keeps in direct context only
+what changes behavior at session start (~17k: memory, the lesson index
+`docs/PM/Active/Stories/LESSONS.md`, three haiku-agent summaries of
+CurrentPlan + workplans + active designs, Perforce state). Everything
+else moved to an ON-DEMAND CONTRACT: the skill's Step 5 table maps
+each subject to the doc that is mandatory reading BEFORE touching that
+subject (`.codex` source -> DevelopersGuide; allocators ->
+ArchitectsSketchbook; builds/VM -> OperatorsManual; tests ->
+ExaminersAssay via Grep; and so on). The stories in
+`docs/PM/Active/Stories/` are no longer read wholesale: LESSONS.md
+carries one id per lesson, and **the story behind an id is read in
+full the moment that lesson becomes load-bearing for your work** --
+that rule is what keeps the summaries-rot failure from coming back.
+The reference docs did not move and are not summarized; only WHEN they
+are read changed.
 
 ## Document Lifecycle
 
@@ -157,6 +147,16 @@ Every change that touches codegen must pass the gate before it is done.
 If the gate is red, shelve changes, notify Damian, and re-evaluate. To
 check one thing, compile and run that one test -- never a sweep.
 
+**Run every parallel harness at `-Jobs 8`.** Damian's ruling, 2026-08-02:
+batteries, sweeps, cross batteries, release proofs, all of it. `test.ps1`,
+`bvt.ps1`, `test-cross-batch.ps1` and `sweep-app-classes.ps1` all default to 8
+now. **Do not lower it, and do not copy a lower number out of an older doc** --
+the `-Jobs 3` and `-Jobs 4` literals that survived in the release recipes until
+2026-08-02 were a workaround for a DDR5 XMP instability fixed on 2026-07-22, and
+following one cost 977 s of compile phase on a 12-core box. The contention the
+low numbers guarded against is crash-shaped and both harnesses already re-run
+that class alone. `ExaminersAssay.md` "The parallelism default" has the account.
+
 **The full battery (`build/test.ps1`) is not an agent command.** It is
 Damian's tool; the script refuses to run without his approval, and that
 refusal is deliberate. There is no category of change -- not codegen,
@@ -200,9 +200,10 @@ builds every time.
 ### 4. One thing at a time
 
 Do one thing. Test it. Commit it. Then do the next thing. Do not batch.
-Do not "while I'm here." The compiler is ~36,300 lines of Codex across
-55 files. A wrong change in one place surfaces as a silent corruption
-three pipeline stages later.
+Do not "while I'm here." The compiler is ~57,466 lines of Codex across
+63 files (measured 2026-07-31; this line said 55,900 on 07-25). A wrong
+change in one place surfaces as a silent corruption three pipeline stages
+later.
 
 ### 5. CCE is the internal encoding
 
@@ -327,20 +328,130 @@ already uses. It is not the more expensive choice, which is the first
 thing everyone assumes: on disk `--` is `2d 2d`, two bytes, against the
 em-dash's three (`e2 80 94`), so the swap makes a file smaller.
 
-Inside the compiler it is not a cost question at all. **The em-dash has
-no CCE code point.** It is U+2014, in General Punctuation, and General
-Punctuation is not a CCE block at any tier: the eleven Tier 1 blocks are
-Latin Extended, Cyrillic, Greek, Arabic, Hebrew, Devanagari, Thai,
-Hangul, CJK, Kana, and Mathematical Operators (U+2200..U+227F), and
-U+2014 is in none of them. `from-unicode` answers negative one for it,
-the same answer it gives a carriage return, and an unmapped code point is
-dropped. So an em-dash in `.codex` prose does not cost bytes, it silently
-disappears at the I/O boundary. The character earns nothing that ASCII
-punctuation does not, and it cannot survive the encoding this project is
-built on.
+**This rule used to carry a technical argument, and every mechanical claim
+in it was false.** It said the em-dash has no CCE code point, that General
+Punctuation is not a CCE block at any tier, that `from-unicode` answers
+negative one for it as it does for a carriage return, and that it therefore
+disappears silently at the I/O boundary. Measured 2026-07-25 against the
+depot seed:
+
+| Call | Answer | |
+|---|---|---|
+| `from-unicode 8212` | **41464** | the em-dash HAS a CCE code point |
+| `from-unicode 8211` | **41463** | the en-dash, adjacent, as the tier-2 arithmetic requires |
+| `from-unicode 13` | **-1** | a carriage return genuinely IS unmapped |
+| `to-unicode 41464` | **8212** | it round-trips exactly |
+| `cce-encode-length 41464` | **3** | three bytes |
+
+`from-unicode` (`codex/foreword/core/CCE.codex`) tries tier 0, then tier 1,
+then **tier 2**, and tier 2 block 7 has Unicode base 8192 and size 512, so
+it spans U+2000..U+21FF. General Punctuation is U+2000..U+206F. The old
+paragraph enumerated the eleven Tier 1 blocks, correctly observed that
+U+2014 is in none of them, and concluded from one tier what only three
+tiers can decide. It is the exact failure this project documents everywhere
+else: an instrument pointed at part of the question, read as an answer to
+all of it.
+
+So the honest statement of the cost is the byte count and nothing more. On
+disk `--` is two bytes against the em-dash's three; inside the compiler the
+CCE encoding is also three. Two against three, either way. That is a real
+but small argument, and the rule does not rest on it: **the em-dash is
+banned because it is a model tic and not house style**, which was always
+the actual reason.
 
 Do not sweep other people's em-dashes as a side quest. Blu owns the
 removal campaign. Just stop producing them.
+
+### 12. Prose about our own code is banned
+
+Column-2 prose is not exempt from the comment rule because it is a language
+feature. It is the same thing wearing the costume of literate programming,
+and it rots the same way.
+
+**The only prose that is justified:**
+
+- **Details of code or formats we do NOT own.** A wire protocol's field
+  order, a hardware register's semantics, what a spec requires. The
+  external thing is the authority and the reader cannot derive it.
+- **Magic numbers.** Why this constant is this value.
+- **Performance and crackability characteristics**, as in the crypto
+  routines: a constant-time requirement, a work factor, a bound that
+  exists for an attacker rather than for a caller.
+
+**Everything else goes**, regardless of whether its claims are currently
+true. Do not audit a block's veracity to decide -- veracity is not the
+test. If it explains our own code to a reader who has that code in front
+of them, delete it.
+
+**Measured 2026-07-28: 64,450 prose lines across 2,601 of 3,249 chapters,
+11 per cent of the tree.** Removal is a campaign and per-block judgement;
+a regex sweep would take the justified blocks with it.
+
+The cost is not hypothetical. On 2026-07-28 the prose above
+`rv-emit-frameless-mod` asserted that a frameless `int-mod` and `math-mod`
+both need the non-negative correction. `math-mod (a) (b) = a - (a / b) * b`
+is the TRUNCATING remainder and must not be corrected, so the block was
+false, the code beside it was wrong in the direction the block described as
+right, and an agent who read the block instead of the body wrote that error
+into a CL description. **`math-mod`'s own body is four tokens long and
+settles the question the paragraph got wrong.**
+
+That is the general shape: prose about our own code competes with the code
+as a source of truth, and it loses while still being believed. Nothing
+re-reads it, no gate observes it (`build/build.ps1` never sees prose at
+all), so it is an assertion with no runner -- the exact failure
+`docs/PM/Active/Stories/LESSONS.md` describes for `CLAUDE.md` itself.
+
+Do not sweep other chapters' prose as a side quest, the way rule 11 asks
+about em-dashes. Delete it in files you are already changing, and stop
+producing it.
+
+### 13. When you hold the answer key, you cannot be the reader. Spend a subagent.
+
+**The signal, and it is the part to learn.** You are about to judge whether a
+thing you just produced will WORK FOR SOMEONE WHO DOES NOT KNOW WHAT YOU KNOW.
+The moment you notice that, stop: you are disqualified. You cannot unknow the
+answer, so you will read your own document filling every gap from memory, find
+it clear, and be wrong. **A reading by its author is an instrument that cannot
+fail** -- the same defect as a suite whose judge is built from its subject
+(`battery-reorg`, `gpu/DeviceMath`), one level up, with you as the judge. It is
+why `docs/Probes/` is deliberately outside the init read path.
+
+**Concrete triggers. Any of these, fire a subagent:**
+
+- A story, run sheet, design or post-mortem written so a LATER session can act
+  without this conversation.
+- A handoff or memory file. The standard is literally "could a fresh session
+  resume from this alone" -- so ask a fresh session.
+- A probe, test or diagnostic **you designed**. Does it fail when it should?
+  You know which arm is the control; a naive runner does not.
+- A brief routed to another lane. If it only parses because you remember the
+  context, it will be acted on wrongly.
+- Any claim of the form "this is discoverable", "this is clear", "anyone
+  reading this would".
+
+**How to run it, because a badly aimed probe passes for free:**
+
+1. **Do NOT hand over the artifact.** Give the naive agent the SYMPTOM or the
+   task and let it find the document. That tests discoverability, which is half
+   of whether a doc is worth anything, and this is where most of them die.
+2. **Do not leak the answer in the prompt.** No hints, no narrowing, no "check
+   whether X". Give it what the next person will actually arrive with.
+3. **Require file:line evidence and a confidence statement**, so you can tell a
+   real finding from an agreeable one.
+4. **Ask it what would falsify its answer.** An agent that cannot say is
+   agreeing, not concluding.
+
+**The pass is not the output. The disagreement is.** Measured 2026-08-02: the
+`TheKeyboardWasNeverSilent` probe confirmed the document was findable and
+correct -- and caught its second sentence overclaiming ("nothing was wrong with
+the xHCI controller") beyond what had been measured, citing a file
+(`InputSource.codex:7`) the author never found. **Reporting "it passed" and
+stopping would have shipped the overclaim.** Expect to be corrected; if the
+subagent only agrees with you, suspect the prompt.
+
+This rule is narrow on purpose and is not licence for general subagent use:
+it is for artifacts whose value is measured on a reader who lacks your context.
 
 ## Agent Identity
 
@@ -377,19 +488,38 @@ contaminate gate runs.
 
 ### Build Coordination (AgentGrid)
 
-You are one of several agents racing to main. **Do not run gates or
-submit without holding the AgentGrid build token.** The protocol is in
-`docs/Agents/CoordinationProtocol.md` -- read it before your first gate
-run. Summary: shelve your CL, write a `build-request` JSON into your
-coordination mailbox (path is in the `.agentgrid` file in your
-workspace root), wait for the `[AgentGrid coordinator]` GO message in
-your terminal, merge down from main first if the grant says so, then
+You are one of several agents racing to main. **Take the AgentGrid build
+token when your change is seed-affecting.**
+
+**What the token is for, and it is one thing:** while you hold it, main
+does not gain seed-affecting changes underneath you, so you never have to
+merge one down mid-run and invalidate the gate you just paid for. A gate
+certifies the source it was run against. If the seed moves under that
+source before you land it, what you proved is no longer what you are
+submitting, and the whole run has to happen again. The token buys the
+window in which that cannot happen. That is the whole of it -- it is not
+a lock on the build box, and it is not there to keep `p4 copy` from
+refusing you.
+
+**So the test is what your change TOUCHES, not what you are about to
+run.** Seed-affecting -- compiler source, the foreword, `seed/` itself --
+takes the token. **Docs, apps, plugs and anything else that leaves the
+seed alone do not, and that holds whether you are submitting to your dev
+stream or copying up to main.** Nothing in those invalidates a gate, so
+queueing for one spends a slot and buys nobody anything.
+
+The protocol is in
+`docs/Agents/CoordinationProtocol.md` -- read it before your first
+seed-affecting run. Summary: shelve your CL, write a `build-request`
+JSON into your coordination mailbox (path is in the `.agentgrid` file in
+your workspace root), wait for the `[AgentGrid coordinator]` GO message
+in your terminal, merge down from main first if the grant says so, then
 run gates, submit, and write `build-complete` to release the token.
 
-The token covers the gate dance and the submit, nothing else. The
-moment your CL needs more code -- a red gate, a fix, a test -- shelve,
-release the token, do the work WITHOUT it, and re-request when the CL
-is ready again (protocol rule 8). Either you submit and free the
+The token covers the gate dance and the submit that lands it, nothing
+else. The moment your CL needs more code -- a red gate, a fix, a test --
+shelve, release the token, do the work WITHOUT it, and re-request when
+the CL is ready again (protocol rule 8). Either you submit and free the
 token, or you free the token. There is no third outcome.
 
 If `.agentgrid` does not exist in your workspace root, AgentGrid is not

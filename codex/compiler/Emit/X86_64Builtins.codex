@@ -132,6 +132,14 @@ Section: Builtin Emission
  Both paths finish with the same +8-displacement load, therefore the
  branch only selects which base the scaled index is added to.
 
+ The index is bounded before either path runs, and the bound is read off
+ the header rather than off the effective base, so a tail view is bounded
+ by the view's own length and not by the backing block behind it. Measured
+ before this guard existed, on a three-element list with a marker list
+ allocated after it: `list-at t 3` and `t 4` answered the neighbour's
+ capacity and length cells, and `t 5` through `t 7` answered its three
+ elements verbatim. Nothing said anything.
+
   emit-list-at-builtin : CodegenState, List IRExpr -> EmitResult
   emit-list-at-builtin (st) (args) =
     let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
@@ -139,7 +147,8 @@ Section: Builtin Emission
    in let st1 = store-local (loc.state) (loc.reg) (r0.reg)
    in let r1 = emit-expr st1 (list-at args 1)
    in let list-loaded = load-local (r1.state) (loc.reg)
-   in let addr = alloc-temp (list-loaded.state)
+   in let guarded = emit-index-bounds (list-loaded.state) (r1.reg) (list-loaded.reg)
+   in let addr = alloc-temp guarded
    in let st2 = st-append-code (addr.state) (mov-rr (addr.reg) (r1.reg))
    in let st3 = st-append-code st2 (shl-ri (addr.reg) 3)
    in let cap = alloc-temp st3
@@ -220,6 +229,43 @@ Section: Builtin Emission
   emit-session-new-builtin : CodegenState, List IRExpr -> EmitResult
   emit-session-new-builtin (st) (args) = emit-helper-call-0 st args "chan-kern-create"
 
+ char-at and char-code-at had substring's defect in its smaller form: the
+ index was added to the pointer and the byte was read, with no check at
+ either end. Measured before this, with a neighbour allocated after the
+ subject and filled with a byte the subject cannot contain, `char-code-at a
+ 20` on a five-byte text answered 64 -- the neighbour's first byte. A
+ negative index read backwards.
+
+ The bound is TIGHTER than substring's by one. `substring s n 0` at
+ start == length is legal and answers empty, because a zero-length slice at
+ the end asks for no bytes; `char-at s n` at index == length is not, because
+ there is no byte there to name. So this is `0 <= i` and `i < len`, not
+ `i <= len`.
+
+ Two guards and both are load-bearing: delete the first and a negative index
+ reads before the text, delete the second and any index past the end reads
+ whatever follows. Neither can stand in for the other, so each has its own
+ case in the tests.
+
+ The length temp avoids the index register only. The container pointer
+ arrives from load-local, whose scratch pool is R8/R9/R15 and whose
+ register-local case hands back a callee-saved register; neither is in the
+ temp rotation, so the pointer cannot be the register the length lands in.
+
+ One guard serves Text and List alike, and it is one function rather than
+ two because both carry their length at offset 0 and both index from zero.
+ Two spellings of one band drift apart -- `cce-is-letter-any` spent months
+ disagreeing with `is-letter` about where the letters were -- so the band is
+ written once, here.
+
+  emit-index-bounds : CodegenState, Integer, Integer -> CodegenState
+  emit-index-bounds (st) (idx-reg) (ptr-reg) =
+    let trap = [15, 11]
+   in let lenr = alloc-temp-avoiding st idx-reg
+   in let g1 = st-append-code (lenr.state) (mov-load (lenr.reg) ptr-reg 0)
+   in let g2 = st-append-code g1 (cmp-ri idx-reg 0 & jcc cc-ge (list-length trap) & trap)
+   in st-append-code g2 (cmp-rr idx-reg (lenr.reg) & jcc cc-l (list-length trap) & trap)
+
   emit-char-at-builtin : CodegenState, List IRExpr -> EmitResult
   emit-char-at-builtin (st) (args) =
     let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
@@ -227,7 +273,8 @@ Section: Builtin Emission
    in let st1 = store-local (loc.state) (loc.reg) (r0.reg)
    in let r1 = emit-expr st1 (list-at args 1)
    in let str-loaded = load-local (r1.state) (loc.reg)
-   in let rd = alloc-temp (str-loaded.state)
+   in let guarded = emit-index-bounds (str-loaded.state) (r1.reg) (str-loaded.reg)
+   in let rd = alloc-temp guarded
    in let st2 = st-append-code (rd.state) (mov-rr (rd.reg) (r1.reg))
    in let st3 = st-append-code st2 (add-rr (rd.reg) (str-loaded.reg))
    in let st4 = st-append-code st3 (movzx-byte (rd.reg) (rd.reg) 8)
@@ -243,7 +290,8 @@ Section: Builtin Emission
    in let st1 = store-local (loc.state) (loc.reg) (r0.reg)
    in let r1 = emit-expr st1 (list-at args 1)
    in let text-loaded = load-local (r1.state) (loc.reg)
-   in let rd = alloc-temp-avoiding (text-loaded.state) (r1.reg)
+   in let guarded = emit-index-bounds (text-loaded.state) (r1.reg) (text-loaded.reg)
+   in let rd = alloc-temp-avoiding guarded (r1.reg)
    in let st2 = st-append-code (rd.state) (mov-rr (rd.reg) (text-loaded.reg))
    in let st3 = st-append-code st2 (add-rr (rd.reg) (r1.reg))
    in let st4 = st-append-code st3 (movzx-byte (rd.reg) (rd.reg) 8)
@@ -270,17 +318,45 @@ Section: Builtin Emission
    reg = result.reg
   }
 
+ A letter is TWO bands, because CCE's punctuation sits between the ASCII
+ letters and the rest. Code points 13..64 are the ASCII lowercase and
+ uppercase, 65..96 are the punctuation and symbols, and 97..127 are the
+ sixteen accented Latin letters and fifteen Cyrillic ones. So this cannot be
+ the single range it used to be: the old test was 13..64 and refused all 31
+ non-ASCII Tier 0 letters, and extending it to 13..127 would have called
+ every punctuation character a letter.
+
+ The lexer's identifier scan runs through this, so the band decides which
+ letters may appear in a name. It already accepted Tier 1 characters through
+ their own multi-byte path, which is why the Tier 0 accented and Cyrillic
+ band was the one thing contradicting "any language can be used in the
+ source".
+
+ Two consecutive alloc-temps and no local, which is safe in both directions
+ the rotation can go. If the first temp is handed the operand's own register
+ the opening move is a no-op, and the operand is never read again after it;
+ the second temp is the next entry in a six-register rotation and so cannot
+ be the first. That is the hazard this file's own prose describes and it is
+ why the operand is copied once and then consumed, rather than re-read.
+
   emit-is-letter-builtin : CodegenState, List IRExpr -> EmitResult
   emit-is-letter-builtin (st) (args) =
     let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
    in let rd = alloc-temp (r.state)
    in let st0 = st-append-code (rd.state) (mov-rr (rd.reg) (r.reg))
-   in let st1 = st-append-code st0 (sub-ri (rd.reg) 13)
-   in let st2 = st-append-code st1 (cmp-ri (rd.reg) 51)
-   in let st3 = st-append-code st2 (setcc cc-be (rd.reg))
-   in let st4 = st-append-code st3 (movzx-byte-self (rd.reg))
+   in let rb = alloc-temp st0
+   in let st1 = st-append-code (rb.state) (mov-rr (rb.reg) (rd.reg))
+   in let st2 = st-append-code st1 (sub-ri (rb.reg) 97)
+   in let st3 = st-append-code st2 (cmp-ri (rb.reg) 30)
+   in let st4 = st-append-code st3 (setcc cc-be (rb.reg))
+   in let st5 = st-append-code st4 (movzx-byte-self (rb.reg))
+   in let st6 = st-append-code st5 (sub-ri (rd.reg) 13)
+   in let st7 = st-append-code st6 (cmp-ri (rd.reg) 51)
+   in let st8 = st-append-code st7 (setcc cc-be (rd.reg))
+   in let st9 = st-append-code st8 (movzx-byte-self (rd.reg))
+   in let st10 = st-append-code st9 (or-rr (rd.reg) (rb.reg))
    in EmitResult {
-   state = st4,
+   state = st10,
    reg = rd.reg
   }
 
@@ -303,11 +379,12 @@ Section: Builtin Emission
     let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
    in let rd = alloc-temp (r.state)
    in let st0 = st-append-code (rd.state) (mov-rr (rd.reg) (r.reg))
-   in let st1 = st-append-code st0 (cmp-ri (rd.reg) 2)
-   in let st2 = st-append-code st1 (setcc cc-be (rd.reg))
-   in let st3 = st-append-code st2 (movzx-byte-self (rd.reg))
+   in let st1 = st-append-code st0 (sub-ri (rd.reg) 1)
+   in let st2 = st-append-code st1 (cmp-ri (rd.reg) 1)
+   in let st3 = st-append-code st2 (setcc cc-be (rd.reg))
+   in let st4 = st-append-code st3 (movzx-byte-self (rd.reg))
    in EmitResult {
-   state = st3,
+   state = st4,
    reg = rd.reg
   }
 
@@ -600,6 +677,72 @@ Section: Builtin Emission
    in let st11 = st-append-code st10 (jmp (sub-loop - (st10.code-len + 5)))
    in patch-jcc-at st11 sub-exit-pos (st11.code-len)
 
+ substring took its start and length on trust and copied that many bytes,
+ with no clamp against the source and no non-negative check. It was an
+ unchecked heap read, and the demonstration is not subtle: with a second
+ text allocated after the first, `substring a 0 40` on a five-byte string
+ answered `abcde   s       PASSWORD-1234567890     ` -- the whole of the
+ next allocation, returned verbatim. A negative start read BEFORE the
+ string, and a negative length produced a Text whose length field was -1.
+
+ That contradicted a published compliance row. `KingsAndCourts.md` carries
+ CRA 1(a) as BY-CONSTRUCTION with "buffer overflow: no raw pointers,
+ bounds-checked", and the ETSI and IEC matrices lean on the same row. The
+ 2026-07-27 sweep of those documents fired every REFUSAL the compiler
+ performs and never fired a bounds READ, which is how the row survived an
+ audit that withdrew twenty-one of its neighbours.
+
+ It traps now, at Damian's ruling. Trapping rather than clamping because a
+ clamp turns a program's bug into quietly wrong data, and this project's
+ virtues say a safety guarantee is never silently degraded; `__narrow`
+ already dies on UD2 for the same shape, so the machinery and the
+ expectation both already exist.
+
+ THREE checks, and each one is the only thing standing between some input
+ and the copy. start >= 0, len >= 0, len <= srclen - start.
+
+ The obvious range check is `start + len <= srclen` and it is wrong: the
+ sum can wrap, and the input that wraps it is the one an attacker picks.
+ Subtracting instead cannot overflow here, because the first check pins
+ start to [0, i64-max] and srclen is a length, so srclen - start is always
+ representable.
+
+ A fourth check, `start <= srclen`, was written first and then removed
+ rather than shipped, because nothing could make it fire ALONE: with start
+ and len both non-negative, a start past the end already makes srclen -
+ start negative and no non-negative len is less than it. A guard no input
+ can exercise on its own is the thing this tree keeps auditing out of its
+ own test suite, and it does not get to enter through the emitter.
+
+ Each of the three that remain was checked the same way and each survives.
+ Drop `start >= 0` and start = -1 with len = 2 computes a room of six and
+ sails through, reading before the string. Drop `len >= 0` and a negative
+ length passes any room test and mints a Text whose length field is
+ negative. Drop the range check and there is no bound at all.
+
+ The source length is read from offset 0, which is where every Text carries
+ it. It is held in a temp across three loads, so the second temp is taken
+ with alloc-temp-avoiding: the rotation is six deep and would otherwise be
+ free to hand back the register the length is sitting in, which is the
+ hazard this file's own prose describes.
+
+  emit-substring-bounds : CodegenState, Integer, Integer, Integer -> CodegenState
+  emit-substring-bounds (st) (src-loc) (start-loc) (len-loc) =
+    let trap = [15, 11]
+   in let a = load-local st start-loc
+   in let s1 = st-append-code (a.state) (cmp-ri (a.reg) 0 & jcc cc-ge (list-length trap) & trap)
+   in let b = load-local s1 len-loc
+   in let s2 = st-append-code (b.state) (cmp-ri (b.reg) 0 & jcc cc-ge (list-length trap) & trap)
+   in let p = load-local s2 src-loc
+   in let sl = alloc-temp (p.state)
+   in let s3 = st-append-code (sl.state) (mov-load (sl.reg) (p.reg) 0)
+   in let room = alloc-temp-avoiding s3 (sl.reg)
+   in let s4 = st-append-code (room.state) (mov-rr (room.reg) (sl.reg))
+   in let d = load-local s4 start-loc
+   in let s5 = st-append-code (d.state) (sub-rr (room.reg) (d.reg))
+   in let e = load-local s5 len-loc
+   in st-append-code (e.state) (cmp-rr (e.reg) (room.reg) & jcc cc-le (list-length trap) & trap)
+
   emit-substring-builtin : CodegenState, List IRExpr -> EmitResult
   emit-substring-builtin (st) (args) =
     let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
@@ -611,7 +754,8 @@ Section: Builtin Emission
    in let r2 = emit-expr st2 (list-at args 2)
    in let loc2 = alloc-local (r2.state)
    in let st3 = store-local (loc2.state) (loc2.reg) (r2.reg)
-   in let ptr-loc = alloc-local st3
+   in let st3b = emit-substring-bounds st3 (loc0.reg) (loc1.reg) (loc2.reg)
+   in let ptr-loc = alloc-local st3b
    in let ptr-tmp = alloc-temp (ptr-loc.state)
    in let st4 = st-append-code (ptr-tmp.state) (mov-rr (ptr-tmp.reg) reg-r10)
    in let st5 = store-local st4 (ptr-loc.reg) (ptr-tmp.reg)
@@ -654,6 +798,24 @@ Section: Builtin Emission
   emit-print-line-raw-builtin (st) (args) =
     let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
    in let st1 = emit-print-text-raw (r.state) (r.reg)
+   in let rd = alloc-temp st1
+   in EmitResult {
+   state = st-append-code (rd.state) (li (rd.reg) 0),
+   reg = rd.reg
+  }
+
+ print-text is print-line minus the terminator: the same raw CCE byte
+ loop with NO trailing linefeed. It exists for wire emitters whose
+ payload newlines are CCE bytes inside the Text -- a payload built in
+ pieces cannot delegate any newline to print-line, whose terminator is
+ the raw serial byte 10 and not the CCE newline, and whose extra byte
+ lands inside any SIZE-framed payload region (measured 2026-07-28
+ against the IR wire; the account is in red-workplan's outbox).
+
+  emit-print-text-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-print-text-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let st1 = emit-print-text-raw-no-newline (r.state) (r.reg)
    in let rd = alloc-temp st1
    in EmitResult {
    state = st-append-code (rd.state) (li (rd.reg) 0),
@@ -722,9 +884,9 @@ Section: Builtin Emission
  now, and they are not here: they live in Foreword chapter Fat16, next to
  file-exists and for the same reason -- the machine does not know what a
  directory is, and FAT16 does. So they are gone from builtin-names and
- from the type environment entirely, which is what lets a chapter that
- cites Fat16 resolve them to the definitions that work. A chapter that
- does not cite Fat16 now gets CDX3002 on the name, which is the truth: it
+ from the type environment entirely, which is what lets a chapter citing
+ Fat16 resolve them to the definitions that work. A chapter that does not
+ cite Fat16 now gets CDX3002 on the name, which is the truth: it
  asked for something it did not bring.
 
  write-file and write-binary-file are no longer here either. FAT16 is not
@@ -754,7 +916,7 @@ Section: Builtin Emission
  None of the three had a single call site in the tree; cons and append
  reach __list_cons and __list_append through the :: and & operators
  (IrConsList / IrAppendList in X86_64.codex), which is why nothing ever
- noticed. All three are gone now (fester, 2026-07-16).
+ noticed. All three are gone now.
 
  A ghost is cheap to leave and expensive to find, and for a while this was
  checked by the build rather than by the next reader:
@@ -1254,6 +1416,27 @@ Section: State Effect
     reg = result.reg
    }
 
+ The runtime half of the lane bound. CDX2093 refuses a LITERAL lane at
+ CHECK, which is the stronger answer and the one to prefer, but it cannot
+ see `vec-extract v i` where `i` is computed -- and every in-tree
+ computed-lane site is a test that passes a parameter. This closes that
+ half.
+
+ It needs no length load, which is what makes it cheaper than the list
+ guard: the lane count is a compile-time constant fixed by the builtin's
+ own type, so both comparisons are against immediates. Two compares and
+ two predictable branches, no memory traffic, no temp.
+
+ The guard reads the index register and writes nothing, so it introduces
+ no register hazard; `alloc-temp-avoiding` below still keeps the result
+ off the index.
+
+  emit-vec-lane-bounds : CodegenState, Integer, Integer -> CodegenState
+  emit-vec-lane-bounds (st) (idx-reg) (lanes) =
+    let trap = [15, 11]
+   in let g1 = st-append-code st (cmp-ri idx-reg 0 & jcc cc-ge (list-length trap) & trap)
+   in st-append-code g1 (cmp-ri idx-reg lanes & jcc cc-l (list-length trap) & trap)
+
   emit-vec-extract-builtin : CodegenState, List IRExpr -> EmitResult
   emit-vec-extract-builtin (st) (args) =
    let vec = emit-expr (st-set-tail-pos st False) (list-at args 0)
@@ -1261,7 +1444,8 @@ Section: State Effect
    in let st1 = store-local (vec-loc.state) (vec-loc.reg) (vec.reg)
    in let idx = emit-expr st1 (list-at args 1)
    in let vld = load-local (idx.state) (vec-loc.reg)
-   in let rd = alloc-temp-avoiding (vld.state) (idx.reg)
+   in let guarded = emit-vec-lane-bounds (vld.state) (idx.reg) 2
+   in let rd = alloc-temp-avoiding guarded (idx.reg)
    in let st2 = st-append-code (rd.state) (
     mov-rr (rd.reg) (idx.reg)
     & shl-ri (rd.reg) 3
@@ -1406,7 +1590,8 @@ Section: State Effect
    in let st1 = store-local (vec-loc.state) (vec-loc.reg) (vec.reg)
    in let idx = emit-expr st1 (list-at args 1)
    in let vld = load-local (idx.state) (vec-loc.reg)
-   in let rd = alloc-temp-avoiding (vld.state) (idx.reg)
+   in let guarded = emit-vec-lane-bounds (vld.state) (idx.reg) 4
+   in let rd = alloc-temp-avoiding guarded (idx.reg)
    in let st2 = st-append-code (rd.state) (
     mov-rr (rd.reg) (idx.reg)
     & shl-ri (rd.reg) 2
@@ -1421,9 +1606,7 @@ Section: State Effect
   emit-suggested-vector-width-builtin : CodegenState, List IRExpr -> EmitResult
   emit-suggested-vector-width-builtin (st) (args) =
    let arg-ty = ir-expr-type (list-at args 0)
-   in let width = when arg-ty
-    is RealApproxTy -> 4
-    is otherwise -> 2
+   in let width = if is-real-f32 arg-ty then 4 else 2
    in let rd = alloc-temp st
    in EmitResult {
     state = st-append-code (rd.state) (li (rd.reg) width),
@@ -1722,7 +1905,7 @@ Section: Builtin Registry
     is otherwise -> emitters-from-builtins bs (i + 1) len acc
 
   x86-builtin-emitters : List BuiltinX86Emitter
-  x86-builtin-emitters = sort-x86-emitters (emitters-from-builtins builtins 0 (list-length builtins) [])
+  x86-builtin-emitters = let bs = builtins in sort-x86-emitters (emitters-from-builtins bs 0 (list-length bs) [])
 
  This is the miss path, and it can no longer be reached from the routing
  list: sorted-builtin-names is derived from this very table, so a routed

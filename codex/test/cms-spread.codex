@@ -1,0 +1,87 @@
+Chapter: CmsSpreadTest
+  cites Foreword chapter CountMinSketch
+
+ A Count-Min sketch works because its rows are INDEPENDENT hash functions.
+ Every key is counted once per row, a query takes the minimum across rows, and
+ the minimum is a good estimate precisely because a key that collides with
+ something in one row is unlikely to collide in another. Correlate the rows
+ and the minimum stops helping: the same pairs collide everywhere, so the
+ error the structure exists to bound is simply not bounded.
+
+ `cms-row-hash` is `hash * (row + 1) * 2654435761 + row * 1103515245` followed
+ by a remainder against the width, with no downward fold. Multiplication
+ carries entropy upward only, so the low bits selecting the column are a
+ function of the low bits of the key hash and the row index, and the rows of
+ one sketch are near-copies of each other rather than independent.
+
+ The measurement is the structure's own promise. Insert N distinct keys with
+ a count of one each into a sketch wide enough to hold them comfortably, then
+ ask for every key back. A sketch whose rows are independent answers one
+ almost every time. A sketch whose rows agree with each other overestimates,
+ because a collision in row zero is a collision in every row.
+
+Section: Fixtures
+
+  cst-width : Integer
+  cst-width = 64
+
+  cst-depth : Integer
+  cst-depth = 4
+
+  cst-keys : Integer
+  cst-keys = 40
+
+  cst-key : Integer -> Text
+  cst-key (i) = "key" & show i
+
+  cst-fill : CmSketch, Integer, Integer -> CmSketch
+  cst-fill (s) (i) (n) =
+    if i >= n then s
+    else cst-fill (cms-add s (cst-key i) 1) (i + 1) n
+
+Section: Measurement
+
+ Every key was inserted exactly once, so every honest estimate is one. Count
+ how many come back exact, and record the worst overestimate.
+
+  cst-exact : CmSketch, Integer, Integer, Integer -> Integer
+  cst-exact (s) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = cms-count s (cst-key i)
+    in cst-exact s (i + 1) n (acc + (if e == 1 then 1 else 0))
+
+  cst-worst : CmSketch, Integer, Integer, Integer -> Integer
+  cst-worst (s) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = cms-count s (cst-key i)
+    in cst-worst s (i + 1) n (if e > acc then e else acc)
+
+ How many distinct columns each row actually uses. Independent rows spread
+ over the width; correlated rows crowd into the same few columns, and the
+ second row looking like the first is the defect stated directly.
+
+  cst-occupied : CmSketch, Integer, Integer, Integer, Integer -> Integer
+  cst-occupied (s) (row) (col) (w) (acc) =
+    if col >= w then acc
+    else let v = list-at (s.cms-table) (row * w + col)
+    in cst-occupied s row (col + 1) w (acc + (if v > 0 then 1 else 0))
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let s = cst-fill (cms-new cst-width cst-depth) 0 cst-keys
+    in let exact = cst-exact s 0 cst-keys 0
+    in let worst = cst-worst s 0 cst-keys 0
+    in let r0 = cst-occupied s 0 0 cst-width 0
+    in let r1 = cst-occupied s 1 0 cst-width 0
+    in let r2 = cst-occupied s 2 0 cst-width 0
+    in let r3 = cst-occupied s 3 0 cst-width 0
+    in act
+      print-line-uni ("keys:           " & show cst-keys)
+      print-line-uni ("exact:          " & show exact)
+      print-line-uni ("worst estimate: " & show worst)
+      print-line-uni ("cols used:      " & show r0 & " " & show r1 & " " & show r2 & " " & show r3)
+      print-line-uni ("mostly exact:   " & show (exact * 4 >= cst-keys * 3))
+      print-line-uni ("rows spread:    " & show ((r0 > 20) & (r1 > 20) & (r2 > 20) & (r3 > 20)))
+      print-line-uni ("total:          " & show (cms-total s))
+    end

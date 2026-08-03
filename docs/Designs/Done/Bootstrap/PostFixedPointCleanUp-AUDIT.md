@@ -1,10 +1,10 @@
-# Post-Fixed-Point Cleanup — Final Audit
+# Post-Fixed-Point Cleanup -- Final Audit
 
 **Date**: 2026-03-18 (verified via system clock)
 **Auditor**: Claude (Opus 4.6, Linux/claude.ai)
 **Source**: `docs/PostFixedPointCleanUp.md`
 
-> Note: The original document is dated "March 17, 2025" — another hallucinated date.
+> Note: The original document is dated "March 17, 2025" -- another hallucinated date.
 > Actual date was 2026-03-17.
 
 ---
@@ -31,28 +31,28 @@
 
 ## Tier-by-Tier Status
 
-### Tier 1: Correctness — ✅ COMPLETE
+### Tier 1: Correctness -- ✅ COMPLETE
 
 | Item | Status |
 |------|--------|
 | 1. Effect annotation parsing | ✅ Done. 0 unification errors. |
 | 2. Verify Stage 2 compiles as C# | ✅ Done. Stage 3 exists and matches Stage 2. Fixed point proven. |
 
-### Tier 2: Convergence — ✅ RESOLVED
+### Tier 2: Convergence -- ✅ RESOLVED
 
 | Item | Status |
 |------|--------|
 | 3. Emission format alignment | ✅ Resolved. User decided: semantic equivalence, not byte-for-byte. Stage 2 = Stage 3 proves convergence. |
 | 4. Type declaration ordering | ✅ Accepted. Cosmetic difference across backends. Harmless. |
 
-### Tier 3: Polish — PARTIALLY OPEN
+### Tier 3: Polish -- PARTIALLY OPEN
 
 | Item | Status |
 |------|--------|
-| 5. `_p0_` proxy parameter names | ⚠️ Open. 48 in Stage 0. Cosmetic — C# infers types. Low priority. |
+| 5. `_p0_` proxy parameter names | ⚠️ Open. 48 in Stage 0. Cosmetic -- C# infers types. Low priority. |
 | 6. Generated output corpus refresh | ⚠️ Done in latest session but needs verification commit. |
 
-### Tier 4: Ecosystem — ✅ COMPLETE
+### Tier 4: Ecosystem -- ✅ COMPLETE
 
 | Item | Status |
 |------|--------|
@@ -62,11 +62,11 @@
 | 10. IL emitter | ✅ Records, sum types, pattern matching, field access. Integration tests exist. Missing: generics, TCO, full bootstrap. |
 | 11. Babbage emitter | ✅ Intentionally limited. |
 
-### Tier 5: Documentation — ❌ STALE
+### Tier 5: Documentation -- ❌ STALE
 
 | Item | Status |
 |------|--------|
-| 12. Update 08-MILESTONES.md M13 checkbox | ❌ Still unchecked. Should be checked off — fixed point achieved. |
+| 12. Update 08-MILESTONES.md M13 checkbox | ❌ Still unchecked. Should be checked off -- fixed point achieved. |
 | 13. Update FORWARD-PLAN.md stale numbers | ❌ Still shows 328 `object`, 1,863 errors. Actual: 7 object, 0 errors. |
 | 14. Opus.md addendum | ⚠️ Not done. Optional. |
 
@@ -79,7 +79,7 @@
 **Tier 3** has one cosmetic item (`_p0_` names) that can be addressed whenever the
 emitter is next touched.
 
-**Tier 4** is solid — the ecosystem tools work.
+**Tier 4** is solid -- the ecosystem tools work.
 
 **Tier 5** is the main gap: `08-MILESTONES.md` and the old `FORWARD-PLAN.md` have
 stale data. But these are being superseded by the new `docs/FORWARD-PLAN.md` created

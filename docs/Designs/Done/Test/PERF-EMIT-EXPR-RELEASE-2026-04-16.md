@@ -1,4 +1,4 @@
-# emit-expr Release-Mode Sanity Check — 2026-04-16
+# emit-expr Release-Mode Sanity Check -- 2026-04-16
 
 Follow-up to `PERF-EMIT-EXPR-2026-04-16.md`. That report flagged that
 5.6M chars of string concat at .NET's ~1 GB/s = ~6ms, nowhere near the
@@ -37,7 +37,7 @@ reported, on the same machine.
 
 ## Interpretation
 
-**Debug build was inflating emit by ~466ms (44% of its cost)** — curried
+**Debug build was inflating emit by ~466ms (44% of its cost)** -- curried
 `Func<>` dispatch from the emitter's "CPS-like" style is expensive in
 Debug but gets aggressively inlined in Release.
 
@@ -52,11 +52,11 @@ nesting in `emit-let` amplifies all of these per level.
 
 ## Decision
 
-**Gate: emit < 300ms Release?** No — 588ms. Go ahead with the IrLet fix.
+**Gate: emit < 300ms Release?** No -- 588ms. Go ahead with the IrLet fix.
 
 Ordering after this:
 
-1. **Flatten `emit-let` chains** — biggest single quadratic, 67% of
+1. **Flatten `emit-let` chains** -- biggest single quadratic, 67% of
    output-char share. Rewrite to detect `IrLet` chains at emit and
    produce `{ var x = v1; var y = v2; return body; }` instead of
    nested `((Func<T,R>)((x) => body))(val)`. Expected savings:
@@ -64,7 +64,7 @@ Ordering after this:
    at ~200ms and total compile at ~550ms.
 
 2. If that lands cleanly, consider the secondary concat hotspots
-   (`emit-binary`, `emit-if`, `emit-apply-args`) — each ~5–10% share.
+   (`emit-binary`, `emit-if`, `emit-apply-args`) -- each ~5–10% share.
 
 3. If time later: rebench both Release and Debug; the Debug number
    is what pingpong shows you during day-to-day work, so Debug wins

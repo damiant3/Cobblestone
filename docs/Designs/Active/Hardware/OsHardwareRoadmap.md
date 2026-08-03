@@ -14,16 +14,16 @@ metal); supersedes the earlier real-hardware driver phases
 
 Two tracks are mature and have never met.
 
-**Track A — the boot arc (proven on real metal).** Option A stub ->
+**Track A -- the boot arc (proven on real metal).** Option A stub ->
 ExitBootServices -> GOP -> Codex payload. On physical machines today:
 GOP framebuffer rendering, PS/2 keyboard, AHCI + IDE storage, GPT +
 FAT16 read/write, the seed read from the stick and WakeCeremony-
 verified, an identity that survives a power cycle. As of CL 7365/7368,
 a post-EBS xHCI + Bulk-Only-Transport + SCSI driver reaches USB mass
 storage (emulator-validated; real-xHCI validation pending). But the
-payload is a menu and a ceremony, not the OS — and everything polls.
+payload is a menu and a ceremony, not the OS -- and everything polls.
 
-**Track B — the GUI OS (proven in the emulator).** `apps/guios/`
+**Track B -- the GUI OS (proven in the emulator).** `apps/guios/`
 GuiShell: a 19-app desktop with mouse, TrueType fonts, a TimingWheel
 event loop, and a zero-leak render cycle. It boots through the
 compiler's NORMAL boot path and leans on codex-vm conveniences:
@@ -31,7 +31,7 @@ scancodes appearing in kernel cells, an IDE font disk, a port-224 VM
 exit for pacing, GPA cells for core counts.
 
 **The missing spine.** The real IDT, exception stubs, LAPIC setup,
-timer ISR, and syscall MSRs all exist — emitted by
+timer ISR, and syscall MSRs all exist -- emitted by
 `codex/compiler/Emit/X86_64Boot.codex` into the normal boot image.
 The Option A stub jumps straight to `opening` and configures none of
 it. That single omission is why every Track A driver is fuel-bounded
@@ -44,7 +44,7 @@ highest-leverage piece of hardware work in the project: it turns
 
 ---
 
-## Inventory — what we have
+## Inventory -- what we have
 
 Verdicts: METAL = proven on physical hardware or real firmware
 (OVMF); EMU = proven under codex-vm only; PROTOCOL = parsing/framing
@@ -67,7 +67,7 @@ behind it; ABSENT = does not exist.
 |---|---|
 | PS/2 keyboard, incl. post-EBS re-enable (0xAE/0xF4) + layout machinery | METAL |
 | PS/2 mouse (kernel cell packets) | EMU, untested beyond guios |
-| USB HID keyboard/mouse post-EBS | ABSENT — the gap for every PS/2-less modern machine; firmware's PS/2 emulation dies at ExitBootServices |
+| USB HID keyboard/mouse post-EBS | ABSENT -- the gap for every PS/2-less modern machine; firmware's PS/2 emulation dies at ExitBootServices |
 | UsbHid protocol framing (GET/SET_REPORT, QMK) | PROTOCOL |
 
 ### Storage
@@ -78,8 +78,8 @@ behind it; ABSENT = does not exist.
 | IDE PIO read+write+flush | METAL-equivalent (OVMF -Machine pc, codex-vm) |
 | USB mass storage: xHCI host + BOT + SCSI READ/WRITE(10), chunked bulk, durable | EMU (CL 7365); wired as GopDisk's third path (CL 7368); real-xHCI validation pending |
 | GPT + FAT16 read/write, bulk cluster-run reads | METAL |
-| NVMe | ABSENT — most modern internal disks are NVMe-only |
-| FAT32 | foreword chapter exists; not wired into the Gop path (FAT16 caps ~2-4 GB — the Time Capsule with a bundled GGUF model exceeds it) |
+| NVMe | METAL (OVMF) -- `GopNvme.codex`, H3a below. OVMF boots FROM the namespace; GPT, FAT walk and the 2.15 MB seed all read through the driver's own queues. Dispatched as med-kind-nvme 4. codex-vm has no NVMe model, so the battery cannot exercise it |
+| FAT32 | wired into the Gop path (H3b, CL 7442): GopFat16 recognizes the 32-bit layout, and a 36 MB FAT32 ESP boots |
 | Volume identity across controllers (which disk is MINE) | ad-hoc (wz-save-identity checks CODEX.CDX); no enumerate-all-disks primitive |
 | VirtioBlk / VirtioPci | real-looking code, untested |
 
@@ -89,7 +89,7 @@ behind it; ABSENT = does not exist.
 |---|---|
 | IDT + exception stubs + LAPIC + PIT/timer ISR + watchdog + syscall MSRs | REAL, but only on the compiler-emitted normal boot path; Option A path has NONE (polling + pet) |
 | HPET counter reads | METAL (entropy sampling uses it) |
-| ACPI table parsing (MADT/FADT/XSDT) | ABSENT — LAPIC/IOAPIC layout is assumed, not discovered; no shutdown/reset |
+| ACPI table parsing (MADT/FADT/XSDT) | ABSENT -- LAPIC/IOAPIC layout is assumed, not discovered; no shutdown/reset |
 | SMP (atomics, AP boot, per-core sched/heap, IPI) | complete x86-64, normal path; guios `-smp` black screen CANNOT REPRODUCE 2026-07-10 (seed 7756AB2C, three configs: 1-core / -smp 4 / -smp 4 + font disk, all render, all 3 APs boot on the low-memory stacks) -- resolved by intervening work, most plausibly the AP-stack relocation out of the demand-paged range (val CLs 7207-7211); Option A single-core; ARM64/RISC-V atomics+boot not ported |
 
 ### Network / Audio / Power / Peripherals
@@ -98,7 +98,7 @@ behind it; ABSENT = does not exist.
 |---|---|
 | NE2K NIC + NAT | EMU only (ISA NE2000 does not exist on real machines) |
 | VirtioNet | untested; e1000/rtl/WiFi ABSENT |
-| Intel HDA driver | ABSENT (codex-vm emulates the device; no Codex driver — `hda-codec-test` actually tests UsbAudio) |
+| Intel HDA driver | ABSENT (codex-vm emulates the device; no Codex driver -- `hda-codec-test` actually tests UsbAudio) |
 | USB Audio / UVC camera | PROTOCOL (parse-level; UVC discovery tested) |
 | Power: ACPI S-states, battery, brightness, [Power] effect | ABSENT (PowerManager et al. in codex/os/dev are UI panels; TheLongFlight IV designs the effect) |
 | Bluetooth, printers, gamepads, touchpads | UI only, far |
@@ -126,9 +126,9 @@ network and audio are senses added later, not gates.
 ## Phases
 
 Each phase ends in a demo on real firmware (OVMF is the verdict;
-metal sessions are batched confirmations — the BootRoadmap doctrine).
+metal sessions are batched confirmations -- the BootRoadmap doctrine).
 
-### H1 — The spine: runtime services after ExitBootServices
+### H1 -- The spine: runtime services after ExitBootServices
 
 Install, from the payload, what the normal boot path gets from
 `X86_64Boot`: IDT + exception stubs (the `!EXC` dump works post-EBS),
@@ -137,14 +137,14 @@ Then the kernel's syscall surface (block-*, DiskFacts, process/spawn)
 and the guios event-loop model work on the boot path, the tick
 counter runs, and `pet` mode becomes unnecessary there.
 
-**H1a — the `runtime-init` builtin (implementation plan, reverse-engineered
+**H1a -- the `runtime-init` builtin (implementation plan, reverse-engineered
 2026-07-09; ready to execute in one focused session).** Decision made: a
 new builtin, NOT a `__start` jump. The Option A stub (`option_a_stub.asm`)
 keeps the firmware GDT (CS ≈ 0x38), builds a 4 GB identity map, sets
 RSP/R10, and jumps straight to `opening`. It never installs a GDT with
 CS at selector 8, an IDT, a TSS, the PIC/PIT, or the LAPIC. The IDT
 entries `emit-idt-entries` writes reference **selector 8** (the
-`add-ri reg-rax 524288` = `8 << 16`), so an IDT alone is not enough — the
+`add-ri reg-rax 524288` = `8 << 16`), so an IDT alone is not enough -- the
 payload must first stand up a GDT with a 64-bit code segment at selector
 8 and reload CS into it.
 
@@ -154,15 +154,15 @@ emits no call to it, so its own boot path and every existing function
 body are byte-unchanged; the only effect on the compiler binary is the
 added helper's bytes shifting later offsets, which the CDX fixed point
 absorbs deterministically. A bug in the runtime-init body therefore
-cannot break self-hosting — worst case the payload demo misbehaves while
+cannot break self-hosting -- worst case the payload demo misbehaves while
 the seed still builds, converges one-pass, and ships. This is what makes
 a boot-codegen change tolerable to attempt.
 
 **The three edit sites:**
 1. `codex/compiler/Types/TypeEnv.codex` (~line 268, beside `port-in-byte`):
-   `env-bind ... "runtime-init" (FunTy int-ty-default (concrete-row "Device.Port") int-ty-default)` — a one-arg (dummy Integer) effectful builtin returning Integer. The payload calls `runtime-init 0`.
+   `env-bind ... "runtime-init" (FunTy int-ty-default (concrete-row "Device.Port") int-ty-default)` -- a one-arg (dummy Integer) effectful builtin returning Integer. The payload calls `runtime-init 0`.
 2. `codex/compiler/Semantics/NameResolver.codex` (~line 101, the builtin-name list): add `"runtime-init"`.
-3. `codex/compiler/Emit/X86_64Chapter.codex` `x86-64-finalize-cdx` (line 918): after `emit-isr-stubs`/`emit-syscall-handler`, before `emit-start`, call a new `emit-runtime-init-fn (state) (isr-result.first-stub-vaddr)` — `first-stub-vaddr` is the value H1 needs and is only in scope here.
+3. `codex/compiler/Emit/X86_64Chapter.codex` `x86-64-finalize-cdx` (line 918): after `emit-isr-stubs`/`emit-syscall-handler`, before `emit-start`, call a new `emit-runtime-init-fn (state) (isr-result.first-stub-vaddr)` -- `first-stub-vaddr` is the value H1 needs and is only in scope here.
 
 **`emit-runtime-init-fn (st) (first-stub-vaddr)` body** (new function in
 `X86_64Boot.codex`; record `"runtime-init"` into `fo-names`/`fo-offsets`
@@ -181,17 +181,17 @@ at `st.code-len`, then):
    emit `[72,184] ++ le64(after)` (mov rax,imm64 = 10) ++ `[80]` (push
    rax = 1) ++ `[72,203]` (retfq = 2) = 13 bytes; the label lands at
    `q + 13`. retfq pops RIP then CS, so the stack order is push-CS then
-   push-RIP (done above). Do NOT let `li` shrink the vaddr mov — hand-emit
+   push-RIP (done above). Do NOT let `li` shrink the vaddr mov -- hand-emit
    `[72,184]++le64` so the size is invariant.
 3. Reload data segments: `mov ax,16` then `8E D8` (ds) `8E C0` (es)
    `8E D0` (ss) `8E E0` (fs) `8E E8` (gs).
-4. Build the TSS at `tss-base` (77824) + `ltr` selector 24 — the tail of
+4. Build the TSS at `tss-base` (77824) + `ltr` selector 24 -- the tail of
    `emit-load-tss` (zero region, store `df-ist-stack-top` at +36,
    `ltr ax=24`). Safe now that CS/GDT are ours.
 5. `emit-idt-entries st first-stub-vaddr` then `emit-load-idt`.
 6. Mark IDT[8] IST1 (the last three instructions of `emit-load-tss`:
    store byte 1 at `idt-base + 8*16 + 4`).
-7. `emit-interrupt-setup` — this ALREADY does `emit-lapic-disable`,
+7. `emit-interrupt-setup` -- this ALREADY does `emit-lapic-disable`,
    `emit-pit-init`, `emit-pic-init`, `emit-kbd-init`, zeroes the
    watchdog/tick/key cells, and ends with `sti`. The legacy PIT→PIC→IDT
    vector 0x20 path drives the tick (LAPIC is left disabled, as on the
@@ -201,7 +201,7 @@ at `st.code-len`, then):
 8. `li reg-rax 0; ret` (near). Stack is balanced: the near `call`'s
    return frame is untouched (the retfq's 16 bytes were pushed and
    popped within the body), so the near `ret` returns to `opening` with
-   CS now 8 — a valid flat 64-bit code segment covering the same address
+   CS now 8 -- a valid flat 64-bit code segment covering the same address
    space, so `opening` continues identically.
 
 **Payload side:** `GopBoot.opening` (and the probe) call `runtime-init 0`
@@ -210,17 +210,17 @@ at `tick-count-addr` (28672) advances and the `pet` compile flag becomes
 unnecessary on the Option A path; a fault raises the `!EXC` ISR dump
 instead of a silent triple fault.
 
-**Test loop:** (a) full seed rebuild `build/build.ps1` — MUST report
+**Test loop:** (a) full seed rebuild `build/build.ps1` -- MUST report
 one-pass fixed point and stay poison-clean (proves the additive change is
 fixed-point-safe); (b) `build/boot/build-option-a.ps1 -Src <probe>` where
 the probe calls `runtime-init 0` then reads/prints `tick-count-addr` in a
-loop; (c) `test-ovmf.ps1` — the tick value must be non-zero and climbing.
+loop; (c) `test-ovmf.ps1` -- the tick value must be non-zero and climbing.
 Silent triple-fault = the CS reload or GDT is wrong; bisect by commenting
 the `emit-interrupt-setup`/`sti` (no interrupts → no fault → confirms
 GDT/IDT install is the culprit vs. an ISR). Keep every attempt on fester;
 do not copy up until the demo is green AND the seed is one-pass.
 
-- H1b: **DONE (fester, 2026-07-09).** `apps/works/GopAcpi.codex` — a
+- H1b: **DONE (fester, 2026-07-09).** `apps/works/GopAcpi.codex` -- a
   pure chapter (peek-* carry no effect row), so it is battery-tested
   against a table set built from the spec in a heap buffer with no
   firmware and no device: `codex/test/acpi-parse` (ground truth
@@ -231,7 +231,7 @@ do not copy up until the demo is green AND the seed is one-pass.
   checksums, MADT (LAPIC + Type-5 override, IOAPIC), FADT (DSDT/X_DSDT,
   PM1a EVT+CNT, PM1b CNT, PM1_CNT_LEN, SCI_INT), and a targeted `_S5_`
   AML decode. The stub walks the UEFI configuration table for the ACPI
-  2.0 GUID (falling back to 1.0) and leaves the RSDP in cell 0x8028 —
+  2.0 GUID (falling back to 1.0) and leaves the RSDP in cell 0x8028 --
   the RSDP is a vendor table, not a protocol, so LocateProtocol cannot
   find it. Verified on OVMF: RSDP in firmware memory at 0x7F76xxxx (an
   E-segment scan would have missed it), 6 configuration tables, rev 2,
@@ -246,23 +246,23 @@ do not copy up until the demo is green AND the seed is one-pass.
   FADT put DSDT at +36 and the PM1a event/control blocks at +64/+72;
   the spec says FIRMWARE_CTRL +36, DSDT +40, PM1a_EVT +56, PM1a_CNT
   +64. A spec-derived parser read the event block as the control block
-  — a shutdown written there does nothing. The port values (0x600 /
+  -- a shutdown written there does nothing. The port values (0x600 /
   0x604) were already right and match QEMU. The RSDP is now revision 2
   with a real XSDT beside the RSDT, and the DSDT carries a real
   `Name (_S5_, Package (4) {...})` instead of an empty header.
 - Risks: IOAPIC routing variance across boards; double-fault paths on
   the boot stack (the TSS/IST1 step above reuses the demand-paging
   hardening addresses). The CS-reload far return is the one delicate
-  spot — get its byte layout exactly as specified.
+  spot -- get its byte layout exactly as specified.
 - **Demo:** on OVMF, the boot payload prints a live tick counter and
-  echoes keys from the keyboard IRQ — no polling loop.
+  echoes keys from the keyboard IRQ -- no polling loop.
 
 **Status 2026-07-09: H1a DONE (fester).** Implemented exactly per the
-plan above, first attempt green — no triple-fault bisection needed.
+plan above, first attempt green -- no triple-fault bisection needed.
 Deltas from the plan as written:
 - `emit-runtime-init-fn` takes a THIRD argument
   (`syscall-handler-offset`) and writes the four syscall MSRs
-  (STAR/LSTAR/SFMASK/EFER.SCE) after the IDT install — the H1 goal
+  (STAR/LSTAR/SFMASK/EFER.SCE) after the IDT install -- the H1 goal
   names syscalls and the offset is in scope at the finalize call site.
 - Before `emit-interrupt-setup`, the body zeroes the process table
   (512 qwords at proc-table-base) plus current-proc, sched-ready-head,
@@ -278,14 +278,14 @@ Verdicts: seed rebuilt two-pass -> converged one-pass (Sut === stage1
 outside signature bytes); probe (`runtime-init 0`, then eight observed
 tick-cell CHANGES drawn as GOP lines, then a key-echo loop over cell
 28680) green under codex-vm, green under OVMF/q35 real firmware
-(ticks 1..8 strictly climbing, scancode echoed — and under OVMF only
+(ticks 1..8 strictly climbing, scancode echoed -- and under OVMF only
 our own IRQ1 ISR writes that cell), 25 s under `-uefi-strict` with no
 fault. The `pet` compile flag is now genuinely optional on the Option
 A path once a payload calls runtime-init; build-option-a.ps1 still
 passes it (harmless), and removing it is a later cleanup. H1b (ACPI
 MADT parse) remains open.
 
-### H2 — Input breadth: USB HID on the xHCI stack
+### H2 -- Input breadth: USB HID on the xHCI stack
 
 The biggest named unknown (BootRoadmap B4.3), now de-risked: GopXhci
 exists and is battery-tested. Add interrupt-endpoint transfers, HID
@@ -295,7 +295,7 @@ through internal hubs). Harden enumeration for real silicon: port
 reset, real input contexts, Set TR Dequeue (replacing the ring-rewind
 shortcut), completion via events when H1 lands.
 
-- H2a: **qemu-xhci validation bed — DONE (fester, 2026-07-09).**
+- H2a: **qemu-xhci validation bed -- DONE (fester, 2026-07-09).**
   `test-ovmf.ps1 -UsbDisk` attaches the boot image as
   `qemu-xhci` + `usb-storage`, so the machine boots from a real,
   spec-strict xHCI and reaches its medium only through the USB stack.
@@ -321,15 +321,15 @@ shortcut), completion via events when H1 lands.
      port reset/speed path replaced the codex-vm-shaped shortcuts.
   4. **Async data + pipelined status.** The killer: a real
      controller answers a disk READ from asynchronous backing
-     storage. Queuing the data and CSW together on the ring — which
-     codex-vm tolerated — left QEMU's status transfer pending
+     storage. Queuing the data and CSW together on the ring -- which
+     codex-vm tolerated -- left QEMU's status transfer pending
      forever. Restructured BOT to three separately-awaited transfers
      (CBW, data, CSW), each with IOC and a transfer-event wait, the
      EDK2/Linux pattern; taught codex-vm to raise a transfer event
      for every bulk TRB that asks for one.
   Verdict screen (booting from the usb-storage stick, post-EBS,
   every pixel drawn by our own driver): enable-slot, address-device,
-  config descriptor (44 bytes — real SuperSpeed companion
+  config descriptor (44 bytes -- real SuperSpeed companion
   descriptors), endpoint discovery, READ CAPACITY (32768 sectors),
   INQUIRY ("QEMU QEMU HARDDISK"), `lba1: [EFI PART]` (read),
   `write-verify: True` (write + readback). Method for any future USB
@@ -340,15 +340,15 @@ shortcut), completion via events when H1 lands.
   table. Then mouse.
 
   **Decode DONE (fester, 2026-07-09).** `apps/works/GopHid.codex` turns
-  8-byte boot reports into Set-1 scancodes — the same codes the PS/2 ISR
+  8-byte boot reports into Set-1 scancodes -- the same codes the PS/2 ISR
   produces, so every consumer above (kb-process-scancode, the wizard's
   text field, the boot menu) is unchanged and cannot tell the difference.
   Pure, therefore battery-tested with no controller and no keyboard:
   `codex/test/hid-decode`, ground truth generated independently in Python
   (two transcriptions of the HID usage tables that must agree).
 
-  The report is a *set* of held keys, not a queue — nothing in it says
-  which key changed — while the consumers take one scancode at a time
+  The report is a *set* of held keys, not a queue -- nothing in it says
+  which key changed -- while the consumers take one scancode at a time
   from a one-byte mailbox. Rather than add a queue, `hid-step` returns
   **one event per call and advances `prev` one change toward `cur`**;
   prev converges after as many calls as there were changes. Ordering is
@@ -374,9 +374,9 @@ shortcut), completion via events when H1 lands.
   (`kbd-pump`) is a three-phase machine driven from the consumer's own
   poll loop, one action per call: idle arms ONE interrupt IN transfer;
   armed checks the event ring with fuel zero (non-blocking, so a NAKed
-  transfer costs nothing); drain walks `hid-step` one event per call —
+  transfer costs nothing); drain walks `hid-step` one event per call --
   poking each Set-1 scancode into the cell-28680 mailbox exactly as the
-  PS/2 ISR does — and re-arms only after prev converges, so the report
+  PS/2 ISR does -- and re-arms only after prev converges, so the report
   buffer is stable under the decoder. A key pressed and released
   entirely between reports is dropped: the same deliberate mailbox
   discipline as GopKey.
@@ -384,33 +384,33 @@ shortcut), completion via events when H1 lands.
   Verdict (spec-strict xHCI, `test-ovmf.ps1 -UsbKbd` = qemu-xhci +
   usb-kbd): enumerated slot 1, dci 3, and delivered H/I/Enter makes AND
   breaks in order through interrupt IN -> boot report -> `hid-step` ->
-  mailbox, first try — the Interval fix read out of the code before any
+  mailbox, first try -- the Interval fix read out of the code before any
   build is why. Probes (untracked, `build-output/`): UsbKbdProbe (echo
-  loop; allocation-free — a payload must NEVER return, the stub jumps
+  loop; allocation-free -- a payload must NEVER return, the stub jumps
   with no return address, so every path ends in a tail loop),
   UsbEnumProbe (per-port slot/class/iface table), UsbMscProbe (MSC
   regression: GPT read + write-readback, green on OVMF post-change).
 
   **Three codex-vm defects found and fixed (nothing had ever driven two
-  devices or the HID path):** (1) ENABLE_SLOT never incremented — every
+  devices or the HID path):** (1) ENABLE_SLOT never incremented -- every
   device got slot 1, and personality dispatch keyed on the doorbell
   number; slots now allocate in order and each ADDRESS_DEVICE latches
   its root port from the input context, with personality (storage/HID/
   UVC) keyed on the PORT as on real hardware. (2) The command-ring walk
-  parked its resume position in CRCR and reloaded it with `& ~0x3F` —
+  parked its resume position in CRCR and reloaded it with `& ~0x3F` --
   CRCR's address field is 64-byte aligned, so up to three consumed
   command TRBs replayed on every doorbell. Invisible while ENABLE_SLOT
   was stateless; slot allocation made each replay mint a phantom slot
   (slots went 1,3,7). Exact position now lives beside CRCR. (3)
-  Interrupt IN completed silently — no transfer event even with IOC —
+  Interrupt IN completed silently -- no transfer event even with IOC --
   and the boot report was built by scanning the PS/2 EVENT QUEUE, so a
   key looked held until the PS/2 consumer drained it and a pure-USB
   guest saw keys stuck forever. Events post per IOC; reports come from
   a real held-key set updated make/break beside every `kbd_enqueue`.
 
   **Wiring DONE, demo achieved (fester, 2026-07-09): the full
-  first-boot ceremony — welcome, masked passphrase twice, entropy
-  sentence, upstream skip, Ed25519 keygen to the fingerprint screen —
+  first-boot ceremony -- welcome, masked passphrase twice, entropy
+  sentence, upstream skip, Ed25519 keygen to the fingerprint screen --
   typed entirely over USB HID on a QEMU q35 with `i8042=off` (no PS/2
   controller at all: `test-ovmf.ps1 -UsbKbd -NoPs2`).** The UsbKbd
   handle threads as `WzCtx.wz-kbd`, a `gt-input`/`gt-read-line`
@@ -425,7 +425,7 @@ shortcut), completion via events when H1 lands.
   emitted PS/2 init (`emit-kbd-init` / `emit-kbd-wait-ibf` in
   X86_64Boot) waited unboundedly on status-port bits; with nothing
   driving the bus, port 0x64 reads 0xFF and OBF/IBF look permanently
-  set — the payload died before its first pixel. Now the init reads
+  set -- the payload died before its first pixel. Now the init reads
   0x64 once and skips everything on 0xFF (the floating-bus signature,
   same idiom as the LAPIC probe), and every wait is fuel-bounded.
   Codegen change: seed rebuilt (two-pass converged, one-pass fixed
@@ -434,9 +434,9 @@ shortcut), completion via events when H1 lands.
 
   2. **The pump's idle path allocated ~32 bytes per poll.**
   `xhci-wait-event` returns a fresh XhciEvent record per call (and
-  `xhci-no-event` is a nullary def — re-evaluated at every mention),
+  `xhci-no-event` is a nullary def -- re-evaluated at every mention),
   so a poll loop allocated its way across the heap until
-  `__out_of_memory` halted the machine in seconds — which reads as a
+  `__out_of_memory` halted the machine in seconds -- which reads as a
   dead keyboard with no crash on screen. `kbd-check` now peeks the
   event-ring cycle bit raw and only runs the record-returning consumer
   when an event exists (bounded by keystrokes, not polls). LESSON for
@@ -448,22 +448,22 @@ shortcut), completion via events when H1 lands.
   enumerates the bus ONCE (`usb-attach`): one controller bring-up, one
   port walk classifying each device by its configuration descriptor,
   keyboard and boot-stick disk configured on the same running host.
-  The disk handle publishes to a magic-guarded cell block (36480—36567,
+  The disk handle publishes to a magic-guarded cell block (36480--36567,
   magic "USB1" written last so firmware residue cannot impersonate a
   handle); GopDisk's stateless USB dispatch rebuilds the records from
-  the cells and transfers WITHOUT a reset — the keyboard survives every
+  the cells and transfers WITHOUT a reset -- the keyboard survives every
   storage call. Three requirements surfaced:
 
   1. **Slot-aware event routing.** Both devices share one event ring;
   a storage wait filtering by event TYPE alone eats the keyboard's
   completion (and the reverse). Transfer events now latch per-slot in
   the host state block; `xhci-wait-xfer (xh, slot, fuel) -> code` is
-  the one transfer wait — integer-returning and allocation-free, so
-  poll loops may call it directly — and `xhci-wait-event` latches any
+  the one transfer wait -- integer-returning and allocation-free, so
+  poll loops may call it directly -- and `xhci-wait-event` latches any
   transfer event it consumes while waiting for command completions.
 
   2. **The IDE floating-bus phantom.** q35 has no legacy IDE; port
-  0x1F7 reads 0xFF, which fakes BSY+DRQ+ERR at once — the fuel-bounded
+  0x1F7 reads 0xFF, which fakes BSY+DRQ+ERR at once -- the fuel-bounded
   waits timed out holding 0xFF, the DRQ test then PASSED, and the
   drain loop "read" sectors of all-ones and reported success. A
   phantom garbage disk outranked the real USB stick in the dispatch
@@ -489,7 +489,7 @@ shortcut), completion via events when H1 lands.
   machine this arc exists for. `usb-inspect` now classifies a hub
   interface (class 9) alongside keyboard and disk: the hub is
   configured, declared to the controller (Configure Endpoint with the
-  slot-context Hub flag and port count — the input context also
+  slot-context Hub flag and port count -- the input context also
   carries the hub's status-change interrupt endpoint so the command
   is fully formed), every downstream port is powered before any is
   examined, and each connected port is reset, speed-read from the hub
@@ -505,35 +505,35 @@ shortcut), completion via events when H1 lands.
   root port 1, keyboard BEHIND it at 1.1, disk on root port 2):
   typed text landed masked in the passphrase field with `-UsbKbd
   -UsbHub -NoPs2`, and the FULL ceremony ran on `-UsbDisk -UsbKbd
-  -UsbHub -NoPs2` — boot from USB storage, every keystroke through
+  -UsbHub -NoPs2` -- boot from USB storage, every keystroke through
   the hub, storage screens all "via USB" including the 2.15 MB seed
   with CDX magic. The TT fields are written from the spec but no bed
   exercises them yet (QEMU's usb-hub is full-speed, so the chain
   carries no splits); first HS-hub encounter is the real-hardware
-  session. codex-vm models no hub — OVMF is the bed, per the H2a
+  session. codex-vm models no hub -- OVMF is the bed, per the H2a
   rule that USB truth comes from real firmware.
 
   **Medium selection DONE (fester, 2026-07-09).** Dispatch order
-  answers "which controller responds", not "which medium is mine" —
+  answers "which controller responds", not "which medium is mine" --
   and on a real machine the internal SATA drive responds on AHCI
   before the boot stick responds on USB, so every read above GopDisk
   came from the WRONG disk. The boot medium is now identified by
   CONTENT: `GopMedium.medium-select` (third act of boot-flow, after
-  usb-attach) probes each candidate — USB first when usb-attach
+  usb-attach) probes each candidate -- USB first when usb-attach
   published a handle (probing through the connect fallback would
   reset the shared controller and kill the keyboard), then each AHCI
   disk in port order (`ahci-find-nth`), then IDE behind the
-  floating-bus gate — by steering GopDisk's new selection cells
+  floating-bus gate -- by steering GopDisk's new selection cells
   (36608, magic "MED1" written last) and asking the FAT stack one
   question: does this ESP carry our own CODEX.CDX? A hit locks the
-  cells and every later read and write — storage screens, wake
-  ceremony, identity save — lands on the proven medium; no hit
+  cells and every later read and write -- storage screens, wake
+  ceremony, identity save -- lands on the proven medium; no hit
   anywhere clears them and the old dispatch order stands. The probe
   rides the same disk-read-sector seam it configures, so it needed
   no second FAT stack. Verdicts (`test-ovmf.ps1 -Decoy`, a real
   GPT+ESP image with its loader renamed so firmware cannot boot it):
   with the decoy on SATA and the boot medium on USB, the storage
-  screen reads everything via USB with the seed verified — the
+  screen reads everything via USB with the seed verified -- the
   pre-selection behavior was AHCI answering first with the decoy;
   and with the decoy on SATA index 0 and the boot image on SATA
   index 1, the probe skips the CODEX-less disk and locks the second
@@ -571,16 +571,16 @@ shortcut), completion via events when H1 lands.
 
   **H5 reset DONE (fester, 2026-07-09).** The menu gained "Restart"
   (five items now). `acpi-reset` honors the FADT's RESET_REG when
-  declared — flags bit 10 at 112, the Generic Address Structure at
+  declared -- flags bit 10 at 112, the Generic Address Structure at
   116 (I/O or memory space), RESET_VALUE at 128, all length-guarded
   (a 116-byte FADT has no such fields and reading them is reading the
-  next table) — then falls back to the universal 0xCF9 chipset port,
+  next table) -- then falls back to the universal 0xCF9 chipset port,
   then the i8042 pulse, itself gated by the floating-bus check (a
   0xFF status means no controller, and writing reset commands into a
   floating bus is theater). Unlike poweroff, reset never refuses.
   Verdicts: codex-vm prints `RESET: 0xCF9 system reset requested`
   and exits (its FADT now publishes the reset register like real
-  chipsets, and 0xCF9 bit 2 is modeled); OVMF genuinely REBOOTS —
+  chipsets, and 0xCF9 bit 2 is modeled); OVMF genuinely REBOOTS --
   two full BdsDxe boot cycles in one serial log. The pure decode is
   battery-pinned: acpi-parse's rev-2 fixture carries a reset GAS at
   a deliberately non-QEMU address (0x1234, value 0x42), and the
@@ -590,7 +590,7 @@ shortcut), completion via events when H1 lands.
   xHCI driver; fix the `hda-codec-test` misnomer.
 - **Demo:** type the wizard passphrase on a machine with no PS/2.
 
-### H3 — Storage breadth: NVMe, FAT32, and "which disk is mine"
+### H3 -- Storage breadth: NVMe, FAT32, and "which disk is mine"
 
 - **H3a DONE (fester, 2026-07-09).** `apps/works/GopNvme.codex`: the
   admin queue pair bootstraps everything (IDENTIFY namespace with the
@@ -601,7 +601,7 @@ shortcut), completion via events when H1 lands.
   PRP-list form is never needed; a write ends with an NVM FLUSH (the
   IDE FLUSH CACHE discipline). The bring-up resets the controller and
   is far too heavy per read, so the first connect publishes its
-  handle to magic-guarded cells (36672, "NVM1" last) — the GopUsbMsc
+  handle to magic-guarded cells (36672, "NVM1" last) -- the GopUsbMsc
   pattern. Wired as med-kind-nvme 4: dispatch order AHCI → NVMe →
   IDE → USB, and GopMedium probes NVMe after AHCI. Battery-pinned:
   codex/test/nvme-encode builds every SQE shape with the driver's
@@ -609,11 +609,11 @@ shortcut), completion via events when H1 lands.
   32 bits pins the dword split; an unaligned buffer pins PRP2).
   Battery baseline is now 339/324/0/15.
 
-  **THE BUG THE BED CAUGHT — a 4 GB-aligned gamble in BAR parsing.**
+  **THE BUG THE BED CAUGHT -- a 4 GB-aligned gamble in BAR parsing.**
   On `-NvmeDisk -UsbKbd -NoPs2` the KEYBOARD died: with two 64-bit
   BAR devices OVMF packs the >4 GB window (NVMe at 0xC000000000,
   xHCI at 0xC000004000), and xhci-init-device trusted a nonzero LOW
-  dword alone — 0x4000 read as a plausible BAR and the controller
+  dword alone -- 0x4000 read as a plausible BAR and the controller
   was brought up against low RAM. It had only ever worked because a
   LONE high device lands 4 GB-aligned and reads zero. Diagnosed with
   QEMU monitor `info pci` (the assigned-BAR truth); both drivers now
@@ -622,13 +622,28 @@ shortcut), completion via events when H1 lands.
   64-bit question, and the answer changes when a second device
   joins the window.
 
+  **A PCI config read is ZERO-extended, so a BAR value is never
+  negative** (measured 2026-07-29 on seed 6671C19A0F78F630, after
+  the readback confirmation above was challenged as impossible).
+  `port-in-32` emits `xor eax, eax` then `in eax, dx`
+  (`emit-port-in-32-helper`), and a 32-bit `in` clears the upper
+  half of RAX; `port-out-32` returns 0, so `pci-config-read-raw`'s
+  `w + read` is the read. With `rb = 0xFE800004`, masking by `-16`
+  and by `4294967280` both give 4269801472 and both compare equal
+  to `#FE800000`. The two idioms are interchangeable for every
+  value `pci-read-config` can return, and neither loses the
+  comparison to sign extension. The masks that do matter are the
+  WINDOW bounds: `[3 GB, 4 GB)` is the only mapped device range,
+  and below 3 GB is the silent failure because it aliases the
+  arena rather than faulting.
+
   Verdict (`test-ovmf.ps1 -NvmeDisk`, OVMF boots FROM the NVMe
   namespace): full ceremony over USB HID with i8042=off, storage
-  screens all "via NVMe" — GPT header, our own loader through the
-  FAT walk, the 2.15 MB seed with CDX magic verified — every byte
+  screens all "via NVMe" -- GPT header, our own loader through the
+  FAT walk, the 2.15 MB seed with CDX magic verified -- every byte
   through the driver's own queues. codex-vm regression green (no
   NVMe model; the PCI scan finds nothing and the chain falls
-  through — OVMF is the NVMe bed, per the H2a rule).
+  through -- OVMF is the NVMe bed, per the H2a rule).
 - **H3b DONE (fester CL 7442, 2026-07-10).** FAT32 in the Gop path:
   GopFat16 recognizes the 32-bit layout structurally (a zero 16-bit
   FAT size), maps FAT32's fields into the shared volume record, and
@@ -638,16 +653,16 @@ shortcut), completion via events when H1 lands.
   ceremony under OVMF. Battery test fat32-parse. Landed with a
   compiler fix the 444 KB boot bundle forced: demand-parse-keep-floor
   raised 64 MB -> 192 MB (the keep-deck copy overflowed into the
-  scratch it was reading and died in a silent #GP — a floor that is
+  scratch it was reading and died in a silent #GP -- a floor that is
   not generous enough fails exactly like the survey it replaced).
 - **H3c DONE (fester, 2026-07-10).** `apps/works/GopEnum.codex`: the
-  disk inventory. Every candidate GopMedium knows how to probe —
+  disk inventory. Every candidate GopMedium knows how to probe --
   AHCI ports 0-3, the NVMe namespace, legacy IDE behind the
-  floating-bus gate, the published USB handle — becomes a DiskInfo:
+  floating-bus gate, the published USB handle -- becomes a DiskInfo:
   controller kind/index, model from the device's own identify data,
   sector count, first-ESP volume label, CODEX.CDX presence. New
   driver surface: ahci-identify-on (ATA IDENTIFY 0xEC through the
-  same one-PRD command path — LBA/count are n/a to the command),
+  same one-PRD command path -- LBA/count are n/a to the command),
   nvme-identify-ctrl (CNS 1; model at bytes 24-63), ide-identify
   (PIO, absent-gated); USB reuses INQUIRY + the sectors already on
   MscDisk. Enumeration rides the med-cells probe seam and SAVES/
@@ -658,7 +673,7 @@ shortcut), completion via events when H1 lands.
   BPB labels at 43/71, printable-stop + space-trim through
   from-unicode) are battery-pinned by disk-enum-parse against
   hand-derived spec fixtures. codex-vm fidelity fix: its IDE model
-  never implemented IDENTIFY (the OperatorsManual overstated it) —
+  never implemented IDENTIFY (the OperatorsManual overstated it) --
   0xEC now answers a synthesized identify sector (model "CODEX VM
   IDE DISK", both sector-count fields) instead of leaving DRQ unset.
   Verdicts: codex-vm -disk shows USB + IDE with USB marked; OVMF
@@ -673,7 +688,7 @@ shortcut), completion via events when H1 lands.
   by name and points at itself (build-output/ovmf-disks.png shape:
   decoy on SATA named but unmarked, stick on USB marked).
 
-### H4 — The desktop lands (BootRoadmap B4 made concrete)
+### H4 -- The desktop lands (BootRoadmap B4 made concrete)
 
 Port guios onto the H1 runtime on the Option A path: keyboard/mouse
 from real IRQs (PS/2 or H2 HID), LAPIC-timer pacing instead of the
@@ -690,14 +705,14 @@ leans on, with the port for each:
 | guios convenience | cite | metal replacement |
 |---|---|---|
 | FB hardcoded 0xBF000000, stride=width, 1024x768 consts | GuiDisplay.codex:13-32, GuiShell.codex:22-23,86 | handoff cells 0x8000 (base/w/h/stride) |
-| Geometry via HOST RASTERIZER: MMIO 0xBE000000 cmd buf + ports 0x400-0x402 (GpuRender) | GpuRender.codex:18,59-65; GuiShell.codex:129-133 | DOES NOT EXIST on metal — software rect walk of the widget tree to the FB (widgets are axis-aligned; GopDraw suffices) |
+| Geometry via HOST RASTERIZER: MMIO 0xBE000000 cmd buf + ports 0x400-0x402 (GpuRender) | GpuRender.codex:18,59-65; GuiShell.codex:129-133 | DOES NOT EXIST on metal -- software rect walk of the widget tree to the FB (widgets are axis-aligned; GopDraw suffices) |
 | Text direct-to-FB via GopBuf aliasing the FB | GuiShell.codex:88-90,156-176 | keep (already metal-shaped) |
-| Keyboard: cell 28680 via InputSource ri-take-key + a port-0x60 drain | InputSource.codex:12,48-62 | kbd-take (H2 pump + PS/2 mailbox); DELETE the 0x60 drain — it races the IRQ1 handler (the documented gk-take race) |
+| Keyboard: cell 28680 via InputSource ri-take-key + a port-0x60 drain | InputSource.codex:12,48-62 | kbd-take (H2 pump + PS/2 mailbox); DELETE the 0x60 drain -- it races the IRQ1 handler (the documented gk-take race) |
 | Mouse: ABSOLUTE ports 0xE1-0xE4 (codex-vm synthesized; kernel 28684 packets unused) | InputSource.codex:50-53 | GopUsbMouse folded absolute state (mouse-x/y/buttons) |
 | Pacing: port-out 224 x30/frame (VM-exit throttle) + assumed PIT 18 Hz | GuiShell.codex:116-120,364 | event-driven repaint + PIT tick cell 28672 gates; LAPIC timer later |
 | Fonts: TTF over block-read-sector SYSCALL from an IDE FAT32 font disk | FontLoad.codex:161-180; GuiShell.codex:54-61 | gfat-read-file-bulk from the stick's own ESP (syscall path is dead post-EBS on Option A); TTF files land on the ESP via build-img |
-| Fallback fonts: SystemFont (baked 9x16) / fl-load-block-font | SystemFont.codex:16-21; FontLoad.codex:589-600 | keep — no disk needed |
-| RTC: CMOS ports 0x70/0x71 | GuiShell.codex:38-39 | keep — real hardware |
+| Fallback fonts: SystemFont (baked 9x16) / fl-load-block-font | SystemFont.codex:16-21; FontLoad.codex:589-600 | keep -- no disk needed |
+| RTC: CMOS ports 0x70/0x71 | GuiShell.codex:38-39 | keep -- real hardware |
 | get-ticks intrinsic / __heap-save gauges | GuiShell.codex:357-392 | keep (tick counter runs on the spine) |
 
 - **H4a DONE (fester, 2026-07-10): the desktop frame on the real
@@ -847,16 +862,16 @@ leans on, with the port for each:
   build-output/guios-{1core,smp4,smp4-disk}.png (untracked).
 - H4e remaining: the editor + compile pipeline (= the B4 demo).
 
-- **Demo:** the B4 demo — on metal: browse the stick in the file
+- **Demo:** the B4 demo -- on metal: browse the stick in the file
   manager, open the editor, compile and run a Codex program, no host,
   no OS.
 
-### H5 — Power: the machine can turn itself off
+### H5 -- Power: the machine can turn itself off
 
 **S5 shutdown DONE (fester, 2026-07-09).** `acpi-poweroff` writes
 `(SLP_TYPa << 10) | SLP_EN` to the PM1a control block the FADT named,
 and the same to PM1b when the machine has a split block. Both the port
-and the sleep type are *read out of the firmware's own tables* — the
+and the sleep type are *read out of the firmware's own tables* -- the
 famous `outw(0x604, 0x2000)` is what this computes on QEMU, not what it
 assumes. It refuses (returns -1, machine stays on, screen says so)
 without a parsed FADT, a decoded `_S5_`, and a control-block address.
@@ -867,7 +882,7 @@ before handing off, and poking a port we have not read would be a guess.
 The boot menu's fourth item is now "Power Off" rather than "Reboot",
 and it works. Verified: codex-vm exits at the keystroke with
 `PM1a_CNT=0x2000` (a value derived from its parsed `_S5_`), and under
-OVMF/q35 QEMU exits on its own — with `-no-shutdown` it reports
+OVMF/q35 QEMU exits on its own -- with `-no-shutdown` it reports
 `VM status: paused (shutdown)`, i.e. the guest reached the real ACPI
 hardware. codex-vm grew a PM1a control block at 0x604 that honors
 SLP_EN with SLP_TYP 0 and honestly ignores sleep states it does not
@@ -881,7 +896,7 @@ TheLongFlight IV's `[Power]` effect.
 
 - **Demo:** "Power Off" in the boot menu powers the machine off. Done.
 
-### H6 — The optional senses: network and audio (later, ordered)
+### H6 -- The optional senses: network and audio (later, ordered)
 
 Offline-first means these do not gate the OS experience.
 Network order when wanted: VirtioNet validated (VMs/cloud) ->
@@ -904,7 +919,7 @@ HDA controller driver for built-in codecs. This is Ascent I's
   where iteration speed demands, each model fix logged (the emulator-
   fidelity ledger in UEFI-BOOT-INVESTIGATION / BootRoadmap style).
 - **Known-answer fixtures built independently from specs** (Python
-  ground truth) for every wire/DMA structure — the ahci-encode /
+  ground truth) for every wire/DMA structure -- the ahci-encode /
   usb-bot method.
 - **Metal sessions batched** at phase ends; OVMF green is the entry
   ticket.
@@ -912,13 +927,10 @@ HDA controller driver for built-in codecs. This is Ascent I's
 ## The boot-image iteration loop (doctrine, 2026-07-10)
 
 Written after the day the working stick "stopped working" and the
-cause turned out to be five stacked actors, none of them the payload:
+cause turned out to be four stacked actors, none of them the payload:
 images shipped without a backup GPT (fixed, CL 7455), Windows GPT
 auto-repair rewriting any nonconforming disk ON EVERY INSERTION,
-Windows caching that repair intent BY DISK GUID so subsequent flashes
-of the same-GUID image are re-repaired within a second of writing
-(build-img stamps a deterministic GUID, so every flash looked like
-the same disk), Windows stamping a random MBR signature into a zero
+Windows stamping a random MBR signature into a zero
 signature field mid-flash (fixed, CL 7457), and the Dell's lazy USB
 UEFI enumeration (entries appear only after several reboot/BIOS-visit
 cycles; its legacy F12 list is HARDCODED and proves nothing). Full
@@ -942,9 +954,6 @@ geometry). Rules learned in blood:
 - Flash -> verify -> PULL. The stick never lingers in and NEVER
   returns to a Windows box between flash and boot test. A stick that
   re-entered Windows is presumed rewritten; reflash before trusting.
-- Randomize the disk GUID at flash time (pending patch) so partmgr's
-  cached repair ruling never matches; without it a flash after any
-  GPT experiment on the same box fails verify within a second.
 - Do not run QEMU (or anything) against the raw physical stick
   between flash and boot test -- closing the raw handle invites
   Windows to re-examine the disk.
@@ -976,9 +985,9 @@ arc); retiring codex-vm via the pure-Codex VMX host (CurrentPlan gap
 
 ## Suggested order and why
 
-H2a (qemu-xhci bed) is a day and validates shipped work — first.
-H1 is the multiplier — everything after it gets events, syscalls, and
-the OS stack on metal — second, and worth doing carefully (it touches
+H2a (qemu-xhci bed) is a day and validates shipped work -- first.
+H1 is the multiplier -- everything after it gets events, syscalls, and
+the OS stack on metal -- second, and worth doing carefully (it touches
 the boot contract). H2 and H3 are independent of each other after H1
 and can proceed in either order or in parallel lanes; H4 needs H1
 (and H2 for PS/2-less machines); H5 is small once H1b exists; H6

@@ -14,8 +14,8 @@ Two issues:
 
 1. **`if` is overloaded.** The same keyword is used for boolean
    conditionals (`if cond then X else Y`) and for pattern-match arms
-   (`if pattern -> X`). To a reader — especially one coming from
-   procedural languages — these look like the same construct but
+   (`if pattern -> X`). To a reader -- especially one coming from
+   procedural languages -- these look like the same construct but
    behave differently: one takes a Boolean, the other takes a
    pattern. The ambiguity is real and costs reading time.
 
@@ -75,12 +75,12 @@ for one migration cycle if we want a gentle rollout.
 
 ### Reference compiler
 
-- `src/Codex.Syntax/Parser.Expressions.cs` — the `ParseMatch` /
+- `src/Codex.Syntax/Parser.Expressions.cs` -- the `ParseMatch` /
   `ParseWhen` path accepts `IfKeyword` today. Add `IsKeyword` (new
   token) as an accepted alternative, or replace outright.
-- `src/Codex.Syntax/Lexer.cs` — lex `is` as `IsKeyword`. Already lexed
+- `src/Codex.Syntax/Lexer.cs` -- lex `is` as `IsKeyword`. Already lexed
   as `Identifier`? Then keyword-promote in a late pass.
-- `src/Codex.Syntax/Parser.Expressions.cs` — the wildcard pattern parse
+- `src/Codex.Syntax/Parser.Expressions.cs` -- the wildcard pattern parse
   accepts `Underscore` today. Add `OtherwiseKeyword` as an accepted
   alternative.
 

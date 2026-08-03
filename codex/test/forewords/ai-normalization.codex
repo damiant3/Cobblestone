@@ -1,0 +1,64 @@
+Chapter: AiNormalization
+  cites Foreword chapter Console
+  cites AI chapter Normalization
+
+ GroupNorm is (x - mean) / sqrt(var + eps), then gamma and beta. The chapter
+ named its divisor `inv-std`, computed it as `math-isqrt (variance + eps)`,
+ and then MULTIPLIED by it. `math-isqrt` is an integer square root and not a
+ reciprocal, so that was the deviation scaled by roughly its own square root
+ rather than divided by it, and the scale was wrong as well: at scale 1000 a
+ standard deviation is `math-isqrt (variance * 1000)`, not `math-isqrt
+ variance`.
+
+ The worked case below is small enough to check by hand, which is the point
+ of choosing it: values 0, 1, 2, 3 have mean 1.5 and variance 1.25, so the
+ standard deviation is 1.118 and the normalized values are -1.342, -0.447,
+ 0.447 and 1.342. The chapter answered -52, -17, 17, 52.
+
+ Two controls, and they held while the defect was live, which is what makes
+ them controls: with every value equal, each term is (val - mean) = 0, so the
+ answer is beta whatever the deviation is scaled by. They separate the mean
+ and beta paths, which were always right, from the scaling, which was not.
+
+Section: Body
+
+  dump : List Integer, Integer, Integer, Text -> Text
+  dump (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else dump xs (i + 1) n (acc & (if i > 0 then " " else "") & show (list-at xs i))
+
+  show-all : List Integer -> Text
+  show-all (xs) = dump xs 0 (list-length xs) ""
+
+Section: Report
+
+  opening : [Console] Nothing = act
+    print-line-uni "group-norm, 1 group, 1 channel, spatial 4, values 0 1 2 3:"
+    let p = group-norm-params 1 1 [1000] [0]
+    in print-line-uni ("  " & show-all (group-norm p [0, 1000, 2000, 3000] 1 4) & "   true -1342 -447 447 1342")
+    print-line-uni ""
+    print-line-uni "control: all values equal, so every deviation is zero and the"
+    print-line-uni "answer is beta no matter what the divisor is."
+    let p2 = group-norm-params 1 1 [1000] [0]
+    in print-line-uni ("  beta 0: " & show-all (group-norm p2 [2000, 2000, 2000, 2000] 1 4) & "   true 0 0 0 0")
+    let p3 = group-norm-params 1 1 [1000] [7]
+    in print-line-uni ("  beta 7: " & show-all (group-norm p3 [2000, 2000, 2000, 2000] 1 4) & "   true 7 7 7 7")
+    print-line-uni ""
+    print-line-uni "gamma scales the normalized value, so doubling it doubles the answer:"
+    let p4 = group-norm-params 1 1 [2000] [0]
+    in print-line-uni ("  gamma 2.0: " & show-all (group-norm p4 [0, 1000, 2000, 3000] 1 4) & "   true -2683 -894 894 2683")
+    print-line-uni ""
+    print-line-uni "layer-norm carried the identical defect and the identical fix:"
+    let p5 = layer-norm-params 4 [1000, 1000, 1000, 1000] [0, 0, 0, 0]
+    in print-line-uni ("  " & show-all (layer-norm-forward p5 [0, 1000, 2000, 3000]) & "   true -1342 -447 447 1342")
+    print-line-uni ""
+    print-line-uni "silu is x * sigmoid(x). Its sigmoid used to be a private copy of"
+    print-line-uni "the one in Activation, byte for byte, and carried the same defect;"
+    print-line-uni "it now delegates, so there is one sigmoid in the quire."
+    print-line-uni ("  silu 1000: " & show-all (silu-forward [1000]) & "   true 731")
+    print-line-uni ("  silu 3000: " & show-all (silu-forward [3000]) & "   true 2858")
+    print-line-uni ("  silu 5000: " & show-all (silu-forward [5000]) & "   true 4967")
+    print-line-uni ("  silu -1000: " & show-all (silu-forward [0 - 1000]) & "   true -269")
+  end
+
+Page 1

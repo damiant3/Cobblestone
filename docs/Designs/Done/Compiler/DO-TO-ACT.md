@@ -11,19 +11,19 @@
 
 `do` is borrowed from Haskell, which borrowed it from English imperative prose ("do this, then that"). Haskell's bet was that imperative programmers would read `do` as "do the following steps."
 
-For anyone with actual imperative muscle memory — FORTRAN, BASIC, Pascal, C, Ruby, shell — `do` means **loop**. `DO i = 1, 10`, `do { ... } while`, `for x in list do`, `do...loop`. It's the wrong word for "sequence of statements."
+For anyone with actual imperative muscle memory -- FORTRAN, BASIC, Pascal, C, Ruby, shell -- `do` means **loop**. `DO i = 1, 10`, `do { ... } while`, `for x in list do`, `do...loop`. It's the wrong word for "sequence of statements."
 
 The camouflage fails exactly when it needs to succeed. A reader new to Codex sees `do` and gets the wrong mental model on first glance. They have to be taught that here, `do` means sequencing, not iteration. That's a needless cognitive tax.
 
 ### Problem 2: layout-based `do`-blocks make multi-line calls load-bearing.
 
-The parser (`parse-app-loop` in self-host, `ParseApplication` in the reference) does not skip newlines between arguments. Every existing multi-argument call in the compiler is squeezed onto one long line because of this — not for style. See: every `make-error` / `span-at` / `bag-add` call in the codebase.
+The parser (`parse-app-loop` in self-host, `ParseApplication` in the reference) does not skip newlines between arguments. Every existing multi-argument call in the compiler is squeezed onto one long line because of this -- not for style. See: every `make-error` / `span-at` / `bag-add` call in the codebase.
 
 This has surfaced as a real bug at least three times (most recently in `check-cite-names` for H-007 duplicate-cite detection). The error manifests far from the actual site because parse recovery drifts. Debugging is painful.
 
 Two prior attempts to fix this without changing the keyword:
 
-1. **Paren-depth counter** (2026-04-15): "inside `()`, newlines are whitespace." Worked for plain multi-line calls. Broke `let x = (do ...)` because the do-block inside parens had its statement separators eaten — next do-stmt's identifier became an argument continuation of the previous stmt's RHS. Round-trip failed. Branch never merged.
+1. **Paren-depth counter** (2026-04-15): "inside `()`, newlines are whitespace." Worked for plain multi-line calls. Broke `let x = (do ...)` because the do-block inside parens had its statement separators eaten -- next do-stmt's identifier became an argument continuation of the previous stmt's RHS. Round-trip failed. Branch never merged.
 
 2. **Indent-aware continuation**: "swallow newlines only if next token is indented past function atom's column." Consistent with how do-blocks already end (column ≤ min-col). Feasible but adds complexity to `parse-app-loop` that scales with every call site.
 
@@ -31,7 +31,7 @@ Both attempts contort the parser to work around the fact that **newlines serve t
 
 ### Problem 3: layout is writer-optimized, not reader-optimized.
 
-When you type fresh code, indentation feels natural. When you read someone else's compiler — or your own code six months later — explicit delimiters are faster to parse visually. You `grep` for `act` and find every effect boundary. With layout you're scanning for indentation patterns and counting columns.
+When you type fresh code, indentation feels natural. When you read someone else's compiler -- or your own code six months later -- explicit delimiters are faster to parse visually. You `grep` for `act` and find every effect boundary. With layout you're scanning for indentation patterns and counting columns.
 
 Layout also lies during code transformations: cut a do-block from one context and paste it into another, and the indentation silently breaks. Explicit delimiters travel with the code.
 
@@ -48,12 +48,12 @@ Rejected alternatives and why:
 
 **`act`** wins because:
 
-- **Fits Codex's vocabulary.** Chapters, cites, prose, claim, proof, quire, notation — Codex already reads like a book. "Acts" belong in that register. A chapter contains acts.
+- **Fits Codex's vocabulary.** Chapters, cites, prose, claim, proof, quire, notation -- Codex already reads like a book. "Acts" belong in that register. A chapter contains acts.
 - **Declarative, not verby.** "An act" names the thing (a scripted sequence of events), not an instruction to perform.
 - **Short.** 3 letters, one more than `do`.
 - **Universally understood.** Every reader, programmer or not, knows an act is a bounded sequence of scripted events. Theater Act 1, Act 2.
 - **No loop connotation.** Nobody confuses an act with iteration.
-- **`end` earns its keep once paired with `act`.** "End Act 1" is vernacular theater language. `end` after `act` is not empty ceremony — the opener named what's being ended. `begin ... end` was vacuous; `act ... end` is not.
+- **`end` earns its keep once paired with `act`.** "End Act 1" is vernacular theater language. `end` after `act` is not empty ceremony -- the opener named what's being ended. `begin ... end` was vacuous; `act ... end` is not.
 
 ### The payoff: one coherent rule
 
@@ -93,8 +93,8 @@ f (x) =
 
 **Statement forms inside `act`:**
 
-- `name <- expr` — bind the result of an effectful expression to a name.
-- `expr` — evaluate for effect, discard the result.
+- `name <- expr` -- bind the result of an effectful expression to a name.
+- `expr` -- evaluate for effect, discard the result.
 
 Unchanged from current `do`-block semantics.
 
@@ -110,10 +110,10 @@ stmt-sep     ::= newline (at top level of act-block only)
 
 ### What doesn't change
 
-- `let ... in ...` — multi-binding `let` with layout continues to work as today. Single-binding is already the norm; multi-binding is rare and not affected by the motivating problems.
-- Top-level definitions — still separated by newline-then-identifier-at-col-0.
-- Record literals `{ field = v, ... }`, list literals `[ a, b, c ]`, function application grouping `(expr)` — unchanged.
-- All effectful-type inference, CDX2033 enforcement, etc. — unchanged. This is purely a syntactic surface change.
+- `let ... in ...` -- multi-binding `let` with layout continues to work as today. Single-binding is already the norm; multi-binding is rare and not affected by the motivating problems.
+- Top-level definitions -- still separated by newline-then-identifier-at-col-0.
+- Record literals `{ field = v, ... }`, list literals `[ a, b, c ]`, function application grouping `(expr)` -- unchanged.
+- All effectful-type inference, CDX2033 enforcement, etc. -- unchanged. This is purely a syntactic surface change.
 
 ---
 
@@ -121,7 +121,7 @@ stmt-sep     ::= newline (at top level of act-block only)
 
 Two phases so each lands independently and `pingpong.sh` validates each.
 
-### Phase A — Additive (coexistence)
+### Phase A -- Additive (coexistence)
 
 **Goal:** accept `act ... end` as alternative syntax. `do`-layout continues to work. No existing code breaks.
 
@@ -156,7 +156,7 @@ Two phases so each lands independently and `pingpong.sh` validates each.
 - Pingpong still green (Cam confirms).
 - No existing `.codex` file needs to change.
 
-### Phase B — Migration + removal
+### Phase B -- Migration + removal
 
 **Goal:** rewrite every `do` in the tree to `act ... end`; delete `do`-layout support and the column-tracking machinery that exists only to serve it.
 
@@ -176,7 +176,7 @@ Two phases so each lands independently and `pingpong.sh` validates each.
 
 3. **Doc + memory cleanup:**
    - Update `docs/Active/Compiler/SELF-HOST-PARITY-AUDIT.md` if it references `do`-block parsing.
-   - Retire `feedback_selfhost_parser_limits.md` memory — single-line rule is no longer load-bearing.
+   - Retire `feedback_selfhost_parser_limits.md` memory -- single-line rule is no longer load-bearing.
    - Remove `do` references from other docs; add a note to `CLAUDE.md` under syntax.
 
 4. **Tests:**
@@ -194,11 +194,11 @@ Two phases so each lands independently and `pingpong.sh` validates each.
 
 - **Sem-equiv regression inside self-host.** The self-host parser rewrite must produce byte-identical output in stage1 vs stage0 for the migrated code. Phase A is additive first precisely so stage0 can still emit `do` while stage1 learns `act`, then migration happens in one atomic commit where both parsers switch over.
 
-- **In-flight branches conflict with migration.** Any branch touching `.codex` files during Phase B will conflict with the migration commit. Coordinate with Cam before starting Phase B — ideally no other compiler-branch work in flight when the migration lands.
+- **In-flight branches conflict with migration.** Any branch touching `.codex` files during Phase B will conflict with the migration commit. Coordinate with Cam before starting Phase B -- ideally no other compiler-branch work in flight when the migration lands.
 
 - **`do` embedded in proof/prose/cites.** Should be none (those use their own grammars), but `git grep` before Phase B confirms.
 
-- **Migration tool correctness.** The tool has to get indentation right for the emitted `end`. Wrong column = post-migration compile error. Mitigation: run migration tool, full build, full test, pingpong — if all green, the migration is correct by construction.
+- **Migration tool correctness.** The tool has to get indentation right for the emitted `end`. Wrong column = post-migration compile error. Mitigation: run migration tool, full build, full test, pingpong -- if all green, the migration is correct by construction.
 
 - **Aesthetic regret.** If `act` turns out to read worse than expected in practice, reversing is mechanical (mirror migration tool). But the worse outcome is ambivalent keeping of both forms.
 

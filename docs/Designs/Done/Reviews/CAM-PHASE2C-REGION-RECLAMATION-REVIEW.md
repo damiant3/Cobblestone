@@ -1,4 +1,4 @@
-# Review: Cam Phase 2c — Region Reclamation + x86-64 Expansion
+# Review: Cam Phase 2c -- Region Reclamation + x86-64 Expansion
 
 **Reviewer**: Agent Windows (Copilot, VS 2022)
 **Date**: 2026-03-24
@@ -11,25 +11,25 @@
 
 Four commits totalling **+1,138 / -112 lines** across 8 files:
 
-1. **`e00e077`** — Region reclamation enabled on x86-64, ARM64, WASM (Camp III-A Phase 2c)
-2. **`bf77d8f`** — x86-64 automated test suite (23 tests, native WSL execution)
-3. **`2681fe6`** — `show` builtin added to x86-64
-4. **`844afbd`** — `write-file`, `file-exists`, `get-args`, `current-dir` builtins for x86-64
+1. **`e00e077`** -- Region reclamation enabled on x86-64, ARM64, WASM (Camp III-A Phase 2c)
+2. **`bf77d8f`** -- x86-64 automated test suite (23 tests, native WSL execution)
+3. **`2681fe6`** -- `show` builtin added to x86-64
+4. **`844afbd`** -- `write-file`, `file-exists`, `get-args`, `current-dir` builtins for x86-64
 
 **Verdict**: ✅ **Approve with one required fix and a few nits.**
 
-The region reclamation work (x86-64, WASM) is solid. The test suite is excellent — 23
+The region reclamation work (x86-64, WASM) is solid. The test suite is excellent -- 23
 tests covering arithmetic, records, sum types, lists, text, HOFs, and register spill,
 all running natively in WSL. The x86-64 builtin stubs match the RISC-V equivalents.
 
-ARM64 review deferred — Agent Linux found bugs; updated code incoming.
+ARM64 review deferred -- Agent Linux found bugs; updated code incoming.
 
 ---
 
 ## Build & Test
 
-- `dotnet build Codex.sln` — ✅ Green (only CS5001 in Codex.Codex, pre-existing)
-- `dotnet test` — ✅ 435 passed in Codex.Types.Tests (23 new x86-64 tests all pass)
+- `dotnet build Codex.sln` -- ✅ Green (only CS5001 in Codex.Codex, pre-existing)
+- `dotnet test` -- ✅ 435 passed in Codex.Types.Tests (23 new x86-64 tests all pass)
 - Pre-existing failures only: `Peek_non_numeric_start_does_not_crash` + 3 agent session log tests
 
 ---
@@ -95,7 +95,7 @@ Remove the first `MovStore` line.
 
 ### 2. `Helpers.cs` duplication
 
-`CompileToX86_64` and `CompileToArm64` are nearly identical (~86 lines each) —
+`CompileToX86_64` and `CompileToArm64` are nearly identical (~86 lines each) --
 only the emitter type differs. Consider extracting a shared `CompileToIR` helper
 that returns the `IRModule`, then each method just calls its backend. Low priority.
 
@@ -136,10 +136,10 @@ Would catch the 🔴 bug above. Add alongside the fix.
   the `Li + Add` pattern that was already present. Cleaner.
 
 - **Test suite**: 23 tests with excellent coverage. The WSL detection (`IsWslAvailable`)
-  is graceful — tests silently skip on non-WSL machines. `CompileAndRun` cleanup is proper
+  is graceful -- tests silently skip on non-WSL machines. `CompileAndRun` cleanup is proper
   (temp dir deleted in `finally`). Good engineering.
 
-- **WASM `TypeHasNestedHeapPointers`**: Smart incremental approach — flat-copy scalar-only
+- **WASM `TypeHasNestedHeapPointers`**: Smart incremental approach -- flat-copy scalar-only
   records/sums, skip types with nested pointers. Gets region reclamation working for the
   common case without needing WASM function-table helpers.
 

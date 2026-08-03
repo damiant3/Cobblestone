@@ -18,7 +18,7 @@ Leaf inlining is in the compiler today, unconditionally, with no flag:
 
 There is **no `inline=` mode flag**, no `CompileFlags.inline` field, and
 no `codex/compiler/IR/Inline.codex`. Earlier drafts of this document
-prescribed all three; none of them were built, and none are needed —
+prescribed all three; none of them were built, and none are needed --
 leaf inlining is always profitable, so it is simply always on. The
 sections below describe what shipped (Phase 1) and what remains
 (Phases 2 and 3).
@@ -46,7 +46,7 @@ Three-phase automatic inlining, implemented as an IR-to-IR pass inside
 LOWER. Each phase feeds the next. Phase 1 is built; Phases 2 and 3 are
 the remaining work.
 
-### Phase 1: Leaf Inlining — SHIPPED
+### Phase 1: Leaf Inlining -- SHIPPED
 
 As built, a leaf candidate is deliberately narrower than the original
 "any body with no `IrApply`" sketch. `collect-leaf-defs` admits a def
@@ -78,10 +78,10 @@ TEXT path is untouched, so text round-trip and semantic equivalence
 never see inlined bodies.
 
 Widening the candidate rule (record constructors, field access, pattern
-matches over arguments — the cases the original sketch assumed) is
+matches over arguments -- the cases the original sketch assumed) is
 future work, and each widening must re-clear the fixed-point gates.
 
-### Phase 2: Single-Caller Inlining — OPEN
+### Phase 2: Single-Caller Inlining -- OPEN
 
 After leaf inlining, build a call graph: for each remaining def, count
 how many other defs reference it via `IrApply`. Inline every function
@@ -100,7 +100,7 @@ Candidates: `te-dispatch`, `te-handle`, `dispatch-local`,
 `handle-request` (in the benchmark, each is called from exactly
 one handler function).
 
-### Phase 3: Cost-Based Inlining — OPEN
+### Phase 3: Cost-Based Inlining -- OPEN
 
 Implies Phases 1 and 2. After the fixed-point iteration, inline
 remaining multi-caller functions whose body is below a cost
@@ -125,8 +125,8 @@ recursive functions.
 ## No flag
 
 Inlining is not mode-selectable and should not become so. Phase 1 is
-always profitable — the prologue/epilogue always costs more than an
-integer expression of at most 12 nodes — so it runs on every CDX
+always profitable -- the prologue/epilogue always costs more than an
+integer expression of at most 12 nodes -- so it runs on every CDX
 compile. Phases 2 and 3 should land the same way: always on, or not at
 all. A flag would mean the seed and the battery disagree about what the
 compiler does, which is the one thing this project cannot afford.
@@ -140,14 +140,14 @@ LOWER: lower-chapter -> EMIT                                                   (
 
 The pass takes an `IRChapter` and returns an `IRChapter`. It does not
 interact with the type checker, scope resolver, or emitter. It has no
-deck of its own — it runs inside LOWER, under `demand-lower-floor`, and
+deck of its own -- it runs inside LOWER, under `demand-lower-floor`, and
 `deck-record`s the rebuilt defs there. (`demand-inline-floor` is
 declared in `BuildSettings.codex` and is currently unused; it exists
 for the day the pass is promoted to its own phase.)
 
 ### Fixed-Point Iteration (Phases 2 and 3)
 
-Phase 1 as shipped is a single pass — its candidate rule is closed
+Phase 1 as shipped is a single pass -- its candidate rule is closed
 under nothing, so there is no fixed point to reach. Phases 2 and 3
 introduce one:
 
@@ -174,7 +174,7 @@ shipped Phase 1 machinery. They need:
 | `remove-dead-defs : List IRDef, List CallerEntry -> List IRDef` | Drop defs with 0 callers (except `opening`) |
 
 Substitution and the bound-name threading already exist
-(`inline-expr`, `inline-apply-site`, `has-leaf-call`) and generalize —
+(`inline-expr`, `inline-apply-site`, `has-leaf-call`) and generalize --
 what is missing is the call graph, the cost model, and dead-def
 removal.
 
@@ -246,8 +246,8 @@ text round-trip, pingpong, and the hard fixed point.
 ## Open Questions
 
 1. **Widen the Phase 1 candidate rule?** The shipped rule is integer
-   arithmetic only. Record constructors and field accesses — the
-   original motivating cases — are still called out of line. Each
+   arithmetic only. Record constructors and field accesses -- the
+   original motivating cases -- are still called out of line. Each
    widening is a separate, separately-gated change.
 
 2. Should the cost threshold be per-function or global? A per-

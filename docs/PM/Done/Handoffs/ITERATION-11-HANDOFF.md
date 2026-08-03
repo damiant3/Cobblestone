@@ -10,7 +10,7 @@
 
 | Milestone | Status | Notes |
 |-----------|--------|-------|
-| M0–M10 | ✅ Complete | See ITERATION-10-HANDOFF.md |
+| M0-M10 | ✅ Complete | See ITERATION-10-HANDOFF.md |
 | **M11: Collaboration** | **✅ Complete** | Proposals, verdicts, trust, sync, stakeholder management |
 
 ### M11 Deliverables
@@ -31,9 +31,9 @@
 
 | Kind | Purpose |
 |------|---------|
-| `Proposal` | Suggested change — bundles a definition hash, stakeholder list, optional supersession |
-| `Verdict` | Response to a proposal — Accept, Reject, Amend, or Abstain with reasoning |
-| `Trust` | Vouching — author vouches for a fact at a degree (Reviewed, Tested, Verified, Critical) |
+| `Proposal` | Suggested change -- bundles a definition hash, stakeholder list, optional supersession |
+| `Verdict` | Response to a proposal -- Accept, Reject, Amend, or Abstain with reasoning |
+| `Trust` | Vouching -- author vouches for a fact at a degree (Reviewed, Tested, Verified, Critical) |
 
 ### New Enums
 
@@ -62,7 +62,7 @@
 | `AcceptProposal(proposalHash, viewName)` | Apply accepted proposal to the view |
 | `GetTrustFacts(targetHash)` | Get all trust/vouch facts for a target |
 | `Sync(other)` | Bidirectional fact synchronization between two stores |
-| `CollectAllHashes()` | Internal — enumerate all stored fact hashes |
+| `CollectAllHashes()` | Internal -- enumerate all stored fact hashes |
 
 ### Static Parsing Helpers
 
@@ -94,15 +94,15 @@
 
 - Bidirectional gossip-based: "I have these hashes, what do you have that I don't?"
 - Each store enumerates its fact hashes, then transfers missing facts in both directions
-- Sync is idempotent — running it twice transfers nothing the second time
+- Sync is idempotent -- running it twice transfers nothing the second time
 - Works between any two local `FactStore` instances (filesystem paths)
 
 ### Architecture Decision: Partial Class Pattern
 
 Added a copilot instruction rule for large file editing: when `Program.cs` or other files exceed ~300 lines and need multiple new methods, use a `partial class` file (e.g., `Program.Collaboration.cs`) to keep edits fast and the UI responsive. Merge back when stable.
 
-- `tools/Codex.Cli/Program.cs` — main dispatch, existing commands
-- `tools/Codex.Cli/Program.Collaboration.cs` — the 5 new collaboration commands
+- `tools/Codex.Cli/Program.cs` -- main dispatch, existing commands
+- `tools/Codex.Cli/Program.Collaboration.cs` -- the 5 new collaboration commands
 
 ---
 
@@ -136,7 +136,7 @@ codex verdict a1b2c3d4e5f6g7h8 accept "verified proofs"
 ✓ Verdict: Accept on proposal a1b2c3d4e5f6g7h8
   by carol
   "verified proofs"
-  ★ Consensus reached — proposal can be accepted into the view.
+  ★ Consensus reached -- proposal can be accepted into the view.
 ```
 
 ### List proposals

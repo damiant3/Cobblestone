@@ -1,4 +1,4 @@
-# 05 — Repository Model
+# 05 -- Repository Model
 
 ## Overview
 
@@ -53,7 +53,7 @@ Every fact's identity is the hash of its content. This means:
 - Two identical facts are the same fact (deduplication)
 - A fact's identity never changes (immutability)
 - References between facts are tamper-evident (a hash chain)
-- Facts can be stored anywhere — the hash verifies integrity
+- Facts can be stored anywhere -- the hash verifies integrity
 
 This is the same principle as Git's object store and IPFS, but applied to semantically meaningful units (definitions, not files).
 
@@ -74,7 +74,7 @@ Views replace branches. Instead of "I'm on the feature-x branch," you say "I'm l
 
 ### Canonical View
 
-The **canonical view** is the view that all stakeholders have agreed to. It is the "main branch" — but it is not a branch, it is a set of facts with full consensus.
+The **canonical view** is the view that all stakeholders have agreed to. It is the "main branch" -- but it is not a branch, it is a set of facts with full consensus.
 
 ### Personal Views
 
@@ -116,7 +116,7 @@ The old definition still exists. It is still addressable by its hash. But the re
 
 ### No Deletion
 
-Facts are never deleted. This is a hard rule. If a definition has a vulnerability, you publish a supersession and a deprecation. The old fact remains — marked deprecated, with a pointer to the fix.
+Facts are never deleted. This is a hard rule. If a definition has a vulnerability, you publish a supersession and a deprecation. The old fact remains -- marked deprecated, with a pointer to the fix.
 
 This prevents the "left-pad problem" (an author deletes a package and breaks the ecosystem). It prevents the "rewriting history" problem (someone force-pushes and loses work). It prevents the "bit-rot" problem (a URL stops working because the hosting service shut down).
 
@@ -227,7 +227,7 @@ Vouching is transitive within limits: if I trust Alice, and Alice vouches for a 
 
 ### Local Store
 
-Each developer has a local fact store — a directory of content-addressed blobs. The store is a simple key-value mapping from `ContentHash → byte[]`.
+Each developer has a local fact store -- a directory of content-addressed blobs. The store is a simple key-value mapping from `ContentHash → byte[]`.
 
 ```
 ~/.codex/store/
@@ -246,7 +246,7 @@ This is gossip-based replication. No central server is required (though one can 
 
 ### Index
 
-The local store also maintains an **index** — a queryable database of fact metadata:
+The local store also maintains an **index** -- a queryable database of fact metadata:
 - By kind (all Definitions, all Proposals, etc.)
 - By author
 - By type signature (for capability search)
@@ -254,7 +254,7 @@ The local store also maintains an **index** — a queryable database of fact met
 - By supersession chain
 - By trust profile
 
-The index is derived from facts and can be rebuilt from scratch. It is not authoritative — the facts are.
+The index is derived from facts and can be rebuilt from scratch. It is not authoritative -- the facts are.
 
 ---
 
@@ -315,14 +315,14 @@ The index is derived from facts and can be rebuilt from scratch. It is not autho
 
 ## Open Questions
 
-1. **Namespace governance** — who decides the canonical name for a definition in a shared repository? First-come-first-served? Democratic vote? Some other mechanism?
+1. **Namespace governance** -- who decides the canonical name for a definition in a shared repository? First-come-first-served? Democratic vote? Some other mechanism?
 
-2. **Storage scalability** — an append-only store grows forever. What garbage collection (if any) is appropriate? Archival tiers? Content deduplication?
+2. **Storage scalability** -- an append-only store grows forever. What garbage collection (if any) is appropriate? Archival tiers? Content deduplication?
 
-3. **Identity system** — how are author identities managed? Public key infrastructure? Decentralized identity? Integration with existing identity providers?
+3. **Identity system** -- how are author identities managed? Public key infrastructure? Decentralized identity? Integration with existing identity providers?
 
-4. **Offline experience** — how much of the repository experience works offline? All of it (local store), with sync when connected? Or is online access required for some operations?
+4. **Offline experience** -- how much of the repository experience works offline? All of it (local store), with sync when connected? Or is online access required for some operations?
 
-5. **Migration from Git** — can existing Git repositories be imported into the Codex fact store? What is lost in translation? This matters for adoption.
+5. **Migration from Git** -- can existing Git repositories be imported into the Codex fact store? What is lost in translation? This matters for adoption.
 
 6. Damian asks: what if a required stakeholder is unable to vote possibly ever again? Do we allow timeouts? Proxy voting? Or is the proposal resubmitted?

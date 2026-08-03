@@ -1,0 +1,93 @@
+Chapter: DiskInspectTest
+  cites Dev chapter DiskInspector
+  cites Kernel chapter DiskFacts
+  cites Foreword chapter FactStore
+  cites Foreword chapter FactLog
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+
+ The disk inspector against the partitioned fixture, which is the disk the
+ inspector exists for: an ESP at LBA 34..127 and a fact-store partition at
+ 128..222 on a 256 sector medium.
+
+ THE FIXTURE IS WHY base 128 MEANS ANYTHING. A store that still addressed
+ absolutely would answer 0, and 0 is also what a raw unpartitioned disk
+ legitimately answers, so a fixture with the store at the bottom could not
+ tell the two apart. That is the same reason facts-partition uses this
+ disk, and it is why the inspector is tested here rather than against a
+ blank image.
+
+ THE SUPERBLOCK IS READ TWICE, BEFORE AND AFTER A WRITE, and the pair is
+ the reading that matters. Before, there is no store in the partition and
+ the inspector must say so; after, the same command at the same base must
+ find one. An inspector that always answered "no superblock" would pass a
+ test that only ran the first half, and an inspector that always answered
+ with a superblock would pass one that only ran the second.
+
+ `cmp-differ` IS A STATEMENT ABOUT THE ALLOCATOR, not about the disk.
+ `block-read-sector` takes the current heap pointer as its destination and
+ bumps it, so two reads land on two distinct buffers and a comparison
+ needs no snapshot between them. If it reused one buffer instead, the
+ second read would overwrite the first and sectors 0 and 1 -- a protective
+ MBR and a GPT header, which cannot be equal -- would compare identical.
+ So this line fails loudly if that property ever changes.
+
+ `cmp-same` reads the same sector twice and must be identical. Without it
+ a comparison hardwired to "differ" would pass on the line above, and it
+ is also what proves the loop traverses the whole sector: reporting
+ "identical over 512 bytes" requires reaching index 512, so the counter
+ the offset is read from is exercised end to end.
+
+ WHAT THIS PAIR DOES NOT COVER, stated rather than left to be assumed: a
+ difference at a NON-ZERO offset. Sectors 0 and 1 differ in their first
+ byte, so `cmp-differ` exercises detection and the buffer property but
+ not the reported offset. Arranging a late difference would mean writing
+ a sector to set one up, which is a heavier fixture than the reading is
+ worth while `cmp-same` already pins the traversal.
+
+ We say:
+
+Section: Joining
+
+ A joined line rather than one print per element: the inspector answers
+ lists, and a test that printed them element by element would need an
+ effectful loop with an empty branch, which is more machinery than the
+ reading is worth.
+
+  joined : List Text, Integer, Text -> Text
+  joined (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else if text-length acc == 0 then joined xs (i + 1) (list-at xs i)
+    else joined xs (i + 1) (acc & " | " & list-at xs i)
+
+Section: Body
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    let r = fact-store-region
+    in let before = di-superblock-lines r
+    in let store = disk-load
+    in let written = disk-write-fact store DefinitionFact "inspect-me" 7
+    in let flushed = disk-checkpoint written
+    in let after = di-superblock-lines r
+    in let facts = di-facts-report 64
+    in act
+      sc <- di-sector-count-line
+      print-line-uni ("sectors: " & sc)
+      print-line-uni ("direct: " & di-region-line r)
+      print-line-uni ("sb-before: " & joined before 0 "")
+      print-line-uni ("count: " & show (disk-fact-count flushed))
+      print-line-uni ("sb-after: " & joined after 0 "")
+      print-line-uni ("facts: " & joined facts 0 "")
+
+      d <- di-compare-line 0 1
+      print-line-uni ("cmp-differ: " & d)
+
+      s <- di-compare-line 1 1
+      print-line-uni ("cmp-same: " & s)
+
+      dump <- di-sector-lines 1
+      print-line-uni ("dump-head: " & list-at dump 0)
+      print-line-uni ("dump-row0: " & list-at dump 1)
+    end
+  end

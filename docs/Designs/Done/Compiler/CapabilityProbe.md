@@ -1,4 +1,4 @@
-# Capability Scoping — Stage-0 Probe Results
+# Capability Scoping -- Stage-0 Probe Results
 
 **Status:** ALL STAGES SHIPPED. Stage 7 (blu, 2026-07-08) closes
 the remaining follow-ups AND fixes a stage-4 regression it uncovered.
@@ -6,12 +6,12 @@ the remaining follow-ups AND fixes a stage-4 regression it uncovered.
 REGRESSION (the important part): stage 4 made boot grants
 manifest-derived, but the gated KERNEL builtins (process-spawn,
 chan-kern-*, identity-set/-set-proc, process-restrict-cap) still
-carried empty effect rows — so no program could declare the effect,
+carried empty effect rows -- so no program could declare the effect,
 so no manifest granted the bit, so their in-kernel cap checks
 denied every call. Nine -Apps identity tests silently went from pass
 to fail (verified: pass on pre-stage-4 seed F1F9DF85, fail on
 stage-6 EF6DF10D). -Apps is not in the default battery, so it landed
-on main unnoticed across stages 4-6. Fix: honest effect rows —
+on main unnoticed across stages 4-6. Fix: honest effect rows --
 process-spawn / -priority / -with-heap and chan-kern-* carry
 [Concurrent]; identity-set carries [Identity]; process-restrict-cap
 carries a new [Capability]; identity-set-proc carries [Identity,
@@ -19,7 +19,7 @@ Capability] (its helper tests both bits). The spawn family is
 effect-POLYMORPHIC in its callback (ForAllEff over the callback row,
 the Koka-style row quantifier already in the type system): the
 closure runs in the child, so its effects are the child's, not the
-caller's — a Concurrent param row would be a lie and the child's own
+caller's -- a Concurrent param row would be a lie and the child's own
 effects still surface at the spawn call's result. The nine tests
 were act-converted to declare their real rows and all pass.
 
@@ -34,24 +34,24 @@ cap-console-read; VerifiedLoader gained the Gpu.Compute/Gpu.Memory
 kernel-bit arms (17/18) and the Capability arm; `granted-capabilities`
 renamed `capability-vocabulary` with prose making clear it is the
 capability VOCABULARY (which effects the manifest can carry), never a
-grant — the old name is exactly what made the stage-4 regression easy
+grant -- the old name is exactly what made the stage-4 regression easy
 to miss. CDX4001 message rewritten to match.
 
 The two-level spawn bug found during stage 7 is FIXED (spawn-pool
 carve, follow-up CL): a spawned process that itself spawned a
 grandchild used to hang or crash, because all three spawn helpers
-carved the child's heap+stack from the SPAWNER's R10 — correct only
+carved the child's heap+stack from the SPAWNER's R10 -- correct only
 for proc 0, which owns the whole heap. A spawned child has a fixed
 2 MB region, so carving a grandchild from the child's own R10 handed
 the grandchild memory overlapping the child's stack. The fix carves
 every child region from slot-indexed spawn regions
 (`__spawn_pool_carve`: slot N owns 1 GB + N x 32 MB; the process
-table is the allocator, so slot reuse reclaims the region — see the
+table is the allocator, so slot reuse reclaims the region -- see the
 Spawn Regions section of ArchitectsSketchbook and the
 codex/test/spawn-reuse.codex probe). The first fix attempt used a
 monotonic cursor at cell 36152
 and appeared to cause a "2 MB null-blit termination regression"; that
-was NOT a scheduler bug — codex-vm reads 36152 as the legacy 0x700000
+was NOT a scheduler bug -- codex-vm reads 36152 as the legacy 0x700000
 output-ring write position (OUTPUT_WRITE_POS_ADDR) and drained the
 zero-filled ring on exit. Any guest cell choice must avoid 36152.
 Regression probe: codex/test/nested-spawn.codex (default battery).
@@ -59,7 +59,7 @@ identity-setproc-no-admin remains self-targeting (fine either way).
 
 The opening-as-value manifest hole is CLOSED (and pinned):
 `opening : Integer = block-read 0` is rejected with CDX2031 exactly
-like a function opening — declared-performing-row returns empty for a
+like a function opening -- declared-performing-row returns empty for a
 non-arrow declared type and the body's Device.Block is uncovered.
 Locked by errors/opening-value-effect-undeclared. The stage-5 note
 that value openings "escape" the check no longer holds on the
@@ -69,7 +69,7 @@ Stage 6 (blu, 2026-07-08): the
 identity key syscalls (15 key-load, 16 key-zero, 18 key-status) are
 gated on the new Identity capability. Discovery that reshaped the
 stage: the only callers wrapped the syscalls in a raw `__syscall`
-intrinsic THAT DOES NOT EXIST — IdentityManager had never compiled
+intrinsic THAT DOES NOT EXIST -- IdentityManager had never compiled
 (all its tests are skipped), so the entire pinned-key path was dark:
 no effect source, no grants, ungated syscalls. The fix promotes
 key-load / key-zero / key-status to real intrinsics carrying
@@ -81,7 +81,7 @@ cap-identity, granted-capabilities list, CdxBinary cdx-cap-identity,
 CdxVerifier cap-name, VerifiedLoader kern-cap-identity arm), gates
 the three syscall handlers with the stage-5 deny pattern, and
 deletes IdentityManager's dead wrappers (its `__syscall 3 0` becomes
-`get-ticks`). HONEST LIMIT: IdentityManager STILL does not compile —
+`get-ticks`). HONEST LIMIT: IdentityManager STILL does not compile --
 its interactive console layer references `print` and `read-key`,
 neither of which exists anywhere (pre-existing rot; a keystroke API
 is first-boot-ceremony surface and belongs to that owner). The
@@ -92,7 +92,7 @@ errors/cap-launder-pure-key (CDX2031+2033). key-zero is gated too:
 zeroing is the safe direction but touching the key region at all is
 identity authority (an ungated zero is a lock-forcing DoS).
 Stage 5 (blu, 2026-07-08): the
-widened syscall surface — all four block syscalls (10 read, 11
+widened syscall surface -- all four block syscalls (10 read, 11
 write, 12 sector count, 13 select) consult the capability word
 before driving the device; a process without cap-block-device falls
 through the dispatch chain and gets -1 with the device untouched.
@@ -108,12 +108,12 @@ on the loader path; the boot path already granted bits 10+16).
 The runtime probe then exposed a THIRD latent bug, found because the
 first widened check actually ran: manifest-base-loop
 (X86_64Chapter) and effect-base-loop (CdxVerifier) both split dotted
-effect names on `char-code == 46` — ASCII thinking; in CCE code 46
+effect names on `char-code == 46` -- ASCII thinking; in CCE code 46
 is the letter H (the identical bug find-dot fixed in CL 6509, in two
 more copies). So "Device.Block" never resolved to its covering
 "Device": the emitted caps section silently dropped the Device
 entry, the boot grant carried Console bits only, and the verifier's
-dotted-coverage relation was dead code — every dotted-effect binary
+dotted-coverage relation was dead code -- every dotted-effect binary
 would have failed phase 4 had anything verified one. Both sites now
 derive the dot from a literal (`char-code (char-at "." 0)`). Every
 prior "Device manifest" behavior was untested theater: stage 3's
@@ -123,7 +123,7 @@ Runtime probe: codex/test/cap-block-denied (granted sector-count,
 strip own grant word, denied -1). The five -Apps disk tests that
 reach block syscalls at runtime now declare [Device.Block] on
 opening so their manifests grant the bit (block-io-basic,
-disk-facts-init/load/multi/read — their openings are value bindings,
+disk-facts-init/load/multi/read -- their openings are value bindings,
 which today escape the row-subset check and carried empty manifests).
 Stage 4 (blu CL 7325, 2026-07-08):
 boot grants proc 0 the mask derived from the binary's own manifest
@@ -132,9 +132,9 @@ zero grants), the syscall capability check tests the required bit as
 an immediate and branches on CF (it previously tested bit
 argument-mod-64 and branched on a flag bt does not set), and
 ProcessCaps (codex/os/verify) wires LoadDecision grants into the real
-process-table capability word — runtime-proven by
+process-table capability word -- runtime-proven by
 codex/test/apps/process-caps-test. Earlier: stages 1a/1b/2/3 (CLs
-6923/6946/6964/6999) — effect-typed intrinsics, enforced foreword io
+6923/6946/6964/6999) -- effect-typed intrinsics, enforced foreword io
 modules, and the real signed manifest. Remaining follow-ups (polish,
 not soundness): read-key (2) could gate on cap-console-read; Gpu
 cap-ids 5/6 map to no kernel bits on the loader path (nothing
@@ -144,7 +144,7 @@ def-boundary row-subset check, so an undeclared effectful opening
 compiles with an empty manifest (the stage-5 disk tests were the
 live examples); and the identity-table builtins (identity-whoami /
 identity-set / identity-set-proc / identity-get-proc) are still
-effect-free — they manage per-process identity labels, not key
+effect-free -- they manage per-process identity labels, not key
 material, but deserve the same treatment when the identity story
 grows.
 
@@ -174,7 +174,7 @@ stitched together:
 
 1. **Compile-time capability check** (`check-opening-capabilities`,
    TypeChecker.codex:2764) compares `opening`'s declared effect row
-   against `granted-capabilities` (TypeChecker.codex:2761) — a
+   against `granted-capabilities` (TypeChecker.codex:2761) -- a
    hardcoded list of *everything* (Console, FileSystem, Network,
    Concurrent, Device, Gpu.*). It never writes anything into the
    binary.
@@ -190,12 +190,12 @@ stitched together:
    effect has a declared capability. Because the compiler emits
    `cap-sz = 0` and `eff-sz = 0`, **Phases 3 and 4 are vacuous no-ops
    on every compiler-produced binary.** Nothing anywhere scans the
-   text section for actual intrinsic/syscall usage — the check is
+   text section for actual intrinsic/syscall usage -- the check is
    declaration-vs-policy, never behavior-vs-declaration.
 
 4. **The kernel** has real per-process capability bits (cap word at
    `proc-cap-offset = 56`, checked by `emit-check-capability` in
-   syscall handlers) — but boot grants process 0 *every* capability
+   syscall handlers) -- but boot grants process 0 *every* capability
    unconditionally (X86_64Chapter.codex), children inherit the
    parent's word, and the verified loader's computed grant bitmask
    (VerifiedLoader.codex) is never wired into the process table.
@@ -212,12 +212,12 @@ Three probes. **All three compile clean and run**, pinned as passing
 | cap-launder-manifest | `opening` declares a real effect; the shipped binary's capability manifest is empty | compiles; nothing for a policy to inspect or deny |
 
 The root of the first two: the raw intrinsics are bound with an
-**empty effect row** (TypeEnv.codex:243-250 — `port-in-byte`,
+**empty effect row** (TypeEnv.codex:243-250 -- `port-in-byte`,
 `port-out-byte`, `port-in/out-16/32`, `peek-byte`, `poke-byte`,
 `block-read-sector`, `block-write-sector` are all `FunTy ... empty-row
 ...`). `print-line` carries `Console` and `read-line` is
 `EffectfulTy [Console]`, so the effect machinery exists and is
-enforced one layer up — but the primitive that actually touches
+enforced one layer up -- but the primitive that actually touches
 hardware opts out of it. "No undeclared I/O" holds for the library
 wrappers and fails for the intrinsics beneath them.
 
@@ -232,11 +232,11 @@ unwired pipeline:
    The effect discipline that would make I/O visible in the type is
    simply not applied to the operations that perform it. (Note for the
    fix, expanded in section 6: `peek-*` reading the program's own heap
-   is not in this set — it is runtime plumbing, not a capability.)
+   is not in this set -- it is runtime plumbing, not a capability.)
 
 2. **The manifest is not derived from anything.** It is hardcoded
-   empty, so the verifier's capability and effect phases — which are
-   correctly implemented — have no input. `granted-capabilities` being
+   empty, so the verifier's capability and effect phases -- which are
+   correctly implemented -- have no input. `granted-capabilities` being
    a grant-all list means even the compile-time check is a formality.
 
 3. **The load-time rejection claim has no subject.** The verify ->
@@ -257,7 +257,7 @@ grant-all with the device trust policy; (d) wire the verified loader's
 grant bitmask into the kernel process table and stop granting all caps
 at boot. Step (a) is the type-system core; the rest is OS plumbing.
 
-## 6. The fix is NOT "compiler-only clean" — reconnaissance (2026-07-03)
+## 6. The fix is NOT "compiler-only clean" -- reconnaissance (2026-07-03)
 
 An earlier draft of this doc called step (a) "the highest-value single
 fix ... purely a TypeEnv + effect-check change." That is wrong, and
@@ -267,13 +267,13 @@ campaign. Measuring the blast radius:
 - The nine raw intrinsics (`port-in/out-byte/16/32`, `peek-byte`,
   `poke-byte`, `peek-32`/`poke-32`, `peek-qword`, `block-read-sector`,
   `block-write-sector`, and the `block-*` family) have **837 call
-  sites across 79 files** — the kernel HAL (`Xhci` 23, `VirtioPci` 27,
+  sites across 79 files** -- the kernel HAL (`Xhci` 23, `VirtioPci` 27,
   `DiskFacts` 47, `DriveManager` 22, `Ne2k` 11, `Vga` 13, ...),
   foreword (`Fat32` 74, `Gpt` 52, `GpuRender` 21, `Sha256` 5), the
   board drivers, and the dev tools.
 - Because effect rows propagate (a body that calls a `[Device]`
   intrinsic gets `[Device]` inferred, and a declared signature that
-  omits it errors at the def boundary — the enforcement EffectRows
+  omits it errors at the def boundary -- the enforcement EffectRows
   already ships), giving these intrinsics an effect **cascades that
   annotation through every one of those files and their transitive
   callers**, and the cascade reaches app code through the foreword
@@ -292,12 +292,12 @@ campaign. Measuring the blast radius:
 
 The sharper design insight the recon surfaces: **not all of these are
 capabilities.** `peek-qword` / `peek-byte` reading the program's OWN
-heap is how the GC-less runtime walks its structures — categorically
+heap is how the GC-less runtime walks its structures -- categorically
 not an I/O capability, and the dominant share of the 837 sites. The
 security-relevant set is narrow: `port-*` (hardware I/O),
 `block-*-sector` (storage), and `poke-*` to a NON-heap (foreign)
 address. Carving those from the runtime plumbing shrinks the blast
-radius by a large factor and is also more correct — a capability
+radius by a large factor and is also more correct -- a capability
 system that flags heap-structure reads as "I/O" is crying wolf.
 
 **The ruling this needs before it starts** (Damian's call, analogous to
@@ -305,16 +305,16 @@ system that flags heap-structure reads as "I/O" is crying wolf.
 1. **Granularity.** Which intrinsics carry an effect? Proposed: only
    `port-*`, `block-*-sector`, and foreign `poke-*` (the last needs a
    heap-vs-foreign distinction the type system does not currently
-   make — likely a separate `poke-foreign` intrinsic, leaving
+   make -- likely a separate `poke-foreign` intrinsic, leaving
    `poke-byte`/`poke-32` for heap writes effect-free). `peek-*` for
    owned-heap reads stays pure.
 2. **Effect name(s).** One `[Device]`, or split `[Port]` / `[Block]` /
    `[Mmio]`? Finer names give the manifest real granularity for
    step (b) but multiply the annotation surface.
 3. **The trusted zone.** The kernel HAL and the compiler's own serial
-   runtime genuinely perform hardware I/O — they cannot be "fixed,"
+   runtime genuinely perform hardware I/O -- they cannot be "fixed,"
    only DECLARED. Do those modules annotate every function with
-   `[Device]` (honest but heavy — hundreds of signatures), or is there
+   `[Device]` (honest but heavy -- hundreds of signatures), or is there
    a module-level trust boundary (`@doctrine trusted-hal` or similar)
    that lets a designated layer use the intrinsics without per-function
    declaration, so the effect discipline means "no UNDECLARED I/O in
@@ -322,7 +322,7 @@ system that flags heap-structure reads as "I/O" is crying wolf.
    the capability claim is the application/library boundary, not the
    HAL's internal plumbing.
 
-That ruling is now made — section 7. The honest status: the pure-I/O
+That ruling is now made -- section 7. The honest status: the pure-I/O
 gap is real and pinned (`cap-launder-pure-io`, `cap-launder-pure-poke`),
 the fix is a genuine cross-cutting campaign with a decided shape, and
 it should not be started as a "quick TypeEnv change." The claim surface
@@ -333,23 +333,23 @@ it should not be started as a "quick TypeEnv change." The claim surface
 The guiding principle: **effect declaration carries information only at
 the boundary where someone consumes code they did not write and cannot
 personally review.** At a hardware boundary the declaration is theater
-— a NIC driver's type saying `[Device.Port]` tells a reader nothing;
+-- a NIC driver's type saying `[Device.Port]` tells a reader nothing;
 of course it does I/O, that is its whole job. The discipline earns its
 keep at exactly one place: installing usermode / library code from an
 external source and asking "what is this thing going to do." So the
-trust boundary is drawn at the **quire** — which is already the unit of
-provenance and trust — not per-function or per-chapter.
+trust boundary is drawn at the **quire** -- which is already the unit of
+provenance and trust -- not per-function or per-chapter.
 
 ### 7.1 The exempt set (hardcoded, the owned hardware stack / TCB)
 
 | Quire | Status | Why |
 |---|---|---|
-| `codex` (compiler runtime) | EXEMPT | `serial-byte`, the emit heap scanner — plumbing we wrote |
+| `codex` (compiler runtime) | EXEMPT | `serial-byte`, the emit heap scanner -- plumbing we wrote |
 | `codex.kernel` | EXEMPT | raw drivers; I/O is the point |
 | `codex.os.*` | EXEMPT | kernel/HAL; I/O is the point |
 | `codex.boards` | EXEMPT | board HAL; "we know the boards need io" |
 | `codex.plugs.*` | EXEMPT | trusted build tools / runtime emitters |
-| `codex.foreword.*` | **ENFORCED** | the library surface external code consumes — the declarations are the value here, so we WANT them |
+| `codex.foreword.*` | **ENFORCED** | the library surface external code consumes -- the declarations are the value here, so we WANT them |
 | apps / external usermode | **ENFORCED** | the actual threat surface: "what will this thing do" |
 
 Foreword is deliberately NOT exempt. It is the code an outside author
@@ -359,18 +359,18 @@ handful of foreword modules that do real I/O (`Fat32` ~74 sites, `Gpt`
 ~52, `GpuRender` ~21, `KeyboardLayout`) declare their effects. This is
 the demonstration surface for the whole mechanism.
 
-### 7.2 The mechanism — route exempt defs through infer-and-propagate
+### 7.2 The mechanism -- route exempt defs through infer-and-propagate
 
 Exemption must NOT be implemented as "suppress the mismatch error." A
 declared `serial-byte : Integer -> Integer` whose error is merely
 skipped keeps its pure declared type, so its callers see pure and the
-effect is SWALLOWED — which silently breaks manifest correctness for
+effect is SWALLOWED -- which silently breaks manifest correctness for
 any external code downstream. Instead, an exempt-quire def is treated
 like an **undeclared def**: its written row is ignored, a fresh row
 variable is synthesized on the performing arrow, and the body's ambient
 effects unify into it (the existing path at TypeChecker.codex:735). The
 effect is therefore INFERRED and PROPAGATES to callers through
-resolution — an external app calling exempt `Fat32`... (were foreword
+resolution -- an external app calling exempt `Fat32`... (were foreword
 exempt) or the enforced foreword calling exempt `block-read-sector`
 still surfaces `Device.Block` in the caller's inferred row. Exemption
 removes the declaration OBLIGATION on owned-stack code; it never
@@ -399,10 +399,10 @@ as `Console.Read` / `Gpu.Compute` already do): `Device.Port`,
 `Device.Block`, `Device.Mmio` are all `⊆ Device`, so the manifest gets
 real granularity (a storage device requests `Device.Block`, not blanket
 `Device`) and a policy can grant `Device` broadly or `Device.Block`
-narrowly — all through shipping machinery.
+narrowly -- all through shipping machinery.
 
 **The MMIO trap:** `poke-byte addr val` is the same intrinsic whether
-`addr` is heap or a device register, and the type system cannot tell —
+`addr` is heap or a device register, and the type system cannot tell --
 the address is a runtime value. So MMIO I/O cannot be caught by typing
 `poke-byte`; it needs a dedicated `poke-mmio` / `read-mmio` intrinsic
 carrying `Device.Mmio`, with the real MMIO sites (VGA framebuffer,
@@ -412,11 +412,11 @@ device BARs) migrated to it. `poke-byte` stays pure for heap.
 
 - **Seed stays byte-identical.** Effects erase at codegen, and the
   compiler quire is exempt, so no error fires and no machine code
-  changes — the fixed-point gate does not notice.
+  changes -- the fixed-point gate does not notice.
 - **Battery-gating, bounded:** the foreword I/O modules (`Fat32`,
   `Gpt`, `GpuRender`, `KeyboardLayout`) must be annotated before their
   `-Apps`/`-FW` tests compile clean. That is the seed-adjacent work
-  item and it is small — the compiler itself does not cite these
+  item and it is small -- the compiler itself does not cite these
   (its I/O is `port-out-byte` + `peek` inside the exempt `codex`
   quire), so they are not in the seed compile set.
 - The quire-exemption check keys on `def.chapter-slug` (the concat
@@ -431,7 +431,7 @@ device BARs) migrated to it. `poke-byte` stays pure for heap.
    `def-effect-exempt` in TypeChecker) against a hardcoded owned-stack
    list (Opening + the compiler subdirs + Kernel/Net/Sched/Dev/Trust/
    Observe/Replay/Verify/Os/Boards + Riscv/Arm64/Pe/Elf/Img). AS-BUILT
-   DISCOVERY: making an intrinsic effectful trips TWO checks, not one —
+   DISCOVERY: making an intrinsic effectful trips TWO checks, not one --
    the def-boundary row-subset check (CDX2031) AND the effectful-let
    check (CDX2033, `check-let-bind-row`, which fires on `let w =
    port-out-byte ...`, the pattern the kernel USB/xHCI drivers use). A
@@ -446,13 +446,13 @@ device BARs) migrated to it. `poke-byte` stays pure for heap.
 1b. **Device.Block + Fat16 annotation + poke-mmio. SHIPPED (blu CL
    6932 + seed).** All six `block-*` intrinsics carry `Device.Block`
    (TypeEnv; nullary `block-sector-count` becomes an `EffectfulTy`
-   value — infer-name proves a bare mention performs its effects, so
+   value -- infer-name proves a bare mention performs its effects, so
    the two `-Apps` callers declare `[Device.Block]` on `opening`). New
    `read-mmio` / `poke-mmio` intrinsics carry `Device.Mmio`: TypeEnv
    bindings, NameResolver known-name list, byte-width helper stubs
-   cloned from peek-byte/poke-byte in X86_64Helpers — the complete
+   cloned from peek-byte/poke-byte in X86_64Helpers -- the complete
    wiring for a new intrinsic is exactly those three files.
-   AS-BUILT DISCOVERY — "annotation" of an enforced module means
+   AS-BUILT DISCOVERY -- "annotation" of an enforced module means
    ACT-CONVERSION, not a signature sweep. CDX2033 forbids an effectful
    let outside an act-bind REGARDLESS of the enclosing def's declared
    row (probe-verified: `let w = port-out-byte p b` inside a declared
@@ -468,7 +468,7 @@ device BARs) migrated to it. `poke-byte` stays pure for heap.
    walk-path-sub move the effectful call into when-scrutinee /
    argument position). Bootstrap subtlety: the pre-1b seed types the
    intrinsics pure, so stage 0 flags only the declared-row USER-call
-   lets while the new compiler flags the INTRINSIC lets — the act form
+   lets while the new compiler flags the INTRINSIC lets -- the act form
    is legal under both typings, which is what keeps the two-pass
    bootstrap green. Two-pass build (new helper stubs change every
    binary), converged one-pass on rebuild; seed CF0FF221 47473EF7...
@@ -479,17 +479,17 @@ device BARs) migrated to it. `poke-byte` stays pure for heap.
    Device.Mmio declared functions.
    STAGE 2 ESTIMATE REVISED: Fat32 (~74 sites) and Gpt (~52) are
    act-conversion campaigns of the same shape as Fat16, not signature
-   sweeps — plan accordingly.
+   sweeps -- plan accordingly.
 2. **Foreword annotation. SHIPPED (blu CL 6958 + docs 6963).** The
    real module set differed from the probe estimate in both
    directions: KeyboardLayout uses ONLY heap peek/poke (pure by the
-   7.3 ruling — needed nothing), while **InputSource** (foreword/ui,
+   7.3 ruling -- needed nothing), while **InputSource** (foreword/ui,
    missing from the probe list) drives the mouse/keyboard ports and
    joined the scope, pulling **AppRunner** (bare-app-tick /
    bare-app-render) in transitively. Shipped set: Fat32 (22 intrinsic
    sites, ~30 defs in the [Device.Block] closure), Gpt (11 sites, ~12
    defs incl. `gpt-read` as an effectful VALUE `[Device.Block] Maybe
-   GptDisk` — the nullary pattern), GpuRender (3 tail defs incl.
+   GptDisk` -- the nullary pattern), GpuRender (3 tail defs incl.
    `gr-clear-depth` as an effectful value), InputSource
    (raw-input-poll act-converted, 5 ordered port binds), AppRunner
    (tick/render act-converted). Conversion shapes: act binds for
@@ -501,13 +501,13 @@ device BARs) migrated to it. `poke-byte` stays pure for heap.
    gpt-build-protective-mbr, gpt-build-header).
    NEW LANGUAGE TRAP (CDX1070): inside an act block, a statement line
    whose first token is argument-like (a literal or `(`) after an
-   application statement is rejected REGARDLESS of column — only
+   application statement is rejected REGARDLESS of column -- only
    name-headed or keyword-headed lines start new statements. So a
    trailing `True` statement is unwritable; the idiom is a
    `<chapter>-done : Integer -> Boolean` helper wrapping the last
    effectful call in argument position (fat32-done / gpt-done).
    Gating: foreword-fat32 + foreword-gpt (-FW) compile clean; NEW
-   foreword-apprunner test added — the ui device closure previously
+   foreword-apprunner test added -- the ui device closure previously
    had NO compile coverage anywhere in the battery, the exact
    dark-ship shape the plug gate closed. NO seed change: none of the
    five modules is in the seed compile set (verified against the
@@ -516,14 +516,14 @@ device BARs) migrated to it. `poke-byte` stays pure for heap.
    The emitter derives both sections from opening's registered type
    (X86_64Chapter, Capability Manifest section): the effects section
    lists every effect name on the performing spine (le16 count, then
-   le16 len + CCE bytes per name — the verify-quire wire format); the
+   le16 len + CCE bytes per name -- the verify-quire wire format); the
    capabilities section grants each effect's covering capability
    (dotted effects cover through their base: Device.Port -> Device;
    ids from the verify-quire table Console 0 / FileSystem 1 / Network
    2 / Concurrent 3 / Device 4 / Gpu.Compute 5 / Gpu.Memory 6) as
    direction=readwrite, empty-scope, unbounded-duration entries.
    PLACEMENT: the manifest sits AFTER rodata, INSIDE the hashed and
-   signed content — text stays at file offset 224 because codex-vm
+   signed content -- text stays at file offset 224 because codex-vm
    skips a fixed 224-byte header, and the verifier reads both sections
    through the header offsets (cap-off@136/cap-sz@144 = real values
    now; the old proof-off/proof-sz slots @152/@160 are the effects
@@ -532,7 +532,7 @@ device BARs) migrated to it. `poke-byte` stays pure for heap.
    coverage of the manifest came for free.
    VERIFIER FIXES in the same CL: cdx-verify-content-hash previously
    recomputed over [cap-off .. EOF], which included the UNSIGNED MAP1
-   debug tail — a pre-existing mismatch on every real binary that
+   debug tail -- a pre-existing mismatch on every real binary that
    self-verify never noticed (it checks magic/signature/author-key
    only). The range is now [224 .. furthest section end] (text,
    rodata, caps, effs), which is behavior-identical for old binaries
@@ -542,20 +542,20 @@ device BARs) migrated to it. `poke-byte` stays pure for heap.
    covered by a Device entry), mirroring the checker's
    effect-covered-by.
    TCB HONESTY BOUNDARY: the manifest reflects opening's REGISTERED
-   type. For ENFORCED programs — apps, the actual threat surface —
+   type. For ENFORCED programs -- apps, the actual threat surface --
    CDX2031 forces the declaration to be complete, so the manifest is
    checker-accurate. For exempt-quire programs (the compiler itself)
    it reflects the declaration only: the seed's manifest says
-   Console+FileSystem though the TCB also drives ports — exactly the
+   Console+FileSystem though the TCB also drives ports -- exactly the
    documented exempt-quire boundary ("a written -> T no longer proves
    purity inside the TCB"). Unmappable effect names (no cap id) get
    no capability entry, so phase 4 rejects rather than silently
-   granting — the format extension point.
+   granting -- the format extension point.
    Probe flip: cap-launder-manifest RENAMED cap-manifest-derived, a
-   positive guard (nothing errors — the fix makes the manifest real,
+   positive guard (nothing errors -- the fix makes the manifest real,
    observable in the header of every emitted binary and consumed by
    VerifiedLoader's cdx-caps-to-bitmask, which is stage 4's input).
-4. **OS wiring** — replace `granted-capabilities` grant-all with the
+4. **OS wiring** -- replace `granted-capabilities` grant-all with the
    device trust policy; wire the verified loader's grant bitmask into
    the kernel process table; stop granting all caps to proc 0 at boot.
 
@@ -563,4 +563,4 @@ Stages 1-2 are the type-system core (mine); 3-4 are OS plumbing that a
 kernel-side agent can take once the effects exist to derive from.
 Record the exempt-quire trust reduction in `TrustedComputingBase.md`
 when stage 1 lands: inside an exempt quire a written `-> T` no longer
-proves purity, by design — that is where the TCB boundary is drawn.
+proves purity, by design -- that is where the TCB boundary is drawn.

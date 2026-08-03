@@ -1,4 +1,5 @@
 Chapter: GeneticAlgorithm
+  cites Foreword chapter Random
 
  Genetic algorithm conductor. Integer-encoded chromosomes with
  tournament selection, single-point crossover, and mutation.
@@ -98,14 +99,132 @@ Section: Evolution Step
     let new-inds = ga-evolve-loop pop cfg seed 0 (pop.pop-size) []
     in GaPopulation { individuals = new-inds, fitness = ga-zero-fitness (pop.pop-size) 0 [], pop-size = pop.pop-size, gene-count = pop.gene-count, generation = pop.generation + 1 }
 
+ crossover-rate is out of 1000 and is now read. It was declared, defaulted to
+ 800, and consulted by nothing: crossover was applied unconditionally, so the
+ one knob nominally governing exploration against exploitation controlled
+ nothing at all. Below the rate the pair is crossed; at or above it the first
+ parent is carried forward unchanged and only mutation acts on it, which is
+ what a crossover rate means.
+
+ It is NOT plumbed into ga-offspring in the generic core, and that is
+ deliberate. The core takes breed as a function and does not know what a
+ chromosome is, let alone what a rate over one would mean. A domain that
+ wants a crossover rate expresses it inside its own breed operator, where it
+ has its own config in scope.
+
   ga-evolve-loop : GaPopulation, GaConfig, Integer, Integer, Integer, List GaChromosome -> List GaChromosome
   ga-evolve-loop (pop) (cfg) (seed) (i) (n) (acc) =
     if i >= n then acc
     else let p1 = ga-tournament-select pop cfg (seed + i * 101)
     in let p2 = ga-tournament-select pop cfg (seed + i * 307 + 1)
-    in let child = ga-crossover (list-at (pop.individuals) p1) (list-at (pop.individuals) p2) (seed + i * 503)
+    in let a = list-at (pop.individuals) p1
+    in let b = list-at (pop.individuals) p2
+    in let roll = ga-rand-range (seed + i * 911) i 0 999
+    in let child = if roll < cfg.crossover-rate then ga-crossover a b (seed + i * 503) else a
     in let mutated = ga-mutate child cfg (seed + i * 709)
     in ga-evolve-loop pop cfg seed (i + 1) n (list-push acc mutated)
+
+Section: Generic Core
+
+ The loop is the invariant part of a genetic algorithm; the representation is
+ not. Everything above this section fixes the representation to an integer
+ vector and leaves the operators implicit, which is the wrong axis and is why
+ nothing outside this chapter could use it. A caller whose individual is a
+ record has to encode it to genes and back, and no caller ever wanted to, so
+ the working GA in this tree grew somewhere else: apps/games/magic breeds
+ Personality records and DeckGenome records with its own copy of the loop.
+
+ These functions are that loop, generic over the individual. The domain
+ supplies breed and mutate; the core supplies ranking, elitism and the
+ offspring walk. The integer-vector API above becomes one instantiation of it
+ (see the adapter below) rather than the only shape on offer.
+
+ The selection strategy here is rank-with-elitism, lifted from the version in
+ apps/games/magic that has actually run against a fitness landscape.
+ ga-evolve keeps its own tournament-with-full-replacement and is unchanged;
+ the two are different strategies and both are legitimate.
+
+  ga-rank : List a, List Integer -> List a
+  ga-rank (pop) (scores) = ga-rank-loop pop scores [] (list-length pop) []
+
+  ga-rank-loop : List a, List Integer, List Integer, Integer, List a -> List a
+  ga-rank-loop (pop) (scores) (used) (left) (acc) =
+    if left <= 0 then acc
+    else let bi = ga-best-unused scores used 0 (list-length scores) (0 - 1) 0
+    in if bi < 0 then acc
+    else if bi >= list-length pop then acc
+    else ga-rank-loop pop scores (list-push used bi) (left - 1) (list-push acc (list-at pop bi))
+
+  ga-best-unused : List Integer, List Integer, Integer, Integer, Integer, Integer -> Integer
+  ga-best-unused (scores) (used) (i) (len) (bi) (bv) =
+    if i >= len then bi
+    else if ga-seen used i 0 (list-length used) then ga-best-unused scores used (i + 1) len bi bv
+    else let v = list-at scores i
+    in if bi < 0 then ga-best-unused scores used (i + 1) len i v
+    else if v > bv then ga-best-unused scores used (i + 1) len i v
+    else ga-best-unused scores used (i + 1) len bi bv
+
+  ga-seen : List Integer, Integer, Integer, Integer -> Boolean
+  ga-seen (xs) (v) (i) (len) =
+    if i >= len then False
+    else if list-at xs i == v then True
+    else ga-seen xs v (i + 1) len
+
+  ga-take : List a, Integer -> List a
+  ga-take (xs) (n) = ga-take-loop xs n 0 []
+
+  ga-take-loop : List a, Integer, Integer, List a -> List a
+  ga-take-loop (xs) (n) (i) (acc) =
+    if i >= n then acc
+    else if i >= list-length xs then acc
+    else ga-take-loop xs n (i + 1) (list-push acc (list-at xs i))
+
+ The offspring walk pairs each parent with its neighbour, wrapping, so a pool
+ of one still breeds. breed sees two parents and a seed; mutate sees the child
+ and a seed. Neither is given the config, because a config is domain data: a
+ caller that needs one binds it in a named wrapper, as the adapter below does.
+
+  ga-offspring : List a, Integer, (a, a, Integer -> a), (a, Integer -> a), Integer -> List a
+  ga-offspring (parents) (want) (breed) (mutate) (seed) =
+    ga-offspring-loop parents want breed mutate seed 0 []
+
+  ga-offspring-loop : List a, Integer, (a, a, Integer -> a), (a, Integer -> a), Integer, Integer, List a -> List a
+  ga-offspring-loop (parents) (want) (breed) (mutate) (seed) (i) (acc) =
+    if i >= want then acc
+    else let np = list-length parents
+    in if np <= 0 then acc
+    else let m = list-at parents (int-mod i np)
+    in let f = list-at parents (int-mod (i + 1) np)
+    in let child = mutate (breed m f (seed + i * 503)) (seed + i * 709)
+    in ga-offspring-loop parents want breed mutate seed (i + 1) (list-push acc child)
+
+  ga-elitist-step : List a, List Integer, Integer, (a, a, Integer -> a), (a, Integer -> a), Integer -> List a
+  ga-elitist-step (pop) (scores) (elite) (breed) (mutate) (seed) =
+    let ranked = ga-rank pop scores
+    in let keep = ga-take ranked elite
+    in keep & ga-offspring keep (list-length pop - elite) breed mutate seed
+
+Section: Integer-Vector Adapter
+
+ The chapter's own representation, expressed as one instantiation of the core
+ rather than as the only thing it can do. These two wrappers are what a domain
+ has to supply, and they are three lines each.
+
+  ga-chromo-breed : GaChromosome, GaChromosome, Integer -> GaChromosome
+  ga-chromo-breed (a) (b) (seed) = ga-crossover a b seed
+
+  ga-chromo-mutate : GaChromosome, Integer -> GaChromosome
+  ga-chromo-mutate (c) (seed) = ga-mutate c ga-config-default seed
+
+  ga-evolve-elitist : GaPopulation, Integer, Integer -> GaPopulation
+  ga-evolve-elitist (pop) (elite) (seed) =
+    GaPopulation {
+      individuals = ga-elitist-step (pop.individuals) (pop.fitness) elite ga-chromo-breed ga-chromo-mutate seed,
+      fitness = ga-zero-fitness (pop.pop-size) 0 [],
+      pop-size = pop.pop-size,
+      gene-count = pop.gene-count,
+      generation = pop.generation + 1
+    }
 
 Section: Fitness Assignment
   ga-set-fitness : GaPopulation, List Integer -> GaPopulation
@@ -137,13 +256,16 @@ Section: Queries
     else ga-sum-fitness fit (i + 1) len (acc + list-at fit i)
 
 Section: Helpers
+ ga-rand-range used to be bit-xor (seed * 2654435761) (idx * 40503) and then
+ a remainder. Multiplication carries entropy upward only, so at range 2 that
+ reduced to lowbit(seed) XOR lowbit(idx): ga-random-population produced thirty
+ chromosomes with the same alternating gene pattern and the same fitness, and
+ a GA whose initial population has no fitness variance has nothing to select
+ on. It now delegates to the shared mixer, which xor-shifts the high bits back
+ down. See Foreword chapter Random for the measurement.
+
   ga-rand-range : Integer, Integer, Integer, Integer -> Integer
-  ga-rand-range (seed) (idx) (lo) (hi) =
-    let h = bit-xor (seed * 2654435761) (idx * 40503)
-    in let positive = if h < 0 then -h else h
-    in let range = hi - lo + 1
-    in if range <= 0 then lo
-    else lo + (positive - (positive / range) * range)
+  ga-rand-range (seed) (idx) (lo) (hi) = rand-in-range seed idx lo hi
 
   format-chromosome : GaChromosome -> Text
   format-chromosome (c) = ga-fmt-genes (c.genes) 0 (c.gene-count) ""

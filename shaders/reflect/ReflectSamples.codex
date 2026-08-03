@@ -1,0 +1,87 @@
+Chapter: ReflectSamples
+  cites Reflect chapter ReflectModel
+  cites Water chapter OceanModel
+  cites Foreword chapter Console
+
+ Exercises the reflection model without drawing anything.
+
+ Three of these are round-trips, and they are here because each one is a
+ place where a silent error produces a picture that still looks like a
+ reflection. A depth buffer that quantises, a normal that comes back
+ unnormalised, a projection that disagrees with the ray it came from --
+ none of those announce themselves, they just make the reflection land in
+ the wrong place, and no image will tell you which one did it.
+
+Section: Report
+
+  b2t : Boolean -> Text
+  b2t (b) = if b then "yes" else "no"
+
+  say-depth : Real -> Text
+  say-depth (d) =
+    let a = gb-store-depth 3 4 d
+    in let back = gb-load-depth 3 4
+    in "depth " & show d & " -> " & show back & "  exact = " & b2t (back ~ d)
+
+  say-normal : Text, V3 -> Text
+  say-normal (label) (n) =
+    let u = v-norm n
+    in let a = gb-store-normal 5 6 u 1
+    in let back = gb-load-normal 5 6
+    in let f = gb-load-flag 5 6
+    in let err = v-len (v-sub back u)
+    in label & " err = " & show err & "  flag = " & show f & "  len = " & show (v-len back)
+
+ The projection has to be the exact inverse of the ray generator, or every
+ reflection lands in the wrong pixel. Casting a ray through a known pixel
+ and projecting a point on it back must return that pixel, offset by the
+ half-pixel the ray generator aims through.
+
+ The depth it returns is along the VIEW AXIS, not along the ray, so it
+ equals the ray distance only down the centre of the screen and is shorter
+ everywhere else by exactly the cosine between them. That is checked here
+ rather than asserted: `want` is computed independently as
+ `dist * dot(dir, forward)`.
+
+  say-project : Integer, Integer, Real -> Text
+  say-project (tx) (ty) (dist) =
+    let cam = rf-camera (V3 { x = 0.0, y = 100.0, z = 0.0 }) (V3 { x = 0.2, y = 0.0 - 0.1, z = 1.0 })
+    in let dir = rf-ray cam tx ty
+    in let p = v-add (cam.eye) (v-scale dir dist)
+    in let pr = rf-project cam p
+    in let want = dist * v-dot dir (cam.cf)
+    in "pixel " & show tx & "," & show ty & " -> " & show (pr.px) & "," & show (pr.py) & "  view-z " & show (pr.pz) & " want " & show want & " agree " & b2t (pr.pz ~ want)
+
+  say-reflect : Text, V3, V3 -> Text
+  say-reflect (label) (v) (n) =
+    let r = rf-reflect (v-norm v) (v-norm n)
+    in label & " -> " & show (r.x) & " " & show (r.y) & " " & show (r.z)
+
+  say-fresnel : Text, Real -> Text
+  say-fresnel (label) (ndotv) =
+    let n = V3 { x = 0.0, y = 1.0, z = 0.0 }
+    in let s = w-sqrt (1.0 - ndotv * ndotv)
+    in let v = V3 { x = s, y = 0.0 - ndotv, z = 0.0 }
+    in label & " n.v = " & show ndotv & " -> " & show (rf-weight n v 0.02)
+
+  say-fade : Text, Real, Real -> Text
+  say-fade (label) (sx) (sy) = label & " " & show (rf-edge-fade sx sy)
+
+  opening : [Console] Nothing
+  opening = act
+    print-line-uni (say-depth 1234.5)
+    print-line-uni (say-depth 0.125)
+    print-line-uni (say-normal "up      " (V3 { x = 0.0, y = 1.0, z = 0.0 }))
+    print-line-uni (say-normal "tilted  " (V3 { x = 0.3, y = 0.9, z = 0.0 - 0.2 }))
+    print-line-uni (say-project 160 100 500.0)
+    print-line-uni (say-project 40 30 1200.0)
+    print-line-uni (say-project 300 180 80.0)
+    print-line-uni (say-reflect "down onto flat " (V3 { x = 0.0, y = 0.0 - 1.0, z = 0.0 }) (V3 { x = 0.0, y = 1.0, z = 0.0 }))
+    print-line-uni (say-reflect "oblique onto flat" (V3 { x = 0.6, y = 0.0 - 0.8, z = 0.0 }) (V3 { x = 0.0, y = 1.0, z = 0.0 }))
+    print-line-uni (say-fresnel "head-on " 1.0)
+    print-line-uni (say-fresnel "45 deg  " 0.7071)
+    print-line-uni (say-fresnel "grazing " 0.05)
+    print-line-uni (say-fade "centre" 160.0 100.0)
+    print-line-uni (say-fade "edge  " 4.0 100.0)
+    print-line-uni (say-fade "corner" 2.0 2.0)
+  end

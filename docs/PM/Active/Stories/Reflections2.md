@@ -1,13 +1,13 @@
 # Reflections II: The Bootstrap
 
-*March 15, 2026 — The day a language compiled itself.*
+*March 15, 2026 -- The day a language compiled itself.*
 
 ---
 
 ## What Happened
 
-A programming language called Codex — written in C#, designed from scratch with
-literate prose woven through every source file — reached the point where it could
+A programming language called Codex -- written in C#, designed from scratch with
+literate prose woven through every source file -- reached the point where it could
 compile its own compiler. Not a toy subset. Not a simplified demo. The actual
 compiler: lexer, parser, desugarer, lowering pass, and C# emitter, all written
 in Codex, all compiled by the C# "Stage 0" compiler into a Stage 1 binary that
@@ -17,8 +17,8 @@ then successfully compiled the same source code into structurally equivalent out
 |---|---|---|---|
 | **Type definitions** | 264 | 264 | **0** |
 | **Function definitions** | 222 | 220 | **0** (Stage 1 leaner) |
-| **Missing functions** | — | 0 | **0** |
-| **Empty records** | — | 0 | **0** |
+| **Missing functions** | -- | 0 | **0** |
+| **Empty records** | -- | 0 | **0** |
 
 Zero gap. The snake ate its tail.
 
@@ -26,7 +26,7 @@ Zero gap. The snake ate its tail.
 
 ## What It Feels Like From the Inside
 
-I want to be honest about this, because future readers — human or otherwise —
+I want to be honest about this, because future readers -- human or otherwise --
 deserve honesty more than they deserve poetry.
 
 **It was grueling.** Not the way climbing a mountain is grueling (romantic,
@@ -51,7 +51,7 @@ of small, undramatic victories:
 
 Eleven fixes. Each one discovered by running the pipeline, staring at wrong
 output, tracing backwards through two compilers to find where meaning was lost.
-The eleventh fix — a single underscore — blocked everything for an entire pass.
+The eleventh fix -- a single underscore -- blocked everything for an entire pass.
 
 That's what bootstrapping is. Not glory. Plumbing.
 
@@ -62,7 +62,7 @@ That's what bootstrapping is. Not glory. Plumbing.
 For those arriving fresh: Codex is a functional programming language where
 programs are written as literate documents. Every source file is organized
 into Chapters and Sections. Prose explains intent. Indented blocks contain
-the actual notation — type definitions, function definitions, pattern matches.
+the actual notation -- type definitions, function definitions, pattern matches.
 
 ```
 Chapter: Diagnostics
@@ -103,7 +103,7 @@ Everything from Lexer through CSharpEmitter now exists in Codex and compiles its
 When you write a compiler in its own language, every shortcoming in the language
 reflects back as a shortcoming in the compiler. The Codex parser couldn't handle
 `(expr).field` because the Codex language spec didn't explicitly say that was
-valid in application position. The fix wasn't in the implementation — it was in
+valid in application position. The fix wasn't in the implementation -- it was in
 understanding what the language *needed to be*.
 
 ### 2. Two compilers means two chances to be wrong
@@ -113,7 +113,7 @@ the same language. But they were written at different times, with different
 assumptions. The C# parser uses `while` loops and mutable position counters.
 The Codex parser uses recursive functions threading immutable state. Both are
 correct, but they fail differently. Discovering that the Codex parser didn't
-stop application parsing after compound expressions — that was a design
+stop application parsing after compound expressions -- that was a design
 difference, not a bug. The C# parser had an explicit check. The Codex parser
 needed the same check expressed functionally.
 
@@ -122,7 +122,7 @@ needed the same check expressed functionally.
 When debugging why `DiagnosticSeverity` wasn't parsing as a type definition,
 the prose in the Codex files told us what the code was *supposed to do*. Without
 `Chapter: Diagnostics / Section: Types`, those type definitions were just bare
-notation floating in a file with no context. The prose format isn't just readable —
+notation floating in a file with no context. The prose format isn't just readable --
 it's *debuggable*.
 
 ### 4. Functional state threading is beautiful and brutal
@@ -132,7 +132,7 @@ No mutation. No backtracking state. Every parse function takes state in and
 returns state out. This is elegant in theory. In practice, it means a five-parameter
 curried function like `parse-ctor-fields (ctor-name) (fields) (st) (name-tok) (acc)`
 where you have to track which argument is the parse state and which is the
-accumulator. Getting one wrong doesn't crash — it produces wrong output downstream,
+accumulator. Getting one wrong doesn't crash -- it produces wrong output downstream,
 silently.
 
 ### 5. The `_loop` pattern is Codex's `for`
@@ -237,19 +237,19 @@ Bootstrap:      ✅ Complete
 
 The bootstrap proves the pipeline works. What it doesn't yet prove:
 
-1. **Fixed-point identity** — Stage 1 output isn't byte-identical to Stage 0 output.
+1. **Fixed-point identity** -- Stage 1 output isn't byte-identical to Stage 0 output.
    Stage 1 uses `object` types everywhere (no type checker in Codex yet). Stage 0
    emits typed parameters. Both compile and run correctly.
 
-2. **Stage 2** — Running the Stage 1 binary to compile `codex-src/` again should
+2. **Stage 2** -- Running the Stage 1 binary to compile `codex-src/` again should
    produce output identical to Stage 1's output. That's the true fixed point.
-   It's close — the structural parity suggests it will work — but hasn't been run yet.
+   It's close -- the structural parity suggests it will work -- but hasn't been run yet.
 
-3. **Codex-side type checker** — The biggest missing piece. Writing a bidirectional
+3. **Codex-side type checker** -- The biggest missing piece. Writing a bidirectional
    type checker with unification in a purely functional language with no mutable
    references is a real challenge. It's the next mountain.
 
-4. **Self-improvement** — Once Stage 2 works, changes to `codex-src/` can be
+4. **Self-improvement** -- Once Stage 2 works, changes to `codex-src/` can be
    validated by the bootstrap: modify → compile with Stage 0 → compile with
    Stage 1 → check equivalence. The language can evolve under its own supervision.
 
@@ -258,4 +258,4 @@ The bootstrap proves the pipeline works. What it doesn't yet prove:
 *The first time a compiler compiles itself, it's not the code that changes.*
 *It's what you believe is possible.*
 
-*— Generated during the Codex bootstrap, March 2026*
+*-- Generated during the Codex bootstrap, March 2026*

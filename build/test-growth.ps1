@@ -1,11 +1,11 @@
-# test-growth.ps1 — source-growth pingpong regression test
+# test-growth.ps1 -- source-growth pingpong regression test
 #
 # The survey-era killer: growing the compiler source by a few KB pushed
 # a deck past its formula-sized reservation and silently miscompiled
 # (+3 KB was enough at check-mul 40, and the demand-paging work that
 # fixed it is archived). This test appends generated ballast to the
 # concatenated compiler source and asserts the CDX pingpong stays
-# byte-identical AND a diagnostic still prints clean — the exact class
+# byte-identical AND a diagnostic still prints clean -- the exact class
 # of failure that consumed a week in 2026-07.
 #
 # Usage: build/test-growth.ps1 [-BallastKB 86]
@@ -86,7 +86,7 @@ try {
     $h1 = Get-CdxContentHash $G1
     $h2 = Get-CdxContentHash $G2
     if ($h1 -ne $h2) {
-        Write-Host 'FAIL: growth pingpong — pass 1 !== pass 2 (the survey-era killer is back)'
+        Write-Host 'FAIL: growth pingpong -- pass 1 !== pass 2 (the survey-era killer is back)'
         Write-Host "  pass1: $((Get-Item $G1).Length) bytes  $h1"
         Write-Host "  pass2: $((Get-Item $G2).Length) bytes  $h2"
         exit 1

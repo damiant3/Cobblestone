@@ -11,7 +11,7 @@
 The CCE-native text migration adds **34% overhead** to the self-hosted compiler
 (208ms → 279ms). This is expected: CCE encoding requires per-character `\uXXXX`
 escaping in the emitter, additional `_Cce` runtime generation, and CCE↔Unicode
-conversion at all I/O boundaries. No algorithmic regressions — the overhead is
+conversion at all I/O boundaries. No algorithmic regressions -- the overhead is
 constant-factor from the encoding layer.
 
 ---
@@ -57,7 +57,7 @@ Output is 14% larger due to `_Cce` runtime class and `\uXXXX` string escaping.
 
 **Typecheck (+37ms, 1.48x)**: Largest absolute regression. The type checker
 manipulates many strings for name lookup. In CCE, these strings have the same
-length but different byte values — the comparison operations themselves are
+length but different byte values -- the comparison operations themselves are
 unchanged (still `string.CompareOrdinal`), but the larger output and more
 string constants mean more data flowing through the pipeline.
 
@@ -66,7 +66,7 @@ character and generates `\uXXXX` escapes for CCE bytes 0-31 and 127. The old
 version used bulk `text-replace`. Per-character iteration is necessary for
 correct CCE encoding but is inherently slower for the common case.
 
-**Parse (+9ms, 1.45x)**: More tokens to process — CCE-encoded string literals
+**Parse (+9ms, 1.45x)**: More tokens to process -- CCE-encoded string literals
 in the source are larger after prose extraction (CCE byte values differ from
 Unicode, so different tokenization patterns at the margins).
 

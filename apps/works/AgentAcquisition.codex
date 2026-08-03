@@ -1,5 +1,6 @@
 Chapter: AgentAcquisition
   cites Works chapter DevAgent
+  cites Works chapter AgentBundle
   cites Works chapter AgentRuntime
   cites Works chapter KeyManager
   cites Works chapter DevConsoleMenu
@@ -53,25 +54,66 @@ Section: Agent Package
 
 Section: Bundled Agent Discovery
 
+ Discovery answers whether the image carries a bundle at all. It is a
+ presence check and nothing more: an agent is only ever admitted by
+ `Works chapter AgentBundle`, which checks the manifest signature, the model
+ digest and the model format in that order.
+
+ This section used to look for `<root>/agent/manifest.json`, a path nothing
+ in the tree has ever written, so BundledNone was the only answer it could
+ give and the difference between an image with an agent and an image without
+ one was invisible. The name below is the one `build/build-img.ps1` actually
+ writes into the ESP root.
+
   BundledAgentResult =
     | BundledFound (Text)
     | BundledNone
 
-  discover-bundled-agent : Text -> [FileSystem.Read, Device.Block] BundledAgentResult
-  discover-bundled-agent (image-root) =
-    let agent-dir = image-root & "/agent"
-    in let manifest-path = agent-dir & "/manifest.json"
-    in if file-exists manifest-path then BundledFound agent-dir
-    else BundledNone
+  discover-bundled-agent : [Device.Block] BundledAgentResult
+  discover-bundled-agent = act
+    there <- file-exists agent-manifest-name
+    if there then BundledFound agent-manifest-name else BundledNone
+  end
 
 Section: Package Verification
 
-  verify-agent-package : AgentPackage, Keyring, TrustLattice -> [FileSystem.Read, Device.Block] PackageValidation
-  verify-agent-package (pkg) (kr) (lat) =
-    if file-exists (pkg.cdx-path) == False then PackageInvalid "agent.cdx not found"
-    else if file-exists (pkg.model-path) == False then PackageInvalid "model.gguf not found"
-    else if pkg.verified == False then PackageInvalid "package not verified"
-    else PackageValid pkg
+ A package is valid when the bundled-agent chain admits it, and at no other
+ time. This function used to answer PackageValid on a `verified` field that
+ nothing in the tree ever set to True, which made it a function that could
+ report a package verified without any verification having happened. It
+ delegates now, so there is one answer to this question and one place that
+ decides it.
+
+  verify-bundled-agent : [Device.Block] PackageValidation
+  verify-bundled-agent = act
+    v <- bundled-agent-verdict
+    when v
+      is BundleRefused (why) -> PackageInvalid why
+      is BundleOk (info) -> PackageValid (AgentPackage {
+        manifest = AgentManifest {
+          name = info.bi-name,
+          version = info.bi-version,
+          author-key = "",
+          cdx-hash = "",
+          capabilities = [],
+          gpu-required = False
+        },
+        model-path = info.bi-model,
+        cdx-path = "",
+        vocab-path = "",
+        model-spec = ModelSpec {
+          name = info.bi-name,
+          path = info.bi-model,
+          context-length = 0,
+          vocab-size = 0,
+          embedding-dim = 0,
+          num-layers = info.bi-tensor-count,
+          quantization = QuantNone,
+          size-bytes = info.bi-model-bytes
+        },
+        verified = True
+      })
+  end
 
 Section: Acquisition Menu
 

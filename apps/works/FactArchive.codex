@@ -169,13 +169,18 @@ Section: Reading The Log's Own Bytes
     if i >= len then acc
     else fa-bytes-of buf (i + 1) len (list-push acc (peek-byte buf i))
 
-  fa-read-range : Integer, Integer -> List Integer
-  fa-read-range (from-sector) (to-sector) =
+ The sector numbers throughout this chapter are RELATIVE to the store's base
+ LBA, as they are in DiskFacts and AppPersist. The base rides down from the
+ store rather than being resolved here; a chapter that walks a log has no
+ business asking a disk where its partitions are.
+
+  fa-read-range : Integer, Integer, Integer -> List Integer
+  fa-read-range (base) (from-sector) (to-sector) =
     let count = to-sector - from-sector
     in if count <= 0 then []
     else let nbytes = count * fl-sector-size
     in let buf = alloc-bytes nbytes
-    in let loaded = app-load-sectors from-sector count buf 0
+    in let loaded = app-load-sectors base from-sector count buf 0
     in fa-bytes-of buf 0 nbytes []
 
   fa-hash-bytes : List Integer -> Text
@@ -188,9 +193,9 @@ Section: Building A Base
  choosing a cut requires knowing what is still current and that is the index's
  question, not this chapter's.
 
-  archive-build : Integer, Integer, Integer, Text, Keypair, Integer -> ArchiveArtifact
-  archive-build (from-sector) (to-sector) (count) (prev-base) (kp) (timestamp) =
-    let plain = fa-read-range from-sector to-sector
+  archive-build : Integer, Integer, Integer, Integer, Text, Keypair, Integer -> ArchiveArtifact
+  archive-build (base) (from-sector) (to-sector) (count) (prev-base) (kp) (timestamp) =
+    let plain = fa-read-range base from-sector to-sector
     in let comp = lz4-compress plain
     in let unsigned = BaseRecord {
       br-artifact-hash = fa-hash-bytes comp,
@@ -339,20 +344,20 @@ Section: Walking The Log
  block-read-sector directly is what CDX2031 stops, and correctly: this chapter
  has no business declaring itself a source of hardware effects.
 
-  fa-scan-log : Integer, Integer, Integer, List LogEntry -> List LogEntry
-  fa-scan-log (buf) (sector) (end-sec) (acc) =
+  fa-scan-log : Integer, Integer, Integer, Integer, List LogEntry -> List LogEntry
+  fa-scan-log (base) (buf) (sector) (end-sec) (acc) =
     if sector >= end-sec then acc
-    else let loaded = app-load-sectors sector 1 buf 0
+    else let loaded = app-load-sectors base sector 1 buf 0
     in let clen = fl-entry-content-len buf
-    in if clen == 0 then fa-scan-log buf (sector + 1) end-sec acc
+    in if clen == 0 then fa-scan-log base buf (sector + 1) end-sec acc
     else let nsec = fl-sectors-for clen
     in let k = fl-entry-kind buf
-    in let txt = app-read-content sector clen
+    in let txt = app-read-content base sector clen
     in let entry = LogEntry { le-sector = sector, le-nsec = nsec, le-kind = k, le-text = txt }
-    in fa-scan-log buf (sector + nsec) end-sec (list-push acc entry)
+    in fa-scan-log base buf (sector + nsec) end-sec (list-push acc entry)
 
-  fa-scan-from : Integer, Integer -> List LogEntry
-  fa-scan-from (start) (end-sec) = fa-scan-log (alloc-bytes fl-sector-size) start end-sec []
+  fa-scan-from : Integer, Integer, Integer -> List LogEntry
+  fa-scan-from (base) (start) (end-sec) = fa-scan-log base (alloc-bytes fl-sector-size) start end-sec []
 
 Section: Choosing The Cut
 
@@ -395,12 +400,12 @@ Section: Running An Archival
  the safe direction here because the destination is always BELOW the source: an
  earlier write can never clobber a sector this loop has yet to read.
 
-  fa-shift : Integer, Integer, Integer, Integer, Integer -> Integer
-  fa-shift (buf) (src) (end-sec) (dst) (i) =
+  fa-shift : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fa-shift (base) (buf) (src) (end-sec) (dst) (i) =
     if src + i >= end-sec then 0
-    else let loaded = app-load-sectors (src + i) 1 buf 0
-    in let w = write-fact-sectors buf (dst + i) 1 0
-    in fa-shift buf src end-sec dst (i + 1)
+    else let loaded = app-load-sectors base (src + i) 1 buf 0
+    in let w = write-fact-sectors base buf (dst + i) 1 0
+    in fa-shift base buf src end-sec dst (i + 1)
 
  A store with nothing archivable is returned untouched, and says so with a cut
  equal to the log start and an empty artifact. That is the common case: a young
@@ -410,21 +415,28 @@ Section: Running An Archival
   archive-run (store) (manifest) (threshold) (kp) (prev-base) (timestamp) =
     let sb = store.superblock
     in let head = sb.log-head
-    in let ix = repo-index-verified store manifest threshold
-    in let entries = fa-scan-from fact-log-start head
+    in if disk-usable store == False then archive-nothing store
+    else let ix = repo-index-verified store manifest threshold
+    in let entries = fa-scan-from (store.base) fact-log-start head
     in let cut = archive-cut entries ix 0 (list-length entries) head
     in if cut <= fact-log-start
-      then ArchiveRun {
-        run-store = store, run-artifact = [],
-        run-base = base-empty, run-archived = 0, run-cut = fact-log-start
-      }
+      then archive-nothing store
       else archive-commit store entries cut head kp prev-base timestamp
+
+  archive-nothing : DiskFactStore -> ArchiveRun
+  archive-nothing (store) = ArchiveRun {
+    run-store = store,
+    run-artifact = [],
+    run-base = base-empty,
+    run-archived = 0,
+    run-cut = fact-log-start
+  }
 
   archive-commit : DiskFactStore, List LogEntry, Integer, Integer, Keypair, Text, Integer -> ArchiveRun
   archive-commit (store) (entries) (cut) (head) (kp) (prev-base) (timestamp) =
     let archived = count-below entries cut 0 (list-length entries) 0
-    in let art = archive-build fact-log-start cut archived prev-base kp timestamp
-    in let moved = fa-shift (alloc-bytes fl-sector-size) cut head fact-log-start 0
+    in let art = archive-build (store.base) fact-log-start cut archived prev-base kp timestamp
+    in let moved = fa-shift (store.base) (alloc-bytes fl-sector-size) cut head fact-log-start 0
     in let sb = store.superblock
     in let shifted-head = fact-log-start + (head - cut)
     in let mid = DiskFactStore {
@@ -433,7 +445,9 @@ Section: Running An Archival
         fact-count = (sb.fact-count) - archived,
         index-gen = (sb.index-gen) + 1
       },
-      mem = store.mem
+      mem = store.mem,
+      base = store.base,
+      limit = store.limit
     }
     in ArchiveRun {
       run-store = base-save mid (art.aa-base),

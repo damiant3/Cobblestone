@@ -1,0 +1,119 @@
+Chapter: CryptoVectors
+  cites Foreword chapter Aes256
+  cites Foreword chapter Cmac
+  cites Foreword chapter Pbkdf
+
+ Three crypto chapters that compiled and were never asked for an
+ answer. A cipher checked only against its own inverse is checked
+ against nothing, so the expected values here come from OUTSIDE: they
+ were computed on the host by .NET, not recalled, and they agree with
+ the published vectors.
+
+ AES-256 is FIPS-197 C.3. AES-CMAC is RFC 4493, at three lengths on
+ purpose: empty exercises the padded path with K2 on a block that is
+ all padding, sixteen bytes exercises the whole-block path with K1,
+ and forty exercises chaining plus a partial final block, so a K1 and
+ K2 swap cannot pass all three.
+
+ Pbkdf gets no vector because it is honestly not a standard: its own
+ prose says NOT Argon2id and cross-incompatible with RFC 9106, so no
+ outside implementation can agree with it. What is checked instead is
+ the property that matters and that a stub would pass silently: verify
+ accepts the right password AND REJECTS A WRONG ONE. A verify that
+ always answered True would satisfy every round trip.
+
+ The accept-and-reject pair runs at a memory-kb of 64 because that
+ property does not depend on the cost parameter. The other two lines
+ exist because cost is exactly what was once wrong: block expansion
+ grew the array with append, which copies, so it was quadratic in the
+ block count.
+
+ The default line pins the value a caller actually gets. It is NOT
+ what would catch a regression, and saying so matters: the old
+ quadratic code still completed at the 3072 MB the battery boots with,
+ so a default-parameters line would have passed over the defect.
+
+ The stress line at 8192 blocks is the one that fails. Quadratic
+ growth there needs several times what the machine has: run against
+ the old code it faults outright, an EXC 06 with the heap pointer up
+ in the device band, where at the default 4096 blocks the same code
+ merely died silently. Linear growth is a quarter of a megabyte and
+ finishes in under a second. That is the difference between a test
+ that records a number and a test that can fail at the thing that
+ changed.
+
+ The stored result is threaded through a parameter rather than named
+ at the top level, because a top-level binding is a definition and is
+ rebuilt at every mention. Naming it cost four hashes instead of one
+ and killed the guest with no output at all.
+
+Section: AES-256
+
+  aes-key : List Integer
+  aes-key = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+
+  aes-pt : List Integer
+  aes-pt = [0, 17, 34, 51, 68, 85, 102, 119, 136, 153, 170, 187, 204, 221, 238, 255]
+
+  aes-ct : List Integer
+  aes-ct = aes256-encrypt-block aes-pt (aes256-expand-key aes-key)
+
+Section: CMAC
+
+  ck : List Integer
+  ck = [43, 126, 21, 22, 40, 174, 210, 166, 171, 247, 21, 136, 9, 207, 79, 60]
+
+  cm16 : List Integer
+  cm16 = [107, 193, 190, 226, 46, 64, 159, 150, 233, 61, 126, 17, 115, 147, 23, 42]
+
+  cm40 : List Integer
+  cm40 = [107, 193, 190, 226, 46, 64, 159, 150, 233, 61, 126, 17, 115, 147, 23, 42,
+          174, 45, 138, 87, 30, 3, 172, 156, 158, 183, 111, 172, 69, 175, 142, 81,
+          48, 200, 28, 70, 163, 92, 228, 17]
+
+Section: Pbkdf
+
+  pw : List Integer
+  pw = [112, 97, 115, 115, 119, 111, 114, 100]
+
+  wrong : List Integer
+  wrong = [112, 97, 115, 115, 119, 111, 114, 101]
+
+  salt : List Integer
+  salt = [1, 2, 3, 4, 5, 6, 7, 8]
+
+  cheap : PbkdfParams
+  cheap = PbkdfParams { pb-time-cost = 1, pb-block-count = 64, pb-hash-length = 32 }
+
+  stress : PbkdfParams
+  stress = PbkdfParams { pb-time-cost = 1, pb-block-count = 8192, pb-hash-length = 32 }
+
+  accepts : PbkdfResult -> Text
+  accepts (stored) = if pbkdf-verify pw stored then "yes" else "no"
+
+  rejects : PbkdfResult -> Text
+  rejects (stored) = if pbkdf-verify wrong stored then "no" else "yes"
+
+Section: Rendering
+
+  dump : List Integer, Integer, Integer, Text -> Text
+  dump (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else dump xs (i + 1) n (acc & " " & show (list-at xs i))
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni ("aes256-ct=" & dump aes-ct 0 16 "")
+    print-line-uni ("aes256-roundtrip=" & dump (aes256-decrypt-block aes-ct (aes256-expand-key aes-key)) 0 16 "")
+    print-line-uni ("cmac-empty=" & dump (aes-cmac ck []) 0 16 "")
+    print-line-uni ("cmac-16=" & dump (aes-cmac ck cm16) 0 16 "")
+    print-line-uni ("cmac-40=" & dump (aes-cmac ck cm40) 0 16 "")
+    print-line-uni ("pbkdf-hash-length=" & show (list-length ((pbkdf-hash pw salt cheap).pbr-hash)))
+    print-line-uni ("pbkdf-default-tag=" & dump ((pbkdf-hash pw salt pbkdf-default-params).pbr-hash) 0 8 "")
+    print-line-uni ("pbkdf-stress-tag=" & dump ((pbkdf-hash pw salt stress).pbr-hash) 0 8 "")
+    print-line-uni ("pbkdf-accepts-right=" & accepts (pbkdf-hash pw salt cheap))
+    print-line-uni ("pbkdf-rejects-wrong=" & rejects (pbkdf-hash pw salt cheap))
+  end
+
+Page 1

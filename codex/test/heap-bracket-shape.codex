@@ -1,0 +1,177 @@
+Chapter: HeapBracketShape
+  cites Foreword chapter Console
+
+ An unbounded poll loop on a machine with no collector has to drop what
+ each iteration built, and the shape that does it puts __heap-save above
+ the poll rather than below it, so the bracket covers the whole iteration
+ and not just the part after the effect. GopScene's gsc-loop is the first
+ use; every other continuous-render loop will want the same thing.
+
+ Two properties decide whether that shape is usable, and neither is
+ settled by the render test that motivated it. The mark is bound in a
+ pure let ABOVE an effectful bind, so the question is whether it is taken
+ before the effect runs. And the value the bind produced has to be read
+ AFTER the restore, so the question is whether an Integer survives a
+ restore that rewinds the allocator past the point where it was produced.
+
+ The plain arm is the control on the instrument. If it does not grow, the
+ loop is not allocating and the bracketed arm's flatness says nothing.
+
+ We say:
+
+Section: Instrument
+
+ The CMOS RTC on ports 0x70/0x71 is the effectful bind: it answers an
+ Integer, it needs no device to be present, and it reads differently
+ across a long loop, so a surviving value cannot be a constant the
+ compiler folded.
+
+  rtc-sec : Integer -> [Device.Port] Integer
+  rtc-sec (d) = act
+    w <- port-out-byte 112 0
+    port-in-byte 113
+  end
+
+ Something has to be allocated inside the iteration or there is nothing
+ for the bracket to reclaim. A four-element list is the cheapest thing
+ that is definitely heap.
+
+  waste : Integer -> List Integer
+  waste (v) = [v, v, v, v]
+
+  bcd-ok : Integer -> Integer
+  bcd-ok (v) = if v < 0 then 0 else if v > 89 then 0 else if int-mod v 16 > 9 then 0 else 1
+
+Section: The two arms
+
+ Identical but for the bracket.
+
+  loop-plain : Integer, Integer, Integer -> [Device.Port] Integer
+  loop-plain (i) (n) (ok) = act
+    v <- rtc-sec 0
+    let w = waste v
+    in let good = ok + bcd-ok (list-at w 3)
+    in if i + 1 >= n then good
+    else loop-plain (i + 1) n good
+  end
+
+  loop-bracketed : Integer, Integer, Integer -> [Device.Port] Integer
+  loop-bracketed (i) (n) (ok) = act
+    let mark = __heap-save
+    in act
+      v <- rtc-sec 0
+      let w = waste v
+      in let seen = list-at w 3
+      in let dropped = __heap-restore mark
+      in let good = ok + bcd-ok seen
+      in if i + 1 >= n then good
+      else loop-bracketed (i + 1) n good
+    end
+  end
+
+ The third arm is the one that decides whether the placement matters at
+ all. It brackets exactly the same work with the mark BELOW the bind, so
+ whatever the effect itself allocates escapes. Against an effect that
+ allocates nothing the two placements agree and this arm reads flat; the
+ arm earns its place by being able to disagree.
+
+  loop-mark-below : Integer, Integer, Integer -> [Device.Port] Integer
+  loop-mark-below (i) (n) (ok) = act
+    v <- rtc-sec 0
+    let mark = __heap-save
+    in let w = waste v
+    in let seen = list-at w 3
+    in let dropped = __heap-restore mark
+    in let good = ok + bcd-ok seen
+    in if i + 1 >= n then good
+    else loop-mark-below (i + 1) n good
+  end
+
+ An effect that allocates nothing cannot express the difference between
+ the two placements, and the pair above duly agrees. So the last pair
+ uses an effect that DOES allocate before it answers, which is what a
+ real device poll does when its idle path builds anything at all. These
+ two run the same work and differ only in which side of the bind the
+ mark sits, and they are the reason the placement is a decision rather
+ than a preference.
+
+ The above arm is run twice at different counts on purpose. Its first
+ call reads a few hundred bytes, and taken alone that looks like a small
+ residual leak; a second call at twice the iterations reads ZERO, which
+ says the first figure was a one-time cost of entering the path and not
+ a per-iteration one. One measurement could not have told those apart
+ and would have been quoted as the wrong thing.
+
+  rtc-sec-alloc : Integer -> [Device.Port] Integer
+  rtc-sec-alloc (d) = act
+    w <- port-out-byte 112 0
+    v <- port-in-byte 113
+    let junk = [v, v, v, v]
+    in list-at junk 0
+  end
+
+  loop-alloc-above : Integer, Integer -> [Device.Port] Integer
+  loop-alloc-above (i) (n) = act
+    let mark = __heap-save
+    in act
+      v <- rtc-sec-alloc 0
+      let dropped = __heap-restore mark
+      in if i + 1 >= n then 0
+      else loop-alloc-above (i + 1) n
+    end
+  end
+
+  loop-alloc-below : Integer, Integer -> [Device.Port] Integer
+  loop-alloc-below (i) (n) = act
+    v <- rtc-sec-alloc 0
+    let mark = __heap-save
+    in let dropped = __heap-restore mark
+    in if i + 1 >= n then 0
+    else loop-alloc-below (i + 1) n
+  end
+
+Section: Entry
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  opening : [Console, Device.Port] Nothing = act
+    let c0 = alloc-bytes 0
+    in act
+      p-ok <- loop-plain 0 200 0
+      let p1 = alloc-bytes 0
+      in act
+        b-ok <- loop-bracketed 0 200 0
+        let b1 = alloc-bytes 0
+        in act
+          m-ok <- loop-mark-below 0 200 0
+          let m1 = alloc-bytes 0
+          in act
+            print-line-uni ("200 plain iterations grow   : " & yn (p1 - c0 > 0))
+            print-line-uni ("200 bracketed are flat      : " & yn (b1 - p1 == 0))
+            print-line-uni ("plain read a live value     : " & yn (p-ok == 200))
+            print-line-uni ("value survived the restore  : " & yn (b-ok == 200))
+            print-line-uni ("free effect: placement agrees: " & yn (m1 - b1 == 0))
+          end
+          aa <- loop-alloc-above 0 200
+          let a1 = alloc-bytes 0
+          in act
+            ab <- loop-alloc-below 0 200
+            let a2 = alloc-bytes 0
+            in act
+              ac <- loop-alloc-above 0 400
+              let a3 = alloc-bytes 0
+              in act
+                print-line-uni ("above is flat once warm     : " & yn (a3 - a2 == 0))
+                print-line-uni ("below leaks on every call   : " & yn (a2 - a1 > 0))
+                print-line-uni ("below leak scales with count: " & yn (a2 - a1 >= 200 & int-mod (a2 - a1) 200 == 0))
+                print-line-uni ("placement decides the leak  : " & yn (a3 - a2 == 0 & a2 - a1 > 0))
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+Page 1

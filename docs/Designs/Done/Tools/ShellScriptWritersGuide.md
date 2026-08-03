@@ -45,7 +45,7 @@ per definition is much higher than normal code.
 
 ## Types
 
-### ShellExpr — Values and Conditions
+### ShellExpr -- Values and Conditions
 
 | Constructor | Emits (PowerShell) |
 |---|---|
@@ -68,7 +68,7 @@ per definition is much higher than normal code.
 | `SeArrayLiteral [a, b]` | `@(<a>, <b>)` |
 | `SeRaw "text"` | `text` (verbatim escape hatch) |
 
-### ShellCmd — Statements
+### ShellCmd -- Statements
 
 | Constructor | Emits (PowerShell) |
 |---|---|
@@ -120,9 +120,9 @@ sizes the LOWER deck by definition count. A single definition with
   script-body : List ShellCmd = [ScSequence s01-preamble, ScBlank, ScSequence s02-validate, ScBlank, ScSequence s03-compile]
 ```
 
-Use `ScSequence` to compose sections — it emits the inner commands
+Use `ScSequence` to compose sections -- it emits the inner commands
 inline without any wrapper syntax. Do NOT use `&` (list append) to
-concatenate sections — it creates nested `list-append` IR trees that
+concatenate sections -- it creates nested `list-append` IR trees that
 blow up the LOWER phase.
 
 ## The ScRaw Escape Hatch
@@ -145,9 +145,9 @@ doc is at `docs/Designs/Tools/Active/ShellScriptEmitter.md`.
 
 ## Reference
 
-- `codex/foreword/shell/ShellTypes.codex` — type definitions
-- `codex/foreword/shell/ShellBuild.codex` — convenience constructors
-- `codex/foreword/shell/PowerShellEmit.codex` — PowerShell emitter
-- `codex/build/CompileScript.codex` — proof-of-concept (generates compile.ps1)
-- `docs/Designs/Tools/Active/ShellScriptEmitter.md` — architecture design
-- `docs/Test/Active/KNOWN-CONDITIONS.md` — LOWER deck survey condition
+- `codex/foreword/shell/ShellTypes.codex` -- type definitions
+- `codex/foreword/shell/ShellBuild.codex` -- convenience constructors
+- `codex/foreword/shell/PowerShellEmit.codex` -- PowerShell emitter
+- `codex/build/CompileScript.codex` -- proof-of-concept (generates compile.ps1)
+- `docs/Designs/Tools/Active/ShellScriptEmitter.md` -- architecture design
+- `docs/Test/Active/KNOWN-CONDITIONS.md` -- LOWER deck survey condition

@@ -1,0 +1,126 @@
+Chapter: SerialMirrorTest
+  cites Works chapter DevConsole
+  cites Works chapter DevConsoleBoot
+  cites Works chapter DevConsoleMenu
+  cites Works chapter UefiConsole
+  cites Works chapter KeyManager
+  cites Kernel chapter DiskFacts
+  cites Foreword chapter FactStore
+  cites Foreword chapter Sha256
+  cites Dev chapter SerialBridge
+  cites Foreword chapter CCE
+
+ The console's serial mirror, driven through `handle-console-input` and
+ read back off the wire.
+
+ THE TWO CHANNELS ARE THE SAME PORT AND THAT IS THE POINT. This test's own
+ `print-line-uni` and the console's mirror both end at 1016, so a mirrored
+ line lands in the harness output interleaved with the test's own. The
+ `cmd:` and `status:` lines below were not printed by this chapter; the
+ console put them there. Nothing else in this test could produce them.
+
+ MIRRORING IS OFF UNTIL IT IS TURNED ON, and the first block proves it
+ rather than assuming it. A command is run with the flag clear and only
+ the test's own line appears; the same shape after `serial.on` produces
+ two more. Without the first half, a mirror that was hardwired on would
+ pass -- and it would also mean every existing console test had started
+ writing to the wire, which is exactly the regression this ordering
+ catches.
+
+ `serial.on` MIRRORS ITSELF, because the flag is read from the state the
+ command produced rather than the state it was given. That is asserted
+ here because the opposite is the more natural way to write it and fails
+ silently in the one case anybody checks first.
+
+ `serial.off` ALSO MIRRORS ITSELF, for the opposite reason: the echo is
+ armed by the flag before the command as well as the one after it, so the
+ last thing a far-end reader sees is the console saying it is going quiet.
+ Without that line the stream just stops, and a mirror that was switched
+ off is indistinguishable from a console that has hung -- the one question
+ this module exists to answer. Both directions are asserted below, and the
+ flag values are printed either side, because the flag flipping and the
+ echo firing are separate failures: a `__record-set` that silently did not
+ write left the status line reading `serial mirror ON` above a wire with
+ nothing on it, which is how that defect was found.
+
+ THE INBOUND CONVERSION IS TESTED AS TEXT, not through a port. Bytes
+ arriving from COM1 are ASCII and Text is CCE, so `sb-append-byte` has to
+ convert; if it did not, a remote `mem` would build a Text that is not
+ equal to the `mem` the dispatcher matches on, and remote commands would
+ never fire while nothing reported an error. Comparing the assembled line
+ against a literal is what discriminates that, and it needs no serial
+ input at all.
+
+ We say:
+
+Section: Fixtures
+
+  bare-console : UefiConsoleState
+  bare-console = UefiConsoleState {
+    sys-table = 0,
+    con-out = 0,
+    con-in = 0,
+    rows = 25,
+    cols = 80,
+    cursor-row = 0,
+    cursor-col = 0
+  }
+
+  bare-disk : DiskFactStore
+  bare-disk = DiskFactStore { superblock = empty-superblock, mem = fact-store-empty, base = 0, limit = 0 }
+
+  bare-keys : Keypair
+  bare-keys = generate-keypair (sha256 (text-to-bytes "codex-serial-mirror-test"))
+
+Section: Reporting
+
+  report : Text, DevConsoleState -> [Console] Nothing
+  report (label) (s) = act
+    print-line-uni (label & ": " & s.status)
+  end
+
+Section: Assembling From Bytes
+
+  feed : Text, List Integer, Integer -> Text
+  feed (acc) (bytes) (i) =
+    if i >= list-length bytes then acc
+    else feed (sb-append-byte acc (list-at bytes i)) bytes (i + 1)
+
+Section: Body
+
+  opening : [Console, Device.Port, Device.Block] Nothing = act
+    let s0 = dev-console-init bare-console bare-disk bare-keys
+    in let d0 = dispatch-main-menu "debug" s0
+    in act
+
+      print-line-uni "-- mirror off --"
+      q <- handle-console-input d0 "perf"
+      report "quiet" q
+
+      print-line-uni "-- turning it on --"
+      m <- handle-console-input q "serial.on"
+      report "armed" m
+      print-line-uni ("flag-after-on: " & show (m.debugger.serial-mirror))
+
+      print-line-uni "-- mirror on --"
+      p <- handle-console-input m "idt.counts"
+      report "mirrored" p
+
+      print-line-uni "-- turning it off --"
+      f <- handle-console-input p "serial.off"
+      report "disarmed" f
+      print-line-uni ("flag-after-off: " & show (f.debugger.serial-mirror))
+
+      print-line-uni "-- mirror off again --"
+      z <- handle-console-input f "perf"
+      report "quiet-again" z
+
+      let line = feed "" [109, 101, 109] 0
+      in print-line-uni ("assembled: [" & line & "] matches-literal: " & show (line == "mem"))
+
+      let dropped = feed "" [109, 7, 101, 109] 0
+      in print-line-uni ("control-dropped: [" & dropped & "] matches-literal: " & show (dropped == "mem"))
+
+      print-line-uni ("remote-default-off: " & show (z.debugger.serial-remote))
+    end
+  end

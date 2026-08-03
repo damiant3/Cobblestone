@@ -1,4 +1,4 @@
-# Language Updates — Bitwise Operations for Crypto Primitives
+# Language Updates -- Bitwise Operations for Crypto Primitives
 
 **Date**: 2026-03-31
 **Status**: Design
@@ -50,7 +50,7 @@ Sigma1(x)  = ROTR(x,6) XOR ROTR(x,11) XOR ROTR(x,25)  -- 3 rotates + 2 XOR
 ```
 
 That's ~10 bitwise operations per round x 64 rounds = ~640 bitwise ops
-per SHA-256 hash. XOR on arbitrary values is irreducible — there is no
+per SHA-256 hash. XOR on arbitrary values is irreducible -- there is no
 arithmetic shortcut. This is a hard blocker.
 
 ---
@@ -64,7 +64,7 @@ arithmetic shortcut. This is a hard blocker.
 | **IR** | None | `IRBinaryOp` has `And`/`Or` (boolean only) |
 | **Type checker** | None | Nothing to check |
 | **C# x86-64 emitter** | Emits AND/XOR/SHL/SHR machine instructions | Used internally for alignment, register zeroing. Not exposed to the language. |
-| **Self-hosted encoder** | Encodes AND/XOR/SHL/SHR opcodes | Same — used internally, not reachable from Codex source. |
+| **Self-hosted encoder** | Encodes AND/XOR/SHL/SHR opcodes | Same -- used internally, not reachable from Codex source. |
 | **Other backends** (C#, JS, Python, etc.) | N/A | Irrelevant post-MM4 |
 
 The machine instructions exist in the encoder. The pipeline above them
@@ -77,7 +77,7 @@ does not connect.
 ### Why builtins
 
 Post-MM4, the compiler is self-hosted Codex. Adding new syntax (operators
-like `.&.`) requires modifying the lexer, parser, and precedence tables —
+like `.&.`) requires modifying the lexer, parser, and precedence tables --
 all of which are .codex source at that point. This is high-risk for the
 first post-MM4 change.
 
@@ -103,7 +103,7 @@ bit-shr   : Integer -> Integer -> Integer    -- logical shift right by n bits (u
 
 All operate on the full 64-bit `Integer` type. Codex has one integer
 type (64-bit signed). For crypto, we treat these as unsigned 64-bit
-values — the bitwise operations are the same regardless of signedness.
+values -- the bitwise operations are the same regardless of signedness.
 The caller is responsible for masking to the relevant width (e.g.,
 `bit-and x 0xFFFFFFFF` for 32-bit SHA-256 words).
 
@@ -125,7 +125,7 @@ rotr32 x n = bit-or (bit-shr (bit-and x 0xFFFFFFFF) n)
 
 Three instructions instead of one. The encoder DOES need a `ROR`
 instruction for performance (see `EncoderUpdates.md`), but the language
-doesn't need a rotate builtin — the emitter can pattern-match
+doesn't need a rotate builtin -- the emitter can pattern-match
 `bit-or (bit-shr x n) (bit-shl x (w-n))` and emit `ROR` as a
 peephole optimization. This keeps the language surface minimal and
 pushes the optimization to where it belongs (the backend).
@@ -157,17 +157,17 @@ These lower directly to x86-64 instructions:
 | IR opcode | x86-64 instruction | Encoder function | Status |
 |-----------|-------------------|-----------------|--------|
 | `BitAnd` | `AND r64, r64` | `and-rr` | Exists in encoder |
-| `BitOr` | `OR r64, r64` | `or-rr` | **Missing — see EncoderUpdates.md** |
+| `BitOr` | `OR r64, r64` | `or-rr` | **Missing -- see EncoderUpdates.md** |
 | `BitXor` | `XOR r64, r64` | `xor-rr` | Exists in encoder (currently 32-bit, needs 64-bit variant) |
 | `BitShl` | `SHL r64, CL` | `shl-ri` exists, `shl-rcl` **missing** |  Immediate form exists; register form needed for variable shifts |
 | `BitShr` | `SHR r64, CL` | `shr-ri` exists, `shr-rcl` **missing** | Same |
-| `BitNot` | `NOT r64` | `not-r` | **Missing — see EncoderUpdates.md** |
+| `BitNot` | `NOT r64` | `not-r` | **Missing -- see EncoderUpdates.md** |
 
 Note: SHA-256 uses only constant shift/rotate amounts (the sigma
 functions have fixed rotation counts), so the immediate forms (`shl-ri`,
 `shr-ri`) are sufficient for SHA-256. Ed25519 field arithmetic does not
 use shifts. Variable shifts (`SHL r64, CL`) are needed only if a general
-`bit-shl` builtin is provided — which we do for completeness, but crypto
+`bit-shl` builtin is provided -- which we do for completeness, but crypto
 code won't exercise the variable path.
 
 ---
@@ -207,7 +207,7 @@ the REX.W prefix. See `EncoderUpdates.md` for details.
 
 Bitwise builtins operate on `Integer -> Integer -> Integer` (binary) or
 `Integer -> Integer` (unary). The type checker already handles builtins
-with these signatures — no new type logic needed. The builtins are pure
+with these signatures -- no new type logic needed. The builtins are pure
 (no effects).
 
 One consideration: should bitwise operations on `Number` (floating-point)
@@ -231,7 +231,7 @@ them to `Number` is already a type error. No special handling needed.
 4. **Round-trip with encoder**: The encoder currently uses arithmetic
    workarounds for bit manipulation. After builtins are available,
    rewrite the encoder's bit manipulation to use them. The encoder's
-   output (byte sequences) must be identical before and after — this
+   output (byte sequences) must be identical before and after -- this
    is a golden-file regression test.
 
 ---
@@ -240,12 +240,12 @@ them to `Number` is already a type error. No special handling needed.
 
 | Step | What | Effort | Risk |
 |------|------|--------|------|
-| 1 | Add 6 IR opcodes to the self-hosted compiler | Small | Low — additive |
-| 2 | Add 6 builtins to the name resolver | Small | Low — additive |
-| 3 | Add encoder instructions (OR, NOT, XOR64, SHL/SHR CL — see EncoderUpdates.md) | Small | Low — additive |
-| 4 | Add emitter cases for 6 IR opcodes | Small | Low — mechanical |
+| 1 | Add 6 IR opcodes to the self-hosted compiler | Small | Low -- additive |
+| 2 | Add 6 builtins to the name resolver | Small | Low -- additive |
+| 3 | Add encoder instructions (OR, NOT, XOR64, SHL/SHR CL -- see EncoderUpdates.md) | Small | Low -- additive |
+| 4 | Add emitter cases for 6 IR opcodes | Small | Low -- mechanical |
 | 5 | Test builtins with unit tests | Small | Low |
-| 6 | Verify pingpong (self-compilation fixed point holds) | Required | Medium — any bug here is a showstopper |
+| 6 | Verify pingpong (self-compilation fixed point holds) | Required | Medium -- any bug here is a showstopper |
 
 Total effort: ~1-2 sessions. All changes are additive (new opcodes,
 new builtins, new encoder functions). Nothing existing is modified
@@ -253,7 +253,7 @@ except to add new cases to existing dispatch tables.
 
 **Step 6 is critical.** After adding bitwise builtins, the self-hosted
 compiler must still produce a fixed-point. The builtins don't change
-existing codegen — they only add new paths. But the pingpong test must
+existing codegen -- they only add new paths. But the pingpong test must
 pass to confirm nothing was broken.
 
 ---

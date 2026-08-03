@@ -55,12 +55,20 @@ Section: Copy Helpers
     else let w = poke-byte dst (dst-off + i) (peek-byte src i)
     in app-copy-sector src dst dst-off (i + 1)
 
-  app-load-sectors : Integer, Integer, Integer, Integer -> Integer
-  app-load-sectors (start) (count) (dst) (i) =
+Section: Sectors Are Relative To The Store
+
+ Every sector number below is relative to the store's base LBA, exactly as
+ in DiskFacts, and goes through that chapter's fact-read-at / fact-write-at.
+ This chapter used to name absolute sectors, which on a partitioned disk is
+ the partition table. A store carries the base it was opened against, so
+ the base comes off the store rather than being resolved here.
+
+  app-load-sectors : Integer, Integer, Integer, Integer, Integer -> Integer
+  app-load-sectors (base) (start) (count) (dst) (i) =
     if i >= count then 0
-    else let src = block-read-sector (start + i)
+    else let src = fact-read-at base (start + i)
     in let c = app-copy-sector src dst (i * fl-sector-size) 0
-    in app-load-sectors start count dst (i + 1)
+    in app-load-sectors base start count dst (i + 1)
 
 Section: Write
 
@@ -86,22 +94,33 @@ Section: Write
     in let c = pack-u32-le buf fl-off-content-len (text-length content)
     in pack-text buf fl-header-size content
 
+ The two refusals are DiskFacts', for DiskFacts' reasons: a store whose
+ base is negative sits on a disk that carries a partition table and no
+ fact store, and a write that would run past the region's limit would
+ land in whatever partition follows. Both answer the store UNCHANGED, so
+ a caller watching disk-fact-count sees it fail to rise. This writer had
+ neither guard and wrote straight through both.
+
   app-write-fact : DiskFactStore, Integer, Text, Integer -> DiskFactStore
   app-write-fact (store) (kind-int) (content) (timestamp) =
     let sb = store.superblock
     in let clen = text-length content
     in let nsec = fl-sectors-for clen
-    in let buf = alloc-bytes (nsec * fl-sector-size)
+    in if disk-usable store == False then store
+    else if region-admits (store.limit) (sb.log-head + nsec) == False then store
+    else let buf = alloc-bytes (nsec * fl-sector-size)
     in let z = zero-bytes buf 0 (nsec * fl-sector-size)
     in let packed = app-pack-fact buf kind-int content timestamp
-    in let w = write-fact-sectors buf (sb.log-head) nsec 0
+    in let w = write-fact-sectors (store.base) buf (sb.log-head) nsec 0
     in DiskFactStore {
       superblock = Superblock {
         log-head = sb.log-head + nsec,
         fact-count = sb.fact-count + 1,
         index-gen = sb.index-gen
       },
-      mem = store.mem
+      mem = store.mem,
+      base = store.base,
+      limit = store.limit
     }
 
   app-write-and-checkpoint : DiskFactStore, Integer, Text, Integer -> DiskFactStore
@@ -110,50 +129,50 @@ Section: Write
 
 Section: Read Content
 
-  app-read-content : Integer, Integer -> Text
-  app-read-content (start) (clen) =
+  app-read-content : Integer, Integer, Integer -> Text
+  app-read-content (base) (start) (clen) =
     let nsec = fl-sectors-for clen
     in let buf = alloc-bytes (nsec * fl-sector-size)
-    in let loaded = app-load-sectors start nsec buf 0
+    in let loaded = app-load-sectors base start nsec buf 0
     in unpack-text buf fl-header-size clen
 
 Section: Scan for Latest Fact of a Given Kind
 
   app-scan-last : DiskFactStore, Integer -> Maybe Text
   app-scan-last (store) (kind) =
-    app-scan-loop kind fact-log-start (store.superblock.log-head) None
+    app-scan-loop (store.base) kind fact-log-start (store.superblock.log-head) None
 
-  app-scan-loop : Integer, Integer, Integer, Maybe Text -> Maybe Text
-  app-scan-loop (kind) (sector) (end-sec) (found) =
+  app-scan-loop : Integer, Integer, Integer, Integer, Maybe Text -> Maybe Text
+  app-scan-loop (base) (kind) (sector) (end-sec) (found) =
     if sector >= end-sec then found
-    else let buf = block-read-sector sector
+    else let buf = fact-read-at base sector
     in let k = fl-entry-kind buf
     in let clen = fl-entry-content-len buf
-    in if clen == 0 then app-scan-loop kind (sector + 1) end-sec found
+    in if clen == 0 then app-scan-loop base kind (sector + 1) end-sec found
     else let nsec = fl-sectors-for clen
     in if k == kind then
-      let txt = app-read-content sector clen
-      in app-scan-loop kind (sector + nsec) end-sec (Just txt)
-    else app-scan-loop kind (sector + nsec) end-sec found
+      let txt = app-read-content base sector clen
+      in app-scan-loop base kind (sector + nsec) end-sec (Just txt)
+    else app-scan-loop base kind (sector + nsec) end-sec found
 
 Section: Scan for All Facts of a Given Kind
 
   app-scan-all : DiskFactStore, Integer -> List Text
   app-scan-all (store) (kind) =
-    app-scan-all-loop kind fact-log-start (store.superblock.log-head) []
+    app-scan-all-loop (store.base) kind fact-log-start (store.superblock.log-head) []
 
-  app-scan-all-loop : Integer, Integer, Integer, List Text -> List Text
-  app-scan-all-loop (kind) (sector) (end-sec) (acc) =
+  app-scan-all-loop : Integer, Integer, Integer, Integer, List Text -> List Text
+  app-scan-all-loop (base) (kind) (sector) (end-sec) (acc) =
     if sector >= end-sec then acc
-    else let buf = block-read-sector sector
+    else let buf = fact-read-at base sector
     in let k = fl-entry-kind buf
     in let clen = fl-entry-content-len buf
-    in if clen == 0 then app-scan-all-loop kind (sector + 1) end-sec acc
+    in if clen == 0 then app-scan-all-loop base kind (sector + 1) end-sec acc
     else let nsec = fl-sectors-for clen
     in if k == kind then
-      let txt = app-read-content sector clen
-      in app-scan-all-loop kind (sector + nsec) end-sec (list-push acc txt)
-    else app-scan-all-loop kind (sector + nsec) end-sec acc
+      let txt = app-read-content base sector clen
+      in app-scan-all-loop base kind (sector + nsec) end-sec (list-push acc txt)
+    else app-scan-all-loop base kind (sector + nsec) end-sec acc
 
 Section: Scan Two Kinds In Log Order
 
@@ -170,7 +189,7 @@ Section: Scan Two Kinds In Log Order
 
   app-scan-two-kinds : DiskFactStore, Integer, Integer -> List KindText
   app-scan-two-kinds (store) (kind-a) (kind-b) =
-    app-scan-two-loop kind-a kind-b fact-log-start (store.superblock.log-head) []
+    app-scan-two-loop (store.base) kind-a kind-b fact-log-start (store.superblock.log-head) []
 
  The same walk, but from a given sector rather than the start of the log. An
  index snapshot covers the log up to a sector; rebuilding on top of it needs
@@ -181,20 +200,20 @@ Section: Scan Two Kinds In Log Order
 
   app-scan-two-kinds-from : DiskFactStore, Integer, Integer, Integer -> List KindText
   app-scan-two-kinds-from (store) (start) (kind-a) (kind-b) =
-    app-scan-two-loop kind-a kind-b start (store.superblock.log-head) []
+    app-scan-two-loop (store.base) kind-a kind-b start (store.superblock.log-head) []
 
-  app-scan-two-loop : Integer, Integer, Integer, Integer, List KindText -> List KindText
-  app-scan-two-loop (kind-a) (kind-b) (sector) (end-sec) (acc) =
+  app-scan-two-loop : Integer, Integer, Integer, Integer, Integer, List KindText -> List KindText
+  app-scan-two-loop (base) (kind-a) (kind-b) (sector) (end-sec) (acc) =
     if sector >= end-sec then acc
-    else let buf = block-read-sector sector
+    else let buf = fact-read-at base sector
     in let k = fl-entry-kind buf
     in let clen = fl-entry-content-len buf
-    in if clen == 0 then app-scan-two-loop kind-a kind-b (sector + 1) end-sec acc
+    in if clen == 0 then app-scan-two-loop base kind-a kind-b (sector + 1) end-sec acc
     else let nsec = fl-sectors-for clen
     in if (k == kind-a) | (k == kind-b) then
-      let txt = app-read-content sector clen
-      in app-scan-two-loop kind-a kind-b (sector + nsec) end-sec (list-push acc (KindText { kt-kind = k, kt-text = txt }))
-    else app-scan-two-loop kind-a kind-b (sector + nsec) end-sec acc
+      let txt = app-read-content base sector clen
+      in app-scan-two-loop base kind-a kind-b (sector + nsec) end-sec (list-push acc (KindText { kt-kind = k, kt-text = txt }))
+    else app-scan-two-loop base kind-a kind-b (sector + nsec) end-sec acc
 
 Section: Log Compaction
 
@@ -244,18 +263,18 @@ Section: Log Compaction
     ce-hash : Text
   }
 
-  compact-scan : Integer, Integer, List CompactEntry -> List CompactEntry
-  compact-scan (sector) (end-sec) (acc) =
+  compact-scan : Integer, Integer, Integer, List CompactEntry -> List CompactEntry
+  compact-scan (base) (sector) (end-sec) (acc) =
     if sector >= end-sec then acc
-    else let buf = block-read-sector sector
+    else let buf = fact-read-at base sector
     in let k = fl-entry-kind buf
     in let clen = fl-entry-content-len buf
-    in if clen == 0 then compact-scan (sector + 1) end-sec acc
+    in if clen == 0 then compact-scan base (sector + 1) end-sec acc
     else let nsec = fl-sectors-for clen
     in let ts = fl-entry-timestamp buf
     in let h = unpack-sha256-hex buf 0
     in let entry = CompactEntry { ce-kind = k, ce-sector = sector, ce-clen = clen, ce-timestamp = ts, ce-hash = h }
-    in compact-scan (sector + nsec) end-sec (list-push acc entry)
+    in compact-scan base (sector + nsec) end-sec (list-push acc entry)
 
   compact-identity : CompactEntry -> Text
   compact-identity (e) = show (e.ce-kind) & ":" & (e.ce-hash)
@@ -279,32 +298,35 @@ Section: Log Compaction
     if i < 0 then acc
     else compact-reverse xs (i - 1) (list-push acc (list-at xs i))
 
-  compact-rewrite : List CompactEntry, Integer, Integer, Integer -> Integer
-  compact-rewrite (kept) (write-sector) (i) (len) =
+  compact-rewrite : Integer, List CompactEntry, Integer, Integer, Integer -> Integer
+  compact-rewrite (base) (kept) (write-sector) (i) (len) =
     if i >= len then write-sector
     else let e = list-at kept i
     in let nsec = fl-sectors-for (e.ce-clen)
     in let src-buf = alloc-bytes (nsec * fl-sector-size)
-    in let loaded = app-load-sectors (e.ce-sector) nsec src-buf 0
-    in let written = write-fact-sectors src-buf write-sector nsec 0
-    in compact-rewrite kept (write-sector + nsec) (i + 1) len
+    in let loaded = app-load-sectors base (e.ce-sector) nsec src-buf 0
+    in let written = write-fact-sectors base src-buf write-sector nsec 0
+    in compact-rewrite base kept (write-sector + nsec) (i + 1) len
 
   disk-compact : DiskFactStore -> DiskFactStore
   disk-compact (store) =
     let sb = store.superblock
-    in if sb.fact-count <= 1 then store
-    else let entries = compact-scan fact-log-start (sb.log-head) []
+    in if disk-usable store == False then store
+    else if sb.fact-count <= 1 then store
+    else let entries = compact-scan (store.base) fact-log-start (sb.log-head) []
     in let kept = compact-dedup entries
     in let kept-count = list-length kept
     in if kept-count >= sb.fact-count then store
-    else let new-head = compact-rewrite kept fact-log-start 0 kept-count
+    else let new-head = compact-rewrite (store.base) kept fact-log-start 0 kept-count
     in let new-sb = Superblock {
         log-head = new-head,
         fact-count = kept-count,
         index-gen = sb.index-gen + 1
       }
-    in let written = write-superblock new-sb
+    in let written = write-superblock (store.base) new-sb
     in DiskFactStore {
         superblock = new-sb,
-        mem = store.mem
+        mem = store.mem,
+        base = store.base,
+        limit = store.limit
       }

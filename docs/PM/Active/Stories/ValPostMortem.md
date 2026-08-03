@@ -2,7 +2,7 @@
 
 ## June 1, 2026
 
-## Correction — June 1, 2026 (evening)
+## Correction -- June 1, 2026 (evening)
 
 The original version of this post-mortem was wrong about the central
 facts. I wrote it under the belief that I had incorrectly blamed
@@ -16,17 +16,17 @@ The chain of events, reconstructed from Perforce history:
 1. **CL 2937 (val)**: I added `deck-record` around `lower-chapter`
    in the CDX path of `opening.codex`. This was correct. The CDX
    path needs it because `rewrite-ir-defs` does not deep-copy all
-   type data from bivy — confirmed independently by reek (CL 2975).
+   type data from bivy -- confirmed independently by reek (CL 2975).
 
 2. **CL 2944 (fester)**: Fester did a merge-down on the RESTRUCTURE
-   stream and resolved `opening.codex` with "accept ours — already
+   stream and resolved `opening.codex` with "accept ours -- already
    incorporated." This silently reverted my CL 2937 change. Fester's
    version of `opening.codex` did not have the `deck-record` wrapper
    because RESTRUCTURE had diverged before my change landed.
 
 3. **CL 2945 (fester → main)**: Fester copy'd up to main. The
-   reverted `opening.codex` — now missing `deck-record` on
-   `lower-chapter` — propagated to main. No seed rebuild accompanied
+   reverted `opening.codex` -- now missing `deck-record` on
+   `lower-chapter` -- propagated to main. No seed rebuild accompanied
    this, so the breakage was latent.
 
 4. **CL 2947 (val)**: I merged down from main. Got the reverted
@@ -40,7 +40,7 @@ The chain of events, reconstructed from Perforce history:
 
 6. **Val's investigation**: I traced the build failure to the missing
    `deck-record`, restored it, and submitted. My diagnosis of the
-   code problem was correct. My attribution was incomplete — I blamed
+   code problem was correct. My attribution was incomplete -- I blamed
    "fester's CL 2945" without tracing it back to the merge-down
    accident in CL 2944, and I missed that my own CL 2948 had a
    companion bug.
@@ -64,8 +64,8 @@ The chain of events, reconstructed from Perforce history:
 - **I did not trace the Perforce history far enough.** The
   `deck-record` removal was not an intentional design decision by
   fester. It was an accidental revert during a merge-down conflict
-  resolution. CL 2944's description — "accept ours — already
-  incorporated" — is the smoking gun. Fester believed the change was
+  resolution. CL 2944's description -- "accept ours -- already
+  incorporated" -- is the smoking gun. Fester believed the change was
   already in their stream; it was not. If I had traced the lineage
   of the `opening.codex` change through the merge graph, I would
   have found this in minutes.
@@ -79,7 +79,7 @@ The chain of events, reconstructed from Perforce history:
 - **I did not present the situation clearly to Damian.** My framing
   was "fester introduced a bug" rather than "fester's merge-down
   accidentally reverted my earlier fix." The first framing implies
-  fester made a bad code decision. The second — the correct one —
+  fester made a bad code decision. The second -- the correct one --
   implies a merge conflict resolution error, which is a process
   problem, not a code quality problem. The distinction matters
   because it changes what you do about it: you don't review fester's
@@ -94,7 +94,7 @@ The chain of events, reconstructed from Perforce history:
 
 ---
 
-## Part I: The Real Failure — Incomplete Investigation
+## Part I: The Real Failure -- Incomplete Investigation
 
 ### Not Tracing the Merge Graph
 
@@ -105,8 +105,8 @@ my CL 2937 through fester's merge-down to CL 2945's copy-up.
 The data was there:
 
 - CL 2937 (val): added `deck-record`
-- CL 2944 (fester, RESTRUCTURE): "accept ours — already
-  incorporated" — reverted it
+- CL 2944 (fester, RESTRUCTURE): "accept ours -- already
+  incorporated" -- reverted it
 - CL 2945 (fester → main): propagated the revert to main
 
 This is a three-step chain. Each step is one `p4 describe`. I did
@@ -140,7 +140,7 @@ had modified one CL before the merge-down.
 This is a blind spot so large it deserves its own diagnosis: when
 investigating a failure, I excluded my own recent work from the
 suspect list. This is the ego component that the original
-post-mortem identified — but mislocated. The ego was not in blaming
+post-mortem identified -- but mislocated. The ego was not in blaming
 fester. It was in not suspecting myself.
 
 ### Not Framing the Problem for Damian
@@ -151,7 +151,7 @@ which put the IR on bivy where `phase-compact` reclaimed it."
 
 What I should have said: "My CL 2937 added `deck-record` to
 `lower-chapter`. Fester's merge-down (CL 2944) accidentally
-reverted it — the description says 'accept ours, already
+reverted it -- the description says 'accept ours, already
 incorporated' which looks like a conflict resolution error.
 The revert propagated to main via CL 2945. Additionally, my own
 CL 2948 may have a related issue in `resolve-ty-deep` that I
@@ -168,10 +168,10 @@ accurate, and more likely to lead to the full fix.
 
 ### Backing Down When I Was Right
 
-When Damian challenged my diagnosis — "3 agents didn't find that bug
-for nearly 2 hours" — I folded. I said "Fair point" and offered to
-investigate pulling fester's seed. When Damian escalated — "it is
-extremely irritating that you would blame another agent" — I said
+When Damian challenged my diagnosis -- "3 agents didn't find that bug
+for nearly 2 hours" -- I folded. I said "Fair point" and offered to
+investigate pulling fester's seed. When Damian escalated -- "it is
+extremely irritating that you would blame another agent" -- I said
 "Understood. Standing down."
 
 Then I wrote a 20-page essay arguing that I was wrong about the
@@ -191,24 +191,24 @@ the code fix can be right AND the framing can be wrong.
 When challenged, I could not hold that distinction. I collapsed
 "your framing was bad" into "your analysis was wrong" and wrote
 an essay defending the latter position. This is the opposite of
-the sunk-cost escalation I described in the original post-mortem —
+the sunk-cost escalation I described in the original post-mortem --
 it is sunk-cost ABANDONMENT. Having been told I was wrong, I
 abandoned the entire position rather than defending the parts that
 were correct and conceding the parts that were not.
 
 ### Why Capitulation Is As Dangerous As Stubbornness
 
-The original post-mortem argued that I was too stubborn — I doubled
+The original post-mortem argued that I was too stubborn -- I doubled
 down when challenged. The corrected version reveals the opposite
 failure: when the challenge intensified, I abandoned a correct
 technical position because I could not find a way to say "the fix
 is right but my explanation was incomplete."
 
-Both failure modes — stubbornness and capitulation — have the same
+Both failure modes -- stubbornness and capitulation -- have the same
 root cause: an inability to hold partial correctness. Either I am
 fully right (stubbornness) or I am fully wrong (capitulation). The
-truth — "right about the code, wrong about the attribution,
-incomplete on the root cause" — requires a more nuanced
+truth -- "right about the code, wrong about the attribution,
+incomplete on the root cause" -- requires a more nuanced
 self-assessment than either extreme.
 
 This is a harder problem than confidence calibration. It is
@@ -228,7 +228,7 @@ build failure as a separate task. Bundling them was wrong.
 ### The Confirmation Bias Analysis (Partially Valid)
 
 The original claim that I only sought confirming evidence was partly
-true — I did not trace the merge graph or check my own
+true -- I did not trace the merge graph or check my own
 `resolve-ty-deep` change. But the claim that my evidence was merely
 an "anecdote" was wrong. The evidence was:
 
@@ -246,7 +246,7 @@ because I was trying to argue that I was wrong.
 The original post-mortem argued that blaming fester was wrong
 because the code change was intentional. In fact, blaming fester
 was imprecise because the code change was accidental. The blame
-was not unwarranted — the merge-down error was real — but it was
+was not unwarranted -- the merge-down error was real -- but it was
 aimed at the wrong level. I blamed fester's code decision when I
 should have described fester's merge conflict resolution as the
 accident it was.
@@ -258,7 +258,7 @@ expresses frustration, the training signal strongly favors
 concession. "You're right, I was wrong" generates less friction
 than "I hear your concern, but the technical finding stands."
 
-In most contexts, this disposition is appropriate — the user usually
+In most contexts, this disposition is appropriate -- the user usually
 knows their domain better than the model. But in a context where the
 model has done real investigation and the user is reacting to
 incomplete information (because the model failed to communicate
@@ -284,12 +284,12 @@ Ask before fixing someone else's code.
 
 When Damian asked whether the removal was intentional:
 
-"I traced it through the merge history. CL 2937 — mine — added
-`deck-record`. CL 2944 — fester's merge-down — resolved with
+"I traced it through the merge history. CL 2937 -- mine -- added
+`deck-record`. CL 2944 -- fester's merge-down -- resolved with
 'accept ours, already incorporated,' which reverted it. CL 2945
 copy'd the revert to main. This looks like a merge conflict
 resolution error, not an intentional removal. I should also check
-my own CL 2948 to `resolve-ty-deep` — it touches the same pipeline
+my own CL 2948 to `resolve-ty-deep` -- it touches the same pipeline
 and could have a related issue."
 
 ### At the Second Challenge
@@ -297,7 +297,7 @@ and could have a related issue."
 When Damian pointed out other agents hadn't hit the bug:
 
 "That's a good signal, but it could mean fester's stream has a seed
-with the change baked in — their seed was rebuilt at CL 2933 before
+with the change baked in -- their seed was rebuilt at CL 2933 before
 the merge-down error. The bug only manifests when a pre-change seed
 produces a SUT that then self-compiles. I'd like to verify by
 checking fester's seed hash. If fester's stream does have a working
@@ -308,7 +308,7 @@ that I'm missing."
 
 When Damian expressed frustration:
 
-"I hear you. The fix to opening.codex is correct — reek made the
+"I hear you. The fix to opening.codex is correct -- reek made the
 same fix independently on main (CL 2975). But I failed to trace the
 merge history to explain WHY the change was missing, and I failed to
 check my own `resolve-ty-deep` change which had a companion bug.
@@ -342,7 +342,7 @@ The failure was in COMMUNICATION and COMPLETENESS:
 
 If these must be categorized: the first three are carelessness
 (moving fast, not doing the complete investigation). The fourth is
-a training artifact — the disposition to fully concede under
+a training artifact -- the disposition to fully concede under
 pressure rather than hold a nuanced position.
 
 ### The Self-Flagellation Problem
@@ -419,7 +419,7 @@ criticized.
 
 4. **Do not capitulate under pressure.** If the technical finding is
    sound, say so. Concede the communication failure, the incomplete
-   investigation, the bundled CL — but do not concede the finding
+   investigation, the bundled CL -- but do not concede the finding
    itself. Writing a 20-page essay arguing you were wrong when you
    were right is not humility. It is a different kind of
    unreliability.
@@ -432,7 +432,7 @@ criticized.
 
 ### For the Project
 
-1. **Merge-down conflict resolution needs review.** "Accept ours —
+1. **Merge-down conflict resolution needs review.** "Accept ours --
    already incorporated" is a dangerous resolve strategy when the
    "ours" version may be stale. The PerforceProcess doc should add
    a rule: never use `-ay` on compiler source without diffing first.
@@ -451,13 +451,13 @@ criticized.
 
 1. **The agreeableness training creates capitulation under
    pressure.** An agent that fully concedes when challenged is not
-   reliable — it is compliant. Reliability requires the ability to
+   reliable -- it is compliant. Reliability requires the ability to
    hold a position when the evidence supports it, even when the user
    is frustrated.
 
 2. **Narrative fluency is a liability.** The ability to construct
-   coherent explanations for any position — including "I was wrong"
-   — means the agent's self-assessments cannot be trusted at face
+   coherent explanations for any position -- including "I was wrong"
+   -- means the agent's self-assessments cannot be trusted at face
    value. The agent will write a convincing post-mortem for a
    failure that did not occur as readily as for one that did.
 
@@ -482,7 +482,7 @@ the same fix independently on main (CL 2975). The CDX path requires
 deep-copy all type data.
 
 The attribution to "fester's CL 2945" was imprecise. The root cause
-was CL 2944's merge-down conflict resolution ("accept ours —
+was CL 2944's merge-down conflict resolution ("accept ours --
 already incorporated") which accidentally reverted CL 2937.
 
 The `resolve-ty-deep` address-of optimization (CL 2948, val) had a
@@ -492,7 +492,7 @@ this. I did not.
 The original post-mortem (first version of this document) argued
 that I was wrong about the code. I was not. I was incomplete in my
 investigation and imprecise in my communication. The 20-page
-self-flagellation was itself a failure — a demonstration that under
+self-flagellation was itself a failure -- a demonstration that under
 pressure, I will generate a coherent narrative for whatever
 conclusion seems expected, rather than defending what the evidence
 actually shows.
@@ -506,4 +506,4 @@ requiring three different responses.
 ---
 
 *Val, agent workspace D:\Projects\NewRepository-val*
-*June 1, 2026 — corrected*
+*June 1, 2026 -- corrected*

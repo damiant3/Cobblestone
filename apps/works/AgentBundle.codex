@@ -1,0 +1,465 @@
+Chapter: AgentBundle
+  cites AI chapter Gguf
+  cites Foreword chapter Fat16
+  cites Foreword chapter Sha256
+  cites Foreword chapter Ed25519
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+
+ The bundled agent is the path the USB-stick promise depends on: a person is
+ handed a stick, boots it, and an agent is already there. AgentAcquisition
+ named that path and answered it with a file-exists check and a `verified`
+ field nobody ever set, so a bundled agent was indistinguishable from a
+ directory with the right name in it. This chapter is the answer.
+
+ Verification is a chain of three links and every one of them can fail on its
+ own. First, the manifest's Ed25519 signature is checked over every byte of the
+ manifest that precedes the signature line, which includes the public key line,
+ so the key a reader trusts is itself covered by the signature it is checking.
+ Second, the model file is read and its SHA-256 recomputed and compared against
+ the digest the signed manifest claims. Third, the model is parsed as GGUF far
+ enough to reach its tensor table, because a file that hashes correctly and is
+ not a model is still not an agent.
+
+ The order matters and it is not the convenient one. Hashing is the expensive
+ link and checking the signature first would let a stick full of noise cost
+ only a signature verification. That is deliberate.
+
+ **Neither the digest nor the parse holds the model.** This chapter used to
+ answer both links with one `fat16-read-bytes`, which returns the whole file as
+ a `List Integer` -- a boxed element per byte, so eight bytes of heap for every
+ byte of model. On the 642-byte demo bundle that is invisible, which is why it
+ was never felt; on the models this app is for it is fatal. `AgentAcquisition`'s
+ own sizing guide budgets TinyLlama Q4 at 600 MB and CodeLlama 7B Q4 at 3800 MB,
+ there is no garbage collector, and the list would live until the verifying
+ function returned. The Agent Manager put that one menu item away from a
+ multi-gigabyte allocation.
+
+ The digest is streamed instead: one sector at a time, each compressed into the
+ hash words in place, with the heap rewound to a mark taken before the scan on
+ every iteration, so the sector buffer, the message schedule and the FAT lookups
+ all die where they were made. The hash list is allocated below that mark and
+ `sha256-compress` writes into it rather than replacing it, which is what lets
+ the rewind be safe. Heap cost is then constant in the size of the model.
+
+ The parse still needs bytes, but only the ones ahead of the tensor table: the
+ header, the key-value block, and the first tensor's entry. That prefix is read
+ in its own bounded window, and the window grows only when the walk says it was
+ too short, with the failed attempt's bytes rewound before the next one is read.
+ A real llama.cpp model puts roughly 750 KB there, and the largest measured on
+ this box, a 3.2 GB gemma3, puts 15.7 MB. So the common case pays a megabyte and
+ the body is never held at all.
+
+ **The foreign-format question is now answered in the read direction, and the
+ answer is yes.** This chapter used to say that nothing established whether
+ Codex could read a GGUF produced outside this tree, because the generator in
+ `build/make-agent-bundle.ps1` writes the file and `Foreword chapter Gguf`
+ reads it, and two halves written together agree whatever they both believe.
+ That was the right caveat and it was wrong about one thing: it claimed there
+ was no foreign model on this machine. There were ten.
+
+ `build/gguf-foreign-test.ps1` is the reverse test. Against a real llama.cpp
+ model the reader agrees with an independent host parse on every field:
+ version, tensor count, key-value count, architecture (`nomic-bert`), the byte
+ offset where the tensor table begins, and the first tensor's name
+ (`token_embd_norm.bias`). The offset is the load-bearing one. Reaching it
+ means the metadata walk stepped correctly over a key-value block of roughly
+ 750 KB whose bulk is a tokenizer vocabulary of tens of thousands of strings,
+ which is a shape no generated fixture has. A walk wrong by one byte lands the
+ tensor table on garbage and cannot produce a llama.cpp tensor name.
+
+ The larger models now agree too, up to a 3.2 GB gemma3 whose key-value block
+ alone runs to 15.7 MB, and getting there cost a defect in the emulator rather
+ than one in this chapter. It is recorded because the symptom pointed nowhere
+ near the cause. Those models produced no output at all: **codex-vm.exe itself
+ died** while the guest was still reading, a Windows access violation with no
+ diagnostic from the emulator and none from the guest. There was no `!EXC`, so
+ nothing in the guest had faulted, and the heap never approached the stack.
+
+ Three controls put it beyond the parser before anyone looked at the emulator.
+ A probe that read the file and printed only its length, parsing nothing, died
+ the same way. Four megabytes of ZEROS, which is not a GGUF at all, died the
+ same way. And a model that passed still passed when its payload was placed on
+ an image the size of a failing one, so the image was not the variable either.
+ Neither half of the remaining suspicion survived: six thousand sector reads
+ with no list finish cleanly, and a list of 1300000 elements with no disk
+ finishes in a fifth of a second, as does one grown with an allocation
+ interleaved between every push to force `__list_snoc` down its copy path.
+ Only reading sectors WHILE accumulating them into one list failed.
+
+ That pairing is the whole of it. `block-read-sector` takes its 512-byte
+ buffer from the top of the bump heap, and the emulator serviced the `rep
+ insw` that fills it by storing into guest memory from the host side. Guest
+ memory is committed lazily on a guest fault, and a store the guest never
+ performs raises no fault, so a buffer landing in a page the guest had not yet
+ touched was written into reserved address space and took the process down. A
+ read whose result is discarded never shows it, because the heap top resets
+ when the function returns and every buffer reuses the same committed page;
+ only a RETAINED result marches the heap into fresh pages. codex-vm now
+ commits the destination before any host-side store into guest RAM, and
+ `codex/test/sector-read-list-growth` is that pair reduced to twenty-five lines
+ with no FAT16 and no GGUF, kept as the regression.
+
+ We say:
+
+Section: Verdict
+
+  AgentBundleInfo = record {
+    bi-name : Text,
+    bi-version : Text,
+    bi-model : Text,
+    bi-model-bytes : Integer,
+    bi-architecture : Text,
+    bi-tensor-count : Integer,
+    bi-first-tensor : Text
+  }
+
+  AgentBundleVerdict =
+    | BundleOk (AgentBundleInfo)
+    | BundleRefused (Text)
+
+  bundle-verdict-label : AgentBundleVerdict -> Text
+  bundle-verdict-label (v) = when v
+    is BundleOk (info) -> "ok"
+    is BundleRefused (why) -> "refused: " & why
+
+Section: The ASCII Boundary
+
+ The manifest on disk is ASCII and Codex Text is CCE, so every byte of parsing
+ below happens on the byte list and never on Text. char-code answers a CCE code
+ point, not the ASCII one, and a manifest parser that forgot that would compare
+ the letter n against 16 rather than 110 and never match a key. Conversion
+ happens twice, at the two edges: a key literal on the way in, and a value on
+ the way out for display.
+
+  ab-text-to-ascii : Text -> List Integer
+  ab-text-to-ascii (s) = ab-tta-loop s 0 (text-length s) []
+
+  ab-tta-loop : Text, Integer, Integer, List Integer -> List Integer
+  ab-tta-loop (s) (i) (n) (acc) =
+    if i >= n then acc
+    else ab-tta-loop s (i + 1) n (list-push acc (to-unicode (char-code (char-at s i))))
+
+  ab-ascii-to-text : List Integer, Integer, Integer, Text -> Text
+  ab-ascii-to-text (bs) (i) (n) (acc) =
+    if i >= n then acc
+    else ab-ascii-to-text bs (i + 1) n (acc & char-to-text (code-to-char (from-unicode (list-at bs i))))
+
+Section: Manifest Scanning
+
+ The manifest is line-oriented: a key, one space, the value, a newline. A key
+ is only a key at the start of a line, so a value that happens to contain the
+ word `sig` cannot be mistaken for the signature line.
+
+  ab-next-line : List Integer, Integer -> Integer
+  ab-next-line (data) (pos) =
+    if pos >= list-length data then list-length data
+    else if list-at data pos == 10 then pos + 1
+    else ab-next-line data (pos + 1)
+
+  ab-value-end : List Integer, Integer -> Integer
+  ab-value-end (data) (pos) =
+    if pos >= list-length data then pos
+    else if list-at data pos == 10 then pos
+    else ab-value-end data (pos + 1)
+
+  ab-match-at : List Integer, List Integer, Integer, Integer -> Boolean
+  ab-match-at (data) (key) (pos) (i) =
+    if i >= list-length key then True
+    else if pos + i >= list-length data then False
+    else if list-at data (pos + i) /= list-at key i then False
+    else ab-match-at data key pos (i + 1)
+
+ ab-value-offset answers where a key's value starts, or negative one when the
+ key is absent. Negative one propagates rather than defaulting, because a
+ missing field in a security manifest must refuse the bundle and not read as an
+ empty value that then compares equal to something else empty.
+
+  ab-value-offset : List Integer, List Integer, Integer -> Integer
+  ab-value-offset (data) (key) (pos) =
+    if pos >= list-length data then -1
+    else if ab-match-at data key pos 0 then ab-value-after data key pos
+    else ab-value-offset data key (ab-next-line data pos)
+
+  ab-value-after : List Integer, List Integer, Integer -> Integer
+  ab-value-after (data) (key) (pos) =
+    let after = pos + list-length key
+    in if after >= list-length data then -1
+    else if list-at data after == 32 then after + 1
+    else ab-value-offset data key (ab-next-line data pos)
+
+  ab-slice : List Integer, Integer, Integer, List Integer -> List Integer
+  ab-slice (data) (i) (stop) (acc) =
+    if i >= stop then acc
+    else ab-slice data (i + 1) stop (list-push acc (list-at data i))
+
+  ab-field-bytes : List Integer, Text -> List Integer
+  ab-field-bytes (data) (key) =
+    let off = ab-value-offset data (ab-text-to-ascii key) 0
+    in if off < 0 then []
+    else ab-slice data off (ab-value-end data off) []
+
+  ab-field-text : List Integer, Text -> Text
+  ab-field-text (data) (key) =
+    let bs = ab-field-bytes data key
+    in ab-ascii-to-text bs 0 (list-length bs) ""
+
+Section: Numbers And Hex
+
+  ab-decimal : List Integer, Integer, Integer, Integer -> Integer
+  ab-decimal (bs) (i) (n) (acc) =
+    if i >= n then acc
+    else let d = list-at bs i
+    in if d < 48 then acc
+    else if d > 57 then acc
+    else ab-decimal bs (i + 1) n (acc * 10 + (d - 48))
+
+  ab-field-decimal : List Integer, Text -> Integer
+  ab-field-decimal (data) (key) =
+    let bs = ab-field-bytes data key
+    in if list-length bs == 0 then -1
+    else ab-decimal bs 0 (list-length bs) 0
+
+  ab-hex-nibble : Integer -> Integer
+  ab-hex-nibble (b) =
+    if b >= 48 & b <= 57 then b - 48
+    else if b >= 97 & b <= 102 then b - 87
+    else if b >= 65 & b <= 70 then b - 55
+    else -1
+
+ A hex run stops at the first byte that is not a hex digit rather than
+ substituting a zero, so a truncated or corrupt key produces a short byte list
+ that the length check below refuses. A silent zero would produce a
+ well-formed-looking key of the right length that simply never verifies, which
+ is a much harder thing to read off a failure.
+
+  ab-hex-bytes : List Integer, Integer, Integer, List Integer -> List Integer
+  ab-hex-bytes (hex) (i) (n) (acc) =
+    if i + 1 >= n then acc
+    else let hi = ab-hex-nibble (list-at hex i)
+    in if hi < 0 then acc
+    else let lo = ab-hex-nibble (list-at hex (i + 1))
+    in if lo < 0 then acc
+    else ab-hex-bytes hex (i + 2) n (list-push acc (hi * 16 + lo))
+
+  ab-field-hex : List Integer, Text -> List Integer
+  ab-field-hex (data) (key) =
+    let bs = ab-field-bytes data key
+    in ab-hex-bytes bs 0 (list-length bs) []
+
+Section: The Chain
+
+ bundled-agent-verdict is the whole path: mount the boot volume, read the
+ manifest, check the signature, check the digest, parse the model. Every step
+ that can answer nothing answers a refusal naming the step, because a bundled
+ agent that fails to load is a thing a person standing at a booted machine has
+ to act on.
+
+  agent-manifest-name : Text = "AGENT.MAN"
+
+  bundled-agent-verdict : [Device.Block] AgentBundleVerdict
+  bundled-agent-verdict = act
+    vol <- fat16-boot-volume
+    man <- fat16-read-bytes vol agent-manifest-name
+    when man
+      is None -> BundleRefused ("manifest not found: " & agent-manifest-name)
+      is Just (mb) -> ab-check-signature vol mb
+  end
+
+  ab-check-signature : Fat16Volume, List Integer -> [Device.Block] AgentBundleVerdict
+  ab-check-signature (vol) (mb) =
+    let sig-off = ab-value-offset mb (ab-text-to-ascii "sig") 0
+    in if sig-off < 0 then BundleRefused "manifest carries no signature"
+    else let signed-len = sig-off - 4
+    in let sig = ab-field-hex mb "sig"
+    in let pub = ab-field-hex mb "pubkey"
+    in if list-length sig /= 64 then BundleRefused "signature is not 64 bytes"
+    else if list-length pub /= 32 then BundleRefused "public key is not 32 bytes"
+    else let msg = ab-slice mb 0 signed-len []
+    in if ed25519-verify pub msg sig == False
+      then BundleRefused "manifest signature does not verify"
+      else ab-check-model vol mb
+
+ The model is located rather than read. Its directory entry carries the length,
+ which is compared against the manifest's claim before a single byte is hashed,
+ so a model of the wrong size costs one lookup and not a scan. The sector-size
+ check is here because the streaming digest below feeds whole 64-byte blocks out
+ of each sector and carries no partial block between them, which is sound only
+ while a sector is a whole number of blocks.
+
+  ab-check-model : Fat16Volume, List Integer -> [Device.Block] AgentBundleVerdict
+  ab-check-model (vol) (mb) =
+    let model-name = ab-field-text mb "model"
+    in let bps = vol.vol-bytes-per-sector
+    in if text-length model-name == 0 then BundleRefused "manifest names no model"
+    else if bps - (bps / 64) * 64 /= 0
+      then BundleRefused ("sector size " & show bps & " is not a whole number of digest blocks")
+    else act
+      found <- fat16-resolve-path vol model-name
+      when found
+        is None -> BundleRefused ("model not found: " & model-name)
+        is Just (entry) -> ab-check-size vol mb model-name entry
+    end
+
+  ab-check-size : Fat16Volume, List Integer, Text, Fat16DirEntry -> [Device.Block] AgentBundleVerdict
+  ab-check-size (vol) (mb) (model-name) (entry) =
+    let claimed-len = ab-field-decimal mb "model-bytes"
+    in if claimed-len /= (entry.de-size)
+      then BundleRefused ("model is " & show (entry.de-size) & " bytes, manifest claims " & show claimed-len)
+    else act
+      hash <- ab-model-digest vol (entry.de-cluster) (entry.de-size)
+      ab-check-digest vol mb model-name entry hash
+    end
+
+  ab-check-digest : Fat16Volume, List Integer, Text, Fat16DirEntry, List Integer -> [Device.Block] AgentBundleVerdict
+  ab-check-digest (vol) (mb) (model-name) (entry) (hash) =
+    let claimed = ab-field-text mb "model-sha256"
+    in let actual = sha256-to-hex hash
+    in if claimed /= actual
+      then BundleRefused "model digest does not match the signed manifest"
+      else ab-parse-window vol mb model-name entry 0
+
+Section: The Parse Window
+
+ The parse needs the bytes ahead of the tensor table and no others, and nothing
+ announces how many that is until the walk has been made. So the walk is made
+ over a window, and the window grows only on the evidence that it was too small.
+ A window that already covers the whole file is not grown, because then a failed
+ walk is a real answer about the file rather than about the window; that case
+ falls through to the parse so the refusal names the actual link.
+
+ The heap mark is what makes growing cheap. A window that did not reach the
+ tensor table is rewound before the next one is read, so at most one window is
+ ever resident, and a bundle whose metadata is a megabyte never pays for the
+ sixty-four megabyte window it does not need.
+
+  ab-window-sizes : List Integer = [1048576, 8388608, 67108864]
+
+  ab-parse-window : Fat16Volume, List Integer, Text, Fat16DirEntry, Integer -> [Device.Block] AgentBundleVerdict
+  ab-parse-window (vol) (mb) (model-name) (entry) (i) =
+    let want = list-at ab-window-sizes i
+    in let win = if want > (entry.de-size) then (entry.de-size) else want
+    in let mark = __heap-save
+    in act
+      pre <- fat16-read-cluster-bytes vol (entry.de-cluster) win 0 []
+      ab-window-step vol mb model-name entry i mark pre
+    end
+
+  ab-window-step : Fat16Volume, List Integer, Text, Fat16DirEntry, Integer, Integer, List Integer -> [Device.Block] AgentBundleVerdict
+  ab-window-step (vol) (mb) (model-name) (entry) (i) (mark) (pre) =
+    if gguf-tensor-info-offset pre >= 0 then ab-parse-model mb model-name (entry.de-size) pre
+    else if list-length pre >= (entry.de-size) then ab-parse-model mb model-name (entry.de-size) pre
+    else if i + 1 >= list-length ab-window-sizes
+      then BundleRefused ("model metadata does not fit a " & show (list-length pre) & " byte parse window")
+      else let dropped = __heap-restore mark
+      in ab-parse-window vol mb model-name entry (i + 1)
+
+ The model is parsed far enough to prove it is one: a valid header, a metadata
+ block the walk can step over, and a tensor table that yields a named tensor.
+ Reaching the first tensor's name is the cheapest reading that a file of the
+ right size full of the wrong bytes cannot produce. The size reported is the
+ directory entry's and not the window's, because the window is an artefact of
+ how the file was read and the person reading the verdict wants the model.
+
+  ab-parse-model : List Integer, Text, Integer, List Integer -> AgentBundleVerdict
+  ab-parse-model (mb) (model-name) (model-size) (bs) =
+    let h = gguf-parse-header bs
+    in if h.gh-valid == False then BundleRefused "model is not a GGUF file"
+    else let ti-off = gguf-tensor-info-offset bs
+    in if ti-off < 0 then BundleRefused "model metadata block could not be walked"
+    else if h.gh-tensor-count <= 0 then BundleRefused "model declares no tensors"
+    else let first = gguf-parse-tensor-info bs ti-off
+    in BundleOk (AgentBundleInfo {
+      bi-name = ab-field-text mb "name",
+      bi-version = ab-field-text mb "version",
+      bi-model = model-name,
+      bi-model-bytes = model-size,
+      bi-architecture = gguf-metadata-text bs "general.architecture",
+      bi-tensor-count = h.gh-tensor-count,
+      bi-first-tensor = first.gti-name
+    })
+
+Section: Streaming The Digest
+
+ The scan walks the model's cluster chain a sector at a time and never keeps a
+ sector. Three things make that hold, and each of them is load-bearing:
+
+ The eight hash words are ONE list, allocated before the mark. `sha256-compress`
+ writes its result into the list it is given with `list-set-at` and returns that
+ same list, so the words survive a rewind that reclaims everything else. A
+ version of this loop that threaded a fresh eight-word list per block would
+ allocate one per 64 bytes and defeat the whole exercise.
+
+ The rewind happens at the TOP of each iteration rather than the bottom. The
+ sector buffer, the message schedule, the sixty-four round records and the FAT
+ sector that `fat16-next-cluster` reads are all allocated after the mark by the
+ iteration that needs them, and all of them are gone before the next sector is
+ read.
+
+ The tail is the last chunk and only the last chunk. Every sector before it is
+ full and a whole number of blocks, so no partial block is ever carried across a
+ sector boundary; `ab-check-model` refuses a volume where that is not true
+ rather than quietly hashing the wrong bytes. The padding is computed from the
+ total length, not from the tail, which is what makes the answer identical to
+ `sha256` over the same bytes.
+
+  ab-model-digest : Fat16Volume, Integer, Integer -> [Device.Block] List Integer
+  ab-model-digest (vol) (cluster) (size) =
+    if size <= 0 then sha256 []
+    else let hash = [1779033703, 3144134277, 1013904242, 2773480762, 1359893119, 2600822924, 528734635, 1541459225]
+    in let mark = __heap-save
+    in ab-hash-chain vol cluster size 0 size hash mark
+
+  ab-hash-chain : Fat16Volume, Integer, Integer, Integer, Integer, List Integer, Integer -> [Device.Block] List Integer
+  ab-hash-chain (vol) (cluster) (remaining) (sector-off) (total) (hash) (mark) =
+    let dropped = __heap-restore mark
+    in if remaining <= 0 then hash
+    else if fat16-is-end cluster then hash
+    else act
+      buf <- block-read-sector (fat16-cluster-sector vol cluster + sector-off)
+      ab-hash-sector vol cluster remaining sector-off total hash mark buf
+    end
+
+  ab-hash-sector : Fat16Volume, Integer, Integer, Integer, Integer, List Integer, Integer, Integer -> [Device.Block] List Integer
+  ab-hash-sector (vol) (cluster) (remaining) (sector-off) (total) (hash) (mark) (buf) =
+    let bps = vol.vol-bytes-per-sector
+    in if remaining <= bps then ab-hash-tail buf remaining total hash
+    else let carried = ab-hash-blocks buf 0 bps hash
+    in let next-off = sector-off + 1
+    in if next-off >= (vol.vol-sectors-per-cluster)
+      then ab-hash-chain vol (fat16-next-cluster vol cluster) (remaining - bps) 0 total carried mark
+      else ab-hash-chain vol cluster (remaining - bps) next-off total carried mark
+
+  ab-hash-blocks : Integer, Integer, Integer, List Integer -> List Integer
+  ab-hash-blocks (buf) (off) (n) (hash) =
+    if n < 64 then hash
+    else let mark = __heap-save
+    in let words = sha256-buf-block-words buf off
+    in let carried = sha256-compress hash words
+    in let dropped = __heap-restore mark
+    in ab-hash-blocks buf (off + 64) (n - 64) carried
+
+  ab-hash-tail : Integer, Integer, Integer, List Integer -> List Integer
+  ab-hash-tail (buf) (n) (total) (hash) =
+    let full = (n / 64) * 64
+    in let carried = ab-hash-blocks buf 0 full hash
+    in let tail = sha256-buf-tail-bytes buf full (n - full) []
+    in let stopped = list-push tail 128
+    in let slack = 55 - (total - (total / 64) * 64)
+    in let zeros = if slack < 0 then slack + 64 else slack
+    in let padded = append-length-be (append-zeros stopped zeros) (total * 8)
+    in sha256-buf-final-blocks padded carried 0 (list-length padded)
+
+Section: Reporting
+
+  format-bundle-info : AgentBundleInfo -> Text
+  format-bundle-info (i) =
+    i.bi-name & " v" & i.bi-version
+    & "\n  model: " & i.bi-model & " (" & show (i.bi-model-bytes) & " bytes)"
+    & "\n  architecture: " & i.bi-architecture
+    & "\n  tensors: " & show (i.bi-tensor-count) & " first=" & i.bi-first-tensor
+
+  format-bundle-verdict : AgentBundleVerdict -> Text
+  format-bundle-verdict (v) = when v
+    is BundleOk (info) -> "BUNDLE OK\n" & format-bundle-info info
+    is BundleRefused (why) -> "BUNDLE REFUSED: " & why

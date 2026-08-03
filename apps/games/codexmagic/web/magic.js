@@ -1,4 +1,4 @@
-// magic.js — CodexMagic shared client logic
+// magic.js -- CodexMagic shared client logic
 
 const API = '/api/magic';
 const AUTH_API = '/api/auth';

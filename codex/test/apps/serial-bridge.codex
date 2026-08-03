@@ -1,0 +1,57 @@
+Chapter: SerialBridgeTest
+  cites Dev chapter SerialBridge
+  cites Foreword chapter CCE
+
+ THIS TEST READS THE WIRE, not a return value, and that is the whole
+ reason it can tell the interesting failure from success. `SerialBridge`
+ writes to port 1016 after polling 1021, which is exactly what the
+ compiler's own output path does, so the harness capturing this test's
+ output is capturing the mirror itself. A line that appears below appeared
+ on COM1. A chapter that formatted perfectly and never reached the port
+ would return the same counts and print nothing.
+
+ THE CCE BOUNDARY IS THE DEFECT WORTH CATCHING and it is invisible from
+ inside. Codex Text is CCE, so `char-code 'd'` is 22, not 100. If
+ `sb-byte-for` forgot `to-unicode`, every mirrored line would still be
+ written, still be counted, and still round-trip through any Codex reader
+ -- and would arrive on the wire as control characters. So the test prints
+ the pair explicitly (22 becomes 100) AND mirrors a readable word: if the
+ conversion were dropped, the word below would not be words.
+
+ THE INBOUND CONVERSION IS THE SAME TRAP RUN BACKWARDS and is asserted as
+ the mirror image of the outbound one: outbound turns CCE 22 into byte
+ 100, so inbound must turn byte 100 back into CCE 22. Stating it that way
+ means neither direction can be quietly wrong on its own, and a Text built
+ without `from-unicode` would answer 100 here -- a Text whose characters
+ are numerically ASCII, which compares unequal to every literal in the
+ dispatcher while looking correct in any debugger that prints it.
+
+ The byte counts are asserted because a drop is silent by design. The
+ transmit wait is fuel-capped and an undrainable line loses bytes on
+ purpose, so the count is the only thing that distinguishes "sent eleven"
+ from "sent none and carried on politely".
+
+ We say:
+
+Section: Body
+
+  opening : [Console, Device.Port] Nothing = act
+    print-line-uni ("cce-d: " & show (char-code 'd') & " -> byte " & show (sb-byte-for (char-code 'd')))
+    print-line-uni ("cce-e: " & show (char-code 'e') & " -> byte " & show (sb-byte-for (char-code 'e')))
+    print-line-uni ("emdash: " & show (sb-byte-for 41464))
+    print-line-uni ("eol-cr: " & show (sb-is-eol 13) & " eol-lf: " & show (sb-is-eol 10) & " eol-a: " & show (sb-is-eol 97))
+    print-line-uni ("printable-32: " & show (sb-is-printable 32) & " printable-126: " & show (sb-is-printable 126) & " printable-127: " & show (sb-is-printable 127))
+
+    n <- sb-write-line "mirror-hello"
+    print-line-uni ("wrote: " & show n)
+
+    f <- sb-write-field "label" "value"
+    print-line-uni ("field-wrote: " & show f)
+
+    b <- sb-read-byte
+    print-line-uni ("idle-read: " & show b)
+
+    print-line-uni ("inbound-100: " & show (char-code (char-at (sb-char-for 100) 0)))
+    print-line-uni ("append: [" & sb-append-byte "me" 109 & "]")
+    print-line-uni ("append-control: [" & sb-append-byte "me" 7 & "]")
+  end

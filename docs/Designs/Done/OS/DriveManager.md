@@ -1,4 +1,4 @@
-# Drive Manager & Installer — Boot, Format, Partition, Deploy
+# Drive Manager & Installer -- Boot, Format, Partition, Deploy
 
 **Date**: 2026-05-18
 **Status**: Design
@@ -18,7 +18,7 @@ A Codex USB stick is the root of trust. You boot it on any x86-64
 UEFI machine. If the stick is fresh (never used), the first-time
 experience runs: generate your Ed25519 keypair, encrypt and store
 it on the stick, establish your identity. From there, you land in
-the UEFI console — a text-mode shell that is always available,
+the UEFI console -- a text-mode shell that is always available,
 even on headless machines with no GPU.
 
 From the console you can:
@@ -107,7 +107,7 @@ integrity per fact.
 | `DriveRegistryFact` | drive UUID + label + last-seen timestamp | Known drives |
 | `InstalledOsFact` | drive UUID + partition index + kernel hash | Installed OS records |
 
-The system DB is small — a few KB at most. It rides on the FAT32
+The system DB is small -- a few KB at most. It rides on the FAT32
 filesystem's reserved sectors (between the BPB and the data area),
 or in a dedicated file `CODEX/SYSDB.BIN` on the ESP.
 
@@ -203,8 +203,8 @@ GptPartition = record {
 ```
 
 Procedure:
-1. Read sector 0 (protective MBR) — verify 0x55AA signature
-2. Read sector 1 (GPT header) — verify "EFI PART" signature
+1. Read sector 0 (protective MBR) -- verify 0x55AA signature
+2. Read sector 1 (GPT header) -- verify "EFI PART" signature
 3. Validate header CRC32
 4. Read partition entry sectors (header says where and how many)
 5. Validate partition entries CRC32
@@ -326,10 +326,10 @@ IdentityFact = record {
 
 ### What We Have
 
-- AES-256: `foreword/core/Aes.codex` — AES-128 exists, extend to
+- AES-256: `foreword/core/Aes.codex` -- AES-128 exists, extend to
   AES-256 (14 rounds, 240-byte round key)
-- SHA-256: `foreword/core/Sha256.codex` — done
-- Ed25519: `foreword/core/Ed25519.codex` — done
+- SHA-256: `foreword/core/Sha256.codex` -- done
+- Ed25519: `foreword/core/Ed25519.codex` -- done
 - HKDF: needs implementation (~40 lines, HMAC-SHA256 extract+expand)
 
 ### What's Missing
@@ -343,7 +343,7 @@ IdentityFact = record {
 
 ---
 
-## UEFI Console — Drive Manager
+## UEFI Console -- Drive Manager
 
 The UEFI console is a text-mode menu system (DevConsoleMenu.codex
 pattern). The Drive Manager is a submenu accessible from the main
@@ -374,7 +374,7 @@ console.
        GPT: 1 partition (EFI System, 500 GB, FAT32)
     1: ATA Primary Slave     WD Blue 1TB        1000 GB
        GPT: 2 partitions (EFI System 512MB, Codex Data 999 GB)
-    2: ATA Secondary Master  (USB stick — this device)
+    2: ATA Secondary Master  (USB stick -- this device)
 
   [I] Inspect drive
   [F] Format drive
@@ -427,7 +427,7 @@ Scheme 2 (recommended):
 - Partition 1: EFI System Partition, 512 MB, FAT32
 - Partition 2: Codex Data, remaining space, Codex FS
 
-Scheme 3 (dual boot — preserves existing Windows ESP):
+Scheme 3 (dual boot -- preserves existing Windows ESP):
 - Read existing GPT, find Windows ESP
 - Shrink last partition or use unallocated space
 - Add Codex partitions after Windows
@@ -492,8 +492,8 @@ Uses FAT32 read from source + FAT32 write to target.
   Wipe Drive 0 (Samsung 870 EVO, 500 GB)
 
   [Q] Quick wipe (zero GPT headers + first 1MB)
-  [F] Full wipe (zero entire drive — SLOW)
-  [S] Secure wipe (ATA SECURITY ERASE — if supported)
+  [F] Full wipe (zero entire drive -- SLOW)
+  [S] Secure wipe (ATA SECURITY ERASE -- if supported)
   [B] Back
 
   WARNING: This cannot be undone.
@@ -507,7 +507,7 @@ supports it (check IDENTIFY word 82 bit 1).
 ### RAID Configuration
 
 Software RAID managed by the kernel. Phase 1 supports mirror
-(RAID-1) only — the simplest and most useful for data protection.
+(RAID-1) only -- the simplest and most useful for data protection.
 
 ```
   RAID Configuration
@@ -649,7 +649,7 @@ holds both; user programs get `BlockDevice` read-only at most.
   identity is encrypted. Full-disk encryption for the target drive
   is a separate design (requires boot-time decryption layer).
 - **Filesystem journaling.** DiskFacts is crash-safe by design
-  (append-only + COW HAMT). FAT32 writes are not journaled —
+  (append-only + COW HAMT). FAT32 writes are not journaled --
   acceptable for installer use, not for production filesystem.
 
 ---

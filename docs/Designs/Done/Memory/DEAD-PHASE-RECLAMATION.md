@@ -17,9 +17,9 @@ definitions, not by discipline:
   `Name`, `SourceSpan`, `Text`, scalars, and recursive `AExpr`. **No
   `Token` field, no CST-node field anywhere.**
 - `SourceSpan` (`Core/SourceText.codex`) is pure integers (line/col/offset/
-  file-id) — never a pointer into the source buffer.
+  file-id) -- never a pointer into the source buffer.
 - Desugar copies, it doesn't alias: `is NameExpr (tok) -> ANameExpr
-  (make-name (token-text tok)) ...` — `token-text` = `substring`, a fresh
+  (make-name (token-text tok)) ...` -- `token-text` = `substring`, a fresh
   string in the desugar deck.
 
 Lifetime: tokens/CST are consumed *through* desugar (parser reads tokens;
@@ -37,9 +37,9 @@ bump allocator cannot free a buried region without moving what's above it.
 
 ## Why the obvious moves don't work / the right mechanism
 
-- **Free the bottom region in place** — impossible with bump alloc (hole in
+- **Free the bottom region in place** -- impossible with bump alloc (hole in
   the middle; later `build`s allocate at the top).
-- **TCO heap-reset / CL 327 compacting reset** — already tried and shelved.
+- **TCO heap-reset / CL 327 compacting reset** -- already tried and shelved.
   It corrupted `sort-bindings-loop` (BS3 blocker) because it rewound `r10`
   *mid-loop* into a live, cumulatively-grown list whose growth was invisible
   to per-iteration checks (TCO-RESET-COMPACTION.md). **That is a different
@@ -49,20 +49,20 @@ bump allocator cannot free a buried region without moving what's above it.
   `AChapter`) and a *clean, known point in time*. Scavenge that root down
   over the dead LEX+PARSE region (copy reachable objects, patch pointers via
   forwarding), set `deck-pos` past the copied AST, reclaim the rest. This is
-  a one-shot deterministic semispace copy with a known root — decidable
-  liveness, no mid-loop hazard — categorically safer than the TCO reset that
+  a one-shot deterministic semispace copy with a known root -- decidable
+  liveness, no mid-loop hazard -- categorically safer than the TCO reset that
   failed. It is NOT a general GC; it runs at fixed boundaries.
 
 ## Evaluating the two ideas on the table
 
-- **Plan A — drop dead phases + re-cover the area (allocator remembers).**
+- **Plan A -- drop dead phases + re-cover the area (allocator remembers).**
   Feasible and proven (above). Win ≈ 51 MB now; more if applied at later
   boundaries (e.g. drop the scope/check decks once LOWER's IR no longer
-  references them — needs the same structural check per boundary). Cost: a
-  copying compactor with pointer patching — real complexity, and pointer
+  references them -- needs the same structural check per boundary). Cost: a
+  copying compactor with pointer patching -- real complexity, and pointer
   patching is exactly the delicate part that bit CL 327 (mitigated here by
   the clean-boundary/single-root setup).
-- **Plan B — bivy up-north halfway to the stack, skip surveys.** This is the
+- **Plan B -- bivy up-north halfway to the stack, skip surveys.** This is the
   pre-discipline regime that became the 4 GB monster: immutable
   copy-on-append lists (O(n²), ~900 MB in the tokenizer alone) + every phase
   kept live in `compile`'s let-chain. The phase discipline exists *because*
@@ -76,11 +76,11 @@ bump allocator cannot free a buried region without moving what's above it.
    (the `-EscapeCheck` seal-time check) can't tell a pointer from an integer,
    so its counts are confounded for large-bivy phases (SCOPE read 126 K,
    mostly false positives). A reclamation gate must *prove* a deck has zero
-   live inbound pointers — which needs distinguishing pointers from integers
+   live inbound pointers -- which needs distinguishing pointers from integers
    in a header-less bump heap (open problem: per-allocation tags, or a typed
    walk from roots). This same check de-confounds the escape counts and is
    the already-listed "escape invariant enforcement" open item. **Do this
-   first** — it derisks the compaction and pays off independently.
+   first** -- it derisks the compaction and pays off independently.
 2. **Audit the later boundaries** the way LEX/PARSE were audited here: does
    any post-SCOPE structure reference the scope/check decks? (Same
    AST-types-are-token-free style proof per boundary.)
@@ -93,7 +93,7 @@ The crux under both step 1 and the compactor is the same: the bump heap is
 header-less (`__alloc` returns a bare pointer; records are raw width-sorted
 field arrays with no type tag), so a deck slot's pointer-vs-integer nature
 cannot be recovered from the heap. A conservative scan (any 8-aligned
-in-range value = maybe-pointer) is all `scan-deck-dangling` can do — hence
+in-range value = maybe-pointer) is all `scan-deck-dangling` can do -- hence
 the false positives.
 
 But the **compiler has the missing information at emit time**: it lays out
@@ -103,7 +103,7 @@ field offsets) into the binary, and tag each allocation with its type id (or
 co-allocate the map reference). Then both consumers become *precise*:
 
 - the escape/liveness check walks objects by their type's pointer-map (real
-  proof, not a heuristic — de-confounds SCOPE too);
+  proof, not a heuristic -- de-confounds SCOPE too);
 - the copying compactor knows exactly which fields to forward/patch.
 
 This is the one foundational feature that unlocks both precise escape
@@ -112,39 +112,39 @@ the standard prerequisite any precise (non-conservative) reclaimer needs.
 Cost: a small per-type table + a type tag per allocation; the type info
 already exists in the emitter.
 
-## Implementation status (2026-05-29, reek) — typed walk COMPLETE + validated
+## Implementation status (2026-05-29, reek) -- typed walk COMPLETE + validated
 
 The typed-walk half is built and runtime-validated (WIP on MutableRecords,
 unlanded, gated behind -EscapeCheck via a temporary self-test). NO per-object
-type tags are needed — the typed-walk insight holds: a walk from a typed root
+type tags are needed -- the typed-walk insight holds: a walk from a typed root
 uses the static type + the variant tag already at offset 0. So the original
 "tag each allocation with a type id" idea is REJECTED (it would force a header
-word onto headerless records — a layout change touching every offset). What
+word onto headerless records -- a layout change touching every offset). What
 IS needed is the root's type, resolved at runtime.
 
 Built (all in codex/compiler, runtime-proven):
-- `is-pointer-type : CodexType -> Boolean` (Types/CodexType.codex) — 19
+- `is-pointer-type : CodexType -> Boolean` (Types/CodexType.codex) -- 19
   variants; nullary ctors heap-box so ALL SumTy are pointers; TypeVar is the
   one conservative case (monomorphized maps are future work).
 - `build-record-pointer-map` / `build-ctor-pointer-map` (Emit/X86_64Compound)
-  — pointer-field offsets (record width-sort reuses cce-byte-offset-and-type;
+  -- pointer-field offsets (record width-sort reuses cce-byte-offset-and-type;
   ctor layout is positional, tag@0, field i @ 8+i*8).
-- `pmap-walk` + helpers (Emit/X86_64Compound) — precise typed traversal from a
+- `pmap-walk` + helpers (Emit/X86_64Compound) -- precise typed traversal from a
   typed root; handles RecordTy/SumTy/ListTy/ConstructedTy (resolved by name
   against a `List TypeBinding` table via lookup-type-binding); fuel-bounded;
   counts pointers landing in [lo,hi). Validated: nested-record self-test -> 3.
-- `address-of : ForAllTy 0 (FunTy (TypeVar 0) Int)` (the bridge) — a polymorphic
+- `address-of : ForAllTy 0 (FunTy (TypeVar 0) Int)` (the bridge) -- a polymorphic
   builtin, pure inline identity (a pointer value already IS its address; same
   shape as `show`). Validated in-session (address-of(rec) == __heap-save
-  captured before alloc). DEFERRED — NOT in the foundation CL; lands with its
+  captured before alloc). DEFERRED -- NOT in the foundation CL; lands with its
   real consumer (walking an EXISTING phase root, where the capture-before-build
   trick fails because a root is built children-first, so it is the LAST alloc).
 
-What LANDS in the foundation CL (a pure library addition — no new builtin, no
+What LANDS in the foundation CL (a pure library addition -- no new builtin, no
 emitter change, so the existing seed compiles it and the fixed point holds):
 is-pointer-type, pmap-walk + helpers, and `pmap-self-test` reframed as a
 PERMANENT gated conformance check (opening.codex pmap-selftest-bag; fires a
-diagnostic only on FAILURE, under -EscapeCheck only — gates/smoke don't set
+diagnostic only on FAILURE, under -EscapeCheck only -- gates/smoke don't set
 that flag, so they are unaffected). The self-test uses the __heap-save
 capture-before-build trick (cap) instead of address-of, so no builtin is
 needed. It walks PmTestRec{tr-num:Int, tr-ptr:Text, tr-inner:PmInner} -> 3.
@@ -153,12 +153,12 @@ GOTCHA learned: bare string literals emit to RODATA (emit-text-lit), real
 pointers but BELOW the heap -> correctly excluded by the [lo,hi) range filter,
 never a false escape. New builtins (like address-of, next CL) need a TWO-PASS
 bootstrap (pass1 compiler registers it w/o using it; pass2 that compiler
-compiles source that uses it) — which is why address-of is deferred.
+compiles source that uses it) -- which is why address-of is deferred.
 
 ## The remaining gap + chosen solution: emit a self-type-table (Damian, b)
 
 pmap-walk needs the root's type at runtime, but the compiler does NOT carry
-descriptions of its own types — the type checker builds CodexTypes for the
+descriptions of its own types -- the type checker builds CodexTypes for the
 PROGRAM being compiled, not for AChapter/AExpr. Decision (2026-05-29): EMIT a
 self-type-table, not hand-author one. The emitter already holds every type in
 `st.type-defs : List TypeBinding` (CodegenState); during a SELF-compile that
@@ -166,13 +166,13 @@ IS the compiler's own type set, so the emitted table bootstraps naturally and
 also serves the compactor.
 
 KEY ENABLER (proven by emit-text-lit): a rodata pointer is INTERCHANGEABLE
-with a heap pointer — emit-text-lit lays a Text into rodata as [len:i64][bytes]
+with a heap pointer -- emit-text-lit lays a Text into rodata as [len:i64][bytes]
 and hands back its address as a normal Text value. So we emit the type-defs
 graph into rodata in EXACT heap layout, write internal pointers as relocations
 (RodataFixup: rf-poffsets = code patch sites, rf-roffsets = target rodata
 offsets, patched at link by collect-rodata-patches with data-vaddr), and a
 runtime accessor returns the table as a live `List TypeBinding`. NO deserializer
-— the rodata bytes ARE the object graph. pmap-walk consumes it unchanged.
+-- the rodata bytes ARE the object graph. pmap-walk consumes it unchanged.
 
 Heap layouts to replicate (verified in source):
 - List X: alloc (count+1)*8; cap@ptr-8 = count; length@ptr+0 = count; elem i @
@@ -189,7 +189,7 @@ Implementation plan (each brick its own build, keep tree green):
 1. PROOF brick: a 0-arg accessor builtin that emits a constant `List Integer`
    ([cap][len][e0..]) into rodata and returns it; self-test asserts list-length
    + list-at round-trip. Validates the List-in-rodata layout + relocation at +8.
-   (Layout is inspection-clear from emit-list-bivy / emit-text-lit — may skip
+   (Layout is inspection-clear from emit-list-bivy / emit-text-lit -- may skip
    the runtime proof and go straight to brick 2 to save build cycles.)
 2. Recursive rodata-graph emitter `emit-const-<T>` over the closure {List,
    Text, Name, RecordField, SumCtor, CodexType(19), TypeBinding}: each returns
@@ -204,12 +204,12 @@ Implementation plan (each brick its own build, keep tree green):
    value into the metrics/check. Validate: DESUGAR precise == 0 (known clean
    after CL 2699) vs conservative 6; then read SCOPE's real number.
 4. Then the copying compactor: a pmap-walk variant that pokes forwarded
-   pointers (needs poke-qword — only poke-32 exists today).
+   pointers (needs poke-qword -- only poke-32 exists today).
 
 Risk: replicating layouts exactly across the whole graph is corruption-prone;
 build/validate brick-by-brick. The self-test harness (gated -EscapeCheck) is
 the fast loop. The defs table MUST be sorted by name (lookup-type-binding
-bsearch) — sort st.type-defs (sort-type-bindings) before emitting.
+bsearch) -- sort st.type-defs (sort-type-bindings) before emitting.
 
 ## Open questions
 

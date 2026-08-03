@@ -10,8 +10,8 @@ A voice recorder with a record/stop control, an animated waveform display, a tim
 
 ## Completeness
 
-35% — Recording state toggle (RECORDING vs READY) is functional. Timer does not advance. Waveform bars do not animate. No audio capture. Library items are static. Play buttons do nothing.
+35% -- Recording state toggle (RECORDING vs READY) is functional. Timer does not advance. Waveform bars do not animate. No audio capture. Library items are static. Play buttons do nothing.
 
 ## Codex Conformance
 
-Partial — Codex source; microphone capture and audio playback require platform plugs.
+Partial -- Codex source; microphone capture and audio playback require platform plugs.

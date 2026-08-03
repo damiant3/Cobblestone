@@ -1,4 +1,4 @@
-# Iteration 8 — Handoff Summary
+# Iteration 8 -- Handoff Summary
 
 **Date**: 2026-03-14, Pi Day
 **Branch**: `master`
@@ -12,22 +12,22 @@
 
 | Milestone | Status | Notes |
 |-----------|--------|-------|
-| M0–M7 | ✅ Complete | See ITERATION-7-HANDOFF.md |
+| M0-M7 | ✅ Complete | See ITERATION-7-HANDOFF.md |
 | **M9: LSP & Editor (Phase 1+2)** | **✅ Complete** | Diagnostics, hover, document symbols, go-to-definition, completion, semantic tokens, VS Code extension |
-| **Collection cleanup** | **✅ Complete** | `Set<T>`, `ValueMap<K,V>` — eliminated all `Dictionary`, `HashSet`, `ImmutableHashSet` from codebase |
+| **Collection cleanup** | **✅ Complete** | `Set<T>`, `ValueMap<K,V>` -- eliminated all `Dictionary`, `HashSet`, `ImmutableHashSet` from codebase |
 
-### M9 — LSP Server + VS Code Extension
+### M9 -- LSP Server + VS Code Extension
 
 #### Phase 1 (Handlers)
 
 | File | What |
 |------|------|
 | `src/Codex.Lsp/Codex.Lsp.csproj` | LSP server executable using `OmniSharp.Extensions.LanguageServer` 0.19.9 |
-| `src/Codex.Lsp/Program.cs` | Entry point — stdio transport, 6 handlers registered |
+| `src/Codex.Lsp/Program.cs` | Entry point -- stdio transport, 6 handlers registered |
 | `src/Codex.Lsp/Analyzer.cs` | Full pipeline (lex → parse → desugar → resolve → typecheck → linearity) on a document string |
 | `src/Codex.Lsp/DocumentStore.cs` | Immutable `Map<string, DocumentEntry>` cache of open documents and analysis results |
-| `src/Codex.Lsp/TextDocumentSyncHandler.cs` | `didOpen`/`didChange`/`didClose` — full-text sync, publishes diagnostics on every change |
-| `src/Codex.Lsp/HoverHandler.cs` | Type-under-cursor — returns Markdown `**name** : \`type\`` |
+| `src/Codex.Lsp/TextDocumentSyncHandler.cs` | `didOpen`/`didChange`/`didClose` -- full-text sync, publishes diagnostics on every change |
+| `src/Codex.Lsp/HoverHandler.cs` | Type-under-cursor -- returns Markdown `**name** : \`type\`` |
 | `src/Codex.Lsp/DocumentSymbolHandler.cs` | Outline of top-level definitions with name, type, and kind |
 | `src/Codex.Lsp/LspHelpers.cs` | Shared `GetWordAt`, `TextDocumentSelector` |
 
@@ -35,15 +35,15 @@
 
 | File | What |
 |------|------|
-| `src/Codex.Lsp/DefinitionHandler.cs` | `textDocument/definition` — jumps to definition span for name under cursor |
-| `src/Codex.Lsp/CompletionHandler.cs` | `textDocument/completion` — user definitions (with types), builtins, type names, keywords |
-| `src/Codex.Lsp/SemanticTokensHandler.cs` | `textDocument/semanticTokens/full` — classifies all tokens (keyword, type, variable, number, string, operator) |
+| `src/Codex.Lsp/DefinitionHandler.cs` | `textDocument/definition` -- jumps to definition span for name under cursor |
+| `src/Codex.Lsp/CompletionHandler.cs` | `textDocument/completion` -- user definitions (with types), builtins, type names, keywords |
+| `src/Codex.Lsp/SemanticTokensHandler.cs` | `textDocument/semanticTokens/full` -- classifies all tokens (keyword, type, variable, number, string, operator) |
 
 #### VS Code Extension
 
 | File | What |
 |------|------|
-| `editors/vscode/package.json` | Extension manifest — language registration, grammar, LSP client config |
+| `editors/vscode/package.json` | Extension manifest -- language registration, grammar, LSP client config |
 | `editors/vscode/tsconfig.json` | TypeScript build config |
 | `editors/vscode/language-configuration.json` | Bracket matching, auto-close, indent rules |
 | `editors/vscode/syntaxes/codex.tmLanguage.json` | TextMate grammar for basic highlighting |
@@ -113,8 +113,8 @@ No `Dictionary`, `HashSet`, or `ImmutableHashSet` outside of `Codex.Core` intern
 
 ### LSP Remaining
 
-- **Pre-built server binary** — currently requires `dotnet run`; should publish self-contained
-- **Incremental analysis** — currently re-analyzes full document on every keystroke
+- **Pre-built server binary** -- currently requires `dotnet run`; should publish self-contained
+- **Incremental analysis** -- currently re-analyzes full document on every keystroke
 
 ### Next Milestones
 
@@ -130,7 +130,7 @@ No `Dictionary`, `HashSet`, or `ImmutableHashSet` outside of `Codex.Core` intern
 
 | Task | File |
 |------|------|
-| Add LSP handler | `src/Codex.Lsp/` — create handler, register in `Program.cs` |
-| Extend analysis | `src/Codex.Lsp/Analyzer.cs` — add fields to `AnalysisResult` |
+| Add LSP handler | `src/Codex.Lsp/` -- create handler, register in `Program.cs` |
+| Extend analysis | `src/Codex.Lsp/Analyzer.cs` -- add fields to `AnalysisResult` |
 | Add collection type | `src/Codex.Core/Map.cs` or `src/Codex.Core/Set.cs` |
 | New test | `tests/Codex.Lsp.Tests/AnalyzerTests.cs` or project-specific test project |

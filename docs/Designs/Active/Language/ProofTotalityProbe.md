@@ -1,9 +1,9 @@
-# Proof Totality Probe — Circular Proofs (FIXED: CDX4023)
+# Proof Totality Probe -- Circular Proofs (FIXED: CDX4023)
 
 **Status:** Stage 1 SHIPPED same day (2026-07-04). Circular proofs
 are rejected with CDX4023; all six probes flipped to
 `errors/*.failing`. Damian's ruling: fix the code to match the goal,
-log bugs, no README hedging — Option A (acyclicity) built
+log bugs, no README hedging -- Option A (acyclicity) built
 immediately. §5's Option B (positive proof-term grammar) remains an
 optional later hardening.
 
@@ -33,7 +33,7 @@ still green this session.
 
 What no one had probed: **totality**. Every proof assistant since
 Coq's positivity/termination checkers has had to close the same hole
-— a proof term that refers to itself inhabits any proposition,
+-- a proof term that refers to itself inhabits any proposition,
 because the typing rule for recursion assumes what it is proving.
 Codex has no termination check on definitions, and proofs are erased
 at emit (CDX4020), so the divergence that would expose the lie at
@@ -44,7 +44,7 @@ runtime never executes.
 Six adversarial programs, each "proving" a FALSE proposition
 (`Zero === Succ Zero`, or `for all (n : Nat), n === Zero`). **All six
 compile clean and run.** The only diagnostic on any of them is the
-info-level CDX4020 "proof erased" line — no warning, no error.
+info-level CDX4020 "proof erased" line -- no warning, no error.
 
 | Probe (codex/test/) | Route | Result |
 |---|---|---|
@@ -52,13 +52,13 @@ info-level CDX4020 "proof erased" line — no warning, no error.
 | `proof-launder-mutual` | Two defs justifying each other | ACCEPTED silently |
 | `proof-launder-helper` | Generally-recursive fn returning the prop: `helper (n) = helper n`; `bad-c = helper Zero` | ACCEPTED silently |
 | `proof-launder-qed` | `claim`/`proof`/`qed` sugar, `proof bad-d = bad-d` | ACCEPTED silently |
-| `proof-launder-lemma-self` | Induction step cites THE CLAIM BEING PROVEN as a lemma: `is Succ (k) (ih) -> all-zero (Succ k)` | ACCEPTED silently — **and as a checked proof, not the CDX4022 unproven route** |
+| `proof-launder-lemma-self` | Induction step cites THE CLAIM BEING PROVEN as a lemma: `is Succ (k) (ih) -> all-zero (Succ k)` | ACCEPTED silently -- **and as a checked proof, not the CDX4022 unproven route** |
 | `proof-launder-lemma-mutual` | Two induction proofs citing each other as lemmas | ACCEPTED silently |
 
 Positive guards pinned alongside:
 
 - `proof-assume-axiom` (+ `.diag` 4021): the explicit axiom door
-  WARNS correctly — the trust trail works for `assume`.
+  WARNS correctly -- the trust trail works for `assume`.
 - Negative control `5 === 6` rejects CDX2001 (literal equality is
   genuinely checked; the DevelopersGuide `5 === 5` example is real,
   not vacuous).
@@ -74,15 +74,15 @@ Two independent mechanisms, both silent:
 1. **Proof definitions are ordinary definitions.** `register-all-defs`
    registers every def's declared type before any body is checked (as
    it must, for ordinary mutual recursion), so a proof body that
-   mentions itself — directly, mutually, or through a prop-returning
-   recursive helper — type-checks trivially: the mention's type IS the
+   mentions itself -- directly, mutually, or through a prop-returning
+   recursive helper -- type-checks trivially: the mention's type IS the
    declared proposition. Nothing distinguishes the recursion principle
    the proof layer sanctions (structural induction, which generates
    its own IH soundly) from raw recursion, which assumes the goal.
 
 2. **`instantiate-claim` has no acyclicity check.** The applicable-
    lemmas elaboration (`elab-claim-apps`, TypeChecker.codex, Stage 5b)
-   resolves ANY claim by name from the def list — including the claim
+   resolves ANY claim by name from the def list -- including the claim
    currently being proven and claims that cite the current one. The
    induction machinery itself is sound (subgoals + IH are structural);
    the lemma door circumvents it.
@@ -91,7 +91,7 @@ Erasure completes the trap: `is-proof-def` (X86_64.codex:810) erases
 the diverging bodies, so there is no runtime signal either.
 
 (Erasure side-note, found while reading: `is-proof-def` matches
-proof-returning `FunTy` only to nesting depth 2 — a 3-parameter
+proof-returning `FunTy` only to nesting depth 2 -- a 3-parameter
 prop-returning function would be emitted as real code. Not a
 soundness issue; fold into stage 1 while the function is open.)
 
@@ -99,7 +99,7 @@ soundness issue; fold into stage 1 while the function is open.)
 
 Highest of any Vision Check leg so far. The other legs guarded
 runtime-safety claims; this one guards the layer the project calls
-"proof" — the one place the word is supposed to mean something
+"proof" -- the one place the word is supposed to mean something
 absolute (ClaimsCalibration already made exactly this point when it
 banned "WCET proofs"). A skeptical reader falsifies the README
 sentence in one line (`bad = bad`), and the flagship's rhetorical
@@ -110,11 +110,11 @@ written by someone else if we don't close it first.
 The blast radius of the HOLE is confined to the proof layer: no
 runtime behavior, no codegen, no memory-safety leg depends on
 propositional equality today. The blast radius of the FIX is equally
-small — which is why stage 1 should ship promptly.
+small -- which is why stage 1 should ship promptly.
 
 ## 5. Fix Shapes (ruling needed: A now, or A then B)
 
-**Option A — acyclicity over the proof reference graph (recommended
+**Option A -- acyclicity over the proof reference graph (recommended
 stage 1).** A def is *proof-relevant* when its declared type mentions
 `ProofTy`/`PropEqTy` anywhere (walk the type tree; covers values,
 prop-returning functions at any arity, and containers embedding
@@ -127,7 +127,7 @@ is already checked by subgoal generation and never routes through a
 name cycle. Cheap: one graph walk over the (tiny) proof-def subset at
 CHECK phase. Kills all six routes.
 
-**Option B — positive proof-term grammar (later, optional).** A proof
+**Option B -- positive proof-term grammar (later, optional).** A proof
 body may consist only of: proof builtins (`Refl`/`sym`/`trans`/
 `cong`/`app-cong`/`assume`), IH names, acyclic claim applications,
 `induction` expressions, and `let` of proof terms. Anything else
@@ -154,19 +154,19 @@ and total).
   Acyclicity), chained after `check-rt-cycles` in `check-chapter`.
   Proof-relevance is judged on the DEEP-RESOLVED checked type
   (`result.types`, index-aligned with `mod.defs`), not the declared
-  type — so an undeclared intermediary (`bad = bad` with no
+  type -- so an undeclared intermediary (`bad = bad` with no
   signature) whose inferred type unifies to a proposition is still in
   the graph. `type-mentions-proof` walks every CodexType shape
-  (fuel-capped at 64, exhaustion answers True — errs toward
+  (fuel-capped at 64, exhaustion answers True -- errs toward
   checking), including SumTy ctor payloads and RecordTy fields, so a
   proposition smuggled inside a nominal container still marks the
   carrier def proof-relevant.
 - **Edges reuse the punctual machinery**: `collect-rt-mentions` with
-  `self = ""` (so direct self-mentions are edges — punctual excludes
+  `self = ""` (so direct self-mentions are edges -- punctual excludes
   them because `has-self-call` owns that case; proofs need them),
   `RtEdges`/`rt-edges-for`/`rt-reaches` verbatim. One new walk arm:
   `AInductionExpr` was missing from `collect-rt-mentions` (the
-  punctual-lesson under-coverage — without it the two lemma routes
+  punctual-lesson under-coverage -- without it the two lemma routes
   slip through the very check meant to catch them); adding it also
   extends punctual's own cycle coverage to induction bodies.
 - **CDX4023 CircularProof** (`CdxCodes.codex`), sev-error,
@@ -174,7 +174,7 @@ and total).
   recursion and `assume` as the honest escape hatch. One error per
   cycle-participating def with a declared span.
 - **`is-proof-def`** (`X86_64.codex`) generalized from hardcoded
-  FunTy depth 1-2 to any arity via `is-proof-return` recursion —
+  FunTy depth 1-2 to any arity via `is-proof-return` recursion --
   same semantics, no EffectfulTy arm added (erasing an effectful
   prop-returning def would delete its effects; they stay emitted).
 - **Gates**: one-pass hard fixed point on the first build (Sut ===
@@ -201,31 +201,31 @@ and total).
   proof-relevant. Option B closes this class wholesale if it ever
   proves reachable in practice.
 - **CDX4022's registry description is stale** (says subgoal checking
-  "is not yet implemented (Stage 5)" — Stage 5 shipped). val's lane;
+  "is not yet implemented (Stage 5)" -- Stage 5 shipped). val's lane;
   logged here.
 
 ## 7. Claim-Surface Impact
 
 - README proof bullet states the enforced behavior: circular proof
   terms are rejected (CDX4023); `assume` axioms warn (CDX4021). No
-  hedging — the code matches the sentence (Damian's ruling: fix the
+  hedging -- the code matches the sentence (Damian's ruling: fix the
   code, log bugs, don't tweak the README).
 - `TrustedComputingBase.md` §4: proof-layer entry lists acyclicity
   as checked.
 - `ClaimsCalibration.md`: entry records found-and-fixed-same-day.
 - `Induction.md` is NOT amended (val's as-built record is accurate
-  about what it built; totality was never in its scope — §8.4
+  about what it built; totality was never in its scope -- §8.4
   explicitly deferred the dependent-type foundations this would ride
   on).
 
 ## 8. Cross-References
 
-- `docs/Reference/ClaimsCalibration.md` — the register
-- `docs/Reference/TrustedComputingBase.md` — §4 ranking
-- `codex/compiler/Types/TypeChecker.codex` — register-all-defs, elab-claim-apps, Induction Checking
-- `codex/compiler/Emit/X86_64.codex:804-826` — is-proof-def / erasure
+- `docs/Reference/ClaimsCalibration.md` -- the register
+- `docs/Reference/TrustedComputingBase.md` -- §4 ranking
+- `codex/compiler/Types/TypeChecker.codex` -- register-all-defs, elab-claim-apps, Induction Checking
+- `codex/compiler/Emit/X86_64.codex:804-826` -- is-proof-def / erasure
 
-## 9. Stage 2 Design — Positive Proof-Term Grammar (blu, 2026-07-17)
+## 9. Stage 2 Design -- Positive Proof-Term Grammar (blu, 2026-07-17)
 
 Stage 1 (CDX4023) rejects proof reference *cycles*. Stage 2 restricts a
 proof term to a positive grammar, so the classes that are not cycles --

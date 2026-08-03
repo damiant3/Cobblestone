@@ -15,7 +15,7 @@ capture (h) = \x -> close-file h
 ```
 
 This warns because the closure might be called zero times (leaking `h`) or
-multiple times (double-close). But it's only a warning — the programmer can
+multiple times (double-close). But it's only a warning -- the programmer can
 ignore it. The goal is to **make this safe by construction**, not by hope.
 
 ---
@@ -48,7 +48,7 @@ The problem reduces to: **how many times is the closure invoked?**
 
 ## Key Insight: Linear Closures
 
-A closure that captures a linear variable is itself linear — it must be used
+A closure that captures a linear variable is itself linear -- it must be used
 exactly once. This is the same insight as Rust's `FnOnce`: if you move an
 owned value into a closure, the closure can only fire once.
 
@@ -73,7 +73,7 @@ The `LinearityChecker` already has the machinery:
 | CDX2042 | Inconsistent usage across branches | Error |
 | CDX2043 | Linear variable captured by closure | **Warning** |
 
-CDX2040-2042 are errors. CDX2043 is the gap — it warns but doesn't enforce.
+CDX2040-2042 are errors. CDX2043 is the gap -- it warns but doesn't enforce.
 
 ---
 
@@ -107,18 +107,18 @@ The common safe pattern is applying the closure immediately:
 (\x -> close-file h) 42       -- OK: closure created and consumed in one step
 ```
 
-This is already safe — the closure never escapes. No special handling needed
+This is already safe -- the closure never escapes. No special handling needed
 because CDX2043 only fires when the closure is a lambda expression, and direct
 application means the linear variable `h` is consumed in the body.
 
 Actually, in the current checker, direct application like `(\x -> close-file h) 42`
 would check the lambda body and see `h` used. The `h` usage is inside the
-lambda scope, and the lambda is immediately applied — but the checker doesn't
+lambda scope, and the lambda is immediately applied -- but the checker doesn't
 see the application, it sees the lambda. So CDX2043 would still fire.
 
 Fix: in `CheckExpr` for `ApplyExpr`, if the function is a `LambdaExpr`, check
 the body directly without the closure-capture check. The lambda is never stored
-— it's consumed at the call site.
+-- it's consumed at the call site.
 
 ### Step 4: Higher-order functions with single-use guarantees
 
@@ -158,7 +158,7 @@ is `LinearType`. 6 tests validate the behavior. See `LinearityChecker.cs`
 
 | Step | What | Effort | Risk |
 |------|------|--------|------|
-| 1 | CDX2043 warning → error | One line | Low — may break existing code | **Shipped** |
+| 1 | CDX2043 warning → error | One line | Low -- may break existing code | **Shipped** |
 | 2 | Linear closure bindings in `let` | ~20 lines in LinearityChecker | Low | **Shipped** |
 | 3 | Direct application bypass | ~10 lines in CheckExpr | Low | **Shipped** |
 | 4 | Higher-order linear callbacks | ~40 lines (TryResolveExprType + ApplyExpr case) | Low | **Shipped** |
@@ -193,12 +193,12 @@ Linear_closure_passed_to_map_error   → map (\x -> close-file h) xs
 
 **Regions** (CAMP-IIIA): Closure escape analysis determines whether a closure
 can be safely allocated in a region. A linear closure (used once) can live in
-the current region — it won't outlive it. A non-linear closure might escape
+the current region -- it won't outlive it. A non-linear closure might escape
 and must be heap-allocated. The two analyses compose.
 
 **Safe mutation** (SAFE-MUTATION.md): `list-snoc` linearity is currently
 programmer-verified. Once closure escape analysis is in place, the compiler
-can verify that the accumulator list isn't aliased — any closure capturing
+can verify that the accumulator list isn't aliased -- any closure capturing
 it would be flagged.
 
 **Codex.OS**: On bare metal with region-based allocation, closure linearity

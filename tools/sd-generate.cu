@@ -1,4 +1,4 @@
-/* sd-generate.cu — SD 1.5 inference PoC. Build: nvcc -O2 -lcublas -o sd-generate.exe sd-generate.cu */
+/* sd-generate.cu -- SD 1.5 inference PoC. Build: nvcc -O2 -lcublas -o sd-generate.exe sd-generate.cu */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -54,7 +54,7 @@ static uint8_t *g_data;         /* mmap'd tensor data region */
 static int64_t g_data_offset;   /* file offset where tensor data starts */
 static FILE *g_model_fp;
 
-/* Minimal JSON parser — good enough for SafeTensors headers */
+/* Minimal JSON parser -- good enough for SafeTensors headers */
 static const char *skip_ws(const char *p) { while (*p==' '||*p=='\t'||*p=='\n'||*p=='\r') p++; return p; }
 
 static const char *parse_string(const char *p, char *out, int maxlen) {
@@ -570,7 +570,7 @@ static void resblock(float *out, const float *x, const float *temb,
     conv2d(h2, h, c0w, c0b, C_in, C_out, H, W, 3, 1, 1);
     cudaFree(c0w); cudaFree(c0b); cudaFree(h);
 
-    /* emb_layers: SiLU + Linear(1280 -> C_out) — add to each spatial position */
+    /* emb_layers: SiLU + Linear(1280 -> C_out) -- add to each spatial position */
     snprintf(kn, sizeof(kn), "%s.emb_layers.1.weight", prefix);
     float *ew = load_f32(kn);
     snprintf(kn, sizeof(kn), "%s.emb_layers.1.bias", prefix);
@@ -1055,7 +1055,7 @@ static float *run_ddim(const float *cond, const float *uncond) {
     int timesteps[DDIM_STEPS];
     get_ddim_schedule(alphas_bar, DDIM_STEPS, timesteps);
 
-    /* Start from random noise — use deterministic seed for reproducibility */
+    /* Start from random noise -- use deterministic seed for reproducibility */
     float *h_noise = (float *)malloc(LAT_SZ * sizeof(float));
     unsigned int seed = 42;
     for (int i = 0; i < LAT_SZ; i++) {

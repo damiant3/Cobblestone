@@ -12,8 +12,8 @@ A focus-timer app implementing the Pomodoro technique with work/short-break/long
 
 ## Completeness
 
-50% — Mode switching and timer label/time update correctly from state. Timer does not count down (no tick mechanism). Stats and history are static. Session dots do not advance. Play button does not start anything. Visual completeness is high; functional completeness is low.
+50% -- Mode switching and timer label/time update correctly from state. Timer does not count down (no tick mechanism). Stats and history are static. Session dots do not advance. Play button does not start anything. Visual completeness is high; functional completeness is low.
 
 ## Codex Conformance
 
-Partial — Codex source; a timer tick would require a platform event/interrupt stub not yet present.
+Partial -- Codex source; a timer tick would require a platform event/interrupt stub not yet present.

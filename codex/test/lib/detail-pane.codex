@@ -1,0 +1,236 @@
+Chapter: DetailPaneTest
+  cites UI chapter DetailPane
+  cites UI chapter StatusBadge
+  cites UI chapter Dropdown
+  cites UI chapter Widget
+  cites UI chapter Theme
+
+ The inspector pane TrackerApp, WorkflowHtml, CallPage and ItemDesignerApp
+ all describe themselves as using. None of them renders one:
+ `call-participant-detail`, `item-detail` and `wf-process-detail` are each
+ mentioned exactly twice, at their signature and their definition, and
+ neither `detail-widget` nor `detail-overlay` has a caller in `apps/`.
+ Latent, and therefore unmeasured.
+
+ The pane assembles itself out of four optional sections, so the shape it
+ produces depends on which of them are present. Asking with all of them
+ filled cannot tell a section that is conditional from one that is always
+ emitted, so the empty spec is asked first and each section is added in
+ turn.
+
+ The badge is the field kind worth the most attention. `df-badge` takes a
+ colour and all four real callers compute one to pass: CallPage derives one
+ from mute, video and screen-share state, ItemDesignerApp calls
+ `badge-label-color`, TrackerApp calls `tk-status-color`, WorkflowHtml calls
+ `wf-status-badge-color`. Each now passes a TONE beside it and the render
+ arm applies it.
+
+ **The priority bar carries its COUNT now**, so Urgent and None no longer
+ come out identical. `badge-widget` renders a gauge of bars against four
+ rather than a fixed 12x12 custom node, which is the shape that already
+ carries a quantity and that every renderer in the tree draws.
+
+ This test asked that question before the fix and read `same=yes`, which is
+ what it was built to pin. It went on reading `same=yes` for a moment after
+ the fix too, because `payload` answered the bare word "gauge" for the one
+ kind that carries numbers while every other arm printed its contents. A
+ helper named for the payload has to print the payload; the category is
+ never the assertion.
+
+ We say:
+
+Section: Reading
+
+  at : WidgetNode, Integer -> WidgetNode
+  at (w) (i) = list-at (w.wn-children) i
+
+  payload : WidgetNode -> Text
+  payload (w) = when w.wn-kind
+    is WkLabel (t) -> "[" & t & "]"
+    is WkButton (t) -> "<" & t & ">"
+    is WkGauge (v) (m) -> "gauge(" & show v & "/" & show m & ")"
+    is WkInput (t) (c) -> "input(" & t & ")"
+    is WkSeparator -> "sep"
+    is WkPanel -> "panel"
+    is WkCustom (tag) -> "custom(" & tag & ")"
+
+  kids : WidgetNode -> Text
+  kids (w) = show (w.wn-child-count)
+
+  ids : WidgetNode, Integer, Integer, Text -> Text
+  ids (w) (i) (n) (acc) =
+    if i >= n then acc
+    else let c = at w i
+    in ids w (i + 1) n (acc & (if i > 0 then " " else "") & c.wn-id)
+
+  shape : WidgetNode -> Text
+  shape (w) = ids w 0 (w.wn-child-count) ""
+
+Section: The specs
+
+  bare : Integer -> DetailSpec
+  bare (x) = detail-spec "dp" "Fix the thing" "TRK-42"
+
+  with-fields : Integer -> DetailSpec
+  with-fields (x) =
+    let s = detail-spec "dp" "Fix the thing" "TRK-42"
+    in let s1 = detail-add-field s (df-text "Owner" "ada")
+    in let s2 = detail-add-field s1 (df-badge "Status" "Active" #F59E0B)
+    in let s3 = detail-add-field s2 (df-dropdown "Cycle" (dropdown-with-selected "cyc" ["C1", "C2"] 1))
+    in detail-add-field s3 (df-widget "Progress" (widget-gauge "pg" 3 10))
+
+Section: Which sections appear
+
+ A pane with nothing but a title is a header and a separator. Each
+ optional section adds its own separator and heading, so the child count
+ is what says whether a section was emitted at all.
+
+  line-bare : Text =
+    let w = detail-widget (bare 0)
+    in "bare: kids=" & kids w & " shape=" & shape w
+
+  line-fields : Text =
+    let w = detail-widget (with-fields 0)
+    in "fields: kids=" & kids w & " shape=" & shape w
+
+  line-description : Text =
+    let s = detail-set-description (bare 0) "A **bold** claim"
+    in let w = detail-widget s
+    in "description: kids=" & kids w & " shape=" & shape w
+
+  line-activity : Text =
+    let s = detail-add-activity (bare 0) "ada" "closed it" "09:41"
+    in let w = detail-widget s
+    in "activity: kids=" & kids w & " shape=" & shape w
+
+  line-footer : Text =
+    let s = detail-set-footer (bare 0) "3 attachments"
+    in let w = detail-widget s
+    in "footer: kids=" & kids w & " shape=" & shape w
+
+Section: The header
+
+ Subtitle, then title, then a close button. The order is printed rather
+ than judged: an identifier ahead of a name is a real convention and this
+ records what the pane does rather than what a reader expects.
+
+  line-header : Text =
+    let h = at (detail-widget (bare 0)) 0
+    in "header: kids=" & kids h & " " & payload (at h 0) & payload (at h 1) & payload (at h 2)
+
+Section: The four field kinds
+
+ Each field is a row of a fixed-width label and a flexed value. What the
+ value widget IS differs by kind, and that is the assertion.
+
+  field-row : Integer -> WidgetNode
+  field-row (i) = at (detail-widget (with-fields 0)) (i + 2)
+
+  line-field-text : Text =
+    let r = field-row 0
+    in "text field: " & payload (at r 0) & payload (at r 1)
+
+  line-field-badge : Text =
+    let r = field-row 1
+    in "badge field: " & payload (at r 0) & payload (at r 1)
+
+  line-field-dropdown : Text =
+    let r = field-row 2
+    in "dropdown field: " & payload (at r 0) & payload (at r 1)
+
+  line-field-widget : Text =
+    let r = field-row 3
+    in "widget field: " & payload (at r 0) & payload (at r 1)
+
+ A badge and a text field are built from the same string here, so the only
+ difference that can appear is the one being a badge is supposed to make.
+ The size is printed as well as the payload, because the payload alone
+ cannot see a size and a line blind to it would read as though the two
+ were identical for a reason it had checked.
+
+ **This line used to pin a defect and now pins a behaviour.** A plain
+ `df-badge` still comes out identical to a text field, and that is correct:
+ it names no tone, so it asks for none. What changed is that there is
+ somewhere to put the meaning at all. `df-badge-toned` carries a tone, the
+ render arm applies it, and the line below reads it back off the node.
+
+ The pair is the point. The untoned badge staying identical to the text
+ field is what stops the toned line passing for a reason it has not
+ checked.
+
+  boxed : WidgetNode -> Text
+  boxed (w) = payload w & "@" & show (w.wn-min-w) & "x" & show (w.wn-min-h)
+
+  line-badge-vs-text : Text =
+    let s = detail-add-field (detail-add-field (detail-spec "cmp" "t" "s") (df-text "L" "Active")) (df-badge "L" "Active" #EF4444)
+    in let w = detail-widget s
+    in let a = at (at w 2) 1
+    in let b = at (at w 3) 1
+    in "badge vs text: text=" & boxed a & " badge=" & boxed b
+    & " same-payload=" & (if payload a == payload b then "yes" else "no")
+    & " untoned=" & tone-name (b.wn-tone)
+
+  line-badge-toned : Text =
+    let s = detail-add-field (detail-add-field (detail-spec "cmp" "t" "s") (df-badge "P" "Active" #EF4444)) (df-badge-toned "T" "Active" #EF4444 tone-error)
+    in let w = detail-widget s
+    in let plain = at (at w 2) 1
+    in let toned = at (at w 3) 1
+    in "badge tone: plain=" & tone-name (plain.wn-tone) & " toned=" & tone-name (toned.wn-tone)
+    & " same-payload=" & (if payload plain == payload toned then "yes" else "no")
+
+Section: What StatusBadge itself renders
+
+ The same question one chapter over, because DetailPane is not where a
+ badge is supposed to be drawn. Every BadgeStyle carries a colour and
+ BsPriorityBar carries a bar count as well.
+
+  line-badge-widget : Text =
+    "badge-widget: urgent=" & payload (badge-widget "b1" (badge-priority 0))
+    & " none=" & payload (badge-widget "b2" (badge-priority 4))
+    & " same=" & (if payload (badge-widget "b1" (badge-priority 0)) == payload (badge-widget "b2" (badge-priority 4)) then "yes" else "no")
+
+  line-badge-dots : Text =
+    "badge dots: done=" & payload (badge-widget "b3" (badge-status 4))
+    & " todo=" & payload (badge-widget "b4" (badge-status 1))
+    & " pill-bug=" & payload (badge-widget "b5" (badge-label "bug"))
+    & " pill-docs=" & payload (badge-widget "b6" (badge-label "docs"))
+
+ The colours themselves are computed correctly and differ, which is what
+ makes the rendering the loss rather than the source.
+
+  line-badge-colors : Text =
+    "colors differ: urgent=" & show (badge-priority-color 0)
+    & " none=" & show (badge-priority-color 4)
+    & " bug=" & show (badge-label-color "bug")
+    & " docs=" & show (badge-label-color "docs")
+
+Section: What a caller still holding the spec sees
+
+ `detail-add-field` pushes onto the spec's own list and hands back the
+ same record. The original is read AFTER the call, not snapshotted before.
+
+  line-alias : Text =
+    let s = detail-spec "al" "t" "s"
+    in let added = detail-add-field s (df-text "Owner" "ada")
+    in "alias: returned=" & show (list-length (added.ds-fields))
+    & " original-after=" & show (list-length (s.ds-fields))
+
+Section: Body
+
+  report-a : Text =
+    line-bare & "\n" & line-fields & "\n" & line-description & "\n"
+    & line-activity & "\n" & line-footer & "\n" & line-header
+
+  report-b : Text =
+    line-field-text & "\n" & line-field-badge & "\n" & line-field-dropdown
+    & "\n" & line-field-widget & "\n" & line-badge-vs-text
+
+  report-c : Text =
+    line-badge-toned & "\n" & line-badge-widget & "\n" & line-badge-dots & "\n" & line-badge-colors
+    & "\n" & line-alias
+
+  opening : [Console] Nothing = act
+    print-line-uni report-a
+    print-line-uni report-b
+    print-line-uni report-c
+  end

@@ -1,4 +1,4 @@
-# Prose Buildout — Feature-Flagged CPL Integration
+# Prose Buildout -- Feature-Flagged CPL Integration
 
 **Started**: 2026-05-06
 **Agent**: Cam
@@ -8,7 +8,7 @@
 
 Integrate the Codex Prose Language (CPL) grammar into the self-hosted
 compiler as a feature-flagged pipeline extension. When the flag is off,
-the compiler behaves identically to today — prose lines are skipped, no
+the compiler behaves identically to today -- prose lines are skipped, no
 new tokens emitted, no new AST nodes. When on, prose lines become
 load-bearing: lexed, parsed into CPL sentence forms, and preserved
 through the AST into IR as structured metadata.
@@ -57,7 +57,7 @@ Source: 1,019,839 bytes (selfhost concatenated)
 
 | Mark | Address | Delta |
 |------|---------|-------|
-| h0-start | 8,273,640 | — |
+| h0-start | 8,273,640 | -- |
 | h1-tokenize | 38,753,440 | 29.1 MB |
 | h2-scan | 70,394,554 | 30.2 MB |
 | h3-assignments | 70,394,554 | 0 |
@@ -96,7 +96,7 @@ No behavioral change.
 **Memory risk**: One 8-byte Boolean per compile. Zero.
 **Files**: `codex/opening.codex`
 
-### Step 2: Lexer — ProseText token emission (flag-gated)
+### Step 2: Lexer -- ProseText token emission (flag-gated)
 
 When `flags.prose` is True, the lexer emits `ProseText` tokens for
 column-2 content instead of producing tokens that the parser later
@@ -112,7 +112,7 @@ Selfhost source has ~4,800 prose lines × 56 bytes/token = ~262 KB.
 Negligible against 29 MB lex deck.
 **Files**: `codex/Syntax/Lexer.codex`, `codex/Syntax/Token.codex`
 
-### Step 3: Parser — prose block collection (flag-gated)
+### Step 3: Parser -- prose block collection (flag-gated)
 
 When `flags.prose` is True, `parse-top-level` calls `parse-prose-block`
 instead of `skip-prose-lines`. Prose blocks are collected as raw text
@@ -124,7 +124,7 @@ it as substrings (offset+length into existing source) costs ~4,800 ×
 16 bytes = ~75 KB. Negligible.
 **Files**: `codex/Syntax/Parser.codex`, `codex/Syntax/SyntaxNodes.codex`
 
-### Step 4: Parser — CPL sentence recognition
+### Step 4: Parser -- CPL sentence recognition
 
 Parse prose blocks into CPL sentence forms per the ProseGrammarProposal:
 - Type Declaration (`A X is a record containing:`)
@@ -138,7 +138,7 @@ Non-matching prose is classified as commentary (not load-bearing).
 Prose inside `We say:` blocks is parsed strictly; outside is lenient.
 
 **Memory risk**: Parse nodes for ~4,800 lines. Structured nodes are
-larger than raw text — estimate 3× overhead = ~225 KB. Still negligible.
+larger than raw text -- estimate 3× overhead = ~225 KB. Still negligible.
 **Files**: `codex/Syntax/Parser.codex`, `codex/Syntax/SyntaxNodes.codex`
 
 ### Step 5: Annotation syntax (`@kind target body`)
@@ -203,7 +203,7 @@ Compile with `prose` flag. Verify round-trip.
 
 | CL | Step | Lex (MB) | Parse (MB) | Desugar (MB) | Scope (MB) | Check (MB) | Total (MB) | Delta |
 |----|------|----------|------------|--------------|------------|------------|------------|-------|
-| head | baseline | 29.07 | 25.92 | 15.10 | 28.63 | 54.93 | 153.65 | — |
+| head | baseline | 29.07 | 25.92 | 15.10 | 28.63 | 54.93 | 153.65 | -- |
 | 1026 | step 1 | 29.10 | 25.95 | 15.11 | 28.66 | 54.94 | 153.77 | +0.12 |
 | 1029 | step 2 | 29.14 | 25.99 | 15.13 | 28.69 | 54.99 | 153.95 | +0.30 |
 | 1031 | step 3 | 29.18 | 26.02 | 15.15 | 28.71 | 55.01 | 154.06 | +0.41 |
@@ -227,11 +227,11 @@ Compile with `prose` flag. Verify round-trip.
 | 1038 | step 4b | FIXED POINT (1,833,728 B) | 152/0/18 | +12,496 B | 1,027,564 B |
 | 1041 | step 5 | FIXED POINT (1,835,784 B) | 152/0/18 | +14,552 B | 1,028,815 B |
 | 1044 | step 6 | FIXED POINT (1,840,216 B) | 152/0/18 | +18,984 B | 1,031,645 B |
-| 1047 | step 8 | FIXED POINT (1,848,440 B) | 152/0/18 | — | 1,037,173 B |
+| 1047 | step 8 | FIXED POINT (1,848,440 B) | 152/0/18 | -- | 1,037,173 B |
 
 ## Decision Log
 
-- **2026-05-06 (step 8)**: HWM delta marked * — new seed (CL 1045)
+- **2026-05-06 (step 8)**: HWM delta marked * -- new seed (CL 1045)
   includes Nib's UEFI Console emit, so absolute numbers reflect both
   prose buildout and UEFI code growth.
 - **2026-05-06**: Feature flag approach chosen over always-on. Rationale:

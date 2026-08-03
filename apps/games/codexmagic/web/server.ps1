@@ -1,4 +1,4 @@
-# server.ps1 — CodexMagic web server
+# server.ps1 -- CodexMagic web server
 # Boots the codexmagic CDX in a VM, serves web pages, bridges API calls.
 [CmdletBinding()]
 param([int]$Port = 8180, [int]$AuthPort = 8889)
@@ -295,7 +295,7 @@ function Load-State {
             Save-State
         }
     } catch {
-        Write-Host "  Failed to load state: $_ — starting fresh" -ForegroundColor Yellow
+        Write-Host "  Failed to load state: $_ -- starting fresh" -ForegroundColor Yellow
     }
 }
 
@@ -1201,7 +1201,7 @@ function Cleanup-Resources { if($script:TcpStream){try{$script:TcpStream.Close()
 try { [Console]::CancelKeyPress.Add({ Cleanup-Resources }) } catch {}
 
 try {
-    try { Start-TcpBridge; Start-GameVm } catch { Write-Host "  VM unavailable: $_ — pages still work" -ForegroundColor Yellow }
+    try { Start-TcpBridge; Start-GameVm } catch { Write-Host "  VM unavailable: $_ -- pages still work" -ForegroundColor Yellow }
     while ($listener.IsListening) {
         $ctx = $listener.GetContext(); $resp = $ctx.Response; $path = $ctx.Request.Url.AbsolutePath
         try {

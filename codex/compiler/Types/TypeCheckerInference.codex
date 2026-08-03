@@ -8,7 +8,7 @@ Chapter: Type Checker
 Section: Check Result
 
  The judgment is Γ ⊢ e : τ | ε (ruled
- 2026-07-02): effect-row is the expression's AMBIENT row — what
+ 2026-07-02): effect-row is the expression's AMBIENT row -- what
  evaluating it performs. The effects of a function VALUE the
  expression produces live on that value's arrow, never in the
  ambient; a lambda's ambient is empty and its body's ambient becomes
@@ -34,7 +34,7 @@ Section: Infer Literal
      state = st
     }
     is NumLit -> CheckResult {
-     inferred-type = RealTy,
+     inferred-type = real-f64,
      effect-row = empty-row,
      state = st
     }
@@ -114,7 +114,7 @@ Section: Infer Name
  A name reference instantiates, then OPENS each closed spine row with
  a fresh tail (the Koka open rule, §6a): a pure or less-effectful
  function flows into a more-effectful context through plain
- unification. Opening happens only here — never at binding positions
+ unification. Opening happens only here -- never at binding positions
  (a def's own signature, record fields, parameter annotations), which
  instantiate through resolve-declared-type and the ctor paths.
  Referencing an effectful VALUE (read-line) performs its effects:
@@ -166,8 +166,8 @@ Section: Infer Name
  fresh unification variable. That is what a CALL SITE wants: the
  caller is free to choose, so the choice must be solvable.
 
- instantiate-type runs on the hottest path in the type checker — every
- variable reference instantiates its type — so it allocates nothing it
+ instantiate-type runs on the hottest path in the type checker -- every
+ variable reference instantiates its type -- so it allocates nothing it
  does not have to. It returns a pair, and a pair is a heap record.
 
  A def's own body wants the opposite of instantiation, and needs to
@@ -177,7 +177,7 @@ Section: Infer Name
  call, and it is why the two walks are SEPARATE rather than one walk
  wrapped by the other: wrapping put that record on every variable
  reference in the program and blew the CHECK deck (a #GP with no
- diagnostic, at ~228 MB — the 2.16 signature). instantiate-collect is
+ diagnostic, at ~228 MB -- the 2.16 signature). instantiate-collect is
  called once per definition and can afford it; instantiate-type cannot.
 
  The duplication is deliberate and must stay in step: the two walks
@@ -228,7 +228,7 @@ Section: Infer Name
  Row ids live only on FunTy rows and ForAllEff binders, never inside
  any other constructor's payload, so everything else recurses through
  the shared children walker. A ForAllEff binding the same id shadows
- it — stop there. No ty-has-typevars short-circuit applies: that
+ it -- stop there. No ty-has-typevars short-circuit applies: that
  guard sees type variables, not row tails.
 
   subst-row-var : CodexType, Integer, Integer -> CodexType
@@ -259,10 +259,24 @@ Section: Infer Binary
     state = amb-st
    }
 
-  is-real-type : CodexType -> Boolean
-  is-real-type (ty) =
-   when ty
-    is RealTy | RealApproxTy | RealTrappingTy | RealSaturatingTy -> True
+ Ordering is refused on both of these and for one reason stated two ways.
+ On Text the operands reach a machine cmp as ADDRESSES, so the answer
+ followed allocation order: two separately built copies of "a" compared
+ unequal, one of them less than the other. On a character the comparison is
+ well defined and misleads instead, because CCE numbers characters by
+ English letter frequency -- 'd' is 22 and 'b' is 32, so `'d' < 'b'` is
+ True. Neither has a single meaning to lower to, which is the same argument
+ that made `==` on Real a refusal rather than a silent choice.
+
+ The unit wrapper is stripped first. A predicate that dispatches on the
+ wrapper is how `unit Real` reached the integer adder, and the lesson from
+ that is written at `strip-unit-ty`: derive the question once and let every
+ caller read it.
+
+  is-text-or-char-type : CodexType -> Boolean
+  is-text-or-char-type (ty) =
+   when strip-unit-ty ty
+    is TextTy | CharTy -> True
     is otherwise -> False
 
  A type the checker has not decided yet: an application's result is a fresh
@@ -290,7 +304,16 @@ Section: Infer Binary
        state = add-unify-error (result.state) cdx-real-equality-banned "Floating-point equality is not safe. Use the ~ operator: x ~ y (approximately equal, 4 ULP tolerance), x ~0 y (bitwise exact, if you are certain)" span
       }
       else result
-    is OpLt | OpGt | OpLtEq | OpGtEq | OpApproxEq | OpApproxEqExact -> infer-comparison st lt rt span
+    is OpLt | OpGt | OpLtEq | OpGtEq ->
+     let result = infer-comparison st lt rt span
+     in if is-text-or-char-type lt | is-text-or-char-type rt
+      then CheckResult {
+       inferred-type = BooleanTy,
+       effect-row = empty-row,
+       state = add-unify-error (result.state) cdx-text-ordering-banned "Ordering on Text or a character has no single meaning. On Text this compared the operands as POINTERS, so the answer followed allocation order and not content. CCE numbers characters by frequency rather than alphabetically, so even a code-point order is not the alphabet. Use text-collate (Foreword chapter Collate) for alphabetical order, or text-compare for code-point order; for a character, compare char-code c as an Integer, which says what it is doing" span
+      }
+      else result
+    is OpApproxEq | OpApproxEqExact -> infer-comparison st lt rt span
     is OpAnd -> infer-and st lt rt span
     is OpOr -> infer-logical st lt rt span
     is OpAppend -> infer-append st lt rt span
@@ -357,7 +380,7 @@ Section: Infer Binary
   is-arithmetic-type : CodexType -> Boolean
   is-arithmetic-type (ty) =
    when ty
-    is IntegerTy (lo) (hi) (mode) | RealTy | RealApproxTy | RealTrappingTy | RealSaturatingTy | VectorTy (vn) (vt) | TypeVar (id) | ErrorTy -> True
+    is IntegerTy (lo) (hi) (mode) | RealTy (rw) (rm) | VectorTy (vn) (vt) | TypeVar (id) | ErrorTy -> True
     is UnitTy (n) (inner) -> is-arithmetic-type inner
     is otherwise -> False
 
@@ -428,7 +451,7 @@ Section: Infer If
  (cond-refine, Lint value-expression range analysis): a comparison
  between a bare local and an expression with a provable range narrows
  the local's recorded range inside the arm the comparison guards, and
- only there — the refined entry rides the env copy handed to that
+ only there -- the refined entry rides the env copy handed to that
  arm's walk and never escapes it. Only the narrowing lint reads the
  refined table, so this shapes diagnostics, never types or codegen.
  Both arms are always inferred: static feasibility only shapes the
@@ -453,7 +476,7 @@ Section: Infer If
 Section: Infer Let
 
  A let's ambient is the union of every binding value's ambient with
- the body's — a binding value is evaluated even if the body never
+ the body's -- a binding value is evaluated even if the body never
  reads the name. The binding loop accumulates the union as it walks.
 
   infer-let : UnificationState, TypeEnv, List ALetBind, AExpr, Integer -> CheckResult
@@ -523,7 +546,7 @@ Section: Infer Let
  The let boundary reads the binding VALUE's ambient row: concrete
  labels mean an effectful call is being let-bound outside an
  act-bind, which silently corrupts on bare metal (CDX2033). A row
- whose only content is an unsolved tail is allowed — it is the HOF
+ whose only content is an unsolved tail is allowed -- it is the HOF
  body pattern, where the effects are the caller's and the def
  boundary answers for them.
 
@@ -536,7 +559,7 @@ Section: Infer Let
 
 Section: Infer Lambda
 
- A lambda VALUE performs nothing — its ambient is empty. What the
+ A lambda VALUE performs nothing -- its ambient is empty. What the
  body performs becomes the row on the innermost synthesized arrow,
  the arrow whose application will perform it (§4 curried placement).
  The row is opened with a fresh tail when the body's ambient is
@@ -647,7 +670,7 @@ Section: Class Instance Check
 Section: Infer Application
  The synthesized expected arrow carries a FRESH row variable, not the
  empty row: unification binds it to the callee arrow's row, and that
- captured row joins the ambient — evaluating an application performs
+ captured row joins the ambient -- evaluating an application performs
  the function expression's effects, the argument expression's
  effects, and whatever the consumed arrow declares. An empty row
  here would instead FORCE every callee arrow closed-pure, which is
@@ -666,7 +689,8 @@ Section: Infer Application
    in let st-cls = check-class-op-app r-st env func (ar.inferred-type) span
    in let st-arg = lint-arg-narrowing st-cls env func (fr.inferred-type) arg (ar.inferred-type) span
    in let st-rs = lint-record-set st-arg env func arg (ar.inferred-type) ret-ty span
-   in let st-final = lint-effect-scope st-rs env func arg span
+   in let st-lint = lint-effect-scope st-rs env func arg span
+   in let st-final = lint-vec-lane st-lint func arg span
    in let refined-ty = refine-vec-result st-final func (ar.inferred-type) ret-ty
    in let (amb1, amb1-st) = row-union st-final (fr.effect-row) (ar.effect-row)
    in let (amb, amb-st) = row-union amb1-st amb1 (deck-record (row-var call-row-id))
@@ -680,14 +704,14 @@ Section: Infer Application
  over. print-line-uni performs Console.Write; a parameter declared
  Text -> [Console] Nothing promises its caller only that it may do
  something Console-ish, and Console.Write is something Console-ish. The
- def boundary has always understood this — a [Console] def may perform
- Console.Write — but the argument boundary compared rows for EQUALITY
+ def boundary has always understood this -- a [Console] def may perform
+ Console.Write -- but the argument boundary compared rows for EQUALITY
  and turned the same program away (CDX2090).
 
  The lattice does NOT move into unify-row, and this is the point:
  unification is symmetric, and a symmetric relation that accepted
- Console.Write against Console would accept it in both directions —
- which is laundering — and would stop being most general. So the
+ Console.Write against Console would accept it in both directions --
+ which is laundering -- and would stop being most general. So the
  directed reasoning stays outside, here, where the direction is known:
  the argument is being handed TO the parameter. Each of the argument
  row's labels is rewritten to the parameter's label that covers it,
@@ -696,7 +720,7 @@ Section: Infer Application
 
  Two relations are applied, and both only ever widen TOWARD a label the
  parameter actually names. An argument label the parameter does not cover
- at all is left alone, so unify still refuses it — this only ever accepts
+ at all is left alone, so unify still refuses it -- this only ever accepts
  more, never less, and never in the unsound direction (a Console argument
  into a Console.Write parameter still fails: Console has no dot, so
  nothing covers it; and an UNSCOPED Console argument into a
@@ -708,12 +732,12 @@ Section: Infer Application
 
  The second contains a scope. Console "stdout" widens to Console, because
  a label with no scope states no restriction and everything falls under no
- restriction — that case needs to know nothing about what a scope MEANS.
+ restriction -- that case needs to know nothing about what a scope MEANS.
  FileSystem.Read "/config/app/" widens to FileSystem.Read "/config/", and
  that case does: a filesystem scope is a path prefix where a network scope
  is an authority and a console scope a channel. `scope-subsumes`
  (TypeChecker) chooses per family off the effect's own name, which is
- where `scope-admits` has always got it from — the family was never
+ where `scope-admits` has always got it from -- the family was never
  missing, it was only ever read off the name.
 
  Dropping the scope is the SAFE direction for the same reason parent-of
@@ -843,7 +867,7 @@ Section: Infer Application
       else label-index-named plabels nm (i + 1) len
 
  The CL 6494-era effect-le argument check is retired (stage 3b): its
- job — an effectful function may not flow into a pure parameter — is
+ job -- an effectful function may not flow into a pure parameter -- is
  now done by row unification itself. A concrete pure parameter's
  arrow row is the closed empty row; an effectful argument's opened
  row cannot reconcile with it (CDX2090), and a row-polymorphic
@@ -851,12 +875,12 @@ Section: Infer Application
  waved through, which was the leniency this check had to carry.
 
  An argument flowing into a bounded parameter draws the same hybrid
- check as a bounded field store — and a constructor is a function
+ check as a bounded field store -- and a constructor is a function
  whose payload is a parameter, so one check serves both. The declared
  parameter is read from the callee arrow BEFORE the application unify
  (overlap-permissive on IntegerTy, so the concrete bound survives).
  Literal out of range is the CDX2050 error, a wider static type the
- CDX2051 warning, an explicit __narrow suppresses — exactly as at
+ CDX2051 warning, an explicit __narrow suppresses -- exactly as at
  record fields. The descriptor names a constructor field when the head
  is one of its sum type's own constructors (FabledTreasureMap entry
  11), a bounded parameter otherwise. Range PROPAGATION from the bound
@@ -890,6 +914,89 @@ Section: Infer Application
    if i == len then False
    else if ((list-at cs i).name.value) == name then True
    else sum-ctors-have cs name (i + 1) len
+
+ A lane index is checked against a lane count the compiler already knows.
+ `vec-extract`'s own type takes a `Vector 2` and `vec4-extract`'s a
+ `Vector 4`, so the count is fixed by the builtin rather than inferred, and
+ a literal lane outside it is decidable HERE. Damian's ruling, 2026-07-28:
+ a compile error, not a runtime trap. It is the stronger answer for the
+ same reason CDX2089 is -- the program never ships, where a trap only fires
+ on the run that reaches the line.
+
+ This is the opposite decision to the one the list builtins got, and the
+ difference is where the length lives. A list's length is discovered while
+ the program runs, so `list-at` can only be guarded at runtime; a vector's
+ lane count is on its type, so this can be refused before the binary exists.
+
+ **A computed lane is NOT covered and cannot be.** `vec-extract v i` with
+ `i` a parameter reads out of bounds exactly as it did before, because the
+ compiler does not know `i`. Four such sites exist in the tree today
+ (`vec-lanes-smoke`, `vec-arith-hazards`, `vec-extract-hazards`). That is
+ the honest limit of a static check, not an oversight, and it is written
+ down here so nobody reads this refusal as full coverage.
+
+ The check is keyed on the builtin's NAME. A chapter that shadows
+ `vec-extract` with its own differently-shaped definition would be judged
+ against the builtin's lane count, which is wrong; nothing in the tree does,
+ and CDX3005 already warns when a builtin is shadowed.
+
+  vec-lane-count : Text -> Integer
+  vec-lane-count (name) =
+   if name == "vec-extract" then 2
+   else if name == "vec4-extract" then 4
+   else 0 - 1
+
+ Whether the lane is a literal and what it is are two questions and they
+ get two functions, because every way of folding them into one number
+ needs a sentinel and every sentinel is a lane somebody can write. The
+ first draft answered -2 for "not a literal", which silently waved through
+ `vec-extract v -2`; -1 has the same problem one lane over. There is no
+ safe out-of-band Integer here, so the flag is a Boolean.
+
+ A negative lane arrives as `AUnaryExpr` wrapping the literal, not as a
+ literal with a minus in its text -- the desugarer discards the operator
+ token and keeps the operand. Negation is the only unary operator in the
+ language, so an `AUnaryExpr` around an IntLit is a negative literal and
+ nothing else. Measured rather than assumed: before this arm existed,
+ `vec-extract (vec-splat 1.5) -1` compiled clean and emitted a binary,
+ which made the zero-comparison arm a guard no input could reach.
+
+  vec-lane-is-literal : AExpr -> Boolean
+  vec-lane-is-literal (arg) =
+   when arg
+    is ALitExpr (val) (kind) (s) ->
+     when kind
+      is IntLit -> True
+      is otherwise -> False
+    is AUnaryExpr (inner) (s) ->
+     when inner
+      is ALitExpr (v2) (k2) (s2) ->
+       when k2
+        is IntLit -> True
+        is otherwise -> False
+      is otherwise -> False
+    is otherwise -> False
+
+  vec-lane-literal : AExpr -> Integer
+  vec-lane-literal (arg) =
+   when arg
+    is ALitExpr (val) (kind) (s) -> lit-text-to-integer val
+    is AUnaryExpr (inner) (s) ->
+     when inner
+      is ALitExpr (v2) (k2) (s2) -> 0 - (lit-text-to-integer v2)
+      is otherwise -> 0
+    is otherwise -> 0
+
+  lint-vec-lane : UnificationState, AExpr, AExpr, SourceSpan -> UnificationState
+  lint-vec-lane (st) (func) (arg) (span) =
+   let lanes = if is-two-arg-call func "vec-extract" then 2
+    else if is-two-arg-call func "vec4-extract" then 4
+    else 0 - 1
+   in if lanes < 0 then st
+   else if vec-lane-is-literal arg == False then st
+   else let idx = vec-lane-literal arg
+   in if idx >= 0 & idx < lanes then st
+   else add-unify-error st cdx-vec-lane-out-of-range ("Lane " & integer-to-text idx & " is outside this vector: it has " & integer-to-text lanes & " lanes, numbered 0 to " & integer-to-text (lanes - 1) & ". The lane count comes from the builtin's own type, so this is decided here rather than read out of bounds at runtime. Use a lane in range, or vec-reduce-add if you meant to combine every lane.") span
 
   refine-vec-result : UnificationState, AExpr, CodexType, CodexType -> CodexType
   refine-vec-result (st) (func) (arg-ty) (ret-ty) =
@@ -981,7 +1088,7 @@ Section: Lint value-expression range analysis
  The checker-side twin of the emit prover's ir-expr-proven-range: a
  structural walk of the value EXPRESSION at a bounded store, run only
  when the inferred type's range has already failed to fit. It proves
- ranges the type system deliberately does not carry — a constant
+ ranges the type system deliberately does not carry -- a constant
  defined as a literal keeps its declared plain-Integer TYPE (refining
  it would make two distinct constants disjoint under unification),
  but its value is known exactly, so the lint can see the store is
@@ -1008,7 +1115,7 @@ Section: Lint value-expression range analysis
 
  A `let` body is proven in an env carrying the let's OWN bindings. The
  arm used to recurse into the body with the env it was handed, and the
- binder's range still arrived — `record-local-range` had written it into
+ binder's range still arrived -- `record-local-range` had written it into
  this very env when inference walked the same def, because
  `env-add-local-range` reached the caller's record. That made every
  bounded return over a let read a range the prover had not derived.
@@ -1021,7 +1128,7 @@ Section: Lint value-expression range analysis
  `local-proven-range`) exists to stop a local from borrowing a
  same-named global's fact, and a binder the prover skipped would borrow
  exactly that. The bound type is a placeholder: no prover path reads a
- local's type — the guards answer before any lookup — only whether the
+ local's type -- the guards answer before any lookup -- only whether the
  name is one.
 
   bind-let-ranges : TypeEnv, List ALetBind, Integer, Integer -> TypeEnv
@@ -1045,7 +1152,7 @@ Section: Lint value-expression range analysis
 
  A let-local proves by its recorded range (populated at its binding
  when the value proved narrower than full i64). A local with no
- recorded range is unknown — the safe default.
+ recorded range is unknown -- the safe default.
 
   local-proven-range : TypeEnv, Text -> (Integer, Integer)
   local-proven-range (env) (name) =
@@ -1105,7 +1212,7 @@ Section: Lint value-expression range analysis
  interval arithmetic, and the result converts back. The kernel
  refuses to iv-unknown whenever an endpoint computation would
  overflow, and iv-unknown converts back to the full i64 range, which
- never fits a real bound — the analysis stays silence-only. Full
+ never fits a real bound -- the analysis stays silence-only. Full
  signed support replaces the hand-written non-negative-only guards
  the checker carried before the kernel existed; it strictly widens
  what can be proven, never what can be stored. An empty interval can
@@ -1208,7 +1315,7 @@ Section: Lint value-expression range analysis
  design: a list cannot hold 2^32 elements in a 4 GB address space
  (elements are at least 8 bytes), a text's byte length cannot exceed
  the heap that holds it, and __deck-pos and __heap-save are heap
- addresses below 4 GB — the same design-era contract the
+ addresses below 4 GB -- the same design-era contract the
  bivy-origin/deck-origin field bounds document. Add a fact only when
  the bound is structural, not conventional.
 
@@ -1228,7 +1335,7 @@ Section: Lint value-expression range analysis
  condition compares a bare local against an expression with a
  provable range, each arm is analyzed with the local's recorded range
  intersected with what the comparison being true (then) or false
- (else) implies — ABCD's pi-nodes collapsed onto lexical scope. The
+ (else) implies -- ABCD's pi-nodes collapsed onto lexical scope. The
  refined entry is pushed onto the env copy that walks one arm and
  never escapes it; a refinement that says nothing (iv-unknown) or
  that proves the arm unreachable (iv-empty) pushes nothing. Both
@@ -1460,8 +1567,8 @@ Section: Lint value-expression range analysis
    then aexpr-proven-range (arm-refined-env env rf (rf.then-iv) t) t
    else proven-range-union (aexpr-proven-range (arm-refined-env env rf (rf.then-iv) t) t) (aexpr-proven-range (arm-refined-env env rf (rf.else-iv) el) el)
 
- A refined position — record field, constructor payload, function
- parameter, or function return — draws the same hybrid check. The
+ A refined position -- record field, constructor payload, function
+ parameter, or function return -- draws the same hybrid check. The
  `descriptor` is the full noun phrase naming the position (e.g.
  "field 'code'", "bounded parameter", "bounded return") so one
  mechanism serves every bounded-signature site.
@@ -1492,16 +1599,16 @@ Section: Lint value-expression range analysis
     is otherwise -> st
 
  The type range failed to fit; before rejecting, try the expression
- analysis. A NON-TRIVIAL proof — one whose proven range is a real
+ analysis. A NON-TRIVIAL proof -- one whose proven range is a real
  interval (p-lo < p-hi), the prover deriving a bound from arithmetic
- or flow — is reported as the CDX2053 info so the elision stays
+ or flow -- is reported as the CDX2053 info so the elision stays
  visible in build logs and assertable in .diag sidecars. A TRIVIAL
  proof, whose proven range is a single point (p-lo == p-hi, a literal
  or a named constant that folds to one value), elides silently: the
  fit is self-evident and reporting it drowned the informative proofs
  (~96% of CDX2053s on a self-compile were single-point constants).
- The elision itself is unchanged in both cases — only the info line
- is gated. An unproven flow is the CDX2051 error — the campaign
+ The elision itself is unchanged in both cases -- only the info line
+ is gated. An unproven flow is the CDX2051 error -- the campaign
  endgame: a bound is a contract, so a value
  that cannot be shown to honour it does not compile. The author
  either strengthens the source (a bounded field, parameter, return,
@@ -1511,14 +1618,14 @@ Section: Lint value-expression range analysis
  The verdict is reached on the PROVEN range and the error used to quote
  the inferred TYPE's, so it named a quantity the decision had not used:
  `b.val / 8` over a 0..255 byte is provably 0..31, and the message read
- "value type is 0..255" — neither the bound nor the proof, and an
+ "value type is 0..255" -- neither the bound nor the proof, and an
  understatement of what had already been worked out. An author cannot act
  on a number the compiler did not use.
 
  It reports the proof, and only the proof. The two are not
  interchangeable and must not be combined: since arithmetic keeps the
  narrower operand's bound, an inferred type is a CONTRACT the store's
- runtime check enforces, not a fact about the value — `b.val - 10` types
+ runtime check enforces, not a fact about the value -- `b.val - 10` types
  as 0..255 and evaluates to -10. Intersecting the two would "prove" a
  range the value can leave, which is the one thing this analysis must
  never do. The proof is sound on its own, and it already reaches every
@@ -1598,7 +1705,7 @@ Section: Infer Match
    else any-ctor-has-return-type ctors (i + 1) len
 
  A match's ambient is the scrutinee's union every arm's guard and
- body — an over-approximation across arms (only one arm runs), which
+ body -- an over-approximation across arms (only one arm runs), which
  is the sound direction. The arm walkers thread the accumulated row.
  A GADT arm's ambient union survives the substitution restore
  deliberately: the arm really is evaluated at runtime, so its
@@ -1832,7 +1939,7 @@ Section: Infer Act
  union of its statements' ambients; the act's TYPE is simply the
  last statement's. The stage-3b readers consume the row, so the old
  EffectfulTy name-union machinery (act-wrap-effects, act-value-type,
- union-names) is retired — effects no longer ride result types.
+ union-names) is retired -- effects no longer ride result types.
  Effectful values and calls arrive at the statements already
  unwrapped by infer-name and infer-application, their effects in the
  ambient.
@@ -1878,7 +1985,7 @@ Section: Infer Act
  threading here is what lets the bind stop aliasing.
 
  A let CHAIN is peeled to its innermost body, so every binding in the
- chain scopes over the rest of the block — the shape `codex/test/
+ chain scopes over the rest of the block -- the shape `codex/test/
  mask-ops` pins, and the same peel `lower-act-let` performs.
 
   infer-act-let : UnificationState, TypeEnv, List ALetBind, AExpr, List AActStmt, Integer, Integer, EffectRow, Integer -> CheckResult
@@ -1986,6 +2093,12 @@ Section: Infer Expression (dispatch)
           effect-row = r.effect-row,
           state = fr-st
          }
+      is UnitTy (uname) (uinner) ->
+       CheckResult {
+        inferred-type = ErrorTy,
+        effect-row = r.effect-row,
+        state = add-unify-error (r.state) cdx-field-on-unit-type ("'" & uname.value & "' is a unit type, not a record: the wrapper is a distinct type of its own and has no field '" & field.value & "'. A unit over a record has no accessor and is not accepted where the record is expected, so the field cannot be reached through it -- use the record directly, or declare the unit over a primitive") s
+       }
       is otherwise ->
        let (fr-ty, fr-st) = fresh-and-advance (r.state)
      in CheckResult {
@@ -2040,11 +2153,18 @@ Section: Infer Expression (dispatch)
       is RecordTy (rname) (rargs) (rfields) -> rname.value
       is ConstructedTy (cname) (cargs) -> cname.value
       is otherwise -> ""
+     in let unit-name = when resolved
+      is UnitTy (uname) (uinner) -> uname.value
+      is otherwise -> ""
+     in let unit-recv = text-length unit-name > 0
+     in let st-unit = if unit-recv
+      then add-unify-error (vr.state) cdx-field-on-unit-type ("'" & unit-name & "' is a unit type, not a record: the wrapper is a distinct type of its own and has no field '" & field.value & "'. A unit over a record has no accessor and is not accepted where the record is expected, so the field cannot be reached through it -- use the record directly, or declare the unit over a primitive") s
+      else vr.state
      in let marker-name = "__mutable-" & type-name
      in let mut-ok = env-has env marker-name
-     in let st-mut = if mut-ok then vr.state
-      else add-unify-error (vr.state) cdx-field-assign-immutable ("Field assignment requires a mutable record; '" & type-name & "' is immutable") s
-     in let st-obs = if field-assign-observable env rec then st-mut
+     in let st-mut = if unit-recv | mut-ok then st-unit
+      else add-unify-error st-unit cdx-field-assign-immutable ("Field assignment requires a mutable record; '" & type-name & "' is immutable") s
+     in let st-obs = if unit-recv | field-assign-observable env rec then st-mut
       else add-unify-error st-mut cdx-field-assign-unobservable ("Field assignment to '" & (field-assign-receiver-name rec) & "' cannot be observed: it names a definition, not a binding, so each mention builds a new '" & type-name & "' and this write is discarded. Bind the record with a let and thread it, or make the definition take the record as a parameter") s
      in let field-ty = when resolved
       is RecordTy (rname) (rargs) (rfields) -> lookup-record-field rfields (field.value)
@@ -2057,7 +2177,8 @@ Section: Infer Expression (dispatch)
         is otherwise -> ErrorTy
       is otherwise -> ErrorTy
      in let st2 = when field-ty
-      is ErrorTy -> add-unify-error st-obs cdx-unknown-record-field ("Record type has no field '" & field.value & "'") s
+      is ErrorTy -> if unit-recv then st-obs
+       else add-unify-error st-obs cdx-unknown-record-field ("Record type has no field '" & field.value & "'") s
       is otherwise -> let (_, u-st) = unify st-obs (vr.inferred-type) field-ty s in u-st
      in let (amb, amb-st) = row-union st2 (rr.effect-row) (vr.effect-row)
      in CheckResult {
@@ -2118,8 +2239,8 @@ Section: Infer Expression (dispatch)
  to accept those labels against a declared [FileSystem].
 
  So the FIRST question is what the body's CONCRETE labels say, not
- whether its row is open. An inferred row is almost always open — it
- carries a fresh tail — and the old rule asked about the tail first,
+ whether its row is open. An inferred row is almost always open -- it
+ carries a fresh tail -- and the old rule asked about the tail first,
  unified against the extension {E | t'}, and thereby forced the bare
  label E into the row while every dotted member fell into t' and
  survived. `with Store` over a body performing Store.Read left
@@ -2128,14 +2249,14 @@ Section: Infer Expression (dispatch)
 
  If any concrete label is covered, drop every covered label and keep
  the tail as it was: the tail was never what carried them. For the
- exact case this is what the old unify already computed — a row
- [Console] under `with Console` bound t' to the rest — so handler-smoke
+ exact case this is what the old unify already computed -- a row
+ [Console] under `with Console` bound t' to the rest -- so handler-smoke
  is unchanged, and the dotted case stops being a no-op with a CDX2092.
 
  Only a body whose row is a BARE tail (no concrete label covered, tail
  open) still unifies: E can only have entered through the tail, and
  only unification can bind it. Family discharge through a tail is not
- attempted — it would have to invent the member names.
+ attempted -- it would have to invent the member names.
 
  Clause bodies are inferred for their own
  ambient rows (a Console handler whose clause writes files yields

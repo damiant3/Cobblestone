@@ -12,8 +12,8 @@ A two-pane note-taking app with a folder sidebar on the left and a rich-text-sty
 
 ## Completeness
 
-55% — Dynamic note list and new-note creation rendering are functional. Clicking a note to select it is not wired (only New Note button fires). Toolbar buttons are no-ops. No actual text editing (editor body is a label, not an input). Persistence stubs declared but unused.
+55% -- Dynamic note list and new-note creation rendering are functional. Clicking a note to select it is not wired (only New Note button fires). Toolbar buttons are no-ops. No actual text editing (editor body is a label, not an input). Persistence stubs declared but unused.
 
 ## Codex Conformance
 
-Partial — Full Codex source with stubs for all platform calls. Local-storage stub declared but not yet called.
+Partial -- Full Codex source with stubs for all platform calls. Local-storage stub declared but not yet called.

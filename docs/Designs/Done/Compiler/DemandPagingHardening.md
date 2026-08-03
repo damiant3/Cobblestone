@@ -1,4 +1,4 @@
-# Demand Paging Hardening — closing the review findings
+# Demand Paging Hardening -- closing the review findings
 
 **Status: DONE.** All eight findings closed; the fix series (CLs
 7207–7211) shipped, gated, and is on main. Filed 2026-07-14.
@@ -10,7 +10,7 @@
 gates could not see, and the fixes.
 
 **What outlived this campaign, and where it went:** the optimization
-backlog in §3 is *deferred by measurement*, not forgotten — at a 6.9 s
+backlog in §3 is *deferred by measurement*, not forgotten -- at a 6.9 s
 self-compile no single remaining lever is worth more than a second, and
 stage 3 (frame pool + decommit) buys physical-memory reduction only. The
 per-core TSS that §2 CL B lists as future work **shipped separately**
@@ -51,7 +51,7 @@ current 1 MB stack.
 Each CL is a single concern, gated independently. Boot-emitter changes
 are codegen changes: build twice, install NewSeed, verify one-pass.
 
-### CL A — #PF handler hardening
+### CL A -- #PF handler hardening
 
 Only not-present faults grow the heap; the mapping restores NX.
 
@@ -60,16 +60,16 @@ Only not-present faults grow the heap; the mapping restores NX.
 - `emit-pagefault-handler`: read the error code at [rsp+40]; if P=1
   (protection/reserved violation) normalize the frame (shift the five
   saved registers over the error code) and fall through to the dump.
-  P=0 in-range faults map `identity | 0x83 | (1<<63)` — NX restored.
+  P=0 in-range faults map `identity | 0x83 | (1<<63)` -- NX restored.
   Exit path drops the error code (`add rsp,8`) before IRETQ.
 - P=0 + PDE-already-present (SMP race: another core mapped it between
   fault and handler) is benign: the store rewrites the same value.
-- Touched-page counter: increment cell 30688 per demand map — the
+- Touched-page counter: increment cell 30688 per demand map -- the
   honest physical-consumption metric (R10 HWM is floor-inflated).
   Folded here because it is two instructions in the same edit and
   saves a later seed cycle.
 
-### CL B — TSS + IST1: double faults become loud
+### CL B -- TSS + IST1: double faults become loud
 
 A 64-bit TSS with IST1 gives the CPU a known-good emergency stack for
 #DF, converting every silent triple-fault (F1, F2, and any future
@@ -88,7 +88,7 @@ stack-invariant violation) into the standard `!EXC` dump.
   stacks demand-grow, changing stack semantics and requiring per-core
   TSS for SMP correctness. Not this campaign.
 
-### CL C — demand top derived from actual RAM
+### CL C -- demand top derived from actual RAM
 
 `emit-demand-unmap` computes the clear range at boot instead of the
 constant 1024: `hi = min(1024, ram_pages - 32)` where ram_pages =
@@ -97,7 +97,7 @@ restores every `-mem` down to ~128 MB. The handler's constant range
 check stays: only cleared pages ever fault. At `-mem >= 3072 + 64 MB`
 behavior is byte-equivalent to today.
 
-### CL D — AP idle stacks out of the demand range + pre-touch loop
+### CL D -- AP idle stacks out of the demand range + pre-touch loop
 
 - AP idle stacks move from `6 MB + i*64 KB` (demand range, heap
   overlap) to fixed low always-present memory: base 0x20000, 16 KB per
@@ -109,13 +109,13 @@ behavior is byte-equivalent to today.
   `ceil(size / 2 MB) + 1` touch points, so raising
   `proc-spawn-stack-size` past 2 MB cannot silently skip middle pages.
 
-### CL E — codex-vm default `-mem` 2048 -> 3072
+### CL E -- codex-vm default `-mem` 2048 -> 3072
 
 Belt and braces: aligns the default with the harness, and binaries
 compiled by pre-CL-C seeds remain bootable without flags. codex-vm.c +
 rebuilt exe (matched pair).
 
-### CL F — doc sweep
+### CL F -- doc sweep
 
 OperatorsManual (`-mem` default row, debugger example, demand-paging
 constraints note), ExaminersAssay (run example), ArchitectsSketchbook
@@ -125,9 +125,9 @@ constraints note), ExaminersAssay (run example), ArchitectsSketchbook
 half of F8 was claimed but not done: the doc kept its survey pass
 signature, survey error cases, and survey migration steps for another
 week, and was corrected separately (2026-07-13). Do not read this row
-as evidence F8 is closed — check the doc.
+as evidence F8 is closed -- check the doc.
 
-### CL G — growth-pingpong regression script
+### CL G -- growth-pingpong regression script
 
 `build/test-growth.ps1`: append generated ballast definitions (~86 KB)
 to the concatenated compiler source, self-compile twice, assert the
@@ -146,32 +146,32 @@ to main carrying the final seed.
 
 Ranked. Each builds on the Stage-1 machinery; none blocks the fixes.
 
-### MEASURED, 2026-07-07 (host sampler — see below)
+### MEASURED, 2026-07-07 (host sampler -- see below)
 
 Before chasing the backlog I profiled the self-compile. **The
 `__alloc` zero-fill is NOT the bottleneck it looked like.** Two
 sampler results:
 
 - Guest sampler (interrupt-frame RIP, injection-skewed): `__alloc`
-  57%. This is the skew — WHP delivers the injected timer at the next
+  57%. This is the skew -- WHP delivers the injected timer at the next
   instruction boundary, which biases toward the tight `rep stosb` in
   `__alloc`. An A/B seed with the zero-fill deleted entirely changed
   the self-compile median by **0.1s of 21.9s** (21.9 -> 21.8, inside
   noise), and the guest histogram was nearly unchanged (still ~59%
-  "in __alloc") — proof the 57% is where the timer lands, not where
+  "in __alloc") -- proof the 57% is where the timer lands, not where
   the time goes.
 - Host sampler (VP-cancel RIP, bias-free): `__write_binary` ~78%,
   `emit-map-lines` ~5%, `__alloc` ~5%. The real cost is **serial
   output of the 2 MB binary**, one byte per port write through the
-  data channel, plus the symbol-map emission — I/O, not compute.
+  data channel, plus the symbol-map emission -- I/O, not compute.
 
 So the ranked backlog is re-prioritized: the `__alloc` zero-elision
-(item 1b below) is a **non-win** on current evidence — keep the
+(item 1b below) is a **non-win** on current evidence -- keep the
 zero-fill (it is the poison safety net) unless a later measurement
 under a fixed output path says otherwise. The output path is the
 lever.
 
-0. **Batch the binary output path** — **DONE 2026-07-08** (blu CLs
+0. **Batch the binary output path** -- **DONE 2026-07-08** (blu CLs
    7301 vm / 7304 builtin+seed / 7305 emit-binary-tail+seed / 7307
    debug-map+seed). Shipped as the second option, minus even the
    copy: the guest stores addr/len into cells 36160/36168 and rings
@@ -180,7 +180,7 @@ lever.
    binary). Feature probe IN 0x511 == 0xB7; anywhere else the legacy
    per-byte loop runs (real hardware, old VMs). The 0x700000 ring
    option was rejected: that GPA is live heap in current guests
-   (heap base 0x600000) — the VM-side ring design predates the
+   (heap base 0x600000) -- the VM-side ring design predates the
    layout and must stay inert. The MAP1 debug map now rides the
    content buffer (same stream bytes, tail-bytes empty). Measured:
    self-compile 25.9s -> 7.8s (3.3x), gate build 188.5s -> 117.5s,
@@ -188,7 +188,7 @@ lever.
    `__alloc` 22%, `emit-map-lines` 21%).
 
    **TEXT leg also DONE 2026-07-08** (blu CL 7311, seed F1F9DF85):
-   the uni print sink is staged — every wait-and-out triple in the
+   the uni print sink is staged -- every wait-and-out triple in the
    inline CCE-to-UTF-8 loops became `call __serial_put` (stage at
    cursor cell 36192 when the blit is present, legacy UART
    otherwise), bracketed per print by __print_begin/__print_flush
@@ -212,12 +212,12 @@ lever.
    - (1b) `__alloc` zero-fill elision: **CLOSED 2026-07-08 with
      data.** The revisit condition fired (output path fixed, fresh
      host profile showed `__alloc` at 33%), so the prescribed A/B ran:
-     an elision seed self-compiles in 6.4s vs 6.9s zero-fill — the
+     an elision seed self-compiles in 6.4s vs 6.9s zero-fill -- the
      33% share was sampler attribution skew (the VP-cancel kicker
      lands disproportionately inside tight `rep stosb` loops; n=48
      samples also reassigned 44% to `__str_concat` on the next run).
      0.5s does not justify removing the poison safety net, and it
-     does not justify stage 3 on compile-speed grounds either —
+     does not justify stage 3 on compile-speed grounds either --
      stage 3's prize remains physical-memory reduction only. Keep
      the zero-fill permanently; compile speed has hit diminishing
      returns (no single lever >1s remains at 6.9s).
@@ -237,13 +237,13 @@ lever.
    metrics report touched-per-phase by sampling it at phase-measure.
 6. **invlpg elision**: architecturally unnecessary for P=0 -> P=1
    transitions (x86 does not cache not-present entries). Two
-   instructions per fault, ~500 faults per compile — negligible; do it
+   instructions per fault, ~500 faults per compile -- negligible; do it
    only if the handler is edited anyway.
 
 Rejected: 1 GB pages (kills touched-page accounting granularity and
 the future frame pool for two saved faults); #PF on IST (changes stack
 semantics, needs per-core TSS first); a per-prologue stack ceiling
-check (per-call cost the demand design exists to avoid — IST + #DF
+check (per-call cost the demand design exists to avoid -- IST + #DF
 dump covers the diagnostic need for free).
 
 ---

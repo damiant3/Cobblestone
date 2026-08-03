@@ -2,7 +2,7 @@
  * codex-vm: Minimal WHP-based VM for Codex bare-metal binaries.
  * Replaces QEMU for development. Serial on TCP sockets, IDE from raw file.
  *
- * Usage: codex-vm.exe -kernel file.cdx [-disk file.img] [-mem 2048]
+ * Usage: codex-vm.exe -kernel file.cdx [-disk file.img] [-disk2 file.img] [-mem 2048]
  *        [-data-port 12345] [-ctrl-port 12346]
  *        [-watch 0x1a6f7c5] [-watch-size 8]
  *        [-headless]
@@ -30,10 +30,23 @@ static size_t guest_mem_size;
 static WHV_PARTITION_HANDLE partition;
 static int smp_cores;  /* 0 or 1 = single-core (default); 2-16 = multi-core */
 
+/* MSR storage for guest-visible MSRs.
+   Declared here rather than beside handle_msr because the boot paths that set a
+   register on the VP directly must also set the shadow, and they run earlier in
+   this file. A shadow that disagrees with the register is a diagnostic that
+   lies: the guest reads one value and the CPU holds another. */
+static unsigned long long msr_efer = 0;
+static unsigned long long msr_star = 0;
+static unsigned long long msr_lstar = 0;
+static unsigned long long msr_cstar = 0;
+static unsigned long long msr_sfmask = 0;
+static unsigned long long msr_kernel_gs_base = 0;
+static unsigned long long msr_apic_base = 0xFEE00900ULL; /* default: enabled, BSP */
+
 /* System-wide mutex: serialize WHP partition create/destroy across all
    codex-vm instances.  vid.sys on Win11 26100 corrupts its kernel heap
    when multiple processes hit WHvCreatePartition / WHvDeletePartition /
-   WHvMapGpaRange concurrently — cascade of 20 event-viewer entries and
+   WHvMapGpaRange concurrently -- cascade of 20 event-viewer entries and
    bug checks 0xD1, 0x13A, 0x50.  Named mutex ensures one-at-a-time. */
 static HANDLE whp_mutex;
 static void whp_lock(void) {
@@ -133,7 +146,7 @@ static volatile LONG pending_mouse_btn_latch = 0;
 static volatile unsigned long long pending_kbd_scancode = 0;
 static volatile int pending_kbd_valid = 0;
 
-/* Forward declaration — full definition + instance below serial/PIC/NE2K */
+/* Forward declaration -- full definition + instance below serial/PIC/NE2K */
 typedef struct IdeState_ {
     unsigned char *data;
     size_t size;
@@ -145,13 +158,29 @@ typedef struct IdeState_ {
     int writing;            /* 1 during a WRITE SECTORS (0x30) transfer */
     int identing;           /* 1 during an IDENTIFY DEVICE (0xEC) transfer */
     const char *path;       /* disk image path, for write-back */
+    int present;            /* 0 = no medium behind this position on the bus */
 } IdeState;
 static IdeState ide;
+/* The primary channel's slave, from -disk2. Two positions is what the guest's
+   own drive manager assumes: dm-enumerate-drives probes four (master and slave
+   on each of two channels) and dm-exec-install partitions whichever one it was
+   given. With a single image behind every position, "install to drive 1"
+   reformatted drive 0 -- the disk the guest booted from -- and nothing in the
+   guest could see it, because every position answered identically. The
+   secondary channel is still undecoded, which is the honest answer: an IN on an
+   unclaimed port returns 0xFF, the floating bus, and the guest's own detect
+   reads that as no drive. */
+static IdeState ide_slave;
+/* Bit 4 of the last drive/head write on the primary channel. The register also
+   carries LBA bits 27:24, so the write is recorded on BOTH devices and only the
+   selection bit picks which one the following accesses reach. */
+static int ide_sel = 0;
+static IdeState *ide_active(void) { return ide_sel ? &ide_slave : &ide; }
 static void ide_flush(IdeState *d, size_t off, size_t len);
 
 /* ══ UEFI Emulation ══ */
 #define UEFI_TABLE_PAGE   0xF0000   /* fake SystemTable + protocols */
-#define UEFI_TRAP_PAGE    0xF1000   /* filled with HLT opcodes — halt-based dispatch */
+#define UEFI_TRAP_PAGE    0xF1000   /* filled with HLT opcodes -- halt-based dispatch */
 #define UEFI_SYSTABLE_PTR 0x8000    /* guest reads SystemTable from here */
 
 /* Trap addresses (offsets from UEFI_TRAP_PAGE, each 8 bytes apart) */
@@ -209,6 +238,47 @@ static const unsigned char GUID_SFS[16]          = {0x22,0x5B,0x4E,0x96, 0x59,0x
 static const unsigned char GUID_LOADED_IMAGE[16] = {0xA1,0x31,0x1B,0x5B, 0x62,0x95, 0xD2,0x11, 0x8E,0x3F,0x00,0xA0,0xC9,0x69,0x72,0x3B};
 static const unsigned char GUID_DEVICE_PATH[16]  = {0x91,0x6E,0x57,0x09, 0x3F,0x6D, 0xD2,0x11, 0x8E,0x39,0x00,0xA0,0xC9,0x69,0x72,0x3B};
 static const unsigned char GUID_GOP[16]          = {0xDE,0xA9,0x42,0x90, 0xDC,0x23, 0x38,0x4A, 0x96,0xFB,0x7A,0xDE,0xD0,0x80,0x51,0x6A};
+/* EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL. The ConInEx block at UEFI_TABLE_PAGE+0x300
+   and its ReadKeyStrokeEx have existed here for a long time and were
+   unreachable: LocateProtocol answered NOT_FOUND for this GUID, so the
+   compiler's uefi-read-key-ex builtin -- which builds exactly these 16 bytes on
+   the stack and calls LocateProtocol with them -- could never succeed under
+   this emulator. That made the one input path that calls firmware untestable,
+   while uefi-read-key (a bare read of the PS/2 cell at key-buffer-addr) was
+   testable and became the only path anything used. On a board with no PS/2
+   port that path cannot ever deliver a key. */
+static const unsigned char GUID_INPUT_EX[16]     = {0x34,0x75,0x9E,0xDD, 0x62,0x77, 0x98,0x46, 0x8C,0x14,0xF5,0x85,0x17,0xA6,0x25,0xAA};
+
+/* ══ Intel PCH USB2 port routing ══
+   On these parts the USB2 pins of a shared port belong to the companion EHCI
+   controller until software moves them. Four PCI-config registers on the xHCI
+   function do it: XUSB2PR (0xD0, which ports are routed to xHCI), XUSB2PRM
+   (0xD4, which ports CAN be), USB3PSSEN (0xD8, SuperSpeed enable) and USB3PRM
+   (0xDC, its mask). Only bits set in the mask are writable in the routing
+   register, and a port left with the companion presents nothing whatever to
+   the xHCI -- no connect status, no port power, no device.
+
+   That last clause is why this is modelled. From inside the guest it is
+   indistinguishable from a device that enumerated and then delivered nothing.
+   Until now this model presented a NEC/Renesas part, so the driver's routing
+   path short-circuited on the vendor check and no emulated run had ever
+   executed it.
+
+   -xhci-intel presents a Lynx Point PCH with the routable ports still on the
+   companion, so the guest must route them before it sees anything.
+   -xhci-intel-lock additionally makes XUSB2PR read-only, which is the arm
+   that says no: a correct driver still finds nothing, and that is what shows
+   the gate is what decides. */
+static int xhci_intel = 0;
+static int xhci_intel_lock = 0;
+static int xhci_pci_slot = -1;
+static int xhci_pci_slot2 = -1;   /* the second controller, -xhci-two */
+static unsigned int xhci_xusb2pr = 0;
+static unsigned int xhci_usb3pssen = 0;
+/* Ports 1..3 are the USB2 ones this model presents (full-speed keyboard,
+   high-speed camera, high-speed hub); port 0 is the SuperSpeed disk. */
+#define XHCI_XUSB2PRM 0xEu
+#define XHCI_USB3PRM  0x1u
 
 /* ══ PCI Configuration Space ══ */
 #define PCI_MAX_DEVICES 8
@@ -229,6 +299,15 @@ static struct {
     unsigned short command;
 } pci_devices[PCI_MAX_DEVICES];
 static int pci_device_count = 0;
+
+/* The xHCI register window follows the BAR the guest most recently wrote,
+   not a compile-time constant. Until 2026-07-31 this dispatch used a fixed
+   XHCI_BAR of 0xFE800000, which sits INSIDE GopXhci's usable window
+   [0xC0000000, 0x100000000), so xhci-init-relocated was never once taken
+   under this model and a relocation could not be observed, let alone a
+   collision between two controllers relocating to the same address. */
+static unsigned int xhci_bar_initial = 0xFE800000u;
+
 
 static int pci_add_device(unsigned short vendor, unsigned short device,
     unsigned char cls, unsigned char sub, unsigned char progif,
@@ -254,6 +333,14 @@ static int pci_add_device(unsigned short vendor, unsigned short device,
 
 static unsigned int pci_read_config(int dev, int func, int offset) {
     if (func != 0 || dev < 0 || dev >= pci_device_count) return 0xFFFFFFFF;
+    if (xhci_intel && dev == xhci_pci_slot) {
+        switch (offset & 0xFC) {
+        case 0xD0: return xhci_xusb2pr;
+        case 0xD4: return XHCI_XUSB2PRM;
+        case 0xD8: return xhci_usb3pssen;
+        case 0xDC: return XHCI_USB3PRM;
+        }
+    }
     switch (offset & 0xFC) {
     case 0x00: return pci_devices[dev].vendor | ((unsigned int)pci_devices[dev].device << 16);
     case 0x04: return pci_devices[dev].command;
@@ -278,9 +365,24 @@ static unsigned int pci_read_config(int dev, int func, int offset) {
 
 static void pci_write_config(int dev, int func, int offset, unsigned int val) {
     if (func != 0 || dev < 0 || dev >= pci_device_count) return;
+    if (xhci_intel && dev == xhci_pci_slot) {
+        /* Unroutable bits are hardwired, so a mask read back from XUSB2PRM is
+           the only value that moves everything movable. */
+        if ((offset & 0xFC) == 0xD0) {
+            unsigned int was = xhci_xusb2pr;
+            if (!xhci_intel_lock) xhci_xusb2pr = val & XHCI_XUSB2PRM;
+            fprintf(stderr, "xHCI: XUSB2PR write 0x%X -> routed 0x%X (was 0x%X, mask 0x%X)%s\n",
+                    val, xhci_xusb2pr, was, XHCI_XUSB2PRM,
+                    xhci_intel_lock ? " [locked: ignored]" : "");
+            return;
+        }
+        if ((offset & 0xFC) == 0xD8) { xhci_usb3pssen = val & XHCI_USB3PRM; return; }
+    }
     if ((offset & 0xFC) == 0x04) pci_devices[dev].command = (unsigned short)(val & 0xFFFF);
     else if ((offset & 0xFC) >= 0x10 && (offset & 0xFC) <= 0x24) {
         int bar_idx = ((offset & 0xFC) - 0x10) / 4;
+        if ((dev == xhci_pci_slot || dev == xhci_pci_slot2) && bar_idx == 0 && val != 0xFFFFFFFF)
+            fprintf(stderr, "xHCI ord%d: BAR0 write 0x%08X (was 0x%08X)\n", dev == xhci_pci_slot ? 0 : 1, val, pci_devices[dev].bar[0]);
         if (val == 0xFFFFFFFF) {
             pci_devices[dev].bar_probe[bar_idx] = 1;  /* size query; base kept */
         } else {
@@ -357,14 +459,14 @@ static unsigned int pit_current_count(int ch) {
 #define XHCI_MAX_PORTS 4
 #define XHCI_HUB_TIERS 2
 
-static struct {
+struct xhci_state {
     unsigned int usbcmd;
     unsigned int usbsts;
     unsigned int dnctrl;
     unsigned long long crcr;
     /* Exact command-ring walk position + consumer cycle state. CRCR's
        address field is bits 63:6, so parking the walk position in crcr
-       and reloading it with & ~0x3F rounded DOWN to a 64-byte boundary —
+       and reloading it with & ~0x3F rounded DOWN to a 64-byte boundary --
        replaying up to three consumed command TRBs per doorbell. Harmless
        while ENABLE_SLOT was stateless; slot allocation made every replay
        mint a phantom slot. */
@@ -379,9 +481,15 @@ static struct {
     unsigned long long er_addr;  /* event ring base (from ERST entry 0) */
     unsigned short er_size;      /* event ring size (from ERST entry 0) */
     int er_ccs;                  /* consumer cycle state */
+    unsigned long long guest_erdp; /* last ERDP the guest wrote back -- the
+                                      consumer's position, which is what makes
+                                      ring-full REAL: a producer that laps an
+                                      unacknowledged consumer is corruption no
+                                      hardware commits */
+    int er_dropped;              /* events dropped on a full ring (reported once) */
     /* Root port (1-based) each slot was addressed against, latched from the
        ADDRESS_DEVICE input context. Device personality (storage / HID kbd /
-       UVC) keys off the PORT, as on real hardware — not the slot number,
+       UVC) keys off the PORT, as on real hardware -- not the slot number,
        which is just allocation order. */
     int slot_port[XHCI_MAX_SLOTS + 1];
     /* The rest of the slot context's identity fields, latched from the same
@@ -410,15 +518,80 @@ static struct {
        handoff observable instead of a constant. */
     int legacy_bios_owned;
     int legacy_os_owned;
-} xhci;
+    /* One latch per slot and DCI for the periodic parameter report below, so
+       it says its piece on the first transfer and not on every one. */
+    unsigned char periodic_reported[XHCI_MAX_SLOTS + 1][32];
+    int next_slot;
+    int scratch_checked;   /* -xhci-scratch: verdict printed once */
+    int scratch_bad;       /* -xhci-scratch: array judged unusable */
+};
 
-static int xhci_next_slot = 1;
+/* TWO controllers. The ASUS carries an Intel PCH xHCI and an ASMedia one
+   (CTL n=2: 8086:a12f ord 0, 1b21:1242 ord 1), and xhci-reloc-base is a
+   single constant with no per-controller term, so if both relocate the
+   second lands on top of the first. One controller cannot express that. */
+static struct xhci_state xhci_ctl[2];
+static struct xhci_state *xcur = &xhci_ctl[0];
+static int xhci_two = 0;
+static unsigned int xhci_bar2_initial = 0x91000000u;
+
+static unsigned long long xhci_decode_base_slot(int slot) {
+    if (slot < 0) return 0;
+    if (!(pci_devices[slot].command & 0x2)) return 0;   /* memory decode off */
+    return (unsigned long long)(pci_devices[slot].bar[0] & 0xFFFFFFF0u);
+}
+
+/* Which controller answers this address. Both can decode the same window
+   once both have relocated to the one xhci-reloc-base; real hardware gives
+   no guarantee there, and this model lets the HIGHER ordinal answer, which
+   is the case the hypothesis names: the keyboard's saved pointers then
+   address the ASMedia rather than the Intel. */
+static int xhci_sel_for(unsigned long long gpa) {
+    int sel = -1;
+    unsigned long long b0 = xhci_decode_base_slot(xhci_pci_slot);
+    unsigned long long b1 = xhci_two ? xhci_decode_base_slot(xhci_pci_slot2) : 0;
+    if (b0 && gpa >= b0 && gpa < b0 + XHCI_BAR_SIZE) sel = 0;
+    if (b1 && gpa >= b1 && gpa < b1 + XHCI_BAR_SIZE) sel = 1;
+    return sel;
+}
 
 /* -xhci-no-root-kbd: unplug the root-port HID keyboard, leaving the hub as
    the only route to one. The bus walk takes the first keyboard it finds and
    the root port comes first, so this is what lets a test drive the hub path
    with an unmodified guest binary -- the topology is the variable. */
 static int xhci_no_root_kbd = 0;
+/* -hid-nak: the HID keyboard never delivers -- every interrupt IN is NAKed,
+   the pending TD stays in progress forever (USB2 8.5.6.4: NAK does not
+   consume error budget, the xHC retries every ESIT per xHCI 4.14.3.1, the
+   endpoint never halts). This is the ASUS flight signature measured
+   2026-08-03: EPINT=0, dq parked, est=1, and Stop Endpoint answering with
+   FSE code 26 (Stopped, TD in progress) -- the arm exists to reproduce
+   that machine on the desk. */
+static int xhci_hid_nak = 0;
+/* -hid-idle-quirk: after the guest sends SET_IDLE with duration 0, the
+   keyboard NAKs every interrupt IN until further notice -- the quirk class
+   where "report only on change" is honored as "never report". HID 1.11
+   F.3 requires a boot keyboard to report on EVERY poll by default and
+   7.2.4 lets SET_IDLE silence it; a quirky device over-honors the
+   silence. The arm exists to test the driver WITHOUT the request against
+   a device that punishes the request. */
+static int hid_idle_quirk = 0;
+static int hid_idle_zeroed = 0;
+/* Tracked HID device state, answered by the class GETs (HID 1.11 7.2).
+   Protocol defaults to 1 (report) per 7.2.6; idle default 0 here rather
+   than the recommended 500 ms so a guest reading GET_IDLE sees exactly
+   what it (or nobody) set. */
+static int hid_idle_rate = 0;
+static int hid_protocol = 1;
+static int hid_configuration = 0;
+
+/* -xhci-no-disk: unplug the SuperSpeed mass storage on root port 1. The bus
+   walk in usb-hosts short-circuits only once keyboard AND mouse AND disk are
+   all found, so with a disk present it stops at controller 0 and never brings
+   up a second one. The ASUS reports disk=n, which is exactly why it walks on
+   to the ASMedia -- without this the two-controller bed cannot reach the
+   second controller at all. */
+static int xhci_no_disk = 0;
 
 /* -xhci-hub-tiers N: how many hubs to stack on root port 4. One is a
    high-speed hub with a full-speed keyboard below it. Two puts a
@@ -427,6 +600,89 @@ static int xhci_no_root_kbd = 0;
    carrying the nearest high-speed ancestor's down the walk. A laptop
    with a monitor hub in front of a keyboard hub is this shape. */
 static int xhci_hub_tiers = 1;
+
+/* -xhci-calibrate-periodic: skew the EXPECTED Interval and Max ESIT Payload
+   by one, so a correct driver is reported as wrong. The value checks below
+   are the arms that make this bed able to say a driver is wrong rather than
+   merely present; a check that has never said no is worth what no check is
+   worth (L-FALSIF), and this flag is how the no gets run. */
+static int xhci_calibrate_periodic = 0;
+
+/* -xhci-psi: declare Protocol Speed ID dwords and report NON-DEFAULT Port
+   Speed values in PORTSC.
+
+   xHCI 1.2 Table 7-13's speed IDs (1 full, 2 low, 3 high, 4 super) are
+   DEFAULTS, and 7.2.2.1.1 conditions them: they "shall be presented in the
+   PORTSC Port Speed field only if no PSI Dwords are defined (PSIC = '0')". A
+   controller that declares its own PSI dwords may report full speed as any
+   value it defined, and a driver must read the Supported Protocol capability
+   to learn the mapping rather than assume the table.
+
+   No previous bed could present that, because the model agreed with the
+   assumption: every arm reported 1 for full speed, so a driver that hardcoded
+   the defaults and one that read the capability were indistinguishable. Under
+   this flag they are not, and three things move at once for a driver that
+   assumed -- endpoint zero's max packet size, which branch of the Interval
+   encoding applies, and whether a device behind a hub is given a transaction
+   translator at all. */
+static int xhci_psi = 0;
+#define XHCI_PSI_FULL  5
+#define XHCI_PSI_LOW   6
+#define XHCI_PSI_HIGH  7
+#define XHCI_PSI_SUPER 8
+
+/* -xhci-csz: advertise CSZ=1 (HCCPARAMS1 bit 2) and hold every context to
+   the 64-byte stride that bit demands, the way Intel PCH silicon does. Every
+   bed before this one reported CSZ=0, so the driver's 64-byte context path
+   was compiled into every image and executed nowhere except the ASUS -- the
+   exact machine where the interrupt endpoint is silent. Under this flag the
+   input control context is still one entry at +0, the slot context moves to
+   +64, DCI n to +(n+1)*64 on the input side and +n*64 in the device context.
+   A driver that hardcodes 32 writes its slot context inside the input
+   control context and its ring pointers where the controller will not look:
+   ADDRESS_DEVICE latches a garbage port, the doorbell reads a zero dequeue
+   pointer, and the existing schedule checks print why nothing moves. */
+static int xhci_csz64 = 0;
+#define XHCI_CTXSZ (xhci_csz64 ? 64 : 32)
+
+/* -xhci-scratch <N>: declare N scratchpad buffers in HCSPARAMS2 (hi 25:21,
+   lo 31:27) and REFUSE the first ENABLE_SLOT unless DCBAA[0] points at an
+   array of N page-aligned, non-zero, in-RAM page pointers. QEMU and this
+   model declared zero forever, so the driver's scratchpad path has never run
+   in any bed; Intel parts demand real pages and DMA into them, and a missing
+   or short array is silent corruption on metal. Refusal with completion code
+   9 plus a stderr verdict is the observable stand-in for that corruption. */
+static int xhci_scratch_bufs = 0;
+
+/* -uefi-conout-remode: the first ConOut ClearScreen switches the GOP to
+   1024x768/1024, modelling AMI Aptio V's GraphicsConsole activation. See the
+   ClearScreen trap for the full account. */
+static int uefi_conout_remode = 0;
+
+/* -xhci-evt-flood <N>: post N extra Port Status Change events at the Run
+   transition. 64-TRB event ring: N >= 64 forces the producer through the
+   wrap with the consumer far behind, and past it into the full condition --
+   the two paths a 4-port bed can never reach and a 26-port Intel reaches
+   before enumeration begins. */
+static int xhci_evt_flood = 0;
+
+/* The speed class actually on each root port, kept apart from the ID used to
+   report it. Without the separation the model cannot tell a driver that read
+   the mapping from one that guessed it, because both answers are the same
+   number. */
+static int xhci_port_true_speed[XHCI_MAX_PORTS];
+
+/* Table 7-13 by default; the declared values when PSI dwords exist. */
+static int xhci_speed_id(int true_speed) {
+    if (!xhci_psi) return true_speed;
+    switch (true_speed) {
+    case 1: return XHCI_PSI_FULL;
+    case 2: return XHCI_PSI_LOW;
+    case 3: return XHCI_PSI_HIGH;
+    case 4: return XHCI_PSI_SUPER;
+    default: return true_speed;
+    }
+}
 
 /* BOT (Bulk-Only Transport) state for the slot-1 mass-storage device.
    The CBW and any write data arrive on the bulk OUT ring (even DCI);
@@ -494,7 +750,7 @@ static const unsigned char usb_hid_dev_desc[] = {
     0x10, 0x02, /* bcdUSB = 2.10 */
     0, 0, 0,    /* class/sub/proto = per-interface */
     64,         /* bMaxPacketSize0 */
-    0x3D, 0x04, /* idVendor = 0x043D (Lexmark — generic) */
+    0x3D, 0x04, /* idVendor = 0x043D (Lexmark -- generic) */
     0x01, 0x00, /* idProduct = 0x0001 */
     0x00, 0x01, /* bcdDevice = 1.00 */
     0, 0, 0,    /* iManufacturer, iProduct, iSerial */
@@ -685,7 +941,7 @@ static void uvc_generate_test_frame(unsigned char *buf) {
 }
 
 /* HID keyboard held-key set. A boot report describes the keys currently
-   HELD, not a queue of events — the old builder scanned the PS/2 event
+   HELD, not a queue of events -- the old builder scanned the PS/2 event
    queue, so a key looked held until the PS/2 consumer drained it and a
    pure-USB guest saw keys stuck down forever. Every host input path calls
    hid_key_event beside kbd_enqueue: make adds the usage, break removes it.
@@ -696,7 +952,7 @@ static void uvc_generate_test_frame(unsigned char *buf) {
    (the same predicate that suppresses the host's direct cell-28680 write);
    mirroring them into the HID set as well would double every keystroke
    for a payload that also pumps USB. When the PS/2 route is live the HID
-   set stays empty — and is cleared, so a make that landed before the
+   set stays empty -- and is cleared, so a make that landed before the
    guest unmasked IRQ1 cannot linger as a phantom held key. */
 static unsigned char hid_held_mods = 0;
 static unsigned char hid_held_keys[6] = {0};
@@ -737,23 +993,56 @@ static void build_hid_keyboard_report(unsigned char *report) {
     }
 }
 
-static void xhci_post_event(int trb_type, int slot, int completion, unsigned long long trb_ptr) {
-    if (xhci.er_addr == 0 || xhci.er_size == 0) return;
-    unsigned long long off = xhci.er_addr + (unsigned long long)xhci.erdp_idx * 16;
+/* Endpoint ID (control bits 20:16) is part of every Transfer Event (xHCI
+   6.4.2.1). This model omitted it until 2026-08-03, so every bed transfer
+   event carried epid=0 and any per-endpoint attribution done by a guest
+   counted real completions as foreign -- the kbd probe's EPINT row read 0
+   in beds where the endpoint was in fact delivering. Command Completion
+   (6.4.2.2) and Port Status Change (6.4.2.3) events have no such field;
+   callers pass 0. */
+static void xhci_post_event_ep_resid(int trb_type, int slot, int ep_id, int completion, unsigned long long trb_ptr, int resid) {
+    if (xcur->er_addr == 0 || xcur->er_size == 0) return;
+    /* Ring full = advancing the producer would land on the slot the guest's
+       last ERDP write-back names (xHCI 4.9.4, one-slot-open convention). Real
+       silicon stops posting and drops; it never laps the consumer. Every bed
+       before this check posted blindly, and none ever produced 64 events, so
+       neither the wrap nor the full path had ever executed against the guest
+       (the ASUS's 26-port controller crosses both). Report the first drop:
+       a guest gone silent for this reason must be attributable. */
+    if (xcur->guest_erdp >= xcur->er_addr &&
+        xcur->guest_erdp < xcur->er_addr + (unsigned long long)xcur->er_size * 16) {
+        int consumer = (int)((xcur->guest_erdp - xcur->er_addr) / 16);
+        if ((xcur->erdp_idx + 1) % xcur->er_size == (unsigned)consumer) {
+            if (!xcur->er_dropped)
+                fprintf(stderr, "xHCI: EVENT RING FULL (size=%u, consumer at %d): dropping type=%d -- guest stopped acknowledging ERDP\n",
+                        xcur->er_size, consumer, trb_type);
+            xcur->er_dropped++;
+            return;
+        }
+    }
+    unsigned long long off = xcur->er_addr + (unsigned long long)xcur->erdp_idx * 16;
     if (off + 16 > guest_mem_size) return;
     unsigned char *ev = (unsigned char *)guest_mem + off;
     /* TRB pointer (param lo/hi) = address of command/transfer TRB that completed */
     *(unsigned int *)(ev + 0) = (unsigned int)(trb_ptr & 0xFFFFFFFF);
     *(unsigned int *)(ev + 4) = (unsigned int)(trb_ptr >> 32);
     /* Status: completion code in bits 31:24, residual in bits 23:0 */
-    *(unsigned int *)(ev + 8) = (completion & 0xFF) << 24;
-    /* Control: TRB type in bits 15:10, slot in bits 31:24, cycle bit */
-    *(unsigned int *)(ev + 12) = ((trb_type & 0x3F) << 10) | ((slot & 0xFF) << 24) | (xhci.er_ccs & 1);
-    xhci.erdp_idx++;
-    if (xhci.erdp_idx >= xhci.er_size) {
-        xhci.erdp_idx = 0;
-        xhci.er_ccs ^= 1;
+    *(unsigned int *)(ev + 8) = ((completion & 0xFF) << 24) | (resid & 0xFFFFFF);
+    /* Control: TRB type in bits 15:10, endpoint ID in 20:16, slot in 31:24 */
+    *(unsigned int *)(ev + 12) = ((trb_type & 0x3F) << 10) | ((ep_id & 0x1F) << 16) | ((slot & 0xFF) << 24) | (xcur->er_ccs & 1);
+    xcur->erdp_idx++;
+    if (xcur->erdp_idx >= xcur->er_size) {
+        xcur->erdp_idx = 0;
+        xcur->er_ccs ^= 1;
     }
+}
+
+static void xhci_post_event_ep(int trb_type, int slot, int ep_id, int completion, unsigned long long trb_ptr) {
+    xhci_post_event_ep_resid(trb_type, slot, ep_id, completion, trb_ptr, 0);
+}
+
+static void xhci_post_event(int trb_type, int slot, int completion, unsigned long long trb_ptr) {
+    xhci_post_event_ep_resid(trb_type, slot, 0, completion, trb_ptr, 0);
 }
 
 /* Advance one TRB slot, following a link TRB (with toggle-cycle handling)
@@ -781,12 +1070,14 @@ static unsigned long long xhci_next_trb(unsigned long long addr, int *ccs) {
    were never copied answers every doorbell with a dequeue pointer of zero
    and moves no bytes, while ADDRESS_DEVICE still reports success.
 
-   32-byte contexts (we advertise CSZ = 0). Input: control context at +0,
-   slot context at +32, DCI n at +(n+1)*32. Output: slot context at +0,
-   DCI n at +n*32. So add-flag bit i copies input+(i+1)*32 to device+i*32. */
+   Context stride is XHCI_CTXSZ: 32 when we advertise CSZ = 0, 64 under
+   -xhci-csz. Input: control context at +0, slot context at +stride, DCI n
+   at +(n+1)*stride. Output: slot context at +0, DCI n at +n*stride. So
+   add-flag bit i copies input+(i+1)*stride to device+i*stride. */
 static void xhci_copy_input_ctx(unsigned long long ictx, int slot) {
-    if (xhci.dcbaap == 0 || ictx == 0) return;
-    unsigned long long ent = xhci.dcbaap + (unsigned long long)slot * 8;
+    int cs = XHCI_CTXSZ;
+    if (xcur->dcbaap == 0 || ictx == 0) return;
+    unsigned long long ent = xcur->dcbaap + (unsigned long long)slot * 8;
     if (ent + 8 > guest_mem_size) return;
     unsigned long long dctx =
         *(unsigned long long *)((unsigned char *)guest_mem + ent) & ~0x3FULL;
@@ -795,11 +1086,20 @@ static void xhci_copy_input_ctx(unsigned long long ictx, int slot) {
     unsigned int add = *(unsigned int *)((unsigned char *)guest_mem + ictx + 4);
     for (int ci = 0; ci < 32; ci++) {
         if (!(add & (1u << ci))) continue;
-        unsigned long long src = ictx + (unsigned long long)(ci + 1) * 32;
-        unsigned long long dst = dctx + (unsigned long long)ci * 32;
-        if (src + 32 > guest_mem_size || dst + 32 > guest_mem_size) continue;
+        unsigned long long src = ictx + (unsigned long long)(ci + 1) * cs;
+        unsigned long long dst = dctx + (unsigned long long)ci * cs;
+        if (src + cs > guest_mem_size || dst + cs > guest_mem_size) continue;
         memcpy((unsigned char *)guest_mem + dst,
-               (unsigned char *)guest_mem + src, 32);
+               (unsigned char *)guest_mem + src, cs);
+        /* xHCI 4.6.5-6: the CONTROLLER owns EP State (output context dword 0
+           bits 2:0) and sets a successfully addressed or configured endpoint
+           to Running(1); the input context offers it as 0. Copying verbatim
+           left est=0 in every bed while real silicon reads 1, so the one row
+           built to discriminate silences disagreed with metal by default. */
+        if (ci >= 1) {
+            unsigned int *d0 = (unsigned int *)((unsigned char *)guest_mem + dst);
+            *d0 = (*d0 & ~7u) | 1;
+        }
     }
 }
 
@@ -820,14 +1120,26 @@ static int bot_db_trace = -1;
    addressed at route 0 (straight off root port 4), tier 1 at route 0x1 (down
    tier 0's port 1). Anything deeper is the keyboard. */
 static int xhci_hub_tier(int slot) {
-    if (xhci.slot_port[slot] != 4) return -1;
-    if (xhci.slot_route[slot] == 0) return 0;
-    if (xhci_hub_tiers >= 2 && xhci.slot_route[slot] == 0x1) return 1;
+    if (xcur->slot_port[slot] != 4) return -1;
+    if (xcur->slot_route[slot] == 0) return 0;
+    if (xhci_hub_tiers >= 2 && xcur->slot_route[slot] == 0x1) return 1;
     return -1;
 }
 
+/* The speed class a slot's device really is, which is what the endpoint
+   context's Interval encoding must be computed from. Everything this model
+   puts below a hub is full speed -- xhci_hub_port_status sets neither the
+   low- nor the high-speed bit -- including the full-speed hub at tier 1. */
+static int xhci_slot_true_speed(int slot) {
+    int port = xcur->slot_port[slot];
+    if (port < 1 || port > XHCI_MAX_PORTS) return 0;
+    if (xhci_hub_tier(slot) == 1) return 1;
+    if (xhci_hub_tier(slot) < 0 && xcur->slot_route[slot] != 0) return 1;
+    return xhci_port_true_speed[port - 1];
+}
+
 static int xhci_slot_kind(int slot) {
-    int port = xhci.slot_port[slot];
+    int port = xcur->slot_port[slot];
     if (port == 4) return xhci_hub_tier(slot) >= 0 ? XHCI_KIND_HUB : XHCI_KIND_HUB_HID;
     return port > 0 ? port : slot;
 }
@@ -840,21 +1152,64 @@ static int xhci_slot_kind(int slot) {
 static unsigned int xhci_hub_port_status(int tier) {
     unsigned int status = 0, change = 0;
     if (tier < 0 || tier >= XHCI_HUB_TIERS) return 0;
-    if (xhci.hub_powered[tier]) status |= (1u << 0) | (1u << 8);  /* CONNECTION, POWER */
-    if (xhci.hub_enabled[tier]) status |= (1u << 1);              /* ENABLE */
-    if (xhci.hub_c_connection[tier]) change |= (1u << 0);         /* C_CONNECTION */
-    if (xhci.hub_c_reset[tier]) change |= (1u << 4);              /* C_RESET */
+    if (xcur->hub_powered[tier]) status |= (1u << 0) | (1u << 8);  /* CONNECTION, POWER */
+    if (xcur->hub_enabled[tier]) status |= (1u << 1);              /* ENABLE */
+    if (xcur->hub_c_connection[tier]) change |= (1u << 0);         /* C_CONNECTION */
+    if (xcur->hub_c_reset[tier]) change |= (1u << 4);              /* C_RESET */
     return status | (change << 16);
+}
+
+/* The endpoint descriptor is the last seven bytes of each of these
+   configurations (USB 2.0 9.6.6: bLength, bDescriptorType, bEndpointAddress,
+   bmAttributes, wMaxPacketSize, bInterval). Read the fields out of the bytes
+   the model actually serves rather than restating them, so the expectation
+   cannot drift from the descriptor it is an expectation about. */
+static const unsigned char *xhci_periodic_ep_desc(int kind) {
+    if (kind == XHCI_KIND_HID || kind == XHCI_KIND_HUB_HID)
+        return usb_hid_cfg_desc + sizeof(usb_hid_cfg_desc) - 7;
+    if (kind == XHCI_KIND_HUB)
+        return usb_hub_cfg_desc + sizeof(usb_hub_cfg_desc) - 7;
+    return 0;
+}
+
+/* xHCI 1.2 Table 6-12. The Interval field of an interrupt endpoint context
+   is a speed-dependent ENCODING of the descriptor's bInterval, never the
+   bInterval itself. Full and low speed count whole frames, so the field is
+   floor(log2(bInterval * 8)) clamped to 3..10; high and super speed already
+   carry a 2^(bInterval-1) microframe exponent, so the field is bInterval - 1
+   clamped to 0..15. A driver that takes the wrong branch writes a legal,
+   non-zero, WRONG number. */
+static int xhci_expected_interval(int speed, int b_interval) {
+    int v;
+    if (b_interval <= 0) return -1;
+    if (speed == 1 || speed == 2) {          /* full, low */
+        int frames = b_interval * 8;
+        v = 0;
+        while ((1 << (v + 1)) <= frames) v++;
+        if (v < 3) v = 3;
+        if (v > 10) v = 10;
+    } else {                                 /* high, super */
+        v = b_interval - 1;
+        if (v > 15) v = 15;
+    }
+    return xhci_calibrate_periodic ? v + 1 : v;
+}
+
+/* xHCI 1.2 section 6.2.3.8. Max ESIT Payload is the most an endpoint can
+   move in one service interval: Max Packet Size * (Max Burst + 1). Nothing
+   this model presents bursts, so it is wMaxPacketSize exactly. */
+static int xhci_expected_esit(int max_packet) {
+    return xhci_calibrate_periodic ? max_packet + 1 : max_packet;
 }
 
 static void xhci_handle_doorbell(int db, unsigned int val) {
     if (db == 0) {
-        /* Command ring doorbell — consume TRBs while their cycle bit
+        /* Command ring doorbell -- consume TRBs while their cycle bit
            matches the consumer cycle state. The walk resumes at the exact
            stored position; CRCR itself cannot hold it (its address field
            is 64-byte aligned, and rounding down replays consumed TRBs). */
-        unsigned long long ring_addr = xhci.cr_pos;
-        int ccs = xhci.cr_ccs;
+        unsigned long long ring_addr = xcur->cr_pos;
+        int ccs = xcur->cr_ccs;
         for (int safety = 0; safety < 64; safety++) {
             if (ring_addr + 16 > guest_mem_size) break;
             unsigned char *trb = (unsigned char *)guest_mem + ring_addr;
@@ -867,10 +1222,36 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                 continue;
             }
             if (trb_type == 9) { /* ENABLE_SLOT */
-                /* Slots allocate in order, one per enable — a second device
+                /* Slots allocate in order, one per enable -- a second device
                    gets slot 2, not slot 1 again. Completion code 9 is the
-                   spec's No Slots Available Error. */
-                int slot = (xhci_next_slot <= XHCI_MAX_SLOTS) ? xhci_next_slot++ : 0;
+                   spec's No Slots Available Error.
+
+                   Under -xhci-scratch, the first ENABLE_SLOT is where the
+                   scratchpad array is judged: by then a correct driver has
+                   written DCBAA[0] and the controller is running. Real
+                   silicon given no scratchpad DMAs through a null pointer
+                   and corrupts silently; this model refuses the slot and
+                   says why, which is the same failure made observable. */
+                int scratch_ok = 1;
+                if (xhci_scratch_bufs > 0 && !xcur->scratch_checked) {
+                    xcur->scratch_checked = 1;
+                    unsigned long long arr = 0;
+                    if (xcur->dcbaap != 0 && xcur->dcbaap + 8 <= guest_mem_size)
+                        arr = *(unsigned long long *)((unsigned char *)guest_mem + xcur->dcbaap) & ~0x3FULL;
+                    /* xHCI 6.1: the array itself needs 64-byte alignment;
+                       only the BUFFER PAGES it points to need PAGESIZE. */
+                    int bad = (arr == 0 || (arr & 0x3F) != 0 ||
+                               arr + (unsigned long long)xhci_scratch_bufs * 8 > guest_mem_size);
+                    for (int sb = 0; !bad && sb < xhci_scratch_bufs; sb++) {
+                        unsigned long long pg = *(unsigned long long *)((unsigned char *)guest_mem + arr + sb * 8);
+                        if (pg == 0 || (pg & 0xFFF) != 0 || pg + 4096 > guest_mem_size) bad = 1;
+                    }
+                    xcur->scratch_bad = bad;
+                    fprintf(stderr, "xHCI: scratchpad check: declared %d, DCBAA[0]=0x%llx : %s\n",
+                            xhci_scratch_bufs, arr, bad ? "BAD -- refusing ENABLE_SLOT" : "OK");
+                }
+                if (xhci_scratch_bufs > 0 && xcur->scratch_bad) scratch_ok = 0;
+                int slot = (scratch_ok && xcur->next_slot <= XHCI_MAX_SLOTS) ? xcur->next_slot++ : 0;
                 xhci_post_event(33, slot, slot ? 1 : 9, ring_addr);
             } else if (trb_type == 11 || trb_type == 12 || trb_type == 13) {
                 /* ADDRESS_DEVICE / CONFIGURE_ENDPOINT / EVALUATE_CONTEXT:
@@ -889,28 +1270,102 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                 int slot = (control >> 24) & 0xFF;
                 if ((trb_type == 11 || trb_type == 12 || trb_type == 13) && slot >= 1 && slot <= XHCI_MAX_SLOTS) {
                     unsigned long long ictx = *(unsigned long long *)trb & ~0xFULL;
-                    if (trb_type == 11 && ictx && ictx + 64 <= guest_mem_size) {
-                        unsigned int sd0 = *(unsigned int *)((unsigned char *)guest_mem + ictx + 32);
-                        unsigned int sd1 = *(unsigned int *)((unsigned char *)guest_mem + ictx + 36);
-                        unsigned int sd2 = *(unsigned int *)((unsigned char *)guest_mem + ictx + 40);
-                        xhci.slot_port[slot]    = (sd1 >> 16) & 0xFF;
-                        xhci.slot_route[slot]   = sd0 & 0xFFFFF;
-                        xhci.slot_speed[slot]   = (sd0 >> 20) & 0xF;
-                        xhci.slot_tt_hub[slot]  = sd2 & 0xFF;
-                        xhci.slot_tt_port[slot] = (sd2 >> 8) & 0xFF;
+                    if (trb_type == 11 && ictx && ictx + (unsigned long long)XHCI_CTXSZ * 2 <= guest_mem_size) {
+                        unsigned int sd0 = *(unsigned int *)((unsigned char *)guest_mem + ictx + XHCI_CTXSZ);
+                        unsigned int sd1 = *(unsigned int *)((unsigned char *)guest_mem + ictx + XHCI_CTXSZ + 4);
+                        unsigned int sd2 = *(unsigned int *)((unsigned char *)guest_mem + ictx + XHCI_CTXSZ + 8);
+                        xcur->slot_port[slot]    = (sd1 >> 16) & 0xFF;
+                        xcur->slot_route[slot]   = sd0 & 0xFFFFF;
+                        xcur->slot_speed[slot]   = (sd0 >> 20) & 0xF;
+                        xcur->slot_tt_hub[slot]  = sd2 & 0xFF;
+                        xcur->slot_tt_port[slot] = (sd2 >> 8) & 0xFF;
                     }
                     xhci_copy_input_ctx(ictx, slot);
                 }
                 xhci_post_event(33, slot, 1, ring_addr);
+            } else if (trb_type == 14 || trb_type == 15 || trb_type == 16) {
+                /* RESET_ENDPOINT / STOP_ENDPOINT / SET_TR_DEQUEUE, xHCI
+                   4.6.8-10: slot in control 31:24, endpoint DCI in 20:16.
+                   Stop parks the state at Stopped(3) and writes the
+                   controller's current dequeue into the output context --
+                   the ONLY moment real silicon publishes its true position;
+                   this model keeps the context dequeue current after every
+                   walk, so the state change is the observable part. Set TR
+                   Dequeue is legal only from Stopped(3) or Error(4), Reset
+                   Endpoint only from Halted(2); anywhere else the answer is
+                   Context State Error(19) and nothing moves, which is the
+                   arm a driver that skipped the stop fails against. Until
+                   2026-08-03 all three fell through with NO completion
+                   event, so no recovery path could ever be bedded. */
+                int slot = (control >> 24) & 0xFF;
+                int dci = (control >> 16) & 0x1F;
+                int code = 17; /* Parameter Error */
+                if (slot >= 1 && slot <= XHCI_MAX_SLOTS && dci >= 1 &&
+                    xcur->dcbaap && xcur->dcbaap + (unsigned long long)(slot + 1) * 8 <= guest_mem_size) {
+                    unsigned long long dctx = *(unsigned long long *)((unsigned char *)guest_mem + xcur->dcbaap + (unsigned long long)slot * 8) & ~0x3FULL;
+                    if (dctx && dctx + 32ULL * XHCI_CTXSZ <= guest_mem_size) {
+                        unsigned int *ed0 = (unsigned int *)((unsigned char *)guest_mem + dctx + (unsigned long long)dci * XHCI_CTXSZ);
+                        int est = (int)(*ed0 & 7);
+                        if (trb_type == 15) {
+                            /* 4.8.3 p.164: Stop received in Halted or Error
+                               state has no effect -- Context State Error.
+                               Otherwise 4.6.9 p.134: a Stopped Transfer
+                               Event on the endpoint is MANDATORY before the
+                               Command Completion Event, in every timing
+                               scenario; an idle ring is the between-TDs
+                               case, code Stopped - Length Invalid (27),
+                               pointer = current dequeue, length 0. */
+                            if (est == 2 || est == 4) code = 19;
+                            else {
+                                /* Between-TDs vs TD-in-progress (4.6.9
+                                   p.134): a cycle-matching non-link TRB at
+                                   the dequeue is a TD the endpoint has in
+                                   hand -- FSE code Stopped(26) with the
+                                   residual; an idle ring answers
+                                   Stopped - Length Invalid(27), length 0.
+                                   The ASUS emits 26 for the NAK-parked
+                                   keyboard TD; beds must too. */
+                                unsigned long long dq_full =
+                                    *(unsigned long long *)((unsigned char *)ed0 + 8);
+                                unsigned long long cur_dq = dq_full & ~0xFULL;
+                                int fse_code = 27, fse_resid = 0;
+                                if (cur_dq && cur_dq + 16 <= guest_mem_size) {
+                                    unsigned int tctl = *(unsigned int *)((unsigned char *)guest_mem + cur_dq + 12);
+                                    if ((int)(tctl & 1) == (int)(dq_full & 1) &&
+                                        ((tctl >> 10) & 0x3F) != 6) {
+                                        fse_code = 26;
+                                        fse_resid = (int)(*(unsigned int *)((unsigned char *)guest_mem + cur_dq + 8) & 0x1FFFF);
+                                    }
+                                }
+                                xhci_post_event_ep_resid(32, slot, dci, fse_code, cur_dq, fse_resid);
+                                *ed0 = (*ed0 & ~7u) | 3;
+                                code = 1;
+                            }
+                        } else if (trb_type == 14) {
+                            if (est == 2) { *ed0 = (*ed0 & ~7u) | 3; code = 1; }
+                            else code = 19;
+                        } else {
+                            if (est == 3 || est == 4) {
+                                /* param bit 0 is DCS, bits 3:1 are the
+                                   stream context type -- not part of the
+                                   stored pointer. */
+                                *(unsigned long long *)((unsigned char *)ed0 + 8) =
+                                    *(unsigned long long *)trb & ~0xEULL;
+                                code = 1;
+                            } else code = 19;
+                        }
+                    }
+                }
+                xhci_post_event(33, slot, code, ring_addr);
             } else if (trb_type == 23) { /* NOOP */
                 xhci_post_event(33, 0, 1, ring_addr);
             }
             ring_addr += 16;
         }
-        xhci.cr_pos = ring_addr;
-        xhci.cr_ccs = ccs;
+        xcur->cr_pos = ring_addr;
+        xcur->cr_ccs = ccs;
     } else if (db >= 1 && db <= XHCI_MAX_SLOTS) {
-        /* Transfer ring doorbell for a device slot — process transfer TRBs */
+        /* Transfer ring doorbell for a device slot -- process transfer TRBs */
         /* The guest wrote TRBs at the transfer ring address stored in the
            device context's endpoint context. For simplicity, we process
            control transfers (SETUP+DATA+STATUS) by pattern matching. */
@@ -918,13 +1373,22 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
            For now, use a simpler approach: the guest just called usb-control-transfer
            or usb-bulk-in/out, which wrote TRBs and rang this doorbell. We can
            find the TRBs by reading the endpoint context from DCBAAP. */
-        if (xhci.dcbaap == 0 || xhci.dcbaap + (db + 1) * 8 > guest_mem_size) return;
-        unsigned long long slot_ctx_addr = *(unsigned long long *)((unsigned char *)guest_mem + xhci.dcbaap + db * 8);
-        if (slot_ctx_addr == 0 || slot_ctx_addr + 64 * 32 > guest_mem_size) return;
+        if (xcur->dcbaap == 0 || xcur->dcbaap + (db + 1) * 8 > guest_mem_size) return;
+        unsigned long long slot_ctx_addr = *(unsigned long long *)((unsigned char *)guest_mem + xcur->dcbaap + db * 8);
+        if (slot_ctx_addr == 0 || slot_ctx_addr + 32 * XHCI_CTXSZ > guest_mem_size) return;
         /* Endpoint context for the target endpoint (val & 0xFF is the endpoint index) */
         int ep_idx = val & 0xFF;
         if (ep_idx == 0) ep_idx = 1; /* control endpoint = DCI 1 */
-        unsigned char *ep_ctx = (unsigned char *)guest_mem + slot_ctx_addr + ep_idx * 32;
+        unsigned char *ep_ctx = (unsigned char *)guest_mem + slot_ctx_addr + ep_idx * XHCI_CTXSZ;
+        /* xHCI 4.8.3: a Halted(2) endpoint ignores its doorbell until Reset
+           Endpoint; a Stopped(3) one restarts on it, resuming at the saved
+           dequeue. Disabled(0) is walked anyway -- contexts written before
+           the state field was modelled carry 0 and must keep working. */
+        {
+            unsigned int ed0 = *(unsigned int *)ep_ctx;
+            if ((ed0 & 7) == 2) return;
+            if ((ed0 & 7) == 3) *(unsigned int *)ep_ctx = (ed0 & ~7u) | 1;
+        }
         unsigned long long dq_raw = *(unsigned long long *)(ep_ctx + 8);
         unsigned long long tr_dequeue = dq_raw & ~0xFULL;
         int ccs = (int)(dq_raw & 1);
@@ -976,20 +1440,36 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                     bmRequestType == 0x23 && wIndex == 1) {
                     if (bRequest == 3) {  /* SET_FEATURE */
                         if (wValue == 8) {          /* PORT_POWER */
-                            if (!xhci.hub_powered[tier]) xhci.hub_c_connection[tier] = 1;
-                            xhci.hub_powered[tier] = 1;
+                            if (!xcur->hub_powered[tier]) xcur->hub_c_connection[tier] = 1;
+                            xcur->hub_powered[tier] = 1;
                         } else if (wValue == 4) {   /* PORT_RESET */
-                            xhci.hub_enabled[tier] = 1;
-                            xhci.hub_c_reset[tier] = 1;
+                            xcur->hub_enabled[tier] = 1;
+                            xcur->hub_c_reset[tier] = 1;
                         }
                     } else if (bRequest == 1) {  /* CLEAR_FEATURE */
-                        if (wValue == 20) xhci.hub_c_reset[tier] = 0;       /* C_PORT_RESET */
-                        else if (wValue == 16) xhci.hub_c_connection[tier] = 0; /* C_PORT_CONNECTION */
+                        if (wValue == 20) xcur->hub_c_reset[tier] = 0;       /* C_PORT_RESET */
+                        else if (wValue == 16) xcur->hub_c_connection[tier] = 0; /* C_PORT_CONNECTION */
+                    }
+                }
+
+                /* HID class SETs (HID 1.11 7.2) and SET_CONFIGURATION are
+                   tracked so the class GETs answer the truth and the
+                   -hid-idle-quirk arm can key off a zero idle duration. */
+                if (kind == XHCI_KIND_HID || kind == XHCI_KIND_HUB_HID) {
+                    if (bmRequestType == 0x21) {
+                        if (bRequest == 10) {
+                            hid_idle_rate = (wValue >> 8) & 0xFF;
+                            if (hid_idle_rate == 0) hid_idle_zeroed = 1;
+                        } else if (bRequest == 11) {
+                            hid_protocol = wValue & 1;
+                        }
+                    } else if (bmRequestType == 0x00 && bRequest == 9) {
+                        hid_configuration = wValue & 0xFF;
                     }
                 }
 
                 /* Optional DATA stage, then the STATUS stage. Both
-                   advances follow links — a TD may straddle the wrap. */
+                   advances follow links -- a TD may straddle the wrap. */
                 tr_dequeue = xhci_next_trb(tr_dequeue, &ccs);
                 if (tr_dequeue + 16 > guest_mem_size) break;
                 unsigned char *data_trb = (unsigned char *)guest_mem + tr_dequeue;
@@ -1026,6 +1506,30 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                         /* GET_PORT_STATUS */
                         unsigned int st = xhci_hub_port_status(xhci_hub_tier(db));
                         memcpy((unsigned char *)guest_mem + data_buf, &st, 4);
+                    } else if (bmRequestType == 0xA1 &&
+                               (kind == XHCI_KIND_HID || kind == XHCI_KIND_HUB_HID)) {
+                        /* HID class GETs (HID 1.11 7.2): GET_REPORT(1) is
+                           MANDATORY and returns the live input report over
+                           EP0 -- the pipe that keeps working when the
+                           interrupt endpoint does not, and therefore the
+                           existence proof for a polling fallback.
+                           GET_IDLE(2) and GET_PROTOCOL(3) answer tracked
+                           state. Absent from this model until 2026-08-03;
+                           no device-state instrument was beddable. */
+                        if (bRequest == 1 && data_len >= 1) {
+                            unsigned char rep[8];
+                            build_hid_keyboard_report(rep);
+                            int n = data_len < 8 ? data_len : 8;
+                            memcpy((unsigned char *)guest_mem + data_buf, rep, n);
+                        } else if (bRequest == 2 && data_len >= 1) {
+                            *((unsigned char *)guest_mem + data_buf) = (unsigned char)hid_idle_rate;
+                        } else if (bRequest == 3 && data_len >= 1) {
+                            *((unsigned char *)guest_mem + data_buf) = (unsigned char)hid_protocol;
+                        }
+                    } else if (bmRequestType == 0x80 && bRequest == 8 && data_len >= 1 &&
+                               (kind == XHCI_KIND_HID || kind == XHCI_KIND_HUB_HID)) {
+                        /* GET_CONFIGURATION (USB2 9.4.2) */
+                        *((unsigned char *)guest_mem + data_buf) = (unsigned char)hid_configuration;
                     }
                 }
                 if (data_tt == 3) tr_dequeue = xhci_next_trb(tr_dequeue, &ccs);
@@ -1035,7 +1539,7 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                     unsigned char *sts_trb = (unsigned char *)guest_mem + tr_dequeue;
                     unsigned int sts_ctrl = *(unsigned int *)(sts_trb + 12);
                     if (((sts_ctrl >> 10) & 0x3F) == 4 && (int)(sts_ctrl & 1) == ccs) {
-                        xhci_post_event(32, db, 1, tr_dequeue); /* Transfer Event, success */
+                        xhci_post_event_ep(32, db, ep_idx, 1, tr_dequeue); /* Transfer Event, success */
                         tr_dequeue = xhci_next_trb(tr_dequeue, &ccs);
                     }
                 }
@@ -1068,6 +1572,50 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                                 db, ep_idx, interval, esit);
                             break;
                         }
+                        /* Non-zero is not the same as right, and the two
+                           fields above are the ones a driver most easily gets
+                           legally wrong: Interval by taking the wrong speed
+                           branch of Table 6-12, Max ESIT Payload by deriving
+                           it from the transfer it wants rather than from
+                           wMaxPacketSize. Compare both against the descriptor
+                           this model serves. Real silicon still schedules a
+                           wrong-but-legal value, at the wrong rate, so this
+                           reports and does not refuse. */
+                        {
+                            const unsigned char *epd = xhci_periodic_ep_desc(kind);
+                            if (epd && !xcur->periodic_reported[db][ep_idx & 31]) {
+                                int b_interval = epd[6];
+                                int max_packet = epd[4] | (epd[5] << 8);
+                                /* The expectation is computed from what the
+                                   device IS, not from the speed the guest
+                                   wrote into the slot context. Taking the
+                                   guest's word makes a driver that misread
+                                   the speed agree with itself, which is the
+                                   whole failure this check exists to catch. */
+                                int truth = xhci_slot_true_speed(db);
+                                int want_id = xhci_speed_id(truth);
+                                int want_i = xhci_expected_interval(truth, b_interval);
+                                int want_e = xhci_expected_esit(max_packet);
+                                xcur->periodic_reported[db][ep_idx & 31] = 1;
+                                fprintf(stderr,
+                                    "xHCI: slot %d dci %d speed: PORTSC reports %d for a "
+                                    "%s-speed device, slot context says %d : %s\n",
+                                    db, ep_idx, want_id,
+                                    truth == 1 ? "full" : truth == 2 ? "low" :
+                                    truth == 3 ? "high" : truth == 4 ? "super" : "?",
+                                    xcur->slot_speed[db],
+                                    want_id == xcur->slot_speed[db] ? "MATCH" : "MISMATCH");
+                                fprintf(stderr,
+                                    "xHCI: slot %d dci %d periodic check: "
+                                    "bInterval %d -> Interval want %d got %d : %s ; "
+                                    "wMaxPacketSize %d -> MaxESITPayload want %d got %d : %s\n",
+                                    db, ep_idx,
+                                    b_interval, want_i, interval,
+                                    want_i == interval ? "MATCH" : "MISMATCH",
+                                    max_packet, want_e, esit,
+                                    want_e == esit ? "MATCH" : "MISMATCH");
+                            }
+                        }
                         /* A full- or low-speed device below a high-speed hub
                            reaches the bus only through that hub's TRANSACTION
                            TRANSLATOR, and the controller is told which one by
@@ -1081,32 +1629,42 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                            reported shape of the keyboard on the ASUS. This
                            model used to deliver anyway, so the one hypothesis
                            left standing was the one it could not test. */
-                        if ((xhci.slot_speed[db] == 1 || xhci.slot_speed[db] == 2) &&
-                            xhci.slot_route[db] != 0 && xhci.slot_tt_hub[db] == 0) {
+                        /* Judged on what the device IS. A driver that misread
+                           the Port Speed ID and therefore skipped the TT is
+                           exactly the case worth catching, and testing its
+                           own claim would let it off. */
+                        if ((xhci_slot_true_speed(db) == 1 || xhci_slot_true_speed(db) == 2) &&
+                            xcur->slot_route[db] != 0 && xcur->slot_tt_hub[db] == 0) {
                             fprintf(stderr,
                                 "xHCI: slot %d dci %d is a periodic endpoint on a "
                                 "%s-speed device at route 0x%X with no transaction "
                                 "translator (TT Hub Slot ID=0); not servicing it. "
                                 "Real hardware is silent here.\n",
                                 db, ep_idx,
-                                xhci.slot_speed[db] == 1 ? "full" : "low",
-                                xhci.slot_route[db]);
+                                xhci_slot_true_speed(db) == 1 ? "full" : "low",
+                                xcur->slot_route[db]);
                             break;
                         }
                     }
                 }
 
-                /* HID keyboard interrupt IN — return 8-byte boot report.
+                /* HID keyboard interrupt IN -- return 8-byte boot report.
                    Real controllers raise a transfer event for any TRB that
                    asks (IOC); a driver awaiting the event instead of
                    re-reading the buffer must not hang here. */
                 if ((kind == XHCI_KIND_HID || kind == XHCI_KIND_HUB_HID) &&
                     buf_addr > 0 && buf_addr + 8 <= guest_mem_size) {
+                    /* NAK arm: no DMA, no event, no dequeue advance -- the
+                       TD is in progress and stays there. Breaking the walk
+                       leaves the context dequeue at this TRB, which is what
+                       a stop's write-back then publishes, exactly as the
+                       ASUS did. */
+                    if (xhci_hid_nak || (hid_idle_quirk && hid_idle_zeroed)) break;
                     unsigned char report[8];
                     build_hid_keyboard_report(report);
                     int n = buf_len < 8 ? buf_len : 8;
                     memcpy((unsigned char *)guest_mem + buf_addr, report, n);
-                    if (ctrl & 0x20) xhci_post_event(32, db, 1, tr_dequeue);
+                    if (ctrl & 0x20) xhci_post_event_ep(32, db, ep_idx, 1, tr_dequeue);
                     tr_dequeue += 16;
                     continue;
                 }
@@ -1216,7 +1774,7 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                        TRB that asks for one (IOC, bit 5). The BOT driver
                        drives CBW, data, and CSW as three separate awaited
                        transfers, so each must complete with its own event. */
-                    if (ctrl & 0x20) xhci_post_event(32, db, 1, tr_dequeue);
+                    if (ctrl & 0x20) xhci_post_event_ep(32, db, ep_idx, 1, tr_dequeue);
                 }
                 tr_dequeue += 16;
             } else if (tt == 5) { /* ISOCH (isochronous transfer) */
@@ -1245,7 +1803,7 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                    a full one. */
                 if (ctrl & 0x20) {
                     int residual = buf_len - copied;
-                    xhci_post_event(32, db, residual > 0 ? 13 : 1, tr_dequeue);
+                    xhci_post_event_ep(32, db, ep_idx, residual > 0 ? 13 : 1, tr_dequeue);
                 }
                 tr_dequeue += 16;
             } else {
@@ -1258,11 +1816,26 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
     }
 }
 
-static void xhci_init(void) {
-    memset(&xhci, 0, sizeof(xhci));
+/* Reset ONE controller. HCRST reaches this, and a host-controller reset on
+   the ASMedia must not touch the Intel: wiping both is what a single global
+   state made look like a driver defect, and it is not one. Ordinal 0 carries
+   every modelled device; ordinal 1 is the ASMedia with nothing on it. */
+static void xhci_reset_ctl(struct xhci_state *x) {
+    int ord = (int)(x - xhci_ctl);
+    memset(x, 0, sizeof(*x));
+    x->usbsts = 1;            /* HCH (halted) */
+    x->next_slot = 1;
+    x->legacy_bios_owned = 1; /* firmware owns it until a driver claims it */
+    x->legacy_os_owned = 0;
+    if (ord != 0) return;
     memset(&bot, 0, sizeof(bot));
-    xhci.usbsts = 1;  /* HCH (halted) */
-    xhci.portsc[0] = 1 | (4 << 10); /* CCS=1 (connected), speed=4 (SuperSpeed) — mass storage */
+    {
+    struct xhci_state *xcur = x;    /* XUSB2PR and USB3PSSEN are NOT reset here. They live in PCI config
+       space, HCRST reaches this function, and a host-controller reset does
+       not un-route a port on real silicon -- a driver that routes and then
+       resets would lose the bus. They start at zero as statics, which is
+       firmware leaving every routable port with the companion. */
+    xcur->portsc[0] = 1 | (4 << 10); /* CCS=1 (connected), speed=4 (SuperSpeed) -- mass storage */
     /* The HID keyboard is FULL SPEED, because that is what a real boot
        keyboard is and what the machine this driver failed on reported.
        It was HighSpeed here for no reason but convenience, and that is
@@ -1270,8 +1843,8 @@ static void xhci_init(void) {
        silent on metal: full speed selects a different endpoint Interval
        encoding and, behind a high-speed hub, needs a transaction
        translator the driver never names. */
-    xhci.portsc[1] = 1 | (1 << 10); /* CCS=1 (connected), speed=1 (FullSpeed) — HID keyboard */
-    xhci.portsc[2] = 1 | (3 << 10); /* CCS=1 (connected), speed=3 (HighSpeed) — UVC camera */
+    xcur->portsc[1] = 1 | (1 << 10); /* CCS=1 (connected), speed=1 (FullSpeed) -- HID keyboard */
+    xcur->portsc[2] = 1 | (3 << 10); /* CCS=1 (connected), speed=3 (HighSpeed) -- UVC camera */
     /* A HIGH-SPEED HUB, with a FULL-SPEED keyboard behind it. This is the
        topology the driver has never been run against: everything else on
        this controller is root-attached, so the hub walk in
@@ -1280,24 +1853,36 @@ static void xhci_init(void) {
        execute against at all. A device here is reachable only through a
        route string, and being full speed under a high-speed parent, only
        through that hub's transaction translator. */
-    xhci.portsc[3] = 1 | (3 << 10); /* CCS=1 (connected), speed=3 (HighSpeed) — hub */
+    xcur->portsc[3] = 1 | (3 << 10); /* CCS=1 (connected), speed=3 (HighSpeed) -- hub */
     /* The bus walk takes the first keyboard it finds, and root port 2 comes
        before the hub on port 4 -- so with both present the hub-attached
        keyboard is never reached. Unplugging the root one makes the hub the
        only route to a keyboard, which is what lets one test drive the hub
        path with the SAME guest binary. The topology is the variable. */
-    if (xhci_no_root_kbd) xhci.portsc[1] = 0;
-    xhci_next_slot = 1;
-    xhci.legacy_bios_owned = 1;   /* firmware owns it until a driver claims it */
-    xhci.legacy_os_owned = 0;
+    if (xhci_no_root_kbd) xcur->portsc[1] = 0;
+    if (xhci_no_disk) xcur->portsc[0] = 0;
+    /* The truth behind the reported IDs, in the same order. */
+    xhci_port_true_speed[0] = 4;
+    xhci_port_true_speed[1] = xhci_no_root_kbd ? 0 : 1;
+    xhci_port_true_speed[2] = 3;
+    xhci_port_true_speed[3] = 3;
+    }
 }
 
+static void xhci_init(void) {
+    xhci_reset_ctl(&xhci_ctl[0]);
+    xhci_reset_ctl(&xhci_ctl[1]);
+    xcur = &xhci_ctl[0];
+}
+static unsigned long long hpet_raw(void);
 static unsigned int xhci_read(unsigned long long offset) {
     if (offset < XHCI_CAP_LEN) {
         switch ((int)offset) {
         case 0:  return XHCI_CAP_LEN | (0x0100 << 16);  /* CAPLENGTH=32, HCIVERSION=1.0 */
         case 4:  return (XHCI_MAX_PORTS << 24) | XHCI_MAX_SLOTS;  /* HCSPARAMS1 */
-        case 8:  return 0x0F;   /* HCSPARAMS2 */
+        case 8:  return 0x0F    /* HCSPARAMS2 */
+                      | (((unsigned)(xhci_scratch_bufs >> 5) & 31) << 21)   /* Max Scratchpad Bufs Hi */
+                      | (((unsigned)xhci_scratch_bufs & 31) << 27);         /* Max Scratchpad Bufs Lo */
         case 12: return 0;      /* HCSPARAMS3 */
         /* HCCPARAMS1. AC64 (bit 0) is now set and honest: every pointer this
            model reads out of a context or a TRB is taken as 64-bit already,
@@ -1306,9 +1891,9 @@ static unsigned int xhci_read(unsigned long long offset) {
            the BAR base; zero used to say "no extended capabilities", which is
            what stops a driver from ever finding USB Legacy Support and taking
            ownership from firmware. It points at BAR+0x80 now. */
-        case 16: return (XHCI_XECP_DWORDS << 16) | 0x21;
+        case 16: return (XHCI_XECP_DWORDS << 16) | 0x21 | (xhci_csz64 ? 4u : 0u); /* +CSZ under -xhci-csz */
         case 20: return 0x800;  /* DBOFF: doorbell array at offset 2048 */
-        case 24: return 0x1000; /* RTSOFF: runtime regs at offset 4096 —
+        case 24: return 0x1000; /* RTSOFF: runtime regs at offset 4096 --
                                    clear of the port array at op+0x400,
                                    which with CAPLENGTH=32 spans absolute
                                    0x420-0x460 and used to shadow the
@@ -1321,42 +1906,89 @@ static unsigned int xhci_read(unsigned long long offset) {
     if (offset >= XHCI_XECP_OFF && offset < XHCI_XECP_OFF + 8) {
         if (offset == XHCI_XECP_OFF)
             return 1                                        /* cap ID: USB Legacy Support */
-                 | (0 << 8)                                 /* next pointer: end of list */
-                 | ((xhci.legacy_bios_owned ? 1u : 0u) << 16)
-                 | ((xhci.legacy_os_owned ? 1u : 0u) << 24);
+                 | (4u << 8)                                /* next: +4 dwords, Supported Protocol */
+                 | ((xcur->legacy_bios_owned ? 1u : 0u) << 16)
+                 | ((xcur->legacy_os_owned ? 1u : 0u) << 24);
         return 0;  /* USBLEGCTLSTS: no SMI sources modelled */
+    }
+    /* Supported Protocol Capability (xHCI 7.2). Required on real silicon and
+       absent here until now, which is why nothing could read a speed mapping
+       rather than assume one. PSIC is zero unless -xhci-psi, and zero is the
+       spec's own condition for Table 7-13's defaults applying. */
+    if (offset >= XHCI_XECP_OFF + 16 && offset < XHCI_XECP_OFF + 16 + 4 * (4 + 4)) {
+        int d = (int)(offset - (XHCI_XECP_OFF + 16)) / 4;
+        int psic = xhci_psi ? 4 : 0;
+        switch (d) {
+        case 0: return 2u | (0u << 8) | (0u << 16) | (3u << 24); /* id 2, end of list, USB 3.0 */
+        case 1: return 0x20425355u;                              /* name string "USB " */
+        case 2: return 1u | ((unsigned)XHCI_MAX_PORTS << 8) | ((unsigned)psic << 28);
+        case 3: return 0;                                        /* protocol slot type 0 */
+        }
+        if (!psic) return 0;
+        /* PSI dword: PSIV 3:0, PSIE 5:4 (2 = Mb/s, 1 = Kb/s, 3 = Gb/s),
+           PSIM 31:16. The rates are the real ones for each class, so a driver
+           that reads the mantissa rather than the id still lands correctly. */
+        switch (d) {
+        case 4: return (12u   << 16) | (2u << 4) | XHCI_PSI_FULL;   /* 12 Mb/s */
+        case 5: return (1500u << 16) | (1u << 4) | XHCI_PSI_LOW;    /* 1500 Kb/s */
+        case 6: return (480u  << 16) | (2u << 4) | XHCI_PSI_HIGH;   /* 480 Mb/s */
+        case 7: return (5u    << 16) | (3u << 4) | XHCI_PSI_SUPER;  /* 5 Gb/s */
+        }
+        return 0;
     }
     unsigned long long op_off = offset - XHCI_CAP_LEN;
     if (op_off < 0x400) {
         switch ((int)op_off) {
-        case 0:  return xhci.usbcmd;
-        case 4:  return xhci.usbsts;
+        case 0:  return xcur->usbcmd;
+        case 4:  return xcur->usbsts;
         case 8:  return 1;  /* PAGESIZE: 4KB */
-        case 20: return xhci.dnctrl;
-        case 24: return (unsigned int)(xhci.crcr & 0xFFFFFFFF);
-        case 28: return (unsigned int)(xhci.crcr >> 32);
-        case 48: return (unsigned int)(xhci.dcbaap & 0xFFFFFFFF);
-        case 52: return (unsigned int)(xhci.dcbaap >> 32);
-        case 56: return xhci.config;
+        case 20: return xcur->dnctrl;
+        case 24: return (unsigned int)(xcur->crcr & 0xFFFFFFFF);
+        case 28: return (unsigned int)(xcur->crcr >> 32);
+        case 48: return (unsigned int)(xcur->dcbaap & 0xFFFFFFFF);
+        case 52: return (unsigned int)(xcur->dcbaap >> 32);
+        case 56: return xcur->config;
         default: return 0;
         }
     }
     if (op_off >= 0x400 && op_off < 0x400 + XHCI_MAX_PORTS * 16) {
         int port = (int)(op_off - 0x400) / 16;
         int preg = (int)(op_off - 0x400) % 16;
-        if (preg == 0) return xhci.portsc[port];
+        /* A port still owned by the companion EHCI is dark to the xHCI: the
+           whole PORTSC reads zero, not merely CCS. */
+        if (xhci_intel && (XHCI_XUSB2PRM & (1u << port)) &&
+            !(xhci_xusb2pr & (1u << port))) return 0;
+        if (preg == 0) {
+            unsigned int v = xcur->portsc[port];
+            if (xhci_psi && xhci_port_true_speed[port])
+                v = (v & ~(0xFu << 10)) |
+                    ((unsigned)xhci_speed_id(xhci_port_true_speed[port]) << 10);
+            return v;
+        }
         return 0;
     }
     /* Runtime registers at offset 0x1000 (RTSOFF) */
+    if (offset == 0x1000) {
+        /* MFINDEX (5.5.1 p.423): bits 13:0, one count per 125 us microframe
+           while the controller runs; it may stop only when every root port
+           is Disconnected/Disabled/Training/Powered-off (4.14.2 p.260).
+           Tied to host time so a guest sampling it twice across a real
+           delay observes real advance -- the SCHEDX instrument that asks
+           whether frames exist at all. Absent from this model until
+           2026-08-03; it read 0 and a bed could not tell a dead frame
+           counter from a live one. */
+        if (!(xcur->usbcmd & 1)) return 0;
+        return (unsigned int)(((hpet_raw() * 8000ULL) / 14318180ULL) & 0x3FFF);
+    }
     /* Interrupter 0 at RTSOFF + 0x20 */
     if (offset >= 0x1020 && offset < 0x1040) {
         int ireg = (int)(offset - 0x1020);
         if (ireg == 0) return 0; /* IMAN */
         if (ireg == 4) return 0; /* IMOD */
-        if (ireg == 8) return xhci.er_size; /* ERSTSZ */
-        if (ireg == 16) return (unsigned int)(xhci.erstba & 0xFFFFFFFF); /* ERSTBA lo */
-        if (ireg == 20) return (unsigned int)(xhci.erstba >> 32); /* ERSTBA hi */
-        if (ireg == 24) return (unsigned int)(xhci.er_addr + xhci.erdp_idx * 16); /* ERDP lo */
+        if (ireg == 8) return xcur->er_size; /* ERSTSZ */
+        if (ireg == 16) return (unsigned int)(xcur->erstba & 0xFFFFFFFF); /* ERSTBA lo */
+        if (ireg == 20) return (unsigned int)(xcur->erstba >> 32); /* ERSTBA hi */
+        if (ireg == 24) return (unsigned int)(xcur->er_addr + xcur->erdp_idx * 16); /* ERDP lo */
         if (ireg == 28) return 0; /* ERDP hi */
     }
     return 0;
@@ -1369,34 +2001,48 @@ static void xhci_write(unsigned long long offset, unsigned int val) {
        driver that polls for the release sees it happen. */
     if (offset >= XHCI_XECP_OFF && offset < XHCI_XECP_OFF + 8) {
         if (offset == XHCI_XECP_OFF && (val & (1u << 24))) {
-            xhci.legacy_os_owned = 1;
-            xhci.legacy_bios_owned = 0;
+            xcur->legacy_os_owned = 1;
+            xcur->legacy_bios_owned = 0;
         }
         return;
     }
     unsigned long long op_off = offset - XHCI_CAP_LEN;
     if (op_off < 0x400) {
         switch ((int)op_off) {
-        case 0:
-            if (val & 2) { xhci_init(); xhci.usbsts &= ~1; return; }
-            xhci.usbcmd = val;
-            if (val & 1) xhci.usbsts &= ~1; else xhci.usbsts |= 1;
+        case 0: {
+            if (val & 2) { xhci_reset_ctl(xcur); xcur->usbsts &= ~1; return; }
+            int was_running = xcur->usbcmd & 1;
+            xcur->usbcmd = val;
+            if (val & 1) xcur->usbsts &= ~1; else xcur->usbsts |= 1;
+            /* Run transition: a connect that predates Run posts its Port
+               Status Change Event now, one per connected port -- 26 of them
+               on the board this model chases. -xhci-evt-flood N stacks N
+               more, which is what marches the producer through the ring
+               WRAP and, unconsumed, into the FULL condition. */
+            if (!was_running && (val & 1)) {
+                for (int p = 0; p < XHCI_MAX_PORTS; p++)
+                    if (xcur->portsc[p] & 1)
+                        xhci_post_event(34, 0, 1, (unsigned long long)(p + 1) << 24);
+                for (int f = 0; f < xhci_evt_flood; f++)
+                    xhci_post_event(34, 0, 1, 1ULL << 24);
+            }
             break;
-        case 4:  xhci.usbsts &= ~val; break;
-        case 20: xhci.dnctrl = val; break;
+        }
+        case 4:  xcur->usbsts &= ~val; break;
+        case 20: xcur->dnctrl = val; break;
         case 24:
-            xhci.crcr = (xhci.crcr & 0xFFFFFFFF00000000ULL) | val;
-            xhci.cr_pos = xhci.crcr & ~0x3FULL;
-            xhci.cr_ccs = (int)(xhci.crcr & 1);
+            xcur->crcr = (xcur->crcr & 0xFFFFFFFF00000000ULL) | val;
+            xcur->cr_pos = xcur->crcr & ~0x3FULL;
+            xcur->cr_ccs = (int)(xcur->crcr & 1);
             break;
         case 28:
-            xhci.crcr = (xhci.crcr & 0xFFFFFFFFULL) | ((unsigned long long)val << 32);
-            xhci.cr_pos = xhci.crcr & ~0x3FULL;
-            xhci.cr_ccs = (int)(xhci.crcr & 1);
+            xcur->crcr = (xcur->crcr & 0xFFFFFFFFULL) | ((unsigned long long)val << 32);
+            xcur->cr_pos = xcur->crcr & ~0x3FULL;
+            xcur->cr_ccs = (int)(xcur->crcr & 1);
             break;
-        case 48: xhci.dcbaap = (xhci.dcbaap & 0xFFFFFFFF00000000ULL) | val; break;
-        case 52: xhci.dcbaap = (xhci.dcbaap & 0xFFFFFFFFULL) | ((unsigned long long)val << 32); break;
-        case 56: xhci.config = val; break;
+        case 48: xcur->dcbaap = (xcur->dcbaap & 0xFFFFFFFF00000000ULL) | val; break;
+        case 52: xcur->dcbaap = (xcur->dcbaap & 0xFFFFFFFFULL) | ((unsigned long long)val << 32); break;
+        case 56: xcur->config = val; break;
         }
         return;
     }
@@ -1405,33 +2051,42 @@ static void xhci_write(unsigned long long offset, unsigned int val) {
         int preg = (int)(op_off - 0x400) % 16;
         if (preg == 0) {
             /* PORTSC: change bits 17-23 are write-1-to-clear; a port
-               reset (PR, bit 4) completes instantly — the device is
-               virtual — leaving the port enabled with PRC latched.
+               reset (PR, bit 4) completes instantly -- the device is
+               virtual -- leaving the port enabled with PRC latched.
                Writing PED=1 outside a reset disables the port (RW1C). */
-            unsigned int old = xhci.portsc[port];
+            unsigned int old = xcur->portsc[port];
             old &= ~(val & 0x00FE0000u);
             if (val & 0x10u) old |= 0x2u | (1u << 21);
             else if (val & 0x2u) old &= ~0x2u;
-            xhci.portsc[port] = old;
+            xcur->portsc[port] = old;
+            /* A completed reset posts a Port Status Change Event (type 34,
+               port id in parameter bits 31:24), the way silicon does. This
+               model never posted one before, so the guest's consumption of
+               unsolicited events -- the skip path in its waits, and the ring
+               WRAP once enough of them accumulate -- had no bed at all. */
+            if ((val & 0x10u) && (xcur->usbcmd & 1))
+                xhci_post_event(34, 0, 1, (unsigned long long)(port + 1) << 24);
         }
         return;
     }
     /* Runtime / Interrupter 0 registers */
     if (offset >= 0x1020 && offset < 0x1040) {
         int ireg = (int)(offset - 0x1020);
-        if (ireg == 8) xhci.er_size = (unsigned short)val; /* ERSTSZ */
+        if (ireg == 8) xcur->er_size = (unsigned short)val; /* ERSTSZ */
         if (ireg == 16) { /* ERSTBA lo */
-            xhci.erstba = (xhci.erstba & 0xFFFFFFFF00000000ULL) | val;
+            xcur->erstba = (xcur->erstba & 0xFFFFFFFF00000000ULL) | val;
             /* Read event ring segment table entry 0 to get ring address+size */
-            if (xhci.erstba > 0 && xhci.erstba + 16 <= guest_mem_size) {
-                unsigned char *erst = (unsigned char *)guest_mem + xhci.erstba;
-                xhci.er_addr = *(unsigned long long *)erst;
-                xhci.er_size = *(unsigned short *)(erst + 8);
-                xhci.erdp_idx = 0;
-                xhci.er_ccs = 1;
+            if (xcur->erstba > 0 && xcur->erstba + 16 <= guest_mem_size) {
+                unsigned char *erst = (unsigned char *)guest_mem + xcur->erstba;
+                xcur->er_addr = *(unsigned long long *)erst;
+                xcur->er_size = *(unsigned short *)(erst + 8);
+                xcur->erdp_idx = 0;
+                xcur->er_ccs = 1;
             }
         }
-        if (ireg == 20) xhci.erstba = (xhci.erstba & 0xFFFFFFFFULL) | ((unsigned long long)val << 32);
+        if (ireg == 20) xcur->erstba = (xcur->erstba & 0xFFFFFFFFULL) | ((unsigned long long)val << 32);
+        if (ireg == 24) xcur->guest_erdp = (xcur->guest_erdp & 0xFFFFFFFF00000000ULL) | (val & ~0xFu);
+        if (ireg == 28) xcur->guest_erdp = (xcur->guest_erdp & 0xFFFFFFFFULL) | ((unsigned long long)val << 32);
         return;
     }
     if (offset >= 0x800 && offset < 0xC00) {
@@ -1663,7 +2318,7 @@ static void hda_drain_stream(void) {
             hda_drain_count++;   /* evidence: a buffer reached the DAC */
         }
         unsigned int ioc = *(unsigned int *)(entry + 12);
-        if (ioc & 1) hda.sd0sts |= 4; /* IOC flag set — raise BCIS */
+        if (ioc & 1) hda.sd0sts |= 4; /* IOC flag set -- raise BCIS */
     }
     if (hda_drain_idx > lvi) {
         /* Played the whole BDL once. Stop instead of looping: leaving RUN set made
@@ -1798,7 +2453,7 @@ static void hda_write(unsigned long long offset, unsigned int val) {
     /* Stream descriptor 0 */
     case 0x80:
         hda.sd0ctl = val;
-        if (val & 2) hda_drain_stream(); /* DMA run bit set — drain BDL to audio */
+        if (val & 2) hda_drain_stream(); /* DMA run bit set -- drain BDL to audio */
         break;
     case 0x83: hda.sd0sts &= ~(unsigned char)val; break;
     case 0x88: hda.sd0cbl = val; break;
@@ -1923,7 +2578,7 @@ static struct {
 
 static unsigned int ioapic_read(unsigned long long offset) {
     if (offset == 0x00) return ioapic.ioregsel;
-    if (offset == 0x10) { /* IOWIN — data register */
+    if (offset == 0x10) { /* IOWIN -- data register */
         unsigned int sel = ioapic.ioregsel;
         if (sel == 0x00) return ioapic.id; /* IOAPICID */
         if (sel == 0x01) return (IOAPIC_MAX_REDIR - 1) << 16 | 0x20; /* IOAPICVER: version=0x20 */
@@ -2407,8 +3062,8 @@ static void ap_thread_func(void *arg) {
             }
             ap_force_wake(cpu_id);
             break;
-        case 0x1000: /* WHvRunVpExitReasonX64ApicInitSipiTrap — ignore, AP already running */
-            /* SIPI ignored — AP already running */
+        case 0x1000: /* WHvRunVpExitReasonX64ApicInitSipiTrap -- ignore, AP already running */
+            /* SIPI ignored -- AP already running */
             break;
         case WHvRunVpExitReasonMemoryAccess:
             if (ctx.MemoryAccess.Gpa >= LAPIC_BAR && ctx.MemoryAccess.Gpa < LAPIC_BAR + LAPIC_BAR_SIZE) {
@@ -2577,7 +3232,7 @@ static void acpi_setup_tables(void *mem) {
        SMI_CMD 48, PM1a_EVT_BLK 56, PM1b_EVT_BLK 60, PM1a_CNT_BLK 64,
        PM1b_CNT_BLK 68, PM2_CNT_BLK 72, PM_TMR_BLK 76. (Through 2026-07-09
        this table put DSDT at 36 and the PM1a event/control blocks at 64/72
-       — a spec-derived parser read the event block as the control block.
+       -- a spec-derived parser read the event block as the control block.
        No guest parsed ACPI, so nothing depended on the wrong layout.)
        The port values match QEMU's PIIX4: events at 0x600, control at
        0x604. */
@@ -2614,7 +3269,7 @@ static void acpi_setup_tables(void *mem) {
     fadt[9] = acpi_checksum(fadt, 129);
 
     /* DSDT at +0x600: header plus the one AML object an OS needs to power the
-       machine off — Name (_S5_, Package (4) { 0, 0, 0, 0 }).
+       machine off -- Name (_S5_, Package (4) { 0, 0, 0, 0 }).
          08            NameOp
          5F 53 35 5F   "_S5_"
          12            PackageOp
@@ -2841,6 +3496,328 @@ static int mmio_insn_len(const unsigned char *b, int n) {
     return mmio_decode(b, n).len;
 }
 
+/* ══ Intel e1000e NIC model (Device Emulation Catalog entry 1) ══
+   Register offsets and bit positions are from the 8254x/8257x family
+   datasheet, the same reading E1000e.codex was written from -- which is
+   exactly why this model is not an independent oracle. */
+#define E1000_BAR       0xFE400000ULL
+#define E1000_BAR_SIZE  0x20000
+
+#define E1000_REG_CTRL     0x0000
+#define E1000_REG_STATUS   0x0008
+#define E1000_REG_MDIC     0x0020
+#define E1000_REG_ICR      0x00C0
+#define E1000_REG_RCTL     0x0100
+#define E1000_REG_TCTL     0x0400
+#define E1000_REG_RDBAL    0x2800
+#define E1000_REG_RDBAH    0x2804
+#define E1000_REG_RDLEN    0x2808
+#define E1000_REG_RDH      0x2810
+#define E1000_REG_RDT      0x2818
+#define E1000_REG_TDBAL    0x3800
+#define E1000_REG_TDBAH    0x3804
+#define E1000_REG_TDLEN    0x3808
+#define E1000_REG_TDH      0x3810
+#define E1000_REG_TDT      0x3818
+#define E1000_REG_RAL      0x5400
+#define E1000_REG_RAH      0x5404
+
+#define E1000_CTRL_RST     0x04000000u
+#define E1000_CTRL_SLU     0x00000040u
+#define E1000_STATUS_LU    0x00000002u
+#define E1000_RCTL_EN      0x00000002u
+#define E1000_RAH_AV       0x80000000u
+#define E1000_RXD_STAT_DD  0x01
+#define E1000_RXD_STAT_EOP 0x02
+#define E1000_TXD_STAT_DD  0x01
+
+/* MDIC, the management interface to the PHY. On the 8254x the PHY is a
+   discrete part on an MDIO bus; on the I219 the MAC and PHY are both inside
+   the PCH and the same register reaches it. Either way this is the ONLY way
+   to read or write a PHY register, and until now the model had no PHY at
+   all, so every PHY-shaped defect in the driver was invisible here by
+   construction.
+
+   Layout, from the same family datasheet as the rest of this model:
+   bits 15:0 DATA, 20:16 REGADD, 25:21 PHYADD, 27:26 OP, 28 R (ready),
+   29 I (interrupt enable), 30 E (error). OP is 01 write, 10 read. Software
+   writes the register with R clear and polls until the MAC sets R. */
+#define E1000_MDIC_DATA    0x0000FFFFu
+#define E1000_MDIC_REG_SH  16
+#define E1000_MDIC_PHY_SH  21
+#define E1000_MDIC_OP_SH   26
+#define E1000_MDIC_OP_MASK 0x0C000000u
+#define E1000_MDIC_OP_WR   0x04000000u
+#define E1000_MDIC_OP_RD   0x08000000u
+#define E1000_MDIC_R       0x10000000u
+#define E1000_MDIC_E       0x40000000u
+
+/* The PHY answers at one address. A read of any other address is an error
+   rather than a zero, because that is what silicon does when nothing is
+   listening, and a driver that scans addresses must be able to tell the
+   difference. */
+#define E1000_PHY_ADDR     1
+
+#define E1000_PHY_BMCR     0
+#define E1000_PHY_BMSR     1
+#define E1000_PHY_ID1      2
+#define E1000_PHY_ID2      3
+
+#define E1000_BMCR_RESET   0x8000
+#define E1000_BMCR_ANEG_EN 0x1000
+#define E1000_BMCR_ANEG_RST 0x0200
+#define E1000_BMSR_ANEG_DONE 0x0020
+#define E1000_BMSR_LINK    0x0004
+
+static int e1000_present = 0;
+/* Every one of these exists so the model can REFUSE. A model that can
+   only succeed is not a test of the driver's failure handling. */
+static int e1000_fault_no_reset = 0;
+static int e1000_fault_no_link  = 0;
+static int e1000_fault_no_mac   = 0;
+static int e1000_fault_no_tx_dd = 0;
+static int e1000_inject_want    = 0;
+static int e1000_nat            = 0;
+static int e1000_strict_filter  = 0;
+/* -e1000-no-phy: MDIC never reports ready, which is a PHY that is not
+   answering. -e1000-phy-err: it reports the error bit instead. The two are
+   different failures and a driver can confuse them, which is the reason
+   both exist rather than one. */
+static int e1000_fault_no_phy   = 0;
+static int e1000_fault_phy_err  = 0;
+/* -e1000-phy-link: STATUS.LU requires the PHY to have finished
+   auto-negotiation, not merely CTRL.SLU. OFF by default, deliberately: the
+   default keeps the SLU-only behaviour every existing green was measured
+   against, so this flag ADDS an arm rather than moving the floor
+   (L-FALLBACK). It is the arm that catches a driver which never touches the
+   PHY at all -- which is every version of ours before this change, and
+   which on a PCH-integrated part is exactly the silent failure. */
+static int e1000_phy_link       = 0;
+
+/* Reset value of the PHY register file. ID1/ID2 are the model's own
+   identifiers and are NOT measured off Damian's I219: nothing here has read
+   that part's PHY. They exist so a driver can prove it reached A phy and
+   read back what it wrote, not so it can recognise a real one. */
+static unsigned short e1000_phy_regs[32];
+static void e1000_phy_reset_regs(void) {
+    memset(e1000_phy_regs, 0, sizeof(e1000_phy_regs));
+    e1000_phy_regs[E1000_PHY_BMCR] = E1000_BMCR_ANEG_EN;
+    e1000_phy_regs[E1000_PHY_BMSR] = 0;
+    e1000_phy_regs[E1000_PHY_ID1]  = 0x0154;
+    e1000_phy_regs[E1000_PHY_ID2]  = 0x0C00;
+}
+
+static unsigned int e1000_regs[E1000_BAR_SIZE / 4];
+static int e1000_rx_cursor = 0;
+static int e1000_injected = 0;
+static int e1000_tx_frames = 0;
+static unsigned int e1000_tx_bytes = 0;
+static unsigned int e1000_tx_sum = 0;
+
+/* The station address the model answers RAL/RAH with, and the address its
+   receive filter accepts on. One array so the two cannot drift: a filter
+   keyed on a different address than the register reports is a bed that
+   passes a driver reading either. */
+static const unsigned char e1000_station_mac[6] = {0x52,0x54,0x00,0xAB,0xCD,0xEF};
+
+/* Where the NAT sends e1000-bound frames. Learned from the source address
+   of the guest's own transmits, which is what a peer on real wire has to
+   do -- nothing tells the other end an address it has not seen used. */
+static unsigned char e1000_peer_mac[6];
+static int e1000_peer_known = 0;
+static int e1000_rx_dropped = 0;
+
+static void nat_handle_tx(unsigned char *frame, int len);
+static void e1000_nat_rx(void);
+
+/* The canned inbound frame. Broadcast destination, a recognisable source
+   and an unassigned EtherType, so a driver that reports receiving it
+   cannot be reporting something the host stack put on the wire. */
+static const unsigned char e1000_canned[60] = {
+    0xFF,0xFF,0xFF,0xFF,0xFF,0xFF, 0x52,0x54,0x00,0xAB,0xCD,0xEF, 0x88,0xB5,
+    0xC0,0xDE,0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0A,0x0B,
+    0x0C,0x0D,0x0E,0x0F,0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,0x19,
+    0x1A,0x1B,0x1C,0x1D,0x1E,0x1F,0x20,0x21,0x22,0x23,0x24,0x25,0x26,0x27,
+    0x28,0x29,0x2A,0x2B
+};
+
+static unsigned long long e1000_ring_base(int lo_reg, int hi_reg) {
+    return (unsigned long long)e1000_regs[lo_reg / 4] |
+           ((unsigned long long)e1000_regs[hi_reg / 4] << 32);
+}
+
+/* Place pending frames into the receive ring the way the silicon would:
+   fetch the descriptor, DMA into the buffer it names, write back the
+   length and set DD|EOP. Stops at the tail, because the descriptors
+   between head and tail belong to the driver and not to the device. */
+static void e1000_deliver_rx(void) {
+    unsigned long long ring = e1000_ring_base(E1000_REG_RDBAL, E1000_REG_RDBAH);
+    unsigned int len = e1000_regs[E1000_REG_RDLEN / 4];
+    if (!ring || !len) return;
+    unsigned int count = len / 16;
+    if (!count) return;
+    while (e1000_injected < e1000_inject_want) {
+        unsigned int idx = (unsigned int)e1000_rx_cursor % count;
+        if (idx == e1000_regs[E1000_REG_RDT / 4]) return;   /* ring full */
+        unsigned long long desc = ring + (unsigned long long)idx * 16;
+        if (desc + 16 > guest_mem_size) return;
+        unsigned char *d = (unsigned char *)guest_mem + desc;
+        unsigned long long buf = *(unsigned long long *)d;
+        if (!buf || buf + sizeof(e1000_canned) > guest_mem_size) return;
+        memcpy((unsigned char *)guest_mem + buf, e1000_canned, sizeof(e1000_canned));
+        *(unsigned short *)(d + 8) = (unsigned short)sizeof(e1000_canned);
+        d[12] = E1000_RXD_STAT_DD | E1000_RXD_STAT_EOP;
+        e1000_rx_cursor = (int)((idx + 1) % count);
+        e1000_regs[E1000_REG_RDH / 4] = (idx + 1) % count;
+        e1000_injected++;
+    }
+}
+
+/* Consume everything the driver has queued up to the tail. The frame is
+   summed rather than retransmitted: what is being tested is that the
+   driver built a descriptor the device can follow to the right bytes. */
+static void e1000_consume_tx(unsigned int tail) {
+    unsigned long long ring = e1000_ring_base(E1000_REG_TDBAL, E1000_REG_TDBAH);
+    unsigned int len = e1000_regs[E1000_REG_TDLEN / 4];
+    if (!ring || !len) { e1000_regs[E1000_REG_TDH / 4] = tail; return; }
+    unsigned int count = len / 16;
+    if (!count) { e1000_regs[E1000_REG_TDH / 4] = tail; return; }
+    unsigned int head = e1000_regs[E1000_REG_TDH / 4] % count;
+    while (head != (tail % count)) {
+        unsigned long long desc = ring + (unsigned long long)head * 16;
+        if (desc + 16 > guest_mem_size) break;
+        unsigned char *d = (unsigned char *)guest_mem + desc;
+        unsigned long long buf = *(unsigned long long *)d;
+        unsigned short dlen = *(unsigned short *)(d + 8);
+        if (buf && dlen && buf + dlen <= guest_mem_size) {
+            unsigned char *p = (unsigned char *)guest_mem + buf;
+            for (unsigned short k = 0; k < dlen; k++) e1000_tx_sum += p[k];
+            e1000_tx_bytes += dlen;
+            e1000_tx_frames++;
+            if (e1000_nat && dlen >= 14) {
+                memcpy(e1000_peer_mac, p + 6, 6);
+                e1000_peer_known = 1;
+                nat_handle_tx(p, dlen);
+            }
+        }
+        if (!e1000_fault_no_tx_dd) d[12] = E1000_TXD_STAT_DD;
+        head = (head + 1) % count;
+    }
+    e1000_regs[E1000_REG_TDH / 4] = head;
+    if (e1000_nat) e1000_nat_rx();   /* deliver replies immediately, as the ne2k TX path does */
+}
+
+/* One MDIC transaction, completed synchronously. Real silicon takes tens of
+   microseconds and the driver polls for R; completing immediately still
+   exercises the poll loop, because the driver cannot know it did not wait.
+   What it does NOT model is a PHY slower than the driver's fuel cap, which
+   is what -e1000-no-phy is for. */
+static unsigned int e1000_mdic_exec(unsigned int val) {
+    unsigned int reg = (val >> E1000_MDIC_REG_SH) & 0x1F;
+    unsigned int phy = (val >> E1000_MDIC_PHY_SH) & 0x1F;
+    unsigned int op  = val & E1000_MDIC_OP_MASK;
+
+    if (e1000_fault_no_phy) return val & ~(E1000_MDIC_R | E1000_MDIC_E);
+    if (e1000_fault_phy_err) return (val & ~E1000_MDIC_R) | E1000_MDIC_E;
+    if (phy != E1000_PHY_ADDR) return (val & ~E1000_MDIC_R) | E1000_MDIC_E;
+
+    if (op == E1000_MDIC_OP_WR) {
+        unsigned short data = (unsigned short)(val & E1000_MDIC_DATA);
+        if (reg == E1000_PHY_BMCR) {
+            /* Both of these are self-clearing on silicon, and a driver that
+               waits for them to clear hangs forever if the model latches
+               them. Auto-negotiation completing is the observable effect. */
+            if (data & E1000_BMCR_RESET) {
+                e1000_phy_reset_regs();
+                data &= (unsigned short)~E1000_BMCR_RESET;
+            }
+            if (data & E1000_BMCR_ANEG_RST) {
+                data &= (unsigned short)~E1000_BMCR_ANEG_RST;
+                if (!e1000_fault_no_link)
+                    e1000_phy_regs[E1000_PHY_BMSR] |=
+                        (unsigned short)(E1000_BMSR_ANEG_DONE | E1000_BMSR_LINK);
+            }
+        }
+        if (reg != E1000_PHY_BMSR) e1000_phy_regs[reg] = data;
+        return (val & ~E1000_MDIC_DATA) | E1000_MDIC_R | data;
+    }
+    if (op == E1000_MDIC_OP_RD)
+        return (val & ~E1000_MDIC_DATA) | E1000_MDIC_R | e1000_phy_regs[reg];
+
+    /* Neither read nor write is a malformed transaction, not a silent zero. */
+    return (val & ~E1000_MDIC_R) | E1000_MDIC_E;
+}
+
+static unsigned int e1000_read(unsigned long long off) {
+    if (off + 4 > E1000_BAR_SIZE) return 0;
+    switch ((unsigned int)off) {
+    case E1000_REG_STATUS: {
+        unsigned int v = e1000_regs[E1000_REG_STATUS / 4];
+        int slu = (e1000_regs[E1000_REG_CTRL / 4] & E1000_CTRL_SLU) != 0;
+        int phy_ok = !e1000_phy_link ||
+            (e1000_phy_regs[E1000_PHY_BMSR] & E1000_BMSR_ANEG_DONE) != 0;
+        if (!e1000_fault_no_link && slu && phy_ok) v |= E1000_STATUS_LU;
+        return v;
+    }
+    case E1000_REG_RAL:
+        return e1000_fault_no_mac ? 0 :
+            ((unsigned int)e1000_station_mac[0] | ((unsigned int)e1000_station_mac[1] << 8) |
+             ((unsigned int)e1000_station_mac[2] << 16) | ((unsigned int)e1000_station_mac[3] << 24));
+    case E1000_REG_RAH:
+        return e1000_fault_no_mac ? 0 : (E1000_RAH_AV |
+            (unsigned int)e1000_station_mac[4] | ((unsigned int)e1000_station_mac[5] << 8));
+    case E1000_REG_RDH:
+        e1000_deliver_rx();
+        if (e1000_nat) e1000_nat_rx();
+        return e1000_regs[E1000_REG_RDH / 4];
+    default:
+        return e1000_regs[off / 4];
+    }
+}
+
+static void e1000_write(unsigned long long off, unsigned int val) {
+    if (off + 4 > E1000_BAR_SIZE) return;
+    switch ((unsigned int)off) {
+    case E1000_REG_CTRL:
+        /* RST is self-clearing on real silicon. Holding it set is the
+           "device wedged in reset" refusal. */
+        if (val & E1000_CTRL_RST) {
+            /* A device reset drops the link, so the PHY is no longer
+               negotiated. Without this the negotiated state survives every
+               later reset, and a test's link arm passes on a bring-up that
+               skipped the PHY entirely -- which is the exact defect the PHY
+               path exists to catch. */
+            e1000_phy_regs[E1000_PHY_BMSR] &=
+                (unsigned short)~(E1000_BMSR_ANEG_DONE | E1000_BMSR_LINK);
+            if (!e1000_fault_no_reset) val &= ~E1000_CTRL_RST;
+        }
+        e1000_regs[E1000_REG_CTRL / 4] = val;
+        return;
+    case E1000_REG_RCTL:
+        e1000_regs[E1000_REG_RCTL / 4] = val;
+        if (val & E1000_RCTL_EN) { e1000_deliver_rx(); if (e1000_nat) e1000_nat_rx(); }
+        return;
+    case E1000_REG_RDT:
+        e1000_regs[E1000_REG_RDT / 4] = val;
+        e1000_deliver_rx();
+        if (e1000_nat) e1000_nat_rx();
+        return;
+    case E1000_REG_TDT:
+        e1000_regs[E1000_REG_TDT / 4] = val;
+        e1000_consume_tx(val);
+        return;
+    case E1000_REG_MDIC:
+        e1000_regs[E1000_REG_MDIC / 4] = e1000_mdic_exec(val);
+        return;
+    case E1000_REG_ICR:
+        e1000_regs[E1000_REG_ICR / 4] = 0;
+        return;
+    default:
+        e1000_regs[off / 4] = val;
+        return;
+    }
+}
+
 static int handle_device_mmio(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
     unsigned long long gpa = ctx->MemoryAccess.Gpa;
     int access_type = ctx->MemoryAccess.AccessInfo.AccessType;
@@ -2858,8 +3835,13 @@ static int handle_device_mmio(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
     unsigned int (*read_fn)(unsigned long long) = NULL;
     void (*write_fn)(unsigned long long, unsigned int) = NULL;
 
-    if (gpa >= XHCI_BAR && gpa < XHCI_BAR + XHCI_BAR_SIZE) {
-        offset = gpa - XHCI_BAR;
+    if (e1000_present && gpa >= E1000_BAR && gpa < E1000_BAR + E1000_BAR_SIZE) {
+        offset = gpa - E1000_BAR;
+        read_fn = e1000_read; write_fn = e1000_write;
+    } else if (xhci_sel_for(gpa) >= 0) {
+        int xsel = xhci_sel_for(gpa);
+        xcur = &xhci_ctl[xsel];
+        offset = gpa - xhci_decode_base_slot(xsel ? xhci_pci_slot2 : xhci_pci_slot);
         read_fn = xhci_read; write_fn = xhci_write;
     } else if (gpa >= HDA_BAR && gpa < HDA_BAR + HDA_BAR_SIZE) {
         offset = gpa - HDA_BAR;
@@ -2878,6 +3860,42 @@ static int handle_device_mmio(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
     if (read_fn) {
         mmio_insn_t insn = mmio_decode(ctx->MemoryAccess.InstructionBytes,
                                        ctx->MemoryAccess.InstructionByteCount);
+        if (insn.len == 0) {
+            /* WHP's instruction bytes are best-effort and stop at the page
+               the exit was taken on: an instruction that STRADDLES a page
+               boundary arrives truncated (or, when the exit races an
+               interrupt window, empty), and a truncated prefix cannot be
+               sized. Refetch through the guest's own translations, one page
+               at a time, so a straddling instruction is assembled from both
+               pages instead of guessed at.
+
+               This is not a corner case, it is a lottery every build enters.
+               Measured 2026-08-03: a 68-byte code-size change moved one
+               LAPIC store to RIP=0x112fff -- last byte of a page -- and the
+               startup IPI that brings up every application processor was
+               reported as unmapped MMIO. No AP ever started, and the guest
+               looked like a broken SMP scheduler while the defect was here.
+               A previous version of this fallback only ran when WHP supplied
+               ZERO bytes, so the truncated case fell straight through. */
+            unsigned char ib[16] = {0};
+            unsigned long long rip = ctx->VpContext.Rip;
+            int got = 0;
+            for (int page = 0; page < 2 && got < 16; page++) {
+                WHV_TRANSLATE_GVA_RESULT tr;
+                WHV_GUEST_PHYSICAL_ADDRESS ig = 0;
+                unsigned long long gva = rip + (unsigned)got;
+                if (FAILED(WHvTranslateGva(partition, 0, gva,
+                        WHvTranslateGvaFlagValidateExecute, &tr, &ig)) ||
+                    tr.ResultCode != WHvTranslateGvaResultSuccess) break;
+                unsigned long long page_left = 4096 - (gva & 0xFFF);
+                unsigned long long want = (unsigned long long)(16 - got);
+                if (want > page_left) want = page_left;
+                if (ig + want > guest_mem_size) break;
+                memcpy(ib + got, (unsigned char *)guest_mem + ig, (size_t)want);
+                got += (int)want;
+            }
+            if (got > 0) insn = mmio_decode(ib, got);
+        }
         int ilen = insn.len;
         if (ilen == 0) {
             fprintf(stderr, "MMIO: cannot size instruction at RIP=0x%llx (gpa=0x%llx), "
@@ -2914,16 +3932,53 @@ static int handle_device_mmio(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
 }
 
 /* GOP (Graphics Output Protocol) state */
-#define GOP_FB_ADDR       0xBF000000ULL  /* guest physical address of framebuffer (3GB - 16MB, in RAM — fast writes, no MMIO trap) */
-#define GOP_MAX_W         1024
-#define GOP_MAX_H         768
-#define GOP_FB_SIZE       (GOP_MAX_W * GOP_MAX_H * 4)  /* 3 MB max */
+#define GOP_FB_ADDR       0xBF000000ULL  /* guest physical address of framebuffer (3GB - 16MB, in RAM -- fast writes, no MMIO trap) */
+#define GOP_MAX_W         1920
+#define GOP_MAX_H         1200
+#define GOP_MAX_STRIDE    2048
+/* Sized by STRIDE x HEIGHT, and the height is the one that was wrong. This was
+   2048 x 768 x 4 = exactly 6 MB while GOP_MAX_STRIDE was already 2048 for the
+   ASUS TUF panel named in the -gop-stride comment below. That panel is
+   1920x1080, which needs 2048 x 1080 x 4 = 8.4 MB, so every attempt to model it
+   memset past the end of this buffer and codex-vm died host-side with an access
+   violation before drawing a pixel. The bed built for padded scanlines could
+   not be run at the panel it was built for, so every probe anyone ever verified
+   under OVMF was necessarily verified at a geometry too small to show the bug.
+   9.4 MB now, and GOP_FB_ADDR leaves 16 MB below the 3 GB line. */
+#define GOP_FB_SIZE       (GOP_MAX_STRIDE * GOP_MAX_H * 4)  /* 9.4 MB */
 static int gop_active = 0;
 static int gop_width = 640;
 static int gop_height = 480;
 static int gop_stride = 640;
+/* -gop-stride pads each scanline past the visible width, which is what real
+   panels do: the ASUS TUF sitting reported 1920x1080 with a stride of 2048.
+   Every bed we own had stride equal to width, so a renderer stepping rows by
+   the visible width could not fail here. 0 means "follow the width", the
+   behaviour before this option existed. */
+static int gop_stride_opt = 0;
 static unsigned char *gop_fb = NULL;  /* host-side framebuffer copy for rendering */
-static HWND vga_hwnd;  /* forward decl — defined in VGA section */
+static HWND vga_hwnd;  /* forward decl -- defined in VGA section */
+
+/* The host-side triangle rasterizer and its post passes address the
+   framebuffer densely, row pitch = visible width, in the band workers, the
+   glow distance field and the bloom composite. Under a padded stride every
+   one of those walks off the end of a row, so the host would paint garbage
+   geometry -- and a sheared HOST renderer gets read as the guest's defect,
+   which is the opposite of what this bed is for. So the host GPU declines a
+   padded stride and says so once. What the bed serves is GUEST-side row
+   stepping, which is where the stride is a payload's responsibility. */
+static int gop_host_gpu_refuses(void) {
+    if (gop_stride == gop_width) return 0;
+    static int warned = 0;
+    if (!warned) {
+        fprintf(stderr, "GPU: host rasterizer REFUSES a padded stride (%d visible, %d scanline). "
+                        "It addresses rows by width. Nothing is drawn by the host this run; "
+                        "-gop-stride is a bed for GUEST-side row stepping.\n",
+                gop_width, gop_stride);
+        warned = 1;
+    }
+    return 1;
+}
 
 /* Board register apertures (-board-mmio).
  *
@@ -3053,7 +4108,7 @@ static void uefi_setup_tables(void *mem) {
     W64(0x100 + 0,  TRAP(UEFI_TRAP_CONIN_RESET));
     W64(0x100 + 8,  TRAP(UEFI_TRAP_CONIN_READKEY));
 
-    /* RuntimeServices at 0x70400 — stub all to traps */
+    /* RuntimeServices at 0x70400 -- stub all to traps */
     W64(88, UEFI_TABLE_PAGE + 0x400);
 
     /* BootServices at 0x70500 */
@@ -3082,7 +4137,7 @@ static void uefi_setup_tables(void *mem) {
         }
     }
 
-    /* ConInEx at 0x70300 — for ReadKeyStrokeEx */
+    /* ConInEx at 0x70300 -- for ReadKeyStrokeEx */
     W64(0x300 + 248, TRAP(UEFI_TRAP_CONIN_READKEYEX));
 
     /* ConOut protocol at 0xF0200 */
@@ -3105,7 +4160,7 @@ static void uefi_setup_tables(void *mem) {
     /* CursorRow (INT32) */    *(int *)(base + 0x290) = 0;
     /* CursorVisible (BOOL) */ *(int *)(base + 0x294) = 1;
 
-    /* ConIn.WaitForKey event handle at ConIn+16 — just a non-null value */
+    /* ConIn.WaitForKey event handle at ConIn+16 -- just a non-null value */
     W64(0x100 + 16, 0xDEAD0001);
 
     /* LocateProtocol at BootServices+320 (0x140) = base+0x640 */
@@ -3170,7 +4225,7 @@ static void uefi_setup_tables(void *mem) {
     /* PixelsPerScanLine at the STANDARD info offset +32 (base+0x7E0). It was
        previously at +20 (0x7D4), which is inside the PixelInformation field --
        a real UEFI app reads +32, so this makes the stride correct on hardware. */
-    *(int *)(base + 0x7E0) = gop_width; /* PixelsPerScanLine */
+    *(int *)(base + 0x7E0) = gop_stride; /* PixelsPerScanLine */
 
     /* Block I/O Protocol at 0xF0800 (only when disk is loaded) */
     if (ide.data && ide.size > 0) {
@@ -3203,13 +4258,13 @@ static void uefi_setup_tables(void *mem) {
     W64(0x880 + 24, 1);                      /* DeviceHandle (handle #1 = boot disk) */
     W64(0x880 + 32, UEFI_TABLE_PAGE + 0x900);/* FilePath (Device Path) */
 
-    /* Device Path at 0xF0900 — EndEntire node */
+    /* Device Path at 0xF0900 -- EndEntire node */
     base[0x900] = 0x7F;  /* Type: End */
     base[0x901] = 0xFF;  /* SubType: EndEntire */
     base[0x902] = 4;     /* Length[0] */
     base[0x903] = 0;     /* Length[1] */
 
-    /* Firmware Vendor string at 0xF0940 (UCS-2) — "Codex VM" */
+    /* Firmware Vendor string at 0xF0940 (UCS-2) -- "Codex VM" */
     {
         const char *vendor = "Codex VM";
         for (int i = 0; vendor[i]; i++) {
@@ -3260,7 +4315,7 @@ static void guest_commit_range(unsigned long long base, unsigned long long size)
     }
 }
 
-/* Handle a UEFI trap — guest called a protocol function that faulted
+/* Handle a UEFI trap -- guest called a protocol function that faulted
    into the trap page. Returns 1 if handled, 0 if not a UEFI trap. */
 static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
     unsigned long long rip = ctx->VpContext.Rip;
@@ -3285,7 +4340,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
 
     switch (func_id) {
     case UEFI_TRAP_CONOUT_PRINT: {
-        /* OutputString(This, String) — RDX = UTF-16LE string in guest mem */
+        /* OutputString(This, String) -- RDX = UTF-16LE string in guest mem */
         if (rdx > 0 && rdx + 2 < guest_mem_size) {
             unsigned char *str = (unsigned char *)guest_mem + rdx;
             unsigned char *vga = (unsigned char *)guest_mem + VGA_BASE;
@@ -3323,7 +4378,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         break;
     }
     case UEFI_TRAP_CONOUT_SETATTR:
-        /* SetAttribute(This, Attr) — RDX = attribute */
+        /* SetAttribute(This, Attr) -- RDX = attribute */
         uefi_attr = (unsigned char)(rdx & 0xFF);
         *(int *)((unsigned char *)guest_mem + UEFI_TABLE_PAGE + 0x288) = (int)rdx;
         break;
@@ -3336,10 +4391,28 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         }
         uefi_cursor_row = 0;
         uefi_cursor_col = 0;
+        /* -uefi-conout-remode: model AMI's GraphicsConsole. On that firmware
+           the first real ConOut use activates the text console, which SETS
+           ITS OWN GRAPHICS MODE (typically 1024x768) -- so a stub that read
+           the GOP geometry BEFORE calling ClearScreen hands its payload a
+           1920x1080/2048 handoff for a scanout that is now 1024 pixels per
+           row. OVMF and this model never re-moded on ClearScreen, which is
+           why no bed could express the ASUS's stretched-and-interleaved
+           screen. The mode-info table is updated the way real firmware
+           updates it: a guest that re-reads Mode->Info AFTER this call sees
+           the truth; only a stale earlier copy is wrong. */
+        if (uefi_conout_remode && gop_active) {
+            gop_width = 1024; gop_height = 768; gop_stride = 1024;
+            unsigned char *gm = (unsigned char *)guest_mem + UEFI_TABLE_PAGE;
+            *(int *)(gm + 0x7C4) = gop_width;
+            *(int *)(gm + 0x7C8) = gop_height;
+            *(int *)(gm + 0x7E0) = gop_stride;
+            fprintf(stderr, "UEFI: ClearScreen re-moded GOP to 1024x768 stride 1024 (AMI GraphicsConsole model)\n");
+        }
         break;
     }
     case UEFI_TRAP_CONOUT_SETCURSOR:
-        /* SetCursorPosition(This, Col, Row) — RDX=col, R8=row */
+        /* SetCursorPosition(This, Col, Row) -- RDX=col, R8=row */
         uefi_cursor_col = (int)(rdx & 0xFF);
         uefi_cursor_row = (int)(r8 & 0xFF);
         *(int *)((unsigned char *)guest_mem + UEFI_TABLE_PAGE + 0x28C) = uefi_cursor_col;
@@ -3347,11 +4420,11 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         break;
 
     case UEFI_TRAP_CONOUT_ENABLECUR:
-        /* EnableCursor(This, Visible) — ignore */
+        /* EnableCursor(This, Visible) -- ignore */
         break;
 
     case UEFI_TRAP_CONIN_READKEY: {
-        /* ReadKeyStroke(This, Key) — RDX = pointer to EFI_INPUT_KEY (4 bytes)
+        /* ReadKeyStroke(This, Key) -- RDX = pointer to EFI_INPUT_KEY (4 bytes)
            Non-blocking: returns EFI_NOT_READY if no key available.
            Handles PS/2 extended scancodes (0xE0 prefix) in one call. */
         int sc = kbd_dequeue();
@@ -3367,8 +4440,8 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             unsigned short scan = 0;
             /* Map PS/2 scancode to UEFI scan code + ASCII */
             unsigned char ps2 = (unsigned char)(sc & 0x7F);
-            if (sc & 0x80) { /* key up — ignore for ReadKeyStroke */ rax_result = EFI_NOT_READY; break; }
-            ascii = vk_to_scancode(0); /* placeholder — need ps2 to ascii */
+            if (sc & 0x80) { /* key up -- ignore for ReadKeyStroke */ rax_result = EFI_NOT_READY; break; }
+            ascii = vk_to_scancode(0); /* placeholder -- need ps2 to ascii */
             /* Direct PS/2-to-ASCII for common keys */
             switch (ps2) {
             case 0x1C: ascii = 13; break; /* Enter */
@@ -3395,7 +4468,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             case 0x57: scan = 21; break;  /* F11 */
             case 0x58: scan = 22; break;  /* F12 */
             default:
-                /* Letter/number keys — convert PS/2 to ASCII */
+                /* Letter/number keys -- convert PS/2 to ASCII */
                 if (ps2 >= 0x10 && ps2 <= 0x19) { /* Q-P */
                     static const char qwerty_top[] = "qwertyuiop";
                     ascii = qwerty_top[ps2 - 0x10];
@@ -3420,7 +4493,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         break;
     }
     case UEFI_TRAP_CONIN_READKEYEX: {
-        /* ReadKeyStrokeEx — block until key press */
+        /* ReadKeyStrokeEx -- block until key press */
         int sc = kbd_dequeue();
         while (sc < 0 || (sc & 0x80)) { Sleep(10); sc = kbd_dequeue(); }
         if (sc < 0) {
@@ -3469,7 +4542,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         break;
     }
     case UEFI_TRAP_BOOT_ALLOC_PAGES: {
-        /* AllocatePages(Type, MemType, Pages, Memory*) — RCX=type, RDX=memtype, R8=pages, R9=&addr
+        /* AllocatePages(Type, MemType, Pages, Memory*) -- RCX=type, RDX=memtype, R8=pages, R9=&addr
            Type: 0=AllocateAnyPages, 1=AllocateMaxAddress, 2=AllocateAddress
            AMI Aptio V allocates top-down from conventional memory. */
         unsigned long long pages = r8;
@@ -3539,7 +4612,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         break; /* no-op */
 
     case UEFI_TRAP_BOOT_GET_MEMMAP: {
-        /* GetMemoryMap — ASUS TUF (AMI Aptio V) compatible memory map
+        /* GetMemoryMap -- ASUS TUF (AMI Aptio V) compatible memory map
            RCX=&MapSize, RDX=MemoryMap, R8=&MapKey, R9=&DescSize
            Stack: [RSP+40]=&DescVersion
            For >3GB guests, splits RAM around the PCI MMIO hole
@@ -3594,7 +4667,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         break;
     }
     case UEFI_TRAP_BOOT_ALLOC_POOL: {
-        /* AllocatePool(PoolType, Size, Buffer*) — RDX=size, R8=&buffer */
+        /* AllocatePool(PoolType, Size, Buffer*) -- RDX=size, R8=&buffer */
         unsigned long long size = rdx;
         unsigned long long addr = uefi_alloc_pool;
         uefi_alloc_pool = (uefi_alloc_pool + size + 4095) & ~4095ULL;
@@ -3618,7 +4691,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         break;
     }
     case UEFI_TRAP_BOOT_STALL: {
-        /* Stall(Microseconds) — RCX = microseconds to pause.
+        /* Stall(Microseconds) -- RCX = microseconds to pause.
            Cap at 16ms for UI responsiveness (compiled-in read-key
            helper requests 50ms which is too sluggish for menus). */
         unsigned long long us = rcx;
@@ -3633,7 +4706,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         break;
 
     case UEFI_TRAP_BOOT_HANDLEPROTO: {
-        /* HandleProtocol(Handle, Protocol*, Interface**) — RCX=handle, RDX=&GUID, R8=&interface */
+        /* HandleProtocol(Handle, Protocol*, Interface**) -- RCX=handle, RDX=&GUID, R8=&interface */
         unsigned char guid[16];
         if (rdx > 0 && rdx + 16 <= guest_mem_size)
             memcpy(guid, (unsigned char *)guest_mem + rdx, 16);
@@ -3658,7 +4731,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         break;
 
     case UEFI_TRAP_BOOT_LOCATEPROTO: {
-        /* LocateProtocol(Protocol*, Registration, Interface**) — RCX=&GUID, RDX=reg, R8=&interface */
+        /* LocateProtocol(Protocol*, Registration, Interface**) -- RCX=&GUID, RDX=reg, R8=&interface */
         unsigned char guid[16];
         if (rcx > 0 && rcx + 16 <= guest_mem_size)
             memcpy(guid, (unsigned char *)guest_mem + rcx, 16);
@@ -3667,11 +4740,13 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         if (memcmp(guid, GUID_BLOCK_IO, 16) == 0 && ide.data) {
             iface = UEFI_TABLE_PAGE + 0x800;
         } else if (memcmp(guid, GUID_SFS, 16) == 0) {
-            /* Simple File System — not yet implemented */
+            /* Simple File System -- not yet implemented */
         } else if (memcmp(guid, GUID_GOP, 16) == 0) {
             iface = UEFI_TABLE_PAGE + 0x700;
         } else if (memcmp(guid, GUID_LOADED_IMAGE, 16) == 0) {
             iface = UEFI_TABLE_PAGE + 0x880;
+        } else if (memcmp(guid, GUID_INPUT_EX, 16) == 0) {
+            iface = UEFI_TABLE_PAGE + 0x300;   /* ConInEx, built above */
         } else {
             fprintf(stderr, "UEFI: LocateProtocol(unknown %02x%02x%02x%02x) → NOT_FOUND\n",
                 guid[3],guid[2],guid[1],guid[0]);
@@ -3710,7 +4785,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         break;
 
     case UEFI_TRAP_RT_GETTIME: {
-        /* GetTime(Time*, Capabilities*) — RCX=&EFI_TIME, RDX=&caps (optional) */
+        /* GetTime(Time*, Capabilities*) -- RCX=&EFI_TIME, RDX=&caps (optional) */
         if (rcx > 0 && rcx + 16 <= guest_mem_size) {
             SYSTEMTIME st;
             GetLocalTime(&st);
@@ -3727,7 +4802,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
     }
 
     case UEFI_TRAP_CONOUT_QUERYMODE:
-        /* QueryMode(This, ModeNumber, Columns, Rows) — R8=&Cols, R9=&Rows */
+        /* QueryMode(This, ModeNumber, Columns, Rows) -- R8=&Cols, R9=&Rows */
         if (r8 > 0 && r8 + 8 <= guest_mem_size) {
             unsigned long long cols = VGA_COLS;
             memcpy((unsigned char *)guest_mem + r8, &cols, 8);
@@ -3762,7 +4837,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         gop_width = 640; gop_height = 480;
         if (mode_num == 1) { gop_width = 800; gop_height = 600; }
         else if (mode_num == 2) { gop_width = 1024; gop_height = 768; }
-        gop_stride = gop_width;
+        gop_stride = gop_stride_opt > gop_width ? gop_stride_opt : gop_width;
         gop_active = 1;
         if (!gop_fb) gop_fb = (unsigned char *)calloc(1, GOP_FB_SIZE);
         unsigned char *gm = (unsigned char *)guest_mem + UEFI_TABLE_PAGE;
@@ -3770,8 +4845,8 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         *(int *)(gm + 0x7C4) = gop_width;
         *(int *)(gm + 0x7C8) = gop_height;
         *(int *)(gm + 0x7E0) = gop_stride;  /* PixelsPerScanLine at standard info offset +32 */
-        if (GOP_FB_ADDR + (unsigned long long)(gop_width * gop_height * 4) <= guest_mem_size) {
-            memset((unsigned char *)guest_mem + GOP_FB_ADDR, 0, gop_width * gop_height * 4);
+        if (GOP_FB_ADDR + (unsigned long long)(gop_stride * gop_height * 4) <= guest_mem_size) {
+            memset((unsigned char *)guest_mem + GOP_FB_ADDR, 0, gop_stride * gop_height * 4);
         }
         if (vga_hwnd) {
             RECT r = {0, 0, gop_width, gop_height};
@@ -3785,7 +4860,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         break;
     }
     case UEFI_TRAP_GOP_BLT:
-        /* Blt — not yet implemented, guest writes directly to framebuffer */
+        /* Blt -- not yet implemented, guest writes directly to framebuffer */
         break;
 
     default:
@@ -3973,7 +5048,7 @@ static void vga_paint(HWND hwnd) {
     HDC hdc = BeginPaint(hwnd, &ps);
 
     if (shadow_gop && shadow_gop_w > 0 && shadow_gop_h > 0) {
-        /* GOP framebuffer mode — render from shadow (never guest_mem) */
+        /* GOP framebuffer mode -- render from shadow (never guest_mem) */
         BITMAPINFO bmi;
         memset(&bmi, 0, sizeof(bmi));
         bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -3982,11 +5057,17 @@ static void vga_paint(HWND hwnd) {
         bmi.bmiHeader.biPlanes = 1;
         bmi.bmiHeader.biBitCount = 32;
         bmi.bmiHeader.biCompression = BI_RGB;
+        /* The SOURCE rectangle is the visible width, not the stride. biWidth
+           above carries the stride, which is what makes rows step correctly;
+           passing the stride here as well scaled the off-screen pad columns
+           into the window. Harmless while every stride equalled a width, and
+           reachable the moment -gop-stride exists. Headless runs never call
+           this, so no test can see it. */
         StretchDIBits(hdc, 0, 0, shadow_gop_w, shadow_gop_h,
-                      0, 0, shadow_gop_stride, shadow_gop_h,
+                      0, 0, shadow_gop_w, shadow_gop_h,
                       shadow_gop, &bmi, DIB_RGB_COLORS, SRCCOPY);
     } else {
-        /* Text mode — render from shadow VGA buffer (never guest_mem) */
+        /* Text mode -- render from shadow VGA buffer (never guest_mem) */
         HFONT old = (HFONT)SelectObject(hdc, vga_font);
         SetBkMode(hdc, OPAQUE);
         char ch[2] = {0, 0};
@@ -4017,7 +5098,7 @@ static LRESULT CALLBACK vga_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_TIMER:
         if (wp == VGA_TIMER_ID) {
             InvalidateRect(hwnd, NULL, FALSE);
-            /* HDA drain moved to main loop — must not touch guest_mem here */
+            /* HDA drain moved to main loop -- must not touch guest_mem here */
         }
         return 0;
     case WM_KEYDOWN: {
@@ -4132,8 +5213,12 @@ static void vga_start(void) {
             0x700000  Output ring buffer (2 MB)
             0x900000  Heap                                             */
 #define INPUT_BUF_ADDR        0x500000
-#define INPUT_BUF_MAX         0x1000000  /* 16 MB */
-#define GUEST_RING_SIZE       0x100000  /* 1 MB — must match seed's serial-ring-buf-size */
+/* The input ceiling is host-side policy, not a guest constraint: only the
+   first GUEST_RING_SIZE bytes land in guest RAM, the rest sits in the
+   malloc'd drip-feed overflow. 16 MB refused a wide-citation program's IR
+   outright (ui-orchestrator-test streams 48 MB, measured 2026-07-28). */
+#define INPUT_BUF_MAX         0x10000000  /* 256 MB */
+#define GUEST_RING_SIZE       0x100000  /* 1 MB -- must match seed's serial-ring-buf-size */
 #define GUEST_RING_MASK       0x0FFFFF
 
 /* Drip-feed state: host-side overflow buffer for input > GUEST_RING_SIZE */
@@ -4168,7 +5253,7 @@ static unsigned long long input_total_written = 0;
 #define BLIT_PROBE_PORT       0x511
 #define BLIT_PROBE_MAGIC      0xB7
 
-/* IDE state — typedef is above (forward-declared for UEFI emulation) */
+/* IDE state -- typedef is above (forward-declared for UEFI emulation) */
 
 /* PIC state */
 typedef struct {
@@ -4198,7 +5283,7 @@ typedef struct {
     int rsar, rbcr;
     unsigned char par[6];
     unsigned char mar[8];
-    int page;          /* 0, 1, or 2 — from CR bits 7:6 */
+    int page;          /* 0, 1, or 2 -- from CR bits 7:6 */
     int started;       /* STA bit */
     int word_mode;     /* DCR bit 0: 1=word transfers */
 } Ne2kState;
@@ -4224,7 +5309,7 @@ static void ne2k_handle_out(int port, int val, int io_size) {
     ne2k_out_count++;
     if (off == 0x1F) { ne2k_reset(); return; }  /* reset port */
     if (off == 0x10) {
-        /* DATA port write — remote DMA write into NIC memory */
+        /* DATA port write -- remote DMA write into NIC memory */
         if (ne2k.rbcr > 0 && ne2k.rsar < NE2K_MEM_SIZE) {
             ne2k.mem[ne2k.rsar] = val & 0xFF;
             ne2k.rsar++; ne2k.rbcr--;
@@ -4237,11 +5322,11 @@ static void ne2k_handle_out(int port, int val, int io_size) {
         return;
     }
     if (off == 0x00) {
-        /* CR — command register */
+        /* CR -- command register */
         ne2k.page = (val >> 6) & 3;
         ne2k.started = (val & 2) ? 1 : 0;
         if (val & 4) {
-            /* TXP — transmit packet */
+            /* TXP -- transmit packet */
             int tx_addr = ne2k.tpsr * 256;
             if (tx_addr + ne2k.tbcr <= NE2K_MEM_SIZE && ne2k.tbcr > 0)
                 nat_handle_tx(ne2k.mem + tx_addr, ne2k.tbcr);
@@ -4280,7 +5365,7 @@ static int ne2k_handle_in(int port, int io_size) {
     int off = port - NE2K_BASE;
     if (off == 0x1F) { ne2k_reset(); return ne2k.isr; }
     if (off == 0x10) {
-        /* DATA port read — remote DMA read from NIC memory, wrapping at ring boundary */
+        /* DATA port read -- remote DMA read from NIC memory, wrapping at ring boundary */
         int val = 0;
         int ring_end = ne2k.pstop * 256;
         int ring_start = ne2k.pstart * 256;
@@ -4344,6 +5429,12 @@ static int portfwd_count = 0;
 #define NAT_GUEST_IP3 15
 
 static const unsigned char nat_gw_mac[6] = {0x52, 0x55, 0x0A, 0x00, 0x02, 0x02};
+
+/* The lease this NAT offers, in seconds. An hour is the sensible default
+   and it is useless as a bed: a client renews at half its lease, so
+   nothing observes a renewal inside a test. -dhcp-lease <n> is what makes
+   the renewal reachable in a run that lasts seconds. */
+static unsigned int nat_dhcp_lease = 3600;
 
 typedef struct {
     int active;
@@ -4541,6 +5632,20 @@ typedef struct {
 
 static RxFrame rx_queue[RX_QUEUE_SIZE];
 static int rx_queue_head = 0, rx_queue_count = 0;
+
+/* The address guest-bound frames are sent TO. The NE2000 path takes it from
+   PAR, which the driver programs; the e1000 path has no such register write
+   to watch, so it uses what the guest's own transmits carried. Returning
+   PAR whenever the e1000 NAT is off is what keeps every existing run
+   byte-identical. */
+static unsigned char *nat_guest_mac(void) {
+    if (!e1000_nat) return ne2k.par;
+    /* Before the guest has transmitted there is nothing to have learned, so
+       the card is addressed at the address it answers RAL/RAH with. A peer
+       reaching this machine cold has the same two choices and takes the
+       same one. */
+    return e1000_peer_known ? e1000_peer_mac : (unsigned char *)e1000_station_mac;
+}
 
 static void rx_enqueue(unsigned char *data, int len) {
     if (rx_queue_count >= RX_QUEUE_SIZE || len > RX_FRAME_MAX) {
@@ -4770,7 +5875,7 @@ static void nat_handle_dns(unsigned char *q, int qlen, unsigned short guest_port
     }
 
     unsigned char guest_ip[4] = {NAT_GUEST_IP0, NAT_GUEST_IP1, NAT_GUEST_IP2, NAT_GUEST_IP3};
-    nat_build_udp_frame(ne2k.par, dns_ip, guest_ip, 53, guest_port, resp, n);
+    nat_build_udp_frame(nat_guest_mac(), dns_ip, guest_ip, 53, guest_port, resp, n);
 }
 
 /* ------------------------------------------------------------------ */
@@ -4984,8 +6089,74 @@ static void udp_poll_rx(void) {
            addressed, not from wherever the host socket heard it. The
            guest asked 10.0.2.2 and must hear 10.0.2.2 back or its own
            demux will not match. */
-        nat_build_udp_frame(ne2k.par, f->dst_ip, guest_ip, f->dst_port, f->guest_port, buf, n);
+        nat_build_udp_frame(nat_guest_mac(), f->dst_ip, guest_ip, f->dst_port, f->guest_port, buf, n);
     }
+}
+
+/* DHCP, RFC 2131. The guest broadcasts a DISCOVER and gets an OFFER of
+   the same 10.0.2.15 this NAT has always assumed, then a REQUEST is
+   answered with an ACK carrying mask, router, DNS and a lease.
+   Until 2026-07-30 there was no server here at all and the manual said
+   there was: a DISCOVER on port 67 went to nat_handle_udp_tx and out to
+   a host socket, where nothing answers.
+
+   The reply is a broadcast, to the address the client will have rather
+   than to the one it does not have yet. A client without an address
+   cannot be reached by unicast IP, and its own filter has to accept the
+   frame before its stack sees it. */
+static void nat_handle_dhcp(unsigned char *req_frame, unsigned char *msg, int len) {
+    if (len < 240) return;                      /* header + magic cookie */
+    if (msg[0] != 1) return;                    /* BOOTREQUEST only */
+    unsigned char *client_mac = req_frame + 6;
+
+    int msg_type = 0;
+    for (int i = 240; i + 1 < len; ) {
+        int opt = msg[i];
+        if (opt == 255) break;
+        if (opt == 0) { i++; continue; }
+        int olen = msg[i + 1];
+        if (i + 2 + olen > len) break;
+        if (opt == 53 && olen >= 1) msg_type = msg[i + 2];
+        i += 2 + olen;
+    }
+    if (msg_type != 1 && msg_type != 3) return; /* DISCOVER or REQUEST */
+
+    unsigned char gw[4]    = {NAT_GW_IP0, NAT_GW_IP1, NAT_GW_IP2, NAT_GW_IP3};
+    unsigned char lease[4] = {NAT_GUEST_IP0, NAT_GUEST_IP1, NAT_GUEST_IP2, NAT_GUEST_IP3};
+    unsigned char bcast[4] = {255, 255, 255, 255};
+    unsigned char dns[4]   = {NAT_GW_IP0, NAT_GW_IP1, NAT_GW_IP2, 3};
+
+    unsigned char reply[576];
+    memset(reply, 0, sizeof(reply));
+    reply[0] = 2;                               /* BOOTREPLY */
+    reply[1] = 1; reply[2] = 6; reply[3] = 0;   /* Ethernet, 6-byte hardware address */
+    memcpy(reply + 4, msg + 4, 4);              /* the client's xid, echoed */
+    memcpy(reply + 16, lease, 4);               /* yiaddr: the address offered */
+    memcpy(reply + 20, gw, 4);                  /* siaddr */
+    memcpy(reply + 28, client_mac, 6);          /* chaddr */
+
+    int o = 236;
+    reply[o++] = 99; reply[o++] = 130; reply[o++] = 83; reply[o++] = 99;
+    reply[o++] = 53; reply[o++] = 1; reply[o++] = (msg_type == 1) ? 2 : 5;  /* OFFER or ACK */
+    reply[o++] = 54; reply[o++] = 4; memcpy(reply + o, gw, 4); o += 4;      /* server id */
+    reply[o++] = 1;  reply[o++] = 4; reply[o++] = 255; reply[o++] = 255;
+                                     reply[o++] = 255; reply[o++] = 0;      /* /24 */
+    reply[o++] = 3;  reply[o++] = 4; memcpy(reply + o, gw, 4); o += 4;      /* router */
+    reply[o++] = 6;  reply[o++] = 4; memcpy(reply + o, dns, 4); o += 4;     /* DNS */
+    reply[o++] = 51; reply[o++] = 4;
+    reply[o++] = (unsigned char)((nat_dhcp_lease >> 24) & 0xFF);
+    reply[o++] = (unsigned char)((nat_dhcp_lease >> 16) & 0xFF);
+    reply[o++] = (unsigned char)((nat_dhcp_lease >> 8) & 0xFF);
+    reply[o++] = (unsigned char)(nat_dhcp_lease & 0xFF);
+    reply[o++] = 255;                                                       /* end */
+
+    fprintf(stderr, "NAT DHCP: %s from %02x:%02x:%02x:%02x:%02x:%02x -> offering %d.%d.%d.%d\n",
+            msg_type == 1 ? "DISCOVER" : "REQUEST",
+            client_mac[0], client_mac[1], client_mac[2],
+            client_mac[3], client_mac[4], client_mac[5],
+            lease[0], lease[1], lease[2], lease[3]);
+
+    nat_build_udp_frame(client_mac, gw, bcast, 67, 68, reply, o);
 }
 
 /* Handle a TX frame from the guest */
@@ -5049,14 +6220,14 @@ static void nat_handle_tx(unsigned char *frame, int len) {
         unsigned char guest_ip[4] = {NAT_GUEST_IP0, NAT_GUEST_IP1, NAT_GUEST_IP2, NAT_GUEST_IP3};
 
         if ((flags & 0x12) == 0x12) {
-            /* SYN+ACK from guest — check if this is a forwarded connection */
+            /* SYN+ACK from guest -- check if this is a forwarded connection */
             NatConn *c = nat_find(sport, dport, dst_ip);
             if (c && c->forwarded && c->state == 1) {
                 portfwd_handle_synack(c, seq, ack);
             }
         }
         else if (flags & 0x02) {
-            /* SYN — new outbound connection */
+            /* SYN -- new outbound connection */
             fprintf(stderr, "NAT: SYN from guest %d.%d.%d.%d:%d -> %d.%d.%d.%d:%d\n",
                 src_ip[0], src_ip[1], src_ip[2], src_ip[3], sport,
                 dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3], dport);
@@ -5095,12 +6266,12 @@ static void nat_handle_tx(unsigned char *frame, int len) {
                what a real network makes it do anyway. */
         }
         else if ((flags & 0x01) && !(flags & 0x02)) {
-            /* FIN — guest is done sending. Gracefully half-close the host
+            /* FIN -- guest is done sending. Gracefully half-close the host
                socket so buffered data drains to the peer before the
                connection tears down. Full cleanup at VM exit. */
             NatConn *c = nat_find(sport, dport, dst_ip);
             if (c) {
-                nat_build_tcp_frame(ne2k.par, dst_ip, guest_ip,
+                nat_build_tcp_frame(nat_guest_mac(), dst_ip, guest_ip,
                                     dport, sport,
                                     ack, seq + 1,
                                     0x11, /* FIN+ACK */
@@ -5139,7 +6310,7 @@ static void nat_handle_tx(unsigned char *frame, int len) {
                        times out is silence rather than duration. */
                     if (c->state == 4) c->closed_at_ms = now_ms_for_timer();
                     /* ACK the data: we have taken responsibility for it. */
-                    nat_build_tcp_frame(ne2k.par, dst_ip, guest_ip,
+                    nat_build_tcp_frame(nat_guest_mac(), dst_ip, guest_ip,
                                         dport, sport,
                                         ack, seq + payload_len,
                                         0x10, /* ACK */
@@ -5167,7 +6338,9 @@ static void nat_handle_tx(unsigned char *frame, int len) {
         if (payload_len > avail) payload_len = avail;
         if (payload_len < 0) payload_len = 0;
 
-        if (dport == 53 && payload_len > 0) {
+        if (dport == 67 && payload_len > 0) {
+            nat_handle_dhcp(frame, udp + 8, payload_len);
+        } else if (dport == 53 && payload_len > 0) {
             nat_handle_dns(udp + 8, payload_len, sport, dst_ip);
         } else {
             nat_handle_udp_tx(sport, dport, dst_ip, udp + 8, payload_len);
@@ -5193,7 +6366,7 @@ static void nat_poll_connect(void) {
         if (select(0, NULL, &wr, &ex, &tv) <= 0) continue;
 
         if (FD_ISSET(c->sock, &ex)) {
-            nat_build_tcp_frame(ne2k.par, c->dst_ip, guest_ip,
+            nat_build_tcp_frame(nat_guest_mac(), c->dst_ip, guest_ip,
                                 c->dst_port, c->guest_port,
                                 c->ack_offset, c->seq_offset + 1,
                                 0x04, /* RST */
@@ -5203,7 +6376,7 @@ static void nat_poll_connect(void) {
             continue;
         }
         /* Writable: the connect completed. Now the guest may be told. */
-        nat_build_tcp_frame(ne2k.par, c->dst_ip, guest_ip,
+        nat_build_tcp_frame(nat_guest_mac(), c->dst_ip, guest_ip,
                             c->dst_port, c->guest_port,
                             c->ack_offset, c->guest_isn + 1,
                             0x12, /* SYN+ACK */
@@ -5274,7 +6447,7 @@ static void nat_poll_rx(void) {
                known to handle, and the goal here is to release the slot rather
                than to model reset semantics faithfully. */
             if (werr != WSAEWOULDBLOCK) {
-                nat_build_tcp_frame(ne2k.par, c->dst_ip, guest_ip,
+                nat_build_tcp_frame(nat_guest_mac(), c->dst_ip, guest_ip,
                                     c->dst_port, c->guest_port,
                                     c->ack_offset + 1, c->seq_offset + 1,
                                     0x11, /* FIN+ACK */
@@ -5289,7 +6462,7 @@ static void nat_poll_rx(void) {
             if (nat_rx_total % 100000 < n) fprintf(stderr, "NAT RX: total=%d chunk=%d q=%d\n", nat_rx_total, n, rx_queue_count);
             c->ack_offset++;
             unsigned long data_seq = c->ack_offset;
-            nat_build_tcp_frame(ne2k.par, c->dst_ip, guest_ip,
+            nat_build_tcp_frame(nat_guest_mac(), c->dst_ip, guest_ip,
                                 c->dst_port, c->guest_port,
                                 data_seq, c->seq_offset + 1,
                                 0x10, /* ACK with data */
@@ -5307,7 +6480,7 @@ static void nat_poll_rx(void) {
                    earlier and the peer has just sent its own. This is the
                    ordinary end of a connection and the point at which the
                    slot and the socket go back. */
-                nat_build_tcp_frame(ne2k.par, c->dst_ip, guest_ip,
+                nat_build_tcp_frame(nat_guest_mac(), c->dst_ip, guest_ip,
                                     c->dst_port, c->guest_port,
                                     c->ack_offset + 1, c->seq_offset + 1,
                                     0x11, /* FIN+ACK */
@@ -5317,7 +6490,7 @@ static void nat_poll_rx(void) {
                 /* Remote half-closed (sent FIN). Deliver FIN to guest.
                    Move to state 4: stop reading but keep forwarding
                    guest TX data back to the host socket. */
-                nat_build_tcp_frame(ne2k.par, c->dst_ip, guest_ip,
+                nat_build_tcp_frame(nat_guest_mac(), c->dst_ip, guest_ip,
                                     c->dst_port, c->guest_port,
                                     c->ack_offset + 1, c->seq_offset + 1,
                                     0x11, /* FIN+ACK */
@@ -5369,7 +6542,7 @@ static void nat_poll_retransmit(void) {
             double rto = 200.0 * (double)(1 << shift);
             if (now - c->last_tx_ms < rto) continue;
             if (c->rtx_count++ >= NAT_MAX_RTX) { nat_conn_free(c); continue; }
-            nat_build_tcp_frame(ne2k.par, gw_ip, guest_ip,
+            nat_build_tcp_frame(nat_guest_mac(), gw_ip, guest_ip,
                                 c->dst_port, c->guest_port,
                                 c->ack_offset, 0,
                                 0x02, /* SYN */
@@ -5381,7 +6554,7 @@ static void nat_poll_retransmit(void) {
             if (now - c->last_tx_ms < NAT_RTO_MS) continue;
             if (c->rtx_count++ >= NAT_MAX_RTX) { nat_conn_free(c); continue; }
             int n = c->rtxlen > 1400 ? 1400 : c->rtxlen;
-            nat_build_tcp_frame(ne2k.par, c->dst_ip, guest_ip,
+            nat_build_tcp_frame(nat_guest_mac(), c->dst_ip, guest_ip,
                                 c->dst_port, c->guest_port,
                                 c->rtx_base, c->seq_offset + 1,
                                 0x10, /* ACK with data */
@@ -5457,7 +6630,7 @@ static void portfwd_poll(void) {
                         pf->guest_port, f->synth_port);
             }
             f->last_ms = now_ms_for_timer();
-            nat_build_udp_frame(ne2k.par, gw_ip, guest_ip, f->synth_port, pf->guest_port, buf, n);
+            nat_build_udp_frame(nat_guest_mac(), gw_ip, guest_ip, f->synth_port, pf->guest_port, buf, n);
             continue;
         }
 
@@ -5482,7 +6655,7 @@ static void portfwd_poll(void) {
         c->guest_ack = 0;
         fprintf(stderr, "portfwd: accepted host client on :%d -> guest:%d\n",
             pf->host_port, pf->guest_port);
-        nat_build_tcp_frame(ne2k.par, gw_ip, guest_ip,
+        nat_build_tcp_frame(nat_guest_mac(), gw_ip, guest_ip,
                             c->dst_port, pf->guest_port,
                             c->ack_offset, 0,
                             0x02, /* SYN */
@@ -5504,7 +6677,7 @@ static void portfwd_handle_synack(NatConn *c, unsigned long seq, unsigned long a
     c->ack_offset = ack;
     c->state = 2;
     c->guest_ack = seq + 1;
-    nat_build_tcp_frame(ne2k.par, gw_ip, guest_ip,
+    nat_build_tcp_frame(nat_guest_mac(), gw_ip, guest_ip,
                         c->dst_port, c->guest_port,
                         c->ack_offset, c->seq_offset + 1,
                         0x10, /* ACK */
@@ -5515,6 +6688,11 @@ static void portfwd_handle_synack(NatConn *c, unsigned long seq, unsigned long a
 /* Inject queued RX frames into the NE2000 ring buffer */
 static void ne2k_inject_rx(void) {
     static int inject_debug = 0;
+    /* One NAT, one wire. The guest's stack brings up the NE2000 whether or
+       not it binds the Intel part, so with both cards draining the same
+       queue the NE2000 takes every frame and the e1000 receives nothing --
+       which is what -e1000-nat looked like before this line existed. */
+    if (e1000_nat) return;
     if (rx_queue_count > 0 && inject_debug < 5) {
         fprintf(stderr, "inject_rx: q=%d pstart=%d pstop=%d curr=%d bnry=%d\n",
             rx_queue_count, ne2k.pstart, ne2k.pstop, ne2k.curr, ne2k.bnry);
@@ -5566,7 +6744,7 @@ static void ne2k_inject_rx(void) {
         }
 
         ne2k.curr = next_page;
-        ne2k.isr |= 0x01; /* PRX — packet received */
+        ne2k.isr |= 0x01; /* PRX -- packet received */
 
         rx_queue_head = (rx_queue_head + 1) % RX_QUEUE_SIZE;
         rx_queue_count--;
@@ -5574,7 +6752,65 @@ static void ne2k_inject_rx(void) {
 }
 
 
-/* VGA Attribute Controller — minimal emulation for port 0x3C0/0x3C1 */
+/* The e1000 counterpart to ne2k_inject_rx: drain the same NAT queue into
+   the receive ring the way e1000_deliver_rx places the canned frame. The
+   canned replay is left alone -- it is what e1000-bringup asserts against
+   -- so the two share only the ring cursor.
+
+   The station filter is the part that makes this a test rather than a
+   conduit. Real silicon drops a frame addressed to an address it was not
+   programmed with, and that is precisely the failure a stack sourcing the
+   wrong MAC produces on metal: it transmits fine and never hears back.
+   A model that delivered to any address could not tell the two apart. */
+static void e1000_nat_rx(void) {
+    unsigned long long ring = e1000_ring_base(E1000_REG_RDBAL, E1000_REG_RDBAH);
+    unsigned int len = e1000_regs[E1000_REG_RDLEN / 4];
+    if (!ring || !len) return;
+    if (!(e1000_regs[E1000_REG_RCTL / 4] & E1000_RCTL_EN)) return;
+    unsigned int count = len / 16;
+    if (!count) return;
+    while (rx_queue_count > 0) {
+        RxFrame *f = &rx_queue[rx_queue_head];
+        if (f->len >= 6) {
+            int bcast = f->data[0] == 0xFF && f->data[1] == 0xFF && f->data[2] == 0xFF &&
+                        f->data[3] == 0xFF && f->data[4] == 0xFF && f->data[5] == 0xFF;
+            int mine  = !e1000_fault_no_mac && !memcmp(f->data, e1000_station_mac, 6);
+            /* RCTL.UPE. Our own driver sets it at bring-up, deliberately and
+               with its reasons written down, so on this bed the filter is
+               open unless -e1000-strict-filter refuses to honour it. Without
+               that knob the filter below is a branch nothing can reach. */
+            int promisc = !e1000_strict_filter && (e1000_regs[E1000_REG_RCTL / 4] & 0x08u) != 0;
+            if (!bcast && !mine && !promisc) {
+                if (e1000_rx_dropped < 5)
+                    fprintf(stderr, "e1000 rx FILTERED: dst=%02x:%02x:%02x:%02x:%02x:%02x "
+                            "station=%02x:%02x:%02x:%02x:%02x:%02x\n",
+                            f->data[0], f->data[1], f->data[2], f->data[3], f->data[4], f->data[5],
+                            e1000_station_mac[0], e1000_station_mac[1], e1000_station_mac[2],
+                            e1000_station_mac[3], e1000_station_mac[4], e1000_station_mac[5]);
+                e1000_rx_dropped++;
+                rx_queue_head = (rx_queue_head + 1) % RX_QUEUE_SIZE;
+                rx_queue_count--;
+                continue;
+            }
+        }
+        unsigned int idx = (unsigned int)e1000_rx_cursor % count;
+        if (idx == e1000_regs[E1000_REG_RDT / 4]) return;   /* ring full: leave it queued */
+        unsigned long long desc = ring + (unsigned long long)idx * 16;
+        if (desc + 16 > guest_mem_size) return;
+        unsigned char *d = (unsigned char *)guest_mem + desc;
+        unsigned long long buf = *(unsigned long long *)d;
+        if (!buf || buf + (unsigned long long)f->len > guest_mem_size) return;
+        memcpy((unsigned char *)guest_mem + buf, f->data, (size_t)f->len);
+        *(unsigned short *)(d + 8) = (unsigned short)f->len;
+        d[12] = E1000_RXD_STAT_DD | E1000_RXD_STAT_EOP;
+        e1000_rx_cursor = (int)((idx + 1) % count);
+        e1000_regs[E1000_REG_RDH / 4] = (idx + 1) % count;
+        rx_queue_head = (rx_queue_head + 1) % RX_QUEUE_SIZE;
+        rx_queue_count--;
+    }
+}
+
+/* VGA Attribute Controller -- minimal emulation for port 0x3C0/0x3C1 */
 static int vga_attr_index = 0;    /* current attribute register index */
 static int vga_attr_flipflop = 0; /* 0=next write is index, 1=next write is data */
 
@@ -5582,7 +6818,7 @@ static int vga_attr_flipflop = 0; /* 0=next write is index, 1=next write is data
 static PicState pic_master, pic_slave;
 
 /* The guest listens to PS/2 when it has programmed the PIC and left the
-   keyboard IRQ unmasked — the same test the main loop uses to decide
+   keyboard IRQ unmasked -- the same test the main loop uses to decide
    whether to write injected scancodes straight to cell 28680. */
 static int ps2_irq_route_live(void) {
     return pic_master.vector_base && !(pic_master.mask & (1 << 1));
@@ -5624,6 +6860,7 @@ static int hw_watch_active = 0;
 static int hw_watch_rw = 1;    /* DR7 R/W0: 1=write(01b), 3=read/write(11b) */
 static int hw_watch_len = 8;   /* 1, 2, 4, or 8 bytes */
 static int hw_watch_hits = 0;
+static int hw_watch_log = 0;   /* one line per write and continue, no crash report */
 static void hw_watch_init(void);
 
 static void die(const char *msg) { fprintf(stderr, "FATAL: %s\n", msg); exit(1); }
@@ -5658,13 +6895,13 @@ static int bp_count = 0;
    (DR0-DR3) at the function entry, single-steps each invocation to its
    return via TF, and counts only the instructions whose RIP lies inside
    the function's own [start,end) range (callee instructions are
-   excluded — matching the compiler's per-body CDX6010 static count).
+   excluded -- matching the compiler's per-body CDX6010 static count).
    Reports WCET-OBS lines on exit. Pure observation: no guest byte is
-   ever written (INT3 cannot be used here — the guest IDT owns vector 3
+   ever written (INT3 cannot be used here -- the guest IDT owns vector 3
    and its handler dumps !EXC and halts; #DB is host-intercepted).
    DR6.B0-B3 marks an entry hit, DR6.BS a step; RF resumes past the
    entry fault. Four functions maximum per run (one debug register
-   each) — batch across runs for more. */
+   each) -- batch across runs for more. */
 #define MAX_WCET_FNS 4
 static struct {
     unsigned long long start, end;
@@ -5677,6 +6914,36 @@ static int wcet_name_count = 0;
 static int wcet_active = -1;
 static unsigned long long wcet_cur = 0, wcet_prev_rip = 0;
 static unsigned long long wcet_ret_addr = 0, wcet_entry_rsp = 0;
+
+/* Conditional execution breakpoint through the debug registers.
+   -hbreak <fn>[:<reg>=<val>] arms DRn at the function entry and evaluates
+   the condition at the host's #DB exit, on the guest's own register file.
+
+   This exists because a conditional breakpoint built on INT3 cannot work in
+   this guest, however it is spelled. Vector 3 belongs to the guest: its
+   handler runs before the host ever sees the trap, so by the time a
+   condition is evaluated the registers are the HANDLER's (rdi reads 0x33
+   every time) and not the callee's. Measured 2026-07-27 with a condition
+   that can never match, which broke anyway. A #DB from DRn is intercepted
+   by the host through ExceptionExitBitmap and never reaches the guest IDT,
+   so the registers at the exit are the ones the call was made with.
+
+   No guest byte is written, so this also does not collide with -break, and
+   an unmatched hit resumes the guest instead of halting it -- which is what
+   lets it reach the Nth call of a helper that is called from everywhere.
+   Four functions maximum, one debug register each, shared with -wcet. */
+#define MAX_HBREAKS 4
+static struct {
+    unsigned long long addr;
+    char name[128];
+    int cond_reg;              /* -1 = unconditional */
+    unsigned long long cond_val;
+    unsigned long long hits;   /* entries seen */
+    unsigned long long matched;/* entries whose condition held */
+} hbreaks[MAX_HBREAKS];
+static int hbreak_count = 0;
+static const char *hbreak_specs[MAX_HBREAKS];
+static int hbreak_spec_count = 0;
 
 static void load_map_file(const char *path) {
     FILE *f = fopen(path, "r");
@@ -5767,7 +7034,15 @@ static void dbg_dump_stack(int count) {
     WHvGetVirtualProcessorRegisters(partition, 0, names, 2, vals);
     unsigned long long rsp = vals[0].Reg64;
     fprintf(stderr, "  Stack at RSP=0x%llx:\n", rsp);
-    for (int i = 0; i < count && rsp + i*8 + 8 <= guest_mem_size; i++) {
+    /* Bound by subtraction, not addition. `rsp + i*8 + 8 <= guest_mem_size`
+       WRAPS for a wild RSP -- which is exactly the case a crash dump exists to
+       report -- so the check passed and the read landed far outside the guest
+       allocation, killing codex-vm with a host access violation in the middle
+       of printing the diagnosis. The dump stopped after the backtrace and the
+       process died, so the fault that mattered was never shown. A reporter
+       that crashes on the inputs it exists for is worse than no reporter. */
+    if (rsp >= guest_mem_size) { fprintf(stderr, "  (RSP outside guest memory)\n"); return; }
+    for (int i = 0; i < count && (guest_mem_size - rsp) >= (unsigned long long)i*8 + 8; i++) {
         unsigned long long val = *(unsigned long long *)((unsigned char *)guest_mem + rsp + i*8);
         fprintf(stderr, "  [RSP+%02x] = ", i*8);
         dbg_print_addr(val);
@@ -5782,7 +7057,9 @@ static void dbg_backtrace(void) {
     unsigned long long rip = vals[0].Reg64, rbp = vals[1].Reg64;
     fprintf(stderr, "  Backtrace:\n");
     fprintf(stderr, "    #0 "); dbg_print_addr(rip); fprintf(stderr, "\n");
-    for (int depth = 1; depth < 32 && rbp > 0 && rbp + 16 <= guest_mem_size; depth++) {
+    /* Same wrap as dbg_dump_stack: bound by subtraction. */
+    for (int depth = 1; depth < 32 && rbp > 0 && rbp < guest_mem_size &&
+                        (guest_mem_size - rbp) >= 16; depth++) {
         unsigned long long ret = *(unsigned long long *)((unsigned char *)guest_mem + rbp + 8);
         unsigned long long prev = *(unsigned long long *)((unsigned char *)guest_mem + rbp);
         if (ret == 0) break;
@@ -6021,7 +7298,14 @@ raw:
 }
 
 static void dbg_disasm_at(unsigned long long addr, int count) {
-    if (addr >= guest_mem_size || addr < 16) return;
+    /* Say why rather than printing an empty section under a heading. A blank
+       "Code at RIP" with only the caret reads as "no instructions here" when
+       what it means is "this address is not in guest memory", which is the
+       single most useful fact about a wild jump. */
+    if (addr >= guest_mem_size || addr < 16) {
+        fprintf(stderr, "  (0x%llx is outside guest memory: cannot disassemble)\n", addr);
+        return;
+    }
     unsigned char *base = (unsigned char *)guest_mem + addr;
     int max_bytes = (int)(guest_mem_size - addr);
     if (max_bytes > 256) max_bytes = 256;
@@ -6092,6 +7376,22 @@ static void dbg_crash_report(const char *reason, unsigned long long fault_addr,
     /* Registers */
     fprintf(stderr, "── Registers ──\n");
     dbg_dump_regs();
+
+    /* The syscall MSRs, read back off the VP rather than out of the shadows, so
+       this reports what the CPU holds and not what the host believes it set.
+       A guest that jumps to a wild address on a `syscall` is indistinguishable
+       from one that jumped there any other way unless you can see LSTAR, and
+       that ambiguity cost a full diagnosis cycle on the UEFI boot path. */
+    {
+        WHV_REGISTER_NAME mn[4] = { WHvX64RegisterEfer, WHvX64RegisterStar,
+                                    WHvX64RegisterLstar, WHvX64RegisterSfmask };
+        WHV_REGISTER_VALUE mv[4];
+        memset(mv, 0, sizeof(mv));
+        if (SUCCEEDED(WHvGetVirtualProcessorRegisters(partition, 0, mn, 4, mv))) {
+            fprintf(stderr, "  EFER=%016llx STAR=%016llx LSTAR=%016llx SFMASK=%016llx\n",
+                    mv[0].Reg64, mv[1].Reg64, mv[2].Reg64, mv[3].Reg64);
+        }
+    }
     fprintf(stderr, "\n");
 
     /* Fault info */
@@ -6129,7 +7429,7 @@ static void dbg_crash_report(const char *reason, unsigned long long fault_addr,
     if (symbol_count > 0)
         fprintf(stderr, "(%d symbols loaded)\n", symbol_count);
     else
-        fprintf(stderr, "(no symbols — pass -map <file.map> for resolved names)\n");
+        fprintf(stderr, "(no symbols -- pass -map <file.map> for resolved names)\n");
 
     if (!vga_headless) {
         fprintf(stderr, "\nEntering debugger. Type 'help' for commands, 'q' to quit.\n");
@@ -6140,9 +7440,26 @@ static void dbg_crash_report(const char *reason, unsigned long long fault_addr,
 static int dbg_set_breakpoint(unsigned long long addr, int cond_reg, unsigned long long cond_val) {
     if (addr >= guest_mem_size) { fprintf(stderr, "  address out of range\n"); return -1; }
     if (bp_count >= MAX_BREAKPOINTS) { fprintf(stderr, "  too many breakpoints\n"); return -1; }
+    /* The byte we are about to save is the one we will restore. If a
+       breakpoint is already patched here, the byte on the page is 0xCC and
+       saving it destroys the instruction: restoring writes 0xCC back and the
+       guest traps forever on an entry it no longer owns. Inherit the saved
+       byte from whoever patched it, and refuse an unowned 0xCC rather than
+       swallowing a real guest INT3. */
+    unsigned char saved = *((unsigned char *)guest_mem + addr);
+    if (saved == 0xCC) {
+        int prev = -1;
+        for (int k = 0; k < bp_count; k++)
+            if (breakpoints[k].active && breakpoints[k].addr == addr) { prev = k; break; }
+        if (prev < 0) {
+            fprintf(stderr, "  0xCC already at 0x%llx and no breakpoint owns it; refusing\n", addr);
+            return -1;
+        }
+        saved = breakpoints[prev].orig_byte;
+    }
     int idx = bp_count++;
     breakpoints[idx].addr = addr;
-    breakpoints[idx].orig_byte = *((unsigned char *)guest_mem + addr);
+    breakpoints[idx].orig_byte = saved;
     breakpoints[idx].active = 1;
     breakpoints[idx].cond_reg = cond_reg;
     breakpoints[idx].cond_val = cond_val;
@@ -6159,11 +7476,19 @@ static void dbg_enable_single_step(void) {
     WHvSetVirtualProcessorRegisters(partition, 0, &name, 1, &val);
 }
 
+static const char *dbg_reg_names_tbl[18] = {
+    "rip","rsp","rax","rbx","rcx","rdx","rsi","rdi","rbp",
+    "r8","r9","r10","r11","r12","r13","r14","r15","rflags"
+};
+
 static int dbg_reg_index(const char *name) {
-    const char *names[] = {"rip","rsp","rax","rbx","rcx","rdx","rsi","rdi","rbp",
-                           "r8","r9","r10","r11","r12","r13","r14","r15","rflags"};
-    for (int i = 0; i < 18; i++) if (!strcmp(name, names[i])) return i;
+    for (int i = 0; i < 18; i++) if (!strcmp(name, dbg_reg_names_tbl[i])) return i;
     return -1;
+}
+
+static const char *dbg_reg_name(int idx) {
+    if (idx < 0 || idx > 17) return "?";
+    return dbg_reg_names_tbl[idx];
 }
 
 static unsigned long long dbg_read_reg(int idx) {
@@ -6189,7 +7514,7 @@ static int dbg_command_loop(int vec, unsigned long long exc_rip) {
             if (breakpoints[i].addr == rip && breakpoints[i].active && breakpoints[i].cond_reg >= 0) {
                 unsigned long long rv = dbg_read_reg(breakpoints[i].cond_reg);
                 if (rv != breakpoints[i].cond_val) {
-                    /* Condition not met — resume via single-step past this address */
+                    /* Condition not met -- resume via single-step past this address */
                     dbg_enable_single_step();
                     return 0;
                 }
@@ -6230,7 +7555,7 @@ static int dbg_command_loop(int vec, unsigned long long exc_rip) {
             dbg_dump_mem(addr, len);
         }
         else if (!strncmp(cmd, "x ", 2)) {
-            /* x <addr> — read 8-byte qword at addr */
+            /* x <addr> -- read 8-byte qword at addr */
             unsigned long long addr = strtoull(cmd + 2, NULL, 0);
             if (addr + 8 <= guest_mem_size) {
                 unsigned long long val = *(unsigned long long *)((unsigned char *)guest_mem + addr);
@@ -6322,19 +7647,19 @@ static int dbg_command_loop(int vec, unsigned long long exc_rip) {
         }
         else if (!strcmp(cmd, "help") || !strcmp(cmd, "h") || !strcmp(cmd, "?")) {
             fprintf(stderr,
-                "  s / step          — single-step one instruction\n"
-                "  c / continue      — resume execution\n"
-                "  r / regs          — dump registers\n"
-                "  m <addr> [len]    — dump memory (hex+ascii)\n"
-                "  x <addr>          — read qword at address\n"
-                "  d <fn|addr> [n]   — disassemble n instructions at address\n"
-                "  di                — disassemble 16 instructions at RIP\n"
-                "  bt / backtrace    — walk RBP chain\n"
-                "  stack             — dump 16 stack slots\n"
-                "  b <fn|addr> [if reg=val] — set breakpoint (conditional)\n"
-                "  w <addr> [size]   — set memory watchpoint\n"
-                "  sym <name>        — look up symbol address\n"
-                "  q / quit          — exit VM\n");
+                "  s / step          -- single-step one instruction\n"
+                "  c / continue      -- resume execution\n"
+                "  r / regs          -- dump registers\n"
+                "  m <addr> [len]    -- dump memory (hex+ascii)\n"
+                "  x <addr>          -- read qword at address\n"
+                "  d <fn|addr> [n]   -- disassemble n instructions at address\n"
+                "  di                -- disassemble 16 instructions at RIP\n"
+                "  bt / backtrace    -- walk RBP chain\n"
+                "  stack             -- dump 16 stack slots\n"
+                "  b <fn|addr> [if reg=val] -- set breakpoint (conditional)\n"
+                "  w <addr> [size]   -- set memory watchpoint\n"
+                "  sym <name>        -- look up symbol address\n"
+                "  q / quit          -- exit VM\n");
         }
         else {
             fprintf(stderr, "  unknown command: %s (type 'help')\n", cmd);
@@ -6397,6 +7722,34 @@ static DWORD WINAPI timer_kick_thread(LPVOID arg) {
     }
 }
 
+/* Last-resort crash reporter. Prints the fault to stderr (which the test
+   harness captures) instead of raising a dialog, then exits with 0xC0DE
+   so a harness can tell a host crash from a guest failure. */
+static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
+    DWORD code = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionCode : 0;
+    unsigned long long addr = 0, ref = 0;
+    int writing = -1;
+    if (ep && ep->ExceptionRecord) {
+        addr = (unsigned long long)ep->ExceptionRecord->ExceptionAddress;
+        if ((code == EXCEPTION_ACCESS_VIOLATION ||
+             code == EXCEPTION_IN_PAGE_ERROR) &&
+            ep->ExceptionRecord->NumberParameters >= 2) {
+            writing = (int)ep->ExceptionRecord->ExceptionInformation[0];
+            ref = (unsigned long long)ep->ExceptionRecord->ExceptionInformation[1];
+        }
+    }
+    fprintf(stderr,
+        "\nHOST CRASH: codex-vm faulted (code=0x%08lX) at 0x%llX",
+        (unsigned long)code, addr);
+    if (writing >= 0)
+        fprintf(stderr, " %s memory 0x%llX",
+                writing == 1 ? "writing" : writing == 8 ? "executing" : "reading", ref);
+    fprintf(stderr, "\nHOST CRASH: this is a defect in codex-vm itself, not in the guest.\n");
+    fflush(stderr);
+    _exit(0xC0DE);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
 static BOOL WINAPI ctrl_handler(DWORD type) {
     (void)type;
     shutdown_requested = 1;
@@ -6407,7 +7760,7 @@ static BOOL WINAPI ctrl_handler(DWORD type) {
 /* Input drip-feed thread: when the input file exceeds the guest ring,
    periodically cancel the VP so the main loop drip-feeds overflow data.
    Without this, the guest busy-waits on the empty ring with no VM exits,
-   and the drip-feed (which runs on exit) never fires — deadlock. */
+   and the drip-feed (which runs on exit) never fires -- deadlock. */
 static DWORD WINAPI drip_feed_thread(LPVOID arg) {
     (void)arg;
     while (!shutdown_requested) {
@@ -6425,7 +7778,7 @@ static DWORD WINAPI drip_feed_thread(LPVOID arg) {
 
 /* Memory-mapped I/O: load input file directly into the guest's serial ring
    buffer at 0x500000. Set write-pos so the guest reads it immediately.
-   The guest compiler's __bare_metal_read_serial polls the ring buffer —
+   The guest compiler's __bare_metal_read_serial polls the ring buffer --
    by pre-filling it, we bypass UART entirely. Zero TCP, zero port I/O. */
 static void load_input_file(const char *path) {
     if (!path || !guest_mem) return;
@@ -6510,6 +7863,17 @@ static int dbg_exc_pending = 0;
 static void output_buf_write(unsigned char b) {
     if (!output_buf) return;
     if (output_lock_ready) EnterCriticalSection(&output_lock);
+    if (output_len == output_cap) {
+        /* Same growth-and-move discipline as blit_guest_output below. The
+           16MB starting cap silently truncated any serial stream past it,
+           and a streamed IR payload for a wide-citation program is bigger
+           than that (measured 2026-07-28: ui-orchestrator-test's IR frame
+           cut off at exactly the cap). On growth failure keep the old
+           buffer and drop the byte, which is the old behavior. */
+        size_t new_cap = output_cap * 2;
+        unsigned char *grown = (unsigned char *)realloc(output_buf, new_cap);
+        if (grown) { output_buf = grown; output_cap = new_cap; }
+    }
     if (output_len < output_cap) output_buf[output_len++] = b;
     if (output_lock_ready) LeaveCriticalSection(&output_lock);
 
@@ -6608,6 +7972,7 @@ static void ide_init(IdeState *d, const char *path) {
     d->path = path;
     FILE *f = fopen(path, "rb");
     if (!f) { fprintf(stderr, "WARN: cannot open disk %s\n", path); return; }
+    d->present = 1;
     fseek(f, 0, SEEK_END);
     d->size = ftell(f);
     fseek(f, 0, SEEK_SET);
@@ -6661,7 +8026,7 @@ static void ide_start_write(IdeState *d) {
     d->buf_remaining = 512;
     d->sectors_left = count - 1;
     d->writing = 1;
-    d->status = 0x58; /* DRDY|DRQ — ready to accept data */
+    d->status = 0x58; /* DRDY|DRQ -- ready to accept data */
     d->error = 0;
 }
 
@@ -6734,7 +8099,7 @@ static int ide_read_data(IdeState *d) {
 
 /* -no-ide: the disk image stays loaded (backing the USB mass-storage
    device model) but the legacy IDE ports answer as if no drive were
-   present — the shape of a modern board, where a USB-booted machine
+   present -- the shape of a modern board, where a USB-booted machine
    reaches its own medium only through the USB stack. Status reads
    return ERR-only so fuel-bounded drivers fail fast instead of
    burning a full poll budget against a floating bus. */
@@ -6743,6 +8108,7 @@ static int no_ide = 0;
 static void ide_handle_out(IdeState *d, int port, int val) {
     int reg = port - 0x1F0;
     if (no_ide) return;
+    if (!d->present) return;
     /* Data register during a WRITE SECTORS transfer. The REP OUTSW fast path in
        handle_io reaches ide_write_data directly; a driver that writes the data
        phase with single 16-bit OUTs (port-out-16) lands here instead, and reg 0
@@ -6770,6 +8136,17 @@ static void ide_handle_out(IdeState *d, int port, int val) {
    always stored these registers; only the read path dropped them). */
 static int ide_handle_in(IdeState *d, int port) {
     if (no_ide) return 0x01; /* ERR, no BSY/DRQ: drivers bail fast */
+    /* A position with no medium. The signature registers float to 0xFF, which
+       is what the guest's detect reads as "no drive" -- it compares LBA-mid
+       against zero and branches away. But STATUS answers 0x00, not 0xFF, and
+       the difference is not cosmetic: emit-ata-bring-up runs a bounded BSY wait
+       BEFORE it looks at the signature, so a status with bit 7 set costs a
+       million port INs, and a port IN is a VM exit. That is seconds of wall
+       clock on every diskless boot, which is most of them -- it took the
+       cross-arch lane over its timeout the first time this was tried. 0x00 is
+       also what the guest tests for explicitly as no-drive, so it is the honest
+       answer as well as the fast one. */
+    if (!d->present) return (port == 0x3F6 || port == 0x1F7) ? 0x00 : 0xFF;
     if (port == 0x3F6) return d->status;
     int reg = port - 0x1F0;
     if (reg == 7) return d->status;
@@ -6782,6 +8159,23 @@ static int ide_handle_in(IdeState *d, int port) {
     if (reg == 6) return d->drive_head;
     return 0xFF;
 }
+
+/* The primary channel's two positions behind one pair of port handlers. The
+   drive/head register is the selector, so it is intercepted here rather than in
+   ide_handle_out: it must land on both devices (it carries LBA 27:24) while
+   only its bit 4 decides which device the following accesses reach. */
+static void ide_bus_out(int port, int val) {
+    if (no_ide) return;
+    if (port == 0x1F6) {
+        ide_sel = (val >> 4) & 1;
+        ide.drive_head = val & 0xFF;
+        ide_slave.drive_head = val & 0xFF;
+        return;
+    }
+    ide_handle_out(ide_active(), port, val);
+}
+
+static int ide_bus_in(int port) { return ide_handle_in(ide_active(), port); }
 
 /* ── PIC ──────────────────────────────────────────────────────────── */
 
@@ -6801,7 +8195,7 @@ static void pic_handle_out(PicState *p, int port_is_data, int val) {
         } else if (val == 0x20) {
             /* EOI */
             p->isr = 0;
-            /* serial_irq_pending removed — no serial */
+            /* serial_irq_pending removed -- no serial */
         }
     } else {
         /* Data port */
@@ -6866,7 +8260,7 @@ static void setup_page_tables(void) {
            firmware legitimately expose stay present:
              0xA000-0xBFFF  GDT + TSS (0xA000/0xA100) and IDT (0xB000)
              0xF0000-0xF1FFF SystemTable/BootServices tables + HLT trap page
-           Everything else in [0, 0x200000) — including 0x8000 and 0x100000 —
+           Everything else in [0, 0x200000) -- including 0x8000 and 0x100000 --
            is not present. A correct kernel stub allocates its memory, calls
            ExitBootServices, and only then owns low memory (a future strict-mode
            refinement will flip these present on ExitBootServices). */
@@ -6900,15 +8294,20 @@ static void create_vm(size_t mem_mb) {
     WHvSetPartitionProperty(partition, WHvPartitionPropertyCodeProcessorCount, &prop, sizeof(prop));
 
     /* Enable I/O port and CPUID exits. MSR exits handled selectively.
-       ExceptionExit is enabled ONLY for -wcet runs: without this bit the
-       ExceptionExitBitmap below is inert and every exception is delivered
-       to the guest IDT (the !EXC dump path). Host-intercepting #PF would
-       break guest-side demand paging, so wcet mode narrows the bitmap to
-       #DB alone and normal runs keep today's behavior untouched. */
+       ExceptionExit is enabled ONLY for -wcet and -hbreak runs: without this
+       bit the ExceptionExitBitmap below is inert and every exception is
+       delivered to the guest IDT (the !EXC dump path). Host-intercepting #PF
+       would break guest-side demand paging, so both modes narrow the bitmap
+       to #DB alone and normal runs keep today's behavior untouched.
+
+       This is also why a -debug conditional breakpoint never discriminated:
+       with the bit off, the guest's own vector-3 handler runs first and any
+       condition is evaluated against ITS registers. */
     memset(&prop, 0, sizeof(prop));
     prop.ExtendedVmExits.X64CpuidExit = 1;
     prop.ExtendedVmExits.X64MsrExit = 1;
-    if (wcet_name_count > 0) prop.ExtendedVmExits.ExceptionExit = 1;
+    if (wcet_name_count > 0 || hbreak_spec_count > 0 || hw_watch_active)
+        prop.ExtendedVmExits.ExceptionExit = 1;
     WHvSetPartitionProperty(partition, WHvPartitionPropertyCodeExtendedVmExits, &prop, sizeof(prop));
 
     hr = WHvSetupPartition(partition);
@@ -6916,7 +8315,7 @@ static void create_vm(size_t mem_mb) {
 
     /* Enable exception exit for debug/breakpoint vectors (must be after setup) */
     memset(&prop, 0, sizeof(prop));
-    if (wcet_name_count > 0)
+    if (wcet_name_count > 0 || hbreak_spec_count > 0 || hw_watch_active)
         prop.ExceptionExitBitmap = (1ULL << 1); /* #DB only: DR entry hits + TF steps */
     else
     prop.ExceptionExitBitmap = (1ULL << 0) | (1ULL << 1) | (1ULL << 3) | (1ULL << 6) | (1ULL << 8)
@@ -6983,7 +8382,7 @@ static void create_vm(size_t mem_mb) {
     if (uefi_mode) {
         uefi_alloc_hi = guest_mem_size - 0x100000; /* top-down allocator starts below top 1MB */
         uefi_setup_tables(guest_mem);
-        /* Fill trap page with HLT (0xF4) opcodes — each UEFI function is at a known offset.
+        /* Fill trap page with HLT (0xF4) opcodes -- each UEFI function is at a known offset.
            When the guest CALLs a function, it executes HLT. The VM checks RIP on halt. */
         memset((unsigned char *)guest_mem + UEFI_TRAP_PAGE, 0xF4, 4096);
         fprintf(stderr, "UEFI mode: tables at 0x%x, traps at 0x%x%s\n", UEFI_TABLE_PAGE, UEFI_TRAP_PAGE,
@@ -6994,7 +8393,7 @@ static void create_vm(size_t mem_mb) {
        Window resize happens in vga_thread after creation (checks gop_active). */
     if (gop_active) {
         if (!gop_fb) gop_fb = (unsigned char *)calloc(1, GOP_FB_SIZE);
-        size_t fb_bytes = (size_t)gop_width * gop_height * 4;
+        size_t fb_bytes = (size_t)gop_stride * gop_height * 4;
         size_t fb_pages = (fb_bytes + 4095) & ~(size_t)4095;
         /* Commit GPU command buffer + depth buffer + GOP framebuffer */
         size_t gpu_region_start = 0xBE000000ULL;
@@ -7065,7 +8464,7 @@ static void load_kernel(const char *path) {
 
     /* Detect format and load accordingly */
     if (sz > 52 && buf[0] == 0x7F && buf[1] == 'E' && buf[2] == 'L' && buf[3] == 'F') {
-        /* ELF32 multiboot kernel — load PT_LOAD segments at their vaddrs */
+        /* ELF32 multiboot kernel -- load PT_LOAD segments at their vaddrs */
         unsigned int e_entry = *(unsigned int*)(buf + 24);
         unsigned int phoff = *(unsigned int*)(buf + 28);
         unsigned short phnum = *(unsigned short*)(buf + 44);
@@ -7103,13 +8502,28 @@ static void load_kernel(const char *path) {
         memcpy((unsigned char*)guest_mem + LOAD_ADDR, buf + skip, payload);
     }
 
-    /* Auto-extract PE from GPT disk image: find FAT16 ESP, locate BOOTX64.EFI */
+    /* Auto-extract the PE from a GPT disk image: find the ESP, locate
+       BOOTX64.EFI. FAT16 and FAT32 both, which it was not.
+
+       This read the BPB as FAT16 unconditionally: root entry count at offset
+       17, sectors-per-FAT at 22, a cluster number as a bare 16-bit field at
+       26. On FAT32 all three are wrong. The first two read zero there, the
+       real FAT size is a 32-bit field at 36, the root is a CLUSTER named at
+       44 rather than a fixed area before the data region, and a cluster
+       number carries its high half at offset 20. So the walk found nothing
+       and the caller fell through to loading the whole disk image as a raw
+       kernel -- no diagnostic, no boot, indistinguishable from a blank disk.
+
+       It mattered the moment the drive installer started working, because
+       that formats the target ESP as FAT32, as it must for anything
+       sizeable. A stick Codex had installed could not be booted by Codex's
+       own firmware emulation while being perfectly readable by real
+       firmware, and the emulator said nothing either way. */
     if (uefi_mode && sz > 1024 && buf[0] != 'M' &&
         buf[512] == 'E' && buf[513] == 'F' && buf[514] == 'I' && buf[515] == ' ') {
         unsigned long long part_lba = *(unsigned long long*)(buf + 1024 + 32);
         unsigned long long part_start = part_lba * 512;
         if (part_start + 512 < sz) {
-            /* Parse FAT16 BPB */
             unsigned char *bpb = buf + part_start;
             unsigned int bps = *(unsigned short*)(bpb + 11);
             unsigned int spc = bpb[13];
@@ -7117,15 +8531,29 @@ static void load_kernel(const char *path) {
             unsigned int nfats = bpb[16];
             unsigned int root_entries = *(unsigned short*)(bpb + 17);
             unsigned int spf = *(unsigned short*)(bpb + 22);
+            /* Both zero is how the format itself says the 32-bit fields are
+               the real ones. */
+            int is_fat32 = (spf == 0 && root_entries == 0);
+            unsigned int root_cluster = 0;
+            if (is_fat32) {
+                spf = *(unsigned int*)(bpb + 36);
+                root_cluster = *(unsigned int*)(bpb + 44);
+            }
+            if (bps && spc && nfats && spf && !(is_fat32 && root_cluster < 2)) {
             unsigned long long root_off = part_start + (unsigned long long)(reserved + nfats * spf) * bps;
+            /* FAT16 keeps a fixed root area ahead of the data region; FAT32's
+               root is an ordinary cluster inside it. */
             unsigned long long data_off = root_off + (unsigned long long)root_entries * 32;
+            unsigned int dir_entries = (unsigned int)(spc * bps / 32);
+            if (is_fat32) root_off = data_off + (unsigned long long)(root_cluster - 2) * spc * bps;
+            unsigned int root_scan = is_fat32 ? dir_entries : root_entries;
             /* Scan root directory for EFI subdir */
             unsigned int efi_cluster = 0;
-            for (int i = 0; i < (int)root_entries && root_off + (i+1)*32 <= sz; i++) {
+            for (int i = 0; i < (int)root_scan && root_off + (i+1)*32 <= sz; i++) {
                 unsigned char *e = buf + root_off + i * 32;
                 if (e[0] == 0) break;
                 if (e[11] == 0x10 && memcmp(e, "EFI        ", 11) == 0) {
-                    efi_cluster = *(unsigned short*)(e + 26);
+                    efi_cluster = *(unsigned short*)(e + 26) | ((unsigned int)*(unsigned short*)(e + 20) << 16);
                     break;
                 }
             }
@@ -7133,11 +8561,11 @@ static void load_kernel(const char *path) {
             unsigned int boot_cluster = 0;
             if (efi_cluster >= 2) {
                 unsigned long long dir_off = data_off + (unsigned long long)(efi_cluster - 2) * spc * bps;
-                for (int i = 0; i < (int)(spc * bps / 32) && dir_off + (i+1)*32 <= sz; i++) {
+                for (int i = 0; i < (int)dir_entries && dir_off + (i+1)*32 <= sz; i++) {
                     unsigned char *e = buf + dir_off + i * 32;
                     if (e[0] == 0) break;
                     if (e[11] == 0x10 && memcmp(e, "BOOT       ", 11) == 0) {
-                        boot_cluster = *(unsigned short*)(e + 26);
+                        boot_cluster = *(unsigned short*)(e + 26) | ((unsigned int)*(unsigned short*)(e + 20) << 16);
                         break;
                     }
                 }
@@ -7145,16 +8573,16 @@ static void load_kernel(const char *path) {
             /* Scan BOOT subdir for BOOTX64.EFI */
             if (boot_cluster >= 2) {
                 unsigned long long dir_off = data_off + (unsigned long long)(boot_cluster - 2) * spc * bps;
-                for (int i = 0; i < (int)(spc * bps / 32) && dir_off + (i+1)*32 <= sz; i++) {
+                for (int i = 0; i < (int)dir_entries && dir_off + (i+1)*32 <= sz; i++) {
                     unsigned char *e = buf + dir_off + i * 32;
                     if (e[0] == 0) break;
                     if (memcmp(e, "BOOTX64 EFI", 11) == 0) {
-                        unsigned int file_cluster = *(unsigned short*)(e + 26);
+                        unsigned int file_cluster = *(unsigned short*)(e + 26) | ((unsigned int)*(unsigned short*)(e + 20) << 16);
                         unsigned int file_size = *(unsigned int*)(e + 28);
                         unsigned long long file_off = data_off + (unsigned long long)(file_cluster - 2) * spc * bps;
                         if (file_off + file_size <= sz && file_size > 64) {
-                            fprintf(stderr, "GPT: extracted BOOTX64.EFI (%u bytes) from partition at LBA %llu\n",
-                                file_size, part_lba);
+                            fprintf(stderr, "GPT: extracted BOOTX64.EFI (%u bytes, %s) from partition at LBA %llu\n",
+                                file_size, is_fat32 ? "FAT32" : "FAT16", part_lba);
                             /* Replace buf with the extracted PE */
                             unsigned char *pe = malloc(file_size);
                             memcpy(pe, buf + file_off, file_size);
@@ -7166,6 +8594,18 @@ static void load_kernel(const char *path) {
                         break;
                     }
                 }
+            }
+            /* The walk reads one cluster per directory and takes the file as
+               contiguous from its first cluster. That is true of an ESP with a
+               handful of entries and a freshly written payload, which is what
+               this is for; it is not a general FAT driver and does not claim
+               to be. A payload that outgrows one cluster chain's contiguity
+               would need the FAT walked, and the failure would be a truncated
+               PE rather than a silent miss. */
+            } else {
+                fprintf(stderr, "GPT: ESP at LBA %llu has an unusable BPB "
+                    "(bps=%u spc=%u nfats=%u spf=%u root_cluster=%u)\n",
+                    part_lba, bps, spc, nfats, spf, root_cluster);
             }
         }
     }
@@ -7233,7 +8673,7 @@ static void load_kernel(const char *path) {
         return;
     }
 
-    /* Parse multiboot header for entry point — scan loaded memory at LOAD_ADDR */
+    /* Parse multiboot header for entry point -- scan loaded memory at LOAD_ADDR */
     unsigned char *mb = (unsigned char*)guest_mem + LOAD_ADDR;
     if (*(unsigned int*)mb == 0x1BADB002) {
         unsigned int flags = *(unsigned int*)(mb + 4);
@@ -7275,8 +8715,18 @@ static void set_initial_regs(void) {
         vals[4].Reg64 = PAGE_TABLE_ADDR;
         /* CR4: PAE + OSFXSR + OSXMMEXCPT */
         vals[5].Reg64 = 0x620;
-        /* EFER: LME + LMA + SCE */
+        /* EFER: LME + LMA + SCE.
+           Keep the shadow in step. `handle_msr` answers a guest `rdmsr` of EFER
+           out of msr_efer, NOT out of the VP, so leaving the shadow at 0 while
+           the register really holds 0xD01 makes the read a lie -- and the read
+           is only ever the first half of a read-modify-write. A guest that adds
+           SCE the way every real kernel does (rdmsr; or rax,1; wrmsr) would read
+           0, write 1, and clear LME and LMA while running in long mode with
+           paging on. That is not a subtle degradation, it is an immediate
+           triple fault, and it is what the UEFI stub hit the moment it started
+           programming the syscall MSRs. */
         vals[6].Reg64 = 0xD01;
+        msr_efer = 0xD01;
 
         /* CS: 64-bit code segment */
         vals[7].Segment.Base = 0; vals[7].Segment.Limit = 0xFFFFFFFF;
@@ -7404,6 +8854,55 @@ static void watch_init(void) {
         watch_page_base, 4096, WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagExecute);
     if (FAILED(hr)) { fprintf(stderr, "WHvMapGpaRange(RX): 0x%lx\n", hr); watch_active = 0; return; }
     fprintf(stderr, "WATCH: page 0x%llx set to READ-ONLY (write traps enabled)\n", watch_page_base);
+}
+
+/* Commit a guest range the HOST is about to store into.
+
+   guest_mem is MEM_RESERVE with lazy commit, and the run loop's demand-commit
+   is driven by a guest fault. A store performed by the host rather than the
+   guest never produces that fault, so if the destination page has never been
+   touched the store lands in reserved address space and takes the whole
+   process down with 0xC0000005 -- no guest diagnostic and no emulator
+   diagnostic, because nothing survives to write one.
+
+   REP INSW is where that bites in practice. The guest's block-read-sector
+   syscall allocates a 512-byte buffer at the top of the bump heap and reads
+   the sector straight into it, so the destination is by construction memory
+   the guest has not touched yet. It survives as long as the heap top stays
+   inside a chunk something else already committed, which is why the failure
+   needs a read AND a live accumulator: only a retained allocation marches the
+   heap top into fresh chunks. codex/test/sector-read-list-growth is the pair.
+
+   The seen-bitmap is not an optimisation detail. Without it this is two
+   syscalls per 16-bit word of every sector read. */
+static unsigned char *guest_chunk_seen = NULL;
+
+static void guest_host_touch(unsigned long long gpa, unsigned long long len) {
+    unsigned long long chunk = 2ULL * 1024 * 1024;
+    if (!guest_mem || gpa >= guest_mem_size) return;
+    if (!guest_chunk_seen) {
+        guest_chunk_seen = (unsigned char *)calloc((size_t)(guest_mem_size / chunk + 2), 1);
+        if (!guest_chunk_seen) return;
+    }
+    unsigned long long first = gpa / chunk;
+    unsigned long long last = (gpa + (len ? len - 1 : 0)) / chunk;
+    for (unsigned long long c = first; c <= last; c++) {
+        unsigned long long base = c * chunk;
+        if (base >= guest_mem_size) return;
+        if (guest_chunk_seen[c]) continue;
+        guest_chunk_seen[c] = 1;
+        /* Leave the chunk carrying an armed watchpoint alone: watch_init
+           committed it already and carved the page read-only, and a remap
+           here would quietly hand write access back. */
+        if (watch_active && watch_page_base / chunk == c) continue;
+        unsigned long long clen = chunk;
+        if (base + clen > guest_mem_size) clen = guest_mem_size - base;
+        if (VirtualAlloc((unsigned char *)guest_mem + base, (size_t)clen,
+                         MEM_COMMIT, PAGE_READWRITE)) {
+            WHvMapGpaRange(partition, (unsigned char *)guest_mem + base, base, clen,
+                WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite | WHvMapGpaRangeFlagExecute);
+        }
+    }
 }
 
 static void hw_watch_init(void) {
@@ -8670,7 +10169,7 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
                 else if (size == 2) wval = gmem[gpa] | (gmem[gpa + 1] << 8);
                 else wval = (int)(*(unsigned int *)(gmem + gpa));
             }
-            ide_write_data(&ide, wval);
+            ide_write_data(ide_active(), wval);
             WHV_REGISTER_NAME sn[] = { WHvX64RegisterRsi, WHvX64RegisterRcx };
             WHV_REGISTER_VALUE sv[2];
             sv[0].Reg64 = ctx->IoPortAccess.Rsi + size;
@@ -8702,7 +10201,7 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             return;
         }
         /* Reset control (0xCF9). Bit 2 pulses the reset line; a full guest
-           reboot is not modeled, so a requested reset ends the VM loudly —
+           reboot is not modeled, so a requested reset ends the VM loudly --
            the exit message is the verdict a test looks for. */
         if (port == 0xCF9 && (val & 0x04)) {
             fprintf(stderr, "RESET: 0xCF9 system reset requested (val=0x%x) -- exiting\n", val);
@@ -8819,9 +10318,9 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         }
         /* IDE */
         else if ((port >= 0x1F0 && port <= 0x1F7) || port == 0x3F6) {
-            ide_handle_out(&ide, port, val);
+            ide_bus_out(port, val);
         }
-        /* Doorbell — guest signals output status */
+        /* Doorbell -- guest signals output status */
         else if (port == DOORBELL_PORT) {
             if (val == DOORBELL_BLIT) blit_guest_output();
             if (val == DOORBELL_COMPILE_DONE || val == DOORBELL_FATAL)
@@ -8841,14 +10340,14 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             cmos_index = val & 0x7F;
         }
         else if (port == 0x71) {
-            /* write to CMOS — ignore */
+            /* write to CMOS -- ignore */
         }
-        /* Guest sleep request: out 0xE0, ms — yields to host for N ms */
+        /* Guest sleep request: out 0xE0, ms -- yields to host for N ms */
         else if (port == 0xE0) {
             DWORD ms = (val > 0 && val <= 1000) ? (DWORD)val : 1;
             Sleep(ms);
         }
-        /* Keyboard controller (0x60/0x64) — accept silently */
+        /* Keyboard controller (0x60/0x64) -- accept silently */
         else if (port == 0x60 || port == 0x64) {
             /* guest disables keyboard; ignore */
         }
@@ -8857,7 +10356,7 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             if (!vga_attr_flipflop) { vga_attr_index = val & 0x3F; }
             vga_attr_flipflop ^= 1;
         }
-        /* VGA misc/sequencer/DAC — accept silently */
+        /* VGA misc/sequencer/DAC -- accept silently */
         else if (port >= 0x3C2 && port <= 0x3CF) { }
         else if (port >= 0x3D4 && port <= 0x3D5) { }
         /* Bochs VBE */
@@ -8871,7 +10370,8 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
                 int h = vbe_regs[2] ? vbe_regs[2] : 480;
                 if (w > GOP_MAX_W) w = GOP_MAX_W;
                 if (h > GOP_MAX_H) h = GOP_MAX_H;
-                gop_width = w; gop_height = h; gop_stride = w;
+                gop_width = w; gop_height = h;
+                gop_stride = gop_stride_opt > w ? gop_stride_opt : w;
                 gop_active = 1; vbe_active = 1;
                 if (!gop_fb) gop_fb = (unsigned char *)calloc(1, GOP_FB_SIZE);
                 fprintf(stderr, "VBE: mode set %dx%d fb=0x%llx\n", w, h, (unsigned long long)VBE_FB_ADDR);
@@ -9083,6 +10583,7 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             unsigned long long done = 0;
             unsigned char *gmem = (unsigned char *)guest_mem;
             if (cnt > (1ULL << 20)) cnt = (1ULL << 20);
+            guest_host_touch(gpa, cnt * (unsigned long long)size);
             for (; done < cnt; done++) {
                 unsigned long long p = gpa + done * (unsigned long long)size;
                 int rval = ne2k_handle_in(port, size);
@@ -9208,7 +10709,7 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         }
         /* IDE */
         else if ((port >= 0x1F0 && port <= 0x1F7) || port == 0x3F6) {
-            result = ide_handle_in(&ide, port);
+            result = ide_bus_in(port);
         }
         /* NE2000 NIC */
         else if (port >= NE2K_BASE && port < NE2K_BASE + 0x20) {
@@ -9223,7 +10724,7 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         else if (port == 0x3DA) { vga_attr_flipflop = 0; result = 0; }
         else if (port >= 0x3C2 && port <= 0x3CF) { result = 0; }
         else if (port >= 0x3D4 && port <= 0x3D5) { result = 0; }
-        /* CMOS RTC (0x71 read — return BCD time from host clock) */
+        /* CMOS RTC (0x71 read -- return BCD time from host clock) */
         else if (port == 0x71) {
             SYSTEMTIME st;
             int uip;
@@ -9308,6 +10809,7 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             /* REP INSW/INSB: write to guest memory at [RDI], update RDI and RCX */
             unsigned long long gpa = ctx->IoPortAccess.Rdi;
             unsigned char *gmem = (unsigned char *)guest_mem;
+            guest_host_touch(gpa, (unsigned long long)size);
             if (gpa < guest_mem_size) {
                 if (size == 1) gmem[gpa] = result & 0xFF;
                 else if (size == 2 && gpa + 1 < guest_mem_size) { gmem[gpa] = result & 0xFF; gmem[gpa + 1] = (result >> 8) & 0xFF; }
@@ -9334,7 +10836,13 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             WHvGetVirtualProcessorRegisters(partition, 0, &rax_name, 1, &rax_val);
             if (size == 1) rax_val.Reg64 = (rax_val.Reg64 & ~0xFFULL) | (result & 0xFF);
             else if (size == 2) rax_val.Reg64 = (rax_val.Reg64 & ~0xFFFFULL) | (result & 0xFFFF);
-            else rax_val.Reg64 = result;
+            /* A 32-bit write to a GPR zeroes the upper half of the 64-bit
+               register; `result` is a signed int, so assigning it directly
+               SIGN-extended every value with bit 31 set and the guest saw
+               0xFFFFFFFF80000000-style garbage where hardware gives a clean
+               dword. Measured 2026-07-30: a PCI vendor/device dword of
+               0x8C318086 reached the guest as -1942912890. */
+            else rax_val.Reg64 = (unsigned int)result;
             WHvSetVirtualProcessorRegisters(partition, 0, &rax_name, 1, &rax_val);
             /* Advance RIP past the I/O instruction */
             WHV_REGISTER_NAME rip_name = WHvX64RegisterRip;
@@ -9365,15 +10873,6 @@ static void handle_cpuid(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
     vals[4].Reg64 = ctx->VpContext.Rip + ctx->VpContext.InstructionLength;
     WHvSetVirtualProcessorRegisters(partition, 0, names, 5, vals);
 }
-
-/* MSR storage for guest-visible MSRs */
-static unsigned long long msr_efer = 0;
-static unsigned long long msr_star = 0;
-static unsigned long long msr_lstar = 0;
-static unsigned long long msr_cstar = 0;
-static unsigned long long msr_sfmask = 0;
-static unsigned long long msr_kernel_gs_base = 0;
-static unsigned long long msr_apic_base = 0xFEE00900ULL; /* default: enabled, BSP */
 
 static void handle_msr(WHV_RUN_VP_EXIT_CONTEXT *ctx, int is_write) {
     unsigned int msr_id = ctx->MsrAccess.MsrNumber;
@@ -9419,7 +10918,7 @@ static void handle_msr(WHV_RUN_VP_EXIT_CONTEXT *ctx, int is_write) {
             WHvSetVirtualProcessorRegisters(partition, 0, &n, 1, &v);
             break;
         }
-        case 0x1B: msr_apic_base = write_val; break; /* IA32_APIC_BASE — just store */
+        case 0x1B: msr_apic_base = write_val; break; /* IA32_APIC_BASE -- just store */
         default: break;
         }
     } else {
@@ -9467,10 +10966,10 @@ static void inject_timer_interrupt(void) {
 }
 
 static int try_inject_serial_interrupt(void) {
-    return 0;  /* serial removed — memory-mapped I/O, no IRQ needed */
+    return 0;  /* serial removed -- memory-mapped I/O, no IRQ needed */
 }
 
-/* (monitor thread removed — page protection provides precise trapping) */
+/* (monitor thread removed -- page protection provides precise trapping) */
 
 /* ── GPU triangle rasterizer (host-side, native speed) ──────────────── */
 /*
@@ -9498,6 +10997,7 @@ static int try_inject_serial_interrupt(void) {
 
 static void gpu_clear_fb(int color) {
     gpu_frame_ready = 0;
+    if (gop_host_gpu_refuses()) return;
     if (!gop_active || GOP_FB_ADDR + (unsigned long long)gop_width * gop_height * 4 > guest_mem_size) return;
     unsigned int *fb = (unsigned int *)((unsigned char *)guest_mem + GOP_FB_ADDR);
     int total = gop_width * gop_height;
@@ -9508,6 +11008,7 @@ static void gpu_clear_fb(int color) {
    of wiping it, so moving sparks leave fading long-exposure trails. */
 static void gpu_fade_clear(int color) {
     gpu_frame_ready = 0;
+    if (gop_host_gpu_refuses()) return;
     if (!gop_active || GOP_FB_ADDR + (unsigned long long)gop_width * gop_height * 4 > guest_mem_size) return;
     unsigned int *fb = (unsigned int *)((unsigned char *)guest_mem + GOP_FB_ADDR);
     int total = gop_width * gop_height;
@@ -9523,6 +11024,7 @@ static void gpu_fade_clear(int color) {
 }
 
 static void gpu_clear_depth(void) {
+    if (gop_host_gpu_refuses()) return;
     if (GPU_DEPTH_ADDR + (unsigned long long)gop_width * gop_height * 4 > guest_mem_size) return;
     unsigned int *db = (unsigned int *)((unsigned char *)guest_mem + GPU_DEPTH_ADDR);
     int total = gop_width * gop_height;
@@ -9983,6 +11485,7 @@ static void gpu_rasterize_band(unsigned int *fb, unsigned int *db, unsigned char
 
 static void gpu_rasterize_triangles(int count) {
     if (!gop_active) return;
+    if (gop_host_gpu_refuses()) return;
     gpu_frame_count++;
     gpu_last_tri_count = count;
     if (count > GPU_MAX_TRIS) {
@@ -10023,6 +11526,7 @@ static int glow_valid = 0;
 
 static void gpu_atmosphere_glow(void) {
     if (!gop_active) return;
+    if (gop_host_gpu_refuses()) return;
     int w = gop_width, h = gop_height;
     if (GOP_FB_ADDR + (unsigned long long)w * h * 4 > guest_mem_size) return;
     unsigned int *fb = (unsigned int *)((unsigned char *)guest_mem + GOP_FB_ADDR);
@@ -10108,6 +11612,7 @@ static void gpu_composite_band(unsigned int *fb, int w, int h, int y0, int y1) {
 
 static void gpu_cinematic_post(void) {
     if (!gop_active) return;
+    if (gop_host_gpu_refuses()) return;
     int w = gop_width, h = gop_height;
     if (GOP_FB_ADDR + (unsigned long long)w * h * 4 > guest_mem_size) return;
     unsigned int *fb = (unsigned int *)((unsigned char *)guest_mem + GOP_FB_ADDR);
@@ -10222,7 +11727,7 @@ static void sync_shadow_buffers(void) {
         if (!gop_last.QuadPart || since >= 16.0) { gop_last = now; gop_due = 1; }
     }
     if (gop_active && gop_width > 0 && gop_height > 0 && gop_due) {
-        size_t fb_bytes = (size_t)gop_width * gop_height * 4;
+        size_t fb_bytes = (size_t)gop_stride * gop_height * 4;
         if (!shadow_gop) shadow_gop = (unsigned char *)calloc(1, GOP_FB_SIZE);
         if (shadow_gop && GOP_FB_ADDR + fb_bytes <= guest_mem_size) {
             memcpy(shadow_gop, (unsigned char *)guest_mem + GOP_FB_ADDR, fb_bytes);
@@ -10246,7 +11751,7 @@ static void sync_shadow_buffers(void) {
     }
 
     /* Flush pending mouse state to guest memory (PS/2 path).
-       Do NOT clear pending_mouse_valid here — the absolute-coordinate
+       Do NOT clear pending_mouse_valid here -- the absolute-coordinate
        port path (0xE1-0xE4) uses the same flag and clears it on 0xE3 read. */
     if (pending_mouse_valid && MOUSE_BUF_ADDR + 3 <= (int)guest_mem_size) {
         unsigned char *mbuf = (unsigned char *)guest_mem + MOUSE_BUF_ADDR;
@@ -10259,17 +11764,38 @@ static void sync_shadow_buffers(void) {
 /* ── Main loop ─────────────────────────────────────────────────────── */
 
 int main(int argc, char **argv) {
+    /* Unbuffered stderr. Redirected to a file it block-buffers, so anything
+       written after the last flush is lost when the process dies -- and the
+       process dying is precisely when the diagnostics matter. A crash dump
+       that ends mid-section reads as "it crashed here" when it means "the
+       buffer was never flushed", which sent this chase after the wrong
+       function once already. */
+    setvbuf(stderr, NULL, _IONBF, 0);
+    /* Never let Windows put a modal dialog in front of a crash. An
+       unhandled access violation otherwise raises "codex-vm.exe -
+       Application Error", which BLOCKS the process until a human clicks
+       it: under the battery that turns a fast failure into a
+       wall-budget-exceeded hang, on a box nobody is watching, and the
+       crash text never reaches the log. Measured 2026-08-03 during a
+       release battery run (exc-stack-heap, pid 43952). SEM_ flags cover
+       the OS dialogs; the filter covers the CRT's own, prints the fault
+       to the log that is being captured, and dies with a distinguishable
+       code. */
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+    SetUnhandledExceptionFilter(crash_filter);
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
     SetConsoleCtrlHandler(ctrl_handler, TRUE);
     create_shutdown_event();
     CreateThread(NULL, 0, shutdown_event_thread, NULL, 0, NULL);
     atexit(cleanup_whp);
-    const char *kernel = NULL, *disk = NULL, *boot_args = NULL, *trace_file = NULL;
+    const char *kernel = NULL, *disk = NULL, *disk2 = NULL, *boot_args = NULL, *trace_file = NULL;
     int mem_mb = 3072;  /* matches the build harness; binaries from pre-7209
                            seeds triple-fault below 2 GB + stack reserve */
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-kernel") && i+1 < argc) { kernel = argv[++i]; g_kernel_path = kernel; }
         else if (!strcmp(argv[i], "-disk") && i+1 < argc) disk = argv[++i];
+        else if (!strcmp(argv[i], "-disk2") && i+1 < argc) disk2 = argv[++i];
         else if (!strcmp(argv[i], "-no-ide")) no_ide = 1;
         else if (!strcmp(argv[i], "-mem") && i+1 < argc) mem_mb = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-input") && i+1 < argc) input_file = argv[++i];
@@ -10282,6 +11808,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-dumpmem") && i+2 < argc) { dumpmem_addr = strtoull(argv[++i], NULL, 0); dumpmem_len = strtoull(argv[++i], NULL, 0); }
         else if (!strcmp(argv[i], "-hwwatch") && i+1 < argc) { hw_watch_addr = strtoull(argv[++i], NULL, 0); hw_watch_active = 1; }
         else if (!strcmp(argv[i], "-hwwatch-rw")) hw_watch_rw = 3;
+        else if (!strcmp(argv[i], "-hwwatch-log")) hw_watch_log = 1;
         else if (!strcmp(argv[i], "-hwwatch-len") && i+1 < argc) hw_watch_len = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-debug")) debug_mode = 1;
         else if (!strcmp(argv[i], "-wcet") && i+1 < argc) {
@@ -10290,6 +11817,9 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-break") && i+1 < argc) {
             debug_mode = 1;
             if (init_break_count < MAX_INIT_BREAKS) init_break_names[init_break_count++] = argv[++i];
+        }
+        else if (!strcmp(argv[i], "-hbreak") && i+1 < argc) {
+            if (hbreak_spec_count < MAX_HBREAKS) hbreak_specs[hbreak_spec_count++] = argv[++i];
         }
         else if (!strcmp(argv[i], "-map") && i+1 < argc) map_file_path = argv[++i];
         else if (!strcmp(argv[i], "-headless")) vga_headless = 1;
@@ -10355,10 +11885,36 @@ int main(int argc, char **argv) {
                 fclose(mf);
             }
         }
+        else if (!strcmp(argv[i], "-e1000")) e1000_present = 1;
+        else if (!strcmp(argv[i], "-e1000-inject") && i+1 < argc) { e1000_present = 1; e1000_inject_want = atoi(argv[++i]); }
+        else if (!strcmp(argv[i], "-e1000-no-reset")) { e1000_present = 1; e1000_fault_no_reset = 1; }
+        else if (!strcmp(argv[i], "-e1000-no-link"))  { e1000_present = 1; e1000_fault_no_link = 1; }
+        else if (!strcmp(argv[i], "-e1000-no-mac"))   { e1000_present = 1; e1000_fault_no_mac = 1; }
+        else if (!strcmp(argv[i], "-e1000-no-tx-dd")) { e1000_present = 1; e1000_fault_no_tx_dd = 1; }
+        else if (!strcmp(argv[i], "-dhcp-lease") && i+1 < argc) { nat_dhcp_lease = (unsigned int)atoi(argv[++i]); }
+        else if (!strcmp(argv[i], "-e1000-nat"))      { e1000_present = 1; e1000_nat = 1; }
+        else if (!strcmp(argv[i], "-e1000-strict-filter")) { e1000_present = 1; e1000_strict_filter = 1; }
+        else if (!strcmp(argv[i], "-e1000-no-phy"))   { e1000_present = 1; e1000_fault_no_phy = 1; }
+        else if (!strcmp(argv[i], "-e1000-phy-err"))  { e1000_present = 1; e1000_fault_phy_err = 1; }
+        else if (!strcmp(argv[i], "-e1000-phy-link")) { e1000_present = 1; e1000_phy_link = 1; }
         else if (!strcmp(argv[i], "-keys-start") && i+1 < argc) inject_key_start_ms = atof(argv[++i]);
         else if (!strcmp(argv[i], "-keys-interval") && i+1 < argc) inject_key_interval_ms = atof(argv[++i]);
         else if (!strcmp(argv[i], "-board-mmio")) board_mmio = 1;
         else if (!strcmp(argv[i], "-xhci-no-root-kbd")) xhci_no_root_kbd = 1;
+        else if (!strcmp(argv[i], "-hid-nak")) xhci_hid_nak = 1;
+        else if (!strcmp(argv[i], "-hid-idle-quirk")) hid_idle_quirk = 1;
+        else if (!strcmp(argv[i], "-xhci-calibrate-periodic")) xhci_calibrate_periodic = 1;
+        else if (!strcmp(argv[i], "-xhci-psi")) xhci_psi = 1;
+        else if (!strcmp(argv[i], "-xhci-bar") && i+1 < argc) xhci_bar_initial = (unsigned int)strtoul(argv[++i], NULL, 0);
+        else if (!strcmp(argv[i], "-xhci-two")) xhci_two = 1;
+        else if (!strcmp(argv[i], "-xhci-no-disk")) xhci_no_disk = 1;
+        else if (!strcmp(argv[i], "-xhci-bar2") && i+1 < argc) { xhci_two = 1; xhci_bar2_initial = (unsigned int)strtoul(argv[++i], NULL, 0); }
+        else if (!strcmp(argv[i], "-xhci-intel")) xhci_intel = 1;
+        else if (!strcmp(argv[i], "-xhci-intel-lock")) { xhci_intel = 1; xhci_intel_lock = 1; }
+        else if (!strcmp(argv[i], "-xhci-csz")) xhci_csz64 = 1;
+        else if (!strcmp(argv[i], "-xhci-scratch") && i+1 < argc) xhci_scratch_bufs = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-uefi-conout-remode")) uefi_conout_remode = 1;
+        else if (!strcmp(argv[i], "-xhci-evt-flood") && i+1 < argc) xhci_evt_flood = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-xhci-hub-tiers") && i + 1 < argc) {
             xhci_hub_tiers = atoi(argv[++i]);
             if (xhci_hub_tiers < 1) xhci_hub_tiers = 1;
@@ -10369,6 +11925,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-gop")) { gop_active = 1; }
         else if (!strcmp(argv[i], "-gop-width") && i+1 < argc) { gop_width = atoi(argv[++i]); gop_stride = gop_width; gop_active = 1; }
         else if (!strcmp(argv[i], "-gop-height") && i+1 < argc) { gop_height = atoi(argv[++i]); gop_active = 1; }
+        else if (!strcmp(argv[i], "-gop-stride") && i+1 < argc) { gop_stride_opt = atoi(argv[++i]); gop_active = 1; }
         else if (!strcmp(argv[i], "-args") && i+1 < argc) boot_args = argv[++i];
         else if (!strcmp(argv[i], "-trace-file") && i+1 < argc) trace_file = argv[++i];
         else if (!strcmp(argv[i], "-portfwd") && i+1 < argc) {
@@ -10394,7 +11951,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Usage: codex-vm -kernel file.cdx [-input file.codex] [-output file.cdx]\n"
                         "       [-disk file.img] [-mem MB] [-args STRING]\n"
                         "       [-watch 0xADDR] [-watch-size N] [-headless] [-uefi] [-uefi-strict]\n"
-                        "       [-gop] [-gop-width N] [-gop-height N] [-keys sc,sc,..]\n"
+                        "       [-gop] [-gop-width N] [-gop-height N] [-gop-stride N] [-keys sc,sc,..]\n"
                         "       [-portfwd hostport:guestport] ...\n");
         return 1;
     }
@@ -10408,6 +11965,7 @@ int main(int argc, char **argv) {
     if (portfwd_count > 0) portfwd_init();
 
     ide_init(&ide, disk);
+    ide_init(&ide_slave, disk2);
     pic_init(&pic_master);
     pic_init(&pic_slave);
     ne2k_reset();
@@ -10419,10 +11977,46 @@ int main(int argc, char **argv) {
     {   /* slot 1: xHCI (NEC/Renesas). Its BAR decodes the register space it
            actually serves, so sizing reports 16 KB and not the old blanket
            64 KB. */
-        int xi = pci_add_device(0x1033, 0x0194, 0x0C, 0x03, 0x30, 0xFE800000, 10);
+        int xi = xhci_intel
+            ? pci_add_device(0x8086, 0x8C31, 0x0C, 0x03, 0x30, xhci_bar_initial, 10)  /* Lynx Point PCH */
+            : pci_add_device(0x1033, 0x0194, 0x0C, 0x03, 0x30, xhci_bar_initial, 10);
         if (xi >= 0) pci_devices[xi].bar_size[0] = XHCI_BAR_SIZE;
+        xhci_pci_slot = xi;
+        if (xhci_two) {   /* the ASMedia, ordinal 1, as on the ASUS */
+            int x2 = pci_add_device(0x1B21, 0x1242, 0x0C, 0x03, 0x30, xhci_bar2_initial, 10);
+            if (x2 >= 0) pci_devices[x2].bar_size[0] = XHCI_BAR_SIZE;
+            xhci_pci_slot2 = x2;
+        }
     }
     pci_add_device(0x8086, 0x2668, 0x04, 0x03, 0x00, 0xFE000000, 11);  /* slot 2: Intel HDA */
+    if (e1000_present) {   /* slot 3: Intel gigabit Ethernet, e1000e family */
+        int ei = pci_add_device(0x8086, 0x15B8, 0x02, 0x00, 0x00, (unsigned int)E1000_BAR, 12);
+        if (ei >= 0) pci_devices[ei].bar_size[0] = E1000_BAR_SIZE;
+        /* Without this the PHY id registers read zero, which is what a bus
+           with nothing on it reads, so a driver could not tell a working
+           model from an absent PHY. */
+        e1000_phy_reset_regs();
+    }
+
+    /* Resolve -gop-stride before create_vm, which commits the guest GPU/GOP
+       region and sizes it from gop_stride: resolving after the call would
+       commit a region too small for the padded scanlines and fault the first
+       time the guest touched the tail. Resolving here rather than inline in
+       the parse loop is what makes flag order not matter, since -gop-width
+       assigns gop_stride as well. A stride below the width is not a padded
+       scanline but a corrupt one, so it is refused rather than clamped. */
+    if (gop_stride_opt > 0) {
+        if (gop_stride_opt < gop_width) {
+            fprintf(stderr, "-gop-stride %d is less than -gop-width %d; ignoring\n",
+                    gop_stride_opt, gop_width);
+            gop_stride_opt = 0;
+        } else if (gop_stride_opt > GOP_MAX_STRIDE) {
+            fprintf(stderr, "-gop-stride %d exceeds the %d maximum; clamping\n",
+                    gop_stride_opt, GOP_MAX_STRIDE);
+            gop_stride_opt = GOP_MAX_STRIDE;
+        }
+    }
+    if (gop_stride_opt > gop_width) gop_stride = gop_stride_opt;
 
     create_vm(mem_mb);
     acpi_setup_tables(guest_mem);
@@ -10439,7 +12033,7 @@ int main(int argc, char **argv) {
     {
         /* Cap reported RAM so guest stack (at RAM top) stays below GPU/GOP region.
            GPU cmd buffer=0xBE000000, depth=0xBE800000, GOP fb=0xBF000000.
-           Guest RSP starts at reported RAM size and grows DOWN — must not overlap. */
+           Guest RSP starts at reported RAM size and grows DOWN -- must not overlap. */
         unsigned long long effective = guest_mem_size;
         if (effective > GPU_CMD_ADDR)
             effective = GPU_CMD_ADDR;
@@ -10447,10 +12041,17 @@ int main(int argc, char **argv) {
         *(unsigned long long *)((unsigned char *)guest_mem + 0xFE8) = effective;
     }
 
-    /* Write GOP resolution to GPA 0x7C4/0x7C8 so guests can read display size. */
+    /* Write GOP resolution to GPA 0x7C4/0x7C8 so guests can read display size.
+       The stride goes at 0x7E0, the same offset PixelsPerScanLine occupies in
+       a UEFI mode-info block, so the two paths agree on where it lives. A
+       guest booted without -uefi never sees a mode-info block at all, so
+       before this it had no way to learn the scanline was padded and could
+       only assume stride equals width -- which is what the whole -gop-stride
+       bed exists to stop being true by construction. */
     if (gop_active) {
         *(int *)((unsigned char *)guest_mem + 0x7C4) = gop_width;
         *(int *)((unsigned char *)guest_mem + 0x7C8) = gop_height;
+        *(int *)((unsigned char *)guest_mem + 0x7E0) = gop_stride;
     }
 
     /* Write boot args string to guest memory at 0x4800 (CCE-encoded).
@@ -10562,19 +12163,66 @@ int main(int argc, char **argv) {
                 wcet_fns[w].name, wcet_fns[w].start, wcet_fns[w].end, w);
         }
     }
-    if (wcet_fn_count > 0) {
+    /* Resolve -hbreak specs: "<name>" or "<name>:<reg>=<val>". */
+    for (int hi = 0; hi < hbreak_spec_count; hi++) {
+        const char *spec = hbreak_specs[hi];
+        const char *colon = strchr(spec, ':');
+        char nbuf[128];
+        size_t nlen = colon ? (size_t)(colon - spec) : strlen(spec);
+        if (nlen >= sizeof(nbuf)) nlen = sizeof(nbuf) - 1;
+        memcpy(nbuf, spec, nlen);
+        nbuf[nlen] = 0;
+        int cr = -1; unsigned long long cv = 0;
+        if (colon) {
+            const char *p = colon + 1;
+            char rname[16]; int ri = 0;
+            while (*p && *p != '=' && ri < 15) rname[ri++] = *p++;
+            rname[ri] = 0;
+            cr = dbg_reg_index(rname);
+            if (cr < 0) { fprintf(stderr, "HBREAK: unknown register '%s' in '%s'\n", rname, spec); continue; }
+            if (*p == '=') p++;
+            cv = strtoull(p, NULL, 0);
+        }
+        unsigned long long a = sym_find(nbuf);
+        if (!a) { fprintf(stderr, "HBREAK: symbol '%s' not found (need -map)\n", nbuf); continue; }
+        if (hbreak_count >= MAX_HBREAKS) {
+            fprintf(stderr, "HBREAK: '%s' skipped (max %d, one debug register each)\n", nbuf, MAX_HBREAKS);
+            continue;
+        }
+        int h = hbreak_count++;
+        hbreaks[h].addr = a;
+        strncpy(hbreaks[h].name, nbuf, 127);
+        hbreaks[h].name[127] = 0;
+        hbreaks[h].cond_reg = cr;
+        hbreaks[h].cond_val = cv;
+        hbreaks[h].hits = 0;
+        hbreaks[h].matched = 0;
+        fprintf(stderr, "HBREAK: arming %s (0x%llx)", hbreaks[h].name, a);
+        if (cr >= 0) fprintf(stderr, " when %s == 0x%llx", dbg_reg_name(cr), cv);
+        fprintf(stderr, "\n");
+    }
+
+    if (wcet_fn_count > 0 || hbreak_count > 0) {
         WHV_REGISTER_NAME drn[5] = { WHvX64RegisterDr0, WHvX64RegisterDr1,
             WHvX64RegisterDr2, WHvX64RegisterDr3, WHvX64RegisterDr7 };
         WHV_REGISTER_VALUE drv[5];
         memset(drv, 0, sizeof(drv));
         unsigned long long dr7 = 0;
-        for (int w = 0; w < wcet_fn_count; w++) {
-            drv[w].Reg64 = wcet_fns[w].start;
-            dr7 |= (2ULL << (2 * w)); /* Gn enable; RW=00 LEN=00 = exec */
+        int slot = 0;
+        for (int w = 0; w < wcet_fn_count && slot < 4; w++, slot++) {
+            drv[slot].Reg64 = wcet_fns[w].start;
+            dr7 |= (2ULL << (2 * slot)); /* Gn enable; RW=00 LEN=00 = exec */
         }
+        for (int h = 0; h < hbreak_count && slot < 4; h++, slot++) {
+            drv[slot].Reg64 = hbreaks[h].addr;
+            dr7 |= (2ULL << (2 * slot));
+        }
+        if (wcet_fn_count + hbreak_count > 4)
+            fprintf(stderr, "WARNING: %d execution breakpoints requested, only 4 debug registers; the rest are NOT armed\n",
+                wcet_fn_count + hbreak_count);
         drv[4].Reg64 = dr7;
         HRESULT whr = WHvSetVirtualProcessorRegisters(partition, 0, drn, 5, drv);
-        if (FAILED(whr)) fprintf(stderr, "WCET: DR setup failed: 0x%lx\n", whr);
+        if (FAILED(whr)) fprintf(stderr, "DR setup failed: 0x%lx\n", whr);
     }
 
     if (uefi_mode) {
@@ -10598,7 +12246,7 @@ int main(int argc, char **argv) {
     int halted = 0;
     int window_registered = 0;
 
-    /* Shadow register file — workaround for WHP corrupting GPRs across VM exits.
+    /* Shadow register file -- workaround for WHP corrupting GPRs across VM exits.
      * We snapshot all 16 GPRs after every exit, then force-write them back before
      * the next VP run. Exit handlers (handle_io, handle_cpuid, handle_msr) modify
      * shadow_gprs[] directly instead of calling WHvSetVirtualProcessorRegisters. */
@@ -10683,7 +12331,7 @@ int main(int argc, char **argv) {
         /* Check if guest exception handler wrote !EXC=03 to serial */
         if (dbg_exc_pending) {
             dbg_exc_pending = 0;
-            /* Guest is inside its exception handler — read registers directly */
+            /* Guest is inside its exception handler -- read registers directly */
             unsigned long long rip = 0;
             WHV_REGISTER_NAME rn = WHvX64RegisterRip;
             WHV_REGISTER_VALUE rv;
@@ -10698,7 +12346,7 @@ int main(int argc, char **argv) {
         case WHvRunVpExitReasonCanceled:
             /* Host-side wall-clock sampler: the timer-kick thread cancels
                the VP every tick period, and VpContext.Rip is exactly where
-               the guest was — no injection-delivery bias (the guest-side
+               the guest was -- no injection-delivery bias (the guest-side
                PROF sampler records the interrupt-frame RIP, which WHP
                skews toward hot call targets). Enable with
                CODEX_VM_PROFILE=<file>; one HPROF:<hex-rip> line per kick. */
@@ -10723,7 +12371,7 @@ int main(int argc, char **argv) {
             {
                 const char *fn = "?";
                 /* Quick symbol lookup */
-                /* HLT debug output removed — floods console at 500+ FPS, blocks Win32 message pump */
+                /* HLT debug output removed -- floods console at 500+ FPS, blocks Win32 message pump */
             }
             if (uefi_mode && ctx.VpContext.Rip >= UEFI_TRAP_PAGE && ctx.VpContext.Rip < UEFI_TRAP_PAGE + 0x1000) {
                 int r = uefi_handle_trap(&ctx);
@@ -10800,7 +12448,7 @@ int main(int argc, char **argv) {
         case WHvRunVpExitReasonException: {
             int vec = ctx.VpException.ExceptionType;
             unsigned long long exc_rip = ctx.VpContext.Rip;
-            if (!(wcet_fn_count > 0 && (vec == 1 || vec == 3)))
+            if (!((wcet_fn_count > 0 || hbreak_count > 0) && (vec == 1 || vec == 3)))
                 fprintf(stderr, "EXC: vec=%d RIP=0x%llx exits=%llu\n", vec, exc_rip, exits);
             if (vec == 1 || vec == 3) {
                 /* #DB (single-step / debug-reg watchpoint) or #BP (INT3) */
@@ -10815,11 +12463,22 @@ int main(int argc, char **argv) {
                         unsigned long long wv = 0;
                         if (hw_watch_addr + 8 <= guest_mem_size)
                             memcpy(&wv, (unsigned char*)guest_mem + hw_watch_addr, 8);
+                        if (hw_watch_log) {
+                            /* One line per write, and keep going. The full crash
+                               report is the wrong instrument for a cell written
+                               more than once: it is the SECOND write that names
+                               the corrupter, and a report that walks the stack
+                               costs far more than the one fact wanted here. */
+                            fprintf(stderr, "HWWATCH #%d: writer=", hw_watch_hits);
+                            dbg_print_addr(exc_rip);
+                            fprintf(stderr, " [0x%llx] now=0x%llx\n", hw_watch_addr, wv);
+                        } else {
                         char rr[224];
                         snprintf(rr, sizeof(rr),
                             "HW WATCHPOINT #%d watch=0x%llx now=0x%llx (RIP is the instruction AFTER the access)",
                             hw_watch_hits, hw_watch_addr, wv);
                         dbg_crash_report(rr, hw_watch_addr, -1, g_kernel_path);
+                        }
                         /* clear DR6 status so the next match reports cleanly */
                         WHV_REGISTER_VALUE z; z.Reg64 = 0;
                         WHvSetVirtualProcessorRegisters(partition, 0, &d6n, 1, &z);
@@ -10852,6 +12511,49 @@ int main(int argc, char **argv) {
                     WHvGetVirtualProcessorRegisters(partition, 0, en, 2, ev);
                     *(unsigned long long *)(exc + 16) = ev[0].Reg64;
                     *(unsigned long long *)(exc + 24) = ev[1].Reg64;
+                }
+                /* Conditional execution breakpoint (-hbreak). A DR entry hit
+                   is a FAULT: RIP is the entry and the instruction has not
+                   run yet, so the register file is the caller's -- which is
+                   the whole reason the condition is evaluated here and not in
+                   the guest's INT3 handler. Whether or not it matches, RF is
+                   set so the entry instruction executes despite DRn, and the
+                   guest is resumed; the breakpoint stays armed for the next
+                   call. TF is never set: this is not a stepping mode. */
+                if (vec == 1 && hbreak_count > 0) {
+                    WHV_REGISTER_NAME d6nh = WHvX64RegisterDr6;
+                    WHV_REGISTER_VALUE d6vh;
+                    WHvGetVirtualProcessorRegisters(partition, 0, &d6nh, 1, &d6vh);
+                    if (d6vh.Reg64 & 0xF) {
+                        int hh = -1;
+                        for (int h = 0; h < hbreak_count; h++)
+                            if (hbreaks[h].addr == exc_rip) { hh = h; break; }
+                        if (hh >= 0) {
+                            hbreaks[hh].hits++;
+                            int match = 1;
+                            if (hbreaks[hh].cond_reg >= 0)
+                                match = (dbg_read_reg(hbreaks[hh].cond_reg) == hbreaks[hh].cond_val);
+                            if (match) {
+                                hbreaks[hh].matched++;
+                                fprintf(stderr, "\n--- HBREAK %s hit %llu (match %llu) exits=%llu ---\n",
+                                    hbreaks[hh].name, hbreaks[hh].hits, hbreaks[hh].matched, exits);
+                                dbg_dump_regs();
+                                if (!vga_headless || debug_mode) {
+                                    int r = dbg_command_loop(99, exc_rip);
+                                    if (r == 1) goto done;
+                                }
+                            }
+                            WHV_REGISTER_VALUE zvh; zvh.Reg64 = 0;
+                            WHvSetVirtualProcessorRegisters(partition, 0, &d6nh, 1, &zvh);
+                            WHV_REGISTER_NAME fnh = WHvX64RegisterRflags;
+                            WHV_REGISTER_VALUE fvh;
+                            WHvGetVirtualProcessorRegisters(partition, 0, &fnh, 1, &fvh);
+                            fvh.Reg64 |= (1ULL << 16); /* RF */
+                            fvh.Reg64 &= ~0x100ULL;    /* never step */
+                            WHvSetVirtualProcessorRegisters(partition, 0, &fnh, 1, &fvh);
+                            break;
+                        }
+                    }
                 }
                 /* WCET measurement (observation only, takes priority).
                    DR6.B0-B3 = entry exec-breakpoint (fault, RIP = entry,
@@ -10914,7 +12616,7 @@ int main(int argc, char **argv) {
                     int r = dbg_command_loop(vec, exc_rip);
                     if (r == 1) goto done;
                     if (r < 0) {
-                        /* stepping over breakpoint — will re-patch on next #DB */
+                        /* stepping over breakpoint -- will re-patch on next #DB */
                     }
                     break;
                 }
@@ -10988,10 +12690,30 @@ int main(int argc, char **argv) {
                 unsigned char *t = (unsigned char *)guest_mem + 0x70000;
                 fprintf(stderr, "  tramp@0x70000: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
                     t[0],t[1],t[2],t[3],t[4],t[5],t[6],t[7],t[8],t[9],t[10],t[11],t[12],t[13],t[14],t[15],t[16],t[17],t[18],t[19],t[20],t[21]);
-                unsigned long long *pml4 = (unsigned long long *)((unsigned char *)guest_mem + 0x1000);
-                unsigned long long *pdpt = (unsigned long long *)((unsigned char *)guest_mem + 0x2000);
-                unsigned long long *pd = (unsigned long long *)((unsigned char *)guest_mem + 0x3000);
-                fprintf(stderr, "  PML4[0]=0x%llx PDPT[0]=0x%llx PD[0]=0x%llx PD[1]=0x%llx\n", pml4[0], pdpt[0], pd[0], pd[1]);
+                /* Walk the tables THROUGH CR3 rather than from a hardcoded
+                   0x1000. That address is where the multiboot trampoline puts
+                   its tables; a UEFI boot runs on the ones built at
+                   PAGE_TABLE_ADDR, so this printed four zeroes and read as
+                   "the guest has no page tables" when it meant "you are
+                   looking at the wrong page". A diagnostic that hardcodes an
+                   address the machine is free to change lies exactly when the
+                   machine does something unusual, which is the only time
+                   anybody reads it. */
+                WHV_REGISTER_NAME cr3n[1] = { WHvX64RegisterCr3 };
+                WHV_REGISTER_VALUE cr3v[1];
+                WHvGetVirtualProcessorRegisters(partition, 0, cr3n, 1, cr3v);
+                unsigned long long cr3 = cr3v[0].Reg64 & ~0xFFFULL;
+                unsigned long long *pml4 = (cr3 + 4096 <= guest_mem_size)
+                    ? (unsigned long long *)((unsigned char *)guest_mem + cr3) : NULL;
+                unsigned long long pdpt_pa = pml4 ? (pml4[0] & 0x000FFFFFFFFFF000ULL) : 0;
+                unsigned long long *pdpt = (pdpt_pa && pdpt_pa + 4096 <= guest_mem_size)
+                    ? (unsigned long long *)((unsigned char *)guest_mem + pdpt_pa) : NULL;
+                unsigned long long pd_pa = pdpt ? (pdpt[0] & 0x000FFFFFFFFFF000ULL) : 0;
+                unsigned long long *pd = (pd_pa && pd_pa + 4096 <= guest_mem_size)
+                    ? (unsigned long long *)((unsigned char *)guest_mem + pd_pa) : NULL;
+                fprintf(stderr, "  CR3=0x%llx PML4[0]=0x%llx PDPT[0]=0x%llx PD[0]=0x%llx PD[1]=0x%llx\n",
+                    cr3, pml4 ? pml4[0] : 0ULL, pdpt ? pdpt[0] : 0ULL,
+                    pd ? pd[0] : 0ULL, pd ? pd[1] : 0ULL);
             }
             if (uefi_mode && ctx.ExitReason == 4) {
                 /* UEFI trampoline fixup: the PE stub wrote target at 0x700A,
@@ -11015,6 +12737,7 @@ int main(int argc, char **argv) {
                     fix_vals[2].Reg64 = 0x1000;          /* CR3: stub's page tables */
                     fix_vals[3].Reg64 = 0x620;           /* CR4: PAE+OSFXSR+OSXMMEXCPT */
                     fix_vals[4].Reg64 = 0xD01;           /* EFER: SCE+LME+LMA+NXE */
+                    msr_efer = 0xD01;                    /* keep the rdmsr shadow honest; see the UEFI entry path */
                     /* CS: 64-bit code */
                     fix_vals[5].Segment.Selector = 0x08;
                     fix_vals[5].Segment.Base = 0; fix_vals[5].Segment.Limit = 0xFFFFFFFF;
@@ -11040,7 +12763,7 @@ int main(int argc, char **argv) {
                    tables) is not present, modeling firmware ownership of low
                    memory before ExitBootServices. A UEFI app that writes to a
                    fixed low address it never allocated triple-faults here. Read
-                   CR2 to name the illegal address and stop — do NOT fall into
+                   CR2 to name the illegal address and stop -- do NOT fall into
                    the demand-commit retry below, which would spin forever on a
                    guest-PTE fault. */
                 WHV_REGISTER_NAME cr2n = WHvX64RegisterCr2;
@@ -11131,7 +12854,7 @@ int main(int argc, char **argv) {
             } else if (!halted && pic_master.vector_base) {
                 /* Busy guest: deliver the PIT tick on schedule. Exits during
                    compute come from the timer-kick thread cancelling the VP
-                   run every tick period — without it a compute-bound guest
+                   run every tick period -- without it a compute-bound guest
                    never exits and never ticks (watchdog, preemption, and the
                    sampling profiler were all blind during compute). */
                 LARGE_INTEGER bnow;
@@ -11142,7 +12865,7 @@ int main(int argc, char **argv) {
                     pending_irq = vec;  /* timer tick */
                 }
             } else if (halted) {
-                /* Halted waiting for interrupt — timer only (no serial) */
+                /* Halted waiting for interrupt -- timer only (no serial) */
                 LARGE_INTEGER now;
                 QueryPerformanceCounter(&now);
                 double elapsed = (double)(now.QuadPart - last_tick.QuadPart) / perf_freq.QuadPart;
@@ -11175,7 +12898,7 @@ int main(int argc, char **argv) {
         }
 
         /* Poll NAT sockets for incoming data and inject into NE2000 ring buffer */
-        if (exits % 10 == 0) { nat_poll_connect(); nat_poll_rx(); udp_poll_rx(); if (portfwd_count > 0) { portfwd_poll(); nat_poll_retransmit(); } ne2k_inject_rx(); }
+        if (exits % 10 == 0) { nat_poll_connect(); nat_poll_rx(); udp_poll_rx(); if (portfwd_count > 0) { portfwd_poll(); nat_poll_retransmit(); } ne2k_inject_rx(); if (e1000_nat) e1000_nat_rx(); }
 
 
         /* Comparator match is checked on the same cadence as the other
@@ -11304,6 +13027,16 @@ done:
         fprintf(stderr, "WCET-OBS: %s max=%llu calls=%llu range=0x%llx-0x%llx\n",
             wcet_fns[w].name, wcet_fns[w].max_count, wcet_fns[w].calls,
             wcet_fns[w].start, wcet_fns[w].end);
+    /* Both counts, always. A run that reports only the matches cannot be
+       told from one whose breakpoint was never reached, and that difference
+       is the whole negative control. */
+    for (int h = 0; h < hbreak_count; h++) {
+        fprintf(stderr, "HBREAK-OBS: %s hits=%llu matched=%llu",
+            hbreaks[h].name, hbreaks[h].hits, hbreaks[h].matched);
+        if (hbreaks[h].cond_reg >= 0)
+            fprintf(stderr, " cond=%s==0x%llx", dbg_reg_name(hbreaks[h].cond_reg), hbreaks[h].cond_val);
+        fprintf(stderr, "\n");
+    }
     if (trace_file && guest_mem) {
         unsigned long long te = 458752, tc = 458760, tb = 458768;  /* trace cells, mirrors X86_64Boot.codex */
         if (te + 8 <= guest_mem_size) {
@@ -11321,7 +13054,7 @@ done:
         }
     }
     /* Close any NAT sockets still open. Connections in state 3 already
-       had shutdown(SD_SEND) called by the FIN handler — buffered data
+       had shutdown(SD_SEND) called by the FIN handler -- buffered data
        drains normally. Active connections get a graceful half-close. */
     for (int i = 0; i < NAT_MAX_CONN; i++) {
         if (nat_conns[i].sock != INVALID_SOCKET && (nat_conns[i].active || nat_conns[i].state == 3)) {
@@ -11349,6 +13082,7 @@ done:
     if (output_file) dump_output_file(output_file);
     cleanup_whp();  /* also runs via atexit if we exit abnormally */
     if (ide.data) free(ide.data);
+    if (ide_slave.data) free(ide_slave.data);
     if (guest_mem) { VirtualFree(guest_mem, 0, MEM_RELEASE); guest_mem = NULL; }
     WSACleanup();
     int rc = (debug_exit_code >= 0) ? (debug_exit_code << 1) | 1 : 0;

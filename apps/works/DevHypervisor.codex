@@ -7,7 +7,7 @@ Chapter: DevHypervisor
 
  Bare-metal VMX hypervisor. Creates a guest VM using Intel VT-x and
  runs a Codex CDX binary inside it. VM exits for I/O ports are
- dispatched to Codex device model functions. This replaces QEMU —
+ dispatched to Codex device model functions. This replaces QEMU --
  Codex is its own hypervisor.
 
  We say:
@@ -36,12 +36,42 @@ Section: VMX Capability MSRs
   msr-vmx-cr4-fixed1 : Integer = 1161
   msr-low32-mask : Integer = 4294967295
 
+ IA32_VMX_BASIC EXISTS ONLY ON A PROCESSOR IN WHICH VMX IS ENABLED, and
+ reading it anywhere else is a #GP, not a zero. Measured: this faulted
+ with `!EXC=0d RIP=... RDI=0000000000000480` under codex-vm -- 0x480 being
+ the MSR index -- before any of the availability checks below could run,
+ because a caller naturally asks for the revision id first and hands it to
+ `vmx-enable`.
+
+ So the gate belongs here too, and it answers zero rather than faulting. A
+ revision id of zero is never valid, and the two callers that matter both
+ refuse before they would use it.
+
+ The general shape, since this is the third function in this chapter to
+ need it: reading a VMX MSR is itself a VMX operation. Everything in this
+ file that touches one has to ask whether the processor is in a state
+ where that is legal, and none of them did.
+
   vmx-read-revision-id : Integer
-  vmx-read-revision-id = bit-and (rdmsr msr-vmx-basic) 2147483647
+  vmx-read-revision-id =
+    if vmx-available == False then 0
+    else bit-and (rdmsr msr-vmx-basic) 2147483647
+
+ The VMX capability MSRs (IA32_VMX_PINBASED_CTLS and its neighbours) are
+ the same class as IA32_VMX_BASIC above: they exist only on a processor
+ with VMX enabled and are a #GP anywhere else. Without the gate this
+ faults at the same instruction, which is what `vmx-launch-test` and
+ `vmx-serial-test` did.
+
+ With no capability MSR to consult there is nothing to adjust, so the
+ desired control word comes back untouched. That value is never used --
+ both lifecycle entries refuse first -- and returning it rather than zero
+ keeps this a pure clamp rather than a second, quieter failure signal.
 
   vmx-adjust-control : Integer, Integer -> Integer
   vmx-adjust-control (msr-index) (desired) =
-    let raw = rdmsr msr-index
+    if vmx-available == False then desired
+    else let raw = rdmsr msr-index
     in let must-be-1 = bit-and raw msr-low32-mask
     in let allowed-1 = bit-shru raw 32
     in bit-and (bit-or desired must-be-1) allowed-1
@@ -155,6 +185,61 @@ Section: VM State
     | VmxOk
     | VmxFailed (Integer)
 
+Section: Is VMX Available At All
+
+ **`vmx-enable` used to return `VmxOk` unconditionally**, discarding the
+ result of `vmxon`, and `VmxFailed` was declared and never constructed
+ anywhere in the tree. On a machine without VT-x that is not a wrong
+ answer so much as no answer: the caller is told the processor entered
+ VMX operation, proceeds to `vmwrite`, and dies. `codex/test/apps/vmx-init-test`
+ asserted `vmx-enable:ok` against it, which is a test that could not fail,
+ behind a skip that claimed it needed real hardware.
+
+ `vmxon` cannot be asked. The runtime helper is `F3 0F C7 37` followed by
+ `ret` and never reads RFLAGS, so its return value is whatever RAX
+ happened to hold; the instruction reports through CF and ZF and nothing
+ carries them back. So availability is established BEFORE the instruction
+ rather than inferred after it.
+
+ IA32_FEATURE_CONTROL is the authority, and it is the same one every
+ hypervisor uses. Bit 0 is the lock: the firmware sets it once and the MSR
+ is read-only afterwards. Bit 2 enables VMX outside SMX. VMXON raises #GP
+ unless the lock is set AND that enable bit is set, so both must be true
+ and nothing else needs asking.
+
+ **Measured here rather than assumed** (2026-07-27, under codex-vm): the
+ MSR reads **1** -- lock set, VMX-outside-SMX clear -- which is exactly
+ the encoding of a machine whose firmware has VT-x turned off. It is not
+ zero, which is what the "an MSR outside codex-vm's list reads zero" note
+ would have predicted, and the difference is worth having measured: the
+ conclusion is the same and the reason for it is not.
+
+  vmx-feature-control-msr : Integer = 58
+
+  vmx-fc-lock : Integer = 1
+  vmx-fc-vmx-outside-smx : Integer = 4
+
+  vmx-err-no-vtx : Integer = 1
+
+  vmx-feature-control : Integer
+  vmx-feature-control = rdmsr vmx-feature-control-msr
+
+  vmx-available : Boolean
+  vmx-available =
+    let fc = vmx-feature-control
+    in bit-and fc vmx-fc-lock == vmx-fc-lock
+     & bit-and fc vmx-fc-vmx-outside-smx == vmx-fc-vmx-outside-smx
+
+ A sentence a human can act on. "VMX unavailable" tells an operator
+ nothing; "enable VT-x in the firmware" tells them where to go.
+
+  vmx-unavailable-reason : Text
+  vmx-unavailable-reason =
+    let fc = vmx-feature-control
+    in if bit-and fc vmx-fc-lock /= vmx-fc-lock
+      then "IA32_FEATURE_CONTROL is unlocked (" & show fc & "): firmware never configured VMX"
+      else "VT-x is locked off in firmware (IA32_FEATURE_CONTROL=" & show fc & "): enable it in the BIOS"
+
 Section: VMX Lifecycle
 
   vmx-init-region : Integer, Integer -> Integer
@@ -164,14 +249,21 @@ Section: VMX Lifecycle
 
   vmx-enable : Integer -> VmxStatus
   vmx-enable (revision-id) =
-    let cr4 = vmx-fixed-cr4
+    if vmx-available == False then VmxFailed vmx-err-no-vtx
+    else let cr4 = vmx-fixed-cr4
     in let w0 = vmx-init-region vmxon-region-addr revision-id
     in let result = vmxon vmxon-region-addr
     in VmxOk
 
+ The VMCS operations are meaningless outside VMX operation -- `vmclear`
+ and `vmptrld` raise #UD when the processor never entered it -- so this
+ refuses for the same reason and by the same test rather than running
+ them and returning OK regardless.
+
   vmx-create-vmcs : Integer -> VmxStatus
   vmx-create-vmcs (revision-id) =
-    let w0 = vmx-init-region vmcs-region-addr revision-id
+    if vmx-available == False then VmxFailed vmx-err-no-vtx
+    else let w0 = vmx-init-region vmcs-region-addr revision-id
     in let c0 = vmclear vmcs-region-addr
     in let l0 = vmptrld vmcs-region-addr
     in VmxOk

@@ -1,0 +1,445 @@
+Chapter: ReflectRender
+  cites Reflect chapter ReflectModel
+  cites Terrain chapter TerrainModel
+  cites Water chapter OceanModel
+  cites Foreword chapter Console
+
+ A lake among the terrain of wave 3, reflecting it by screen-space
+ reflection. Two passes over the same frame, which is the shape every SSR
+ implementation has:
+
+   Pass 1 draws the scene normally and, as it goes, records for each pixel
+   the distance to what it drew and that surface's normal. Colour goes to
+   the framebuffer, the rest to the G-buffer.
+   Pass 2 walks back over the water pixels only. For each it reconstructs
+   the world point, reflects the view direction about the stored normal,
+   and marches that reflected ray against the depth buffer pass 1 just
+   wrote. Where it crosses a surface, the colour already in the
+   framebuffer at that pixel is the reflected colour.
+
+ Pass 2 cannot run until pass 1 has finished the whole frame, and that is
+ not an implementation detail: a reflection can land on a pixel far from
+ the one being shaded, so any pixel of the image may be needed. Interleaving
+ the passes would sample a half-drawn frame, which is the same failure the
+ magenta clear was added to catch and would be much harder to see.
+
+Section: The Scene
+
+ The water line. The field runs from 33 to 207 metres with a mean of 119,
+ measured over a 60x60 grid rather than guessed, and 108 puts roughly the
+ lower third under water: a lake with a shoreline, not a puddle and not a
+ flood.
+
+  rr-lake-y : Real
+  rr-lake-y = 108.0
+
+  rr-max-dist : Real
+  rr-max-dist = 5000.0
+
+  rr-max-step : Real
+  rr-max-step = 24.0
+
+  rr-first-step : Real
+  rr-first-step = 6.0
+
+  rr-step-growth : Real
+  rr-step-growth = 1.035
+
+  rr-march-steps : Integer
+  rr-march-steps = 260
+
+  rr-refine-iters : Integer
+  rr-refine-iters = 12
+
+ The height-field march, again. `TerrainRender` has one and it cannot be
+ cited, because it carries an `opening`; but this one is not the same
+ traversal anyway. It has to resolve a lake plane against the ground and
+ decide which of the two the ray met first, and the step cap is here for
+ the reason recorded in that chapter -- the bracket must not hold two
+ crossings.
+
+  rr-under : V3, V3, Real -> Boolean
+  rr-under (origin) (dir) (t) =
+    let p = v-add origin (v-scale dir t)
+    in p.y < t-height (p.x) (p.z)
+
+  rr-refine : V3, V3, Real, Real, Integer -> Real
+  rr-refine (origin) (dir) (lo) (hi) (iters) =
+    if iters <= 0 then hi
+    else let mid = (lo + hi) * 0.5
+    in if rr-under origin dir mid then rr-refine origin dir lo mid (iters - 1)
+    else rr-refine origin dir mid hi (iters - 1)
+
+  rr-ground : V3, V3, Real, Real, Integer -> Real
+  rr-ground (origin) (dir) (t) (step) (steps) =
+    if steps <= 0 then 0.0 - 1.0
+    else if t > rr-max-dist then 0.0 - 1.0
+    else let t2 = t + step
+    in if rr-under origin dir t2 then rr-refine origin dir t t2 rr-refine-iters
+    else let grown = step * rr-step-growth
+    in let next = if grown > rr-max-step then rr-max-step else grown
+    in rr-ground origin dir t2 next (steps - 1)
+
+ Where the ray meets the lake surface, if it does. A ray climbing away
+ from the water never meets it.
+
+  rr-lake-t : V3, V3 -> Real
+  rr-lake-t (origin) (dir) =
+    if dir.y > (0.0 - 0.000001) then 0.0 - 1.0
+    else let t = (rr-lake-y - origin.y) / dir.y
+    in if t < 0.0 then 0.0 - 1.0 else t
+
+  Scene = record { dist : Real, water : Boolean, found : Boolean }
+
+ Nearest wins, with one guard: the lake only exists where the ground under
+ it is lower than the water. On a scene this shape the guard is redundant,
+ because ground standing above the lake plane would have stopped the ray
+ before it got there, but it costs one height sample and it makes the rule
+ explicit rather than a consequence.
+
+  rr-scene : V3, V3 -> Scene
+  rr-scene (origin) (dir) =
+    let tg = rr-ground origin dir 0.0 rr-first-step rr-march-steps
+    in let tl = rr-lake-t origin dir
+    in if tl < 0.0 then
+      (if tg < 0.0 then Scene { dist = 0.0, water = False, found = False }
+       else Scene { dist = tg, water = False, found = True })
+    else let lp = v-add origin (v-scale dir tl)
+    in let wet = t-height (lp.x) (lp.z) < rr-lake-y
+    in if wet == False then
+      (if tg < 0.0 then Scene { dist = 0.0, water = False, found = False }
+       else Scene { dist = tg, water = False, found = True })
+    else if tg < 0.0 then Scene { dist = tl, water = True, found = True }
+    else if tl < tg then Scene { dist = tl, water = True, found = True }
+    else Scene { dist = tg, water = False, found = True }
+
+ The water normal. Two crossed ripples, small enough to keep the surface
+ readable as water rather than as a disturbed mirror. This is what makes
+ the reflection wobble, and it is also what the roughness perturbation in
+ the model acts on top of.
+
+  rr-ripple-scale : Real
+  rr-ripple-scale = 0.055
+
+ The ripple amplitude is small, and it has to be. A normal tilted by a is
+ a reflected ray turned by 2a, and at this viewpoint the reflected ray
+ clears the horizon by only a few degrees; a slope of 0.03 turns it by
+ more than three, which is enough to swing each pixel between striking the
+ far ridge and escaping into the sky. The reflection then arrives as
+ salt-and-pepper rather than an image. Real water does break up a distant
+ reflection exactly this way, but the amplitude that reads as water at a
+ steep angle is far too much at a grazing one.
+
+  rr-ripple-amp : Real
+  rr-ripple-amp = 0.0075
+
+  rr-water-normal : V3 -> V3
+  rr-water-normal (p) =
+    let a = w-sin (p.x * rr-ripple-scale) * w-cos (p.z * rr-ripple-scale * 0.8)
+    in let b = w-sin ((p.x + p.z) * rr-ripple-scale * 0.61)
+    in v-norm (V3 { x = a * rr-ripple-amp, y = 1.0, z = b * rr-ripple-amp })
+
+Section: Sky and Palette
+
+  rr-sky : V3 -> V3
+  rr-sky (dir) =
+    let t = w-sat (dir.y * 2.0 + 0.08)
+    in let base = v-lerp rr-horizon-color terrain-sky-color t
+    in let s = w-sat (v-dot dir (v-norm terrain-sun))
+    in let disc = w-powi s 64
+    in let halo = w-powi s 8 * 0.20
+    in v-add base (v-scale terrain-sun-color (disc + halo))
+
+  rr-horizon-color : V3
+  rr-horizon-color = V3 { x = 0.74, y = 0.80, z = 0.86 }
+
+  rr-water-deep : V3
+  rr-water-deep = V3 { x = 0.020, y = 0.055, z = 0.075 }
+
+  rr-water-f0 : Real
+  rr-water-f0 = 0.02
+
+  rr-water-rough : Real
+  rr-water-rough = 0.055
+
+  rr-fog-start : Real
+  rr-fog-start = 500.0
+
+  rr-fog-end : Real
+  rr-fog-end = 4600.0
+
+  rr-fog : V3, V3, Real -> V3
+  rr-fog (color) (dir) (dist) =
+    let f = w-sat ((dist - rr-fog-start) / (rr-fog-end - rr-fog-start))
+    in v-lerp color (rr-sky dir) (f * f)
+
+Section: Framebuffer
+
+  rr-fb-base : Integer
+  rr-fb-base = #BF000000
+
+  rr-width : Integer
+  rr-width = 640
+
+  rr-height : Integer
+  rr-height = 400
+
+  rr-pack : Real, Real, Real -> Integer
+  rr-pack (r) (g) (b) =
+    let ri = real-to-int (w-sat r * 255.0 + 0.5)
+    in let gi = real-to-int (w-sat g * 255.0 + 0.5)
+    in let bi = real-to-int (w-sat b * 255.0 + 0.5)
+    in ri * 65536 + gi * 256 + bi
+
+  rr-unpack : Integer -> V3
+  rr-unpack (c) =
+    let b = int-mod c 256
+    in let g = int-mod (c / 256) 256
+    in let r = int-mod (c / 65536) 256
+    in V3 { x = real-from-int r / 255.0, y = real-from-int g / 255.0, z = real-from-int b / 255.0 }
+
+  rr-put : Integer, Integer, Integer -> Integer
+  rr-put (x) (y) (color) =
+    if x < 0 then 0
+    else if y < 0 then 0
+    else if x >= rr-width then 0
+    else if y >= rr-height then 0
+    else poke-32 rr-fb-base ((y * rr-width + x) * 4) color
+
+ A traced sample fills a 2x2 block, so reading the colour of traced pixel
+ (tx,ty) means reading the framebuffer at twice those coordinates. Pass 2
+ samples through here, which is the moment the technique becomes literal:
+ this reads the picture it is drawing.
+
+  rr-get-traced : Integer, Integer -> V3
+  rr-get-traced (tx) (ty) =
+    rr-unpack (peek-32 rr-fb-base ((ty * 2 * rr-width + tx * 2) * 4))
+
+  rr-put-block : Integer, Integer, Integer -> Integer
+  rr-put-block (tx) (ty) (color) =
+    let x = tx * 2
+    in let y = ty * 2
+    in let a = rr-put x y color
+    in let b = rr-put (x + 1) y color
+    in let c = rr-put x (y + 1) color
+    in rr-put (x + 1) (y + 1) color
+
+  rr-clear-color : Integer
+  rr-clear-color = #FF00FF
+
+  rr-clear-row : Integer, Integer -> Integer
+  rr-clear-row (x) (y) =
+    if x >= rr-width then 0
+    else let d = rr-put x y rr-clear-color
+    in rr-clear-row (x + 1) y
+
+  rr-clear : Integer -> Integer
+  rr-clear (y) =
+    if y >= rr-height then 0
+    else let d = rr-clear-row 0 y
+    in rr-clear (y + 1)
+
+Section: Pass One
+
+ Draw the scene, and record what was drawn. The water is shaded here
+ WITHOUT its reflection: deep water colour plus the sun's specular
+ highlight. Pass 2 adds the reflection on top, which is why this pass can
+ be a normal render and why the technique bolts onto an existing one.
+
+  rr-shade-water : V3, V3, V3 -> V3
+  rr-shade-water (p) (dir) (n) =
+    let l = v-norm terrain-sun
+    in let spec = ggx-spec n (v-neg dir) l rr-water-rough rr-water-f0
+    in let sky-tint = v-scale (rr-sky (rf-reflect dir n)) 0.10
+    in v-add (v-add rr-water-deep sky-tint) (v-scale terrain-sun-color (spec * 26.0))
+
+  rr-pass1-px : Cam, Integer, Integer -> Integer
+  rr-pass1-px (cam) (tx) (ty) =
+    let dir = rf-ray cam tx ty
+    in let sc = rr-scene (cam.eye) dir
+    in if sc.found == False then
+      (let s = rr-sky dir
+       in let a = gb-store-depth tx ty (0.0 - 1.0)
+       in rr-put-block tx ty (rr-pack (s.x) (s.y) (s.z)))
+    else let p = v-add (cam.eye) (v-scale dir (sc.dist))
+    in let vz = sc.dist * v-dot dir (cam.cf)
+    in if sc.water then
+      (let n = rr-water-normal p
+       in let c = rr-shade-water p dir n
+       in let a = gb-store-depth tx ty vz
+       in let b = gb-store-normal tx ty n 1
+       in rr-put-block tx ty (rr-pack (c.x) (c.y) (c.z)))
+    else let n = t-normal (p.x) (p.z)
+    in let lit = t-shade p n
+    in let c = rr-fog lit dir (sc.dist)
+    in let a = gb-store-depth tx ty vz
+    in let b = gb-store-normal tx ty n 0
+    in rr-put-block tx ty (rr-pack (c.x) (c.y) (c.z))
+
+  rr-pass1-row : Cam, Integer, Integer -> Integer
+  rr-pass1-row (cam) (tx) (ty) =
+    if tx >= gb-width then 0
+    else let c = rr-pass1-px cam tx ty
+    in rr-pass1-row cam (tx + 1) ty
+
+  rr-pass1 : Cam, Integer -> Integer
+  rr-pass1 (cam) (ty) =
+    if ty >= gb-height then 0
+    else let d = rr-pass1-row cam 0 ty
+    in rr-pass1 cam (ty + 1)
+
+Section: Pass Two
+
+ The reflection. Everything that makes SSR what it is happens in these
+ twenty lines.
+
+ The march starts a little way off the surface along the normal. Starting
+ exactly on it means the first probe compares the surface against its own
+ recorded depth and reports a hit immediately, and the water reflects
+ itself -- a flat wash of water colour that looks almost plausible, which
+ is what makes it worth naming.
+
+ On a miss the sky stands in. A real implementation would fall back to a
+ pre-rendered environment probe, and the sky IS that probe here; the fade
+ toward the screen edge blends between them so the boundary does not draw
+ a line across the water.
+
+  rr-start-offset : Real
+  rr-start-offset = 0.35
+
+  rr-pass2-px : Cam, Integer, Integer -> Integer
+  rr-pass2-px (cam) (tx) (ty) =
+    if gb-load-flag tx ty /= 1 then 0
+    else let d = gb-load-depth tx ty
+    in if d < 0.0 then 0
+    else let dir = rf-ray cam tx ty
+    in let n = gb-load-normal tx ty
+    in let along = v-dot dir (cam.cf)
+    in let p = v-add (cam.eye) (v-scale dir (d / along))
+    in let mirror = rf-reflect dir n
+    in let j1 = c-jitter-like tx ty
+    in let j2 = c-jitter-like ty tx
+    in let r = rf-perturb mirror rr-water-rough j1 j2
+    in let origin = v-add p (v-scale n rr-start-offset)
+    in let h = rf-trace cam origin r 1
+    in let sky = rr-sky r
+    in let refl = if h.found then v-lerp sky (rr-get-traced (h.hx) (h.hy)) (h.fade) else sky
+    in let w = rf-weight n dir rr-water-f0
+    in let base = rr-get-traced tx ty
+    in let final = v-add base (v-scale refl w)
+    in let d2 = rr-put-block tx ty (rr-pack (final.x) (final.y) (final.z))
+    in if h.found then 1 else 0
+
+ The hit count is ACCUMULATED and not recorded in the G-buffer, and the
+ first version of this got that wrong in a way worth keeping a note about.
+ Marking each pixel's outcome back into the flag byte seemed a tidy way to
+ count them, but pass 2 READS that same byte: every water pixel already
+ processed carried its outcome instead of its material, so the
+ self-reflection reject could never match and the buffer the march depends
+ on was being rewritten underneath it, row by row, as the pass advanced.
+ A pass that consumes a buffer must not also write it.
+
+  rr-pass2-row : Cam, Integer, Integer, Integer -> Integer
+  rr-pass2-row (cam) (tx) (ty) (acc) =
+    if tx >= gb-width then acc
+    else rr-pass2-row cam (tx + 1) ty (acc + rr-pass2-px cam tx ty)
+
+  rr-pass2 : Cam, Integer, Integer -> Integer
+  rr-pass2 (cam) (ty) (acc) =
+    if ty >= gb-height then acc
+    else rr-pass2 cam (ty + 1) (rr-pass2-row cam 0 ty acc)
+
+ A cheap decorrelated value per pixel, the same shape as the cloud model's
+ jitter and for the same reason: neighbouring pixels must not perturb their
+ reflection the same way, or the noise organises itself into bands.
+
+  c-jitter-like : Integer, Integer -> Real
+  c-jitter-like (x) (y) =
+    let h0 = bit-and (x * 73856093 + y * 19349663 + 83492791) 2147483647
+    in let h1 = bit-and (h0 * 1103515245 + 12345) 2147483647
+    in let h2 = bit-and (h1 * 1103515245 + 12345) 2147483647
+    in real-from-int h2 * 0.000000000465661287308
+
+Section: Counting
+
+ How much water is in frame, and how much of it found something to
+ reflect. Both are printed, because a reflection pass that runs over zero
+ water pixels and one that runs over thousands and misses every time
+ produce the same image, and neither announces itself.
+
+  rr-count-row : Integer, Integer, Integer, Integer -> Integer
+  rr-count-row (tx) (ty) (want) (acc) =
+    if tx >= gb-width then acc
+    else let f = gb-load-flag tx ty
+    in let hit = if f == want then 1 else 0
+    in rr-count-row (tx + 1) ty want (acc + hit)
+
+  rr-count : Integer, Integer, Integer -> Integer
+  rr-count (ty) (want) (acc) =
+    if ty >= gb-height then acc
+    else rr-count (ty + 1) want (rr-count-row 0 ty want acc)
+
+Section: Holding the Frame
+
+  rr-tick-addr : Integer
+  rr-tick-addr = 28672
+
+  rr-hold-ticks : Integer
+  rr-hold-ticks = 220
+
+  rr-hold-fuel : Integer
+  rr-hold-fuel = 40000000000
+
+  rr-hold : Integer, Integer -> Integer
+  rr-hold (until) (fuel) =
+    if fuel <= 0 then 0
+    else if peek-32 rr-tick-addr 0 >= until then 1
+    else rr-hold until (fuel - 1)
+
+  rr-hold-frame : Integer
+  rr-hold-frame = rr-hold (peek-32 rr-tick-addr 0 + rr-hold-ticks) rr-hold-fuel
+
+Section: Driver
+
+ Placed over the basin the height scan found around z = 1800, high enough
+ to stand clear of ground that reaches 142 at z = 900, and pitched down
+ just enough to put the far shore and the mountains behind it in frame.
+ A reflective surface is only worth rendering if there is something above
+ it to reflect, and on screen for the reflection to sample.
+
+ Low over the water, and that is a physical decision rather than a
+ compositional one. Fresnel governs how much a dielectric reflects, and
+ for water it runs from about 0.02 head-on to nearly 1.0 at grazing
+ incidence. A camera looking DOWN at a lake therefore sees almost no
+ reflection, correctly: the first framing here sat 80 m above the surface
+ and produced water that was accurately, uselessly dark. Dropping the eye
+ to a few metres above the waterline is what puts the reflection where it
+ can be seen, and it is also what a photographer would do.
+
+  rr-eye : V3
+  rr-eye = V3 { x = 0.0, y = 124.0, z = 1650.0 }
+
+  rr-forward : V3
+  rr-forward = V3 { x = 0.05, y = 0.0 - 0.045, z = 0.998 }
+
+  opening : [Console] Nothing
+  opening = act
+    print-line-uni "Reflection render (screen-space, GGX weighted, two passes)"
+    print-line-uni ("resolution = " & show rr-width & "x" & show rr-height & ", traced at " & show gb-width & "x" & show gb-height)
+    print-line-uni ("lake y = " & show rr-lake-y & ", roughness = " & show rr-water-rough & ", f0 = " & show rr-water-f0)
+    print-line-uni ("ssr steps = " & show rf-steps & ", thickness = " & show rf-thickness)
+    let cam = rf-camera rr-eye rr-forward
+    in let c0 = rr-clear 0
+    in let g0 = gb-clear 0
+    in let p1 = rr-pass1 cam 0
+    in act
+      let water = rr-count 0 1 0
+      in let hits = rr-pass2 cam 0 0
+      in act
+        print-line-uni ("water pixels = " & show water)
+        print-line-uni ("ssr hit = " & show hits)
+        print-line-uni ("ssr miss = " & show (water - hits))
+        print-line-uni ("held = " & show rr-hold-frame)
+      end
+    end
+  end

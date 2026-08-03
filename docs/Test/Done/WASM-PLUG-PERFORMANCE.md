@@ -11,18 +11,18 @@ when processing IR larger than ~1.8MB. The compiler selfhost (30K lines,
 
 These were investigated and ruled out:
 
-- **Text concatenation `&`** — the x86-64 `__str_concat` has a fast path
+- **Text concatenation `&`** -- the x86-64 `__str_concat` has a fast path
   that extends in-place when the string is at the heap top. The
   right-to-left concatenation pattern in `emit-wat-defs` should hit the
   fast path every time. Confirmed by reading X86_64TextHelpers.codex.
 
-- **`list-at` complexity** — Lists are array-backed; `list-at` is O(1)
+- **`list-at` complexity** -- Lists are array-backed; `list-at` is O(1)
   (direct index scaling + load). Confirmed by reading
   X86_64Builtins.codex line 197-212.
 
-- **`text-length` / `list-length`** — Both are O(1) (load from header).
+- **`text-length` / `list-length`** -- Both are O(1) (load from header).
 
-- **Binary search** — `bsearch-arity-pos` with O(1) `list-at` is
+- **Binary search** -- `bsearch-arity-pos` with O(1) `list-at` is
   genuinely O(log n). Not a bottleneck.
 
 ## Observations
@@ -37,22 +37,22 @@ These were investigated and ruled out:
 
 ## Hypotheses Still Open
 
-1. **Tokenizer on 2.1MB text** — The tokenizer walks every character.
+1. **Tokenizer on 2.1MB text** -- The tokenizer walks every character.
    With CCE encoding this should be O(n) but n=2.1M. If there are
    quadratic patterns in token list building (`list-push` copies?),
    this could be slow.
 
-2. **IR parser S-expression tree building** — `build-tree` constructs
+2. **IR parser S-expression tree building** -- `build-tree` constructs
    an S-expression tree from tokens. If tree construction has quadratic
    behavior for deeply nested expressions, this could hang.
 
-3. **Heap exhaustion** — The plug allocates aggressively during
+3. **Heap exhaustion** -- The plug allocates aggressively during
    parsing and emission. With 2.1MB of IR, the intermediate data
    structures (token list, S-expression tree, arity map, string table,
    WAT text) might exhaust the 4GB arena, triggering the out-of-memory
    handler which loops or halts.
 
-4. **Specific IR pattern** — The foreword Signal modules may produce
+4. **Specific IR pattern** -- The foreword Signal modules may produce
    IR with characteristics (deep nesting, many string literals, complex
    type expressions) that trigger worst-case behavior in a specific
    emitter function.

@@ -1,4 +1,4 @@
-# IoT Market Data — Verified Claims
+# IoT Market Data -- Verified Claims
 
 **Source**: Deep research workflow (107 agents, 25 sources, 20 confirmed,
 5 adversarially refuted). All claims below survived 3-vote adversarial
@@ -29,7 +29,7 @@ verification unless noted.
 - $44.30B (2025) to $65.29B (2030) at 8.1% CAGR (MarketsandMarkets)
 - Massive cross-firm variance: Mordor $60.54B vs R&M $9.58B (6x spread)
 - Leaders: Microsoft, AWS, Cisco, Huawei, Siemens
-- Google Cloud IoT Core sunset August 2023 — absent from leadership
+- Google Cloud IoT Core sunset August 2023 -- absent from leadership
 - Vote: 3-0 (across 2 merged claims).
 
 ## IoT Vulnerability Landscape
@@ -51,12 +51,12 @@ verification unless noted.
 
 ## Refuted Claims (Failed Verification)
 
-- "China officially encouraged RISC-V adoption by 2027" — 0-3
-- "CRA + EO 14028 driving hardware secure-by-design" — 0-3
+- "China officially encouraged RISC-V adoption by 2027" -- 0-3
+- "CRA + EO 14028 driving hardware secure-by-design" -- 0-3
   (conflated multiple unrelated initiatives)
-- Edge computing market $658.1B by 2031 — 0-3
-- Edge computing market $257.76B by 2031 — 1-2
-- "IoT devices overtook IT as primary attack entry point" — 0-3
+- Edge computing market $658.1B by 2031 -- 0-3
+- Edge computing market $257.76B by 2031 -- 1-2
+- "IoT devices overtook IT as primary attack entry point" -- 0-3
 
 ## Caveats
 

@@ -1,6 +1,8 @@
 Chapter: Sampler
+  cites Foreword chapter MathLib
   cites AI chapter DiffusionScheduler
   cites AI chapter Tensor
+  cites AI chapter Activation
 
  Diffusion model samplers. Implements Euler, Euler Ancestral,
  DPM++ 2M, DPM++ SDE, and DDIM. Each sampler takes the current
@@ -36,15 +38,7 @@ Section: Sigma from Alpha-Bar
   sampler-sigma (schedule) (t) =
     let abar = list-at (schedule.ns-alpha-cumprod) t
     in if abar <= 0 then 30000
-    else sampler-isqrt ((1000 - abar) * 1000000 / abar)
-
-  sampler-isqrt : Integer -> Integer
-  sampler-isqrt (n) = if n <= 0 then 0 else sampler-isqrt-loop n (n / 2 + 1)
-
-  sampler-isqrt-loop : Integer, Integer -> Integer
-  sampler-isqrt-loop (n) (guess) =
-    let next = (guess + n / guess) / 2
-    in if next >= guess then guess else sampler-isqrt-loop n next
+    else math-isqrt ((1000 - abar) * 1000000 / abar)
 
 Section: Unified Step
   sampler-step : SamplerState, List Integer, List Integer, Integer, Integer -> List Integer
@@ -77,8 +71,8 @@ Section: Euler Ancestral Sampler
   euler-a-step (schedule) (xt) (noise-pred) (t) (t-prev) =
     let sigma = sampler-sigma schedule t
     in let sigma-next = if t-prev >= 0 then sampler-sigma schedule t-prev else 0
-    in let sigma-up = if sigma == 0 then 0 else sigma-next * sampler-isqrt ((sigma * sigma - sigma-next * sigma-next) * 1000 / (sigma * sigma)) / 1000
-    in let sigma-down = sampler-isqrt (sigma-next * sigma-next - sigma-up * sigma-up)
+    in let sigma-up = if sigma == 0 then 0 else sigma-next * math-isqrt ((sigma * sigma - sigma-next * sigma-next) * 1000 / (sigma * sigma)) / 1000
+    in let sigma-down = math-isqrt (sigma-next * sigma-next - sigma-up * sigma-up)
     in let dt = sigma-down - sigma
     in euler-a-apply xt noise-pred sigma dt sigma-up 0 (list-length xt) []
 
@@ -150,10 +144,7 @@ Section: DPM++ 2M Sampler
     in dpmpp-so-loop xt x0 old-x0 sigma sigma-next h r (i + 1) n (list-push acc val)
 
   dpmpp-exp : Integer -> Integer
-  dpmpp-exp (x) =
-    if x > 8000 then 30000
-    else if x < (0 - 8000) then 0
-    else 1000 + x + x * x / 2000 + x * x * x / 6000000
+  dpmpp-exp (x) = act-exp-approx x
 
 Section: DPM++ SDE Sampler
   dpmpp-sde-step : NoiseSchedule, List Integer, List Integer, Integer, Integer -> List Integer

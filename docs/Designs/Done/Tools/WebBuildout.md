@@ -1,4 +1,4 @@
-# Web Buildout — val
+# Web Buildout -- val
 
 **Status:** Partially shipped. Agent: val. Date: 2026-05-27. HTML plug + theme-to-CSS pipeline live (Gen2/3). Pending: full user-owned data-driven theming / reactive binding.
 
@@ -14,7 +14,7 @@ Users define their own layouts, color preferences, and widget
 arrangements via the DB. We provide the layout widgets (from
 `codex.foreword.ui`) and users can arrange them. The web output
 must have AJAX, eventing, and reactive binding built in as
-first-class capabilities — not bolted on after the fact.
+first-class capabilities -- not bolted on after the fact.
 
 ---
 
@@ -22,7 +22,7 @@ first-class capabilities — not bolted on after the fact.
 
 ### Three Generations of Web Output
 
-**Gen 1 — Legacy inline-JS** (`apps/explorer/ItemDesigner.codex`,
+**Gen 1 -- Legacy inline-JS** (`apps/explorer/ItemDesigner.codex`,
 `CharacterDesigner.codex`, `SettingDesigner.codex`). These files
 emit full HTML pages by printing `<!DOCTYPE html>` through serial
 output. CSS and JS are embedded as Codex text literals. Each page
@@ -31,7 +31,7 @@ lightbox, generate function, and per-type JSON serializers. Working
 but high duplication, fragile escaping, and all logic is
 string-templated JS rather than compiled Codex.
 
-**Gen 2 — Plug pipeline** (`apps/explorer/ItemDesignerApp.codex`,
+**Gen 2 -- Plug pipeline** (`apps/explorer/ItemDesignerApp.codex`,
 `CharDesignerApp.codex`, `SettingDesignerApp.codex`). These cite
 shared chapters (`ExplorerTheme`, `ExplorerData`) and use DOM stub
 functions (`dom-get`, `dom-set-html`, `inject-theme-css`, etc.).
@@ -41,7 +41,7 @@ Shared nav, dropdown builder, history panel, hero image, and SD
 status check live in ExplorerTheme. Data lives in ExplorerData.
 This is the active path.
 
-**Gen 3 — Semantic widget emission** (designed, not built). The
+**Gen 3 -- Semantic widget emission** (designed, not built). The
 WebEmitter.md design describes recognizing `WidgetNode` construction
 sites in IR and emitting semantic HTML (`<button>`, `<progress>`,
 etc.) with CSS from `Theme`/`BoxModel`/`Layout`. No code exists.
@@ -181,7 +181,7 @@ Fix bugs and clean up the existing HtmlEmitter before extending it.
 1. **X3: Freeze Gen 1 files.** Add `.skip` or a comment marking
    `ItemDesigner.codex`, `CharacterDesigner.codex`,
    `SettingDesigner.codex` as superseded by `*App.codex`. Don't
-   delete — they document the evolution.
+   delete -- they document the evolution.
 
 2. **X4: Remove orphaned JS glue.** Delete `tools/web/explorer/card-ui.js`
    and `item-ui.js` if `card-app.js` / `item-app.js` are not
@@ -190,7 +190,7 @@ Fix bugs and clean up the existing HtmlEmitter before extending it.
 3. **Verify Gen 2 pages build.** Run the HTML plug pipeline for
    each `*App.codex` and confirm the output HTML works in a
    browser. This requires a working seed on the CodexMagic stream
-   (currently blocked by constants mismatch — see build failure).
+   (currently blocked by constants mismatch -- see build failure).
 
 ### Phase 3: Theme-Driven Widget Rendering
 
@@ -312,7 +312,7 @@ To add a new dimension axis to a page:
    `SettingDesigner.codex`) are reference material only. Once all
    lessons have been extracted into the Gen 2 pattern, delete them.
 
-2. **Seed mismatch on CodexMagic stream.** Resolved — CL 2573
+2. **Seed mismatch on CodexMagic stream.** Resolved -- CL 2573
    build files applied, full build passes (120/120, all gates green).
 
 3. **IR size blocker for foreword cites.** No longer a hard
@@ -338,25 +338,25 @@ and layout. We provide widgets and data; they arrange them.
 
 | # | Work Item | Phase | Status |
 |---|-----------|-------|--------|
-| 1 | `mount-widget` runtime — WidgetNode tree to DOM | 1 | **DONE** CL 2574 |
+| 1 | `mount-widget` runtime -- WidgetNode tree to DOM | 1 | **DONE** CL 2574 |
 | 2 | Flatten let-chain IIFEs (E3) | 1 | **DONE** CL 2574 |
 | 3 | Warn on dropped handlers (E5) | 1 | **DONE** CL 2574 |
 | 4 | Extract dom builtins into named sections (E1) | 1 | **DONE** CL 2574 |
-| 5 | Theme-driven widget rendering — `_wkStyle`, `_wkSS` | 2 | **DONE** CL 2574 |
-| 6 | `mount-widget-themed` — user's theme flows to all widgets | 2 | **DONE** CL 2574 |
-| 7 | AJAX callbacks — `fetch-then`, `fetch-get-then` | 3 | **DONE** CL 2574 |
-| 8 | Event wiring — `dom-on-click`, `dom-on-input`, `dom-on-key` | 3 | **DONE** CL 2574 |
-| 9 | Reactive render loop — `set-render`, `state-set-render`, `request-render` | 3 | **DONE** CL 2574 |
-| 10 | Dialog — `show-alert`, `show-confirm`, `show-prompt`, `close-dialog` | 4 | **DONE** CL 2574 |
+| 5 | Theme-driven widget rendering -- `_wkStyle`, `_wkSS` | 2 | **DONE** CL 2574 |
+| 6 | `mount-widget-themed` -- user's theme flows to all widgets | 2 | **DONE** CL 2574 |
+| 7 | AJAX callbacks -- `fetch-then`, `fetch-get-then` | 3 | **DONE** CL 2574 |
+| 8 | Event wiring -- `dom-on-click`, `dom-on-input`, `dom-on-key` | 3 | **DONE** CL 2574 |
+| 9 | Reactive render loop -- `set-render`, `state-set-render`, `request-render` | 3 | **DONE** CL 2574 |
+| 10 | Dialog -- `show-alert`, `show-confirm`, `show-prompt`, `close-dialog` | 4 | **DONE** CL 2574 |
 | 11 | Widget types inlined in ExplorerTheme (WidgetNode, WidgetKind, etc.) | 2 | **DONE** CL 2574 |
-| 12 | Migrate ExplorerTheme to `cites UI chapter ...` | — | **DEFERRED** plug IR size limit |
+| 12 | Migrate ExplorerTheme to `cites UI chapter ...` | -- | **DEFERRED** plug IR size limit |
 | 13 | Delete Gen 1 inline-JS files + orphaned JS glue | 4 | **DONE** CL 2574 |
 | 14 | Animation CSS: spin/pulse/bounce @keyframes + CSS transition | 4 | **DONE** CL 2574 |
 | 15 | Accessibility: `dom-set-aria`, `dom-set-role` builtins | 4 | **DONE** CL 2574 |
-| 16 | Dashboard `fetch` refresh (D1) — `/api/status` endpoint | 5 | **DONE** CL 2574 |
-| 17 | User theme persistence via localStorage | — | **BLOCKED** plug compile ceiling (see below) |
+| 16 | Dashboard `fetch` refresh (D1) -- `/api/status` endpoint | 5 | **DONE** CL 2574 |
+| 17 | User theme persistence via localStorage | -- | **BLOCKED** plug compile ceiling (see below) |
 | 18 | Game catalog → `tools/web/games.json` + server.ps1 loader | 5 | **DONE** CL 2574 |
-| 19 | Shared game component library (D3) | — | Not started |
+| 19 | Shared game component library (D3) | -- | Not started |
 
 ### IR Size Constraint
 
@@ -365,7 +365,7 @@ crashes with 2048MB RAM and succeeds with 4096MB retry. Each new
 `&`-chain function adds IR depth. Mitigation: split long
 concatenations into multiple named functions (e.g.,
 `emit-dom-dialog-a`, `emit-dom-dialog-b`, `emit-dom-dialog-c`).
-The foreword-cite migration is blocked by this — adding 37KB of
+The foreword-cite migration is blocked by this -- adding 37KB of
 foreword UI chapters would push the source to ~111KB, well past
 the limit.
 
@@ -374,6 +374,6 @@ recursing too deeply on nested type trees from long `&`
 concatenation chains. The stack overflows at ~75KB source. See
 `docs/Test/PLUG-PARAMETERIZE-CRASH.md` for full investigation
 and fix proposals. Theme persistence (`save-theme`/`load-theme`)
-is ready to add — the JS runtime code is in
-`codex/plugs/html/runtime-extra.js` — but cannot be compiled into
+is ready to add -- the JS runtime code is in
+`codex/plugs/html/runtime-extra.js` -- but cannot be compiled into
 the plug until the stack depth issue is resolved.

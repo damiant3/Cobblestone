@@ -1,0 +1,263 @@
+Chapter: PaletteFilter
+  cites UI chapter CommandPalette
+  cites UI chapter Widget
+  cites UI chapter Theme
+  cites UI chapter KeyInput
+
+ TrackerApp, DiffusionApp and CallPage each build a command palette and
+ none of them renders, filters or drives it: all three constants are
+ mentioned exactly twice, at their signature and their definition. So the
+ whole chapter is latent, which is the condition under which a wrong
+ answer survives indefinitely and greets its first caller.
+
+ The palette caps what it draws at ps-max-visible, which is twelve, and
+ TrackerApp registers twelve commands. Twelve is therefore the one count
+ that cannot tell a cap that works from a cap that never engages, so the
+ table here carries FOURTEEN and asks what happens to the highlight past
+ the cap.
+
+ The filter is asked with a query that matches nothing, because an empty
+ result is where a highlight can leave the range its own list has.
+
+ We say:
+
+Section: Reading
+
+  at : WidgetNode, Integer -> WidgetNode
+  at (w) (i) = list-at (w.wn-children) i
+
+  payload : WidgetNode -> Text
+  payload (w) = when w.wn-kind
+    is WkLabel (t) -> "[" & t & "]"
+    is WkButton (t) -> "<" & t & ">"
+    is WkGauge (v) (m) -> "gauge"
+    is WkInput (t) (c) -> "input(" & t & ")"
+    is WkSeparator -> "sep"
+    is WkPanel -> "panel"
+    is WkCustom (tag) -> tag
+
+  state-name : Integer -> Text
+  state-name (s) =
+    if s == state-normal then "normal"
+    else if s == state-focused then "focused"
+    else if s == state-hover then "hover"
+    else if s == state-pressed then "pressed"
+    else "other"
+
+  labels : List PaletteCommand, Integer, Integer, Text -> Text
+  labels (cs) (i) (n) (acc) =
+    if i >= n then acc
+    else let c = list-at cs i
+    in labels cs (i + 1) n (acc & (if i > 0 then "," else "") & c.pc-id)
+
+  show-visible : PaletteState -> Text
+  show-visible (p) =
+    let v = palette-visible p
+    in labels v 0 (list-length v) ""
+
+Section: The palette under test
+
+ Fourteen commands, two past the twelve the palette will draw. Two of
+ them carry a capital in the label, which is what the case question needs.
+
+  base : Integer -> PaletteState
+  base (x) = palette-new "pal" [
+    palette-command "c01" "open file" "o" "file" 1,
+    palette-command "c02" "Open folder" "O" "file" 2,
+    palette-command "c03" "save file" "s" "file" 3,
+    palette-command "c04" "close tab" "w" "file" 4,
+    palette-command "c05" "find text" "f" "edit" 5,
+    palette-command "c06" "replace text" "r" "edit" 6,
+    palette-command "c07" "copy line" "c" "edit" 7,
+    palette-command "c08" "paste line" "v" "edit" 8,
+    palette-command "c09" "split view" "2" "view" 9,
+    palette-command "c10" "zoom in" "+" "view" 10,
+    palette-command "c11" "zoom out" "-" "view" 11,
+    palette-command "c12" "toggle sidebar" "b" "view" 12,
+    palette-command "c13" "run build" "F5" "run" 13,
+    palette-command "c14" "run tests" "F6" "run" 14
+  ]
+
+  navd : PaletteState, Integer -> PaletteState
+  navd (p) (n) = if n <= 0 then p else navd (palette-nav-down p) (n - 1)
+
+Section: Construction and filtering
+
+  line-new : Text =
+    let p = base 0
+    in "new: commands=" & show (p.ps-cmd-count) & " max-visible=" & show (p.ps-max-visible)
+    & " open=" & (if p.ps-open then "true" else "false")
+    & " highlight=" & show (p.ps-highlight)
+
+  line-filter : Text =
+    "filter run: " & show-visible (palette-set-filter (base 0) "run")
+
+ A palette a person types into is asked to match what they typed, and the
+ obvious query for the two commands whose labels begin with a capital is
+ the lowercase one. Both cases are printed rather than one.
+
+  line-filter-case : Text =
+    "filter open=" & show-visible (palette-set-filter (base 0) "open")
+    & " Open=" & show-visible (palette-set-filter (base 0) "Open")
+
+  line-filter-none : Text =
+    let p = palette-set-filter (base 0) "zzz"
+    in "filter zzz: visible=" & show (palette-visible-count p)
+    & " highlight=" & show (p.ps-highlight)
+
+Section: Navigation
+
+ The palette wraps deliberately at both ends, which is what a list a
+ person arrows through should do.
+
+  line-nav : Text =
+    "nav: down=" & show ((palette-nav-down (base 0)).ps-highlight)
+    & " down-x13=" & show ((navd (base 0) 13).ps-highlight)
+    & " down-x14-wraps=" & show ((navd (base 0) 14).ps-highlight)
+    & " up-from-zero-wraps=" & show ((palette-nav-up (base 0)).ps-highlight)
+
+ Navigating an EMPTY result is the case that decides whether the highlight
+ can leave the list it indexes. Both directions are asked.
+
+  line-nav-empty : Text =
+    let p = palette-set-filter (base 0) "zzz"
+    in "nav on empty: up=" & show ((palette-nav-up p).ps-highlight)
+    & " down=" & show ((palette-nav-down p).ps-highlight)
+
+Section: Confirming
+
+  line-confirm : Text =
+    "confirm: at-zero=" & show (palette-confirm (base 0))
+    & " at-three=" & show (palette-confirm (navd (base 0) 3))
+
+ Confirming with a highlight the visible list does not have must answer
+ nothing rather than reading past either end of it.
+
+  line-confirm-empty : Text =
+    let p = palette-set-filter (base 0) "zzz"
+    in "confirm empty: plain=" & show (palette-confirm p)
+    & " after-up=" & show (palette-confirm (palette-nav-up p))
+
+  line-selected : Text =
+    let some = palette-selected-command (navd (base 0) 2)
+    in let none-hl = palette-selected-command (palette-nav-up (palette-set-filter (base 0) "zzz"))
+    in "selected: at-two=" & (when some is Just (c) -> c.pc-id is None -> "none")
+    & " empty-after-up=" & (when none-hl is Just (c) -> c.pc-id is None -> "none")
+
+ Now that navigating clamps, nothing reachable through the public calls
+ leaves the highlight below zero, so the lower bound in the selection
+ functions can no longer be reached that way. It is asked directly
+ instead, by writing the field: a caller that builds or restores a state
+ is not obliged to have arrived at it through the arrow keys, and a guard
+ that only its own neighbour can fire is a guard nobody has tested.
+
+ This line fires the bound in `palette-selected-command`, which without it
+ answers `Just` a command whose every field is empty. It does NOT fire the
+ one in `palette-confirm`: that read is equally out of range, but the
+ action it comes back with is zero, which is what refusing answers too, so
+ nothing printable here can tell them apart. The chapter says the same.
+
+  negative : Integer -> PaletteState
+  negative (x) = __record-set (base 0) "ps-highlight" (0 - 1)
+
+  line-negative : Text =
+    "negative highlight: confirm=" & show (palette-confirm (negative 0))
+    & " selected=" & (when palette-selected-command (negative 0) is Just (c) -> "[" & c.pc-id & "]" is None -> "none")
+
+Section: The widget
+
+ Two rows of chrome and then one row per command, capped at twelve.
+
+  line-widget : Text =
+    let w = palette-widget (base 0)
+    in "widget: kids=" & show (w.wn-child-count)
+    & " search=" & payload (at w 0) & " sep=" & payload (at w 1)
+
+  row-state : PaletteState, Integer -> Text
+  row-state (p) (i) = state-name ((at (palette-widget p) (i + 2)).wn-state)
+
+  line-highlight : Text =
+    "highlight: row0=" & row-state (base 0) 0 & " row1=" & row-state (base 0) 1
+    & " after-down row0=" & row-state (palette-nav-down (base 0)) 0
+    & " row1=" & row-state (palette-nav-down (base 0)) 1
+
+ A highlight past the twelve rows the palette draws is the question the
+ cap raises: the selected command is real and off the bottom of what is
+ rendered, so nothing on screen is marked.
+
+  marked : PaletteState, Integer, Integer, Integer -> Integer
+  marked (p) (i) (n) (acc) =
+    if i >= n then acc
+    else let s = (at (palette-widget p) (i + 2)).wn-state
+    in marked p (i + 1) n (acc + (if s == state-focused then 1 else 0))
+
+  first-row-label : PaletteState -> Text
+  first-row-label (p) = payload (at (at (palette-widget p) 2) 0)
+
+  line-past-cap : Text =
+    let p = navd (base 0) 13
+    in let w = palette-widget p
+    in "past cap: highlight=" & show (p.ps-highlight)
+    & " rows-drawn=" & show (w.wn-child-count - 2)
+    & " rows-marked=" & show (marked p 0 (w.wn-child-count - 2) 0)
+    & " first-row=" & first-row-label p
+
+ The window does not move until the selection would leave it, so the
+ first screenful is still the first twelve commands.
+
+  line-window-still : Text =
+    "window at rest: first-row=" & first-row-label (base 0)
+    & " at-eleven=" & first-row-label (navd (base 0) 11)
+    & " at-twelve=" & first-row-label (navd (base 0) 12)
+
+Section: The keyboard
+
+ UI chapter KeyInput settles what a key is: a character is its CCE code
+ point and a named key is a constant at or above key-named-base. This
+ handler names its parameter sc and tests 1, 36 and 37, which are PS/2
+ Set-1 SCANCODES -- a third encoding again, neither CCE nor the virtual
+ key codes the other widgets used. In CCE 1 is the newline, 36 is x and
+ 37 is q.
+
+ Each probe opens its own palette. These functions hand back the state
+ they were given with a field written through, so driving one state three
+ times measures a sequence and not three independent answers -- the second
+ reading would start wherever the first left it.
+
+  opened : Integer -> PaletteState
+  opened (x) = palette-toggle (base 0)
+
+  line-keys : Text =
+    "keys: down=" & show ((palette-handle-key (opened 0) key-down).ps-highlight)
+    & " up-wraps=" & show ((palette-handle-key (opened 0) key-up).ps-highlight)
+    & " escape-closes=" & (if (palette-handle-key (opened 0) key-escape).ps-open then "no" else "yes")
+    & " letter-ignored=" & show ((palette-handle-key (opened 0) (char-code 'x')).ps-highlight)
+
+  line-toggle : Text =
+    let opened = palette-toggle (base 0)
+    in "toggle: open=" & (if opened.ps-open then "true" else "false")
+    & " closed-again=" & (if (palette-toggle opened).ps-open then "true" else "false")
+    & " close=" & (if (palette-close opened).ps-open then "true" else "false")
+
+Section: Body
+
+  report-a : Text =
+    line-new & "\n" & line-filter & "\n" & line-filter-case & "\n" & line-filter-none
+
+  report-b : Text =
+    line-nav & "\n" & line-nav-empty & "\n" & line-confirm & "\n" & line-confirm-empty
+    & "\n" & line-selected & "\n" & line-negative
+
+  report-c : Text =
+    line-widget & "\n" & line-highlight & "\n" & line-past-cap
+    & "\n" & line-window-still
+
+  report-d : Text =
+    line-keys & "\n" & line-toggle
+
+  opening : [Console] Nothing = act
+    print-line-uni report-a
+    print-line-uni report-b
+    print-line-uni report-c
+    print-line-uni report-d
+  end

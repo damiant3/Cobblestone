@@ -8,14 +8,14 @@
 
 ## Why
 
-Unicode is a compromise. Not a bad one — it unified dozens of incompatible encodings
+Unicode is a compromise. Not a bad one -- it unified dozens of incompatible encodings
 and gave the world a shared character space. That was important work. But it was done
 by committee, under the constraint of backward compatibility with ASCII, and it shows.
 
-UTF-8 allocates its most precious resource — the 128 single-byte code points — to the
+UTF-8 allocates its most precious resource -- the 128 single-byte code points -- to the
 ASCII set, which includes 33 control characters that virtually no modern software uses
 (SOH, STX, ETX, EOT, ENQ, ACK, BEL... relics of 1960s teletypes). Meanwhile, characters
-used daily by billions of people — é, ñ, ü, и, а, 的, 是 — cost 2 or 3 bytes.
+used daily by billions of people -- é, ñ, ü, и, а, 的, 是 -- cost 2 or 3 bytes.
 
 This is not optimal. It is historical accident preserved by inertia.
 
@@ -42,7 +42,7 @@ UTF-8 has genuine engineering virtues that any replacement must preserve:
 4. **Backward-compatible sort order for ASCII.** Byte-level comparison of ASCII strings
    produces the correct lexicographic order.
 
-These are not accidents — they are real design achievements. CCE preserves all four.
+These are not accidents -- they are real design achievements. CCE preserves all four.
 
 ### What UTF-8 gets wrong
 
@@ -52,18 +52,18 @@ These are not accidents — they are real design achievements. CCE preserves all
    a single-byte code point that could hold é or ñ.
 
 2. **Frequency-blind assignment.** ASCII was designed for American English teletype.
-   The 1-byte tier contains `~`, `^`, `` ` ``, `|`, `\` — characters that appear in
-   less than 0.01% of natural text — while the letter é (which appears in 2% of French
+   The 1-byte tier contains `~`, `^`, `` ` ``, `|`, `\` -- characters that appear in
+   less than 0.01% of natural text -- while the letter é (which appears in 2% of French
    text, the 7th most spoken language) costs 2 bytes.
 
 3. **No computational structure for character classification.** In ASCII, `is_uppercase`
    is a range check (0x41–0x5A), but `is_letter` requires two range checks, and
-   `is_digit` requires a third. These ranges are arbitrary — they could have been
+   `is_digit` requires a third. These ranges are arbitrary -- they could have been
    designed so that a single bitmask answers all three questions. In Unicode, character
    classification requires table lookups for every script.
 
 4. **Case conversion is not a bit operation.** In ASCII, `toupper` is `& 0xDF` and
-   `tolower` is `| 0x20` — but only for the 26 English letters. For é→É, you need
+   `tolower` is `| 0x20` -- but only for the 26 English letters. For é→É, you need
    a lookup table. For ß→SS, you need a one-to-many mapping. The encoding provides
    no structural help.
 
@@ -106,7 +106,7 @@ CCE is guided by five principles, in priority order:
 
 ## Encoding Structure
 
-### Framing (same as UTF-8 — proven correct)
+### Framing (same as UTF-8 -- proven correct)
 
 | Prefix | Bytes | Data bits | Code points | Tier |
 |--------|-------|-----------|-------------|------|
@@ -130,27 +130,27 @@ here was earned by frequency, not by historical accident.
 | 0x00–0x03 | 4 | NUL, LF, CR, TAB | Whitespace/control: `(b & 0x7C) == 0` |
 | 0x04–0x07 | 4 | SPACE, NBSP, punctuation space variants | Whitespace: `b <= 0x07` |
 | 0x08–0x11 | 10 | Digits 0–9 | `is_digit`: `b >= 0x08 && b <= 0x11`. Value: `b - 0x08` |
-| 0x12–0x2B | 26 | Lowercase a–z (frequency order: etaoinshrdlcumwfgypbvkjxqz) | `is_lower`: `b >= 0x12 && b <= 0x2B` |
-| 0x2C–0x45 | 26 | Uppercase A–Z (same order) | `is_upper`: `b >= 0x2C && b <= 0x45`. Case flip: `b ^ 0x1A` |
+| 0x12–0x2B | 26 | Lowercase a-z (frequency order: etaoinshrdlcumwfgypbvkjxqz) | `is_lower`: `b >= 0x12 && b <= 0x2B` |
+| 0x2C-0x45 | 26 | Uppercase A-Z (same order) | `is_upper`: `b >= 0x2C && b <= 0x45`. Case flip: `b ^ 0x1A` |
 | 0x46–0x59 | 20 | Core punctuation: `.` `,` `!` `?` `:` `;` `'` `"` `-` `(` `)` `/` `@` `#` `+` `=` `*` `&` `_` `\` | `is_punct`: range check |
-| 0x5A–0x6F | 22 | Frequent accented Latin: é è ê ë á à â ä ó ò ô ö ú ù û ü ñ ç ß í ì î | Common in French, Spanish, German, Portuguese, Italian |
+| 0x5A-0x6F | 22 | Frequent accented Latin: é è ê ë á à â ä ó ò ô ö ú ù û ü ñ ç ß í ì î | Common in French, Spanish, German, Portuguese, Italian |
 | 0x70–0x7F | 16 | Top Cyrillic: а о е и н т с р в л к м д п у г | Russian vowels + most frequent consonants |
 
 **Key properties:**
-- `is_whitespace(b)` = `b <= 0x07` — one comparison
-- `is_digit(b)` = `(b - 0x08) < 10` — one subtract + compare
-- `digit_value(b)` = `b - 0x08` — one subtract
-- `is_lower(b)` = `b >= 0x12 && b <= 0x2B` — range check
-- `is_upper(b)` = `b >= 0x2C && b <= 0x45` — range check
-- `is_letter(b)` = `b >= 0x12 && b <= 0x45` — single range check (!)
-- `to_lower(b)` = `b | 0x1A` (if upper) — bitmask
-- `to_upper(b)` = `b & ~0x1A` (if lower) — bitmask
-- `is_ascii_letter_or_accented(b)` = `b >= 0x12 && b <= 0x6F` — single range check
+- `is_whitespace(b)` = `b <= 0x07` -- one comparison
+- `is_digit(b)` = `(b - 0x08) < 10` -- one subtract + compare
+- `digit_value(b)` = `b - 0x08` -- one subtract
+- `is_lower(b)` = `b >= 0x12 && b <= 0x2B` -- range check
+- `is_upper(b)` = `b >= 0x2C && b <= 0x45` -- range check
+- `is_letter(b)` = `b >= 0x12 && b <= 0x45` -- single range check (!)
+- `to_lower(b)` = `b | 0x1A` (if upper) -- bitmask
+- `to_upper(b)` = `b & ~0x1A` (if lower) -- bitmask
+- `is_ascii_letter_or_accented(b)` = `b >= 0x12 && b <= 0x6F` -- single range check
 
 **Why these characters?** Space alone accounts for ~15% of all text. The 26 lowercase
 Latin letters account for another ~35% of English text (and English is ~60% of digital
 content). Digits account for ~5%. The accented characters serve French, Spanish, German,
-Portuguese, and Italian — languages representing another ~15% of digital text. The Cyrillic
+Portuguese, and Italian -- languages representing another ~15% of digital text. The Cyrillic
 block serves Russian (~5% of digital text). Together, Tier 0 covers approximately
 **80–85% of all bytes in a typical multilingual text corpus** at 1 byte per character.
 

@@ -1,0 +1,163 @@
+Chapter: EcdsaP256Test
+  cites Foreword chapter EcdsaP256
+  cites Foreword chapter Console
+
+ A P-256 signature nobody here produced, checked here.
+
+ This is the direction the compression post-mortem says to write first:
+ their bytes, our reader. Codex cannot sign with this curve and does not
+ want to, so there is no paired signer to agree with and no way for this
+ test to pass by two halves sharing an assumption.
+
+ The vector is RFC 6979 A.2.5, the published deterministic-ECDSA answer
+ for P-256 with SHA-256 over the message "sample". It was confirmed
+ against TWO independent implementations before anything here was
+ written -- OpenSSL 3.0.13 `dgst -sha256 -verify` and .NET's ECDsa on
+ Windows CNG -- and both also reject the perturbations below. A
+ transcription error in the curve constants or in this vector therefore
+ has somewhere to show up, which a single-oracle check could not offer.
+
+ We say:
+
+Section: Vectors
+
+ The public key as SEC1 uncompressed: 0x04 and then the two coordinates.
+
+  p-pub : List Integer =
+    [4, 96, 254, 212, 186, 37, 90, 157, 49, 201, 97, 235, 116, 198, 53, 109,
+     104, 192, 73, 184, 146, 59, 97, 250, 108, 230, 105, 98, 46, 96, 242, 159,
+     182, 121, 3, 254, 16, 8, 184, 188, 153, 164, 26, 233, 233, 86, 40, 188,
+     100, 242, 241, 178, 12, 45, 126, 159, 81, 119, 163, 194, 148, 212, 70, 34,
+     153]
+
+ "sample", which is the message RFC 6979 signs.
+
+  p-msg : List Integer =
+    [115, 97, 109, 112, 108, 101]
+
+ r then s, thirty-two bytes each, which is the fixed-width form TLS and
+ the JOSE family use. A certificate carries the DER form instead; taking
+ that apart is the X.509 layer's job and not this chapter's.
+
+  p-sig : List Integer =
+    [239, 212, 139, 42, 172, 182, 168, 253, 17, 64, 221, 156, 212, 94, 129, 214,
+     157, 44, 135, 123, 86, 170, 249, 145, 195, 77, 14, 168, 78, 175, 55, 22,
+     247, 203, 28, 148, 45, 101, 124, 65, 212, 54, 199, 161, 182, 226, 159, 101,
+     243, 233, 0, 219, 185, 175, 244, 6, 77, 196, 171, 47, 132, 58, 205, 168]
+
+Section: Cases
+
+ The positive.
+
+  ok-case : Boolean = ecdsa-p256-verify p-pub p-msg p-sig
+
+ Every altered byte below is produced by flipping a bit of the original
+ rather than by writing a literal. A control that quietly tests nothing
+ is worse than no control here, because these are the lines that would
+ report a forgery as genuine, and the RSA test next door has already been
+ bitten once by a "different" value that happened to equal the original.
+
+ One bit of s. The signature is still the right width and still a scalar
+ in range, so only the arithmetic can reject it.
+
+  bad-sig : List Integer = ep-flip p-sig 63
+  bad-sig-case : Boolean = ecdsa-p256-verify p-pub p-msg bad-sig
+
+ One bit of r. This exercises a different half of the check: r feeds the
+ second scalar multiplication AND is the value the recovered x is
+ compared against, so a wrong r is wrong twice over.
+
+  bad-r : List Integer = ep-flip p-sig 0
+  bad-r-case : Boolean = ecdsa-p256-verify p-pub p-msg bad-r
+
+ The genuine signature against a different message.
+
+  other-msg : List Integer = ep-flip p-msg 0
+  wrong-msg-case : Boolean = ecdsa-p256-verify p-pub other-msg p-sig
+
+ s of zero, refused on range before any arithmetic. SEC1 requires the
+ range check and it is not decoration: a zero scalar sails through the
+ inversion and the comparison below can be made to hold.
+
+  zero-s : List Integer = ep-zero-tail p-sig 32
+  zero-s-case : Boolean = ecdsa-p256-verify p-pub p-msg zero-s
+
+ A public key one bit off the curve.
+
+ THIS LINE DOES NOT EXERCISE THE CURVE CHECK, and saying so is the point
+ of writing it down. Run with `ec-on-curve` forced to True the output of
+ this whole test is byte-identical: a tampered key fails the arithmetic
+ anyway, so the end-to-end case cannot tell a guard that holds from a
+ guard that does nothing. The same is true of the zero-scalar case above,
+ which yields the point at infinity and is refused there whether or not
+ the range check runs.
+
+ So the two guards are asserted directly, below, where they can fail.
+ The end-to-end lines stay because they pin the answer; they are simply
+ not evidence about these two predicates.
+
+  bad-pub : List Integer = ep-flip p-pub 64
+  bad-pub-case : Boolean = ecdsa-p256-verify bad-pub p-msg p-sig
+
+Section: The Two Guards, Asserted Where They Can Fail
+
+  p-field : EcField = ec-p256-curve
+
+  good-point : EcPoint = ec-point-of (ec-slice p-pub 1 32) (ec-slice p-pub 33 32) p-field
+  bad-point : EcPoint = ec-point-of (ec-slice bad-pub 1 32) (ec-slice bad-pub 33 32) p-field
+
+  good-on-curve : Boolean = ec-on-curve good-point p-field
+  bad-on-curve : Boolean = ec-on-curve bad-point p-field
+
+ The range check, both directions. A genuine s is in [1, n-1]; zero is
+ not, and neither is n itself, which is the boundary the comparison has
+ to get right and the one an off-by-one would let through.
+
+  good-scalar : Boolean = ec-scalar-ok (ec-slice p-sig 32 32) 32 ec-n-bytes
+  zero-scalar : Boolean = ec-scalar-ok (ep-zero-tail (ec-slice p-sig 32 32) 0) 32 ec-n-bytes
+  order-scalar : Boolean = ec-scalar-ok ec-n-bytes 32 ec-n-bytes
+
+ A signature of the wrong width, refused before anything else runs.
+
+  short-sig : List Integer = ep-take p-sig 63 0 []
+  short-case : Boolean = ecdsa-p256-verify p-pub p-msg short-sig
+
+Section: Helpers
+
+  ep-take : List Integer, Integer, Integer, List Integer -> List Integer
+  ep-take (bs) (n) (i) (acc) =
+    if i >= n then acc
+    else ep-take bs n (i + 1) (list-push acc (list-at bs i))
+
+  ep-copy : List Integer -> List Integer
+  ep-copy (bs) = ep-take bs (list-length bs) 0 []
+
+  ep-flip : List Integer, Integer -> List Integer
+  ep-flip (bs) (i) = list-set-at (ep-copy bs) i (bit-xor (list-at bs i) 1)
+
+  ep-zero-tail : List Integer, Integer -> List Integer
+  ep-zero-tail (bs) (from) = ep-zero-loop (ep-copy bs) from
+
+  ep-zero-loop : List Integer, Integer -> List Integer
+  ep-zero-loop (bs) (i) =
+    if i >= list-length bs then bs
+    else ep-zero-loop (list-set-at bs i 0) (i + 1)
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni ("rfc6979 signature verifies = " & show ok-case)
+    print-line-uni ("one bit flipped in s = " & show bad-sig-case)
+    print-line-uni ("one bit flipped in r = " & show bad-r-case)
+    print-line-uni ("signature against another message = " & show wrong-msg-case)
+    print-line-uni ("s of zero = " & show zero-s-case)
+    print-line-uni ("public key off the curve = " & show bad-pub-case)
+    print-line-uni ("signature of the wrong width = " & show short-case)
+    print-line-uni ("genuine key is on the curve = " & show good-on-curve)
+    print-line-uni ("tampered key is on the curve = " & show bad-on-curve)
+    print-line-uni ("genuine s is in range = " & show good-scalar)
+    print-line-uni ("zero s is in range = " & show zero-scalar)
+    print-line-uni ("s equal to the order is in range = " & show order-scalar)
+  end
+
+Page 1

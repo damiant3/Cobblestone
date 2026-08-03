@@ -1,4 +1,4 @@
-# Camp III-A Design — Region-Based Linear Allocator
+# Camp III-A Design -- Region-Based Linear Allocator
 
 **Date**: 2026-03-22
 **Status**: Approved (design decision: regions over drops)
@@ -142,7 +142,7 @@ enter-before, body, exit-after. The body's result is the region's result
 The **Lowering** pass inserts `IRRegion` nodes:
 - Around every function body
 - Around every `let` binding that allocates a heap value (optional
-  refinement — Phase 1 can just do function bodies)
+  refinement -- Phase 1 can just do function bodies)
 
 Phase 1 keeps it simple: **one region per function call**. This means
 all allocations within a function live until the function returns. Not
@@ -159,7 +159,7 @@ optimal, but correct and simple.
 ### Testing Strategy
 
 1. **IR test**: Lowering wraps function bodies in IRRegion
-2. **WASM test**: program that allocates records in a loop — without
+2. **WASM test**: program that allocates records in a loop -- without
    regions, bump allocator grows unbounded; with regions, memory is stable
 3. **Memory stability test**: call a function 1000 times that allocates
    a record, verify heap_ptr returns to the same value each time

@@ -1,43 +1,43 @@
-# CodexMagic — Design Overview
+# CodexMagic -- Design Overview
 
 ## What This Is
 
 CodexMagic is a **card game construction kit** built on Codex. The
 platform provides a universal game engine, a blockchain economy, an
 AI content pipeline, and a social infrastructure. On top of this,
-players and clans configure their own game experiences — formats,
+players and clans configure their own game experiences -- formats,
 rules, card pools, art themes, and private economies.
 
 Magic: The Gathering is one configuration in the space. So is a
 30-card speed game with robots and lasers. So is a kids-only game
 with biblical art and no deathtouch. The engine is the same. The
-experience is defined by data — format records, house rules, content
+experience is defined by data -- format records, house rules, content
 themes, and clan policies. No code changes required.
 
 ## Pillars
 
-1. **Universal Engine** — One deterministic rules engine handles all
+1. **Universal Engine** -- One deterministic rules engine handles all
    configurations. P/T/D combat, stack resolution, zone transitions,
    triggered abilities, and state-based actions are constants. Turn
    caps, life totals, deck sizes, copy limits, keyword legality, and
    content themes are parameters.
 
-2. **AI-Supervised Gameplay** — Players set posture and priorities.
+2. **AI-Supervised Gameplay** -- Players set posture and priorities.
    The AI General executes. Games resolve in 5-8 minutes with 25-35
-   meaningful decisions. The stack is hidden — the AI resolves it,
+   meaningful decisions. The stack is hidden -- the AI resolves it,
    the player sees decision points.
 
-3. **AI-Generated Content** — Cards, art, mechanics, and flavor text
+3. **AI-Generated Content** -- Cards, art, mechanics, and flavor text
    are produced by AI on seasonal schedules, with QA gates before
    release. Clans can theme their own packs with custom art styles,
    creature types, and profanity levels.
 
-4. **Blockchain Economy** — Every card is a token on-chain. Match
+4. **Blockchain Economy** -- Every card is a token on-chain. Match
    results, tournament outcomes, and card provenance are auditable
    and replayable. Clans mint private currencies alongside the global
    Mana Coin.
 
-5. **Safe Social Platform** — Age brackets (Child/Teen/Adult) with
+5. **Safe Social Platform** -- Age brackets (Child/Teen/Adult) with
    enforced communication tiers (EmotesOnly/Moderated/Unmoderated),
    parental controls, and clan-based content curation. Kids play in
    walled gardens. Adults get the experience they choose.
@@ -77,7 +77,7 @@ themes, and clan policies. No code changes required.
 
 ### Game Engine
 
-The universal rules engine. These docs define the constants —
+The universal rules engine. These docs define the constants --
 mechanics that are the same in every format and every clan.
 
 | Document | Covers |

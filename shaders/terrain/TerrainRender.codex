@@ -1,0 +1,293 @@
+Chapter: TerrainRender
+  cites Terrain chapter TerrainModel
+  cites Clouds chapter CloudModel
+  cites Water chapter OceanModel
+  cites Foreword chapter Console
+
+ Raymarches the height field into an image on the GOP framebuffer.
+
+ A height field is marched rather than rasterised because the model is a
+ FUNCTION of x and z, not a mesh. The ocean renderer builds a grid and fills
+ triangles because it needs the surface at controlled positions; here the
+ surface can be asked about anywhere, and marching gives an exact silhouette
+ along every ridge line instead of one quantised to a grid.
+
+ Traced at half resolution and written as 2x2 blocks, for the reason
+ `CloudRender` gives.
+
+Section: Framebuffer
+
+  tr-fb-base : Integer
+  tr-fb-base = #BF000000
+
+  tr-width : Integer
+  tr-width = 640
+
+  tr-height : Integer
+  tr-height = 400
+
+  tr-tw : Integer
+  tr-tw = 320
+
+  tr-th : Integer
+  tr-th = 200
+
+  tr-half-w : Real
+  tr-half-w = 160.0
+
+  tr-half-h : Real
+  tr-half-h = 100.0
+
+  tr-focal : Real
+  tr-focal = 250.0
+
+  tr-pack : Real, Real, Real -> Integer
+  tr-pack (r) (g) (b) =
+    let ri = real-to-int (w-sat r * 255.0 + 0.5)
+    in let gi = real-to-int (w-sat g * 255.0 + 0.5)
+    in let bi = real-to-int (w-sat b * 255.0 + 0.5)
+    in ri * 65536 + gi * 256 + bi
+
+  tr-put : Integer, Integer, Integer -> Integer
+  tr-put (x) (y) (color) =
+    if x < 0 then 0
+    else if y < 0 then 0
+    else if x >= tr-width then 0
+    else if y >= tr-height then 0
+    else poke-32 tr-fb-base ((y * tr-width + x) * 4) color
+
+ Cleared to magenta first so a capture that lands mid-draw is obvious
+ rather than plausible. See the note in `CloudRender`; it was written after
+ a partial frame was mistaken for a finished one.
+
+  tr-clear-color : Integer
+  tr-clear-color = #FF00FF
+
+  tr-clear-row : Integer, Integer -> Integer
+  tr-clear-row (x) (y) =
+    if x >= tr-width then 0
+    else let d = tr-put x y tr-clear-color
+    in tr-clear-row (x + 1) y
+
+  tr-clear : Integer -> Integer
+  tr-clear (y) =
+    if y >= tr-height then 0
+    else let d = tr-clear-row 0 y
+    in tr-clear (y + 1)
+
+  tr-put-block : Integer, Integer, Integer -> Integer
+  tr-put-block (tx) (ty) (color) =
+    let x = tx * 2
+    in let y = ty * 2
+    in let a = tr-put x y color
+    in let b = tr-put (x + 1) y color
+    in let c = tr-put x (y + 1) color
+    in tr-put (x + 1) (y + 1) color
+
+Section: Camera
+
+  Cam = record { cf : V3, cr : V3, cu : V3 }
+
+  tr-cross : V3, V3 -> V3
+  tr-cross (a) (b) =
+    V3 {
+      x = a.y * b.z - a.z * b.y,
+      y = a.z * b.x - a.x * b.z,
+      z = a.x * b.y - a.y * b.x
+    }
+
+  tr-eye : V3
+  tr-eye = V3 { x = 0.0, y = 330.0, z = 0.0 }
+
+  tr-world-up : V3
+  tr-world-up = V3 { x = 0.0, y = 1.0, z = 0.0 }
+
+  tr-forward : V3
+  tr-forward = V3 { x = 0.22, y = 0.0 - 0.13, z = 0.97 }
+
+  tr-camera : Cam
+  tr-camera =
+    let f = v-norm tr-forward
+    in let r = v-norm (tr-cross tr-world-up f)
+    in Cam { cf = f, cr = r, cu = tr-cross f r }
+
+  tr-ray : Cam, Integer, Integer -> V3
+  tr-ray (cam) (tx) (ty) =
+    let sx = (real-from-int tx - tr-half-w + 0.5) / tr-focal
+    in let sy = (tr-half-h - real-from-int ty - 0.5) / tr-focal
+    in let a = v-add (cam.cf) (v-scale (cam.cr) sx)
+    in v-norm (v-add a (v-scale (cam.cu) sy))
+
+Section: The March
+
+ A linear march with a GROWING step. Uniform steps small enough to catch a
+ ridge close to the camera are far more than are needed a kilometre out,
+ where one step already covers less than a pixel; growing the step spends
+ the samples where the silhouette actually is. It is the same reasoning as
+ the lengthening stride in the cloud model's light march.
+
+ The march finds the first step whose end is under the terrain, which
+ brackets the surface between two samples but locates it only to within a
+ step. Bisecting that bracket is what makes the silhouette clean: without
+ it the ridge lines are visibly quantised into the step size, and no
+ affordable step count hides that.
+
+  tr-under : V3, V3, Real -> Boolean
+  tr-under (origin) (dir) (t) =
+    let p = v-add origin (v-scale dir t)
+    in p.y < t-height (p.x) (p.z)
+
+  tr-refine : V3, V3, Real, Real, Integer -> Real
+  tr-refine (origin) (dir) (lo) (hi) (iters) =
+    if iters <= 0 then hi
+    else let mid = (lo + hi) * 0.5
+    in if tr-under origin dir mid then tr-refine origin dir lo mid (iters - 1)
+    else tr-refine origin dir mid hi (iters - 1)
+
+ The step grows but is CAPPED. Bisection locates the surface inside the
+ bracket it is given and is only correct if the ray crosses the surface
+ once inside it; uncapped growth reaches a step near 180 m by the
+ hundredth sample while the finest octave of the field is around 39 m, so
+ one step can straddle a ridge and the bisection then converges
+ confidently to the wrong crossing. The cap has to stay below the smallest
+ feature the field can produce, which makes it a property of
+ `terrain-freq` and the octave count rather than a quality dial.
+
+ **This cap is NOT what fixed the terracing, and it was blamed for it.**
+ The first render came out in stair-step contours, the bracket argument
+ above was the obvious explanation, the cap was added, and the terraces
+ did not move at all. The cause was in the material blend, not here; see
+ the note on `terrain-splat-scale` in `TerrainModel`, and the pair of
+ experiments that cornered it. Rendering with a constant albedo is what
+ cleared this file: the surface came out smooth, so the march and the
+ normals were never the problem.
+
+ The cap stays, because the reasoning for it is sound on its own terms and
+ the bracket really can hold two crossings. The note stays because the
+ same reasoning was sound for an artifact it was innocent of, and a
+ mechanism that plausibly explains the wrong thing is more expensive than
+ no explanation at all -- it stops the search.
+
+  tr-max-step : Real
+  tr-max-step = 24.0
+
+  tr-march : V3, V3, Real, Real, Integer -> Real
+  tr-march (origin) (dir) (t) (step) (steps) =
+    if steps <= 0 then 0.0 - 1.0
+    else if t > tr-max-dist then 0.0 - 1.0
+    else let t2 = t + step
+    in if tr-under origin dir t2 then tr-refine origin dir t t2 tr-refine-iters
+    else let grown = step * tr-step-growth
+    in let next = if grown > tr-max-step then tr-max-step else grown
+    in tr-march origin dir t2 next (steps - 1)
+
+  tr-max-dist : Real
+  tr-max-dist = 5000.0
+
+  tr-first-step : Real
+  tr-first-step = 6.0
+
+  tr-step-growth : Real
+  tr-step-growth = 1.035
+
+  tr-march-steps : Integer
+  tr-march-steps = 260
+
+  tr-refine-iters : Integer
+  tr-refine-iters = 12
+
+Section: Sky and Distance
+
+  tr-sky : V3 -> V3
+  tr-sky (dir) =
+    let t = w-sat (dir.y * 2.0 + 0.08)
+    in let base = v-lerp tr-horizon-color terrain-sky-color t
+    in let s = w-sat (v-dot dir (v-norm terrain-sun))
+    in let disc = w-powi s 64
+    in let halo = w-powi s 8 * 0.20
+    in v-add base (v-scale terrain-sun-color (disc + halo))
+
+  tr-horizon-color : V3
+  tr-horizon-color = V3 { x = 0.74, y = 0.80, z = 0.86 }
+
+ Aerial perspective. Distant ground is not merely dimmer, it is closer to
+ the colour of the air in front of it, and without this the far ridges read
+ as being the same distance as the near ones.
+
+  tr-fog-start : Real
+  tr-fog-start = 500.0
+
+  tr-fog-end : Real
+  tr-fog-end = 4600.0
+
+  tr-fog : V3, V3, Real -> V3
+  tr-fog (color) (dir) (dist) =
+    let f = c-remap dist tr-fog-start tr-fog-end 0.0 1.0
+    in v-lerp color (tr-sky dir) (f * f)
+
+Section: The Frame
+
+  tr-sample : Cam, Integer, Integer -> Integer
+  tr-sample (cam) (tx) (ty) =
+    let dir = tr-ray cam tx ty
+    in let hit = tr-march tr-eye dir 0.0 tr-first-step tr-march-steps
+    in if hit < 0.0 then (let s = tr-sky dir in tr-pack (s.x) (s.y) (s.z))
+    else let p = v-add tr-eye (v-scale dir hit)
+    in let n = t-normal (p.x) (p.z)
+    in let lit = t-shade p n
+    in let c = tr-fog lit dir hit
+    in tr-pack (c.x) (c.y) (c.z)
+
+  tr-row : Cam, Integer, Integer -> Integer
+  tr-row (cam) (tx) (ty) =
+    if tx >= tr-tw then 0
+    else let c = tr-put-block tx ty (tr-sample cam tx ty)
+    in tr-row cam (tx + 1) ty
+
+  tr-rows : Cam, Integer -> Integer
+  tr-rows (cam) (ty) =
+    if ty >= tr-th then 0
+    else let d = tr-row cam 0 ty
+    in tr-rows cam (ty + 1)
+
+Section: Holding the Frame
+
+ `-screenshot` captures at `-screenshot-delay` and ends the run there, so
+ the guest must still be alive with a finished frame when the timer fires.
+ Too short and the capture lands mid-draw; too long and no file is written
+ at all. The hold is deliberately generous so the delay need not be exact.
+
+  tr-tick-addr : Integer
+  tr-tick-addr = 28672
+
+  tr-hold-ticks : Integer
+  tr-hold-ticks = 220
+
+  tr-hold-fuel : Integer
+  tr-hold-fuel = 40000000000
+
+  tr-hold : Integer, Integer -> Integer
+  tr-hold (until) (fuel) =
+    if fuel <= 0 then 0
+    else if peek-32 tr-tick-addr 0 >= until then 1
+    else tr-hold until (fuel - 1)
+
+  tr-hold-frame : Integer
+  tr-hold-frame = tr-hold (peek-32 tr-tick-addr 0 + tr-hold-ticks) tr-hold-fuel
+
+Section: Driver
+
+  opening : [Console] Nothing
+  opening = act
+    print-line-uni "Terrain render (raymarched height field, triplanar, height-blended splat)"
+    print-line-uni ("resolution = " & show tr-width & "x" & show tr-height & ", traced at " & show tr-tw & "x" & show tr-th)
+    print-line-uni ("march steps = " & show tr-march-steps & ", refine = " & show tr-refine-iters)
+    print-line-uni ("amplitude = " & show terrain-amplitude & ", sharpness = " & show terrain-tri-sharpness)
+    let cam = tr-camera
+    in let c0 = tr-clear 0
+    in let d = tr-rows cam 0
+    in act
+      print-line-uni "drawn"
+      print-line-uni ("held = " & show tr-hold-frame)
+    end
+  end

@@ -1,4 +1,4 @@
-# Codex Binary Format — Trust at the Binary Boundary
+# Codex Binary Format -- Trust at the Binary Boundary
 
 **Date**: 2026-03-31
 **Status**: Design
@@ -34,7 +34,7 @@ certificates. The binary itself carries no trust information.
 | **RWX pages allowed** | Self-modifying code, JIT regions, `mprotect` to flip permissions at runtime. The format permits executing data and writing code. |
 | **Optional section headers** | Can be stripped, losing all metadata. The binary still runs. |
 | **No dependency verification** | Shared libraries are resolved by name at runtime. `LD_PRELOAD` injects arbitrary code. The format has no concept of verified dependencies. |
-| **Mitigations are bolt-ons** | RELRO, stack canaries, ASLR, NX, PIE — all patching a format that doesn't protect itself. Each one is optional and can be disabled. |
+| **Mitigations are bolt-ons** | RELRO, stack canaries, ASLR, NX, PIE -- all patching a format that doesn't protect itself. Each one is optional and can be disabled. |
 
 These flaws are not bugs. ELF was designed for a world where the OS
 enforces security through process isolation and file permissions. The binary
@@ -46,7 +46,7 @@ binary proves it is safe before it loads.**
 ## Design Principles
 
 1. **The binary carries its own trust record.** Author signature, capability
-   manifest, proof hashes, trust threshold — all embedded in the binary.
+   manifest, proof hashes, trust threshold -- all embedded in the binary.
    The verifier reads them before loading a single byte of code.
 
 2. **No dynamic linking.** All dependencies are resolved at compile time,
@@ -56,17 +56,17 @@ binary proves it is safe before it loads.**
 3. **No self-modifying code.** Code pages are read-execute (RX). Data pages
    are read-write (RW). There is no RWX. The format does not support
    `mprotect`-style permission changes. JIT compilation is an effect that
-   requires the `[CodeGen]` capability — and most programs don't have it.
+   requires the `[CodeGen]` capability -- and most programs don't have it.
 
 4. **Verification before loading.** The Codex.OS loader verifies the
    content hash, checks the signature, evaluates the capability manifest
-   against the current policy, and optionally verifies carried proofs —
+   against the current policy, and optionally verifies carried proofs --
    all before mapping any code into memory. A binary that fails any check
    is never loaded.
 
 5. **Content-addressed.** The binary's identity is its SHA-256 hash. Two
    identical compilations produce the same hash. A different hash means
-   different code. There is no versioning — there are different binaries,
+   different code. There is no versioning -- there are different binaries,
    identified by their content.
 
 ---
@@ -99,7 +99,7 @@ Offset  Size  Field              Description
 0xD8    2     trust_threshold    Minimum trust score (fixed-point, 0-10000 = 0.0-1.0)
 0xDA    2     reserved           Must be zero
 0xDC    4     fact_hash_count    Number of dependency fact hashes
-0xE0    varies  fact_hashes      Array of SHA-256 hashes (32 bytes each) — content-
+0xE0    varies  fact_hashes      Array of SHA-256 hashes (32 bytes each) -- content-
                                  addressed dependencies this binary was compiled against
 ```
 
@@ -125,7 +125,7 @@ Entry format:
   2 bytes   capability_id     Numeric ID (from the capability registry)
   2 bytes   direction         0=Read, 1=Write, 2=ReadWrite
   4 bytes   scope_length      Length of scope string (0 = no scope restriction)
-  N bytes   scope             Scope string (path prefix, host, etc.) — CCE encoded
+  N bytes   scope             Scope string (path prefix, host, etc.) -- CCE encoded
   8 bytes   max_duration      Maximum lease duration in ticks (0 = unlimited)
 ```
 
@@ -156,14 +156,14 @@ Load? [the agent decides based on policy, or asks the user]
 ### Proof Hash Table
 
 Optional. Lists SHA-256 hashes of proofs that the binary carries. The
-proofs themselves are facts in the repository — the binary carries only
+proofs themselves are facts in the repository -- the binary carries only
 the hashes. The verifier can:
 
 1. **Skip verification**: Trust the author's signature (fast path).
 2. **Check proofs**: Retrieve the proof facts by hash from the local
    fact store or a trusted peer, and verify them (thorough path).
 3. **Require proofs**: Refuse to load unless all listed proofs are
-   verified (paranoid path — appropriate for safety-critical binaries).
+   verified (paranoid path -- appropriate for safety-critical binaries).
 
 ```
 Entry format:
@@ -175,7 +175,7 @@ Entry format:
 
 ### Code Section (text)
 
-Machine code. Read-execute only. No relocations — all addresses are
+Machine code. Read-execute only. No relocations -- all addresses are
 resolved at compile time relative to the load address. The load address
 is determined by the loader, but the code is position-independent (all
 internal references are RIP-relative or use a base register).
@@ -192,7 +192,7 @@ are faults.
 
 ### What's NOT in the Binary
 
-- **No writable data section.** Codex programs are functional — mutable
+- **No writable data section.** Codex programs are functional -- mutable
   state lives in the heap, managed by the runtime's region allocator.
   There is no `.data` or `.bss` section with pre-initialized mutable
   globals.
@@ -203,7 +203,7 @@ are faults.
 
 - **No debug information (in the binary).** Debug information is a
   separate fact in the repository, linked by content hash. The binary
-  is a deployment artifact — debug info is a development artifact.
+  is a deployment artifact -- debug info is a development artifact.
   Keeping them separate means the binary hash doesn't change when you
   update debug info.
 
@@ -265,7 +265,7 @@ When Codex.OS loads a binary:
 ```
 
 Steps 1-5 execute before any code is mapped into memory. A malicious
-binary is rejected at step 2, 3, 4, or 5 — it never gets to execute
+binary is rejected at step 2, 3, 4, or 5 -- it never gets to execute
 a single instruction.
 
 ---
@@ -335,7 +335,7 @@ ELF used only as a QEMU boot shim that wraps the CDX binary for loading.
 
 | Step | What | Effort | Depends on |
 |------|------|--------|------------|
-| 1 | Define the CDX header format (this document) | Done | — |
+| 1 | Define the CDX header format (this document) | Done | -- |
 | 2 | CDX writer in Codex (Second Bootstrap Phase 2) | Small | Phase 1 of Second Bootstrap |
 | 3 | CDX loader in bare-metal kernel | Medium | Step 2 + kernel process loader |
 | 4 | Capability table evaluation in loader | Medium | Step 3 + Policy Contract |
@@ -344,7 +344,7 @@ ELF used only as a QEMU boot shim that wraps the CDX binary for loading.
 | 7 | ELF-with-CDX-note writer for Linux target | Small | Step 2 |
 
 Steps 2-3 are part of the Second Bootstrap and should be built during
-that effort. Steps 4-6 are part of the Codex.OS verifier — the component
+that effort. Steps 4-6 are part of the Codex.OS verifier -- the component
 that THE-LAST-PEAK calls "the hardest sub-problem." Step 7 is a convenience
 for running Codex programs on Linux with metadata.
 

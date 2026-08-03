@@ -1,16 +1,16 @@
 # Fabled Treasure Map
 
-Deferred wins discovered in passing — things found while digging for
+Deferred wins discovered in passing -- things found while digging for
 something else that were too big, too separate, or too early to grab
 on the spot. Each entry records where the treasure is buried, why it
 is treasure, and roughly how big the dig is. When one is claimed,
-move it to the Claimed section with its CL rather than deleting it —
+move it to the Claimed section with its CL rather than deleting it --
 the map is also a record of instincts that paid off.
 
 Entry format: what / where found / the win / the dig / pointer.
 
 **This map is fully dug up** (every entry claimed or debunked as of
-2026-07-03). The successor is `docs/QuartermastersMap.md` — drawn
+2026-07-03). The successor is `docs/QuartermastersMap.md` -- drawn
 deliberately for delegation rather than filled with finds-in-passing.
 New deferred finds still land here; new scoped, delegatable work goes
 on the Quartermaster's Map.
@@ -22,18 +22,18 @@ on the Quartermaster's Map.
 ### 1. Ctor field packing by bounds
 
 **What:** Sum-constructor fields are laid out as flat 8-byte slots
-regardless of their declared bounds — `emit-sum-ctor` computes
+regardless of their declared bounds -- `emit-sum-ctor` computes
 `total-size = (1 + field-count) * 8` (`X86_64Compound.codex`).
 Record fields already narrow-store by bounds (1/2/4/8 bytes); variants
 never got the same treatment.
 
 **Found:** 2026-07-02, while bounding type-variable ids to 32 bits
-(CL 6516) — the payload bound turned out to be contract-only because
+(CL 6516) -- the payload bound turned out to be contract-only because
 the slots don't shrink.
 
 **The win:** Every boxed variant node in every phase shrinks. The
 CHECK deck (~69 MB on the selfhost, survey S × 400) is dominated by
-CodexType nodes — TypeVar drops 16→12, bounded-field-heavy variants
+CodexType nodes -- TypeVar drops 16→12, bounded-field-heavy variants
 more. IR nodes, tokens-as-variants, and every user program's sum
 values benefit identically. This is a deck-survey-multiplier-scale
 win, bought once in codegen.
@@ -99,9 +99,9 @@ diagnostics records; `bivy-origin`/`deck-origin` in PhaseAllocator;
 `pos` in SkipListText.
 
 **Found:** 2026-07-02, clearing the `var-id` members of the same
-class (CL 6516 — zero var-id warnings remain).
+class (CL 6516 -- zero var-id warnings remain).
 
-**The win:** Silent truncation is a live corruption class — a heap
+**The win:** Silent truncation is a live corruption class -- a heap
 position past 4 GB in `bivy-origin` would wrap silently. CL 6516
 shows the pattern: bound the value at its *source* so it flows
 bounded end-to-end, rather than `__narrow` at every store. Endgame:
@@ -109,7 +109,7 @@ promote CDX2051 warning → error once the count is zero, the same
 promotion CDX9002 got.
 
 **The dig:** Mechanical per field family; each is small. Diagnostics
-codes first (source: CdxCodes constants — already statically in
+codes first (source: CdxCodes constants -- already statically in
 range, just typed wide).
 
 **Progress 2026-07-02 (fester):** The live-corruption member landed
@@ -153,26 +153,26 @@ zero comes from the compiler getting smarter, not from the contracts
 getting weaker.
 
 **Restoration status (2026-07-02, fester):** the widening is undone.
-- 6562 (emit-layer ~40 fields) — reverted by CL 6573; bounds restored.
+- 6562 (emit-layer ~40 fields) -- reverted by CL 6573; bounds restored.
 - 6527 (PhaseAllocator `bivy-origin`/`deck-origin`/`bivy-hwm`/`deck-end`)
-  — reverted this session; `Integer between 0 and 4294967295` restored on
+  -- reverted this session; `Integer between 0 and 4294967295` restored on
   PhaseStart/PhaseMetrics. One-pass hard fixed point, self-verify green,
   full battery clean. Restored on the fester stream; pending copy-up to
   main (6527 reached main via 6528).
-- 6566 (PatchEntry `{ pos, value : Integer }`) — KEPT, per 6573: a patch
+- 6566 (PatchEntry `{ pos, value : Integer }`) -- KEPT, per 6573: a patch
   IS a 32-bit little-endian write, so one `value` is the honest
   representation, not a bounds-dodge; `pos` stays bounded. This was never
   a widened bounded field, so nothing to restore.
 
 The campaign is now redirected at the compiler (prover reach / source
-bounding / list-element bounds), per the ruling above — no more deleting
+bounding / list-element bounds), per the ruling above -- no more deleting
 contracts to silence the warning.
 
 **Prover reach slice 1 landed (2026-07-02, blu, CLs 6611 + seed 6612):**
 the narrowing lint gained an AST-level range analysis
 (`aexpr-proven-range`, the checker-side twin of `ir-expr-proven-range`)
 consulted only on the would-warn path: literals, literal-defined
-constants (a `TypeEnv.const-ranges` side table filled at registration —
+constants (a `TypeEnv.const-ranges` side table filled at registration --
 the registered TYPE is untouched, refining it would make distinct
 constants disjoint under unification), if-union, and let-body. A proven
 store reports info CDX2053 (NarrowingProven) instead of the warning.
@@ -180,7 +180,7 @@ Selfhost 66 -> 53; the 13 proven are the reg-rax/reg-rdx/sev-error
 constant family. Test const-narrow-proven pins the shapes both ways.
 
 **Slice 2 landed (2026-07-02, blu, CLs 6625 + seed 6626, main 6628):**
-`aexpr-proven-range` gained an application arm — `__narrow x` passes
+`aexpr-proven-range` gained an application arm -- `__narrow x` passes
 its argument's range through, and a head name resolving to a
 structurally bounded builtin proves its return (`list-length`,
 `__deck-pos` are 0..2^32-1, guarded by env-is-local). Selfhost
@@ -205,10 +205,10 @@ parser feature, a decision for Damian.
 ### 3. Audit ASCII char-code literals against CCE
 
 **What:** `find-dot` compared `char-code` output against ASCII 46,
-which is the letter 'H' in CCE — the dotted sub-effect lattice was
+which is the letter 'H' in CCE -- the dotted sub-effect lattice was
 dead code from birth (fixed, CL 6509). That was one site, found by a
-probe. The *class* — comparing `char-code`/`char-code-at` results
-against integer literals that are ASCII codes — may have other
+probe. The *class* -- comparing `char-code`/`char-code-at` results
+against integer literals that are ASCII codes -- may have other
 members. In CCE: newline is 1, space is 2, digits start at 3,
 letters at 13; almost no ASCII code means what it looks like.
 
@@ -216,7 +216,7 @@ letters at 13; almost no ASCII code means what it looks like.
 
 **The win:** Each hit is a silently-dead or silently-wrong branch in
 internal text handling. The fix idiom is established:
-`char-code (char-at "." 0)` — self-describing, table-independent.
+`char-code (char-at "." 0)` -- self-describing, table-independent.
 
 **The dig:** Grep `char-code.*== \d` and `== \d+.*char-code` across
 `codex/` (excluding I/O-boundary code that legitimately works on
@@ -238,7 +238,7 @@ silent corruption). +positive test int-literal-underscore.
 ### 4. TEXT printer drops effect scopes
 
 **What:** `emit-type`'s EffectfulTy arm renders `[Console] T` and
-never prints the scope list — a scoped effect `[Console "auth"]`
+never prints the scope list -- a scoped effect `[Console "auth"]`
 loses its scope through TEXT emission. The AST-path renderer
 (`emit-type-expr`) has the same gap.
 
@@ -249,7 +249,7 @@ tails (CL 6513).
 scoped effect in compiler source, and a real information loss for
 any TEXT-mode consumer today.
 
-**The dig:** Small — mirror the effs rendering with the parallel
+**The dig:** Small -- mirror the effs rendering with the parallel
 scopes list in both printers; add a round-trip test with a scoped
 effect.
 
@@ -273,9 +273,9 @@ depot code hits it; discovered by reading, not by a failure.
 
 **Found:** 2026-07-02, while designing `emit-row-result` (CL 6513).
 
-**The win:** Printer totality — every legal type should round-trip.
+**The win:** Printer totality -- every legal type should round-trip.
 
-**The dig:** Small — parenthesize function-typed results after an
+**The dig:** Small -- parenthesize function-typed results after an
 effect bracket in `emit-row-result` / the EffectfulTy arm; add the
 round-trip test.
 
@@ -295,7 +295,7 @@ EffectfulTy), not the result arm.
 ### 6. `map` builtin is type-level only
 
 **What:** `TypeEnv.codex` binds `map` with a full polymorphic
-signature, but there is no runtime implementation — using it
+signature, but there is no runtime implementation -- using it
 compiles through the checker and dies at codegen with CDX2040
 "Unresolved call to 'map'". Users get a late, confusing error for
 what is effectively an unknown name; `list-map` (foreword) is the
@@ -328,8 +328,8 @@ so the map is complete.
 ### 8. Type variables under EffectfulTy never parameterize
 
 **What:** `parameterize-walk-children` has no `EffectfulTy` arm, so a
-lowercase type name under an effectful VALUE type — a signature like
-`peek : [State] a` — falls through `otherwise` unchanged: the `a`
+lowercase type name under an effectful VALUE type -- a signature like
+`peek : [State] a` -- falls through `otherwise` unchanged: the `a`
 stays a `ConstructedTy` instead of becoming a bound `TypeVar`. Arrow
 signatures are unaffected (the row rides the FunTy and the inner
 walk recurses param/ret); only the effectful-value form loses its
@@ -344,21 +344,21 @@ entries through the parameterize walk.
 otherwise fire the first time someone writes a polymorphic effectful
 value binding, three pipeline stages from the cause.
 
-**The dig:** Tiny — add `is EffectfulTy (effs) (sc) (ret)` to
+**The dig:** Tiny -- add `is EffectfulTy (effs) (sc) (ret)` to
 `parameterize-walk-children` recursing into `ret`, plus a test with
 a polymorphic effectful value signature.
 
 ### 9. TEXT printer drops parens around for-expressions in operands
 
 **What:** `(for l in xs -> l.name) & rest` emits as
-`for l in xs -> l.name & rest` — the parentheses vanish and the
+`for l in xs -> l.name & rest` -- the parentheses vanish and the
 re-parse absorbs `& rest` into the for-body, changing the program
 (caught as CDX2001 in stage2 of the pingpong). The expression
 printer parenthesizes lambdas and applications where precedence
 demands but has no arm for for-expressions in binary-operand
 position.
 
-**Found:** 2026-07-02, EffectRows stage 3b — collect-effect-names
+**Found:** 2026-07-02, EffectRows stage 3b -- collect-effect-names
 originally used the pattern; the pingpong's stage2 caught the
 mis-parse. Sidestepped with an explicit accumulator loop.
 
@@ -366,18 +366,18 @@ mis-parse. Sidestepped with an explicit accumulator loop.
 the pattern silently round-trips to a different program until a
 type error surfaces it.
 
-**The dig:** Small — wrap for-expressions in the printer's operand
+**The dig:** Small -- wrap for-expressions in the printer's operand
 positions (mirror the lambda arm), plus a round-trip test with
 `(for ...) & suffix`.
 
 ### 10. Const-boxed FunTy descriptor still two words
 
 **What:** `emit-const-codextype` boxes `FunTy` as tag 8 with two
-zeroed words (`X86_64Compound.codex`) — the shape of the two-field
+zeroed words (`X86_64Compound.codex`) -- the shape of the two-field
 pre-row arrow. Stage 1a made FunTy three fields. Nothing observably
 breaks, which strongly suggests these const type descriptors are
 never pattern-matched as CodexType values at runtime (their tag
-numbers do not match constructor ordinals either — RealTy prints
+numbers do not match constructor ordinals either -- RealTy prints
 tag 1 but sits at a different decl position). Either the consts are
 consumed by something with its own tag table, or they are dead
 weight.
@@ -391,25 +391,25 @@ consumer exists, the FunTy box needs its third word and ForAllEff
 may need a real tag; if none, this is dead code hiding a future
 corruption.
 
-**The dig:** Small investigation — trace `emit-const-typebinding`'s
+**The dig:** Small investigation -- trace `emit-const-typebinding`'s
 output symbol to its readers; then either a two-line shape fix or a
 deletion.
 
 **Progress 2026-07-02 (from fester's #1 packing, CL 6541):** consumer
-identified — the const boxes are read only under `-EscapeCheck`,
+identified -- the const boxes are read only under `-EscapeCheck`,
 which is gated off by default; fester left const-box at the old
 layout with a documented follow-up in source. So the two-word FunTy
 box is dead in normal builds; the dig narrows to "fix the shape when
 touching the escape-check path, or fold it into that follow-up".
 
-**VERDICT 2026-07-02 (fester): NIT — deferred to escape-check revival,
+**VERDICT 2026-07-02 (fester): NIT -- deferred to escape-check revival,
 no standalone fix.** Traced the reader (`X86_64Compound.codex`
 ~1209-1221 + the in-source NOTE at ~1271-1281). The FunTy 2-vs-3-word
 box cannot bite: (1) normal builds never read the const boxes
-(`-EscapeCheck` off — fixed point and battery never touch them); (2)
+(`-EscapeCheck` off -- fixed point and battery never touch them); (2)
 even under `-EscapeCheck`, `pmap-walk`/`is-pointer-type` read only a
 descriptor's TAG and the pointer slots they recurse on (ListTy.elem,
-RecordTy.fields, SumTy.ctors, ConstructedTy.name) — FunTy is not a
+RecordTy.fields, SumTy.ctors, ConstructedTy.name) -- FunTy is not a
 recursion target, so its payload words are never indexed regardless of
 count; (3) navigation is pointer-based (absolute vaddrs to children),
 not size-based, so a wrong word count can't misalign siblings. The
@@ -417,7 +417,7 @@ map's "dead code hiding a future corruption" overstates it for FunTy.
 The one genuine latent item here is the SEPARATE variant-packing
 mismatch (const-box lays variant fields flat `8 + i*8` while runtime
 packs by width), which is already documented in the source NOTE and
-only matters if `-EscapeCheck` becomes a supported path — at which
+only matters if `-EscapeCheck` becomes a supported path -- at which
 point the whole const-box serializer gets a width-packing pass and
 FunTy's third word falls out of it. Touching the fixed-point-critical
 emitter to add one inert zero word in isolation is no-premature churn
@@ -429,7 +429,7 @@ emitter to add one inert zero word in isolation is no-premature churn
 silently (IntegerTy unification is overlap-permissive), and there is
 no variant-construction analog of the record lints (CDX2050 literal
 out of range, CDX2051 wider value). Before packing this was a
-contract violation with no value change — the flat 8-byte slot
+contract violation with no value change -- the flat 8-byte slot
 stored and reloaded the full value. After #1 (CL 6541),
 emit-store-ctor-fields narrow-stores at the declared width, so an
 out-of-range value is silently truncated at construction
@@ -443,7 +443,7 @@ opened: the same tripwire the record paths already have, at variant
 construction (and `when` literal patterns against bounded fields,
 which share the width assumption).
 
-**The dig:** Small checker change — mirror lint-narrowing-check
+**The dig:** Small checker change -- mirror lint-narrowing-check
 where ctor application unifies argument types against declared
 field types (infer-application on a ctor head, or bind-ctor-...
 construction path); reuse CDX2050/2051. One positive + one negative

@@ -1,0 +1,85 @@
+Chapter: Hpet
+  cites Foreword chapter Maybe
+
+ The High Precision Event Timer, read as a clock rather than driven as a
+ timer. This is a part we do not own, so the register offsets, the units
+ and the enable bit are written down here; what this chapter decides for
+ itself is left to the code.
+
+ The base address is the conventional one and every machine this runs on
+ places it there. The counter is 64 bits presented as two 32-bit halves
+ at F0 and F4, and it counts at a rate the machine chooses and declares:
+ GCAP_ID's upper half at offset 04 is the period of one tick in
+ FEMTOSECONDS. That number is 69841279 under codex-vm and it is not the
+ same on other silicon, which is why it is read rather than assumed.
+
+ THE COUNTER DOES NOT RUN UNTIL BIT 0 OF THE CONFIGURATION IS SET, and
+ firmware does not reliably leave it set. A reader that skips the enable
+ gets a frozen counter, which is a plausible-looking constant rather than
+ an error.
+
+ THE 32-BIT HALF WRAPS EVERY FIVE MINUTES at codex-vm's rate, so the low
+ half alone cannot time anything longer. It is read between two reads of
+ the high half and taken again if the high half moved, which is the
+ standard fix for reading a 64-bit counter through two 32-bit ports.
+
+ We say:
+
+Section: Registers
+
+  hpet-base : Integer = #FED00000
+  hpet-off-caps-period : Integer = #04
+  hpet-off-config : Integer = #10
+  hpet-off-counter-lo : Integer = #F0
+  hpet-off-counter-hi : Integer = #F4
+
+  hpet-config-enable : Integer = 1
+
+  hpet-reg : Integer -> Integer
+  hpet-reg (off) = bit-and (peek-32 (hpet-base + off) 0) #FFFFFFFF
+
+Section: Starting
+
+ Enabling an already-enabled timer is not a reset: the configuration is
+ read, the bit is set in what was there, and a counter that was already
+ running keeps its value.
+
+  hpet-start : Integer
+  hpet-start =
+    let cfg = hpet-reg hpet-off-config
+    in if bit-and cfg hpet-config-enable /= 0 then cfg
+    else poke-32 (hpet-base + hpet-off-config) 0 (bit-or cfg hpet-config-enable)
+
+Section: Reading
+
+  hpet-ticks : Integer
+  hpet-ticks =
+    let hi1 = hpet-reg hpet-off-counter-hi
+    in let lo = hpet-reg hpet-off-counter-lo
+    in let hi2 = hpet-reg hpet-off-counter-hi
+    in if hi1 == hi2 then hi1 * 4294967296 + lo
+    else hi2 * 4294967296 + hpet-reg hpet-off-counter-lo
+
+ A femtosecond is 10^-15 of a second, so the tick rate is that constant
+ divided by the declared period. A machine that declares a zero period
+ has told us nothing, and answering a huge number would be worse than
+ answering none: the rate is reported as zero and the second reader
+ below turns that into a clock that never advances rather than one that
+ races.
+
+  hpet-femtoseconds-per-second : Integer = 1000000000000000
+
+  hpet-ticks-per-second : Integer
+  hpet-ticks-per-second =
+    let period = hpet-reg hpet-off-caps-period
+    in if period <= 0 then 0
+    else hpet-femtoseconds-per-second / period
+
+  hpet-seconds : Integer
+  hpet-seconds =
+    let started = hpet-start
+    in let rate = hpet-ticks-per-second
+    in if rate <= 0 then 0
+    else hpet-ticks / rate
+
+Page 1

@@ -1,11 +1,11 @@
 # ARM64 Codegen Optimization Plan
 
-> **Filed to Done 2026-07-15 (val):** the campaign shipped (CLs 6141-6173); the one remaining phase — frame elision for plain leaves — is tracked in BACKLOG 3.2. Moved out of Active to keep init light; reopen if frame elision is picked up.
+> **Filed to Done 2026-07-15 (val):** the campaign shipped (CLs 6141-6173); the one remaining phase -- frame elision for plain leaves -- is tracked in BACKLOG 3.2. Moved out of Active to keep init light; reopen if frame elision is picked up.
 
 **Status:** Campaign partly executed (CLs 6141-6173). ARM64 codegen
 beats **GCC -O0** on aggregate across the **four** micro-benchmarks:
 Codex 74 vs GCC -O0 78 (docs/ExaminersAssay.md, ARM64 section). It does
-**not** beat -Os — it loses to -Os on every one of the four (fib 21 vs
+**not** beat -Os -- it loses to -Os on every one of the four (fib 21 vs
 16, fact 13 vs 9, gcd 23 vs 7, sum 17 vs 9; aggregate 74 vs 41). The
 one standout is fact, which beats -O0 (17) and -O2 (15).
 
@@ -24,7 +24,7 @@ was **RISC-V's** result, misattributed. RISC-V runs an 8-benchmark
 suite and beats -Os on four of them. ARM64 runs four and beats -O0 on
 aggregate. Do not conflate them.)
 
-The goal below — match or beat GCC -O0 on the four — **is achieved**.
+The goal below -- match or beat GCC -O0 on the four -- **is achieved**.
 The gap to -Os is the honest remaining headroom, and Phase 5 (frame
 elision) is the unbuilt phase that would close part of it. The "Current
 State" table below records the PRE-campaign baseline.
@@ -160,7 +160,7 @@ Expected after TCO:
 - sum: `cbz x0, done; add x1, x1, x0; sub x0, x0, #1; b top` =
   ~6 insns (beats GCC -O2's 13)
 
-### Phase 5: Frame Elision — **NOT BUILT. This is the open work.**
+### Phase 5: Frame Elision -- **NOT BUILT. This is the open work.**
 
 **Impact: -4 to -6 for leaf functions, -2 for near-leaf**
 
@@ -181,7 +181,7 @@ Phase 1 landed on top of this rather than replacing it:
 `a64-compute-save-pairs` sizes the save set from `peak-local`, and
 `a64-nop-unused-saves` patches the unneeded STPs to NOP after the body
 is emitted (the NOPs are then removed by the peephole compactor). So
-the *unused pairs* are gone from the final bytes — but the frame
+the *unused pairs* are gone from the final bytes -- but the frame
 itself is not. `SUB SP,SP,#96`, `STP x29,x30`, and `STP x19,x20` are
 emitted for every function, and `a64-emit-epilogue` unconditionally
 emits the matching `LDP x19,x20` + `LDP x29,x30` + `RET`, even when
@@ -219,14 +219,14 @@ post-campaign count from ExaminersAssay.
 | sum   | 28       | 20       | 18       | 17       | 6        | **17**                 | 6              |
 
 All four are at or below GCC -O0 in aggregate (74 vs 78). gcd and sum
-badly missed their post-TCO projections — worth a look alongside Phase
+badly missed their post-TCO projections -- worth a look alongside Phase
 5, since both are dominated by frame setup they do not need.
 
 ## Execution Order
 
 Phase 1 first (biggest single-phase impact, simplest to implement).
 Phase 4 (TCO) second (transforms 3 of 4 benchmarks from recursive
-to iterative — the largest per-benchmark win). Phase 2 and 3 together
+to iterative -- the largest per-benchmark win). Phase 2 and 3 together
 (destination-driven + MOV elimination are interrelated). Phase 5 last
 (frame elision benefits compound with earlier phases).
 
