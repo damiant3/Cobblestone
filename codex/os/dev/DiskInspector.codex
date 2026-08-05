@@ -4,10 +4,6 @@ Chapter: DiskInspector
   cites Foreword chapter FactLog
   cites Foreword chapter Maybe
 
- The disk half of the developer debugger: what is actually on the medium,
- as against what the fact store believes about it. The two disagreeing is
- the case this chapter exists to make visible.
-
  THE STORE NO LONGER STARTS AT SECTOR ZERO, and that is why every command
  here resolves the region before it reads anything. The fact store lives
  in a partition of its own type and addresses every sector relative to
@@ -16,12 +12,6 @@ Chapter: DiskInspector
  reports no superblock about a disk that has one. The design this chapter
  implements still describes that command as reading sectors 0 and 1, which
  was true before the partition existed and is not true now.
-
- THE REGION IS RESOLVED ONCE AND THREADED. `fact-store-region` takes no
- arguments, so every mention of it runs again, and each run reads the GPT.
- Threading the answer is the discipline the store itself follows:
- `disk-init` and `disk-load` resolve the base once and carry it in the
- `DiskFactStore` rather than asking per access.
 
  EVERY SECTOR READ COSTS 512 BYTES OF HEAP THAT IS NEVER RETURNED.
  `block-read-sector` is three instructions over the bump allocator: it
@@ -32,25 +22,9 @@ Chapter: DiskInspector
  function returns, which is why the walk is fuel-capped rather than
  running to the log head unconditionally.
 
- THE EFFECT ROWS ARE NOT UNIFORM HERE, AND THE SPLIT IS NOT ARBITRARY.
- `block-read-sector` and `block-sector-count` are builtins that declare
- `Device.Block`, so anything calling one directly declares it too and
- binds the result with an act-bind. Everything reached through
- `DiskFacts` -- `fact-read-at`, `read-superblock`, `fact-store-region` --
- declares no row, so the functions built on those declare none either.
- The boundary belongs to that chapter rather than to this one, and
- restating it here would be inventing a second answer to a question
- already settled next door.
-
  We say:
 
 Section: The Region
-
- All three states of a region are things an operator has to be able to
- tell apart, and two of them answer base zero. A whole-disk store really
- does begin at LBA 0; a refusal reports base -1 and means the disk carries
- a partition table with no fact partition in it. Printing the number alone
- would collapse the first into the second.
 
   di-region-line : DiskRegion -> Text
   di-region-line (r) =
@@ -59,11 +33,6 @@ Section: The Region
     else "region: base " & show (r.dr-base) & ", " & show (r.dr-limit) & " sectors"
 
 Section: The Medium
-
- The sector count is the drive's own answer, and a stuck counter reports
- zero for every disk. Zero is also the truthful answer when no disk is
- attached, so the two are named differently here rather than both printing
- as a number.
 
   di-sector-count-line : [Device.Block] Text
   di-sector-count-line = act
@@ -80,13 +49,6 @@ Section: One Sector
   end
 
 Section: Two Sectors
-
- A compare reports the FIRST difference and both bytes, not a count. A
- count says two sectors differ and leaves the operator to find where,
- which is the thing they were about to go looking for. This is the same
- shape the memory compare uses, deliberately: two commands that answer the
- same question about different address spaces should not answer it in two
- formats.
 
   di-compare-line : Integer, Integer -> [Device.Block] Text
   di-compare-line (x) (y) = act
@@ -129,14 +91,6 @@ Section: The Fact Log
  fact and materialises it, so listing a log would cost the log. Kind,
  length and timestamp are all in the entry's first sector, which the walk
  has already paid for.
-
- THE KIND IS REPORTED AS A RAW INTEGER. `int-to-fact-kind` answers
- CapabilityFact for every value of four or above, so a corrupt or unknown
- kind would be displayed as a legitimate one. An inspector that renamed
- the thing it was inspecting would be worth less than no inspector.
-
- A zero content length ends the walk. That is what `scan-fact-at` treats
- as no-entry-here, and past the log head there is nothing to describe.
 
   di-fact-line : Integer, Integer, Integer, Integer -> Text
   di-fact-line (sector) (buf) (clen) (nsec) =

@@ -302,6 +302,7 @@ Section: CodexType
    else if a == "void" then VoidTy
    else if a == "nothing" then NothingTy
    else if a == "error" then ErrorTy
+   else if a == "proof" then ProofTy
    else ErrorTy
 
   parse-type-list : List SExp -> CodexType
@@ -309,7 +310,7 @@ Section: CodexType
    if list-length xs == 0 then ErrorTy
    else let head = sexp-atom (list-at xs 0)
    in if head == "int" then parse-type-int xs
-   else if head == "fn" then FunTy (parse-type (list-at xs 1)) empty-row (parse-type (list-at xs 2))
+   else if head == "fn" then parse-type-fn xs
    else if head == "list" then ListTy (parse-type (list-at xs 1))
    else if head == "llist" then LinkedListTy (parse-type (list-at xs 1))
    else if head == "tvar" then TypeVar (__narrow (sexp-int (list-at xs 1)))
@@ -321,7 +322,35 @@ Section: CodexType
    else if head == "vector" then VectorTy (sexp-int (list-at xs 1)) (parse-type (list-at xs 2))
    else if head == "unit" then UnitTy (make-name (sexp-str (list-at xs 1))) (parse-type (list-at xs 2))
    else if head == "vector-mask" then VectorMaskTy (sexp-int (list-at xs 1))
+   else if head == "propeq" then PropEqTy (parse-type (list-at xs 1)) (parse-type (list-at xs 2))
+   else if head == "tycon" then TypeCon (make-name (sexp-str (list-at xs 1)))
+   else if head == "tyapply" then TypeApply (parse-type (list-at xs 1)) (parse-type (list-at xs 2))
    else ErrorTy
+
+ The row is optional and trails the two type positions, so IR text emitted
+ before the row was published parses to the same empty row it always did.
+ Every arrow used to be rebuilt as empty-row unconditionally, which made
+ the effect claim unrecoverable on this side even once the emitter
+ published it.
+
+  parse-type-fn : List SExp -> CodexType
+  parse-type-fn (xs) =
+   let row = if list-length xs > 3 then parse-row (list-at xs 3) else empty-row
+   in FunTy (parse-type (list-at xs 1)) row (parse-type (list-at xs 2))
+
+  parse-row : SExp -> EffectRow
+  parse-row (e) =
+   let xs = sexp-list e
+   in if list-length xs < 4 then empty-row
+   else let labels = parse-row-labels (sexp-list (list-at xs 1)) 1 []
+   in EffectRow { labels = labels, tail-name = sexp-str (list-at xs 2), tail-id = __narrow (sexp-int (list-at xs 3)) }
+
+  parse-row-labels : List SExp, Integer, List EffectLabel -> List EffectLabel
+  parse-row-labels (xs) (i) (acc) =
+   if i >= list-length xs then acc
+   else let l = sexp-list (list-at xs i)
+   in let lab = EffectLabel { name = make-name (sexp-str (list-at l 1)), scope = sexp-str (list-at l 2) }
+   in parse-row-labels xs (i + 1) (list-push acc lab)
 
   parse-type-int : List SExp -> CodexType
   parse-type-int (xs) =
@@ -772,7 +801,13 @@ Section: IRDef + Chapter
    in let body = parse-expr (list-at xs 5)
    in let punct = if list-length xs > 6 then sexp-int (list-at xs 6) > 0 else False
    in let budget = if list-length xs > 7 then sexp-int (list-at xs 7) else 0
-   in IRDef { name = name, params = params, type-val = ty, body = body, chapter-slug = slug, is-punctual = punct, wcet-budget = budget, unique-params = [], span = synthetic-span }
+   in let uniq = if list-length xs > 8 then parse-unique (sexp-list (list-at xs 8)) 1 [] else []
+   in IRDef { name = name, params = params, type-val = ty, body = body, chapter-slug = slug, is-punctual = punct, wcet-budget = budget, unique-params = uniq, span = synthetic-span }
+
+  parse-unique : List SExp, Integer, List Text -> List Text
+  parse-unique (xs) (i) (acc) =
+   if i >= list-length xs then acc
+   else parse-unique xs (i + 1) (list-push acc (sexp-str (list-at xs i)))
 
   parse-ir-chapter : Text -> ParsedIR
   parse-ir-chapter (s) =
@@ -789,6 +824,7 @@ Section: IRDef + Chapter
    in let sections = walk-named-strs xs "sections"
    in let ctors = walk-named-strs xs "ctors"
    in let eff-ops = walk-named-strs xs "eff-ops"
+   in let ground-tbl = walk-named-strs xs "grounds"
    in let pblocks = parse-prose-blocks (walk-named-list xs "pblocks")
    in let anns = parse-annotations (walk-named-list xs "anns")
    in let type-defs = walk-named-list xs "type-defs"
@@ -807,7 +843,8 @@ Section: IRDef + Chapter
        section-titles = sections,
        ctor-names = ctors,
        prose-blocks = pblocks,
-       annotations = anns
+       annotations = anns,
+       ground-effects = ground-tbl
       }
    in ParsedIR { chapter = chapter, meta = meta, type-defs = parsed-tdefs, effect-op-names = eff-ops }
 

@@ -1,0 +1,112 @@
+Chapter: GopCompositeClamp
+  cites Foreword chapter Console
+  cites Works chapter GopDraw
+  cites Works chapter GopComposite
+  cites UI chapter Theme
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter BoxModel
+  cites Kernel chapter BitmapFont
+
+ A gauge asked to show more than its maximum, and an input whose caret is
+ sixty characters past a field that holds a couple of dozen. Both must
+ stop at their own right edge.
+
+ Moved from `codex/test/gop-render-clamp` when `apps/guios/GopRender.codex`
+ retired. Same two questions, same two over-range values; what changed is
+ the subject, which is now the compositor that actually ships, and the
+ instrument, which reads the framebuffer with `peek-32` instead of a
+ GopBuf with `gop-buf-get`.
+
+ The instrument has to scan OUTSIDE the widget and that is the whole
+ design. An over-wide fill and a one-pixel caret are written exactly as
+ correct ones are, so a reading that asks only whether either is present
+ answers yes in both worlds. What distinguishes them is where the paint
+ stops, so each arm counts the subject's colour in the band to the RIGHT
+ of its bounds, where nothing should ever appear.
+
+ The buffer is wider than the widget for the same reason: `gop-fill-rect`
+ clips to the buffer, so a buffer the size of the widget would swallow the
+ escape it exists to catch.
+
+ We say:
+
+Section: Geometry
+
+  cc-w : Integer = 400
+  cc-h : Integer = 60
+  cc-cells : Integer = 24000
+  cc-bytes : Integer = 96000
+
+Section: Counting
+
+  fill-bg : Integer, Integer, Integer, Integer -> Integer
+  fill-bg (b) (i) (n) (c) =
+    if i >= n then 0 else let p = poke-32 b (i * 4) c in fill-bg b (i + 1) n c
+
+  count-row : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  count-row (b) (y) (x) (xend) (target) (acc) =
+    if x >= xend then acc
+    else count-row b y (x + 1) xend target (acc + (if peek-32 b ((y * cc-w + x) * 4) == target then 1 else 0))
+
+  count-band : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  count-band (b) (y) (x0) (x1) (target) (acc) =
+    if y >= cc-h then acc
+    else count-band b (y + 1) x0 x1 target (acc + count-row b y x0 x1 target 0)
+
+  yn : Boolean -> Text
+  yn (v) = if v then "yes" else "no"
+
+Section: Trees
+
+ The subject is pinned to 200 wide inside a 400-wide buffer and a flexible
+ label takes the rest, so there is a 200-pixel band to the right of it that
+ belongs to nobody.
+
+  cc-gauge : WidgetNode
+  cc-gauge =
+    widget-panel "root" DirRow 0 [
+      widget-set-flex (widget-set-min (widget-gauge "over" 150 100) 200 40) 0,
+      widget-set-flex (widget-label "pad" "") 1
+    ]
+
+  cc-input : WidgetNode
+  cc-input =
+    widget-panel "root" DirRow 0 [
+      widget-set-flex (widget-set-min (widget-input "far" "" 60) 200 40) 0,
+      widget-set-flex (widget-label "pad" "") 1
+    ]
+
+Section: Main
+
+  opening : [Console] Nothing = act
+    let font = cbf-init
+    in let th = theme-terminal
+    in let pal = th.th-palette
+    in let buf = __heap-save
+    in let adv = __heap-advance (cc-bytes + 256)
+    in act
+      let z0 = fill-bg buf 0 cc-cells (pal.pal-bg)
+      in let gl = comp-render buf cc-w font cc-gauge th cc-w cc-h
+      in let gb = (list-at (gl.wn-children) 0).wn-bounds
+      in let gright = gb.lr-x + gb.lr-w
+      in let g-in = count-band buf 0 (gb.lr-x) gright (pal.pal-primary) 0
+      in let g-out = count-band buf 0 (gright + 4) (cc-w - 8) (pal.pal-primary) 0
+
+      in let z1 = fill-bg buf 0 cc-cells (pal.pal-bg)
+      in let il = comp-render buf cc-w font cc-input th cc-w cc-h
+      in let ib = (list-at (il.wn-children) 0).wn-bounds
+      in let iright = ib.lr-x + ib.lr-w
+      in let i-in = count-band buf 0 (ib.lr-x) iright (pal.pal-fg) 0
+      in let i-out = count-band buf 0 (iright + 4) (cc-w - 8) (pal.pal-fg) 0
+
+      in act
+        print-line-uni ("gauge fills its box  : " & yn (g-in > 0))
+        print-line-uni ("gauge stops at edge  : " & yn (g-out == 0))
+        print-line-uni ("caret is drawn       : " & yn (i-in > 0))
+        print-line-uni ("caret stops at edge  : " & yn (i-out == 0))
+      end
+    end
+  end
+
+Page 1

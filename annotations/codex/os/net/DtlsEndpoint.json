@@ -1,0 +1,258 @@
+[
+  {
+    "target": "chapter:DtlsEndpoint",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "AUTHENTICATION IS HERE, AND IT IS OPT-IN. An endpoint built by dtls-ep-new alone still does the ANONYMOUS X25519 agreement -- no Certificate, no CertificateVerify -- and that agreement resists a passive eavesdropper but NOT an active man in the middle. Do not describe the anonymous handshake as secure. But a server given a certificate chain (dtls-ep-with-cert) and a client given trust anchors (dtls-ep-with-anchors) now authenticate: the server signs the transcript with the private key of its leaf certificate, the client walks the chain to an anchor and verifies that signature over its OWN transcript, and a client that was given anchors refuses to finish if that verification did not happen. An active man in the middle who substitutes his own key_share changes the client's transcript, so the server's signature -- made over the real transcript -- no longer verifies, and the handshake fails. That is the difference between the transport working and DTLS working, and it is what the authenticated loopback drives with a real forged chain.",
+    "thread": null
+  },
+  {
+    "target": "chapter:DtlsEndpoint",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The record layer is now used at both epochs. The server flight after ServerHello (Certificate, CertificateVerify, Finished) and both Finished messages travel as DTLS 1.3 ciphertext at the handshake epoch (2) under the handshake traffic keys, exactly as a real DTLS 1.3 peer expects -- only the ClientHello, HelloRetryRequest and ServerHello, which precede the keys, are DTLSPlaintext. On completion the endpoint derives the master secret and the two application traffic secrets over the transcript through the server Finished, and dtls-ep-send-app / dtls-ep-recv-app carry application records at epoch 3 (see Section: Application Data).",
+    "thread": null
+  },
+  {
+    "target": "section:Construction",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The session id is empty and the randoms are the caller's business -- this chapter does not invent entropy, because a chapter that quietly invents entropy is a chapter that quietly invents a weak key. The handshake Random is one such value: it enters here, from the caller, as the `random` argument, and is never derived from anything the endpoint already holds.",
+    "thread": null
+  },
+  {
+    "target": "chapter:DtlsEndpoint",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Authentication is opt-in and defaults OFF, exactly the way a real DTLS stack negotiates it. An endpoint built by dtls-ep-new alone does the anonymous X25519 agreement the loopback proved -- no Certificate, no CertificateVerify, and no claim to be secure. The two builders below add the credential material, and each is the whole of what a role needs.",
+    "thread": null
+  },
+  {
+    "target": "function:dtls-ep-with-cert",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A server presents a certificate CHAIN (leaf first) and the private key that matches the leaf. It signs the transcript with that key, and a peer who does not hold it cannot produce the signature -- which is the entire point.",
+    "thread": null
+  },
+  {
+    "target": "chapter:DtlsEndpoint",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A client carries the trust anchors it will accept, and a CALENDAR time to check certificate validity against. The two arguments are not the same clock as the transport `now` the handshake machine uses, and conflating them is a real error: the transport `now` is an integer tick that drives retransmission, while a certificate's notBefore/notAfter are calendar instants, carried here as 14 ASCII digits (YYYYMMDDHHMMSS) exactly as the chain walk compares them. A device without a real-time clock cannot check certificate validity honestly, and this is where that time enters -- from the caller, never invented.",
+    "thread": null
+  },
+  {
+    "target": "function:dtls-ep-with-anchors",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A client with anchors REQUIRES authentication: it refuses to complete a handshake in which the peer did not present a chain that walks to one of them. A client without anchors is anonymous, and says so by not finishing any differently than before. The anchors are the client's whole security policy in one field.",
+    "thread": null
+  },
+  {
+    "target": "chapter:DtlsEndpoint",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Anchors say the peer's certificate must chain to a CA the client runs. They do not say WHICH peer. A chain that walks to a trusted anchor proves the holder is someone the CA vouched for -- not that the holder is the server this client meant to reach. In a fleet whose CA signs every device that is the difference between \"a valid device\" and \"the device I dialed\": without this, a holder of any valid certificate impersonates any other, and the man-in-the-middle simply presents a real certificate of his own.",
+    "thread": null
+  },
+  {
+    "target": "section:Client",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "That paragraph was here before the check was, and underneath it sat `dtls-ep-expect-peer`, which set the name AFTER the fact and defaulted to \"anything matches\" when nobody called it -- and nobody did. The name is now the third argument of dtls-ep-with-anchors, because the moment a client decides to verify a chain it has to say whose chain it wanted. Anonymous DTLS is untouched: an endpoint that never takes anchors never verifies a certificate and never needs a name.",
+    "thread": null
+  },
+  {
+    "target": "function:dtls-ep-random",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The client/server random the caller supplied at construction, taken to the 32 bytes the hello body carries. Real entropy is the caller's job; a device with a real entropy source passes real bytes, and the loopback passes a fixed value so it stays reproducible. It is never derived from the endpoint's own key -- doing that made the Random a public value.",
+    "thread": null
+  },
+  {
+    "target": "function:dtls-ep-cookie",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A cookie that were only a MAC of the address would look fine, verify fine, and leave the server unable to reconstruct the transcript -- the handshake would then fail at the Finished, on the cookie path only.",
+    "thread": null
+  },
+  {
+    "target": "chapter:DtlsEndpoint",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The authenticated flight: ServerHello, Certificate, CertificateVerify, Finished. The handshake traffic keys are still derived at the ServerHello transcript -- authentication does not move the key schedule, it only adds messages the key schedule then covers.",
+    "thread": null
+  },
+  {
+    "target": "function:dtls-ep-server-emit-auth",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "CertificateVerify signs Transcript-Hash(ClientHello ... Certificate) -- everything through the Certificate message and NOT the CertificateVerify itself. That is the hinge the whole scheme turns on. The server's signature commits to the transcript, and the transcript contains the ServerHello key_share. An active man in the middle who substitutes his own key_share changes the transcript, so the signature he would need is one over bytes the real server never signed -- and he does not hold the key.",
+    "thread": null
+  },
+  {
+    "target": "function:dtls-ep-server-emit-msgs",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The Finished is over the transcript through CertificateVerify, so a client whose CertificateVerify check failed has already stopped and never reaches it. ep-transcript is stored through CertificateVerify too, which is what the client's own Finished will be checked against.",
+    "thread": null
+  },
+  {
+    "target": "function:dtls-ep-server-transcript",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The transcript on the cookie path: message_hash(ClientHello1), HelloRetryRequest, ClientHello2, ServerHello. The ClientHello1 hash comes out of the cookie, and the HelloRetryRequest is rebuilt from that same cookie -- so both sides hash identical bytes without the server having stored a thing.",
+    "thread": null
+  },
+  {
+    "target": "function:dtls-ep-server-fin",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The client's Finished. If it verifies, both sides hold the same handshake secret -- and nothing more than that. It does not say who the client is.",
+    "thread": null
+  },
+  {
+    "target": "function:dtls-ep-client-hrr",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A HelloRetryRequest. Recognised by the magic random, never by a message type -- there isn't one.",
+    "thread": null
+  },
+  {
+    "target": "function:dtls-ep-client-other",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "After the ServerHello, the authenticated server sends Certificate and CertificateVerify before its Finished. The anonymous server sends neither, so a client with no anchors simply never sees them.",
+    "thread": null
+  },
+  {
+    "target": "chapter:DtlsEndpoint",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The Certificate message. The chain is parsed and walked against the client's trust anchors at the client's calendar time (ep-cal-now, supplied by the caller -- see dtls-ep-with-anchors). A chain that does not parse, or does not reach an anchor, leaves ep-auth-done False and keeps no peer key, and the later Finished is refused by dtls-ep-auth-missing.",
+    "thread": null
+  },
+  {
+    "target": "function:dtls-ep-client-cert",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "THE TRANSCRIPT RECORDS WHAT WAS RECEIVED, NOT WHAT WAS BELIEVED. This message and CertificateVerify fold either way. Folding them only on success is a defect the anonymous configuration hides: an anonymous server sends neither message, so a client with no anchors never sees one. A server that DOES present a chain to a client that does not check it is the ordinary case on the open internet, and there the unfolded message left the client's transcript one message short of the server's, so the server Finished could not verify and the handshake died at the Finished -- which reads as a key schedule fault and is nothing of the kind. Fixed in TlsEndpoint at the same time and for the same reason; the two client paths are the same design.",
+    "thread": null
+  },
+  {
+    "target": "function:dtls-ep-cert-key-walk",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The chain proved the leaf is trusted; this proves it is the RIGHT leaf. The identity is checked inside x509-chain-verify, against the leaf's subjectAltName. It used to be checked here, against the leaf's subject DN, and only when the caller had opted in. Both halves of that were wrong: a DN is not the name anybody dials, and a check nobody switches on is a check nobody has.",
+    "thread": null
+  },
+  {
+    "target": "function:dtls-ep-client-cv",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "CertificateVerify. The signature is checked over the transcript hash THROUGH the Certificate -- the transcript as it stands right now, before this message is folded in. This is the line an active man in the middle cannot get past: his substituted key_share made the client's transcript differ from the one the server signed, so a signature that is valid for the server is invalid here. The verdict becomes ep-auth-done; the message folds either way, and dtls-ep-auth-missing is what refuses.",
+    "thread": null
+  },
+  {
+    "target": "function:dtls-ep-client-fin",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A client that REQUIRES authentication -- one that was given anchors -- refuses to finish unless CertificateVerify succeeded. This is the gate that turns a failed authentication into a failed handshake rather than a silent downgrade to the anonymous exchange.",
+    "thread": null
+  },
+  {
+    "target": "function:dtls-ep-auth-missing",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A client with anchors requires authentication; a client without them does not. The empty-anchor case is the anonymous handshake, unchanged.",
+    "thread": null
+  },
+  {
+    "target": "function:dtls-ep-parse-chain",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Parse a list of DER certificates into a list of X509Cert. If any one fails to parse, the whole chain is refused -- there is no such thing as a chain with a hole in it.",
+    "thread": null
+  },
+  {
+    "target": "function:dtls-ep-derive-app",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Derive the application secrets and open the application-data buffer. The transcript passed in already runs through the server Finished. ep-transcript is advanced to it so the server verifies the client Finished over the same hash.",
+    "thread": null
+  },
+  {
+    "target": "function:dtls-ep-seal-hs",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Seal a handshake message at the handshake epoch (2), inner content type handshake. The server flight after ServerHello and both Finished messages go out this way.",
+    "thread": null
+  },
+  {
+    "target": "function:dtls-ep-send-app",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "One application record out. The client seals under the client application secret and the server under the server one; each direction has its own sequence number, and reusing one across directions would reuse a nonce.",
+    "thread": null
+  },
+  {
+    "target": "function:dtls-ep-recv-app",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "One application record in, opened under the PEER's application secret: a server reads what the client sealed, and the reverse. A record that does not authenticate yields no plaintext and leaves the buffer untouched -- the None is the security property, not an error to paper over.",
+    "thread": null
+  },
+  {
+    "target": "function:dtls-ep-app-accept",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Only inner content type application_data is appended; a post-handshake handshake record (a NewSessionTicket or KeyUpdate) advances the sequence like any other but must never reach the application buffer.",
+    "thread": null
+  },
+  {
+    "target": "function:dtls-ep-wrap",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Every handshake message goes out in a DTLSPlaintext record. There are no keys yet for the flights that matter, and the Finished is carried the same way here -- protecting it under the handshake traffic keys is the next rung and is not claimed.",
+    "thread": null
+  },
+  {
+    "target": "function:dtls-ep-authenticated",
+    "kind": "invariant",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "True only when the peer presented a certificate chain that walked to a trust anchor and signed the transcript. For an anonymous endpoint this is always False, and that is the honest answer: an anonymous handshake authenticated no one.",
+    "thread": null
+  }
+]

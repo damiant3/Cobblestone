@@ -1,0 +1,245 @@
+Chapter: DeskBoot
+  cites Works chapter GopHandoff
+  cites Works chapter GopDraw
+  cites Works chapter GopRtc
+  cites Works chapter GopUsb
+  cites Works chapter GopUsbKbd
+  cites Works chapter GopXhci
+  cites Works chapter GopMedium
+  cites Works chapter GopDesk
+  cites Works chapter HexFormat
+  cites Kernel chapter BitmapFont
+
+ A2b's payload: the desktop, with nothing between the power button and
+ it. GopBoot reaches the same desktop through the first-boot ceremony
+ and a menu, and both of those need a keyboard. On the ASUS TUF the
+ keyboard is the open question -- measured 2026-08-04, no key delivered
+ in 3978 seconds after the firmware handback -- so a boot whose panel
+ evidence depends on typing answers neither question. This one asks the
+ panel questions alone: the mode, the aspect, the seven panes, and what
+ the Monitor pane reads off the machine.
+
+ It is not a replacement for GopBoot and does not duplicate it. The
+ ceremony writes the identity this stick carries and the menu is how a
+ person chooses an interface; both stay where they are. This is the
+ instrument, and it is built the way the run sheet asks every rung to be
+ built: it answers one question and it cannot be held up by another.
+
+ We say:
+
+Section: Narration
+
+ The same shape as GopBoot's boot-trace and for the same reason: on real
+ metal there is no serial port, so the boot narrates itself on the glass
+ and the last line standing names the stage that died.
+
+  db-trace : Integer, Integer, Integer, CbfFont, Integer, Text -> Integer
+  db-trace (base) (stride) (h) (font) (row) (t) =
+    let y = h / 2 + 80 + row * 14
+    in let bg = gop-fill-rect base stride 8 y 400 12 0
+    in gop-draw-text base stride font 8 y t #00FF00 1 0
+
+ Four bars in a fixed order and the mode the payload believes it is
+ painting into. A stride or mode mismatch shows as banded smear rather
+ than clean bars, and the order red, green, blue, white exposes a
+ BGR/RGB swap at a glance.
+
+  db-diag : Integer, Integer, Integer, Integer, CbfFont -> Integer
+  db-diag (base) (w) (h) (stride) (font) =
+    let b1 = gop-fill-rect base stride 0 0 w (h / 8) #FF0000
+    in let b2 = gop-fill-rect base stride 0 (h / 8) w (h / 8) #00FF00
+    in let b3 = gop-fill-rect base stride 0 (h / 4) w (h / 8) #0000FF
+    in let b4 = gop-fill-rect base stride 0 (h * 3 / 8) w (h / 8) #FFFFFF
+    in let bg = gop-fill-rect base stride 0 (h / 2) w (h / 2) 0
+    in let l1 = gop-draw-text base stride font 8 (h / 2 + 8) "CODEX DESK BOOT   bars: red green blue white" #FFFFFF 1 0
+    in let l2 = gop-draw-text base stride font 8 (h / 2 + 24) ("w=" & show w & "  h=" & show h & "  stride=" & show stride) #FFFFFF 1 0
+    in gop-draw-text base stride font 8 (h / 2 + 40) ("fb=" & show base) #FFFFFF 1 0
+
+Section: The Hold
+
+ The diag is held on the RTC, not on a spin count. GopBoot holds it with
+ boot-spin 150000000, and a spin budget is not a duration: the same
+ constant is a long pause on one machine and a flicker on another, and
+ on the ASUS the whole diag went by faster than a camera could be lined
+ up on it. Damian, 2026-08-04, photographing it: "flash on screen too
+ quickly to line up the shot."
+
+ The fuel is the floor for a machine whose RTC never advances, which is
+ the one case a clock cannot measure. It is spent per iteration rather
+ than per second, so it bounds the hold on a dead clock without ever
+ shortening it on a live one.
+
+ Ten seconds, and the window says how much of itself is left. The hold
+ runs BEFORE runtime-init, so there is no IDT, no IRQ and no key cell
+ yet: nothing can shorten it and nothing can extend it, which makes the
+ printed number the only thing the operator has to work with.
+
+ The number was five, then thirty, now ten, all within one day and all
+ from the bench rather than from an argument. Five was not enough to
+ line up a camera on a rig that has to be walked to; thirty was more
+ than the rig needs once it is standing (Damian, 2026-08-04, both
+ readings). Ten is what a mounted camera actually costs, and the cost
+ is paid on every boot of this payload.
+
+  db-hold-secs : Integer = 10
+
+  db-hold-fuel : Integer = 2000000000
+
+  db-hold-row : Integer, Integer, Integer, CbfFont, Integer -> Integer
+  db-hold-row (base) (stride) (h) (font) (left) =
+    let y = h / 2 + 56
+    in let bg = gop-fill-rect base stride 8 y 400 12 0
+    in gop-draw-text base stride font 8 y ("diag hold: " & show left & "s -- photograph now") #FFFF00 1 0
+
+  db-hold-start : Integer, Integer, Integer, CbfFont -> [Device.Port] Integer
+  db-hold-start (base) (stride) (h) (font) = act
+    let r0 = db-hold-row base stride h font db-hold-secs
+    in act
+      s0 <- rtc-seconds 0
+      db-hold base stride h font s0 db-hold-secs db-hold-fuel
+    end
+  end
+
+  db-hold : Integer, Integer, Integer, CbfFont, Integer, Integer, Integer -> [Device.Port] Integer
+  db-hold (base) (stride) (h) (font) (prev) (left) (fuel) = act
+    now <- rtc-seconds 0
+    if left <= 0 then 0
+    else if fuel <= 0 then 0
+    else if now < 0 then db-hold base stride h font prev left (fuel - 1)
+    else if now == prev then db-hold base stride h font prev left (fuel - 1)
+    else let r = db-hold-row base stride h font (left - 1)
+    in db-hold base stride h font now (left - 1) (fuel - 1)
+  end
+
+Section: The Keyboard Table
+
+ One row per bound keyboard interface, off the cells usb-kbd-note wrote
+ at bind time (GopUsb: count at 47, rows at 80-95). The row width is 720
+ rather than db-trace's 400 because a row carries idVendor:idProduct,
+ which is the field that names the device a silent interface belongs to
+ -- the reading the whole 2026-08 keyboard campaign never had.
+
+  db-krow : Integer, Integer, Integer, CbfFont, Integer, Text -> Integer
+  db-krow (base) (stride) (h) (font) (row) (t) =
+    let y = h / 2 + 80 + row * 14
+    in let bg = gop-fill-rect base stride 8 y 720 12 0
+    in gop-draw-text base stride font 8 y t #00FF00 1 0
+
+  db-kbd-row-kind : Integer -> Text
+  db-kbd-row-kind (meta) =
+    if bit-and meta 512 /= 0 then " mouse"
+    else if bit-and meta 256 /= 0 then " raw"
+    else " kbd"
+
+  db-kbd-row-txt : Integer -> Text
+  db-kbd-row-txt (i) =
+    let base = 80 + i * 4
+    in let meta = xdiag-get (base + 2)
+    in "hid" & show (i + 1) & " id=" & hex-i32 (xdiag-get base)
+      & " port=" & show (bit-shru (xdiag-get (base + 1)) 24)
+      & " route=" & hex-i32 (bit-and (xdiag-get (base + 1)) #FFFFF)
+      & " dci=" & show (bit-and meta 255)
+      & db-kbd-row-kind meta
+      & " spd=" & show (bit-and (bit-shru meta 12) 15)
+      & " buf=" & hex-i32 (xdiag-get (base + 3))
+
+  db-kbd-table-rows : Integer, Integer, Integer, CbfFont, Integer, Integer -> Integer
+  db-kbd-table-rows (base) (stride) (h) (font) (i) (n) =
+    if i >= n then 0
+    else if i >= 4 then 0
+    else let r = db-krow base stride h font (4 + i) (db-kbd-row-txt i)
+    in db-kbd-table-rows base stride h font (i + 1) n
+
+  db-kbd-table : Integer, Integer, Integer, CbfFont -> Integer
+  db-kbd-table (base) (stride) (h) (font) =
+    let n = xdiag-get 47
+    in let s = db-krow base stride h font 3 ("hid interfaces bound=" & show n)
+    in db-kbd-table-rows base stride h font 0 n
+
+Section: The Keyboard Hold
+
+ Ten seconds with the table and the live counters on the glass, and any
+ key ends the hold at once. A working keyboard therefore costs one tap
+ and proves delivery before the desktop paints; a dead one leaves ten
+ seconds to photograph the table and a counters row updating every
+ second, which together name every bound interface and say which of
+ them, if any, ever carried a non-zero report.
+
+  db-khold-row : Integer, Integer, Integer, CbfFont, Integer -> Integer
+  db-khold-row (base) (stride) (h) (font) (left) =
+    let y = h / 2 + 56
+    in let bg = gop-fill-rect base stride 8 y 720 12 0
+    in gop-draw-text base stride font 8 y ("keyboard hold: " & show left & "s -- any key skips -- photograph the table") #FFFF00 1 0
+
+ The first flight of this hold never showed its table: the boot-menu
+ Enter was still releasing when the hold's first poll ran, so a pending
+ scancode skipped it inside one frame. Two guards now: the mailbox is
+ drained once before the hold starts, and a key ends the hold only after
+ the dwell -- the first three seconds are a floor, so the table is on
+ the glass long enough to photograph whatever is pre-loaded.
+
+  db-hold-dwell : Integer = 3
+
+  db-kbd-hold : Integer, Integer, Integer, CbfFont, UsbKbd, Integer, Integer, Integer -> [Device.Port] Integer
+  db-kbd-hold (base) (stride) (h) (font) (kbd) (prev) (left) (fuel) = act
+    sc <- kbd-take kbd
+    now <- rtc-seconds 0
+    if if sc /= 0 then left <= db-hold-secs - db-hold-dwell else False then 1
+    else if left <= 0 then 0
+    else if fuel <= 0 then 0
+    else if now < 0 then db-kbd-hold base stride h font kbd prev left (fuel - 1)
+    else if now == prev then db-kbd-hold base stride h font kbd prev left (fuel - 1)
+    else let r = db-khold-row base stride h font (left - 1)
+    in let l = db-krow base stride h font 8 ("live: " & desk-kbd-line kbd)
+    in db-kbd-hold base stride h font kbd now (left - 1) (fuel - 1)
+  end
+
+  db-kbd-hold-start : Integer, Integer, Integer, CbfFont, UsbKbd -> [Device.Port] Integer
+  db-kbd-hold-start (base) (stride) (h) (font) (kbd) = act
+    d <- kbd-take kbd
+    let r0 = db-khold-row base stride h font db-hold-secs
+    in let l0 = db-krow base stride h font 8 ("live: " & desk-kbd-line kbd)
+    in act
+      s0 <- rtc-seconds 0
+      db-kbd-hold base stride h font kbd s0 db-hold-secs db-hold-fuel
+    end
+  end
+
+Section: Entry
+
+ runtime-init installs the GDT, IDT, TSS, syscall MSRs and the PIC/PIT
+ and keyboard setup; usb-attach enumerates the bus once, configuring
+ every keyboard interface and the boot stick on the same running
+ controllers; medium-select locks GopDisk onto the disk carrying our own
+ CODEX.CDX so a real machine's internal drive cannot shadow the boot
+ stick. Then the desktop, and the desktop is where this payload stops.
+ There is nothing behind it to return to.
+
+  db-flow : Integer, Integer, Integer, Integer, CbfFont -> [Device.Port, Device.Mmio] Integer
+  db-flow (base) (w) (h) (stride) (font) = act
+    let dg = db-diag base w h stride font
+    in act
+      hd <- db-hold-start base stride h font
+      let t0 = db-trace base stride h font 0 "stage: spine..."
+      in act
+        ri <- runtime-init 0
+        let t1 = db-trace base stride h font 1 "spine OK  stage: usb..."
+        in act
+          att <- usb-attach
+          let t2 = db-trace base stride h font 2 ("usb OK kbd=" & (if (att.ua-kbd).uk-ok then "Y" else "n") & " mouse=" & (if (att.ua-mouse).um-ok then "Y" else "n") & " disk=" & (if (att.ua-disk).md-ok then "Y" else "n") & "  stage: kbd hold...")
+          in let tk = db-kbd-table base stride h font
+          in act
+            hk <- db-kbd-hold-start base stride h font (att.ua-kbd)
+            med <- medium-select
+            let t3 = db-trace base stride h font 9 ("medium kind=" & show med & "  stage: desk...")
+            in desk-run base w h stride font (att.ua-kbd) (att.ua-mouse)
+          end
+        end
+      end
+    end
+  end
+
+  opening : [Device.Port, Device.Mmio] Integer
+  opening =
+    let font = cbf-init
+    in db-flow (boot-fb-base 0) (boot-fb-w 0) (boot-fb-h 0) (boot-fb-stride 0) font

@@ -5,26 +5,9 @@ Chapter: FactSync
   cites Trust chapter AgentProtocol
   cites Net chapter MessageFraming
 
- Replication between two fact stores, made trivial by content addressing.
- A fact's name is the hash of its content, and a fact never changes once
- written, so two stores can be reconciled with no conflict resolution at
- all: the union of their facts is a fact store, and it is the same store
- whichever order the two are merged in. There is no last-writer-wins to
- arbitrate, no diff to compute -- a hash either is present or it is not.
-
- This is the substance of a sync: given what a peer holds, a store knows
- exactly which facts it is missing (the hashes it has never seen), and
- merging a peer's facts in adds only those, dropping every duplicate on
- the way. The wire that carries the offer of hashes and the reply of facts
- is TrustTransport's job; what MOVES over that wire, and the guarantee that
- moving it converges, is here.
-
  We say:
 
 Section: Enumerate
-
- Every fact a store holds. The store keys its facts by hash, so folding the
- map yields each fact exactly once.
 
   fact-store-all : BareFactStore -> List Fact
   fact-store-all (store) =
@@ -35,10 +18,6 @@ Section: Enumerate
     hamt-fold (\acc -> \k -> \f -> list-push acc k) [] (store.facts)
 
 Section: What A Store Is Missing
-
- Of the hashes a peer offers, the ones this store has never seen -- exactly
- the facts it must ask the peer to send. A hash it already holds is skipped;
- content addressing means holding the hash is holding the fact.
 
   fact-sync-missing : BareFactStore, List Text -> List Text
   fact-sync-missing (local) (offered) =
@@ -54,11 +33,6 @@ Section: What A Store Is Missing
 
 Section: Merge
 
- Every fact of the source that the destination lacks, added; every one it
- already holds, dropped. fact-store is a no-op on a hash already present, so
- the merge is idempotent and the result is the union. Merging in either
- direction, or twice, lands on the same store.
-
   fact-sync-merge : BareFactStore, BareFactStore -> BareFactStore
   fact-sync-merge (into) (from) =
     let facts = fact-store-all from
@@ -69,21 +43,11 @@ Section: Merge
     if i >= len then acc
     else fs-merge-loop facts (i + 1) len (fact-store acc (list-at facts i))
 
- A list of facts (the ones a peer sent for the hashes we asked for), merged
- in. This is the receiving end of a sync once the wire has delivered the
- bytes and each has been decoded back into a Fact.
-
   fact-sync-apply : BareFactStore, List Fact -> BareFactStore
   fact-sync-apply (store) (incoming) =
     fs-merge-loop incoming 0 (list-length incoming) store
 
 Section: What A Store Can Answer
-
- Of the facts this store holds, the ones a peer did NOT offer -- exactly the
- facts the peer is missing and this store can supply. This is the mirror of
- fact-sync-missing: missing asks "which offered hashes do I lack?", this asks
- "which of my facts did the offer not mention?". The answer is what a sync
- reply carries back to the offering peer.
 
   fact-sync-facts-not-offered : BareFactStore, List Text -> List Fact
   fact-sync-facts-not-offered (store) (offered) =
@@ -187,13 +151,6 @@ Section: Wire Codec
     else sync-append-loop (list-push acc (list-at src i)) src (i + 1) len
 
 Section: The Wire Verb
-
- The three moves of a sync, each mapping a store and a message. A peer that
- wants to catch up makes an offer of every hash it holds; the peer that
- receives it answers with the facts the offer did not name; the first peer
- absorbs the reply into its store. Run the round the other way and both
- stores hold the union. The offer and reply are ordinary AgentMessages, so
- they ride TrustTransport's wire beside every other trust message.
 
   fact-sync-make-offer : BareFactStore, AgentIdentity -> SyncOfferMsg
   fact-sync-make-offer (store) (me) =

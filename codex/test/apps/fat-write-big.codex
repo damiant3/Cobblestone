@@ -1,0 +1,69 @@
+Chapter: FatWriteBig
+  cites Works chapter GopUsb
+  cites Works chapter GopFat16
+  cites Works chapter GopDisk
+  cites Foreword chapter Maybe
+
+ The multi-cluster FAT writer, driven to screenshot size and read back.
+ A three-megabyte file is a ~6000-cluster chain: the chain is built in
+ the loaded FAT, flushed to both copies in bulk, and the data leaves in
+ 64-sector chunks -- every piece of machinery a desktop screenshot
+ rides. The read-back through the established bulk reader is the
+ oracle: a writer verified only by its own return value is a stub that
+ agrees with itself.
+
+Section: Test
+
+  fwb-fill : Integer, Integer, Integer -> Integer
+  fwb-fill (buf) (i) (n) =
+    if i >= n then 0
+    else let w = poke-byte buf i (int-mod (i * 7 + i / 513) 251)
+    in fwb-fill buf (i + 1) n
+
+  fwb-check : Integer, Integer, Integer, Integer -> Integer
+  fwb-check (buf) (i) (n) (bad) =
+    if i >= n then bad
+    else if peek-byte buf i /= int-mod (i * 7 + i / 513) 251 then fwb-check buf (i + 1) n (bad + 1)
+    else fwb-check buf (i + 1) n bad
+
+  fwb-name : Integer -> Integer
+  fwb-name (buf) =
+    let a = poke-byte buf 0 66
+    in let b = poke-byte buf 1 73
+    in let c = poke-byte buf 2 71
+    in let d = poke-byte buf 3 87
+    in let e = poke-byte buf 4 82
+    in let f = poke-byte buf 5 84
+    in let g = poke-byte buf 6 32
+    in let h = poke-byte buf 7 32
+    in let i = poke-byte buf 8 66
+    in let j = poke-byte buf 9 73
+    in poke-byte buf 10 78
+
+  fwb-size : Integer = 3000000
+
+  opening : [Console, Device.Port, Device.Mmio] Nothing = act
+    att <- usb-attach
+    m <- gfat-mount-esp
+    print-line-uni ("disk=" & (if (att.ua-disk).md-ok then "1" else "0") & " mount=" & (if m.gm-ok then "1" else "0"))
+    if m.gm-ok == False then print-line-uni "SKIP: no mount"
+    else act
+      let src = alloc-zeroed (bit-and (fwb-size + 511) (-512)) 64
+      in let f = fwb-fill src 0 fwb-size
+      in let nb = alloc-zeroed 16 16
+      in let nm = fwb-name nb
+      in act
+        ok <- gfat-write-file (m.gm-vol) nb src fwb-size
+        print-line-uni ("write=" & (if ok then "1" else "0"))
+        if ok == False then print-line-uni "FAIL: write refused"
+        else act
+          sz <- gfat-file-size (m.gm-vol) "BIGWRT.BIN"
+          let dest = alloc-zeroed (bit-and (fwb-size + 511) (-512)) 64
+          in act
+            got <- gfat-read-file-bulk (m.gm-vol) "BIGWRT.BIN" dest
+            print-line-uni ("size=" & show sz & " read=" & show got & " bad=" & show (fwb-check dest 0 fwb-size 0))
+          end
+        end
+      end
+    end
+  end

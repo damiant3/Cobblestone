@@ -7,25 +7,12 @@ Chapter: IdentityManager
   cites UI chapter KeyInput
   cites Kernel chapter DiskFacts
 
- Identity lifecycle manager. Orchestrates the first-boot ceremony
- (generate keypair, encrypt with passphrase, store to DiskFacts),
- the unlock flow (prompt passphrase, derive key, decrypt, verify,
- load to pinned kernel memory), lock and timeout.
-
  The private key never exists on disk in plaintext. At runtime it
  lives in a pinned kernel memory region accessible only via the
  key-load (syscall 15), key-zero (syscall 16), and key-status
  (syscall 18) intrinsics, which carry the Identity effect and are
  refused by the kernel for any process whose capability word lacks
  the identity bit.
-
- To idm-first-boot runs the first-boot identity ceremony.
- To idm-unlock prompts for passphrase and loads the key.
- To idm-lock zeros the pinned key.
- To idm-is-unlocked checks if a key is loaded.
- To idm-check-timeout locks if the timeout has elapsed.
- To idm-change-passphrase re-encrypts with a new passphrase.
- To idm-copy-to-drive copies the encrypted identity to another DiskFactStore.
 
  We say:
 
@@ -126,15 +113,6 @@ Section: Unlock Flow
         else idm-unlock-refuse store pp-bytes derived-bytes decrypted
       end
 
- The two outcomes are named functions rather than branches written inline,
- because the accepting one has to load the key into pinned memory before it
- wipes the plaintext, and that load is effectful: inline it needs an act-bind
- nested inside an if inside an act, which is the exact shape that has scoped
- an `in` to the wrong `let` before now. A single-line dispatch to two named
- functions cannot do that. Both branches zero every plaintext buffer on every
- path -- the refusing one zeroes the same three the accepting one does, which
- is the property worth reading them side by side to check.
-
   idm-unlock-accept : DiskFactStore, List Integer, List Integer, List Integer -> [Identity] IdmOutcome
   idm-unlock-accept (store) (pp-bytes) (derived-bytes) (decrypted) = act
     loaded <- idm-load-key-to-pinned decrypted
@@ -152,14 +130,6 @@ Section: Unlock Flow
     in IdmOutcome { idm-store = store, idm-result = IdmWrongPassphrase }
 
 Section: Lock
-
- These three reach the pinned key through key-zero and key-status, so they
- carry [Identity] and say so. The row is not bookkeeping: Identity is a real
- capability with a manifest bit, and a program that can lock, unlock, or ask
- after the private key is exercising authority a program that merely prints
- does not have. Declaring it here is what makes that authority visible in the
- signature of everything above -- up to and including first-boot's own entry
- point, which is the one place a reader should be able to see it.
 
   idm-lock : [Identity] Integer
   idm-lock = key-zero
@@ -316,16 +286,6 @@ Section: Keypair Generation
   idm-take-bytes : List Integer, Integer -> List Integer
   idm-take-bytes (words) (n) = idm-take-loop words n 0 []
 
- Take n bytes, padding a short source with zeros. The padding branch used
- to push one zero and return, so idm-take-bytes [7,7] 4 answered [7,7,0]:
- three bytes, not four, and no further padding. It recurses now.
-
- It has never mattered, and that is not a reason to leave it: the only
- caller is idm-generate-keypair, whose seed is idm-hash-words-to-bytes of
- a sha256 -- eight words, exactly 32 bytes -- so the short path was never
- taken. A helper that pads on request must pad, or the first caller with
- a shorter source gets a key built from a truncated seed and no error.
-
   idm-take-loop : List Integer, Integer, Integer, List Integer -> List Integer
   idm-take-loop (src) (n) (i) (acc) =
     if i >= n then acc
@@ -356,19 +316,6 @@ Section: Console I/O Helpers
  same reason, which is that the alternative is a keyboard that lies about
  what was typed. There is no compatibility path worth having here; a
  passphrase is a hash of bytes and the bytes changed.
-
- Nothing in this loop had to change for it, which is the point of doing the
- conversion at the boundary: the loop collects what the keyboard says and
- never interprets it. Only the terminator moved, from the ASCII carriage
- return to `key-enter`, because Enter is not a character and never was.
-
- (historical) `poll-key` had no shift latch, so a letter arrived as its
- UPPERCASE ASCII code whatever the typist did, and a passphrase was folded
- to uppercase before it was ever hashed. This is a property of the stored
- identity, not of this loop: teaching `poll-key` to decode shift changed
- what these bytes are, and every passphrase created before that day stopped
- unlocking its key. Fold here deliberately, or migrate, but do
- not let it change by accident.
 
   idm-show-lines : List Text -> [Console] Integer
   idm-show-lines (lines) = idm-show-loop lines 0 (list-length lines)
@@ -435,27 +382,12 @@ Section: Byte Utilities
     else let w = list-set-at xs i 0
     in idm-zero-list xs (i + 1)
 
- The passphrase-derived AES-256 key. It was written out at all four sites
- that need it -- both encrypts and both decrypts -- and it was wrong at
- all four, in the same way: each ran hkdf's result through
- idm-hash-words-to-bytes.
-
  hkdf returns BYTES. hkdf-expand converts every hmac block with
  hkdf-words-to-bytes and then takes `length` of them, so `hkdf ... 32` is
  32 bytes, and codex/test/apps/hkdf-vector-test pins exactly that against
  RFC 5869. Expanding them again turned each byte b into [0,0,0,b]: a
  128-element key, 97 of them zero, of which AES-256 takes the first 32 --
  eight bytes of real entropy in a 256-bit key.
-
- Nothing could see it. The same wrong key encrypted and decrypted, so the
- ceremony round-tripped: a passphrase set at first boot unlocked
- correctly, and the only symptom was a number nobody read. That is why it
- is one function now -- a derivation written four times is a derivation
- that can be wrong four times -- and why idm-key-tests asserts its LENGTH
- rather than round-tripping it. A round trip agrees with itself.
-
- idm-hash-words-to-bytes stays: sha256 really does return words, and the
- first-boot seed above is the one place that is the right conversion.
 
   idm-derive-key : List Integer, List Integer -> List Integer
   idm-derive-key (salt) (pp-bytes) = hkdf salt pp-bytes idm-hkdf-info 32

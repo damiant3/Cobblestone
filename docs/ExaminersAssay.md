@@ -391,6 +391,31 @@ same decision.** After a change to width handling, a print walk or anything
 else a plug re-implements, run `build/test-cross.ps1 -Arch arm64 -Test <name>`
 on the tests you just pinned. It is one test and about a minute.
 
+**A fault the runtime handles by HALTING cannot be expressed as a test, and
+this is an open gap rather than a rule.** `__out_of_memory` ends in
+`cli; hlt; jmp -6`, and so does `__watchdog_panic`. A test that correctly
+trips one of them prints its line to serial and then never exits, so the
+harness records a timeout, which is how it reports a hang. Pass and the worst
+kind of fail are the same observation.
+
+The consequence is that the heap and stack guards have no runner. `cmp rsp,
+r10; jb __out_of_memory` is emitted into every non-leaf prologue and is the
+only thing standing between a runaway recursion and a silently corrupted
+stack, and nothing in the battery has ever watched it fire.
+`act-tco-loop` comes closest and points the other way: it asserts the
+constant-stack path completes, so the collision is its FAILURE mode, never its
+subject. Measured 2026-08-03, the same invariant is unguarded in the other
+direction entirely -- `__str_concat` bumps the frontier past the stack with no
+check at all -- and no test in the tree could have said so.
+
+Deciding what a passing halt-test looks like is the work. The shape is
+probably a sidecar declaring the expected end state, so the runner can treat
+"halted after emitting this line" as a pass and a bare timeout as a failure,
+the way `.expected` already declares the output. Until that exists, a guard of
+this class is verified by hand, in two arms, and the account goes in the CL:
+see `docs/Designs/Active/Compiler/ProportionalDecks.md` for one worked
+example, including the probe and the reason its result was negative.
+
 ## Battery architecture
 
 99 individual tests are consolidated into smoke bundles (`unit-smoke`,
@@ -1366,6 +1391,31 @@ and spins by design, so the serial battery would hang on it. The skip says
 where its assertion actually lives rather than claiming an environment limit,
 which is the failure the skip census found seven of.
 
+### PARKED during active GUI development (Damian, 2026-08-03)
+
+**Do not add new pixel goldens for GopDesk panes, and do not treat re-minting
+`desk-boot` as work that has to happen.** The ruling: *"during active gui
+development we should wait on the goldens, they will change for silly reasons
+and it becomes ceremony not certainty."*
+
+The case that produced it, the same day: adding one sentence to the Welcome
+window's hint line moved 3752 pixels and made `desk-boot` red. The frame was
+correct, the re-mint was correct, and the whole exchange established nothing
+except that the text had changed -- which the diff already said. A golden over
+a surface that is being actively designed reports the design changing, and a
+red that is always the expected answer trains its reader to accept it, which is
+worse than no test because it looks like one.
+
+Nothing runs `codex/test/gui/` automatically, so parking costs no gate. What it
+costs is honest to state: **GopDesk has no automated coverage while this holds**,
+and panes are verified by capture (`build/desk.ps1 -Shot -Keys`). The recorded
+frames are kept as the record rather than deleted.
+
+Resume when the desktop's chrome stops moving -- a golden is worth minting
+against a surface that is supposed to hold still, and that is exactly when it
+starts catching things. `gop-source-preview` is NOT parked: it pins a probe with
+a fixed geometry that nobody is redesigning.
+
 ### `desk-boot`: the desktop's chrome, on a bare `-gop` guest
 
 `codex/test/gui/desk-boot` pins what `build/desk.ps1` puts on the glass:
@@ -1546,6 +1596,55 @@ The command buffer was enlarged to 6 MB to hold the 2 MB operands of a
 512x512, and the whole COM3 slab (`0xBD000000`..`0xBE000000`) is now
 committed at boot -- the host writes the reply there directly, so it cannot
 rely on the guest having demand-committed the page first.
+
+## The Console Re-Mode (`build/boot/test-conout-remode.ps1`)
+
+The boot stub asks the firmware for its display geometry AFTER it clears the
+screen, and that ORDER is the whole subject of this harness. On AMI Aptio V the
+first real ConOut use activates the GraphicsConsole, which sets its own graphics
+mode; until 2026-08-02 `build/cdx-to-pe.ps1` read GOP `Mode->Info` and cleared
+~200 bytes later, so every image it built published the splash mode's
+1920x1080/2048 for a scanout the firmware had switched to 1024 px/row. Every row
+the payload wrote spanned two scanlines. That is the ASUS display corruption:
+glyphs stretched, alternate lines black, long-line tails overpainting the row
+below.
+
+It was cured by swapping the two calls, and **the cure then had no runner for a
+day**. `codex-vm -uefi-conout-remode` models the activation and nothing in the
+tree ran it, so re-ordering those two blocks -- or writing a payload that reads
+the geometry before its own first ConOut call -- restored the corruption with
+every gate green. The same shape as `check-cdx-registry`'s false green: an
+assertion with nothing evaluating it.
+
+```powershell
+pwsh build/boot/test-conout-remode.ps1
+```
+
+`build/boot/diag/GeoTruth.codex` prints the three published numbers and paints
+nothing, because the subject is two calls in a PowerShell script and a probe that
+also drew could fail for unrelated reasons. One image is built and booted twice,
+re-mode off then on, at 1920x1080 stride 2048:
+
+| arm | reads | what it establishes |
+|---|---|---|
+| no re-mode | `1920x1080/2048` | the control. The bed really is presenting the padded panel, so the other arm is answering the question asked |
+| stderr `ClearScreen re-moded GOP to 1024x768` | -- | the flag fired. A silent flag and a working fix are otherwise the same green |
+| re-mode | `1024x768/1024` | the subject. Reading `1920x1080/2048` here IS the 2026-08-02 corruption |
+| the pair | strides differ | a payload printing a constant satisfies exactly one arm; this says which shape a failure had |
+
+**Fired 2026-08-03, and this is why the numbers are worth believing.** Moving the
+ClearScreen block back below `GopAcquire` in `cdx-to-pe.ps1` takes the re-mode arm
+to `1920x1080/2048`: the subject row and the pair row go red and **both controls
+stay green**, which is what attributes the failure to the stub's ordering rather
+than to the bed or the payload. `cdx-to-pe.ps1` was restored byte-identical
+(SHA-256 re-checked) afterwards.
+
+**It is NOT in `build/build.ps1`.** It compiles a payload and boots two VMs.
+
+**`test-ovmf.ps1` cannot replace it and no QEMU geometry can.** OVMF does not
+re-mode on ClearScreen, so the mechanism is absent there whatever resolution it
+is given; this is the L-OPTIONAL shape inverted, a bed that is *less* eventful
+than the target rather than more capable.
 
 ## The Serving Peer (`build/cdx-serve-test.ps1`)
 
@@ -2690,7 +2789,7 @@ the thing it grabbed.
 |-----|------:|--------|
 | circuits | 15 (**15 pass**, measured 2026-07-28) | boot chrome; the four dropdowns and a menu item firing; the PCB / 3D / SIM tabs; hover properties; palette place; wire; marquee; drag; delete+undo |
 | spark | 8 | boot chrome (toolbar, viewport, outliner, camera panel, status bar); add cube/sphere/plane; wireframe; grid; orbit; zoom; a multi-command scene |
-| guios | 2 | `desktop-chrome`: the F3 view -- sidebar at its declared width, taskbar as a bottom strip, every panel delineated, clock frozen by `vmargs -rtc`. 5/5 clean at 0 pixels, no retries; negative control (drop the `-rtc` line) differs by 285. `dashboard`: the F1 view, adding the memory gauge's track and border, with a measured 76x60 `mask` over the uptime figure, the heap figure and the gauge fill edge (0.58% of the frame). Both controls run: at a 20000 ms deadline it compares clean against a golden recorded at 11000 ms, and with the mask removed it differs by 278. The masked rect also carries an `expect-ink 350..900` so it is not wholly unchecked; it reads 509 in the recorded run and fails when the range is set impossible. Run with `-Kernel apps/guios/build-output/guios.cdx` -- guios' `build.ps1` takes no `-Out`, so `-Build` does not work for it, and the default kernel path collides with the one `apps/cvmm/build-gui.ps1` writes |
+| ~~guios~~ | ~~2~~ | **DELETED 2026-08-03 with their subject.** `desktop-chrome` and `dashboard` recorded the F3 and F1 views of `apps/guios/GuiShell.codex`, which is retired: GopDesk replaces it and the shell, its `build.ps1` and its `start.ps1` went in the same changelist. A golden of a program that no longer exists is not coverage, so the two `.uiscript` files and their goldens went with it rather than being left to fail. Both were good tests and their design is worth copying if the desktop ever wants one again -- `dashboard` in particular carried a measured 76x60 `mask` over the uptime and heap figures with an `expect-ink 350..900` inside it, so the masked rectangle was bounded rather than unchecked, and both fired their negative controls (drop `-rtc`, 285 pixels; drop the mask, 278). Note that GopDesk goldens are PARKED, above |
 
 **`circuits/tab-sim` was red from 2026-07-13 and is green as of
 2026-07-28. The golden was wrong, and the reading that diagnosed it was

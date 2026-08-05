@@ -106,6 +106,64 @@ build/build.ps1                       # Full pipeline (all gates)
 build/desk.ps1                        # The desktop, in a window, ~1.5s to paint
 ```
 
+### The scripts under `build/` are generated, and the generators are stale
+
+Most of `build/` is emitted by a Shell DSL: 49 generators under
+`codex/build/*Script.codex`, each printing one script. `build/build.ps1`,
+`build/test.ps1`, `build/compile.ps1` and `build/bvt.ps1` are all in that set.
+
+**They have not been the source of truth for a long time. Do not regenerate
+one to fix a bug in it.** Measured 2026-08-03 by compiling every generator
+against the depot seed and diffing its output against what ships: **39 of the
+40 generators with a live target have drifted, about 6,300 lines in total.**
+Only `vm-config` still matches. Nine more generators emit scripts that no
+longer exist anywhere. Nothing has ever regenerated or diffed any of them, so
+the drift accumulated silently while the shipped scripts were maintained by
+hand.
+
+The shipped script is the maintained side in every case measured, and the
+generator is the abandoned one, so a regeneration is a downgrade rather than a
+refresh. Two examples, because the shape matters more than the count:
+
+- **`compile.ps1`'s generator declares 3 parameters against the shipped
+  script's 30** (measured 2026-08-03: it has `Src`, `Out` and `Log` and
+  nothing else), and its `Stage0` is the hardcoded literal
+  `build-output\bare-metal\Codex.cdx` with no `-Kernel` path at all. A
+  regeneration would delete `-Kernel`, `-Text`, `-Measure` and `-Decks`,
+  which `build/build.ps1`, `deck-floor-test.ps1` and most recipes in this
+  document all pass. **The gate would go red on the first run and the cause
+  would read as a compiler regression.** This is the sharpest instance and
+  fester found it.
+- **`test.ps1`'s generator does not emit `-ApprovedBy` at all.** Regenerating
+  it removes the stop that keeps the full battery from being launched by an
+  agent, and removes it silently. `stress-sweep.ps1` was the same until it
+  was backported.
+- **Every unconverted generator still defaults to `-Jobs 4`.** That number was
+  overturned on 2026-08-02; the shipped scripts say 8.
+
+So the generators encode at least two rulings that have since been reversed.
+Until a generator is backported, **hand-editing the `.ps1` is the correct
+thing to do** and regenerating it is not.
+
+```powershell
+build/check-generated-scripts.ps1              # drift table for all 49
+build/check-generated-scripts.ps1 -Only test   # one, by emitted name
+build/check-generated-scripts.ps1 -Diff test   # the actual drift, line by line
+```
+
+It exits 1 when anything has drifted and takes about 40 seconds for the whole
+set (one VM boot compiles them all). It is deliberately **not** wired into
+`build.ps1` or the battery, and it deliberately has **no** write mode: with the
+generators in their current state, a bulk regenerate would destroy the working
+scripts. Use `-Diff` and port the change back into the generator by hand.
+
+When a generator is backported and `-Only <name>` reports `match`, that script
+flips: the generator becomes the place to edit, and hand-editing the `.ps1`
+becomes the thing that reintroduces drift. **`stress-sweep` and
+`lint-unused-cites` have flipped**; `vm-config` reports `match` but is still
+almost entirely `ScRaw`, so it is not yet a place to edit either. Everything
+else is still hand-edited.
+
 ## The Desktop On The Dev Box (`build/desk.ps1`)
 
 ```powershell
@@ -243,7 +301,8 @@ codex-vm -kernel file.cdx [options]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-kernel <file>` | (required) | CDX or multiboot kernel to boot |
-| `-mem <MB>` | 3072 | Guest RAM in megabytes. Binaries compiled by seeds older than CL 7209 require more than 2048 (their boot stack lands in the demand-paged range below 2 GB); current seeds boot at any size from ~128 MB up |
+| `-mem <MB>` | 3072 | Guest RAM in megabytes. Binaries compiled by seeds older than CL 7209 require more than 2048 (their boot stack lands in the demand-paged range below 2 GB); current seeds boot at any size from ~128 MB up. **The size REPORTED to the guest is capped at 3040 MB**, so anything above that changes nothing without `-mem-nocap`: see "The guest heap ceiling is 3040 MB" |
+| `-mem-nocap` | off | Report the real `-mem` to the guest instead of the 3040 MB cap. Only for a run that draws nothing: the heap may then grow through the GPU and GOP windows, which are at fixed GPAs |
 | `-input <file>` | -- | Pre-load file into serial ring buffer (source input) |
 | `-output <file>` | -- | Capture serial output to file |
 | `-disk <file>` | -- | Attach IDE disk image as the primary channel's MASTER (read/write, flushed to host) |
@@ -252,6 +311,12 @@ codex-vm -kernel file.cdx [options]
 | `-board-mmio` | off | Commit and map host RAM at the three board register windows that sit above the RAM ceiling: RP2040 SIO (0xD0000000), Cortex-M PPB/SCB (0xE0000000), BCM2711 peripherals (0xFE000000, 9 MB). A board driver's register access then reads back what it wrote -- the same fidelity the six sub-3GB boards get from falling inside guest RAM. **Opt-in, because it shadows the HDA and xHCI BARs**: audio and USB are dead while it is on, which a board test does not care about. Required by the pi4 / rp2040 / stm32l4 driver tests; `build/boards-test.ps1` passes it. |
 | `-xhci-no-root-kbd` | off | Unplug the HID keyboard on xHCI root port 2, leaving the high-speed hub on root port 4 as the only route to a keyboard. The bus walk takes the first keyboard it finds and the root port comes first, so this is what lets a test drive the hub path with an unmodified guest binary. |
 | `-xhci-hub-tiers <N>` | 1 | How many hubs to stack on xHCI root port 4. `1` is a high-speed hub with a full-speed keyboard below it. `2` inserts a full-speed hub in between, which is what tells apart a driver that reads the transaction translator off the immediate parent from one that carries the nearest high-speed ancestor's down the walk -- a full-speed hub has no translator of its own, so the keyboard below it is still served by the high-speed hub two tiers up. Route strings run to two nibbles (`0x11`). A monitor hub in front of a keyboard hub is this topology. |
+| `-xhci-ports <N>` | 4 | Root ports the controller REPORTS (HCSPARAMS1 and the Supported Protocol capability), 4 to 32. The four modelled devices stay on ports 1-4; ports above them are empty and POWERED, so PORTSC reads non-zero there, which is what a real wide controller looks like. Use it on anything that INDEXES A TABLE BY PORT NUMBER: `xhci-diag-ports` wrote `20 + port` into a band that ends at 27 and laid PORTSC over the handback flag gating `kbd-pump`. Four ports here and eight in QEMU both sat on or under that boundary, so neither bed could show it; the ASUS reports 26. |
+| `-usb-setcfg-fault-once <N>` | 0 | As `-usb-setcfg-fault`, but the fault applies to the FIRST SET_CONFIGURATION only and then clears. A TRANSIENT failure and a permanent one want opposite fixes in the host, so a bed that can only produce the permanent kind cannot show that a reading distinguishes them. Pair with the probe's `retry:` field: permanent gives `sc1=4 sc2=4`, transient gives `sc1=4 sc2=1`. |
+| `-usb-no-unit-attention` | off (the condition is ON) | Restore the old always-ready storage target. **By default the device now presents the power-on UNIT ATTENTION every conforming SCSI target presents:** the first command after a controller reset answers CHECK CONDITION with sense key 0x06 / ASC 0x29, and the condition persists until REQUEST SENSE reads it. A host that skips that handshake sees its first real command fail on real hardware and used to pass here; `msc-wait-ready`'s retry loop had never executed. The condition is armed in the RESET path, not at init, because the guest issues HCRST during bring-up and would wipe it -- a sabotage arm that should have failed and did not is what found that. |
+| `-usb-disk-port <N>` | 1 | Carry the mass-storage device to root port N; its old port goes dark rather than answering as well. Pair with `-xhci-ports` to reproduce a device sitting where no reader can see it. **No bed could put a connected device above root port 7** before this: the model had four ports, and QEMU refuses attachment above its eighth whatever HCSPARAMS1 claims. The ASUS answered with the boot stick on port 9, past the probe's eight PORTSC rows, so a count of connected ports named none of them. `-xhci-ports 26 -usb-disk-port 10` reproduces the board's `port=9 speed=4`. |
+| `-usb-cfgval <N>` | 1 | The mass-storage device numbers its configuration N and **refuses any other value** with a STALL (USB 2.0 9.4.7 makes a bad configuration value a request error, and a control pipe reports one by stalling). `bConfigurationValue` is not an index and is not obliged to be 1. Use it on any driver that sends SET_CONFIGURATION: `msc-open-endpoints` sent a hardcoded 1 while every sibling driver read descriptor byte 5, and no bed could refuse it -- this model reported 1, and QEMU's `usb-storage` reports 1 and then accepts anything. |
+| `-usb-setcfg-fault <N>` | 0 | The mass-storage device answers SET_CONFIGURATION with completion code N whatever value is sent: 6 STALL, 4 USB Transaction Error. Reproduces the ASUS 2026-08-03 reading (`connect=FAILED`, rung 2) on the desk so the host's handling of a refusal can be built here. **It injects a symptom, not a cause.** Never use it to confirm a diagnosis -- a check fed a fault you selected will agree with you. |
 | `-xhci-calibrate-periodic` | off | Skew the model's EXPECTED Interval and Max ESIT Payload by one, so a correct driver is reported as MISMATCH. The periodic value check runs always and reports once per slot and DCI on stderr; this is the arm that shows it can say no. Use it whenever you are about to believe a MATCH. |
 | `-xhci-psi` | off | Declare Protocol Speed ID dwords in the Supported Protocol capability (PSIC = 4) and report NON-DEFAULT Port Speed values in PORTSC: full speed as 5, low as 6, high as 7, super as 8. Table 7-13's familiar 1/2/3/4 are only the defaults, and xHCI 7.2.2.1.1 makes them conditional on PSIC being zero. Use this on any driver that decides a speed CLASS from the PORTSC speed field. The model reports the true class and the slot context's claim side by side on stderr. |
 | `-xhci-intel` | off | Present the xHCI as an Intel Lynx Point PCH (8086:8C31) with the USB2 ports still owned by the companion EHCI. XUSB2PRM reads `0xE` (ports 1-3 routable), XUSB2PR resets to 0, and an unrouted port reads PORTSC as all zero -- dark, not merely disconnected, which is what a port left with the companion looks like to the xHCI. The guest must route the ports before it sees any device on them. Writes to XUSB2PR are traced on stderr. |
@@ -262,6 +327,10 @@ codex-vm -kernel file.cdx [options]
 | `-xhci-evt-flood <N>` | 0 | Post N extra Port Status Change events at the Run transition, on top of the per-port connect and reset-completion PSC events the model now always posts. The event ring is 64 TRBs: N at or above it marches the producer through the ring WRAP and into the FULL condition (drop + one stderr report, per real silicon), the two paths a 4-port bed can never reach and a 26-port Intel reaches before enumeration begins. Both paths measured PASS on the shipping driver at N=30/50/100. |
 | `-hid-nak` | off | The HID keyboard NAKs every interrupt IN forever: no DMA, no transfer event, the pending TD stays in progress and Stop Endpoint answers FSE code 26 (Stopped) with the residual. Reproduces the ASUS 2026-08-03 flight signature (EPINT=0, dq parked, est=1, f1=1a) on the desk; the arm every silent-keyboard hypothesis is tested against. |
 | `-hid-idle-quirk` | off | The HID keyboard NAKs every interrupt IN after the guest sends SET_IDLE duration 0 (the over-honored "report only on change", HID 1.11 7.2.4 against the F.3 every-poll default). A driver that skips SET_IDLE never triggers it; one that sends it goes silent -- the arm that separates the v15 fix from the v14 behavior. |
+| `-hid-root-silent` | off | The root-port keyboard completes every interrupt IN with SUCCESS and eight zero bytes (GET_REPORT answers zeros too) while the hub-attached keyboard carries the injected keys. The ASUS TUF 2026-08-04 desktop signature -- SUCCESS on the driver's own endpoint, buffer untouched, key held -- which `-hid-nak` cannot produce (it models no event at all). The arm the bind-every-keyboard fix is proven against (`usb-kbd-silent`). |
+| `-hid-keys` | off | Scripted keys (`-keyt`/`-keys-file`) feed ONLY the USB HID held-key set: no PS/2 queue, no host-side key-cell write. Without it injected keys reach the guest through the PS/2 emulation whatever the USB stack does, so no bed run could ever prove a scancode travelled the interrupt-IN DMA path. The honest model of the ASUS, which has no PS/2 controller at all. |
+| `-hid-combo` | off | The root HID device carries TWO interfaces: boot keyboard on EP1 IN and boot mouse on EP2 IN -- the wireless-dongle topology. Boot mouse reports are built as deltas from the `-mouse` timeline's absolute samples (clamped to the signed byte the protocol carries), so a scripted pointer drives the USB pipe exactly as scripted keys do under `-hid-keys`. The arm the per-interface classification is proven against (`usb-hid-combo`): a whole-device classifier hands the combo to the keyboard driver and the mouse half is unreachable. |
+| `-hid-nak-unchanged` | off | HID interrupt IN endpoints NAK until they have news: a TRB completes only when its report would differ from the last one delivered on that endpoint (the combo mouse: only when a sample arrived since the last report); otherwise the TD stays pending and is re-rung when input state changes. The default model completes every interrupt TRB at doorbell time, which makes completions so plentiful that a defect fed by their SCARCITY -- one endpoint's waiter consuming a sibling's rare completion and starving it, the Unifying-receiver mouse failure of 2026-08-04 -- can never be expressed. The arm the per-endpoint event latch is proven against (`usb-hid-steal`). |
 | `-uefi` | off | UEFI firmware mode (ConOut/ConIn, GOP, Block I/O, memory map, runtime services, auto-extract PE from GPT images) |
 | `-gop` | off | Activate GOP framebuffer (default 640x480) |
 | `-gop-width <N>` | 640 | GOP framebuffer width (implies `-gop`) |
@@ -500,6 +569,8 @@ negotiated state.
 | `-e1000-no-phy` | MDIC never reports ready: a PHY that is not answering |
 | `-e1000-phy-err` | MDIC reports the error bit on every transaction |
 | `-e1000-phy-link` | STATUS.LU requires auto-negotiation complete, not merely CTRL.SLU |
+| `-e1000-mdio-window` | MDIC answers nothing for 10 ms after CTRL.RST (I219 datasheet 9.2) |
+| `-e1000-mdio-slow` | MDIO reads answer E until page 769 register 16 bit 10 is set (I219 9.2) |
 
 `-e1000-phy-link` is the one worth knowing about. It is **off by default**,
 so every run that predates it keeps the SLU-only link it was measured
@@ -507,6 +578,28 @@ against; with it on, a driver that never brings the PHY up gets no link,
 which is the I219's real behaviour and the failure that was previously
 invisible here. `codex/test/e1000-phy` runs under it and
 `codex/test/e1000-phy-absent` runs under `-e1000-no-phy`.
+
+`-e1000-mdio-window` is also off by default and is the arm for the settle
+the I219 datasheet requires between a reset and the first MDIO access
+(section 9.2). A closed window answers with neither R nor E, so it is
+indistinguishable from `-e1000-no-phy` to the driver, on purpose.
+`codex/test/e1000-mdio-window` runs under it together with
+`-e1000-phy-link`, which is the pair that reproduces the metal symptom on
+the desk: a link that never comes up while every MAC register reads
+exactly as it should.
+
+`-e1000-mdio-slow` is the third of these and also off by default. The PHY
+model has pages now: registers 0-15 are the IEEE set and answer in every
+page, registers 16-31 at page 0 keep the flat behaviour they always had,
+and page 769 register 16 is modelled with the reset value its field table
+gives. Any other page answers E rather than pretending to hold something.
+With the flag on, ordinary MDIO reads answer E until slow mode is set, and
+**the page register and 769.16 itself stay reachable so the bootstrap can
+happen at all** -- that exemption is ours rather than the datasheet's,
+because 9.2 read strictly forbids the very writes that would satisfy it.
+A PHY reset clears the paged state, so a driver that sets slow mode before
+resetting the PHY loses it; `codex/test/e1000-mdio-slow` catches that
+ordering specifically.
 
 **DNS is answered, and until 2026-07-14 it was not.** This entry used
 to say the NAT handled "DNS (forwards to host)" and "TCP/UDP
@@ -1029,6 +1122,25 @@ format's `*PROF:` lines into a hot-function histogram. Mint a fresh map
 by compiling the compiler source NON-repl (the `<out>.map` sidecar) --
 the seed map drifts (see the Release-to-Public Gate note).
 
+**Re-concatenate before you mint, or the fresh map describes stale
+source.** `build/output/Codex.codex` is written by `build.ps1`'s source
+phase, so it is only as current as the last full build in THAT workspace.
+Compiling it gives a genuinely fresh map of whatever the tree looked like
+then, which is the worst of both: it carries no staleness marker and every
+symbol in it is confident. Run
+`build/concat-codex-self.ps1 -OutFile <path>` first and compile that.
+Measured 2026-08-04 in a workspace whose last build was five days old: the
+checked-in `build/output/Codex.codex` was 3007248 bytes against 2993576
+from a fresh concatenation of the same tree.
+
+Two things a fresh map is NOT. It is not a replacement for
+`seed/Codex.map`: that file must describe the binary that actually ships,
+and installing a map minted from a compiler source ahead of the seed makes
+every backtrace it resolves wrong in a way nothing announces. And the
+symbol-count delta between the two is a measure of how far compiler source
+has moved ahead of the seed, not of anything being broken -- source landing
+without a seed cycle is normal.
+
 The sample buffer lives at 0x60000 (profiler) / 0x70000 (alloc trace),
 in the free low-memory band above the AP stacks; earlier it sat inside
 the page tables and enabling it destroyed them after ~88 samples.
@@ -1484,6 +1596,53 @@ mappings carry NX, the demand-range top derives from actual RAM (any
 `-mem` from ~128 MB boots; the top 64 MB stays present for the stack),
 a TSS/IST1 emergency stack turns stack-overflow triple-faults into
 `!EXC` dumps, and the touched-page count lives at cell 30688.
+
+### The guest heap ceiling is 3040 MB, and `-mem` does not move it
+
+Measured 2026-08-03. codex-vm caps the RAM size it reports to the guest at
+`GPU_CMD_ADDR` (0xBE000000, 3040 MB) so the boot stack, which starts at the
+reported size and grows down, cannot land in the GPU command buffer, the
+depth buffer or the GOP framebuffer. Those three sit at fixed GPAs. The cap
+binds unconditionally, so `-mem 8192` reports 3040 MB:
+
+```
+RAM cap: guest_mem_size=0x200000000 effective=0xbe000000 gop=0
+```
+
+**The consequence is that `compile.ps1`'s crash retry cannot recover
+anything.** On an `!EXC` it prints `crash with 3072MB, retrying with 8192MB`
+and runs a byte-identical machine. A whole-compiler `-IrCce` emit crashes
+with the same RIP, the same interrupted RSP and the same heap frontier at
+both sizes, four runs out of four. Do not read that retry as having ruled
+memory out.
+
+The failure looks like this, and the shape is worth knowing because the
+crash site is innocent:
+
+```
+CRASH in __str_concat+0xF9 (general protection)
+  callR 0xBDFFFA48   interrupted RSP
+  R10   0xBE00367E   heap frontier, ABOVE the reported RAM top
+  RBX   0x111C49161510180D   CCE text, restored from a clobbered stack slot
+```
+
+The heap frontier has passed the stack. Registers holding text rather than
+pointers are the fingerprint: saved registers reloaded from stack slots the
+heap has overwritten. Any `!EXC=0d` whose R10 is near 0xBE000000 is this and
+not a codegen defect.
+
+`-mem-nocap` reports the real size instead. It is opt-in, and it must stay
+opt-in: the guest can turn GOP on after boot (UEFI GOP, VBE) by which time
+the RAM size is long written, and an uncapped heap that grows past
+0xBE000000 then overwrites the framebuffer it is about to scan out. Pass it
+only for a run that draws nothing. `compile.ps1 -MemNoCap` forwards it, and
+`-TimeoutSec` raises the 600 s VM kill for the one job that outruns it.
+
+**Above ~3 GB nothing helps, because the address space is baked into the
+binary.** `bare-metal-ram-size` in `codex/compiler/Emit/X86_64State.codex`
+is the constant 3221225472, and the page tables the seed emits map exactly
+that much RAM plus one device gigabyte above it. Raising the guest ceiling
+past 3 GB is a change to that constant, which is seed-affecting.
 
 ### GDB (Legacy Fallback)
 

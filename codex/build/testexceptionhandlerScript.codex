@@ -6,59 +6,92 @@ Chapter: TestExceptionHandlerScript
   cites Shell chapter ShellBuild
   cites Shell chapter PowerShellEmit
 
- Generates test-exception-handler.ps1 from the Shell DSL.
- Tests the bare-metal exception handler output: compiles crashing
- samples, boots them with a short timeout, verifies serial output.
- Compile with: -Survey "lower-mul:500000"
-
  We say:
 
 Section: Parameters
 
-  teh-params : List ShellParam = [sh-param-default "CodexCdx" SptString (SeLit "")]
+  exc-params : List ShellParam = [sh-param-default "CodexCdx" SptString (SeLit "")]
 
-Section: S01 -- Preamble
+Section: S01 -- Directories
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'vm-config.ps1')"), ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScIf (SeNot (SeVar "CodexCdx")) [ScAssign "CodexCdx" (SeRaw "Join-Path $Repo 'seed\\Codex.cdx'")] [], ScAssign "compile" (SeRaw "Join-Path $PSScriptRoot 'compile.ps1'"), ScAssign "outDir" (SeRaw "Join-Path $Repo 'build-output\\exc-test'"), ScIf (SeDirExists (SeVar "outDir")) [ScRaw "Remove-Item -Recurse -Force $outDir"] [], ScMkdir (SeVar "outDir")]
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScRunDot (SePathJoin SeScriptRoot (SeLit "vm-config.ps1")), ScBlank, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))), ScIf (SeNot (SeVar "CodexCdx")) [ScAssign "CodexCdx" (SePathJoin (SeVar "Repo") (SeLit "seed\\Codex.cdx"))] [], ScAssign "compile" (SePathJoin SeScriptRoot (SeLit "compile.ps1")), ScAssign "outDir" (SePathJoin (SeVar "Repo") (SeLit "build-output\\exc-test")), ScIf (SeDirExists (SeVar "outDir")) [ScDeleteTree (SeVar "outDir")] [], ScMkdir (SeVar "outDir"), ScBlank, ScAssign "stage0Dir" (SePathJoin (SeVar "Repo") (SeLit "build-output\\bare-metal")), ScMkdir (SeVar "stage0Dir"), ScCopy (SeVar "CodexCdx") (SePathJoin (SeVar "stage0Dir") (SeLit "Codex.cdx"))]
 
-Section: S02 -- Stage0 copy
+Section: S02 -- The Sample Table
 
-  s02 : List ShellCmd = [ScAssign "stage0Dir" (SeRaw "Join-Path $Repo 'build-output\\bare-metal'"), ScMkdir (SeVar "stage0Dir"), ScCopy (SeVar "CodexCdx") (SeRaw "Join-Path $stage0Dir 'Codex.cdx'")]
+  exc-pattern : Text = "!EXC="
 
-Section: S03 -- Sample definitions
+  sample-div-zero : ShellExpr = SeRecord [SfField "Name" (SeLit "exc-div-zero"), SfField "Pattern" (SeLit exc-pattern), SfField "NeedStack" (SeBool True)]
 
-  s03 : List ShellCmd = [ScRaw "# NeedFrames asserts the guest's RBP frame walk actually produced frames.", ScRaw "# exc-deep-frames faults six non-tail recursions down, so a working walk", ScRaw "# reports at least three; a walk that silently stopped reports none, and", ScRaw "# without this the sample would pass on the !EXC= line alone and the", ScRaw "# capability could rot unnoticed. The shallower samples fault at the top of", ScRaw "# the stack, which the handler's own RSP switch overwrites before the walk", ScRaw "# runs, so they are not expected to yield a chain.", ScRaw "$samples = @(\n    @{ Name = 'exc-div-zero';    Pattern = '!EXC=';          NeedStack = $true },\n    @{ Name = 'exc-null-read';   Pattern = '!EXC=';          NeedStack = $true },\n    @{ Name = 'exc-gpf';         Pattern = '!EXC=';          NeedStack = $true },\n    @{ Name = 'exc-deep-frames'; Pattern = '!EXC=';          NeedStack = $true; NeedFrames = 3 },\n    @{ Name = 'exc-stack-heap';  Pattern = 'OUT OF MEMORY';  NeedStack = $false; TimeoutSec = 90 }\n)", ScBlank, ScRaw "$pass = 0; $fail = 0"]
+  sample-null-read : ShellExpr = SeRecord [SfField "Name" (SeLit "exc-null-read"), SfField "Pattern" (SeLit exc-pattern), SfField "NeedStack" (SeBool True)]
 
-Section: S04 -- Compile each sample
+  sample-gpf : ShellExpr = SeRecord [SfField "Name" (SeLit "exc-gpf"), SfField "Pattern" (SeLit exc-pattern), SfField "NeedStack" (SeBool True)]
 
-  s04 : List ShellCmd = [ScAssign "src" (SeRaw "Join-Path $Repo \"codex\\test\\$($s.Name).codex\""), ScAssign "cdx" (SeRaw "Join-Path $outDir \"$($s.Name).cdx\""), ScAssign "log" (SeRaw "Join-Path $outDir \"$($s.Name).log\""), ScBlank, ScRaw "Write-Host -NoNewline \"$($s.Name): \"", ScBlank, ScRaw "& pwsh -NoProfile -File $compile -Src $src -Out $cdx -Log $log 2>&1 | Out-Null", ScIf (SeNot (SeExitCodeEq 0)) [ScRaw "Write-Host 'FAIL (compile)'", ScRaw "$fail++; continue"] []]
+  sample-deep : ShellExpr = SeRecord [SfField "Name" (SeLit "exc-deep-frames"), SfField "Pattern" (SeLit exc-pattern), SfField "NeedStack" (SeBool True), SfField "NeedFrames" (SeInt 3)]
 
-Section: S05 -- VM boot and capture
+  sample-stack-heap : ShellExpr = SeRecord [SfField "Name" (SeLit "exc-stack-heap"), SfField "Pattern" (SeLit "OUT OF MEMORY"), SfField "NeedStack" (SeBool False), SfField "TimeoutSec" (SeInt 90)]
 
-  s05 : List ShellCmd = [ScRaw "# These samples exist to crash the guest, and they crash in well under a", ScRaw "# second. Start-VmRun cannot observe that: it sleeps 500 ms, treats an", ScRaw "# already-exited process as a failed launch, and retries four times before", ScRaw "# returning null. So every sample reported 'FAIL (vm start)' and the file", ScRaw "# asserted nothing. Run the VM directly with -serial stdio instead and read", ScRaw "# what it captured after it halts; a fast exit is the expected outcome here,", ScRaw "# not a launch failure.", ScRaw "#", ScRaw "# That logic was not wrong when it was written, and it is worth knowing why,", ScRaw "# because nothing in this file changed. It was written against QEMU, whose", ScRaw "# chardev is 'server=on,wait=on': QEMU blocks before running the guest until", ScRaw "# the harness connects, so the process was still alive at the 500 ms check", ScRaw "# and the read loop got its output. codex-vm has no such wait. And the", ScRaw "# choice between them is not a flag but", ScRaw "#     $script:UseCodexVm = Test-Path -PathType Leaf $script:CodexVmBin", ScRaw "# so the day codex-vm.exe landed in the depot this test broke in every", ScRaw "# workspace at once, with no changelist touching it and nothing to announce", ScRaw "# it. A liveness check that assumes the VM waits is the coupling to see.", ScRaw "$so = Join-Path $outDir \"$($s.Name).stdout\"", ScRaw "$se = Join-Path $outDir \"$($s.Name).stderr\"", ScRaw "# exc-stack-heap has to recurse until the stack collides with a 2.1 GB heap", ScRaw "# advance, so it needs a bigger budget than the fault samples, which finish", ScRaw "# in under a second.", ScRaw "#", ScRaw "# KNOWN FAILING, and pre-existing: it does not merely need longer, it never", ScRaw "# terminates. Measured 2026-07-26 on the depot seed, a run left going for", ScRaw "# over twelve hours never printed OUT OF MEMORY and never exited, and", ScRaw "# codex-vm's own -timeout did not stop it either. This was invisible while", ScRaw "# the harness reported every sample as 'FAIL (vm start)'. The budget is", ScRaw "# therefore sized to fail fast rather than to let it finish; raising it", ScRaw "# will not help until the hang itself is understood.", ScRaw "$budget = if ($s.ContainsKey('TimeoutSec')) { [int]$s.TimeoutSec } else { 45 }", ScRaw "$vmArgs = @('-kernel', $cdx, '-serial', 'stdio', '-mem', '3072', '-timeout', \"$budget\")", ScRaw "$proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput $so -RedirectStandardError $se", ScRaw "$proc | Wait-Process -Timeout ($budget + 30) -ErrorAction SilentlyContinue", ScRaw "if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }"]
+  s02 : List ShellCmd = [ScAssign "samples" (SeArrayLiteral [sample-div-zero, sample-null-read, sample-gpf, sample-deep, sample-stack-heap]), ScBlank, ScAssign "pass" (SeInt 0), ScAssign "fail" (SeInt 0)]
 
-Section: S06 -- Stream read loop
+Section: S03 -- Compile One Sample
 
-  s06 : List ShellCmd = [ScRaw "$output = ''", ScRaw "foreach ($f in @($so, $se)) {\n    $t = Get-Content $f -Raw -ErrorAction SilentlyContinue\n    if ($t) { $output += $t }\n}", ScRaw "Remove-Item -Force $so, $se -ErrorAction SilentlyContinue"]
+  sample-name : ShellExpr = SeProperty (SeVar "s") "Name"
 
-Section: S07 -- Write output and verify
+  compile-args : List ShellArg = [SaSwitch "NoProfile", SaNamed "File" (SeVar "compile"), SaNamed "Src" (SeVar "src"), SaNamed "Out" (SeVar "cdx"), SaNamed "Log" (SeVar "log")]
 
-  s07-verify : List ShellCmd = [ScRaw "$hasPattern = $output.Contains($s.Pattern)", ScRaw "$dumpLines = @($output -split \"`n\" | Where-Object { $_ -match '^S\\[' }).Count", ScRaw "$stackOk = if ($s.NeedStack) { $dumpLines -ge 14 } else { $true }", ScRaw "$frameLines = @($output -split \"`n\" | Where-Object { $_ -match '^F\\[' }).Count", ScRaw "$needFrames = if ($s.ContainsKey('NeedFrames')) { [int]$s.NeedFrames } else { 0 }", ScRaw "$framesOk = $frameLines -ge $needFrames", ScBlank, ScIf (SeAnd (SeAnd (SeVar "hasPattern") (SeVar "stackOk")) (SeVar "framesOk")) [ScRaw "Write-Host \"PASS (pattern=$hasPattern stack=$dumpLines frames=$frameLines)\"", ScRaw "$pass++"] [ScRaw "Write-Host \"FAIL (pattern=$hasPattern stack=$dumpLines frames=$frameLines need=$needFrames)\"", ScRaw "Write-Host \"  output: $($output.Substring(0, [math]::Min(200, $output.Length)))\"", ScRaw "$fail++"]]
+  compile-failed : List ShellCmd = [ScEcho (SeLit "FAIL (compile)"), ScIncrement "fail", ScContinue]
 
-  s07 : List ShellCmd = [ScDotNetCall "System.IO.File" "WriteAllText" [SeRaw "Join-Path $outDir \"$($s.Name).out\"", SeVar "output"], ScBlank, ScSequence s07-verify]
+  s03 : List ShellCmd = [ScAssign "src" (SePathJoin (SeVar "Repo") (SeConcat (SeConcat (SeLit "codex\\test\\") sample-name) (SeLit ".codex"))), ScAssign "cdx" (SePathJoin (SeVar "outDir") (SeConcat sample-name (SeLit ".cdx"))), ScAssign "log" (SePathJoin (SeVar "outDir") (SeConcat sample-name (SeLit ".log"))), ScBlank, ScEchoPartial (SeConcat sample-name (SeLit ": ")), ScRunArgs (SeLit "pwsh") compile-args, ScIf (SeNot (SeExitCodeEq 0)) compile-failed []]
 
-Section: S08 -- Summary
+Section: S04 -- Boot It
 
-  s08 : List ShellCmd = [ScEcho (SeLit ""), ScRaw "Write-Host \"Exception handler tests: pass=$pass fail=$fail\"", ScIf (SeIntGt (SeVar "fail") (SeInt 0)) [ScExit (SeInt 1)] [], ScExit (SeInt 0)]
+  budget : ShellExpr = SeIfElse (SeHasField (SeVar "s") "TimeoutSec") (SeProperty (SeVar "s") "TimeoutSec") (SeInt 45)
+
+  vm-args : List ShellExpr = [SeLit "-kernel", SeVar "cdx", SeLit "-serial", SeLit "stdio", SeLit "-mem", SeLit "3072", SeLit "-timeout", SeVar "budget"]
+
+  vm-spec : ShellProcessSpec = ShellProcessSpec { sp-executable = SeVar "script:CodexVmBin", sp-arguments = vm-args, sp-result-var = "proc", sp-stdout-file = Just (SeVar "so"), sp-stderr-file = Just (SeVar "se"), sp-hidden = True, sp-passthru = True }
+
+  gather-stream : List ShellCmd = [ScAssign "t" (SeFileText (SeVar "f")), ScIf (SeVar "t") [ScIncrementBy "output" (SeVar "t")] []]
+
+  s04 : List ShellCmd = [ScAssign "so" (SePathJoin (SeVar "outDir") (SeConcat sample-name (SeLit ".stdout"))), ScAssign "se" (SePathJoin (SeVar "outDir") (SeConcat sample-name (SeLit ".stderr"))), ScAssign "budget" budget, ScStartProcess vm-spec, ScWaitProcessSec "proc" (SeAdd (SeVar "budget") (SeInt 30)), ScIf (SeNot (SeProperty (SeVar "proc") "HasExited")) [ScStopProcess (SeProperty (SeVar "proc") "Id")] [], ScBlank, ScAssign "output" (SeLit ""), ScForEach "f" (SeArrayLiteral [SeVar "so", SeVar "se"]) gather-stream, ScDelete (SeVar "so"), ScDelete (SeVar "se"), ScDotNetCall "System.IO.File" "WriteAllText" [SePathJoin (SeVar "outDir") (SeConcat sample-name (SeLit ".out")), SeVar "output"]]
+
+Section: S05 -- Judge It
+
+  dump-lines : ShellExpr = SeCount (SePipe (SeSplit (SeVar "output") "\\n") [StWhere (SeMatch SeItem "^S\\[")])
+
+  frame-lines : ShellExpr = SeCount (SePipe (SeSplit (SeVar "output") "\\n") [StWhere (SeMatch SeItem "^F\\[")])
+
+  need-frames : ShellExpr = SeIfElse (SeHasField (SeVar "s") "NeedFrames") (SeProperty (SeVar "s") "NeedFrames") (SeInt 0)
+
+  stack-ok : ShellExpr = SeIfElse (SeProperty (SeVar "s") "NeedStack") (SeIntGt (SeVar "dumpLines") (SeInt 13)) (SeBool True)
+
+  verdict-tail : ShellExpr = SeConcat (SeConcat (SeLit " stack=") (SeVar "dumpLines")) (SeConcat (SeLit " frames=") (SeVar "frameLines"))
+
+  pass-message : ShellExpr = SeConcat (SeConcat (SeLit "PASS (pattern=") (SeVar "hasPattern")) (SeConcat verdict-tail (SeLit ")"))
+
+  fail-tail : ShellExpr = SeConcat (SeConcat (SeLit " need=") (SeVar "needFrames")) (SeLit ")")
+
+  fail-message : ShellExpr = SeConcat (SeConcat (SeLit "FAIL (pattern=") (SeVar "hasPattern")) (SeConcat verdict-tail fail-tail)
+
+  clip-length : ShellExpr = SeStaticCall "math" "Min" [SeInt 200, SeProperty (SeVar "output") "Length"]
+
+  fail-detail : ShellExpr = SeConcat (SeLit "  output: ") (SeSubstringLen (SeVar "output") (SeInt 0) clip-length)
+
+  passed : ShellExpr = SeAnd (SeAnd (SeVar "hasPattern") (SeVar "stackOk")) (SeVar "framesOk")
+
+  s05 : List ShellCmd = [ScAssign "hasPattern" (SeMethodCall (SeVar "output") "Contains" [SeProperty (SeVar "s") "Pattern"]), ScAssign "dumpLines" dump-lines, ScAssign "stackOk" stack-ok, ScAssign "frameLines" frame-lines, ScAssign "needFrames" need-frames, ScAssign "framesOk" (SeNot (SeIntLt (SeVar "frameLines") (SeVar "needFrames"))), ScBlank, ScIf passed [ScEcho pass-message, ScIncrement "pass"] [ScEcho fail-message, ScEcho fail-detail, ScIncrement "fail"]]
 
 Section: Assembly
 
-  teh-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScForEach "s" (SeVar "samples") [ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07], ScBlank, ScSequence s08]
+  summary : ShellExpr = SeConcat (SeConcat (SeLit "Exception handler tests: pass=") (SeVar "pass")) (SeConcat (SeLit " fail=") (SeVar "fail"))
 
-  teh-script : ShellScript = sh-script "test-exception-handler" "Test bare-metal exception handler output" teh-params teh-body
+  sample-body : List ShellCmd = [ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05]
+
+  exc-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScForEach "s" (SeVar "samples") sample-body, ScBlank, ScEcho (SeLit ""), ScEcho summary, ScIf (SeIntGt (SeVar "fail") (SeInt 0)) [ScExit (SeInt 1)] [], ScExit (SeInt 0)]
+
+  exc-script : ShellScript = sh-script "test-exception-handler" "Test the bare-metal exception handler output" exc-params exc-body
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell teh-script)
+    print-line-uni (emit-powershell exc-script)
   end
 
 Page 1

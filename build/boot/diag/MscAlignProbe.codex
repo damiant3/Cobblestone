@@ -4,6 +4,10 @@ Chapter: MscAlignProbe
   cites Works chapter GopDraw
   cites Kernel chapter BitmapFont
   cites Works chapter GopHandoff
+  cites Foreword chapter Maybe
+  cites Kernel chapter Pci
+  cites Kernel chapter E1000e
+  cites Dev chapter NicAsde
 
  Does a bulk TRB whose data buffer crosses a 64 KB boundary work on a
  spec-strict controller? xHCI is believed to forbid it, and msc-read-into
@@ -47,6 +51,12 @@ Chapter: MscAlignProbe
   pyn : Integer -> Text
   pyn (v) = if v == 0 then "n" else "y"
 
+ The liveness LBA is DERIVED from the medium, not written down. It was the
+ literal 100000, which is out of range on the 16 MB emulator image and well
+ inside a 28.9 GB stick, so on the ASUS 2026-08-04 the arm read `ok=y` and
+ the probe correctly announced that it proved nothing. A constant that
+ encodes the bed's disk size is not a liveness check anywhere else.
+
  Sixty-four dwords spread across the 32 KB at a 512-byte stride. Enough
  to catch a short, shifted or absent transfer without walking every byte.
 
@@ -58,6 +68,44 @@ Chapter: MscAlignProbe
   prow : Integer, Integer, CbfFont, Integer, Integer, Text, Integer -> Integer
   prow (base) (stride) (font) (y) (scale) (s) (col) =
     gop-draw-text base stride font 40 y s col scale 0
+
+ blu's ASDE stage rides here rather than on its own boot, because the body
+ at the bench is the expensive line and these two arms cost no extra flash.
+
+ THEY MUST STAY LAST. This stage is unproven on metal -- that is what the
+ flight is for -- and the four rows above it answer a storage question that
+ cost a board trip to ask. Painted first, those rows survive an ASDE arm
+ that faults or hangs on the real part.
+
+ Two breadcrumbs, because on the ASUS 2026-08-04 NO ASDE row appeared at
+ all. Every non-crashing path prints something, so the silence proved only
+ that something between entry and the first row died -- it could not say
+ whether the scan, the BAR read or the bring-up, nor name the device chosen.
+ One row before the scan and one naming the eligible device make those three
+ distinguishable, and both survive a fault or a hang beneath them.
+
+ The candidate is looked for on bus 0 because the I219 is a PCH-integrated
+ MAC at 00:1f.6. That scope is stated ON the miss row rather than left
+ implicit: a scan that finds nothing must not photograph the same as a bus
+ that was never searched. `na-eligible` is blu's vendor-plus-BAR gate and
+ the Realtek at 06:00.0 is what it exists to reject, because Intel register
+ offsets read off that part yield garbage shaped like an answer.
+
+  na-rows : Integer, Integer, CbfFont, Integer -> [Device.Port, Device.Mmio] Integer
+  na-rows (base) (stride) (font) (scale) =
+    let bc0 = prow base stride font 240 scale "ASDE: scanning bus 0" 9474192
+    in let scan = pci-scan-bus 0
+    in when e1000-find scan
+      is None -> prow base stride font 270 scale "ASDE: no Intel NIC on bus 0 (scope: bus 0 only)" 16755200
+      is Just (dev) ->
+        if na-eligible dev == False
+        then prow base stride font 270 scale "ASDE: candidate REJECTED by vendor/BAR gate" 16755200
+        else let bc1 = prow base stride font 270 scale ("ASDE: eligible at " & show (dev.pci-bus) & ":" & show (dev.pci-dev) & "." & show (dev.pci-func) & " -- entering bring-up") 16776960
+        in let mmio = na-mmio-of dev
+        in let on = na-bring-up mmio True
+        in let off = na-bring-up mmio False
+        in let r1 = prow base stride font 300 scale (na-line "ASDE=1" on) 65280
+        in prow base stride font 330 scale (na-line "ASDE=0" off) 65280
 
   opening : [Device.Port, Device.Mmio] Integer
   opening =
@@ -79,13 +127,17 @@ Chapter: MscAlignProbe
       in let cha = chk al 0 0
       in let rc = msc-read-into d 0 64 xa
       in let chc = chk xa 0 0
-      in let ro = msc-read-into d 100000 64 al
+      in let badlba = (d.md-sectors) + 16
+      in let ro = msc-read-into d badlba 64 al
       in let bg = gop-fill-rect base stride 0 0 w h 1710638
       in let t0 = prow base stride font 40 scale "MSC 64K BOUNDARY PROBE" 65535
       in let t1 = prow base stride font 80 scale ("disk=" & pyn (if (d.md-ok) then 1 else 0) & " sectors=" & show (d.md-sectors) & "  heap=" & ph64 hp & " heap mod 64K=" & show (int-mod hp 65536)) 9474192
       in let t2 = prow base stride font 110 scale ("ALIGNED  addr=" & ph64 al & " off=" & show (int-mod al 65536) & " ok=" & pyn ra & " chk=" & phw cha) 65280
       in let t3 = prow base stride font 140 scale ("CROSSING addr=" & ph64 xa & " off=" & show (int-mod xa 65536) & " ok=" & pyn rc & " chk=" & phw chc) 65280
       in let t4 = prow base stride font 170 scale ("data identical=" & pyn (if cha == chc then 1 else 0) & "   (same LBA, both 64 sectors)") 16776960
-      in let t5 = prow base stride font 200 scale ("LIVENESS out-of-range lba=100000 ok=" & pyn ro & "  (must be n, or this probe proves nothing)") 16776960
-      in probe-halt 0
+      in let t5 = prow base stride font 200 scale ("LIVENESS lba=" & show badlba & " (sectors+16) ok=" & pyn ro & "  must be n, or the two rows above prove nothing") 16776960
+      in act
+        t6 <- na-rows base stride font scale
+        probe-halt 0
+      end
     end

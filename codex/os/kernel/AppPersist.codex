@@ -11,7 +11,6 @@ Chapter: AppPersist
  with multi-sector fact writes and kind-based scanning. Apps assign
  kind integers 20+ to avoid collision with system kinds (0-14).
 
- Kind allocation:
    20 = Browser history
    21 = Browser trust decisions
    22 = Diagram data
@@ -35,18 +34,6 @@ Chapter: AppPersist
 
 Section: The Layout Lives In FactLog
 
- This chapter used to carry its own copy of the fact log's shape: a header size
- of 78, a sector size of 512, its own sector-count formula, a writer that
- chained each field off the previous one's return value, and four readers that
- reached into a sector buffer at bare 32, 66 and 74. FactLog exists precisely so
- that shape has one definition, and DiskFacts was moved onto it -- but this
- chapter was left behind, which made FactLog's guarantee a half-truth. A change
- to the layout that DiskFacts followed and AppPersist did not is a divergence
- nothing would catch until a fact read back as garbage.
-
- So every size, offset and field read here now asks FactLog. There is nothing
- left in this file that knows what a fact header looks like.
-
 Section: Copy Helpers
 
   app-copy-sector : Integer, Integer, Integer, Integer -> Integer
@@ -57,12 +44,6 @@ Section: Copy Helpers
 
 Section: Sectors Are Relative To The Store
 
- Every sector number below is relative to the store's base LBA, exactly as
- in DiskFacts, and goes through that chapter's fact-read-at / fact-write-at.
- This chapter used to name absolute sectors, which on a partitioned disk is
- the partition table. A store carries the base it was opened against, so
- the base comes off the store rather than being resolved here.
-
   app-load-sectors : Integer, Integer, Integer, Integer, Integer -> Integer
   app-load-sectors (base) (start) (count) (dst) (i) =
     if i >= count then 0
@@ -72,19 +53,6 @@ Section: Sectors Are Relative To The Store
 
 Section: Write
 
- DiskFacts packs an entry whose kind is a FactKind; the kinds this chapter hands
- out are plain integers past that variant's range, so the packing is here rather
- than borrowed. What is NOT here is the layout: each field goes where FactLog
- says it goes.
-
- The old writer chained instead -- hash returns 32, the kind write returns 34,
- step over the gap with a bare + 32, and so on -- so the offsets were reachable
- only by adding the widths up in your head, and the 32-byte gap between the kind
- and the timestamp was a magic number in the middle of an expression. A writer
- that computes what a reader looks up is the same divergence with one side
- hidden. The gap is still there and still zero: the buffer is zeroed before
- anything is packed into it, and nothing writes those bytes.
-
   app-pack-fact : Integer, Integer, Text, Integer -> Integer
   app-pack-fact (buf) (kind-int) (content) (timestamp) =
     let hw = sha256 (text-to-bytes content)
@@ -93,13 +61,6 @@ Section: Write
     in let t = pack-u64-le buf fl-off-timestamp timestamp
     in let c = pack-u32-le buf fl-off-content-len (text-length content)
     in pack-text buf fl-header-size content
-
- The two refusals are DiskFacts', for DiskFacts' reasons: a store whose
- base is negative sits on a disk that carries a partition table and no
- fact store, and a write that would run past the region's limit would
- land in whatever partition follows. Both answer the store UNCHANGED, so
- a caller watching disk-fact-count sees it fail to rise. This writer had
- neither guard and wrote straight through both.
 
   app-write-fact : DiskFactStore, Integer, Text, Integer -> DiskFactStore
   app-write-fact (store) (kind-int) (content) (timestamp) =
@@ -176,12 +137,6 @@ Section: Scan for All Facts of a Given Kind
 
 Section: Scan Two Kinds In Log Order
 
- Some readers need more than one kind, in the order the log wrote them --
- a repository tree, for one, reads source definitions and their tombstones
- together, because which one is later for a given path is the whole
- question. This walks the log once and yields each matching entry tagged
- with its kind, in log order.
-
   KindText = record {
     kt-kind : Integer,
     kt-text : Text
@@ -190,13 +145,6 @@ Section: Scan Two Kinds In Log Order
   app-scan-two-kinds : DiskFactStore, Integer, Integer -> List KindText
   app-scan-two-kinds (store) (kind-a) (kind-b) =
     app-scan-two-loop (store.base) kind-a kind-b fact-log-start (store.superblock.log-head) []
-
- The same walk, but from a given sector rather than the start of the log. An
- index snapshot covers the log up to a sector; rebuilding on top of it needs
- only the entries written after that point, so a fast rebuild scans the tail
- instead of the whole log. The start sector is a fact boundary (it was the
- log-head captured when the snapshot was taken), so the walk lands cleanly on
- the first entry that the snapshot did not already fold in.
 
   app-scan-two-kinds-from : DiskFactStore, Integer, Integer, Integer -> List KindText
   app-scan-two-kinds-from (store) (start) (kind-a) (kind-b) =
@@ -216,44 +164,6 @@ Section: Scan Two Kinds In Log Order
     else app-scan-two-loop base kind-a kind-b (sector + nsec) end-sec acc
 
 Section: Log Compaction
-
- Compaction used to keep ONE FACT PER KIND. It walked the log and dropped any
- entry whose kind it had already seen, so a store with five hundred facts of
- the same kind compacted down to one and the other four hundred and ninety-nine
- were gone.
-
- That is the right answer for a kind that holds a single current value -- the
- browser's history blob is rewritten whole each time, and only the newest is
- worth keeping -- and it is a catastrophe for a kind that holds a collection.
- Kind 24 is secret ENTRIES. Kind 25 is FileShare manifests. Kind 26 is
- revocation records. Kind 30 is every source definition in the repository. All
- of them are collections, and compacting any of them would have destroyed all
- but one member.
-
- The log cannot tell the difference. Nothing on the disk says that fact B
- supersedes fact A; a fact is a kind, a timestamp, a hash and some bytes.
- Guessing the relation from the kind is how you lose a repository, and the kind
- space already contains counterexamples.
-
- So the rule is the conservative one, and it is the only one the data supports:
- a compactor that cannot prove two facts are the same must keep them both.
- Identity for a content-addressed fact is its content hash, which is already in
- the entry header -- so two entries collapse only when they are the same kind
- AND the same hash, which is to say the same bytes written twice. Nothing else
- is ever dropped.
-
- The consequence is honest and worth stating: compaction no longer reclaims
- space from a superseded singleton, because the disk holds no evidence that it
- was superseded, and the conservative rule is the correct trade. Reclaiming
- space is what the archive base is for -- a signed, compressed copy of a range
- of the log, recorded in the live log as the base (Works chapter FactArchive) --
- and it does not guess at supersession either: it moves history to another tier
- rather than deciding that any of it is redundant.
-
- The old walk had a second defect. It collected survivors newest-first and
- handed them straight to compact-rewrite, so a compacted log came out REVERSED
- -- and app-scan-last, which trusts log order to mean recency, would then have
- returned the OLDEST fact of a kind. Survivors are restored to log order here.
 
   CompactEntry = record {
     ce-kind : Integer,

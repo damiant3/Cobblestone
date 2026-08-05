@@ -8,38 +8,11 @@ Chapter: VerifiedLoader
   cites Foreword chapter Sha256
   cites Foreword chapter Maybe
 
- The VerifiedLoader combines CdxVerifier checks with trust-lattice
- policy evaluation, then maps verified CDX binaries into runnable
- process images with kernel-granted capability bits.
-
  We say:
 
 Section: Kernel Capability Bits
 
- The kernel capability bits live in Foreword chapter Capability. They
- were written out here as kern-cap-* and again in the compiler as cap-*,
- identical in all 23 names and all 23 values, and a binary is granted its
- authority by ONE of those two paths and must not get a different answer
- depending on which. Two were once missing here, and their absence WAS
- the disagreement: the boot path set cap-console (bit 0) and granted a
- Concurrent program ipc + process-create, and the loader granted neither,
- so the SAME binary could spawn a process when booted and could not when
- loaded. One table now, cited by both quires.
-
 Section: Load Decision
-
- A grant is a set of bits AND the extent over which they hold. The
- bitmask alone was the whole grant here, and the scope the verifier had
- already decoded was thrown away one line later -- so a binary whose
- manifest said "filesystem read, under /config/" was loaded with
- filesystem read over the ENTIRE volume. The authority survived the
- journey and the limit on it did not, which is the worst half to lose.
-
- Only the filesystem scope is carried, because it is the only one with a
- runtime chokepoint to enforce it (Fat16). A network authority and a
- console channel are checked at compile time and nowhere else, and a
- grant record that carried them would be claiming an enforcement that
- does not exist.
 
   CapGrant = record {
     bitmask : Integer,
@@ -54,11 +27,6 @@ Section: Load Decision
 
 Section: Capability Mapping
 
- dir-bits was the compiler's boot-dir-bits written out again, and the
- expansion below was boot-cap-mask-for written out again keyed by
- identifier instead of by name. Both are one function in the foreword
- now, and this asks it the same question the boot path asks.
-
   cdx-cap-to-kern-bits : CdxCapability -> Integer
   cdx-cap-to-kern-bits (cap) = cap-bits-for-id (cap.cap-id) (cap.direction)
 
@@ -72,13 +40,6 @@ Section: Capability Mapping
     else let cap = list-at caps i
     in caps-bitmask-loop caps (i + 1) len (bit-or acc (cdx-cap-to-kern-bits cap))
 
- The filesystem grant's scope, which the loader writes into the process
- table beside the bits. An absent filesystem capability and a filesystem
- capability with no scope both answer "" -- the empty prefix, which
- admits every path. That is the honest reading of an unscoped grant and
- it is what Fat16 already does with an empty scope, so the two agree by
- construction rather than by coincidence.
-
   cdx-caps-to-scope : List CdxCapability -> Text
   cdx-caps-to-scope (caps) =
     caps-scope-loop caps 0 (list-length caps)
@@ -90,12 +51,6 @@ Section: Capability Mapping
     in if cap.cap-id == cdx-cap-filesystem & text-length (cap.scope) > 0
        then cap.scope
        else caps-scope-loop caps (i + 1) len
-
- The network authority scope, decoded the same way as the filesystem
- path scope but off the network capability. A loaded binary that
- declared [Network.Write "api.example.com"] carries that authority in
- its manifest; apply-load-decision installs it into the process's
- network scope cell so the fetch chokepoint enforces it at runtime.
 
   cdx-caps-to-net-scope : List CdxCapability -> Text
   cdx-caps-to-net-scope (caps) =
@@ -131,11 +86,6 @@ Section: Load Evaluation
   load-bitmask (d) = when d
     is LoadApproved (g) -> g.bitmask
     is LoadDenied (r) -> 0
-
- A DENIED load has no scope, and answering "" for it is not a hole: a
- denied decision writes nothing into the process table at all, so the
- empty string here is never installed anywhere. apply-load-decision is
- what enforces that, and it refuses before it writes either half.
 
   load-scope : LoadDecision -> Text
   load-scope (d) = when d

@@ -37,6 +37,16 @@ Section: Mouse State
   um-ph-idle : Integer = 0
   um-ph-armed : Integer = 1
 
+ A machine can carry more than one boot-mouse interface, and the one a
+ person moves is not obliged to be the first the walk meets -- the same
+ defect the keyboard had, cured the same day it was proven on the ASUS
+ (four keyboard-shaped interfaces, keys on the fourth). Peers each pump
+ their own endpoint but fold into ONE position block (`um-pos`), because
+ the desktop has one cursor: phase and the per-interface event count
+ stay in the interface's own `um-state`, position, buttons and the
+ click edge live at `um-pos`, which for the primary is its own state
+ block and for every peer is the primary's.
+
   UsbMouse = record {
     um-ok : Boolean,
     um-host : XhciHost,
@@ -44,30 +54,49 @@ Section: Mouse State
     um-dci : Integer,
     um-ring : Integer,
     um-report : Integer,
-    um-state : Integer
+    um-state : Integer,
+    um-pos : Integer,
+    um-peers : List UsbMouse
   }
 
   mouse-no-mouse : UsbMouse
-  mouse-no-mouse = UsbMouse { um-ok = False, um-host = xhci-no-host, um-dev = xhci-no-dev, um-dci = 0, um-ring = 0, um-report = 0, um-state = 0 }
+  mouse-no-mouse = UsbMouse { um-ok = False, um-host = xhci-no-host, um-dev = xhci-no-dev, um-dci = 0, um-ring = 0, um-report = 0, um-state = 0, um-pos = 0, um-peers = [] }
+
+  mouse-peer-cap : Integer = 3
+
+  mouse-peers : UsbMouse -> Integer
+  mouse-peers (m) = if m.um-ok == False then 0 else list-length (m.um-peers)
+
+  mouse-peer : UsbMouse, Integer -> UsbMouse
+  mouse-peer (m) (i) = list-at (m.um-peers) i
+
+  mouse-adopt : UsbMouse, UsbMouse -> UsbMouse
+  mouse-adopt (m) (p) =
+    if list-length (m.um-peers) >= mouse-peer-cap then m
+    else let w = list-push (m.um-peers) p
+    in __record-set m "um-peers" w
 
   mouse-x : UsbMouse -> Integer
-  mouse-x (m) = peek-32 (m.um-state) 4
+  mouse-x (m) = peek-32 (m.um-pos) 4
 
   mouse-y : UsbMouse -> Integer
-  mouse-y (m) = peek-32 (m.um-state) 8
+  mouse-y (m) = peek-32 (m.um-pos) 8
 
   mouse-buttons : UsbMouse -> Integer
-  mouse-buttons (m) = peek-32 (m.um-state) 12
+  mouse-buttons (m) = peek-32 (m.um-pos) 12
 
   mouse-clicked : UsbMouse -> Boolean
-  mouse-clicked (m) = peek-32 (m.um-state) 16 /= 0
+  mouse-clicked (m) = peek-32 (m.um-pos) 16 /= 0
+
+  mouse-events : UsbMouse -> Integer
+  mouse-events (m) = if m.um-ok == False then 0 else peek-32 (m.um-state) 20
 
   mouse-warp : UsbMouse, Integer, Integer -> Integer
   mouse-warp (m) (x) (y) =
     if m.um-ok == False then 0
-    else let sx = poke-32 (m.um-state) 4 x
-    in let sy = poke-32 (m.um-state) 8 y
-    in um-publish x y (peek-32 (m.um-state) 12)
+    else let sx = poke-32 (m.um-pos) 4 x
+    in let sy = poke-32 (m.um-pos) 8 y
+    in um-publish x y (peek-32 (m.um-pos) 12)
 
 Section: Pointer Mailbox
 
@@ -139,7 +168,16 @@ Section: Open
 
   mouse-open-endpoint : XhciHost, UsbDev, Integer, Integer, Integer, Integer, Integer -> UsbMouse
   mouse-open-endpoint (xh) (dev) (iface) (cfgv) (epnum) (maxpkt) (binterval) =
-    let sc = usb-set-configuration xh dev cfgv
+    mouse-open-iface xh dev iface cfgv epnum maxpkt binterval True 0
+
+ The peer form skips SET_CONFIGURATION when the device is already
+ configured (USB 2.0 9.1.1.5: re-sending it resets every data toggle
+ the device holds) and folds into the position block it is handed;
+ zero means own the position, the primary's case.
+
+  mouse-open-iface : XhciHost, UsbDev, Integer, Integer, Integer, Integer, Integer, Boolean, Integer -> UsbMouse
+  mouse-open-iface (xh) (dev) (iface) (cfgv) (epnum) (maxpkt) (binterval) (do-cfg) (pos) =
+    let sc = if do-cfg then usb-set-configuration xh dev cfgv else True
     in if sc == False then mouse-no-mouse
     else let bp = usb-set-protocol xh dev iface 0
     in if bp == False then mouse-no-mouse
@@ -150,16 +188,18 @@ Section: Open
     in let ce = xhci-configure-endpoint xh dev ictx
     in if ce.xe-ok == False then mouse-no-mouse
     else if ce.xe-code /= trb-cc-success then mouse-no-mouse
-    else let pub = um-publish-magic 0
-    in UsbMouse { um-ok = True, um-host = xh, um-dev = dev, um-dci = dci, um-ring = ring, um-report = alloc-zeroed 64 64, um-state = alloc-zeroed 64 64 }
+    else let pub = if pos == 0 then um-publish-magic 0 else 0
+    in let st = alloc-zeroed 64 64
+    in UsbMouse { um-ok = True, um-host = xh, um-dev = dev, um-dci = dci, um-ring = ring, um-report = alloc-zeroed 64 64, um-state = st, um-pos = if pos == 0 then st else pos, um-peers = [] }
 
 Section: The Pump
 
  Arm one interrupt IN transfer; check the event ring without
- blocking through the per-slot latch (a storage or keyboard wait on
- the shared host may already have consumed this slot's completion);
- consume the report whole. Returns 1 exactly when a report was
- folded, so the caller knows to move the cursor.
+ blocking through the per-endpoint latch (another wait on the shared
+ host may already have consumed this endpoint's completion -- on a
+ combo receiver the keyboard pump polls this very slot); consume the
+ report whole. Returns 1 exactly when a report was folded, so the
+ caller knows to move the cursor.
 
   mouse-set-phase : UsbMouse, Integer -> Integer
   mouse-set-phase (m) (ph) =
@@ -175,13 +215,13 @@ Section: The Pump
   mouse-consume : UsbMouse, Integer, Integer -> Integer
   mouse-consume (m) (w) (h) =
     let buttons = peek-byte (m.um-report) 0
-    in let prev = peek-32 (m.um-state) 12
-    in let nx = mouse-fold (peek-32 (m.um-state) 4) (peek-byte (m.um-report) 1) w
-    in let ny = mouse-fold (peek-32 (m.um-state) 8) (peek-byte (m.um-report) 2) h
-    in let s0 = poke-32 (m.um-state) 4 nx
-    in let s1 = poke-32 (m.um-state) 8 ny
-    in let s2 = poke-32 (m.um-state) 12 buttons
-    in let s3 = poke-32 (m.um-state) 16 (mouse-click-edge prev buttons)
+    in let prev = peek-32 (m.um-pos) 12
+    in let nx = mouse-fold (peek-32 (m.um-pos) 4) (peek-byte (m.um-report) 1) w
+    in let ny = mouse-fold (peek-32 (m.um-pos) 8) (peek-byte (m.um-report) 2) h
+    in let s0 = poke-32 (m.um-pos) 4 nx
+    in let s1 = poke-32 (m.um-pos) 8 ny
+    in let s2 = poke-32 (m.um-pos) 12 buttons
+    in let s3 = poke-32 (m.um-pos) 16 (mouse-click-edge prev buttons)
     in let s4 = poke-32 (m.um-state) 20 (peek-32 (m.um-state) 20 + 1)
     in let s5 = poke-32 (m.um-state) 0 um-ph-idle
     in let s6 = um-publish nx ny buttons
@@ -189,13 +229,26 @@ Section: The Pump
 
   mouse-check : UsbMouse, Integer, Integer -> Integer
   mouse-check (m) (w) (h) =
-    let code = xhci-wait-xfer (m.um-host) ((m.um-dev).ud-slot) 0
+    let code = xhci-wait-xfer (m.um-host) ((m.um-dev).ud-slot) (m.um-dci) 0
     in if code == 0 then 0
     else mouse-consume m w h
 
-  mouse-pump : UsbMouse, Integer, Integer -> Integer
-  mouse-pump (m) (w) (h) =
+  mouse-pump-one : UsbMouse, Integer, Integer -> Integer
+  mouse-pump-one (m) (w) (h) =
     if m.um-ok == False then 0
     else let ph = peek-32 (m.um-state) 0
     in if ph == um-ph-armed then mouse-check m w h
     else mouse-arm m
+
+  mouse-pump-peers : List UsbMouse, Integer, Integer, Integer, Integer -> Integer
+  mouse-pump-peers (ms) (i) (w) (h) (moved) =
+    if i >= list-length ms then moved
+    else let r = mouse-pump-one (list-at ms i) w h
+    in mouse-pump-peers ms (i + 1) w h (if r /= 0 then 1 else moved)
+
+  mouse-pump : UsbMouse, Integer, Integer -> Integer
+  mouse-pump (m) (w) (h) =
+    if m.um-ok == False then 0
+    else let pm = mouse-pump-peers (m.um-peers) 0 w h 0
+    in let r = mouse-pump-one m w h
+    in if r /= 0 then 1 else pm

@@ -19,6 +19,12 @@
 #
 # Success criterion: the emitted Codex.cs compiles under `dotnet build`.
 #
+# -Kernel is the artifact under audit and defaults to seed/Codex.cdx. It is
+# not a convenience switch: compile.ps1 with no -Kernel takes whatever
+# build.ps1 last left in build-output/bare-metal/, which is an experimental
+# binary nobody ships, so the witness would certify a compiler that is not
+# the seed while printing only a NOTE to say so.
+#
 # Usage:
 #   plugs/csharp/emit-compiler.ps1                 # -> build-output/Codex.cs
 #   plugs/csharp/emit-compiler.ps1 -Out path.cs
@@ -27,6 +33,7 @@
 param(
     [string]$Out,
     [int]$MemMB = 3072,
+    [string]$Kernel,
     [switch]$SkipIr
 )
 
@@ -42,6 +49,12 @@ $ConcatScript = Join-Path $Repo 'build\concat-codex-self.ps1'
 $CompileScript = Join-Path $Repo 'build\compile.ps1'
 $RunScript    = Join-Path $PlugDir 'run.ps1'
 
+if (-not $Kernel) { $Kernel = Join-Path $Repo 'seed\Codex.cdx' }
+if (-not (Test-Path -PathType Leaf $Kernel)) {
+    [Console]::Error.WriteLine("MISSING: -Kernel $Kernel")
+    exit 2
+}
+
 $CodexSrc = Join-Path $OutDir 'Codex.codex'
 $IrFile   = Join-Path $OutDir 'compiler.ir'
 $IrLog    = Join-Path $OutDir 'compiler-ir.log'
@@ -56,8 +69,8 @@ if (-not $SkipIr) {
     Write-Host "[emit-compiler] compiler source: $srcLen bytes"
 
     # -- Phase 2: source -> IR (CCE) ----------------------------------
-    Write-Host "[emit-compiler] compiling to IR (mem=${MemMB}MB)..."
-    & pwsh -NoProfile -File $CompileScript -Src $CodexSrc -Out $IrFile -Log $IrLog -IrCce -MemMB $MemMB
+    Write-Host "[emit-compiler] compiling to IR (kernel=$Kernel, mem=${MemMB}MB)..."
+    & pwsh -NoProfile -File $CompileScript -Src $CodexSrc -Out $IrFile -Log $IrLog -IrCce -MemMB $MemMB -Kernel $Kernel
     if ($LASTEXITCODE -ne 0) {
         [Console]::Error.WriteLine("FAIL: IR emit exited $LASTEXITCODE; see $IrLog")
         Get-Content $IrLog -ErrorAction SilentlyContinue | Select-Object -Last 15 | ForEach-Object { [Console]::Error.WriteLine("  $_") }

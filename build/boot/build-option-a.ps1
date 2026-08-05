@@ -2,8 +2,13 @@
 # a GPT/FAT16 disk image.
 #
 # The stub comes from cdx-to-pe.ps1, which emits it from PowerShell. It used to
-# come from ml64 assembling option_a_stub.asm; that stub is deleted and no MSVC
-# is involved in any boot artifact now (B5.4 step 4). The switch also moves the
+# come from ml64 assembling option_a_stub.asm; that stub is RETIRED and no MSVC
+# is involved in any boot artifact this script builds (B5.4 step 4). The .asm
+# and its ml64 builder build-option-a-legacy.ps1 were DELETED 2026-08-03: they
+# had been kept as the reference for the ASUS display defect, that defect turned
+# out to be the ConOut re-mode (cured in cdx-to-pe.ps1, gated by
+# build/boot/test-conout-remode.ps1), and the legacy stub rendered on that panel
+# only because it never called ConOut at all. The switch also moves the
 # framebuffer handoff to the magic-gated block at 0x1F000, which is why every
 # probe reads it through GopHandoff's boot-fb-* rather than off 0x8000.
 #

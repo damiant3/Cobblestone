@@ -9,7 +9,6 @@ Chapter: CheckAppsScript
  Generates check-apps.ps1 -- asserts runtime invariants across every
  generated app page. Each web/<name>.html must carry the shared runtime
  the apps depend on.
- Compile with: -Survey "lower-mul:500000"
 
  We say:
 
@@ -19,21 +18,38 @@ Section: Parameters
 
 Section: S01 -- Preamble
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScComment "Pages not produced by the widget pipeline", ScAssign "Skip" (SeArrayLiteral [SeLit "fishtank"])]
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))), ScComment "Pages not produced by the widget pipeline", ScAssign "Skip" (SeArrayLiteral [])]
 
 Section: S02 -- Invariant Table
 
-  s02 : List ShellCmd = [ScAssign "Invariants" (SeRaw "[ordered]@{ 'html-shell' = '(?s)^<!(DOCTYPE|doctype) html'; 'click-dispatch' = '_wkOnClick'; 'state-runtime' = 'function state_get\\('; 'render-loop' = 'function set_render\\(|_render'; 'handler-binding' = 'register_handlers\\('; 'theme-css' = 'function theme_to_css\\('; 'audio-runtime' = 'function play_tone\\('; 'input-channel' = 'register_input_handler|function _wkOnInput|on-input' }")]
+  invariant : Text, Text -> ShellField
+  invariant (name) (pattern) = SfField name (SeLit pattern)
+
+  s02 : List ShellCmd = [ScComment "name -> regex the page must match", ScAssign "Invariants" (SeOrderedMap [invariant "html-shell" "(?s)^<!(DOCTYPE|doctype) html", invariant "click-dispatch" "_wkOnClick", invariant "state-runtime" "function state_get\\(", invariant "render-loop" "function set_render\\(|_render", invariant "handler-binding" "register_handlers\\(", invariant "theme-css" "function theme_to_css\\(", invariant "audio-runtime" "function play_tone\\(", invariant "input-channel" "register_input_handler|function _wkOnInput|on-input"])]
 
 Section: S03 -- Scan Loop
 
-  s03-inner : List ShellCmd = [ScAssign "appDir" (SeProperty (SeProperty (SeVar "html") "Directory") "Parent"), ScAssign "base" (SeProperty (SeVar "html") "BaseName"), ScRaw "$pages = @(Get-ChildItem (Join-Path $appDir.FullName '*Page.codex') -ErrorAction SilentlyContinue | Where-Object { ($_.BaseName -replace 'WebPage$|Page$','').ToLower() -eq $base })", ScIf (SeRaw "$pages.Count -eq 0") [ScContinue] [], ScIf (SeRaw "$Skip -contains $base") [ScContinue] [], ScAssign "txt" (SeStaticCall "System.IO.File" "ReadAllText" [SeProperty (SeVar "html") "FullName"]), ScAssign "bad" (SeRaw "@()"), ScForEach "k" (SeRaw "$Invariants.Keys") [ScIf (SeRaw "$txt -notmatch $Invariants[$k]") [ScRaw "$bad += $k"] []], ScAssign "lf" (SeRaw "([regex]::Matches($txt, \"`n\")).Count"), ScAssign "crlf" (SeRaw "([regex]::Matches($txt, \"`r`n\")).Count"), ScIf (SeRaw "$lf -ne $crlf") [ScRaw "$bad += 'crlf-endings'"] [], ScRaw "$checked++", ScIf (SeRaw "$bad.Count -gt 0") [ScRaw "Write-Host (\"FAIL {0,-12} {1}\" -f $base, ($bad -join ', ')) -ForegroundColor Red", ScRaw "$failed++"] [ScRaw "Write-Host (\"ok   {0}\" -f $base) -ForegroundColor Green"]]
+  app-dir : ShellExpr = SeProperty (SeProperty (SeProperty (SeVar "html") "Directory") "Parent") "FullName"
 
-  s03 : List ShellCmd = [ScAssign "failed" (SeInt 0), ScAssign "checked" (SeInt 0), ScForEach "html" (SeRaw "Get-ChildItem (Join-Path $Repo 'apps\\*\\web\\*.html')") s03-inner]
+  page-stem : ShellExpr = SeToLower (SeReplace (SeProperty SeItem "BaseName") "WebPage$|Page$" (SeLit ""))
+
+  s03-pages : ShellExpr = SeAsArray (SePipe (SeListFiles app-dir "*Page.codex" False) [StWhere (SeStringEq page-stem (SeVar "base"))])
+
+  s03-report : List ShellCmd = [ScIf (SeIntGt (SeCount (SeVar "bad")) (SeInt 0)) [ScEchoStyled (SeFormat (SeLit "FAIL {0,-12} {1}") [SeVar "base", SeJoin (SeVar "bad") (SeLit ", ")]) ClBrightRed True, ScIncrement "failed"] [ScEchoStyled (SeFormat (SeLit "ok   {0}") [SeVar "base"]) ClBrightGreen True]]
+
+  s03-endings : List ShellCmd = [ScAssign "lf" (SeCount (SeStaticCall "regex" "Matches" [SeVar "txt", SeNewline])), ScAssign "crlf" (SeCount (SeStaticCall "regex" "Matches" [SeVar "txt", SeCrLf])), ScIf (SeStringNeq (SeVar "lf") (SeVar "crlf")) [ScAppend "bad" (SeLit "crlf-endings")] []]
+
+  s03-inner : List ShellCmd = [ScAssign "base" (SeProperty (SeVar "html") "BaseName"), ScComment "only check artifacts produced by the HTML plug pipeline", ScAssign "pages" s03-pages, ScIf (SeIntEq (SeCount (SeVar "pages")) (SeInt 0)) [ScContinue] [], ScIf (SeContains (SeVar "Skip") (SeVar "base")) [ScContinue] [], ScAssign "txt" (SeStaticCall "System.IO.File" "ReadAllText" [SeProperty (SeVar "html") "FullName"]), ScAssign "bad" (SeArrayLiteral []), ScForEach "k" (SeProperty (SeVar "Invariants") "Keys") [ScIf (SeNot (SeMatchExpr (SeVar "txt") (SeIndex (SeVar "Invariants") (SeVar "k")))) [ScAppend "bad" (SeVar "k")] []], ScSequence s03-endings, ScIncrement "checked", ScSequence s03-report]
+
+  s03 : List ShellCmd = [ScAssign "failed" (SeInt 0), ScAssign "checked" (SeInt 0), ScForEach "html" (SeListGlob (SePathJoin (SeVar "Repo") (SeLit "apps\\*\\web\\*.html"))) s03-inner]
 
 Section: S04 -- Summary
 
-  s04 : List ShellCmd = [ScEcho (SeLit ""), ScIf (SeRaw "$failed -gt 0") [ScRaw "Write-Host \"$failed of $checked pages violate invariants\" -ForegroundColor Red", ScExit (SeInt 1)] [ScRaw "Write-Host \"all $checked pages carry the shared runtime\" -ForegroundColor Green"]]
+  s04-fail : List ShellCmd = [ScEchoStyled (SeConcat (SeConcat (SeConcat (SeVar "failed") (SeLit " of ")) (SeVar "checked")) (SeLit " pages violate invariants")) ClBrightRed True, ScExit (SeInt 1)]
+
+  s04-pass : List ShellCmd = [ScEchoStyled (SeConcat (SeConcat (SeLit "all ") (SeVar "checked")) (SeLit " pages carry the shared runtime")) ClBrightGreen True]
+
+  s04 : List ShellCmd = [ScEcho (SeLit ""), ScIf (SeIntGt (SeVar "failed") (SeInt 0)) s04-fail s04-pass]
 
 Section: Assembly
 

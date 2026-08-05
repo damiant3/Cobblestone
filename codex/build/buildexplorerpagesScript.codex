@@ -6,10 +6,6 @@ Chapter: BuildExplorerPagesScript
   cites Shell chapter ShellBuild
   cites Shell chapter PowerShellEmit
 
- Generates build-explorer-pages.ps1 -- runs CDX binaries that emit HTML
- to serial and captures them as explorer pages.
- Compile with: -Survey "lower-mul:500000"
-
  We say:
 
 Section: Parameters
@@ -18,27 +14,42 @@ Section: Parameters
 
 Section: S01 -- Preamble
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScAssign "OutDir" (SeLit "D:\\Projects\\CodexMagic\\explorer\\pages"), ScRaw "New-Item -ItemType Directory -Force $OutDir | Out-Null", ScBlank, ScRunDot (SeRaw "(Join-Path $Repo 'build\\vm-config.ps1')")]
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))), ScAssign "OutDir" (SeLit "D:\\Projects\\CodexMagic\\explorer\\pages"), ScMkdir (SeVar "OutDir"), ScBlank, ScRunDot (SePathJoin (SeVar "Repo") (SeLit "build\\vm-config.ps1"))]
 
 Section: S02 -- Page Table
 
-  s02 : List ShellCmd = [ScAssign "pages" (SeRaw "@( @{ Name = 'card'; Cdx = 'build-output\\carddesigner.cdx' }, @{ Name = 'item'; Cdx = 'build-output\\item-designer.cdx' }, @{ Name = 'character'; Cdx = 'build-output\\characterdesigner.cdx' }, @{ Name = 'setting'; Cdx = 'build-output\\settingdesigner.cdx' }, @{ Name = 'voice'; Cdx = 'build-output\\voicestudio.cdx' } )")]
+  page-entry : Text, Text -> ShellExpr
+  page-entry (name) (cdx) = SeRecord [SfField "Name" (SeLit name), SfField "Cdx" (SeLit cdx)]
+
+  s02 : List ShellCmd = [ScAssign "pages" (SeArrayLiteral [page-entry "card" "build-output\\carddesigner.cdx", page-entry "item" "build-output\\item-designer.cdx", page-entry "character" "build-output\\characterdesigner.cdx", page-entry "setting" "build-output\\settingdesigner.cdx", page-entry "voice" "build-output\\voicestudio.cdx"])]
 
 Section: S03 -- Build Loop
 
-  s03-skip : List ShellCmd = [ScRaw "Write-Host \"SKIP $($page.Name): CDX not found at $cdx\" -ForegroundColor Yellow", ScContinue]
+  page-name : ShellExpr = SeProperty (SeVar "page") "Name"
 
-  s03-run : List ShellCmd = [ScRaw "Write-Host \"Running $($page.Name)...\" -NoNewline -ForegroundColor Cyan", ScAssign "tmpOut" (SeRaw "Join-Path $env:TEMP \"explorer-$($page.Name)-$PID.txt\""), ScRaw "& pwsh -NoProfile -File (Join-Path $Repo 'build\\test-run.ps1') -Kernel $cdx -OutFile $tmpOut 2>`$null"]
+  skip-message : ShellExpr = SeConcat (SeConcat (SeConcat (SeLit "SKIP ") page-name) (SeLit ": CDX not found at ")) (SeVar "cdx")
 
-  s03-check-content : List ShellCmd = [ScRaw "$content = Get-Content -Raw $tmpOut -ErrorAction SilentlyContinue", ScIf (SeRaw "$content -and $content.Length -gt 100") [ScRaw "$content | Set-Content -Path $htmlOut -Encoding UTF8 -NoNewline", ScRaw "Write-Host \" OK ($($content.Length) bytes)\" -ForegroundColor Green"] [ScRaw "Write-Host \" EMPTY output\" -ForegroundColor Yellow"], ScRaw "Remove-Item $tmpOut -Force -ErrorAction SilentlyContinue"]
+  s03-skip : List ShellCmd = [ScEchoStyled skip-message ClBrightYellow True, ScContinue]
 
-  s03-no-output : List ShellCmd = [ScRaw "Write-Host \" NO output file\" -ForegroundColor Red"]
+  tmp-name : ShellExpr = SeConcat (SeConcat (SeConcat (SeConcat (SeLit "explorer-") page-name) (SeLit "-")) (SeVar "PID")) (SeLit ".txt")
 
-  s03 : List ShellCmd = [ScForEach "page" (SeVar "pages") [ScAssign "cdx" (SeRaw "Join-Path $Repo $page.Cdx"), ScAssign "htmlOut" (SeRaw "Join-Path $OutDir \"$($page.Name).html\""), ScIf (SeNot (SeFileExists (SeVar "cdx"))) s03-skip [], ScSequence s03-run, ScIf (SeFileExists (SeVar "tmpOut")) s03-check-content s03-no-output]]
+  s03-run : List ShellCmd = [ScEchoStyled (SeConcat (SeConcat (SeLit "Running ") page-name) (SeLit "...")) ClBrightCyan False, ScAssign "tmpOut" (SePathJoin (SeEnvVar "TEMP") tmp-name), ScRunArgsDropErr (SeLit "pwsh") [SaSwitch "NoProfile", SaNamed "File" (SePathJoin (SeVar "Repo") (SeLit "build\\test-run.ps1")), SaNamed "Kernel" (SeVar "cdx"), SaNamed "OutFile" (SeVar "tmpOut")]]
+
+  ok-message : ShellExpr = SeConcat (SeConcat (SeLit " OK (") (SeTextLength (SeVar "content"))) (SeLit " bytes)")
+
+  s03-have-content : List ShellCmd = [ScSetContent (SeVar "htmlOut") (SeVar "content"), ScEchoStyled ok-message ClBrightGreen True]
+
+  s03-check-content : List ShellCmd = [ScAssign "content" (SeFileText (SeVar "tmpOut")), ScIf (SeAnd (SeVar "content") (SeIntGt (SeTextLength (SeVar "content")) (SeInt 100))) s03-have-content [ScEchoStyled (SeLit " EMPTY output") ClBrightYellow True], ScDelete (SeVar "tmpOut")]
+
+  s03-no-output : List ShellCmd = [ScEchoStyled (SeLit " NO output file") ClBrightRed True]
+
+  s03 : List ShellCmd = [ScForEach "page" (SeVar "pages") [ScAssign "cdx" (SePathJoin (SeVar "Repo") (SeProperty (SeVar "page") "Cdx")), ScAssign "htmlOut" (SePathJoin (SeVar "OutDir") (SeConcat page-name (SeLit ".html"))), ScIf (SeNot (SeFileExists (SeVar "cdx"))) s03-skip [], ScSequence s03-run, ScIf (SeFileExists (SeVar "tmpOut")) s03-check-content s03-no-output]]
 
 Section: S04 -- Summary
 
-  s04 : List ShellCmd = [ScEcho (SeLit ""), ScRaw "Write-Host \"Pages built in $OutDir\" -ForegroundColor Green", ScRaw "Get-ChildItem $OutDir -Filter '*.html' | ForEach-Object { \"  $($_.Name) ($($_.Length) bytes)\" }"]
+  listing-line : ShellExpr = SeConcat (SeConcat (SeConcat (SeConcat (SeLit "  ") (SeProperty SeItem "Name")) (SeLit " (")) (SeProperty SeItem "Length")) (SeLit " bytes)")
+
+  s04 : List ShellCmd = [ScEcho (SeLit ""), ScEchoStyled (SeConcat (SeLit "Pages built in ") (SeVar "OutDir")) ClBrightGreen True, ScPipeDo (SeListFiles (SeVar "OutDir") "*.html" False) [] [ScEcho listing-line]]
 
 Section: Assembly
 

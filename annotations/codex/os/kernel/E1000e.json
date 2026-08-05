@@ -1,0 +1,186 @@
+[
+{
+    "target": "chapter:E1000e",
+    "kind": "doctrine",
+    "author": "blu",
+    "date": "2026-08-04",
+    "body": "Every MAC-side fact in this chapter is corroborated by FAMILY, not cited for the part. The I219's MAC is integrated into the PCH and no public document covers its CSR block, so the offsets and bit positions are confirmed against the Intel 82583V datasheet, a discrete controller of the same family. The I219 datasheet covers the PHY reached through MDIC and wins wherever it speaks. Both are in docs/Reference/ with .txt for Grep; docs/Reference/E1000_ServiceModel_Notes.md is the audit and carries the line numbers.",
+    "thread": null
+  },
+  {
+    "target": "section:Register Offsets",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-04",
+    "body": "All 21 offsets confirmed against the 82583V datasheet, section 9.2, one register per heading with the offset in the heading. None was wrong. Do not re-run this audit; the line numbers are in E1000_ServiceModel_Notes.md.",
+    "thread": null
+  },
+  {
+    "target": "function:e1000-phy-addr",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-04",
+    "body": "Address 1 is CORRECT and looks wrong. The I219 datasheet's Table 9-1 address map lists the IEEE registers (0 Control, 1 Status, 2 PHY Identifier 1) under PHY address 02, and section 9.3 opens by saying the PHY specific registers are at address 02. Section 9.3 then settles it: the registers in PHY address 01 are divided into pages and registers 0-15 are identical in all pages and ARE the IEEE defined registers. The 82583V confirms it independently from the MAC side, MDIC PHYADD: 1 = Gigabit PHY, 2 = PCIe PHY. Acting on the table alone would move every PHY access onto an address whose registers 16-31 mean something else.",
+    "thread": null
+  },
+  {
+    "target": "function:e1000-ctrl-asde",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-04",
+    "body": "We SET this bit and the 82583V says to clear it: 'This bit must be set to 0b in the 82583V.' ASDE makes the MAC IGNORE the speed the PHY indicates and auto-detect the resolved speed itself, which is not the same as settling speed and duplex from the PHY's auto-negotiation. Whether the PCH-integrated I219 carries the same requirement is not answerable from any document in the tree. Candidate cause for a link that never comes up, and the cheapest of the four to test on metal because it is one bit.",
+    "thread": null
+  },
+  {
+    "target": "function:e1000-ctrl-slu",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-04",
+    "body": "82583V: 'The Set Link Up bit MUST be set to 1b to permit the MAC to recognize the link signal from the PHY, which indicates the PHY has gotten the link up, and to receive and transmit data.' Bit 6.",
+    "thread": null
+  },
+  {
+    "target": "function:e1000-status-lu",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-04",
+    "body": "STATUS.LU is a report of the PHY's link, not an echo of CTRL.SLU. 82583V 6.2.3: the PHY provides a direct internal indication of link status to the MAC, and 'the MAC relies on this internal indication to reflect the STATUS.LU status'. This is why codex-vm's -e1000-phy-link arm is the spec-correct behaviour and its default, granting LU from SLU alone, models a device that does not exist.",
+    "thread": null
+  },
+  {
+    "target": "function:e1000-tipg-default",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-04",
+    "body": "0x0060200A decodes to IPGT 10, IPGR1 8, IPGR2 6. IPGR1 and IPGR2 match this family's suggested value exactly; IPGT does NOT. The 82583V suggests 0x00602006 because this implementation adds 6 MAC clocks rather than the 2 earlier ones added, so IPGT 6 reaches the intended total of 12 while our 10 reaches 16. Ours is the pre-PCIe value: legal and conservative, a longer gap costing throughput and nothing else. Deliberately NOT changed, with no metal measurement behind a change and every emulator green recorded against the current value. Do not describe these as 802.3 figures: they are device-clock counts, IPGR1 and IPGR2 are significant only in half duplex, and 802.3's stated relation (IPGR1 = 2/3 of IPGR2) is violated by Intel's own suggested value.",
+    "thread": null
+  },
+  {
+    "target": "function:e1000-tctl-ct",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-04",
+    "body": "CT is bits 11:4 and 15 is the right value, for the reason the 82583V gives: 'it should be set to a value of 15 in order to comply with the IEEE specification requiring a total of 16 attempts.' It is the collision threshold and it 'only has meaning while in half-duplex operation', so it is NOT a full-duplex figure. COLD, bits 21:12, is the field that applies here: hardware checks and pads to that value plus one byte even in full duplex.",
+    "thread": null
+  },
+  {
+    "target": "function:e1000-tctl-cold",
+    "kind": "todo",
+    "author": "blu",
+    "date": "2026-08-04",
+    "body": "Open question, not a finding: whether 64 is right at gigabit. The 82583V notes the collision window is speed dependent, 64 bytes for 10/100 Mb/s and 512 bytes for 1000 Mb/s, but says it about RTLC and late-collision detection rather than about COLD. Nothing measured, and this driver runs full duplex where the field only pads.",
+    "thread": null
+  },
+  {
+    "target": "section:Receive Ring",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-04",
+    "body": "Legacy Rx descriptor confirmed against the 82583V: buffer address 63:0 at offset 0, Length 16-bit at offset 8, Packet Checksum at 10, Status at 12, Errors at 13, VLAN Tag at 14; status DD bit 0, EOP bit 1. RCTL BSIZE 17:16 with BSEX 25 both zero is 2048 bytes, matching e1000-buf-size. The datasheet also states the recycle idiom e1000-recycle-rx uses: software determines buffer usage by setting the status byte to zero before making the descriptor available to hardware.",
+    "thread": null
+  },
+  {
+    "target": "section:Transmit Ring",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-04",
+    "body": "Legacy Tx command byte confirmed against the 82583V Table 39: EOP bit 0, IFCS bit 1, RS bit 3, DEXT bit 5 which must be 0b for a legacy descriptor and which we leave clear. CSO is eight bits and we leave it zero. The claim that RS is required to learn of completion is the datasheet's own: 'Hardware only sets the DD bit for descriptors with RS set.'",
+    "thread": null
+  },
+  {
+    "target": "function:e1000-settle-mdio",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-04",
+    "body": "The 10 ms comes from I219 datasheet 9.2: 'After LCD reset to the I219 a delay of 10 ms is required before attempting to access MDIO registers.' The assumption, which nothing in the tree can close: an LCD reset is a reset of the LAN Connected Device, while our CTRL.RST is what the 82583V calls a reset of the MAC function and distinguishes from CTRL.PHY_RST. Waiting unconditionally makes the question moot rather than answered. The no-clock fallback CANNOT promise 10 ms: an MMIO read costs about 100 ns on metal and far more under a hypervisor, so the same count is a different wait on each.",
+    "thread": null
+  },
+  {
+    "target": "function:e1000-phy-bring-up",
+    "kind": "invariant",
+    "author": "blu",
+    "date": "2026-08-04",
+    "body": "ORDER IS LOAD-BEARING: slow mode is set AFTER the BMCR reset, never before. A PHY reset returns the paged registers to their defaults and takes slow mode with them, so the earlier order leaves every later read ungated. Measured 2026-08-04 by sabotage under -e1000-mdio-slow: moving the e1000-phy-slow-mode call above the reset flips codex/test/e1000-mdio-slow's last row to no, and removing it entirely flips the same row. The prose that used to sit here claimed this function already handled the link-never-comes-up symptom while two requirements on this path were unimplemented; both are implemented now, and this note replaces that claim rather than restating it.",
+    "thread": null
+  },
+  {
+    "target": "function:e1000-phy-slow-mode",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-04",
+    "body": "I219 datasheet 9.2: 'Access using MDIO should be done only when bit 10 in page 769 register 16 is set.' 9.5.3.1 defines that bit as reduced MDIO frequency access, 'required for read during cable disconnect', and its reset value is 0b, so the condition is unmet on a part nobody has configured. Cable disconnect is the state a bench machine is in, which is why this is not a niche path. Read strictly 9.2 is circular, because setting the bit is itself MDIO access; the page register and 769.16 are the bootstrap that has to be exempt for the requirement to be satisfiable at all, and codex-vm's -e1000-mdio-slow arm exempts exactly those two and says so.",
+    "thread": null
+  },
+  {
+    "target": "function:e1000-phy-set-page",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-04",
+    "body": "I219 datasheet 9.3: 'Setting the page is done by writing page_num x 32 to Register 31. This is because only the 11 MSB's of register 31 are used for defining the page. During write to the page register, the five LSB's are ignored.' Registers 0-15 are the IEEE set and are identical in every page, so paging is needed only above 15, which is why the driver went without it until slow mode required 769.16. The page is restored to 0 after use: leaving it parked would silently re-aim any later paged access.",
+    "thread": null
+  },
+  {
+    "target": "function:e1000-bar-verdict",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-04",
+    "body": "A memory BAR has three fates and only one works. Inside the 3-4 GB device window it is reachable. Above 4 GB nothing is mapped and the first register read takes a page fault the demand handler will not serve. BELOW 3 GB is the case that looks harmless and is not: the address IS mapped, so nothing faults, but it is mapped as ordinary RAM inside the arena alloc-bytes hands out, so the driver and the heap point at the same bytes. Not hypothetical: firmware places a BAR wherever it finds a hole and a machine with less RAM has its hole lower down, and OVMF was measured putting a NIC BAR at 0x81060000, which is 2.16 GB and squarely inside the arena. Refusing is the whole handling, because a driver that proceeds from a bad window does not fail at the point of the mistake: it either writes registers into its own heap and reads back its last allocation, or it faults several calls later inside a ring walk, and neither failure names the BAR.",
+    "thread": null
+  },
+  {
+    "target": "type:E1000Device",
+    "kind": "invariant",
+    "author": "blu",
+    "date": "2026-08-04",
+    "body": "Allocated once at bring-up and never rebuilt. The per-packet cursors live in the control block rather than in this record because a record rebuilt on every poll is an allocation on every poll, and the receive path is polled millions of times per accept with no collector behind it. e1000-poll-raw taking four addresses instead of the record is the same decision: the stack keeps no driver record and would otherwise construct one per poll.",
+    "thread": null
+  },
+  {
+    "target": "function:e1000-rctl-upe",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-04",
+    "body": "UPE and MPE are set during bring-up deliberately. The first honest proof that this driver receives is a frame that was already on the wire, and a MAC filter that is subtly wrong looks exactly like a driver that does not receive.",
+    "thread": null
+  },
+  {
+    "target": "function:e1000-take-frame",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-04",
+    "body": "A frame spanning more than one descriptor is dropped rather than reassembled, and the descriptor is still returned to the ring. With SECRC set and a 2048-byte buffer against a 1522-byte maximum frame the hardware has no reason to split one; dropping is the honest handling of a case this driver does not implement, and it cannot wedge the ring.",
+    "thread": null
+  },
+  {
+    "target": "function:e1000-await-reset",
+    "kind": "invariant",
+    "author": "blu",
+    "date": "2026-08-04",
+    "body": "Every wait in this chapter is fuel-capped rather than unbounded. A device that never clears its reset bit is absent or wedged, and a driver that spins forever on it takes the machine down with it. This applies to e1000-await-mdic, e1000-await-aneg, e1000-await-link, e1000-await-tx and e1000-await-ticks equally.",
+    "thread": null
+  },
+  {
+    "target": "function:e1000-await-mdic",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-04",
+    "body": "MDIC layout confirmed against the 82583V: DATA 15:0, REGADD 20:16, PHYADD 25:21, OP 27:26 (01b write, 10b read), R 28, I 29, E 30. Two obligations the datasheet states and e1000-mdic-frame meets by construction, so do not remove them: R 'should be reset to 0b by software at the same time the command is written', and software 'should make sure this bit [E] is clear before making an MDI Read or Write command'. E and a read of zero are different answers and must not be folded together: nothing listening reads as E, a register holding zero reads as R with zero data.",
+    "thread": null
+  },
+  {
+    "target": "function:e1000-phy-read-at",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The address is a parameter rather than baked into the frame so that a caller can ask an address nothing answers on and get the error sentinel back. Without that a test cannot tell an addressed transaction from one whose address field is ignored, and both look identical when the only address ever used is the right one.",
+    "thread": null
+  },
+  {
+    "target": "chapter:E1000e",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A PHY that cannot be reached is NOT fatal here. e1000-phy-read answers negative one and this returns zero, and the caller still sets SLU: a part whose PHY we cannot talk to may still bring a link up on its own, and refusing it outright would be worse than trying. What the driver must not do is report success it did not observe.",
+    "thread": null
+  }
+]

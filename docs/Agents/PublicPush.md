@@ -63,7 +63,16 @@ the mirror.
   `git status` for key/pem/pfx/env/credential/token before every push.
   Secret-scan false positives to ignore: `Keyboard.codex`,
   `identity-keygen`, `cap-launder-pure-key` (they match "key" but are
-  source or tests).
+  source or tests), and `codex/test/fixtures/https/*` (a synthetic
+  throwaway TLS test PKI -- CA, leaf, and a deliberately rogue leaf,
+  private keys included BY DESIGN so the peer-verification tests run
+  from a clone; inspected and shipped with Update 38).
+- Third-party specification PDFs and their text extracts
+  (`docs/Reference/*_Specification.*`, `*_Datasheet.*`) stay OUT of the
+  public mirror: the depot may hold them for the audit trail, but
+  republishing other parties' copyrighted documents is redistribution.
+  Our own notes about them (`docs/Reference/*_Notes.md`) ship. Ruled
+  during the Update 38 push, 2026-08-05.
 - `apps/games/magic/`, the old basic Magic engine (21 core files), stays
   OUT of the public mirror. It is in `.gitignore`, but `.gitignore` only
   governs UNTRACKED files; it never untracks a file already committed. If

@@ -1,0 +1,115 @@
+Chapter: E1000AsdeArms
+  cites Foreword chapter Maybe
+  cites Kernel chapter E1000e
+  cites Kernel chapter Pci
+  cites Dev chapter NicAsde
+
+ The ASDE stage that is going to the board, run against the emulator so
+ the arms are known to execute before a human is spent on them.
+
+ This CANNOT answer the question the stage exists to ask. The model's
+ STATUS.LU does not consult CTRL.ASDE at all, so both arms come back the
+ same here by construction, and that agreement is worth exactly nothing
+ as evidence about the I219. What it does establish is that the stage
+ compiles, that both arms run to completion against a device, that the
+ second arm's bring-up is not wedged by the first, and that the rendered
+ line is well formed. A payload whose stage faults at the bench has
+ spent a trip to discover a compile-time fact.
+
+Section: Judges
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+ "Ran" is asked as "came back carrying a give-up state I recognise", not
+ as "STATUS was nonzero". Those are the same thing only while the bed
+ grants a link: under -e1000-no-link STATUS reads zero on an arm that ran
+ perfectly, and the earlier version of this judge answered no and named
+ itself `both-arms-run` while doing it. A judge whose answer depends on a
+ condition it does not name is the defect this stage already paid for once.
+
+  gave-known : NicAsdeArm -> Boolean
+  gave-known (a) =
+   if (a.na-gave) == na-gave-ok then True
+   else if (a.na-gave) == na-gave-reset then True
+   else (a.na-gave) == na-gave-nolink
+
+  both-arms-run : PciDevice -> Boolean
+  both-arms-run (dev) =
+   let mmio = na-mmio-of dev
+   in let on = na-bring-up mmio True
+   in let off = na-bring-up mmio False
+   in gave-known on
+
+ The second arm must not be poisoned by the first. Both reset and bring
+ the PHY up from scratch, so the later reading has to be as live as the
+ earlier one; a zero here would mean the first arm left the part wedged.
+
+  second-arm-live : PciDevice -> Boolean
+  second-arm-live (dev) =
+   let mmio = na-mmio-of dev
+   in let on = na-bring-up mmio True
+   in let off = na-bring-up mmio False
+   in gave-known off
+
+ The arms differ in one bit of CTRL and nothing else, so under a model
+ that ignores ASDE they must agree. If this ever answers no on the
+ EMULATOR, the stage has grown a difference that is not the bit.
+
+  arms-agree-in-bed : PciDevice -> Boolean
+  arms-agree-in-bed (dev) =
+   let mmio = na-mmio-of dev
+   in let on = na-bring-up mmio True
+   in let off = na-bring-up mmio False
+   in (on.na-status) == (off.na-status)
+
+  line-nonempty : PciDevice -> Boolean
+  line-nonempty (dev) =
+   let mmio = na-mmio-of dev
+   in text-length (na-line "ASDE=1" (na-bring-up mmio True)) > 20
+
+ The give-up state is the row that flew and did not paint. Under the model
+ the link comes up, so this reads ok; the arm that matters is the one
+ below, which asks whether a state that is NOT ok can render at all.
+
+  gave-is-ok-here : PciDevice -> Boolean
+  gave-is-ok-here (dev) =
+   let mmio = na-mmio-of dev
+   in (na-bring-up mmio True).na-gave == na-gave-ok
+
+ A hand-built arm in each give-up state, so the text for a state this bed
+ cannot produce is still known to render rather than being assumed. The
+ flight that painted nothing is what this arm exists for.
+
+  refused : NicAsdeArm
+  refused = NicAsdeArm { na-status = 0, na-aneg = 0 - 1,
+                         na-gave = na-gave-reset, na-phy = 0 }
+
+  nolink : NicAsdeArm
+  nolink = NicAsdeArm { na-status = 0, na-aneg = 0,
+                        na-gave = na-gave-nolink, na-phy = 1 }
+
+  give-up-rows-render : Boolean
+  give-up-rows-render =
+   if text-length (na-line "ASDE=1" refused) <= 20 then False
+   else text-length (na-line "ASDE=0" nolink) > 20
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let scan = pci-scan-bus 0
+    in act
+      when e1000-find scan
+        is Just (dev) -> act
+          print-line-uni ("first arm runs  : " & yn (both-arms-run dev))
+          print-line-uni ("second arm live : " & yn (second-arm-live dev))
+          print-line-uni ("arms agree      : " & yn (arms-agree-in-bed dev))
+          print-line-uni ("line renders    : " & yn (line-nonempty dev))
+          print-line-uni ("gave is ok here : " & yn (gave-is-ok-here dev))
+          print-line-uni ("give-up renders : " & yn give-up-rows-render)
+        end
+        is None -> print-line-uni ("candidate found : no")
+    end
+  end
+
+Page 1

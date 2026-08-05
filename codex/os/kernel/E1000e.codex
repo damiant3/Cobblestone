@@ -1,25 +1,11 @@
 Chapter: E1000e
   cites Foreword chapter Maybe
+  cites Kernel chapter Hpet
   cites Kernel chapter Pci
 
  Intel gigabit Ethernet, the 8254x/8257x/I21x descriptor-ring family.
 
- This is the driver for a part we do not own, so what is written down
- here is the part number, the register offset, the bit position and what
- the silicon does with each -- none of which a reader can derive from the
- code beside it. Everything this driver decides for itself is left to the
- code.
-
 Section: Identification
-
- Every Intel network part answers vendor 0x8086, and the ones this
- driver speaks to answer class 0x02 subclass 0x00 (Ethernet). The
- device ID is NOT pinned here on purpose. The register layout below is
- common to the family, and the exact part on any given board is a
- question for the PCI probe rather than an assumption in the source;
- an I219-V answers 0x15B8, an I219-LM 0x15B7, an 82574L 0x10D3, and a
- driver that named one of them would refuse the other two for no
- reason the hardware requires.
 
   e1000-vendor-intel : Integer = #8086
   e1000-class-network : Integer = 2
@@ -43,8 +29,7 @@ Section: Identification
 
 Section: Register Offsets
 
- Byte offsets into the BAR 0 memory window. These are the device's, not
- ours, and they are stable across the whole family.
+ Byte offsets into the BAR 0 memory window.
 
   e1000-reg-ctrl : Integer = #0000
   e1000-reg-status : Integer = #0008
@@ -69,28 +54,16 @@ Section: Register Offsets
   e1000-reg-rah : Integer = #5404
   e1000-reg-mdic : Integer = #0020
 
- CTRL bits. RST is self-clearing and takes microseconds; SLU asks the
- MAC to bring the link up and ASDE lets it settle speed and duplex from
- the PHY's own auto-negotiation, which is why this driver never writes a
- speed.
-
   e1000-ctrl-slu : Integer = #00000040
   e1000-ctrl-asde : Integer = #00000020
   e1000-ctrl-rst : Integer = #04000000
 
- STATUS bit 1 is LU, link up. It reads zero until auto-negotiation
- finishes, which is the only reason link bring-up needs a wait at all.
-
   e1000-status-lu : Integer = #00000002
 
- RCTL. BAM accepts broadcast, which ARP needs. UPE and MPE are
- promiscuous unicast and multicast: they are set during bring-up
- deliberately, because the first honest proof that this driver receives
- is a frame that was already on the wire, and a MAC filter that is
- subtly wrong looks exactly like a driver that does not receive. SECRC
- strips the four-byte CRC so the length the descriptor reports is the
- length of the frame. BSIZE is left at its zero setting, which is 2048
- bytes and matches e1000-buf-size below.
+ UPE and MPE are promiscuous unicast and multicast, set during bring-up
+ deliberately: the first honest proof that this driver receives is a
+ frame that was already on the wire, and a MAC filter that is subtly
+ wrong looks exactly like a driver that does not receive.
 
   e1000-rctl-en : Integer = #00000002
   e1000-rctl-upe : Integer = #00000008
@@ -98,32 +71,19 @@ Section: Register Offsets
   e1000-rctl-bam : Integer = #00008000
   e1000-rctl-secrc : Integer = #04000000
 
- TCTL. CT is the collision threshold and COLD the collision distance;
- the values below are the 802.3 full-duplex figures, 15 and 64, at bit
- positions 4 and 12.
+ CT is bits 11:4 and COLD bits 21:12, so these set 15 and 64.
 
   e1000-tctl-en : Integer = #00000002
   e1000-tctl-psp : Integer = #00000008
   e1000-tctl-ct : Integer = #000000F0
   e1000-tctl-cold : Integer = #00040000
 
- TIPG carries three inter-packet-gap fields: IPGT at bit 0, IPGR1 at
- bit 10, IPGR2 at bit 20. 10, 8 and 6 are the copper 802.3 values.
+ IPGT at bit 0, IPGR1 at bit 10, IPGR2 at bit 20: 10, 8 and 6.
 
   e1000-tipg-default : Integer = #0060200A
 
- Descriptor status bits, in the status byte of a receive descriptor.
- DD says the hardware is done with the descriptor and the driver may
- read it; EOP says the frame ends here rather than continuing into the
- next descriptor.
-
   e1000-rx-status-dd : Integer = #01
   e1000-rx-status-eop : Integer = #02
-
- Transmit command bits. EOP ends the packet, IFCS asks the hardware to
- append the Ethernet CRC, and RS asks it to report completion by setting
- DD in the descriptor's own status byte -- without RS the driver has
- nothing to wait on.
 
   e1000-tx-cmd-eop : Integer = #01
   e1000-tx-cmd-ifcs : Integer = #02
@@ -144,30 +104,6 @@ Section: Ring Geometry
 
 Section: Where the BAR Is Allowed to Land
 
- The runtime page tables decide this and the driver only reports it.
- Three gigabytes are mapped identity as RAM and are the heap and stack
- arena; the single page directory above that maps three to four
- gigabytes for devices; nothing above four gigabytes is mapped at all.
-
- So a memory BAR has three possible fates and only one of them works.
- Inside the device window it is reachable. Above four gigabytes there is
- no mapping and the first register read takes a page fault the demand
- handler will not serve. Below three gigabytes is the case that looks
- harmless and is not: the address IS mapped, so nothing faults, but it
- is mapped as ordinary RAM inside the arena the allocator hands out, so
- the driver and the heap are pointed at the same bytes.
-
- That third case is not hypothetical. Firmware places a BAR wherever it
- finds a hole, and a machine with less RAM has its hole lower down: OVMF
- was measured putting a NIC BAR at 0x81060000, which is 2.16 GB and
- squarely inside the arena.
-
- Refusing is the whole handling. A driver that proceeds from a bad
- window does not fail at the point of the mistake -- it either writes
- registers into its own heap and reads back whatever it last allocated,
- or it faults several calls later inside a ring walk, and neither
- failure names the BAR.
-
   e1000-window-lo : Integer = 3221225472
   e1000-window-hi : Integer = 4294967296
 
@@ -187,12 +123,6 @@ Section: Where the BAR Is Allowed to Land
 
 Section: Device Handle
 
- Allocated once at bring-up and never rebuilt. The cursors that move
- per packet live in the control block rather than in this record,
- because a record rebuilt on every poll would allocate on every poll,
- and the receive path is polled millions of times per accept with no
- collector behind it.
-
   E1000Device = record {
     e-mmio : Integer,
     e-rx-ring : Integer,
@@ -204,9 +134,6 @@ Section: Device Handle
     e-mac : List Integer,
     e-mac-valid : Boolean
   }
-
- The control block holds two cursors: the next receive descriptor this
- driver will examine, and the next transmit descriptor it will fill.
 
   e1000-cb-rx-next : Integer = 0
   e1000-cb-tx-next : Integer = 4
@@ -260,14 +187,10 @@ Section: Reset and Link
    in let ctrl = e1000-read mmio e1000-reg-ctrl
    in let r = e1000-write mmio e1000-reg-ctrl (bit-or ctrl e1000-ctrl-rst)
    in let settled = e1000-await-reset mmio 0
+   in let waited = e1000-settle-mdio mmio
    in let m2 = e1000-write mmio e1000-reg-imc #FFFFFFFF
    in let cleared = e1000-read mmio e1000-reg-icr
    in settled
-
- Every wait in this chapter is fuel-capped rather than unbounded. A
- device that never clears its reset bit is a device that is absent or
- wedged, and a driver that spins forever on it takes the machine down
- with it.
 
   e1000-reset-fuel : Integer = 1000000
 
@@ -276,6 +199,33 @@ Section: Reset and Link
    if i >= e1000-reset-fuel then 0
    else if bit-and (e1000-read mmio e1000-reg-ctrl) e1000-ctrl-rst == 0 then 1
    else e1000-await-reset mmio (i + 1)
+
+ Intel I219 datasheet rev 2.02 section 9.2 requires this delay between a
+ reset and the first MDIO access.
+
+  e1000-mdio-window-ms : Integer = 10
+
+  e1000-settle-ticks-fuel : Integer = 200000
+  e1000-settle-spin-fuel : Integer = 100000
+
+  e1000-settle-mdio : Integer -> Integer
+  e1000-settle-mdio (mmio) =
+   let started = hpet-start
+   in let rate = hpet-ticks-per-second
+   in if rate <= 0 then e1000-settle-spin mmio e1000-settle-spin-fuel
+   else e1000-await-ticks hpet-ticks ((rate * e1000-mdio-window-ms) / 1000) 0
+
+  e1000-await-ticks : Integer, Integer, Integer -> Integer
+  e1000-await-ticks (start) (want) (i) =
+   if i >= e1000-settle-ticks-fuel then 0
+   else if (hpet-ticks - start) >= want then 1
+   else e1000-await-ticks start want (i + 1)
+
+  e1000-settle-spin : Integer, Integer -> Integer
+  e1000-settle-spin (mmio) (i) =
+   if i <= 0 then 0
+   else let v = e1000-read mmio e1000-reg-status
+   in e1000-settle-spin mmio (i - 1)
 
   e1000-link-fuel : Integer = 4000000
 
@@ -317,12 +267,6 @@ Section: Reset and Link
  value. A sixteen-bit register cannot hold negative one, so the sentinel
  cannot collide with a legitimate reading.
 
- The address is a parameter rather than baked into the frame so that a
- caller can ask an address nothing answers on and get the error sentinel
- back. Without that a test cannot tell an addressed transaction from one
- whose address field is ignored, and both look identical when the only
- address ever used is the right one.
-
   e1000-phy-read-at : Integer, Integer, Integer -> Integer
   e1000-phy-read-at (mmio) (phy) (reg) =
    let f = e1000-mdic-frame e1000-mdic-op-read phy reg 0
@@ -346,26 +290,39 @@ Section: Reset and Link
     else if bit-and v e1000-mdic-r /= 0 then bit-and v e1000-mdic-data
     else e1000-await-mdic mmio (i + 1)
 
- Reset the PHY and restart auto-negotiation before asking the MAC for a
- link. On a part with a discrete PHY the MAC's own SLU is usually enough
- and this is redundant; on a PCH-integrated part it is not, and the
- failure when it is skipped is a link that simply never comes up, with
- every MAC register reading exactly as it should. That is why this runs
- unconditionally rather than behind a device check: the cost is a handful
- of MDIC transactions and the alternative is a silent failure on the one
- board we have.
+ Register 31 is the page register and only its 11 high bits select, so the
+ page is written shifted by five. Registers 0 to 15 are the IEEE set and
+ are the same in every page, so this is needed only above 15.
 
- A PHY that cannot be reached is NOT fatal here. e1000-phy-read answers
- negative one and this returns zero, and the caller still sets SLU: a part
- whose PHY we cannot talk to may still bring a link up on its own, and
- refusing it outright would be worse than trying. What the driver must not
- do is report success it did not observe.
+  e1000-phy-page-reg : Integer = 31
+  e1000-phy-port-page : Integer = 769
+  e1000-phy-custom-mode : Integer = 16
+  e1000-phy-mdio-slow : Integer = #0400
+
+  e1000-phy-set-page : Integer, Integer -> Integer
+  e1000-phy-set-page (mmio) (page) =
+   e1000-phy-write mmio e1000-phy-page-reg (bit-shl page 5)
+
+ Set after the PHY reset, never before: a reset returns the paged
+ registers to their defaults and would take this with them.
+
+  e1000-phy-slow-mode : Integer -> Integer
+  e1000-phy-slow-mode (mmio) =
+   let p = e1000-phy-set-page mmio e1000-phy-port-page
+   in if p < 0 then 0
+   else let cur = e1000-phy-read mmio e1000-phy-custom-mode
+   in if cur < 0 then 0
+   else let want = bit-or cur e1000-phy-mdio-slow
+   in let w = e1000-phy-write mmio e1000-phy-custom-mode want
+   in let back = e1000-phy-set-page mmio 0
+   in if w < 0 then 0 else 1
 
   e1000-phy-bring-up : Integer -> Integer
   e1000-phy-bring-up (mmio) =
    let r = e1000-phy-write mmio e1000-phy-bmcr e1000-bmcr-reset
    in if r < 0 then 0
-   else let mode = bit-or e1000-bmcr-aneg-en e1000-bmcr-aneg-rst
+   else let s = e1000-phy-slow-mode mmio
+   in let mode = bit-or e1000-bmcr-aneg-en e1000-bmcr-aneg-rst
     in let a = e1000-phy-write mmio e1000-phy-bmcr mode
     in if a < 0 then 0
     else e1000-await-aneg mmio 0
@@ -531,13 +488,6 @@ Section: Receive
   e1000-no-frame : E1000RecvResult
   e1000-no-frame = E1000RecvResult { r-frame = [], r-has-frame = False }
 
- The raw form is the real one and the record form calls it. A caller
- holding the four addresses separately -- the stack does, because it
- keeps no driver record -- would otherwise have to build an E1000Device
- per poll, and a record built per poll is an allocation per poll on a
- path with no collector behind it. That is the same reason the cursors
- live in the control block, so the two decisions are one decision.
-
   e1000-poll-frame : E1000Device -> E1000RecvResult
   e1000-poll-frame (d) =
    if (d.e-present) == False then e1000-no-frame
@@ -561,13 +511,6 @@ Section: Receive
    in let frame = if whole then e1000-read-bytes buf 0 capped [] else []
    in let recycled = e1000-recycle-rx mmio ctrl-blk idx desc
    in E1000RecvResult { r-frame = frame, r-has-frame = whole }
-
- A frame spanning more than one descriptor is dropped rather than
- reassembled, and the descriptor is still returned to the ring. With
- SECRC set and a 2048-byte buffer against a 1522-byte maximum frame,
- the hardware has no reason to split one; dropping is the honest
- handling of a case this driver does not implement, and it cannot
- wedge the ring.
 
   e1000-recycle-rx : Integer, Integer, Integer, Integer -> Integer
   e1000-recycle-rx (mmio) (ctrl-blk) (idx) (desc) =

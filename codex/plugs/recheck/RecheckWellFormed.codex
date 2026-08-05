@@ -1,0 +1,506 @@
+Chapter: RecheckWellFormed
+  cites Recheck chapter RecheckCore
+  cites Recheck chapter RecheckBuiltins
+
+ Stage 1. Re-derives, from the IR text alone, the four properties a
+ well-formed chapter must have: every name is bound by something, every
+ application agrees with the function type its callee carries, every
+ constructor is applied to the payload types its own sum type declares,
+ and every match arm binds sub-patterns at the constructor's field types.
+
+ This is the stage that would have caught the shape of Lean kernel bug
+ 14576: a declaration accepted carrying an argument nothing ever checked.
+
+Section: Environment
+
+ Names a body may legitimately mention: the locals in scope, the chapter's
+ own definitions, its constructors, and the builtins the language supplies.
+ A name resolving to none of these is bound by nothing.
+
+  RcEnv = record {
+   re-locals : List Text,
+   re-defs : List Text,
+   re-ctors : List Text,
+   re-def-name : Text,
+   re-typedefs : List ATypeDef,
+   re-builtins : List Text
+  }
+
+  rc-env-bind : RcEnv, Text -> RcEnv
+  rc-env-bind (e) (n) =
+   RcEnv { re-locals = list-push (e.re-locals) n, re-defs = e.re-defs, re-ctors = e.re-ctors, re-def-name = e.re-def-name, re-typedefs = e.re-typedefs, re-builtins = e.re-builtins }
+
+  rc-env-bind-all : RcEnv, List Text, Integer, Integer -> RcEnv
+  rc-env-bind-all (e) (ns) (i) (len) =
+   if i >= len then e
+   else rc-env-bind-all (rc-env-bind e (list-at ns i)) ns (i + 1) len
+
+  rc-text-member : List Text, Text, Integer, Integer -> Boolean
+  rc-text-member (xs) (t) (i) (len) =
+   if i >= len then False
+   else if list-at xs i == t then True
+   else rc-text-member xs t (i + 1) len
+
+  rc-in : List Text, Text -> Boolean
+  rc-in (xs) (t) = rc-text-member xs t 0 (list-length xs)
+
+ The builtin names are a FIELD rather than a mention of the list constant,
+ and that is not style. A top-level list definition is a recipe, not
+ storage: every mention re-materialises the whole list, measured elsewhere
+ in this tree at 98.4 MB of heap for 100000 reads of a 121-element
+ constant against 1 KB for the same list threaded as a parameter. Name
+ resolution runs once per name node in every body, so mentioning the
+ 259-element table there rebuilt it once per name, permanently, on a heap
+ with no collector. It is bound once per chapter and threaded.
+
+ A double underscore prefix is a compiler intrinsic by the language's own
+ naming rule, so it resolves without appearing in any table.
+
+  rc-is-intrinsic : Text -> Boolean
+  rc-is-intrinsic (n) =
+   if text-length n < 2 then False
+   else char-code-at n 0 == char-code-at "_" 0 & char-code-at n 1 == char-code-at "_" 0
+
+  rc-resolves : RcEnv, Text -> Boolean
+  rc-resolves (e) (n) =
+   if rc-in (e.re-locals) n then True
+   else if rc-in (e.re-defs) n then True
+   else if rc-in (e.re-ctors) n then True
+   else if rc-is-intrinsic n then True
+   else rc-in (e.re-builtins) n
+
+Section: Node Types
+
+ Literals carry no type on the wire, and a literal's type is whatever its
+ context admits, so their type is absent rather than wrong. Absent
+ compares as undecided.
+
+ One node does not carry its own type and it is not marked on the wire.
+ A list expression's type field holds the ELEMENT type: the IR builds it
+ with the element type and the compiler's own accessor wraps it in ListTy
+ on the way out. Read straight off the wire, `(list-expr (elems ...)
+ int-default)` says int-default where the node's type is List Integer,
+ and the rechecker reported every list argument in the tree as a type
+ mismatch until this was wrapped. Any consumer of this wire has the same
+ trap waiting, and nothing in the wire format announces it.
+
+  RcTyOf =
+   | RcTyKnown (CodexType)
+   | RcTyNone
+
+  rc-expr-ty : IRExpr -> RcTyOf
+  rc-expr-ty (x) =
+   when x
+    is IrName (n) (t) (sp) -> RcTyKnown t
+    is IrBinary (o) (l) (r) (t) (sp) -> RcTyKnown t
+    is IrNegate (v) (t) (sp) -> RcTyKnown t
+    is IrIf (c) (a) (b) (t) (sp) -> RcTyKnown t
+    is IrApply (f) (a) (t) (sp) -> RcTyKnown t
+    is IrLambda (ps) (b) (t) (sp) -> RcTyKnown t
+    is IrList (es) (t) (sp) -> RcTyKnown (ListTy t)
+    is IrMatch (s) (bs) (t) (sp) -> RcTyKnown t
+    is IrAct (ss) (t) (sp) -> RcTyKnown t
+    is IrHandle (e) (h) (cs) (t) (sp) -> RcTyKnown t
+    is IrRecord (n) (fs) (t) (sp) -> RcTyKnown t
+    is IrFieldAccess (r) (f) (t) (sp) -> RcTyKnown t
+    is IrFieldStore (r) (f) (v) (t) (sp) -> RcTyKnown t
+    is IrFork (b) (t) (sp) -> RcTyKnown t
+    is IrAwait (b) (t) (sp) -> RcTyKnown t
+    is IrError (m) (t) (sp) -> RcTyKnown t
+    is otherwise -> RcTyNone
+
+  rc-cmp-tyof : CodexType, RcTyOf -> TyCmp
+  rc-cmp-tyof (want) (got) =
+   when got
+    is RcTyKnown (t) -> rc-ty-eq want t
+    is RcTyNone -> TyUnknown
+
+  rc-fits-tyof : CodexType, RcTyOf -> TyCmp
+  rc-fits-tyof (want) (got) =
+   when got
+    is RcTyKnown (t) -> rc-ty-fits t want
+    is RcTyNone -> TyUnknown
+
+Section: Constructor Lookup
+
+  rc-find-ctor-fields : List SumCtor, Text, Integer, Integer -> List CodexType
+  rc-find-ctor-fields (cs) (name) (i) (len) =
+   if i >= len then []
+   else let c = list-at cs i
+   in if (c.name).value == name then c.fields
+   else rc-find-ctor-fields cs name (i + 1) len
+
+  rc-has-ctor : List SumCtor, Text, Integer, Integer -> Boolean
+  rc-has-ctor (cs) (name) (i) (len) =
+   if i >= len then False
+   else if ((list-at cs i).name).value == name then True
+   else rc-has-ctor cs name (i + 1) len
+
+Section: Pattern Walk
+
+  rc-pat-names : IRPat, List Text -> List Text
+  rc-pat-names (p) (acc) =
+   when p
+    is IrVarPat (n) (t) (sp) -> list-push acc n
+    is IrCtorPat (n) (subs) (t) (sp) -> rc-pat-names-list subs 0 (list-length subs) acc
+    is IrVecPat (subs) (t) (sp) -> rc-pat-names-list subs 0 (list-length subs) acc
+    is otherwise -> acc
+
+  rc-pat-names-list : List IRPat, Integer, Integer, List Text -> List Text
+  rc-pat-names-list (ps) (i) (len) (acc) =
+   if i >= len then acc
+   else rc-pat-names-list ps (i + 1) len (rc-pat-names (list-at ps i) acc)
+
+  rc-pat-ty : IRPat -> RcTyOf
+  rc-pat-ty (p) =
+   when p
+    is IrVarPat (n) (t) (sp) -> RcTyKnown t
+    is IrCtorPat (n) (subs) (t) (sp) -> RcTyKnown t
+    is IrVecPat (subs) (t) (sp) -> RcTyKnown t
+    is otherwise -> RcTyNone
+
+ A constructor pattern is checked against the scrutinee type it carries:
+ the constructor must be one of that type's, and each sub-pattern must
+ bind at the field type the constructor declares. Builtin List patterns
+ (Cons, Nil) carry a ListTy rather than a SumTy and are not re-checkable
+ from the wire, so they are undecided rather than wrong.
+
+  rc-check-pat : RcWalk, RcEnv, IRPat -> RcWalk
+  rc-check-pat (w) (e) (p) =
+   if rc-dry w then w
+   else when p
+    is IrCtorPat (n) (subs) (t) (sp) -> rc-check-ctor-pat (rc-burn w) e n subs t
+    is otherwise -> rc-burn w
+
+ A sum type declared in the chapter under test arrives inlined as a
+ SumTy carrying its constructors. A sum type reached by CITATION does
+ not: it arrives as `(ctd "Maybe" (args ...))`, a bare name and its type
+ arguments, and every Maybe, Result and Either in the tree is that shape.
+ Reading only the inlined form left constructor checking covering
+ same-chapter types and nothing else, which the first tree sweep showed
+ as UNSUPPORTED on every `Just` and `None`.
+
+ The constructors are on the wire, in the chapter's `(type-defs ...)`
+ section, so the name is resolved there. Field types are surface
+ ATypeExpr rather than CodexType and carry the declaration's own type
+ parameters, so ARITY is checked and the payload types are answered
+ UNSUPPORTED unless the field is a bare parameter reference this
+ declaration's arguments can substitute.
+
+  rc-check-ctor-pat : RcWalk, RcEnv, Text, List IRPat, CodexType -> RcWalk
+  rc-check-ctor-pat (w) (e) (n) (subs) (t) =
+   when t
+    is SumTy (sn) (args) (ctors) -> rc-check-ctor-pat-sum w e n subs ctors
+    is ConstructedTy (cn) (args) -> rc-check-ctor-pat-ctd w e n subs (cn.value) args
+    is otherwise ->
+     rc-add w (rc-finding (e.re-def-name) RcUnsupported "ctor-pat-scrutinee" ("constructor pattern " & n & " over a scrutinee that is neither a sum nor a named type"))
+
+  rc-find-variant : List ATypeDef, Text, Integer, Integer -> List AVariantCtorDef
+  rc-find-variant (tds) (name) (i) (len) =
+   if i >= len then []
+   else when list-at tds i
+    is AVariantTypeDef (tn) (tps) (ctors) (sp) -> if tn.value == name then ctors else rc-find-variant tds name (i + 1) len
+    is otherwise -> rc-find-variant tds name (i + 1) len
+
+  rc-variant-tparams : List ATypeDef, Text, Integer, Integer -> List Name
+  rc-variant-tparams (tds) (name) (i) (len) =
+   if i >= len then []
+   else when list-at tds i
+    is AVariantTypeDef (tn) (tps) (ctors) (sp) -> if tn.value == name then tps else rc-variant-tparams tds name (i + 1) len
+    is otherwise -> rc-variant-tparams tds name (i + 1) len
+
+  rc-avariant-has : List AVariantCtorDef, Text, Integer, Integer -> Boolean
+  rc-avariant-has (cs) (n) (i) (len) =
+   if i >= len then False
+   else if ((list-at cs i).name).value == n then True
+   else rc-avariant-has cs n (i + 1) len
+
+  rc-avariant-fields : List AVariantCtorDef, Text, Integer, Integer -> List ATypeExpr
+  rc-avariant-fields (cs) (n) (i) (len) =
+   if i >= len then []
+   else if ((list-at cs i).name).value == n then (list-at cs i).fields
+   else rc-avariant-fields cs n (i + 1) len
+
+  rc-check-ctor-pat-ctd : RcWalk, RcEnv, Text, List IRPat, Text, List CodexType -> RcWalk
+  rc-check-ctor-pat-ctd (w) (e) (n) (subs) (tyname) (args) =
+   let ctors = rc-find-variant (e.re-typedefs) tyname 0 (list-length (e.re-typedefs))
+   in if list-length ctors == 0
+   then rc-add w (rc-finding (e.re-def-name) RcUnsupported "ctor-pat-scrutinee" ("constructor pattern " & n & " over " & tyname & ", whose declaration is not on this wire"))
+   else if rc-avariant-has ctors n 0 (list-length ctors) == False
+   then rc-add w (rc-finding (e.re-def-name) RcDisagree "ctor-pat-unknown" (n & " is not a constructor of " & tyname))
+   else let fields = rc-avariant-fields ctors n 0 (list-length ctors)
+   in if list-length fields /= list-length subs
+   then rc-add w (rc-finding (e.re-def-name) RcDisagree "ctor-pat-arity" (n & " of " & tyname & " declares " & show (list-length fields) & " fields, pattern binds " & show (list-length subs)))
+   else rc-check-ctd-fields w e n subs fields (rc-variant-tparams (e.re-typedefs) tyname 0 (list-length (e.re-typedefs))) args 0 (list-length subs)
+
+  rc-check-ctd-fields : RcWalk, RcEnv, Text, List IRPat, List ATypeExpr, List Name, List CodexType, Integer, Integer -> RcWalk
+  rc-check-ctd-fields (w) (e) (n) (subs) (fields) (tps) (args) (i) (len) =
+   if i >= len then w
+   else let want = rc-subst-field (list-at fields i) tps args
+   in let w2 = rc-ctd-field-verdict w e n i want (rc-pat-ty (list-at subs i))
+   in rc-check-ctd-fields w2 e n subs fields tps args (i + 1) len
+
+  rc-subst-field : ATypeExpr, List Name, List CodexType -> RcTyOf
+  rc-subst-field (f) (tps) (args) =
+   when f
+    is ANamedType (nm) (sp) -> rc-subst-name (nm.value) tps args 0 (list-length tps)
+    is otherwise -> RcTyNone
+
+  rc-subst-name : Text, List Name, List CodexType, Integer, Integer -> RcTyOf
+  rc-subst-name (nm) (tps) (args) (i) (len) =
+   if i >= len then RcTyNone
+   else if ((list-at tps i).value) == nm then (if i < list-length args then RcTyKnown (list-at args i) else RcTyNone)
+   else rc-subst-name nm tps args (i + 1) len
+
+  rc-ctd-field-verdict : RcWalk, RcEnv, Text, Integer, RcTyOf, RcTyOf -> RcWalk
+  rc-ctd-field-verdict (w) (e) (n) (i) (want) (got) =
+   when want
+    is RcTyNone -> rc-add w (rc-finding (e.re-def-name) RcUnsupported "ctor-pat-field-type" ("sub-pattern " & show i & " of " & n & " has a field type this wire cannot resolve"))
+    is RcTyKnown (wt) -> rc-pat-field-verdict w e n i (rc-cmp-tyof wt got)
+
+  rc-check-ctor-pat-sum : RcWalk, RcEnv, Text, List IRPat, List SumCtor -> RcWalk
+  rc-check-ctor-pat-sum (w) (e) (n) (subs) (ctors) =
+   if rc-has-ctor ctors n 0 (list-length ctors) == False
+   then rc-add w (rc-finding (e.re-def-name) RcDisagree "ctor-pat-unknown" (n & " is not a constructor of the scrutinee's own sum type"))
+   else let fields = rc-find-ctor-fields ctors n 0 (list-length ctors)
+   in if list-length fields /= list-length subs
+   then rc-add w (rc-finding (e.re-def-name) RcDisagree "ctor-pat-arity" (n & " declares " & show (list-length fields) & " fields, pattern binds " & show (list-length subs)))
+   else rc-check-pat-fields w e n subs fields 0 (list-length subs)
+
+  rc-check-pat-fields : RcWalk, RcEnv, Text, List IRPat, List CodexType, Integer, Integer -> RcWalk
+  rc-check-pat-fields (w) (e) (n) (subs) (fields) (i) (len) =
+   if i >= len then w
+   else let cmp = rc-cmp-tyof (list-at fields i) (rc-pat-ty (list-at subs i))
+   in let w2 = rc-pat-field-verdict w e n i cmp
+   in rc-check-pat-fields w2 e n subs fields (i + 1) len
+
+  rc-pat-field-verdict : RcWalk, RcEnv, Text, Integer, TyCmp -> RcWalk
+  rc-pat-field-verdict (w) (e) (n) (i) (cmp) =
+   when cmp
+    is TyEq -> w
+    is TyNeq -> rc-add w (rc-finding (e.re-def-name) RcDisagree "ctor-pat-field-type" ("sub-pattern " & show i & " of " & n & " does not bind at the field type the constructor declares"))
+    is TyUnknown -> rc-add w (rc-finding (e.re-def-name) RcUnsupported "ctor-pat-field-type" ("sub-pattern " & show i & " of " & n & " has an undecided field type"))
+
+Section: Expression Walk
+
+  rc-check-expr : RcWalk, RcEnv, IRExpr -> RcWalk
+  rc-check-expr (w) (e) (x) =
+   if rc-dry w then w
+   else rc-check-expr-go (rc-burn w) e x
+
+  rc-check-expr-go : RcWalk, RcEnv, IRExpr -> RcWalk
+  rc-check-expr-go (w) (e) (x) =
+   when x
+    is IrName (n) (t) (sp) -> rc-check-ctor-ref (rc-check-name w e n) e n t
+    is IrApply (f) (a) (t) (sp) -> rc-check-apply w e f a t
+    is IrBinary (o) (l) (r) (t) (sp) -> rc-check-expr (rc-check-expr w e l) e r
+    is IrNegate (v) (t) (sp) -> rc-check-expr w e v
+    is IrIf (c) (a) (b) (t) (sp) -> rc-check-expr (rc-check-expr (rc-check-expr w e c) e a) e b
+    is IrLet (n) (t) (v) (b) (sp) -> rc-check-expr (rc-check-expr w e v) (rc-env-bind e n) b
+    is IrLambda (ps) (b) (t) (sp) -> rc-check-expr w (rc-env-bind-all e (rc-param-names ps 0 (list-length ps) []) 0 (list-length ps)) b
+    is IrList (es) (t) (sp) -> rc-check-expr-list w e es 0 (list-length es)
+    is IrMatch (s) (bs) (t) (sp) -> rc-check-branches (rc-check-expr w e s) e bs 0 (list-length bs)
+    is IrAct (ss) (t) (sp) -> rc-check-stmts w e ss 0 (list-length ss)
+    is IrFieldAccess (r) (f) (t) (sp) -> rc-check-expr w e r
+    is IrFieldStore (r) (f) (v) (t) (sp) -> rc-check-expr (rc-check-expr w e r) e v
+    is IrRecord (n) (fs) (t) (sp) -> rc-check-fieldvals w e fs 0 (list-length fs)
+    is IrFork (b) (t) (sp) -> rc-check-expr w e b
+    is IrAwait (b) (t) (sp) -> rc-check-expr w e b
+    is IrHandle (ef) (h) (cs) (t) (sp) -> rc-check-expr w e h
+    is IrWithTimeout (s) (ef) (sc) (b) (t) (sp) -> rc-check-expr w e b
+    is IrTry (m) (b) (fb) (fl) (t) (sp) -> rc-check-stmts (rc-check-stmts (rc-check-stmts w e b 0 (list-length b)) e fb 0 (list-length fb)) e fl 0 (list-length fl)
+    is otherwise -> w
+
+  rc-param-names : List IRParam, Integer, Integer, List Text -> List Text
+  rc-param-names (ps) (i) (len) (acc) =
+   if i >= len then acc
+   else rc-param-names ps (i + 1) len (list-push acc ((list-at ps i).name))
+
+  rc-check-name : RcWalk, RcEnv, Text -> RcWalk
+  rc-check-name (w) (e) (n) =
+   if rc-resolves e n then w
+   else rc-add w (rc-finding (e.re-def-name) RcDisagree "unbound-name" ("no definition, parameter, binding, constructor or builtin binds " & n))
+
+ A constructor reference carries a function type of its own, and the sum
+ type that function returns declares the same constructor's field types.
+ Those are two statements of one fact, made in two places on the wire, so
+ they can be held against each other without consulting anything else.
+ A constructor typed to accept a payload its own sum does not declare is
+ the shape of Lean kernel bug 14576.
+
+ Multi-field constructors are curried, so the parameter types are gathered
+ down the arrow chain until it arrives at the sum.
+
+  rc-curried-params : CodexType, List CodexType, Integer -> List CodexType
+  rc-curried-params (t) (acc) (fuel) =
+   if fuel <= 0 then acc
+   else when t
+    is FunTy (p) (row) (r) -> rc-curried-params r (list-push acc p) (fuel - 1)
+    is otherwise -> acc
+
+  rc-curried-result : CodexType, Integer -> CodexType
+  rc-curried-result (t) (fuel) =
+   if fuel <= 0 then t
+   else when t
+    is FunTy (p) (row) (r) -> rc-curried-result r (fuel - 1)
+    is otherwise -> t
+
+  rc-check-ctor-ref : RcWalk, RcEnv, Text, CodexType -> RcWalk
+  rc-check-ctor-ref (w) (e) (n) (t) =
+   if rc-in (e.re-ctors) n == False then w
+   else let res = rc-curried-result t 32
+   in when res
+    is SumTy (sn) (args) (ctors) -> rc-check-ctor-ref-sum w e n t ctors
+    is otherwise -> w
+
+  rc-check-ctor-ref-sum : RcWalk, RcEnv, Text, CodexType, List SumCtor -> RcWalk
+  rc-check-ctor-ref-sum (w) (e) (n) (t) (ctors) =
+   if rc-has-ctor ctors n 0 (list-length ctors) == False
+   then rc-add w (rc-finding (e.re-def-name) RcDisagree "ctor-ref-unknown" (n & " is typed as building a sum type that does not declare it"))
+   else let want = rc-find-ctor-fields ctors n 0 (list-length ctors)
+   in let got = rc-curried-params t [] 32
+   in if list-length want /= list-length got
+   then rc-add w (rc-finding (e.re-def-name) RcDisagree "ctor-ref-arity" (n & " is typed to take " & show (list-length got) & " payloads, its sum declares " & show (list-length want)))
+   else rc-ctor-ref-verdict w e n (rc-ty-eq-list want got)
+
+  rc-ctor-ref-verdict : RcWalk, RcEnv, Text, TyCmp -> RcWalk
+  rc-ctor-ref-verdict (w) (e) (n) (cmp) =
+   when cmp
+    is TyEq -> w
+    is TyNeq -> rc-add w (rc-finding (e.re-def-name) RcDisagree "ctor-ref-payload-type" (n & " is typed to accept a payload its own sum type does not declare"))
+    is TyUnknown -> rc-add w (rc-finding (e.re-def-name) RcUnsupported "ctor-ref-payload-type" (n & " has an undecided payload type"))
+
+ An application is checked against the type its own callee carries: the
+ argument must have the parameter type, and the application's result type
+ must be the callee's return type. Nothing here consults a signature from
+ outside the wire, so what is being asked is whether the IR agrees with
+ itself.
+
+  rc-check-apply : RcWalk, RcEnv, IRExpr, IRExpr, CodexType -> RcWalk
+  rc-check-apply (w) (e) (f) (a) (t) =
+   let w1 = rc-check-expr w e f
+   in let w2 = rc-check-expr w1 e a
+   in rc-check-apply-types w2 e (rc-expr-ty f) a t
+
+  rc-check-apply-types : RcWalk, RcEnv, RcTyOf, IRExpr, CodexType -> RcWalk
+  rc-check-apply-types (w) (e) (ft) (a) (t) =
+   when ft
+    is RcTyNone -> w
+    is RcTyKnown (fty) -> rc-check-apply-fun w e fty a t
+
+  rc-check-apply-fun : RcWalk, RcEnv, CodexType, IRExpr, CodexType -> RcWalk
+  rc-check-apply-fun (w) (e) (fty) (a) (t) =
+   when fty
+    is FunTy (p) (row) (r) -> rc-check-apply-parts w e p r a t
+    is otherwise ->
+     if rc-ty-opaque fty then w
+     else rc-add w (rc-finding (e.re-def-name) RcDisagree "apply-non-function" "the callee's type is not a function type")
+
+  rc-check-apply-parts : RcWalk, RcEnv, CodexType, CodexType, IRExpr, CodexType -> RcWalk
+  rc-check-apply-parts (w) (e) (p) (r) (a) (t) =
+   let w1 = if rc-wf-narrow-into-int p a then w else rc-apply-arg-verdict w e (rc-fits-tyof p (rc-expr-ty a))
+   in rc-apply-result-verdict w1 e (rc-ty-fits r t)
+
+ `__narrow` is how the guide says a plain Integer is asked into a bounded
+ slot: an assertion checked at runtime, trapping if violated. So the
+ argument's static type is EXPECTED to differ from the bounded parameter,
+ and the difference is the point rather than a finding. Stage 2 already
+ skips a narrowed argument at the same slot and stage 1 did not, which
+ reported every explicit narrow in the tree as a type mismatch.
+
+ The exemption is only for an INTEGER parameter. A narrow handed to a
+ parameter of any other type is still a mismatch and is still reported,
+ which is what keeps this from being a hole shaped like a fix.
+
+  rc-wf-narrow-into-int : CodexType, IRExpr -> Boolean
+  rc-wf-narrow-into-int (p) (a) = rc-wf-is-int-ty p & rc-wf-is-narrow-call a
+
+  rc-wf-is-int-ty : CodexType -> Boolean
+  rc-wf-is-int-ty (t) =
+   when t
+    is IntegerTy (lo) (hi) (m) -> True
+    is otherwise -> False
+
+  rc-wf-is-narrow-call : IRExpr -> Boolean
+  rc-wf-is-narrow-call (x) =
+   when x
+    is IrApply (f) (a) (t) (sp) -> rc-wf-is-narrow-name f
+    is otherwise -> False
+
+  rc-wf-is-narrow-name : IRExpr -> Boolean
+  rc-wf-is-narrow-name (f) =
+   when f
+    is IrName (n) (t) (sp) -> n == "__narrow"
+    is otherwise -> False
+
+  rc-apply-arg-verdict : RcWalk, RcEnv, TyCmp -> RcWalk
+  rc-apply-arg-verdict (w) (e) (cmp) =
+   when cmp
+    is TyEq -> w
+    is TyNeq -> rc-add w (rc-finding (e.re-def-name) RcDisagree "apply-arg-type" "the argument's type is not the parameter type the callee's own type declares")
+    is TyUnknown -> w
+
+  rc-apply-result-verdict : RcWalk, RcEnv, TyCmp -> RcWalk
+  rc-apply-result-verdict (w) (e) (cmp) =
+   when cmp
+    is TyEq -> w
+    is TyNeq -> rc-add w (rc-finding (e.re-def-name) RcDisagree "apply-result-type" "the application's result type is not the callee's declared return type")
+    is TyUnknown -> w
+
+  rc-check-expr-list : RcWalk, RcEnv, List IRExpr, Integer, Integer -> RcWalk
+  rc-check-expr-list (w) (e) (xs) (i) (len) =
+   if i >= len then w
+   else rc-check-expr-list (rc-check-expr w e (list-at xs i)) e xs (i + 1) len
+
+  rc-check-fieldvals : RcWalk, RcEnv, List IRFieldVal, Integer, Integer -> RcWalk
+  rc-check-fieldvals (w) (e) (fs) (i) (len) =
+   if i >= len then w
+   else rc-check-fieldvals (rc-check-expr w e ((list-at fs i).value)) e fs (i + 1) len
+
+  rc-check-branches : RcWalk, RcEnv, List IRBranch, Integer, Integer -> RcWalk
+  rc-check-branches (w) (e) (bs) (i) (len) =
+   if i >= len then w
+   else let b = list-at bs i
+   in let names = rc-pat-names (b.pattern) []
+   in let e2 = rc-env-bind-all e names 0 (list-length names)
+   in let w1 = rc-check-pat w e (b.pattern)
+   in let w2 = rc-check-expr w1 e2 (b.body)
+   in rc-check-branches w2 e bs (i + 1) len
+
+ A do-bind is in scope for the statements that follow it, not for its own
+ value expression.
+
+  rc-check-stmts : RcWalk, RcEnv, List IRActStmt, Integer, Integer -> RcWalk
+  rc-check-stmts (w) (e) (ss) (i) (len) =
+   if i >= len then w
+   else when list-at ss i
+    is IrDoBind (n) (t) (v) (sp) -> rc-check-stmts (rc-check-expr w e v) (rc-env-bind e n) ss (i + 1) len
+    is IrDoExec (v) (sp) -> rc-check-stmts (rc-check-expr w e v) e ss (i + 1) len
+
+Section: Definition Walk
+
+  rc-check-def : RcWalk, List Text, List Text, List ATypeDef, List Text, IRDef -> RcWalk
+  rc-check-def (w) (defs) (ctors) (tds) (bs) (d) =
+   let base = RcEnv { re-locals = [], re-defs = defs, re-ctors = ctors, re-def-name = d.name, re-typedefs = tds, re-builtins = bs }
+   in let ps = rc-param-names (d.params) 0 (list-length (d.params)) []
+   in let e = rc-env-bind-all base ps 0 (list-length ps)
+   in rc-check-expr w e (d.body)
+
+  rc-def-names : List IRDef, Integer, Integer, List Text -> List Text
+  rc-def-names (ds) (i) (len) (acc) =
+   if i >= len then acc
+   else rc-def-names ds (i + 1) len (list-push acc ((list-at ds i).name))
+
+  rc-check-chapter : IRChapter, List Text, List ATypeDef, Integer -> RcWalk
+  rc-check-chapter (ch) (ctors) (tds) (fuel) =
+   let ds = ch.defs
+   in let names = rc-def-names ds 0 (list-length ds) []
+   in let bs = recheck-builtin-names
+   in rc-check-defs (rc-walk-new fuel) names ctors tds bs ds 0 (list-length ds)
+
+  rc-check-defs : RcWalk, List Text, List Text, List ATypeDef, List Text, List IRDef, Integer, Integer -> RcWalk
+  rc-check-defs (w) (defs) (ctors) (tds) (bs) (ds) (i) (len) =
+   if i >= len then w
+   else rc-check-defs (rc-check-def w defs ctors tds bs (list-at ds i)) defs ctors tds bs ds (i + 1) len
+
+Page 1

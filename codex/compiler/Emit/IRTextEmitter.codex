@@ -214,6 +214,45 @@ Section: CodexType Emission
     is RmTrapping -> "real-trapping"
     is RmSaturating -> "real-saturating"
 
+ An arrow's effect row was bound and discarded here until 2026-08-03, so
+ a function that declared an effect lost it the moment it took a
+ parameter and no consumer of this wire could see it. The row is
+ OPTIONAL and trails the two type positions: `(fn p r)` still means an
+ empty row and keeps its exact spelling, so a reader taking element 1 and
+ element 2 is unaffected.
+
+  ir-emit-row-labels : List EffectLabel -> Text
+  ir-emit-row-labels (xs) =
+   ir-cat (for l in xs -> " (label " & ir-quote ((l.name).value) & " " & ir-quote (l.scope) & ")")
+
+ Only a row carrying CONCRETE LABELS is published. An open row with no
+ labels is a row variable, and rows are inert through the compiler's own
+ stage 2 -- concrete effects ride in EffectfulTy until a later stage
+ migrates them onto the arrow -- so a bare row variable is a fact no
+ consumer can use today, and they are most of the cost. Measured on
+ `list-pattern` and `linear-smoke` 2026-08-03: publishing every row grew
+ the IR text 15.4 and 9.0 per cent, almost all of it `(row (labels) "" N)`
+ on polymorphic arrows; publishing only labelled rows grows it 5.7 and 2.3
+ per cent. When row variables become load-bearing this is where they go
+ back.
+
+  ir-emit-row : EffectRow -> Text
+  ir-emit-row (row) =
+   if list-length (row.labels) == 0 then ""
+   else " (row (labels" & ir-emit-row-labels (row.labels) & ") " & ir-quote (row.tail-name) & " " & integer-to-text (row.tail-id) & ")"
+
+ `ProofTy`, `PropEqTy`, `TypeCon` and `TypeApply` fell through to the
+ `otherwise` arm until 2026-08-04 and emitted the same `error` atom
+ `ErrorTy` emits, so a proof type was indistinguishable from a type
+ failure on this wire and a reader had to answer UNSUPPORTED on the atom
+ rather than treat it as either. That is a hole on its own, and it also
+ makes a real defect undiagnosable: a constructor pattern over a
+ PARAMETRIC sum binds its variable at `error` while the same variable's
+ use carries the real type, and whether the lowering assigned `ErrorTy`
+ or a `TypeApply` this emitter had no arm for cannot be read off the
+ artifact while both spell it the same way. The `otherwise` arm stays as
+ a floor for a variant added later.
+
   ir-emit-type : CodexType -> Text
   ir-emit-type (ty) =
    when ty
@@ -225,7 +264,7 @@ Section: CodexType Emission
     is VoidTy -> "void"
     is NothingTy -> "nothing"
     is ErrorTy -> "error"
-    is FunTy (p) (row) (r) -> "(fn " & ir-emit-type p & " " & ir-emit-type r & ")"
+    is FunTy (p) (row) (r) -> "(fn " & ir-emit-type p & " " & ir-emit-type r & ir-emit-row row & ")"
     is ListTy (elem) -> "(list " & ir-emit-type elem & ")"
     is LinkedListTy (elem) -> "(llist " & ir-emit-type elem & ")"
     is TypeVar (id) -> "(tvar " & integer-to-text id & ")"
@@ -239,6 +278,10 @@ Section: CodexType Emission
     is VectorTy (n) (t) -> "(vector " & integer-to-text n & " " & ir-emit-type t & ")"
     is VectorMaskTy (n) -> "(vector-mask " & integer-to-text n & ")"
     is LinearTy (linner) -> ir-emit-type linner
+    is ProofTy -> "proof"
+    is PropEqTy (a) (b) -> "(propeq " & ir-emit-type a & " " & ir-emit-type b & ")"
+    is TypeCon (n) -> "(tycon " & ir-quote (n.value) & ")"
+    is TypeApply (tf) (ta) -> "(tyapply " & ir-emit-type tf & " " & ir-emit-type ta & ")"
     is otherwise -> "error"
 
   ir-emit-type-list : List CodexType, Integer -> Text
@@ -809,10 +852,23 @@ Section: IR Dead Code Elimination
 
 Section: IRDef Emission
 
+ `unique-params` names the parameters declared `linear`. It is carried the
+ whole length of the pipeline and consumed at x86 emit for noalias slots,
+ and it was never printed, so linearity did not survive to this wire at
+ all: `linear T` and `T` produced byte-identical IR text. It trails the
+ form and is omitted when empty, so a def with no linear parameter keeps
+ its exact previous spelling and a reader taking elements 1 through 7 is
+ unaffected.
+
+  ir-emit-unique : List Text -> Text
+  ir-emit-unique (ns) =
+   if list-length ns == 0 then ""
+   else " (unique" & ir-cat (for n in ns -> " " & ir-quote n) & ")"
+
   ir-emit-def : IRDef -> Text
   ir-emit-def (d) =
    let punct = if d.is-punctual then "1" else "0"
-   in "(def " & ir-quote (d.name) & " " & ir-quote (d.chapter-slug) & " (params" & ir-emit-params (d.params) 0 & ") " & ir-emit-type (d.type-val) & " " & ir-emit-expr (d.body) & " " & punct & " " & show (d.wcet-budget) & ")"
+   in "(def " & ir-quote (d.name) & " " & ir-quote (d.chapter-slug) & " (params" & ir-emit-params (d.params) 0 & ") " & ir-emit-type (d.type-val) & " " & ir-emit-expr (d.body) & " " & punct & " " & show (d.wcet-budget) & ir-emit-unique (d.unique-params) & ")"
 
   ir-emit-defs : List IRDef, Integer -> Text
   ir-emit-defs (xs) (i) =
@@ -867,6 +923,15 @@ Section: IRChapter Emission
   emit-ir-chapter (m) (meta) (type-defs) =
    emit-ir-chapter-prefix m meta type-defs & ir-emit-defs (m.defs) 0 & "))\n"
 
+ `grounds` publishes the chapter's grounds table, one "slug\neffect"
+ entry per grounded effect, exactly as the type checker holds it. It is
+ keyed like every other form in this header rather than positional, so a
+ reader that does not look it up is unaffected; `ir-quote` escapes the
+ separating newline and the parser's tokenizer restores it, so the entry
+ crosses the wire unchanged. Unlike `unique` it is emitted even when
+ empty, matching its siblings here, and an ungrounded chapter pays ten
+ bytes for `(grounds)`.
+
  The chapter header up to and including the "(defs" opener -- everything
  except the per-def list and the closing "))". emit-ir-cce (opening)
  does not call emit-ir-chapter: building the whole chapter as one value
@@ -899,6 +964,75 @@ Section: IRChapter Emission
    in let restored = __heap-restore h
    in ir-defs-wire-size xs (i + 1) len (acc + n + 3)
 
+ The same walk with the name printed BEFORE the render and the size after, so a
+ def that cannot be rendered at all is named by the last line that survives. It
+ exists because "peak heap is the largest single def" above is a design
+ statement with no instrument behind it: on the compiler's own source the
+ whole-compiler `-IrCce` emit dies before `SIZE:` is printed, which puts the
+ cost in this pass, and nothing said WHICH def. Reached with
+ `compile.ps1 -IrCce -RawFlags "wsz"`.
+
+ **It has its own flag rather than riding `debug`, and that is not tidiness.**
+ Wired behind `debug` first, it printed nothing at all: `IR-CCE debug` empties
+ the chapter. Measured 2026-08-04 on the compiler's own source, same kernel and
+ same input, `IR-CCE` runs 28 s and dies OUT OF MEMORY while `IR-CCE debug`
+ finishes in 5 s announcing `SIZE:130` with zero definitions -- and it does the
+ same on `seed#587` and `seed#586`, so it long predates this instrument. An
+ instrument gated on the flag that destroys its own subject measures nothing,
+ which is what running it against the real input is for.
+
+ Not folded into `ir-defs-wire-size`: that one is on the shipping path and pure,
+ and giving it a Console effect to carry a diagnostic would put the effect row
+ on every caller.
+
+ Per-definition cost of the DCE name collection, which is where the
+ whole-compiler `-IrCce` emit dies. Prints the name-occurrence count and the
+ bytes the collection actually moved the frontier, each def bracketed so the
+ probe itself cannot be what runs out.
+
+ It was written to test a hypothesis that `list-push` copies and makes this
+ quadratic, and it REFUTED it: 1.48 MB across all 5,201 definitions of the
+ compiler's own source, largest 32,784 bytes, and the per-def figures are
+ capacity-doubling rather than quadratic. The DCE collection is not a cost.
+ Kept because that is worth being able to re-establish in one run.
+
+ **Print through `print-line-uni`, never `print-text`.** `print-text` emits CCE,
+ which is right for the payload and unreadable as ASCII in a raw capture: these
+ three probes first shipped on `print-text` and 390 KB of trace read as an empty
+ output, which cost a wrong published finding about where the emit dies.
+
+  ir-trace-dce-cost : List IRDef, Integer, Integer -> [Console] Nothing
+  ir-trace-dce-cost (xs) (i) (len) =
+   if i >= len then print-line-uni "DCE-END"
+   else let d = list-at xs i
+   in act
+    print-line-uni ("DCE " & integer-to-text i & " " & d.name)
+    let h = __heap-save
+    in let names = ir-dce-collect-expr (d.body) []
+    in let k = list-length names
+    in let after = __heap-save
+    in let restored = __heap-restore h
+    in act
+     print-line-uni ("DCE-K " & integer-to-text k & " bytes " & integer-to-text (after - h))
+     ir-trace-dce-cost xs (i + 1) len
+    end
+   end
+
+  ir-trace-def-sizes : List IRDef, Integer, Integer -> [Console] Nothing
+  ir-trace-def-sizes (xs) (i) (len) =
+   if i >= len then print-line-uni "WSZ-END"
+   else let d = list-at xs i
+   in act
+    print-line-uni ("WSZ " & integer-to-text i & " " & d.name)
+    let h = __heap-save
+    in let n = text-length (ir-emit-def d)
+    in let restored = __heap-restore h
+    in act
+     print-line-uni ("WSZ-SIZE " & integer-to-text n)
+     ir-trace-def-sizes xs (i + 1) len
+    end
+   end
+
   ir-print-defs : List IRDef, Integer, Integer -> [Console] Nothing
   ir-print-defs (xs) (i) (len) =
    if i == len then print-text "))\n"
@@ -920,6 +1054,7 @@ Section: IRChapter Emission
     & "(sections" & ir-emit-text-strs (meta.section-titles) 0 & ")\n  "
     & "(ctors" & ir-emit-text-strs (meta.ctor-names) 0 & ")\n  "
     & "(eff-ops" & ir-emit-text-strs (m.effect-op-names) 0 & ")\n  "
+    & "(grounds" & ir-emit-text-strs (meta.ground-effects) 0 & ")\n  "
     & "(type-defs" & ir-emit-atype-defs type-defs 0 & ")\n  "
     & "(defs"
 

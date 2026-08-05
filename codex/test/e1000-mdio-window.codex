@@ -1,0 +1,86 @@
+Chapter: E1000MdioWindow
+  cites Foreword chapter Maybe
+  cites Kernel chapter E1000e
+  cites Kernel chapter Pci
+
+ The settle between a reset and the first MDIO access. Intel I219
+ datasheet rev 2.02, section 9.2: "After LCD reset to the I219 a delay of
+ 10 ms is required before attempting to access MDIO registers." The bed
+ arm this runs under, -e1000-mdio-window, answers MDIC with neither ready
+ nor error until that window has passed, which is what silicon that is not
+ listening yet looks like and is deliberately the same shape as silicon
+ that is not there.
+
+ The first two readings are a matched pair and the pairing is the whole
+ instrument. Both reset the device and both then read the same PHY
+ register through the same path; the ONLY difference is that one waits and
+ the other does not. So the second reading cannot pass because the window
+ is absent, which is the way an arm like this usually fails to test
+ anything: if the window were not being enforced, the first reading would
+ answer no.
+
+ The unsettled read is expected to come back as the error sentinel rather
+ than as zero. A driver that folded those together could not tell a PHY
+ it may not talk to yet from a register holding zero, and the sentinel is
+ what makes the distinction observable here.
+
+Section: Fixtures
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  bar-of : PciDevice -> Integer
+  bar-of (dev) =
+   let enabled = pci-enable-device dev
+   in (pci-parse-bar (dev.pci-bus) (dev.pci-dev) (dev.pci-func) 0).bar-base
+
+ A reset with nothing after it, which is what this driver did before the
+ settle existed.
+
+  raw-reset : Integer -> Integer
+  raw-reset (mmio) =
+   let ctrl = e1000-read mmio e1000-reg-ctrl
+   in let w = e1000-write mmio e1000-reg-ctrl (bit-or ctrl e1000-ctrl-rst)
+   in e1000-await-reset mmio 0
+
+Section: Judges
+
+  unsettled-is-error : PciDevice -> Boolean
+  unsettled-is-error (dev) =
+   let mmio = bar-of dev
+   in let r = raw-reset mmio
+   in e1000-phy-read mmio e1000-phy-id1 < 0
+
+  settled-reads-phy : PciDevice -> Boolean
+  settled-reads-phy (dev) =
+   let mmio = bar-of dev
+   in let r = e1000-reset mmio
+   in e1000-phy-read mmio e1000-phy-id1 > 0
+
+  aneg-after : PciDevice -> Boolean
+  aneg-after (dev) =
+   let mmio = bar-of dev
+   in let r = e1000-reset mmio
+   in let b = e1000-phy-bring-up mmio
+   in bit-and (e1000-phy-read mmio e1000-phy-bmsr) e1000-bmsr-aneg-done /= 0
+
+  link-after-init : PciDevice -> Boolean
+  link-after-init (dev) = e1000-has-link (e1000-init dev)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let scan = pci-scan-bus 0
+    in act
+      when e1000-find scan
+        is Just (dev) -> act
+          print-line-uni ("unsettled errors : " & yn (unsettled-is-error dev))
+          print-line-uni ("settled reads phy: " & yn (settled-reads-phy dev))
+          print-line-uni ("aneg after       : " & yn (aneg-after dev))
+          print-line-uni ("link under gates : " & yn (link-after-init dev))
+        end
+        is None -> print-line-uni ("candidate found : no")
+    end
+  end
+
+Page 1

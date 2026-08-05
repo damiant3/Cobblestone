@@ -1,5 +1,421 @@
 # The Hardware Sitting -- Run Sheet
 
+## FLOWN 2026-08-05, ALL GREEN: `deskboot.img` (`ADA7CC4D9837B66097B89745EB7699445F9E8FCC8F5CEE6D04F074BEE0BFA004`). The completion-steal fix. Flight 3.
+
+**Flight 3 verdict, Damian on the glass: "it all works." The mouse
+works, clicks work (the Shutdown button clicks and powers off), F12
+screenshots land on the stick with the taskbar verdict posted, and the
+shot files appear in the Files app.** A3 is CLOSED, the write path is
+proven on real hardware, and the camera stands down. Both flight-2
+defects (keyboard death mid-session, mouse dead) are cured by the
+(slot, DCI) latch below; fix red 13128, main 13133.
+
+Flashed and read back byte-for-byte 2026-08-05, disk 2. Supersedes the
+flown `23C4A936` build (below): same payload -- mouse walk, F12 shots,
+table dwell -- plus the fix for what flight 2 exposed.
+
+**What flight 2 taught** (table photographed, upside down and perfect):
+port 1 is a Logitech Unifying receiver (`046d:c52b`, kbd dci=3, mouse
+dci=5, raw DJ dci=7, ONE slot), port 7 the wired keyboard (`046d:c31c`),
+`bound=5`. The desktop typed, then the keyboard DIED mid-session; the
+mouse never moved. One defect: `xhci-wait-xfer` matched transfer events
+by SLOT alone, so sibling endpoints armed on one slot steal each other's
+completions -- the kbd/raw pumps poll the dongle's slot before the mouse
+pump and ate its completions from frame one, and the wired keyboard lost
+a 500 ms heartbeat to its own raw sibling minutes in and starved forever
+(the thief generates no traffic of its own, so the slot goes silent).
+Flight 1 survived only because the old walk never armed the siblings.
+
+**The fix on this image:** the completion latch is keyed by
+(slot, DCI) and every waiter passes its endpoint -- control, storage,
+keyboard, mouse, camera. Proven both directions in a bed that could not
+previously express starvation: new codex-vm `-hid-nak-unchanged` makes
+interrupt endpoints NAK until they have news (the instant-complete
+default made completions too plentiful for a scarcity defect to show);
+under it `usb-hid-steal` answers `pos=0,0` on the old code and
+`pos=80,40 btn=1` on this one. Rehearsed on THIS file, UEFI-booted with
+a combo receiver and the image attached as its own disk: keyboard opened
+Monitor, the USB mouse crossed the screen and CLICKED OPEN the Files
+pane, TrueType loaded from the ESP.
+
+Reading, beyond the standing rows (the table below still applies):
+
+| Read | Verdict |
+|---|---|
+| Keyboard types AND KEEPS TYPING past a few minutes | **The steal fix holds on metal.** Flight 2's death was minutes in; longevity is this flight's keyboard reading |
+| Cursor moves, click opens a pane | **The mouse works through our driver.** A3 closes on this photograph or its F12 shot |
+| Keyboard dies again mid-session | Photograph the top bar `k`/`e`/`n` counters THE MOMENT it dies: whether `e` still climbs after keys stop decides event-theft vs endpoint death |
+| Mouse still dead but keyboard lives | Photograph the HID table rows: if hid2 (`c52b` dci=5 mouse) is present, the dongle's boot-protocol mouse path is the suspect, not the walk |
+
+## FLOWN 2026-08-05 (was READY TO FLASH 2026-08-04 NIGHT): `deskboot.img` (`23C4A936E6CC56ABE8591ACFCB690B86E5E9B472EB1F62AE398DFDDFF1E89744`). The mouse and the camera's replacement.
+
+**Flight 2 verdict: the table was photographed and named the bus (see
+the entry above); the keyboard typed then died mid-session, the mouse
+never moved -- both explained by the completion-steal defect the entry
+above fixes. F12 was never exercised (no BMP on the ESP afterward).**
+
+Supersedes the flown `CAE755B1` build (below); same payload plus three
+capabilities, all bed-proven on this exact file or its dev-loop twin:
+
+1. **Every boot MOUSE is bound, per-interface** (`usb-hid-walk`): a
+   combo device -- keyboard on one interface, mouse on the next, the
+   dongle shape -- now contributes both. `usb-hid-combo` proves it
+   (`same-dev=1 got=30 pos=60,40 btn=1`; against the old walk:
+   `mouse: ok=0`), and a codex-vm desk capture shows the Files pane
+   opened by a USB mouse click. The reading on the glass: Monitor's
+   `input` row says `mouse yes`, and the cursor moves and clicks.
+2. **F12 writes the screen to this stick as `SHhhmmss.BMP`** -- on the
+   desktop and inside every GopDesk pane -- through a new multi-cluster
+   FAT16 chain writer (bulk FAT flush, 64-sector data runs). Proven:
+   `fat-write-big` (3 MB written and read back through the independent
+   bulk reader, zero bad bytes) and a full desk arm whose extracted
+   Monitor-pane BMP is pixel-exact. The verdict paints in the taskbar:
+   `shot SHhhmmss.BMP ok` or a named failure. **This is the telemetry
+   channel that retires the camera**: shoot, later pull the stick, and
+   the frames are files on the ESP.
+3. **The HID table survives a pre-loaded scancode** (drained mailbox +
+   3 s dwell floor), so the table that flashed past unseen on the last
+   boot holds still; rows now tag kbd / mouse / raw, so the four
+   interfaces get NAMES (VID:PID) this boot.
+
+Flash block and stick discipline: identical to the flown entry below
+(same flasher line, `-Image build\boot\deskboot.img`, hash above,
+PULL do not eject). Reading, beyond the standing keyboard rows:
+
+| Read | Verdict |
+|---|---|
+| Cursor moves, click opens a pane | **The mouse works through our driver.** A3 closes on this photograph -- or on an F12 shot of it |
+| Monitor `input` row `mouse no`, cursor dead | The typed-on mouse is none of the bound interfaces; photograph the HID table -- the mouse's `id=` row (bit `mouse`) or its absence names the next move |
+| F12 -> taskbar `shot SH....BMP ok` | **The write path works on the real stick.** Frames come home as files; the camera stands down |
+| F12 -> `shot write FAILED` | The chain writer failed on real hardware; the stick still boots (both FAT copies stay consistent); photograph the taskbar and note how many shots preceded |
+| F12 -> `shot: no ESP mount` | The mount failed in the shot's own context; photograph |
+| F12 -> nothing in the taskbar | The key never decoded: check whether the top bar `s` moved on the press; if `s` moves with no verdict, that is a dispatch defect, photograph |
+| ~10 s pause after F12 | Normal: a 1024x768 frame is ~2.3 MB through 64-sector bulk writes. The desk resumes by itself |
+
+Shots persist across boots; each is named by the RTC second. Read them
+back on the dev box by mounting the stick's ESP (a plain FAT16
+partition Windows can read); two shots within one second overwrite
+each other, deliberately.
+
+## FLOWN 2026-08-04 EVENING: `deskboot.img` (`CAE755B1...6B3A`). THE KEYBOARD WORKS ON METAL. THE CAMPAIGN IS CLOSED.
+
+Flashed to disk 2 (` USB DISK 2.0`, 28.9 GB), full readback verified,
+booted the ASUS first try. What the glass answered (Damian, at the board):
+
+| Read | Verdict |
+|---|---|
+| Bars, then the desktop directly; the keyboard hold skipped on its first poll | A scancode was already pending -- the boot-menu Enter still releasing as our driver took the controller. **That keystroke, and every one after it, travelled our own USB driver end to end** |
+| Files, Calendar, Issues and Monitor panes all open and answer keys | Decode, mailbox and every pane loop hold on metal. **A2's keyboard question is closed** |
+| Top bar `k4 e0n0s0 \|e1n0 \|e0n0 \|e397n88` | **FOUR keyboard-shaped interfaces on this bus, and the typed-on one is the FOURTH bound**: e climbing at the ~500 ms idle cadence, n=88 key-bearing reports. The first three carry nothing. First-match binding could never have worked on this machine, whatever the transport under it did -- the diagnosis exactly |
+| Monitor `input` row: `keyboard USB HID   mouse no` | The mouse is unbound/undelivered: A3, the named next campaign, now with a live desktop to instrument it from |
+| The keyboard table was never seen | The pending scancode skipped the hold inside one frame and the desk painted over the table. The identities remain in diag cells 80-95; follow-up: drain the mailbox once before the hold or give the table a minimum dwell, so the table survives a pre-loaded key. Not worth a reflash today |
+
+The interface identities (which VID:PID each of the four blocks is) were
+not photographed and are the first thing the next boot of this same stick
+brings home for free -- boot it once with no key touched and the table
+holds for its full ten seconds.
+
+## THE ENTRY BELOW IS THE FLIGHT THIS RECORD ANSWERS, kept for the procedure and the reading table.
+
+## READY TO FLASH, 2026-08-04 EVENING: `deskboot.img` (`CAE755B1C2189A2CD7897FCD1FB07D875038CFF1CD7ADDFE3364616921EF6B3A`). The keyboard FIX, not another instrument.
+
+**This supersedes both `DA2556FBCA0188F0` (below) and the unflashed
+`D0F61D751F9680F9` (the n=/b= instrument boot that was to decide the
+DMA-address fork -- decided by inspection instead): it carries their
+readings AND the repair. It also supersedes the "NEXT BOOT:
+kbd-diag-v16" section and the 2026-08-03 STATUS section's "USB HID
+proven on the board" claim further down -- both are historical record
+now, per the corrections in the v15 row.** Built
+`build/boot/build-option-a.ps1 -Src apps/works/DeskBoot.codex -Kernel
+seed/Codex.cdx -Ebs` against seed `52E0A3A00218E19F`; the file at
+`build/boot/deskboot.img` hashes to the digest above and that exact file
+passed the OVMF gate (boots real UEFI firmware to the full desktop,
+TrueType from its own ESP) and a codex-vm `-uefi` boot.
+
+### The diagnosis this flies on
+
+Assembled from readings already home, no new boot spent: under factory
+idle the bound interface delivers an all-zero report every 500 ms (v15
+`EPINT=97` at 48 s, desktop `a`/`e` lockstep, `c=1`, `p=3/3`, `r=` zeros)
+-- so DMA, ring and events all work and the DEVICE reports no keys. Its
+own control pipe says the same (`R2:` zeros with `f=1f`, and `i=125`
+proves nonzero control-IN data lands in the same arena, killing the
+address-truncation candidate). Back in the SET_IDLE(0) era a keypress --
+which report-on-change semantics oblige a report for -- produced zero
+events in 90 s (v14). And the same physical keyboard delivers keys to the
+firmware's boot-protocol poller (v11 phase 2). One conclusion survives:
+**the interface `usb-attach` binds first is not the device the keys are
+typed on.** The walk bound the FIRST boot-keyboard interface and stopped.
+
+### The fix, and how it was proven without the board
+
+`usb-attach` now binds every boot-keyboard interface on every controller
+(hub-descended included) up to FOUR -- the primary plus three peers,
+`kbd-peer-cap` -- plus the primary device's other HID interrupt-IN
+interfaces as raw counting listeners inside the same cap; all pump into
+the one scancode mailbox. A fifth interface is silently not bound; the
+table's `bound=` count against the visible rows is what would say so. codex-vm gained the arm no bed could produce (`-hid-root-silent`:
+first keyboard completes SUCCESS with eight zero bytes, second carries the
+keys) and `-hid-keys` (keys reach the guest ONLY through USB HID -- the
+first bed in this tree that can prove a scancode crossed the interrupt-IN
+DMA path). `codex/test/apps/usb-kbd-silent` reproduces the board's exact
+state and answers `got=30 primary-live=0 peer-live=Y peer-scans=Y`;
+sabotaging the multi-bind back to first-wins answers `peers=0 got=0`.
+The flash image itself, UEFI-booted under that arm, opened the Monitor
+pane from a keystroke that had no route but the second keyboard's pipe.
+
+### The boot
+
+**PULL THE STICK OUT, DO NOT EJECT** (standing). Pre-flash, hash the file
+and confirm the digest above, then:
+
+```powershell
+Get-Disk | Where-Object BusType -eq 'USB'      # find N -- check it twice
+Start-Process pwsh -Verb RunAs -PassThru -ArgumentList '-NoProfile','-File',
+  'D:\Projects\NewRepository-red\build\flash-usb.ps1','-Image','D:\Projects\NewRepository-red\build\boot\deskboot.img',
+  '-DiskNumber','N','-SpecFit','-Force','-Log','D:\Projects\NewRepository-red\build-output\flash.log'
+```
+
+Sequence on the glass: bars + mode (held 10 s) -> trace lines -> **the
+keyboard table** (one row per bound interface: `id=` VID:PID, port,
+route, dci, boot/raw, speed, buffer) -> **keyboard hold, 10 s, ANY KEY
+SKIPS** with a live per-interface counters row -> desktop.
+
+**Operator instruction, and the failure rows are meaningless without
+it: TAP A KEY as soon as the hold row appears. If the hold does not
+skip, HOLD A LETTER KEY DOWN for the remainder of the window and
+photograph the table with the live row.** "Hold expires untouched"
+in the table below means no scancode ARRIVED, not that no key was
+pressed -- the `n` counters can only name where keys arrive if keys
+were being sent while they counted.
+
+| Read | Verdict |
+|---|---|
+| **A tap ends the hold at once and the desktop appears** | **The keyboard works through our own USB driver.** `f 3 c l i d m` open panes; Esc returns; the campaign closes on a photograph of the desktop with a pane open |
+| Hold expires untouched and typing does nothing on the desktop | Still dead. Photograph the table and the live row: any interface whose `n` moved while a key was held is where the keys arrive, and its `id=` names the device. `raw` rows count undecoded interfaces -- `n>0` there means the keys ride a report format we do not parse yet |
+| `kbd interfaces bound=1` and its `n` stays 0, key held | Only one keyboard-shaped interface exists and it carries no keys: photograph its `id=` -- the device identity is the whole next move |
+| `bound=` 2 or more, all `n=0`, key held | Keys reach none of the bound interfaces; the id rows say what WAS bound and the un-bound classes become the suspects |
+| The table is ABSENT | The boot died before or during `usb-attach`; the last trace line standing names the stage. A missing table is a reading, not a formatting fault |
+| The hold skips with no tap | A phantom scancode reached the mailbox; note it and continue -- the desktop is still typable for the per-pane checks |
+| Top bar `k=n` on the desktop | No boot keyboard bound at all; photograph the `usb OK` trace line and the table |
+| The hold ends but the desktop never paints | Death in `medium-select` or `desk-run`; the last trace line standing names the stage (`medium kind=` is trace row 9) |
+| No bars at all: firmware screen unchanged / solid dark blue / solid dark green | Pre-USB liveness states; read them against the colour table in section 4 ("Read the screen COLOUR"), not this one |
+
+The desktop's top bar keeps the live per-interface counters
+(`k<N> e..n..s.. |e..n..`) repainting every RTC second; on any failure
+it is the photograph that decides, exactly as the hold row is.
+
+Photographs to bring home: the keyboard table + hold row (one frame
+covers both), and the desktop -- with a pane open if typing works.
+
+---
+
+## THE BOARD IS RED'S, 2026-08-04. The stick last held reek's `msc-align.img`.
+
+Damian's ruling after reek's two boots. **Reflash before assuming anything
+about what is on the stick**: reek's A4a blocker is closed on metal (`rung=6
+disk usable`, cured by EP0 recover-then-retry, and the first SET_CONFIGURATION
+errors on the wire every boot with the recovery getting past it), and rung 3
+is NOT answered for the reason recorded in section 1.
+
+## READY TO FLASH, 2026-08-04: `deskboot.img` (DA2556FBCA0188F0). A2b without a keyboard.
+
+**Built, not yet flashed.** `build/boot/build-option-a.ps1 -Src
+apps/works/DeskBoot.codex -Kernel seed/Codex.cdx -Ebs`, depot seed
+`37A7EF8E4EF603AE`.
+
+### Why this replaces the flight below before it has flown twice
+
+`gopdesk-a2b.img` reached the first-boot ceremony and stopped there, because
+the ceremony needs a keyboard and this board's keyboard is the open question.
+**A2b does not need a keyboard.** The mode, the aspect, the seven panes and the
+Monitor readings are all visible on a desktop nobody has typed at, so one
+unknown was holding the other hostage. `apps/works/DeskBoot.codex` (main 12991)
+is spine, `usb-attach`, `medium-select`, `desk-run` and nothing else.
+
+### The three defects the 2026-08-04 boot found, all fixed in this image
+
+| Found on the glass | Fix |
+|---|---|
+| `pit=979` at `s=573` AND at `s=3978` -- the timer stops at ~54 s and never resumes, while IRQ1 keeps delivering and the RTC keeps counting | `desk-clock` and `desk-mon-loop` gated on that dead cell, so **the taskbar clock and the whole Monitor pane would have frozen on this board**. Both now gate on the RTC second (main 12989). The `ticks` figure is now READ rather than waited on, so a dead timer reports itself instead of freezing its own instrument |
+| A 30 s countdown advancing in 11 s jumps, read as a hung machine | The wizard painted its vitals every 262144 SPINS, and this board runs 24,000 iterations a second. Now on the RTC second and on every keystroke (main 12990). Same mistake the same chapter had already corrected one screen away for `wz-noclock-spins` |
+| The boot diag "flash on screen too quickly to line up the shot" | Held five RTC seconds, not `boot-spin 150000000` |
+
+### What is NOT fixed, and is the reason to fly this
+
+**The keyboard, both paths.** Pre-handback our USB HID delivered nothing;
+post-handback the firmware fallback delivered nothing either, for 3978 seconds
+-- proven by the elapsed counter, which any real key resets to zero. The second
+half **contradicts the v11 flight**, which recorded `rel=y reclaim=y` and keys
+delivered and is the basis for calling the fallback real on this board (R-3).
+Two boots of one machine disagree, so R-3 is narrower than it reads. Not
+chased here: this image is built so the panel answers do not wait on it.
+
+### Reading it
+
+No keys needed. Bars (red, green, blue, white) and the mode, held five
+seconds -- **photograph this** -- then three trace lines, then the desktop.
+
+| Read | Verdict |
+|---|---|
+| Desktop paints, seven live buttons over Shutdown | **A2b passes** |
+| Font is proportional, not the blocky CBF | The stick's own `CMUNSS.TTF` was read back through our FAT16 |
+| `usb OK ... disk=Y` on trace line 2 | Our MSC attach works on the real ASMedia, still an open defect from v11 |
+| Taskbar clock advancing past a minute | The RTC gate holds where the PIT one would already be dead |
+| Monitor pane `ticks` frozen at ~979 while the pane stays live | The PIT stall, now reported instead of fatal |
+| `display` / `framebuffer` rows | The mode actually in use, which is the input to the aspect work |
+| `sci` value | A real GSI here means codex-vm's `0x2000` is purely an emulator artifact |
+
+---
+
+## FLOWN 2026-08-04: `gopdesk-a2b.img` (02FF3DD9A4C07D89). Reached the ceremony, stopped there.
+
+**Flashed and verified 2026-08-04**, disk 2 (` USB DISK 2.0`, 28.9 GB), by
+`build/flash-usb.ps1 -SpecFit -Force`: all 16,777,216 bytes read back matching,
+GPT refitted to this stick (backup header at LBA 60506111), all four patched
+blobs verified. Transcript `build-output/flash.log`.
+
+**Provenance.** `build/boot/build-option-a.ps1 -Src apps/works/GopBoot.codex
+-Kernel seed/Codex.cdx -Ebs`, built against depot seed `37A7EF8E4EF603AE`.
+Carries CODEX.CDX (2,712,066 B), SOURCE.SRC (2,993,576 B) and CMUNSS.TTF, so
+`medium-select` can lock onto its own disk, the Files pane has source to draw,
+and the desk speaks TrueType rather than CBF. **`-Ebs` is deliberate**: GopBoot
+brings up its own USB stack through `usb-attach`, so this is a driver-truth
+boot and the firmware's xHCI driver must be gone. It is not a ConIn payload.
+
+**What flies for the first time:** the seven-pane GopDesk with no dead controls
+(main 12905), and the ACPI RSDP memory search (main 12905), which is what lets
+the Monitor pane read tables on a payload the stub did not hand a pointer to.
+
+### Pre-flight, stated including the part that did not pass
+
+| Gate | Result |
+|---|---|
+| Image boots under OVMF post-EBS, exact file | **PASS.** Wizard paints legibly at 1280x800, `pit` and `rtc` both climbing |
+| Driven to the desktop under OVMF | **NOT ACHIEVED.** 11 keys over 100 s, `sc=0` throughout, the wizard never left its Welcome screen and its 30 s window expired to `Handed back to firmware` |
+
+**The second row is honest and it is not a reason the stick was held.** What it
+establishes is that no scancode reached the payload from QEMU's USB HID
+keyboard in this bed; it does NOT establish that the payload cannot read a
+keyboard, and the two are different claims (L-OPTIONAL, and the inverse in the
+`cured-defect` case: a bed can be too quiet as well as too capable). Checked
+rather than assumed: `apps/works/GopUsbKbd.codex:102-106` still carries the
+metal-proven cure, the SET_IDLE that is deliberately NOT sent, and the vitals
+line showed the loop alive (`spin` climbing) with both clocks running, so the
+silence is on the delivery path and not in a hung guest. **This board already
+answered the USB HID question on metal on 2026-08-03 (main 12627).** The boot
+below is what re-answers it for this payload.
+
+### The boot
+
+**PULL THE STICK OUT. DO NOT EJECT IT.** Windows rewrites the partition table
+on re-enumeration and destroys the GPT the flasher just verified. Boot UEFI
+with CSM/Legacy off.
+
+1. **Boot diag.** Four bars top to bottom: red, green, blue, white, then
+   `w= h= stride=`. Banded smear instead of clean bars is a stride or mode
+   mismatch; wrong bar ORDER is a BGR/RGB swap. Then green trace lines
+   top-left of the black region, one per stage. **On a machine that hangs, the
+   last line standing names the stage that died** -- photograph it.
+2. **Wizard.** `Press Enter to begin.` The vitals line under it is the
+   instrument: `spin` climbing means the loop is alive, and **`sc=` is the
+   keyboard answer.** Any key, not just Enter, restarts the window and proves
+   delivery. If `sc` stays 0 for 30 s the payload hands the controller back to
+   firmware and says so on the glass; that costs the USB stick it booted from,
+   which is the accepted trade.
+3. Through passphrase, entropy, upstream (Enter accepts each), then the
+   keypair generates, then Complete.
+4. Four screens follow: disk probe, disks, xHCI, wake. Enter through them.
+5. **Menu.** Down once to `Graphical UI`, Enter.
+
+### What a pass looks like, and what to bring home
+
+| Read | Verdict |
+|---|---|
+| `sc=` moves when a key is struck | **The USB HID path holds on this board for the desktop payload.** A2b's blocking question |
+| Desktop paints, seven sidebar buttons over Shutdown | **A2b passes.** Photograph it: this is the screen the project has been working toward |
+| Any button does nothing when clicked | A regression -- as of main 12905 every drawn button has a handler |
+| Monitor pane (`m`): `acpi` row reads `rev N tables N` | The stub published an RSDP and the parse works on real firmware |
+| Monitor pane: `sci` value | **Worth reading deliberately.** codex-vm publishes a bogus `0x2000` (8192) here (`codex-vm.c:3388`). A real GSI, 9 or similar, on the panel confirms that value is purely an emulator artifact |
+| Monitor pane: `display` and `framebuffer` rows | The geometry the payload believes, against the panel you are looking at |
+
+Photographs to bring home: the boot diag, the desktop, and the Monitor pane.
+Any screen that hangs, with its last trace line legible.
+
+**Every reading table in this sheet must say what an ABSENT reading means,
+not only what each present one does.** Routed by reek 2026-08-04 and it cost
+them a boot: their sheet gave two branches for a retry line, `success` and
+`USB TRANSACTION ERROR`, and the board answered with a third state the sheet
+did not admit -- the line simply was not there, which meant the first attempt
+had succeeded and no retry ever ran. A table that enumerates outcomes and
+silently omits one sends its reader looking for a fault that is not there.
+This is L-MISROUTE's quieter cousin: that row is about a sheet pre-assigning
+the wrong cause, this is about a sheet having no row at all for what the
+glass actually shows. When you write a reading table, write the missing-line
+row first.
+
+---
+
+## STATUS 2026-08-03: READ THIS BEFORE THE REST OF THE SHEET
+
+**The keyboard campaign that occupies most of this document is CLOSED.** Both
+input paths work on the ASUS: the firmware path (main 12609) and USB HID (main
+12627, proven on the board 2026-08-03). Everything below about rungs, the
+`kbd-diag-v*` series, SET_IDLE, EPINT and the silent keyboard is **the record
+of how that was answered, not open work.** Do not plan against it and do not
+re-derive any of it.
+
+It is kept rather than trimmed because it is the evidence: the ladder, the
+QR-decoded bytes off the glass, and which hypotheses were killed by which
+measurement. Four of them were wrong in ways worth not repeating.
+
+**What this sheet still governs:** the procedure. Red owns it. Any future
+sitting is planned here, top to bottom, under the rule below, and the standing
+constraints in section 4 are all still live -- most of all **PULL THE STICK
+OUT, DO NOT EJECT IT** (Windows rewrites the partition table on
+re-enumeration and destroys the GPT the flasher just verified).
+
+**What is actually open and would justify a sitting:**
+
+1. ~~**The ASUS display defect.**~~ **CLOSED. This entry was stale when it was
+   written and it is struck rather than deleted, because it sent work at the
+   wrong target twice.** It is the ConOut re-mode of item 1 under v11/v12 below:
+   AMI's GraphicsConsole re-modes the scanout on the stub's first ConOut call, so
+   a stub that read `Mode->Info` first published geometry that was correct for a
+   mode that no longer existed -- which is exactly the "geometry reads back
+   correct" this entry treated as ruling the cause out. Cured in
+   `build/cdx-to-pe.ps1` (clear first, ask after), confirmed on the glass by v11
+   on 2026-08-02, and gated since 2026-08-03 by
+   `build/boot/test-conout-remode.ps1`. **`test-ovmf.ps1` was never the answer**:
+   OVMF does not re-mode on ClearScreen, so no QEMU geometry could express it.
+   Only the residual 4:3 aspect stretch is open, and that is a native-mode
+   SetMode in the stub rather than a defect.
+2. **Rung 3, `msc-align.img`, the 64 KB TRB crossing.** Reek's, and it was
+   dropped last time on a false negative. **The account of that false negative
+   was itself wrong and is corrected here (reek, verified in source
+   2026-08-03).** It read "every device on the Intel controller was Full or Low
+   speed, so none was the boot stick" -- but that was read off a display showing
+   **8 PORTSC rows for a controller reporting 26 ports**, and a SuperSpeed
+   device sits on port 9 where the probe could not show it. Same shape as
+   scanning bus 0 only and reporting NONE FOUND, which is the shape the entry
+   itself invoked.
+
+   The port-cell overflow behind it is fixed (`xhci-port-cells = 8` now guards
+   the write in `xhci-diag-ports`, `apps/works/GopXhci.codex`). It mattered
+   beyond the display: cell 28 is `xhci-released`, `kbd-pump` stops dead on it
+   being non-zero, and port 8's PORTSC was landing there with Port Power alone
+   setting it. That was blamed on firmware residue in unzeroed metal RAM, and
+   `xhci-reset-handback` already zeroes 28 and 29 on the way in, so residue was
+   never the mechanism. **QEMU could not have shown it: its controller reports
+   exactly eight ports, so the bed sat precisely on the boundary.**
+
+With 1 closed, rung 3 is the only open row and it is not scheduled. **Do not
+propose a boot for it until its dev-box work lands.** The next thing that would
+justify a body is A2b, the desktop itself on the panel, and that is red's to
+plan here when a GopDesk payload has been up this ladder.
+
+---
+
 Release row R6: *the stick boots on real hardware.* It is the only row an
 agent cannot finish, and the human body it needs is the scarcest device on
 the bus (R-5). This sheet exists so that body is spent **once**.
@@ -110,7 +526,7 @@ to ask; v15 asks the device-side ones.
 | **EPINT freezes at 97 at ~48 s, pump keeps running** | **SCHEDX killed the pipe it was built to autopsy**: the 45 s Stop Endpoint pair ran against a LIVE endpoint, and on this Intel the doorbell-restart after a Stop does not resume periodic delivery. Invisible in v13/v14 (pipe already dead). Fixed in v16: the experiments fire only if EPINT is still 0 at trigger time. The non-resuming restart is a real Intel behavior worth knowing for any future driver stop path -- recorded, not chased |
 | Phase countdown froze at "7 s" (~82 s wall) while p climbed past 15,000 | The PIT tick source stalls at ~82 s on metal. The paint-count fallback (p=20,000) still advances phases, so the boot is not stuck, but the tick stall is a new, real observation -- open item, not keyboard-blocking |
 | QR panel re-render overpaints the old codes without clearing | Cosmetic probe bug; v16 clears the panel band before re-rendering |
-| `R2:` all zeros | Sampled at ~49 s with no key held at that instant; no finding |
+| `R2:` all zeros | **Recorded as "no finding" and it was THE finding.** Corrected 2026-08-04. R1/R2 are `kd-devx`'s GET_REPORT samples over the CONTROL pipe (`KbdDiagProbe.codex:348-354`), the only report DATA this probe ever read, and they were zero. The heading above claims the pipe delivers on the strength of EPINT, which counts EVENTS. **v15 proved events arrive and GET_IDLE reads 125; it never proved data lands anywhere**, which is exactly what the desktop measured on 2026-08-04: SUCCESS on our own endpoint, buffer untouched. Same events-versus-data conflation as the SCANS gap, one layer earlier |
 
 ## NEXT BOOT: `kbd-diag-v16.img` -- the victory-lap boot
 
@@ -343,6 +759,40 @@ attempt-2 ladder, for the reason in its own block below, so do not spend
 **Pass `-Source ''` on every line.** It is not covered by `-Seed ''` and
 defaults to `build-output/Codex.codex`, so a probe otherwise carries a
 ~3 MB `SOURCE.SRC` it never reads and doubles the image for nothing.
+
+**Pass `-Ebs` on every DRIVER-TRUTH line, and it is missing from all four
+above.** Routed by reek 2026-08-04 and corrected here: their entry said the
+invocation was recorded nowhere, and it is recorded -- it is the block above,
+and has been -- but **not one of those four lines carries the switch**, which
+is the half that matters. Without it boot services stay alive, the FIRMWARE'S
+xHCI driver keeps driving the controller under test, and nothing the probe
+reports about that controller is a single-driver measurement. `ConIn
+"working"` on the 2026-07-29 ladder was the firmware's driver, not ours.
+`cdx-to-pe.ps1` makes the switch the discriminator: set it for anything
+measuring our own drivers, leave it OFF only for payloads that call
+ConIn/ConOut, which is KeyProof and the dev console. `DeskBoot` and `GopBoot`
+are driver-truth and are built with it.
+
+**Rung 3 has an artifact now** -- `build/boot/msc-align.img` (reek,
+2026-08-04) -- and the chapter had existed since the ladder was written with no
+image ever built from it, which is why that rung kept being "one trip away"
+with nothing to take.
+
+**It is STILL NOT ANSWERED, and I recorded the opposite here for part of a
+day.** The image flew and its liveness arm read a hardcoded LBA 100000: out of
+range on the 16 MB emulator image, an ordinary sector on the 28.9 GB stick. So
+on metal it answered `ok=y` and the probe correctly announced that it had
+proved nothing, which left the two green rows above it unclaimable. Fixed by
+deriving the LBA from `md-sectors`. Corrected from reek's outbox, and the
+correction is the point: **an artifact existing and a question being answered
+are different claims**, and I folded the first in as though it were the second.
+
+**A run sheet that says "this arm must read N" must also say what the arm
+assumes about the MEDIUM.** reek's, 2026-08-04, and it is the third entry in
+this family today alongside the absent-reading rule below. A constant that is
+out of range on the bed and in range on the stick reads as a pass on the one
+machine you cannot re-run cheaply, and neither number is visibly wrong on its
+own. State the assumption next to the constant.
 
 **Pass `-Kernel`.** Each build prints the kernel it used and it must say
 `seed\Codex.cdx` with the seed's digest. A NOTE saying the kernel is not
@@ -1061,8 +1511,13 @@ diag probe goes through it, while `seed/Codex.img` is built through
 at all; so the colour table at the head of section 4 does not apply to this rung,
 and combined with the ConOut gap it would return a black screen worth zero bits.
 
-**Every clause of that is now false, and the two stubs are one stub.**
-`option_a_stub.asm` is deleted; `cdx-to-pe.ps1`'s stub acquires GOP and paints
+**Every clause of that is now false, and the shipping path has one stub.**
+`option_a_stub.asm` and its ml64 builder `build-option-a-legacy.ps1` were
+**deleted 2026-08-03**. They had been kept as the reference for the ASUS display
+defect; that defect is closed (the ConOut re-mode, cured in `cdx-to-pe.ps1` and
+gated by `build/boot/test-conout-remode.ps1`), and the legacy stub rendered on
+that panel only because it never called ConOut at all.
+`cdx-to-pe.ps1`'s stub acquires GOP and paints
 both colours; `seed/Codex.img` is the GOP payload and paints under OVMF, which
 fester measured and red confirmed in the stub source independently. **So the
 colour table DOES apply to this rung**, and boot 3 is no longer held off the

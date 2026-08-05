@@ -1,0 +1,82 @@
+[
+  {
+    "target": "chapter:GpuBridge",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "This chapter used to drive a polled serial line at COM3, one byte at a time. That cost TWO VM exits per byte in each direction -- one to poll the line status register, one to move the byte -- so what a dispatch cost was a multiple of the OPERAND SIZE rather than of the work. It was measured before it was replaced: a 2x2 matmul was 160 exits, its relu 112, and a single 32x32 matmul 24,640. Through the buffers below each of those is four, because only the two addresses and the ring cross the boundary. The serial path is deleted rather than kept beside this one; a second transport that nothing uses is a second thing to keep correct, and it would be exercised by nothing.",
+    "thread": null
+  },
+  {
+    "target": "section:Dispatch",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The doorbell write is last, so both buffer addresses are in place before the host is told to look. The reply length answers zero when the host refused the dispatch, which is what separates a refusal from a reply that happens to decode to zeros -- a distinction the caller cannot make from the reply bytes alone.",
+    "thread": null
+  },
+  {
+    "target": "function:gpu-run1",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "THE REPLY CARRIES ELEMENTS AND NOT DIMENSIONS for every op but matmul, so the caller supplies the result shape it expects. That is safe because the caller also chose the operation: a transpose of an ra x ca is ca x ra by definition, and an upsample of c x h x w is c x 2h x 2w.",
+    "thread": null
+  },
+  {
+    "target": "function:gpu-bridge-softmax",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Elementwise and shape-preserving. Softmax is a reduction over the whole tensor rather than per row, which is what its constructor's rows-a by 1 shape already says.",
+    "thread": null
+  },
+  {
+    "target": "function:gpu-bridge-group-norm",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Group norm is the one operation whose dimension fields do not mean what its neighbours' mean: the LENGTH goes in rows-a and the GROUP COUNT in cols-a, so it is passed that way rather than as a shape. A length that does not divide into whole groups is refused by the host.",
+    "thread": null
+  },
+  {
+    "target": "function:gpu-bridge-upsample2x",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Upsample doubles both spatial dimensions, NEAREST NEIGHBOUR. The other reading is bilinear, and the two agree only on a constant input, so the choice is written down rather than left to be discovered from an answer.",
+    "thread": null
+  },
+  {
+    "target": "function:gpu-bridge-clamp",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Clamp carries its two bounds as a second operand, the way scale carries its one factor, so the command needs no field the header does not have. Every value below lo becomes lo and every value above hi becomes hi.",
+    "thread": null
+  },
+  {
+    "target": "section:A Kernel On The Actual Device",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Everything above computes on the HOST CPU, in scalar C, inside the emulator. That was honest as a transport and dishonest as a GPU: a caller reaching for this bridge to go faster got a slower CPU with a round trip in front of it, while GpuProxy's prose advertised dispatch to CUDA. `gpu-op-launch-ptx` was defined, had a constructor, and reached nothing at all.",
+    "thread": null
+  },
+  {
+    "target": "chapter:GpuBridge",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "It reaches the device now. The command carries a PTX module and the name of an entry point in it; the host JITs that module through the CUDA driver and launches the kernel on the graphics processor. PTX rather than a binary because PTX is the portable form -- the driver compiles it for whatever card is present, so a module built for one generation runs on the next.",
+    "thread": null
+  },
+  {
+    "target": "function:gpu-put-text",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A LAUNCH ON A BOX WITH NO NVIDIA GPU IS REFUSED, NOT QUIETLY COMPUTED ON THE CPU. The host answers None, and the caller can therefore tell a kernel that ran on a device from one that did not run at all. Falling back to the scalar path would reproduce exactly the lie this section exists to remove.",
+    "thread": null
+  }
+]

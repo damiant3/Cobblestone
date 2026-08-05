@@ -1,10 +1,146 @@
 [
-  {
+{
     "target": "function:find-collisions-loop",
     "kind": "rationale",
     "author": "cam",
     "date": "2026-05-06",
     "body": "CL 996: replaced O(N^2) appears-in-different-chapter scan with sorted parallel name/slug lists + bsearch. The seen-names and seen-slugs lists stay sorted via list-insert-at at the bsearch position.",
+    "thread": null
+  },
+  {
+    "target": "section:Builtin Shadowing",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Emit resolves a user definition ahead of a builtin and says nothing: X86_64Compound's dispatch reads `if user-arity < 0 & is-builtin ...`, so where a call reaches that dispatch, a definition of the same name wins for EVERY call site in the compilation unit, including the compiler's own if the chapter is cited into it. Nothing anywhere reported that, and nothing does yet.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Chapter Scoper",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A warning, not an error, and deliberately so. Most shadows are benign and a few are load-bearing: CCE defines is-digit / is-letter / is-whitespace over CCE code points rather than ASCII, and StringUtils defines text-contains / text-replace / text-starts-with, and those are the definitions their callers want. An error would break them, and an error nobody can act on is a build everyone learns to bypass.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Chapter Scoper",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Measured against the compiler's own unit when this shipped: 7 sites.",
+    "thread": null
+  },
+  {
+    "target": "function:check-shadowed-builtins",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The name set is built once by the caller. builtin-names is a zero-parameter definition, so a mention of one is a call that rebuilds the whole list -- the same shape that made emit-builtin expensive before the table moved into CodegenState.",
+    "thread": null
+  },
+  {
+    "target": "section:Colliding Across Chapters",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The mangling below is what makes a collision survivable: two chapters may each define a name and each keeps its own. What it does not do is say so. A mention resolves by the chapter it sits in, and in a chapter that defines neither the winner is the first assignment in concat order, which is the directory glob and not anything written in the source. So the same body means different things in different files, and moving one is silent.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Chapter Scoper",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A warning at each definition site, not an error: a collision is legal and sometimes deliberate, and both halves of a parallel API are legitimate code. What it costs is bounded by the collision count, because only a name in the colliding set pays for the scan that names the other chapter.",
+    "thread": null
+  },
+  {
+    "target": "function:colliding-other-chapter",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Both are gone -- the table by deletion in favour of the foreword's, the lookup by taking a chapter-specific prefix -- so the claim is true now. It is restated as history rather than removed because a doc that asserted its own cleanliness, and was believed, is the thing that let the count sit at two while it was being reported as one.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Chapter Scoper",
+    "kind": "invariant",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A cite that names no chapter in the unit was silent: it type-checked, compiled and ran with no diagnostic, and the guarantee lived entirely in the build resolver's PowerShell. A second front end would not inherit it.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Chapter Scoper",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Two normalizations have to be right here, and getting either wrong makes the check reject correct code. Both were measured against the real tree before this was written, not reasoned about.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Chapter Scoper",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "FIRST: match on the BARE chapter name, not on <Quire>--<Chapter>. The concat prefixes each header with its DIRECTORY, and a quire is not a directory -- everything under codex/compiler is the Codex quire but sits in Core, Emit, Types and the rest. So `cites Codex chapter Build Settings` has to match the chapter the concat named `Core--Build Settings`. Composing the quire into the key misses 21 of the compiler's own 73 cites; the bare key misses none.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Chapter Scoper",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "SECOND: the key DROPS spaces, it does not turn them into hyphens, so slugify is the wrong function to reach for. A cite may name the FILE while the header names the chapter: `cites Common chapter ByteHelpers` is satisfied by `ByteHelpers.codex`, whose header reads `Chapter: Byte Helpers`. Neither form is wrong and no key built on one finds the other unless the spaces come out. This is the build resolver's Get-CiteKey rule (`build/quire-map.ps1`), and it is deliberately the same rule -- a second notion of matching is how the two ends drift apart. Using slugify here rejected both of the pe writers' correct cites.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Chapter Scoper",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "find-slug-for-cite-name used to compose the key the first way and so answered \"\" for those same 21 cites, dropping their cite overrides. It now tries the composed key first and falls back to the bare name, which is why both spellings keep working.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Chapter Scoper",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The consequence of that \"\" was sharper than a dropped override, and codex/test/cite-override-quire.codex pins it: if the cited name is CONTESTED, both definitions are mangled, the citing chapter gets no rename entry, and the mention resolves to nothing -- CDX3002, no binary. So the old key did not quietly choose the wrong definition, it made a whole construct uncompilable. It went unnoticed because every cite written the quire way happens to name an uncontested definition.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Chapter Scoper",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The fallback REFUSES rather than guesses. A bare name can be ambiguous where <Quire>--<Chapter> was not: ten of them are, measured over the real source -- Console lives in both core and kernel, Opening in both compiler and test, and Markdown in both encode and ui. Matching bare and taking the first hit would mangle a name to whichever chapter the concat happened to emit first, which is a wrong answer that compiles. So when the bare name matches more than one chapter in the unit the answer is \"\" -- exactly what the broken key gave, no worse than before, and never a guess. Note this is not the same question the presence check asks: a duplicate bare name is still PRESENT, so it warrants no CDX3007.",
+    "thread": null
+  },
+  {
+    "target": "function:chapter-slug-dashes",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "This walks the citations ONCE. apply-cite-overrides-loop runs per chapter and would report every miss as many times as there are chapters.",
+    "thread": null
+  },
+  {
+    "target": "function:check-cites-resolve",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Presence is asked of the chapter headers the scan passed, not only of the chapters that own a definition. ChapterAssignment is built per definition, so a chapter declaring only an effect or a type contributed no assignment and read as absent though it sat in the unit. Both sources feed the cache: the assignments still answer for a bundled chapter renamed Quire--Name, whose header the scan records under the prefixed form and whose bare name chapter-bare-name recovers.",
+    "thread": null
+  },
+  {
+    "target": "function:scope-adefs-ll",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The ceiling is the SCOPE deck reservation's top, and it is checked here because this loop is the only place the phase writes the deck in bulk: one renamed ADef per definition. Past the ceiling the deck grows into the bivy and the phase reads its own overwrite. A phase that stops here leaves the deck short of its ceiling, which is what compile-desugar-and-scope tests to raise CDX9002.",
     "thread": null
   }
 ]

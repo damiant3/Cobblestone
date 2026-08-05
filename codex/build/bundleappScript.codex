@@ -6,10 +6,6 @@ Chapter: BundleAppScript
   cites Shell chapter ShellBuild
   cites Shell chapter PowerShellEmit
 
- Generates bundle-app.ps1 -- bundles a Codex application source file
- with all its transitive cited dependencies into a single .codex file.
- Compile with: -Survey "lower-mul:500000"
-
  We say:
 
 Section: Parameters
@@ -18,23 +14,39 @@ Section: Parameters
 
 Section: S01 -- Preamble
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'quire-map.ps1')")]
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))), ScRunDot (SePathJoin SeScriptRoot (SeLit "quire-map.ps1"))]
 
 Section: S02 -- Read Source
 
-  s02 : List ShellCmd = [ScBlank, ScAssign "srcPath" (SeRaw "(Resolve-Path $Src).Path"), ScDotNetCallAssign "rootLines" "System.IO.File" "ReadAllLines" [SeVar "srcPath"]]
+  s02 : List ShellCmd = [ScBlank, ScAssign "srcPath" (SePathResolve (SeVar "Src")), ScDotNetCallAssign "rootLines" "System.IO.File" "ReadAllLines" [SeVar "srcPath"]]
 
 Section: S03 -- Resolve Cite Order
 
-  s03 : List ShellCmd = [ScBlank, ScTry [ScAssign "ordered" (SeRaw "Resolve-CiteOrder -RootLines $rootLines -Repo $Repo")] [ScWriteError (SeRaw "\"MISSING: $($_.Exception.Message)\""), ScExit (SeInt 3)] []]
+  resolve-call : ShellExpr = SeCallArgs "Resolve-CiteOrder" [SaNamed "RootLines" (SeVar "rootLines"), SaNamed "Repo" (SeVar "Repo")]
+
+  missing-message : ShellExpr = SeConcat (SeLit "MISSING: ") (SeProperty (SeProperty SeErrorText "Exception") "Message")
+
+  s03 : List ShellCmd = [ScBlank, ScTry [ScAssign "ordered" resolve-call] [ScWriteError missing-message, ScExit (SeInt 3)] []]
 
 Section: S04 -- Build Output
 
-  s04 : List ShellCmd = [ScAssign "lines" (SeRaw "Format-CiteChapters -Ordered $ordered"), ScBlank, ScForEach "l" (SeVar "rootLines") [ScRaw "[void]$lines.Add($l)"], ScRaw "[void]$lines.Add('')"]
+  format-call : ShellExpr = SeCallArgs "Format-CiteChapters" [SaNamed "Ordered" (SeVar "ordered")]
+
+  s04 : List ShellCmd = [ScAssign "lines" format-call, ScBlank, ScForEach "l" (SeVar "rootLines") [ScCallMethod (SeVar "lines") "Add" [SeVar "l"]], ScCallMethod (SeVar "lines") "Add" [SeLit ""]]
 
 Section: S05 -- Write Output
 
-  s05 : List ShellCmd = [ScBlank, ScAssign "body" (SeRaw "($lines -join \"`n\") + \"`n\""), ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "Out", SeVar "body", SeRaw "[System.Text.UTF8Encoding]::new($false)"], ScEcho (SeRaw "\"[bundle-app] $($ordered.Count) dependencies + root -> $Out ($($body.Length) bytes)\"")]
+  body-text : ShellExpr = SeConcat (SeJoin (SeVar "lines") SeNewline) SeNewline
+
+  write-args : List ShellExpr = [SeVar "Out", SeVar "body", SeStaticCall "System.Text.UTF8Encoding" "new" [SeBool False]]
+
+  count-part : ShellExpr = SeConcat (SeConcat (SeLit "[bundle-app] ") (SeProperty (SeVar "ordered") "Count")) (SeLit " dependencies + root -> ")
+
+  size-part : ShellExpr = SeConcat (SeConcat (SeLit " (") (SeProperty (SeVar "body") "Length")) (SeLit " bytes)")
+
+  done-message : ShellExpr = SeConcat (SeConcat count-part (SeVar "Out")) size-part
+
+  s05 : List ShellCmd = [ScBlank, ScAssign "body" body-text, ScDotNetCall "System.IO.File" "WriteAllText" write-args, ScEcho done-message]
 
 Section: Assembly
 

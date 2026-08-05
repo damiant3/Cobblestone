@@ -282,11 +282,20 @@ Section: The Parse
  A revision 2 RSDP must satisfy both checksums: the first twenty bytes
  for the benefit of a 1.0 reader, and the whole declared length.
 
+ The declared length is bounded before it is used as a loop count. The
+ spec's RSDP is 36 bytes; a candidate found by scanning memory can carry
+ any four bytes there, and a length of four billion would walk the whole
+ address space inside a checksum.
+
+  acpi-rsdp-len-ok : Integer -> Boolean
+  acpi-rsdp-len-ok (n) = n >= 20 & n <= 4096
+
   acpi-rsdp-ok : Integer -> Boolean
   acpi-rsdp-ok (r) =
     if acpi-rsdp-sig-ok r == False then False
     else if acpi-checksum-ok r 20 == False then False
     else if peek-byte r 15 < 2 then True
+    else if acpi-rsdp-len-ok (acpi-rd32 r 20) == False then False
     else acpi-checksum-ok r (acpi-rd32 r 20)
 
   acpi-root-of : Integer -> Integer
@@ -429,10 +438,49 @@ Section: Boot Cell
 
   acpi-cell : Integer = 32768
 
-  acpi-boot-rsdp : Integer -> Integer
-  acpi-boot-rsdp (dummy) =
+  acpi-stub-rsdp : Integer -> Integer
+  acpi-stub-rsdp (dummy) =
     if handoff-present 0 then peek-qword handoff-base 40
     else peek-qword acpi-cell 40
+
+Section: RSDP Scan
+
+ ACPI 6.5 section 5.2.5.1 gives the IA-PC search when nobody hands the
+ pointer over: the first kilobyte of the Extended BIOS Data Area, then
+ the BIOS read-only area 0xE0000 to 0xFFFFF, on 16-byte boundaries in
+ both. The EBDA segment is the 16-bit word at 0x40E of the BIOS data
+ area and addresses it in paragraphs, so it is shifted left four. A
+ segment outside 0x80000 to 0xA0000 is not an EBDA, and on a machine
+ whose firmware left that word alone it is whatever was in the RAM.
+
+ A payload reaches this only when nothing published a pointer, which is
+ not the rare case it reads as: a plain CDX started on a bare -gop guest
+ has no boot stub at all, and until now it reported a machine with no
+ ACPI while the tables sat at 0xE0000 unread. The stub's pointer is
+ still asked for first and still wins.
+
+  acpi-ebda-base : Integer -> Integer
+  acpi-ebda-base (dummy) = acpi-rd16 1024 14 * 16
+
+  acpi-ebda-plausible : Integer -> Boolean
+  acpi-ebda-plausible (e) = e >= 524288 & e < 655360
+
+  acpi-scan-range : Integer, Integer -> Integer
+  acpi-scan-range (a) (limit) =
+    if a >= limit then 0
+    else if acpi-rsdp-ok a then a
+    else acpi-scan-range (a + 16) limit
+
+  acpi-scan-rsdp : Integer -> Integer
+  acpi-scan-rsdp (dummy) =
+    let e = acpi-ebda-base 0
+    in let low = if acpi-ebda-plausible e then acpi-scan-range e (e + 1024) else 0
+    in if low /= 0 then low else acpi-scan-range 917504 1048576
+
+  acpi-boot-rsdp : Integer -> Integer
+  acpi-boot-rsdp (dummy) =
+    let p = acpi-stub-rsdp 0
+    in if p /= 0 & acpi-rsdp-ok p then p else acpi-scan-rsdp 0
 
   acpi-boot : Integer -> AcpiInfo
   acpi-boot (dummy) = acpi-parse (acpi-boot-rsdp 0)

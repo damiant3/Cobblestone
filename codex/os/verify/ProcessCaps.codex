@@ -24,23 +24,6 @@ Section: Process Table
 
 Section: Grant Wiring
 
- A grant has three parts and the process table has a slot for each: the
- capability word at offset 56 says what the process may do, the
- filesystem scope at offset 64 says what path it may name, and the
- network scope at offset 24 says what authority it may reach. Writing
- the capability word without a scope hands a loaded binary its authority
- and loses the limit on it -- a program whose manifest said "filesystem
- read, under /config/" would run with filesystem read over the whole
- volume, and one that said "network write, to api.example.com" would run
- able to POST anywhere. So apply-load-decision writes ALL THREE, and a
- denied decision writes NONE.
-
- Each scope goes through its process-set-*-scope helper rather than a
- poke because a Text is a pointer and the process table wants that
- pointer, not its bytes; the helpers are privileged
- (cap-capability-admin), which is the point -- installing a scope is the
- loader's business and not an application's.
-
   write-process-grant : Integer, Integer -> Integer
   write-process-grant (pid) (mask) =
    let lo = poke-32 (proc-cap-addr pid) 0 mask
@@ -60,12 +43,6 @@ Section: Grant Wiring
 
   read-process-network-scope : Integer -> Text
   read-process-network-scope (pid) = process-get-network-scope pid
-
- The bare `True` that used to end this act block cannot come back: a
- literal on its own line after an act-bind is parsed as an ARGUMENT to
- the line above it (CDX1070), not as the block's result. The block ends
- in an application instead, and wired-ok is what makes that application
- an honest one.
 
   apply-load-decision : Integer, LoadDecision -> [Capability] Boolean
   apply-load-decision (pid) (d) =

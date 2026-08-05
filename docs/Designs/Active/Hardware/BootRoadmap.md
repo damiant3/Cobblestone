@@ -369,8 +369,9 @@ gone. We own the machine and must drive the disk ourselves.
 
 ### RULED 2026-07-30 (Damian delegated it permanently: "do whatever makes maximum flexibility, and maximum sense", and it must never come back to him)
 
-**One stub survives, and it is `cdx-to-pe.ps1`'s. `option_a_stub.asm` and its
-ml64 invocation are retired.** That single decision settles B5.3, most of
+**One stub survives IN THE SHIPPING PATH, and it is `cdx-to-pe.ps1`'s.
+`option_a_stub.asm` and its ml64 invocation are retired.** That single decision
+settles B5.3, most of
 B5.4, and the address question below at once, because two stubs is what
 created the address question in the first place. `cdx-to-pe.ps1` already
 emits its stub as machine code from PowerShell and already acquires GOP, so
@@ -476,6 +477,17 @@ existing writes; teach `GopBoot` to prefer the block and fall back to
 -BootSource apps\works\GopBoot.codex -Pet`; then make that the default and
 delete `option_a_stub.asm`, `build-option-a.ps1`'s ml64 call and
 `build-a1.ps1`.
+  **Done 2026-08-01. The one deliberate exception is now closed too: the .asm
+  and `build-option-a-legacy.ps1` were DELETED 2026-08-03 (Damian's call).**
+  They had been kept as the reference for the ASUS display defect, on the
+  reasoning that the legacy stub was the only artifact rendering correctly on
+  that panel while the new stub was keyboard-without-display. **That defect is
+  closed** -- it was the ConOut re-mode (AMI's GraphicsConsole re-modes the
+  scanout on the stub's first ConOut call), cured in `cdx-to-pe.ps1` by clearing
+  before reading the geometry, and gated since 2026-08-03 by
+  `build/boot/test-conout-remode.ps1`. The legacy stub "rendered correctly" only
+  because it never called ConOut at all, so it was never the contrast it was
+  being read as. One stub now exists anywhere in the tree.
 - **B5.5 Storage breadth** - NVMe, more AHCI controllers, USB mass storage.
 
 ## Test infrastructure (the discipline that makes this fast)

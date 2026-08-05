@@ -1,0 +1,130 @@
+Chapter: GopTrack
+  cites Works chapter GopTrackDb
+  cites Data chapter Row
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Theme
+  cites UI chapter DataTable
+
+ The issue tracker's list view, moved out of `apps/guios/TrackerApp.codex`
+ when the guios shell retired into GopDesk. The data layer moved with it
+ as `GopTrackDb`, unchanged: it is a relational store over `DbServer` with
+ no UI in it, which is why it survived the retirement while the four
+ menu-item chapters did not.
+
+ This is a real view over real rows. The issues are inserted into a
+ catalog, queried back through the executor, filtered, and turned into
+ table rows -- not a picture of a tracker.
+
+ **What did NOT come across, and it is most of the old chapter.** The
+ kanban board, the sprint-cycle dashboard, the detail overlay, the command
+ palette and the focus ring were all built as `(GopBuf, ShellUiState)`
+ painting through `gop-render-tree`, and every one of them needs UI state
+ the shell owned. They are worth having and they are not lost -- the old
+ chapter stays in the depot until they land -- but a pane that shows the
+ issues is the rung that proves the data layer reaches the glass, and
+ shipping the board half-wired would have proved less.
+
+Section: Names
+
+ Status and priority are stored as integers and rendered as words. The
+ numbers are the database's and the words are this view's.
+
+  gtk-status-name : Integer -> Text
+  gtk-status-name (s) =
+    if s == 0 then "Backlog"
+    else if s == 1 then "Todo"
+    else if s == 2 then "In Progress"
+    else if s == 3 then "In Review"
+    else if s == 4 then "Done"
+    else "Cancelled"
+
+  gtk-priority-name : Integer -> Text
+  gtk-priority-name (p) =
+    if p == 0 then "Urgent"
+    else if p == 1 then "High"
+    else if p == 2 then "Medium"
+    else if p == 3 then "Low"
+    else "None"
+
+Section: Filter
+
+ Three filters: everything, open only, done only. Open excludes both Done
+ and Cancelled, because an abandoned issue is not outstanding work.
+
+  gtk-filter-all : Integer = 0
+  gtk-filter-open : Integer = 1
+  gtk-filter-done : Integer = 2
+
+  gtk-filter-name : Integer -> Text
+  gtk-filter-name (f) =
+    if f == gtk-filter-open then "open"
+    else if f == gtk-filter-done then "done"
+    else "all"
+
+  gtk-filter-ok : Integer, Integer -> Boolean
+  gtk-filter-ok (filter) (status) =
+    if filter == gtk-filter-all then True
+    else if filter == gtk-filter-open then
+      (if status == 4 then False else if status == 5 then False else True)
+    else status == 4
+
+Section: Table
+
+ Column widths are in pixels and the compositor cuts a cell's text to its
+ own column, so a width is a character budget: 8 pixels a character, less
+ 4 for the cell's left inset. These are sized to the widest value each
+ column actually holds -- `CDX-142` is 7, `In Progress` is 11, `security`
+ is 8 -- rather than to the header, which is what the inherited widths
+ were sized to. At 54 pixels the ID column showed `CDX-14`.
+
+  gtk-columns : List TableColumn
+  gtk-columns = [
+    table-column "key" "ID" 68,
+    table-column "status" "Status" 100,
+    table-column "title" "Title" 200,
+    table-column "priority" "Priority" 68,
+    table-column "label" "Label" 76,
+    table-column "assignee" "Assignee" 76
+  ]
+
+  gtk-rows-from-db : List RowData, Integer, Integer, Integer, List TableRow -> List TableRow
+  gtk-rows-from-db (rows) (filter) (i) (n) (acc) =
+    if i >= n then acc
+    else let row = list-at rows i
+    in let status = tk-row-int row "status"
+    in if gtk-filter-ok filter status == False
+    then gtk-rows-from-db rows filter (i + 1) n acc
+    else let tr = table-row (show (i + 1)) [
+        tk-row-text row "key",
+        gtk-status-name status,
+        tk-row-text row "title",
+        gtk-priority-name (tk-row-int row "priority"),
+        tk-row-text row "label",
+        tk-row-text row "assignee"
+      ]
+    in gtk-rows-from-db rows filter (i + 1) n (list-push acc tr)
+
+ The row id is the index in the UNFILTERED result, so a row keeps its
+ identity when the filter changes.
+
+  gtk-data-table : DbServer, Integer, Integer -> DataTableState
+  gtk-data-table (srv) (filter) (sel) =
+    let result = tk-db-all-issues srv
+    in let rows = gtk-rows-from-db (result.qr-rows) filter 0 (result.qr-count) []
+    in data-table-select-row (data-table-new "issues" gtk-columns rows) sel
+
+Section: Tree
+
+  gtk-tree : DbServer, Integer, Integer -> WidgetNode
+  gtk-tree (srv) (filter) (sel) =
+    let dt = gtk-data-table srv filter sel
+    in let open-n = tk-db-count-open srv
+    in let all-n = tk-db-issue-count srv
+    in widget-panel "gtk-root" DirColumn 6 [
+      widget-label "gtk-title" ("Issues -- " & show open-n & " open of " & show all-n & ", showing " & gtk-filter-name filter),
+      widget-separator "gtk-sep",
+      widget-set-flex (data-table-widget dt) 1,
+      widget-separator "gtk-sep2",
+      widget-label "gtk-help" "f cycles the filter   up/down select   Esc returns"
+    ]

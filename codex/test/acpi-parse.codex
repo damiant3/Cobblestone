@@ -261,11 +261,58 @@ Section: Cases
   case-null : Integer -> AcpiInfo
   case-null (dummy) = acpi-parse 0
 
+Section: Scan Cases
+
+ The memory search, on a window of heap rather than on the BIOS area,
+ so it runs anywhere. Four arms, and each fails for one reason only.
+
+ The window is aligned up to 16 first: the scan steps by 16 from where
+ it is told to start, and a window that began mid-paragraph would move
+ every arm's answer for a reason that has nothing to do with the arm.
+
+  scan-window : Integer = 2048
+
+  scan-base : Integer -> Integer
+  scan-base (b) = b + int-mod (16 - int-mod b 16) 16
+
+ Placed at an aligned offset, a well-formed RSDP is found and its
+ address reported. Placed EIGHT bytes further on it is not found at all,
+ which is the arm that pins the step: a scan walking byte by byte would
+ report 264 and a scan stepping 16 cannot see it. Corrupting one OEM
+ byte leaves the eight signature bytes intact, so only a scan that
+ checksums its candidate answers 0. An untouched window answers 0
+ because there is nothing in it.
+
+  scan-at : Integer, Integer -> Integer
+  scan-at (sa) (off) =
+    let z = zero-fill sa 0 scan-window
+    in let r = build-rsdp (sa + off) 2
+    in acpi-scan-range sa (sa + 1024)
+
+  scan-corrupt : Integer -> Integer
+  scan-corrupt (sa) =
+    let z = zero-fill sa 0 scan-window
+    in let r = build-rsdp (sa + 256) 2
+    in let bad = poke-byte (sa + 256) 10 88
+    in acpi-scan-range sa (sa + 1024)
+
+  scan-empty : Integer -> Integer
+  scan-empty (sa) =
+    let z = zero-fill sa 0 scan-window
+    in acpi-scan-range sa (sa + 1024)
+
+ Reported as an offset from the window, and 0 already means "not
+ found", so a hit at offset 0 would be ambiguous. No arm places one
+ there.
+
+  scan-report : Integer, Integer -> Text
+  scan-report (sa) (hit) = if hit == 0 then "none" else "+" & show (hit - sa)
+
 Section: Main
 
   opening : [Console] Nothing = act
     let b = __heap-save
-    in let adv = __heap-advance (blob-size + 256)
+    in let adv = __heap-advance (blob-size + 256 + scan-window + 16)
     in act
       let a2 = case-rev b 2
       in act
@@ -288,5 +335,12 @@ Section: Main
       in print-line-uni ("corrupt ok=" & yn (bad.ai-ok))
       let none = case-null 0
       in print-line-uni ("null ok=" & yn (none.ai-ok))
+      let sa = scan-base (b + blob-size + 256)
+      in act
+        print-line-uni ("scan aligned " & scan-report sa (scan-at sa 256))
+        print-line-uni ("scan unaligned " & scan-report sa (scan-at sa 264))
+        print-line-uni ("scan corrupt " & scan-report sa (scan-corrupt sa))
+        print-line-uni ("scan empty " & scan-report sa (scan-empty sa))
+      end
     end
   end

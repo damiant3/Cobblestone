@@ -1,0 +1,74 @@
+[
+  {
+    "target": "chapter:DiskFacts",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "It has to be relative because of what absolute addressing did. This store owns sectors 0 and 1 for its superblock and everything from sector 2 upward for its log; on a partitioned disk those are the protective MBR, the GPT header and the partition entry array. Measured 2026-07-27: a 16 MB boot image the firmware read as \"extracted BOOTX64.EFI (327680 bytes, FAT16) from partition at LBA 2048\" was, after a single disk-write-fact, read as \"ESP at LBA 0 has an unusable BPB\". It did not boot, and nothing warned anyone. Codex's own stick is such a disk, and the dev console it boots opens this store at startup.",
+    "thread": null
+  },
+  {
+    "target": "section:Resolving The Base",
+    "kind": "invariant",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Three answers, and the middle one is the one worth naming: a base of zero means the whole medium is the store, which is what a raw disk and every test fixture in this tree is. It is a legitimate base and not a failure, so refusal cannot be encoded as zero. It is negative one.",
+    "thread": null
+  },
+  {
+    "target": "chapter:DiskFacts",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A disk is partitioned if it carries a GPT header at LBA 1 or merely an MBR boot signature at sector 0. The second half is the residual case and it was the remaining hole: a disk with an MBR partition table and no GPT was still written straight through, because the old guard looked only for \"EFI PART\". The same test also catches a bare FAT volume with no partition table at all, whose boot sector ends in the same two bytes, and refusing that is right for the same reason -- the store would write over somebody's filesystem.",
+    "thread": null
+  },
+  {
+    "target": "function:fact-base-min-lba",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A fact partition starting below LBA 2 is refused rather than believed. A GPT's own header and entry array live there, so an entry claiming that start is a malformed table, and taking it at its word would put the base back on top of the partition table -- the exact failure this addressing exists to prevent, arriving through the mechanism that prevents it.",
+    "thread": null
+  },
+  {
+    "target": "section:Relative Sector Access",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The only two functions in this chapter that name an absolute sector. A limit of zero means the whole medium, which is what a raw disk gets; any other limit is the partition's sector count and is checked before a write rather than after it, because a write past the end of the partition lands in whatever partition follows.",
+    "thread": null
+  },
+  {
+    "target": "function:disk-write-fact",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Two ways to refuse, and they are different failures. A base below zero is \"this disk carries a partition table and no fact store\"; a write that would run past dr-limit is \"the fact store is full\". Neither is allowed to reach the medium, and both come back as the store UNCHANGED rather than with its fact-count incremented over a write that did not happen. A caller that checks disk-fact-count sees it fail to rise, which is the only signal these writers can carry; a store that counted a fact it never wrote would be the same class of lie as the superblock that went on reporting a full count over a truncated log, two sections above.",
+    "thread": null
+  },
+  {
+    "target": "section:Disk Load (Boot-Time Recovery)",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A fact is not one sector. pack-fact-entry has always sized itself with sectors-for-fact, and app-write-fact writes as many sectors as the content needs -- a source definition is thousands of bytes, not hundreds. The replay read a single sector and gave up on anything longer, and giving up meant returning the store it had built SO FAR, which ended the walk. One multi-sector fact therefore truncated the whole in-memory store at that entry: every fact after it was on the disk, verifiable, and invisible. The superblock went on reporting the full count, so nothing looked wrong.",
+    "thread": null
+  },
+  {
+    "target": "type:FactScan",
+    "kind": "invariant",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "So the walk always yields a sector stride, whether or not it yields a fact. A blank or unreadable sector strides one and resynchronises; a fact whose length would run past the end of the log is not trusted to say how long it is, and strides one as well.",
+    "thread": null
+  },
+  {
+    "target": "function:disk-load",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A refused disk is not read either. Reading it would mean walking a log that is really somebody else's partition entries, and every sector of it would be scanned for a fact header, which at best finds nothing and at worst finds a length field that sends the walk off the end. The region is resolved before the superblock is looked for, not after.",
+    "thread": null
+  }
+]

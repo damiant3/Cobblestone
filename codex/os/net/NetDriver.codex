@@ -4,15 +4,6 @@ Chapter: NetDriver
   cites Kernel chapter Pci
   cites Foreword chapter Maybe
 
- The one place the I/O loop names a NIC. NetIO, HttpFetch and WebServer
- call net-driver-send-frame and net-driver-recv-frame; those choose a
- card.
-
- The NE2000 is the default and stays the default. Nothing binds the
- Intel part unless net-driver-bind-e1000 is called at bring-up, so a
- guest that never probes PCI behaves exactly as it did before this
- chapter learned a second card.
-
 Section: The Bound Card
 
  Cells 36264 through 36319 of the low-memory band documented in
@@ -47,18 +38,6 @@ Section: The Bound Card
 
 Section: Bind
 
- The card selector is written LAST. Until it is, a half-written control
- block is never the live one, so a bind that faults partway through
- leaves the NE2000 serving rather than a card with three of its six
- addresses set.
-
- A card whose station address is absent is REFUSED, and that is the
- reason the bind takes a device rather than six integers. RAH bit 31 is
- the address-valid bit and E1000e reports a clear one rather than
- inventing an address; a card the network cannot answer is worse than no
- card, because the frames leave and the replies are filtered out by the
- card itself, which reads as a dead link.
-
   net-driver-bind-e1000 : E1000Device -> Integer
   net-driver-bind-e1000 (d) =
    if (d.e-present) == False then net-card-ne2k
@@ -74,29 +53,11 @@ Section: Bind
 
 Section: Bring-up
 
- The one call a program makes to get a real card. Nothing else in the tree
- has to know a NIC exists: probe the bus, find the part, initialise it,
- bind it, and answer which card is now live.
-
  The SHAPE here is card-independent and the finder behind it is not. If
  the sitting reports a part that is not Intel, `e1000-find` and
  `e1000-init` are what change and this function does not. That is the
  reason it holds no device knowledge of its own: no device-ID table, no
  quirk, no register.
-
- It scans the whole bus TREE, not bus 0. This asked `pci-scan-bus 0` when
- it was written, which finds a chipset-integrated part and silently misses
- a discrete one behind a bridge, and a silent miss here lands on a NE2000
- that does not exist outside the emulator. Measured under OVMF, the NIC is
- at `01:00.0` with only the bridge on bus 0, so the firmware we gate
- against is a case that bus 0 alone gets wrong.
-
- Every refusal lands on the NE2000. A bus with no matching part answers
- None; a part that fails reset comes back from `e1000-init` as
- `e1000-absent`; a part whose station address is invalid is refused by
- `net-driver-bind-e1000`. In all three the selector is never written, so a
- program that calls this on a machine it does not recognise behaves
- exactly as it did before the call existed.
 
   net-driver-bring-up : Integer
   net-driver-bring-up =
@@ -109,18 +70,9 @@ Section: Bring-up
 
 Section: Station Address
 
- The address every outgoing frame is sourced from, and the one the card's
- own receive filter is programmed with. They have to be the same value or
- the card discards the replies before the driver is called.
-
  It is read live off RAL/RAH rather than cached in the control block. A
  cached copy would be one more thing that can disagree with the hardware,
  and the two register reads cost less than the six-byte list they answer.
-
- The NE2000 answer is a declared constant because there is nothing to
- read: the part exists only inside codex-vm, and this is the address its
- NAT is built to expect. That is why the value was never wrong while the
- NE2000 was the only card.
 
   net-driver-ne2k-mac : List Integer = [82, 84, 0, 18, 52, 86]
 

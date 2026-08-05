@@ -30,9 +30,10 @@ Chapter: GopUsb
  recurses through nested hubs until the route string's five nibbles
  are spent.
 
- The two devices share one event ring; the per-slot latch in GopXhci
+ Every device shares one event ring; the per-endpoint latch in GopXhci
  (xhci-wait-xfer) is what keeps a storage wait from eating a keyboard
- completion, and the reverse.
+ completion, and one interface of a combo device from eating its
+ sibling's.
 
  We say:
 
@@ -112,6 +113,7 @@ Section: Attachment
   usb-host-walk : XhciHost, Integer, Integer, UsbFound -> UsbFound
   usb-host-walk (xh) (ord) (shadow) (found) =
     let o = xdiag-put 41 (xdiag-get 41 + 1)
+    in let cur = xdiag-put xhci-cur-ord (ord + 1)
     in let w = xdiag-put 42 (bit-or (xdiag-get 42) (bit-shl 1 ord))
     in let after = usb-walk xh 0 found
     in let m = xhci-ctl-put ord 3 (bit-xor (usb-found-mask after) (usb-found-mask found))
@@ -141,11 +143,12 @@ Section: Attachment
 
 Section: The Walk
 
- First keyboard wins, first mouse wins, first disk wins; a port whose
- device is none of them (a camera) is opened, inspected, and left
- addressed -- slots are plentiful and abandoning one is harmless. The
- walk publishes the disk handle at the end, after everything on the
- shared host is configured.
+ The first keyboard becomes the primary handle and every later
+ boot-keyboard interface is bound as a peer on it; first mouse wins,
+ first disk wins; a port whose device is none of them (a camera) is
+ opened, inspected, and left addressed -- slots are plentiful and
+ abandoning one is harmless. The walk publishes the disk handle at the
+ end, after everything on the shared host is configured.
 
   usb-done : UsbFound -> UsbAttach
   usb-done (found) =
@@ -167,55 +170,134 @@ Section: The Walk
  route string that reached it, depth the count of hubs above it --
  the nibble index its own children would occupy, were it a hub.
 
+ A device carrying any boot HID interface is classified PER INTERFACE:
+ a combo device -- a wireless dongle is the canonical case -- carries a
+ boot keyboard on one interface and a boot mouse on another, and the
+ old whole-device classification handed the entire device to whichever
+ class its first interface matched, so the mouse half of every combo
+ was unreachable. The ASUS proved the keyboard version of this on the
+ glass (four keyboard-shaped interfaces, keys on the fourth bound);
+ the mouse gets the identical treatment before it costs a flash.
+ Devices with no boot HID keep the old shape: mass storage first-wins,
+ then hubs descend. A device that is both HID and hub descends too,
+ with SET_CONFIGURATION sent once for the whole device.
+
   usb-inspect : XhciHost, UsbDev, Integer, Integer, UsbFound -> UsbFound
   usb-inspect (xh) (dev) (route) (depth) (found) =
     let cfg = alloc-zeroed 256 64
     in let g = usb-get-descriptor xh dev 2 0 cfg 255
     in if g == False then found
     else let total = kbd-cfg-total cfg
-    in let ki = kbd-find-interface cfg 0 total
-    in if ki >= 0 then
-      if (found.uf-kbd).uk-ok then found
-      else UsbFound { uf-kbd = usb-open-kbd xh dev cfg ki total, uf-mouse = found.uf-mouse, uf-disk = found.uf-disk }
-    else let pi = mouse-find-interface cfg 0 total
-    in if pi >= 0 then
-      if (found.uf-mouse).um-ok then found
-      else UsbFound { uf-kbd = found.uf-kbd, uf-mouse = usb-open-mouse xh dev cfg pi total, uf-disk = found.uf-disk }
+    in let hid = usb-has-boot-hid cfg 0 total
+    in let f2 = if hid then usb-hid-walk xh dev cfg 0 total 0 found else found
+    in let f3 = usb-inspect-disk xh dev cfg total hid f2
+    in let hi = hub-find-interface cfg 0 total
+    in if hi < 0 then f3
+    else if depth >= usb-max-depth then f3
+    else usb-open-hub xh dev cfg hi total route depth hid f3
+
+  usb-inspect-disk : XhciHost, UsbDev, Integer, Integer, Boolean, UsbFound -> UsbFound
+  usb-inspect-disk (xh) (dev) (cfg) (total) (hid) (found) =
+    if hid then found
+    else if (found.uf-disk).md-ok then found
     else let mi = msc-find-interface cfg 0 total
-    in if mi >= 0 then
-      if (found.uf-disk).md-ok then found
-      else UsbFound { uf-kbd = found.uf-kbd, uf-mouse = found.uf-mouse, uf-disk = usb-open-msc xh dev cfg mi total }
-    else let hi = hub-find-interface cfg 0 total
-    in if hi >= 0 then
-      if depth >= usb-max-depth then found
-      else usb-open-hub xh dev cfg hi total route depth found
-    else found
+    in if mi < 0 then found
+    else UsbFound { uf-kbd = found.uf-kbd, uf-mouse = found.uf-mouse, uf-disk = msc-open-iface xh dev cfg mi total }
 
-Section: Configuration
+Section: The HID Interface Walk
 
- These are the tails of kbd-open-port and msc-open-port, applied to a
- device the walk already opened and read.
+ Only alternate setting zero is considered (byte 3 of the interface
+ descriptor): an interface's alternate settings repeat its number with
+ different endpoint sets, and binding two settings of one interface
+ would drive one pipe from two rings.
 
-  usb-open-kbd : XhciHost, UsbDev, Integer, Integer, Integer -> UsbKbd
-  usb-open-kbd (xh) (dev) (cfg) (iface) (total) =
-    let ep = kbd-find-int-in cfg (iface + peek-byte cfg iface) total
-    in if ep < 0 then kbd-no-kbd
-    else kbd-open-endpoint xh dev (peek-byte cfg (iface + 2)) (peek-byte cfg 5) (bit-and (peek-byte cfg (ep + 2)) 15) (kbd-ep-maxpkt cfg ep) (peek-byte cfg (ep + 6))
+  usb-has-boot-hid : Integer, Integer, Integer -> Boolean
+  usb-has-boot-hid (cfg) (off) (total) =
+    if off >= total then False
+    else let len = peek-byte cfg off
+    in if len == 0 then False
+    else if peek-byte cfg (off + 1) /= 4 then usb-has-boot-hid cfg (off + len) total
+    else if peek-byte cfg (off + 3) /= 0 then usb-has-boot-hid cfg (off + len) total
+    else if peek-byte cfg (off + 5) /= 3 then usb-has-boot-hid cfg (off + len) total
+    else if peek-byte cfg (off + 6) /= 1 then usb-has-boot-hid cfg (off + len) total
+    else if peek-byte cfg (off + 7) == 1 then True
+    else if peek-byte cfg (off + 7) == 2 then True
+    else usb-has-boot-hid cfg (off + len) total
 
-  usb-open-mouse : XhciHost, UsbDev, Integer, Integer, Integer -> UsbMouse
-  usb-open-mouse (xh) (dev) (cfg) (iface) (total) =
-    let ep = kbd-find-int-in cfg (iface + peek-byte cfg iface) total
-    in if ep < 0 then mouse-no-mouse
-    else mouse-open-endpoint xh dev (peek-byte cfg (iface + 2)) (peek-byte cfg 5) (bit-and (peek-byte cfg (ep + 2)) 15) (kbd-ep-maxpkt cfg ep) (peek-byte cfg (ep + 6))
+ The walk threads `cfgd`: SET_CONFIGURATION is sent by the first bind
+ on the device and never again (USB 2.0 9.1.1.5 -- re-sending it resets
+ every data toggle the device holds). Boot keyboards join the keyboard
+ peer set, boot mice the mouse peer set folding into the primary's
+ position block, and every OTHER HID interrupt-IN interface on a device
+ that carries boot HID is bound as a raw counting listener on the
+ keyboard set -- pumped and counted, never decoded, never fed to the
+ mailbox -- because gaming devices commonly route their real traffic to
+ an interface whose layout only the report descriptor defines, and a
+ raw listener's non-zero count on the glass is what says so.
 
-  usb-open-msc : XhciHost, UsbDev, Integer, Integer, Integer -> MscDisk
-  usb-open-msc (xh) (dev) (cfg) (iface) (total) =
-    let skip = peek-byte cfg iface
-    in let in-off = msc-find-bulk-off cfg (iface + skip) total True
-    in let out-off = msc-find-bulk-off cfg (iface + skip) total False
-    in if in-off < 0 then msc-no-disk
-    else if out-off < 0 then msc-no-disk
-    else msc-open-endpoints xh dev (msc-ep-num cfg in-off * 2 + 1) (msc-ep-maxpkt cfg in-off) (msc-ep-num cfg out-off * 2) (msc-ep-maxpkt cfg out-off) (peek-byte cfg (iface + 2))
+  usb-hid-walk : XhciHost, UsbDev, Integer, Integer, Integer, Integer, UsbFound -> UsbFound
+  usb-hid-walk (xh) (dev) (cfg) (off) (total) (cfgd) (found) =
+    if off >= total then found
+    else let len = peek-byte cfg off
+    in if len == 0 then found
+    else if peek-byte cfg (off + 1) /= 4 then usb-hid-walk xh dev cfg (off + len) total cfgd found
+    else if peek-byte cfg (off + 3) /= 0 then usb-hid-walk xh dev cfg (off + len) total cfgd found
+    else if peek-byte cfg (off + 5) /= 3 then usb-hid-walk xh dev cfg (off + len) total cfgd found
+    else let ep = kbd-find-int-in cfg (off + len) total
+    in if ep < 0 then usb-hid-walk xh dev cfg (off + len) total cfgd found
+    else let sub = peek-byte cfg (off + 6)
+    in let proto = peek-byte cfg (off + 7)
+    in if if sub == 1 then proto == 1 else False then usb-hid-bind-kbd xh dev cfg off ep total cfgd found False
+    else if if sub == 1 then proto == 2 else False then usb-hid-bind-mouse xh dev cfg off ep total cfgd found
+    else usb-hid-bind-kbd xh dev cfg off ep total cfgd found True
+
+  usb-hid-bind-kbd : XhciHost, UsbDev, Integer, Integer, Integer, Integer, Integer, UsbFound, Boolean -> UsbFound
+  usb-hid-bind-kbd (xh) (dev) (cfg) (off) (ep) (total) (cfgd) (found) (raw) =
+    let len = peek-byte cfg off
+    in if raw & ((found.uf-kbd).uk-ok == False) then usb-hid-walk xh dev cfg (off + len) total cfgd found
+    else let k = kbd-open-iface xh dev (peek-byte cfg (off + 2)) (peek-byte cfg 5) (bit-and (peek-byte cfg (ep + 2)) 15) (kbd-ep-maxpkt cfg ep) (peek-byte cfg (ep + 6)) (cfgd == 0) (peek-byte cfg (off + 6) == 1) raw
+    in if k.uk-ok == False then usb-hid-walk xh dev cfg (off + len) total cfgd found
+    else let n = usb-hid-note xh dev (k.uk-dci) (k.uk-raw) False (k.uk-report)
+    in if (found.uf-kbd).uk-ok then
+      let a = kbd-adopt (found.uf-kbd) k
+      in usb-hid-walk xh dev cfg (off + len) total 1 found
+    else usb-hid-walk xh dev cfg (off + len) total 1 (UsbFound { uf-kbd = k, uf-mouse = found.uf-mouse, uf-disk = found.uf-disk })
+
+  usb-hid-bind-mouse : XhciHost, UsbDev, Integer, Integer, Integer, Integer, Integer, UsbFound -> UsbFound
+  usb-hid-bind-mouse (xh) (dev) (cfg) (off) (ep) (total) (cfgd) (found) =
+    let len = peek-byte cfg off
+    in let havem = (found.uf-mouse).um-ok
+    in let pos = if havem then (found.uf-mouse).um-pos else 0
+    in let m = mouse-open-iface xh dev (peek-byte cfg (off + 2)) (peek-byte cfg 5) (bit-and (peek-byte cfg (ep + 2)) 15) (kbd-ep-maxpkt cfg ep) (peek-byte cfg (ep + 6)) (cfgd == 0) pos
+    in if m.um-ok == False then usb-hid-walk xh dev cfg (off + len) total cfgd found
+    else let n = usb-hid-note xh dev (m.um-dci) False True (m.um-report)
+    in if havem then
+      let a = mouse-adopt (found.uf-mouse) m
+      in usb-hid-walk xh dev cfg (off + len) total 1 found
+    else usb-hid-walk xh dev cfg (off + len) total 1 (UsbFound { uf-kbd = found.uf-kbd, uf-mouse = m, uf-disk = found.uf-disk })
+
+ Cell 47 counts every HID interface bound this boot; rows at 80, 84,
+ 88, 92 carry the first four. Per row: the device descriptor's idVendor
+ and idProduct, the root port and route string, then the DCI with the
+ raw flag at bit 8, the mouse flag at bit 9 and the speed class at bits
+ 15:12, then the report buffer's address. The row is written at bind
+ time so a boot that dies later still photographs with its devices
+ named.
+
+  usb-hid-note : XhciHost, UsbDev, Integer, Boolean, Boolean, Integer -> Integer
+  usb-hid-note (xh) (dev) (dci) (raw) (mouse) (buf) =
+    let idx = xdiag-get 47
+    in let c = xdiag-put 47 (idx + 1)
+    in if idx >= 4 then 0
+    else let dbuf = alloc-zeroed 64 64
+    in let g = usb-get-descriptor xh dev 1 0 dbuf 18
+    in let vid = if g then bit-or (peek-byte dbuf 8) (bit-shl (peek-byte dbuf 9) 8) else 0
+    in let pid = if g then bit-or (peek-byte dbuf 10) (bit-shl (peek-byte dbuf 11) 8) else 0
+    in let base = 80 + idx * 4
+    in let w0 = xdiag-put base (bit-or (bit-shl vid 16) pid)
+    in let w1 = xdiag-put (base + 1) (bit-or (bit-shl (dev.ud-port) 24) (bit-and (dev.ud-route) #FFFFF))
+    in let w2 = xdiag-put (base + 2) (bit-or dci (bit-or (if raw then 256 else 0) (bit-or (if mouse then 512 else 0) (bit-shl (dev.ud-speed) 12))))
+    in xdiag-put (base + 3) buf
 
 Section: Hub Requests
 
@@ -351,9 +433,9 @@ Section: Hub Bring-Up
 
 Section: Hub Walk
 
-  usb-open-hub : XhciHost, UsbDev, Integer, Integer, Integer, Integer, Integer, UsbFound -> UsbFound
-  usb-open-hub (xh) (dev) (cfg) (iface) (total) (route) (depth) (found) =
-    let sc = usb-set-configuration xh dev (peek-byte cfg 5)
+  usb-open-hub : XhciHost, UsbDev, Integer, Integer, Integer, Integer, Integer, Boolean, UsbFound -> UsbFound
+  usb-open-hub (xh) (dev) (cfg) (iface) (total) (route) (depth) (cfgd) (found) =
+    let sc = if cfgd then True else usb-set-configuration xh dev (peek-byte cfg 5)
     in if sc == False then found
     else let buf = alloc-zeroed 64 64
     in let count = hub-port-count xh dev buf

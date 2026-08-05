@@ -236,6 +236,22 @@ Section: Memory Address Map
 
   ap-id-next-addr : Integer = 36256
 
+ 36264 through 36319 are the NIC control block (`codex/os/net/NetDriver.codex`,
+ `net-driver-cb`), so the next free scalar in this band is 36320 and NOT the
+ 8 bytes above `ap-id-next-addr`. That gap is the one this section's own
+ instruction ("find the gap and confirm the preceding allocation has ended")
+ exists for, and taking the obvious next slot would have landed a compiler cell
+ inside the card's ring pointers.
+
+ The guard page base is PUBLISHED rather than recomputed by its readers.
+ `emit-demand-unmap` derives it once from the reported RAM size and stores it
+ here; `build` (`Core/PhaseAllocator.codex`) reads it to decide whether a deck
+ reservation would leap the page. Two places deriving the same geometry from
+ `demand-stack-reserve-pages` is how they drift apart, and a `build` that
+ believed the page were higher than it is would let the reservation through.
+
+  guard-page-base-addr : Integer = 36320
+
  Application-processor idle stacks live in low always-present memory,
  never in the demand-paged heap range: an AP takes its first interrupt
  on this stack, and the CPU cannot deliver a fault frame onto a
@@ -897,6 +913,26 @@ Section: Page Fault Handler
  their stacks from the heap, so every spawn helper pre-touches its
  stack pages before the child runs.
 
+ The guard page is the 2 MB page immediately below the boot stack's reserve,
+ at index (ram-pages - demand-stack-reserve-pages - 1), left unmapped so that
+ any of the 58 inline frontier bumps across the emitters faults on first touch
+ instead of writing over the stack. It is tested BEFORE the lo/hi range tests
+ and not after: at 3 GB the guard index is 1487, which is above
+ demand-heap-hi-page, so the range test would send it to the exception dump and
+ the arm below would never run. Placing it after the range tests leaves a guard
+ that works only on small-RAM configurations, which is the configuration nobody
+ runs.
+
+ It routes to __out_of_memory rather than to the dump because the dump prints
+ from the current stack, and the case this exists to catch is the stack having
+ just been written over. __out_of_memory reloads RSP from ram-size-addr before
+ printing, so it survives that.
+
+ The stack case is not symmetric: a stack that grows DOWN into the guard page
+ cannot take a #PF at all, because the CPU cannot deliver the fault frame onto
+ the faulting stack. That is a double fault, delivered on the TSS IST1 stack,
+ and it produces an !EXC dump rather than the OUT OF MEMORY line.
+
   demand-heap-lo-page : Integer = 6291456 / 2097152
 
   demand-heap-hi-page : Integer = 2147483648 / 2097152
@@ -915,7 +951,15 @@ Section: Page Fault Handler
    in let st3 = st-append-code ec2 [15, 32, 208]
    in let st4 = st-append-code st3 (mov-rr reg-rcx reg-rax)
    in let st5 = st-append-code st4 (shr-ri reg-rax 21)
-   in let st6 = st-append-code st5 (cmp-ri reg-rax demand-heap-lo-page)
+   in let gp0 = st-append-code st5 (li reg-rdi ram-size-addr)
+   in let gp1 = st-append-code gp0 (mov-load reg-rdx reg-rdi 0)
+   in let gp2 = st-append-code gp1 (shr-ri reg-rdx 21)
+   in let gp3 = st-append-code gp2 (sub-ri reg-rdx (demand-stack-reserve-pages + 1))
+   in let gp4 = st-append-code gp3 (cmp-rr reg-rax reg-rdx)
+   in let gp-pos = gp4.code-len
+   in let gp5 = st-append-code gp4 (jcc cc-e 0)
+   in let gp6 = __record-set gp5 "stack-overflow-checks" (list-push (gp5.stack-overflow-checks) gp-pos)
+   in let st6 = st-append-code gp6 (cmp-ri reg-rax demand-heap-lo-page)
    in let j-lo = st6.code-len
    in let st7 = st-append-code st6 (jcc cc-b 0)
    in let st8 = st-append-code st7 (cmp-ri reg-rax demand-heap-hi-page)
@@ -1001,7 +1045,19 @@ Section: Page Fault Handler
    in let up5 = st-append-code up4 (sub-ri reg-rcx 1)
    in let up-cur = up5.code-len
    in let up6 = st-append-code up5 (jcc cc-ne (up-top - (up-cur + 6)))
-   in patch-jcc-at up6 j-empty (up6.code-len)
+   in let up7 = patch-jcc-at up6 j-empty (up6.code-len)
+   in let g0 = st-append-code up7 (li reg-rdi ram-size-addr)
+   in let g1 = st-append-code g0 (mov-load reg-rcx reg-rdi 0)
+   in let g2 = st-append-code g1 (shr-ri reg-rcx 21)
+   in let g3 = st-append-code g2 (sub-ri reg-rcx (demand-stack-reserve-pages + 1))
+   in let gb0 = st-append-code g3 (mov-rr reg-rax reg-rcx)
+   in let gb1 = st-append-code gb0 (shl-ri reg-rax 21)
+   in let gb2 = st-append-code gb1 (li reg-rdi guard-page-base-addr)
+   in let gb3 = st-append-code gb2 (mov-store reg-rdi reg-rax 0)
+   in let g4 = st-append-code gb3 (shl-ri reg-rcx 3)
+   in let g5 = st-append-code g4 (add-ri reg-rcx (32768 + 8192))
+   in let g6 = st-append-code g5 (li reg-rax 0)
+   in st-append-code g6 (mov-store reg-rcx reg-rax 0)
 
  Spawn-stack pre-touch. A spawned process carves its stack from the
  parent's heap frontier, inside the demand range; the child's first

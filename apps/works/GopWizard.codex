@@ -138,17 +138,27 @@ Section: Key Wait
  as the menu's dispatchers are, because mutual recursion would grow
  the stack until the machine died waiting for a keystroke.
 
- The gate reports its own vitals, unconditionally, on a fixed spin
- interval -- not when a second turns over, and not when a key
- arrives. The first two builds of this gate each depended on a clock
- to say anything at all, and each went silent on the one machine it
- was written for: a screen that prints nothing cannot be
+ The gate reports its own vitals when the second turns over, when a
+ key arrives, and -- only on a machine whose clock has never moved at
+ all -- on a spin interval. The first two builds of this gate each
+ depended on a clock to say anything, and each went silent on the one
+ machine it was written for: a screen that prints nothing cannot be
  distinguished from a loop that is not running, an RTC that never
  ticks, or a keyboard streaming garbage that resets the window every
  iteration. Those are three different faults and they looked
- identical. The spin counter is the one number that cannot lie: if it
- climbs, the loop is alive, and every other number on the line is
- then worth reading.
+ identical. The third arm is what keeps that guarantee: the spin
+ counter is the one number that cannot lie, and a clockless machine
+ still gets a line.
+
+ The paint used to be on the spin interval ALONE, and that was the
+ same mistake this file corrected one screen away in wz-noclock-spins:
+ a spin count is not a duration, and the loop's rate is the machine's
+ to decide. Measured on the ASUS TUF 2026-08-04: 13,893,632 spins over
+ 573 RTC seconds is about 24,000 iterations a second, so a 262,144-spin
+ interval repainted the line every eleven seconds and a THIRTY-second
+ countdown advanced in eleven-second jumps. The operator read that as a
+ hung machine, which is the one reading this gate exists to prevent.
+ A countdown nobody can watch is not a countdown.
 
  The window resets only on a real MAKE code (1..0x7F). A break code,
  and in particular the i8042's power-on 0xFA acknowledgement -- which
@@ -187,6 +197,10 @@ Section: Key Wait
 
   wz-gate-secs : Integer = 30
   wz-noclock-spins : Integer = 500000000
+
+ The clockless floor only. A machine whose RTC turns over repaints on
+ the second and never reaches this.
+
   wz-note-every : Integer = 262144
 
   wz-pit : Integer -> Integer
@@ -253,7 +267,7 @@ Section: Key Wait
     in let tick = good & now /= prev
     in let e2 = if tick then elapsed + 1 else elapsed
     in let p2 = if good then now else prev
-    in let note = if int-mod spins wz-note-every == 0 then wz-vitals c spins e2 now seen else 0
+    in let note = if tick | spins == 0 | (e2 == 0 & int-mod spins wz-note-every == 0) then wz-vitals c spins e2 now seen else 0
     in let fire = if kbd-released 0 /= 0 then 0
       else if wz-real-key sc then 0
       else if e2 >= wz-gate-secs then wz-gate-fire c

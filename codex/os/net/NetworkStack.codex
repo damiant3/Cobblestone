@@ -2,11 +2,6 @@ Chapter: NetworkStack
   cites Net chapter Tcp
   cites Net chapter Ethernet
 
- Full-stack networking: composes Ethernet framing, IP, and TCP into
- a session-oriented API. Tracks ARP cache, connection state, and
- outbound frame queue. All pure -- actual NIC I/O is the caller's
- responsibility (feed frames in, send frames out).
-
  We say:
 
 Section: ARP Cache
@@ -108,26 +103,6 @@ Section: Session Operations
   set-outbox (s) (o) = NetSession { local-mac = s.local-mac, local-ip = s.local-ip, gateway-ip = s.gateway-ip, conn = s.conn, arp = s.arp, outbox = o, rexmit-frame = s.rexmit-frame, rexmit-ack = s.rexmit-ack, rexmit-rto = s.rexmit-rto, close-timer = s.close-timer }
 
 Section: Reliability Timers
-
- A lossy or slow peer means a sent segment can vanish and an inbound one can
- arrive out of order or twice. Three mechanisms make the guest stack survive it,
- all driven by `net-tick` on the caller's poll cadence (there is no wall clock):
-
- RETRANSMISSION. `net-send` stashes the data frame it just sent as `rexmit-frame`
- and the sequence the peer must acknowledge as `rexmit-ack`, arming `rexmit-rto`.
- An inbound ACK that reaches `rexmit-ack` clears the stash; if `rexmit-rto` counts
- down to zero first, `net-tick` re-queues the same frame and re-arms. One segment
- is outstanding at a time -- this stack sends a response, then waits for it.
-
- TIME_WAIT and LAST_ACK are modelled, not reclaimed by an external idle timeout.
- On reaching either, `close-timer` is armed; `net-tick` counts it down and drops
- the connection to CLOSED at zero -- a bounded 2*MSL wait absorbing a lost final
- ACK.
-
- RECEIVE WINDOW. A data segment outside the advertised window -- a duplicate of
- already-delivered bytes, or one starting beyond the window -- is dropped and
- re-ACKed (`net-process-ip` via `net-seg-acceptable`), so a doubled or
- out-of-range delivery cannot corrupt the byte stream.
 
   net-rto-ticks : Integer = 3
   net-timewait-ticks : Integer = 4
@@ -257,48 +232,10 @@ Section: Inbound Frame Processing
     in let new-arp = arp-cache-add (sess.arp) (pkt.sender-ip) (pkt.sender-mac)
     in NetResult { session = set-arp sess new-arp, output = "arp-learned", data = [] }
 
- A segment is demultiplexed before it is stepped. It belongs to this session
- only if it is addressed to this session's local port; anything else is another
- connection's traffic and is dropped.
-
  THIS CHECK WAS ABSENT UNTIL 2026-07-20 AND ITS ABSENCE WAS INVISIBLE, because
  nothing in the tree had ever run two connections at once. `net-receive-segment`
  fed every TCP frame straight into `tcp-step` on whatever session was looping,
  so a session processed traffic addressed to a port it does not own.
-
- One connection cannot see this. Two cannot avoid it: a guest that answers an
- inbound request by opening an outbound one has both live at once, and every
- frame for either is offered to whichever session happens to be looping.
-
- WHAT THIS FIX IS NOT. It was written while chasing a `tools/cdx-registry`
- failure and it did NOT fix it -- proven by neutralising this check and
- reproducing the failure with it gone, and again by an announce-driven registry
- that opens no outbound connection at all and fails the same way. An earlier
- draft of this prose asserted the nesting as that failure's cause. It is not
- established, and the sentence is removed rather than softened, because a
- confident wrong cause in a comment is what the next reader will believe.
-
- The defect this DOES fix stands on its own: a session must not step traffic
- addressed to a port it does not own.
-
- THE REMOTE PORT IS PART OF THE CHECK, and it has to be. Matching the local
- port alone is not enough for a server that handles more than one connection in
- a row: every one of them is accepted on the same local port, so a stale frame
- from the connection just closed -- a retransmit, a lingering FIN -- is applied
- to the FRESH session that replaced it. Measured: `tools/cdx-registry` served
- its first request correctly, went back to accept, took the second connection,
- and then sat in its receive loop forever with the second request already on the
- wire.
-
- A listener whose `remote-port` is still zero has not yet been claimed by a
- peer, so it must take any SYN -- that is how it learns who it is talking to
- (`tcp-step-listening` stores `seg.src-port`). Once claimed, anything from a
- different source port belongs to somebody else.
-
- STILL OPEN: a segment for another session is DROPPED rather than queued,
- because there is no per-session inbox. A frame arriving for a connection that
- is not the one currently looping is lost, and the sender has to retransmit --
- which nothing in this stack does yet. Do not assume that away.
 
   net-session-owns-segment : NetSession, TcpSegment -> Boolean
   net-session-owns-segment (sess) (seg) =
@@ -352,12 +289,6 @@ Section: Inbound Frame Processing
     else NetResult { session = sess, output = "unknown proto", data = [] }
 
 Section: Timer Tick
-
- `net-tick` advances the reliability timers by one step. The caller drives it on
- its poll cadence (the WebServer sweep does). It re-queues the outstanding data
- frame into the outbox when the retransmit timer expires, and drops a connection
- to CLOSED when its TIME_WAIT / LAST_ACK timer expires. A tick that does neither
- leaves the outbox untouched, so it never drops frames a prior operation queued.
 
   net-tick : NetSession -> NetResult
   net-tick (sess) =

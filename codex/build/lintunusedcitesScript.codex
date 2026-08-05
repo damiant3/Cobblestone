@@ -6,61 +6,95 @@ Chapter: LintUnusedCitesScript
   cites Shell chapter ShellBuild
   cites Shell chapter PowerShellEmit
 
- Generates lint-unused-cites.ps1 from the Shell DSL.
- Detects unused cites in Codex source files: for each
- cites Quire chapter Name, checks whether any definition
- from the cited chapter is referenced in the citing file.
- Compile with: -Survey "lower-mul:500000"
-
  We say:
 
 Section: Parameters
 
-  lint-params : List ShellParam = [sh-param "Src" SptString, sh-switch "All"]
+  lint-params : List ShellParam = [sh-param-optional "Src" SptString, sh-switch "All"]
 
 Section: S01 -- Preamble
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'quire-map.ps1')"), ScBlank, ScAssign "CitePat" (SeLit "^\\s*cites\\s+(\\w+)\\s+chapter\\s+([A-Za-z_][A-Za-z0-9_-]*)"), ScAssign "DefPat" (SeLit "^\\s{2}(\\S+)\\s*[:=(|]"), ScAssign "TypeDefPat" (SeLit "^\\s{2}([A-Z][A-Za-z0-9]*)\\s*[=(]")]
+  cite-pattern : Text = "^\\s*cites\\s+(\\w+)\\s+chapter\\s+([A-Za-z_][A-Za-z0-9_-]*)"
 
-Section: S02 -- Get-ChapterDefs function
+  def-pattern : Text = "^\\s{2}(\\S+)\\s*[:=(|]"
 
-  s02 : List ShellCmd = [ScRaw "function Get-ChapterDefs([string]$Path) {", ScRaw "    $names = [System.Collections.Generic.HashSet[string]]::new()", ScRaw "    foreach ($line in [System.IO.File]::ReadAllLines($Path)) {", ScRaw "        if ($line -match $DefPat) { [void]$names.Add($matches[1]) }", ScRaw "        if ($line -match $TypeDefPat) { [void]$names.Add($matches[1]) }", ScRaw "    }", ScRaw "    return $names", ScRaw "}"]
+  type-def-pattern : Text = "^\\s{2}([A-Z][A-Za-z0-9]*)\\s*[=(]"
 
-Section: S03 -- Lint-File function
+  prose-pattern : Text = "^ [^ ]"
 
-  s03a : List ShellCmd = [ScRaw "function Lint-File([string]$FilePath) {", ScRaw "    $lines = [System.IO.File]::ReadAllLines($FilePath)", ScRaw "    $body = [System.IO.File]::ReadAllText($FilePath)", ScRaw "    $relPath = $FilePath", ScRaw "    if ($FilePath.StartsWith($Repo)) { $relPath = $FilePath.Substring($Repo.Length + 1) }", ScRaw "    $warnings = 0", ScRaw "    $lineNum = 0"]
+  ctor-pattern : Text = "^\\s+\\|\\s*([A-Z][A-Za-z0-9_-]*)"
 
-  s03b : List ShellCmd = [ScRaw "    foreach ($line in $lines) {", ScRaw "        $lineNum++", ScRaw "        if ($line -match $CitePat) {", ScRaw "            $quire = $matches[1]", ScRaw "            $chapter = $matches[2]", ScRaw "            $dir = $QuireDirs[$quire]", ScRaw "            if (-not $dir) { continue }", ScRaw "            $citedPath = Join-Path $Repo (Join-Path $dir \"$chapter.codex\")", ScRaw "            if (-not (Test-Path -PathType Leaf $citedPath)) { continue }"]
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))), ScRunDot (SePathJoin SeScriptRoot (SeLit "quire-map.ps1")), ScBlank, ScAssign "CitePat" (SeLit cite-pattern), ScAssign "DefPat" (SeLit def-pattern), ScAssign "TypeDefPat" (SeLit type-def-pattern), ScAssign "ProsePat" (SeLit prose-pattern), ScAssign "CtorPat" (SeLit ctor-pattern)]
 
-  s03c : List ShellCmd = [ScRaw "            $defs = Get-ChapterDefs $citedPath", ScRaw "            $used = $false", ScRaw "            foreach ($name in $defs) {", ScRaw "                if ($name.Length -lt 2) { continue }", ScRaw "                if ($body.Contains($name)) {", ScRaw "                    $used = $true", ScRaw "                    break", ScRaw "                }", ScRaw "            }"]
+Section: S02 -- Get-ChapterDefs
 
-  s03d : List ShellCmd = [ScRaw "            $defCount = @($defs).Count", ScRaw "            if (-not $used -and $defCount -gt 0) {", ScRaw "                Write-Host \"  $($relPath):$($lineNum): unused cite: $quire chapter $chapter ($defCount defs, none referenced)\"", ScRaw "                $warnings++", ScRaw "            }", ScRaw "        }", ScRaw "    }", ScRaw "    return $warnings", ScRaw "}"]
+  add-match : ShellCmd = ScDiscard (SeMethodCall (SeVar "names") "Add" [SeIndex (SeVar "matches") (SeInt 1)])
 
-Section: S04 -- Main: single file or all
+  defs-loop : List ShellCmd = [ScIf (SeMatchExpr (SeVar "line") (SeVar "DefPat")) [add-match] [], ScIf (SeMatchExpr (SeVar "line") (SeVar "TypeDefPat")) [add-match] [], ScIf (SeMatchExpr (SeVar "line") (SeVar "CtorPat")) [add-match] []]
 
-  s04 : List ShellCmd = [ScAssign "totalWarnings" (SeInt 0), ScAssign "filesChecked" (SeInt 0)]
+  defs-body : List ShellCmd = [ScAssign "names" (SeStaticCall "System.Collections.Generic.HashSet[string]" "new" []), ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "Path"]) defs-loop, ScReturn (SeVar "names")]
 
-Section: S05 -- Single-file mode
+  s02 : List ShellCmd = [ScFunction "Get-ChapterDefs" [sh-param-optional "Path" SptString] defs-body]
 
-  s05 : List ShellCmd = [ScIf (SeVar "Src") [ScAssign "totalWarnings" (SeRaw "Lint-File (Resolve-Path $Src).Path"), ScAssign "filesChecked" (SeInt 1)] []]
+Section: S03 -- The Code-Only Text
 
-Section: S06 -- All-files mode
+  code-loop : List ShellCmd = [ScIf (SeMatchExpr (SeVar "line") (SeVar "ProsePat")) [ScContinue] [], ScIf (SeMatchExpr (SeVar "line") (SeVar "CitePat")) [ScContinue] [], ScDiscard (SeMethodCall (SeVar "code") "AppendLine" [SeVar "line"])]
 
-  s06-dirs : List ShellCmd = [ScAssign "files" (SeRaw "@()")]
+  code-text : List ShellCmd = [ScAssign "lines" (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "FilePath"]), ScAssign "code" (SeStaticCall "System.Text.StringBuilder" "new" []), ScForEach "line" (SeVar "lines") code-loop, ScAssign "body" (SeMethodCall (SeVar "code") "ToString" [])]
 
-  s06-scan : List ShellCmd = [ScForEach "dir" (SeArrayLiteral [SeLit "codex\\compiler", SeLit "codex\\foreword", SeLit "codex\\os", SeLit "codex\\plugs", SeLit "apps"]) [ScAssign "fullDir" (SeRaw "Join-Path $Repo $dir"), ScIf (SeDirExists (SeVar "fullDir")) [ScRaw "$files += Get-ChildItem $fullDir -Recurse -Filter '*.codex' -File"] []]]
+Section: S04 -- Lint-File
 
-  s06-lint : List ShellCmd = [ScForEach "f" (SeVar "files") [ScAssign "w" (SeRaw "Lint-File $f.FullName"), ScRaw "$totalWarnings += $w", ScRaw "$filesChecked++"]]
+  rel-path : ShellExpr = SeSubstringFrom (SeVar "FilePath") (SeAdd (SeTextLength (SeVar "Repo")) (SeInt 1))
 
-  s06 : List ShellCmd = [ScIf (SeAnd (SeNot (SeVar "Src")) (SeVar "All")) [ScSequence s06-dirs, ScSequence s06-scan, ScSequence s06-lint] []]
+  lint-prelude : List ShellCmd = [ScAssign "relPath" (SeVar "FilePath"), ScIf (SeStartsWith (SeVar "FilePath") (SeVar "Repo")) [ScAssign "relPath" rel-path] [], ScAssign "warnings" (SeInt 0), ScAssign "lineNum" (SeInt 0)]
 
-Section: S07 -- Summary
+  used-loop : List ShellCmd = [ScIf (SeIntLt (SeTextLength (SeVar "name")) (SeInt 2)) [ScContinue] [], ScIf (SeMethodCall (SeVar "body") "Contains" [SeVar "name"]) [ScAssign "used" (SeBool True), ScBreak] []]
 
-  s07 : List ShellCmd = [ScEcho (SeRaw "\"Checked $filesChecked files, $totalWarnings unused cites found.\"")]
+  cited-path : ShellExpr = SePathJoin (SeVar "Repo") (SePathJoin (SeVar "dir") (SeConcat (SeVar "chapter") (SeLit ".codex")))
+
+  w1 : ShellExpr = SeConcat (SeConcat (SeLit "  ") (SeVar "relPath")) (SeLit ":")
+
+  w2 : ShellExpr = SeConcat (SeConcat w1 (SeVar "lineNum")) (SeLit ": unused cite: ")
+
+  w3 : ShellExpr = SeConcat (SeConcat w2 (SeVar "quire")) (SeLit " chapter ")
+
+  w4 : ShellExpr = SeConcat (SeConcat w3 (SeVar "chapter")) (SeLit " (")
+
+  warn-message : ShellExpr = SeConcat (SeConcat w4 (SeVar "defCount")) (SeLit " defs, none referenced)")
+
+  unused-test : ShellExpr = SeAnd (SeNot (SeVar "used")) (SeIntGt (SeVar "defCount") (SeInt 0))
+
+  cite-body : List ShellCmd = [ScAssign "quire" (SeIndex (SeVar "matches") (SeInt 1)), ScAssign "chapter" (SeIndex (SeVar "matches") (SeInt 2)), ScAssign "dir" (SeIndex (SeVar "QuireDirs") (SeVar "quire")), ScIf (SeNot (SeVar "dir")) [ScContinue] [], ScAssign "citedPath" cited-path, ScIf (SeNot (SeFileExists (SeVar "citedPath"))) [ScContinue] [], ScAssign "defs" (SeCall "Get-ChapterDefs" [SeVar "citedPath"]), ScAssign "used" (SeBool False), ScForEach "name" (SeVar "defs") used-loop, ScAssign "defCount" (SeCount (SeVar "defs")), ScIf unused-test [ScEcho warn-message, ScIncrement "warnings"] []]
+
+  scan-loop : List ShellCmd = [ScIncrement "lineNum", ScIf (SeMatchExpr (SeVar "line") (SeVar "CitePat")) cite-body []]
+
+  lint-body-cmds : List ShellCmd = [ScSequence code-text, ScSequence lint-prelude, ScForEach "line" (SeVar "lines") scan-loop, ScReturn (SeVar "warnings")]
+
+  s04 : List ShellCmd = [ScFunction "Lint-File" [sh-param-optional "FilePath" SptString] lint-body-cmds]
+
+Section: S05 -- Main
+
+  scan-dirs : ShellExpr = SeArrayLiteral [SeLit "codex\\compiler", SeLit "codex\\foreword", SeLit "codex\\os", SeLit "codex\\plugs", SeLit "apps"]
+
+  single-mode : ShellCmd = ScIf (SeVar "Src") [ScAssign "totalWarnings" (SeCall "Lint-File" [SePathResolve (SeVar "Src")]), ScAssign "filesChecked" (SeInt 1)] []
+
+  gather-loop : List ShellCmd = [ScAssign "fullDir" (SePathJoin (SeVar "Repo") (SeVar "dir")), ScIf (SeDirExists (SeVar "fullDir")) [ScIncrementBy "files" (SeListFiles (SeVar "fullDir") "*.codex" True)] []]
+
+  lint-loop : List ShellCmd = [ScAssign "w" (SeCall "Lint-File" [SeProperty (SeVar "f") "FullName"]), ScIncrementBy "totalWarnings" (SeVar "w"), ScIncrement "filesChecked"]
+
+  all-body : List ShellCmd = [ScAssign "files" (SeArrayLiteral []), ScForEach "dir" scan-dirs gather-loop, ScForEach "f" (SeVar "files") lint-loop]
+
+  all-mode : ShellCmd = ScIf (SeAnd (SeNot (SeVar "Src")) (SeVar "All")) all-body []
+
+  summary-head : ShellExpr = SeConcat (SeConcat (SeLit "Checked ") (SeVar "filesChecked")) (SeLit " files, ")
+
+  summary : ShellExpr = SeConcat (SeConcat summary-head (SeVar "totalWarnings")) (SeLit " unused cites found.")
+
+  s05 : List ShellCmd = [ScAssign "totalWarnings" (SeInt 0), ScAssign "filesChecked" (SeInt 0), ScBlank, single-mode, all-mode, ScBlank, ScEcho summary]
 
 Section: Assembly
 
-  lint-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03a, ScSequence s03b, ScSequence s03c, ScSequence s03d, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScSequence s06, ScBlank, ScSequence s07]
+  lint-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s04, ScBlank, ScSequence s05]
 
   lint-script : ShellScript = sh-script "lint-unused-cites" "Detect unused cites in Codex source files" lint-params lint-body
 

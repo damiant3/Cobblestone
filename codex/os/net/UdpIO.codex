@@ -3,9 +3,6 @@ Chapter: UdpIO
   cites Net chapter Udp
   cites Net chapter Ethernet
 
- The datagram half of the I/O loop: the layer where a UDP payload stops
- being a list of bytes and starts being traffic.
-
  `Udp.codex` builds and parses datagrams and says of itself "pure logic
  -- no I/O", which was accurate and was the whole problem: every chapter
  in the tree that speaks a datagram protocol -- Dhcp, DnsResolver, Ntp,
@@ -13,26 +10,6 @@ Chapter: UdpIO
  way to put it on the wire. The one exception was `HttpFetch`, which
  carried its own private DNS-shaped send and poll because there was
  nothing to call. This chapter is that missing call, written once.
-
- It is the sibling of `NetIO`, and it declares the same two effect rows
- for the same reason: `NetDriver` is where a frame reaches the card, so
- everything above it inherits `Network.Read` and `Network.Write` and must
- say so. Nothing below this line performs I/O.
-
- THERE IS NO CONNECTION HERE, because UDP has none. A `UdpSocket` is four
- addresses and a local port -- a description of where datagrams go and
- what to answer to. Opening one sends nothing, closing one is not a
- concept, and two datagrams to the same peer are related only by the
- caller's intent.
-
- THE DESTINATION MAC IS THE BROADCAST ADDRESS, deliberately, and this is
- what `HttpFetch`'s DNS query and every TCP connection in the tree
- already do (`resolve-dst-mac`): the ARP cache starts empty and the
- gateway answers regardless. A stack that ARPed first would be more
- correct and would also block the first datagram behind a round trip.
-
- To udp-io-send gives the bytes sent, putting one datagram on the wire.
- To udp-io-recv gives a UdpRecv, polling until one arrives or fuel runs out.
 
  We say:
 
@@ -65,11 +42,6 @@ Section: Receive
  zero-length datagram indistinguishable from the fuel running out, and a
  protocol that retransmits on silence would then retransmit on an answer.
 
- THE SOURCE PORT COMES BACK WITH THE DATAGRAM, because a server needs it.
- A client knows who it is talking to and can ignore it; a server is told
- who is talking to it by nothing else, and UDP carries no connection to
- answer along. `udp-io-reply` is the send that uses it.
-
   UdpRecv = record {
     ur-data : List Integer,
     ur-got : Boolean,
@@ -99,11 +71,6 @@ Section: Receive
       in udp-io-recv sk (fuel - 1)
     end
 
- A frame is this socket's when it is IPv4 carrying UDP addressed to the
- port we sent from. The peer's source port is NOT checked: a datagram
- server is permitted to answer from a different port, and CoAP's separate
- responses are the case in the tree that does it.
-
   udp-io-mine : UdpSocket, List Integer -> Boolean
   udp-io-mine (sk) (frame) =
     if eth-ethertype frame /= eth-type-ipv4 then False
@@ -123,10 +90,6 @@ Section: Receive
     in dg.src-port
 
 Section: Answering
-
- A server's send. The socket's configured peer port is the one a CLIENT
- talks to; a server answers whoever asked, which is a different port per
- peer and is not known until a datagram arrives.
 
   udp-io-reply : UdpSocket, Integer, List Integer -> [Network.Write] Integer
   udp-io-reply (sk) (peer-port) (payload) =

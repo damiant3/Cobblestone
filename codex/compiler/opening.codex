@@ -6,7 +6,7 @@ Chapter: Opening
   cites Foreword chapter FactDisk
 
   cites Emit chapter Codex Emitter (codex-emit-text-chapter, codex-emit-type-defs, codex-emit-def)
-  cites Emit chapter IR Text Emitter (emit-ir-chapter, emit-ir-chapter-prefix, ir-defs-wire-size, ir-print-defs, ir-prune-unreachable, ir-prune-unreachable-roots, ir-dropped-budgeted-punctuals)
+  cites Emit chapter IR Text Emitter (emit-ir-chapter, emit-ir-chapter-prefix, ir-defs-wire-size, ir-print-defs, ir-trace-def-sizes, ir-trace-dce-cost, ir-prune-unreachable, ir-prune-unreachable-roots, ir-dropped-budgeted-punctuals)
   cites Emit chapter Emit Allocator (emit-build)
   cites Emit chapter X86-64 Code Generator (x86-64-emit-cdx, x86-64-emit-cdx-with-exit-mode, ir-chapter-with-proofs, keep-proof-defs, X86_64ExitMode, ExitRepl, Exit, X86_64WatchdogMode, WatchdogProgress, WatchdogPet, pmap-self-test, pmap-escape-count, pmap-escape-count-quiet, pmap-escape-list-quiet, pmap-escape-reached, utf8-to-cce, lir-target-x86)
   cites Semantics chapter Name Resolution (resolve-chapter, check-entry-point-duplicate, check-duplicate-cites, check-cites-resolve, count-typecheck-units)
@@ -21,19 +21,84 @@ Section: Compile Flags
    poison-compact : Boolean,
    deck-scale : Integer,
    phase-trace : Boolean,
+   wire-trace : Boolean,
    pipeline : List Text
   }
 
   compile-flags-default : CompileFlags
-  compile-flags-default = CompileFlags { prose = False, escape-check = False, poison-compact = False, deck-scale = 100, phase-trace = False, pipeline = default-ir-pipeline }
+  compile-flags-default = CompileFlags { prose = False, escape-check = False, poison-compact = False, deck-scale = 100, phase-trace = False, wire-trace = False, pipeline = default-ir-pipeline }
 
-  scaled-floor : Integer, Integer -> Integer
-  scaled-floor (pct) (floor) = floor / 100 * pct
+ A floor is a guard band plus a workspace, and only the workspace scales. The
+ band is what the phase's write-path check reserves to stop short in, so a
+ scaled floor that eats into it makes the guard fire on a deck holding almost
+ nothing: measured 2026-08-03, a 1082-byte app refused at decks=11 with
+ CDX9002 from DESUGAR, whose scaled floor was 7.92 MB against an 8 MB band,
+ while the phase's real usage was 88 KB. That put a hard bottom on the knob at
+ about 12 per cent for reasons unrelated to how much room anything needed.
+
+ At pct 100 the branch evaluates the previous expression exactly, truncation
+ included, so every reservation is unchanged at the shipping setting. The
+ emitted binary does change, because this function gained a parameter; what
+ is preserved is what it computes. Verified rather than argued: the same
+ source measured under the seed and under the new compiler produces
+ byte-identical deck origins across all seven decks.
+
+  deck-min-workspace : Integer = 2097152
+
+  scaled-floor : Integer, Integer, Integer -> Integer
+  scaled-floor (pct) (floor) (band) =
+   if pct == 100 then floor / 100 * pct
+   else let ws = (floor - band) / 100 * pct
+    in band + (if ws < deck-min-workspace then deck-min-workspace else ws)
 
   deck-scale-of : Text -> Integer
   deck-scale-of (mode) =
-   let v = mode-flag-value mode "decks=" 100
-   in if v < 1 then 100 else v
+   let v = mode-flag-value mode "decks=" 0
+   in if v < 1 then 0 else v
+
+ deck-scale-anchor is the compiler's own concatenated unit, measured 2026-08-04
+ (`build/concat-codex-self.ps1 -CodexDir codex/compiler`). It is the length that
+ maps to a scale of 100, so the compiler compiling itself reserves exactly the
+ shipping floors. Staleness is safe in both directions: as the compiler grows,
+ its own derived scale exceeds 100 and clamps back to 100, and every smaller
+ unit is handed slightly more room than the current anchor would give it.
+
+ deck-scale-margin is headroom over the linear estimate, and 2 is measured
+ rather than chosen for roundness. Across 29 units above 150 KB the binding
+ phase is DESUGAR and the ratio of the linear estimate to the scale actually
+ required ran from 1.24 to 1.71, so the bare estimate clears the requirement by
+ as little as a quarter. Doubling it puts the tightest observed case at 2.5x.
+ The reason margin is needed at all is that phase usage is NOT reliably linear
+ in unit length below that size: CHECK usage per unit byte was measured between
+ 21x and 167x and is not monotonic, so a bare linear estimate is a line through
+ points that do not lie on one.
+
+ deck-scale-min is what 86 per cent of the corpus actually receives, because
+ 1436 of 1674 compilable entry points derive below it, so it is the number this
+ change mostly IS. It is set from the two worst-density units in the tree rather
+ than from a small app, because density is where a length-derived scale fails:
+ both are pathological on purpose and both are the tests that would break.
+ Bisected 2026-08-04 against the SUT: `codex/test/errors/list-literal-too-large`
+ refuses at 12 and compiles at 16, and `codex/test/shell-build-keep` refuses at
+ 24 and compiles at 28 while its unit is only 26,164 bytes, so it needs 28 times
+ what its length predicts. 32 clears the measured boundary and a full sweep of
+ all 1674 entry points at this setting raises no CDX9002.
+
+  deck-scale-anchor : Integer = 2993576
+  deck-scale-margin : Integer = 2
+  deck-scale-min : Integer = 32
+
+  derive-deck-scale : Integer -> Integer
+  derive-deck-scale (unit-len) =
+   let est = unit-len * 100 * deck-scale-margin / deck-scale-anchor
+   in if est < deck-scale-min then deck-scale-min
+      else if est > 100 then 100
+      else est
+
+  effective-deck-scale : Text, Integer -> Integer
+  effective-deck-scale (mode) (unit-len) =
+   let explicit = deck-scale-of mode
+   in if explicit > 0 then explicit else derive-deck-scale unit-len
 
   pipeline-of : Text -> List Text
   pipeline-of (mode) =
@@ -145,7 +210,7 @@ Section: Frontend
       }
    in CompileFrontend {
     type-defs = [],
-    text-meta = IRTextMeta { chapter-title = "", prose = "", section-titles = [], ctor-names = [], prose-blocks = [], annotations = [] },
+    text-meta = IRTextMeta { chapter-title = "", prose = "", section-titles = [], ctor-names = [], prose-blocks = [], annotations = [], ground-effects = [] },
     ir = blank-ir,
     cdx-ir = blank-ir,
     sorted-type-defs = [],
@@ -217,7 +282,6 @@ Section: Frontend
   serial-hex (val) = serial-hex-loop val 60
 
   serial-newline : Integer = serial-byte 10
-
 
   serial-text-loop : Text, Integer, Integer -> Integer
   serial-text-loop (t) (i) (len) =
@@ -302,7 +366,7 @@ Section: Frontend
   compile-lex : Text, Integer, CompileFlags -> LexResult
   compile-lex (source) (h0) (flags) =
    let mountain-base = init-phase-allocator
-   in let lex-deck-height = scaled-floor (flags.deck-scale) demand-lex-floor
+   in let lex-deck-height = scaled-floor (flags.deck-scale) demand-lex-floor demand-lex-guard-band
    in let lex-base = build lex-deck-height
    in let lex-phase = phase-start
    in let tok-result = tokenize-into source 1 (flags.prose) (lex-base + lex-deck-height)
@@ -323,10 +387,10 @@ Section: Frontend
   compile-parse : List Token, Text, Integer, List PhaseMetrics, CompileFlags -> ParseResult
   compile-parse (tokens) (source) (h0) (prior-metrics) (flags) =
    let h1 = __heap-save
-   in let parse-keep-height = scaled-floor (flags.deck-scale) demand-parse-keep-floor
+   in let parse-keep-height = scaled-floor (flags.deck-scale) demand-parse-keep-floor demand-parse-guard-band
    in let parse-base = build parse-keep-height
    in let parse-guard = pitch demand-parse-guard-band
-   in let parse-scratch-height = scaled-floor (flags.deck-scale) demand-parse-scratch-floor
+   in let parse-scratch-height = scaled-floor (flags.deck-scale) demand-parse-scratch-floor demand-parse-scratch-guard-band
    in let scratch-base = build (parse-scratch-height + (if parse-guard < 0 then 1 else 0))
    in let scratch-ceiling = scratch-base + parse-scratch-height
    in let parse-phase = phase-start
@@ -394,7 +458,7 @@ Section: Frontend
 
   compile-desugar-and-scope : Text, ParseResult, Text, CompileFlags, Integer, Integer -> ScopeResult
   compile-desugar-and-scope (source) (pr) (chapter-name) (flags) (fk-base) (fk-height) =
-   let desugar-deck-height = scaled-floor (flags.deck-scale) demand-desugar-floor
+   let desugar-deck-height = scaled-floor (flags.deck-scale) demand-desugar-floor demand-desugar-guard-band
    in let desugar-base = build desugar-deck-height
    in let desugar-phase = phase-start
    in let dr = desugar-document source (pr.doc) chapter-name (desugar-base + desugar-deck-height)
@@ -421,7 +485,7 @@ Section: Frontend
    in let desugar-esc-bag = deck-record (escape-check-bag (flags.escape-check) desugar-metrics "DESUGAR")
    in let desugar-sealed = compact-phase flags poison-desugar
    in let h5 = __heap-save
-   in let scope-deck-height = scaled-floor (flags.deck-scale) demand-scope-floor
+   in let scope-deck-height = scaled-floor (flags.deck-scale) demand-scope-floor demand-scope-guard-band
    in let scope-base = build scope-deck-height
    in let scope-ceiling = scope-base + scope-deck-height
    in let scope-origin = __deck-pos
@@ -461,8 +525,8 @@ Section: Frontend
   compile-type-check : ScopeResult, Integer, CompileFlags -> CompileChecked
   compile-type-check (sr) (source-len) (flags) =
    let check-units = count-typecheck-units (sr.scoped.type-defs) 0 (list-length (sr.scoped.type-defs)) 0
-   in let check-deck-height = scaled-floor (flags.deck-scale) demand-check-floor
-   in let keep-height = scaled-floor (flags.deck-scale) demand-check-keep-floor
+   in let check-deck-height = scaled-floor (flags.deck-scale) demand-check-floor demand-check-guard-band
+   in let keep-height = scaled-floor (flags.deck-scale) demand-check-keep-floor 0
    in let keep-base = build keep-height
    in let check-base = build check-deck-height
    in let check-ceiling = check-base + check-deck-height
@@ -572,7 +636,7 @@ Section: Frontend
 
   compile-checked : Text, Text, CompileFlags -> CompileChecked
   compile-checked (source) (chapter-name) (flags) =
-   let fk-height = scaled-floor (flags.deck-scale) demand-frontend-keep-floor
+   let fk-height = scaled-floor (flags.deck-scale) demand-frontend-keep-floor demand-frontend-keep-guard-band
    in let fk-base = build fk-height
    in let h0 = __heap-save
    in let lr = compile-lex source h0 flags
@@ -604,13 +668,13 @@ Section: Frontend
   compile-frontend-passes (source) (chapter-name) (flags) (run-passes) =
    let checked = compile-checked source chapter-name flags
    in if bag-has-errors (checked.bag) then halted-frontend (checked.bag) (checked.heap-marks)
-   else let lower-deck-height = scaled-floor (flags.deck-scale) demand-lower-floor
+   else let lower-deck-height = scaled-floor (flags.deck-scale) demand-lower-floor demand-lower-guard-band
    in let lower-base = build lower-deck-height
    in let lower-ceiling = lower-base + lower-deck-height
    in let lower-origin = __deck-pos
    in let lower-phase = phase-start
    in let ir-raw = deck-record (lower-chapter (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments) lower-ceiling)
-   in let passed = if run-passes then deck-record (run-ir-pipeline (flags.pipeline) ir-raw)
+   in let passed = if run-passes then deck-record (run-ir-pipeline (flags.pipeline) ir-raw (flags.phase-trace))
       else IRPassResult { chapter = ir-raw, violations = [], infos = [] }
    in let ir = passed.chapter
    in let tm = deck-record (IRTextMeta {
@@ -619,7 +683,8 @@ Section: Frontend
     section-titles = checked.scoped.section-titles,
     ctor-names = checked.ctor-names,
     prose-blocks = checked.scoped.prose-blocks,
-    annotations = checked.scoped.annotations
+    annotations = checked.scoped.annotations,
+    ground-effects = checked.scoped.ground-effects
    })
    in let lower-end = __deck-pos
    in let lower-sat = if deck-short-of lower-ceiling demand-lower-guard-band then 1 else 0
@@ -650,13 +715,13 @@ Section: Frontend
   compile-frontend-cdx (source) (chapter-name) (flags) =
    let checked = compile-checked source chapter-name flags
    in if bag-has-errors (checked.bag) then halted-frontend (checked.bag) (checked.heap-marks)
-   else let lower-deck-height = scaled-floor (flags.deck-scale) demand-lower-floor
+   else let lower-deck-height = scaled-floor (flags.deck-scale) demand-lower-floor demand-lower-guard-band
    in let lower-base = build lower-deck-height
    in let lower-ceiling = lower-base + lower-deck-height
    in let lower-origin = __deck-pos
    in let lower-phase = phase-start
    in let ir-raw = deck-record (lower-chapter (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments) lower-ceiling)
-   in let passed = deck-record (run-ir-pipeline (flags.pipeline) ir-raw)
+   in let passed = deck-record (run-ir-pipeline (flags.pipeline) ir-raw (flags.phase-trace))
    in let ir = passed.chapter
    in let ir-check-bag = deck-record (ir-check-violation-bag (passed.violations))
    in let occ-report-bag = deck-record (occ-info-bag (passed.infos))
@@ -666,7 +731,7 @@ Section: Frontend
    in let lower-ov = check-deck-overflow (lower-end - lower-origin) lower-deck-height
    in let lower-precise-bag = deck-record (precise-escape-bag (flags.escape-check) (address-of ir) "IRChapter" lower-metrics "LOWER")
    in let lower-sealed = compact-phase flags poison-lower
-   in let resolve-deck-height = scaled-floor (flags.deck-scale) demand-resolve-floor
+   in let resolve-deck-height = scaled-floor (flags.deck-scale) demand-resolve-floor demand-resolve-guard-band
    in let resolve-base = build resolve-deck-height
    in let resolve-ceiling = resolve-base + resolve-deck-height
    in let resolve-phase = phase-start
@@ -676,7 +741,7 @@ Section: Frontend
    in let resolve-sat = if deck-short-of resolve-ceiling demand-resolve-guard-band then 1 else 0
    in let resolve-metrics = phase-measure resolve-phase "RESOLVE"
    in let resolve-ov = check-deck-overflow (resolve-metrics.deck-end - resolve-metrics.deck-origin) resolve-deck-height
-   in let lift-deck-height = scaled-floor (flags.deck-scale) demand-lift-floor
+   in let lift-deck-height = scaled-floor (flags.deck-scale) demand-lift-floor demand-lift-guard-band
    in let lift-base = build lift-deck-height
    in let lift-ceiling = lift-base + lift-deck-height
    in let lift-phase = phase-start
@@ -695,7 +760,8 @@ Section: Frontend
     section-titles = checked.scoped.section-titles,
     ctor-names = checked.ctor-names,
     prose-blocks = checked.scoped.prose-blocks,
-    annotations = checked.scoped.annotations
+    annotations = checked.scoped.annotations,
+    ground-effects = checked.scoped.ground-effects
    })
    in let blank-ir = IRChapter { name = ir.name, defs = [], effect-op-names = ir.effect-op-names, span = ir.span }
    in let pm1 = deck-record (list-push (checked.phase-metrics) lower-metrics)
@@ -807,7 +873,6 @@ Section: Library Loading
       then filter-library-cites citations (i + 1) len (list-push acc c)
       else filter-library-cites citations (i + 1) len acc
 
-
 Section: Disk Foreword Loading
 
   DiskLoadState = record {
@@ -915,10 +980,6 @@ Section: Quoted Works
         sp-works = substring src (at + mlen) (tlen - at - mlen)
       }
 
- The asymmetry that fixes the guard's strictness: a false positive costs
- one wasted parse, a false negative lets a quotation through ungated. So
- the guard must be the loosest thing that cannot miss one.
-
   next-line-at : Text, Integer, Integer -> Integer
   next-line-at (t) (i) (tlen) =
    if i >= tlen then tlen
@@ -987,12 +1048,6 @@ Section: Reading The Offered Works
    in let m2 = manifest-add m (k.chapter-name) pub (k.trust-floor)
    in build-source-manifest ks (i + 1) len m2
 
- A WORK line offers a signed work; an OFFER line offers one with no
- signature at all. The transport must be able to say which it means: an
- unsigned work smuggled in as a WORK line with an empty signature would
- be filed as signed and refused as forged, which answers a different
- question from the one asked.
-
   parse-works : List Text, Integer, Integer, WorksState -> WorksState
   parse-works (lines) (i) (len) (st) =
    if i >= len then st
@@ -1012,10 +1067,6 @@ Section: Reading The Offered Works
    in let fact = Fact { hash = list-at f 1, kind = DefinitionFact, content = content, author = list-at f 2, timestamp = ts }
    in let st2 = __record-set st "ws-bundle" (bundle-offer (st.ws-bundle) fact)
    in parse-works lines (i + 1 + nlines) len st2
-
- The declared digest on a WORK line is only a claim. It is what the work
- is filed under, so that a quotation can find it at all; whether the
- content actually hashes to it is the gate's second guard, not ours.
 
   apply-work-line : List Text, Integer, Integer, WorksState -> WorksState
   apply-work-line (lines) (i) (len) (st) =
@@ -1069,12 +1120,6 @@ Section: Refusing A Quotation
   quotation-diag (q) (o) =
    let sp = span-at (q.quire.line) (q.quire.column) (q.quire.offset) (q.quire.length) (q.quire.file-id)
    in make-error (__narrow (quotation-code o)) (quotation-message q o) sp
-
- An absent trust floor is refused rather than defaulted: a weak default
- chosen by omission is not a choice. The parser stamps an absent floor as
- a NEGATIVE sentinel, which is what distinguishes it from a declared
- floor of zero -- and zero stays legal, admitting only keys the author
- pinned, at any score.
 
   quotation-no-floor-diag : CitesDecl -> Diagnostic
   quotation-no-floor-diag (q) =
@@ -1208,6 +1253,13 @@ Section: Measurement
   format-heap-marks-wd : List Integer -> Text
   format-heap-marks-wd (marks) =
    text-concat-list (format-heap-marks-prefix marks phase-labels "WD:PHASE-" 0 (list-length marks) [])
+
+  emit-mark-labels : List Text
+  emit-mark-labels = ["h-pre-emit", "h-post-emit"]
+
+  format-emit-marks : Integer, Integer, Text -> Text
+  format-emit-marks (pre) (post) (pfx) =
+   text-concat-list (format-heap-marks-prefix [pre, post] emit-mark-labels pfx 0 2 [])
 
   format-heap-marks-prefix : List Integer, List Text, Text, Integer, Integer, List Text -> List Text
   format-heap-marks-prefix (marks) (labels) (pfx) (i) (len) (acc) =
@@ -1398,7 +1450,7 @@ Section: Entry Point
     print-codegen-error-header (bag-errors (fe.bag))
     if bag-has-errors (fe.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no text emitted"
     else print-line-uni text
-    print-line-uni (format-heap-marks-wd (fe.heap-marks & [h-pre-emit, h-post-emit]))
+    print-line-uni ((format-heap-marks-wd (fe.heap-marks) & format-emit-marks h-pre-emit h-post-emit "WD:PHASE-"))
    end
 
   emit-ir-uni : Text, CompileFlags -> [Console] Nothing
@@ -1415,7 +1467,7 @@ Section: Entry Point
      print-line-uni "IR-END"
     end
     let h-post-emit = __heap-save
-    in print-line-uni (format-heap-marks-wd (fe.heap-marks & [h-pre-emit, h-post-emit]))
+    in print-line-uni ((format-heap-marks-wd (fe.heap-marks) & format-emit-marks h-pre-emit h-post-emit "WD:PHASE-"))
    end
 
  The SIZE-framed wire format the emit plugs consume: the SIZE line must
@@ -1430,20 +1482,28 @@ Section: Entry Point
    let fe = compile-frontend-ir source "Program" flags
    in let h-pre-emit = __heap-save
    in act
+    if flags.wire-trace then print-line-uni ("FE-DONE frontier " & integer-to-text h-pre-emit) else print-text ""
     print-codegen-error-header (bag-errors (fe.bag))
     if bag-has-errors (fe.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no IR emitted"
-    else let ir = ir-prune-unreachable (fe.ir) "opening"
-     in let defs-len = list-length (ir.defs)
-     in let prefix = emit-ir-chapter-prefix ir (fe.text-meta) (fe.type-defs)
-     in let total = text-length prefix + ir-defs-wire-size (ir.defs) 0 defs-len 0 + 3
+    else let raw-defs = fe.ir.defs
      in act
-      print-line-uni ("SIZE:" & show total)
-      print-text prefix
-      ir-print-defs (ir.defs) 0 defs-len
-      print-line ""
+      if flags.wire-trace then ir-trace-dce-cost raw-defs 0 (list-length raw-defs) else print-text ""
+      let ir = ir-prune-unreachable (fe.ir) "opening"
+      in let defs-len = list-length (ir.defs)
+      in act
+       if flags.wire-trace then ir-trace-def-sizes (ir.defs) 0 defs-len else print-text ""
+       let prefix = emit-ir-chapter-prefix ir (fe.text-meta) (fe.type-defs)
+       in let total = text-length prefix + ir-defs-wire-size (ir.defs) 0 defs-len 0 + 3
+       in act
+        print-line-uni ("SIZE:" & show total)
+        print-text prefix
+        ir-print-defs (ir.defs) 0 defs-len
+        print-line ""
+       end
+      end
      end
     let h-post-emit = __heap-save
-    in print-line-uni (format-heap-marks-wd (fe.heap-marks & [h-pre-emit, h-post-emit]))
+    in print-line-uni ((format-heap-marks-wd (fe.heap-marks) & format-emit-marks h-pre-emit h-post-emit "WD:PHASE-"))
    end
 
   emit-measure : Text, CompileFlags -> [Console] Nothing
@@ -1452,7 +1512,7 @@ Section: Entry Point
    in let h-pre-emit = __heap-save
    in let text = compile-text fe CtCodexText
    in let h-post-emit = __heap-save
-   in print-line-uni (format-heap-marks (fe.heap-marks & [h-pre-emit, h-post-emit]) & format-phase-decks (fe.phase-metrics) 0 (list-length (fe.phase-metrics)) "" & "EMIT-BYTES:" & integer-to-text (text-length text) & "\n")
+   in print-line-uni ((format-heap-marks (fe.heap-marks) & format-emit-marks h-pre-emit h-post-emit "PHASE-") & format-phase-decks (fe.phase-metrics) 0 (list-length (fe.phase-metrics)) "" & "EMIT-BYTES:" & integer-to-text (text-length text) & "\n")
 
   format-phase-decks : List PhaseMetrics, Integer, Integer, Text -> Text
   format-phase-decks (ms) (i) (len) (acc) =
@@ -1513,9 +1573,9 @@ Section: Entry Point
    end
   end
 
-  parse-mode-flags : Text -> CompileFlags
-  parse-mode-flags (mode) =
-   CompileFlags { prose = has-mode-flag mode "prose", escape-check = has-mode-flag mode "escape-check", poison-compact = has-mode-flag mode "poison-compact", deck-scale = deck-scale-of mode, phase-trace = has-mode-flag mode "debug", pipeline = pipeline-of mode }
+  parse-mode-flags : Text, Integer -> CompileFlags
+  parse-mode-flags (mode) (unit-len) =
+   CompileFlags { prose = has-mode-flag mode "prose", escape-check = has-mode-flag mode "escape-check", poison-compact = has-mode-flag mode "poison-compact", deck-scale = effective-deck-scale mode unit-len, phase-trace = has-mode-flag mode "debug", wire-trace = has-mode-flag mode "wsz", pipeline = pipeline-of mode }
 
  The volume is resolved from the disk's own GPT rather than assumed to
  start at LBA 2048. That constant is only right for an image our own
@@ -1532,7 +1592,7 @@ Section: Entry Point
         is Just (source) ->
           let foreword-prefix = disk-resolve-forewords vol source
           in let full = foreword-prefix & source
-          in let flags = parse-mode-flags mode
+          in let flags = parse-mode-flags mode (text-length full)
           in emit-cdx full mode flags
         is None -> print-line-uni ("DISK: file not found: " & path)
     is None -> print-line-uni "DISK: no path on stdin"
@@ -1549,9 +1609,9 @@ Section: Entry Point
   compile-with-quotations : SourceSplit, Text, Text, CompileFlags -> [Console, FileSystem, Device.Block] Nothing
   compile-with-quotations (split) (cmd) (mode) (flags) =
    let mountain = init-phase-allocator
-   in let keep-height = scaled-floor (flags.deck-scale) demand-quote-keep-floor
+   in let keep-height = scaled-floor (flags.deck-scale) demand-quote-keep-floor 0
    in let keep-base = build keep-height
-   in let scratch-height = scaled-floor (flags.deck-scale) demand-quote-scratch-floor
+   in let scratch-height = scaled-floor (flags.deck-scale) demand-quote-scratch-floor 0
    in let scratch-base = build scratch-height
    in let base-ws = build-works (split.sp-works)
    in let base-bundle = base-ws.ws-bundle
@@ -1586,7 +1646,7 @@ Section: Entry Point
     source-raw <- read-file-uni mode
     let raw = utf8-to-cce source-raw
     in let split = split-quoted-works raw
-    in let flags = parse-mode-flags mode
+    in let flags = parse-mode-flags mode (text-length raw)
     in if has-quotations (split.sp-body)
        then compile-with-quotations split cmd mode flags
        else compile-plain (split.sp-body) cmd mode flags

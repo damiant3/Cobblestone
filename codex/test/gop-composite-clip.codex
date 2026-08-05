@@ -1,0 +1,95 @@
+Chapter: GopCompositeClip
+  cites Foreword chapter Console
+  cites Works chapter GopDraw
+  cites Works chapter GopComposite
+  cites UI chapter Theme
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter BoxModel
+  cites Kernel chapter BitmapFont
+
+ A label whose text is far wider than the node holding it must stop at the
+ node's right edge.
+
+ Moved from `codex/test/gop-text-clip` when `apps/guios/GopRender.codex`
+ retired, and the subject is now the compositor that ships. It is not a
+ formality: this chapter drew label text past the node's bounds until
+ 2026-08-03, and what that looked like was the issue tracker's `In
+ Progress` running through the Title column beside it.
+
+ **The third row is the calibration and it is the reason to believe the
+ second.** `gop-draw-text` is called directly at the same origin with the
+ same string, and it MUST escape -- it is the unclipped primitive the
+ clipped path is built on. Without that arm, "outside: no" is satisfied by
+ a renderer that drew nothing at all, and the first row alone cannot tell
+ those apart because it only looks inside the box.
+
+ We say:
+
+Section: Geometry
+
+  cl-w : Integer = 400
+  cl-h : Integer = 60
+  cl-cells : Integer = 24000
+  cl-bytes : Integer = 96000
+
+Section: Counting
+
+  fill-bg : Integer, Integer, Integer, Integer -> Integer
+  fill-bg (b) (i) (n) (c) =
+    if i >= n then 0 else let p = poke-32 b (i * 4) c in fill-bg b (i + 1) n c
+
+  count-row : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  count-row (b) (y) (x) (xend) (target) (acc) =
+    if x >= xend then acc
+    else count-row b y (x + 1) xend target (acc + (if peek-32 b ((y * cl-w + x) * 4) == target then 1 else 0))
+
+  count-band : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  count-band (b) (y) (x0) (x1) (target) (acc) =
+    if y >= cl-h then acc
+    else count-band b (y + 1) x0 x1 target (acc + count-row b y x0 x1 target 0)
+
+  yn : Boolean -> Text
+  yn (v) = if v then "yes" else "no"
+
+Section: Subject
+
+  cl-long : Text = "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+
+  cl-tree : WidgetNode
+  cl-tree =
+    widget-panel "root" DirRow 0 [
+      widget-set-flex (widget-set-min (widget-label "long" cl-long) 200 40) 0,
+      widget-set-flex (widget-gauge "pad" 0 100) 1
+    ]
+
+Section: Main
+
+  opening : [Console] Nothing = act
+    let font = cbf-init
+    in let th = theme-terminal
+    in let pal = th.th-palette
+    in let buf = __heap-save
+    in let adv = __heap-advance (2 * cl-bytes + 256)
+    in let free = buf + cl-bytes
+    in act
+      let z0 = fill-bg buf 0 cl-cells (pal.pal-bg)
+      in let laid = comp-render buf cl-w font cl-tree th cl-w cl-h
+      in let b = (list-at (laid.wn-children) 0).wn-bounds
+      in let bright = b.lr-x + b.lr-w
+      in let inside = count-band buf 0 (b.lr-x) bright (pal.pal-fg) 0
+      in let outside = count-band buf 0 (bright + 4) (cl-w - 8) (pal.pal-fg) 0
+
+      in let z1 = fill-bg free 0 cl-cells (pal.pal-bg)
+      in let d2 = gop-draw-text free cl-w font (b.lr-x + 4) (b.lr-y + 3) cl-long (pal.pal-fg) 1 0
+      in let unbounded = count-band free 0 (bright + 4) (cl-w - 8) (pal.pal-fg) 0
+
+      in act
+        print-line-uni ("label paints inside  : " & yn (inside > 0))
+        print-line-uni ("label stops at edge  : " & yn (outside == 0))
+        print-line-uni ("unclipped escapes    : " & yn (unbounded > 0))
+      end
+    end
+  end
+
+Page 1

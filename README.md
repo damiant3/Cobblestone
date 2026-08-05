@@ -72,9 +72,12 @@ Measured 2026-08-03.
 6. **A bare-metal OS and GUI.** Preemptive scheduler, IPC, Ed25519
    identity, trust lattice, 5-phase CDX verifier, shell and debugger;
    a GOP-framebuffer desktop with a compositor, TrueType rendering and
-   SMP-aware app rendering across cores. SMP is complete for x86-64:
-   atomics, AP bootstrap via SIPI, work-stealing scheduler, per-core heap
-   isolation, IPI and lock-free channels.
+   SMP-aware app rendering across cores. Proven on real hardware
+   2026-08-05: the desktop boots from USB on a consumer board and runs
+   with keyboard, mouse, click-driven panes, shutdown, and
+   screenshot-to-stick, all through the tree's own drivers. SMP is
+   complete for x86-64: atomics, AP bootstrap via SIPI, work-stealing
+   scheduler, per-core heap isolation, IPI and lock-free channels.
 7. **53 plugs, all building clean.** Emitters are standalone CDX programs
    that consume the compiler's IR text: 31 languages, 14 UI frameworks,
    three GPU targets (PTX, SPIR-V, WGSL) and four binary formats (CDX,
@@ -110,21 +113,21 @@ skip.** The BVT subset that `build/build.ps1` gates on is 73 tests in
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (2,710,900 bytes) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (2,722,559 bytes) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `9DCE330256566B2A` |
-| SHA-256 | `9DCE330256566B2ADFED366C702EA5540F92520487342DDB55C94228BAC945A5` |
-| MD5 | `20D4B5891E831DDD6506DC32FD907B82` |
+| Content hash prefix | `52E0A3A00218E19F` |
+| SHA-256 | `52E0A3A00218E19F05D10385CFD25BC92721072133F0DAF2DFF4EEE5EE745CC9` |
+| MD5 | `281515DBF55EB60B09096EA5B66F7CFB` |
 
 **`seed/Codex.img`** (16,777,216 bytes) -- bootable GPT disk image, the
 first-boot ceremony.
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `7123F976C1F789BF520CBD158C127E81A2B8EAE11707FBF47077C530DD3ABE7B` |
+| SHA-256 | `31027F32A32EF15751E6548D45862E6394B86FD62898B36A4571C6E4F80A6F2E` |
 
 Boot it on a UEFI machine and it runs its own first-boot ceremony on the
 GOP framebuffer with no OS beneath it: choose an interface, walk the
@@ -138,15 +141,19 @@ the keyboard and the disk itself.
 Real-UEFI boot needs Secure Boot off, Fast Boot off, and CSM/Legacy off
 (UEFI-only) -- the image is pure GPT.
 
-**`build/boot/kbd-diag-v16.img`** (16,777,216 bytes) -- the bootable USB
-keyboard diagnostic that closed the ASUS hardware bring-up campaign. The
-method it anchors is written down for other people's hardware in
+**`build/boot/deskboot.img`** (16,777,216 bytes, built from source with
+`build/boot/build-option-a.ps1 -Src apps/works/DeskBoot.codex -Kernel
+seed/Codex.cdx -Ebs`) -- the bootable USB desktop, proven on real
+hardware 2026-08-05: keyboard and mouse through the tree's own xHCI/USB
+HID stack, panes opened by click, shutdown by button, and F12 writing
+the live screen to the stick as a BMP through the tree's own FAT16
+writer. The bring-up method that got it there is written down for other
+people's hardware in
 [docs/Designs/Active/Tools/HardwareBringUpPlaybook.md](docs/Designs/Active/Tools/HardwareBringUpPlaybook.md).
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `8916020E555F49BF3FAB7B67A36C06F5F36679AADDDF4C7BFC0870D7B35745C8` |
-| MD5 | `7FBD48F4FDAD41A99862E6EB62187AAA` |
+| SHA-256 | `ADA7CC4D9837B66097B89745EB7699445F9E8FCC8F5CEE6D04F074BEE0BFA004` |
 
 Flash to USB from an elevated PowerShell. **Pull the stick out when it is
 done -- do not eject it.** Windows rewrites the partition table when the

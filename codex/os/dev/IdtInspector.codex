@@ -2,10 +2,6 @@ Chapter: IdtInspector
   cites Dev chapter HexFormat
   grounds Device.Port
 
- The interrupt half of the developer debugger: the dispatch table the
- processor will actually use, the two counters the ISRs actually move, and
- what the machine actually recorded the last time it stopped advancing.
-
  THE TABLE IS AT A COMPILE-TIME CONSTANT AND IS NOT READ FROM IDTR. The
  boot path builds 256 gates at `idt-base` and then points IDTR at that
  same address, so the constant and the register agree by construction and
@@ -26,15 +22,6 @@ Chapter: IdtInspector
  path writes 1 to the IST field at +4 afterwards so a double fault lands
  on the emergency stack. An inspector that showed all 256 gates identical
  would be hiding the one gate whose difference is load-bearing.
-
- THERE IS NO EXCEPTION RECORD ON THIS MACHINE, and `ii-fault-report` is
- what exists instead. Nothing in the address map stores a faulting vector,
- RIP or RSP; the only cells that ever hold a RIP are the watchdog's, and
- the timer ISR writes them when neither the heap pointer nor the saved RIP
- has moved since the last tick. So a slot is a sample of a system that had
- stopped advancing, which is close to the question an operator asks after
- a hang and is NOT the same as a trap frame. Naming it "the last fault"
- would be inventing a record the machine does not keep.
 
  THE RING IS FOUR SLOTS AND THE HEAD IS A FREE-RUNNING COUNTER. The
  writer masks with three and scales by thirty-two, so the head is a total
@@ -62,10 +49,6 @@ Section: The Table
 
 Section: One Gate
 
- The offset is assembled from three fields the processor keeps apart, and
- it is the field an operator is actually after: it is the address the
- machine will jump to, and it is what a symbol lookup takes.
-
   ii-gate-offset : Integer -> Integer
   ii-gate-offset (a) =
     let lo = ii-u16-at a 0
@@ -91,11 +74,6 @@ Section: One Gate
   ii-gate-present : Integer -> Boolean
   ii-gate-present (a) = bit-and (ii-gate-attr a) 128 /= 0
 
- THE TYPE IS NAMED ONLY WHERE THE NAME IS CERTAIN. An unknown type is
- reported as its number rather than guessed at, for the same reason the
- fact log reports a raw kind: an inspector that renames the thing it is
- inspecting is worth less than no inspector.
-
   ii-gate-type-name : Integer -> Text
   ii-gate-type-name (t) =
     if t == 14 then "interrupt"
@@ -117,10 +95,6 @@ Section: One Gate
     in let head = "vec " & show vec & "  off " & addr-to-hex (ii-gate-offset a)
     in head & "  sel #" & u16-to-hex (ii-gate-selector a) & "  " & ii-gate-attrs a
 
- A vector outside the table is REFUSED and names the value it rejected.
- `ii-entry-addr` of 300 is an address inside whatever follows the table,
- and it would decode into a confident, entirely fictional gate.
-
   ii-entry-report : Integer -> List Text
   ii-entry-report (vec) =
     if vec < 0 then [ii-vector-refusal vec]
@@ -132,12 +106,6 @@ Section: One Gate
     "refused: vector " & show vec & " is not in 0.." & show (ii-vector-count - 1)
 
 Section: The Counters
-
- Both cells are zeroed before `sti` and moved only by an ISR, so zero
- means the handler has never run rather than that the count wrapped.
- Naming the two states apart is the whole value of the command: a tick
- count of zero on a running system says the timer never armed, and that
- reads identically to a slow boot if the line just prints a number.
 
   ii-tick-count-addr : Integer = 28672
   ii-key-buffer-addr : Integer = 28680
@@ -175,10 +143,6 @@ Section: The Stall Ring
     let stale = peek-qword ii-wd-stale-tick-addr 0
     in show head & " stall samples taken, stale-tick counter " & show stale
 
- Newest first. The slot is the head minus one minus the row, and the
- whole table is offset by a multiple of the slot count before the modulo
- so the arithmetic never reaches a negative index.
-
   ii-fault-slot : Integer, Integer -> Integer
   ii-fault-slot (head) (i) =
     int-mod (head - 1 - i + ii-wd-slots * ii-wd-slots) ii-wd-slots
@@ -192,11 +156,6 @@ Section: The Stall Ring
   ii-fault-line (head) (i) =
     ii-fault-body i (ii-wd-ring-buf-addr + ii-fault-slot head i * ii-wd-slot-size)
 
- A ring with fewer samples than slots must not print the slots it has not
- written yet: `alloc-bytes` does not zero, and neither did anything else
- pass over this band, so an unwritten slot holds whatever the firmware
- left and would render as a plausible RIP.
-
   ii-fault-lines : Integer, Integer -> List Text
   ii-fault-lines (head) (i) =
     if i >= ii-wd-slots then []
@@ -208,14 +167,6 @@ Section: The Stall Ring
     let head = peek-qword ii-wd-ring-head-addr 0
     in if head == 0 then ["no stall sample since boot -- the watchdog has not fired"]
     else [ii-fault-header head] & ii-fault-lines head 0
-
- The newest slot on its own, for the console views that want a RIP and an
- RSP rather than a table. `ii-stall-sampled` GUARDS BOTH READERS and is
- not decoration: with an empty ring the newest-slot arithmetic lands on
- slot three, which has never been written, so an unguarded read answers
- whatever the firmware left there. That is precisely the failure these
- two functions were written to repair, and repeating it one address to
- the left would not be an improvement.
 
   ii-stall-sampled : Boolean
   ii-stall-sampled = peek-qword ii-wd-ring-head-addr 0 /= 0

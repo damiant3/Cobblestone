@@ -6,52 +6,66 @@ Chapter: StressSweepScript
   cites Shell chapter ShellBuild
   cites Shell chapter PowerShellEmit
 
- Generates stress-sweep.ps1 -- stress loop re-running test.ps1 until killed or failure.
- Compile with: -Survey "lower-mul:500000"
-
  We say:
 
 Section: Parameters
 
-  stress-params : List ShellParam = [sh-param-default "Jobs" SptInt (SeInt 7), sh-switch "Pin", sh-switch "ContinueOnFailure", sh-param-default "LogPath" SptString (SeLit "build-output\\stress-sweep.log")]
+  stress-params : List ShellParam = [sh-param-default "Jobs" SptInt (SeInt 8), sh-switch "Pin", sh-switch "ContinueOnFailure", sh-param-default "LogPath" SptString (SeLit "build-output\\stress-sweep.log"), sh-param-optional "ApprovedBy" SptString]
 
 Section: S01 -- Preamble
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScRaw "$ErrorActionPreference = 'Continue'", ScRaw "Set-Location (Join-Path $PSScriptRoot '..')", ScRaw "[Environment]::CurrentDirectory = (Get-Location).Path"]
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorContinue, ScSetLocation (SePathJoin SeScriptRoot (SeLit ".."))]
 
 Section: S02 -- Setup
 
-  s02 : List ShellCmd = [ScAssign "sweepScript" (SeRaw "Join-Path $PSScriptRoot 'test.ps1'"), ScRaw "New-Item -ItemType Directory -Force -Path (Split-Path $LogPath) | Out-Null", ScSetContent (SeVar "LogPath") (SeRaw "\"=== stress-sweep start jobs=$Jobs at $((Get-Date).ToString('yyyy-MM-dd HH:mm:ss')) ===`n\"")]
+  stamp-format : Text = "yyyy-MM-dd HH:mm:ss"
+
+  banner-tail : ShellExpr = SeConcat (SeLit " at ") (SeConcat (SeFormatTime SeNow stamp-format) (SeLit " ==="))
+
+  start-banner : ShellExpr = SeConcat (SeConcat (SeLit "=== stress-sweep start jobs=") (SeVar "Jobs")) banner-tail
+
+  s02 : List ShellCmd = [ScAssign "sweepScript" (SePathJoin SeScriptRoot (SeLit "test.ps1")), ScMkdir (SePathParent (SeVar "LogPath")), ScSetContent (SeVar "LogPath") start-banner]
 
 Section: S03 -- Iteration Start
 
-  s03 : List ShellCmd = [ScRaw "$iter++", ScAssign "start" (SeRaw "Get-Date"), ScAddContent (SeVar "LogPath") (SeRaw "\"[iter $iter] start $($start.ToString('HH:mm:ss'))\"")]
+  iter-label : ShellExpr = SeConcat (SeConcat (SeLit "[iter ") (SeVar "iter")) (SeLit "] ")
+
+  s03 : List ShellCmd = [ScIncrement "iter", ScAssign "start" SeNow, ScAddContent (SeVar "LogPath") (SeConcat iter-label (SeConcat (SeLit "start ") (SeFormatTime (SeVar "start") "HH:mm:ss")))]
 
 Section: S04 -- Run Test
 
-  s04-try-body : List ShellCmd = [ScRaw "$sweepArgs = @('-NoProfile','-File',$sweepScript,'-Jobs',$Jobs)", ScIf (SeVar "Pin") [ScRaw "$sweepArgs += '-Pin'"] [], ScRaw "& pwsh @sweepArgs *>&1 | Tee-Object -FilePath $tmp | Out-Null", ScAssign "exit" (SeRaw "$LASTEXITCODE"), ScAssign "tail" (SeRaw "(Get-Content -Path $tmp -Tail 6) -join ' | '")]
+  sweep-args : ShellExpr =
+    SeArrayLiteral [SeLit "-NoProfile", SeLit "-File", SeVar "sweepScript", SeLit "-Jobs", SeVar "Jobs", SeLit "-ApprovedBy", SeVar "ApprovedBy"]
 
-  s04-catch : List ShellCmd = [ScAssign "exit" (SeInt (-1)), ScAssign "tail" (SeRaw "\"exception: $_\"")]
+  s04-try-body : List ShellCmd = [ScAssign "sweepArgs" sweep-args, ScIf (SeVar "Pin") [ScAppend "sweepArgs" (SeLit "-Pin")] [], ScRunCapture (SeLit "pwsh") "sweepArgs" (SeVar "tmp"), ScAssign "exit" SeLastExit, ScAssign "tail" (SeTailJoin (SeVar "tmp") 6 (SeLit " | "))]
 
-  s04-finally : List ShellCmd = [ScRaw "Remove-Item -Force $tmp -ErrorAction SilentlyContinue"]
+  s04-catch : List ShellCmd = [ScAssign "exit" (SeInt (0 - 1)), ScAssign "tail" (SeConcat (SeLit "exception: ") SeErrorText)]
 
-  s04 : List ShellCmd = [ScDotNetCallAssign "tmp" "System.IO.Path" "GetTempFileName" [], ScTry s04-try-body s04-catch s04-finally]
+  s04-finally : List ShellCmd = [ScDelete (SeVar "tmp")]
+
+  s04 : List ShellCmd = [ScTempFile "tmp", ScTry s04-try-body s04-catch s04-finally]
 
 Section: S05 -- Log Result
 
-  s05 : List ShellCmd = [ScRaw "$dur = [int]((Get-Date) - $start).TotalSeconds", ScAddContent (SeVar "LogPath") (SeRaw "\"[iter $iter] end exit=$exit dur=${dur}s tail=$tail\"")]
+  dur-part : ShellExpr = SeConcat (SeConcat (SeLit " dur=") (SeVar "dur")) (SeConcat (SeLit "s tail=") (SeVar "tail"))
+
+  result-line : ShellExpr = SeConcat (SeConcat (SeLit "end exit=") (SeVar "exit")) dur-part
+
+  s05 : List ShellCmd = [ScAssign "dur" (SeElapsedSeconds (SeVar "start")), ScAddContent (SeVar "LogPath") (SeConcat iter-label result-line)]
 
 Section: S06 -- Check Failure
 
-  s06-continue-branch : List ShellCmd = [ScAddContent (SeVar "LogPath") (SeRaw "\"[iter $iter] FAILED exit=$exit -- continuing (-ContinueOnFailure)\"")]
+  failed-prefix : ShellExpr = SeConcat (SeLit "FAILED exit=") (SeVar "exit")
 
-  s06-stop-branch : List ShellCmd = [ScAddContent (SeVar "LogPath") (SeRaw "\"[iter $iter] FAILED exit=$exit -- stopping\""), ScExit (SeInt 1)]
+  s06-continue-branch : List ShellCmd = [ScAddContent (SeVar "LogPath") (SeConcat iter-label (SeConcat failed-prefix (SeLit " -- continuing (-ContinueOnFailure)")))]
 
-  s06 : List ShellCmd = [ScIf (SeRaw "$exit -ne 0") [ScIf (SeVar "ContinueOnFailure") s06-continue-branch s06-stop-branch] []]
+  s06-stop-branch : List ShellCmd = [ScAddContent (SeVar "LogPath") (SeConcat iter-label (SeConcat failed-prefix (SeLit " -- stopping"))), ScExit (SeInt 1)]
+
+  s06 : List ShellCmd = [ScIf (SeNot (SeIntEq (SeVar "exit") (SeInt 0))) [ScIf (SeVar "ContinueOnFailure") s06-continue-branch s06-stop-branch] []]
 
 Section: Assembly
 
-  stress-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScAssign "iter" (SeInt 0), ScLabeledWhile "stress_loop" (SeRaw "$true") [ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06]]
+  stress-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScAssign "iter" (SeInt 0), ScLabeledWhile "stress_loop" (SeBool True) [ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06]]
 
   stress-script : ShellScript = sh-script "stress-sweep" "Stress loop: re-run test.ps1 -Jobs N until killed or test fails" stress-params stress-body
 

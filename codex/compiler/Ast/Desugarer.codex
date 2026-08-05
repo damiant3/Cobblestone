@@ -2,13 +2,6 @@ Chapter: Desugarer
   cites Codex chapter Build Settings (max-recursion-depth, demand-desugar-guard-band)
   cites Codex chapter Phase Allocator (deck-short-of)
 
- Transforms the concrete syntax tree into the abstract syntax tree.
- Tokens become Names, literal token text becomes literal values,
- parenthesized nodes are removed, binary operators are resolved, and
- a SourceSpan is carried on every AST node. Compound nodes without
- a natural source token inherit a span from a sub-expression (or fall
- back to synthetic) and are tagged ProvDesugared.
-
 Section: Span Helpers
   token-span : Token -> SourceSpan
   token-span (tok) =
@@ -161,27 +154,6 @@ Section: Expression Desugaring
     span = token-span (f.name)
    })
 
- A revised field's value is hoisted into a let so that every value is
- computed BEFORE the first __record-set mutates the record in place --
- without that, a later field's expression would read the already-mutated
- record. The hoist is not optional.
-
- But it used to hoist a `__narrow` call whole, and that broke the one
- escape hatch the bounds checker offers. lint-narrowing-check suppresses
- CDX2051 when it can SEE `__narrow` at the store; after hoisting it saw
- `__rv0`, a bare name with no proven range, so `c revised { f = __narrow
- n }` was rejected while the identical `Rec { f = __narrow n }` passed.
- The diagnostic then recommended __narrow -- the very thing the author
- had written -- and the only way out was to expand the whole record by
- hand.
-
- So the ARGUMENT is hoisted and the __narrow stays at the store:
- `let __rv0 = n in __record-set __rev "f" (__narrow __rv0)`. The value is
- still computed before any mutation, so the ordering the hoist exists for
- is untouched; __narrow is a pure range assertion on an already-computed
- value, so moving it one step later asserts the same thing about the same
- value. The marker survives to the check that looks for it.
-
   is-narrow-app : Expr -> Boolean
   is-narrow-app (e) =
    when e
@@ -236,20 +208,6 @@ Section: Expression Desugaring
      let de = desugar-expr e
      in deck-record (AActExprStmt de (aexpr-span de))
 
- An act block took `synthetic-span`, which is 0,0, and the CST `ActExpr`
- carries no token of its own to take a position from. That made it the
- one AST node standing exactly where the most common effect error lands:
- `check-def` reports CDX2031 against `aexpr-span (def.body)`, and for any
- def whose body is an act block -- most effectful code in the language --
- that span was 0,0 and the diagnostic printed with no line:column at all.
- Not a wrong position, an absent one.
-
- The statements inside DO carry spans (a bind takes its token's, an
- expression statement its expression's), so the block takes its first
- statement's. That is a real position inside the block rather than a
- guess, and an empty block keeps `synthetic-span` because there is
- nothing truthful to point at.
-
   act-stmts-span : List AActStmt -> SourceSpan
   act-stmts-span (ss) =
    if list-length ss == 0 then synthetic-span
@@ -266,7 +224,6 @@ Section: Expression Desugaring
     body = desugar-expr (c.body),
     span = token-span (c.op-name)
    })
-
 
   desugar-lambda-param : Token -> Name
   desugar-lambda-param (tok) =
@@ -449,12 +406,6 @@ Section: Definition Desugaring
    })
 
 Section: Document Desugaring
- These two are per-definition loops, and per-definition is the grain the
- DESUGAR deck grows at: every definition's whole expression tree is
- rebuilt on the deck. deck-room-left answers whether another definition
- fits, and a loop that runs out stops where it is. The chapter it was
- building is thrown away by desugar-document rather than returned
- truncated -- see the note there.
 
   desugar-defs-ll : List Def, Integer, Integer, LinkedList ADef, Integer -> LinkedList ADef
   desugar-defs-ll (src) (i) (len) (acc) (ceiling) =
@@ -596,13 +547,6 @@ Section: Document Desugaring
     span = synthetic-span
    }))
 
- The DESUGAR deck's ceiling, and what a phase does when it reaches it.
-
- deck-out-of-room answers True once the deck is within a guard band of
- its reservation's top. A ceiling of zero means unbounded, which is
- what a caller with no reservation of its own passes -- the same
- convention tokenize-collect uses.
-
   deck-out-of-room : Integer -> Boolean
   deck-out-of-room (ceiling) = deck-short-of ceiling demand-desugar-guard-band
 
@@ -632,16 +576,6 @@ Section: Document Desugaring
     conversions = [],
     span = synthetic-span
    })
-
- The saturation test is taken AFTER the loops and BEFORE the chapter is
- assembled, and the truncated work is then discarded rather than
- returned. Both halves matter. Returning the partial chapter would
- assemble a record whose lists cost eight bytes per surviving
- definition on the very deck that just refused another definition,
- which is how the LEX guard shipped with a hole: firing is not the job
- if the wind-down walks through the ceiling anyway. Nothing downstream
- wants this chapter -- the caller raises CDX9002 on dr-sat and the bag
- carries an error from there on.
 
   desugar-document : Text, Document, Text, Integer -> DesugarResult
   desugar-document (source) (doc) (chapter-name) (ceiling) =
@@ -1150,7 +1084,6 @@ Section: Document Desugaring
     is AUnaryExpr (inner) (s) -> is-concrete-arg inner
     is otherwise -> False
 
-
   collect-tyvar-param-names : ATypeExpr, List AParam, Text, Integer -> List Text
   collect-tyvar-param-names (ty) (params) (tv) (i) =
    if i >= list-length params then []
@@ -1481,23 +1414,6 @@ Section: Document Desugaring
    })
    in synth-specialized-methods ms type-name (i + 1) len (__linked-list-push acc def)
 
-
- synth-class-type-defs gives a class with a superclass an extra dictionary
- field, __super-<Super> of type <Super>Dict. Nothing ever put a value in it.
- The instance dictionary was built from the instance's methods alone, so the
- field was left to __alloc, which zero-fills -- a superclass dictionary that
- was a null pointer in every instance of every class that had one.
-
- It went unseen because the superclass never reached here: the PARSE keep-deck
- copy dropped ClassDef.superclass, so text-length (cd.superclass) was 0, the
- field was never added to the record either, and the two halves of the bug
- cancelled. Repairing the copy exposed this one.
-
- An instance of a class with a superclass now names the superclass's dictionary
- for the same type. If that instance does not exist, <Super>-dict-<Type> is an
- undefined name and the compiler says so, which is the honest answer to an
- unsatisfied superclass constraint.
-
   class-superclass-of : List ClassDef, Text, Integer, Integer -> Text
   class-superclass-of (cds) (class-name) (i) (len) =
    if i >= len then ""
@@ -1519,7 +1435,6 @@ Section: Document Desugaring
     span = synthetic-span
    })
    in synth-instance-fields ms (i + 1) len (list-push acc field)
-
 
   desugar-class-defs : List ClassDef, Integer, Integer, List AClassDef -> List AClassDef
   desugar-class-defs (cds) (i) (len) (acc) =

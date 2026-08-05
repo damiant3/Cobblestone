@@ -24,12 +24,6 @@ Chapter: GopUsbKbd
  input that arrived while the machine was busy must not replay into
  whatever screen appears next.
 
- The event check accepts any transfer event, because this driver
- owns the only endpoint generating them. Sharing the controller with
- the mass-storage driver is a later concern: each of the two connect
- paths resets the controller, so today they are alternatives, not
- housemates.
-
  We say:
 
 Section: Keyboard State
@@ -37,6 +31,86 @@ Section: Keyboard State
   uk-ph-idle : Integer = 0
   uk-ph-armed : Integer = 1
   uk-ph-drain : Integer = 2
+
+ Two counters in the state block, which is 64 zeroed bytes with only the
+ phase at offset 0. They exist because "the keyboard enumerated" and "the
+ keyboard delivers" are different claims and this driver could report
+ only the first.
+
+ Enumerate what the pair can say, because the interesting state is the
+ one no bed here can produce (reek, 2026-08-04, at the cost of a board
+ trip):
+
+   ok=n                     enumeration failed. Every bed reproduces it
+                            by not attaching a keyboard.
+   ok=Y ev=0 sc=0           enumerated, and the interrupt pipe has never
+                            completed. THE EMULATED KEYBOARD ALWAYS
+                            ANSWERS, so no bed in this tree can make this
+                            state, and it is what the ASUS TUF shows.
+   ok=Y ev>0 sc=0           reports arrive and decode to nothing. This is
+                            kbd-drain's ground, and it is the arm
+                            kbd-diag-v16 was written for and never flew.
+   ok=Y ev>0 sc>0           the whole path works.
+
+ A single Y/n line collapses the middle two into "Y" and reads exactly
+ like the last one, which is how a keyboard that enumerates perfectly and
+ delivers nothing looks healthy to its own diagnostic.
+
+ Two more, added 2026-08-04 when the board answered `ev` climbing and
+ `rp=0000000000000000` with a key held: completions arrive carrying no
+ data, so the fault is the transfer and not hid-step.
+
+ `cc` is the last completion code, which xhci-wait-xfer returns and
+ nobody kept. SUCCESS(1) with an empty buffer means the bytes were
+ written somewhere that is not uk-report; SHORT PACKET(13) means the
+ device completed with fewer bytes than asked; TRANSACTION ERROR(4) or
+ STALL(6) name themselves.
+
+ `ar` is how many TRBs this driver has pushed. It is the discriminator
+ the pair above cannot give: **if `ev` climbs while `ar` stands still,
+ the controller is completing transfers we never armed** -- a stale ring
+ position or a cycle-bit fault -- and every "completion" counted so far
+ was a re-read of a TRB already consumed, which would produce exactly
+ the empty buffer on the glass. If they climb together, each arm
+ completes once and the ring is walking correctly.
+
+  uk-cell-events : Integer = 8
+  uk-cell-scans : Integer = 16
+  uk-cell-code : Integer = 24
+  uk-cell-arms : Integer = 32
+
+ A STICKY count of reports that carried any non-zero byte, because the
+ hex dump it replaces was a snapshot once per second and a keypress can
+ fall between two repaints. This one cannot be missed: if the device has
+ ever delivered a byte since boot, it is non-zero, and if it reads 0
+ after a key has been held then every report this driver has ever been
+ handed was eight zeroes.
+
+  uk-cell-nonzero : Integer = 40
+
+  kbd-report-live : Integer, Integer -> Boolean
+  kbd-report-live (a) (i) =
+    if i >= 8 then False
+    else if peek-byte a i /= 0 then True
+    else kbd-report-live a (i + 1)
+
+  kbd-events : UsbKbd -> Integer
+  kbd-events (k) = if k.uk-ok == False then 0 else peek-32 (k.uk-state) uk-cell-events
+
+  kbd-scans : UsbKbd -> Integer
+  kbd-scans (k) = if k.uk-ok == False then 0 else peek-32 (k.uk-state) uk-cell-scans
+
+  kbd-code : UsbKbd -> Integer
+  kbd-code (k) = if k.uk-ok == False then 0 else peek-32 (k.uk-state) uk-cell-code
+
+  kbd-arms : UsbKbd -> Integer
+  kbd-arms (k) = if k.uk-ok == False then 0 else peek-32 (k.uk-state) uk-cell-arms
+
+  kbd-live : UsbKbd -> Integer
+  kbd-live (k) = if k.uk-ok == False then 0 else peek-32 (k.uk-state) uk-cell-nonzero
+
+  kbd-buffer : UsbKbd -> Integer
+  kbd-buffer (k) = k.uk-report
 
   UsbKbd = record {
     uk-ok : Boolean,
@@ -46,11 +120,27 @@ Section: Keyboard State
     uk-ring : Integer,
     uk-report : Integer,
     uk-prev : Integer,
-    uk-state : Integer
+    uk-state : Integer,
+    uk-raw : Boolean,
+    uk-peers : List UsbKbd
   }
 
   kbd-no-kbd : UsbKbd
-  kbd-no-kbd = UsbKbd { uk-ok = False, uk-host = xhci-no-host, uk-dev = xhci-no-dev, uk-dci = 0, uk-ring = 0, uk-report = 0, uk-prev = 0, uk-state = 0 }
+  kbd-no-kbd = UsbKbd { uk-ok = False, uk-host = xhci-no-host, uk-dev = xhci-no-dev, uk-dci = 0, uk-ring = 0, uk-report = 0, uk-prev = 0, uk-state = 0, uk-raw = False, uk-peers = [] }
+
+  kbd-peer-cap : Integer = 3
+
+  kbd-peers : UsbKbd -> Integer
+  kbd-peers (k) = if k.uk-ok == False then 0 else list-length (k.uk-peers)
+
+  kbd-peer : UsbKbd, Integer -> UsbKbd
+  kbd-peer (k) (i) = list-at (k.uk-peers) i
+
+  kbd-adopt : UsbKbd, UsbKbd -> UsbKbd
+  kbd-adopt (k) (p) =
+    if list-length (k.uk-peers) >= kbd-peer-cap then k
+    else let w = list-push (k.uk-peers) p
+    in __record-set k "uk-peers" w
 
 Section: Configuration Descriptor Walk
 
@@ -153,9 +243,21 @@ Section: Connect
 
   kbd-open-endpoint : XhciHost, UsbDev, Integer, Integer, Integer, Integer, Integer -> UsbKbd
   kbd-open-endpoint (xh) (dev) (iface) (cfgv) (epnum) (maxpkt) (binterval) =
-    let sc = usb-set-configuration xh dev cfgv
+    kbd-open-iface xh dev iface cfgv epnum maxpkt binterval True True False
+
+ SET_CONFIGURATION resets the data toggle of every endpoint the device
+ already has (USB 2.0 9.1.1.5), so a second interface bound on an
+ already-configured device must skip it. SET_PROTOCOL is a boot-subclass
+ request (HID 1.11 7.2.5) and a non-boot interface is permitted to STALL
+ it, so it is sent only to subclass-1 interfaces. A raw interface is
+ pumped for its counters and never decoded: its report layout is the
+ report descriptor's, which this driver does not parse.
+
+  kbd-open-iface : XhciHost, UsbDev, Integer, Integer, Integer, Integer, Integer, Boolean, Boolean, Boolean -> UsbKbd
+  kbd-open-iface (xh) (dev) (iface) (cfgv) (epnum) (maxpkt) (binterval) (do-cfg) (do-proto) (raw) =
+    let sc = if do-cfg then usb-set-configuration xh dev cfgv else True
     in if sc == False then kbd-no-kbd
-    else let bp = usb-set-protocol xh dev iface 0
+    else let bp = if do-proto then usb-set-protocol xh dev iface 0 else True
     in if bp == False then kbd-no-kbd
     else let dci = epnum * 2 + 1
     in let ring = xhci-ring-new
@@ -166,7 +268,7 @@ Section: Connect
     in let nt = xhci-ep-note dev epnum maxpkt binterval ivl (xhci-ep-status ce)
     in if ce.xe-ok == False then kbd-no-kbd
     else if ce.xe-code /= trb-cc-success then kbd-no-kbd
-    else UsbKbd { uk-ok = True, uk-host = xh, uk-dev = dev, uk-dci = dci, uk-ring = ring, uk-report = alloc-zeroed 64 64, uk-prev = alloc-zeroed 64 64, uk-state = alloc-zeroed 64 64 }
+    else UsbKbd { uk-ok = True, uk-host = xh, uk-dev = dev, uk-dci = dci, uk-ring = ring, uk-report = alloc-zeroed 64 64, uk-prev = alloc-zeroed 64 64, uk-state = alloc-zeroed 64 64, uk-raw = raw, uk-peers = [] }
 
 Section: The Pump
 
@@ -184,6 +286,7 @@ Section: The Pump
   kbd-arm (k) =
     let w = xhci-ring-push (k.uk-ring) (k.uk-report) 0 8 (bit-or (bit-shl trb-t-normal 10) trb-flag-ioc)
     in let db = xhci-ring-doorbell (k.uk-host) ((k.uk-dev).ud-slot) (k.uk-dci)
+    in let n = poke-32 (k.uk-state) uk-cell-arms (peek-32 (k.uk-state) uk-cell-arms + 1)
     in kbd-set-phase k uk-ph-armed
 
  The idle path must allocate NOTHING: this check runs millions of
@@ -192,16 +295,18 @@ Section: The Pump
  polled naively the heap climbs into the stack and __out_of_memory
  halts the machine in seconds, which reads as a dead keyboard.
  xhci-wait-xfer is built for exactly this seat: an integer-returning,
- allocation-free wait that also consults the per-slot latch -- on a
- shared host a storage wait may have already consumed this endpoint's
+ allocation-free wait that also consults the per-endpoint latch -- on
+ a shared host another wait may have already consumed this endpoint's
  completion off the ring and latched it, and a raw ring peek would
  miss it forever.
 
   kbd-check : UsbKbd -> Integer
   kbd-check (k) =
-    let code = xhci-wait-xfer (k.uk-host) ((k.uk-dev).ud-slot) 0
+    let code = xhci-wait-xfer (k.uk-host) ((k.uk-dev).ud-slot) (k.uk-dci) 0
     in if code == 0 then 0
-    else kbd-set-phase k uk-ph-drain
+    else let n = poke-32 (k.uk-state) uk-cell-events (peek-32 (k.uk-state) uk-cell-events + 1)
+    in let c = poke-32 (k.uk-state) uk-cell-code code
+    in kbd-set-phase k uk-ph-drain
 
  Drain hands the mailbox one scancode per call, the same overwrite
  the PS/2 interrupt handler performs. The store is the low dword
@@ -212,19 +317,36 @@ Section: The Pump
 
   kbd-drain : UsbKbd -> Integer
   kbd-drain (k) =
-    let sc = hid-step (k.uk-prev) (k.uk-report)
+    let live = if kbd-report-live (k.uk-report) 0
+      then poke-32 (k.uk-state) uk-cell-nonzero (peek-32 (k.uk-state) uk-cell-nonzero + 1)
+      else 0
+    in if k.uk-raw then kbd-set-phase k uk-ph-idle
+    else let sc = hid-step (k.uk-prev) (k.uk-report)
     in if sc == 0 then kbd-set-phase k uk-ph-idle
     else let w = poke-32 gk-cell 0 sc
+    in let n = poke-32 (k.uk-state) uk-cell-scans (peek-32 (k.uk-state) uk-cell-scans + 1)
     in sc
 
-  kbd-pump : UsbKbd -> Integer
-  kbd-pump (k) =
+  kbd-pump-one : UsbKbd -> Integer
+  kbd-pump-one (k) =
     if k.uk-ok == False then 0
     else if xhci-released 0 /= 0 then 0
     else let ph = peek-32 (k.uk-state) 0
     in if ph == uk-ph-armed then kbd-check k
     else if ph == uk-ph-drain then kbd-drain k
     else kbd-arm k
+
+  kbd-pump-peers : List UsbKbd, Integer -> Integer
+  kbd-pump-peers (ks) (i) =
+    if i >= list-length ks then 0
+    else let p = kbd-pump-one (list-at ks i)
+    in kbd-pump-peers ks (i + 1)
+
+  kbd-pump : UsbKbd -> Integer
+  kbd-pump (k) =
+    if k.uk-ok == False then 0
+    else let m = kbd-pump-peers (k.uk-peers) 0
+    in kbd-pump-one k
 
 Section: The Fallback
 

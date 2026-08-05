@@ -133,32 +133,12 @@ Section: HTTP Serve Loop
 
 Section: Concurrent Event Loop
 
- A single loop that holds many client connections at once and never serves one
- to completion before looking at the next. It polls the NIC once per turn and
- dispatches the frame to the connection that owns it -- by (local port, remote
- port), the same demultiplex the stack uses. Because the NE2K RX ring buffers
- inbound frames and this one loop is the only reader of every connection, a
- request for connection B that arrives while A is mid-flight waits in the ring
- and is delivered to B when the loop next polls; it is never read by the wrong
- connection's loop and dropped. That is the concurrency guarantee -- a server
- holds more than one connection without losing requests -- and it needs no
- per-session parking, because there is exactly one reader.
-
  The listener has `remote-port = 0` and accepts any SYN to the serve port. When
  it takes a SYN it learns its peer and becomes that peer's connection; it is
  moved into `conns` and a fresh listener replaces it, the ordinary accept()
  shape. A frame is offered to the connected conns FIRST (specific remote) and
  only falls through to the listener (remote 0) if none owns it, so a client's
  own ACK is never mistaken for a new connection.
-
- Each connection accumulates its incoming bytes until a full HTTP request is
- present -- headers terminated by a blank line, plus any Content-Length body --
- and only then parses and answers it, draining pipelined requests in one pass and
- keeping any partial tail for the next frame. So a request split across frames, a
- header set larger than one segment, or a POST body all arrive whole. The client's
- GET usually rides in on the ACK that completes the handshake (PSH+ACK); the TCP
- SYN_RECEIVED path delivers that payload rather than dropping it, so no
- retransmit is needed.
 
  A connection is kept open across requests, so a client can send more than one
  (HTTP keep-alive). When the client closes -- the responses carry

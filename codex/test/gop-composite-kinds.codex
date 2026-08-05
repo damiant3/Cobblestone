@@ -1,0 +1,139 @@
+Chapter: GopCompositeKinds
+  cites Foreword chapter Console
+  cites Works chapter GopDraw
+  cites Works chapter GopComposite
+  cites UI chapter Widget
+  cites UI chapter Theme
+  cites UI chapter Layout
+  cites UI chapter BoxModel
+  cites Kernel chapter BitmapFont
+
+ `comp-draw-node` handled five of the seven widget kinds and answered
+ `otherwise -> 0` for `WkInput` and `WkCustom`. A widget that lays out,
+ occupies its space and paints nothing reads as a layout bug rather than
+ as a missing arm, which is why it survived: the tree looked right and the
+ pixels were simply absent. This pins both arms.
+
+ **The measurement is a DIFFERENCE against a baseline, and the first cut
+ of this test got that wrong.** It rendered one tree and counted non-zero
+ cells inside the child's bounds. Every cell in the buffer is non-zero,
+ because the root panel fills the whole rectangle before any child paints,
+ so that counted the panel and answered the same thing whatever the child
+ did. Here each arm renders twice -- a root with no children, then the
+ same root with the child -- and counts the cells that CHANGED. That is
+ the child's own contribution and nothing else.
+
+ The gauge is the calibration. It was drawn before this change, so it must
+ register under exactly this harness; if its row ever reads `no` the
+ harness is broken and the rows above it are answering a question nobody
+ asked.
+
+ `event-dot` is counted exactly: six by six is 36 cells, so a dot drawn at
+ the wrong size or in the wrong place fails on the number rather than on a
+ yes.
+
+ **Fired against the arms removed** (`otherwise -> 0` restored, seed
+ 37A7EF8E4EF603AE): `input painted` and `event-dot is 6 by 6` both go to
+ `no` and the gauge control holds. `input inside its box` stays `yes`
+ under that sabotage and it is worth saying why rather than counting it as
+ a third moved row: with nothing painted both counts are zero and zero
+ equals zero. It is meaningful only while `input painted` reads yes, which
+ is the row it is paired with.
+
+ The unknown-tag fallback is deliberately NOT asserted here. It fills its
+ bounds with the panel style, `widget-resolve-style` gives a `WkCustom`
+ the same panel style as its parent, and painting a colour over the same
+ colour changes no cell. It is unobservable by difference, and a row that
+ cannot fail is worse than an absent one.
+
+ We say:
+
+Section: Geometry
+
+  ck-w : Integer = 200
+  ck-h : Integer = 40
+  ck-cells : Integer = 8000
+  ck-bytes : Integer = 32000
+
+Section: Counting
+
+  zero-fill : Integer, Integer, Integer -> Integer
+  zero-fill (b) (i) (n) =
+    if i >= n then 0 else let p = poke-32 b i 0 in zero-fill b (i + 4) n
+
+  changed-at : Integer, Integer, Integer -> Integer
+  changed-at (a) (b) (i) = if peek-32 a (i * 4) /= peek-32 b (i * 4) then 1 else 0
+
+  count-changed : Integer, Integer, Integer, Integer, Integer -> Integer
+  count-changed (a) (b) (i) (n) (acc) =
+    if i >= n then acc
+    else count-changed a b (i + 1) n (acc + changed-at a b i)
+
+  changed-cols : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  changed-cols (a) (b) (x) (xend) (y) (acc) =
+    if x >= xend then acc
+    else changed-cols a b (x + 1) xend y (acc + changed-at a b (y * ck-w + x))
+
+  changed-box : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  changed-box (a) (b) (x0) (y0) (bw) (bh) (y) (acc) =
+    if y >= bh then acc
+    else changed-box a b x0 y0 bw bh (y + 1) (changed-cols a b x0 (x0 + bw) (y0 + y) acc)
+
+  yn : Boolean -> Text
+  yn (v) = if v then "yes" else "no"
+
+Section: Trees
+
+  ck-bare : WidgetNode
+  ck-bare = widget-panel "root" DirColumn 0 []
+
+  ck-input : WidgetNode
+  ck-input = widget-panel "root" DirColumn 0 [widget-input "field" "abc" 3]
+
+  ck-dot : WidgetNode
+  ck-dot = widget-panel "root" DirColumn 0 [widget-custom "dot" "event-dot" 20 20]
+
+  ck-gauge : WidgetNode
+  ck-gauge = widget-panel "root" DirColumn 0 [widget-gauge "g" 1 2]
+
+Section: Main
+
+  opening : [Console] Nothing = act
+    let font = cbf-init
+    in let th = theme-terminal
+    in let base = __heap-save
+    in let adv = __heap-advance (2 * ck-bytes + 256)
+    in let subj = base + ck-bytes
+    in act
+
+ The baseline is painted once: the root alone, no children. Every arm
+ below is the same root with one child added, so any cell that differs
+ from this buffer was written by that child.
+
+      let zb = zero-fill base 0 ck-bytes
+      in let rb = comp-render base ck-w font ck-bare th ck-w ck-h
+
+      in let z0 = zero-fill subj 0 ck-bytes
+      in let r0 = comp-render subj ck-w font ck-input th ck-w ck-h
+      in let k0 = (list-at (r0.wn-children) 0).wn-bounds
+      in let all0 = count-changed base subj 0 ck-cells 0
+      in let box0 = changed-box base subj (k0.lr-x) (k0.lr-y) (k0.lr-w) (k0.lr-h) 0 0
+
+      in let z1 = zero-fill subj 0 ck-bytes
+      in let r1 = comp-render subj ck-w font ck-dot th ck-w ck-h
+      in let all1 = count-changed base subj 0 ck-cells 0
+
+      in let z2 = zero-fill subj 0 ck-bytes
+      in let r2 = comp-render subj ck-w font ck-gauge th ck-w ck-h
+      in let all2 = count-changed base subj 0 ck-cells 0
+
+      in act
+        print-line-uni ("input painted        : " & yn (all0 > 0))
+        print-line-uni ("input inside its box : " & yn (box0 == all0))
+        print-line-uni ("event-dot is 6 by 6  : " & yn (all1 == 36))
+        print-line-uni ("gauge painted (ctrl) : " & yn (all2 > 0))
+      end
+    end
+  end
+
+Page 1

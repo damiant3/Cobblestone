@@ -1,7 +1,5 @@
 Chapter: Parser
 
- The parser transforms a flat token list into a concrete syntax tree.
-
   cites Foreword chapter Maybe
   cites Foreword chapter Tuple
 
@@ -69,19 +67,6 @@ Section: Type Parsing
    if is-between-keyword (current-kind st) then parse-bound-between left (advance st)
    else unwrap-type-ok (parse-type-mul-tail left st) parse-type-add-tail
 
- Infix arithmetic in a type. A proposition is parsed by parse-type, so
- without these two levels `1 + 1 === 2` stops at the operator: the type
- grammar returns the bare `1`, the claim parser then reads the `+` as
- the proof name, and the failure surfaces as CDX1000 on the token after
- it. The operator becomes an ordinary application spine -- `+` applied
- to two operands -- which is the shape ctype-to-aterm already carries
- into the proof normalizer, so nothing downstream needs a new node.
-
- Two levels rather than one because a single left-associative loop
- reads `1 + 2 * 3` as `(1 + 2) * 3`. The mul tail binds first and
- refuses to look at `+`; the add tail runs an operand through the mul
- tail before joining it, which is what keeps the grouping honest.
-
   is-type-mul-op : TokenKind -> Boolean
   is-type-mul-op (k) =
    when k
@@ -133,14 +118,6 @@ Section: Type Parsing
   make-type-arith-add (left) (op-tok) (right) (st) =
    parse-type-add-loop (deck-record (AppType (deck-record (NamedType op-tok)) [left, right])) st
 
- Append is one level looser than the arithmetic, matching `&`'s
- precedence in expressions, and it exists for the same reason the two
- levels above it do: a proposition is parsed by parse-type, so without
- it `xs & Cons 7 Nil === ...` stops at the operator and the claim
- parser reads `&` as the proof name. Ampersand previously terminated
- every type parse, so the only sources this reaches are the ones that
- could not be written before.
-
   parse-type-append-tail : TypeExpr, ParseState -> ParseTypeResult
   parse-type-append-tail (left) (st) =
    if parse-fuel-exhausted st then TypeOk left (emit-parse-fuel-error st "parse-type-append-tail")
@@ -181,15 +158,6 @@ Section: Type Parsing
    in let (mode, st-mode) = parse-overflow-mode st-hi
    in let st-mode-ok = check-wrapping-band lo hi mode mode-tok st-mode
    in parse-type-continue (deck-record (BoundedIntType base lo hi mode)) st-mode-ok
-
- A wrapping band promises modular arithmetic the machine performs for
- free, and the machine performs it at the width of the store. When the
- band is the width the two agree; when it is narrower they do not, and
- the store truncates at the width and leaves a value outside the band in
- a field whose declared range the bounds prover goes on to trust. That
- makes an elided check rest on a false range, so the band is refused here
- rather than silently meaning something else. The token blamed is the
- mode keyword, because that is the word to delete.
 
   check-wrapping-band : Integer, Integer, OverflowMode, Token, ParseState -> ParseState
   check-wrapping-band (lo) (hi) (mode) (tok) (st) =
@@ -283,12 +251,6 @@ Section: Type Parsing
    else let tok = current st
    in TypeOk (deck-record (NamedType tok)) (advance st)
 
- A negative literal is ONE atom, not a minus applied to something. The
- catch-all above takes the bare `-` and leaves the digits behind, which
- is why `-2` could never sit on either side of a `===`: the proposition
- `1 - 3 === -2` parsed its left side as subtraction and its right side
- as the name `-`, and no reduction could ever make those meet.
-
  Adjacency is what separates this from binary subtraction, and it has
  to be adjacency in the SOURCE rather than token order: `1 - 3` and
  `-2` produce the same two token kinds. The digits must begin at the
@@ -296,10 +258,6 @@ Section: Type Parsing
  token honest -- its text is read straight out of the source across
  both tokens, so `token-text` answers "-2" without anything being
  fabricated.
-
- This only fires where an atom is expected, so it cannot capture the
- `3` of `1 - 3`: by then parse-type-add-tail has already consumed the
- operator and the atom sees the digits alone.
 
   is-signed-literal-atom : ParseState -> Boolean
   is-signed-literal-atom (st) =
@@ -924,9 +882,6 @@ Section: Document Parsing
  each walk the whole token list again, after parse-top-level has stopped,
  and between them they carried the deck past the ceiling on their own.
 
- Zero means unbounded, which is what the two callers that parse a quoted
- work or a prose block pass; neither has a reservation of its own.
-
   parse-document : ParseState, Integer -> Document
   parse-document (st) (ceiling) =
    let st0 = __record-set st "deck-ceiling" ceiling
@@ -983,16 +938,6 @@ Section: Document Parsing
 
 Section: Quotations
 
- A quotation binds a local name to a definition named only by the digest
- of its content. The word joining the two is an ordinary word, not a
- keyword: the language is full of lists named as, including in this
- compiler, in the foreword, and in the reverse-reverse proof. It needs
- no protection, because the declaration it sits in has already been
- opened unambiguously.
-
- The digest arrives as a text literal, whose token text still carries
- its quotation marks; the body is what lies between them.
-
   quote-body-text : Token -> Text
   quote-body-text (tok) =
    let n = tok.length
@@ -1017,10 +962,6 @@ Section: Quotations
         content-hash = quote-body-text hash-tok,
         trust-floor = 0
        }), st4)
-
- A trust floor sets the threshold for the whole chapter. It is carried
- through the header as a declaration like any other and sorted out at
- the end, because it may be written after the quotations it governs.
 
   parse-trusting : ParseState, Text -> (CitesDecl, ParseState)
   parse-trusting (st) (citing) =
@@ -1130,10 +1071,6 @@ Section: Grounds
 
 Section: Sorting Out The Header
 
- The parser accumulates cites, quotes and trust floors into one list as
- it walks the header. These three take it apart again once the whole
- chapter has been read.
-
   filter-decl-kind : List CitesDecl, Integer, Integer, Integer, List CitesDecl -> List CitesDecl
   filter-decl-kind (ds) (want) (i) (len) (acc) =
    if i >= len then acc
@@ -1141,11 +1078,6 @@ Section: Sorting Out The Header
    in if d.decl-kind == want
       then filter-decl-kind ds want (i + 1) len (list-push acc d)
       else filter-decl-kind ds want (i + 1) len acc
-
- A chapter declaring more than one floor gets the last one it wrote. A
- chapter declaring none is stamped with the negative sentinel the caller
- seeds, so the quotation gate can tell an absent floor from a declared
- floor of zero and refuse the former.
 
   header-trust-floor : List CitesDecl, Integer, Integer, Integer -> Integer
   header-trust-floor (ds) (i) (len) (acc) =
@@ -1173,7 +1105,6 @@ Section: Sorting Out The Header
     else if is-right-paren (current-kind st) then (deck-record (__linked-list-to-list acc), advance st)
     else (deck-record (__linked-list-to-list acc), st)
 
-
   is-chapter-header : ParseState -> Boolean
   is-chapter-header (st) =
    if is-type-ident (current-kind st) then let tok = current st
@@ -1197,19 +1128,6 @@ Section: Chapter Pagination
  -- the X86-64 code generator is one chapter across thirteen files, and
  the parser is right to merge them.
 
- But nothing checked the markers, and they drifted. The X86-64 chapter
- grew from ten files to thirteen; the three new ones never got a marker
- and M stayed at 10. Six of the seven multi-file chapters in the tree
- were coherent; that one was not, and no gate could tell.
-
- The cost of not checking is not untidiness. While a bare repeat is
- legal, an ACCIDENTAL duplicate chapter name is indistinguishable from
- a deliberate page: two chapters called Hamt in one quire merge under
- one slug, a name defined in both collides or shadows, and the program
- compiles and runs meaning something neither file said. Coherent
- pagination is what tells the two apart -- a real page declares itself
- one of M, and an accident does not.
-
  So: a chapter that appears once needs nothing. A chapter that appears
  k > 1 times must have, on every page, `Page N of M` with M == k and
  the N distinct. Anything else is CDX3004.
@@ -1220,12 +1138,6 @@ Section: Chapter Pagination
    po-m : Integer,
    po-span : SourceSpan
   }
-
- The marker is `Page` `N` [`of` `M`]. is-page-marker has already
- established the `Page` and the N, so the M is a lookahead past them:
- the token after N is the lowercase identifier `of`, and the one after
- that is the count. A page with no `of` reports M as 0, which is what
- the k > 1 rule rejects.
 
   page-marker-n : ParseState -> Integer
   page-marker-n (st) = text-to-integer (token-text (current (advance st)))
@@ -1472,15 +1384,6 @@ Section: Chapter Pagination
    in let to-unit = if is-done st3 then from-unit else token-text (current st3)
    in let factor = text-to-integer to-val / text-to-integer from-val
    in deck-record (AnnotationNode { kind = "conversion", target = from-unit, body = integer-to-text factor & " " & to-unit })
-
- On saturation an EMPTY document is returned, not the truncated one, and
- that is the LEX lesson rather than a second discovery of it: the is-done
- wind-down converts six linked lists with __linked-list-to-list and then
- anchors the prose blocks against the defs, all onto the deck that has
- just refused to grow, in proportion to everything collected so far. A
- late fire has far more to convert than any flat band covers. Nothing
- reads the document either way -- compile-parse raises CDX9002 for the
- phase and the compile halts on it.
 
   empty-parse-document : DiagnosticBag -> Document
   empty-parse-document (bag) =
@@ -1747,14 +1650,6 @@ Section: Chapter Pagination
 
 Section: Prose Anchoring
 
- Runs once, when the Document is assembled. A template that carries a
- name is the author's explicit claim about which definition the block
- describes, therefore the claimed name wins. Every other block anchors
- to the definition that follows it in the source: the nearest def or
- type-def whose name token sits past the block's line. Blocks, defs,
- and type-defs each arrive in source order, therefore one merge walk
- anchors every block in a single pass.
-
   template-anchor : ProseTemplate -> Text
   template-anchor (t) =
    when t
@@ -1830,15 +1725,6 @@ Section: Prose-Notation Consistency
    let found = find-type-def-named type-defs template-name 0
    in if found < 0 then list-push acc (make-warning diag-code ("Prose declares " & kind & " '" & template-name & "' but no type definition with that name exists") synthetic-span)
    else acc
-
- Named for this chapter because `Types--Type Checker` defines its own
- `find-def-index` over `List ADef`, reading `.name.value` off a
- desugared definition where this one reads `token-text` off a parsed
- one. They are two functions that answer the same question about
- different trees, not a duplicate to merge -- so the prefix is the fix
- and sharing the name would be the defect. Both callers happen to sit
- in the chapter that defines the version they want, which is the only
- reason the collision was latent rather than a miscompile.
 
   parser-find-def-index : List Def, Text, Integer, Integer -> Integer
   parser-find-def-index (defs) (name) (i) (len) =
@@ -1920,12 +1806,6 @@ Section: Prose-Notation Consistency
    in if prose-name == def-name then check-prose-param-names prose-params def-params (i + 1) len acc
       else list-push (check-prose-param-names prose-params def-params (i + 1) len acc) (make-warning cdx-prose-parameter-mismatch ("Prose parameter " & show (i + 1) & " is '" & prose-name & "' but notation has '" & def-name & "'") synthetic-span)
 
- The check reads the block's anchor, not the template's name. For a
- named template the anchoring pass has already copied the claimed name
- into the anchor, therefore the two agree by construction; reading the
- anchor is what makes the anchor the association of record rather than
- a parallel bookkeeping the emitter carries and nothing consults.
-
   check-prose-block-against-defs : ProseBlock, List Def, List TypeDef, List EffectDef, List Diagnostic -> List Diagnostic
   check-prose-block-against-defs (block) (defs) (type-defs) (effect-defs) (acc) =
    when (block.template)
@@ -1999,14 +1879,6 @@ Section: Banned Word Enforcement
    check-banned-in-blocks (doc.prose-blocks) 0 (list-length (doc.prose-blocks)) False []
 
 Section: Header Scanning (streaming)
- A chapter that declares no definitions still counts as present in the
- compilation unit. ChapterAssignment is built per DEFINITION, so a
- chapter carrying only an effect or a type declaration produced no
- assignment and check-cites-resolve reported it missing while it sat in
- the unit -- CDX3007 fired on every cite of Foreword chapter Console,
- which declares two effect operations and nothing else. The scan
- therefore accumulates every chapter header it passes, the way it
- already accumulates section titles.
 
   scan-document : ParseState -> ScanResult
   scan-document (st) =

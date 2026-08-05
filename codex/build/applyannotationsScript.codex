@@ -1,0 +1,91 @@
+Chapter: ApplyAnnotationsScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates apply-annotations.ps1, phase two of two. It reads the report
+ phase one wrote and a human then edited, and it is the only half that
+ mutates anything.
+
+ Every block carries its source VERBATIM in the report, and a block whose
+ lines no longer match the file is refused. The refusal is per FILE, not
+ per block: a report written against an older tree is stale everywhere in
+ that file at once, and applying the blocks that still happen to match
+ would cut the right lines out of the wrong places. A stale report must be
+ a refusal rather than a corruption, because the corruption is silent and
+ spread across thousands of chapters.
+
+ Nothing is written without -Apply. Without it the run verifies every
+ block and prints what it would do, which is the mode to trust after
+ editing the report.
+
+ Keep the definition count low; see the note in ExtractAnnotationsScript
+ for what happens to the CHECK deck otherwise.
+
+ We say:
+
+Section: Parameters
+
+  apply-params : List ShellParam = [sh-param-optional "Report" SptString, sh-param-optional "Only" SptString, sh-param-optional "Author" SptString, sh-switch "Apply", sh-switch "List"]
+
+Section: S01 -- Preamble
+
+ The header line is file, line range, target, verdict and signals. The
+ verdict is one or two words, so it is captured whole and split after.
+
+  head-pattern : Text = "^@@ (.+?) \\| ([0-9]+)-([0-9]+) \\| (.+?) \\| (.+?) \\| (.*)$"
+
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))), ScIf (SeNot (SeVar "Report")) [ScAssign "Report" (SePathJoin (SeVar "Repo") (SeLit "docs\\Reports\\AnnotationExtract.txt"))] [ScAssign "Report" (SeStaticCall "System.IO.Path" "GetFullPath" [SeVar "Report"])], ScIf (SeNot (SeVar "Author")) [ScAssign "Author" (SeLit "blu")] [], ScAssign "HeadPat" (SeLit head-pattern), ScAssign "today" (SeFormatTime SeNow "yyyy-MM-dd"), ScBlank, ScIf (SeNot (SeFileExists (SeVar "Report"))) [ScEcho (SeConcat (SeLit "no report at ") (SeVar "Report")), ScExit (SeInt 2)] [], ScAssign "script:recs" (SeStaticCall "System.Collections.Generic.List[object]" "new" []), ScAssign "script:staleFiles" (SeInt 0), ScAssign "script:cutBlocks" (SeInt 0), ScAssign "script:cutLines" (SeInt 0), ScAssign "script:annWritten" (SeInt 0), ScAssign "script:filesChanged" (SeInt 0)]
+
+Section: S02 -- Parse-Report
+
+ A record is finalised when the next header arrives or the file ends, so
+ the flush is written once and called from both places.
+
+  flush-cmds : List ShellCmd = [ScIf (SeVar "curFile") [ScDiscard (SeMethodCall (SeVar "script:recs") "Add" [SeOrderedMap [SfField "file" (SeVar "curFile"), SfField "start" (SeVar "curStart"), SfField "stop" (SeVar "curStop"), SfField "target" (SeVar "curTarget"), SfField "verb" (SeVar "curVerb"), SfField "kind" (SeVar "curKind"), SfField "body" (SeVar "curBody")]])] []]
+
+  parse-head : List ShellCmd = [ScSequence flush-cmds, ScAssign "curFile" (SeIndex (SeVar "matches") (SeInt 1)), ScAssign "curStart" (SeCast "int" (SeIndex (SeVar "matches") (SeInt 2))), ScAssign "curStop" (SeCast "int" (SeIndex (SeVar "matches") (SeInt 3))), ScAssign "curTarget" (SeIndex (SeVar "matches") (SeInt 4)), ScAssign "vfull" (SeTrim (SeIndex (SeVar "matches") (SeInt 5))), ScAssign "vparts" (SeSplit (SeVar "vfull") " "), ScAssign "curVerb" (SeIndex (SeVar "vparts") (SeInt 0)), ScAssign "curKind" (SeIfElse (SeIntGt (SeCount (SeVar "vparts")) (SeInt 1)) (SeIndex (SeVar "vparts") (SeInt 1)) (SeLit "rationale")), ScAssign "curBody" (SeStaticCall "System.Collections.Generic.List[string]" "new" [])]
+
+  s02 : List ShellCmd = [ScAssign "curFile" (SeLit ""), ScAssign "curStart" (SeInt 0), ScAssign "curStop" (SeInt 0), ScAssign "curTarget" (SeLit ""), ScAssign "curVerb" (SeLit ""), ScAssign "curKind" (SeLit ""), ScAssign "curBody" (SeStaticCall "System.Collections.Generic.List[string]" "new" []), ScForEach "rl" (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "Report"]) [ScIf (SeMatchExpr (SeVar "rl") (SeVar "HeadPat")) [ScSequence parse-head, ScContinue] [], ScIf (SeStartsWith (SeVar "rl") (SeLit "> ")) [ScDiscard (SeMethodCall (SeVar "curBody") "Add" [SeSubstringFrom (SeVar "rl") (SeInt 2)])] []], ScSequence flush-cmds, ScEcho (SeConcat (SeConcat (SeLit "report: ") (SeCount (SeVar "script:recs"))) (SeLit " records"))]
+
+Section: S03 -- Apply-File
+
+ Verify first, mutate second, and never interleave the two: a file is
+ either wholly consistent with the report or wholly refused.
+
+  json-body : ShellExpr = SeReplace (SeReplace (SeReplace (SeTrim (SeJoin (SeProperty (SeVar "r") "body") (SeLit " "))) "\\s+" (SeLit " ")) "\\\\" (SeLit "\\\\")) "\"" (SeLit "\\\"")
+
+  ann-record : ShellExpr = SeLines [SeLit "  {", SeConcat (SeConcat (SeLit "    \"target\": \"") (SeProperty (SeVar "r") "target")) (SeLit "\","), SeConcat (SeConcat (SeLit "    \"kind\": \"") (SeProperty (SeVar "r") "kind")) (SeLit "\","), SeConcat (SeConcat (SeLit "    \"author\": \"") (SeVar "Author")) (SeLit "\","), SeConcat (SeConcat (SeLit "    \"date\": \"") (SeVar "today")) (SeLit "\","), SeConcat (SeConcat (SeLit "    \"body\": \"") json-body) (SeLit "\","), SeLit "    \"thread\": null", SeLit "  }"]
+
+  verify-cmds : List ShellCmd = [ScAssign "ok" (SeBool True), ScAssign "x" (SeInt 0), ScWhile (SeAnd (SeIntLt (SeVar "x") (SeCount (SeProperty (SeVar "r") "body"))) (SeVar "ok")) [ScAssign "idx" (SeSub (SeAdd (SeProperty (SeVar "r") "start") (SeVar "x")) (SeInt 1)), ScIf (SeIntGe (SeVar "idx") (SeCount (SeVar "lines"))) [ScAssign "ok" (SeBool False)] [ScIf (SeStringNeq (SeIndex (SeVar "lines") (SeVar "idx")) (SeIndex (SeProperty (SeVar "r") "body") (SeVar "x"))) [ScAssign "ok" (SeBool False)] []], ScIncrement "x"]]
+
+  collect-cmds : List ShellCmd = [ScSequence verify-cmds, ScIf (SeNot (SeVar "ok")) [ScEcho (SeConcat (SeConcat (SeConcat (SeLit "  STALE ") (SeVar "f")) (SeLit " line ")) (SeProperty (SeVar "r") "start")), ScAssign "stale" (SeBool True), ScContinue] [], ScIf (SeStringEq (SeProperty (SeVar "r") "verb") (SeLit "KEEP")) [ScContinue] [], ScAssign "x" (SeInt 0), ScWhile (SeIntLt (SeVar "x") (SeCount (SeProperty (SeVar "r") "body"))) [ScDiscard (SeMethodCall (SeVar "del") "Add" [SeSub (SeAdd (SeProperty (SeVar "r") "start") (SeVar "x")) (SeInt 1)]), ScIncrement "x"], ScIf (SeStringEq (SeProperty (SeVar "r") "verb") (SeLit "ANNOTATE")) [ScDiscard (SeMethodCall (SeVar "anns") "Add" [ann-record])] []]
+
+ A removed block leaves the blank line above it and the blank line below,
+ so runs of blanks are collapsed to one. Without this every extraction
+ leaves a widening gap behind it.
+
+  keep-line : List ShellCmd = [ScAssign "ln" (SeIndex (SeVar "lines") (SeVar "x")), ScIf (SeStringEq (SeTrim (SeVar "ln")) (SeLit "")) [ScIncrement "blank"] [ScAssign "blank" (SeInt 0)], ScIf (SeIntLe (SeVar "blank") (SeInt 1)) [ScDiscard (SeMethodCall (SeVar "kept") "Add" [SeVar "ln"])] []]
+
+  rebuild-cmds : List ShellCmd = [ScAssign "kept" (SeStaticCall "System.Collections.Generic.List[string]" "new" []), ScAssign "blank" (SeInt 0), ScAssign "x" (SeInt 0), ScWhile (SeIntLt (SeVar "x") (SeCount (SeVar "lines"))) [ScIf (SeNot (SeMethodCall (SeVar "del") "Contains" [SeVar "x"])) keep-line [], ScIncrement "x"]]
+
+  sidecar-cmds : List ShellCmd = [ScAssign "side" (SePathJoin (SeVar "Repo") (SePathJoin (SeLit "annotations") (SeReplace (SeVar "f") "\\.codex$" (SeLit ".json")))), ScAssign "prior" (SeLit ""), ScIf (SeFileExists (SeVar "side")) [ScAssign "prior" (SeTrim (SeReplace (SeReplace (SeStaticCall "System.IO.File" "ReadAllText" [SeVar "side"]) "^\\s*\\[" (SeLit "")) "\\]\\s*$" (SeLit "")))] [], ScAssign "joined" (SeJoin (SeVar "anns") (SeLit ",\n")), ScIf (SeVar "prior") [ScAssign "joined" (SeConcat (SeConcat (SeVar "prior") (SeLit ",\n")) (SeVar "joined"))] [], ScMkdir (SePathParent (SeVar "side")), ScSetContent (SeVar "side") (SeLines [SeLit "[", SeVar "joined", SeLit "]"]), ScIncrementBy "script:annWritten" (SeCount (SeVar "anns"))]
+
+  s03 : List ShellCmd = [ScFunction "Apply-File" [sh-param-optional "f" SptString] [ScAssign "full" (SePathJoin (SeVar "Repo") (SeVar "f")), ScIf (SeNot (SeFileExists (SeVar "full"))) [ScEcho (SeConcat (SeLit "  MISSING ") (SeVar "f")), ScIncrement "script:staleFiles", ScReturn (SeBool False)] [], ScAssign "lines" (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "full"]), ScAssign "del" (SeStaticCall "System.Collections.Generic.HashSet[int]" "new" []), ScAssign "anns" (SeStaticCall "System.Collections.Generic.List[string]" "new" []), ScAssign "stale" (SeBool False), ScForEach "r" (SeVar "script:recs") [ScIf (SeStringNeq (SeProperty (SeVar "r") "file") (SeVar "f")) [ScContinue] [], ScSequence collect-cmds], ScIf (SeVar "stale") [ScEcho (SeConcat (SeLit "  REFUSED (stale report): ") (SeVar "f")), ScIncrement "script:staleFiles", ScReturn (SeBool False)] [], ScIf (SeIntEq (SeCount (SeVar "del")) (SeInt 0)) [ScReturn (SeBool False)] [], ScIncrementBy "script:cutLines" (SeCount (SeVar "del")), ScIncrement "script:filesChanged", ScIf (SeNot (SeVar "Apply")) [ScEcho (SeConcat (SeConcat (SeConcat (SeLit "  would cut ") (SeCount (SeVar "del"))) (SeLit " lines from ")) (SeVar "f")), ScReturn (SeBool True)] [], ScSetWritable (SeVar "full"), ScSequence rebuild-cmds, ScDotNetCall "System.IO.File" "WriteAllLines" [SeVar "full", SeVar "kept"], ScIf (SeIntGt (SeCount (SeVar "anns")) (SeInt 0)) sidecar-cmds [], ScEcho (SeConcat (SeConcat (SeConcat (SeLit "  cut ") (SeCount (SeVar "del"))) (SeLit " lines from ")) (SeVar "f")), ScReturn (SeBool True)]]
+
+Section: S04 -- Main
+
+  s04 : List ShellCmd = [ScSequence s02, ScBlank, ScAssign "fileSet" (SeStaticCall "System.Collections.Generic.HashSet[string]" "new" []), ScForEach "r" (SeVar "script:recs") [ScIf (SeStringEq (SeProperty (SeVar "r") "verb") (SeLit "KEEP")) [ScContinue] [], ScIf (SeAnd (SeVar "Only") (SeStringNeq (SeProperty (SeVar "r") "file") (SeVar "Only"))) [ScContinue] [], ScDiscard (SeMethodCall (SeVar "fileSet") "Add" [SeProperty (SeVar "r") "file"])], ScIf (SeVar "List") [ScForEach "f" (SeVar "fileSet") [ScEcho (SeVar "f")], ScAssign "sideSet" (SeStaticCall "System.Collections.Generic.HashSet[string]" "new" []), ScForEach "r" (SeVar "script:recs") [ScIf (SeStringNeq (SeProperty (SeVar "r") "verb") (SeLit "ANNOTATE")) [ScContinue] [], ScIf (SeAnd (SeVar "Only") (SeStringNeq (SeProperty (SeVar "r") "file") (SeVar "Only"))) [ScContinue] [], ScAssign "sp" (SePathJoin (SeVar "Repo") (SePathJoin (SeLit "annotations") (SeReplace (SeProperty (SeVar "r") "file") "\\.codex$" (SeLit ".json")))), ScIf (SeFileExists (SeVar "sp")) [ScDiscard (SeMethodCall (SeVar "sideSet") "Add" [SeVar "sp"])] []], ScForEach "s" (SeVar "sideSet") [ScEcho (SeVar "s")], ScExit (SeInt 0)] [], ScIf (SeNot (SeVar "Apply")) [ScEcho (SeLit "DRY RUN -- nothing is written. Pass -Apply to mutate.")] [], ScForEach "f" (SeVar "fileSet") [ScDiscard (SeCall "Apply-File" [SeVar "f"])], ScBlank, ScEcho (SeConcat (SeConcat (SeConcat (SeConcat (SeLit "files ") (SeVar "script:filesChanged")) (SeLit ", lines cut ")) (SeVar "script:cutLines")) (SeConcat (SeConcat (SeLit ", annotations ") (SeVar "script:annWritten")) (SeConcat (SeLit ", refused ") (SeVar "script:staleFiles"))))]
+
+Section: Assembly
+
+  apply-script : ShellScript = sh-script "apply-annotations" "Apply an audited annotation-extraction report: cut prose from source and write the sidecars" apply-params [ScSequence s01, ScBlank, ScSequence s03, ScBlank, ScSequence s04]
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell apply-script)
+  end
+
+Page 1

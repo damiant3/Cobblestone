@@ -1,70 +1,108 @@
 Chapter: WidgetTone
   cites Foreword chapter Console
+  cites Works chapter GopDraw
+  cites Works chapter GopComposite
   cites UI chapter Theme
   cites UI chapter Widget
   cites UI chapter Layout
   cites UI chapter BoxModel
-  cites UI chapter PixelBuf
-  cites Guios chapter GopRender
-  cites Guios chapter GuiDisplay
-  cites Guios chapter GuiTimer
+  cites Kernel chapter BitmapFont
 
  A tone says what a widget MEANS and the theme owns which colour that is.
  The reason this is a render test and not an arithmetic one: a field that
  nothing reads looks exactly like a working one, so the assertion has to be
  that the pixels changed, not that the setter stored a number.
 
+ **That is not hypothetical here.** Re-pointed 2026-08-03 from
+ `apps/guios/GopRender.codex`, which was retiring, onto the compositor that
+ ships -- and `GopComposite` was ignoring `wn-tone` entirely. It resolved a
+ style and painted `ws-fg`, so every badge rendered on the real desktop was
+ the same colour whatever it was reporting, which is the entire content of
+ a badge. The field was read by the renderer being deleted and by nothing
+ that shipped. Moving this test is what found it.
+
+ **The recorded output did not change by a single byte**, which was not the
+ expectation going in -- the old subject drew through `font-role-sans` into
+ a GopBuf and this one draws the CBF cell into a framebuffer, and both put
+ 140 pixels of ink on the glass for `STATUS`. The `.expected` is untouched
+ across the move, so the two renderers agree on this question exactly.
+
+ The control row is the one that matters and it is why this move was worth
+ making: `error in default fg = 0` says a toned label paints NOTHING in the
+ untoned colour. Against `GopComposite` before the tone fix that row read
+ 140, because the compositor painted `ws-fg` and ignored the tone entirely.
+
+Section: Geometry
+
+  wt-w : Integer = 240
+  wt-h : Integer = 40
+  wt-cells : Integer = 9600
+  wt-bytes : Integer = 38400
+
 Section: Body
-  buf-w : Integer = 240
-  buf-h : Integer = 40
 
-  count-color : GopBuf, Integer, Integer, Integer, Integer -> Integer
-  count-color (gb) (y) (x) (target) (acc) =
-    if y >= buf-h then acc
-    else if x >= buf-w then count-color gb (y + 1) 0 target acc
-    else count-color gb y (x + 1) target (acc + (if gop-buf-get gb x y == target then 1 else 0))
+  fill-bg : Integer, Integer, Integer, Integer -> Integer
+  fill-bg (b) (i) (n) (c) =
+    if i >= n then 0 else let p = poke-32 b (i * 4) c in fill-bg b (i + 1) n c
 
-  painted : Integer -> Integer
-  painted (tone) =
+  count-color : Integer, Integer, Integer, Integer -> Integer
+  count-color (b) (i) (target) (acc) =
+    if i >= wt-cells then acc
+    else count-color b (i + 1) target (acc + (if peek-32 b (i * 4) == target then 1 else 0))
+
+ Each arm paints into the same scratch buffer after refilling it with the
+ background, so a count is that arm's ink and not the last one's.
+
+  render-tone : Integer, Integer -> Integer
+  render-tone (buf) (tone) =
     let th = theme-terminal
     in let pal = th.th-palette
+    in let z = fill-bg buf 0 wt-cells (pal.pal-bg)
     in let tree = widget-set-tone (widget-label "l" "STATUS") tone
-    in let laid = widget-layout tree th (layout-rect 0 0 buf-w buf-h)
-    in let gb = gop-buf-new buf-w buf-h (pal.pal-bg)
-    in let d = gop-render-label laid th "STATUS" gb mw-new
-    in count-color gb 0 0 (theme-tone-fg th tone (pal.pal-fg)) 0
+    in let laid = widget-layout tree th (layout-rect 0 0 wt-w wt-h)
+    in comp-draw-node buf wt-w cbf-init laid th
 
-  row : Integer -> Text
-  row (tone) =
-    "  " & tone-name tone & " ink=" & show (painted tone)
+  painted : Integer, Integer -> Integer
+  painted (buf) (tone) =
+    let th = theme-terminal
+    in let pal = th.th-palette
+    in let d = render-tone buf tone
+    in count-color buf 0 (theme-tone-fg th tone (pal.pal-fg)) 0
+
+  in-default-fg : Integer, Integer -> Integer
+  in-default-fg (buf) (tone) =
+    let th = theme-terminal
+    in let pal = th.th-palette
+    in let d = render-tone buf tone
+    in count-color buf 0 (pal.pal-fg) 0
+
+  row : Integer, Integer -> Text
+  row (buf) (tone) =
+    "  " & tone-name tone & " ink=" & show (painted buf tone)
       & " color=" & show (theme-tone-fg theme-terminal tone ((theme-terminal.th-palette).pal-fg))
 
-  in-default-fg : Integer -> Integer
-  in-default-fg (tone) =
-    let th = theme-terminal
-    in let pal = th.th-palette
-    in let tree = widget-set-tone (widget-label "l" "STATUS") tone
-    in let laid = widget-layout tree th (layout-rect 0 0 buf-w buf-h)
-    in let gb = gop-buf-new buf-w buf-h (pal.pal-bg)
-    in let d = gop-render-label laid th "STATUS" gb mw-new
-    in count-color gb 0 0 (pal.pal-fg) 0
+Section: Main
 
   opening : [Console] Nothing = act
-    print-line-uni "the control: a toned label paints NOTHING in the untoned fg,"
-    print-line-uni "so the ink below is the tone being obeyed and not a coincidence."
-    print-line-uni ("  none  in default fg = " & show (in-default-fg tone-none))
-    print-line-uni ("  error in default fg = " & show (in-default-fg tone-error))
-    print-line-uni ""
-    print-line-uni "a toned label paints in its tone's colour, not the style fg:"
-    print-line-uni (row tone-none)
-    print-line-uni (row tone-error)
-    print-line-uni (row tone-success)
-    print-line-uni (row tone-warning)
-    print-line-uni ""
-    print-line-uni "the tone survives the layout pass and the other decorators:"
-    print-line-uni ("  set-tone then set-flex: " & show ((widget-set-flex (widget-set-tone (widget-label "a" "x") tone-error) 3).wn-tone))
-    print-line-uni ("  set-flex then set-tone: " & show ((widget-set-tone (widget-set-flex (widget-label "b" "x") 3) tone-error).wn-tone))
-    print-line-uni ("  default on a fresh node: " & show ((widget-label "c" "x").wn-tone))
+    let buf = __heap-save
+    in let adv = __heap-advance (wt-bytes + 256)
+    in act
+      print-line-uni "the control: a toned label paints NOTHING in the untoned fg,"
+      print-line-uni "so the ink below is the tone being obeyed and not a coincidence."
+      print-line-uni ("  none  in default fg = " & show (in-default-fg buf tone-none))
+      print-line-uni ("  error in default fg = " & show (in-default-fg buf tone-error))
+      print-line-uni ""
+      print-line-uni "a toned label paints in its tone's colour, not the style fg:"
+      print-line-uni (row buf tone-none)
+      print-line-uni (row buf tone-error)
+      print-line-uni (row buf tone-success)
+      print-line-uni (row buf tone-warning)
+      print-line-uni ""
+      print-line-uni "the tone survives the layout pass and the other decorators:"
+      print-line-uni ("  set-tone then set-flex: " & show ((widget-set-flex (widget-set-tone (widget-label "a" "x") tone-error) 3).wn-tone))
+      print-line-uni ("  set-flex then set-tone: " & show ((widget-set-tone (widget-set-flex (widget-label "b" "x") 3) tone-error).wn-tone))
+      print-line-uni ("  default on a fresh node: " & show ((widget-label "c" "x").wn-tone))
+    end
   end
 
 Page 1

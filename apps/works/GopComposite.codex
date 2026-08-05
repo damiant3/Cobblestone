@@ -2,6 +2,7 @@ Chapter: GopComposite
   cites Works chapter GopDraw
   cites UI chapter Widget
   cites UI chapter Theme
+  cites UI chapter StatusBadge
   cites UI chapter BoxModel
   cites UI chapter Layout
   cites Kernel chapter BitmapFont
@@ -22,6 +23,19 @@ Chapter: GopComposite
  tree, so a caller can hit-test against the same wn-bounds the
  pixels came from.
 
+ **All seven widget kinds are drawn here as of 2026-08-03.** This handled
+ five and answered `otherwise -> 0` for `WkInput` and `WkCustom`, which is
+ a widget that lays out, occupies its space, and paints nothing -- the
+ shape that reads as a layout bug when it is a missing arm. The two
+ arrived when `apps/guios/GopRender.codex` was compared against this one
+ during the guios retirement: that chapter drew all seven, against a
+ GopBuf through codex-vm's host rasterizer, and is the one being retired.
+
+ What is deliberately NOT carried over from it: borders, shadows,
+ gradients and accent borders. This compositor draws flat fills, every
+ theme in the tree is flat, and a shadow is `sh-blur` filled rectangles
+ per node per frame on a machine with no GC and no blitter.
+
  We say:
 
 Section: Node Drawing
@@ -37,20 +51,79 @@ Section: Node Drawing
     in if fw <= 0 then 0
     else gop-fill-rect base stride (b.lr-x) (b.lr-y) fw (b.lr-h) fg
 
+ The CBF cell is 8 pixels wide at scale 1 and `gop-draw-text` advances by
+ exactly that, so a node's capacity in characters is its inner width over
+ 8. Text longer than that is cut rather than drawn past the node: there is
+ no clipped text primitive on this path, so a label that overruns is drawn
+ straight over whatever is beside it.
+
+ **Every text-bearing kind is cut to its own bounds, not just inputs.** A
+ label was not, and the first capture of the issue tracker is what that
+ looks like: `In Progress` is 11 cells in a 72-pixel Status column and ran
+ through the Title beside it, in a DataTable whose whole point is columns.
+ A widget drawing outside its own rectangle also breaks the one thing the
+ compositor promises -- that a parent's fill is covered only by its own
+ children -- which `gop-composite-stride` asserts and could not have
+ caught, because it measures rows against a stride rather than a node
+ against its neighbour.
+
+  comp-fit : Text, Integer -> Text
+  comp-fit (t) (cols) =
+    if cols <= 0 then ""
+    else if text-length t <= cols then t
+    else substring t 0 cols
+
+ The caret is placed by character index, clamped into the field, and drawn
+ one pixel wide so an empty field still shows where typing will land.
+
+  comp-input : Integer, Integer, CbfFont, LayoutRect, Text, Integer, Integer, Integer -> Integer
+  comp-input (base) (stride) (font) (b) (t) (cursor) (fg) (bg) =
+    let fill = gop-fill-rect base stride (b.lr-x) (b.lr-y) (b.lr-w) (b.lr-h) bg
+    in let cols = (b.lr-w - 8) / 8
+    in let txt = comp-text base stride font b 4 4 (comp-fit t cols) fg
+    in let want = b.lr-x + 4 + cursor * 8
+    in let hi = b.lr-x + b.lr-w - 2
+    in let cx = if want > hi then hi else want
+    in gop-fill-rect base stride cx (b.lr-y + 3) 1 (if b.lr-h > 6 then b.lr-h - 6 else 1) fg
+
+ `event-dot` is the one custom tag anything in the tree uses. An unknown
+ tag falls back to a panel fill rather than to nothing, so a widget kind
+ this chapter has not met is visible as a block instead of silently absent.
+
+  comp-custom : Integer, Integer, LayoutRect, Text, Integer, Integer -> Integer
+  comp-custom (base) (stride) (b) (tag) (fg) (bg) =
+    if tag == "event-dot"
+    then gop-fill-rect base stride (b.lr-x + b.lr-w / 2 - 3) (b.lr-y + b.lr-h / 2 - 3) 6 6 fg
+    else gop-fill-rect base stride (b.lr-x) (b.lr-y) (b.lr-w) (b.lr-h) bg
+
+ A node's TONE overrides the style's foreground: `tone-success` paints a
+ label green wherever the theme would have painted it plain. It is how
+ `StatusBadge` and everything built on it says what it means, and this
+ chapter ignored it -- so a badge rendered here was the same colour
+ whatever it was reporting, which is the whole content of a badge.
+ `theme-tone-fg` falls through to the style's own foreground for
+ `tone-none`, so this is not a special case, it is the general one.
+
+  comp-fg : Theme, WidgetNode, WidgetStyle -> Integer
+  comp-fg (th) (node) (st) = theme-tone-fg th (node.wn-tone) (st.ws-fg)
+
   comp-draw-node : Integer, Integer, CbfFont, WidgetNode, Theme -> Integer
   comp-draw-node (base) (stride) (font) (node) (th) =
     let st = widget-resolve-style node th
     in let b = node.wn-bounds
+    in let fg = comp-fg th node st
     in when node.wn-kind
       is WkPanel -> gop-fill-rect base stride (b.lr-x) (b.lr-y) (b.lr-w) (b.lr-h) (st.ws-bg)
       is WkSeparator -> gop-fill-rect base stride (b.lr-x) (b.lr-y) (b.lr-w) (b.lr-h) (st.ws-fg)
-      is WkLabel (t) -> comp-text base stride font b 4 3 t (st.ws-fg)
+      is WkLabel (t) -> comp-text base stride font b 4 3 (comp-fit t ((b.lr-w - 4) / 8)) fg
       is WkButton (t) ->
         let bg = gop-fill-rect base stride (b.lr-x) (b.lr-y) (b.lr-w) (b.lr-h) (st.ws-bg)
-        in comp-text base stride font b 8 4 t (st.ws-fg)
+        in comp-text base stride font b 8 4 (comp-fit t ((b.lr-w - 8) / 8)) fg
       is WkGauge (v) (mx) ->
         let bg = gop-fill-rect base stride (b.lr-x) (b.lr-y) (b.lr-w) (b.lr-h) (st.ws-bg)
-        in comp-gauge-fill base stride b v mx (st.ws-fg)
+        in comp-gauge-fill base stride b v mx fg
+      is WkInput (t) (c) -> comp-input base stride font b t c fg (st.ws-bg)
+      is WkCustom (tag) -> comp-custom base stride b tag fg (st.ws-bg)
       is otherwise -> 0
 
 Section: Tree Walk

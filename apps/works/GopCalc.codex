@@ -1,0 +1,190 @@
+Chapter: GopCalc
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Theme
+
+ The calculator, moved out of `apps/guios/CalcApp.codex` when the guios
+ shell retired into GopDesk. The arithmetic and the scancode dispatch are
+ that chapter's, unchanged in behaviour; what changed is where the state
+ lives and who owns the loop.
+
+ State was a MutWheel, which is GuiTimer's mutable metadata buffer and one
+ of the chapters retiring. It is a plain 64-byte cell block here, allocated
+ once by `desk-run` and passed in, so entering and leaving the pane
+ allocates nothing.
+
+ This chapter has NO run loop and does no drawing. It answers with a
+ WidgetNode and GopDesk composes that into the chrome's content panel, so
+ the sidebar and taskbar lay out around it and this file never needs to
+ know the sidebar's width. GopScene and GopFiles each compute that offset
+ themselves and their own prose records that the two files "have to agree
+ by hand"; a pane that hands back a tree cannot drift that way.
+
+Section: Operators
+
+  op-none : Integer = 0
+  op-add : Integer = 1
+  op-sub : Integer = 2
+  op-mul : Integer = 3
+  op-div : Integer = 4
+
+Section: State
+
+ Three cells: the accumulator, the number being typed, and the pending
+ operator.
+
+  gcalc-acc : Integer -> Integer
+  gcalc-acc (ks) = peek-32 ks 0
+
+  gcalc-cur : Integer -> Integer
+  gcalc-cur (ks) = peek-32 ks 8
+
+  gcalc-op : Integer -> Integer
+  gcalc-op (ks) = peek-32 ks 16
+
+Section: Operations
+
+ Typing past the width of the display would run the value off the panel
+ and, at ten digits, past what the accumulator can hold usefully. The
+ digit is dropped rather than wrapping the value.
+
+  gcalc-digit-cap : Integer = 999999999
+
+  gcalc-digit : Integer, Integer -> Integer
+  gcalc-digit (ks) (d) =
+    let cur = gcalc-cur ks
+    in if cur > gcalc-digit-cap then 0
+    else poke-32 ks 8 (cur * 10 + d)
+
+ Division by zero answers zero rather than faulting. There is nothing
+ behind this desktop to catch a fault, so the calculator must not be the
+ thing that takes the machine down.
+
+  gcalc-eval : Integer -> Integer
+  gcalc-eval (ks) =
+    let acc = gcalc-acc ks
+    in let cur = gcalc-cur ks
+    in let op = gcalc-op ks
+    in let result = if op == op-add then acc + cur
+      else if op == op-sub then acc - cur
+      else if op == op-mul then acc * cur
+      else if op == op-div then (if cur /= 0 then acc / cur else 0)
+      else cur
+    in let d1 = poke-32 ks 0 result
+    in poke-32 ks 8 0
+
+  gcalc-set-op : Integer, Integer -> Integer
+  gcalc-set-op (ks) (new-op) =
+    let d = gcalc-eval ks
+    in poke-32 ks 16 new-op
+
+  gcalc-equals : Integer -> Integer
+  gcalc-equals (ks) =
+    let d = gcalc-eval ks
+    in poke-32 ks 16 op-none
+
+  gcalc-clear : Integer -> Integer
+  gcalc-clear (ks) =
+    let d1 = poke-32 ks 0 0
+    in let d2 = poke-32 ks 8 0
+    in poke-32 ks 16 op-none
+
+Section: Scancode Dispatch
+
+ Set-1 make codes. The answer is whether the key changed anything, so the
+ caller repaints on a key that did and does nothing on one that did not:
+ a calculator is event-driven and an idle pane should not be painting.
+
+  gcalc-key : Integer, Integer -> Integer
+  gcalc-key (ks) (sc) =
+    if sc == 2 then let d = gcalc-digit ks 1 in 1
+    else if sc == 3 then let d = gcalc-digit ks 2 in 1
+    else if sc == 4 then let d = gcalc-digit ks 3 in 1
+    else if sc == 5 then let d = gcalc-digit ks 4 in 1
+    else if sc == 6 then let d = gcalc-digit ks 5 in 1
+    else if sc == 7 then let d = gcalc-digit ks 6 in 1
+    else if sc == 8 then let d = gcalc-digit ks 7 in 1
+    else if sc == 9 then let d = gcalc-digit ks 8 in 1
+    else if sc == 10 then let d = gcalc-digit ks 9 in 1
+    else if sc == 11 then let d = gcalc-digit ks 0 in 1
+    else if sc == 12 then let d = gcalc-set-op ks op-sub in 1
+    else if sc == 13 then let d = gcalc-set-op ks op-add in 1
+    else if sc == 28 then let d = gcalc-equals ks in 1
+    else if sc == 53 then let d = gcalc-set-op ks op-div in 1
+    else if sc == 55 then let d = gcalc-set-op ks op-mul in 1
+    else if sc == 46 then let d = gcalc-clear ks in 1
+    else 0
+
+Section: Display
+
+  gcalc-op-sym : Integer -> Text
+  gcalc-op-sym (op) =
+    if op == op-add then "+"
+    else if op == op-sub then "-"
+    else if op == op-mul then "*"
+    else if op == op-div then "/"
+    else ""
+
+ The big line is what you are typing, or the accumulator when you are not.
+ The small line under it is the expression so far, so a pending operator
+ is visible rather than remembered.
+
+  gcalc-shown : Integer -> Integer
+  gcalc-shown (ks) =
+    if gcalc-cur ks > 0 then gcalc-cur ks else gcalc-acc ks
+
+  gcalc-expr : Integer -> Text
+  gcalc-expr (ks) =
+    if gcalc-op ks /= op-none
+    then show (gcalc-acc ks) & " " & gcalc-op-sym (gcalc-op ks) & " " & show (gcalc-cur ks)
+    else "= " & show (gcalc-acc ks)
+
+Section: Widget Tree
+
+ The keypad is drawn rather than merely labelled, because the pane is
+ reachable by a click and a user who arrived that way has no reason to
+ know which keys work. The buttons are not hit-tested yet; the labels are
+ the legend for the keyboard.
+
+ The flex is not decoration. A panel is born flexible but a BUTTON is
+ not, so inside a DirRow -- where the main axis is width -- a button with
+ flex 0 and a min width of 0 lays out exactly 0 pixels wide and paints
+ nothing at all. The first capture of this pane showed an empty keypad
+ between two separators, with the tree laid out correctly around it.
+
+  gcalc-btn : Text -> WidgetNode
+  gcalc-btn (label) = widget-set-flex (widget-set-min (widget-button ("gcalc-" & label) label) 0 34) 1
+
+  gcalc-row : Text, Text, Text, Text -> WidgetNode
+  gcalc-row (a) (b) (c) (d) =
+    widget-panel ("gcalc-r-" & a) DirRow 6 [gcalc-btn a, gcalc-btn b, gcalc-btn c, gcalc-btn d]
+
+  gcalc-tree : Integer -> WidgetNode
+  gcalc-tree (ks) =
+    let display = widget-panel "gcalc-disp" DirColumn 2 [
+      widget-set-min (widget-label "gcalc-val" (show (gcalc-shown ks))) 0 28,
+      widget-label "gcalc-expr" (gcalc-expr ks)
+    ]
+    in let keypad = widget-panel "gcalc-pad" DirColumn 6 [
+      gcalc-row "7" "8" "9" "/",
+      gcalc-row "4" "5" "6" "*",
+      gcalc-row "1" "2" "3" "-",
+      widget-panel "gcalc-r-0" DirRow 6 [gcalc-btn "0", gcalc-btn "=", gcalc-btn "+"]
+    ]
+    in let help = widget-label "gcalc-help" "0-9  + -  * /  Enter equals  C clears  Esc returns"
+
+ Display and keypad are both left flexible and split the pane's height
+ between them. Pinning them with `widget-set-flex ... 0` to pull the
+ keypad up under the display was tried and is wrong: flex 0 means no
+ share of the main axis, and with no minimum height both panels collapsed
+ to nothing and every row of the pane drew on top of every other. A
+ minimum height per panel is what that would need, and the slack is not
+ worth guessing at the layout engine for.
+
+    in widget-panel "gcalc-root" DirColumn 8 [
+      display,
+      widget-separator "gcalc-sep",
+      keypad,
+      widget-separator "gcalc-sep2",
+      help
+    ]

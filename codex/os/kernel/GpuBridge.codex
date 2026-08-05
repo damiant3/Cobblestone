@@ -9,21 +9,6 @@ Chapter: GpuBridge
  the host is told where it is; the host computes and writes the reply
  back into guest memory. Fixed-point scale 1000.
 
- This chapter used to drive a polled serial line at COM3, one byte at a
- time. That cost TWO VM exits per byte in each direction -- one to poll
- the line status register, one to move the byte -- so what a dispatch
- cost was a multiple of the OPERAND SIZE rather than of the work. It was
- measured before it was replaced: a 2x2 matmul was 160 exits, its relu
- 112, and a single 32x32 matmul 24,640. Through the buffers below each of
- those is four, because only the two addresses and the ring cross the
- boundary. The serial path is deleted rather than kept beside this one; a
- second transport that nothing uses is a second thing to keep correct,
- and it would be exercised by nothing.
-
- Handing the host a guest address is this machine's existing idiom. The
- triangle rasterizer takes its command buffer that way and so does the
- asset loader.
-
  We say:
 
 Section: Buffers
@@ -93,12 +78,6 @@ Section: Command Buffer
 
 Section: Dispatch
 
- The doorbell write is last, so both buffer addresses are in place before
- the host is told to look. The reply length answers zero when the host
- refused the dispatch, which is what separates a refusal from a reply
- that happens to decode to zeros -- a distinction the caller cannot make
- from the reply bytes alone.
-
   gpu-ring : Integer -> Integer
   gpu-ring (cmd-bytes) =
     let p1 = port-out-32 gpu-port-cmd-addr gpu-cmd-buf
@@ -136,20 +115,6 @@ Section: High-Level Operations
 
 Section: The Rest of the Operations
 
- GpuProxy names seventeen arithmetic operations and one launch. All
- seventeen are reachable through this chapter; conv2d is the last one and
- needed a header of its own, described where its entry point is defined.
-
- The shape below is one dispatch expressed twice: an op that reads one
- tensor and answers one of a known size, and an op that reads two. Every
- public operation is one line on top of those, which is what makes adding
- the next one cheap rather than another copy of the protocol.
-
- THE REPLY CARRIES ELEMENTS AND NOT DIMENSIONS for every op but matmul,
- so the caller supplies the result shape it expects. That is safe because
- the caller also chose the operation: a transpose of an ra x ca is ca x
- ra by definition, and an upsample of c x h x w is c x 2h x 2w.
-
   gpu-run1 : Integer, Integer, Integer, Integer, Tensor, Integer, Integer -> Maybe Tensor
   gpu-run1 (op) (ra) (ca) (cb) (t) (out-rows) (out-cols) =
     let n = list-length (t.data)
@@ -171,10 +136,6 @@ Section: The Rest of the Operations
     in if rlen <= 0 then None
     else if peek-32 gpu-reply-buf 0 /= gpu-status-complete then None
     else Just (Tensor { data = gpu-get-tensor gpu-reply-buf 4 (out-rows * out-cols) 0 [], rows = out-rows, cols = out-cols })
-
- Elementwise and shape-preserving. Softmax is a reduction over the whole
- tensor rather than per row, which is what its constructor's rows-a by 1
- shape already says.
 
   gpu-bridge-softmax : GpuBridge, Tensor -> Maybe Tensor
   gpu-bridge-softmax (bridge) (t) =
@@ -200,34 +161,19 @@ Section: The Rest of the Operations
   gpu-bridge-elemwise-mul (bridge) (x) (y) =
     gpu-run2 gpu-op-elemwise-mul (x.rows) (x.cols) 0 x y (x.rows) (x.cols)
 
- Transpose keeps its elements and swaps its shape, so the caller names
- the result the other way round.
-
   gpu-bridge-transpose : GpuBridge, Tensor -> Maybe Tensor
   gpu-bridge-transpose (bridge) (t) =
     gpu-run1 gpu-op-transpose (t.rows) (t.cols) 0 t (t.cols) (t.rows)
-
- Scale carries its factor as a one-element second operand, which is where
- the command's offset-b already pointed.
 
   gpu-bridge-scale : GpuBridge, Tensor, Integer -> Maybe Tensor
   gpu-bridge-scale (bridge) (t) (factor) =
     let k = Tensor { data = [factor], rows = 1, cols = 1 }
     in gpu-run2 gpu-op-scale (t.rows) (t.cols) 0 t k (t.rows) (t.cols)
 
- Group norm is the one operation whose dimension fields do not mean what
- its neighbours' mean: the LENGTH goes in rows-a and the GROUP COUNT in
- cols-a, so it is passed that way rather than as a shape. A length that
- does not divide into whole groups is refused by the host.
-
   gpu-bridge-group-norm : GpuBridge, Tensor, Integer -> Maybe Tensor
   gpu-bridge-group-norm (bridge) (t) (groups) =
     let n = list-length (t.data)
     in gpu-run1 gpu-op-group-norm n groups 0 t (t.rows) (t.cols)
-
- Upsample doubles both spatial dimensions, NEAREST NEIGHBOUR. The other
- reading is bilinear, and the two agree only on a constant input, so the
- choice is written down rather than left to be discovered from an answer.
 
   gpu-bridge-upsample2x : GpuBridge, Tensor, Integer, Integer, Integer -> Maybe Tensor
   gpu-bridge-upsample2x (bridge) (t) (channels) (h) (w) =
@@ -255,10 +201,6 @@ Section: The Rest of the Operations
     let el = list-length (t.data)
     in let out = (el - window) / stride + 1
     in gpu-run1 gpu-op-max-pool el window stride t 1 out
-
- Clamp carries its two bounds as a second operand, the way scale carries
- its one factor, so the command needs no field the header does not have.
- Every value below lo becomes lo and every value above hi becomes hi.
 
   gpu-bridge-clamp : GpuBridge, Tensor, Integer, Integer -> Maybe Tensor
   gpu-bridge-clamp (bridge) (t) (lo) (hi) =
@@ -303,20 +245,6 @@ Section: The Rest of the Operations
 
 Section: A Kernel On The Actual Device
 
- Everything above computes on the HOST CPU, in scalar C, inside the
- emulator. That was honest as a transport and dishonest as a GPU: a
- caller reaching for this bridge to go faster got a slower CPU with a
- round trip in front of it, while GpuProxy's prose advertised dispatch to
- CUDA. `gpu-op-launch-ptx` was defined, had a constructor, and reached
- nothing at all.
-
- It reaches the device now. The command carries a PTX module and the name
- of an entry point in it; the host JITs that module through the CUDA
- driver and launches the kernel on the graphics processor. PTX rather
- than a binary because PTX is the portable form -- the driver compiles it
- for whatever card is present, so a module built for one generation runs
- on the next.
-
  THE KERNEL ABI IS FIXED AND IT IS WRITTEN DOWN IN BOTH HALVES, because a
  calling convention cannot be recovered by looking at an answer. A kernel
  takes exactly three parameters in this order: a pointer to the operand
@@ -334,20 +262,11 @@ Section: A Kernel On The Actual Device
  is the same conversion a wire protocol needs and the same one a TLS
  hostname went out without.
 
- A LAUNCH ON A BOX WITH NO NVIDIA GPU IS REFUSED, NOT QUIETLY COMPUTED ON
- THE CPU. The host answers None, and the caller can therefore tell a
- kernel that ran on a device from one that did not run at all. Falling
- back to the scalar path would reproduce exactly the lie this section
- exists to remove.
-
   gpu-put-text : Integer, Integer, Text, Integer, Integer -> Integer
   gpu-put-text (base) (off) (s) (i) (n) =
     if i >= n then 0
     else let w = poke-byte base (off + i) (to-unicode (char-code (char-at s i)))
     in gpu-put-text base off s (i + 1) n
-
- The launch header is its own: eight fields rather than five, because a
- program has a length that no shape implies.
 
   gpu-ptx-header : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   gpu-ptx-header (n-in) (grid) (block) (ptx-len) (name-len) (n-out) =

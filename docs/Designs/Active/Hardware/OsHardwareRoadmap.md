@@ -139,9 +139,18 @@ counter runs, and `pet` mode becomes unnecessary there.
 
 **H1a -- the `runtime-init` builtin (implementation plan, reverse-engineered
 2026-07-09; ready to execute in one focused session).** Decision made: a
-new builtin, NOT a `__start` jump. The Option A stub (`option_a_stub.asm`)
-keeps the firmware GDT (CS ≈ 0x38), builds a 4 GB identity map, sets
-RSP/R10, and jumps straight to `opening`. It never installs a GDT with
+new builtin, NOT a `__start` jump.
+
+**The stub described below is `option_a_stub.asm`, which was DELETED
+2026-08-03, and this paragraph has not been re-derived against the surviving
+one. Do not execute H1a on it as written.** `cdx-to-pe.ps1`'s stub is not the
+same shape: it copies the firmware GDT into a page it owns and appends a
+64-bit code descriptor so `SYSCALL` has a selector pair (`cdx-to-pe.ps1:473-525`),
+so at least the "never installs a GDT" clause is false for the shipping path.
+Re-read that stub and restate this before planning against it.
+
+The deleted stub kept the firmware GDT (CS ~ 0x38), built a 4 GB identity map,
+set RSP/R10, and jumped straight to `opening`. It never installed a GDT with
 CS at selector 8, an IDT, a TSS, the PIC/PIT, or the LAPIC. The IDT
 entries `emit-idt-entries` writes reference **selector 8** (the
 `add-ri reg-rax 524288` = `8 << 16`), so an IDT alone is not enough -- the

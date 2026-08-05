@@ -774,7 +774,7 @@ Section: Match Lowering
    else let arm = list-at arms i
    in let arm-ctx = bind-pattern-to-ctx ctx (arm.pattern) scrut-ty
    in lower-match-arms-acc arms ty scrut-ty ctx (i + 1) len (list-push acc (deck-record (IRBranch {
-    pattern = lower-pattern (arm.pattern) scrut-ty,
+    pattern = lower-pattern ctx (arm.pattern) scrut-ty,
     body = lower-expr (arm.body) ty arm-ctx,
     guard = lower-expr (arm.guard) BooleanTy arm-ctx,
     span = arm.span,
@@ -824,39 +824,132 @@ Section: Match Lowering
       let ctx2 = bind-pattern-to-ctx ctx (list-at sub-pats i) ErrorTy
       in bind-ctor-pattern-fields ctx2 sub-pats ctor-ty (i + 1) len
 
-  lower-pattern : APat, CodexType -> IRPat
-  lower-pattern (p) (scrut-ty) = lower-pattern-at p scrut-ty 0
+  lower-pattern : LowerCtx, APat, CodexType -> IRPat
+  lower-pattern (ctx) (p) (scrut-ty) = lower-pattern-at ctx p scrut-ty 0
 
-  lower-pattern-at : APat, CodexType, Integer -> IRPat
-  lower-pattern-at (p) (scrut-ty) (depth) =
+  lower-pattern-at : LowerCtx, APat, CodexType, Integer -> IRPat
+  lower-pattern-at (ctx) (p) (scrut-ty) (depth) =
    if depth >= max-recursion-depth then deck-record (IrWildPat (apat-span p))
    else when p
     is AVarPat (name) (s) -> deck-record (IrVarPat (name.value) scrut-ty s)
     is ALitPat (text) (kind) (s) -> deck-record (IrLitPat text scrut-ty s)
-    is ACtorPat (name) (subs) (s) -> deck-record (IrCtorPat (name.value) (lower-ctor-sub-patterns subs scrut-ty (name.value) 0 (depth + 1)) scrut-ty s)
+    is ACtorPat (name) (subs) (s) -> deck-record (IrCtorPat (name.value) (lower-ctor-sub-patterns ctx subs scrut-ty (name.value) 0 (depth + 1)) scrut-ty s)
     is AVecPat (subs) (s) ->
      let elem-ty = when scrut-ty is VectorTy (n) (t) -> t is otherwise -> ErrorTy
-     in deck-record (IrVecPat (lower-vec-sub-patterns subs elem-ty 0 (depth + 1)) scrut-ty s)
+     in deck-record (IrVecPat (lower-vec-sub-patterns ctx subs elem-ty 0 (depth + 1)) scrut-ty s)
     is AWildPat (s) -> deck-record (IrWildPat s)
 
-  lower-ctor-sub-patterns : List APat, CodexType, Text, Integer, Integer -> List IRPat
-  lower-ctor-sub-patterns (subs) (scrut-ty) (ctor-name) (i) (depth) =
-   lower-ctor-sub-patterns-acc subs scrut-ty ctor-name i (list-length subs) depth []
+  lower-ctor-sub-patterns : LowerCtx, List APat, CodexType, Text, Integer, Integer -> List IRPat
+  lower-ctor-sub-patterns (ctx) (subs) (scrut-ty) (ctor-name) (i) (depth) =
+   lower-ctor-sub-patterns-acc ctx subs scrut-ty ctor-name i (list-length subs) depth []
 
-  lower-ctor-sub-patterns-acc : List APat, CodexType, Text, Integer, Integer, Integer, List IRPat -> List IRPat
-  lower-ctor-sub-patterns-acc (subs) (scrut-ty) (ctor-name) (i) (len) (depth) (acc) =
+  lower-ctor-sub-patterns-acc : LowerCtx, List APat, CodexType, Text, Integer, Integer, Integer, List IRPat -> List IRPat
+  lower-ctor-sub-patterns-acc (ctx) (subs) (scrut-ty) (ctor-name) (i) (len) (depth) (acc) =
    if i == len then acc
-   else let field-ty = lookup-ctor-field-type scrut-ty ctor-name i
-   in lower-ctor-sub-patterns-acc subs scrut-ty ctor-name (i + 1) len depth (list-push acc (lower-pattern-at (list-at subs i) field-ty depth))
+   else let field-ty = ctor-field-type-in-ctx ctx scrut-ty ctor-name i
+   in lower-ctor-sub-patterns-acc ctx subs scrut-ty ctor-name (i + 1) len depth (list-push acc (lower-pattern-at ctx (list-at subs i) field-ty depth))
 
-  lower-vec-sub-patterns : List APat, CodexType, Integer, Integer -> List IRPat
-  lower-vec-sub-patterns (subs) (elem-ty) (i) (depth) =
-   lower-vec-sub-patterns-acc subs elem-ty i (list-length subs) depth []
+  lower-vec-sub-patterns : LowerCtx, List APat, CodexType, Integer, Integer -> List IRPat
+  lower-vec-sub-patterns (ctx) (subs) (elem-ty) (i) (depth) =
+   lower-vec-sub-patterns-acc ctx subs elem-ty i (list-length subs) depth []
 
-  lower-vec-sub-patterns-acc : List APat, CodexType, Integer, Integer, Integer, List IRPat -> List IRPat
-  lower-vec-sub-patterns-acc (subs) (elem-ty) (i) (len) (depth) (acc) =
+  lower-vec-sub-patterns-acc : LowerCtx, List APat, CodexType, Integer, Integer, Integer, List IRPat -> List IRPat
+  lower-vec-sub-patterns-acc (ctx) (subs) (elem-ty) (i) (len) (depth) (acc) =
    if i == len then acc
-   else lower-vec-sub-patterns-acc subs elem-ty (i + 1) len depth (list-push acc (lower-pattern-at (list-at subs i) elem-ty depth))
+   else lower-vec-sub-patterns-acc ctx subs elem-ty (i + 1) len depth (list-push acc (lower-pattern-at ctx (list-at subs i) elem-ty depth))
+
+ `lookup-ctor-field-type` answers ErrorTy for any scrutinee that is not
+ ALREADY a resolved SumTy, and a parametric sum never is: `Box (a)`
+ reaches here as a ConstructedTy. The BINDING path resolves the
+ constructor and substitutes (bind-pattern-to-ctx's ACtorPat arm above),
+ so the USE of a pattern variable carried its real type while the PATTERN
+ NODE carried a type-error type -- one variable, two types, in one branch.
+ Recorded as hole 1 of the three in IRCheck's prose, and measured on the
+ wire 2026-08-04 by the rechecker, which answered UNSUPPORTED on 419
+ definitions because a binding typed `error` is not decidable.
+
+ This performs the same resolution the binding path performs, so the two
+ now agree by construction rather than by coincidence. The direct SumTy
+ answer is tried first and is unchanged, so a non-parametric sum keeps its
+ exact previous spelling.
+
+  ctor-field-type-in-ctx : LowerCtx, CodexType, Text, Integer -> CodexType
+  ctor-field-type-in-ctx (ctx) (scrut-ty) (ctor-name) (field-idx) =
+   let direct = lookup-ctor-field-type scrut-ty ctor-name field-idx
+   in when direct
+    is ErrorTy -> resolved-ctor-field-type ctx scrut-ty ctor-name field-idx
+    is otherwise -> direct
+
+ ORDER IS THE WHOLE OF IT. `apply-ctor-subst` substitutes a bare
+ `ConstructedTy` carrying no arguments -- a type parameter still spelled
+ as a NAME -- and has no arm for `TypeVar`, so a parameter that
+ `deep-resolve` has already turned into `TypeVar 16` can never be mapped
+ by a name-keyed substitution. Resolving first and substituting after
+ answers `(tvar 16)` where the answer is `int-default`, which is what
+ this did on its first attempt. Substitute against the RAW constructor
+ type while the parameter names are still there, and resolve the one
+ field type that comes out.
+
+  TvarBind = record {
+   tvb-id : Integer,
+   tvb-ty : CodexType
+  }
+
+  resolved-ctor-field-type : LowerCtx, CodexType, Text, Integer -> CodexType
+  resolved-ctor-field-type (ctx) (scrut-ty) (ctor-name) (field-idx) =
+   let ctor-stripped = strip-forall-ty (lookup-type-split (ctx.overlay) (ctx.base) ctor-name)
+   in let named = apply-ctor-subst (pattern-type-subst ctor-stripped scrut-ty) ctor-stripped
+   in let ret-args = ctor-ret-tyargs named
+   in let binds = pair-tvars ret-args (extract-scrut-args scrut-ty) 0 (list-length ret-args) []
+   in deep-resolve (ctx.ust) (subst-tvars binds (nth-fun-param named field-idx) 32)
+
+ A constructor's return type carries the DECLARATION's parameters in
+ order, and the scrutinee carries the arguments in the same order, so
+ pairing them positionally is the map the name-keyed substitution cannot
+ express once those parameters are type variables.
+
+  ctor-ret-tyargs : CodexType -> List CodexType
+  ctor-ret-tyargs (t) =
+   when strip-fun-args t
+    is SumTy (n) (args) (cs) -> args
+    is ConstructedTy (n) (args) -> args
+    is otherwise -> []
+
+  pair-tvars : List CodexType, List CodexType, Integer, Integer, List TvarBind -> List TvarBind
+  pair-tvars (rs) (ss) (i) (len) (acc) =
+   if i >= len then acc
+   else if i >= list-length ss then acc
+   else pair-tvars rs ss (i + 1) len (pair-tvar-one (list-at rs i) (list-at ss i) acc)
+
+  pair-tvar-one : CodexType, CodexType, List TvarBind -> List TvarBind
+  pair-tvar-one (r) (s) (acc) =
+   when r
+    is TypeVar (id) -> list-push acc (TvarBind { tvb-id = id, tvb-ty = s })
+    is otherwise -> acc
+
+  subst-tvars : List TvarBind, CodexType, Integer -> CodexType
+  subst-tvars (bs) (t) (fuel) =
+   if fuel <= 0 then t
+   else if list-length bs == 0 then t
+   else when t
+    is TypeVar (id) -> tvar-lookup bs id t 0 (list-length bs)
+    is ListTy (e) -> ListTy (subst-tvars bs e (fuel - 1))
+    is LinkedListTy (e) -> LinkedListTy (subst-tvars bs e (fuel - 1))
+    is FunTy (p) (row) (r) -> FunTy (subst-tvars bs p (fuel - 1)) row (subst-tvars bs r (fuel - 1))
+    is ConstructedTy (n) (args) -> ConstructedTy n (for a in args -> subst-tvars bs a (fuel - 1))
+    is otherwise -> t
+
+  tvar-lookup : List TvarBind, Integer, CodexType, Integer, Integer -> CodexType
+  tvar-lookup (bs) (id) (dflt) (i) (len) =
+   if i >= len then dflt
+   else let b = list-at bs i
+   in if b.tvb-id == id then b.tvb-ty else tvar-lookup bs id dflt (i + 1) len
+
+  nth-fun-param : CodexType, Integer -> CodexType
+  nth-fun-param (t) (i) =
+   when t
+    is FunTy (p) (row) (r) -> if i == 0 then p else nth-fun-param r (i - 1)
+    is otherwise -> ErrorTy
 
   lookup-ctor-field-type : CodexType, Text, Integer -> CodexType
   lookup-ctor-field-type (ty) (ctor-name) (field-idx) =

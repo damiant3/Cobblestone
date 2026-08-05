@@ -1,0 +1,73 @@
+Chapter: ExtractAnnotationsScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ We say:
+
+Section: Parameters
+
+  extract-params : List ShellParam = [sh-param-optional "Src" SptString, sh-switch "All", sh-param-optional "Out" SptString]
+
+Section: Patterns
+
+  spec-pattern : Text = "(?i)(datasheet|data sheet|spec[a-z]*|section [0-9]|rfc ?[0-9]|ieee|802\\.|uefi|xhci|ehci|acpi|smbios|dwarf|\\belf\\b|pe32|jpeg|utf-?8|unicode|protocol|the standard|per the|requires that|must be set|must be zero|reserved|register|wire format|byte order|endian|errata|vendor|opcode)"
+
+  magic-pattern : Text = "(#[0-9A-Fa-f]{2,}|0x[0-9A-Fa-f]+|\\b[0-9]{3,}\\b)"
+
+  perf-pattern : Text = "(?i)(constant.time|work factor|attacker|timing attack|crackab|side.channel|throughput|hot path|cache line|heap|allocation|fuel cap|blow.?up|quadratic|amortis|amortiz)"
+
+  hazard-pattern : Text = "(?i)(do not|does not|never |must not|cannot |silently|beware|hazard|footgun|breaks |trap\\b|careful|wrong |fails |refuses)"
+
+  invariant-pattern : Text = "(?i)(invariant|always |guarantee|must hold|holds |precondition|postcondition|assumes )"
+
+  measured-pattern : Text = "(?i)(measured|20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]|\\bCL [0-9]+)"
+
+  docref-pattern : Text = "(docs/|BACKLOG|CLAUDE\\.md|\\.md\\b)"
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))), ScBlank, ScAssign "ProsePat" (SeLit "^ [^ ]"), ScAssign "DefPat" (SeLit "^\\s{2}(\\S+)\\s*[:=(|]"), ScAssign "TypePat" (SeLit "^\\s{2}([A-Z][A-Za-z0-9]*)\\s*[=(]"), ScAssign "SectionPat" (SeLit "^Section:\\s*(.+?)\\s*$"), ScAssign "ChapterPat" (SeLit "^Chapter:\\s*(.+?)\\s*$"), ScAssign "SayWePat" (SeLit "^ We say:\\s*$"), ScAssign "SpecPat" (SeLit spec-pattern), ScAssign "MagicPat" (SeLit magic-pattern), ScAssign "PerfPat" (SeLit perf-pattern), ScAssign "HazardPat" (SeLit hazard-pattern), ScAssign "InvarPat" (SeLit invariant-pattern), ScAssign "MeasPat" (SeLit measured-pattern), ScAssign "DocRefPat" (SeLit docref-pattern), ScBlank, ScIf (SeNot (SeVar "Out")) [ScAssign "Out" (SePathJoin (SeVar "Repo") (SeLit "docs\\Reports\\AnnotationExtract.txt"))] [ScAssign "Out" (SeStaticCall "System.IO.Path" "GetFullPath" [SeVar "Out"])], ScAssign "report" (SeStaticCall "System.Text.StringBuilder" "new" []), ScAssign "script:blockCount" (SeInt 0), ScAssign "script:keepCount" (SeInt 0), ScAssign "script:annotateCount" (SeInt 0), ScAssign "script:proseLines" (SeInt 0), ScAssign "script:sayWeCount" (SeInt 0), ScAssign "script:filesWithProse" (SeInt 0), ScAssign "script:filesScanned" (SeInt 0)]
+
+Section: S02 -- Classify-Block
+
+  sig-test : Text, Text -> ShellCmd
+  sig-test (pat) (name) = ScIf (SeMatchExpr (SeVar "Text") (SeVar pat)) [ScDiscard (SeMethodCall (SeVar "sig") "Add" [SeLit name])] []
+
+  has-sig : Text -> ShellExpr
+  has-sig (name) = SeContains (SeVar "sig") (SeLit name)
+
+  s02 : List ShellCmd = [ScFunction "Classify-Block" [sh-param-optional "Text" SptString] [ScAssign "sig" (SeStaticCall "System.Collections.Generic.List[string]" "new" []), sig-test "SpecPat" "spec", sig-test "MagicPat" "magic", sig-test "PerfPat" "perf", sig-test "HazardPat" "hazard", sig-test "InvarPat" "invariant", sig-test "MeasPat" "measured", sig-test "DocRefPat" "docref", ScAssign "verdict" (SeIfElse (has-sig "spec") (SeLit "KEEP") (SeIfElse (has-sig "perf") (SeLit "KEEP") (SeIfElse (has-sig "magic") (SeLit "KEEP") (SeIfElse (has-sig "hazard") (SeLit "ANNOTATE warning") (SeIfElse (has-sig "invariant") (SeLit "ANNOTATE invariant") (SeIfElse (has-sig "measured") (SeLit "ANNOTATE discovery") (SeLit "ANNOTATE rationale"))))))), ScAssign "sigs" (SeIfElse (SeIntEq (SeCount (SeVar "sig")) (SeInt 0)) (SeLit "none") (SeJoin (SeVar "sig") (SeLit ","))), ScReturn (SeConcat (SeConcat (SeVar "verdict") (SeLit "|")) (SeVar "sigs"))]]
+
+Section: S03 -- Scan-File
+
+  target-cmds : List ShellCmd = [ScAssign "target" (SeConcat (SeLit "chapter:") (SeVar "chapter")), ScAssign "j" (SeVar "blockEnd"), ScWhile (SeAnd (SeIntLt (SeVar "j") (SeVar "n")) (SeStringEq (SeTrim (SeIndex (SeVar "lines") (SeVar "j"))) (SeLit ""))) [ScIncrement "j"], ScIf (SeIntLt (SeVar "j") (SeVar "n")) [ScAssign "nl" (SeIndex (SeVar "lines") (SeVar "j")), ScIf (SeMatchExpr (SeVar "nl") (SeVar "SectionPat")) [ScAssign "target" (SeConcat (SeLit "section:") (SeIndex (SeVar "matches") (SeInt 1)))] [ScIf (SeMatchExpr (SeVar "nl") (SeVar "TypePat")) [ScAssign "target" (SeConcat (SeLit "type:") (SeIndex (SeVar "matches") (SeInt 1)))] [ScIf (SeMatchExpr (SeVar "nl") (SeVar "DefPat")) [ScAssign "target" (SeConcat (SeLit "function:") (SeIndex (SeVar "matches") (SeInt 1)))] []]]] [], ScAssign "k" (SeSub (SeVar "blockStart") (SeInt 1)), ScWhile (SeAnd (SeIntGe (SeVar "k") (SeInt 0)) (SeStringEq (SeTrim (SeIndex (SeVar "lines") (SeVar "k"))) (SeLit ""))) [ScDecrement "k"], ScIf (SeIntGe (SeVar "k") (SeInt 0)) [ScIf (SeMatchExpr (SeIndex (SeVar "lines") (SeVar "k")) (SeVar "SectionPat")) [ScAssign "target" (SeConcat (SeLit "section:") (SeIndex (SeVar "matches") (SeInt 1)))] []] [], ScIf (SeNot (SeVar "seenSection")) [ScAssign "target" (SeConcat (SeLit "chapter:") (SeVar "chapter"))] []]
+
+  head-line : ShellExpr = SeConcat (SeConcat (SeConcat (SeConcat (SeConcat (SeConcat (SeConcat (SeConcat (SeConcat (SeConcat (SeLit "@@ ") (SeVar "rel")) (SeLit " | ")) (SeAdd (SeVar "blockStart") (SeInt 1))) (SeLit "-")) (SeVar "blockEnd")) (SeLit " | ")) (SeVar "target")) (SeLit " | ")) (SeVar "verdict")) (SeConcat (SeLit " | ") (SeVar "sigs"))
+
+  emit-cmds : List ShellCmd = [ScAssign "cls" (SeCall "Classify-Block" [SeJoin (SeVar "buf") (SeLit " ")]), ScAssign "parts" (SeSplit (SeVar "cls") "\\|"), ScAssign "verdict" (SeIndex (SeVar "parts") (SeInt 0)), ScAssign "sigs" (SeIndex (SeVar "parts") (SeInt 1)), ScSequence target-cmds, ScDiscard (SeMethodCall (SeVar "report") "AppendLine" [head-line]), ScForEach "bl" (SeVar "buf") [ScDiscard (SeMethodCall (SeVar "report") "AppendLine" [SeConcat (SeLit "> ") (SeVar "bl")])], ScDiscard (SeMethodCall (SeVar "report") "AppendLine" [SeLit ""]), ScIncrement "script:blockCount", ScIncrement "found", ScIncrementBy "script:proseLines" (SeCount (SeVar "buf")), ScIf (SeStringEq (SeVar "verdict") (SeLit "KEEP")) [ScIncrement "script:keepCount"] [ScIncrement "script:annotateCount"]]
+
+  s03 : List ShellCmd = [ScFunction "Scan-File" [sh-param-optional "Path" SptString] [ScAssign "lines" (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "Path"]), ScAssign "n" (SeCount (SeVar "lines")), ScAssign "rel" (SeVar "Path"), ScIf (SeStartsWith (SeVar "Path") (SeVar "Repo")) [ScAssign "rel" (SeSubstringFrom (SeVar "Path") (SeAdd (SeTextLength (SeVar "Repo")) (SeInt 1)))] [], ScAssign "chapter" (SeLit ""), ScAssign "seenSection" (SeBool False), ScAssign "i" (SeInt 0), ScAssign "found" (SeInt 0), ScWhile (SeIntLt (SeVar "i") (SeVar "n")) [ScAssign "line" (SeIndex (SeVar "lines") (SeVar "i")), ScIf (SeMatchExpr (SeVar "line") (SeVar "ChapterPat")) [ScAssign "chapter" (SeIndex (SeVar "matches") (SeInt 1)), ScIncrement "i", ScContinue] [], ScIf (SeMatchExpr (SeVar "line") (SeVar "SectionPat")) [ScAssign "seenSection" (SeBool True), ScIncrement "i", ScContinue] [], ScIf (SeMatchExpr (SeVar "line") (SeVar "ProsePat")) [ScAssign "blockStart" (SeVar "i"), ScAssign "buf" (SeStaticCall "System.Collections.Generic.List[string]" "new" []), ScWhile (SeAnd (SeIntLt (SeVar "i") (SeVar "n")) (SeMatchExpr (SeIndex (SeVar "lines") (SeVar "i")) (SeVar "ProsePat"))) [ScDiscard (SeMethodCall (SeVar "buf") "Add" [SeIndex (SeVar "lines") (SeVar "i")]), ScIncrement "i"], ScAssign "blockEnd" (SeVar "i"), ScIf (SeAnd (SeIntEq (SeCount (SeVar "buf")) (SeInt 1)) (SeMatchExpr (SeIndex (SeVar "buf") (SeInt 0)) (SeVar "SayWePat"))) [ScIncrement "script:sayWeCount"] emit-cmds, ScContinue] [], ScIncrement "i"], ScIncrement "script:filesScanned", ScIf (SeIntGt (SeVar "found") (SeInt 0)) [ScIncrement "script:filesWithProse"] []]]
+
+Section: S04 -- Main
+
+  report-header : ShellExpr = SeLines [SeLit "# Annotation extraction report -- phase 1 of 2. READ ONLY; nothing was mutated.", SeLit "#", SeLit "# Edit the VERDICT field on each @@ header, then run build/apply-annotations.ps1.", SeLit "#   KEEP              leave the prose in the source", SeLit "#   ANNOTATE <kind>   move it to annotations/<path>.json and cut it from the source", SeLit "#   DELETE            cut it from the source and keep nothing", SeLit "#", SeLit "# This tool NEVER proposes DELETE. Whether a block explains our own code is", SeLit "# a judgement, and a keyword classifier answering it would be an instrument", SeLit "# that cannot fail. DELETE is a word only the auditor writes.", SeLit "#", SeLit "# kinds: invariant rationale warning discussion discovery todo doctrine", SeLit "# Body lines below each header are VERBATIM source. apply-annotations refuses", SeLit "# any block whose source no longer matches, so a stale report is a refusal", SeLit "# rather than a corruption. Do not reflow them.", SeLit ""]
+
+  counts-line : ShellExpr = SeConcat (SeConcat (SeConcat (SeConcat (SeConcat (SeConcat (SeLit "# scanned ") (SeVar "script:filesScanned")) (SeLit " chapters, ")) (SeVar "script:filesWithProse")) (SeLit " with prose; ")) (SeVar "script:blockCount")) (SeConcat (SeConcat (SeLit " blocks, ") (SeVar "script:proseLines")) (SeLit " prose lines"))
+
+  verdict-line : ShellExpr = SeConcat (SeConcat (SeConcat (SeConcat (SeConcat (SeLit "# proposed ") (SeVar "script:keepCount")) (SeLit " KEEP, ")) (SeVar "script:annotateCount")) (SeLit " ANNOTATE, 0 DELETE; ")) (SeConcat (SeVar "script:sayWeCount") (SeLit " We say: markers excluded"))
+
+  s04 : List ShellCmd = [ScIf (SeVar "Src") [ScDiscard (SeCall "Scan-File" [SePathResolve (SeVar "Src")])] [], ScIf (SeAnd (SeNot (SeVar "Src")) (SeVar "All")) [ScAssign "files" (SeArrayLiteral []), ScForEach "dir" (SeArrayLiteral [SeLit "codex", SeLit "apps"]) [ScAssign "fullDir" (SePathJoin (SeVar "Repo") (SeVar "dir")), ScIf (SeDirExists (SeVar "fullDir")) [ScIncrementBy "files" (SeListFiles (SeVar "fullDir") "*.codex" True)] []], ScForEach "f" (SeVar "files") [ScDiscard (SeCall "Scan-File" [SeProperty (SeVar "f") "FullName"])]] [], ScBlank, ScMkdir (SePathParent (SeVar "Out")), ScSetContent (SeVar "Out") (SeLines [report-header, counts-line, verdict-line, SeLit "", SeMethodCall (SeVar "report") "ToString" []]), ScEcho (SeConcat (SeLit "report: ") (SeVar "Out")), ScEcho counts-line, ScEcho verdict-line]
+
+Section: Assembly
+
+  extract-script : ShellScript = sh-script "extract-annotations" "Cut column-2 prose into blocks, name each block target, propose a verdict, write the audit report" extract-params [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04]
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell extract-script)
+  end
+
+Page 1

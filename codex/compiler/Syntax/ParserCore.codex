@@ -1,28 +1,9 @@
 Chapter: Parser
   cites Codex chapter Build Settings (max-parse-fuel, max-parse-stall)
 
- Core parser utilities: state, results, predicates, helpers.
-
   cites Foreword chapter Maybe
 
 Section: Parser State
-
- ParseState is threaded functionally: `advance` returns a fresh state and
- earlier states are reused for backtracking, so it is not a uniquely owned
- `mutable` record. Its in-place writes go through the __record-set intrinsic.
-
- stall-pos and stall are the no-progress guard. They are a heuristic and
- are allowed to leak across a backtrack for the same reason fuel is: both
- only ever move one way, and answering that the parser is stuck is not a
- decision any earlier state relies on.
-
- deck-ceiling is the top of the PARSE scratch reservation, carried here
- rather than threaded as a parameter because the walk that spends it is
- parse-top-level, whose twenty recursion sites would each have to pass
- it. Zero means unbounded, which is what a caller with no reservation of
- its own gets; compile-parse sets the real ceiling through parse-document.
- It is only ever read, so it leaks across a backtrack harmlessly, exactly
- as fuel and stall do.
 
   ParseState = record {
    tokens : List Token,
@@ -69,19 +50,11 @@ Section: Parser State
     deck-ceiling = st.deck-ceiling
    }
 
- Every arm that can spin consumes fuel, so this is the one place both
- guards have to live: answering True here bails through the check each of
- those arms already makes.
-
   parse-fuel-exhausted : ParseState -> Boolean
   parse-fuel-exhausted (st) = st.fuel <= 0 | st.stall >= max-parse-stall
 
   parse-stalled : ParseState -> Boolean
   parse-stalled (st) = st.stall >= max-parse-stall
-
- A call at the same token as the last one is a step the parser did not
- take. Counting those, rather than counting calls, is what makes the bound
- immune to depth: nesting moves the position and resets the count.
 
   consume-parse-fuel : ParseState -> ParseState
   consume-parse-fuel (st) =
@@ -525,9 +498,6 @@ Section: TokenKind Predicates
  offsets can tell them apart, exactly as is-signed-literal-atom found for
  types. The lexer has already resolved the other two spacings: `a-2` and
  `a-` arrive as single identifiers and never reach this test.
-
- is-app-start decides what may follow the minus, so a negated name, literal
- or parenthesized expression all qualify and nothing else does.
 
   is-abutted-negation : ParseState -> Boolean
   is-abutted-negation (st) =
