@@ -8,7 +8,7 @@ param(
     [int]$HeapPages = 512,
     # Call GetMemoryMap + ExitBootServices (one stale-key retry) after the last
     # boot-services use, then cli and zero the SystemTable cells. This is what
-    # the deleted option_a_stub.asm always did and this stub never did, and the
+    # the retired option_a_stub.asm always did and this stub never did, and the
     # difference is not academic: with boot services alive the FIRMWARE'S OWN
     # xHCI driver keeps driving the same controller our driver is bringing up,
     # so a keyboard probe measures two drivers fighting, not ours. Payloads
@@ -193,20 +193,19 @@ function Mark([char]$c) { $bw.Write([byte[]](MarkBytes $c)) }
 # glass. So on the hardware that matters the marks are invisible, and a black
 # screen still cannot distinguish "firmware never started us" from "we started
 # and died" from "we handed off and the guest said nothing" -- three states with
-# three different next actions. option_a_stub.asm solved this with two solid
-# framebuffer fills (main 12073); every diag probe goes through that stub, and
-# seed/Codex.img goes through this one and had nothing.
+# three different next actions. The retired option_a_stub.asm solved this with
+# two solid framebuffer fills (main 12073) while this stub had nothing, which is
+# why the marks were brought over here before that .asm was deleted.
 #
-# Same two colours as that stub, deliberately, so one table serves both:
+# Same two colours at the same two points, so the one table serves every image:
 #   firmware screen unchanged  never loaded, or LocateProtocol(GOP) failed
 #   DARK BLUE                  we have a framebuffer, died inside the stub
 #   DARK GREEN                 stub finished, control passed to the guest
 #   text over dark green       the guest is alive and ConOut works
 #
-# EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID 9042a9de-23dc-4a38-96fb-7aded080516a, copied
-# byte for byte from option_a_stub.asm rather than composed from two qword
-# literals, so no endianness reasoning is involved and the two stubs can be
-# diffed against each other.
+# EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID 9042a9de-23dc-4a38-96fb-7aded080516a, laid
+# out as raw bytes rather than composed from two qword literals, so no
+# endianness reasoning is involved in reading it against the spec.
 $GopGuid = [byte[]]@(
     0xDE, 0xA9, 0x42, 0x90, 0xDC, 0x23, 0x38, 0x4A,
     0x96, 0xFB, 0x7A, 0xDE, 0xD0, 0x80, 0x51, 0x6A

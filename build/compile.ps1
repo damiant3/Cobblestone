@@ -23,6 +23,15 @@ param(
     [Parameter(Mandatory=$true)] [string]$Log,
     [int]$PCore = 1,
     [int]$MemMB = 3072,
+    # Report the real -mem to the guest instead of codex-vm's 3040 MB cap, so
+    # the heap has room above 0xBE000000. Only for a run that draws nothing:
+    # the heap then grows through the GPU command buffer, depth buffer and GOP
+    # framebuffer, which are at fixed GPAs. Keep MemMB under 4064 -- the boot
+    # page tables map four PDs and the xHCI BAR sits at 0xFE800000.
+    [switch]$MemNoCap,
+    # Seconds to let the VM run before it is killed as hung. The whole-compiler
+    # IR emit is the one job that legitimately outruns the default.
+    [int]$TimeoutSec = 600,
     [switch]$IrUni,
     [switch]$IrCce,
     [switch]$Text,
@@ -42,7 +51,7 @@ param(
     [switch]$Uefi,
     [switch]$Pet,
     [string]$Break,
-    [ValidateRange(1, 10000)] [int]$Decks = 100,
+    [ValidateRange(0, 10000)] [int]$Decks = 0,
     [string]$RawFlags = '',
     [string]$Passes = '',
     [string]$Survey = '',
@@ -197,7 +206,15 @@ try {
     # source that outgrows the floors compiled into the kernel you are
     # compiling with -- without it, raising the constant cannot help, because
     # the kernel doing the compile enforces its own baked-in floor.
-    if ($Decks -ne 100) { $baseMode = "$baseMode decks=$Decks" }
+    #
+    # 0 (the default) sends no decks= flag at all, which is what tells the
+    # compiler to derive the scale from the assembled unit length. This has to
+    # be a distinct value from 100: while the default was 100 and 100 was the
+    # value that got omitted, "the caller asked for the shipping floors" and
+    # "the caller said nothing" were the same mode string, so an explicit
+    # -Decks 100 could not override a derivation. deck-floor-test's last leg
+    # depends on being able to ask for exactly 100.
+    if ($Decks -ne 0) { $baseMode = "$baseMode decks=$Decks" }
     # IR pass pipeline: comma-separated pass names ('fold-constants,inline-leaf-calls'),
     # or 'none' for the empty pipeline. Absent = the kernel's default pipeline.
     # This is the ablation knob: it exists so a pass can be switched off and measured.
@@ -276,9 +293,10 @@ try {
     if (Test-Path $outputFile) { [System.IO.File]::WriteAllBytes($outputFile, [byte[]]::new(0)) }
 
     $vmArgs = @('-kernel', $Stage0, '-input', $inputFile, '-output', $outputFile, '-mem', "$curMem", '-headless')
+    if ($MemNoCap) { $vmArgs += '-mem-nocap' }
     if ($DiskFile) { $vmArgs += @('-disk', $DiskFile) }
     $proc = Start-Process -FilePath $vmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
-    $proc.WaitForExit(600000)
+    $proc.WaitForExit($TimeoutSec * 1000)
     if (-not $proc.HasExited) {
         Stop-VmGraceful -ProcessId $proc.Id
         "FAIL: VM timed out" | Set-Content -Path $Log -Encoding UTF8
@@ -389,6 +407,20 @@ try {
             if ($tailStart -lt $outBytes.Length) {
                 $tailText = [System.Text.Encoding]::UTF8.GetString($outBytes, $tailStart, $outBytes.Length - $tailStart)
                 $tailLines = $tailText -split "`n"
+
+                # emit-ir-cce and emit-text both take __heap-save either side of
+                # the emit and print the marks after the payload, where the
+                # payload-end scan above uses the line's prefix as a terminator
+                # and nothing then reads it. So the frontier across the emit has
+                # been measured and transmitted all along and thrown away on
+                # arrival, which is why a question about what the IR emitter
+                # costs had no instrument. Log it.
+                foreach ($tl in $tailLines) {
+                    $t = $tl.TrimEnd("`r")
+                    if ($t.StartsWith('WD:') -or $t.StartsWith('HEAP:') -or $t.StartsWith('STACK:')) {
+                        Add-Content -Path $Log -Value $t -Encoding UTF8
+                    }
+                }
 
                 # Capture MAP
                 $mapFile = [System.IO.Path]::ChangeExtension($Out, '.map')

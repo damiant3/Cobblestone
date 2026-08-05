@@ -1,0 +1,89 @@
+Chapter: E1000MdioSlow
+  cites Foreword chapter Maybe
+  cites Kernel chapter E1000e
+  cites Kernel chapter Pci
+
+ Intel I219 datasheet rev 2.02 section 9.2 requires reduced MDIO frequency
+ mode for register reads, and 9.3 requires the page register to reach the
+ bit that turns it on. The arm this runs under refuses reads until it is
+ set, exempting only the page register and the mode register itself.
+
+ The reset arm is the one that earns its place. A PHY reset returns the
+ paged registers to their defaults, so slow mode set BEFORE the reset is
+ gone by the time any read needs it; the driver sets it after, and this
+ reads a register that is only reachable if that ordering held.
+
+Section: Fixtures
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  bar-of : PciDevice -> Integer
+  bar-of (dev) =
+   let enabled = pci-enable-device dev
+   in (pci-parse-bar (dev.pci-bus) (dev.pci-dev) (dev.pci-func) 0).bar-base
+
+Section: Judges
+
+ Before any bring-up the mode is at its reset default, so an ordinary
+ register read is refused and comes back as the error sentinel.
+
+  read-before-slow : PciDevice -> Boolean
+  read-before-slow (dev) =
+   let mmio = bar-of dev
+   in let r = e1000-reset mmio
+   in e1000-phy-read mmio e1000-phy-id1 < 0
+
+ The page register answers while ordinary reads do not. That separates a
+ gated bus from a dead one: if this also failed, the arm would be
+ indistinguishable from -e1000-no-phy and would prove nothing about pages.
+
+  page-reg-answers : PciDevice -> Boolean
+  page-reg-answers (dev) =
+   let mmio = bar-of dev
+   in e1000-phy-set-page mmio 0 >= 0
+
+ A page nothing is modelled on must answer error rather than zero, the
+ same distinction e1000-phy-read-at draws for an unanswered address.
+
+  bad-page-errors : PciDevice -> Boolean
+  bad-page-errors (dev) =
+   let mmio = bar-of dev
+   in let p = e1000-phy-set-page mmio 999
+   in let v = e1000-phy-read mmio e1000-phy-custom-mode
+   in let back = e1000-phy-set-page mmio 0
+   in v < 0
+
+  slow-mode-takes : PciDevice -> Boolean
+  slow-mode-takes (dev) =
+   let mmio = bar-of dev
+   in e1000-phy-slow-mode mmio == 1
+
+ After a full bring-up the ordinary read that failed above succeeds, and
+ it succeeds only if slow mode was set on the far side of the PHY reset.
+
+  read-after-bring-up : PciDevice -> Boolean
+  read-after-bring-up (dev) =
+   let mmio = bar-of dev
+   in let r = e1000-reset mmio
+   in let b = e1000-phy-bring-up mmio
+   in e1000-phy-read mmio e1000-phy-id1 > 0
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let scan = pci-scan-bus 0
+    in act
+      when e1000-find scan
+        is Just (dev) -> act
+          print-line-uni ("read before slow : " & yn (read-before-slow dev))
+          print-line-uni ("page reg answers : " & yn (page-reg-answers dev))
+          print-line-uni ("bad page errors  : " & yn (bad-page-errors dev))
+          print-line-uni ("slow mode takes  : " & yn (slow-mode-takes dev))
+          print-line-uni ("read after setup : " & yn (read-after-bring-up dev))
+        end
+        is None -> print-line-uni ("candidate found : no")
+    end
+  end
+
+Page 1

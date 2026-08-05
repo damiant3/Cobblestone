@@ -1,0 +1,59 @@
+Chapter: UsbKbdMulti
+  cites Works chapter GopUsb
+  cites Works chapter GopUsbKbd
+  cites Works chapter GopXhci
+  cites Works chapter GopRtc
+  cites Foreword chapter Maybe
+
+ Every boot-keyboard interface on the bus is bound, not only the first.
+ codex-vm's default topology carries TWO keyboards -- one on root port 2
+ and one behind the high-speed hub on root port 4 -- and until this test
+ nothing asserted that the second is reachable while the first is alive.
+
+ `-hid-keys` routes the scripted keys through the USB HID model alone:
+ no PS/2 queue, no host-side write into the key cell. `got=30` therefore
+ proves a scancode travelled interrupt-IN DMA, drain and decode end to
+ end, which no bed test had ever shown -- injected keys used to reach
+ the guest through the PS/2 emulation whatever the USB stack did.
+
+ The injected keys appear on the ROOT keyboard here, so the primary's
+ sticky non-zero count must move and the hub peer's must stay zero: the
+ peer delivers the all-zero idle reports of a keyboard nobody types on.
+
+Section: Test
+
+  peers-line : UsbKbd -> Text
+  peers-line (k) =
+    "kbd: ok=" & (if k.uk-ok then "1" else "0")
+      & " peers=" & show (kbd-peers k)
+      & " peer0-route=" & (if kbd-peers k > 0 then show (((kbd-peer k 0).uk-dev).ud-route) else "-")
+
+ The wait is bounded by the RTC rather than by an iteration count: each
+ pump costs several VM exits, so a count large enough to cover the key
+ timeline in iterations is minutes of wall clock.
+
+  ukm-wait : UsbKbd, Integer, Integer, Integer -> [Device.Port] Integer
+  ukm-wait (k) (want) (prev) (secs) = act
+    sc <- kbd-take k
+    now <- rtc-seconds 0
+    if sc == want then sc
+    else if secs <= 0 then 0
+    else if now < 0 then ukm-wait k want prev secs
+    else if now == prev then ukm-wait k want prev secs
+    else ukm-wait k want now (secs - 1)
+  end
+
+  yn : Integer -> Text
+  yn (n) = if n > 0 then "Y" else "0"
+
+  opening : [Console, Device.Port, Device.Mmio] Nothing = act
+    att <- usb-attach
+    let k = att.ua-kbd
+    in act
+      print-line-uni (peers-line k)
+      s0 <- rtc-seconds 0
+      got <- ukm-wait k 30 s0 8
+      print-line-uni ("got=" & show got)
+      print-line-uni ("primary-live=" & yn (kbd-live k) & " peer-live=" & (if kbd-peers k > 0 then yn (kbd-live (kbd-peer k 0)) else "-"))
+    end
+  end

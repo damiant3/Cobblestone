@@ -1,8 +1,5 @@
 Chapter: Build Settings
 
- Compiler-wide build parameters. All recursive-descent phases
- reference these values instead of per-file constants.
-
  LOAD-BEARING: values used in emit functions (code-buffer-size,
  data-buffer-size, accum-capacity, offset-table-size, offset-table-mask)
  are baked into the seed as x86-64 immediates. Changing them requires
@@ -27,16 +24,7 @@ Section: Work Budgets
  that cascades into a heap blow-up instead, because an exhausted parse
  call returns an error node and the parse carries on.
 
- max-parse-stall bounds the thing that actually goes wrong: consecutive
- fuel-consuming calls at the SAME token position. A parse that progresses
- resets it, so no legitimate program can reach it however deeply nested --
- the grammar chain at any one token is tens of calls, not thousands. A
- parse that cannot progress reaches it in microseconds and says so.
-
   max-parse-stall : Integer = 4096
-
- max-list-literal-elems is an EMITTER limit that the type checker enforces
- on the checker's behalf, because the emitter cannot report it.
 
  The O(N) cost this bound was sized against is GONE. A list literal used
  to take one live local per element -- emit-eval-list-elems gave every
@@ -46,11 +34,6 @@ Section: Work Budgets
  so 65504 was the most a function could have. The emitter now reserves
  the buffer first and stores each element as it is evaluated, which
  costs TWO locals at any length (X86_64Compound, List Emission).
-
- The bound is therefore no longer the binding constraint and is kept
- unchanged for now on purpose: raising it is a separate change that has
- to establish what the NEXT limit is and pin it with a test, rather than
- inherit a number sized for a cost that no longer exists.
 
  What the bound was protecting against, and why the check still lives in
  the checker rather than the emitter: past the ceiling the emitter walked
@@ -132,16 +115,6 @@ Section: Demand Decks
  holding the token linked list and the crash was the lexer reading its
  own overwrite one call later.
 
- That guard had a hole of its own for a day, and it is the instructive
- kind: it fired correctly and then the WIND-DOWN overran the ceiling.
- __linked-list-to-list runs inside deck-record, so converting the
- collected tokens wrote eight bytes per token onto the deck that had
- just overflowed, against a flat one-megabyte band. `-Decks 5` fires
- early enough to fit; `-Decks 20` fired late and converted straight
- through the ceiling into the bivy. The overflow path now discards the
- tokens, which costs nothing because compile-lex already returns
- `tokens = []` once the bag has errors.
-
  DESUGAR carries the same discipline since 2026-07-21, and finding it
  needed the phase trace: `-Decks` at 30, 40, 50 and 60 all complete LEX
  and PARSE and then die inside DESUGAR, in three different shared
@@ -156,16 +129,6 @@ Section: Demand Decks
  deliberately generous: a band that is too big costs a spurious CDX9002
  that says exactly what to do about it, and a band that is too small
  costs silent corruption. The asymmetry is the whole argument.
-
- demand-desugar-floor was raised from 64 MB to 72 MB in the same change,
- by exactly the band width, so the guard costs no USABLE floor. Address
- space is the only cost of a floor, which is what makes paying for the
- band this way free.
-
- On saturation desugar-document returns an EMPTY chapter rather than
- the truncated one, which is the LEX lesson applied rather than learned
- twice: a wind-down that allocates in proportion to what it collected
- walks through the ceiling it just refused to cross.
 
  SCOPE, CHECK and LOWER joined them on 2026-07-21, and RESOLVE and LIFT
  on the same day, so every phase that reserves a deck now stops on the
@@ -188,10 +151,6 @@ Section: Demand Decks
  the two predicates; the measurement is an in-loop probe that printed
  __deck-pos unchanged through 19.1 MB of writing.
 
- LOWER and the PARSE-KEEP copy were settled the same way on 2026-07-21,
- and CHECK turned out to be a different case rather than a third
- instance of the same one.
-
  LOWER and the copy sit inside phase-wide extents and both read the
  frozen cell, so both guards were dead from the day they shipped. Both
  now read R10. The measurement that settles it is MEASURE against a
@@ -211,16 +170,6 @@ Section: Demand Decks
  the caller-side report was never the problem: `check-sat` and
  `lower-sat` are both evaluated after their extents have exited, where
  the cell is live.
-
- The rule stands as PhaseAllocator states it: the predicate follows the
- EXTENT the loop sits in, and neither reading is safe to assume from the
- phase's name.
-
- There was never an INLINE phase. demand-inline-floor sat here as a
- dead constant, read by nothing, and its presence alone was enough to
- put a third phase into the deck-guard work that no reservation and
- no deck ever corresponded to. The inline passes run inside
- run-ir-pipeline, on the LOWER deck. The constant is deleted.
 
  That verdict was noise until 2026-07-21, and the reason is worth
  carrying: check-deck-overflow used to read its operands out of a
@@ -269,16 +218,6 @@ Section: Demand Decks
   demand-resolve-guard-band : Integer = 8388608
   demand-lift-floor : Integer = 109051904
   demand-lift-guard-band : Integer = 8388608
-
- The quotation gate runs before the frontend does, and it parses the
- source to find the quotations it must gate. That parse needs decks of
- its own, because the frontend has not raised any yet. The scratch floor
- carries the tokens and the syntax tree of a parse that is thrown away,
- so it is sized as a LEX and a PARSE together; the keep floor carries
- the one thing that survives, the text of the works we admitted, so it
- is sized as source text and is checked against before it is written.
-
- A source that quotes nothing reserves neither.
 
   demand-quote-keep-floor : Integer = 67108864
   demand-quote-scratch-floor : Integer = 503316480

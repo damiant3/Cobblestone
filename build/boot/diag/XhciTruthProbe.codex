@@ -96,6 +96,68 @@ Chapter: XhciTruthProbe
     in let got = xdiag-get 66
     in "        wMaxPacket asked=" & show (bit-shru ask 16) & " -> MaxESIT set=" & show (bit-shru got 16)
 
+ The mass-storage rows. `disk=n` on the ENUMERATED line has six causes and
+ the rung says which one, so the two rows below are the ones to read when
+ that letter is an n.
+
+  pmsc-rung : Integer -> Text
+  pmsc-rung (r) =
+    if r == 0 then "0 NO MASS-STORAGE INTERFACE SEEN"
+    else if r == 1 then "1 interface seen, NO BULK PAIR"
+    else if r == 2 then "2 bulk pair found, SET-CONFIG REFUSED"
+    else if r == 3 then "3 configured, CONFIGURE-ENDPOINT REFUSED"
+    else if r == 4 then "4 endpoints up, NEVER CAME READY"
+    else if r == 5 then "5 ready, CAPACITY REFUSED OR NOT 512-BYTE"
+    else "6 disk usable"
+
+  pmsc1 : Integer -> Text
+  pmsc1 (r) = "MSC: rung=" & pmsc-rung r
+
+  pmsc2 : Integer -> Text
+  pmsc2 (r) =
+    let ce = xdiag-get 71
+    in let cet = if ce == 0 then "not issued" else if ce == 256 then "no event" else show ce
+    in "     cfgv=" & show (xdiag-get 74) & " cfgep=" & cet & " blocksize=" & show (xdiag-get 72) & " sectors=" & show (xdiag-get 73)
+
+ The completion code of the SET_CONFIGURATION itself, named rather than
+ numbered: a photograph should not need the spec beside it. Zero is the
+ fuel running out with no event at all, which is not a refusal and must
+ not read as one.
+
+  pcc : Integer -> Text
+  pcc (c) =
+    if c == 0 then "NO EVENT (fuel)"
+    else if c == 256 then "NO EVENT (fuel)"
+    else if c == 1 then "success"
+    else if c == 4 then "USB TRANSACTION ERROR"
+    else if c == 5 then "TRB ERROR"
+    else if c == 6 then "STALL"
+    else if c == 17 then "PARAMETER ERROR"
+    else "code " & show c
+
+  pmsc3 : Integer -> Text
+  pmsc3 (r) =
+    let w = xdiag-get 75
+    in let ord = bit-and w 255
+    in let ordt = if ord == 0 then "?" else show (ord - 1)
+    in "     dev on ctl" & ordt & " port=" & show (bit-and (bit-shru w 8) 255) & " speed=" & show (bit-and (bit-shru w 16) 255) & " slot=" & show (bit-shru w 24) & " route=#" & phw (xdiag-get 76)
+
+  pmsc4 : Integer -> Text
+  pmsc4 (r) =
+    let c2 = xdiag-get 79
+    in let retry = if c2 == 0 then "" else "  retry: " & pcc c2
+    in "     SET-CONFIG completion: " & pcc (xdiag-get 77) & retry
+
+ The device's own port register, decoded. PED is the field to read against
+ a transfer that failed on the wire: a port holding a device without being
+ ENABLED explains a transaction error that no reading of the driver will.
+
+  pmsc5 : Integer -> Text
+  pmsc5 (r) =
+    let raw = xdiag-get 78
+    in if raw == 0 then "     dev PORTSC: not taken"
+    else "     dev PORTSC=" & ph32 raw & " CCS=" & pyn (bit-and raw 1) & " PED=" & pyn (bit-and (bit-shru raw 1) 1) & " PR=" & pyn (bit-and (bit-shru raw 4) 1) & " spd=" & show (bit-and (bit-shru raw 10) 15)
+
   pep3 : Integer -> Text
   pep3 (st) =
     if st == 0 then "        (no route, TT or speed recorded)"
@@ -128,7 +190,7 @@ Chapter: XhciTruthProbe
     in let t3 = prow base stride 40 font 120 scale ("legsup=" & pyn (xdiag-get 9) & " before=" & ph32 (xdiag-get 10) & " after=" & ph32 (xdiag-get 11) & " released=" & pyn (xdiag-get 12)) 9474192
     in let t4 = prow base stride 40 font 140 scale ("slots=" & show (xdiag-get 13) & " ports=" & show (xdiag-get 14) & " reset=" & pyn (xdiag-get 15) & " cnr=" & pyn (xdiag-get 16) & " run=" & pyn (xdiag-get 17) & " connected=" & show (xdiag-get 18)) 16777215
     in let t4b = prow base stride 40 font 160 scale ("BAR verdict=" & show (xdiag-get 30) & " judged=#" & phw (xdiag-get 32) & "_" & phw (xdiag-get 31) & " op=" & ph32 (xdiag-get 19)) 16777215
-    in let t5 = prow base stride 40 font 180 scale "root ports (raw PORTSC at start):" 9474192
+    in let t5 = prow base stride 40 font 180 scale ("root ports, first 8 only. connected=#" & phw (xdiag-get 46) & " (bit N = port N):") 9474192
     in pports base stride font scale 0 (xdiag-get 14)
 
   opening : [Device.Port, Device.Mmio] Integer
@@ -150,5 +212,11 @@ Chapter: XhciTruthProbe
       in let ep1 = prow base stride 40 font 520 sc (pep1 est) (if pepok est then 65280 else 16755200)
       in let ep2 = prow base stride 40 font 540 sc (pep2 est) (if pepok est then 9474192 else 16755200)
       in let ep3 = prow base stride 40 font 560 sc (pep3 est) (if pepok est then 9474192 else 16755200)
+      in let mr = xdiag-get 70
+      in let m1 = prow base stride 40 font 600 sc (pmsc1 mr) (if mr == 6 then 65280 else 16755200)
+      in let m2 = prow base stride 40 font 620 sc (pmsc2 mr) 9474192
+      in let m3 = prow base stride 40 font 640 sc (pmsc3 mr) 9474192
+      in let m4 = prow base stride 40 font 660 sc (pmsc4 mr) (if mr == 6 then 9474192 else 16776960)
+      in let m5 = prow base stride 40 font 680 sc (pmsc5 mr) 9474192
       in probe-halt 0
     end

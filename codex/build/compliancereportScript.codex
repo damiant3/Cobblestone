@@ -6,49 +6,52 @@ Chapter: ComplianceReportScript
   cites Shell chapter ShellBuild
   cites Shell chapter PowerShellEmit
 
- Generates compliance-report.ps1 from the Shell DSL.
- Compiles a tiny program that calls generate-evidence-report from the
- ComplianceEvidence foreword, runs it in the VM, and captures the output.
- Compile with: -Survey "lower-mul:500000"
-
  We say:
 
 Section: Parameters
 
-  cr-params : List ShellParam = [sh-param-default "PCore" SptInt (SeInt 1)]
+  report-params : List ShellParam = [sh-param-default "PCore" SptInt (SeInt 1)]
 
-Section: S01 -- Preamble
+Section: S01 -- Paths
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "compile" (SeRaw "Join-Path $PSScriptRoot 'compile.ps1'"), ScAssign "run" (SeRaw "Join-Path $PSScriptRoot 'test-run.ps1'"), ScAssign "src" (SeRaw "Join-Path $PSScriptRoot 'compliance-report.codex'"), ScAssign "outDir" (SeRaw "Join-Path $PSScriptRoot 'output'"), ScAssign "cdx" (SeRaw "Join-Path $outDir 'compliance-report.cdx'"), ScAssign "log" (SeRaw "Join-Path $outDir 'compliance-report.log'"), ScAssign "report" (SeRaw "Join-Path $outDir 'compliance-evidence.txt'")]
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "compile" (SePathJoin SeScriptRoot (SeLit "compile.ps1")), ScAssign "run" (SePathJoin SeScriptRoot (SeLit "test-run.ps1")), ScAssign "src" (SePathJoin SeScriptRoot (SeLit "compliance-report.codex")), ScAssign "outDir" (SePathJoin SeScriptRoot (SeLit "output")), ScAssign "cdx" (SePathJoin (SeVar "outDir") (SeLit "compliance-report.cdx")), ScAssign "log" (SePathJoin (SeVar "outDir") (SeLit "compliance-report.log")), ScAssign "report" (SePathJoin (SeVar "outDir") (SeLit "compliance-evidence.txt"))]
 
-Section: S02 -- Output directory
+Section: S02 -- Output Directory
 
-  s02 : List ShellCmd = [ScIf (SeNot (SeDirExists (SeVar "outDir"))) [ScRaw "New-Item -ItemType Directory -Force $outDir | Out-Null"] []]
+  s02 : List ShellCmd = [ScIf (SeNot (SeDirExists (SeVar "outDir"))) [ScMkdir (SeVar "outDir")] []]
 
 Section: S03 -- Compile
 
-  s03-fail : List ShellCmd = [ScEcho (SeLit "FAIL: compliance report compilation failed"), ScIf (SeFileExists (SeVar "log")) [ScRaw "Get-Content $log | Write-Host"] [], ScExit (SeInt 1)]
+  compile-args : List ShellArg = [SaNamed "Src" (SeVar "src"), SaNamed "Out" (SeVar "cdx"), SaNamed "Log" (SeVar "log"), SaNamed "PCore" (SeVar "PCore")]
 
-  s03 : List ShellCmd = [ScEcho (SeLit "Compiling compliance report generator..."), ScRaw "& $compile -Src $src -Out $cdx -Log $log -PCore $PCore", ScIf (SeExitCodeEq 0) [] s03-fail]
+  compile-failed : List ShellCmd = [ScEcho (SeLit "FAIL: compliance report compilation failed"), ScIf (SeFileExists (SeVar "log")) [ScPrintFile (SeVar "log")] [], ScExit (SeInt 1)]
+
+  s03 : List ShellCmd = [ScEcho (SeLit "Compiling compliance report generator..."), ScRunArgs (SeVar "compile") compile-args, ScIf (SeNot (SeExitCodeEq 0)) compile-failed []]
 
 Section: S04 -- Run
 
-  s04-fail : List ShellCmd = [ScEcho (SeLit "FAIL: compliance report execution failed"), ScExit (SeInt 1)]
+  run-args : List ShellArg = [SaNamed "Kernel" (SeVar "cdx"), SaNamed "OutFile" (SeVar "report"), SaNamed "PCore" (SeVar "PCore")]
 
-  s04 : List ShellCmd = [ScEcho (SeLit "Running compliance report..."), ScRaw "& $run -Kernel $cdx -OutFile $report -PCore $PCore", ScIf (SeExitCodeEq 0) [] s04-fail]
+  run-failed : List ShellCmd = [ScEcho (SeLit "FAIL: compliance report execution failed"), ScExit (SeInt 1)]
+
+  s04 : List ShellCmd = [ScEcho (SeLit "Running compliance report..."), ScRunArgs (SeVar "run") run-args, ScIf (SeNot (SeExitCodeEq 0)) run-failed []]
 
 Section: S05 -- Report
 
-  s05 : List ShellCmd = [ScRaw "$lines = (Get-Content $report | Measure-Object -Line).Lines", ScEcho (SeRaw "\"Compliance evidence report generated: $report ($lines lines)\""), ScEcho (SeLit ""), ScRaw "Get-Content $report"]
+  done-head : ShellExpr = SeConcat (SeLit "Compliance evidence report generated: ") (SeVar "report")
+
+  done-message : ShellExpr = SeConcat (SeConcat done-head (SeLit " (")) (SeConcat (SeVar "lines") (SeLit " lines)"))
+
+  s05 : List ShellCmd = [ScAssign "lines" (SeFileNonEmptyLineCount (SeVar "report")), ScEcho done-message, ScEcho (SeLit ""), ScPrintFile (SeVar "report")]
 
 Section: Assembly
 
-  cr-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05]
+  report-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05]
 
-  cr-script : ShellScript = sh-script "compliance-report" "Generate compliance evidence report" cr-params cr-body
+  report-script : ShellScript = sh-script "compliance-report" "Generate compliance evidence report" report-params report-body
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell cr-script)
+    print-line-uni (emit-powershell report-script)
   end
 
 Page 1

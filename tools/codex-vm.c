@@ -456,7 +456,19 @@ static unsigned int pit_current_count(int ch) {
 #define XHCI_XECP_DWORDS 0x20
 #define XHCI_XECP_OFF    (XHCI_XECP_DWORDS * 4)
 #define XHCI_MAX_SLOTS 32
-#define XHCI_MAX_PORTS 4
+/* Array bound, not the reported count. The four modelled devices live on
+   ports 1-4; everything above them is a powered empty port and exists so
+   the number of ROOT PORTS can be varied.
+
+   That number is not cosmetic. Real controllers are wide -- the ASUS PCH
+   reports 26 -- and a guest that indexes a fixed-size table by port
+   number overruns whatever sits above it. GopXhci's diagnostic snapshot
+   did exactly that, laying PORTSC over the handback flag that gates the
+   keyboard pump, and no bed could show it: this model reported FOUR ports
+   and QEMU reports EIGHT, which is precisely the last cell the snapshot
+   owns. Both beds sat on or under the boundary. */
+#define XHCI_MAX_PORTS 32
+#define XHCI_MODELLED_PORTS 4
 #define XHCI_HUB_TIERS 2
 
 struct xhci_state {
@@ -577,6 +589,25 @@ static int xhci_hid_nak = 0;
    a device that punishes the request. */
 static int hid_idle_quirk = 0;
 static int hid_idle_zeroed = 0;
+/* -hid-root-silent: the root-port keyboard completes every interrupt IN
+   with SUCCESS and eight zero bytes, and answers GET_REPORT with zeros,
+   while the hub-attached keyboard carries the injected keys. This is the
+   state the ASUS TUF measured on 2026-08-04 -- a Transfer Event, SUCCESS,
+   on the driver's own endpoint, buffer all zeros with a key held -- which
+   no arm could produce: -hid-nak models the OPPOSITE (no event at all).
+   A keyboard-shaped interface that answers everything and never carries a
+   key is what a wireless dongle with no paired keyboard, a composite
+   device's boot interface, or a vendor HID node all look like from the
+   bus, and the fix under test is binding EVERY boot keyboard rather than
+   the first. */
+static int xhci_hid_root_silent = 0;
+/* -hid-keys: scripted keys (-keyt / -keys-file) feed ONLY the USB HID
+   held-key set -- no PS/2 queue, no host-side write into the 28680 key
+   cell. Without this, injected keys reach the guest through the PS/2
+   emulation whatever the USB stack does, so no bed could ever prove a
+   scancode travelled the interrupt-IN DMA path end to end. The ASUS has
+   no PS/2 controller at all; this flag is that machine. */
+static int hid_keys_only = 0;
 /* Tracked HID device state, answered by the class GETs (HID 1.11 7.2).
    Protocol defaults to 1 (report) per 7.2.6; idle default 0 here rather
    than the recommended 500 ms so a guest reading GET_IDLE sees exactly
@@ -592,6 +623,41 @@ static int hid_configuration = 0;
    to the ASMedia -- without this the two-controller bed cannot reach the
    second controller at all. */
 static int xhci_no_disk = 0;
+/* The bConfigurationValue the mass-storage model reports and REQUIRES.
+   -usb-cfgval N. Default 1 keeps every existing test unchanged. */
+static int usb_cfgval = 1;
+/* Completion code the mass-storage model answers SET_CONFIGURATION with,
+   regardless of the value sent. -usb-setcfg-fault N. 0 leaves it alone.
+   6 is STALL, 4 is USB Transaction Error. This injects a SYMPTOM, not a
+   cause: it is for developing and proving the host's handling of a
+   refusal, and it can never tell you why a real device refused. */
+static int usb_setcfg_fault = 0;
+/* As above, but the fault applies to the FIRST SET_CONFIGURATION only and
+   then clears. -usb-setcfg-fault-once N. A transient failure and a
+   permanent one want opposite fixes in the host, and a bed that can only
+   produce the permanent kind cannot show that a reading distinguishes
+   them. This is the arm that makes "would a retry have worked?" a
+   question the instrument can answer both ways. */
+static int usb_setcfg_fault_once = 0;
+/* Root ports the controller REPORTS in HCSPARAMS1. -xhci-ports N.
+   Defaults to the four that carry devices, so every existing test is
+   unchanged; raising it adds empty powered ports above them. */
+static int xhci_num_ports = XHCI_MODELLED_PORTS;
+/* Root port the mass-storage device sits on. -usb-disk-port N.
+
+   It is 1 by default and every existing test depends on that. It exists
+   because NO BED COULD PUT A CONNECTED DEVICE ABOVE ROOT PORT 7 -- this
+   model had four ports, and QEMU refuses attachment above its eighth
+   whatever HCSPARAMS1 claims. The ASUS answered with the boot stick on
+   port 9, where the probe's eight PORTSC rows could not reach it and a
+   count of connected ports named none of them. A device the reader cannot
+   locate is the failure this flag exists to make reproducible. */
+static int usb_disk_port = 1;
+/* Present the power-on UNIT ATTENTION every conforming SCSI target
+   presents. ON by default, because a target that does NOT do this is the
+   unusual one and a model that only succeeds is not a test.
+   -usb-no-unit-attention restores the old always-ready behaviour. */
+static int usb_unit_attention = 1;
 
 /* -xhci-hub-tiers N: how many hubs to stack on root port 4. One is a
    high-speed hub with a full-speed keyboard below it. Two puts a
@@ -696,6 +762,22 @@ static struct {
     unsigned char cb[16];
     unsigned int data_done;  /* bytes of the data phase consumed so far */
     int csw_status;          /* 0 = good, 1 = failed */
+    /* Pending sense, as a real target keeps it. A SCSI device answers the
+       FIRST command after a power-on or reset with CHECK CONDITION and
+       sense key UNIT ATTENTION, and KEEPS answering it until the host
+       reads the sense data. REQUEST SENSE is the one command the
+       condition does not apply to, and reading it clears the condition.
+
+       This model had none of it: csw_status was zeroed per CBW and
+       REQUEST_SENSE returned eighteen zeros with no key, so every
+       recognised command succeeded and a host that skipped the handshake
+       passed here and failed on every conforming target. reek recorded
+       that on 2026-07-29 and it stayed open until 2026-08-03. It is the
+       rung-4-to-5 path of the MSC ladder -- the next rung the board will
+       reach -- and nothing had ever executed it. */
+    int sense_key;           /* 0 = none pending */
+    int sense_asc;
+    int sense_ascq;
 } bot;
 
 /* USB Mass Storage device descriptor (18 bytes) */
@@ -711,13 +793,22 @@ static const unsigned char usb_dev_desc[] = {
     1           /* bNumConfigurations */
 };
 
-/* Config + Interface + 2 Bulk Endpoints (32 bytes total) */
-static const unsigned char usb_cfg_desc[] = {
+/* Config + Interface + 2 Bulk Endpoints (32 bytes total).
+
+   NOT const: -usb-cfgval patches byte 5. bConfigurationValue is the value
+   SET_CONFIGURATION must carry and it is NOT an index -- a device is free
+   to number its single configuration anything non-zero. Every emulated
+   storage device in reach reported 1 AND accepted any value sent, so a
+   host that sent a hardcoded 1 passed on every bed and was refused on real
+   hardware. Enforced at the SETUP stage below, because reporting a value
+   the model does not then require is the stub-that-agrees-with-itself
+   shape this catalog exists to refuse. */
+static unsigned char usb_cfg_desc[] = {
     /* Config descriptor */
     9, 2,       /* bLength, bDescriptorType=CONFIG */
     32, 0,      /* wTotalLength = 32 */
     1,          /* bNumInterfaces */
-    1,          /* bConfigurationValue */
+    1,          /* bConfigurationValue -- patched by -usb-cfgval */
     0,          /* iConfiguration */
     0x80,       /* bmAttributes: bus-powered */
     50,         /* bMaxPower: 100mA */
@@ -785,6 +876,29 @@ static const unsigned char usb_hid_cfg_desc[] = {
     3,          /* bmAttributes = Interrupt */
     8, 0,       /* wMaxPacketSize = 8 */
     10          /* bInterval = 10ms */
+};
+
+/* -hid-combo: the HID device carries TWO interfaces -- boot keyboard on
+   EP1 IN, boot mouse on EP2 IN -- the wireless-dongle topology, and the
+   shape the ASUS answered on 2026-08-04 (four keyboard-shaped interfaces,
+   keys on the fourth). A whole-device classifier hands the combo to the
+   keyboard driver and the mouse half is unreachable; the per-interface
+   walk binds both, with SET_CONFIGURATION sent exactly once. */
+static int hid_combo = 0;
+static const unsigned char usb_hid_combo_cfg_desc[] = {
+    9, 2,       /* bLength, bDescriptorType=CONFIG */
+    59, 0,      /* wTotalLength = 59 */
+    2,          /* bNumInterfaces */
+    1,          /* bConfigurationValue */
+    0, 0x80, 50,/* iConfiguration, bmAttributes, bMaxPower */
+    /* Interface 0: boot keyboard */
+    9, 4, 0, 0, 1, 3, 1, 1, 0,
+    9, 0x21, 0x11, 0x01, 0, 1, 0x22, 63, 0,
+    7, 5, 0x81, 3, 8, 0, 10,   /* EP1 IN, interrupt, mps 8 */
+    /* Interface 1: boot mouse */
+    9, 4, 1, 0, 1, 3, 1, 2, 0,
+    9, 0x21, 0x11, 0x01, 0, 1, 0x22, 50, 0,
+    7, 5, 0x82, 3, 4, 0, 10    /* EP2 IN, interrupt, mps 4 */
 };
 
 /* USB 2.0 high-speed hub, single transaction translator.
@@ -957,10 +1071,38 @@ static void uvc_generate_test_frame(unsigned char *buf) {
 static unsigned char hid_held_mods = 0;
 static unsigned char hid_held_keys[6] = {0};
 
+/* -hid-nak-unchanged: real interrupt endpoints NAK until they have news.
+   The default model completes every interrupt IN TRB at doorbell time
+   with whatever the state is now, which makes completions so plentiful
+   that a driver defect fed by their SCARCITY -- one endpoint's waiter
+   consuming a sibling endpoint's rare completion and starving it -- can
+   never be expressed. Under the flag, a HID interrupt IN TRB completes
+   only when its report would differ from the last one delivered on that
+   endpoint (for the combo mouse: only when a sample arrived since the
+   last report); otherwise the TD stays pending, and endpoints that were
+   left NAKing are re-rung from the main loop when input state changes. */
+static int hid_nak_unchanged = 0;
+static int hid_nak_dbg = 0;
+static volatile int hid_input_changed = 0;
+static volatile int hid_mouse_fresh = 0;
+static unsigned char hid_nak_last[XHCI_MAX_SLOTS + 1][32][8];
+static unsigned char hid_nak_seen[XHCI_MAX_SLOTS + 1][32];
+static struct xhci_state *hid_nak_ctl = 0;
+
 static int ps2_irq_route_live(void);
 
+static int hid_first_key_logged = 0;
 static void hid_key_event(unsigned char scancode) {
-    if (ps2_irq_route_live()) {
+    hid_input_changed = 1;
+    if (!hid_first_key_logged) {
+        hid_first_key_logged = 1;
+        fprintf(stderr, "HID: first key event sc=%02x keys_only=%d route_live=%d\n",
+                scancode, hid_keys_only, ps2_irq_route_live());
+    }
+    /* The route-live suppression prevents double delivery for guests taking
+       keys through their PS/2 ISR. Under -hid-keys nothing is enqueued to
+       PS/2 at all, so the HID set is the only route and must fill. */
+    if (!hid_keys_only && ps2_irq_route_live()) {
         hid_held_mods = 0;
         memset(hid_held_keys, 0, sizeof(hid_held_keys));
         return;
@@ -984,6 +1126,7 @@ static void hid_key_event(unsigned char scancode) {
 }
 
 /* Build an 8-byte HID boot keyboard report from the held-key set */
+static int hid_first_report_logged = 0;
 static void build_hid_keyboard_report(unsigned char *report) {
     memset(report, 0, 8);
     report[0] = hid_held_mods;
@@ -992,6 +1135,41 @@ static void build_hid_keyboard_report(unsigned char *report) {
         if (hid_held_keys[i]) report[slot++] = hid_held_keys[i];
     }
 }
+
+/* Which keyboard device the injected keys appear on. Exactly one carries
+   them, because two devices mirroring one held-key set is not a machine
+   anyone has: the root keyboard by default; the hub keyboard when the
+   root one is unplugged (-xhci-no-root-kbd) or silenced
+   (-hid-root-silent). The other keyboard reports zeros -- the idle
+   heartbeat of a keyboard nobody is typing on. */
+static int hid_kbd_carries_keys(int kind_hid_or_hub) {
+    if (kind_hid_or_hub == 2 /* XHCI_KIND_HID */) return !xhci_hid_root_silent;
+    return xhci_no_root_kbd || xhci_hid_root_silent;
+}
+
+/* Boot mouse report from the pointer the host already tracks: the delta
+   since the last report, clamped to the signed byte the boot protocol
+   carries, so a large jump arrives as several reports exactly as a real
+   mouse delivers it. Buttons are the live state plus the press latch, the
+   same edge guarantee the absolute port path gives. */
+static int hid_mouse_last_x = 0, hid_mouse_last_y = 0;
+static int hid_mouse_delta_clamp(int d) {
+    if (d > 127) return 127;
+    if (d < -127) return -127;
+    return d;
+}
+static void build_hid_mouse_report(unsigned char *report) {
+    int dx = hid_mouse_delta_clamp(pending_mouse_abs_x - hid_mouse_last_x);
+    int dy = hid_mouse_delta_clamp(pending_mouse_abs_y - hid_mouse_last_y);
+    hid_mouse_last_x += dx;
+    hid_mouse_last_y += dy;
+    LONG latched = InterlockedExchange(&pending_mouse_btn_latch, 0);
+    report[0] = (unsigned char)((pending_mouse_btn | (int)latched) & 7);
+    report[1] = (unsigned char)(dx & 0xFF);
+    report[2] = (unsigned char)(dy & 0xFF);
+    report[3] = 0;
+}
+
 
 /* Endpoint ID (control bits 20:16) is part of every Transfer Event (xHCI
    6.4.2.1). This model omitted it until 2026-08-03, so every bed transfer
@@ -1140,6 +1318,10 @@ static int xhci_slot_true_speed(int slot) {
 
 static int xhci_slot_kind(int slot) {
     int port = xcur->slot_port[slot];
+    /* The relocated storage port is checked FIRST, so -usb-disk-port can
+       carry the device to any root port without disturbing the identity
+       the other three ports carry by their number. */
+    if (port == usb_disk_port) return XHCI_KIND_MSC;
     if (port == 4) return xhci_hub_tier(slot) >= 0 ? XHCI_KIND_HUB : XHCI_KIND_HUB_HID;
     return port > 0 ? port : slot;
 }
@@ -1164,7 +1346,10 @@ static unsigned int xhci_hub_port_status(int tier) {
    bmAttributes, wMaxPacketSize, bInterval). Read the fields out of the bytes
    the model actually serves rather than restating them, so the expectation
    cannot drift from the descriptor it is an expectation about. */
-static const unsigned char *xhci_periodic_ep_desc(int kind) {
+static const unsigned char *xhci_periodic_ep_desc(int kind, int ep_idx) {
+    if (kind == XHCI_KIND_HID && hid_combo)
+        return ep_idx == 5 ? usb_hid_combo_cfg_desc + sizeof(usb_hid_combo_cfg_desc) - 7
+                           : usb_hid_combo_cfg_desc + 27;
     if (kind == XHCI_KIND_HID || kind == XHCI_KIND_HUB_HID)
         return usb_hid_cfg_desc + sizeof(usb_hid_cfg_desc) - 7;
     if (kind == XHCI_KIND_HUB)
@@ -1435,6 +1620,26 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                    PORT_POWER and PORT_RESET without changing its port
                    status is a hub whose walk always finds nothing -- the
                    stub-that-agrees-with-itself shape. */
+                /* SET_CONFIGURATION on the storage model, answered rather
+                   than merely recorded. Completion code for the STATUS
+                   stage: 1 success, 6 STALL, 4 USB Transaction Error.
+
+                   A device REFUSES a configuration value it does not have
+                   (USB 2.0 9.4.7: a value not matching a
+                   bConfigurationValue is a request error, and a control
+                   pipe reports a request error by stalling). Sending the
+                   descriptor's value is therefore not a nicety, and a
+                   model that accepts any value cannot say so. */
+                int ctrl_cc = 1;
+                if (kind == XHCI_KIND_MSC && bmRequestType == 0x00 && bRequest == 9) {
+                    if (usb_setcfg_fault) ctrl_cc = usb_setcfg_fault;
+                    else if (usb_setcfg_fault_once) {
+                        ctrl_cc = usb_setcfg_fault_once;
+                        usb_setcfg_fault_once = 0;   /* transient: the next one lands */
+                    }
+                    else if (wValue != usb_cfgval) ctrl_cc = 6;
+                }
+
                 int tier = xhci_hub_tier(db);
                 if (kind == XHCI_KIND_HUB && tier >= 0 &&
                     bmRequestType == 0x23 && wIndex == 1) {
@@ -1486,6 +1691,7 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                         const unsigned char *cfg_d = usb_cfg_desc;
                         int cfg_d_sz = (int)sizeof(usb_cfg_desc);
                         if (kind == XHCI_KIND_HID || kind == XHCI_KIND_HUB_HID) { dev_d = usb_hid_dev_desc; dev_d_sz = (int)sizeof(usb_hid_dev_desc); cfg_d = usb_hid_cfg_desc; cfg_d_sz = (int)sizeof(usb_hid_cfg_desc); }
+                        if (kind == XHCI_KIND_HID && hid_combo) { cfg_d = usb_hid_combo_cfg_desc; cfg_d_sz = (int)sizeof(usb_hid_combo_cfg_desc); }
                         if (kind == XHCI_KIND_UVC) { dev_d = usb_uvc_dev_desc; dev_d_sz = (int)sizeof(usb_uvc_dev_desc); cfg_d = usb_uvc_cfg_desc; cfg_d_sz = (int)sizeof(usb_uvc_cfg_desc); }
                         if (kind == XHCI_KIND_HUB) { dev_d = tier == 0 ? usb_hub_dev_desc : usb_hub_fs_dev_desc; dev_d_sz = 18; cfg_d = usb_hub_cfg_desc; cfg_d_sz = (int)sizeof(usb_hub_cfg_desc); }
                         if (desc_type == 1) { /* DEVICE */
@@ -1518,7 +1724,8 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                            no device-state instrument was beddable. */
                         if (bRequest == 1 && data_len >= 1) {
                             unsigned char rep[8];
-                            build_hid_keyboard_report(rep);
+                            if (hid_kbd_carries_keys(kind)) build_hid_keyboard_report(rep);
+                            else memset(rep, 0, 8);
                             int n = data_len < 8 ? data_len : 8;
                             memcpy((unsigned char *)guest_mem + data_buf, rep, n);
                         } else if (bRequest == 2 && data_len >= 1) {
@@ -1539,7 +1746,18 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                     unsigned char *sts_trb = (unsigned char *)guest_mem + tr_dequeue;
                     unsigned int sts_ctrl = *(unsigned int *)(sts_trb + 12);
                     if (((sts_ctrl >> 10) & 0x3F) == 4 && (int)(sts_ctrl & 1) == ccs) {
-                        xhci_post_event_ep(32, db, ep_idx, 1, tr_dequeue); /* Transfer Event, success */
+                        xhci_post_event_ep(32, db, ep_idx, ctrl_cc, tr_dequeue); /* Transfer Event */
+                        /* xHCI 4.8.3: a USB Transaction Error transitions the
+                           endpoint to Halted(2), and 4.10.2.1 requires a Reset
+                           Endpoint before it will accept a doorbell again. The
+                           doorbell handler above already honours Halted(2) and
+                           returns; injecting only the completion code left EP0
+                           Running, so a bare retry was serviced here while on
+                           silicon it gets no completion event at all. */
+                        if (ctrl_cc == 4) {
+                            unsigned int ed0 = *(unsigned int *)ep_ctx;
+                            *(unsigned int *)ep_ctx = (ed0 & ~7u) | 2;
+                        }
                         tr_dequeue = xhci_next_trb(tr_dequeue, &ccs);
                     }
                 }
@@ -1582,7 +1800,7 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                            wrong-but-legal value, at the wrong rate, so this
                            reports and does not refuse. */
                         {
-                            const unsigned char *epd = xhci_periodic_ep_desc(kind);
+                            const unsigned char *epd = xhci_periodic_ep_desc(kind, ep_idx);
                             if (epd && !xcur->periodic_reported[db][ep_idx & 31]) {
                                 int b_interval = epd[6];
                                 int max_packet = epd[4] | (epd[5] << 8);
@@ -1661,7 +1879,39 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                        ASUS did. */
                     if (xhci_hid_nak || (hid_idle_quirk && hid_idle_zeroed)) break;
                     unsigned char report[8];
-                    build_hid_keyboard_report(report);
+                    int is_combo_mouse = (kind == XHCI_KIND_HID && hid_combo && ep_idx == 5);
+                    if (hid_nak_unchanged) {
+                        if (!hid_nak_seen[db][ep_idx & 31] && hid_nak_dbg < 8) {
+                            hid_nak_dbg++;
+                            fprintf(stderr, "HIDNAK: slot %d ep %d first service (kind=%d)\n", db, ep_idx, kind);
+                        }
+                        hid_nak_seen[db][ep_idx & 31] = 1;
+                        hid_nak_ctl = xcur;
+                        /* The mouse builder consumes the delta and the press
+                           latch, so its NAK gate is the sample-freshness flag
+                           checked BEFORE building, not a byte compare after. */
+                        if (is_combo_mouse && !hid_mouse_fresh) break;
+                    }
+                    if (is_combo_mouse) {
+                        memset(report, 0, 8);
+                        build_hid_mouse_report(report);
+                        /* A clamped delta leaves a remainder; stay fresh so
+                           the next TRB drains it as silicon would. */
+                        if (hid_nak_unchanged)
+                            hid_mouse_fresh = (pending_mouse_abs_x != hid_mouse_last_x ||
+                                               pending_mouse_abs_y != hid_mouse_last_y);
+                    }
+                    else if (hid_kbd_carries_keys(kind)) build_hid_keyboard_report(report);
+                    else memset(report, 0, 8);
+                    if (hid_nak_unchanged && !is_combo_mouse) {
+                        if (!memcmp(report, hid_nak_last[db][ep_idx & 31], 8)) break;
+                        memcpy(hid_nak_last[db][ep_idx & 31], report, 8);
+                    }
+                    if ((report[0] || report[2]) && hid_first_report_logged < 4) {
+                        hid_first_report_logged++;
+                        fprintf(stderr, "HID: nonzero report -> slot=%d ep=%d buf=0x%llx key=%02x\n",
+                                db, ep_idx, (unsigned long long)buf_addr, report[2]);
+                    }
                     int n = buf_len < 8 ? buf_len : 8;
                     memcpy((unsigned char *)guest_mem + buf_addr, report, n);
                     if (ctrl & 0x20) xhci_post_event_ep(32, db, ep_idx, 1, tr_dequeue);
@@ -1703,6 +1953,14 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                                     bot.csw_status = 1;
                                     bot.data_done = bot.xfer_len;
                                 }
+                                /* A pending UNIT ATTENTION refuses everything
+                                   except REQUEST SENSE, which is how the host
+                                   is meant to clear it. SPC: the condition
+                                   persists until the sense data is read. */
+                                else if (bot.sense_key && op != 0x03) {
+                                    bot.csw_status = 1;
+                                    bot.data_done = bot.xfer_len;
+                                }
                             }
                         } else if (bot.active && !bot.dir_in && bot.data_done < bot.xfer_len) {
                             unsigned int n = (unsigned int)buf_len;
@@ -1716,9 +1974,11 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                                     ide_flush(&ide, (size_t)disk_off, n); /* durable, like IDE writes */
                                 } else {
                                     bot.csw_status = 1;
+                                    fprintf(stderr, "BOT: WRITE_10 out of range lba=%u done=%u n=%u\n", lba, bot.data_done, n);
                                 }
                             } else {
                                 bot.csw_status = 1; /* OUT data for a non-write command */
+                                fprintf(stderr, "BOT: OUT data for op=%02x n=%u\n", bot.cb[0], n);
                             }
                             bot.data_done += n;
                         }
@@ -1756,8 +2016,15 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                             } else if (op == 0x03) { /* REQUEST_SENSE */
                                 unsigned char sense[18] = {0};
                                 sense[0] = 0x70; /* current, fixed format */
+                                sense[2] = (unsigned char)bot.sense_key;
                                 sense[7] = 10;   /* additional length */
+                                sense[12] = (unsigned char)bot.sense_asc;
+                                sense[13] = (unsigned char)bot.sense_ascq;
                                 memcpy(buf, sense, n < 18 ? n : 18);
+                                /* Reading it is what clears it. A model that
+                                   answered the key and kept the condition
+                                   would loop the host forever. */
+                                bot.sense_key = 0; bot.sense_asc = 0; bot.sense_ascq = 0;
                             }
                             bot.data_done += n;
                         } else if (buf_len >= 13) {
@@ -1829,6 +2096,13 @@ static void xhci_reset_ctl(struct xhci_state *x) {
     x->legacy_os_owned = 0;
     if (ord != 0) return;
     memset(&bot, 0, sizeof(bot));
+    /* A controller reset raises the target's power-on condition, and this
+       is the ONLY correct place to arm it: the guest issues HCRST during
+       bring-up, so arming at init alone is wiped before the first command.
+       ASC 0x29 says so in as many words -- "power on, RESET, or bus device
+       reset occurred". Caught by a sabotage arm that should have failed
+       and did not. */
+    if (usb_unit_attention) { bot.sense_key = 0x06; bot.sense_asc = 0x29; bot.sense_ascq = 0x00; }
     {
     struct xhci_state *xcur = x;    /* XUSB2PR and USB3PSSEN are NOT reset here. They live in PCI config
        space, HCRST reaches this function, and a host-controller reset does
@@ -1866,6 +2140,27 @@ static void xhci_reset_ctl(struct xhci_state *x) {
     xhci_port_true_speed[1] = xhci_no_root_kbd ? 0 : 1;
     xhci_port_true_speed[2] = 3;
     xhci_port_true_speed[3] = 3;
+    /* Ports above the four modelled ones are empty and POWERED, which is
+       what a real wide controller reports and what makes them dangerous
+       to a guest that overruns a table: PP alone makes PORTSC non-zero,
+       so the overrunning write lands a truthy value on whatever follows.
+       Leaving these at zero would reproduce the overrun and hide its
+       consequence, which is the failure mode this model exists to expose. */
+    for (int p = XHCI_MODELLED_PORTS; p < XHCI_MAX_PORTS; p++) {
+        xcur->portsc[p] = 1u << 9;   /* PP=1, CCS=0 */
+        xhci_port_true_speed[p] = 0;
+    }
+    /* Carry the storage device to another root port. Its old port goes
+       dark rather than staying connected, because a stick that answers on
+       two ports at once is not a machine anyone has. */
+    if (usb_disk_port != 1 && usb_disk_port >= 1 && usb_disk_port <= XHCI_MAX_PORTS) {
+        unsigned int was = xcur->portsc[0];
+        int wasspd = xhci_port_true_speed[0];
+        xcur->portsc[0] = 1u << 9;
+        xhci_port_true_speed[0] = 0;
+        xcur->portsc[usb_disk_port - 1] = was;
+        xhci_port_true_speed[usb_disk_port - 1] = wasspd;
+    }
     }
 }
 
@@ -1879,7 +2174,7 @@ static unsigned int xhci_read(unsigned long long offset) {
     if (offset < XHCI_CAP_LEN) {
         switch ((int)offset) {
         case 0:  return XHCI_CAP_LEN | (0x0100 << 16);  /* CAPLENGTH=32, HCIVERSION=1.0 */
-        case 4:  return (XHCI_MAX_PORTS << 24) | XHCI_MAX_SLOTS;  /* HCSPARAMS1 */
+        case 4:  return ((unsigned)xhci_num_ports << 24) | XHCI_MAX_SLOTS;  /* HCSPARAMS1 */
         case 8:  return 0x0F    /* HCSPARAMS2 */
                       | (((unsigned)(xhci_scratch_bufs >> 5) & 31) << 21)   /* Max Scratchpad Bufs Hi */
                       | (((unsigned)xhci_scratch_bufs & 31) << 27);         /* Max Scratchpad Bufs Lo */
@@ -1921,7 +2216,7 @@ static unsigned int xhci_read(unsigned long long offset) {
         switch (d) {
         case 0: return 2u | (0u << 8) | (0u << 16) | (3u << 24); /* id 2, end of list, USB 3.0 */
         case 1: return 0x20425355u;                              /* name string "USB " */
-        case 2: return 1u | ((unsigned)XHCI_MAX_PORTS << 8) | ((unsigned)psic << 28);
+        case 2: return 1u | ((unsigned)xhci_num_ports << 8) | ((unsigned)psic << 28);
         case 3: return 0;                                        /* protocol slot type 0 */
         }
         if (!psic) return 0;
@@ -1951,7 +2246,7 @@ static unsigned int xhci_read(unsigned long long offset) {
         default: return 0;
         }
     }
-    if (op_off >= 0x400 && op_off < 0x400 + XHCI_MAX_PORTS * 16) {
+    if (op_off >= 0x400 && op_off < 0x400 + xhci_num_ports * 16) {
         int port = (int)(op_off - 0x400) / 16;
         int preg = (int)(op_off - 0x400) % 16;
         /* A port still owned by the companion EHCI is dark to the xHCI: the
@@ -2020,7 +2315,7 @@ static void xhci_write(unsigned long long offset, unsigned int val) {
                more, which is what marches the producer through the ring
                WRAP and, unconsumed, into the FULL condition. */
             if (!was_running && (val & 1)) {
-                for (int p = 0; p < XHCI_MAX_PORTS; p++)
+                for (int p = 0; p < xhci_num_ports; p++)
                     if (xcur->portsc[p] & 1)
                         xhci_post_event(34, 0, 1, (unsigned long long)(p + 1) << 24);
                 for (int f = 0; f < xhci_evt_flood; f++)
@@ -2046,7 +2341,7 @@ static void xhci_write(unsigned long long offset, unsigned int val) {
         }
         return;
     }
-    if (op_off >= 0x400 && op_off < 0x400 + XHCI_MAX_PORTS * 16) {
+    if (op_off >= 0x400 && op_off < 0x400 + xhci_num_ports * 16) {
         int port = (int)(op_off - 0x400) / 16;
         int preg = (int)(op_off - 0x400) % 16;
         if (preg == 0) {
@@ -3594,6 +3889,83 @@ static int e1000_fault_phy_err  = 0;
    which on a PCH-integrated part is exactly the silent failure. */
 static int e1000_phy_link       = 0;
 
+/* -e1000-mdio-window: MDIC answers nothing until 10 ms have passed since the
+   guest wrote CTRL.RST. Intel I219 datasheet rev 2.02, section 9.2 "MDIO
+   Access", page 88: "After LCD reset to the I219 a delay of 10 ms is required
+   before attempting to access MDIO registers."
+
+   A closed window answers with neither R nor E, which is deliberately the
+   same shape -e1000-no-phy produces. Silicon that is not listening yet and
+   silicon that is not there cannot be told apart by the driver, and a model
+   that made them distinguishable would let a driver pass by reading a
+   difference the real part does not offer.
+
+   OFF by default (L-FALLBACK): every existing green was measured with no
+   window at all, so this ADDS an arm rather than moving the floor.
+
+   THE ASSUMPTION, and it is not ours to settle: the datasheet says the window
+   opens at an LCD reset, which is a reset of the LAN Connected Device. This
+   arm opens it at CTRL.RST, which the 82583V calls a reset of the MAC
+   function and which that datasheet distinguishes from CTRL.PHY_RST. Nothing
+   public establishes that our CTRL.RST is an LCD reset. See
+   docs/Reference/E1000_ServiceModel_Notes.md, finding 1. */
+static int e1000_mdio_window = 0;
+#define E1000_MDIO_WINDOW_MS 10
+
+/* -e1000-mdio-slow: MDIO READS answer E until reduced-frequency mode is on.
+   I219 datasheet 9.2: "Access using MDIO should be done only when bit 10 in
+   page 769 register 16 is set", and 9.5.3.1 defines that bit as "reduced MDIO
+   frequency access (required for read during cable disconnect)". Its reset
+   value is 0b, so the condition is unmet on a part nobody has configured,
+   which is the part we get.
+
+   TWO MODELLING DECISIONS THAT ARE OURS AND NOT THE DATASHEET'S, because an
+   arm that hides its own inventions is not evidence:
+
+   1. Reads are refused and WRITES are not, and the page register and 769.16
+      itself are exempt. Read strictly, 9.2 forbids the very transactions that
+      would satisfy it -- setting the bit is itself MDIO access -- so a literal
+      arm would make the requirement unsatisfiable. The exemption is the
+      smallest bootstrap that leaves the requirement testable.
+   2. The failure shape is E. The datasheet does not say what an access at the
+      wrong frequency does, and a floating bus reading 0xFFFF would be equally
+      arguable. E was chosen because it cannot be confused with a legitimate
+      register value, which 0xFFFF can.
+
+   What the arm therefore tests is that the driver SETS slow mode, which is
+   the citable part. It does not claim to reproduce the electrical failure.
+
+   OFF by default (L-FALLBACK). */
+static int e1000_mdio_slow = 0;
+
+/* Page selected by the last write to register 31. Registers 0-15 are the IEEE
+   set and are identical in every page (9.3), so only 16-31 consult this. */
+static unsigned int e1000_phy_page = 0;
+#define E1000_PHY_PAGE_REG   31
+#define E1000_PHY_PORT_PAGE  769
+#define E1000_PHY_CUSTOM_MODE 16
+#define E1000_PHY_MDIO_SLOW  0x0400u   /* 769.16 bit 10 */
+
+/* Page 769 register 16, Custom Mode Control. Reset value from the field table
+   at 9.5.3.1: reserved 9:0 = 0x180, bit 10 = 0b, reserved 15:11 = 0x04. */
+#define E1000_PHY_CUSTOM_MODE_RESET 0x2180u
+static unsigned short e1000_phy_custom_mode = E1000_PHY_CUSTOM_MODE_RESET;
+static LARGE_INTEGER e1000_reset_at;   /* zero until the guest writes CTRL.RST */
+
+static int e1000_mdio_window_open(void) {
+    static LARGE_INTEGER freq;
+    LARGE_INTEGER now;
+    if (!e1000_mdio_window) return 1;
+    /* No reset seen yet, so no window has opened and none is being violated.
+       Refusing here would make the arm fire on a driver that never resets,
+       which is a different defect and not this one. */
+    if (!e1000_reset_at.QuadPart) return 1;
+    if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&now);
+    return ((now.QuadPart - e1000_reset_at.QuadPart) * 1000)
+             / freq.QuadPart >= E1000_MDIO_WINDOW_MS;
+}
+
 /* Reset value of the PHY register file. ID1/ID2 are the model's own
    identifiers and are NOT measured off Damian's I219: nothing here has read
    that part's PHY. They exist so a driver can prove it reached A phy and
@@ -3605,6 +3977,13 @@ static void e1000_phy_reset_regs(void) {
     e1000_phy_regs[E1000_PHY_BMSR] = 0;
     e1000_phy_regs[E1000_PHY_ID1]  = 0x0154;
     e1000_phy_regs[E1000_PHY_ID2]  = 0x0C00;
+    /* A PHY reset takes the paged state with it, slow mode included. That
+       makes ORDER matter to the driver: set slow mode before resetting the
+       PHY and it is gone by the time the reads that need it happen. Without
+       this the model would accept either order and the arm would be testing
+       that the write occurred rather than that it holds. */
+    e1000_phy_page = 0;
+    e1000_phy_custom_mode = E1000_PHY_CUSTOM_MODE_RESET;
 }
 
 static unsigned int e1000_regs[E1000_BAR_SIZE / 4];
@@ -3717,6 +4096,7 @@ static unsigned int e1000_mdic_exec(unsigned int val) {
     unsigned int phy = (val >> E1000_MDIC_PHY_SH) & 0x1F;
     unsigned int op  = val & E1000_MDIC_OP_MASK;
 
+    if (!e1000_mdio_window_open()) return val & ~(E1000_MDIC_R | E1000_MDIC_E);
     if (e1000_fault_no_phy) return val & ~(E1000_MDIC_R | E1000_MDIC_E);
     if (e1000_fault_phy_err) return (val & ~E1000_MDIC_R) | E1000_MDIC_E;
     if (phy != E1000_PHY_ADDR) return (val & ~E1000_MDIC_R) | E1000_MDIC_E;
@@ -3738,11 +4118,46 @@ static unsigned int e1000_mdic_exec(unsigned int val) {
                         (unsigned short)(E1000_BMSR_ANEG_DONE | E1000_BMSR_LINK);
             }
         }
+        /* Register 31 is the page register in every page of PHY address 01,
+           and only its 11 MSBs define the page: software writes page x 32
+           and the five LSBs are ignored (I219 9.3). */
+        if (reg == E1000_PHY_PAGE_REG) {
+            e1000_phy_page = data >> 5;
+            return (val & ~E1000_MDIC_DATA) | E1000_MDIC_R | data;
+        }
+        if (reg >= 16 && e1000_phy_page != 0) {
+            if (e1000_phy_page == E1000_PHY_PORT_PAGE &&
+                reg == E1000_PHY_CUSTOM_MODE) {
+                e1000_phy_custom_mode = data;
+                return (val & ~E1000_MDIC_DATA) | E1000_MDIC_R | data;
+            }
+            /* Only the one paged register this model has a citation for
+               exists. Anything else on a non-zero page is not modelled and
+               must not answer as though it were. */
+            return (val & ~E1000_MDIC_R) | E1000_MDIC_E;
+        }
         if (reg != E1000_PHY_BMSR) e1000_phy_regs[reg] = data;
         return (val & ~E1000_MDIC_DATA) | E1000_MDIC_R | data;
     }
-    if (op == E1000_MDIC_OP_RD)
+    if (op == E1000_MDIC_OP_RD) {
+        if (reg == E1000_PHY_PAGE_REG)
+            return (val & ~E1000_MDIC_DATA) | E1000_MDIC_R |
+                   ((e1000_phy_page << 5) & E1000_MDIC_DATA);
+        if (reg >= 16 && e1000_phy_page != 0) {
+            if (e1000_phy_page == E1000_PHY_PORT_PAGE &&
+                reg == E1000_PHY_CUSTOM_MODE)
+                return (val & ~E1000_MDIC_DATA) | E1000_MDIC_R |
+                       e1000_phy_custom_mode;
+            return (val & ~E1000_MDIC_R) | E1000_MDIC_E;
+        }
+        /* The slow-mode gate applies to ordinary register reads only. The
+           page register and 769.16 returned above are the bootstrap, and the
+           reasoning for exempting them is at the flag's declaration. */
+        if (e1000_mdio_slow &&
+            !(e1000_phy_custom_mode & E1000_PHY_MDIO_SLOW))
+            return (val & ~E1000_MDIC_R) | E1000_MDIC_E;
         return (val & ~E1000_MDIC_DATA) | E1000_MDIC_R | e1000_phy_regs[reg];
+    }
 
     /* Neither read nor write is a malformed transaction, not a silent zero. */
     return (val & ~E1000_MDIC_R) | E1000_MDIC_E;
@@ -3789,6 +4204,7 @@ static void e1000_write(unsigned long long off, unsigned int val) {
                path exists to catch. */
             e1000_phy_regs[E1000_PHY_BMSR] &=
                 (unsigned short)~(E1000_BMSR_ANEG_DONE | E1000_BMSR_LINK);
+            QueryPerformanceCounter(&e1000_reset_at);   /* opens the MDIO window */
             if (!e1000_fault_no_reset) val &= ~E1000_CTRL_RST;
         }
         e1000_regs[E1000_REG_CTRL / 4] = val;
@@ -5136,6 +5552,8 @@ static LRESULT CALLBACK vga_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (pressed) InterlockedOr(&pending_mouse_btn_latch, pressed);
         pending_mouse_btn = new_btn;
         pending_mouse_valid = 1;
+        hid_mouse_fresh = 1;
+        hid_input_changed = 1;
         return 0;
     }
     case WM_CLOSE:
@@ -11791,6 +12209,7 @@ int main(int argc, char **argv) {
     const char *kernel = NULL, *disk = NULL, *disk2 = NULL, *boot_args = NULL, *trace_file = NULL;
     int mem_mb = 3072;  /* matches the build harness; binaries from pre-7209
                            seeds triple-fault below 2 GB + stack reserve */
+    int mem_nocap = 0;
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-kernel") && i+1 < argc) { kernel = argv[++i]; g_kernel_path = kernel; }
@@ -11897,12 +12316,35 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-e1000-no-phy"))   { e1000_present = 1; e1000_fault_no_phy = 1; }
         else if (!strcmp(argv[i], "-e1000-phy-err"))  { e1000_present = 1; e1000_fault_phy_err = 1; }
         else if (!strcmp(argv[i], "-e1000-phy-link")) { e1000_present = 1; e1000_phy_link = 1; }
+        else if (!strcmp(argv[i], "-e1000-mdio-window")) { e1000_present = 1; e1000_mdio_window = 1; }
+        else if (!strcmp(argv[i], "-e1000-mdio-slow")) { e1000_present = 1; e1000_mdio_slow = 1; }
         else if (!strcmp(argv[i], "-keys-start") && i+1 < argc) inject_key_start_ms = atof(argv[++i]);
         else if (!strcmp(argv[i], "-keys-interval") && i+1 < argc) inject_key_interval_ms = atof(argv[++i]);
         else if (!strcmp(argv[i], "-board-mmio")) board_mmio = 1;
         else if (!strcmp(argv[i], "-xhci-no-root-kbd")) xhci_no_root_kbd = 1;
+        else if (!strcmp(argv[i], "-usb-cfgval") && i+1 < argc) {
+            usb_cfgval = atoi(argv[++i]);
+            usb_cfg_desc[5] = (unsigned char)usb_cfgval;
+        }
+        else if (!strcmp(argv[i], "-usb-setcfg-fault") && i+1 < argc) usb_setcfg_fault = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-usb-setcfg-fault-once") && i+1 < argc) usb_setcfg_fault_once = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-usb-no-unit-attention")) usb_unit_attention = 0;
+        else if (!strcmp(argv[i], "-usb-disk-port") && i+1 < argc) {
+            usb_disk_port = atoi(argv[++i]);
+            if (usb_disk_port < 1) usb_disk_port = 1;
+            if (usb_disk_port > XHCI_MAX_PORTS) usb_disk_port = XHCI_MAX_PORTS;
+        }
+        else if (!strcmp(argv[i], "-xhci-ports") && i+1 < argc) {
+            xhci_num_ports = atoi(argv[++i]);
+            if (xhci_num_ports < XHCI_MODELLED_PORTS) xhci_num_ports = XHCI_MODELLED_PORTS;
+            if (xhci_num_ports > XHCI_MAX_PORTS) xhci_num_ports = XHCI_MAX_PORTS;
+        }
         else if (!strcmp(argv[i], "-hid-nak")) xhci_hid_nak = 1;
         else if (!strcmp(argv[i], "-hid-idle-quirk")) hid_idle_quirk = 1;
+        else if (!strcmp(argv[i], "-hid-root-silent")) xhci_hid_root_silent = 1;
+        else if (!strcmp(argv[i], "-hid-keys")) hid_keys_only = 1;
+        else if (!strcmp(argv[i], "-hid-combo")) hid_combo = 1;
+        else if (!strcmp(argv[i], "-hid-nak-unchanged")) hid_nak_unchanged = 1;
         else if (!strcmp(argv[i], "-xhci-calibrate-periodic")) xhci_calibrate_periodic = 1;
         else if (!strcmp(argv[i], "-xhci-psi")) xhci_psi = 1;
         else if (!strcmp(argv[i], "-xhci-bar") && i+1 < argc) xhci_bar_initial = (unsigned int)strtoul(argv[++i], NULL, 0);
@@ -11920,6 +12362,7 @@ int main(int argc, char **argv) {
             if (xhci_hub_tiers < 1) xhci_hub_tiers = 1;
             if (xhci_hub_tiers > XHCI_HUB_TIERS) xhci_hub_tiers = XHCI_HUB_TIERS;
         }
+        else if (!strcmp(argv[i], "-mem-nocap")) mem_nocap = 1;
         else if (!strcmp(argv[i], "-uefi")) uefi_mode = 1;
         else if (!strcmp(argv[i], "-uefi-strict")) { uefi_mode = 1; uefi_strict = 1; }
         else if (!strcmp(argv[i], "-gop")) { gop_active = 1; }
@@ -11949,7 +12392,7 @@ int main(int argc, char **argv) {
     }
     if (!kernel) {
         fprintf(stderr, "Usage: codex-vm -kernel file.cdx [-input file.codex] [-output file.cdx]\n"
-                        "       [-disk file.img] [-mem MB] [-args STRING]\n"
+                        "       [-disk file.img] [-mem MB] [-mem-nocap] [-args STRING]\n"
                         "       [-watch 0xADDR] [-watch-size N] [-headless] [-uefi] [-uefi-strict]\n"
                         "       [-gop] [-gop-width N] [-gop-height N] [-gop-stride N] [-keys sc,sc,..]\n"
                         "       [-portfwd hostport:guestport] ...\n");
@@ -12033,9 +12476,24 @@ int main(int argc, char **argv) {
     {
         /* Cap reported RAM so guest stack (at RAM top) stays below GPU/GOP region.
            GPU cmd buffer=0xBE000000, depth=0xBE800000, GOP fb=0xBF000000.
-           Guest RSP starts at reported RAM size and grows DOWN -- must not overlap. */
+           Guest RSP starts at reported RAM size and grows DOWN -- must not overlap.
+
+           The cap binds whatever -mem says, so a guest is told 3040 MB at
+           -mem 8192 and its heap frontier meets the boot stack at the same
+           address either way. That is what made compile.ps1's crash retry a
+           no-op: "retrying with 8192MB" ran a byte-identical machine, and a
+           whole-compiler IR emit crashed with the same RIP, RSP and heap
+           frontier at both sizes.
+
+           -mem-nocap reports the real size. It is opt-in and not the default
+           because the three windows sit at FIXED GPAs and the guest may start
+           using them after boot (UEFI GOP, VBE), by which time the RAM size is
+           long written: an uncapped heap that grows past 0xBE000000 then
+           overwrites the framebuffer it is about to scan out. Pass it only for
+           a run that draws nothing -- a headless compile is the case it exists
+           for. */
         unsigned long long effective = guest_mem_size;
-        if (effective > GPU_CMD_ADDR)
+        if (!mem_nocap && effective > GPU_CMD_ADDR)
             effective = GPU_CMD_ADDR;
         fprintf(stderr, "RAM cap: guest_mem_size=0x%llx effective=0x%llx gop=%d\n", guest_mem_size, effective, gop_active);
         *(unsigned long long *)((unsigned char *)guest_mem + 0xFE8) = effective;
@@ -12933,10 +13391,14 @@ int main(int argc, char **argv) {
             double kel = (double)(know.QuadPart - screenshot_start.QuadPart) * 1000.0 / perf_freq.QuadPart;
             if (kel >= inject_keyt[inject_keyt_idx].t_ms) {
                 unsigned char sc = inject_keyt[inject_keyt_idx++].sc;
-                pending_kbd_scancode = sc;
-                pending_kbd_valid = 1;
-                kbd_enqueue(sc);
-                kbd_irq_pending = 1;
+                if (hid_keys_only) {
+                    hid_key_event(sc);
+                } else {
+                    pending_kbd_scancode = sc;
+                    pending_kbd_valid = 1;
+                    kbd_enqueue(sc);
+                    kbd_irq_pending = 1;
+                }
             }
         }
 
@@ -12957,7 +13419,28 @@ int main(int argc, char **argv) {
                 pending_mouse_abs_y = ev->y;
                 pending_mouse_btn = ev->btn;
                 pending_mouse_valid = 1;
+                hid_mouse_fresh = 1;
+                hid_input_changed = 1;
             }
+        }
+
+        /* -hid-nak-unchanged: input arrived, so re-ring every HID interrupt
+           endpoint that was left NAKing; its pending TD can complete now.
+           Same thread as the MMIO doorbell path, so the ring walk cannot
+           race the guest's own doorbells. */
+        if (hid_nak_unchanged && hid_input_changed) {
+            hid_input_changed = 0;
+            if (hid_nak_dbg < 8) {
+                hid_nak_dbg++;
+                fprintf(stderr, "HIDNAK: input changed, re-ringing seen endpoints (ctl=%p)\n", (void *)hid_nak_ctl);
+            }
+            struct xhci_state *nak_saved = xcur;
+            if (hid_nak_ctl) xcur = hid_nak_ctl;
+            for (int nak_s = 1; nak_s <= XHCI_MAX_SLOTS; nak_s++)
+                for (int nak_e = 2; nak_e < 32; nak_e++)
+                    if (hid_nak_seen[nak_s][nak_e])
+                        xhci_handle_doorbell(nak_s, (unsigned int)nak_e);
+            xcur = nak_saved;
         }
 
         if (inject_key_idx < inject_key_count) {

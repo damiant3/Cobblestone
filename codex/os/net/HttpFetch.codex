@@ -13,37 +13,9 @@ Chapter: HttpFetch
   cites Foreword chapter Maybe
   cites Foreword chapter Result
 
- This is the implementation of the Network effect.
-
- fetch, post and resolve-dns were declared as operations of the
- Network effect in Foreword chapter Network and no handler for them
- existed anywhere, so the type checker vouched for the name and the
- build died at the end of emit with CDX2040. A name the compiler
- promises and cannot keep is worth less than no name. They are real
- here, and they are not in the foreword, for the reason that decides
- it: an implementation needs NetIO, NetIO is codex.os, and a foreword
- chapter may not depend on codex.os. A chapter that wants them cites
- this one.
-
- The declared rows were wrong as well as unimplemented. fetch was
- typed [Network.Read] -- but fetching sends a SYN and sends the
- request line, and net-io-connect says [Network.Read, Network.Write]
- because that is what it does. A read that writes to the wire is the
- laundering the effect system exists to refuse, and this quire is
- effect-exempt, so nothing would have caught it. All three operations
- declare both rows. The name says what it is for; the row says what
- it does.
-
- Scope is unaffected: lint-scoped-call keys on the callee's name, not
- on whether the name is a builtin, so fetch "https://host/x" is still
- checked against a Network.Read grant and still refused with CDX4002.
-
  We say:
 
 Section: Network Configuration
-
- The addresses codex-vm's user-mode NAT hands out. The gateway
- answers ARP and forwards; 10.0.2.3 is its DNS.
 
   http-local-mac : List Integer = [82, 84, 0, 18, 52, 99]
   http-local-ip : List Integer = [10, 0, 2, 15]
@@ -53,10 +25,6 @@ Section: Network Configuration
   http-default-port : Integer = 80
 
 Section: Character Codes
-
- Never write a character code down. Text is CCE inside and ASCII on
- the wire, and the two do not agree: in CCE the newline is 1 and the
- code 10 is the digit seven. Every code here is asked for.
 
   cce-colon : Integer = char-code (char-at ":" 0)
   cce-slash : Integer = char-code (char-at "/" 0)
@@ -71,11 +39,6 @@ Section: Character Codes
   http-digit-value (c) = c - cce-zero
 
 Section: URL Parsing
-
- A URL is scheme://authority/path. The authority is host or host:port.
- The scheme is read, and it decides whether the request happens at all:
- https is refused, because this speaks HTTP and would otherwise fetch
- it in the clear. See The Refusal, below.
 
   url-authority-start : Text -> Integer
   url-authority-start (u) = url-scan-scheme u 0 (text-length u)
@@ -142,9 +105,6 @@ Section: URL Parsing
 
 Section: Host Addresses
 
- A host that is already a dotted quad is not looked up. Anything else
- goes to the resolver on the wire.
-
   http-is-dotted-quad : Text -> Boolean
   http-is-dotted-quad (h) = http-quad-scan h 0 (text-length h) 0 False
 
@@ -167,11 +127,6 @@ Section: Host Addresses
    else http-quad-parts h (i + 1) len (cur * 10 + http-digit-value c) True acc
 
 Section: DNS On The Wire
-
- An A-record query to the NAT's resolver over UDP. The destination MAC
- is the broadcast address because the ARP cache starts empty and the
- NAT answers for the gateway either way -- this is what NetworkStack's
- resolve-dst-mac already does for every TCP connection in the tree.
 
   http-dns-budget : Integer = 3000000
   http-dns-tx-id : Integer = 4919
@@ -221,10 +176,6 @@ Section: DNS On The Wire
 
 Section: Response Framing
 
- HTTP/1.0 has two ways to end a body: the server names its length, or
- the server closes. Both are honoured. The length is the one that lets
- the read stop without waiting for a FIN, so it is checked first.
-
   http-headers-end : List Integer, Integer, Integer -> Integer
   http-headers-end (bs) (i) (len) =
    if i + 3 >= len then (-1)
@@ -246,12 +197,6 @@ Section: Response Framing
    else list-length bs - he >= cl
 
 Section: Receive
-
- A receive loop of our own rather than net-io-recv-raw, because that
- one returns only when a frame carried payload and so cannot see the
- FIN that ends a close-delimited body: it would spin out its whole
- budget after the last byte had already arrived. This one watches the
- connection state and stops on the close.
 
  The response is accumulated into ONE list, reserved up front and
  pushed into in place. The obvious loop -- acc & chunk, once per
@@ -310,24 +255,6 @@ Section: Receive
    else list-length acc - head-end >= want
 
 Section: The Network Scope Gate
-
- The runtime chokepoint for the network authority scope, the twin of
- Fat16's fat16-scope-admits for the filesystem path. A
- program declaring [Network.Write "api.example.com"] has that authority
- written into its process-table cell by the boot grant (or copied in at
- spawn, or installed by the verified loader). The compile time checker
- only sees literal URLs; a URL built at runtime from input is exactly
- what this gate is here to catch, so the check reads the destination
- authority off the runtime url and compares it to the grant with the
- same relation the type checker uses: a host matches whole, a port is
- compared only when the grant names one, and an empty grant admits every
- host (an unscoped program is unrestricted, which is what the empty
- authority already means).
-
- net-request-authority mirrors the type checker's url-authority: it
- appends the scheme's default port when the url leaves it implicit, so a
- grant written "host:80" and a fetch of "http://host/" agree on the port
- the way they do at compile time.
 
   auth-host : Text -> Text
   auth-host (a) =
@@ -402,13 +329,6 @@ Section: The Request
 
 Section: The Refusal
 
- An https URL is not fetched by THIS function. It would be fetched in
- the CLEAR -- the cleartext path speaks HTTP/1.0 and negotiates nothing
- -- and a caller that wrote https has said, in the only way the URL
- lets them, that the bytes must not cross the wire unprotected.
- Honouring the scheme as a parse and ignoring it as a promise is how a
- transport-security bug gets shipped, so the request is refused.
-
  What a refusal must not do is misdescribe itself, and this one did for
  as long as it said "TLS is not implemented here". TLS IS implemented
  here: `fetch-tls`, in the section below, runs a real TLS 1.3 handshake
@@ -420,11 +340,6 @@ Section: The Refusal
  against). A one-argument `fetch` has nowhere to carry either, so it
  cannot authenticate anybody, and an anonymous connection under the
  https scheme is exactly the false promise this project does not ship.
-
- So the refusal is permanent by design rather than pending on somebody
- doing the work, and it names the function that does the job. A
- diagnostic that sends its reader looking for an unimplemented feature
- is worse than one that says nothing, because it looks like an answer.
 
   https-refusal : Text -> Text
   https-refusal (url) = "https: refusing to fetch " & url & " in the clear. fetch carries no trust anchors and no entropy, so it cannot authenticate a server; use fetch-tls, which takes both"
@@ -438,18 +353,6 @@ Section: HTTPS Over TLS 1.3
  the handshake, the record protection, the Ed25519 X.509 authentication,
  the man-in-the-middle defence -- is `Encode chapter TlsEndpoint`, proven end
  to end by `codex/test/apps/tls-fetch-loopback`.
-
- Two things enter from the caller and are never invented here, because a
- chapter that invents them invents a weak key or a lie: the client's
- ephemeral X25519 private key and 32-byte handshake random (entropy), and
- the trust anchors plus calendar time the server's certificate is checked
- against (the security policy). A caller with no anchors gets no
- authentication and this refuses to pretend otherwise.
-
- The bare one-argument `fetch` still refuses https below: it has nowhere to
- carry anchors or entropy, so it cannot make an authenticated connection,
- and an anonymous one under the https scheme would be exactly the false
- promise this project does not ship. Authenticated fetch is this function.
 
  The live exchange cannot run in the headless battery -- it starts no TLS
  server -- so in the battery this is compile-verified and rests on the
@@ -484,12 +387,6 @@ Section: HTTPS Over TLS 1.3
     end
   end
 
- One TLS record framed off the TCP byte stream. A record is a five-byte
- header whose last two bytes are the length of what follows, so the whole
- record is 5 + that. Bytes are pulled until a full record is present; a
- stream that stops before one completes ends the read rather than blocking
- forever.
-
   HttpsRecv = record {
     hr-ts : TcpTransportState,
     hr-rec : List Integer,
@@ -521,23 +418,6 @@ Section: HTTPS Over TLS 1.3
    if i >= n then acc
    else if off + i >= list-length bs then acc
    else http-slice-loop bs off n (i + 1) (list-push acc (list-at bs (off + i)))
-
- The bytes are pulled with a loop of this chapter's own rather than
- net-io-recv-raw, for the reason http-recv above gives about the cleartext
- path: net-io-recv-raw returns only when a frame carried payload, so it
- cannot tell a peer that has finished from a peer that is merely slow, and
- it spins out its whole fifty-million-iteration budget after the last byte
- has already arrived. The cleartext half was written that way from the
- start. This half was not, and nothing in the tree could show it: every
- loopback here keeps its connection open forever, so the spin never
- happened. The first foreign server this fetch ever met sent its response,
- sent a FIN, had the FIN acknowledged by the stack, and the client then sat
- for minutes with the entire body already in hand.
-
- An empty answer ends the read, and it means either the connection closed
- or the budget ran out. The caller does the same thing in both cases -- it
- stops -- so the two are not distinguished here; a field nobody reads is
- worth what no field is worth.
 
   HttpsPull = record {
     hp-ts : TcpTransportState,
@@ -583,17 +463,6 @@ Section: HTTPS Over TLS 1.3
     https-send-loop ts1 recs (i + 1)
    end
 
- Drive the handshake: send our ClientHello, then for every server record
- feed it to the endpoint and send whatever the endpoint answers, until the
- endpoint reports the handshake done or the stream stalls.
-
- The host out of the URL is what the certificate is checked against, in
- ASCII, because a certificate holds ASCII and `host` is CCE Text. This is
- the whole reason an https fetch can mean anything: the authority in the
- URL is the identity the caller asked for, so it is the identity the
- server has to prove. A certificate that is genuine but belongs to another
- host now fails the handshake instead of completing it.
-
   https-run : TcpTransportState, Text, Text, List Integer, List Integer, List X509Anchor, List Integer -> [Network.Read, Network.Write] Result Text Text
   https-run (ts) (host) (path) (client-priv) (random) (anchors) (cal-now) =
    let st0 = tls-ep-hello (tls-ep-client-new client-priv random anchors cal-now (http-to-ascii host))
@@ -617,11 +486,6 @@ Section: HTTPS Over TLS 1.3
      https-drive ts2 (step.tes-ep) (rr.hr-rest)
     end
    end
-
- The request goes out as application data under the client key; the
- response records come back until the server closes, each decrypted and
- appended to the endpoint's application buffer, and that buffer is the HTTP
- response the ordinary parser then reads.
 
   https-request : HttpsHs, Text, Text -> [Network.Read, Network.Write] Result Text Text
   https-request (hs) (host) (path) =

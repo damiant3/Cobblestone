@@ -13,10 +13,6 @@ Chapter: DtlsEndpoint
   cites Foreword chapter Tls
   cites Foreword chapter Maybe
 
- The DTLS 1.3 endpoint: the thing that finally makes the record layer,
- the handshake machine, the message framing and the hello bodies into
- something that can complete a handshake.
-
  It is PURE, and deliberately so. Datagrams in, datagrams out; no socket,
  no clock, no I/O. It follows the Udp chapter's precedent -- os/net holds
  pure protocol logic and NetIO is the only thing that touches a wire. The
@@ -25,36 +21,10 @@ Chapter: DtlsEndpoint
  no peer process. A datagram protocol whose difficulty is loss and
  reordering can be tested by simply choosing which datagrams to deliver.
 
- AUTHENTICATION IS HERE, AND IT IS OPT-IN. An endpoint built by
- dtls-ep-new alone still does the ANONYMOUS X25519 agreement -- no
- Certificate, no CertificateVerify -- and that agreement resists a passive
- eavesdropper but NOT an active man in the middle. Do not describe the
- anonymous handshake as secure. But a server given a certificate chain
- (dtls-ep-with-cert) and a client given trust anchors (dtls-ep-with-anchors)
- now authenticate: the server signs the transcript with the private key of
- its leaf certificate, the client walks the chain to an anchor and verifies
- that signature over its OWN transcript, and a client that was given anchors
- refuses to finish if that verification did not happen. An active man in the
- middle who substitutes his own key_share changes the client's transcript,
- so the server's signature -- made over the real transcript -- no longer
- verifies, and the handshake fails. That is the difference between the
- transport working and DTLS working, and it is what the authenticated
- loopback drives with a real forged chain.
-
  X.509 peer authentication only, with Ed25519 certificates (RFC 8410): that
  is the credential model, and its one real limit is that a chain signed by a
  commercial CA (RSA or ECDSA) cannot be validated -- this authenticates a
  fleet whose CA you run.
-
- The record layer is now used at both epochs. The server flight after
- ServerHello (Certificate, CertificateVerify, Finished) and both Finished
- messages travel as DTLS 1.3 ciphertext at the handshake epoch (2) under the
- handshake traffic keys, exactly as a real DTLS 1.3 peer expects -- only the
- ClientHello, HelloRetryRequest and ServerHello, which precede the keys, are
- DTLSPlaintext. On completion the endpoint derives the master secret and the
- two application traffic secrets over the transcript through the server
- Finished, and dtls-ep-send-app / dtls-ep-recv-app carry application records
- at epoch 3 (see Section: Application Data).
 
  One honest limit remains, and it is not hidden: no third-party DTLS peer
  has ever been in the loop. The record layer has a known-answer oracle
@@ -63,10 +33,6 @@ Chapter: DtlsEndpoint
  openssl DTLS 1.3 peer as the oracle -- the way tls-interop-test does for
  TLS -- is what would turn "protected as a real peer expects" into
  "interoperates with a real peer", and it is the next step, not a done one.
-
- To dtls-ep-client gives DtlsEpStep, starting a client and emitting its first flight.
- To dtls-ep-recv gives DtlsEpStep, feeding one datagram in and getting datagrams out.
- To dtls-ep-send-app gives DtlsEpStep, sealing one application record.
 
  We say:
 
@@ -111,13 +77,6 @@ Section: Types
 
 Section: Construction
 
- The session id is empty and the randoms are the caller's business --
- this chapter does not invent entropy, because a chapter that quietly
- invents entropy is a chapter that quietly invents a weak key. The
- handshake Random is one such value: it enters here, from the caller, as
- the `random` argument, and is never derived from anything the endpoint
- already holds.
-
   dtls-ep-new : Boolean, List Integer, List Integer, List Integer, List Integer -> DtlsEp
   dtls-ep-new (is-server) (priv) (random) (cookie-secret) (addr) =
     DtlsEp { ep-server = is-server, ep-hs = dtls-hs-new, ep-priv = priv, ep-pub = x25519-public-key priv,
@@ -128,61 +87,15 @@ Section: Construction
              ep-expected-peer = [], ep-hs-secret = [], ep-c-ap = [], ep-s-ap = [],
              ep-app-read-seq = 0, ep-app-write-seq = 0, ep-app-in = [] }
 
- Authentication is opt-in and defaults OFF, exactly the way a real DTLS
- stack negotiates it. An endpoint built by dtls-ep-new alone does the
- anonymous X25519 agreement the loopback proved -- no Certificate, no
- CertificateVerify, and no claim to be secure. The two builders below add
- the credential material, and each is the whole of what a role needs.
-
- A server presents a certificate CHAIN (leaf first) and the private key
- that matches the leaf. It signs the transcript with that key, and a peer
- who does not hold it cannot produce the signature -- which is the entire
- point.
-
   dtls-ep-with-cert : DtlsEp, List (List Integer), List Integer, List Integer -> DtlsEp
   dtls-ep-with-cert (ep) (chain) (sign-priv) (sign-pub) =
     __record-set (__record-set (__record-set ep "ep-cert-chain" chain) "ep-sign-priv" sign-priv) "ep-sign-pub" sign-pub
-
- A client carries the trust anchors it will accept, and a CALENDAR time to
- check certificate validity against. The two arguments are not the same
- clock as the transport `now` the handshake machine uses, and conflating
- them is a real error: the transport `now` is an integer tick that drives
- retransmission, while a certificate's notBefore/notAfter are calendar
- instants, carried here as 14 ASCII digits (YYYYMMDDHHMMSS) exactly as the
- chain walk compares them. A device without a real-time clock cannot check
- certificate validity honestly, and this is where that time enters -- from
- the caller, never invented.
-
- A client with anchors REQUIRES authentication: it refuses to complete a
- handshake in which the peer did not present a chain that walks to one of
- them. A client without anchors is anonymous, and says so by not finishing
- any differently than before. The anchors are the client's whole security
- policy in one field.
 
   dtls-ep-with-anchors : DtlsEp, List X509Anchor, List Integer, List Integer -> DtlsEp
   dtls-ep-with-anchors (ep) (anchors) (cal-now) (expected) =
     __record-set (__record-set (__record-set ep "ep-anchors" anchors) "ep-cal-now" cal-now) "ep-expected-peer" expected
 
- Anchors say the peer's certificate must chain to a CA the client runs.
- They do not say WHICH peer. A chain that walks to a trusted anchor proves
- the holder is someone the CA vouched for -- not that the holder is the
- server this client meant to reach. In a fleet whose CA signs every device
- that is the difference between "a valid device" and "the device I dialed":
- without this, a holder of any valid certificate impersonates any other,
- and the man-in-the-middle simply presents a real certificate of his own.
-
- That paragraph was here before the check was, and underneath it sat
- `dtls-ep-expect-peer`, which set the name AFTER the fact and defaulted to
- "anything matches" when nobody called it -- and nobody did. The name is
- now the third argument of dtls-ep-with-anchors, because the moment a
- client decides to verify a chain it has to say whose chain it wanted.
- Anonymous DTLS is untouched: an endpoint that never takes anchors never
- verifies a certificate and never needs a name.
-
 Section: Client
-
- Flight 1: a ClientHello with no cookie. The machine decides to send it;
- this chapter decides what "it" is.
 
   dtls-ep-client : DtlsEp, Integer -> DtlsEpStep
   dtls-ep-client (ep) (now) =
@@ -192,12 +105,6 @@ Section: Client
     in let tr = tls13-msg-transcript dtls-hs-client-hello body
     in let ep2 = __record-set (__record-set (__record-set ep "ep-hs" (r.step-state)) "ep-transcript" tr) "ep-ch1" tr
     in DtlsEpStep { es-ep = ep2, es-out = [dtls-ep-wrap ep2 msg] }
-
- The client/server random the caller supplied at construction, taken to
- the 32 bytes the hello body carries. Real entropy is the caller's job;
- a device with a real entropy source passes real bytes, and the loopback
- passes a fixed value so it stays reproducible. It is never derived from
- the endpoint's own key -- doing that made the Random a public value.
 
   dtls-ep-random : DtlsEp -> List Integer
   dtls-ep-random (ep) = dtls-take-at (ep.ep-random) 0 32
@@ -289,10 +196,6 @@ Section: Server
  cookie here is the hash followed by a MAC over the address AND the hash,
  which is what makes it both unforgeable and self-carrying.
 
- A cookie that were only a MAC of the address would look fine, verify
- fine, and leave the server unable to reconstruct the transcript -- the
- handshake would then fail at the Finished, on the cookie path only.
-
   dtls-ep-cookie : List Integer, List Integer, List Integer -> List Integer
   dtls-ep-cookie (secret) (addr) (ch1-hash) =
     ch1-hash & hkdf-words-to-bytes (hmac-sha256 secret (addr & ch1-hash))
@@ -326,9 +229,6 @@ Section: Server
       is None -> dtls-ep-idle ep
       is Just (h) -> dtls-ep-server-accept ep m cookie h
 
- The cookie held. NOW the server allocates, and not one instruction
- sooner.
-
   dtls-ep-server-accept : DtlsEp, DtlsMsg, List Integer, List Integer -> DtlsEpStep
   dtls-ep-server-accept (ep) (m) (cookie) (ch1-hash) =
     when dtls-ch-key-share (m.dm-body)
@@ -347,19 +247,6 @@ Section: Server
     then dtls-ep-server-emit (dtls-ep-with-keys ep peer hs tr c-hs s-hs) sh-body th
     else dtls-ep-server-emit-auth ep peer hs tr c-hs s-hs sh-body
 
- The authenticated flight: ServerHello, Certificate, CertificateVerify,
- Finished. The handshake traffic keys are still derived at the ServerHello
- transcript -- authentication does not move the key schedule, it only adds
- messages the key schedule then covers.
-
- CertificateVerify signs Transcript-Hash(ClientHello ... Certificate) --
- everything through the Certificate message and NOT the CertificateVerify
- itself. That is the hinge the whole scheme turns on. The server's
- signature commits to the transcript, and the transcript contains the
- ServerHello key_share. An active man in the middle who substitutes his own
- key_share changes the transcript, so the signature he would need is one
- over bytes the real server never signed -- and he does not hold the key.
-
   dtls-ep-server-emit-auth : DtlsEp, List Integer, List Integer, List Integer, List Integer, List Integer, List Integer -> DtlsEpStep
   dtls-ep-server-emit-auth (ep) (peer) (hs) (tr) (c-hs) (s-hs) (sh-body) =
     let cert-body = tls-cert-encode (ep.ep-cert-chain)
@@ -369,11 +256,6 @@ Section: Server
     in let tr-cv = tr-cert & tls13-msg-transcript dtls-hs-cert-verify cv-body
     in let th-cv = tls13-transcript-hash tr-cv
     in dtls-ep-server-emit-msgs (dtls-ep-with-keys ep peer hs tr-cv c-hs s-hs) sh-body cert-body cv-body th-cv
-
- The Finished is over the transcript through CertificateVerify, so a client
- whose CertificateVerify check failed has already stopped and never reaches
- it. ep-transcript is stored through CertificateVerify too, which is what
- the client's own Finished will be checked against.
 
   dtls-ep-server-emit-msgs : DtlsEp, List Integer, List Integer, List Integer, List Integer -> DtlsEpStep
   dtls-ep-server-emit-msgs (ep) (sh-body) (cert-body) (cv-body) (th) =
@@ -385,12 +267,6 @@ Section: Server
     in let hk = dtls-ep-keys (ep.ep-s-hs)
     in let ep2 = dtls-ep-derive-app ep ((ep.ep-transcript) & tls13-msg-transcript dtls-hs-finished sfin)
     in DtlsEpStep { es-ep = ep2, es-out = [dtls-ep-wrap ep sh-msg, dtls-ep-seal-hs hk 0 cert-msg, dtls-ep-seal-hs hk 1 cv-msg, dtls-ep-seal-hs hk 2 fin-msg] }
-
- The transcript on the cookie path: message_hash(ClientHello1),
- HelloRetryRequest, ClientHello2, ServerHello. The ClientHello1 hash comes
- out of the cookie, and the HelloRetryRequest is rebuilt from that same
- cookie -- so both sides hash identical bytes without the server having
- stored a thing.
 
   dtls-ep-server-transcript : DtlsEp, DtlsMsg, List Integer, List Integer, List Integer -> List Integer
   dtls-ep-server-transcript (ep) (m) (sh-body) (cookie) (ch1-hash) =
@@ -407,10 +283,6 @@ Section: Server
     in let ep2 = dtls-ep-derive-app ep ((ep.ep-transcript) & tls13-msg-transcript dtls-hs-finished sfin)
     in DtlsEpStep { es-ep = ep2, es-out = [dtls-ep-wrap ep sh-msg, dtls-ep-seal-hs (dtls-ep-keys (ep.ep-s-hs)) 0 fin] }
 
- The client's Finished. If it verifies, both sides hold the same
- handshake secret -- and nothing more than that. It does not say who the
- client is.
-
   dtls-ep-server-fin : DtlsEp, DtlsMsg -> DtlsEpStep
   dtls-ep-server-fin (ep) (m) =
     let th = tls13-transcript-hash (ep.ep-transcript)
@@ -425,9 +297,6 @@ Section: Client Receive
     if m.dm-type /= dtls-hs-server-hello then dtls-ep-client-other ep m
     else if dtls-is-hrr (m.dm-body) then dtls-ep-client-hrr ep m now
     else dtls-ep-client-sh ep m
-
- A HelloRetryRequest. Recognised by the magic random, never by a message
- type -- there isn't one.
 
   dtls-ep-client-hrr : DtlsEp, DtlsMsg, Integer -> DtlsEpStep
   dtls-ep-client-hrr (ep) (m) (now) =
@@ -446,9 +315,6 @@ Section: Client Receive
     in let ep2 = __record-set (__record-set ep "ep-hs" (r.step-state)) "ep-transcript" tr
     in DtlsEpStep { es-ep = ep2, es-out = [dtls-ep-wrap ep2 msg] }
 
- The ServerHello. The key exchange completes here, and the handshake
- traffic secrets fall out of it.
-
   dtls-ep-client-sh : DtlsEp, DtlsMsg -> DtlsEpStep
   dtls-ep-client-sh (ep) (m) =
     when dtls-sh-key-share (m.dm-body)
@@ -463,34 +329,12 @@ Section: Client Receive
     in let th = tls13-transcript-hash tr
     in DtlsEpStep { es-ep = dtls-ep-with-keys ep peer hs tr (tls13-client-hs-traffic hs th) (tls13-server-hs-traffic hs th), es-out = [] }
 
- After the ServerHello, the authenticated server sends Certificate and
- CertificateVerify before its Finished. The anonymous server sends neither,
- so a client with no anchors simply never sees them.
-
   dtls-ep-client-other : DtlsEp, DtlsMsg -> DtlsEpStep
   dtls-ep-client-other (ep) (m) =
     if m.dm-type == dtls-hs-certificate then dtls-ep-client-cert ep m
     else if m.dm-type == dtls-hs-cert-verify then dtls-ep-client-cv ep m
     else if m.dm-type == dtls-hs-finished then dtls-ep-client-fin ep m
     else dtls-ep-idle ep
-
- The Certificate message. The chain is parsed and walked against the
- client's trust anchors at the client's calendar time (ep-cal-now, supplied
- by the caller -- see dtls-ep-with-anchors). A chain that does not parse, or
- does not reach an anchor, leaves ep-auth-done False and keeps no peer key,
- and the later Finished is refused by dtls-ep-auth-missing.
-
- THE TRANSCRIPT RECORDS WHAT WAS RECEIVED, NOT WHAT WAS BELIEVED. This
- message and CertificateVerify fold either way. Folding them only on
- success is a defect the anonymous configuration hides: an anonymous
- server sends neither message, so a client with no anchors never sees one.
- A server that DOES present a chain to a client that does not check it is
- the ordinary case on the open internet, and there the unfolded message
- left the client's transcript one message short of the server's, so the
- server Finished could not verify and the handshake died at the Finished
- -- which reads as a key schedule fault and is nothing of the kind. Fixed
- in TlsEndpoint at the same time and for the same reason; the two client
- paths are the same design.
 
   dtls-ep-client-cert : DtlsEp, DtlsMsg -> DtlsEpStep
   dtls-ep-client-cert (ep) (m) =
@@ -512,26 +356,11 @@ Section: Client Receive
       is None -> ep
       is Just (certs) -> dtls-ep-cert-key-walk ep certs
 
- The chain proved the leaf is trusted; this proves it is the RIGHT leaf.
- The identity is checked inside x509-chain-verify, against the leaf's
- subjectAltName. It used to be checked here, against the leaf's subject
- DN, and only when the caller had opted in. Both halves of that were
- wrong: a DN is not the name anybody dials, and a check nobody switches on
- is a check nobody has.
-
   dtls-ep-cert-key-walk : DtlsEp, List X509Cert -> DtlsEp
   dtls-ep-cert-key-walk (ep) (certs) =
     when x509-verify-peer certs (ep.ep-anchors) (ep.ep-cal-now) (ep.ep-expected-peer)
       is ChainOk -> __record-set ep "ep-peer-key" ((list-at certs 0).xc-key)
       is otherwise -> ep
-
- CertificateVerify. The signature is checked over the transcript hash
- THROUGH the Certificate -- the transcript as it stands right now, before
- this message is folded in. This is the line an active man in the middle
- cannot get past: his substituted key_share made the client's transcript
- differ from the one the server signed, so a signature that is valid for
- the server is invalid here. The verdict becomes ep-auth-done; the message
- folds either way, and dtls-ep-auth-missing is what refuses.
 
   dtls-ep-client-cv : DtlsEp, DtlsMsg -> DtlsEpStep
   dtls-ep-client-cv (ep) (m) =
@@ -541,11 +370,6 @@ Section: Client Receive
  The server's Finished. Verify it, then send ours. A client that sends
  its Finished before checking the server's has authenticated nothing and
  announced its own key confirmation to an attacker.
-
- A client that REQUIRES authentication -- one that was given anchors --
- refuses to finish unless CertificateVerify succeeded. This is the gate
- that turns a failed authentication into a failed handshake rather than a
- silent downgrade to the anonymous exchange.
 
   dtls-ep-client-fin : DtlsEp, DtlsMsg -> DtlsEpStep
   dtls-ep-client-fin (ep) (m) =
@@ -558,17 +382,10 @@ Section: Client Receive
     in if tls13-finished-ok (ep.ep-s-hs) th (m.dm-body) == False then dtls-ep-idle ep
     else dtls-ep-client-send-fin (dtls-ep-derive-app ep ((ep.ep-transcript) & tls13-msg-transcript dtls-hs-finished (m.dm-body)))
 
- A client with anchors requires authentication; a client without them does
- not. The empty-anchor case is the anonymous handshake, unchanged.
-
   dtls-ep-auth-missing : DtlsEp -> Boolean
   dtls-ep-auth-missing (ep) =
     if list-length (ep.ep-anchors) == 0 then False
     else ep.ep-auth-done == False
-
- Parse a list of DER certificates into a list of X509Cert. If any one
- fails to parse, the whole chain is refused -- there is no such thing as a
- chain with a hole in it.
 
   dtls-ep-parse-chain : List (List Integer) -> Maybe (List X509Cert)
   dtls-ep-parse-chain (ders) = dtls-ep-parse-loop ders 0 []
@@ -618,11 +435,6 @@ Section: Application Data
   dtls-ep-app-epoch : Integer = 3
   dtls-ep-content-app : Integer = 23
 
- Derive the application secrets and open the application-data buffer. The
- transcript passed in already runs through the server Finished. ep-transcript
- is advanced to it so the server verifies the client Finished over the same
- hash.
-
   dtls-ep-derive-app : DtlsEp, List Integer -> DtlsEp
   dtls-ep-derive-app (ep) (tr) =
     let th = tls13-transcript-hash tr
@@ -642,17 +454,9 @@ Section: Application Data
   dtls-ep-keys (secret) =
     DtlsKeys { dk-key = tls13-traffic-key secret, dk-iv = tls13-traffic-iv secret, dk-sn-key = dtls-sn-key secret 16 }
 
- Seal a handshake message at the handshake epoch (2), inner content type
- handshake. The server flight after ServerHello and both Finished messages
- go out this way.
-
   dtls-ep-seal-hs : DtlsKeys, Integer, List Integer -> List Integer
   dtls-ep-seal-hs (k) (seq) (msg) =
     dtls-seal k dtls-ep-hs-epoch seq msg dtls-content-handshake
-
- One application record out. The client seals under the client application
- secret and the server under the server one; each direction has its own
- sequence number, and reusing one across directions would reuse a nonce.
 
   dtls-ep-send-app : DtlsEp, List Integer -> DtlsEpStep
   dtls-ep-send-app (ep) (data) =
@@ -660,21 +464,12 @@ Section: Application Data
     in let rec = dtls-seal (dtls-ep-keys secret) dtls-ep-app-epoch (ep.ep-app-write-seq) data dtls-ep-content-app
     in DtlsEpStep { es-ep = __record-set ep "ep-app-write-seq" (ep.ep-app-write-seq + 1), es-out = [rec] }
 
- One application record in, opened under the PEER's application secret: a
- server reads what the client sealed, and the reverse. A record that does
- not authenticate yields no plaintext and leaves the buffer untouched --
- the None is the security property, not an error to paper over.
-
   dtls-ep-recv-app : DtlsEp, List Integer -> DtlsEpStep
   dtls-ep-recv-app (ep) (rec) =
     let secret = if ep.ep-server then ep.ep-c-ap else ep.ep-s-ap
     in when dtls-open (dtls-ep-keys secret) 0 rec
       is None -> dtls-ep-idle ep
       is Just (p) -> DtlsEpStep { es-ep = dtls-ep-app-accept ep p, es-out = [] }
-
- Only inner content type application_data is appended; a post-handshake
- handshake record (a NewSessionTicket or KeyUpdate) advances the sequence
- like any other but must never reach the application buffer.
 
   dtls-ep-app-accept : DtlsEp, DtlsPlain -> DtlsEp
   dtls-ep-app-accept (ep) (p) =
@@ -704,11 +499,6 @@ Section: Helpers
   dtls-ep-with-keys (ep) (peer) (hs) (tr) (c) (s) =
     __record-set (__record-set (__record-set (__record-set (__record-set ep "ep-peer-pub" peer) "ep-hs-secret" hs) "ep-transcript" tr) "ep-c-hs" c) "ep-s-hs" s
 
- Every handshake message goes out in a DTLSPlaintext record. There are no
- keys yet for the flights that matter, and the Finished is carried the
- same way here -- protecting it under the handshake traffic keys is the
- next rung and is not claimed.
-
   dtls-ep-wrap : DtlsEp, List Integer -> List Integer
   dtls-ep-wrap (ep) (msg) = dtls-plain-encode dtls-content-handshake 0 (ep.ep-send-seq) msg
 
@@ -717,11 +507,6 @@ Section: Helpers
 
   dtls-ep-done : DtlsEp -> Boolean
   dtls-ep-done (ep) = ep.ep-done
-
- True only when the peer presented a certificate chain that walked to a
- trust anchor and signed the transcript. For an anonymous endpoint this is
- always False, and that is the honest answer: an anonymous handshake
- authenticated no one.
 
   dtls-ep-authenticated : DtlsEp -> Boolean
   dtls-ep-authenticated (ep) = ep.ep-auth-done

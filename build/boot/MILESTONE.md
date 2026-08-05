@@ -53,8 +53,12 @@ pwsh build/boot/build-option-a.ps1        # -> build/boot/optiona.img
 #   build/build-img.ps1 wraps GPT/FAT16
 ```
 
-Source revisions (as of this milestone; `option_a_stub.asm` was deleted at B5.4
-step 4 and its sequence now lives in `cdx-to-pe.ps1`): `option_a_stub.asm`,
+Source revisions (as of this milestone; `option_a_stub.asm` was retired from the
+default boot path at B5.4 step 4, its sequence now lives in `cdx-to-pe.ps1`, and
+the file and its ml64 builder were deleted 2026-08-03. It is named below because
+it is what this milestone was actually built with; read it out of the depot
+history):
+`option_a_stub.asm`,
 `build-option-a.ps1`, `build-img.ps1`
 (CL 7289), `GopBoot.codex` (CL 7286 state), and the codex-vm fidelity fixes
 (CLs 7278/7280/7283/7286/7288).

@@ -1,0 +1,106 @@
+[
+  {
+    "target": "chapter:Name Resolution",
+    "kind": "invariant",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "**Locals linearity**: `scope-add-local` uses mutable field assignment, which is in-place mutation on bare metal -- it changes the Scope it is handed and returns that same Scope. So a Scope may be shared only where every binding added to it genuinely belongs to every later reader of it. The line to hold is the BINDING REGION, and it has two sides.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Name Resolution",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "*Within* a region, sharing is the point: sequential accumulators (the bindings of one let, the statements of one act block, a lambda's param chain) share one Scope so each binding sees the ones before it, which is what lexical scope means.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Name Resolution",
+    "kind": "invariant",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "*Entering* a region, the Scope must be forked (`scope-fork`), or the region's bindings escape into the scope it was reached from. Sibling iterations are the case this file always got right -- sibling arms in `resolve-match-arms`, sibling clauses in `resolve-handle-clauses`, sibling defs in `resolve-all-defs` (which starts from `skip-list-text-empty`, having no outer locals) -- because one sibling's additions leaking into the next would resolve a misspelled name against the previous sibling's bindings.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Name Resolution",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A let body and an act block are regions too, and they formerly did not fork: a `let` inside an `if` arm left its binder bound after the arm, so an out-of-scope read still RESOLVED and the error surfaced far downstream as the emitter's CDX2040 (a call to a name nobody wrote). The subtlety that hid it: an act-block `let` scoping over the rest of its block is REAL do-notation, and it was riding on the same mutation, so the leak looked like a feature from one angle and a bug from the other. `resolve-act-let` now says the do-notation deliberately; every other region forks.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Name Resolution",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "`ATryExpr`'s three regions each fork. The decision that required: a fallback runs precisely when the body did NOT finish, so a body binding is possibly-unwritten when the fallback reads it, and the body re-runs from the top on every attempt, so the slot holds one partial attempt rather than one value. The regions do not share.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Name Resolution",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Nothing relied on the old sharing -- `trying` occurs in one other source file (`codex/test/try-smoke`) and no fallback there names anything from its body. What the sharing did produce was a miscompile, because the checker never had it: `infer-act` is handed the untouched `env` per region, so a fallback's name typed as the OUTER binding while this file resolved it to the body's and the emitter loaded the body's slot. `codex/test/scope-try-region` pins it.",
+    "thread": null
+  },
+  {
+    "target": "function:scope-fork",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A fork is a Scope that shares the global names and the renames but owns its locals, so `scope-add-local` on it cannot reach the scope it came from. Every site that opens a nested BINDING REGION forks: a let body, a match arm, a handler clause, an act block, an induction's arms. The three that already did wrote this constructor out by hand; naming it keeps the fourth from being written slightly differently.",
+    "thread": null
+  },
+  {
+    "target": "section:Built-in Names",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The names, from the one table that has them (Chapter: Builtins). This was a hand-written literal of 244 strings that had to agree with the type environment and with the emitter by inspection alone. It does not have to agree with them now; it is made of them.",
+    "thread": null
+  },
+  {
+    "target": "function:resolve-try-region",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "One try region, resolved in its own fork. This is a function rather than three forks written out in the arm because `Scope` is `mutable`: a function returning a Scope threads it onward and therefore CONSUMES it, so three `scope-fork sc` calls on one path is three owners and CDX2062 rejects it. Returning diagnostics borrows `sc` instead, and the fork inside is consumed once per call. The uniqueness checker caught this while 2.23 was being closed.",
+    "thread": null
+  },
+  {
+    "target": "section:Resolve Let",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The binder loop shares one Scope across the bindings on purpose -- each binding sees the ones before it, which is what `let a = .. in let b = a .. ` means. What must NOT be shared is the scope the let was reached from, so the caller hands this loop a fork. `resolve-let` forks for its own body; `resolve-act-let` does not, because an act-block let scopes over the rest of the block.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Name Resolution",
+    "kind": "invariant",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A `let` statement in an act block is do-notation: it scopes over the REST of the block, not merely over its own `in` body -- the rule `codex/test/act-let-scope` pins, and the one lowering says by nesting the remaining statements inside the let's body (`lower-act-let`). So this binds into the BLOCK's scope and does not fork: here the binding escaping the let is the point.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Name Resolution",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Until the fork landed on `resolve-expr-at`'s ALetExpr arm, an act-block let reached the following statements the same way a let inside an if-arm reached past its arm -- by mutating the scope it was handed. One was the language, the other was the bug, and they were the same line of code.",
+    "thread": null
+  },
+  {
+    "target": "function:resolve-act-let",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The chain is peeled to its innermost body so every binding in `let a = .. in let b = .. in stmt` scopes over the rest, and each let statement carries its OWN duplicate-tracking (a later `let a` in the same block SHADOWS an earlier one, which act-let-scope also pins), so the block's `seen` is passed through untouched.",
+    "thread": null
+  }
+]

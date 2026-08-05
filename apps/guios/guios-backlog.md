@@ -1,5 +1,11 @@
 # GuiOS -- open capabilities
 
+**This app is retiring into `apps/works/GopDesk.codex`** (ruled
+2026-08-03, `docs/Designs/Active/OS/GuiOsBringup.md`). The four menu-item
+chapters are deleted; `CalcApp`, `CalendarApp`, `DiffusionApp`, `TrackerApp`
+and `TrackerDb` carry real logic and are being merged into the GopDesk stack
+and wired to panes. Do not start new work here.
+
 App-domain backlog. `docs/PM/BACKLOG.md` is the register for the
 platform -- compiler, forewords, OS, plugs, backends. Anything that is
 this application's own behaviour lives here instead, so the platform

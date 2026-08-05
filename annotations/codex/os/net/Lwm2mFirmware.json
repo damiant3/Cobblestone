@@ -1,0 +1,98 @@
+[
+  {
+    "target": "type:Lwm2mFw",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The staged image is never held in memory. Blocks go from the parsed response straight into the bank, and Gate A hashes the bank -- so what is verified is what actually landed, not what the client believes it sent. A write that never reached the silicon cannot pass this gate.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Lwm2mFirmware",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Every result code enters the record through here. The bounds prover reads literals, field accesses and __narrow of those -- it does not read a named constant's declared range -- so a bare fw-result-integrity would be CDX2051 even though the constant is declared 0..9. Narrowing a parameter is the idiom that carries the assertion (ota-version-new does the same with a sequence number), and it costs one runtime check on a path that runs once per update.",
+    "thread": null
+  },
+  {
+    "target": "function:fw-set-result",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "This was seven lines of hand-expanded record until 2026-07-16, because __narrow did not survive revised's hoist and the checker rejected the assertion the diagnostic recommended. That is fixed in the desugarer (codex/test/revised-narrow), so the update sugar reads as it should.",
+    "thread": null
+  },
+  {
+    "target": "section:Object 5 Resources",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "State is /5/0/3 and Result is /5/0/5. Both are reads a server performs to learn where the device is, and both are derived rather than stored -- a second copy of the state is a second thing to get wrong.",
+    "thread": null
+  },
+  {
+    "target": "section:Write /5/0/1 -- Package URI",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The server writing the Package URI is what starts a download. The manifest carries the hash, the size and the sequence number, which the URI does not: those come from the release fact the publisher signed, and a device that took the server's word for them would let a compromised fleet server pick the image. The server carries bytes; the publisher grants execution.",
+    "thread": null
+  },
+  {
+    "target": "function:fw-feed-response",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A response is refused before it is staged. A packet that does not parse is not a short packet, it is not CoAP; a code that is not 2.05 Content is not a body; and a block that is not the one asked for is not the next block. Staging an out-of-order block would write the image at the wrong offset and leave a hole that Gate A would catch and nobody could explain, so it is refused where it happens.",
+    "thread": null
+  },
+  {
+    "target": "function:fw-write",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "One block, one unlock-program-lock cycle. Holding a bank open across a network wait would leave a live write path into the image while the device sits idle, which is the state this whole design exists to avoid. The cost is a key sequence per block; the alternative is an unlocked bank owned by nobody.",
+    "thread": null
+  },
+  {
+    "target": "function:fw-download-complete",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A staging fault outranks the hash. If a page write ran out of fuel the bank is short a page, and the honest answer is that flash failed (Result 2), not that the image was corrupt in transit (Result 5) -- the two send an operator to different places.",
+    "thread": null
+  },
+  {
+    "target": "section:Execute /5/0/2 -- Update",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The server executing Update is what asks for Gate B. Gate B is trust and policy -- the author's key against the device's lattice, the manifest's capabilities against the device's grants -- and this chapter does not own any of that. It should not: a firmware client that carried the trust lattice would be a client that could be talked into changing it. So the verdict is computed by the caller, against the real verifier, and handed in. This chapter decides WHEN Gate B runs, which is what the design assigns it, and never what it decides.",
+    "thread": null
+  },
+  {
+    "target": "function:fw-execute-update",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The verdict is delivered twice, and that is the machine's shape rather than a stutter. In OtaDownloaded the state machine answers ANY event by moving to OtaVerifying with action ActionRunGateB -- it is asking for the gate to be run, and it discards the verdict it was handed because it has not run it yet. Only the step taken in OtaVerifying reads the verdict. Sending it once leaves the device parked in Verifying forever, which the loopback caught by staging an image and then activating nothing.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Lwm2mFirmware",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Activation commits the candidate slot. The old firmware is still what boots until this point, which is the whole property: every refusal above leaves a device running the image it already trusted.",
+    "thread": null
+  },
+  {
+    "target": "function:fw-activate",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Activation is legal from OtaVerified and nowhere else, and the guard is not decoration. The first cut of this function set Result to 1 (success) unconditionally, and the loopback reported a successful update that had staged zero bytes -- every block had been refused, the machine had never left Idle, and the device said Success anyway. A firmware client that can report success without installing anything is worse than one that fails, because the fleet stops looking. A state that is not Verified leaves the context and the Result exactly as the failure left them.",
+    "thread": null
+  }
+]

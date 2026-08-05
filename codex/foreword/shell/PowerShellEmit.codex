@@ -2,6 +2,7 @@ Chapter: PowerShellEmit
 
   cites Shell chapter ShellTypes
   cites Foreword chapter Maybe
+  cites Foreword chapter StringUtils
 
  Emits idiomatic PowerShell 7+ source from ShellScript values.
  Split into small functions to stay within LOWER deck budget.
@@ -25,13 +26,71 @@ Section: Parameters
     if i >= len then ""
     else let p = list-at params i
     in let mandatory-attr = if p.sp-mandatory then "    [Parameter(Mandatory=$true)]\n" else ""
+    in let choice-attr = if list-length (p.sp-choices) == 0 then "" else "    [ValidateSet(" & emit-ps-choices (p.sp-choices) 0 & ")]\n"
     in let type-attr = emit-ps-param-type (p.sp-type)
     in let default-val = when p.sp-default is Just (e) -> " = " & emit-ps-expr e is None -> ""
     in let sep = if i < len - 1 then ",\n" else "\n"
-    in mandatory-attr & "    " & type-attr & "$" & p.sp-name & default-val & sep & emit-ps-params params (i + 1) len
+    in mandatory-attr & choice-attr & "    " & type-attr & "$" & p.sp-name & default-val & sep & emit-ps-params params (i + 1) len
+
+  emit-ps-fields : List ShellField, Integer -> Text
+  emit-ps-fields (fields) (i) =
+    if i >= list-length fields then ""
+    else let sep = if i == list-length fields - 1 then "" else "; "
+    in emit-ps-field (list-at fields i) & sep & emit-ps-fields fields (i + 1)
+
+  emit-ps-field : ShellField -> Text
+  emit-ps-field (f) = when f is SfField (name) (value) -> name & " = " & emit-ps-expr value
+
+ A hashtable key is quoted here and bare in emit-ps-field. PowerShell reads a
+ bare key as a bareword, and a bareword ends at a hyphen, so an invariant
+ named html-shell becomes html minus shell.
+
+  emit-ps-map-fields : List ShellField, Integer -> Text
+  emit-ps-map-fields (fields) (i) =
+    if i >= list-length fields then ""
+    else let sep = if i == list-length fields - 1 then "" else "; "
+    in emit-ps-map-field (list-at fields i) & sep & emit-ps-map-fields fields (i + 1)
+
+  emit-ps-map-field : ShellField -> Text
+  emit-ps-map-field (f) = when f is SfField (name) (value) -> ps-quote name & " = " & emit-ps-expr value
+
+  emit-ps-choices : List Text, Integer -> Text
+  emit-ps-choices (choices) (i) =
+    if i >= list-length choices then ""
+    else if i == list-length choices - 1 then ps-quote (list-at choices i)
+    else ps-quote (list-at choices i) & "," & emit-ps-choices choices (i + 1)
 
   emit-ps-param-type : ShellParamType -> Text
-  emit-ps-param-type (ty) = when ty is SptString -> "[string]" is SptInt -> "[int]" is SptSwitch -> "[switch]" is SptBool -> "[bool]" is SptPath -> "[string]"
+  emit-ps-param-type (ty) = when ty is SptString -> "[string]" is SptInt -> "[int]" is SptSwitch -> "[switch]" is SptBool -> "[bool]" is SptPath -> "[string]" is SptStringArray -> "[string[]]" is SptLong -> "[long]"
+
+Section: Colour
+
+ PowerShell's ConsoleColor names do NOT line up with the ANSI ones, and the
+ mismatch is a trap rather than a preference: its `Red` is ANSI's BRIGHT red
+ (SGR 91) and ANSI's red (31) is its `DarkRed`, while its plain white is
+ `Gray` and `White` is the bright one. So the sixteen map across shifted by
+ one intensity, and a colour written as PowerShell `Cyan` is ClBrightCyan
+ here rather than ClCyan.
+
+  emit-ps-color : ShellColor -> Text
+  emit-ps-color (c) =
+    when c
+      is ClBlack -> "Black"
+      is ClRed -> "DarkRed"
+      is ClGreen -> "DarkGreen"
+      is ClYellow -> "DarkYellow"
+      is ClBlue -> "DarkBlue"
+      is ClMagenta -> "DarkMagenta"
+      is ClCyan -> "DarkCyan"
+      is ClWhite -> "Gray"
+      is ClBrightBlack -> "DarkGray"
+      is ClBrightRed -> "Red"
+      is ClBrightGreen -> "Green"
+      is ClBrightYellow -> "Yellow"
+      is ClBrightBlue -> "Blue"
+      is ClBrightMagenta -> "Magenta"
+      is ClBrightCyan -> "Cyan"
+      is ClBrightWhite -> "White"
 
 Section: Command List
 
@@ -56,6 +115,13 @@ Section: Commands -- Core
       is ScBreak -> pad & "break"
       is ScContinue -> pad & "continue"
       is ScExit (e) -> pad & "exit " & emit-ps-expr e
+      is ScThrow (e) -> pad & "throw " & emit-ps-expr e
+      is ScSleepMs (ms) -> pad & "Start-Sleep -Milliseconds " & emit-ps-expr ms
+      is ScEchoPartial (e) -> pad & "Write-Host -NoNewline " & emit-ps-expr e
+      is ScDeleteTree (path) -> pad & "Remove-Item -Recurse -Force " & emit-ps-expr path
+      is ScWaitProcessSec (name) (secs) ->
+        pad & "$" & name & " | Wait-Process -Timeout " & emit-ps-expr secs & " -ErrorAction SilentlyContinue"
+      is ScWaitProcessFor (name) (timeout) -> pad & "$" & name & ".WaitForExit(" & emit-ps-expr timeout & ") | Out-Null"
       is ScReturn (e) -> pad & "return " & emit-ps-expr e
       is ScRaw (text) -> pad & text
       is ScSequence (cmds) -> emit-ps-cmds cmds indent 0 (list-length cmds)
@@ -81,8 +147,8 @@ Section: Commands -- IO and Extended
       is ScTempFile (name) -> pad & "$" & name & " = [System.IO.Path]::GetTempFileName()"
       is ScSetContent (path) (value) -> pad & "Set-Content -Path " & emit-ps-expr path & " -Value " & emit-ps-expr value & " -Encoding UTF8"
       is ScAddContent (path) (value) -> pad & "Add-Content -Path " & emit-ps-expr path & " -Value " & emit-ps-expr value & " -Encoding UTF8"
-      is ScDotNetCall (cls) (method) (args) -> pad & "[" & cls & "]::" & method & "(" & emit-ps-args args 0 & ")"
-      is ScDotNetCallAssign (result) (cls) (method) (args) -> pad & "$" & result & " = [" & cls & "]::" & method & "(" & emit-ps-args args 0 & ")"
+      is ScDotNetCall (cls) (method) (args) -> pad & "[" & cls & "]::" & method & "(" & emit-ps-call-args args 0 & ")"
+      is ScDotNetCallAssign (result) (cls) (method) (args) -> pad & "$" & result & " = [" & cls & "]::" & method & "(" & emit-ps-call-args args 0 & ")"
       is otherwise -> emit-ps-cmd-flow cmd indent pad
 
 Section: Commands -- Flow Control
@@ -114,9 +180,93 @@ Section: Commands -- Flow Control
         in let hd = if spec.sp-hidden then " -WindowStyle Hidden" else ""
         in let pt = if spec.sp-passthru then " -PassThru" else ""
         in let se = when spec.sp-stderr-file is Just (f) -> " -RedirectStandardError " & emit-ps-expr f is None -> ""
-        in pad & "$" & spec.sp-result-var & " = Start-Process -FilePath " & emit-ps-expr (spec.sp-executable) & " -ArgumentList " & at & hd & pt & se
+        in let so = when spec.sp-stdout-file is Just (f) -> " -RedirectStandardOutput " & emit-ps-expr f is None -> ""
+        in pad & "$" & spec.sp-result-var & " = Start-Process -FilePath " & emit-ps-expr (spec.sp-executable) & " -ArgumentList " & at & hd & pt & so & se
       is ScWaitProcess (name) (timeout) -> pad & "$" & name & ".WaitForExit(" & show timeout & ") | Out-Null"
+      is otherwise -> emit-ps-cmd-shell cmd indent pad
+
+Section: Commands -- Shell State and Process Capture
+
+ Set-Location does NOT set the process working directory that .NET calls
+ read, so a script that only calls it resolves relative paths against
+ whatever directory the shell was started in. Emitting both lines is the
+ whole reason this is one node rather than a raw pair.
+
+  emit-ps-cmd-shell : ShellCmd, Integer, Text -> Text
+  emit-ps-cmd-shell (cmd) (indent) (pad) =
+    when cmd
+      is ScSetErrorContinue -> pad & "$ErrorActionPreference = 'Continue'"
+      is ScSetLocation (path) ->
+        pad & "Set-Location " & emit-ps-expr path & "\n"
+        & pad & "[Environment]::CurrentDirectory = (Get-Location).Path"
+      is ScIncrement (name) -> pad & "$" & name & "++"
+      is ScDecrement (name) -> pad & "$" & name & "--"
+      is ScAppend (name) (value) -> pad & "$" & name & " += " & emit-ps-expr value
+      is ScRunCapture (exe) (args-var) (out-path) ->
+        pad & "& " & emit-ps-expr exe & " @" & args-var
+        & " *>&1 | Tee-Object -FilePath " & emit-ps-expr out-path & " | Out-Null"
+      is ScDiscard (e) -> pad & "[void]" & emit-ps-expr e
+      is ScIncrementBy (name) (amount) -> pad & "$" & name & " += " & emit-ps-expr amount
+      is ScRunArgs (exe) (args) -> pad & "& " & emit-ps-expr exe & emit-ps-shell-args args 0
+      is ScRunArgsDropErr (exe) (args) -> pad & "& " & emit-ps-expr exe & emit-ps-shell-args args 0 & " 2>$null"
+      is ScPrintFile (path) -> pad & "Get-Content " & emit-ps-expr path
+      is ScSetIndex (name) (key) (value) ->
+        pad & "$" & name & "[" & emit-ps-expr key & "] = " & emit-ps-expr value
+      is ScEchoStyled (e) (colour) (newline) ->
+        let nl = if newline then "" else " -NoNewline"
+        in pad & "Write-Host " & emit-ps-expr e & nl & " -ForegroundColor " & emit-ps-color colour
+      is ScCallMethod (obj) (method) (args) ->
+        pad & emit-ps-expr obj & "." & method & "(" & emit-ps-call-args args 0 & ")"
+      is ScStopProcess (id) ->
+        pad & "try { Stop-Process -Id " & emit-ps-expr id & " -Force -ErrorAction Stop } catch {}"
+      is ScSetWritable (path) ->
+        pad & "Set-ItemProperty " & emit-ps-expr path & " -Name IsReadOnly -Value $false -ErrorAction SilentlyContinue"
+      is ScPipeDo (source) (stages) (body) ->
+        let head = emit-ps-expr source & emit-ps-stages stages 0
+        in pad & head & " | ForEach-Object {\n" & emit-ps-cmds body (indent + 1) 0 (list-length body) & pad & "}"
+      is ScFunction (name) (params) (body) ->
+        let ps = emit-ps-fn-params params 0 (list-length params)
+        in let b = emit-ps-cmds body (indent + 1) 0 (list-length body)
+        in pad & "function " & name & "(" & ps & ") {\n" & b & pad & "}"
       is otherwise -> pad & "# <unknown-cmd>"
+
+ A function's parameters are declared inline and take neither a mandatory
+ attribute nor a default, which is why they do not go through
+ emit-ps-params.
+
+  emit-ps-stages : List ShellStage, Integer -> Text
+  emit-ps-stages (stages) (i) =
+    if i >= list-length stages then ""
+    else emit-ps-stage (list-at stages i) & emit-ps-stages stages (i + 1)
+
+  emit-ps-stage : ShellStage -> Text
+  emit-ps-stage (s) =
+    when s
+      is StWhere (pred) -> " | Where-Object { " & emit-ps-expr pred & " }"
+      is StMap (proj) -> " | ForEach-Object { " & emit-ps-expr proj & " }"
+      is StTake (n) -> " | Select-Object -First " & show n
+      is StSort -> " | Sort-Object"
+      is StSortBy (prop) -> " | Sort-Object " & prop
+      is StSortDesc (prop) -> " | Sort-Object " & prop & " -Descending"
+
+  emit-ps-shell-args : List ShellArg, Integer -> Text
+  emit-ps-shell-args (args) (i) =
+    if i >= list-length args then ""
+    else emit-ps-shell-arg (list-at args i) & emit-ps-shell-args args (i + 1)
+
+  emit-ps-shell-arg : ShellArg -> Text
+  emit-ps-shell-arg (a) =
+    when a
+      is SaPos (e) -> " " & emit-ps-expr e
+      is SaNamed (name) (e) -> " -" & name & " " & emit-ps-expr e
+      is SaSwitch (name) -> " -" & name
+
+  emit-ps-fn-params : List ShellParam, Integer, Integer -> Text
+  emit-ps-fn-params (params) (i) (len) =
+    if i >= len then ""
+    else let p = list-at params i
+    in let sep = if i < len - 1 then ", " else ""
+    in emit-ps-param-type (p.sp-type) & "$" & p.sp-name & sep & emit-ps-fn-params params (i + 1) len
 
 Section: Expressions -- Leaf
 
@@ -133,10 +283,17 @@ Section: Expressions -- Leaf
 
 Section: Expressions -- Operators
 
+ SeConcat is TEXT concatenation, and PowerShell's + only concatenates when
+ its LEFT operand is already a string: an integer on the left makes it try
+ to parse the right as a number and throw. The cast is what makes the node
+ mean the same thing wherever its operands came from, rather than working
+ by accident of the order the author happened to write.
+
+
   emit-ps-expr-ops : ShellExpr -> Text
   emit-ps-expr-ops (e) =
     when e
-      is SeConcat (a) (b) -> "(" & emit-ps-expr a & " + " & emit-ps-expr b & ")"
+      is SeConcat (a) (b) -> "([string]" & emit-ps-expr a & " + " & emit-ps-expr b & ")"
       is SeNot (x) -> "(-not " & emit-ps-expr x & ")"
       is SeAnd (a) (b) -> "(" & emit-ps-expr a & " -and " & emit-ps-expr b & ")"
       is SeOr (a) (b) -> "(" & emit-ps-expr a & " -or " & emit-ps-expr b & ")"
@@ -145,11 +302,21 @@ Section: Expressions -- Operators
       is SeIntEq (a) (b) -> "(" & emit-ps-expr a & " -eq " & emit-ps-expr b & ")"
       is SeIntLt (a) (b) -> "(" & emit-ps-expr a & " -lt " & emit-ps-expr b & ")"
       is SeIntGt (a) (b) -> "(" & emit-ps-expr a & " -gt " & emit-ps-expr b & ")"
+      is SeIntLe (a) (b) -> "(" & emit-ps-expr a & " -le " & emit-ps-expr b & ")"
+      is SeIntGe (a) (b) -> "(" & emit-ps-expr a & " -ge " & emit-ps-expr b & ")"
       is SeExitCodeEq (n) -> "($LASTEXITCODE -eq " & show n & ")"
       is SeMatch (expr) (pattern) -> "(" & emit-ps-expr expr & " -match " & ps-quote pattern & ")"
       is otherwise -> emit-ps-expr-access e
 
 Section: Expressions -- Access and Method
+
+ A static call and a static property are parenthesised because either can
+ land in COMMAND-ARGUMENT position, where PowerShell will not accept a bare
+ `[Type]::Member`: `Join-Path [System.IO.Path]::GetTempPath() $x` is a parse
+ error. Every earlier use sat in an assignment or inside a method call's own
+ parentheses, so the defect was invisible until a path was built from a
+ temporary directory.
+
 
   emit-ps-expr-access : ShellExpr -> Text
   emit-ps-expr-access (e) =
@@ -161,10 +328,88 @@ Section: Expressions -- Access and Method
       is SeTextLength (s) -> emit-ps-expr s & ".Length"
       is SeIndex (arr) (idx) -> emit-ps-expr arr & "[" & emit-ps-expr idx & "]"
       is SeProperty (obj) (prop) -> emit-ps-expr obj & "." & prop
-      is SeMethodCall (obj) (method) (args) -> emit-ps-expr obj & "." & method & "(" & emit-ps-args args 0 & ")"
-      is SeStaticCall (cls) (method) (args) -> "[" & cls & "]::" & method & "(" & emit-ps-args args 0 & ")"
+      is SeMethodCall (obj) (method) (args) -> emit-ps-expr obj & "." & method & "(" & emit-ps-call-args args 0 & ")"
+      is SeStaticCall (cls) (method) (args) -> "([" & cls & "]::" & method & "(" & emit-ps-call-args args 0 & "))"
       is SeStartsWith (str) (prefix) -> emit-ps-expr str & ".StartsWith(" & emit-ps-expr prefix & ")"
       is SeArrayLiteral (items) -> "@(" & emit-ps-array-inner items 0 & ")"
+      is otherwise -> emit-ps-expr-builtin e
+
+Section: Expressions -- Portable Builtins
+
+ These name what the script MEANS rather than the cmdlet that happens to
+ do it here, so a bash or ksh emitter renders its own spelling instead of
+ inheriting PowerShell's.
+
+  emit-ps-expr-builtin : ShellExpr -> Text
+  emit-ps-expr-builtin (e) =
+    when e
+      is SeBool (b) -> if b then "$true" else "$false"
+      is SeScriptRoot -> "$PSScriptRoot"
+      is SePathJoin (a) (b) -> "(Join-Path " & emit-ps-expr a & " " & emit-ps-expr b & ")"
+      is SePathParent (p) -> "(Split-Path " & emit-ps-expr p & ")"
+      is SeNow -> "(Get-Date)"
+      is SeFormatTime (t) (fmt) -> emit-ps-expr t & ".ToString(" & ps-quote fmt & ")"
+      is SeElapsedSeconds (t) -> "[int]((Get-Date) - " & emit-ps-expr t & ").TotalSeconds"
+      is SeLastExit -> "$LASTEXITCODE"
+      is SeTailJoin (path) (n) (sep) ->
+        "(Get-Content -Path " & emit-ps-expr path & " -Tail " & show n & ") -join " & emit-ps-expr sep
+      is SeErrorText -> "$_"
+      is otherwise -> emit-ps-expr-call e
+
+Section: Expressions -- Calls and Collections
+
+ SeIfElse uses the SUBEXPRESSION form. PowerShell's parentheses take an
+ expression and `if` is a statement, so `(if ...)` parses as an attempt to
+ run a command named `if` and fails at RUN time with "the term 'if' is not
+ recognized" -- it is syntactically valid and semantically wrong, which is
+ why parsing the generated script was not enough to catch it. `$( )` takes a
+ statement and is accepted in argument position too.
+
+
+  emit-ps-expr-call : ShellExpr -> Text
+  emit-ps-expr-call (e) =
+    when e
+      is SeCall (name) (args) -> "(" & name & " " & emit-ps-args args 0 & ")"
+      is SeMatchExpr (subject) (pattern) -> "(" & emit-ps-expr subject & " -match " & emit-ps-expr pattern & ")"
+      is SeCount (c) -> "@(" & emit-ps-expr c & ").Count"
+      is SeAdd (a) (b) -> "(" & emit-ps-expr a & " + " & emit-ps-expr b & ")"
+      is SeSubstringFrom (s) (start) -> emit-ps-expr s & ".Substring(" & emit-ps-expr start & ")"
+      is SePathResolve (p) -> "(Resolve-Path " & emit-ps-expr p & ").Path"
+      is SeFileNonEmptyLineCount (p) -> "(Get-Content " & emit-ps-expr p & " | Measure-Object -Line).Lines"
+      is SeFileText (p) -> "(Get-Content " & emit-ps-expr p & " -Raw -ErrorAction SilentlyContinue)"
+      is SeItem -> "$_"
+      is SePipe (source) (stages) -> "(" & emit-ps-expr source & emit-ps-stages stages 0 & ")"
+      is SeJoin (items) (sep) -> "(" & emit-ps-expr items & " -join " & emit-ps-expr sep & ")"
+      is SeTrim (s) -> emit-ps-expr s & ".Trim()"
+      is SeStaticProp (cls) (prop) -> "([" & cls & "]::" & prop & ")"
+      is SeFileFirstLine (p) -> "(Get-Content " & emit-ps-expr p & " -First 1)"
+      is SeNewline -> "\"`n\""
+      is SeTab -> "\"`t\""
+      is SeCrLf -> "\"`r`n\""
+      is SeContains (c) (x) -> "(" & emit-ps-expr c & " -contains " & emit-ps-expr x & ")"
+      is SeListGlob (pattern) -> "Get-ChildItem " & emit-ps-expr pattern & " -File"
+      is SeOrderedMap (fields) -> "[ordered]@{ " & emit-ps-map-fields fields 0 & " }"
+      is SeAsArray (c) -> "@(" & emit-ps-expr c & ")"
+      is SeCallArgs (name) (args) -> "(" & name & emit-ps-shell-args args 0 & ")"
+      is SeReplace (s) (pattern) (repl) -> "(" & emit-ps-expr s & " -replace " & ps-quote pattern & ", " & emit-ps-expr repl & ")"
+      is SeToLower (s) -> emit-ps-expr s & ".ToLower()"
+      is SeLines (parts) -> "(@(" & emit-ps-array-inner parts 0 & ") -join \"`n\")"
+      is SeSlice (s) (from) (to) -> emit-ps-expr s & "[" & show from & ".." & show to & "]"
+      is SeSplit (s) (sep) -> "(" & emit-ps-expr s & " -split " & ps-quote sep & ")"
+      is SeMul (a) (b) -> "(" & emit-ps-expr a & " * " & emit-ps-expr b & ")"
+      is SeSub (a) (b) -> "(" & emit-ps-expr a & " - " & emit-ps-expr b & ")"
+      is SeDiv (a) (b) -> "(" & emit-ps-expr a & " / " & emit-ps-expr b & ")"
+      is SeCast (ty) (x) -> "[" & ty & "]" & emit-ps-expr x
+      is SeFormat (fmt) (args) -> "(" & emit-ps-expr fmt & " -f " & emit-ps-call-args args 0 & ")"
+      is SeRecord (fields) -> "@{ " & emit-ps-fields fields 0 & " }"
+      is SeHasField (r) (name) -> emit-ps-expr r & ".ContainsKey(" & ps-quote name & ")"
+      is SeIfElse (cond) (a) (b) ->
+        "$(if (" & emit-ps-expr cond & ") { " & emit-ps-expr a & " } else { " & emit-ps-expr b & " })"
+      is SeSubstringLen (s) (start) (len) ->
+        emit-ps-expr s & ".Substring(" & emit-ps-expr start & ", " & emit-ps-expr len & ")"
+      is SeListFiles (dir) (pattern) (recurse) ->
+        let r = if recurse then " -Recurse" else ""
+        in "Get-ChildItem " & emit-ps-expr dir & r & " -Filter " & ps-quote pattern & " -File"
       is otherwise -> "\"<unknown-expr>\""
 
 Section: Helpers
@@ -172,14 +417,33 @@ Section: Helpers
   ps-indent : Integer -> Text
   ps-indent (n) = if n <= 0 then "" else "    " & ps-indent (n - 1)
 
+ A literal is emitted SINGLE-quoted. PowerShell does not interpolate inside
+ single quotes and the only escape is a doubled quote, so a literal
+ containing a dollar or a backtick cannot become a variable reference and a
+ literal containing a double quote cannot terminate its own string. This
+ emitted `$inject = "<link rel="stylesheet" ...>"` while it used double
+ quotes with no escaping at all, which is a parse error, and it had gone
+ unnoticed because no literal in the tree had carried a quote before.
+
   ps-quote : Text -> Text
-  ps-quote (s) = "\"" & s & "\""
+  ps-quote (s) = "'" & text-replace s "'" "''" & "'"
 
   emit-ps-args : List ShellExpr, Integer -> Text
   emit-ps-args (args) (i) =
     if i >= list-length args then ""
     else if i == list-length args - 1 then emit-ps-expr (list-at args i)
     else emit-ps-expr (list-at args i) & " " & emit-ps-args args (i + 1)
+
+ A command's arguments are separated by spaces and a method's by commas.
+ Sharing one helper between them was invisible while every method call in
+ the tree took nought or one argument, and produced
+ `WriteAllText($a ($b) $c)` on the first that took three.
+
+  emit-ps-call-args : List ShellExpr, Integer -> Text
+  emit-ps-call-args (args) (i) =
+    if i >= list-length args then ""
+    else if i == list-length args - 1 then emit-ps-expr (list-at args i)
+    else emit-ps-expr (list-at args i) & ", " & emit-ps-call-args args (i + 1)
 
   emit-ps-array : List ShellExpr, Integer -> Text
   emit-ps-array (items) (i) = if list-length items == 0 then "@()" else "@(" & emit-ps-array-inner items 0 & ")"

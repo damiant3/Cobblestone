@@ -301,7 +301,7 @@ function Normalize-TripleNewlines {
 $script:UseCodexVm = Test-Path -PathType Leaf $script:CodexVmBin
 $script:FallbackVmBin = $env:QEMU_BIN_WHPX
 if ((-not $script:FallbackVmBin)) {
-    foreach ($p in @("D:\Program Files\qemu\qemu-system-x86_64.exe", "C:\Program Files\qemu\qemu-system-x86_64.exe")) {
+    foreach ($p in @('D:\Program Files\qemu\qemu-system-x86_64.exe', 'C:\Program Files\qemu\qemu-system-x86_64.exe')) {
         if (Test-Path -PathType Leaf $p) {
             $script:FallbackVmBin = $p; break
         }
@@ -486,6 +486,3 @@ function Start-CodexVmRun {
     Remove-Item -Force $stdoutFile, $stderrFile -ErrorAction SilentlyContinue
     return $null
 }
-
-
-

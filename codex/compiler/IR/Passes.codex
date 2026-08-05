@@ -161,19 +161,48 @@ Section: Pipeline
    if i >= n then acc
    else pipeline-names-text names (i + 1) n (if acc == "" then list-at names i else acc & "," & list-at names i)
 
-  run-ir-pipeline : List Text, IRChapter -> IRPassResult
-  run-ir-pipeline (names) (ch) =
+ The per-pass frontier marks are behind `trace` and not on by default, because
+ an info line reaches every compile log: `PIPELINE` already does, and three
+ `.expected` files in the tree capture it. Three more lines per compile would
+ have to be rewritten into all of them, which is a lot of churn to carry for an
+ instrument that is read during an investigation and ignored the rest of the
+ time.
+
+ What the marks answer. In the FRONTEND, `-Measure` and `-IrCce` differ only by
+ this pipeline: `emit-measure` calls `compile-frontend` and `emit-ir-cce` calls
+ `compile-frontend-ir`, both are `compile-frontend-passes` with `run-passes`
+ False and True, and `lower-chapter` sits ABOVE that branch, so lowering runs in
+ both. They differ a second time after the frontend, in what they emit, and that
+ half is not what these marks measure.
+
+ Measured 2026-08-04 on the compiler's own source (2,999,659 bytes, CDX path):
+ `fold-constants` +10,052,336, `inline-leaf-calls` +685,944,
+ `inline-single-caller` +2,028,848 -- **12.2 MB for the whole pipeline.** So the
+ passes are not where a gigabyte goes, and the C1 gap is not here. That is the
+ third refuted hypothesis in this area after the deck floors and the IR text
+ emitter, and like both of those it was refuted by measuring rather than by
+ reasoning about the code's shape.
+
+  run-ir-pipeline : List Text, IRChapter, Boolean -> IRPassResult
+  run-ir-pipeline (names) (ch) (trace) =
    let n = list-length names
    in let line = "PIPELINE " & (if n == 0 then "(empty)" else pipeline-names-text names 0 n "")
-   in run-ir-pipeline-loop names 0 n ch [] [line]
+   in run-ir-pipeline-loop names 0 n ch [] [line] trace
 
-  run-ir-pipeline-loop : List Text, Integer, Integer, IRChapter, List Text, List Text -> IRPassResult
-  run-ir-pipeline-loop (names) (i) (len) (ch) (vs) (infos) =
+  pass-frontier-mark : Text, Integer, Integer -> Text
+  pass-frontier-mark (name) (before) (after) =
+   "PASS " & name & " frontier +" & integer-to-text (after - before) & " abs " & integer-to-text after
+
+  run-ir-pipeline-loop : List Text, Integer, Integer, IRChapter, List Text, List Text, Boolean -> IRPassResult
+  run-ir-pipeline-loop (names) (i) (len) (ch) (vs) (infos) (trace) =
    if i >= len then IRPassResult { chapter = ch, violations = vs, infos = infos }
-   else let r = run-ir-pass (list-at names i) ch
+   else let h-before = __heap-save
+   in let r = run-ir-pass (list-at names i) ch
+   in let h-after = __heap-save
    in let vs2 = tag-pass-violations vs i (r.violations) 0 (list-length (r.violations))
    in let infos2 = tag-pass-violations infos i (r.infos) 0 (list-length (r.infos))
-   in run-ir-pipeline-loop names (i + 1) len (r.chapter) vs2 infos2
+   in let infos3 = if trace then list-push infos2 (pass-frontier-mark (list-at names i) h-before h-after) else infos2
+   in run-ir-pipeline-loop names (i + 1) len (r.chapter) vs2 infos3 trace
 
   tag-pass-violations : List Text, Integer, List Text, Integer, Integer -> List Text
   tag-pass-violations (acc) (slot) (vs) (i) (len) =

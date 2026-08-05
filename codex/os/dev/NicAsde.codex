@@ -1,0 +1,156 @@
+Chapter: NicAsde
+  cites Foreword chapter Maybe
+  cites Kernel chapter E1000e
+  cites Kernel chapter Hpet
+  cites Kernel chapter Pci
+
+ The 82583V datasheet says of ASDE, bit 5, "This bit must be set to 0b in
+ the 82583V", and this driver sets it. The I219's MAC is integrated into
+ the PCH and no public document covers its CSR block, so no bed can
+ referee it: a model written from the 82583V would only report back the
+ reading it was built from. Only the silicon can answer.
+
+Section: Reading
+
+  NicAsdeArm = record {
+    na-status : Integer,
+    na-aneg : Integer,
+    na-gave : Integer,
+    na-phy : Integer
+  }
+
+  na-gave-ok : Integer = 0
+  na-gave-reset : Integer = 1
+  na-gave-nolink : Integer = 2
+
+ STATUS carries more than link. FD is bit 0, LU bit 1, SPEED bits 7:6 (00
+ is 10 Mb/s, 01 is 100, 10 and 11 are 1000), and ASDV bits 9:8 is the
+ "speed result sensed by the MAC auto-detection function" -- the field
+ ASDE actually drives, and the one that separates ASDE having done
+ something from ASDE having done nothing.
+
+  na-lu : Integer = #00000002
+  na-fd : Integer = #00000001
+
+  na-clear-asde : Integer = #FFFFFFFF - e1000-ctrl-asde
+
+ This deliberately does NOT call e1000-phy-bring-up, and that is the fix
+ for the flight that painted nothing. That function ends in
+ e1000-await-aneg, whose fuel is a million iterations and whose EVERY
+ iteration is a full MDIC transaction; on real MDIO a transaction is tens
+ of microseconds, so an arm on a part with no link spends tens of seconds
+ there before it gives up, and two arms is a minute or worse. It is
+ bounded and it is indistinguishable from a hang.
+
+  na-phy-kick : Integer -> Integer
+  na-phy-kick (mmio) =
+   let r = e1000-phy-write mmio e1000-phy-bmcr e1000-bmcr-reset
+   in if r < 0 then 0
+   else let s = e1000-phy-slow-mode mmio
+   in let mode = bit-or e1000-bmcr-aneg-en e1000-bmcr-aneg-rst
+   in let a = e1000-phy-write mmio e1000-phy-bmcr mode
+   in if a < 0 then 0 else 1
+
+ Bounded by wall time rather than by iterations, because the two bounds
+ want opposite things: a real gigabit link takes a second or more to
+ negotiate, so a fuel small enough to be safe on a dead cable would report
+ no link on a live one. Where HPET reports no rate there is no wall clock
+ to bound against, and the smaller pure-iteration fuel is the honest
+ fallback -- it may cut a live negotiation short, and a row that says so
+ is still better than a stage that does not paint.
+
+  na-link-budget-ms : Integer = 2000
+  na-link-fuel-clocked : Integer = 20000000
+  na-link-fuel-blind : Integer = 2000000
+
+  na-expired : Integer, Integer -> Boolean
+  na-expired (start) (want) =
+   if want <= 0 then False
+   else (hpet-ticks - start) >= want
+
+  na-await-lu : Integer, Integer, Integer, Integer, Integer -> Integer
+  na-await-lu (mmio) (start) (want) (fuel) (i) =
+   if i >= fuel then 0
+   else if bit-and (e1000-read mmio e1000-reg-status) na-lu /= 0 then 1
+   else if na-expired start want then 0
+   else na-await-lu mmio start want fuel (i + 1)
+
+  na-link-wait : Integer -> Integer
+  na-link-wait (mmio) =
+   let started = hpet-start
+   in let rate = hpet-ticks-per-second
+   in if rate <= 0 then na-await-lu mmio 0 0 na-link-fuel-blind 0
+   else let want = (rate * na-link-budget-ms) / 1000
+   in let start = hpet-ticks
+   in na-await-lu mmio start want na-link-fuel-clocked 0
+
+  na-bring-up : Integer, Boolean -> NicAsdeArm
+  na-bring-up (mmio) (asde) =
+   let r = e1000-reset mmio
+   in if r == 0 then NicAsdeArm { na-status = 0, na-aneg = 0,
+                                  na-gave = na-gave-reset, na-phy = 0 }
+   else na-bring-up-after mmio asde
+
+  na-bring-up-after : Integer, Boolean -> NicAsdeArm
+  na-bring-up-after (mmio) (asde) =
+   let p = na-phy-kick mmio
+   in let ctrl = e1000-read mmio e1000-reg-ctrl
+   in let withslu = bit-or ctrl e1000-ctrl-slu
+   in let want = if asde then bit-or withslu e1000-ctrl-asde
+                 else bit-and withslu na-clear-asde
+   in let w = e1000-write mmio e1000-reg-ctrl want
+   in let up = na-link-wait mmio
+   in let s = e1000-read mmio e1000-reg-status
+   in let a = e1000-phy-read mmio e1000-phy-bmsr
+   in let gave = if up == 1 then na-gave-ok else na-gave-nolink
+   in NicAsdeArm { na-status = s, na-aneg = a, na-gave = gave, na-phy = p }
+
+Section: Formatting
+
+  na-yn : Integer -> Text
+  na-yn (v) = if v /= 0 then "y" else "n"
+
+  na-spd : Integer -> Text
+  na-spd (bits) =
+   if bits == 0 then "10"
+   else if bits == 1 then "100"
+   else "1000"
+
+  na-gave-text : Integer -> Text
+  na-gave-text (g) =
+   if g == na-gave-ok then "ok"
+   else if g == na-gave-reset then "RESET"
+   else "nolink"
+
+  na-line : Text, NicAsdeArm -> Text
+  na-line (label) (arm) =
+   let s = arm.na-status
+   in let ad = arm.na-aneg
+   in let anegtxt = if ad < 0 then "ERR"
+                    else na-yn (bit-and ad e1000-bmsr-aneg-done)
+   in label & " gave=" & na-gave-text (arm.na-gave)
+     & " phy=" & na-yn (arm.na-phy)
+     & " LU=" & na-yn (bit-and s na-lu)
+     & " FD=" & na-yn (bit-and s na-fd)
+     & " SPEED=" & na-spd (bit-and (bit-shru s 6) 3)
+     & " ASDV=" & na-spd (bit-and (bit-shru s 8) 3)
+     & " aneg=" & anegtxt
+     & " STATUS=" & show s
+
+ Gated on vendor and on the BAR verdict for the reason sitting rung 2 was:
+ a second NIC is present on this board, a Realtek at 06:00.0 whose window
+ lands below three gigabytes, and reading Intel register offsets off it
+ would yield garbage shaped like an answer.
+
+  na-eligible : PciDevice -> Boolean
+  na-eligible (d) =
+   if (d.pci-vendor) /= e1000-vendor-intel then False
+   else e1000-bar-verdict (pci-parse-bar (d.pci-bus) (d.pci-dev) (d.pci-func) 0)
+        == e1000-bar-ok
+
+  na-mmio-of : PciDevice -> Integer
+  na-mmio-of (d) =
+   let en = pci-enable-device d
+   in (pci-parse-bar (d.pci-bus) (d.pci-dev) (d.pci-func) 0).bar-base
+
+Page 1

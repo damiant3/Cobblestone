@@ -6,34 +6,71 @@ Chapter: BuildMagicPagesScript
   cites Shell chapter ShellBuild
   cites Shell chapter PowerShellEmit
 
- Generates build-magic-pages.ps1 -- builds CodexMagic web pages from
- .codex sources through the HTML plug, then post-processes the output
- HTML to inject shared CSS, scripts, and auth bootstrap.
- Compile with: -Survey "lower-mul:500000"
-
  We say:
 
 Section: Parameters
 
-  magic-params : List ShellParam = [sh-param-default "Pages" SptString (SeLit "")]
+  magic-params : List ShellParam = [sh-param-default "Pages" SptStringArray (SeArrayLiteral [])]
 
-Section: S01 -- Preamble
+Section: S01 -- Paths
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScAssign "BundleScript" (SeRaw "Join-Path $Repo 'build\\bundle-app.ps1'"), ScAssign "HtmlRunScript" (SeRaw "Join-Path $Repo 'codex\\plugs\\html\\run.ps1'"), ScAssign "AppDir" (SeRaw "Join-Path $Repo 'apps\\games\\codexmagic'"), ScAssign "WebDir" (SeRaw "Join-Path $AppDir 'web'"), ScAssign "OutDir" (SeRaw "Join-Path $WebDir 'build-output'"), ScRaw "New-Item -ItemType Directory -Force -Path $OutDir | Out-Null"]
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))), ScAssign "BundleScript" (SePathJoin (SeVar "Repo") (SeLit "build\\bundle-app.ps1")), ScAssign "HtmlRunScript" (SePathJoin (SeVar "Repo") (SeLit "codex\\plugs\\html\\run.ps1")), ScAssign "AppDir" (SePathJoin (SeVar "Repo") (SeLit "apps\\games\\codexmagic")), ScAssign "WebDir" (SePathJoin (SeVar "AppDir") (SeLit "web")), ScAssign "OutDir" (SePathJoin (SeVar "WebDir") (SeLit "build-output")), ScMkdir (SeVar "OutDir")]
 
-Section: S02 -- Discover Pages
+Section: S02 -- Default Page List
 
-  s02 : List ShellCmd = [ScIf (SeRaw "$Pages -and $Pages.Length -gt 0") [ScRaw "$pageList = $Pages -split ','"] [ScRaw "$pageList = @(Get-ChildItem -Path $AppDir -Filter '*Page.codex' | ForEach-Object { $_.BaseName })"]]
+  discovered : ShellExpr = SePipe (SeListFiles (SeVar "AppDir") "*Page.codex" False) [StMap (SeProperty SeItem "BaseName")]
 
-Section: S03 -- Build Loop
+  s02 : List ShellCmd = [ScIf (SeIntEq (SeProperty (SeVar "Pages") "Count") (SeInt 0)) [ScAssign "Pages" discovered] []]
 
-  s03-postprocess : List ShellCmd = [ScDotNetCallAssign "html" "System.IO.File" "ReadAllText" [SeVar "htmlOut"], ScAssign "inject" (SeLit "<link rel=\"stylesheet\" href=\"/magic.css\">"), ScAssign "inject" (SeRaw "$inject + '<script src=\"/magic.js\"></script>'"), ScAssign "inject" (SeRaw "$inject + '<script src=\"/card-render.js\"></script>'"), ScRaw "$html = $html -replace '</head>', \"$inject</head>\"", ScAssign "authBoot" (SeLit "<script>document.addEventListener(\"DOMContentLoaded\",function(){if(typeof ensureAccount===\"function\")ensureAccount()});</script>"), ScRaw "$html = $html -replace '</body>', \"$authBoot</body>\"", ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "htmlOut", SeVar "html", SeRaw "[System.Text.Encoding]::UTF8"]]
+Section: S03 -- Per-page Paths
 
-  s03 : List ShellCmd = [ScForEach "page" (SeVar "pageList") [ScAssign "src" (SeRaw "Join-Path $AppDir \"$page.codex\""), ScIf (SeNot (SeFileExists (SeVar "src"))) [ScRaw "Write-Host \"SKIP: $src not found\" -ForegroundColor Yellow", ScContinue] [], ScAssign "bundled" (SeRaw "Join-Path $OutDir \"$page-bundle.codex\""), ScAssign "htmlOut" (SeRaw "Join-Path $WebDir (($page -replace 'Page$','').ToLower() + '.html')"), ScBlank, ScRaw "Write-Host \"[$page] bundling...\" -ForegroundColor Cyan", ScRaw "& pwsh -NoProfile -File $BundleScript -Src $src -Out $bundled", ScIf (SeRaw "$LASTEXITCODE -ne 0") [ScRaw "Write-Host \"[$page] FAIL: bundle\" -ForegroundColor Red", ScContinue] [], ScBlank, ScRaw "Write-Host \"[$page] compiling to HTML...\" -ForegroundColor Cyan", ScRaw "& pwsh -NoProfile -File $HtmlRunScript -Src $bundled -Out $htmlOut", ScIf (SeRaw "$LASTEXITCODE -ne 0") [ScRaw "Write-Host \"[$page] FAIL: HTML generation\" -ForegroundColor Red", ScContinue] [], ScBlank, ScSequence s03-postprocess, ScRaw "Write-Host \"[$page] OK: $htmlOut\" -ForegroundColor Green"]]
+  html-name : ShellExpr = SeConcat (SeToLower (SeReplace (SeVar "page") "Page$" (SeLit ""))) (SeLit ".html")
+
+  page-paths : List ShellCmd = [ScAssign "src" (SePathJoin (SeVar "AppDir") (SeConcat (SeVar "page") (SeLit ".codex"))), ScAssign "bundled" (SePathJoin (SeVar "OutDir") (SeConcat (SeVar "page") (SeLit "-bundle.codex"))), ScAssign "htmlOut" (SePathJoin (SeVar "WebDir") html-name)]
+
+Section: S04 -- Bundle and Compile
+
+  skip-message : ShellExpr = SeConcat (SeConcat (SeLit "SKIP: ") (SeVar "src")) (SeLit " not found")
+
+  tag : ShellExpr = SeConcat (SeConcat (SeLit "[") (SeVar "page")) (SeLit "] ")
+
+  bundle-args : List ShellArg = [SaSwitch "NoProfile", SaNamed "File" (SeVar "BundleScript"), SaNamed "Src" (SeVar "src"), SaNamed "Out" (SeVar "bundled")]
+
+  html-args : List ShellArg = [SaSwitch "NoProfile", SaNamed "File" (SeVar "HtmlRunScript"), SaNamed "Src" (SeVar "bundled"), SaNamed "Out" (SeVar "htmlOut")]
+
+  bundle-failed : List ShellCmd = [ScEchoStyled (SeConcat tag (SeLit "FAIL: bundle")) ClBrightRed True, ScContinue]
+
+  html-failed : List ShellCmd = [ScEchoStyled (SeConcat tag (SeLit "FAIL: HTML generation")) ClBrightRed True, ScContinue]
+
+  s04 : List ShellCmd = [ScEchoStyled (SeConcat tag (SeLit "bundling...")) ClBrightCyan True, ScRunArgs (SeLit "pwsh") bundle-args, ScIf (SeNot (SeExitCodeEq 0)) bundle-failed [], ScBlank, ScEchoStyled (SeConcat tag (SeLit "compiling to HTML...")) ClBrightCyan True, ScRunArgs (SeLit "pwsh") html-args, ScIf (SeNot (SeExitCodeEq 0)) html-failed []]
+
+Section: S05 -- Inject Shared Assets
+
+  css-link : Text = "<link rel=\"stylesheet\" href=\"/magic.css\">"
+
+  magic-js : Text = "<script src=\"/magic.js\"></script>"
+
+  card-js : Text = "<script src=\"/card-render.js\"></script>"
+
+  auth-boot : Text = "<script>document.addEventListener(\"DOMContentLoaded\",function(){if(typeof ensureAccount===\"function\")ensureAccount()});</script>"
+
+  build-inject : List ShellCmd = [ScAssign "inject" (SeLit css-link), ScIncrementBy "inject" (SeLit magic-js), ScIncrementBy "inject" (SeLit card-js)]
+
+  head-repl : ShellExpr = SeConcat (SeVar "inject") (SeLit "</head>")
+
+  body-repl : ShellExpr = SeConcat (SeLit auth-boot) (SeLit "</body>")
+
+  utf8 : ShellExpr = SeStaticProp "System.Text.Encoding" "UTF8"
+
+  ok-message : ShellExpr = SeConcat (SeConcat tag (SeLit "OK: ")) (SeVar "htmlOut")
+
+  s05 : List ShellCmd = [ScDotNetCallAssign "html" "System.IO.File" "ReadAllText" [SeVar "htmlOut"], ScSequence build-inject, ScAssign "html" (SeReplace (SeVar "html") "</head>" head-repl), ScAssign "html" (SeReplace (SeVar "html") "</body>" body-repl), ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "htmlOut", SeVar "html", utf8], ScEchoStyled ok-message ClBrightGreen True]
 
 Section: Assembly
 
-  magic-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03]
+  page-body : List ShellCmd = [ScSequence page-paths, ScIf (SeNot (SeFileExists (SeVar "src"))) [ScEchoStyled skip-message ClBrightYellow True, ScContinue] [], ScBlank, ScSequence s04, ScBlank, ScSequence s05]
+
+  magic-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScForEach "page" (SeVar "Pages") page-body]
 
   magic-script : ShellScript = sh-script "build-magic-pages" "Build CodexMagic web pages from .codex sources through the HTML plug" magic-params magic-body
 

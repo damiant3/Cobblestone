@@ -5,19 +5,6 @@ Chapter: DriveManager
   cites Foreword chapter Fat32
   grounds Device.Block
 
- Drive Manager for the UEFI console. Enumerates ATA drives, displays
- partition tables, and provides format, partition, install, wipe, and
- copy operations. All disk operations go through block-read-sector,
- block-write-sector, and block-select syscalls.
-
- To dm-enumerate-drives gives List DriveInfo, scanning all ATA channels.
- To dm-inspect-drive gives DriveInspection for a selected drive.
- To dm-format-partition formats a partition as FAT32 or Codex FS.
- To dm-partition-drive writes a fresh GPT with the given scheme.
- To dm-install-to-drive installs Codex from one drive onto another, answering
- which link failed.
- To dm-wipe-quick zeros GPT headers on a drive.
-
  We say:
 
 Section: Drive Info Types
@@ -196,13 +183,6 @@ Section: Partition Drive
     else if half < dm-esp-min-sectors then dm-esp-min-sectors
     else half
 
- The second partition carries the FACT STORE type GUID and not the generic
- basic-data one. That is what DiskFacts looks for, and it is the whole
- difference between a stick that can persist a fact and one where the store
- refuses because it can find no region of its own. It was basic-data while
- the store addressed absolute sectors, which is to say while it could not
- use a partition at all.
-
   dm-partition-esp-plus-data : Integer, List Integer -> Boolean
   dm-partition-esp-plus-data (total-sectors) (disk-guid) =
     let esp-sectors = dm-esp-sectors-for total-sectors
@@ -238,24 +218,6 @@ Section: Format Partition
     fat32-format start-lba sector-count label
 
 Section: Install Codex
-
- There were two installers and neither could work. This one, which the chapter
- header advertises, had no caller at all and read the source through FAT32,
- which the images `build/build-boot-img.ps1` produces are not. The one the
- DevConsole actually ran reimplemented it inline and parsed the SOURCE
- volume's boot sector while the TARGET was still selected, one line before it
- selected the source. Neither could be observed until 2026-07-27, because
- `block-select` did nothing and every position on the bus was the same disk.
-
- So this is one function, it is the one the menu calls, and it says which link
- failed rather than answering a bare Boolean. The old one discarded the result
- of the copy and returned True regardless, which is the reading that would have
- hidden all of this the moment the drives became real.
-
- The source is read through whichever filesystem its ESP actually carries. A
- stick built by `build-boot-img.ps1` is FAT16; one built with `-Fat32`, or any
- volume past 2 GB, is not. Assuming either one is how the dead path stayed
- plausible.
 
   dm-install-ok : Integer = 1
   dm-install-no-gpt : Integer = 0
@@ -317,13 +279,6 @@ Section: Install Codex
   dm-read-boot-image : Integer -> [Device.Block] Maybe (List Integer)
   dm-read-boot-image (src-drive) = dm-read-source-file src-drive dm-boot-image-path
 
- A stick that boots and cannot verify or rebuild itself is not what this
- project promises anyone, so the install carries the seed and the source text
- as well as the boot image. The boot image is required and its absence refuses
- the install; the other two are copied when the source has them, because a
- machine installing from a stick that was itself built without them should
- still get a bootable target rather than nothing.
-
   dm-install-to-drive : Integer, Integer -> [Device.Block] Integer
   dm-install-to-drive (target-index) (src-index) = act
     boot <- dm-read-boot-image src-index
@@ -372,11 +327,6 @@ Section: Install Codex
         fat32-write-file vol path data
       end
 
- The source is read BEFORE the target is touched. Partitioning first and
- discovering afterwards that there is nothing to install leaves the target
- wiped, which is the worst answer available: the old inline path did exactly
- that.
-
   dm-install-write-target : Integer, List Integer -> [Device.Block] Integer
   dm-install-write-target (target-index) (data) = act
     w <- block-select target-index
@@ -402,11 +352,6 @@ Section: Install Codex
       vol <- fat32-init esp-start
       dm-install-place-file vol data
     end
-
- `fat32-write-file` walks the path and creates the directories it needs, so the
- mkdir-then-find-then-mkdir dance both installers performed was redundant. It
- was also the thing that failed: it is the older interface, from before
- `fat32-ensure-parent-dirs` existed, and nothing had run it since.
 
   dm-install-place-file : Fat32Volume, List Integer -> [Device.Block] Integer
   dm-install-place-file (vol) (data) = act

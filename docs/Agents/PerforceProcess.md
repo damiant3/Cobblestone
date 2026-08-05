@@ -409,6 +409,20 @@ verified on disk, submitted, and absent from the depot revision. It took two
 recoveries -- the first because the same session had already lost the section
 once to a bulk `-at` over its own file.
 
+**A REBUILT BINARY is an edit, and this is the shape that gets missed.**
+2026-08-04, reek: merged down a `tools/codex-vm.c` both sides had changed,
+`-at`-ed the unmergeable `codex-vm.exe`, cleared the read-only bit, rebuilt
+from the merged source, ran seven tests green against that rebuild, and
+submitted -- and the depot took MAIN's binary. Main then carried a
+`codex-vm.c` containing an xHCI change and a `codex-vm.exe` built without
+it, which every agent syncing main would have run. Nobody reads "rebuild the
+artifact" as "edit the resolved file", so the rule above does not fire, and a
+binary cannot be eyeballed the way missing prose can. **After any merge-down
+that touches a build output, `p4 fstat -Ol` the depot digests on both streams
+before copying up: identical digests across the merge boundary mean your
+build did not land.** Then verify the binary BEHAVIOURALLY -- a digest says
+the bytes moved, not that they are the right bytes.
+
 **Fix, and it is two commands:** `p4 edit <file>` before writing to a file
 that is open only for integrate, so the action includes an edit. Then
 **`p4 print` the depot revision you just created and grep it for your own

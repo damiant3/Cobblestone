@@ -1,0 +1,69 @@
+Chapter: E1000AsdeNoLink
+  cites Foreword chapter Maybe
+  cites Kernel chapter E1000e
+  cites Kernel chapter Pci
+  cites Dev chapter NicAsde
+
+ The regression guard for a board trip that came home with a blank row.
+
+ blu's ASDE stage flew on the ASUS on 2026-08-04 and painted NOTHING. The
+ cause was not a fault: with no link the stage went through
+ e1000-phy-bring-up, whose e1000-await-aneg spends a million iterations and
+ makes a full MDIC transaction on each, and a real MDIO transaction is tens
+ of microseconds. Two arms of that is a minute or worse. Bounded, and
+ indistinguishable from a hang to anyone watching a screen.
+
+ A bench cable is normally out, so NO LINK IS THE NORMAL BENCH CONDITION
+ and the arm below is the one that matters. -e1000-no-link is what makes
+ the bed produce it, which was worth finding out: the failure had been
+ called unreproducible here.
+
+ What this asserts is that the stage COMPLETES on a dead link and says so.
+ It cannot assert how long that takes -- a test that passes or fails on
+ elapsed time on a shared box is a flaky test -- so the bound lives in the
+ constants and this guards the observable half: every arm comes back, and
+ comes back carrying a state that renders.
+
+Section: Judges
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  arms-give-nolink : PciDevice -> Boolean
+  arms-give-nolink (dev) =
+   let mmio = na-mmio-of dev
+   in let on = na-bring-up mmio True
+   in let off = na-bring-up mmio False
+   in if (on.na-gave) /= na-gave-nolink then False
+   else (off.na-gave) == na-gave-nolink
+
+ The PHY is still reachable with the link down, so a nolink verdict must
+ not be confused with an unreachable PHY. If this ever answers no, the
+ give-up state is reporting the wrong thing.
+
+  phy-still-reached : PciDevice -> Boolean
+  phy-still-reached (dev) =
+   let mmio = na-mmio-of dev
+   in (na-bring-up mmio True).na-phy == 1
+
+  row-still-paints : PciDevice -> Boolean
+  row-still-paints (dev) =
+   let mmio = na-mmio-of dev
+   in text-length (na-line "ASDE=1" (na-bring-up mmio True)) > 20
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let scan = pci-scan-bus 0
+    in act
+      when e1000-find scan
+        is Just (dev) -> act
+          print-line-uni ("arms say nolink : " & yn (arms-give-nolink dev))
+          print-line-uni ("phy reached     : " & yn (phy-still-reached dev))
+          print-line-uni ("row paints      : " & yn (row-still-paints dev))
+        end
+        is None -> print-line-uni ("candidate found : no")
+    end
+  end
+
+Page 1

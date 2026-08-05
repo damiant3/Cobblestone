@@ -19,7 +19,9 @@ Use the USB two when a machine boots the Codex payload but finds no USB
 keyboard, no boot stick, or nothing on the USB bus at all.
 
 **Before reading any probe, read the screen COLOUR.** Every Option A
-image carries two liveness marks from `option_a_stub.asm`: solid dark
+image carries two liveness marks, painted by `cdx-to-pe.ps1`'s stub at
+the same two points the deleted `option_a_stub.asm` painted them (checked
+in source 2026-08-02, not assumed from the migration): solid dark
 blue once GOP is acquired, solid dark green once ExitBootServices and
 our own page tables are live. An unchanged firmware screen means we were
 never loaded or `LocateProtocol(GOP)` failed; blue alone means the stub
@@ -145,6 +147,8 @@ device enumeration), then paints the xHCI reading and halts:
 - raw PORTSC of every root port (CCS/PED/PR/speed)
 - ENUMERATED: whether the keyboard, mouse, and disk were configured
 - the per-machine xHCI summary and one row per controller (below)
+- the mass-storage bring-up ladder: which of six rungs the disk reached,
+  with the Configure Endpoint code, block size and sector count
 
 Reading it: `found=n` means no xHCI on the PCI bus (an EHCI-only
 board). `connected=0` with devices plugged in points below enumeration
@@ -251,6 +255,106 @@ nobody opened. A row saying `disk=n` and a row saying `NEVER-OPENED` are
 different answers and the screen now prints which one it is. So: if
 `ENUMERATED disk=n`, read `seen=` against `opened=` before concluding
 anything about the storage stack.
+
+### The MSC rows: which of six ways the disk failed
+
+`seen=` against `opened=` settles whether the stick's controller was even
+looked at. The two `MSC:` lines settle the rest. The bring-up has six ways
+to stop and they used to photograph identically, so a trip that ended in
+`disk=n` bought one bit and returned the question it was booked to answer.
+The rows carry **the furthest rung the bring-up ever reached**, green only
+at 6.
+
+```
+MSC: rung=6 disk usable
+     cfgv=1 cfgep=1 blocksize=512 sectors=32768
+     dev on ctl0 port=0 speed=4 slot=1 route=#00000000
+     SET-CONFIG completion: success
+     dev PORTSC=#00021203 CCS=y PED=y PR=n spd=4
+```
+
+The fifth line is the device's OWN port register, read at the device. The
+`root ports` block above prints **eight rows and this board has 26**, so on
+a wide controller it cannot show the port that matters -- the ASUS stick is
+on port 9. **`PED` is the first field to read against a transfer that failed
+on the wire:** a port holding a device without being ENABLED explains a
+transaction error that no amount of reading the driver will.
+
+The `root ports` header also carries `connected=#...`, one bit per port up
+to 32. `connected=4` is a COUNT and names none of them; the mask says which,
+and for a port above the eighth it is the only place that port appears at
+all.
+
+The third line says WHERE the mass-storage device was, and it is the only
+place on the screen that does. Everything above the ENUMERATED line is
+restored from the snapshot taken when the KEYBOARD was credited, so on a
+two-controller machine a disk failure has nothing naming the controller it
+happened on. `ctl?` means the ordinal was never recorded. `route=#0` is
+root-attached; non-zero is behind a hub, which is a different bring-up.
+
+The fourth line is the SET_CONFIGURATION completion code, named rather
+than numbered, and it is the line that matters at rung 2:
+
+| completion | meaning |
+|---|---|
+| `STALL` | the device UNDERSTOOD the request and refused it. The request or the device's state is wrong, not the wire |
+| `USB TRANSACTION ERROR` | the wire. Signalling, the hub or the port, not the request |
+| `NO EVENT (fuel)` | nothing came back at all. **This is not a refusal** and must not be read as one -- the transfer never completed, so look at the ring, the doorbell or the slot, not at the device's opinion |
+| `TRB ERROR` / `PARAMETER ERROR` | the controller rejected our TRB before the device saw it. Ours to fix |
+
+**`retry:` appears on that line only when the first attempt was refused**, and
+it is the answer to the question one attempt cannot settle: a transient
+failure and a permanent one want opposite fixes. `SET-CONFIG completion: USB
+TRANSACTION ERROR  retry: success` means a retry would have worked and is
+worth writing; the same line ending `retry: USB TRANSACTION ERROR` means it
+would not and nothing should be spent on one.
+
+**The retry is asked and RECORDED, never acted on.** The first answer stays
+the verdict. Adopting a retry because it might help would be a behaviour
+change resting on a guess; one extra idempotent request turns the guess into
+a measurement, and the evidence is then there to argue from. Both readings
+are producible on the desk -- `codex-vm -usb-setcfg-fault 4` for permanent,
+`-usb-setcfg-fault-once 4` for transient.
+
+| rung | reached | what it means next |
+|---|---|---|
+| 0 | no mass-storage interface seen on any controller | the stick was never enumerated. Read the `ctlN` rows and the PORTSC block -- a bus or port problem, not a storage one |
+| 1 | interface seen, no bulk pair | class 8/6/80 was found and no bulk IN+OUT beneath it. A descriptor problem, with the device in hand |
+| 2 | bulk pair found, SET_CONFIGURATION refused | **read the `SET-CONFIG completion:` line, then `cfgv=`, then which controller.** `cfgv=` is the `bConfigurationValue` sent, written before the request so a refusal still shows what was refused; anything but 1 means the device numbered its configuration unconventionally. Reaching this rung PROVES ep0 control-IN works on that device, because its descriptor had to be read to get here, so a refusal here is never "ep0 is broken" |
+| 3 | Configure Endpoint refused | `cfgep=` carries the controller's own completion code and IS the finding |
+| 4 | endpoints up, never came ready | sixteen TEST UNIT READY / REQUEST SENSE rounds and the target never passed. The first rung where the medium itself is implicated |
+| 5 | ready, capacity refused or not 512-byte | `blocksize=` splits it: 0 is a READ CAPACITY that failed, anything else is a medium this driver does not address |
+| 6 | disk usable | `sectors=` is the medium's own count |
+
+`cfgep=not issued` is a reading, not a zero completion code -- xHCI defines
+none, so the cell says "never issued" without collision. `cfgep=no event`
+means the command was posted and nothing came back.
+
+**The rung is the furthest ever reached, not the last**, so on a
+multi-controller machine a second controller with no stick on it cannot drag
+the reading below what the first one proved.
+
+All seven states were produced under OVMF before this shipped, each by
+sabotaging the guard above it; the control arm is the unmodified driver
+reading `rung=6 blocksize=512 sectors=32768` off a 16 MB `-UsbDisk`. A
+ladder that has only ever printed its top rung is worth what no ladder is
+worth.
+
+**One thing this bed cannot show you, so do not read its silence as
+agreement.** QEMU's `usb-storage` reports `bConfigurationValue` 1 and then
+accepts ANY value sent to it. Measured 2026-08-03: passing byte 5 plus one
+still came up `rung=6 disk usable` at `cfgv=2`. So no arm here can
+reproduce a refused SET_CONFIGURATION *for the reason a real device would
+refuse one*. A stall CAN be forced -- send an undefined `bRequest`, which
+a conforming device must reject -- and that is how the completion-code
+line above was calibrated.
+
+**What the ASUS actually answered, 2026-08-03.** `rung=2` with `cfgv=1`:
+the stick numbers its configuration 1, we sent 1, and it refused anyway.
+The hardcoded `SET_CONFIGURATION(1)` that this rung first exposed was a
+genuine defect and was NOT the cause of this refusal. Recorded so the next
+reader does not re-buy that theory. The completion-code and location lines
+exist because the reading that killed it could not say anything further.
 
 `verdict=1` means the BAR was used where firmware put it, `2` means it
 was relocated to FE800000, and `0` means the judgement was never
@@ -404,6 +508,30 @@ blue-dominant and the pyramid is red, so a channel swap inverts both
 and is obvious at a glance; the stub does not read `PixelFormat`, so
 this picture is currently the only thing that would catch it.
 Confirmed correct under OVMF at 1280x800.
+
+## GeoTruth.codex
+
+Prints the three published framebuffer numbers and paints nothing. It is
+the only payload here that is not read by eye, and the only one with a
+harness: `build/boot/test-conout-remode.ps1` boots it twice, with
+codex-vm's `-uefi-conout-remode` off and on, and asserts that the geometry
+the stub handed it tracks the LIVE console mode rather than the splash
+mode. That is the ASUS display corruption of 2026-08-02, cured in
+`build/cdx-to-pe.ps1` by clearing the screen before asking for the
+geometry.
+
+It paints nothing on purpose. The subject is the ORDER of two calls in a
+PowerShell script, and a probe that also drew could fail for reasons that
+have nothing to do with the question.
+
+| Observation | Meaning |
+|---|---|
+| `GEOTRUTH w=1024 h=768 stride=1024` under `-uefi-conout-remode` | Correct. The stub asked after it cleared |
+| `GEOTRUTH w=1920 h=1080 stride=2048` under `-uefi-conout-remode` | The corruption is back: the stub asked before it cleared, and every row the payload writes will span two scanlines |
+| No `GEOTRUTH` line at all | The payload did not reach `print-line-uni`. Read stderr, not this table |
+
+Run the harness rather than this payload by hand; a single arm proves
+nothing, which is the whole reason there are two.
 
 ## Build and run
 

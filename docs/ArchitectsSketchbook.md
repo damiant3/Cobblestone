@@ -705,8 +705,49 @@ performs two checks:
    resets RSP to `bare-metal-stack-top` and prints a diagnostic over
    serial before halting.
 
-There is no guard page or MMU-based protection. The check is a software
-compare on every function entry.
+The check is a software compare on every function entry, and it watches
+one direction only: RSP falling below R10.
+
+### The Guard Page (2026-08-04)
+
+The opposite direction has its own protection. One 2 MB page is left
+unmapped at index `ram-pages - demand-stack-reserve-pages - 1`, directly
+below the boot stack's 64 MB reserve -- at the shipping 3040 MB reported
+size that is index 1487, `[2974 MB, 2976 MB)`. Any heap bump that lands
+in it faults on first touch, whichever of the 58 inline `add r10` sites
+did it, including sites added later. The cost on the allocation path is
+nothing: no compare, no branch, no load.
+
+`emit-demand-unmap` clears its PDE at boot (unconditionally, so it is
+gone whether or not it falls inside the demand range), and
+`emit-pagefault-handler` tests the faulting page against it BEFORE the
+lo/hi range tests -- after them, the 3 GB case would already have been
+routed to the exception dump. A hit routes to `__out_of_memory`, which
+reloads RSP from `ram-size-addr` before printing and therefore survives
+having had its stack written over.
+
+**Two honest limits.** A single allocation LARGER than 2 MB steps
+clean over the hole, demonstrated with a probe parked above the page.
+`build` reserves a phase deck with one `__heap-advance` of the entire
+deck height, so a reservation is exactly that shape -- but the
+compiler's reservations are taken from a low frontier and land below
+the page, and `build` carries its own ceiling test as belt-and-braces
+regardless (`deck-reservation-guard`, `Core/PhaseAllocator.codex`).
+
+**An earlier revision of this paragraph said the guard page therefore
+does not catch the whole-compiler `-IrCce` overrun. That was measured
+against a binary with no guard page in it and is retracted.** The SUT's
+boot code is emitted by the SEED, so an emitter change reaches stage1
+and not the SUT; ablated against `seed/Codex.cdx#586` (crash) and
+`#587` (OUT OF MEMORY, no ceiling test present), the page alone is what
+fixes it. And a STACK that
+grows down into it cannot take a #PF at all (the CPU cannot deliver the
+frame onto the faulting stack), so that arm arrives as a double fault on
+IST1 and an `!EXC` dump rather than an OUT OF MEMORY line.
+
+`build/guard-page-test.ps1` is the runner. `build/build.ps1` cannot see
+this: the compiler peaks around 1245 MB against a guard at 2974 MB, so
+the gate is green whether the page exists or not.
 
 ---
 
@@ -1067,8 +1108,15 @@ for the binary, starting at 0x100000).
 
 The stack starts at `bare-metal-stack-top` and grows downward. Typical
 self-compilation uses approximately 1 MB of stack. The prologue
-collision check (`cmp rsp, r10`) is the only protection against stack
-overflow. There is no guard page.
+collision check (`cmp rsp, r10`) is the protection against the STACK
+growing into the heap; it is tested on every function entry and it is
+still the only thing watching that direction.
+
+The other direction -- the HEAP frontier growing into the stack -- is
+caught by the guard page (below), since 2026-08-04. The two are not
+the same failure and the prologue check never saw the second one: it
+compares only at function entry, and the 58 inline `add r10` bumps
+that cross the boundary do so between calls.
 
 ## Codegen Quality vs C and the JITs
 

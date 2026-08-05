@@ -3,11 +3,6 @@ Chapter: Chapter Scoper
   cites Codex chapter Build Settings (demand-scope-guard-band)
   cites Codex chapter Phase Allocator (deck-short-of)
 
- Resolves name collisions across chapters by prefixing duplicate
- definition names with their chapter slug. Only colliding names
- (defined in 2+ chapters) are renamed. Non-colliding names pass
- through unchanged.
-
 Section: Chapter Assignment
   ChapterAssignment = record {
    def-name : Text,
@@ -59,13 +54,6 @@ Section: Collision Detection
 
 Section: Builtin Shadowing
 
- Emit resolves a user definition ahead of a builtin and says nothing:
- X86_64Compound's dispatch reads `if user-arity < 0 & is-builtin ...`,
- so where a call reaches that dispatch, a definition of the same name
- wins for EVERY call site in the compilation unit, including the
- compiler's own if the chapter is cited into it. Nothing anywhere
- reported that, and nothing does yet.
-
  It does not win everywhere, and that is the sharper half. Measured
  2026-07-18 by shadowing five builtins in one chapter and printing what
  each call returned: abs, int-mod, text-contains and is-digit took the
@@ -78,13 +66,6 @@ Section: Builtin Shadowing
  answer consistently, and it is the reason to say something at the
  definition rather than leave it to be reasoned out at each call.
 
- A warning, not an error, and deliberately so. Most shadows are benign
- and a few are load-bearing: CCE defines is-digit / is-letter /
- is-whitespace over CCE code points rather than ASCII, and StringUtils
- defines text-contains / text-replace / text-starts-with, and those are
- the definitions their callers want. An error would break them, and an
- error nobody can act on is a build everyone learns to bypass.
-
  What the warning buys is that the dangerous case stops being silent.
  The danger is not a different ANSWER, it is a different COST: `Hamt`
  defined list-insert-at -- a builtin that is in-place and amortised
@@ -92,13 +73,6 @@ Section: Builtin Shadowing
  TypeEnv, ChapterScoper, TypeChecker and LambdaLifting quadratic until
  R10 walked into the stack. That shadow was correct by every test and
  wrong by every clock.
-
- Measured against the compiler's own unit when this shipped: 7 sites.
-
- The name set is built once by the caller. builtin-names is a
- zero-parameter definition, so a mention of one is a call that rebuilds
- the whole list -- the same shape that made emit-builtin expensive
- before the table moved into CodegenState.
 
   check-shadowed-builtins : List DefHeader, SkipListText, Integer, Integer, List Diagnostic -> List Diagnostic
   check-shadowed-builtins (headers) (bset) (i) (len) (acc) =
@@ -111,26 +85,12 @@ Section: Builtin Shadowing
 
 Section: Colliding Across Chapters
 
- The mangling below is what makes a collision survivable: two chapters
- may each define a name and each keeps its own. What it does not do is
- say so. A mention resolves by the chapter it sits in, and in a chapter
- that defines neither the winner is the first assignment in concat
- order, which is the directory glob and not anything written in the
- source. So the same body means different things in different files,
- and moving one is silent.
-
  It has been paid for once already. CL 8955 moved three builtin emitter
  bodies from the Emit quire into Types, where emit-expr resolved to the
  text emitter instead of the x86 one. That was caught, but only because
  the two signatures were far enough apart to raise CDX2001. Two
  colliding definitions with compatible types compile clean and emit the
  wrong code, and nothing looks wrong anywhere.
-
- A warning at each definition site, not an error: a collision is legal
- and sometimes deliberate, and both halves of a parallel API are
- legitimate code. What it costs is bounded by the collision count,
- because only a name in the colliding set pays for the scan that names
- the other chapter.
 
  This paragraph used to end "the compiler's own unit carries none as of
  the CL that shipped this, so it is silent where it should be silent."
@@ -142,12 +102,6 @@ Section: Colliding Across Chapters
  `Syntax--Parser` and `Types--Type Checker`, which is the other shape
  entirely: two different functions over two different trees that had
  merely been given one name.
-
- Both are gone -- the table by deletion in favour of the foreword's, the
- lookup by taking a chapter-specific prefix -- so the claim is true now.
- It is restated as history rather than removed because a doc that
- asserted its own cleanliness, and was believed, is the thing that let
- the count sit at two while it was being reported as one.
 
   colliding-other-chapter : List ChapterAssignment, Text, Text, Integer, Integer -> Text
   colliding-other-chapter (assignments) (name) (own-slug) (i) (len) =
@@ -473,10 +427,6 @@ Section: Duplicate Cite Detection
   check-duplicate-cites (citations) =
    check-duplicate-cites-loop citations 0 (list-length citations) empty-bag
 
- A cite that names no chapter in the unit was silent: it type-checked,
- compiled and ran with no diagnostic, and the guarantee lived entirely in
- the build resolver's PowerShell. A second front end would not inherit it.
-
  It is an ERROR (CDX3007) since 2026-07-20, and both the warning period
  and the flip were decided by measurement rather than by taste. It began
  as a warning because as an error it would have halted the sign tool and
@@ -491,55 +441,6 @@ Section: Duplicate Cite Detection
  chapter in the unit is a broken unit, the host resolver already
  refuses the same fact as CDX3010, and with the false-positive class
  gone there is nothing left for a warning to measure.
-
- Two normalizations have to be right here, and getting either wrong makes
- the check reject correct code. Both were measured against the real tree
- before this was written, not reasoned about.
-
- FIRST: match on the BARE chapter name, not on <Quire>--<Chapter>. The
- concat prefixes each header with its DIRECTORY, and a quire is not a
- directory -- everything under codex/compiler is the Codex quire but sits in
- Core, Emit, Types and the rest. So `cites Codex chapter Build Settings`
- has to match the chapter the concat named `Core--Build Settings`. Composing
- the quire into the key misses 21 of the compiler's own 73 cites; the bare
- key misses none.
-
- SECOND: the key DROPS spaces, it does not turn them into hyphens, so
- slugify is the wrong function to reach for. A cite may name the FILE while
- the header names the chapter: `cites Common chapter ByteHelpers` is
- satisfied by `ByteHelpers.codex`, whose header reads `Chapter: Byte
- Helpers`. Neither form is wrong and no key built on one finds the other
- unless the spaces come out. This is the build resolver's Get-CiteKey rule
- (`build/quire-map.ps1`), and it is deliberately the same rule -- a second
- notion of matching is how the two ends drift apart. Using slugify here
- rejected both of the pe writers' correct cites.
-
- find-slug-for-cite-name used to compose the key the first way and so
- answered "" for those same 21 cites, dropping their cite overrides. It
- now tries the composed key first and falls back to the bare name, which
- is why both spellings keep working.
-
- The consequence of that "" was sharper than a dropped override, and
- codex/test/cite-override-quire.codex pins it: if the cited name is
- CONTESTED, both definitions are mangled, the citing chapter gets no
- rename entry, and the mention resolves to nothing -- CDX3002, no binary.
- So the old key did not quietly choose the wrong definition, it made a
- whole construct uncompilable. It went unnoticed because every cite
- written the quire way happens to name an uncontested definition.
-
- The fallback REFUSES rather than guesses. A bare name can be ambiguous
- where <Quire>--<Chapter> was not: ten of them are, measured over the real
- source -- Console lives in both core and kernel, Opening in both compiler
- and test, and Markdown in both encode and ui. Matching bare and taking the
- first hit would mangle a name to whichever chapter the concat happened to
- emit first, which is a wrong answer that compiles. So when the bare name
- matches more than one chapter in the unit the answer is "" -- exactly what
- the broken key gave, no worse than before, and never a guess. Note this is
- not the same question the presence check asks: a duplicate bare name is
- still PRESENT, so it warrants no CDX3007.
-
- This walks the citations ONCE. apply-cite-overrides-loop runs per chapter
- and would report every miss as many times as there are chapters.
 
   chapter-slug-dashes : Text, Integer, Integer -> Integer
   chapter-slug-dashes (s) (i) (len) =
@@ -583,14 +484,6 @@ Section: Duplicate Cite Detection
       then check-cites-resolve-loop citations bare-cache (i + 1) len bag
       else check-cites-resolve-loop citations bare-cache (i + 1) len (add-missing-cite-error bag cite)
 
- Presence is asked of the chapter headers the scan passed, not only of
- the chapters that own a definition. ChapterAssignment is built per
- definition, so a chapter declaring only an effect or a type contributed
- no assignment and read as absent though it sat in the unit. Both
- sources feed the cache: the assignments still answer for a bundled
- chapter renamed Quire--Name, whose header the scan records under the
- prefixed form and whose bare name chapter-bare-name recovers.
-
   check-cites-resolve : List ACitesDecl, List ChapterAssignment, List Text -> DiagnosticBag
   check-cites-resolve (citations) (assignments) (chapter-names) =
    let from-defs = for a in assignments -> cite-key (chapter-bare-name (a.chapter-slug))
@@ -621,13 +514,6 @@ Section: AST-Level Chapter Scoping
     conversions = ast.conversions,
     span = ast.span
    })
-
- The ceiling is the SCOPE deck reservation's top, and it is checked here
- because this loop is the only place the phase writes the deck in bulk:
- one renamed ADef per definition. Past the ceiling the deck grows into
- the bivy and the phase reads its own overwrite. A phase
- that stops here leaves the deck short of its ceiling, which is what
- compile-desugar-and-scope tests to raise CDX9002.
 
   scope-adefs-ll : List ADef, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, Integer, LinkedList ADef, Integer -> LinkedList ADef
   scope-adefs-ll (defs) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-rn) (i) (acc) (ceiling) =

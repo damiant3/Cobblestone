@@ -99,7 +99,7 @@ if ($Shot) {
 }
 
 Write-Host "[desk] ${Width}x${Height}; desk paints about 1.5s after launch"
-Write-Host "[desk] keys: f = Files, 3 = 3D View, Esc leaves a view. Editor/Terminal/Monitor/Settings are inert."
+Write-Host "[desk] keys: f Files, 3 3D View, c Calc, l Calendar, i Issues, d Diffusion, m Monitor; Esc leaves a pane."
 Write-Host "[desk] the desk itself does not exit by key: Shutdown (bottom-left) or Stop-Process."
 
 if ($Wait) {

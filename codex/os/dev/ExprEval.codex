@@ -1,34 +1,12 @@
 Chapter: ExprEval
   cites Foreword chapter CCE
 
- Inline arithmetic for the debugger's address arguments.
-
- `docs/Designs/Active/Tools/DEVELOPER-DEBUGGER.md` names this as one of
- the two Phase-1 modules that never landed, and says why it matters more
- than a sixth inspector: every command in that document promises
- expression arguments -- `dbg mem vga-base+0xA0 32`, `$` for the last
- result -- and without this every address is a bare literal and the
- promise is unmet across the whole tool. A debugger in which you cannot
- type `heap-base + 0x100` is one where you do the arithmetic on paper and
- typo it, at the moment you can least afford to.
-
- THE ANSWER IS A VARIANT, NOT AN INTEGER. An evaluator that returns 0 for
- a name it does not know is indistinguishable from one that read a zero,
- and in a debugger that means dumping the wrong page and believing it.
- Every failure says what it failed on and where.
-
  A HYPHEN BINDS THE WAY IT BINDS EVERYWHERE ELSE IN CODEX. `heap-base-1`
  is one name and not a subtraction, because a hyphen followed by a digit
  continues an identifier; the subtraction is `heap-base - 1`. That is the
  same rule `docs/DevelopersGuide.md` states for the language, and having
  the debugger disagree with the language about what a hyphen means would
  be its own small trap.
-
- WHAT THIS IS NOT. No parentheses, no unary minus, no function calls.
- This is an address calculator for a command line: the shape it must
- cover is a literal or a name, then operators and more of the same. The
- design specifies exactly that set and nothing about grouping, and
- inventing grouping would be building for a need nobody has stated.
 
  We say:
 
@@ -46,10 +24,6 @@ Section: The Answer
 
   expr-show : ExprResult -> Text
   expr-show (r) = when r is ExprOk (v) -> show v is ExprErr (m) -> "error: " & m
-
- A parse step: what was produced, and how far the scanner got. The index
- is what lets the caller tell "the expression ended here" from "there is
- trailing rubbish", which is the difference between `0x10` and `0x10 )`.
 
   ExprStep = record {
    es-result : ExprResult,
@@ -92,11 +66,6 @@ Section: Characters
 
 Section: Named Constants
 
- The addresses a person actually types at a bare-metal debugger, taken
- from `docs/ArchitectsSketchbook.md` rather than invented. A name that is
- silently wrong here is worse than a name that is absent, so the list is
- short and every entry is one this system genuinely uses.
-
   ex-names : List Text
   ex-names = [
    "load-addr", "heap-base", "stack-top", "serial-ring",
@@ -130,9 +99,6 @@ Section: Atoms
     then ex-name-end s (i + 2)
    else i
 
- A hex digit, or minus one for anything that is not one. `to-lower` folds
- the case, so `0xFF` and `0xff` are the same number and neither is a name.
-
  THE SIX LETTERS ARE COMPARED ONE AT A TIME, AND THAT IS NOT CLUMSINESS.
  The obvious version -- `if l >= 'a' & l <= 'f' then 10 + l - 'a'` -- is
  wrong here, and it was written that way first and shipped `0xff` as
@@ -141,11 +107,6 @@ Section: Atoms
  nor the subtraction means anything. Digits ARE contiguous in CCE (3
  through 12), which is why the digit arm above is allowed its arithmetic
  and this one is not.
-
- That is the same CCE assumption this project has shipped repeatedly, and
- it survived being written by someone who had spent the same day writing
- a chapter warning about it. A table is the only form that cannot be
- wrong about an ordering it does not assume.
 
   ex-hex-letter : Text, Integer -> Integer
   ex-hex-letter (s) (i) =
@@ -164,10 +125,6 @@ Section: Atoms
    let c = char-at s i
    in if is-digit c then char-code c - ex-ch "0"
    else ex-hex-letter s i
-
- Both number scanners carry a digit COUNT, so `0x` with nothing after it
- is an error rather than zero. A literal that silently becomes zero is
- the same class of lie as an unknown name that becomes zero.
 
   ex-hex : Text, Integer, Integer, Integer -> ExprStep
   ex-hex (s) (i) (acc) (n) =
@@ -268,11 +225,6 @@ Section: The Two Chains
 
 Section: Evaluating
 
- The trailing check is what makes `0x10 )` an error rather than 16.
- Stopping at the first thing it does not understand and reporting the
- value it happened to have is how a calculator silently answers the wrong
- question.
-
   expr-eval : Text, Integer -> ExprResult
   expr-eval (s) (last) =
    let st = ex-top-chain s 0 last
@@ -280,10 +232,6 @@ Section: Evaluating
    else let j = ex-skip-spaces s (st.es-next)
    in if ex-at-end s j then st.es-result
    else ExprErr ("unexpected " & ex-here s j)
-
- The form a caller with no last-result wants. `$` in this one is an
- error rather than zero, because a caller that never supplied a previous
- value has none to give and should not be handed one.
 
   expr-eval-plain : Text -> ExprResult
   expr-eval-plain (s) = expr-eval s 0

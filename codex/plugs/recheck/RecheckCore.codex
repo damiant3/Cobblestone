@@ -1,0 +1,248 @@
+Chapter: RecheckCore
+
+ Verdict vocabulary and type comparison for the independent rechecker.
+
+ Type comparison answers THREE values, not two. A rechecker that cannot
+ decide must say so: collapsing the undecided case into equal manufactures
+ agreement it did not earn, and collapsing it into unequal manufactures a
+ disagreement against a program that is fine. Both are worse than silence.
+ docs/Designs/Active/Tools/IndependentRechecker.md section 6 is the rule.
+
+Section: Verdicts
+
+  RcVerdict =
+   | RcAgree
+   | RcDisagree
+   | RcUnsupported
+
+  RcFinding = record {
+   rf-def : Text,
+   rf-verdict : RcVerdict,
+   rf-kind : Text,
+   rf-detail : Text
+  }
+
+  rc-finding : Text, RcVerdict, Text, Text -> RcFinding
+  rc-finding (d) (v) (k) (det) =
+   RcFinding { rf-def = d, rf-verdict = v, rf-kind = k, rf-detail = det }
+
+  rc-verdict-atom : RcVerdict -> Text
+  rc-verdict-atom (v) =
+   when v
+    is RcAgree -> "AGREE"
+    is RcDisagree -> "DISAGREE"
+    is RcUnsupported -> "UNSUPPORTED"
+
+Section: Walk State
+
+  RcWalk = record {
+   rw-findings : List RcFinding,
+   rw-fuel : Integer
+  }
+
+  rc-walk-new : Integer -> RcWalk
+  rc-walk-new (fuel) = RcWalk { rw-findings = [], rw-fuel = fuel }
+
+  rc-burn : RcWalk -> RcWalk
+  rc-burn (w) = RcWalk { rw-findings = w.rw-findings, rw-fuel = w.rw-fuel - 1 }
+
+  rc-dry : RcWalk -> Boolean
+  rc-dry (w) = w.rw-fuel <= 0
+
+  rc-add : RcWalk, RcFinding -> RcWalk
+  rc-add (w) (f) =
+   RcWalk { rw-findings = list-push (w.rw-findings) f, rw-fuel = w.rw-fuel - 1 }
+
+Section: Three Valued Type Comparison
+
+  TyCmp =
+   | TyEq
+   | TyNeq
+   | TyUnknown
+
+ A definite difference in any component is a definite difference overall,
+ so TyNeq outranks TyUnknown here: FunTy a r and FunTy b r differ whatever
+ is unknown about r once a and b are known to differ.
+
+  rc-cmp-both : TyCmp, TyCmp -> TyCmp
+  rc-cmp-both (a) (b) =
+   when a
+    is TyNeq -> TyNeq
+    is TyUnknown -> when b is TyNeq -> TyNeq is otherwise -> TyUnknown
+    is TyEq -> b
+
+  rc-bool-cmp : Boolean -> TyCmp
+  rc-bool-cmp (b) = if b then TyEq else TyNeq
+
+  rc-ov-eq : OverflowMode, OverflowMode -> Boolean
+  rc-ov-eq (a) (b) =
+   when a
+    is OvError -> when b is OvError -> True is otherwise -> False
+    is OvWrapping -> when b is OvWrapping -> True is otherwise -> False
+    is OvClamping -> when b is OvClamping -> True is otherwise -> False
+
+  rc-rw-eq : RealWidth, RealWidth -> Boolean
+  rc-rw-eq (a) (b) =
+   when a
+    is RwF64 -> when b is RwF64 -> True is otherwise -> False
+    is RwF32 -> when b is RwF32 -> True is otherwise -> False
+
+  rc-rm-eq : RealMode, RealMode -> Boolean
+  rc-rm-eq (a) (b) =
+   when a
+    is RmDefault -> when b is RmDefault -> True is otherwise -> False
+    is RmTrapping -> when b is RmTrapping -> True is otherwise -> False
+    is RmSaturating -> when b is RmSaturating -> True is otherwise -> False
+
+ The atom `error` on the wire is not only ErrorTy: ir-emit-type has no arm
+ for ProofTy, PropEqTy, TypeCon or TypeApply, and its `is otherwise` sends
+ all four to the same spelling. Four distinct types and one failure type
+ are indistinguishable here, so every one of them is undecided.
+
+  rc-ty-opaque : CodexType -> Boolean
+  rc-ty-opaque (t) =
+   when t
+    is ErrorTy -> True
+    is TypeVar (i) -> True
+    is ForAllTy (i) (b) -> True
+    is ForAllEff (i) (b) -> True
+    is ProofTy -> True
+    is PropEqTy (a) (b) -> True
+    is TypeCon (n) -> True
+    is TypeApply (f) (a) -> True
+    is otherwise -> False
+
+  rc-ty-eq : CodexType, CodexType -> TyCmp
+  rc-ty-eq (a) (b) =
+   if rc-ty-opaque a | rc-ty-opaque b then TyUnknown
+   else rc-ty-eq-known a b
+
+ A unit type is documented as transparent to its inner type at assignment
+ boundaries, and the exact extent of that is not settled by the language
+ docs. Answering Unknown rather than guessing is deliberate; do not
+ "fix" it to Eq or Neq without a documented rule to cite. Resolving it by
+ reading strip-unit-ty is the one move section 7 forbids.
+
+  rc-ty-eq-known : CodexType, CodexType -> TyCmp
+  rc-ty-eq-known (a) (b) =
+   when a
+    is IntegerTy (lo) (hi) (m) ->
+     when b
+      is IntegerTy (lo2) (hi2) (m2) -> rc-bool-cmp (lo == lo2 & hi == hi2 & rc-ov-eq m m2)
+      is UnitTy (n2) (i2) -> TyUnknown
+      is otherwise -> TyNeq
+    is RealTy (w) (m) ->
+     when b
+      is RealTy (w2) (m2) -> rc-bool-cmp (rc-rw-eq w w2 & rc-rm-eq m m2)
+      is UnitTy (n2) (i2) -> TyUnknown
+      is otherwise -> TyNeq
+    is TextTy -> when b is TextTy -> TyEq is UnitTy (n2) (i2) -> TyUnknown is otherwise -> TyNeq
+    is BooleanTy -> when b is BooleanTy -> TyEq is otherwise -> TyNeq
+    is CharTy -> when b is CharTy -> TyEq is otherwise -> TyNeq
+    is VoidTy -> when b is VoidTy -> TyEq is otherwise -> TyNeq
+    is NothingTy -> when b is NothingTy -> TyEq is otherwise -> TyNeq
+    is ListTy (e) -> when b is ListTy (e2) -> rc-ty-eq e e2 is otherwise -> TyNeq
+    is LinkedListTy (e) -> when b is LinkedListTy (e2) -> rc-ty-eq e e2 is otherwise -> TyNeq
+    is FunTy (p) (row) (r) ->
+     when b
+      is FunTy (p2) (row2) (r2) -> rc-cmp-both (rc-ty-eq p p2) (rc-ty-eq r r2)
+      is otherwise -> TyNeq
+    is SumTy (n) (args) (ctors) ->
+     when b
+      is SumTy (n2) (args2) (ctors2) -> rc-nominal-eq (n.value) args (n2.value) args2
+      is ConstructedTy (n2) (args2) -> rc-nominal-eq (n.value) args (n2.value) args2
+      is otherwise -> TyNeq
+    is RecordTy (n) (args) (fs) ->
+     when b
+      is RecordTy (n2) (args2) (fs2) -> rc-nominal-eq (n.value) args (n2.value) args2
+      is ConstructedTy (n2) (args2) -> rc-nominal-eq (n.value) args (n2.value) args2
+      is otherwise -> TyNeq
+    is ConstructedTy (n) (args) ->
+     when b
+      is ConstructedTy (n2) (args2) -> rc-nominal-eq (n.value) args (n2.value) args2
+      is SumTy (n2) (args2) (ctors2) -> rc-nominal-eq (n.value) args (n2.value) args2
+      is RecordTy (n2) (args2) (fs2) -> rc-nominal-eq (n.value) args (n2.value) args2
+      is otherwise -> TyNeq
+    is EffectfulTy (e) (s) (r) ->
+     when b
+      is EffectfulTy (e2) (s2) (r2) -> rc-ty-eq r r2
+      is otherwise -> TyNeq
+    is UnitTy (n) (inner) ->
+     when b
+      is UnitTy (n2) (inner2) -> rc-cmp-both (rc-bool-cmp (n.value == n2.value)) (rc-ty-eq inner inner2)
+      is otherwise -> TyUnknown
+    is VectorTy (n) (t) ->
+     when b
+      is VectorTy (n2) (t2) -> rc-cmp-both (rc-bool-cmp (n == n2)) (rc-ty-eq t t2)
+      is otherwise -> TyNeq
+    is VectorMaskTy (n) ->
+     when b is VectorMaskTy (n2) -> rc-bool-cmp (n == n2) is otherwise -> TyNeq
+    is LinearTy (inner) -> rc-ty-eq inner b
+    is otherwise -> TyUnknown
+
+Section: Assignability
+
+ Equality is the wrong question in an argument position and using it there
+ was this rechecker's first bug, caught by its own control: passing a
+ value of `Integer between 0 and 20` to a plain `Integer` parameter is
+ ordinary Codex, and equality called it a disagreement.
+
+ A value flows from a narrower band into a wider one, never the reverse.
+ The reverse direction is the one that matters and it stays a
+ disagreement, which is what the compiler itself does -- an unproven range
+ in a bounded slot is CDX2051, refused rather than guarded.
+
+ Overflow mode is not a range, so a difference in mode is not a fit that
+ can be decided by containment. Undecided rather than guessed.
+
+  rc-ty-fits : CodexType, CodexType -> TyCmp
+  rc-ty-fits (from) (to) =
+   if rc-ty-opaque from | rc-ty-opaque to then TyUnknown
+   else when from
+    is IntegerTy (lo1) (hi1) (m1) ->
+     when to
+      is IntegerTy (lo2) (hi2) (m2) ->
+       if rc-ov-eq m1 m2 == False then TyUnknown
+       else rc-bool-cmp (lo2 <= lo1 & hi1 <= hi2)
+      is otherwise -> rc-ty-eq-known from to
+    is FunTy (p1) (row1) (r1) ->
+     when to
+      is FunTy (p2) (row2) (r2) -> rc-cmp-both (rc-ty-fits p2 p1) (rc-ty-fits r1 r2)
+      is otherwise -> TyNeq
+    is ListTy (e1) -> when to is ListTy (e2) -> rc-ty-fits e1 e2 is otherwise -> TyNeq
+    is LinkedListTy (e1) -> when to is LinkedListTy (e2) -> rc-ty-fits e1 e2 is otherwise -> TyNeq
+    is otherwise -> rc-ty-eq-known from to
+
+ One type has two spellings on this wire and they meet each other. A sum or
+ record type is emitted INLINE with its constructors where it stands on its
+ own, but a RECURSIVE reference inside its own constructor field list is
+ emitted as the truncated `(ctd "Expr" (args))`, deliberately: the emitter
+ says re-emitting the fields caused exponential IR bloat on recursive
+ types. So the constructor `Mul` carries a parameter typed as the inlined
+ `(sum "Expr" ...)` while the same sum's own field list for `Mul` says
+ `(ctd "Expr" (args))`. They denote one type and structural equality called
+ them different, which reported four disagreements on `expr-calculator` and
+ eleven on `final-batch-test` in the first full sweep, all of them this
+ rechecker's own.
+
+ Nominal identity is the right comparison for both spellings: same name and
+ same type arguments is the same type. A different name still disagrees, so
+ this widens nothing except across the spelling boundary.
+
+  rc-nominal-eq : Text, List CodexType, Text, List CodexType -> TyCmp
+  rc-nominal-eq (n) (args) (n2) (args2) =
+   if n /= n2 then TyNeq
+   else if list-length args == 0 | list-length args2 == 0 then TyEq
+   else rc-ty-eq-list args args2
+
+  rc-ty-eq-list : List CodexType, List CodexType -> TyCmp
+  rc-ty-eq-list (xs) (ys) =
+   if list-length xs /= list-length ys then TyNeq
+   else rc-ty-eq-list-loop xs ys 0 (list-length xs) TyEq
+
+  rc-ty-eq-list-loop : List CodexType, List CodexType, Integer, Integer, TyCmp -> TyCmp
+  rc-ty-eq-list-loop (xs) (ys) (i) (len) (acc) =
+   if i >= len then acc
+   else rc-ty-eq-list-loop xs ys (i + 1) len (rc-cmp-both acc (rc-ty-eq (list-at xs i) (list-at ys i)))
+
+Page 1

@@ -728,3 +728,111 @@ Section: Writing
     if gfat-is32 vol then gfat-dir-slot32 vol name-buf (vol.vol-root-start)
     else gfat-root-slot vol name-buf (vol.vol-root-start) (((vol.vol-root-entry-count) * 32 + (vol.vol-bytes-per-sector) - 1) / (vol.vol-bytes-per-sector)) 0
   end
+
+Section: Multi-Cluster Writing
+
+ The chain writer: the FAT is loaded once and the whole chain is built
+ in memory, then flushed to both copies in bulk, then the data goes out
+ in contiguous runs -- the write-side mirror of Bulk File Reading above.
+ Every allocated cluster is marked end-of-chain the moment it is taken,
+ so the free scan cannot hand the same cluster out twice, and the link
+ to the next overwrites the mark as the chain grows; a volume that runs
+ out mid-chain aborts before the flush, leaving the disk untouched.
+
+ Writes are chunked at 64 sectors: a bulk transfer above 64 KB crosses
+ the TRB boundary question rung 3 of the sitting ladder has never
+ answered on metal, and a screenshot must not be the first thing to ask
+ it.
+
+  gfat-write-cap : Integer = 64
+
+  gfat-fat-put : Fat16Volume, Integer, Integer, Integer -> Integer
+  gfat-fat-put (vol) (fat) (cluster) (value) =
+    if gfat-is32 vol then gfat-put-u32 fat (cluster * 4) (bit-or (bit-and (fat16-read-u32 fat (cluster * 4)) 4026531840) (bit-and value 268435455))
+    else gfat-put-u16 fat (cluster * 2) value
+
+  gfat-chain-alloc : Fat16Volume, Integer, Integer, Integer, Integer, Integer -> Integer
+  gfat-chain-alloc (vol) (fat) (need) (from) (first) (prev) =
+    if need <= 0 then first
+    else let width = if gfat-is32 vol then 4 else 2
+    in let max-cluster = (vol.vol-fat-sectors) * (vol.vol-bytes-per-sector) / width
+    in let free = gfat-find-free vol fat from max-cluster
+    in if free == 0 then 0
+    else let l = if prev == 0 then 0 else gfat-fat-put vol fat prev free
+    in let m = gfat-fat-put vol fat free (gfat-eoc vol)
+    in gfat-chain-alloc vol fat (need - 1) (free + 1) (if first == 0 then free else first) free
+
+  gfat-write-sectors : Integer, Integer, Integer -> [Device.Port] Boolean
+  gfat-write-sectors (lba) (count) (src) = act
+    if count <= 0 then True
+    else let n = if count > gfat-write-cap then gfat-write-cap else count
+    in act
+      ok <- disk-write-into lba n src
+      if ok == False then False
+      else gfat-write-sectors (lba + n) (count - n) (src + n * 512)
+    end
+  end
+
+  gfat-flush-fat : Fat16Volume, Integer -> [Device.Port] Boolean
+  gfat-flush-fat (vol) (fat) = act
+    a <- gfat-write-sectors (vol.vol-fat-start) (vol.vol-fat-sectors) fat
+    if a == False then False
+    else if vol.vol-num-fats < 2 then True
+    else gfat-write-sectors ((vol.vol-fat-start) + (vol.vol-fat-sectors)) (vol.vol-fat-sectors) fat
+  end
+
+  gfat-write-runs : Fat16Volume, Integer, Integer, Integer, Integer, Integer -> [Device.Port] Integer
+  gfat-write-runs (vol) (fat) (cluster) (sectors-left) (src) (written) = act
+    if sectors-left <= 0 then written
+    else if gfat-is-end vol cluster then written
+    else if cluster < 2 then written
+    else act
+      let spc = vol.vol-sectors-per-cluster
+      in let clusters-left = (sectors-left + spc - 1) / spc
+      in let run = gfat-run-length vol fat cluster clusters-left 0
+      in let run-sectors = if run * spc > sectors-left then sectors-left else run * spc
+      in act
+        ok <- gfat-write-sectors (fat16-cluster-sector vol cluster) run-sectors (src + written * 512)
+        if ok == False then written
+        else act
+          nxt <- gfat-fat-next vol fat (cluster + run - 1)
+          gfat-write-runs vol fat nxt (sectors-left - run-sectors) src (written + run-sectors)
+        end
+      end
+    end
+  end
+
+ The caller's buffer must be readable to the size rounded up to a whole
+ sector -- the tail of the last sector goes to the disk as it lies.
+ gfat-load-fat allocates by raw heap bump, so a caller that wants the
+ FAT buffer and the file buffer reclaimed brackets the whole write with
+ __heap-save / __heap-restore.
+
+  gfat-write-file : Fat16Volume, Integer, Integer, Integer -> [Device.Port] Boolean
+  gfat-write-file (vol) (name-buf) (src) (size) = act
+    let cbytes = (vol.vol-bytes-per-sector) * (vol.vol-sectors-per-cluster)
+    in if size <= cbytes then gfat-write-small-file vol name-buf src size
+    else act
+      f <- gfat-load-fat vol
+      if f.gft-ok == False then False
+      else let need = (size + cbytes - 1) / cbytes
+      in let first = gfat-chain-alloc vol (f.gft-buf) need 2 0 0
+      in if first == 0 then False
+      else act
+        ff <- gfat-flush-fat vol (f.gft-buf)
+        if ff == False then False
+        else act
+          let sectors = (size + 511) / 512
+          in act
+            wr <- gfat-write-runs vol (f.gft-buf) first sectors src 0
+            if wr < sectors then False
+            else act
+              slot <- gfat-find-slot vol name-buf
+              if slot < 0 then False
+              else gfat-write-dir-entry name-buf slot first size (vol.vol-bytes-per-sector)
+            end
+          end
+        end
+      end
+    end
+  end

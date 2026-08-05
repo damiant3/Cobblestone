@@ -1,0 +1,102 @@
+Chapter: E1000RingWrap
+  cites Foreword chapter Maybe
+  cites Kernel chapter E1000e
+  cites Kernel chapter Pci
+
+ Both rings hold sixteen descriptors and until this test nothing in the
+ tree drove either past its end: e1000-bringup injects one frame and
+ sends one, dhcp-acquire-e1000 exchanges a handful. So the two places
+ that decide a wrap -- the int-mod in e1000-recycle-rx and the one in
+ e1000-send-at -- had no arm that could tell a correct answer from an
+ absent one. Forty of each against sixteen is two full turns and part of
+ a third.
+
+ The byte total is here rather than a count alone because the count is
+ satisfied by forty frames of anything. e1000-recycle-rx clears the
+ status and length words and deliberately does NOT rewrite the
+ descriptor's buffer address; the model re-reads that address on every
+ placement, so an address damaged on the way round the ring moves this
+ total and nothing else would notice.
+
+ Both halves were measured against a deliberately broken driver on
+ 2026-08-03, because an arm that cannot fail is not evidence. Dropping
+ the int-mod in e1000-recycle-rx gave count 16, wrapped no, bytes 63808,
+ and moved no other row. Dropping the one in e1000-send-at left every
+ receive row standing and gave send failed 24. Neither sabotage was
+ submitted; both rows discriminate.
+
+Section: Fixtures
+
+ Two and a half turns of a sixteen-entry ring.
+
+  wrap-count : Integer = 40
+
+  bring-up : PciScanResult -> E1000Device
+  bring-up (scan) =
+    when e1000-find scan
+      is Just (d) -> e1000-init d
+      is None -> e1000-absent
+
+  mk-frame : Integer, Integer, List Integer -> List Integer
+  mk-frame (i) (n) (acc) =
+    if i >= n then acc else mk-frame (i + 1) n (list-push acc i)
+
+Section: Judges
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  WrapTally = record {
+    w-count : Integer,
+    w-bytes : Integer,
+    w-odd : Integer
+  }
+
+  sum-bytes : List Integer, Integer, Integer, Integer -> Integer
+  sum-bytes (l) (i) (n) (acc) =
+    if i >= n then acc else sum-bytes l (i + 1) n (acc + list-at l i)
+
+ The fuel is the ring size times the frame count, which is far above any
+ honest run and still terminates a driver that reports a frame forever.
+
+  drain-fuel : Integer = 640
+
+  drain : E1000Device, Integer, Integer, Integer, Integer -> WrapTally
+  drain (d) (fuel) (count) (bytes) (odd) =
+    if fuel <= 0 then WrapTally { w-count = count, w-bytes = bytes, w-odd = odd }
+    else let r = e1000-poll-frame d
+    in if (r.r-has-frame) == False
+       then WrapTally { w-count = count, w-bytes = bytes, w-odd = odd }
+       else let f = r.r-frame
+       in let n = list-length f
+       in let total = bytes + sum-bytes f 0 n 0
+       in let odd-next = if n == 60 then odd else odd + 1
+       in drain d (fuel - 1) (count + 1) total odd-next
+
+  send-all : E1000Device, List Integer, Integer, Integer -> Integer
+  send-all (d) (frame) (i) (bad) =
+    if i >= wrap-count then bad
+    else let bad-next = if e1000-send-frame d frame == 1 then bad else bad + 1
+    in send-all d frame (i + 1) bad-next
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let d = bring-up (pci-scan-bus 0)
+    in let t = drain d drain-fuel 0 0 0
+    in let after = e1000-poll-frame d
+    in let bad = send-all d (mk-frame 0 64 []) 0 0
+    in act
+      print-line-uni ("present      : " & yn (d.e-present))
+      print-line-uni ("ring size    : " & show e1000-rx-count)
+      print-line-uni ("recv count   : " & show (t.w-count))
+      print-line-uni ("recv wrapped : " & yn ((t.w-count) > e1000-rx-count))
+      print-line-uni ("recv bytes   : " & show (t.w-bytes))
+      print-line-uni ("odd lengths  : " & show (t.w-odd))
+      print-line-uni ("poll after   : " & yn (after.r-has-frame))
+      print-line-uni ("send count   : " & show wrap-count)
+      print-line-uni ("send failed  : " & show bad)
+    end
+  end
+
+Page 1

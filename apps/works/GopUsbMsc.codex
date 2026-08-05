@@ -43,6 +43,68 @@ Section: Protocol Constants
 
   msc-chunk : Integer = 64
 
+Section: Bring-Up Ladder
+
+ The bring-up has six ways to stop and one cell recorded whether a disk
+ appeared, so all six photographed as `disk=n` and a board trip spent a
+ human to learn one bit. These are indices into the xHCI diagnostic block;
+ the map and the growth ceiling are in GopXhci.
+
+ Zero in the completion-code cell means the command was never issued, and
+ that is safe because xHCI defines no completion code zero. The no-event
+ sentinel is 256, not -1, because these cells are read back through
+ `peek-32`, whose helper is `mov eax, [rdi]` and therefore ZERO-extends:
+ a poked -1 returns 4294967295 and a reader testing for -1 tests a branch
+ that cannot fire. A completion code is eight bits, so 256 clears the
+ field and survives the round trip as itself.
+
+  msc-cell-stage : Integer = 70
+  msc-cell-ce : Integer = 71
+  msc-cell-blocksize : Integer = 72
+  msc-cell-sectors : Integer = 73
+  msc-cell-cfgv : Integer = 74
+  msc-cell-where : Integer = 75
+  msc-cell-route : Integer = 76
+  msc-cell-sccode : Integer = 77
+  msc-cell-portsc : Integer = 78
+  msc-cell-sccode2 : Integer = 79
+  msc-cell-end : Integer = 80
+  msc-ce-no-event : Integer = 256
+
+  msc-rung-iface : Integer = 1
+  msc-rung-bulk : Integer = 2
+  msc-rung-config : Integer = 3
+  msc-rung-endpoints : Integer = 4
+  msc-rung-ready : Integer = 5
+  msc-rung-capacity : Integer = 6
+
+  msc-rung : Integer -> Integer
+  msc-rung (r) =
+    if xdiag-get msc-cell-stage >= r then 0
+    else xdiag-put msc-cell-stage r
+
+ Where the device was, recorded the moment its interface is recognised.
+ Cells 0-39 are restored from the keyboard's snapshot, so on a machine with
+ two controllers nothing else on the screen says which one a disk failure
+ happened on, nor at what port, speed or depth. Route zero is root-attached
+ and non-zero is behind a hub, which is a different bring-up entirely.
+
+ The device's OWN root port register, taken here rather than left to the
+ snapshot, which covers eight ports on a controller that may have
+ twenty-six. Whether that port is ENABLED is the first thing to ask of a
+ transfer that fails on the wire: a port carrying a device but not showing
+ PED is a port whose transfers are unreliable for reasons no amount of
+ reading the driver will reveal.
+
+  msc-note-where : XhciHost, UsbDev -> Integer
+  msc-note-where (xh) (dev) =
+    let p = xdiag-put msc-cell-portsc (xhci-portsc xh (dev.ud-port))
+    in let r = xdiag-put msc-cell-route (dev.ud-route)
+    in xdiag-put msc-cell-where (bit-or (bit-and (xdiag-get xhci-cur-ord) 255)
+      (bit-or (bit-shl (bit-and (dev.ud-port) 255) 8)
+      (bit-or (bit-shl (bit-and (dev.ud-speed) 255) 16)
+              (bit-shl (bit-and (dev.ud-slot) 255) 24))))
+
 Section: Disk State
 
   MscDisk = record {
@@ -112,10 +174,16 @@ Section: Configuration Descriptor Walk
 
 Section: Connect
 
+ The ladder cells are driven from, not merely written, so the standalone
+ path zeroes its own. Metal RAM is not zeroed and firmware residue in a
+ monotonic cell pins it at whatever it pleases; the boot path is covered
+ by usb-attach's own wipe of the block.
+
   msc-connect : [Device.Port] MscDisk
   msc-connect = act
     xh <- xhci-connect
-    if xh.xh-ok then msc-try-ports xh 0
+    let z = xdiag-zero msc-cell-stage msc-cell-end
+    in if xh.xh-ok then msc-try-ports xh 0
     else msc-no-disk
   end
 
@@ -145,31 +213,108 @@ Section: Connect
     else let total = msc-cfg-total cfg
     in let iface = msc-find-interface cfg 0 total
     in if iface < 0 then msc-no-disk
-    else let skip = peek-byte cfg iface
+    else msc-open-iface xh dev cfg iface total
+
+ One mass-storage interface the caller has already located, taken up to a
+ configured pair of bulk endpoints. Both entries arrive here: the
+ standalone connect above, and the boot walk in GopUsb, which classifies
+ every device once and hands this the interface it found.
+
+  msc-open-iface : XhciHost, UsbDev, Integer, Integer, Integer -> MscDisk
+  msc-open-iface (xh) (dev) (cfg) (iface) (total) =
+    let r1 = msc-rung msc-rung-iface
+    in let wh = msc-note-where xh dev
+    in let skip = peek-byte cfg iface
     in let in-off = msc-find-bulk-off cfg (iface + skip) total True
     in let out-off = msc-find-bulk-off cfg (iface + skip) total False
     in if in-off < 0 then msc-no-disk
     else if out-off < 0 then msc-no-disk
-    else msc-open-endpoints xh dev (msc-ep-num cfg in-off * 2 + 1) (msc-ep-maxpkt cfg in-off) (msc-ep-num cfg out-off * 2) (msc-ep-maxpkt cfg out-off) (peek-byte cfg (iface + 2))
+    else let r2 = msc-rung msc-rung-bulk
+    in msc-open-endpoints xh dev (msc-ep-num cfg in-off * 2 + 1) (msc-ep-maxpkt cfg in-off) (msc-ep-num cfg out-off * 2) (msc-ep-maxpkt cfg out-off) (peek-byte cfg (iface + 2)) (peek-byte cfg 5)
 
-  msc-open-endpoints : XhciHost, UsbDev, Integer, Integer, Integer, Integer, Integer -> MscDisk
-  msc-open-endpoints (xh) (dev) (dci-in) (pkt-in) (dci-out) (pkt-out) (iface-num) =
-    let sc = usb-set-configuration xh dev 1
-    in if sc == False then msc-no-disk
-    else let ring-in = xhci-ring-new
+ `bConfigurationValue` is byte 5 of the configuration descriptor and it is
+ the value SET_CONFIGURATION must carry. It is NOT an index and it is not
+ obliged to be 1: a device is free to number its one configuration
+ anything non-zero, and a host that sends 1 to a device that called it
+ something else is refused.
+
+ This driver sent a hardcoded 1 until 2026-08-03, alone among the five --
+ the keyboard, mouse, camera and hub paths all read byte 5 and pass it
+ down. Sending the descriptor's value is correct on its own terms and the
+ hardcode was wrong on its own terms, independently of what any one device
+ does with it.
+
+ WHAT IS NOT ESTABLISHED, and cell 74 exists to settle it. The ASUS
+ answered `rung=2 SET-CONFIG REFUSED` on the first boot that could say so,
+ and a wrong configuration value is the obvious candidate. It is not
+ proven. **No emulator we own can reproduce the refusal**: QEMU's
+ usb-storage reports bConfigurationValue 1 and then ACCEPTS ANY VALUE
+ SENT -- measured 2026-08-03 by passing byte 5 plus one, which still came
+ up `rung=6 disk usable` at `cfgv=2`. So the bed proves the value is
+ threaded through and cannot prove what refusing it looks like. That is
+ why 74 is written BEFORE the request: if the board comes back `cfgv=1
+ rung=2` the theory is dead and the refusal has another cause, and one
+ boot says which.
+
+ A Transaction Error is the wire dropping a request, not the device
+ declining it, and xHCI 4.8.3 halts the endpoint when one occurs. A halted
+ endpoint ignores its doorbell until Reset Endpoint, so the second attempt
+ has to be preceded by the host clearing the halt or it reaches nothing at
+ all. Measured on the ASUS 2026-08-04: without the recovery the retry
+ returned no completion event, which is what a doorbell into a halted
+ endpoint looks like from here.
+
+ SET_CONFIGURATION to the same value is idempotent, so asking twice cannot
+ disturb a device that was fine.
+
+ A STALL deliberately gets no retry. That is the device REFUSING a request
+ it understood (USB 2.0 9.4.7), and asking again identically would be
+ adopting a retry on a guess rather than on the evidence above.
+
+  msc-retry-config : XhciHost, UsbDev, Integer -> Integer
+  msc-retry-config (xh) (dev) (cfgv) =
+    if xhci-recover-ep0 xh dev == False then msc-ce-no-event
+    else let c = usb-set-configuration-code xh dev cfgv
+    in if c == 0 then msc-ce-no-event else c
+
+ The first answer stays in cell 77 as the reading; cell 79 carries the
+ second, and it is the second that decides.
+
+  msc-configure : XhciHost, UsbDev, Integer -> Integer
+  msc-configure (xh) (dev) (cfgv) =
+    let first = usb-set-configuration-code xh dev cfgv
+    in let n1 = xdiag-put msc-cell-sccode first
+    in if first == trb-cc-success then first
+    else if first /= trb-cc-usb-transaction-error then first
+    else let second = msc-retry-config xh dev cfgv
+    in let n2 = xdiag-put msc-cell-sccode2 second
+    in second
+
+  msc-open-endpoints : XhciHost, UsbDev, Integer, Integer, Integer, Integer, Integer, Integer -> MscDisk
+  msc-open-endpoints (xh) (dev) (dci-in) (pkt-in) (dci-out) (pkt-out) (iface-num) (cfgv) =
+    let n0 = xdiag-put msc-cell-cfgv cfgv
+    in let sccode = msc-configure xh dev cfgv
+    in if sccode /= trb-cc-success then msc-no-disk
+    else let r3 = msc-rung msc-rung-config
+    in let ring-in = xhci-ring-new
     in let ring-out = xhci-ring-new
     in let r0 = xhci-set-ep-ring (dev.ud-ctx) dci-in (xhci-ring-trbs ring-in) (xh.xh-ctxsz)
     in let r1 = xhci-set-ep-ring (dev.ud-ctx) dci-out (xhci-ring-trbs ring-out) (xh.xh-ctxsz)
     in let ictx = xhci-ictx-configure dci-in pkt-in (xhci-ring-trbs ring-in) dci-out pkt-out (xhci-ring-trbs ring-out) (xh.xh-ctxsz) (dev.ud-ctx)
     in let ce = xhci-configure-endpoint xh dev ictx
+    in let n1 = xdiag-put msc-cell-ce (if ce.xe-ok then ce.xe-code else msc-ce-no-event)
     in if ce.xe-ok == False then msc-no-disk
     else if ce.xe-code /= trb-cc-success then msc-no-disk
-    else let disk = MscDisk { md-ok = True, md-host = xh, md-dev = dev, md-dci-in = dci-in, md-dci-out = dci-out, md-ring-in = ring-in, md-ring-out = ring-out, md-cbw = alloc-zeroed 64 64, md-csw = alloc-zeroed 64 64, md-buf = alloc-zeroed 64 64, md-sectors = 0, md-iface = iface-num }
+    else let r4 = msc-rung msc-rung-endpoints
+    in let disk = MscDisk { md-ok = True, md-host = xh, md-dev = dev, md-dci-in = dci-in, md-dci-out = dci-out, md-ring-in = ring-in, md-ring-out = ring-out, md-cbw = alloc-zeroed 64 64, md-csw = alloc-zeroed 64 64, md-buf = alloc-zeroed 64 64, md-sectors = 0, md-iface = iface-num }
     in let rdy = msc-wait-ready disk msc-ready-tries
     in if rdy == False then __record-set disk "md-ok" False
-    else let cap = msc-read-capacity disk
+    else let r5 = msc-rung msc-rung-ready
+    in let cap = msc-read-capacity disk
     in if cap == 0 then __record-set disk "md-ok" False
-    else __record-set disk "md-sectors" cap
+    else let r6 = msc-rung msc-rung-capacity
+    in let n2 = xdiag-put msc-cell-sectors cap
+    in __record-set disk "md-sectors" cap
 
 Section: CBW Construction
 
@@ -228,7 +373,7 @@ Section: BOT Transfer
   msc-xfer-code (d) (ring) (dci) (buf) (len) =
     let w = xhci-ring-push ring buf 0 len (bit-or (bit-shl trb-t-normal 10) trb-flag-ioc)
     in let db = xhci-ring-doorbell (d.md-host) ((d.md-dev).ud-slot) dci
-    in xhci-wait-xfer (d.md-host) ((d.md-dev).ud-slot) xhci-fuel
+    in xhci-wait-xfer (d.md-host) ((d.md-dev).ud-slot) dci xhci-fuel
 
   msc-code-ok : Integer -> Boolean
   msc-code-ok (code) =
@@ -404,7 +549,9 @@ Section: SCSI Operations
     in let c = poke-byte (d.md-cbw) 15 scsi-op-capacity
     in let ok = msc-issue d tag True (d.md-buf) 8
     in if ok == False then 0
-    else if msc-be32 (d.md-buf) 4 /= 512 then 0
+    else let bs = msc-be32 (d.md-buf) 4
+    in let n = xdiag-put msc-cell-blocksize bs
+    in if bs /= 512 then 0
     else msc-be32 (d.md-buf) 0 + 1
 
 Section: Sector Read and Write

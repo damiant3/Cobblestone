@@ -1,0 +1,119 @@
+Chapter: GopShot
+  cites Works chapter GopFat16
+  cites Works chapter GopRtc
+
+ The screen, written to the boot stick as a BMP -- the telemetry channel
+ that retires the camera: a photograph names what a reader can decode
+ from it, a pixel-exact frame names everything. One keystroke on the
+ desktop captures the live framebuffer and lands SHhhmmss.BMP on the
+ stick's own ESP, named by the RTC so no directory scan is needed and
+ two shots collide only within one second.
+
+ We say:
+
+Section: BMP Encoding
+
+ BITMAPFILEHEADER (14 bytes) then BITMAPINFOHEADER (40): magic "BM",
+ file size, pixel offset 54; header size 40, width, height POSITIVE for
+ bottom-up rows, one plane, 24 bits per pixel, no compression, image
+ size, 2835 pixels-per-metre both axes. Rows pad to four bytes. The
+ framebuffer's 32-bit pixels are B,G,R,X in memory order and BMP wants
+ B,G,R, so the copy takes the low three bytes of each pixel as they lie.
+
+  shot-row-bytes : Integer -> Integer
+  shot-row-bytes (w) = bit-and (w * 3 + 3) (-4)
+
+  shot-header : Integer, Integer, Integer, Integer -> Integer
+  shot-header (buf) (w) (h) (size) =
+    let a = poke-byte buf 0 66
+    in let b = poke-byte buf 1 77
+    in let c = gfat-put-u32 buf 2 size
+    in let d = gfat-put-u32 buf 6 0
+    in let e = gfat-put-u32 buf 10 54
+    in let f = gfat-put-u32 buf 14 40
+    in let g = gfat-put-u32 buf 18 w
+    in let i = gfat-put-u32 buf 22 h
+    in let j = gfat-put-u16 buf 26 1
+    in let k = gfat-put-u16 buf 28 24
+    in let l = gfat-put-u32 buf 30 0
+    in let m = gfat-put-u32 buf 34 (size - 54)
+    in let n = gfat-put-u32 buf 38 2835
+    in let o = gfat-put-u32 buf 42 2835
+    in let p = gfat-put-u32 buf 46 0
+    in gfat-put-u32 buf 50 0
+
+  shot-copy-row : Integer, Integer, Integer, Integer -> Integer
+  shot-copy-row (dst) (src) (w) (x) =
+    if x >= w then 0
+    else let a = poke-byte dst (x * 3) (peek-byte src (x * 4))
+    in let b = poke-byte dst (x * 3 + 1) (peek-byte src (x * 4 + 1))
+    in let c = poke-byte dst (x * 3 + 2) (peek-byte src (x * 4 + 2))
+    in shot-copy-row dst src w (x + 1)
+
+  shot-copy-rows : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  shot-copy-rows (buf) (base) (w) (h) (stride) (rb) (y) =
+    if y >= h then 0
+    else let r = shot-copy-row (buf + 54 + y * rb) (base + (h - 1 - y) * stride * 4) w 0
+    in shot-copy-rows buf base w h stride rb (y + 1)
+
+Section: Naming
+
+ An 8.3 directory name is eleven ASCII bytes, space-padded, no dot:
+ "SHhhmmssBMP". The bytes are poked as ASCII directly -- Text here is
+ CCE and a CCE byte on a FAT directory entry is a name no other reader
+ resolves.
+
+  shot-digit2 : Integer, Integer, Integer -> Integer
+  shot-digit2 (buf) (off) (v) =
+    let a = poke-byte buf off (48 + v / 10)
+    in poke-byte buf (off + 1) (48 + int-mod v 10)
+
+  shot-name : Integer, Integer, Integer, Integer -> Integer
+  shot-name (buf) (hh) (mm) (ss) =
+    let a = poke-byte buf 0 83
+    in let b = poke-byte buf 1 72
+    in let c = shot-digit2 buf 2 hh
+    in let d = shot-digit2 buf 4 mm
+    in let e = shot-digit2 buf 6 ss
+    in let f = poke-byte buf 8 66
+    in let g = poke-byte buf 9 77
+    in poke-byte buf 10 80
+
+  shot-bcd : Integer -> Integer
+  shot-bcd (n) = (n / 16) * 10 + int-mod n 16
+
+  shot-pad2 : Integer -> Text
+  shot-pad2 (n) = if n < 10 then "0" & show n else show n
+
+Section: Capture
+
+ The caller brackets this with __heap-save / __heap-restore AFTER using
+ the returned Text: the frame buffer copy and the FAT image both live on
+ the heap and a desktop that leaks megabytes per keystroke halts in
+ minutes. The answer Text names the file on success and the failing
+ stage otherwise, ready to paint.
+
+  shot-take : Integer, Integer, Integer, Integer -> [Device.Port] Text
+  shot-take (base) (w) (h) (stride) = act
+    m <- gfat-mount-esp
+    if m.gm-ok == False then "shot: no ESP mount"
+    else act
+      rh <- rtc-read 4
+      rm <- rtc-read 2
+      ss <- rtc-seconds 0
+      let hh = shot-bcd rh
+      in let mi = shot-bcd rm
+      in let s2 = if ss < 0 then 0 else ss
+      in let rb = shot-row-bytes w
+      in let size = 54 + rb * h
+      in let buf = alloc-zeroed (bit-and (size + 511) (-512)) 64
+      in let hd = shot-header buf w h size
+      in let px = shot-copy-rows buf base w h stride rb 0
+      in let nb = alloc-zeroed 16 16
+      in let nm = shot-name nb hh mi s2
+      in act
+        ok <- gfat-write-file (m.gm-vol) nb buf size
+        if ok then "shot SH" & shot-pad2 hh & shot-pad2 mi & shot-pad2 s2 & ".BMP ok" else "shot write FAILED"
+      end
+    end
+  end
