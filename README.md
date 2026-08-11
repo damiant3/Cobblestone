@@ -38,14 +38,50 @@ Built solo by one human in collaboration with a fleet of AI agents, in
 
 ## Verified
 
-Measured 2026-08-03.
+Measured 2026-08-03, except where an item gives its own date.
 
 1. **The compiler is a hard fixed point of itself on bare metal.** Text
    round-trip (stage1 === stage2) and CDX fixed point (stage1.cdx ===
    stage2.cdx), byte-identical, with no OS and no libc beneath it. The
-   self-hosted compiler is **63 chapters, 57,498 lines** of Codex and
-   compiles itself in 22 seconds.
-2. **The safety claims are compiler-enforced, not aspirational.** Effect
+   self-hosted compiler is **63 chapters, 53,881 lines** of Codex
+   (measured 2026-08-10) and compiles itself in 22 seconds.
+
+2. **Two independent implementations check the compiler, and they agree**
+   (measured 2026-08-10). A fixed point proves the seed is *stable*, not
+   that it is *honest*: a compiler carrying a Thompson trojan is a
+   perfectly stable fixed point too, recognising its own source and
+   re-injecting the payload into every compiler it emits, and no amount of
+   self-consistency or reproducible-build determinism can see it. Two
+   things answer that, from directions that share no code.
+
+   **Diverse double-compiling.** The whole compiler is rendered to C# by a
+   plug, built by Roslyn -- a toolchain with no ancestry in this project --
+   and that compiler then compiles the Codex compiler's own source. Its
+   output is **2,755,007 bytes against the shipped seed's 2,755,007, with
+   96 differing bytes, every one of them inside the signature region at
+   offsets 40..135 and none outside it.** The signature is stamped by the
+   sign phase rather than emitted by the compiler. That is Wheeler's
+   `stage2 == X`. **The residual hole, stated because it is large: this is
+   not yet a complete Wheeler DDC.** The seed still sits upstream twice, as
+   it produced the IR and compiled the plug; what is narrowed is the
+   frontend and the emitter, on one input, with Roslyn as the independent
+   lineage. It runs on every release, because it once broke silently while
+   every other proof stayed green.
+
+   **An independently written rechecker.** It reads the compiler's IR
+   output as text and re-derives every type judgement in it, and is
+   forbidden from reading the compiler's own judgement code -- so agreement
+   means two implementations agree, not that one agrees with itself. Over
+   the compiler and the standard library, **4,821 definitions: zero
+   disagreements**, and one honest abstention, down from 1,365 at the start
+   of the cycle. Its abstention set turned out to be a map of where the
+   *language* was unspecified rather than a list of the checker's
+   weaknesses, and three sections of the language guide were written from
+   it. It also found a real defect in the compiler: `lower-lambda` recorded
+   the type it was handed rather than the type it had just resolved, so the
+   compiler worked out a lambda's instantiation and then discarded it.
+
+3. **The safety claims are compiler-enforced, not aspirational.** Effect
    rows are first-class inferred data checked at every boundary; linear
    ownership follows through moves, calls, captures and containers with
    all nine laundering routes closed; bounded-integer parameters and
@@ -54,22 +90,22 @@ Measured 2026-08-03.
    `Device.Mmio` capability effects. Each was landed by writing the
    program that *should* be rejected, confirming the hole, then closing
    it and pinning the rejection as a `.failing` test.
-3. **Dependent types with machine-checked proofs.** `===` in type
+4. **Dependent types with machine-checked proofs.** `===` in type
    position produces propositional equality; `Refl` is verified by the
    unifier. Structural induction with per-constructor subgoals; the
    flagship proof is `reverse (reverse xs) === xs` through a four-lemma
    chain. All proofs erase at emit -- zero machine code, zero runtime cost.
-4. **Punctual functions: compile-time bounded execution.** The
+5. **Punctual functions: compile-time bounded execution.** The
    `punctual` keyword rejects heap allocation, recursion, closures, bare
    I/O and calls to non-punctual functions, and reports an instruction
    count per function against an optional budget. No production language
    has this combination -- Ada Ravenscar is global and needs external WCET
    tools, Rust has nothing, MISRA-C is external linters.
-5. **590 library modules across 22 quires** (430 foreword + 160 OS): data
+6. **590 library modules across 22 quires** (430 foreword + 160 OS): data
    structures, crypto, a full TCP/IP stack with TLS 1.3 and X.509 peer
    verification, 3D and game engines, AI inference, encoding, math,
    compression, a themeable UI toolkit, and hard real-time primitives.
-6. **A bare-metal OS and GUI.** Preemptive scheduler, IPC, Ed25519
+7. **A bare-metal OS and GUI.** Preemptive scheduler, IPC, Ed25519
    identity, trust lattice, 5-phase CDX verifier, shell and debugger;
    a GOP-framebuffer desktop with a compositor, TrueType rendering and
    SMP-aware app rendering across cores. Proven on real hardware
@@ -78,7 +114,7 @@ Measured 2026-08-03.
    screenshot-to-stick, all through the tree's own drivers. SMP is
    complete for x86-64: atomics, AP bootstrap via SIPI, work-stealing
    scheduler, per-core heap isolation, IPI and lock-free channels.
-7. **55 plugs, all building clean.** Emitters are standalone CDX programs
+8. **55 plugs, all building clean.** Emitters are standalone CDX programs
    that consume the compiler's IR text: 31 languages, 14 UI frameworks,
    three GPU targets (PTX, SPIR-V, WGSL) and four binary formats (CDX,
    ELF, PE, IMG). A new target is a plug, not a compiler change.
@@ -103,11 +139,11 @@ Measured 2026-08-03.
    alone, against `t3isa-spec-v1.3`:
    [docs/t3isa-reference.md](https://github.com/manishthatte/maniTC/blob/main/docs/t3isa-reference.md)
    in [manishthatte/maniTC](https://github.com/manishthatte/maniTC).
-8. **Cross-architecture parity.** ARM64 and RISC-V backends run the test
+9. **Cross-architecture parity.** ARM64 and RISC-V backends run the test
    battery on Renode and QEMU, and the two agree. This is a claim of
    *parity*, not correctness: a known failure residue remains on both
    lanes, and the per-lane counts have not been re-measured since June.
-9. **Nine target boards with register-level drivers**, addresses taken
+10. **Nine target boards with register-level drivers**, addresses taken
    from official reference manuals, each with a smoke test on the hosted
    VM: STM32F4, STM32L4, ESP32-C6, Raspberry Pi 4, nRF52840, nRF9160,
    RP2040, FE310 and QEMU virt. Above them sits an industrial protocol
@@ -115,7 +151,7 @@ Measured 2026-08-03.
    BACnet/IP, KNX, J1939, CANopen, OPC UA, LoRaWAN, Zigbee and more --
    each with byte-exact known-answer tests against an independent
    reference encoder.
-10. **EU compliance evidence is a build artifact.** `ComplianceEvidence`
+11. **EU compliance evidence is a build artifact.** `ComplianceEvidence`
     maps 60 regulatory requirements across CRA Annex I, ETSI EN 303 645,
     NISTIR 8259A and IEC 62443 to the language features that satisfy
     each, and `generate-evidence-report` emits the summary. Codex is
