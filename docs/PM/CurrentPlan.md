@@ -303,12 +303,20 @@ open as WORKS-9.
 ## Track C -- the trust audit
 
 - **C1 (fester): diverse double-compiling. The main claim is LANDED.**
-  - **State the residual hole every time C1 is reported, because it is
-    large. This is NOT a complete Wheeler DDC.** The seed still sits
-    upstream twice: it produced the IR and it compiled `csharp-plug.cdx`.
-    A real DDC needs the C# arm to do `source -> IR` itself. What is
-    narrowed is the frontend and the text emitter, on one input, with
-    Roslyn as the independent lineage.
+  - **State the residual hole every time C1 is reported. The witness has
+    been falsified, so the hole is now stated precisely.** Sabotage arms
+    2026-08-10 (`OperatorsManual`, "The witness has a negative control")
+    poisoned the code generator and then constant folding, each payload
+    living only in the binary and in no source; both went RED against the
+    tampered build and reconstructed the honest seed. **The measured
+    boundary is self-reproducing versus not:** any payload in the binary
+    alone is caught, because the double-compile rebuilds from clean source.
+    The sole survivor is a self-reproducing quine, which is a high bar, not
+    the loose "the seed sits upstream." The seed does still sit upstream
+    (it produced the IR and compiled the plug), and the `source -> IR` arm
+    a complete Wheeler DDC wants is DONE -- the C# arm parsed raw source and
+    emitted a byte-identical CDX on demand this cycle -- so the residual is
+    the quine and nothing smaller.
 - **C2 (val): the independent rechecker. R1 to R4 are all published and
   enforced, and the abstention set is 1 finding from 1365.** All three
   classes are now closed:

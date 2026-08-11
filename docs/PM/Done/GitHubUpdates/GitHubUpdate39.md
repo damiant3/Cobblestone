@@ -52,21 +52,41 @@ runtime disagreed about something neither had ever been asked to state:
 - `__record-set` mutates in place; the plug copied.
 - The plug's text model was Unicode where the compiler's is CCE.
 
-**State the residual hole, because it is large and this is not a complete
-Wheeler DDC.** The seed still sits upstream twice: it produced the IR,
-and it compiled the C# plug itself. A real double-compile needs the
-independent arm to do `source -> IR` on its own. What is narrowed here is
-the frontend and the text emitter, on one input, with Roslyn as the
-independent lineage. That is worth having and it is not the whole claim.
+**And the witness was shown to fail, because a check that only ever comes
+back green proves nothing.** We poisoned the compiler on purpose, twice,
+each time with a payload living only in the compiler binary and in no
+source in the tree.
 
-**The witness broke during this cycle, which is the reason it is now a
-release gate.** Adding `block-write-sector` as a builtin was a change with
-nothing to do with C#, and the plug's builtin table gained no entry for it,
-so the emitted C# referenced a name that did not exist and Roslyn refused
-the file. The compiler was correct throughout and every other proof stayed
-green, which is exactly the problem: a witness nothing runs is a witness
-that reports the last answer it was given. It is repaired, it is re-measured
-above, and it now runs on every release rather than on demand.
+- A trojan in the x86-64 code generator: the witness went red by
+  **2,232,990 bytes** and stage2 reconstructed the untampered seed exactly
+  (96 differing bytes, all signature). The payload never reached the IR, so
+  the C# arm built an honest stage1 from it.
+- A trojan in constant folding, one layer up in lowering: **red again**,
+  same shape. The payload did reach the IR this time, but stage2 still
+  landed on the honest seed and exposed the poisoned build.
+
+**The measured boundary is not frontend versus backend; it is
+self-reproducing versus not.** Any trojan that lives only in the binary is
+caught, anywhere in the compiler, because the double-compile rebuilds it
+from clean source and a payload that does not copy itself cannot survive
+the rebuild.
+
+**The residual hole, stated precisely because the sabotage let us state it
+precisely: a self-reproducing quine** -- a trojan that recognises it is
+compiling the compiler and writes a copy of its own injector into the
+output, the attack Thompson actually built. That is a high bar, not the
+loose "the seed sits upstream twice" this entry used to claim. The seed
+does still sit upstream (it produced the IR and compiled the plug), and a
+complete Wheeler DDC would have the independent arm do `source -> IR`
+itself -- which it now can, and did, on demand this cycle -- but the thing
+that would actually defeat the witness is the quine, and building one is
+its own project.
+
+**This is now a release gate**, because it is the only one of the four
+proofs that does not take the compiler's word for anything: the battery,
+the sweep and the poison build all ask the compiler about itself, and a
+compiler carrying a trojan passes every one of them. Only a second
+implementation with unrelated lineage can answer the question.
 
 ### Arm two: an independently written checker re-derives what the compiler asserted
 
