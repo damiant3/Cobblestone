@@ -5,13 +5,9 @@ Chapter: SparkServer
   cites Net chapter Router
   cites Works chapter Http
   cites Foreword chapter Fat16
+  cites Foreword chapter StringUtils
   cites Foreword chapter CCE
   cites Foreword chapter Maybe
-
- HTTP server for Spark Studio. Serves the HTML page, WASM binary,
- CSS, JS, and a live API. Static files are read from a FAT16 disk
- image attached to the VM's IDE controller. Binary files (WASM) use
- HttpBinaryResponse; text files use HttpResponse.
 
  Routes:
    GET /                       HTML page (from disk or inline)
@@ -38,17 +34,7 @@ Section: MIME Types
     else if text-ends-with path ".stl" then "text/plain"
     else "text/plain"
 
-  text-ends-with : Text, Text -> Boolean
-  text-ends-with (s) (suffix) =
-    let slen = text-length s in let sufflen = text-length suffix
-    in if sufflen > slen then False
-    else substring s (slen - sufflen) slen == suffix
-
 Section: Static File Serving
-
- Reads a file from the FAT16 volume and serves it with the correct
- MIME type. Binary files (wasm, png) use http-encode-binary; text
- files use http-encode.
 
   serve-static-file : Fat16Volume, Text -> [Device.Block] Text
   serve-static-file (vol) (path) =
@@ -120,12 +106,9 @@ Section: HTML Response
 
 Section: Request Dispatch
 
- Handles an incoming HTTP request: parse, route, build response,
- send raw bytes over TCP using net-io-send-raw.
-
   SparkLoop = record { transport : TcpTransportState, requests : Integer }
 
-  spark-handle-request : SparkLoop, TransportRecvResult -> [Network.Write] SparkLoop
+  spark-handle-request : SparkLoop, TransportRecvResult -> [Network.Read, Network.Write] SparkLoop
   spark-handle-request (ls) (recv) =
     let req-text = bytes-to-text (recv.body) 0 (list-length (recv.body)) ""
     in let req = http-parse-request (recv.body)
@@ -157,14 +140,14 @@ Section: Serve Loop
 
 Section: Server Entry
 
-  local-mac : List Integer = [82, 84, 0, 18, 52, 99]
-  local-ip : List Integer = [10, 0, 2, 15]
-  gateway-ip : List Integer = [10, 0, 2, 2]
-  host-ip : List Integer = [127, 0, 0, 1]
+  spark-local-mac : List Integer = [82, 84, 0, 18, 52, 99]
+  spark-local-ip : List Integer = [10, 0, 2, 15]
+  spark-gateway-ip : List Integer = [10, 0, 2, 2]
+  spark-host-ip : List Integer = [127, 0, 0, 1]
 
   spark-server : [Console, Network.Read, Network.Write] Integer
   spark-server =
-    let sess = net-session-new local-mac local-ip gateway-ip 49153 9100 host-ip 1000
+    let sess = net-session-new spark-local-mac spark-local-ip spark-gateway-ip 49153 9100 spark-host-ip 1000
     in let ts = transport-new sess
     in act
       ts1 <- net-io-connect ts

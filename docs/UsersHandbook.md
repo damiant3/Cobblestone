@@ -158,6 +158,17 @@ generated when it is missing. A stick that cannot verify or rebuild
 itself is not what is being promised here, so the claim belongs where
 the artifact can be checked against it.
 
+### First boot: the ceremony
+
+The current bootable-stick payload is GopBoot, built by
+`build/boot/build-option-a.ps1 -Src apps/works/GopBoot.codex -Kernel
+seed/Codex.cdx -Ebs`. First boot runs the identity ceremony: it asks for
+a passphrase, gathers entropy, and saves an Ed25519 identity to the
+stick as `IDENTITY.DAT`; later boots unlock that identity instead of
+minting a new one. The full screen-by-screen walkthrough with
+screenshots is `docs/TailorsFitting.md`. It flew green on real hardware
+2026-08-05.
+
 ### Building the image
 
 ```powershell
@@ -358,8 +369,12 @@ Codex Dev Console
 Indexed 95 definitions, 0 disk facts | Codex Dev Console | 2026-07-29 ...
 ```
 
-**Still open, and it still blocks `docs/HardwareSitting.md` boot 3: the
-screen stays black.** That output goes to COM1 and nowhere else.
+**The ConOut gap is still real for DevConsoleBoot as an alternate
+payload** (WORKS-5 in `apps/works/works-backlog.md` records the black
+screen and OUT OF MEMORY under OVMF), **but it no longer blocks any
+sitting:** the 2026-08-05 flights flew GopBoot painting GOP directly,
+and Dev Console left the interface menu the same day. The dev console's
+output goes to COM1 and nowhere else.
 `uefi-con-put-text` sets attribute and cursor through real UEFI traps and
 then writes the text with `print-uni`, which lowers to `__serial_put` --
 staged into codex-vm's blit cell, or `out` to COM1. **There is no ConOut

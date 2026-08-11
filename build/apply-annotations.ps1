@@ -19,7 +19,7 @@ if ((-not $Report)) {
     $Report = ([System.IO.Path]::GetFullPath($Report))
 }
 if ((-not $Author)) {
-    $Author = 'blu'
+    $Author = ($Repo -replace '^.*[\\/][^-\\/]*-', '').ToLower()
 }
 $HeadPat = '^@@ (.+?) \| ([0-9]+)-([0-9]+) \| (.+?) \| (.+?) \| (.*)$'
 $today = (Get-Date).ToString('yyyy-MM-dd')
@@ -214,3 +214,35 @@ foreach ($f in $fileSet) {
 }
 
 Write-Host ([string]([string]([string]([string]'files ' + $script:filesChanged) + ', lines cut ') + $script:cutLines) + ([string]([string]', annotations ' + $script:annWritten) + ([string]', refused ' + $script:staleFiles)))
+
+
+if ($Apply) {
+    $auditSet = ([System.Collections.Generic.HashSet[string]]::new())
+    foreach ($r in $script:recs) {
+        if (($Only -and ($r.file -ne $Only))) {
+            continue
+        }
+        [void]$auditSet.Add($r.file)
+    }
+    $ledger = (Join-Path $Repo (Join-Path 'annotations' 'AUDITED.txt'))
+    $ledgerLines = ([System.Collections.Generic.List[string]]::new())
+    if ((Test-Path -PathType Leaf $ledger)) {
+        foreach ($ll in ([System.IO.File]::ReadAllLines($ledger))) {
+            if (($ll.Trim() -eq '')) {
+                continue
+            }
+            if ($auditSet.Contains(($ll -replace ' [^ ]+ [0-9-]+$', ''))) {
+                continue
+            }
+            [void]$ledgerLines.Add($ll)
+        }
+    }
+    foreach ($f in $auditSet) {
+        [void]$ledgerLines.Add(([string]([string]([string]([string]$f + ' ') + $Author) + ' ') + $today))
+    }
+    [void]$ledgerLines.Sort()
+    New-Item -ItemType Directory -Force (Split-Path $ledger) | Out-Null
+    Set-Content -Path $ledger -Value ($ledgerLines -join '
+') -Encoding UTF8
+    Write-Host ([string]([string]'ledger: ' + @($auditSet).Count) + ' chapters recorded')
+}

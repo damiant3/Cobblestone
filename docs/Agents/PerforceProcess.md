@@ -109,8 +109,14 @@ had been `unicode+C`.
 ## Before Running Gates
 
 ```powershell
-# 1. Shelve your work (without -k: reverts on-disk files back to depot state)
-p4 shelve -c <CL>
+# 1. Shelve your work, then REVERT it -- shelving alone does NOT clear the
+#    workspace. This line used to say "without -k: reverts on-disk files back
+#    to depot state" and that is false: after `p4 shelve -c <CL>` the files
+#    are still modified on disk and still in `p4 opened`. Verified 2026-08-07.
+#    The Golden Rule above depends on the revert actually happening, so do it
+#    explicitly and LOOK at `p4 opened` afterwards. The shelf survives it.
+p4 shelve -f -c <CL>
+p4 revert -c <CL> //Codex/<stream>/...
 
 # 2. Force-sync to guarantee clean (handles stale/missing files)
 p4 sync -f
@@ -153,6 +159,25 @@ rebuild or copy-up verification, `p4 clean codex/... apps/...` first.
 **Symptom:** `EPERM: operation not permitted` or similar write error.
 **Cause:** Perforce marks synced files read-only. You must `p4 edit -c <CL> <file>` before modifying any file. Without it, the file is locked on disk and your edit tool will fail.
 **Fix:** Always `p4 edit -c <CL> <file>` before writing to a file. If you don't have a CL yet, create one with `p4 change` first.
+
+### 0b. A merge-down resolve can silently REVERT your own recent landing
+**Symptom:** After a fleet merge-down, definitions you landed days or hours
+ago are GONE from your dev files, the merge resolved with
+`0 yours + N theirs + 0 conflicting`, and nothing looked wrong until a
+sweep or gate went red with CDX3002 on names you know you shipped.
+**Cause:** When your copy-up gave main a revision whose content came from
+your stream, a later merge-down can credit that revision as already
+integrated and offer an OLDER sibling revision (someone else's edit of the
+same file, based before your work) as "theirs". `p4 resolve -am` then
+COPIES that pre-your-work content over your dev file. "0 yours" does not
+mean your content is safe; it can mean the merge base swallowed your side.
+Measured 2026-08-07: the no-ESP instrument (red, main 13917) was reverted
+on red's dev stream by the annotation-campaign merge and submitted blind
+inside a 233-file merge CL; main was never wrong; the app sweep caught it.
+**Fix:** After any merge-down touching files you recently landed, grep ONE
+key definition per recent CL before submitting the merge. Repair:
+`p4 print` the main head over the local file, `p4 sync` + `p4 resolve -ay`,
+resubmit -- main head is the union when your copy-up landed last.
 
 ### 1. Running gates with open edits
 **Symptom:** Build fails with "Undefined name" errors for names you renamed, or "Duplicate definition" for names you added.
@@ -845,7 +870,7 @@ p4 merge -S //Codex/<CHILD_STREAM> -r
 p4 resolve -n   # preview what needs resolving
 
 # For files you haven't touched:
-p4 resolve -at <file>    # accept theirs
+p4 resolve -at <file>    # accept theirs -- NAME THE FILE, never bare
 
 # For files with changes on both sides:
 p4 diff2 //Codex/main/<file> //Codex/<CHILD>/<file>   # inspect
@@ -858,6 +883,33 @@ p4 resolve -ay <file>    # accept yours -- but ONLY if you've verified
 
 # 3. Submit the merge-down CL
 p4 submit -d "merge down from main (CLs ...)"
+```
+
+**A bare `p4 resolve -at` REVERTS YOUR OWN SUBMITTED WORK, silently, and
+the CL it lands in is called "merge down".** This is what the
+DO-NOT-BULK-RESOLVE line above is protecting, and it is worth spelling out
+because the failure looks like nothing at all: the resolve succeeds, the
+submit succeeds, and the file on main goes back to what it was before your
+change.
+
+Measured 2026-08-09 (blu). `Coap.codex` had just landed in blu 14281 with
+new Uri-Path splitters. Main had independently renamed `coap-byte` to
+`int-widen` in the same chapter. A bare `p4 resolve -at` accepted main's
+whole file, deleting the splitters, and the working copy was one submit
+away from a merge CL that quietly undid a change submitted ten minutes
+earlier. Recovery was cheap ONLY because it was caught before submit:
+
+```powershell
+p4 revert <file>                  # drop the bad integrate, keeps your version
+p4 merge -S //Codex/<CHILD> -r    # re-open just that file
+p4 resolve -am <file>             # three-way merge, keeps BOTH sides
+```
+
+`-am` reported `2 yours + 4 theirs + 0 conflicting` and both changes
+survived. **The tell that you needed `-am` and not `-at` is that the file
+appears in your own recent submits.** Check `p4 resolve -n` output against
+the files your open or just-submitted CL touched, and never answer for a
+file you have edited without looking at both sides.
 ```
 
 ### Copy-Up (Child → Parent)

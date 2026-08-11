@@ -1,23 +1,6 @@
 Chapter: IntMinLiteral
 
- A 64-bit immediate in the band i64-min..i64-min+254 was emitted as the
- wrong constant, with no diagnostic.
-
- `#8000000000000000` evaluated to 9223372036854775552, which is
- `0x7FFFFFFFFFFFFF00`. The front end was never at fault: lit-text-to-integer
- computes the value correctly, and the IR dump for such a definition reads
- `(int-lit i64-min)`. The loss happened one leaf function deep in the
- encoder. `write-bytes` extracts the eight little-endian bytes of an
- immediate through `floor-div`, which biased the dividend before dividing:
-
    if n >= 0 then n / d else (n - d + 1) / d
-
- For n = i64-min and d = 256 the subexpression `n - d + 1` underflows and
- wraps positive. The low byte still comes out right, because i64-min is
- divisible by 256; the quotient does not, so the remaining seven bytes are
- FF FF FF FF FF FF 7F. Reconstructing that little-endian gives exactly
- 0x7FFFFFFFFFFFFF00, which is how the diagnosis was confirmed before the
- fix was written rather than after.
 
  The band ends where the underflow does. i64-min+255 subtracts to exactly
  i64-min and is representable, so it was always correct, and so was

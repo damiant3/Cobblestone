@@ -1,6 +1,7 @@
 Chapter: Coap
   cites Foreword chapter Maybe
   cites Foreword chapter CCE
+  cites Foreword chapter MathLib (int-widen)
 
  CoAP (Constrained Application Protocol) per RFC 7252.
  UDP-based RESTful protocol for constrained IoT devices.
@@ -91,15 +92,21 @@ Section: Packet Builder
    value : List Integer
   }
 
+ A type argument is invariant (`docs/DevelopersGuide.md` "Variance of Type
+ Arguments"), and the three fragments below are joined with & and so must
+ carry the SAME element type. bit-and yields 0..255 while a subtraction
+ yields a plain Integer, so without the widening the branches of one if,
+ and then the joins, disagree.
+
   coap-encode-option : Integer, CoapOption -> List Integer
   coap-encode-option (prev-number) (opt) =
    let delta = opt.number - prev-number
    in let opt-len = list-length (opt.value)
    in let delta-nibble = if delta < 13 then delta else if delta < 269 then 13 else 14
    in let len-nibble = if opt-len < 13 then opt-len else if opt-len < 269 then 13 else 14
-   in let header = [bit-or (bit-shl delta-nibble 4) len-nibble]
-   in let delta-ext = if delta < 13 then [] else if delta < 269 then [delta - 13] else [bit-shru (delta - 269) 8, bit-and (delta - 269) 255]
-   in let len-ext = if opt-len < 13 then [] else if opt-len < 269 then [opt-len - 13] else [bit-shru (opt-len - 269) 8, bit-and (opt-len - 269) 255]
+   in let header = [int-widen (bit-or (bit-shl delta-nibble 4) len-nibble)]
+   in let delta-ext = if delta < 13 then [] else if delta < 269 then [int-widen (delta - 13)] else [int-widen (bit-shru (delta - 269) 8), int-widen (bit-and (delta - 269) 255)]
+   in let len-ext = if opt-len < 13 then [] else if opt-len < 269 then [int-widen (opt-len - 13)] else [int-widen (bit-shru (opt-len - 269) 8), int-widen (bit-and (opt-len - 269) 255)]
    in header & delta-ext & len-ext & opt.value
 
   coap-build-request : CoapType, CoapMethod, Integer, List Integer, List CoapOption, List Integer -> List Integer
@@ -124,6 +131,41 @@ Section: URI Path Helper
     number = coap-opt-uri-path,
     value = coap-text-to-bytes segment
    }
+
+ RFC 7252 section 6.4 step 7 and section 5.10.1: each path SEGMENT is its
+ own Uri-Path option, and an option value must not contain a slash. One
+ option holding a whole path names a resource whose name has slashes in it,
+ which on any conforming server is a different resource and usually no
+ resource at all. Nothing caught it because every path this tree had ever
+ asked for was a single segment -- "temperature", "actuator", "codex" in
+ coap-interop-test -- and a single segment is the one case where the two
+ spellings agree. An LwM2M path is /3/0/1 and needs three.
+
+  coap-uri-path-options : Text -> List CoapOption
+  coap-uri-path-options (path) = coap-split-opts (coap-text-to-bytes path) coap-opt-uri-path 47 0 0 []
+
+ A query is Uri-Query (option 15), not part of the path. The caller passes
+ the query alone, without the leading question mark, because the question
+ mark separates the two and belongs to neither.
+
+  coap-uri-query-options : Text -> List CoapOption
+  coap-uri-query-options (query) = coap-split-opts (coap-text-to-bytes query) coap-opt-uri-query 38 0 0 []
+
+  coap-split-opts : List Integer, Integer, Integer, Integer, Integer, List CoapOption -> List CoapOption
+  coap-split-opts (bs) (num) (sep) (i) (start) (acc) =
+   if i >= list-length bs then coap-emit-seg bs num start i acc
+   else if list-at bs i == sep then coap-split-opts bs num sep (i + 1) (i + 1) (coap-emit-seg bs num start i acc)
+   else coap-split-opts bs num sep (i + 1) start acc
+
+ An empty segment is dropped rather than sent. A leading slash and a
+ trailing one both produce one, and "//" produces one between them; an
+ empty Uri-Path option is a legal encoding of a different path, so emitting
+ it would make "/3/0/1" and "3/0/1" name different resources.
+
+  coap-emit-seg : List Integer, Integer, Integer, Integer, List CoapOption -> List CoapOption
+  coap-emit-seg (bs) (num) (start) (stop) (acc) =
+   if stop <= start then acc
+   else list-push acc (CoapOption { number = __narrow num, value = coap-slice bs start (stop - start) })
 
  A Uri-Path segment goes on the wire, so the conversion is an I/O
  boundary and runs through `to-unicode`. This said `char-code` alone
@@ -156,14 +198,6 @@ Section: Convenience Builders
   coap-ack : Integer -> List Integer
   coap-ack (msg-id) =
    coap-build-header CoapAcknowledgement 0 msg-id 0
-
- coap-build-request takes a CoapMethod and turns it into a code, which
- means it can only ever build the request half. A response carries a
- response code (2.05 Content, 4.04 Not Found) and there is no CoapMethod
- that spells one, so every builder above could ask and none could answer.
- This is the same shape the missing parser had: the chapter could only
- speak. A caller that reached for coap-build-request to build a response
- got a packet whose code said GET, which a correct client refuses.
 
   coap-build-response : CoapType, Integer, Integer, List Integer, List CoapOption, List Integer -> List Integer
   coap-build-response (msg-type) (code) (msg-id) (token) (options) (payload) =
@@ -212,11 +246,6 @@ Section: Block-Wise Transfer and Observe
    }
 
 Section: Parsing
-
- Every function above this line writes a packet. Nothing read one, which
- meant a device could ask a server for a firmware image and had no way to
- hear the answer. A block-wise download is a conversation, and this
- chapter could only talk.
 
  coap-parse returns Maybe, and the None is the point: a malformed packet
  is not a packet with some fields missing, it is bytes from someone who
@@ -334,6 +363,29 @@ Section: Reading Options
  at all means the whole body is here; a Block2 option with an empty value
  means block 0, no more, size 16. Collapsing those loses the difference
  between a server that is not doing block-wise transfer and one that is.
+
+ Uri-Path and Location-Path are repeatable and their ORDER is the path, so
+ finding the first one answers a different question from reading the path.
+ coap-find-option is right for a singleton option and wrong for these.
+
+  coap-opt-location-path : Integer = 8
+
+  coap-find-options : List CoapOption, Integer -> List (List Integer)
+  coap-find-options (opts) (num) = coap-find-options-loop opts num 0 []
+
+  coap-find-options-loop : List CoapOption, Integer, Integer, List (List Integer) -> List (List Integer)
+  coap-find-options-loop (opts) (num) (i) (acc) =
+   if i >= list-length opts then acc
+   else let o = list-at opts i
+   in if o.number == num then coap-find-options-loop opts num (i + 1) (list-push acc (o.value))
+   else coap-find-options-loop opts num (i + 1) acc
+
+ 2.04 Changed, which a Write and an Execute both answer with. The constant
+ named coap-204-deleted above is 2.02 Deleted (response-code 2 2); its VALUE
+ is right and its NAME is not, and it is left alone here rather than renamed
+ under an unrelated change.
+
+  coap-204-changed : Integer = coap-response-code 2 4
 
   coap-find-option : List CoapOption, Integer -> Maybe (List Integer)
   coap-find-option (opts) (num) = coap-find-option-loop opts num 0 (list-length opts)

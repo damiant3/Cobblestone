@@ -299,20 +299,22 @@ Section: AI
 
   go-find-capture : GoBoard -> Integer
   go-find-capture (b) =
-    go-find-cap-loop b 0
+    go-find-cap-loop b (b.stones) 0
 
-  go-find-cap-loop : GoBoard, Integer -> Integer
-  go-find-cap-loop (b) (i) =
+  go-find-cap-loop : GoBoard, List Integer, Integer -> Integer
+  go-find-cap-loop (b) (s) (i) =
     if i >= 81 then (-1)
-    else if list-at (b.stones) i /= 0 then go-find-cap-loop b (i + 1)
-    else if i == b.ko-point then go-find-cap-loop b (i + 1)
-    else let stones2 = list-set-at (b.stones) i (b.current-player)
-    in let libs-self = count-liberties stones2 i (b.current-player)
-    in if libs-self == 0 then go-find-cap-loop b (i + 1)
-    else let opp = if b.current-player == 1 then 2 else 1
+    else if list-at s i /= 0 then go-find-cap-loop b s (i + 1)
+    else if i == b.ko-point then go-find-cap-loop b s (i + 1)
+    else let probed = list-set-at s i (b.current-player)
+    in let libs-self = count-liberties probed i (b.current-player)
+    in let opp = if b.current-player == 1 then 2 else 1
     in let ns = go-neighbors i
-    in if go-has-capturable stones2 ns (list-length ns) 0 opp then i
-    else go-find-cap-loop b (i + 1)
+    in let hit = if libs-self == 0 then False
+                 else go-has-capturable probed ns (list-length ns) 0 opp
+    in let restored = list-set-at probed i 0
+    in if hit then i
+    else go-find-cap-loop b restored (i + 1)
 
   go-has-capturable : List Integer, List Integer, Integer, Integer, Integer -> Boolean
   go-has-capturable (stones) (ns) (n) (i) (enemy) =
@@ -325,32 +327,38 @@ Section: AI
 
   go-try-center : GoBoard -> Integer
   go-try-center (b) =
-    go-try-center-loop b 0 go-center-points
+    go-try-center-loop b (b.stones) 0 go-center-points
 
   go-center-points : List Integer
   go-center-points = [40, 30, 32, 48, 50, 20, 22, 60, 62]
 
-  go-try-center-loop : GoBoard, Integer, List Integer -> Integer
-  go-try-center-loop (b) (i) (pts) =
+  go-try-center-loop : GoBoard, List Integer, Integer, List Integer -> Integer
+  go-try-center-loop (b) (s) (i) (pts) =
     if i >= list-length pts then (-1)
     else let p = list-at pts i
-    in if list-at (b.stones) p /= 0 then go-try-center-loop b (i + 1) pts
-    else if p == b.ko-point then go-try-center-loop b (i + 1) pts
-    else let stones2 = list-set-at (b.stones) p (b.current-player)
-    in let libs = count-liberties stones2 p (b.current-player)
+    in if list-at s p /= 0 then go-try-center-loop b s (i + 1) pts
+    else if p == b.ko-point then go-try-center-loop b s (i + 1) pts
+    else let probed = list-set-at s p (b.current-player)
+    in let libs = count-liberties probed p (b.current-player)
+    in let restored = list-set-at probed p 0
     in if libs > 0 then p
-    else go-try-center-loop b (i + 1) pts
+    else go-try-center-loop b restored (i + 1) pts
 
   go-random-legal : GoBoard, Rng, Integer, Integer -> Integer
   go-random-legal (b) (rng) (tried) (limit) =
+    go-random-legal-loop b (b.stones) rng tried limit
+
+  go-random-legal-loop : GoBoard, List Integer, Rng, Integer, Integer -> Integer
+  go-random-legal-loop (b) (s) (rng) (tried) (limit) =
     if tried >= limit then (-1)
     else let rng2 = rng-next rng
     in let i = rng-mod (rng-value rng2) 81
-    in if list-at (b.stones) i /= 0 then go-random-legal b rng2 (tried + 1) limit
-    else if i == b.ko-point then go-random-legal b rng2 (tried + 1) limit
-    else let stones2 = list-set-at (b.stones) i (b.current-player)
-    in let libs = count-liberties stones2 i (b.current-player)
-    in if libs == 0 then go-random-legal b rng2 (tried + 1) limit
+    in if list-at s i /= 0 then go-random-legal-loop b s rng2 (tried + 1) limit
+    else if i == b.ko-point then go-random-legal-loop b s rng2 (tried + 1) limit
+    else let probed = list-set-at s i (b.current-player)
+    in let libs = count-liberties probed i (b.current-player)
+    in let restored = list-set-at probed i 0
+    in if libs == 0 then go-random-legal-loop b restored rng2 (tried + 1) limit
     else i
 
 Section: Game Runner

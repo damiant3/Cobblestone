@@ -2,20 +2,10 @@ Chapter: RecheckWellFormed
   cites Recheck chapter RecheckCore
   cites Recheck chapter RecheckBuiltins
 
- Stage 1. Re-derives, from the IR text alone, the four properties a
- well-formed chapter must have: every name is bound by something, every
- application agrees with the function type its callee carries, every
- constructor is applied to the payload types its own sum type declares,
- and every match arm binds sub-patterns at the constructor's field types.
-
  This is the stage that would have caught the shape of Lean kernel bug
  14576: a declaration accepted carrying an argument nothing ever checked.
 
 Section: Environment
-
- Names a body may legitimately mention: the locals in scope, the chapter's
- own definitions, its constructors, and the builtins the language supplies.
- A name resolving to none of these is bound by nothing.
 
   RcEnv = record {
    re-locals : List Text,
@@ -53,9 +43,6 @@ Section: Environment
  259-element table there rebuilt it once per name, permanently, on a heap
  with no collector. It is bound once per chapter and threaded.
 
- A double underscore prefix is a compiler intrinsic by the language's own
- naming rule, so it resolves without appearing in any table.
-
   rc-is-intrinsic : Text -> Boolean
   rc-is-intrinsic (n) =
    if text-length n < 2 then False
@@ -71,26 +58,34 @@ Section: Environment
 
 Section: Node Types
 
- Literals carry no type on the wire, and a literal's type is whatever its
- context admits, so their type is absent rather than wrong. Absent
- compares as undecided.
-
- One node does not carry its own type and it is not marked on the wire.
- A list expression's type field holds the ELEMENT type: the IR builds it
- with the element type and the compiler's own accessor wraps it in ListTy
- on the way out. Read straight off the wire, `(list-expr (elems ...)
- int-default)` says int-default where the node's type is List Integer,
- and the rechecker reported every list argument in the tree as a type
- mismatch until this was wrapped. Any consumer of this wire has the same
- trap waiting, and nothing in the wire format announces it.
-
   RcTyOf =
    | RcTyKnown (CodexType)
    | RcTyNone
 
+ The five literal forms carry no CodexType on the wire, so a literal's type
+ cannot be read off the IR. `docs/DevelopersGuide.md` "Integer literals"
+ gives an integer literal the plain `Integer` type, NOT the range `[n, n]`,
+ and settles the bound question separately and by VALUE: a literal handed to
+ a bounded parameter is admitted when the value is in range and is CDX2050
+ when it is not. `IrNumLit` has no published rule fixing its width or mode.
+
+ The two are different questions and they are answered in different stages.
+ `[n, n]` is the literal's VALUE and it belongs to `RecheckBounds`, where
+ `rc-derive` uses exactly that. Reading it as the literal's TYPE here is
+ what produced this checker's first three disagreements, all of them false:
+ it made `(0, x)` declared `(Integer, Integer)` fix the tuple's element type
+ to `[0, 0]`, which invariance then refused.
+
   rc-expr-ty : IRExpr -> RcTyOf
   rc-expr-ty (x) =
    when x
+    is IrIntLit (v) (sp) -> RcTyKnown (IntegerTy rc-wf-i64-min rc-wf-i64-max OvError)
+    is IrTextLit (v) (sp) -> RcTyKnown TextTy
+    is IrBoolLit (v) (sp) -> RcTyKnown BooleanTy
+    is IrCharLit (v) (sp) -> RcTyKnown CharTy
+    is IrLet (n) (t) (v) (b) (sp) -> rc-expr-ty b
+    is IrWithTimeout (ms) (a) (b) (body) (t) (sp) -> RcTyKnown t
+    is IrTry (k) (a) (b) (c) (t) (sp) -> RcTyKnown t
     is IrName (n) (t) (sp) -> RcTyKnown t
     is IrBinary (o) (l) (r) (t) (sp) -> RcTyKnown t
     is IrNegate (v) (t) (sp) -> RcTyKnown t
@@ -159,12 +154,6 @@ Section: Pattern Walk
     is IrVecPat (subs) (t) (sp) -> RcTyKnown t
     is otherwise -> RcTyNone
 
- A constructor pattern is checked against the scrutinee type it carries:
- the constructor must be one of that type's, and each sub-pattern must
- bind at the field type the constructor declares. Builtin List patterns
- (Cons, Nil) carry a ListTy rather than a SumTy and are not re-checkable
- from the wire, so they are undecided rather than wrong.
-
   rc-check-pat : RcWalk, RcEnv, IRPat -> RcWalk
   rc-check-pat (w) (e) (p) =
    if rc-dry w then w
@@ -172,25 +161,18 @@ Section: Pattern Walk
     is IrCtorPat (n) (subs) (t) (sp) -> rc-check-ctor-pat (rc-burn w) e n subs t
     is otherwise -> rc-burn w
 
- A sum type declared in the chapter under test arrives inlined as a
- SumTy carrying its constructors. A sum type reached by CITATION does
- not: it arrives as `(ctd "Maybe" (args ...))`, a bare name and its type
- arguments, and every Maybe, Result and Either in the tree is that shape.
- Reading only the inlined form left constructor checking covering
- same-chapter types and nothing else, which the first tree sweep showed
- as UNSUPPORTED on every `Just` and `None`.
-
- The constructors are on the wire, in the chapter's `(type-defs ...)`
- section, so the name is resolved there. Field types are surface
- ATypeExpr rather than CodexType and carry the declaration's own type
- parameters, so ARITY is checked and the payload types are answered
- UNSUPPORTED unless the field is a bare parameter reference this
- declaration's arguments can substitute.
+  rc-pat-binds-nothing : IRPat -> Boolean
+  rc-pat-binds-nothing (p) =
+   when p
+    is IrWildPat (sp) -> True
+    is otherwise -> False
 
   rc-check-ctor-pat : RcWalk, RcEnv, Text, List IRPat, CodexType -> RcWalk
   rc-check-ctor-pat (w) (e) (n) (subs) (t) =
    when t
-    is SumTy (sn) (args) (ctors) -> rc-check-ctor-pat-sum w e n subs ctors
+    is SumTy (sn) (args) (ctors) ->
+     if list-length ctors == 0 then rc-check-ctor-pat-ctd w e n subs (sn.value) args
+     else rc-check-ctor-pat-sum w e n subs ctors
     is ConstructedTy (cn) (args) -> rc-check-ctor-pat-ctd w e n subs (cn.value) args
     is otherwise ->
      rc-add w (rc-finding (e.re-def-name) RcUnsupported "ctor-pat-scrutinee" ("constructor pattern " & n & " over a scrutinee that is neither a sum nor a named type"))
@@ -236,6 +218,7 @@ Section: Pattern Walk
   rc-check-ctd-fields : RcWalk, RcEnv, Text, List IRPat, List ATypeExpr, List Name, List CodexType, Integer, Integer -> RcWalk
   rc-check-ctd-fields (w) (e) (n) (subs) (fields) (tps) (args) (i) (len) =
    if i >= len then w
+   else if rc-pat-binds-nothing (list-at subs i) then rc-check-ctd-fields w e n subs fields tps args (i + 1) len
    else let want = rc-subst-field (list-at fields i) tps args
    in let w2 = rc-ctd-field-verdict w e n i want (rc-pat-ty (list-at subs i))
    in rc-check-ctd-fields w2 e n subs fields tps args (i + 1) len
@@ -243,8 +226,87 @@ Section: Pattern Walk
   rc-subst-field : ATypeExpr, List Name, List CodexType -> RcTyOf
   rc-subst-field (f) (tps) (args) =
    when f
-    is ANamedType (nm) (sp) -> rc-subst-name (nm.value) tps args 0 (list-length tps)
+    is ANamedType (nm) (sp) -> rc-named-field (nm.value) tps args
+    is ALinearType (inner) (sp) -> rc-subst-field inner tps args
+    is ABoundedIntType (base) (lo) (hi) (mode) (sp) -> RcTyKnown (IntegerTy lo hi mode)
+    is AAppType (head) (as) (sp) -> rc-app-field head as tps args
     is otherwise -> RcTyNone
+
+  rc-named-field : Text, List Name, List CodexType -> RcTyOf
+  rc-named-field (nm) (tps) (args) =
+   when rc-subst-name nm tps args 0 (list-length tps)
+    is RcTyKnown (t) -> RcTyKnown t
+    is RcTyNone -> rc-concrete-named nm
+
+  rc-concrete-named : Text -> RcTyOf
+  rc-concrete-named (nm) =
+   if nm == "Text" then RcTyKnown TextTy
+   else if nm == "Boolean" then RcTyKnown BooleanTy
+   else if nm == "Char" then RcTyKnown CharTy
+   else if nm == "Nothing" then RcTyKnown NothingTy
+   else if nm == "Integer" then RcTyKnown (IntegerTy rc-wf-i64-min rc-wf-i64-max OvError)
+   else if nm == "Real" then RcTyKnown real-f64
+   else if nm == "real" then RcTyKnown (RealTy RwF64 RmDefault)
+   else if nm == "real-approx" then RcTyKnown (RealTy RwF32 RmDefault)
+   else if nm == "real-trapping" then RcTyKnown (RealTy RwF64 RmTrapping)
+   else if nm == "real-saturating" then RcTyKnown (RealTy RwF64 RmSaturating)
+   else if nm == "real-approx-trapping" then RcTyKnown (RealTy RwF32 RmTrapping)
+   else if nm == "real-approx-saturating" then RcTyKnown (RealTy RwF32 RmSaturating)
+   else RcTyKnown (ConstructedTy (Name { value = nm }) [])
+
+  rc-wf-i64-max : Integer = 9223372036854775807
+  rc-wf-i64-min : Integer = 0 - 9223372036854775807 - 1
+
+  rc-app-field : ATypeExpr, List ATypeExpr, List Name, List CodexType -> RcTyOf
+  rc-app-field (head) (as) (tps) (args) =
+   when head
+    is ANamedType (nm) (sp) -> rc-app-named (nm.value) as tps args
+    is otherwise -> RcTyNone
+
+  rc-app-named : Text, List ATypeExpr, List Name, List CodexType -> RcTyOf
+  rc-app-named (nm) (as) (tps) (args) =
+   if nm == "Real" then rc-real-quals as 0 RwF64 RmDefault True
+   else if rc-all-resolve as tps args 0 (list-length as) == False then RcTyNone
+   else if nm == "List" then (if list-length as == 1 then RcTyKnown (ListTy (rc-field-ty (list-at as 0) tps args)) else RcTyNone)
+   else RcTyKnown (ConstructedTy (Name { value = nm }) (rc-subst-fields as tps args 0 (list-length as) []))
+
+ A Real's width and mode arrive as APPLICATION ARGUMENTS, not as a distinct
+ node: `Real approximate` is spelled the way `List a` is, and the words are
+ recognised only by `resolve-real-quals` in the compiler's type checker. Read
+ without this, `Real approximate` resolves to a ConstructedTy over a made-up
+ `approximate` type and compares unequal against the structural `RealTy RwF32`,
+ which is a DISAGREE that says the program is wrong when only the reader was.
+ A word that is not a recognised qualifier answers RcTyNone rather than a
+ guess, so an unfamiliar spelling is reported as unsupported instead of as a
+ disagreement.
+
+  rc-real-quals : List ATypeExpr, Integer, RealWidth, RealMode, Boolean -> RcTyOf
+  rc-real-quals (as) (i) (w) (m) (all-quals) =
+   if list-length as == 0 then RcTyKnown real-f64
+   else if i >= list-length as then (if all-quals then RcTyKnown (RealTy w m) else RcTyNone)
+   else let word = when (list-at as i) is ANamedType (n) (s) -> n.value is otherwise -> ""
+   in if word == "approximate" then rc-real-quals as (i + 1) RwF32 m all-quals
+   else if word == "trapping" then rc-real-quals as (i + 1) w RmTrapping all-quals
+   else if word == "saturating" then rc-real-quals as (i + 1) w RmSaturating all-quals
+   else rc-real-quals as (i + 1) w m False
+
+  rc-all-resolve : List ATypeExpr, List Name, List CodexType, Integer, Integer -> Boolean
+  rc-all-resolve (as) (tps) (args) (i) (len) =
+   if i >= len then True
+   else when rc-subst-field (list-at as i) tps args
+    is RcTyNone -> False
+    is RcTyKnown (t) -> rc-all-resolve as tps args (i + 1) len
+
+  rc-field-ty : ATypeExpr, List Name, List CodexType -> CodexType
+  rc-field-ty (f) (tps) (args) =
+   when rc-subst-field f tps args
+    is RcTyKnown (t) -> t
+    is RcTyNone -> ErrorTy
+
+  rc-subst-fields : List ATypeExpr, List Name, List CodexType, Integer, Integer, List CodexType -> List CodexType
+  rc-subst-fields (as) (tps) (args) (i) (len) (acc) =
+   if i >= len then acc
+   else rc-subst-fields as tps args (i + 1) len (list-push acc (rc-field-ty (list-at as i) tps args))
 
   rc-subst-name : Text, List Name, List CodexType, Integer, Integer -> RcTyOf
   rc-subst-name (nm) (tps) (args) (i) (len) =
@@ -270,6 +332,7 @@ Section: Pattern Walk
   rc-check-pat-fields : RcWalk, RcEnv, Text, List IRPat, List CodexType, Integer, Integer -> RcWalk
   rc-check-pat-fields (w) (e) (n) (subs) (fields) (i) (len) =
    if i >= len then w
+   else if rc-pat-binds-nothing (list-at subs i) then rc-check-pat-fields w e n subs fields (i + 1) len
    else let cmp = rc-cmp-tyof (list-at fields i) (rc-pat-ty (list-at subs i))
    in let w2 = rc-pat-field-verdict w e n i cmp
    in rc-check-pat-fields w2 e n subs fields (i + 1) len
@@ -328,9 +391,6 @@ Section: Expression Walk
  A constructor typed to accept a payload its own sum does not declare is
  the shape of Lean kernel bug 14576.
 
- Multi-field constructors are curried, so the parameter types are gathered
- down the arrow chain until it arrives at the sum.
-
   rc-curried-params : CodexType, List CodexType, Integer -> List CodexType
   rc-curried-params (t) (acc) (fuel) =
    if fuel <= 0 then acc
@@ -350,7 +410,9 @@ Section: Expression Walk
    if rc-in (e.re-ctors) n == False then w
    else let res = rc-curried-result t 32
    in when res
-    is SumTy (sn) (args) (ctors) -> rc-check-ctor-ref-sum w e n t ctors
+    is SumTy (sn) (args) (ctors) ->
+     if list-length ctors == 0 then rc-check-ctor-ref-ctd w e n t (sn.value) args
+     else rc-check-ctor-ref-sum w e n t ctors
     is otherwise -> w
 
   rc-check-ctor-ref-sum : RcWalk, RcEnv, Text, CodexType, List SumCtor -> RcWalk
@@ -363,18 +425,30 @@ Section: Expression Walk
    then rc-add w (rc-finding (e.re-def-name) RcDisagree "ctor-ref-arity" (n & " is typed to take " & show (list-length got) & " payloads, its sum declares " & show (list-length want)))
    else rc-ctor-ref-verdict w e n (rc-ty-eq-list want got)
 
+  rc-check-ctor-ref-ctd : RcWalk, RcEnv, Text, CodexType, Text, List CodexType -> RcWalk
+  rc-check-ctor-ref-ctd (w) (e) (n) (t) (tyname) (args) =
+   let ctors = rc-find-variant (e.re-typedefs) tyname 0 (list-length (e.re-typedefs))
+   in if list-length ctors == 0
+   then rc-add w (rc-finding (e.re-def-name) RcUnsupported "ctor-ref-scrutinee" (n & " is typed as building " & tyname & ", whose declaration is not on this wire"))
+   else if rc-avariant-has ctors n 0 (list-length ctors) == False
+   then rc-add w (rc-finding (e.re-def-name) RcDisagree "ctor-ref-unknown" (n & " is typed as building a sum type that does not declare it"))
+   else rc-check-ctor-ref-fields w e n t (rc-avariant-fields ctors n 0 (list-length ctors)) (rc-variant-tparams (e.re-typedefs) tyname 0 (list-length (e.re-typedefs))) args
+
+  rc-check-ctor-ref-fields : RcWalk, RcEnv, Text, CodexType, List ATypeExpr, List Name, List CodexType -> RcWalk
+  rc-check-ctor-ref-fields (w) (e) (n) (t) (fields) (tps) (args) =
+   let got = rc-curried-params t [] 32
+   in if list-length fields /= list-length got
+   then rc-add w (rc-finding (e.re-def-name) RcDisagree "ctor-ref-arity" (n & " is typed to take " & show (list-length got) & " payloads, its sum declares " & show (list-length fields)))
+   else if rc-all-resolve fields tps args 0 (list-length fields) == False
+   then rc-add w (rc-finding (e.re-def-name) RcUnsupported "ctor-ref-payload-type" (n & " has a payload type this wire cannot resolve"))
+   else rc-ctor-ref-verdict w e n (rc-ty-eq-list (rc-subst-fields fields tps args 0 (list-length fields) []) got)
+
   rc-ctor-ref-verdict : RcWalk, RcEnv, Text, TyCmp -> RcWalk
   rc-ctor-ref-verdict (w) (e) (n) (cmp) =
    when cmp
     is TyEq -> w
     is TyNeq -> rc-add w (rc-finding (e.re-def-name) RcDisagree "ctor-ref-payload-type" (n & " is typed to accept a payload its own sum type does not declare"))
     is TyUnknown -> rc-add w (rc-finding (e.re-def-name) RcUnsupported "ctor-ref-payload-type" (n & " has an undecided payload type"))
-
- An application is checked against the type its own callee carries: the
- argument must have the parameter type, and the application's result type
- must be the callee's return type. Nothing here consults a signature from
- outside the wire, so what is being asked is whether the IR agrees with
- itself.
 
   rc-check-apply : RcWalk, RcEnv, IRExpr, IRExpr, CodexType -> RcWalk
   rc-check-apply (w) (e) (f) (a) (t) =
@@ -396,24 +470,305 @@ Section: Expression Walk
      if rc-ty-opaque fty then w
      else rc-add w (rc-finding (e.re-def-name) RcDisagree "apply-non-function" "the callee's type is not a function type")
 
+Section: Spine Scoped Substitution
+
+ Facts about the WIRE, which this plug may not read the compiler to learn.
+
+ A comprehension desugars to `map-list`, and the compiler records that
+ application's result uninstantiated: `(list (tvar 25))`, flowing into a
+ concrete parameter. Type-variable ids belong to the CALLEE'S signature and
+ are reproduced verbatim at every call site, so both comprehensions in one
+ definition carry the same ids and so does an unrelated definition's --
+ which is why a map keyed by tvar id may not outlive one spine. A lambda
+ argument's recorded type stays `(fn (tvar 24) (tvar 25))`, so the pair that
+ supplies the result variable is the lambda's BODY, not its type.
+
+ Where a call carries enough information for a second witness the compiler
+ INSTANTIATES it and no variable reaches the wire at all, measured on the
+ whole compiler as SINGLE-WITNESS 92 of 92. So the conflict arm below is
+ present and has never fired.
+
+ Soundness: no binding here is taken from the parameter the spine's result
+ flows into, which would close every one of these vacuously. The arm that
+ fails if that changes is `bounded-arg-into-plain-slot` in `kill-rate.ps1`,
+ and `tvar-spine-substitution` is the arm that fails if the substitution
+ stops deciding.
+
+ Fuel of 24: a spine longer than that answers unknown rather than recursing.
+
+  rc-spine-fuel : Integer = 24
+
+  rc-spine-soft : RcSubst, List RcTvBind -> RcSubst
+  rc-spine-soft (s) (bs) =
+   when s
+    is RcSubOk (bs2) -> RcSubOk bs2
+    is RcSubConflict -> RcSubConflict
+    is RcSubUnknown -> RcSubOk bs
+
+ A curried call is nested applies, so the callee's recorded type at each node
+ supplies that node's parameter and no head-type peeling is needed. Walking
+ inward first accumulates across the spine, which is what would let one
+ variable acquire two witnesses.
+
+  rc-spine-bind : IRExpr, List RcTvBind, Integer -> RcSubst
+  rc-spine-bind (x) (bs) (fuel) =
+   if fuel <= 0 then RcSubUnknown
+   else when x
+    is IrApply (f) (a) (t) (sp) -> rc-spine-node f a bs (fuel - 1)
+    is otherwise -> RcSubOk bs
+
+  rc-spine-node : IRExpr, IRExpr, List RcTvBind, Integer -> RcSubst
+  rc-spine-node (f) (a) (bs) (fuel) =
+   when rc-spine-bind f bs fuel
+    is RcSubOk (bs1) -> rc-spine-pair (rc-expr-ty f) a bs1
+    is RcSubConflict -> RcSubConflict
+    is RcSubUnknown -> RcSubUnknown
+
+  rc-spine-pair : RcTyOf, IRExpr, List RcTvBind -> RcSubst
+  rc-spine-pair (ft) (a) (bs) =
+   when ft
+    is RcTyNone -> RcSubOk bs
+    is RcTyKnown (fty) -> rc-spine-param fty a bs
+
+  rc-spine-param : CodexType, IRExpr, List RcTvBind -> RcSubst
+  rc-spine-param (fty) (a) (bs) =
+   when fty
+    is FunTy (p) (row) (r) -> rc-spine-witness p a bs
+    is otherwise -> RcSubOk bs
+
+  rc-spine-witness : CodexType, IRExpr, List RcTvBind -> RcSubst
+  rc-spine-witness (p) (a) (bs) =
+   when rc-spine-arg p a bs
+    is RcSubOk (bs2) -> rc-spine-lambda p a bs2
+    is RcSubConflict -> RcSubConflict
+    is RcSubUnknown -> RcSubUnknown
+
+  rc-spine-arg : CodexType, IRExpr, List RcTvBind -> RcSubst
+  rc-spine-arg (p) (a) (bs) =
+   when rc-expr-ty a
+    is RcTyNone -> RcSubOk bs
+    is RcTyKnown (at) -> rc-spine-soft (rc-match p at bs rc-subst-fuel) bs
+
+  rc-spine-lambda : CodexType, IRExpr, List RcTvBind -> RcSubst
+  rc-spine-lambda (p) (a) (bs) =
+   when a
+    is IrLambda (ps) (b) (t) (sp) -> rc-spine-lambda-ret p b bs
+    is otherwise -> RcSubOk bs
+
+  rc-spine-lambda-ret : CodexType, IRExpr, List RcTvBind -> RcSubst
+  rc-spine-lambda-ret (p) (b) (bs) =
+   when p
+    is FunTy (pp) (row) (pr) -> rc-spine-body pr b bs
+    is otherwise -> RcSubOk bs
+
+  rc-spine-body : CodexType, IRExpr, List RcTvBind -> RcSubst
+  rc-spine-body (pr) (b) (bs) =
+   when rc-body-ty b rc-spine-fuel
+    is RcTyNone -> RcSubOk bs
+    is RcTyKnown (bt) -> rc-spine-soft (rc-match pr bt bs rc-subst-fuel) bs
+
+ Another wire fact: a lambda body that is an `if` or a `when` is recorded as
+ the bare `(tvar 73)` while every arm beneath carries a concrete type. That
+ is the four sites in `IR/Lowering.codex` the spine walk alone cannot decide.
+
+ The arms must AGREE for the descent to answer. Taking one arm where another
+ contradicts it would assert a return the lambda does not have, and a wrong
+ binding manufactures a false disagreement. `tvar-spine-branch-arms` is the
+ arm that fails if this stops deciding.
+
+  rc-body-ty : IRExpr, Integer -> RcTyOf
+  rc-body-ty (b) (fuel) =
+   if fuel <= 0 then RcTyNone
+   else when rc-expr-ty b
+    is RcTyNone -> RcTyNone
+    is RcTyKnown (bt) -> rc-body-ty-known b bt fuel
+
+  rc-body-ty-known : IRExpr, CodexType, Integer -> RcTyOf
+  rc-body-ty-known (b) (bt) (fuel) =
+   if rc-ty-opaque bt == False then RcTyKnown bt else rc-body-arms b (fuel - 1)
+
+  rc-body-arms : IRExpr, Integer -> RcTyOf
+  rc-body-arms (b) (fuel) =
+   when b
+    is IrIf (c) (x) (y) (t) (sp) -> rc-body-agree (rc-body-ty x fuel) (rc-body-ty y fuel)
+    is IrMatch (s) (bs) (t) (sp) -> rc-body-branches bs 0 (list-length bs) RcTyNone fuel
+    is otherwise -> RcTyNone
+
+  rc-body-branches : List IRBranch, Integer, Integer, RcTyOf, Integer -> RcTyOf
+  rc-body-branches (bs) (i) (len) (acc) (fuel) =
+   if i >= len then acc
+   else rc-body-branches bs (i + 1) len (rc-body-join acc (rc-body-ty ((list-at bs i).body) fuel) i) fuel
+
+  rc-body-join : RcTyOf, RcTyOf, Integer -> RcTyOf
+  rc-body-join (acc) (here) (i) = if i == 0 then here else rc-body-agree acc here
+
+  rc-body-agree : RcTyOf, RcTyOf -> RcTyOf
+  rc-body-agree (p) (q) =
+   when p
+    is RcTyNone -> RcTyNone
+    is RcTyKnown (a) -> rc-body-agree-with a q
+
+  rc-body-agree-with : CodexType, RcTyOf -> RcTyOf
+  rc-body-agree-with (a) (q) =
+   when q
+    is RcTyNone -> RcTyNone
+    is RcTyKnown (b) -> rc-body-agree-cmp a (rc-ty-eq a b)
+
+  rc-body-agree-cmp : CodexType, TyCmp -> RcTyOf
+  rc-body-agree-cmp (a) (c) =
+   when c
+    is TyEq -> RcTyKnown a
+    is otherwise -> RcTyNone
+
+ The early exit is load-bearing rather than ornamental, for the reason
+ recorded against `rc-subst`: this runs at every application in the payload
+ and almost every one is monomorphic, so building a spine map for a recorded
+ type that mentions no variable would allocate a walk per call across 4820
+ definitions on a heap with no collector.
+
+  rc-arg-spine : IRExpr -> RcSubst
+  rc-arg-spine (a) =
+   when a
+    is IrApply (f) (aa) (t) (sp) -> rc-arg-spine-tv a t
+    is otherwise -> RcSubOk []
+
+  rc-arg-spine-tv : IRExpr, CodexType -> RcSubst
+  rc-arg-spine-tv (a) (t) =
+   if rc-has-tvar t rc-subst-fuel then rc-spine-bind a [] rc-spine-fuel else RcSubOk []
+
+  rc-arg-improved : IRExpr, List RcTvBind -> RcTyOf
+  rc-arg-improved (a) (bs) =
+   when rc-expr-ty a
+    is RcTyNone -> RcTyNone
+    is RcTyKnown (at) -> RcTyKnown (rc-subst at bs rc-subst-fuel)
+
+  rc-arg-supplied : IRExpr, List RcTvBind -> Integer
+  rc-arg-supplied (a) (bs) =
+   when rc-expr-ty a
+    is RcTyNone -> 0
+    is RcTyKnown (at) -> rc-min-witness at bs 0 rc-subst-fuel
+
+ The callee's declared parameter and return may carry type variables. The
+ guide's "Type Variables" rule fixes them by matching the parameter against
+ the argument, so that match runs first and both verdicts are taken against
+ the SUBSTITUTED types. When the match cannot answer, p and r are used
+ unchanged and the verdicts abstain exactly as before -- a partial answer
+ must never read as a total one.
+
   rc-check-apply-parts : RcWalk, RcEnv, CodexType, CodexType, IRExpr, CodexType -> RcWalk
   rc-check-apply-parts (w) (e) (p) (r) (a) (t) =
-   let w1 = if rc-wf-narrow-into-int p a then w else rc-apply-arg-verdict w e (rc-fits-tyof p (rc-expr-ty a))
-   in rc-apply-result-verdict w1 e (rc-ty-fits r t)
+   rc-check-apply-spine w e p r a t (rc-arg-spine a)
 
- `__narrow` is how the guide says a plain Integer is asked into a bounded
- slot: an assertion checked at runtime, trapping if violated. So the
- argument's static type is EXPECTED to differ from the bounded parameter,
- and the difference is the point rather than a finding. Stage 2 already
- skips a narrowed argument at the same slot and stage 1 did not, which
- reported every explicit narrow in the tree as a type mismatch.
+ A conflict inside the ARGUMENT's own spine is one type variable of that
+ application required to be two types at once. It surfaces here rather than
+ at the spine's own nodes because a per-node match starts from an empty map
+ and can never hold two witnesses at the same time.
 
- The exemption is only for an INTEGER parameter. A narrow handed to a
- parameter of any other type is still a mismatch and is still reported,
- which is what keeps this from being a hole shaped like a fix.
+  rc-check-apply-spine : RcWalk, RcEnv, CodexType, CodexType, IRExpr, CodexType, RcSubst -> RcWalk
+  rc-check-apply-spine (w) (e) (p) (r) (a) (t) (sp) =
+   when sp
+    is RcSubConflict -> rc-add w (rc-finding (e.re-def-name) RcDisagree "apply-tvar-inconsistent" "one type variable of the argument's own application is required to be two different types")
+    is RcSubUnknown -> rc-check-apply-parts2 w e p r a t (rc-expr-ty a)
+    is RcSubOk (bs) -> rc-check-apply-improved w e p r a t bs
+
+  rc-check-apply-improved : RcWalk, RcEnv, CodexType, CodexType, IRExpr, CodexType, List RcTvBind -> RcWalk
+  rc-check-apply-improved (w) (e) (p) (r) (a) (t) (bs) =
+   let n = rc-arg-supplied a bs
+   in let w1 = if n <= 0 then w else rc-note-improved w (n == 1)
+   in rc-check-apply-parts2 w1 e p r a t (rc-arg-improved a bs)
+
+  rc-check-apply-parts2 : RcWalk, RcEnv, CodexType, CodexType, IRExpr, CodexType, RcTyOf -> RcWalk
+  rc-check-apply-parts2 (w) (e) (p) (r) (a) (t) (at) =
+   when rc-apply-subst p at
+    is RcSubOk (bs) -> rc-check-apply-decided w e (rc-subst p bs rc-subst-fuel) (rc-subst r bs rc-subst-fuel) a at t
+    is RcSubConflict -> rc-add w (rc-finding (e.re-def-name) RcDisagree "apply-tvar-inconsistent" "one type variable of the callee is required to be two different types by this application")
+    is RcSubUnknown -> rc-check-apply-decided w e p r a at t
+
+  rc-apply-subst : CodexType, RcTyOf -> RcSubst
+  rc-apply-subst (p) (g) =
+   when g
+    is RcTyNone -> RcSubUnknown
+    is RcTyKnown (at) -> rc-match p at [] rc-subst-fuel
+
+  rc-check-apply-decided : RcWalk, RcEnv, CodexType, CodexType, IRExpr, RcTyOf, CodexType -> RcWalk
+  rc-check-apply-decided (w) (e) (p) (r) (a) (at) (t) =
+   let w1 = if rc-wf-narrow-into-int p a | rc-wf-lit-into-int p a | rc-wf-int-bounds-deferred p at then w else rc-apply-arg-verdict w e (rc-fits-tyof p at) (rc-wf-int-into-int p at) (rc-arg-undecided-kind p at)
+   in rc-apply-result-verdict w1 e (rc-ty-fits r t) (rc-result-undecided-kind r t)
+
+  rc-arg-undecided-kind : CodexType, RcTyOf -> Text
+  rc-arg-undecided-kind (p) (g) =
+   when g
+    is RcTyNone -> "apply-arg-undecided-no-wire-type"
+    is RcTyKnown (at) ->
+     if rc-ty-opaque p then "apply-arg-undecided-opaque-param-" & rc-ty-opaque-kind p
+     else if rc-ty-opaque at then "apply-arg-undecided-opaque-arg-" & rc-ty-opaque-kind at
+     else if rc-has-nominal-widening at p then "apply-arg-undecided-nested-variance"
+     else "apply-arg-undecided-nested-" & rc-why at p
+
+  rc-result-undecided-kind : CodexType, CodexType -> Text
+  rc-result-undecided-kind (r) (t) =
+   if rc-ty-opaque r then "apply-result-undecided-opaque-declared-" & rc-ty-opaque-kind r
+   else if rc-ty-opaque t then "apply-result-undecided-opaque-site-" & rc-ty-opaque-kind t
+   else if rc-has-nominal-widening r t then "apply-result-undecided-nested-variance"
+   else "apply-result-undecided-nested-" & rc-why r t
 
   rc-wf-narrow-into-int : CodexType, IRExpr -> Boolean
   rc-wf-narrow-into-int (p) (a) = rc-wf-is-int-ty p & rc-wf-is-narrow-call a
+
+ An integer literal reaching an integer parameter is admitted by its VALUE
+ against the parameter's bound, which is CDX2050 and is decided in
+ `RecheckBounds`. Its plain `Integer` type does not fit a bounded parameter
+ and never will, so judging it here would report an abstention on every
+ `narrow 5` in the tree for a question another stage answers.
+
+  rc-wf-lit-into-int : CodexType, IRExpr -> Boolean
+  rc-wf-lit-into-int (p) (a) = rc-wf-is-int-ty p & rc-wf-is-int-lit a
+
+  rc-wf-is-int-lit : IRExpr -> Boolean
+  rc-wf-is-int-lit (x) =
+   when x
+    is IrIntLit (v) (sp) -> True
+    is otherwise -> False
+
+ These two take the argument's type rather than the argument, because the
+ type they must judge is the IMPROVED one: reading it back off the expression
+ would consult the uninstantiated recorded type and route a decided pair to
+ the wrong stage.
+
+  rc-wf-int-into-int : CodexType, RcTyOf -> Boolean
+  rc-wf-int-into-int (p) (at) = rc-wf-is-int-ty p & rc-wf-tyof-is-int at
+
+ An integer argument reaching an integer parameter is admitted by its PROVEN
+ RANGE against the parameter's declared range, never by the two types being
+ equal, and that is decided in `RecheckBounds`. Published as
+ `docs/DevelopersGuide.md` "What a bounded parameter admits", measured: the
+ same field declared 0..1000 is refused at a 0..255 parameter directly and
+ admitted through `int-mod ... 100`, so the declared type cannot be what
+ decides it. The refusal is CDX2051 from the bounds prover and never CDX2001
+ from the type checker.
+
+ This is the same division `rc-wf-lit-into-int` already makes one case up,
+ generalised from a literal to any integer argument, and for the same reason:
+ judging it here reports an abstention on a site the type comparison was
+ never the right instrument for.
+
+ The OVERFLOW MODE does not qualify this, and it did for a day. It was
+ excluded on the ground that the compiler compares mode nowhere, so a
+ difference was an unruled gap worth keeping a record of. Measured since:
+ mode is not part of type identity at all, published as
+ `docs/DevelopersGuide.md` "Overflow mode is not part of type identity".
+ Qualifying the deferral on it sends a mode-differing pair down the type
+ comparison instead of to the bounds stage, which is the wrong stage for it
+ and resurrects this whole class for exactly those pairs.
+
+  rc-wf-int-bounds-deferred : CodexType, RcTyOf -> Boolean
+  rc-wf-int-bounds-deferred (p) (at) = rc-wf-int-into-int p at
+
+  rc-wf-tyof-is-int : RcTyOf -> Boolean
+  rc-wf-tyof-is-int (g) =
+   when g
+    is RcTyKnown (t) -> rc-wf-is-int-ty t
+    is RcTyNone -> False
 
   rc-wf-is-int-ty : CodexType -> Boolean
   rc-wf-is-int-ty (t) =
@@ -433,19 +788,21 @@ Section: Expression Walk
     is IrName (n) (t) (sp) -> n == "__narrow"
     is otherwise -> False
 
-  rc-apply-arg-verdict : RcWalk, RcEnv, TyCmp -> RcWalk
-  rc-apply-arg-verdict (w) (e) (cmp) =
+  rc-apply-arg-verdict : RcWalk, RcEnv, TyCmp, Boolean, Text -> RcWalk
+  rc-apply-arg-verdict (w) (e) (cmp) (int-into-int) (undecided-kind) =
    when cmp
     is TyEq -> w
-    is TyNeq -> rc-add w (rc-finding (e.re-def-name) RcDisagree "apply-arg-type" "the argument's type is not the parameter type the callee's own type declares")
-    is TyUnknown -> w
+    is TyNeq -> if int-into-int
+     then rc-add w (rc-finding (e.re-def-name) RcUnsupported "apply-arg-int-bounds" "an integer argument reaches an integer parameter declared with different bounds; whether the value fits is the bounds checker's question, and this checker has no published rule for a narrowing the compiler proved statically")
+     else rc-add w (rc-finding (e.re-def-name) RcDisagree "apply-arg-type" "the argument's type is not the parameter type the callee's own type declares")
+    is TyUnknown -> rc-add w (rc-finding (e.re-def-name) RcUnsupported undecided-kind "the argument's type against the parameter type is a comparison this checker cannot decide")
 
-  rc-apply-result-verdict : RcWalk, RcEnv, TyCmp -> RcWalk
-  rc-apply-result-verdict (w) (e) (cmp) =
+  rc-apply-result-verdict : RcWalk, RcEnv, TyCmp, Text -> RcWalk
+  rc-apply-result-verdict (w) (e) (cmp) (undecided-kind) =
    when cmp
     is TyEq -> w
     is TyNeq -> rc-add w (rc-finding (e.re-def-name) RcDisagree "apply-result-type" "the application's result type is not the callee's declared return type")
-    is TyUnknown -> w
+    is TyUnknown -> rc-add w (rc-finding (e.re-def-name) RcUnsupported undecided-kind "the application's result type against the callee's declared return type is a comparison this checker cannot decide")
 
   rc-check-expr-list : RcWalk, RcEnv, List IRExpr, Integer, Integer -> RcWalk
   rc-check-expr-list (w) (e) (xs) (i) (len) =
@@ -466,9 +823,6 @@ Section: Expression Walk
    in let w1 = rc-check-pat w e (b.pattern)
    in let w2 = rc-check-expr w1 e2 (b.body)
    in rc-check-branches w2 e bs (i + 1) len
-
- A do-bind is in scope for the statements that follow it, not for its own
- value expression.
 
   rc-check-stmts : RcWalk, RcEnv, List IRActStmt, Integer, Integer -> RcWalk
   rc-check-stmts (w) (e) (ss) (i) (len) =

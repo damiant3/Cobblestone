@@ -16,6 +16,12 @@ if ((-not (Test-Path -PathType Leaf $script:CodexVmBin))) {
 
 
 # CCE encode/decode tables -- shared by plug run scripts.
+#
+# Ported from codex/foreword/core/CCE.codex, which is the authority. Tier 0 is
+# 128 code points ordered by frequency; tier 1 is 11 blocks covering CCE 128..2175;
+# tier 2 is 10 blocks from CCE 2176, each block's CCE base being the running sum of
+# the sizes before it. A tier-0-only decoder does not fail on the rest -- it answers
+# '?', which reads as a corrupt symbol rather than an unreadable one.
 $script:CceToUnicode = @(
     0, 10, 32,
     48, 49, 50, 51, 52, 53, 54, 55, 56, 57,
@@ -31,15 +37,179 @@ $script:CceToUnicode = @(
     94,
     36, 37,
     233, 232, 234, 235, 225, 224, 226, 228,
-    243, 244, 246, 250, 252, 241, 231, 237
+    243, 244, 246, 250, 252, 241, 231, 237,
+    1072, 1086, 1077, 1080, 1085, 1090, 1089, 1088,
+    1074, 1083, 1082, 1084, 1076, 1087, 1091
 )
+# (unicode-base, size) pairs. Tier 1 CCE ranges are implied by the sizes and are
+# recomputed by Get-CceTier1Block rather than stored, exactly as CCE.codex does.
+$script:CceTier1Bases = @(128,256, 1024,128, 880,128, 1536,128, 1424,128, 2304,128, 3584,128, 4352,128, 19968,512, 12352,256, 8704,128)
+$script:CceTier2Table = @(12288,64, 12352,96, 12448,96, 19968,20992, 13312,6592, 44032,11172, 3584,256, 8192,512, 127744,1024, 9728,256)
+$script:CceTier2Base = 2176
+
 $script:UnicodeToCce = [byte[]]::new(256)
 for ($i = 0; $i -lt 256; $i++) {
     $script:UnicodeToCce[$i] = 68
 }
+# The `-lt 256` guard is load-bearing. Tier 0's last 15 entries are Cyrillic
+# (1072..1091); the fold this loop used to do (`% 256`) lands 1072 on 48 and
+# silently remaps the digit '0' to a Cyrillic code point. This table is the
+# single-byte fast path only -- Convert-UnicodeToCce is the general answer.
 for ($i = 0; $i -lt $script:CceToUnicode.Length; $i++) {
-    $u = $script:CceToUnicode[$i] % 256
-    $script:UnicodeToCce[$u] = [byte]$i
+    $u = $script:CceToUnicode[$i]
+    if ($u -lt 256) { $script:UnicodeToCce[$u] = [byte]$i }
+}
+
+
+function Get-CceTier1Block([int]$cp) {
+    $v = $cp - 128
+    if ($v -lt 0) { return -1 }
+    if ($v -lt 256) { return 0 }
+    if ($v -lt 1152) { return 1 + [int][math]::Floor(($v - 256) / 128) }
+    if ($v -lt 1664) { return 8 }
+    if ($v -lt 1920) { return 9 }
+    if ($v -lt 2048) { return 10 }
+    return -1
+}
+
+function Get-CceTier1Offset([int]$cp) {
+    $v = $cp - 128
+    if ($v -lt 256) { return $v }
+    if ($v -lt 1152) { return ($v - 256) % 128 }
+    if ($v -lt 1664) { return $v - 1152 }
+    if ($v -lt 1920) { return $v - 1664 }
+    return $v - 1920
+}
+
+function Get-CceTier2CceBase([int]$block) {
+    $acc = $script:CceTier2Base
+    for ($i = 0; $i -lt $block; $i++) { $acc += $script:CceTier2Table[$i * 2 + 1] }
+    return $acc
+}
+
+# CCE code point -> Unicode. 65533 (U+FFFD) means unmapped, matching to-unicode.
+function Convert-CceToUnicode([int]$cp) {
+    if ($cp -lt 0) { return 65533 }
+    if ($cp -lt 128) { return [int]$script:CceToUnicode[$cp] }
+    if ($cp -lt 2176) {
+        $b = Get-CceTier1Block $cp
+        if ($b -lt 0) { return 65533 }
+        return [int]$script:CceTier1Bases[$b * 2] + (Get-CceTier1Offset $cp)
+    }
+    if ($cp -lt 67712) {
+        for ($b = 0; $b -lt 10; $b++) {
+            $bb = Get-CceTier2CceBase $b
+            $bs = [int]$script:CceTier2Table[$b * 2 + 1]
+            if ($cp -ge $bb -and $cp -lt ($bb + $bs)) { return [int]$script:CceTier2Table[$b * 2] + ($cp - $bb) }
+        }
+        return 65533
+    }
+    return 65533
+}
+
+# Unicode -> CCE code point, -1 when unmapped. Tier order is load-bearing and not
+# an optimisation: U+4E00 and U+3040 sit in a tier 1 block AND a tier 2 block, and
+# from-unicode answers with the tier 1 code point. Searching tier 2 first would
+# produce a different, larger encoding for the same character.
+function Convert-UnicodeToCce([int]$u) {
+    for ($i = 0; $i -lt $script:CceToUnicode.Length; $i++) {
+        if ([int]$script:CceToUnicode[$i] -eq $u) { return $i }
+    }
+    for ($b = 0; $b -lt 11; $b++) {
+        $base = [int]$script:CceTier1Bases[$b * 2]
+        $size = [int]$script:CceTier1Bases[$b * 2 + 1]
+        if ($u -ge $base -and $u -lt ($base + $size)) {
+            $start = if ($b -eq 0) { 128 } elseif ($b -lt 8) { 256 + $b * 128 } elseif ($b -eq 8) { 1280 } elseif ($b -eq 9) { 1792 } else { 2048 }
+            return $start + ($u - $base)
+        }
+    }
+    for ($b = 0; $b -lt 10; $b++) {
+        $base = [int]$script:CceTier2Table[$b * 2]
+        $size = [int]$script:CceTier2Table[$b * 2 + 1]
+        if ($u -ge $base -and $u -lt ($base + $size)) { return (Get-CceTier2CceBase $b) + ($u - $base) }
+    }
+    return -1
+}
+
+function Get-CceEncodeLength([int]$cp) {
+    if ($cp -lt 128) { return 1 }
+    if ($cp -lt 2176) { return 2 }
+    if ($cp -lt 67712) { return 3 }
+    return 4
+}
+
+
+# Multi-byte framing is UTF-8 SHAPED but is not UTF-8: the code point is biased by
+# the tier base, so the same bytes decode to a different number. Treating a CCE
+# stream as UTF-8 is wrong for every code point above 127.
+function ConvertTo-CceBytes([string]$Text) {
+    $out = [System.Collections.Generic.List[byte]]::new()
+    for ($i = 0; $i -lt $Text.Length; $i++) {
+        $u = [int]$Text[$i]
+        if ([char]::IsHighSurrogate($Text[$i]) -and ($i + 1) -lt $Text.Length -and [char]::IsLowSurrogate($Text[$i + 1])) {
+            $u = [char]::ConvertToUtf32($Text[$i], $Text[$i + 1])
+            $i++
+        }
+        $cp = Convert-UnicodeToCce $u
+        if ($cp -lt 0) { throw ("cce: U+{0:X4} has no CCE code point" -f $u) }
+        if ($cp -lt 128) {
+            $out.Add([byte]$cp)
+        } elseif ($cp -lt 2176) {
+            $v = $cp - 128
+            $out.Add([byte](192 -bor ($v -shr 6))); $out.Add([byte](128 -bor ($v -band 63)))
+        } elseif ($cp -lt 67712) {
+            $v = $cp - 2176
+            $out.Add([byte](224 -bor ($v -shr 12))); $out.Add([byte](128 -bor (($v -shr 6) -band 63))); $out.Add([byte](128 -bor ($v -band 63)))
+        } else {
+            $v = $cp - 67712
+            $out.Add([byte](240 -bor ($v -shr 18))); $out.Add([byte](128 -bor (($v -shr 12) -band 63))); $out.Add([byte](128 -bor (($v -shr 6) -band 63))); $out.Add([byte](128 -bor ($v -band 63)))
+        }
+    }
+    return $out.ToArray()
+}
+
+# Returns the text AND what could not be read, because a decoder that quietly
+# substitutes a replacement character turns "I could not read this" into "this is
+# what it said". Callers that report a negative result must check Unmapped.
+function ConvertFrom-CceBytesDetailed([byte[]]$Bytes) {
+    $sb = [System.Text.StringBuilder]::new()
+    $unmapped = 0; $malformed = 0; $truncated = 0; $chars = 0
+    $i = 0
+    while ($i -lt $Bytes.Length) {
+        $b0 = [int]$Bytes[$i]
+        $stray = $false
+        if (($b0 -band 128) -eq 0) { $len = 1 }
+        elseif (($b0 -band 224) -eq 192) { $len = 2 }
+        elseif (($b0 -band 240) -eq 224) { $len = 3 }
+        elseif (($b0 -band 248) -eq 240) { $len = 4 }
+        else { $len = 1; $stray = $true }
+        if (($i + $len) -gt $Bytes.Length) { $truncated++; break }
+        # A byte in 128..191 where a lead byte belongs is a continuation byte adrift.
+        # cce-decode-length reads it as a 1-byte character, which yields a plausible
+        # tier 1 letter for what is actually a framing error, so it is counted here
+        # rather than answered.
+        if ($stray) {
+            $malformed++
+            [void]$sb.Append([char]65533)
+            $chars++
+            $i += 1
+            continue
+        }
+        if ($len -eq 1) { $cp = $b0 }
+        elseif ($len -eq 2) { $cp = 128 + ((($b0 -band 31) -shl 6) -bor ([int]$Bytes[$i + 1] -band 63)) }
+        elseif ($len -eq 3) { $cp = 2176 + ((($b0 -band 15) -shl 12) -bor (([int]$Bytes[$i + 1] -band 63) -shl 6) -bor ([int]$Bytes[$i + 2] -band 63)) }
+        else { $cp = 67712 + ((($b0 -band 7) -shl 18) -bor (([int]$Bytes[$i + 1] -band 63) -shl 12) -bor (([int]$Bytes[$i + 2] -band 63) -shl 6) -bor ([int]$Bytes[$i + 3] -band 63)) }
+        $u = Convert-CceToUnicode $cp
+        if ($u -eq 65533) { $unmapped++ }
+        if ($u -gt 65535) { [void]$sb.Append([char]::ConvertFromUtf32($u)) } else { [void]$sb.Append([char]$u) }
+        $chars++
+        $i += $len
+    }
+    return @{ Text = $sb.ToString(); Unmapped = $unmapped; Malformed = $malformed; Truncated = $truncated; Chars = $chars }
+}
+
+function ConvertFrom-CceBytes([byte[]]$Bytes) {
+    return (ConvertFrom-CceBytesDetailed $Bytes).Text
 }
 
 
@@ -69,9 +239,12 @@ for ($i = 0; $i -lt $script:CceToUnicode.Length; $i++) {
 #   +4  count
 #   +8  string-table offset, always 12 + count*12 -- this is the validity check
 #   +12 count x 12-byte entries: code-offset, code-size, name-offset
-#   strings at (block + string-offset), NUL-terminated, ONE CCE BYTE PER CHAR.
-# Names are CCE, not ASCII -- decode them through $script:CceToUnicode or every
-# symbol comes back as plausible garbage ("III", "UU") rather than as an error.
+#   strings at (block + string-offset), NUL-terminated, CCE bytes.
+# Names are CCE, not ASCII -- decode them with ConvertFrom-CceBytes or every symbol
+# comes back as plausible garbage ("III", "UU") rather than as an error. The bytes
+# are a CCE STREAM, not one byte per character: map-text-to-cce-bytes copies
+# char-code-at over text-length, and both are byte-indexed, so a name holding any
+# code point above 127 is written as a 2-4 byte sequence.
 # Entry code-offsets are relative to the 1 MB load address.
 
 $script:MapCache = @{}
@@ -105,17 +278,16 @@ function Get-Map1Symbols {
         $a  = $at + 12 + $e * 12
         $no = [BitConverter]::ToUInt32($b, $a + 8)
         $p  = $strBase + $no
-        $sb = [System.Text.StringBuilder]::new()
+        $nameBytes = [System.Collections.Generic.List[byte]]::new()
         while ($p -lt $b.Length -and $b[$p] -ne 0) {
-            $cce = [int]$b[$p]
-            $u = if ($cce -lt $script:CceToUnicode.Length) { $script:CceToUnicode[$cce] } else { 63 }
-            [void]$sb.Append([char]$u)
+            $nameBytes.Add($b[$p])
             $p++
         }
+        $decoded = ConvertFrom-CceBytes $nameBytes.ToArray()
         $entries.Add(@{
             Addr = [long]0x100000 + [BitConverter]::ToUInt32($b, $a)
             Size = [int][BitConverter]::ToUInt32($b, $a + 4)
-            Name = $sb.ToString()
+            Name = $decoded
         })
     }
     $script:Map1Cache[$key] = $entries

@@ -261,7 +261,7 @@ All scripts use `build/vm-config.ps1` for shared VM setup.
 
 ### codex-vm (default)
 
-`tools/codex-vm.exe` -- a ~8000-line C program using Windows Hypervisor
+`tools/codex-vm.exe` -- a ~12,800-line C program (measured 2026-08-05) using Windows Hypervisor
 Platform (WHP). Build with `tools/build-vm.ps1`.
 
 **A guest cannot detect codex-vm through the HYPERVISOR bit.** CPUID leaf 1
@@ -313,6 +313,7 @@ codex-vm -kernel file.cdx [options]
 | `-xhci-hub-tiers <N>` | 1 | How many hubs to stack on xHCI root port 4. `1` is a high-speed hub with a full-speed keyboard below it. `2` inserts a full-speed hub in between, which is what tells apart a driver that reads the transaction translator off the immediate parent from one that carries the nearest high-speed ancestor's down the walk -- a full-speed hub has no translator of its own, so the keyboard below it is still served by the high-speed hub two tiers up. Route strings run to two nibbles (`0x11`). A monitor hub in front of a keyboard hub is this topology. |
 | `-xhci-ports <N>` | 4 | Root ports the controller REPORTS (HCSPARAMS1 and the Supported Protocol capability), 4 to 32. The four modelled devices stay on ports 1-4; ports above them are empty and POWERED, so PORTSC reads non-zero there, which is what a real wide controller looks like. Use it on anything that INDEXES A TABLE BY PORT NUMBER: `xhci-diag-ports` wrote `20 + port` into a band that ends at 27 and laid PORTSC over the handback flag gating `kbd-pump`. Four ports here and eight in QEMU both sat on or under that boundary, so neither bed could show it; the ASUS reports 26. |
 | `-usb-setcfg-fault-once <N>` | 0 | As `-usb-setcfg-fault`, but the fault applies to the FIRST SET_CONFIGURATION only and then clears. A TRANSIENT failure and a permanent one want opposite fixes in the host, so a bed that can only produce the permanent kind cannot show that a reading distinguishes them. Pair with the probe's `retry:` field: permanent gives `sc1=4 sc2=4`, transient gives `sc1=4 sc2=1`. |
+| `-usb-bot-drop <N>` | 0 | Swallow the Nth transfer event on a BULK endpoint (EP0 enumeration untouched), counting from 1. The data still moves and the completion code is still success; only the EVENT goes missing, so the guest spins its `xhci-fuel` out and reads no completion. This is the worksflight 2026-08-09 signature exactly: a 32 KB data phase answering `msc-ce-no-event` with no stall and a volume left clean on all four FAT questions. Nothing else can reach a guest's timeout path, and everything behind it -- Stop Endpoint recovery, the latch drain, BOT Reset Recovery, the chunk retry -- was unexecuted code before this flag existed. Also implemented with it: Bulk-Only Mass Storage Reset (`bmRequestType 0x21`, `bRequest 0xFF`), which clears the model's in-flight CBW; without it a retried command arrived while `bot.active` was still set and was consumed as write data. |
 | `-usb-no-unit-attention` | off (the condition is ON) | Restore the old always-ready storage target. **By default the device now presents the power-on UNIT ATTENTION every conforming SCSI target presents:** the first command after a controller reset answers CHECK CONDITION with sense key 0x06 / ASC 0x29, and the condition persists until REQUEST SENSE reads it. A host that skips that handshake sees its first real command fail on real hardware and used to pass here; `msc-wait-ready`'s retry loop had never executed. The condition is armed in the RESET path, not at init, because the guest issues HCRST during bring-up and would wipe it -- a sabotage arm that should have failed and did not is what found that. |
 | `-usb-disk-port <N>` | 1 | Carry the mass-storage device to root port N; its old port goes dark rather than answering as well. Pair with `-xhci-ports` to reproduce a device sitting where no reader can see it. **No bed could put a connected device above root port 7** before this: the model had four ports, and QEMU refuses attachment above its eighth whatever HCSPARAMS1 claims. The ASUS answered with the boot stick on port 9, past the probe's eight PORTSC rows, so a count of connected ports named none of them. `-xhci-ports 26 -usb-disk-port 10` reproduces the board's `port=9 speed=4`. |
 | `-usb-cfgval <N>` | 1 | The mass-storage device numbers its configuration N and **refuses any other value** with a STALL (USB 2.0 9.4.7 makes a bad configuration value a request error, and a control pipe reports one by stalling). `bConfigurationValue` is not an index and is not obliged to be 1. Use it on any driver that sends SET_CONFIGURATION: `msc-open-endpoints` sent a hardcoded 1 while every sibling driver read descriptor byte 5, and no bed could refuse it -- this model reported 1, and QEMU's `usb-storage` reports 1 and then accepts anything. |
@@ -330,13 +331,15 @@ codex-vm -kernel file.cdx [options]
 | `-hid-root-silent` | off | The root-port keyboard completes every interrupt IN with SUCCESS and eight zero bytes (GET_REPORT answers zeros too) while the hub-attached keyboard carries the injected keys. The ASUS TUF 2026-08-04 desktop signature -- SUCCESS on the driver's own endpoint, buffer untouched, key held -- which `-hid-nak` cannot produce (it models no event at all). The arm the bind-every-keyboard fix is proven against (`usb-kbd-silent`). |
 | `-hid-keys` | off | Scripted keys (`-keyt`/`-keys-file`) feed ONLY the USB HID held-key set: no PS/2 queue, no host-side key-cell write. Without it injected keys reach the guest through the PS/2 emulation whatever the USB stack does, so no bed run could ever prove a scancode travelled the interrupt-IN DMA path. The honest model of the ASUS, which has no PS/2 controller at all. |
 | `-hid-combo` | off | The root HID device carries TWO interfaces: boot keyboard on EP1 IN and boot mouse on EP2 IN -- the wireless-dongle topology. Boot mouse reports are built as deltas from the `-mouse` timeline's absolute samples (clamped to the signed byte the protocol carries), so a scripted pointer drives the USB pipe exactly as scripted keys do under `-hid-keys`. The arm the per-interface classification is proven against (`usb-hid-combo`): a whole-device classifier hands the combo to the keyboard driver and the mouse half is unreachable. |
-| `-hid-nak-unchanged` | off | HID interrupt IN endpoints NAK until they have news: a TRB completes only when its report would differ from the last one delivered on that endpoint (the combo mouse: only when a sample arrived since the last report); otherwise the TD stays pending and is re-rung when input state changes. The default model completes every interrupt TRB at doorbell time, which makes completions so plentiful that a defect fed by their SCARCITY -- one endpoint's waiter consuming a sibling's rare completion and starving it, the Unifying-receiver mouse failure of 2026-08-04 -- can never be expressed. The arm the per-endpoint event latch is proven against (`usb-hid-steal`). |
+| `-hid-nak-unchanged` | **on** | HID interrupt IN endpoints NAK until they have news: a TRB completes only when its report would differ from the last one delivered on that endpoint (the combo mouse: only when a sample arrived since the last report); otherwise the TD stays pending and is re-rung when input state changes. **The default since 2026-08-06** -- the flag is still accepted so existing sidecars keep parsing, and passing it is now a no-op. The arm the per-endpoint event latch is proven against (`usb-hid-steal`). `CODEX_VM_HIDNAK_TRACE=1` restores the `HIDNAK:` narration, which used to appear whenever the flag was passed and would otherwise now be on every bed's stderr. |
+| `-hid-instant-complete` | off | Restores the pre-2026-08-06 default: every interrupt IN TRB completes at doorbell time with whatever the input state is then. Completions become so plentiful that a defect fed by their SCARCITY -- one endpoint's waiter consuming a sibling's rare completion and starving it, the Unifying-receiver mouse failure of 2026-08-04 -- cannot be expressed, which is the reason to reach for it. The cost is that it drops any keystroke narrower than the guest's poll interval, silently; see the scripted-input section below. |
 | `-uefi` | off | UEFI firmware mode (ConOut/ConIn, GOP, Block I/O, memory map, runtime services, auto-extract PE from GPT images) |
 | `-gop` | off | Activate GOP framebuffer (default 640x480) |
 | `-gop-width <N>` | 640 | GOP framebuffer width (implies `-gop`) |
 | `-gop-height <N>` | 480 | GOP framebuffer height (implies `-gop`) |
 | `-smp [N]` | 1 | Enable multi-core: N virtual processors (1-16, default 4 if N omitted). Creates WHP VPs, LAPIC, MADT with per-core entries. Core count written to GPA 0xFF8; boot code reads it to decide whether to send INIT/SIPI. |
 | `-portfwd [udp:]<host:guest>` | -- | Port forwarding from host to guest NIC (repeatable, max 8). TCP by default; `udp:` forwards datagrams instead, giving each host client a synthetic gateway source port so the guest's replies route back. Examples: `-portfwd 8080:80`, `-portfwd udp:15683:5683` |
+| `-natmap <guestdest:hostport>` | -- | Remap an OUTBOUND destination port (repeatable, max 16, TCP only). The opposite direction to `-portfwd`: when the guest dials `guestdest`, the NAT connects to the host on `hostport` instead of the port the guest asked for. Exists because a plug's port is compiled into it from `build/plug-ports.ps1`, so N copies of one plug all needed the same host listener and could not run at once. With this, each worker owns a private host port while running the same unmodified plug binary -- which is what lets `codex/plugs/recheck/sweep-all.ps1` go N-wide. Unmapped ports are untouched, so every existing invocation means what it always did. Example: `-natmap 9134:9250` |
 | `-debug` | off | Interactive debugger shell on breakpoints and single-step |
 | `-break <name>` | -- | Patch INT3 at named function entry (implies `-debug`, repeatable) |
 | `-map <file>` | auto | Symbol map file for address resolution. Auto-probed: `<kernel>.map`, then `seed/Codex.map` |
@@ -348,7 +351,7 @@ codex-vm -kernel file.cdx [options]
 | `-wcet <name>` | -- | Observe a function's per-invocation dynamic instruction count (repeatable, max 4 -- one DR0-DR3 exec breakpoint each; needs `-map`). Prints `WCET-OBS: <fn> max=<n> calls=<k>` on exit. Observation only: no guest byte is modified. |
 | `-mouse <script>` | -- | Scripted pointer: `t:x,y,btn` events separated by `;` (t = ms from boot, btn bit 0 left / 1 right / 2 middle). Injected straight into the guest, so no host cursor moves and no window takes focus. Works headless. |
 | `-mouse-file <file>` | -- | Same, read from a file (one event per line, `#` comments). Use for drags, which run to dozens of samples. |
-| `-keys-file <file>` | -- | Timeline keyboard: `t:scancode` per line, on the same clock as `-mouse`. Lets a script interleave typing with clicks (the older `-keys` fires on a fixed start+interval). |
+| `-keys-file <file>` | -- | Timeline keyboard: `t:scancode` per line, on the same clock as `-mouse`. Lets a script interleave typing with clicks (the older `-keys` fires on a fixed start+interval). **The event separators are `;` and newline ONLY.** `inject_keyt_parse` skips leading `;`, newline, `\r`, space and tab, but after each event its trailing skip runs to the next `;` or newline, so **a comma-joined timeline silently injects its FIRST event and discards the rest of the line with no error printed.** Cost four boots to find. Re-derive any probe arm that rode a multi-key timeline before building on it. |
 | `-rtc <stamp>` | host clock | Freeze the emulated CMOS RTC at `YYYY-MM-DDTHH:MM:SS` (the `T` may be a space). Day-of-week is computed from the date, not accepted. **This is what makes a guest that paints the time comparable against a recorded frame** -- without it the clock is host state the test cannot twist, which is why GuiOS was believed to be un-goldenable. It also turns the update-in-progress simulation OFF (a frozen clock cannot express UIP), so it is for frames and never for testing the RTC itself: anything asserting on clock behaviour must run without it. |
 | `-screenshot <file>` | -- | Save GOP framebuffer as BMP on exit |
 | `-screenshot-delay <ms>` | 0 | Delay before screenshot capture |
@@ -571,6 +574,7 @@ negotiated state.
 | `-e1000-phy-link` | STATUS.LU requires auto-negotiation complete, not merely CTRL.SLU |
 | `-e1000-mdio-window` | MDIC answers nothing for 10 ms after CTRL.RST (I219 datasheet 9.2) |
 | `-e1000-mdio-slow` | MDIO reads answer E until page 769 register 16 bit 10 is set (I219 9.2) |
+| `-e1000-asde` | STATUS answers SPEED and ASDV, and CTRL.ASDE picks which source SPEED comes from (82583V 12349, 12590) |
 
 `-e1000-phy-link` is the one worth knowing about. It is **off by default**,
 so every run that predates it keeps the SLU-only link it was measured
@@ -587,6 +591,18 @@ indistinguishable from `-e1000-no-phy` to the driver, on purpose.
 `-e1000-phy-link`, which is the pair that reproduces the metal symptom on
 the desk: a link that never comes up while every MAC register reads
 exactly as it should.
+
+`-e1000-asde` is the fourth and also off by default, and it exists because
+the fields it fills were dead. STATUS carried no SPEED and no ASDV, so
+`na-line` printed both off a register nothing ever wrote and every arm ever
+run reported 10 Mb/s. With the flag on, SPEED follows the PHY's negotiated
+speed when CTRL.ASDE is clear and the MAC's own detection when it is set,
+which is the divergence 82583V 12349 describes. The datasheet says the bit
+"must be set to 0b" and does not say what happens when software disobeys, so
+the model invents no failure for it: the MAC's detection resolves to 10 Mb/s
+because this bed's MAC has nothing to sense. `codex/test/e1000-asde-speed`
+runs under it with `-e1000-phy-link`. **It does not reproduce the metal wedge
+and must not be read as evidence about it.**
 
 `-e1000-mdio-slow` is the third of these and also off by default. The PHY
 model has pages now: registers 0-15 are the IEEE set and answer in every
@@ -709,6 +725,37 @@ Scripted input (`-mouse`, `-mouse-file`, `-keys-file`) writes the same guest
 state the window proc writes -- press latch included -- so a guest cannot
 distinguish it from a hand on the mouse. This is what `build/test-gui.ps1`
 drives GOP applications with; see `docs/ExaminersAssay.md`.
+
+**Under `-hid-instant-complete` a keystroke narrower than the guest's poll
+interval does not exist.** That model completes every interrupt IN TRB at
+doorbell time, so the guest's armed TD is consumed with whatever the
+held-key set held then and nothing stays armed for a later report to land
+in. It was the default until 2026-08-06 and is why scripted input was
+unreliable in desk beds. Measured on `usb-kbd-multi`, hold width the only
+variable, three runs per cell, before and after the flip:
+
+| hold | `-hid-instant-complete` | default (NAK) |
+|---|---|---|
+| 1 ms | `got=0` 3/3 | `got=30` 3/3 |
+| 2 ms | `got=0` 3/3 | `got=30` 3/3 |
+| 10 ms | `got=30` 3/3 | `got=30` 3/3 |
+| 600 ms (shipped) | `got=30` 3/3 | `got=30` 3/3 |
+
+It fails silently: the VM logs the key event and the report reaching the
+endpoint either way, so a bed reads as working right up to the width where
+it stops being. That silence is why the default moved rather than the
+guidance.
+
+Re-ringing the endpoint on input change does NOT rescue instant-complete,
+and was measured not to: with a trace on the re-ring it fires (twice, make
+and break) and produces no report, because that model already drained the
+ring at the guest's last doorbell. There is nothing to deliver into. Only
+leaving the TD pending works, which is what the NAK model is.
+
+Separator trap, same family: `-keys-file` and `-mouse` accept `;` and
+newline ONLY. A comma-joined timeline silently injects its FIRST event and
+prints no error, because the parser skips to the next `;` or newline and
+discards the rest of the line.
 
 **Mouse (absolute, I/O ports 0xE1-0xE4).** The guest reads the mouse
 through four ports rather than shared memory (which WHP does not keep
@@ -1004,6 +1051,18 @@ so a signed `Sut` and the unsigned `stage1` still register as one pass when
 their code is identical. On copy-up, the gate is `Sut === seed` rebuilt on
 the *target* workspace -- see `docs/Agents/PerforceProcess.md`.)
 
+**Building the compiler by hand needs `-Repl`, and without it you get a
+different binary that looks like a codegen difference.** `Invoke-BuildCdx`
+in `build.ps1` compiles every stage with `compile.ps1 -Repl`, and nothing
+outside that function does. Measured 2026-08-09 against the same source and
+the same kernel: `-Repl` gives 2,753,304 bytes and is BYTE-IDENTICAL to the
+gate's `build/output/stage1.cdx`, while omitting it gives 2,753,312. So a
+hand-built compiler compared against `stage1.cdx` or the seed disagrees by
+8 bytes for a reason that has nothing to do with the change under test.
+Pass `-Repl` whenever the artifact is meant to BE the compiler; leave it off
+when compiling an ordinary program. L-SAMEVER: confirm the two things you
+are diffing were built the same way before concluding anything about either.
+
 ## Diverse Double-Compiling (and why the C# plug is maintained)
 
 The fixed point proves the seed is a stable fixed point of itself. It does
@@ -1057,12 +1116,122 @@ codex/compiler/*.codex --concat--> Codex.codex
                        --csharp-plug--> Codex.cs
 ```
 
-The script stops at writing the `.cs`. Its stated success criterion is that
-`Codex.cs` compiles under `dotnet build`, and even that is a manual step the
-script does not take. To turn it into a witness, carry it three steps
-further: run `dotnet build`, run the result against `Codex.codex`, and diff
-the x86 CDX it emits against `seed/Codex.cdx`. Nothing in `build/` invokes
-any of this today.
+**All three further steps are now taken, and the result is byte-identical.**
+Compiled in the mode the gate actually uses, the Roslyn arm reproduces
+`build/output/NewSeed.cdx` (the gate's own unsigned stage1) with zero
+differing bytes across the whole file. Against the shipped `seed/Codex.cdx`
+the only difference is the 96-byte signature region at offsets 40..135,
+which is zeros in an unsigned build and is stamped in place by the sign
+phase rather than emitted by the compiler. Header bytes 0..39 and 136..223
+agree and the entire body from 224 agrees. The `source -> IR` arm matches
+too: both compilers run `IR-UNI` over the whole compiler source and emit
+byte-identical IR. Nothing in `build/` invokes any of this on the gate; it
+is run on demand.
+
+**Five rules make the comparison mean anything. Each was learned by a false
+result.**
+
+- **ALWAYS compile the compiler with `CDX repl` when comparing against the
+  seed.** `build.ps1` passes `-Repl` and `compile.ps1` turns that into the
+  `CDX repl` mode line; without `-Repl` it appends `map` instead. Exit mode
+  is a real codegen difference, so `CDX`, `CDX map` and `CDX repl` are three
+  different binaries from one source. **Two content hashes disagreeing is
+  not evidence of a defect; it is evidence that two different things were
+  compiled.**
+- **Run `emit-compiler.ps1` in FULL before any comparison.** `-SkipIr`
+  reuses the previous `compiler.ir` and therefore the `Codex.codex` it was
+  assembled from, and a merge-down moves `codex/compiler/` underneath you
+  with no signal. That is how a stale bundle passed for a compiler defect
+  through two sessions, surviving six individually sound eliminations that
+  were all aimed at the transpiler while the untested assumption -- that
+  both arms were the same program -- was the only wrong one (L-SAMEVER).
+  **Compare `LastWriteTime` on `build-output/Codex.codex` against the newest
+  file under `codex/compiler/` before believing any disagreement.** Reserve
+  `-SkipIr` for iterating on the plug, where the compiler source is genuinely
+  fixed.
+- **Give both compilers the same input, and do NOT use `compile.ps1` to do
+  it.** It assembles a unit (cites resolved, chapter lines rewritten) and
+  that is not the file. Write the mode line, the source and a trailing
+  `0x04` as UTF-8 without BOM, feed that to the .NET build's stdin and to
+  `codex-vm -input`. The stderr line `all_consumed=1` confirms the guest read
+  every byte. Both sides take the mode on stdin as one line, then the source.
+- **The symbol map is the instrument for CDX, not the byte diff.** Pass
+  `CDX map` and compare the `MAP:` block. One early size difference shifts
+  every later absolute address, so a raw byte diff reports near-total
+  disagreement and localises nothing; the map gives per-helper sizes at
+  relative offsets.
+- **`opening`'s Integer return does NOT surface as the codex-vm exit code.**
+  A control returning 7 also reports 0, so reading an answer out of an exit
+  code can "find" exactly the bug you are hunting. Print through the console
+  and `-output`.
+
+**One known structural limit, not a defect to chase.** The C# build prints
+`warning CDX9003: pmap-walk self-test FAILED`. `pmap-self-test` builds
+records and walks their raw memory; on .NET records are CLR objects rather
+than bytes in the arena, so the walk sees nothing. It is a diagnostic and
+does not alter emitted code, which is why the CDX still matches byte for
+byte while the warning prints.
+
+### Running the DDC end to end
+
+This is a release gate (release skill, step 4). Measured 2026-08-10 against
+seed `AF4E14D9`: 96 differing bytes, all inside the signature region, none
+outside it.
+
+```powershell
+$R = 'D:\Projects\NewRepository-<agent>-main'
+
+# 1. Emit. Do NOT pass -SkipIr on a release run.
+& "$R\codex\plugs\csharp\emit-compiler.ps1" -Kernel "$R\seed\Codex.cdx" `
+    -Out "$R\build-output\Codex.cs"
+
+# 2. Build the arm with Roslyn. Scaffold once: a net9.0 Exe csproj beside
+#    Codex.cs, Nullable disable, LangVersion latest.
+dotnet build "$R\build-output\ddc-arm\CodexCs.csproj" -c Release
+
+# 3. Same bytes to both arms: mode line, source, trailing 0x04, UTF-8 no BOM.
+#    Feed to CodexCs.exe on stdin and keep stdout as BYTES.
+
+# 4. Slice at the CDX1 magic, then compare to seed/Codex.cdx.
+```
+
+**Four things that will give you a false answer, three of them measured
+here on 2026-08-10.**
+
+- **The plug must be built with the seed under audit.**
+  `codex/plugs/common/plug-build-lib.ps1` calls `compile.ps1` with no
+  `-Kernel`, so the plug is built by whatever sits in
+  `build-output/bare-metal/`, and that path resolves against the PROCESS
+  working directory rather than the workspace. A plug built by the previous
+  seed certifies the wrong compiler and says so only in a NOTE. Pass
+  `-Kernel` explicitly and read the kernel line it prints.
+- **The C# arm writes diagnostics to stdout AHEAD of the binary.** The run
+  above put 67,380 bytes of warning text before the CDX. Find the `CDX1`
+  magic and slice from there; comparing the raw stream reports total
+  disagreement and localises nothing.
+- **Do not trust `plugs/csharp/build.ps1`'s exit code alone; check that the
+  plug binary is actually newer than the bundle.** On 2026-08-10 it reported
+  "FAIL: compile errors" twice on a bundle that compiles clean, naming a
+  `build.log` that was not at the path it printed, then succeeded on an
+  identical third invocation. The cause is NOT established and both earlier
+  failures were in runs chained behind another codex-vm, so file contention
+  is a suspect and nothing more. What is certain is that the emit step will
+  happily use a stale plug and produce a confidently wrong answer.
+- **A new builtin anywhere breaks this witness silently.** That is what
+  happened at main 14398: `block-write-sector` became a builtin, the plug's
+  builtin table gained no entry, and the emitted C# referenced a name that
+  did not exist. The seed was green throughout. If you add a builtin, add
+  its `BuiltinEmitter` beside the others in
+  `codex/plugs/csharp/CSharpEmitterExpressions.codex`; the stub is `"0L"`
+  wherever a hosted C# build has no such device.
+
+**Two source sites read as dead bindings and are NOT. Leave them alone.**
+`X86_64Helpers.codex:1539` binds `st12c = emit-list-tail st12b` and the next
+line continues from `st12b`; `X86_64Chapter.codex:450` binds
+`st45j = patch-jcc-at st45i ...` and the next line continues from `st45i`.
+Both are correct ONLY because `__record-set` mutates in place, and
+`check-stale-reads` (`TypeChecker.codex:3114`) exists to warn about exactly
+this shape. A tidy-up there is seed-affecting and would break the seed.
 
 ### The residual hole, stated plainly
 
@@ -1341,6 +1510,114 @@ BREAK: patched INT3 at lookup-expr-type+0x0 (0x2F56FB, orig=0x4C)
 
 Exit code 5 = breakpoint hit (vs 4 = real crash).
 
+### Exit code 49374 (0xC0DE) is a HOST crash, not a guest one
+
+`crash_filter` in `tools/codex-vm.c` catches a fault in codex-vm ITSELF,
+prints `HOST CRASH:` to **stderr**, and exits 0xC0DE. The distinction
+matters because a harness that only captures `-output` sees an empty
+serial log and a nonzero exit and reads it as a guest that produced
+nothing. **Redirect stderr or the diagnosis is invisible.**
+
+**OPEN DEFECT, measured 2026-08-09 (blu): setting VBE mode crashes the
+host.** `apps/browser/opening.codex` compiles clean (493057 bytes off seed
+`A1EBA5A03016A128`) and dies immediately on boot:
+
+```
+VBE: mode set 1024x768 fb=0xfd000000
+HOST CRASH: codex-vm faulted (code=0xC0000005) at 0x7FF7F24D5A0D reading memory 0x22715520000
+```
+
+Reproduced three times; the faulting code address is identical every run
+and the host address it reads varies, which is what a per-run mapping base
+does. One byte of guest serial appears before the fault, so the guest never
+reaches its first `print-line`.
+
+The log line above it is the lead: `RAM cap: guest_mem_size=0xc0000000
+effective=0xbe000000 gop=0`, and the VBE framebuffer is handed out at
+`0xfd000000`, which is above `effective`. **Raising `-mem` does not raise
+`effective`** -- at `-mem 4096` the line reads `guest_mem_size=0x100000000
+effective=0xbe000000` and the fault is unchanged, so the cap is not derived
+from the requested size. That refutes "give it more RAM" as a fix and
+points at the framebuffer mapping rather than at the guest.
+
+Whatever the guest did, a guest cannot be allowed to fault the emulator:
+the correct behaviour is a guest fault, not a host access violation.
+
+`codex/test/apps/browser-keys` passes and is not a counter-example: it
+never sets a video mode, so the whole display path is outside what the
+browser's gate observes. That is why the browser reads green and does not
+run.
+
+**FIXED 2026-08-10 (blu), main 14494. A disk image larger than 31 MB
+overran the pre-committed guest region.** Measured by reek, kept in full
+below because the measurement is what made it findable in one sitting.
+
+`guest_mem` is `MEM_RESERVE` with only the **first 32 MB committed** up
+front (`codex-vm.c:8997`), and `load_kernel`'s raw path memcpys the WHOLE
+file to `guest_mem + LOAD_ADDR` (`0x100000`) bounded against
+`guest_mem_size` -- 3 GB -- rather than against what is committed. A 32 MB
+image therefore writes 1 MB..33 MB and walks off the end of the commit into
+reserved address space. `guest_commit_range` exists for exactly this and its
+own comment describes the symptom ("a direct memcpy out of the same region
+does crash, and takes the VM process with it"); `load_kernel` was not among
+its callers. It now commits first.
+
+**The threshold is where the mechanism says it is, which is how it was
+pinned rather than argued.** `LOAD_ADDR + size` of exactly 32 MB
+(32,505,856-byte image) boots; one 64 KB step past it faults. Both crashing
+sizes boot after the fix and the 30 MB control is unchanged.
+
+Two corrections to the notes below, both worth keeping. **The absence of
+both GPT lines was not a clue about the directory walk** -- the fault is
+upstream of the walk entirely, in a copy that runs before it, so neither
+line could have printed and buffering was never involved. And the
+unbounded `memcpy` at the extracted-PE copy is **real but is not this
+crash**: it is bounded against the image and not against guest RAM, so it
+would need a `BOOTX64.EFI` larger than guest RAM, while the crash needs
+only a 32 MB disk. It is bounded and committed now as well.
+
+The original measurement, unchanged:
+
+**CLOSED. Re-verified 2026-08-10 (reek) against the fix above**: a 32 MB
+image (33,554,432 bytes, 65536 sectors) built from the same source now boots
+and runs to completion under `-uefi -disk`, with no host fault. The entry
+below is the original measurement, kept because it is what made the cause
+findable in one sitting. It said the cause was NOT pinned, and that was
+true when written; it is pinned now and the account is above.
+
+```
+tools/codex-vm.exe -kernel X.img -uefi -disk X.img -headless -timeout 60
+IDE: X.img (33554432 bytes, 65536 sectors)
+UEFI mode / ACPI / SMBIOS lines, then:
+HOST CRASH: codex-vm faulted (code=0xC0000005) at 0x7FF62F685F9E writing memory 0x227397B0000
+```
+
+The control is the same payload and the same source in a **32768**-sector
+image, built by the same `build/build-img.ps1` invocation with only
+`-TotalSectors` changed: it boots, prints
+`GPT: extracted BOOTX64.EFI (2591232 bytes, FAT16) from partition at LBA 2048`,
+and compiles. So the variable is image size, not the payload.
+
+Two facts to start from rather than re-measure. The failing run prints
+neither the `GPT: extracted` line nor the `GPT: ESP ... has an unusable BPB`
+line that is its else-branch, which either puts the fault inside the
+directory walk or means those `fprintf(stderr, ...)` calls are lost to
+buffering while the SEH handler's own writes survive -- **establish which
+before reasoning from the absence**, because they imply different faults.
+And the fault is a WRITE, while every access in the walk itself is a read.
+
+Not on the A5 flight path: `a5flight2.img` and the 2.7 MB source arm are
+both 32768 sectors. It bites whoever first needs an image above 16 MB,
+which the drive installer will.
+
+**One thing this fix does NOT change, recorded so nobody reads it as
+covered.** A GPT disk image under `-uefi` is copied into guest RAM twice:
+once whole by the raw path above, then again as the extracted PE. The first
+copy is discarded and now commits the whole image, so a multi-gigabyte ESP
+will commit multiple gigabytes of host RAM before booting. That is waste,
+not a crash, and skipping the raw copy for a GPT image is a separate change
+with its own fallback question.
+
 ### Interactive Debugger
 
 Run codex-vm directly with `-debug` (and optionally `-map <file>.map`)
@@ -1552,6 +1829,33 @@ build/compile.ps1 -Src codex\test\apps\foo.codex -Out out.cdx -Log out.log -Kern
 produce the same SHA-256 have not read your file. This is the cheap check and
 it is the only one that fires before you start debugging the wrong program.
 
+### Run a plug's `build.ps1` FROM THE REPO ROOT, never from the plug directory
+
+**Symptom:** `pwsh .\build.ps1` inside `codex\plugs\<p>\` exits 5 with
+`FAIL: compile errors`, and prints a log full of `CDX3005` shadowing
+warnings about `is-letter`, `is-digit` and `is-whitespace`. There are no
+errors anywhere in it. The same bundle compiles clean by hand.
+
+**Cause:** the message is wrong twice over. `compile.ps1` resolves its
+default `-Kernel` (`build-output\bare-metal\Codex.cdx`) against the CURRENT
+WORKING DIRECTORY, so from the plug directory there is no kernel and it
+exits 2 with `MISSING: build-output\bare-metal\Codex.cdx`. Nothing is
+compiled at all. `Build-PlugCdx` (`codex\plugs\common\plug-build-lib.ps1`:146)
+swallows that output with `| Out-Null`, sees a non-zero exit, reports it as
+"compile errors", and then dumps the FIRST TEN LINES OF THE PREVIOUS RUN'S
+`build.log`. Those warnings are stale and belong to a compile that succeeded.
+
+**Fix:** run it from the repo root.
+
+```powershell
+cd D:\Projects\NewRepository-<agent>
+pwsh codex\plugs\csharp\build.ps1        # OK: ...\csharp-plug.cdx (371061 bytes)
+```
+
+**Detect:** the success line is `[<plug>-plug] OK: <path> (<n> bytes)`. If you
+do not see it, nothing was written, whatever the log appears to say. Check the
+log's timestamp against the run before believing a word of it.
+
 ### The deck knob, and the deadlock it exists to break
 
 Phase deck floors live in `BuildSettings.codex` and are **compiled into
@@ -1644,6 +1948,49 @@ is the constant 3221225472, and the page tables the seed emits map exactly
 that much RAM plus one device gigabyte above it. Raising the guest ceiling
 past 3 GB is a change to that constant, which is seed-affecting.
 
+### The UEFI identity map tracks `-mem`
+
+codex-vm identity-maps one 2 MB-page PD per GB of guest RAM, minimum 4 GB and
+maximum 64 GB, and CR3 points at it before the guest builds its own tables.
+It tracks `-mem` because GetMemoryMap advertises conventional RAM at and
+above 0x100000000 whenever `-mem` exceeds 4 GB, and `AllocateAnyPages`
+allocates top-down from `guest_mem_size - 1 MB`: a guest that believes
+either one touches memory the map has to cover.
+
+It was a fixed 4 GB until 2026-08-08, and before that a fixed 2 GB. Both were
+the same defect at different thresholds -- the emulator advertised memory it
+did not map, so at `-mem 8192` it returned 0x1f7f00000 from its own
+allocator and then triple-faulted the guest on that address. **A fault of
+that shape was the bed, not the payload.** If you are reading an old account
+that says a UEFI run above `-mem 4096` is meaningless, that is why, and it
+no longer holds.
+
+Past 64 GB the map stops growing and says so on stderr, naming the address
+above which memory is advertised and not mapped. It does not fault silently.
+### A BOOT IMAGE RUNS IN 128 MB. THE BED GIVES IT ~3 GB.
+
+**Any memory claim about a flight artifact measured in codex-vm at the
+default `-mem` is measured against an arena roughly 24x too large.** The
+two paths do not share a memory model:
+
+| Path | Arena |
+|---|---|
+| `build/boot/build-option-a.ps1` (the boot image, what flies) | ONE region of `HeapPages` * 4096 bytes, heap at its base (`r10`) and stack at its top (RSP), every prologue checking `cmp rsp, r10`. `-AllocPages 32768` is the shipping value: **128 MB for heap and stack together** |
+| `build/desk.ps1`, any `codex-vm -kernel *.cdx` | the bare-metal model above: heap 6 MB up to `-mem`, default 3072 |
+
+`-AllocPages` is `cdx-to-pe.ps1`'s `-HeapPages` under another name; the
+name is kept because probe commands in `docs/HardwareSitting.md` pass it.
+
+This is what hid the A6 F12 regression for a week. Six bed arms across two
+agents could not express a 4.6 MB per-visit leak, and the post-mortem
+concluded the remaining space was real hardware behavior the emulator does
+not model. It was the heap.
+
+**You cannot shrink the bed to match with `-mem`.** codex-vm's GOP
+framebuffer sits at GPA 0xBF000000 (3056 MB), so a small `-mem` leaves it
+outside RAM and the guest dies in `gop-rect-rows` (measured at 256 MB).
+OVMF or metal are the only routes to the real arena.
+
 ### GDB (Legacy Fallback)
 
 The interactive debugger (`-debug`) covers breakpoints, single-step,
@@ -1665,7 +2012,13 @@ broken subsystems. That mistake cost a week; the accident report is
 that no hardware campaign may launch without an output channel that does
 not depend on the subsystem under test.
 
-This is that channel, and it is the standing one.
+Since 2026-08-05 the standing probe telemetry channel is GopShot's F12
+screenshot-to-stick: probe-halt was replaced by shot-wait, and the frame
+lands on the ESP as `SHhhmmss.BMP` behind the medium-select `CODEX.CDX`
+lock. QR plus a photograph remains the honest fallback when the disk
+stack is itself the subsystem under test, or below rung 6, where the
+shot cannot land through a broken disk path. This section is that
+fallback.
 
 **The guest paints QR codes.** `apps/works/GopQr.codex` is a QR encoder in
 Codex -- version 5, error level L, mask 0, 106 bytes per code, chunked
@@ -1706,10 +2059,12 @@ number is the honest test of whether the geometry was found:
 - anything less -- the grid is wrong, and no amount of error correction
   will save it. Re-shoot straighter and fill the frame with the codes.
 
-**When you add a probe, render its findings as QR.** A number that only a
-human can read off a monitor is a number that arrives wrong, arrives late,
-or -- as happened -- dies with the framebuffer at power-off, having cost a
-person a walk across the building and a flash cycle to obtain.
+**When you add a probe that tests the disk stack or runs below rung 6,
+render its findings as QR;** everywhere else, let it screenshot itself
+via F12. A number that only a human can read off a monitor is a number
+that arrives wrong, arrives late, or -- as happened -- dies with the
+framebuffer at power-off, having cost a person a walk across the
+building and a flash cycle to obtain.
 
 ## Poison-Alloc Diagnostic Build
 

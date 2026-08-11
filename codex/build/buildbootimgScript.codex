@@ -10,25 +10,65 @@ Chapter: BuildBootImgScript
 
 Section: Parameters
 
-  boot-img-params : List ShellParam = []
+  agent-doc : List Text =
+    ["-Agent additionally generates a bundled agent (build/make-agent-bundle.ps1)",
+     "and writes AGENT.GGU + AGENT.MAN into the ESP root, which is what makes a",
+     "booted stick carry an agent rather than an offer to go and find one. It is",
+     "opt-in because it signs, so it boots VMs, and because it changes the depot",
+     "artifact. `build/agent-bundle-test.ps1` is what proves the guest verifies",
+     "what this writes."]
+
+  out-doc : List Text =
+    ["Where to write. Defaults to the depot artifact; point it elsewhere to",
+     "exercise this script without touching seed/Codex.img."]
+
+  kernel-doc : List Text =
+    ["Which compiler to build the payload WITH. Defaults to the depot seed.",
+     "",
+     "This was not passed at all, so compile.ps1 fell back to whatever",
+     "build.ps1 had last left in build-output/bare-metal -- and it prints a NOTE",
+     "saying so, which nothing was reading. That is the same defect the comment",
+     "about -Source below describes, one input over: two runs of this script at",
+     "the same commit could produce different depot images and neither would say",
+     "so, and a digest recorded against \"the tree at CL N\" would not be",
+     "reproducible from CL N. The seed is the reproducible choice and the one",
+     "-Seed already uses for the payload it embeds."]
+
+  bootsource-doc : List Text =
+    ["Which payload the image boots into. B5.4 step 3 made GopBoot the default,",
+     "gated: it passes validate-img and paints its menu under OVMF, where the",
+     "dev console reaches a black screen and OUT OF MEMORY. UefiBoot stays",
+     "reachable by name, and install-boot-test.ps1 asks for it explicitly",
+     "because it asserts that payload's banner (L-FALLBACK)."]
+
+  pet-doc : List Text =
+    ["GopBoot is an interactive poll loop that makes no heap progress, so the",
+     "watchdog has to be petted rather than inferred from progress. This is the",
+     "one compile-mode difference between the two payloads, and it follows the",
+     "payload: -Pet is now the default and -Uefi selects the dev console's mode.",
+     "-Pet is still accepted so the invocation B5.4 was gated with keeps working."]
+
+  boot-img-params : List ShellParam = [sh-doc agent-doc (sh-switch "Agent"), sh-doc out-doc (sh-param-default "Out" SptString (SeLit "")), sh-doc kernel-doc (sh-param-default "Kernel" SptString (SeLit "")), sh-doc bootsource-doc (sh-param-default "BootSource" SptString (SeLit "apps\\works\\GopBoot.codex")), sh-doc pet-doc (sh-switch "Pet"), sh-switch "Uefi"]
 
 Section: S01 -- Preamble
 
   s01 : List ShellCmd =
     let fail-seed = [ScEcho (SeRaw "\"FAIL: $Seed missing\""), ScExit (SeInt 1)]
-    in [ScSetErrorStop, ScSetStrictMode, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScAssign "Seed" (SeRaw "Join-Path $Repo 'seed\\Codex.cdx'"), ScAssign "ImgOut" (SeRaw "Join-Path $Repo 'seed\\Codex.img'"), ScBlank, ScIf (SeNot (SeFileExists (SeVar "Seed"))) fail-seed [], ScBlank, ScAssign "BuildOut" (SeRaw "Join-Path $Repo 'build-output'"), ScIf (SeNot (SeDirExists (SeVar "BuildOut"))) [ScMkdir (SeVar "BuildOut")] [], ScBlank, ScEcho (SeLit "=== Build Boot IMG ===")]
+    in [ScSetErrorStop, ScSetStrictMode, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScAssign "Seed" (SeRaw "Join-Path $Repo 'seed\\Codex.cdx'"), ScAssign "ImgOut" (SeRaw "if ($Out) { $Out } else { Join-Path $Repo 'seed\\Codex.img' }"), ScBlank, ScIf (SeNot (SeFileExists (SeVar "Seed"))) fail-seed [], ScBlank, ScAssign "BuildOut" (SeRaw "Join-Path $Repo 'build-output'"), ScIf (SeNot (SeDirExists (SeVar "BuildOut"))) [ScMkdir (SeVar "BuildOut")] [], ScBlank, ScEcho (SeLit "=== Build Boot IMG ===")]
 
 Section: S02 -- Bundle
 
   s02 : List ShellCmd =
-    let fail-bundle = [ScEcho (SeLit "FAIL: bundle failed"), ScExit (SeInt 1)]
-    in [ScComment "Step 1: Bundle boot source with all dependencies", ScAssign "bundleScript" (SeRaw "Join-Path $PSScriptRoot 'bundle-app.ps1'"), ScAssign "compileScript" (SeRaw "Join-Path $PSScriptRoot 'compile.ps1'"), ScAssign "BootSource" (SeRaw "Join-Path $Repo 'apps\\works\\UefiBoot.codex'"), ScAssign "BundledSource" (SeRaw "Join-Path $BuildOut 'boot-bundled.codex'"), ScAssign "BootCdx" (SeRaw "Join-Path $BuildOut 'boot.cdx'"), ScAssign "BootLog" (SeRaw "Join-Path $BuildOut 'img-compile.log'"), ScEcho (SeRaw "\"  Bundling $BootSource...\""), ScRaw "& pwsh -NoProfile -File $bundleScript -Src $BootSource -Out $BundledSource", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "BundledSource")))) fail-bundle []]
+    let fail-source = [ScEcho (SeRaw "\"FAIL: boot source $BootSourcePath missing\""), ScExit (SeInt 1)]
+    in let fail-bundle = [ScEcho (SeLit "FAIL: bundle failed"), ScExit (SeInt 1)]
+    in [ScComment "Step 1: Bundle boot source with all dependencies", ScAssign "bundleScript" (SeRaw "Join-Path $PSScriptRoot 'bundle-app.ps1'"), ScAssign "compileScript" (SeRaw "Join-Path $PSScriptRoot 'compile.ps1'"), ScAssign "BootSourcePath" (SeRaw "if ([System.IO.Path]::IsPathRooted($BootSource)) { $BootSource } else { Join-Path $Repo $BootSource }"), ScIf (SeNot (SeFileExists (SeVar "BootSourcePath"))) fail-source [], ScAssign "BundledSource" (SeRaw "Join-Path $BuildOut 'boot-bundled.codex'"), ScAssign "BootCdx" (SeRaw "Join-Path $BuildOut 'boot.cdx'"), ScAssign "BootLog" (SeRaw "Join-Path $BuildOut 'img-compile.log'"), ScEcho (SeRaw "\"  Bundling $BootSourcePath...\""), ScRaw "& pwsh -NoProfile -File $bundleScript -Src $BootSourcePath -Out $BundledSource", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "BundledSource")))) fail-bundle []]
 
 Section: S03 -- Compile CDX
 
   s03 : List ShellCmd =
-    let fail-compile = [ScEcho (SeLit "FAIL: CDX compile failed"), ScRaw "Get-Content $BootLog -ErrorAction SilentlyContinue | Select-Object -First 15 | ForEach-Object { Write-Host \"  $_\" }", ScExit (SeInt 1)]
-    in [ScComment "Step 2: Compile bundled source to CDX", ScEcho (SeLit "  Compiling bundled source -> CDX (UEFI mode)..."), ScRaw "& pwsh -NoProfile -File $compileScript -Src $BundledSource -Out $BootCdx -Log $BootLog -Uefi", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "BootCdx")))) fail-compile []]
+    let fail-kernel = [ScEcho (SeRaw "\"FAIL: kernel $KernelArg missing\""), ScExit (SeInt 1)]
+    in let fail-compile = [ScEcho (SeLit "FAIL: CDX compile failed"), ScRaw "Get-Content $BootLog -ErrorAction SilentlyContinue | Select-Object -First 15 | ForEach-Object { Write-Host \"  $_\" }", ScExit (SeInt 1)]
+    in [ScComment "Step 2: Compile bundled source to CDX", ScAssign "KernelArg" (SeRaw "if ($Kernel) { $Kernel } else { $Seed }"), ScIf (SeNot (SeFileExists (SeVar "KernelArg"))) fail-kernel [], ScAssign "ModeFlag" (SeRaw "if ($Uefi) { '-Uefi' } else { '-Pet' }"), ScEcho (SeRaw "\"  Compiling bundled source -> CDX ($ModeFlag), kernel $KernelArg...\""), ScRaw "& pwsh -NoProfile -File $compileScript -Src $BundledSource -Out $BootCdx -Log $BootLog $ModeFlag -Kernel $KernelArg", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "BootCdx")))) fail-compile []]
 
 Section: S04 -- CDX to PE
 
@@ -36,21 +76,52 @@ Section: S04 -- CDX to PE
     let fail-pe = [ScEcho (SeLit "FAIL: PE conversion failed"), ScExit (SeInt 1)]
     in [ScComment "Step 3: Convert CDX to PE", ScAssign "PeScript" (SeRaw "Join-Path $PSScriptRoot 'cdx-to-pe.ps1'"), ScAssign "BootPe" (SeRaw "Join-Path $BuildOut 'boot.efi'"), ScEcho (SeLit "  Converting CDX -> PE..."), ScRaw "& pwsh -NoProfile -File $PeScript -CdxInput $BootCdx -Out $BootPe -HeapPages 131072", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "BootPe")))) fail-pe []]
 
-Section: S05 -- Build GPT Image
+Section: S05 -- Optional bundled agent
 
   s05 : List ShellCmd =
-    let fail-img = [ScEcho (SeLit "FAIL: IMG build failed"), ScExit (SeInt 1)]
-    in [ScComment "Step 4: Build GPT FAT16 disk image", ScAssign "ImgScript" (SeRaw "Join-Path $PSScriptRoot 'build-img.ps1'"), ScAssign "SourceFile" (SeRaw "Join-Path $BuildOut 'Codex.codex'"), ScEcho (SeLit "  Building GPT disk image..."), ScIf (SeFileExists (SeVar "SourceFile")) [ScRaw "& pwsh -NoProfile -File $ImgScript -PeInput $BootPe -Out $ImgOut -Source $SourceFile"] [ScRaw "& pwsh -NoProfile -File $ImgScript -PeInput $BootPe -Out $ImgOut"], ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "ImgOut")))) fail-img []]
+    let fail-agent = [ScEcho (SeLit "FAIL: agent bundle failed"), ScExit (SeInt 1)]
+    in let build-agent = [ScAssign "AgentDir" (SeRaw "Join-Path $BuildOut 'agent'"), ScEcho (SeLit "  Building the bundled agent (signs, so this boots VMs)..."), ScRaw "& pwsh -NoProfile -File (Join-Path $PSScriptRoot 'make-agent-bundle.ps1') -OutDir $AgentDir", ScIf (SeNot (SeExitCodeEq 0)) fail-agent [], ScRaw "$AgentArgs = @('-Agent', (Join-Path $AgentDir 'AGENT.GGU'), '-AgentManifest', (Join-Path $AgentDir 'AGENT.MAN'))"]
+    in [ScComment "Step 4 (optional): the bundled agent", ScAssign "AgentArgs" (SeRaw "@()"), ScIf (SeVar "Agent") build-agent []]
 
-Section: S06 -- Done
+Section: S06 -- Build GPT Image
 
-  s06 : List ShellCmd = [ScAssign "totalSize" (SeProperty (SeRaw "Get-Item $ImgOut") "Length"), ScEcho (SeRaw "\"Done: $ImgOut ($([math]::Round($totalSize / 1MB, 1)) MB)\"")]
+ 32768 sectors is 16 MB. The payload is the PE plus a ~2.6 MB seed plus a
+ ~2.8 MB source, and build-img refuses a payload over 90 per cent of the
+ partition: at the old 16384 it fitted with almost nothing to spare and
+ -Agent would not have fitted at all.
+
+  s06 : List ShellCmd =
+    let fail-concat = [ScEcho (SeLit "FAIL: could not produce the compiler source concat"), ScExit (SeInt 1)]
+    in let make-concat = [ScEcho (SeRaw "\"  Concatenating compiler source (no $SourceFile present)...\""), ScRaw "& pwsh -NoProfile -File $ConcatScript -CodexDir (Join-Path $Repo 'codex\\compiler') -OutFile $SourceFile", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "SourceFile")))) fail-concat []]
+    in let fail-img = [ScEcho (SeLit "FAIL: IMG build failed"), ScExit (SeInt 1)]
+    in [ScComment "Step 5: Build the GPT disk image.",
+        ScComment "",
+        ScComment "The seed and the source both go on it, unconditionally. They did not before,",
+        ScComment "and the way they did not is the instructive part:",
+        ScComment "",
+        ScComment "  -Seed was never passed at all, so CODEX.CDX was never on the image, while",
+        ScComment "  docs/UsersHandbook.md said the image contained the CDX seed.",
+        ScComment "",
+        ScComment "  -Source was passed only `if (Test-Path $SourceFile)`, and $SourceFile is",
+        ScComment "  build-output/Codex.codex -- a scratch artifact that build.ps1's concat",
+        ScComment "  phase happens to leave behind. So whether the stick a person is handed",
+        ScComment "  carried its own source depended on whether somebody had run a build in",
+        ScComment "  that workspace recently and not cleaned it. Two runs of this script, same",
+        ScComment "  commit, could produce different images and neither would say so.",
+        ScComment "",
+        ScComment "A stick that cannot verify or rebuild itself is not what this project",
+        ScComment "promises anyone, so both are now required inputs and the concat is generated",
+        ScComment "when it is missing rather than silently skipped.", ScAssign "ImgScript" (SeRaw "Join-Path $PSScriptRoot 'build-img.ps1'"), ScAssign "ConcatScript" (SeRaw "Join-Path $PSScriptRoot 'concat-codex-self.ps1'"), ScAssign "SourceFile" (SeRaw "Join-Path $BuildOut 'Codex.codex'"), ScIf (SeNot (SeFileExists (SeVar "SourceFile"))) make-concat [], ScBlank, ScComment "32768 sectors (16 MB). The payload is now the PE plus a ~2.6 MB seed plus a", ScComment "~2.8 MB source, and build-img refuses a payload over 90 per cent of the", ScComment "partition -- at the old 16384 it fitted with almost nothing to spare and", ScComment "-Agent would not have fitted at all.", ScEcho (SeLit "  Building GPT disk image..."), ScRaw "& pwsh -NoProfile -File $ImgScript -PeInput $BootPe -Out $ImgOut -Seed $Seed -Source $SourceFile -TotalSectors 32768 @AgentArgs", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "ImgOut")))) fail-img []]
+
+Section: S07 -- Done
+
+  s07 : List ShellCmd = [ScAssign "totalSize" (SeProperty (SeRaw "(Get-Item $ImgOut)") "Length"), ScEcho (SeRaw "\"Done: $ImgOut ($([math]::Round($totalSize / 1MB, 1)) MB)\"")]
 
 Section: Assembly
 
-  boot-img-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06]
+  boot-img-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07]
 
-  boot-img-script : ShellScript = sh-script "build-boot-img" "Build a bootable GPT disk image from UefiBoot.codex" boot-img-params boot-img-body
+  boot-img-script : ShellScript = sh-script "build-boot-img" "Build seed/Codex.img, the bootable UEFI dev-console image" boot-img-params boot-img-body
 
   opening : [Console] Nothing = act
     print-line-uni (emit-powershell boot-img-script)

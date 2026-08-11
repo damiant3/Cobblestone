@@ -3,42 +3,6 @@ Chapter: E1000Phy
   cites Kernel chapter E1000e
   cites Kernel chapter Pci
 
- MDIC, the management door to the PHY, and the first test in this tree to
- reach a PHY register at all. Until the model grew one, every PHY-shaped
- defect in this driver was invisible here by construction: the model
- granted link on CTRL.SLU alone, so a driver that never touched the PHY
- passed, and on the I219 -- a PCH-integrated MAC whose PHY is reached
- only through MDIC -- that is exactly the failure that would have been
- silent.
-
- Four readings, and each is chosen so its two candidate answers look
- different rather than so it can pass.
-
- The PHY id is read back through MDIC. A model with no PHY reads zero on
- an unclaimed register, and zero is also what a bus with nothing on it
- reads, so the id is asserted as a specific non-zero value: it separates
- "reached the PHY" from "read a hole". It is the MODEL's id and is not
- measured off any real part, so this asserts the transaction worked, not
- that we recognise an I219.
-
- The address arm is the one that proves the transaction is addressed at
- all. A read of a PHY address nobody answers must come back as the error
- sentinel and not as zero, because a driver that folds those together
- cannot tell an absent PHY from a register holding zero. This is the
- arm that would fail if e1000-mdic-frame ignored its address field.
-
- Auto-negotiation is asserted as a TRANSITION, not a level. BMSR's
- auto-negotiation-complete bit is clear before the driver restarts
- negotiation and set afterwards, so a model that simply always reported
- done would fail the first half. A single reading after bring-up would
- have been satisfied by a constant.
-
- The link arm runs under `-e1000-phy-link`, which makes STATUS.LU require
- the PHY to have finished negotiating rather than merely CTRL.SLU. That
- flag is off by default so every existing green keeps the floor it was
- measured against; here it is on, and it is what makes this a test of the
- PHY path rather than of SLU.
-
 Section: Fixtures
 
   found-dev : PciScanResult -> Maybe PciDevice
@@ -49,9 +13,6 @@ Section: Judges
   yn : Boolean -> Text
   yn (b) = if b then "yes" else "no"
 
- Read straight off the bar, before any bring-up, so the pre-negotiation
- reading is genuinely pre-negotiation.
-
   bar-of : PciDevice -> Integer
   bar-of (dev) =
    let enabled = pci-enable-device dev
@@ -59,9 +20,6 @@ Section: Judges
 
   phy-id-nonzero : PciDevice -> Boolean
   phy-id-nonzero (dev) = e1000-phy-read (bar-of dev) e1000-phy-id1 > 0
-
- Address 2 is not e1000-phy-addr and nothing answers there. The reading
- must be the error sentinel and not zero.
 
   bad-addr-is-error : PciDevice -> Boolean
   bad-addr-is-error (dev) = e1000-phy-read-at (bar-of dev) 2 e1000-phy-id1 < 0

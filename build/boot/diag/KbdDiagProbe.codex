@@ -11,8 +11,6 @@ Chapter: KbdDiagProbe
   cites Kernel chapter BitmapFont
   cites Works chapter GopHandoff
 
- Real-hardware keyboard diagnostic, v8: three phases, one boot.
-
  PHASE 1 is the endpoint-attributed USB pump. Every transfer event is
  attributed to its ENDPOINT (the event TRB's control dword carries the
  endpoint id in bits 20:16); earlier probes counted any transfer event
@@ -36,11 +34,6 @@ Chapter: KbdDiagProbe
  floating-bus-guarded port 0x60 poll, because SMM emulation on some
  boards only answers the polled port. PS2 climbing here means the
  fallback is real.
-
- PHASE 3 re-acquires: the full bring-up runs again (handoff, reset,
- enumerate, mount) and the phase-2 verdict is written to the file. A
- working phase 3 proves ownership can be juggled per phase -- the
- strongest form of the fallback feature.
 
  The counters are ZEROED at start. Phases advance on the PIT tick
  (~18 Hz, the spine runtime-init started) with a paint-count fallback
@@ -172,7 +165,7 @@ Section: Raw Event Walk
 
   kd-wait-raw : XhciHost, Integer, Integer -> Integer
   kd-wait-raw (xh) (slot) (dci) =
-    let l = xhci-latch-take xh slot
+    let l = xhci-latch-take xh slot dci
     in if l /= 0 then
       let a = kd-inc 24
       in let c = poke-32 kd-cell 8 l
@@ -189,18 +182,18 @@ Section: Raw Event Walk
     in if ty /= trb-t-xfer-event then kd-wait-raw xh slot dci
     else let code = bit-and (bit-shru sts 24) 255
     in let eslot = bit-and (bit-shru ctl 24) 255
+    in let edci = bit-and (bit-shru ctl 16) 31
     in if eslot /= slot then
-      let put = xhci-latch-put xh eslot code
+      let put = xhci-latch-put xh eslot edci code
       in kd-wait-raw xh slot dci
-    else let epid = bit-and (bit-shru ctl 16) 31
-    in let rc = poke-32 kd-cell 28 ctl
+    else let rc = poke-32 kd-cell 28 ctl
     in let rp = poke-32 kd-cell 32 ptr
     in let rr = poke-32 kd-cell 36 (bit-and sts 16777215)
     in let cc = poke-32 kd-cell 8 code
-    in if epid == dci then
+    in if edci == dci then
       let e = kd-inc 0
       in code
-    else if epid == 1 then
+    else if edci == 1 then
       let e = kd-inc 16
       in kd-wait-raw xh slot dci
     else let e = kd-inc 20
@@ -299,7 +292,7 @@ Section: Schedule Experiment
     in let md = poke-32 kx-cell 24 (bit-and (mf2 - mf1) 16383)
     in let e1 = xhci-stop-endpoint xh slot (k.uk-dci)
     in let r1 = poke-32 kx-cell 4 (bit-or (if e1.xe-ok then 256 else 0) (e1.xe-code))
-    in let f1 = poke-32 kx-cell 28 (xhci-latch-take xh slot)
+    in let f1 = poke-32 kx-cell 28 (xhci-latch-take xh slot (k.uk-dci))
     in let ep = dctx + (k.uk-dci) * (xh.xh-ctxsz)
     in let r2 = poke-32 kx-cell 8 (peek-32 ep 8)
     in let r3 = poke-32 kx-cell 12 (bit-and (peek-32 ep 0) 7)
@@ -308,7 +301,7 @@ Section: Schedule Experiment
     in let dl2 = xhci-delay-ticks 4
     in let e2 = xhci-stop-endpoint xh slot (k.uk-dci)
     in let r5 = poke-32 kx-cell 32 (bit-or (if e2.xe-ok then 256 else 0) (e2.xe-code))
-    in let f2 = poke-32 kx-cell 36 (xhci-latch-take xh slot)
+    in let f2 = poke-32 kx-cell 36 (xhci-latch-take xh slot (k.uk-dci))
     in let r6 = poke-32 kx-cell 40 (peek-32 ep 8)
     in xhci-ring-doorbell xh slot (k.uk-dci)
 
@@ -464,10 +457,6 @@ Section: Findings File
     else let w = poke-byte buf i (to-unicode (char-code (char-at s i)))
     in kd-put-text buf s (i + 1)
 
- Cells 2 and 3 are the vendor and device id of the controller cells 0-39
- describe, packed here the way cell 48 packs the per-controller table so
- the two read as the same kind of number and can be compared by eye.
-
   kd-host-id : Integer -> Integer
   kd-host-id (z) = bit-or (bit-shl (xdiag-get 2) 16) (xdiag-get 3)
 
@@ -595,10 +584,6 @@ Section: Findings File
       m
     end
   end
-
- The controller host for the handback: the keyboard's when one
- enumerated, else the disk's -- on a machine with no USB keyboard the
- experiment still runs.
 
   kd-host : UsbAttach -> XhciHost
   kd-host (att) =

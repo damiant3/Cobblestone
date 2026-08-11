@@ -13,6 +13,8 @@ disk, virtio-net for networking). The existing TCP/IP stack, HTTP
 parser, and web server routing are pure Codex and architecture-
 independent -- only the hardware drivers need swapping.
 
+**Ruling 2026-08-05 (Damian): KEPT in Active.** The phase checklist below is stale in the done direction -- `Arm64PeWriter`, `Gic`, `Arm64Timer`, `Arm64Pci`, `VirtioPci`, `VirtioNet` and `VirtioBlk` exist under `codex/os/kernel/` and `codex/plugs/`, and `build/build-arm64-img.ps1` / `build/boot-arm64.ps1` build and boot the image under QEMU + edk2. The honest remainder: validate the virtio drivers under QEMU (untested per OsHardwareRoadmap's inventory), then Phase 5 -- the OCI deployment -- which has not started.
+
 ## OCI Free Tier Specs
 
 - 4 ARM Ampere A1 cores (Neoverse N1, ARMv8.2)

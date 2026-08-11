@@ -13,33 +13,6 @@ Chapter: GopCompositeStride
  `gop-put`. This covers the three painters above them that the audit could
  only read: `gop-draw-text`, `comp-draw-node` and `comp-render`.
 
- 200 visible against a 264-pixel scanline is the same shape small, and no
- emulator feature is involved because the stride is an ordinary argument.
-
- The discriminator does not depend on which pixels a glyph happens to set,
- which matters because a test that assumed a particular bitmap would be
- asserting about the font instead of about the stride. Every painted pixel
- is counted twice: once over the whole buffer, and once inside the box the
- subject was asked to paint, addressed by stride. A stride-stepping walk
- puts all of them inside the box. A width-stepping walk leaves row 0 there
- and scatters every later row, because row r lands at r * 200 instead of
- r * 264, so the two counts stop agreeing. Anything drawn at all satisfies
- the first count, which is why the pair is the assertion and neither half
- is.
-
- The last row is the calibration and it is the reason to believe the rest:
- the same text is drawn into a fresh buffer with the visible width handed
- in as the pitch, and the counts are required to DISAGREE. Without it every
- row above would be satisfied by a subject that painted nothing outside its
- box because it painted almost nothing at all.
-
- Sabotaged against seed 6671C19A0F78F630 by giving `comp-draw-node`'s
- WkPanel arm the node's own width as the pitch: `draw-node rows by stride`
- and `render inside the panel` go to `no`, and the three text rows and the
- calibration hold. The painted rows stay `yes` under it, which is the point
- of keeping them -- the defect moves where the pixels went, not whether
- there were any.
-
  We say:
 
 Section: Geometry
@@ -60,11 +33,6 @@ Section: Counting
 
   at : Integer, Integer, Integer, Integer -> Integer
   at (b) (stride) (x) (y) = peek-32 b ((y * stride + x) * 4)
-
- Every non-zero word in the buffer, wherever it landed. Walking the raw
- extent rather than the rows on purpose: a width-stepping painter writes
- outside every row this test knows about, and a counter that only visited
- the rows would miss exactly the pixels that prove the defect.
 
   count-all : Integer, Integer, Integer, Integer -> Integer
   count-all (b) (i) (n) (acc) =

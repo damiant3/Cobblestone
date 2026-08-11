@@ -1,26 +1,6 @@
 Chapter: GaCoreTest
   cites AI chapter GeneticAlgorithm
 
- Runs a real genetic algorithm end to end on the generic core and requires it
- to solve the problem. Score, rank, keep the elite, cross over, mutate,
- re-run, for enough generations to actually converge.
-
- The problem is OneMax: a binary genome, fitness is the number of ones, and
- the optimum is the gene count exactly. It is the canonical GA benchmark, and
- it is also the shape a doctrine genome has -- one bit per lesson, include or
- exclude -- so this test doubles as the worked example for that use.
-
- The population is driven through ga-elitist-step directly with operators
- supplied here, rather than through ga-evolve-elitist. That is deliberate and
- it is the point of the lift: ga-evolve-elitist is bound to ga-config-default
- and therefore to a 0..1000 gene range, which would reroll a binary gene to
- three digits and destroy the genome. A domain that needs its own config
- binds it in a named wrapper, which is what gct-mutate is, and the generic
- core never has to know.
-
- Everything is deterministic. ga-rand-range is a pure hash of seed and index,
- so there is no real randomness and the whole run is reproducible.
-
  What is asserted, in order of what would survive a rewrite:
 
    solved          the GA reaches the known optimum. This is the product
@@ -47,35 +27,14 @@ Section: Problem
   gct-cfg : GaConfig
   gct-cfg = GaConfig { mutation-rate = 40, crossover-rate = 800, tournament-size = 3, gene-min = 0, gene-max = 1 }
 
- The same config with mutation switched off. The run is done twice, once with
- each, and the contrast is asserted. Crossover only recombines material that
- is already in the pool, and elitism drains the pool, so a crossover-only run
- converges on a suboptimum and stops there. Mutation is what introduces bits
- nobody had. Measured here rather than assumed: 24 of 24 with mutation, 18 of
- 24 without.
-
   gct-cfg-nomut : GaConfig
   gct-cfg-nomut = GaConfig { mutation-rate = 0, crossover-rate = 800, tournament-size = 3, gene-min = 0, gene-max = 1 }
-
- Two configs differing ONLY in crossover-rate, with mutation off in both so
- crossover is the sole variable. `ga-evolve` (tournament selection, full
- replacement) runs under each and the two best-fitness sequences must DIFFER.
-
- That assertion is the point. crossover-rate was declared, defaulted to 800,
- and read by nothing: crossover was applied unconditionally whatever the
- config said. A knob wired to nothing produces identical output at 0 and at
- 1000, so requiring a difference is what tells a connected knob from a
- decorative one, and it is the only assertion here that could have caught the
- original defect. It also gives ga-evolve and ga-tournament-select their only
- coverage in this file.
 
   gct-cfg-nox : GaConfig
   gct-cfg-nox = GaConfig { mutation-rate = 0, crossover-rate = 0, tournament-size = 3, gene-min = 0, gene-max = 1 }
 
   gct-cfg-allx : GaConfig
   gct-cfg-allx = GaConfig { mutation-rate = 0, crossover-rate = 1000, tournament-size = 3, gene-min = 0, gene-max = 1 }
-
- Fitness is the count of ones, so the optimum is gct-genes.
 
   gct-ones : GaChromosome -> Integer
   gct-ones (c) = gct-ones-loop (c.genes) 0 (c.gene-count) 0
@@ -90,24 +49,12 @@ Section: Problem
     if i >= n then acc
     else gct-score-all pop (i + 1) n (list-push acc (gct-ones (list-at pop i)))
 
- The starting population is built here rather than by ga-random-population,
- and that is not a style choice.
-
  ga-rand-range is |seed * 2654435761 XOR idx * 40503| mod range. Both
  multipliers are odd, so for range 2 the answer reduces to
  lowbit(seed) XOR lowbit(idx): gene i of every chromosome is f(seed) with the
  parity of i flipped in, an alternating pattern, and therefore exactly half
  ones in every chromosome whatever the seed. Measured: a 30-individual,
  24-gene population from ga-random-population scored 12 for all thirty.
-
- That is a real defect in the helper and it is recorded in the changelist
- rather than fixed here, because ga-rand-range is what ga-evolve's tournament
- and mutation both draw on and changing it moves their behaviour.
-
- Its consequence for a test is worse than the flat scores: with every score
- equal, a ranking assertion cannot fail, because an all-equal list is both
- ascending and descending. The fixture below gives thirty distinct-ish
- scores, so ranking has something to get wrong.
 
   gct-bits : Integer, Integer, Integer, List Integer -> List Integer
   gct-bits (ones) (i) (n) (acc) =
@@ -133,8 +80,6 @@ Section: The operators the domain supplies
 
 Section: The run
 
- The mutate operator is a parameter, so the same driver runs both arms.
-
   gct-run : List GaChromosome, Integer, Integer, (GaChromosome, Integer -> GaChromosome), List Integer -> List Integer
   gct-run (pop) (gen) (seed) (mut) (acc) =
     if gen >= gct-gens then acc
@@ -142,13 +87,6 @@ Section: The run
     in let best = gct-max scores 0 (list-length scores) 0
     in let next = ga-elitist-step pop scores gct-elite gct-breed mut (seed + gen * 13)
     in gct-run next (gen + 1) seed mut (list-push acc best)
-
- The recorded statistic is the population TOTAL, not its maximum. The maximum
- is too blunt to see this: the fixture's chromosomes are prefixes (m ones then
- zeros), a single-point crossover of two prefixes is another prefix, and its
- one-count never exceeds the better parent, so the best sits at 18 whether
- every child is a clone or every child is a crossover. The total moves,
- because it describes the whole generation rather than its luckiest member.
 
   gct-sum : List Integer, Integer, Integer, Integer -> Integer
   gct-sum (xs) (i) (n) (acc) =

@@ -126,7 +126,7 @@ pwsh apps\games\codexmagic\web\build-pages.ps1        # admin + marketplace only
 
 ## Chapter 2: The Widget Kingdom
 
-The **47-module** UI foreword (`codex/foreword/ui`, quire `UI`) defines
+The **50-module** UI foreword (`codex/foreword/ui`, quire `UI`) defines
 a platform-agnostic widget system. These types are the contract between
 application code and any rendering backend -- browser, framebuffer, GPU.
 

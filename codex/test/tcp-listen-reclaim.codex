@@ -2,29 +2,6 @@ Chapter: TcpListenReclaim
   cites Net chapter NetworkStack
   cites Net chapter Tcp
 
- A server that serves one caller and goes back to accept must be able to
- take the next caller. This is the test for the half of the problem that
- a single-connection server hits, and it needs no NIC, no VM and no
- second guest: the whole defect is expressible against `tcp-step` and
- `net-session-owns-segment`, which are pure.
-
- THE DEFECT. `tcp-set-state` carries every field forward, including
- `remote-port`, and `tcp-step-closed`'s `EvListen` arm reaches
- `TcpListening` through it. So a listener that has once been claimed by a
- peer still names that peer after it closes and re-listens. The demux
- check then reads a fresh caller's SYN as somebody else's traffic and
- drops it, and the server waits forever for a request that was on the
- wire. A listener has no peer by definition; `remote-port = 0` is the
- sentinel `net-session-owns-segment` already keys on for exactly this.
-
- THE CONTROLS ARE THE TEST. `second-caller-admitted` fails against the
- unfixed code and is the point, but on its own it cannot tell a fixed
- demux from a deleted one -- removing the remote-port check entirely
- makes it pass. `claimed-rejects-stranger` is what pins the check still
- doing its job: once a peer has claimed the listener, another peer's
- frame must still be refused. A change that satisfies one and not both is
- wrong, in whichever direction it fails.
-
 Section: Fixture
 
   local-mac : List Integer = [0, 1, 2, 3, 4, 5]
@@ -47,16 +24,9 @@ Section: Fixture
   ack-from (src) =
     TcpSegment { src-port = __narrow src, dst-port = __narrow server-port, seq-num = 7001, ack-num = 1, flags = __narrow tcp-flag-ack, window = 8192, payload = [] }
 
- A listener as a server actually builds one: no peer named, because it
- does not know who will call.
-
   fresh-listener : NetSession =
     let sess = net-session-new local-mac local-ip gateway-ip server-port 0 peer-ip 1000
     in (net-listen sess).session
-
- One whole connection, from the SYN that claims the listener to the close
- and the re-listen that a serve loop performs before taking the next
- caller.
 
   after-one-caller : NetSession =
     let claimed = net-receive-segment fresh-listener (syn-from caller-a-port)

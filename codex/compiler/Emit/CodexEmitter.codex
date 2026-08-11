@@ -1,8 +1,6 @@
 Chapter: Codex Emitter
   cites Codex chapter Build Settings (max-recursion-depth)
 
- Emits Codex source code from the IR.
-
 Section: Type Definition Emission
   codex-emit-type-defs : List ATypeDef, Integer -> Text
   codex-emit-type-defs (tds) (i) =
@@ -175,13 +173,6 @@ Section: TypeVar Normalization
 
 Section: CodexType Emission
 
- A bounded IntegerTy prints its bound. Dropping it emitted signatures
- whose stage-B guards and propagated param ranges silently vanished
- from the text round-trip - stage1 compiled with the parameters
- unbounded, which the CDX2051 promotion turned from a masked warning
- into a build failure. Full-range prints bare Integer, so unbounded
- signatures round-trip byte-identically.
-
   codex-emit-type : CodexType -> Text
   codex-emit-type (ty) =
    when ty
@@ -209,12 +200,6 @@ Section: CodexType Emission
     is VectorMaskTy (n) -> "VectorMask " & integer-to-text n
     is LinearTy (linner) -> "linear " & wrap-complex linner
     is otherwise -> "Unknown"
-
- The row prints only at the arrow whose result it decorates: a tail
- merges into the result's effect bracket ([Audit, e]) or opens its
- own ([e]) when the result carries no concrete effects. An empty row
- prints nothing, so pure signatures are byte-identical to the
- pre-row rendering -- the text fixed point depends on this.
 
   codex-emit-fun-params : CodexType, EffectRow, CodexType -> Text
   codex-emit-fun-params (p) (row) (r) =
@@ -653,12 +638,6 @@ Section: Match
     is IrBoolLit (v) (sp) -> if v then "" else " when False"
     is otherwise -> " when " & codex-emit-expr guard ctors indent
 
- A branch joins the group only when it carries the same non-negative
- alt-group as the group head: alternatives expanded from one source
- or-pattern share the head pattern's source offset, while distinct
- source arms (and synthesized arms, tagged -1) never re-merge even
- with identical bodies.
-
   find-group-end : List IRBranch, List Text, Integer, Text, Text, Integer, Integer, Integer -> Integer
   find-group-end (branches) (ctors) (indent) (body-text) (guard-text) (group) (i) (len) =
    if i >= len then i
@@ -832,10 +811,36 @@ Section: Utilities
    else char-to-text (code-to-char c)
 
 Section: Chapter Emission
+  codex-grounds-seen : List Text, Text, Integer, Integer -> Boolean
+  codex-grounds-seen (acc) (e) (i) (len) =
+   if i == len then False
+   else if list-at acc i == e then True
+   else codex-grounds-seen acc e (i + 1) len
+
+  codex-grounds-effects : List Text, Integer, Integer, List Text -> List Text
+  codex-grounds-effects (gs) (i) (len) (acc) =
+   if i == len then acc
+   else let parts = text-split (list-at gs i) "\n"
+   in let e = if list-length parts > 1 then list-at parts 1 else list-at gs i
+   in codex-grounds-effects gs (i + 1) len (if codex-grounds-seen acc e 0 (list-length acc) then acc else list-push acc e)
+
+  codex-grounds-join : List Text, Integer, Integer, List Text -> List Text
+  codex-grounds-join (es) (i) (len) (acc) =
+   if i == len then acc
+   else let sep = if i > 0 then ", " else ""
+   in codex-grounds-join es (i + 1) len (list-push acc (sep & list-at es i))
+
+  codex-emit-grounds-line : List Text -> Text
+  codex-emit-grounds-line (gs) =
+   let effs = codex-grounds-effects gs 0 (list-length gs) []
+   in if list-length effs == 0 then ""
+      else "  grounds " & text-concat-list (codex-grounds-join effs 0 (list-length effs) []) & "\n"
+
   codex-emit-text-chapter : IRChapter, IRTextMeta, List ATypeDef, List RenameEntry -> Text
   codex-emit-text-chapter (m) (meta) (type-defs) (renames) =
    let header = if meta.chapter-title == "" then ""
-      else "Chapter: " & meta.chapter-title & "\n\n"
+      else "Chapter: " & meta.chapter-title & "\n"
+        & codex-emit-grounds-line (meta.ground-effects) & "\n"
         & if meta.prose == "" then "" else " " & meta.prose & "\n\n"
    in header & codex-emit-type-defs type-defs 0 & codex-emit-all-defs (m.defs) (meta.ctor-names) 0 renames
 

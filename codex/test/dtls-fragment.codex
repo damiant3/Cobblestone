@@ -1,0 +1,78 @@
+Chapter: DtlsFragmentTest
+  cites Encode chapter DtlsMessage
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ We say:
+
+Section: Fixtures
+
+ A 250-byte body split at 100 gives three fragments (100, 100, 50), so the
+ last one is a different size from the others and a loop that assumed a
+ uniform final fragment is caught.
+
+  body-len : Integer = 250
+
+  mk-body : Integer, List Integer -> List Integer
+  mk-body (i) (acc) =
+    if i >= body-len then acc
+    else mk-body (i + 1) (list-push acc (bit-and (i * 7 + 3) 255))
+
+  body : List Integer = mk-body 0 []
+
+  msg-type : Integer = 11
+  msg-seq : Integer = 4
+
+  parse-or-empty : List Integer -> DtlsMsg
+  parse-or-empty (bs) = when (dtls-msg-parse bs)
+    is Just (m) -> m
+    is None -> DtlsMsg { dm-type = 0, dm-length = 0, dm-seq = 0, dm-frag-offset = 0, dm-frag-length = 0, dm-body = [] }
+
+  add-frag : DtlsReasm, List Integer -> DtlsReasm
+  add-frag (r) (bs) = dtls-reasm-add r (parse-or-empty bs)
+
+  same-bytes : List Integer, List Integer, Integer -> Boolean
+  same-bytes (a) (b) (i) =
+    if list-length a /= list-length b then False
+    else if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else same-bytes a b (i + 1)
+
+  show-bool : Boolean -> Text
+  show-bool (v) = if v then "True" else "False"
+
+  three : List (List Integer) = dtls-msg-fragments msg-type msg-seq body 100
+  whole : List (List Integer) = dtls-msg-fragments msg-type msg-seq body 4096
+
+Section: Entry
+  opening : [Console] Nothing = act
+    let in-order = add-frag (add-frag (add-frag dtls-reasm-new (list-at three 0)) (list-at three 1)) (list-at three 2)
+    in let reversed = add-frag (add-frag (add-frag dtls-reasm-new (list-at three 2)) (list-at three 1)) (list-at three 0)
+    in let duped = add-frag (add-frag (add-frag (add-frag dtls-reasm-new (list-at three 0)) (list-at three 1)) (list-at three 1)) (list-at three 2)
+    in let gapped = add-frag (add-frag dtls-reasm-new (list-at three 0)) (list-at three 2)
+    in act
+      print-line-uni ("nfrags=" & show (list-length three))
+      print-line-uni ("onefrag=" & show (list-length whole))
+      print-line-uni ("onefrag-same=" & show-bool (same-bytes (list-at whole 0) (dtls-msg-encode msg-type msg-seq body) 0))
+      print-line-uni ("declared-len=" & show ((parse-or-empty (list-at three 0)).dm-length))
+      print-line-uni ("frag0-len=" & show ((parse-or-empty (list-at three 0)).dm-frag-length))
+      print-line-uni ("frag2-off=" & show ((parse-or-empty (list-at three 2)).dm-frag-offset))
+      print-line-uni ("inorder-complete=" & show-bool (dtls-reasm-complete in-order))
+      print-line-uni ("inorder-same=" & show-bool (same-bytes (dtls-reasm-body in-order) body 0))
+      print-line-uni ("reversed-complete=" & show-bool (dtls-reasm-complete reversed))
+      print-line-uni ("reversed-same=" & show-bool (same-bytes (dtls-reasm-body reversed) body 0))
+      print-line-uni ("duped-complete=" & show-bool (dtls-reasm-complete duped))
+      print-line-uni ("duped-same=" & show-bool (same-bytes (dtls-reasm-body duped) body 0))
+      print-line-uni ("gapped-complete=" & show-bool (dtls-reasm-complete gapped))
+      print-line-uni ("gapped-covered=" & show (dtls-reasm-covered gapped))
+      let overlong = dtls-reasm-add dtls-reasm-new (DtlsMsg { dm-type = msg-type, dm-length = 99999, dm-seq = 1, dm-frag-offset = 0, dm-frag-length = 1, dm-body = [7] })
+      in let past-end = dtls-reasm-add dtls-reasm-new (DtlsMsg { dm-type = msg-type, dm-length = 10, dm-seq = 1, dm-frag-offset = 8, dm-frag-length = 5, dm-body = [1, 2, 3, 4, 5] })
+      in let seq-switch = dtls-reasm-add in-order (DtlsMsg { dm-type = msg-type, dm-length = 2, dm-seq = 9, dm-frag-offset = 0, dm-frag-length = 2, dm-body = [1, 2] })
+      in act
+        print-line-uni ("overlong-refused=" & show-bool (overlong.dr-active == False))
+        print-line-uni ("pastend-refused=" & show-bool (past-end.dr-active == False))
+        print-line-uni ("seqswitch-seq=" & show (seq-switch.dr-seq))
+        print-line-uni ("seqswitch-complete=" & show-bool (dtls-reasm-complete seq-switch))
+      end
+    end
+  end

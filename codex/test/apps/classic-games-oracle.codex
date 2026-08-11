@@ -1,0 +1,228 @@
+Chapter: ClassicGamesOracle
+  cites Games chapter Go
+  cites Games chapter HexGame
+  cites Games chapter DotsAndBoxes
+  cites Games chapter Game2048
+  cites Games chapter RoyalUr
+  cites Games chapter GoFish
+  cites Games chapter Mahjong
+  cites Games chapter Spider
+  cites Games chapter Monopoly
+  cites Games chapter HexWar
+  cites Games chapter Rng
+
+Section: Helpers
+
+  occupied : List Integer, Integer, Integer, Integer -> Integer
+  occupied (s) (i) (n) (acc) =
+    if i >= n then acc
+    else occupied s (i + 1) n (acc + (if list-at s i == 0 then 0 else 1))
+
+  verdict : Text, Integer, Integer -> Text
+  verdict (label) (got) (want) =
+    label & " got " & show got & " want " & show want
+    & (if got == want then " ok" else " WRONG")
+
+  holds : Text, Boolean -> Text
+  holds (label) (held) =
+    label & (if held then " ok" else " WRONG")
+
+  go-board-with : List Integer -> GoBoard
+  go-board-with (s) =
+    GoBoard { stones = s, current-player = 1, black-captures = 0,
+              white-captures = 0, passes = 0, game-over = False,
+              black-score = 0, white-score = 0, ko-point = (-1) }
+
+Section: Go
+
+  go-checks : [Console] Nothing
+  go-checks =
+    let eb = go-new
+    in let cap-empty = go-find-capture eb
+    in let occ-1 = occupied (eb.stones) 0 81 0
+    in let centre = go-try-center eb
+    in let occ-2 = occupied (eb.stones) 0 81 0
+    in let atari = go-board-with (list-set-at (list-set-at (go-new).stones 0 2) 1 1)
+    in let cap-hit = go-find-capture atari
+    in let occ-3 = occupied (atari.stones) 0 81 0
+    in let v0 = list-at (atari.stones) 0
+    in let v9 = list-at (atari.stones) 9
+    in let g = run-go-game
+    in act
+      print-line-uni (verdict "go: empty board offers no capture" cap-empty (-1))
+      print-line-uni (verdict "go: capture search leaves board empty" occ-1 0)
+      print-line-uni (verdict "go: first centre point is taken" centre 40)
+      print-line-uni (verdict "go: centre search leaves board empty" occ-2 0)
+      print-line-uni (verdict "go: white on 0 with black on 1 is caught at 9" cap-hit 9)
+      print-line-uni (verdict "go: that search leaves two stones" occ-3 2)
+      print-line-uni (verdict "go: point 0 is still white" v0 2)
+      print-line-uni (verdict "go: point 9 is still empty" v9 0)
+      print-line-uni (holds "go: scores cannot exceed the 81 points" (g.black-score + g.white-score <= 81))
+      print-line-uni (holds "go: both colours take stones off" (g.black-captures > 0 & g.white-captures > 0))
+    end
+
+Section: Hex
+
+  hex-checks : [Console] Nothing
+  hex-checks =
+    let hb = hex-new
+    in let scan = hex-scan-winning (hb.cells) 1 0
+    in let occ = occupied (hb.cells) 0 121 0
+    in let r = run-hex-game
+    in act
+      print-line-uni (verdict "hex: one stone connects no two sides" scan (-1))
+      print-line-uni (verdict "hex: the win search leaves the board empty" occ 0)
+      print-line-uni (holds "hex: a finished game has a winner" (r.winner /= 0))
+    end
+
+Section: Dots and Boxes
+
+  dots-checks : [Console] Nothing
+  dots-checks =
+    let db = dots-new (rng-new 5)
+    in let find = dots-find-completing-move (db.edges) 0
+    in let occ = occupied (db.edges) 0 24 0
+    in let r = run-dots-game
+    in act
+      print-line-uni (verdict "dots: one edge completes no box" find (-1))
+      print-line-uni (verdict "dots: the box search leaves the grid empty" occ 0)
+      print-line-uni (verdict "dots: a played-out grid claims all nine boxes" (r.p1-score + r.p2-score) 9)
+      print-line-uni (verdict "dots: and takes all twenty-four edges" (r.moves-made) 24)
+    end
+
+Section: 2048
+
+  g2048-checks : [Console] Nothing
+  g2048-checks =
+    let row = g2048-slide-row-left [2, 2, 4, 0]
+    in let g = [2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    in let slid = g2048-slide-left g
+    in let r = run-2048-game
+    in act
+      print-line-uni (verdict "2048: two and two merge to four" (list-at row 0) 4)
+      print-line-uni (verdict "2048: the lone four follows it" (list-at row 1) 4)
+      print-line-uni (verdict "2048: and the rest is empty" (list-at row 2) 0)
+      print-line-uni (verdict "2048: a slide leaves its own grid alone" (list-at g 1) 2)
+      print-line-uni (verdict "2048: while the slid grid has merged" (list-at slid 0) 4)
+      print-line-uni (holds "2048: the game makes progress" (r.moves > 0 & r.moves <= 2000))
+      print-line-uni (holds "2048: tiles merge past the starting values" (r.max-tile >= 8))
+      print-line-uni (holds "2048: a grid of twos and fours sums even" (r.score - (r.score / 2) * 2 == 0))
+    end
+
+Section: Royal Ur
+
+  ur-roll-spread : Rng, Integer, Integer, Integer -> Integer
+  ur-roll-spread (r) (n) (lo) (hi) =
+    if n <= 0 then hi - lo
+    else let r1 = rng-next r
+    in let v = ur-roll r1
+    in let r2 = rng-next (rng-next (rng-next (rng-next r1)))
+    in ur-roll-spread r2 (n - 1) (if v < lo then v else lo) (if v > hi then v else hi)
+
+  ur-checks : [Console] Nothing
+  ur-checks =
+    let spread = ur-roll-spread (rng-new 99) 40 9 (-1)
+    in let r = run-ur-game 99
+    in act
+      print-line-uni (holds "ur: forty throws of four coins are not one number" (spread > 0))
+      print-line-uni (holds "ur: a finished race has a winner" (r.winner /= 0))
+      print-line-uni (holds "ur: and finishes inside the move cap" (r.moves-made <= 500))
+    end
+
+Section: Go Fish
+
+  gf-book-total : List Integer, Integer, Integer, Integer -> Integer
+  gf-book-total (books) (i) (n) (acc) =
+    if i >= n then acc
+    else gf-book-total books (i + 1) n (acc + list-at books i)
+
+  gofish-checks : [Console] Nothing
+  gofish-checks =
+    let two = run-go-fish 7 2
+    in let three = run-go-fish 42 3
+    in let four = run-go-fish 99 4
+    in act
+      print-line-uni (verdict "gofish: two players book all thirteen ranks" (gf-book-total (two.books-each) 0 2 0) 13)
+      print-line-uni (verdict "gofish: three players book all thirteen" (gf-book-total (three.books-each) 0 3 0) 13)
+      print-line-uni (verdict "gofish: four players book all thirteen" (gf-book-total (four.books-each) 0 4 0) 13)
+      print-line-uni (holds "gofish: and none of them runs to the turn cap" (two.turns <= 500 & three.turns <= 500 & four.turns <= 500))
+    end
+
+Section: Mahjong
+
+  mahjong-checks : [Console] Nothing
+  mahjong-checks =
+    let a = run-mahjong-game 101
+    in let b = run-mahjong-game 7
+    in act
+      print-line-uni (verdict "mahjong: pairs taken and tiles left account for all 144" (a.matched * 2 + a.remaining) 144)
+      print-line-uni (holds "mahjong: a layout with free tiles takes some of them" (a.matched > 0))
+      print-line-uni (verdict "mahjong: a cleared board took all 72 pairs" (b.matched) 72)
+      print-line-uni (holds "mahjong: and left nothing behind" (b.remaining == 0 & b.cleared))
+    end
+
+Section: Spider and Monopoly
+
+  spider-mono-checks : [Console] Nothing
+  spider-mono-checks =
+    let s = run-spider-game 42
+    in let m = run-monopoly-game 5 4
+    in act
+      print-line-uni (holds "spider: the solver halts instead of shuffling to the cap" (s.moves < 500))
+      print-line-uni (holds "monopoly: bankruptcy can end a game" (m.turns < 600))
+    end
+
+Section: HexWar Supply
+
+ Owner 0's supply edge is column q = 0 on a 10 by 8 map, owner 1's is
+ q = 9. A unit exerts a zone of control over the six hexes around it.
+
+  lone-unit : List Unit
+  lone-unit = list-push [] (make-unit 0 0 0 5 4)
+
+  cut-off : List Unit
+  cut-off =
+    list-push (list-push (list-push (list-push (list-push [] (make-unit 0 0 0 5 4))
+      (make-unit 1 0 1 4 4)) (make-unit 2 0 1 5 3)) (make-unit 3 0 1 6 4)) (make-unit 4 0 1 5 5)
+
+  on-the-edge : List Unit
+  on-the-edge =
+    list-push (list-push (list-push [] (make-unit 0 0 0 0 4))
+      (make-unit 1 0 1 1 4)) (make-unit 2 0 1 0 3)
+
+  supply-checks : [Console] Nothing
+  supply-checks =
+    let free-map = supply-map lone-unit 0 10 8
+    in let free-ok = unit-in-supply (list-at lone-unit 0) free-map 10
+    in let cut-map = supply-map cut-off 0 10 8
+    in let cut-ok = unit-in-supply (list-at cut-off 0) cut-map 10
+    in let edge-map = supply-map on-the-edge 0 10 8
+    in let edge-ok = unit-in-supply (list-at on-the-edge 0) edge-map 10
+    in let before = (list-at cut-off 0).strength
+    in let worn = list-at (apply-supply-attrition cut-off 0 10 8) 0
+    in let spared = list-at (apply-supply-attrition lone-unit 0 10 8) 0
+    in act
+      print-line-uni (holds "hexwar: an empty map leaves a unit in supply" free-ok)
+      print-line-uni (holds "hexwar: enemies on every side cut it off" (cut-ok == False))
+      print-line-uni (holds "hexwar: a unit on its own supply edge is never cut off" edge-ok)
+      print-line-uni (verdict "hexwar: being cut off costs one strength" (before - worn.strength) 1)
+      print-line-uni (holds "hexwar: a supplied unit loses nothing" (spared.strength == before))
+      print-line-uni (holds "hexwar: the whole supply edge is in supply" (supply-count edge-map 0 0 >= 8))
+    end
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    go-checks
+    hex-checks
+    dots-checks
+    g2048-checks
+    ur-checks
+    gofish-checks
+    mahjong-checks
+    spider-mono-checks
+    supply-checks
+  end
+
+Page 1

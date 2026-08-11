@@ -1,0 +1,221 @@
+Chapter: FatWriteGuardTest
+  cites Works chapter GopFat16
+  cites Works chapter GopDisk
+  cites Works chapter GopXhci
+  cites Foreword chapter Fat16
+  cites Foreword chapter Maybe
+
+ The sidecar is a 64 KB GPT image whose ESP is FAT16: 45 clusters of one
+ 512-byte sector, 32 root slots, and a FAT sized 8 sectors and so holding
+ 2048 entries. Those two numbers differing is the point of the bound
+ arms -- 2001 entries past the end of the volume have no sectors behind
+ them. Pristine state is EFI (cluster 2), two more directory clusters
+ (3, 4) and HELLO.TXT (5 -> 6), so clusters 2-6 are used and 7-46 free.
+
+Section: Main
+
+  name-of : Text -> Integer
+  name-of (s) =
+    let b = __heap-save
+    in let adv = __heap-advance 16
+    in let z = zero-name b 0
+    in let n = put-name b s 0
+    in b
+
+  zero-name : Integer, Integer -> Integer
+  zero-name (buf) (i) =
+    if i >= 16 then 0
+    else let w = poke-byte buf i 32
+    in zero-name buf (i + 1)
+
+  put-name : Integer, Text, Integer -> Integer
+  put-name (buf) (s) (i) =
+    if i >= text-length s then 0
+    else let w = poke-byte buf i (to-unicode (char-code (char-at s i)))
+    in put-name buf s (i + 1)
+
+  pad2 : Integer -> Text
+  pad2 (n) = if n < 10 then "0" & show n else show n
+
+  fill-name : Integer -> Integer
+  fill-name (n) = name-of ("FILL" & pad2 n & "  TST")
+
+  buf-of : Integer -> Integer
+  buf-of (n) =
+    let b = __heap-save
+    in let adv = __heap-advance (n + 512)
+    in let f = fill-bytes b 0 n
+    in b
+
+  fill-bytes : Integer, Integer, Integer -> Integer
+  fill-bytes (buf) (i) (n) =
+    if i >= n then 0
+    else let w = poke-byte buf i (int-mod (i * 7 + 1) 256)
+    in fill-bytes buf (i + 1) n
+
+ Count the clusters the ON-DISK FAT calls used. The caller reloads the
+ FAT first, so this reads what a later mount would see rather than what
+ the writer intended.
+
+  count-used : Fat16Volume, Integer, Integer, Integer, Integer -> Integer
+  count-used (vol) (fat) (c) (limit) (acc) =
+    if c >= limit then acc
+    else if gfat-fat-next vol fat c == 0 then count-used vol fat (c + 1) limit acc
+    else count-used vol fat (c + 1) limit (acc + 1)
+
+  used-now : Fat16Volume -> [Device.Port] Integer
+  used-now (vol) = act
+    f <- gfat-load-fat vol
+    if f.gft-ok == False then -1
+    else count-used vol (f.gft-buf) 2 (gfat-max-cluster vol) 0
+  end
+
+ The refusing arm needs a cluster the DIRECTORY claims, which is what
+ the guard consults; picking one out of the FAT would only find what
+ the FAT already reports.
+
+  live-cluster : List Fat16DirEntry, Integer -> Integer
+  live-cluster (es) (i) =
+    if i >= list-length es then 0
+    else let e = list-at es i
+    in if e.de-cluster >= 2 then e.de-cluster
+    else live-cluster es (i + 1)
+
+  write-fillers : Fat16Volume, Integer, Integer -> [Device.Port] Integer
+  write-fillers (vol) (i) (n) = act
+    if i >= n then 0
+    else act
+      ok <- gfat-write-small-file vol (fill-name i) (buf-of 64) 64
+      write-fillers vol (i + 1) n
+    end
+  end
+
+Section: Arms
+
+  arm-bounds : Fat16Volume -> [Device.Port] Text
+  arm-bounds (vol) = act
+    let cap = (vol.vol-fat-sectors) * (vol.vol-bytes-per-sector) / 2
+    in act
+      f1 <- gfat-load-fat vol
+      let a40 = gfat-chain-alloc vol (f1.gft-buf) 40 2 0 0
+      in act
+        f2 <- gfat-load-fat vol
+        let a41 = gfat-chain-alloc vol (f2.gft-buf) 41 2 0 0
+        in "maxc=" & show (gfat-max-cluster vol) & " cap=" & show cap & " alloc40=" & show a40 & " alloc41=" & show a41
+      end
+    end
+  end
+
+ The refusing arm and its control run on the same instrument, one after
+ the other, on a freshly loaded FAT each time. An arm that only proves a
+ guard refuses cannot tell a working guard from one that refuses
+ everything, and that is the failure this test exists to catch.
+
+  arm-guard : Fat16Volume -> [Device.Port] Text
+  arm-guard (vol) = act
+    es <- gfat-list-root vol
+    let live = live-cluster es 0
+    in act
+      f <- gfat-load-fat vol
+      let sab = gfat-fat-put vol (f.gft-buf) live 0
+      in act
+        refused <- gfat-chain-is-clear vol (f.gft-buf) live 1
+        f2 <- gfat-load-fat vol
+        let free = gfat-find-free vol (f2.gft-buf) 2 (gfat-max-cluster vol)
+        in act
+          admitted <- gfat-chain-is-clear vol (f2.gft-buf) free 1
+          let msg = "refuse=" & show (if refused then 0 else 1) & " admit=" & show (if admitted then 1 else 0)
+          in msg
+        end
+      end
+    end
+  end
+
+ `EFI/BOOT/BOOTX64.EFI` is two levels down, and a root-only walk marks
+ the EFI directory's own cluster and nothing inside it. The arm sabotages
+ the FAT entry of the file the stick boots from, so the FAT calls it free
+ while `EFI/BOOT` still points at it, and the guard must refuse. Its
+ control is the same free-cluster admission the refusing arm carries, so
+ a guard that simply refused everything could not pass either arm.
+
+  arm-subdir : Fat16Volume -> [Device.Port] Text
+  arm-subdir (vol) = act
+    deep <- gfat-resolve vol "EFI/BOOT/BOOTX64.EFI"
+    when deep
+      is None -> "deep=NOTFOUND"
+      is Just (e) -> act
+        f <- gfat-load-fat vol
+        let sab = gfat-fat-put vol (f.gft-buf) (e.de-cluster) 0
+        in act
+          refused <- gfat-chain-is-clear vol (f.gft-buf) (e.de-cluster) 1
+          f2 <- gfat-load-fat vol
+          let free = gfat-find-free vol (f2.gft-buf) 2 (gfat-max-cluster vol)
+          in act
+            admitted <- gfat-chain-is-clear vol (f2.gft-buf) free 1
+            let msg = "deep=" & show (e.de-cluster) & " deeprefuse=" & show (if refused then 0 else 1) & " deepadmit=" & show (if admitted then 1 else 0)
+            in msg
+          end
+        end
+      end
+    end
+  end
+
+  arm-rollback : Fat16Volume -> [Device.Port] Text
+  arm-rollback (vol) = act
+    base <- used-now vol
+    f <- gfat-load-fat vol
+    let first = gfat-chain-alloc vol (f.gft-buf) 3 2 0 0
+    in act
+      ff <- gfat-flush-fat vol (f.gft-buf)
+      mid <- used-now vol
+      rb <- gfat-rollback-chain vol (f.gft-buf) first 4
+      back <- used-now vol
+      let msg = "rbmid=" & show (mid - base) & " rbback=" & show (back - base)
+      in msg
+    end
+  end
+
+ The forced failure is a full root directory, which is the one
+ post-allocation failure this bed can produce on demand. It lands after
+ the chain is allocated and before the FAT is flushed, so a leak here is
+ exactly the 2.3 MB-per-shot class measured off the stick.
+
+  arm-leak : Fat16Volume -> [Device.Port] Text
+  arm-leak (vol) = act
+    n <- write-fillers vol 0 30
+    before <- used-now vol
+    ok <- gfat-write-file vol (name-of "LEAK    TST") (buf-of 1500) 1500
+    after <- used-now vol
+    let msg = "leakwrote=" & show (if ok then 1 else 0) & " leakstage=" & show (xdiag-get gfat-cell-write) & " leak=" & show (after - before)
+    in msg
+  end
+
+Section: Run
+
+  run : [Device.Port] Text
+  run = act
+    m <- gfat-mount-esp
+    if m.gm-ok == False then "mount=FAILED"
+    else act
+      let vol = m.gm-vol
+      in act
+        bounds <- arm-bounds vol
+        big <- gfat-write-file vol (name-of "BIGGUARDTST") (buf-of 3000) 3000
+        let wstage = xdiag-get gfat-cell-write
+        in act
+          bigsize <- gfat-file-size vol "BIGGUARD.TST"
+          guard <- arm-guard vol
+          sub <- arm-subdir vol
+          roll <- arm-rollback vol
+          leak <- arm-leak vol
+          let head = bounds & " big=" & show (if big then 1 else 0) & " wstage=" & show wstage & " bigsize=" & show bigsize
+          in head & " " & guard & " " & sub & " " & roll & " " & leak
+        end
+      end
+    end
+  end
+
+  opening : [Console, Device.Port] Nothing = act
+    r <- run
+    print-line-uni r
+  end

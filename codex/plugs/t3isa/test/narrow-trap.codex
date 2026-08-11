@@ -1,0 +1,33 @@
+Chapter: T3 Narrow Trap
+
+ A bounds check nothing has ever seen fire is not a bounds check. This
+ program narrows one value that is inside its band and one that is outside,
+ and the second must stop the machine. `scale` exists so the static bounds
+ prover cannot see the value: a literal out of range is a compile error
+ (CDX2050) and would never reach the emitted check at all.
+
+ Expected under the emulator: the first two lines print, then the literal
+ prefix of the third, then `TRAP: division by zero`, which is what the
+ emitted check deliberately provokes. The prefix appears here and not on
+ x86-64 because a print is linearised into one syscall per leaf on this
+ target, so the literal is out before the value that traps is computed.
+
+ Division by zero is not the only fault this machine raises -- under spec
+ v1.3 an unknown syscall, a heap allocation past the top of memory and a
+ malformed instruction all trap too, and every trap halts with exit 70. It
+ is simply the one an emitted check can provoke deliberately from a
+ register it already holds.
+
+Section: Body
+
+  takes-small : Integer between 0 and 100 -> Integer between 0 and 100
+  takes-small (b) = b
+
+  scale : Integer between 0 and 100 -> Integer between 0 and 100000
+  scale (n) = n * 50
+
+  opening : [Console] Nothing = act
+    print-line-uni ("in band: " & show (takes-small (__narrow (scale 1))))
+    print-line-uni ("about to narrow 2000 into 0..100")
+    print-line-uni ("must not print: " & show (takes-small (__narrow (scale 40))))
+  end

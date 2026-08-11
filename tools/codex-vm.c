@@ -1071,18 +1071,40 @@ static void uvc_generate_test_frame(unsigned char *buf) {
 static unsigned char hid_held_mods = 0;
 static unsigned char hid_held_keys[6] = {0};
 
-/* -hid-nak-unchanged: real interrupt endpoints NAK until they have news.
-   The default model completes every interrupt IN TRB at doorbell time
-   with whatever the state is now, which makes completions so plentiful
-   that a driver defect fed by their SCARCITY -- one endpoint's waiter
-   consuming a sibling endpoint's rare completion and starving it -- can
-   never be expressed. Under the flag, a HID interrupt IN TRB completes
-   only when its report would differ from the last one delivered on that
-   endpoint (for the combo mouse: only when a sample arrived since the
-   last report); otherwise the TD stays pending, and endpoints that were
-   left NAKing are re-rung from the main loop when input state changes. */
-static int hid_nak_unchanged = 0;
+/* Real interrupt endpoints NAK until they have news: a HID interrupt IN
+   TRB completes only when its report would differ from the last one
+   delivered on that endpoint (for the combo mouse: only when a sample
+   arrived since the last report); otherwise the TD stays pending, and
+   endpoints left NAKing are re-rung from the main loop when input state
+   changes.
+
+   DEFAULT SINCE 2026-08-06, with -hid-instant-complete as the opt-out.
+   The old default completed every interrupt IN TRB at doorbell time with
+   whatever the state was then, which consumes the guest's armed TD and
+   leaves nothing for a later report to land in. Measured on
+   usb-kbd-multi, three runs per cell, key hold width the only variable:
+   1 ms and 2 ms holds gave got=0 under instant-complete and got=30 here;
+   10 ms and the shipped 600 ms gave got=30 under both. A keystroke
+   narrower than the guest's poll interval simply did not exist, and it
+   failed silently -- the VM logs the key event and the report reaching
+   the endpoint either way.
+
+   -hid-instant-complete keeps the old model reachable because it is the
+   one where completions are so plentiful that a driver defect fed by
+   their SCARCITY -- one endpoint's waiter consuming a sibling's rare
+   completion and starving it -- cannot be expressed. That is a real use
+   (it is the negative arm usb-hid-steal was designed against), but it is
+   a thing to ask for, not a thing to be handed. */
+static int hid_nak_unchanged = 1;
+/* Now that the NAK model is the default, its narration would be on every
+   bed's stderr rather than only where it was asked for. CODEX_VM_HIDNAK_TRACE
+   restores it, sampled once like the BOT trace. */
 static int hid_nak_dbg = 0;
+static int hid_nak_trace = -1;
+static int hid_nak_tracing(void) {
+    if (hid_nak_trace < 0) hid_nak_trace = getenv("CODEX_VM_HIDNAK_TRACE") ? 1 : 0;
+    return hid_nak_trace;
+}
 static volatile int hid_input_changed = 0;
 static volatile int hid_mouse_fresh = 0;
 static unsigned char hid_nak_last[XHCI_MAX_SLOTS + 1][32][8];
@@ -1178,8 +1200,26 @@ static void build_hid_mouse_report(unsigned char *report) {
    in beds where the endpoint was in fact delivering. Command Completion
    (6.4.2.2) and Port Status Change (6.4.2.3) events have no such field;
    callers pass 0. */
+/* -usb-bot-drop N: drop the Nth transfer event on a BULK endpoint (ep_id >= 2,
+   so EP0 enumeration is untouched). The data still moves; only the completion
+   goes missing, which is the worksflight 2026-08-09 signature exactly -- a
+   32 KB data phase answering msc-ce-no-event with no stall and a volume left
+   clean. Without it no bed can reach a guest's fuel-exhaustion path or the
+   Reset Recovery retry behind it, and an unexecuted recovery path is worth
+   what no recovery path is worth. N counts from 1. */
+static int usb_bot_drop = 0;
+static int usb_bot_xfer_seen = 0;
+
 static void xhci_post_event_ep_resid(int trb_type, int slot, int ep_id, int completion, unsigned long long trb_ptr, int resid) {
     if (xcur->er_addr == 0 || xcur->er_size == 0) return;
+    if (usb_bot_drop > 0 && trb_type == 32 && ep_id >= 2) {
+        usb_bot_xfer_seen++;
+        if (usb_bot_xfer_seen == usb_bot_drop) {
+            fprintf(stderr, "xHCI: -usb-bot-drop: swallowing transfer event %d (slot=%d ep=%d cc=%d)\n",
+                    usb_bot_xfer_seen, slot, ep_id, completion);
+            return;
+        }
+    }
     /* Ring full = advancing the producer would land on the slot the guest's
        last ERDP write-back names (xHCI 4.9.4, one-slot-open convention). Real
        silicon stops posting and drops; it never laps the consumer. Every bed
@@ -1673,6 +1713,21 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                     }
                 }
 
+                /* Bulk-Only Mass Storage Reset (USB MSC BOT 3.1): abandon the
+                   command in flight and go back to expecting a CBW. Absent
+                   from this model until 2026-08-09, so a guest that timed out
+                   mid-command could not resynchronise it: bot.active stayed
+                   set, and the retry's CBW was consumed as write data for the
+                   command it was trying to replace. Reset Recovery therefore
+                   had no bed at all. Sense is deliberately left alone -- a BOT
+                   reset does not clear a pending UNIT ATTENTION. */
+                if (kind == XHCI_KIND_MSC && bmRequestType == 0x21 && bRequest == 0xFF) {
+                    fprintf(stderr, "xHCI: BOT Mass Storage Reset (active=%d, data_done=%u) -- abandoning command\n",
+                            bot.active, bot.data_done);
+                    bot.active = 0;
+                    bot.data_done = 0;
+                }
+
                 /* Optional DATA stage, then the STATUS stage. Both
                    advances follow links -- a TD may straddle the wrap. */
                 tr_dequeue = xhci_next_trb(tr_dequeue, &ccs);
@@ -1680,7 +1735,7 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                 unsigned char *data_trb = (unsigned char *)guest_mem + tr_dequeue;
                 unsigned int data_ctrl = *(unsigned int *)(data_trb + 12);
                 int data_tt = (data_ctrl >> 10) & 0x3F;
-                unsigned long long data_buf = *(unsigned long long *)data_trb & ~0xFULL;
+                unsigned long long data_buf = *(unsigned long long *)data_trb;
                 int data_len = *(unsigned int *)(data_trb + 8) & 0x1FFFF;
 
                 if (data_tt == 3 && data_buf > 0 && data_buf + data_len <= guest_mem_size) {
@@ -1764,7 +1819,12 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                 (void)wLength;
                 continue;
             } else if (tt == 1) { /* NORMAL (bulk or interrupt transfer) */
-                unsigned long long buf_addr = *(unsigned long long *)trb & ~0xFULL;
+                /* xHCI 6.4.1.1: a Data Buffer Pointer has NO alignment
+                   requirement. The ~0xF mask belongs on ring bases, input
+                   contexts and dequeue pointers -- all 16-byte aligned by
+                   spec -- and rounding a data buffer down by it silently
+                   reads or writes up to 15 bytes displaced. */
+                unsigned long long buf_addr = *(unsigned long long *)trb;
                 int buf_len = *(unsigned int *)(trb + 8) & 0x1FFFF;
 
                 /* A periodic endpoint has to be SCHEDULABLE, not merely
@@ -1881,7 +1941,7 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                     unsigned char report[8];
                     int is_combo_mouse = (kind == XHCI_KIND_HID && hid_combo && ep_idx == 5);
                     if (hid_nak_unchanged) {
-                        if (!hid_nak_seen[db][ep_idx & 31] && hid_nak_dbg < 8) {
+                        if (hid_nak_tracing() && !hid_nak_seen[db][ep_idx & 31] && hid_nak_dbg < 8) {
                             hid_nak_dbg++;
                             fprintf(stderr, "HIDNAK: slot %d ep %d first service (kind=%d)\n", db, ep_idx, kind);
                         }
@@ -2045,7 +2105,7 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                 }
                 tr_dequeue += 16;
             } else if (tt == 5) { /* ISOCH (isochronous transfer) */
-                unsigned long long buf_addr = *(unsigned long long *)trb & ~0xFULL;
+                unsigned long long buf_addr = *(unsigned long long *)trb;
                 int buf_len = *(unsigned int *)(trb + 8) & 0x1FFFF;
                 int copied = 0;
                 /* UVC camera: write test pattern frame data */
@@ -3541,7 +3601,13 @@ static void acpi_setup_tables(void *mem) {
     *(unsigned int *)(fadt + 36) = 0;          /* FIRMWARE_CTRL (no FACS) */
     *(unsigned int *)(fadt + 40) = dsdt_addr;  /* DSDT address */
     fadt[45] = 1;                               /* preferred PM profile: desktop */
-    *(unsigned short *)(fadt + 46) = 0x2000;   /* SCI interrupt */
+    *(unsigned short *)(fadt + 46) = 9;        /* SCI interrupt: a GSI, as
+                                                  QEMU's PIIX4 publishes and
+                                                  this table's 0x600/0x604
+                                                  ports already imitate. Was
+                                                  0x2000, which is not an
+                                                  interrupt number at all --
+                                                  the IOAPIC has 24 entries. */
     *(unsigned int *)(fadt + 48) = 0xB004;     /* SMI command port (Bochs compat) */
     fadt[52] = 0xF1;                            /* ACPI enable value */
     fadt[53] = 0xF0;                            /* ACPI disable value */
@@ -3819,7 +3885,26 @@ static int mmio_insn_len(const unsigned char *b, int n) {
 
 #define E1000_CTRL_RST     0x04000000u
 #define E1000_CTRL_SLU     0x00000040u
+#define E1000_CTRL_ASDE    0x00000020u
 #define E1000_STATUS_LU    0x00000002u
+
+/* Speed reporting, which is the field B2 Finding 4 turns on.
+   82583V STATUS (line 12590): SPEED 7:6, "Reflects speed setting of the MAC
+   and/or link"; ASDV 9:8, "Auto-Speed Detection Value -- speed result sensed
+   by the MAC auto-detection function". Both encode 00b=10, 01b=100,
+   10b/11b=1000. CTRL.SPEED is 9:8, and line 12640 says STATUS.SPEED reflects
+   "(CTRL.SPEED) or MAC auto-speed detection used". */
+#define E1000_CTRL_SPEED_SH   8
+#define E1000_STATUS_SPEED_SH 6
+#define E1000_STATUS_ASDV_SH  8
+#define E1000_SPEED_10     0u
+#define E1000_SPEED_1000   2u
+
+/* ASDV is diagnostic only (12648): "The ASDV bits are provided for diagnostics
+   purposes only. Even if the MAC speed configuration is not set using this
+   function (ASDE=0b), the ASD calculation can be initiated by software writing
+   a logic one to the CTRL_EXT.ASDCHK bit." Recorded, not modelled -- see the
+   -e1000-asde block for why. */
 #define E1000_RCTL_EN      0x00000002u
 #define E1000_RAH_AV       0x80000000u
 #define E1000_RXD_STAT_DD  0x01
@@ -3937,6 +4022,47 @@ static int e1000_mdio_window = 0;
 
    OFF by default (L-FALLBACK). */
 static int e1000_mdio_slow = 0;
+
+/* -e1000-asde: STATUS answers SPEED and ASDV, and CTRL.ASDE decides which
+   source SPEED is taken from. Until this flag existed the model had no ASDE
+   bit and no speed fields at all, so `na-line` printed SPEED and ASDV off a
+   register nothing ever wrote: both read 10 Mb/s on every arm, forever, which
+   is an instrument that cannot fail (L-FALSIF). The ASDE finding could not be
+   exercised in the bed because the bed could not express it.
+
+   What is CITED (82583V 12349): with ASDE set "the MAC ignores the speed
+   indicated by the PHY and attempts to automatically detect the resolved speed
+   of the link". With it clear, STATUS.SPEED follows the link. And 12646: "If
+   Auto-Speed Detection is enabled, the device's speed is configured only once
+   after the link signal is asserted by the PHY", which is why the value latches
+   rather than being recomputed per read.
+
+   WHAT IS OURS, stated here rather than left for a reader to find. The
+   datasheet says ASDE "must be set to 0b" and does NOT say what a part does
+   when software disobeys. This model does not invent a failure for that: it
+   models only the behaviour the sentence describes, and the MAC's own
+   detection resolves to 10 Mb/s because this bed's MAC has no wire to sense
+   and nothing to detect. So a driver that leaves ASDE set reads SPEED=10 while
+   the PHY negotiated 1000, and a driver that clears it reads 1000. That is the
+   cited DIRECTION with a magnitude of our choosing.
+
+   In particular this arm does NOT reproduce the metal wedge and must not be
+   read as evidence about it. Nothing in either datasheet in this tree explains
+   why the ASUS hangs, and a bed that hung here would be manufacturing a cause.
+
+   Two things the datasheet describes are deliberately NOT modelled, because
+   in this bed they have no observable state. 12646 says the speed is
+   "configured only once after the link signal is asserted", and 12648 says
+   ASDCHK can run the detection with ASDE clear -- but our detection has one
+   possible outcome, so a latch and a trigger would both be invisible whether
+   they worked or not. Modelling them would add exactly the kind of field this
+   flag exists to remove.
+
+   OFF by default (L-FALLBACK): every existing green was measured against a
+   STATUS with no speed fields, and `e1000-asde-arms` asserts the two arms are
+   INDISTINGUISHABLE in the bed, which is precisely the blindness this lifts. */
+static int e1000_asde = 0;
+static const unsigned int e1000_asd_value = E1000_SPEED_10;
 
 /* Page selected by the last write to register 31. Registers 0-15 are the IEEE
    set and are identical in every page (9.3), so only 16-31 consult this. */
@@ -4168,10 +4294,24 @@ static unsigned int e1000_read(unsigned long long off) {
     switch ((unsigned int)off) {
     case E1000_REG_STATUS: {
         unsigned int v = e1000_regs[E1000_REG_STATUS / 4];
-        int slu = (e1000_regs[E1000_REG_CTRL / 4] & E1000_CTRL_SLU) != 0;
+        unsigned int ctrl = e1000_regs[E1000_REG_CTRL / 4];
+        int slu = (ctrl & E1000_CTRL_SLU) != 0;
         int phy_ok = !e1000_phy_link ||
             (e1000_phy_regs[E1000_PHY_BMSR] & E1000_BMSR_ANEG_DONE) != 0;
-        if (!e1000_fault_no_link && slu && phy_ok) v |= E1000_STATUS_LU;
+        int lu = !e1000_fault_no_link && slu && phy_ok;
+        if (lu) v |= E1000_STATUS_LU;
+        if (e1000_asde) {
+            /* The PHY's own resolved speed. It has a speed to report only once
+               auto-negotiation has finished, which is the same condition the
+               link itself rides on. */
+            unsigned int phy_speed =
+                (e1000_phy_regs[E1000_PHY_BMSR] & E1000_BMSR_ANEG_DONE)
+                    ? E1000_SPEED_1000 : E1000_SPEED_10;
+            v &= ~((3u << E1000_STATUS_SPEED_SH) | (3u << E1000_STATUS_ASDV_SH));
+            v |= e1000_asd_value << E1000_STATUS_ASDV_SH;
+            v |= ((ctrl & E1000_CTRL_ASDE) ? e1000_asd_value : phy_speed)
+                     << E1000_STATUS_SPEED_SH;
+        }
         return v;
     }
     case E1000_REG_RAL:
@@ -4789,7 +4929,14 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
                     vga[off + 1] = uefi_attr;
                     uefi_cursor_col++;
                 }
+                /* Echo to stderr as well. ConOut used to land ONLY in the VGA
+                   text buffer, where scrolling discards a line for good, so a
+                   -headless UEFI payload was mute and its diagnostics were
+                   unreadable at exactly the point they were needed. */
+                if (ch == '\n') fputc('\n', stderr);
+                else if (ch != '\r') fputc((ch < 128) ? (int)ch : '?', stderr);
             }
+            fflush(stderr);
         }
         break;
     }
@@ -4963,6 +5110,13 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
            AMI Aptio V allocates top-down from conventional memory. */
         unsigned long long pages = r8;
         unsigned long long alloc_size = pages * 4096;
+        /* The value the guest had in *R9 BEFORE the call. For AllocateMaxAddress
+           that is the ceiling it is asking for, and reading it back here is the
+           only way to see whether a stub's ceiling store landed at the address
+           the call actually reads. Captured before any branch overwrites it. */
+        unsigned long long alloc_in = 0;
+        if (arg_vals[3].Reg64 > 0 && arg_vals[3].Reg64 + 8 <= guest_mem_size)
+            memcpy(&alloc_in, (unsigned char *)guest_mem + arg_vals[3].Reg64, 8);
         if (rcx == 2) {
             /* AllocateAddress: caller set *R9 to exact address.
                Permissive mode just succeeds. Strict mode honors the memory
@@ -5020,6 +5174,19 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             if (arg_vals[3].Reg64 > 0 && arg_vals[3].Reg64 + 8 <= guest_mem_size)
                 memcpy(&got, (unsigned char *)guest_mem + arg_vals[3].Reg64, 8);
             if (got) guest_commit_range(got, alloc_size);
+        }
+        /* CODEX_VM_ALLOC_TRACE=1: one line per AllocatePages. Lets a guest that
+           faults on a returned address be told apart from one that asked for the
+           wrong thing, which reasoning about the stub's byte encoding could not
+           settle. */
+        if (getenv("CODEX_VM_ALLOC_TRACE")) {
+            unsigned long long shown = 0;
+            if (arg_vals[3].Reg64 > 0 && arg_vals[3].Reg64 + 8 <= guest_mem_size)
+                memcpy(&shown, (unsigned char *)guest_mem + arg_vals[3].Reg64, 8);
+            fprintf(stderr, "UEFI-ALLOC: type=%llu pages=%llu in=0x%llx -> addr=0x%llx "
+                    "status=0x%llx alloc_hi=0x%llx\n",
+                    (unsigned long long)rcx, pages, alloc_in, shown,
+                    (unsigned long long)rax_result, uefi_alloc_hi);
         }
         break;
     }
@@ -5195,8 +5362,33 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         }
         break;
     }
+    case UEFI_TRAP_BLK_WRITEBLOCKS: {
+        /* WriteBlocks(This, MediaId, LBA, BufferSize, Buffer) -- same ABI as
+           ReadBlocks above. This fell through to the no-op below until
+           2026-08-09, so every guest write returned EFI_SUCCESS and left the
+           image byte-identical: a correct writer and a missing one produced the
+           same picture, and no bed could tell them apart. */
+        unsigned long long lba = r8;
+        unsigned long long buf_size = arg_vals[3].Reg64;
+        unsigned long long buf_addr = 0;
+        if (rsp + 40 + 8 <= guest_mem_size)
+            memcpy(&buf_addr, (unsigned char *)guest_mem + rsp + 40, 8);
+        unsigned long long disk_off = lba * 512;
+        if (!ide.data || disk_off + buf_size > ide.size) {
+            rax_result = EFI_DEVICE_ERROR_S;
+            break;
+        }
+        if (buf_addr > 0 && buf_addr + buf_size <= guest_mem_size) {
+            memcpy(ide.data + disk_off, (unsigned char *)guest_mem + buf_addr, (size_t)buf_size);
+            /* Media advertises WriteCaching = 0 (0xF0848), so a write is
+               through to the backing file and FlushBlocks has nothing left. */
+            ide_flush(&ide, (size_t)disk_off, (size_t)buf_size);
+        } else {
+            rax_result = EFI_INVALID_PARAM;
+        }
+        break;
+    }
     case UEFI_TRAP_BLK_RESET:
-    case UEFI_TRAP_BLK_WRITEBLOCKS:
     case UEFI_TRAP_BLK_FLUSH:
         break;
 
@@ -5619,6 +5811,10 @@ static void vga_start(void) {
 #define LOAD_ADDR       0x100000
 #define STACK_TOP       0x7FFE00
 #define PAGE_TABLE_ADDR 0xC00000
+/* Ceiling on the UEFI identity map, in GB. 64 PDs cost 264 KB of guest RAM
+   at PAGE_TABLE_ADDR and cover more than any bed needs; past it the map
+   prints that it is short rather than faulting the guest silently. */
+#define UEFI_MAP_MAX_GB 64
 #define MAX_MEM         (16ULL*1024*1024*1024)
 
 /* Memory-mapped I/O.
@@ -5834,6 +6030,30 @@ typedef struct {
 } PortFwd;
 static PortFwd portfwds[PORTFWD_MAX];
 static int portfwd_count = 0;
+
+/* Outbound destination-port remap, the opposite direction to -portfwd above.
+   A guest dials a port compiled into it -- every transpiler plug carries one
+   fixed port from build/plug-ports.ps1 -- and the NAT connects to the host on
+   exactly that port, so N copies of one plug cannot run at once: they all need
+   the same host listener. This table lets each VM be told "when the guest asks
+   for G, connect to H instead", so N workers each own a private host port
+   while running the same unmodified plug binary. TCP only; the UDP path is
+   deliberately not remapped because nothing needs it and untested code here
+   would be worse than the asymmetry. */
+#define NATMAP_MAX 16
+typedef struct {
+    unsigned short guest_dport;
+    unsigned short host_port;
+} NatMap;
+static NatMap natmaps[NATMAP_MAX];
+static int natmap_count = 0;
+
+static unsigned short natmap_host_port(unsigned short dport) {
+    for (int i = 0; i < natmap_count; i++) {
+        if (natmaps[i].guest_dport == dport) return natmaps[i].host_port;
+    }
+    return dport;
+}
 
 /* NAT connection table */
 #define NAT_MAX_CONN 64
@@ -6672,7 +6892,7 @@ static void nat_handle_tx(unsigned char *frame, int len) {
                a guest reaches a service on this machine at the address
                this NAT tells it the gateway is. */
             nat_host_addr(dst_ip, &addr);
-            addr.sin_port = htons(dport);
+            addr.sin_port = htons(natmap_host_port(dport));
             connect(c->sock, (struct sockaddr*)&addr, sizeof(addr));
 
             /* The SYN-ACK used to go out here, before the non-blocking
@@ -8651,21 +8871,44 @@ static void setup_gdt(void) {
 
 static void setup_page_tables(void) {
     unsigned char *pt = (unsigned char*)guest_mem + PAGE_TABLE_ADDR;
-    /* PML4 + PDPT + 4 PDs = 6 pages for a 4 GB identity map. Real UEFI
-       firmware identity-maps at least the low 4 GB, so a UEFI app can write
-       to any conventional page AllocatePages hands it (which is commonly
-       near the top of RAM) and to the GOP framebuffer (often ~3 GB). A 2 GB
-       map made codex-vm unfaithful: a correct Option A stub that builds its
-       own page tables in allocated high memory faulted writing them. */
-    memset(pt, 0, 6 * 4096);
+    /* PML4 + PDPT + one PD per GB of guest RAM, 2 MB huge pages throughout.
+       Real UEFI firmware identity-maps what it advertises, so this has to
+       track -mem rather than sit at a constant.
+
+       It was 2 GB once and that was unfaithful: a correct Option A stub that
+       built its own page tables in allocated high memory faulted writing
+       them. Raising it to a fixed 4 GB moved the threshold without removing
+       the class. Measured 2026-08-08: GET_MEMMAP above advertises
+       conventional RAM at 0x100000000 and up whenever -mem exceeds 4 GB, and
+       AllocateAnyPages hands out top-down from guest_mem_size - 1 MB, so at
+       -mem 8192 the emulator returned 0x1f7f00000 from its own allocator and
+       then triple-faulted the guest on the address it had just handed over.
+       Advertising memory you do not map is the defect; the allocator and the
+       memory map were both right.
+
+       Minimum 4 GB so the device windows and the GOP framebuffer stay mapped
+       when -mem is small. */
+    unsigned long long map_gb = (guest_mem_size + 0x3FFFFFFFULL) >> 30;
+    if (map_gb < 4) map_gb = 4;
+    if (map_gb > UEFI_MAP_MAX_GB) {
+        /* Loud rather than silent: this is the exact shape of the bug above,
+           so it must never be reintroduced quietly at a higher threshold. */
+        fprintf(stderr, "UEFI: identity map covers %d GB but guest RAM is %llu GB; "
+                        "memory at or above 0x%llx is ADVERTISED AND NOT MAPPED\n",
+                UEFI_MAP_MAX_GB, map_gb, (unsigned long long)UEFI_MAP_MAX_GB << 30);
+        map_gb = UEFI_MAP_MAX_GB;
+    }
+    int pd_count = (int)map_gb;
+    /* PML4 + PDPT + pd_count PDs, then one spare page for strict mode's 4 KB PT. */
+    memset(pt, 0, (size_t)(2 + pd_count + 1) * 4096);
     /* PML4[0] -> PDPT */
     *(unsigned long long*)(pt) = (PAGE_TABLE_ADDR + 4096) | 3;
-    /* PDPT[0..3] -> PD0..PD3 (one per GB) */
-    for (int g = 0; g < 4; g++)
+    /* PDPT[0..pd_count-1] -> PD0.. (one per GB) */
+    for (int g = 0; g < pd_count; g++)
         *(unsigned long long*)(pt + 4096 + g*8) = (PAGE_TABLE_ADDR + (2 + g) * 4096) | 3;
-    /* PD0..PD3: 4 * 512 x 2 MB huge pages = 4 GB identity */
-    for (int i = 0; i < 4 * 512; i++)
-        *(unsigned long long*)(pt + 8192 + i*8) = ((unsigned long long)i * 0x200000) | 0x83;
+    /* PDs: pd_count * 512 x 2 MB huge pages, identity */
+    for (int i = 0; i < pd_count * 512; i++)
+        *(unsigned long long*)(pt + 8192 + (size_t)i*8) = ((unsigned long long)i * 0x200000) | 0x83;
 
     if (uefi_strict) {
         /* Split the first 2 MB (PD0[0]) into 4 KB pages so firmware-owned low
@@ -8682,7 +8925,7 @@ static void setup_page_tables(void) {
            is not present. A correct kernel stub allocates its memory, calls
            ExitBootServices, and only then owns low memory (a future strict-mode
            refinement will flip these present on ExitBootServices). */
-        unsigned long long *pt0 = (unsigned long long*)(pt + 6*4096); /* 7th PT page, past PML4+PDPT+PD0..3 */
+        unsigned long long *pt0 = (unsigned long long*)(pt + (size_t)(2 + pd_count)*4096); /* the page past PML4+PDPT+PDs */
         for (int i = 0; i < 512; i++) {
             unsigned long long pa = (unsigned long long)i * 0x1000;
             int present = 0;
@@ -8691,7 +8934,7 @@ static void setup_page_tables(void) {
             pt0[i] = present ? (pa | 3) : 0;
         }
         /* PD0[0] now references the 4KB PT (PS bit clear) instead of a 2MB huge page. */
-        *(unsigned long long*)(pt + 8192 + 0) = (PAGE_TABLE_ADDR + 6*4096) | 3;
+        *(unsigned long long*)(pt + 8192 + 0) = (PAGE_TABLE_ADDR + (unsigned long long)(2 + pd_count)*4096) | 3;
     }
 }
 
@@ -8917,6 +9160,17 @@ static void load_kernel(const char *path) {
                     payload, LOAD_ADDR, (unsigned long long)guest_mem_size);
             exit(1);
         }
+        /* Fitting in guest RAM is not the same as being COMMITTED, and that
+           gap crashed the host. Only the first 32 MB is committed up front,
+           so a disk image past 31 MB (LOAD_ADDR + payload > 32 MB) ran this
+           memcpy off the end of the commit into reserved address space:
+           0xC0000005 on a write, before the guest executed an instruction and
+           before any GPT diagnostic could print, which made it read as a fault
+           in the directory walk below. Measured 2026-08-10: 32,505,856 bytes
+           (LOAD_ADDR + size = exactly 32 MB) boots, and one 64 KB step past it
+           faults. A disk image is the ordinary way to exceed this -- the ESPs
+           the drive installer formats are well above 16 MB. */
+        guest_commit_range(LOAD_ADDR, payload);
         memcpy((unsigned char*)guest_mem + LOAD_ADDR, buf + skip, payload);
     }
 
@@ -8998,7 +9252,16 @@ static void load_kernel(const char *path) {
                         unsigned int file_cluster = *(unsigned short*)(e + 26) | ((unsigned int)*(unsigned short*)(e + 20) << 16);
                         unsigned int file_size = *(unsigned int*)(e + 28);
                         unsigned long long file_off = data_off + (unsigned long long)(file_cluster - 2) * spc * bps;
-                        if (file_off + file_size <= sz && file_size > 64) {
+                        /* Two bounds, and they are different questions. The
+                           first says the file lies inside the image we read;
+                           the second says it fits in guest RAM. Only the first
+                           was checked, so a BOOTX64.EFI larger than guest RAM
+                           would have run the copy below off the end -- found by
+                           reek reading this path, and not the cause of the
+                           crash he was chasing, which is upstream at the raw
+                           copy. */
+                        if (file_off + file_size <= sz && file_size > 64 &&
+                            (unsigned long long)LOAD_ADDR + file_size <= guest_mem_size) {
                             fprintf(stderr, "GPT: extracted BOOTX64.EFI (%u bytes, %s) from partition at LBA %llu\n",
                                 file_size, is_fat32 ? "FAT32" : "FAT16", part_lba);
                             /* Replace buf with the extracted PE */
@@ -9007,6 +9270,7 @@ static void load_kernel(const char *path) {
                             free(buf);
                             buf = pe;
                             sz = file_size;
+                            guest_commit_range(LOAD_ADDR, sz);
                             memcpy((unsigned char*)guest_mem + LOAD_ADDR, buf, sz);
                         }
                         break;
@@ -12318,6 +12582,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-e1000-phy-link")) { e1000_present = 1; e1000_phy_link = 1; }
         else if (!strcmp(argv[i], "-e1000-mdio-window")) { e1000_present = 1; e1000_mdio_window = 1; }
         else if (!strcmp(argv[i], "-e1000-mdio-slow")) { e1000_present = 1; e1000_mdio_slow = 1; }
+        else if (!strcmp(argv[i], "-e1000-asde")) { e1000_present = 1; e1000_asde = 1; }
         else if (!strcmp(argv[i], "-keys-start") && i+1 < argc) inject_key_start_ms = atof(argv[++i]);
         else if (!strcmp(argv[i], "-keys-interval") && i+1 < argc) inject_key_interval_ms = atof(argv[++i]);
         else if (!strcmp(argv[i], "-board-mmio")) board_mmio = 1;
@@ -12329,6 +12594,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-usb-setcfg-fault") && i+1 < argc) usb_setcfg_fault = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-usb-setcfg-fault-once") && i+1 < argc) usb_setcfg_fault_once = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-usb-no-unit-attention")) usb_unit_attention = 0;
+        else if (!strcmp(argv[i], "-usb-bot-drop") && i+1 < argc) usb_bot_drop = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-usb-disk-port") && i+1 < argc) {
             usb_disk_port = atoi(argv[++i]);
             if (usb_disk_port < 1) usb_disk_port = 1;
@@ -12345,6 +12611,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-hid-keys")) hid_keys_only = 1;
         else if (!strcmp(argv[i], "-hid-combo")) hid_combo = 1;
         else if (!strcmp(argv[i], "-hid-nak-unchanged")) hid_nak_unchanged = 1;
+        else if (!strcmp(argv[i], "-hid-instant-complete")) hid_nak_unchanged = 0;
         else if (!strcmp(argv[i], "-xhci-calibrate-periodic")) xhci_calibrate_periodic = 1;
         else if (!strcmp(argv[i], "-xhci-psi")) xhci_psi = 1;
         else if (!strcmp(argv[i], "-xhci-bar") && i+1 < argc) xhci_bar_initial = (unsigned int)strtoul(argv[++i], NULL, 0);
@@ -12387,6 +12654,17 @@ int main(int argc, char **argv) {
                 portfwd_count++;
             } else {
                 fprintf(stderr, "Bad -portfwd spec: %s (expected [udp:]host:guest)\n", spec);
+            }
+        }
+        else if (!strcmp(argv[i], "-natmap") && i+1 < argc) {
+            char *spec = argv[++i];
+            int gp = 0, hp = 0;
+            if (sscanf(spec, "%d:%d", &gp, &hp) == 2 && natmap_count < NATMAP_MAX) {
+                natmaps[natmap_count].guest_dport = (unsigned short)gp;
+                natmaps[natmap_count].host_port   = (unsigned short)hp;
+                natmap_count++;
+            } else {
+                fprintf(stderr, "Bad -natmap spec: %s (expected guestdest:hostport)\n", spec);
             }
         }
     }
@@ -13424,13 +13702,22 @@ int main(int argc, char **argv) {
             }
         }
 
-        /* -hid-nak-unchanged: input arrived, so re-ring every HID interrupt
-           endpoint that was left NAKing; its pending TD can complete now.
-           Same thread as the MMIO doorbell path, so the ring walk cannot
-           race the guest's own doorbells. */
+        /* Input arrived, so re-ring every HID interrupt endpoint that was
+           left NAKing; its pending TD can complete now. Same thread as the
+           MMIO doorbell path, so the ring walk cannot race the guest's own
+           doorbells.
+
+           This is what makes delivery track the input instead of the
+           guest's poll cadence, and it only works because the NAK model
+           left a TD armed. Under -hid-instant-complete it is skipped, and
+           skipping it is not the reason that model drops narrow
+           keystrokes: measured 2026-08-06, running the re-ring
+           unconditionally fires it twice (make and break) and produces no
+           report, because that model already drained the ring at the
+           guest's last doorbell. There is nothing to deliver into. */
         if (hid_nak_unchanged && hid_input_changed) {
             hid_input_changed = 0;
-            if (hid_nak_dbg < 8) {
+            if (hid_nak_tracing() && hid_nak_dbg < 8) {
                 hid_nak_dbg++;
                 fprintf(stderr, "HIDNAK: input changed, re-ringing seen endpoints (ctl=%p)\n", (void *)hid_nak_ctl);
             }

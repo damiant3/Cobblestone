@@ -1,0 +1,66 @@
+[
+  {
+    "target": "chapter:Arm64 Runtime",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "Each entry now loads its own index into x9 and branches to the shared handler emitted after the runtime helpers. The branch cannot be built here because the handler's address is not known until everything between has been emitted, so slot 1 goes out as a NOP and `a64-emit-runtime` patches all sixteen once it knows. The remaining 30 slots stay `WFI + B .self`, so an entry reached with the handler unpatched parks exactly as before rather than falling into the next entry.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-rt-tag-equal",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "tag-equal reads the constructor tag word at [p+0] of both variant values and answers their equality without touching a field. `cset x0, eq` is spelled inline here rather than through `a64-csinc-eq`, which lives in a later chapter.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 Runtime",
+    "kind": "discovery",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "This used to allocate a fresh list and copy every element into it, returning the copy. That is a different language. Code that mutates a list for its effect and returns something else lost every write -- Ed25519's `fe-carry` is what exposed it, calling `fe-carry-pass` for the carry it hands back while the reduced limbs go into the list it passed in. Under copy semantics those limbs landed in copies that were discarded, so carry propagation vanished. It is invisible on small values and wrong on real ones, which is why `fe-mul` of one by one looked correct while `ge-double` of the base point did not.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-rt-list-set-at",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "The copy also cost what it should not: an allocation and an O(n) copy for every single element write, in loops that set sixteen limbs at a time.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 Runtime",
+    "kind": "discovery",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "This used to say the undefined instruction trapped to a vector entry and parked on its `WFI + B .self`. It cannot have. Renode enters at EL3 and `__start` set `VBAR_EL1` only, so no table was installed on that board at all and no entry was reachable to park on. The silence was real and opt-in was the right fix; the step in between was invented.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 Runtime",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "Then `WFI + B .self`, the same park as before -- the point is not to recover, it is to say what happened. Nothing here calls a runtime helper and nothing here touches the stack, because a handler that needs either one is a handler that faults again on the faults worth reading.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-rt-fault-mrs-el",
+    "kind": "discovery",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "That difference is not cosmetic. It is why the vector table was inert on Renode for its whole existence -- `__start` set VBAR_EL1 and nothing else, so at EL3 the table was never installed and a fault took the reset behaviour instead of an entry. Any diagnosis that assumed a fault reached an entry on Renode was reasoning about a table the hardware was ignoring.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-rt-write-vbar-current-el",
+    "kind": "invariant",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "Install the table at whatever level we are actually running at. x9 holds the table address on entry and must survive; x11 and x12 are scratch and are reloaded by the caller straight after.",
+    "thread": null
+  }
+]

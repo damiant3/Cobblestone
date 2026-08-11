@@ -1,22 +1,6 @@
 Chapter: CloudModel
   cites Water chapter OceanModel
 
- A runnable model of raymarched volumetric clouds. A ray goes in, a
- scattered colour and a transmittance come out. This is the simulation a
- cloud shader evaluates per pixel, written so it can be executed and
- checked rather than only rendered.
-
- It cites `OceanModel` for the Real math kernel and `V3`. That chapter was
- made a library with no entry point precisely so the next wave could do
- this, and the pieces reused are the general ones -- range-reduced sine,
- Newton sqrt, saturate, the vector algebra. Nothing about waves is used
- here; whole-program dead-code elimination drops it.
-
- One piece the ocean did not need had to be built: an **exponential**.
- Beer's law is an exponential and nothing else, and the foreword's
- near-zero approximations are useless for optical depths that run to tens.
- `c-exp` is range-reduced the same way `w-sin` is, for the same reason.
-
  The model has four parts:
 
    1. `c-exp`, and a lattice value noise with a fractal sum over it.
@@ -28,16 +12,6 @@ Chapter: CloudModel
       toward the sun at each step to find how much light arrives there.
 
 Section: Exponential
-
- exp(x) = 2^k * exp(r), choosing k so the remainder r lands in
- [-ln2/2, ln2/2]. Over that interval eight Taylor terms are exact to
- better than one part in a hundred million, which is far below anything a
- transmittance can carry.
-
- The clamp is not decoration. `w-trunc` converts through `real-to-int`,
- so an unbounded argument would convert a value no Integer can hold. It is
- also physically right: exp(-80) is 1.8e-35, and a transmittance that
- small is zero against any colour it will multiply.
 
   c-ln2 : Real
   c-ln2 = 0.693147180559945
@@ -78,9 +52,6 @@ Section: Exponential
 
 Section: Value Noise
 
- A lattice noise: hash the eight integer corners of the cell a point falls
- in, then interpolate with a quintic fade.
-
  The hash folds the lattice coordinate to 31 bits BEFORE the mixing
  multiply. That is not tidiness: the fold bounds the accumulator below
  2^31, so the multiply by 1103515245 reaches at most about 2.4e18 and
@@ -97,9 +68,6 @@ Section: Value Noise
  Masking off the sign bit is not the same function on a negative input,
  but nothing here needs it to be: the result only has to be deterministic
  and well spread, and the low 31 bits of the two's complement are both.
-
- The final scale is a multiply by the reciprocal for the same reason. A
- divide by a constant on this path is a divide per corner per octave.
 
   c-hash-mask : Integer
   c-hash-mask = 2147483647
@@ -151,10 +119,6 @@ Section: Value Noise
     in let y1 = c-mix x01 x11 v
     in c-mix y0 y1 w
 
- The fractal sum. Each octave doubles the frequency and halves the
- amplitude, and the total is divided by the amplitude sum so the result
- stays in [0,1] however many octaves are asked for.
-
   c-fbm-acc : V3, Integer, Real, Real, Real, Real -> Real
   c-fbm-acc (p) (octaves) (freq) (amp) (sum) (norm) =
     if octaves <= 0 then (if norm ~ 0.0 then 0.0 else sum / norm)
@@ -167,23 +131,10 @@ Section: Value Noise
 
 Section: The Density Field
 
- Where there is cloud, and how much.
-
- `c-remap` is the workhorse: it rescales a value from one interval to
- another and is how coverage and erosion are applied without a branch.
- Raising coverage lowers the floor of the remap, so more of the noise
- range survives into the cloud.
-
   c-remap : Real, Real, Real, Real, Real -> Real
   c-remap (x) (lo) (hi) (nlo) (nhi) =
     if hi - lo ~ 0.0 then nlo
     else nlo + (w-sat ((x - lo) / (hi - lo))) * (nhi - nlo)
-
- The height gradient is what makes a cloud read as a cloud rather than as
- noise in a box. Cumulus are dense and rounded underneath, where rising
- air is still saturated, and frayed on top where it has mixed with dry air
- above. So density ramps up quickly over the bottom fifth of the slab and
- falls away across the top third.
 
   c-height-gradient : Real -> Real
   c-height-gradient (h) =
@@ -192,12 +143,6 @@ Section: The Density Field
   c-slab-height : V3 -> Real
   c-slab-height (p) =
     w-sat ((p.y - cloud-base) / (cloud-top - cloud-base))
-
- The density at a point. The base shape is a low-octave fractal remapped
- by coverage and shaped by the gradient; the detail sum then erodes it
- from below, which is what carves the cauliflower edges. Erosion is
- weighted toward the top of the slab, because that is where the mixing
- that frays a cloud actually happens.
 
   c-density : V3 -> Real
   c-density (p) =
@@ -221,9 +166,6 @@ Section: Scattering
  boundary is DARKER than Beer predicts, and the contrast that produces is
  what gives a cloud its billowed, self-shadowed look.
 
- `2 * beer * powder` is the combined form; the factor of two restores the
- mid-range that the product would otherwise halve.
-
   c-beer : Real -> Real
   c-beer (d) = c-exp (0.0 - d)
 
@@ -238,9 +180,6 @@ Section: Scattering
  Water droplets are strongly forward-scattering, which is why a cloud
  between you and the sun has a bright rim.
 
- The 1.5 power is a square root of a cube rather than a general power,
- which the kernel does not have and does not need.
-
   c-hg : Real, Real -> Real
   c-hg (cos-theta) (g) =
     let g2 = g * g
@@ -249,16 +188,6 @@ Section: Scattering
     in (1.0 - g2) / (12.5663706143592 * d * w-sqrt d)
 
 Section: The March
-
- Two nested marches. The view ray steps through the slab accumulating
- scattered light and attenuating transmittance; at every step that holds
- density, a shorter march toward the sun measures how much sunlight
- reached that point.
-
- The light march is the expensive part and the reason a cloud shader is
- costly. It is also why it is deliberately short: six steps over a
- lengthening stride, which resolves the self-shadowing that matters and
- nothing finer.
 
   c-light-march : V3, V3, Integer, Real, Real, Real -> Real
   c-light-march (p) (sun) (steps) (t) (stride) (acc) =
@@ -272,20 +201,10 @@ Section: The March
     let depth = c-light-march p cloud-sun cloud-light-steps 0.0 cloud-light-stride 0.0
     in c-beer-powder (depth * cloud-extinction)
 
- The accumulator. `trans` is how much of the background still shows
- through; `r`,`g`,`b` are the scattered light gathered so far. They are
- kept as scalars rather than a `V3` on purpose: the march allocates one
- record per step either way, and this keeps that to one instead of
- several on a path that runs tens of times per pixel and has no garbage
- collector under it.
-
   March = record { r : Real, g : Real, b : Real, trans : Real }
 
   c-march-zero : March
   c-march-zero = March { r = 0.0, g = 0.0, b = 0.0, trans = 1.0 }
-
- One step. Below the density floor the step contributes nothing and only
- costs a density lookup, which is the usual case for most of a ray.
 
  The energy form is the standard one for a piecewise-constant medium:
  over a step of optical depth `dt` the medium absorbs `1 - exp(-dt)` of
@@ -304,9 +223,6 @@ Section: The March
  than the sun. It is the cheapest honest approximation of multiple scattering,
  and leaving it out is what makes a first cloud shader look like smoke.
 
- `c-exp` is evaluated once and used twice. It is the most expensive call in
- the model and this loop is its hottest caller.
-
   c-march-step : March, V3, Real, Real -> March
   c-march-step (acc) (p) (step) (phase) =
     let d = c-density p
@@ -324,20 +240,6 @@ Section: The March
       trans = acc.trans * step-trans
     }
 
- The view march. It stops early when the ray is effectively opaque, which
- is the single biggest saving in the whole model: a ray that has entered
- a dense cumulus has nothing left to learn from the far side of it.
-
- The sample sits at `t + step * jitter`, and the caller varies `jitter`
- per ray. With a fixed offset every ray in the frame samples the volume on
- the same set of planes, and where those planes cut a cloud they draw
- visible bands across it -- the single most recognisable artifact a
- raymarcher has, and one that no amount of extra steps removes, because
- more steps only makes the bands finer and keeps them coherent. Decorrelating
- the offset between neighbouring rays trades that structured error for
- unstructured noise, which the eye reads as texture instead of as a mistake.
- It is the same reasoning behind a dither pattern and it costs one hash.
-
   c-view-march : V3, V3, Integer, Real, Real, Real, Real, March -> March
   c-view-march (origin) (dir) (steps) (t) (step) (phase) (jitter) (acc) =
     if steps <= 0 then acc
@@ -345,10 +247,6 @@ Section: The March
     else let p = v-add origin (v-scale dir (t + step * jitter))
     in let acc2 = c-march-step acc p step phase
     in c-view-march origin dir (steps - 1) (t + step) step phase jitter acc2
-
- Where the ray enters and leaves the slab. A ray climbing or descending
- crosses both planes; one running level through the slab never leaves it,
- and one that misses entirely gets an empty interval.
 
   Span = record { t0 : Real, t1 : Real, hit : Boolean }
 
@@ -370,9 +268,6 @@ Section: The March
     in let t1 = if hi > cloud-max-dist then cloud-max-dist else hi
     in Span { t0 = t0, t1 = t1, hit = t1 > t0 }
 
- The whole model, for one ray. `jitter` is where in each step the sample is
- taken, in [0,1); see the note above `c-view-march`.
-
   c-trace-at : V3, V3, Real -> March
   c-trace-at (origin) (dir) (jitter) =
     let span = c-slab-span origin dir
@@ -382,31 +277,14 @@ Section: The March
     in let entry = v-add origin (v-scale dir span.t0)
     in c-view-march entry dir cloud-steps 0.0 step phase jitter c-march-zero
 
- The midpoint rule, for a single ray asked about on its own. A driver
- sampling a handful of directions wants the unbiased answer, not a
- decorrelated one.
-
   c-trace : V3, V3 -> March
   c-trace (origin) (dir) = c-trace-at origin dir 0.5
-
- A jitter for a screen position.
-
- The coordinates are scrambled before they reach the hash, and passing the
- raw `x` and `y` is not good enough. `c-hash3` begins by combining its three
- arguments LINEARLY, so neighbouring pixels enter the mixer a fixed distance
- apart and leave it correlated; the offsets then vary smoothly across the
- screen instead of independently, and the bands the jitter is meant to break
- up come back as a cross-hatch. Feeding it three quantities that each depend
- on both x and y, with unrelated multipliers, is what actually decorrelates
- neighbours.
 
   c-jitter-at : Integer, Integer -> Real
   c-jitter-at (x) (y) =
     c-hash3 (x * 131 + y * 7919) (y * 271 - x * 5449) (x + y * 37)
 
 Section: Scene Configuration
-
- The slab, in metres above the viewer.
 
   cloud-base : Real
   cloud-base = 1500.0
@@ -416,9 +294,6 @@ Section: Scene Configuration
 
   cloud-max-dist : Real
   cloud-max-dist = 30000.0
-
- Shape. The base frequency sets how large a single cumulus is; the detail
- frequency sets how fine its edges are.
 
   cloud-base-freq : Real
   cloud-base-freq = 0.0006
@@ -431,9 +306,6 @@ Section: Scene Configuration
 
   cloud-detail-octaves : Integer
   cloud-detail-octaves = 2
-
- Coverage is the single most expressive dial: 0.35 gives scattered fair
- weather cumulus, 0.7 an overcast deck.
 
   cloud-coverage : Real
   cloud-coverage = 0.50
@@ -456,15 +328,6 @@ Section: Scene Configuration
 
   cloud-extinction : Real
   cloud-extinction = 0.004
-
- The multiple-scattering floor. See the note above c-march-step.
-
- Its colour is NOT the sky colour, which was the first thing tried and is
- wrong in a way that shows: tinting the floor with deep sky blue makes even
- the sunlit face of a cloud come out blue-dominant, because the floor is a
- large fraction of the total. Light that has bounced several times inside a
- cloud has been scattered by water droplets, which are near-neutral, so what
- fills the shadows is mostly the cloud's own light and only a little sky.
 
   cloud-ambient : Real
   cloud-ambient = 0.40
@@ -498,13 +361,6 @@ Section: Scene Configuration
   cloud-light-stride : Real
   cloud-light-stride = 50.0
 
- Where the view march gives up. A ray that has lost 96% of its
- transmittance has nothing left to learn from the far side of the cloud it
- is inside, and the remaining steps are the most expensive ones in the
- frame because they are the ones that run the light march. Raising this
- from 0.01 to 0.04 is invisible in the image and removes a large slice of
- the work.
-
   cloud-trans-cutoff : Real
   cloud-trans-cutoff = 0.04
 
@@ -522,9 +378,3 @@ Section: Scene Configuration
 
 Section: Where the drivers went
 
- This chapter is a library and carries no entry point, for the same reason
- `OceanModel` carries none: a chapter with an `opening` cannot be cited by
- a program that has its own.
-
- `CloudSamples` marches a few rays and prints what came back.
- `CloudRender` draws the sky as an image.

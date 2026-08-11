@@ -189,8 +189,78 @@ binary.
 Both exist as chapters (`codex/foreword/ui/Editor.codex`,
 `codex/os/core/ShellCore.codex`). What is missing is their integration
 into the booted image as the default path: open a file, edit it, compile
-it, run it, without leaving the machine. See `docs/PM/CurrentPlan.md`
-gap 7.
+it, run it, without leaving the machine.
+
+## The Shell DSL generators (the `build/*.ps1` half of the migration)
+
+**The parse class is closed and gated.** `check-generated-scripts.ps1`
+compiles every generator, dead target or not, and hard-fails on PowerShell
+parse errors with NO baseline. Ten tractable generators are converted and
+matching. **Re-measure the counts, never copy them** (L-COUNT).
+
+**There is no next generator to pick up.** What remains is two decisions
+for Damian, both recorded in `docs/PM/CurrentPlan.md`: the four backlogged
+stubs (`test`, `cdx-to-pe`, `build`, `build-img`), and whether the
+unadopted `plug-build` / `plug-run` pair is adopted.
+
+Method, for whoever resumes it:
+
+- Read the drift with `check-generated-scripts.ps1 -Diff <name>`, judge
+  each shipped-only line as real behaviour or emitter convention, port
+  only the former, then INSTALL the emitted script and accept the style
+  change. **Do not bulk-regenerate; there is deliberately no `-Write`
+  flag.**
+- **A TEXT MATCH IS NOT VERIFICATION.** `compile-arm64` sat at 58 drift
+  lines that all read as convention while its generator emitted load
+  address 0x40000000 for 0x40100000, heap reserve 0x1000000 for
+  0x0F000000, align 0x10000 for 0x1000, and a CCE name decoded one byte
+  per character. **It exits 0 and writes a broken ELF.** The two-arm run
+  is what caught it: compile a real test through the plug pipeline before
+  and after installing and require the artifact to be byte-identical,
+  then run the PRE-fix emission as a control and require it to diverge
+  (L-FALSIF).
+- **A GENERATOR WITH NO `$AltTarget` ENTRY READS AS HAVING NO TARGET, AND
+  NOTHING REPORTS THAT.** `cvmm-build` emits `apps\cvmm\build.ps1` and
+  sat in that blind spot since it was written: counted among the "no live
+  target" set, never compared, drift unknown. **Before calling any
+  generator dead, READ IT and look for the script it describes** -- the
+  target name in `sh-script` is not the path.
+- **The emitter is usually not the wrong side.** `SeProperty` emits
+  `obj.prop` unparenthesised, which is right for `SeVar` and wrong for a
+  raw command; the fix went in the three generator sites, not in
+  `emit-ps-expr`, because parenthesising there would drift every matching
+  generator at once.
+- **CHECK `ShellTypes` BEFORE ADDING A NODE.** A prior plan asserted the
+  DSL had no `-ForegroundColor` node and needed a new one. Wrong:
+  `ScEchoStyled` and `ScEchoPartial` already existed and `emit-ps-color`
+  already maps the sixteen `ShellColor` constructors onto PowerShell's
+  console names. No node was added.
+- **A `let` binding's value must start on the SAME line.** A multi-line
+  list literal is fine for a top-level definition but `let name =`
+  followed by a newline raises CDX2000 at the column after the `=`. The
+  fix is a section-level definition rather than a `let`.
+- `codex/test/shell-build-keep` cites `ShellTypes` and `ShellBuild`, so it
+  is the test any Shell quire change touches. Compile and run it through
+  the harness.
+- `testrunBashScript` is the only `emit-bash` generator and is NOT one to
+  delete: until `test-run.sh` has a live target, "no unhandled nodes" is a
+  statement about PowerShell only. `PowerShellEmit` handles every
+  constructor `ShellTypes` declares; `BashEmit` and `KshEmit` are each
+  missing most of them. The count is recorded at the scan site in
+  `check-generated-scripts.ps1`; re-derive it, never copy it.
+- `build/vm-config.ps1` is generated and still matches: edit the generator
+  and regenerate. `compile-arm64.ps1` / `compile-riscv.ps1` are the
+  opposite -- generator abandoned, shipped script is the maintained side.
+  **Check `-Only <name>` before editing either half of any generated
+  script.**
+
+**The general trap, which is not limited to this lane: the `build/*.ps1`
+files are hand-maintained, and the drift runs the OTHER way from what
+"generated from" advertises.** Measured on `lintunusedcitesScript.codex`:
+the generator emits `[Parameter(Mandatory=$true)]` where the shipped
+script has none, so the shipped copy is the hand-FIXED one and the Codex
+is stale. Regenerating would hand back a script that prompts headless.
+Diff before regenerating one of these to fix a bug in it.
 
 ## Priority Order
 

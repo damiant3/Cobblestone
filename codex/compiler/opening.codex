@@ -1,11 +1,12 @@
 Chapter: Opening
+  grounds Device.Port, Device.Block
   cites Codex chapter Phase Allocator (phase-start, phase-measure, phase-compact, phase-compact-poison, PhaseStart, PhaseMetrics, deck-short-of)
   cites Foreword chapter Maybe
   cites Foreword chapter Fat16
   cites Foreword chapter ImportGate
   cites Foreword chapter FactDisk
 
-  cites Emit chapter Codex Emitter (codex-emit-text-chapter, codex-emit-type-defs, codex-emit-def)
+  cites Emit chapter Codex Emitter (codex-emit-text-chapter, codex-emit-type-defs, codex-emit-def, codex-emit-grounds-line)
   cites Emit chapter IR Text Emitter (emit-ir-chapter, emit-ir-chapter-prefix, ir-defs-wire-size, ir-print-defs, ir-trace-def-sizes, ir-trace-dce-cost, ir-prune-unreachable, ir-prune-unreachable-roots, ir-dropped-budgeted-punctuals)
   cites Emit chapter Emit Allocator (emit-build)
   cites Emit chapter X86-64 Code Generator (x86-64-emit-cdx, x86-64-emit-cdx-with-exit-mode, ir-chapter-with-proofs, keep-proof-defs, X86_64ExitMode, ExitRepl, Exit, X86_64WatchdogMode, WatchdogProgress, WatchdogPet, pmap-self-test, pmap-escape-count, pmap-escape-count-quiet, pmap-escape-list-quiet, pmap-escape-reached, utf8-to-cce, lir-target-x86)
@@ -57,11 +58,20 @@ Section: Compile Flags
    in if v < 1 then 0 else v
 
  deck-scale-anchor is the compiler's own concatenated unit, measured 2026-08-04
- (`build/concat-codex-self.ps1 -CodexDir codex/compiler`). It is the length that
- maps to a scale of 100, so the compiler compiling itself reserves exactly the
- shipping floors. Staleness is safe in both directions: as the compiler grows,
- its own derived scale exceeds 100 and clamps back to 100, and every smaller
- unit is handed slightly more room than the current anchor would give it.
+ (`build/concat-codex-self.ps1 -CodexDir codex/compiler`). This said it is the
+ length that maps to a scale of 100. It is not: deck-scale-margin doubles the
+ estimate, so a unit of exactly this length derives 200 and is clamped, and the
+ length that actually maps to 100 is HALF the anchor, 1,496,788. Everything
+ above that gets the same reservation, so the derivation stops tracking length
+ at half the anchor rather than at the anchor.
+
+ Staleness is not safe in both directions either, though this said it was. The
+ argument covered only the compiler growing. An anchor LARGER than the true
+ unit divides every estimate down and hands the linear band less room, and that
+ is the direction that happened: measured 2026-08-09 the unit is 2,746,259
+ bytes, 247,317 below the anchor. It costs nothing today because the linear
+ band holds 15 of 2814 measurable entry points and the other 2799 are at the
+ floor or the clamp, neither of which the anchor touches.
 
  deck-scale-margin is headroom over the linear estimate, and 2 is measured
  rather than chosen for roundness. Across 29 units above 150 KB the binding
@@ -73,20 +83,81 @@ Section: Compile Flags
  21x and 167x and is not monotonic, so a bare linear estimate is a line through
  points that do not lie on one.
 
- deck-scale-min is what 86 per cent of the corpus actually receives, because
- 1436 of 1674 compilable entry points derive below it, so it is the number this
- change mostly IS. It is set from the two worst-density units in the tree rather
- than from a small app, because density is where a length-derived scale fails:
- both are pathological on purpose and both are the tests that would break.
- Bisected 2026-08-04 against the SUT: `codex/test/errors/list-literal-too-large`
- refuses at 12 and compiles at 16, and `codex/test/shell-build-keep` refuses at
- 24 and compiles at 28 while its unit is only 26,164 bytes, so it needs 28 times
- what its length predicts. 32 clears the measured boundary and a full sweep of
- all 1674 entry points at this setting raises no CDX9002.
+ deck-scale-min is what 99 per cent of the corpus actually receives: measured
+ 2026-08-09 over every quire, 2798 of 2814 measurable entry points derive the
+ floor, 15 derive from the linear term and 1 derives the clamp. So the floor is
+ not a fallback, it IS the derivation, and the linear term between them governs
+ fifteen units.
+
+ It is set from density rather than from length, because density is where a
+ length-derived scale fails. It was set from the two worst-density units known
+ in 2026-08-04, and THOSE ARE NO LONGER THE BINDING CASE. Bisected 2026-08-09
+ against seed A66E54F57CBAEBFD, the 46 units of the Shell quire (`codex/build`,
+ 70 to 102 KB each) need 34 to 43, the worst being `vmconfigScript`, which
+ refuses at 42 and compiles at 43. `codex/test/shell-build-keep` needs 30. The
+ Shell quire is what the floor must now clear, and 43 against 64 is 1.49x.
+ Outside those 46 and the compiler, nothing in the tree is closer than 2.13x.
+
+ The floor was 32, and at 32 a short deck fails BOTH ways. Measured 2026-08-05
+ against seed 52E0A3A00218E19F, on `codex/build`, every unit of which derives
+ the floor exactly:
+
+ - **Silently.** `checkappsScript.codex` compiles clean at 32 and its output
+   carries the intermediate states of a string concatenation, each with its
+   length byte. At 33 and above it is byte-identical to the same unit at 150.
+   Deterministic across three compiles, with a byte-identical CDX. This is the
+   defect that was bisected to a seed change and read as a Text or rope fault.
+   The seed is not at fault; the knob is.
+ - **Loudly.** `BuildScript.codex`, `vmconfigScript.codex` and
+   `comparecodexsemanticScript.codex` all refuse at 32 with `CDX9002: Deck
+   overflow in CHECK` and compile at 64.
+
+ The claim that certified 32 was that a sweep of all 1674 entry points at this
+ setting raises no CDX9002. `BuildScript.codex` raises exactly that at 32, so
+ the sweep's corpus did not cover the units that fail -- the Shell quire is not
+ in the seed's reach and nothing gated compiles it. **A sweep cannot certify a
+ floor for a quire it does not enumerate, and CDX9002 cannot certify one at
+ all**, because the silent arm above raises nothing. Certify a floor by OUTPUT
+ EQUALITY over a corpus that names its scope.
+
+ 64 was double the value known to break when it was chosen. It is 1.49x it now,
+ because the Shell quire needs 43 and needed 33 four days earlier: measured
+ 2026-08-09, `checkappsScript` refuses at 34 and compiles at 36 where
+ 2026-08-05 recorded it byte-identical at 33. The compiler is not what moved.
+ The same unit's CHECK deck usage is byte-identical under seeds
+ AEB5ED2B5043C7C1, 065D92E60292492D and A66E54F57CBAEBFD, so the requirement is
+ growing with the units and the floor is a constant that does not follow them.
+ `build/deck-headroom.ps1` is the runner that re-measures this.
+
+ The ceiling on the cost is that `derive-deck-scale` clamps at 100 and 100 is
+ what every unit received before this derivation existed, so 64 cannot reserve
+ more than the arrangement it replaced.
+
+ The clamp is a ceiling on the CURE as well as on the cost, and one unit is
+ already past it. `codex/test/apps/foreword-all-compile` needs at least 131:
+ measured 2026-08-09 at decks=200 its LOWER deck uses 437,990,744 bytes, and
+ -Measure runs no IR pipeline so the shipping LOWER is larger again. It
+ compiles only because a `.flags` sidecar overrides the derivation with 200.
+ At the 100 it would derive, the CDX path refuses with CDX9002 naming LOWER,
+ which is the right answer, and the -Measure path faults in `bag-add` instead
+ of raising, which is C2's open item reproduced on a real unit.
+
+ **The mechanism this paragraph called unnamed is CHECK-KEEP, and `mc-sat` WAS
+ it.** `mcopy-sat` read `let z = __record-set mc "mc-sat" 1 in x` and `MemoCtx`
+ is not `mutable`, so the set built a record that was bound to `z` and
+ discarded; the caller's `mc.mc-sat` was 0 on every path ever taken. When the
+ keep frontier passes `mc-ceiling` the copy hands back the ORIGINAL pointer,
+ which is scratch the caller reclaims a moment later, and the flag that was
+ supposed to turn that into CDX9002 could not be set. A dangling `CodexType`
+ then reaches `lookup-expr-type`, an append over it classifies as neither text
+ nor list, and the program is miscompiled rather than refused. The flag is
+ deleted and the caller now compares the keep deck's measured end against
+ `mc-ceiling`, which is sound because the keep frontier is monotonic across
+ these copies.
 
   deck-scale-anchor : Integer = 2993576
   deck-scale-margin : Integer = 2
-  deck-scale-min : Integer = 32
+  deck-scale-min : Integer = 64
 
   derive-deck-scale : Integer -> Integer
   derive-deck-scale (unit-len) =
@@ -522,6 +593,14 @@ Section: Frontend
    in let sealed = compact-phase flags poison-scope
    in result
 
+ The CHECK deck is measured TWICE and the two are not redundant. `check-metrics`
+ is taken before the resolve tail because `memo-graph` sizes the memo table from
+ it, so moving it later makes that sizing depend on itself. `CHECK-RESOLVE` is
+ the same deck at its true end, after `resolved-env`, `sorted-all0` and
+ `sorted-et0`, which are the deck-recorded allocations `post-ov-bag` exists to
+ catch. Reading CHECK's requirement off the first number understates it by 7 to
+ 29 per cent, measured over four units 2026-08-09.
+
   compile-type-check : ScopeResult, Integer, CompileFlags -> CompileChecked
   compile-type-check (sr) (source-len) (flags) =
    let check-units = count-typecheck-units (sr.scoped.type-defs) 0 (list-length (sr.scoped.type-defs)) 0
@@ -550,6 +629,7 @@ Section: Frontend
       else let resolved-env = deck-record (for b in (check-result.env.bindings) -> deck-record (TypeBinding { name = b.name, bound-type = deep-resolve (check-result.state) (b.bound-type) }))
       in let sorted-all0 = deck-record (resolve-all-bindings (check-result.state) (sort-bindings (check-result.types & resolved-env)) 0 (list-length (check-result.types) + list-length resolved-env) (__list-with-capacity (list-length (check-result.types) + list-length resolved-env)))
       in let sorted-et0 = deck-record (resolve-all-expr-types (check-result.state) (sort-expr-types (check-result.state.expr-types)) 0 (list-length (check-result.state.expr-types)) (__list-with-capacity (list-length (check-result.state.expr-types))))
+      in let post-ov-bag = if __deck-pos > check-ceiling then deck-overflow-bag "CHECK" else no-overflow-bag
       in let memo-pop0 = list-length sorted-et0 * 32 + list-length sorted-all0 * 32 + 1024
       in let memo-graph = (check-metrics.deck-end - check-metrics.deck-origin) / 64
       in let memo-pop = if memo-graph > memo-pop0 then memo-graph else memo-pop0
@@ -580,9 +660,10 @@ Section: Frontend
        mc-cap-name = memo-pop / 2 + 16,
        mc-cap-row = memo-pop / 16 + 16,
        mc-cap-list = memo-pop / 4 + 16,
-       mc-ceiling = keep-base + keep-height - 4194304,
-       mc-sat = 0
+       mc-ceiling = keep-base + keep-height - 4194304
       }
+      in let check-resolve-metrics = phase-measure check-phase "CHECK-RESOLVE"
+      in let all-phase-metrics = deck-record (list-push check-phase-metrics check-resolve-metrics)
       in let keep-set = __deck-set keep-base
       in let keep-phase = phase-start
       in let sorted-all = deck-record (copy-bindings-deep sorted-all0 mc)
@@ -592,12 +673,12 @@ Section: Frontend
       in let kept-bag = deck-record (copy-sx-bag keep-base check-bag)
       in let kept-ust-bag = deck-record (copy-sx-bag keep-base (check-result.state.bag))
       in let kept-marks = deck-record (copy-list-with-headroom check-heap-marks 0)
-      in let kept-metrics = deck-record (for m in check-phase-metrics -> deck-record (PhaseMetrics { label = m.label, bivy-origin = m.bivy-origin, bivy-hwm = m.bivy-hwm, deck-origin = m.deck-origin, deck-end = m.deck-end }))
+      in let kept-metrics = deck-record (for m in all-phase-metrics -> deck-record (PhaseMetrics { label = m.label, bivy-origin = m.bivy-origin, bivy-hwm = m.bivy-hwm, deck-origin = m.deck-origin, deck-end = m.deck-end }))
       in let keep-metrics = phase-measure keep-phase "CHECK-KEEP"
       in let keep-ov = check-deck-overflow (keep-metrics.deck-end - keep-metrics.deck-origin) keep-height
-      in let keep-ov-bag = if keep-ov == 1 | mc.mc-sat == 1 then deck-overflow-bag "CHECK-KEEP" else no-overflow-bag
+      in let keep-ov-bag = if keep-ov == 1 | keep-metrics.deck-end >= mc.mc-ceiling then deck-overflow-bag "CHECK-KEEP" else no-overflow-bag
       in let keep-stat-bag = if flags.escape-check then deck-record (bag-from-list [make-warning cdx-escape-violation ("KEEP-STAT used=" & show (keep-metrics.deck-end - keep-metrics.deck-origin) & " ty=" & show (list-length (mc.mc-ty)) & " text=" & show (list-length (mc.mc-text)) & " name=" & show (list-length (mc.mc-name)) & " row=" & show (list-length (mc.mc-row)) & " tylists=" & show (list-length (mc.mc-tylist)) & "/" & show (sum-tylist-lens (mc.mc-tylist) 0 (list-length (mc.mc-tylist)) 0) & " fieldlists=" & show (list-length (mc.mc-fieldlist)) & "/" & show (sum-fieldlist-lens (mc.mc-fieldlist) 0 (list-length (mc.mc-fieldlist)) 0) & " ctorlists=" & show (list-length (mc.mc-ctorlist)) & "/" & show (sum-ctorlist-lens (mc.mc-ctorlist) 0 (list-length (mc.mc-ctorlist)) 0) & " labellists=" & show (list-length (mc.mc-labellist)) & "/" & show (sum-labellist-lens (mc.mc-labellist) 0 (list-length (mc.mc-labellist)) 0) & " subs=" & show (list-length kept-subs) & " et=" & show (list-length sorted-et) & " binds=" & show (list-length sorted-all)) synthetic-span]) else bag-from-list []
-      in let final-bag = deck-record (bag-merge-all [kept-bag, keep-ov-bag, keep-stat-bag])
+      in let final-bag = deck-record (bag-merge-all [kept-bag, keep-ov-bag, keep-stat-bag, post-ov-bag])
       in let pre-sorted-ust = deck-record (UnificationState {
        substitutions = kept-subs,
        row-substitutions = kept-rows,
@@ -691,12 +772,12 @@ Section: Frontend
    in let lower-metrics = phase-measure lower-phase "LOWER"
    in let lower-ov = check-deck-overflow (lower-end - lower-origin) lower-deck-height
    in let lower-precise-bag = deck-record (precise-escape-bag (flags.escape-check) (address-of ir) "IRChapter" lower-metrics "LOWER")
-   in let lower-sealed = compact-phase flags poison-lower
    in let blank-ir = IRChapter { name = ir.name, defs = [], effect-op-names = ir.effect-op-names, span = ir.span }
    in let pm1 = deck-record (list-push (checked.phase-metrics) lower-metrics)
    in let lower-ov-bag = if lower-ov == 1 | lower-sat == 1 then deck-overflow-bag "LOWER" else no-overflow-bag
    in let lower-esc-bag = escape-check-bag (flags.escape-check) lower-metrics "LOWER"
    in let fe-bag = deck-record (frontend-bag-with-passes (checked.bag) lower-ov-bag lower-esc-bag lower-precise-bag passed)
+   in let lower-sealed = compact-phase flags poison-lower
    in let result = deck-record (CompileFrontend {
     type-defs = checked.scoped.type-defs,
     text-meta = tm,
@@ -880,38 +961,44 @@ Section: Disk Foreword Loading
    dls-chunks : List Text
   }
 
-  disk-extract-cites : Text -> List CitesDecl
-  disk-extract-cites (source) =
-   let tok-result = tokenize source 1
-   in let doc = parse-document (make-parse-state (tok-result.tokens) source) 0
+  disk-extract-cites : Text, Integer -> List CitesDecl
+  disk-extract-cites (source) (ceiling) =
+   let tok-result = tokenize-into source 1 False ceiling
+   in let doc = parse-document (make-parse-state (tok-result.tokens) source) ceiling
    in filter-library-cites (doc.citations) 0 (list-length (doc.citations)) []
 
-  disk-load-cite : Fat16Volume, DiskLoadState, Text, Text -> DiskLoadState
-  disk-load-cite (vol) (st) (quire) (name) =
+  disk-load-cite : Fat16Volume, DiskLoadState, Text, Text, Integer -> DiskLoadState
+  disk-load-cite (vol) (st) (quire) (name) (ceiling) =
    let key = quire & ":" & name
    in if text-set-has (st.dls-seen) key then st
    else let seen2 = text-set-insert (st.dls-seen) key
    in let path = quire-to-dir quire & name & ".codex"
    in when fat16-read-text vol path
      is Just (content) ->
-       let deps = disk-extract-cites content
-       in let st2 = disk-load-cites-list vol (DiskLoadState { dls-seen = seen2, dls-chunks = st.dls-chunks }) deps 0 (list-length deps)
+       let deps = disk-extract-cites content ceiling
+       in let st2 = disk-load-cites-list vol (DiskLoadState { dls-seen = seen2, dls-chunks = st.dls-chunks }) deps 0 (list-length deps) ceiling
        in let renamed = text-replace content ("Chapter: " & name) ("Chapter: " & quire & "--" & name)
        in DiskLoadState { dls-seen = st2.dls-seen, dls-chunks = list-push (st2.dls-chunks) (renamed & "\n\n") }
      is None -> DiskLoadState { dls-seen = seen2, dls-chunks = st.dls-chunks }
 
-  disk-load-cites-list : Fat16Volume, DiskLoadState, List CitesDecl, Integer, Integer -> DiskLoadState
-  disk-load-cites-list (vol) (st) (cite-list) (i) (len) =
+  disk-load-cites-list : Fat16Volume, DiskLoadState, List CitesDecl, Integer, Integer, Integer -> DiskLoadState
+  disk-load-cites-list (vol) (st) (cite-list) (i) (len) (ceiling) =
    if i >= len then st
    else let c = list-at cite-list i
-   in let st2 = disk-load-cite vol st (token-text (c.quire)) (c.chapter-name)
-   in disk-load-cites-list vol st2 cite-list (i + 1) len
+   in let st2 = disk-load-cite vol st (token-text (c.quire)) (c.chapter-name) ceiling
+   in disk-load-cites-list vol st2 cite-list (i + 1) len ceiling
 
-  disk-resolve-forewords : Fat16Volume, Text -> Text
-  disk-resolve-forewords (vol) (source) =
-   let cite-list = disk-extract-cites source
-   in let st = disk-load-cites-list vol (DiskLoadState { dls-seen = [], dls-chunks = [] }) cite-list 0 (list-length cite-list)
-   in text-concat-list (st.dls-chunks)
+  disk-resolve-forewords : Fat16Volume, Text, Text -> Text
+  disk-resolve-forewords (vol) (source) (mode) =
+   let scan-scale = effective-deck-scale mode (text-length source)
+   in let scan-height = scaled-floor scan-scale demand-disk-scan-floor demand-disk-scan-guard-band
+   in let scan-base = build scan-height
+   in let ceiling = scan-base + scan-height
+   in let cite-list = disk-extract-cites source ceiling
+   in let st = disk-load-cites-list vol (DiskLoadState { dls-seen = [], dls-chunks = [] }) cite-list 0 (list-length cite-list) ceiling
+   in let joined = deck-record (text-concat-list (st.dls-chunks))
+   in let compacted = phase-compact
+   in joined
 
 Section: Quoted Works
 
@@ -1343,7 +1430,8 @@ Section: Streaming Emission
    in let len = list-length ir-defs
    in if len == 0
       then let header = if fe.text-meta.chapter-title == "" then ""
-           else "Chapter: " & fe.text-meta.chapter-title & "\n\n"
+           else "Chapter: " & fe.text-meta.chapter-title & "\n"
+             & codex-emit-grounds-line (fe.text-meta.ground-effects) & "\n"
              & if fe.text-meta.prose == "" then "" else " " & fe.text-meta.prose & "\n\n"
       in let type-defs-text = codex-emit-type-defs (fe.type-defs) 0
       in act
@@ -1352,7 +1440,8 @@ Section: Streaming Emission
       end
    else let h-emit = __heap-save
    in let header = if fe.text-meta.chapter-title == "" then ""
-      else "Chapter: " & fe.text-meta.chapter-title & "\n\n"
+      else "Chapter: " & fe.text-meta.chapter-title & "\n"
+        & codex-emit-grounds-line (fe.text-meta.ground-effects) & "\n"
         & if fe.text-meta.prose == "" then "" else " " & fe.text-meta.prose & "\n\n"
    in let type-defs-text = codex-emit-type-defs (fe.type-defs) 0
    in let first-text = codex-emit-def (list-at ir-defs 0) (fe.text-meta.ctor-names) (fe.renames)
@@ -1365,12 +1454,13 @@ Section: Streaming Emission
 
 Section: Entry Point
 
-  emit-cdx : Text, Text, CompileFlags -> [Console, FileSystem] Nothing
-  emit-cdx (source) (mode) (flags) =
+  emit-cdx : Text, Text, CompileFlags, Boolean -> [Console, FileSystem, Device.Block] Nothing
+  emit-cdx (source) (mode) (flags) (force-disk) =
    let exit-mode = if has-mode-flag mode "repl" then ExitRepl
     else if has-mode-flag mode "uefi" then ExitUefi
     else Exit
    in let want-map = has-mode-flag mode "map"
+   in let want-disk = if force-disk then True else has-mode-flag mode "diskout"
    in let poison = has-mode-flag mode "poison"
    in let debug = has-mode-flag mode "debug"
    in let prof = has-mode-flag mode "profile"
@@ -1393,8 +1483,8 @@ Section: Entry Point
       else print-line-uni ""
       print-codegen-error-header (bag-errors (result.bag))
       print-bag-notices (result.bag)
-      if want-map then emit-binary-tail-with-map result
-      else emit-binary-tail result
+      if want-map then emit-binary-tail-with-map result want-disk
+      else emit-binary-tail result want-disk
      end
     end
    end
@@ -1403,24 +1493,62 @@ Section: Entry Point
   emit-binary-size (result) =
    list-length (result.header-bytes) + result.content-len + list-length (result.tail-bytes)
 
-  emit-binary-tail : EmitChapterResult -> [Console, FileSystem] Nothing
-  emit-binary-tail (result) =
+  emit-binary-tail : EmitChapterResult, Boolean -> [Console, FileSystem, Device.Block] Nothing
+  emit-binary-tail (result) (to-disk) =
    if bag-has-errors (result.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no binary emitted"
    else act
     print-line-uni ("SIZE:" & integer-to-text (emit-binary-size result))
-    write-binary (result.header-bytes)
-    write-binary-buf (result.content-buf) 0 (result.content-len)
-    write-binary (result.tail-bytes)
+    if to-disk then emit-binary-to-disk result
+    else act
+     write-binary (result.header-bytes)
+     write-binary-buf (result.content-buf) 0 (result.content-len)
+     write-binary (result.tail-bytes)
+    end
    end
 
-  emit-binary-tail-with-map : EmitChapterResult -> [Console, FileSystem] Nothing
-  emit-binary-tail-with-map (result) =
+ write-binary and write-binary-buf reach a board through neither of their two
+ arms: the fast one probes for codex-vm on port 0x511 and the fallback writes
+ COM1 a byte at a time, and a UEFI machine with no UART answers neither. So a
+ metal compile puts the CDX on the boot volume instead, and the verdict beside
+ it, because print-line-uni is that same serial line.
+
+ DISK mode takes this arm unconditionally, and emit-from-disk says so with an
+ argument rather than emit-cdx re-deriving it from the mode line. Measured
+ 2026-08-09 with a probe at the head of emit-cdx: on that path `mode` is not a
+ damaged string but not a string at all, arriving as twelve bytes of unrelated
+ memory, so every has-mode-flag answers False and `parse-mode-cmd mode` does
+ not equal "DISK" either. Deriving the sink from a value in that state is what
+ made an earlier attempt dead code.
+
+ The segments go down uncopied. The content is already a buffer, and routing it
+ through a List would cost eight bytes of arena per byte of file.
+
+  emit-binary-to-disk : EmitChapterResult -> [Console, Device.Block] Nothing
+  emit-binary-to-disk (result) = act
+   ok <- fat16-write-segments "OUT.CDX" (result.header-bytes) (result.content-buf) (result.content-len) (result.tail-bytes)
+   emit-disk-verdict ok (emit-binary-size result)
+  end
+
+  emit-disk-verdict : Boolean, Integer -> [Console, Device.Block] Nothing
+  emit-disk-verdict (ok) (size) = act
+   let line = if ok then "OK OUT.CDX " & integer-to-text size else "FAILED"
+   in act
+    v <- fat16-write-file "OUT.TXT" line
+    print-line-uni ("DISK-OUT: " & line)
+   end
+  end
+
+  emit-binary-tail-with-map : EmitChapterResult, Boolean -> [Console, FileSystem, Device.Block] Nothing
+  emit-binary-tail-with-map (result) (to-disk) =
    if bag-has-errors (result.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no binary emitted"
    else act
     print-line-uni ("SIZE:" & integer-to-text (emit-binary-size result))
-    write-binary (result.header-bytes)
-    write-binary-buf (result.content-buf) 0 (result.content-len)
-    write-binary (result.tail-bytes)
+    if to-disk then emit-binary-to-disk result
+    else act
+     write-binary (result.header-bytes)
+     write-binary-buf (result.content-buf) 0 (result.content-len)
+     write-binary (result.tail-bytes)
+    end
     emit-symbol-map (result.symbol-map) 0 (list-length (result.symbol-map))
    end
 
@@ -1590,17 +1718,17 @@ Section: Entry Point
     is Just (path) ->
       when fat16-read-text vol path
         is Just (source) ->
-          let foreword-prefix = disk-resolve-forewords vol source
+          let foreword-prefix = disk-resolve-forewords vol source mode
           in let full = foreword-prefix & source
           in let flags = parse-mode-flags mode (text-length full)
-          in emit-cdx full mode flags
+          in emit-cdx full mode flags True
         is None -> print-line-uni ("DISK: file not found: " & path)
     is None -> print-line-uni "DISK: no path on stdin"
   end
 
   compile-plain : Text, Text, Text, CompileFlags -> [Console, FileSystem] Nothing
   compile-plain (source) (cmd) (mode) (flags) =
-   if cmd == "CDX" then emit-cdx source mode flags
+   if cmd == "CDX" then emit-cdx source mode flags (has-mode-flag mode "diskout")
    else if cmd == "IR-UNI" then emit-ir-uni source flags
    else if cmd == "IR-CCE" then emit-ir-cce source flags
    else if cmd == "MEASURE" then emit-measure source flags

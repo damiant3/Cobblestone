@@ -4,20 +4,6 @@ Chapter: TlsFetchLoopbackTest
   cites Encode chapter X509Chain
   cites Foreword chapter Maybe
 
- An AUTHENTICATED TLS 1.3 handshake over a reliable stream, end to end,
- with no network -- and then application data carried both ways under the
- application traffic keys. This is what an https fetch needs: a client that
- speaks real TLS to a server it can authenticate, so an https fetch is no
- longer a refusal.
-
- The server presents the same real Ed25519 leaf certificate the DTLS
- loopback uses (minted outside Codex; signatures by our RFC-8032-gated
- Ed25519). The client carries the CA as its trust anchor and REQUIRES
- authentication. The negative at the end proves it: a man in the middle who
- substitutes the ServerHello key share makes the client derive different
- handshake keys, so it cannot even decrypt the server's encrypted flight,
- and it never completes.
-
 Section: Fixtures
 
   ca-cert : List Integer =
@@ -133,14 +119,8 @@ Section: Setup
 
 Section: The Handshake
 
- Flight 1: the client's ClientHello, in the clear.
-
   st1 : TlsEpStep = tls-ep-hello c0
   ch : List Integer = list-at (st1.tes-out) 0
-
- The server answers with ServerHello in the clear and then
- EncryptedExtensions, Certificate, CertificateVerify and Finished, each
- encrypted under the server handshake key.
 
   sv1 : TlsEpStep = tls-ep-recv s0 ch
   sh : List Integer = list-at (sv1.tes-out) 0
@@ -148,11 +128,6 @@ Section: The Handshake
   cert : List Integer = list-at (sv1.tes-out) 2
   cv : List Integer = list-at (sv1.tes-out) 3
   fin : List Integer = list-at (sv1.tes-out) 4
-
- The client consumes the flight in order: ServerHello (key agreement),
- then the encrypted EncryptedExtensions, Certificate (chain walk to the
- anchor), CertificateVerify (signature over its own transcript), and the
- server Finished, at which point it emits its own encrypted Finished.
 
   c1 : TlsEpStep = tls-ep-recv (st1.tes-ep) sh
   c2 : TlsEpStep = tls-ep-recv (c1.tes-ep) ee
@@ -165,11 +140,6 @@ Section: The Handshake
 
 Section: Application Data
 
- GET goes up under the client application key; the server decrypts it. A
- reply goes back down under the server application key; the client decrypts
- that. This is the byte an https fetch would carry, and until this point in
- the tree no connection could carry it.
-
   cs1 : TlsEpStep = tls-ep-send-app (c5.tes-ep) [71, 69, 84]
   creq : List Integer = list-at (cs1.tes-out) 0
   sv3 : TlsEpStep = tls-ep-recv (sv2.tes-ep) creq
@@ -180,10 +150,6 @@ Section: Application Data
 
 Section: The Man In The Middle
 
- Flip a byte inside the ServerHello key share. The client derives a
- different shared secret, so its handshake keys do not match the server's,
- the encrypted flight will not decrypt, and it never completes.
-
   sh-bad : List Integer = flip-late sh
 
   m1 : TlsEpStep = tls-ep-recv (st1.tes-ep) sh-bad
@@ -193,17 +159,6 @@ Section: The Man In The Middle
   m5 : TlsEpStep = tls-ep-recv (m4.tes-ep) fin
 
 Section: The Right Certificate, The Wrong Host
-
- The negative that makes the positive mean something. This is the SAME
- server, the SAME genuine certificate and the SAME trust anchor -- the
- only thing that changes is who the client says it dialled. A client that
- expected `evil.codex.test` is handed a valid, unexpired, correctly signed
- certificate for `device.codex.test`, and it must NOT authenticate.
-
- Before 2026-07-26 it did. The chain walked to the anchor, nothing
- compared the leaf against the name, and `authenticated` came back True
- for a certificate belonging to somebody else. Every loopback in the tree
- passed throughout, because they all agree on a name none of them checked.
 
   w0 : TlsEp = tls-ep-client-new c-priv c-random anchors cal-now wrong-name
   w1 : TlsEpStep = tls-ep-hello w0

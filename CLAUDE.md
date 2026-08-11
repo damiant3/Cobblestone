@@ -46,7 +46,8 @@ before any work started; measured, one session arrived at 59 per cent
 spent after one unit of work. Init now keeps in direct context only
 what changes behavior at session start (~17k: memory, the lesson index
 `docs/PM/Active/Stories/LESSONS.md`, three haiku-agent summaries of
-CurrentPlan + workplans + active designs, Perforce state). Everything
+CurrentPlan + Perforce process + active designs, Perforce state).
+Everything
 else moved to an ON-DEMAND CONTRACT: the skill's Step 5 table maps
 each subject to the doc that is mandatory reading BEFORE touching that
 subject (`.codex` source -> DevelopersGuide; allocators ->
@@ -61,10 +62,36 @@ are read changed.
 
 ## Document Lifecycle
 
-There is no platform-wide register of open work. `docs/PM/BACKLOG.md`
-was deleted 2026-07-23. **Do not recreate it.** Application-domain
-registers (`apps/<app>/<app>-backlog.md`,
-`codex/<quire>/<quire>-backlog.md`) are unaffected.
+`docs/PM/BACKLOG.md` was deleted 2026-07-23. **Do not recreate it.**
+Application-domain registers (`apps/<app>/<app>-backlog.md`,
+`codex/<quire>/<quire>-backlog.md`) are unaffected, and an item that
+originates in ONE app or quire belongs in that register rather than in
+the plan.
+
+**The workplans were emptied and the findings-outbox channel was retired
+2026-08-08 at Damian's direction.** `docs/Agents/<agent>-workplan.md`
+still exists and **is scratch for the current session's lane state only**:
+what is shelved, what is mid-gate, what the next action is. It is emptied
+at handoff, not appended to. **Open work does not go in it** -- cross-lane
+items go to `docs/PM/CurrentPlan.md`, which is the fleet's only cross-lane
+register, and an item originating in one app or quire goes to that
+register.
+
+**Do not start a findings outbox anywhere.** A finding worth another
+lane's attention goes into the doc that owns the subject the moment it is
+verified: the reference docs (`OperatorsManual`, `ExaminersAssay`,
+`DevelopersGuide`, `HardwareSitting`), the design that owns the
+capability, `LESSONS.md` for a lesson, or the relevant backlog for a gap.
+
+That is the fix for two failures the old arrangement kept producing. A
+durable fact parked in a status file is read once at init and then
+reasoned about from memory instead of re-read. And an outbox entry was
+"deleted by the addressee" from the AUTHOR's file in the author's stream,
+which is a cross-workspace write on somebody else's document, so it
+almost never happened: a true, unfixed finding about a switch that does
+not exist sat in one outbox for a day and reached nobody. An entry
+addressed "for the fleet" had no addressee at all and could never be
+cleared by anyone.
 
 `docs/PM/CurrentPlan.md` is the shape and the priority order.
 `docs/Designs/Active/` means **live work only**. `docs/Designs/Done/` is
@@ -98,7 +125,7 @@ The canonical artifact is `seed/Codex.cdx` -- a ~2.1 MB
 self-sustaining CDX binary, bootable via codex-vm (or QEMU multiboot).
 The CDX is the root of trust.
 
-`tools/codex-vm.exe` is a ~6000-line C program (WHP hypervisor) that
+`tools/codex-vm.exe` is a ~12,800-line C program (WHP hypervisor) that
 emulates: PCI bus (3 devices), xHCI USB 3.x (mass storage + HID
 keyboard + UVC camera), Intel HDA audio with host waveOut, Bochs VBE
 display, NE2K NIC with NAT + port forwarding, IDE disk (read/write
@@ -200,8 +227,9 @@ builds every time.
 ### 4. One thing at a time
 
 Do one thing. Test it. Commit it. Then do the next thing. Do not batch.
-Do not "while I'm here." The compiler is ~57,466 lines of Codex across
-63 files (measured 2026-07-31; this line said 55,900 on 07-25). A wrong
+Do not "while I'm here." The compiler is ~53,652 lines of Codex across
+63 files (measured 2026-08-09; this line said 57,466 on 07-31 and 55,900
+on 07-25, so it is now falling rather than rising). A wrong
 change in one place surfaces as a silent corruption three pipeline stages
 later.
 
@@ -456,8 +484,14 @@ it is for artifacts whose value is measured on a reader who lacks your context.
 ## Agent Identity
 
 Working directory: `D:\Projects\NewRepository-XXX`. Use pwd to find the
-actual XXX value. You are **XXX** -- the last 3 characters of your working
-directory name.
+actual XXX value. You are **XXX** -- **everything to the RIGHT of the
+first `-` in your working directory's folder name.** Split on the
+separator; do not take a fixed number of characters.
+
+This said "the last 3 characters" until 2026-08-05 and that is wrong for
+half the fleet: it gives fester "ter" and reek "eek". blu found it while
+deriving an agent name in `applyannotationsScript.codex` and caught it
+by running the rule over all five workspace names before shipping.
 
 ### Perforce `.p4config`
 

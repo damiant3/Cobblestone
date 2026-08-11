@@ -20,12 +20,6 @@ Chapter: BrotliDict
  every table against it in seconds, with no VM and no network. Run it after any
  regeneration.
 
- The archaeology was RIGHT, which is worth recording rather than glossing: the
- corpus, the 121 transforms and both context lookup tables matched their published
- check values first time. That makes the extraction an independent derivation
- agreeing with the standard, which is better evidence than either alone. The lesson
- is not that the method failed, it is that a free document would have been cheaper.
-
  THE CORPUS IS CARRIED AS BASE64 TEXT, AND THAT IS A SIZE DECISION WORTH KNOWING
  ABOUT. A list literal is emitted as code that builds the list one element at a
  time: measured, these bytes as four list literals cost 4.3 MB of binary, 35
@@ -33,14 +27,6 @@ Chapter: BrotliDict
  segment and lands in the serial ring buffer. A text literal is static data in
  the data buffer at a byte per character, so the same corpus costs about 164 KB.
  Decoding it back is 122784 pushes, paid once per stream.
-
- It arrives in four pieces only to keep any one literal a comfortable size, not
- because anything about the format is chunked. Each piece is a whole number of
- base64 groups, so no chunk boundary needs padding.
-
- To brdict-load gives the whole corpus as one list.
- To brdict-count gives how many words have a given length.
- To brdict-offset gives where that length's words start.
 
  We say:
 
@@ -70,8 +56,6 @@ Section: Shape
     else if len > brdict-max-len then 0
     else list-at brdict-offsets (len - brdict-min-len)
 
- The byte offset of one word, by its length and its index within that length.
-
   brdict-word-at : Integer, Integer -> Integer
   brdict-word-at (len) (idx) = brdict-offset len + idx * len
 
@@ -84,11 +68,6 @@ Section: Corpus
  char-code-at alone cost EIGHTY BYTES. Reading the whole corpus through
  to-unicode cost 172 MB a load, and the round-trip test ran the heap into the
  stack and double-faulted.
-
- So the alphabet is indexed by its CCE code point directly. The table is built
- once per load by asking the alphabet itself what its code points are, rather
- than by writing them down: they are 3 to 81 in an order that is CCE's business
- and not this chapter's, and a table nobody typed cannot be typed wrong.
 
   brdict-b64-alpha : Text = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
@@ -105,9 +84,6 @@ Section: Corpus
   brdict-b64-table : Integer -> List Integer
   brdict-b64-table (ignored) = brdict-b64-fill 0 (brdict-zeros 128 [])
 
- Four characters carry three bytes. Every chunk is a whole number of groups, so
- there is no partial group and no padding to handle.
-
   brdict-b64 : List Integer, Text, Integer, Integer, List Integer -> List Integer
   brdict-b64 (tb) (s) (i) (n) (acc) =
     if i >= n then acc
@@ -119,10 +95,6 @@ Section: Corpus
     in let b1 = bit-and (bit-or (bit-shl b 4) (bit-shru c 2)) 255
     in let b2 = bit-and (bit-or (bit-shl c 6) d) 255
     in brdict-b64 tb s (i + 4) n (list-push (list-push (list-push acc b0) b1) b2)
-
- Built once per stream and threaded from there. Every reference to a constant
- rebuilds what it names, so a caller that loads this per position instead of per
- stream pays for the whole corpus each time.
 
   brdict-chunk : List Integer, Text, List Integer -> List Integer
   brdict-chunk (tb) (t) (acc) = brdict-b64 tb t 0 (text-length t) acc
@@ -199,9 +171,6 @@ Section: Transforms
  fatal where it is touched inside a search loop: the transform matcher reads
  these tables 121 times per candidate word, per chain slot, per input byte, and
  the first version of it ran the heap into the stack and double-faulted.
-
- So they are loaded ONCE into a record and threaded from there. Every constant
- below is mentioned exactly once in this chapter, here.
 
   BrXf = record {
     bxf-type : List Integer,

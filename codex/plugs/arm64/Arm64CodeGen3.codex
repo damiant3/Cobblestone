@@ -36,7 +36,7 @@ Section: Records and Sum Types
     else let st1b = a64-emit-li st1a a64-x9 total-size
     in a64-emit st1b (arm64-add a64-heap-reg a64-heap-reg a64-x9)
    in let st3 = st2
-   in let field-types = a64-extract-field-types ty
+   in let field-types = a64-extract-field-types st3 ty
    in let st4 = a64-emit-record-fields-flat st3 fields (ptr-loc.reg) 0 field-types
    in a64-load-local st4 (ptr-loc.reg)
 
@@ -48,11 +48,9 @@ Section: Records and Sum Types
    in let new-best = if slot > best then slot else best
    in a64-max-embedded-slot fields (i + 1) new-best
 
-  a64-extract-field-types : CodexType -> List CodexType
-  a64-extract-field-types (ty) =
-   when ty
-    is RecordTy (rn) (tvars) (fields) -> a64-collect-field-types fields 0
-    is otherwise -> []
+  a64-extract-field-types : A64State, CodexType -> List CodexType
+  a64-extract-field-types (st) (ty) =
+   a64-collect-field-types (a64-resolve-record-fields st ty) 0
 
   a64-collect-field-types : List RecordField, Integer -> List CodexType
   a64-collect-field-types (fields) (i) =
@@ -156,10 +154,7 @@ Section: Records and Sum Types
 
   a64-field-type-for-store : A64State, CodexType, Text -> CodexType
   a64-field-type-for-store (st) (rec-ty) (field-name) =
-   when rec-ty
-    is RecordTy (rn) (tvars) (fields) ->
-     a64-find-field-type-in-list fields field-name 0
-    is otherwise -> int-ty-default
+   a64-find-field-type-in-list (a64-resolve-record-fields st rec-ty) field-name 0
 
   a64-find-field-type-in-list : List RecordField, Text, Integer -> CodexType
   a64-find-field-type-in-list (fields) (name) (i) =
@@ -646,13 +641,6 @@ Section: Match
    guard-reg : Integer
   }
 
- A literal pattern's value arrives as its source spelling. `True` and
- `False` are the Boolean scrutinee's 1 and 0; `parse-int-text` reads
- neither and answers 0 for both, so every `is True` and `is False`
- compared against 0 and the arms inverted. Characters were reduced to
- digits by the desugarer and pass through unchanged. This mirrors the
- compiler's `pat-lit-to-integer`.
-
   a64-pat-lit-to-integer : Text -> Integer
   a64-pat-lit-to-integer (t) =
    if t == "True" then 1
@@ -881,24 +869,6 @@ Section: Match
    in let pr = a64-load-local (vr.state) ptr-local
    in let st1 = a64-emit (pr.state) (arm64-str (vr.reg) (pr.reg) (8 + i * 8))
    in a64-store-ctor-captures st1 args cap-locals ptr-local (i + 1)
-
- A literal sub-pattern inside a constructor pattern used to be DROPPED: this
- walk bound IrVarPat and let everything else fall out of its otherwise arm, so
- the constructor tag was the only thing tested and `is BInt (0)` matched any
- BInt. Whichever arm's CONSTRUCTOR matched first won, which collapses a
- multi-way dispatch onto one arm. Measured on ARM64 2026-07-21 with
- codex/test/literal-subpattern: by-int answered 10 for every input, by-text 20,
- by-flag 30, by-pair 40. The x86-64 emitter carried the identical defect until
- 2026-07-20, where it made apps/cvmm's Calculator treat every operator as plus.
-
- Each literal now emits its own test and its own branch, and every index this
- returns has to be patched by the caller -- a single patch slot was the other
- half of the original bug, because a second failing test had nowhere to go.
-
- A Text literal cannot be a cmp. The scrutinee holds a POINTER and
- a64-pat-lit-to-integer answers a number for the spelling, so `is "sin"`
- matched nothing at any nesting depth. Text goes through __str_eq, the helper
- IrEq already uses for the same comparison.
 
   a64-emit-pat-lit-test : A64State, Integer, Text, CodexType -> A64VecCheckResult
   a64-emit-pat-lit-test (st) (val-reg) (spelling) (ty) =
@@ -1189,16 +1159,6 @@ Section: Tail Call Optimization
  only the first eight and a ninth would arrive as a free name and emit
  the very `bl` framelessness cannot survive.
 
- `opening` is declined by name for the reason the LIR try declines it:
- the framed path is not an ordinary emitter for the entry point, it
- appends the print-result epilogue (`integer-to-text` then
- `print-line-uni`), and the frameless path has no such special case. The
- old gate excluded `opening` only incidentally -- it is never
- self-recursive, so `a64-should-tco` was False -- and the widening to
- plain leaves would otherwise admit `opening : Integer = 0` frameless and
- emit a correct function that prints nothing. `list-append-perf-N8-L7`
- caught exactly that.
-
   a64-can-be-frameless : IRDef -> Boolean
   a64-can-be-frameless (def) =
    if def.name == "opening" then False
@@ -1213,32 +1173,6 @@ Section: Tail Call Optimization
    else if a64-should-tco def
         then a64-body-has-non-tail-call body (def.name) == False
         else a64-frameless-body-ok def
-
- The second analysis is a POSITIVE whitelist, and it is positive on
- purpose: the reverted attempt used a blocklist of call shapes and was
- defeated by every shape it forgot to list. A frameless leaf writes no
- frame, so its body may emit no `bl` (a `bl` overwrites x30 with no save
- and the `ret` re-enters the body forever) and may touch no local past
- the six-register frameless file. Rather than enumerate the emitting
- shapes -- a bare nullary name (`f (x) = x + some-constant`), a list
- literal (`aes-sbox`, `cpt-key`), a record, a match, an act, and whatever
- the emitter grows next, each an `a64-emit-call-to` -- this walk names
- the shapes that are SAFE and frames everything else. A body is safe iff
- it is a bound name, a literal, a negate of a safe body, a non-appending
- binary over safe operands, a let whose value and body are safe, an if
- whose parts are safe, or an application of an `a64-is-inline-here`
- builtin to safe arguments. Any other node -- any call to a non-inline
- name, any allocating literal -- is unsafe, so the default arm frames.
- Coverage given up on purpose: a leaf that reads a bare nullary constant
- or builds a small record stays framed. The win is the thousands of pure
- arithmetic and bitwise leaves, which this admits and the old TCO-only
- gate did not. `codex/test/frameless-leaf-probe` pins the shapes.
-
- The whitelist was arrived at by shipping a blocklist first and watching
- it regress `chacha20poly1305`, `aesgcm256` and `cce-tier1` -- all green
- on the base, all broken by a frameless table constant the blocklist did
- not name. A blocklist for this is a list of every way a body can emit a
- call, which is not a closed set; a whitelist of the ways it cannot is.
 
   a64-name-in : List Text, Text, Integer -> Boolean
   a64-name-in (bound) (n) (i) =
@@ -1288,20 +1222,6 @@ Section: Tail Call Optimization
     is IrLambda (lp) (lb) (lt) (ls) -> lb
     is otherwise -> def.body
    in a64-frameless-safe body (a64-param-name-list all-params 0 [])
-
- The frameless analysis treats every `a64-is-known-inline` name as
- call-free, but that list is BROADER than the set `a64-is-inline-here`
- actually inlines: `abs`, `negate`, `min` and `max` are analysed as
- inline yet, when a definition in the module shadows one, the dispatch
- emits a REAL `bl` to it (user-wins, deliberately kept for these -- a
- shadowed `abs` answers the user's body on x86-64 and must here too).
- A `bl` in a frameless function clobbers x30 with no save, and the
- `ret` returns into the loop body forever. So a body that calls a
- shadowed member of that residue takes the framed path, where the `bl`
- is what a frame is for. The bit ops and mods are NOT in the residue:
- `a64-is-inline-here` inlines them regardless of registration, so the
- emission agrees with the analysis there and frameless coverage is
- unchanged for them.
 
   a64-shadowed-inline-name : A64State, Text -> Boolean
   a64-shadowed-inline-name (st) (name) =
@@ -1407,19 +1327,6 @@ Section: Tail Call Optimization
     is IrBoolLit (v) (s) -> False
     is IrCharLit (v) (s) -> False
     is otherwise -> True
-
- Writing a parameter destroys the value any later argument still reads out
- of it, so the two writes have an order and only one of them may be wrong.
- If argument 0 reads parameter 1, parameter 0 must be written first; if
- argument 1 reads parameter 0, parameter 1 must be written first. Both at
- once is a cycle and no order saves it, so that alone falls back to the
- general path, which saves every argument before copying any.
-
- p-shift (n) (a) = p-shift (n - 1) (a + a - n) is the shape that exposed
- this: it answered -2 where -33 is correct, because a + a - n was
- evaluated against the already-decremented n. The guard tested only the
- safe direction, so the hazard it existed to catch was the one it let
- through. RiscVCodeGen3's rv-emit-tail-call-direct is the same rule.
 
   a64-can-direct-tco : A64State, List IRExpr, List Integer -> Boolean
   a64-can-direct-tco (st) (args) (param-locals) =
@@ -1727,16 +1634,6 @@ Section: Effect Handler Emission
    let st1 = a64-emit-li st 9 addr
    in a64-emit st1 (arm64-str val-reg 9 0)
 
- A handle saves each operation's current handler for the duration of its body
- and puts it back afterwards. That saving used to PUSH on the stack, and a
- spill slot is addressed off SP (a64-store-local: [SP, slot*8 + 96]), so a body
- that spilled resolved every slot 16 bytes per clause away from where the same
- slot resolves outside the handle. Two handles in sequence then aliased:
- measured, a two-clause handle wrote its result to SP+128 after popping and the
- next handle wrote SP+160 while SP was still 32 low -- the same byte -- so the
- earlier result came back holding the later one. The saved handlers live in
- ordinary frame locals now and SP does not move inside a frame.
-
   A64HandlerSlots = record {
    hs-state : A64State,
    hs-slots : List Integer
@@ -1955,23 +1852,6 @@ Section: Effect Handler Emission
    in let immhi = bit-and (bit-shru offset 2) #7FFFF
    in let w = bit-or (bit-or (bit-or #10000000 rd) (bit-shl immlo 29)) (bit-shl immhi 5)
    in [bit-and w 255, bit-and (bit-shru w 8) 255, bit-and (bit-shru w 16) 255, bit-and (bit-shru w 24) 255]
-
- Name resolution: first match among the DEFINITIONS, with a leading
- runtime registration skipped when a definition exists. The fourth
- parameter is the runtime/definition boundary -- the count of names the
- runtime registered before the first definition was emitted, stamped
- into `extra.runtime-funcs` by `a64-emit-module` -- and the rule is
- exactly two cases. A name whose first occurrence is at or past the
- boundary is a definition, and the FIRST definition wins, which is what
- the tree has always done and what `dtls-hello`'s expectations encode
- for its colliding hello builders. A name whose first occurrence is
- below the boundary is a runtime helper; if a definition of the same
- name exists above the boundary, the definition wins -- that is
- shadowing (`codex/test/shadow-builtin-fold`: `text-length (s) = 99`
- must beat the runtime's `text-length`) -- and otherwise the helper is
- the only thing there is. Plain last-match was tried first and bound
- `dtls-hello`'s duplicate definitions to the wrong body; measured both
- ways 2026-07-23. A caller passing 0 gets plain first-match.
 
   a64-find-name-index : List Text, Text, Integer -> Integer
   a64-find-name-index (names) (target) (i) =

@@ -633,9 +633,6 @@ Section: Atomic Emission
 
 Section: Global Memory Access
 
- device-load base index: load 8 bytes from base + index * 8.
- device-store base index value: store 8 bytes at base + index * 8.
-
   ptx-emit-device-load : PtxCtx, Text, List IRExpr, Integer -> PtxResult
   ptx-emit-device-load (ctx) (ty) (args) (depth) =
    let a0 = ptx-emit-expr-at ctx (list-at args 0) (depth + 1)
@@ -837,7 +834,8 @@ Section: Apply Emission
    let chain = collect-apply-chain e []
    in when (chain.root)
     is IrName (n) (ty) (sp) ->
-     if ptx-is-gpu-intrinsic n then ptx-emit-gpu-intrinsic ctx n
+     if n == "__narrow" then ptx-emit-expr-at ctx (list-at (chain.args) 0) (depth + 1)
+     else if ptx-is-gpu-intrinsic n then ptx-emit-gpu-intrinsic ctx n
      else if ptx-is-gpu-intrinsic-with-args n then ptx-emit-gpu-intrinsic-call ctx n (chain.args) depth
      else if ptx-is-math-intrinsic n then ptx-emit-math-intrinsic ctx n (chain.args) depth
      else if n == (ctx.self-name) then ptx-emit-tco-jump ctx n (chain.args) depth
@@ -1157,12 +1155,6 @@ Section: Chapter Emission
    in let rest = ptx-filter-entries defs (i + 1)
    in if ptx-is-kernel-entry (d.name) then [d] & rest
    else rest
-
- base-slot offsets each definition's register numbering block past the
- blocks of previously emitted definitions. It was previously conflated
- with the loop index: the entry pass started its INDEX at the function
- count, silently dropping every gpu- kernel entry whenever any plain
- function preceded it.
 
   ptx-emit-defs : PtxCtx, List IRDef, Integer, Integer -> Text
   ptx-emit-defs (ctx) (defs) (i) (base-slot) =

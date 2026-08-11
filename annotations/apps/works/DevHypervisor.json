@@ -1,0 +1,82 @@
+[
+  {
+    "target": "chapter:DevHypervisor",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Bare-metal VMX hypervisor. Creates a guest VM using Intel VT-x and runs a Codex CDX binary inside it. VM exits for I/O ports are dispatched to Codex device model functions. This replaces QEMU -- Codex is its own hypervisor.",
+    "thread": null
+  },
+  {
+    "target": "chapter:DevHypervisor",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "So the gate belongs here too, and it answers zero rather than faulting. A revision id of zero is never valid, and the two callers that matter both refuse before they would use it.",
+    "thread": null
+  },
+  {
+    "target": "function:vmx-read-revision-id",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The general shape, since this is the third function in this chapter to need it: reading a VMX MSR is itself a VMX operation. Everything in this file that touches one has to ask whether the processor is in a state where that is legal, and none of them did.",
+    "thread": null
+  },
+  {
+    "target": "chapter:DevHypervisor",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The VMX capability MSRs (IA32_VMX_PINBASED_CTLS and its neighbours) are the same class as IA32_VMX_BASIC above: they exist only on a processor with VMX enabled and are a #GP anywhere else. Without the gate this faults at the same instruction, which is what `vmx-launch-test` and `vmx-serial-test` did.",
+    "thread": null
+  },
+  {
+    "target": "function:vmx-adjust-control",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "With no capability MSR to consult there is nothing to adjust, so the desired control word comes back untouched. That value is never used -- both lifecycle entries refuse first -- and returning it rather than zero keeps this a pure clamp rather than a second, quieter failure signal.",
+    "thread": null
+  },
+  {
+    "target": "section:Is VMX Available At All",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "**`vmx-enable` used to return `VmxOk` unconditionally**, discarding the result of `vmxon`, and `VmxFailed` was declared and never constructed anywhere in the tree. On a machine without VT-x that is not a wrong answer so much as no answer: the caller is told the processor entered VMX operation, proceeds to `vmwrite`, and dies. `codex/test/apps/vmx-init-test` asserted `vmx-enable:ok` against it, which is a test that could not fail, behind a skip that claimed it needed real hardware.",
+    "thread": null
+  },
+  {
+    "target": "chapter:DevHypervisor",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "`vmxon` cannot be asked. The runtime helper is `F3 0F C7 37` followed by `ret` and never reads RFLAGS, so its return value is whatever RAX happened to hold; the instruction reports through CF and ZF and nothing carries them back. So availability is established BEFORE the instruction rather than inferred after it.",
+    "thread": null
+  },
+  {
+    "target": "chapter:DevHypervisor",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "IA32_FEATURE_CONTROL is the authority, and it is the same one every hypervisor uses. Bit 0 is the lock: the firmware sets it once and the MSR is read-only afterwards. Bit 2 enables VMX outside SMX. VMXON raises #GP unless the lock is set AND that enable bit is set, so both must be true and nothing else needs asking.",
+    "thread": null
+  },
+  {
+    "target": "function:vmx-unavailable-reason",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A sentence a human can act on. \"VMX unavailable\" tells an operator nothing; \"enable VT-x in the firmware\" tells them where to go.",
+    "thread": null
+  },
+  {
+    "target": "function:vmx-create-vmcs",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The VMCS operations are meaningless outside VMX operation -- `vmclear` and `vmptrld` raise #UD when the processor never entered it -- so this refuses for the same reason and by the same test rather than running them and returning OK regardless.",
+    "thread": null
+  }
+]

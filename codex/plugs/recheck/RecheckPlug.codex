@@ -9,26 +9,30 @@ Chapter: RecheckPlug
   cites Recheck chapter RecheckBounds
   cites Recheck chapter RecheckEffects
 
- Plug entry. Connects to the host TCP server on port 9100, receives IR
- text, re-checks it, sends a report back.
-
- The report always carries all three counts. A run whose UNSUPPORTED
- count is unstated is a failed run: a checker that says nothing about
- what it did not examine converts an unknown into an assurance.
-
 Section: Helpers
 
-  bytes-to-text-chunk : List Integer, Integer, Integer, Text -> Text
+  bytes-to-text-chunk : List Integer, Integer, Integer, List Text -> List Text
   bytes-to-text-chunk (bs) (i) (stop) (acc) =
    if i >= stop then acc
-   else bytes-to-text-chunk bs (i + 1) stop (acc & char-to-text (code-to-char (list-at bs i)))
+   else bytes-to-text-chunk bs (i + 1) stop (list-push acc (char-to-text (code-to-char (list-at bs i))))
 
-  bytes-to-text : List Integer, Integer, Integer, Text -> Text
-  bytes-to-text (bs) (off) (total) (acc) =
+ The `acc & chunk` accumulator this replaces was O(n^2): it allocated the
+ sum of every prefix length, about n^2/512 bytes, which is 2,486 MB at a
+ 1,128,053 byte payload and 3,057 MB at 1,251,034 against a guest heap
+ ceiling of 3040 MB. That was the ~1.13 MB payload cliff, and it was
+ reached before the parse began. The same accumulator is recorded in
+ CSharpPlug as having hung that plug on the 9.7 MB compiler IR.
+
+  bytes-to-text-chunks : List Integer, Integer, Integer, List Text -> List Text
+  bytes-to-text-chunks (bs) (off) (total) (acc) =
    if off >= total then acc
    else let stop = if off + 256 > total then total else off + 256
-   in let chunk = bytes-to-text-chunk bs off stop ""
-   in bytes-to-text bs stop total (acc & chunk)
+   in let chunk = text-concat-list (bytes-to-text-chunk bs off stop [])
+   in bytes-to-text-chunks bs stop total (list-push acc chunk)
+
+  bytes-to-text : List Integer, Integer, Integer -> Text
+  bytes-to-text (bs) (off) (total) =
+   text-concat-list (bytes-to-text-chunks bs off total [])
 
   local-mac : List Integer = [82, 84, 0, 18, 52, 86]
   local-ip : List Integer = [10, 0, 2, 15]
@@ -87,7 +91,7 @@ Section: Report
    in let head = "RECHECK stage=" & stage & "\n"
    in let body = rc-render-findings fs 0 (list-length fs) ""
    in let fuel = if w.rw-fuel <= 0 then "FUEL-EXHAUSTED yes stage=" & stage & "\n" else ""
-   in let sum = "STAGE " & stage & " DEFS " & show (list-length (ch.defs)) & " AGREE " & show (t.rt-agree) & " DISAGREE " & show (t.rt-disagree) & " UNSUPPORTED " & show (t.rt-unsupported) & "\n"
+   in let sum = "STAGE " & stage & " DEFS " & show (list-length (ch.defs)) & " AGREE " & show (t.rt-agree) & " DISAGREE " & show (t.rt-disagree) & " UNSUPPORTED " & show (t.rt-unsupported) & " IMPROVED " & show (w.rw-improved) & " SINGLE-WITNESS " & show (w.rw-1w) & "\n"
    in head & body & fuel & sum
 
   rc-render : IRChapter, RcWalk, RcWalk, RcWalk -> Text
@@ -100,13 +104,13 @@ Section: Body
   rc-all-ctors (p) = ((p.meta).ctor-names) & (p.effect-op-names)
 
   opening : [Console, FileSystem, Network.Read, Network.Write] Nothing =
-   let sess = net-session-new local-mac local-ip gateway-ip 49152 9100 host-ip 1000
+   let sess = net-session-new local-mac local-ip gateway-ip 49152 9134 host-ip 1000
    in let ts = transport-new sess
    in act
     ts1 <- net-io-connect ts
     recv <- net-io-recv-loop ts1 0
     if recv.has-message then
-     let ir-text = bytes-to-text (recv.body) 0 (list-length (recv.body)) ""
+     let ir-text = bytes-to-text (recv.body) 0 (list-length (recv.body))
      in let parsed = parse-ir-chapter ir-text
      in let w = rc-check-chapter (parsed.chapter) (rc-all-ctors parsed) (parsed.type-defs) 40000000
      in let wb = rc-bnd-chapter (parsed.chapter) 40000000

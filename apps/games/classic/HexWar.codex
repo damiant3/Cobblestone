@@ -1,12 +1,6 @@
 Chapter: HexWar
   cites Games chapter Rng
 
- Hex-and-counter wargame engine in the Avalon Hill tradition.
- Covers Panzerblitz, Squad Leader, Stalingrad, Afrika Korps, and any
- similar game. Everything is data-driven: terrain costs, unit stats,
- and the CRT are all lookup tables. A new scenario is a new config
- record, not new code.
-
  Axial hex coordinates. Terrain encoded as integers 0-9. Unit types
  encoded as integers 0-9. Combat results encoded as integers 0-4:
  0=AE (attacker eliminated), 1=AR (attacker retreat), 2=EX (exchange),
@@ -334,28 +328,92 @@ Section: Supply System
     if owner == 0 then q == 0
     else q == map-width - 1
 
-  trace-supply-loop : HexCoord, List Unit, Integer, Integer, Integer, Integer -> Boolean
-  trace-supply-loop (h) (units) (owner) (width) (height) (fuel) =
-    if fuel <= 0 then False
-    else if is-supply-source h.q h.r owner width height then True
-    else let blocked = in-enemy-zoc h units owner
-    in if blocked then False
-    else trace-supply-neighbor h units owner width height fuel 0
+ Supply is one flood per side per turn rather than a trace per unit. The
+ trace this replaces searched outward from each unit six ways to a depth of
+ eight and kept no record of where it had been, so a unit with no path
+ explored on the order of a million hexes, each of them rescanning the whole
+ roster for zones of control. Flooding inward from the map edge instead
+ visits each hex once and answers for every unit at the same time.
 
-  trace-supply-neighbor : HexCoord, List Unit, Integer, Integer, Integer, Integer, Integer -> Boolean
-  trace-supply-neighbor (h) (units) (owner) (width) (height) (fuel) (dir) =
+ A hex on the owner's supply edge is supplied whatever sits next to it.
+ Any other hex is supplied when it is free of enemy zones of control and
+ touches a supplied hex, which is the same path the old trace walked, taken
+ in the other direction.
+
+  zoc-map : List Unit, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  zoc-map (units) (owner) (width) (height) (i) (acc) =
+    if i >= width * height then acc
+    else let h = hex-from-index i width
+    in let v = if in-enemy-zoc h units owner then 1 else 0
+    in zoc-map units owner width height (i + 1) (list-push acc v)
+
+  supply-seed : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  supply-seed (owner) (width) (height) (i) (acc) =
+    if i >= width * height then acc
+    else let h = hex-from-index i width
+    in let v = if is-supply-source h.q h.r owner width height then 1 else 0
+    in supply-seed owner width height (i + 1) (list-push acc v)
+
+  supply-count : List Integer, Integer, Integer -> Integer
+  supply-count (sup) (i) (acc) =
+    if i >= list-length sup then acc
+    else supply-count sup (i + 1) (acc + list-at sup i)
+
+  supply-touches : List Integer, HexCoord, Integer, Integer, Integer -> Boolean
+  supply-touches (sup) (h) (width) (height) (dir) =
     if dir >= 6 then False
-    else let nq = hex-neighbor-q dir h.q
-    in let nr = hex-neighbor-r dir h.r
-    in let nh = HexCoord { q = nq, r = nr }
-    in if hex-valid nh width height == False then trace-supply-neighbor h units owner width height fuel (dir + 1)
-    else if trace-supply-loop nh units owner width height (fuel - 1) then True
-    else trace-supply-neighbor h units owner width height fuel (dir + 1)
+    else let nh = HexCoord { q = hex-neighbor-q dir h.q, r = hex-neighbor-r dir h.r }
+    in if hex-valid nh width height == False then supply-touches sup h width height (dir + 1)
+    else if list-at sup (hex-index nh width) /= 0 then True
+    else supply-touches sup h width height (dir + 1)
 
-  unit-in-supply : Unit, List Unit, Integer, Integer -> Boolean
-  unit-in-supply (u) (units) (width) (height) =
-    let h = HexCoord { q = u.q, r = u.r }
-    in trace-supply-loop h units u.owner width height 8
+  supply-step : List Integer, List Integer, Integer, Integer, Integer -> List Integer
+  supply-step (sup) (zoc) (width) (height) (i) =
+    if i >= width * height then sup
+    else if list-at sup i /= 0 then supply-step sup zoc width height (i + 1)
+    else if list-at zoc i /= 0 then supply-step sup zoc width height (i + 1)
+    else if supply-touches sup (hex-from-index i width) width height 0 then
+      supply-step (list-set-at sup i 1) zoc width height (i + 1)
+    else supply-step sup zoc width height (i + 1)
+
+  supply-relax : List Integer, List Integer, Integer, Integer, Integer -> List Integer
+  supply-relax (sup) (zoc) (width) (height) (fuel) =
+    if fuel <= 0 then sup
+    else let before = supply-count sup 0 0
+    in let sup2 = supply-step sup zoc width height 0
+    in if supply-count sup2 0 0 == before then sup2
+    else supply-relax sup2 zoc width height (fuel - 1)
+
+  supply-map : List Unit, Integer, Integer, Integer -> List Integer
+  supply-map (units) (owner) (width) (height) =
+    let zoc = zoc-map units owner width height 0 []
+    in let seed = supply-seed owner width height 0 []
+    in supply-relax seed zoc width height (width + height)
+
+  unit-in-supply : Unit, List Integer, Integer -> Boolean
+  unit-in-supply (u) (sup) (width) =
+    list-at sup (u.r * width + u.q) /= 0
+
+Section: Attrition
+
+ A unit that starts its owner's turn cut off loses a point of strength, and
+ a unit at zero strength is gone. That is what being out of supply costs.
+
+  apply-supply-attrition : List Unit, Integer, Integer, Integer -> List Unit
+  apply-supply-attrition (units) (owner) (width) (height) =
+    let sup = supply-map units owner width height
+    in attrition-loop units sup owner width 0
+
+  attrition-loop : List Unit, List Integer, Integer, Integer, Integer -> List Unit
+  attrition-loop (units) (sup) (owner) (width) (i) =
+    if i >= list-length units then units
+    else let u = list-at units i
+    in if u.owner /= owner then attrition-loop units sup owner width (i + 1)
+    else if u.eliminated then attrition-loop units sup owner width (i + 1)
+    else if unit-in-supply u sup width then attrition-loop units sup owner width (i + 1)
+    else let s = u.strength - 1
+    in let u2 = __record-set (__record-set u "strength" (if s < 0 then 0 else s)) "eliminated" (s <= 0)
+    in attrition-loop (list-set-at units i u2) sup owner width (i + 1)
 
 Section: Turn Structure
 
@@ -942,6 +1000,79 @@ Section: AI
     in if dist <= 1 then True
     else ai-adj-loop units owner eq er (i + 1)
 
+  ai-nearest-enemy : List Unit, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  ai-nearest-enemy (units) (owner) (uq) (ur) (i) (best) (best-d) =
+    if i >= list-length units then best
+    else let e = list-at units i
+    in if e.owner == owner then ai-nearest-enemy units owner uq ur (i + 1) best best-d
+    else if e.eliminated then ai-nearest-enemy units owner uq ur (i + 1) best best-d
+    else let d = hex-distance (HexCoord { q = uq, r = ur }) (HexCoord { q = e.q, r = e.r })
+    in if d < best-d then ai-nearest-enemy units owner uq ur (i + 1) i d
+    else ai-nearest-enemy units owner uq ur (i + 1) best best-d
+
+  ai-nearest-vp : List TerrainHex, List Unit, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  ai-nearest-vp (td) (units) (owner) (width) (uq) (ur) (i) (best) (best-d) =
+    if i >= list-length td then best
+    else let th = list-at td i
+    in if th.victory-point == False then ai-nearest-vp td units owner width uq ur (i + 1) best best-d
+    else if ai-hex-held-by units owner i width then ai-nearest-vp td units owner width uq ur (i + 1) best best-d
+    else let vr = i / width
+    in let vq = i - vr * width
+    in let d = hex-distance (HexCoord { q = uq, r = ur }) (HexCoord { q = vq, r = vr })
+    in if d < best-d then ai-nearest-vp td units owner width uq ur (i + 1) i d
+    else ai-nearest-vp td units owner width uq ur (i + 1) best best-d
+
+  ai-hex-occupancy : List Unit, Integer, Integer, Integer, Integer -> Integer
+  ai-hex-occupancy (units) (q) (r) (i) (acc) =
+    if i >= list-length units then acc
+    else let u = list-at units i
+    in if u.eliminated then ai-hex-occupancy units q r (i + 1) acc
+    else if u.q == q & u.r == r then ai-hex-occupancy units q r (i + 1) (acc + 1)
+    else ai-hex-occupancy units q r (i + 1) acc
+
+  ai-step-toward : Unit, Integer, Integer, List TerrainHex, List Unit, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  ai-step-toward (u) (eq) (er) (td) (units) (width) (height) (stack-limit) (dir) (best) (best-d) =
+    if dir >= 6 then best
+    else let nq = hex-neighbor-q dir u.q
+    in let nr = hex-neighbor-r dir u.r
+    in if hex-valid (HexCoord { q = nq, r = nr }) width height == False
+      then ai-step-toward u eq er td units width height stack-limit (dir + 1) best best-d
+    else if can-move-to u nq nr td units width == False
+      then ai-step-toward u eq er td units width height stack-limit (dir + 1) best best-d
+    else if ai-hex-occupancy units nq nr 0 0 >= stack-limit
+      then ai-step-toward u eq er td units width height stack-limit (dir + 1) best best-d
+    else let d = hex-distance (HexCoord { q = nq, r = nr }) (HexCoord { q = eq, r = er })
+    in if d < best-d then ai-step-toward u eq er td units width height stack-limit (dir + 1) (nr * width + nq) d
+    else ai-step-toward u eq er td units width height stack-limit (dir + 1) best best-d
+
+  ai-advance-units : List Unit, List TerrainHex, Integer, Integer, Integer, Integer, Integer -> List Unit
+  ai-advance-units (units) (td) (owner) (width) (height) (stack-limit) (i) =
+    if i >= list-length units then units
+    else let u = list-at units i
+    in if u.owner /= owner then ai-advance-units units td owner width height stack-limit (i + 1)
+    else if u.eliminated then ai-advance-units units td owner width height stack-limit (i + 1)
+    else let here = list-at td (u.r * width + u.q)
+    in if here.victory-point then ai-advance-units units td owner width height stack-limit (i + 1)
+    else let tgt = ai-nearest-enemy units owner u.q u.r 0 (-1) 999
+    in if tgt < 0 then ai-advance-units units td owner width height stack-limit (i + 1)
+    else let e = list-at units tgt
+    in let uh = HexCoord { q = u.q, r = u.r }
+    in let de = hex-distance uh (HexCoord { q = e.q, r = e.r })
+    in if de <= 1 then ai-advance-units units td owner width height stack-limit (i + 1)
+    else let vi = ai-nearest-vp td units owner width u.q u.r 0 (-1) 999
+    in let vr = vi / width
+    in let vq = vi - vr * width
+    in let dv = if vi < 0 then 999 else hex-distance uh (HexCoord { q = vq, r = vr })
+    in let goal-q = if dv <= de then vq else e.q
+    in let goal-r = if dv <= de then vr else e.r
+    in let cur = if dv <= de then dv else de
+    in let step = ai-step-toward u goal-q goal-r td units width height stack-limit 0 (-1) cur
+    in if step < 0 then ai-advance-units units td owner width height stack-limit (i + 1)
+    else let nr = step / width
+    in let nq = step - nr * width
+    in let u2 = spend-movement u nq nr td units width
+    in ai-advance-units (list-set-at units i u2) td owner width height stack-limit (i + 1)
+
   ai-find-advance-target : List TerrainHex, Integer, Integer -> Integer
   ai-find-advance-target (terrain-data) (width) (height) =
     ai-advance-loop terrain-data width height 0 (-1)
@@ -953,32 +1084,32 @@ Section: AI
     in if th.victory-point == False then ai-advance-loop td width height (i + 1) best
     else ai-advance-loop td width height (i + 1) i
 
-  ai-count-vp : List TerrainHex, List Unit, Integer -> Integer
-  ai-count-vp (terrain-data) (units) (owner) =
-    ai-vp-loop terrain-data units owner 0 0
+  ai-count-vp : List TerrainHex, List Unit, Integer, Integer -> Integer
+  ai-count-vp (terrain-data) (units) (owner) (width) =
+    ai-vp-loop terrain-data units owner width 0 0
 
-  ai-vp-loop : List TerrainHex, List Unit, Integer, Integer, Integer -> Integer
-  ai-vp-loop (td) (units) (owner) (i) (acc) =
+  ai-vp-loop : List TerrainHex, List Unit, Integer, Integer, Integer, Integer -> Integer
+  ai-vp-loop (td) (units) (owner) (width) (i) (acc) =
     if i >= list-length td then acc
     else let th = list-at td i
-    in if th.victory-point == False then ai-vp-loop td units owner (i + 1) acc
-    else let held = ai-hex-held-by units owner i
+    in if th.victory-point == False then ai-vp-loop td units owner width (i + 1) acc
+    else let held = ai-hex-held-by units owner i width
     in let delta = if held then 1 else 0
-    in ai-vp-loop td units owner (i + 1) (acc + delta)
+    in ai-vp-loop td units owner width (i + 1) (acc + delta)
 
-  ai-hex-held-by : List Unit, Integer, Integer -> Boolean
-  ai-hex-held-by (units) (owner) (idx) =
-    ai-hex-held-loop units owner idx 0
+  ai-hex-held-by : List Unit, Integer, Integer, Integer -> Boolean
+  ai-hex-held-by (units) (owner) (idx) (width) =
+    ai-hex-held-loop units owner idx width 0
 
-  ai-hex-held-loop : List Unit, Integer, Integer, Integer -> Boolean
-  ai-hex-held-loop (units) (owner) (idx) (i) =
+  ai-hex-held-loop : List Unit, Integer, Integer, Integer, Integer -> Boolean
+  ai-hex-held-loop (units) (owner) (idx) (width) (i) =
     if i >= list-length units then False
     else let u = list-at units i
-    in if u.eliminated then ai-hex-held-loop units owner idx (i + 1)
-    else if u.owner /= owner then ai-hex-held-loop units owner idx (i + 1)
-    else let uid = u.r * 1000 + u.q
+    in if u.eliminated then ai-hex-held-loop units owner idx width (i + 1)
+    else if u.owner /= owner then ai-hex-held-loop units owner idx width (i + 1)
+    else let uid = u.r * width + u.q
     in if uid == idx then True
-    else ai-hex-held-loop units owner idx (i + 1)
+    else ai-hex-held-loop units owner idx width (i + 1)
 
 Section: Game Runner
 
@@ -1013,21 +1144,23 @@ Section: Game Runner
     in let delta = if u.owner == owner & u.eliminated == False then 1 else 0
     in count-alive-loop units owner (i + 1) (acc + delta)
 
-  determine-winner : List Unit, List TerrainHex, Integer, Integer -> Integer
-  determine-winner (units) (terrain-data) (turn) (turn-limit) =
+  determine-winner : List Unit, List TerrainHex, Integer, Integer, Integer -> Integer
+  determine-winner (units) (terrain-data) (turn) (turn-limit) (width) =
     let alive-a = count-alive units 0
     in let alive-b = count-alive units 1
     in if alive-a == 0 then 1
     else if alive-b == 0 then 0
-    else let vp-a = ai-count-vp terrain-data units 0
-    in let vp-b = ai-count-vp terrain-data units 1
+    else let vp-a = ai-count-vp terrain-data units 0 width
+    in let vp-b = ai-count-vp terrain-data units 1 width
     in if vp-a > vp-b then 0
     else if vp-b > vp-a then 1
     else (-1)
 
-  run-hexwar-turn : List Unit, List TerrainHex, Integer, Integer, Rng -> List Unit
-  run-hexwar-turn (units) (terrain-data) (active-player) (width) (r) =
-    let units2 = reset-units-for-turn units
+  run-hexwar-turn : List Unit, List TerrainHex, Integer, Integer, Integer, Integer, Rng -> List Unit
+  run-hexwar-turn (units) (terrain-data) (active-player) (width) (height) (stack-limit) (r) =
+    let units0 = reset-units-for-turn units
+    in let units1 = apply-supply-attrition units0 active-player width height
+    in let units2 = ai-advance-units units1 terrain-data active-player width height stack-limit 0
     in let r2 = rng-next r
     in let target = ai-find-target units2 active-player terrain-data width
     in if target < 0 then units2
@@ -1131,18 +1264,18 @@ Section: Game Runner
     else if count-alive units 0 == 0 then hexwar-finish cfg units turn
     else if count-alive units 1 == 0 then hexwar-finish cfg units turn
     else let r2 = rng-next r
-    in let units2 = run-hexwar-turn units cfg.terrain-data active-player cfg.map-width r2
+    in let units2 = run-hexwar-turn units cfg.terrain-data active-player cfg.map-width cfg.map-height cfg.stacking-limit r2
     in let next-player = rng-mod (active-player + 1) cfg.num-players
     in let next-turn = if next-player == 0 then turn + 1 else turn
     in hexwar-loop cfg r2 units2 next-turn next-player
 
   hexwar-finish : WargameConfig, List Unit, Integer -> HexwarResult
   hexwar-finish (cfg) (units) (turn) =
-    let winner = determine-winner units cfg.terrain-data turn cfg.turn-limit
+    let winner = determine-winner units cfg.terrain-data turn cfg.turn-limit cfg.map-width
     in let la = count-eliminated units 0
     in let lb = count-eliminated units 1
-    in let va = ai-count-vp cfg.terrain-data units 0
-    in let vb = ai-count-vp cfg.terrain-data units 1
+    in let va = ai-count-vp cfg.terrain-data units 0 cfg.map-width
+    in let vb = ai-count-vp cfg.terrain-data units 1 cfg.map-width
     in HexwarResult {
          winner = winner,
          turns = turn,

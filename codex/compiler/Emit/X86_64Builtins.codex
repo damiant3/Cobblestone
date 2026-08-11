@@ -1,40 +1,8 @@
 Chapter: X86-64 Code Generator
   cites Foreword chapter Sort
+  cites Foreword chapter MathLib (int-widen)
 
 Section: Builtin Detection
-
- Two things decide a builtin's fate. This list routes the call to
- emit-builtin; x86-builtin-emitters says how to emit it. Until 2026-07-16
- they were two hand-maintained literals holding the same 143 names, written
- out twice and agreeing only by inspection. A name here with no emitter
- raised CDX2042 at a distance from whoever asked for it. An emitter with no
- name here was unreachable, because is-builtin would never say yes.
-
- No drift is expressible now, and there is no longer a second literal for
- one to open up against. This list is DERIVED from the emitter table, so
- being routed IS having an emitter, which is what routing was always
- supposed to mean; and the emitter table is itself derived from the one
- table in Types chapter Builtins, whose rows carry the name, the type and
- the emitter together. build/check-builtin-tables.ps1 checked the last of
- these relations and is deleted, because a relation between two columns of
- one row is not a relation any more.
-
- The emitters live over there and are named from here, which is the reverse
- of the usual direction and worth saying plainly: Emit sorts before Types in
- the concatenated unit, so `builtins` is a forward reference from this
- chapter. That already worked before this change, and still does in both
- directions: capability-vocabulary in Types is a projection of a foreword
- table, and boot-cap-mask-for in the X86-64 Chapter reads the same one --
- so nothing here depends on a new property of the unit.
-
- Names are kept in a SkipListText, sorted by the same text-compare that
- skip-list-text-has uses. They arrive already ordered, since
- x86-builtin-emitters sorts itself for its own bsearch, and
- skip-list-text-from-list sorts on insert regardless. The walk binds the
- emitter table once: x86-builtin-emitters is a zero-parameter definition and
- every mention of one is emitted as a call, so naming it twice would build
- and sort the whole table twice. It runs where a CodegenState is built, not
- per is-builtin call.
 
   x86-emitter-names : List BuiltinX86Emitter, Integer, Integer, List Text -> List Text
   x86-emitter-names (es) (i) (len) (acc) =
@@ -194,6 +162,15 @@ Section: Builtin Emission
     reg = rd.reg
    }
 
+  emit-variant-tag-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-variant-tag-builtin (st) (args) =
+   let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let rd = alloc-temp (r.state)
+   in EmitResult {
+    state = st-append-code (rd.state) (mov-load (rd.reg) (r.reg) 0),
+    reg = rd.reg
+   }
+
   emit-list-head-builtin : CodegenState, List IRExpr -> EmitResult
   emit-list-head-builtin (st) (args) =
     let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
@@ -242,21 +219,10 @@ Section: Builtin Emission
  there is no byte there to name. So this is `0 <= i` and `i < len`, not
  `i <= len`.
 
- Two guards and both are load-bearing: delete the first and a negative index
- reads before the text, delete the second and any index past the end reads
- whatever follows. Neither can stand in for the other, so each has its own
- case in the tests.
-
  The length temp avoids the index register only. The container pointer
  arrives from load-local, whose scratch pool is R8/R9/R15 and whose
  register-local case hands back a callee-saved register; neither is in the
  temp rotation, so the pointer cannot be the register the length lands in.
-
- One guard serves Text and List alike, and it is one function rather than
- two because both carry their length at offset 0 and both index from zero.
- Two spellings of one band drift apart -- `cce-is-letter-any` spent months
- disagreeing with `is-letter` about where the letters were -- so the band is
- written once, here.
 
   emit-index-bounds : CodegenState, Integer, Integer -> CodegenState
   emit-index-bounds (st) (idx-reg) (ptr-reg) =
@@ -325,12 +291,6 @@ Section: Builtin Emission
  the single range it used to be: the old test was 13..64 and refused all 31
  non-ASCII Tier 0 letters, and extending it to 13..127 would have called
  every punctuation character a letter.
-
- The lexer's identifier scan runs through this, so the band decides which
- letters may appear in a name. It already accepted Tier 1 characters through
- their own multi-byte path, which is why the Tier 0 accented and Cyrillic
- band was the one thing contradicting "any language can be used in the
- source".
 
  Two consecutive alloc-temps and no local, which is safe in both directions
  the rotation can go. If the first temp is handed the operand's own register
@@ -685,40 +645,17 @@ Section: Builtin Emission
  next allocation, returned verbatim. A negative start read BEFORE the
  string, and a negative length produced a Text whose length field was -1.
 
- That contradicted a published compliance row. `KingsAndCourts.md` carries
- CRA 1(a) as BY-CONSTRUCTION with "buffer overflow: no raw pointers,
- bounds-checked", and the ETSI and IEC matrices lean on the same row. The
- 2026-07-27 sweep of those documents fired every REFUSAL the compiler
- performs and never fired a bounds READ, which is how the row survived an
- audit that withdrew twenty-one of its neighbours.
-
  It traps now, at Damian's ruling. Trapping rather than clamping because a
  clamp turns a program's bug into quietly wrong data, and this project's
  virtues say a safety guarantee is never silently degraded; `__narrow`
  already dies on UD2 for the same shape, so the machinery and the
  expectation both already exist.
 
- THREE checks, and each one is the only thing standing between some input
- and the copy. start >= 0, len >= 0, len <= srclen - start.
-
  The obvious range check is `start + len <= srclen` and it is wrong: the
  sum can wrap, and the input that wraps it is the one an attacker picks.
  Subtracting instead cannot overflow here, because the first check pins
  start to [0, i64-max] and srclen is a length, so srclen - start is always
  representable.
-
- A fourth check, `start <= srclen`, was written first and then removed
- rather than shipped, because nothing could make it fire ALONE: with start
- and len both non-negative, a start past the end already makes srclen -
- start negative and no non-negative len is less than it. A guard no input
- can exercise on its own is the thing this tree keeps auditing out of its
- own test suite, and it does not get to enter through the emitter.
-
- Each of the three that remain was checked the same way and each survives.
- Drop `start >= 0` and start = -1 with len = 2 computes a room of six and
- sails through, reading before the string. Drop `len >= 0` and a negative
- length passes any room test and mints a Text whose length field is
- negative. Drop the range check and there is no bound at all.
 
  The source length is read from offset 0, which is where every Text carries
  it. It is held in a temp across three loads, so the second temp is taken
@@ -854,101 +791,6 @@ Section: Builtin Emission
    state = st-append-code (rd.state) (mov-rr (rd.reg) reg-rax),
    reg = rd.reg
   }
-
- This used to print the content to the console and return 0. A program
- that wrote a file and checked the result was told it had succeeded, and
- nothing had been written anywhere. Silent data loss, reported as
- success, in an operation whose entire purpose is not to lose data.
-
- There is no honest implementation to give it. Fat16 is the only
- filesystem the bare-metal target has and it is read-only -- it can
- resolve a path, list a directory and read a file, and it cannot create
- or write one. So the emitter refuses and says so, which is the rule: a
- target that cannot represent a feature does not get to pretend.
-
- What to use instead, until the write path exists: block-write-sector to
- put bytes on the disk, or write-binary to hand them back over the wire.
- Both say what they do.
-
- The phantoms went the other way about it and were no better. list-files,
- list-directories, create-directory and write-binary-file were bound in
- the type environment and named in builtin-names, and no emitter for any
- of them was ever written. The type checker vouched for the name and the
- build then died at the very end with CDX2040, a diagnostic about an
- unresolved function offset -- true, and no help at all to someone who
- had simply asked to list a directory. A name the compiler promises and
- cannot keep is worth less than no name, and it should say so at the
- first opportunity, in the words of the thing that was asked for.
-
- list-files and list-directories are no longer among them. They are real
- now, and they are not here: they live in Foreword chapter Fat16, next to
- file-exists and for the same reason -- the machine does not know what a
- directory is, and FAT16 does. So they are gone from builtin-names and
- from the type environment entirely, which is what lets a chapter citing
- Fat16 resolve them to the definitions that work. A chapter that does not
- cite Fat16 now gets CDX3002 on the name, which is the truth: it
- asked for something it did not bring.
-
- write-file and write-binary-file are no longer here either. FAT16 is not
- read-only any more -- it allocates a cluster, chains it, writes the bytes
- and commits a directory entry, all in Codex over block-write-sector -- so
- both names now resolve to definitions that keep their promise, next to
- file-exists in Foreword chapter Fat16. The emitter has nothing to say about
- them. write-file used to live here and print its content to the console
- while reporting success, which is the strongest argument in this file for
- why a name the compiler cannot keep does not belong in the compiler.
-
- For a while after that, the string "write-file" lingered in
- sorted-builtin-names with no emitter behind it. That ghost was not
- harmless: an application site asks is-builtin BEFORE it consults the
- handler table, so a `with FileSystem` handler over write-file would
- discharge the row at type level and then die at emit looking for an
- emitter that does not exist. The name is out of the list now, which is
- what lets the FileSystem effect's write-file op reach a handler -- the
- layer that services it over the disk is the one place the name resolves.
-
- The paragraph above was true of write-file and false of write-binary-file,
- which stayed in sorted-builtin-names for months after this prose said it
- had gone -- routed by is-builtin, with no emitter and no NameResolver
- entry, so it answered CDX3002 to anyone who asked. list-append and
- list-cons sat the same way, and they had emitters, so all that kept them
- from reaching one was that the resolver had never heard of them either.
- None of the three had a single call site in the tree; cons and append
- reach __list_cons and __list_append through the :: and & operators
- (IrConsList / IrAppendList in X86_64.codex), which is why nothing ever
- noticed. All three are gone now.
-
- A ghost is cheap to leave and expensive to find, and for a while this was
- checked by the build rather than by the next reader:
- build/check-builtin-tables.ps1 walked these lists and failed on a name
- that was routed with no emitter, or routed and unresolvable, or emitted
- and unrouted. A ghost of any of those shapes is now unrepresentable --
- one row carries the name, the type and the emitter, and routing is a
- projection of the emitter column -- so the script is deleted. So is
- check-cap-tables.ps1, which sat in the build for the same reason and
- lost it the same way when the capability table moved to the foreword.
-
- create-directory is gone too, and the sentence that used to sit here is the
- reason: it said the name stayed "because there is still nothing honest to
- point it at -- creating a directory means walking to a parent and writing the
- dot and dotdot entries, and that is not written." That was a condition, not a
- verdict, and it is met now. fat16-create-directory claims a cluster, zeroes
- it, writes the dot entries and commits the parent's entry, so the name
- resolves to something that keeps its promise and it lives where the promise
- is kept. The emitter has nothing to say about it either.
-
- That leaves this file with no name in it that the compiler cannot keep, which
- is the state build/check-builtin-tables.ps1 now holds it in.
-
- emit-no-target-impl stood here and is gone with them. It raised CDX2043 for
- a builtin the target could not perform, and nothing called it -- once the
- last phantom left this file there was no name to point it at, so the code
- refused a case that could no longer arise. A diagnostic no program can
- provoke is the same promise-that-is-not-kept the paragraph above forbids,
- and it is worse than the phantoms were: those at least failed loudly.
- emit-unknown-builtin raises CDX2042 for a name routed here with no emitter,
- which is the case that can still happen, and check-builtin-tables.ps1 fails
- the build before it does.
 
   emit-read-line-builtin : CodegenState -> EmitResult
   emit-read-line-builtin (st) =
@@ -1361,11 +1203,6 @@ Section: Builtin Emission
 
 Section: State Effect
 
- Integer-width state scoped to a run-state body. State lives in a
- single stack-slot local whose slot index is tracked on
- CodegenState.state-local. Nested run-state saves and restores the
- slot index so inner scopes shadow, not overwrite, outer ones.
-
   emit-run-state-builtin : CodegenState, List IRExpr -> EmitResult
   emit-run-state-builtin (st) (args) =
    let init = emit-expr (st-set-tail-pos st False) (list-at args 0)
@@ -1415,12 +1252,6 @@ Section: State Effect
     state = result.state,
     reg = result.reg
    }
-
- The runtime half of the lane bound. CDX2093 refuses a LITERAL lane at
- CHECK, which is the stronger answer and the one to prefer, but it cannot
- see `vec-extract v i` where `i` is computed -- and every in-tree
- computed-lane site is a test that passes a parameter. This closes that
- half.
 
  It needs no length load, which is what makes it cheaper than the list
  guard: the lane count is a compile-time constant fixed by the builtin's
@@ -1819,6 +1650,14 @@ Section: State Effect
     reg = rd.reg
    }
 
+ CodegenState's reg is declared 0..65535 and a type argument is invariant,
+ so pairing it with the state below would otherwise build a Tup2 carrying
+ those bounds against a declared plain Integer.
+
+ How it was found is worth the line: a tuple desugars to a MkTupN
+ application carrying a SYNTHETIC span, so the mismatch is reported with no
+ file and no line at all.
+
   emit-mask-extract : CodegenState, List IRExpr -> (CodegenState, Integer)
   emit-mask-extract (st) (args) =
    let mask = emit-expr (st-set-tail-pos st False) (list-at args 0)
@@ -1828,7 +1667,7 @@ Section: State Effect
    in let st2 = st-append-code (mld.state) (movupd-load 0 (mld.reg) 0)
    in let rd = alloc-temp st2
    in let st3 = st-append-code (rd.state) (movmskpd (rd.reg) 0)
-   in (st3, rd.reg)
+   in (st3, int-widen (rd.reg))
 
   emit-mask-any-builtin : CodegenState, List IRExpr -> EmitResult
   emit-mask-any-builtin (st) (args) =
@@ -1875,12 +1714,6 @@ Section: Builtin Registry
   sort-x86-emitters : List BuiltinX86Emitter -> List BuiltinX86Emitter
   sort-x86-emitters (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
 
- char-code, code-to-char and address-of are reinterpretations and not
- conversions: the operand is already the value the result wants, so all
- three emit the first argument and nothing else. They shared one inline
- lambda until the table moved to Types chapter Builtins, and that move is
- why this function exists rather than the lambda.
-
  emit-expr is defined twice in the unit -- here in the X86-64 emitter as
  CodegenState, IRExpr -> EmitResult, and in the Codex Emitter as IRExpr,
  List Text, Integer -> Text -- so which one a mention resolves to depends on
@@ -1917,13 +1750,6 @@ Section: Builtin Registry
  happen must still be loud, because the cost of being wrong about that is
  a program that compiles and lies.
 
- That emitter is gone. file-exists never had an implementation worth the
- name -- it answered True for every path, existing or not -- and it is a
- real FAT16 lookup now, in Foreword chapter Fat16, where a filesystem
- question belongs. A program that asks it must cite the chapter, which is
- the loud failure this file argues for throughout: a name that resolves
- to nothing is better than a name that resolves to a lie.
-
   emit-unknown-builtin : CodegenState, Text -> EmitResult
   emit-unknown-builtin (st) (name) =
    let st0 = st-add-error st cdx-emit-not-implemented ("No x86-64 emitter for builtin '" & name & "'. Nothing routed here should be able to miss: sorted-builtin-names is derived from x86-builtin-emitters. Reaching this means emit-builtin was called for a name is-builtin did not admit.") synthetic-span
@@ -1958,6 +1784,5 @@ Section: Builtin Registry
       else let e = list-at es pos
       in if e.name == name then (e.emit) st args
          else emit-unknown-builtin st name
-
 
 Page 4 of 14

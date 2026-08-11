@@ -10,7 +10,7 @@ Chapter: GdbWatchpointScript
 
 Section: Parameters
 
-  gdb-wp-params : List ShellParam = [sh-param "Src" SptString, sh-param-default "Watch" SptString (SeLit ""), sh-param-default "Break" SptString (SeLit ""), sh-param-default "ReadWatch" SptString (SeLit ""), sh-param-default "Accel" SptString (SeLit "tcg"), sh-param-default "TimeoutSec" SptInt (SeInt 300), sh-param-default "Kernel" SptString (SeLit "")]
+  gdb-wp-params : List ShellParam = [sh-param "Src" SptString, sh-param-default "Watch" SptString (SeLit ""), sh-param-default "Break" SptString (SeLit ""), sh-param-default "ReadWatch" SptString (SeLit ""), sh-param-choice-default "Accel" ["tcg", "whpx"] (SeLit "tcg"), sh-param-default "TimeoutSec" SptInt (SeInt 300), sh-param-default "Kernel" SptString (SeLit "")]
 
 Section: S01 -- Preamble
 
@@ -19,8 +19,7 @@ Section: S01 -- Preamble
     in let no-mode = [ScWriteError (SeLit "Specify -Watch, -Break, or -ReadWatch with an address"), ScExit (SeInt 2)]
     in let whpx-watch = [ScWriteError (SeLit "WHPX does not support watchpoints. Use -Accel tcg or use -Break instead."), ScExit (SeInt 2)]
     in let no-gdb = [ScWriteError (SeLit "gdb not found in WSL. Install: sudo apt install gdb"), ScExit (SeInt 2)]
-    in let bad-accel = [ScWriteError (SeLit "-Accel must be 'tcg' or 'whpx'"), ScExit (SeInt 2)]
-    in [ScSetStrictMode, ScSetErrorStop, ScBlank, ScRaw "Set-Location (Join-Path $PSScriptRoot '..')", ScRaw "[Environment]::CurrentDirectory = (Get-Location).Path", ScRaw "$env:USE_QEMU = '1'", ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'vm-config.ps1')"), ScBlank, ScIf (SeNot (SeVar "Kernel")) [ScAssign "Kernel" (SeLit "build-output\\bare-metal\\Codex.cdx")] [], ScIf (SeNot (SeFileExists (SeVar "Kernel"))) missing-kernel [], ScIf (SeAnd (SeNot (SeStringEq (SeVar "Accel") (SeLit "tcg"))) (SeNot (SeStringEq (SeVar "Accel") (SeLit "whpx")))) bad-accel [], ScIf (SeAnd (SeAnd (SeNot (SeVar "Watch")) (SeNot (SeVar "Break"))) (SeNot (SeVar "ReadWatch"))) no-mode [], ScIf (SeAnd (SeStringEq (SeVar "Accel") (SeLit "whpx")) (SeOr (SeVar "Watch") (SeVar "ReadWatch"))) whpx-watch [], ScBlank, ScRaw "$gdbCheck = wsl -- which gdb 2>&1", ScIf (SeExitCodeEq 0 |> SeNot) no-gdb []]
+    in [ScSetStrictMode, ScSetErrorStop, ScBlank, ScRaw "Set-Location (Join-Path $PSScriptRoot '..')", ScRaw "[Environment]::CurrentDirectory = (Get-Location).Path", ScRaw "$env:USE_QEMU = '1'", ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'vm-config.ps1')"), ScBlank, ScIf (SeNot (SeVar "Kernel")) [ScAssign "Kernel" (SeLit "build-output\\bare-metal\\Codex.cdx")] [], ScIf (SeNot (SeFileExists (SeVar "Kernel"))) missing-kernel [], ScIf (SeAnd (SeAnd (SeNot (SeVar "Watch")) (SeNot (SeVar "Break"))) (SeNot (SeVar "ReadWatch"))) no-mode [], ScIf (SeAnd (SeStringEq (SeVar "Accel") (SeLit "whpx")) (SeOr (SeVar "Watch") (SeVar "ReadWatch"))) whpx-watch [], ScBlank, ScRaw "$gdbCheck = wsl -- which gdb 2>&1", ScIf (SeExitCodeEq 0 |> SeNot) no-gdb []]
 
 Section: S02 -- Setup
 
@@ -31,8 +30,8 @@ Section: S02 -- Setup
 Section: S03 -- GDB Script File
 
   s03 : List ShellCmd =
-    let gdb-content = [ScRaw "$gdbContent = @\"\nset architecture i386:x86-64\ntarget remote localhost:1234\nset pagination off\nset confirm off\n$bpCmd\ncontinue\nprintf \"\"\\n=== STOPPED at %s ===\\n\"\", \"\"$bpCmd\"\"\nprintf \"\"RIP=%#lx RAX=%#lx RBX=%#lx RCX=%#lx\\n\"\", `$rip, `$rax, `$rbx, `$rcx\nprintf \"\"RDX=%#lx RSI=%#lx RDI=%#lx RBP=%#lx\\n\"\", `$rdx, `$rsi, `$rdi, `$rbp\nprintf \"\"R8=%#lx R9=%#lx R10=%#lx R11=%#lx\\n\"\", `$r8, `$r9, `$r10, `$r11\nprintf \"\"R12=%#lx R13=%#lx R14=%#lx R15=%#lx\\n\"\", `$r12, `$r13, `$r14, `$r15\nprintf \"\"RSP=%#lx\\n\"\", `$rsp\nprintf \"\"\\nDisassembly around RIP:\\n\"\"\nx/3i `$rip-16\nprintf \"\"----->\\n\"\"\nx/5i `$rip\nprintf \"\"\\nValue at watched address:\\n\"\"\nx/2gx $($addr)\nprintf \"\"\\nStack (8 slots):\\n\"\"\nx/8gx `$rsp\nprintf \"\"\\nBacktrace (RBP chain, 4 frames):\\n\"\"\nx/2gx `$rbp\nset `$_f1 = *(unsigned long long *)`$rbp\nx/2gx `$_f1\nkill\nquit\n\"@"]
-    in [ScAssign "gdbFile" (SeRaw "Join-Path $env:TEMP \"codex-gdb-$PID.gdb\""), ScSequence gdb-content, ScSetContent (SeVar "gdbFile") (SeVar "gdbContent"), ScBlank, ScRaw "$wslGdbPath = $gdbFile -replace '^([A-Z]):', { '/mnt/' + $_.Groups[1].Value.ToLower() } -replace '\\\\', '/'", ScAssign "gdbOut" (SeRaw "Join-Path $env:TEMP \"codex-gdb-$PID.out\""), ScAssign "gdbErr" (SeRaw "Join-Path $env:TEMP \"codex-gdb-$PID.err\"")]
+    let gdb-content = [ScRaw "$gdbContent = @\"\nset architecture i386:x86-64\ntarget remote localhost:1234\nset pagination off\nset confirm off\n$bpCmd\ncontinue\nprintf \"\\n=== STOPPED at %s ===\\n\", \"$bpCmd\"\nprintf \"RIP=%#lx RAX=%#lx RBX=%#lx RCX=%#lx\\n\", `$rip, `$rax, `$rbx, `$rcx\nprintf \"RDX=%#lx RSI=%#lx RDI=%#lx RBP=%#lx\\n\", `$rdx, `$rsi, `$rdi, `$rbp\nprintf \"R8=%#lx R9=%#lx R10=%#lx R11=%#lx\\n\", `$r8, `$r9, `$r10, `$r11\nprintf \"R12=%#lx R13=%#lx R14=%#lx R15=%#lx\\n\", `$r12, `$r13, `$r14, `$r15\nprintf \"RSP=%#lx\\n\", `$rsp\nprintf \"\\nDisassembly around RIP:\\n\"\nx/3i `$rip-16\nprintf \"--->\\n\"\nx/5i `$rip\nprintf \"\\nValue at watched address:\\n\"\nx/2gx $($addr)\nprintf \"\\nStack (8 slots):\\n\"\nx/8gx `$rsp\nprintf \"\\nBacktrace (RBP chain, 4 frames):\\n\"\nx/2gx `$rbp\nset `$_f1 = *(unsigned long long *)`$rbp\nx/2gx `$_f1\nkill\nquit\n\"@"]
+    in [ScAssign "gdbFile" (SeRaw "Join-Path $env:TEMP \"codex-gdb-$PID.gdb\""), ScSequence gdb-content, ScRaw "$gdbContent | Set-Content $gdbFile -Encoding UTF8 -NoNewline", ScBlank, ScRaw "$wslGdbPath = $gdbFile -replace '^([A-Z]):', { '/mnt/' + $_.Groups[1].Value.ToLower() } -replace '\\\\', '/'", ScAssign "gdbOut" (SeRaw "Join-Path $env:TEMP \"codex-gdb-$PID.out\""), ScAssign "gdbErr" (SeRaw "Join-Path $env:TEMP \"codex-gdb-$PID.err\"")]
 
 Section: S04 -- Launch QEMU
 
@@ -42,13 +41,13 @@ Section: S04 -- Launch QEMU
 
 Section: S05 -- Launch GDB
 
-  s05 : List ShellCmd = [ScEcho (SeRaw "\"[2/4] Launching GDB ($bpCmd)...\""), ScRaw "$gdbProc = Start-Process -FilePath 'wsl' -ArgumentList @('--', 'timeout', \"$TimeoutSec\", '/usr/bin/gdb', '-batch', '-nx', '-x', $wslGdbPath) -PassThru -WindowStyle Hidden -RedirectStandardOutput $gdbOut -RedirectStandardError $gdbErr", ScRaw "Start-Sleep -Seconds 3"]
+  s05 : List ShellCmd = [ScComment "Start GDB (this sends 'continue' which unpauses the CPU)", ScEcho (SeRaw "\"[2/4] Launching GDB ($bpCmd)...\""), ScRaw "$gdbProc = Start-Process -FilePath 'wsl' -ArgumentList @('--', 'timeout', \"$TimeoutSec\", '/usr/bin/gdb', '-batch', '-nx', '-x', $wslGdbPath) -PassThru -WindowStyle Hidden -RedirectStandardOutput $gdbOut -RedirectStandardError $gdbErr", ScRaw "Start-Sleep -Seconds 3"]
 
 Section: S06 -- Wait for READY and Send Source
 
   s06 : List ShellCmd =
     let no-ready = [ScEcho (SeLit "READY not received within 120s."), ScEcho (SeLit "GDB output so far:"), ScIf (SeFileExists (SeVar "gdbOut")) [ScRaw "Get-Content $gdbOut | Select-Object -First 10"] [], ScExit (SeInt 4)]
-    in [ScEcho (SeLit "[3/4] Waiting for READY..."), ScAssign "conn" (SeProperty (SeVar "run") "Conn"), ScIf (SeNot (SeRaw "Read-VmReady -Conn $conn -TimeoutSec 120")) no-ready [], ScBlank, ScComment "Send source bytes over TCP serial", ScRaw "$stream = $conn.Data.GetStream()", ScRaw "$hdr = [System.Text.Encoding]::UTF8.GetBytes(\"CDX`n\")", ScRaw "$stream.Write($hdr, 0, $hdr.Length)", ScRaw "$stream.Write($srcBytes, 0, $srcBytes.Length)", ScRaw "$stream.WriteByte(4)", ScRaw "$stream.Flush()", ScEcho (SeRaw "\"  Source sent ($($srcBytes.Length) bytes)\"")]
+    in [ScComment "Wait for READY (CPU is now running via GDB continue)", ScEcho (SeLit "[3/4] Waiting for READY..."), ScAssign "conn" (SeProperty (SeVar "run") "Conn"), ScIf (SeNot (SeRaw "(Read-VmReady -Conn $conn -TimeoutSec 120)")) no-ready [], ScBlank, ScComment "Send source bytes over TCP serial", ScRaw "$stream = $conn.Data.GetStream()", ScRaw "$hdr = [System.Text.Encoding]::UTF8.GetBytes(\"CDX`n\")", ScRaw "$stream.Write($hdr, 0, $hdr.Length)", ScRaw "$stream.Write($srcBytes, 0, $srcBytes.Length)", ScRaw "$stream.WriteByte(4)", ScRaw "$stream.Flush()", ScEcho (SeRaw "\"  Source sent ($($srcBytes.Length) bytes)\"")]
 
 Section: S07 -- Wait for Hit
 
@@ -67,9 +66,41 @@ Section: S09 -- Cleanup
 
   s09 : List ShellCmd = [ScIf (SeVar "run") [ScRaw "Close-Vm -Conn $run.Conn -Process $run.Process"] [], ScRaw "Remove-Item -Force $gdbFile, $gdbOut, $gdbErr -ErrorAction SilentlyContinue"]
 
+Section: S00 -- Usage
+
+  s00 : List ShellCmd =
+    [ScComment "Launches QEMU in TCG mode (required for hardware watchpoints via GDB),",
+     ScComment "feeds source over TCP serial, and uses WSL gdb to set a write-watchpoint",
+     ScComment "on a given address. Reports the instruction and register state when the",
+     ScComment "watchpoint fires.",
+     ScComment "",
+     ScComment "NOTE: This script always uses QEMU (not codex-vm) because GDB stubs",
+     ScComment "require QEMU's -gdb flag and TCG mode for hardware watchpoints.",
+     ScComment "",
+     ScComment "Requirements: WSL with /usr/bin/gdb, QEMU installed on Windows.",
+     ScComment "",
+     ScComment "Modes:",
+     ScComment "  -Watch 0xADDR    Hardware write-watchpoint (TCG only, slow but catches writer)",
+     ScComment "  -Break 0xADDR    Hardware breakpoint (works with WHPX too, fast)",
+     ScComment "  -ReadWatch 0xADDR  Hardware read-watchpoint (TCG only)",
+     ScComment "",
+     ScComment "Usage:",
+     ScComment "  build/gdb-watchpoint.ps1 -Src plug-source.codex -Watch 0x1a6f7c5",
+     ScComment "  build/gdb-watchpoint.ps1 -Src plug-source.codex -Break 0x273f22",
+     ScComment "  build/gdb-watchpoint.ps1 -Src plug-source.codex -Watch 0x1a6f7c5 -Accel whpx",
+     ScComment "",
+     ScComment "Notes:",
+     ScComment "  - TCG is ~20-50x slower than WHPX. A compile that takes 2s under WHPX",
+     ScComment "    may take 60-120s under TCG. Budget accordingly.",
+     ScComment "  - WHPX does NOT support watchpoints (only breakpoints). If you pass",
+     ScComment "    -Watch with -Accel whpx, the script will warn and exit.",
+     ScComment "  - The source file should be pre-bundled (forewords inlined). Use the",
+     ScComment "    output of plugs/csharp/build.ps1 phase 1 or test-compile-batch.ps1's",
+     ScComment "    foreword resolver."]
+
 Section: Assembly
 
-  gdb-wp-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScTry [ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08] [] s09]
+  gdb-wp-body : List ShellCmd = [ScSequence s00, ScBlank, ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScTry [ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08] [] s09]
 
   gdb-wp-script : ShellScript = sh-script "gdb-watchpoint" "Memory watchpoint / breakpoint debugger for bare-metal Codex via QEMU + GDB" gdb-wp-params gdb-wp-body
 

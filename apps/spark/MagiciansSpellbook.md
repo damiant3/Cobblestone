@@ -649,15 +649,15 @@ let val = curves-eval crv 128
 ### Color Operations (ColorPicker.codex)
 
 ```
--- HSV color model (hue 0-360000, sat 0-1000, val 0-1000)
-let hsv = hsv-new 120000 800 900
+-- HSV color model (hue 0.0-360.0, sat 0.0-1.0, val 0.0-1.0)
+let hsv = hsv-new 120.0 0.8 0.9
 let rgb-packed = hsv-to-rgb hsv
 let back = rgb-to-hsv rgb-packed
 
--- Color operations
-let lighter = color-lighten 16711680 200
-let darker = color-darken 16711680 200
-let saturated = color-saturate 16711680 300
+-- Color operations (amount is Real)
+let lighter = color-lighten 16711680 0.2
+let darker = color-darken 16711680 0.2
+let saturated = color-saturate 16711680 0.3
 let comp = color-complement 16711680     -- opposite on color wheel
 ```
 

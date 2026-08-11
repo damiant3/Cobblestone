@@ -2,15 +2,6 @@ Chapter: GopUsbCam
   cites Works chapter GopXhci
   cites Foreword chapter Maybe
 
- A USB video camera, read one frame at a time.
-
- This is the fourth endpoint type. Control carries setup packets, bulk
- carries sectors, interrupt carries keystrokes, and isochronous carries
- this: a stream with a deadline, where the controller reserves bus
- bandwidth in advance and a packet that misses its slot is dropped
- rather than retried. Nothing in the tree drove one before, which is
- why the camera the emulator has always presented could not be read.
-
  Isochronous differs from the others in ways this driver has to
  respect. The endpoint type in the context is 5 (Isoch IN), not 7.
  The interface is published at two alternate settings: alt 0 declares
@@ -47,11 +38,6 @@ Section: The Camera
 
 Section: Configuration Descriptor Walk
 
- The streaming interface is class 14 (video), subclass 2
- (videostreaming). It appears twice: alt 0 with zero endpoints, alt 1
- with the isochronous one. Requiring at least one endpoint is what
- picks the alternate that can actually stream.
-
   cam-cfg-total : Integer -> Integer
   cam-cfg-total (cfg) = bit-or (peek-byte cfg 2) (bit-shl (peek-byte cfg 3) 8)
 
@@ -65,11 +51,6 @@ Section: Configuration Descriptor Walk
     else if peek-byte cfg (off + 6) /= 2 then cam-find-stream-iface cfg (off + len) total
     else if peek-byte cfg (off + 4) == 0 then cam-find-stream-iface cfg (off + len) total
     else off
-
- An isochronous IN endpoint has transfer type 1 in the low two bits of
- bmAttributes and the direction bit set in its address. The walk stops
- at the next interface descriptor so it cannot wander into another
- alternate setting's endpoints.
 
   cam-find-isoch-in : Integer, Integer, Integer -> Integer
   cam-find-isoch-in (cfg) (off) (total) =
@@ -87,11 +68,6 @@ Section: Configuration Descriptor Walk
     bit-or (peek-byte cfg (ep + 4)) (bit-shl (peek-byte cfg (ep + 5)) 8)
 
 Section: Alternate Setting
-
- SET_INTERFACE is a standard request to the interface recipient:
- bmRequestType 1, bRequest 11, wValue the alternate setting, wIndex
- the interface number. Selecting alt 1 is what commits the bandwidth
- the isochronous endpoint needs.
 
   cam-set-interface : XhciHost, UsbDev, Integer, Integer -> Boolean
   cam-set-interface (xh) (dev) (iface) (alt) =
@@ -122,12 +98,6 @@ Section: Open
 
 Section: Read A Frame
 
- One isochronous TRB for the whole frame, then wait for its
- completion. A short packet is not a failure here: a camera that sends
- less than a full frame has still sent something, and the residual in
- the event says how much is missing. Both codes are accepted; anything
- else is not a frame.
-
  Note what zero means on the way in and on the way out. `xhci-wait-xfer`
  answers zero for NO EVENT -- it ran out of fuel and nothing arrived --
  while this function answers zero for success. Passing one through as
@@ -149,11 +119,6 @@ Section: Read A Frame
     else if code == trb-cc-success then 0
     else if code == trb-cc-short then 0
     else code
-
- Pixel accessors, so a caller reads a frame rather than an address.
- YUYV packs luma per pixel and chroma per pair; this driver exposes
- the two bytes each pixel occupies and leaves colour conversion to
- whoever wants a picture.
 
   cam-luma : UsbCam, Integer, Integer -> Integer
   cam-luma (c) (x) (y) =

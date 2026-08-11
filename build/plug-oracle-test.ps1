@@ -49,7 +49,22 @@ $Work    = Join-Path $Repo 'build-output\plug-oracle'
 if (-not $Kernel) { $Kernel = Join-Path $Repo 'seed\Codex.cdx' }
 
 # Each entry: the plug CDX, and how to run what it emits. `Ext` is only
-# cosmetic; `Runner` is the executable and `RunArgs` the argv it takes.
+# cosmetic; `Exe` is the runtime that must be on PATH for the arm to run at
+# all, and `Args` the argv it takes.
+#
+# Two optional hooks exist because not every plug speaks the same protocol
+# and not every language runs from loose source:
+#
+#   Transpile ($ir, $srcOut)  overrides the default `run-plug.ps1` delivery.
+#   Invoke    ($srcOut)       overrides "hand the file to `Exe`", and returns
+#                             the program's output lines.
+#
+# The C# plug needs both. It does NOT answer over TCP -- it writes its output
+# to the codex-vm output ring, which `codex/plugs/csharp/run.ps1` drains via
+# `-output`, so `run-plug.ps1` waits for a reply that never comes and reports
+# the plug as having emitted nothing. And a loose `.cs` is not runnable under
+# the .NET 9 SDK on this box, so the arm scaffolds the same csproj that
+# `codex/plugs/csharp/emit-app.ps1` generates and runs the built exe.
 $Plugs = @(
     @{ Name = 'python'
        Cdx  = 'codex\plugs\python\build-output\python-plug.cdx'
@@ -61,6 +76,42 @@ $Plugs = @(
        Ext  = 'js'
        Exe  = 'node'
        Args = { param($f) @($f) } }
+    @{ Name = 'csharp'
+       Cdx  = 'codex\plugs\csharp\build-output\csharp-plug.cdx'
+       Ext  = 'cs'
+       Exe  = 'dotnet'
+       Transpile = {
+           param($ir, $srcOut)
+           & pwsh -NoProfile -File (Join-Path $Repo 'codex\plugs\csharp\run.ps1') -Ir $ir -Out $srcOut | Out-Null
+       }
+       Invoke = {
+           param($srcOut)
+           $d = Join-Path $Work 'cs'
+           New-Item -ItemType Directory -Force $d | Out-Null
+           Copy-Item $srcOut (Join-Path $d 'subject.cs') -Force
+           $proj = Join-Path $d 'subject.csproj'
+           $lines = @(
+               '<Project Sdk="Microsoft.NET.Sdk">'
+               '  <PropertyGroup>'
+               '    <OutputType>Exe</OutputType>'
+               '    <TargetFramework>net9.0</TargetFramework>'
+               '    <Nullable>disable</Nullable>'
+               '    <ImplicitUsings>disable</ImplicitUsings>'
+               '    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>'
+               '    <AssemblyName>subject</AssemblyName>'
+               '  </PropertyGroup>'
+               '  <ItemGroup>'
+               '    <Compile Include="subject.cs" />'
+               '  </ItemGroup>'
+               '</Project>'
+           )
+           [System.IO.File]::WriteAllLines($proj, $lines, [System.Text.UTF8Encoding]::new($false))
+           $buildLog = & dotnet build $proj -c Release --nologo -v quiet 2>&1
+           if ($LASTEXITCODE -ne 0) { throw "dotnet build failed:`n$($buildLog -join "`n")" }
+           $exe = Join-Path $d 'bin\Release\net9.0\subject.exe'
+           if (-not (Test-Path -PathType Leaf $exe)) { throw "expected exe not found: $exe" }
+           & $exe 2>&1
+       } }
 )
 
 if (-not (Test-Path $Subject)) { Write-Host "MISSING subject: $Subject"; exit 2 }
@@ -116,14 +167,28 @@ foreach ($p in $Plugs) {
         $skip++; continue
     }
 
+    # Remove any previous emission first: a plug that silently fails would
+    # otherwise be scored on the last run's source, which passes.
     $srcOut = Join-Path $Work "subject.$($p.Ext)"
-    & pwsh -NoProfile -File (Join-Path $Repo 'build\run-plug.ps1') -Plug $cdx -InFile $irFile -Output $srcOut -TimeoutSec $TimeoutSec | Out-Null
+    Remove-Item $srcOut -Force -ErrorAction SilentlyContinue
+
+    if ($p.ContainsKey('Transpile')) {
+        & $p.Transpile $irFile $srcOut
+    } else {
+        & pwsh -NoProfile -File (Join-Path $Repo 'build\run-plug.ps1') -Plug $cdx -InFile $irFile -Output $srcOut -TimeoutSec $TimeoutSec | Out-Null
+    }
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $srcOut) -or (Get-Item $srcOut).Length -eq 0) {
         Write-Host "  $($p.Name): FAIL -- the plug emitted nothing"
         $fail++; continue
     }
 
-    $runOut = & $exe.Source @(& $p.Args $srcOut) 2>&1
+    try {
+        $runOut = if ($p.ContainsKey('Invoke')) { & $p.Invoke $srcOut }
+                  else { & $exe.Source @(& $p.Args $srcOut) 2>&1 }
+    } catch {
+        Write-Host "  $($p.Name): FAIL -- the emitted program could not be run: $_"
+        $fail++; continue
+    }
     $got = @($runOut | ForEach-Object { "$_" } | Where-Object { $_.Trim().Length -gt 0 })
 
     if ($got.Count -eq 0) {

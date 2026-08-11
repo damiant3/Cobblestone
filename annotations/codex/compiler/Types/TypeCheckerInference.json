@@ -1,0 +1,634 @@
+[
+{
+    "target": "function:is-text-or-char-type",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The unit wrapper is stripped first. A predicate that dispatches on the wrapper is how `unit Real` reached the integer adder, and the lesson from that is written at `strip-unit-ty`: derive the question once and let every caller read it.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A `let` statement in an act block is do-notation: it scopes over the REST of the block, not merely over its own `in` body. Lowering says this by nesting the remaining statements inside the let's body (`lower-act-let`); the checker has to say the same thing, and it says it by threading the extended env into both the let's body AND the statements that follow.",
+    "thread": null
+  },
+  {
+    "target": "function:infer-act-let",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A let CHAIN is peeled to its innermost body, so every binding in the chain scopes over the rest of the block -- the shape `codex/test/ mask-ops` pins, and the same peel `lower-act-let` performs.",
+    "thread": null
+  },
+  {
+    "target": "function:resolve-constructed-to-record",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The flat-effect handler machinery (strip-effect-from-env's whole-environment rewrite, strip-handled-effect, filter-effect) is retired: discharge is the §7 row unification above, and effects no longer ride result types where stripping could reach them.",
+    "thread": null
+  },
+  {
+    "target": "section:Infer Name",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A name reference instantiates, then OPENS each closed spine row with a fresh tail (the Koka open rule, §6a): a pure or less-effectful function flows into a more-effectful context through plain unification. Opening happens only here -- never at binding positions (a def's own signature, record fields, parameter annotations), which instantiate through resolve-declared-type and the ctor paths. Referencing an effectful VALUE (read-line) performs its effects: they become the reference's ambient row and the type unwraps to the inner value type.",
+    "thread": null
+  },
+  {
+    "target": "function:instantiate-type",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The duplication is deliberate and must stay in step: the two walks differ only in the report. Change one, change the other.",
+    "thread": null
+  },
+  {
+    "target": "function:instantiate-collect",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Row ids are not collected: a row variable is an effect-axis binder, checked by row-le at stage 3b, not by the rigidity check.",
+    "thread": null
+  },
+  {
+    "target": "function:subst-row-var",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "subst-row-var freshens one row-variable id through a type: every arrow row whose tail carries the old id is rebuilt with the new id. Row ids live only on FunTy rows and ForAllEff binders, never inside any other constructor's payload, so everything else recurses through the shared children walker. A ForAllEff binding the same id shadows it -- stop there. No ty-has-typevars short-circuit applies: that guard sees type variables, not row tails.",
+    "thread": null
+  },
+  {
+    "target": "section:Infer Binary",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The operand-shape helpers below construct their results with the empty ambient; infer-binary is the one entry point and stamps the union of the operands' ambients onto whatever they return.",
+    "thread": null
+  },
+  {
+    "target": "function:is-undecided-type",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A type the checker has not decided yet: an application's result is a fresh variable until unification binds it. Unary minus must not force such a type to Integer -- `-(f x)` where f returns a Real would be typed Integer and then collide with the declared Real. It stays undecided and the surrounding context binds it, exactly as `-x` on a Real parameter already does.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Keeping the bound is the right answer and always was. It is not a claim that the sum cannot exceed it: it is the CONTRACT. The emit prover keeps a bounds check at the store precisely because it cannot prove the sum fits, and that check traps -- Eiffel-style, as the guide describes. So the type carries the author's declared intent and the runtime enforces it. What was broken is only that the intent survived on one side and not the other.",
+    "thread": null
+  },
+  {
+    "target": "function:arith-result-ty",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "So take the narrower operand rather than the left one. When one side is an unbounded literal it is the bounded side that wins, whichever way it was written, and the two spellings agree. Where both are plain Integer nothing changes -- the result is plain, and a store into a bounded field is still rejected (codex/test/errors/narrowing-unproven), because there the author declared no intent to carry.",
+    "thread": null
+  },
+  {
+    "target": "section:Infer If",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Each arm is inferred under the branch-refined environment (cond-refine, Lint value-expression range analysis): a comparison between a bare local and an expression with a provable range narrows the local's recorded range inside the arm the comparison guards, and only there -- the refined entry rides the env copy handed to that arm's walk and never escapes it. Only the narrowing lint reads the refined table, so this shapes diagnostics, never types or codegen. Both arms are always inferred: static feasibility only shapes the prover's union (if-proven-range), never type checking.",
+    "thread": null
+  },
+  {
+    "target": "section:Infer Let",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A let's ambient is the union of every binding value's ambient with the body's -- a binding value is evaluated even if the body never reads the name. The binding loop accumulates the union as it walks.",
+    "thread": null
+  },
+  {
+    "target": "function:record-local-range",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A let-local whose value proves narrower than the full i64 range carries that range forward for the narrowing lint. The value is analyzed in the pre-binding env (a let has no recursion), and only a genuinely-narrower proof is recorded, so unknown-range locals cost nothing. When the expression analysis cannot prove but the value's RESOLVED TYPE is a bounded IntegerTy, the type's range is recorded instead: a direct store of that value would type-fit silently, so a local carrying the same range makes local-mediated flows exactly as permissive as direct ones - no more - and lets the local participate in the arithmetic arms (255 - v proves when v carries a field's 0..255).",
+    "thread": null
+  },
+  {
+    "target": "function:check-let-bind-row",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The let boundary reads the binding VALUE's ambient row: concrete labels mean an effectful call is being let-bound outside an act-bind, which silently corrupts on bare metal (CDX2033). A row whose only content is an unsolved tail is allowed -- it is the HOF body pattern, where the effects are the caller's and the def boundary answers for them.",
+    "thread": null
+  },
+  {
+    "target": "section:Infer Lambda",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A lambda VALUE performs nothing -- its ambient is empty. What the body performs becomes the row on the innermost synthesized arrow, the arrow whose application will perform it (§4 curried placement). The row is opened with a fresh tail when the body's ambient is closed (§6a: inferred literals are born open), so a pure lambda flows into an effectful-arrow context through plain unification.",
+    "thread": null
+  },
+  {
+    "target": "section:Class Instance Check",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "`show` and `compare` require an instance for their operand type. A primitive (Integer, Number, Text, Boolean, Char) has a built-in one; a user type must derive the class, which leaves a `__show_T`/`__compare_T` definition in scope (mirrors the dispatch probe in Lowering, so the checker rejects exactly when codegen would otherwise fall back to a meaningless number or a pointer compare). Primitives, type variables, lists, and other non-nominal types are never rejected here; type variables are deferred to the constraint pass.",
+    "thread": null
+  },
+  {
+    "target": "function:class-prefix-for",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "`==` / `/=` are intentionally not checked: the emitter already compares sums and text structurally (`emit-sum-structural-eq`, `__str_eq`), so equality is sound there without deriving. Record equality is a separate concern handled in codegen, not here.",
+    "thread": null
+  },
+  {
+    "target": "section:Infer Application",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The synthesized expected arrow carries a FRESH row variable, not the empty row: unification binds it to the callee arrow's row, and that captured row joins the ambient -- evaluating an application performs the function expression's effects, the argument expression's effects, and whatever the consumed arrow declares. An empty row here would instead FORCE every callee arrow closed-pure, which is wrong the moment stage 3b puts concrete effects on arrows.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "invariant",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A function that performs less than it was asked for is safe to hand over. print-line-uni performs Console.Write; a parameter declared Text -> [Console] Nothing promises its caller only that it may do something Console-ish, and Console.Write is something Console-ish. The def boundary has always understood this -- a [Console] def may perform Console.Write -- but the argument boundary compared rows for EQUALITY and turned the same program away (CDX2090).",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The lattice does NOT move into unify-row, and this is the point: unification is symmetric, and a symmetric relation that accepted Console.Write against Console would accept it in both directions -- which is laundering -- and would stop being most general. So the directed reasoning stays outside, here, where the direction is known: the argument is being handed TO the parameter. Each of the argument row's labels is rewritten to the parameter's label that covers it, and then the rows are equal and ordinary unification finishes the job, principality intact.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Two relations are applied, and both only ever widen TOWARD a label the parameter actually names. An argument label the parameter does not cover at all is left alone, so unify still refuses it -- this only ever accepts more, never less, and never in the unsound direction (a Console argument into a Console.Write parameter still fails: Console has no dot, so nothing covers it; and an UNSCOPED Console argument into a Console \"stdout\" parameter fails because an argument that states no restriction is wider than the parameter, not narrower).",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The first relation is parent-of, over the dot: Console.Write widens to Console.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The second contains a scope. Console \"stdout\" widens to Console, because a label with no scope states no restriction and everything falls under no restriction -- that case needs to know nothing about what a scope MEANS. FileSystem.Read \"/config/app/\" widens to FileSystem.Read \"/config/\", and that case does: a filesystem scope is a path prefix where a network scope is an authority and a console scope a channel. `scope-subsumes` (TypeChecker) chooses per family off the effect's own name, which is where `scope-admits` has always got it from -- the family was never missing, it was only ever read off the name.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Dropping the scope is the SAFE direction for the same reason parent-of is: the argument does LESS than the parameter promises. A Text -> [Console \"stdout\"] Nothing writes only to stdout; a parameter declared Text -> [Console] Nothing promises its caller only that it may do something Console-ish. Nothing is laundered, because the callee's own declared row is what its caller pays for, and that row is unchanged by what is handed to it. The scope the argument really honours has already been enforced against the argument's own signature at its def boundary (CDX4002); this widening is used to unify with the parameter and nowhere else.",
+    "thread": null
+  },
+  {
+    "target": "function:widen-arg-to-param",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Cost: this runs on EVERY application, so it allocates nothing unless a widening actually applies. The guards are length checks and two label walks over rows that carry at most a couple of labels; the row is rebuilt only when some label really is a proper child of one the parameter names, which is rare.",
+    "thread": null
+  },
+  {
+    "target": "function:labels-need-widening",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "True when at least one argument label is a proper child of a label the parameter names. A label the parameter already carries needs nothing; one it cannot cover is unify's business, not ours.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The index of the parameter label that covers this argument label, or -1. A strict widening only: an exact match is not a widening and must not report one, or widen-labels would rebuild a row that was already equal and labels-need-widening would never settle on a fixed point.",
+    "thread": null
+  },
+  {
+    "target": "function:label-parent-index",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Scope-drop is tried before parent-of because it is the more specific answer. Console.Write \"stdout\" handed to a parameter naming both Console.Write and Console widens to Console.Write, keeping the dot the argument earned rather than spending it.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The parameter label with this argument's exact name whose scope contains the argument's. Only a SCOPED argument can be widened this way: unscoped-to-unscoped with the same name is an exact match, not a widening, and reporting it would spin labels-need-widening forever.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "An unscoped parameter label contains everything, which is why the unscoped case needs no family knowledge and shipped first. A scoped one has to be asked, and scope-subsumes asks the right question per family: a path contains what extends it, an authority contains the same host at the port it named (or every port, if it named none), a channel contains only itself. Note which direction is being asked: the PARAMETER's scope is the outer, the ARGUMENT's the inner, because the safe direction is the argument doing less than the parameter promised.",
+    "thread": null
+  },
+  {
+    "target": "function:label-scope-drop-index",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "An exact match anywhere in the row means no widening is wanted at all -- the label the argument already carries is one the parameter names, so the rows can meet without help. Checking that first also keeps a row holding both FileSystem.Read \"/a/\" and FileSystem.Read \"/a/b/\" from rewriting an argument's \"/a/b/\" to the wider \"/a/\", which would be sound and would still be a loss.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The CL 6494-era effect-le argument check is retired (stage 3b): its job -- an effectful function may not flow into a pure parameter -- is now done by row unification itself. A concrete pure parameter's arrow row is the closed empty row; an effectful argument's opened row cannot reconcile with it (CDX2090), and a row-polymorphic parameter constrains through its row variable instead of being waved through, which was the leniency this check had to carry.",
+    "thread": null
+  },
+  {
+    "target": "function:lint-arg-narrowing",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "An argument flowing into a bounded parameter draws the same hybrid check as a bounded field store -- and a constructor is a function whose payload is a parameter, so one check serves both. The declared parameter is read from the callee arrow BEFORE the application unify (overlap-permissive on IntegerTy, so the concrete bound survives). Literal out of range is the CDX2050 error, a wider static type the CDX2051 warning, an explicit __narrow suppresses -- exactly as at record fields. The descriptor names a constructor field when the head is one of its sum type's own constructors (FabledTreasureMap entry 11), a bounded parameter otherwise. Range PROPAGATION from the bound into the body is done at bind-def-params, not here, and only behind the stage-B runtime guard on bounded signatures.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "This is the opposite decision to the one the list builtins got, and the difference is where the length lives. A list's length is discovered while the program runs, so `list-at` can only be guarded at runtime; a vector's lane count is on its type, so this can be refused before the binary exists.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "**A computed lane is NOT covered and cannot be.** `vec-extract v i` with `i` a parameter reads out of bounds exactly as it did before, because the compiler does not know `i`. Four such sites exist in the tree today (`vec-lanes-smoke`, `vec-arith-hazards`, `vec-extract-hazards`). That is the honest limit of a static check, not an oversight, and it is written down here so nobody reads this refusal as full coverage.",
+    "thread": null
+  },
+  {
+    "target": "function:vec-lane-count",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The check is keyed on the builtin's NAME. A chapter that shadows `vec-extract` with its own differently-shaped definition would be judged against the builtin's lane count, which is wrong; nothing in the tree does, and CDX3005 already warns when a builtin is shadowed.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Whether the lane is a literal and what it is are two questions and they get two functions, because every way of folding them into one number needs a sentinel and every sentinel is a lane somebody can write. The first draft answered -2 for \"not a literal\", which silently waved through `vec-extract v -2`; -1 has the same problem one lane over. There is no safe out-of-band Integer here, so the flag is a Boolean.",
+    "thread": null
+  },
+  {
+    "target": "function:vec-lane-is-literal",
+    "kind": "discovery",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A negative lane arrives as `AUnaryExpr` wrapping the literal, not as a literal with a minus in its text -- the desugarer discards the operator token and keeps the operand. Negation is the only unary operator in the language, so an `AUnaryExpr` around an IntLit is a negative literal and nothing else. Measured rather than assumed: before this arm existed, `vec-extract (vec-splat 1.5) -1` compiled clean and emitted a binary, which made the zero-comparison arm a guard no input could reach.",
+    "thread": null
+  },
+  {
+    "target": "section:Lint __record-set narrowing",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Tripwire pass for silent narrowing at __record-set call sites. When a `__record-set st \"field\" value` is detected and the field has a bounded Integer type that the value's static type does not fit, emit a warning. Codegen would silently truncate at runtime via narrow-store; this lint surfaces the site so the author can decide whether the runtime value range actually fits or needs an explicit narrow.",
+    "thread": null
+  },
+  {
+    "target": "section:Lint value-expression range analysis",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The checker-side twin of the emit prover's ir-expr-proven-range: a structural walk of the value EXPRESSION at a bounded store, run only when the inferred type's range has already failed to fit. It proves ranges the type system deliberately does not carry -- a constant defined as a literal keeps its declared plain-Integer TYPE (refining it would make two distinct constants disjoint under unification), but its value is known exactly, so the lint can see the store is safe and elide the warning. Unknown shapes return the full i64 range, which never fits a real bound: the analysis can only silence true positives, never invent one.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A `let` body is proven in an env carrying the let's OWN bindings. The arm used to recurse into the body with the env it was handed, and the binder's range still arrived -- `record-local-range` had written it into this very env when inference walked the same def, because `env-add-local-range` reached the caller's record. That made every bounded return over a let read a range the prover had not derived. Cutting that delivery left the arm to derive it: same proofs, obtained rather than inherited. `codex/compiler/Core/PhaseAllocator. pitch` is the site that proved the difference.",
+    "thread": null
+  },
+  {
+    "target": "function:bind-let-ranges",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A binder is bound as a local even when its range is unknown. Every `env-is-local` guard downstream (`apply-proven-range`, `local-proven-range`) exists to stop a local from borrowing a same-named global's fact, and a binder the prover skipped would borrow exactly that. The bound type is a placeholder: no prover path reads a local's type -- the guards answer before any lookup -- only whether the name is one.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A bounded record field proves by its declared bound, on the same argument that lets bind-param-range trust a bounded parameter: the store that put the value there was itself guarded, so the declared range is a fact about whatever is read back out. The emit prover has carried this arm all along (ir-expr-proven-range's IrFieldAccess); its absence here is why `Nibble { n = b.val / 16 }` was rejected -- provably 0..15, and provable by the emitter -- while a far weaker store went through untouched.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The receiver must be a plain name. An arbitrary receiver needs inference and a UnificationState, which a structural walk does not carry, whereas a name's declared type is already in the env. Deeper shapes stay unknown, which is the safe answer: this analysis only ever silences a true positive, it cannot invent one.",
+    "thread": null
+  },
+  {
+    "target": "function:field-declared-range",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Only OvError bounds are read, mirroring bind-param-range. A wrapping or clamping field is total at its store, but claiming a range that no guard enforces would let the lint silence a real overflow, so that door stays shut until something needs it open.",
+    "thread": null
+  },
+  {
+    "target": "function:field-proven-range",
+    "kind": "invariant",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A guard's refinement outranks the declaration, and can only narrow it: make-field-cond-refine intersects what the comparison implies with the declared range before recording it, so a recorded entry is always inside the bound the field was declared with.",
+    "thread": null
+  },
+  {
+    "target": "function:range-interval",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A binary arithmetic expression proves by the shared interval kernel (Math chapter Interval): operand ranges convert to Interval at the boundary, the iv-* transfer function computes full signed i64 interval arithmetic, and the result converts back. The kernel refuses to iv-unknown whenever an endpoint computation would overflow, and iv-unknown converts back to the full i64 range, which never fits a real bound -- the analysis stays silence-only. Full signed support replaces the hand-written non-negative-only guards the checker carried before the kernel existed; it strictly widens what can be proven, never what can be stored. An empty interval can only reach the boundary through a dead-branch intersection and converts to the full range: claiming nothing is sound where nothing can flow, and it keeps every downstream tuple a real lo <= hi pair.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "An application proves through three doors. `__narrow x` passes its argument's range through, mirroring the emit prover. Otherwise the head name is tried against the builtin return facts, and finally against the head's DECLARED bounded return - the stage-B postcondition guard enforces a declared bounded return at runtime, so the declared range is a sound fact at every call. Both lookups are guarded by env-is-local so a binding that shadows a global name never borrows its fact. A partial application walks past its remaining arrows to a range the lint never uses (its store value is function-typed, which the lint skips). A wrong fact here could only silence the warning; the runtime narrow-store check is emitted regardless, so program soundness never rests on this table.",
+    "thread": null
+  },
+  {
+    "target": "function:apply-proven-range",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The divisor is matched STRUCTURALLY rather than by head name: only an apply whose own function is the bare name is a genuine two-argument call, so a partial application (`int-mod x`, whose argument is the DIVIDEND) cannot be mistaken for one and read its dividend as a divisor. The guard `lo > 0` is the same one the emitter uses, and it is doing real work: a divisor whose range admits zero or negatives proves nothing here, because `math-mod` takes the sign of neither operand in a way this interval could describe.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Branch refinement: when an if's condition compares a bare local against an expression with a provable range, each arm is analyzed with the local's recorded range intersected with what the comparison being true (then) or false (else) implies -- ABCD's pi-nodes collapsed onto lexical scope. The refined entry is pushed onto the env copy that walks one arm and never escapes it; a refinement that says nothing (iv-unknown) or that proves the arm unreachable (iv-empty) pushes nothing. Both orientations are handled: name-on-left directly, name-on-right through the swapped operator. An arm whose refined range is empty cannot execute, so the if proves as the surviving arm alone (SCCP feasibility); an infeasible arm is otherwise walked with the unrefined env, which can only widen, never invent.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "invariant",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A field assignment writes into the record the receiver evaluates to. That is only useful when the receiver names a BINDING -- a parameter or a let -- because then the caller holds the same record and sees the write. When the receiver names a top-level DEFINITION instead, the definition is a function of no arguments: every mention of the name evaluates its body again and builds a fresh record, so the write lands in a value nothing else holds and is discarded on return.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "This type-checks perfectly and is silent at runtime, which is what makes it worth a diagnostic. `a64-effect-cell` (`codex/plugs/arm64`) was written on every module emit for as long as it existed and never read back anything but its initial value; its loader had no callers, so nothing noticed. The same idiom was reached for again in CL 9208 to carry a flag and silently answered False.",
+    "thread": null
+  },
+  {
+    "target": "function:field-assign-observable",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A receiver that is anything other than a bare name -- a field of another record, a subscript, a call result -- is left alone here. Those have their own ownership questions and none of them is the flat always-discarded write this catches.",
+    "thread": null
+  },
+  {
+    "target": "function:interval-lt-bound",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The interval a comparison against [o-lo, o-hi] implies for the refined side. The bounds quantify over every concrete value the other side can take: v < e with e <= o-hi means v <= o-hi - 1, and v < e being false means v >= e >= o-lo. A strict bound one past an i64 endpoint has no satisfying value and answers iv-empty. The false side of == is not an interval, so it answers iv-unknown.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A guard on a FIELD refines it too, and until now it did not: only a bare local was a target, so `if b.val <= 15 then Nibble { n = b.val }` read b.val as its declared 0..255 and was rejected, while the identical `let v = b.val in if v <= 15 then Nibble { n = v }` was proven. The guard was the same; the thing guarded was not a name.",
+    "thread": null
+  },
+  {
+    "target": "function:field-refine-key",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A field key is `recv.field`. It cannot collide with a local: a dot ends an identifier, so no local is ever spelled this way, and the entry rides local-ranges like any other refinement.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The condition a field refinement carries that a local does not need.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A local is a VALUE: once bound it cannot change, so a range proven at the guard still holds at the store. A field is a LOCATION -- `b.val` is re-read at the store, and __record-set mutates in place -- so the refinement holds only while the arm cannot reach the record. It can only reach it by NAMING it: you cannot mutate a record you do not mention. So the refinement stands exactly when the receiver appears in the arm solely as the object of a field access. `b.val` reads and cannot write; `f b` or `__record-set b \"val\" 200` mentions it bare, and the refinement is dropped rather than trusted.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Unknown shapes answer False and drop it. That is the safe direction: dropping a refinement costs a diagnostic the author can satisfy with __narrow, while keeping a stale one would silence a real overflow.",
+    "thread": null
+  },
+  {
+    "target": "function:arm-reads-only",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "What this does not see: a closure created BEFORE the if that captured the record and is called inside the arm. The arm names the closure, not the record. Nothing in the tree does this, and the store's own runtime bounds check is the backstop either way -- the emit prover does not refine on conditions, so it keeps that check regardless of what the lint concludes here.",
+    "thread": null
+  },
+  {
+    "target": "function:lint-narrowing-check",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A refined position -- record field, constructor payload, function parameter, or function return -- draws the same hybrid check. The `descriptor` is the full noun phrase naming the position (e.g. \"field 'code'\", \"bounded parameter\", \"bounded return\") so one mechanism serves every bounded-signature site.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The type range failed to fit; before rejecting, try the expression analysis. A NON-TRIVIAL proof -- one whose proven range is a real interval (p-lo < p-hi), the prover deriving a bound from arithmetic or flow -- is reported as the CDX2053 info so the elision stays visible in build logs and assertable in .diag sidecars. A TRIVIAL proof, whose proven range is a single point (p-lo == p-hi, a literal or a named constant that folds to one value), elides silently: the fit is self-evident and reporting it drowned the informative proofs (~96% of CDX2053s on a self-compile were single-point constants). The elision itself is unchanged in both cases -- only the info line is gated. An unproven flow is the CDX2051 error -- the campaign endgame: a bound is a contract, so a value that cannot be shown to honour it does not compile. The author either strengthens the source (a bounded field, parameter, return, or constant the prover can see) or takes responsibility with __narrow, which traps at runtime if violated.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The verdict is reached on the PROVEN range and the error used to quote the inferred TYPE's, so it named a quantity the decision had not used: `b.val / 8` over a 0..255 byte is provably 0..31, and the message read \"value type is 0..255\" -- neither the bound nor the proof, and an understatement of what had already been worked out. An author cannot act on a number the compiler did not use.",
+    "thread": null
+  },
+  {
+    "target": "function:lint-narrowing-prove",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "It reports the proof, and only the proof. The two are not interchangeable and must not be combined: since arithmetic keeps the narrower operand's bound, an inferred type is a CONTRACT the store's runtime check enforces, not a fact about the value -- `b.val - 10` types as 0..255 and evaluates to -10. Intersecting the two would \"prove\" a range the value can leave, which is the one thing this analysis must never do. The proof is sound on its own, and it already reaches every sound thing the type knows: a field's declared bound (enforced at every store), a bounded return, a bounded parameter, a literal.",
+    "thread": null
+  },
+  {
+    "target": "function:infer-match",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A match's ambient is the scrutinee's union every arm's guard and body -- an over-approximation across arms (only one arm runs), which is the sound direction. The arm walkers thread the accumulated row. A GADT arm's ambient union survives the substitution restore deliberately: the arm really is evaluated at runtime, so its effects are part of the match's ambient even though its speculative type bindings are rolled back.",
+    "thread": null
+  },
+  {
+    "target": "function:is-trivial-guard",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A guard on a Nil or Cons arm is refused: the lowering desugar chains arms as nested ifs, and a failed guard would need the rest of the chain duplicated under the arm's bindings. The parser writes a True literal where the source carries no guard, therefore that literal is the shape a guardless arm presents here.",
+    "thread": null
+  },
+  {
+    "target": "function:is-builtin-list-ctor",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The builtin List has no declared constructors, therefore Nil and Cons on a List scrutinee bind against the same synthesized view Stage 5 induction already checks against: Nil takes nothing, Cons takes the element and a tail of the same List type. Only name and wildcard fields are accepted -- a nested pattern in a Cons field would force the lowering desugar to duplicate the rest of the match per nesting level, therefore the checker refuses the shape here, where the message can say what to write instead. LinkedList scrutinees are excluded: the linked representation has no view runtime.",
+    "thread": null
+  },
+  {
+    "target": "section:Infer Act",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "An act block performs every statement, so its ambient row is the union of its statements' ambients; the act's TYPE is simply the last statement's. The stage-3b readers consume the row, so the old EffectfulTy name-union machinery (act-wrap-effects, act-value-type, union-names) is retired -- effects no longer ride result types. Effectful values and calls arrive at the statements already unwrapped by infer-name and infer-application, their effects in the ambient.",
+    "thread": null
+  },
+  {
+    "target": "function:infer-act-let",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The checker once did not thread it at all -- the binding reached the following statements only because `env-bind-local` aliased the caller's locals list, so the sibling statements read a binding that had merely never been removed. That made the act-block case work by the same accident that let an if-arm's local escape its arm. The threading here is what lets the bind stop aliasing.",
+    "thread": null
+  },
+  {
+    "target": "section:Infer Expression (dispatch)",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "infer-expr is how a DEFINITION is entered, and it is the only place the budget returns to zero: each definition legitimately starts fresh. Every walker inside the inference cycle calls infer-expr-at and passes depth + 1, so the budget measures real AST nesting. A helper that calls infer-expr rather than infer-expr-at silently restores the hole below.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The handler rule. Discharge is by the dotted sub-effect lattice, not by exact name: `with FileSystem` handles a body that performs FileSystem.Read and FileSystem.Write, because effect-covered-by is the same relation the def boundary already uses to accept those labels against a declared [FileSystem].",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "So the FIRST question is what the body's CONCRETE labels say, not whether its row is open. An inferred row is almost always open -- it carries a fresh tail -- and the old rule asked about the tail first, unified against the extension {E | t'}, and thereby forced the bare label E into the row while every dotted member fell into t' and survived. `with Store` over a body performing Store.Read left Store.Read in the row and manufactured a Store nobody performed. That is why the tail is now the fallback and never the first question.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "If any concrete label is covered, drop every covered label and keep the tail as it was: the tail was never what carried them. For the exact case this is what the old unify already computed -- a row [Console] under `with Console` bound t' to the rest -- so handler-smoke is unchanged, and the dotted case stops being a no-op with a CDX2092.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Only a body whose row is a BARE tail (no concrete label covered, tail open) still unifies: E can only have entered through the tail, and only unification can bind it. Family discharge through a tail is not attempted -- it would have to invent the member names.",
+    "thread": null
+  },
+  {
+    "target": "function:row-labels-covered",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Clause bodies are inferred for their own ambient rows (a Console handler whose clause writes files yields FileSystem) and unioned into the result; clause VALUE typing stays with lowering, as before this stage.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A record literal names every field of its type, and no other. Neither was checked until 2026-07-14, and both silences were dangerous in the same way: the emitter writes the fields it was given and leaves the rest of the record as __alloc left it, which is zero.",
+    "thread": null
+  },
+  {
+    "target": "function:record-field-unknown",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A field MISSPELLED was dropped on the floor: it matched no field of the type, so nothing was written, and the field the author meant to set kept its zero. CDX2005 already existed for exactly this mistake on a field ACCESS and a field ASSIGNMENT. The literal was the one place it was not raised.",
+    "thread": null
+  }
+]

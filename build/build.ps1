@@ -582,13 +582,18 @@ Measure-Phase 'oracles' {
 }
 
 # -- binary backend plugs: must build clean with the just-proven compiler.
-# Native code-emitting backends only (riscv/arm64/elf/pe/img). The
+# Native code-emitting backends only (riscv/arm64/t3isa/elf/pe/img). The
 # transpiler/text plugs are secondary outputs and are NOT gated here. Plug
 # CDX is untracked build-output, so without this gate a compiler tightening
 # silently dark-ships every backend until someone rebuilds one by hand.
+#
+# t3isa emits balanced-ternary words for a 27-trit machine and belongs here
+# for the same reason as the rest. Only its BUILD is gated: its own gate
+# needs an external emulator that lives on one machine, and nothing here
+# reaches that.
 Measure-Phase 'plug-binary' {
     Copy-Item -Force $SutCdx (Join-Path $Repo 'build-output\bare-metal\Codex.cdx')
-    $binaryBackends = @('riscv','arm64','elf','pe','img')
+    $binaryBackends = @('riscv','arm64','t3isa','elf','pe','img')
     $plugFail = @()
     foreach ($bp in $binaryBackends) {
         $bs = Join-Path $Repo "codex\plugs\$bp\build.ps1"
@@ -664,6 +669,86 @@ Measure-Phase 'plug-smoke' {
             if (Test-Path $spLog) { Get-Content $spLog | Select-Object -Last 5 | ForEach-Object { Write-Host "  ${sp}: $_" } }
         }
         exit 1
+    }
+}
+
+# -- the Shell DSL generators: codex/build/*Script.codex compile with the
+# just-proven compiler and emit the scripts the build itself runs on. Nothing
+# observed that. The deck-short miscompile emitted CORRUPT generator output
+# from a clean compile, and it sat silent because no gate ever compared a
+# generator against the script beside it; the corruption was found by eye.
+# This leg is that comparison, and it also catches the quieter half: an
+# emitter answers `# <unknown-cmd>` for a node it does not handle instead of
+# failing, so a node added to ShellTypes and forgotten in BashEmit produces a
+# script that is wrong rather than missing.
+#
+# 26 of 42 generators were already behind their shipped script when this
+# became a gate, and porting each drift back by hand is a campaign. Those are
+# recorded in build/generated-scripts-baseline.txt and do not fail the build.
+# A compile failure, an empty emission, an unhandled-node stub, and any drift
+# that is not in that file do. Cost measured 2026-08-06: 61s.
+Measure-Phase 'gen-scripts' {
+    $chkGen = Join-Path $PSScriptRoot 'check-generated-scripts.ps1'
+    if (Test-Path $chkGen) {
+        & pwsh -NoProfile -File $chkGen 2>&1 | ForEach-Object { Write-Host "  $_" }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host 'FAIL: a Shell DSL generator is broken or has newly drifted from the script it emits'
+            exit 1
+        }
+    }
+}
+
+# -- deck headroom. These 47 units are every one in the tree under 2.0x margin;
+# the next tightest is 2.13x, in codex/foreword, which this does not cover.
+# 1.25 trips codex/build at 52 points and the compiler's own unit at 80, about
+# 20 per cent above each one's current requirement. Rationale, corpus numbers
+# and the cost of raising the floor are in ProportionalDecks.md.
+#
+# It runs HERE because it needs the compiler this run built and must not touch
+# build-output\bare-metal\Codex.cdx: by this point SUT === seed is proven, and
+# app-sweep below clobbers the bare-metal copy. 23s over 47 units.
+Measure-Phase 'deck-headroom' {
+    $chkDeck = Join-Path $PSScriptRoot 'deck-headroom.ps1'
+    if (Test-Path $chkDeck) {
+        # -Fresh: the script serves cached logs without it.
+        & pwsh -NoProfile -File $chkDeck -Quire 'codex\build' -WithSelf -MinMargin 1.25 `
+              -Tag 'gate' -Top 5 -Jobs 8 -Fresh 2>&1 |
+            Where-Object { $_ -match 'FAIL|^\s+margin\s+\d|OK, tightest' } |
+            ForEach-Object { Write-Host "  $_" }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host 'FAIL: a unit has grown into its deck reservation'
+            Write-Host '      Detail: pwsh build/deck-headroom.ps1 -Quire codex\build -WithSelf -Fresh'
+            exit 1
+        }
+    }
+}
+
+# -- the apps are the extended pin on the compiler: 267 entry chapters
+# against build/app-sweep-baseline.txt, which names the units known not to
+# compile and the reason. Anything dirty and not in that file is a compiler
+# or foreword regression. The script existed with -Check and was invoked by
+# NOTHING, so it caught nothing: the cons-typed-as-its-element miscompile
+# (main 13839) turned RadioStationMain dirty the day CL 13483 landed and
+# sat a full day unobserved.
+#
+# It runs LAST because it copies seed\Codex.cdx over
+# build-output\bare-metal\Codex.cdx to compile with, which would clobber
+# the stage0 the fixed-point phases are comparing. By here SUT === seed is
+# already proven, so the seed it picks up IS the compiler this run built.
+# Cost measured 2026-08-06: 191s of a 517s gate.
+Measure-Phase 'app-sweep' {
+    $sweep = Join-Path $PSScriptRoot 'sweep-app-classes.ps1'
+    if (Test-Path $sweep) {
+        $swOut = @(& pwsh -NoProfile -File $sweep -Check -Jobs 8 2>&1 | ForEach-Object { "$_" })
+        $code = $LASTEXITCODE
+        if ($code -ne 0) {
+            Write-Host ''
+            Write-Host 'FAIL: an app entry chapter regressed against build\app-sweep-baseline.txt'
+            $swOut | Select-Object -Last 20 | ForEach-Object { Write-Host "  $_" }
+            Write-Host '  per-unit detail: test-output\clssweep\_per-unit.csv'
+            exit 1
+        }
+        $swOut | Where-Object { $_ -match 'units:|CHECK|elapsed:' } | ForEach-Object { Write-Host "  $_" }
     }
 }
 

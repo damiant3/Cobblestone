@@ -201,7 +201,7 @@ Start-Sleep -Seconds ([Math]::Max(1,$Seconds-3))
 if ($Keys) {
     # Set-1 make codes -> QEMU qcodes. Letters/digits cover the wizard's
     # text fields; sendkey emits make+break, so pass make codes only.
-    $qmap = @{ '72'='up'; '80'='down'; '28'='ret'; '1'='esc'; '14'='backspace'; '57'='spc';
+    $qmap = @{ '72'='up'; '80'='down'; '28'='ret'; '1'='esc'; '14'='backspace'; '57'='spc'; '88'='f12';
                '2'='1'; '3'='2'; '4'='3'; '5'='4'; '6'='5'; '7'='6'; '8'='7'; '9'='8'; '10'='9'; '11'='0';
                '16'='q'; '17'='w'; '18'='e'; '19'='r'; '20'='t'; '21'='y'; '22'='u'; '23'='i'; '24'='o'; '25'='p';
                '30'='a'; '31'='s'; '32'='d'; '33'='f'; '34'='g'; '35'='h'; '36'='j'; '37'='k'; '38'='l';

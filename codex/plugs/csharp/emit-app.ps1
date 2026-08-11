@@ -3,7 +3,7 @@
 #
 #   <source.codex>
 #     |
-#     v  run.ps1 (compile.ps1 -IrCce, then plug over TCP port 9100)
+#     v  run.ps1 (compile.ps1 -IrCce, then plug over its own TCP port, see build/plug-ports.ps1)
 #   <OutDir>\<name>.cs
 #     |
 #     v  generated <name>.csproj (the only barbarian-authored artifact,

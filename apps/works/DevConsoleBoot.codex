@@ -6,6 +6,7 @@ Chapter: DevConsoleBoot
   cites Works chapter AnnotationShellCommands
   cites Works chapter KeyManager
   cites Foreword chapter Maybe
+  cites Foreword chapter TextSearch
   cites Foreword chapter Sha256
   cites Foreword chapter Fat32
   cites Foreword chapter CCE
@@ -695,34 +696,6 @@ Section: Dev Console Entry
     else if list-at names i == target then i
     else find-chapter-index names target (i + 1) len
 
- THE MIRROR IS ONE WRAPPER AROUND THE WHOLE DISPATCH, not a write at each
- command. Every command in this console reports by setting `status`, so
- one echo here covers all of them and cannot fall out of step with a
- command added later; a write per arm would have to be remembered every
- time, and the arms that forgot would look exactly like commands that
- produced no output.
-
- It echoes the line that arrived as well as the answer. A reader at the
- far end of COM1 sees only what is written, so without the echo a
- transcript would be a column of answers to questions it cannot see, and
- with remote input on there is no keyboard anywhere for them to have been
- typed at.
-
- THE FLAG IS READ FROM THE STATE THE COMMAND PRODUCED, not the one it was
- given, and that is what makes `serial.on` mirror itself. Reading the old
- state would turn the mirror on and say nothing about it, so the first
- line of every mirrored session would be missing exactly when someone is
- checking whether the mirror works.
-
- THE `before` FLAG IS READ INTO A LOCAL FIRST, AND IT HAS TO BE.
- `__record-set` mutates the record in place, so the incoming `state` and
- the returned `after` are the SAME debugger record; reading
- `state.debugger.serial-mirror` after the route has run reads the value
- the command just wrote, not the one it started with. Written the obvious
- way, `serial.off` therefore saw False for both halves and went silent
- without announcing itself -- the exact ambiguity the `before` flag exists
- to remove, reintroduced by the aliasing rather than by the logic.
-
   handle-console-input : DevConsoleState, Text -> [Device.Port, Device.Block] DevConsoleState
   handle-console-input (state) (line) =
     let was-on = state.debugger.serial-mirror
@@ -730,19 +703,6 @@ Section: Dev Console Entry
       after <- (handle-console-route state line)
       (mirror-exchange after line was-on)
     end
-
- EITHER FLAG ARMS THE ECHO, the one before the command or the one after,
- and the `before` half exists entirely so that `serial.off` announces its
- own switch-off. With only the `after` flag the stream simply stops, and a
- reader at the far end cannot tell a mirror that was turned off from a
- console that has hung -- which is the precise question this module was
- built to answer, so leaving it ambiguous would have hollowed out the
- feature while every test still passed.
-
- The `after` half is what makes `serial.on` mirror itself: reading only
- the incoming state would turn the mirror on and say nothing, so the first
- line of a session would be missing exactly when someone is checking that
- the mirror works at all.
 
   mirror-exchange : DevConsoleState, Text, Boolean -> [Device.Port] DevConsoleState
   mirror-exchange (state) (line) (was-on) =
@@ -767,46 +727,14 @@ Section: Dev Console Entry
       else state
     is ModeSearch ->
       dev-console-search state line
-    is ModeDebug -> dispatch-debug-menu line state
-    is ModeCompile -> dispatch-compile-menu line state
-    is ModeSweep -> dispatch-sweep-menu line state
+    is ModeDebug -> dcb-dispatch-debug-menu line state
+    is ModeCompile -> dcb-dispatch-compile-menu line state
+    is ModeSweep -> dcb-dispatch-sweep-menu line state
     is ModeDriveManager -> dispatch-drive-menu line state
     is ModeIdentity -> dispatch-identity-menu line state
     is ModeAnnotations -> dispatch-annotations-menu line state
     is ModeAgent -> dispatch-agent-menu line state
     is otherwise -> state
-
-  text-trim : Text -> Text
-  text-trim (s) = text-trim-left (text-trim-right s)
-
-  text-trim-left : Text -> Text
-  text-trim-left (s) =
-    let len = text-length s
-    in let start = scan-space-fwd s 0 len
-    in if start == 0 then s
-    else if start >= len then ""
-    else substring s start (len - start)
-
-  text-trim-right : Text -> Text
-  text-trim-right (s) =
-    let len = text-length s
-    in if len == 0 then s
-    else let stop = scan-space-back s (len - 1)
-    in if stop < 0 then ""
-    else if stop == len - 1 then s
-    else substring s 0 (stop + 1)
-
-  scan-space-fwd : Text, Integer, Integer -> Integer
-  scan-space-fwd (s) (i) (len) =
-    if i >= len then i
-    else if is-whitespace (char-at s i) then scan-space-fwd s (i + 1) len
-    else i
-
-  scan-space-back : Text, Integer -> Integer
-  scan-space-back (s) (i) =
-    if i < 0 then i
-    else if is-whitespace (char-at s i) then scan-space-back s (i - 1)
-    else i
 
 Section: Editor Key Handling
 
@@ -902,8 +830,8 @@ Section: Editor Key Handling
 
 Section: Debug Menu Dispatch
 
-  dispatch-debug-menu : Text, DevConsoleState -> [Device.Port, Device.Block] DevConsoleState
-  dispatch-debug-menu (key) (state) =
+  dcb-dispatch-debug-menu : Text, DevConsoleState -> [Device.Port, Device.Block] DevConsoleState
+  dcb-dispatch-debug-menu (key) (state) =
     if key == "mem" then
       let dbg = __record-set (state.debugger) "mode" DebugMemory
       in __record-set (__record-set state "debugger" dbg) "status" ("Memory @ 0x" & hex-i64 (state.debugger.last-address))
@@ -966,13 +894,6 @@ Section: Debug Menu Dispatch
       in __record-set s "menu" main-menu
     else debug-line-input key state
 
- `read` and `write` act at the CURSOR, like `watch`. Both used to set a
- status saying "enter address" and then consume nothing, so the next line
- fell through to the evaluator, moved the cursor, and no read or write
- ever happened -- two menu items the console could not perform. A read
- answers immediately. A write needs a value, so it is the one command
- that arms `pending`.
-
   debug-mem-read-here : DevConsoleState -> DevConsoleState
   debug-mem-read-here (state) =
     __record-set state "status" (debug-mem-read-line (state.debugger.last-address))
@@ -982,9 +903,6 @@ Section: Debug Menu Dispatch
     let dbg = __record-set (state.debugger) "pending" PendingWriteValue
     in let msg = "Memory Write at 0x" & hex-i64 (state.debugger.last-address) & ": enter byte value"
     in __record-set (__record-set state "debugger" dbg) "status" msg
-
- A line arrives as a value only when a command asked for one. Otherwise
- it is an address expression, exactly as before.
 
   debug-line-input : Text, DevConsoleState -> [Device.Port, Device.Block] DevConsoleState
   debug-line-input (key) (state) =
@@ -1006,21 +924,10 @@ Section: Debug Menu Dispatch
       is PendingPortWatch -> debug-take-port-watch key state
       is PendingNone -> debug-eval-expr key state
 
- `Address Lookup` was in the menu with no arm at all, so the key fell
- through to the evaluator and answered `expr: unknown name addr`. It needs
- no argument -- it asks what the cursor is pointing AT -- and
- `resolve-addr` already existed to answer it.
-
   debug-addr-here : DevConsoleState -> DevConsoleState
   debug-addr-here (state) =
     let dbg = state.debugger
     in __record-set state "status" ("0x" & hex-i64 (dbg.last-address) & " is " & resolve-addr dbg (dbg.last-address))
-
- A search is a PATTERN at the cursor and a compare is the cursor against
- ONE other address, so each takes a single line and neither needs a
- multi-argument parser. The window in both cases is the dump length,
- which is the same rule `watch` uses: the region acted on is the region
- `mem` would have shown.
 
  The two lines are read differently, which is why the pending flag is a
  variant. A search pattern is TEXT -- hex digit pairs, parsed here -- and
@@ -1054,14 +961,6 @@ Section: Debug Menu Dispatch
       is ExprErr (m) -> __record-set s "status" ("compare cancelled -- expr: " & m)
 
 Section: The Port Commands
-
- A PORT NUMBER IS AN EXPRESSION SEEDED WITH ZERO, not with a cursor.
- The disk prompts seed `$` with the disk cursor and the CPUID prompt with
- the leaf cursor, each because a number from another space is meaningless
- in theirs. A port is a sixth such space, and the argument that earned
- those cursors does not carry here: nobody steps through the I/O map, they
- type the port the manual names. Seeding zero keeps `$` defined and makes
- it mean nothing in particular, which is what it is.
 
   debug-port-read-arm : DevConsoleState -> DevConsoleState
   debug-port-read-arm (state) =
@@ -1125,11 +1024,6 @@ Section: The Port Commands
     in let msg = "watching port 0x" & hex-i32 port & ", " & show (list-length ports) & " watched"
     in __record-set (__record-set state "debugger" d1) "status" msg
 
- Arming and clearing are the whole of the trace's control surface. There
- is no per-port filter: the ring holds sixty-four entries and a filter
- would be a second thing to get right for a report an operator can read
- in one screen.
-
   debug-io-trace : DevConsoleState, Boolean, Text -> DevConsoleState
   debug-io-trace (state) (on) (msg) =
     let dbg = __record-set (state.debugger) "port-trace" (pt-arm (state.debugger.port-trace) on)
@@ -1141,25 +1035,6 @@ Section: The Port Commands
     in __record-set (__record-set state "debugger" dbg) "status" "port trace cleared"
 
 Section: The Disk Commands
-
- The disk commands take the same shape as the memory ones: an expression
- supplies the sector, the command acts there, and one argument is enough.
- A dump is a sector; a compare is the disk cursor against one other
- sector. `disk.sb`, `disk.facts` and `disk.sc` take no argument at all,
- because they ask about the store and the medium rather than about a
- place the operator chose.
-
- `$` MEANS THE DISK CURSOR IN THESE PROMPTS, not the memory cursor. A
- prompt that has just asked for an LBA and then read `$` as a physical
- address would answer with a sector number six orders of magnitude away
- from anything on the medium. So the evaluator is seeded with `last-lba`
- here and `last-address` everywhere else, and `$ + 1` means the next
- sector, which is what a person stepping through a disk means by it.
-
- The multi-line reports go to `disk-lines` and switch the view, rather
- than into the one-line status. The sector is read once, here, for the
- reason given in `DevDebugger`: a view that read it would re-read on
- every repaint.
 
   debug-disk-arm : DevConsoleState -> DevConsoleState
   debug-disk-arm (state) =
@@ -1225,11 +1100,6 @@ Section: The Disk Commands
     (__record-set state "status" line)
   end
 
- The three interrupt reports that need no argument share one function,
- because they differ only in which list they render. The disk commands
- could not: each of those performs I/O and has its own effect row, so
- there was nothing to share.
-
   debug-lines-report : DevConsoleState, List Text, Text -> DevConsoleState
   debug-lines-report (state) (lines) (what) =
     let d0 = __record-set (state.debugger) "report-lines" lines
@@ -1242,21 +1112,10 @@ Section: The Disk Commands
     (debug-lines-report state lines "PIC IRQ lines")
   end
 
- The vector is an EXPRESSION seeded with `last-vector`, the same rule the
- rest of this console follows, so `$ + 1` steps to the next gate. The
- seed is the vector cursor and not `last-address`: an address seeded here
- would make `$ + 1` mean a vector six orders of magnitude outside the
- table, which `ii-entry-report` would then correctly refuse and the
- operator would read as the command being broken.
-
   debug-idt-arm : DevConsoleState -> DevConsoleState
   debug-idt-arm (state) =
     let dbg = __record-set (state.debugger) "pending" PendingIdtVec
     in __record-set (__record-set state "debugger" dbg) "status" "IDT entry: enter a vector"
-
- THE CURSOR MOVES ONLY WHEN THE VECTOR WAS ACCEPTED. A refused vector
- leaves `last-vector` where it was, so the next `$` still means the last
- gate actually looked at rather than the out-of-range number just typed.
 
   debug-idt-show : DevConsoleState, Integer -> DevConsoleState
   debug-idt-show (state) (vec) =
@@ -1283,10 +1142,6 @@ Section: The Disk Commands
  stayed False, which is why the console reported `serial mirror ON` and
  mirrored nothing.
 
- The status line names the new state rather than acknowledging the
- command, so a mirrored session shows what the flag IS at the moment it
- changed, which is what a reader at the far end needs.
-
   debug-serial-mirror : DevConsoleState, Boolean, Text -> DevConsoleState
   debug-serial-mirror (state) (on) (msg) =
     let dbg = __record-set (state.debugger) "serial-mirror" on
@@ -1296,12 +1151,6 @@ Section: The Disk Commands
   debug-serial-remote (state) (on) (msg) =
     let dbg = __record-set (state.debugger) "serial-remote" on
     in __record-set (__record-set state "debugger" dbg) "status" msg
-
- A macro needs TWO lines, which no other command here does, so the name
- arrives first and is parked in `macro-name` while the body is asked for.
- Neither line is an expression: a macro name is a name, and a body is a
- list of command keys, so both bypass `ExprEval` for the reason `sym` and
- `bp-add` do.
 
   debug-macro-def-arm : DevConsoleState -> DevConsoleState
   debug-macro-def-arm (state) =
@@ -1331,12 +1180,6 @@ Section: The Disk Commands
     let dbg = __record-set (state.debugger) "pending" PendingMacroRun
     in __record-set (__record-set state "debugger" dbg) "status" "Run macro: enter a name"
 
- THE NESTING REFUSAL IS HERE AND IT IS THE ONLY BOUND ON RECURSION. A body
- containing `macro.run` would otherwise reach this function again, and a
- macro that names itself would not stop. There is no fuel and no depth
- count: while one macro is running, another is refused outright, which is
- one flag to read rather than a limit to get right and then trust.
-
   debug-take-macro-run : Text, DevConsoleState -> [Device.Port, Device.Block] DevConsoleState
   debug-take-macro-run (key) (state) =
     let d0 = __record-set (state.debugger) "pending" PendingNone
@@ -1345,12 +1188,6 @@ Section: The Disk Commands
     else when macro-body-of (d0.macros) key
       is None -> __record-set s "status" ("no such macro: " & key)
       is Just (body) -> debug-macro-execute s key body
-
- The commands run through `handle-console-input`, which is the same door a
- typed line comes through, so a macro can do exactly what an operator can
- and nothing else. It also means each step MIRRORS when the serial mirror
- is on, and a reader at the far end sees the macro's steps rather than one
- unexplained final status.
 
   debug-macro-execute : DevConsoleState, Text, Text -> [Device.Port, Device.Block] DevConsoleState
   debug-macro-execute (state) (name) (body) =
@@ -1369,20 +1206,6 @@ Section: The Disk Commands
       next <- (handle-console-input state (list-at cmds i))
       (debug-run-commands next cmds (i + 1) n)
     end
-
- The flag is cleared on the way out, and leaving it set would refuse every
- macro for the rest of the session -- a worse defect than the nesting it
- prevents, and one a test that checked only the refusal would miss.
-
- THE SUMMARY CARRIES THE LAST COMMAND'S STATUS RATHER THAN REPLACING IT.
- A macro's own summary reads the same whether every step succeeded or the
- third was refused, so a summary alone makes an in-macro refusal invisible
- on screen -- the nesting refusal in particular, which is the one an
- operator most needs to see. Both are reported: the summary says what ran,
- the tail says where it ended.
-
- The status is read into a local BEFORE the debugger record is written,
- because `__record-set` mutates in place and the two are the same record.
 
   debug-macro-finish : DevConsoleState, Text, Integer -> DevConsoleState
   debug-macro-finish (state) (name) (n) =
@@ -1403,10 +1226,6 @@ Section: The Disk Commands
     in if parsed.mr-ok == False then __record-set s "status" (parsed.mr-message)
     else debug-repeat-run s (parsed.mr-count) (parsed.mr-command)
 
- A repeat reuses the macro runner by building the command list, so the
- count bound and the one-command-at-a-time execution are the same code
- rather than a second copy that could drift from it.
-
   debug-repeat-run : DevConsoleState, Integer, Text -> [Device.Port, Device.Block] DevConsoleState
   debug-repeat-run (state) (n) (cmd) = act
     done <- (debug-run-commands state (macro-repeat-list cmd 0 n []) 0 n)
@@ -1423,20 +1242,10 @@ Section: The Disk Commands
     if i >= n then acc
     else macro-repeat-list cmd (i + 1) n (list-snoc acc cmd)
 
- `cpu.cr` and `cpu.feat` need no argument and go straight to the report.
- `cpu.cpuid` needs a leaf, and takes it the way every other argument in
- this console is taken: an expression, seeded from its own cursor, so
- `$ + 1` walks to the next leaf.
-
   debug-cpuid-arm : DevConsoleState -> DevConsoleState
   debug-cpuid-arm (state) =
     let dbg = __record-set (state.debugger) "pending" PendingCpuLeaf
     in __record-set (__record-set state "debugger" dbg) "status" "CPUID: enter a leaf"
-
- THE CURSOR MOVES ONLY ON A LEAF THE PROCESSOR ACCEPTED, the same rule the
- IDT vector follows. A refused leaf leaving the cursor behind would make
- the next `$` mean a leaf that does not exist, so a second `$ + 1` would
- walk further into nothing rather than back to solid ground.
 
   debug-cpuid-show : DevConsoleState, Integer -> DevConsoleState
   debug-cpuid-show (state) (leaf) =
@@ -1454,16 +1263,6 @@ Section: The Disk Commands
       is ExprErr (m) -> __record-set s "status" ("CPUID cancelled -- expr: " & m)
       is ExprOk (v) -> debug-cpuid-show s v
 
- `sym` and `bp-add` are the two commands whose argument is a NAME, and
- both had working implementations with no caller: `debug-sym-lookup` and
- `bp-add-symbolic` were defined here and reached from nowhere, while the
- menu offered both. The line each prompted for went to the address
- evaluator and moved the cursor.
-
- Neither name goes through `ExprEval`, and that is the point of the
- variant. A name is not an expression; handing `main` to an evaluator
- answers "unknown name" for something that was never one.
-
   debug-sym-arm : DevConsoleState -> DevConsoleState
   debug-sym-arm (state) =
     let dbg = __record-set (state.debugger) "pending" PendingSymName
@@ -1480,22 +1279,11 @@ Section: The Disk Commands
     in let s = __record-set state "debugger" dbg
     in __record-set s "status" (debug-sym-lookup (s.source-index) key)
 
- `bp-add-symbolic` reports through the DEBUGGER's status field and this
- console draws the CONSOLE's, so the answer is copied across. Two status
- fields is not a shape worth defending, but collapsing them is a wider
- change than this one and would touch every debug command.
-
   debug-take-bp-name : Text, DevConsoleState -> DevConsoleState
   debug-take-bp-name (key) (state) =
     let dbg0 = __record-set (state.debugger) "pending" PendingNone
     in let dbg1 = bp-add-symbolic dbg0 key
     in __record-set (__record-set state "debugger" dbg1) "status" (dbg1.status)
-
- THE PENDING FLAG IS CLEARED BEFORE THE EXPRESSION IS EVALUATED, on both
- paths. If a bad value left the write armed, the next line the operator
- typed -- most likely an address expression, since that is what every
- other line here is -- would be taken as the value and written to memory.
- A refusal that stays armed is worse than the refusal it reports.
 
   debug-take-write-value : Text, DevConsoleState -> DevConsoleState
   debug-take-write-value (key) (state) =
@@ -1512,13 +1300,6 @@ Section: The Disk Commands
  evaluate them with, so this arm was `else state`: it swallowed the line
  without a word, which is the worst of the three things it could do.
 
- `$` is the last address, which is the reading a person at a debugger
- means by it: look at something, then look a little past it.
-
- A bad expression sets the status to the reason and leaves last-address
- ALONE. Moving the cursor to a value the evaluator could not compute is
- how you dump the wrong page and believe it.
-
  `watch` arms at the CURSOR rather than taking an address of its own, and
  that is what makes the expression evaluator worth having here: you type
  `heap-base + 0x100`, the cursor moves there, and `watch` watches it. The
@@ -1526,20 +1307,12 @@ Section: The Disk Commands
  dispatches single words, so the address arrives the way every other
  address in it does.
 
- The length is the dump length, so the region you watch is the region
- `mem` would show you. Two different defaults would be two numbers to
- keep straight for no reason.
-
   debug-watch-here : DevConsoleState -> DevConsoleState
   debug-watch-here (state) =
     let dbg = state.debugger
     in let r = dev-watch-add (dbg.dev) ("0x" & hex-i64 (dbg.last-address)) (dbg.last-address) (dbg.dump-length)
     in let dbg2 = __record-set dbg "dev" (r.wa-state)
     in __record-set (__record-set state "debugger" dbg2) "status" (r.wa-message)
-
- The check writes the re-armed table back. Dropping it would leave every
- watch reporting its first change forever, which is the defect
- `dev-watch-check` is written against and which its own test ablates.
 
   debug-watch-check : DevConsoleState -> DevConsoleState
   debug-watch-check (state) =
@@ -1557,21 +1330,9 @@ Section: The Disk Commands
 
 Section: Compile Menu Dispatch
 
-  dispatch-compile-menu : Text, DevConsoleState -> DevConsoleState
- Compile-and-run needs a guest to run the compiler in, and that guest is a
- VMX one. So the first thing this asks is whether this machine can enter
- VMX operation at all, and it says so plainly when it cannot -- naming the
- MSR and what to do about it -- rather than reporting "(pending)", which
- was true of the feature and told an operator nothing about their machine.
+  dcb-dispatch-compile-menu : Text, DevConsoleState -> DevConsoleState
 
- The honest state, stated once here so it is not discovered twice: on a
- machine with VT-x the run path is `vm-compile-cdx` then `vm-run-cdx`, and
- it is **unexercised**, because no emulator this project tests under
- exposes nested VMX. What IS exercised, and every battery run exercises
- it, is the refusal: `codex/test/apps/vmx-init-test` requires this machine
- to be told the truth about itself.
-
-  dispatch-compile-menu (key) (state) =
+  dcb-dispatch-compile-menu (key) (state) =
     if key == "back" then
       let s = __record-set state "mode" ModeMainMenu
       in __record-set s "menu" main-menu
@@ -1586,8 +1347,8 @@ Section: Compile Menu Dispatch
 
 Section: Sweep Menu Dispatch
 
-  dispatch-sweep-menu : Text, DevConsoleState -> DevConsoleState
-  dispatch-sweep-menu (key) (state) =
+  dcb-dispatch-sweep-menu : Text, DevConsoleState -> DevConsoleState
+  dcb-dispatch-sweep-menu (key) (state) =
     if key == "back" then
       let s = __record-set state "mode" ModeMainMenu
       in __record-set s "menu" main-menu
@@ -1709,12 +1470,6 @@ Section: Drive Manager Dispatch
           else __record-set s "status" ("Format failed: " & drive.di-model)
         end
   end
-
- The install lives in `Kernel chapter DriveManager` and this is the menu entry
- for it. It used to be a second copy of the whole sequence, and the copy read
- the SOURCE volume's boot sector while the TARGET was still selected -- one
- line before it selected the source. That was unreachable while block-select
- did nothing, and became a real wrong read the moment it started working.
 
   dm-exec-install : DevConsoleState, DriveInfo -> [Device.Block] DevConsoleState
   dm-exec-install (state) (drive) = act

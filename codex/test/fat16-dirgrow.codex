@@ -1,37 +1,11 @@
 Chapter: Fat16Dirgrow
   cites Foreword chapter Fat16
 
- A subdirectory that has run out of slots grows a cluster
- instead of refusing a write the volume has room for.
-
  The fixture's clusters are one sector, so SUB holds sixteen 32-byte slots and
  two of them are . and .. -- fourteen files fit in the cluster it was born
  with. The fifteenth is the whole test. Before the growth code it answered
  False on a disk with sixteen megabytes free, and that False was
  indistinguishable from the honest one a full ROOT gives.
-
- Fourteen-then-one is deliberate. A test that wrote fifteen files and checked
- only the count would pass on a volume that grew on the first write and on one
- that never needed to, so it would not be evidence about growth at all. The
- fill is sized to leave the directory exactly full, which makes the next write
- the first one that cannot be served without a new cluster.
-
- Three assertions, and the count is the weakest of them:
-
- The chain length is the direct evidence. SUB is resolved and its cluster
- chain is walked through the FAT: one cluster before the fifteenth file, two
- after. A write that reported True while quietly landing the entry somewhere
- else would not move this number.
-
- The read-back of the FIRST file is what catches a growth that corrupts what
- was already there. The new cluster is zeroed before it is linked, and the
- link is written last; if either were done in the other order, an existing
- entry or a stale one would show up here.
-
- F15 must NOT be in the root. A writer that gave up on the parent and fell
- back to the root would report True and read back through SUB/ correctly if
- the walk found it there -- reading the root is what tells those apart, the
- same way fat16-subdir pins it.
 
  We say:
 
@@ -65,10 +39,6 @@ Section: Entry
 
 Section: Filling
 
- Each write allocates a cluster for the file's own bytes as well as taking a
- slot, so this exercises the allocator fourteen times over before the
- directory itself needs anything.
-
   fill-dir : Integer, Integer, Integer -> [Device.Block] Integer
   fill-dir (i) (n) (acc) =
     if i > n then acc
@@ -78,10 +48,6 @@ Section: Filling
     end
 
 Section: Measuring The Chain
-
- The walk stops on anything a chain cannot continue into, not only on the
- end-of-chain marker, so a corrupt volume ends this loop rather than hanging
- the machine.
 
   sub-chain-length : Fat16Volume -> [Device.Block] Integer
   sub-chain-length (vol) = act

@@ -841,47 +841,87 @@ trust infrastructure rather than a parallel one.
 sidecar. If a sidecar grows past that, the schema-evolution
 migration path can move that chapter to a binary form. Defer.
 
-## E. Coverage status
+## E. Coverage status, and how to run an audit
 
-**Re-measured 2026-07-28. Do not quote these forward; count them again.**
-21 sidecar files, 55 records. Every one is a JSON array, which is the
-property worth checking and the one that has been wrong before.
+**The prose audit campaign is COMPLETE (2026-08-07): every chapter in the
+tree carrying column-2 prose has been audited and recorded, and zero
+remain.** Re-measure before quoting any figure here (L-COUNT). Populating
+by campaign is what closed it; the CLI lift below was never the
+prerequisite it was assumed to be.
 
-| area | files | records |
-|---|---:|---:|
-| `codex/compiler/` (Emit, IR x2, Semantics) | 4 | 4 |
-| `codex/plugs/` (riscv 16, pe 2, go 2, ocaml 2, and 9 emitters with 1 each) | 13 | 31 |
-| `apps/guios/` (GopRender, GuiDisplay) | 2 | 11 |
-| `codex/test/` (gop-render-clamp, gop-text-clip) | 2 | 9 |
+**Coverage is `annotations/AUDITED.txt` MEMBERSHIP and nothing else.** An
+all-KEEP chapter changes no source and writes no sidecar, so sidecars,
+CL descriptions and diffs all under-report: this design once claimed the
+foreword complete while 122 chapters had never been opened, and after
+those were audited 101 still flagged, all of them that run's own all-KEEP
+chapters. Consequences for anyone running an audit:
 
-The previous version of this section read "exactly five compiler chapters
-... roughly 50 annotation records ... the other ~340 chapters in the depot
-have zero", and named `codex/Emit/PeWriter` and `codex/Emit/X86_64Chapter`,
-neither of which is where those chapters live. Every figure in it was stale
-and the paths had rotted underneath it, which is `L-COUNT` exactly.
+- **Run `apply-annotations.ps1 -Apply` even when the report is all KEEP
+  and nothing will be cut.** That run is the only thing that records the
+  audit; a dry run deliberately writes nothing.
+- **A ledger line is a claim about a POINT IN TIME and nothing reopens
+  it.** A chapter recorded on day D can gain prose on D+1 and still read
+  as audited. When it matters, check the ledger date against
+  `p4 fstat -T headTime` rather than membership alone.
+- **The date test gives FALSE POSITIVES on prose-free chapters, and it
+  hides nothing.** A chapter with zero prose lines produces no extractor
+  record, so `-Apply` finds nothing for it and its ledger line never
+  refreshes. Measured across the ledger, roughly 30 per cent of entries
+  are such chapters, so a date sweep reports them as unaudited forever.
+  This is noise on the test, not hidden prose: if such a chapter later
+  GAINS prose the extractor does produce a record and `-Apply` refreshes
+  normally.
 
-**Verify the array property on the RAW TEXT, not on a parsed object.**
-`ConvertFrom-Json` unrolls a single-element array to a bare object, so
-`$parsed -is [array]` answers False for a correct one-record file and False
-for a broken bare-object file alike: the instrument cannot express the
-distinction it is being asked about. Testing the first non-whitespace
-character for `[` can. Measured both ways on 2026-07-28: the parsed test
+**Measure prose as `^ [^ ]` MINUS the bare ` We say:` marker, and skip
+`build/output`.** The marker matches the prose pattern and is not prose,
+so counting it inflates the remaining work substantially and a chapter
+can read as one prose line with nothing in it to audit.
+
+**Run the colon test AND the continuation test, both, and BEFORE apply.**
+They are not redundant. A block ending in a colon introduces an indented
+example the extractor cannot see; so does a block that does not end in
+one (`browser/ContentAddress` 19, "Display format: hex-encoded digest
+with codec prefix", followed by an indented example at three spaces).
+Cutting that block would have orphaned its example, and only the
+continuation test catches it.
+
+**Three chapters are FIXTURES, not subjects: `prose-anchor`,
+`prose-consistency` and `prose-smoke` are tests OF the prose system, so
+their prose is the test data.** `prose-anchor.diag` pins CDX1101, raised
+by a block naming a function that deliberately has no definition; cutting
+that block fails the test outright, and cutting its siblings leaves the
+test green while it pins nothing. Detect them by scanning for CPL
+template and transition markers in prose (`To X gives`, `A X is a record
+containing`, `X is one of`, `such that`, `For every`). The full account
+is in `docs/ExaminersAssay.md`.
+
+**The high KEEP rate is the finding, not leniency.** Rule 12's exemptions
+carry most of the tree: external specs and wire layouts, magic numbers
+with their derivations, hardware register semantics, and attacker-facing
+bounds. Two further kinds the campaign had to learn, both of which
+survive rule 12 and neither of which is obvious:
+
+- **A test's prose carries what its code cannot**: the oracle's
+  provenance (whether the expected values came from an independent
+  reference or from this code), why a particular case exists, and what
+  the test deliberately does NOT assert. Cut the last kind and the next
+  session tightens the test into machine-dependence. This is L-FALSIF
+  written into the source.
+- **A quoted external spec inside a paragraph about OUR engine is a
+  citation, not a spec fact**, and the classifier cannot tell those
+  apart. Judge the block, not the quotation.
+
+**Verify the sidecar array property on the RAW TEXT, not on a parsed
+object.** `ConvertFrom-Json` unrolls a single-element array to a bare
+object, so `$parsed -is [array]` answers False for a correct one-record
+file and False for a broken bare-object file alike: the instrument cannot
+express the distinction it is being asked about. Testing the first
+non-whitespace character for `[` can. Measured both ways: the parsed test
 reported 13 of 21 files broken and the raw test reported 0, and the raw
 test is the true one.
 
-Two ways forward:
-
-- **Scope down**: declare the system "compiler-internal for now,"
-  delete the unused directory shell, and revisit when the agent
-  workflow that needs annotations actually materializes.
-- **Populate**: ship `AnnotationsCli.codex`, then have agents
-  annotate the chapters they touch as part of normal CL work. The
-  trust + signing pieces above make this safe.
-
-I lean toward the second. The CLI lift is the load-bearing fix;
-once authoring is ergonomic, coverage follows. Without the CLI,
-populating is sustained by discipline alone, and discipline is the
-property the design correctly chose to *not* depend on.
+**Do not restart this as a sweep.** A future pass starts from the ledger,
+not from a guess.
 
 ## F. Phasing
 
@@ -949,8 +989,8 @@ priority is yours.
 ## H. Second pass -- grounded in the founding vision
 
 This section was added after I went back and read
-`docs/Stories/Vision/NewRepository.txt` and
-`docs/Stories/Vision/IntelligenceLayer.txt` end to end. Sections
+`docs/PM/Stories/Vision/NewRepository.txt` and
+`docs/PM/Stories/Vision/IntelligenceLayer.txt` end to end. Sections
 above were written from the condensed `FOUNDING-VISION.md` and a
 codebase tour. Reading the source documents changed the framing
 substantially: most of what I was about to propose as "new

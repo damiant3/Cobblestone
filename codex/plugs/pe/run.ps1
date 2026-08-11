@@ -45,7 +45,7 @@ $payloadMs.Write($cdxBytes, 0, $cdxBytes.Length)
 $inputBytes = $payloadMs.ToArray()
 
 # -- Start TCP listener ----------------------------------------------
-$plugPort = 9100
+$plugPort = 9128
 $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $plugPort)
 $listener.Start()
 Write-Host "[pe-run] Listening on port $plugPort"

@@ -74,7 +74,10 @@ $vmArgs = @('-kernel', $Out, '-gop-width', $Width, '-gop-height', $Height, '-mem
 if ($Keys) {
     $keyFile = Join-Path $outDir 'desk-keys.txt'
     Set-Content -Path $keyFile -Value ($Keys -replace ';', "`n")
-    $vmArgs += @('-keys-file', $keyFile)
+    # -hid-nak-unchanged: under the default HID model a keystroke narrower
+    # than the guest's poll interval does not exist (reek's measured table,
+    # OperatorsManual). Every bed that injects keys carries the flag.
+    $vmArgs += @('-keys-file', $keyFile, '-hid-nak-unchanged')
 }
 if ($Rtc) { $vmArgs += @('-rtc', $Rtc) }
 

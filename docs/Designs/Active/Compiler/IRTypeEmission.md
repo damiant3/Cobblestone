@@ -206,12 +206,28 @@ fields than the inline form does, because it lists every field of every
 declared type while the inline form only shows fields of types some node
 mentions.
 
-**The constructor-payload side is UNTESTED, not clean.** The same tool reports
-zero bounded constructor payloads in all six units, on both sides. That is
-zero instances, so it is no evidence at all about whether `var-ctor` field
-bounds survive the round trip. It is the open question for
-`rc-check-ctor-ref-sum`, and it needs a unit that has one, or a probe written
-to have one.
+**The constructor-payload side is now MEASURED, and it is covered.** The
+accountant reports zero bounded constructor payloads in all six units, on
+both sides, which is zero instances and therefore no evidence either way. So
+the probe was written to have one: `build/ir-type-probes/ctor-bounded.codex`,
+a sum whose `Present` constructor carries `Integer between -100 and 100
+clamping`, beside a record field `pc` carrying `between 0 and 100 clamping`
+as the positive control. Against seed `52E0A3A00218E19F`:
+
+```
+type-defs: (var-ctor "Present" (fields (a-bounded (a-named "Integer") -100 100 ov-clamp)))
+inline:    (sum-ctor  "Present" (fields (int -100 100 ov-clamp)))            x10
+```
+
+Bounds AND overflow mode, published once in type-defs in the same
+`(a-bounded ...)` form the record side uses, against ten inline copies. The
+instrument can render the opposite and does so in the same two lines:
+`Absent` shows a bare `(fields)` and the `nm` field shows a bare
+`(a-named "Text")`, so "no bounds published" is a shape this measurement
+would have shown had it been the case.
+
+**This closes the open risk on A.** The sum side recovers by name exactly as
+the record side does, so option B is not needed for it.
 
 The other honest limit: `a64-atype-to-codex-type:1937` defaults its
 `otherwise` arm to a wide `OvError` integer, and `:1933` maps a bare `Integer`
@@ -267,9 +283,10 @@ once, ignorable by a consumer that does not need it.
   being exact.
 - Costs: one new emitter form, one new parser form, four call sites. Bounded
   in size by the type-defs section beside it, so 0.14 to 1.39 per cent.
-- **B is no longer the recommendation, but it is the answer if the
-  constructor-payload measurement comes back uncovered**, and it can be scoped
-  to the sum side alone if that is where the gap is.
+- **B is no longer the recommendation, and the measurement that would have
+  revived it came back COVERED** (`ctor-bounded.codex`, above), so it is not
+  needed for the sum side either. It stays on the page as the answer if a
+  later unit turns up an uncovered bounded field or payload.
 
 ### C. Leave the wire alone
 
@@ -286,16 +303,22 @@ where 3.4 MB carries the same meaning.
 
 **Take A.** Sequence, because two of these are controls and belong first:
 
-1. Put a clamped bounded-integer record field on
-   `codex/test/plug-oracle-arith.codex` so `plug-oracle-test.ps1` can see a
-   clamping regression at all. This is a control, and it must be green before
-   anything else moves.
-2. Measure the constructor-payload side against a unit that HAS a bounded
-   constructor payload. If covered, A is enough; if not, take B for the sum
-   side only.
-3. Lift `a64-atype-to-codex-type` into shared plug code and point the group-3
-   sites at it, WITHOUT changing the emitter. Everything still passes, because
-   the inline form is still there and still wins.
+1. ~~Put a clamped bounded-integer record field on
+   `codex/test/plug-oracle-arith.codex`~~ **DONE, main 13199.** The field
+   alone was not sufficient: neither wired arm implemented clamping, so the
+   control could not have failed. The C# plug is now a third arm of
+   `plug-oracle-test.ps1` (it is the only wired arm carrying a group-3 site),
+   and the control is proven to fire -- feeding `py-clamp-field-val` an empty
+   field list, which is what a naive A delivers, moves exactly the two
+   predicted rows. Two unrelated defects surfaced on the first run and are
+   fixed in the same CL; see it for the record-field slot-strip.
+2. ~~Measure the constructor-payload side~~ **DONE. Covered** -- see the
+   `ctor-bounded.codex` measurement above. A is enough; B is not needed.
+3. ~~Lift `a64-atype-to-codex-type` into shared plug code and point the
+   group-3 sites at it, WITHOUT changing the emitter.~~ **DEFERRED by Damian
+   2026-08-05**, carried in `codex/plugs/plugs-backlog.md` 1.1. It was a
+   rehearsal rather than a prerequisite, and A's own risks came back measured
+   closed on both the record and constructor sides.
 4. Only then change the emitter, and run the whole-compiler `-IrCce`.
 
 Steps 1 through 3 are not seed-affecting and land independently. Step 4 is the
@@ -313,7 +336,18 @@ the lane that wrote it.
   a group-3 site. A naive A would flood C2's sweep with false disagreements,
   and val's kill-rate is the instrument that would notice.
 - arm64, riscv and wasm carry group-3 sites and are claimed by no lane in the
-  `CurrentPlan.md:228-237` table.
+  `CurrentPlan.md:228-237` table. **RESOLVED 2026-08-06, and no lane had to
+  take them.** All three already route their empty-inline case through the
+  shared `record-fields-by-name` lift in `IRTextParser.codex`, so the
+  consumers-first work covered them: `a64-resolve-record-fields`,
+  `rv-resolve-record-fields` and `field-index-from-ctx`
+  (`WasmEmitter.codex:249`). Bounds survive because `atype-to-codex-type`
+  maps `ABoundedIntType (base) (lo) (hi) (mode)` to `IntegerTy lo hi mode`.
+  `test-boards.ps1` is 2 pass 0 fail under the live short wire. Wasm is the
+  exception and it is not a regression: it has no clamp code at all and
+  `afields-to-rfields` fills every `type-val` with `ErrorTy`, so it was not
+  clamping before this change either. (That table reference is also stale --
+  `CurrentPlan.md` is 124 lines now and carries no such table.)
 
 ## What is not established
 
@@ -327,16 +361,45 @@ the lane that wrote it.
 - **Whether any plug's output actually changes** is a read of the group-3
   sites plus step 1's oracle subject, not a sweep. An app-class sweep measures
   compiles, and every consumer here keeps compiling either way.
-- Bounded constructor payloads, as above: zero instances found is not
-  coverage.
+- ~~Bounded constructor payloads: zero instances found is not coverage.~~
+  Measured and covered; see `ctor-bounded.codex` above.
 
 ## What would falsify the case for A
 
-A group-3 site needing an elaborated type that `type-defs` cannot key by name,
-because the type is not nominal: a structural type in a field position with no
-`type-defs` entry. I did not find one, and `rc-ty-eq` already comparing these
-types nominally is evidence there is not one, but I have not proved the
-negative and it is the thing to check before writing the emitter.
+The original form of this question was wrong, and reading the emitter answers
+it. `type-defs` does NOT key a field's type by name: `ir-emit-rec-field-defs`
+(`IRTextEmitter.codex:411`) emits each field's `ATypeExpr` STRUCTURALLY, in
+full, via `ir-emit-atype-expr`. Only the enclosing record or variant is keyed
+by name. So "a structural type in a field position" is published like any
+other and was never the risk.
+
+**The real hole is `(a-unknown)`, and it is narrow but sharp.**
+`ir-emit-atype-expr` (`:304-315`) handles six `ATypeExpr` constructors and
+sends everything else to `otherwise -> "(a-unknown)"`. `resolve-type-expr`
+(`TypeChecker.codex:18-32`) is exhaustive over **nine**, with no `otherwise`.
+The three the emitter cannot spell:
+
+| constructor | elaborates to | built at |
+|---|---|---|
+| `APropEqType` | `PropEqTy` | `Desugarer.codex:306` |
+| `AConstrainedType` | **its BODY** | `Desugarer.codex:335` |
+| `AForallType` | `ProofTy` | `Desugarer.codex:315` |
+
+Two of those are proof types and no group-3 site wants an integer from them,
+so losing them costs a clamping decision nothing. **`AConstrainedType` is the
+one that bites**: it resolves to its body, so a constrained bounded integer
+elaborates to a genuine `IntegerTy lo hi OvClamping` while `type-defs` says
+`(a-unknown)`. Today that is harmless because the inline elaborated form is
+emitted beside it and wins. Under A the inline form is gone and `(a-unknown)`
+is the only description left, which is a silently dropped clamp -- the exact
+failure mode this design is trying not to introduce.
+
+Whether a record field or constructor payload can actually carry one of these
+is NOT established. It is deliberately not worth establishing: **the repair is
+cheaper than the proof.** Teach `ir-emit-atype-expr` the three missing arms,
+at minimum unwrapping `AConstrainedType` to its body so a constraint cannot
+swallow a band, and the question stops mattering. That belongs in the step 4
+CL, before the inline form is dropped.
 
 Cheaper and more likely to fire: a unit whose bounded record fields are NOT
 all covered by `(a-bounded ...)`. Six units say zero uncovered. A seventh that

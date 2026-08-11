@@ -89,14 +89,14 @@ Section: HTTP JSON Response
 
 Section: HTTP Serve Loop
 
-  web-send-http : TcpTransportState, HttpResponse -> [Network.Write] TcpTransportState
+  web-send-http : TcpTransportState, HttpResponse -> [Network.Read, Network.Write] TcpTransportState
   web-send-http (ts) (resp) =
     let response-bytes = http-encode resp
     in net-io-send-raw ts response-bytes
 
   WebLoop = record { server : WebState, transport : TcpTransportState }
 
-  web-handle-http : (HttpRequest -> HttpResponse), WebLoop, List Integer -> [Network.Write] WebLoop
+  web-handle-http : (HttpRequest -> HttpResponse), WebLoop, List Integer -> [Network.Read, Network.Write] WebLoop
   web-handle-http (route) (ls) (raw-bytes) =
     let req = http-parse-request raw-bytes
     in if req.valid == False then act
@@ -262,7 +262,7 @@ Section: Concurrent Event Loop
   web-idle-max : Integer = 5
   web-sweep-interval : Integer = 1000000
 
-  web-mux-sweep : WebMux, Integer -> [Network.Write] WebMux
+  web-mux-sweep : WebMux, Integer -> [Network.Read, Network.Write] WebMux
   web-mux-sweep (m) (i) =
     if i >= list-length (m.conns) then m
     else let c = list-at (m.conns) i
@@ -279,7 +279,7 @@ Section: Concurrent Event Loop
       else web-mux-sweep (WebMux { listen = m.listen, conns = list-set-at (m.conns) i (WebConn { transport = t1, server = c.server, pending = c.pending, idle = c.idle + 1 }), served = m.served }) (i + 1)
     end
 
-  web-mux-serve-conn : (HttpRequest -> HttpResponse), WebMux, Integer, List Integer -> [Network.Write] WebMux
+  web-mux-serve-conn : (HttpRequest -> HttpResponse), WebMux, Integer, List Integer -> [Network.Read, Network.Write] WebMux
   web-mux-serve-conn (route) (m) (idx) (frame) =
     let c = list-at (m.conns) idx
     in let r = net-process-frame ((c.transport).session) frame
@@ -293,7 +293,7 @@ Section: Concurrent Event Loop
       else web-mux-drain route m idx ts2 (c.server) ((c.pending) & (r.data))
     end
 
-  web-mux-drain : (HttpRequest -> HttpResponse), WebMux, Integer, TcpTransportState, WebState, List Integer -> [Network.Write] WebMux
+  web-mux-drain : (HttpRequest -> HttpResponse), WebMux, Integer, TcpTransportState, WebState, List Integer -> [Network.Read, Network.Write] WebMux
   web-mux-drain (route) (m) (idx) (ts) (srv) (pending) =
     let plen = list-length pending
     in let total = wb-request-total pending plen
@@ -307,7 +307,7 @@ Section: Concurrent Event Loop
       web-mux-drain route (WebMux { listen = m.listen, conns = m.conns, served = m.served + 1 }) idx ts2 ns (wb-slice pending total plen [])
     end
 
-  web-mux-accept : WebMux, List Integer, Integer -> [Network.Write] WebMux
+  web-mux-accept : WebMux, List Integer, Integer -> [Network.Read, Network.Write] WebMux
   web-mux-accept (m) (frame) (port) =
     let r = net-process-frame ((m.listen).session) frame
     in let listen1 = transport-set-session (m.listen) (r.session)
@@ -316,7 +316,7 @@ Section: Concurrent Event Loop
       WebMux { listen = net-io-listen (fresh-listen-transport port), conns = list-push (m.conns) (WebConn { transport = listen2, server = web-new, pending = [], idle = 0 }), served = m.served }
     end
 
-  web-mux-feed : (HttpRequest -> HttpResponse), WebMux, List Integer, Integer -> [Network.Write] WebMux
+  web-mux-feed : (HttpRequest -> HttpResponse), WebMux, List Integer, Integer -> [Network.Read, Network.Write] WebMux
   web-mux-feed (route) (m) (frame) (port) =
     if frame-tcp frame == False then m
     else let seg = frame-seg frame
@@ -381,7 +381,7 @@ Section: Legacy Framed Serve (for backward compat)
     end
   end
 
-  web-send : TcpTransportState, Text -> [Network.Write] TcpTransportState
+  web-send : TcpTransportState, Text -> [Network.Read, Network.Write] TcpTransportState
   web-send (ts) (response) =
     let body = "200 application/json " & response
     in let body-bytes = ws-text-to-bytes body 0 (text-length body) []

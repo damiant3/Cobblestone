@@ -11,11 +11,6 @@ Chapter: Brotli
  decoder cannot see a bug both halves share. The format details are in
  docs/Reference/BrotliFormat.md.
 
- This chapter used to be byte-aligned framing with a Deflate payload -- self
- consistent, and not RFC 7932 by any reading. Nothing of that survives except the
- Huffman machinery, which is Deflate's: the same optimal code-length build, the
- same bit writer and reader, the same canonical decode tables.
-
  A compressed meta-block carries COMMANDS: some literals to insert, then a copy
  of something already written. The matcher is Lz77's, the same one Deflate uses,
  so a command is a run of literals closed by a match, and three prefix codes are
@@ -35,10 +30,6 @@ Chapter: Brotli
  header. Incompressible input takes stored blocks and comes back the size it
  went in.
 
- To brotli-compress gives an RFC 7932 stream.
- To brotli-decompress gives original bytes from one.
- To brotli-valid gives True when input could be an RFC 7932 stream we wrote.
-
  We say:
 
 Section: Constants
@@ -51,9 +42,6 @@ Section: Constants
   brotli-max-lit-bits : Integer = 15
   brotli-max-cl-bits : Integer = 5
 
- The order the code-length code's own lengths travel in, and the fixed code that
- carries each of them. Both are the format's, not ours.
-
   brotli-cl-order : List Integer = [1, 2, 3, 4, 0, 5, 17, 6, 16, 7, 8, 9, 10, 11, 12, 13, 14, 15]
   brotli-clf-code : List Integer = [0, 7, 3, 2, 1, 15]
   brotli-clf-len : List Integer = [2, 4, 3, 2, 2, 4]
@@ -62,9 +50,6 @@ Section: Constants
 
   brotli-ins-base : List Integer = [0, 1, 2, 3, 4, 5, 6, 8, 10, 14, 18, 26, 34, 50, 66, 98, 130, 194, 322, 578, 1090, 2114, 6210, 22594]
   brotli-ins-extra : List Integer = [0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 7, 8, 9, 10, 12, 14, 24]
-
- Copy length codes, the same shape. The base starts at TWO, the shortest copy the
- format can name.
 
   brotli-cpy-base : List Integer = [2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 18, 22, 30, 38, 54, 70, 102, 134, 198, 326, 582, 1094, 2118]
   brotli-cpy-extra : List Integer = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 7, 8, 9, 10, 24]
@@ -75,9 +60,6 @@ Section: Constants
 
   brotli-dist-alpha : Integer = 64
   brotli-ic-alpha : Integer = 704
-
- A cost no real plan can reach, so a plan that cannot be built loses every
- comparison it is in without needing a second field to say so.
 
   brotli-huge : Integer = 1000000000
 
@@ -118,10 +100,6 @@ Section: Constants
  input cannot repay it: a 400-byte run of one byte compresses to 10 bytes with
  the dictionary and 10 bytes without.
 
- A thousand and twenty-four is the floor context modelling already uses for the
- same reason, an extra table only paying on a long block. It is deliberately the
- same number.
-
   brotli-dict-min-input : Integer = 1024
 
 Section: Insert And Copy Codes
@@ -159,27 +137,12 @@ Section: Insert And Copy Codes
       + bit-shl (ins-c - (ins-c / 8) * 8) 3
       + (cpy-c - (cpy-c / 8) * 8)
 
- Reading a symbol back means finding which group it lands in, since the bases are
- not in order. The group then gives the high three bits of each code and the
- symbol's own low six bits give the rest.
-
- THE ALPHABET HAS ELEVEN GROUPS OF SIXTY-FOUR AND THIS MODELLED NINE. The nine in
- brotli-ic-bases above all start at 128; symbols 0 to 127 were absent entirely, so
- brotli-ic-group walked off the end of the table and answered zero, and the insert
- code came out as a negative index into brotli-ins-base. On the prose oracle stream
- the very first command is symbol 34 and the insert length read back as
- 8333441927550439407.
-
  The two missing groups are the reason it matters rather than a gap at the edge.
  They are the ins-0-to-7 by cpy-0-to-7 and cpy-8-to-15 combinations AGAIN, and what
  distinguishes them is that a symbol below 128 carries an IMPLICIT DISTANCE: the
  distance is the last one used, and no distance code is read from the stream at all.
  That is the cheapest command the format has, so a real encoder reaches for it
  constantly, and a reader without it desynchronises at the first one.
-
- Since every group is exactly sixty-four wide the group is the symbol divided by
- sixty-four, and no search is needed. The offsets are read off the nine-entry table
- above, which is oracle-validated, rather than from the RFC's prose.
 
   brotli-ic-ins-off : List Integer = [0, 0, 0, 0, 8, 8, 0, 16, 8, 16, 16]
   brotli-ic-cpy-off : List Integer = [0, 8, 0, 8, 0, 8, 16, 0, 16, 8, 16]
@@ -234,10 +197,6 @@ Section: The General Distance Alphabet
 
   brotli-dist-alpha-of : Integer, Integer -> Integer
   brotli-dist-alpha-of (npostfix) (ndirect) = 16 + ndirect + bit-shl 48 npostfix
-
- A simple prefix code spells its symbols in a fixed width, and the width is the
- bits needed to count the alphabet. Sixty-four takes six, which is the constant
- that was written in; five hundred and twenty takes ten.
 
   brotli-abits-loop : Integer, Integer -> Integer
   brotli-abits-loop (n) (b) =
@@ -346,15 +305,6 @@ Section: The Window Field
  zero. Measured against .NET at quality eleven across seven input sizes: it
  writes twenty-two, in four bits, every time.
 
- The check that settles the width is external. Each stream's original length is
- known on the host, and a meta-block length field decodes to that length only if
- every bit before it was consumed correctly, so a candidate width is either right
- or it is off by three bits and the length is nonsense.
-
- The window is not decoration. It is half of the rule separating a copy from a
- dictionary reference, so a reader that assumes sixteen while the stream declares
- twenty-two turns ordinary copies into dictionary lookups.
-
   BrWin = record {
     bw2-wbits : Integer,
     bw2-r : BitReader
@@ -376,11 +326,6 @@ Section: The Window Field
   brotli-max-dist-w (produced) (window) =
     if produced > window then window else produced
 
- The stream-level and meta-block-level fields the command loop needs, carried as
- one value rather than as three more parameters on a loop that already takes
- fourteen. The window comes from WBITS and is fixed for the stream; the postfix
- and direct fields are read per meta-block.
-
   BrCfg = record {
     bg-window : Integer,
     bg-npostfix : Integer,
@@ -388,10 +333,6 @@ Section: The Window Field
   }
 
 Section: Code Length Limiting
-
- A Huffman build can hand back a code longer than the format allows. Clamping
- alone breaks the Kraft equality, so the excess is repaid by lengthening the
- shortest codes until the sum fits the tree again.
 
   brotli-clamp : List Integer, Integer, Integer, Integer -> List Integer
   brotli-clamp (lens) (i) (n) (maxlen) =
@@ -405,24 +346,6 @@ Section: Code Length Limiting
     else let l = list-at lens i
     in let add = if l > 0 then bit-shl 1 (maxlen - l) else 0
     in brotli-kraft lens (i + 1) n maxlen (acc + add)
-
- THE REPAIR AIMS AT EQUALITY, NOT AT "NO LONGER TOO BIG", AND THAT DISTINCTION
- WAS A REAL DEFECT. Lengthening a code by one step reduces the Kraft sum by a
- power of two, so a loop that lengthens the shortest code until the sum is no
- longer OVER-subscribed can step straight past equality and leave it UNDER-
- subscribed. An under-subscribed code is incomplete, `brotli-space` rejects it,
- the caller answers `brotli-code-bad`, and the whole plan is discarded as
- `brotli-huge` with no diagnostic anywhere -- a silent ratio ceiling that looks
- exactly like a plan that was honestly outcosted. It cost the static dictionary
- most of its reach: a command list with about twenty distinct insert-and-copy
- symbols could not be described at all.
-
- So each step now picks a symbol whose adjustment FITS the remaining gap rather
- than the largest one available, and the two directions are symmetric. Over
- subscribed: lengthen the shortest code whose reduction does not overshoot.
- Under subscribed: shorten the longest code whose increase does not overshoot. A
- code at `maxlen` shortened by one step adds exactly one, so the gap can always
- be closed by ones once nothing coarser fits.
 
   brotli-fits-cut : List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   brotli-fits-cut (lens) (i) (n) (maxlen) (excess) (best) =
@@ -459,11 +382,6 @@ Section: Code Length Limiting
     if s < 0 then lens
     else brotli-repair (list-set-at lens s (list-at lens s - 1)) n maxlen (fuel - 1)
 
- An alphabet with exactly one symbol in use cannot be made complete by any of
- this -- one leaf fills half a tree whatever length it is given -- so it never
- reaches here: `brotli-code-of` answers a simple code naming that symbol, which
- is the form the format provides for the case.
-
   brotli-fit : List Integer, Integer, Integer -> List Integer
   brotli-fit (lens) (n) (maxlen) =
     brotli-repair (brotli-clamp lens 0 n maxlen) n maxlen 4096
@@ -497,10 +415,6 @@ Section: Writing A Prefix Code
 
 Section: Runs Of Code Lengths
 
- Writing a length for every symbol is wasteful once an alphabet is sparse. The
- insert-and-copy alphabet has 704 symbols and a block uses a few dozen of them,
- so the description is mostly zeros, one code apiece.
-
  RFC 7932 gives code 17 for a run of zeros -- three extra bits carrying a count of
  three to ten -- and code 16 for a run of the previous NON-ZERO length, two extra
  bits carrying three to six. 17 is what makes a sparse alphabet cheap; 16 is what
@@ -521,10 +435,6 @@ Section: Runs Of Code Lengths
  A 16 after a 17, or a 17 after a 16, does NOT accumulate -- the rule is about a
  code following itself -- so the two interleave freely.
 
- The item list is built ONCE and then histogrammed, costed and written from. The
- three used to walk the lengths separately, which is how a writer and a cost
- function drift apart.
-
   brotli-zero-run : List Integer, Integer, Integer, Integer -> Integer
   brotli-zero-run (lens) (n) (i) (acc) =
     if i >= n then acc
@@ -543,10 +453,6 @@ Section: Runs Of Code Lengths
  saves. Measured: made mandatory it took `random` from 604 bytes to 398, because a
  near-flat literal code is 256 equal lengths and nothing else, and in the same run
  it pushed `groups` from 494 to the 704-byte stored fallback.
-
- So the item list is built BOTH ways and the shorter description wins, which is
- the same arrangement the literal and match encodings already have. Code 16 can
- then only help.
 
   brotli-lens-items : List Integer, Integer, Integer, Integer, List DhCl, Boolean -> List DhCl
   brotli-lens-items (lens) (n) (i) (space) (acc) (use16) =
@@ -567,9 +473,6 @@ Section: Runs Of Code Lengths
        in let a2 = list-push acc (DhCl { dc-sym = 17, dc-extra = cnt - 3, dc-nbits = 3 })
        in if run > cnt then brotli-lens-items lens n (i + cnt + 1) space (list-push a2 (DhCl { dc-sym = 0, dc-extra = 0, dc-nbits = 0 })) use16
           else brotli-lens-items lens n (i + cnt) space a2 use16
-
- A description carries its items, its code-length code, and what the two cost
- together, so a caller cannot cost one and emit the other.
 
   BrDesc = record {
     bq-items : List DhCl,
@@ -605,17 +508,6 @@ Section: Runs Of Code Lengths
     in brotli-items-bits items (i + 1) n cl-len (acc + list-at cl-len (it.dc-sym) + it.dc-nbits)
 
 Section: A Prefix Code As One Value
-
- Three codes are written now -- literals, insert-and-copy, distances -- and each
- is either simple or complex depending on how many symbols it actually uses. That
- decision, the lengths, the canonical codes and the cost of describing the code
- all travel together, so a caller cannot cost one shape and emit the other.
-
- A single-symbol code is held as bk-single with all its LENGTHS ZERO, which is not
- a placeholder: a simple code naming one symbol costs zero bits to use, so the
- same emit loop and the same cost sum give the right answer for both shapes
- without ever asking which they are holding. Only the code's own description
- differs, and that is what brotli-write-code branches on.
 
   BrCode = record {
     bk-single : Integer,
@@ -691,9 +583,6 @@ Section: A Prefix Code As One Value
 
 Section: Costing A Region
 
- The choice between stored and compressed is made by counting bits, not by
- building both. Every term below is exactly what the emitter goes on to write.
-
   brotli-clcl-bits : List Integer, Integer, Integer, Integer -> Integer
   brotli-clcl-bits (cl-len) (i) (space) (acc) =
     if i >= 18 then acc
@@ -708,9 +597,6 @@ Section: Costing A Region
     if i >= n then freq
     else let b = list-at xs i
     in brotli-histo xs (i + 1) n (list-set-at freq b (list-at freq b + 1))
-
- A stored meta-block costs its header, whatever padding takes it to a byte
- boundary, and the bytes themselves.
 
   brotli-stored-bits : Integer -> Integer
   brotli-stored-bits (n) = 20 + 8 * n
@@ -728,10 +614,6 @@ Section: Context Modelling
  A region that starts from a fresh zero desynchronises the decoder for every
  region after the first, and only on an input long enough to need a second one --
  so the last byte of each region is carried into the next.
-
- An extra tree costs its whole description, so more trees only pay on a long
- block. Every candidate is costed against the single-tree plan and the cheaper is
- emitted, which is what makes this unable to lose.
 
  THE FLOOR IS NOT WHAT COSTS THE SHORT CASES, and it was worth one measurement to
  establish that rather than assume it. On the interop corpus .NET uses six literal
@@ -765,14 +647,6 @@ Section: Context Modelling
  two bytes: context = Lut0[p1] | Lut1[p2], two tables of 256 entries that RFC 7932
  carries as data.
 
- THIS READER IGNORED THE CONTEXT MODE FIELD UNTIL 2026-07-19, and that was a
- correctness bug rather than a missing feature: the field was skipped with the
- other twelve fixed header bits and every literal was given a mode-zero context,
- so a stream from any other encoder using mode two decoded to the WRONG BYTES with
- no error anywhere. Our own encoder writes mode zero, so no round trip could see
- it, and the interop harness only ever asked whether .NET could read OUR output --
- never whether we could read .NET's.
-
  The tables are DATA and cannot honestly be written from memory. They were
  recovered from the oracle by build/brotli-ctx2-extract.ps1, the same method that
  produced the static dictionary and the 121 transforms, and verified on 576 pairs
@@ -802,11 +676,6 @@ Section: Context Modelling
 
   brctx2-load : Integer -> List Integer
   brctx2-load (ignored) = brctx2-fill (brdict-b64-table 0) 0 []
-
- The mode and its tables travel together, so that the one function both halves
- compute a context with cannot be given one without the other. An encoder and a
- decoder that disagree here produce a stream that decodes to plausible garbage
- rather than one that is refused, which is the worst failure shape available.
 
   BrLCtx = record {
     bc2-mode : Integer,
@@ -860,9 +729,6 @@ Section: Context Modelling
  out, one bit each at two and two bits each at four -- so the map takes that form
  and the degenerate case never arises. Building the map's code the ordinary way
  fails the space check, falls back, and disables context modelling in silence.
-
- The symbols are written in order, so a value's canonical code equals the value
- and the decoder can read the map as fixed-width fields.
 
   brotli-map-abits : Integer -> Integer
   brotli-map-abits (k) = if k <= 2 then 1 else 2
@@ -941,12 +807,6 @@ Section: Context Modelling
     else if list-at map c /= j then brotli-merge-rows flat map (c + 1) j acc
     else brotli-merge-rows flat map (c + 1) j (brotli-add-row flat (c * 256) 0 acc)
 
- A context costs what its bytes cost under a cluster's lengths. A symbol the
- cluster has no code for is charged a flat miss rather than treated as free: the
- assignment that follows rebuilds every cluster from what was assigned to it, so
- the final codes always cover their own members and the miss only ever steers the
- choice.
-
   brotli-row-cost : List Integer, Integer, List Integer, Integer, Integer, Integer -> Integer
   brotli-row-cost (flat) (base) (lens) (lbase) (b) (acc) =
     if b >= 256 then acc
@@ -980,12 +840,6 @@ Section: Context Modelling
     if c >= brotli-ctx-count then map
     else brotli-assign flat lens (c + 1) k (list-set-at map c (brotli-best-j flat (c * 256) lens 0 k 0 brotli-huge))
 
- NOTHING RE-SEEDS AN ABANDONED CLUSTER. The assignment is free to route every
- context to the same cluster while the description is still charged for k trees, so
- a collapsed plan cannot beat the single-tree plan it is costed against. A re-seed
- was written, measured, and TAKEN BACK OUT, because on this corpus it moved not one
- byte: see the paragraph on what the literal plan is actually worth, below.
-
   brotli-kmeans : List Integer, List Integer, Integer, Integer -> List Integer
   brotli-kmeans (flat) (map) (k) (it) =
     if it >= brotli-ctx-iters then map
@@ -995,11 +849,6 @@ Section: Context Modelling
   brotli-seed-map (k) (c) (acc) =
     if c >= brotli-ctx-count then acc
     else brotli-seed-map k (c + 1) (list-push acc (c * k / brotli-ctx-count))
-
- A literal plan: how many trees, which context takes which, and the trees. One
- tree is the shape this chapter emitted before, and it costs the single NTREESL
- bit it always did, so a region that declines context modelling is byte-identical
- to what it was.
 
   BrLit = record {
     bl-k : Integer,
@@ -1090,10 +939,6 @@ Section: Context Modelling
     else let ca = brotli-lit-total region cmds 0 nc 0 prev0 a 0 + a.bl-desc
     in let cb = brotli-lit-total region cmds 0 nc 0 prev0 b 0 + b.bl-desc
     in if cb < ca then b else a
-
- The single-tree plan is always built. Two and four trees are tried only on a
- region long enough to have a chance of paying for them, and the winner is
- whichever costs fewest bits once its own description is counted.
 
  CONTEXT MODE TWO WAS BUILT HERE AND TAKEN BACK OUT, so that nobody costs the
  same idea twice. Mode two keys a literal's context on the character class of the
@@ -1186,10 +1031,6 @@ Section: Block Splitting
  each block names a type, and each type has its own code. This is the same gap
  Deflate closed with a block type per block, and it is closed here the same way.
 
- Insert-and-copy first, because it is the clean half: literal block types
- multiply the context map (the tree is context-map[type * 64 + context]) and
- distance types would want their own map, while insert-and-copy has neither.
-
  The header order is per CATEGORY, not per field: each count is followed
  immediately by its own two codes and its first block length, and only then does
  the next category start. NBLTYPESI is therefore written between NBLTYPESL and
@@ -1229,10 +1070,6 @@ Section: Block Splitting
   brotli-btype-sym : Integer -> Integer
   brotli-btype-sym (t) = t + 2
 
- Both of these codes are SIMPLE ones, for the reason the context map's is: with
- two blocks the alphabets are tiny and evenly used, and a flat alphabet cannot be
- described by the complex form at all.
-
   brotli-simple-desc : Integer, Integer -> Integer
   brotli-simple-desc (nsym) (abits) = 4 + nsym * abits + (if nsym == 4 then 1 else 0)
 
@@ -1270,10 +1107,6 @@ Section: Block Splitting
   brotli-put-sym (w) (syms) (nsym) (v) =
     let j = brotli-idx-of syms v 0 nsym
     in bw-code w (brotli-simple-cw nsym j) (brotli-simple-len nsym j)
-
- Two blocks, cut at one command. The first block's length rides in the header and
- the second's arrives at the boundary, so exactly one switch is written and the
- meta-block ends when the second block's count runs out.
 
   BrSplit = record {
     bp-on : Boolean,
@@ -1363,12 +1196,6 @@ Section: Block Splitting
     else let w1 = brotli-write-code w (sp.bp-ick0) brotli-ic-alpha 10
     in brotli-write-code w1 (sp.bp-ick1) brotli-ic-alpha 10
 
- Only the insert-and-copy symbols differ between candidates -- the literals, the
- distances and every extra-bit field are the same whichever way the commands are
- cut -- so the comparison counts those and each candidate's own description, and
- nothing else. Three cuts are tried and the single-block plan is one of the
- candidates, so splitting cannot lose.
-
   brotli-split-min : Integer = 4
 
   brotli-ic-bits : List BrCmd, Integer, Integer, BrSplit, Integer -> Integer
@@ -1393,9 +1220,6 @@ Section: Block Splitting
     else let a = brotli-split-better cmds nc none (brotli-split-at cmds nc (nc / 2))
     in let b = brotli-split-better cmds nc a (brotli-split-at cmds nc (nc / 4))
     in brotli-split-better cmds nc b (brotli-split-at cmds nc (nc * 3 / 4))
-
- Distance block types, the same shape as the insert-and-copy ones with two
- differences that decide the whole design.
 
  A DISTANCE BLOCK LENGTH COUNTS DISTANCE CODES, NOT COMMANDS. A command that
  inserts literals and copies nothing writes no distance and does not advance the
@@ -1431,10 +1255,6 @@ Section: Block Splitting
     else let c = list-at cmds i
     in brotli-dist-count cmds (i + 1) hi (if c.bc-cpy == 0 then acc else acc + 1)
 
- The cut is named by a COMMAND index so the emitter can test for it directly,
- and it is chosen by walking to the command that carries the wanted distance.
- That guarantees the boundary lands on a command that actually writes one.
-
   brotli-dsp-cut-at : List BrCmd, Integer, Integer, Integer, Integer -> Integer
   brotli-dsp-cut-at (cmds) (i) (nc) (want) (seen) =
     if i >= nc then nc
@@ -1456,11 +1276,6 @@ Section: Block Splitting
     bq-desc : Integer,
     bq-ok : Boolean
   }
-
- The two bits in the off case are NBLTYPESD and NTREESD, both of which used to
- sit in the emitter's fixed header count. They move here because neither is one
- bit any more once splitting is possible, the same way the literal tree count
- moved into the literal plan and the insert-and-copy count into the split.
 
   brotli-dsp-none : List BrCmd, Integer -> BrDSp
   brotli-dsp-none (cmds) (nc) =
@@ -1541,11 +1356,6 @@ Section: Block Splitting
     in let cb = b.bq-desc + brotli-dist-bits cmds 0 nc b 0
     in if cb < ca then b else a
 
- A second distance code has to pay for its own description, a context map and a
- block-type switch before it returns anything, so it is only tried where there
- are enough distances for that to be possible. The single-block plan is one of
- the candidates, so splitting cannot lose.
-
   brotli-dsp-min : Integer = 16
 
   brotli-dsp-plan : List BrCmd, Integer -> BrDSp
@@ -1623,28 +1433,12 @@ Section: Compression
     in let w2 = brotli-emit-region w region n prev0 input pos ix xf
     in brotli-emit-blocks w2 input total (pos + n) (list-at region (n - 1)) ix xf
 
- The literal code is built once and used three times: to decide, to describe
- itself, and to code the literals.
-
  A prefix code must be COMPLETE -- its Kraft sum exactly fills the tree. A single
  distinct byte cannot make one: one symbol at one bit fills half a tree, and a
  real decoder rejects it. The format's answer is a simple prefix code, where a
  lone symbol is named outright and then costs nothing at all to use, so a run
  codes into no bits whatever. That is also the best case in the whole chapter,
  which is why it is worth a branch rather than a fallback.
-
- A command is some literals to insert and then a copy of something already
- written. The matcher is Lz77's, the same one Deflate uses, so the tokens come
- back as literals and matches and a command is just a run of literals terminated
- by one match.
-
- The LAST command may have no copy at all. That is the trick the literals-only
- block was already built on and it still holds: the decoder inserts the literals,
- checks whether it has produced the meta-block length, and only THEN reads a
- distance. So a trailing run of literals needs no match to close it, and a block
- with no matches anywhere is simply the case where there is one command and it is
- that one. Literals-only stopped being a separate encoder here -- it is a command
- list of length one.
 
   BrCmd = record {
     bc-ins : Integer,
@@ -1685,11 +1479,6 @@ Section: Compression
   brotli-dict-dist : Integer, Integer -> Integer
   brotli-dict-dist (produced) (word-id) = brotli-max-dist produced + 1 + word-id
 
- How many literal tokens run unbroken from here, capped at the longest word the
- corpus holds. A dictionary word may only replace LITERALS: the matcher's own
- matches are left alone, so taking a word can never cost a match that was already
- found, and the walk never has to take a token apart.
-
   brotli-lit-run : List DhTok, Integer, Integer, Integer -> Integer
   brotli-lit-run (toks) (i) (n) (acc) =
     if i >= n then acc
@@ -1698,19 +1487,10 @@ Section: Compression
       is DhLit (b) -> brotli-lit-run toks (i + 1) n (acc + 1)
       is DhMat (l) (d) -> acc
 
- The matcher's command list again, with dictionary words taken where the corpus
- has one. It is built as a THIRD candidate rather than as an improvement to the
- second, so the dictionary is costed against not using it and cannot make any
- input larger. Where no word is found anywhere, this list is identical to the
- matcher's and the two cost the same.
-
  The position carried here is absolute, not region-relative, because the distance
  depends on how much the DECODER has produced and it has produced every earlier
  meta-block too. A region-relative position would work on the first region and
  silently corrupt every one after it.
-
- Which lookup a plan uses is the plan's own business: the same walk serves both,
- so the dictionary can be costed with transforms and without.
 
   brotli-dict-look : BrDictIx, BrXf, List Integer, Integer, Integer, Boolean -> Integer
   brotli-dict-look (ix) (xf) (input) (p) (avail) (usexf) =
@@ -1757,11 +1537,6 @@ Section: Compression
  others the code would not match the stream and the result would be a plausible
  wrong answer rather than an error. Recomputing a state-dependent value in five
  places invites exactly that, so none of them recomputes it: they read bc-dcode.
-
- A RANGE WALK IS THE REASON IT CANNOT BE COMPUTED IN PLACE. Block splitting costs
- sub-ranges of the command list, and the code for the command at index i depends
- on every distance before it. A walk starting at i does not know the state at i.
- One pass from the beginning does, so one pass is what runs.
 
  TWO THINGS DO NOT PUSH THE RING BUFFER. Code zero does not push, because the most
  recent distance is already the one at the front; the encoder leaves last
@@ -1812,9 +1587,6 @@ Section: Compression
     in let c2 = BrCmd { bc-ins = c.bc-ins, bc-cpy = c.bc-cpy, bc-out = c.bc-out, bc-dist = c.bc-dist, bc-dcode = dc }
     in brotli-dcodes cmds (i + 1) nc nxt last2 (list-push acc c2)
 
- A distance no copy can carry, so the first command in a meta-block never matches
- it and never takes the shorthand.
-
   brotli-dist-none : Integer = 0
 
  The extra bits a distance code carries. Codes below sixteen name a cached
@@ -1856,10 +1628,6 @@ Section: Compression
     else let dc = c.bc-dcode
     in brotli-dist-freq cmds (i + 1) nc (list-set-at freq dc (list-at freq dc + 1))
 
- The cost of a command list, counted in the same order the emitter writes it. The
- fixed thirty-three bits are the meta-block header and the block-type, postfix,
- context and tree-count fields.
-
   brotli-cmds-bits : List Integer, List BrCmd, Integer, Integer, Integer, BrLit, BrSplit, BrDSp, Integer, Integer -> Integer
   brotli-cmds-bits (region) (cmds) (i) (nc) (off) (lit) (sp) (dsp) (prev0) (acc) =
     if i >= nc then acc
@@ -1876,13 +1644,6 @@ Section: Compression
     in let one = list-at (ick.bk-len) s + list-at brotli-ins-extra ins-c + list-at brotli-cpy-extra cpy-c + lits + dist
     in brotli-cmds-bits region cmds (i + 1) nc (off + c.bc-ins + c.bc-out) lit sp dsp prev0 (acc + one)
 
- The fixed twenty-nine bits are the meta-block header and the postfix, direct,
- context-mode and literal-block-type fields. Four counts are NOT among them,
- because none of them is one bit any more: the literal tree count travels inside
- the literal plan's description, the insert-and-copy block type count inside the
- split's, and the distance block type and distance tree counts inside the
- distance split's, each carrying whatever machinery it turns on.
-
   brotli-plan-bits : List Integer, Integer, List BrCmd, Integer, BrLit, BrSplit, BrDSp, Integer -> Integer
   brotli-plan-bits (region) (n) (cmds) (nc) (lit) (sp) (dsp) (prev0) =
     if lit.bl-ok == False then brotli-huge
@@ -1890,11 +1651,6 @@ Section: Compression
     else if dsp.bq-ok == False then brotli-huge
     else 29 + lit.bl-desc + sp.bp-desc + dsp.bq-desc
       + brotli-cmds-bits region cmds 0 nc 0 lit sp dsp prev0 0
-
- The two candidates are costed the same way because they ARE the same encoder,
- differing only in their command list: one command that inserts everything, or
- the matcher's. Whichever counts fewer bits is emitted, and a stored block wins
- over both when neither pays for itself.
 
   brotli-emit-region : BitWriter, List Integer, Integer, Integer, List Integer, Integer, BrDictIx, BrXf -> BitWriter
   brotli-emit-region (w) (region) (n) (prev0) (input) (pos) (ix) (xf) =
@@ -1909,12 +1665,6 @@ Section: Compression
  fresh at the cut, which is what makes the declared window mean anything on an
  input longer than one meta-block. Started fresh, the effective window is the
  meta-block however large a window the header claims.
-
- Three plans now, costed the same way because they ARE the same encoder differing
- only in their command list: one command inserting everything, the matcher's, and
- the matcher's with dictionary words taken where the corpus has one. Whichever
- counts fewest bits is emitted, and a stored block wins over all three when none
- pays for itself.
 
  The matcher's plan is preferred on a tie, which matters more than it sounds: on
  input where no dictionary word is ever found the third list is IDENTICAL to the
@@ -1951,11 +1701,6 @@ Section: Compression
   brotli-min3 (a) (b) (c) =
     let ab = if a < b then a else b
     in if ab < c then ab else c
-
- Building the three codes is the expensive half of costing a plan, so the cost
- and the emission build them the same way from the same command list rather than
- sharing a cached copy: the plan is the only thing carried between them, and two
- readings of it cannot disagree.
 
   brotli-plan-cost : List Integer, Integer, List BrCmd, Integer -> Integer
   brotli-plan-cost (region) (n) (cmds) (prev0) =
@@ -2071,11 +1816,6 @@ Section: Compression
 
 Section: Decompression
 
- The reader mirrors the writer. It handles the subset this chapter emits -- one
- block type of each kind, context mode zero with up to four literal trees, and no
- distance context map -- which is what our own round-trip needs; the interop
- harness is what proves the OUTPUT is valid for a general decoder.
-
   BrLens = record {
     bl-lens : List Integer,
     bl-r : BitReader
@@ -2089,20 +1829,11 @@ Section: Decompression
  and every reference after that finds it already there: a stream with no
  references pays nothing, and one with a thousand pays once.
 
- This is only sound because the corpus is immutable and identical every time it
- is loaded, so which reference happens to be first cannot change the answer.
-
   brotli-decompress : List Integer -> List Integer
   brotli-decompress (input) =
     if brotli-valid input == False then []
     else let w = brotli-read-wbits (BitReader { br-bytes = input, br-pos = 0 })
     in brotli-blocks (w.bw2-r) [] [] (brdict-xf-load 0) (brotli-window-of (w.bw2-wbits)) (brotli-cache-init 0)
-
- THE DISTANCE RING BUFFER BELONGS TO THE STREAM, NOT TO THE META-BLOCK, and this
- reader re-initialised it per meta-block until it was measured. Everything else a
- meta-block header carries is genuinely per-meta-block -- the prefix codes, the
- context maps, the block-type state, the postfix and direct fields -- so putting
- the cache beside them looked right and read right.
 
  It is not decidable from our own encoder, which is exactly why it survived: the
  encoder declines the shorthand on the first distance of a meta-block, so a stream
@@ -2200,36 +1931,9 @@ Section: Decompression
     in let data = brotli-slice (ra.br-bytes) start mlen 0 []
     in brotli-blocks (br-advance ra (mlen * 8)) (acc & data) dict xf window cache
 
- Thirteen bits of the compressed header carry three block-type counts, the postfix
- and direct-distance fields, one context mode and two tree counts. All but the
- context mode are skipped rather than checked, which is what limits the reader to
- our own subset.
-
- THE CONTEXT MODE IS READ. It was skipped with the rest until 2026-07-19, and
- skipping it was not a subsetting decision but a silent wrong answer: every
- literal was given a mode-zero context whatever the stream said, so a stream from
- any other encoder using mode two decoded to the WRONG BYTES with nothing
- reporting anything. Our encoder writes mode zero, so no round trip could see it,
- and the interop harness only ever asked whether .NET could read our output --
- never whether we could read .NET's. The two directions are different questions
- and only one of them was being asked.
-
  codex/test/lib/brotli-ctx2-test carries ten streams built by an independent
  implementation, each chosen where the mode-zero and mode-two contexts DISAGREE.
  Against the reader as it stood, all ten decoded to the wrong byte.
-
- The tables cost a load, so they are built only when the mode actually asks for
- them; a mode-zero stream pays nothing, the same arrangement the dictionary has.
-
- Then the three prefix codes in the
- format's order -- literals, insert-and-copy, distances -- and then commands until
- the meta-block length is met.
-
- A prefix code is read the way it was written: two bits of HSKIP say simple or
- complex, and a simple code here always names exactly one symbol, because that is
- the only simple code this chapter emits. Reading it back as a single symbol that
- costs no bits is what lets one command loop serve every block the encoder
- produces, including the all-one-byte region that used to need its own reader.
 
   BrDec = record {
     bd-single : Integer,
@@ -2450,11 +2154,6 @@ Section: Decompression
     bz-r : BitReader
   }
 
- THE BLOCK-TYPE AND BLOCK-COUNT CODES ARE ORDINARY PREFIX CODES and this read them
- as simple ones only, through a decoder that also got the four-symbol tree-select
- case wrong. Our encoder emits simple codes here, so nothing round-tripping our own
- output could see either fault.
-
  They are read with brotli-read-code now, the same reader the literal, insert-copy
  and distance codes use, which handles the simple form at one to four symbols and
  the complex form alike. The type code's alphabet is the block-type count plus two,
@@ -2490,11 +2189,6 @@ Section: Decompression
     by-len : Integer,
     by-r : BitReader
   }
-
- The distance side's whole state travels as one record rather than as five more
- parameters on a loop that already carries fourteen: the block machinery, the
- current type and what is left of its block, the codes, and the context map that
- chooses between them.
 
   BrDSt = record {
     bs2-blk : BrBlk,
@@ -2539,19 +2233,12 @@ Section: Decompression
       by-r = br-advance (cs.dr-reader) ne
     }
 
- The header is read a category at a time, because that is how it is written: each
- block-type count carries its own two codes and its first block length before the
- next category begins.
-
  THE POSTFIX AND DIRECT FIELDS ARE READ, NOT SKIPPED, and the context mode is
  read once per literal block type rather than once per meta-block. The six bits
  that used to be stepped over carry NPOSTFIX and NDIRECT, and NDIRECT is scaled
  by NPOSTFIX -- the four-bit field is a count of postfix-sized steps, not a count
  of distances. Getting that scaling wrong is worth one hundred and twenty against
  fifteen on the cyclic stream, which is every distance in it.
-
- The distance alphabet size follows from both fields, so it is computed here and
- handed to the code reader instead of the sixty-four that only the zero case has.
 
   brotli-compressed : BitReader, List Integer, Integer, Boolean, List Integer, BrXf, Integer, List Integer -> List Integer
   brotli-compressed (r) (acc) (mlen) (islast) (dict) (xf) (window) (cache) =
@@ -2585,14 +2272,6 @@ Section: Decompression
  distance with. The two ranges abut and cannot overlap, because a copy from the
  output can never reach further back than the output goes.
 
- The word id is what is left after subtracting that maximum, and it carries a
- transform in its high part: id divided by the count of words at this length. Our
- encoder emits transform ZERO only, so this reads transform zero only, and takes
- the word modulo the count. That is the same subsetting as the rest of this
- reader -- and the interop harness is what proves the OUTPUT is valid for a
- general decoder. A stream from elsewhere using a transform will decode to the
- untransformed word here.
-
  THIS READER ONLY READS STREAMS THIS CHAPTER WROTE, and the gap is wider than it
  looks. It accepts one window size, one literal block type, no postfix or direct
  distance codes, and a distance context map only in the simple form. Every real
@@ -2625,9 +2304,6 @@ Section: Decompression
   brotli-up-all (w) (i) (n) =
     if i >= n then w
     else brotli-up-all (brotli-up-step w i n) (brotli-up-next w i) n
-
- The word under one transform type. The omit types can empty a word entirely,
- which is legal and produces nothing at all between the prefix and the suffix.
 
   brotli-xf-core : List Integer, Integer, Integer, Integer -> List Integer
   brotli-xf-core (dict) (off) (len) (ty) =
@@ -2676,9 +2352,6 @@ Section: Decompression
  compile-frontend-passes, and the remedy is the same one: move the work into a
  helper so no single binding count grows.
 
- The seam is where the format's own is. The loop reads the command header, the
- literal half consumes the insert, and the distance half resolves the copy.
-
   brotli-cmd-loop : BitReader, List Integer, Integer, Boolean, List BrDec, List Integer, List BrDec, BrBlk, Integer, Integer, Integer, BrDSt, List Integer, BrXf, BrLCtx, BrCfg -> List Integer
   brotli-cmd-loop (r) (acc) (need) (islast) (lks) (map) (iks) (blk) (btype) (bprev) (blen) (ds) (dict) (xf) (lc) (cfg) =
     if need <= 0 then (if islast then acc else brotli-blocks r acc dict xf (cfg.bg-window) (ds.bs2-cache))
@@ -2714,9 +2387,6 @@ Section: Decompression
  command that reads none must leave it exactly where it was. Getting only half of
  that right desynchronises a stream that mixes the two forms, which prose does.
 
- The distance itself is code zero, the most recent one, which the cache already
- answers and deliberately does not disturb.
-
   brotli-cmd-dist : BitReader, List Integer, Integer, Boolean, List BrDec, List Integer, List BrDec, BrBlk, Integer, Integer, Integer, BrDSt, List Integer, BrXf, BrLCtx, BrCfg, Integer, Integer, Boolean -> List Integer
   brotli-cmd-dist (r) (acc2) (need) (islast) (lks) (map) (iks) (blk) (bt) (bp) (bl) (ds) (dict) (xf) (lc) (cfg) (ins) (cpy) (imp) =
     let dsw = if imp then BrSw { by-t = ds.bs2-t, by-prev = ds.bs2-prev, by-len = ds.bs2-len, by-r = r }
@@ -2740,9 +2410,6 @@ Section: Decompression
     else if list-length out - la2 + ins <= 0 then []
     else let ds2 = BrDSt { bs2-blk = ds.bs2-blk, bs2-t = dt, bs2-prev = dsw.by-prev, bs2-len = if imp then dsw.by-len else (dsw.by-len) - 1, bs2-ks = ds.bs2-ks, bs2-map = ds.bs2-map, bs2-cache = if isdict then ds.bs2-cache else dv.bq-cache }
     in brotli-cmd-loop (dv.bq-r) out (need - ins - (list-length out - la2)) islast lks map iks blk bt bp (bl - 1) ds2 dict2 xf lc cfg
-
- Reading a complex prefix code: the code-length code first, then the code lengths
- themselves, each stopping when its tree is full.
 
   brotli-read-complex : BitReader, Integer, Integer -> BrLens
   brotli-read-complex (r) (n) (hskip) =
@@ -2799,9 +2466,6 @@ Section: Decompression
  Adding them gives a shorter run and every code length after it lands at the wrong
  symbol.
 
- `rep` carries the count standing and `lastc` which repeat code produced it, so a
- different code, or any ordinary length, resets both.
-
   brotli-fill-lens : List Integer, Integer, Integer, Integer -> List Integer
   brotli-fill-lens (acc) (i) (cnt) (v) =
     if cnt <= 0 then acc
@@ -2834,13 +2498,6 @@ Section: Validation
 
  An RFC 7932 stream carries no magic number, so this can only say the input could
  be one: non-empty, and its window field naming a legal size.
-
- THIS USED TO REQUIRE THE FIRST BIT TO BE THE ZERO OUR OWN ENCODER WRITES, which
- made it a test for our own output rather than for the format. Every stream from
- every other encoder was refused here, before a single field was read, and the
- refusal was indistinguishable from an empty input. The window field is variable
- width and its legal range is ten through twenty-four, so a value outside that is
- the only thing this can honestly reject.
 
   brotli-valid : List Integer -> Boolean
   brotli-valid (input) =

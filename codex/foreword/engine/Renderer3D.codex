@@ -2,6 +2,8 @@ Chapter: Renderer3D
   cites Engine chapter Scene3D
   cites Engine chapter Mesh
   cites Engine chapter Material
+  cites Engine chapter Texture
+  cites Engine chapter Culling
   cites Game chapter Rasterizer
   cites Game chapter Color
   cites Math chapter Matrix4
@@ -28,11 +30,6 @@ Section: Flat Raster Target
  whether it was drawn or not. Rendering into a real framebuffer at panel
  size exhausted the heap within a few frames. This path allocates at
  construction and nothing per pixel.
-
- The depth buffer is indexed by the visible width and the colour buffer
- by the stride, so a framebuffer whose PixelsPerScanLine exceeds its
- horizontal resolution is written without shear and its padding is never
- touched.
 
   R3dTriState = record {
     r3t-base : Integer,
@@ -77,10 +74,6 @@ Section: Flat Raster Target
     in let c2 = r3d-fill-32 dp r3d-far-depth 0 (w * h)
     in R3dTriState { r3t-base = base, r3t-depth = dp, r3t-w = w, r3t-h = h, r3t-stride = stride }
 
- A repainting view builds its target once and clears it per frame.
- Rebuilding the target instead would allocate a fresh depth buffer every
- frame, which at panel size is megabytes that never come back.
-
   r3d-target-clear : R3dTriState, Integer -> Integer
   r3d-target-clear (st) (bg) =
     let c1 = r3d-fill-rows (st.r3t-base) (st.r3t-stride) (st.r3t-w) (st.r3t-h) bg 0
@@ -111,32 +104,89 @@ Section: Projected Vertex
     pv-wv : Integer,
     pv-wx : Real,
     pv-wy : Real,
-    pv-wz : Real
+    pv-wz : Real,
+    pv-lx : Integer,
+    pv-ly : Integer,
+    pv-ld : Integer
   }
 
 Section: Vertex Transform Pipeline
 
- A Vertex holds integer world coordinates and Mat4 is Real, so the vertex
- crosses into clip space and the screen position crosses back to the integer
- pixel grid. The world position stays Real: it is only ever fed back into
- Vec3 arithmetic for shading. At v4w = 1.0 the w is a true homogeneous
- coordinate, where the old fixed-point code carried thousandths.
+  ClipVert = record {
+    cv-cx : Real,
+    cv-cy : Real,
+    cv-cz : Real,
+    cv-cw : Real,
+    cv-nx : Integer,
+    cv-ny : Integer,
+    cv-nz : Integer,
+    cv-wu : Integer,
+    cv-wv : Integer,
+    cv-wx : Real,
+    cv-wy : Real,
+    cv-wz : Real
+  }
 
-  r3d-transform-vertex : Vertex, Mat4, Mat4, Integer, Integer -> ProjVert
-  r3d-transform-vertex (v) (mvp) (model) (half-w) (half-h) =
+  r3d-clip-vertex : Vertex, Mat4, Mat4 -> ClipVert
+  r3d-clip-vertex (v) (mvp) (model) =
     let clip = mat4-transform-vec4 mvp (Vec4 { v4x = real-from-int (v.vp-x), v4y = real-from-int (v.vp-y), v4z = real-from-int (v.vp-z), v4w = 1.0 })
     in let world = mat4-transform-point model (vec3-new (real-from-int (v.vp-x)) (real-from-int (v.vp-y)) (real-from-int (v.vp-z)))
-    in let w = clip.v4w
-    in if w <= 0.0 then ProjVert { pv-sx = -9999, pv-sy = -9999, pv-depth = 999999999, pv-nx = v.vn-x, pv-ny = v.vn-y, pv-nz = v.vn-z, pv-wu = v.vu, pv-wv = v.vv, pv-wx = world.vx, pv-wy = world.vy, pv-wz = world.vz }
-    else let ndc-x = clip.v4x / w
-    in let ndc-y = clip.v4y / w
-    in let ndc-z = clip.v4z / w
+    in ClipVert { cv-cx = clip.v4x, cv-cy = clip.v4y, cv-cz = clip.v4z, cv-cw = clip.v4w, cv-nx = v.vn-x, cv-ny = v.vn-y, cv-nz = v.vn-z, cv-wu = v.vu, cv-wv = v.vv, cv-wx = world.vx, cv-wy = world.vy, cv-wz = world.vz }
+
+ 0.000001 keeps the perspective divide away from a zero cw on a vertex
+ sitting exactly on the near plane.
+
+  r3d-near-eps : Real = 0.000001
+
+  r3d-near-dist : ClipVert -> Real
+  r3d-near-dist (v) = v.cv-cz + v.cv-cw
+
+  r3d-lerp-real : Real, Real, Real -> Real
+  r3d-lerp-real (a) (b) (t) = a + (b - a) * t
+
+  r3d-lerp-int : Integer, Integer, Real -> Integer
+  r3d-lerp-int (a) (b) (t) = a + real-to-int (real-from-int (b - a) * t)
+
+  r3d-clip-lerp : ClipVert, ClipVert, Real -> ClipVert
+  r3d-clip-lerp (a) (b) (t) =
+    ClipVert { cv-cx = r3d-lerp-real (a.cv-cx) (b.cv-cx) t, cv-cy = r3d-lerp-real (a.cv-cy) (b.cv-cy) t, cv-cz = r3d-lerp-real (a.cv-cz) (b.cv-cz) t, cv-cw = r3d-lerp-real (a.cv-cw) (b.cv-cw) t, cv-nx = r3d-lerp-int (a.cv-nx) (b.cv-nx) t, cv-ny = r3d-lerp-int (a.cv-ny) (b.cv-ny) t, cv-nz = r3d-lerp-int (a.cv-nz) (b.cv-nz) t, cv-wu = r3d-lerp-int (a.cv-wu) (b.cv-wu) t, cv-wv = r3d-lerp-int (a.cv-wv) (b.cv-wv) t, cv-wx = r3d-lerp-real (a.cv-wx) (b.cv-wx) t, cv-wy = r3d-lerp-real (a.cv-wy) (b.cv-wy) t, cv-wz = r3d-lerp-real (a.cv-wz) (b.cv-wz) t }
+
+  r3d-clip-edge : ClipVert, ClipVert, List ClipVert -> List ClipVert
+  r3d-clip-edge (cur) (nxt) (acc) =
+    let dc = r3d-near-dist cur
+    in let dn = r3d-near-dist nxt
+    in if dc >= r3d-near-eps then
+      (if dn >= r3d-near-eps then list-push acc nxt
+      else list-push acc (r3d-clip-lerp cur nxt (dc / (dc - dn))))
+    else if dn >= r3d-near-eps then list-push (list-push acc (r3d-clip-lerp cur nxt (dc / (dc - dn)))) nxt
+    else acc
+
+  r3d-clip-tri : ClipVert, ClipVert, ClipVert -> List ClipVert
+  r3d-clip-tri (a) (b) (c) =
+    r3d-clip-edge b c (r3d-clip-edge a b (r3d-clip-edge c a []))
+
+  r3d-project-clip : ClipVert, Integer, Integer -> ProjVert
+  r3d-project-clip (v) (half-w) (half-h) =
+    let w = v.cv-cw
+    in if w <= 0.0 then ProjVert { pv-sx = -9999, pv-sy = -9999, pv-depth = 999999999, pv-nx = v.cv-nx, pv-ny = v.cv-ny, pv-nz = v.cv-nz, pv-wu = v.cv-wu, pv-wv = v.cv-wv, pv-wx = v.cv-wx, pv-wy = v.cv-wy, pv-wz = v.cv-wz, pv-lx = 0, pv-ly = 0, pv-ld = 0 }
+    else let ndc-x = v.cv-cx / w
+    in let ndc-y = v.cv-cy / w
+    in let ndc-z = v.cv-cz / w
     in let fhw = real-from-int half-w
     in let fhh = real-from-int half-h
     in let sx = real-to-int (fhw + ndc-x * fhw)
     in let sy = real-to-int (fhh - ndc-y * fhh)
     in let depth = real-to-int ((ndc-z + 1.0) * 500000.0)
-    in ProjVert { pv-sx = sx, pv-sy = sy, pv-depth = depth, pv-nx = v.vn-x, pv-ny = v.vn-y, pv-nz = v.vn-z, pv-wu = v.vu, pv-wv = v.vv, pv-wx = world.vx, pv-wy = world.vy, pv-wz = world.vz }
+    in ProjVert { pv-sx = sx, pv-sy = sy, pv-depth = depth, pv-nx = v.cv-nx, pv-ny = v.cv-ny, pv-nz = v.cv-nz, pv-wu = v.cv-wu, pv-wv = v.cv-wv, pv-wx = v.cv-wx, pv-wy = v.cv-wy, pv-wz = v.cv-wz, pv-lx = 0, pv-ly = 0, pv-ld = 0 }
+
+  r3d-raster-fan : R3dTriState, List ClipVert, Integer, Integer, Integer, Integer -> Integer
+  r3d-raster-fan (st) (poly) (i) (color) (half-w) (half-h) =
+    if i + 1 >= list-length poly then 0
+    else let p0 = r3d-project-clip (list-at poly 0) half-w half-h
+    in let pa = r3d-project-clip (list-at poly i) half-w half-h
+    in let pb = r3d-project-clip (list-at poly (i + 1)) half-w half-h
+    in let hit = if cull-backface (p0.pv-sx) (p0.pv-sy) (pa.pv-sx) (pa.pv-sy) (pb.pv-sx) (pb.pv-sy) then 0 else r3d-rasterize-tri st p0 pa pb color
+    in r3d-raster-fan st poly (i + 1) color half-w half-h
 
 Section: Triangle Rasterization with Depth
 
@@ -241,12 +291,6 @@ Section: Phong Shading
  speak, and the geometry is Real, so a dot product crosses back at exactly
  one place: r3d-unit-to-milli.
 
- A lit surface keeps its own colour: the diffuse term is the albedo times the
- light, not the light alone. Scaling the bare light colour by the Lambert
- term, as this did, makes every lit face the colour of the lamp and leaves
- the material visible only in what ambient contributes, so a blue cube under
- a white key light comes out white.
-
   r3d-light-contrib : Vec3, Vec3, Vec3, EngineMaterial, Light3D -> Rgb
   r3d-light-contrib (world-pos) (normal) (eye-pos) (mat) (light) =
     when light
@@ -272,15 +316,491 @@ Section: Phong Shading
         in let total = diffuse * intensity / 1000
         in rgb-scale (rgb-multiply (mat.emat-albedo) col) (r3d-clamp total 0 1000)
       is SpotLight3D (pos) (dir) (col) (intensity) (angle) (falloff) ->
-        rgb 0 0 0
+        let to-light = mat4-v3-normalize (vec3-subtract pos world-pos)
+        in let axis = mat4-v3-normalize dir
+        in let cos-frag = r3d-unit-to-milli (vec3-dot (r3d-negate-vec to-light) axis)
+        in let cone = r3d-spot-cone cos-frag angle falloff
+        in if cone == 0 then rgb 0 0 0
+        else let n-dot-l = r3d-unit-to-milli (vec3-dot normal to-light)
+        in let diffuse = if n-dot-l > 0 then n-dot-l * mat.emat-diffuse / 1000 else 0
+        in let reflect = r3d-reflect (r3d-negate-vec to-light) normal
+        in let to-eye = mat4-v3-normalize (vec3-subtract eye-pos world-pos)
+        in let r-dot-v = r3d-unit-to-milli (vec3-dot reflect to-eye)
+        in let spec-raw = if r-dot-v > 0 then r-dot-v else 0
+        in let specular = r3d-pow-int spec-raw (mat.emat-shininess) * mat.emat-specular / 1000
+        in let total = (diffuse + specular) * intensity / 1000 * cone / 1000
+        in rgb-scale (rgb-multiply (mat.emat-albedo) col) (r3d-clamp total 0 1000)
+
+  r3d-spot-cone : Integer, Integer, Integer -> Integer
+  r3d-spot-cone (cos-frag) (angle) (falloff) =
+    if cos-frag >= angle then 1000
+    else if falloff <= 0 then 0
+    else if cos-frag > angle - falloff then (cos-frag - (angle - falloff)) * 1000 / falloff
+    else 0
+
+Section: Per-Pixel Shading
+
+ Everything per pixel below is integer reads and integer arithmetic on
+ records built once per triangle: a per-pixel allocation at panel
+ resolution is permanent heap gone in a few frames, which is the
+ constraint the whole chapter is shaped around.
+
+  R3dLightPre = record {
+    lp-lx : Integer,
+    lp-ly : Integer,
+    lp-lz : Integer,
+    lp-scale : Integer,
+    lp-cr : Integer,
+    lp-cg : Integer,
+    lp-cb : Integer
+  }
+
+  R3dShadeCtx = record {
+    sc-mode : Integer,
+    sc-g0 : Integer,
+    sc-g1 : Integer,
+    sc-g2 : Integer,
+    sc-base : Integer,
+    sc-ar : Integer,
+    sc-ag : Integer,
+    sc-ab : Integer,
+    sc-diffuse : Integer,
+    sc-specular : Integer,
+    sc-shininess : Integer,
+    sc-ex : Integer,
+    sc-ey : Integer,
+    sc-ez : Integer,
+    sc-lights : List R3dLightPre,
+    sc-amb : Integer,
+    sc-sh-base : Integer,
+    sc-sh-size : Integer,
+    sc-sh-bias : Integer,
+    sc-tex : Maybe EngineTexture
+  }
+
+  r3d-pre-light : Vec3, Vec3, Light3D -> R3dLightPre
+  r3d-pre-light (center) (eye) (light) =
+    when light
+      is DirLight (dir) (col) (intensity) ->
+        let l = mat4-v3-normalize dir
+        in R3dLightPre { lp-lx = r3d-unit-to-milli (l.vx), lp-ly = r3d-unit-to-milli (l.vy), lp-lz = r3d-unit-to-milli (l.vz), lp-scale = intensity, lp-cr = col.cr, lp-cg = col.cg, lp-cb = col.cb }
+      is PtLight (pos) (col) (intensity) (radius) ->
+        let delta = vec3-subtract pos center
+        in let dist = r3d-vec-len delta
+        in let l = mat4-v3-normalize delta
+        in let atten = if dist > radius then 0 else 1000 - dist * 1000 / radius
+        in R3dLightPre { lp-lx = r3d-unit-to-milli (l.vx), lp-ly = r3d-unit-to-milli (l.vy), lp-lz = r3d-unit-to-milli (l.vz), lp-scale = intensity * atten / 1000, lp-cr = col.cr, lp-cg = col.cg, lp-cb = col.cb }
+      is SpotLight3D (pos) (dir) (col) (intensity) (angle) (falloff) ->
+        let l = mat4-v3-normalize (vec3-subtract pos center)
+        in let axis = mat4-v3-normalize dir
+        in let cos-frag = r3d-unit-to-milli (vec3-dot (r3d-negate-vec l) axis)
+        in let cone = r3d-spot-cone cos-frag angle falloff
+        in R3dLightPre { lp-lx = r3d-unit-to-milli (l.vx), lp-ly = r3d-unit-to-milli (l.vy), lp-lz = r3d-unit-to-milli (l.vz), lp-scale = intensity * cone / 1000, lp-cr = col.cr, lp-cg = col.cg, lp-cb = col.cb }
+
+  r3d-pre-lights : Vec3, Vec3, List Light3D, Integer, Integer, List R3dLightPre -> List R3dLightPre
+  r3d-pre-lights (center) (eye) (lights) (i) (n) (acc) =
+    if i >= n then acc
+    else r3d-pre-lights center eye lights (i + 1) n (list-push acc (r3d-pre-light center eye (list-at lights i)))
+
+  r3d-shade-ctx-phong : ClipVert, ClipVert, ClipVert, EngineMaterial, List Light3D, Vec3, Integer -> R3dShadeCtx
+  r3d-shade-ctx-phong (c0) (c1) (c2) (mat) (lights) (eye) (ambient) =
+    let center = vec3-new ((c0.cv-wx + c1.cv-wx + c2.cv-wx) / 3.0) ((c0.cv-wy + c1.cv-wy + c2.cv-wy) / 3.0) ((c0.cv-wz + c1.cv-wz + c2.cv-wz) / 3.0)
+    in let to-eye = mat4-v3-normalize (vec3-subtract eye center)
+    in let base = rgb-to-packed (rgb-scale (mat.emat-albedo) ambient)
+    in R3dShadeCtx { sc-mode = 2, sc-g0 = 0, sc-g1 = 0, sc-g2 = 0, sc-base = base, sc-ar = mat.emat-albedo.cr, sc-ag = mat.emat-albedo.cg, sc-ab = mat.emat-albedo.cb, sc-diffuse = mat.emat-diffuse, sc-specular = mat.emat-specular, sc-shininess = mat.emat-shininess, sc-ex = r3d-unit-to-milli (to-eye.vx), sc-ey = r3d-unit-to-milli (to-eye.vy), sc-ez = r3d-unit-to-milli (to-eye.vz), sc-lights = r3d-pre-lights center eye lights 0 (list-length lights) [], sc-amb = base, sc-sh-base = 0, sc-sh-size = 0, sc-sh-bias = 0, sc-tex = mat.emat-texture }
+
+  r3d-shade-ctx-gouraud : Integer, Integer, Integer -> R3dShadeCtx
+  r3d-shade-ctx-gouraud (g0) (g1) (g2) =
+    R3dShadeCtx { sc-mode = 1, sc-g0 = g0, sc-g1 = g1, sc-g2 = g2, sc-base = 0, sc-ar = 0, sc-ag = 0, sc-ab = 0, sc-diffuse = 0, sc-specular = 0, sc-shininess = 0, sc-ex = 0, sc-ey = 0, sc-ez = 0, sc-lights = [], sc-amb = 0, sc-sh-base = 0, sc-sh-size = 0, sc-sh-bias = 0, sc-tex = None }
+
+  r3d-chan : Integer, Integer -> Integer
+  r3d-chan (packed) (shift) = bit-and (bit-shru packed shift) 255
+
+  r3d-gouraud-px : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  r3d-gouraud-px (g0) (g1) (g2) (w0) (w1) (w2) =
+    let r = (r3d-chan g0 16 * w0 + r3d-chan g1 16 * w1 + r3d-chan g2 16 * w2) / 1000
+    in let g = (r3d-chan g0 8 * w0 + r3d-chan g1 8 * w1 + r3d-chan g2 8 * w2) / 1000
+    in let b = (r3d-chan g0 0 * w0 + r3d-chan g1 0 * w1 + r3d-chan g2 0 * w2) / 1000
+    in bit-or (bit-shl (r3d-clamp r 0 255) 16) (bit-or (bit-shl (r3d-clamp g 0 255) 8) (r3d-clamp b 0 255))
+
+  r3d-phong-px : R3dShadeCtx, Integer, Integer, Integer -> Integer
+  r3d-phong-px (ctx) (nx) (ny) (nz) =
+    r3d-phong-accum ctx nx ny nz 0 (list-length (ctx.sc-lights)) (r3d-chan (ctx.sc-base) 16) (r3d-chan (ctx.sc-base) 8) (r3d-chan (ctx.sc-base) 0)
+
+  r3d-phong-accum : R3dShadeCtx, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  r3d-phong-accum (ctx) (nx) (ny) (nz) (i) (n) (ar) (ag) (ab) =
+    if i >= n then bit-or (bit-shl (r3d-clamp ar 0 255) 16) (bit-or (bit-shl (r3d-clamp ag 0 255) 8) (r3d-clamp ab 0 255))
+    else let lp = list-at (ctx.sc-lights) i
+    in let ndl = (nx * lp.lp-lx + ny * lp.lp-ly + nz * lp.lp-lz) / 1000
+    in let diffuse = if ndl > 0 then ndl * ctx.sc-diffuse / 1000 else 0
+    in let rx = 2 * ndl * nx / 1000 - lp.lp-lx
+    in let ry = 2 * ndl * ny / 1000 - lp.lp-ly
+    in let rz = 2 * ndl * nz / 1000 - lp.lp-lz
+    in let rdv = (rx * ctx.sc-ex + ry * ctx.sc-ey + rz * ctx.sc-ez) / 1000
+    in let specular = if rdv > 0 then r3d-pow-int rdv (ctx.sc-shininess) * ctx.sc-specular / 1000 else 0
+    in let total = r3d-clamp ((diffuse + specular) * lp.lp-scale / 1000) 0 1000
+    in r3d-phong-accum ctx nx ny nz (i + 1) n (ar + ctx.sc-ar * lp.lp-cr / 255 * total / 1000) (ag + ctx.sc-ag * lp.lp-cg / 255 * total / 1000) (ab + ctx.sc-ab * lp.lp-cb / 255 * total / 1000)
+
+  r3d-rasterize-tri-sh : R3dTriState, ProjVert, ProjVert, ProjVert, R3dShadeCtx -> Integer
+  r3d-rasterize-tri-sh (st) (a) (b) (c) (ctx) =
+    let min-y = r3d-max 0 (r3d-min3 (a.pv-sy) (b.pv-sy) (c.pv-sy))
+    in let max-y = r3d-min (st.r3t-h - 1) (r3d-max3 (a.pv-sy) (b.pv-sy) (c.pv-sy))
+    in let min-x = r3d-max 0 (r3d-min3 (a.pv-sx) (b.pv-sx) (c.pv-sx))
+    in let max-x = r3d-min (st.r3t-w - 1) (r3d-max3 (a.pv-sx) (b.pv-sx) (c.pv-sx))
+    in r3d-scan-rows-sh st a b c ctx min-y max-y min-x max-x
+
+  r3d-scan-rows-sh : R3dTriState, ProjVert, ProjVert, ProjVert, R3dShadeCtx, Integer, Integer, Integer, Integer -> Integer
+  r3d-scan-rows-sh (st) (a) (b) (c) (ctx) (y) (max-y) (min-x) (max-x) =
+    if y > max-y then 0
+    else let n = r3d-scan-cols-sh st a b c ctx y min-x max-x
+    in r3d-scan-rows-sh st a b c ctx (y + 1) max-y min-x max-x
+
+  r3d-scan-cols-sh : R3dTriState, ProjVert, ProjVert, ProjVert, R3dShadeCtx, Integer, Integer, Integer -> Integer
+  r3d-scan-cols-sh (st) (a) (b) (c) (ctx) (y) (x) (max-x) =
+    if x > max-x then 0
+    else let v0x = c.pv-sx - a.pv-sx
+    in let v0y = c.pv-sy - a.pv-sy
+    in let v1x = b.pv-sx - a.pv-sx
+    in let v1y = b.pv-sy - a.pv-sy
+    in let v2x = x - a.pv-sx
+    in let v2y = y - a.pv-sy
+    in let d00 = v0x * v0x + v0y * v0y
+    in let d01 = v0x * v1x + v0y * v1y
+    in let d02 = v0x * v2x + v0y * v2y
+    in let d11 = v1x * v1x + v1y * v1y
+    in let d12 = v1x * v2x + v1y * v2y
+    in let denom = d00 * d11 - d01 * d01
+    in let u = if denom == 0 then 0 - 1 else (d11 * d02 - d01 * d12) * 1000 / denom
+    in let v = if denom == 0 then 0 - 1 else (d00 * d12 - d01 * d02) * 1000 / denom
+    in let w = if denom == 0 then 0 - 1 else 1000 - u - v
+    in let hit = r3d-cover-sh st a b c w v u x y ctx
+    in r3d-scan-cols-sh st a b c ctx y (x + 1) max-x
+
+  r3d-cover-sh : R3dTriState, ProjVert, ProjVert, ProjVert, Integer, Integer, Integer, Integer, Integer, R3dShadeCtx -> Integer
+  r3d-cover-sh (st) (a) (b) (c) (w0) (w1) (w2) (x) (y) (ctx) =
+    if w0 < 0 then 0
+    else if w1 < 0 then 0
+    else if w2 < 0 then 0
+    else let depth = r3d-interp-depth a b c w0 w1 w2 1000
+    in let shadowed = if ctx.sc-sh-base == 0 then False else r3d-shadow-test ctx a b c w0 w1 w2
+    in let color = if shadowed then ctx.sc-amb
+      else if ctx.sc-mode == 1 then r3d-gouraud-px (ctx.sc-g0) (ctx.sc-g1) (ctx.sc-g2) w0 w1 w2
+      else if ctx.sc-mode == 3 then ctx.sc-g0
+      else r3d-phong-px ctx ((a.pv-nx * w0 + b.pv-nx * w1 + c.pv-nx * w2) / 1000) ((a.pv-ny * w0 + b.pv-ny * w1 + c.pv-ny * w2) / 1000) ((a.pv-nz * w0 + b.pv-nz * w1 + c.pv-nz * w2) / 1000)
+    in let final = when ctx.sc-tex
+      is None -> color
+      is Just (tex) -> r3d-tex-px tex a b c w0 w1 w2 color
+    in r3d-plot st x y depth final
+
+ The repeat wrap is inlined as integer arithmetic: constructing even a
+ nullary WrapMode here would be a per-pixel allocation, the exact cost
+ sc-mode being an Integer already exists to avoid.
+
+  r3d-tex-px : EngineTexture, ProjVert, ProjVert, ProjVert, Integer, Integer, Integer, Integer -> Integer
+  r3d-tex-px (tex) (a) (b) (c) (w0) (w1) (w2) (color) =
+    let u = (a.pv-wu * w0 + b.pv-wu * w1 + c.pv-wu * w2) / 1000
+    in let v = (a.pv-wv * w0 + b.pv-wv * w1 + c.pv-wv * w2) / 1000
+    in let pw = tex.etx-width
+    in let ph = tex.etx-height
+    in let px0 = u * pw / 1000
+    in let py0 = v * ph / 1000
+    in let pxm = px0 - (px0 / pw) * pw
+    in let px = if pxm < 0 then pxm + pw else pxm
+    in let pym = py0 - (py0 / ph) * ph
+    in let py = if pym < 0 then pym + ph else pym
+    in let t = etx-get tex px py
+    in let r = r3d-chan color 16 * r3d-chan t 16 / 255
+    in let g = r3d-chan color 8 * r3d-chan t 8 / 255
+    in let bl = r3d-chan color 0 * r3d-chan t 0 / 255
+    in bit-or (bit-shl r 16) (bit-or (bit-shl g 8) bl)
+
+  r3d-ctx-with-tex : R3dShadeCtx, EngineMaterial -> R3dShadeCtx
+  r3d-ctx-with-tex (ctx) (mat) = __record-set ctx "sc-tex" (mat.emat-texture)
+
+  r3d-shadow-test : R3dShadeCtx, ProjVert, ProjVert, ProjVert, Integer, Integer, Integer -> Boolean
+  r3d-shadow-test (ctx) (a) (b) (c) (w0) (w1) (w2) =
+    let tx = (a.pv-lx * w0 + b.pv-lx * w1 + c.pv-lx * w2) / 1000000
+    in let ty = (a.pv-ly * w0 + b.pv-ly * w1 + c.pv-ly * w2) / 1000000
+    in if tx < 0 then False
+    else if ty < 0 then False
+    else if tx >= ctx.sc-sh-size then False
+    else if ty >= ctx.sc-sh-size then False
+    else let ld = (a.pv-ld * w0 + b.pv-ld * w1 + c.pv-ld * w2) / 1000
+    in let md = peek-32 (ctx.sc-sh-base) ((ty * ctx.sc-sh-size + tx) * 4)
+    in ld > md + ctx.sc-sh-bias
+
+  r3d-raster-fan-sh : R3dTriState, List ClipVert, Integer, R3dShadeCtx, Integer, Integer -> Integer
+  r3d-raster-fan-sh (st) (poly) (i) (ctx) (half-w) (half-h) =
+    if i + 1 >= list-length poly then 0
+    else let p0 = r3d-project-clip (list-at poly 0) half-w half-h
+    in let pa = r3d-project-clip (list-at poly i) half-w half-h
+    in let pb = r3d-project-clip (list-at poly (i + 1)) half-w half-h
+    in let hit = if cull-backface (p0.pv-sx) (p0.pv-sy) (pa.pv-sx) (pa.pv-sy) (pb.pv-sx) (pb.pv-sy) then 0 else r3d-rasterize-tri-sh st p0 pa pb ctx
+    in r3d-raster-fan-sh st poly (i + 1) ctx half-w half-h
+
+  r3d-shade-clip-vert : ClipVert, EngineMaterial, List Light3D, Vec3, Integer -> Integer
+  r3d-shade-clip-vert (cv) (mat) (lights) (eye) (ambient) =
+    let normal = mat4-v3-normalize (vec3-new (real-from-int (cv.cv-nx) / 1000.0) (real-from-int (cv.cv-ny) / 1000.0) (real-from-int (cv.cv-nz) / 1000.0))
+    in let world = vec3-new (cv.cv-wx) (cv.cv-wy) (cv.cv-wz)
+    in rgb-to-packed (r3d-shade-phong world normal eye mat lights 0 (list-length lights) ambient)
+
+  r3d-gouraud-fan : R3dTriState, List ClipVert, Integer, EngineMaterial, List Light3D, Vec3, Integer, Integer, Integer, Integer -> Integer
+  r3d-gouraud-fan (st) (poly) (i) (mat) (lights) (eye) (ambient) (g0) (half-w) (half-h) =
+    if i + 1 >= list-length poly then 0
+    else let gi = r3d-shade-clip-vert (list-at poly i) mat lights eye ambient
+    in let gj = r3d-shade-clip-vert (list-at poly (i + 1)) mat lights eye ambient
+    in let ctx = r3d-ctx-with-tex (r3d-shade-ctx-gouraud g0 gi gj) mat
+    in let hit = r3d-raster-fan-single st poly i ctx half-w half-h
+    in r3d-gouraud-fan st poly (i + 1) mat lights eye ambient g0 half-w half-h
+
+  r3d-raster-fan-single : R3dTriState, List ClipVert, Integer, R3dShadeCtx, Integer, Integer -> Integer
+  r3d-raster-fan-single (st) (poly) (i) (ctx) (half-w) (half-h) =
+    let p0 = r3d-project-clip (list-at poly 0) half-w half-h
+    in let pa = r3d-project-clip (list-at poly i) half-w half-h
+    in let pb = r3d-project-clip (list-at poly (i + 1)) half-w half-h
+    in if cull-backface (p0.pv-sx) (p0.pv-sy) (pa.pv-sx) (pa.pv-sy) (pb.pv-sx) (pb.pv-sy) then 0
+    else r3d-rasterize-tri-sh st p0 pa pb ctx
+
+  r3d-render-tris-gouraud : R3dTriState, Mesh, Mat4, Mat4, EngineMaterial, List Light3D, Vec3, Integer, Integer, Integer, Integer, Integer -> Integer
+  r3d-render-tris-gouraud (st) (mesh) (model) (mvp) (mat) (lights) (eye) (ambient) (half-w) (half-h) (i) (n) =
+    if i >= n then 0
+    else let i0 = mesh-index-at mesh i
+    in let i1 = mesh-index-at mesh (i + 1)
+    in let i2 = mesh-index-at mesh (i + 2)
+    in let c0 = r3d-clip-vertex (mesh-vertex-at mesh i0) mvp model
+    in let c1 = r3d-clip-vertex (mesh-vertex-at mesh i1) mvp model
+    in let c2 = r3d-clip-vertex (mesh-vertex-at mesh i2) mvp model
+    in let poly = r3d-clip-tri c0 c1 c2
+    in if list-length poly < 3 then r3d-render-tris-gouraud st mesh model mvp mat lights eye ambient half-w half-h (i + 3) n
+    else let g0 = r3d-shade-clip-vert (list-at poly 0) mat lights eye ambient
+    in let hit = r3d-gouraud-fan st poly 1 mat lights eye ambient g0 half-w half-h
+    in r3d-render-tris-gouraud st mesh model mvp mat lights eye ambient half-w half-h (i + 3) n
+
+  r3d-render-tris-phong : R3dTriState, Mesh, Mat4, Mat4, EngineMaterial, List Light3D, Vec3, Integer, Integer, Integer, Integer, Integer -> Integer
+  r3d-render-tris-phong (st) (mesh) (model) (mvp) (mat) (lights) (eye) (ambient) (half-w) (half-h) (i) (n) =
+    if i >= n then 0
+    else let i0 = mesh-index-at mesh i
+    in let i1 = mesh-index-at mesh (i + 1)
+    in let i2 = mesh-index-at mesh (i + 2)
+    in let c0 = r3d-clip-vertex (mesh-vertex-at mesh i0) mvp model
+    in let c1 = r3d-clip-vertex (mesh-vertex-at mesh i1) mvp model
+    in let c2 = r3d-clip-vertex (mesh-vertex-at mesh i2) mvp model
+    in let poly = r3d-clip-tri c0 c1 c2
+    in if list-length poly < 3 then r3d-render-tris-phong st mesh model mvp mat lights eye ambient half-w half-h (i + 3) n
+    else let ctx = r3d-shade-ctx-phong c0 c1 c2 mat lights eye ambient
+    in let hit = r3d-raster-fan-sh st poly 1 ctx half-w half-h
+    in r3d-render-tris-phong st mesh model mvp mat lights eye ambient half-w half-h (i + 3) n
+
+Section: Shadow Mapping
+
+  R3dShadow = record {
+    rs-base : Integer,
+    rs-size : Integer,
+    rs-bias : Integer,
+    rs-vp : Mat4
+  }
+
+  r3d-shadow-bias : Integer = 3000
+
+  r3d-first-dir : List Light3D, Integer, Integer -> Maybe Vec3
+  r3d-first-dir (lights) (i) (n) =
+    if i >= n then None
+    else when list-at lights i
+      is DirLight (dir) (col) (intensity) -> Just dir
+      is otherwise -> r3d-first-dir lights (i + 1) n
+
+  r3d-bounds-union : MeshBounds, MeshBounds -> MeshBounds
+  r3d-bounds-union (a) (b) =
+    MeshBounds {
+      mb-min-x = r3d-min (a.mb-min-x) (b.mb-min-x),
+      mb-min-y = r3d-min (a.mb-min-y) (b.mb-min-y),
+      mb-min-z = r3d-min (a.mb-min-z) (b.mb-min-z),
+      mb-max-x = r3d-max (a.mb-max-x) (b.mb-max-x),
+      mb-max-y = r3d-max (a.mb-max-y) (b.mb-max-y),
+      mb-max-z = r3d-max (a.mb-max-z) (b.mb-max-z)
+    }
+
+  r3d-scene-bounds : Scene3DState, Integer, Integer, MeshBounds, Boolean -> MeshBounds
+  r3d-scene-bounds (scene) (i) (n) (acc) (found) =
+    if i >= n then acc
+    else let node = list-at (scene.s3-nodes) i
+    in when node.sn3-mesh
+      is None -> r3d-scene-bounds scene (i + 1) n acc found
+      is Just (mesh) ->
+        let wb = r3d-world-bounds (mesh-bounds mesh) (scene3d-world-matrix scene i)
+        in r3d-scene-bounds scene (i + 1) n (if found then r3d-bounds-union acc wb else wb) True
+
+  r3d-light-vp : Scene3DState, Vec3 -> Mat4
+  r3d-light-vp (scene) (dir) =
+    let b = r3d-scene-bounds scene 0 (scene.s3-count) (MeshBounds { mb-min-x = 0, mb-min-y = 0, mb-min-z = 0, mb-max-x = 0, mb-max-y = 0, mb-max-z = 0 }) False
+    in let cx = real-from-int (b.mb-min-x + b.mb-max-x) / 2.0
+    in let cy = real-from-int (b.mb-min-y + b.mb-max-y) / 2.0
+    in let cz = real-from-int (b.mb-min-z + b.mb-max-z) / 2.0
+    in let hx = real-from-int (b.mb-max-x - b.mb-min-x) / 2.0
+    in let hy = real-from-int (b.mb-max-y - b.mb-min-y) / 2.0
+    in let hz = real-from-int (b.mb-max-z - b.mb-min-z) / 2.0
+    in let radius = mat4-sqrt (hx * hx + hy * hy + hz * hz) + 1.0
+    in let l = mat4-v3-normalize dir
+    in let vertical = if l.vx < 0.01 then (if l.vx > -0.01 then (if l.vz < 0.01 then (if l.vz > -0.01 then True else False) else False) else False) else False
+    in let up = if vertical then vec3-new 0.0 0.0 1.0 else vec3-new 0.0 1.0 0.0
+    in let center = vec3-new cx cy cz
+    in let eye = vec3-new (cx + l.vx * radius * 2.0) (cy + l.vy * radius * 2.0) (cz + l.vz * radius * 2.0)
+    in let view = mat4-look-at eye center up
+    in let proj = mat4-ortho (0.0 - radius) radius (0.0 - radius) radius (radius * 0.1) (radius * 4.0)
+    in mat4-mul proj view
+
+  r3d-shadow-pass : R3dTriState, Scene3DState, Mat4 -> Integer
+  r3d-shadow-pass (st) (scene) (lvp) =
+    r3d-shadow-pass-nodes st scene lvp 0 (scene.s3-count)
+
+  r3d-shadow-pass-nodes : R3dTriState, Scene3DState, Mat4, Integer, Integer -> Integer
+  r3d-shadow-pass-nodes (st) (scene) (lvp) (i) (n) =
+    if i >= n then 0
+    else let node = list-at (scene.s3-nodes) i
+    in let d = if node.sn3-visible then r3d-shadow-pass-node st scene lvp node i else 0
+    in r3d-shadow-pass-nodes st scene lvp (i + 1) n
+
+  r3d-shadow-pass-node : R3dTriState, Scene3DState, Mat4, SceneNode3D, Integer -> Integer
+  r3d-shadow-pass-node (st) (scene) (lvp) (node) (idx) =
+    when node.sn3-mesh
+      is None -> 0
+      is Just (mesh) ->
+        let lmvp = mat4-mul lvp (scene3d-world-matrix scene idx)
+        in r3d-render-tris-unlit st mesh lmvp (node.sn3-material) (st.r3t-w / 2) (st.r3t-h / 2) 0 (mesh.mesh-index-count)
+
+  r3d-project-clip-sw : ClipVert, Integer, Integer, R3dShadow -> ProjVert
+  r3d-project-clip-sw (v) (half-w) (half-h) (sh) =
+    let p = r3d-project-clip v half-w half-h
+    in let lc = mat4-transform-vec4 (sh.rs-vp) (Vec4 { v4x = v.cv-wx, v4y = v.cv-wy, v4z = v.cv-wz, v4w = 1.0 })
+    in let lw = lc.v4w
+    in if lw <= 0.0 then p
+    else let fs = real-from-int (sh.rs-size)
+    in let lx = real-to-int ((lc.v4x / lw * 0.5 + 0.5) * fs * 1000.0)
+    in let ly = real-to-int ((0.5 - lc.v4y / lw * 0.5) * fs * 1000.0)
+    in let ld = real-to-int ((lc.v4z / lw + 1.0) * 500000.0)
+    in __record-set (__record-set (__record-set p "pv-lx" lx) "pv-ly" ly) "pv-ld" ld
+
+  r3d-ctx-with-shadow : R3dShadeCtx, R3dShadow, Integer -> R3dShadeCtx
+  r3d-ctx-with-shadow (ctx) (sh) (amb) =
+    __record-set (__record-set (__record-set (__record-set ctx "sc-amb" amb) "sc-sh-base" (sh.rs-base)) "sc-sh-size" (sh.rs-size)) "sc-sh-bias" (sh.rs-bias)
+
+  r3d-shade-ctx-flat : Integer -> R3dShadeCtx
+  r3d-shade-ctx-flat (color) =
+    R3dShadeCtx { sc-mode = 3, sc-g0 = color, sc-g1 = 0, sc-g2 = 0, sc-base = 0, sc-ar = 0, sc-ag = 0, sc-ab = 0, sc-diffuse = 0, sc-specular = 0, sc-shininess = 0, sc-ex = 0, sc-ey = 0, sc-ez = 0, sc-lights = [], sc-amb = 0, sc-sh-base = 0, sc-sh-size = 0, sc-sh-bias = 0, sc-tex = None }
+
+  r3d-raster-fan-sw : R3dTriState, List ClipVert, Integer, R3dShadeCtx, Integer, Integer, R3dShadow -> Integer
+  r3d-raster-fan-sw (st) (poly) (i) (ctx) (half-w) (half-h) (sh) =
+    if i + 1 >= list-length poly then 0
+    else let hit = r3d-fan-one-sw st poly i ctx half-w half-h sh
+    in r3d-raster-fan-sw st poly (i + 1) ctx half-w half-h sh
+
+  r3d-fan-one-sw : R3dTriState, List ClipVert, Integer, R3dShadeCtx, Integer, Integer, R3dShadow -> Integer
+  r3d-fan-one-sw (st) (poly) (i) (ctx) (half-w) (half-h) (sh) =
+    let p0 = r3d-project-clip-sw (list-at poly 0) half-w half-h sh
+    in let pa = r3d-project-clip-sw (list-at poly i) half-w half-h sh
+    in let pb = r3d-project-clip-sw (list-at poly (i + 1)) half-w half-h sh
+    in if cull-backface (p0.pv-sx) (p0.pv-sy) (pa.pv-sx) (pa.pv-sy) (pb.pv-sx) (pb.pv-sy) then 0
+    else r3d-rasterize-tri-sh st p0 pa pb ctx
+
+  r3d-render-tris-flat-sw : R3dTriState, Mesh, Mat4, Mat4, EngineMaterial, List Light3D, Vec3, Integer, R3dShadow, Integer, Integer, Integer, Integer -> Integer
+  r3d-render-tris-flat-sw (st) (mesh) (model) (mvp) (mat) (lights) (eye) (ambient) (sh) (half-w) (half-h) (i) (n) =
+    if i >= n then 0
+    else let c0 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh i)) mvp model
+    in let c1 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh (i + 1))) mvp model
+    in let c2 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh (i + 2))) mvp model
+    in let poly = r3d-clip-tri c0 c1 c2
+    in if list-length poly < 3 then r3d-render-tris-flat-sw st mesh model mvp mat lights eye ambient sh half-w half-h (i + 3) n
+    else let face-normal = mat4-v3-normalize (vec3-new (real-from-int (c0.cv-nx + c1.cv-nx + c2.cv-nx) / 3.0) (real-from-int (c0.cv-ny + c1.cv-ny + c2.cv-ny) / 3.0) (real-from-int (c0.cv-nz + c1.cv-nz + c2.cv-nz) / 3.0))
+    in let center = vec3-new ((c0.cv-wx + c1.cv-wx + c2.cv-wx) / 3.0) ((c0.cv-wy + c1.cv-wy + c2.cv-wy) / 3.0) ((c0.cv-wz + c1.cv-wz + c2.cv-wz) / 3.0)
+    in let lit = rgb-to-packed (r3d-shade-phong center face-normal eye mat lights 0 (list-length lights) ambient)
+    in let amb = rgb-to-packed (rgb-scale (mat.emat-albedo) ambient)
+    in let ctx = r3d-ctx-with-tex (r3d-ctx-with-shadow (r3d-shade-ctx-flat lit) sh amb) mat
+    in let hit = r3d-raster-fan-sw st poly 1 ctx half-w half-h sh
+    in r3d-render-tris-flat-sw st mesh model mvp mat lights eye ambient sh half-w half-h (i + 3) n
+
+  r3d-render-tris-gouraud-sw : R3dTriState, Mesh, Mat4, Mat4, EngineMaterial, List Light3D, Vec3, Integer, R3dShadow, Integer, Integer, Integer, Integer -> Integer
+  r3d-render-tris-gouraud-sw (st) (mesh) (model) (mvp) (mat) (lights) (eye) (ambient) (sh) (half-w) (half-h) (i) (n) =
+    if i >= n then 0
+    else let c0 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh i)) mvp model
+    in let c1 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh (i + 1))) mvp model
+    in let c2 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh (i + 2))) mvp model
+    in let poly = r3d-clip-tri c0 c1 c2
+    in if list-length poly < 3 then r3d-render-tris-gouraud-sw st mesh model mvp mat lights eye ambient sh half-w half-h (i + 3) n
+    else let amb = rgb-to-packed (rgb-scale (mat.emat-albedo) ambient)
+    in let g0 = r3d-shade-clip-vert (list-at poly 0) mat lights eye ambient
+    in let hit = r3d-gouraud-fan-sw st poly 1 mat lights eye ambient g0 amb sh half-w half-h
+    in r3d-render-tris-gouraud-sw st mesh model mvp mat lights eye ambient sh half-w half-h (i + 3) n
+
+  r3d-gouraud-fan-sw : R3dTriState, List ClipVert, Integer, EngineMaterial, List Light3D, Vec3, Integer, Integer, Integer, R3dShadow, Integer, Integer -> Integer
+  r3d-gouraud-fan-sw (st) (poly) (i) (mat) (lights) (eye) (ambient) (g0) (amb) (sh) (half-w) (half-h) =
+    if i + 1 >= list-length poly then 0
+    else let gi = r3d-shade-clip-vert (list-at poly i) mat lights eye ambient
+    in let gj = r3d-shade-clip-vert (list-at poly (i + 1)) mat lights eye ambient
+    in let ctx = r3d-ctx-with-tex (r3d-ctx-with-shadow (r3d-shade-ctx-gouraud g0 gi gj) sh amb) mat
+    in let hit = r3d-fan-one-sw st poly i ctx half-w half-h sh
+    in r3d-gouraud-fan-sw st poly (i + 1) mat lights eye ambient g0 amb sh half-w half-h
+
+  r3d-render-tris-phong-sw : R3dTriState, Mesh, Mat4, Mat4, EngineMaterial, List Light3D, Vec3, Integer, R3dShadow, Integer, Integer, Integer, Integer -> Integer
+  r3d-render-tris-phong-sw (st) (mesh) (model) (mvp) (mat) (lights) (eye) (ambient) (sh) (half-w) (half-h) (i) (n) =
+    if i >= n then 0
+    else let c0 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh i)) mvp model
+    in let c1 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh (i + 1))) mvp model
+    in let c2 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh (i + 2))) mvp model
+    in let poly = r3d-clip-tri c0 c1 c2
+    in if list-length poly < 3 then r3d-render-tris-phong-sw st mesh model mvp mat lights eye ambient sh half-w half-h (i + 3) n
+    else let amb = rgb-to-packed (rgb-scale (mat.emat-albedo) ambient)
+    in let ctx = r3d-ctx-with-shadow (r3d-shade-ctx-phong c0 c1 c2 mat lights eye ambient) sh amb
+    in let hit = r3d-raster-fan-sw st poly 1 ctx half-w half-h sh
+    in r3d-render-tris-phong-sw st mesh model mvp mat lights eye ambient sh half-w half-h (i + 3) n
+
+  r3d-render-mesh-sw : R3dTriState, Mesh, Mat4, Mat4, EngineMaterial, List Light3D, Vec3, Integer, R3dShadow, Integer, Integer -> Integer
+  r3d-render-mesh-sw (st) (mesh) (model) (mvp) (mat) (lights) (eye) (ambient) (sh) (half-w) (half-h) =
+    when mat.emat-shading
+      is Unlit -> r3d-render-unlit-dispatch st mesh mvp mat half-w half-h
+      is FlatShaded -> r3d-render-tris-flat-sw st mesh model mvp mat lights eye ambient sh half-w half-h 0 (mesh.mesh-index-count)
+      is GouraudShaded -> r3d-render-tris-gouraud-sw st mesh model mvp mat lights eye ambient sh half-w half-h 0 (mesh.mesh-index-count)
+      is PhongShaded -> r3d-render-tris-phong-sw st mesh model mvp mat lights eye ambient sh half-w half-h 0 (mesh.mesh-index-count)
+
+  r3d-render-nodes-sw : Scene3DState, Mat4, Frustum, R3dTriState, R3dShadow, Integer, Integer, Integer, Integer -> Integer
+  r3d-render-nodes-sw (scene) (vp) (fr) (st) (sh) (i) (n) (w) (h) =
+    if i >= n then 0
+    else let node = list-at (scene.s3-nodes) i
+    in let drawn = if node.sn3-visible then r3d-render-node-sw scene vp fr st sh node i w h else 0
+    in r3d-render-nodes-sw scene vp fr st sh (i + 1) n w h
+
+  r3d-render-node-sw : Scene3DState, Mat4, Frustum, R3dTriState, R3dShadow, SceneNode3D, Integer, Integer, Integer -> Integer
+  r3d-render-node-sw (scene) (vp) (fr) (st) (sh) (node) (idx) (w) (h) =
+    when node.sn3-mesh
+      is None -> 0
+      is Just (mesh) ->
+        let model = scene3d-world-matrix scene idx
+        in let verdict = frustum-test-aabb fr (r3d-world-bounds (mesh-bounds mesh) model)
+        in when verdict
+          is FrOutside -> 0
+          is otherwise ->
+            let mvp = mat4-mul vp model
+            in r3d-render-mesh-sw st mesh model mvp (node.sn3-material) (scene.s3-lights) (scene.s3-camera.c3-eye) (scene.s3-ambient) sh (w / 2) (h / 2)
+
+  r3d-render-shadowed : R3dTriState, Scene3DState, Integer -> Integer
+  r3d-render-shadowed (st) (scene) (map-size) =
+    when r3d-first-dir (scene.s3-lights) 0 (list-length (scene.s3-lights))
+      is None -> r3d-render-into st scene
+      is Just (dir) ->
+        let lvp = r3d-light-vp scene dir
+        in let sh-st = r3d-target-new map-size map-size 0
+        in let dp = r3d-shadow-pass sh-st scene lvp
+        in let sh = R3dShadow { rs-base = sh-st.r3t-depth, rs-size = map-size, rs-bias = r3d-shadow-bias, rs-vp = lvp }
+        in let vp = camera3d-vp (scene.s3-camera)
+        in let fr = frustum-extract vp
+        in r3d-render-nodes-sw scene vp fr st sh 0 (scene.s3-count) (st.r3t-w) (st.r3t-h)
+
+  r3d-render-scene-shadowed : Scene3DState, Integer, Integer, Integer -> Framebuf
+  r3d-render-scene-shadowed (scene) (width) (height) (map-size) =
+    let st = r3d-target-new width height (rgb-to-packed (rgb 20 20 30))
+    in let drawn = r3d-render-shadowed st scene map-size
+    in Framebuf { fb-width = width, fb-height = height, fb-pixels = r3d-buf-to-list (st.r3t-base) 0 (width * height) [] }
 
 Section: Scene Rendering
-
- r3d-render-into renders through a caller-supplied target, which is how
- a scene reaches a real framebuffer: build one with r3d-target-at from
- the base and stride the firmware reported. r3d-render-scene keeps the
- offline shape, converting the flat buffer to a Framebuf once at the end
- rather than a record per pixel.
 
   r3d-render-scene : Scene3DState, Integer, Integer -> Framebuf
   r3d-render-scene (scene) (width) (height) =
@@ -291,41 +811,98 @@ Section: Scene Rendering
   r3d-render-into : R3dTriState, Scene3DState -> Integer
   r3d-render-into (st) (scene) =
     let vp = camera3d-vp (scene.s3-camera)
-    in r3d-render-nodes scene vp st 0 (scene.s3-count) (st.r3t-w) (st.r3t-h)
+    in let fr = frustum-extract vp
+    in r3d-render-nodes scene vp fr st 0 (scene.s3-count) (st.r3t-w) (st.r3t-h)
+
+  r3d-world-bounds : MeshBounds, Mat4 -> MeshBounds
+  r3d-world-bounds (b) (model) =
+    let c0 = mat4-transform-point model (vec3-new (real-from-int (b.mb-min-x)) (real-from-int (b.mb-min-y)) (real-from-int (b.mb-min-z)))
+    in let c1 = mat4-transform-point model (vec3-new (real-from-int (b.mb-max-x)) (real-from-int (b.mb-min-y)) (real-from-int (b.mb-min-z)))
+    in let c2 = mat4-transform-point model (vec3-new (real-from-int (b.mb-min-x)) (real-from-int (b.mb-max-y)) (real-from-int (b.mb-min-z)))
+    in let c3 = mat4-transform-point model (vec3-new (real-from-int (b.mb-max-x)) (real-from-int (b.mb-max-y)) (real-from-int (b.mb-min-z)))
+    in let c4 = mat4-transform-point model (vec3-new (real-from-int (b.mb-min-x)) (real-from-int (b.mb-min-y)) (real-from-int (b.mb-max-z)))
+    in let c5 = mat4-transform-point model (vec3-new (real-from-int (b.mb-max-x)) (real-from-int (b.mb-min-y)) (real-from-int (b.mb-max-z)))
+    in let c6 = mat4-transform-point model (vec3-new (real-from-int (b.mb-min-x)) (real-from-int (b.mb-max-y)) (real-from-int (b.mb-max-z)))
+    in let c7 = mat4-transform-point model (vec3-new (real-from-int (b.mb-max-x)) (real-from-int (b.mb-max-y)) (real-from-int (b.mb-max-z)))
+    in MeshBounds {
+      mb-min-x = real-to-int (r3d-rmin8 (c0.vx) (c1.vx) (c2.vx) (c3.vx) (c4.vx) (c5.vx) (c6.vx) (c7.vx)),
+      mb-min-y = real-to-int (r3d-rmin8 (c0.vy) (c1.vy) (c2.vy) (c3.vy) (c4.vy) (c5.vy) (c6.vy) (c7.vy)),
+      mb-min-z = real-to-int (r3d-rmin8 (c0.vz) (c1.vz) (c2.vz) (c3.vz) (c4.vz) (c5.vz) (c6.vz) (c7.vz)),
+      mb-max-x = real-to-int (r3d-rmax8 (c0.vx) (c1.vx) (c2.vx) (c3.vx) (c4.vx) (c5.vx) (c6.vx) (c7.vx)),
+      mb-max-y = real-to-int (r3d-rmax8 (c0.vy) (c1.vy) (c2.vy) (c3.vy) (c4.vy) (c5.vy) (c6.vy) (c7.vy)),
+      mb-max-z = real-to-int (r3d-rmax8 (c0.vz) (c1.vz) (c2.vz) (c3.vz) (c4.vz) (c5.vz) (c6.vz) (c7.vz))
+    }
+
+  r3d-rmin : Real, Real -> Real
+  r3d-rmin (a) (b) = if a < b then a else b
+
+  r3d-rmax : Real, Real -> Real
+  r3d-rmax (a) (b) = if a > b then a else b
+
+  r3d-rmin8 : Real, Real, Real, Real, Real, Real, Real, Real -> Real
+  r3d-rmin8 (a) (b) (c) (d) (e) (f) (g) (h) = r3d-rmin (r3d-rmin (r3d-rmin a b) (r3d-rmin c d)) (r3d-rmin (r3d-rmin e f) (r3d-rmin g h))
+
+  r3d-rmax8 : Real, Real, Real, Real, Real, Real, Real, Real -> Real
+  r3d-rmax8 (a) (b) (c) (d) (e) (f) (g) (h) = r3d-rmax (r3d-rmax (r3d-rmax a b) (r3d-rmax c d)) (r3d-rmax (r3d-rmax e f) (r3d-rmax g h))
 
   r3d-buf-to-list : Integer, Integer, Integer, List Integer -> List Integer
   r3d-buf-to-list (base) (i) (n) (acc) =
     if i >= n then acc
     else r3d-buf-to-list base (i + 1) n (list-push acc (peek-32 base (i * 4)))
 
-  r3d-render-nodes : Scene3DState, Mat4, R3dTriState, Integer, Integer, Integer, Integer -> Integer
-  r3d-render-nodes (scene) (vp) (st) (i) (n) (w) (h) =
+  r3d-render-nodes : Scene3DState, Mat4, Frustum, R3dTriState, Integer, Integer, Integer, Integer -> Integer
+  r3d-render-nodes (scene) (vp) (fr) (st) (i) (n) (w) (h) =
     if i >= n then 0
     else let node = list-at (scene.s3-nodes) i
-    in let drawn = if node.sn3-visible then r3d-render-node scene vp st node i w h else 0
-    in r3d-render-nodes scene vp st (i + 1) n w h
+    in let drawn = if node.sn3-visible then r3d-render-node scene vp fr st node i w h else 0
+    in r3d-render-nodes scene vp fr st (i + 1) n w h
 
-  r3d-render-node : Scene3DState, Mat4, R3dTriState, SceneNode3D, Integer, Integer, Integer -> Integer
-  r3d-render-node (scene) (vp) (st) (node) (idx) (w) (h) =
+  r3d-render-node : Scene3DState, Mat4, Frustum, R3dTriState, SceneNode3D, Integer, Integer, Integer -> Integer
+  r3d-render-node (scene) (vp) (fr) (st) (node) (idx) (w) (h) =
     when node.sn3-mesh
       is None -> 0
       is Just (mesh) ->
         let model = scene3d-world-matrix scene idx
-        in let mvp = mat4-mul vp model
-        in let half-w = w / 2
-        in let half-h = h / 2
-        in r3d-render-mesh st mesh model mvp (node.sn3-material) (scene.s3-lights) (scene.s3-camera.c3-eye) (scene.s3-ambient) half-w half-h
+        in let verdict = frustum-test-aabb fr (r3d-world-bounds (mesh-bounds mesh) model)
+        in when verdict
+          is FrOutside -> 0
+          is otherwise ->
+            let mvp = mat4-mul vp model
+            in let half-w = w / 2
+            in let half-h = h / 2
+            in r3d-render-mesh st mesh model mvp (node.sn3-material) (scene.s3-lights) (scene.s3-camera.c3-eye) (scene.s3-ambient) half-w half-h
 
   r3d-render-mesh : R3dTriState, Mesh, Mat4, Mat4, EngineMaterial, List Light3D, Vec3, Integer, Integer, Integer -> Integer
   r3d-render-mesh (st) (mesh) (model) (mvp) (mat) (lights) (eye) (ambient) (half-w) (half-h) =
     let shading = mat.emat-shading
     in when shading
-      is Unlit -> r3d-render-tris-unlit st mesh mvp mat half-w half-h 0 (mesh.mesh-index-count)
+      is Unlit -> r3d-render-unlit-dispatch st mesh mvp mat half-w half-h
       is FlatShaded -> r3d-render-tris-flat st mesh model mvp mat lights eye ambient half-w half-h 0 (mesh.mesh-index-count)
-      is GouraudShaded -> r3d-render-tris-flat st mesh model mvp mat lights eye ambient half-w half-h 0 (mesh.mesh-index-count)
-      is PhongShaded -> r3d-render-tris-flat st mesh model mvp mat lights eye ambient half-w half-h 0 (mesh.mesh-index-count)
+      is GouraudShaded -> r3d-render-tris-gouraud st mesh model mvp mat lights eye ambient half-w half-h 0 (mesh.mesh-index-count)
+      is PhongShaded -> r3d-render-tris-phong st mesh model mvp mat lights eye ambient half-w half-h 0 (mesh.mesh-index-count)
 
 Section: Unlit Triangle Rendering
+
+ The shadow depth pass calls r3d-render-tris-unlit directly and must stay
+ on the plain path: its target is a depth map, so sampling a texture
+ there would spend per-pixel work on a colour nothing reads.
+
+  r3d-render-unlit-dispatch : R3dTriState, Mesh, Mat4, EngineMaterial, Integer, Integer -> Integer
+  r3d-render-unlit-dispatch (st) (mesh) (mvp) (mat) (half-w) (half-h) =
+    when mat.emat-texture
+      is None -> r3d-render-tris-unlit st mesh mvp mat half-w half-h 0 (mesh.mesh-index-count)
+      is Just (t) -> r3d-render-tris-unlit-tex st mesh mvp mat half-w half-h 0 (mesh.mesh-index-count)
+
+  r3d-render-tris-unlit-tex : R3dTriState, Mesh, Mat4, EngineMaterial, Integer, Integer, Integer, Integer -> Integer
+  r3d-render-tris-unlit-tex (st) (mesh) (mvp) (mat) (half-w) (half-h) (i) (n) =
+    if i >= n then 0
+    else let c0 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh i)) mvp mat4-identity
+    in let c1 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh (i + 1))) mvp mat4-identity
+    in let c2 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh (i + 2))) mvp mat4-identity
+    in let poly = r3d-clip-tri c0 c1 c2
+    in let ctx = r3d-ctx-with-tex (r3d-shade-ctx-flat (rgb-to-packed (mat.emat-albedo))) mat
+    in let drawn = r3d-raster-fan-sh st poly 1 ctx half-w half-h
+    in r3d-render-tris-unlit-tex st mesh mvp mat half-w half-h (i + 3) n
 
   r3d-render-tris-unlit : R3dTriState, Mesh, Mat4, EngineMaterial, Integer, Integer, Integer, Integer -> Integer
   r3d-render-tris-unlit (st) (mesh) (mvp) (mat) (half-w) (half-h) (i) (n) =
@@ -336,11 +913,12 @@ Section: Unlit Triangle Rendering
     in let v0 = mesh-vertex-at mesh i0
     in let v1 = mesh-vertex-at mesh i1
     in let v2 = mesh-vertex-at mesh i2
-    in let p0 = r3d-transform-vertex v0 mvp mat4-identity half-w half-h
-    in let p1 = r3d-transform-vertex v1 mvp mat4-identity half-w half-h
-    in let p2 = r3d-transform-vertex v2 mvp mat4-identity half-w half-h
+    in let c0 = r3d-clip-vertex v0 mvp mat4-identity
+    in let c1 = r3d-clip-vertex v1 mvp mat4-identity
+    in let c2 = r3d-clip-vertex v2 mvp mat4-identity
+    in let poly = r3d-clip-tri c0 c1 c2
     in let color = rgb-to-packed (mat.emat-albedo)
-    in let drawn = r3d-rasterize-tri st p0 p1 p2 color
+    in let drawn = r3d-raster-fan st poly 1 color half-w half-h
     in r3d-render-tris-unlit st mesh mvp mat half-w half-h (i + 3) n
 
 Section: Flat/Phong Triangle Rendering
@@ -354,24 +932,22 @@ Section: Flat/Phong Triangle Rendering
     in let v0 = mesh-vertex-at mesh i0
     in let v1 = mesh-vertex-at mesh i1
     in let v2 = mesh-vertex-at mesh i2
-    in let p0 = r3d-transform-vertex v0 mvp model half-w half-h
-    in let p1 = r3d-transform-vertex v1 mvp model half-w half-h
-    in let p2 = r3d-transform-vertex v2 mvp model half-w half-h
-    in let face-nx = real-from-int (p0.pv-nx + p1.pv-nx + p2.pv-nx) / 3.0
-    in let face-ny = real-from-int (p0.pv-ny + p1.pv-ny + p2.pv-ny) / 3.0
-    in let face-nz = real-from-int (p0.pv-nz + p1.pv-nz + p2.pv-nz) / 3.0
+    in let c0 = r3d-clip-vertex v0 mvp model
+    in let c1 = r3d-clip-vertex v1 mvp model
+    in let c2 = r3d-clip-vertex v2 mvp model
+    in let poly = r3d-clip-tri c0 c1 c2
+    in if list-length poly < 3 then r3d-render-tris-flat st mesh model mvp mat lights eye ambient half-w half-h (i + 3) n
+    else let face-nx = real-from-int (c0.cv-nx + c1.cv-nx + c2.cv-nx) / 3.0
+    in let face-ny = real-from-int (c0.cv-ny + c1.cv-ny + c2.cv-ny) / 3.0
+    in let face-nz = real-from-int (c0.cv-nz + c1.cv-nz + c2.cv-nz) / 3.0
     in let face-normal = mat4-v3-normalize (vec3-new face-nx face-ny face-nz)
-    in let center = vec3-new ((p0.pv-wx + p1.pv-wx + p2.pv-wx) / 3.0) ((p0.pv-wy + p1.pv-wy + p2.pv-wy) / 3.0) ((p0.pv-wz + p1.pv-wz + p2.pv-wz) / 3.0)
+    in let center = vec3-new ((c0.cv-wx + c1.cv-wx + c2.cv-wx) / 3.0) ((c0.cv-wy + c1.cv-wy + c2.cv-wy) / 3.0) ((c0.cv-wz + c1.cv-wz + c2.cv-wz) / 3.0)
     in let color = r3d-shade-phong center face-normal eye mat lights 0 (list-length lights) ambient
-    in let drawn = r3d-rasterize-tri st p0 p1 p2 (rgb-to-packed color)
+    in let ctx = r3d-ctx-with-tex (r3d-shade-ctx-flat (rgb-to-packed color)) mat
+    in let drawn = r3d-raster-fan-sh st poly 1 ctx half-w half-h
     in r3d-render-tris-flat st mesh model mvp mat lights eye ambient half-w half-h (i + 3) n
 
 Section: Vector Helpers
-
- Vec3 is Real, so normalization and reflection are the Matrix4 primitives
- rather than the fixed-point integer routines this chapter used to carry.
- r3d-vec-len still answers in world units as an integer, because the point
- light compares it against an integer radius.
 
   r3d-unit-to-milli : Real -> Integer
   r3d-unit-to-milli (x) = real-to-int (x * 1000.0)

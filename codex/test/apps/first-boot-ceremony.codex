@@ -1,10 +1,89 @@
 Chapter: FirstBootCeremony
+  cites Works chapter GopWizard
+  cites Foreword chapter Aes256
+  cites Foreword chapter Hkdf
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
   cites Foreword chapter Console
+
+Section: Fixtures
+
+  fbc-pass : Text = "test"
+
+  fbc-iota : Integer, Integer, List Integer -> List Integer
+  fbc-iota (i) (n) (acc) =
+    if i >= n then acc
+    else fbc-iota (i + 1) n (list-push acc i)
+
+  fbc-fill : Integer, Integer, Integer, List Integer -> List Integer
+  fbc-fill (i) (n) (v) (acc) =
+    if i >= n then acc
+    else fbc-fill (i + 1) n v (list-push acc v)
+
+  fbc-salt : List Integer
+  fbc-salt = fbc-fill 0 16 7 []
+
+  fbc-iv : List Integer
+  fbc-iv = fbc-fill 0 16 9 []
+
+  fbc-identity : WzIdentity
+  fbc-identity =
+    let seed = fbc-iota 0 32 []
+    in let pub = ed25519-public-key seed
+    in let dk = wz-words-to-bytes (hkdf fbc-salt (wz-text-bytes fbc-pass 0 []) wz-hkdf-info 32) 0 []
+    in let wrapped = aes256-cbc-encrypt (aes256-pkcs7-pad (fbc-iota 0 32 [])) dk fbc-iv
+    in WzIdentity {
+      wid-fingerprint = sha256-to-hex (sha256 pub),
+      wid-public = pub,
+      wid-wrapped = wrapped,
+      wid-salt = fbc-salt,
+      wid-iv = fbc-iv
+    }
+
+Section: Verdicts
+
+  fbc-parse-verdict : Maybe WzIdentity, WzIdentity -> Text
+  fbc-parse-verdict (parsed) (wid) = when parsed
+    is None -> "parse=FAILED"
+    is Just (w) -> "parse=ok pub-eq=" & (if wz-bytes-eq (w.wid-public) (wid.wid-public) 0 then "Y" else "N")
+
+  fbc-right-verdict : Maybe WzIdentity -> Text
+  fbc-right-verdict (parsed) = when parsed
+    is None -> "no-parse"
+    is Just (w) -> when (wz-unlock-try w fbc-pass)
+      is None -> "unlock-right=FAILED"
+      is Just (s) -> "unlock-right=ok seed-eq=" & (if wz-bytes-eq s (fbc-iota 0 32 []) 0 then "Y" else "N")
+
+  fbc-wrong-verdict : Maybe WzIdentity -> Text
+  fbc-wrong-verdict (parsed) = when parsed
+    is None -> "no-parse"
+    is Just (w) -> when (wz-unlock-try w "wrong")
+      is None -> "unlock-wrong=rejected"
+      is Just (_) -> "unlock-wrong=ACCEPTED"
+
+  fbc-corrupt-verdict : Integer, Integer -> Text
+  fbc-corrupt-verdict (buf) (len) =
+    let cm = poke-byte buf 0 88
+    in when (wz-parse-identity buf len)
+      is None -> "corrupt=rejected"
+      is Just (_) -> "corrupt=ACCEPTED"
 
 Section: Entry
 
   opening : [Console] Nothing = act
-    print-line-uni "first-boot-ceremony:ok"
+    let wid = fbc-identity
+    in let buf = __heap-save
+    in let adv = __heap-advance 512
+    in let z = wz-zero buf 0 512
+    in let len = wz-serialize-identity wid buf
+    in let parsed = wz-parse-identity buf len
+    in act
+      print-line-uni ("len=" & show len)
+      print-line-uni (fbc-parse-verdict parsed wid)
+      print-line-uni (fbc-right-verdict parsed)
+      print-line-uni (fbc-wrong-verdict parsed)
+      print-line-uni (fbc-corrupt-verdict buf len)
+    end
   end
 
 Page 1

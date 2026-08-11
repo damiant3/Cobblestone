@@ -64,7 +64,28 @@ seed and run the battery against it. Any failure is an uninitialized-field
 read (`CR2=0xCDCD...`); fix it before release. This is the gate that proves
 the zero-fill is a safety net, not a crutch holding something together.
 
-## Step 4 -- Seed, map, and img
+## Step 4 -- Diverse double-compiling (the trusting-trust witness)
+
+Run the DDC end to end and compare against the seed being shipped. Recipe
+and the traps are in `OperatorsManual.md`, "Running the DDC end to end".
+
+The pass is exact: the Roslyn arm's stage2 is the same byte count as
+`seed/Codex.cdx`, and the only differing bytes are the 96 in the signature
+region at offsets 40..135. **Zero differing bytes outside that region.**
+
+**This is the one proof the other three cannot substitute for.** The
+battery, the sweep and the poison build all ask the compiler about itself;
+a compiler carrying a Thompson trojan passes every one of them, because it
+is a stable fixed point too. Only a second implementation with unrelated
+lineage can answer the question, and Roslyn is the only one in reach.
+
+**Run it even when nothing looks like it touched the plug.** It broke at
+main 14398 by a change that had nothing to do with C#: `block-write-sector`
+became a builtin, the plug's builtin table gained no entry, and the emitted
+C# referenced a name that did not exist. A new builtin anywhere breaks this
+witness silently, and the seed stays perfectly green while it is broken.
+
+## Step 5 -- Seed, map, and img
 - **Seed:** if a rebuild is due, follow the Developer's Guide seed
   procedure; verify the DEPOT digest after submit (PerforceProcess.md).
 - **Map:** refresh `seed/Codex.map`. The `-Repl` seed build never emits the
@@ -74,24 +95,25 @@ the zero-fill is a safety net, not a crutch holding something together.
   separate distribution artifact that drifts and is NOT part of a seed
   rebuild. A release ships a current img.
 
-## Step 5 -- README and the GitHubUpdate report
+## Step 6 -- README and the GitHubUpdate report
 - Update `README.md`: the seed digest and any capability claims that moved.
 - Top off and rotate the update report: fill in the current
   `docs/PM/Active/GitHubUpdates/GitHubUpdateN.md` with this release's
   themes, then start the next `N+1` for the following cycle. The report
   ships IN the same commit as the release.
 
-## Step 6 -- Push
+## Step 7 -- Push
 Follow `docs/Agents/PublicPush.md` exactly: sync main, `git add -u` plus
 explicit new paths (never `git add -A`), secret scan (the signing key and
 `apps/games/magic/` never ship), one Update-N commit, push github master and
 gitlab master:main, no force.
 
 ## Rules
-- The battery, the app sweep and the poison build are the three proofs a
-  release cannot skip. Everything else is polish; these three are
+- The battery, the app sweep, the poison build and the DDC are the four
+  proofs a release cannot skip. Everything else is polish; these four are
   correctness. They prove different things: the battery is depth, the sweep
-  is breadth over the front end, the poison build is memory hygiene.
+  is breadth over the front end, the poison build is memory hygiene, and the
+  DDC is the only one that does not take the compiler's word for anything.
 - Never force-push; never publish the signing key or `apps/games/magic/`.
 - If any step is red, STOP and report. A release is the one thing that must
   never ship broken, because the public inherits it directly.

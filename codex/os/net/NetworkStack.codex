@@ -40,10 +40,20 @@ Section: Network Session
     conn : TcpConnection,
     arp : ArpCache,
     outbox : List (List Integer),
-    rexmit-frame : List Integer,
-    rexmit-ack : Integer,
+    rexmit-queue : List RexmitSeg,
     rexmit-rto : Integer,
-    close-timer : Integer
+    rexmit-tries : Integer,
+    close-timer : Integer,
+    now-ticks : Integer,
+    srtt : Integer,
+    rttvar : Integer
+  }
+
+  RexmitSeg = record {
+    rx-frame : List Integer,
+    rx-ack : Integer,
+    rx-sent : Integer,
+    rx-resent : Boolean
   }
 
   net-session-new : List Integer, List Integer, List Integer, Integer, Integer, List Integer, Integer -> NetSession
@@ -55,10 +65,13 @@ Section: Network Session
       conn = tcp-new-connection local-port local-ip remote-port remote-ip initial-seq,
       arp = arp-cache-empty,
       outbox = [],
-      rexmit-frame = [],
-      rexmit-ack = 0,
+      rexmit-queue = [],
       rexmit-rto = 0,
-      close-timer = 0
+      rexmit-tries = 0,
+      close-timer = 0,
+      now-ticks = 0,
+      srtt = 0,
+      rttvar = 0
     }
 
 Section: Frame Wrapping
@@ -94,24 +107,165 @@ Section: Session Operations
   }
 
   set-conn : NetSession, TcpConnection -> NetSession
-  set-conn (s) (c) = NetSession { local-mac = s.local-mac, local-ip = s.local-ip, gateway-ip = s.gateway-ip, conn = c, arp = s.arp, outbox = s.outbox, rexmit-frame = s.rexmit-frame, rexmit-ack = s.rexmit-ack, rexmit-rto = s.rexmit-rto, close-timer = s.close-timer }
+  set-conn (s) (c) = NetSession { local-mac = s.local-mac, local-ip = s.local-ip, gateway-ip = s.gateway-ip, conn = c, arp = s.arp, outbox = s.outbox, rexmit-queue = s.rexmit-queue, rexmit-rto = s.rexmit-rto, rexmit-tries = s.rexmit-tries, close-timer = s.close-timer, now-ticks = s.now-ticks, srtt = s.srtt, rttvar = s.rttvar }
 
   set-arp : NetSession, ArpCache -> NetSession
-  set-arp (s) (a) = NetSession { local-mac = s.local-mac, local-ip = s.local-ip, gateway-ip = s.gateway-ip, conn = s.conn, arp = a, outbox = s.outbox, rexmit-frame = s.rexmit-frame, rexmit-ack = s.rexmit-ack, rexmit-rto = s.rexmit-rto, close-timer = s.close-timer }
+  set-arp (s) (a) = NetSession { local-mac = s.local-mac, local-ip = s.local-ip, gateway-ip = s.gateway-ip, conn = s.conn, arp = a, outbox = s.outbox, rexmit-queue = s.rexmit-queue, rexmit-rto = s.rexmit-rto, rexmit-tries = s.rexmit-tries, close-timer = s.close-timer, now-ticks = s.now-ticks, srtt = s.srtt, rttvar = s.rttvar }
 
   set-outbox : NetSession, List (List Integer) -> NetSession
-  set-outbox (s) (o) = NetSession { local-mac = s.local-mac, local-ip = s.local-ip, gateway-ip = s.gateway-ip, conn = s.conn, arp = s.arp, outbox = o, rexmit-frame = s.rexmit-frame, rexmit-ack = s.rexmit-ack, rexmit-rto = s.rexmit-rto, close-timer = s.close-timer }
+  set-outbox (s) (o) = NetSession { local-mac = s.local-mac, local-ip = s.local-ip, gateway-ip = s.gateway-ip, conn = s.conn, arp = s.arp, outbox = o, rexmit-queue = s.rexmit-queue, rexmit-rto = s.rexmit-rto, rexmit-tries = s.rexmit-tries, close-timer = s.close-timer, now-ticks = s.now-ticks, srtt = s.srtt, rttvar = s.rttvar }
 
 Section: Reliability Timers
 
   net-rto-ticks : Integer = 3
   net-timewait-ticks : Integer = 4
 
-  set-rexmit : NetSession, List Integer, Integer, Integer -> NetSession
-  set-rexmit (s) (f) (ack) (rto) = NetSession { local-mac = s.local-mac, local-ip = s.local-ip, gateway-ip = s.gateway-ip, conn = s.conn, arp = s.arp, outbox = s.outbox, rexmit-frame = f, rexmit-ack = ack, rexmit-rto = rto, close-timer = s.close-timer }
+ A tick is whatever period the caller drives the session at, so these are
+ counts and not durations. The retry ceiling exists because bare metal has
+ no operator: an unbounded retransmit into a peer that has gone away is a
+ device that never stops and never reports, which is the failure this
+ project exists to prevent, and it is the same bound DtlsHandshake takes at
+ 10. Five retransmissions with the interval doubling spans 141 ticks before
+ the connection is declared dead. At five tries the clamp binds only the
+ last interval: unclamped that one would be 96 ticks rather than 48, which
+ buys nothing against a peer already silent through four and pushes the
+ give-up out to 189 ticks.
+
+  net-rto-max-tries : Integer = 5
+  net-rto-max-ticks : Integer = 48
+
+ RFC 6298 sections 2 and 3, in ticks rather than seconds. The caller decides
+ what a tick is worth and never tells us, which is why net-rto-ticks was a
+ fixed 3 for as long as it was: an interval cannot be a duration here. The
+ estimator does not need one. It needs only that the tick RATE is steady,
+ and then the ratio between a measured round trip and the retransmit
+ interval is right whatever the rate turns out to be. A fixed 3 is wrong in
+ both directions at once -- far too eager on a slow link, far too patient on
+ a fast one -- and no calibration was ever required to fix that.
+
+ srtt is carried scaled by 8 and rttvar by 4, the standard integer form.
+ The 1/8 and 1/4 gains are then shifts, and a divide-then-store does not
+ truncate the estimate a little further on every single update.
+
+  net-rto-min-ticks : Integer = 2
+
+  set-rtt : NetSession, Integer, Integer -> NetSession
+  set-rtt (s) (sr) (rv) = NetSession { local-mac = s.local-mac, local-ip = s.local-ip, gateway-ip = s.gateway-ip, conn = s.conn, arp = s.arp, outbox = s.outbox, rexmit-queue = s.rexmit-queue, rexmit-rto = s.rexmit-rto, rexmit-tries = s.rexmit-tries, close-timer = s.close-timer, now-ticks = s.now-ticks, srtt = sr, rttvar = rv }
+
+  set-now : NetSession, Integer -> NetSession
+  set-now (s) (n) = NetSession { local-mac = s.local-mac, local-ip = s.local-ip, gateway-ip = s.gateway-ip, conn = s.conn, arp = s.arp, outbox = s.outbox, rexmit-queue = s.rexmit-queue, rexmit-rto = s.rexmit-rto, rexmit-tries = s.rexmit-tries, close-timer = s.close-timer, now-ticks = n, srtt = s.srtt, rttvar = s.rttvar }
+
+ A sample of zero is a round trip that completed inside one tick, not an
+ absent measurement, and the two must not share a representation: srtt = 0
+ is what "never measured" means here, so a zero sample would silently
+ discard itself and leave the fixed default in place forever on the fastest
+ links. It is floored at one tick instead, which is RFC 6298's clock
+ granularity G doing its ordinary job -- the true value is below what this
+ clock can express, and one tick is the smallest thing it can honestly say.
+
+  net-rtt-update : NetSession, Integer -> NetSession
+  net-rtt-update (s) (m) =
+    if m < 0 then s
+    else net-rtt-first s (if m == 0 then 1 else m)
+
+  net-rtt-first : NetSession, Integer -> NetSession
+  net-rtt-first (s) (m) =
+    if s.srtt == 0 then set-rtt s (bit-shl m 3) (bit-shl m 1)
+    else net-rtt-again s m
+
+  net-rtt-again : NetSession, Integer -> NetSession
+  net-rtt-again (s) (m) =
+    let err = m - bit-shru (s.srtt) 3
+    in let dev = if err < 0 then 0 - err else err
+    in set-rtt s (s.srtt + err) (s.rttvar + (dev - bit-shru (s.rttvar) 2))
+
+  net-rto-base : NetSession -> Integer
+  net-rto-base (s) =
+    if s.srtt == 0 then net-rto-ticks
+    else net-rto-clamp (bit-shru (s.srtt) 3 + s.rttvar)
+
+  net-rto-clamp : Integer -> Integer
+  net-rto-clamp (t) =
+    if t < net-rto-min-ticks then net-rto-min-ticks
+    else if t > net-rto-max-ticks then net-rto-max-ticks
+    else t
+
+  net-rto-backoff : NetSession, Integer -> Integer
+  net-rto-backoff (s) (tries) = net-rto-clamp (bit-shl (net-rto-base s) tries)
+
+ Karn's algorithm, RFC 6298 section 3. A segment that was retransmitted
+ cannot be sampled: the ack does not say which copy it answers, and the
+ wrong guess feeds the estimator a round trip that never happened. It
+ matters most under exactly the loss the estimator exists to survive, which
+ is why the flag is carried per segment rather than inferred from the retry
+ counter -- the counter is reset by any retiring ack, and a segment already
+ retransmitted would become sampleable again.
+
+  net-rtt-measure : List RexmitSeg, Integer, Integer, Integer -> Integer
+  net-rtt-measure (q) (ack) (now) (i) =
+    if i >= list-length q then 0 - 1
+    else let e = list-at q i
+    in if tcp-seq-le (e.rx-ack) ack & e.rx-resent == False then now - e.rx-sent
+    else net-rtt-measure q ack now (i + 1)
+
+  net-mark-resent : List RexmitSeg, Integer, List RexmitSeg -> List RexmitSeg
+  net-mark-resent (q) (i) (acc) =
+    if i >= list-length q then acc
+    else let e = list-at q i
+    in let e2 = if i == 0 then RexmitSeg { rx-frame = e.rx-frame, rx-ack = e.rx-ack, rx-sent = e.rx-sent, rx-resent = True } else e
+    in net-mark-resent q (i + 1) (list-push acc e2)
+
+  set-rexmit : NetSession, List RexmitSeg, Integer, Integer -> NetSession
+  set-rexmit (s) (q) (rto) (tries) = NetSession { local-mac = s.local-mac, local-ip = s.local-ip, gateway-ip = s.gateway-ip, conn = s.conn, arp = s.arp, outbox = s.outbox, rexmit-queue = q, rexmit-rto = rto, rexmit-tries = tries, close-timer = s.close-timer, now-ticks = s.now-ticks, srtt = s.srtt, rttvar = s.rttvar }
 
   set-close-timer : NetSession, Integer -> NetSession
-  set-close-timer (s) (t) = NetSession { local-mac = s.local-mac, local-ip = s.local-ip, gateway-ip = s.gateway-ip, conn = s.conn, arp = s.arp, outbox = s.outbox, rexmit-frame = s.rexmit-frame, rexmit-ack = s.rexmit-ack, rexmit-rto = s.rexmit-rto, close-timer = t }
+  set-close-timer (s) (t) = NetSession { local-mac = s.local-mac, local-ip = s.local-ip, gateway-ip = s.gateway-ip, conn = s.conn, arp = s.arp, outbox = s.outbox, rexmit-queue = s.rexmit-queue, rexmit-rto = s.rexmit-rto, rexmit-tries = s.rexmit-tries, close-timer = t, now-ticks = s.now-ticks, srtt = s.srtt, rttvar = s.rttvar }
+
+ The queue is bounded because there is no collector and the peer decides how
+ fast it stops acking. An unbounded queue would let a silent peer choose our
+ memory ceiling, which is the one thing a bare-metal stack must not concede,
+ so a send past the bound is refused rather than served.
+
+ The bound applies to DATA only, and the true ceiling is therefore nine
+ rather than eight: net-close arms the FIN through the same queue without
+ consulting the capacity, deliberately, because refusing to close a
+ connection is a worse failure than carrying one more entry. A SYN cannot
+ add to it, since a connection with anything queued is past CLOSED.
+
+  net-rexmit-capacity : Integer = 8
+
+  net-rexmit-full : NetSession -> Boolean
+  net-rexmit-full (s) = list-length (s.rexmit-queue) >= net-rexmit-capacity
+
+ The timer belongs to the OLDEST unacked segment (RFC 6298 section 5), so it
+ is armed only when the queue goes from empty to occupied. A later send joins
+ a timer that is already running rather than restarting it, which is what
+ stops a steady stream of sends from postponing the first segment's deadline
+ forever.
+
+  net-rexmit-arm : NetSession, List Integer, Integer -> NetSession
+  net-rexmit-arm (s) (frame) (ack) =
+    let q = list-push (s.rexmit-queue) (RexmitSeg { rx-frame = frame, rx-ack = ack, rx-sent = s.now-ticks, rx-resent = False })
+    in if list-length (s.rexmit-queue) == 0 then set-rexmit s q (net-rto-base s) 0
+    else set-rexmit s q (s.rexmit-rto) (s.rexmit-tries)
+
+  net-rexmit-prune : List RexmitSeg, Integer, Integer, List RexmitSeg -> List RexmitSeg
+  net-rexmit-prune (q) (ack) (i) (acc) =
+    if i >= list-length q then acc
+    else let e = list-at q i
+    in if tcp-seq-le (e.rx-ack) ack then net-rexmit-prune q ack (i + 1) acc
+    else net-rexmit-prune q ack (i + 1) (list-push acc e)
+
+ An ACK that retires anything is evidence the path is alive, so the backoff
+ earned by the retired segment does not carry over to the one behind it: the
+ timer restarts at the base interval with the retry count reset. Carrying the
+ count forward would let one slow segment spend the whole retry budget of
+ every segment queued behind it.
+
+  net-rexmit-retire : NetSession, List RexmitSeg -> NetSession
+  net-rexmit-retire (s) (q) =
+    if list-length q == 0 then set-rexmit s q 0 0
+    else set-rexmit s q (net-rto-base s) 0
 
   net-listen : NetSession -> NetResult
   net-listen (sess) =
@@ -131,10 +285,17 @@ Section: Reliability Timers
       is ActData (d) -> []
       is ActClosed -> []
       is ActError (m) -> []
-    in NetResult { session = set-outbox s1 frame, output = "connecting", data = [] }
+    in let base = set-outbox s1 frame
+    in let s2 = if list-length frame > 0 then net-rexmit-arm base (list-at frame 0) ((step.conn).send-next) else base
+    in NetResult { session = s2, output = "connecting", data = [] }
 
   net-send : NetSession, List Integer -> NetResult
   net-send (sess) (payload) =
+    if list-length payload > 0 & net-rexmit-full sess then NetResult { session = sess, output = "send queue full", data = [] }
+    else net-send-go sess payload
+
+  net-send-go : NetSession, List Integer -> NetResult
+  net-send-go (sess) (payload) =
     let step = tcp-step (sess.conn) (EvSend payload)
     in let s1 = set-conn sess (step.conn)
     in let frame = when (step.action)
@@ -154,7 +315,7 @@ Section: Reliability Timers
       is ActData (d) -> "no action"
       is ActClosed -> "no action"
     in let s2 = set-outbox s1 frame
-    in let s3 = if list-length payload > 0 & list-length frame > 0 then set-rexmit s2 (list-at frame 0) ((step.conn).send-next) net-rto-ticks else s2
+    in let s3 = if list-length payload > 0 & list-length frame > 0 then net-rexmit-arm s2 (list-at frame 0) ((step.conn).send-next) else s2
     in NetResult { session = s3, output = out-text, data = [] }
 
   net-receive-segment : NetSession, TcpSegment -> NetResult
@@ -186,8 +347,12 @@ Section: Reliability Timers
       is ActError (m) -> "error: " & m
       is ActNone -> "none"
     in let base = set-outbox s1 frame
-    in let acked = tcp-has-flag seg tcp-flag-ack & seg.ack-num >= sess.rexmit-ack & sess.rexmit-rto > 0
-    in let s2 = if acked then set-rexmit base [] 0 0 else base
+    in let q0 = sess.rexmit-queue
+    in let acking = tcp-has-flag seg tcp-flag-ack & list-length q0 > 0
+    in let q2 = if acking then net-rexmit-prune q0 (seg.ack-num) 0 [] else q0
+    in let m = if acking then net-rtt-measure q0 (seg.ack-num) (sess.now-ticks) 0 else 0 - 1
+    in let base2 = net-rtt-update base m
+    in let s2 = if list-length q2 < list-length q0 then net-rexmit-retire base2 q2 else base2
     in let s3 = when ((step.conn).state)
       is TcpTimeWait -> set-close-timer s2 net-timewait-ticks
       is TcpLastAck -> set-close-timer s2 net-timewait-ticks
@@ -210,7 +375,8 @@ Section: Reliability Timers
     in let s2 = when ((step.conn).state)
       is TcpLastAck -> set-close-timer base net-timewait-ticks
       is otherwise -> base
-    in NetResult { session = s2, output = "closing", data = [] }
+    in let s3 = if list-length frame > 0 then net-rexmit-arm s2 (list-at frame 0) ((step.conn).send-next) else s2
+    in NetResult { session = s3, output = "closing", data = [] }
 
   net-outbox-count : NetSession -> Integer
   net-outbox-count (sess) = list-length (sess.outbox)
@@ -259,9 +425,9 @@ Section: Inbound Frame Processing
   net-seg-acceptable (sess) (seg) =
     let rn = (sess.conn).recv-next
     in let win = (sess.conn).send-window
-    in let seg-end = seg.seq-num + list-length (seg.payload)
-    in if seg-end <= rn then False
-    else if seg.seq-num >= rn + win then False
+    in let seg-end = tcp-seq-wrap (seg.seq-num + list-length (seg.payload))
+    in if tcp-seq-le seg-end rn then False
+    else if tcp-seq-ge (seg.seq-num) (tcp-seq-wrap (rn + win)) then False
     else True
 
   net-dup-ack : NetSession -> NetResult
@@ -292,12 +458,24 @@ Section: Timer Tick
 
   net-tick : NetSession -> NetResult
   net-tick (sess) =
-    let r1 = if sess.rexmit-rto == 1 then set-rexmit (set-outbox sess [sess.rexmit-frame]) (sess.rexmit-frame) (sess.rexmit-ack) net-rto-ticks
-      else if sess.rexmit-rto > 1 then set-rexmit sess (sess.rexmit-frame) (sess.rexmit-ack) (sess.rexmit-rto - 1)
-      else sess
+    let s0 = set-now sess (sess.now-ticks + 1)
+    in let expired = s0.rexmit-rto == 1 & list-length (s0.rexmit-queue) > 0
+    in let gave-up = expired & s0.rexmit-tries >= net-rto-max-tries
+    in let r1 = if gave-up then set-rexmit (set-conn s0 (tcp-set-state (s0.conn) TcpClosed)) [] 0 0
+      else if expired then net-rexmit-again s0
+      else if s0.rexmit-rto > 1 then set-rexmit s0 (s0.rexmit-queue) (s0.rexmit-rto - 1) (s0.rexmit-tries)
+      else s0
     in let r2 = if r1.close-timer == 1 then set-close-timer (set-conn r1 (tcp-set-state (r1.conn) TcpClosed)) 0
       else if r1.close-timer > 1 then set-close-timer r1 (r1.close-timer - 1)
       else r1
-    in NetResult { session = r2, output = "tick", data = [] }
+    in let out = if gave-up then "rexmit-giveup" else "tick"
+    in NetResult { session = r2, output = out, data = [] }
+
+  net-rexmit-again : NetSession -> NetSession
+  net-rexmit-again (sess) =
+    let n = sess.rexmit-tries + 1
+    in let head = list-at (sess.rexmit-queue) 0
+    in let q2 = net-mark-resent (sess.rexmit-queue) 0 []
+    in set-rexmit (set-outbox sess [head.rx-frame]) q2 (net-rto-backoff sess n) n
 
 Page 1

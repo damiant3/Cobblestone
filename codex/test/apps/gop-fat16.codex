@@ -1,6 +1,7 @@
 Chapter: GopFat16Test
   cites Works chapter GopFat16
   cites Foreword chapter Fat16
+  cites Foreword chapter Gpt
   cites Foreword chapter Maybe
 
  Reads a GPT + FAT16 disk through the payload's own block driver, the
@@ -27,9 +28,6 @@ Section: Main
        & " root-start=" & show (m.gm-vol.vol-root-start)
        & " data-start=" & show (m.gm-vol.vol-data-start)
   end
-
- A file three levels deep: root -> EFI -> BOOT -> BOOTX64.EFI. Only the
- directory entry is read; its size is what the walk must recover.
 
   show-deep : [Device.Port] Text
   show-deep = act
@@ -72,9 +70,6 @@ Section: Main
     end
   end
 
- The same file read in bulk: the FAT chain is followed in memory and its
- two clusters coalesce into one command.
-
   show-bulk-file : [Device.Port] Text
   show-bulk-file = act
     m <- gfat-mount-esp
@@ -97,6 +92,50 @@ Section: Main
     end
   end
 
+ The type GUID is sixteen bytes and a prefix match is not a match. These
+ three buffers differ from the real ESP GUID only in how far along they
+ stop agreeing: the first is the genuine article, the second shares the
+ opening dword and diverges at byte 4, the third agrees for fifteen bytes
+ and differs in the last. A four-byte comparison accepts the second and
+ the third, which is what this arm exists to refuse.
+
+  guid-buf : Integer, Integer -> Integer
+  guid-buf (breakat) (newval) =
+    let b = __heap-save
+    in let adv = __heap-advance 32
+    in let want = gpt-esp-type-guid
+    in let f = guid-fill b 0 breakat newval want
+    in b
+
+  guid-fill : Integer, Integer, Integer, Integer, List Integer -> Integer
+  guid-fill (buf) (i) (breakat) (newval) (want) =
+    if i >= 16 then 0
+    else let v = if i == breakat then newval else list-at want i
+    in let w = poke-byte buf i v
+    in guid-fill buf (i + 1) breakat newval want
+
+ `prefix-4` is the comparison this chapter USED to make, kept as the
+ calibration. Without it the arm is vacuous: two buffers that failed to
+ match for some unrelated reason would also read zero, and the test would
+ be green for the wrong reason. The control has to ACCEPT both
+ near-misses for their rejection to mean anything.
+
+  prefix-4 : Integer, Integer, List Integer -> Boolean
+  prefix-4 (buf) (off) (want) =
+    peek-byte buf off == list-at want 0
+    & peek-byte buf (off + 1) == list-at want 1
+    & peek-byte buf (off + 2) == list-at want 2
+    & peek-byte buf (off + 3) == list-at want 3
+
+  show-guid : Text
+  show-guid =
+    let exact = gfat-is-esp-at (guid-buf 99 0) 0
+    in let early = gfat-is-esp-at (guid-buf 4 7) 0
+    in let late = gfat-is-esp-at (guid-buf 15 7) 0
+    in let ctl-early = prefix-4 (guid-buf 4 7) 0 gpt-esp-type-guid
+    in let ctl-late = prefix-4 (guid-buf 15 7) 0 gpt-esp-type-guid
+    in "guid-exact=" & show (if exact then 1 else 0) & " guid-early=" & show (if early then 1 else 0) & " guid-late=" & show (if late then 1 else 0) & " prefix-accepts=" & show (if ctl-early & ctl-late then 1 else 0)
+
   opening : [Console, Device.Port] Nothing = act
     a <- show-esp
     print-line-uni a
@@ -112,4 +151,5 @@ Section: Main
     print-line-uni g
     e <- show-missing
     print-line-uni e
+    print-line-uni show-guid
   end

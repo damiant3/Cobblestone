@@ -1,0 +1,619 @@
+Chapter: T3ISA Encode
+
+ Assembles T3ISA assembly text into 27-trit words and a string sidecar.
+ This is the Codex port of `spec/t3isa-assembler.ps1`, which was written
+ first and proven byte-for-byte against the external compiler's own output
+ on fourteen programs. That proof is the specification this chapter has to
+ meet, and `spec/validate-codex-encoder.ps1` runs the same comparison
+ through this code.
+
+ The numeric opcodes are not in the published reference. They were derived
+ by arithmetic from matched (assembly, word) pairs; the account is in
+ docs/Designs/Active/Compiler/T3IsaPlug.md. Six mnemonics have no measured
+ number because the external front end never emits one, and guessing them
+ is refused rather than risked.
+
+Section: Field Weights
+
+ word = opcode * 3^18 + r1 * 3^13 + r2 * 3^8 + r3 * 3^3 + imm, or for the
+ wide forms opcode * 3^18 + r1 * 3^13 + (imm rem_euclid 3^13).
+
+  t3e-p18 : Integer
+  t3e-p18 = 387420489
+
+  t3e-p13 : Integer
+  t3e-p13 = 1594323
+
+  t3e-p8 : Integer
+  t3e-p8 = 6561
+
+  t3e-p3 : Integer
+  t3e-p3 = 27
+
+ The wide immediate is 13 trits, so it holds this much either way. Over
+ that it WRAPS rather than failing, which is why encoding refuses instead.
+
+  t3e-wide-max : Integer
+  t3e-wide-max = 797161
+
+Section: Opcodes
+
+ An if-chain rather than a table because a top-level list constant is
+ rebuilt at every mention, and this is read once per instruction.
+
+  t3e-opcode : Text -> Integer
+  t3e-opcode (m) =
+   if m == "TADD" then 1
+   else if m == "TSUB" then 2
+   else if m == "TMUL" then 3
+   else if m == "TDIV" then 4
+   else if m == "TMOD" then 5
+   else if m == "TNEG" then 6
+   else if m == "TSHI" then 10
+   else if m == "TSHR" then 11
+   else if m == "TMIN" then 12
+   else if m == "TMAX" then 13
+   else if m == "TCMP" then 14
+   else if m == "LOAD" then 15
+   else if m == "STORE" then 16
+   else if m == "TLIT" then 17
+   else if m == "MOV" then 18
+   else if m == "JUMP" then 20
+   else if m == "CALL" then 21
+   else if m == "RET" then 22
+   else if m == "SYSCALL" then 24
+   else if m == "TBR_POS" then 25
+   else if m == "TBR_ZERO" then 26
+   else if m == "CALLR" then 28
+   else -1
+
+  t3e-is-wide : Text -> Boolean
+  t3e-is-wide (m) =
+   m == "TLIT" | m == "JUMP" | m == "CALL" | m == "SYSCALL"
+   | m == "TBR_POS" | m == "TBR_ZERO"
+
+ TBRANCH is a pseudo-instruction the assembler expands to three words.
+
+  t3e-width : Text -> Integer
+  t3e-width (m) = if m == "TBRANCH" then 3 else 1
+
+Section: Text Helpers
+
+ Written here rather than reached for, because every one of these runs on
+ CCE code points and the comparisons have to be against CCE too.
+
+  t3e-space : Integer
+  t3e-space = char-code-at " " 0
+
+ Space only. A tab cannot be written as an escape here (CDX0005, \t is not
+ valid in CCE) and neither the external emitter's assembly nor ours ever
+ contains one. A carriage return is stripped before this sees a line.
+
+  t3e-is-blank : Integer -> Boolean
+  t3e-is-blank (c) = c == t3e-space
+
+  t3e-trim : Text -> Text
+  t3e-trim (s) =
+   let a = t3e-trim-start s 0 (text-length s)
+   in let b = t3e-trim-end s (text-length s)
+   in if b <= a then "" else substring s a (b - a)
+
+  t3e-trim-start : Text, Integer, Integer -> Integer
+  t3e-trim-start (s) (i) (len) =
+   if i >= len then i
+   else if t3e-is-blank (char-code-at s i) then t3e-trim-start s (i + 1) len
+   else i
+
+  t3e-trim-end : Text, Integer -> Integer
+  t3e-trim-end (s) (j) =
+   if j <= 0 then 0
+   else if t3e-is-blank (char-code-at s (j - 1)) then t3e-trim-end s (j - 1)
+   else j
+
+  t3e-index-of : Text, Integer, Integer -> Integer
+  t3e-index-of (s) (target) (i) =
+   if i >= text-length s then -1
+   else if char-code-at s i == target then i
+   else t3e-index-of s target (i + 1)
+
+  t3e-starts-with : Text, Text -> Boolean
+  t3e-starts-with (s) (p) =
+   if text-length p > text-length s then False
+   else substring s 0 (text-length p) == p
+
+ A comment runs from the first semicolon, except on a .string line where a
+ semicolon can sit inside the literal.
+
+  t3e-strip-comment : Text -> Text
+  t3e-strip-comment (line) =
+   if t3e-has-string-decl line then line
+   else let k = t3e-index-of line (char-code-at ";" 0) 0
+   in if k < 0 then line else substring line 0 k
+
+  t3e-has-string-decl : Text -> Boolean
+  t3e-has-string-decl (line) = t3e-find-sub line ".string" 0 >= 0
+
+  t3e-find-sub : Text, Text, Integer -> Integer
+  t3e-find-sub (s) (needle) (i) =
+   let n = text-length needle
+   in if i + n > text-length s then -1
+   else if substring s i n == needle then i
+   else t3e-find-sub s needle (i + 1)
+
+Section: Line Splitting
+
+  t3e-split-lines : Text -> List Text
+  t3e-split-lines (s) = t3e-split-loop s 0 0 (text-length s) []
+
+  t3e-split-loop : Text, Integer, Integer, Integer, List Text -> List Text
+  t3e-split-loop (s) (start) (i) (len) (acc) =
+   if i >= len then list-push acc (substring s start (len - start))
+   else if char-code-at s i == char-code-at "\n" 0 then
+    t3e-split-loop s (i + 1) (i + 1) len (list-push acc (substring s start (i - start)))
+   else t3e-split-loop s start (i + 1) len acc
+
+Section: Operand Splitting
+
+  t3e-split-ops : Text -> List Text
+  t3e-split-ops (s) = t3e-ops-loop s 0 0 (text-length s) []
+
+  t3e-ops-loop : Text, Integer, Integer, Integer, List Text -> List Text
+  t3e-ops-loop (s) (start) (i) (len) (acc) =
+   if i >= len then t3e-push-op acc (substring s start (len - start))
+   else if char-code-at s i == char-code-at "," 0 then
+    t3e-ops-loop s (i + 1) (i + 1) len (t3e-push-op acc (substring s start (i - start)))
+   else t3e-ops-loop s start (i + 1) len acc
+
+  t3e-push-op : List Text, Text -> List Text
+  t3e-push-op (acc) (raw) =
+   let t = t3e-trim raw
+   in if t == "" then acc else list-push acc t
+
+ The mnemonic is everything up to the first blank; the rest is operands.
+
+  t3e-mnemonic : Text -> Text
+  t3e-mnemonic (line) =
+   let k = t3e-first-blank line 0 (text-length line)
+   in if k < 0 then line else substring line 0 k
+
+  t3e-rest : Text -> Text
+  t3e-rest (line) =
+   let k = t3e-first-blank line 0 (text-length line)
+   in if k < 0 then "" else t3e-trim (substring line k (text-length line - k))
+
+  t3e-first-blank : Text, Integer, Integer -> Integer
+  t3e-first-blank (s) (i) (len) =
+   if i >= len then -1
+   else if t3e-is-blank (char-code-at s i) then i
+   else t3e-first-blank s (i + 1) len
+
+Section: Tables
+
+  T3eLabel = record {
+   lab-name : Text,
+   lab-addr : Integer
+  }
+
+  T3eStr = record {
+   str-label : Text,
+   str-body : Text
+  }
+
+  t3e-lookup-label : List T3eLabel, Text, Integer -> Integer
+  t3e-lookup-label (ls) (n) (i) =
+   if i >= list-length ls then -1
+   else let l = list-at ls i
+   in if l.lab-name == n then l.lab-addr
+   else t3e-lookup-label ls n (i + 1)
+
+Section: Operand Parsing
+
+  t3e-parse-reg : Text -> Integer
+  t3e-parse-reg (s) =
+   if text-length s < 2 then -1
+   else let c = char-code-at s 0
+   in if c == char-code-at "R" 0 then parse-int-text (substring s 1 (text-length s - 1))
+   else if c == char-code-at "r" 0 then parse-int-text (substring s 1 (text-length s - 1))
+   else -1
+
+ An immediate is a number or a symbol, and a symbol is a code label or a
+ string label. The two share one namespace here because the assembler
+ resolves both through the same table.
+
+  t3e-resolve : Text, List T3eLabel -> Integer
+  t3e-resolve (s) (labels) =
+   let v = if t3e-starts-with s "#" then substring s 1 (text-length s - 1) else s
+   in if t3e-is-numeric v then parse-int-text v
+   else t3e-lookup-label labels v 0
+
+  t3e-is-numeric : Text -> Boolean
+  t3e-is-numeric (s) =
+   if text-length s == 0 then False
+   else let c = char-code-at s 0
+   in if c == char-code-at "-" 0 then t3e-digits-from s 1
+   else t3e-digits-from s 0
+
+  t3e-digits-from : Text, Integer -> Boolean
+  t3e-digits-from (s) (i) =
+   if i >= text-length s then i > 0
+   else if t3e-is-digit (char-code-at s i) then t3e-digits-from s (i + 1)
+   else False
+
+  t3e-is-digit : Integer -> Boolean
+  t3e-is-digit (c) = c >= char-code-at "0" 0 & c <= char-code-at "9" 0
+
+ A memory operand is [Ra+#imm]. Only this one addressing mode exists.
+
+  t3e-mem-reg : Text -> Integer
+  t3e-mem-reg (s) =
+   let a = t3e-index-of s (char-code-at "[" 0) 0
+   in let b = t3e-index-of s (char-code-at "+" 0) 0
+   in if a < 0 then -1 else if b <= a then -1
+   else t3e-parse-reg (t3e-trim (substring s (a + 1) (b - a - 1)))
+
+  t3e-mem-imm : Text -> Integer
+  t3e-mem-imm (s) =
+   let h = t3e-index-of s (char-code-at "#" 0) 0
+   in let e = t3e-index-of s (char-code-at "]" 0) 0
+   in if h < 0 then 0 else if e <= h then 0
+   else parse-int-text (t3e-trim (substring s (h + 1) (e - h - 1)))
+
+Section: Encoding
+
+  t3e-encode-std : Integer, Integer, Integer, Integer, Integer -> Integer
+  t3e-encode-std (op) (r1) (r2) (r3) (imm) =
+   op * t3e-p18 + r1 * t3e-p13 + r2 * t3e-p8 + r3 * t3e-p3 + imm
+
+  t3e-encode-wide : Integer, Integer, Integer -> Integer
+  t3e-encode-wide (op) (r1) (imm) =
+   op * t3e-p18 + r1 * t3e-p13 + int-mod imm t3e-p13
+
+Section: Result
+
+  T3eOut = record {
+   words : List Integer,
+   sidecar : List Text,
+   errors : List Text
+  }
+
+  t3e-fail : T3eOut, Text -> T3eOut
+  t3e-fail (o) (why) =
+   T3eOut { words = o.words, sidecar = o.sidecar, errors = list-push (o.errors) why }
+
+Section: Pass One, Labels and Strings
+
+ A label's address is the word index of the instruction that follows it,
+ and a line may carry several labels before its instruction.
+
+  T3ePass1 = record {
+   labels : List T3eLabel,
+   strs : List T3eStr,
+   code-size : Integer
+  }
+
+  t3e-pass1 : List Text -> T3ePass1
+  t3e-pass1 (lines) = t3e-pass1-loop lines 0 0 [] [] False
+
+  t3e-pass1-loop : List Text, Integer, Integer, List T3eLabel, List T3eStr, Boolean -> T3ePass1
+  t3e-pass1-loop (lines) (i) (wi) (labels) (strs) (in-data) =
+   if i >= list-length lines then t3e-pass1-finish labels strs wi
+   else let raw = t3e-trim (t3e-strip-comment (list-at lines i))
+   in if raw == "" then t3e-pass1-loop lines (i + 1) wi labels strs in-data
+   else if t3e-starts-with raw ".data" then t3e-pass1-loop lines (i + 1) wi labels strs True
+   else if t3e-starts-with raw ".globals" then t3e-pass1-loop lines (i + 1) wi labels strs False
+   else if in-data then t3e-pass1-loop lines (i + 1) wi labels (t3e-add-str strs raw) True
+   else t3e-pass1-code lines i wi labels strs raw
+
+  t3e-pass1-code : List Text, Integer, Integer, List T3eLabel, List T3eStr, Text -> T3ePass1
+  t3e-pass1-code (lines) (i) (wi) (labels) (strs) (raw) =
+   let r = t3e-eat-labels raw wi labels
+   in if r.rest == "" then t3e-pass1-loop lines (i + 1) wi (r.labs) strs False
+   else t3e-pass1-loop lines (i + 1) (wi + t3e-width (t3e-mnemonic (r.rest))) (r.labs) strs False
+
+  T3eEat = record {
+   rest : Text,
+   labs : List T3eLabel
+  }
+
+ A label name may itself contain `::`, which qualified method names use, so
+ the terminator is the LAST colon of the leading run of label characters,
+ not the first. Taking the first splits `Process::new:` into three bogus
+ labels, the real name never gets registered, and every `CALL Process::new`
+ resolves to nothing. That is what it did until it was measured.
+
+  t3e-eat-labels : Text, Integer, List T3eLabel -> T3eEat
+  t3e-eat-labels (s) (wi) (labels) =
+   let run = t3e-label-run s 0 (text-length s)
+   in let k = t3e-last-colon-before s run
+   in if k < 0 then T3eEat { rest = s, labs = labels }
+   else let tail = t3e-trim (substring s (k + 1) (text-length s - k - 1))
+   in let grown = list-push labels (T3eLabel { lab-name = substring s 0 k, lab-addr = wi })
+   in t3e-eat-labels tail wi grown
+
+ The run of characters a label may be built from. A blank, a comma or a
+ bracket ends it, which is what keeps a colon inside an operand from
+ reading as a label terminator.
+
+  t3e-label-run : Text, Integer, Integer -> Integer
+  t3e-label-run (s) (i) (len) =
+   if i >= len then i
+   else if t3e-is-label-char (char-code-at s i) then t3e-label-run s (i + 1) len
+   else i
+
+  t3e-is-label-char : Integer -> Boolean
+  t3e-is-label-char (c) =
+   if t3e-is-digit c then True
+   else if c == char-code-at "_" 0 then True
+   else if c == char-code-at "." 0 then True
+   else if c == char-code-at ":" 0 then True
+   else t3e-is-letter c
+
+  t3e-is-letter : Integer -> Boolean
+  t3e-is-letter (c) = c /= t3e-space & t3e-is-plain c
+
+ CCE has no contiguous letter range to test, so a letter is anything the
+ other classes have not already claimed and that is not punctuation the
+ assembly uses structurally.
+
+  t3e-is-plain : Integer -> Boolean
+  t3e-is-plain (c) =
+   c /= char-code-at "," 0 & c /= char-code-at "[" 0 & c /= char-code-at "]" 0
+   & c /= char-code-at "#" 0 & c /= char-code-at "+" 0 & c /= char-code-at ";" 0
+   & c /= char-code-at "\"" 0 & c /= char-code-at "-" 0
+
+  t3e-last-colon-before : Text, Integer -> Integer
+  t3e-last-colon-before (s) (run) =
+   if run <= 0 then -1
+   else if char-code-at s (run - 1) == char-code-at ":" 0 then run - 1
+   else t3e-last-colon-before s (run - 1)
+
+  t3e-add-str : List T3eStr, Text -> List T3eStr
+  t3e-add-str (strs) (raw) =
+   let k = t3e-index-of raw (char-code-at ":" 0) 0
+   in if k < 0 then strs
+   else let q1 = t3e-index-of raw (char-code-at "\"" 0) 0
+   in if q1 < 0 then strs
+   else let q2 = t3e-last-quote raw (text-length raw)
+   in if q2 <= q1 then strs
+   else list-push strs (T3eStr { str-label = t3e-trim (substring raw 0 k),
+                                 str-body = substring raw (q1 + 1) (q2 - q1 - 1) })
+
+  t3e-last-quote : Text, Integer -> Integer
+  t3e-last-quote (s) (j) =
+   if j <= 0 then -1
+   else if char-code-at s (j - 1) == char-code-at "\"" 0 then j - 1
+   else t3e-last-quote s (j - 1)
+
+ String addresses are code_size + 1024 + i, where i is the label's position
+ in ORDINAL LEXICOGRAPHIC order of the name, not declaration order. That is
+ a sorted-map ordering leaking out of the external emitter; the reference
+ does not mention it and it was found by the artifact refusing to match.
+
+  t3e-pass1-finish : List T3eLabel, List T3eStr, Integer -> T3ePass1
+  t3e-pass1-finish (labels) (strs) (wi) =
+   let sorted = t3e-sort-strs strs
+   in T3ePass1 { labels = t3e-add-str-labels labels sorted 0 wi, strs = sorted, code-size = wi }
+
+  t3e-add-str-labels : List T3eLabel, List T3eStr, Integer, Integer -> List T3eLabel
+  t3e-add-str-labels (labels) (sorted) (i) (code-size) =
+   if i >= list-length sorted then labels
+   else let s = list-at sorted i
+   in let grown = list-push labels (T3eLabel { lab-name = s.str-label, lab-addr = code-size + 1024 + i })
+   in t3e-add-str-labels grown sorted (i + 1) code-size
+
+  t3e-sort-strs : List T3eStr -> List T3eStr
+  t3e-sort-strs (strs) = t3e-insert-all strs 0 []
+
+  t3e-insert-all : List T3eStr, Integer, List T3eStr -> List T3eStr
+  t3e-insert-all (src) (i) (acc) =
+   if i >= list-length src then acc
+   else t3e-insert-all src (i + 1) (t3e-insert-sorted acc (list-at src i) 0)
+
+  t3e-insert-sorted : List T3eStr, T3eStr, Integer -> List T3eStr
+  t3e-insert-sorted (acc) (x) (i) =
+   if i >= list-length acc then list-push acc x
+   else if t3e-text-lt (x.str-label) ((list-at acc i).str-label) then list-insert-at acc i x
+   else t3e-insert-sorted acc x (i + 1)
+
+ Ordinal comparison on CCE code points. CCE is not alphabetical, so this is
+ not the same order a human would call lexicographic -- but the external
+ emitter's keys are all `strN`, whose ordering under any consistent
+ code-point comparison is the same as under ASCII, because the alphabetic
+ prefix is identical and only the digits differ.
+
+  t3e-text-lt : Text, Text -> Boolean
+  t3e-text-lt (a) (b) = t3e-text-lt-at a b 0
+
+  t3e-text-lt-at : Text, Text, Integer -> Boolean
+  t3e-text-lt-at (a) (b) (i) =
+   if i >= text-length a then text-length b > text-length a
+   else if i >= text-length b then False
+   else let ca = char-code-at a i
+   in let cb = char-code-at b i
+   in if ca < cb then True
+   else if ca > cb then False
+   else t3e-text-lt-at a b (i + 1)
+
+Section: Pass Two, Encoding
+
+  t3e-pass2 : List Text, T3ePass1 -> T3eOut
+  t3e-pass2 (lines) (p1) =
+   t3e-pass2-loop lines 0 (p1.labels) False (T3eOut { words = [], sidecar = [], errors = [] })
+
+  t3e-pass2-loop : List Text, Integer, List T3eLabel, Boolean, T3eOut -> T3eOut
+  t3e-pass2-loop (lines) (i) (labels) (in-data) (o) =
+   if i >= list-length lines then o
+   else let raw = t3e-trim (t3e-strip-comment (list-at lines i))
+   in if raw == "" then t3e-pass2-loop lines (i + 1) labels in-data o
+   else if t3e-starts-with raw ".data" then t3e-pass2-loop lines (i + 1) labels True o
+   else if t3e-starts-with raw ".globals" then t3e-pass2-loop lines (i + 1) labels False o
+   else if in-data then t3e-pass2-loop lines (i + 1) labels True o
+   else t3e-pass2-code lines i labels raw o
+
+  t3e-pass2-code : List Text, Integer, List T3eLabel, Text, T3eOut -> T3eOut
+  t3e-pass2-code (lines) (i) (labels) (raw) (o) =
+   let r = t3e-eat-labels raw 0 []
+   in if r.rest == "" then t3e-pass2-loop lines (i + 1) labels False o
+   else t3e-pass2-loop lines (i + 1) labels False (t3e-emit-instr (r.rest) labels o)
+
+  t3e-emit-instr : Text, List T3eLabel, T3eOut -> T3eOut
+  t3e-emit-instr (line) (labels) (o) =
+   let m = t3e-mnemonic line
+   in let ops = t3e-split-ops (t3e-rest line)
+   in if m == "TBRANCH" then t3e-emit-tbranch ops labels o
+   else if t3e-opcode m < 0 then t3e-fail o ("unknown mnemonic: " & m)
+   else t3e-emit-one m ops labels o
+
+  t3e-push-word : T3eOut, Integer -> T3eOut
+  t3e-push-word (o) (w) =
+   T3eOut { words = list-push (o.words) w, sidecar = o.sidecar, errors = o.errors }
+
+ The wide immediate wraps rather than failing, so an over-range value is
+ refused here instead of silently becoming another number.
+
+  t3e-push-wide : T3eOut, Integer, Integer, Integer -> T3eOut
+  t3e-push-wide (o) (op) (r1) (imm) =
+   if imm > t3e-wide-max then t3e-fail o ("wide immediate out of range: " & show imm)
+   else if imm < 0 - t3e-wide-max then t3e-fail o ("wide immediate out of range: " & show imm)
+   else t3e-push-word o (t3e-encode-wide op r1 imm)
+
+  t3e-emit-tbranch : List Text, List T3eLabel, T3eOut -> T3eOut
+  t3e-emit-tbranch (ops) (labels) (o) =
+   if list-length ops /= 4 then t3e-fail o "TBRANCH needs a register and three labels"
+   else let rc = t3e-parse-reg (list-at ops 0)
+   in let a = t3e-push-wide o 25 rc (t3e-resolve (list-at ops 1) labels)
+   in let b = t3e-push-wide a 26 rc (t3e-resolve (list-at ops 2) labels)
+   in t3e-push-wide b 20 0 (t3e-resolve (list-at ops 3) labels)
+
+ RET is all zeroes. CALLR takes a register in r1. The wide forms put their
+ operand in the 13-trit immediate. LOAD and STORE share one addressing
+ mode. MOV and TNEG are two-register. Everything else is three-address,
+ where a register third operand goes in r3 and an immediate in imm.
+
+  t3e-emit-one : Text, List Text, List T3eLabel, T3eOut -> T3eOut
+  t3e-emit-one (m) (ops) (labels) (o) =
+   let op = t3e-opcode m
+   in if m == "RET" then t3e-push-word o (t3e-encode-std op 0 0 0 0)
+   else if m == "CALLR" then t3e-emit-callr op ops o
+   else if m == "LOAD" then t3e-emit-mem op ops o
+   else if m == "STORE" then t3e-emit-mem op ops o
+   else if m == "MOV" then t3e-emit-two op ops o
+   else if m == "TNEG" then t3e-emit-two op ops o
+   else if t3e-is-wide m then t3e-emit-wide m op ops labels o
+   else t3e-emit-three m op ops labels o
+
+  t3e-emit-callr : Integer, List Text, T3eOut -> T3eOut
+  t3e-emit-callr (op) (ops) (o) =
+   if list-length ops /= 1 then t3e-fail o "CALLR needs one register"
+   else t3e-push-word o (t3e-encode-std op (t3e-parse-reg (list-at ops 0)) 0 0 0)
+
+ JUMP, CALL and SYSCALL carry only the immediate; TLIT and the two branch
+ forms carry a register as well.
+
+  t3e-emit-wide : Text, Integer, List Text, List T3eLabel, T3eOut -> T3eOut
+  t3e-emit-wide (m) (op) (ops) (labels) (o) =
+   if m == "JUMP" | m == "CALL" | m == "SYSCALL" then
+    (if list-length ops /= 1 then t3e-fail o (m & " needs one operand")
+     else t3e-push-wide o op 0 (t3e-resolve (list-at ops 0) labels))
+   else if list-length ops /= 2 then t3e-fail o (m & " needs a register and an operand")
+   else t3e-push-wide o op (t3e-parse-reg (list-at ops 0)) (t3e-resolve (list-at ops 1) labels)
+
+  t3e-emit-mem : Integer, List Text, T3eOut -> T3eOut
+  t3e-emit-mem (op) (ops) (o) =
+   if list-length ops /= 2 then t3e-fail o "LOAD and STORE need a register and a memory operand"
+   else let rd = t3e-parse-reg (list-at ops 0)
+   in let ra = t3e-mem-reg (list-at ops 1)
+   in if ra < 0 then t3e-fail o ("bad memory operand: " & list-at ops 1)
+   else t3e-push-word o (t3e-encode-std op rd ra 0 (t3e-mem-imm (list-at ops 1)))
+
+  t3e-emit-two : Integer, List Text, T3eOut -> T3eOut
+  t3e-emit-two (op) (ops) (o) =
+   if list-length ops /= 2 then t3e-fail o "this instruction needs two registers"
+   else t3e-push-word o (t3e-encode-std op (t3e-parse-reg (list-at ops 0)) (t3e-parse-reg (list-at ops 1)) 0 0)
+
+ Every three-address instruction resolves its right-hand side as
+ rhs = regs[r3] + imm, so r3 = 0 with an immediate and imm = 0 with a
+ register are both legal (spec v1.3, "The effective right-hand operand").
+ This chapter used to refuse the register form of TSHI and TSHR, because
+ measured 2026-08-09 the register form handed the operand back unchanged,
+ a silent multiply by 3^0. Re-measured 2026-08-10 against the v1.3
+ emulator, `TLIT R21, #13` then `TSHI R11, R11, R21` answers 1594323, the
+ same as the immediate form. The refusal would now reject a conforming
+ program, so it is gone.
+
+  t3e-emit-three : Text, Integer, List Text, List T3eLabel, T3eOut -> T3eOut
+  t3e-emit-three (m) (op) (ops) (labels) (o) =
+   if list-length ops /= 3 then t3e-fail o (m & " needs three operands")
+   else let rd = t3e-parse-reg (list-at ops 0)
+   in let ra = t3e-parse-reg (list-at ops 1)
+   in let third = list-at ops 2
+   in if t3e-starts-with third "#" then t3e-push-word o (t3e-encode-std op rd ra 0 (t3e-resolve third labels))
+   else t3e-push-word o (t3e-encode-std op rd ra (t3e-parse-reg third) 0)
+
+Section: Sidecar
+
+ The .t3s literal escapes a quote as \" and a backslash as \\ ; the sidecar
+ carries both raw. The newline escape stays escaped and the emulator
+ re-expands it.
+
+  t3e-build-sidecar : List T3eStr, Integer, Integer, List Text -> List Text
+  t3e-build-sidecar (strs) (i) (code-size) (acc) =
+   if i >= list-length strs then acc
+   else let s = list-at strs i
+   in let line = show (code-size + 1024 + i) & ":" & t3e-unescape (s.str-body)
+   in t3e-build-sidecar strs (i + 1) code-size (list-push acc line)
+
+  t3e-unescape : Text -> Text
+  t3e-unescape (s) = t3e-unescape-loop s 0 (text-length s) []
+
+  t3e-unescape-loop : Text, Integer, Integer, List Text -> Text
+  t3e-unescape-loop (s) (i) (len) (acc) =
+   if i >= len then text-concat-list acc
+   else let c = char-code-at s i
+   in if c == char-code-at "\\" 0 then t3e-unescape-esc s i len acc
+   else t3e-unescape-loop s (i + 1) len (list-push acc (char-to-text (code-to-char c)))
+
+  t3e-unescape-esc : Text, Integer, Integer, List Text -> Text
+  t3e-unescape-esc (s) (i) (len) (acc) =
+   if i + 1 >= len then text-concat-list (list-push acc "\\")
+   else let n = char-code-at s (i + 1)
+   in if n == char-code-at "\"" 0 then t3e-unescape-loop s (i + 2) len (list-push acc "\"")
+   else if n == char-code-at "\\" 0 then t3e-unescape-loop s (i + 2) len (list-push acc "\\")
+   else t3e-unescape-loop s (i + 1) len (list-push acc "\\")
+
+Section: Entry
+
+  encode-t3isa-asm : Text -> Text
+  encode-t3isa-asm (asm) =
+   let lines = t3e-split-lines asm
+   in let p1 = t3e-pass1 lines
+   in let o = t3e-pass2 lines p1
+   in t3e-render o (t3e-build-sidecar (p1.strs) 0 (p1.code-size) [])
+
+ Words as decimal, one per line, then the sidecar. The runner turns the
+ decimals into little-endian 64-bit words; the arithmetic that matters has
+ already happened here.
+
+  t3e-render : T3eOut, List Text -> Text
+  t3e-render (o) (side) =
+   if list-length (o.errors) > 0 then t3e-render-errors (o.errors) 0 []
+   else t3e-render-words (o.words) 0 [] & t3e-render-strs side 0 []
+
+ Accumulated as a list and joined once. Growing a Text by appending in the
+ loop is quadratic, and a 2,900-word program is exactly the size where that
+ stops being free on a machine with no collector.
+
+  t3e-render-errors : List Text, Integer, List Text -> Text
+  t3e-render-errors (es) (i) (acc) =
+   if i >= list-length es then text-concat-list acc
+   else t3e-render-errors es (i + 1) (list-push acc ("!ENCODE-ERROR " & list-at es i & "\n"))
+
+  t3e-render-words : List Integer, Integer, List Text -> Text
+  t3e-render-words (ws) (i) (acc) =
+   if i >= list-length ws then text-concat-list acc
+   else t3e-render-words ws (i + 1) (list-push acc ("W " & show (list-at ws i) & "\n"))
+
+  t3e-render-strs : List Text, Integer, List Text -> Text
+  t3e-render-strs (ss) (i) (acc) =
+   if i >= list-length ss then text-concat-list acc
+   else t3e-render-strs ss (i + 1) (list-push acc ("S " & list-at ss i & "\n"))

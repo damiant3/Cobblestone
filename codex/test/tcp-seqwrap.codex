@@ -1,0 +1,62 @@
+Chapter: TcpSeqWrap
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+  cites Foreword chapter Console
+
+ We say:
+
+Section: Wire Fixtures
+
+ The initial sequence is six below 2^32, so the two payload bytes this
+ server sends are the last two the 32-bit space holds and the peer's ACK
+ for them is the wrapped value zero. That is what a real peer puts on the
+ wire, and it is the number an implementation that never wraps its own
+ counter cannot match.
+
+  srv-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  cli-mac : List Integer = [82, 85, 10, 0, 2, 2]
+  srv-ip : List Integer = [10, 0, 2, 15]
+  cli-ip : List Integer = [10, 0, 2, 100]
+  gw-ip : List Integer = [10, 0, 2, 2]
+
+  wrap-isn : Integer = 4294967293
+
+  get-bytes : List Integer = [71, 69, 84, 32, 47, 32, 72, 84, 84, 80, 47, 49, 46, 49, 13, 10, 13, 10]
+  resp-bytes : List Integer = [72, 73]
+
+  psh : Integer = bit-or tcp-flag-psh tcp-flag-ack
+
+  mkc : Integer, Integer, Integer, List Integer -> List Integer
+  mkc (seq) (ack) (flags) (payload) =
+    let seg = tcp-build-segment 50000 80 seq ack flags 8192 payload
+    in let ip = ip-build-packet cli-ip srv-ip ip-proto-tcp seg
+    in eth-build-frame srv-mac cli-mac eth-type-ipv4 ip
+
+  tick-n : NetSession, Integer -> NetSession
+  tick-n (s) (n) = if n <= 0 then s else tick-n ((net-tick s).session) (n - 1)
+
+Section: Server Session
+
+  srv0 : NetSession = net-session-new srv-mac srv-ip gw-ip 80 0 cli-ip wrap-isn
+  listening : NetSession = (net-listen srv0).session
+  established : NetSession =
+    let s1 = (net-process-frame listening (mkc 1000 0 tcp-flag-syn [])).session
+    in (net-process-frame s1 (mkc 1001 4294967294 psh get-bytes)).session
+
+Section: Entry
+  opening : [Console] Nothing = act
+    let sent = (net-send established resp-bytes).session
+    in let acked = (net-process-frame sent (mkc 1019 0 tcp-flag-ack [])).session
+    in act
+      print-line-uni ("wrapstate=" & tcp-state-name ((sent.conn).state))
+      print-line-uni ("wrapack=" & (if acked.rexmit-rto == 0 then "disarmed" else "armed"))
+      print-line-uni ("wrapclose=" & tcp-state-name (((tick-n acked 141).conn).state))
+      print-line-uni ("diffback=" & show (tcp-seq-diff 0 4294967295))
+      print-line-uni ("difffwd=" & show (tcp-seq-diff 4294967295 0))
+      print-line-uni ("diffzero=" & show (tcp-seq-diff 5 5))
+      print-line-uni ("halfedge=" & show (tcp-seq-diff 2147483647 0))
+      print-line-uni ("halfflip=" & show (tcp-seq-diff 2147483648 0))
+      print-line-uni ("wraparith=" & show (tcp-seq-wrap 4294967296))
+    end
+  end

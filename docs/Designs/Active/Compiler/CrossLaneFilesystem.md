@@ -2,6 +2,8 @@
 
 **Status**: proposal, not started. Measured 2026-07-21 (val).
 
+**Ruling 2026-08-05 (Damian): RESURFACED into the IoT/cross-arch chain.** Steps 2-5 (VirtioBlk on the plug lanes, block-read-sector, FileSystem grounding) are live again alongside ProtocolStack's remainder; step 1 landed independently (see the corrected table below).
+
 The arm64 and riscv lanes cannot read a file, and the reason is further
 down than it looks. This is the implementation plan. It came out of
 a one-line register entry describing a builtin
@@ -19,7 +21,7 @@ Measured against source, not inferred:
 | `read-text` servicer | Absent. x86 installs `__fs-read-servicer` via `emit-seed-fs-handler` (`Emit/X86_64Chapter.codex`); the plugs install nothing. |
 | FAT16 | **Present and portable.** `codex/foreword/core/Fat16.codex` is pure Codex and needs only the block primitives underneath it. |
 | Block builtins | Absent. Neither plug has an entry for `block-read-sector`, `block-read`, `block-sector-count` or any sibling. |
-| Raw load/store | Absent. Neither plug has an entry for `peek-byte`, `peek-32`, `peek-qword`, `poke-byte`, `poke-32`, `poke-mmio`. **There is no raw memory access on either lane at all**, so no driver of any kind can currently be written for them. |
+| Raw load/store | **Present (measured 2026-08-05; Step 1 landed independently of this plan).** `codex/plugs/arm64/Arm64Runtime.codex` registers `peek-byte`/`poke-byte`/`peek-16`/`peek-32`/`peek-qword`/`poke-qword` (~lines 2044-2063) and `codex/plugs/riscv/RiscVRuntime.codex` likewise (~1943-1955). |
 | A block device | Absent from the committed Renode boards (`tools/renode/codex/codex-arm64.repl`, `codex-riscv64.repl` declare CPU, UART and RAM only). QEMU virt has virtio-mmio. |
 
 The good news is the shape: **only the bottom two layers are missing
@@ -70,6 +72,10 @@ a reason per entry, not a weakened check.
 Independently valuable, small, and it belongs on the register as its
 own row rather than here.
 
+**Note 2026-08-05:** what landed is a `[WARN]` shadow warning at the
+unresolved-call path (`Arm64CodeGen3.codex` ~1815), not the hard
+`[UNSUPPORTED]` failure this step prescribes.
+
 ### Step 1 -- raw load and store
 
 Implement `peek-byte`, `peek-32`, `peek-qword`, `poke-byte`, `poke-32`,
@@ -80,6 +86,9 @@ the emitters for field access already do the addressing.
 
 Nothing above this step can be written without it, and after Step 0 the
 absence of these is a loud build failure rather than a silent one.
+
+**Note 2026-08-05:** landed. Both plug runtimes register the peek/poke
+builtins (see the table above).
 
 **Volatility.** These lanes run with the MMU off on the committed
 boards, so a plain load is a real bus access and no barrier is needed

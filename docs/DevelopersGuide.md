@@ -114,6 +114,168 @@ fit in the return type. It answers the letter unchanged rather than a wrong one.
 | Real approx (f32) | `Real approximate` |
 | Real + safety | `Real trapping`, `Real saturating` |
 
+## Type Variables
+
+A **lowercase identifier in a type position is a type variable**. `List a`,
+`Maybe a` and `a -> b` all use them, and the table above uses them without
+saying so.
+
+**A signature binds every type variable it mentions, at that definition.**
+Nothing declares them ahead of the signature and the binding does not
+escape it, so two definitions that both write `a` share nothing. A
+definition with a variable in its type works at every type that fits:
+
+```
+  ident : a -> a
+  ident (x) = x
+
+  use-ident : Integer -> Integer
+  use-ident (n) = ident n          -- a is Integer here
+
+  use-ident-text : Text -> Text
+  use-ident-text (t) = ident t     -- and Text here
+```
+
+**A parametric type declares its parameters in parentheses after the
+name**, and they are in scope in every constructor's payload:
+
+```
+  Box (a) =
+   | Boxed (a)
+   | Empty
+```
+
+That is the form behind `Maybe`, `Result` and `List`. Use it as `Box
+Integer`, exactly as the table's `List Integer` and `Maybe Text` are uses
+of types that are already parametric.
+
+### Applying a function that has type variables
+
+At a call, each of the callee's type variables is fixed by matching its
+parameter types against the argument types, and **every occurrence of one
+variable in one signature must be fixed to the same type**. The result is
+the declared return with that substitution applied.
+
+The rule is only visible when a variable appears twice, and the pair below
+is what distinguishes it. Both calls pass an `Integer` and a `Text`; only
+the signature differs:
+
+```
+  diff-two : a, b -> a
+  diff-two (x) (y) = x
+
+  same-two : a, a -> a
+  same-two (x) (y) = x
+
+  diff-two 1 "text"        -- fine: a is Integer, b is Text
+  same-two 1 "text"        -- CDX2001, Integer vs Text: a cannot be both
+```
+
+So neither argument is wrong on its own, and a reader (or a checker) that
+judges arguments one at a time cannot see the error. It is a fact about
+the RELATIONSHIP between argument positions.
+
+## Integer literals
+
+**An integer literal has the type `Integer`.** It does NOT take the
+one-value range of what is written, so `0` is an `Integer` and not an
+`Integer between 0 and 0`. That is why `[0]` is a `List Integer`, and why
+`(0, x)` returned from a declared `(Integer, Integer)` needs nothing done
+to it.
+
+**Whether a literal may be handed to a BOUNDED parameter is a separate
+question and it is decided by the value**, not by the type:
+
+```
+  narrow : Integer between 0 and 10 -> Integer between 0 and 20
+
+  narrow 5            -- fine, 5 is within 0..10
+  narrow 500          -- CDX2050, the literal is out of range
+```
+
+A value that is not a literal does not get that treatment, because there
+is no value to look at. It needs a range the compiler can prove:
+
+```
+  via-param : Integer -> Integer
+  via-param (x) = narrow x     -- CDX2051, x's proven range is all of Integer
+```
+
+**A value read out of a bounded field DOES carry that field's bounds**,
+and this is the case the rules above are most often mistaken for:
+
+```
+  Holder = record { h-small : Integer between 0 and 255 }
+
+  from-field : Holder, Integer -> (Integer, Integer)
+  from-field (h) (x) = (h.h-small, x)     -- CDX2001
+```
+
+`h.h-small` is an `Integer between 0 and 255`, the tuple's first type
+argument is declared `Integer`, and a type argument is invariant (below),
+so the two are different types. A literal in that position would have been
+fine; a bounded field is not. Widen it with `int-widen`.
+
+## Variance of Type Arguments
+
+**A type argument is INVARIANT.** `List (Integer between 0 and 10)` does
+not stand where `List (Integer between 0 and 20)` is wanted, and neither
+does the reverse. The argument types must be the same type. This holds for
+every parametric form in the table above -- `List`, `LinkedList`, `Maybe`,
+`Result`, `Vector`, `Tup2`..`Tup5`, and any sum or record you declare with
+parameters.
+
+The reason is that our parametric containers are mutable in place.
+`list-set-at` is a builtin that writes the slot and returns the same list
+(see Lists), so if a narrow list could stand where a wide one is wanted,
+you could take `List (Integer between 0 and 10)` through the wider view,
+store 15, and the narrower view's bounds claim would then be false while
+the compiler still asserted it. Bounded integers are one of the four safety
+claims the README rests on, so this is a soundness question rather than a
+convenience one.
+
+The rule is stated for ALL type arguments and not only for the mutable
+containers, because variance is otherwise a per-constructor fact that every
+reader and every checker would have to look up, and we do not publish one.
+Uniform and sound beats precise and unwritten.
+
+**What this rule does not govern.**
+
+An ordinary parameter or return is unaffected: a narrower integer still
+fits a wider one, so passing `Integer between 0 and 10` to a parameter
+declared `Integer`, or returning it from one declared `Integer`, is fine.
+Invariance applies to a type sitting in an ARGUMENT position of a
+parametric type, not to assignability generally.
+
+**That is also the only way to widen, and there is exactly one spelling of
+it: `int-widen` in `Foreword chapter MathLib`.** The language has no cast
+and no type ascription, so widening is a function from the narrow type to
+the wide one, and `int-widen` is that function. Cite it; do not write
+another. Four differently-named local copies existed for about a day and
+every one of them was the same identity function.
+
+**Once inside an argument position, everything below it is invariant**,
+including a function type. `List (Integer between 0 and 10 -> Text)` and
+`List (Integer -> Text)` are different types. The exemption above is for
+functions compared at an ordinary position, not for functions nested in a
+container.
+
+**The consequence you will actually meet is the list literal.** A literal
+takes its element type from its FIRST element and nothing widens it
+afterwards, so `[c.cr, c.cg, c.cb]` over fields declared
+`Integer between 0 and 255` is a `List (Integer between 0 and 255)` and
+will not stand where a `List Integer` is wanted, nor join one with `&`.
+Write `[int-widen (c.cr), int-widen (c.cg), int-widen (c.cb)]`, as the byte
+encoders in `Encode` do. The compiler enforces this: `unify-structural`
+compares integer bounds exactly in an argument position and by overlap
+everywhere else.
+
+That the literal needs an explicit widening is the honest reading, not a
+wart to be inferred away: under invariance `[c.cr]` really is a
+`List (Integer between 0 and 255)`, and calling it a `List Integer` is a
+claim the author should make rather than one the checker should guess from
+context.
+
 ## Definitions
 
 ```
@@ -457,6 +619,52 @@ out-of-band value there puts a false range under every elision
 downstream. `clamping` is unaffected and IS band-relative: `between 0 and
 100 clamping` saturates at 100.
 
+### Overflow mode is not part of type identity
+
+**Two integer types with the same band are the same type whatever their
+overflow modes.** `Integer between 0 and 255 wrapping` and
+`Integer between 0 and 255` are interchangeable for admission, in both
+directions, at a parameter and inside a type argument. Measured:
+
+| the value | the slot | result |
+|---|---|---|
+| `0..255` | parameter `0..255 wrapping` | CLEAN |
+| `0..255 wrapping` | parameter `0..255` | CLEAN |
+| `List (0..255 wrapping)` | `List (0..255)` | CLEAN |
+| **control**: `List (0..255)` | `List (0..10)` | **CDX2001** |
+
+The control is the row that makes this a rule rather than an omission. In
+the SAME position, a difference in the BAND is refused by invariance and a
+difference in MODE is accepted, so mode is being excluded from type identity
+deliberately rather than by oversight.
+
+**The reason is that mode and band are claims about different things.** A
+band is a claim about which VALUES the slot can hold. A mode is a claim
+about what happens at an OPERATION, and the operation is governed by the
+declared type at the site performing it, not by wherever the value came
+from. So a mode never travels with a value.
+
+That is also why the invariance argument does not carry over. Invariance
+exists because `list-set-at` through a wide view can store 15 into a
+`0..10` view and falsify the narrow view's claim about its values. A
+`wrapping` view and an `error` view over the same list cannot falsify each
+other: every mode keeps the value inside the band, so both views' claims
+about the values stay true, and each site's arithmetic follows its own
+declaration.
+
+**That last sentence is the premise the whole rule rests on, and it is the
+thing to attack if this is ever wrong.** `wrapping` must have a band exactly
+one hardware width wide (CDX1073), so its modular arithmetic cannot leave
+the band; `clamping` saturates to the band; `error` refuses. If any mode
+could produce an out-of-band value, mode would have to become part of
+identity.
+
+The practical cost of the alternative is worth stating too. The language has
+no cast and no type ascription, and `int-widen` widens a band rather than
+changing a mode, so if mode were part of identity there would be no way to
+convert. Some programs would become unwritable rather than merely more
+verbose.
+
 Plain `Integer` arithmetic produces a plain `Integer`, which won't fit
 into a bounded slot. Use `__narrow` to assert the value is in range
 (checked at runtime -- out-of-range traps):
@@ -496,6 +704,74 @@ not an implicit contract. Two tests written against the old reading
 (`codex/test/bounded-param-trap`, `bounded-return-trap`) stopped
 compiling when CDX2051 landed and nobody noticed, because both are
 `.fatal` and nothing runs those.
+
+**`__narrow` does not carry its band on the node it emits, and a backend
+that reads only the node will drop the check.** In the IR the call is
+
+```
+(apply (name "__narrow" (fn int-default int-default)) <arg> int-default)
+```
+
+typed default to default whatever band was asserted. The band IS in the
+artifact, but it is held by whatever encloses the narrow, and which thing
+that is depends on where the narrow sits:
+
+| position | where the band is |
+|---|---|
+| a def's return | the def's own type, `(fn int-default (int 0 100 ov-error))` |
+| a call argument | the callee's type, `(name "takes-small" (fn (int 0 100 ov-error) ...))` |
+| a record field | the field's declaration in the type-defs, `(rec-field "val" (a-bounded (a-named "Integer") 0 100 ov-error))` |
+| a constructor payload | that constructor's fields in the type-defs, `(var-ctor "Line" (fields (a-bounded (a-named "Integer") 0 1000000 ov-error)))` |
+
+x86-64 does not notice because it recovers the range itself
+(`ir-expr-proven-range` in `X86_64Compound.codex`) rather than reading it
+off the node. **A plug has to walk the context on purpose.** Measured
+2026-08-09 while writing the T3ISA backend, which emitted a
+weaker-but-plausible check for a full cycle on the strength of the node
+alone, and then reported the band as missing from the IR entirely. It is
+not missing; it is non-local. Nothing in the artifact tells a backend
+author that, which is the whole reason this paragraph exists.
+
+The shape of the mistake generalises past `__narrow`: a node whose type is
+`int-default` has not necessarily lost its type information, it may never
+have been the node carrying it.
+
+### What a bounded parameter admits
+
+**An integer argument is not required to have the parameter's type. It is
+admitted exactly when its PROVEN RANGE fits inside the parameter's declared
+range.** Measured against the seed, each arm passing a record field into a
+differently bounded parameter:
+
+| argument, and its proven range | parameter | result |
+|---|---|---|
+| `h.small`, 0..10 | `Integer between 0 and 20` | CLEAN, CDX4010 |
+| `h.small`, 0..10 | `Integer` | CLEAN |
+| `h.small`, 0..10 | `Integer between 5 and 20` | **CDX2051** |
+| `h.big`, 0..1000 | `Integer between 0 and 255` | **CDX2051** |
+| `int-mod (h.big) 100`, 0..99 | `Integer between 0 and 255` | CLEAN, CDX2053 |
+| control: `h.any`, plain `Integer` | `Integer between 0 and 255` | CDX2051 |
+
+Three things follow, and each is a case that is commonly guessed wrong.
+
+**Overlap is not enough.** 0..10 into `between 5 and 20` is refused even
+though the two ranges share 5..10, because the argument can be 0 and the
+callee's contract says 5.
+
+**It is the proven range, not the declared type.** The fourth and fifth rows
+are the same field `h.big`, declared 0..1000 in both. Passed directly it is
+refused; passed through `int-mod ... 100` it is admitted, because the prover
+derives 0..99. Nothing about the declared type changed between them, so the
+declared type cannot be what decides it. The Static Bounds Prover table
+below is the list of expressions a range can be derived through.
+
+**The refusal is CDX2051 from the bounds prover, never CDX2001 from the type
+checker**, and no arm above produces a type mismatch at all. This is the
+sharpest contrast with a type ARGUMENT: there invariance makes the
+comparison exact and refuses with CDX2001, while here the types need not
+match and the value decides. `List (Integer between 0 and 10)` does not
+stand where `List Integer` is wanted, but `h.small` passes to a plain
+`Integer` parameter without comment.
 
 ## Unit Types
 
@@ -697,17 +973,97 @@ The prover recognizes these expression patterns:
 | `a / b` (non-negative, b > 0) | `[a.lo/b.hi, a.hi/b.lo]` |
 | `negate x` | `[-x.hi, -x.lo]` |
 | `int-mod x n` (n > 0) | `[0, n-1]` |
-| `bit-and x y` (non-negative) | `[0, min(x.hi, y.hi)]` |
-| `bit-shru x n` (non-negative) | `[x.lo>>n.hi, x.hi>>n.lo]` |
 | `if c then a else b` | Union of branch ranges |
+| `when e is ... -> a is ... -> b` | Union of arm ranges |
 | `let x = v in body` | Carries `v`'s range for `x` in body |
+| Name bound at module level to a literal | The literal's range |
+| `list-length`, `text-length`, `__deck-pos`, `__heap-save`, `__buf-write-bytes` | `[0, 4294967295]` |
+
+**Two rows were ADDED on 2026-08-09 because the prover implements them and
+the table did not say so.** Both were found by the rechecker abstaining on
+real compiler definitions, which is what an abstention set is for.
+
+The `when` row is the match form of the `if` row above it. Measured: a
+`when` over `Kind` whose arms are a parameter declared 0..20 and the literal
+5 is admitted at a declared return of `between 0 and 30` and refused at
+`between 0 and 10`, so the union is genuinely computed rather than the arms
+being ignored. `skip-newlines-pos` in `Syntax/ParserCore.codex` is the real
+definition that needs it.
+
+**The builtin row is a fact about the values, not about their types.** All
+five are declared to return a plain `Integer`, so nothing in the signature
+carries the bound; the prover holds it as a structural fact, because these
+are heap-backed quantities in a 3 GB-RAM design. A list cannot hold 2^32
+elements in a 4 GB address space when each is at least 8 bytes, a text's
+byte length cannot exceed the heap holding it, and `__deck-pos` and
+`__heap-save` are heap addresses below 4 GB. Measured with the pair that
+separates it from the `let`: `let p = size in p` at a declared return of
+`between 0 and 4294967295` is CDX2051, and `let p = __heap-save in p` is
+clean, so the `let` hides nothing and the builtin is what carries the range.
+`pitch` in `Core/PhaseAllocator.codex` is the real definition. Add a fact
+here only when the bound is structural rather than conventional.
+
+**Two rows were REMOVED from this table on 2026-08-09 because the prover
+does not implement them.** It claimed `bit-and x y` (non-negative) proves
+`[0, min(x.hi, y.hi)]` and `bit-shru x n` (non-negative) proves
+`[x.lo>>n.hi, x.hi>>n.lo]`. Measured against the seed, every arm feeding a
+`0..255` slot from a field declared `0..1000`, so the non-negative
+precondition holds and the claimed range fits:
+
+| value reaching the slot | result |
+|---|---|
+| `h.big / 4` | CLEAN, CDX2053 |
+| `int-mod (h.big) 200` | CLEAN, CDX2053 |
+| a module-level `lim : Integer = 200` | CLEAN |
+| `bit-and (h.big) 255` | **CDX2051** |
+| `bit-shru (h.big) 2` | **CDX2051** |
+| control: `h.any`, declared plain `Integer` | CDX2051 |
+
+Both fail in the parameter form and in the field form this section
+describes, in either argument order, and the range CDX2051 reports is the
+full i64 band, identical to the plain-Integer control. So nothing is
+derived, rather than something derived that does not fit. `int-mod` is a
+builtin call, is in the table, and IS proven, so this is not the prover
+declining builtin calls as a class. Mask or shift with `__narrow` when you
+need it: `__narrow (bit-and (h.big) 255)` compiles and carries the runtime
+trap.
+
+**The direction of this error is the dangerous one**, and it is the mirror
+of the paragraph below. A missing row costs an independent implementation a
+proof the compiler makes, which shows up as a spurious complaint. A row
+that is present and false makes that implementation prove a range the
+compiler REFUSES, so it agrees where the compiler would stop the build, and
+a checker more permissive than the thing it audits is worse than no
+checker.
+
+The last row was missing until 2026-08-06 and the omission had a
+consequence: an independent implementation written from this table alone
+cannot reproduce the proof, reads the name at its declared type (a plain
+`Integer` is the FULL i64 range), and concludes the value does not fit.
+Measured on `codex/test/const-narrow-proven.codex`, where `code-a` and
+`code-b` are module-level `Integer` constants used in a `0..255` field:
+
+```
+const-narrow-proven.codex:23:42: info CDX2053: field 'code' has bound 0..255
+  and the value expression is proven within 41..202; bounds check elided
+```
+
+The prover resolved both names to their literals and unioned the branches.
 
 ### Diagnostics
 
 | Code | Severity | Meaning |
 |------|----------|---------|
+| CDX2053 | info | Field narrowing proven, bounds check elided |
 | CDX4010 | info | Bounds proven, runtime check elided |
 | CDX4020 | info | Proof definition erased (compile-time only) |
+
+CDX2053 was absent from this table until 2026-08-06, which is the more
+misleading of the two gaps: it is the code actually emitted for a proven
+field narrowing, and the compile quoted above emits no CDX4010 at all. A
+reader looking for evidence that a narrowing was proven, and grepping for
+the only code this table offered, would have found nothing and concluded
+the proof did not happen.
 
 ## Linear Types
 
@@ -902,6 +1258,27 @@ caller that re-reads the old list -- must copy first (a
 `apps/games/classic/TicTacToe.codex` for the idiom and the aliasing
 bug it fixed).
 
+**`list-push` is NOT unconditionally destructive, and the exception is
+the empty list literal.** `__list_snoc`
+(`compiler/Emit/X86_64ListHelpers.codex`) has three paths: store in place
+and return the SAME pointer when the backing array has spare capacity;
+extend in place when the list is the topmost allocation; otherwise COPY
+to a fresh allocation and return a NEW pointer. `[]` has no spare
+capacity, so **`list-push [] x` returns a new list and leaves the
+original empty.** The compiler depends on exactly that: `tco-ensure-temps`
+(`X86_64.codex:359`) pushes onto `st.tco.temp-locals` and relies on the
+TcoState's list staying empty between tail calls.
+
+The consequence is for anyone emitting Codex to another target. A plug
+that emits `list-push` as an in-place append is wrong, and the failure
+needs a function with two tail calls in one body before it shows: the
+csharp plug emitted `_l.Add(v); return _l;` and silently reused spill
+slots in 17 functions of the 5,000 in the compiler. The fix there was a
+capacity-aware helper (in place when `Count < Capacity`, else copy into
+twice the capacity, floor 4), amortized O(1) with no measured slowdown.
+Which of the other 43 plugs have the same defect is unswept and is
+`codex/plugs/plugs-backlog.md` 1.7.
+
 ## Text
 
 ```
@@ -1036,17 +1413,26 @@ The exemption is **scoped to the named effects**. A chapter that
 CDX2031 -- a chapter cannot launder some other hardware effect through an
 exemption it took for a different one.
 
-`grounds` replaces a hardcoded quire-exemption list that lived inside the
+`grounds` replaced a hardcoded quire-exemption list that lived inside the
 compiler: the module now declares its own status, in the file, three
 lines above the code that touches the hardware, rather than the compiler
 asserting it from afar. Effects erase at codegen, so `grounds` changes
 only what type-checks, never the emitted binary. See
 `docs/Designs/Done/Language/GroundsBoundary.md` for the full rationale.
-The migration it describes is COMPLETE: `quire-effect-exempt` holds only
-the compiler's own quires and the plug backends, no `codex/os/` quire is
-exempt, and fourteen driver chapters carry `grounds`. Delete the `grounds`
-line from `Pci.codex` and it fails CDX2031 and CDX2033, which is the check
-that the declaration is load-bearing rather than decorative.
+
+**The migration is finished and the list is GONE.** `quire-effect-exempt`,
+`def-effect-exempt` and `slug-quire` were deleted from `TypeChecker.codex`
+on 2026-08-07; there is no quire-based exemption left in the compiler and
+no way to be exempt except by declaring `grounds`. The last five entries
+were the plug backends, and only two of them originated an effect at all:
+`RiscVPlug` and `Arm64Plug` each ground `Device.Port` for one function,
+their serial wire protocol's `serial-write-byte`. Pe, Elf and Img
+originated nothing and were dead entries, as six of the compiler's own
+eight had been.
+
+Delete a `grounds` line and the chapter fails CDX2031 and CDX2033, which
+is the check that the declaration is load-bearing rather than decorative.
+Do not take the count of grounding chapters from this page; count them.
 
 ## Compile Modes
 
@@ -1171,6 +1557,43 @@ unaffected.
 4. No forward use of value bindings in procedures.
 5. Constraints scope follows their attachment point.
 
+## Reading the IR: what a backend author is handed, and where
+
+Only relevant if you are writing a plug. The general shape is that a node's
+own type is not always where its information lives, and a backend reading only
+the node it stands on will be wrong in ways that still compile.
+
+**The band on a `__narrow` is the worked example and it is documented under
+Bounded Integers above**, with the four positions the band can be held in. Do
+not re-derive it here. The consequence for a backend is that emitting the
+check means threading the expected type down to each subexpression from its
+position, and that **a backend which cannot recover the band must refuse
+rather than approximate**: substituting a word-range test for the declared
+`0 and 100` passes two million while reading, in the emitted code, exactly
+like an enforced bound.
+
+The second instance has the same shape and is not derivable from the first.
+
+**A field-access node carries the resolved field index; a record literal's
+field-val nodes do not.** The two halves of the same record are described
+differently:
+
+```
+(field-access (name "p" (record-ty "Point" (args))) "px/0" (int 0 1000000 ov-error))
+(record "Point" (fields (field-val "py" ...) (field-val "px" ...)) (record-ty "Point" (args)))
+```
+
+The reader is handed `px/0`, name and declared index joined by a slash. The
+writer is handed `py` and `px` in the order the literal wrote them, which is
+not the declared order and must not be used as one. Resolve construction
+order through `record-fields-by-name` in
+`codex/plugs/common/IRTextParser.codex`; a record built with its fields out of
+order otherwise reads back with them transposed, and a two-field record of the
+same type transposes silently.
+
+Also note that a `field-access` node's own type is the FIELD's type, not the
+record's, so the record type has to come from the receiver expression.
+
 ## Pitfalls
 
 **Lines cannot start with `.`** A `.field` continuation on its own line
@@ -1195,7 +1618,16 @@ nested conditionals, let bindings are still clearer:
   in 64 + wv + rv
 ```
 
-**`alloc-bytes` does NOT zero the memory it returns.** It is three
+**Constructing a variant allocates, even a nullary one.** Passing
+`WrapRepeat` to a sampler inside a per-pixel loop grew the render's heap
+in proportion to covered pixels; measured 2026-08-06 by
+`engine-texture`'s cost arm, and cured by inlining the wrap as integer
+arithmetic. A mode a hot loop dispatches on should be an Integer field,
+not a variant mention -- `R3dShadeCtx.sc-mode` is the standing example.
+The test that catches the class is two renders at doubled resolution
+asserting equal heap delta.
+
+**lloc-bytes does NOT zero the memory it returns.** It is three
 instructions -- `mov rax, r10; add r10, rdi; ret` -- so it hands back the
 current heap pointer and bumps it. That is a different primitive from
 `__alloc`, which does zero-fill and which the poison build is written
@@ -1406,6 +1838,30 @@ being fed before. Do not go looking for a clean byte count attached to a
 changelist for it -- CL 9400 is the one usually cited and it changed
 `opening.codex` and three foreword chapters in the same breath, so its seed
 growth cannot be pinned on the citation.
+
+**Adding a builtin is ALWAYS two changelists and TWO seed rebuilds.** The
+"new builtin" row above understates it. Name resolution happens in the
+compiler DOING the compiling, so the seed in hand answers
+`CDX3002: Undefined name: <yours>` for source that calls a builtin it does
+not carry. Land the `BuiltinSpec` and its emitter first, rebuild the seed,
+and only then land the use. Verify with a three-line probe BEFORE planning
+the work, not after taking the token. `variant-tag` was landed exactly that
+way (CL 14106, then 14112).
+
+**Two builtins answer deliberately wrong on hosted targets, and must not
+be "fixed".** `address-of` returns `0L` in every transpiled build, and
+three uses depend on it: `Unifier.codex:876,884,891` use
+`address-of m == 0` as a null guard, `SyntaxNodes.codex:222` uses
+`address-of t < b` as the deck barrier in `copy-sx-text`, and the `mkey-*`
+memo keys mix addresses in. Making it real moves all of those.
+`block-read-sector` is stubbed for the same reason (no block device). Code
+that needs a specific PROPERTY of an address should ask for that property
+directly: `live-type-tag` used to read a tag through `address-of` and now
+calls `variant-tag`, which returns a variant value's constructor index
+(declaration order, zero-based). Its contract is variant values only, the
+same as `tag-equal`, because on bare metal both are a load of `[p+0]`; a
+plug emitting variant types as unrelated target types needs a tag member to
+answer it.
 
 **So do not predict it. Measure it, every time, after the gate:**
 

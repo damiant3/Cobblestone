@@ -2,19 +2,6 @@ Chapter: Lir
   cites Codex chapter Build Settings (max-recursion-depth)
   cites Codex chapter IR Chapter (ir-expr-type)
 
- The flat low-level IR: the representation on which register allocation
- will happen (middle-end
- campaign step 5). The tree `IRExpr` has no linear order and no basic
- blocks, so linear-scan allocation cannot be expressed over it; the LIR is
- that linear order. This chapter is the second increment -- it adds basic
- blocks and branches so that `if` lowers, on top of the first increment's
- straight-line whitelist. It is still deliberately dead to the shipping
- compiler: it lowers nothing in the default pipeline, emits no machine
- code, and is reachable only through the opt-in `lir-dump` pass, so the
- seed's own compilation is byte-identical and the fixed point is
- undisturbed. The allocator and the x86 selector are later ratchet steps,
- each its own CL.
-
  This increment runs over the RESOLVED, LIFTED IR (`cdx-chapter`, after
  the RESOLVE and LIFT phases), not the raw lowering, because a constructor
  pattern needs its scrutinee's `SumTy` -- the constructor list for the tag
@@ -26,56 +13,11 @@ Chapter: Lir
  executed post-resolve). The eventual allocator and selector consume the
  same post-frontend IR, so this is also their correct home.
 
- **This increment lowers straight-line code, `if`, scalar `match`, and
- constructor-pattern `match`.** A function whose body is integer literals,
- names, add/sub/mul, let bindings, and `if` expressions lowers to a list of
- basic blocks over virtual registers. An `if` is destination-driven and
- phi-free: a result vreg is allocated, the condition is lowered into the
- current block ending in a conditional branch, each arm is lowered into its
- own block that moves its value into the shared result vreg and jumps to a
- join block, and lowering continues in the join. There are no loops -- the
- tree IR has none -- so flattening a body yields a DAG and the join is the
- only merge point, exactly as the LIR design specifies. A `match` over
- a scalar scrutinee with literal, variable, and wildcard patterns lowers
- the same way: the scrutinee becomes an operand, and the arms become a
- decision chain of `LiCmp`/branch tests ending in an unconditional
- catch-all. A `match` on **constructor patterns** reuses that decision
- chain with the first LIR memory instruction, `LiLoad`: a tested
- constructor arm loads the variant tag from offset 0 of the scrutinee
- pointer (`LiLoad tag sv 0 w8`), compares it against the constructor's tag,
- and branches; the arm's body first binds each variable field with a
- `LiLoad` at the field's packed offset and width, then lowers the body.
- Every arm still moves its value into one result vreg and jumps to a join.
- Only variable and wildcard sub-patterns are handled -- a nested
- constructor, literal, or vector sub-pattern, a real guard, or a scrutinee
- type that did not resolve to a `SumTy` makes the whole function fall back:
- `lower-def-to-lir` answers "not lowerable" and the tree emitter keeps it.
- Calls, records, effects, and vector patterns still fall back. The
- whitelist grows one construct per CL.
-
- Alongside the lowering, this chapter now computes **backward liveness** over
- the block DAG (Section: Liveness) -- the input the linear-scan allocator
- needs. It is a single backward sweep with no fixpoint (the DAG has no
- loops), and `-Passes lir-dump` prints it as one `LIVE <def>: bN in {..}`
- line per lowerable function beside the `LIR <def>:` dump.
-
  It also carries the **allocation verifier** (Section: Allocation
  Verifier): given each vreg an assigned location, it re-derives what
  each location holds along every path and asserts every use reads its vreg
  from that location -- the checker that stands before the allocator so the
  allocator is validated from its first line.
-
- And it now carries the **linear-scan allocator** itself (Section:
- Allocator -- Wimmer 2005 minus splitting, on a DAG). It
- computes each vreg's live interval over a flat instruction numbering,
- lets values with disjoint intervals share a register, and spills a whole
- interval to a stack slot by furthest-next-use (Belady) when registers run
- out. Its `List Location` output is exactly what the allocation verifier
- checks, so every allocation is validated on the spot -- one
- `ALLOC <def>: v0->r0 v1->r0 ... [alloc-check: ok]` line per function, now
- showing register reuse and (under pressure) spill slots. It is still
- analysis only: nothing the compiler emits changes, because the x86
- selector that would consume this allocation is a later ratchet step.
 
 Section: Representation
 
@@ -91,10 +33,6 @@ Section: Representation
   LirValue =
    | LvReg (Integer)
    | LvImm (Integer)
-
- The binary operators this increment lowers as values -- the three that
- need no flags register and no idiv: add, subtract, multiply. Division
- (fixed register pair, can trap) arrives with the construct that needs it.
 
  `LoRem` is the first operator whose registers are not the allocator's to
  choose. Every target that has a divide instruction at all tends to fix them:
@@ -125,21 +63,6 @@ Section: Representation
    | LcGt
    | LcLe
    | LcGe
-
- The instructions. `LiBin` computes an arithmetic result into a fresh
- vreg. `LiMove` copies an operand into a vreg -- the destination-driven
- join uses it to write the shared result vreg from each arm. `LiLoad`
- reads a value from memory into a fresh vreg: `LiLoad dst base off width
- signed` loads `width` bytes from `[base + off]`, sign- or zero-extending a
- narrow field to 64 bits. It is the first LIR memory instruction, added for
- constructor patterns -- the tag load at offset 0 and each variable field
- load at its packed offset. `LiCmp` sets flags from two operands and
- defines nothing. `LiTest` is its sibling: it sets flags from the bitwise
- AND of two operands and likewise defines nothing, which is the whole of
- what `x86`'s `test` does and what a remainder-against-zero needs.
- `LiBranch` and `LiJump` are terminators: a block's last
- instruction transfers control, naming successor blocks by id, never a
- vreg.
 
  `LiRet` returns an operand from the function. It is a terminator with no
  successor, and it is what lets an `if` in tail position stop building a join
@@ -174,11 +97,6 @@ Section: Representation
    id : Integer,
    insns : List LirInsn
   }
-
- A lowered function: its name, how many parameters (which occupy the first
- vregs), the basic blocks, the operand that holds the result, and the
- number of vregs used (the id ceiling, for the allocator to size its
- interval table). A straight-line body is one block with no terminator.
 
  `rets` says every path leaves through a `LiRet` of its own. The function then
  has no result operand to speak of and no single exit to fall into, so the
@@ -304,10 +222,6 @@ Section: Lowering
    else if (list-at env i).name == n then i
    else lir-env-find env n (i + 1) len
 
- The whitelisted value operators, and the fallthrough that rejects every
- other IR binary op (comparisons, boolean, division, remainder, append,
- vector) in value position by leaving the function un-lowered.
-
   lir-op-of : IRBinaryOp -> LirOp
   lir-op-of (op) =
    when op
@@ -373,10 +287,6 @@ Section: Lowering
     is IntegerTy (lo) (hi) (m) -> lo >= 0
     is otherwise -> False
 
- The comparison operators a fused condition accepts, and the mapping to a
- branch condition. Any other operator in condition position falls to the
- value path (compare the materialised boolean against zero).
-
  Every comparison is whitelisted only for the operand types a machine `cmp`
  answers correctly. `IrEq` on Text is a call to `__str_eq`, not a compare of
  the two values, and a fused branch would compare the two POINTERS instead --
@@ -440,12 +350,6 @@ Section: Lowering
  leaves from where the value was computed. An arm that is not in tail position
  has somewhere to go afterwards, so it moves into the shared result vreg and
  jumps to the join, which is what gives that vreg a definition on every path.
-
- The shared vreg is what this avoids, and it was never cheap. Every arm
- defines it, so its single interval runs from the first arm to the exit and
- spans everything between -- including every call -- which forces it into a
- callee-saved register and costs a push, a pop, and a move to RAX at the end,
- to carry a value each arm already had.
 
   lir-close-arm : List LirInsn, LirValue, Integer, Integer, Boolean, Boolean -> List LirInsn
   lir-close-arm (curi) (v) (d) (join-id) (term) (tail) =
@@ -747,12 +651,6 @@ Section: Lowering
     in if ra.ok == False then ra
        else lower-backedge-stage env args (i + 1) na (ra.counter) (ra.blocks) (ra.cur) (ra.curi) (ra.bctr) (list-push argvals (ra.val)) depth lc
 
- Lowering an `if` condition. A comparison lowers its two operands as
- values and emits a `LiCmp`, carrying the branch condition up; any other
- boolean lowers as a value operand compared against zero (non-zero is
- true). Either way the compare lands in the current block, and the caller
- terminates that block with the branch.
-
  One shape is worth recognising before that: a remainder by a power of two
  compared against zero. `math-mod n 2 == 0` is how a program asks whether a
  number is even, and it would otherwise lower as a move, an `and` (the
@@ -847,11 +745,6 @@ Section: Lowering
             ok = True
            }
     is otherwise -> cond-value-path env c counter blocks cur curi bctr depth lc
-
- The fused form: lower the dividend alone and test it against the mask. The
- remainder is never computed and the comparison never emitted -- `test` sets
- ZF from the AND it does not keep, which is exactly the flag the branch is
- about to read.
 
   lower-if-test : List LirEnvEntry, IRBinaryOp, IRExpr, Integer, List LirBlock, Integer, List LirInsn, Integer, Integer, LirLoopCtx -> CondRes
   lower-if-test (env) (op) (l) (counter) (blocks) (cur) (curi) (bctr) (depth) (lc) =
@@ -990,12 +883,6 @@ Section: Lowering
     is IrVarPat (nm) (t) (s) -> True
     is otherwise -> False
 
- Binding a pattern into the current block. A variable binds the scrutinee
- operand directly; a wildcard or literal binds nothing; a constructor
- emits one `LiLoad` per variable field at its packed offset and width,
- binding the field name to the loaded vreg. The record threads the running
- vreg counter and the block's instruction list.
-
   PatBindRes = record {
    env : List LirEnvEntry,
    counter : Integer,
@@ -1022,13 +909,6 @@ Section: Lowering
      let tys = when t is SumTy (sn) (sa) (cs) -> lir-ctor-fields-find cs nm 0 is otherwise -> []
      in lir-bind-ctor-loads env subs tys sv 0 (list-length subs) counter curi
     is otherwise -> PatBindRes { env = env, counter = counter, curi = curi }
-
- Emitting a branch's discriminating test into the current block. A literal
- arm compares the scrutinee against the literal; a constructor arm loads
- the tag into a fresh vreg and compares it against the constructor's tag.
- Both are followed by an equality branch (the caller adds the `LiBranch`),
- so the test record carries the extended instruction list and the advanced
- vreg counter (a constructor test consumes one vreg for the tag).
 
   MatchTestRes = record {
    curi : List LirInsn,
@@ -1094,13 +974,6 @@ Section: Lowering
               else let body-insns = lir-close-arm (rb.curi) (rb.val) d join-id (rb.term) (lc.tail)
               in let blocks2 = list-push (rb.blocks) (deck-record (LirBlock { id = rb.cur, insns = body-insns }))
               in lower-match-chain env branches (i + 1) n sv d join-id (rb.counter) blocks2 next-id [] (rb.bctr) (depth + 1) lc
-
- Seed the environment with one entry per parameter, in declaration order,
- bound to vregs 0, 1, 2, ...; the vreg counter starts past them, block 0
- is the entry, and the next free block id starts at 1. A function whose
- body lowers cleanly has its final current block sealed as the exit block
- and becomes a `LirFunc`; otherwise the result's `ok` is False and the
- caller keeps the tree form.
 
   LowerFuncRes = record {
    func : LirFunc,
@@ -1234,9 +1107,6 @@ Section: Move Coalescing
    let uc = lcoal-cu-blocks (f.blocks) 0 (list-length (f.blocks)) (lir-int-vec 0 (f.nvregs) 0 []) (f.nvregs)
    in if f.rets then uc else lcoal-cu-val (f.result) uc (f.nvregs)
 
- Find the first coalescable move: `LiMove d (LvReg s)` with `s` a
- non-parameter, distinct from `d`, and used exactly once.
-
  Coalescing rewrites `s`'s definition to define `d` directly, which hoists
  that definition up to wherever `s` was computed. Two things must hold for the
  hoist to be sound: nothing between the two reads `d` (or the read sees the new
@@ -1329,9 +1199,6 @@ Section: Move Coalescing
    else let b = list-at blocks i
    in let c = lcoal-find-insns (b.insns) 0 (list-length (b.insns)) uc np
    in if c.found then c else lcoal-find-blocks blocks (i + 1) len uc np
-
- Apply a coalesce (d, s): drop the unique `LiMove _ (LvReg s)` and rewrite
- every instruction defining `s` to define `d` instead.
 
   lcoal-dst : LirInsn -> Integer
   lcoal-dst (ins) =
@@ -1448,10 +1315,6 @@ Section: Structural Verifier
  as its evidence. It answered `check: ok` throughout, which is what a check
  with no evidence behind it looks like.
 
- Found by the `list-at` bounds guard, which is the general argument for the
- guard: the compiler had been quietly reading past a list end for as long as
- the verifier has existed, and nothing else could see it.
-
   lir-init-entries : Integer, Integer, Integer, List (List Boolean) -> List (List Boolean)
   lir-init-entries (i) (n) (nv) (acc) =
    if i >= n then acc
@@ -1536,10 +1399,6 @@ Section: Structural Verifier
     is LiBranch (c) (bt) (be) -> lir-check-block-insns fname bid nvregs insns (i + 1) len defined msgs rl
     is LiJump (b) -> lir-check-block-insns fname bid nvregs insns (i + 1) len defined msgs rl
 
- The successors of a block are named by its terminator, which is its last
- instruction. A block without a terminator (the exit block) has no
- successors and its exit set is where the function result must be defined.
-
   lir-block-succs : List LirInsn -> List Integer
   lir-block-succs (insns) =
    let n = list-length insns
@@ -1603,13 +1462,6 @@ Section: Structural Verifier
       else list-push (cs.msgs) ((f.name) & ": result operand uses an undefined vreg")
 
 Section: Liveness
-
- Backward liveness over the block DAG, the foundation the linear-scan
- allocator needs: liveness is one backward pass over
- blocks in reverse topological order. Because the LIR has no loops --
- flattening a loop-free tree yields a DAG -- there is no fixpoint: a single
- backward sweep suffices. A vreg is live at a point if some path from there
- uses it before redefining it.
 
  The transfer over one instruction, applied to the live-after set to get
  live-before: kill the defined vreg first, then add the used operands (so a
@@ -1754,17 +1606,6 @@ Section: Allocator
  every allocation is validated on the spot -- the checker stood before the
  allocator by design.
 
- The loop-free property of the LIR (the tree IR has no loops, so a
- flattened body is a DAG) buys the simplifications: an interval is a single
- [start, fin] range over a flat instruction numbering, not a range-list
- with holes. That is a conservative interval -- it can only over-state
- liveness (keep a value in a register or slot longer than needed), never
- under-state it, so it is safe, and the allocation verifier backstops any
- lowering that would break the assumption. Interval splitting,
- rematerialisation, and stack-slot recycling are v2;
- this increment is whole-interval spill with one dedicated slot per spilled
- vreg.
-
  The register file is a flat count -- `nregs` allocatable registers, numbered
  0.. -- of which the first `ncallee` are the callee-saved "local" registers a
  target's emitter fills first and the remainder are caller-saved registers a
@@ -1857,11 +1698,6 @@ Section: Allocator
   lir-int-vec (i) (n) (fill) (acc) =
    if i >= n then acc
    else lir-int-vec (i + 1) n fill (list-push acc fill)
-
- A use at position `p` extends the operand's `fin` to `p` (max); a def at
- `p` sets the vreg's `start` to `p` on its first occurrence (defs are met in
- increasing position order, so the first is the minimum). Immediates carry
- no interval.
 
   lir-iv-use : LirValue, List Integer, Integer, Integer -> List Integer
   lir-iv-use (v) (fin) (p) (nv) =
@@ -2059,10 +1895,6 @@ Section: Allocator
    in let ivs = lir-iv-assemble start1 fin3 0 nv []
    in lir-iv-sort ivs 0 (list-length ivs) []
 
- The scan. An active entry records a vreg currently held in a register: its
- `fin` (for expiry and for finding the furthest-out victim) and the
- register it holds.
-
   LirActive = record {
    vreg : Integer,
    fin : Integer,
@@ -2107,10 +1939,6 @@ Section: Allocator
    else let a = list-at active i
    in if (a.fin) < start then lir-scan-expire active (i + 1) n start kept (list-set-at free (a.reg) True)
       else lir-scan-expire active (i + 1) n start (list-push kept a) free
-
- The spill victim is the active interval of greatest `fin` (furthest next
- use), ties broken by greatest vreg. Returns its index in `active`, or -1
- when active is empty.
 
   lir-scan-victim : List LirActive, Integer, Integer, Integer -> Integer
   lir-scan-victim (active) (i) (n) (best) =
@@ -2232,10 +2060,6 @@ Section: Allocator
  are the only intervals with `start = -1`, the sort is by start and then by
  vreg, so they are scanned first, in order, against a wholly free file.
 
- Inside a leaf the choice splits once more, on whether the interval is a
- parameter -- which the scan already knows, because a parameter is exactly an
- interval defined before the first instruction (`start = -1`).
-
  A parameter wants an argument register, and specifically the one it arrived
  in, so it takes the argument pool and the entry move disappears. Everything
  else wants RAX first: the function's result is copied to RAX before the
@@ -2333,9 +2157,6 @@ Section: Allocator
    if list-at free (tgt.ncallee) then tgt.ncallee
    else lir-free-lowest free 0 (tgt.ncallee)
 
- Place an interval in a free register, or spill it whole to a fresh slot.
- Factored out because the crosser and non-crosser paths share them.
-
   lir-place-reg : LirIvl, LirScan, List LirActive, List Boolean, Integer -> LirScan
   lir-place-reg (iv) (st) (active) (free) (fr) =
    LirScan {
@@ -2392,18 +2213,11 @@ Section: Allocator
    else if (i == a) | (i == b) then lir-free-mask tgt free a b (i + 1) (list-push acc False)
    else lir-free-mask tgt free a b (i + 1) (list-push acc (list-at free i))
 
- The call-crossing arm: a value live across a call needs a callee-saved
- register, so it looks in the low (callee-saved) range and spills itself if
- none is free.
-
   lir-scan-cross : LirTarget, LirIvl, LirScan, LirExpire -> LirScan
   lir-scan-cross (tgt) (iv) (st) (ex) =
    let fr = lir-free-lowest (ex.free) 0 (tgt.ncallee)
    in if fr >= 0 then lir-place-reg iv st (ex.active) (ex.free) fr
       else lir-spill-self iv st (ex.active) (ex.free)
-
- A value crossing a division cannot use RAX or RDX (idiv destroys them), so
- those are masked out of the free set before the general placement scan.
 
   lir-scan-avail : LirTarget, LirIvl, LirExpire, List Integer -> List Boolean
   lir-scan-avail (tgt) (iv) (ex) (divpos) =
@@ -2411,21 +2225,12 @@ Section: Allocator
    then lir-free-mask tgt (ex.free) (tgt.diva) (tgt.divb) 0 []
    else ex.free
 
- The non-crossing arm: place into any free register the general scan hands
- out (honouring the hint and the division mask), or evict a lower-priority
- interval when the file is full.
-
   lir-scan-nocross : LirTarget, LirIvl, LirScan, LirExpire, List Integer, List Integer, List Integer -> LirScan
   lir-scan-nocross (tgt) (iv) (st) (ex) (callpos) (hints) (divpos) =
    let avail = lir-scan-avail tgt iv ex divpos
    in let fr = lir-free-nc tgt avail (list-length callpos == 0) (iv.start == 0 - 1) (list-at hints (iv.vreg))
    in if fr >= 0 then lir-place-reg iv st (ex.active) (ex.free) fr
       else lir-scan-evict iv st (ex.active) (ex.free)
-
- One interval placed. Expire the intervals that ended before this one starts,
- then take the crossing arm if it spans a call, else the general arm. The two
- arms were inline nested lets until a text-emitter round-trip bug on that
- shape forced the split; they are the same computation.
 
   lir-scan-step : LirTarget, LirIvl, LirScan, List Integer, List Integer, List Integer -> LirScan
   lir-scan-step (tgt) (iv) (st) (callpos) (hints) (divpos) =
@@ -2626,20 +2431,6 @@ Section: Entry Moves
 
 Section: Argument Moves
 
- The mirror of the entry moves, and the same problem pointed the other way. An
- entry move takes a parameter from where the ABI put it to where the allocator
- put it; an argument move takes a call's operand from where the allocator put
- it to where the ABI wants it. Parameter `i` arrives in abstract index
- `nargregs + i`, and argument `i` has to reach that same index.
-
- It is planned here for the reason the entry moves are: nothing about the
- ordering is target-specific, and a backend-side copy of it is the bug class
- that kept `col-hue` miscompiled for ten sessions. A backend supplies the
- mapping from an abstract index to one of its registers and nothing else.
- `Emit/X86_64Lir.codex` carries its own copy planned in physical registers
- (`lir-place-args`), written before this existed and agreeing with it on the
- algorithm; that one should be replaced by this rather than kept beside it.
-
  **The naive order is wrong here for a sharper reason than at entry.** The
  destinations ARE the argument registers, and the argument registers are
  allocatable, so a source is routinely another argument's destination. `f b a`
@@ -2717,11 +2508,6 @@ Section: Argument Moves
       is LocReg (pr) -> AmvMove ((tgt.nargregs) + i) pr
       is LocSlot (k) -> AmvLoad ((tgt.nargregs) + i) k
 
- `lir-amv-stage` exists for `lir-emv-stage`'s reason: `list-set-at` writes in
- place and arguments evaluate left to right, so a staging step built in the
- argument list after the rewrite would read the scratch back and stage a
- register onto itself.
-
   lir-amv-stage : LirTarget, List LirValue, List Integer, List Boolean, Integer, List Location, Integer, List LirAmv, Integer, Integer -> List LirAmv
   lir-amv-stage (tgt) (argvals) (srcs) (done) (na) (assign) (fuel) (acc) (c) (sc) =
    lir-amv-plan tgt argvals (list-set-at srcs c (lir-amv-scratch tgt)) done na assign fuel (list-push acc (AmvMove (lir-amv-scratch tgt) sc))
@@ -2740,9 +2526,6 @@ Section: Argument Moves
   lir-amv-for (tgt) (argvals) (assign) =
    let na = list-length argvals
    in lir-amv-plan tgt argvals (lir-amv-srcs argvals assign 0 na []) (lir-make-vec 0 na []) na assign (na * 2 + 4) []
-
- The check, and it simulates for the reason `lir-emv-check` does: a checker
- that re-ran the planner's reasoning would agree with it however wrong it was.
 
  The file is indexed by location and seeded so that every location holds
  ITSELF -- register `r` holds token `r`, spill slot `k` holds token
@@ -2796,11 +2579,6 @@ Section: Argument Moves
     is AmvMove (d) (s) -> lir-amv-text plan (i + 1) n (acc & (if acc == "" then "" else " ") & "r" & integer-to-text d & "<-r" & integer-to-text s)
     is AmvLoad (d) (k) -> lir-amv-text plan (i + 1) n (acc & (if acc == "" then "" else " ") & "r" & integer-to-text d & "<-s" & integer-to-text k)
     is AmvImm (d) (a) -> lir-amv-text plan (i + 1) n (acc & (if acc == "" then "" else " ") & "r" & integer-to-text d & "<-imm" & integer-to-text a)
-
- The same precondition the entry planner has, for the same reason: an argument
- past the last argument register goes on the callee's stack, which is a push
- and not a register move. Every selector declines such a call before it reaches
- here, so the dump says so rather than planning something that cannot be right.
 
   lir-amv-call-text : LirTarget, List LirValue, List Location -> Text
   lir-amv-call-text (tgt) (argvals) (assign) =
@@ -3115,13 +2893,6 @@ Section: Allocation Verifier
 
 Section: Dump and Pass
 
- A textual rendering of a lowered function: the signature, the vreg count,
- the blocks (each `bN:` then its instructions, joined by ` | `), and the
- result operand. It exists so the lowering can be driven over real IR and
- read back from the compile log, before any allocator consumes it -- the
- same way the occurrence analyser's `occ-report` proved that analysis over
- real lowered IR.
-
   lir-val-text : LirValue -> Text
   lir-val-text (v) =
    when v
@@ -3182,11 +2953,6 @@ Section: Dump and Pass
   lir-dump-func (f) =
    "LIR " & (f.name) & "(" & integer-to-text (f.nparams) & ") nvregs=" & integer-to-text (f.nvregs) & ": " & lir-blocks-text (f.blocks) 0 (list-length (f.blocks)) "" & " => " & lir-val-text (f.result)
 
- A textual rendering of the block-level liveness: each block (in list order,
- the same order the LIR dump prints) with the set of vregs live on entry.
- The result vreg shows up live at the exit block, an incoming parameter at
- the entry. It is emitted alongside the LIR dump under `-Passes lir-dump`.
-
   lir-liveset-text : List Boolean, Integer, Integer, Text -> Text
   lir-liveset-text (vec) (i) (n) (acc) =
    if i >= n then acc
@@ -3202,14 +2968,6 @@ Section: Dump and Pass
   lir-liveness-text (f) =
    "LIVE " & (f.name) & ": " & lir-liveblocks-text (f.blocks) (lir-liveness f) 0 (list-length (f.blocks)) (f.nvregs) ""
 
- A textual rendering of the linear-scan allocation and its verification:
- each vreg with the location it was assigned (a register `rN` or a spill
- slot `sN`), then the verifier's verdict. The assignment now shows register
- reuse (two vregs with disjoint live ranges sharing a register) and, under
- pressure, spill slots. The verifier runs over this real allocated code on
- every dump, and the same verifier catches a wrong allocation (proven by
- corrupting the assignment).
-
   lir-assign-text : List Location, Integer, Integer, Text -> Text
   lir-assign-text (assign) (i) (n) (acc) =
    if i >= n then acc
@@ -3220,12 +2978,6 @@ Section: Dump and Pass
    let a = lir-alloc-linscan tgt f
    in let viol = lir-alloc-check tgt f (a.assign)
    in "ALLOC " & (f.name) & ": " & lir-assign-text (a.assign) 0 (f.nvregs) "" & (if list-length viol == 0 then " [alloc-check: ok]" else " [alloc-check: " & integer-to-text (list-length viol) & " violations]") & lir-emv-dump tgt f (a.assign) & lir-amv-dump tgt f (a.assign)
-
- The opt-in pass. For each definition it lowers to the LIR as far as the
- whitelist allows; a lowerable function reports its dump and any structural
- violations, and a function outside the whitelist reports that it was not
- lowered. The lines ride the info channel, the same as `occ-report`, so
- `-Passes lir-dump` reports without halting and still emits a binary.
 
   lir-report-chapter : LirTarget, IRChapter -> List Text
   lir-report-chapter (tgt) (ch) = lir-report-defs tgt (ch.defs) 0 (list-length (ch.defs)) []

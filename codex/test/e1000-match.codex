@@ -2,39 +2,13 @@ Chapter: E1000Match
   cites Foreword chapter Maybe
   cites Kernel chapter E1000e
   cites Kernel chapter Pci
-
- What this test covers and what it does NOT.
-
- There is no e1000 device under codex-vm -- the only NIC it emulates is
- an ISA NE2000 -- so nothing here touches a register, a descriptor ring
- or a frame. Every function in E1000e that reads or writes the device is
- UNTESTED and stays untested until the driver meets real hardware. This
- file pins the part of the driver that is decidable without the part:
- which PCI devices it claims, and the alignment arithmetic its rings
- depend on.
-
- Saying so matters more than the rows below. A green result here is
- evidence about device selection and nothing else, and reading it as
- evidence the driver works would be the exact failure this project keeps
- recording.
-
- The negative rows are the test. A matcher that answered True to
- everything would pass a positive-only suite, so each of the three ways
- a device can fail to be ours gets its own row: wrong vendor, wrong
- class, wrong subclass. The expected values are written as literals
- rather than computed, because a judge built out of the subject cannot
- fail with it.
+  cites Dev chapter NicAsde
 
 Section: Fixtures
 
   mk : Integer, Integer, Integer, Integer -> PciDevice
   mk (vendor) (did) (cls) (sub) =
     PciDevice { pci-bus = 0, pci-dev = 0, pci-func = 0, pci-vendor = __narrow vendor, pci-device-id = __narrow did, pci-class = __narrow cls, pci-subclass = __narrow sub, pci-header-type = 0 }
-
- Each fixture carries its OWN device id so that find-present names which
- device was selected rather than merely that something was. With one id
- shared across the fixtures, a matcher that claimed every device would
- still answer find-present correctly, and the row would be decoration.
 
   intel-eth : PciDevice
   intel-eth = mk 32902 5560 2 0
@@ -74,10 +48,6 @@ Section: Judges
   scan-of : List PciDevice -> PciScanResult
   scan-of (ds) = PciScanResult { devices = ds, count = list-length ds }
 
- e1000-poll-raw is the entry the network stack calls, and its absent
- guard is the only part of it reachable without a device: a zero window
- must answer no-frame rather than reading descriptor memory at zero.
-
   poll-raw-hit : Integer -> Boolean
   poll-raw-hit (mmio) =
     let r = e1000-poll-raw mmio 0 0 0
@@ -106,6 +76,11 @@ Section: Body
     print-line-uni ("bar-io=" & show (e1000-bar-verdict (bar-at 49152 True)))
     print-line-uni ("bar-zero=" & show (e1000-bar-verdict (bar-at 0 False)))
     print-line-uni ("poll-raw-absent=" & yn (poll-raw-hit 0))
+    print-line-uni ("vname-ok=" & na-verdict-text e1000-bar-ok)
+    print-line-uni ("vname-io=" & na-verdict-text e1000-bar-is-io)
+    print-line-uni ("vname-below=" & na-verdict-text e1000-bar-below-window)
+    print-line-uni ("vname-above=" & na-verdict-text e1000-bar-above-window)
+    print-line-uni ("vname-zero=" & na-verdict-text e1000-bar-zero)
   end
 
 Page 1

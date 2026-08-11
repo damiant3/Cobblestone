@@ -4,9 +4,6 @@ Chapter: PowerShellEmit
   cites Foreword chapter Maybe
   cites Foreword chapter StringUtils
 
- Emits idiomatic PowerShell 7+ source from ShellScript values.
- Split into small functions to stay within LOWER deck budget.
-
  We say:
 
 Section: Top Level
@@ -25,12 +22,18 @@ Section: Parameters
   emit-ps-params (params) (i) (len) =
     if i >= len then ""
     else let p = list-at params i
+    in let doc-attr = emit-ps-param-doc (p.sp-doc) 0
     in let mandatory-attr = if p.sp-mandatory then "    [Parameter(Mandatory=$true)]\n" else ""
     in let choice-attr = if list-length (p.sp-choices) == 0 then "" else "    [ValidateSet(" & emit-ps-choices (p.sp-choices) 0 & ")]\n"
     in let type-attr = emit-ps-param-type (p.sp-type)
     in let default-val = when p.sp-default is Just (e) -> " = " & emit-ps-expr e is None -> ""
     in let sep = if i < len - 1 then ",\n" else "\n"
-    in mandatory-attr & choice-attr & "    " & type-attr & "$" & p.sp-name & default-val & sep & emit-ps-params params (i + 1) len
+    in doc-attr & mandatory-attr & choice-attr & "    " & type-attr & "$" & p.sp-name & default-val & sep & emit-ps-params params (i + 1) len
+
+  emit-ps-param-doc : List Text, Integer -> Text
+  emit-ps-param-doc (lines) (i) =
+    if i >= list-length lines then ""
+    else "    # " & list-at lines i & "\n" & emit-ps-param-doc lines (i + 1)
 
   emit-ps-fields : List ShellField, Integer -> Text
   emit-ps-fields (fields) (i) =
@@ -172,7 +175,7 @@ Section: Commands -- Flow Control
         pad & ":" & label & " while (" & emit-ps-expr cond & ") {\n" & emit-ps-cmds body (indent + 1) 0 (list-length body) & pad & "}"
       is ScTry (body) (catch-cmds) (finally-cmds) ->
         let tb = emit-ps-cmds body (indent + 1) 0 (list-length body)
-        in let cp = if list-length catch-cmds == 0 then "" else " catch {\n" & emit-ps-cmds catch-cmds (indent + 1) 0 (list-length catch-cmds) & pad & "}"
+        in let cp = if list-length catch-cmds == 0 then (if list-length finally-cmds == 0 then " catch {}" else "") else " catch {\n" & emit-ps-cmds catch-cmds (indent + 1) 0 (list-length catch-cmds) & pad & "}"
         in let fp = if list-length finally-cmds == 0 then "" else " finally {\n" & emit-ps-cmds finally-cmds (indent + 1) 0 (list-length finally-cmds) & pad & "}"
         in pad & "try {\n" & tb & pad & "}" & cp & fp
       is ScStartProcess (spec) ->
@@ -230,10 +233,6 @@ Section: Commands -- Shell State and Process Capture
         in pad & "function " & name & "(" & ps & ") {\n" & b & pad & "}"
       is otherwise -> pad & "# <unknown-cmd>"
 
- A function's parameters are declared inline and take neither a mandatory
- attribute nor a default, which is why they do not go through
- emit-ps-params.
-
   emit-ps-stages : List ShellStage, Integer -> Text
   emit-ps-stages (stages) (i) =
     if i >= list-length stages then ""
@@ -289,7 +288,6 @@ Section: Expressions -- Operators
  mean the same thing wherever its operands came from, rather than working
  by accident of the order the author happened to write.
 
-
   emit-ps-expr-ops : ShellExpr -> Text
   emit-ps-expr-ops (e) =
     when e
@@ -317,7 +315,6 @@ Section: Expressions -- Access and Method
  parentheses, so the defect was invisible until a path was built from a
  temporary directory.
 
-
   emit-ps-expr-access : ShellExpr -> Text
   emit-ps-expr-access (e) =
     when e
@@ -335,10 +332,6 @@ Section: Expressions -- Access and Method
       is otherwise -> emit-ps-expr-builtin e
 
 Section: Expressions -- Portable Builtins
-
- These name what the script MEANS rather than the cmdlet that happens to
- do it here, so a bash or ksh emitter renders its own spelling instead of
- inheriting PowerShell's.
 
   emit-ps-expr-builtin : ShellExpr -> Text
   emit-ps-expr-builtin (e) =
@@ -364,7 +357,6 @@ Section: Expressions -- Calls and Collections
  recognized" -- it is syntactically valid and semantically wrong, which is
  why parsing the generated script was not enough to catch it. `$( )` takes a
  statement and is accepted in argument position too.
-
 
   emit-ps-expr-call : ShellExpr -> Text
   emit-ps-expr-call (e) =

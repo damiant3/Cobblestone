@@ -22,18 +22,6 @@ Chapter: GopXhci
  has no IDT, so nothing here may rely on an interrupt or hang on a
  register that never changes.
 
- Rings are the real discipline, not a shortcut: every producer ring
- (command, endpoint zero, each bulk endpoint) carries its enqueue
- index and producer cycle state in a small header before the TRB
- array, ends in a pre-written link TRB with the toggle-cycle flag,
- and wraps by activating that link and flipping its cycle. A real
- controller caches ring position from the moment Address Device or
- Configure Endpoint reads it out of the input context -- rewinding a
- dequeue pointer behind its back is not a thing hardware permits, so
- the driver never does it. Consumed events are acknowledged by
- writing ERDP back, which real controllers require to know the ring
- is not full.
-
  We say:
 
 Section: Capability and Operational Registers
@@ -199,12 +187,6 @@ Section: Producer Rings
     in let w3 = poke-32 (ring + 64) (off + 12) (bit-or ctl cyc)
     in poke-32 ring 0 (enq + 1)
 
- A halted endpoint is restarted by pointing the controller back at the
- ring, and the only position it may be given is one the producer has not
- yet filled: the current enqueue slot, carrying the producer's own cycle
- state as the dequeue cycle. Anything behind that is a TRB the controller
- has already consumed, and anything ahead of it is not written yet.
-
   xhci-ring-enq-addr : Integer -> Integer
   xhci-ring-enq-addr (ring) = ring + 64 + (peek-32 ring 0) * 16
 
@@ -260,32 +242,10 @@ Section: Host State
     ud-tt-port : Integer
   }
 
- The route string is what says WHERE a device is. Without it a device
- addressed through two tiers of hub is indistinguishable from one on a
- root port, because every other field is the same -- the root port it
- descends from, its speed, its slot. A hub walk that cannot report
- where it arrived cannot be checked by anything.
-
- The transaction translator is carried on the device for the same
- reason. A full-speed device reaches a high-speed bus only through
- some ancestor hub's translator, and that ancestor is not always the
- hub it is plugged into -- a full-speed hub has none of its own and
- passes its parent's along. Recording which translator serves this
- device is what lets its children inherit the right one.
-
   xhci-no-dev : UsbDev
   xhci-no-dev = UsbDev { ud-ok = False, ud-slot = 0, ud-port = 0, ud-speed = 0, ud-ctx = 0, ud-ep0-ring = 0, ud-route = 0, ud-tt-slot = 0, ud-tt-port = 0 }
 
 Section: Diagnostics
-
- On real metal there is no serial log, so the bring-up records what
- it found -- controller identity, capability parameters, the
- ownership handoff, and a raw snapshot of every root port the
- instant the controller starts -- into a fixed cell block that a
- later screen reads. The magic dword is written LAST so a partial
- capture (a bring-up that faulted midway) is never mistaken for a
- complete one; the field that never got written names how far the
- bring-up got.
 
  The block is otherwise observational, with one exception that must
  be stated rather than discovered: the handback below READS it. Index
@@ -320,53 +280,14 @@ Section: Diagnostics
  disk and the keyboard came from as ordinal PLUS ONE, so zero means no
  controller yielded one rather than controller zero did.
 
- 48 upwards is four dwords per controller for the first four: identity,
- location, outcome, and what was found there. The outcome is three-valued
- for the reason index 30 is -- 0 "never reached" must not read the same as
- 1 "opened, bring-up failed" or 2 "running and walked".
-
- 64-69 are the boot keyboard's interrupt endpoint, and they exist to be a
- COMPARISON: what the device's descriptor asked for beside what we
- programmed into its endpoint context. A value alone is satisfied by any
- plausible number, so a mismatch is the finding and a lone reading is not.
- 64 is three-valued for the same reason 30 and the outcome above are: a
- bInterval of zero because the descriptor was never fetched must not read
- the same as a bInterval genuinely zero.
-
- 70-74 are the mass-storage bring-up ladder, owned by GopUsbMsc: the
- furthest rung reached, the Configure Endpoint completion code, the block
- size the medium reported, the sector count, and the bConfigurationValue
- the driver sent. They are three-valued in the same way -- a zero rung is
- a bring-up that never reached the first one, and there is no completion
- code zero for the second cell to collide with.
-
- 74 is written BEFORE the request it describes is issued, which is the
- point of it: a refused SET_CONFIGURATION has to be able to show the value
- that was refused, or the reading cannot tell a wrong value from a device
- that refuses every value.
-
- 75-78 say WHERE the mass-storage device was and what actually came back
- from its SET_CONFIGURATION: controller ordinal plus one, port, speed and
- slot packed a byte each, then the route string, then the completion code,
- then that port's own PORTSC. The code is the point -- a STALL, a
- Transaction Error and the fuel expiring are three different faults and the
- Boolean rendered them as one. The PORTSC is taken AT THE DEVICE rather
- than left to the snapshot, which covers eight ports on a controller that
- may have twenty-six.
-
- 46 is a bitmask of which root ports report a device connected, one bit per
- port up to 32. Index 18 counts them, and a count names none of them: the
- ASUS answered connected=4 with the device that mattered on port 9, which
- no snapshot row reaches.
-
- 79 is the completion code of a SECOND SET_CONFIGURATION, asked only when
- the first was refused and never acted on. A transient failure and a
- permanent one want opposite fixes and one attempt cannot tell them apart;
- the cell turns "a retry might help" from a guess into a measurement, at
- the cost of one idempotent request.
-
- 79 is the last index in use, so the block spans 320 bytes from its base.
- It was 69 and 280 until the ladder was added on 2026-08-03.
+ 87 is the last index in use, so the block spans 352 bytes from its base.
+ It was 69 and 280 until the ladder was added on 2026-08-03, then 79 and
+ 320 until the ESP mount telemetry was added on 2026-08-07 (cell 80 in
+ GopFat16, 81-82 in GopUsbMsc). This line said 82 and 332 until 2026-08-09
+ and was already wrong when it was read: GopFat16 took 83 for the write
+ stage. Re-measure the maximum rather than trusting it (L-COUNT). 83 is
+ GopFat16, 84 the fuel-left publication here, 85-87 the fuel low-water,
+ failing LBA and retry outcome in GopUsbMsc.
 
  The base is 0x1D000: the hole between the IST emergency stacks
  ([0x15000, 0x1D000), sixteen 2 KB stacks) and the AP idle stacks at
@@ -378,7 +299,7 @@ Section: Diagnostics
  2026-07-30, and KbdDiagProbe's `kx-cell` took 119808 to 119875 -- inside
  what this paragraph used to call free, placed deliberately a kilobyte
  past the 96 dwords `xdiag-zero` claims. So the map is: this block 118784
- to 119079, free to 119807, kx-cell to 119875, free to 126975, the
+ to 119135, free to 119807, kx-cell to 119875, free to 126975, the
  handoff block, then 4048 free bytes below the AP idle stacks.
 
  Growth here stops at 119808, not at 0x1F000 and not at 0x20000, and the
@@ -397,13 +318,6 @@ Section: Diagnostics
   xhci-diag : Integer = 118784
   xhci-diag-magic : Integer = #58444731
 
- The ordinal of the controller currently being walked, plus one. Indices 0
- to 39 are restored from the snapshot taken when the keyboard was credited,
- so on a two-controller machine they describe the KEYBOARD's controller and
- a device found on the other one has nothing on screen naming where it was.
- 45 is written as each controller's walk begins, so anything recorded
- during that walk can say which one it happened on.
-
   xhci-cur-ord : Integer = 45
 
   xhci-ctl-max : Integer = 4
@@ -420,10 +334,6 @@ Section: Diagnostics
     if ce.xe-ok == False then xhci-ep-failed
     else if ce.xe-code /= trb-cc-success then xhci-ep-failed
     else xhci-ep-ok
-
- The status goes in LAST, so a bring-up that faults midway leaves it zero
- and the reading says the fields were never taken rather than showing the
- residue of whatever the firmware left.
 
   xhci-ep-note : UsbDev, Integer, Integer, Integer, Integer, Integer -> Integer
   xhci-ep-note (dev) (epnum) (maxpkt) (binterval) (interval) (status) =
@@ -452,20 +362,6 @@ Section: Diagnostics
     if i >= n then 0
     else let w = poke-32 xhci-diag (i * 4) 0
     in xdiag-zero (i + 1) n
-
- Which controller 0-39 describe is not a presentation question. The
- handback in KbdDiagProbe computes the capability base as the KEYBOARD
- host's operational base minus cell 4, then scans from there for the
- legacy-support capability using cell 8 and writes cell 39 back into it.
- On a machine with one controller those agree by accident. On a machine
- with two they name different controllers, and the handback then walks a
- capability list at an address derived from mismatched halves.
-
- So the walk keeps a copy of 0-39 taken at the moment the keyboard is
- credited and puts it back once every controller is up. A copy is exact
- where a re-read is not: cell 39 is the firmware's pre-handoff control
- word and 20-27 are the port snapshot taken the instant the controller
- started, and neither exists to be read a second time.
 
   xdiag-span : Integer = 40
 
@@ -530,10 +426,6 @@ Section: Controller Bring-Up
     if bit-and (peek-32 base reg) mask /= 0 then 1
     else if fuel <= 0 then 0
     else xhci-wait-bit-set base reg mask (fuel - 1)
-
- A controller must be halted before it is reset: resetting a running
- controller is undefined. Clear Run/Stop and wait for HCHalted; a
- controller firmware already stopped answers at once.
 
   xhci-halt : Integer -> Integer
   xhci-halt (op) =
@@ -654,14 +546,6 @@ Section: Controller Bring-Up
  of zero "when the Slot Context Speed field indicates a Full- or Low-speed
  device", and 4.23.5.2 reads it for PING scheduling.
 
- A device behind a hub gets its speed from the hub's port status, which
- has no PSI value in it at all, so the encode is a reverse lookup by rate
- rather than a pass-through of what PORTSC said. Where no declared PSI
- dword carries the class, the class itself is written: that is a
- controller whose vocabulary cannot express the device, and it is what
- this driver did before it read PSI dwords at all, so it is a guess that
- is no worse rather than a new refusal.
-
   xhci-psi-encode : Integer, Integer, Integer, Integer -> Integer
   xhci-psi-encode (addr) (n) (cls) (i) =
     if i >= n then 0
@@ -739,30 +623,6 @@ Section: Controller Bring-Up
 
 Section: Ownership Handback
 
- The reverse of the handoff, and the reason it exists: on a board
- whose firmware presents its USB keyboard as a PS/2 one through an
- SMM legacy handler, taking ownership by the book DISABLES that
- emulation. If the pure USB path then fails to deliver a keystroke,
- the machine has no keyboard at all -- and that is exactly what
- happened here on real hardware: the working
- path was scuttled in the same change that introduced its
- replacement, and the replacement did not hold weight.
-
- So the cord goes back. Halt the controller, so firmware inherits a
- quiescent device rather than a running one; restore the SMI enables
- the firmware itself had chosen, verbatim, from the word saved at
- the handoff; clear the OS-owned semaphore; and watch for BIOS-owned
- to return. A firmware may take a measurable stretch of SMM work to
- re-own a controller, so the wait is fuel-bounded and its outcome is
- recorded rather than asserted -- a board that never re-owns says so
- at index 29 instead of hanging.
-
- What this costs, stated plainly: the controller is shared, so a USB
- mass-storage boot stick dies with the keyboard's endpoint. The
- caller must therefore only reach for this when there is no keyboard
- at all, which is a machine that cannot be driven anyway. A keyboard
- and no stick beats a stick and no keyboard.
-
   xhci-legsup-os-mask : Integer = #FEFFFFFF
   xhci-release-fuel : Integer = 200000
 
@@ -789,12 +649,6 @@ Section: Ownership Handback
     in let w = xdiag-put 29 (xhci-reclaim-wait addr xhci-release-fuel)
     in xdiag-put 28 1
 
- A raw PORTSC snapshot of the root ports the moment the controller runs,
- plus a count of ports reporting a device connected. This is the single
- most telling line on a board that enumerates nothing: all-zero connect
- bits point at port power or chipset routing, live connect bits at the
- enumeration path above.
-
  THE SNAPSHOT OWNS EIGHT CELLS AND MUST NOT WRITE A NINTH. The band is
  20-27; 28-29 are the handback, 30-32 the BAR verdict. This loop stopped
  at port 16 and wrote `20 + port`, so on any controller with more than
@@ -810,24 +664,7 @@ Section: Ownership Handback
  zeroes 28 and 29 on the way in, so residue was never the mechanism. It
  was this loop, and it wrote the cell AFTER the wipe.
 
- QEMU could not show it and the reason is not that it zeroes RAM. Its
- controller reports exactly EIGHT ports, so the write lands on the last
- legal cell and stops. The bed sat precisely on the boundary.
-
- The bound is the cell count, not a second literal, so the two cannot
- drift apart again. Ports at or above the bound are still COUNTED -- the
- connected total is the number the enumeration path is judged against and
- it must cover every port, which is how a device on port 9 shows up in
- `connected=` while having no PORTSC row of its own.
-
   xhci-port-cells : Integer = 8
-
- A COUNT of connected ports names none of them, and on a controller wider
- than the eight rows above it that is the difference between a reading and
- a rumour: the ASUS answered connected=4 while the device that mattered
- sat on port 9, which no row could show. One bit per port, up to 32, says
- WHICH -- and it is the only place a port above the snapshot band appears
- at all.
 
   xhci-conn-mask : Integer = 46
 
@@ -841,11 +678,6 @@ Section: Ownership Handback
     in let c = if conn then nconn + 1 else nconn
     in xhci-diag-ports op (port + 1) maxports c
 
- Wait n PIT ticks, exiting the instant the counter has advanced far
- enough. If the tick never moves -- an environment where the timer
- interrupt is not delivered -- the fuel bounds a busy spin so timing
- alone can never hang the boot.
-
   xhci-delay-wait : Integer, Integer, Integer -> Integer
   xhci-delay-wait (start) (n) (fuel) =
     if peek-qword xhci-tick-cell 0 - start >= n then 1
@@ -856,12 +688,6 @@ Section: Ownership Handback
   xhci-delay-ticks (n) =
     let start = peek-qword xhci-tick-cell 0
     in xhci-delay-wait start n xhci-settle-fuel
-
- Set Port Power on every root port. PORTSC carries write-1-to-clear
- change bits, so the write names only the intent -- Port Power alone
- -- and never echoes the read value back, the same discipline the
- reset path follows. Harmless on a controller that powers its ports
- unconditionally.
 
   xhci-power-ports : Integer, Integer, Integer -> Integer
   xhci-power-ports (op) (port) (maxports) =
@@ -889,10 +715,6 @@ Section: Ownership Handback
  loop. The tell was in the first photograph of the board: `BAR verdict=672`,
  a value the verdict cannot hold, which is port 10's PORTSC in cell 30.
 
- The claim that QEMU "zeroes its RAM and could not fail this" was true of
- the wrong mechanism. Its controller reports exactly eight ports, so the
- overrun lands on the last legal cell. The bed sat on the boundary.
-
   xhci-reset-handback : Integer -> Integer
   xhci-reset-handback (d) =
     let a = xdiag-put 28 0
@@ -910,20 +732,23 @@ Section: Ownership Handback
     if ord >= xhci-ctl-max then 0
     else xdiag-put (xhci-ctl-base + ord * 4 + slot) v
 
- The identity and location are recorded BEFORE the bring-up, with the
- outcome pre-set to failed, so a bring-up that faults partway leaves a row
- naming the controller it died on instead of an empty one.
+  xhci-ctl-note-id : PciDevice, Integer -> Integer
+  xhci-ctl-note-id (d) (ord) =
+    let i = xhci-ctl-put ord 0 (bit-or (bit-shl (d.pci-vendor) 16) (d.pci-device-id))
+    in xhci-ctl-put ord 1 (bit-or (bit-shl (d.pci-bus) 16) (bit-or (bit-shl (d.pci-dev) 8) (d.pci-func)))
 
   xhci-ctl-note : PciDevice, Integer -> Integer
   xhci-ctl-note (d) (ord) =
-    let i = xhci-ctl-put ord 0 (bit-or (bit-shl (d.pci-vendor) 16) (d.pci-device-id))
-    in let l = xhci-ctl-put ord 1 (bit-or (bit-shl (d.pci-bus) 16) (bit-or (bit-shl (d.pci-dev) 8) (d.pci-func)))
+    let i = xhci-ctl-note-id d ord
     in xhci-ctl-put ord 2 xhci-ctl-failed
 
- The scan is taken once and handed in. `pci-scan-all` walks the bridge
- tree and allocates as it goes, and there is no collector, so a caller
- that re-scanned per controller would pay for the whole tree again on
- every round.
+  xhci-ctl-census : PciScanResult, Integer, Integer -> Integer
+  xhci-ctl-census (scan) (from) (ord) =
+    if ord >= xhci-ctl-max then 0
+    else let idx = pci-index-class scan xhci-pci-class xhci-pci-subclass from
+    in if idx < 0 then 0
+    else let n = xhci-ctl-note-id (list-at (scan.devices) idx) ord
+    in xhci-ctl-census scan (idx + 1) (ord + 1)
 
   xhci-connect-at : PciScanResult, Integer, Integer -> [Device.Port] XhciHost
   xhci-connect-at (scan) (from) (ord) = act
@@ -944,6 +769,7 @@ Section: Ownership Handback
   xhci-connect = act
     scan <- pci-scan-all
     let c = xdiag-put 40 (pci-count-class scan xhci-pci-class xhci-pci-subclass)
+    in let e = xhci-ctl-census scan 0 0
     in xhci-connect-at scan 0 0
   end
 
@@ -974,13 +800,6 @@ Section: Ownership Handback
  it. red measured OVMF placing a NIC at 0x81060000, 2.16 GB, squarely
  inside the arena, and the exposure belongs to any driver that reads a
  BAR rather than to that one (`e1000-bar-verdict`, `E1000e`).
-
- So the test is membership of the device window, not the height of one
- dword. A BAR is used where it lies only when it is memory, non-zero,
- 32-bit-addressable and inside [3 GB, 4 GB); everything else relocates,
- which this driver can do and a NIC driver cannot. The verdict and the
- address it judged are recorded, because a board that lands somewhere
- unexpected should say so rather than be inferred from a dead screen.
 
   xhci-window-lo : Integer = 3221225472
   xhci-window-hi : Integer = 4294967296
@@ -1073,11 +892,6 @@ Section: Ownership Handback
     if bit-and rb 4294967280 == xhci-reloc-base-for ord then 1 else 0
   end
 
- Some controllers demand private scratchpad pages: HCSPARAMS2 states
- how many, and slot zero of the device context array must point at an
- array of that many page pointers before Run. A controller that asks
- and is not answered corrupts memory it was never given.
-
   xhci-scratch-count : Integer -> Integer
   xhci-scratch-count (hcs2) =
     bit-or (bit-shl (bit-and (bit-shru hcs2 21) 31) 5) (bit-and (bit-shru hcs2 27) 31)
@@ -1169,13 +983,6 @@ Section: Ownership Handback
 
 Section: Event Ring
 
- The controller produces events; the driver consumes them at its own
- dequeue index, accepting a TRB only when its cycle bit matches the
- driver's cycle state, flipping that state each time the index wraps.
- Each consumed event is acknowledged by writing ERDP back with the
- event-handler-busy bit, which is how a real controller learns the
- ring has room.
-
  xHCI delivers every endpoint of every device on the one event ring
  (one interrupter here), so an event consumed while waiting for a
  different (slot, endpoint) pair is latched by that pair. One byte of
@@ -1212,10 +1019,20 @@ Section: Event Ring
  is a heap allocation per call. Its idle path is a latch peek, three
  more peeks, and a compare: nothing allocates.
 
+ xhci-fuel is a SPIN COUNT, not a duration, and this cell is what converts
+ it. Every iteration below reads three ordinary memory locations and nothing
+ memory-mapped, so a million of them is milliseconds on one box and a
+ different number of milliseconds on the next. Publishing the fuel left at
+ completion lets a caller keep the low-water mark and see how close the
+ budget actually runs, which is the only way to tell a marginal fuel from a
+ device that genuinely stopped answering.
+
+  xhci-cell-fuel-left : Integer = 84
+
   xhci-wait-xfer : XhciHost, Integer, Integer, Integer -> Integer
   xhci-wait-xfer (xh) (slot) (dci) (fuel) =
     let l = xhci-latch-take xh slot dci
-    in if l /= 0 then l
+    in if l /= 0 then let fl = xdiag-put xhci-cell-fuel-left fuel in l
     else let st = xh.xh-state
     in let deq = peek-32 st xh-st-evt-deq
     in let cyc = peek-32 st xh-st-evt-cyc
@@ -1231,7 +1048,7 @@ Section: Event Ring
     in let eslot = bit-and (bit-shru ctl 24) 255
     in let edci = bit-and (bit-shru ctl 16) 31
     in let mine = if eslot == slot then (if edci == dci then 1 else 0) else 0
-    in if mine == 1 then code
+    in if mine == 1 then let fl = xdiag-put xhci-cell-fuel-left fuel in code
     else let put = xhci-latch-put xh eslot edci code
     in xhci-wait-xfer xh slot dci fuel
 
@@ -1263,9 +1080,6 @@ Section: Event Ring
     else XhciEvent { xe-ok = True, xe-code = bit-and (bit-shru sts 24) 255, xe-slot = bit-and (bit-shru ctl 24) 255 }
 
 Section: Command Ring
-
- One command TRB, doorbell zero, then wait for the command completion
- event. Completion code 1 is success.
 
   xhci-command : XhciHost, Integer, Integer, Integer, Integer -> XhciEvent
   xhci-command (xh) (plo) (phi) (sts) (ctl) =
@@ -1320,24 +1134,6 @@ Section: Ports
 
 Section: Input Contexts
 
- The controller learns about a device only through input contexts:
- Address Device reads the slot and endpoint-zero contexts, Configure
- Endpoint the slot and each added endpoint. Root-hub port numbers are
- one-based. Endpoint types in context encoding: control 4, bulk OUT
- 2, bulk IN 6, interrupt IN 7. The dequeue pointer carries the ring's
- cycle state in bit zero; error-count three is the conventional
- bulk/control retry budget.
-
- A device behind a hub is named by the route string in slot-context
- dword zero, bits 19:0: one nibble per tier, each the one-based
- downstream port number of the hub at that tier, with the root port
- kept separately in dword one. A device on a root port has route
- zero. A low- or full-speed device below a HIGH-speed hub needs that
- hub's transaction translator: dword two names the parent hub's slot
- and the parent port, and the controller issues split transactions
- through them. Below a full-speed hub the whole chain runs at one
- speed and the fields stay zero.
-
  Endpoint-context dword zero carries the Interval field in bits
  23:16, the polling period as a power-of-two count of 125-microsecond
  microframes. Bulk endpoints ignore it; an interrupt endpoint with
@@ -1346,17 +1142,6 @@ Section: Input Contexts
  in whole frames, so the exponent is the floor log of eight times
  that, clamped to the 3..10 window the spec demands; high and super
  speed give bInterval already as an exponent, one-based.
-
- Every context is ctxsz bytes -- 32 on a controller reporting CSZ=0
- (QEMU), 64 on most real Intel silicon (CSZ=1). The input control
- context sits at offset 0; the slot context at one context size; the
- endpoint contexts follow, endpoint-zero (device context index 1) at
- two context sizes. Writing the slot context at a hardcoded 32 on a
- 64-byte controller lands it inside the input control context, and
- Address Device then reads a garbage slot -- a device that resets and
- connects but never addresses. A 64-byte input context with a high
- device-context index reaches 33 contexts, so the buffer is sized for
- that ceiling.
 
   xhci-ictx-address : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   xhci-ictx-address (route) (port) (speed) (maxpkt) (ep0-trbs) (ttslot) (ttport) (ctxsz) =
@@ -1413,9 +1198,6 @@ Section: Input Contexts
     in let eo = xhci-ictx-ep ictx dci-out 2 pkt-out trbs-out 0 ctxsz
     in ictx
 
- The single-endpoint variant, for a device whose interesting traffic
- is one interrupt endpoint: a HID keyboard's reports.
-
  The input slot context for a Configure Endpoint command is a copy
  of the current output slot context with only Context Entries
  changed (xHCI 4.6.3.2). Building a fresh one with Speed zero costs
@@ -1450,17 +1232,6 @@ Section: Input Contexts
     in ictx
 
 Section: Slot and Device
-
- Enable Slot returns the slot id in the completion event. The output
- device context handed to the controller through DCBAA is the
- controller's own memory from then on; the driver initializes the
- endpoint-zero dequeue there once for device models that read it
- directly (codex-vm) and never touches it again -- real controllers
- take ring positions only from input contexts.
-
- The output device context follows the same size, but with no input
- control context ahead of it: the slot context is at offset zero and
- endpoint context d at d context sizes.
 
   xhci-set-ep-ring : Integer, Integer, Integer, Integer -> Integer
   xhci-set-ep-ring (ctx) (dci) (trbs) (ctxsz) =
@@ -1499,25 +1270,6 @@ Section: Doorbells
   xhci-ring-doorbell (xh) (slot) (dci) = poke-32 (xh.xh-db) (slot * 4) dci
 
 Section: Endpoint Recovery
-
- A device that refuses a command answers its bulk endpoint with STALL
- (completion code 6), and the endpoint stops there: the controller puts
- it in the Halted state and every later doorbell on it is ignored. Two
- halves have to be undone, and doing either alone leaves a pipe that
- looks recovered and moves nothing.
-
- The controller half is Reset Endpoint, which takes the endpoint out of
- Halted, followed by Set TR Dequeue Pointer -- mandatory after a reset,
- because the controller's saved position is the TRB that stalled and it
- will not resume past it on its own. The device half is CLEAR_FEATURE
- ENDPOINT_HALT on endpoint zero, which clears the condition and resets
- the data toggle at the far end; skip it and the device stalls again on
- the next packet.
-
- The endpoint address the device wants is not the device context index
- the controller wants: the DCI is the endpoint number doubled, plus one
- for an IN endpoint, while the wire address is the number with bit seven
- set for IN.
 
   xhci-reset-endpoint : XhciHost, Integer, Integer -> XhciEvent
   xhci-reset-endpoint (xh) (slot) (dci) =
@@ -1561,14 +1313,32 @@ Section: Endpoint Recovery
     else if q.xe-code /= trb-cc-success then False
     else usb-clear-halt xh dev (xhci-dci-to-ep-addr dci)
 
- The default control pipe recovers with the HOST half only, and the
- function above must not be used for it. Its last step is
- CLEAR_FEATURE ENDPOINT_HALT, which is a control transfer -- on endpoint
- zero that request would have to travel through the very pipe it is
- recovering. USB 2.0 8.5.3.4 also makes it unnecessary: a control
- endpoint's halt is cleared by the next SETUP, which a device is
- required to accept even while halted, so there is no device half to
- clear.
+ A TIMED-OUT endpoint is not a halted one, and the recovery above does not
+ fit it. Reset Endpoint is defined only for the Halted state (xHCI 4.6.8);
+ an endpoint whose transfer merely never completed is still Running with a
+ TD pending, and the controller answers Context State Error. Stop Endpoint
+ is the command for that state: it retires the pending TD and publishes the
+ true dequeue position, and Set TR Dequeue then places the ring where the
+ next transfer starts. Measured 2026-08-09 under -usb-bot-drop: routing a
+ timeout through the halted path answers retry=1 (recovery refused) every
+ time, and through this one it recovers.
+
+ Stop Endpoint MUST publish a Stopped transfer event before its command
+ completion (xHCI 4.6.9 p.134), so stopping an endpoint always leaves one
+ behind. The command wait latches it, being a transfer event on a slot and
+ DCI it was not waiting for, and the next real transfer on that endpoint
+ then takes it out of the latch and reads code 26 or 27 as its own answer.
+ Measured 2026-08-09: without this drain the retried CBW comes back
+ lastcc=27, Stopped - Length Invalid, and the retry fails at phase 1.
+
+  xhci-recover-stopped : XhciHost, UsbDev, Integer, Integer -> Boolean
+  xhci-recover-stopped (xh) (dev) (dci) (ring) =
+    let s = xhci-stop-endpoint xh (dev.ud-slot) dci
+    in if s.xe-ok == False then False
+    else let drain = xhci-latch-take xh (dev.ud-slot) dci
+    in let q = xhci-set-tr-dequeue xh (dev.ud-slot) dci ring
+    in if q.xe-ok == False then False
+    else q.xe-code == trb-cc-success
 
   xhci-recover-ep0 : XhciHost, UsbDev -> Boolean
   xhci-recover-ep0 (xh) (dev) =
@@ -1580,14 +1350,6 @@ Section: Endpoint Recovery
     else q.xe-code == trb-cc-success
 
 Section: Control Transfers
-
- A control transfer is three TRBs on the endpoint-zero ring: SETUP
- with the eight setup bytes immediate in the parameter dwords, DATA
- pointing at the buffer, STATUS closing the handshake in the opposite
- direction of the data. Only the status TRB carries IOC, so exactly
- one transfer event answers the whole transfer; a short data stage is
- normal (a descriptor read asks for more than most descriptors hold)
- and ends the data TD silently.
 
   xhci-setup-lo : Integer, Integer, Integer -> Integer
   xhci-setup-lo (rt) (req) (value) =
@@ -1607,12 +1369,6 @@ Section: Control Transfers
     in let code = xhci-wait-xfer xh (dev.ud-slot) 1 xhci-fuel
     in if code == trb-cc-success then True
     else code == trb-cc-short
-
- The completion code is the diagnosis and the Boolean throws it away. A
- STALL is the device refusing a request it understood, a Transaction Error
- is the wire, and the fuel running out is neither -- three different next
- steps rendered as one `False`. Callers that only branch keep the Boolean;
- a caller standing at a failure it has to explain takes the code.
 
   xhci-ctrl-nodata-code : XhciHost, UsbDev, Integer, Integer, Integer, Integer -> Integer
   xhci-ctrl-nodata-code (xh) (dev) (rt) (req) (value) (index) =

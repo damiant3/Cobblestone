@@ -35,15 +35,8 @@ Section: Framing
   test-wire : Text =
     "dm wire=" & x-hex m-wire
 
- The same message, transcript form. Twelve bytes of header on the wire;
- four in the hash.
-
   test-transcript : Text =
     "dm transcript=" & x-hex m-tr
-
- And the assertion that matters: these are NOT the same bytes. If this
- ever reads same=True, someone has "simplified" the transcript to reuse
- the wire encoding and the handshake will never interoperate again.
 
   test-differ : Text =
     "dm same=" & show (tls13-ct-equal m-wire m-tr) & " wirelen=" & show (list-length m-wire) & " trlen=" & show (list-length m-tr)
@@ -55,25 +48,15 @@ Section: Parse
       is None -> "dm parse=REJECTED"
       is Just (m) -> "dm parse type=" & show (m.dm-type) & " len=" & show (m.dm-length) & " seq=" & show (m.dm-seq) & " foff=" & show (m.dm-frag-offset) & " flen=" & show (m.dm-frag-length) & " body=" & x-hex (m.dm-body)
 
- A truncated header is not a message. A datagram protocol is handed
- rubbish constantly, and reading past the end of it is the attack.
-
   test-short : Text =
     when dtls-msg-parse [1, 0, 0]
       is None -> "dm short=REJECTED"
       is Just (m) -> "dm short=ACCEPTED"
 
- A header whose fragment_length runs past the datagram is a lie. Trusting
- it is an out-of-bounds read.
-
   test-liar : Text =
     when dtls-msg-parse [1, 0, 0, 99, 0, 7, 0, 0, 0, 0, 0, 99, 1, 2]
       is None -> "dm liar=REJECTED"
       is Just (m) -> "dm liar=ACCEPTED"
-
- A parsed message must hash to the same transcript bytes the sender put
- in. This is the round trip that matters: not wire-to-wire, but
- wire-to-TRANSCRIPT.
 
   test-roundtrip : Text =
     when dtls-msg-parse m-wire
@@ -105,10 +88,6 @@ Section: Finished
 
   test-verify-data : Text =
     "dm verify=" & x-hex (tls13-verify-data s-hs t-hash)
-
- A Finished that verifies proves the peer holds the same handshake
- secret. It does NOT prove who the peer is -- there is still no peer
- authentication anywhere in this stack. A wrong transcript must fail.
 
   test-finished-ok : Text =
     "dm fin-ok=" & show (tls13-finished-ok s-hs t-hash (tls13-verify-data s-hs t-hash))

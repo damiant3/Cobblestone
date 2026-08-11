@@ -2,11 +2,7 @@ Chapter: Unification
   cites Foreword chapter Sort
   cites Codex chapter Build Settings (max-recursion-depth)
   cites Foreword chapter Tuple
-
- Type unification for the Codex type checker. The UnificationState
- is threaded through all operations -- it tracks type variable
- substitutions, effect-row substitutions, a counter for generating
- fresh variables, and accumulated diagnostics.
+  cites Foreword chapter MathLib (int-widen)
 
  Row variables have their own id space and their own substitution
  table: rows are not CodexTypes, so a type position can never resolve
@@ -38,18 +34,6 @@ Section: State
    scope-grants : List EffectLabel,
    chapter-grounds : List Text
   }
-
- scope-grants holds the effect labels the def under check declares, so
- an operation deep in the body can be measured against the scope its
- signature granted. It is per-def context, set once at the def boundary
- like effect-exempt, never threaded through unification.
-
- chapter-grounds is different: it is per-COMPILE context, the whole
- chapter's grounds table ("slug\neffect" entries) set once when checking
- begins and constant across every def. check-def-normal looks up the def's
- own chapter-slug in it to find which hardware effects that chapter is the
- source of, and admits exactly those in the def's body without a
- declaration.
 
 Section: Construction
   empty-unification-state : UnificationState
@@ -83,11 +67,17 @@ Section: Fresh Variables
   fresh-and-advance (st) =
    (TypeVar (st.next-id), advance-id st)
 
+ next-row-id is declared 0..4294967295 and a type argument is invariant, so
+ the pair below would otherwise be a Tup2 carrying those bounds. Widening
+ HERE rather than declaring the narrow type in the signature keeps all
+ eleven call sites seeing a plain Integer; declaring it narrow pushes the
+ bounds out to every caller and moves the mismatch rather than fixing it.
+
   fresh-row-id : UnificationState -> (Integer, UnificationState)
   fresh-row-id (st) =
    let id = st.next-row-id
    in let __seq = st.next-row-id = __narrow (id + 1)
-   in (id, st)
+   in (int-widen id, st)
 
 Section: Fuel Budget
 
@@ -97,9 +87,6 @@ Section: Fuel Budget
  adversarial input. Emit CDX9001 and bail rather than stack-overflow.
 
 Section: Resolve
-
- resolve-silent resolves a type variable to its substitution target,
- returning ErrorTy on fuel exhaustion. Pure: does not thread state.
 
   resolve-silent : UnificationState, CodexType -> CodexType
   resolve-silent (st) (ty) = resolve-silent-at st ty 0
@@ -207,12 +194,6 @@ Section: Occurs Check
 
 Section: Effect Row Substitution
 
- Rows solve against their own table (see State above). make-row is
- the canonical constructor: labels sorted by name then scope,
- duplicate-free, so structural equality is set equality and the
- merge in unify-row is a single linear walk. Rows in practice carry
- at most a couple of labels; nothing here recurses into types.
-
   label-compare : EffectLabel, EffectLabel -> Integer
   label-compare (a) (b) =
    let nc = text-compare (a.name.value) (b.name.value)
@@ -248,9 +229,6 @@ Section: Effect Row Substitution
    else if label-compare (list-at xs i) (list-at ys i) == 0 then labels-equal-loop xs ys (i + 1) len
    else False
 
- labels-minus walks two canonical lists with one sorted merge and
- keeps the labels of the left list that the right list lacks.
-
   labels-minus : List EffectLabel, List EffectLabel -> List EffectLabel
   labels-minus (xs) (ys) =
    labels-minus-merge xs ys 0 0 (list-length xs) (list-length ys) []
@@ -264,16 +242,9 @@ Section: Effect Row Substitution
       else if c < 0 then labels-minus-merge xs ys (i + 1) j xlen ylen (list-push acc (list-at xs i))
       else labels-minus-merge xs ys i (j + 1) xlen ylen acc
 
- A slot is unbound while it still holds its self-row. The occurs
- check forbids binding row id i to a row whose tail chain reaches i,
- so a stored binding can never look like the self-row.
-
   row-slot-unbound : EffectRow, Integer -> Boolean
   row-slot-unbound (slot) (id) =
    slot.tail-id == id & list-length (slot.labels) == 0
-
- Binding grows the table with self-row fillers up to the bound id, so
- fresh ids alone allocate nothing and the table stays index-dense.
 
   grow-row-substs : List EffectRow, Integer, Integer -> List EffectRow
   grow-row-substs (entries) (len) (want) =
@@ -285,10 +256,6 @@ Section: Effect Row Substitution
    let grown = grow-row-substs (st.row-substitutions) (list-length (st.row-substitutions)) id
    in let __seq = st.row-substitutions = list-set-at grown id row
    in st
-
- resolve-row chases the tail substitution chain, merging the labels
- gathered along the way into one canonical row whose tail is the
- chain's final (unbound or closed) tail.
 
   resolve-row : UnificationState, EffectRow -> EffectRow
   resolve-row (st) (row) = resolve-row-at st row 0
@@ -303,11 +270,6 @@ Section: Effect Row Substitution
    in if row-slot-unbound slot (row.tail-id) then row
    else let bound = resolve-row-at st slot (depth + 1)
    in make-row ((row.labels) & (bound.labels)) (bound.tail-name) (bound.tail-id)
-
- The row occurs check is a walk of the tail substitution chain -- rows
- do not nest, so there is no recursion into types. Binding a tail to
- a row whose resolved chain reaches that same tail would create an
- infinite row.
 
   row-occurs : UnificationState, Integer, EffectRow, Integer -> Boolean
   row-occurs (st) (tid) (row) (depth) =
@@ -372,19 +334,10 @@ Section: Row Unification
    else if a.tail-id == b.tail-id then unify-row-both-closed st a b only1 only2 span
    else unify-row-open-open st a b only1 only2 span
 
- Closed against closed (and same-tail against same-tail: a tail
- cannot absorb labels on one side of itself) requires the label sets
- to already agree.
-
   unify-row-both-closed : UnificationState, EffectRow, EffectRow, List EffectLabel, List EffectLabel, SourceSpan -> (Boolean, UnificationState)
   unify-row-both-closed (st) (a) (b) (only1) (only2) (span) =
    if list-length only1 == 0 & list-length only2 == 0 then (True, st)
    else (False, add-unify-error st cdx-row-mismatch (row-mismatch-msg a b) span)
-
- Open against closed: the closed side cannot absorb the open side's
- extra labels, so those must be empty; the open tail then absorbs
- exactly the closed side's leftovers and closes. The binding target
- is a closed row, so no occurs check is needed on this path.
 
   unify-row-open-closed : UnificationState, EffectRow, List EffectLabel, List EffectLabel, EffectRow, SourceSpan -> (Boolean, UnificationState)
   unify-row-open-closed (st) (open-r) (open-only) (closed-only) (closed-r) (span) =
@@ -415,11 +368,6 @@ Section: Row Unification
    else let st2 = add-row-subst st (a.tail-id) (deck-record (row-var (b.tail-id)))
    in (make-row merged (b.tail-name) (b.tail-id), st2)
 
- Open against open with distinct tails: each tail absorbs the other
- side's leftovers, sharing one fresh remainder. Both binding targets
- end in the fresh tail, so a cycle is impossible by construction --
- the occurs check stands as defense in depth.
-
   unify-row-open-open : UnificationState, EffectRow, EffectRow, List EffectLabel, List EffectLabel, SourceSpan -> (Boolean, UnificationState)
   unify-row-open-open (st) (a) (b) (only1) (only2) (span) =
    let (t3, st2) = fresh-row-id st
@@ -430,25 +378,26 @@ Section: Row Unification
       else (True, add-row-subst (add-row-subst st2 (a.tail-id) bind-a) (b.tail-id) bind-b)
 
 Section: Unify
+ The `inv` flag threaded from here down means "this pair sits in a type
+ ARGUMENT position", where `docs/DevelopersGuide.md` "Variance of Type
+ Arguments" requires the two types to be the same rather than merely
+ compatible. It is set at the argument positions below and never cleared,
+ so nesting inside an argument stays invariant. Everything reached with it
+ False keeps the assignability the language has always had.
+
   unify : UnificationState, CodexType, CodexType, SourceSpan -> (Boolean, UnificationState)
   unify (st) (a) (b) (span) =
-   unify-at st a b span 0
+   unify-at st a b span 0 False
 
- The EffectfulTy stripping arms are gone (stage 3b): an effectful
- VALUE type unifies structurally -- set-equal effect names and
- unifiable inner types -- and never silently sheds its effects
- against a bare type. Concrete effects on ARROWS live in the row and
- unify through unify-row inside unify-fun.
-
-  unify-at : UnificationState, CodexType, CodexType, SourceSpan, Integer -> (Boolean, UnificationState)
-  unify-at (st) (a) (b) (span) (depth) =
+  unify-at : UnificationState, CodexType, CodexType, SourceSpan, Integer, Boolean -> (Boolean, UnificationState)
+  unify-at (st) (a) (b) (span) (depth) (inv) =
    if depth >= max-recursion-depth then (False, add-fuel-error st "unify" span)
    else let ra = strip-linear-ty (resolve-silent st a)
    in let rb = strip-linear-ty (resolve-silent st b)
-   in unify-resolved st ra rb span (depth + 1)
+   in unify-resolved st ra rb span (depth + 1) inv
 
-  unify-resolved : UnificationState, CodexType, CodexType, SourceSpan, Integer -> (Boolean, UnificationState)
-  unify-resolved (st) (a) (b) (span) (depth) =
+  unify-resolved : UnificationState, CodexType, CodexType, SourceSpan, Integer, Boolean -> (Boolean, UnificationState)
+  unify-resolved (st) (a) (b) (span) (depth) (inv) =
    if types-equal a b then (True, st)
    else when a
     is TypeVar (id-a) -> when b
@@ -459,7 +408,7 @@ Section: Unify
      is otherwise ->
       if occurs-in st id-a b 0 then (False, add-unify-error st cdx-infinite-type "Infinite type" span)
        else (True, add-subst st id-a b)
-    is otherwise -> unify-rhs st a b span depth
+    is otherwise -> unify-rhs st a b span depth inv
 
   types-equal : CodexType, CodexType -> Boolean
   types-equal (a) (b) =
@@ -515,40 +464,33 @@ Section: Unify
      is otherwise -> False
     is otherwise -> False
 
-  unify-rhs : UnificationState, CodexType, CodexType, SourceSpan, Integer -> (Boolean, UnificationState)
-  unify-rhs (st) (a) (b) (span) (depth) =
+  unify-rhs : UnificationState, CodexType, CodexType, SourceSpan, Integer, Boolean -> (Boolean, UnificationState)
+  unify-rhs (st) (a) (b) (span) (depth) (inv) =
    when b
     is TypeVar (id-b) ->
      if occurs-in st id-b a 0 then (False, add-unify-error st cdx-infinite-type "Infinite type" span)
       else (True, add-subst st id-b a)
-    is otherwise -> unify-structural st a b span depth
+    is otherwise -> unify-structural st a b span depth inv
 
- A `unit` wrapper is transparent to its inner type at a boundary: the
- guide's example is passing a `Second` where an `Integer` is expected, and
- that has always worked because the `IntegerTy` arm below unwraps a
- `UnitTy` on the right. The `UnitTy` arm handles the mirror direction
- generically, so a unit on the LEFT unwraps against anything.
+ The integer arm is where every widening in the language is actually
+ admitted, and at a non-argument position it stays exactly as it was:
+ either range inside the other, or merely OVERLAPPING, is accepted. In an
+ argument position the bounds must match. Overflow mode is not compared in
+ either branch, which is pre-existing and is a separate question from
+ variance.
 
- The Real family did not, and the asymmetry was invisible for as long as
- nobody wrote `unit Real`: passing a `Metre` where a `Real` was expected
- raised CDX2001 while the identical Integer program compiled. Half a
- feature, and the half that was missing is the one a shader wants, since
- every physical quantity in one is a Real.
-
- Every Real takes the arm whatever its width and mode, not only the
- default one. Fixing the case with a failing example and leaving the
- others is how a defect grows a long tail.
-
-  unify-structural : UnificationState, CodexType, CodexType, SourceSpan, Integer -> (Boolean, UnificationState)
-  unify-structural (st) (a) (b) (span) (depth) =
+  unify-structural : UnificationState, CodexType, CodexType, SourceSpan, Integer, Boolean -> (Boolean, UnificationState)
+  unify-structural (st) (a) (b) (span) (depth) (inv) =
    when a
     is IntegerTy (a-lo) (a-hi) (a-mode) -> when b
      is IntegerTy (b-lo) (b-hi) (b-mode) ->
-      if a-lo >= b-lo & a-hi <= b-hi then (True, st)
+      if inv then
+       if a-lo == b-lo & a-hi == b-hi then (True, st) else unify-mismatch st a b span
+      else if a-lo >= b-lo & a-hi <= b-hi then (True, st)
       else if b-lo >= a-lo & b-hi <= a-hi then (True, st)
       else if a-lo <= b-hi & b-lo <= a-hi then (True, st)
       else unify-mismatch st a b span
-     is UnitTy (nb) (inner-b) -> unify-at st a inner-b span (depth + 1)
+     is UnitTy (nb) (inner-b) -> unify-at st a inner-b span (depth + 1) inv
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is RealTy (a-w) (a-m) -> when b
@@ -556,7 +498,7 @@ Section: Unify
       if real-width-eq a-w b-w & real-mode-eq a-m b-m then (True, st)
       else unify-mismatch st a b span
      is ErrorTy -> (True, st)
-     is UnitTy (nb) (inner-b) -> unify-at st a inner-b span (depth + 1)
+     is UnitTy (nb) (inner-b) -> unify-at st a inner-b span (depth + 1) inv
      is otherwise -> unify-mismatch st a b span
     is TextTy -> when b
      is TextTy | ErrorTy -> (True, st)
@@ -575,30 +517,30 @@ Section: Unify
      is otherwise -> unify-mismatch st a b span
     is PropEqTy (a1) (a2) -> when b
      is PropEqTy (b1) (b2) ->
-      let (ok1, st1) = unify-at st a1 b1 span (depth + 1)
-      in if ok1 then unify-at st1 a2 b2 span (depth + 1)
+      let (ok1, st1) = unify-at st a1 b1 span (depth + 1) inv
+      in if ok1 then unify-at st1 a2 b2 span (depth + 1) inv
          else (ok1, st1)
      is ProofTy | ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is ErrorTy -> (True, st)
     is FunTy (pa) (rwa) (ra) -> when b
-     is FunTy (pb) (rwb) (rb) -> unify-fun st pa rwa ra pb rwb rb span depth
+     is FunTy (pb) (rwb) (rb) -> unify-fun st pa rwa ra pb rwb rb span depth inv
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is EffectfulTy (ea) (sa) (ia) -> when b
      is EffectfulTy (eb) (sb) (ib) ->
-      if name-sets-equal ea eb then unify-at st ia ib span (depth + 1)
+      if name-sets-equal ea eb then unify-at st ia ib span (depth + 1) inv
       else unify-mismatch st a b span
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is ListTy (ea) -> when b
-     is ListTy (eb) | LinkedListTy (eb) -> unify-at st ea eb span (depth + 1)
-     is TypeApply (fb) (ab) -> let (ok1, st1) = unify-at st (deck-record (TypeCon (Name { value = "List" }))) fb span (depth + 1) in if ok1 then unify-at st1 ea ab span (depth + 1) else (ok1, st1)
+     is ListTy (eb) | LinkedListTy (eb) -> unify-at st ea eb span (depth + 1) True
+     is TypeApply (fb) (ab) -> let (ok1, st1) = unify-at st (deck-record (TypeCon (Name { value = "List" }))) fb span (depth + 1) inv in if ok1 then unify-at st1 ea ab span (depth + 1) True else (ok1, st1)
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is LinkedListTy (ea) -> when b
-     is LinkedListTy (eb) | ListTy (eb) -> unify-at st ea eb span (depth + 1)
-     is TypeApply (fb) (ab) -> let (ok1, st1) = unify-at st (deck-record (TypeCon (Name { value = "LinkedList" }))) fb span (depth + 1) in if ok1 then unify-at st1 ea ab span (depth + 1) else (ok1, st1)
+     is LinkedListTy (eb) | ListTy (eb) -> unify-at st ea eb span (depth + 1) True
+     is TypeApply (fb) (ab) -> let (ok1, st1) = unify-at st (deck-record (TypeCon (Name { value = "LinkedList" }))) fb span (depth + 1) inv in if ok1 then unify-at st1 ea ab span (depth + 1) True else (ok1, st1)
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is ConstructedTy (na) (args-a) -> when b
@@ -611,7 +553,7 @@ Section: Unify
      is RecordTy (rb-name) (rb-args) (rb-fields) ->
       if na.value == rb-name.value then unify-constructed-args st args-a rb-args 0 (list-length args-a) span depth
       else unify-mismatch st a b span
-     is TypeApply (fb) (ab) -> if list-length args-a >= 1 then unify-ctor-apply-peel st na args-a fb ab span depth else unify-mismatch st a b span
+     is TypeApply (fb) (ab) -> if list-length args-a >= 1 then unify-ctor-apply-peel st na args-a fb ab span depth inv else unify-mismatch st a b span
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is SumTy (sa-name) (sa-args) (sa-ctors) -> when b
@@ -621,7 +563,7 @@ Section: Unify
      is ConstructedTy (nb) (args-b) ->
       if sa-name.value == nb.value then unify-constructed-args st sa-args args-b 0 (list-length sa-args) span depth
       else unify-mismatch st a b span
-     is TypeApply (fb) (ab) -> if list-length sa-args == 1 then let (ok1, st1) = unify-at st (deck-record (TypeCon sa-name)) fb span (depth + 1) in if ok1 then unify-at st1 (list-at sa-args 0) ab span (depth + 1) else (ok1, st1) else unify-mismatch st a b span
+     is TypeApply (fb) (ab) -> if list-length sa-args == 1 then let (ok1, st1) = unify-at st (deck-record (TypeCon sa-name)) fb span (depth + 1) inv in if ok1 then unify-at st1 (list-at sa-args 0) ab span (depth + 1) True else (ok1, st1) else unify-mismatch st a b span
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is RecordTy (ra-name) (ra-args) (ra-fields) -> when b
@@ -631,19 +573,19 @@ Section: Unify
      is ConstructedTy (nb) (args-b) ->
       if ra-name.value == nb.value then unify-constructed-args st ra-args args-b 0 (list-length ra-args) span depth
       else unify-mismatch st a b span
-     is TypeApply (fb) (ab) -> if list-length ra-args == 1 then let (ok1, st1) = unify-at st (deck-record (TypeCon ra-name)) fb span (depth + 1) in if ok1 then unify-at st1 (list-at ra-args 0) ab span (depth + 1) else (ok1, st1) else unify-mismatch st a b span
+     is TypeApply (fb) (ab) -> if list-length ra-args == 1 then let (ok1, st1) = unify-at st (deck-record (TypeCon ra-name)) fb span (depth + 1) inv in if ok1 then unify-at st1 (list-at ra-args 0) ab span (depth + 1) True else (ok1, st1) else unify-mismatch st a b span
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
-    is ForAllTy (id) (body) -> unify-at st body b span (depth + 1)
-    is ForAllEff (id) (body) -> unify-at st body b span (depth + 1)
+    is ForAllTy (id) (body) -> unify-at st body b span (depth + 1) inv
+    is ForAllEff (id) (body) -> unify-at st body b span (depth + 1) inv
     is UnitTy (na) (inner-a) -> when b
      is UnitTy (nb) (inner-b) ->
-      unify-at st inner-a inner-b span (depth + 1)
+      unify-at st inner-a inner-b span (depth + 1) inv
      is ErrorTy -> (True, st)
-     is otherwise -> unify-at st inner-a b span (depth + 1)
+     is otherwise -> unify-at st inner-a b span (depth + 1) inv
     is VectorTy (na) (ta) -> when b
      is VectorTy (nb) (tb) ->
-      if na == nb | na < 0 | nb < 0 then unify-at st ta tb span (depth + 1)
+      if na == nb | na < 0 | nb < 0 then unify-at st ta tb span (depth + 1) True
       else unify-mismatch st a b span
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
@@ -658,28 +600,23 @@ Section: Unify
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is TypeApply (fa) (aa) -> when b
-     is TypeApply (fb) (ab) -> let (ok1, st1) = unify-at st fa fb span (depth + 1) in if ok1 then unify-at st1 aa ab span (depth + 1) else (ok1, st1)
-     is ListTy (eb) -> let (ok1, st1) = unify-at st fa (deck-record (TypeCon (Name { value = "List" }))) span (depth + 1) in if ok1 then unify-at st1 aa eb span (depth + 1) else (ok1, st1)
-     is LinkedListTy (eb) -> let (ok1, st1) = unify-at st fa (deck-record (TypeCon (Name { value = "LinkedList" }))) span (depth + 1) in if ok1 then unify-at st1 aa eb span (depth + 1) else (ok1, st1)
-     is ConstructedTy (nb) (args-b) -> if list-length args-b >= 1 then unify-ctor-apply-peel st nb args-b fa aa span depth else unify-mismatch st a b span
-     is SumTy (sb-name) (sb-args) (sb-ctors) -> if list-length sb-args == 1 then let (ok1, st1) = unify-at st fa (deck-record (TypeCon sb-name)) span (depth + 1) in if ok1 then unify-at st1 aa (list-at sb-args 0) span (depth + 1) else (ok1, st1) else unify-mismatch st a b span
-     is RecordTy (rb-name) (rb-args) (rb-fields) -> if list-length rb-args == 1 then let (ok1, st1) = unify-at st fa (deck-record (TypeCon rb-name)) span (depth + 1) in if ok1 then unify-at st1 aa (list-at rb-args 0) span (depth + 1) else (ok1, st1) else unify-mismatch st a b span
+     is TypeApply (fb) (ab) -> let (ok1, st1) = unify-at st fa fb span (depth + 1) inv in if ok1 then unify-at st1 aa ab span (depth + 1) True else (ok1, st1)
+     is ListTy (eb) -> let (ok1, st1) = unify-at st fa (deck-record (TypeCon (Name { value = "List" }))) span (depth + 1) inv in if ok1 then unify-at st1 aa eb span (depth + 1) True else (ok1, st1)
+     is LinkedListTy (eb) -> let (ok1, st1) = unify-at st fa (deck-record (TypeCon (Name { value = "LinkedList" }))) span (depth + 1) inv in if ok1 then unify-at st1 aa eb span (depth + 1) True else (ok1, st1)
+     is ConstructedTy (nb) (args-b) -> if list-length args-b >= 1 then unify-ctor-apply-peel st nb args-b fa aa span depth inv else unify-mismatch st a b span
+     is SumTy (sb-name) (sb-args) (sb-ctors) -> if list-length sb-args == 1 then let (ok1, st1) = unify-at st fa (deck-record (TypeCon sb-name)) span (depth + 1) inv in if ok1 then unify-at st1 aa (list-at sb-args 0) span (depth + 1) True else (ok1, st1) else unify-mismatch st a b span
+     is RecordTy (rb-name) (rb-args) (rb-fields) -> if list-length rb-args == 1 then let (ok1, st1) = unify-at st fa (deck-record (TypeCon rb-name)) span (depth + 1) inv in if ok1 then unify-at st1 aa (list-at rb-args 0) span (depth + 1) True else (ok1, st1) else unify-mismatch st a b span
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is otherwise -> when b
-     is UnitTy (nb) (inner-b) -> unify-at st a inner-b span (depth + 1)
-     is TypeApply (fb) (ab) -> unify-at st b a span (depth + 1)
+     is UnitTy (nb) (inner-b) -> unify-at st a inner-b span (depth + 1) inv
+     is TypeApply (fb) (ab) -> unify-at st b a span (depth + 1) inv
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
 
- Same-named type constructors must be applied at the same arity.
- Unifying only the common prefix and silently succeeding on the extra
- arguments (either side) would let `Foo A B` unify with `Foo A`. The
- declared-type arity checker (CDX2050) catches this in signatures, so
- this is defense-in-depth for constructed types synthesized during
- inference: a length mismatch is a type mismatch, not a match on the
- overlap. The length is compared once at entry (len is the caller's
- list-length args-a); the loop then walks the equal-length lists.
+ unify-constructed-args and unify-cargs-loop take no inv parameter because
+ every pair they compare is a type argument by construction, so they pass
+ True unconditionally.
 
   unify-constructed-args : UnificationState, List CodexType, List CodexType, Integer, Integer, SourceSpan, Integer -> (Boolean, UnificationState)
   unify-constructed-args (st) (args-a) (args-b) (i) (len) (span) (depth) =
@@ -689,31 +626,31 @@ Section: Unify
   unify-cargs-loop : UnificationState, List CodexType, List CodexType, Integer, Integer, SourceSpan, Integer -> (Boolean, UnificationState)
   unify-cargs-loop (st) (args-a) (args-b) (i) (len) (span) (depth) =
    if i == len then (True, st)
-   else let (ok, st1) = unify-at st (list-at args-a i) (list-at args-b i) span (depth + 1)
+   else let (ok, st1) = unify-at st (list-at args-a i) (list-at args-b i) span (depth + 1) True
    in if ok then unify-cargs-loop st1 args-a args-b (i + 1) len span depth
         else (ok, st1)
 
-  unify-ctor-apply-peel : UnificationState, Name, List CodexType, CodexType, CodexType, SourceSpan, Integer -> (Boolean, UnificationState)
-  unify-ctor-apply-peel (st) (name) (args) (fb) (ab) (span) (depth) =
+  unify-ctor-apply-peel : UnificationState, Name, List CodexType, CodexType, CodexType, SourceSpan, Integer, Boolean -> (Boolean, UnificationState)
+  unify-ctor-apply-peel (st) (name) (args) (fb) (ab) (span) (depth) (inv) =
    let n = list-length args
    in if n == 1
-    then let (ok1, st1) = unify-at st (deck-record (TypeCon name)) fb span (depth + 1)
-      in if ok1 then unify-at st1 (list-at args 0) ab span (depth + 1) else (ok1, st1)
+    then let (ok1, st1) = unify-at st (deck-record (TypeCon name)) fb span (depth + 1) inv
+      in if ok1 then unify-at st1 (list-at args 0) ab span (depth + 1) True else (ok1, st1)
     else let head-ty = deck-record (ConstructedTy name (ctype-list-take args 0 (n - 1) []))
-      in let (ok1, st1) = unify-at st head-ty fb span (depth + 1)
-      in if ok1 then unify-at st1 (list-at args (n - 1)) ab span (depth + 1) else (ok1, st1)
+      in let (ok1, st1) = unify-at st head-ty fb span (depth + 1) inv
+      in if ok1 then unify-at st1 (list-at args (n - 1)) ab span (depth + 1) True else (ok1, st1)
 
   ctype-list-take : List CodexType, Integer, Integer, List CodexType -> List CodexType
   ctype-list-take (xs) (i) (k) (acc) =
    if i == k then acc
    else ctype-list-take xs (i + 1) k (list-push acc (list-at xs i))
 
-  unify-fun : UnificationState, CodexType, EffectRow, CodexType, CodexType, EffectRow, CodexType, SourceSpan, Integer -> (Boolean, UnificationState)
-  unify-fun (st) (pa) (rwa) (ra) (pb) (rwb) (rb) (span) (depth) =
-   let (ok1, st1) = unify-at st pa pb span (depth + 1)
+  unify-fun : UnificationState, CodexType, EffectRow, CodexType, CodexType, EffectRow, CodexType, SourceSpan, Integer, Boolean -> (Boolean, UnificationState)
+  unify-fun (st) (pa) (rwa) (ra) (pb) (rwb) (rb) (span) (depth) (inv) =
+   let (ok1, st1) = unify-at st pa pb span (depth + 1) inv
    in if ok1 then
        let (ok2, st2) = unify-row st1 rwa rwb span
-       in if ok2 then unify-at st2 ra rb span (depth + 1)
+       in if ok2 then unify-at st2 ra rb span (depth + 1) inv
           else (ok2, st2)
       else (ok1, st1)
 
@@ -747,10 +684,22 @@ Section: Unify
    else if n == "Just" then True
    else False
 
+ The bounds are printed only when they are narrower than the default,
+ because "Integer vs Integer" is what this message said for every bounded
+ mismatch and it names neither side. Invariance of type arguments makes
+ that pair common, and locating one such error in the compiler's own
+ 57,000 lines cost a full diagnostic cycle against a message that could
+ have answered it.
+
+  int-bounds-desc : Integer, Integer -> Text
+  int-bounds-desc (lo) (hi) =
+   if lo == i64-min & hi == i64-max then ""
+   else " between " & integer-to-text lo & " and " & integer-to-text hi
+
   type-desc : CodexType -> Text
   type-desc (ty) =
    when ty
-    is IntegerTy (lo) (hi) (mode) -> "Integer"
+    is IntegerTy (lo) (hi) (mode) -> "Integer" & int-bounds-desc lo hi
     is RealTy (w) (m) -> "Real" & real-width-suffix w & real-mode-suffix m
     is TextTy -> "Text"
     is BooleanTy -> "Boolean"
@@ -787,12 +736,6 @@ Section: Unify
    in prefix & type-desc (list-at args i) & type-desc-args args (i + 1)
 
 Section: Deep Resolve
-
- Most types reaching deep-resolve are already fully resolved -- the
- checker ran first and unified everything. Short-circuit when the
- input has no TypeVars: a single fold-only pass that allocates
- nothing and returns the original tree. Otherwise fall through to
- the full map-children rebuild.
 
   ty-has-typevars : CodexType -> Boolean
   ty-has-typevars (ty) =
@@ -848,7 +791,10 @@ Section: Deep Type Copy
  - survive in place and only check-era boxes are materialized into
  the keep. A degraded path (probe fuel exhausted, side list at
  capacity, tag out of range, depth cap) returns the original box
- unchanged. That is never wrong for one box, but it is NOT merely
+ unchanged for Texts, Names, rows and the four list kinds;
+ `mcopy-type` answers `ErrorTy` on its unsafe escapes instead, because a
+ CodexType handed back into scratch is the one that reached codegen.
+ That is never wrong for one box, but it is NOT merely
  less deduplicated in aggregate: a saturated address memo makes
  every re-visit of a shared subtree a fresh unmemoized copy, the
  re-copies feed fresh addresses into the cons keys of every parent
@@ -857,10 +803,16 @@ Section: Deep Type Copy
  whose memoized copy is 0.17 MB (measured on ShellBuild). The
  table is therefore sized from the CHECK deck's measured usage -
  the population the memo actually keys is address-distinct boxes,
- not post-dedup contents - and mc-ceiling is the second line: any
+ not post-dedup contents - and mc-ceiling is the second line: a
  copy entry that would allocate once the keep frontier has climbed
- past the ceiling shares the original instead and sets mc-sat, and
- the caller raises CDX9002 for the phase. The copy must never write
+ past the ceiling shares the original instead (`mcopy-type` answers
+ `ErrorTy` there), and the caller raises CDX9002 for the phase by
+ comparing the keep deck's measured end against mc-ceiling. That
+ comparison is calibrated: forced below the measured keep use it
+ raises CDX9002 naming CHECK-KEEP, forced above it the same edited
+ line raises nothing. A shared original is a pointer into scratch the
+ caller is about to reclaim, so the phase must not be allowed to
+ succeed once one has been handed out. The copy must never write
  past its reservation into the scratch it is still reading; that
  silent breach is how ShellBuild died with no diagnostic. The interned
  empty-row is preserved so arrows keep sharing one empty row.
@@ -887,8 +839,7 @@ Section: Deep Type Copy
    mc-cap-name : Integer,
    mc-cap-row : Integer,
    mc-cap-list : Integer,
-   mc-ceiling : Integer,
-   mc-sat : Integer
+   mc-ceiling : Integer
   }
 
   memo-pow2-at-least : Integer, Integer -> Integer
@@ -995,17 +946,18 @@ Section: Deep Type Copy
     is RmSaturating -> " saturating"
     is otherwise -> ""
 
-  mcopy-sat : MemoCtx, a -> a
-  mcopy-sat (mc) (x) =
-   let z = __record-set mc "mc-sat" 1
-   in x
+ A CodexType box carries its constructor index in its first word, and there
+ are 27 of them, so a first word outside 0..28 is not a CodexType. Returning
+ the argument in that case hands the caller a pointer into scratch it is about
+ to reclaim, and the value is already known to be wrong; ErrorTy is a defined
+ value the rest of the compiler already understands.
 
   mcopy-text : Text, MemoCtx -> Text
   mcopy-text (t) (mc) =
    let a = address-of t
    in if a == 0 then t
    else if a < mc.mc-floor then t
-   else if __heap-save >= mc.mc-ceiling then mcopy-sat mc t
+   else if __heap-save >= mc.mc-ceiling then t
    else mcopy-text-memo t a (memo-probe a mc) mc
 
   mcopy-text-memo : Text, Integer, Integer, MemoCtx -> Text
@@ -1041,7 +993,7 @@ Section: Deep Type Copy
    let a = address-of nm
    in if a == 0 then nm
    else if a < mc.mc-floor then nm
-   else if __heap-save >= mc.mc-ceiling then mcopy-sat mc nm
+   else if __heap-save >= mc.mc-ceiling then nm
    else mcopy-name-memo nm a (memo-probe a mc) mc
 
   mcopy-name-memo : Name, Integer, Integer, MemoCtx -> Name
@@ -1078,7 +1030,7 @@ Section: Deep Type Copy
    in if a == 0 then row
    else if row-is-empty row then empty-row
    else if a < mc.mc-floor then row
-   else if __heap-save >= mc.mc-ceiling then mcopy-sat mc row
+   else if __heap-save >= mc.mc-ceiling then row
    else mcopy-row-memo row a (memo-probe a mc) mc
 
   mcopy-row-memo : EffectRow, Integer, Integer, MemoCtx -> EffectRow
@@ -1127,7 +1079,7 @@ Section: Deep Type Copy
    let a = address-of ls
    in if a == 0 then ls
    else if a < mc.mc-floor then ls
-   else if __heap-save >= mc.mc-ceiling then mcopy-sat mc ls
+   else if __heap-save >= mc.mc-ceiling then ls
    else let k = cons-norm (mkey-labels ls mc)
    in let v = cons-lookup k mc
    in if v /= 0 then list-at (mc.mc-labellist) (v - 1)
@@ -1193,7 +1145,7 @@ Section: Deep Type Copy
    let a = address-of ts
    in if a == 0 then ts
    else if a < mc.mc-floor then ts
-   else if __heap-save >= mc.mc-ceiling then mcopy-sat mc ts
+   else if __heap-save >= mc.mc-ceiling then ts
    else let k = cons-norm (mkey-types ts depth mc)
    in let v = cons-lookup k mc
    in if v /= 0 then list-at (mc.mc-tylist) (v - 1)
@@ -1230,7 +1182,7 @@ Section: Deep Type Copy
    let a = address-of fs
    in if a == 0 then fs
    else if a < mc.mc-floor then fs
-   else if __heap-save >= mc.mc-ceiling then mcopy-sat mc fs
+   else if __heap-save >= mc.mc-ceiling then fs
    else let k = cons-norm (mkey-fields fs depth mc)
    in let v = cons-lookup k mc
    in if v /= 0 then list-at (mc.mc-fieldlist) (v - 1)
@@ -1268,7 +1220,7 @@ Section: Deep Type Copy
    let a = address-of cs
    in if a == 0 then cs
    else if a < mc.mc-floor then cs
-   else if __heap-save >= mc.mc-ceiling then mcopy-sat mc cs
+   else if __heap-save >= mc.mc-ceiling then cs
    else let k = cons-norm (mkey-ctors cs depth mc)
    in let v = cons-lookup k mc
    in if v /= 0 then list-at (mc.mc-ctorlist) (v - 1)
@@ -1306,10 +1258,10 @@ Section: Deep Type Copy
    let a = address-of ty
    in if a == 0 then ty
    else if a < mc.mc-floor then ty
-   else if __heap-save >= mc.mc-ceiling then mcopy-sat mc ty
-   else if depth >= max-recursion-depth then ty
-   else if peek-qword a 0 < 0 then ty
-   else if peek-qword a 0 > 28 then ty
+   else if __heap-save >= mc.mc-ceiling then ErrorTy
+   else if depth >= max-recursion-depth then ErrorTy
+   else if peek-qword a 0 < 0 then ErrorTy
+   else if peek-qword a 0 > 28 then ErrorTy
    else mcopy-type-memo ty a (memo-probe a mc) depth mc
 
   mcopy-type-memo : CodexType, Integer, Integer, Integer, MemoCtx -> CodexType
@@ -1441,11 +1393,6 @@ Section: List Pre-Allocation
    else copy-list-loop src (list-push dst (list-at src i)) (i + 1) len
 
 Section: GADT Snapshot
-
- The snapshot must cover both substitution tables: a speculative
- unify inside a GADT arm can bind row tails as well as type
- variables, and a restore that rolled back only one table would leave
- the other holding bindings from the abandoned branch.
 
   SubstSnapshot = record {
    snap-types : List CodexType,

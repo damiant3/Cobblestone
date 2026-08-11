@@ -1,0 +1,90 @@
+[
+  {
+    "target": "chapter:GopUsb",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "One enumeration of the USB bus for the whole boot (H2). kbd-connect and msc-connect each begin with a controller reset, so they are alternatives, not housemates: whichever runs second destroys the first's device state -- on real hardware, where the boot medium is a USB stick AND the keyboard is USB, that is a dead keyboard the moment a storage screen runs. usb-attach brings the controller up once, walks the root ports once, classifies each device by the interfaces in its configuration descriptor, and configures the boot keyboard and the mass-storage disk on the same host. The disk handle is then published to the fixed cell block (GopUsbMsc), so GopDisk's stateless dispatch transfers on the running host instead of reconnecting.",
+    "thread": null
+  },
+  {
+    "target": "chapter:GopUsb",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A root port may also hold a hub: real laptops route their built-in ports through internal hubs, so a keyboard that enumerates fine on QEMU's root port simply is not there on the machine this arc exists for. A device whose configuration carries a hub interface (class 9) is brought up as one -- configured, declared to the controller, ports powered -- and each connected downstream port is reset and enumerated with the route string extended by one nibble. The walk recurses through nested hubs until the route string's five nibbles are spent.",
+    "thread": null
+  },
+  {
+    "target": "chapter:GopUsb",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "One addressed device, classified by its configuration descriptor. The route and depth name where it sits: route is the slot-context route string that reached it, depth the count of hubs above it -- the nibble index its own children would occupy, were it a hub.",
+    "thread": null
+  },
+  {
+    "target": "function:usb-inspect",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A device carrying any boot HID interface is classified PER INTERFACE: a combo device -- a wireless dongle is the canonical case -- carries a boot keyboard on one interface and a boot mouse on another, and the old whole-device classification handed the entire device to whichever class its first interface matched, so the mouse half of every combo was unreachable. The ASUS proved the keyboard version of this on the glass (four keyboard-shaped interfaces, keys on the fourth bound); the mouse gets the identical treatment before it costs a flash. Devices with no boot HID keep the old shape: mass storage first-wins, then hubs descend. A device that is both HID and hub descends too, with SET_CONFIGURATION sent once for the whole device.",
+    "thread": null
+  },
+  {
+    "target": "section:The HID Interface Walk",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Only alternate setting zero is considered (byte 3 of the interface descriptor): an interface's alternate settings repeat its number with different endpoint sets, and binding two settings of one interface would drive one pipe from two rings.",
+    "thread": null
+  },
+  {
+    "target": "function:usb-hid-walk",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The walk threads `cfgd`: SET_CONFIGURATION is sent by the first bind on the device and never again (USB 2.0 9.1.1.5 -- re-sending it resets every data toggle the device holds). Boot keyboards join the keyboard peer set, boot mice the mouse peer set folding into the primary's position block, and every OTHER HID interrupt-IN interface on a device that carries boot HID is bound as a raw counting listener on the keyboard set -- pumped and counted, never decoded, never fed to the mailbox -- because gaming devices commonly route their real traffic to an interface whose layout only the report descriptor defines, and a raw listener's non-zero count on the glass is what says so.",
+    "thread": null
+  },
+  {
+    "target": "function:hub-think-time",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "wHubCharacteristics is bytes 3 and 4 of the same descriptor, and its TT Think Time sub-field is bits 6:5 of the low byte (USB2 Table 11-13): 0, 1, 2 and 3 mean the translator needs at most 8, 16, 24 or 32 full-speed bit times of inter-transaction gap.",
+    "thread": null
+  },
+  {
+    "target": "section:Hub Bring-Up",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The controller must be told a slot is a hub before anything is addressed through it: Configure Endpoint evaluates the Hub flag and the port count from the input slot context. The command also declares the hub's one interrupt IN endpoint -- the status-change pipe every hub carries -- which keeps the command fully formed even though this driver polls port status by control request instead.",
+    "thread": null
+  },
+  {
+    "target": "function:hub-declare",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "MTT stays zero, and that is the required value rather than an omission: Table 6-4 bit 25 and 4.5.2 both condition MTT = '1' on the hub's Multi-TT interface having been enabled by a Set Interface request, which nothing here issues, so the hub is operating its single translator. If Set Interface is ever added, MTT must be raised here AND on every child's slot context in the same change.",
+    "thread": null
+  },
+  {
+    "target": "function:usb-max-depth",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Every port is powered before any is examined, so the mandatory power-good interval of the later ports elapses while the earlier ones are walked. The waits below are budgets of whole control transfers, each a real round-trip on the wire; exhausting one FAILS the port -- the floating-bus rule: garbage status must never be acted on as if it had been earned.",
+    "thread": null
+  },
+  {
+    "target": "function:hub-attach-port",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Which translator is not always this hub's. A translator lives in a high-speed hub; a full-speed hub has none, and everything below it is served by whichever high-speed hub sits further up. So the choice is by the hub's own speed, not by the child's: a high-speed hub translates for its full-speed child at the port that child occupies, and a hub that is not high-speed hands down the translator that already serves it. Reading only the immediate parent leaves a device two tiers down with no translator at all, which enumerates perfectly and then never delivers an interrupt transfer.",
+    "thread": null
+  }
+]

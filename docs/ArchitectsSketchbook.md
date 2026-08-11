@@ -279,6 +279,12 @@ shipping code: **a bivy value held live across a `deck-record` in that
 window is already exposed.** `proofs` in `compile-to-cdx-with-exit-mode`
 is one, and it survives only because nothing else allocates there.
 
+The same collision exists before a run's FIRST `build`, where `deck-pos`
+still holds its power-on value below everything bump-allocated. Reserve
+with `init-phase-allocator` then `build` before any deck-bound work;
+`init-phase-allocator` alone page-faults, because the deck and the bivy
+then grow from one address.
+
 Phase boundaries are recorded in `PhaseMetrics` records and reported
 as `heap-marks` in the compile pipeline (`codex/compiler/opening.codex`).
 
@@ -1173,7 +1179,7 @@ sum-to-N beats C at both optimization levels. The remaining gap to the
 JITs is the registers they win through full linear-scan allocation of
 named bindings. The LIR selector carries a Wimmer linear-scan allocator and is
 live in the default pipeline. Measured 2026-07-19
-(`docs/Designs/Active/Compiler/LIR.md`), it takes **all nine** `bench/codex`
+(`docs/Designs/Done/Compiler/LIR.md`), it takes **all nine** `bench/codex`
 functions and against the tree emitter is **neutral on seven and one instruction
 ahead on `ack` and `collatz`**. This paragraph called it flatly
 "instruction-neutral" for a while, which was both out of date and easy to
@@ -1181,7 +1187,7 @@ misread as the selector declining functions -- it declines none of them.
 
 **Beating the tree by more than a margin of one is NOT the next frontier, and
 this paragraph said it was until 2026-07-23.** It was measured and it is not
-available: `docs/Designs/Active/Compiler/LIR.md` section 12 is the closing note.
+available: `docs/Designs/Done/Compiler/LIR.md` section 12 is the closing note.
 The short version is two independent negatives. The spills that remain are the
 register file rather than the allocator -- one program (`bench/codex/regstress`)
 under three register-file descriptors and one unchanged allocator spills 13, 6

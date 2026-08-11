@@ -14,14 +14,6 @@ Chapter: EcdsaP256
  that reads RSA and refuses EC can validate a minority of the chains it
  will meet.
 
- THE ARITHMETIC IS BORROWED, THE CURVE IS NOT. Every big-number
- operation here runs through `Foreword chapter CryptoBig`: base 2^16
- limbs, Montgomery reduction, no division. That chapter was written for
- RSA and needs nothing added for this, which is the reason it is used
- rather than a second bignum being written beside it. What this chapter
- adds is the field layer CryptoBig has no opinion about (addition,
- subtraction and inversion modulo a prime) and the group layer above it.
-
  NOTHING HERE IS CONSTANT TIME, and that is a statement about what may be
  fed to it rather than an excuse. Every input is public: a public key, a
  message, and a signature. The scalars `u1` and `u2` are derived from
@@ -50,12 +42,6 @@ Section: The Curve
      0, 0, 0, 0, 0, 0, 0, 0,
      0, 0, 0, 0, 255, 255, 255, 255,
      255, 255, 255, 255, 255, 255, 255, 255]
-
- p - 2 is the exponent that inverts a field element by Fermat's little
- theorem. Inversion is needed twice per verification and a binary
- extended Euclid would be faster, but this way the only reduction
- primitive in the chapter is Montgomery's, and a second one is a second
- thing that can be subtly wrong.
 
   ec-p-minus-2 : List Integer =
     [255, 255, 255, 255, 0, 0, 0, 1,
@@ -111,7 +97,6 @@ Section: The Curve
   ec384-limbs : Integer = 24
 
   ec384-width : Integer = 48
-
 
  The secp384r1 constants. They are checked rather than transcribed:
  p equals 2^384 - 2^128 - 2^96 + 2^32 - 1, and the generator satisfies
@@ -176,19 +161,6 @@ Section: The Curve
 
 Section: The Field
 
- A field is its modulus in limbs together with the three values
- Montgomery multiplication needs. They are computed once per
- verification and threaded, rather than recomputed per operation:
- `cb-r-squared` doubles thirty-two times per limb, so recomputing it
- inside the point loop would cost more than the point loop.
-
- The curve's own constants ride on the field rather than being read from
- the top of the chapter. The field is already threaded through every
- function that needs them, so this adds no parameter anywhere, and it is
- what makes one copy of the arithmetic serve both curves. `ef-b`, `ef-gx`
- and `ef-gy` are empty for a field built over the group order, which
- never sees the curve equation.
-
   EcField = record {
     ef-m : List Integer,
     ef-n : Integer,
@@ -223,11 +195,6 @@ Section: The Field
       ef-gy = gy
     }
 
- Multiplication is Montgomery's, so both operands and the result are in
- Montgomery form and the form is never mixed. Addition and subtraction
- need no conversion at all: x maps to xR, and that map is linear, so a
- sum of Montgomery forms is the Montgomery form of the sum.
-
   ec-mul-f : List Integer, List Integer, EcField -> List Integer
   ec-mul-f (a) (b) (f) = cb-mont-mul a b f.ef-m f.ef-n f.ef-n0
 
@@ -250,10 +217,6 @@ Section: The Field
   ec-add-carry : List Integer, List Integer, EcField -> List Integer
   ec-add-carry (r) (b) (f) = ec-add-reduce r (ec-addc r b f.ef-n 0 0) f
 
- A sum that overflowed the top limb is above the modulus however the low
- limbs compare, so the carry is tested before the comparison rather than
- instead of it.
-
   ec-add-reduce : List Integer, Integer, EcField -> List Integer
   ec-add-reduce (r) (c) (f) =
     if c > 0 then cb-sub-into r f.ef-m f.ef-n
@@ -268,11 +231,6 @@ Section: The Field
   ec-addc-step : List Integer, List Integer, Integer, Integer, Integer -> Integer
   ec-addc-step (r) (b) (n) (i) (v) =
     ec-addc (list-set-at r i (bit-and v cb-mask)) b n (i + 1) (bit-shru v cb-shift)
-
- Subtraction that goes negative wraps by adding the modulus back. The
- borrow out of the top limb is exactly the test for that, and it is
- returned rather than clamped for the same reason CryptoBig's subtraction
- carries its borrow explicitly.
 
   ec-sub-f : List Integer, List Integer, EcField -> List Integer
   ec-sub-f (a) (b) (f) = ec-sub-borrow (cb-take a f.ef-n) b f
@@ -309,12 +267,6 @@ Section: The Field
     if i >= n then True
     else if list-at a i /= 0 then False
     else ec-zero-loop a n (i + 1)
-
- Inversion by Fermat: a^(p-2) is a^-1 for every non-zero a modulo a
- prime. `cb-mod-exp-bytes` works on plain byte strings rather than
- Montgomery limbs, so the value leaves Montgomery form on the way in and
- returns to it on the way out. That is two conversions for one inversion,
- and it happens once per verification, not once per point.
 
   ec-inv-mont : List Integer, EcField -> List Integer
   ec-inv-mont (a) (f) =
@@ -384,12 +336,6 @@ Section: Points
     in let y3 = ec-sub-f (ec-mul-f alpha (ec-sub-f beta4 x3 f) f) g8 f
     in EcPoint { ep-x = x3, ep-y = y3, ep-z = z3 }
 
- Addition of two Jacobian points. The intermediates are gathered into a
- record rather than threaded as parameters because the formula needs six
- of them alive at once and a nine-parameter helper is harder to read than
- the arithmetic it carries. The record costs one allocation against the
- eleven multiplications around it.
-
   EcAddTmp = record {
     at-z1z1 : List Integer,
     at-z2z2 : List Integer,
@@ -448,11 +394,6 @@ Section: Points
     in let zt = ec-sub-f (ec-sub-f (ec-mul-f zs zs f) t.at-z1z1 f) t.at-z2z2 f
     in EcPoint { ep-x = x3, ep-y = y3, ep-z = ec-mul-f zt t.at-h f }
 
- Double and add, most significant bit first, starting at the scalar's
- highest set bit. Starting above it would square in leading zeros, which
- is harmless and slow; a scalar of zero has no set bit and answers
- infinity, which is what `cb-top-bit` returning minus one arranges.
-
   ec-scalar-mul : List Integer, EcPoint, EcField -> EcPoint
   ec-scalar-mul (k) (p) (f) = ec-sm-loop k p f (ec-infinity f) (cb-top-bit k)
 
@@ -479,10 +420,6 @@ Section: Points
     cb-to-bytes (ec-from-mont (ec-mul-f pt.ep-x (ec-mul-f zi zi f) f) f) f.ef-w
 
 Section: Key Validation
-
- A public key is checked before it is used. Two independent things are
- required: each coordinate must be a field element, and the point must
- satisfy the curve equation.
 
  For ECDSA verification this is a smaller hazard than it is for key
  agreement, where a point on a different curve leaks the private scalar.
@@ -565,12 +502,6 @@ Section: Verification
   ec-reduce-fix (r) (m) (n) =
     if cb-cmp r m n >= 0 then cb-sub-into r m n
     else r
-
- Multiplication modulo n of two plain values. Montgomery multiplication
- answers a*b*R^-1, so multiplying that by R^2 and reducing once more
- gives a*b with both operands and the result outside Montgomery form.
- Two reductions to avoid carrying a form through six lines is the right
- trade at this call count.
 
   ec-mulmod : List Integer, List Integer, EcField -> List Integer
   ec-mulmod (a) (b) (f) = ec-mul-f (ec-mul-f a b f) f.ef-r2 f
@@ -700,9 +631,6 @@ Section: Verification
   ecdsa-onq (dg) (r) (s) (fp) (fn) (q) =
     if ec-on-curve q fp == False then False
     else ecdsa-p256-us dg r s fp q fn
-
- s inverse modulo n, then u1 = z/s and u2 = r/s, both reduced to plain
- byte strings because the scalar multiplication reads bits off bytes.
 
   ecdsa-p256-us : List Integer, List Integer, List Integer, EcField, EcPoint, EcField -> Boolean
   ecdsa-p256-us (dg) (r) (s) (fp) (q) (fn) =

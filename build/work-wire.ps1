@@ -30,24 +30,15 @@ Set-StrictMode -Version Latest
 # digits go out as CCE bytes. Sending ASCII does not error -- the server simply
 # never finds the work and answers "not here", which reads exactly like a
 # working server with an empty store.
-function ConvertTo-CceBytes([string]$Text) {
-    $b = New-Object System.Collections.Generic.List[byte]
-    foreach ($ch in $Text.ToCharArray()) {
-        $u = [int]$ch
-        if ($u -ge 256) { throw "work-wire: '$ch' is outside the single-byte CCE range" }
-        $b.Add($script:UnicodeToCce[$u])
-    }
-    return $b.ToArray()
-}
-
-function ConvertFrom-CceBytes([byte[]]$Bytes) {
-    $sb = New-Object System.Text.StringBuilder
-    foreach ($x in $Bytes) {
-        $u = if ($x -lt $script:CceToUnicode.Length) { $script:CceToUnicode[$x] } else { 63 }
-        [void]$sb.Append([char]$u)
-    }
-    return $sb.ToString()
-}
+#
+# ConvertTo-CceBytes / ConvertFrom-CceBytes come from vm-config.ps1 and are
+# tier-aware. This file used to carry its own single-byte pair, and both halves
+# were wrong in the quiet direction. The encoder folded 112 of the 128 code points
+# in 128..255 onto CCE 68 -- which is '?' -- and every one of those 112 has a real
+# tier 1 CCE code point, so a single accented character in a work name silently
+# changed the bytes that got hashed. The decoder answered '?' above tier 0 in the
+# same way, which reads as a corrupt reply rather than an unread one. Both now
+# refuse (encode throws, decode counts) instead of guessing.
 
 # --- Frames ------------------------------------------------------------------
 function New-Le32([int]$Value) {

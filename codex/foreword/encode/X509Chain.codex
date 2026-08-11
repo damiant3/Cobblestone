@@ -6,25 +6,6 @@ Chapter: X509Chain
   cites Foreword chapter EcdsaP256
   cites Foreword chapter Maybe
 
- The chain walk. X509 said what a certificate IS; this chapter says whether
- to believe it. The two are kept apart on purpose: a parser that also
- decides trust tends to decide it by accident, in a branch nobody meant as
- a policy.
-
- A verdict is a variant and never a Boolean. "False" tells a caller that
- something is wrong and nothing about what, which means the caller cannot
- log it, cannot alert on it, and cannot tell an expired certificate (a
- clock problem, probably benign) from a bad signature (an attack, never
- benign). Every rejection below names itself.
-
- This chapter has NO CLOCK. The current time is a parameter, because a
- library that reaches for a clock cannot be tested at an interesting
- instant and cannot run where there is no clock -- and on bare metal there
- often is not one. The caller supplies the time; the caller is where the
- clock lives.
-
- What a chain walk must get right, and what each rule is here to stop:
-
  The issuer link is compared as RAW DER BYTES, never as decoded text. Two
  names that print the same can be different encodings, and a decoder that
  normalises them is a decoder that can be talked into believing one
@@ -37,9 +18,6 @@ Chapter: X509Chain
 
  An issuer's key must be able to VERIFY. An X25519 key agrees keys; it
  signs nothing. X509 makes that a type, and this chapter honours it.
-
- To x509-chain-verify gives X509Verdict, deciding whether a certificate chain is trustworthy at a given time.
- To x509-time-norm gives Maybe (List Integer), normalising a certificate time to 14 comparable digits.
 
  We say:
 
@@ -114,9 +92,6 @@ Section: Time
     else if x509-all-digits t 0 14 == False then None
     else Just (x509-take t 0 14)
 
- A time field that is not digits is not a time. A parser that shrugs at
- this is a parser that will compare garbage and get an answer.
-
   x509-all-digits : List Integer, Integer, Integer -> Boolean
   x509-all-digits (t) (i) (n) =
     if i >= n then True
@@ -133,8 +108,6 @@ Section: Time
     else if off + i >= list-length t then acc
     else x509-take-loop t off n (i + 1) (list-push acc (list-at t (off + i)))
 
- Lexicographic, over equal fixed widths, which is numeric order.
-
   x509-time-le : List Integer, List Integer -> Boolean
   x509-time-le (a) (b) = x509-le-loop a b 0
 
@@ -145,10 +118,6 @@ Section: Time
     else if list-at a i < list-at b i then True
     else if list-at a i > list-at b i then False
     else x509-le-loop a b (i + 1)
-
- notBefore <= now <= notAfter. Both ends, and the failures are told apart:
- a certificate that is not valid yet is usually a clock that is wrong, and
- one that has expired is usually a certificate that has expired.
 
   x509-valid-at : X509Cert, List Integer -> X509Verdict
   x509-valid-at (c) (now) =
@@ -188,16 +157,6 @@ Section: Signature
  chain link resting on a SHA-1 signature is not verified here. Chosen-
  prefix collisions have been practical since 2017, and an algorithm that
  cannot distinguish two documents cannot attest to either.
-
- SigEcdsaSha384 answered False until 2026-07-28, for a different cause: the
- algorithm was sound and we had not implemented it. A P-256 key signing
- under SHA-384 is legal and the elliptic-curve intermediates of both
- Sectigo and Let's Encrypt are signed that way, so the refusal cost real
- chains. The digest half is written now, in `ecdsa-p256-verify-sha384`.
- The paragraph's warning survives its own fix and is the reason the
- entry point is a separate name rather than a flag: a verifier that
- quietly substituted SHA-256 would be checking a signature over a message
- nobody computed.
 
   x509-verify-with : X509SigAlg, X509Cert, X509Key -> Boolean
   x509-verify-with (salg) (c) (k) =
@@ -259,11 +218,6 @@ Section: Signature
       is None -> False
       is Just (rs) -> ecdsa-p256-verify-sha384 pub tbs rs
 
- Four combinations of curve and digest, four named functions and no flag
- between them. A P-384 root signed under SHA-384 is the case that matters;
- P-384 under SHA-256 is legal and is wired rather than left to fall through
- to a False that would read as a refusal on policy.
-
   x509-p384-sha256-go : List Integer, List Integer, Maybe (List Integer) -> Boolean
   x509-p384-sha256-go (pub) (tbs) (m) =
     when m
@@ -277,9 +231,6 @@ Section: Signature
       is Just (rs) -> ecdsa-p384-verify-sha384 pub tbs rs
 
 Section: Issuers
-
- An issuer must be a CA and must hold a signing key. Both, and the two
- failures are named separately because they are different mistakes.
 
   x509-issuer-ok : X509Cert -> X509Verdict
   x509-issuer-ok (issuer) =
@@ -460,9 +411,6 @@ Section: The Walk
     when x509-valid-at (list-at chain i) now
       is ChainOk -> x509-walk-link chain anchors now i
       is otherwise -> x509-valid-at (list-at chain i) now
-
- The last certificate in the chain must be vouched for by an anchor.
- Everything before it must be vouched for by the certificate above it.
 
   x509-walk-link : List X509Cert, List X509Anchor, List Integer, Integer -> X509Verdict
   x509-walk-link (chain) (anchors) (now) (i) =

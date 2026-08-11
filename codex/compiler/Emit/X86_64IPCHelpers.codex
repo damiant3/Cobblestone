@@ -1,11 +1,5 @@
 Chapter: X86-64 Code Generator
 
-
-
- IPC channel and network device helpers.
-
-
-
 Section: IPC and Network Helpers
 
   emit-ipc-cap-check : CodegenState, Integer -> CheckExpiryResult
@@ -30,8 +24,6 @@ Section: IPC and Network Helpers
 
    in CheckExpiryResult { state = st8, deny-offset = deny-off }
 
-
-
   emit-chan-addr-from-rdi : CodegenState -> CodegenState
 
   emit-chan-addr-from-rdi (st) =
@@ -41,8 +33,6 @@ Section: IPC and Network Helpers
    in let st2 = st-append-code st1 (shl-ri reg-rdx 7)
 
    in st-append-code st2 (add-ri reg-rdx chan-table-base)
-
-
 
   emit-chan-create-helper : CodegenState -> CodegenState
 
@@ -141,8 +131,6 @@ Section: IPC and Network Helpers
    in let st33 = patch-jcc-at st32 (chk.deny-offset) fail-pos
 
    in patch-jcc-at st33 no-slot fail-pos
-
-
 
   emit-chan-send-helper : CodegenState -> CodegenState
 
@@ -254,8 +242,6 @@ Section: IPC and Network Helpers
 
    in patch-jcc-at st40 full-deny fail-pos
 
-
-
   emit-chan-recv-helper : CodegenState -> CodegenState
 
   emit-chan-recv-helper (st) =
@@ -356,8 +342,6 @@ Section: IPC and Network Helpers
 
    in patch-jcc-at st36 empty-deny fail-pos
 
-
-
   emit-chan-close-helper : CodegenState -> CodegenState
 
   emit-chan-close-helper (st) =
@@ -411,8 +395,6 @@ Section: IPC and Network Helpers
    in let st16 = patch-jcc-at st15 (chk.deny-offset) fail-pos
 
    in patch-jcc-at st16 range-deny fail-pos
-
-
 
   emit-process-kill-helper : CodegenState -> CodegenState
 
@@ -538,22 +520,6 @@ Section: IPC and Network Helpers
 
    in patch-jcc-at st48 self-deny fail-pos
 
-
-
- process-set-scope is the write counterpart, and it is PRIVILEGED. A
- process that could set another process's scope could set its own, and a
- scope it chose itself is not a limit -- it is a capability amplification
- with an extra step. So the helper tests cap-capability-admin against the
- CALLER, the same bit process-kill and identity-set-proc test, and answers
- -1 to anyone else. The verified loader holds that bit; an application
- does not.
-
- It is deliberately NOT a way to widen your own grant: the loader calls it
- to write a scope INTO a slot before the process it belongs to is started,
- which is the only moment a scope is anyone's to choose.
-
- RDI is the process index, RSI the scope Text (a pointer, like every Text).
-
   emit-process-set-scope-helper : CodegenState -> CodegenState
 
   emit-process-set-scope-helper (st) =
@@ -608,19 +574,6 @@ Section: IPC and Network Helpers
 
    in patch-jcc-at st10 range-deny fail-pos
 
- process-get-scope answers what a process is permitted to name, the way
- process-get-cap answers what it is permitted to do. It hands back the
- Text stored at proc-scope-offset -- the scope the boot grant wrote for
- proc 0, or the one a parent copied into a child at spawn.
-
- It NEVER hands back a null. A process index out of range, and a cell
- that was never written (any process that declared no filesystem scope),
- both fall through to a static empty Text. That matters because the
- caller is Fat16, which will do text-starts-with on the answer: a zero
- here would be a null pointer dereference inside the filesystem, and an
- empty scope is also the honest answer -- the empty prefix admits every
- path, which is exactly what an unscoped grant means.
-
   emit-process-get-scope-helper : CodegenState -> CodegenState
 
   emit-process-get-scope-helper (st) =
@@ -664,14 +617,6 @@ Section: IPC and Network Helpers
    in let st11 = patch-jcc-at st10 range-deny fail-pos
 
    in patch-jcc-at st11 null-deny fail-pos
-
- The network twins of the two scope helpers above, reading and writing
- proc-net-scope-offset instead of proc-scope-offset. process-set is the
- loader's privileged writer (cap-capability-admin, denies -1 otherwise);
- process-get never hands back a null (out-of-range or an unwritten cell
- both fall to a static empty Text, and an empty authority admits every
- host, which is what an unscoped network grant means). The caller is the
- fetch chokepoint, which does authority-admits on the answer.
 
   emit-process-set-network-scope-helper : CodegenState -> CodegenState
 
@@ -805,8 +750,6 @@ Section: IPC and Network Helpers
 
    in patch-jcc-at st8 range-deny fail-pos
 
-
-
   emit-process-status-helper : CodegenState -> CodegenState
 
   emit-process-status-helper (st) =
@@ -840,8 +783,6 @@ Section: IPC and Network Helpers
    in let st8 = st-append-code st7 x86-ret
 
    in patch-jcc-at st8 range-deny fail-pos
-
-
 
   emit-process-count-helper : CodegenState -> CodegenState
 
@@ -894,8 +835,6 @@ Section: IPC and Network Helpers
    in let st15 = patch-jcc-at st14 loop-done (st14.code-len)
 
    in st-append-code st15 x86-ret
-
-
 
   emit-chan-wake-blocked-sender : CodegenState -> CodegenState
 
@@ -1003,8 +942,6 @@ Section: IPC and Network Helpers
 
    in st-append-code st42 (pop-r reg-rcx)
 
-
-
   emit-chan-wake-blocked-receiver : CodegenState -> CodegenState
 
   emit-chan-wake-blocked-receiver (st) =
@@ -1111,8 +1048,6 @@ Section: IPC and Network Helpers
 
    in st-append-code st42 (pop-r reg-rcx)
 
-
-
   emit-chan-wake-all-with-err : CodegenState -> CodegenState
 
   emit-chan-wake-all-with-err (st) =
@@ -1187,8 +1122,6 @@ Section: IPC and Network Helpers
 
    in patch-jcc-at st27 scan-done (st27.code-len)
 
-
-
   emit-find-next-ready : CodegenState -> CodegenState
 
   emit-find-next-ready (st) =
@@ -1204,25 +1137,6 @@ Section: IPC and Network Helpers
    in let st6 = st-append-code st5 (mov-load reg-r15 reg-rcx proc-core-offset)
 
    in emit-jmp-to st6 "__idle_dispatch"
-
-
-
- Blocking on a channel is block-then-recheck, exactly as process-wait is,
- and for the same reason. A sender that finds the channel full commits its
- slot to BLOCKED and switches away; but a receiver can drain the channel and
- run its wake (emit-chan-wake-blocked-sender) in the window between the
- fullness check and the BLOCKED commit, find no blocked sender, and move on --
- and the sender then blocks on a wake that has already come and gone. So
- after committing BLOCKED the sender re-reads the channel: if room now exists
- it claims BLOCKED -> RUNNING with a cmpxchg and, on winning, jumps to the
- write path to complete the send itself; on losing the cmpxchg a receiver has
- already rendezvous'd it, so it relinquishes to __idle_dispatch and is resumed
- normally; if still full it blocks as before. The receiver's recv-block path
- is the mirror image (re-read count, retry the read). The retry jump is a
- patched forward jump, not a hand-computed backward offset -- st-append-code
- buffers into a flush cache, so code-len on an un-flushed state is not an
- instruction's final position; patch-jmp-at flushes first. Proven by the
- yield-injection mutant.
 
   emit-chan-send-block-helper : CodegenState -> CodegenState
 
@@ -1445,26 +1359,6 @@ Section: IPC and Network Helpers
    in let s26 = patch-jcc-at s25 range-deny fail-pos
 
    in patch-jcc-at s26 not-open fail-pos
-
-
-
- Every st-append-code in this chain must be passed the state the PREVIOUS
- one returned, and blk18 took blk17 rather than blk17a for a long time.
- That read as a dropped r12 store and was reported as one;
- it never was. st-append-code writes into the shared code buffer and then
- __record-set stores code-len into the SAME record, so blk16, blk17 and
- blk17a are one box: blk18 read the length AFTER the r12 store whichever
- alias it was handed, and the store landed. Proven, not argued -- the two
- compilers emit a byte-identical program, and the r12 store sits four
- bytes before the r13 store in both.
-
- It is threaded correctly now because the accident is a poor thing to
- stand on. A binding whose value is never read is exactly what a dead-code
- pass removes, and st-append-code carries its effect in a buffer write
- rather than in its type, so nothing would stop one: the r12 store would
- vanish and the only symptom would be a receiver waking with a stale r12.
- Naming the alias you actually built costs nothing and does not depend on
- how the allocator feels about unused lets.
 
   emit-chan-recv-block-helper : CodegenState -> CodegenState
 
@@ -1690,8 +1584,6 @@ Section: IPC and Network Helpers
 
    in patch-jcc-at r25 closed-jmp fail-pos
 
-
-
   emit-identity-cap-check : CodegenState -> CheckExpiryResult
 
   emit-identity-cap-check (st) =
@@ -1714,8 +1606,6 @@ Section: IPC and Network Helpers
 
    in CheckExpiryResult { state = st8, deny-offset = deny-off }
 
-
-
   emit-hardware-random-helper : CodegenState -> CodegenState
 
   emit-hardware-random-helper (st) =
@@ -1735,8 +1625,6 @@ Section: IPC and Network Helpers
    in let st2 = st-append-code st1 (jcc cc-ae (retry-pos - (st1.code-len + 6)))
 
    in st-append-code st2 x86-ret
-
-
 
   emit-identity-whoami-helper : CodegenState -> CodegenState
 
@@ -1785,8 +1673,6 @@ Section: IPC and Network Helpers
    in let st15 = patch-jcc-at st14 (chk.deny-offset) fail-pos
 
    in patch-jcc-at st15 range-deny fail-pos
-
-
 
   emit-identity-set-helper : CodegenState -> CodegenState
 
@@ -1844,8 +1730,6 @@ Section: IPC and Network Helpers
 
    in patch-jcc-at st19 range-deny fail-pos
 
-
-
   emit-device-seed-helper : CodegenState -> CodegenState
 
   emit-device-seed-helper (st) =
@@ -1885,8 +1769,6 @@ Section: IPC and Network Helpers
    in let st10 = patch-jcc-at st9 (chk.deny-offset) fail-pos
 
    in patch-jcc-at st10 range-deny fail-pos
-
-
 
   emit-identity-set-proc-helper : CodegenState -> CodegenState
 
@@ -1972,8 +1854,6 @@ Section: IPC and Network Helpers
 
    in patch-jcc-at st23 word-deny fail-pos
 
-
-
   emit-boot-factstore-status-helper : CodegenState -> CodegenState
 
   emit-boot-factstore-status-helper (st) =
@@ -1991,8 +1871,6 @@ Section: IPC and Network Helpers
    in let st2 = st-append-code st1 (mov-load reg-rax reg-rax 0)
 
    in st-append-code st2 x86-ret
-
-
 
   emit-identity-get-proc-helper : CodegenState -> CodegenState
 
@@ -2043,8 +1921,6 @@ Section: IPC and Network Helpers
    in let st14 = patch-jcc-at st13 pid-deny fail-pos
 
    in patch-jcc-at st14 word-deny fail-pos
-
-
 
   emit-process-spawn-with-heap-helper : CodegenState -> CodegenState
 
@@ -2252,14 +2128,6 @@ Section: IPC and Network Helpers
 
    in patch-jcc-at s48 size-deny fail-pos
 
-
-
- The four network helpers test cap-network-read or cap-network-write
- before they touch the NE2000. Until now none of them tested anything:
- the bits were defined, granted from a Network manifest row, and read
- by anybody. A program put raw Ethernet frames on the wire declaring
- nothing and earning nothing.
-
  The gate and the effect row in TypeEnv are one change and must stay
  one change. A builtin that is gated here but typed pure there is
  worse than an ungated one: the caller never declares Network, so the
@@ -2267,11 +2135,6 @@ Section: IPC and Network Helpers
  -1 with nothing to say why. That has cost this project three
  debugging sessions (process-kill, device-seed, the identity readers).
  The row is what earns the bit; the gate is what spends it.
-
- A denial returns -1, the same answer these helpers already give for
- an absent NIC. That conflation is deliberate: from the caller's seat
- "you may not" and "there is nothing there" are both "you got
- nothing", and neither is a lie.
 
   emit-net-status-helper : CodegenState -> CodegenState
 
@@ -2304,8 +2167,6 @@ Section: IPC and Network Helpers
    in let st5 = st-append-code st4 x86-ret
 
    in patch-jcc-at st5 cap-deny deny-pos
-
-
 
   emit-net-get-hwaddr-helper : CodegenState -> CodegenState
 
@@ -2346,8 +2207,6 @@ Section: IPC and Network Helpers
    in let st8 = patch-jcc-at st7 range-deny fail-pos
 
    in patch-jcc-at st8 cap-deny fail-pos
-
-
 
   emit-net-send-raw-helper : CodegenState -> CodegenState
 
@@ -2482,8 +2341,6 @@ Section: IPC and Network Helpers
    in let st54 = patch-jcc-at st53 no-nic-jmp fail-pos
 
    in patch-jcc-at st54 cap-deny fail-pos
-
-
 
   emit-net-recv-raw-helper : CodegenState -> CodegenState
 
@@ -2738,8 +2595,6 @@ Section: IPC and Network Helpers
    in let st20 = st-append-code st19 (pop-r reg-rcx)
    in let st21 = st-append-code st20 (pop-r reg-rbx)
    in st-append-code st21 x86-ret
-
-
 
 Page 7 of 14
 

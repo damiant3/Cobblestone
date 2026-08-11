@@ -1,0 +1,98 @@
+[
+  {
+    "target": "chapter:Lir",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "**This increment lowers straight-line code, `if`, scalar `match`, and constructor-pattern `match`.** A function whose body is integer literals, names, add/sub/mul, let bindings, and `if` expressions lowers to a list of basic blocks over virtual registers. An `if` is destination-driven and phi-free: a result vreg is allocated, the condition is lowered into the current block ending in a conditional branch, each arm is lowered into its own block that moves its value into the shared result vreg and jumps to a join block, and lowering continues in the join. There are no loops -- the tree IR has none -- so flattening a body yields a DAG and the join is the only merge point, exactly as the LIR design specifies. A `match` over a scalar scrutinee with literal, variable, and wildcard patterns lowers the same way: the scrutinee becomes an operand, and the arms become a decision chain of `LiCmp`/branch tests ending in an unconditional catch-all. A `match` on **constructor patterns** reuses that decision chain with the first LIR memory instruction, `LiLoad`: a tested constructor arm loads the variant tag from offset 0 of the scrutinee pointer (`LiLoad tag sv 0 w8`), compares it against the constructor's tag, and branches; the arm's body first binds each variable field with a `LiLoad` at the field's packed offset and width, then lowers the body. Every arm still moves its value into one result vreg and jumps to a join. Only variable and wildcard sub-patterns are handled -- a nested constructor, literal, or vector sub-pattern, a real guard, or a scrutinee type that did not resolve to a `SumTy` makes the whole function fall back: `lower-def-to-lir` answers \"not lowerable\" and the tree emitter keeps it. Calls, records, effects, and vector patterns still fall back. The whitelist grows one construct per CL.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Lir",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The binary operators this increment lowers as values -- the three that need no flags register and no idiv: add, subtract, multiply. Division (fixed register pair, can trap) arrives with the construct that needs it.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Lir",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The instructions. `LiBin` computes an arithmetic result into a fresh vreg. `LiMove` copies an operand into a vreg -- the destination-driven join uses it to write the shared result vreg from each arm. `LiLoad` reads a value from memory into a fresh vreg: `LiLoad dst base off width signed` loads `width` bytes from `[base + off]`, sign- or zero-extending a narrow field to 64 bits. It is the first LIR memory instruction, added for constructor patterns -- the tag load at offset 0 and each variable field load at its packed offset. `LiCmp` sets flags from two operands and defines nothing. `LiTest` is its sibling: it sets flags from the bitwise AND of two operands and likewise defines nothing, which is the whole of what `x86`'s `test` does and what a remainder-against-zero needs. `LiBranch` and `LiJump` are terminators: a block's last instruction transfers control, naming successor blocks by id, never a vreg.",
+    "thread": null
+  },
+  {
+    "target": "function:lir-close-arm",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The shared vreg is what this avoids, and it was never cheap. Every arm defines it, so its single interval runs from the first arm to the exit and spans everything between -- including every call -- which forces it into a callee-saved register and costs a push, a pop, and a move to RAX at the end, to carry a value each arm already had.",
+    "thread": null
+  },
+  {
+    "target": "function:lir-init-entries",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Found by the `list-at` bounds guard, which is the general argument for the guard: the compiler had been quietly reading past a list end for as long as the verifier has existed, and nothing else could see it.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Lir",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The loop-free property of the LIR (the tree IR has no loops, so a flattened body is a DAG) buys the simplifications: an interval is a single [start, fin] range over a flat instruction numbering, not a range-list with holes. That is a conservative interval -- it can only over-state liveness (keep a value in a register or slot longer than needed), never under-state it, so it is safe, and the allocation verifier backstops any lowering that would break the assumption. Interval splitting, rematerialisation, and stack-slot recycling are v2; this increment is whole-interval spill with one dedicated slot per spilled vreg.",
+    "thread": null
+  },
+  {
+    "target": "function:lir-scan-step",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "One interval placed. Expire the intervals that ended before this one starts, then take the crossing arm if it spans a call, else the general arm. The two arms were inline nested lets until a text-emitter round-trip bug on that shape forced the split; they are the same computation.",
+    "thread": null
+  },
+  {
+    "target": "section:Argument Moves",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The mirror of the entry moves, and the same problem pointed the other way. An entry move takes a parameter from where the ABI put it to where the allocator put it; an argument move takes a call's operand from where the allocator put it to where the ABI wants it. Parameter `i` arrives in abstract index `nargregs + i`, and argument `i` has to reach that same index.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Lir",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "It is planned here for the reason the entry moves are: nothing about the ordering is target-specific, and a backend-side copy of it is the bug class that kept `col-hue` miscompiled for ten sessions. A backend supplies the mapping from an abstract index to one of its registers and nothing else. `Emit/X86_64Lir.codex` carries its own copy planned in physical registers (`lir-place-args`), written before this existed and agreeing with it on the algorithm; that one should be replaced by this rather than kept beside it.",
+    "thread": null
+  },
+  {
+    "target": "function:lir-amv-stage",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "`lir-amv-stage` exists for `lir-emv-stage`'s reason: `list-set-at` writes in place and arguments evaluate left to right, so a staging step built in the argument list after the rewrite would read the scratch back and stage a register onto itself.",
+    "thread": null
+  },
+  {
+    "target": "function:lir-amv-call-text",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The same precondition the entry planner has, for the same reason: an argument past the last argument register goes on the callee's stack, which is a push and not a register move. Every selector declines such a call before it reaches here, so the dump says so rather than planning something that cannot be right.",
+    "thread": null
+  },
+  {
+    "target": "function:lir-assign-text",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A textual rendering of the linear-scan allocation and its verification: each vreg with the location it was assigned (a register `rN` or a spill slot `sN`), then the verifier's verdict. The assignment now shows register reuse (two vregs with disjoint live ranges sharing a register) and, under pressure, spill slots. The verifier runs over this real allocated code on every dump, and the same verifier catches a wrong allocation (proven by corrupting the assignment).",
+    "thread": null
+  }
+]

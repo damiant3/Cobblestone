@@ -26,15 +26,6 @@ Section: Work Budgets
 
   max-parse-stall : Integer = 4096
 
- The O(N) cost this bound was sized against is GONE. A list literal used
- to take one live local per element -- emit-eval-list-elems gave every
- element its own local and held all of them until the buffer was filled
- -- and a local is addressed by a number carried in EmitResult.reg, a
- field bounded to 65535, with spill slots starting at spill-base (32),
- so 65504 was the most a function could have. The emitter now reserves
- the buffer first and stores each element as it is evaluated, which
- costs TWO locals at any length (X86_64Compound, List Emission).
-
  What the bound was protecting against, and why the check still lives in
  the checker rather than the emitter: past the ceiling the emitter walked
  off the end of four separate 16-bit counters in sequence -- the slot
@@ -151,14 +142,6 @@ Section: Demand Decks
  the two predicates; the measurement is an in-loop probe that printed
  __deck-pos unchanged through 19.1 MB of writing.
 
- LOWER and the copy sit inside phase-wide extents and both read the
- frozen cell, so both guards were dead from the day they shipped. Both
- now read R10. The measurement that settles it is MEASURE against a
- 16 MB LOWER floor: with the cell, LOWER reports `used=-5307132`,
- negative because the phase overran far enough to destroy the record
- measuring it; with R10, it stops at 8,487,976 bytes, one guard band
- short of the floor and reporting CDX9002 without a crash.
-
  CHECK is the exception and the reason is three lines of check-chapter:
  it issues a __deck-exit immediately before the per-definition walk and
  a __deck-enter after it, so that walk runs OUTSIDE the extent and the
@@ -171,13 +154,6 @@ Section: Demand Decks
  `lower-sat` are both evaluated after their extents have exited, where
  the cell is live.
 
- That verdict was noise until 2026-07-21, and the reason is worth
- carrying: check-deck-overflow used to read its operands out of a
- PhaseMetrics, and phase-measure builds that record with deck-record at
- the END of the phase -- so an overflowing phase allocated the record
- describing its own overflow past its own reservation and then
- overwrote it. It now takes plain Integers captured from __deck-pos.
-
  **LOWER's headroom is 1.06x, not the 1.11x this file used to record.**
  Measured 2026-07-21 in CDX mode: -Decks 93 refuses and 94 compiles, so
  LOWER uses 312 to 315 MB of its 335.5 MB floor. The old figure came
@@ -185,17 +161,9 @@ Section: Demand Decks
  smaller LOWER than the one that ships. It is by a wide margin the
  tightest deck in the compiler and the row to watch.
 
- The PARSE floors were not generous, whatever the comment above claimed.
- On 2026-07-13 the compiler grew by about 80 KB of source - the foreword
- chapters behind the quotation gate, chiefly Ed25519 and Sha256 - and
- PARSE overflowed at 192 MB. The floor had been sitting within roughly a
- kilobyte of its limit: the build before the last one passed, and adding
- a single function to a prose block tipped it over. Nobody had noticed
- because nothing had grown the compiler in a while.
-
- That is the failure this section warns about, arriving exactly as
- predicted, and it is the reason these two are now 384 MB rather than
- 192. A floor you can reach by writing one more function is not a floor.
+ These two are 384 MB rather than 192 because 192 was reached by adding
+ one function to the compiler. A floor you can reach by writing one more
+ function is not a floor.
 
   demand-lex-floor : Integer = 100663296
   demand-lex-guard-band : Integer = 1048576
@@ -221,6 +189,13 @@ Section: Demand Decks
 
   demand-quote-keep-floor : Integer = 67108864
   demand-quote-scratch-floor : Integer = 503316480
+
+ The DISK cite scan takes 11.5 to 27 bytes of deck per source byte; the
+ 2,759,457-byte whole-compiler concat took 40,003,312 at 14.5, so this floor
+ carries 20 per cent over the largest workload measured (2026-08-09).
+
+  demand-disk-scan-floor : Integer = 50331648
+  demand-disk-scan-guard-band : Integer = 8388608
 
 Section: Recursion Limits
   max-recursion-depth : Integer = 1024

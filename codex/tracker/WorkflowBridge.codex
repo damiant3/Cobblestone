@@ -35,11 +35,11 @@ Section: Issue Workflow Process Definition
     ],
     pd-start-step = "backlog",
     pd-roles = [
-      RoleDef { role-id = "reporter", role-name = "Reporter", role-description = "Creates issues" },
-      RoleDef { role-id = "assignee", role-name = "Assignee", role-description = "Works on issues" },
-      RoleDef { role-id = "reviewer", role-name = "Reviewer", role-description = "Reviews completed work" }
+      RoleDef { rd-id = "reporter", rd-name = "Reporter", rd-description = "Creates issues", rd-can-approve = False, rd-can-assign = False, rd-max-concurrent = 20 },
+      RoleDef { rd-id = "assignee", rd-name = "Assignee", rd-description = "Works on issues", rd-can-approve = False, rd-can-assign = False, rd-max-concurrent = 15 },
+      RoleDef { rd-id = "reviewer", rd-name = "Reviewer", rd-description = "Reviews completed work", rd-can-approve = True, rd-can-assign = False, rd-max-concurrent = 10 }
     ],
-    pd-sla-defaults = SlaDef { sla-deadline-secs = 1209600, sla-warn-secs = 604800, sla-escalation-role = "lead" },
+    pd-sla-defaults = SlaDef { sla-warn-secs = 604800, sla-deadline-secs = 1209600, sla-escalate-to = "lead", sla-auto-action = SlaEscalate },
     pd-data-schema = [
       FieldSpec { fs-id = "title", fs-label = "Title", fs-type = InputText, fs-required = True, fs-default = "", fs-validation = "", fs-group = "basics", fs-help-text = "", fs-options = [] },
       FieldSpec { fs-id = "description", fs-label = "Description", fs-type = InputTextArea, fs-required = False, fs-default = "", fs-validation = "", fs-group = "basics", fs-help-text = "", fs-options = [] },
@@ -76,9 +76,9 @@ Section: Issue Operations (through workflow engine)
   te-create-issue (te) (issue) (ts) =
     let store2 = iss-add-issue (te.te-store) issue
     in let data = [
-      DataEntry { de-key = "title", de-value = issue.issue-title },
-      DataEntry { de-key = "priority", de-value = issue-priority-name (issue.issue-priority) },
-      DataEntry { de-key = "assignee", de-value = issue.issue-assignee }
+      data-entry "title" (issue.issue-title) "backlog" "reporter" ts,
+      data-entry "priority" (issue-priority-name (issue.issue-priority)) "backlog" "reporter" ts,
+      data-entry "assignee" (issue.issue-assignee) "backlog" "reporter" ts
     ]
     in let (eng2, maybe-inst) = start-process (te.te-engine) "issue-lifecycle" (issue.issue-key & ": " & issue.issue-title) data ts
     in when maybe-inst
@@ -90,7 +90,7 @@ Section: Issue Operations (through workflow engine)
     let inst-idx = te-find-instance (te.te-instances) issue-id 0
     in if inst-idx < 0 then te
     else let inst = list-at (te.te-instances) inst-idx
-    in let step-data = [DataEntry { de-key = "advanced-by", de-value = user-id }]
+    in let step-data = [data-entry "advanced-by" user-id (inst.pi-current-step) user-id ts]
     in let (eng2, inst2) = complete-step (te.te-engine) inst issue-process-def user-id step-data ts
     in let new-status = te-step-to-status (inst2.pi-current-step)
     in let store2 = iss-update-status (te.te-store) issue-id new-status

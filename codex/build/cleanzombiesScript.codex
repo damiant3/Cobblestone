@@ -20,13 +20,15 @@ Section: S02 -- Kill VM and WSL Processes
 
   s02-codexvm-signal : List ShellCmd = [ScForEach "p" (SeVar "procs") [ScRaw "$evtName = \"Global\\CodexVmShutdown_$($p.Id)\"", ScTry [ScRaw "$evt = [System.Threading.EventWaitHandle]::OpenExisting($evtName)", ScRaw "$evt.Set() | Out-Null", ScRaw "$evt.Dispose()"] [] []], ScRaw "Start-Sleep -Milliseconds 3000"]
 
+  s02-portfwd-spare : List ShellCmd = [ScComment "Spare long-running SERVER VMs (webservices booted with -portfwd,", ScComment "e.g. apps/ideas). Compile/test VMs never use -portfwd, so any", ScComment "codex-vm with it on the command line is deliberately serving,", ScComment "not an orphan. Killing it breaks another agent's live demo.", ScRaw "$procs = @($procs | Where-Object {", ScRaw "$cl = (Get-CimInstance Win32_Process -Filter \"ProcessId=$($_.Id)\" -ErrorAction SilentlyContinue).CommandLine", ScRaw "\"$cl\" -notlike '*-portfwd*'", ScRaw "})"]
+
   s02-kill-remaining : List ShellCmd = [ScRaw "$procs | Where-Object { -not $_.HasExited } | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }", ScAssign "killed" (SeRaw "$true")]
 
-  s02 : List ShellCmd = [ScForEach "name" (SeArrayLiteral [SeLit "qemu-system-x86_64", SeLit "codex-vm", SeLit "wsl"]) [ScRaw "$procs = Get-Process -Name $name -ErrorAction SilentlyContinue", ScIf (SeVar "procs") [ScIf (SeStringEq (SeVar "name") (SeLit "codex-vm")) s02-codexvm-signal [], ScSequence s02-kill-remaining] []]]
+  s02 : List ShellCmd = [ScForEach "name" (SeArrayLiteral [SeLit "qemu-system-x86_64", SeLit "codex-vm", SeLit "wsl"]) [ScRaw "$procs = Get-Process -Name $name -ErrorAction SilentlyContinue", ScIf (SeAnd (SeStringEq (SeVar "name") (SeLit "codex-vm")) (SeVar "procs")) s02-portfwd-spare [], ScIf (SeVar "procs") [ScIf (SeStringEq (SeVar "name") (SeLit "codex-vm")) s02-codexvm-signal [], ScSequence s02-kill-remaining] []]]
 
 Section: S03 -- WSL Shutdown
 
-  s03 : List ShellCmd = [ScIf (SeRaw "Get-Process -Name vmmemWSL -ErrorAction SilentlyContinue") [ScRaw "& wsl.exe --shutdown 2>`$null | Out-Null", ScAssign "killed" (SeRaw "$true")] []]
+  s03 : List ShellCmd = [ScIf (SeRaw "Get-Process -Name vmmemWSL -ErrorAction SilentlyContinue") [ScRaw "& wsl.exe --shutdown 2>$null | Out-Null", ScAssign "killed" (SeRaw "$true")] []]
 
 Section: S04 -- Summary
 

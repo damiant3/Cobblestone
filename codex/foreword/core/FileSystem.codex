@@ -2,26 +2,6 @@ Chapter: FileSystem
   cites Foreword chapter Path
   cites Foreword chapter Fat16
 
- The FileSystem effect provides open-file, read-all, close-file, read-file,
- read-text, and write-file.
- To open-file gives a linear FileHandle for the named path.
- To read-all gives the full contents and an updated FileHandle as a Pair.
- To close-file consumes a linear FileHandle.
- To read-file gives the full text contents of the named path.
- To read-text gives the full text contents of the named path, through a handler.
- To write-file writes text to the named path and answers whether the write landed.
-
- A caution the names do not show: read-file is ALSO a compiler builtin that
- reads the serial port, and at an application site the builtin wins over the
- effect op. A `with FileSystem` handler over read-file would discharge the
- row at type level while the call went to serial at runtime. read-text exists
- because of that: it is a pure effect op, absent from the builtin tables, so
- a bare read-text always reaches the handler that services it. A layer that
- holds the block device services read-text and write-file over the disk and
- re-emits [Device.Block]; the program above it carries FileSystem.Read and
- never block access. That is the attenuation: holding FileSystem does not
- grant the disk.
-
  We say:
 
 Section: Definitions
@@ -51,24 +31,6 @@ Section: Path Utilities
     in base & "." & ext
 
 Section: Default Servicer
-
- The compiler installs these two functions as the DEFAULT handler for
- read-text and write-file when a program performs a FileSystem op with no
- `with` of its own. A hand-emitted stub checks the
- program's cap-filesystem-read / cap-filesystem-write bit, sets the kernel
- fs-elevated cell so the block device answers even though the program
- holds only FileSystem.Read and never Device.Block, calls one of these,
- and clears the cell. The DIRECTION bit is enforced by that stub; the path
- SCOPE is enforced by fat16 itself (fat16-scope-admits). So a program
- granted FileSystem.Read that performs write-file is refused at the stub,
- which is the guarantee this makes real: holding FileSystem does not grant
- the disk, and holding it read-only does not grant a write.
-
- This is why FileSystem cites Fat16: the default filesystem IS fat16, and
- a program that cites the effect must carry the backend that services it.
- These functions are called only from the compiler-emitted stub (by name,
- over the handler table), never from Codex source, so their Device.Block
- row is discharged by the elevation, not by the program above them.
 
   fat16-servicer-read : Text -> [Device.Block] Text
   fat16-servicer-read (path) = act

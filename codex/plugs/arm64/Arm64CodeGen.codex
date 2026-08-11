@@ -3,11 +3,6 @@ Chapter: Arm64 Code Generator
   cites Plug chapter Plug Types
   cites Foreword chapter CCE (cce-to-unicode-table)
 
- ARM64 (AArch64) code generator for the plug pipeline.
- Receives parsed IR, emits machine code bytes and metadata
- in the x86-output wire format for chaining to ELF/PE plugs.
- Transliterated from old/src/Codex.Emit.Arm64/Arm64CodeGen.cs.
-
 Section: Register Constants
 
   a64-x0 : Integer = 0
@@ -74,20 +69,6 @@ Section: Codegen State
  A local's `reg` is one of two things: a physical register number below
  `a64-spill-base`, or a spill slot encoded as `a64-spill-base + slot`. The bound
  has to cover the second, and at 255 it did not.
-
- **It was 255, and a function needing its 192nd spill slot killed the plug.**
- `a64-bind-local` narrows into this field, a failed `__narrow` is a `ud2`, and a
- `ud2` inside the plug is `!EXC=06` with no diagnostic and no wire output -- the
- harness then reads the register dump as a wire header and reports a .NET array
- exception. `codex/test/gop-text-field` is the case: it wants slot 197, so the
- narrow was handed 261 and trapped. That value is visible in the dump itself
- (R13 = R15 = 0x105 = 261), which is what identified this without a bisection.
-
- This is x86-64's bug 20 with a better ending. There `AllocLocal` returned a
- `byte` and slot 224 WRAPPED to RAX, silently miscompiling; here the bounded
- integer refused. The lesson that transfers is the one that story already drew:
- the register file is small, the SLOT file is not, and a type sized for the
- first is wrong for the second.
 
  **562 is not a round number, it is the ceiling the rest of the pipeline can
  actually encode.** The binding constraint is the prologue: `a64-compute-frame-size`
@@ -273,14 +254,6 @@ Section: Emit Helpers
    in let st2 = __record-set st1 "func-offsets" (list-push (st.func-offsets) (st.insn-count))
    in __record-set st2 "func-arities" (list-push (st2.func-arities) arity)
 
- Arity resolution stays FIRST-match even though offset resolution is
- last-match (`a64-find-func-offset`): runtime helpers are recorded with
- arity zero on purpose, and the partial-application dispatch is
- calibrated to that answer for every double-registered name. Resolving
- the arity to the later, real-arity registration changed call protocol
- for those names and broke `handler-smoke` and `dtls-hello`; measured
- both ways 2026-07-23.
-
   a64-find-func-arity : List Text, List Integer, Text, Integer -> Integer
   a64-find-func-arity (names) (arities) (target) (i) =
    if i >= list-length names then 0
@@ -447,16 +420,6 @@ Section: NOP Compaction
    in let b2 = peek-byte (st.code-buf) (p + 2)
    in let raw = bit-or (bit-or (bit-or b0 (bit-shl b1 8)) (bit-shl b2 16)) (bit-shl (bit-and b3 3) 24)
    in raw >= #2000000
-
- An if's jump-to-end may be dropped only when nothing can arrive at the slot.
- a64-prev-is-uncond-branch answers a weaker question -- whether the preceding
- instruction is a backward branch -- and those two questions come apart when
- the then-branch is itself a join. A nested if whose else is a tail self-call
- leaves that backward branch immediately before the slot while its own then
- path branches forward onto it, so the slot is live and eliding the jump drops
- the arm into the enclosing else. tco-nested-if guards this; CL 6430 is the
- same defect on x86, and a64-tail-is-join is that fix mirrored. A shape only
- answers False here when it is straight-line and cannot merge control flow.
 
   a64-tail-is-join : IRExpr -> Boolean
   a64-tail-is-join (e) =
@@ -644,14 +607,6 @@ Section: NOP Compaction
     reg = tr.reg
    }
 
- a64-alloc-local answers a REGISTER while one is free and a SPILL SLOT ID once
- they are gone, and only a64-store-local / a64-load-local know the difference.
- A caller that wants to WRITE a value into a fresh local needs a register to
- write into first: a64-local-base gives it the local itself when the local is
- a register, and a scratch temp when the local is a spill slot. Park the value
- with a64-store-local afterwards, which is a no-op in the register case, so
- the emitted bytes are unchanged whenever nothing has spilled.
-
   a64-local-base : A64State, Integer -> A64EmitResult
   a64-local-base (st) (local) =
    if local < a64-spill-base then A64EmitResult { state = st, reg = local }
@@ -674,14 +629,6 @@ Section: NOP Compaction
   a64-bind-local : A64State, Text, Integer -> A64State
   a64-bind-local (st) (name) (reg) =
    __record-set st "locals" (list-push (st.locals) (A64Local { name = name, reg = __narrow reg }))
-
- a64-bind-local appends and a64-lookup-local reads the last match, so a scope is
- a suffix of st.locals: entering one adds bindings at the end, leaving one has
- to drop them again. What is saved is the LENGTH, not the list. __list_push
- writes into the same buffer and hands back the same pointer whenever capacity
- allows, so holding the old field value and putting it back changes nothing --
- it only ever appeared to work when a bind hit the grow path and got a fresh
- buffer. act-let-scope is the guard.
 
   a64-locals-take : List A64Local, Integer, Integer, List A64Local -> List A64Local
   a64-locals-take (locals) (n) (i) (acc) =
@@ -1100,14 +1047,6 @@ Section: Binary Emission
     else a64-emit-binary-reg st op left right ty
    else a64-emit-binary-reg st op left right ty
 
- A unit type is runtime-transparent: its representation IS the inner
- type, so every dispatch that picks an instruction sequence by type
- must see through the wrapper. Before these arms, `show` on a
- `unit Text` printed the pointer, a literal pattern on one never
- matched, and a compare on a `unit Real` went through the integer
- path (measured 2026-07-28: unit-show, unit-pattern-lit,
- unit-real-compare on both machine lanes).
-
   a64-is-text-type : CodexType -> Boolean
   a64-is-text-type (ty) =
    when ty
@@ -1252,15 +1191,6 @@ Section: Binary Emission
     is IrBoolLit (v) (s) -> True
     is IrCharLit (v) (s) -> True
     is otherwise -> False
-
- A vector operation allocates a LOCAL to hold its result, and its operands
- are pointers that may themselves be sitting in locals. Recycling the local
- counter around such an operation hands that result local a register one of
- the operands still occupies, and the operation then reads the buffer it is
- about to write. Disassembled: the saved left operand in x20, then
- `mov x20, x28` for the output, then `ldr x14, [x20]`. Discriminate on the
- OPERATOR, not on the expression type -- a call's IR type is not reliably a
- VectorTy at this point, so a type test silently never fires.
 
   a64-is-vec-binop-op : IRBinaryOp -> Boolean
   a64-is-vec-binop-op (op) =
@@ -2025,6 +1955,5 @@ Section: Real Arithmetic
    in let st1 = a64-emit (rd.state) (arm64-sdiv (rd.reg) (ll.reg) (rr.reg))
    in let st2 = a64-emit st1 (arm64-msub (rd.reg) (rd.reg) (rr.reg) (ll.reg))
    in a64-emit-mod-correction st2 (rd.reg) (rr.reg)
-
 
 Page 1 of 3

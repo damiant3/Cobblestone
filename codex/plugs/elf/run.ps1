@@ -37,7 +37,7 @@ $inputBytes = [System.IO.File]::ReadAllBytes($X86Input)
 Write-Host "[elf-run] Input: $($inputBytes.Length) bytes from $X86Input"
 
 # -- Start TCP listener ----------------------------------------------
-$plugPort = 9100
+$plugPort = 9110
 $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $plugPort)
 $listener.Start()
 Write-Host "[elf-run] Listening on port $plugPort"

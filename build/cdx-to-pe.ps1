@@ -14,7 +14,11 @@ param(
     # so a keyboard probe measures two drivers fighting, not ours. Payloads
     # that need ConIn/ConOut (KeyProof, the dev console) must NOT set this;
     # driver-truth probes (KbdDiagProbe, XhciTruthProbe, MscAlignProbe) must.
-    [switch]$ExitBootServices
+    [switch]$ExitBootServices,
+    # Enter at __start so the bare-metal runtime init runs. Required by any\n    # payload that reads a disk through block-read-sector; see the block below.
+    [switch]$EntryStart,
+    # Text to pre-load into the serial input ring, so a payload that reads stdin\n    # can run on a board with no serial port. See the block near BivySaveAddr.
+    [string]$Stdin = ''
 )
 
 Set-StrictMode -Version Latest
@@ -99,12 +103,30 @@ function Find-FuncOffset([string]$name) {
     return -1
 }
 
-$openingFuncOff = Find-FuncOffset 'opening'
-if ($openingFuncOff -lt 0) {
-    Write-Host "[cdx-to-pe] WARN: 'opening' not found in debug map, using __start"
+# Entry point: `opening` by default, `__start` under -EntryStart.
+#
+# `__start` (emit-start, X86_64Chapter.codex) is the bare-metal runtime init:
+# GDT, page tables, CR3, the syscall MSR, and -- the one that matters here --
+# emit-ata-init at X86_64Chapter.codex:423. A payload entered at `opening`
+# NEVER RUNS ANY OF IT, so every block-read-sector answers -1. Measured
+# 2026-08-08: the compiler in DISK mode entered at `opening` triple-faults in
+# fat16-find-in-root with CR2=0 on the unchecked -1, and entered at `__start`
+# compiles from the volume and emits a CDX byte-identical to the host.
+#
+# The default stays `opening` because the shipping GOP payloads work that way
+# and do not use this block layer at all -- they read the stick through their
+# own USB mass-storage driver. Pass -EntryStart for a payload that uses the
+# compiler's own disk path.
+if ($EntryStart) {
     $openingFuncOff = $entryOff
+    Write-Host "[cdx-to-pe] entry: __start (bare-metal init runs)"
+} else {
+    $openingFuncOff = Find-FuncOffset 'opening'
+    if ($openingFuncOff -lt 0) {
+        Write-Host "[cdx-to-pe] WARN: 'opening' not found in debug map, using __start"
+        $openingFuncOff = $entryOff
+    }
 }
-
 # The syscall dispatcher. This is NOT optional and there is no fallback: every
 # disk read, every key read and every console write in a Codex program is a
 # `syscall`, so a stub that does not program IA32_LSTAR produces a binary that
@@ -129,12 +151,30 @@ $textAligned = ($textSz + 7) -band -8
 $dataVaddr = $ImageBase + $textAligned
 
 # Memory layout constants (must match X86_64Boot.codex)
+#
+# $HeapCeiling MUST match `bare-metal-ram-size` in X86_64State.codex, and the
+# `L` is load-bearing: PowerShell parses 0xC0000000 as Int32, which is
+# NEGATIVE, and [long] then sign-extends it to 0xFFFFFFFFC0000000. Firmware
+# reads that as a ceiling above all memory and ignores it, so the allocation
+# silently goes top-down again and the bug looks unfixed. Measured 2026-08-08.
+#
+# The ceiling exists because the payload builds its own PML4 at 0x8000 and
+# emit-start loads CR3 unconditionally: bare-metal-pd-count RAM PDs cover
+# [0, 3 GB) write-back, plus ONE device PD over [3 GB, 4 GB) with PCD and NX.
+# A heap above 3 GB is unmapped or uncacheable the moment CR3 loads, whatever
+# the firmware thought it gave us.
+$HeapCeiling = 0xC0000000L      # bare-metal-ram-size
 $DeckPosAddr = 28720            # 0x7030
 $DeckBoundCounterAddr = 28904   # 0x70E8
 $HeapHwmAddr = 28728            # 0x7038
 $BivySaveAddr = 28912           # 0x70F0
 $SysTableAddr = 0x8000
-$UefiSystabAddr = 36208         # uefi-systab-addr, read by every uefi-* function
+# uefi-systab-addr, read by every uefi-* function. Moved off 36208 on
+# 2026-08-09: that address is 0x8D70, which is inside the 4 KB PML4 the
+# bare-metal init builds at 0x8000, so under -EntryStart the write below was
+# zeroed by the page-table build before any helper could read it. Must match
+# X86_64Boot.codex.
+$UefiSystabAddr = 30704
 
 # --- Assemble the UEFI app stub ---
 $ms = [System.IO.MemoryStream]::new()
@@ -460,7 +500,10 @@ Mark 'c'                                                        # code pages are
 # what fails under edk2 -- measured 2026-07-29, and it fails at 64 MB as well as
 # at 512 MB, so it is the ADDRESS that is unavailable and not the size. The
 # status was ignored, so the stub then used 512 MB it did not own as its stack.
-$bw.Write([byte[]]@(0x48, 0x31, 0xC9))                          # xor rcx, rcx (AllocateAnyPages)
+$bw.Write([byte[]]@(0x48, 0xB8))                                # mov rax, $HeapCeiling
+$bw.Write([BitConverter]::GetBytes([long]$HeapCeiling))
+$bw.Write([byte[]]@(0x48, 0x89, 0x44, 0x24, 0x38))              # mov [rsp+0x38], rax (ceiling IN)
+$bw.Write([byte[]]@(0x48, 0xC7, 0xC1, 0x01, 0x00, 0x00, 0x00))  # mov rcx, 1 (AllocateMaxAddress)
 $bw.Write([byte[]]@(0x48, 0xC7, 0xC2, 0x02, 0x00, 0x00, 0x00))  # mov rdx, 2 (EfiLoaderData)
 $bw.Write([byte[]]@(0x49, 0xC7, 0xC0))                          # mov r8, HeapPages
 $bw.Write([BitConverter]::GetBytes([int]$HeapPages))
@@ -494,7 +537,10 @@ Mark 'h'                                                        # heap pages are
 # copy is byte-identical, and the appended pair are the firmware's own
 # descriptors rather than invented ones, so they are correct for this machine
 # without hardcoding 0x38/0x30. STAR then points at 0x40.
-$bw.Write([byte[]]@(0x48, 0x31, 0xC9))                          # xor rcx, rcx (AllocateAnyPages)
+$bw.Write([byte[]]@(0x48, 0xB8))                                # mov rax, $HeapCeiling
+$bw.Write([BitConverter]::GetBytes([long]$HeapCeiling))
+$bw.Write([byte[]]@(0x48, 0x89, 0x44, 0x24, 0x40))              # mov [rsp+0x40], rax (ceiling IN)
+$bw.Write([byte[]]@(0x48, 0xC7, 0xC1, 0x01, 0x00, 0x00, 0x00))  # mov rcx, 1 (AllocateMaxAddress)
 $bw.Write([byte[]]@(0x48, 0xC7, 0xC2, 0x02, 0x00, 0x00, 0x00))  # mov rdx, 2 (EfiLoaderData)
 $bw.Write([byte[]]@(0x49, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00))  # mov r8, 1 page
 $bw.Write([byte[]]@(0x4C, 0x8D, 0x4C, 0x24, 0x40))              # lea r9, [rsp+0x40]
@@ -597,6 +643,43 @@ $bw.Write([byte[]]@(0x48, 0xBF))                                 # mov rdi, Bivy
 $bw.Write([BitConverter]::GetBytes([long]$BivySaveAddr))
 $bw.Write([byte[]]@(0x48, 0x89, 0x07))                          # mov [rdi], rax
 
+# Pre-load the serial input ring, for a board with no serial port.
+#
+# `__bare_metal_read_serial` polls a ring at serial-ring-buf-addr (0x500000,
+# X86_64Boot.codex:91) with the write position at cell 28704 and the read
+# position at 28712. codex-vm's -input does exactly this and nothing else
+# (load_input_file), which is why a bed run can feed the compiler a mode line
+# while a board cannot: no UART, and nothing else fills the ring.
+#
+# The bytes are stored one at a time rather than through a data section because
+# this stub is hand-assembled and has no relocations to spend.
+if ($Stdin) {
+    $sb = [System.Text.Encoding]::ASCII.GetBytes($Stdin)
+    if ($sb.Length -gt 120) { throw "[cdx-to-pe] -Stdin is $($sb.Length) bytes; this emitter stores it with disp8 and tops out at 120." }
+    $bw.Write([byte[]]@(0x48, 0xBF))                                # mov rdi, 0x500000
+    $bw.Write([BitConverter]::GetBytes([long]0x500000))
+    for ($i = 0; $i -lt $sb.Length; $i++) {
+        $bw.Write([byte[]]@(0xC6, 0x47, [byte]$i, $sb[$i]))         # mov byte [rdi+i], imm8
+    }
+    $bw.Write([byte[]]@(0x48, 0xC7, 0xC0))                          # mov rax, len
+    $bw.Write([BitConverter]::GetBytes([int]$sb.Length))
+    $bw.Write([byte[]]@(0x48, 0xBF))                                # mov rdi, 28704 (write pos)
+    $bw.Write([BitConverter]::GetBytes([long]28704))
+    $bw.Write([byte[]]@(0x48, 0x89, 0x07))                          # mov [rdi], rax
+    $bw.Write([byte[]]@(0x48, 0x31, 0xC0))                          # xor rax, rax
+    $bw.Write([byte[]]@(0x48, 0xBF))                                # mov rdi, 28712 (read pos)
+    $bw.Write([BitConverter]::GetBytes([long]28712))
+    $bw.Write([byte[]]@(0x48, 0x89, 0x07))                          # mov [rdi], rax
+    # Tell emit-start the ring is primed, or it zeroes both positions on the
+    # way past and this prefill never existed. See the serial-primed-magic
+    # guard in X86_64Chapter.codex. Cell 30696, magic 1347573316.
+    $bw.Write([byte[]]@(0x48, 0xC7, 0xC0))                          # mov rax, magic
+    $bw.Write([BitConverter]::GetBytes([int]1347573316))
+    $bw.Write([byte[]]@(0x48, 0xBF))                                # mov rdi, 30696
+    $bw.Write([BitConverter]::GetBytes([long]30696))
+    $bw.Write([byte[]]@(0x48, 0x89, 0x07))                          # mov [rdi], rax
+    Mark 'i'                                                        # input ring primed
+}
 # Copy text section: memcpy(0x100000, rbx + textDataOff, textSz)
 # We'll patch textDataOff after we know the full stub size (two-pass)
 $copyTextPatchPos = $ms.Position + 3  # offset of the imm32 in lea rsi, [rbx+imm32]

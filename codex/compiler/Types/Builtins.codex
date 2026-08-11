@@ -1,75 +1,13 @@
 Chapter: Builtins
   cites Foreword chapter Maybe
 
- The builtins, once. A builtin name used to appear in three hand-maintained
- lists that agreed only by inspection, and each way of disagreeing failed
- differently and at its own distance from the cause: absent from the
- resolver was CDX3002, which kills not just the call but every chapter
- downstream of the one that made it; routed with no emitter was CDX2042 at
- emit. A build-time guard reconciled them, which is not the same as removing
- the disagreement -- it only meant a disagreement could not ship.
-
- All three are here now, one row each. `builtin-names` is the names in it;
- `builtin-type-env` is a fold of `env-bind` over the ones that carry a type;
- `x86-builtin-emitters` is the rows whose `bs-emit` is a `Just`, and the
- routing list is derived from that in turn, so being routed IS having an
- emitter. None of the three is written out by hand any more, so none of
- them can drift from this one. The build-time guard that used to reconcile
- the emitter column with the rest had nothing left to compare and is
- deleted.
-
- A row's emitter is a `Maybe` because most names do not have one. 143 of
- the 244 carry a `Just`; the other 101 are effect ops, kernel syscalls and
+ A row's emitter is a `Maybe` because most names do not have one. 152 of
+ the 260 carry a `Just`; the other 107 are effect ops, kernel syscalls and
  constructors reached by paths other than `emit-builtin`, and `None` is the
  honest answer for them rather than a stub that would route them here and
  then fail.
 
- The emitter is an Emit-quire function, and this chapter names it without
- citing anything. That is what the concatenated unit allows -- Emit sorts
- before Types, so these are backward references -- and the reverse
- direction is ordinary too: `boot-cap-mask-for` in the X86-64 Chapter
- reads `cap-bits-for-name` out of the foreword, and `capability-vocabulary`
- here in Types is a projection of that same table.
-
- Eight names carry no type, and each is deliberate. `True`, `False` and
- `Nothing` are special-cased by the checker -- that is how CDX2086 gets to
- say that Nothing is a type and not a value. `open-file`, `close-file`,
- `read-all`, `now` and `random-integer` are effect operations, typed by
- their `effect` declarations rather than here. A name with no type resolves
- and is not bound; that is what `None` means in this table, and it is a
- statement rather than an omission.
-
- The order is the order the let-chain bound in, and it is load-bearing:
- `env-bind` REPLACES, so where a name appears twice the LAST one wins.
- No name appears twice now. `process-exit` did, with two different types,
- and the nullary one bound second and won -- so `process-exit 0` answered
- CDX2001, Integer vs Fun, and the unary form every transpiler emitter
- implements was unreachable. The fix is two
- names for what were always two operations:
-
- `process-exit` is the host form, `Integer -> [Process] Nothing`. It is
- what `std::process::exit`, `Environment.Exit` and `sys.exit` mean, and
- the 53 plugs emit it under this name.
-
- `process-exit-self` is the bare-metal form and takes no argument. It is
- the syscall `emit-process-exit-helper` writes: mark this slot FREE, walk
- the wake loop marking every waiter READY, jump to `__idle_dispatch`.
- Its neighbours `process-yield`, `process-wait` and `get-ticks` are the
- same nullary shape, which is the family it belongs to.
-
- The unary form has an x86 emitter too: a
- process-table exit-status cell, written by `process-exit`'s helper and
- by `__proc_entry` from the closure's return value, delivered to a
- waiter through its saved RAX by the exit wake loop, and answered by
- `process-wait` -- so a child's exit status means the same thing on
- bare metal as on the hosts.
-
 Section: The Table
- bs-varies answers whether two calls with the same arguments can differ, either
- by returning a different value or by touching the machine. A new builtin takes
- True, and takes it without argument: the cost of a wrong True is an
- optimisation nobody gets, and the cost of a wrong False is a frozen clock or a
- constant hardware-random.
 
   BuiltinSpec = record {
    bs-name : Text,
@@ -77,10 +15,6 @@ Section: The Table
    bs-type : Maybe CodexType,
    bs-emit : Maybe (CodegenState, List IRExpr -> EmitResult)
   }
-
- The four session-channel type names were `let` bindings inside the chain,
- which a table cannot hold. They are definitions now, so the type
- expressions below are the ones that were there, unedited.
 
   ssend-name : Name = Name { value = "SSend" }
   srecv-name : Name = Name { value = "SRecv" }
@@ -254,6 +188,7 @@ Section: The Table
    BuiltinSpec { bs-name = "__record-set", bs-varies = True, bs-type = Just (ForAllTy 0 (ForAllTy 1 (FunTy (TypeVar 0) empty-row (FunTy TextTy empty-row (FunTy (TypeVar 1) empty-row (TypeVar 0)))))), bs-emit = Just (\s a -> emit-record-set-builtin s a) },
    BuiltinSpec { bs-name = "__heap-save", bs-varies = True, bs-type = Just int-ty-default, bs-emit = Just (\s a -> emit-heap-save-builtin s) },
    BuiltinSpec { bs-name = "address-of", bs-varies = True, bs-type = Just (ForAllTy 0 (FunTy (TypeVar 0) empty-row int-ty-default)), bs-emit = Just (\s a -> emit-identity-builtin s a) },
+   BuiltinSpec { bs-name = "variant-tag", bs-varies = False, bs-type = Just (ForAllTy 0 (FunTy (TypeVar 0) empty-row int-ty-default)), bs-emit = Just (\s a -> emit-variant-tag-builtin s a) },
    BuiltinSpec { bs-name = "__self-type-defs", bs-varies = True, bs-type = Just (ListTy (ConstructedTy (Name { value = "TypeBinding" }) [])), bs-emit = Just (\s a -> emit-self-type-defs-builtin s) },
    BuiltinSpec { bs-name = "__heap-restore", bs-varies = True, bs-type = Just (FunTy int-ty-default empty-row NothingTy), bs-emit = Just (\s a -> emit-heap-restore-builtin s a) },
    BuiltinSpec { bs-name = "__memset", bs-varies = True, bs-type = Just (FunTy int-ty-default empty-row (FunTy int-ty-default empty-row (FunTy int-ty-default empty-row NothingTy))), bs-emit = Just (\s a -> emit-memset-builtin s a) },
@@ -352,28 +287,12 @@ Section: The Table
 
 Section: Projections
 
- The names the resolver admits. Every entry, typed or not.
-
   builtin-names-from : List BuiltinSpec, Integer, Integer, List Text -> List Text
   builtin-names-from (bs) (i) (len) (acc) =
    if i >= len then acc
    else builtin-names-from bs (i + 1) len (list-push acc ((list-at bs i).bs-name))
 
 Section: Constant Definitions
-
- A definition with no parameters is compiled as a function, so naming it calls
- it and its body runs again. It is a genuine constant only when running it
- twice cannot differ, which bs-varies decides for every builtin the body
- reaches.
-
- Three answers here are deliberately conservative, because a wrong True costs
- an optimisation and a wrong False costs a miscompile. An expression shape the
- walk does not enumerate answers varies, which covers act, match, handle, try,
- fork, await and field-store without naming them. A user function is descended
- into on fuel, and running out answers varies, which is what makes the walk
- total against recursion. A lambda is judged by what it CAPTURES and not by
- what its body does: the body runs when the closure is called, not when the
- constant is built, so a closure over nothing is as constant as an integer.
 
   builtin-varies-by-name : List BuiltinSpec, Text, Integer, Integer -> Boolean
   builtin-varies-by-name (bs) (n) (i) (len) =
@@ -464,11 +383,6 @@ Section: Constant Definitions
    if const-name-in bound n 0 then True
    else if skip-list-text-has pure n then True
    else builtin-varies-by-name builtins n 0 (list-length builtins) == False
-
- The set of definitions whose bodies cannot vary is a LEAST fixpoint, grown
- from empty. That direction is the safe one: a def only joins the set once
- everything it names is already in it, so stopping early under-approximates
- and costs an optimisation rather than correctness.
 
  It is a fixpoint and not a recursive descent for a measured reason. Descending
  into each called definition spends no fuel across siblings, so a body naming N

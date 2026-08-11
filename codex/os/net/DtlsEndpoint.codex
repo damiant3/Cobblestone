@@ -27,12 +27,22 @@ Chapter: DtlsEndpoint
  fleet whose CA you run.
 
  One honest limit remains, and it is not hidden: no third-party DTLS peer
- has ever been in the loop. The record layer has a known-answer oracle
- (codex/test/dtls-record) and the key schedule has the RFC 8448 vectors, but
- the assembled handshake is proven only between our own endpoints. Wiring an
- openssl DTLS 1.3 peer as the oracle -- the way tls-interop-test does for
- TLS -- is what would turn "protected as a real peer expects" into
- "interoperates with a real peer", and it is the next step, not a done one.
+ has completed a handshake with this endpoint. The record layer has a
+ known-answer oracle (codex/test/dtls-record), the key schedule has the RFC
+ 8448 vectors, and since 2026-08-09 the handshake FRAGMENTATION layer has a
+ third-party oracle too (codex/test/dtls-openssl-fragments reassembles real
+ OpenSSL fragments, including a flight OpenSSL refragmented differently on
+ retransmission). The assembled handshake is still proven only between our
+ own endpoints.
+
+ What blocks the rest is a tool version, not a decision, and it is worth
+ recording so nobody re-derives it: OpenSSL gained DTLS 1.3 in 3.5, and
+ 3.2.4 is what is installed here (measured 2026-08-09, both the mingw64 and
+ usr/bin builds; Python's ssl module exposes no DTLS at any version). The
+ fragmentation oracle works around this because RFC 6347 section 4.2.2 and
+ RFC 9147 section 5.2 specify the same handshake message header, so a DTLS
+ 1.2 peer is a valid oracle for that layer and only that layer. A full
+ interop test the way tls-interop-test does it needs OpenSSL 3.5 or later.
 
  We say:
 
@@ -67,7 +77,8 @@ Section: Types
     ep-s-ap : List Integer,
     ep-app-read-seq : Integer,
     ep-app-write-seq : Integer,
-    ep-app-in : List Integer
+    ep-app-in : List Integer,
+    ep-reasm : DtlsReasm
   }
 
   DtlsEpStep = record {
@@ -85,7 +96,7 @@ Section: Construction
              ep-cert-chain = [], ep-sign-priv = [], ep-sign-pub = [], ep-anchors = [], ep-cal-now = [],
              ep-peer-key = X509Key { xk-alg = KeyUnknown, xk-bytes = [], xk-mod = [], xk-exp = [] }, ep-auth-done = False,
              ep-expected-peer = [], ep-hs-secret = [], ep-c-ap = [], ep-s-ap = [],
-             ep-app-read-seq = 0, ep-app-write-seq = 0, ep-app-in = [] }
+             ep-app-read-seq = 0, ep-app-write-seq = 0, ep-app-in = [], ep-reasm = dtls-reasm-new }
 
   dtls-ep-with-cert : DtlsEp, List (List Integer), List Integer, List Integer -> DtlsEp
   dtls-ep-with-cert (ep) (chain) (sign-priv) (sign-pub) =
@@ -101,10 +112,9 @@ Section: Client
   dtls-ep-client (ep) (now) =
     let r = dtls-hs-step (ep.ep-hs) (EvStart now)
     in let body = dtls-client-hello-body (dtls-ep-random ep) [] (ep.ep-pub) []
-    in let msg = dtls-msg-encode dtls-hs-client-hello 0 body
     in let tr = tls13-msg-transcript dtls-hs-client-hello body
     in let ep2 = __record-set (__record-set (__record-set ep "ep-hs" (r.step-state)) "ep-transcript" tr) "ep-ch1" tr
-    in DtlsEpStep { es-ep = ep2, es-out = [dtls-ep-wrap ep2 msg] }
+    in DtlsEpStep { es-ep = ep2, es-out = dtls-ep-wrap-into ep2 [] dtls-hs-client-hello 0 body }
 
   dtls-ep-random : DtlsEp -> List Integer
   dtls-ep-random (ep) = dtls-take-at (ep.ep-random) 0 32
@@ -151,7 +161,7 @@ Section: Receive
     if p.dp-type /= dtls-content-handshake then dtls-ep-idle ep
     else when dtls-msg-parse (p.dp-content)
       is None -> dtls-ep-idle ep
-      is Just (m) -> dtls-ep-on-msg ep m now
+      is Just (m) -> dtls-ep-on-frag ep m now
 
   dtls-ep-recv-plain : DtlsEp, List Integer, Integer -> DtlsEpStep
   dtls-ep-recv-plain (ep) (dgram) (now) =
@@ -163,7 +173,25 @@ Section: Receive
   dtls-ep-on-plain (ep) (p) (now) =
     when dtls-msg-parse (p.dpr-fragment)
       is None -> dtls-ep-idle ep
-      is Just (m) -> dtls-ep-on-msg ep m now
+      is Just (m) -> dtls-ep-on-frag ep m now
+
+ RFC 9147 section 5.2. A message that arrives whole takes the same path it
+ always did, without touching the buffer: that is what keeps an
+ unfragmented handshake byte-identical rather than merely still working.
+ Anything else accumulates until the fragments cover the declared length,
+ and the buffer resets on completion so the next message does not inherit
+ a satisfied one.
+
+  dtls-ep-on-frag : DtlsEp, DtlsMsg, Integer -> DtlsEpStep
+  dtls-ep-on-frag (ep) (m) (now) =
+    if m.dm-frag-offset == 0 & m.dm-frag-length == m.dm-length then dtls-ep-on-msg ep m now
+    else dtls-ep-on-partial ep (dtls-reasm-add (ep.ep-reasm) m) now
+
+  dtls-ep-on-partial : DtlsEp, DtlsReasm, Integer -> DtlsEpStep
+  dtls-ep-on-partial (ep) (r) (now) =
+    when dtls-reasm-message r
+      is None -> dtls-ep-idle (__record-set ep "ep-reasm" r)
+      is Just (whole) -> dtls-ep-on-msg (__record-set ep "ep-reasm" dtls-reasm-new) whole now
 
   dtls-ep-on-msg : DtlsEp, DtlsMsg, Integer -> DtlsEpStep
   dtls-ep-on-msg (ep) (m) (now) =
@@ -216,8 +244,7 @@ Section: Server
   dtls-ep-send-hrr (ep) (m) =
     let ch1-hash = tls13-transcript-hash (dtls-msg-to-transcript m)
     in let cookie = dtls-ep-cookie (ep.ep-cookie-secret) (ep.ep-addr) ch1-hash
-    in let msg = dtls-msg-encode dtls-hs-server-hello 0 (dtls-hrr-body [] cookie)
-    in DtlsEpStep { es-ep = ep, es-out = [dtls-ep-wrap ep msg] }
+    in DtlsEpStep { es-ep = ep, es-out = dtls-ep-wrap-into ep [] dtls-hs-server-hello 0 (dtls-hrr-body [] cookie) }
 
  A cookie that does not verify MUST abort. It is not the same as no
  cookie: re-issuing a HelloRetryRequest here would give an attacker a
@@ -260,13 +287,13 @@ Section: Server
   dtls-ep-server-emit-msgs : DtlsEp, List Integer, List Integer, List Integer, List Integer -> DtlsEpStep
   dtls-ep-server-emit-msgs (ep) (sh-body) (cert-body) (cv-body) (th) =
     let sfin = tls13-verify-data (ep.ep-s-hs) th
-    in let sh-msg = dtls-msg-encode dtls-hs-server-hello 0 sh-body
-    in let cert-msg = dtls-msg-encode dtls-hs-certificate 1 cert-body
-    in let cv-msg = dtls-msg-encode dtls-hs-cert-verify 2 cv-body
-    in let fin-msg = dtls-msg-encode dtls-hs-finished 3 sfin
     in let hk = dtls-ep-keys (ep.ep-s-hs)
+    in let o0 = dtls-ep-wrap-into ep [] dtls-hs-server-hello 0 sh-body
+    in let o1 = dtls-ep-seal-into hk o0 0 dtls-hs-certificate 1 cert-body
+    in let o2 = dtls-ep-seal-into hk o1 (list-length o1 - list-length o0) dtls-hs-cert-verify 2 cv-body
+    in let o3 = dtls-ep-seal-into hk o2 (list-length o2 - list-length o0) dtls-hs-finished 3 sfin
     in let ep2 = dtls-ep-derive-app ep ((ep.ep-transcript) & tls13-msg-transcript dtls-hs-finished sfin)
-    in DtlsEpStep { es-ep = ep2, es-out = [dtls-ep-wrap ep sh-msg, dtls-ep-seal-hs hk 0 cert-msg, dtls-ep-seal-hs hk 1 cv-msg, dtls-ep-seal-hs hk 2 fin-msg] }
+    in DtlsEpStep { es-ep = ep2, es-out = o3 }
 
   dtls-ep-server-transcript : DtlsEp, DtlsMsg, List Integer, List Integer, List Integer -> List Integer
   dtls-ep-server-transcript (ep) (m) (sh-body) (cookie) (ch1-hash) =
@@ -278,10 +305,10 @@ Section: Server
   dtls-ep-server-emit : DtlsEp, List Integer, List Integer -> DtlsEpStep
   dtls-ep-server-emit (ep) (sh-body) (th) =
     let sfin = tls13-verify-data (ep.ep-s-hs) th
-    in let sh-msg = dtls-msg-encode dtls-hs-server-hello 0 sh-body
-    in let fin = dtls-msg-encode dtls-hs-finished 1 sfin
+    in let o0 = dtls-ep-wrap-into ep [] dtls-hs-server-hello 0 sh-body
+    in let o1 = dtls-ep-seal-into (dtls-ep-keys (ep.ep-s-hs)) o0 0 dtls-hs-finished 1 sfin
     in let ep2 = dtls-ep-derive-app ep ((ep.ep-transcript) & tls13-msg-transcript dtls-hs-finished sfin)
-    in DtlsEpStep { es-ep = ep2, es-out = [dtls-ep-wrap ep sh-msg, dtls-ep-seal-hs (dtls-ep-keys (ep.ep-s-hs)) 0 fin] }
+    in DtlsEpStep { es-ep = ep2, es-out = o1 }
 
   dtls-ep-server-fin : DtlsEp, DtlsMsg -> DtlsEpStep
   dtls-ep-server-fin (ep) (m) =
@@ -308,12 +335,11 @@ Section: Client Receive
   dtls-ep-client-ch2 (ep) (m) (cookie) (now) =
     let r = dtls-hs-step (ep.ep-hs) (EvHelloRetry cookie now)
     in let body = dtls-client-hello-body (dtls-ep-random ep) [] (ep.ep-pub) cookie
-    in let msg = dtls-msg-encode dtls-hs-client-hello 1 body
     in let hrr = tls13-msg-transcript dtls-hs-server-hello (m.dm-body)
     in let ch2 = tls13-msg-transcript dtls-hs-client-hello body
     in let tr = tls13-transcript-after-hrr (ep.ep-ch1) & hrr & ch2
     in let ep2 = __record-set (__record-set ep "ep-hs" (r.step-state)) "ep-transcript" tr
-    in DtlsEpStep { es-ep = ep2, es-out = [dtls-ep-wrap ep2 msg] }
+    in DtlsEpStep { es-ep = ep2, es-out = dtls-ep-wrap-into ep2 [] dtls-hs-client-hello 1 body }
 
   dtls-ep-client-sh : DtlsEp, DtlsMsg -> DtlsEpStep
   dtls-ep-client-sh (ep) (m) =
@@ -404,8 +430,8 @@ Section: Client Receive
   dtls-ep-client-send-fin : DtlsEp -> DtlsEpStep
   dtls-ep-client-send-fin (ep) =
     let th = tls13-transcript-hash (ep.ep-transcript)
-    in let fin = dtls-msg-encode dtls-hs-finished 2 (tls13-verify-data (ep.ep-c-hs) th)
-    in DtlsEpStep { es-ep = __record-set ep "ep-done" True, es-out = [dtls-ep-seal-hs (dtls-ep-keys (ep.ep-c-hs)) 0 fin] }
+    in DtlsEpStep { es-ep = __record-set ep "ep-done" True,
+                    es-out = dtls-ep-seal-into (dtls-ep-keys (ep.ep-c-hs)) [] 0 dtls-hs-finished 2 (tls13-verify-data (ep.ep-c-hs) th) }
 
 Section: Application Data
 
@@ -493,14 +519,62 @@ Section: Application Data
   dtls-ep-app-in : DtlsEp -> List Integer
   dtls-ep-app-in (ep) = ep.ep-app-in
 
+Section: Fragmentation
+
+ UDP does not split a datagram that is too large for the path; the path
+ drops it. So a handshake message past the path's limit either goes out in
+ pieces or it never arrives at all, and the failure is a handshake that
+ stalls with nothing to report. The Certificate message is the one that
+ reaches that size in practice: two Ed25519 certificates and their framing
+ already pass a kilobyte.
+
+ 1200 is not a measurement of this path. An endpoint with no clock, no
+ ICMP and no socket cannot make one, and RFC 9147 section 4.4 leaves the
+ number to the implementation. It is the value chosen so that no path has
+ to be measured: 1200 bytes of UDP payload under a 40-byte IPv6 header and
+ an 8-byte UDP header is 1248, inside the 1280 every IPv6 link is required
+ to carry (RFC 8200 section 5), and far inside Ethernet's 1500. QUIC fixed
+ on 1200 for the same reason (RFC 9000 section 14.1).
+
+  dtls-ep-mtu : Integer = 1200
+
+ The body limit is the MTU less the worst framing we emit. A sealed record
+ costs 5 bytes of unified header, one inner content-type byte and a 16-byte
+ tag; the handshake message header is 12 more; 34 in all. 1024 leaves 142
+ bytes of slack against that, which is what lets an outer tunnel appear
+ without this constant having to be re-derived, and it keeps a fragment
+ boundary on a round number when reading a capture.
+
+  dtls-ep-frag-body : Integer = 1024
+
+ Each fragment is its own record and needs its own record sequence number,
+ which is why these thread the output accumulated so far rather than
+ returning a fresh list: a sealed record's sequence number is exactly how
+ many sealed records already precede it in this flight.
+
+  dtls-ep-wrap-into : DtlsEp, List (List Integer), Integer, Integer, List Integer -> List (List Integer)
+  dtls-ep-wrap-into (ep) (acc) (msg-type) (msg-seq) (body) =
+    dtls-ep-plain-loop (dtls-msg-fragments msg-type msg-seq body dtls-ep-frag-body) (ep.ep-send-seq) 0 acc
+
+  dtls-ep-plain-loop : List (List Integer), Integer, Integer, List (List Integer) -> List (List Integer)
+  dtls-ep-plain-loop (fs) (base) (i) (acc) =
+    if i >= list-length fs then acc
+    else dtls-ep-plain-loop fs base (i + 1) (list-push acc (dtls-plain-encode dtls-content-handshake 0 (base + i) (list-at fs i)))
+
+  dtls-ep-seal-into : DtlsKeys, List (List Integer), Integer, Integer, Integer, List Integer -> List (List Integer)
+  dtls-ep-seal-into (k) (acc) (rec-seq) (msg-type) (msg-seq) (body) =
+    dtls-ep-seal-loop k (dtls-msg-fragments msg-type msg-seq body dtls-ep-frag-body) rec-seq 0 acc
+
+  dtls-ep-seal-loop : DtlsKeys, List (List Integer), Integer, Integer, List (List Integer) -> List (List Integer)
+  dtls-ep-seal-loop (k) (fs) (base) (i) (acc) =
+    if i >= list-length fs then acc
+    else dtls-ep-seal-loop k fs base (i + 1) (list-push acc (dtls-ep-seal-hs k (base + i) (list-at fs i)))
+
 Section: Helpers
 
   dtls-ep-with-keys : DtlsEp, List Integer, List Integer, List Integer, List Integer, List Integer -> DtlsEp
   dtls-ep-with-keys (ep) (peer) (hs) (tr) (c) (s) =
     __record-set (__record-set (__record-set (__record-set (__record-set ep "ep-peer-pub" peer) "ep-hs-secret" hs) "ep-transcript" tr) "ep-c-hs" c) "ep-s-hs" s
-
-  dtls-ep-wrap : DtlsEp, List Integer -> List Integer
-  dtls-ep-wrap (ep) (msg) = dtls-plain-encode dtls-content-handshake 0 (ep.ep-send-seq) msg
 
   dtls-ep-idle : DtlsEp -> DtlsEpStep
   dtls-ep-idle (ep) = DtlsEpStep { es-ep = ep, es-out = [] }

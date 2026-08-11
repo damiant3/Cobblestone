@@ -7,16 +7,6 @@ Chapter: HeapBracketShape
  and not just the part after the effect. GopScene's gsc-loop is the first
  use; every other continuous-render loop will want the same thing.
 
- Two properties decide whether that shape is usable, and neither is
- settled by the render test that motivated it. The mark is bound in a
- pure let ABOVE an effectful bind, so the question is whether it is taken
- before the effect runs. And the value the bind produced has to be read
- AFTER the restore, so the question is whether an Integer survives a
- restore that rewinds the allocator past the point where it was produced.
-
- The plain arm is the control on the instrument. If it does not grow, the
- loop is not allocating and the bracketed arm's flatness says nothing.
-
  We say:
 
 Section: Instrument
@@ -32,10 +22,6 @@ Section: Instrument
     port-in-byte 113
   end
 
- Something has to be allocated inside the iteration or there is nothing
- for the bracket to reclaim. A four-element list is the cheapest thing
- that is definitely heap.
-
   waste : Integer -> List Integer
   waste (v) = [v, v, v, v]
 
@@ -43,8 +29,6 @@ Section: Instrument
   bcd-ok (v) = if v < 0 then 0 else if v > 89 then 0 else if int-mod v 16 > 9 then 0 else 1
 
 Section: The two arms
-
- Identical but for the bracket.
 
   loop-plain : Integer, Integer, Integer -> [Device.Port] Integer
   loop-plain (i) (n) (ok) = act
@@ -69,12 +53,6 @@ Section: The two arms
     end
   end
 
- The third arm is the one that decides whether the placement matters at
- all. It brackets exactly the same work with the mark BELOW the bind, so
- whatever the effect itself allocates escapes. Against an effect that
- allocates nothing the two placements agree and this arm reads flat; the
- arm earns its place by being able to disagree.
-
   loop-mark-below : Integer, Integer, Integer -> [Device.Port] Integer
   loop-mark-below (i) (n) (ok) = act
     v <- rtc-sec 0
@@ -86,21 +64,6 @@ Section: The two arms
     in if i + 1 >= n then good
     else loop-mark-below (i + 1) n good
   end
-
- An effect that allocates nothing cannot express the difference between
- the two placements, and the pair above duly agrees. So the last pair
- uses an effect that DOES allocate before it answers, which is what a
- real device poll does when its idle path builds anything at all. These
- two run the same work and differ only in which side of the bind the
- mark sits, and they are the reason the placement is a decision rather
- than a preference.
-
- The above arm is run twice at different counts on purpose. Its first
- call reads a few hundred bytes, and taken alone that looks like a small
- residual leak; a second call at twice the iterations reads ZERO, which
- says the first figure was a one-time cost of entering the path and not
- a per-iteration one. One measurement could not have told those apart
- and would have been quoted as the wrong thing.
 
   rtc-sec-alloc : Integer -> [Device.Port] Integer
   rtc-sec-alloc (d) = act

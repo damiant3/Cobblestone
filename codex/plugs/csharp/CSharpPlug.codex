@@ -5,9 +5,6 @@ Chapter: CSharpPlug
   cites Kernel chapter Ne2k
   cites Foreword chapter CCE
 
- Plug entry. Connects to host TCP server on port 9100,
- receives IR text, runs the C# emitter, sends C# source back.
-
 Section: Helpers
 
 
@@ -50,13 +47,13 @@ Section: Streaming Send
 
 
 
-  stream-defs : TcpTransportState, List IRDef, List ArityEntry, Integer, Integer -> [Network.Write] TcpTransportState
-  stream-defs (ts) (defs) (arities) (i) (n) =
+  stream-defs : TcpTransportState, List IRDef, CsCtx, Integer, Integer -> [Network.Read, Network.Write] TcpTransportState
+  stream-defs (ts) (defs) (ctx) (i) (n) =
    if i >= n then ts
-   else let cs = emit-def (list-at defs i) arities
+   else let cs = emit-def (list-at defs i) ctx
    in act
     ts1 <- net-io-send-text ts (cs & "\n")
-    stream-defs ts1 defs arities (i + 1) n
+    stream-defs ts1 defs ctx (i + 1) n
    end
 
  Stream C# one def at a time to the output ring (print-uni, fire-and-
@@ -64,17 +61,68 @@ Section: Streaming Send
  between defs. Each def's IRDef is parsed from its raw S-expression only
  when it is emitted, so the whole IRChapter is never materialized.
 
-  stream-defs-sexp : List SExp, List ArityEntry, Integer, Integer -> [Console] Nothing
-  stream-defs-sexp (def-sexps) (arities) (i) (n) =
+  stream-defs-sexp : List SExp, CsCtx, Integer, Integer -> [Console] Nothing
+  stream-defs-sexp (def-sexps) (ctx) (i) (n) =
    if i >= n then print-uni ""
    else let h = __heap-save
-   in let cs = emit-def (parse-def (list-at def-sexps i)) arities
+   in let cs = emit-def (parse-def (list-at def-sexps i)) ctx
    in act
     print-uni cs
     print-uni "\n"
     let restored = __heap-restore h
-    in stream-defs-sexp def-sexps arities (i + 1) n
+    in stream-defs-sexp def-sexps ctx (i + 1) n
    end
+
+Section: Mutable Record Detection
+
+ The wire carries the `mutable` marker as of 2026-08-08, and this plug
+ deliberately does not read it. The set that must be settable in C# is
+ derived from a STRICTER authority than the source marker: x86-64's
+ `emit-field-store` writes destructively for every `field-store` node,
+ so a record type that receives one must be assignable here to mean the
+ same thing. A record declared `mutable` that is never stored to needs
+ no settable field, and taking the marker instead would widen every such
+ record for nothing. Read the store's own type slot, which lowering
+ fills with the deep-resolved receiver type.
+
+  collect-mut-names : List SExp, Integer, Integer, List Text -> List Text
+  collect-mut-names (xs) (i) (n) (acc) =
+   if i >= n then acc
+   else collect-mut-names xs (i + 1) n (collect-mut-names-in (list-at xs i) acc)
+
+  collect-mut-names-in : SExp, List Text -> List Text
+  collect-mut-names-in (e) (acc) =
+   when e
+    is SList (xs) ->
+     let acc1 = if list-length xs >= 5 then
+                 (if sexp-atom (list-at xs 0) == "field-store" then push-store-ty (list-at xs 4) acc else acc)
+                else acc
+     in let acc2 = if is-record-set-apply xs then push-store-ty (sexp-last (list-at xs 2)) acc1 else acc1
+     in collect-mut-names xs 0 (list-length xs) acc2
+    is otherwise -> acc
+
+  is-record-set-apply : List SExp -> Boolean
+  is-record-set-apply (xs) =
+   if list-length xs /= 4 then False
+   else if sexp-atom (list-at xs 0) /= "apply" then False
+   else let f = list-at xs 1
+   in if sexp-head f /= "name" then False
+      else sexp-str (list-at (sexp-list f) 1) == "__record-set"
+
+  sexp-last : SExp -> SExp
+  sexp-last (e) =
+   let xs = sexp-list e
+   in if list-length xs == 0 then e else list-at xs (list-length xs - 1)
+
+  push-store-ty : SExp, List Text -> List Text
+  push-store-ty (ty) (acc) =
+   let h = sexp-head ty
+   in if h == "record-ty" | h == "ctd" then
+       let nm = sexp-str (list-at (sexp-list ty) 1)
+       in if text-length nm == 0 then acc
+          else if name-in-list acc nm 0 then acc
+          else list-push acc nm
+      else acc
 
 Section: Drain
 
@@ -90,7 +138,7 @@ Section: Drain
 Section: Body
 
   opening : [Console, FileSystem, Network.Read, Network.Write] Nothing =
-   let sess = net-session-new local-mac local-ip gateway-ip 49152 9100 host-ip 1000
+   let sess = net-session-new local-mac local-ip gateway-ip 49152 9107 host-ip 1000
    in let ts = transport-new sess
    in act
     ts1 <- net-io-connect ts
@@ -105,6 +153,8 @@ Section: Body
      in let def-sexps = walk-named-list xs "defs"
      in let n = list-length def-sexps
      in let arities = build-arity-map-sexp def-sexps 1 n []
+     in let muts = collect-mut-names def-sexps 1 n []
+      in let ctx = CsCtx { arities = arities, type-defs = type-defs, locals = [] }
      in let class-name = "Codex_" & sanitize chap-name
      in act
       print-uni (render-usings [cs-using "System", cs-using "System.Collections.Generic", cs-using "System.IO", cs-using "System.Linq", cs-using "System.Threading.Tasks"] 0 5 "")
@@ -114,9 +164,9 @@ Section: Body
       print-uni emit-buf-runtime
       print-uni emit-state-runtime
       print-uni (emit-seam-runtimes arities)
-      print-uni (emit-type-defs type-defs 0)
+      print-uni (emit-type-defs type-defs 0 muts)
       print-uni (emit-class-header chap-name)
-      stream-defs-sexp def-sexps arities 1 n
+      stream-defs-sexp def-sexps ctx 1 n
       print-uni "}\n"
       closed <- net-io-close (recv.transport)
       print-uni ""

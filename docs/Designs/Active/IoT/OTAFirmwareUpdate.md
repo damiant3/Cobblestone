@@ -54,9 +54,12 @@ re-check catches is the bank changing after Gate B blessed it.
 
 **Pending, in the order it bites:**
 
-1. **The socket.** CoAP is UDP; codex-vm serves only port 53 and drops
-   the rest, so no guest completes a live CoAP exchange. The transport is
-   injected into `fw-feed-response`, plus a VM capability.
+1. **Driving the flow over the socket.** The socket itself exists:
+   general UDP forwarding shipped 2026-07-23 (`tools/codex-vm.c`,
+   `-portfwd udp:`), and `tools/coap-server.codex` completes a live CoAP
+   exchange against aiocoap. What remains is that nothing drives the OTA
+   flow over it -- `fw-feed-response` is called only by the loopback
+   test.
 2. **Gate B costs a List.** `evaluate-load` takes `List Integer`, so the
    caller reads the staged image back out of the bank -- the constraint 5
    memory limit this design names, unfixed. A buffer-taking verifier is

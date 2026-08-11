@@ -65,7 +65,7 @@ Measured 2026-08-03.
    count per function against an optional budget. No production language
    has this combination -- Ada Ravenscar is global and needs external WCET
    tools, Rust has nothing, MISRA-C is external linters.
-5. **588 library modules across 22 quires** (430 foreword + 158 OS): data
+5. **590 library modules across 22 quires** (430 foreword + 160 OS): data
    structures, crypto, a full TCP/IP stack with TLS 1.3 and X.509 peer
    verification, 3D and game engines, AI inference, encoding, math,
    compression, a themeable UI toolkit, and hard real-time primitives.
@@ -78,10 +78,31 @@ Measured 2026-08-03.
    screenshot-to-stick, all through the tree's own drivers. SMP is
    complete for x86-64: atomics, AP bootstrap via SIPI, work-stealing
    scheduler, per-core heap isolation, IPI and lock-free channels.
-7. **53 plugs, all building clean.** Emitters are standalone CDX programs
+7. **55 plugs, all building clean.** Emitters are standalone CDX programs
    that consume the compiler's IR text: 31 languages, 14 UI frameworks,
    three GPU targets (PTX, SPIR-V, WGSL) and four binary formats (CDX,
    ELF, PE, IMG). A new target is a plug, not a compiler change.
+
+   That last sentence was tested against a target chosen for sharing almost
+   none of the assumptions the others were built under. **T3ISA is a
+   balanced-ternary machine**: 27-trit words, no sign bit, arithmetic that
+   saturates instead of wrapping, word-addressed memory, three-valued logic
+   and strings that are not addressable at all. The plug is 2,262 lines of
+   Codex, 1,466 of them code, and **the compiler was not touched** -- programs
+   compiled both
+   ways give identical output on x86-64 and on the ternary emulator,
+   covering integers, control flow, formatted output, records, variants and
+   pattern matching. Reals, vectors and wrapping overflow are refused by
+   name rather than approximated: IEEE 754 is binary by construction and
+   wrapping is defined by a binary modulus, so those are the measured edge
+   of the claim.
+   `docs/Designs/Active/Compiler/T3IsaPlug.md` has the account.
+
+   T3ISA is designed and specified by Manish Jagdish Thatte. Our plug is an
+   independent implementation written from the published specification
+   alone, against `t3isa-spec-v1.3`:
+   [docs/t3isa-reference.md](https://github.com/manishthatte/maniTC/blob/main/docs/t3isa-reference.md)
+   in [manishthatte/maniTC](https://github.com/manishthatte/maniTC).
 8. **Cross-architecture parity.** ARM64 and RISC-V backends run the test
    battery on Renode and QEMU, and the two agree. This is a claim of
    *parity*, not correctness: a known failure residue remains on both
@@ -105,29 +126,29 @@ Measured 2026-08-03.
 the seed; 33 carry a web front end through the HTML plug. Catalog:
 [docs/CuratorsCatalogue.md](docs/CuratorsCatalogue.md).
 
-**Test battery: 1,403 tests across six tiers, 1,359 pass, 0 fail, 44
-skip.** The BVT subset that `build/build.ps1` gates on is 73 tests in
-19.6s.
+**Test battery: 1,433 tests across six tiers, 1,402 pass, 0 fail, 31
+skip.** The BVT subset that `build/build.ps1` gates on is 75 tests in
+18.8s.
 
 ---
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (2,722,559 bytes) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (2,755,007 bytes) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `52E0A3A00218E19F` |
-| SHA-256 | `52E0A3A00218E19F05D10385CFD25BC92721072133F0DAF2DFF4EEE5EE745CC9` |
-| MD5 | `281515DBF55EB60B09096EA5B66F7CFB` |
+| Content hash prefix | `AF4E14D9703985AC` |
+| SHA-256 | `AF4E14D9703985AC62690F56097A7AB77B7693C375400D9DF0ECD03D3448685B` |
+| MD5 | `0E47F9CDEEF50EB6614E29899CC12101` |
 
 **`seed/Codex.img`** (16,777,216 bytes) -- bootable GPT disk image, the
 first-boot ceremony.
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `31027F32A32EF15751E6548D45862E6394B86FD62898B36A4571C6E4F80A6F2E` |
+| SHA-256 | `4564D27F6C28EF09F9E1F4503FA998E4317061FBB3369CC20073BBF3F890ADD2` |
 
 Boot it on a UEFI machine and it runs its own first-boot ceremony on the
 GOP framebuffer with no OS beneath it: choose an interface, walk the
@@ -417,7 +438,7 @@ is preserved regardless of Tier 1 and 2 support.
 ## Library Quires
 
 Code outside the compiler is organized into **22 quires** (library
-namespaces) holding **588 modules** (430 foreword, 158 OS). Quires cite
+namespaces) holding **590 modules** (430 foreword, 160 OS). Quires cite
 each other as `cites Game chapter AStar`; the quire name is the last
 segment of the directory name, capitalized. Full catalog:
 [docs/DevelopersRulebook.md](docs/DevelopersRulebook.md).
@@ -451,8 +472,8 @@ codex/
   compiler/      Self-hosted compiler (63 files, 57.5K lines)
   foreword/      430 library modules across 13 quires
   boards/        Board HAL drivers -- 9 target boards
-  os/            Kernel, net, trust, verify, sched, dev, observe (158 modules)
-  plugs/         53 plugs, 134 source modules -- IR-text-driven emitters
+  os/            Kernel, net, trust, verify, sched, dev, observe (160 modules)
+  plugs/         55 plugs, 145 source modules -- IR-text-driven emitters
   test/          Compiler samples + OS integration tests (1,403 across 6 tiers)
 apps/            66 applications, 1,010 modules
 annotations/     On-disk annotation sidecars (JSON facts)

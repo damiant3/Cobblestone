@@ -1,6 +1,7 @@
 Chapter: GopFiles
   cites Works chapter GopFat16
   cites Works chapter GopDraw
+  cites Works chapter GopShot
   cites Works chapter GopUsbKbd
   cites Works chapter GopUsbMouse
   cites Works chapter SyntaxHighlight
@@ -8,14 +9,6 @@ Chapter: GopFiles
   cites Foreword chapter Fat16
   cites Foreword chapter CCE
   cites Foreword chapter Maybe
-
- The file manager -- H4e's first app on the desktop. It browses the
- boot medium's ESP through the same GopFat16 mount every storage
- screen uses, riding the medium lock, so the volume on the glass is
- the volume the machine booted from. The list is the directory's
- decoded entries; Enter or a click descends into a directory or opens
- a byte view of a file; Esc climbs back up and finally returns to the
- desktop.
 
  The loop keeps the desk's law: idle is the keyboard mailbox take and
  the allocation-free mouse pump; everything that allocates -- a
@@ -61,9 +54,6 @@ Section: Palette and Geometry
   gfl-rows-vis : Integer, Integer -> Integer
   gfl-rows-vis (h) (s) = (gfl-ph h s - 74 * s) / gfl-row-h s
 
- The row under a screen point, or -1: shared by hover and click so
- the two can never disagree about what the pointer is on.
-
   gfl-row-at : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   gfl-row-at (w) (h) (s) (top) (n) (mx) (my) =
     let y0 = gfl-rows-y0 h s
@@ -83,9 +73,6 @@ Section: Palette and Geometry
     else if my < gfl-py h s then False
     else if my >= gfl-py h s + 20 * s then False
     else True
-
- Keep the selection on screen: the top row follows the selection when
- it walks off either edge of the window.
 
   gfl-clamp-top : Integer, Integer, Integer -> Integer
   gfl-clamp-top (sel) (top) (vis) =
@@ -126,9 +113,6 @@ Section: Formatting
     if c < 32 then "."
     else if c > 126 then "."
     else char-to-text (code-to-char (from-unicode c))
-
- One preview line: n bytes as hex then the same n as printable ASCII,
- the shape every hex viewer trains an eye for.
 
  A byte costs four character cells on the line -- two hex digits and a
  space in the run, one more in the ASCII column -- plus one cell for the
@@ -203,17 +187,6 @@ Section: Drawing
     in let none = if list-length entries == 0 then gop-draw-text base stride font (px + 10 * s) (gfl-rows-y0 h s) "(empty directory)" gfl-col-dim s 0 else 0
     in gop-draw-text base stride font (px + 10 * s) (py + gfl-ph h s - 18 * s) "Up/Down move   Enter open   Esc back" gfl-col-green s 0
 
- A Codex source file gets its source drawn and coloured; everything else
- gets the hex dump. The stick carries its own source as SOURCE.SRC, so
- this is the screen on which a person reads the machine's own text on
- the machine, and reading it as sixteen bytes of hex per line was a poor
- way to do that.
-
- The test is the 8.3 EXTENSION and not the name, because FAT16 has no
- other place to put the answer: a `.codex` file cannot survive 8.3 with
- its extension intact, and the extension is the only field a directory
- entry has that says what kind of thing this is.
-
   gfl-is-source : Fat16DirEntry -> Boolean
   gfl-is-source (e) = gfl-ext-is (e.de-name) "SRC"
 
@@ -244,11 +217,6 @@ Section: Source Preview
  has shipped more than once, and here it would render every letter as
  the wrong glyph.
 
- A line ends at byte 10, or at the end of what was read. The preview
- holds one sector, so the last line is usually cut mid-way; that is
- honest for a preview and the classifier is written to tolerate it,
- including a string left unterminated by the cut.
-
   gfl-lf : Integer
   gfl-lf = 10
 
@@ -264,11 +232,6 @@ Section: Source Preview
     else let b = peek-byte buf off
     in let ch = if b < 32 then " " else char-to-text (code-to-char (from-unicode b))
     in gfl-src-text buf (off + 1) stop (acc & ch)
-
- One drawn line per source line, and one `gop-draw-text` per RUN rather
- than per character: a run is already a contiguous span of one colour,
- which is exactly what the text primitive draws, so the colouring costs
- no more calls than the number of tokens on the line.
 
   gfl-source-lines : Integer, Integer, Integer, Integer, Integer, CbfFont, Integer, Integer, Integer, Integer -> Integer
   gfl-source-lines (base) (w) (h) (stride) (s) (font) (buf) (off) (n) (row) =
@@ -300,11 +263,6 @@ Section: Source Preview
 
 Section: Navigation State
 
- The descent is two parallel stacks -- the cluster of every directory
- on the path (a negative sentinel names the FAT16 fixed root) and its
- name for the title bar. Pop rebuilds all but the last; the lists are
- a screen deep at most.
-
   gfl-pop-int : List Integer -> List Integer
   gfl-pop-int (xs) = gfl-pop-int-loop xs 0 []
 
@@ -333,9 +291,6 @@ Section: Navigation State
 
 Section: Preview
 
- One sector answers the whole view. An empty file has no cluster to
- read and says so honestly.
-
   gfl-preview : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Fat16Volume, Fat16DirEntry -> [Device.Port] Integer
   gfl-preview (base) (w) (h) (stride) (s) (font) (kbd) (mouse) (cs) (vol) (e) = act
     if e.de-size == 0 | e.de-cluster < 2 then act
@@ -344,7 +299,7 @@ Section: Preview
       t <- gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + 26 * s) "empty file" gfl-col-dim s 0
       t2 <- gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + gfl-ph h s - 18 * s) "Esc back" gfl-col-green s 0
       cu <- if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
-      gfl-wait-back base w h stride s kbd mouse cs
+      gfl-wait-back base w h stride s font kbd mouse cs
     end
     else act
       b <- disk-read-sector (fat16-cluster-sector vol (e.de-cluster))
@@ -352,20 +307,43 @@ Section: Preview
       in let got = if b.dr-ok then (if e.de-size < 512 then e.de-size else 512) else 0
       in let d = gfl-draw-preview base w h stride s font e (b.dr-buf) got
       in let cu = if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
-      in gfl-wait-back base w h stride s kbd mouse cs
+      in gfl-wait-back base w h stride s font kbd mouse cs
     end
   end
 
-  gfl-wait-back : Integer, Integer, Integer, Integer, Integer, UsbKbd, UsbMouse, Integer -> [Device.Port] Integer
-  gfl-wait-back (base) (w) (h) (stride) (s) (kbd) (mouse) (cs) = act
+ The shot verdict paints into the taskbar band, which no Files screen
+ repaints. The height is GopDesk's, hand-synced like every other chrome
+ size in a pane.
+
+  gfl-taskbar-h : Integer = 28
+
+  gfl-shot : Integer, Integer, Integer, Integer, CbfFont -> [Device.Port] Integer
+  gfl-shot (base) (w) (h) (stride) (font) = act
+    let mark = __heap-save
+    in act
+      t <- shot-take base w h stride
+      let s = ui-scale w
+      in let bg = gop-fill-rect base stride (200 * s) (h - gfl-taskbar-h * s + 4 * s) (300 * s) (16 * s) #000E1C
+      in let tx = gop-draw-text base stride font (204 * s) (h - gfl-taskbar-h * s + 6 * s) t #69BE28 s 0
+      in let d = __heap-restore mark
+      in 0
+    end
+  end
+
+  gfl-wait-back : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer -> [Device.Port] Integer
+  gfl-wait-back (base) (w) (h) (stride) (s) (font) (kbd) (mouse) (cs) = act
     sc <- kbd-take kbd
     let mv = mouse-pump mouse w h
     in let cu = if mv == 1 then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
     in let back = mv == 1 & mouse-clicked mouse & gfl-close-hit w h s (mouse-x mouse) (mouse-y mouse)
     in if sc == 1 then 0
     else if sc == 28 then 0
+    else if sc == 88 then act
+      st <- gfl-shot base w h stride font
+      gfl-wait-back base w h stride s font kbd mouse cs
+    end
     else if back then 0
-    else gfl-wait-back base w h stride s kbd mouse cs
+    else gfl-wait-back base w h stride s font kbd mouse cs
   end
 
 Section: Loop
@@ -403,11 +381,6 @@ Section: Loop
     end
   end
 
- The cursor hides BEFORE a repaint and is re-placed after: the pane
- covers only part of the panel, so clearing the flag without
- restoring would leave the old cursor pixels standing on the
- sidebar and bake them into the next saved patch.
-
   gfl-redraw : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbMouse, Integer, List Fat16DirEntry, Integer, Integer, List Text -> Integer
   gfl-redraw (base) (w) (h) (stride) (s) (font) (mouse) (cs) (entries) (sel) (top) (names) =
     let hd = cursor-hide cs base stride
@@ -430,6 +403,10 @@ Section: Loop
     in let hover = if mv == 1 then gfl-row-at w h s top n (mouse-x mouse) (mouse-y mouse) else -1
     in let clicked = mv == 1 & mouse-clicked mouse
     in if sc == 1 then gfl-back base w h stride s font kbd mouse cs vol clusters names
+    else if sc == 88 then act
+      st <- gfl-shot base w h stride font
+      gfl-loop base w h stride s font kbd mouse cs vol entries sel top clusters names
+    end
     else if clicked & gfl-close-hit w h s (mouse-x mouse) (mouse-y mouse) then gfl-back base w h stride s font kbd mouse cs vol clusters names
     else if clicked & hover >= 0 then gfl-activate base w h stride s font kbd mouse cs vol entries hover clusters names
     else if sc == 72 & sel > 0 then gfl-move base w h stride s font kbd mouse cs vol entries (sel - 1) top clusters names
@@ -441,9 +418,6 @@ Section: Loop
 
 Section: Entry
 
- Mounting rides the medium lock; a machine with no readable ESP gets
- an honest pane and a way back.
-
   gfl-run : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer -> [Device.Port] Integer
   gfl-run (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) = act
     m <- gfat-mount-esp
@@ -451,10 +425,10 @@ Section: Entry
     in if m.gm-ok == False then act
       hd <- cursor-hide cs base stride
       f <- gfl-draw-frame base w h stride s font "Files"
-      t <- gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + 26 * s) "no FAT ESP on the boot medium" gfl-col-dim s 0
+      t <- gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + 26 * s) (shot-diag-text "no FAT ESP on the boot medium") gfl-col-dim s 0
       t2 <- gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + gfl-ph h s - 18 * s) "Esc back" gfl-col-green s 0
       cu <- if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
-      gfl-wait-back base w h stride s kbd mouse cs
+      gfl-wait-back base w h stride s font kbd mouse cs
     end
     else act
       let root-flag = if gfat-is32 (m.gm-vol) then (m.gm-vol).vol-root-start else -1

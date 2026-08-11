@@ -17,12 +17,6 @@ Chapter: ReflectRender
    wrote. Where it crosses a surface, the colour already in the
    framebuffer at that pixel is the reflected colour.
 
- Pass 2 cannot run until pass 1 has finished the whole frame, and that is
- not an implementation detail: a reflection can land on a pixel far from
- the one being shaded, so any pixel of the image may be needed. Interleaving
- the passes would sample a half-drawn frame, which is the same failure the
- magenta clear was added to catch and would be much harder to see.
-
 Section: The Scene
 
  The water line. The field runs from 33 to 207 metres with a mean of 119,
@@ -51,13 +45,6 @@ Section: The Scene
   rr-refine-iters : Integer
   rr-refine-iters = 12
 
- The height-field march, again. `TerrainRender` has one and it cannot be
- cited, because it carries an `opening`; but this one is not the same
- traversal anyway. It has to resolve a lake plane against the ground and
- decide which of the two the ray met first, and the step cap is here for
- the reason recorded in that chapter -- the bracket must not hold two
- crossings.
-
   rr-under : V3, V3, Real -> Boolean
   rr-under (origin) (dir) (t) =
     let p = v-add origin (v-scale dir t)
@@ -80,9 +67,6 @@ Section: The Scene
     in let next = if grown > rr-max-step then rr-max-step else grown
     in rr-ground origin dir t2 next (steps - 1)
 
- Where the ray meets the lake surface, if it does. A ray climbing away
- from the water never meets it.
-
   rr-lake-t : V3, V3 -> Real
   rr-lake-t (origin) (dir) =
     if dir.y > (0.0 - 0.000001) then 0.0 - 1.0
@@ -90,12 +74,6 @@ Section: The Scene
     in if t < 0.0 then 0.0 - 1.0 else t
 
   Scene = record { dist : Real, water : Boolean, found : Boolean }
-
- Nearest wins, with one guard: the lake only exists where the ground under
- it is lower than the water. On a scene this shape the guard is redundant,
- because ground standing above the lake plane would have stopped the ray
- before it got there, but it costs one height sample and it makes the rule
- explicit rather than a consequence.
 
   rr-scene : V3, V3 -> Scene
   rr-scene (origin) (dir) =
@@ -112,11 +90,6 @@ Section: The Scene
     else if tg < 0.0 then Scene { dist = tl, water = True, found = True }
     else if tl < tg then Scene { dist = tl, water = True, found = True }
     else Scene { dist = tg, water = False, found = True }
-
- The water normal. Two crossed ripples, small enough to keep the surface
- readable as water rather than as a disturbed mirror. This is what makes
- the reflection wobble, and it is also what the roughness perturbation in
- the model acts on top of.
 
   rr-ripple-scale : Real
   rr-ripple-scale = 0.055
@@ -206,11 +179,6 @@ Section: Framebuffer
     else if y >= rr-height then 0
     else poke-32 rr-fb-base ((y * rr-width + x) * 4) color
 
- A traced sample fills a 2x2 block, so reading the colour of traced pixel
- (tx,ty) means reading the framebuffer at twice those coordinates. Pass 2
- samples through here, which is the moment the technique becomes literal:
- this reads the picture it is drawing.
-
   rr-get-traced : Integer, Integer -> V3
   rr-get-traced (tx) (ty) =
     rr-unpack (peek-32 rr-fb-base ((ty * 2 * rr-width + tx * 2) * 4))
@@ -290,20 +258,6 @@ Section: Pass One
 
 Section: Pass Two
 
- The reflection. Everything that makes SSR what it is happens in these
- twenty lines.
-
- The march starts a little way off the surface along the normal. Starting
- exactly on it means the first probe compares the surface against its own
- recorded depth and reports a hit immediately, and the water reflects
- itself -- a flat wash of water colour that looks almost plausible, which
- is what makes it worth naming.
-
- On a miss the sky stands in. A real implementation would fall back to a
- pre-rendered environment probe, and the sky IS that probe here; the fade
- toward the screen edge blends between them so the boundary does not draw
- a line across the water.
-
   rr-start-offset : Real
   rr-start-offset = 0.35
 
@@ -330,15 +284,6 @@ Section: Pass Two
     in let d2 = rr-put-block tx ty (rr-pack (final.x) (final.y) (final.z))
     in if h.found then 1 else 0
 
- The hit count is ACCUMULATED and not recorded in the G-buffer, and the
- first version of this got that wrong in a way worth keeping a note about.
- Marking each pixel's outcome back into the flag byte seemed a tidy way to
- count them, but pass 2 READS that same byte: every water pixel already
- processed carried its outcome instead of its material, so the
- self-reflection reject could never match and the buffer the march depends
- on was being rewritten underneath it, row by row, as the pass advanced.
- A pass that consumes a buffer must not also write it.
-
   rr-pass2-row : Cam, Integer, Integer, Integer -> Integer
   rr-pass2-row (cam) (tx) (ty) (acc) =
     if tx >= gb-width then acc
@@ -349,10 +294,6 @@ Section: Pass Two
     if ty >= gb-height then acc
     else rr-pass2 cam (ty + 1) (rr-pass2-row cam 0 ty acc)
 
- A cheap decorrelated value per pixel, the same shape as the cloud model's
- jitter and for the same reason: neighbouring pixels must not perturb their
- reflection the same way, or the noise organises itself into bands.
-
   c-jitter-like : Integer, Integer -> Real
   c-jitter-like (x) (y) =
     let h0 = bit-and (x * 73856093 + y * 19349663 + 83492791) 2147483647
@@ -361,11 +302,6 @@ Section: Pass Two
     in real-from-int h2 * 0.000000000465661287308
 
 Section: Counting
-
- How much water is in frame, and how much of it found something to
- reflect. Both are printed, because a reflection pass that runs over zero
- water pixels and one that runs over thousands and misses every time
- produce the same image, and neither announces itself.
 
   rr-count-row : Integer, Integer, Integer, Integer -> Integer
   rr-count-row (tx) (ty) (want) (acc) =
@@ -406,15 +342,6 @@ Section: Driver
  just enough to put the far shore and the mountains behind it in frame.
  A reflective surface is only worth rendering if there is something above
  it to reflect, and on screen for the reflection to sample.
-
- Low over the water, and that is a physical decision rather than a
- compositional one. Fresnel governs how much a dielectric reflects, and
- for water it runs from about 0.02 head-on to nearly 1.0 at grazing
- incidence. A camera looking DOWN at a lake therefore sees almost no
- reflection, correctly: the first framing here sat 80 m above the surface
- and produced water that was accurately, uselessly dark. Dropping the eye
- to a few metres above the waterline is what puts the reflection where it
- can be seen, and it is also what a photographer would do.
 
   rr-eye : V3
   rr-eye = V3 { x = 0.0, y = 124.0, z = 1650.0 }

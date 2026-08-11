@@ -1,21 +1,7 @@
 Chapter: IR Text Emitter
   cites Codex chapter OffsetTable (offset-table-empty, offset-table-set, offset-table-get)
 
- Serializes IRChapter + ATypeDef list as S-expression text. The output
- is the wire format between the compiler and emit-plug programs (e.g.
- the C# plug under plugs/csharp/). Plug programs parse this text back
- into IRChapter + ATypeDef and feed it to a target-specific emitter.
-
- Format is positional S-expressions: every node is a paren-delimited
- list whose first element is a tag atom. Strings are double-quoted
- with backslash escapes for backslash, double-quote, and newline.
- Identifiers are bare atoms. Spans are elided -- the plug fills
- synthetic-span on parse since downstream emitters don't read span.
-
 Section: Identifier Atoms
-
- Stable atoms identifying each variant. Plug parsers dispatch on the
- first atom of each form.
 
   ov-mode-atom : OverflowMode -> Text
   ov-mode-atom (m) =
@@ -73,10 +59,6 @@ Section: Identifier Atoms
 
 Section: String Escaping
 
- Strings use double quotes. Backslash, double-quote, newline get
- backslash-escaped. Other CCE bytes pass through literally -- the
- plug parser scans byte-by-byte and reverses the escape mapping.
-
   ir-quote : Text -> Text
   ir-quote (s) = "\"" & text-concat-list (ir-quote-collect s 0 (text-length s) []) & "\""
 
@@ -95,9 +77,6 @@ Section: String Escaping
 
 Section: List Helpers
 
- Repeated text-list join used everywhere below. Concatenates a list
- of text fragments with no separator.
-
   ir-cat : List Text -> Text
   ir-cat (xs) = text-concat-list xs
 
@@ -112,9 +91,6 @@ Section: List Helpers
    else ir-names-quoted xs (i + 1) (list-push acc (" " & ir-quote ((list-at xs i).value)))
 
 Section: CodexType Emission
-
- Closed match on every CodexType variant. SumTy/RecordTy include their
- ctor / field lists since downstream emitters dispatch on them.
 
   is-default-int : Integer, Integer, OverflowMode -> Boolean
   is-default-int (lo) (hi) (mode) =
@@ -270,8 +246,8 @@ Section: CodexType Emission
     is TypeVar (id) -> "(tvar " & integer-to-text id & ")"
     is ForAllTy (id) (body) -> "(forall " & integer-to-text id & " " & ir-emit-type body & ")"
     is ForAllEff (id) (body) -> ir-emit-type body
-    is SumTy (name) (args) (ctors) -> "(sum " & ir-quote (name.value) & " (args" & ir-emit-type-list args 0 & ") (sum-ctors" & ir-emit-sum-ctors ctors 0 & "))"
-    is RecordTy (name) (args) (fields) -> "(record-ty " & ir-quote (name.value) & " (args" & (if list-length args > 0 then ir-emit-type-list args 0 else ir-emit-tvar-args (ir-record-field-tvars fields 0 []) 0) & ") (record-fields" & ir-emit-record-fields fields 0 & "))"
+    is SumTy (name) (args) (ctors) -> "(sum " & ir-quote (name.value) & " (args" & ir-emit-type-list args 0 & "))"
+    is RecordTy (name) (args) (fields) -> "(record-ty " & ir-quote (name.value) & " (args" & (if list-length args > 0 then ir-emit-type-list args 0 else ir-emit-tvar-args (ir-record-field-tvars fields 0 []) 0) & "))"
     is ConstructedTy (name) (args) -> "(ctd " & ir-quote (name.value) & " (args" & ir-emit-type-list args 0 & "))"
     is EffectfulTy (effs) (sc) (ret) -> "(effectful (effs" & ir-cat (ir-names-quoted effs 0 []) & ") (scopes" & ir-cat (ir-strs-quoted sc 0 []) & ") " & ir-emit-type ret & ")"
     is UnitTy (name) (inner) -> "(unit " & ir-quote (name.value) & " " & ir-emit-type inner & ")"
@@ -288,30 +264,24 @@ Section: CodexType Emission
   ir-emit-type-list (xs) (i) =
    ir-cat (for t in xs -> " " & ir-emit-type t)
 
-  ir-emit-sum-ctors : List SumCtor, Integer -> Text
-  ir-emit-sum-ctors (xs) (i) =
-   ir-cat (for c in xs -> " (sum-ctor " & ir-quote (c.name.value) & " (fields" & ir-emit-type-list (c.fields) 0 & "))")
-
-  ir-emit-record-fields : List RecordField, Integer -> Text
-  ir-emit-record-fields (xs) (i) =
-   ir-cat (for f in xs -> " (record-field " & ir-quote (f.name.value) & " " & ir-emit-type (f.type-val) & ")")
-
 Section: ATypeExpr Emission
-
- Surface AST type expressions. Distinct prefix from CodexType atoms
- ("a" prefix) so a parser can tell them apart structurally.
 
   ir-emit-atype-expr : ATypeExpr -> Text
   ir-emit-atype-expr (te) =
    when te
     is ANamedType (name) (s) -> "(a-named " & ir-quote (name.value) & ")"
     is AFunType (p) (r) (s) -> "(a-fun " & ir-emit-atype-expr p & " " & ir-emit-atype-expr r & ")"
-    is AAppType (base) (args) (s) -> "(a-app " & ir-emit-atype-expr base & " (args" & ir-emit-atype-expr-list args 0 & "))"
+    is AAppType (base) (args) (s) ->
+     if ir-real-qual-app-p base args then "(a-named " & ir-quote (ir-real-qual-atom args 0 RwF64 RmDefault) & ")"
+     else "(a-app " & ir-emit-atype-expr base & " (args" & ir-emit-atype-expr-list args 0 & "))"
     is AEffectType (effs) (scopes) (tail) (r) (s) ->
      if list-length tail == 0 then "(a-eff (effs" & ir-cat (ir-names-quoted effs 0 []) & ") (scopes" & ir-cat (ir-strs-quoted scopes 0 []) & ") " & ir-emit-atype-expr r & ")"
      else "(a-eff (effs" & ir-cat (ir-names-quoted effs 0 []) & ") (scopes" & ir-cat (ir-strs-quoted scopes 0 []) & ") (tail " & ir-quote ((list-at tail 0).value) & ") " & ir-emit-atype-expr r & ")"
     is ABoundedIntType (b) (lo) (hi) (mode) (s) -> "(a-bounded " & ir-emit-atype-expr b & " " & safe-int-text lo & " " & safe-int-text hi & " " & ov-mode-atom mode & ")"
     is ALinearType (inner) (s) -> "(a-linear " & ir-emit-atype-expr inner & ")"
+    is AConstrainedType (cn) (cv) (body) (s) -> ir-emit-atype-expr body
+    is APropEqType (l) (r) (s) -> "(a-propeq " & ir-emit-atype-expr l & " " & ir-emit-atype-expr r & ")"
+    is AForallType (v) (vt) (p) (s) -> "(a-forall)"
     is otherwise -> "(a-unknown)"
 
   ir-emit-atype-expr-list : List ATypeExpr, Integer -> Text
@@ -320,9 +290,48 @@ Section: ATypeExpr Emission
 
 Section: Type Parameter Inference
 
- When a type-def has empty tparams (the parser found no explicit type
- parameters between the name and =), scan field types to find implicit
- type parameters: lowercase-initial names in type position.
+ A width or mode qualifier on a Real is an application ARGUMENT in the surface
+ syntax and is spelled exactly like a type variable: `Real approximate` parses
+ the same way `List a` does, and the qualifier words are recognised only by
+ `resolve-real-quals` in `Types/TypeChecker.codex`. Without this guard the
+ inference below reads `approximate` as a free type variable and publishes it
+ as a type parameter, which makes the whole declaration spuriously parametric
+ -- and because the parameter belongs to the TYPE rather than the constructor,
+ it poisons every constructor of that type, including the ones carrying no
+ qualifier at all. The condition mirrors `resolve-real-quals`: the arguments
+ are qualifiers only if EVERY one of them is a qualifier word, because one
+ unrecognised word makes the checker treat the whole thing as a genuine
+ application instead.
+
+  ir-real-qual-word-p : Text -> Boolean
+  ir-real-qual-word-p (w) =
+   if w == "approximate" then True
+   else if w == "trapping" then True
+   else if w == "saturating" then True
+   else False
+
+  ir-all-real-quals-p : List ATypeExpr, Integer, Integer -> Boolean
+  ir-all-real-quals-p (args) (i) (len) =
+   if i >= len then True
+   else let w = when (list-at args i) is ANamedType (n) (s) -> n.value is otherwise -> ""
+   in if ir-real-qual-word-p w then ir-all-real-quals-p args (i + 1) len
+   else False
+
+  ir-real-qual-app-p : ATypeExpr, List ATypeExpr -> Boolean
+  ir-real-qual-app-p (base) (args) =
+   if list-length args == 0 then False
+   else let is-real = when base is ANamedType (n) (s) -> n.value == "Real" is otherwise -> False
+   in if is-real then ir-all-real-quals-p args 0 (list-length args)
+   else False
+
+  ir-real-qual-atom : List ATypeExpr, Integer, RealWidth, RealMode -> Text
+  ir-real-qual-atom (args) (i) (w) (m) =
+   if i >= list-length args then ir-emit-real-ty w m
+   else let word = when (list-at args i) is ANamedType (n) (s) -> n.value is otherwise -> ""
+   in if word == "approximate" then ir-real-qual-atom args (i + 1) RwF32 m
+      else if word == "trapping" then ir-real-qual-atom args (i + 1) w RmTrapping
+      else if word == "saturating" then ir-real-qual-atom args (i + 1) w RmSaturating
+      else ir-real-qual-atom args (i + 1) w m
 
   ir-tparam-name-p : Text -> Boolean
   ir-tparam-name-p (name) =
@@ -346,7 +355,8 @@ Section: Type Parameter Inference
     is AFunType (p) (r) (s) ->
      ir-collect-atexpr-tparams r (ir-collect-atexpr-tparams p acc)
     is AAppType (base) (args) (s) ->
-     ir-collect-atexpr-list-tparams args 0 (list-length args) (ir-collect-atexpr-tparams base acc)
+     if ir-real-qual-app-p base args then acc
+     else ir-collect-atexpr-list-tparams args 0 (list-length args) (ir-collect-atexpr-tparams base acc)
     is AEffectType (effs) (scopes) (tail) (r) (s) ->
      ir-collect-atexpr-tparams r acc
     is ABoundedIntType (b) (lo) (hi) (mode) (s) ->
@@ -393,7 +403,7 @@ Section: ATypeDef Emission
    when td
     is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) ->
      let inferred = ir-collect-rec-field-tparams fields 0 (list-length fields) []
-     in "(rec-def " & ir-quote (name.value) & " (tparams" & ir-emit-tparams-text tparams inferred & ") (fields" & ir-emit-rec-field-defs fields 0 & "))"
+     in "(rec-def " & ir-quote (name.value) & " (tparams" & ir-emit-tparams-text tparams inferred & ") (fields" & ir-emit-rec-field-defs fields 0 & ")" & (if is-mut then " (mutable)" else "") & ")"
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      let inferred = ir-collect-var-ctor-tparams ctors 0 (list-length ctors) []
      in "(var-def " & ir-quote (name.value) & " (tparams" & ir-emit-tparams-text tparams inferred & ") (ctors" & ir-emit-var-ctor-defs ctors 0 & "))"
@@ -441,10 +451,6 @@ Section: IRPattern Emission
    else ir-emit-pat-list-acc xs (i + 1) len (list-push acc (" " & ir-emit-pat (list-at xs i)))
 
 Section: IRExpr Emission
-
- The expression printer. Each variant fits a single (atom ...) form.
- Type tags follow the structural arguments -- match the IRExpr
- constructor order so a parser can read positionally.
 
   ir-emit-expr : IRExpr -> Text
   ir-emit-expr (e) =
@@ -598,19 +604,6 @@ Section: IR Dead Code Elimination
    if i == list-length xs then acc
    else ir-dce-append-list xs (i + 1) (list-push acc (list-at xs i))
 
- What counts as a reference to a definition, and what does not.
-
- This walk collects the names a definition REACHES. It used to collect
- every name-shaped thing it passed -- text literals, let names, param
- names, field names, pattern variables, error messages -- on the reasoning
- that over-collecting only ever keeps too much. That is true of soundness
- and false of usefulness: a compiler writes its own function names as text
- literals (runtime helper names, builtin names, diagnostics), and a field
- or a parameter routinely shares a name with some definition somewhere. On
- the compiler's own source the walk retained essentially everything and
- the prune was inert -- measured, before this change: zero definitions
- dropped out of 5167.
-
  So the walk now collects REFERENCES only:
 
    IrName            a use of a definition -- the reference
@@ -632,10 +625,6 @@ Section: IR Dead Code Elimination
  calling a worker through a hardcoded string of its own -- the fat16
  servicers. That is not something this walk can see from the IR, and it is
  handled where it belongs, as an explicit root (cdx-emit-roots, opening).
-
- If this list is ever wrong, the build says so and names the definition:
- every call, address-of and effect-op slot is checked at finalize and an
- unresolved one raises CDX2040 and refuses the binary.
 
   ir-dce-collect-expr : IRExpr, List Text -> List Text
   ir-dce-collect-expr (e) (acc) =
@@ -749,14 +738,6 @@ Section: IR Dead Code Elimination
   ir-prune-unreachable : IRChapter, Text -> IRChapter
   ir-prune-unreachable (m) (root) = ir-prune-unreachable-roots m [root]
 
- The multi-root form. A root naming no definition is skipped rather than
- refused -- ir-dce-add-name already answers -1 for a name the index does
- not hold -- so a caller may offer a root that only some programs carry.
- The FIRST root is different: if it is absent the chapter comes back
- whole, because a chapter with no entry point is one we cannot reason
- about and must not prune. That is the rule the single-root form has
- always had, and the IR-text callers depend on it.
-
   ir-prune-unreachable-roots : IRChapter, List Text -> IRChapter
   ir-prune-unreachable-roots (m) (roots) =
    if list-length roots == 0 then m
@@ -787,16 +768,6 @@ Section: IR Dead Code Elimination
  before calling, which is the same discipline `keep-proof-defs` above
  already follows and says so.
 
- A punctual definition that declares an EXPLICIT budget and does not
- survive the prune is a budget nothing checks. The instruction count is
- taken per emitted body (emit-all-defs), so a definition the inliner
- absorbed into its callers, or one nothing ever calls, reaches
- emit-wcet-check never and both CDX6010 and CDX6011 go silent. Measured
- against seed EFC7FCD0: a five-instruction body declaring a budget of two
- raises CDX6011 with the inliner off and nothing at all under the default
- pipeline, so the declared budget was unenforced in the shipping
- configuration and the author had no way to tell.
-
  Only an EXPLICIT budget is reported. A wcet-budget of zero means the
  author declared none and emit-wcet-check substitutes the default 256;
  that is not a claim anyone made, so a pruned punctual without a budget
@@ -808,20 +779,6 @@ Section: IR Dead Code Elimination
  definition names are unique, which is no stronger an assumption than the
  prune already makes -- ir-dce-build-index keys the reachability table by
  the same name.
-
- It takes two def LISTS and not two chapters, and that is the whole
- correctness of it. ir-prune-roots-flood ends in `__record-set m "defs"`,
- which stores into the field and hands back THE SAME record, so the
- chapter a caller passed in and the chapter it got back are one object.
- Written to take chapters, this function compared the pruned list against
- itself, every name matched, and it reported nothing on a program whose
- budget was demonstrably being dropped. The caller must therefore bind
- the def list BEFORE calling the prune. The old list is safe to hold:
- ir-dce-filter builds a fresh one and `__record-set` only swaps the field.
-
- Do not try to fix that by making the prune functional instead. It was
- tried and it duplicates every surviving definition -- the note on
- ir-prune-roots-flood has the measurement.
 
   ir-dropped-budgeted-punctuals : List IRDef, List IRDef -> List IRDef
   ir-dropped-budgeted-punctuals (all-defs) (kept) =
@@ -836,11 +793,6 @@ Section: IR Dead Code Elimination
            then ir-dbp-loop all-defs kept (i + 1) (j + 1) acc
            else ir-dbp-take all-defs kept i j acc d
       else ir-dbp-take all-defs kept i j acc d
-
- The arms are nested rather than joined with `&` so the bounds test
- guards the subscript by control flow. A conjunction would leave
- `list-at kept j` reachable at j equal to the length whenever the last
- definition in the chapter is the pruned one.
 
   ir-dbp-take : List IRDef, List IRDef, Integer, Integer, List IRDef, IRDef -> List IRDef
   ir-dbp-take (all-defs) (kept) (i) (j) (acc) (d) =
@@ -881,9 +833,6 @@ Section: IRDef Emission
 
 Section: IRChapter Emission
 
- Top-level entry. Plug parsers expect a single (chapter ...) form on
- input. Strings list-fields use a "(strs ...)" wrapper for consistency.
-
   ir-emit-text-strs : List Text, Integer -> Text
   ir-emit-text-strs (xs) (i) =
    ir-cat (ir-strs-quoted xs i [])
@@ -891,13 +840,6 @@ Section: IRChapter Emission
   ir-emit-name-strs : List Name, Integer -> Text
   ir-emit-name-strs (xs) (i) =
    ir-cat (ir-names-quoted xs i [])
-
- Prose blocks and annotations ride the chapter header so that per-def
- prose survives the wire. A block prints as its anchor and its text;
- the classification is re-derivable from the text and is not sent. An
- annotation prints as kind, target, body. Plug parsers walk the header
- by form name and skip forms they do not ask for, therefore both forms
- are additive.
 
   ir-pblocks-quoted : List ProseBlock, Integer, List Text -> List Text
   ir-pblocks-quoted (xs) (i) (acc) =
@@ -964,14 +906,6 @@ Section: IRChapter Emission
    in let restored = __heap-restore h
    in ir-defs-wire-size xs (i + 1) len (acc + n + 3)
 
- The same walk with the name printed BEFORE the render and the size after, so a
- def that cannot be rendered at all is named by the last line that survives. It
- exists because "peak heap is the largest single def" above is a design
- statement with no instrument behind it: on the compiler's own source the
- whole-compiler `-IrCce` emit dies before `SIZE:` is printed, which puts the
- cost in this pass, and nothing said WHICH def. Reached with
- `compile.ps1 -IrCce -RawFlags "wsz"`.
-
  **It has its own flag rather than riding `debug`, and that is not tidiness.**
  Wired behind `debug` first, it printed nothing at all: `IR-CCE debug` empties
  the chapter. Measured 2026-08-04 on the compiler's own source, same kernel and
@@ -980,21 +914,6 @@ Section: IRChapter Emission
  same on `seed#587` and `seed#586`, so it long predates this instrument. An
  instrument gated on the flag that destroys its own subject measures nothing,
  which is what running it against the real input is for.
-
- Not folded into `ir-defs-wire-size`: that one is on the shipping path and pure,
- and giving it a Console effect to carry a diagnostic would put the effect row
- on every caller.
-
- Per-definition cost of the DCE name collection, which is where the
- whole-compiler `-IrCce` emit dies. Prints the name-occurrence count and the
- bytes the collection actually moved the frontier, each def bracketed so the
- probe itself cannot be what runs out.
-
- It was written to test a hypothesis that `list-push` copies and makes this
- quadratic, and it REFUTED it: 1.48 MB across all 5,201 definitions of the
- compiler's own source, largest 32,784 bytes, and the per-def figures are
- capacity-doubling rather than quadratic. The DCE collection is not a cost.
- Kept because that is worth being able to re-establish in one run.
 
  **Print through `print-line-uni`, never `print-text`.** `print-text` emits CCE,
  which is right for the payload and unreadable as ASCII in a raw capture: these

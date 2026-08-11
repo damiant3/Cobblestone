@@ -2,19 +2,6 @@ Chapter: RaytraceKernel
   cites Gpu chapter DeviceEffect
   cites Gpu chapter DeviceMath
 
- A whitted-style ray tracer as a [Device] compute kernel: one GPU thread per
- pixel casts a primary ray into a fixed scene of three analytic spheres on a
- checkered floor, finds the nearest hit, and shades it with a rotating key
- light and a hard shadow ray. This is the reference site's "compute shader ray
- tracing" technique, generated entirely from Codex [Device] AST.
-
- The scene is data-driven: the sphere table is a set of if-ladder accessors
- (sphere index -> centre / radius / colour), so the nearest-hit search and the
- shadow test are tail-recursive folds over the object index -- the plug lowers
- them to WGSL loops. Real math (real-sqrt, real-sin, real-cos, real-min,
- real-max) comes from Gpu chapter DeviceMath; integer conversion uses the
- real-from-int / real-to-int builtins.
-
  We say:
 
 Section: Parameters
@@ -25,9 +12,6 @@ Section: Parameters
   rt-nobj : Integer = 4
 
 Section: Scene Table
-
- Object ids 0, 1, 2 are spheres; id 3 is the floor plane at y = -1. The sphere
- table is fixed at compile time via if-ladder accessors.
 
   rt-cx : Integer -> Real
   rt-cx (i) = if i == 0 then 0.0 else if i == 1 then 0.0 - 1.7 else 1.6
@@ -68,15 +52,11 @@ Section: Intersection
     else let t = 0.0 - b - real-sqrt disc
     in if t > 0.001 then t else 0.0 - 1.0
 
- The floor is the plane y = -1. t = (-1 - oy) / dy when the ray points down.
-
   rt-plane-hit : Real, Real -> Real
   rt-plane-hit (oy) (dy) =
     if dy > 0.0 - 0.0001 then 0.0 - 1.0
     else let t = (0.0 - 1.0 - oy) / dy
     in if t > 0.001 then t else 0.0 - 1.0
-
- Distance to object id (spheres 0..2, plane 3).
 
   rt-hit : Real, Real, Real, Real, Real, Real, Integer -> Real
   rt-hit (ox) (oy) (oz) (dx) (dy) (dz) (id) =
@@ -84,10 +64,6 @@ Section: Intersection
     else rt-sphere-hit ox oy oz dx dy dz id
 
 Section: Nearest Hit
-
- Fold over object index carrying the best id and its t; tail-recursive -> loop.
- Returns the nearest object id, or -1 on a full miss. t is recovered by
- re-intersecting the winner (cheap, avoids returning a pair).
 
   rt-nearest : Real, Real, Real, Real, Real, Real, Integer, Integer, Real -> Integer
   rt-nearest (ox) (oy) (oz) (dx) (dy) (dz) (i) (best-id) (best-t) =
@@ -98,9 +74,6 @@ Section: Nearest Hit
     else rt-nearest ox oy oz dx dy dz (i + 1) best-id best-t
 
 Section: Shadow Test
-
- Any sphere between the hit point and the light puts the point in shadow. Fold
- over the three spheres; return 1 if occluded.
 
   rt-shadowed : Real, Real, Real, Real, Real, Real, Integer -> Integer
   rt-shadowed (ox) (oy) (oz) (dx) (dy) (dz) (i) =
@@ -126,9 +99,6 @@ Section: Shading Helpers
     let h = rt-clamp01 (dy * 0.5 + 0.5)
     in rt-pack (0.05 + h * 0.06) (0.09 + h * 0.14) (0.22 + h * 0.34)
 
- Checker parity from truncated floor coordinates (offset to stay positive in
- view, so truncation behaves like floor).
-
   rt-checker : Real, Real -> Real
   rt-checker (hx) (hz) =
     let ix = real-to-int (hx + 64.0)
@@ -137,10 +107,6 @@ Section: Shading Helpers
     in if s - (s / 2) * 2 == 0 then 0.32 else 0.62
 
 Section: Render
-
- Per pixel: build the primary ray, find the nearest hit, compute the surface
- normal and albedo, then Lambert shade with a rotating key light and a hard
- shadow ray. Misses draw the sky gradient.
 
   rt-render : Integer, Integer -> Integer
   rt-render (gid) (frame) =

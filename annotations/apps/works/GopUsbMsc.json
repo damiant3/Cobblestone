@@ -1,0 +1,162 @@
+[
+  {
+    "target": "chapter:GopUsbMsc",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Every command is one round of the BOT dance: a 31-byte Command Block Wrapper goes out on the bulk OUT endpoint, data moves in whichever direction the command declares, and a 13-byte Command Status Wrapper comes back on the bulk IN endpoint. Completion is detected by polling the CSW buffer for its signature and the command's tag -- the CSW is defined to arrive after the data, so its arrival proves the whole transfer, with no dependence on transfer events. The CSW buffer's signature dword is zeroed before each command so a stale status can never satisfy the poll.",
+    "thread": null
+  },
+  {
+    "target": "chapter:GopUsbMsc",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Where the device was, recorded the moment its interface is recognised. Cells 0-39 are restored from the keyboard's snapshot, so on a machine with two controllers nothing else on the screen says which one a disk failure happened on, nor at what port, speed or depth. Route zero is root-attached and non-zero is behind a hub, which is a different bring-up entirely.",
+    "thread": null
+  },
+  {
+    "target": "function:msc-find-bulk-off",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Endpoint search from just past the interface descriptor, stopping at the next interface. `want-in` selects direction: bit 7 of the endpoint address. Only bulk endpoints (attributes low bits 2) count. One walk finds the endpoint's offset; the number and max packet size are read out of it.",
+    "thread": null
+  },
+  {
+    "target": "section:Connect",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The ladder cells are driven from, not merely written, so the standalone path zeroes its own. Metal RAM is not zeroed and firmware residue in a monotonic cell pins it at whatever it pleases; the boot path is covered by usb-attach's own wipe of the block.",
+    "thread": null
+  },
+  {
+    "target": "function:msc-try-ports",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Walk the root ports: reset each connected one, address the device, read its configuration descriptor, and keep the first that carries a mass-storage interface -- a keyboard on port two is somebody else's device. Endpoint N maps to device context index 2N for OUT and 2N+1 for IN.",
+    "thread": null
+  },
+  {
+    "target": "function:msc-open-iface",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "One mass-storage interface the caller has already located, taken up to a configured pair of bulk endpoints. Both entries arrive here: the standalone connect above, and the boot walk in GopUsb, which classifies every device once and hands this the interface it found.",
+    "thread": null
+  },
+  {
+    "target": "chapter:GopUsbMsc",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "`bConfigurationValue` is byte 5 of the configuration descriptor and it is the value SET_CONFIGURATION must carry. It is NOT an index and it is not obliged to be 1: a device is free to number its one configuration anything non-zero, and a host that sends 1 to a device that called it something else is refused.",
+    "thread": null
+  },
+  {
+    "target": "chapter:GopUsbMsc",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "SET_CONFIGURATION to the same value is idempotent, so asking twice cannot disturb a device that was fine.",
+    "thread": null
+  },
+  {
+    "target": "function:msc-retry-config",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A STALL deliberately gets no retry. That is the device REFUSING a request it understood (USB 2.0 9.4.7), and asking again identically would be adopting a retry on a guess rather than on the evidence above.",
+    "thread": null
+  },
+  {
+    "target": "function:msc-configure",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The first answer stays in cell 77 as the reading; cell 79 carries the second, and it is the second that decides.",
+    "thread": null
+  },
+  {
+    "target": "section:CBW Construction",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The wrapper is written fresh for every command: signature, tag, transfer length, direction flag, LUN zero, then the command block. The command block region is zeroed first so a longer previous command can never leak bytes into a shorter one.",
+    "thread": null
+  },
+  {
+    "target": "function:msc-xfer-code",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "One bulk transfer: push a normal TRB with interrupt-on-completion, ring the endpoint's doorbell, and wait for its transfer event. A short completion -- the device sent fewer bytes than asked, as a capacity read invites -- still counts as success.",
+    "thread": null
+  },
+  {
+    "target": "chapter:GopUsbMsc",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A BOT command is three bulk transfers, each awaited on its own transfer event: the CBW out, an optional data phase in the command's direction, then the CSW in. Driving them one at a time -- not queuing the data and status together on the ring -- is what a real controller's asynchronous storage backend requires: the status token must arrive after the device has finished the data, never pipelined behind it, or the controller can leave the status transfer pending indefinitely. The CSW's signature and tag are checked before its status byte is trusted.",
+    "thread": null
+  },
+  {
+    "target": "chapter:GopUsbMsc",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A stalled data phase is a REFUSAL, not a broken pipe: the device has declined this command and is still waiting to report why. BOT says the host clears the halt and then reads the status, because the CSW is what carries the reason and the next command cannot be trusted until it has been collected. Treating a data stall as a dead transfer instead leaves the CSW queued on the device, and the following command reads THAT as its own status -- every later answer off by one command.",
+    "thread": null
+  },
+  {
+    "target": "function:msc-recover",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A stall on the status phase itself is the one retry: clear the halt and ask again, once. A device that stalls its CSW twice is not answering.",
+    "thread": null
+  },
+  {
+    "target": "function:msc-req-bot-reset",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Reset Recovery is the class's own Bulk-Only Mass Storage Reset on the interface, then the halt cleared on BOTH bulk endpoints. Returning a plain failure instead leaves the disagreement in place, and the next command inherits it.",
+    "thread": null
+  },
+  {
+    "target": "function:msc-ready-tries",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The retry budget is a count of BOT rounds, not a spin: each round is three bulk transfers already bounded by the transfer fuel, so the loop needs no wait of its own.",
+    "thread": null
+  },
+  {
+    "target": "function:msc-read-into",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Bulk transfers walk the request in chunks of sixty-four sectors -- the same stride the IDE path uses -- so no single command carries more than 32 KB and the READ(10) count never nears its 16-bit ceiling. Self-recursive, constant stack.",
+    "thread": null
+  },
+  {
+    "target": "section:Published Handle",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A full bring-up RESETS the controller, which destroys every other device on it -- reconnecting for a disk read kills the USB keyboard. So the boot path enumerates the bus once (GopUsb) and publishes the disk handle's fields to a fixed cell block; any later caller rebuilds the records from the cells and transfers on the already -running host. The block opens with a magic dword, written LAST, so firmware residue in low memory can never impersonate a handle; the rebuild allocates three records per call, bounded by disk operations, never by polling. All published values are guest physical addresses and counts below 4 GB, so 32-bit cells hold them.",
+    "thread": null
+  },
+  {
+    "target": "section:Stateless Facade",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "One-shot entry points shaped like ahci-read-into, for the GopDisk dispatch. A published handle -- the boot path's single enumeration -- is used when present; only a machine that never ran usb-attach pays a full connect per call, and such a machine has no USB keyboard to kill.",
+    "thread": null
+  }
+]

@@ -1,0 +1,161 @@
+Chapter: EngineMeshGen
+  cites Foreword chapter Console
+  cites Engine chapter Renderer3D
+  cites Engine chapter Scene3D
+  cites Engine chapter Mesh
+  cites Engine chapter Material
+  cites Math chapter Matrix4
+  cites Game chapter Color
+
+Section: Fixture
+
+ The counts are exact formulas: a sphere of s segments and r rings is a
+ grid of (r+1)*(s+1) vertices and r*s*6 indices; a cylinder is two side
+ rows plus two capped fans, 2*(s+1) + 2*(s+2) vertices and 12*s
+ indices; a cone is a rim, s apex copies, a base centre and rim,
+ 3*s + 3 vertices and 6*s indices; a torus of u by v segments is
+ (u+1)*(v+1) vertices and u*v*6 indices. The cylinder and cone y
+ bounds carry no trigonometry and are exact; the trig-bearing bounds
+ sit inside a 1 per cent CORDIC band AROUND THE SAMPLED ANGLES: six
+ tube segments never sample the sine peak, so the torus y reach is
+ minor * sin 60 degrees = 200 * 866 / 1000, about 173, not 200.
+
+  rw : Integer = 320
+  rh : Integer = 240
+
+  sky : Integer = #14141E
+
+  sph : Mesh
+  sph = mesh-sphere 800 8 6
+
+  cyl : Mesh
+  cyl = mesh-cylinder 500 400 8
+
+  cone : Mesh
+  cone = mesh-cone 500 900 8
+
+  tor : Mesh
+  tor = mesh-torus 700 200 8 6
+
+ A winding flip leaves the silhouette of a closed mesh unchanged: the
+ culled front is replaced by the visible inside of the far shell, so a
+ coverage count cannot pin winding. Vertex normals do not flip with the
+ indices, so the far shell answers ambient only under a light from the
+ camera side, and luminance at the centre is the discriminator.
+
+  gen-scene : Mesh, ShadingModel -> Scene3DState
+  gen-scene (m) (mode) =
+    let cam = camera3d-new (vec3-new 0.0 0.0 3000.0) (vec3-new 0.0 0.0 0.0) 0.785
+    in let scene = scene3d-new cam
+    in let mat = emat-set-shading (emat-flat (rgb 200 160 90)) mode
+    in let node = sn3-with-mesh "gen" m mat
+    in let key = dir-light (vec3-new 0.0 0.0 1000.0) (rgb 255 255 255) 900
+    in scene3d-set-ambient (scene3d-add-light (scene3d-add scene node) key) 200
+
+  above-scene : Mesh -> Scene3DState
+  above-scene (m) =
+    let cam = camera3d-new (vec3-new 0.0 2500.0 900.0) (vec3-new 0.0 0.0 0.0) 0.785
+    in let scene = scene3d-new cam
+    in let node = sn3-with-mesh "gen" m (emat-flat (rgb 200 160 90))
+    in let key = dir-light (vec3-new 0.0 1000.0 0.0) (rgb 255 255 255) 900
+    in scene3d-set-ambient (scene3d-add-light (scene3d-add scene node) key) 200
+
+  below-scene : Mesh -> Scene3DState
+  below-scene (m) =
+    let cam = camera3d-new (vec3-new 0.0 (-2500.0) 900.0) (vec3-new 0.0 0.0 0.0) 0.785
+    in let scene = scene3d-new cam
+    in let node = sn3-with-mesh "gen" m (emat-flat (rgb 200 160 90))
+    in let key = dir-light (vec3-new 0.0 (-1000.0) 0.0) (rgb 255 255 255) 900
+    in scene3d-set-ambient (scene3d-add-light (scene3d-add scene node) key) 200
+
+Section: Instrument
+
+  coverage : Scene3DState -> Integer
+  coverage (scene) =
+    let fb = r3d-render-scene scene rw rh
+    in cov-count (fb.fb-pixels) 0 (rw * rh) 0
+
+  cov-count : List Integer, Integer, Integer, Integer -> Integer
+  cov-count (px) (i) (n) (acc) =
+    if i >= n then acc
+    else if list-at px i == sky then cov-count px (i + 1) n acc
+    else cov-count px (i + 1) n (acc + 1)
+
+  center-px : Scene3DState -> Integer
+  center-px (scene) =
+    let fb = r3d-render-scene scene rw rh
+    in list-at (fb.fb-pixels) (120 * rw + 160)
+
+  lum : Integer -> Integer
+  lum (packed) =
+    bit-and (bit-shru packed 16) 255 + bit-and (bit-shru packed 8) 255 + bit-and packed 255
+
+ The relation between a sphere vertex's position and its normal is the
+ same product computed at two scales, so it holds to within rounding
+ whatever CORDIC answered: |pos - normal * radius / 1000| <= 2 per
+ component, at every vertex.
+
+  sph-rel-max : Mesh, Integer, Integer, Integer -> Integer
+  sph-rel-max (m) (radius) (i) (worst) =
+    if i >= m.mesh-vert-count then worst
+    else let v = mesh-vertex-at m i
+    in let dx = mg-abs (v.vp-x - v.vn-x * radius / 1000)
+    in let dy = mg-abs (v.vp-y - v.vn-y * radius / 1000)
+    in let dz = mg-abs (v.vp-z - v.vn-z * radius / 1000)
+    in let w2 = mg-max (mg-max dx dy) (mg-max dz worst)
+    in sph-rel-max m radius (i + 1) w2
+
+  mg-abs : Integer -> Integer
+  mg-abs (n) = if n < 0 then 0 - n else n
+
+  mg-max : Integer, Integer -> Integer
+  mg-max (a) (b) = if a > b then a else b
+
+  in-band : Integer, Integer, Integer -> Boolean
+  in-band (v) (lo) (hi) = if v < lo then False else if v > hi then False else True
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let sb = mesh-bounds sph
+    in let cb = mesh-bounds cyl
+    in let nb = mesh-bounds cone
+    in let tb = mesh-bounds tor
+    in let cov-sph = coverage (gen-scene sph FlatShaded)
+    in let cov-cyl = coverage (gen-scene cyl FlatShaded)
+    in let cov-cone = coverage (gen-scene cone FlatShaded)
+    in let cov-tor = coverage (gen-scene tor FlatShaded)
+    in let cap-top = center-px (above-scene cyl)
+    in let cap-bot = center-px (below-scene cyl)
+    in let sph-mid = center-px (gen-scene sph FlatShaded)
+    in let rel = sph-rel-max sph 800 0 0
+    in let seam0 = mesh-vertex-at sph 9
+    in let seam1 = mesh-vertex-at sph 17
+    in act
+      print-line-uni ("sphere counts exact      : " & yn (sph.mesh-vert-count == 63 & sph.mesh-index-count == 288))
+      print-line-uni ("cylinder counts exact    : " & yn (cyl.mesh-vert-count == 38 & cyl.mesh-index-count == 96))
+      print-line-uni ("cone counts exact        : " & yn (cone.mesh-vert-count == 27 & cone.mesh-index-count == 48))
+      print-line-uni ("torus counts exact       : " & yn (tor.mesh-vert-count == 63 & tor.mesh-index-count == 288))
+      print-line-uni ("cylinder y bounds exact  : " & yn (cb.mb-min-y == -400 & cb.mb-max-y == 400))
+      print-line-uni ("cone y bounds exact      : " & yn (nb.mb-min-y == 0 & nb.mb-max-y == 900))
+      print-line-uni ("sphere bounds in band    : " & yn (in-band (sb.mb-max-x) 790 800 & in-band (sb.mb-max-y) 790 800 & in-band (sb.mb-min-x) (-800) (-790)))
+      print-line-uni ("torus reach in band      : " & yn (in-band (tb.mb-max-x) 890 900 & in-band (tb.mb-max-y) 170 174))
+      print-line-uni ("sphere normal relation   : " & yn (rel <= 2))
+      print-line-uni ("sphere seam u exact      : " & yn (seam0.vu == 0 & seam1.vu == 1000))
+      print-line-uni ("sphere coverage in band  : " & yn (in-band cov-sph 15000 23000))
+      print-line-uni ("cylinder draws           : " & yn (cov-cyl > 0))
+      print-line-uni ("cone draws               : " & yn (cov-cone > 0))
+      print-line-uni ("torus draws              : " & yn (cov-tor > 0))
+      print-line-uni ("sphere front faces eye   : " & yn (lum sph-mid > 200))
+      print-line-uni ("top cap faces up         : " & yn (lum cap-top > 200))
+      print-line-uni ("base cap faces down      : " & yn (lum cap-bot > 200))
+      print-line-uni ("sphere coverage          : " & show cov-sph)
+      print-line-uni ("normal relation worst    : " & show rel)
+      print-line-uni ("lit samples              : " & show sph-mid & " " & show cap-top & " " & show cap-bot)
+    end
+  end
+
+Page 1

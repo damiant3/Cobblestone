@@ -1,0 +1,54 @@
+Chapter: E1000AsdeSpeed
+  cites Foreword chapter Maybe
+  cites Kernel chapter E1000e
+  cites Kernel chapter Pci
+  cites Dev chapter NicAsde
+
+Section: Judges
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  spd-of : Integer -> Integer
+  spd-of (status) = bit-and (bit-shru status 6) 3
+
+  asde-set : PciDevice -> Integer
+  asde-set (dev) =
+   let mmio = na-mmio-of dev
+   in spd-of ((na-bring-up mmio True).na-status)
+
+  asde-clear : PciDevice -> Integer
+  asde-clear (dev) =
+   let mmio = na-mmio-of dev
+   in spd-of ((na-bring-up mmio False).na-status)
+
+  driver-leaves-asde-clear : PciDevice -> Boolean
+  driver-leaves-asde-clear (dev) =
+   let mmio = na-mmio-of dev
+   in let up = e1000-link-up mmio
+   in bit-and (e1000-read mmio e1000-reg-ctrl) e1000-ctrl-asde == 0
+
+  driver-reads-phy-speed : PciDevice -> Boolean
+  driver-reads-phy-speed (dev) =
+   let mmio = na-mmio-of dev
+   in let up = e1000-link-up mmio
+   in spd-of (e1000-read mmio e1000-reg-status) == 2
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let scan = pci-scan-bus 0
+    in act
+      when e1000-find scan
+        is Just (dev) -> act
+          print-line-uni ("asde set  speed : " & na-spd (asde-set dev))
+          print-line-uni ("asde clear speed: " & na-spd (asde-clear dev))
+          print-line-uni ("arms differ     : " & yn (asde-set dev /= asde-clear dev))
+          print-line-uni ("driver clears   : " & yn (driver-leaves-asde-clear dev))
+          print-line-uni ("driver gets 1000: " & yn (driver-reads-phy-speed dev))
+        end
+        is None -> print-line-uni ("candidate found : no")
+    end
+  end
+
+Page 1

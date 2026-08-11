@@ -1,0 +1,66 @@
+[
+  {
+    "target": "chapter:Arm64 Code Generator",
+    "kind": "discovery",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "**It was 255, and a function needing its 192nd spill slot killed the plug.** `a64-bind-local` narrows into this field, a failed `__narrow` is a `ud2`, and a `ud2` inside the plug is `!EXC=06` with no diagnostic and no wire output -- the harness then reads the register dump as a wire header and reports a .NET array exception. `codex/test/gop-text-field` is the case: it wants slot 197, so the narrow was handed 261 and trapped. That value is visible in the dump itself (R13 = R15 = 0x105 = 261), which is what identified this without a bisection.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 Code Generator",
+    "kind": "discovery",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "This is x86-64's bug 20 with a better ending. There `AllocLocal` returned a `byte` and slot 224 WRAPPED to RAX, silently miscompiling; here the bounded integer refused. The lesson that transfers is the one that story already drew: the register file is small, the SLOT file is not, and a type sized for the first is wrong for the second.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-find-func-arity",
+    "kind": "invariant",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "Arity resolution stays FIRST-match even though offset resolution is last-match (`a64-find-func-offset`): runtime helpers are recorded with arity zero on purpose, and the partial-application dispatch is calibrated to that answer for every double-registered name. Resolving the arity to the later, real-arity registration changed call protocol for those names and broke `handler-smoke` and `dtls-hello`; measured both ways 2026-07-23.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-tail-is-join",
+    "kind": "warning",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "An if's jump-to-end may be dropped only when nothing can arrive at the slot. a64-prev-is-uncond-branch answers a weaker question -- whether the preceding instruction is a backward branch -- and those two questions come apart when the then-branch is itself a join. A nested if whose else is a tail self-call leaves that backward branch immediately before the slot while its own then path branches forward onto it, so the slot is live and eliding the jump drops the arm into the enclosing else. tco-nested-if guards this; CL 6430 is the same defect on x86, and a64-tail-is-join is that fix mirrored. A shape only answers False here when it is straight-line and cannot merge control flow.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-local-base",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "a64-alloc-local answers a REGISTER while one is free and a SPILL SLOT ID once they are gone, and only a64-store-local / a64-load-local know the difference. A caller that wants to WRITE a value into a fresh local needs a register to write into first: a64-local-base gives it the local itself when the local is a register, and a scratch temp when the local is a spill slot. Park the value with a64-store-local afterwards, which is a no-op in the register case, so the emitted bytes are unchanged whenever nothing has spilled.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-locals-take",
+    "kind": "warning",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "a64-bind-local appends and a64-lookup-local reads the last match, so a scope is a suffix of st.locals: entering one adds bindings at the end, leaving one has to drop them again. What is saved is the LENGTH, not the list. __list_push writes into the same buffer and hands back the same pointer whenever capacity allows, so holding the old field value and putting it back changes nothing -- it only ever appeared to work when a bind hit the grow path and got a fresh buffer. act-let-scope is the guard.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-is-text-type",
+    "kind": "warning",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "A unit type is runtime-transparent: its representation IS the inner type, so every dispatch that picks an instruction sequence by type must see through the wrapper. Before these arms, `show` on a `unit Text` printed the pointer, a literal pattern on one never matched, and a compare on a `unit Real` went through the integer path (measured 2026-07-28: unit-show, unit-pattern-lit, unit-real-compare on both machine lanes).",
+    "thread": null
+  },
+  {
+    "target": "function:a64-is-vec-binop-op",
+    "kind": "warning",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "A vector operation allocates a LOCAL to hold its result, and its operands are pointers that may themselves be sitting in locals. Recycling the local counter around such an operation hands that result local a register one of the operands still occupies, and the operation then reads the buffer it is about to write. Disassembled: the saved left operand in x20, then `mov x20, x28` for the output, then `ldr x14, [x20]`. Discriminate on the OPERATOR, not on the expression type -- a call's IR type is not reliably a VectorTy at this point, so a type test silently never fires.",
+    "thread": null
+  }
+]

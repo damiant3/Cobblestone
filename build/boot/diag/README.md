@@ -556,11 +556,16 @@ build/boot/build-option-a.ps1 -Src build/boot/diag/PciProbe.codex `
 # depot seed -- an image about to be flashed should be built by the
 # compiler the depot actually holds.
 
+# These two carry the SEED (no -Seed '') since the probes gained F12
+# screenshots: shot-take writes only to a medium whose ESP carries our
+# own CODEX.CDX (the GopMedium lock), so a seedless probe stick paints
+# "F12 shots OFF" and never writes anywhere. On a machine with internal
+# drives that refusal is the point.
 build/boot/build-option-a.ps1 -Src build/boot/diag/XhciTruthProbe.codex `
-    -Out build/boot/xhci-probe.img -Seed '' -Font '' -Kernel seed/Codex.cdx
+    -Out build/boot/xhci-probe.img -Font '' -Source '' -Kernel seed/Codex.cdx
 
 build/boot/build-option-a.ps1 -Src build/boot/diag/MscAlignProbe.codex `
-    -Out build/boot/msc-align.img -Seed '' -Font '' -Source '' -Kernel seed/Codex.cdx
+    -Out build/boot/msc-align.img -Font '' -Source '' -Kernel seed/Codex.cdx
 
 # Verify under real UEFI (OVMF). This is the instrument -- QEMU's
 # monitor screendumps a LIVE guest, so a payload that never exits is

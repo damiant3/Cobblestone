@@ -3,9 +3,6 @@ Chapter: X86-64 Code Generator
   cites Emit chapter Emit Allocator (init-emit-workspace)
   cites Codex chapter Build Settings (code-buffer-size, data-buffer-size, accum-capacity)
 
- Bare-metal start routine and chapter entry point (x86-64-emit-cdx).
- ConstructedTy resolution is now in IR/ResolveTypes.codex.
-
 Section: Bare-Metal Start
   bare-metal-heap-base : Integer = 6291456
 
@@ -208,18 +205,6 @@ Section: Bare-Metal Start
    in if d.name == opening-entry-point then peel-effectful-ty-once (strip-fun-args (d.type-val))
       else opening-bare-print-type-loop defs (i + 1) len
 
- `__real_to_text` reads sixty-four bits, so an f32 has to be widened
- before the call or the helper reads a single-precision bit pattern as
- double and prints a number nobody computed. This is the same convert
- `emit-show-real-approx` does for `show`; that path takes an expression
- and this one takes a value already in RAX, which is why the sequence is
- written twice rather than shared.
-
- Before the Real collapse these two walks matched `RealTy` alone and every
- other Real fell to a tail that emits nothing, so an `opening` returning a
- moded Real printed NO OUTPUT AT ALL and a record field of one printed its
- bit pattern through the integer path.
-
   widen-f32-in-rax : CodegenState, RealWidth -> CodegenState
   widen-f32-in-rax (st) (w) =
    if is-width-f32 w
@@ -340,20 +325,10 @@ Section: Bare-Metal Start
    in let st6 = emit-print-text-no-newline (false-lit.state) (false-lit.reg)
    in patch-jmp-at st6 jmp-end-pos (st6.code-len)
 
- The scope store is the twin of emit-grant-cap-mask: proc 0's authority
- to touch the disk is its capability bits, and the extent of that
- authority is its scope. Both are known at emit time and both are
- written into the process table before opening runs.
-
  emit-text-lit puts the string in the data buffer and leaves its
  address in a register through the ordinary rodata fixup, so the cell
  holds an honest Text -- the same representation every other Text in the
  program has, and the one process-get-scope hands back.
-
- The value is copied to RAX before RDI is loaded because emit-text-lit
- allocates its result through the rotating temp pool and may hand back
- RDI itself; loading the address first would clobber the string pointer
- with the address it was about to be stored at.
 
   emit-set-boot-scope : CodegenState, Integer, Integer, Text -> CodegenState
   emit-set-boot-scope (st) (proc-index) (offset) (scope) =
@@ -404,10 +379,15 @@ Section: Bare-Metal Start
    in let st7a = st-append-code st7 (li reg-rdi ram-size-addr)
    in let st8 = st-append-code st7a (mov-load reg-rax reg-rdi 0)
    in let st11 = st-append-code st8 (mov-store reg-r11 reg-rax 0)
-   in let stU0 = st-append-code st11 ([72, 139, 4, 37] & write-i32 32768)
-   in let stU1 = st-append-code stU0 (li reg-rdi uefi-systab-addr)
-   in let stU2 = st-append-code stU1 (mov-store reg-rdi reg-rax 0)
-   in let st12 = emit-process-setup stU2
+   in let stU0 = st-append-code st11 (li reg-rdi uefi-systab-addr)
+   in let stU1 = st-append-code stU0 (mov-load reg-rax reg-rdi 0)
+   in let stU2 = st-append-code stU1 [72, 133, 192]
+   in let stU3pos = stU2.code-len
+   in let stU3 = st-append-code stU2 (jcc cc-ne 0)
+   in let stU4 = st-append-code stU3 ([72, 139, 4, 37] & write-i32 32768)
+   in let stU5 = st-append-code stU4 (mov-store reg-rdi reg-rax 0)
+   in let stU6 = patch-jcc-at stU5 stU3pos (stU5.code-len)
+   in let st12 = emit-process-setup stU6
    in let cap-names = manifest-cap-names manifest-effs 0 (list-length manifest-effs) []
    in let grant-mask = boot-cap-mask cap-names manifest-effs 0 (list-length cap-names) 0
    in let st14 = if grant-mask == 0 then st12 else emit-grant-cap-mask st12 0 grant-mask
@@ -433,10 +413,19 @@ Section: Bare-Metal Start
    in let st29 = emit-out-byte st28 1020 11
    in let st29a = emit-com2-init st29
    in let st30 = emit-out-byte st29a 1017 1
-   in let st31 = st-append-code st30 (li reg-rdi serial-write-pos-addr)
+   in let st31m = st-append-code st30 (li reg-rdi serial-primed-magic-addr)
+   in let st31n = st-append-code st31m (mov-load reg-rax reg-rdi 0)
+   in let st31o = st-append-code st31n (cmp-ri reg-rax serial-primed-magic)
+   in let primed-skip = st31o.code-len
+   in let st31p = st-append-code st31o (jcc cc-e 0)
+   in let st31 = st-append-code st31p (li reg-rdi serial-write-pos-addr)
    in let st32 = st-append-code st31 (li reg-rax 0)
    in let st33 = st-append-code st32 (mov-store reg-rdi reg-rax 0)
-   in let st34 = st-append-code st33 (li reg-rdi serial-read-pos-addr)
+   in let st33a = patch-jcc-at st33 primed-skip (st33.code-len)
+   in let st33b = st-append-code st33a (li reg-rax 0)
+   in let st33c = st-append-code st33b (li reg-rdi serial-primed-magic-addr)
+   in let st33d = st-append-code st33c (mov-store reg-rdi reg-rax 0)
+   in let st34 = st-append-code st33d (li reg-rdi serial-read-pos-addr)
    in let st35 = st-append-code st34 (mov-store reg-rdi reg-rax 0)
    in let st35p = emit-blit-probe st35
    in let st35a = emit-control-string st35p [66, 79, 79, 84, 58, 83, 48, 45, 72, 87, 10]
@@ -769,29 +758,6 @@ Section: Capability Manifest
    if i >= len then acc
    else manifest-name-values ns (i + 1) len (manifest-add-name acc ((list-at ns i).value))
 
- The opening's scope for a given effect family, which the boot grant
- hands to proc 0 the same way emit-grant-cap-mask hands it its bits.
- The manifest pipeline is a List Text of NAMES and drops the scope on
- the floor (the loader ring) -- but the boot ring does not
- need the manifest at all: the scope literal is right here in the row
- at emit time, so it is read straight off the label.
-
- Two families now have a runtime chokepoint and are carried: the
- filesystem (a path PREFIX, checked at the three Fat16 gates) and the
- network (an AUTHORITY, checked at the fetch chokepoint against a
- runtime URL's host). A console channel is the third relation
- scope-admits knows about and is NOT carried -- a channel is fixed at
- compile time by the builtin name and never becomes a runtime value,
- so there is nothing at runtime to check a stored channel against, and
- carrying it would be a promise the machine cannot keep.
-
- The EMPTY STRING is a real answer, not a missing one: an opening that
- names no scope for the family gets "", the cell holds a valid Text,
- and the family's relation admits everything by itself (the empty
- prefix admits every path; an empty authority admits every host). That
- is what keeps a program which never declared the effect from handing
- the chokepoint a null pointer.
-
   manifest-opening-fs-scope : List TypeBinding -> Text
   manifest-opening-fs-scope (types) = manifest-find-opening-scope types "FileSystem" 0 (list-length types)
 
@@ -804,13 +770,6 @@ Section: Capability Manifest
    else let t = list-at types i
    in if t.name == "opening" then manifest-type-scope (t.bound-type) family ""
       else manifest-find-opening-scope types family (i + 1) len
-
- Both shapes carry the row, and an opening is usually the second one:
- `opening : [Console, FileSystem.Read "/config/"] Nothing` is a VALUE
- with an effect row, not a function, so its type is an EffectfulTy and
- not a FunTy. EffectfulTy's second field is the scope list, parallel to
- its name list -- reading the names and ignoring that list is exactly
- how the scope got dropped everywhere else in this pipeline.
 
   manifest-type-scope : CodexType, Text, Text -> Text
   manifest-type-scope (ty) (family) (acc) =
@@ -867,35 +826,11 @@ Section: Capability Manifest
    else if char-code (char-at n i) == char-code (char-at "." 0) then substring n 0 i
    else manifest-base-loop n (i + 1) len
 
- Direction, derived from the row instead of asserted.
-
- manifest-cap-bytes used to write a literal `cdx-le16 2` -- readwrite --
- for every capability it emitted, so a program declaring
- [FileSystem.Read] put a READWRITE filesystem capability into its own
- manifest. The loader's dir-bits was never wrong: it honours read-only
- grants exactly as the format intends, and it was simply being TOLD
- readwrite by a compiler that never asked the effect row. Direction was
- broken at the source, and every consumer downstream inherited it.
-
  The dotted member is the direction: FileSystem.Read is read, .Write is
  write, and a bare FileSystem asks for both. A family with no read/write
  split (Device.Block, Gpu.Compute) has no direction to name, so it takes
  readwrite -- the honest answer, because withholding a bit the family
  does not model would deny an authority the program correctly declared.
-
- A program naming BOTH .Read and .Write gets readwrite, which is the
- union it asked for and not an escalation.
-
- The three VALUES were written out here as manifest-dir-read, -write and
- -readwrite until 2026-07-27, and they were the compiler's copy of a
- triple that also existed as cap-dir-* in Foreword chapter Capability and
- as cdx-dir-* in the CDX format. Nothing checked that the three agreed.
- The failure mode is not a mismatch that reports itself: cap-dir-bits is
- the only thing that ever interprets a direction, and its last branch is
- readwrite, so a renumbered write would have been read as readwrite and
- the program would have earned an authority it did not declare. The
- numbers are read from the table now, which is where the capability
- identifiers and the kernel bits already come from.
 
   manifest-cap-direction : List Text, Text -> Integer
   manifest-cap-direction (effs) (cap) =
@@ -922,33 +857,8 @@ Section: Capability Manifest
    in if text-length base >= text-length n then ""
       else substring n (text-length base + 1) (text-length n - text-length base - 1)
 
- The identifier the CDX capability section carries. It is a projection
- of Foreword chapter Capability now, not a second copy of the table.
-
   manifest-cap-id : Text -> Integer
   manifest-cap-id (n) = cap-id-for-name n
-
- The anti-drift guard that used to live here is gone, and its going is
- the point. It walked capability-vocabulary and required
- every name to resolve to a manifest cap id, because the two were
- hand-kept lists that could disagree -- and had: [Gpu] once compiled
- clean, exit 0 with no diagnostic at any severity, and was denied at
- runtime the moment 1.6 armed the gpu-memory guard.
-
- Both lists are now projections of one table, so a vocabulary name with
- no cap id cannot be written. A guard whose condition can never hold is
- not protection, it is furniture; the state it watched for is
- unreachable, so the walk, the diagnostic and the once-per-compile cost
- all go with it.
-
- The boot grant for proc 0 derives from the same manifest names the
- capability section records: each covered name contributes its kernel
- capability bits, and anything the manifest does not declare stays
- ungranted (Concurrent covers task spawn, channels, and process
- creation -- the three faces of the concurrency authority in this
- kernel). Identity and Capability are effect-row sources like the
- rest: a program that declares Identity earns cap-identity at boot,
- which is what every identity builtin's kernel helper now tests.
 
  boot-cap-mask-for is the boot path's reading of the capability table,
  and cdx-cap-to-kern-bits is the verified-load path's reading of the
@@ -961,13 +871,6 @@ Section: Capability Manifest
  while: it granted FileSystem read AND write to a program that declared
  only [FileSystem.Read], while the loader honoured the read-only grant.
  One expansion cannot drift from itself.
-
- boot-dir-bits was dir-bits (VerifiedLoader) written out again here,
- because the compiler could not cite the OS quire. Both are gone. The
- expansion lives in Foreword chapter Capability, which both quires may
- cite, and this is the boot path asking it the same question the
- verified-load path asks. There is no second copy left to disagree with,
- so build/check-cap-tables.ps1 is deleted too.
 
   boot-cap-mask-for : Text, Integer -> Integer
   boot-cap-mask-for (n) (dir) = cap-bits-for-name n dir
@@ -985,19 +888,6 @@ Section: Capability Manifest
    in let cover = if manifest-cap-id e >= 0 then e else manifest-effect-base e
    in if manifest-cap-id cover >= 0 then manifest-cap-names effs (i + 1) len (manifest-add-name acc cover)
       else manifest-cap-names effs (i + 1) len acc
-
- The capability section carries the scope, and until now it lied about
- having none: the length field was a hardcoded `cdx-le32 0`, so every
- binary this compiler emitted told the verifier its grants were
- unscoped. The verifier has always been able to read a scope --
- `CdxVerifier` decodes the bytes and strides `16 + scope-len`, and
- `CdxBinary` writes them the same way -- so the format was never the
- gap. One hardcoded zero was.
-
- Only the filesystem grant carries one, for the same reason
- manifest-opening-fs-scope carries only that scope: a path is the one
- resource string the machine can check. Writing a scope for a family
- with no runtime chokepoint would be a promise the loader cannot keep.
 
  The bytes are CCE (`char-code`), which is what `CdxBinary`'s
  `text-to-cap-bytes` writes and `CdxVerifier`'s `bytes-to-text` reads.
@@ -1144,7 +1034,6 @@ Section: Capability Manifest
    if n <= 0 then acc
    else cdx-zeros-loop (n - 1) (list-push acc 0)
 
-
 Section: Symbol Map
 
   build-symbol-map : List Text, List Integer, Integer, Integer, Integer, Integer, List Text -> List Text
@@ -1224,16 +1113,8 @@ Section: Binary Debug Map (MAP1)
    in let str-off = list-at str-offsets i
    in build-map-entries offsets names str-offsets code-len (i + 1) count (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push acc (bit-and off 255)) (bit-and (bit-shr off 8) 255)) (bit-and (bit-shr off 16) 255)) (bit-and (bit-shr off 24) 255)) (bit-and size 255)) (bit-and (bit-shr size 8) 255)) (bit-and (bit-shr size 16) 255)) (bit-and (bit-shr size 24) 255)) (bit-and str-off 255)) (bit-and (bit-shr str-off 8) 255)) (bit-and (bit-shr str-off 16) 255)) (bit-and (bit-shr str-off 24) 255))
 
-
   x86-64-emit-cdx : IRChapter, List TypeBinding -> EmitChapterResult
   x86-64-emit-cdx (m) (tdefs) = x86-64-emit-cdx-with-exit-mode m tdefs Exit False False WatchdogProgress []
-
- The last parameter is the definitions the caller's prune dropped that
- declared an explicit WCET budget. It is a list and not a chapter because
- the caller is the only place both the pre-prune and post-prune def lists
- exist: ir-prune-unreachable-roots stores its result back into the chapter
- it was given, so a callee holding one chapter cannot recover the other.
- An empty list is the honest default for a caller that did not prune.
 
   x86-64-emit-cdx-with-exit-mode : IRChapter, List TypeBinding, X86_64ExitMode, Boolean, Boolean, X86_64WatchdogMode, List IRDef -> EmitChapterResult
   x86-64-emit-cdx-with-exit-mode (m) (tdefs) (exit-mode) (poison) (trace) (wd-mode) (unchecked) =

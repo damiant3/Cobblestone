@@ -4,21 +4,6 @@ Chapter: PitLatch
 
   grounds Device.Port, Device.Mmio
 
- The counter-latch command, pinned by the one property that distinguishes it
- from its absence.
-
- The obvious test -- latch, read both halves, check they agree -- passes
- against a machine with no latch at all. The counter moves between the two
- reads either way, and two bytes sampled a microsecond apart almost always
- look like a coherent pair. A check that passes on a controller that does
- nothing is not a check.
-
- What a latch actually promises is that the value goes STALE: once frozen,
- it must not follow the counter. So the test reads a coherent value, latches,
- lets a lot of time pass, and then reads the latch. A working latch answers
- the value from before the delay. A missing one answers the value from after
- it -- which is exactly what the live counter says, and that is the tell.
-
  Channel 2 is used rather than channel 0 because the boot code owns channel 0
  and runs it in mode 3, where the count decrements by two and reloads at half
  the divisor. Channel 2 is programmed here in mode 0 with a divisor of 65536,
@@ -56,9 +41,6 @@ Section: Reading
     in let hi = port-in-byte pit-ch2
     in bit-or lo (bit-shl hi 8)
 
- Read the frozen value WITHOUT latching first, so the delay sits between the
- latch and the read. This is the call whose answer the whole test turns on.
-
   read-frozen : [Device.Port] Integer
   read-frozen =
     let lo = port-in-byte pit-ch2
@@ -73,11 +55,6 @@ Section: Reading
 
   ticks-between : Integer, Integer -> Integer
   ticks-between (earlier) (later) = int-mod (earlier - later + 65536) 65536
-
- The delay is measured, not counted. A fixed spin of N iterations takes
- whatever wall time the host happens to give it, which put the elapsed count
- either side of the threshold depending on machine load -- a flaky test, and
- a flaky test is worth less than none.
 
  So channel 1 is the clock. Nothing else uses it, it is programmed in access
  mode 2 so each read returns just the high byte of a live counter -- one byte,
@@ -99,9 +76,6 @@ Section: Reading
   steps-since : Integer, Integer -> Integer
   steps-since (start) (now) = int-mod (start - now + 256) 256
 
- Fuel-capped: a channel that never advances ends the wait instead of hanging
- the machine, and the verdict then reports a delay that did not happen.
-
   wait-steps : Integer, Integer, Integer -> Integer
   wait-steps (start) (want) (fuel) =
     if fuel <= 0 then 0
@@ -109,16 +83,6 @@ Section: Reading
     else wait-steps start want (fuel - 1)
 
 Section: The LAPIC Input Clock
-
- The local APIC timer divides an input frequency that nothing had ever
- measured or advertised. A guest could rely on the period scaling with the
- initial count and the divisor, and on nothing else -- so a guest calibrating
- the LAPIC against the PIT had no way to know whether the two clocks agreed
- about how fast a second is. This measures it: count LAPIC ticks against PIT
- ticks and work back to the input frequency.
-
- The timer is armed MASKED, so it counts without delivering an interrupt and
- the boot processor's own PIT-driven scheduling is left alone.
 
   lapic-base : Integer = #FEE00000
   lapic-lvt-timer : Integer = #320

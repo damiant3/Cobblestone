@@ -1,0 +1,98 @@
+[
+  {
+    "target": "chapter:LensSql",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The T-SQL emitter for Target B. Target N hands a plan tree straight to the local executor and never renders text; Target B must speak to Microsoft SQL Server, so this chapter turns a RelOp tree into one T-SQL statement. The emitter covers exactly the shapes the Lens planner builds: filtered scans, date bucket derives over those scans, home grain groups, equi-joins between derived tables, the cross join that glues dimensionless measures together, projection, ascending sorts, and a positive limit rendered as TOP. It is a pure text builder; the statement it returns is what lens-sql-exec carries to the warehouse.",
+    "thread": null
+  },
+  {
+    "target": "chapter:LensSql",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Grain correctness is inherited, not re-derived. The planner already aggregated every measure at its home grain before any join, so each RelGroup emits as a GROUP BY inside its own derived table and each RelEquiJoin emits as an INNER JOIN between derived tables on the composite key columns. The generated SQL therefore reads the way a careful warehouse hand writes it, with no symmetric-aggregate hash incantations anywhere.",
+    "thread": null
+  },
+  {
+    "target": "chapter:LensSql",
+    "kind": "invariant",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Column references need care because merged join rows keep duplicate names and the executor resolves a lookup to the left occurrence first. The emitter mirrors that rule: every FROM clause remembers its leftmost item's alias and known output columns, and a column that appears in that known set is qualified to the leftmost alias while any other column stays bare for SQL Server to resolve against the remaining items. Join keys always qualify both sides. Under the planner's star shapes the bare names are unambiguous by construction; a model whose physical tables share unrelated column names is outside what v1 emits.",
+    "thread": null
+  },
+  {
+    "target": "section:Lexical Pieces",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Identifiers quote with brackets and a closing bracket doubles inside them. Text literals quote with single quotes and a quote doubles inside them, which is the whole T-SQL escape story for both. Boolean values render as the bit literals 1 and 0.",
+    "thread": null
+  },
+  {
+    "target": "section:Predicates",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The planner only builds column-versus-literal equality tests, but the predicate grammar is small enough to cover whole. PredTrue and PredFalse render as the standard always-true and always-false comparisons so a predicate always lands somewhere a WHERE clause can hold it.",
+    "thread": null
+  },
+  {
+    "target": "section:Column References",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "tsql-col is the left-occurrence rule in one function: a column known to belong to the FROM clause's leftmost item qualifies to that item's alias, anything else stays bare.",
+    "thread": null
+  },
+  {
+    "target": "section:From Clauses",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A TsqlFrom is a rendered FROM clause plus the bookkeeping the parent SELECT needs: the leftmost item's alias, that item's known output columns when it is a derived table with a computed shape, a star flag when the item exposes a physical table's whole column set, and the next free alias number. Aliases count upward as q0, q1, q2 across the whole statement, so every derived table in the emitted text is uniquely named.",
+    "thread": null
+  },
+  {
+    "target": "type:TsqlPeel",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The planner wraps every scan in zero or more single-predicate filters, so filter emission peels the whole chain into one WHERE conjunction over the base scan. A filter over anything other than a scan never leaves the planner; the fallback wraps the emitted child statement the same way so the arm stays honest anyway.",
+    "thread": null
+  },
+  {
+    "target": "function:tsql-on-pairs",
+    "kind": "invariant",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Equi-join keys pair positionally and both sides always qualify: the left column to the clause's leftmost alias, where the planner puts every join key it groups by, and the right column to the joined item's own alias.",
+    "thread": null
+  },
+  {
+    "target": "function:tsql-from",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "tsql-from renders joins flat: the left side stays a clause, the right side becomes exactly one item, and the leftmost bookkeeping rides through so nested equi-joins keep qualifying against the original grained table. RelJoin only reaches this emitter as the planner's always-true glue between dimensionless measure rows and renders as CROSS JOIN; any other predicate falls back to INNER JOIN ON.",
+    "thread": null
+  },
+  {
+    "target": "section:Select Statements",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A TsqlSel is a complete SELECT statement plus its output column bookkeeping. TOP and ORDER BY thread down as parameters because T-SQL puts both inside the statement whose head the planner's RelLimit and RelSort wrap from outside: the limit and sort arms simply pass their payload into the child and emit nothing of their own, which is exactly right for the planner's limit-over-sort-over- project crown.",
+    "thread": null
+  },
+  {
+    "target": "function:tsql-select",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The group arm is the grain carrier: keys and aggregates form the select list, the same key references form the GROUP BY, and the output shape is keys then aliases, which is what every parent join and projection relies on. The wrap helper turns the relational nodes that are pure FROM material into a SELECT star statement, and the otherwise arm names the operators this planner never produces so an out-of-subset tree is visible in the emitted text instead of silently wrong.",
+    "thread": null
+  }
+]

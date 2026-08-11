@@ -1,0 +1,123 @@
+Chapter: EngineShading
+  cites Foreword chapter Console
+  cites Engine chapter Renderer3D
+  cites Engine chapter Scene3D
+  cites Engine chapter Mesh
+  cites Engine chapter Material
+  cites Math chapter Matrix4
+  cites Game chapter Color
+
+Section: Scene
+
+ One triangle facing the camera, its three normals deliberately unequal:
+ vertex 0 aims at the key light, vertices 1 and 2 aim square at the
+ camera. Flat must paint one colour; Gouraud must grade corner 0 bright
+ against corners 1 and 2; Phong must disagree with Gouraud in the
+ interior, where the interpolated normal swings the specular term the
+ vertex average cannot see.
+
+  rw : Integer = 320
+  rh : Integer = 240
+
+  sky : Integer = #14141E
+
+  tri-mesh : Mesh
+  tri-mesh =
+    let verts = [
+      vertex 0 900 0 (-566) 566 599 500 0 #FFFFFF,
+      vertex (-900) (-700) 0 0 0 1000 0 1000 #FFFFFF,
+      vertex 900 (-700) 0 0 0 1000 1000 1000 #FFFFFF
+    ]
+    in mesh-new verts [0, 1, 2]
+
+  lit-scene : ShadingModel -> Scene3DState
+  lit-scene (mode) =
+    let cam = camera3d-new (vec3-new 0.0 0.0 3000.0) (vec3-new 0.0 0.0 0.0) 0.785
+    in let scene = scene3d-new cam
+    in let mat = emat-set-shading (emat-shiny (rgb 200 120 60) 16) mode
+    in let node = sn3-with-mesh "tri" tri-mesh mat
+    in let key = dir-light (vec3-new (-1000.0) 1000.0 1060.0) (rgb 255 255 255) 900
+    in scene3d-set-ambient (scene3d-add-light (scene3d-add scene node) key) 200
+
+  spot-scene : Scene3DState
+  spot-scene =
+    let cam = camera3d-new (vec3-new 0.0 0.0 3000.0) (vec3-new 0.0 0.0 0.0) 0.785
+    in let scene = scene3d-new cam
+    in let mat = emat-set-shading (emat-shiny (rgb 200 200 200) 8) PhongShaded
+    in let node = sn3-with-mesh "wall" (mesh-plane-upright 1400 1000) mat
+    in let spot = SpotLight3D (vec3-new (-800.0) 0.0 1500.0) (vec3-new 0.0 0.0 (-1.0)) (rgb 255 255 255) 1000 800 150
+    in scene3d-set-ambient (scene3d-add-light (scene3d-add scene node) spot) 150
+
+  mesh-plane-upright : Integer, Integer -> Mesh
+  mesh-plane-upright (half-w) (half-h) =
+    let verts = [
+      vertex (0 - half-w) (0 - half-h) 0 0 0 1000 0 0 #FFFFFF,
+      vertex half-w (0 - half-h) 0 0 0 1000 1000 0 #FFFFFF,
+      vertex half-w half-h 0 0 0 1000 1000 1000 #FFFFFF,
+      vertex (0 - half-w) half-h 0 0 0 1000 0 1000 #FFFFFF
+    ]
+    in mesh-new verts [0, 1, 2, 0, 2, 3]
+
+Section: Instrument
+
+  px-at : List Integer, Integer, Integer -> Integer
+  px-at (px) (x) (y) = list-at px (y * rw + x)
+
+  render-cost : Scene3DState, Integer, Integer -> Integer
+  render-cost (scene) (w) (h) =
+    let tgt = r3d-target-new w h sky
+    in let a = alloc-bytes 0
+    in let d = r3d-render-into tgt scene
+    in let b = alloc-bytes 0
+    in b - a
+
+  lum : Integer -> Integer
+  lum (packed) =
+    bit-and (bit-shru packed 16) 255 + bit-and (bit-shru packed 8) 255 + bit-and packed 255
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+Section: Entry
+
+ Sample points, in screen space at 320x240 with the camera on the +z
+ axis: corner 0 projects near the top centre, corners 1 and 2 near the
+ lower left and right, the centroid between them.
+
+  opening : [Console] Nothing = act
+    let fb-flat = r3d-render-scene (lit-scene FlatShaded) rw rh
+    in let fb-gou = r3d-render-scene (lit-scene GouraudShaded) rw rh
+    in let fb-pho = r3d-render-scene (lit-scene PhongShaded) rw rh
+    in let fb-spot = r3d-render-scene spot-scene rw rh
+    in let flat-top = list-at (fb-flat.fb-pixels) (76 * rw + 160)
+    in let flat-mid = list-at (fb-flat.fb-pixels) (120 * rw + 160)
+    in let flat-low = list-at (fb-flat.fb-pixels) (160 * rw + 130)
+    in let gou-top = list-at (fb-gou.fb-pixels) (40 * rw + 160)
+    in let gou-mid = list-at (fb-gou.fb-pixels) (120 * rw + 160)
+    in let gou-low = list-at (fb-gou.fb-pixels) (160 * rw + 130)
+    in let pho-mid = list-at (fb-pho.fb-pixels) (120 * rw + 160)
+    in let spot-in = list-at (fb-spot.fb-pixels) (120 * rw + 130)
+    in let spot-out = list-at (fb-spot.fb-pixels) (120 * rw + 260)
+    in let cost-g-small = render-cost (lit-scene GouraudShaded) 320 240
+    in let cost-g-large = render-cost (lit-scene GouraudShaded) 640 480
+    in let cost-p-small = render-cost (lit-scene PhongShaded) 320 240
+    in let cost-p-large = render-cost (lit-scene PhongShaded) 640 480
+    in act
+      print-line-uni ("flat is uniform          : " & yn (flat-top == flat-mid & flat-mid == flat-low))
+      print-line-uni ("gouraud top is covered   : " & yn (gou-top /= sky))
+      print-line-uni ("gouraud grades to corner : " & yn (lum gou-top > lum gou-low + 30))
+      print-line-uni ("gouraud differs from flat: " & yn (gou-mid /= flat-mid))
+      print-line-uni ("phong differs from gourau: " & yn (pho-mid /= gou-mid))
+      print-line-uni ("spot cone lights inside  : " & yn (lum spot-in > lum spot-out + 100))
+      print-line-uni ("gouraud cost pixel-free  : " & yn (cost-g-small == cost-g-large))
+      print-line-uni ("phong cost pixel-free    : " & yn (cost-p-small == cost-p-large))
+      print-line-uni ("flat top sample          : " & show flat-top)
+      print-line-uni ("gouraud top sample       : " & show gou-top)
+      print-line-uni ("gouraud low sample       : " & show gou-low)
+      print-line-uni ("phong mid sample         : " & show pho-mid)
+      print-line-uni ("spot inside sample       : " & show spot-in)
+      print-line-uni ("spot outside sample      : " & show spot-out)
+    end
+  end
+
+Page 1

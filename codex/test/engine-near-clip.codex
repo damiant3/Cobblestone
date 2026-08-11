@@ -1,0 +1,69 @@
+Chapter: EngineNearClip
+  cites Foreword chapter Console
+  cites Engine chapter Renderer3D
+  cites Engine chapter Scene3D
+  cites Engine chapter Mesh
+  cites Engine chapter Material
+  cites Math chapter Matrix4
+  cites Game chapter Color
+
+Section: Scenes
+
+  rw : Integer = 320
+  rh : Integer = 240
+
+  sky : Integer = #14141E
+
+  plane-scene : Real -> Scene3DState
+  plane-scene (z) =
+    let cam = camera3d-new (vec3-new 0.0 300.0 0.0) (vec3-new 0.0 300.0 (-1000.0)) 0.785
+    in let scene = scene3d-new cam
+    in let ground = sn3-set-pos (sn3-with-mesh "ground" (mesh-plane 3000 3000) (emat-flat (rgb 90 80 62))) 0.0 0.0 z
+    in let s2 = scene3d-add scene ground
+    in let key = dir-light (vec3-new (-400.0) 800.0 400.0) (rgb 255 250 235) 850
+    in scene3d-set-ambient (scene3d-add-light s2 key) 260
+
+Section: Tallies
+
+  drawn : List Integer, Integer, Integer, Integer -> Integer
+  drawn (px) (i) (n) (acc) =
+    if i >= n then acc
+    else if list-at px i == sky then drawn px (i + 1) n acc
+    else drawn px (i + 1) n (acc + 1)
+
+  drawn-band : List Integer, Integer, Integer, Integer -> Integer
+  drawn-band (px) (row-start) (row-end) (acc0) =
+    drawn-band-rows px row-start row-end acc0
+
+  drawn-band-rows : List Integer, Integer, Integer, Integer -> Integer
+  drawn-band-rows (px) (y) (row-end) (acc) =
+    if y >= row-end then acc
+    else drawn-band-rows px (y + 1) row-end (acc + drawn-row px y 0 0)
+
+  drawn-row : List Integer, Integer, Integer, Integer -> Integer
+  drawn-row (px) (y) (x) (acc) =
+    if x >= rw then acc
+    else if list-at px (y * rw + x) == sky then drawn-row px y (x + 1) acc
+    else drawn-row px y (x + 1) (acc + 1)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let fb-straddle = r3d-render-scene (plane-scene 0.0) rw rh
+    in let fb-front = r3d-render-scene (plane-scene (-3200.0)) rw rh
+    in let fb-behind = r3d-render-scene (plane-scene 4000.0) rw rh
+    in let s-total = drawn (fb-straddle.fb-pixels) 0 (rw * rh) 0
+    in let s-top = drawn-band (fb-straddle.fb-pixels) 0 (rh / 4) 0
+    in let s-bottom = drawn-row (fb-straddle.fb-pixels) (rh - 1) 0 0
+    in let f-total = drawn (fb-front.fb-pixels) 0 (rw * rh) 0
+    in let b-total = drawn (fb-behind.fb-pixels) 0 (rw * rh) 0
+    in act
+      print-line-uni ("straddle total  : " & show s-total)
+      print-line-uni ("straddle top-q  : " & show s-top)
+      print-line-uni ("straddle bottom : " & show s-bottom)
+      print-line-uni ("front total     : " & show f-total)
+      print-line-uni ("behind total    : " & show b-total)
+    end
+  end
+
+Page 1

@@ -1,0 +1,130 @@
+[
+  {
+    "target": "chapter:GopFat16",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "FAT over the payload's own block drivers (B3.2, FAT32 in H3b). The foreword `Fat16` chapter already knows FAT: its BPB parse, directory-entry decode, name matching, and path splitting are pure functions over a sector buffer, and this chapter reuses every one of them. What it cannot reuse is `Fat16`'s sector source: those functions call the `block-read-sector` builtin, which is a syscall. The Option A stub jumps straight to `opening` and configures no syscall path, so on this boot every read must go through `disk-read-sector` (AHCI, then legacy IDE).",
+    "thread": null
+  },
+  {
+    "target": "chapter:GopFat16",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Reading a file writes bytes into a flat caller-supplied buffer. `Fat16`'s own reader accumulates a `List Integer` one byte at a time -- fine for a small config file, ruinous for a 2 MB seed, which is what B3.3 will ask for.",
+    "thread": null
+  },
+  {
+    "target": "section:GPT",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The EFI System Partition's first LBA, found by walking the GPT: the header at LBA 1 names the partition-entry array, and the first entry whose type GUID is the ESP's carries the starting LBA. Returns 0 when the disk has no GPT or no ESP -- an honest zero, not a guess.",
+    "thread": null
+  },
+  {
+    "target": "function:gpt-esp-start",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Only the low 32 bits of each 64-bit GPT field are read: a boot medium with more than 2 TB of sectors before its ESP is not a stick.",
+    "thread": null
+  },
+  {
+    "target": "function:gpt-is-esp",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Four bytes of the type GUID are enough to name the ESP among the partition types a boot stick carries.",
+    "thread": null
+  },
+  {
+    "target": "function:gfat-is32",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A zero 16-bit FAT size is the structural mark of the 32-bit layout; the parse then maps FAT32's fields into the shared record as the chapter prose describes.",
+    "thread": null
+  },
+  {
+    "target": "function:gfat-find-in-root",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The FAT32 root directory is an ordinary cluster chain named by the BPB, so its search IS the data-area search; only FAT16 has the fixed root region.",
+    "thread": null
+  },
+  {
+    "target": "function:gfat-find-in-dir",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A directory that lives in the data area is a cluster chain, so a miss in one cluster follows the FAT to the next.",
+    "thread": null
+  },
+  {
+    "target": "function:gfat-walk",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "`e` is the entry matched at depth-1. A path continues only through a directory (attribute bit 4); a file in the middle of a path is a miss, not a silent success.",
+    "thread": null
+  },
+  {
+    "target": "section:File Reading",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Copy a file's bytes into `dest`, following the FAT chain. Returns the number of bytes written, which is the entry's size unless the chain ended early (a truncated or corrupt file -- report what was actually read, never what the directory claimed).",
+    "thread": null
+  },
+  {
+    "target": "section:Bulk File Reading",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Reading a 2 MB file one sector at a time costs two reads per sector: the data, and the FAT sector holding the next cluster. Instead load the FAT once, follow the chain in memory, and coalesce consecutive clusters into runs -- a freshly written file is contiguous, so a whole seed becomes a single bulk command (one DMA on AHCI). Fragmentation costs one command per run, never per sector.",
+    "thread": null
+  },
+  {
+    "target": "function:gfat-run-length",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Length of the run of consecutive clusters starting at `cluster`, capped so a corrupt chain cannot spin: a run can never exceed the clusters the file still needs.",
+    "thread": null
+  },
+  {
+    "target": "function:gfat-read-file-bulk",
+    "kind": "invariant",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Read a file into a caller-supplied buffer. The buffer must hold the file's size rounded up to a whole sector -- the last sector arrives whole, and trimming it is the caller's business.",
+    "thread": null
+  },
+  {
+    "target": "function:gfat-put-u16",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The 8.3 name is passed already space-padded to 11 characters, the way it sits in a directory entry (\"IDENTITYDAT\").",
+    "thread": null
+  },
+  {
+    "target": "section:Multi-Cluster Writing",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The chain writer: the FAT is loaded once and the whole chain is built in memory, then flushed to both copies in bulk, then the data goes out in contiguous runs -- the write-side mirror of Bulk File Reading above. Every allocated cluster is marked end-of-chain the moment it is taken, so the free scan cannot hand the same cluster out twice, and the link to the next overwrites the mark as the chain grows; a volume that runs out mid-chain aborts before the flush, leaving the disk untouched.",
+    "thread": null
+  },
+  {
+    "target": "function:gfat-write-cap",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Writes are chunked at 64 sectors: a bulk transfer above 64 KB crosses the TRB boundary question rung 3 of the sitting ladder has never answered on metal, and a screenshot must not be the first thing to ask it.",
+    "thread": null
+  }
+]

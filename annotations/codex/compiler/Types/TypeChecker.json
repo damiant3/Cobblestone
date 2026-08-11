@@ -1,0 +1,514 @@
+[
+{
+    "target": "chapter:Type Checker",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "PRECISION AND SAFETY ARE INDEPENDENT, so the qualifiers are a set rather than a choice and they are folded one at a time. `Real approximate trapping` and `Real approximate saturating` are the two combinations the old single-qualifier grammar could not spell, and both are f32.",
+    "thread": null
+  },
+  {
+    "target": "function:is-arith-op-name",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A negative result used to be a third refusal. It no longer is: the type grammar reads `-2` as a single atom now, so a folded negative names a literal that can actually be written on the other side of the `===`. While it could not, folding one would have manufactured a term nothing could match, which is worse than leaving the claim unproven. The refusal and the grammar gap were one fact, not two.",
+    "thread": null
+  },
+  {
+    "target": "function:find-char-at",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "find-char-at derives every character code from a literal because internal text is CCE: a written-down 58 is ASCII thinking, and in CCE that code is a letter. The same mistake made the dotted sub-effect relation dead code once already (find-dot, above).",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The check runs at every application, but costs nothing until a signature actually names a scope: row-any-scoped is the first thing it asks, and today nothing in the tree answers yes.",
+    "thread": null
+  },
+  {
+    "target": "section:Resolve Type Expression",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A declared effect bracket on an arrow's result lands ON THE ARROW as its row -- concrete labels and tail together (stage 3b migration). Only the standalone effectful-VALUE form (an AEffectType that is not an arrow's result, e.g. `read-line : [Console] (Maybe Text)`) still resolves to EffectfulTy.",
+    "thread": null
+  },
+  {
+    "target": "function:resolve-real-quals",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A word that is not a qualifier makes the whole application an ordinary constructed type, which is what carries `Real` applied to a genuine type argument through unchanged. That is why the walk tracks whether every word so far was a qualifier rather than failing on the first one that is not.",
+    "thread": null
+  },
+  {
+    "target": "section:Proof Normalizer",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Definitional-equality normalizer for value-level propositional equality (Stage 3 of the proof system). Before a `PropEqTy` is registered and the proven unifier runs, each side is reduced by delta (unfold a saturated call to a def's body), iota (reduce a when-match whose scrutinee is a constructor application), and beta (substitute actuals for formals). A Fuel counter bounds the number of reduction steps: exhaustion returns the partial term, which is not a closed constructor tree, so the operand falls back to its original syntactic form and the proof is reported unproven -- never a silent pass. Soundness reduces to \"only valid reductions are performed\"; the unifier and the rest of the proof path are unchanged.",
+    "thread": null
+  },
+  {
+    "target": "type:SubstPair",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The operands are read at `register-all-defs`, before `parameterize-type` rewrites value-names into fresh type variables, so the source names of the referenced functions are still present as `ConstructedTy` heads and can be looked up in the def list.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Arithmetic in a proposition folds here. The parser gives `1 + 1` the shape of an application whose head is the operator, so it arrives as an ordinary two-argument spine and needs no node of its own. Both operands are normalized first, which is what lets `2 * 3 === 6` and a nested `1 + 2 + 3` reduce rather than sit stuck.",
+    "thread": null
+  },
+  {
+    "target": "function:is-arith-op-name",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Two cases deliberately do NOT fold, and each stays a spine so the claim is reported unproven rather than silently admitted. A division by zero, because folding it would trap the compiler on a program that only stated a false proposition. And a non-integer operand, because the literal shape is the only one this can evaluate.",
+    "thread": null
+  },
+  {
+    "target": "function:is-list-prim-name",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The builtin list primitives reduce here, over the same Nil/Cons spines the induction checker substitutes for a `List`-typed variable. The primitives are builtins, not defs, so without these rules every proposition naming one is stuck on its first step and no claim about the builtin List could ever normalize. Each rule is the primitive's defining equation read left to right: length of Nil is 0 and length of Cons is one more than the tail's; push onto Nil is a one-element list and push onto Cons pushes onto the tail (list-push appends at the END, which is what makes the Cons case recurse); at 0 of a Cons is the head and at n is at n-1 of the tail, for a literal n only. Anything else -- a symbolic index, a stuck scrutinee -- rebuilds the spine, so the claim is reported unproven rather than admitted.",
+    "thread": null
+  },
+  {
+    "target": "function:normalize-list-set-at",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The three rules below are the rest of the primitives, carried out of 2.5 as 2.36. They are read off the same defining equations and gated the same way. Setting at 0 of a Cons replaces the head; at a literal n it keeps the head and recurses on the tail, so an index past the end walks down to a stuck `list-set-at Nil` and the claim is reported unproven rather than folded to a value the runtime never produces -- which is why there is deliberately no Nil rule for either indexed primitive. Inserting at 0 of a spine conses onto it; at a literal n it recurses like set. Append is the only total one: Nil on the left is the right operand, Cons on the left conses onto the appended tail. The left operand must already be a Nil/Cons spine, which is also what keeps `&` on Text out of these rules.",
+    "thread": null
+  },
+  {
+    "target": "type:ParamEntry",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A ParamEntry records one lowercase signature name and the fresh variable id it was assigned. Type names and effect-row tails share the entry list (and the unifier's id counter) but are distinct kinds: is-row tells wrap-forall-from-entries which binder to build (ForAllTy or ForAllEff), and find-param-entry matches name AND kind, so a signature using the same lowercase letter as a type variable and as a row tail gets two independent variables.",
+    "thread": null
+  },
+  {
+    "target": "function:parameterize-row",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "parameterize-row assigns a row-variable id to a source tail name. A row without a tail name passes through untouched (the interned empty-row included); a tail already carrying an id passes through (parameterization runs once per signature). A named tail either reuses the id of an earlier occurrence in the same signature -- that sharing is what makes map's argument row and result row the SAME variable -- or mints a fresh id from the unifier's shared counter and records a row-kind entry for the ForAllEff wrap.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A type variable in a signature is universally quantified: it is the CALLER's to choose, so the body must work for every choice. The body is checked against an instantiation of the declared type, which hands each of those variables a fresh unification variable -- the right treatment at a call site and the wrong one here, because a fresh variable is solvable and the body will happily solve it. That is how `h : a -> b` with the body `[x]` type-checked: the body decided `b := List a`, the caller went on choosing `b` for itself, and `h 5 + 1` answered a heap pointer wearing the type Integer.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "So the body is held to the declaration afterwards: every variable the signature quantified must still be unbound. resolve-declared-type mints them before the body is inferred, so they carry lower ids than anything the body allocates, and unify-resolved binds the higher id to the lower -- a declared variable therefore survives unification with another variable, and can only become bound by meeting a structural type. Bound means the body chose, and the body does not get to choose.",
+    "thread": null
+  },
+  {
+    "target": "function:check-declared-rigidity",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "This runs BEFORE the tie-back below, which unifies the instantiation against the env's binders and would bind these very ids itself.",
+    "thread": null
+  },
+  {
+    "target": "function:lint-return-narrowing",
+    "kind": "invariant",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A bounded return is a refined position (the bounded-signature postcondition): the body's result must inhabit the declared bound. When the declared return resolves to a bounded Integer, run the same hybrid lint the parameter and field positions use, on the body expression against the return's bound. Range propagation to callers is deferred to stage B behind the runtime postcondition guard.",
+    "thread": null
+  },
+  {
+    "target": "function:last-arrow-row",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "An undeclared def's synthesized arrow carries a fresh row variable on its innermost (performing) arrow; the body's ambient row unifies into it above, so callers checked in any order see the def's real effects through resolution. A declared def's row is checked against its signature by row-le at stage 3b, not unified here.",
+    "thread": null
+  },
+  {
+    "target": "function:check-effect-row-subset",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The def boundary compares the body's AMBIENT row against the row the signature declares on the def's performing arrow (the arrow consumed by the last parameter), or against the effect set of an effectful VALUE signature. Coverage uses the dotted sub-effect lattice via effect-covered-by; row tails are ignored here -- a body tail that is the signature's own row variable is trivially allowed, and any other unsolved tail absorbed nothing, so it defaults to empty. Scope literals ride the labels but are not checked at this boundary; scope enforcement stays with the capability machinery.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "collect-effect-names gathers every declared effect name reachable on a type's performing spine: arrow-row labels down the curried chain (never into parameter types -- a parameter's effects are the caller's) plus the effect set of an effectful value type. The punctual bare-I/O check and the opening capability check read declared effects through this, row and value forms alike.",
+    "thread": null
+  },
+  {
+    "target": "function:collect-effect-names",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The FunTy arm deliberately uses parenthesized for-sugar as a binary operand: this exact shape is the FabledTreasureMap entry-9 printer regression (an emitted for-expr in operand position must keep its parentheses), and living here it is re-proven by the text fixed point on every build.",
+    "thread": null
+  },
+  {
+    "target": "section:Capability Scope",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A capability effect may carry a scope literal naming the resources the grant covers: [FileSystem.Read \"/config/\"] promises this function reads only under /config/. The literal has always parsed, ridden the label, and round-tripped through the text emitter -- and until now nothing read it, so that grant opened /etc just as well. A field that is populated and never read looks like a shipped feature from every angle except the one that matters.",
+    "thread": null
+  },
+  {
+    "target": "function:row-any-scoped",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The rule is that a scope may narrow, never widen. A declared label with an EMPTY scope is unrestricted and covers everything, which is why a program that names no scope is unaffected by any of this: the whole check is gated on some label actually carrying a scope.",
+    "thread": null
+  },
+  {
+    "target": "function:scoped-op-effect",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The scoped operations are the effect primitives whose first argument names the resource they touch. The effect each one performs is the dotted sub-effect a grant is written against, so read-file answers to a FileSystem.Read grant and to a bare FileSystem grant alike, through effect-covered-by.",
+    "thread": null
+  },
+  {
+    "target": "function:console-channel-op",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Console is the family that does not fit the shape of the other two, and pretending it did would have made the check a lie. print-line does not take its channel as an argument -- it IS the channel. So a console operation's resource comes from the operation's own name and never from anything the caller wrote, which is why op-resource and lint-fixed-resource exist beside the argument path.",
+    "thread": null
+  },
+  {
+    "target": "function:authority-admits",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A host must match whole, never by prefix. A port is compared only when both sides name one: a grant that names no port covers every port on that host, and a resource that names no port is a resolve-dns hostname, which never reaches a port for us to check.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "scope-admits answers \"does this grant reach that RESOURCE\". This answers \"does this scope contain that SCOPE\", and they are not the same question even though the families are. The relation is chosen the same way, by the effect family, and for a path and a channel the test is the same text: a path contains what extends it, a channel contains only itself.",
+    "thread": null
+  },
+  {
+    "target": "function:authority-subsumes",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "An outer authority contains an inner one when the hosts are the same and the outer either names no port (it covers every port, so it covers whatever the inner names) or names the very port the inner does. An inner that names no port covers every port and is therefore NOT inside an outer that named one -- that is the clause authority-admits spends on resolve-dns and this one must not.",
+    "thread": null
+  },
+  {
+    "target": "function:scope-permits",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A grant permits a resource when SOME declared label covers the effect and either grants it unrestricted (empty scope) or names a scope the resource sits inside. Any one covering grant is enough -- a signature that declares both [FileSystem] and [FileSystem.Read \"/config/\"] has granted the wider of the two, and we hold it to what it actually said.",
+    "thread": null
+  },
+  {
+    "target": "function:effect-has-grant",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "An effect this signature never granted at all is not a scope problem -- it is an undeclared effect, and the def-boundary row-subset check owns that diagnosis (CDX2031). Scope only speaks where a grant exists, or it would answer a question it was not asked.",
+    "thread": null
+  },
+  {
+    "target": "function:collect-effect-labels",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "collect-effect-labels is collect-effect-names keeping the scope. A callee that declares its own scope must sit inside ours: the caller cannot delegate authority it was never granted.",
+    "thread": null
+  },
+  {
+    "target": "function:check-callee-scopes",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A callee with NO scope of its own may touch anything. Under a grant that names a scope, that is a widening: the caller cannot hand on authority it was never given. So an unscoped callee is not skipped -- it is measured, and its empty scope fails to sit inside a narrowed grant exactly as \"/etc/\" would. This is what makes a scope survive an indirect call, and it only became reachable once the filesystem builtins carried honest effect rows.",
+    "thread": null
+  },
+  {
+    "target": "function:lint-effect-scope",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A computed path is a refusal, not a pass. The compiler cannot prove where a path it did not read will point, and a scope that admits the unprovable is not a scope. Pass a literal, or widen the declaration.",
+    "thread": null
+  },
+  {
+    "target": "function:lint-fixed-resource",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A console operation carries its own resource, so there is no argument to read and nothing the caller can compute: the channel is decided by which function was called. That makes this the one scoped check that can never be defeated by an unprovable argument.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Capability effect exemption. The hardware intrinsics carry Device.* effect rows so that application and library code doing raw I/O must declare it. But at a hardware boundary the declaration is theater -- a driver is expected to do I/O. So the OWNED HARDWARE STACK is exempt at QUIRE granularity: a def whose quire is the compiler, kernel, OS, or plugs may use the intrinsics without declaring the effect. The quire is the prefix before \"--\" in the concat-mangled chapter slug (an unprefixed slug is its own quire, e.g. the compiler root \"Opening\"). Foreword and app code are NOT exempt -- foreword is the surface external code consumes, so its declarations are the value; apps are the threat surface the discipline exists for. This slice skips the effect-row check for exempt defs; full infer-and-propagate through exempt wrappers (the app-calls-kernel-directly path) is later work.",
+    "thread": null
+  },
+  {
+    "target": "function:slug-grounded-names",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The grounds table is a List Text of \"slug\\neffect\" entries (built by the parser, carried on the chapter and the state). A def's grounded effects are the effect halves of every entry whose slug half equals the def's chapter-slug. Because a slug can hold no newline, text-starts-with on \"slug\\n\" is an exact slug match, never a prefix collision between a slug and a longer one. The result is a List Name so it drops straight into check-effect-row-subset's allowed set beside the declared labels, where the dotted sub-effect lattice covers it. The grounds rule: a chapter grounds the hardware effects it is the source of, and its bodies may perform exactly those without declaring them.",
+    "thread": null
+  },
+  {
+    "target": "type:DefSetup",
+    "kind": "invariant",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "declared-vars carries the type variables the SIGNATURE quantified, as instantiate-collect minted them. They are the caller's to choose, and check-declared-rigidity holds the body to that. An undeclared def has none: the variables in its synthesized arrow are exactly what the body is supposed to solve.",
+    "thread": null
+  },
+  {
+    "target": "function:bind-param-range",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A bounded parameter's declared range is a sound fact inside the body because stage B's entry guard enforces it at runtime. Recording it into local-ranges lets the narrowing lint prove a store of the parameter into an equal-or-wider bounded field. Only OvError bounds narrower than the full i64 range are recorded; a plain Integer parameter adds nothing.",
+    "thread": null
+  },
+  {
+    "target": "section:Punctual Mutual Recursion",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "has-self-call rejects direct self-recursion per def. A cycle THROUGH other punctual functions (f calls g, g calls f) is equally unbounded but invisible to a per-def scan, so after all defs are checked the punctual call graph is walked. An edge is any mention of another punctual def's name in a punctual body -- over-approximate on purpose, so a punctual function reference passed as a value still pins the cycle. A def that can reach itself through one or more OTHER punctual defs is rejected with CDX6005. Direct self-loops contribute no edge; has-self-call owns those, so a single mistake is reported once.",
+    "thread": null
+  },
+  {
+    "target": "function:pg-is-prop",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A proof term may only be built from the proof calculus: a proof builtin (Refl / sym / trans / cong / app-cong / assume), an inductive-hypothesis binding, a cited claim, an 'induction' expression, or a let of proof terms. Any other expression form -- an if, a when, an act block, a lambda, arithmetic -- that produces a proposition is rejected, because such a form can launder a proof of a false proposition past the acyclicity check above. The check is type-directed: a subexpression is constrained only when its checked type is a proposition, so the value arguments that instantiate a for-all (append-assoc (reverse ys) ...) are left alone while the proof arguments to the builtins are walked. expr-types is keyed by span but is not sorted until the check-lower boundary, so this sorts a copy first; the whole pass is guarded by there being a proof-relevant definition at all, so a program with no proofs (the selfhost) pays nothing.",
+    "thread": null
+  },
+  {
+    "target": "function:register-const-range",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A zero-parameter def whose body is an integer literal is a constant with a known value; its [n, n] range is recorded in the env's const-range table for the narrowing lint. The registered TYPE stays the declared one -- refining it would make two distinct constants disjoint under unification.",
+    "thread": null
+  },
+  {
+    "target": "function:check-effectful-arrow-value",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Post-stage-4 an EffectfulTy may wrap only a value type (§4): an effect bracket around a function type in a VALUE signature would revive the transitional form the migration retired, so it is rejected at registration with the fix in the message.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The ceiling is the CHECK deck reservation's top, checked per definition because this loop is where the phase writes the deck in bulk -- one def's inferred types, substitutions and expr-types per turn.",
+    "thread": null
+  },
+  {
+    "target": "section:Induction Checking",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Structural induction over a variant type (proof-system Stage 4b/5). A `proof p = induction on x ... qed` def whose claim is `for all (x : T), lhs === rhs` is checked constructor-by-constructor: for each `C_i` of T, the subgoal is the proposition with `x` replaced by `C_i` applied to its (rigid, opaque) field variables; each recursive field binds an inductive hypothesis (the proposition with `x` replaced by that field); both are normalized by the Stage 3 definitional-equality normalizer and the branch's proof term is checked against the subgoal by the ordinary proof unifier. A missing constructor case is an error; a claim that is not a variant-typed for-all equality is disclosed as an unproven axiom (CDX4022), never silently accepted.",
+    "thread": null
+  },
+  {
+    "target": "function:builtin-list-sumty",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The builtin List is not a variant, but its inductive shape is fixed -- empty, or an element before a shorter list -- so induction over `xs : List a` is checked against a synthesized view: `Nil` with no fields and `Cons (a) (List a)`. The view exists only here, for Stage 5; nothing at runtime changes, and `is Cons (h) (t)` in ordinary code remains CDX2001. The tail field is ListTy, so ctype-head-name must answer the view's own type name for it or no inductive hypothesis would ever bind.",
+    "thread": null
+  },
+  {
+    "target": "type:ElabResult",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A proof term may apply a proven `claim` (another `for all` def in the module) to arguments -- `append-nil (reverse ys)` instantiates the lemma's proposition with `xs := reverse ys`. Such applications are elaborated before inference: each maximal claim-application spine is replaced by a fresh local bound to the instantiated (and normalized) `PropEqTy`, so the ordinary proof unifier then checks the surrounding term (`trans`/`sym`/`cong`/`app-cong`) against it.",
+    "thread": null
+  },
+  {
+    "target": "section:Linearity Checking",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Two disciplines share this machinery, because they spring from one idea: a uniquely owned value may not be duplicated.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A value typed `linear T` (a non-mutable resource -- a file handle, a socket) must be used *exactly once* along every path: not zero times (leak, CDX2063), not two or more (CDX2061). Every mention is a use, so `lin-of` counts them all; branches must use it an equal number of times.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A `mutable` record is the other face of uniqueness. It is a stable container you own and may *read* as often as you like -- reading a field does not spend it. What you may not do is hand the same record to two owners. So for a mutable parameter `consume-of` counts only the *consuming* positions (passing it on, storing it, returning it) and never the reads (`r.field`); if any single path consumes it more than once, that is aliasing (CDX2062). Branches take the worst path (max), not a sum, because only one path runs.",
+    "thread": null
+  },
+  {
+    "target": "type:LinResult",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Ownership flows through let-bound locals: a bind whose value is a bare mention of the tracked owner is a MOVE. The walk re-roots on the new name (which inherits the exactly-once obligation), and any residual mention of the old name is a use-after-move, tallied in the `dead` field. Tracking ownership through argument boundaries, returns, captures, and containers is later work (ownership stages 3 and 4).",
+    "thread": null
+  },
+  {
+    "target": "function:lin-spine",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The argument boundary: a bare mention of the tracked owner in argument position is sanctioned only when the callee's parameter at that position is declared linear in its registered signature (stage 1 left the LinearTy wrapper there for exactly this read). freeze's own `linear a` parameter makes it the door with no special case. An unknown or unregistered callee (a function value, a lambda head) is conservatively a plain boundary.",
+    "thread": null
+  },
+  {
+    "target": "function:lin-arg-lambda",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A capturing closure handed to a callee escapes into an unknown call discipline - the callee may invoke it any number of times. A capturing closure in tail position escapes to the caller the same way, so it takes the return obligation (sanctioned only by a linear-declared return type).",
+    "thread": null
+  },
+  {
+    "target": "function:lin-stash-elem",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A bind RETAINS the owner when its value still holds the resource after the bind: a lambda that captures it, a partial application (by registered arity) that consumed it into a closure environment, or a list/record literal that stashes the bare name (possibly nested in further literals). The binding then owns the chain: a closure is call-once, a container is consume-once, and the boundary and count rules compose from there. A container element that merely CONSUMES the owner through a call (`[consume n]`) is not a stash - the container holds a plain result.",
+    "thread": null
+  },
+  {
+    "target": "function:lin-let-moved",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The index i is already the bind AFTER the alias. A self-alias (let n = n) transfers to the same name, so the walk simply continues under it; a self-named retain keeps only the bind value's own judgment (the rest is shadowed).",
+    "thread": null
+  },
+  {
+    "target": "function:lin-clause-guard",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A handler clause body may run zero or many times, so any mention of the tracked owner inside one is a capture violation.",
+    "thread": null
+  },
+  {
+    "target": "function:return-mentions-mut",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The return-position walk. apply-threads asks whether a callee's return type hands the mutable record onward. At return position the walk recurses through PARAMETRIC structure - List and LinkedList elements, and a sum's instantiated type ARGUMENTS - because a target wrapped there is the threading pattern: state in, wrapped state out. It must NOT recurse into a sum's constructor payloads, and the record-FIELD walk must stay sum/list blind: a named return type whose field chain reaches the target only through a list or sum field merely reads the state (the make-token shape), and completing that chain rejects legitimate borrow-twice callers (tried CL 2710, reverted). Named types therefore delegate to type-mentions-mut, whose field walk keeps its deliberate sum/list blindness.",
+    "thread": null
+  },
+  {
+    "target": "function:consume-let-moved",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The dead walk of a moved-from mutable name counts EVERY mention, reads included: after the transfer the old name is a stale alias, exactly the hazard the discipline exists to forbid.",
+    "thread": null
+  },
+  {
+    "target": "function:afun-return-after",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A bare return of the owner is sanctioned only when the def's declared return type is itself linear. The freeze identity is the one exempt door: its whole meaning is shedding the wrapper.",
+    "thread": null
+  },
+  {
+    "target": "section:Minted Linear Owners",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A local bound from a call whose registered return type is linear is a freshly minted owner: the callee handed over the only reference, so the binding inherits the exactly-once obligation. Before this walk existed the checker tracked declared parameters only, and a minted handle could be duplicated or dropped without diagnosis (the documented LinearOwnership residual). The walk finds every such bind, in let chains and act blocks alike, and runs the same ownership discipline over the binding's scope that a declared linear parameter receives, using the existing lin-let machinery so moves, retains, shadowing, and the argument boundary all apply unchanged. The callee's return is read from the registered signature, where LinearTy survives in return position, unwrapping EffectfulTy so an effectful constructor like open-file mints too.",
+    "thread": null
+  },
+  {
+    "target": "function:mutable-name-of",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The mutable twin of the mint above. A local bound from a call whose registered return type is a mutable record owns that record: sb-new hands over the only reference exactly as a declared mutable parameter arrives owned. Before this walk the checker tracked declared parameters only, so `let base = sb-new in let a = sb-append base x in let b = sb-append base y` compiled clean and aliased silently, while the identical body with base as a parameter was refused -- the Developer's Guide promised the wider guarantee. The detector answers the mutable type's NAME (empty text for none) so the same consume-of discipline a declared parameter receives can be rooted at the binding, borrow-vs-consume inference included.",
+    "thread": null
+  },
+  {
+    "target": "section:Stale Read After In-Place Update",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "__record-set mutates the record it is handed, so a function that __record-sets one of its parameters changes the caller's value through the alias. The hazard: bind a mutator's result to a NEW name, then keep reading a field of the ORIGINAL binding -- the read sees the mutated value, not the old one. Correct threading rebinds the same name (let s = f s) or reads the result; this check flags the alias-and-reuse mistake. It is field-sensitive: only a read of a field the mutator actually writes is flagged, so reading an untouched field after the call stays silent. Intra-chapter and direct-mutator (the param appears as the bare target of __record-set in the body); both hold for the floating-point rotate bug that motivated it.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Checker",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "This was a hand-written list of 23 names that had to be kept in step with manifest-cap-id (X86_64Chapter) by inspection, and a build-time guard existed because a name here with no cap id declares an effect the manifest silently drops. It is a projection of Foreword chapter Capability now: the 17 capabilities, plus a dotted Read and Write for each of the three families that carry a direction. Both readings come from one table, so the guard has no state left to catch and is deleted with it.",
+    "thread": null
+  },
+  {
+    "target": "function:capability-vocabulary",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The order differs from the list this replaced. Nothing reads it in order -- every call site is a membership test through cap-name-covered.",
+    "thread": null
+  }
+]

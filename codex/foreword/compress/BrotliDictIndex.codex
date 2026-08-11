@@ -1,11 +1,6 @@
 Chapter: BrotliDictIndex
   cites Compress chapter BrotliDict
 
- An index over RFC 7932's 13504 dictionary words, so a position in the input can
- ask "is there a dictionary word here" without comparing itself against all of
- them. The corpus itself is BrotliDict, which is generated; this is the part that
- is written rather than extracted, so it lives in its own chapter.
-
  The shape is Lz77's, for the same reason and with the same guarantees: words are
  bucketed by a hash of their first four bytes, and the candidates for a position
  are the chain of words sharing that hash, walked and verified against the actual
@@ -17,14 +12,6 @@ Chapter: BrotliDictIndex
  13504 words and allocates about a third of a megabyte; doing that inside the
  matcher's loop would be quadratic in the input. The caller builds it and threads
  it, which is why it is a record rather than something looked up on demand.
-
- The corpus is carried inside the index for the same reason -- one load, threaded
- -- because every reference to a list constant rebuilds it and the corpus is a
- megabyte.
-
- To brdix-build gives an index over the whole dictionary.
- To brdix-none gives an index that never matches, for input too small to bother.
- To brdix-find gives the longest dictionary word at a position, or minus one.
 
  We say:
 
@@ -51,11 +38,6 @@ Section: Shape
  three floors go 1754 at six, 1749 at five, 1722 at FOUR, with all nine other
  cases unchanged at every setting.
 
- Four is also the shortest word the corpus has, so this floor now excludes
- nothing. It is a floor on the SEARCH, not a judgement about any stream: the plan
- as a whole is still costed against not using the dictionary, which is what makes
- a marginal word safe to take.
-
   brdix-min-word : Integer = 4
 
   BrDictIx = record {
@@ -68,9 +50,6 @@ Section: Shape
   }
 
 Section: Building
-
- The hash is over the four bytes a word starts with, which is also the shortest
- word in the corpus, so every word can be indexed by it.
 
   brdix-hash : List Integer, Integer -> Integer
   brdix-hash (xs) (p) =
@@ -124,10 +103,6 @@ Section: Building
       bx-n = brdix-fill data head next offs lens brdict-min-len 0 0
     }
 
- An index with no slots. Every lookup answers minus one, so a caller that does not
- want the dictionary -- input too short to repay a megabyte of tables -- takes the
- same path as one that looked and found nothing.
-
   brdix-none : Integer -> BrDictIx
   brdix-none (ignored) =
     BrDictIx { bx-head = [], bx-next = [], bx-off = [], bx-len = [], bx-data = [], bx-n = 0 }
@@ -140,10 +115,6 @@ Section: Lookup
     else if list-at d (off + i) == list-at xs (p + i) then brdix-eq d off xs p (i + 1) n
     else False
 
- The walk keeps the LONGEST word that matches, not the first. A shorter candidate
- is rejected on its length before its bytes are touched, so the common case costs
- one comparison of two integers.
-
   brdix-walk : BrDictIx, List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   brdix-walk (ix) (xs) (p) (avail) (slot) (fuel) (best) =
     if slot < 0 then best
@@ -155,9 +126,6 @@ Section: Lookup
        else brdix-eq (ix.bx-data) (list-at (ix.bx-off) slot) xs p 0 wl
     in brdix-walk ix xs p avail (list-at (ix.bx-next) slot) (fuel - 1) (if take then slot else best)
 
- Answers a SLOT, not a word. The caller needs the length and the index within that
- length to build a distance, and both come off the slot.
-
   brdix-find : BrDictIx, List Integer, Integer, Integer -> Integer
   brdix-find (ix) (xs) (p) (avail) =
     if ix.bx-n <= 0 then 0 - 1
@@ -166,10 +134,6 @@ Section: Lookup
 
   brdix-slot-len : BrDictIx, Integer -> Integer
   brdix-slot-len (ix) (slot) = list-at (ix.bx-len) slot
-
- The index within its own length, which is the word id transform zero uses. Slots
- are numbered in corpus order, so subtracting the length's own base offset and
- dividing by the length recovers it without a table.
 
   brdix-slot-idx : BrDictIx, Integer -> Integer
   brdix-slot-idx (ix) (slot) =
@@ -238,11 +202,6 @@ Section: Transformed Lookup
  transform zero alone -- it was buying one saved literal, worth four or five bits
  under a decent literal code, for eight or ten bits of distance.
 
- So a candidate is scored rather than measured: eight bits earned per byte
- consumed, less the width of the word id it needs. That is an estimate and it is
- meant to be -- the PLAN is still costed exactly, against the same plan without
- transforms, so a bad estimate costs ratio and can never cost correctness.
-
   brdix-idbits : Integer, Integer -> Integer
   brdix-idbits (v) (acc) =
     if v <= 0 then acc
@@ -257,9 +216,6 @@ Section: Transformed Lookup
   brdix-used : BrDictIx, BrXf, Integer, Integer -> Integer
   brdix-used (ix) (xf) (slot) (t) =
     brdix-core-len (list-at (ix.bx-len) slot) (list-at (xf.bxf-type) t) + list-at (xf.bxf-suf-len) t
-
- Every usable transform tried against one candidate word, cheapest test first: a
- length that cannot win is rejected before a byte is read.
 
   brdix-xf-scan : BrDictIx, BrXf, List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   brdix-xf-scan (ix) (xf) (xs) (p) (avail) (slot) (t) (best) =
@@ -282,10 +238,6 @@ Section: Transformed Lookup
     if slot < 0 then best
     else if fuel <= 0 then best
     else brdix-xf-walk ix xf xs p avail (list-at (ix.bx-next) slot) (fuel - 1) (brdix-xf-scan ix xf xs p avail slot 0 best)
-
- The plain lookup in the same packed form, so a caller can ask for the dictionary
- WITHOUT transforms and get an answer of the same shape. Transform zero is the
- identity, so this is that answer.
 
   brdix-find-0 : BrDictIx, List Integer, Integer, Integer -> Integer
   brdix-find-0 (ix) (xs) (p) (avail) =

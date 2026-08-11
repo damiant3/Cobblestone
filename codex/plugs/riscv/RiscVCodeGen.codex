@@ -3,11 +3,6 @@ Chapter: RISC-V Code Generator
   cites Plug chapter Plug Types
   cites Foreword chapter CCE (cce-to-unicode-table)
 
- RISC-V RV64IM code generator for the plug pipeline.
- Receives parsed IR, emits machine code bytes and metadata
- in the wire format for chaining to ELF plugs.
- Transliterated from old/src/Codex.Emit.RiscV/RiscVCodeGen.cs.
-
 Section: Register Constants
 
   rv-heap-reg : Integer = 9
@@ -224,11 +219,6 @@ Section: Emit Helpers
    in if idx < 0 then st
    else __record-set st "func-arities" (list-set-at (st.func-arities) idx arity)
 
- Arity resolution stays FIRST-match even though offset resolution is
- last-match: runtime helpers are recorded with arity zero on purpose and
- the dispatch is calibrated to that answer (the ARM64 chapter carries
- the measurement).
-
   rv-find-func-arity : List Text, List Integer, Text, Integer -> Integer
   rv-find-func-arity (names) (arities) (target) (i) =
    if i >= list-length names then 0
@@ -365,14 +355,6 @@ Section: Register Allocation
   rv-bind-local : RvState, Text, Integer -> RvState
   rv-bind-local (st) (name) (reg) =
    __record-set st "locals" (list-push (st.locals) (RvLocal { name = name, reg = __narrow reg }))
-
- rv-bind-local appends and rv-lookup-local reads the last match, so a scope is a
- suffix of st.locals: entering one adds bindings at the end, leaving one has to
- drop them again. What is saved is the LENGTH, not the list. __list_push writes
- into the same buffer and hands back the same pointer whenever capacity allows,
- so holding the old field value and putting it back changes nothing -- it only
- ever appeared to work when a bind hit the grow path and got a fresh buffer.
- act-let-scope is the guard.
 
   rv-locals-take : List RvLocal, Integer, Integer, List RvLocal -> List RvLocal
   rv-locals-take (locals) (n) (i) (acc) =
@@ -898,12 +880,6 @@ Section: Expression Emission
 
 Section: Name Emission
 
- A zero-argument effect operation goes through the handler table ONLY
- when a handler was installed: an unwritten slot reads zero and calling
- through it dies before the first print, which is what
- `console-readline-cite` did on this lane too (the ARM64 chapter carries
- the account). An unhandled `read-line` answers the None cell.
-
   rv-emit-name : RvState, Text, CodexType -> RvEmitResult
   rv-emit-name (st) (name) (ty) =
    let local-reg = rv-lookup-local (st.locals) name 0
@@ -1032,13 +1008,6 @@ Section: Binary Emission
    else let rd = rv-alloc-temp (lr.state)
    in RvEmitResult { state = rv-emit (rd.state) (rv-srai (rd.reg) (lr.reg) shift), reg = rd.reg }
 
- A unit type is runtime-transparent: its representation IS the inner
- type, so every dispatch that picks an instruction sequence by type
- must see through the wrapper. Before the UnitTy arms here, a compare
- on a `unit Real` took the integer path, `show` on a `unit Text`
- printed the pointer, and a literal pattern on one never matched
- (measured 2026-07-28: unit-real-compare, unit-show, unit-pattern-lit).
-
   rv-is-text-type : CodexType -> Boolean
   rv-is-text-type (ty) =
    when ty
@@ -1160,12 +1129,6 @@ Section: Binary Emission
     else rv-emit-binary-reg st op left right ty
    else rv-emit-binary-reg st op left right ty
 
- A simple expression is one whose evaluation cannot disturb a value already
- staged in an argument register. Literals qualify because they lower to a
- single load-immediate. A name qualifies only when it resolves to a local or
- a parameter, which lives in a callee-saved register or a spill slot and is
- reached with a load.
-
  A name that resolves to nothing is a top-level definition, and a top-level
  definition is a function. `three` and `seven` are not storage, they are a
  `jal`, and a `jal` clobbers a0 and a1. Answering True for those is what let
@@ -1173,9 +1136,6 @@ Section: Binary Emission
  it: `f-two 2 seven` put 2 in a0, called `seven`, and handed the callee 7 and
  7. The same predicate drives `skip-save` in `rv-emit-binary-reg`, so such a
  name also cost the left operand of a binary expression.
-
- Answering False when unsure is free: it buys a save and a reload. Answering
- True when unsure returns a wrong number.
 
   rv-right-is-simple : RvState, IRExpr -> Boolean
   rv-right-is-simple (st) (e) =
@@ -1877,12 +1837,6 @@ Section: Real Arithmetic
  left to clobber, and `slli rd, rs1, shamt` is correct even when the
  allocator returns rd == rs1.
 
- **This is not the general fix and must not be read as one.** Two live
- temporaries either side of a binop can still collide in frameless mode,
- here and in `rv-emit-frameless-binop-reg`; what is fixed is the shape
- that occurs, where one side is a literal. The general defect is open and
- is not fixed here.
-
  The shift amount is bounded at 63 rather than trusted, because
  `rv-slli` MASKS an oversized shamt with #3F instead of refusing it: an
  unguarded 2047 would quietly shift by 63. Above 63 this declines and
@@ -2018,6 +1972,5 @@ Section: Real Arithmetic
    in let tr = rv-alloc-temp (lr.state)
    in let rd = tr.reg
    in RvEmitResult { state = rv-emit (tr.state) (rv-amoswap-d rd val-r addr-r), reg = rd }
-
 
 Page 1 of 3

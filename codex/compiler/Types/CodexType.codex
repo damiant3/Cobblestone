@@ -1,7 +1,5 @@
 Chapter: Codex Types
 
- Type representations used by the type checker and later stages.
-
 Section: Primitive Types
   CodexType =
    | IntegerTy (Integer) (Integer) (OverflowMode)
@@ -94,23 +92,12 @@ Section: Effect Rows
 
 Section: Overflow Modes
 
- The behavior of a narrow-store at a bounded-Integer field when the
- incoming value falls outside the field's declared range. Set on a
- type at declaration time; consulted by codegen at every
- narrow-store site for that type. Mode is irrelevant for full-width
- (`i64-min..i64-max`) integers -- narrow-store does not fire.
-
   OverflowMode =
    | OvError
    | OvWrapping
    | OvClamping
 
 Section: Real Width And Mode
-
- Precision and safety are INDEPENDENT choices and the type used to carry
- exactly one of them, so of the six combinations only four could be
- spelled and both missing ones were f32. They are two fields here for
- that reason rather than for symmetry with IntegerTy.
 
  RmDefault is IEEE 754: an overflow yields an infinity and a caller who
  wants to know must ask. RmTrapping halts instead. RmSaturating clamps
@@ -125,10 +112,6 @@ Section: Real Width And Mode
    | RmDefault
    | RmTrapping
    | RmSaturating
-
- The spellings that existed before the collapse, named once so the
- hundred-odd mentions across the compiler do not each spell out a pair.
- `int-ty-default` is the same idea for integers and the precedent.
 
   real-f64 : CodexType = RealTy RwF64 RmDefault
   real-f32 : CodexType = RealTy RwF32 RmDefault
@@ -145,25 +128,6 @@ Section: Integer Bounds
   int-ty-default : CodexType = IntegerTy i64-min i64-max OvError
 
 Section: Unit Stripping
-
- A `unit` type is a wrapper codegen erases, so anything dispatching on what
- a value IS at runtime has to look through it. This is that one look, and it
- lives here rather than in a back end because it is a question about the
- type, not about a machine.
-
- It recurses, because nothing prevents a unit wrapping a unit.
-
- There were four hand-maintained answers to this question and they did not
- agree. `emit-ord-comparison` stripped recursively; `is-fusable-int-comparison`
- and `cmp-answers-operand` stripped one level; `lower-bin-op` stripped nothing
- at all, so every arithmetic operator on a `unit Real` fell past the floating
- arms to the integer one and added two IEEE-754 bit patterns. That is wrong on
- every input rather than on a quarter of them, and it emitted no diagnostic
- because `CDX9010` guards the comparison emitter and arithmetic does not go
- through it.
-
- The lesson is the one this tree keeps relearning: a predicate copied is a
- predicate that will drift. Derive it once and let every caller read it.
 
   strip-unit-ty : CodexType -> CodexType
   strip-unit-ty (ty) =
@@ -202,9 +166,6 @@ Section: Real Mode Classification
    when ty
     is RealTy (w) (m) -> w
     is otherwise -> RwF64
-
- A variant carries no structural equality, so the two fields need their
- own comparisons before a unifier can ask whether two Real types agree.
 
   real-width-eq : RealWidth, RealWidth -> Boolean
   real-width-eq (a) (b) = is-width-f32 a == is-width-f32 b
@@ -248,11 +209,6 @@ Section: Pointer Classification
  can read declared linearity, but it is representation-transparent
  everywhere -- width, layout, unification, and the IR wire all see
  the inner type.
-
- TypeVar is the one undecidable case: a polymorphic field's runtime
- representation depends on its instantiation. Classified conservatively
- as a pointer here; a precise map for a generic record requires a
- per-instantiation (monomorphized) map, which is future work.
 
   is-pointer-type : CodexType -> Boolean
   is-pointer-type (ty) =

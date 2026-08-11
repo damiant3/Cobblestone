@@ -1,0 +1,118 @@
+Chapter: EngineTextureTest
+  cites Foreword chapter Console
+  cites Engine chapter Renderer3D
+  cites Engine chapter Scene3D
+  cites Engine chapter Mesh
+  cites Engine chapter Material
+  cites Engine chapter Texture
+  cites Math chapter Matrix4
+  cites Game chapter Color
+
+Section: Fixture
+
+ An upright quad squarely facing the camera at constant depth, so the
+ affine UV interpolation is exact and every expectation below is
+ hand-derivable. The texture is a 2x2 checkerboard: texel (0,0) and
+ (1,1) carry colour A, (1,0) and (0,1) carry colour B. The quad spans
+ screen x 25..295 and y 23..217 at this camera, so the four sample
+ points sit deep inside their checker quadrants and no rounding can
+ move them across a texel boundary.
+
+  rw : Integer = 320
+  rh : Integer = 240
+
+  sky : Integer = #14141E
+
+  col-a : Integer = #C81020
+  col-b : Integer = #2040C8
+
+  checker : EngineTexture
+  checker = etx-checkerboard 2 2 1 col-a col-b
+
+  quad : Mesh
+  quad =
+    let verts = [
+      vertex (-1400) (-1000) 0 0 0 1000 0 0 #FFFFFF,
+      vertex 1400 (-1000) 0 0 0 1000 1000 0 #FFFFFF,
+      vertex 1400 1000 0 0 0 1000 1000 1000 #FFFFFF,
+      vertex (-1400) 1000 0 0 0 1000 0 1000 #FFFFFF
+    ]
+    in mesh-new verts [0, 1, 2, 0, 2, 3]
+
+  tex-scene : EngineMaterial -> Scene3DState
+  tex-scene (mat) =
+    let cam = camera3d-new (vec3-new 0.0 0.0 3000.0) (vec3-new 0.0 0.0 0.0) 0.785
+    in let scene = scene3d-new cam
+    in let node = sn3-with-mesh "quad" quad mat
+    in scene3d-set-ambient (scene3d-add scene node) 200
+
+  unlit-tex : EngineMaterial
+  unlit-tex = emat-set-shading (emat-textured checker) Unlit
+
+ The grey albedo makes the modulate observable as an exact literal:
+ (100 * 200) / 255 = 78, (100 * 16) / 255 = 6, (100 * 32) / 255 = 12,
+ so a colour-A texel under grey answers #4E060C precisely.
+
+  grey-tex : EngineMaterial
+  grey-tex = emat-set-texture (emat-unlit (rgb 100 100 100)) checker
+
+  plain-red : EngineMaterial
+  plain-red = emat-unlit (rgb 220 50 50)
+
+Section: Instrument
+
+  px-at : Framebuf, Integer, Integer -> Integer
+  px-at (fb) (x) (y) = list-at (fb.fb-pixels) (y * rw + x)
+
+  render-cost : Scene3DState, Integer, Integer -> Integer
+  render-cost (scene) (w) (h) =
+    let tgt = r3d-target-new w h sky
+    in let a = alloc-bytes 0
+    in let d = r3d-render-into tgt scene
+    in let b = alloc-bytes 0
+    in b - a
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+Section: Entry
+
+ Screen y grows downward and world y grows upward, and v follows world
+ y, so the screen upper-left quadrant carries uv near (250, 750): texel
+ (0,1), colour B. The four quadrants must answer the checker diagonal.
+
+  opening : [Console] Nothing = act
+    let s-a = etx-sample-nearest checker 250 250 WrapRepeat
+    in let s-b = etx-sample-nearest checker 750 250 WrapRepeat
+    in let s-wrap = etx-sample-nearest checker 1250 250 WrapRepeat
+    in let s-clamp = etx-sample-nearest checker 1250 250 WrapClamp
+    in let fb = r3d-render-scene (tex-scene unlit-tex) rw rh
+    in let ul = px-at fb 92 72
+    in let ur = px-at fb 228 72
+    in let ll = px-at fb 92 168
+    in let lr = px-at fb 228 168
+    in let fb-grey = r3d-render-scene (tex-scene grey-tex) rw rh
+    in let grey-ll = px-at fb-grey 92 168
+    in let fb-plain = r3d-render-scene (tex-scene plain-red) rw rh
+    in let plain-mid = px-at fb-plain 160 120
+    in let cost-small = render-cost (tex-scene unlit-tex) 320 240
+    in let cost-large = render-cost (tex-scene unlit-tex) 640 480
+    in act
+      print-line-uni ("nearest samples texel A  : " & yn (s-a == col-a))
+      print-line-uni ("nearest samples texel B  : " & yn (s-b == col-b))
+      print-line-uni ("repeat wraps to texel A  : " & yn (s-wrap == col-a))
+      print-line-uni ("clamp holds at texel B   : " & yn (s-clamp == col-b))
+      print-line-uni ("quad lower-left exact A  : " & yn (ll == col-a))
+      print-line-uni ("quad upper-right exact A : " & yn (ur == col-a))
+      print-line-uni ("quad upper-left exact B  : " & yn (ul == col-b))
+      print-line-uni ("quad lower-right exact B : " & yn (lr == col-b))
+      print-line-uni ("grey modulate exact      : " & yn (grey-ll == #4E060C))
+      print-line-uni ("untextured unlit intact  : " & yn (plain-mid == rgb-to-packed (rgb 220 50 50)))
+      print-line-uni ("texture cost pixel-free  : " & yn (cost-small == cost-large))
+      print-line-uni ("upper-left sample        : " & show ul)
+      print-line-uni ("lower-left sample        : " & show ll)
+      print-line-uni ("grey lower-left sample   : " & show grey-ll)
+    end
+  end
+
+Page 1

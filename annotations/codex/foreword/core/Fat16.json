@@ -1,0 +1,226 @@
+[
+  {
+    "target": "function:fat16-zero-volume",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "fat16-init is total now. Ask fat16-vol-is-usable before trusting what it returns.",
+    "thread": null
+  },
+  {
+    "target": "function:fat16-write-u16",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "fat16-read-fat-entry takes a copy index because the test needs to interrogate the copies separately -- asking copy 1 whether it agrees with copy 0 is the only way to catch a writer that quietly updates just the first.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Fat16",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "The same search, over a cluster chain instead of the root's fixed region. A subdirectory has no root-entry-count to bound it and no contiguity to assume: it is a chain, so this follows the chain exactly as the read side does, and gives up when the chain ends rather than when a count runs out. It answers the same thing fat16-find-free-slot answers -- a byte address, or -1 -- so fat16-create-at-slot cannot tell the two apart, which is the whole reason writing into a subdirectory needed no new write code.",
+    "thread": null
+  },
+  {
+    "target": "section:Growing A Directory",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "A subdirectory whose every slot is taken is not full in the way a root is full. The root is a fixed region between the FATs and the data area and it genuinely cannot grow. A subdirectory is a cluster chain, and a chain is exactly the thing that can have another cluster put on the end of it. Both refusals used to read the same from outside -- False, nothing written -- so a volume with a gigabyte free would decline to record a file, and the caller could not tell that from the honest refusal of a full root.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Fat16",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "This is the search's tail, not a new search. fat16-find-free-slot-in-dir answers -1 when it runs off the end of the chain; the only question that -1 leaves open is whether the chain could be longer. So the answer is layered on rather than folded in: find first, and grow only when the find comes back empty. A directory that has a free slot never allocates anything.",
+    "thread": null
+  },
+  {
+    "target": "function:fat16-find-or-grow-slot-in-dir",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "A failure at any step answers -1, which is the same no the caller already handles, and leaves at worst a claimed cluster attached to nothing. That is a lost cluster, which chkdsk understands and reclaims; the alternative orders lose data instead.",
+    "thread": null
+  },
+  {
+    "target": "function:fat16-link-grown-dir",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "The grown cluster's first slot is its first byte, because the cluster was just zeroed and every slot in it is free.",
+    "thread": null
+  },
+  {
+    "target": "section:Creating A File",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "fat16-create-file answers True only when the entry is on the disk and every cluster of the file is behind it. It refuses rather than half-writes: no free cluster, no free slot, or a parent directory that does not exist all return False with nothing written.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Fat16",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "A subdirectory target used to be refused outright, and the refusal was honest while the parent walk was unwritten -- dropping \"a/b.txt\" into the root under the name \"A\" would have been worse than saying no. The walk is written now, and it turned out to be the smaller half of the job: everything below fat16-create-at-slot takes a slot as a byte address and does not care where that address came from. The root is a flat fixed region and a subdirectory is a cluster chain, so finding the free slot is the only thing that differs, and finding it is the only new code. The chain walk itself is the read side's (fat16-walk-path), used verbatim to resolve the parent.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Fat16",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "A parent whose every slot is taken is no longer refused: a subdirectory is a cluster chain and grows one when it runs out, which is the Growing A Directory section above. A full ROOT is still refused, and that refusal is the honest one -- the root is a fixed region and there is nowhere for it to go.",
+    "thread": null
+  },
+  {
+    "target": "function:fat16-create-file",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "Replacing means freeing the old chain before writing the new one and committing over the SAME slot, so the entry count does not grow and the clusters do not leak. fat16-create-at-slot takes a byte address and does not care whether it came from a free-slot scan or a name scan, which is the same property that let subdirectory writes reuse it.",
+    "thread": null
+  },
+  {
+    "target": "function:fat16-find-name-slot",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "The read side's root scan, answering the entry's byte address instead of the entry. It is deliberately the same walk with the same skips -- free slots, long-file-name fragments and the volume label -- because a name scan that disagreed with the one readers use would replace an entry that no reader was going to find, or miss one that they would.",
+    "thread": null
+  },
+  {
+    "target": "function:fat16-find-name-slot-in-dir",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "The same scan over a subdirectory's cluster chain. The subdirectory path had the identical duplicate-entry defect and it is fixed the same way: look for the name first, replace over its slot if it is there, and only find-or-grow a fresh slot when it is not.",
+    "thread": null
+  },
+  {
+    "target": "function:fat16-create-in-subdir",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "The parent is parts[0..n-2] and the leaf is parts[n-1], so resolving the parent is fat16-walk-path over one fewer part than the path has. A single name would leave nothing to walk, which is why n < 2 is refused here rather than reaching the walk -- it cannot happen through fat16-create-file, whose slash test is what sent us here, but this function does not get to assume its caller.",
+    "thread": null
+  },
+  {
+    "target": "section:Creating A Directory",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "create-directory was a compiler builtin that could not create a directory. Its emitter raised CDX2043 and said so, which was honest and is better than the write-file builtin it sat next to (that one printed to the console and reported success). But an honest refusal is still a refusal, and a filesystem a program can write into but cannot make a directory in is a strange shape. So it is here now, next to write-file and file-exists, for the same reason they are: the machine does not know what a directory is, and FAT16 does.",
+    "thread": null
+  },
+  {
+    "target": "function:fat16-create-directory",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "It refuses rather than half-writes, the same as fat16-create-file: no free cluster, no free slot, a parent that does not exist, a parent that is a file, or a name already taken all answer False with nothing written.",
+    "thread": null
+  },
+  {
+    "target": "function:fat16-mkdir-if-free",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "A name that already exists is refused before anything is claimed. Without this, making a directory twice would allocate a second cluster and commit a second entry under the same name -- two directories, one name, and a walk that finds whichever comes first.",
+    "thread": null
+  },
+  {
+    "target": "function:fat16-mkdir-init-cluster",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "The cluster is zeroed a sector at a time through the same read-modify-write the data path uses, and the dot entries go into the first sector after it is clear. An empty byte list fills the sector with zeroes, which is exactly what fat16-fill-sector does past the end of its input.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Fat16",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "The runtime half of the scope check. A capability effect may carry a scope literal naming the resources the grant covers, and until now nothing read it at runtime: the compiler refused an out-of-scope path it could SEE, and a path computed at runtime walked straight past the promise. A grant that only binds the paths you wrote as literals is not a grant, it is a lint.",
+    "thread": null
+  },
+  {
+    "target": "section:Asking Whether A File Is There",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "file-exists was a compiler builtin whose entire body was one instruction, `li rd, 1`. It returned True for every path, existing or not, so every existence check in every program took the same branch and took it for the same reason: nobody was looking. It is a real lookup now, and it lives here rather than in the emitter because the machine has no idea what a file is. FAT16 does, and FAT16 is written in Codex, over the block device, a few lines above.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Fat16",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "So ask the volume, which is the thing actually at risk. A no-disk volume parses out of a sector of zeroes and its bytes-per-sector is zero; that is the value the division would fault on, and it is the value to refuse. The check is now local to what it protects and depends on nothing else -- which is why it did not need revisiting when the counter was repaired, and why it should not start leaning on it again.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Fat16",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "So ask the disk. The GPT is on it, gpt-read parses it, and each partition carries its own start LBA.",
+    "thread": null
+  },
+  {
+    "target": "function:fat16-fallback-partition-start",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "Cost: gpt-read stops at the first zero type GUID, so a single-partition image costs four sector reads rather than one. Bounded by the partition count, and paid per volume-open.",
+    "thread": null
+  },
+  {
+    "target": "section:Saving A File",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "write-file was a compiler builtin that printed its content to the console and reported success. A program that saved a file saved nothing and was told otherwise -- silent data loss, and the loudest possible argument for why a name the compiler cannot keep should not be in the emitter. It refused honestly (CDX2043) for a while, which was better. This is better still: it writes the file.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Fat16",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "These return Boolean, not Nothing. Saving is exactly the operation whose failure a caller must be able to see: the disk can be full, the root directory can be full, and both are ordinary. A save that cannot fail is the builtin we just deleted.",
+    "thread": null
+  },
+  {
+    "target": "section:Listing Any Directory",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "fat16-list-root answers for the root and drops everything but the name, which is enough to show a listing and not enough to answer a question about it. list-files and list-directories need the attribute byte, to tell a file from a directory, and they need to reach a named directory and not only the root -- fat16-resolve-path already walks the tree to read a file, so the walk is not new here, only its use.",
+    "thread": null
+  },
+  {
+    "target": "section:Listing A Directory By Name",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "list-files and list-directories were compiler builtins with no emitter. They resolved, they type-checked, and the build died at emit. They live here for the same reason file-exists does: the machine does not know what a directory is, and FAT16 does.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Fat16",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "They take a path, not just the root. FAT16 stores 8.3 names, so the extension a caller filters on is at most three characters; an empty extension matches every file. The dot and dot-dot entries are not directories anyone asked for and are dropped.",
+    "thread": null
+  }
+]

@@ -1,16 +1,5 @@
 Chapter: GopHid
 
- USB HID boot-keyboard reports, decoded into Set-1 scancodes (H2b).
-
- On a machine with no PS/2 controller -- which is most machines made in
- the last decade -- the firmware's keyboard emulation dies at
- ExitBootServices and the boot payload goes deaf. The keys are still
- there, arriving as 8-byte reports on an interrupt endpoint of a USB
- keyboard. This chapter turns those reports into the same Set-1
- scancodes the PS/2 ISR produces, so every consumer above it --
- kb-process-scancode, the wizard's text field, the boot menu -- is
- unchanged and cannot tell the difference.
-
  The whole chapter is pure. It reads and writes two 8-byte buffers and
  calls nothing effectful, so the decode is battery-tested against report
  sequences taken from the HID specification, with no controller and no
@@ -34,12 +23,6 @@ Section: One Event At A Time
  toward cur. No queue, no allocation: prev converges on cur after as
  many calls as there were changes, and a caller that stops early simply
  sees the rest of the events on its next visit.
-
- The order matters. Modifier presses come before key presses, so Shift
- is down before H arrives; key releases come before modifier releases,
- so H lifts before Shift does. A consumer tracking shift state with
- kb-process-scancode therefore sees exactly the sequence a PS/2
- keyboard would have sent.
 
 Section: Usage Tables
 
@@ -79,8 +62,6 @@ Section: Usage Tables
     else if u == 53 then 41 else if u == 54 then 51 else if u == 55 then 52
     else if u == 56 then 53 else if u == 57 then 58
     else 0
-
- F1 through F10 are contiguous at 59; F11 and F12 are not.
 
   hid-fn-sc : Integer -> Integer
   hid-fn-sc (u) =
@@ -131,9 +112,6 @@ Section: Report Inspection
   hid-mod-set : Integer, Integer -> Boolean
   hid-mod-set (buf) (b) = bit-and (peek-byte buf 0) (hid-bit b) /= 0
 
- A usage of 0 is an empty slot and 1 is ErrorRollOver; both are below
- the first real key (4), so "greater than 3" is the liveness test.
-
   hid-slot-live : Integer -> Boolean
   hid-slot-live (u) = u > 3
 
@@ -150,8 +128,6 @@ Section: Report Inspection
     else hid-has-rollover cur (i + 1)
 
 Section: Finding The Change
-
- Each of these returns the first difference of its kind, or -1.
 
   hid-find-mod-press : Integer, Integer, Integer -> Integer
   hid-find-mod-press (prev) (cur) (b) =
@@ -187,11 +163,6 @@ Section: Finding The Change
 
 Section: Applying The Change
 
- Each applier mutates prev and returns the scancode it implies, or -1
- for a change that was applied but names no Set-1 code. Returning -1
- rather than 0 keeps "nothing left to do" distinct from "nothing to
- say about this key".
-
   hid-unmapped : Integer = -1
 
   hid-do-mod-press : Integer, Integer -> Integer
@@ -205,11 +176,6 @@ Section: Applying The Change
     let p = poke-byte prev 0 (bit-and (peek-byte prev 0) (255 - hid-bit b))
     in let sc = hid-mod-sc b
     in if sc == 0 then hid-unmapped else bit-or sc 128
-
- A press with no free slot cannot be recorded, so it must not be
- reported either: prev would never converge and the key would repeat
- forever. Six down is the report's own limit, so this is unreachable
- from a conforming device.
 
   hid-do-key-press : Integer, Integer -> Integer
   hid-do-key-press (prev) (u) =
@@ -240,22 +206,12 @@ Section: The Step
     in if mr >= 0 then hid-do-mod-release prev mr
     else 0
 
- An unmapped change is consumed and the search continues, so a key this
- table does not name costs one iteration rather than stalling the
- stream. The fuel bounds that search at more changes than a report can
- possibly carry (eight modifiers plus six keys, pressed and released).
-
   hid-step-fuel : Integer, Integer, Integer -> Integer
   hid-step-fuel (prev) (cur) (fuel) =
     if fuel <= 0 then 0
     else let r = hid-apply-one prev cur
     in if r == hid-unmapped then hid-step-fuel prev cur (fuel - 1)
     else r
-
- The one entry point. Returns the next Set-1 scancode implied by the
- difference between the last report and this one, or 0 when there is
- nothing left. An ErrorRollOver report is discarded whole, leaving prev
- untouched, so the keys still held are not spuriously released.
 
   hid-step : Integer, Integer -> Integer
   hid-step (prev) (cur) =
