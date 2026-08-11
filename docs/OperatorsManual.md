@@ -1217,13 +1217,48 @@ here on 2026-08-10.**
   failures were in runs chained behind another codex-vm, so file contention
   is a suspect and nothing more. What is certain is that the emit step will
   happily use a stale plug and produce a confidently wrong answer.
-- **A new builtin anywhere breaks this witness silently.** That is what
-  happened at main 14398: `block-write-sector` became a builtin, the plug's
-  builtin table gained no entry, and the emitted C# referenced a name that
-  did not exist. The seed was green throughout. If you add a builtin, add
-  its `BuiltinEmitter` beside the others in
+- **A new compiler builtin needs a matching `BuiltinEmitter` in the plug**,
+  or the emitted C# references a name that does not exist and Roslyn refuses
+  it. Ordinary upkeep, the same as teaching any transpiler a new primitive:
+  add the entry beside the others in
   `codex/plugs/csharp/CSharpEmitterExpressions.codex`; the stub is `"0L"`
-  wherever a hosted C# build has no such device.
+  wherever a hosted C# build has no such device. Running the DDC on the
+  release is what surfaces it if the entry was missed.
+
+### The witness has a negative control: it has been made to fail
+
+A DDC that only ever comes back green is the exact instrument L-FALSIF
+warns about. It has been falsified deliberately (2026-08-10), and the
+procedure is worth keeping because the result names the boundary.
+
+Poison the compiler in one source site, build `A'` from the poisoned
+source WITH THE CLEAN SEED, then REVERT the source before using `A'` -- so
+`A'` is a compiler binary whose payload appears in no source in the tree,
+which is Thompson's setup. Run `X = A'(clean source)` and the witness
+chain (`A' -> IR -> C# -> stage1 -> stage2`), then compare stage2 against
+both `X` and the clean seed.
+
+Two sites were tried, each semantically inert so the compiler still works
+and only the bytes move:
+
+- **Code generator** (`X86_64Helpers.codex`, one extra `0x90` in a wait
+  loop): stage2 differed from `X` by **2,232,990 bytes** and matched the
+  clean seed to the signature. The payload never reached the IR (its size
+  was byte-for-byte the clean IR's), so the C# arm built an honest stage1.
+- **Lowering** (`fold-constants-in-chapter` stubbed to `ch`): stage2
+  differed from `X` and again matched the clean seed. The payload DID reach
+  the IR this time, but stage2 still reconstructed the honest compiler,
+  because `A'` merely failed to fold -- it did not teach its output to fail
+  to fold.
+
+**The boundary is self-reproducing versus not, not frontend versus
+backend.** Any payload living only in the binary is caught, anywhere,
+because the double-compile rebuilds the compiler from clean source. The one
+payload that would survive is a self-reproducing quine, which is why the
+residual hole is a high bar and not the loose "the seed sits upstream." If
+you add a DDC sabotage arm to a harness, confirm the probe FIRES first
+(stage2 must differ from a clean build) before trusting a red verdict --
+an inert edit that never reaches the output is a vacuous arm.
 
 **Two source sites read as dead bindings and are NOT. Leave them alone.**
 `X86_64Helpers.codex:1539` binds `st12c = emit-list-tail st12b` and the next

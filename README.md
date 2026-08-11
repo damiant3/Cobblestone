@@ -61,12 +61,26 @@ Measured 2026-08-03, except where an item gives its own date.
    96 differing bytes, every one of them inside the signature region at
    offsets 40..135 and none outside it.** The signature is stamped by the
    sign phase rather than emitted by the compiler. That is Wheeler's
-   `stage2 == X`. **The residual hole, stated because it is large: this is
-   not yet a complete Wheeler DDC.** The seed still sits upstream twice, as
-   it produced the IR and compiled the plug; what is narrowed is the
-   frontend and the emitter, on one input, with Roslyn as the independent
-   lineage. It runs on every release, because it once broke silently while
-   every other proof stayed green.
+   `stage2 == X`. **And the witness has been shown to fail.** A check that
+   has only ever come back green proves nothing, so we poisoned the
+   compiler on purpose. Inject a payload into the code generator: the
+   witness goes red by 2.2 million bytes and reconstructs the honest
+   compiler. Inject one into constant folding instead: red again. In both
+   cases stage2 lands exactly on the untampered seed and exposes the
+   poisoned build, and in both the trojan existed only in the compiler
+   binary and in no source in the tree. **The measured boundary is not
+   frontend versus backend; it is self-reproducing versus not.** Any trojan
+   that lives only in the binary is caught, anywhere in the compiler,
+   because the double-compile rebuilds it from clean source and a
+   payload that does not copy itself cannot survive the rebuild.
+
+   **The one thing that would survive, stated because it is the honest
+   limit: a self-reproducing quine** -- a trojan that recognises it is
+   compiling the compiler and writes a copy of its own injector into the
+   output, the attack Ken Thompson actually built. That is the residual,
+   and it is a high bar rather than a loose "the seed sits upstream." The
+   witness runs on every release, because it is the only proof here that
+   does not take the compiler's word for anything.
 
    **An independently written rechecker.** It reads the compiler's IR
    output as text and re-derives every type judgement in it, and is

@@ -79,11 +79,12 @@ a compiler carrying a Thompson trojan passes every one of them, because it
 is a stable fixed point too. Only a second implementation with unrelated
 lineage can answer the question, and Roslyn is the only one in reach.
 
-**Run it even when nothing looks like it touched the plug.** It broke at
-main 14398 by a change that had nothing to do with C#: `block-write-sector`
-became a builtin, the plug's builtin table gained no entry, and the emitted
-C# referenced a name that did not exist. A new builtin anywhere breaks this
-witness silently, and the seed stays perfectly green while it is broken.
+**A new compiler builtin needs a matching entry in the C# plug's builtin
+table** (`codex/plugs/csharp/CSharpEmitterExpressions.codex`), or the
+emitted C# references a name that does not exist and Roslyn refuses it. That
+is ordinary upkeep, the same as teaching any transpiler a new primitive;
+the stub is `"0L"` wherever a hosted C# build has no such device. Running
+the DDC on the release is what surfaces it if it was missed.
 
 ## Step 5 -- Seed, map, and img
 - **Seed:** if a rebuild is due, follow the Developer's Guide seed
