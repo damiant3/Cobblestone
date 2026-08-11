@@ -1,5 +1,6 @@
 Chapter: X86-64 Code Generator
   cites Foreword chapter Sort
+  grounds Console.Write
 
 Section: Function Application
   flatten-apply : IRExpr, List IRExpr -> FlatApply
@@ -217,17 +218,6 @@ Section: Function Application
    reg = reg-rax
   }
 
- An applied effect op performed OUTSIDE the function that installed its
- handler. Inside that function the clause emission parks the op name in a
- local and emit-indirect-call takes it; every other function reaches the
- SAME clause through the handler table, which is global state at runtime --
- that dynamic reach is the whole point of the table. Until the FileSystem
- layer no program performed an op outside the
- handler's own body, so this path emitted a direct call by name and died
- at finalize with CDX2040. The op-table walk is gated on user-arity < 0,
- so an ordinary call never pays it; a constructor application skips it by
- matching its tag first.
-
   emit-call-or-effect-op : CodegenState, FlatApply, Integer -> EmitResult
   emit-call-or-effect-op (st) (flat) (user-arity) =
    if user-arity >= 0 then emit-direct-call st flat
@@ -386,22 +376,6 @@ Section: Function Application
  no locals: next-local, spill-count, and the frame layout are
  identical whether or not it fires.
 
- "Over locals" is a hard requirement on BOTH operands, and the reason
- is the ordering above rather than the emission. The order is computed
- by tco-arg-reads, which reports which parameters an argument reads,
- and it can only see through a name -- give it a field access, a call
- or any other shape and it answers "reads nothing", so the planner
- believes that argument is safe to schedule after the parameters it
- actually depends on have been overwritten.
-
- is-direct-tail-binop used to accept ANY left operand when the right
- was a small literal and the operator was add or sub. That is how
- `s.v + 1` came to be written from a parameter slot that the argument
- before it had already replaced: a wrong number, silently, with no
- diagnostic and no fault. Widening the direct shapes therefore means
- teaching tco-arg-reads to see the new shape FIRST; the two are one
- change, never two. Pinned by codex/test/tco-direct-arg-reads.
-
   is-commutative-tco-op : IRBinaryOp -> Boolean
   is-commutative-tco-op (op) =
    when op
@@ -518,35 +492,6 @@ Section: Function Application
     order = order
    }
 
- The shuffle verifier. The planner above decides an order and has
- always been trusted to have decided it correctly; nothing checked the
- order it produced, and two miscompiles have shipped out of this code.
- The checks below are stated over the plan the emitter is about to
- use, not over the search that built it, so a defect in the search is
- visible to them. CDX9006, CDX9007 and CDX9008 stand on the LIR
- emission path and cannot reach here, and the tree emitter is what
- handles most of every compile.
-
- Two properties, and they fail differently.
-
- The first is that acceptance implies analysis. is-direct-tail-arg
- decides which arguments are written straight into their parameter;
- tco-arg-reads decides what those arguments read; the ordering is
- sound only while the second sees everything the first admits. It has
- been wrong once. is-direct-tail-binop accepted any left operand at
- all when the right was a small literal, tco-arg-reads walks only
- names, and `s.v + 1` was therefore scheduled after the parameter `s`
- had already been overwritten -- a wrong number, silently.
- tco-reads-visible answers True for exactly the shapes tco-arg-reads
- can see through, so widening one without the other is a halt instead.
-
- The second is the ordering itself: no direct argument may be written
- after a parameter it reads has been replaced. An argument reading its
- own target is fine, because that read and that write are the same
- instruction, and it cannot appear in the written set anyway. The
- complex arguments do not participate: they are evaluated into temps
- before any parameter is written and copied out after.
-
   tco-operand-visible : IRExpr -> Boolean
   tco-operand-visible (e) =
    when e
@@ -654,12 +599,6 @@ Section: Function Application
    if k == list-length order then st
    else let st1 = emit-direct-tail-arg st (list-at args (list-at order k)) (list-at param-locals (list-at order k))
    in emit-direct-tail-moves st1 args param-locals order (k + 1)
-
- Load any local straight into target. For a register-local this is a
- plain mov (elided when already in target); for a spilled local it is
- a single mov from the frame slot. Unlike load-local it needs no
- scratch and leaves the load-local toggle untouched -- the caller has
- named the destination, so there is nothing transient to rotate.
 
   load-local-to : CodegenState, Integer, Integer -> CodegenState
   load-local-to (st) (local) (target) =
@@ -1004,9 +943,6 @@ Section: Narrow-store with overflow-mode dispatch
     is IrLet (name) (lty) (value) (body) (sp) -> ir-expr-proven-range (range-env-bind env name (ir-expr-proven-range env value)) body
     is otherwise -> int-ty-default
 
- Whether a dividend is proven never to be negative, which is the condition
- on the power-of-two strength reduction for division and remainder.
-
  `sar` rounds toward negative infinity and `and` answers the non-negative
  residue, while `idiv` truncates toward zero and leaves a remainder with
  the sign of the dividend. For a non-negative dividend the two agree and
@@ -1262,28 +1198,6 @@ Section: Pointer-Map Walk
  LinkedListTy are leaves for now (cons-cell layout is a later
  refinement). The TypeBinding table must be sorted by name (bsearch).
 
- EVERY VARIANT WAS A LEAF UNTIL 2026-07-26, and this block claimed the
- opposite. Found by running the walk over a range containing every pointer so
- that each one reports: 7,161 hits on `codex/test/arithmetic` were 5,070
- record fields, 2,091 list elements, and ZERO constructor fields, with no sum
- type appearing as a location anywhere. `Def.body : Expr` was reported and
- nothing beneath it ever was.
-
- The cause was in the table rather than the walk, and it is fixed at
- `emit-const-sumctor`: SumCtor has three pointer fields and the emitter wrote
- two, so `c.fields` read one word past the end of the box. Four readings were
- needed to get there and three of them refuted a guess -- the walk IS entered
- (1,673 times on that file), `tag` is always in range, the constructor NAME
- always decodes correctly, and the emitted field list is written with the
- right length at the right offset (638 of 638 agreed on read-back). Only the
- slot it was written INTO was wrong.
-
- The lesson for the next person here: this hole was invisible from every
- direction the instrument could look at itself. The always-on self-test passes
- because PmTestRec is a record; a zero escape count reads as a clean phase;
- and the constructor whose fields were lost still reported its own name. Ask
- what a walk is not visiting before reading its silence as agreement.
-
   ptr-in-range : Integer, Integer, Integer -> Integer
   ptr-in-range (p) (lo) (hi) =
    if p >= lo then if p < hi then 1 else 0 else 0
@@ -1291,21 +1205,6 @@ Section: Pointer-Map Walk
  THE WALK MUST ALLOCATE NOTHING. It is a read-only instrument, and it is
  called from inside `deck-record` extents, so anything it allocates lands on
  the phase deck it is measuring.
-
- `pmap-walk-record` used to reach a field's offset through
- `cce-byte-offset-and-type`, which builds a FieldOffsetType record to carry an
- offset and a type the caller already holds in `f`. One small record per
- POINTER FIELD VISITED. That was survivable while every variant was a leaf and
- became 176 MB the moment they were not: measured on `db-full-test`, R10 climbed
- 375,156,211 to 551,780,147 across the fourteen DECK-LIVE walks, roughly 25 MB
- per walk against a reach of 2.4M. The deck overran its floor, and the merge
- that follows read the corruption as a diagnostic list -- a `#GP` in
- `bag-concat-loop` on a garbage element pointer, reported against `bag-concat`
- because the map attributes a fault to the preceding symbol.
-
- So the offset is computed in place from the field already in hand, which also
- skips `find-target-type`'s scan for a type `f.type-val` already is. If you add
- anything to this walk, check R10 across it before and after.
 
  The location text is built INSIDE the quiet test, never at the call site.
  Codex is strict, so `report q (loc & "." & name)` concatenates on every hit
@@ -1530,9 +1429,12 @@ Section: Self-Type-Table Emission
  for the all-8-byte descriptor payloads the walk reads, divergent for
  mixed-width ctors (ForAllTy's 4-byte id), whose slots are written in
  width order below. Tags are now read off LIVE values at emit time
- (live-type-tag: a boxed variant's value is its address; the first
- qword is its tag), so the tag class of drift is closed by
- construction. The always-on pmap self-test (opening.codex) is the
+ (live-type-tag, via the variant-tag builtin), so the tag class of
+ drift is closed by construction. It used to read the tag with
+ `peek-qword (address-of ty) 0`, which is the same load on bare metal
+ but silently answers 0 on any target where `address-of` cannot be
+ modelled: that cost the C# arm every tag in this table.
+ The always-on pmap self-test (opening.codex) is the
  tripwire for the layout class ON RECORDS ONLY, and this line said
  "the layout class" without that qualification while a sum-ctor layout
  bug sat one function below it: PmTestRec is a record, so the self-test
@@ -1542,7 +1444,7 @@ Section: Self-Type-Table Emission
  wrong for a shape the self-test does not contain, nothing here fires.
 
   live-type-tag : CodexType -> Integer
-  live-type-tag (ty) = peek-qword (address-of ty) 0
+  live-type-tag (ty) = variant-tag ty
 
   live-name-ref-tag : Name -> Integer
   live-name-ref-tag (n) = live-type-tag (ConstructedTy n [])
@@ -1600,10 +1502,6 @@ Section: Self-Type-Table Emission
  constructor by tag, read its correct name, found no fields to follow, and
  returned 0. The whole expression graph went unwalked and the escape check
  reported clean on the spine it could still see.
-
- `return-type` is emitted faithfully rather than as a zero. The walk does not
- read it, but a null in a `List` slot is a fault waiting for the first reader
- that does, and the honest list is two words.
 
   emit-const-sumctor : Integer, Integer, Integer, SumCtor, Integer -> ConstEmit
   emit-const-sumctor (buf) (len) (vaddr) (ct) (fuel) =
@@ -1750,13 +1648,6 @@ Section: Self-Type-Table Emission
  CHECK and LOWER were exactly that: `precise-escape-bag` on
  `CompileChecked` and `IRChapter` answered 0 against a range covering the
  whole 32-bit address space, which no real traversal can do.
-
- The failure is quiet in both directions, which is why it lasted: the
- self-test passes (PmTestRec is a root), and a phase whose root is missing
- looks like a phase with nothing to report. When adding a precise root at
- a call site, add its type here in the same change and confirm the count
- moves off zero against a deliberately-wide range before trusting a zero
- against the real one.
 
   emit-self-type-table : Integer, Integer, Integer, List TypeBinding -> ConstEmit
   emit-self-type-table (buf) (len) (vaddr) (type-defs) =
@@ -2063,20 +1954,6 @@ Section: Pattern Matching
    extra-patches : List Integer
   }
 
- A pattern used to report exactly one place to patch, which was enough
- for a tag test or a bare literal and not enough for anything that has
- to test twice. `is TkOp ("+")` needs the tag AND the field compared, so
- the field test had nowhere to be reported -- and `bind-ctor-fields`
- accordingly emitted none, binding variable sub-patterns and dropping
- every other kind on its `is otherwise`. The result compiled clean,
- raised no diagnostic, and answered the first arm whose CONSTRUCTOR
- matched: `is ExInt (0)` matched any ExInt, and a four-way operator
- dispatch became whichever arm was written first.
-
- `extra-patches` is where the second test goes. Everything that reports
- one patch reports an empty list here, and the branch emitter patches
- the head and the tail to the same landing site.
-
   BindFieldsResult = record {
    state : CodegenState,
    patches : List Integer
@@ -2266,11 +2143,6 @@ Section: Pattern Matching
       in bind-ctor-fields (lt.state) scrut-loc sub-pats tys (i + 1) (list-push patches (lt.patch))
      is otherwise -> bind-ctor-fields st scrut-loc sub-pats tys (i + 1) patches
 
- Every field test a pattern emitted lands where its tag test lands: the
- next branch. They are patched to the same target as next-branch-patch,
- which is the code position reached once this branch's body and its
- jump-to-end have been written.
-
   patch-pattern-extras : CodegenState, List Integer, Integer -> CodegenState
   patch-pattern-extras (st) (patches) (i) =
    if i == list-length patches then st
@@ -2290,16 +2162,6 @@ Section: List Emission
  makes this safe rather than merely shorter: the bivy is a bump
  allocator, so an element that allocates advances R10 ABOVE a buffer
  already reserved below it and cannot overlap it.
-
- This replaces a walk that gave every element its own local and held
- all of them until the buffer was filled. At one local per element a
- literal ran the emitter off the end of four separate 16-bit counters
- in sequence, and the first to go tripped __narrow and trapped with no
- diagnostic, which is why max-list-literal-elems exists.
-
- The instruction count per element is unchanged: the store-load pair
- that used to straddle the two walks now sits inside one. What moves
- is the ORDER, and the emitted bytes with it.
 
   emit-store-elem-at : CodegenState, IRExpr, Integer, Integer, Integer -> CodegenState
   emit-store-elem-at (st) (elem) (ptr-loc) (scratch-loc) (i) =
@@ -2333,6 +2195,5 @@ Section: List Emission
    in let scratch = alloc-local st8
    in let st9 = emit-eval-store-list-elems (scratch.state) elems (alloc.ptr-loc) (scratch.reg) 0
    in load-local st9 (alloc.ptr-loc)
-
 
 Page 5 of 14

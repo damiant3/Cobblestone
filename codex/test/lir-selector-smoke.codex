@@ -1,21 +1,8 @@
 Chapter: LirSelectorSmoke
 
- The LIR selector's correctness shapes, packed into one boot for the BVT. The
- self-compile (fixed point) cannot see any of these: the compiler either does
- not contain the shape, or self-compiles the same whether the shape is right or
- wrong. Each function here is a miscompile that shipped or would have shipped,
- pinned by its ANSWER -- a wrong codegen decision changes the number, not the
- structure, so only a `.expected` catches it.
-
   cites Foreword chapter Console
 
 Section: Defs
-
- A higher-order function whose parameter name shadows a same-arity global. The
- body must call the PARAMETER (indirect, through the closure), not the global
- the name shadows. s-apply s-add 3 4 is 3 + 4 = 7; a call-root resolver that
- ignores the local binding calls the global s-sub and answers -1. The selector
- declines this to the tree, which resolves locals first.
 
   s-sub : Integer, Integer -> Integer
   s-sub (a) (b) = a - b
@@ -26,20 +13,8 @@ Section: Defs
   s-apply : (Integer, Integer -> Integer), Integer, Integer -> Integer
   s-apply (s-sub) (x) (y) = s-sub x y
 
- A join feeding a second branch in one arm, non-tail (the + 7 forces it).
- Coalescing must not hoist the inner join's definition onto a path where the
- outer join vreg is otherwise defined -- that double-def is a legal overwrite
- the emitter handles but the structural verifier rejects (CDX9007). Refusing
- the fold keeps the program compilable. s-join 0 = 6, s-join 5 = 7.
-
   s-join : Integer -> Integer
   s-join (n) = (let v = if n > 0 then n + 1 else n - 1 in if n == 0 then v else 0) + 7
-
- Tail recursion whose tail call passes a compound accumulator argument that
- reads the loop parameter the first argument decrements. The accumulator must
- read the OLD parameter: s-tail 1 7 is 7 - 1 + 2 = 8. Writing the decremented
- value first makes the accumulator read it (7 - 0 + 2 = 9). The selector orders
- the back-edge writes topologically; the tree emitter does not for this shape.
 
   s-tail : Integer, Integer -> Integer
   s-tail (n) (acc) = if n <= 0 then acc else s-tail (n - 1) (acc - n + 2)
@@ -54,12 +29,6 @@ Section: Defs
     if d == a then (b - c) * 6 / e
     else if d == b then (c - a) * 6 / e + 120
     else (a - b) * 6 / e + 240
-
- The function result is a use. s is both the result and the source of the one
- join move; the else arm's division keeps the dead let alive through
- simplification. A coalescer that counts only instruction operands folds the
- add into the join vreg and the result reads an undefined vreg (RAX by
- default). s-result 5 b = 5 + 1 = 6 for every b.
 
   s-result : Integer, Integer -> Integer
   s-result (a) (b) = let s = a + 1 in let y = (if b > 0 then s else 100 / (b * b + 1)) in s

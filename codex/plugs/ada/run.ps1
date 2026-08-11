@@ -33,7 +33,7 @@ $irBytes = [System.IO.File]::ReadAllBytes($IrFile)
 Write-Host "[ada-run] IR: $($irBytes.Length) bytes"
 
 # -- Phase 2: Start TCP listener -------------------------------------
-$plugPort = 9100
+$plugPort = 9101
 $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $plugPort)
 $listener.Start()
 Write-Host "[ada-run] Listening on port $plugPort"

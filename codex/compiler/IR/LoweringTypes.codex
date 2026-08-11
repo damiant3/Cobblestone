@@ -1,9 +1,6 @@
 Chapter: Lowering
   cites Foreword chapter Sort
 
- Type lookup, substitution, and constructor binding utilities
- used by the main lowering pass.
-
 Section: Lookup Overlay
 
  Cons-cell stack used by lowering for nested let / lambda / match /
@@ -130,6 +127,43 @@ Section: Binary Op Lowering
     is BooleanTy -> True
     is otherwise -> False
 
+  is-list-type : CodexType -> Boolean
+  is-list-type (ty) =
+   when ty
+    is ListTy (e) -> True
+    is LinkedListTy (e) -> True
+    is otherwise -> False
+
+ A Text's header word is its BYTE LENGTH and a list's is its ELEMENT
+ COUNT, so the two append opcodes are not interchangeable at runtime:
+ `__list_concat_many` handed a Text reads one as the other and walks spans
+ that are not there.
+
+  append-op-unclassified : BinaryOp, CodexType -> Boolean
+  append-op-unclassified (op) (ty0) =
+   let ty = strip-unit-ty ty0
+   in when op
+    is OpAppend -> if is-text-type ty then False else if is-list-type ty then False else True
+    is OpAnd -> if is-text-type ty then False else if is-boolean-type ty then False else if is-list-type ty then False else True
+    is otherwise -> False
+
+  is-integer-type : CodexType -> Boolean
+  is-integer-type (ty) =
+   when ty
+    is IntegerTy (lo) (hi) (m) -> True
+    is otherwise -> False
+
+  arith-op-unclassified : BinaryOp, CodexType -> Boolean
+  arith-op-unclassified (op) (ty0) =
+   let ty = strip-unit-ty ty0
+   in when op
+    is OpAdd | OpSub | OpMul | OpDiv ->
+     if is-vector-type ty then False
+     else if is-number-type ty then False
+     else if is-integer-type ty then False
+     else True
+    is otherwise -> False
+
  The operand type is stripped of any `unit` wrapper before the dispatch
  below reads it, because a unit is erased at codegen and every predicate
  here asks what the value IS at runtime.
@@ -140,11 +174,6 @@ Section: Binary Op Lowering
  `CDX9010` guards the comparison emitter, and arithmetic never reaches it.
  A `unit Integer` was right by accident, since `IrAddInt` is what it wanted
  anyway, which is why the hole stayed on the one type nobody wrote.
-
- One strip at the dispatch, not one per predicate: the arms are a decision
- table over a single question, so the question gets answered once. The
- vector, text and boolean arms are covered by the same strip, though the
- checker refuses those unit shapes at these operators today.
 
   lower-bin-op : BinaryOp, CodexType -> IRBinaryOp
   lower-bin-op (op) (ty0) =
@@ -183,6 +212,8 @@ Section: Binary Op Lowering
     is OpAppend -> if is-text-type left-ty then TextTy
            else if is-text-type expected-ty then TextTy
            else left-ty
+    is OpCons -> if is-list-type expected-ty then expected-ty
+           else deck-record (ListTy left-ty)
     is otherwise -> left-ty
 
 Page 2 of 2

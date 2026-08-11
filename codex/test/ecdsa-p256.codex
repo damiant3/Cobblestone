@@ -2,13 +2,6 @@ Chapter: EcdsaP256Test
   cites Foreword chapter EcdsaP256
   cites Foreword chapter Console
 
- A P-256 signature nobody here produced, checked here.
-
- This is the direction the compression post-mortem says to write first:
- their bytes, our reader. Codex cannot sign with this curve and does not
- want to, so there is no paired signer to agree with and no way for this
- test to pass by two halves sharing an assumption.
-
  The vector is RFC 6979 A.2.5, the published deterministic-ECDSA answer
  for P-256 with SHA-256 over the message "sample". It was confirmed
  against TWO independent implementations before anything here was
@@ -47,54 +40,19 @@ Section: Vectors
 
 Section: Cases
 
- The positive.
-
   ok-case : Boolean = ecdsa-p256-verify p-pub p-msg p-sig
-
- Every altered byte below is produced by flipping a bit of the original
- rather than by writing a literal. A control that quietly tests nothing
- is worse than no control here, because these are the lines that would
- report a forgery as genuine, and the RSA test next door has already been
- bitten once by a "different" value that happened to equal the original.
-
- One bit of s. The signature is still the right width and still a scalar
- in range, so only the arithmetic can reject it.
 
   bad-sig : List Integer = ep-flip p-sig 63
   bad-sig-case : Boolean = ecdsa-p256-verify p-pub p-msg bad-sig
 
- One bit of r. This exercises a different half of the check: r feeds the
- second scalar multiplication AND is the value the recovered x is
- compared against, so a wrong r is wrong twice over.
-
   bad-r : List Integer = ep-flip p-sig 0
   bad-r-case : Boolean = ecdsa-p256-verify p-pub p-msg bad-r
-
- The genuine signature against a different message.
 
   other-msg : List Integer = ep-flip p-msg 0
   wrong-msg-case : Boolean = ecdsa-p256-verify p-pub other-msg p-sig
 
- s of zero, refused on range before any arithmetic. SEC1 requires the
- range check and it is not decoration: a zero scalar sails through the
- inversion and the comparison below can be made to hold.
-
   zero-s : List Integer = ep-zero-tail p-sig 32
   zero-s-case : Boolean = ecdsa-p256-verify p-pub p-msg zero-s
-
- A public key one bit off the curve.
-
- THIS LINE DOES NOT EXERCISE THE CURVE CHECK, and saying so is the point
- of writing it down. Run with `ec-on-curve` forced to True the output of
- this whole test is byte-identical: a tampered key fails the arithmetic
- anyway, so the end-to-end case cannot tell a guard that holds from a
- guard that does nothing. The same is true of the zero-scalar case above,
- which yields the point at infinity and is refused there whether or not
- the range check runs.
-
- So the two guards are asserted directly, below, where they can fail.
- The end-to-end lines stay because they pin the answer; they are simply
- not evidence about these two predicates.
 
   bad-pub : List Integer = ep-flip p-pub 64
   bad-pub-case : Boolean = ecdsa-p256-verify bad-pub p-msg p-sig
@@ -109,15 +67,9 @@ Section: The Two Guards, Asserted Where They Can Fail
   good-on-curve : Boolean = ec-on-curve good-point p-field
   bad-on-curve : Boolean = ec-on-curve bad-point p-field
 
- The range check, both directions. A genuine s is in [1, n-1]; zero is
- not, and neither is n itself, which is the boundary the comparison has
- to get right and the one an off-by-one would let through.
-
   good-scalar : Boolean = ec-scalar-ok (ec-slice p-sig 32 32) 32 ec-n-bytes
   zero-scalar : Boolean = ec-scalar-ok (ep-zero-tail (ec-slice p-sig 32 32) 0) 32 ec-n-bytes
   order-scalar : Boolean = ec-scalar-ok ec-n-bytes 32 ec-n-bytes
-
- A signature of the wrong width, refused before anything else runs.
 
   short-sig : List Integer = ep-take p-sig 63 0 []
   short-case : Boolean = ecdsa-p256-verify p-pub p-msg short-sig

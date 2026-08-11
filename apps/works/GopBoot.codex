@@ -42,29 +42,27 @@ Section: Framebuffer Handoff
 
 Section: Menu Model
 
-  menu-count : Integer = 5
+  menu-count : Integer = 3
 
   menu-label : Integer -> Text
   menu-label (i) =
-    if i == 0 then "Dev Console"
-    else if i == 1 then "Graphical UI"
-    else if i == 2 then "Serial REPL"
-    else if i == 3 then "Restart"
+    if i == 0 then "Graphical UI"
+    else if i == 1 then "Restart"
     else "Power Off"
 
-  menu-desktop : Integer = 1
+  menu-desktop : Integer = 0
 
-  menu-restart : Integer = 3
+  menu-restart : Integer = 1
 
-  menu-power-off : Integer = 4
+  menu-power-off : Integer = 2
 
 Section: Layout
 
  The stub reports the panel's real mode through the handoff cells;
- every position derives from it. The menu block (title, five rows, a
+ every position derives from it. The menu block (title, three rows, a
  status line) is centered on the panel, and glyphs double on panels
- 1024 pixels wide or wider (ui-scale, in GopDraw). The block is 224
- base units tall: title row 16, gap 32, five rows of 28, gap 20,
+ 1024 pixels wide or wider (ui-scale, in GopDraw). The block is 168
+ base units tall: title row 16, gap 32, three rows of 28, gap 20,
  status row 16.
 
   menu-box-w : Integer -> Integer
@@ -74,13 +72,13 @@ Section: Layout
   menu-left (w) (scale) = (w - menu-box-w scale) / 2
 
   menu-top : Integer, Integer -> Integer
-  menu-top (h) (scale) = (h - 224 * scale) / 2
+  menu-top (h) (scale) = (h - 168 * scale) / 2
 
   items-top : Integer, Integer -> Integer
   items-top (h) (scale) = menu-top h scale + 48 * scale
 
   msg-y : Integer, Integer -> Integer
-  msg-y (h) (scale) = items-top h scale + 160 * scale
+  msg-y (h) (scale) = items-top h scale + 104 * scale
 
 Section: Rendering
 
@@ -112,10 +110,6 @@ Section: Rendering
     in draw-item base w h stride font scale sel 0
 
 Section: Cursor
-
- The cursor primitives (save-under patch, restore, draw) live in
- GopDraw so the desktop shell shares them. A pointer position maps to
- the menu row whose selection bar covers it, or to no row at all.
 
   menu-row-at : Integer, Integer, Integer, Integer, Integer -> Integer
   menu-row-at (w) (h) (scale) (mx) (my) =
@@ -182,12 +176,6 @@ Section: Loop
  through menu-next, which returns the new selection, keeping menu-loop
  a direct self-tail-call so the compiler's TCO turns it into a jump.
 
- One pure step handles everything short of leaving the loop: keyboard
- first (a queued scancode must never be lost to a mouse twitch), then
- the pointer -- a click confirms the hovered row, plain hover moves
- the bar. Any repaint invalidates the cursor patch; a movement
- repaints the cursor last, so it rides above whatever was drawn.
-
   menu-step : Integer, Integer, Integer, Integer, CbfFont, UsbMouse, Integer, Integer, Integer, Integer, Integer, Boolean -> Integer
   menu-step (base) (w) (h) (stride) (font) (mouse) (cs) (sel) (sc) (mv) (hover) (clicked) =
     let s1 = menu-next base w h stride font sel sc
@@ -213,10 +201,6 @@ Section: Loop
     else if fire & tgt == menu-desktop then menu-desk base w h stride font kbd mouse cs
     else menu-loop base w h stride font kbd mouse cs (menu-step base w h stride font mouse cs sel sc mv hover clicked)
   end
-
- The desktop borrows the whole panel; when it returns (Esc or its
- close box) the menu redraws and the cursor patch is invalidated --
- the desktop's cursor state block is its own.
 
   menu-desk : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer -> [Device.Port] Integer
   menu-desk (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) = act
@@ -261,11 +245,6 @@ Section: Loop
 
 Section: Disk Probe
 
- Read LBA 1 of the boot disk with the payload's own drivers (AHCI first,
- then legacy IDE PIO) and check for the GPT header signature "EFI PART".
- Firmware is gone, so a hit proves the running program reached its own
- boot medium unaided. The screen names the controller that answered.
-
   gpt-sig-byte : Integer -> Integer
   gpt-sig-byte (i) =
     if i == 0 then 69 else if i == 1 then 70 else if i == 2 then 73
@@ -287,10 +266,6 @@ Section: Disk Probe
     else "Boot disk: no AHCI or IDE controller answered."
   end
 
- Mount the stick's own EFI System Partition and resolve the loader that
- the firmware booted a moment ago -- the payload finding, through its own
- drivers and its own filesystem code, the very file it was launched from.
-
   fs-line : WzCtx -> [Device.Port] Text
   fs-line (c) = act
     m <- gfat-mount-esp
@@ -303,12 +278,6 @@ Section: Disk Probe
       end
     end
   end
-
- Read the seed itself off the stick -- 2.1 MB through the payload's own
- driver, filesystem, and FAT chain -- and check the CDX magic in the
- header it just fetched. This is the compiler that compiled this program,
- recovered from the medium it booted from. Verifying its signature is
- B3.4 (WakeCeremony).
 
   cdx-magic-ok : Integer -> Boolean
   cdx-magic-ok (buf) =
@@ -335,14 +304,6 @@ Section: Disk Probe
   end
 
 Section: Wake Ceremony
-
- The first act of a machine that cannot ask anyone what it is. It reads
- its own seed off its own stick, recomputes the hash over those bytes,
- checks the author signature, and speaks only what it checked -- or says
- it does not verify and refuses to act. Ascent V, rung 3.
-
- The report is computed before anything is drawn: the screen reports a
- verdict, it does not narrate a hope.
 
   WakeScreen = record {
     ws-ok : Boolean,
@@ -414,13 +375,6 @@ Section: Wake Ceremony
   end
 
 Section: Disk Inventory
-
- H3c: the machine names every disk it can reach -- controller, model
- from the device's own identify data, size, ESP volume label, and
- whether our CODEX.CDX is aboard -- and points at the one it booted
- from. The enumeration walks GopEnum's candidates and restores the
- medium lock, so the line marked as the boot medium is read from the
- same cells every later storage call obeys.
 
   disk-line-head : DiskInfo -> Text
   disk-line-head (d) =
@@ -541,23 +495,6 @@ Section: xHCI Truth
 
 Section: Entry
 
- The first act on the boot path is runtime-init (H1a): GDT, IDT, TSS,
- syscall MSRs, then the PIC/PIT/keyboard setup ending in sti -- which
- also re-enables the PS/2 keyboard interface and scanning that firmware
- often leaves disabled after ExitBootServices (and skips itself cleanly
- on a machine with no i8042 at all). From here ticks run, keystrokes
- arrive by IRQ, and a fault dumps !EXC instead of triple faulting.
- Second act: usb-attach (H2) enumerates the USB bus ONCE -- keyboard
- and boot-stick disk configured on the same running controller, the
- disk handle published so every later storage call transfers without a
- reset. On a machine with no PS/2 controller the USB keyboard is the
- only input there is; a machine without one gets kbd-no-kbd, whose
- pump is a flag test. Third act: medium-select probes every disk for
- our own CODEX.CDX and locks GopDisk onto the one carrying it, so a
- real machine's internal drive cannot shadow the boot stick. The
- first-boot ceremony (GopWizard) runs next, then the interface menu
- takes over.
-
   run-menu : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse -> [Device.Port] Integer
   run-menu (base) (w) (h) (stride) (font) (kbd) (mouse) = act
     let cs = alloc-zeroed 2048 64
@@ -567,19 +504,6 @@ Section: Entry
       menu-loop base w h stride font kbd mouse cs 0
     end
   end
-
- On real metal there is no serial log, so the boot narrates itself
- on the glass. Before the runtime spine comes up -- when the only
- working thing is the framebuffer the stub handed over -- four
- bright bars and the mode numbers are painted with the REPORTED
- stride: a stride or mode mismatch shows as banded smear instead of
- clean bars, and the bar ORDER (red, green, blue, white) exposes a
- BGR/RGB pixel-format swap at a glance. After each boot stage a
- green trace line lands top-right; on a machine that hangs, the
- last line standing names the stage that died. A healthy boot shows
- the diag for a couple of seconds and the wizard then paints over
- all of it -- the diag matters exactly on the machine that never
- gets that far.
 
   boot-diag : Integer, Integer, Integer, Integer, CbfFont -> Integer
   boot-diag (base) (w) (h) (stride) (font) =
@@ -595,11 +519,6 @@ Section: Entry
 
   boot-spin : Integer -> Integer
   boot-spin (n) = if n <= 0 then 0 else boot-spin (n - 1)
-
- The trace column lives in the diag's black bottom region so paint
- damage at the top of the panel cannot eat it. Every stage writes a
- line when it STARTS and another when it completes: on a machine
- that dies mid-stage, the last line names the stage that died.
 
   boot-trace : Integer, Integer, Integer, CbfFont, Integer, Text -> Integer
   boot-trace (base) (stride) (h) (font) (row) (t) =

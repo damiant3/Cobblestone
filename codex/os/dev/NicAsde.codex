@@ -84,6 +84,27 @@ Section: Reading
    in let start = hpet-ticks
    in na-await-lu mmio start want na-link-fuel-clocked 0
 
+ The I219's MAC sits in the PCH and its PHY is owned by the Management
+ Engine, which is the class of part where an unhandshaked CTRL.RST is
+ documented folklore for wedging the CSR block. Read STATUS and CTRL
+ before writing anything, so a flight that dies can say WHICH touch
+ killed it: no row at all means the first MMIO read never completed, and
+ a painted row followed by silence means the reset did it.
+
+  na-bar-of : PciDevice -> PciBar
+  na-bar-of (d) = pci-parse-bar (d.pci-bus) (d.pci-dev) (d.pci-func) 0
+
+  NicAsdeTouch = record {
+    nt-status : Integer,
+    nt-ctrl : Integer
+  }
+
+  na-touch : Integer -> NicAsdeTouch
+  na-touch (mmio) =
+   let s = e1000-read mmio e1000-reg-status
+   in let c = e1000-read mmio e1000-reg-ctrl
+   in NicAsdeTouch { nt-status = s, nt-ctrl = c }
+
   na-bring-up : Integer, Boolean -> NicAsdeArm
   na-bring-up (mmio) (asde) =
    let r = e1000-reset mmio
@@ -137,6 +158,28 @@ Section: Formatting
      & " aneg=" & anegtxt
      & " STATUS=" & show s
 
+  na-touch-line : Integer, NicAsdeTouch -> Text
+  na-touch-line (mmio) (t) =
+   let a = "ASDE: read-only touch mmio=" & show mmio
+   in let b = a & " STATUS=" & show (t.nt-status)
+   in b & " CTRL=" & show (t.nt-ctrl)
+
+  na-verdict-text : Integer -> Text
+  na-verdict-text (v) =
+   if v == e1000-bar-ok then "ok"
+   else if v == e1000-bar-is-io then "is-io"
+   else if v == e1000-bar-below-window then "below-window"
+   else if v == e1000-bar-above-window then "above-window"
+   else "zero"
+
+  na-reject-line : PciDevice -> Text
+  na-reject-line (d) =
+   let bar = na-bar-of d
+   in let a = "ASDE: REJECTED vendor=" & show (d.pci-vendor)
+   in let b = a & " bar=" & show (bar.bar-base)
+   in let c = b & " io=" & na-yn (if (bar.bar-is-io) then 1 else 0)
+   in c & " verdict=" & na-verdict-text (e1000-bar-verdict bar)
+
  Gated on vendor and on the BAR verdict for the reason sitting rung 2 was:
  a second NIC is present on this board, a Realtek at 06:00.0 whose window
  lands below three gigabytes, and reading Intel register offsets off it
@@ -145,8 +188,7 @@ Section: Formatting
   na-eligible : PciDevice -> Boolean
   na-eligible (d) =
    if (d.pci-vendor) /= e1000-vendor-intel then False
-   else e1000-bar-verdict (pci-parse-bar (d.pci-bus) (d.pci-dev) (d.pci-func) 0)
-        == e1000-bar-ok
+   else e1000-bar-verdict (na-bar-of d) == e1000-bar-ok
 
   na-mmio-of : PciDevice -> Integer
   na-mmio-of (d) =

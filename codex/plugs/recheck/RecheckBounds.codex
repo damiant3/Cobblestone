@@ -1,22 +1,6 @@
 Chapter: RecheckBounds
   cites Recheck chapter RecheckCore
 
- Stage 2. Re-derives the range of every value that enters a bounded slot
- and requires it to fit the bounds declared there.
-
- The derivation rules are the ones published in docs/DevelopersGuide.md
- under Static Bounds Prover, re-implemented here rather than lifted from
- the compiler's own prover: a second implementation of a published rule
- is the whole point, and an implementation transcribed from the original
- inherits the original's misreadings.
-
- The rechecker does NOT read a node's own type as its derived range. A
- binary node carries the type of its LEFT OPERAND, so `n * 2` for
- `n : Integer between 0 and 10` is emitted typed `(int 0 10 ov-error)`
- while the value's range is 0..20. Trusting node types here would produce
- a disagreement at almost every arithmetic node and every one of them
- would be this rechecker's own.
-
 Section: Ranges
 
   RcRange = record {
@@ -38,11 +22,6 @@ Section: Ranges
 
   rc-range-unknown : RcRange
   rc-range-unknown = RcRange { rr-lo = 0, rr-hi = 0, rr-known = False }
-
- Products and sums of two full-width bands overflow the arithmetic doing
- the deriving, which would answer a range narrower than the truth and turn
- this instrument into a source of false agreement. Anything wider than
- this guard is answered as unknown instead.
 
   rc-derive-guard : Integer = 2147483647
 
@@ -68,25 +47,10 @@ Section: Ranges
    if a.rr-known == False | b.rr-known == False then rc-range-unknown
    else rc-range (rc-min (a.rr-lo) (b.rr-lo)) (rc-max (a.rr-hi) (b.rr-hi))
 
- Containment is the whole judgement of this stage: a value fits a slot
- when its whole range lies inside the slot's declared band.
-
   rc-range-within : RcRange, Integer, Integer -> Boolean
   rc-range-within (r) (lo) (hi) = lo <= r.rr-lo & r.rr-hi <= hi
 
 Section: Let Bindings
-
- The published table's last row is `let x = v in body` carrying v's range
- for x in the body. Without it a bounded return written through a let
- derives from the let name's own type, which for a plain Integer is the
- full band, and the rechecker reports a disagreement that is entirely its
- own: `ret-via-let` in codex/test/mod-bound-return did exactly that.
-
- A binding is pushed only when its range is KNOWN, because an unknown one
- changes no answer -- the lookup falls back to the name's declared type
- either way -- and the push is what costs. Lookup runs from the most
- recent binding backwards so an inner let shadows an outer one of the
- same name.
 
   RcBind = record {
    rb-name : Text,
@@ -109,9 +73,6 @@ Section: Bounded Slots
   rc-i64-max : Integer = 9223372036854775807
   rc-i64-min : Integer = 0 - 9223372036854775807 - 1
 
- A slot is bounded when its band is narrower than the full width. A plain
- Integer is a band too, just the widest one, and nothing flows out of it.
-
   rc-is-bounded-int : CodexType -> Boolean
   rc-is-bounded-int (t) =
    when t
@@ -130,11 +91,60 @@ Section: Bounded Slots
     is IntegerTy (lo) (hi) (m) -> rc-range lo hi
     is otherwise -> rc-range-unknown
 
-Section: Derivation
+Section: Module Constants
 
- `__narrow` is an explicit runtime-checked assertion, so a value reaching a
- bounded slot through one is legal whatever its static range: the trap is
- the contract. It propagates the inner range for anything further up.
+ A name bound at module level to an integer literal is a row the guide's
+ Static Bounds Prover table publishes and the compiler proves. It cannot be
+ read off the name's declared type, which is a plain Integer and so carries
+ the full i64 band; only the defining chapter says 3003.
+
+ The table is a separate argument rather than the initial let environment
+ because a let PUSHES onto that environment during a derivation, and with
+ the table in it every push would copy the whole table. It is consulted
+ after a let binding and after a bounded declared type, so it never
+ overrides a more local answer.
+
+ A constant whose name is ever a PARAMETER is dropped when the table is
+ built. A parameter and a module constant are both an IrName on the wire
+ with nothing to tell them apart, so a shared name would hand a parameter
+ the constant's range, and a checker that derives a wrong range is worse
+ than one that abstains. Dropping it once per chapter costs nothing per
+ definition and fails in the safe direction: the constant stops being
+ derivable rather than being believed in the wrong place.
+
+  rc-name-in-params : List IRParam, Text, Integer -> Boolean
+  rc-name-in-params (ps) (n) (i) =
+   if i < 0 then False
+   else if ((list-at ps i).name) == n then True
+   else rc-name-in-params ps n (i - 1)
+
+  rc-name-any-param : List IRDef, Text, Integer, Integer -> Boolean
+  rc-name-any-param (ds) (n) (i) (len) =
+   if i >= len then False
+   else let d = list-at ds i
+   in if rc-name-in-params (d.params) n (list-length (d.params) - 1) then True
+   else rc-name-any-param ds n (i + 1) len
+
+  rc-const-of-def : IRDef -> RcRange
+  rc-const-of-def (d) =
+   if list-length (d.params) > 0 then rc-range-unknown
+   else when (d.body)
+    is IrIntLit (v) (sp) -> rc-range v v
+    is otherwise -> rc-range-unknown
+
+  rc-consts-of : List IRDef, Integer, Integer, List RcBind -> List RcBind
+  rc-consts-of (ds) (i) (len) (acc) =
+   if i >= len then acc
+   else let d = list-at ds i
+   in let r = rc-const-of-def d
+   in if r.rr-known == False then rc-consts-of ds (i + 1) len acc
+   else if rc-name-any-param ds (d.name) 0 len then rc-consts-of ds (i + 1) len acc
+   else rc-consts-of ds (i + 1) len (list-push acc (RcBind { rb-name = d.name, rb-range = r }))
+
+  rc-const-lookup : List RcBind, Text -> RcRange
+  rc-const-lookup (cs) (n) = rc-bind-lookup cs n (list-length cs - 1)
+
+Section: Derivation
 
   rc-is-named : IRExpr, Text -> Boolean
   rc-is-named (f) (nm) =
@@ -151,60 +161,81 @@ Section: Derivation
   rc-is-narrow-name : IRExpr -> Boolean
   rc-is-narrow-name (f) = rc-is-named f "__narrow"
 
-  rc-derive : List RcBind, IRExpr, Integer -> RcRange
-  rc-derive (env) (x) (fuel) =
+  rc-derive : List RcBind, List RcBind, IRExpr, Integer -> RcRange
+  rc-derive (cs) (env) (x) (fuel) =
    if fuel <= 0 then rc-range-unknown
    else when x
     is IrIntLit (v) (sp) -> rc-range v v
-    is IrName (n) (t) (sp) -> rc-derive-name env n t
-    is IrNegate (v) (t) (sp) -> rc-derive-negate (rc-derive env v (fuel - 1))
-    is IrIf (c) (a) (b) (t) (sp) -> rc-range-union (rc-derive env a (fuel - 1)) (rc-derive env b (fuel - 1))
-    is IrLet (n) (t) (v) (b) (sp) -> rc-derive (rc-bind-push env n (rc-derive env v (fuel - 1))) b (fuel - 1)
+    is IrName (n) (t) (sp) -> rc-derive-name cs env n t
+    is IrNegate (v) (t) (sp) -> rc-derive-negate (rc-derive cs env v (fuel - 1))
+    is IrIf (c) (a) (b) (t) (sp) -> rc-range-union (rc-derive cs env a (fuel - 1)) (rc-derive cs env b (fuel - 1))
+    is IrLet (n) (t) (v) (b) (sp) -> rc-derive cs (rc-bind-push env n (rc-derive cs env v (fuel - 1))) b (fuel - 1)
+    is IrMatch (s) (bs) (t) (sp) -> rc-derive-arms cs env bs 0 (list-length bs) (fuel - 1)
     is IrFieldAccess (r) (f) (t) (sp) -> rc-ty-range t
-    is IrApply (f) (a) (t) (sp) -> rc-derive-apply env x f a t (fuel - 1)
-    is IrBinary (o) (l) (r) (t) (sp) -> rc-derive-binary o (rc-derive env l (fuel - 1)) (rc-derive env r (fuel - 1))
+    is IrApply (f) (a) (t) (sp) -> rc-derive-apply cs env x f a t (fuel - 1)
+    is IrBinary (o) (l) (r) (t) (sp) -> rc-derive-binary o (rc-derive cs env l (fuel - 1)) (rc-derive cs env r (fuel - 1))
     is otherwise -> rc-range-unknown
 
- A let-bound range beats the name's declared type; a name the environment
- does not carry falls back to the type, which is what every name did
- before the environment existed.
-
-  rc-derive-name : List RcBind, Text, CodexType -> RcRange
-  rc-derive-name (env) (n) (t) =
+  rc-derive-name : List RcBind, List RcBind, Text, CodexType -> RcRange
+  rc-derive-name (cs) (env) (n) (t) =
    let b = rc-bind-lookup env n (list-length env - 1)
-   in if b.rr-known then b else rc-ty-range t
+   in if b.rr-known then b
+   else if rc-is-nullary-heap-builtin n then rc-heap-quantity-range
+   else if rc-is-bounded-int t then rc-ty-range t
+   else rc-const-lookup cs n
+
+ A `when` is the match form of an `if` and carries the same rule, the union
+ of the arms. An arm whose own range is unknown makes the union unknown,
+ which `rc-range-union` already does, and a match with no arms answers
+ unknown rather than an empty union.
+
+  rc-derive-arms : List RcBind, List RcBind, List IRBranch, Integer, Integer, Integer -> RcRange
+  rc-derive-arms (cs) (env) (bs) (i) (len) (fuel) =
+   if i >= len then rc-range-unknown
+   else if i == len - 1 then rc-derive cs env ((list-at bs i).body) fuel
+   else rc-range-union (rc-derive cs env ((list-at bs i).body) fuel) (rc-derive-arms cs env bs (i + 1) len fuel)
+
+ Five builtins carry a range their SIGNATURE does not: all five are declared
+ to return a plain Integer, and the bound is a structural fact about
+ heap-backed quantities in a 3 GB-RAM design rather than anything in the
+ type. Published in the guide's Static Bounds Prover table; the compiler
+ holds the same five in `builtin-return-range`. Two are nullary and reach
+ the derivation as a bare name, the other three as an application.
+
+  rc-heap-quantity-range : RcRange
+  rc-heap-quantity-range = rc-range 0 4294967295
+
+  rc-is-nullary-heap-builtin : Text -> Boolean
+  rc-is-nullary-heap-builtin (n) = n == "__heap-save" | n == "__deck-pos"
+
+  rc-is-applied-heap-builtin : Text -> Boolean
+  rc-is-applied-heap-builtin (n) =
+   n == "list-length" | n == "text-length" | n == "__buf-write-bytes"
+
+  rc-applied-builtin-range : IRExpr -> RcRange
+  rc-applied-builtin-range (f) =
+   when f
+    is IrName (n) (t) (sp) -> if rc-is-applied-heap-builtin n then rc-heap-quantity-range else rc-range-unknown
+    is otherwise -> rc-range-unknown
 
   rc-derive-negate : RcRange -> RcRange
   rc-derive-negate (r) =
    if r.rr-known == False then rc-range-unknown
    else rc-range (0 - r.rr-hi) (0 - r.rr-lo)
 
- An application's own type field IS its result type, unlike a binary
- node's, so a call's range is read from the callee's declared return.
-
-  rc-derive-apply : List RcBind, IRExpr, IRExpr, IRExpr, CodexType, Integer -> RcRange
-  rc-derive-apply (env) (whole) (f) (a) (t) (fuel) =
-   if rc-is-narrow-name f then rc-derive env a fuel
-   else if rc-is-int-mod-partial f then rc-derive-int-mod (rc-derive env a fuel)
+  rc-derive-apply : List RcBind, List RcBind, IRExpr, IRExpr, IRExpr, CodexType, Integer -> RcRange
+  rc-derive-apply (cs) (env) (whole) (f) (a) (t) (fuel) =
+   if rc-is-narrow-name f then rc-derive cs env a fuel
+   else if rc-is-int-mod-partial f then rc-derive-int-mod (rc-derive cs env a fuel)
+   else let br = rc-applied-builtin-range f
+   in if br.rr-known then br
    else rc-ty-range t
-
- `int-mod x n` for n > 0 proves [0, n-1] -- the Euclidean remainder, never
- negative, which is the row `int-rem` does not get. A two-argument builtin
- arrives curried, so the divisor is the OUTER application's argument and
- the partially applied inner one is what names the builtin. Its result
- type on the wire is the builtin's declared plain Integer, so without this
- rule the value derives to the full band and a provable bounded return is
- reported as a disagreement.
 
   rc-is-int-mod-partial : IRExpr -> Boolean
   rc-is-int-mod-partial (f) =
    when f
     is IrApply (g) (x) (gt) (sp) -> rc-is-named g "int-mod"
     is otherwise -> False
-
- A divisor that is not provably positive answers unknown rather than a
- band that assumes the sign: the published rule is stated for n > 0 and
- nothing here may widen it.
 
   rc-derive-int-mod : RcRange -> RcRange
   rc-derive-int-mod (d) =
@@ -219,6 +250,7 @@ Section: Derivation
     is IrAddInt -> rc-range (a.rr-lo + b.rr-lo) (a.rr-hi + b.rr-hi)
     is IrSubInt -> rc-range (a.rr-lo - b.rr-hi) (a.rr-hi - b.rr-lo)
     is IrMulInt -> rc-derive-mul a b
+    is IrDivInt -> rc-derive-div a b
     is IrRemInt -> rc-derive-rem b
     is otherwise -> rc-range-unknown
 
@@ -233,6 +265,18 @@ Section: Derivation
    in let p3 = a.rr-hi * b.rr-lo
    in let p4 = a.rr-hi * b.rr-hi
    in rc-range (rc-min4 p1 p2 p3 p4) (rc-max4 p1 p2 p3 p4)
+
+ Integer division truncates toward zero, which is monotone in both operands
+ only while the dividend is non-negative and the divisor is strictly
+ positive. Outside that quadrant the endpoints do not bound the quotient
+ and a divisor band spanning zero admits a division by zero, so the answer
+ is unknown rather than a wider band. Those are the preconditions the
+ guide's Static Bounds Prover table states for this row.
+
+  rc-derive-div : RcRange, RcRange -> RcRange
+  rc-derive-div (a) (b) =
+   if a.rr-lo < 0 | b.rr-lo <= 0 then rc-range-unknown
+   else rc-range (a.rr-lo / b.rr-hi) (a.rr-hi / b.rr-lo)
 
  A truncating remainder takes the sign of the dividend and is bounded by
  the divisor's magnitude, so without knowing the dividend's sign the safe
@@ -249,76 +293,96 @@ Section: Derivation
 
 Section: The Narrowing Sites
 
- Two places a value enters a bounded slot and the wire shows both: an
- argument arriving at a bounded parameter, and a body arriving at a
- declared bounded return type.
-
-  rc-bnd-expr : RcWalk, Text, IRExpr -> RcWalk
-  rc-bnd-expr (w) (d) (x) =
+  rc-bnd-expr : RcWalk, List RcBind, Text, IRExpr -> RcWalk
+  rc-bnd-expr (w) (cs) (d) (x) =
    if rc-dry w then w
-   else rc-bnd-go (rc-burn w) d x
+   else rc-bnd-go (rc-burn w) cs d x
 
-  rc-bnd-go : RcWalk, Text, IRExpr -> RcWalk
-  rc-bnd-go (w) (d) (x) =
+  rc-bnd-go : RcWalk, List RcBind, Text, IRExpr -> RcWalk
+  rc-bnd-go (w) (cs) (d) (x) =
    when x
-    is IrApply (f) (a) (t) (sp) -> rc-bnd-apply w d f a
-    is IrBinary (o) (l) (r) (t) (sp) -> rc-bnd-expr (rc-bnd-expr w d l) d r
-    is IrNegate (v) (t) (sp) -> rc-bnd-expr w d v
-    is IrIf (c) (a) (b) (t) (sp) -> rc-bnd-expr (rc-bnd-expr (rc-bnd-expr w d c) d a) d b
-    is IrLet (n) (t) (v) (b) (sp) -> rc-bnd-expr (rc-bnd-expr w d v) d b
-    is IrLambda (ps) (b) (t) (sp) -> rc-bnd-expr w d b
-    is IrList (es) (t) (sp) -> rc-bnd-list w d es 0 (list-length es)
-    is IrMatch (s) (bs) (t) (sp) -> rc-bnd-branches (rc-bnd-expr w d s) d bs 0 (list-length bs)
-    is IrAct (ss) (t) (sp) -> rc-bnd-stmts w d ss 0 (list-length ss)
-    is IrFieldAccess (r) (f) (t) (sp) -> rc-bnd-expr w d r
-    is IrFieldStore (r) (f) (v) (t) (sp) -> rc-bnd-expr (rc-bnd-expr w d r) d v
-    is IrRecord (n) (fs) (t) (sp) -> rc-bnd-fieldvals w d fs 0 (list-length fs)
-    is IrFork (b) (t) (sp) -> rc-bnd-expr w d b
-    is IrAwait (b) (t) (sp) -> rc-bnd-expr w d b
+    is IrApply (f) (a) (t) (sp) -> rc-bnd-apply w cs d f a
+    is IrBinary (o) (l) (r) (t) (sp) -> rc-bnd-expr (rc-bnd-expr w cs d l) cs d r
+    is IrNegate (v) (t) (sp) -> rc-bnd-expr w cs d v
+    is IrIf (c) (a) (b) (t) (sp) -> rc-bnd-expr (rc-bnd-expr (rc-bnd-expr w cs d c) cs d a) cs d b
+    is IrLet (n) (t) (v) (b) (sp) -> rc-bnd-expr (rc-bnd-expr w cs d v) cs d b
+    is IrLambda (ps) (b) (t) (sp) -> rc-bnd-expr w (rc-consts-minus cs ps) d b
+    is IrList (es) (t) (sp) -> rc-bnd-list w cs d es 0 (list-length es)
+    is IrMatch (s) (bs) (t) (sp) -> rc-bnd-branches (rc-bnd-expr w cs d s) cs d bs 0 (list-length bs)
+    is IrAct (ss) (t) (sp) -> rc-bnd-stmts w cs d ss 0 (list-length ss)
+    is IrFieldAccess (r) (f) (t) (sp) -> rc-bnd-expr w cs d r
+    is IrFieldStore (r) (f) (v) (t) (sp) -> rc-bnd-expr (rc-bnd-expr w cs d r) cs d v
+    is IrRecord (n) (fs) (t) (sp) -> rc-bnd-fieldvals w cs d fs 0 (list-length fs)
+    is IrFork (b) (t) (sp) -> rc-bnd-expr w cs d b
+    is IrAwait (b) (t) (sp) -> rc-bnd-expr w cs d b
     is otherwise -> w
 
-  rc-bnd-list : RcWalk, Text, List IRExpr, Integer, Integer -> RcWalk
-  rc-bnd-list (w) (d) (xs) (i) (len) =
+ A lambda binder shadows a module constant the same way a parameter does,
+ and the chapter-level filter cannot see it. The common answer is that no
+ binder collides, and then the table is handed on unchanged with nothing
+ allocated.
+
+  rc-consts-minus : List RcBind, List IRParam -> List RcBind
+  rc-consts-minus (cs) (ps) =
+   if rc-consts-collide cs ps 0 (list-length cs) then rc-consts-filter cs ps 0 (list-length cs) []
+   else cs
+
+  rc-consts-collide : List RcBind, List IRParam, Integer, Integer -> Boolean
+  rc-consts-collide (cs) (ps) (i) (len) =
+   if i >= len then False
+   else if rc-name-in-params ps ((list-at cs i).rb-name) (list-length ps - 1) then True
+   else rc-consts-collide cs ps (i + 1) len
+
+  rc-consts-filter : List RcBind, List IRParam, Integer, Integer, List RcBind -> List RcBind
+  rc-consts-filter (cs) (ps) (i) (len) (acc) =
+   if i >= len then acc
+   else let b = list-at cs i
+   in if rc-name-in-params ps (b.rb-name) (list-length ps - 1)
+      then rc-consts-filter cs ps (i + 1) len acc
+      else rc-consts-filter cs ps (i + 1) len (list-push acc b)
+
+  rc-bnd-list : RcWalk, List RcBind, Text, List IRExpr, Integer, Integer -> RcWalk
+  rc-bnd-list (w) (cs) (d) (xs) (i) (len) =
    if i >= len then w
-   else rc-bnd-list (rc-bnd-expr w d (list-at xs i)) d xs (i + 1) len
+   else rc-bnd-list (rc-bnd-expr w cs d (list-at xs i)) cs d xs (i + 1) len
 
-  rc-bnd-fieldvals : RcWalk, Text, List IRFieldVal, Integer, Integer -> RcWalk
-  rc-bnd-fieldvals (w) (d) (fs) (i) (len) =
+  rc-bnd-fieldvals : RcWalk, List RcBind, Text, List IRFieldVal, Integer, Integer -> RcWalk
+  rc-bnd-fieldvals (w) (cs) (d) (fs) (i) (len) =
    if i >= len then w
-   else rc-bnd-fieldvals (rc-bnd-expr w d ((list-at fs i).value)) d fs (i + 1) len
+   else rc-bnd-fieldvals (rc-bnd-expr w cs d ((list-at fs i).value)) cs d fs (i + 1) len
 
-  rc-bnd-branches : RcWalk, Text, List IRBranch, Integer, Integer -> RcWalk
-  rc-bnd-branches (w) (d) (bs) (i) (len) =
+  rc-bnd-branches : RcWalk, List RcBind, Text, List IRBranch, Integer, Integer -> RcWalk
+  rc-bnd-branches (w) (cs) (d) (bs) (i) (len) =
    if i >= len then w
-   else rc-bnd-branches (rc-bnd-expr w d ((list-at bs i).body)) d bs (i + 1) len
+   else rc-bnd-branches (rc-bnd-expr w cs d ((list-at bs i).body)) cs d bs (i + 1) len
 
-  rc-bnd-stmts : RcWalk, Text, List IRActStmt, Integer, Integer -> RcWalk
-  rc-bnd-stmts (w) (d) (ss) (i) (len) =
+  rc-bnd-stmts : RcWalk, List RcBind, Text, List IRActStmt, Integer, Integer -> RcWalk
+  rc-bnd-stmts (w) (cs) (d) (ss) (i) (len) =
    if i >= len then w
-   else rc-bnd-stmts (rc-bnd-expr w d (ir-act-stmt-expr (list-at ss i))) d ss (i + 1) len
+   else rc-bnd-stmts (rc-bnd-expr w cs d (ir-act-stmt-expr (list-at ss i))) cs d ss (i + 1) len
 
-  rc-bnd-apply : RcWalk, Text, IRExpr, IRExpr -> RcWalk
-  rc-bnd-apply (w) (d) (f) (a) =
-   let w1 = rc-bnd-expr (rc-bnd-expr w d f) d a
-   in rc-bnd-param-check w1 d f a
+  rc-bnd-apply : RcWalk, List RcBind, Text, IRExpr, IRExpr -> RcWalk
+  rc-bnd-apply (w) (cs) (d) (f) (a) =
+   let w1 = rc-bnd-expr (rc-bnd-expr w cs d f) cs d a
+   in rc-bnd-param-check w1 cs d f a
 
-  rc-bnd-param-check : RcWalk, Text, IRExpr, IRExpr -> RcWalk
-  rc-bnd-param-check (w) (d) (f) (a) =
+  rc-bnd-param-check : RcWalk, List RcBind, Text, IRExpr, IRExpr -> RcWalk
+  rc-bnd-param-check (w) (cs) (d) (f) (a) =
    when f
-    is IrName (n) (ft) (sp) -> rc-bnd-against-fun w d n ft a
+    is IrName (n) (ft) (sp) -> rc-bnd-against-fun w cs d n ft a
     is otherwise -> w
 
-  rc-bnd-against-fun : RcWalk, Text, Text, CodexType, IRExpr -> RcWalk
-  rc-bnd-against-fun (w) (d) (n) (ft) (a) =
+  rc-bnd-against-fun : RcWalk, List RcBind, Text, Text, CodexType, IRExpr -> RcWalk
+  rc-bnd-against-fun (w) (cs) (d) (n) (ft) (a) =
    when ft
-    is FunTy (p) (row) (r) -> rc-bnd-slot w d ("parameter of " & n) p a
+    is FunTy (p) (row) (r) -> rc-bnd-slot w cs d ("parameter of " & n) p a
     is otherwise -> w
 
-  rc-bnd-slot : RcWalk, Text, Text, CodexType, IRExpr -> RcWalk
-  rc-bnd-slot (w) (d) (site) (slot) (a) =
+  rc-bnd-slot : RcWalk, List RcBind, Text, Text, CodexType, IRExpr -> RcWalk
+  rc-bnd-slot (w) (cs) (d) (site) (slot) (a) =
    if rc-is-bounded-int slot == False then w
    else if rc-is-narrow-call a then w
-   else rc-bnd-verdict w d site (rc-int-lo slot) (rc-int-hi slot) (rc-derive [] a 400)
+   else rc-bnd-verdict w d site (rc-int-lo slot) (rc-int-hi slot) (rc-derive cs [] a 400)
 
   rc-bnd-verdict : RcWalk, Text, Text, Integer, Integer, RcRange -> RcWalk
   rc-bnd-verdict (w) (d) (site) (lo) (hi) (r) =
@@ -337,21 +401,22 @@ Section: Definition Walk
     is EffectfulTy (e) (s) (r) -> rc-bnd-return-ty r (fuel - 1)
     is otherwise -> t
 
-  rc-bnd-def : RcWalk, IRDef -> RcWalk
-  rc-bnd-def (w) (d) =
-   let w1 = rc-bnd-expr w (d.name) (d.body)
+  rc-bnd-def : RcWalk, List RcBind, IRDef -> RcWalk
+  rc-bnd-def (w) (cs) (d) =
+   let w1 = rc-bnd-expr w cs (d.name) (d.body)
    in let ret = rc-bnd-return-ty (d.type-val) 32
    in if rc-is-bounded-int ret == False then w1
    else if rc-is-narrow-call (d.body) then w1
-   else rc-bnd-verdict w1 (d.name) "declared return type" (rc-int-lo ret) (rc-int-hi ret) (rc-derive [] (d.body) 400)
+   else rc-bnd-verdict w1 (d.name) "declared return type" (rc-int-lo ret) (rc-int-hi ret) (rc-derive cs [] (d.body) 400)
 
   rc-bnd-chapter : IRChapter, Integer -> RcWalk
   rc-bnd-chapter (ch) (fuel) =
-   rc-bnd-defs (rc-walk-new fuel) (ch.defs) 0 (list-length (ch.defs))
+   let cs = rc-consts-of (ch.defs) 0 (list-length (ch.defs)) []
+   in rc-bnd-defs (rc-walk-new fuel) cs (ch.defs) 0 (list-length (ch.defs))
 
-  rc-bnd-defs : RcWalk, List IRDef, Integer, Integer -> RcWalk
-  rc-bnd-defs (w) (ds) (i) (len) =
+  rc-bnd-defs : RcWalk, List RcBind, List IRDef, Integer, Integer -> RcWalk
+  rc-bnd-defs (w) (cs) (ds) (i) (len) =
    if i >= len then w
-   else rc-bnd-defs (rc-bnd-def w (list-at ds i)) ds (i + 1) len
+   else rc-bnd-defs (rc-bnd-def w cs (list-at ds i)) cs ds (i + 1) len
 
 Page 1

@@ -1,0 +1,135 @@
+Chapter: FatSinkBig
+
+  cites Foreword chapter Fat16
+  cites Foreword chapter Maybe
+
+ The FOREWORD FAT writer at CDX scale. fat-write-big is the same question
+ asked of Works chapter GopFat16, which is a different writer on a different
+ path; this one drives fat16-write-segments, which is what the compiler's
+ metal output sink calls.
+
+ The oracle streams: it walks the chain and compares each sector in place,
+ bracketed by __heap-save/__heap-restore, because fat16-read-bytes
+ materialises a List Integer and at this size that is ~21.8 MB live inside a
+ 128 MB arena.
+
+ sb-shift is the calibration. At 0 the check is the real one; set it to 1 and
+ every byte must be reported bad. A run that cannot report bad is not evidence.
+
+Section: Test
+
+  sb-size : Integer = 2745998
+
+  sb-shift : Integer = 0
+
+  sb-pat : Integer -> Integer
+  sb-pat (i) = int-mod (i * 7 + i / 513) 251
+
+  sb-fill : Integer, Integer, Integer -> Integer
+  sb-fill (buf) (i) (n) =
+    if i >= n then 0
+    else let w = poke-byte buf i (sb-pat i)
+    in sb-fill buf (i + 1) n
+
+Section: Streaming Verify
+
+  sb-check-sector : Integer, Integer, Integer, Integer, Integer -> Integer
+  sb-check-sector (buf) (k) (bps) (off) (bad) =
+    if k >= bps then bad
+    else if off + k >= sb-size then bad
+    else if peek-byte buf k /= sb-pat (off + k + sb-shift) then sb-check-sector buf (k + 1) bps off (bad + 1)
+    else sb-check-sector buf (k + 1) bps off bad
+
+  sb-check-cluster : Fat16Volume, Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  sb-check-cluster (vol) (cluster) (s) (off) (bad) =
+    if s >= (vol.vol-sectors-per-cluster) then bad
+    else if off >= sb-size then bad
+    else let h = __heap-save
+    in act
+      buf <- block-read-sector (fat16-cluster-sector vol cluster + s)
+      sb-cluster-step vol cluster s off bad buf h
+    end
+
+  sb-cluster-step : Fat16Volume, Integer, Integer, Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  sb-cluster-step (vol) (cluster) (s) (off) (bad) (buf) (h) =
+    let b2 = sb-check-sector buf 0 (vol.vol-bytes-per-sector) off bad
+    in let z = __heap-restore h
+    in sb-check-cluster vol cluster (s + 1) (off + (vol.vol-bytes-per-sector)) b2
+
+  sb-walk : Fat16Volume, Integer, Integer, Integer -> [Device.Block] Integer
+  sb-walk (vol) (cluster) (off) (bad) =
+    if off >= sb-size then bad
+    else if fat16-is-end cluster then bad
+    else if cluster < 2 then bad
+    else let h = __heap-save
+    in act
+      b2 <- sb-check-cluster vol cluster 0 off bad
+      nxt <- fat16-next-cluster vol cluster
+      sb-walk-next vol nxt off b2 h
+    end
+
+  sb-walk-next : Fat16Volume, Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  sb-walk-next (vol) (nxt) (off) (bad) (h) =
+    let z = __heap-restore h
+    in sb-walk vol nxt (off + fat16-bytes-per-cluster vol) bad
+
+ chain is printed because sb-walk answers 0 for a cluster below 2, which is
+ what an unresolved entry hands it, and that is indistinguishable from a clean
+ verify. A vacuous run reports first=0 chain=0 and convicts itself.
+
+  sb-chain-count : Fat16Volume, Integer, Integer -> [Device.Block] Integer
+  sb-chain-count (vol) (cluster) (n) =
+    if fat16-is-end cluster then n
+    else if cluster < 2 then n
+    else if n > 100000 then n
+    else let h = __heap-save
+    in act
+      nxt <- fat16-next-cluster vol cluster
+      sb-count-next vol nxt n h
+    end
+
+  sb-count-next : Fat16Volume, Integer, Integer, Integer -> [Device.Block] Integer
+  sb-count-next (vol) (nxt) (n) (h) =
+    let z = __heap-restore h
+    in sb-chain-count vol nxt (n + 1)
+
+Section: Reporting
+
+  sb-entry-size : Maybe Fat16DirEntry -> Integer
+  sb-entry-size (m) = when m
+    is Just (e) -> e.de-size
+    is None -> 0 - 1
+
+  sb-entry-cluster : Maybe Fat16DirEntry -> Integer
+  sb-entry-cluster (m) = when m
+    is Just (e) -> e.de-cluster
+    is None -> 0
+
+Section: Entry
+
+  opening : [Console, Device.Block] Nothing = act
+    v0 <- fat16-init 2048
+    print-line-uni ("bps=" & show (v0.vol-bytes-per-sector) & " spc=" & show (v0.vol-sectors-per-cluster) & " clusters=" & show (v0.vol-cluster-count))
+    let buf = __heap-save
+    in let adv = __heap-advance (bit-and (sb-size + 511) (-512))
+    in let f = sb-fill buf 0 sb-size
+    in let h0 = __heap-save
+    in act
+      ok <- fat16-write-segments "BIG.CDX" [] buf sb-size []
+      sb-report h0 ok
+    end
+  end
+
+  sb-report : Integer, Boolean -> [Console, Device.Block] Nothing
+  sb-report (h0) (ok) =
+    let h1 = __heap-save
+    in act
+      print-line-uni ("write=" & show ok & " arena=" & show (h1 - h0))
+      vol <- fat16-init 2048
+      entry <- fat16-resolve-path vol "BIG.CDX"
+      print-line-uni ("size=" & show (sb-entry-size entry) & " want=" & show sb-size)
+      chain <- sb-chain-count vol (sb-entry-cluster entry) 0
+      print-line-uni ("first=" & show (sb-entry-cluster entry) & " chain=" & show chain)
+      bad <- sb-walk vol (sb-entry-cluster entry) 0 0
+      print-line-uni ("bad=" & show bad & " shift=" & show sb-shift)
+    end

@@ -1,0 +1,39 @@
+Needs a 16 MB FAT16 medium and 3 to 6 minutes of wall clock, both past the
+battery's budget. Run by hand, green 2026-08-09 on both beds:
+
+  build/compile.ps1 -Src codex/test/apps/fat-sink-big.codex -Out sb.cdx -Log sb.log -Kernel seed/Codex.cdx
+
+  # bed 1, -kernel on a 16 MB FAT16 volume (about 3 min)
+  copy codex\test\fat16-write.disk sb-k.img   (clear the read-only bit)
+  tools/codex-vm.exe -kernel sb.cdx -mem 3072 -headless -disk sb-k.img -output sb-k.out -timeout 900
+
+  # bed 2, the shipping envelope: -HeapPages 32768 is 128 MB exactly (about 5.5 min)
+  build/cdx-to-pe.ps1 -CdxInput sb.cdx -Out sb.efi -EntryStart -HeapPages 32768
+  build/build-img.ps1 -PeInput sb.efi -Out sb.img -TotalSectors 32768
+  tools/codex-vm.exe -kernel sb.img -uefi -disk sb.img -headless -output sb-u.out -timeout 900
+
+Expected (arena and first cluster differ by bed; the rest does not):
+
+  bps=512 spc=1 clusters=<volume>          (bed 2 prefixes this line with
+                                            "svchgo" -- UEFI stub output, not
+                                            corruption)
+  write=True arena=<50608 on bed 2, 66152 on bed 1>
+  size=2745998 want=2745998
+  first=<nonzero> chain=5364
+  bad=0 shift=0
+
+CALIBRATION, and it is not optional. Set sb-shift to 1, rebuild, re-run: the
+last line must read bad=2745998. An oracle that has only ever printed bad=0
+cannot tell a correct write from one it is unable to inspect. Set it back to 0
+and re-measure before believing the green -- after a control run the file is in
+the control state.
+
+sb-size is the seed CDX size and is deliberately a literal, not a measurement
+of seed/Codex.cdx: the point is a fixed 2.7 MB payload, not tracking the seed.
+Do not carry the number forward as the current seed size (L-COUNT).
+
+What only this file reaches is the FOREWORD writer at scale. fat-write is the
+small-file path, fat-write-guard is the allocator bound and rollback, and
+fat-write-big is Works chapter GopFat16, which is a different writer. This one
+drives fat16-write-segments, which is what the compiler's metal output sink
+calls (docs/Designs/Active/Compiler/MetalOutputSink.md).

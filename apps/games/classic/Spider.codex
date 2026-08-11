@@ -1,15 +1,17 @@
 Chapter: Spider
   cites Games chapter Rng
+  cites Foreword chapter Random
 
- Spider Solitaire, 2-suit variant. 104 cards (suits 0 and 1,
- ranks 0-12 each appearing 4 times). 10 tableau columns receive
- the initial deal (cols 0-3 get 6 cards, cols 4-9 get 5 cards).
- Cards represented as integers: rank = card mod 13, suit = card / 13.
- Sequences of same-suit descending cards can be moved as a unit.
- A complete K-through-A run of the same suit is removed.
- The stock holds 50 remaining cards dealt 10 at a time.
- The greedy AI prefers completing suits, then uncovering cards,
- then any legal sequence move.
+ Spider Solitaire, 2-suit variant. 104 cards, rank = card mod 13,
+ suit = card / 13. Cols 0-3 get 6 cards, cols 4-9 get 5, stock holds
+ the remaining 50 and deals 10 at a time.
+
+ The solver is greedy over the full legal move set and halts because it
+ never enters a position it has already been in. Nothing weaker works: a
+ move's only effect on same-suit adjacency is the join it makes at its
+ destination, so a rank-join onto a different suit leaves adjacency
+ unchanged and is therefore always reversible. Refusing only the
+ immediate reversal just moves the oscillation into a longer cycle.
 
  We say:
 
@@ -184,6 +186,15 @@ Section: Sequence Logic
     else if sp-suit c-curr /= sp-suit c-prev then len
     else sp-seq-loop col i (i + 1) (len + 1)
 
+  sp-seq-start : List Integer, Integer -> Integer
+  sp-seq-start (col) (i) =
+    if i <= 0 then 0
+    else let c-prev = list-at col (i - 1)
+    in let c-curr = list-at col i
+    in if sp-rank c-curr /= sp-rank c-prev - 1 then i
+    else if sp-suit c-curr /= sp-suit c-prev then i
+    else sp-seq-start col (i - 1)
+
   sp-can-move : List Integer, List Integer, Integer -> Boolean
   sp-can-move (from-col) (to-col) (seq-start) =
     let to-n = list-length to-col
@@ -274,13 +285,128 @@ Section: Stock Deal
     in let col2 = list-push col card
     in sp-set-col st col-idx col2
 
+Section: Position Hashing
+
+ A column's hash folds its cards left to right from a seed carrying the
+ column index, so two columns holding the same cards hash differently and
+ order within a column matters. The ten are combined with bit-xor, which
+ makes a move's effect local: only the source and the destination change,
+ so the position AFTER a candidate move is the current hash with those two
+ columns' old hashes taken out and their new ones put in. That is what lets
+ the solver test a candidate without building the state it would produce.
+ Building it would allocate ten columns per candidate against a heap with
+ no collector.
+
+  sp-col-hash : Integer, List Integer, Integer, Integer, Integer -> Integer
+  sp-col-hash (c) (col) (i) (n) (h) =
+    if i >= n then h
+    else sp-col-hash c col (i + 1) n (mix-bits h (list-at col i + 1))
+
+  sp-col-hash-of : Integer, List Integer, Integer -> Integer
+  sp-col-hash-of (c) (col) (n) =
+    sp-col-hash c col 0 n (mix-bits 2654435761 (c + 1))
+
+  sp-hash : SpiderState -> Integer
+  sp-hash (st) = sp-hash-loop st 0 0
+
+  sp-hash-loop : SpiderState, Integer, Integer -> Integer
+  sp-hash-loop (st) (c) (acc) =
+    if c >= 10 then acc
+    else let col = sp-get-col st c
+    in sp-hash-loop st (c + 1) (bit-xor acc (sp-col-hash-of c col (list-length col)))
+
+  sp-hash-after : SpiderState, Integer, Integer, Integer, Integer -> Integer
+  sp-hash-after (st) (h) (from-c) (seq-start) (to-c) =
+    let from-col = sp-get-col st from-c
+    in let to-col = sp-get-col st to-c
+    in let fn = list-length from-col
+    in let tn = list-length to-col
+    in let old-f = sp-col-hash-of from-c from-col fn
+    in let old-t = sp-col-hash-of to-c to-col tn
+    in let new-f = sp-col-hash-of from-c from-col seq-start
+    in let new-t = sp-col-hash to-c from-col seq-start fn old-t
+    in let a = bit-xor h old-f
+    in let b = bit-xor a old-t
+    in let c = bit-xor b new-f
+    in bit-xor c new-t
+
 Section: AI -- Greedy Solver
 
-  sp-find-best-move : SpiderState -> Integer
-  sp-find-best-move (st) =
+  sp-find-best-move : SpiderState, Integer, List Integer -> Integer
+  sp-find-best-move (st) (h) (seen) =
     let suit-move = sp-find-completing-move st 0
     in if suit-move >= 0 then suit-move
-    else sp-find-any-move st 0
+    else sp-find-fresh-move st h seen 0
+
+ For a caller that steps one move at a time and keeps no history of its
+ own, such as the /api/spider/step endpoint. It gets the best-scoring
+ legal move and no cycle protection, which is what an interactive caller
+ wants: the person clicking is the one deciding when to stop.
+
+  sp-suggest-move : SpiderState -> Integer
+  sp-suggest-move (st) = sp-find-best-move st (sp-hash st) []
+
+  sp-find-fresh-move : SpiderState, Integer, List Integer, Integer -> Integer
+  sp-find-fresh-move (st) (h) (seen) (from-c) =
+    let best = sp-best-fresh st h seen 0 0
+    in if best == 0 then (-1)
+    else rng-mod best 1000000 - 1
+
+ A candidate is packed score-above-move so that one integer comparison
+ orders them, which is why the move code is offset by one: zero has to
+ mean no candidate at all rather than the move from column 0 to column 0.
+
+  sp-best-fresh : SpiderState, Integer, List Integer, Integer, Integer -> Integer
+  sp-best-fresh (st) (h) (seen) (from-c) (best) =
+    if from-c >= 10 then best
+    else let col = sp-get-col st from-c
+    in let n = list-length col
+    in if n == 0 then sp-best-fresh st h seen (from-c + 1) best
+    else let seq-start = sp-seq-start col (n - 1)
+    in sp-best-fresh st h seen (from-c + 1) (sp-best-start st h seen from-c seq-start n best)
+
+  sp-best-start : SpiderState, Integer, List Integer, Integer, Integer, Integer, Integer -> Integer
+  sp-best-start (st) (h) (seen) (from-c) (s) (n) (best) =
+    if s >= n then best
+    else sp-best-start st h seen from-c (s + 1) n (sp-best-target st h seen from-c s 0 best)
+
+  sp-best-target : SpiderState, Integer, List Integer, Integer, Integer, Integer, Integer -> Integer
+  sp-best-target (st) (h) (seen) (from-c) (seq-start) (to-c) (best) =
+    if to-c >= 10 then best
+    else if to-c == from-c then sp-best-target st h seen from-c seq-start (to-c + 1) best
+    else let from-col = sp-get-col st from-c
+    in let to-col = sp-get-col st to-c
+    in if list-length to-col == 0 & seq-start <= 0 then
+      sp-best-target st h seen from-c seq-start (to-c + 1) best
+    else if sp-can-move from-col to-col seq-start == False then
+      sp-best-target st h seen from-c seq-start (to-c + 1) best
+    else if sp-seen-has seen (sp-hash-after st h from-c seq-start to-c) 0 then
+      sp-best-target st h seen from-c seq-start (to-c + 1) best
+    else let pack = sp-rank-move st from-c seq-start to-c * 1000000 + from-c * 10000 + seq-start * 10 + to-c + 1
+    in if pack > best then sp-best-target st h seen from-c seq-start (to-c + 1) pack
+    else sp-best-target st h seen from-c seq-start (to-c + 1) best
+
+  sp-rank-move : SpiderState, Integer, Integer, Integer -> Integer
+  sp-rank-move (st) (from-c) (seq-start) (to-c) =
+    let from-col = sp-get-col st from-c
+    in let to-col = sp-get-col st to-c
+    in let fn = list-length from-col
+    in let tn = list-length to-col
+    in let suited = if tn == 0 then False
+                    else sp-suit (list-at from-col seq-start) == sp-suit (list-at to-col (tn - 1))
+    in let run-start = sp-seq-start from-col (fn - 1)
+    in let suit-bonus = if suited then 1000 else 0
+    in let split-cost = if seq-start > run-start then 300 else 0
+    in let empty-source = if seq-start == 0 then 500 else 0
+    in let uncovers = if seq-start > 0 then 200 else 0
+    in let empty-target = if tn == 0 then 5 else 0
+    in suit-bonus + empty-source + uncovers + (fn - seq-start) * 10 + empty-target - split-cost
+
+  sp-seen-has : List Integer, Integer, Integer -> Boolean
+  sp-seen-has (seen) (h) (i) =
+    if i >= list-length seen then False
+    else if list-at seen i == h then True
+    else sp-seen-has seen h (i + 1)
 
   sp-find-completing-move : SpiderState, Integer -> Integer
   sp-find-completing-move (st) (from-c) =
@@ -288,7 +414,7 @@ Section: AI -- Greedy Solver
     else let col = sp-get-col st from-c
     in let n = list-length col
     in if n == 0 then sp-find-completing-move st (from-c + 1)
-    else let seq-start = n - sp-seq-len col (n - 1)
+    else let seq-start = sp-seq-start col (n - 1)
     in let m = sp-find-target-completing st from-c seq-start 0
     in if m >= 0 then m
     else sp-find-completing-move st (from-c + 1)
@@ -302,29 +428,8 @@ Section: AI -- Greedy Solver
     in if sp-can-move from-col to-col seq-start == False then
       sp-find-target-completing st from-c seq-start (to-c + 1)
     else let score = sp-move-score st from-c seq-start to-c
-    in if score >= 100 then from-c * 1000 + seq-start * 10 + to-c
+    in if score >= 100 then from-c * 10000 + seq-start * 10 + to-c
     else sp-find-target-completing st from-c seq-start (to-c + 1)
-
-  sp-find-any-move : SpiderState, Integer -> Integer
-  sp-find-any-move (st) (from-c) =
-    if from-c >= 10 then (-1)
-    else let col = sp-get-col st from-c
-    in let n = list-length col
-    in if n == 0 then sp-find-any-move st (from-c + 1)
-    else let seq-start = n - sp-seq-len col (n - 1)
-    in let m = sp-find-any-target st from-c seq-start 0
-    in if m >= 0 then m
-    else sp-find-any-move st (from-c + 1)
-
-  sp-find-any-target : SpiderState, Integer, Integer, Integer -> Integer
-  sp-find-any-target (st) (from-c) (seq-start) (to-c) =
-    if to-c >= 10 then (-1)
-    else if to-c == from-c then sp-find-any-target st from-c seq-start (to-c + 1)
-    else let from-col = sp-get-col st from-c
-    in let to-col = sp-get-col st to-c
-    in if sp-can-move from-col to-col seq-start == False then
-      sp-find-any-target st from-c seq-start (to-c + 1)
-    else from-c * 1000 + seq-start * 10 + to-c
 
   sp-move-score : SpiderState, Integer, Integer, Integer -> Integer
   sp-move-score (st) (from-c) (seq-start) (to-c) =
@@ -339,8 +444,8 @@ Section: AI -- Greedy Solver
 
   sp-decode-move : Integer -> SpiderMove
   sp-decode-move (code) =
-    let from-c = code / 1000
-    in let rem = rng-mod code 1000
+    let from-c = code / 10000
+    in let rem = rng-mod code 10000
     in let seq-start = rem / 10
     in let to-c = rng-mod rem 10
     in SpiderMove { from-col = from-c, seq-start = seq-start, to-col = to-c }
@@ -350,22 +455,23 @@ Section: Game Runner
   run-spider-game : Integer -> SpiderResult
   run-spider-game (seed) =
     let st = spider-new seed
-    in spider-loop st 0
+    in spider-loop st 0 (list-push [] (sp-hash st))
 
-  spider-loop : SpiderState, Integer -> SpiderResult
-  spider-loop (st) (deals-used) =
+  spider-loop : SpiderState, Integer, List Integer -> SpiderResult
+  spider-loop (st) (deals-used) (seen) =
     if st.completed-suits >= 8 then
       SpiderResult { completed-suits = st.completed-suits, moves = st.moves, won = True }
     else if st.moves > 500 then
       SpiderResult { completed-suits = st.completed-suits, moves = st.moves, won = False }
-    else let move-code = sp-find-best-move st
+    else let h = sp-hash st
+    in let move-code = sp-find-best-move st h seen
     in if move-code >= 0 then
       let m = sp-decode-move move-code
       in let st2 = sp-apply-move st m
-      in spider-loop st2 deals-used
+      in spider-loop st2 deals-used (list-push seen (sp-hash st2))
     else if deals-used < 5 & list-length (st.stock) >= 10 then
       let st2 = sp-deal-stock st
-      in spider-loop st2 (deals-used + 1)
+      in spider-loop st2 (deals-used + 1) (list-push seen (sp-hash st2))
     else SpiderResult { completed-suits = st.completed-suits, moves = st.moves, won = False }
 
 Section: Formatting

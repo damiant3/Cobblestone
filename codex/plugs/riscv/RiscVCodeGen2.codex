@@ -438,18 +438,6 @@ Section: Control Flow
     reg = br.reg
    }
 
- The result-dest override that steers the let VALUE into the local's
- register is scoped to the value and restored before the BODY is
- emitted. It leaked into the body until 2026-07-23, so every
- dest-honoring emitter in the body wrote the live local: in
- `text-index-of`, the five-argument marshal into `str-index-loop`
- evaluated the literal `0` and `slen - sublen + 1` straight into the
- register still holding `sublen`, and the call went out with limit 12
- and sublen 12 on an 11-character string -- every `text-contains` on
- this lane answered False through it. Found by disassembly of the
- reduced probe; only FRAMED functions were affected, because the
- frameless arm never sets a dest.
-
   rv-emit-let-bound : RvState, Text, IRExpr, IRExpr -> RvEmitResult
   rv-emit-let-bound (st) (name) (value) (body) =
    let saved-tail = st.tco.in-tail-pos
@@ -1198,7 +1186,7 @@ Section: Records and Sum Types
   rv-emit-record : RvState, List IRFieldVal, CodexType -> RvEmitResult
   rv-emit-record (st) (fields) (ty) =
    let st = rv-learn-field-names st (rv-type-name ty) fields 0
-   in let field-types = rv-extract-field-types ty
+   in let field-types = rv-extract-field-types st ty
    in let saved = rv-eval-record-fields st fields 0 [] field-types
    in let total-size = list-length fields * 8
    in let ptr-loc = rv-alloc-local (saved.state)
@@ -1207,11 +1195,9 @@ Section: Records and Sum Types
    in let st3 = rv-store-record-fields st2 (saved.locals) (ptr-loc.reg) 0
    in rv-load-local st3 (ptr-loc.reg)
 
-  rv-extract-field-types : CodexType -> List CodexType
-  rv-extract-field-types (ty) =
-   when ty
-    is RecordTy (rn) (tvars) (fields) -> rv-collect-field-types fields 0
-    is otherwise -> []
+  rv-extract-field-types : RvState, CodexType -> List CodexType
+  rv-extract-field-types (st) (ty) =
+   rv-collect-field-types (rv-resolve-record-fields st ty) 0
 
   rv-collect-field-types : List RecordField, Integer -> List CodexType
   rv-collect-field-types (fields) (i) =
@@ -1395,11 +1381,17 @@ Section: Records and Sum Types
 
   rv-find-field-type-st : RvState, CodexType, Text -> CodexType
   rv-find-field-type-st (st) (ty) (name) =
+   rv-find-field-type-in-rf (rv-resolve-record-fields st ty) name 0
+
+  rv-resolve-record-fields : RvState, CodexType -> List RecordField
+  rv-resolve-record-fields (st) (ty) =
    when ty
     is RecordTy (rn) (tvars) (fields) ->
-     if list-length fields > 0 then rv-find-field-type-in-rf fields name 0
-     else int-ty-default
-    is otherwise -> int-ty-default
+     if list-length fields > 0 then fields
+     else record-fields-by-name (st.type-defs) (rn.value) 0
+    is ConstructedTy (tname) (args) -> record-fields-by-name (st.type-defs) (tname.value) 0
+    is TypeCon (tname) -> record-fields-by-name (st.type-defs) (tname.value) 0
+    is otherwise -> []
 
   rv-find-field-type-in-rf : List RecordField, Text, Integer -> CodexType
   rv-find-field-type-in-rf (fields) (name) (i) =
@@ -1437,6 +1429,5 @@ Section: Records and Sum Types
      in if idx >= 0 then idx
      else rv-find-field-in-any-type-def defs field-name (i + 1)
     is otherwise -> rv-find-field-in-any-type-def defs field-name (i + 1)
-
 
 Page 2 of 3

@@ -13,14 +13,6 @@ Chapter: GopWizard
   cites Foreword chapter StringUtils
   cites Foreword chapter CCE
 
- The first-boot ceremony on the GOP framebuffer (B2.2 + B2.3). The
- flow mirrors FirstBoot's phase model -- welcome, identity, upstream,
- complete -- rendered with GopDraw and driven by GopText fields over
- whichever keyboard the machine has: PS/2 by IRQ, or USB HID by the
- pump the context carries (wz-kbd), because on the Option A boot path
- firmware is gone: no ConOut, no ConIn, and on most modern machines
- no PS/2 controller either.
-
  Identity follows the IdentityManager recipe: entropy is hashed with
  SHA-256 into an Ed25519 seed, the public key's hash is the
  fingerprint, and the private seed is wrapped with AES-256-CBC under
@@ -33,10 +25,6 @@ Chapter: GopWizard
  tick count sampled after typing -- keystroke timing the machine
  cannot predict. The wrapped key lives only in memory: persistence to
  the stick is B3.
-
- Every waiting loop is a self-recursive act tail (constant stack under
- the compiler's TCO) whose idle path allocates nothing; the hosting
- program compiles with the pet flag like every boot-path poll loop.
 
  We say:
 
@@ -93,23 +81,6 @@ Section: Context
 
 Section: Key Wait
 
- The wait polls through kbd-take so a USB keyboard's Enter arrives
- exactly like a PS/2 one; with no USB keyboard connected the pump is
- a flag test and this is gk-take in a loop, unchanged.
-
- This wait is also the keyboard proof gate, because it is the one
- place the boot stops and asks a human to press something. A key --
- any key, not just the Enter this screen wants -- proves the keyboard
- delivers, and restarts the window. Silence proves nothing on its
- own: a machine whose keyboard is simply unattended looks exactly
- like a machine whose USB HID endpoint enumerated and never spoke.
- The gate treats them the same on purpose, because the remedy is
- harmless to the first and is the only remedy for the second: after
- a bounded silence the controller goes back to firmware (kbd-handback)
- and its legacy emulation answers instead. The cost is the USB boot
- stick, which shares the controller; a machine nobody can type on
- could not have used it anyway.
-
  The window is measured on the CMOS real-time clock, NOT on the PIT
  tick, and that is the whole lesson of the first attempt. The tick
  cell (28672) is filled by the timer interrupt, so it only advances
@@ -122,33 +93,6 @@ Section: Key Wait
  interrupt, no PIC, and no handler in the path; a machine that can
  boot at all has one. The gate now counts the seconds it sees the
  RTC turn over, which is a clock the firmware cannot take away.
-
- Both clocks are reported on the glass while the gate waits, because
- a boot that fails to fire must say WHY: if pit stays 0 while rtc
- climbs, the timer interrupt is dead on that machine and everything
- else built on the tick (the watchdog, preemption, any timeout) is
- dead with it. That is a finding, not a nuisance.
-
- The gate fires at most once -- the handback records its own
- decision -- so a firmware that refuses to take the controller back
- is not asked twice.
-
- wz-wait-enter-from tail-calls ITSELF so the compiler's TCO turns the
- poll into a jump; the gate is a helper returning an integer, exactly
- as the menu's dispatchers are, because mutual recursion would grow
- the stack until the machine died waiting for a keystroke.
-
- The gate reports its own vitals when the second turns over, when a
- key arrives, and -- only on a machine whose clock has never moved at
- all -- on a spin interval. The first two builds of this gate each
- depended on a clock to say anything, and each went silent on the one
- machine it was written for: a screen that prints nothing cannot be
- distinguished from a loop that is not running, an RTC that never
- ticks, or a keyboard streaming garbage that resets the window every
- iteration. Those are three different faults and they looked
- identical. The third arm is what keeps that guarantee: the spin
- counter is the one number that cannot lie, and a clockless machine
- still gets a line.
 
  The paint used to be on the spin interval ALONE, and that was the
  same mistake this file corrected one screen away in wz-noclock-spins:
@@ -166,40 +110,14 @@ Section: Key Wait
  -- must not count as proof that a human is typing, or a board that
  emits one holds the gate open forever and never falls back.
 
- The spin backstop is for ONE case, and it must never pre-empt a
- working clock: a machine where neither the timer interrupt NOR the
- real-time clock advances at all. Written as a plain spin budget it
- fired within a second or two on real silicon -- that CPU spins tens
- of millions of times a second, so sixty million spins is not "a long
- wait", it is an instant -- and it handed the controller back before
- the thirty-second window had even begun, switching off the very
- keyboard pump whose silence it was supposed to be measuring. A
- budget in spins is not a duration. It only becomes one when there is
- nothing else to count by.
-
  So the backstop now requires that the RTC has NEVER moved: elapsed
  still zero after a spin count no working machine reaches without the
  clock turning over once. On a board whose RTC ticks -- which is every
  board we have met -- the thirty seconds are the only thing that can
  fire this gate.
 
- The window is THIRTY seconds and it announces itself, because the
- handback is not free: it costs the USB stick, and on a machine whose
- firmware offers no legacy emulation it costs the USB keyboard too.
- A ten-second window fired while a human was still reading the
- welcome screen -- caught in the emulator, where the fallback has
- nothing to fall back TO, and a working keyboard was destroyed by the
- mechanism meant to save it. So the machine now says what it is about
- to do, counts down where the operator can see it, and any keystroke
- at all calls the whole thing off. A person who has not touched a key
- in half a minute, on a screen that says "Press Enter to begin", does
- not have a working keyboard.
-
   wz-gate-secs : Integer = 30
   wz-noclock-spins : Integer = 500000000
-
- The clockless floor only. A machine whose RTC turns over repaints on
- the second and never reaches this.
 
   wz-note-every : Integer = 262144
 
@@ -215,11 +133,6 @@ Section: Key Wait
  countdown could be seen, and switched off the keyboard pump whose
  silence it was measuring. An unreadable clock is reported as -1 and
  changes nothing: it is not a tick, and it never becomes one.
-
- A status row is cleared across the WHOLE panel, not across the text
- column: these lines are longer than the ceremony's prose, and a
- clear sized to the column leaves the tail of the previous, longer
- line standing beside the new one.
 
   wz-clear-row : WzCtx, Integer -> Integer
   wz-clear-row (c) (row) =
@@ -253,10 +166,6 @@ Section: Key Wait
     r <- rtc-seconds 0
     wz-wait-enter-from c r 0 0 0
   end
-
- An unreadable second (-1) is carried through as no change at all: prev is
- left standing, elapsed does not move, and the loop simply asks again. A
- clock that cannot be read is not a clock that has ticked.
 
   wz-wait-enter-from : WzCtx, Integer, Integer, Integer, Integer -> [Device.Port] Integer
   wz-wait-enter-from (c) (prev) (elapsed) (spins) (last) = act
@@ -296,11 +205,6 @@ Section: Welcome
     in wz-wait-enter c
 
 Section: Passphrase
-
- The passphrase protects the private key. Two masked entries must
- match and reach four characters; a failed attempt redraws the screen
- with the reason and starts over -- the retry is a tail self-call, so
- a stubborn typist costs no stack.
 
   wz-passphrase : WzCtx, Text -> [Device.Port, Device.Mmio] GtLine
   wz-passphrase (c) (note) = act
@@ -450,8 +354,6 @@ Section: Persistence
     in let wr = wz-put-list buf 76 (wid.wid-wrapped) 0 (list-length (wid.wid-wrapped))
     in 76 + list-length (wid.wid-wrapped)
 
- The 8.3 name "IDENTITYDAT" as 11 space-padded bytes.
-
   wz-id-name : Integer
   wz-id-name =
     let b = __heap-save
@@ -464,15 +366,6 @@ Section: Persistence
     if i >= text-length s then 0
     else let w = poke-byte buf i (to-unicode (char-code (char-at s i)))
     in wz-name-bytes buf s (i + 1)
-
- Only ever write to the disk we booted from. The AHCI driver picks the
- first SATA disk it finds, which on a real machine with internal drives
- is NOT the boot medium -- so an unguarded write could land on the wrong
- disk. The boot medium is the one carrying our own CODEX.CDX; if the
- mounted volume has no CODEX.CDX, decline rather than risk another disk.
- (On real hardware the boot stick is USB mass storage, which these
- AHCI/IDE drivers cannot reach at all -- so the mount fails first and
- this guard is belt-and-suspenders until the USB stack lands.)
 
   wz-save-identity : WzIdentity -> [Device.Port] Boolean
   wz-save-identity (wid) = act
@@ -507,6 +400,60 @@ Section: Persistence
     end
   end
 
+Section: Unlock
+
+  wz-get-list : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  wz-get-list (buf) (off) (i) (n) (acc) =
+    if i >= n then acc
+    else wz-get-list buf off (i + 1) n (list-push acc (peek-byte buf (off + i)))
+
+  wz-get-u32 : Integer, Integer -> Integer
+  wz-get-u32 (buf) (off) =
+    peek-byte buf off + bit-shl (peek-byte buf (off + 1)) 8 + bit-shl (peek-byte buf (off + 2)) 16 + bit-shl (peek-byte buf (off + 3)) 24
+
+  wz-parse-identity : Integer, Integer -> Maybe WzIdentity
+  wz-parse-identity (buf) (len) =
+    if len < 92 then None
+    else if peek-byte buf 0 /= wz-id-magic0 | peek-byte buf 1 /= wz-id-magic1 | peek-byte buf 2 /= wz-id-magic2 | peek-byte buf 3 /= wz-id-magic3 then None
+    else if wz-get-u32 buf 4 /= 1 then None
+    else let wl = wz-get-u32 buf 72
+    in if wl < 16 | int-mod wl 16 /= 0 | 76 + wl > len then None
+    else let pub = wz-get-list buf 40 0 32 []
+    in Just (WzIdentity {
+      wid-fingerprint = sha256-to-hex (sha256 pub),
+      wid-public = pub,
+      wid-wrapped = wz-get-list buf 76 0 wl [],
+      wid-salt = wz-get-list buf 8 0 16 [],
+      wid-iv = wz-get-list buf 24 0 16 []
+    })
+
+  wz-load-identity : [Device.Port] Maybe WzIdentity
+  wz-load-identity = act
+    m <- gfat-mount-esp
+    if m.gm-ok == False then None
+    else act
+      f <- gfat-read-file (m.gm-vol) "IDENTITY.DAT"
+      if f.gf-ok == False then None
+      else wz-parse-identity (f.gf-buf) (f.gf-len)
+    end
+  end
+
+  wz-bytes-eq : List Integer, List Integer, Integer -> Boolean
+  wz-bytes-eq (a) (b) (i) =
+    if list-length a /= list-length b then False
+    else if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else wz-bytes-eq a b (i + 1)
+
+  wz-unlock-try : WzIdentity, Text -> Maybe (List Integer)
+  wz-unlock-try (wid) (passphrase) =
+    let dk = wz-words-to-bytes (hkdf (wid.wid-salt) (wz-text-bytes passphrase 0 []) wz-hkdf-info 32) 0 []
+    in let padded = aes256-cbc-decrypt (wid.wid-wrapped) dk (wid.wid-iv)
+    in let seed = aes256-pkcs7-unpad padded
+    in if list-length seed /= 32 then None
+    else if wz-bytes-eq (ed25519-public-key seed) (wid.wid-public) 0 then Just seed
+    else None
+
 Section: Complete
 
   wz-complete : WzCtx, WzIdentity, Text, Boolean -> [Device.Port] Integer
@@ -524,25 +471,60 @@ Section: Complete
 
 Section: Flow
 
- A returning boot: a stick that already carries an identity greets you
- and skips generation. Unlocking the key -- re-deriving the HKDF key from
- the passphrase and decrypting the wrapped seed -- is the next rung
- (B3.6); for now a saved identity is detected and acknowledged.
+  wz-unlock-attempts : Integer = 3
 
-  wz-welcome-back : WzCtx -> [Device.Port] Integer
-  wz-welcome-back (c) =
+  wz-welcome-back : WzCtx -> [Device.Port, Device.Mmio] Integer
+  wz-welcome-back (c) = act
+    wid <- wz-load-identity
+    when wid
+      is None -> wz-back-unreadable c
+      is Just (w) -> wz-unlock-screen c w 1 ""
+  end
+
+  wz-back-unreadable : WzCtx -> [Device.Port] Integer
+  wz-back-unreadable (c) =
     let d0 = wz-clear c
     in let t0 = wz-text c 0 "Welcome Back" wz-col-title
-    in let t1 = wz-text c 2 "This stick already carries an identity (IDENTITY.DAT)." wz-col-text
-    in let t2 = wz-text c 3 "Unlocking it with your passphrase arrives with B3.6." wz-col-text
+    in let t1 = wz-text c 2 "This stick carries IDENTITY.DAT, but it cannot be read." wz-col-warn
+    in let t2 = wz-text c 3 "The identity stays locked this boot." wz-col-text
     in let t3 = wz-text c 5 "Press Enter to choose your interface." wz-col-green
     in wz-wait-enter c
 
- Boot-diag trace lines (temporary, real-hardware bring-up): same
- bottom-region geometry as GopBoot's boot-trace, rows 4 and up, so
- on a machine with no serial the last line standing names the
- wizard step that died. Each screen's clear wipes them; a death
- mid-clear leaves them readable below the partial fill.
+  wz-unlock-screen : WzCtx, WzIdentity, Integer, Text -> [Device.Port, Device.Mmio] Integer
+  wz-unlock-screen (c) (wid) (attempt) (note) = act
+    d0 <- wz-clear c
+    t0 <- wz-text c 0 "Welcome Back" wz-col-title
+    t1 <- wz-text c 2 "This stick already carries an identity (IDENTITY.DAT)." wz-col-text
+    t2 <- wz-text c 3 ("Fingerprint: " & text-take (wid.wid-fingerprint) 32) wz-col-text
+    t3 <- if text-length note > 0 then wz-text c 10 note wz-col-warn else 0
+    t4 <- wz-text c 5 "Passphrase to unlock:" wz-col-text
+    p <- gt-input (wz-field c 6 32 True) (c.wz-kbd)
+    let seed = wz-unlock-try wid (p.gl-text)
+    in when seed
+      is Just (_) -> wz-unlocked c wid
+      is None ->
+        if attempt >= wz-unlock-attempts then wz-back-locked c
+        else wz-unlock-screen c wid (attempt + 1) "Wrong passphrase - try again."
+  end
+
+  wz-unlocked : WzCtx, WzIdentity -> [Device.Port] Integer
+  wz-unlocked (c) (wid) =
+    let d0 = wz-clear c
+    in let t0 = wz-text c 0 "Identity Unlocked" wz-col-title
+    in let t1 = wz-text c 2 ("Fingerprint: " & text-take (wid.wid-fingerprint) 32) wz-col-green
+    in let t2 = wz-text c 3 ("             " & text-drop (wid.wid-fingerprint) 32) wz-col-green
+    in let t3 = wz-text c 5 "The public key matches the stored identity." wz-col-text
+    in let t4 = wz-text c 7 "Press Enter to choose your interface." wz-col-green
+    in wz-wait-enter c
+
+  wz-back-locked : WzCtx -> [Device.Port] Integer
+  wz-back-locked (c) =
+    let d0 = wz-clear c
+    in let t0 = wz-text c 0 "Identity Locked" wz-col-title
+    in let t1 = wz-text c 2 "Three failed passphrase attempts. The identity stays" wz-col-warn
+    in let t2 = wz-text c 3 "locked this boot; the stick is unchanged." wz-col-text
+    in let t3 = wz-text c 5 "Press Enter to choose your interface." wz-col-green
+    in wz-wait-enter c
 
   wz-trace : WzCtx, Integer, Text -> Integer
   wz-trace (c) (row) (t) =

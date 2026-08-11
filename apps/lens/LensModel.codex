@@ -1,23 +1,6 @@
 Chapter: LensModel
 
- A Lens model maps raw warehouse tables to governed business concepts.
- Where Looker describes this mapping in LookML that only Looker can
- check, a Lens model is ordinary Codex data: records and lists that the
- type system checks like any other value. This chapter is the modeling
- vocabulary. It declares the shapes a model is made of and the
- validator that every model must pass before the planner will touch it.
- The planner itself lives in a later chapter; the query request shape
- it consumes is declared here so both sides agree on the contract.
-
 Section: Cardinality
-
- A join declares its cardinality, and the declaration is load-bearing.
- The grain checker uses cardinality to decide whether a join can fan
- rows out and therefore whether a naive aggregate would double-count.
- ManyToOne is the workhorse: many fact rows point at one dimension row,
- and an aggregate computed at the fact table's own grain stays correct
- across the join. The other two directions are declared now and
- exploited by the planner later.
 
   Cardinality =
     | OneToOne
@@ -25,13 +8,6 @@ Section: Cardinality
     | OneToMany
 
 Section: Aggregation
-
- Every measure names the aggregate that summarizes it. The five kinds
- below cover the LookML core. The constructors carry a Lens prefix
- rather than the bare names AggSum through AggMax because the Data
- quire's RelAlgebra chapter already owns those constructor names, and
- constructor names are program-wide: the planner will cite both
- chapters in one program, so the bare names would collide.
 
   AggKind =
     | LensAggSum
@@ -42,12 +18,6 @@ Section: Aggregation
 
 Section: Tables
 
- A LensTable points the model at one physical table. The primary key
- is what makes grain reasoning possible: a many-to-one join is only
- trustworthy when the one side can be identified row by row. The grain
- field is prose for the analyst, one honest sentence about what a
- single row means.
-
   LensTable = record {
     name : Text,
     primary-key : Text,
@@ -55,11 +25,6 @@ Section: Tables
   }
 
 Section: Joins
-
- A LensJoin relates two declared tables by one column on each side.
- The cardinality field is not documentation. The validator checks that
- a many-to-one join's destination declares a primary key, and the
- grain checker will refuse plans that fan out through it.
 
   LensJoin = record {
     from-table : Text,
@@ -71,17 +36,6 @@ Section: Joins
 
 Section: Time Buckets
 
- A dimension may bucket a date column by calendar period: year,
- quarter, month, or day. Dates are Unix seconds stored in integer
- columns by convention, and declaring a bucket is the modeler's
- assertion that the column holds Unix seconds; the validator does
- not police that assertion, in the same manner it does not police
- that an amount column holds cents. The constructors carry an Lb
- prefix because constructor names are program-wide and the bare
- calendar words are too valuable to claim. LbNone means the
- dimension reads its column as-is, which is every dimension that
- existed before buckets did.
-
   LensBucket =
     | LbNone
     | LbYear
@@ -91,10 +45,6 @@ Section: Time Buckets
 
 Section: Dimensions
 
- A dimension is an attribute column that segments the data. It names
- its home table, the column it reads, and the bucket that column is
- read through.
-
   LensDimension = record {
     name : Text,
     table : Text,
@@ -103,13 +53,6 @@ Section: Dimensions
   }
 
 Section: Measures
-
- A measure is a governed aggregate: a column on a home table, an
- aggregation kind, and a description that a controller can sign off
- on. Measure filters are deferred. A filter needs a predicate type,
- and inventing one here would prejudge the planner's expression
- language. When the predicate type exists, filters become one more
- field on this record.
 
   LensMeasure = record {
     name : Text,
@@ -121,10 +64,6 @@ Section: Measures
 
 Section: The Model
 
- A LensModel gathers the whole vocabulary under one name. This value
- is the unit of validation, the unit of versioning, and the ground the
- planner stands on.
-
   LensModel = record {
     name : Text,
     tables : List LensTable,
@@ -134,13 +73,6 @@ Section: The Model
   }
 
 Section: Filters
-
- A query filter is an equality test: one column on one table must
- equal one literal value. The value is its own small sum so the
- filter mirrors the relational predicate's column-versus-literal
- shape without citing the engine: an integer or a text, nothing
- else in v1. The planner places each filter at raw-row grain, under
- the aggregations, therefore a filter can never see a summed row.
 
   LensFilterValue =
     | LfInt (Integer)
@@ -154,13 +86,6 @@ Section: Filters
 
 Section: Queries
 
- A LensQuery is the request shape the planner consumes: which lens to
- ask, which dimensions to group by, which measures to compute, the
- filters to apply before any aggregation, and a row limit. Dimension
- and measure names refer to the model's declared dimensions and
- measures, never to raw columns; filters name physical tables and
- columns and the planner checks them against the model's vocabulary.
-
   LensQuery = record {
     lens-name : Text,
     dimensions : List Text,
@@ -171,18 +96,6 @@ Section: Queries
 
 Section: Diagnostic Codes
 
- Validation reports diagnostics as code plus message. Codes are
- app-level, drawn from the 1 to 99 range, and are not compiler CDX
- codes. The table:
-
- code 1 means a table name is declared more than once.
- code 2 means a join's from-table is not a declared table.
- code 3 means a join's to-table is not a declared table.
- code 4 means a many-to-one join's to-table declares no primary key.
- code 5 means a dimension's table is not a declared table.
- code 6 means a measure's table is not a declared table.
- code 7 means a measure name is declared more than once.
-
   LensDiag = record {
     code : Integer,
     message : Text
@@ -192,10 +105,6 @@ Section: Diagnostic Codes
   lens-diag (code) (msg) = LensDiag { code = code, message = msg }
 
 Section: Table Lookup
-
- Two small scans over the declared tables. Both walk by index with an
- explicit stop, so the duplicate check can reuse the same walk to ask
- whether a name appears before a given position.
 
   table-name-within : List LensTable, Integer, Integer, Text -> Boolean
   table-name-within (ts) (i) (stop) (nm) =
@@ -219,11 +128,6 @@ Section: Table Lookup
 
 Section: Validation
 
- lens-validate is the gate between a model as written and a model the
- planner may plan against. It threads one diagnostic accumulator
- through four passes: duplicate tables, joins, dimensions, measures.
- A clean model yields the empty list.
-
   lens-validate : LensModel -> List LensDiag
   lens-validate (model) =
     let d1 = check-table-dups (model.tables) 0 []
@@ -243,12 +147,6 @@ Section: Validation
   table-dup-diag (t) = lens-diag 1 ("duplicate table name " & t.name)
 
 Section: Join Validation
-
- Each join is checked three ways: its from-table must be declared, its
- to-table must be declared, and when the join is many-to-one its
- to-table must carry a nonempty primary key, because grain checking
- identifies the one side by that key. The key check is skipped when
- the to-table is itself undeclared; code 3 already tells that story.
 
   check-joins : List LensTable, List LensJoin, Integer, List LensDiag -> List LensDiag
   check-joins (ts) (js) (i) (acc) =
@@ -283,10 +181,6 @@ Section: Join Validation
     else acc
 
 Section: Dimension and Measure Validation
-
- Dimensions and measures must live on declared tables, and measure
- names must be unique because the query surface addresses measures by
- name alone.
 
   check-dimensions : List LensTable, List LensDimension, Integer, List LensDiag -> List LensDiag
   check-dimensions (ts) (ds) (i) (acc) =

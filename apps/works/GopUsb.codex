@@ -7,29 +7,6 @@ Chapter: GopUsb
   cites Works chapter GopAhci
   cites Foreword chapter Maybe
 
- One enumeration of the USB bus for the whole boot (H2). kbd-connect
- and msc-connect each begin with a controller reset, so they are
- alternatives, not housemates: whichever runs second destroys the
- first's device state -- on real hardware, where the boot medium is a
- USB stick AND the keyboard is USB, that is a dead keyboard the
- moment a storage screen runs. usb-attach brings the controller up
- once, walks the root ports once, classifies each device by the
- interfaces in its configuration descriptor, and configures the boot
- keyboard and the mass-storage disk on the same host. The disk handle
- is then published to the fixed cell block (GopUsbMsc), so GopDisk's
- stateless dispatch transfers on the running host instead of
- reconnecting.
-
- A root port may also hold a hub: real laptops route their built-in
- ports through internal hubs, so a keyboard that enumerates fine on
- QEMU's root port simply is not there on the machine this arc exists
- for. A device whose configuration carries a hub interface (class 9)
- is brought up as one -- configured, declared to the controller,
- ports powered -- and each connected downstream port is reset and
- enumerated with the route string extended by one nibble. The walk
- recurses through nested hubs until the route string's five nibbles
- are spent.
-
  Every device shares one event ring; the per-endpoint latch in GopXhci
  (xhci-wait-xfer) is what keeps a storage wait from eating a keyboard
  completion, and one interface of a combo device from eating its
@@ -52,15 +29,15 @@ Section: Attachment
   }
 
  A machine may carry more than one xHCI, and the boot stick is not
- obliged to be on the first: the ASUS has an Intel PCH controller whose
- four ports are all Full or Low speed and an ASMedia 1b21:1242 behind a
- bridge, and the stick is on the ASMedia one. Taking the first controller
- and stopping reports no disk while looking at a controller the disk was
- never on -- an answer that reads as "our storage stack fails on real
- hardware" and means "we did not look there". So every xHCI function in
- the bus tree is brought up and walked until the keyboard, the mouse and
- the disk have all been found, and each controller records its own
- outcome rather than overwriting the last one's.
+ obliged to be on the first: the ASUS carries an Intel PCH controller
+ (8086:a12f at 0:20.0, 26 ports) and an ASMedia 1b21:1242 behind a
+ bridge. Taking the first controller and stopping reports no disk while
+ looking at a controller the disk was never on -- an answer that reads
+ as "our storage stack fails on real hardware" and means "we did not
+ look there". So every xHCI function in the bus tree is brought up and
+ walked until the keyboard, the mouse and the disk have all been found,
+ and each controller records its own outcome rather than overwriting the
+ last one's.
 
   usb-max-hosts : Integer = 8
 
@@ -74,7 +51,8 @@ Section: Attachment
   usb-attach-all (scan) = act
     z <- xdiag-zero 0 96
     c <- xdiag-put 40 (pci-count-class scan xhci-pci-class xhci-pci-subclass)
-    usb-attach-with scan (alloc-zeroed (xdiag-span * 4) 64)
+    let e = xhci-ctl-census scan 0 0
+    in usb-attach-with scan (alloc-zeroed (xdiag-span * 4) 64)
   end
 
   usb-attach-with : PciScanResult, Integer -> [Device.Port] UsbAttach
@@ -165,23 +143,6 @@ Section: The Walk
     in if dev.ud-ok == False then usb-walk xh (port + 1) found
     else usb-walk xh (port + 1) (usb-inspect xh dev 0 0 found)
 
- One addressed device, classified by its configuration descriptor.
- The route and depth name where it sits: route is the slot-context
- route string that reached it, depth the count of hubs above it --
- the nibble index its own children would occupy, were it a hub.
-
- A device carrying any boot HID interface is classified PER INTERFACE:
- a combo device -- a wireless dongle is the canonical case -- carries a
- boot keyboard on one interface and a boot mouse on another, and the
- old whole-device classification handed the entire device to whichever
- class its first interface matched, so the mouse half of every combo
- was unreachable. The ASUS proved the keyboard version of this on the
- glass (four keyboard-shaped interfaces, keys on the fourth bound);
- the mouse gets the identical treatment before it costs a flash.
- Devices with no boot HID keep the old shape: mass storage first-wins,
- then hubs descend. A device that is both HID and hub descends too,
- with SET_CONFIGURATION sent once for the whole device.
-
   usb-inspect : XhciHost, UsbDev, Integer, Integer, UsbFound -> UsbFound
   usb-inspect (xh) (dev) (route) (depth) (found) =
     let cfg = alloc-zeroed 256 64
@@ -206,11 +167,6 @@ Section: The Walk
 
 Section: The HID Interface Walk
 
- Only alternate setting zero is considered (byte 3 of the interface
- descriptor): an interface's alternate settings repeat its number with
- different endpoint sets, and binding two settings of one interface
- would drive one pipe from two rings.
-
   usb-has-boot-hid : Integer, Integer, Integer -> Boolean
   usb-has-boot-hid (cfg) (off) (total) =
     if off >= total then False
@@ -223,17 +179,6 @@ Section: The HID Interface Walk
     else if peek-byte cfg (off + 7) == 1 then True
     else if peek-byte cfg (off + 7) == 2 then True
     else usb-has-boot-hid cfg (off + len) total
-
- The walk threads `cfgd`: SET_CONFIGURATION is sent by the first bind
- on the device and never again (USB 2.0 9.1.1.5 -- re-sending it resets
- every data toggle the device holds). Boot keyboards join the keyboard
- peer set, boot mice the mouse peer set folding into the primary's
- position block, and every OTHER HID interrupt-IN interface on a device
- that carries boot HID is bound as a raw counting listener on the
- keyboard set -- pumped and counted, never decoded, never fed to the
- mailbox -- because gaming devices commonly route their real traffic to
- an interface whose layout only the report descriptor defines, and a
- raw listener's non-zero count on the glass is what says so.
 
   usb-hid-walk : XhciHost, UsbDev, Integer, Integer, Integer, Integer, UsbFound -> UsbFound
   usb-hid-walk (xh) (dev) (cfg) (off) (total) (cfgd) (found) =
@@ -326,11 +271,6 @@ Section: Hub Requests
     let g = xhci-ctrl-in xh dev 160 6 10496 0 buf 9
     in if g == False then 0 else peek-byte buf 2
 
- wHubCharacteristics is bytes 3 and 4 of the same descriptor, and its
- TT Think Time sub-field is bits 6:5 of the low byte (USB2 Table 11-13):
- 0, 1, 2 and 3 mean the translator needs at most 8, 16, 24 or 32
- full-speed bit times of inter-transaction gap.
-
   hub-think-time : Integer -> Integer
   hub-think-time (buf) = bit-and (bit-shru (peek-byte buf 3) 5) 3
 
@@ -359,26 +299,12 @@ Section: Hub Requests
 
 Section: Hub Bring-Up
 
- The controller must be told a slot is a hub before anything is
- addressed through it: Configure Endpoint evaluates the Hub flag and
- the port count from the input slot context. The command also
- declares the hub's one interrupt IN endpoint -- the status-change
- pipe every hub carries -- which keeps the command fully formed even
- though this driver polls port status by control request instead.
-
  xHCI 1.2c 6.2.2.2: "If Hub = '1' and Speed = High-Speed, then the TT
  Think Time (TTT) and Multi-TT (MTT) fields shall be initialized." TTT
  is Slot Context dword two bits 17:16 (Table 6-6) and 4.5.2 names its
  source as the hub descriptor's wHubCharacteristics. Zero is not a
  neutral default there: it asserts the tightest gap the field can
  express, and the xHC schedules split transactions to that claim.
-
- MTT stays zero, and that is the required value rather than an
- omission: Table 6-4 bit 25 and 4.5.2 both condition MTT = '1' on the
- hub's Multi-TT interface having been enabled by a Set Interface
- request, which nothing here issues, so the hub is operating its
- single translator. If Set Interface is ever added, MTT must be raised
- here AND on every child's slot context in the same change.
 
   hub-declare : XhciHost, UsbDev, Integer, Integer, Integer, Integer, Integer -> Boolean
   hub-declare (xh) (dev) (cfg) (iface) (total) (ports) (ttt) =
@@ -397,13 +323,6 @@ Section: Hub Bring-Up
     in let ce = xhci-configure-endpoint xh dev ictx
     in if ce.xe-ok == False then False
     else ce.xe-code == trb-cc-success
-
- Every port is powered before any is examined, so the mandatory
- power-good interval of the later ports elapses while the earlier
- ones are walked. The waits below are budgets of whole control
- transfers, each a real round-trip on the wire; exhausting one FAILS
- the port -- the floating-bus rule: garbage status must never be
- acted on as if it had been earned.
 
   usb-max-depth : Integer = 5
   hub-connect-fuel : Integer = 256
@@ -457,16 +376,6 @@ Section: Hub Walk
  port. The downstream device is then addressed at the extended route,
  through a transaction translator when the speeds demand one, and
  inspected like any other -- including as a further hub.
-
- Which translator is not always this hub's. A translator lives in a
- high-speed hub; a full-speed hub has none, and everything below it
- is served by whichever high-speed hub sits further up. So the choice
- is by the hub's own speed, not by the child's: a high-speed hub
- translates for its full-speed child at the port that child occupies,
- and a hub that is not high-speed hands down the translator that
- already serves it. Reading only the immediate parent leaves a device
- two tiers down with no translator at all, which enumerates perfectly
- and then never delivers an interrupt transfer.
 
   hub-attach-port : XhciHost, UsbDev, Integer, Integer, Integer, Integer, UsbFound -> UsbFound
   hub-attach-port (xh) (hub) (buf) (port) (route) (depth) (found) =

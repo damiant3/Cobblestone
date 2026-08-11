@@ -1,0 +1,90 @@
+[
+  {
+    "target": "chapter:X86-64 Boot Infrastructure",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Evidence that a device interrupt was taken. Until these existed nothing a guest could read recorded the arrival of any vector except the two timers: __interrupt_common answers the PIT and the local timer specially and returns from every other vector without leaving a mark, so an emulator could route a comparator match through an IOAPIC to a vector, deliver it, and have the guest take it, with no observable difference from having dropped it. That made interrupt delivery untestable by construction rather than by omission -- the one class of failure a battery could never see.",
+    "thread": null
+  },
+  {
+    "target": "chapter:X86-64 Boot Infrastructure",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The local timer. This is the clock that preempts a process on an application processor: the boot processor is driven by the PIT, whose IRQ is delivered to it alone, so before this an AP took no interrupt at all and a process that never yielded owned its core until it exited.",
+    "thread": null
+  },
+  {
+    "target": "function:ap-sipi-vector",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The startup vector field (bits 0-7) names the 4 KB page an application processor begins executing in, and it is the page at ap-trampoline-addr. The vector used to be zero, because codex-vm sidestepped the mechanism entirely and read a full 64-bit entry address out of guest memory -- so SMP worked under the emulator and could not have worked on a physical machine, where the field is the only thing that tells an AP where to begin. Both ends are honest now: the vector carries the page, the page carries a real-mode trampoline, and codex-vm starts an AP the way silicon does. Every SMP test therefore runs through the trampoline.",
+    "thread": null
+  },
+  {
+    "target": "function:proc-core-offset",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "It exists because of the idle path. A core with no work has to get off the stack of the process it was last running before it parks, and to do that it needs to know which idle stack is its own.",
+    "thread": null
+  },
+  {
+    "target": "chapter:X86-64 Boot Infrastructure",
+    "kind": "invariant",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Evidence that an application processor was preempted. The core that is running the interrupted process is recorded in the process itself (proc-core-offset), stamped by whichever core won the claim, so the handler can ask what core it is on without an MSR or a LAPIC read. The boot processor's id is always zero and no host code writes this cell, so any value above zero was put there by a timer interrupt taken on a core that is not the BSP.",
+    "thread": null
+  },
+  {
+    "target": "chapter:X86-64 Boot Infrastructure",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "An application processor arms its own scheduling clock. Until it does, it is running with interrupts disabled and no timer, so a process that never yields owns the core until it exits -- which is what was once called \"an AP is never preempted\".",
+    "thread": null
+  },
+  {
+    "target": "chapter:X86-64 Boot Infrastructure",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The IDT load is new and it was missing for as long as the host was configuring these cores by hand: codex-vm used to point each AP's IDTR at the real IDT itself, so nothing in the guest ever had to. A core coming out of reset has the real-mode interrupt vector table and nothing else, and the very next thing this routine does is arm a periodic timer and raise IF. Without the lidt the first tick on each application processor dispatched through sixteen bits of garbage. The shape it produced is worth recognising, because it looks nothing like a missing IDT: the cores checked in, the ready count read three, and then no application processor ever claimed a process, because each was dead by the time work appeared.",
+    "thread": null
+  },
+  {
+    "target": "chapter:X86-64 Boot Infrastructure",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "It used to be created READY, and that was wrong in a way that only one core could get away with. The claim that hands a process from one core to another is a CMPXCHG from READY to RUNNING, so READY means \"nobody is executing this, come and take it\" -- and proc 0 wore that label for the entire life of the program it was running. On one core nothing ever looked, so nothing ever came. The moment an application processor scans the table, it finds the boot processor's own program advertised as free work and takes it.",
+    "thread": null
+  },
+  {
+    "target": "function:emit-check-capability",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "emit-check-capability tests one named capability bit of the current process's grant word (bt r64, imm8) and leaves the answer in CF. It previously tested bit RDX -- the syscall ARGUMENT (the character being written), taken mod 64 -- so the console-write gate passed or failed by character value, not by authority. The required bit is an emit-time constant now. The entry address multiplies proc-entry-size by the current-proc index held in R11 -- an earlier encoding hardcoded imul rcx, rbx, so the check read a cap word offset by whatever the interrupted program left in RBX and only worked when RBX happened to be zero.",
+    "thread": null
+  },
+  {
+    "target": "chapter:X86-64 Boot Infrastructure",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "It was the other way around, and that is what made block-select inert. The three cells it writes -- ata-active-drive-addr, ata-active-base-addr, ata-active-select-addr -- had **no reader anywhere in the compiler**: nine mentions, three of them the definitions, three the initialisation, three the writes in block-select itself. Meanwhile emit-ata-setup-lba put the literal 224 on the drive-head port before every read and every write, so the whole block layer addressed the primary master forever. `dm-enumerate-drives` reported four drives, `dm-exec-install` partitioned whichever one it was handed, and all four were the disk the machine booted from.",
+    "thread": null
+  },
+  {
+    "target": "function:emit-ata-port",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Nothing could see it, because with one image behind every position a working selector and a missing one produce identical output. The test that pins it attaches two images with different bytes at LBA 0 and reads sector zero from each drive; before this change both answered with the first image's bytes.",
+    "thread": null
+  }
+]

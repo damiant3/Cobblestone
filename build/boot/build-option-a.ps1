@@ -41,7 +41,16 @@ param(
     # for every driver-truth probe: with boot services alive the firmware's own
     # xHCI driver keeps driving the controller under test. Leave it off only
     # for payloads that call ConIn/ConOut (KeyProof, the dev console).
-    [switch]$Ebs
+    [switch]$Ebs,
+    # Compile in UEFI mode (compile.ps1 -Uefi): reads and writes go through
+    # EFI_BLOCK_IO and print-line-uni through __uefi_print. Mandatory for any
+    # payload that touches the disk under firmware, and its absence is silent
+    # -- such a payload still runs and still paints, and every block read
+    # returns a buffer of zeros because it went down the bare-metal path to a
+    # controller that is not there. Measured 2026-08-10: BlockLadderProbe
+    # rebuilt without it reported bps=0 while the identical source built with
+    # it read the BPB correctly.
+    [switch]$Uefi
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -63,6 +72,7 @@ Write-Host "[opt-a] bundling $Src"
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $bundled)) { throw "bundle failed" }
 Write-Host "[opt-a] compiling -> CDX (pet: interactive poll loop, no heap progress)"
 $compileArgs = @('-Src', $bundled, '-Out', $cdxOut, '-Log', $log, '-Pet')
+if ($Uefi) { $compileArgs += '-Uefi' }
 if ($Kernel -ne '') {
     if (-not (Test-Path $Kernel)) { throw "-Kernel not found: $Kernel" }
     $compileArgs += @('-Kernel', (Resolve-Path $Kernel).Path)

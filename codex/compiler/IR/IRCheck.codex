@@ -1,31 +1,6 @@
 Chapter: IRCheck
   cites Codex chapter Build Settings (max-recursion-depth)
 
- The IR validator: the one idea worth taking from nanopass. Every
- rewriting pass is a chance to produce IR that is still well-typed
- enough to walk and still wrong -- a name left dangling by a
- substitution, a type dropped on a rebuilt node, a match rewritten
- down to no branches. None of those crash the pass that made them.
- They crash, or worse do not crash, three stages later in the
- emitter, and the search starts in the wrong place. `ir-check` walks
- a chapter and answers with the list of things wrong with it, so that
- a malformed chapter is attributed to the pass that produced it.
-
- It is a checker in a rewriter's clothing. The pipeline's interface is
- `IRChapter -> IRChapter` and the registry dispatches on a name, so the
- cheapest way to make the validator placeable anywhere in the pipeline
- -- `passes=fold-constants,ir-check,inline-leaf-calls,ir-check` -- is to
- register it as a pass that returns its input unchanged and reports out
- of band. The violations ride back to the caller in the pass result and
- become CDX9004 errors in the frontend's bag.
-
- It halts rather than warns. A warning that the IR is malformed is a
- warning that the binary about to be written is not the program that
- was written down; there is nothing to do with that but stop. The bag
- already carries this meaning -- `compile-to-cdx-with-exit-mode` emits
- no binary when the frontend bag has errors -- so a violation lands in
- the bag and the existing halt does the rest. No new halt machinery.
-
  It is opt-in, and it is off in `default-ir-pipeline`. The shipping
  compiler pays nothing for it: no walk, no skip list, no allocation.
  Turn it on when a pass is under suspicion, and it is on for every
@@ -53,17 +28,6 @@ Chapter: IRCheck
  **Type presence.** Every expression node, parameter, and definition
  that carries a `CodexType` carries a resolved one. `ErrorTy` there
  means an earlier phase failed silently.
-
- This paragraph used to add "codegen already refuses it, but by then the
- pass that dropped the type is long gone." Codegen does not refuse it and
- never did. There was a code for that refusal -- CDX2041, ErrorTypeInIR,
- registered in the codegen phase -- and nothing ever raised it; codegen
- instead PRODUCES `ErrorTy` (`prefer-type-binding` answers it for a name
- it cannot bind) and renders it as "Unknown". The code is deleted rather
- than left standing as a refusal nobody performs. It could not honestly
- be wired anyway while the three holes below exist, because codegen would
- refuse the valid programs that carry them. This check, here, is the only
- thing that reports an `ErrorTy` in the IR at all.
 
  The contract is not universal, and finding out where it fails was the
  first thing this checker did. **Three places in the IR carry `ErrorTy`
@@ -131,10 +95,6 @@ Section: Entry Point
    let globals = ir-check-globals ch
    in let stack = ir-check-make-stack 0 []
    in ir-check-defs globals stack (ch.defs) 0 (list-length (ch.defs)) []
-
- The names a bare IrName may legitimately carry without a binder: every
- definition in the chapter, every builtin the name resolver knows, and
- every effect operation the chapter declares.
 
   ir-check-globals : IRChapter -> SkipListText
   ir-check-globals (ch) =
@@ -328,10 +288,6 @@ Section: Expressions
    else let f = list-at fs i
    in ir-check-fields env fs nb depth (i + 1) len (ir-check-expr env (f.value) nb depth acc)
 
- An act statement's binder is in scope for the statements after it, and
- for nothing else. The count threads forward through the list; the
- caller's count is what the next construct sees.
-
   ir-check-stmts : IRCheckEnv, List IRActStmt, Integer, Integer, Integer, Integer, List Text -> List Text
   ir-check-stmts (env) (ss) (nb) (depth) (i) (len) (acc) =
    if i >= len then acc
@@ -343,10 +299,6 @@ Section: Expressions
      in ir-check-stmts env ss (ir-check-push env n nb) depth (i + 1) len acc2
     is IrDoExec (v) (sp) ->
      ir-check-stmts env ss nb depth (i + 1) len (ir-check-expr env v nb depth acc)
-
- A branch's pattern binds for that branch's guard and body only. The
- pattern is walked for its binders and for nothing else -- see the
- Patterns section for why its types are not checked.
 
   ir-check-branches : IRCheckEnv, List IRBranch, Integer, Integer, Integer, Integer, List Text -> List Text
   ir-check-branches (env) (bs) (nb) (depth) (i) (len) (acc) =
@@ -388,12 +340,6 @@ Section: Patterns
    else ir-check-bind-pats env ps (ir-check-bind-pat env (list-at ps i) nb depth) depth (i + 1) len
 
 Section: Reporting
-
- Violations reach the frontend as errors in the diagnostic bag, which
- is the compiler's existing halt: a frontend bag with errors emits no
- binary. Every violation is one message naming the definition and the
- problem; the pipeline slot is prefixed by the pass loop, so two
- `ir-check` entries in one pipeline are told apart.
 
   ir-check-violation-bag : List Text -> DiagnosticBag
   ir-check-violation-bag (vs) =

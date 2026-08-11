@@ -291,8 +291,7 @@ tick-cell CHANGES drawn as GOP lines, then a key-echo loop over cell
 our own IRQ1 ISR writes that cell), 25 s under `-uefi-strict` with no
 fault. The `pet` compile flag is now genuinely optional on the Option
 A path once a payload calls runtime-init; build-option-a.ps1 still
-passes it (harmless), and removing it is a later cleanup. H1b (ACPI
-MADT parse) remains open.
+passes it (harmless), and removing it is a later cleanup.
 
 ### H2 -- Input breadth: USB HID on the xHCI stack
 
@@ -849,8 +848,9 @@ leans on, with the port for each:
   CEREMONY SCRIPT NOTE: a fresh first boot needs typed passphrases --
   the key list is welcome-Enter, then "test"-Enter three times
   (pass/confirm/entropy), then five Enters (upstream/complete/
-  storage/disks/wake) to the menu; Graphical UI is menu ROW 1 (Down,
-  Enter), not the default row.
+  storage/disks/wake) to the menu; Graphical UI is the menu's
+  default row since the 2026-08-05 shrink, so a plain Enter
+  selects it.
 - **guios REVIVED + -smp CLOSED (fester, 2026-07-10).** GuiShell's
   pre-EffectRows rot is swept (the debt flagged at H4c): rtc-read/
   rtc-time/rtc-date carry [Device.Port] and the LOOP samples the

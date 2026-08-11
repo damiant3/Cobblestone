@@ -1,7 +1,5 @@
 Chapter: Fortran Emitter
 
- Generates Fortran 90+ source code from the IR.
-
 Section: Keywords and Sanitization
 
   fort-keywords : List Text
@@ -328,21 +326,6 @@ Section: Expression Emission
    "text-contains", "text-length", "text-replace", "text-split",
    "text-starts-with", "text-to-integer", "write-file"]
 
- This was a BINARY search until 2026-07-28, and it silently found only
- some of its names. A binary search requires the list to be ordered by
- the same comparison it searches with, and the two disagreed: the list
- is written in alphabetical order, while `text-compare` orders by CCE
- code point, and CCE numbers letters by FREQUENCY. `c` is 24 and `b` is
- 32, so `char-at` sorts before `bit-and` under the comparator and after
- it in the list. Names past the first such inversion were unreachable,
- and an unreachable builtin does not fail loudly: it falls through to
- the ordinary apply path and emits a call to a function the target
- language has never heard of.
-
- A linear scan has no ordering invariant to get wrong. The list is
- roughly forty entries and this runs once per call site at transpile
- time, so the search is not worth an invariant that nothing checks.
-
   fort-find-builtin : List Text, Text, Integer -> Integer
   fort-find-builtin (names) (target) (i) =
    if i >= list-length names then -1
@@ -351,7 +334,8 @@ Section: Expression Emission
 
   fort-try-builtin : Text, List IRExpr, List ArityEntry -> Text
   fort-try-builtin (n) (args) (arities) =
-   let idx = fort-find-builtin fort-builtin-names n 0
+   if n == "__narrow" then fort-emit-expr (list-at args 0) arities
+   else let idx = fort-find-builtin fort-builtin-names n 0
    in if idx < 0 then ""
       else fort-emit-builtin-by-idx idx args arities
 

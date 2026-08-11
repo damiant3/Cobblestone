@@ -245,8 +245,8 @@ the day they landed. That is what this reorg buys.
      parallel slots, so there is nothing to fold. **The harnesses
      agree on results** (same 4 passes, same 5 shared failures), so
      retiring loses no signal. RETIRE `test-cross-fast` +
-     `test-cross-compile-batch` (its orphaned subroutine): in shelved
-     red CL 11237. One set-discovery quirk recorded: -batch found 14
+     `test-cross-compile-batch` (its orphaned subroutine): landed;
+     both are absent from `build/` (verified 2026-08-05). One set-discovery quirk recorded: -batch found 14
      eligible to -fast's 13 on the same filter (-batch also scans
      `ops/`).
      The run also surfaced a real cross-parity finding, routed to reek
@@ -270,8 +270,12 @@ the day they landed. That is what this reorg buys.
      probe superseded by the extractor it spawned. All eight reference
      deleted BACKLOG rows in their comments; fix the references when a
      script is next touched, no sweep.
-   - Store/disk scripts: READ 2026-07-28, verdicts below. Deletions are
-     the arc's first action CL; none has been made yet.
+   - Store/disk scripts: READ 2026-07-28, verdicts below. The retire
+     deletions landed: `run-with-disk.ps1`, `test-disk-persistence.ps1`,
+     `test-disk-boot.ps1`, `test-store-real-file.ps1`,
+     `measure-survey.ps1`, `test-cross-fast.ps1` and
+     `test-cross-compile-batch.ps1` are all absent from `build/`
+     (verified 2026-08-05).
      - KEEP `test-quote-from-store` (79): a store written FRESH by one
        VM then read by the compiler (`compile.ps1 -DiskFile`). Its own
        comment says why the battery cannot do it: `test-run.ps1` copies

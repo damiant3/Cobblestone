@@ -1,8 +1,5 @@
 Chapter: X86-64 Code Generator
 
- List runtime helpers emitted into every x86-64-bare binary: cons,
- append, snoc, insert-at, set-at, tail, and concat-many.
-
 Section: List Views
 
  A tail view is the O(1) answer to taking a flat list apart
@@ -29,12 +26,6 @@ Section: List Views
  write through list-set-at lands in the backing, which is the same
  aliasing contract list-set-at already documents for plain lists.
 
- emit-list-eff-base appends the four-instruction selection: preg is
- the register holding the list pointer and is REPLACED by the
- effective base (phantom q for a view, unchanged for a plain list);
- scratch is clobbered. Call it only after every header read of preg
- is done, because afterwards preg no longer points at a header.
-
   emit-list-eff-base : CodegenState, Integer, Integer -> CodegenState
   emit-list-eff-base (st) (preg) (scratch) =
     let st1 = st-append-code st (mov-load scratch preg (-8))
@@ -45,13 +36,6 @@ Section: List Views
    in patch-jcc-at st4 plain-pos (st4.code-len)
 
 Section: __list_tail
-
- rdi = list. Returns a view whose length is one less (floored at
- zero) and whose phantom base is the caller's effective base plus
- eight, which skips exactly one element whether the input was plain
- or itself a view. Allocates three cells from R10; inside a
- deck-record extent R10 is the deck, the same rule every list
- literal follows.
 
   emit-list-tail : CodegenState -> CodegenState
   emit-list-tail (st) =
@@ -393,17 +377,6 @@ Section: __list_snoc
 
 Section: __deck_list_snoc
 
- Phase-discipline twin of __list_snoc that allocates from the deck
- pointer instead of the bivy bump pointer R10. The body mirrors
- __list_snoc; the only differences are (a) the prologue saves R14
- and loads deck-pos into it, (b) every R10 reference in the alloc
- paths is replaced with R14, and (c) every return is preceded by
- writing R14 back to the deck-pos cell and restoring R14 from the
- stack. R10 (bivy) is untouched throughout, so a snoc that fires
- path-3 leaves the bivy bump pointer where it was -- only the deck
- grows. emit-apply for `list-push` dispatches here when
- st.deck-bound is True at the call site.
-
   emit-deck-snoc-prologue : CodegenState -> CodegenState
   emit-deck-snoc-prologue (st) =
     let st0 = record-func-offset st "__deck_list_snoc"
@@ -546,15 +519,6 @@ Section: __deck_list_snoc
 
 Section: __deck_list_append
 
- Phase-discipline twin of __list_append. Always allocates a fresh
- result list in the deck region (via R14-saved deck-pos cell) and
- copies a then b into it. The bivy in-place fast path from
- __list_append is intentionally dropped: when a is in bivy and the
- bivy is about to be struck, an in-place extend would dangle; when
- a is in deck, copy-realloc is correct. emit-binary-op for
- IrAppendList dispatches here when st.deck-bound is True at the
- call site.
-
   emit-deck-list-append-prologue : CodegenState -> CodegenState
   emit-deck-list-append-prologue (st) =
     let st0 = record-func-offset st "__deck_list_append"
@@ -641,14 +605,6 @@ Section: __list_insert_at
  shift loop starts at len-1 and stops as soon as it is below the index,
  so index == len shifts nothing and stores into the slot the length is
  about to grow into. `0 <= i` and `i <= len`.
-
- Guarded on the strength of the shape rather than of a firing, which is
- stated because it is the weaker evidence: `list-insert-at` reaches the
- same unchecked scale-and-store as `list-set-at` and was never fired past
- the end. The tests fire it now.
-
- r12 holds the index and r14 the length by this point, and rax is not
- live until the capacity arithmetic below.
 
   emit-list-insert-at-prologue : CodegenState -> HelpResult2
   emit-list-insert-at-prologue (st) =
@@ -820,12 +776,6 @@ Section: __list_insert_at
 
 Section: __list_set_at
 
- The write goes through the effective base so a view stores into its
- backing, and the function still returns the view it was handed --
- the same in-place-and-return-receiver contract plain lists get. The
- selection runs on a copy in rcx because rdi must survive to be the
- return value.
-
  The index is bounded first, and this is the sharpest of the indexing
  guards because the defect it closes was a WRITE across an allocation
  boundary rather than a disclosure. Measured before it existed, on a
@@ -833,11 +783,6 @@ Section: __list_set_at
  `list-set-at t 5 424242` left the marker reading `424242 999 999`, with
  no diagnostic and exit 0. `0 <= i` and `i < len`, as for `list-at`;
  there is no slot at index length to store into.
-
- The length is read from the header into rax before anything moves,
- because rax is free at entry and is only wanted later -- eff-base takes
- it as scratch and the epilogue loads the return value into it, both
- after the guard has finished with it.
 
   emit-list-set-at : CodegenState -> CodegenState
   emit-list-set-at (st) =
@@ -927,6 +872,5 @@ Section: List Concat Many
    in let st58 = patch-jcc-at st57 skip-copy (st57.code-len)
    in let st59 = st-append-code st58 (mov-rr reg-rax reg-rbx)
    in st-append-code st59 (pop-r reg-r15 & pop-r reg-r14 & pop-r reg-r13 & pop-r reg-r12 & pop-r reg-rbx & x86-ret)
-
 
 Page 9 of 14

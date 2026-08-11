@@ -1,0 +1,90 @@
+Chapter: EngineCulling
+  cites Foreword chapter Console
+  cites Engine chapter Renderer3D
+  cites Engine chapter Scene3D
+  cites Engine chapter Mesh
+  cites Engine chapter Material
+  cites Math chapter Matrix4
+  cites Game chapter Color
+
+Section: Scenes
+
+  rw : Integer = 320
+  rh : Integer = 240
+
+  sky : Integer = #14141E
+
+  cube-scene : Scene3DState
+  cube-scene =
+    let cam = camera3d-new (vec3-new 0.0 1500.0 4000.0) (vec3-new 0.0 300.0 0.0) 0.785
+    in let scene = scene3d-new cam
+    in let cube = sn3-set-pos (sn3-with-mesh "cube" (mesh-cube 900) (emat-shiny (rgb 90 130 210) 32)) (-300.0) 450.0 0.0
+    in let key = dir-light (vec3-new (-400.0) 800.0 400.0) (rgb 255 250 235) 850
+    in scene3d-set-ambient (scene3d-add-light (scene3d-add scene cube) key) 260
+
+  with-far-cube : Scene3DState
+  with-far-cube =
+    let base = cube-scene
+    in let stray = sn3-set-pos (sn3-with-mesh "stray" (mesh-cube 900) emat-red) 50000.0 450.0 0.0
+    in scene3d-add base stray
+
+  with-near-cube : Scene3DState
+  with-near-cube =
+    let base = cube-scene
+    in let second = sn3-set-pos (sn3-with-mesh "second" (mesh-cube 900) emat-red) 1500.0 450.0 0.0
+    in scene3d-add base second
+
+  plane-seen-from : Real -> Scene3DState
+  plane-seen-from (cam-y) =
+    let cam = camera3d-new (vec3-new 0.0 cam-y 4000.0) (vec3-new 0.0 0.0 0.0) 0.785
+    in let scene = scene3d-new cam
+    in let ground = sn3-with-mesh "ground" (mesh-plane 1500 1500) (emat-flat (rgb 90 80 62))
+    in let key = dir-light (vec3-new (-400.0) 800.0 400.0) (rgb 255 250 235) 850
+    in scene3d-set-ambient (scene3d-add-light (scene3d-add scene ground) key) 260
+
+Section: Instrument
+
+  drawn : List Integer, Integer, Integer, Integer -> Integer
+  drawn (px) (i) (n) (acc) =
+    if i >= n then acc
+    else if list-at px i == sky then drawn px (i + 1) n acc
+    else drawn px (i + 1) n (acc + 1)
+
+  render-cost : Scene3DState, Integer, Integer -> Integer
+  render-cost (scene) (w) (h) =
+    let tgt = r3d-target-new w h sky
+    in let a = alloc-bytes 0
+    in let d = r3d-render-into tgt scene
+    in let b = alloc-bytes 0
+    in b - a
+
+  tally : Scene3DState -> Integer
+  tally (scene) =
+    let fb = r3d-render-scene scene rw rh
+    in drawn (fb.fb-pixels) 0 (rw * rh) 0
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let base-drawn = tally cube-scene
+    in let far-drawn = tally with-far-cube
+    in let cost-base = render-cost cube-scene rw rh
+    in let cost-far = render-cost with-far-cube rw rh
+    in let cost-near = render-cost with-near-cube rw rh
+    in let topside = tally (plane-seen-from 2000.0)
+    in let underside = tally (plane-seen-from (-2000.0))
+    in act
+      print-line-uni ("culled changes no pixels : " & yn (far-drawn == base-drawn))
+      print-line-uni ("culled costs less        : " & yn (cost-far - cost-base < cost-near - cost-base))
+      print-line-uni ("plane from above draws   : " & yn (topside > 1000))
+      print-line-uni ("plane from below draws 0 : " & yn (underside == 0))
+      print-line-uni ("base drawn               : " & show base-drawn)
+      print-line-uni ("above drawn              : " & show topside)
+      print-line-uni ("cost delta culled        : " & show (cost-far - cost-base))
+    end
+  end
+
+Page 1

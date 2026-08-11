@@ -3,15 +3,7 @@ Chapter: Type Checker
   cites Codex chapter Phase Allocator (deck-short-of)
   cites Foreword chapter Tuple
 
- Bidirectional type checker for Codex.
-
 Section: Resolve Type Expression
-
- A declared effect bracket on an arrow's result lands ON THE ARROW
- as its row -- concrete labels and tail together (stage 3b
- migration). Only the standalone effectful-VALUE form (an
- AEffectType that is not an arrow's result, e.g. `read-line :
- [Console] (Maybe Text)`) still resolves to EffectfulTy.
 
   resolve-type-expr : List TypeBinding, ATypeExpr -> CodexType
   resolve-type-expr (tdm) (texpr) =
@@ -52,17 +44,6 @@ Section: Resolve Type Expression
       is IntegerTy (b-lo) (b-hi) (b-mode) -> deck-record (UnitTy name (deck-record (IntegerTy lo hi mode)))
       is otherwise -> ErrorTy
     is otherwise -> ErrorTy
-
- PRECISION AND SAFETY ARE INDEPENDENT, so the qualifiers are a set rather
- than a choice and they are folded one at a time. `Real approximate
- trapping` and `Real approximate saturating` are the two combinations the
- old single-qualifier grammar could not spell, and both are f32.
-
- A word that is not a qualifier makes the whole application an ordinary
- constructed type, which is what carries `Real` applied to a genuine type
- argument through unchanged. That is why the walk tracks whether every
- word so far was a qualifier rather than failing on the first one that is
- not.
 
   resolve-real-quals : Name, List ATypeExpr, List TypeBinding, Integer, RealWidth, RealMode, Boolean -> CodexType
   resolve-real-quals (name) (args) (tdm) (i) (w) (m) (all-quals) =
@@ -116,24 +97,6 @@ Section: Resolve Type Expression
          else deck-record (ConstructedTy (Name { value = name }) [])
 
 Section: Proof Normalizer
-
- Definitional-equality normalizer for value-level propositional
- equality (Stage 3 of the proof system). Before a `PropEqTy` is
- registered and the proven unifier runs, each side is reduced by
- delta (unfold a saturated call to a def's body), iota (reduce a
- when-match whose scrutinee is a constructor application), and beta
- (substitute actuals for formals). A Fuel counter bounds the number
- of reduction steps: exhaustion returns the partial term, which is
- not a closed constructor tree, so the operand falls back to its
- original syntactic form and the proof is reported unproven -- never
- a silent pass. Soundness reduces to "only valid reductions are
- performed"; the unifier and the rest of the proof path are
- unchanged.
-
- The operands are read at `register-all-defs`, before
- `parameterize-type` rewrites value-names into fresh type variables,
- so the source names of the referenced functions are still present
- as `ConstructedTy` heads and can be looked up in the def list.
 
   SubstPair = record {
    sp-name : Text,
@@ -220,25 +183,6 @@ Section: Proof Normalizer
      normalize-aterm defs (subst-expr (letbinds-to-subst binds 0 (list-length binds) []) body) (fuel - 1)
     is otherwise -> e
 
- Arithmetic in a proposition folds here. The parser gives `1 + 1` the
- shape of an application whose head is the operator, so it arrives as
- an ordinary two-argument spine and needs no node of its own. Both
- operands are normalized first, which is what lets `2 * 3 === 6` and a
- nested `1 + 2 + 3` reduce rather than sit stuck.
-
- Two cases deliberately do NOT fold, and each stays a spine so the
- claim is reported unproven rather than silently admitted. A division
- by zero, because folding it would trap the compiler on a program that
- only stated a false proposition. And a non-integer operand, because
- the literal shape is the only one this can evaluate.
-
- A negative result used to be a third refusal. It no longer is: the
- type grammar reads `-2` as a single atom now, so a folded negative
- names a literal that can actually be written on the other side of the
- `===`. While it could not, folding one would have manufactured a term
- nothing could match, which is worse than leaving the claim unproven.
- The refusal and the grammar gap were one fact, not two.
-
   is-arith-op-name : Text -> Boolean
   is-arith-op-name (t) = t == "+" | t == "-" | t == "*" | t == "/"
 
@@ -278,19 +222,6 @@ Section: Proof Normalizer
      in if op == "/" & y == 0 then build-app-spine head [a, b] 0 2
       else deck-record (ANameExpr (make-name (integer-to-text (arith-fold-value op (text-to-integer at) y))) synthetic-span)
     else build-app-spine head [a, b] 0 2
-
- The builtin list primitives reduce here, over the same Nil/Cons spines
- the induction checker substitutes for a `List`-typed variable. The
- primitives are builtins, not defs, so without these rules every
- proposition naming one is stuck on its first step and no claim about
- the builtin List could ever normalize. Each rule is the primitive's
- defining equation read left to right: length of Nil is 0 and length of
- Cons is one more than the tail's; push onto Nil is a one-element list
- and push onto Cons pushes onto the tail (list-push appends at the END,
- which is what makes the Cons case recurse); at 0 of a Cons is the head
- and at n is at n-1 of the tail, for a literal n only. Anything else --
- a symbolic index, a stuck scrutinee -- rebuilds the spine, so the claim
- is reported unproven rather than admitted.
 
   is-list-prim-name : Text -> Boolean
   is-list-prim-name (t) = t == "list-length" | t == "list-push" | t == "list-snoc" | t == "list-at" | t == "list-set-at" | t == "list-insert-at" | t == "&"
@@ -355,19 +286,6 @@ Section: Proof Normalizer
         else if n > 0 then normalize-aterm defs (build-app-spine head [cons-tail-of a, int-name-term (n - 1)] 0 2) (fuel - 1)
         else build-app-spine head [a, ix] 0 2
    else build-app-spine head [a, ix] 0 2
-
- The three rules below are the rest of the primitives, carried out of
- 2.5 as 2.36. They are read off the same defining equations and gated
- the same way. Setting at 0 of a Cons replaces the head; at a literal n
- it keeps the head and recurses on the tail, so an index past the end
- walks down to a stuck `list-set-at Nil` and the claim is reported
- unproven rather than folded to a value the runtime never produces --
- which is why there is deliberately no Nil rule for either indexed
- primitive. Inserting at 0 of a spine conses onto it; at a literal n it
- recurses like set. Append is the only total one: Nil on the left is
- the right operand, Cons on the left conses onto the appended tail. The
- left operand must already be a Nil/Cons spine, which is also what
- keeps `&` on Text out of these rules.
 
   normalize-list-set-at : List ADef, AExpr, List AExpr, Integer -> AExpr
   normalize-list-set-at (defs) (head) (args) (fuel) =
@@ -634,14 +552,6 @@ Section: Parameterize Type
    else let code = char-code (char-at name 0)
    in code >= char-code 'e' & code <= char-code 'z'
 
- A ParamEntry records one lowercase signature name and the fresh
- variable id it was assigned. Type names and effect-row tails share
- the entry list (and the unifier's id counter) but are distinct
- kinds: is-row tells wrap-forall-from-entries which binder to build
- (ForAllTy or ForAllEff), and find-param-entry matches name AND kind,
- so a signature using the same lowercase letter as a type variable
- and as a row tail gets two independent variables.
-
   ParamEntry = record {
    param-name : Text,
    var-id : Integer between 0 and 4294967295,
@@ -713,15 +623,6 @@ Section: Parameterize Type
       state = rr.state
      }
     is otherwise -> parameterize-walk-children st entries ty
-
- parameterize-row assigns a row-variable id to a source tail name. A
- row without a tail name passes through untouched (the interned
- empty-row included); a tail already carrying an id passes through
- (parameterization runs once per signature). A named tail either
- reuses the id of an earlier occurrence in the same signature -- that
- sharing is what makes map's argument row and result row the SAME
- variable -- or mints a fresh id from the unifier's shared counter and
- records a row-kind entry for the ForAllEff wrap.
 
   parameterize-row : UnificationState, List ParamEntry, EffectRow -> (EffectRow, List ParamEntry, UnificationState)
   parameterize-row (st) (entries) (row) =
@@ -893,7 +794,7 @@ Section: Check Definition
   check-def-normal : UnificationState, TypeEnv, ADef, List RenameEntry -> CheckResult
   check-def-normal (st) (env) (def) (renames) =
    let grounded = def-grounded-names st def
-   in let st0 = __record-set st "effect-exempt" (def-effect-exempt def | (list-length grounded > 0))
+   in let st0 = __record-set st "effect-exempt" (list-length grounded > 0)
    in let rn = resolve-def-name renames (def.name.value) (def.chapter-slug)
    in let declared = resolve-declared-type st0 env def renames
    in let linked-state = if list-length (def.declared-type) == 0
@@ -908,7 +809,7 @@ Section: Check Definition
         is otherwise -> env2.remaining-type
    in let (_, u-st) = unify (body-r.state) remaining-inner (body-r.inferred-type) (aexpr-span (def.body))
    in let ret-checked = lint-return-narrowing u-st (env2.env) (def.body) (body-r.inferred-type) remaining-inner (aexpr-span (def.body))
-   in let effect-checked = if def-effect-exempt def then ret-checked else check-effect-row-subset ret-checked (declared-performing-row (declared.expected-type) (list-length (def.params))) (body-r.effect-row) grounded (aexpr-span (def.body))
+   in let effect-checked = check-effect-row-subset ret-checked (declared-performing-row (declared.expected-type) (list-length (def.params))) (body-r.effect-row) grounded (aexpr-span (def.body))
    in let rigid-checked = check-declared-rigidity effect-checked (declared.declared-vars) 0 (list-length (declared.declared-vars)) (def.name.value) (def.span)
    in let env-type = env-lookup env rn
    in let tied-state = when env-type
@@ -924,27 +825,6 @@ Section: Check Definition
     state = row-tied
    }
 
- A type variable in a signature is universally quantified: it is the
- CALLER's to choose, so the body must work for every choice. The body
- is checked against an instantiation of the declared type, which hands
- each of those variables a fresh unification variable -- the right
- treatment at a call site and the wrong one here, because a fresh
- variable is solvable and the body will happily solve it. That is how
- `h : a -> b` with the body `[x]` type-checked: the body decided
- `b := List a`, the caller went on choosing `b` for itself, and
- `h 5 + 1` answered a heap pointer wearing the type Integer.
-
- So the body is held to the declaration afterwards: every variable the
- signature quantified must still be unbound. resolve-declared-type
- mints them before the body is inferred, so they carry lower ids than
- anything the body allocates, and unify-resolved binds the higher id to
- the lower -- a declared variable therefore survives unification with
- another variable, and can only become bound by meeting a structural
- type. Bound means the body chose, and the body does not get to choose.
-
- This runs BEFORE the tie-back below, which unifies the instantiation
- against the env's binders and would bind these very ids itself.
-
   check-declared-rigidity : UnificationState, List Integer, Integer, Integer, Text, SourceSpan -> UnificationState
   check-declared-rigidity (st) (ids) (i) (len) (name) (span) =
    if i == len then st
@@ -958,14 +838,6 @@ Section: Check Definition
         else add-unify-error st cdx-body-fixes-declared-var ("the body of '" & name & "' decides a type its own signature leaves to the caller: a declared type variable is fixed by the body to " & type-desc settled & ". A signature variable is the caller's to choose, so the body must answer every choice; if the body only ever answers " & type-desc settled & ", declare that.") span
    in check-declared-rigidity st2 ids (i + 1) len name span
 
- A bounded return is a refined position (the bounded-signature
- postcondition): the body's result must inhabit the
- declared bound. When the declared return resolves to a bounded
- Integer, run the same hybrid lint the parameter and field positions
- use, on the body expression against the return's bound. Range
- propagation to callers is deferred to stage B behind the runtime
- postcondition guard.
-
   lint-return-narrowing : UnificationState, TypeEnv, AExpr, CodexType, CodexType, SourceSpan -> UnificationState
   lint-return-narrowing (st) (env) (body) (body-ty) (ret-ty) (span) =
    when deep-resolve st ret-ty
@@ -973,12 +845,6 @@ Section: Check Definition
      if lo <= i64-min & hi >= i64-max then st
      else lint-narrowing-check st env body body-ty (deck-record (IntegerTy lo hi mode)) span "bounded return"
     is otherwise -> st
-
- An undeclared def's synthesized arrow carries a fresh row variable
- on its innermost (performing) arrow; the body's ambient row unifies
- into it above, so callers checked in any order see the def's real
- effects through resolution. A declared def's row is checked against
- its signature by row-le at stage 3b, not unified here.
 
   last-arrow-row : CodexType -> EffectRow
   last-arrow-row (ty) =
@@ -988,16 +854,6 @@ Section: Check Definition
       is FunTy (p2) (row2) (r2) -> last-arrow-row r
       is otherwise -> row
     is otherwise -> empty-row
-
- The def boundary compares the body's AMBIENT row against the row the
- signature declares on the def's performing arrow (the arrow consumed
- by the last parameter), or against the effect set of an effectful
- VALUE signature. Coverage uses the dotted sub-effect lattice via
- effect-covered-by; row tails are ignored here -- a body tail that is
- the signature's own row variable is trivially allowed, and any other
- unsolved tail absorbed nothing, so it defaults to empty. Scope
- literals ride the labels but are not checked at this boundary; scope
- enforcement stays with the capability machinery.
 
   check-effect-row-subset : UnificationState, EffectRow, EffectRow, List Name, SourceSpan -> UnificationState
   check-effect-row-subset (st) (declared-row) (body-row) (grounded) (span) =
@@ -1015,19 +871,6 @@ Section: Check Definition
     is FunTy (p) (row) (r) -> if pcount <= 1 then row else declared-performing-row r (pcount - 1)
     is EffectfulTy (effs) (sc) (inner) -> make-row-from-names effs sc ""
     is otherwise -> empty-row
-
- collect-effect-names gathers every declared effect name reachable on
- a type's performing spine: arrow-row labels down the curried chain
- (never into parameter types -- a parameter's effects are the
- caller's) plus the effect set of an effectful value type. The
- punctual bare-I/O check and the opening capability check read
- declared effects through this, row and value forms alike.
-
- The FunTy arm deliberately uses parenthesized for-sugar as a binary
- operand: this exact shape is the FabledTreasureMap entry-9 printer
- regression (an emitted for-expr in operand position must keep its
- parentheses), and living here it is re-proven by the text fixed
- point on every build.
 
   collect-effect-names : CodexType -> List Name
   collect-effect-names (ty) =
@@ -1078,30 +921,11 @@ Section: Check Definition
 
 Section: Capability Scope
 
- A capability effect may carry a scope literal naming the resources the
- grant covers: [FileSystem.Read "/config/"] promises this function
- reads only under /config/. The literal has always parsed, ridden the
- label, and round-tripped through the text emitter -- and until now
- nothing read it, so that grant opened /etc just as well. A field that
- is populated and never read looks like a shipped feature from every
- angle except the one that matters.
-
- The rule is that a scope may narrow, never widen. A declared label
- with an EMPTY scope is unrestricted and covers everything, which is
- why a program that names no scope is unaffected by any of this: the
- whole check is gated on some label actually carrying a scope.
-
   row-any-scoped : List EffectLabel, Integer, Integer -> Boolean
   row-any-scoped (ls) (i) (len) =
    if i == len then False
    else if text-length ((list-at ls i).scope) > 0 then True
    else row-any-scoped ls (i + 1) len
-
- The scoped operations are the effect primitives whose first argument
- names the resource they touch. The effect each one performs is the
- dotted sub-effect a grant is written against, so read-file answers to
- a FileSystem.Read grant and to a bare FileSystem grant alike, through
- effect-covered-by.
 
   scoped-op-effect : Text -> Text
   scoped-op-effect (n) =
@@ -1116,13 +940,6 @@ Section: Capability Scope
    else if n == "post" then "Network.Write"
    else if text-length (console-channel-op n) > 0 then console-op-effect n
    else ""
-
- Console is the family that does not fit the shape of the other two,
- and pretending it did would have made the check a lie. print-line
- does not take its channel as an argument -- it IS the channel. So a
- console operation's resource comes from the operation's own name and
- never from anything the caller wrote, which is why op-resource and
- lint-fixed-resource exist beside the argument path.
 
   console-channel-op : Text -> Text
   console-channel-op (n) =
@@ -1169,11 +986,6 @@ Section: Capability Scope
       else if k == scope-kind-channel then res == grant
       else text-starts-with res grant
 
- A host must match whole, never by prefix. A port is compared only
- when both sides name one: a grant that names no port covers every
- port on that host, and a resource that names no port is a resolve-dns
- hostname, which never reaches a port for us to check.
-
   authority-admits : Text, Text -> Boolean
   authority-admits (grant) (res) =
    if auth-host grant /= auth-host res then False
@@ -1182,12 +994,6 @@ Section: Capability Scope
    in if text-length gp == 0 then True
       else if text-length rp == 0 then True
       else gp == rp
-
- scope-admits answers "does this grant reach that RESOURCE". This answers
- "does this scope contain that SCOPE", and they are not the same question
- even though the families are. The relation is chosen the same way, by
- the effect family, and for a path and a channel the test is the same
- text: a path contains what extends it, a channel contains only itself.
 
  Authority is where they part, and reusing scope-admits here would
  launder. Its portless-RESOURCE rule -- "a resource that names no port is
@@ -1206,13 +1012,6 @@ Section: Capability Scope
       else if k == scope-kind-channel then inner == outer
       else text-starts-with inner outer
 
- An outer authority contains an inner one when the hosts are the same and
- the outer either names no port (it covers every port, so it covers
- whatever the inner names) or names the very port the inner does. An
- inner that names no port covers every port and is therefore NOT inside an
- outer that named one -- that is the clause authority-admits spends on
- resolve-dns and this one must not.
-
   authority-subsumes : Text, Text -> Boolean
   authority-subsumes (outer) (inner) =
    if auth-host outer /= auth-host inner then False
@@ -1229,11 +1028,6 @@ Section: Capability Scope
   auth-port (a) =
    let p = find-char-at a ":" 0 (text-length a)
    in if p < 0 then "" else substring a (p + 1) (text-length a - p - 1)
-
- find-char-at derives every character code from a literal because
- internal text is CCE: a written-down 58 is ASCII thinking, and in CCE
- that code is a letter. The same mistake made the dotted sub-effect
- relation dead code once already (find-dot, above).
 
   find-char-at : Text, Text, Integer, Integer -> Integer
   find-char-at (s) (c) (i) (len) =
@@ -1274,12 +1068,6 @@ Section: Capability Scope
   op-resource (eff) (v) =
    if scope-kind eff == scope-kind-authority then url-authority v else v
 
- A grant permits a resource when SOME declared label covers the effect
- and either grants it unrestricted (empty scope) or names a scope the
- resource sits inside. Any one covering grant is enough -- a signature
- that declares both [FileSystem] and [FileSystem.Read "/config/"] has
- granted the wider of the two, and we hold it to what it actually said.
-
   scope-permits : List EffectLabel, Text, Text, Integer, Integer -> Boolean
   scope-permits (ls) (eff) (res) (i) (len) =
    if i == len then False
@@ -1289,20 +1077,11 @@ Section: Capability Scope
       else if scope-admits eff (l.scope) res then True
       else scope-permits ls eff res (i + 1) len
 
- An effect this signature never granted at all is not a scope problem --
- it is an undeclared effect, and the def-boundary row-subset check owns
- that diagnosis (CDX2031). Scope only speaks where a grant exists, or it
- would answer a question it was not asked.
-
   effect-has-grant : List EffectLabel, Text, Integer, Integer -> Boolean
   effect-has-grant (ls) (eff) (i) (len) =
    if i == len then False
    else if effect-covered-by [(list-at ls i).name] eff then True
    else effect-has-grant ls eff (i + 1) len
-
- collect-effect-labels is collect-effect-names keeping the scope. A
- callee that declares its own scope must sit inside ours: the caller
- cannot delegate authority it was never granted.
 
   collect-effect-labels : CodexType -> List EffectLabel
   collect-effect-labels (ty) =
@@ -1313,14 +1092,6 @@ Section: Capability Scope
     is EffectfulTy (effs) (sc) (inner) -> (make-row-from-names effs sc "").labels & collect-effect-labels inner
     is otherwise -> []
 
- A callee with NO scope of its own may touch anything. Under a grant
- that names a scope, that is a widening: the caller cannot hand on
- authority it was never given. So an unscoped callee is not skipped --
- it is measured, and its empty scope fails to sit inside a narrowed
- grant exactly as "/etc/" would. This is what makes a scope survive an
- indirect call, and it only became reachable once the filesystem
- builtins carried honest effect rows.
-
   check-callee-scopes : UnificationState, List EffectLabel, List EffectLabel, Text, SourceSpan, Integer, Integer -> UnificationState
   check-callee-scopes (st) (grants) (callee-labels) (fname) (span) (i) (len) =
    if i == len then st
@@ -1330,14 +1101,6 @@ Section: Capability Scope
       else if scope-permits grants eff (l.scope) 0 (list-length grants) then check-callee-scopes st grants callee-labels fname span (i + 1) len
       else if text-length (l.scope) == 0 then add-unify-error st cdx-scope-violation ("'" & fname & "' performs " & eff & " with no scope of its own, so it may touch anything, and this signature grants " & eff & " only over a narrower scope. Declare the scope on '" & fname & "', or widen the grant.") span
       else add-unify-error st cdx-scope-violation ("'" & fname & "' is declared over the scope \"" & (l.scope) & "\" for " & eff & ", which is not inside the scope this signature grants. A scope may narrow, never widen.") span
-
- The check runs at every application, but costs nothing until a
- signature actually names a scope: row-any-scoped is the first thing it
- asks, and today nothing in the tree answers yes.
-
- A computed path is a refusal, not a pass. The compiler cannot prove
- where a path it did not read will point, and a scope that admits the
- unprovable is not a scope. Pass a literal, or widen the declaration.
 
   lint-effect-scope : UnificationState, TypeEnv, AExpr, AExpr, SourceSpan -> UnificationState
   lint-effect-scope (st) (env) (func) (arg) (span) =
@@ -1362,11 +1125,6 @@ Section: Capability Scope
     in check-callee-scopes st grants cls fname span 0 (list-length cls)
    else st
 
- A console operation carries its own resource, so there is no argument
- to read and nothing the caller can compute: the channel is decided by
- which function was called. That makes this the one scoped check that
- can never be defeated by an unprovable argument.
-
   lint-fixed-resource : UnificationState, List EffectLabel, Text, Text, Text, SourceSpan -> UnificationState
   lint-fixed-resource (st) (grants) (eff) (fname) (res) (span) =
    if effect-has-grant grants eff 0 (list-length grants) == False then st
@@ -1385,71 +1143,6 @@ Section: Capability Scope
       is otherwise -> st
     is otherwise -> add-unify-error st cdx-scope-violation ("'" & fname & "' is given a computed resource, so the compiler cannot prove it stays inside the scope this signature grants for " & eff & ". Pass a literal, or widen the declared scope.") span
 
- Capability effect exemption. The
- hardware intrinsics carry Device.* effect rows so that application
- and library code doing raw I/O must declare it. But at a hardware
- boundary the declaration is theater -- a driver is expected to do
- I/O. So the OWNED HARDWARE STACK is exempt at QUIRE granularity: a
- def whose quire is the compiler, kernel, OS, or plugs may use the
- intrinsics without declaring the effect. The quire is the prefix
- before "--" in the concat-mangled chapter slug (an unprefixed slug is
- its own quire, e.g. the compiler root "Opening"). Foreword and app
- code are NOT exempt -- foreword is the surface external code
- consumes, so its declarations are the value; apps are the threat
- surface the discipline exists for. This slice skips the effect-row
- check for exempt defs; full infer-and-propagate through exempt
- wrappers (the app-calls-kernel-directly path) is later work.
-
- Boards came off this list on 2026-07-13, and the reason is worth
- keeping. "The declaration is theater" is a good argument for the
- kernel, which is the machine talking to itself. It is a bad argument
- for the board quire, because a board driver is not machine internals
- -- it is a LIBRARY, and the code that consumes it is ordinary
- application code. The tell was already in the tree: the HAL those
- drivers are built on, `Foreword chapter Board`, is not exempt and has
- declared [Device.Mmio] on every primitive since it became real. So
- the intrinsics were honest, the HAL was honest, and the nine chapters
- in between -- the only things in the tree that actually touch a
- register -- were the one link that nobody checked. 429 call sites sat
- behind pure signatures, and `Board.codex`'s own prose said that could
- not happen.
-
- The cost of taking the exemption away is that a driver must say what
- it does. The gain is that it cannot say otherwise: the row is what
- makes a register access visible to the effect system, to the
- capability manifest, and to the boot grant, and a guarantee that stops
- at the last function before the hardware is not a guarantee.
-
-  slug-find-dashes : Text, Integer, Integer -> Integer
-  slug-find-dashes (s) (i) (len) =
-   if i + 1 >= len then 0 - 1
-   else if (char-code (char-at s i) == char-code (char-at "-" 0)) & (char-code (char-at s (i + 1)) == char-code (char-at "-" 0)) then i
-   else slug-find-dashes s (i + 1) len
-
-  slug-quire : Text -> Text
-  slug-quire (slug) =
-   let p = slug-find-dashes slug 0 (text-length slug)
-   in if p >= 0 then substring slug 0 p else slug
-
-  quire-effect-exempt : Text -> Boolean
-  quire-effect-exempt (q) =
-   q == "Opening" | q == "Ast" | q == "Core" | q == "Emit" | q == "IR" | q == "Semantics" | q == "Syntax" | q == "Types"
-   | q == "Riscv" | q == "Arm64" | q == "Pe" | q == "Elf" | q == "Img"
-
-  def-effect-exempt : ADef -> Boolean
-  def-effect-exempt (def) = quire-effect-exempt (slug-quire (def.chapter-slug))
-
- The grounds table is a List Text of "slug\neffect" entries (built by the
- parser, carried on the chapter and the state). A def's grounded effects
- are the effect halves of every entry whose slug half equals the def's
- chapter-slug. Because a slug can hold no newline, text-starts-with on
- "slug\n" is an exact slug match, never a prefix collision between a slug
- and a longer one. The result is a List Name so it drops straight into
- check-effect-row-subset's allowed set beside the declared labels, where
- the dotted sub-effect lattice covers it. The grounds rule: a chapter
- grounds the hardware effects it is the source of, and its bodies may
- perform exactly those without declaring them.
-
   slug-grounded-names : List Text, Text, Integer, Integer, List Name -> List Name
   slug-grounded-names (gs) (slug) (i) (len) (acc) =
    if i >= len then acc
@@ -1462,12 +1155,6 @@ Section: Capability Scope
   def-grounded-names : UnificationState, ADef -> List Name
   def-grounded-names (st) (def) =
    slug-grounded-names (st.chapter-grounds) (def.chapter-slug) 0 (list-length (st.chapter-grounds)) []
-
- declared-vars carries the type variables the SIGNATURE quantified,
- as instantiate-collect minted them. They are the caller's to choose,
- and check-declared-rigidity holds the body to that. An undeclared def
- has none: the variables in its synthesized arrow are exactly what the
- body is supposed to solve.
 
   DefSetup = record {
    expected-type : CodexType,
@@ -1538,13 +1225,6 @@ Section: Capability Scope
       let (fr-ty, fr-st) = fresh-and-advance st
    in let env2 = env-bind-local env (p.name.value) fr-ty
    in bind-def-params fr-st env2 params remaining (i + 1) len
-
- A bounded parameter's declared range is a sound fact inside the body
- because stage B's entry guard enforces it at
- runtime. Recording it into local-ranges lets
- the narrowing lint prove a store of the parameter into an
- equal-or-wider bounded field. Only OvError bounds narrower than the
- full i64 range are recorded; a plain Integer parameter adds nothing.
 
   bind-param-range : TypeEnv, Text, CodexType -> TypeEnv
   bind-param-range (env) (name) (ty) =
@@ -1835,17 +1515,6 @@ Section: Check Chapter
 
 Section: Punctual Mutual Recursion
 
- has-self-call rejects direct self-recursion per def. A cycle THROUGH
- other punctual functions (f calls g, g calls f) is equally unbounded
- but invisible to a per-def scan, so after all defs are checked the
- punctual call graph is walked. An edge is any mention of another
- punctual def's name in a punctual body -- over-approximate on
- purpose, so a punctual function reference passed as a value still
- pins the cycle. A def that can reach itself through one or more
- OTHER punctual defs is rejected with CDX6005. Direct self-loops
- contribute no edge; has-self-call owns those, so a single mistake
- is reported once.
-
   RtEdges = record {
    re-fn : Text,
    re-calls : List Text
@@ -2054,21 +1723,6 @@ Section: Proof Acyclicity
        in check-proof-cycles-loop g defs names (i + 1) len st2
       else check-proof-cycles-loop g defs names (i + 1) len st
 
- A proof term may only be built from the proof calculus: a proof builtin
- (Refl / sym / trans / cong / app-cong / assume), an inductive-hypothesis
- binding, a cited claim, an 'induction' expression, or a let of proof
- terms. Any other expression form -- an if, a when, an act block, a
- lambda, arithmetic -- that produces a proposition is rejected, because
- such a form can launder a proof of a false proposition past the
- acyclicity check above. The check is
- type-directed: a subexpression is constrained only when its checked type
- is a proposition, so the value arguments that instantiate a for-all
- (append-assoc (reverse ys) ...) are left alone while the proof arguments
- to the builtins are walked. expr-types is keyed by span but is not sorted
- until the check-lower boundary, so this sorts a copy first; the whole
- pass is guarded by there being a proof-relevant definition at all, so a
- program with no proofs (the selfhost) pays nothing.
-
   pg-is-prop : UnificationState, AExpr -> Boolean
   pg-is-prop (sorted-st) (e) = type-mentions-proof (lookup-expr-type sorted-st (aexpr-span e)) 64
 
@@ -2190,12 +1844,6 @@ Section: Proof Acyclicity
          }
    in register-all-defs (ty.state) (ty.env) tdm defs (i + 1) len renames
 
- A zero-parameter def whose body is an integer literal is a constant
- with a known value; its [n, n] range is recorded in the env's
- const-range table for the narrowing lint. The registered TYPE stays
- the declared one -- refining it would make two distinct constants
- disjoint under unification.
-
   register-const-range : TypeEnv, Text, ADef -> TypeEnv
   register-const-range (env) (name) (def) =
    if list-length (def.params) > 0 then env
@@ -2205,11 +1853,6 @@ Section: Proof Acyclicity
       is IntLit -> env-add-const-range env name (lit-text-to-integer val)
       is otherwise -> env
     is otherwise -> env
-
- Post-stage-4 an EffectfulTy may wrap only a value type (§4): an
- effect bracket around a function type in a VALUE signature would
- revive the transitional form the migration retired, so it is
- rejected at registration with the fix in the message.
 
   check-effectful-arrow-value : UnificationState, CodexType, SourceSpan -> UnificationState
   check-effectful-arrow-value (st) (ty) (span) =
@@ -2285,10 +1928,6 @@ Section: Proof Acyclicity
   empty-type-bindings : List TypeBinding
   empty-type-bindings = []
 
- The ceiling is the CHECK deck reservation's top, checked per definition
- because this loop is where the phase writes the deck in bulk -- one
- def's inferred types, substitutions and expr-types per turn.
-
  This one reads the deck-pos cell (deck-short-of) and that is correct,
  which makes CHECK the exception worth naming: check-chapter issues a
  __deck-exit immediately before this walk and a __deck-enter after it,
@@ -2349,18 +1988,6 @@ Section: Proof Acyclicity
    in check-all-defs rt-st env defs (i + 1) len (list-push acc entry) renames colliding assignments citations slug-cache (def.chapter-slug) chapter-rn rt-names tdm ceiling
 
 Section: Induction Checking
-
- Structural induction over a variant type (proof-system Stage 4b/5). A
- `proof p = induction on x ... qed` def whose claim is `for all (x : T),
- lhs === rhs` is checked constructor-by-constructor: for each `C_i` of
- T, the subgoal is the proposition with `x` replaced by `C_i` applied to
- its (rigid, opaque) field variables; each recursive field binds an
- inductive hypothesis (the proposition with `x` replaced by that field);
- both are normalized by the Stage 3 definitional-equality normalizer and
- the branch's proof term is checked against the subgoal by the ordinary
- proof unifier. A missing constructor case is an error; a claim that is
- not a variant-typed for-all equality is disclosed as an unproven axiom
- (CDX4022), never silently accepted.
 
   def-is-induction : ADef -> Boolean
   def-is-induction (def) =
@@ -2429,15 +2056,6 @@ Section: Induction Checking
     is ConstructedTy (n) (args) -> lookup-type-def tdm (n.value)
     is ListTy (elem) | LinkedListTy (elem) -> builtin-list-sumty elem
     is otherwise -> ty
-
- The builtin List is not a variant, but its inductive shape is fixed --
- empty, or an element before a shorter list -- so induction over
- `xs : List a` is checked against a synthesized view: `Nil` with no
- fields and `Cons (a) (List a)`. The view exists only here, for Stage 5;
- nothing at runtime changes, and `is Cons (h) (t)` in ordinary code
- remains CDX2001. The tail field is ListTy, so ctype-head-name must
- answer the view's own type name for it or no inductive hypothesis
- would ever bind.
 
   builtin-list-sumty : CodexType -> CodexType
   builtin-list-sumty (elem) =
@@ -2553,14 +2171,6 @@ Section: Induction Checking
   induction-missing-arm (st) (cn) (sp) =
    __record-set st "bag" (bag-add (st.bag) (make-error cdx-non-exhaustive-match ("induction proof is missing a case for constructor '" & cn & "'") sp))
 
- A proof term may apply a proven `claim` (another `for all` def in the
- module) to arguments -- `append-nil (reverse ys)` instantiates the
- lemma's proposition with `xs := reverse ys`. Such applications are
- elaborated before inference: each maximal claim-application spine is
- replaced by a fresh local bound to the instantiated (and normalized)
- `PropEqTy`, so the ordinary proof unifier then checks the surrounding
- term (`trans`/`sym`/`cong`/`app-cong`) against it.
-
   ElabResult = record {
    ec-expr : AExpr,
    ec-env : TypeEnv,
@@ -2626,31 +2236,6 @@ Section: Induction Checking
 
 Section: Linearity Checking
 
- Two disciplines share this machinery, because they spring from one
- idea: a uniquely owned value may not be duplicated.
-
- A value typed `linear T` (a non-mutable resource -- a file handle, a
- socket) must be used *exactly once* along every path: not zero times
- (leak, CDX2063), not two or more (CDX2061). Every mention is a use, so
- `lin-of` counts them all; branches must use it an equal number of times.
-
- A `mutable` record is the other face of uniqueness. It is a stable
- container you own and may *read* as often as you like -- reading a field
- does not spend it. What you may not do is hand the same record to two
- owners. So for a mutable parameter `consume-of` counts only the
- *consuming* positions (passing it on, storing it, returning it) and
- never the reads (`r.field`); if any single path consumes it more
- than once, that is aliasing (CDX2062). Branches take the worst path
- (max), not a sum, because only one path runs.
-
- Ownership flows through let-bound locals: a bind whose value is a
- bare mention of the tracked owner is a MOVE. The walk re-roots on
- the new name (which inherits the exactly-once obligation), and any
- residual mention of the old name is a use-after-move, tallied in
- the `dead` field. Tracking ownership through argument boundaries,
- returns, captures, and containers is later work (ownership stages
- 3 and 4).
-
   LinResult = record {
    count : Integer,
    ok : Boolean,
@@ -2659,12 +2244,6 @@ Section: Linearity Checking
    esc : Text,
    cap : Text
   }
-
- `ret` marks a bare mention of the tracked owner in tail (return)
- position; `esc` carries the name of the first callee that received
- the owner through a plain (non-linear) parameter; `cap` names the
- first context that captured the owner and may run zero or many
- times (a handler clause, an escaping closure). Empty text = none.
 
   lin-zero : LinResult
   lin-zero = LinResult { count = 0, ok = True, dead = 0, ret = False, esc = "", cap = "" }
@@ -2694,20 +2273,8 @@ Section: Linearity Checking
   lin-path-max : LinResult, LinResult -> LinResult
   lin-path-max (a) (b) = LinResult { count = if a.count >= b.count then a.count else b.count, ok = a.ok & b.ok, dead = a.dead + b.dead, ret = (a.ret) | (b.ret), esc = lin-esc-first (a.esc) (b.esc), cap = lin-esc-first (a.cap) (b.cap) }
 
- A move joins two walks of the remainder: the live chain rooted at
- the new owner, and the dead walk of the old name, every mention of
- which is a violation. A branch-imbalanced dead mention still counts
- as at least one. The live chain keeps the tail obligation, so
- returning the current owner bare still marks `ret`.
-
   lin-move-join : LinResult, LinResult -> LinResult
   lin-move-join (moved) (dead) = LinResult { count = moved.count, ok = moved.ok, dead = (moved.dead) + (dead.dead) + (dead.count) + (if dead.ok then 0 else 1), ret = moved.ret, esc = lin-esc-first (moved.esc) (dead.esc), cap = lin-esc-first (moved.cap) (dead.cap) }
-
- A retaining bind (a capturing closure, a partial application, a
- container stash) folds three walks: the bind value itself (whose
- first mention is the sanctioned move in; extras are double-uses),
- the live chain rooted at the new binding, and the dead walk of the
- old name.
 
   lin-retain-join : LinResult, LinResult, LinResult -> LinResult
   lin-retain-join (c) (moved) (dead) = LinResult { count = (moved.count) + (if c.count > 0 then (c.count) - 1 else 0), ok = c.ok & moved.ok, dead = (c.dead) + (moved.dead) + (dead.count) + (dead.dead) + (if dead.ok then 0 else 1), ret = moved.ret, esc = lin-esc-first (c.esc) (lin-esc-first (moved.esc) (dead.esc)), cap = lin-esc-first (c.cap) (lin-esc-first (moved.cap) (dead.cap)) }
@@ -2732,11 +2299,6 @@ Section: Linearity Checking
    else if apat-binds-name (list-at subs i) v then True
    else apat-list-binds-name subs v (i + 1) len
 
- The walk carries the environment (to read callee signatures at
- argument boundaries) and a tail flag (True only where the
- expression's value is the def's return value). Act-block statement
- values are conservatively non-tail.
-
   lin-of : TypeEnv, Text, Boolean, AExpr -> LinResult
   lin-of (env) (v) (tail) (e) =
    when e
@@ -2759,14 +2321,6 @@ Section: Linearity Checking
     is ALazyExpr (inner) (s) -> lin-of env v False inner
     is otherwise -> lin-zero
 
- The argument boundary: a bare mention of the tracked owner in
- argument position is sanctioned only when the callee's parameter at
- that position is declared linear in its registered signature (stage
- 1 left the LinearTy wrapper there for exactly this read). freeze's
- own `linear a` parameter makes it the door with no special case. An
- unknown or unregistered callee (a function value, a lambda head) is
- conservatively a plain boundary.
-
   lin-spine : TypeEnv, Text, Text, AExpr -> LinResult
   lin-spine (env) (v) (head) (e) =
    when e
@@ -2779,12 +2333,6 @@ Section: Linearity Checking
     is ANameExpr (n) (s) -> if (n.value) == v then lin-arg-use env head k else lin-zero
     is ALambdaExpr (ps) (bd) (s) -> lin-arg-lambda (lin-of env v False a)
     is otherwise -> lin-of env v False a
-
- A capturing closure handed to a callee escapes into an unknown call
- discipline - the callee may invoke it any number of times. A
- capturing closure in tail position escapes to the caller the same
- way, so it takes the return obligation (sanctioned only by a
- linear-declared return type).
 
   lin-arg-lambda : LinResult -> LinResult
   lin-arg-lambda (c) =
@@ -2830,16 +2378,6 @@ Section: Linearity Checking
    when (b.value)
     is ANameExpr (n) (s) -> (n.value) == v
     is otherwise -> False
-
- A bind RETAINS the owner when its value still holds the resource
- after the bind: a lambda that captures it, a partial application
- (by registered arity) that consumed it into a closure environment,
- or a list/record literal that stashes the bare name (possibly
- nested in further literals). The binding then owns the chain: a
- closure is call-once, a container is consume-once, and the
- boundary and count rules compose from there. A container element
- that merely CONSUMES the owner through a call (`[consume n]`) is
- not a stash - the container holds a plain result.
 
   lin-stash-elem : AExpr, Text -> Boolean
   lin-stash-elem (e) (v) =
@@ -2897,11 +2435,6 @@ Section: Linearity Checking
    else if (b.name.value) == v then here
    else lin-seq here (lin-let env v tail binds body (i + 1) len)
 
- The index i is already the bind AFTER the alias. A self-alias
- (let n = n) transfers to the same name, so the walk simply
- continues under it; a self-named retain keeps only the bind
- value's own judgment (the rest is shadowed).
-
   lin-let-moved : TypeEnv, Text, Text, Boolean, List ALetBind, AExpr, Integer, Integer -> LinResult
   lin-let-moved (env) (v) (h) (tail) (binds) (body) (i) (len) =
    if h == v then lin-let env v tail binds body i len
@@ -2941,9 +2474,6 @@ Section: Linearity Checking
   clause-binds-name : AHandleClause, Text -> Boolean
   clause-binds-name (cl) (v) =
    if name-list-has (cl.params) v then True else (cl.resume-name.value) == v
-
- A handler clause body may run zero or many times, so any mention of
- the tracked owner inside one is a capture violation.
 
   lin-clause-guard : LinResult -> LinResult
   lin-clause-guard (c) =
@@ -3029,19 +2559,6 @@ Section: Linearity Checking
    else if type-mentions-mut env ((list-at fields i).type-val) target fuel then True
    else fields-mention-mut-at env fields target fuel (i + 1) len
 
- The return-position walk. apply-threads asks whether a callee's
- return type hands the mutable record onward. At return position the
- walk recurses through PARAMETRIC structure - List and LinkedList
- elements, and a sum's instantiated type ARGUMENTS - because a target
- wrapped there is the threading pattern: state in, wrapped state out.
- It must NOT recurse into a sum's constructor payloads, and the
- record-FIELD walk must stay sum/list blind: a named return type
- whose field chain reaches the target only through a list or sum
- field merely reads the state (the make-token shape), and completing
- that chain rejects legitimate borrow-twice callers (tried CL 2710,
- reverted). Named types therefore delegate to type-mentions-mut,
- whose field walk keeps its deliberate sum/list blindness.
-
   return-mentions-mut : TypeEnv, CodexType, Text, Integer -> Boolean
   return-mentions-mut (env) (ty) (target) (fuel) =
    if fuel <= 0 then False
@@ -3115,10 +2632,6 @@ Section: Linearity Checking
    else let here = consume-of env target v (b.value)
    in if (b.name.value) == v then here
    else lin-seq here (consume-let env target v binds body (i + 1) len)
-
- The dead walk of a moved-from mutable name counts EVERY mention,
- reads included: after the transfer the old name is a stale alias,
- exactly the hazard the discipline exists to forbid.
 
   consume-let-moved : TypeEnv, Text, Text, Text, List ALetBind, AExpr, Integer, Integer -> LinResult
   consume-let-moved (env) (target) (v) (h) (binds) (body) (i) (len) =
@@ -3197,10 +2710,6 @@ Section: Linearity Checking
     then add-unify-error st cdx-mutable-alias ("In '" & (def.name.value) & "', mutable record '" & (p.name.value) & "' is consumed " & integer-to-text (r.count) & " times on a single path; a mutable record may be handed to a new owner at most once") (p.span)
     else st
 
- A bare return of the owner is sanctioned only when the def's
- declared return type is itself linear. The freeze identity is the
- one exempt door: its whole meaning is shedding the wrapper.
-
   afun-return-after : ATypeExpr, Integer -> ATypeExpr
   afun-return-after (dt) (k) =
    if k <= 0 then dt
@@ -3250,20 +2759,6 @@ Section: Linearity Checking
 
 Section: Minted Linear Owners
 
- A local bound from a call whose registered return type is linear is
- a freshly minted owner: the callee handed over the only reference,
- so the binding inherits the exactly-once obligation. Before this
- walk existed the checker tracked declared parameters only, and a
- minted handle could be duplicated or dropped without diagnosis
- (the documented LinearOwnership residual). The walk finds every
- such bind, in let chains and act blocks alike, and runs the same
- ownership discipline over the binding's scope that a declared
- linear parameter receives, using the existing lin-let machinery so
- moves, retains, shadowing, and the argument boundary all apply
- unchanged. The callee's return is read from the registered
- signature, where LinearTy survives in return position, unwrapping
- EffectfulTy so an effectful constructor like open-file mints too.
-
   return-is-linear-after : CodexType, Integer -> Boolean
   return-is-linear-after (ty) (k) =
    when ty
@@ -3284,18 +2779,6 @@ Section: Minted Linear Owners
      in if env-has env resolved then return-is-linear-after (env-lookup env resolved) (apply-arg-count e)
      else False
     is otherwise -> False
-
- The mutable twin of the mint above. A local bound from
- a call whose registered return type is a mutable record owns that
- record: sb-new hands over the only reference exactly as a declared
- mutable parameter arrives owned. Before this walk the checker tracked
- declared parameters only, so `let base = sb-new in let a = sb-append
- base x in let b = sb-append base y` compiled clean and aliased
- silently, while the identical body with base as a parameter was
- refused -- the Developer's Guide promised the wider guarantee. The
- detector answers the mutable type's NAME (empty text for none) so the
- same consume-of discipline a declared parameter receives can be
- rooted at the binding, borrow-vs-consume inference included.
 
   mutable-name-of : TypeEnv, Name -> Text
   mutable-name-of (env) (n) =
@@ -3427,18 +2910,6 @@ Section: Minted Linear Owners
    else check-mints-fields def env fields (i + 1) len (check-mints def env False (list-at fields i).value st)
 
 Section: Stale Read After In-Place Update
-
- __record-set mutates the record it is handed, so a function that
- __record-sets one of its parameters changes the caller's value through
- the alias. The hazard: bind a mutator's result to a NEW name, then keep
- reading a field of the ORIGINAL binding -- the read sees the mutated
- value, not the old one. Correct threading rebinds the same name
- (let s = f s) or reads the result; this check flags the alias-and-reuse
- mistake. It is field-sensitive: only a read of a field the mutator
- actually writes is flagged, so reading an untouched field after the
- call stays silent. Intra-chapter and direct-mutator (the param appears
- as the bare target of __record-set in the body); both hold for the
- floating-point rotate bug that motivated it.
 
   MutatorEntry = record {
    me-fn : Text,
@@ -3924,18 +3395,6 @@ Section: Capability Checker
  at boot (emit-grant-cap-mask) and from the trust policy at load
  (VerifiedLoader). The old name `granted-capabilities` read like a
  grant-all list; it never granted anything.
-
- This was a hand-written list of 23 names that had to be kept in step
- with manifest-cap-id (X86_64Chapter) by inspection, and a build-time
- guard existed because a name here with no cap id declares an effect the
- manifest silently drops. It is a projection of Foreword chapter
- Capability now: the 17 capabilities, plus a dotted Read and Write for
- each of the three families that carry a direction. Both readings come
- from one table, so the guard has no state left to catch and is deleted
- with it.
-
- The order differs from the list this replaced. Nothing reads it in
- order -- every call site is a membership test through cap-name-covered.
 
   capability-vocabulary : List Text
   capability-vocabulary = capability-names

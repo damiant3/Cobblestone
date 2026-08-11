@@ -45,8 +45,9 @@ is not neutral -- it type-checks and then dies at emit with CDX2040, so a
 program that merely MENTIONS it cannot be built. `LocationStub` and
 `SensorsStub` answer their effects with named constants and publish
 `location-is-fixed` / `sensors-are-fixed`, both False, so a caller can
-always tell a placeholder from a reading. `Camera` is answered over real
-hardware by `Works chapter CamCapture`.
+always tell a placeholder from a reading. `Camera`'s only answering
+chapter is `Works chapter CamCapture`, retired along with the camera rig
+(2026-08-05); the effect declaration remains for a future revival.
 
 ### codex.foreword.ai (43 modules) -- Machine Learning
 
@@ -197,7 +198,7 @@ The self-hosted compiler, in `codex/compiler/`. Subdirectories: Ast,
 Core, Emit, IR, Semantics, Syntax, Types. Do not modify without reading
 the code first and passing both gates (sample battery + pingpong).
 
-### codex.os (158 modules) -- Operating System
+### codex.os (160 modules) -- Operating System
 
 Split across sub-quires. Re-measured 2026-07-29, when adding one kernel
 chapter turned `check-doc-counts.ps1` red and showed the table had
@@ -209,22 +210,28 @@ internally inconsistent.
 | Sub-quire | Modules | Purpose |
 |-----------|---------|---------|
 | codex.os.core | 4 | Core OS abstractions |
-| codex.os.dev | 36 | Device management |
+| codex.os.dev | 37 | Device management |
 | codex.os.kernel | 36 | Hardware drivers (PCI, xHCI, NE2K, e1000e, VGA, IDE, HDA, USB HID, and Hpet, the monotonic clock) |
-| codex.os.net | 38 | Networking stack (incl. HttpFetch -- the Network effect -- DtlsEndpoint, UdpIO, the datagram send/poll pair, and DhcpIO, which acquires an address) |
+| codex.os.net | 39 | Networking stack (incl. HttpFetch -- the Network effect -- DtlsEndpoint, UdpIO, the datagram send/poll pair, and DhcpIO, which acquires an address) |
 | codex.os.observe | 8 | Observability |
 | codex.os.replay | 3 | Deterministic replay |
 | codex.os.sched | 10 | Scheduling |
 | codex.os.trust | 16 | Trust lattice |
 | codex.os.verify | 7 | Verification |
 
-### codex.plugs (53 plugs, all building clean) -- Transpiler Plugs
+### codex.plugs (55 plugs, all building clean) -- Transpiler Plugs
 
-48 transpiler plugs (Ada to Zig, 14 UI frameworks, GPU PTX + SPIR-V +
-WGSL) plus 5 native backends (ARM64, RISC-V, ELF, PE, IMG). Each plug
-receives IR or CDX over TCP and produces the target format. A plug is a
-directory under `codex/plugs/` with a `build.ps1`; `common/` and
-`test-input/` are not plugs.
+48 language and UI transpilers (Ada to Zig, 14 UI frameworks, GPU PTX +
+SPIR-V + WGSL), 6 native backends (ARM64, RISC-V, T3ISA, ELF, PE, IMG),
+and `recheck`, the independent rechecker. Each plug receives IR or CDX
+over TCP and produces the target format. A plug is a directory under
+`codex/plugs/` with a `build.ps1`; `common/` and `test-input/` are not
+plugs, and `t3isa/spec/` is a subdirectory of one rather than another.
+
+Re-measured 2026-08-09, when landing `t3isa` moved the count and showed
+the header had already drifted: it said 53 against a measured 54, because
+`recheck` arrived without the row being touched. Both were re-measured
+together rather than fixing only the one that moved.
 
 ## Library Rules
 

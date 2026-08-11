@@ -58,6 +58,8 @@ Section: Register Offsets
   e1000-ctrl-asde : Integer = #00000020
   e1000-ctrl-rst : Integer = #04000000
 
+  e1000-clear-asde : Integer = #FFFFFFFF - e1000-ctrl-asde
+
   e1000-status-lu : Integer = #00000002
 
  UPE and MPE are promiscuous unicast and multicast, set during bring-up
@@ -337,11 +339,20 @@ Section: Reset and Link
     else if bit-and s e1000-bmsr-aneg-done /= 0 then 1
     else e1000-await-aneg mmio (i + 1)
 
+ ASDE is CLEARED, and the datasheet is unusually blunt about it. 82583V
+ CTRL, bit 5: "When set to 1b, the MAC ignores the speed indicated by the
+ PHY and attempts to automatically detect the resolved speed of the link
+ and configure itself appropriately. This bit must be set to 0b in the
+ 82583V." A driver that sets it is asking the MAC to disregard the one
+ part that knows the answer. SLU is the opposite case, required by the
+ same table: "The Set Link Up bit MUST be set to 1b to permit the MAC to
+ recognize the link signal from the PHY."
+
   e1000-link-up : Integer -> Integer
   e1000-link-up (mmio) =
    let p = e1000-phy-bring-up mmio
    in let ctrl = e1000-read mmio e1000-reg-ctrl
-   in let w = e1000-write mmio e1000-reg-ctrl (bit-or ctrl (bit-or e1000-ctrl-slu e1000-ctrl-asde))
+   in let w = e1000-write mmio e1000-reg-ctrl (bit-and (bit-or ctrl e1000-ctrl-slu) e1000-clear-asde)
    in e1000-await-link mmio 0
 
   e1000-await-link : Integer, Integer -> Integer

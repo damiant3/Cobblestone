@@ -95,6 +95,41 @@ Section: Segment Parsing
     if off >= len then []
     else eth-payload-loop data off len []
 
+Section: Sequence Arithmetic
+
+ RFC 793 section 3.3: the sequence space is circular, 32 bits wide, and
+ comparisons in it are the SIGN OF THE WRAPPED DIFFERENCE rather than the
+ order of the two magnitudes. An ordinary compare is right only while
+ neither operand has crossed 2^32, which on a link doing real work is a
+ property with an expiry date rather than an invariant.
+
+ Both halves are needed and neither is sufficient. A wrapped counter
+ compared with an ordinary operator is wrong the moment the two operands
+ sit on opposite sides of the seam; an unwrapped counter compared with
+ serial arithmetic is wrong because the local value never re-enters the
+ 32-bit space the peer answers in. What arrives from the wire is always
+ truncated, because `read-be32` reads four bytes.
+
+  tcp-seq-space : Integer = 4294967296
+  tcp-seq-half : Integer = 2147483648
+
+  tcp-seq-wrap : Integer -> Integer
+  tcp-seq-wrap (n) = bit-and n #FFFFFFFF
+
+  tcp-seq-diff : Integer, Integer -> Integer
+  tcp-seq-diff (a) (b) =
+    let d = bit-and (a - b) #FFFFFFFF
+    in if d >= tcp-seq-half then d - tcp-seq-space else d
+
+  tcp-seq-lt : Integer, Integer -> Boolean
+  tcp-seq-lt (a) (b) = tcp-seq-diff a b < 0
+
+  tcp-seq-le : Integer, Integer -> Boolean
+  tcp-seq-le (a) (b) = tcp-seq-diff a b <= 0
+
+  tcp-seq-ge : Integer, Integer -> Boolean
+  tcp-seq-ge (a) (b) = tcp-seq-diff a b >= 0
+
 Section: Connection Record
   TcpConnection = record {
     state : TcpState,
@@ -115,7 +150,7 @@ Section: Connection Record
       remote-port = __narrow remote-port,
       local-ip = local-ip,
       remote-ip = remote-ip,
-      send-next = initial-seq,
+      send-next = tcp-seq-wrap initial-seq,
       recv-next = 0,
       send-window = 8192
     }
@@ -160,10 +195,10 @@ Section: State Transitions
   tcp-set-state (c) (s) = TcpConnection { state = s, local-port = c.local-port, remote-port = c.remote-port, local-ip = c.local-ip, remote-ip = c.remote-ip, send-next = c.send-next, recv-next = c.recv-next, send-window = c.send-window }
 
   set-send-next : TcpConnection, Integer -> TcpConnection
-  set-send-next (c) (n) = TcpConnection { state = c.state, local-port = c.local-port, remote-port = c.remote-port, local-ip = c.local-ip, remote-ip = c.remote-ip, send-next = n, recv-next = c.recv-next, send-window = c.send-window }
+  set-send-next (c) (n) = TcpConnection { state = c.state, local-port = c.local-port, remote-port = c.remote-port, local-ip = c.local-ip, remote-ip = c.remote-ip, send-next = tcp-seq-wrap n, recv-next = c.recv-next, send-window = c.send-window }
 
   set-recv-next : TcpConnection, Integer -> TcpConnection
-  set-recv-next (c) (n) = TcpConnection { state = c.state, local-port = c.local-port, remote-port = c.remote-port, local-ip = c.local-ip, remote-ip = c.remote-ip, send-next = c.send-next, recv-next = n, send-window = c.send-window }
+  set-recv-next (c) (n) = TcpConnection { state = c.state, local-port = c.local-port, remote-port = c.remote-port, local-ip = c.local-ip, remote-ip = c.remote-ip, send-next = c.send-next, recv-next = tcp-seq-wrap n, send-window = c.send-window }
 
   set-remote : TcpConnection, Integer, List Integer -> TcpConnection
   set-remote (c) (rp) (rip) = TcpConnection { state = c.state, local-port = c.local-port, remote-port = __narrow rp, local-ip = c.local-ip, remote-ip = rip, send-next = c.send-next, recv-next = c.recv-next, send-window = c.send-window }

@@ -6,6 +6,8 @@ needs none of the rest.
 **Author:** AgentGrid session, 2026-08-02, at Damian's request, after
 reading EverParse (Project Everest / Microsoft Research).
 
+**Ruling 2026-08-05 (Damian): stage 0 is APPROVED as schedulable background work.** It needs no design approval and is not seed-affecting; any lane with slack may take it. Stages 1-4 remain proposal.
+
 ---
 
 ## 1. The exposure

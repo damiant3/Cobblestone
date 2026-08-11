@@ -2,6 +2,8 @@
 
 ## Status
 
+**Ruling 2026-08-05 (Damian): RESURFACED, chained to blu's network track.** Phase 2 begins when B2-B4 (link bring-up, TCP/IP, the repository protocol) give the mesh a real socket surface; until then this design waits on that lane rather than on an owner of its own.
+
 **Phase 1 is shipped -- as a self-contained simulation.**
 `codex/foreword/engine/EdgeMesh.codex` implements the queue, Elo
 pairing, aggregate-latency region selection, fleet lifecycle, and reward

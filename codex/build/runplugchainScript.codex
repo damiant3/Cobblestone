@@ -10,64 +10,40 @@ Chapter: RunPlugChainScript
 
 Section: Parameters
 
-  plugchain-params : List ShellParam = [sh-param "Input" SptString, sh-param "Output" SptString, sh-param "Plugs" SptString, sh-param-default "MemMB" SptInt (SeInt 4096), sh-param-default "TimeoutSec" SptInt (SeInt 120)]
+  plugchain-params : List ShellParam = [sh-param "InFile" SptString, sh-param "Output" SptString, sh-param "Plugs" SptStringArray, sh-param-default "MemMB" SptInt (SeInt 4096), sh-param-default "TimeoutSec" SptInt (SeInt 120)]
 
 Section: S01 -- Preamble
 
   s01 : List ShellCmd =
-    let fail = [ScWriteError (SeRaw "\"MISSING: $Input\""), ScExit (SeInt 2)]
-    in [ScSetStrictMode, ScSetErrorStop, ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'vm-config.ps1')"), ScBlank, ScIf (SeNot (SeFileExists (SeVar "Input"))) fail []]
+    let fail = [ScRaw "[Console]::Error.WriteLine(\"MISSING: $InFile\")", ScExit (SeInt 2)]
+    in [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "RunPlug" (SeRaw "Join-Path $PSScriptRoot 'run-plug.ps1'"), ScBlank, ScIf (SeNot (SeFileExists (SeVar "InFile"))) fail []]
 
 Section: S02 -- Validate plugs
 
   s02 : List ShellCmd =
-    let plug-fail = [ScWriteError (SeRaw "\"MISSING plug CDX: $plug\""), ScExit (SeInt 2)]
+    let plug-fail = [ScRaw "[Console]::Error.WriteLine(\"MISSING plug CDX: $plug\")", ScExit (SeInt 2)]
     in [ScForEach "plug" (SeVar "Plugs") [ScIf (SeNot (SeFileExists (SeVar "plug"))) plug-fail []]]
 
-Section: S03 -- Read initial input
+Section: S03 -- Stage loop
 
-  s03 : List ShellCmd = [ScReadBytes "currentPayload" (SeVar "Input"), ScRaw "Write-Host \"[chain] Input: $($currentPayload.Length) bytes from $Input\"", ScRaw "Write-Host \"[chain] Chain: $($Plugs -join ' -> ')\"", ScAssign "plugPort" (SeInt 9100)]
+  s03-dest : List ShellCmd =
+    let last-dest = [ScAssign "dest" (SeVar "Output")]
+    in let temp-dest = [ScDotNetCallAssign "dest" "System.IO.Path" "GetTempFileName" [], ScRaw "$temps += $dest"]
+    in [ScAssign "isLast" (SeRaw "($i -eq ($Plugs.Count - 1))"), ScIf (SeVar "isLast") last-dest temp-dest]
 
-Section: S04 -- Stage loop start
+  s03-run : List ShellCmd =
+    let stage-fail = [ScRaw "[Console]::Error.WriteLine(\"FAIL: stage $($i + 1) ($($Plugs[$i])) exited $LASTEXITCODE\")", ScRaw "$temps | ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }", ScExit (SeRaw "$LASTEXITCODE")]
+    in [ScRaw "Write-Host \"[chain] stage $($i + 1)/$($Plugs.Count): $($Plugs[$i])\"", ScRaw "& pwsh -NoProfile -File $RunPlug -Plug $Plugs[$i] -InFile $stage -Output $dest -MemMB $MemMB -TimeoutSec $TimeoutSec", ScIf (SeRaw "$LASTEXITCODE -ne 0") stage-fail []]
 
-  s04 : List ShellCmd = [ScRaw "$plugCdx = $Plugs[$stage]", ScDotNetCallAssign "plugName" "System.IO.Path" "GetFileNameWithoutExtension" [SeVar "plugCdx"], ScRaw "Write-Host \"[chain] Stage $($stage + 1)/$($Plugs.Length): $plugName ($($currentPayload.Length) bytes in)\""]
+  s03 : List ShellCmd = [ScAssign "stage" (SeVar "InFile"), ScAssign "temps" (SeRaw "@()"), ScForLoop "i" (SeInt 0) (SeRaw "$i -lt $Plugs.Count") (SeRaw "$i++") [ScSequence s03-dest, ScBlank, ScSequence s03-run, ScBlank, ScAssign "stage" (SeVar "dest")]]
 
-Section: S05 -- TCP listener and VM boot
+Section: S04 -- Write final output
 
-  s05 : List ShellCmd =
-    let vm-fail = [ScRaw "$listener.Stop()", ScWriteError (SeRaw "\"FAIL: VM did not start for $plugName\""), ScExit (SeInt 4)]
-    in [ScRaw "$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $plugPort)", ScRaw "$listener.Start()", ScBlank, ScRaw "$run = Start-VmRun -Kernel $plugCdx -ConnectTimeoutSec 30 -MemMB $MemMB", ScIf (SeNot (SeVar "run")) vm-fail []]
-
-Section: S06 -- Wait for READY and accept TCP
-
-  s06 : List ShellCmd =
-    let ready-fail = [ScWriteError (SeRaw "\"FAIL: no READY from $plugName\""), ScExit (SeInt 4)]
-    in let connect-fail = [ScWriteError (SeRaw "\"FAIL: $plugName did not connect within 30s\""), ScExit (SeInt 5)]
-    in [ScAssign "conn" (SeRaw "$run.Conn"), ScIf (SeNot (SeRaw "Read-VmReady -Conn $conn -TimeoutSec 30")) ready-fail [], ScBlank, ScRaw "$deadline = [DateTime]::UtcNow.AddSeconds(30)", ScRaw "while (-not $listener.Pending()) { if ([DateTime]::UtcNow -gt $deadline) { [Console]::Error.WriteLine(\"FAIL: $plugName did not connect within 30s\"); exit 5 }; Start-Sleep -Milliseconds 50 }", ScRaw "$tcpClient = $listener.AcceptTcpClient()", ScRaw "$tcpStream = $tcpClient.GetStream()", ScRaw "$listener.Stop()", ScRaw "Write-Host \"[chain] $plugName connected\""]
-
-Section: S07 -- Send payload
-
-  s07 : List ShellCmd = [ScRaw "$tag = if ($stage -eq 0) { 1 } else { 2 }", ScRaw "$msgLen = $currentPayload.Length + 1", ScRaw "$header = [BitConverter]::GetBytes([int]$msgLen)", ScRaw "$tcpStream.Write($header, 0, 4)", ScRaw "$tcpStream.WriteByte($tag)", ScRaw "$tcpStream.Write($currentPayload, 0, $currentPayload.Length)", ScRaw "$tcpStream.Flush()", ScRaw "Write-Host \"[chain] Sent $($currentPayload.Length) bytes (tag=$tag)\""]
-
-Section: S08 -- Receive output
-
-  s08 : List ShellCmd = [ScRaw "$tcpStream.ReadTimeout = $TimeoutSec * 1000", ScRaw "$allBytes = [System.Collections.Generic.List[byte]]::new(65536)", ScRaw "$readBuf = [byte[]]::new(8192)", ScRaw "try { while ($true) { $n = $tcpStream.Read($readBuf, 0, $readBuf.Length); if ($n -le 0) { break }; for ($bi = 0; $bi -lt $n; $bi++) { $allBytes.Add($readBuf[$bi]) } } } catch {}", ScRaw "$currentPayload = $allBytes.ToArray()", ScRaw "Write-Host \"[chain] $plugName produced $($currentPayload.Length) bytes\"", ScRaw "$tcpClient.Close()"]
-
-Section: S09 -- Drain serial
-
-  s09 : List ShellCmd = [ScAssign "serialDrain" (SeLit ""), ScRaw "$dataStream = $conn.Data.GetStream()", ScRaw "$dataStream.ReadTimeout = 3000", ScRaw "$sBuf = [byte[]]::new(4096)", ScRaw "try { while ($true) { $sn = $dataStream.Read($sBuf, 0, $sBuf.Length); if ($sn -le 0) { break }; $serialDrain += [System.Text.Encoding]::UTF8.GetString($sBuf, 0, $sn) } } catch {}", ScIf (SeRaw "$serialDrain.Length -gt 0") [ScRaw "Write-Host \"[chain] $plugName serial: $($serialDrain.TrimEnd())\""] []]
-
-Section: S10 -- Finally cleanup per stage
-
-  s10 : List ShellCmd = [ScRaw "if ($listener.Server.IsBound) { try { $listener.Stop() } catch {} }", ScRaw "Close-Vm -Conn $run.Conn -Process $run.Process", ScRaw "Remove-Item -Force $run.StdoutFile, $run.StderrFile -ErrorAction SilentlyContinue"]
-
-Section: S11 -- Write final output
-
-  s11 : List ShellCmd = [ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "Output", SeVar "currentPayload"], ScRaw "Write-Host \"[chain] OK: $Output ($($currentPayload.Length) bytes)\"", ScExit (SeInt 0)]
+  s04 : List ShellCmd = [ScRaw "$temps | ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }", ScRaw "Write-Host \"[chain] OK: $Output ($((Get-Item $Output).Length) bytes)\"", ScExit (SeInt 0)]
 
 Section: Assembly
 
-  plugchain-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScForLoop "stage" (SeInt 0) (SeRaw "$stage -lt $Plugs.Length") (SeRaw "$stage++") [ScSequence s04, ScBlank, ScTry [ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08, ScBlank, ScSequence s09] [] s10], ScBlank, ScSequence s11]
+  plugchain-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04]
 
   plugchain-script : ShellScript = sh-script "run-plug-chain" "Run a chain of plug CDXs sequentially piping output from each to the next" plugchain-params plugchain-body
 

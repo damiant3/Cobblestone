@@ -21,6 +21,8 @@ param([string]$Subject = '', [string]$Kernel = '')
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path (Split-Path (Split-Path (Split-Path $PSScriptRoot))) 'build\plug-ports.ps1')
+$RecheckPort = Get-PlugPort 'recheck'
 
 . (Join-Path $PSScriptRoot '..' '..' '..' 'build' 'vm-config.ps1')
 
@@ -126,9 +128,31 @@ $mutations = @(
        From  = '(apply (name "label" (fn int-default text))'
        To    = '(apply (name "label" text)' },
 
+    # The five literal forms carry no type on the wire, so every literal
+    # argument used to reach rc-apply-arg-verdict as TyUnknown and be swallowed
+    # into silence, which the tally reads as AGREE. That was 33,922 of the
+    # 34,338 undecided argument comparisons over codex/test. rc-expr-ty now
+    # synthesizes a literal's type from what the guide publishes, and this arm
+    # is what says the synthesis DECIDES rather than merely stops abstaining:
+    # a text literal replaced by an integer one, into Bright's declared Text
+    # parameter. It scores nothing about bounds; bounds-exceeded-arg covers
+    # that through the other checker.
+    @{ Class = 'apply-arg-literal-sort'; Kind = 'apply-arg-type'
+       From  = '(text-lit "hi")'
+       To    = '(int-lit 7)' },
+
     @{ Class = 'ctor-pat-field-type'
        From  = '(ctor-pat "Dim" (subs (var-pat "k" int-default))'
        To    = '(ctor-pat "Dim" (subs (var-pat "k" text))' },
+
+    # Dim is NOT parametric, so the mutation above walks the plain path and
+    # says nothing about a sum with type arguments. Until 2026-08-07 the
+    # corpus had no parametric type at all, so every nominal-argument
+    # comparison in the checker was unpoliced -- including the arm that
+    # decides whether Box Integer may stand where Box Text is declared.
+    @{ Class = 'ctor-pat-nominal-arg'; Kind = 'ctor-pat-field-type'
+       From  = '(ctor-pat "Wrap" (subs (var-pat "k" int-default)) (ctd "Box" (args int-default))'
+       To    = '(ctor-pat "Wrap" (subs (var-pat "k" int-default)) (ctd "Box" (args text))' },
 
     @{ Class = 'ctor-pat-unknown'
        From  = '(ctor-pat "Dim" (subs'
@@ -149,6 +173,89 @@ $mutations = @(
     @{ Class = 'ctor-ref-unknown'
        From  = '(name "Dim" (fn int-default (sum "Shade"'
        To    = '(name "Fair" (fn int-default (sum "Shade"' },
+
+    # The variance arm. `boxed` is an ordinary function, not a constructor, so
+    # this cannot be caught by the ctor-ref arms the way a mutation on Wrap
+    # would be -- that was the first version of this row and it scored under
+    # ctor-ref-payload-type before the checker under test had run at all.
+    #
+    # Only the CALLEE's declared return moves; the apply node's own recorded
+    # type stays `(ctd "Box" (args int-default))`, so exactly one comparison
+    # changes and the outer unbox application is untouched.
+    #
+    # The two candidate readings genuinely disagree, which is what makes this
+    # a mutation rather than decoration: 0..10 FITS inside int-default, so
+    # under covariance of a type argument this is well typed and silent, and
+    # only invariance rejects it. It was confirmed MISSED before the rule was
+    # published and CAUGHT after.
+    @{ Class = 'variance-widened-type-arg'; Kind = 'apply-result-type'
+       From  = '(name "boxed" (fn int-default (ctd "Box" (args int-default))))'
+       To    = '(name "boxed" (fn int-default (ctd "Box" (args (int 0 10 ov-error)))))' },
+
+    # The substitution arm. MkTup2 is the one callee that reaches an apply
+    # with its type variables still on the wire: a curried call records each
+    # node's result with the substitution SO FAR applied, so the inner node
+    # carries (fn (tvar 3) (Tup2 int-default (tvar 3))) while the callee
+    # still says (fn (tvar 2) (fn (tvar 3) (Tup2 (tvar 2) (tvar 3)))).
+    #
+    # Corrupting the ARGUMENT's type is what only substitution can catch.
+    # Without substitution both comparisons involve tvar 2 and answer
+    # TyUnknown, so the whole thing is silent.
+    #
+    # It must NOT be the inner node's RESULT type that moves: that type is
+    # also the OUTER apply's callee, so corrupting it disagrees concretely
+    # one node up and is caught with or without this change. Confirmed
+    # MISSED before and CAUGHT after.
+    #
+    @{ Class = 'tvar-substitution'; Kind = 'apply-result-type'
+       From  = '(ctd "Tup2" (args (tvar 2) (tvar 3)))))) (name "n" int-default)'
+       To    = '(ctd "Tup2" (args (tvar 2) (tvar 3)))))) (name "n" text)' },
+
+    # The argument-side twin of variance-widened-type-arg, and the arm that
+    # exists because its absence let a WRONG fix score 21 of 21 on
+    # 2026-08-09. The mutation above corrupts the argument to a type of
+    # another SORT, so a checker that only asks whether the argument FITS the
+    # parameter still catches it. This one corrupts it to a bounded integer
+    # that DOES fit int-default, so the fit question answers yes and only the
+    # invariance of the tuple's type argument rejects it.
+    #
+    # That is the `fresh-row-id` shape, which is a real defect the compiler
+    # accepted, so a checker blind here is blind to the class this lane
+    # found. The rejected fix fixed the callee's variables from the site's
+    # own recorded result type; under it this mutation is SILENT and every
+    # other arm still passes.
+    @{ Class = 'bounded-arg-into-plain-slot'; Kind = 'apply-result-type'
+       From  = '(ctd "Tup2" (args (tvar 2) (tvar 3)))))) (name "n" int-default)'
+       To    = '(ctd "Tup2" (args (tvar 2) (tvar 3)))))) (name "n" (int 0 10 ov-error))' },
+
+    # A `tvar-spine-substitution` arm stood here and was RETIRED, not lost.
+    # It corrupted wrap-kids' declared parameter so a comprehension's result,
+    # arriving as (list (tvar 25)), contradicted it. That was a real arm
+    # against a compiler that recorded a lambda as the expected type it was
+    # handed. Now that lower-lambda records the lambda's ACTUAL type, the
+    # argument arrives as (list (sum "Tree")) and an ordinary comparison
+    # catches the corruption whether or not any spine substitution exists.
+    #
+    # Measured, not assumed: with rc-arg-spine forced to the empty map
+    # against the fixed compiler, that row is STILL CAUGHT while the row
+    # below goes MISSED. An arm caught for a reason it does not name is the
+    # decoration this file warns about, so it is gone. Do not re-add it
+    # without a compiler that leaves the shape uninstantiated.
+    #
+    # The arm below covers the substitution now, and it covers BOTH halves:
+    # via-if's result variable is fixed at the INNER node from the lambda's
+    # body and consumed on the OUTER node's recorded type, so the
+    # accumulation across the spine is load-bearing and not only the descent.
+    # via-if's lambda body is an `if`, which the compiler records as the bare
+    # type variable while both arms carry Tree. Those are the four sites in
+    # IR/Lowering.codex that lower-lambda's fix does not reach, because there
+    # the body's own type is a variable too and there is nothing concrete to
+    # substitute.
+    #
+    # Confirmed MISSED before and CAUGHT after, against both compilers.
+    @{ Class = 'tvar-spine-branch-arms'; Kind = 'apply-arg-type'
+       From  = '(name "hold-kids" (fn (list (sum "Tree" (args))) (sum "Tree" (args))))'
+       To    = '(name "hold-kids" (fn (list text) (sum "Tree" (args))))' },
 
     # Stage 2. A literal too large for the bounded parameter it is handed to.
     @{ Class = 'bounds-exceeded-arg'; Kind = 'bounds-exceeded'
@@ -174,6 +281,100 @@ $mutations = @(
     @{ Class = 'bounds-widened-operand'; Kind = 'bounds-exceeded'
        From  = '(binary mul-int (name "n" (int 0 10 ov-error))'
        To    = '(binary mul-int (name "n" (int 0 15 ov-error))' },
+
+    # The division twin, and it exists because rc-derive-binary had no
+    # div-int arm at all: every division abstained as bounds-underived, which
+    # is a row the guide's Static Bounds Prover table publishes and the
+    # compiler really does prove (`halve` in the corpus compiles).
+    #
+    # Division makes a range SMALLER, so the mutation cannot work the way the
+    # mul arm's does. Widening the DIVIDEND is what pushes the quotient past
+    # the declared return: 0..60 halved is 0..30 against a declared 0..10.
+    # Without the arm the derivation answers unknown and the verdict is an
+    # UNSUPPORTED bounds-underived, which is not the expected kind, so this is
+    # MISSED before and CAUGHT after.
+    #
+    # The unmutated corpus is the other half and it guards the ARITHMETIC
+    # rather than the presence of the arm. `halve`'s div-int node records its
+    # LEFT OPERAND type (int 0 20), not the true quotient, so a derivation
+    # that passed the dividend through unchanged would answer 0..20 against a
+    # declared 0..10 and turn the control DISAGREE. Getting the arm merely
+    # present is not enough to keep the control green.
+    #
+    # Sabotage confirmed, 2026-08-09, and the result is the reason to read
+    # this: with the derivation replaced by a pass-through the control fails
+    # with exactly `derived range 0..20 which does not fit the declared
+    # 0..10` AND EVERY MUTATION STILL SCORES, 22 of 22. The kill-rate alone
+    # cannot tell correct division from a pass-through, because both derive
+    # SOMETHING and every arm here is planted to exceed either way. The
+    # control is the only row that separates them.
+    @{ Class = 'bounds-widened-dividend'; Kind = 'bounds-exceeded'
+       From  = '(binary div-int (name "n" (int 0 20 ov-error))'
+       To    = '(binary div-int (name "n" (int 0 60 ov-error))' },
+
+    # The module-constant row, and the largest of R4's bounds classes: 96 of
+    # the compiler's 101 bounds-underived findings are a named cdx-* code
+    # reaching one of four diagnostic constructors.
+    #
+    # The mutation moves the CONSTANT'S DEFINITION, not the call site. On the
+    # wire the argument is `(name "cdx-sample" int-default)` and its declared
+    # type is a plain Integer, which carries the full i64 band, so nothing at
+    # the call site distinguishes 200 from 900. Only a checker that resolves
+    # the name to its defining literal can tell, which is exactly the
+    # capability under test: without it the derivation answers unknown and
+    # the verdict is an UNSUPPORTED bounds-underived, not the expected kind.
+    # Confirmed MISSED before and CAUGHT after.
+    @{ Class = 'bounds-widened-constant'; Kind = 'bounds-exceeded'
+       From  = '(def "cdx-sample" "RecheckSubject" (params) int-default (int-lit 200)'
+       To    = '(def "cdx-sample" "RecheckSubject" (params) int-default (int-lit 900)' },
+
+    # THIS ARM IS NOT A SENSITIVITY GAIN AND IS NOT MEANT TO BE. It is the
+    # pin under a REMOVAL: stage 1 stopped reporting apply-arg-int-bounds,
+    # on the ground that an integer argument is admitted by its proven range
+    # and RecheckBounds is what decides that. The whole justification for
+    # that silence is that the bounds stage really does catch an argument
+    # whose range exceeds the parameter, so it is asserted here instead of
+    # assumed, and it is CAUGHT both before and after the removal.
+    #
+    # An abstention is not a kill, so removing one cannot lower the score
+    # and the kill-rate can never notice the removal on its own. No arm in
+    # this file has ever expected the kind apply-arg-int-bounds. If stage 2
+    # coverage is ever weakened, this row is what goes red.
+    @{ Class = 'bounds-widened-field-arg'; Kind = 'bounds-exceeded'
+       From  = '"level/0" (int 0 200 ov-error)'
+       To    = '"level/0" (int 0 900 ov-error)' },
+
+    # A `when` is the match form of `if` and carries the same union rule.
+    # The table published the `if` row and never the `when` row, so every
+    # match abstained; skip-newlines-pos in Syntax/ParserCore.codex is the
+    # real definition that needs it.
+    #
+    # The arms are a parameter declared 0..20 and the literal 5, so the union
+    # is 0..20 and narrowing the declared return to 0..10 exceeds it. Without
+    # the arm the derivation answers unknown and the verdict is an UNSUPPORTED
+    # bounds-underived, so this is MISSED before and CAUGHT after. 0..10 also
+    # excludes the 0..20 arm on its own, which is deliberate: an implementation
+    # that took only the FIRST arm would still be caught, and one that took
+    # only the literal arm would not, which the control covers by requiring
+    # the unmutated union to fit 0..30.
+    @{ Class = 'bounds-widened-match-arm'; Kind = 'bounds-exceeded'
+       From  = '(def "arm-pick" "RecheckSubject" (params (param "p" (sum "Pick" (args))) (param "n" (int 0 20 ov-error))) (fn (sum "Pick" (args)) (fn (int 0 20 ov-error) (int 0 30 ov-error)))'
+       To    = '(def "arm-pick" "RecheckSubject" (params (param "p" (sum "Pick" (args))) (param "n" (int 0 20 ov-error))) (fn (sum "Pick" (args)) (fn (int 0 20 ov-error) (int 0 10 ov-error)))' },
+
+    # Five builtins carry a range their SIGNATURE does not: all are declared
+    # to return a plain Integer and the bound is a structural fact about
+    # heap-backed quantities under 4 GB. The compiler holds the same five in
+    # builtin-return-range; the table did not publish them, so pitch in
+    # Core/PhaseAllocator.codex abstained.
+    #
+    # The discriminating pair is in the guide: `let p = size in p` at this
+    # same declared return is CDX2051 while `let p = __heap-save in p` is
+    # clean, so the let hides nothing and the builtin is what carries the
+    # range. Narrowing the declared return to 0..100 makes 0..4294967295
+    # exceed it. MISSED before, CAUGHT after.
+    @{ Class = 'bounds-widened-heap-builtin'; Kind = 'bounds-exceeded'
+       From  = '(def "heap-mark" "RecheckSubject" (params (param "z" int-default)) (fn int-default (int 0 4294967295 ov-error))'
+       To    = '(def "heap-mark" "RecheckSubject" (params (param "z" int-default)) (fn int-default (int 0 100 ov-error))' },
 
     # Stage 3. The declared effect removed from a signature whose body still
     # performs it. announce's body calls print-line-uni, which carries
@@ -217,7 +418,7 @@ function Invoke-Recheck([string]$IrPath) {
         $proc = Start-Process -FilePath $script:CodexVmBin `
             -ArgumentList @('-kernel', $PlugCdx, '-mem', '3072', '-headless') `
             -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
-        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 9100)
+        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $RecheckPort)
         $listener.Start()
         $deadline = (Get-Date).AddSeconds(30)
         while (-not $listener.Pending() -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }
@@ -230,9 +431,8 @@ function Invoke-Recheck([string]$IrPath) {
         $ns.WriteByte(1)
         $off = 0
         while ($off -lt $data.Length) {
-            $n = [Math]::Min(4096, $data.Length - $off)
+            $n = [Math]::Min(65536, $data.Length - $off)
             $ns.Write($data, $off, $n); $ns.Flush(); $off += $n
-            if ($off -lt $data.Length) { Start-Sleep -Milliseconds 20 }
         }
         $ns.ReadTimeout = 300000
         $resp = [System.Collections.Generic.List[byte]]::new()
@@ -258,7 +458,14 @@ Write-Host $controlOut
 # Two stages report two summary lines, so "DISAGREE 0" appearing anywhere is
 # not the question: a clean stage 1 beside a disagreeing stage 2 would match it
 # and pass a control that had failed. Finding lines begin with the verdict.
-$controlOk = -not ($controlOut -match '(?m)^DISAGREE ')
+#
+# The STAGE requirement is not belt and braces. A plug that dies answers an
+# EMPTY string, an empty string contains no DISAGREE line, and the control
+# therefore PASSED while every mutation below reported MISSED -- a 0 per cent
+# kill rate presented as a working harness. That happened here on 2026-08-09
+# and cost a cycle before the silence was recognised as a crash rather than
+# twenty honest misses.
+$controlOk = (-not ($controlOut -match '(?m)^DISAGREE ')) -and ($controlOut -match '(?m)^STAGE ')
 if (-not $controlOk) {
     Write-Host 'CONTROL FAILED: the rechecker disagrees with valid IR. Every kill below is suspect.'
 }
@@ -300,6 +507,14 @@ foreach ($m in $mutations) {
     $wantKind = if ($m.ContainsKey('Kind')) { $m.Kind } else { $class }
     $sawClass = $out -match ("DISAGREE .*\[" + [regex]::Escape($wantKind) + "\]")
     $sawAny   = $out -match '(?m)^DISAGREE '
+    # A dead plug answers nothing, which is not a miss and must not be counted
+    # as one. Distinguish it here or a crash reads as a checker that is merely
+    # insensitive.
+    if (-not ($out -match '(?m)^STAGE ')) {
+        $rows.Add([pscustomobject]@{ Class = $class; Result = 'PLUG-DIED' })
+        Write-Host ("  {0,-24} PLUG-DIED (no answer -- not a miss)" -f $class)
+        continue
+    }
     if ($sawClass) {
         $caught++
         $rows.Add([pscustomobject]@{ Class = $class; Result = 'CAUGHT' })

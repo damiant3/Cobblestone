@@ -18,11 +18,6 @@ Chapter: TlsEndpoint
  share parser, the hello bodies. DTLS 1.3 inherits those from TLS 1.3
  unchanged, so this cites them rather than copying them.
 
- It is PURE: records in, records out, no socket and no clock. A whole
- authenticated handshake between a client and a server runs as an ordinary
- battery sample by shuttling the emitted records between two endpoints,
- exactly the way the DTLS loopback shuttles datagrams.
-
  What TLS-over-TCP adds over the DTLS endpoint, and why this is a separate
  chapter rather than a reuse of that one: the server flight after the
  ServerHello is ENCRYPTED under the handshake traffic keys (the DTLS
@@ -32,17 +27,6 @@ Chapter: TlsEndpoint
  application bytes. There is no cookie, no HelloRetryRequest-for-DoS and no
  retransmission: a reliable stream has none of the datagram problems those
  solve.
-
- AUTHENTICATION is Ed25519 X.509 only (RFC 8410), opt-in for the client via
- trust anchors. A client given anchors REFUSES to finish a handshake whose
- server did not present a chain that walks to one of them and sign the
- transcript -- which is what stops an active man in the middle. This
- authenticates a fleet whose CA you run; a commercial CA chain (RSA/ECDSA)
- cannot be validated, because the tree owns no such signature primitive.
-
- To tls-ep-hello gives TlsEpStep, starting a client and emitting its ClientHello.
- To tls-ep-recv gives TlsEpStep, feeding one record in and getting records out.
- To tls-ep-send-app gives TlsEpStep, encrypting one application record.
 
  We say:
 
@@ -83,19 +67,6 @@ Section: Types
 
 Section: Construction
 
- A client carries its X25519 private key, a 32-byte handshake random, the
- trust anchors it will accept, the calendar time (14 ASCII digits) it
- checks certificate validity against, and THE NAME IT DIALLED. Entropy and
- clock enter from the caller and are never invented here.
-
- The name is a parameter and not a setter, and that is the whole point of
- this signature. It used to be optional -- `tls-ep-expect-peer` set it
- after the fact, an unset name meant "anything matches", and every caller
- in the tree left it unset, so a certificate from any trusted authority
- authenticated for every host. An optional security check that defaults to
- permissive is not a check; it is a place where one could have gone. Made
- required, the type checker visits every caller and asks the question.
-
  It is ASCII, not CCE: it is compared against bytes out of a certificate,
  and a certificate holds ASCII. Convert at the boundary.
 
@@ -108,9 +79,6 @@ Section: Construction
             tep-anchors = anchors, tep-cal-now = cal-now,
             tep-peer-key = X509Key { xk-alg = KeyUnknown, xk-bytes = [], xk-mod = [], xk-exp = [] }, tep-auth-done = False,
             tep-expected-peer = expected, tep-done = False, tep-app-in = [] }
-
- A server presents a certificate chain (leaf first) and the Ed25519 private
- key that matches the leaf, and signs the transcript with it.
 
   tls-ep-server-new : List Integer, List Integer, List (List Integer), List Integer, List Integer -> TlsEp
   tls-ep-server-new (priv) (random) (chain) (sign-priv) (sign-pub) =
@@ -243,10 +211,6 @@ Section: Client Receive
   tep-fold : TlsEp, Integer, List Integer -> TlsEpStep
   tep-fold (ep) (t) (body) =
     TlsEpStep { tes-ep = __record-set ep "tep-transcript" ((ep.tep-transcript) & tls13-msg-transcript t body), tes-out = [] }
-
- The Certificate message: parse the chain, walk it to an anchor at the
- client's calendar time, and check the leaf's subject against the pinned
- peer if one is set. On success keep the leaf's key.
 
  THE TRANSCRIPT IS A RECORD OF WHAT WAS RECEIVED, NOT OF WHAT WAS
  BELIEVED. Both this message and CertificateVerify fold unconditionally.
@@ -398,12 +362,6 @@ Section: Server Receive
     when dtls-ch-key-share (tep-msg-body msg)
       is None -> tep-idle ep
       is Just (peer) -> tep-server-flight ep (tep-msg-body msg) peer
-
- The whole server flight in one place: ServerHello in the clear, then
- EncryptedExtensions, Certificate, CertificateVerify and Finished each in
- its own record under the server handshake key. The application secrets are
- derived over the transcript through the server Finished -- the same hash
- the client's Finished will be checked against.
 
   tep-server-flight : TlsEp, List Integer, List Integer -> TlsEpStep
   tep-server-flight (ep) (ch-body) (peer) =

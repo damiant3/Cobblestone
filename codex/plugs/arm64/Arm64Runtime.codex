@@ -1,10 +1,6 @@
 Chapter: Arm64 Runtime
   cites Foreword chapter Arm64Encoder
 
- Runtime helper functions emitted at the start of ARM64 codegen.
- Each returns the bytes of an ARM64 function body. The codegen
- records the function offset and appends the bytes.
-
  IMPORTANT: register 31 means SP in arm64-mov/arm64-add-imm (the
  instruction encoding aliases). To load zero, use arm64-movz rd 0 0
  instead of arm64-mov rd 31 (which loads SP, not XZR).
@@ -687,14 +683,6 @@ Section: Exception Vector Table
  an undefined `hvc` trapping to entry 4, and it cost 238 tests before anyone
  could see what it was.
 
- Each entry now loads its own index into x9 and branches to the shared
- handler emitted after the runtime helpers. The branch cannot be built here
- because the handler's address is not known until everything between has
- been emitted, so slot 1 goes out as a NOP and `a64-emit-runtime` patches
- all sixteen once it knows. The remaining 30 slots stay `WFI + B .self`, so
- an entry reached with the handler unpatched parks exactly as before rather
- than falling into the next entry.
-
  The index tells you which exception it was: 0-3 are current EL with SP0,
  4-7 current EL with SPx (4 is the synchronous one an ordinary fault takes),
  8-11 lower EL running AArch64, 12-15 lower EL running AArch32.
@@ -715,8 +703,6 @@ Section: Exception Vector Table
 
   a64-rt-vector-table : List Integer
   a64-rt-vector-table = a64-rt-vt-build 0 []
-
- Slot 1 of entry i, in instructions from the start of the table.
 
   a64-rt-vt-branch-slot : Integer -> Integer
   a64-rt-vt-branch-slot (idx) = idx * 32 + 1
@@ -863,11 +849,6 @@ Section: MMIO Helpers
   a64-rt-poke-qword =
    arm64-add 0 0 1 & arm64-str 2 0 0 & arm64-movz 0 0 0 & arm64-ret
 
- tag-equal reads the constructor tag word at [p+0] of both variant values
- and answers their equality without touching a field. `cset x0, eq` is
- spelled inline here rather than through `a64-csinc-eq`, which lives in a
- later chapter.
-
   a64-rt-tag-equal : List Integer
   a64-rt-tag-equal =
    arm64-ldr 2 0 0 & arm64-ldr 3 1 0 & arm64-cmp 2 3
@@ -957,20 +938,6 @@ Section: list-set-at (a0=list, a1=index, a2=value -> the same list)
  implements in five instructions. Element i lives at [list + 8 + i*8],
  so the whole operation is a shift, an add, a store and a return; x0
  already holds the list, so nothing needs to move into place.
-
- This used to allocate a fresh list and copy every element into it,
- returning the copy. That is a different language. Code that mutates a
- list for its effect and returns something else lost every write --
- Ed25519's `fe-carry` is what exposed it, calling `fe-carry-pass` for
- the carry it hands back while the reduced limbs go into the list it
- passed in. Under copy semantics those limbs landed in copies that
- were discarded, so carry propagation vanished. It is invisible on
- small values and wrong on real ones, which is why `fe-mul` of one by
- one looked correct while `ge-double` of the base point did not.
-
- The copy also cost what it should not: an allocation and an O(n) copy
- for every single element write, in loops that set sixteen limbs at a
- time.
 
   a64-rt-list-set-at : List Integer
   a64-rt-list-set-at =
@@ -1813,9 +1780,6 @@ Section: Unicode Conversion
 
 Section: Boot Tail
 
- The last of `__start`: start `opening`, then park. Two shapes, chosen by
- the mode line's `smp` flag.
-
  The multi-core shape asks PSCI to start core 1 at the AP stub below,
  through an `hvc #0` whose immediate is patched to the stub's offset. That
  instruction is only legal where PSCI answers it. QEMU virt does; the
@@ -1823,15 +1787,6 @@ Section: Boot Tail
  the UART stays silent for the whole run. That is what shipping this
  sequence unconditionally cost: not the SMP test, but every other ARM64
  program on Renode.
-
- This used to say the undefined instruction trapped to a vector entry and
- parked on its `WFI + B .self`. It cannot have. Renode enters at EL3 and
- `__start` set `VBAR_EL1` only, so no table was installed on that board at
- all and no entry was reachable to park on. The silence was real and
- opt-in was the right fix; the step in between was invented.
-
- The single-core shape is the same tail without the PSCI call or the AP
- stub, and it is what a program gets unless it asks for a second core.
 
   a64-emit-smp-boot : A64State -> A64State
   a64-emit-smp-boot (st) =
@@ -1860,15 +1815,7 @@ Section: Boot Tail
 
 Section: Fault Handler
 
- What every vector entry branches to. It runs with x9 holding the entry
- index and prints one line to the PL011 before parking:
-
    !A64FAULT V=4 ESR=0000000002000000 ELR=0000000040200018 FAR=0000000000000000
-
- Then `WFI + B .self`, the same park as before -- the point is not to
- recover, it is to say what happened. Nothing here calls a runtime helper
- and nothing here touches the stack, because a handler that needs either
- one is a handler that faults again on the faults worth reading.
 
  x19 keeps the index because the character writer clobbers x9. x10 is the
  UART, x11 the value being printed, x12-x14 the hex loop.
@@ -1920,12 +1867,6 @@ Section: Fault Handler
  wires an EL3 timer). Reading the EL1 copy at EL3 answers about a level the
  fault did not happen at. So read the EL once into x20 and dispatch.
 
- That difference is not cosmetic. It is why the vector table was inert on
- Renode for its whole existence -- `__start` set VBAR_EL1 and nothing else,
- so at EL3 the table was never installed and a fault took the reset
- behaviour instead of an entry. Any diagnosis that assumed a fault reached
- an entry on Renode was reasoning about a table the hardware was ignoring.
-
   a64-rt-fault-mrs-el : List Integer, Integer, Integer -> List Integer
   a64-rt-fault-mrs-el (i) (dst) (base) =
    let i = a64-rt-emit i (arm64-cmp-imm 20 3)
@@ -1974,10 +1915,6 @@ Section: Fault Handler
    in let i = a64-rt-emit i a64-rt-wfi
    in a64-rt-emit i (arm64-b (-4))
 
- Install the table at whatever level we are actually running at. x9 holds
- the table address on entry and must survive; x11 and x12 are scratch and
- are reloaded by the caller straight after.
-
   a64-rt-write-vbar-current-el : List Integer
   a64-rt-write-vbar-current-el =
    let i = a64-rt-emit [] (arm64-mrs 11 sysreg-currentel)
@@ -2004,8 +1941,6 @@ Section: Fault Handler
    in let i = a64-patch-insn-raw i e2 (arm64-b-cond arm64-cond-eq ((l2 - e2) * 4))
    in let i = a64-patch-insn-raw i d1 (arm64-b ((done - d1) * 4))
    in a64-patch-insn-raw i d2 (arm64-b ((done - d2) * 4))
-
- Point all sixteen entries at the handler now that its address is known.
 
   a64-rt-patch-vectors : A64State, Integer, Integer -> A64State
   a64-rt-patch-vectors (st) (handler) (idx) =

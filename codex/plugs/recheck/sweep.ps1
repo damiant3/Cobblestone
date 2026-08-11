@@ -13,14 +13,17 @@
 # kill-rate.ps1 in the same change -- a fix that reduces disagreements is
 # exactly the kind that can silently destroy sensitivity.
 #
-# PORT 9100 IS SHARED BY THE WHOLE FLEET. Every plug's run script binds it on
-# loopback, $env:TEMP is per-user, and four agents run from separate
-# workspaces on one box. A guest reaches the host at 10.0.2.2 through its own
-# NAT, so another agent's plug VM can connect to whichever listener owns the
-# port. This script refuses to start when the port is already held rather than
-# reporting someone else's plug as its own result (L-SHARED). It cannot close
-# the narrower window where another agent starts a plug run mid-sweep, and
-# says so rather than implying otherwise.
+# THE PORT IS THE RECHECK PLUG'S ALONE as of 2026-08-06, from the table in
+# build/plug-ports.ps1. It used to be 9100 for every plug in the tree, and the
+# paragraph here used to describe what that cost: a guest reaches the host at
+# 10.0.2.2 through its own NAT, so another agent's plug VM could connect to
+# whichever listener owned the shared port and this sweep could report someone
+# else's plug as its own result (L-SHARED). Distinct ports close that for two
+# agents running DIFFERENT plugs, which is every case but one.
+#
+# The refusal below still matters and is not a formality: two agents running
+# THIS plug still contend, and the window where one starts mid-sweep is still
+# open. Refusing beats answering with another run's result.
 #
 #   pwsh codex/plugs/recheck/sweep.ps1                      # codex/test, capped
 #   pwsh codex/plugs/recheck/sweep.ps1 -Dir codex/foreword/core -Limit 40
@@ -31,20 +34,33 @@ param(
     [int]$Limit = 25,
     [string]$Kernel = '',
     [string]$Passes = 'none',
-    [string]$Report = ''
+    [string]$Report = '',
+    # Sharding. One shard is the whole sweep and behaves exactly as before.
+    # sweep-all.ps1 runs N of these at once, each with its own host port, which
+    # codex-vm's -natmap bridges to the port the plug dials.
+    [int]$Shard = 0,
+    [int]$Shards = 1,
+    [int]$HostPort = 0
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..' '..' '..' 'build' 'vm-config.ps1')
+. (Join-Path $PSScriptRoot '..' '..' '..' 'build' 'plug-ports.ps1')
+$GuestPort = Get-PlugPort 'recheck'
+# The plug dials $GuestPort no matter what; only the HOST side moves.
+$RecheckPort = if ($HostPort -gt 0) { $HostPort } else { $GuestPort }
 
 $Repo    = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
 $PlugDir = (Resolve-Path $PSScriptRoot).Path
 $PlugCdx = Join-Path $PlugDir 'build-output\recheck-plug.cdx'
 $WorkDir = Join-Path $PlugDir 'build-output\sweep'
 if (-not $Kernel) { $Kernel = Join-Path $Repo 'seed\Codex.cdx' }
-if (-not $Report) { $Report = Join-Path $WorkDir 'sweep.log' }
+if (-not $Report) {
+    $Report = if ($Shards -gt 1) { Join-Path $WorkDir "sweep.shard$Shard.log" }
+              else { Join-Path $WorkDir 'sweep.log' }
+}
 
 if (-not (Test-Path -PathType Leaf $PlugCdx)) {
     [Console]::Error.WriteLine("MISSING: $PlugCdx -- run codex/plugs/recheck/build.ps1 first")
@@ -54,10 +70,10 @@ New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
 
 # Refuse a held port rather than answer with another agent's run.
 try {
-    $probe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 9100)
+    $probe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $RecheckPort)
     $probe.Start(); $probe.Stop()
 } catch {
-    [Console]::Error.WriteLine("REFUSING: TCP 9100 is already held on this box.")
+    [Console]::Error.WriteLine("REFUSING: TCP $RecheckPort is already held on this box.")
     [Console]::Error.WriteLine("  Another agent's plug run owns it. Results would be theirs, not yours.")
     exit 3
 }
@@ -67,12 +83,46 @@ $files = Get-ChildItem (Join-Path $Repo $Dir) -Filter '*.codex' -File |
 if ($Limit -gt 0) { $files = $files | Select-Object -First $Limit }
 if (-not $files) { [Console]::Error.WriteLine("no .codex files under $Dir"); exit 1 }
 
+# Longest-processing-time-first, dealt round-robin across shards. Cost is wildly
+# uneven -- 42 per cent of a full sweep sat in 8 of 428 chapters (2026-08-06) --
+# so alphabetical order would leave one worker holding a 450 s chapter after the
+# others had finished, and the makespan would be that chapter plus its queue.
+# The estimate is the previous run's .ir if there is one (the real number) and
+# the source size otherwise, which is only used to seed the very first run.
+if ($Shards -gt 1) {
+    $ordered = @($files | Sort-Object -Descending {
+        $prev = Join-Path $WorkDir "$($_.BaseName).ir"
+        if (Test-Path $prev) { (Get-Item $prev).Length } else { $_.Length }
+    })
+    # Greedy least-loaded, not round-robin. Dealing the size-sorted list
+    # k-by-k gives shard 0 the largest item in EVERY block of k, so shard 0
+    # ends up with strictly the heaviest queue: measured 2026-08-06, 8-wide
+    # round-robin ran 1,291 s while the ideal split of the same work is about
+    # 600 s. Assigning each chapter to whichever shard is lightest so far is
+    # the standard LPT bin-pack and it is deterministic, so every shard
+    # computes the identical assignment without talking to the others.
+    $load = New-Object double[] $Shards
+    $mine = [System.Collections.Generic.List[object]]::new()
+    foreach ($cand in $ordered) {
+        $prev = Join-Path $WorkDir "$($cand.BaseName).ir"
+        $cost = if (Test-Path $prev) { [double](Get-Item $prev).Length } else { [double]$cand.Length }
+        $pick = 0
+        for ($j = 1; $j -lt $Shards; $j++) { if ($load[$j] -lt $load[$pick]) { $pick = $j } }
+        if ($pick -eq $Shard) { $mine.Add($cand) }
+        $load[$pick] += $cost
+    }
+    $files = $mine.ToArray()
+    if ($files.Count -eq 0) { [Console]::Error.WriteLine("shard $Shard of $Shards is empty"); exit 0 }
+}
+
 function Invoke-Plug([string]$IrPath) {
     $stderrFile = [System.IO.Path]::GetTempFileName()
     $proc = $null
     try {
+        $vmArgs = @('-kernel', $PlugCdx, '-mem', '3072', '-headless')
+        if ($RecheckPort -ne $GuestPort) { $vmArgs += @('-natmap', "${GuestPort}:${RecheckPort}") }
         $proc = Start-Process -FilePath $script:CodexVmBin `
-            -ArgumentList @('-kernel', $PlugCdx, '-mem', '3072', '-headless') `
+            -ArgumentList $vmArgs `
             -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
         # Binding the SAME port once per chapter in ONE process is what the
         # single-shot scripts never do, so only the sweep meets TIME_WAIT: the
@@ -88,7 +138,7 @@ function Invoke-Plug([string]$IrPath) {
         $listener = $null
         for ($try = 0; $try -lt 40; $try++) {
             try {
-                $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 9100)
+                $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $RecheckPort)
                 $listener.Start()
                 break
             } catch {
@@ -106,11 +156,24 @@ function Invoke-Plug([string]$IrPath) {
         $data = [System.IO.File]::ReadAllBytes($IrPath)
         $ns.Write([BitConverter]::GetBytes([int]($data.Length + 1)), 0, 4)
         $ns.WriteByte(1)
+        # The 20 ms sleep per 4 KB chunk was not load-bearing: measured
+        # 2026-08-06 against tls-cert (1.13 MB), 4096/20ms and 65536/0ms return
+        # the same 204 reply bytes and the same three STAGE lines.
+        # build/run-plug.ps1, which every transpiler plug goes through, has
+        # always sent the whole frame in one Write with no sleep at all.
+        #
+        # DO NOT EXPECT THIS TO BE FAST. Chunk count times 20 ms says the sleep
+        # was 28 per cent of a full sweep, and that arithmetic is a trap: the
+        # guest parses while it receives, so the sleep overlapped real work.
+        # Removing it saved 3.6 s of 13.8 s on tls-cert and NOTHING on the
+        # 54 MB ui-orchestrator-test payload, which still takes 286 s to send
+        # because the wire is bound by what the guest can consume (~190 KB/s),
+        # not by the pacing. Wall clock on this sweep is a parallelism problem,
+        # not a pacing one.
         $off = 0
         while ($off -lt $data.Length) {
-            $n = [Math]::Min(4096, $data.Length - $off)
+            $n = [Math]::Min(65536, $data.Length - $off)
             $ns.Write($data, $off, $n); $ns.Flush(); $off += $n
-            if ($off -lt $data.Length) { Start-Sleep -Milliseconds 20 }
         }
         $ns.ReadTimeout = 300000
         $resp = [System.Collections.Generic.List[byte]]::new()
@@ -226,6 +289,11 @@ Write-Host ("  chapters swept         : {0}" -f $swept)
 Write-Host ("  skipped, did not build : {0}" -f $skipped)
 Write-Host ("  excluded by sidecar    : {0}" -f $excluded)
 Write-Host ("  plug died on payload   : {0}" -f $plugDied)
+if ($plugDied -gt 0) {
+    Write-Host ("      NOT A FLAKE: the plug guest answers OUT OF MEMORY above ~1.13 MB of IR")
+    Write-Host ("      and those {0} chapters are UNCHECKED, not clean. Largest answered" -f $plugDied)
+    Write-Host ("      2026-08-06 was 1,128,053 bytes; every payload above it died.")
+}
 Write-Host ("  definitions (stage 1)  : {0}" -f $totDefs)
 Write-Host ("  chapters disagreeing   : {0}" -f $filesWithDisagree)
 Write-Host ("  verdicts across stages : AGREE {0}  DISAGREE {1}  UNSUPPORTED {2}" -f $totAgree, $totDis, $totUns)

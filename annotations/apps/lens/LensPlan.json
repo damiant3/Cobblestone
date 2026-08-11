@@ -1,0 +1,146 @@
+[
+  {
+    "target": "chapter:LensPlan",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The planner turns a LensQuery into a grain-correct relational plan. The v1 rule is structural, per the design's fan-out section: every measure is aggregated at the grain of its own home table before any join. A measure whose home table already carries every requested dimension aggregates directly, with no join at all. A measure that must reach a dimension on another table first groups its home table by the join keys, then equi-joins the already-aggregated rows to the dimension tables, then re-aggregates by the dimension columns. Sum re-aggregates as sum, count as a sum of counts, min as min, max as max. An average is never re-aggregated: the planner decomposes it into a sum and a count over the same column, both at the home grain, carries the pair through every join and re-aggregation as sums, and lens-run divides the pair once after the last combine. The division is integer division in v1, the same truncation the engine's own average applies. Fan-out never reaches an aggregate because nothing is summed after a row can be duplicated.",
+    "thread": null
+  },
+  {
+    "target": "chapter:LensPlan",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A dimension's table is reached by a chain of declared many-to-one joins walked from the measure's home table, up to four hops deep. A chain of many-to-one hops is grain-safe because every hop maps many rows to one, so the aggregated home rows never multiply on the way to the dimension. A table no chain reaches earns diagnostic 23, and a table two distinct chains reach earns diagnostic 28, because the planner refuses to pick a join path silently.",
+    "thread": null
+  },
+  {
+    "target": "chapter:LensPlan",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Query filters are equality tests on physical columns. A filter lands on every scan of the table it names, under every aggregation, therefore a filter always applies at raw-row grain: a filter on a measure's home table restricts the rows that sub-aggregation sums, and a filter on a dimension table restricts the dimension rows every sub-plan joins against. A filter naming a table or column outside the model's vocabulary, or a table the query never touches, is rejected with diagnostic 27.",
+    "thread": null
+  },
+  {
+    "target": "chapter:LensPlan",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Result columns are physical names: each dimension contributes its column name and each measure contributes its measure name as the aggregate alias. An average travels through the plan as two columns, the measure name suffixed __sum and __cnt, and lens-run replaces the pair with the single measure-name column holding their quotient, so a caller sees exactly the columns it asked for. A measure named to collide with another measure's __sum or __cnt spelling would break the pairing; v1 accepts that assumption rather than police names. Rows sort ascending by the dimension columns so results are deterministic, and a positive limit truncates after the sort. A limit of zero means no limit.",
+    "thread": null
+  },
+  {
+    "target": "section:Plan Result",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "lens-plan answers with a plan or with diagnostics, never both. When plan-ok is False the plan-op field holds an inert placeholder scan and only plan-diags speaks. The plan-avgs field names the average measures whose sum-and-count column pairs lens-run must divide after execution; it is empty whenever the query names no averages. Planner diagnostics draw from code 20 upward; codes 1 through 7 belong to the model validator. The table:",
+    "thread": null
+  },
+  {
+    "target": "type:LensPlanResult",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "code 20 means the query names a lens this model does not declare. code 21 means a queried dimension name is not in the model. code 22 means a queried measure name is not in the model. code 23 means no chain of many-to-one joins reaches a dimension's table from a measure's home table within four hops. code 24 means the query names no measures. code 25 is retired: it refused average measures that would need re-aggregation across a join. The planner now decomposes every average into a sum and a count at the home grain, re-aggregates the pair losslessly, and lens-run divides after the last combine, therefore the code is never issued again. code 26 is retired: it refused several measures with several dimensions when the combine step was a single-column equi-join. The combine step now equi-joins on the full requested-dimension column set, therefore the shape plans correctly and the code is never issued again. code 27 means a query filter names a table or column this query cannot filter: the table is not declared, the column is not part of the model's vocabulary for that table, or the table takes no part in the query. code 28 means more than one distinct chain of many-to-one joins reaches a dimension's table from a measure's home table. The message names two of the paths; the modeler must remove a join or query a different shape, because the planner will not pick between paths silently.",
+    "thread": null
+  },
+  {
+    "target": "section:Name Resolution",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Query names resolve against the model's declared dimensions and measures. Every unknown name earns its own diagnostic so the analyst sees the whole damage in one pass.",
+    "thread": null
+  },
+  {
+    "target": "section:Join Paths",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The planner trusts chains of declared many-to-one joins walked out of a measure's home table. lp-find-paths enumerates the distinct chains from one table to another by a depth-first walk over the model's join list: each step follows a many-to-one join out of the current table, the visited list forbids returning to a table so no walk cycles, and the depth counter caps a chain at four hops. The walk stops collecting at two paths, because one path is a plan and two is diagnostic 28 no matter how many more exist; the accumulator never grows past two, so the search is bounded by the join list, the depth cap, and the path cap together. A path is the list of join indices walked, in order, and lp-render-path spells one out as the table names it passes through.",
+    "thread": null
+  },
+  {
+    "target": "section:Grain Checking",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The grain checker refuses every query the builder below cannot plan correctly. It walks each measure against each requested dimension: a dimension on the measure's own table is always fine, a dimension whose table exactly one many-to-one chain reaches is fine, a table no chain reaches is code 23, and a table two chains reach is code 28 with both offending paths named, so the analyst sees the ambiguity spelled out instead of a silently chosen join.",
+    "thread": null
+  },
+  {
+    "target": "section:Aggregate Mapping",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The model's Lens-prefixed aggregation kinds map onto the relational algebra's aggregate functions twice: once at the home grain over the raw column, and once at re-aggregation time over the alias the first pass produced. Count re-aggregates as a sum of per-key counts. An average never reaches either map: lp-agg-specs decomposes it into a sum aliased with the __sum suffix and a count aliased with the __cnt suffix, and lp-reagg-specs re-aggregates both aliases as sums, which is lossless where re-aggregating an average is not. The AggAvg arms below are therefore unreachable and exist so the matches stay total.",
+    "thread": null
+  },
+  {
+    "target": "section:Bucketed Dimensions",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A bucketed dimension reads its date column through a calendar bucket, and its effective column everywhere in the plan is an alias: the physical column name, two underscores, and the bucket word, so a month bucket over order-date answers to order-date__month. The alias is what group keys, display columns, combine-join columns, and sort columns carry, because the bucketed value is a new column the derive computes, not a reading of the old one. The derive itself sits directly on the filtered scan of the dimension's home table, under every aggregation, so bucket values exist at raw-row grain before any group or join touches them: a home-table bucket is derived under the measure's home-grain group, and a foreign bucket is derived on the dimension table's own scan before the equi-join reaches it. Filters keep naming physical columns and sit under the derive, which is harmless because the derive only appends columns. Declaring a bucket is the modeler's assertion the column holds Unix seconds, per the model chapter; no planner diagnostic polices it. The LbNone arm of lp-bucket-fn is unreachable because every caller checks lp-dim-bucketed first; the arm answers DerYear so the match stays total.",
+    "thread": null
+  },
+  {
+    "target": "section:Column Bookkeeping",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Small text-list helpers: membership and push-if-absent, so group keys and attached tables stay duplicate-free. The home-side group key for a foreign dimension is the first hop's left column, because only that column lives on the home table; the later hops' keys ride along on the joined dimension tables. The builder runs only after the grain check proved exactly one path exists, so taking the first found path is taking the only one. lp-measure-cols lists the columns the plan itself produces per measure: the measure name, except an average contributes its sum and count aliases because the division happens after execution.",
+    "thread": null
+  },
+  {
+    "target": "section:Filters",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Filter checking walks every filter three ways. The filter's table must be declared. The filter's column must be part of the model's vocabulary for that table: the table's primary key, a declared dimension or measure column on the table, or a declared join key touching the table. The table must take part in the query, as some measure's home table or some requested dimension's table, because a filter on an absent table would otherwise be dropped silently and the numbers would answer a different question than the one asked. Each failing filter earns diagnostic 27.",
+    "thread": null
+  },
+  {
+    "target": "function:lp-filter-pred",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A checked filter becomes a column-versus-literal equality predicate, and lp-filtered-scan wraps a table scan in one RelFilter per filter naming that table. Every scan the builder emits goes through lp-filtered-scan, therefore filters sit under the aggregations by construction.",
+    "thread": null
+  },
+  {
+    "target": "section:Per-Measure Plans",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "One measure becomes one aggregated sub-plan keyed by the requested dimension columns. The no-join case is a single group over the home table. The join case is the three-step ladder the chapter opened with: group the home table by the join keys and any home dimension columns, equi-join along each dimension's join chain one hop at a time, then group again by the dimension display columns with the re-aggregation functions over the aliases the first group produced. A table an earlier chain already joined is never joined twice: the done list carries every attached table across chains, so two dimensions whose chains share a prefix share the joined tables too, and the shared table's columns carry the later hops' join keys. Every scan in either case is a filtered scan, therefore query filters restrict rows before any grouping runs, and every scan of a table hosting a requested bucketed dimension is additionally a derived scan, therefore bucket columns exist before any grouping or joining reads them.",
+    "thread": null
+  },
+  {
+    "target": "section:Assembly",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Measure sub-plans combine pairwise. With dimensions present the combine is an equi-join on the full list of dimension display columns, therefore several measures with several dimensions pair up exactly; with no dimensions each sub-plan is a single row and a cross join through an always-true predicate glues them side by side. After combining: project the dimension columns and the per-measure plan columns, sort ascending by the dimensions, and apply a positive limit. An average's sum and count columns both survive the projection; lens-run collapses them after execution.",
+    "thread": null
+  },
+  {
+    "target": "section:The Planner",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "lens-plan is the whole contract: validate the model, resolve the query's names, grain-check alongside filter-check, and only then build. The first failing stage answers alone, so a diagnostic list never mixes model faults with query faults. A good plan carries the names of its average measures so lens-run knows which column pairs to divide.",
+    "thread": null
+  },
+  {
+    "target": "section:Execution",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "lens-run drives a query end to end against a live catalog. A failed plan surfaces as a query error carrying every diagnostic, code and message both, so no caller ever executes a placeholder plan. A plan carrying average measures comes back from the engine with each average still split into its sum and count columns; lp-finish-avgs rewrites the result once, after every join, combine, sort, and limit has already happened: the sum column becomes the measure-name column holding sum divided by count, the count column disappears, and every other column passes through untouched. The division is integer division in v1, the same truncation the engine's own average applies. A count of zero would mean a group no row ever landed in, which grouping never produces; the guard answers ValNull rather than divide by zero.",
+    "thread": null
+  }
+]

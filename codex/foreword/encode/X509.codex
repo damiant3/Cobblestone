@@ -21,9 +21,6 @@ Chapter: X509
  decoded forms is how an implementation ends up believing that one issuer
  is another. The chain walk compares issuer bytes to subject bytes.
 
- To x509-parse gives Maybe X509Cert, decoding a DER certificate.
- To x509-spki gives Maybe X509Key, decoding a SubjectPublicKeyInfo.
-
  We say:
 
 Section: Object Identifiers
@@ -106,22 +103,6 @@ Section: Key
  and not a byte string, because the whole point is that a caller cannot
  hand an X25519 key to a signature check.
 
- The elliptic-curve kinds are separate variants and not one variant with a
- curve field beside it, for the same reason X25519 is separate from
- Ed25519: a field can be ignored and a variant cannot.
-
- This paragraph used to add that x509-can-verify answers True for exactly
- one of them, "so a P-384 key cannot reach P-256 arithmetic by any route,
- including a route somebody adds later without reading this paragraph".
- That route was added on 2026-07-28 and the paragraph was read. What
- changed is the count and not the property: P-384 now verifies too, on
- P-384 arithmetic, because `KeyEcdsaP384` selects the P-384 field. The
- variant is still what carries the curve, so the only way to reach the
- wrong arithmetic is to write the wrong variant on the wrong key, which is
- one decision in one place -- `x509-curve-of` -- rather than a length that
- could be mistaken anywhere. `KeyEcdsaOther` keeps its meaning exactly:
- a curve we cannot compute on, and False.
-
   X509KeyAlg =
     | KeyEd25519
     | KeyX25519
@@ -130,12 +111,6 @@ Section: Key
     | KeyEcdsaP384
     | KeyEcdsaOther
     | KeyUnknown
-
- What a certificate says it was signed WITH, which is a different
- question from what its own key is FOR. It used to be a Boolean called
- xc-sig-ed25519 that was set to True without reading anything, so every
- certificate in the world claimed to be Ed25519-signed and the one
- branch that consulted it refused all the ones that were not.
 
   X509SigAlg =
     | SigEd25519
@@ -219,11 +194,6 @@ Section: Key
       is KeyEcdsaP384 -> True
       is KeyEcdsaOther -> True
       is otherwise -> x509-alg-params-ok buf kids
-
- This one is now the signature AlgorithmIdentifier's check and nothing
- else. It used to admit an OID parameter too, because it was shared with
- the key path, and that shared leniency was the hole: an elliptic-curve
- key could carry ANY named curve and the curve was never read.
 
   x509-alg-params-ok : List Integer, List Asn1Tlv -> Boolean
   x509-alg-params-ok (buf) (kids) =
@@ -357,9 +327,6 @@ Section: Key
   x509-drop-loop (bs) (i) (acc) =
     if i >= list-length bs then acc
     else x509-drop-loop bs (i + 1) (list-push acc (list-at bs i))
-
- The question the chain walk asks, and the reason the algorithm is typed:
- an X25519 key must never be handed to a signature verification.
 
   x509-can-verify : X509Key -> Boolean
   x509-can-verify (k) =
@@ -740,13 +707,6 @@ Section: An ECDSA Signature As DER
  negative. So the two forms are not the same bytes, and this is where one
  becomes the other.
 
- It lives in this chapter rather than in the chain walk because it is DER
- decoding and this is the DER-decoding chapter, and because it has two
- callers: a certificate's signatureValue and a TLS CertificateVerify
- signature are the same encoding, and RFC 8446 section 4.4.3 says so
- explicitly for ecdsa_secp256r1_sha256. It was written in X509Chain first,
- when the chain walk was its only caller.
-
  It is a decode and not a reshuffle. Every rule the Asn1 chapter enforces
  about a DER INTEGER applies here, and the reason it matters is that a
  signature is the one field an attacker chooses freely: a decoder that
@@ -816,11 +776,6 @@ Section: An ECDSA Signature As DER
  fifty-six signatures. Refusing those, or truncating instead of padding,
  is a verifier that rejects a valid signature at a rate low enough to
  reach production and high enough to be seen there.
-
- The width is the CURVE's, passed in, not a constant. It was 32 until
- 2026-07-28, which would have refused every P-384 signature on the length
- test below rather than on anything to do with the signature: r and s are
- forty-eight bytes there, and `> 32` is None.
 
   x509-ecdsa-fit : List Integer, List Integer, Integer -> Maybe (List Integer)
   x509-ecdsa-fit (r) (s) (w) =

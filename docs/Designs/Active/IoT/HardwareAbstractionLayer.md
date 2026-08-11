@@ -247,10 +247,10 @@ the Power phase.
   effect with the same linear shape (open bank, write pages, seal).
   **Shipped 2026-07-16; OTA is no longer blocked.** Its gates,
   anti-rollback, and manifest verification were already built, and the
-  staging write now has a typed path to the bank. What is still unbuilt
-  is the wiring: `ota-step` signals `ActionWriteBlock data offset` and
-  nothing yet calls `flash-write-page` with it. Unblocked is not done
-  .
+  staging write now has a typed path to the bank. The wiring landed the
+  same day: `ota-step` signals `ActionWriteBlock data offset` and
+  `codex/os/net/Lwm2mFirmware.codex` calls `flash-write-page` with it,
+  proven by `codex/test/apps/ota-lwm2m-loopback`.
 - `[HardRealtime]`-annotated sensor reads and
   motor control loops use `[Gpio]`, `[Clock]`, `[Adc]` effects --
   the effect restrictions (§Effect Integration) are designed to

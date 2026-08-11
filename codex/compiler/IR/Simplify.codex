@@ -78,14 +78,6 @@ Chapter: Simplify
  (reassociation) is where a size-proportional global budget that errors
  loudly earns its place.
 
- This unit is a rewrite, but it is registered as the opt-in `simplify`
- pass and is NOT in `default-ir-pipeline`. The shipping compiler's own
- compilation does not run it, so the default output is byte-identical
- and the fixed point is undisturbed; it is exercised by `-Passes
- simplify` and scored by the ablation harness. It absorbs the rules of
- the hardcoded `fold-constants` pass but does not yet replace it -- that
- swap is a codegen change to the default pipeline and its own CL.
-
  Limitations, stated so they are not assumed away: occurs-once inlining
  refuses rather than renames when a substitution would capture (the
  rename-on-collision rapier that would inline those cases too is a later
@@ -101,19 +93,10 @@ Chapter: Simplify
 
 Section: Results
 
- A walk returns the rewritten expression and the number of rewrites it
- performed, exactly as the occurrence analyser returns a free map and a
- binder list: the count threads up so the iteration driver knows whether
- a fixpoint was reached, and so the pass can report how much it did.
-
   SimpRes = record {
    expr : IRExpr,
    ticks : Integer
   }
-
- A fold either fired or it did not. Returning the outcome as a flag
- beside the expression keeps the tick accounting honest -- the caller
- adds one only when `folded` is true -- without reaching for a Maybe.
 
   FoldRes = record {
    folded : Boolean,
@@ -134,12 +117,6 @@ Section: Results
    stmts : List IRActStmt,
    ticks : Integer
   }
-
- What the `simplify` pass hands back to the pipeline: the rewritten
- chapter and one info line reporting the rewrite count. The infos ride
- the same channel `occ-report` uses, so the number is visible in the
- compile log and to the ablation harness without a rewrite to the
- pipeline result shape.
 
   SimplifyOutcome = record {
    chapter : IRChapter,
@@ -193,10 +170,6 @@ Section: Literals
 
 Section: Folding
 
- Every fold answers with `folded = False` and the rebuilt node when no
- rule applies, so the caller rebuilds once and counts a tick only on a
- real rewrite.
-
   fold-none : IRExpr -> FoldRes
   fold-none (e) = FoldRes { folded = False, expr = e }
 
@@ -230,11 +203,6 @@ Section: Folding
     is IrEq -> fold-some (deck-record (IrBoolLit (a == b) sp))
     is IrNotEq -> fold-some (deck-record (IrBoolLit (a /= b) sp))
     is otherwise -> fold-none (deck-record (IrBinary op (deck-record (IrBoolLit a sp)) (deck-record (IrBoolLit b sp)) ty sp))
-
- A binary node whose operands are already simplified. When both are the
- right kind of literal a fold may fire; otherwise the node is rebuilt
- unchanged. Character equality compares code points; character ordering
- is left to a later slice.
 
   simp-fold-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, SourceSpan -> FoldRes
   simp-fold-binary (op) (l) (r) (ty) (sp) =
@@ -376,10 +344,6 @@ Section: Purity and Deadness
    else if simp-pure-trapfree ((list-at fs i).value) depth then simp-pure-trapfree-fields fs depth (i + 1) len
    else False
 
- A name is dead in a body when the occurrence analyser's free map
- classifies it Dead -- absent from the map, because no free reference to
- it survives the body's binders.
-
   simp-is-dead : Text, IRExpr -> Boolean
   simp-is-dead (n) (b) =
    when occ-map-get ((occ-expr b [] 0).free) n
@@ -410,10 +374,6 @@ Section: Inlining
  fixed point cannot see a capture miscompile -- a wrongly captured program
  still compiles to a consistent wrong answer -- the guard here is the one
  that matters, and the adversarial `sc-cap` fixture pins it.
-
- The occurrence count and the value's free names both come from the WS-D2
- occurrence analyser's free map, so shadowing is handled the same way the
- rest of the simplifier handles it.
 
   simp-free-names : IRExpr -> List Text
   simp-free-names (e) = for en in ((occ-expr e [] 0).free) -> en.name
@@ -481,10 +441,6 @@ Section: Inlining
    else if simp-binds-any ((list-at fs i).value) names depth then True
    else simp-binds-any-fields fs names depth (i + 1) len
 
- A branch binds its pattern's variables over the guard and body, so a
- pattern variable in the set is itself a capture; otherwise the guard and
- body are walked.
-
   simp-binds-any-branches : List IRBranch, List Text, Integer, Integer, Integer -> Boolean
   simp-binds-any-branches (bs) (names) (depth) (i) (len) =
    if i >= len then False
@@ -509,9 +465,6 @@ Section: Inlining
    else if simp-pat-binds names (list-at ps i) depth then True
    else simp-pat-binds-list names ps depth (i + 1) len
 
- An act statement's bind, in either an `IrAct` or the statement lists of
- an `IrTry`, is a binder over the statements after it.
-
   simp-binds-any-stmts : List IRActStmt, List Text, Integer, Integer, Integer -> Boolean
   simp-binds-any-stmts (ss) (names) (depth) (i) (len) =
    if i >= len then False
@@ -534,10 +487,6 @@ Section: Inlining
    if i >= len then False
    else if simp-name-in names (list-at xs i) then True
    else simp-name-in-list names xs (i + 1) len
-
- The admission test. A bare name is copy-propagated whenever the body
- does not bind it. Any other value must be pure and trap-free, occur
- exactly once, and carry no free name the body binds.
 
   simp-inline-ok : Text, IRExpr, IRExpr -> Boolean
   simp-inline-ok (n) (v) (b) =
@@ -643,20 +592,12 @@ Section: Expression Walk
      in SimpRes { expr = deck-record (IrFieldStore (rr.expr) f (rv.expr) t s), ticks = rr.ticks + rv.ticks }
     is IrError (m) (t) (s) -> SimpRes { expr = e, ticks = 0 }
 
- Removing a run of names from the substitution: the parameters of a
- lambda, all at once, before its body is walked.
-
   subst-remove-names : List SubstEntry, List IRParam, Integer, Integer -> List SubstEntry
   subst-remove-names (env) (ps) (i) (len) =
    if i >= len then env
    else subst-remove-names (subst-remove env ((list-at ps i).name)) ps (i + 1) len
 
 Section: List and Field Walks
-
- Sibling expressions share one substitution and accumulate their ticks.
- The result reuses `SimpStmtsRes`'s free-form shape through a companion
- record so a list of expressions threads exactly like a list of
- statements does.
 
   SimpExprsRes = record {
    stmts-as-exprs : List IRExpr,
@@ -683,12 +624,6 @@ Section: List and Field Walks
 
 Section: Statement, Branch, and Clause Walks
 
- An act statement's bind is in scope for the statements after it, so its
- name is removed from the substitution before the tail is walked -- the
- same do-notation scoping the occurrence analyser and the emitter follow.
- The bind's own value is simplified under the substitution as it stands,
- because the value is evaluated in the scope before the bind.
-
   simplify-stmts : SkipListText, List SubstEntry, List IRActStmt, Integer, Integer, Integer, List IRActStmt, Integer -> SimpStmtsRes
   simplify-stmts (dn) (env) (ss) (depth) (i) (len) (acc) (ticks) =
    if i >= len then SimpStmtsRes { stmts = acc, ticks = ticks }
@@ -700,10 +635,6 @@ Section: Statement, Branch, and Clause Walks
     is IrDoBind (n) (t) (v) (sp) ->
      let rv = simplify-expr dn env v depth
      in simplify-stmts dn (subst-remove env n) ss depth (i + 1) len (list-push acc (deck-record (IrDoBind n t (rv.expr) sp))) (ticks + rv.ticks)
-
- A branch pattern binds over its guard and body only. The pattern
- variables are stripped from the substitution before the branch is
- walked; the scrutinee was already simplified by the caller.
 
   SimpBranchesRes = record {
    branches : List IRBranch,
@@ -733,10 +664,6 @@ Section: Statement, Branch, and Clause Walks
    if i >= len then env
    else subst-remove-pats (subst-remove-pat env (list-at ps i) depth) ps depth (i + 1) len
 
- Handle clauses are walked under an empty substitution -- see the chapter
- prose for why the operation, resume, and leaked try binders make
- carrying the outer substitution in unsound until those are scoped.
-
   SimpClausesRes = record {
    clauses : List IRHandleClause,
    ticks : Integer
@@ -750,11 +677,6 @@ Section: Statement, Branch, and Clause Walks
    in simplify-clauses dn cs depth (i + 1) len (list-push acc (deck-record (__record-set c "body" (rb.expr)))) (ticks + rb.ticks)
 
 Section: Definition and Chapter
-
- A definition is simplified by iterating one traversal of its body until
- a traversal reports no rewrites or the cap is reached. The substitution
- starts empty at the definition boundary -- a parameter is not a literal,
- so nothing propagates in from the signature.
 
   simplify-def : SkipListText, IRDef -> SimpDefRes
   simplify-def (dn) (d) =
@@ -775,16 +697,10 @@ Section: Definition and Chapter
    else let r = simplify-def dn (list-at defs i)
    in simplify-defs dn defs (i + 1) len (list-push acc (r.def)) (ticks + r.ticks)
 
- The pure rewrite, for the day the simplifier replaces `fold-constants`
- in the default pipeline: chapter in, chapter out, no report.
-
   simplify-chapter : IRChapter -> IRChapter
   simplify-chapter (ch) =
    let dn = deck-record (skip-list-text-from-list (for d in (ch.defs) -> d.name))
    in __record-set ch "defs" ((simplify-defs dn (ch.defs) 0 (list-length (ch.defs)) [] 0).defs)
-
- The opt-in pass: the same rewrite, plus one info line carrying the
- rewrite count for the compile log and the ablation harness.
 
   simplify-run : IRChapter -> SimplifyOutcome
   simplify-run (ch) =

@@ -74,9 +74,19 @@ $ErrorActionPreference = 'Stop'
 
 # WHICH COMPILER THIS BOOTS, AND WHY IT MATTERS
 #
-# By default this is build-output\bare-metal\Codex.cdx -- NOT seed\Codex.cdx.
-# That file is whatever the last build.ps1 left behind, which is the SUT, not
-# the seed. Nothing keeps the two in step, and nothing warns when they drift.
+# By default this is build-output\bare-metal\Codex.cdx -- NOT seed\Codex.cdx,
+# and NOT reliably the SUT either. Build-Cdx and Build-Text in build.ps1 each
+# copy their own kernel over that path before running, so it ends up holding
+# whichever kernel the LAST compile phase used -- not whichever artifact the
+# run produced. This line said "which is the SUT" until 2026-08-08; measured
+# after a full green build.ps1 on that date, the file's content hash equalled
+# seed\Codex.cdx, because phases after plug-binary compile against the seed.
+#
+# That is the dangerous direction. Verifying a codegen change with the default
+# kernel boots the OLD compiler, the emitted wire is unchanged, and the honest
+# reading of that is "my fix did nothing" -- when the fix was never in the
+# binary under test. Pass -Kernel build\output\Sut.cdx to test what a gate
+# just built.
 #
 # This has already produced a wrong answer. A per-chapter sweep of apps/works
 # reported ~80 of 84 chapters compiling; the real figure against the depot seed

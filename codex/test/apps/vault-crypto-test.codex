@@ -7,26 +7,6 @@ Chapter: VaultCryptoTest
   cites Foreword chapter Maybe
   cites Foreword chapter ListUtils
 
- The secrets vault crypto, exercised end to end.
-
- This chapter never compiled until 2026-07-20, so none of it had ever
- run: encrypt-payload called aesgcm-encrypt with three arguments where
- it takes four, decrypt-payload passed the tag where the AAD goes, and
- create-team-share threw the authentication tag away because
- TeamKeyShare had no field to hold one.
-
- A round-trip alone cannot see any of that -- two halves that share a
- mistake agree with each other perfectly. So the assertions that carry
- weight here are the ones that must FAIL to pass: a tampered
- ciphertext, a tampered tag, and a wrong derivation must each come back
- None. Before the tag field existed, the tampered-tag case could not
- even be written down.
-
- The key derivation is checked against hkdf called directly, which is
- the same primitive by a different route: it pins that derive-vault-key
- passes the salt and the info string it claims to, which is exactly
- what was wrong.
-
 Section: Fixtures
 
  A master key built by hand rather than through derive-master-key,
@@ -69,9 +49,6 @@ Section: Helpers
     if list-length bs == 0 then bs
     else list-set-at (vct-copy bs) 0 (bit-xor (list-at bs 0) 255)
 
- list-set-at writes in place and hands back the same list, so a
- tampered copy has to be built first or the original is tampered too.
-
   vct-copy : List Integer -> List Integer
   vct-copy (bs) = vct-copy-loop bs 0 (list-length bs) []
 
@@ -82,18 +59,11 @@ Section: Helpers
 
 Section: Derivation
 
- derive-vault-key must hand hkdf the master salt and the vault-scoped
- info string. Computing the same thing here through hkdf directly is
- what makes a dropped salt visible; a round-trip would not notice,
- because encrypt and decrypt would both drop it.
-
   vct-derivation-matches : Boolean
   vct-derivation-matches =
     let vk = derive-vault-key test-master "vault-one"
     in let expected = hkdf test-salt-bytes test-key-bytes (text-to-bytes "vault-encryption:vault-one") key-length
     in bytes-equal (vk.vk-key) expected
-
- Two secrets in one vault must not share a key.
 
   vct-secrets-are-separated : Boolean
   vct-secrets-are-separated =
@@ -101,10 +71,6 @@ Section: Derivation
     in let k1 = derive-secret-key vk 1
     in let k2 = derive-secret-key vk 2
     in if bytes-equal k1 k2 then False else True
-
- The nonce is twelve bytes, not the eight words sha256 actually
- returns. This is the assertion that catches the words-for-bytes
- confusion the DevelopersGuide warns about.
 
   vct-nonce-length-right : Boolean
   vct-nonce-length-right =
@@ -132,10 +98,6 @@ Section: Payload Round Trip
     in let back = decrypt-payload vk 1 vct-encrypted
     in vct-password-of back == "correct horse battery staple"
 
- Negative controls. Each of these must come back None, and a
- compressor-style "agrees with itself" implementation cannot satisfy
- them.
-
   vct-rejects-tampered-cipher : Boolean
   vct-rejects-tampered-cipher =
     let vk = derive-vault-key test-master "vault-one"
@@ -157,10 +119,6 @@ Section: Payload Round Trip
   vct-rejects-wrong-vault =
     let other = derive-vault-key test-master "vault-two"
     in vct-is-none (decrypt-payload other 1 vct-encrypted)
-
- __record-set stores into the record and returns the same one, so a
- tampered variant needs its own EncryptedSecret rather than a mutation
- of the shared fixture.
 
   vct-encrypted-copy : EncryptedSecret
   vct-encrypted-copy = EncryptedSecret {

@@ -2,26 +2,6 @@ Chapter: MqttEndpoint
   cites Encode chapter Mqtt
   cites Foreword chapter Maybe
 
- The MQTT v5 client endpoint: the binding that turns the Mqtt codec --
- which only ever built packets, and until 2026-07-23 could not read one
- at all -- into a session with a broker.
-
- It is PURE, in the style of `CoapEndpoint`, `TlsEndpoint` and
- `DtlsEndpoint`: bytes in, bytes out, no socket and no clock. The
- transport `now` is a caller-supplied tick that drives retransmission and
- keepalive, and a thin caller carries the bytes over TCP. The reliability
- and correlation live here and are exercised by a loopback; the wire is
- `tools/mqtt-client.codex`.
-
- WHY THIS IS NOT SHAPED LIKE THE CoAP ONE. CoAP runs on datagrams, so its
- endpoint takes exactly one datagram and answers with whole datagrams.
- MQTT runs on TCP, which delivers a byte STREAM: a segment can carry half
- a packet, or three packets, or the tail of one and the head of the next.
- So this endpoint takes a buffer and reports how much of it it consumed,
- and the caller keeps the remainder. Getting that wrong is not a subtle
- failure -- it desynchronises the stream permanently on the first
- coalesced segment, which is exactly what a broker sends under load.
-
  QoS 1 IS THE RELIABILITY, AND TCP IS NOT IT. TCP guarantees the bytes
  arrive at the far socket; it says nothing about the broker having
  accepted the message, and a reconnect loses whatever was in flight. So a
@@ -29,18 +9,6 @@ Chapter: MqttEndpoint
  retransmitted with the DUP flag if the broker stays silent past the
  deadline. That is the retransmission this row wanted, at the layer that
  can actually promise anything.
-
- AN MqttEp IS THREADED LINEARLY, like every other endpoint here. The
- state updates go through `__record-set`, which stores into the record and
- returns the same one, so a value that has been passed to one of these
- functions is spent and the caller must use what came back. Branching two
- exchanges off one endpoint value does not give two sessions -- it gives
- one session and two names for it, and the older name then reads state it
- does not own.
-
- To mqtt-ep-connect gives MqttEpStep, opening the session.
- To mqtt-ep-recv gives MqttEpStep, feeding whatever bytes have arrived.
- To mqtt-ep-tick gives MqttEpStep, advancing the retransmission and keepalive clocks.
 
  We say:
 
@@ -140,17 +108,6 @@ Section: Opening The Session
 
 Section: Publishing
 
- At QoS 0 the packet goes out and is forgotten -- there is nothing to
- wait for and nothing to retransmit, which is what "at most once" means.
- At QoS 1 it is held: the identifier, the exact bytes, and the deadline,
- because a message that cannot be resent is a message with no delivery
- guarantee at all.
-
- ONE OUTSTANDING PUBLISH AT A TIME. A second while one is unacknowledged
- is refused rather than queued, the same call `CoapEndpoint` makes for the
- same reason: a queue is a larger client's concern and this one says so by
- not pretending to have one.
-
   mqtt-ep-publish : MqttEp, Text, List Integer, MqttQos, Integer -> MqttEpStep
   mqtt-ep-publish (ep) (topic) (payload) (qos) (now) =
     if ep.me-state /= mqtt-st-ready then mqtt-ep-idle ep
@@ -170,10 +127,6 @@ Section: Publishing
     in MqttEpStep { ms-ep = ep2, ms-out = [pkt], ms-consumed = 0 }
 
 Section: Receiving
-
- Take as many whole packets out of the buffer as it holds, and report the
- byte count consumed so the caller can keep the rest. A partial packet at
- the end consumes nothing and waits for more bytes.
 
   mqtt-ep-recv : MqttEp, List Integer, Integer -> MqttEpStep
   mqtt-ep-recv (ep) (buf) (now) = mqtt-ep-drain ep buf 0 [] now
@@ -197,30 +150,16 @@ Section: Receiving
     else if p.mp-type == mqtt-t-publish then mqtt-ep-on-publish ep p
     else mqtt-ep-idle ep
 
- A non-zero CONNACK reason is the broker refusing, and the session is
- failed rather than quietly left half-open. Reason 135 is "not
- authorized", which is what an unauthenticated client gets from a broker
- that requires credentials -- the case the dead username field made
- unreachable.
-
   mqtt-ep-on-connack : MqttEp, MqttPacket -> MqttEpStep
   mqtt-ep-on-connack (ep) (p) =
     let reason = mqtt-connack-reason p
     in let ep2 = __record-set ep "me-connack" reason
     in mqtt-ep-idle (__record-set ep2 "me-state" (if reason == 0 then mqtt-st-ready else mqtt-st-failed))
 
- A SUBACK is matched by packet identifier. One that names a subscription
- we did not send is not our confirmation and is dropped -- without the
- check, any SUBACK at all would confirm any subscription.
-
   mqtt-ep-on-suback : MqttEp, MqttPacket -> MqttEpStep
   mqtt-ep-on-suback (ep) (p) =
     if mqtt-suback-id p /= ep.me-sub-id then mqtt-ep-idle ep
     else mqtt-ep-idle (__record-set ep "me-suback" (mqtt-suback-reason p))
-
- A PUBACK clears the outstanding publish, and only if the identifier
- matches. A stale acknowledgement from an earlier message must not retire
- the current one.
 
   mqtt-ep-on-puback : MqttEp, MqttPacket -> MqttEpStep
   mqtt-ep-on-puback (ep) (p) =

@@ -1,0 +1,65 @@
+Chapter: MetalLadder
+  cites Works chapter GopHandoff
+  cites Works chapter GopDraw
+
+ A payload's report channel on a board with no serial port and no proven
+ ConOut. The screen is the only channel demonstrated to reach a human on the
+ ASUS: the stub's own fills render there, which is why this paints rather
+ than prints.
+
+ The contract is that the LAST COLOUR STANDING names the last stage passed.
+ A stage paints on success and the payload spins on failure, so a dead
+ machine still reports. The operator table lives in docs/HardwareSitting.md.
+
+ We say:
+
+Section: Palette
+
+ Framebuffer pixels are B,G,R,X in memory order and poke-32 stores
+ little-endian, so a 0xRRGGBB literal lands correctly.
+
+  ladder-cyan : Integer = 65535
+
+  ladder-yellow : Integer = 16776960
+
+  ladder-magenta : Integer = 16711935
+
+  ladder-orange : Integer = 16744448
+
+  ladder-white : Integer = 16777215
+
+  ladder-red : Integer = 16711680
+
+Section: Channel
+
+  ladder-paint : Integer -> Integer
+  ladder-paint (colour) =
+    let b = boot-fb-base 0
+    in if b == 0 then 0
+    else let f = gop-fill-rect b (boot-fb-stride 0) 0 0 (boot-fb-w 0) (boot-fb-h 0) colour
+    in if peek-32 b 0 == colour then 1 else 0
+
+ ladder-hold repaints rather than spinning on an empty loop. A pure
+ non-terminating function is not a halt: the optimizer removed the first
+ version of this outright, so a FAILED stage fell through and painted the
+ colour that means the stage passed. The framebuffer writes are what make
+ this one survive.
+
+  ladder-hold : Integer -> Integer
+  ladder-hold (colour) =
+    let f = ladder-paint colour
+    in ladder-hold colour
+
+ ladder-pass paints and RETURNS on either outcome, so a caller can say what
+ it painted before it stops. Holding inside here made a failure mute: the
+ hold never returns, so the stage that failed printed nothing at all and a
+ held colour was indistinguishable from a run still in progress.
+
+  ladder-pass : Integer, Integer, Integer -> Integer
+  ladder-pass (ok) (colour) (prev) =
+    if ok == 0 then ladder-paint prev
+    else ladder-paint colour
+
+  ladder-hold-if : Integer, Integer -> Integer
+  ladder-hold-if (ok) (prev) =
+    if ok == 0 then ladder-hold prev else 0

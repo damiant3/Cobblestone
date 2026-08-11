@@ -1,13 +1,13 @@
 Chapter: GopShot
   cites Works chapter GopFat16
   cites Works chapter GopRtc
-
- The screen, written to the boot stick as a BMP -- the telemetry channel
- that retires the camera: a photograph names what a reader can decode
- from it, a pixel-exact frame names everything. One keystroke on the
- desktop captures the live framebuffer and lands SHhhmmss.BMP on the
- stick's own ESP, named by the RTC so no directory scan is needed and
- two shots collide only within one second.
+  cites Works chapter GopDraw
+  cites Works chapter GopMedium
+  cites Works chapter GopDisk
+  cites Works chapter GopUsbMsc
+  cites Works chapter GopXhci
+  cites Works chapter GopUsbKbd
+  cites Kernel chapter BitmapFont
 
  We say:
 
@@ -58,11 +58,6 @@ Section: BMP Encoding
 
 Section: Naming
 
- An 8.3 directory name is eleven ASCII bytes, space-padded, no dot:
- "SHhhmmssBMP". The bytes are poked as ASCII directly -- Text here is
- CCE and a CCE byte on a FAT directory entry is a name no other reader
- resolves.
-
   shot-digit2 : Integer, Integer, Integer -> Integer
   shot-digit2 (buf) (off) (v) =
     let a = poke-byte buf off (48 + v / 10)
@@ -93,10 +88,43 @@ Section: Capture
  minutes. The answer Text names the file on success and the failing
  stage otherwise, ready to paint.
 
+ A failed mount means the screen is the only readout the flight gets,
+ so the failure text carries the diag cells: s is the mount stage
+ (GopFat16, 1 hdr-read 2 gpt-sig 3 ents-read 4 no-esp-guid 5 bpb-read
+ 6 bad-bps 7 ok), m the selected medium kind (GopDisk, 0 none 1 AHCI
+ 2 IDE 3 USB 4 NVMe), c the last MSC bulk completion code (256 no
+ event, 6 stall), p the BOT phase it landed in (1 CBW 2 data 3 CSW).
+
+ w is the WRITE stage (GopFat16 cell 83), and it is the one that names
+ a write failure: s answers 7 on every one of them because it reports
+ the mount. 1-7 are the small-file path, 11-17 the multi-cluster path,
+ 20 a completed write, and anything above 100 is that failure plus a
+ failed rollback, which means the stick was left with an allocated
+ chain no directory entry names.
+
+ f is the smallest xhci-fuel any COMPLETED transfer left behind, out of
+ 1000000. It is on this line because c alone cannot separate a budget that
+ was nearly spent on the transfers that worked from a device that stopped
+ answering: a small f says the fuel is marginal, an f near 1000000 says it
+ is innocent and c256 is the device. l is the LBA of a failed chunk and r
+ its retry: 0 none, 1 recovery failed, 2 retried and failed, 3 retried and
+ succeeded.
+
+  shot-diag-text : Text -> Text
+  shot-diag-text (what) =
+    what & " s" & show (xdiag-get gfat-cell-stage)
+    & " m" & show med-selected
+    & " c" & show (xdiag-get msc-cell-lastcc)
+    & " p" & show (xdiag-get msc-cell-phase)
+    & " w" & show (xdiag-get gfat-cell-write)
+    & " f" & show (xdiag-get msc-cell-fuel-lo)
+    & " l" & show (xdiag-get msc-cell-fail-lba)
+    & " r" & show (xdiag-get msc-cell-retry)
+
   shot-take : Integer, Integer, Integer, Integer -> [Device.Port] Text
   shot-take (base) (w) (h) (stride) = act
     m <- gfat-mount-esp
-    if m.gm-ok == False then "shot: no ESP mount"
+    if m.gm-ok == False then shot-diag-text "shot: no ESP"
     else act
       rh <- rtc-read 4
       rm <- rtc-read 2
@@ -113,7 +141,90 @@ Section: Capture
       in let nm = shot-name nb hh mi s2
       in act
         ok <- gfat-write-file (m.gm-vol) nb buf size
-        if ok then "shot SH" & shot-pad2 hh & shot-pad2 mi & shot-pad2 s2 & ".BMP ok" else "shot write FAILED"
+        if ok then "shot SH" & shot-pad2 hh & shot-pad2 mi & shot-pad2 s2 & ".BMP ok" else shot-diag-text "shot write FAILED"
       end
+    end
+  end
+
+Section: Probe Wait
+
+  shot-hint : Integer, Integer, Integer, Integer, CbfFont, Integer -> Integer
+  shot-hint (base) (w) (h) (stride) (font) (med) =
+    let scale = if w >= 1024 then 2 else 1
+    in let y = h - 50
+    in let bg = gop-fill-rect base stride 0 y w (h - y) 1710638
+    in gop-draw-text base stride font 40 y (if med == 0 then "F12 shots OFF: no medium carrying CODEX.CDX" else "F12 saves the screen to the stick") (if med == 0 then 16755200 else 9474192) scale 0
+
+  shot-spin : Integer -> Integer
+  shot-spin (n) = shot-spin (n + 1)
+
+  shot-loop : Integer, Integer, Integer, Integer, CbfFont, UsbKbd -> [Device.Port] Integer
+  shot-loop (base) (w) (h) (stride) (font) (kbd) = act
+    sc <- kbd-take kbd
+    if sc == 88 then act
+      let mark = __heap-save
+      in act
+        t <- shot-take base w h stride
+        let scale = if w >= 1024 then 2 else 1
+        in let y = h - 50
+        in let bg = gop-fill-rect base stride 0 y w (h - y) 1710638
+        in let tx = gop-draw-text base stride font 40 y t 65280 scale 0
+        in let r = __heap-restore mark
+        in shot-loop base w h stride font kbd
+      end
+    end
+    else shot-loop base w h stride font kbd
+  end
+
+  shot-wait : Integer, Integer, Integer, Integer, CbfFont, UsbKbd -> [Device.Port] Integer
+  shot-wait (base) (w) (h) (stride) (font) (kbd) = act
+    med <- medium-select
+    let hint = shot-hint base w h stride font med
+    in if med == 0 then shot-spin 0
+    else shot-loop base w h stride font kbd
+  end
+
+Section: Bounded Window
+
+  shot-window-fuel : Integer = 500000000
+
+  shot-window : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, Integer -> [Device.Port] Integer
+  shot-window (base) (w) (h) (stride) (font) (kbd) (secs) = act
+    med <- medium-select
+    if med == 0 then 0
+    else act
+      let scale = if w >= 1024 then 2 else 1
+      in let y = h - 50
+      in let hint = gop-draw-text base stride font 40 y ("F12 saves the screen (" & show secs & "s window), then the arm runs") 16776960 scale 0
+      in act
+        r <- rtc-seconds 0
+        shot-window-loop base w h stride font kbd r 0 secs 0
+      end
+    end
+  end
+
+  shot-window-loop : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, Integer, Integer, Integer, Integer -> [Device.Port] Integer
+  shot-window-loop (base) (w) (h) (stride) (font) (kbd) (prev) (elapsed) (secs) (spins) = act
+    if elapsed >= secs then 0
+    else if spins >= shot-window-fuel then 0
+    else act
+      sc <- kbd-take kbd
+      now <- rtc-seconds 0
+      let tick = now >= 0 & now /= prev
+      in let e2 = if tick then elapsed + 1 else elapsed
+      in let p2 = if now >= 0 then now else prev
+      in if sc == 88 then act
+        let mark = __heap-save
+        in act
+          t <- shot-take base w h stride
+          let scale = if w >= 1024 then 2 else 1
+          in let y = h - 50
+          in let bg = gop-fill-rect base stride 0 y w (h - y) 1710638
+          in let tx = gop-draw-text base stride font 40 y t 65280 scale 0
+          in let rr = __heap-restore mark
+          in shot-window-loop base w h stride font kbd p2 e2 secs (spins + 1)
+        end
+      end
+      else shot-window-loop base w h stride font kbd p2 e2 secs (spins + 1)
     end
   end

@@ -1,8 +1,5 @@
 Chapter: SmpProc0Pinned
 
- Proc 0 stays on the boot processor, and the machine is genuinely
- multi-core while it does.
-
  Slot 0 is the program the machine booted. It owns the boot stack and the
  main heap, and three separate places in the scheduler make sure no other
  core can take it: __idle_dispatch starts each core's scan at its own id
@@ -11,11 +8,6 @@ Chapter: SmpProc0Pinned
  boot processor. Proc 0's affinity field says the same thing -- it names
  core 0 -- where it used to say -1, "any core", which was a licence nothing
  in the scheduler honoured.
-
- The evidence is the core stamp. Whichever core wins the claim for a
- process writes its own id into that process's proc-core field, so the
- field is the claiming core's signature. Slot 0's must still read 0 after a
- run in which every other core was demonstrably busy.
 
  "Demonstrably busy" is what stops this being a test that cannot fail. Zero
  is also the value the field is initialised to, so slot 0 reading zero
@@ -35,42 +27,10 @@ Chapter: SmpProc0Pinned
    above zero, which is the field this test reads on slot 0, proven able to
    hold a value other than the one slot 0 is required to hold.
 
- The control was run rather than assumed, and its shape is worth writing
- down because it is not the shape anyone would predict. A compiler was
- built with __idle_dispatch's scan-wrap forced to slot 0 AND proc 0's
- affinity put back to -1 -- both are needed, because either one alone
- refuses an application processor on its own, which is itself the finding
- that the affinity field is now load-bearing rather than decorative. The
- guest built by that compiler runs for seven minutes without printing a
- line and without faulting, and had to be killed. It does not report PROC 0
- MIGRATED; it never reports anything.
-
- That is the failure the guards' own prose predicts. An application
- processor that claims slot 0 resumes the booted program on the boot stack
- and strands it RUNNING on a core that is not its own, so the waits never
- return and the test is a runtime failure rather than a wrong answer. A
- shorter spin was tried first and passed cleanly on the broken build: proc
- 0 is READY only in the instant between a child's exit waking it and the
- boot processor picking it up again, so a guest that finishes inside a
- couple of scheduling ticks never opens the window at all. The window is a
- function of how long the run is, which is the second reason the spin is
- the length it is.
-
- It needs a `.smp` sidecar; on one core there is nothing to migrate to and
- the two counters are both zero by construction.
-
 Section: Body
 
   spin : Integer, Integer -> Integer
   spin (n) (acc) = if n == 0 then acc else spin (n - 1) (acc + 1)
-
- The spin is smp-preempt's, digit for digit, and for smp-preempt's reason:
- a scheduling tick arrives every few tens of milliseconds, so a child that
- finishes inside one is never a candidate for preemption on any core and
- the second reading below comes back NO AP WAS PREEMPTED while everything
- underneath works. The first cut of this test used a tenth of this and did
- exactly that. A shorter spin does not make the test faster, it makes it a
- test of the clock.
 
   child-body : Integer -> Integer
   child-body (x) = spin 1000000000 0

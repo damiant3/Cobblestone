@@ -1,9 +1,6 @@
 Chapter: X86-64 Boot Infrastructure
   cites Foreword chapter Capability
 
- Bare-metal boot sequence, interrupt handling, process management,
- syscall dispatch, and capability model.
-
 Section: Memory Address Map
 
  Sorted by address. To add a new entry, find the gap and confirm
@@ -130,16 +127,48 @@ Section: Memory Address Map
  table and called through it, which is an invalid opcode fault at a low
  address, on every boot, in every mode. It cannot ever have worked.
 
- emit-start now copies [0x8000] here BEFORE emit-process-setup overwrites
- it, and the helpers read this cell instead. On a boot with no UEFI stub
- the snapshot is zero and every helper returns -1 rather than calling into
- the page tables. A helper that cannot reach firmware must say so, not
- jump into it.
+ emit-start copies [0x8000] here BEFORE emit-process-setup overwrites it,
+ and the helpers read this cell instead. On a boot with no UEFI stub the
+ snapshot is zero and every helper returns -1 rather than calling into the
+ page tables. A helper that cannot reach firmware must say so, not jump
+ into it.
 
- Cell 36208, the next free slot above ap-dispatch-count. Grep
- tools/codex-vm.c before claiming any cell in this band.
+ THE COPY ONLY HAPPENS WHEN THIS CELL IS STILL ZERO, and that condition is
+ load-bearing rather than an optimisation. cdx-to-pe.ps1 writes the pointer
+ to BOTH 0x8000 and this cell before it jumps, because a stub that calls
+ opening directly never runs emit-start at all. Under -EntryStart emit-start
+ DOES run, and an unconditional copy then overwrote a correct pointer with
+ whatever 0x8000 held by then: measured 2026-08-09, this cell read 0 and
+ 0x8000 read 0x9023, a page-table entry. Every uefi-* helper therefore
+ dereferenced null on the one path that boots the compiler from a stick,
+ which is why A5 could not read or write its volume on metal.
 
-  uefi-systab-addr : Integer = 36208
+ Same shape as the serial-ring prefill (serial-primed-magic): a later stage
+ must not clobber what an earlier stage deliberately primed. A non-zero cell
+ means somebody already knows the answer.
+
+ IT LIVED AT 36208 UNTIL 2026-08-09 AND THAT ADDRESS IS INSIDE THE PAGE
+ TABLES. emit-build-process-page-tables puts the PML4 at 0x8000 and a PML4 is
+ a full 4 KB, so it owns 0x8000 through 0x8FFF -- and 36208 is 0x8D70, entry
+ 430 of that table. Building the tables zeroes the page, so anything written
+ to this cell BEFORE emit-process-setup is destroyed.
+
+ That is survivable for the rest of the 36xxx band, which is why nothing
+ caught it: ap-dispatch-count, spawn-affinity and fs-elevated are all written
+ at runtime, long after the tables exist, and they occupy PML4 entries no
+ canonical address reaches. This cell is the one exception, because the UEFI
+ stub primes it before jumping, and that write is the one the page tables eat.
+
+ Measured under -EntryStart: cell read 0 and 0x8000 read 0x9023, a PML4 entry
+ pointing at the PDPT. Every uefi-* helper then dereferenced null, which is
+ why the compiler could neither read nor write its own boot volume on a board.
+
+ 30704 is below the tables, between serial-primed-magic and chan-table-base,
+ and was confirmed unclaimed in tools/codex-vm.c, apps/works and
+ codex/foreword as well as here. cdx-to-pe.ps1 carries the same number as
+ $UefiSystabAddr and the two must move together.
+
+  uefi-systab-addr : Integer = 30704
 
  Timer interrupts taken by a core whose id is not zero. Only the interrupt
  handler writes it, and only when the core it is running on is not the boot
@@ -191,16 +220,6 @@ Section: Memory Address Map
  capability bypass (elevate, then block-write-sector).
 
   fs-elevated-addr : Integer = 36232
-
- Evidence that a device interrupt was taken. Until these existed nothing
- a guest could read recorded the arrival of any vector except the two
- timers: __interrupt_common answers the PIT and the local timer
- specially and returns from every other vector without leaving a mark,
- so an emulator could route a comparator match through an IOAPIC to a
- vector, deliver it, and have the guest take it, with no observable
- difference from having dropped it. That made interrupt delivery
- untestable by construction rather than by omission -- the one class of
- failure a battery could never see.
 
  The count is incremented on every vector that is not a timer, and the
  second cell holds the last such vector, so a test can name the line it
@@ -270,20 +289,11 @@ Section: Memory Address Map
   lapic-icr-lo-reg : Integer = 768
   lapic-icr-hi-reg : Integer = 784
 
- The local timer. This is the clock that preempts a process on an
- application processor: the boot processor is driven by the PIT, whose IRQ
- is delivered to it alone, so before this an AP took no interrupt at all
- and a process that never yielded owned its core until it exited.
-
  lapic-lvt-timer-reg is the entry in the local vector table (0x320): the
  low eight bits are the vector to raise, bit 16 masks the timer, and bit 17
  selects periodic rather than one-shot. lapic-timer-init-reg (0x380) is the
  count it reloads, and writing zero there disarms it. lapic-timer-div-reg
  (0x3E0) divides the bus clock; 3 is divide-by-16.
-
- The old constant here read 832, which is 0x340 -- the performance-counter
- entry, not the timer. It was never used by anything, so it never misfired;
- it is replaced rather than kept.
 
   lapic-lvt-timer-reg : Integer = 800
   lapic-timer-init-reg : Integer = 896
@@ -306,16 +316,6 @@ Section: Memory Address Map
  the level-assert bit is 14, and destination shorthand 3 in bits 18-19
  means "all excluding self", which is what lets one write reach every AP
  without addressing them one at a time.
-
- The startup vector field (bits 0-7) names the 4 KB page an application
- processor begins executing in, and it is the page at ap-trampoline-addr.
- The vector used to be zero, because codex-vm sidestepped the mechanism
- entirely and read a full 64-bit entry address out of guest memory -- so
- SMP worked under the emulator and could not have worked on a physical
- machine, where the field is the only thing that tells an AP where to
- begin. Both ends are honest now: the vector carries the page, the page
- carries a real-mode trampoline, and codex-vm starts an AP the way silicon
- does. Every SMP test therefore runs through the trampoline.
 
   ap-sipi-vector : Integer = 1
   lapic-sivr-enable : Integer = 511
@@ -405,10 +405,6 @@ Section: Process Table Layout
  asking the process it is standing in -- which is the only per-core
  identity the kernel has, and the only one it needs. Offset 8 was free.
 
- It exists because of the idle path. A core with no work has to get off
- the stack of the process it was last running before it parks, and to do
- that it needs to know which idle stack is its own.
-
   proc-core-offset : Integer = 8
   proc-affinity-offset : Integer = 16
 
@@ -485,12 +481,6 @@ Section: Channel Table Layout
   chan-state-free : Integer = 0
   chan-state-open : Integer = 1
   chan-state-closed : Integer = 2
-
- The kernel capability bits moved to Foreword chapter Capability, where
- the verified loader can read the same ones. They were written out here
- and again there as kern-cap-*, identical in all 23 names and all 23
- values, and build/check-cap-tables.ps1 existed to notice when that
- stopped being true.
 
 Section: PIT and PIC Initialization
   emit-pit-init : CodegenState -> CodegenState
@@ -938,6 +928,8 @@ Section: Page Fault Handler
   demand-heap-hi-page : Integer = 2147483648 / 2097152
 
   demand-fault-count-addr : Integer = 30688
+  serial-primed-magic-addr : Integer = 30696
+  serial-primed-magic : Integer = 1347573316
 
   emit-pagefault-handler : CodegenState -> CodegenState
   emit-pagefault-handler (st) =
@@ -1093,13 +1085,6 @@ Section: Which Process Is Running
  subtract the pool base, and the region shift is the slot. An address
  outside the pool belongs to proc 0, the program the machine booted,
  whose stack is the boot stack at the top of RAM.
-
- This used to be a single cell (28688) holding the running slot, which
- is correct for exactly one core and for no more than one. Two cores
- each running a process would each overwrite that cell, and each would
- then resume the other's saved context. The cell is gone, and nothing
- per-core replaces it, because nothing needs to be stored: a core
- running a process is already standing on the answer.
 
  emit-load-current-proc reads it from the live RSP. emit-slot-from-addr
  takes an address already in the destination register -- the interrupt
@@ -1641,13 +1626,6 @@ Section: Interrupt Setup
  gdt-tss-sel-base + core * 16, which is the number the boot processor and
  each application processor load into their own task register.
 
- This used to be the boot processor alone -- an application processor
- loaded no task register at all, so a fault on one had no stack to be
- delivered on and vanished as a triple fault. That cost nothing while no
- application processor had ever executed a guest instruction, which was
- the state of the world until the SMP bring-up was fixed. It costs a great
- deal now, because an AP running real code is a place bugs can hide.
-
   gdt64-base : Integer = 75776
 
   tss-base : Integer = 77824
@@ -2009,14 +1987,6 @@ Section: SMP Initialization
    in let st7 = emit-out-byte st6 32 32
    in patch-jmp-at st7 done-pos (st7.code-len)
 
- Evidence that an application processor was preempted. The core that is
- running the interrupted process is recorded in the process itself
- (proc-core-offset), stamped by whichever core won the claim, so the
- handler can ask what core it is on without an MSR or a LAPIC read. The
- boot processor's id is always zero and no host code writes this cell, so
- any value above zero was put there by a timer interrupt taken on a core
- that is not the BSP.
-
  RCX already holds the address of the running process here. RAX and RDX are
  dead; RDI holds the slot index and the scan below still needs it.
 
@@ -2055,11 +2025,6 @@ Section: SMP Initialization
    in let st6 = st-append-code st5 (lock-xadd-mem reg-rax reg-rdx 0)
    in patch-jcc-at st6 skip-pos (st6.code-len)
 
- An application processor arms its own scheduling clock. Until it does, it
- is running with interrupts disabled and no timer, so a process that never
- yields owns the core until it exits -- which is what was once called
- "an AP is never preempted".
-
  The order matters. The local APIC is enabled first (the MSR bit, which is
  per-core), then its spurious vector, then the timer is programmed, and
  only then are interrupts unmasked. Raising IF before there is a handler
@@ -2082,8 +2047,6 @@ Section: SMP Initialization
    in let st2 = st-append-code st1 x86-pause
    in let st3 = st-append-code st2 (sub-ri reg-rcx 1)
    in st-append-code st3 (jcc cc-ne (loop-top - (st3.code-len + 6)))
-
- The trampoline an application processor wakes up inside.
 
  A start-up IPI does not hand a core an address. It hands it a page
  number, and the core begins executing at the first byte of that page in
@@ -2213,17 +2176,6 @@ Section: SMP Initialization
  own making, which carries no TSS, and a core with no task register cannot
  be handed a fault -- adds itself to the ready count with a locked add,
  and goes to look for work.
-
- The IDT load is new and it was missing for as long as the host was
- configuring these cores by hand: codex-vm used to point each AP's IDTR at
- the real IDT itself, so nothing in the guest ever had to. A core coming
- out of reset has the real-mode interrupt vector table and nothing else,
- and the very next thing this routine does is arm a periodic timer and
- raise IF. Without the lidt the first tick on each application processor
- dispatched through sixteen bits of garbage. The shape it produced is
- worth recognising, because it looks nothing like a missing IDT: the cores
- checked in, the ready count read three, and then no application processor
- ever claimed a process, because each was dead by the time work appeared.
 
  It goes to __idle_dispatch -- the same place the boot processor goes when
  it runs out of work -- with its core id already in R15, which is where
@@ -2449,20 +2401,6 @@ Section: Process Management
    in st-append-code st10 (mov-store reg-rdi reg-rax 0)
 
  Proc 0 starts RUNNING, because it is running.
-
- It used to be created READY, and that was wrong in a way that only one
- core could get away with. The claim that hands a process from one core
- to another is a CMPXCHG from READY to RUNNING, so READY means "nobody is
- executing this, come and take it" -- and proc 0 wore that label for the
- entire life of the program it was running. On one core nothing ever
- looked, so nothing ever came. The moment an application processor scans
- the table, it finds the boot processor's own program advertised as
- free work and takes it.
-
- Nothing depended on the old value. Proc 0 is published READY properly
- when it actually yields, waits, or is preempted -- each of those saves
- its context first. The boot value was only ever read before the first
- switch, when proc 0 is unambiguously the thing on the CPU.
 
  Pinned by codex/test/proc-state-running.codex.
 
@@ -2801,17 +2739,6 @@ Section: MSR and Syscall
    in let st12 = st-append-code st11 (pop-r reg-rsi)
    in let st13 = st-append-code st12 (pop-r reg-rdi)
    in CheckExpiryResult { state = st13, deny-offset = expired-pos }
-
- emit-check-capability tests one named capability bit of the current
- process's grant word (bt r64, imm8) and leaves the answer in CF. It
- previously tested bit RDX -- the syscall ARGUMENT (the character
- being written), taken mod 64 -- so the console-write gate passed or
- failed by character value, not by authority. The required bit is an
- emit-time constant now. The entry address multiplies proc-entry-size
- by the current-proc index held in R11 -- an earlier encoding
- hardcoded imul rcx, rbx, so the check read a cap word offset by
- whatever the interrupted program left in RBX and only worked when
- RBX happened to be zero.
 
   emit-check-capability : CodegenState, Integer -> CodegenState
   emit-check-capability (st) (cap-bit) =
@@ -3152,21 +3079,6 @@ Section: MSR and Syscall
  Every port below is reached through the ACTIVE drive's base rather than through
  the primary channel's literal address, and the drive is selected with the
  active select byte rather than a hardcoded master.
-
- It was the other way around, and that is what made block-select inert. The
- three cells it writes -- ata-active-drive-addr, ata-active-base-addr,
- ata-active-select-addr -- had **no reader anywhere in the compiler**: nine
- mentions, three of them the definitions, three the initialisation, three the
- writes in block-select itself. Meanwhile emit-ata-setup-lba put the literal 224
- on the drive-head port before every read and every write, so the whole block
- layer addressed the primary master forever. `dm-enumerate-drives` reported four
- drives, `dm-exec-install` partitioned whichever one it was handed, and all four
- were the disk the machine booted from.
-
- Nothing could see it, because with one image behind every position a working
- selector and a missing one produce identical output. The test that pins it
- attaches two images with different bytes at LBA 0 and reads sector zero from
- each drive; before this change both answered with the first image's bytes.
 
   emit-ata-port : CodegenState, Integer -> CodegenState
   emit-ata-port (st) (off) =

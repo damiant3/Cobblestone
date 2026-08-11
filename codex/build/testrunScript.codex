@@ -10,7 +10,7 @@ Chapter: TestRunScript
 
 Section: Parameters
 
-  testrun-params : List ShellParam = [sh-param "Kernel" SptString, sh-param "OutFile" SptString, sh-param-default "StdinFile" SptString (SeLit ""), sh-param-default "DiskFile" SptString (SeLit ""), sh-param-default "PCore" SptInt (SeInt 1)]
+  testrun-params : List ShellParam = [sh-param "Kernel" SptString, sh-param "OutFile" SptString, sh-param-default "StdinFile" SptString (SeLit ""), sh-param-default "KeysFile" SptString (SeLit ""), sh-param-default "DiskFile" SptString (SeLit ""), sh-param-default "Disk2File" SptString (SeLit ""), sh-param-default "VmArgsFile" SptString (SeLit ""), sh-param-default "Smp" SptInt (SeInt 0), sh-param-default "PCore" SptInt (SeInt 1)]
 
 Section: S01 -- Preamble
 
@@ -24,8 +24,11 @@ Section: S03 -- VM args and optional input/disk
 
   s03 : List ShellCmd =
     let stdin-copy = [ScDotNetCallAssign "inputFile" "System.IO.Path" "GetTempFileName" [], ScReadBytes "stdinBytes" (SeVar "StdinFile"), ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "inputFile", SeVar "stdinBytes"], ScRaw "$vmArgs += @('-input', $inputFile)"]
-    in let disk-add = [ScRaw "$vmArgs += @('-disk', $DiskFile)"]
-    in [ScAssign "vmArgs" (SeArrayLiteral [SeLit "-kernel", SeVar "Kernel", SeLit "-output", SeVar "outputFile", SeLit "-mem", SeLit "3072", SeLit "-headless"]), ScIf (SeAnd (SeVar "StdinFile") (SeRaw "Test-Path -PathType Leaf $StdinFile")) stdin-copy [], ScIf (SeAnd (SeVar "DiskFile") (SeRaw "Test-Path -PathType Leaf $DiskFile")) disk-add []]
+    in let keys-add = [ScComment "Read directly: codex-vm only reads this file, so the read-only", ScComment "attribute a depot sidecar carries after sync is no obstacle.", ScRaw "$vmArgs += @('-keys-file', $KeysFile)"]
+    in let disk-add = [ScComment "Copy to a writable temp image: depot sidecars are read-only after", ScComment "sync (write tests would fail to open the disk), and codex-vm", ScComment "flushes writes durably (a writable sidecar would be mutated).", ScDotNetCallAssign "diskWork" "System.IO.Path" "GetTempFileName" [], ScRaw "[System.IO.File]::WriteAllBytes($diskWork, [System.IO.File]::ReadAllBytes($DiskFile))", ScRaw "$vmArgs += @('-disk', $diskWork)"]
+    in let disk2-add = [ScComment "The primary channel's slave. Copied to a writable temp for the same", ScComment "reason as the master, and it matters more here: the case this exists", ScComment "for is one drive writing to another.", ScDotNetCallAssign "disk2Work" "System.IO.Path" "GetTempFileName" [], ScRaw "[System.IO.File]::WriteAllBytes($disk2Work, [System.IO.File]::ReadAllBytes($Disk2File))", ScRaw "$vmArgs += @('-disk2', $disk2Work)"]
+    in let vmargs-add = [ScComment "Whitespace-separated flags, '#' comments, blank lines ignored.", ScForEach "line" (SeRaw "(Get-Content $VmArgsFile)") [ScAssign "line" (SeRaw "$line.Trim()"), ScIf (SeRaw "-not $line -or $line.StartsWith('#')") [ScContinue] [], ScRaw "$vmArgs += ($line -split '\\s+')"]]
+    in [ScAssign "vmArgs" (SeArrayLiteral [SeLit "-kernel", SeVar "Kernel", SeLit "-output", SeVar "outputFile", SeLit "-mem", SeLit "3072", SeLit "-headless"]), ScIf (SeAnd (SeVar "StdinFile") (SeRaw "(Test-Path -PathType Leaf $StdinFile)")) stdin-copy [], ScIf (SeAnd (SeVar "KeysFile") (SeRaw "(Test-Path -PathType Leaf $KeysFile)")) keys-add [], ScIf (SeAnd (SeVar "DiskFile") (SeRaw "(Test-Path -PathType Leaf $DiskFile)")) disk-add [], ScIf (SeAnd (SeVar "Disk2File") (SeRaw "(Test-Path -PathType Leaf $Disk2File)")) disk2-add [], ScIf (SeRaw "$Smp -gt 1") [ScRaw "$vmArgs += @('-smp', \"$Smp\")"] [], ScIf (SeAnd (SeVar "VmArgsFile") (SeRaw "(Test-Path -PathType Leaf $VmArgsFile)")) vmargs-add []]
 
 Section: S04 -- VM launch and wait
 

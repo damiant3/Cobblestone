@@ -251,6 +251,21 @@ input in your session. Obey it.
    The test: if the next ten minutes are an editor and not `p4 submit`,
    you should not be holding the token.
 
+9. **Warm the caches BEFORE you request.** The hold is a mutex on the
+   whole fleet, so a one-time cost paid inside it is paid by everyone
+   in the queue. A workspace that has not gated recently has no cached
+   plug binaries (`build-output/` is p4-ignored), and the gate's
+   plug-smoke phase then BUILDS four plugs from source inside your
+   hold: measured 2026-08-06 on the CL 13708 hold, 1,045s of a
+   1,394s gate, on a hold Damian had to ping. Every second of it was
+   tokenless work. Before writing `build-request` on a cold workspace
+   (above all a copy-up client), pre-build the plug CDXs
+   (`pwsh codex\plugs\<p>\build.ps1` for typescript, python, rust,
+   ptx) and sync the workspace. The test extends rule 8's: work that
+   would run identically WITHOUT the token belongs before the
+   request, not inside the hold. (Damian's ruling, 2026-08-06: "the
+   problem isn't the time it took, it was the mutex it held.")
+
 ## Example Session (agent "blu")
 
 ```powershell

@@ -11,7 +11,8 @@ param(
     [Parameter(Mandatory=$true)] [string]$Src,
     [string]$Out = '',
     [string]$Passes = 'none',
-    [string]$Kernel = ''
+    [string]$Kernel = '',
+    [int]$Mem = 3072
 )
 
 Set-StrictMode -Version Latest
@@ -54,9 +55,9 @@ if (-not (Test-Path $IrFile)) {
 $stderrFile = [System.IO.Path]::GetTempFileName()
 try {
     $proc = Start-Process -FilePath $script:CodexVmBin `
-        -ArgumentList @('-kernel', $PlugCdx, '-mem', '3072', '-headless') `
+        -ArgumentList @('-kernel', $PlugCdx, '-mem', "$Mem", '-headless') `
         -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
-    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 9100)
+    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 9134)
     $listener.Start()
     $deadline = (Get-Date).AddSeconds(30)
     while (-not $listener.Pending() -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }
@@ -76,16 +77,30 @@ try {
         $off += $n
         if ($off -lt $irData.Length) { Start-Sleep -Milliseconds 20 }
     }
+    # A read that FAILS is not a response that ENDED, and conflating the two
+    # cost three wrong diagnoses on 2026-08-09: the reader caught the timeout,
+    # broke, and handed back the first 11 KB of a 16 MB report as though the
+    # plug had finished. A partial report reads as a small clean one -- the
+    # summary line is simply absent -- so it must be a loud failure here.
+    #
+    # The accumulator is a MemoryStream because the old one added ONE BYTE AT
+    # A TIME to a List; at 16 MB that is slow enough for the socket to fall
+    # behind and produce the very timeout being mistaken for the end.
     $ns.ReadTimeout = 300000
-    $resp = [System.Collections.Generic.List[byte]]::new()
-    $buf = New-Object byte[] 65536
+    $resp = [System.IO.MemoryStream]::new()
+    $buf = New-Object byte[] 262144
+    $truncated = $false
     while ($true) {
-        try { $n = $ns.Read($buf, 0, $buf.Length) } catch { break }
+        try { $n = $ns.Read($buf, 0, $buf.Length) } catch { $truncated = $true; break }
         if ($n -le 0) { break }
-        for ($i = 0; $i -lt $n; $i++) { $resp.Add($buf[$i]) }
+        $resp.Write($buf, 0, $n)
     }
     $client.Close()
-    if ($resp.Count -eq 0) { [Console]::Error.WriteLine("FAIL: empty response from plug"); exit 8 }
+    if ($resp.Length -eq 0) { [Console]::Error.WriteLine("FAIL: empty response from plug"); exit 8 }
+    if ($truncated) {
+        [Console]::Error.WriteLine("FAIL: response truncated after $($resp.Length) bytes -- the plug was still sending")
+        exit 9
+    }
     $text = [System.Text.Encoding]::ASCII.GetString($resp.ToArray())
     Write-Host "[recheck] $Src  (passes=$(if ($Passes) { $Passes } else { 'default' }))"
     Write-Host $text

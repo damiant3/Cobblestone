@@ -1,0 +1,87 @@
+Chapter: BlockLadderProbe
+  cites Works chapter MetalLadder
+
+ What A5 could not answer on 2026-08-10: the compiler payload reached the
+ board, painted nothing of its own, wrote nothing, and the volume came back
+ byte-identical. Every stage between entry and the write was collapsed into
+ one silent state. This walks those stages and paints each one.
+
+ THE PAINT MUST PRECEDE THE PRINT ON EVERY RUNG, and the first version of
+ this chapter got that backwards. print-line-uni reaches firmware ConOut,
+ and the kernel loads its own CR3 before any of this runs (X86_64Boot, the
+ uefi-systab-addr note), so a firmware call here is a jump into a mapping we
+ replaced. On the ASUS, 2026-08-10, the payload produced no colour and no
+ write and the screen held the stub's dark green: a print that never returns
+ explains that exactly, and with the print first the colour channel could not
+ run to say so. Ordering the paint first makes the colour independent of
+ ConOut, which is what having two channels was supposed to buy.
+
+ fb=1 on a stage line means the colour was read back out of the framebuffer
+ after it was written, so a silent paint convicts itself.
+
+ We say:
+
+Section: Cells
+
+ uefi-systab-addr, the cell cdx-to-pe.ps1 primes with the SystemTable
+ pointer before it jumps. It moved to 30704 at main 14398 because 36208 sat
+ inside the PML4 the page-table build zeroes.
+
+  probe-systab-cell : Integer = 30704
+
+ The ESP as build-img.ps1 lays it out. flash-usb.ps1 -SpecFit rewrites LBA 0
+ and 1 and the backup GPT, and moves neither the partition nor its BPB.
+
+  probe-part-lba : Integer = 2048
+
+ Inside the facts region (LBA 28639..32734 on a 32768-sector image), so a
+ test write lands on nothing the volume's own checks read.
+
+  probe-scratch-lba : Integer = 30000
+
+  probe-mark-a : Integer = 165
+
+Section: Entry
+
+  probe-bps : Integer -> Integer
+  probe-bps (buf) = peek-byte buf 11 + bit-shl (peek-byte buf 12) 8
+
+ The read rung tests the CONTENT, not the pointer. Testing buf /= 0 tests
+ that a buffer was allocated, which is true whether or not any sector
+ arrived in it: a payload built without UEFI mode reads down the bare-metal
+ path, gets 512 zero bytes, and passes a pointer test every time. The
+ 0x55AA signature at 510 is in every boot sector build-img.ps1 lays down.
+
+  probe-read-ok : Integer -> Integer
+  probe-read-ok (buf) =
+    if buf == 0 then 0
+    else if peek-byte buf 510 /= 85 then 0
+    else if peek-byte buf 511 /= 170 then 0
+    else 1
+
+  probe-truth : Boolean -> Integer
+  probe-truth (b) = if b then 1 else 0
+
+  probe-step : Text, Integer, Integer, Integer -> [Console] Nothing
+  probe-step (tag) (ok) (colour) (prev) = act
+    fb <- ladder-pass ok colour prev
+    print-line-uni ("LADDER " & tag & " ok=" & show ok & " painted fb=" & show fb)
+    h <- ladder-hold-if ok prev
+    print-line-uni ("LADDER " & tag & " continuing")
+  end
+
+  opening : [Console, Device.Block] Integer = act
+    a <- probe-step "entered" 1 ladder-cyan ladder-red
+    print-line-uni ("LADDER fb base=" & show (boot-fb-base 0) & " w=" & show (boot-fb-w 0) & " h=" & show (boot-fb-h 0) & " stride=" & show (boot-fb-stride 0))
+    b <- probe-step "systab" (probe-truth (peek-qword probe-systab-cell 0 /= 0)) ladder-yellow ladder-cyan
+    sb <- block-read-sector probe-part-lba
+    c <- probe-step "read" (probe-read-ok sb) ladder-magenta ladder-yellow
+    print-line-uni ("LADDER bps=" & show (probe-bps sb) & " b0=" & show (peek-byte sb 0) & " b11=" & show (peek-byte sb 11) & " b12=" & show (peek-byte sb 12))
+    d <- probe-step "bpb" (probe-truth (probe-bps sb == 512)) ladder-orange ladder-magenta
+    m0 <- poke-byte sb 0 probe-mark-a
+    wr <- block-write-sector probe-scratch-lba sb
+    rb <- block-read-sector probe-scratch-lba
+    e <- probe-step "readback" (probe-read-ok rb) ladder-orange ladder-magenta
+    f <- probe-step "wrote" (probe-truth (peek-byte rb 0 == probe-mark-a)) ladder-white ladder-orange
+    ladder-hold ladder-white
+  end

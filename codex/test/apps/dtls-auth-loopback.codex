@@ -4,20 +4,6 @@ Chapter: DtlsAuthLoopbackTest
   cites Encode chapter X509Chain
   cites Foreword chapter Maybe
 
- An AUTHENTICATED DTLS 1.3 handshake, end to end, over datagrams, with no
- network -- and the negative that proves it is authentication and not
- decoration.
-
- The server presents a real Ed25519 leaf certificate and signs the
- transcript with its private key. The certificate chain was minted outside
- Codex: the DER was built by .NET's ASN.1 writer and the signatures by our
- own RFC-8032-gated Ed25519 (the forge in scratchpad/forge). The client
- carries the CA as its trust anchor.
-
- UNLIKE THE ANONYMOUS LOOPBACK, THIS ONE AUTHENTICATES. If test-mitm below
- is not "not-done", the man-in-the-middle defence is broken and nothing
- here is secure.
-
 Section: Fixtures
 
   ca-cert : List Integer =
@@ -88,9 +74,6 @@ Section: Setup
   cookie-secret : List Integer = [7, 7, 7, 7, 7, 7, 7, 7]
   client-addr : List Integer = [10, 0, 0, 7]
 
- The handshake Randoms: caller-supplied entropy, fixed here for a
- reproducible exchange, distinct from the private keys.
-
   c-random : List Integer =
     [101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116,
      117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132]
@@ -103,17 +86,10 @@ Section: Setup
 
   cal-now : List Integer = [50, 48, 50, 53, 48, 49, 48, 49, 48, 48, 48, 48, 48, 48]
 
- The trust anchor is the CA: parse its certificate, take its subject name
- and key. A name match alone means nothing here -- the anchor carries the
- KEY, and the leaf must be signed by it.
-
   ca-parsed : Maybe X509Cert = x509-parse ca-cert
 
   anchors : List X509Anchor =
     when ca-parsed is None -> [] is Just (c) -> [X509Anchor { xa-subject = c.xc-subject, xa-key = c.xc-key }]
-
- The server presents the leaf and signs with the leaf's private key. The
- client requires authentication because it holds anchors.
 
   s0 : DtlsEp = dtls-ep-with-cert (dtls-ep-new True s-priv s-random cookie-secret client-addr) [leaf-cert] leaf-priv leaf-pub
   peer-name : List Integer =
@@ -135,17 +111,11 @@ Section: The Authenticated Exchange
   st3 : DtlsEpStep = dtls-ep-recv (st1.es-ep) d2 20
   d3 : List Integer = list-at (st3.es-out) 0
 
- The cookie verifies: the server emits ServerHello, Certificate,
- CertificateVerify, Finished -- four datagrams.
-
   st4 : DtlsEpStep = dtls-ep-recv (st2.es-ep) d3 30
   d-sh : List Integer = list-at (st4.es-out) 0
   d-cert : List Integer = list-at (st4.es-out) 1
   d-cv : List Integer = list-at (st4.es-out) 2
   d-fin : List Integer = list-at (st4.es-out) 3
-
- The client consumes them in order: ServerHello (keys), Certificate (chain
- walk), CertificateVerify (signature over its own transcript), Finished.
 
   st5 : DtlsEpStep = dtls-ep-recv (st3.es-ep) d-sh 40
   st6 : DtlsEpStep = dtls-ep-recv (st5.es-ep) d-cert 41
@@ -163,27 +133,12 @@ Section: Results
   test-client-done : Text = "auth client-done=" & show (dtls-ep-done (st8.es-ep))
   test-server-done : Text = "auth server-done=" & show (dtls-ep-done (st9.es-ep))
 
- The line that separates this from the anonymous loopback: the client
- authenticated the server.
-
   test-authenticated : Text = "auth client-authenticated=" & show (dtls-ep-authenticated (st8.es-ep))
 
   test-agree : Text =
     "auth agree=" & show (tls13-ct-equal ((st8.es-ep).ep-s-hs) ((st9.es-ep).ep-s-hs))
 
 Section: A Client That Does Not Check
-
- The same certificate-presenting server, and a client with NO anchors. It
- does not require authentication and cannot verify the chain, so it keeps
- no peer key and ends unauthenticated -- but it must COMPLETE, because
- completing is a property of the transcript and the key schedule.
-
- This is the configuration the anonymous loopback cannot reach (an
- anonymous server sends no Certificate at all) and it is the ordinary one
- on the open internet. It could not complete until the Certificate and
- CertificateVerify messages folded into the transcript unconditionally:
- an unfolded message left this client's transcript one short of the
- server's and the server Finished failed to verify.
 
   na0 : DtlsEp = dtls-ep-new False c-priv c-random [] []
 
@@ -223,10 +178,6 @@ Section: The Man In The Middle
 
   d-sh-tampered : List Integer = flip-late d-sh
 
- Flip a byte 6 from the end -- inside the key_share value, past its length
- framing, so the ServerHello still parses and the failure lands at
- CertificateVerify rather than at ServerHello parsing.
-
   flip-late : List Integer -> List Integer
   flip-late (bs) = list-set-at (copy-bytes bs) (list-length bs - 6) (bit-xor (list-at bs (list-length bs - 6)) 1)
 
@@ -246,11 +197,6 @@ Section: The Man In The Middle
 
 Section: The Downgrade
 
- An ANONYMOUS server -- no certificate -- talking to a client that requires
- authentication. The server sends only ServerHello and Finished. The client
- has anchors, so it must refuse to complete rather than silently accept an
- unauthenticated peer.
-
   anon-s0 : DtlsEp = dtls-ep-new True s-priv s-random cookie-secret client-addr
   ds2 : DtlsEpStep = dtls-ep-recv anon-s0 d1 10
   dd2 : List Integer = list-at (ds2.es-out) 0
@@ -267,18 +213,6 @@ Section: The Downgrade
 
 Section: The Expected Peer
 
- The chain proves the leaf is trusted; it does not prove it is the peer the
- client meant to reach. A client that pins the expected peer completes only
- when the leaf's subject is that peer, and refuses an otherwise-valid chain
- that authenticates a DIFFERENT holder under the same CA -- a
- man-in-the-middle holding a real certificate of his own.
-
- The wrong-host client is built from the start rather than adjusted
- mid-handshake, because the expected name is now a property the endpoint
- is CONSTRUCTED with and not one that can be set afterwards. Same key,
- same random, same anchors, same server datagrams -- the only difference
- is the name it says it dialled, which is exactly the variable under test.
-
   bad-c0 : DtlsEp = dtls-ep-with-anchors (dtls-ep-new False c-priv c-random [] []) anchors cal-now wrong-name
 
   bad1 : DtlsEpStep = dtls-ep-client bad-c0 0
@@ -288,10 +222,6 @@ Section: The Expected Peer
   bad6 : DtlsEpStep = dtls-ep-recv (bad5.es-ep) d-cert 41
   bad7 : DtlsEpStep = dtls-ep-recv (bad6.es-ep) d-cv 42
   bad8 : DtlsEpStep = dtls-ep-recv (bad7.es-ep) d-fin 43
-
- The chain still walks to the anchor and every signature still verifies.
- The leaf is genuinely `device.codex.test`, and this client asked for
- `evil.codex.test`, so it must not authenticate and must not complete.
 
   test-expect-wrong : Text =
     "auth expect-wrong client-done=" & show (dtls-ep-done (bad8.es-ep)) & " authenticated=" & show (dtls-ep-authenticated (bad8.es-ep))

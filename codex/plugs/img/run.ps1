@@ -55,7 +55,7 @@ $inputBytes = $ms.ToArray()
 Write-Host "[img-run] PE=$($peBytes.Length) CDX=$($cdxBytes.Length) src=$($srcBytes.Length) sectors=$TotalSectors fs=$(if ($Fat16) {'FAT16'} else {'FAT32'})"
 
 # -- Start TCP listener ----------------------------------------------
-$plugPort = 9100
+$plugPort = 9118
 $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $plugPort)
 $listener.Start()
 

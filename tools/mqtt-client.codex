@@ -8,9 +8,6 @@ Chapter: MqttClient
   cites Foreword chapter Console
   cites Foreword chapter Maybe
 
- An MQTT v5 client on a real socket, so that something other than our own
- loopback can be the thing that answers it.
-
  `codex/test/apps/mqtt-loopback` drives `MqttEndpoint` against packets
  built by our own `Mqtt` codec: two halves that share every assumption
  and therefore agree forever. This binary exists to be answered by
@@ -27,11 +24,6 @@ Chapter: MqttClient
  is dialled by the harness. Here the guest dials 10.0.2.2, and codex-vm
  resolves the gateway to the host's own loopback, which is where the
  broker is.
-
- THE RECORD BOUNDARY IS THE WHOLE OF THE TRANSPORT WORK, exactly as it is
- for TLS. `mqtt-ep-recv` takes a buffer and answers how many bytes it
- consumed; TCP delivers whatever happened to arrive, so a segment may hold
- half a packet or three. The loop keeps the remainder.
 
 Section: Configuration
 
@@ -80,18 +72,13 @@ Section: Pumping
     mr-buf : List Integer
   }
 
-  mqtt-send-all : TcpTransportState, List (List Integer), Integer -> [Network.Write] TcpTransportState
+  mqtt-send-all : TcpTransportState, List (List Integer), Integer -> [Network.Read, Network.Write] TcpTransportState
   mqtt-send-all (ts) (outs) (i) =
     if i >= list-length outs then ts
     else act
       ts1 <- net-io-send-raw ts (list-at outs i)
       mqtt-send-all ts1 outs (i + 1)
     end
-
- Read once, feed everything complete out of the buffer, keep the rest.
- The step reports the byte count it took, and the remainder is carried
- forward -- this is the only place in the client that can desynchronise
- the stream, so it is the only place that decides how much was consumed.
 
   mqtt-pump : MqttEp, TcpTransportState, List Integer, Integer -> [Network.Read, Network.Write] MqttRun
   mqtt-pump (ep) (ts) (buf) (fuel) =
@@ -115,16 +102,6 @@ Section: Reporting
     else mqtt-bytes-text bs (i + 1) (if i == 0 then show (list-at bs i) else acc & "," & show (list-at bs i))
 
 Section: One Exchange
-
- Publish, then pump until the broker has finished with it. A QoS 1
- exchange is one round trip and a QoS 2 exchange is two, so the pump runs
- until the endpoint reports the publish retired rather than a fixed
- number of times -- a count that happened to suit QoS 1 would report a
- QoS 2 publish as unacknowledged when it was merely halfway.
-
- The rounds are bounded. A broker that stops answering must end the run
- with `acked=False`, which the harness fails on; looping until success
- would turn a broken exchange into a hang.
 
   mqtt-exchange-rounds : Integer = 8
 

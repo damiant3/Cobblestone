@@ -1,0 +1,156 @@
+Chapter: Lwm2mClientTest
+  cites Net chapter Lwm2mClient
+  cites Encode chapter Coap
+  cites Encode chapter Lwm2m
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ A registration exchange and a management session with no socket and no
+ server process, which is what the client being pure buys. The server side
+ here is a handful of hand-built CoAP requests rather than a peer, so what
+ is proven is our half: the requests we emit and the answers we give.
+
+Section: The Device
+
+  temp-value : List Integer = [50, 51, 46, 53]
+ The written value is a DIFFERENT LENGTH from the one it replaces (4 bytes
+ against 3). With both at three the write-visible arm reads the same either
+ way and passes against a client that stored nothing.
+
+  new-lifetime : List Integer = [51, 54, 48, 48]
+
+  resources : List Lwm2mRes = [
+    lwm2m-res lwm2m-obj-device 0 lwm2m-res-manufacturer [67, 111, 100, 101, 120],
+    lwm2m-res lwm2m-obj-device 0 lwm2m-res-model [66, 108, 117],
+    lwm2m-res-exec lwm2m-obj-device 0 lwm2m-res-reboot,
+    lwm2m-res-rw lwm2m-obj-server 0 1 [51, 48, 48],
+    lwm2m-res lwm2m-obj-temperature 0 5700 temp-value
+  ]
+
+  reg : Lwm2mRegistration = Lwm2mRegistration {
+    endpoint = "blu-probe", lifetime = 8, binding = "U",
+    objects = [lwm2m-obj-device, lwm2m-obj-server, lwm2m-obj-temperature]
+  }
+
+  c0 : Lwm2mClient = lwm2m-client-new reg resources
+
+Section: Registration
+
+  st-reg : Lwm2mStep = lwm2m-client-register c0
+  reg-dgram : List Integer = list-at (st-reg.ls-out) 0
+
+ The registration must parse as CoAP and address /rd with the endpoint in
+ Uri-Query, not in the path. Counting the options by number is what
+ separates the two spellings: a whole path in one option would show one
+ Uri-Path and no Uri-Query.
+
+  reg-parsed : Maybe CoapMessage = coap-parse reg-dgram
+
+  reg-opts : List CoapOption = when reg-parsed is None -> [] is Just (m) -> m.cm-options
+
+  reg-paths : List (List Integer) = coap-find-options reg-opts coap-opt-uri-path
+  reg-queries : List (List Integer) = coap-find-options reg-opts coap-opt-uri-query
+
+  same : List Integer, List Integer, Integer -> Boolean
+  same (a) (b) (i) =
+    if list-length a /= list-length b then False
+    else if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else same a b (i + 1)
+
+  head-is : List (List Integer), Text -> Boolean
+  head-is (os) (want) =
+    if list-length os == 0 then False
+    else same (list-at os 0) (coap-text-to-bytes want) 0
+
+ The server accepts and issues a handle. Location-Path is repeatable and
+ the handle is the sequence, so the arm below reads back both segments.
+
+  reg-msg-id : Integer = when reg-parsed is None -> 0 is Just (m) -> m.cm-msg-id
+
+  loc-opts : List CoapOption =
+    [CoapOption { number = coap-opt-location-path, value = [114, 100] },
+     CoapOption { number = coap-opt-location-path, value = [55, 52] }]
+
+  loc-response : List Integer =
+    let t = CoapAcknowledgement
+    in coap-build-response t coap-201-created reg-msg-id [] loc-opts []
+
+  c1 : Lwm2mClient = (lwm2m-client-recv (st-reg.ls-client) loc-response).ls-client
+
+Section: Device Management
+
+  mk-req : Integer, List CoapOption, List Integer -> List Integer
+  mk-req (code) (opts) (payload) =
+    let method = if code == 1 then CoapGet else if code == 2 then CoapPost else CoapPut
+    in coap-build-request CoapConfirmable method 500 [9] opts payload
+
+  read-model : List Integer = mk-req 1 (coap-uri-path-options "/3/0/1") []
+  read-missing : List Integer = mk-req 1 (coap-uri-path-options "/3/0/99") []
+  read-instance : List Integer = mk-req 1 (coap-uri-path-options "/3/0") []
+  write-ok : List Integer = mk-req 3 (coap-uri-path-options "/1/0/1") new-lifetime
+  write-ro : List Integer = mk-req 3 (coap-uri-path-options "/3/0/1") new-lifetime
+  exec-ok : List Integer = mk-req 2 (coap-uri-path-options "/3/0/4") []
+  exec-not : List Integer = mk-req 2 (coap-uri-path-options "/3/0/1") []
+
+  code-of : Lwm2mStep -> Integer
+  code-of (s) =
+    if list-length (s.ls-out) == 0 then 0 - 1
+    else when coap-parse (list-at (s.ls-out) 0)
+      is None -> 0 - 2
+      is Just (m) -> m.cm-code
+
+  payload-len : Lwm2mStep -> Integer
+  payload-len (s) =
+    if list-length (s.ls-out) == 0 then 0 - 1
+    else when coap-parse (list-at (s.ls-out) 0)
+      is None -> 0 - 2
+      is Just (m) -> list-length (m.cm-payload)
+
+  s-read : Lwm2mStep = lwm2m-client-recv c1 read-model
+  s-missing : Lwm2mStep = lwm2m-client-recv c1 read-missing
+  s-inst : Lwm2mStep = lwm2m-client-recv c1 read-instance
+  s-write : Lwm2mStep = lwm2m-client-recv c1 write-ok
+  s-wro : Lwm2mStep = lwm2m-client-recv c1 write-ro
+  s-exec : Lwm2mStep = lwm2m-client-recv c1 exec-ok
+  s-execno : Lwm2mStep = lwm2m-client-recv c1 exec-not
+
+ The write must be visible to the next read, or it changed nothing and the
+ 2.04 was a courtesy.
+
+  s-after-write : Lwm2mStep = lwm2m-client-recv (s-write.ls-client) (mk-req 1 (coap-uri-path-options "/1/0/1") [])
+
+Section: Lifetime
+
+ Lifetime 8, so the Update is due once half of it is gone: three silent
+ ticks and the fourth speaks. quiet-ticks answers the 1-based tick that
+ first emitted, or 0 if none did within n.
+
+  quiet-ticks : Lwm2mClient, Integer, Integer -> Integer
+  quiet-ticks (c) (i) (n) =
+    if i >= n then 0
+    else let s = lwm2m-client-tick c
+    in if list-length (s.ls-out) > 0 then i + 1
+    else quiet-ticks (s.ls-client) (i + 1) n
+
+  st-dereg : Lwm2mStep = lwm2m-client-deregister c1
+
+Section: Entry
+  opening : [Console] Nothing = act
+    print-line-uni ("reg-paths=" & show (list-length reg-paths))
+    print-line-uni ("reg-path0-is-rd=" & show (head-is reg-paths "rd"))
+    print-line-uni ("reg-queries=" & show (list-length reg-queries))
+    print-line-uni ("reg-query0-is-ep=" & show (head-is reg-queries "ep=blu-probe"))
+    print-line-uni ("registered=" & show (lwm2m-client-registered c1))
+    print-line-uni ("read=" & show (code-of s-read) & " len=" & show (payload-len s-read))
+    print-line-uni ("read-missing=" & show (code-of s-missing))
+    print-line-uni ("read-instance=" & show (code-of s-inst) & " tlv=" & show (payload-len s-inst))
+    print-line-uni ("write=" & show (code-of s-write))
+    print-line-uni ("write-readonly=" & show (code-of s-wro))
+    print-line-uni ("write-visible=" & show (payload-len s-after-write))
+    print-line-uni ("exec=" & show (code-of s-exec) & " count=" & show (lwm2m-client-executions (s-exec.ls-client)))
+    print-line-uni ("exec-notallowed=" & show (code-of s-execno))
+    print-line-uni ("update-at-tick=" & show (quiet-ticks c1 0 8))
+    print-line-uni ("dereg-out=" & show (list-length (st-dereg.ls-out)))
+    print-line-uni ("dereg-registered=" & show (lwm2m-client-registered (st-dereg.ls-client)))
+  end

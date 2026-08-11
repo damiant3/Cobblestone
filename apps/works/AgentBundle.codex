@@ -6,12 +6,6 @@ Chapter: AgentBundle
   cites Foreword chapter CCE
   cites Foreword chapter Maybe
 
- The bundled agent is the path the USB-stick promise depends on: a person is
- handed a stick, boots it, and an agent is already there. AgentAcquisition
- named that path and answered it with a file-exists check and a `verified`
- field nobody ever set, so a bundled agent was indistinguishable from a
- directory with the right name in it. This chapter is the answer.
-
  Verification is a chain of three links and every one of them can fail on its
  own. First, the manifest's Ed25519 signature is checked over every byte of the
  manifest that precedes the signature line, which includes the public key line,
@@ -20,10 +14,6 @@ Chapter: AgentBundle
  the digest the signed manifest claims. Third, the model is parsed as GGUF far
  enough to reach its tensor table, because a file that hashes correctly and is
  not a model is still not an agent.
-
- The order matters and it is not the convenient one. Hashing is the expensive
- link and checking the signature first would let a stick full of noise cost
- only a signature verification. That is deliberate.
 
  **Neither the digest nor the parse holds the model.** This chapter used to
  answer both links with one `fat16-read-bytes`, which returns the whole file as
@@ -49,14 +39,6 @@ Chapter: AgentBundle
  A real llama.cpp model puts roughly 750 KB there, and the largest measured on
  this box, a 3.2 GB gemma3, puts 15.7 MB. So the common case pays a megabyte and
  the body is never held at all.
-
- **The foreign-format question is now answered in the read direction, and the
- answer is yes.** This chapter used to say that nothing established whether
- Codex could read a GGUF produced outside this tree, because the generator in
- `build/make-agent-bundle.ps1` writes the file and `Foreword chapter Gguf`
- reads it, and two halves written together agree whatever they both believe.
- That was the right caveat and it was wrong about one thing: it claimed there
- was no foreign model on this machine. There were ten.
 
  `build/gguf-foreign-test.ps1` is the reverse test. Against a real llama.cpp
  model the reader agrees with an independent host parse on every field:
@@ -147,10 +129,6 @@ Section: The ASCII Boundary
 
 Section: Manifest Scanning
 
- The manifest is line-oriented: a key, one space, the value, a newline. A key
- is only a key at the start of a line, so a value that happens to contain the
- word `sig` cannot be mistaken for the signature line.
-
   ab-next-line : List Integer, Integer -> Integer
   ab-next-line (data) (pos) =
     if pos >= list-length data then list-length data
@@ -169,11 +147,6 @@ Section: Manifest Scanning
     else if pos + i >= list-length data then False
     else if list-at data (pos + i) /= list-at key i then False
     else ab-match-at data key pos (i + 1)
-
- ab-value-offset answers where a key's value starts, or negative one when the
- key is absent. Negative one propagates rather than defaulting, because a
- missing field in a security manifest must refuse the bundle and not read as an
- empty value that then compares equal to something else empty.
 
   ab-value-offset : List Integer, List Integer, Integer -> Integer
   ab-value-offset (data) (key) (pos) =
@@ -227,12 +200,6 @@ Section: Numbers And Hex
     else if b >= 65 & b <= 70 then b - 55
     else -1
 
- A hex run stops at the first byte that is not a hex digit rather than
- substituting a zero, so a truncated or corrupt key produces a short byte list
- that the length check below refuses. A silent zero would produce a
- well-formed-looking key of the right length that simply never verifies, which
- is a much harder thing to read off a failure.
-
   ab-hex-bytes : List Integer, Integer, Integer, List Integer -> List Integer
   ab-hex-bytes (hex) (i) (n) (acc) =
     if i + 1 >= n then acc
@@ -248,12 +215,6 @@ Section: Numbers And Hex
     in ab-hex-bytes bs 0 (list-length bs) []
 
 Section: The Chain
-
- bundled-agent-verdict is the whole path: mount the boot volume, read the
- manifest, check the signature, check the digest, parse the model. Every step
- that can answer nothing answers a refusal naming the step, because a bundled
- agent that fails to load is a thing a person standing at a booted machine has
- to act on.
 
   agent-manifest-name : Text = "AGENT.MAN"
 
@@ -279,13 +240,6 @@ Section: The Chain
     in if ed25519-verify pub msg sig == False
       then BundleRefused "manifest signature does not verify"
       else ab-check-model vol mb
-
- The model is located rather than read. Its directory entry carries the length,
- which is compared against the manifest's claim before a single byte is hashed,
- so a model of the wrong size costs one lookup and not a scan. The sector-size
- check is here because the streaming digest below feeds whole 64-byte blocks out
- of each sector and carries no partial block between them, which is sound only
- while a sector is a whole number of blocks.
 
   ab-check-model : Fat16Volume, List Integer -> [Device.Block] AgentBundleVerdict
   ab-check-model (vol) (mb) =
@@ -321,13 +275,6 @@ Section: The Chain
 
 Section: The Parse Window
 
- The parse needs the bytes ahead of the tensor table and no others, and nothing
- announces how many that is until the walk has been made. So the walk is made
- over a window, and the window grows only on the evidence that it was too small.
- A window that already covers the whole file is not grown, because then a failed
- walk is a real answer about the file rather than about the window; that case
- falls through to the parse so the refusal names the actual link.
-
  The heap mark is what makes growing cheap. A window that did not reach the
  tensor table is rewound before the next one is read, so at most one window is
  ever resident, and a bundle whose metadata is a megabyte never pays for the
@@ -354,13 +301,6 @@ Section: The Parse Window
       else let dropped = __heap-restore mark
       in ab-parse-window vol mb model-name entry (i + 1)
 
- The model is parsed far enough to prove it is one: a valid header, a metadata
- block the walk can step over, and a tensor table that yields a named tensor.
- Reaching the first tensor's name is the cheapest reading that a file of the
- right size full of the wrong bytes cannot produce. The size reported is the
- directory entry's and not the window's, because the window is an artefact of
- how the file was read and the person reading the verdict wants the model.
-
   ab-parse-model : List Integer, Text, Integer, List Integer -> AgentBundleVerdict
   ab-parse-model (mb) (model-name) (model-size) (bs) =
     let h = gguf-parse-header bs
@@ -380,28 +320,6 @@ Section: The Parse Window
     })
 
 Section: Streaming The Digest
-
- The scan walks the model's cluster chain a sector at a time and never keeps a
- sector. Three things make that hold, and each of them is load-bearing:
-
- The eight hash words are ONE list, allocated before the mark. `sha256-compress`
- writes its result into the list it is given with `list-set-at` and returns that
- same list, so the words survive a rewind that reclaims everything else. A
- version of this loop that threaded a fresh eight-word list per block would
- allocate one per 64 bytes and defeat the whole exercise.
-
- The rewind happens at the TOP of each iteration rather than the bottom. The
- sector buffer, the message schedule, the sixty-four round records and the FAT
- sector that `fat16-next-cluster` reads are all allocated after the mark by the
- iteration that needs them, and all of them are gone before the next sector is
- read.
-
- The tail is the last chunk and only the last chunk. Every sector before it is
- full and a whole number of blocks, so no partial block is ever carried across a
- sector boundary; `ab-check-model` refuses a volume where that is not true
- rather than quietly hashing the wrong bytes. The padding is computed from the
- total length, not from the tail, which is what makes the answer identical to
- `sha256` over the same bytes.
 
   ab-model-digest : Fat16Volume, Integer, Integer -> [Device.Block] List Integer
   ab-model-digest (vol) (cluster) (size) =

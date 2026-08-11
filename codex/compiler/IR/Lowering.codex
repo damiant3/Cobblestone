@@ -2,10 +2,6 @@ Chapter: Lowering
   cites Codex chapter Build Settings (max-recursion-depth, demand-lower-guard-band)
   cites Codex chapter Phase Allocator (deck-bound-short-of)
 
- Transforms the typed AST into the intermediate representation.
- Every IR node inherits the SourceSpan of the AST node it was
- lowered from.
-
 Section: Lower Context
   LowerCtx = record {
    overlay : LookupOverlay,
@@ -87,9 +83,10 @@ Section: Expression Lowering
      in let actual-field-ty = when inst-field-ty
         is ErrorTy -> ty
         is otherwise -> inst-field-ty
+     in let node-rec-ty = instantiate-receiver-ty refined-rec-ty resolved-rec-ty
      in let fixed-rec = when rec-ty
         is RecordTy (rn) (ra) (rf) -> rec-ir
-        is otherwise -> set-ir-expr-type rec-ir resolved-rec-ty
+        is otherwise -> set-ir-expr-type rec-ir node-rec-ty
      in deck-record (IrFieldAccess fixed-rec (field.value) actual-field-ty s)
     is AActExpr (stmts) (s) -> lower-act stmts ty ctx s
     is AHandleExpr (eff) (body) (clauses) (s) -> lower-handle eff body clauses ty ctx s
@@ -178,6 +175,17 @@ Section: Expression Lowering
     is EffectfulTy (effs) (sc) (r) -> deck-record (EffectfulTy effs sc (fa-apply-subst subst r))
     is otherwise -> ty
 
+  instantiate-receiver-ty : CodexType, CodexType -> CodexType
+  instantiate-receiver-ty (refined) (resolved) =
+   when refined
+    is ConstructedTy (icn) (icargs) ->
+     (if list-length icargs == 0 then resolved
+      else when resolved
+       is RecordTy (irn) (ira) (irf) ->
+        (if list-length ira == list-length icargs then RecordTy irn icargs irf else resolved)
+       is otherwise -> resolved)
+    is otherwise -> resolved
+
   refine-receiver-ty : IRExpr, CodexType, LowerCtx -> CodexType
   refine-receiver-ty (rec-ir) (stripped) (ctx) =
    if ty-has-typevars stripped == False then stripped
@@ -258,7 +266,7 @@ Section: Expression Lowering
       is otherwise ->
        let resolved = deep-resolve (ctx.ust) raw
        in let stripped = strip-forall-ty resolved
-       in deck-record (IrName rn (prefer-applied-ty ty stripped) sp)
+       in deck-record (IrName rn (prefer-applied-ty ty stripped (ctx.local-type-vars)) sp)
     is otherwise ->
      let final = deep-resolve (ctx.ust) recorded
      in let stripped = strip-forall-ty final
@@ -286,16 +294,29 @@ Section: Expression Lowering
       is otherwise -> a
     is otherwise -> a
 
-  prefer-applied-ty : CodexType, CodexType -> CodexType
-  prefer-applied-ty (expected) (stripped) =
+  prefer-applied-ty : CodexType, CodexType, List Integer -> CodexType
+  prefer-applied-ty (expected) (stripped) (local-ids) =
    let peeled = peel-effectful-ty expected
    in when peeled
     is ConstructedTy (en) (eargs) ->
      if list-length eargs == 0 then stripped
      else when stripped
-      is SumTy (sn) (sa) (sc) -> if en.value == sn.value then peeled else stripped
-      is RecordTy (rn) (ra) (rf) -> if en.value == rn.value then peeled else stripped
-      is ConstructedTy (cn) (cargs) -> if en.value == cn.value & list-length cargs == list-length eargs then peeled else stripped
+      is SumTy (sn) (sa) (sc) ->
+       if en.value == sn.value then
+        (if list-length sa == list-length eargs
+          then SumTy sn (pick-record-args eargs sa local-ids 0 (list-length eargs) []) sc
+          else peeled)
+       else stripped
+      is RecordTy (rn) (ra) (rf) ->
+       if en.value == rn.value then
+        (if list-length ra == list-length eargs
+          then RecordTy rn (pick-record-args eargs ra local-ids 0 (list-length eargs) []) rf
+          else peeled)
+       else stripped
+      is ConstructedTy (cn) (cargs) ->
+       if en.value == cn.value & list-length cargs == list-length eargs
+        then ConstructedTy cn (pick-record-args eargs cargs local-ids 0 (list-length eargs) [])
+        else stripped
       is otherwise -> stripped
     is otherwise -> stripped
 
@@ -379,7 +400,7 @@ Section: Expression Lowering
       in let dict-ir = deck-record (IrName dict-rn (deep-resolve (ctx.ust) db) sp)
       in let inner-ret = peel-fun-return func-ty
       in let inner-apply = deck-record (IrApply func-ir dict-ir inner-ret sp)
-      in lower-apply-dispatch inner-apply arg-ir (prefer-applied-ty ty (peel-fun-return inner-ret)) sp
+      in lower-apply-dispatch inner-apply arg-ir (prefer-applied-ty ty (peel-fun-return inner-ret) (ctx.local-type-vars)) sp
       else let cls-name = substring pname 10 (text-length pname - 10)
       in let param-name = "__" & cls-name & "-dict"
       in let pb = lookup-type-split (ctx.overlay) (ctx.base) param-name
@@ -388,7 +409,7 @@ Section: Expression Lowering
        is otherwise -> let dict-ir = deck-record (IrName param-name (deep-resolve (ctx.ust) pb) sp)
         in let inner-ret = peel-fun-return func-ty
         in let inner-apply = deck-record (IrApply func-ir dict-ir inner-ret sp)
-        in lower-apply-dispatch inner-apply arg-ir (prefer-applied-ty ty (peel-fun-return inner-ret)) sp
+        in lower-apply-dispatch inner-apply arg-ir (prefer-applied-ty ty (peel-fun-return inner-ret) (ctx.local-type-vars)) sp
 
   lower-derived-apply : AExpr, Text, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-derived-apply (inner-f) (pname) (a) (ty) (ctx) (sp) =
@@ -402,7 +423,7 @@ Section: Expression Lowering
    in let dict-ir = deck-record (IrName dict-rn (deep-resolve (ctx.ust) db) sp)
    in let inner-ret = peel-fun-return func-ty
    in let inner-apply = deck-record (IrApply func-ir dict-ir inner-ret sp)
-   in lower-apply-dispatch inner-apply arg-ir (prefer-applied-ty ty (peel-fun-return inner-ret)) sp
+   in lower-apply-dispatch inner-apply arg-ir (prefer-applied-ty ty (peel-fun-return inner-ret) (ctx.local-type-vars)) sp
 
   constrained-dict-rn : Text, Text, LowerCtx -> Text
   constrained-dict-rn (pname) (tn) (ctx) =
@@ -424,7 +445,7 @@ Section: Expression Lowering
       else let fty = strip-forall-ty (deep-resolve (ctx.ust) (lookup-type-split (ctx.overlay) (ctx.base) spec-rn))
       in let func-ir = deck-record (IrName spec-rn fty sp)
       in let ret-ty = peel-fun-return fty
-      in lower-apply-dispatch func-ir arg-ir (prefer-applied-ty ty ret-ty) sp
+      in lower-apply-dispatch func-ir arg-ir (prefer-applied-ty ty ret-ty (ctx.local-type-vars)) sp
 
   method-spec-rn : Text, Text, LowerCtx -> Text
   method-spec-rn (mname) (tn) (ctx) =
@@ -461,7 +482,7 @@ Section: Expression Lowering
    in let actual-ret = when resolved-ret
       is ErrorTy -> ty
       is otherwise -> resolved-ret
-   in let preferred-ret = prefer-applied-ty ty actual-ret
+   in let preferred-ret = prefer-applied-ty ty actual-ret (ctx.local-type-vars)
    in lower-apply-dispatch func-ir arg-ir preferred-ret sp
 
   lower-show-apply : AExpr, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
@@ -475,7 +496,7 @@ Section: Expression Lowering
    in let actual-ret = when resolved-ret
       is ErrorTy -> ty
       is otherwise -> resolved-ret
-   in let preferred-ret = prefer-applied-ty ty actual-ret
+   in let preferred-ret = prefer-applied-ty ty actual-ret (ctx.local-type-vars)
    in let arg-tn = type-name-of (deep-resolve (ctx.ust) (ir-expr-type arg-ir))
    in let probe = if text-length arg-tn == 0 | is-primitive-type-name arg-tn then ErrorTy else lookup-type-split (ctx.overlay) (ctx.base) ("__show_" & arg-tn)
    in when probe
@@ -488,7 +509,12 @@ Section: Expression Lowering
    when op
     is OpEq -> lower-eq-dispatch left-ty left-ir right-ir ty ctx s True
     is OpNotEq -> lower-eq-dispatch left-ty left-ir right-ir ty ctx s False
-    is otherwise -> deck-record (IrBinary (lower-bin-op op left-ty) left-ir right-ir (binary-result-type op left-ty ty) s)
+    is otherwise -> let lt = deep-resolve (ctx.ust) left-ty
+     in if append-op-unclassified op lt
+     then deck-record (IrError "append operand is neither text nor a list" (binary-result-type op left-ty ty) s)
+     else if arith-op-unclassified op lt
+     then deck-record (IrError "arithmetic operand is neither a number nor an integer" (binary-result-type op left-ty ty) s)
+     else deck-record (IrBinary (lower-bin-op op left-ty) left-ir right-ir (binary-result-type op left-ty ty) s)
 
   eq-op-for : Boolean -> BinaryOp
   eq-op-for (positive) = if positive then OpEq else OpNotEq
@@ -573,7 +599,28 @@ Section: Let and Lambda
    let stripped = strip-forall-ty ty
    in let lparams = lower-lambda-params params stripped 0 sp
    in let lctx = bind-lambda-to-ctx ctx params stripped 0
-   in deck-record (IrLambda lparams (lower-expr body (get-lambda-return stripped (list-length params)) lctx) ty sp)
+   in let declared-ret = get-lambda-return stripped (list-length params)
+   in let body-ir = lower-expr body declared-ret lctx
+   in deck-record (IrLambda lparams body-ir (lambda-recorded-ty declared-ret (ir-expr-type body-ir) ty) sp)
+
+ A lambda used to record the EXPECTED type it was handed, which at a
+ polymorphic call is the callee's declared parameter with its type variables
+ still in it. `lower-let` twenty lines above records the resolved type of
+ what it bound, which is why the same expression through a `let` came out
+ concrete and through a lambda did not.
+
+ The consequence was not local. `subst-type-vars-from-arg` at the call site
+ learns the callee's variables by matching its declared parameter against the
+ argument's type, so a lambda argument matched `(fn (tvar 24) (tvar 25))`
+ against itself, substituted each variable for itself, and learned nothing.
+ The application's result type was then emitted uninstantiated and every
+ consumer of the IR inherited a variable the compiler had already resolved.
+
+  lambda-recorded-ty : CodexType, CodexType, CodexType -> CodexType
+  lambda-recorded-ty (declared-ret) (body-ty) (ty) =
+   if ty-has-typevars ty == False then ty
+   else if ty-has-typevars body-ty then ty
+   else subst-type-vars-from-arg declared-ret body-ty ty
 
   bind-lambda-to-ctx : LowerCtx, List Name, CodexType, Integer -> LowerCtx
   bind-lambda-to-ctx (ctx) (params) (ty) (i) =
@@ -1470,16 +1517,6 @@ Section: Constant Folding
  fold is handed the set of names this chapter defines, and it declines any
  name in that set.
 
- Without the set, a shadow answered two ways in one function: the fold
- caught `text-length "abc"` and gave the builtin's answer, while
- `text-length (substring "abcde" 0 3)` reached `emit-compound`, which
- checks `user-arity < 0` before routing to `emit-builtin` and so gave the
- definition's. Same name, same body, different answers, decided by whether
- the argument happened to be a literal. This was first recorded as a
- per-builtin split -- `text-length` shadowed and `abs` not -- and it is
- really a per-CALL-SITE split, which is why `abs` looked fine: nothing
- folds `abs`.
-
  The rule this settles is the one `emit-compound` already implemented: a
  definition beats a builtin. The folder is now the only other place that
  decided, and it decides the same way.
@@ -1568,6 +1605,7 @@ Section: Leaf Inlining
   InlineLeaf = record {
    il-name : Text,
    il-params : List Text,
+   il-ptys : List CodexType,
    il-body : IRExpr
   }
 
@@ -1607,7 +1645,7 @@ Section: Leaf Inlining
       else if np >= 1 & np <= 3 then leaf-body-ok (d.body) pnames 12
       else 0 - 1
    in if ok >= 0
-      then collect-leaf-defs defs (i + 1) (list-push acc (deck-record (InlineLeaf { il-name = d.name, il-params = pnames, il-body = d.body })))
+      then collect-leaf-defs defs (i + 1) (list-push acc (deck-record (InlineLeaf { il-name = d.name, il-params = pnames, il-ptys = for p in (d.params) -> p.type-val, il-body = d.body })))
    else collect-leaf-defs defs (i + 1) acc
 
  A function with a bounded parameter or return is enforced by
@@ -1898,15 +1936,6 @@ Section: Leaf Inlining
 
 Section: Single-Caller Inlining
 
- Phase 2 of inlining. Leaf inlining above will only take a body of pure
- integer arithmetic over the callee's own parameters, because it inlines
- at EVERY call site and so pays for the body once per site. A definition
- referenced exactly ONCE in the whole chapter does not have that problem:
- substituting it duplicates nothing, and once the single reference is
- gone the definition is unreachable and emit-time dead-code elimination
- drops it. So the body vocabulary can widen where the caller count
- cannot.
-
  That the removal actually happens is measured, not assumed. A one-caller
  arithmetic helper that phase 1 already inlines is absent from the
  emitted symbol map, and a four-parameter one that phase 1 declines is
@@ -1965,12 +1994,6 @@ Section: Single-Caller Inlining
  lost 709 bytes between them with none growing, and all ten produced
  byte-identical output.
 
- Worth recording that the first reading of those numbers was wrong. Deck
- unchanged was reported as "does nothing", which is one metric standing in
- for a conclusion it cannot support -- the deck measures what the pass
- ALLOCATES, and the point of the pass is what the emitter then does not
- have to write.
-
   once-binder-free : IRExpr -> Boolean
   once-binder-free (e) =
    when e
@@ -2001,10 +2024,6 @@ Section: Single-Caller Inlining
    if i >= list-length fs then True
    else if once-binder-free ((list-at fs i).value) then once-binder-free-fields fs (i + 1)
    else False
-
- A name in the body that is not a parameter is a reference the callee
- resolved globally. It is safe to move only while the call site has no
- local of that name.
 
   once-free-escapes : IRExpr, List Text, List Text -> Boolean
   once-free-escapes (e) (params) (bound) =
@@ -2050,20 +2069,22 @@ Section: Single-Caller Inlining
  template is substituted exactly once; this is the `__record-set`
  single-owner condition, violated by multi-site reuse.
 
-  subst-once : IRExpr, List Text, List IRExpr -> IRExpr
-  subst-once (e) (params) (args) =
+  subst-once : IRExpr, List Text, List IRExpr, List CodexType, List CodexType -> IRExpr
+  subst-once (e) (params) (args) (ptys) (atys) =
    when e
     is IrName (n) (ty) (sp) ->
      let idx = leaf-param-index params n 0
-     in if idx >= 0 then list-at args idx else e
-    is IrNegate (x) (t) (sp) -> deck-record (IrNegate (subst-once x params args) t sp)
-    is IrBinary (op) (l) (r) (ty) (sp) -> deck-record (IrBinary op (subst-once l params args) (subst-once r params args) ty sp)
-    is IrIf (c) (t) (el) (ty) (sp) -> deck-record (IrIf (subst-once c params args) (subst-once t params args) (subst-once el params args) ty sp)
-    is IrApply (f) (a) (ty) (sp) -> deck-record (IrApply (subst-once f params args) (subst-once a params args) ty sp)
-    is IrFieldAccess (r) (f) (ty) (sp) -> deck-record (IrFieldAccess (subst-once r params args) f ty sp)
-    is IrFieldStore (r) (f) (v) (ty) (sp) -> deck-record (IrFieldStore (subst-once r params args) f (subst-once v params args) ty sp)
-    is IrList (es) (ty) (sp) -> deck-record (IrList (for x in es -> subst-once x params args) ty sp)
-    is IrRecord (n) (fs) (ty) (sp) -> deck-record (IrRecord n (for fv in fs -> deck-record (IRFieldVal { name = fv.name, value = subst-once (fv.value) params args, span = fv.span })) ty sp)
+     in if idx >= 0 then list-at args idx
+        else if list-length ptys == 0 then e
+        else deck-record (IrName n (once-retype ty ptys atys 0) sp)
+    is IrNegate (x) (t) (sp) -> deck-record (IrNegate (subst-once x params args ptys atys) (once-retype t ptys atys 0) sp)
+    is IrBinary (op) (l) (r) (ty) (sp) -> deck-record (IrBinary op (subst-once l params args ptys atys) (subst-once r params args ptys atys) (once-retype ty ptys atys 0) sp)
+    is IrIf (c) (t) (el) (ty) (sp) -> deck-record (IrIf (subst-once c params args ptys atys) (subst-once t params args ptys atys) (subst-once el params args ptys atys) (once-retype ty ptys atys 0) sp)
+    is IrApply (f) (a) (ty) (sp) -> deck-record (IrApply (subst-once f params args ptys atys) (subst-once a params args ptys atys) (once-retype ty ptys atys 0) sp)
+    is IrFieldAccess (r) (f) (ty) (sp) -> deck-record (IrFieldAccess (subst-once r params args ptys atys) f (once-retype ty ptys atys 0) sp)
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> deck-record (IrFieldStore (subst-once r params args ptys atys) f (subst-once v params args ptys atys) (once-retype ty ptys atys 0) sp)
+    is IrList (es) (ty) (sp) -> deck-record (IrList (for x in es -> subst-once x params args ptys atys) (once-retype ty ptys atys 0) sp)
+    is IrRecord (n) (fs) (ty) (sp) -> deck-record (IrRecord n (for fv in fs -> deck-record (IRFieldVal { name = fv.name, value = subst-once (fv.value) params args ptys atys, span = fv.span })) (once-retype ty ptys atys 0) sp)
     is otherwise -> e
 
  The reference census. This walk must reach every constructor that can
@@ -2155,7 +2176,7 @@ Section: Single-Caller Inlining
       else if np > 4 then False
       else once-binder-free (d.body)
    in if ok
-      then collect-once-defs defs (i + 1) (list-push acc (deck-record (InlineLeaf { il-name = d.name, il-params = pnames, il-body = d.body })))
+      then collect-once-defs defs (i + 1) (list-push acc (deck-record (InlineLeaf { il-name = d.name, il-params = pnames, il-ptys = for p in (d.params) -> p.type-val, il-body = d.body })))
    else collect-once-defs defs (i + 1) acc
 
   keep-single-caller : List InlineLeaf, List Integer, Integer, List InlineLeaf -> List InlineLeaf
@@ -2176,7 +2197,20 @@ Section: Single-Caller Inlining
    in if list-length args /= list-length (cand.il-params) then e
    else if leaf-args-simple args 0 == False then e
    else if once-free-escapes (cand.il-body) (cand.il-params) bound then e
-   else subst-once (cand.il-body) (cand.il-params) args
+   else if any-tyvar-param (cand.il-ptys) 0 == False then subst-once (cand.il-body) (cand.il-params) args [] []
+   else subst-once (cand.il-body) (cand.il-params) args (cand.il-ptys) (for a in args -> ir-expr-type a)
+
+  any-tyvar-param : List CodexType, Integer -> Boolean
+  any-tyvar-param (ps) (i) =
+   if i >= list-length ps then False
+   else if ty-has-typevars (list-at ps i) then True
+   else any-tyvar-param ps (i + 1)
+
+  once-retype : CodexType, List CodexType, List CodexType, Integer -> CodexType
+  once-retype (ty) (ptys) (atys) (i) =
+   if i >= list-length ptys then ty
+   else if i >= list-length atys then ty
+   else once-retype (subst-type-vars-from-arg (list-at ptys i) (list-at atys i) ty) ptys atys (i + 1)
 
   once-expr : IRExpr, List InlineLeaf, List Text -> IRExpr
   once-expr (e) (cands) (bound) =
@@ -2234,18 +2268,6 @@ Section: Cost-Based Inlining
  The numbers are with the ceiling constant in BuildSettings. A
  workload whose hot helpers are small and truly hot may still win;
  the compiler is not that workload.
-
- Everything else is the single-caller pass's machinery, reused rather
- than restated: the same binder-free allow-list (`once-binder-free`),
- the same arity band, the same census (`count-refs-chapter`), and the
- same site admission (`once-apply-site`: saturated arity, simple
- arguments, the shadowed-free-name capture guard). The only new
- judgment is the cost function and who qualifies: a reference count of
- TWO or more, because a count of one belongs to the single-caller pass
- that ran just before and a count of zero is dead already. A candidate
- whose sites all inline loses its last reference and emit-time
- dead-code elimination drops the definition; one with a declining site
- (a bare reference, a partial application) simply stays.
 
  The cost function counts operation nodes over the admitted
  vocabulary, an architecture-independent proxy for emitted
@@ -2318,7 +2340,7 @@ Section: Cost-Based Inlining
       else if ir-body-mentions (d.body) (d.name) then False
       else ir-cost-expr (d.body) <= inline-cost-ceiling
    in if ok
-      then collect-cost-defs defs (i + 1) (list-push acc (deck-record (InlineLeaf { il-name = d.name, il-params = pnames, il-body = d.body })))
+      then collect-cost-defs defs (i + 1) (list-push acc (deck-record (InlineLeaf { il-name = d.name, il-params = pnames, il-ptys = for p in (d.params) -> p.type-val, il-body = d.body })))
    else collect-cost-defs defs (i + 1) acc
 
   keep-multi-caller : List InlineLeaf, List Integer, Integer, List InlineLeaf -> List InlineLeaf

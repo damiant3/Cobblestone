@@ -1,0 +1,295 @@
+Chapter: Lwm2mClient
+  cites Encode chapter Coap
+  cites Encode chapter Lwm2m
+  cites Foreword chapter Maybe
+
+ The LwM2M client the tree did not have. Lwm2m carried the object IDs, the
+ URI builders and a registration payload; Lwm2mFirmware bound Object 5 to
+ the OTA machine. Between them sat the thing a server actually talks to: a
+ client that registers, holds an object tree, and answers Read, Write and
+ Execute on it. OMA-TS-LightweightM2M-V1_1 sections 6.2 (Registration) and
+ 6.4 (Device Management and Service Enablement).
+
+ It is PURE, on DtlsEndpoint's precedent and for the same reason: datagrams
+ in, datagrams out, no socket and no clock. A registration exchange then
+ runs as an ordinary battery sample with no network and no server process,
+ and the lifetime is driven by the caller's tick rather than by a timer this
+ chapter would have to own.
+
+ What it is NOT: Bootstrap, Observe/Notify, or Access Control. Those are
+ separate interfaces and each is its own unit of work. Registration and
+ Device Management are what a server needs before any of them mean
+ anything, and they are complete here.
+
+ We say:
+
+Section: The Object Tree
+
+ A resource is flat rather than nested, which is the shape the protocol
+ actually addresses: every operation names /object/instance/resource, so a
+ tree of maps would be three lookups built to answer a question that
+ arrives pre-flattened.
+
+  Lwm2mRes = record {
+    lr-object : Integer,
+    lr-instance : Integer,
+    lr-resource : Integer,
+    lr-value : List Integer,
+    lr-writable : Boolean,
+    lr-executable : Boolean
+  }
+
+  Lwm2mClient = record {
+    lc-reg : Lwm2mRegistration,
+    lc-res : List Lwm2mRes,
+    lc-location : List Integer,
+    lc-registered : Boolean,
+    lc-msg-id : Integer,
+    lc-ticks-left : Integer,
+    lc-exec-count : Integer
+  }
+
+  Lwm2mStep = record {
+    ls-client : Lwm2mClient,
+    ls-out : List (List Integer)
+  }
+
+  lwm2m-client-new : Lwm2mRegistration, List Lwm2mRes -> Lwm2mClient
+  lwm2m-client-new (reg) (res) =
+    Lwm2mClient { lc-reg = reg, lc-res = res, lc-location = [], lc-registered = False,
+                  lc-msg-id = 1, lc-ticks-left = 0, lc-exec-count = 0 }
+
+  lwm2m-res : Integer, Integer, Integer, List Integer -> Lwm2mRes
+  lwm2m-res (o) (i) (r) (v) =
+    Lwm2mRes { lr-object = o, lr-instance = i, lr-resource = r, lr-value = v, lr-writable = False, lr-executable = False }
+
+  lwm2m-res-rw : Integer, Integer, Integer, List Integer -> Lwm2mRes
+  lwm2m-res-rw (o) (i) (r) (v) =
+    Lwm2mRes { lr-object = o, lr-instance = i, lr-resource = r, lr-value = v, lr-writable = True, lr-executable = False }
+
+  lwm2m-res-exec : Integer, Integer, Integer -> Lwm2mRes
+  lwm2m-res-exec (o) (i) (r) =
+    Lwm2mRes { lr-object = o, lr-instance = i, lr-resource = r, lr-value = [], lr-writable = False, lr-executable = True }
+
+Section: Registration
+
+ The registration query carries the endpoint name, the lifetime and the
+ binding, and they are Uri-Query options rather than part of the path. The
+ lwm2m=1.0 pair is not decoration: a server that does not see a version
+ treats the client as 1.0 by default, and saying it is what makes the
+ assumption ours rather than the server's.
+
+  lwm2m-client-query : Lwm2mClient -> Text
+  lwm2m-client-query (c) =
+    let r = c.lc-reg
+    in "ep=" & r.endpoint & "&lt=" & show (r.lifetime) & "&lwm2m=1.0&b=" & r.binding
+
+  lwm2m-client-register : Lwm2mClient -> Lwm2mStep
+  lwm2m-client-register (c) =
+    let opts = coap-uri-path-options "/rd"
+      & [CoapOption { number = coap-opt-content-format, value = [coap-format-link] }]
+      & coap-uri-query-options (lwm2m-client-query c)
+    in let body = coap-text-to-bytes (lwm2m-registration-payload (c.lc-reg))
+    in let msg = coap-build-request CoapConfirmable CoapPost (c.lc-msg-id) [] opts body
+    in Lwm2mStep { ls-client = lwm2m-bump c, ls-out = [msg] }
+
+ The registration handle is whatever the server put in Location-Path, and
+ it is opaque: the client must echo it back exactly rather than rebuild a
+ path it thinks it remembers. Location-Path is repeatable, so the handle is
+ the SEQUENCE of them and reading only the first loses the rest.
+
+  lwm2m-client-update : Lwm2mClient -> Lwm2mStep
+  lwm2m-client-update (c) =
+    if c.lc-registered == False then Lwm2mStep { ls-client = c, ls-out = [] }
+    else lwm2m-client-relocate c CoapPost
+
+  lwm2m-client-deregister : Lwm2mClient -> Lwm2mStep
+  lwm2m-client-deregister (c) =
+    if c.lc-registered == False then Lwm2mStep { ls-client = c, ls-out = [] }
+    else lwm2m-client-relocate (c revised { lc-registered = False, lc-location = [], lc-ticks-left = 0 }) CoapDelete
+
+  lwm2m-client-relocate : Lwm2mClient, CoapMethod -> Lwm2mStep
+  lwm2m-client-relocate (c) (method) =
+    let opts = coap-uri-path-options (lwm2m-loc-text (c.lc-location) 0 "")
+    in let msg = coap-build-request CoapConfirmable method (c.lc-msg-id) [] opts []
+    in Lwm2mStep { ls-client = lwm2m-bump c, ls-out = [msg] }
+
+  lwm2m-loc-text : List Integer, Integer, Text -> Text
+  lwm2m-loc-text (loc) (i) (acc) =
+    if i >= list-length loc then acc
+    else lwm2m-loc-text loc (i + 1) (acc & "/" & show (list-at loc i))
+
+  lwm2m-bump : Lwm2mClient -> Lwm2mClient
+  lwm2m-bump (c) = c revised { lc-msg-id = bit-and (c.lc-msg-id + 1) 65535 }
+
+Section: Receive
+
+ One datagram in. A response to our own registration and a request from the
+ server arrive on the same socket and are told apart by the CoAP code
+ class: a code below 1 is a request method, anything else is a response.
+
+  lwm2m-client-recv : Lwm2mClient, List Integer -> Lwm2mStep
+  lwm2m-client-recv (c) (dgram) =
+    when coap-parse dgram
+      is None -> Lwm2mStep { ls-client = c, ls-out = [] }
+      is Just (m) -> lwm2m-client-dispatch c m
+
+  lwm2m-client-dispatch : Lwm2mClient, CoapMessage -> Lwm2mStep
+  lwm2m-client-dispatch (c) (m) =
+    if m.cm-code == 0 then Lwm2mStep { ls-client = c, ls-out = [] }
+    else if m.cm-code <= 4 then lwm2m-server-request c m
+    else lwm2m-client-response c m
+
+ 2.01 Created is the registration accepted. The location is stored as the
+ integers of its segments, which is what a server issues in practice and
+ what lets the handle be echoed without carrying Text through the client.
+
+  lwm2m-client-response : Lwm2mClient, CoapMessage -> Lwm2mStep
+  lwm2m-client-response (c) (m) =
+    if m.cm-code /= coap-201-created then Lwm2mStep { ls-client = c, ls-out = [] }
+    else let loc = lwm2m-loc-numbers (coap-find-options (m.cm-options) coap-opt-location-path) 0 []
+    in Lwm2mStep { ls-client = c revised { lc-location = loc, lc-registered = True, lc-ticks-left = (c.lc-reg).lifetime }, ls-out = [] }
+
+  lwm2m-loc-numbers : List (List Integer), Integer, List Integer -> List Integer
+  lwm2m-loc-numbers (segs) (i) (acc) =
+    if i >= list-length segs then acc
+    else lwm2m-loc-numbers segs (i + 1) (list-push acc (lwm2m-digits (list-at segs i) 0 0))
+
+ A location segment is not obliged to be a number and "rd" is the one every
+ server sends first. A non-digit contributes nothing rather than being
+ rejected, because refusing the registration over the spelling of a handle
+ the server chose is a worse failure than carrying it.
+
+  lwm2m-digits : List Integer, Integer, Integer -> Integer
+  lwm2m-digits (bs) (i) (acc) =
+    if i >= list-length bs then acc
+    else let d = list-at bs i
+    in if d < 48 then lwm2m-digits bs (i + 1) acc
+    else if d > 57 then lwm2m-digits bs (i + 1) acc
+    else lwm2m-digits bs (i + 1) (acc * 10 + (d - 48))
+
+Section: Device Management
+
+ GET is Read, PUT is Write, POST on a resource is Execute. The path decides
+ what is addressed and a path that names nothing is 4.04 rather than an
+ empty success, because a server that reads 2.05 with no payload learns the
+ resource exists and is empty, which is a different fact.
+
+  lwm2m-server-request : Lwm2mClient, CoapMessage -> Lwm2mStep
+  lwm2m-server-request (c) (m) =
+    let path = lwm2m-path-numbers (coap-find-options (m.cm-options) coap-opt-uri-path) 0 []
+    in if list-length path < 2 then lwm2m-answer c m coap-404-not-found []
+    else if m.cm-code == 1 then lwm2m-do-read c m path
+    else if m.cm-code == 3 then lwm2m-do-write c m path
+    else if m.cm-code == 2 then lwm2m-do-execute c m path
+    else lwm2m-answer c m coap-405-not-allowed []
+
+  lwm2m-path-numbers : List (List Integer), Integer, List Integer -> List Integer
+  lwm2m-path-numbers (segs) (i) (acc) =
+    if i >= list-length segs then acc
+    else lwm2m-path-numbers segs (i + 1) (list-push acc (lwm2m-digits (list-at segs i) 0 0))
+
+  lwm2m-answer : Lwm2mClient, CoapMessage, Integer, List Integer -> Lwm2mStep
+  lwm2m-answer (c) (m) (code) (payload) =
+    Lwm2mStep { ls-client = c,
+                ls-out = [coap-build-response CoapAcknowledgement code (m.cm-msg-id) (m.cm-token) [] payload] }
+
+ A Read of a whole instance answers TLV, which is what the object model is
+ for; a Read of one resource answers its bytes. Both are 2.05 Content.
+
+  lwm2m-do-read : Lwm2mClient, CoapMessage, List Integer -> Lwm2mStep
+  lwm2m-do-read (c) (m) (path) =
+    if list-length path >= 3 then lwm2m-read-one c m path
+    else lwm2m-read-instance c m path
+
+  lwm2m-read-one : Lwm2mClient, CoapMessage, List Integer -> Lwm2mStep
+  lwm2m-read-one (c) (m) (path) =
+    let idx = lwm2m-find c (list-at path 0) (list-at path 1) (list-at path 2) 0
+    in if idx < 0 then lwm2m-answer c m coap-404-not-found []
+    else lwm2m-answer c m coap-205-content ((list-at (c.lc-res) idx).lr-value)
+
+  lwm2m-read-instance : Lwm2mClient, CoapMessage, List Integer -> Lwm2mStep
+  lwm2m-read-instance (c) (m) (path) =
+    let body = lwm2m-tlv-instance (c.lc-res) (list-at path 0) (list-at path 1) 0 []
+    in if list-length body == 0 then lwm2m-answer c m coap-404-not-found []
+    else lwm2m-answer c m coap-205-content body
+
+  lwm2m-tlv-instance : List Lwm2mRes, Integer, Integer, Integer, List Integer -> List Integer
+  lwm2m-tlv-instance (res) (o) (i) (k) (acc) =
+    if k >= list-length res then acc
+    else let e = list-at res k
+    in if e.lr-object == o & e.lr-instance == i & e.lr-executable == False
+    then lwm2m-tlv-instance res o i (k + 1) (acc & lwm2m-encode-tlv-resource (e.lr-resource) (e.lr-value))
+    else lwm2m-tlv-instance res o i (k + 1) acc
+
+ A Write to a resource that exists but is not writable is 4.05 and not
+ 4.04. The distinction is the whole of an access model: 4.04 tells a server
+ the resource is absent and invites it to create one, and answering that to
+ a read-only resource is a lie that produces a retry loop.
+
+  lwm2m-do-write : Lwm2mClient, CoapMessage, List Integer -> Lwm2mStep
+  lwm2m-do-write (c) (m) (path) =
+    if list-length path < 3 then lwm2m-answer c m coap-405-not-allowed []
+    else lwm2m-write-one c m path
+
+  lwm2m-write-one : Lwm2mClient, CoapMessage, List Integer -> Lwm2mStep
+  lwm2m-write-one (c) (m) (path) =
+    let idx = lwm2m-find c (list-at path 0) (list-at path 1) (list-at path 2) 0
+    in if idx < 0 then lwm2m-answer c m coap-404-not-found []
+    else if (list-at (c.lc-res) idx).lr-writable == False then lwm2m-answer c m coap-405-not-allowed []
+    else lwm2m-answer (c revised { lc-res = lwm2m-store (c.lc-res) idx (m.cm-payload) 0 [] }) m coap-204-changed []
+
+  lwm2m-store : List Lwm2mRes, Integer, List Integer, Integer, List Lwm2mRes -> List Lwm2mRes
+  lwm2m-store (res) (idx) (v) (i) (acc) =
+    if i >= list-length res then acc
+    else let e = list-at res i
+    in let e2 = if i == idx then e revised { lr-value = v } else e
+    in lwm2m-store res idx v (i + 1) (list-push acc e2)
+
+ Execute performs nothing here and counts instead. The chapter is pure, so
+ an Execute that did something would be a side effect this layer has no
+ business owning; what it owes the server is the acknowledgement, and what
+ it owes the caller is the fact that the server asked.
+
+  lwm2m-do-execute : Lwm2mClient, CoapMessage, List Integer -> Lwm2mStep
+  lwm2m-do-execute (c) (m) (path) =
+    if list-length path < 3 then lwm2m-answer c m coap-405-not-allowed []
+    else lwm2m-execute-one c m path
+
+  lwm2m-execute-one : Lwm2mClient, CoapMessage, List Integer -> Lwm2mStep
+  lwm2m-execute-one (c) (m) (path) =
+    let idx = lwm2m-find c (list-at path 0) (list-at path 1) (list-at path 2) 0
+    in if idx < 0 then lwm2m-answer c m coap-404-not-found []
+    else if (list-at (c.lc-res) idx).lr-executable == False then lwm2m-answer c m coap-405-not-allowed []
+    else lwm2m-answer (c revised { lc-exec-count = (c.lc-exec-count) + 1 }) m coap-204-changed []
+
+  lwm2m-find : Lwm2mClient, Integer, Integer, Integer, Integer -> Integer
+  lwm2m-find (c) (o) (i) (r) (k) =
+    if k >= list-length (c.lc-res) then 0 - 1
+    else let e = list-at (c.lc-res) k
+    in if e.lr-object == o & e.lr-instance == i & e.lr-resource == r then k
+    else lwm2m-find c o i r (k + 1)
+
+Section: Lifetime
+
+ A registration that is not refreshed expires and the server drops the
+ client silently, so the Update goes out BEFORE the lifetime runs out
+ rather than when it has. Half the lifetime is the margin: it survives one
+ lost Update without the registration lapsing, which a margin of one tick
+ would not.
+
+  lwm2m-client-tick : Lwm2mClient -> Lwm2mStep
+  lwm2m-client-tick (c) =
+    if c.lc-registered == False then Lwm2mStep { ls-client = c, ls-out = [] }
+    else lwm2m-tick-go (c revised { lc-ticks-left = (c.lc-ticks-left) - 1 })
+
+  lwm2m-tick-go : Lwm2mClient -> Lwm2mStep
+  lwm2m-tick-go (c) =
+    if (c.lc-ticks-left) * 2 > (c.lc-reg).lifetime then Lwm2mStep { ls-client = c, ls-out = [] }
+    else lwm2m-client-update (c revised { lc-ticks-left = (c.lc-reg).lifetime })
+
+  lwm2m-client-registered : Lwm2mClient -> Boolean
+  lwm2m-client-registered (c) = c.lc-registered
+
+  lwm2m-client-executions : Lwm2mClient -> Integer
+  lwm2m-client-executions (c) = c.lc-exec-count

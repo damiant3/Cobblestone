@@ -1,34 +1,5 @@
 Chapter: X86-64 Code Generator
 
- The x86-64 instruction selector for the flat LIR (the ratchet step of
- the LIR design). This is the
- first codegen-changing step of the middle-end campaign -- where the LIR the
- `IR/Lir.codex` chapter lowers and allocates finally becomes machine code
- rather than an opt-in dump. It runs behind a per-function dispatch: a
- function whose body lies entirely within a construct whitelist is lowered
- tree -> LIR -> allocated -> x86 here, and everything else falls back to the
- existing recursive tree emitter (`emit-function-standard` /
- `emit-function-minimal`), byte-for-byte unchanged.
-
- **This increment covers straight-line arithmetic, branches, spills,
- constructor-pattern matches, and direct calls:** integer literals,
- parameters, `let`, add/subtract/multiply, `if` / `match` (literal, variable,
- wildcard, or, and constructor patterns), spills, and calls to plain user
- functions (`LiCall`) -- placing arguments in the argument registers, keeping
- the heap-collision stack guard for a non-leaf, and leaving self-tail-
- recursive functions on the tree path where TCO turns them into loops. A
- value live across a call is safe because the allocator only uses callee-saved
- registers, which the callee preserves. A spilled operand is loaded from its slot into a
- scratch before use; a spilled destination is computed in a scratch and
- stored back; a spilled parameter is stored from its argument register into
- its slot at entry. A constructor pattern loads the variant tag and each
- bound field from the scrutinee pointer (`LiLoad`). The selector now handles
- every LIR instruction the lowering emits, so what falls back is exactly what
- the lowering itself declines: calls, vector patterns, real guards, act
- blocks, closures, and everything else -- plus, here, functions with more
- than six parameters (a seventh arrives on the caller's stack, not in a
- register). The whitelist grows one construct per CL.
-
  The register file is the concrete form of "the register file is data": the
  allocator's abstract registers `0..4` map through `lir-phys` to the four
  callee-saved locals `RBX, R12, R13, R14` at `0..3` (the same four the tree
@@ -150,10 +121,6 @@ Section: LIR Instruction Selection (x86-64)
  lets selection compute a result in one working register and place it,
  without an aliasing case to guard.
 
- Load an operand into a specific register `w`: an immediate via `li` (which
- already picks xor / mov-imm32 / mov-imm64 by magnitude), a register operand
- via `mov-rr`, a spilled operand via a load from its stack slot.
-
   lir-load-into : CodegenState, Integer, LirValue, List Location -> CodegenState
   lir-load-into (st) (w) (v) (assign) =
    when v
@@ -203,11 +170,6 @@ Section: LIR Instruction Selection (x86-64)
     is LvImm (k) ->
      if imm-fits-i32 k then lir-alu-imm st op w k
      else lir-alu-rr (st-append-code st (li lir-scratch2 k)) op w lir-scratch2
-
- A binary op: compute in a working register -- the destination register when
- the def has one, else R11 -- by loading the left operand and applying the
- operator with the right, then place the working register into the def's slot
- if it was spilled.
 
  Fusing an add or subtract of a constant into an `lea`. x86's ALU is
  two-operand -- `dst op= src` -- so a binary whose destination is not its left
@@ -318,10 +280,6 @@ Section: LIR Instruction Selection (x86-64)
  those cases it goes through the scratch register first. R11 is never
  allocated, so nothing is displaced by borrowing it.
 
- The two moves that bracket this both tend to vanish. The remainder's vreg is
- hinted to RDX, so taking it out is `mov rdx, rdx`; and where the dividend is
- already in RAX, putting it there is `mov rax, rax`.
-
  Dividing or taking a remainder by a positive power of two is a shift or a
  mask. The tree emitter has always done this -- `collatz` is `test rdi, 1` and
  `sar rdi, 1` there, not two `idiv` sequences -- and the LIR emits the same
@@ -426,9 +384,6 @@ Section: LIR Instruction Selection (x86-64)
      let w = lir-scratch-reg
      in st-append-code (lir-alu-gen (lir-load-into st w l assign) op w r assign) (mov-store reg-rsp w (lir-slot-off ks))
 
- A move: load the source into the destination register, or into R11 and
- store to the destination slot.
-
   lir-sel-mov : CodegenState, Integer, LirValue, List Location -> CodegenState
   lir-sel-mov (st) (dst) (src) (assign) =
    when (list-at assign dst)
@@ -454,18 +409,6 @@ Section: LIR Instruction Selection (x86-64)
    in when (list-at assign dst)
     is LocReg (pr) -> lir-emit-load-w (bb.state) (list-at lir-phys pr) (bb.reg) off w sg
     is LocSlot (ks) -> st-append-code (lir-emit-load-w (bb.state) lir-scratch-reg (bb.reg) off w sg) (mov-store reg-rsp lir-scratch-reg (lir-slot-off ks))
-
- A call places each argument into its argument register (`arg-regs[i]`),
- emits the call (recording the call-site patch, resolved to the target's
- offset at finalize), and moves the RAX result into the destination. There is
- no argument-shuffle hazard: every argument value is an immediate, a value in
- a callee-saved register, or a spill slot -- never an argument register,
- because the allocator only ever uses callee-saved registers and parameters
- were moved out of the argument registers at entry. So the placements are
- independent and their order does not matter. Values live across the call
- survive it for the same reason: callee-saved registers are preserved by the
- callee, and spill slots are memory. At most six arguments (the lowering
- declines a seventh, which would need a stack push).
 
  Placing a call's arguments. Each moves into the register its position
  requires, and while the allocator kept every value out of the argument
@@ -633,15 +576,6 @@ Section: LIR Function Emission (x86-64)
    target : Integer
   }
 
- The emission context threaded through a function's blocks: the codegen
- state, the byte offset of each block indexed by its (dense) id, and the
- list of pending branch fixups.
-
- `nused` and `frame` ride along because a `LiRet` returns from the middle of
- the layout and has to account for them. `epi` is the block id the shared
- epilogue is laid out at -- one past the real blocks, so it can be a branch
- target like any other and be patched by the same machinery.
-
   LirCtx = record {
    state : CodegenState,
    boffs : List Integer,
@@ -683,31 +617,9 @@ Section: LIR Function Emission (x86-64)
  return has no second copy to save. `fib` has three exits and saves two
  registers, and four beats either threshold.
 
- Three cuts, and each one was wrong in a way the next made visible. The first
- ignored `nrets` and asked only whether the epilogue was longer than a jump: it
- bought fib three instructions and quietly charged one each to ack, locals and
- tak, every one a single-return function, and the total came out exactly where
- it started. The second charged a jump at every return including the one that
- falls through, which reads as a tie at two returns and a two-instruction
- epilogue and duplicates instead -- `regright` is that shape and it cost an
- instruction against the tree emitter. The third assumed the fall-through it
- had just started pricing, and at that same cell with a back-edge laid out last
- it shares on a tie and pays two five-byte jumps and an epilogue where two
- two-byte epilogues would do.
-
- **No benchmark can show that last one and none ever will.** At `(2,2)` the
- two costs are exactly equal in instructions -- `nrets*e >= nrets+e` for
- `nrets,e >= 2`, with equality only there -- so the only witness is bytes and
- executed jumps. It survived two rounds of measurement for that reason. The
- `epishare` bench is the shape; the harness reports bytes beside instructions
- because instructions cannot see it.
-
   lir-epi-len : Integer, Integer -> Integer
   lir-epi-len (nused) (frame) =
    (if frame > 0 then 1 else 0) + nused + 1
-
- Whether the layout ends in a return: the last block that emits anything, since
- blocks that emit nothing are not where control comes to rest.
 
   lir-ends-in-ret : List LirInsn -> Boolean
   lir-ends-in-ret (insns) =
@@ -779,19 +691,9 @@ Section: LIR Function Emission (x86-64)
    in let st1 = st-append-code (cx.state) (jmp 0)
    in LirCtx { state = st1, boffs = cx.boffs, fixups = list-push (cx.fixups) (LirFix { patch-pos = jmp-pos + 1, next-ip = jmp-pos + 5, target = b }), nused = cx.nused, frame = cx.frame, epi = cx.epi, share = cx.share, canon = cx.canon }
 
- One instruction inside a block. Value instructions (binary, move) and the
- compare only advance the state; the terminators (branch, jump) also record
- fixups. A load never reaches a selected block (the dispatch predicate
- rejects any block containing one), so its case is a defensive no-op.
-
   lir-ctx-st : LirCtx, CodegenState -> LirCtx
   lir-ctx-st (cx) (st) =
    LirCtx { state = st, boffs = cx.boffs, fixups = cx.fixups, nused = cx.nused, frame = cx.frame, epi = cx.epi, share = cx.share, canon = cx.canon }
-
- A return from where it stands: the value into RAX, the frame released, the
- callee-saved registers restored, `ret`. It is the same sequence the single
- exit emits, and an `if` in tail position simply has one per arm instead of
- driving every arm's value into a shared vreg to hand to one at the end.
 
   lir-emit-return : CodegenState, LirValue, List Location, Integer, Integer -> CodegenState
   lir-emit-return (st) (v) (assign) (nused) (frame) =
@@ -820,10 +722,6 @@ Section: LIR Function Emission (x86-64)
    if i >= n then cx
    else lir-emit-block-insns (lir-emit-binsn cx (list-at insns i) next-id assign) insns (i + 1) n next-id assign
 
- A block records its start offset (by id) before its instructions. Because
- every control transfer is an explicit branch patched afterwards, the offset
- table is the only thing layout order feeds into.
-
   lir-emit-block : LirCtx, LirBlock, Integer, List Location -> LirCtx
   lir-emit-block (cx) (b) (next-id) (assign) =
    let cx1 = LirCtx { state = cx.state, boffs = list-set-at (cx.boffs) (b.id) ((cx.state).code-len), fixups = cx.fixups, nused = cx.nused, frame = cx.frame, epi = cx.epi, share = cx.share, canon = cx.canon }
@@ -851,15 +749,6 @@ Section: LIR Function Emission (x86-64)
  after its layout position that emits anything, or the epilogue at `n` when
  none does. A block that emits is its own canonical form.
 
- Both sides of the elision must speak this language or neither does. The
- first cut of the fall-through canonicalised only what the layout falls INTO
- and left the jump's own target raw, so an arm ending `LiJump exit` compared
- the exit block's id against the epilogue's and missed: `let v = if c then a
- else b in v` seals an empty exit that both arms jump to, and each of them
- emitted `E9 00 00 00 00` -- five bytes of jump to the instruction underneath.
- Every benchmark returns from its arms, so not one of them has a non-tail join
- exit and not one of them noticed.
-
  Ids are dense but layout order is not id order, so this is indexed by id and
  filled by position.
 
@@ -883,9 +772,6 @@ Section: LIR Function Emission (x86-64)
    if i >= n then cx
    else let next-id = lir-next-emitting blocks (i + 1) n
    in lir-emit-blocks (lir-emit-block cx (list-at blocks i) next-id assign) blocks (i + 1) n assign
-
- With every block laid out and its offset known, each fixup becomes a
- concrete rel32 written straight into the code buffer.
 
   lir-apply-fixups : CodegenState, List LirFix, List Integer, Integer, Integer -> CodegenState
   lir-apply-fixups (st) (fixups) (boffs) (i) (n) =
@@ -959,29 +845,6 @@ Section: LIR Function Emission (x86-64)
  location the allocator gave its vreg -- a register, or a store into its spill
  slot. At most six parameters; the dispatch predicate refuses a seventh, which
  would arrive on the caller's stack.
-
- **This is a parallel move, and the reason is a lesson.** It used to be a
- sequence, one move per parameter in parameter order, on the stated grounds
- that every destination was a callee-saved register or a stack slot and so
- disjoint from the argument registers. That was true the day it was written.
- Then the leaf register file put `RDI, RSI, RDX, RCX` into `lir-phys` at
- `5..8`, so that a leaf could keep its parameters in the registers they
- arrived in -- and from that moment a destination could be *another
- parameter's arrival register*. The comment kept vouching for an invariant the
- code had lost, and nothing re-checked it.
-
- What it cost: `col-hue` in the foreword's Color chapter takes five parameters
- and divides. The division masks RDX out of the free set for every value live
- across it, so parameter 2 cannot keep the register it arrived in and is
- placed in RCX -- which is where parameter 3 arrives. In order, that emits
- `mov rcx,rdx` and then `mov rbx,rcx`, and the second move reads a register
- the first one has already overwritten: `mx` is handed `b`. `col-hue` answers
- 60 where it should answer 0, `rgb-to-hsl` reports red as yellow, and the
- whole thing was invisible to every gate the campaign had -- the benchmarks
- measure speed and this is an answer, the fixed point proves determinism and a
- deterministic wrong answer is still a fixed point, and the allocation
- verifier never sees these moves at all because they are emitted before the
- blocks and are not LIR instructions.
 
  So: emit a parameter's move only when no parameter still to be moved reads
  the register it writes. When every remaining move is blocked, the moves form
@@ -1084,11 +947,6 @@ Section: LIR Function Emission (x86-64)
  `16 + k`, because these moves are physical -- they are what establishes the
  vreg-to-location invariant that the abstract LIR takes as given.
 
- It halts rather than warns. A warning here is a warning that the binary about
- to be written computes something other than the program, which is not a thing
- a build should survive; `IR/IRCheck.codex` reaches the same conclusion about
- malformed IR for the same reason.
-
   pmv-nphys : Integer = 16
 
   pmv-loc-sim : Location -> Integer
@@ -1152,14 +1010,6 @@ Section: LIR Function Emission (x86-64)
       is LocReg (pr) -> lir-move-param-reg st reg-rax (list-at lir-phys pr)
       is LocSlot (ks) -> st-append-code st (mov-load reg-rax reg-rsp (lir-slot-off ks))
 
- The whole function: record its offset and reset per-function state (the
- same `reset-func-state` the tree path uses, so the offset lands in the
- shared capacity-backed `fo-names`/`fo-offsets` buffers and calls resolve to
- it), then prologue, frame reservation, parameter moves, the blocks (with
- branch fixups applied once laid out), the result, frame release, epilogue,
- return. A straight-line body with no spill is the degenerate case: one
- block, no terminator, no fixups, no frame.
-
   lir-emit-func : CodegenState, LirFunc, List Location -> CodegenState
   lir-emit-func (st) (f) (assign) =
    let st0 = reset-func-state st (f.name)
@@ -1176,11 +1026,6 @@ Section: LIR Function Emission (x86-64)
    in let cxf = lir-emit-blocks cx0 (f.blocks) 0 nb assign
    in let cxe = lir-emit-epilogue cxf f assign nb nused frame
    in lir-apply-fixups (cxe.state) (cxe.fixups) (cxe.boffs) 0 (list-length (cxe.fixups))
-
- The epilogue is laid out after every block, at the id the returns branch to.
- A function with a single exit falls into it with its result operand, exactly
- as before. A function whose every path returns emits it once if it is worth
- sharing, and not at all if each return already carried its own.
 
   lir-emit-epilogue : LirCtx, LirFunc, List Location, Integer, Integer, Integer -> LirCtx
   lir-emit-epilogue (cx) (f) (assign) (nb) (nused) (frame) =

@@ -1,7 +1,5 @@
 Chapter: Ada Emitter
 
- Generates Ada source code from the IR.
-
 Section: Keywords and Sanitization
 
   ada-keywords : List Text
@@ -172,10 +170,16 @@ Section: Type Definition Emission
     is AForallType (fav) (favt) (b) (s) -> emit-ada-atype-expr b
     is APropEqType (b) (peright) (s) -> emit-ada-atype-expr b
 
+  is-ada-real-atom : Text -> Boolean
+  is-ada-real-atom (n) =
+   n == "real" | n == "real-approx" | n == "real-trapping" | n == "real-saturating"
+   | n == "real-approx-trapping" | n == "real-approx-saturating"
+
   ada-when-type-name : Text -> Text
   ada-when-type-name (n) =
    if n == "Integer" then "Long_Long_Integer"
    else if n == "Real" then "Long_Float"
+   else if is-ada-real-atom n then "Long_Float"
    else if n == "Text" then "Unbounded_String"
    else if n == "Boolean" then "Boolean"
    else ada-cap-sanitize n
@@ -310,20 +314,6 @@ Section: Expression Emission
    "text-concat-list", "text-contains", "text-replace", "text-split",
    "text-starts-with", "text-to-integer", "write-file"]
 
- This was a BINARY search until 2026-07-28, and it silently found only
- some of its names. A binary search requires the list to be ordered by
- the same comparison it searches with, and the two disagreed: the list
- is written in alphabetical order, while `text-compare` orders by CCE
- code point, and CCE numbers letters by FREQUENCY. `c` is 24 and `b` is
- 32, so `char-at` sorts before `bit-and` under the comparator and after
- it in the list. Names past the first such inversion were unreachable,
- and an unreachable builtin does not fail loudly: it falls through to
- the ordinary apply path and emits a call to a subprogram Ada has never
- heard of.
-
- A linear scan has no ordering invariant to get wrong, and this runs
- once per call site at transpile time.
-
   ada-find-builtin : List Text, Text, Integer -> Integer
   ada-find-builtin (names) (target) (i) =
    if i >= list-length names then -1
@@ -332,7 +322,8 @@ Section: Expression Emission
 
   emit-ada-apply-named : Text, CodexType, List IRExpr, List ArityEntry, IRExpr -> Text
   emit-ada-apply-named (n) (ty) (args) (arities) (original) =
-   let idx = ada-find-builtin ada-builtin-names n 0
+   if n == "__narrow" then emit-ada-expr (list-at args 0) arities
+   else let idx = ada-find-builtin ada-builtin-names n 0
    in if idx >= 0 then emit-ada-builtin-by-idx idx n args arities
    else if text-length n > 0 then if is-upper-letter (char-code (char-at n 0)) then emit-ada-ctor-apply n args arities
         else emit-ada-func-apply n args arities original

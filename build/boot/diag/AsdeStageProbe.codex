@@ -1,0 +1,182 @@
+Chapter: AsdeStageProbe
+  cites Works chapter GopUsb
+  cites Works chapter GopXhci
+  cites Works chapter GopFat16
+  cites Works chapter GopDraw
+  cites Kernel chapter BitmapFont
+  cites Works chapter GopHandoff
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+  cites Kernel chapter Pci
+  cites Kernel chapter E1000e
+  cites Works chapter GopShot
+  cites Dev chapter NicAsde
+
+ B2 Finding 4, and the question is which ARM wedges rather than whether
+ one does. 82583V CTRL bit 5: "When set to 1b, the MAC ignores the speed
+ indicated by the PHY ... This bit must be set to 0b in the 82583V." The
+ ASDE=0 arm therefore runs FIRST. A wedge before any arm row indicts the
+ reset; ASDE=0 painting and ASDE=1 wedging indicts the bit the datasheet
+ says to clear; both arms painting exonerates ASDE on this part.
+
+ The 2026-08-10 flight of this probe returned nothing, and the reason was
+ in this file: the mount was a PRECONDITION, so a volume that would not
+ mount ended the flight before a single stage ran. It is not one now. The
+ rows paint whether or not a volume is there, the markers are written when
+ there happens to be one, and a stage's row goes down BEFORE the touch
+ that might kill the machine. Two boots have established that a wedge
+ leaves the glass intact (HardwareSitting, 2026-08-05: rows painted, then
+ the machine stalled, rows still readable), so the glass is a bank for a
+ person standing at the board, which is every sitting we have ever had.
+
+ The markers remain because they cost nothing here: each is under one
+ cluster, so it takes the small-file path and one 512-byte transfer, and
+ cannot be defeated by the multi-cluster timeout WORKS-9 measured.
+
+ We say:
+
+Section: Marker Files
+
+ An 8.3 directory name is eleven bytes with no dot: eight of name padded
+ with spaces, then three of extension.
+
+  asde-name : Integer, Integer -> Integer
+  asde-name (buf) (digit) =
+   let a = poke-byte buf 0 65
+   in let s = poke-byte buf 1 83
+   in let d = poke-byte buf 2 68
+   in let e = poke-byte buf 3 69
+   in let n = poke-byte buf 4 (48 + digit)
+   in let p1 = poke-byte buf 5 32
+   in let p2 = poke-byte buf 6 32
+   in let p3 = poke-byte buf 7 32
+   in let t = poke-byte buf 8 84
+   in let x = poke-byte buf 9 88
+   in poke-byte buf 10 84
+
+ Text crosses to the wire as Unicode, not as the CCE the compiler holds
+ internally, so every byte goes through to-unicode at this boundary.
+
+  asde-bytes : Integer, Text, Integer -> Integer
+  asde-bytes (buf) (s) (i) =
+   if i >= text-length s then i
+   else let b = poke-byte buf i (to-unicode (char-code (char-at s i)))
+   in asde-bytes buf s (i + 1)
+
+ A marker is written when a volume happens to be mounted and skipped when
+ one is not. It answers False in that case, which is the same answer a
+ failed write gives, and the row on the glass is what carries the reading
+ either way.
+
+  asde-mark : GfatMount, Integer, Text -> [Device.Port] Boolean
+  asde-mark (m) (digit) (body) =
+   if (m.gm-ok) == False then False
+   else let nb = alloc-zeroed 16 16
+   in let nm = asde-name nb digit
+   in let n = text-length body
+   in let buf = alloc-zeroed 512 64
+   in let w = asde-bytes buf body 0
+   in gfat-write-file (m.gm-vol) nb buf n
+
+ GopFat16 records WHICH step of the mount failed in diag cell 80, at every
+ exit, and always has. The 2026-08-10 flight collapsed all seven of those
+ into one line reading "no ESP", which named none of them and cost a
+ sitting. The cell is free to read and it is read here.
+
+  asde-stage-name : Integer -> Text
+  asde-stage-name (s) =
+   if s == gfat-stage-hdr then "GPT header read failed"
+   else if s == gfat-stage-sig then "no EFI PART signature"
+   else if s == gfat-stage-ents then "entry array read failed"
+   else if s == gfat-stage-guid then "no ESP GUID in the entry array"
+   else if s == gfat-stage-bpb then "BPB sector read failed"
+   else if s == gfat-stage-bps then "bytes-per-sector not 512"
+   else if s == gfat-stage-ok then "ok"
+   else "not asked"
+
+  asde-bank-line : GfatMount, Boolean -> Text
+  asde-bank-line (m) (wrote) =
+   if m.gm-ok then "bank live, ASDE0.TXT written=" & (if wrote then "y" else "n")
+   else "no bank, mount stage " & show (xdiag-get gfat-cell-stage)
+        & " (" & asde-stage-name (xdiag-get gfat-cell-stage)
+        & ") -- the rows below are the reading"
+
+Section: Rows
+
+  arow : Integer, Integer, CbfFont, Integer, Integer, Text, Integer, Integer -> Integer
+  arow (base) (stride) (font) (y) (scale) (s) (col) (w) =
+   let lines = gop-draw-text-wrap base stride font 40 y s col scale w
+   in y + lines * 16 * scale + 6
+
+Section: Stages
+
+ Stage 2 is the read-only touch, stage 3 is ASDE=0 and stage 4 is ASDE=1.
+ Each row is painted BEFORE the touch that follows it, so the last row on
+ the glass names the last thing that completed and the first thing that
+ did not.
+
+  asde-armed : GfatMount, Integer, Integer, CbfFont, Integer, Integer, Integer, PciDevice -> [Device.Port, Device.Mmio] Integer
+  asde-armed (m) (base) (stride) (font) (scale) (y1) (w) (dev) =
+   let y2 = arow base stride font y1 scale ("ASDE: eligible at " & show (dev.pci-bus) & ":" & show (dev.pci-dev) & "." & show (dev.pci-func) & " -- entering bring-up") 16776960 w
+   in let mmio = na-mmio-of dev
+   in act
+    m1 <- asde-mark m 1 ("stage1 eligible mmio=" & show mmio)
+    let touch = na-touch mmio
+    in let y3 = arow base stride font y2 scale (na-touch-line mmio touch) 16776960 w
+    in act
+      m2 <- asde-mark m 2 ("stage2 touch STATUS=" & show (touch.nt-status) & " CTRL=" & show (touch.nt-ctrl))
+      let off = na-bring-up mmio False
+      in let y4 = arow base stride font y3 scale (na-line "ASDE=0" off) 65280 w
+      in act
+        m3 <- asde-mark m 3 ("stage3 asde0 " & na-line "ASDE=0" off)
+        let on = na-bring-up mmio True
+        in let y5 = arow base stride font y4 scale (na-line "ASDE=1" on) 65280 w
+        in act
+          m4 <- asde-mark m 4 ("stage4 asde1 " & na-line "ASDE=1" on)
+          y5
+        end
+      end
+    end
+   end
+
+  asde-stages : GfatMount, Integer, Integer, CbfFont, Integer, Integer, Integer -> [Device.Port, Device.Mmio] Integer
+  asde-stages (m) (base) (stride) (font) (scale) (y0) (w) =
+   let y1 = arow base stride font y0 scale "ASDE: scanning bus 0" 9474192 w
+   in let scan = pci-scan-bus 0
+   in when e1000-find scan
+    is None -> act
+      mk <- asde-mark m 1 "stage1 no Intel NIC on bus 0 (scope: bus 0 only)"
+      arow base stride font y1 scale "ASDE: no Intel NIC on bus 0 (scope: bus 0 only)" 16755200 w
+    end
+    is Just (dev) ->
+      if na-eligible dev == False then act
+        mk <- asde-mark m 1 ("stage1 rejected " & na-reject-line dev)
+        arow base stride font y1 scale (na-reject-line dev) 16755200 w
+      end
+      else asde-armed m base stride font scale y1 w dev
+
+Section: Entry
+
+  opening : [Device.Port, Device.Mmio] Integer
+  opening =
+   let base = boot-fb-base 0
+   in let w = boot-fb-w 0
+   in let h = boot-fb-h 0
+   in let stride = boot-fb-stride 0
+   in let font = cbf-init
+   in let scale = if w >= 1024 then 2 else 1
+   in act
+    ri <- runtime-init 0
+    att <- usb-attach
+    let bg = gop-fill-rect base stride 0 0 w h 1710638
+    in let y0 = arow base stride font 40 scale "ASDE STAGE PROBE -- B2 Finding 4" 65535 w
+    in act
+      m <- gfat-mount-esp
+      m0 <- asde-mark m 0 "stage0 mounted, write path live"
+      let y1 = arow base stride font y0 scale (asde-bank-line m m0) (if m.gm-ok then 9474192 else 16755200) w
+      in act
+        y2 <- asde-stages m base stride font scale y1 w
+        shot-wait base w h stride font (att.ua-kbd)
+      end
+    end
+   end

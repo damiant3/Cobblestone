@@ -4,27 +4,6 @@ Chapter: TlsNoAuthLoopbackTest
   cites Encode chapter X509Chain
   cites Foreword chapter Maybe
 
- A TLS 1.3 handshake completing WITHOUT authentication, and the same
- client refusing to complete when it asked for authentication and did not
- get it. Both halves matter and they are the same code path.
-
- A client with no trust anchors does not require the server to be
- authenticated. It still cannot verify the certificate, and until this
- test existed that was fatal for the wrong reason: the Certificate and
- CertificateVerify messages were folded into the transcript only when
- they verified, so a client that could not verify them held a transcript
- one message short of the server's and the server Finished never matched.
- The handshake failed at the Finished, which reads like a key schedule
- fault and is nothing of the kind.
-
- The transcript records what was RECEIVED. Authentication is a separate
- verdict carried by tep-auth-done, and tep-auth-missing is what refuses.
-
- no-anchors is the case that could not complete before. tampered is the
- control that proves the fix did not buy it by weakening anything: that
- client DOES carry the real anchor, so it requires authentication, and it
- is handed a Certificate with a flipped byte. It must not finish.
-
 Section: Fixtures
 
   ca-cert : List Integer =
@@ -130,17 +109,9 @@ Section: Helpers
 
 Section: The Server
 
- One server, used by both clients. It presents the real leaf chain either
- way; what differs is what the client is willing to check.
-
   s0 : TlsEp = tls-ep-server-new s-priv s-random [leaf-cert] leaf-priv leaf-pub
 
 Section: A Client With No Anchors
-
- anchors is empty, so this client does not require authentication. It
- cannot verify the chain and does not try to; it must still complete,
- because completing is a property of the transcript and the key schedule,
- not of whether it liked the certificate.
 
   n0 : TlsEp = tls-ep-client-new c-priv c-random [] cal-now []
 
@@ -163,9 +134,6 @@ Section: A Client With No Anchors
 
   nsv2 : TlsEpStep = tls-ep-recv (nsv1.tes-ep) nfin-out
 
- Application data proves the handshake produced usable keys on both
- sides, which a Finished check alone does not.
-
   ncs1 : TlsEpStep = tls-ep-send-app (n5.tes-ep) [71, 69, 84]
   nreq : List Integer = list-at (ncs1.tes-out) 0
   nsv3 : TlsEpStep = tls-ep-recv (nsv2.tes-ep) nreq
@@ -175,13 +143,6 @@ Section: A Client With No Anchors
   n6 : TlsEpStep = tls-ep-recv (ncs1.tes-ep) nresp
 
 Section: A Client That Asked For Authentication And Was Cheated
-
- This client carries the real anchor, so it requires authentication. The
- Certificate it receives has a flipped byte, so the chain does not walk,
- no peer key is kept, and the CertificateVerify cannot check out. Both
- messages still fold, so its transcript matches the server's and the
- server Finished verifies -- and it must STILL refuse, on the
- authentication verdict alone.
 
   peer-name : List Integer =
     [100, 101, 118, 105, 99, 101, 46, 99, 111, 100, 101, 120, 46, 116, 101, 115, 116]

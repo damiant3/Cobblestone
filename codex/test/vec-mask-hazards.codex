@@ -1,29 +1,12 @@
 Chapter: VecMaskHazards
   cites Foreword chapter Console
 
- Adversarial probe for the mask query builtins, and the pin for the
- movmskpd REX omission.
-
  movmskpd was encoded with no REX byte, so a destination in R8-R15 lost
  its high bit and encoded the low-three-bits register instead. alloc-temp
  rotates [RAX, RCX, RDX, RSI, RDI, R11] and R11 is the only extended
  register in that pool, so a mask query whose temp landed there wrote its
  bits to RBX while the test-rr that follows read R11, and sete answered
  from whatever R11 held.
-
- Two things are needed to reach it, and every existing vector test in the
- tree has neither. The operands must have DISTINCT LANES, because
- vec-splat writes the same value to both and movmskpd can then only answer
- 0 or 3 -- under which mask-any and mask-all are the same function and
- mask-count is never asked for 1. And several queries must sit in ONE
- arithmetic expression, because which temp a query is handed depends on
- how many the surrounding expression has already consumed. mk2 builds a
- distinct-lane vector by writing two doubles into a buffer, which is the
- only way to express one.
-
- The lane-uniform variants are the controls: they answer correctly even on
- a compiler carrying the defect, which is precisely why splat-only tests
- could not see it.
 
  This is a WITNESS rather than a guarantee. It reaches R11 through the
  temp rotation, and a future codegen change that shifts the rotation could
@@ -70,9 +53,6 @@ Section: Operands
 
 Section: Probes
 
- An empty mask: every lane clear, so none is True and any and all are
- False.
-
  The operands arrive as PARAMETERS, not as chapter constants. A top-level
  constant is a zero-argument function and so a call, which consumes a
  different number of temps and moves the rotation; written against
@@ -94,9 +74,6 @@ Section: Probes
    in let m = v < w
    in b2i (mask-none m) + 2 * b2i (mask-none m) + 4 * b2i (mask-none m)
 
- A mixed mask: lane zero set, lane one clear. This is the pattern
- vec-splat cannot produce, and the only one under which count is 1.
-
   mixed-all-four : Real, Real, Real, Real -> Integer
   mixed-all-four (x0) (x1) (y0) (y1) =
    let v = mk2 x0 x1
@@ -112,10 +89,6 @@ Section: Probes
    in mask-count m + 2 * mask-count m + 4 * mask-count m
 
 Section: Controls
-
- Lane-uniform operands. These answer correctly with or without the fix,
- so a run where these pass and the probes above fail is the signature of
- the defect rather than of vectors being broken generally.
 
   splat-empty : Real, Real -> Integer
   splat-empty (x) (y) =

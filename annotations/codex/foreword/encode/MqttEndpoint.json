@@ -1,0 +1,74 @@
+[
+  {
+    "target": "chapter:MqttEndpoint",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "The MQTT v5 client endpoint: the binding that turns the Mqtt codec -- which only ever built packets, and until 2026-07-23 could not read one at all -- into a session with a broker.",
+    "thread": null
+  },
+  {
+    "target": "chapter:MqttEndpoint",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "It is PURE, in the style of `CoapEndpoint`, `TlsEndpoint` and `DtlsEndpoint`: bytes in, bytes out, no socket and no clock. The transport `now` is a caller-supplied tick that drives retransmission and keepalive, and a thin caller carries the bytes over TCP. The reliability and correlation live here and are exercised by a loopback; the wire is `tools/mqtt-client.codex`.",
+    "thread": null
+  },
+  {
+    "target": "chapter:MqttEndpoint",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "WHY THIS IS NOT SHAPED LIKE THE CoAP ONE. CoAP runs on datagrams, so its endpoint takes exactly one datagram and answers with whole datagrams. MQTT runs on TCP, which delivers a byte STREAM: a segment can carry half a packet, or three packets, or the tail of one and the head of the next. So this endpoint takes a buffer and reports how much of it it consumed, and the caller keeps the remainder. Getting that wrong is not a subtle failure -- it desynchronises the stream permanently on the first coalesced segment, which is exactly what a broker sends under load.",
+    "thread": null
+  },
+  {
+    "target": "chapter:MqttEndpoint",
+    "kind": "invariant",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "AN MqttEp IS THREADED LINEARLY, like every other endpoint here. The state updates go through `__record-set`, which stores into the record and returns the same one, so a value that has been passed to one of these functions is spent and the caller must use what came back. Branching two exchanges off one endpoint value does not give two sessions -- it gives one session and two names for it, and the older name then reads state it does not own.",
+    "thread": null
+  },
+  {
+    "target": "section:Publishing",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "At QoS 0 the packet goes out and is forgotten -- there is nothing to wait for and nothing to retransmit, which is what \"at most once\" means. At QoS 1 it is held: the identifier, the exact bytes, and the deadline, because a message that cannot be resent is a message with no delivery guarantee at all.",
+    "thread": null
+  },
+  {
+    "target": "function:mqtt-ep-publish",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "ONE OUTSTANDING PUBLISH AT A TIME. A second while one is unacknowledged is refused rather than queued, the same call `CoapEndpoint` makes for the same reason: a queue is a larger client's concern and this one says so by not pretending to have one.",
+    "thread": null
+  },
+  {
+    "target": "function:mqtt-ep-on-connack",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "A non-zero CONNACK reason is the broker refusing, and the session is failed rather than quietly left half-open. Reason 135 is \"not authorized\", which is what an unauthenticated client gets from a broker that requires credentials -- the case the dead username field made unreachable.",
+    "thread": null
+  },
+  {
+    "target": "function:mqtt-ep-on-suback",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "A SUBACK is matched by packet identifier. One that names a subscription we did not send is not our confirmation and is dropped -- without the check, any SUBACK at all would confirm any subscription.",
+    "thread": null
+  },
+  {
+    "target": "function:mqtt-ep-on-puback",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-06",
+    "body": "A PUBACK clears the outstanding publish, and only if the identifier matches. A stale acknowledgement from an earlier message must not retire the current one.",
+    "thread": null
+  }
+]

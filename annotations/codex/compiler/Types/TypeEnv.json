@@ -1,0 +1,90 @@
+[
+{
+    "target": "function:env-add-local-range",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Consing the entry is what makes an inner binding shadow an outer one, but the cons alone never made the table SCOPED: reaching the caller's record through `__record-set` handed the new list back to the caller (see `env-bind-local`), so a range recorded inside a let outlived it. The scoping this prose claims is the fresh record, not the cons.",
+    "thread": null
+  },
+  {
+    "target": "function:builtin-type-env",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The fold is in table order and `env-bind` REPLACES, which is exactly what the let-chain this replaced did -- so a name bound twice would still resolve to the last one. No name is bound twice. `process-exit` was, and the losing bind is `process-exit-self` now; the replacing fold is kept because it is what the let-chain did, not because anything depends on it.",
+    "thread": null
+  },
+  {
+    "target": "type:ConstRange",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A ConstRange records the proven value range of a name -- a literal-defined constant (const-ranges) or a let-local bound to a proven expression (local-ranges). The range lives BESIDE the registered type, never in it: refining the type itself would make two distinct constants disjoint under unification and break comparisons, arithmetic, and list literals that mix them. Only the narrowing lint reads these tables, on its would-warn path.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Environment",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Binding a local yields a NEW environment. Both halves of that are load-bearing, and each one alone is not enough.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Environment",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "`__record-set` is an in-place field store that hands back the SAME record (`emit-record-set-builtin`) -- a controlled concession that holds only while single ownership is threaded linearly (VisionAndVirtues, virtue 5). A binder does not own its caller's env: `infer-let` extends an env for its body and returns a CheckResult carrying no env, so the caller goes on using the env it passed in. Setting the field through it therefore wrote the binding into the CALLER's environment, and the local stayed visible after inference popped back out -- an if-arm's `let` escaped its arm, and a leaked local could shadow a global at a later read and reject a valid program (CDX2001).",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Environment",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "`list-insert-at` is likewise the in-place builtin: under capacity it mutates the list and returns the same object. So a fresh record that kept the caller's list would still mutate through the shared list. The copy carries one slot of headroom, so the insert always lands on the fresh list's in-place path and never reallocates.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Environment",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The sibling table `local-ranges` conses its entries, which is why its LIST is safe -- but it reaches the caller through `__record-set` just the same, so it is scoped by this constructor, not by that cons.",
+    "thread": null
+  },
+  {
+    "target": "function:env-add-local-range",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A let-local's proven range is recorded when its binding value proves narrower than the full i64 range. New entries prepend, and lookup returns the FIRST match, so an inner binding that shadows an outer name wins. The table is scoped by env threading: it exists only within the let body where the local is bound, and is discarded when inference pops back out.",
+    "thread": null
+  },
+  {
+    "target": "section:Builtins",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The spawn family is effect-polymorphic in its callback (ForAllEff over the callback's row): the closure runs in the CHILD process, so its effects are not the caller's. Spawning itself is Concurrent. The child inherits the parent's capability word, so an effect the parent never declared is ungranted in the child too and its syscall is refused -- the leak is fail-closed at the kernel, not silent.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Type Environment",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "identity-set-proc writes another process's identity label, so its kernel helper tests two bits: identity and capability-admin. The row names both effects, which is what lets the manifest grant both.",
+    "thread": null
+  },
+  {
+    "target": "function:identity-admin-row",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Reading an identity is an Identity effect too. identity-whoami and identity-get-proc read a label -- your own and another process's -- and device-seed reads the per-device entropy the key is derived from. All three name Identity, so a caller must declare it and the manifest must grant it. The row is not decoration: device-seed's kernel helper already tested cap-identity while its type claimed purity, so a caller that did not declare Identity was denied at the gate and got -1 back -- indistinguishable from the -1 that an out-of-range index returns. A gated builtin with an empty row is a silent denial waiting to happen; that is the reason these rows are written down.",
+    "thread": null
+  }
+]

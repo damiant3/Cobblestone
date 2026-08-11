@@ -8,15 +8,6 @@ Chapter: GopDraw
  as a scale-by-scale square, so the same font renders 8x16 at scale 1
  and 16x32 at scale 2. Panels 1024 pixels wide or wider use scale 2.
 
- The mouse cursor is drawn by saving the pixels beneath it, painting a
- small white block with a dark border, and restoring the patch on the
- next move -- a full-panel repaint per mouse twitch would run at
- report rate for nothing. Any draw that clears or repaints beneath the
- cursor invalidates the saved patch; the next movement repaints the
- cursor over the fresh screen. State block: [0] valid, [4] x, [8] y,
- [12] clamped width, [16] clamped height, saved pixels from [32] at a
- fixed 16-pixel pitch.
-
  We say:
 
 Section: Cursor
@@ -50,14 +41,6 @@ Section: Cursor
 
   cursor-min : Integer, Integer -> Integer
   cursor-min (a) (b) = if a < b then a else b
-
- Hide before a repaint, not just clear the flag: clearing alone is
- correct only when the repaint covers the cursor. A pane that covers
- part of the panel leaves the old cursor pixels standing outside it,
- and the next save-under bakes them into the patch -- a permanent
- ghost the first restore stamps back. Restore first, then clear;
- the repaint may then paint anywhere, and the next update saves a
- clean patch.
 
   cursor-hide : Integer, Integer, Integer -> Integer
   cursor-hide (cs) (base) (stride) =
@@ -134,17 +117,41 @@ Section: Glyph
  box at 1280 wraps at 1024 and shreds the screen at 800, so without this
  bound every probe's legibility is a bet on the panel.
 
- Truncating at `stride` rather than at a visible width is deliberate: the
- padded region beyond the visible pixels is invisible but harmless, while
- the next scanline is not. Losing the tail of a long line is a failure the
- reader can SEE; overwriting the line above it is one they cannot.
-
   gop-draw-text (base) (stride) (font) (px) (py) (s) (fg) (scale) (i) =
     if i >= text-length s then 0
     else if px + (i + 1) * 8 * scale > stride then 0
     else let cce = char-code (char-at s i)
     in let c = gop-char-rows base stride font (px + i * 8 * scale) py cce fg scale 0
     in gop-draw-text base stride font px py s fg scale (i + 1)
+
+Section: Wrapped Text
+
+  gop-word-len : Text, Integer -> Integer
+  gop-word-len (s) (i) =
+    if i >= text-length s then 0
+    else if gop-is-space (char-code (char-at s i)) then 0
+    else 1 + gop-word-len s (i + 1)
+
+  gop-is-space : Integer -> Boolean
+  gop-is-space (cc) = if cc >= 1 then cc <= 2 else False
+
+  gop-draw-text-wrap : Integer, Integer, CbfFont, Integer, Integer, Text, Integer, Integer, Integer -> Integer
+  gop-draw-text-wrap (base) (stride) (font) (px) (py) (s) (fg) (scale) (w) =
+    let cpl = (w - px) / (8 * scale)
+    in if cpl <= 0 then 0
+    else gop-wrap-go base stride font px py s fg scale cpl 0 0 0
+
+  gop-wrap-go : Integer, Integer, CbfFont, Integer, Integer, Text, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-wrap-go (base) (stride) (font) (px) (py) (s) (fg) (scale) (cpl) (i) (col) (line) =
+    if i >= text-length s then line + 1
+    else let cc = char-code (char-at s i)
+    in if gop-is-space cc then
+      (if col + 1 + gop-word-len s (i + 1) > cpl
+       then gop-wrap-go base stride font px py s fg scale cpl (i + 1) 0 (line + 1)
+       else gop-wrap-go base stride font px py s fg scale cpl (i + 1) (col + 1) line)
+    else if col >= cpl then gop-wrap-go base stride font px py s fg scale cpl i 0 (line + 1)
+    else let c = gop-char-rows base stride font (px + col * 8 * scale) (py + line * 16 * scale) cc fg scale 0
+    in gop-wrap-go base stride font px py s fg scale cpl (i + 1) (col + 1) line
 
 Section: Scale
 

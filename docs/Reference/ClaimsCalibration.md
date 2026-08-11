@@ -42,7 +42,7 @@ Companion: `TrustedComputingBase.md` (what we trust vs. check vs. prove).
   coverage). All six probes now live in `errors/*.failing`;
   `proof-assume-axiom` pins the CDX4021 axiom warning (the explicit
   `assume` door was already honest). Residual edges logged in
-  `docs/Designs/Active/Language/ProofTotalityProbe.md` §6.2
+  `docs/Designs/Done/Language/ProofTotalityProbe.md` §6.2
   (cross-chapter DefMap if it ever ships; Option B positive grammar
   as optional hardening). The README sentence stands unqualified
   because the compiler now enforces it.

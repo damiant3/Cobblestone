@@ -70,30 +70,6 @@ Section: Breakpoint
 
 Section: Debugger State
 
- `watch-ports` and `dev` are different things and the names are close
- enough to be worth separating here. `watch-ports` is the I/O port probe
- list; `dev` holds the MEMORY watch table from `Dev chapter DevState`,
- which is what `dbg watch` in the design means.
-
- `last-address` stays the one home for the cursor and for what `$` reads.
- The design's `DevState` record also lists a `last-result`; putting one
- there would have made two fields holding the same number with nothing
- checking they agree, so DevState carries the watch table and nothing
- else. That reasoning is written out in the chapter itself.
-
- `pending` is what lets a command need a SECOND word. The console
- dispatches one line at a time, so a command that takes an argument has to
- say it is waiting and the next line has to know it was expected. Before
- this, `Memory Write` set a status that said "enter address value" and
- nothing anywhere consumed the next line: it fell through to the address
- evaluator, moved the cursor, and no write ever happened. The menu offered
- a command the console could not perform.
-
- A read acts at the cursor and answers immediately, the way `watch` does,
- because the cursor is already how every address in this console is chosen
- -- an expression moves it, and the command acts there. That keeps one
- idiom instead of two.
-
  THE THREE PENDING CASES DO NOT CONSUME THEIR LINE THE SAME WAY, and that
  is the reason this is a variant rather than a Boolean. A write value is an
  EXPRESSION and goes through `ExprEval`, so `0x2a` and `$ - 1` both work.
@@ -119,12 +95,6 @@ Section: Debugger State
    | PendingCpuLeaf
    | PendingPortRead
    | PendingPortWatch
-
- THE DISK CURSOR IS SEPARATE FROM `last-address`, and it has to be. One is
- an address in the flat physical space and the other is a sector number on
- a medium; a single cursor meaning both would read the same number two
- ways depending on which command was asked, which is the kind of thing
- that is only noticed after it has dumped the wrong thing.
 
  `disk-lines` HOLDS A RENDERED REPORT RATHER THAN THE VIEW RE-READING IT.
  The memory dump can be produced during rendering because `peek-byte`
@@ -157,40 +127,11 @@ Section: Debugger State
     port-trace : PortTrace
   }
 
- A FOURTH CURSOR, and the argument is the one the other three made. An
- address, a sector, an interrupt vector and a CPUID leaf are four
- different spaces, and a number from any one of them is meaningless in
- the others; a single cursor would read the same number four ways
- depending on which command asked. The leaf cursor earns its place the
- same way the vector cursor did: `$ + 1` steps to the next leaf, which is
- how anyone enumerates CPUID.
-
- `macro-running` IS THE WHOLE RECURSION BOUND. A macro body that runs a
- macro can reach itself, and under no collector and no stack guard that is
- a hang. `macro.run` is refused outright while this is set, rather than
- bounded by a depth counter: a flag is checkable by reading it, a depth
- limit has to be got right and then trusted, and nothing a debugger macro
- is for needs nesting.
-
- `macro-name` carries the name from the first prompt to the second, since
- defining a macro is the one command here that needs two lines of input.
- It is not a cursor and nothing reads it outside that pair.
-
- THE TWO SERIAL FLAGS ARE INDEPENDENT, and the design's command table
- reads as though they are one mode with two positions (`serial.remote`
- against `serial.local`). They are not, because they govern opposite
- directions: mirroring is what the console SAYS on COM1 and remote is what
- it LISTENS to there, and wanting the first without the second is the
- ordinary case -- watching a console you are driving by keyboard.
-
  `serial-remote` NEVER DISABLES THE KEYBOARD. The poll checks the serial
  line in addition to `uefi-con-poll-key`, never instead of it, so the flag
  cannot strand an operator in front of a console that has stopped
  listening to them. That is a deliberate divergence from the `serial.local`
  row, which reads as a switch back from a mode this does not enter.
-
- `serial-line` is the PARTIAL line: bytes arrive one poll at a time and a
- command is not a command until its terminator does.
 
  A THIRD CURSOR, for the same reason there was a second. `last-address` is
  an address in the flat physical space and `last-lba` is a sector on a
@@ -287,10 +228,6 @@ Section: Reading And Writing One Cell
  it in `status`, which is a `Text`. So what is needed here is the same
  arithmetic returning a value rather than performing an output.
 
- These are PURE. `peek-byte` and `poke-byte` carry no effect row, so the
- whole of the read and the whole of the write are ordinary functions, and
- the console's use of them can be tested without a machine.
-
   debug-read-u16 : Integer -> Integer
   debug-read-u16 (a) = bit-or (peek-byte a 0) (bit-shl (peek-byte a 1) 8)
 
@@ -308,10 +245,6 @@ Section: Reading And Writing One Cell
     in let hi = bit-or (peek-byte a 4) (bit-or h1 (bit-or h2 h3))
     in bit-or (debug-read-u32 a) (bit-shl hi 32)
 
- All four widths on one line, because the menu item promises all four and
- because the question an operator has at an address is usually "which of
- these is it" rather than one width chosen in advance.
-
   debug-mem-read-line : Integer -> Text
   debug-mem-read-line (addr) =
     let hb = "  b=#" & hex-byte (peek-byte addr 0)
@@ -319,12 +252,6 @@ Section: Reading And Writing One Cell
     in let hd = "  d=#" & hex-i32 (debug-read-u32 addr)
     in let hq = "  q=#" & hex-i64 (debug-read-u64 addr)
     in "0x" & hex-i64 addr & hb & hw & hd & hq
-
- A value outside a byte is REFUSED and nothing is written. `poke-byte`
- would take the low eight bits and the operator would be told a byte had
- been stored, which is a different byte from the one they typed. The
- answer names the value it rejected so the refusal is not mistaken for a
- write that happened to change nothing.
 
   debug-mem-write-at : Integer, Integer -> Text
   debug-mem-write-at (addr) (val) =
@@ -341,14 +268,6 @@ Section: Searching And Comparing
  `dbg mem.cmp <a1> <a2> <len>`, which read as commands needing two and
  three arguments, and this console dispatches one line at a time. That
  looked like a reason to build a multi-argument parser.
-
- IT IS NOT, BECAUSE THE CONSOLE ALREADY ANSWERS THE QUESTION. Every
- address here is chosen by moving the cursor with an expression, and every
- command acts there; `watch` additionally takes its length from the dump
- length, so the region it watches is the region `mem` would have shown.
- Applying the same two rules leaves each command needing exactly ONE
- argument: a search is a pattern at the cursor, and a compare is the
- cursor against one other address. The parser was not needed.
 
  THE PATTERN IS PARSED WITH `hex-char-val` FROM `Dev chapter HexFormat`
  rather than a fourth spelling of the same table. That function is already
@@ -371,11 +290,6 @@ Section: Searching And Comparing
     in if hi < 0 then 0 - 1
     else if lo < 0 then 0 - 1
     else hi * 16 + lo
-
- A pattern is refused rather than truncated. An odd number of characters
- is a typo, not half a byte, and a non-hex character is a typo too; either
- one silently dropped would search for something the operator did not ask
- for and report an address they would then trust.
 
   debug-pattern-fault : Text -> Text
   debug-pattern-fault (t) =
@@ -401,11 +315,6 @@ Section: Searching And Comparing
     else if peek-byte addr (off + b) /= debug-pattern-byte t b then False
     else debug-pattern-rest t n addr off (b + 1)
 
- The window is the dump length, and the answer names the ADDRESS as well
- as the offset. An offset alone is a number the operator has to add to
- something, and the thing they would add it to is the cursor they are
- about to move.
-
   debug-mem-search : Integer, Integer, Text -> Text
   debug-mem-search (addr) (len) (pat) =
     let fault = debug-pattern-fault pat
@@ -421,10 +330,6 @@ Section: Searching And Comparing
   debug-search-hit : Integer, Integer -> Text
   debug-search-hit (addr) (off) =
     "found at 0x" & hex-i64 (addr + off) & " (cursor + " & show off & ")"
-
- A compare reports the FIRST difference and both bytes, not a count. A
- count says two regions differ and leaves the operator to find where; the
- offset is the thing they were going to look for next.
 
   debug-mem-compare : Integer, Integer, Integer -> Text
   debug-mem-compare (a) (b) (len) = debug-compare-loop a b len 0
@@ -509,10 +414,6 @@ Section: MAP1 Debug Map
  address congruent to 3 modulo 4 every time, which a scan stepping by
  four from an aligned base can never read. Correcting the magic alone
  left this answering None, which is how the alignment came to light.
-
- The cost is a byte-wise walk of the search window on the FIRST call
- only. `map1` in `DebuggerState` caches the result, and every caller
- already consults that field before calling here.
 
   map1-scan : Integer, Integer -> Maybe Map1Info
   map1-scan (addr) (limit) =
@@ -643,11 +544,6 @@ Section: Where A RIP Actually Comes From
  rendering the standard-input EOF flag as a fault vector and walking a
  stack from whatever the scheduler's ready-list head happened to hold.
 
- It is the shape this project keeps meeting. Nothing was ever blank or
- obviously wrong, so three menu items showed confident numbers and looked
- like they worked. The address map in `X86_64Boot` is the referee, and it
- records no faulting vector anywhere.
-
  WHAT THE MACHINE DOES KEEP is the watchdog's ring: the timer ISR writes a
  RIP, an RSP and a heap pointer into it when neither the heap pointer nor
  the saved RIP has moved since the last tick. Those are real registers,
@@ -707,16 +603,6 @@ Section: Perf View
         "  HPET counter = 0x" & hex-i32 hpet-hi & hex-i32 hpet-lo]
 
 Section: Port Watch
-
- THE WATCH LIST HAD NO WAY TO GROW UNTIL `io.watch` LANDED. `watch-ports`
- was initialised empty and no command anywhere added to it, so the Port
- I/O view rendered an empty list on every repaint since it was written --
- a menu item that drew a heading and nothing under it, which reads as a
- machine with nothing to say rather than as a view with no input.
-
- The cap is here rather than in the view because the view is a repaint:
- every port in this list is read again on every frame, so the list's
- length is a per-frame I/O cost and not merely storage.
 
   debug-max-watch-ports : Integer = 16
 

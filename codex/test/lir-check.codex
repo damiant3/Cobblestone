@@ -1,36 +1,6 @@
 Chapter: LirCheck
   cites Foreword chapter MathLib
 
- Drives the REAL LIR lowering (IR/Lir.codex, via the `lir-dump` pass) over
- real lowered IR. Each straight-line, `if`, and scalar `match` function
- below is lowered to the flat LIR, structurally verified, and dumped; the
- non-lowerable ones (a call, an act block, a constructor-pattern match) are
- declined. There is no reimplementation here: the shapes are ordinary
- Codex, the compiler lowers them to IRExpr, and `-Passes lir-dump` runs
- `lower-def-to-lir` + `lir-check-func` over each and prints one line per
- definition to the compile log. The pinned answers live in
- `lir-check.lir-expected`, read off the real lowering and hand-checked.
-
- The default battery compiles this file with the DEFAULT pipeline (the LIR
- pass does not run) and checks the runtime output against
- `lir-check.expected` -- that pins that the functions actually COMPUTE
- correctly, so the LIR dump is being read against working programs.
-
- Each lowerable function also gets a `LIVE <name>: bN in {..}` line beside
- its `LIR` line, pinning the backward liveness (Section: Liveness in
- `Lir.codex`): a parameter is live at the entry block, the result vreg is
- live at the exit block, and a value is live across exactly the blocks
- between its definition and its last use.
-
- A third `ALLOC <name>: v0->r0 v1->r0 ... [alloc-check: ok]` line pins the
- linear-scan register assignment (Section: Allocator) and the allocation
- verifier's verdict on it (Section: Allocation Verifier). The assignment
- now shows register reuse -- two vregs with disjoint live ranges share a
- register (e.g. sl-mix's v2 reuses v0's) -- and sl-wide, with five live
- parameters over four registers, shows spill slots (`sN`). The verifier
- runs over the real allocation and accepts it; corrupting the assignment
- makes it fire.
-
  The shapes:
 
   - sl-add:     two params, one add          -> one block
@@ -50,36 +20,6 @@ Chapter: LirCheck
   - if-mod4:    a wider power of two                   -> `test` against mask 3
   - if-mod3:    a remainder by three                   -> NOT fused (not a power of two)
   - if-mod-one: a remainder against one, not zero      -> NOT fused (not against zero)
-
- **These five are pinned by their VALUES first, and by their dump lines as
- well since 2026-07-19.** They were answers-only for a reason worth keeping
- written down: `build/lir-dump-test.ps1` ran `-Passes lir-dump`, and `-Passes`
- REPLACES the pipeline rather than adding to it, so the recording ran with
- `fold-constants` and `inline-leaf-calls` switched off. All five dumped as
- `call math-mod` with an ordinary compare while every one of them emitted
- something else, and this prose concluded the inliner "runs later, in the
- INLINE phase". It does not. It runs in the pass pipeline the flag was
- silently emptying.
-
- The harness now names the default passes alongside `lir-dump`, so the pin
- records the program that actually ships: `if-even`, `if-odd` and `if-mod4`
- dump as a single `test`, and -- this is the part that was unreachable before
- -- `if-mod3` dumps as `rem` and `if-mod-one` keeps its `cmp v1 #1`, so both
- guards on the fusion are now visible in the pin rather than resting on the
- answers alone.
-
- The last two are the negative half and they are the point of the pair. The
- fusion is guarded on a power-of-two divisor and on a comparison against
- zero, and a guard that nothing tests is a guard that is not there. Both are
- chosen so a broken guard changes an answer rather than merely a shape:
- `if-mod3 6` is 1, and a mask-2 fusion escaping onto it would say 0.
-
- `if-even` is called with negative arguments on purpose. The mask and the
- remainder do not agree in general -- they differ in sign and value for a
- negative dividend, because the remainder follows the quotient's rounding and
- the mask does not -- and they agree on zero-ness alone, which is exactly and
- only what the fusion asks. -4 is even and -5 is odd, and the fused form has
- to say so.
 
 Section: Shapes
 
@@ -150,30 +90,12 @@ Section: Shapes
  Emitted in parameter order, `mov rcx,rdx` then `mov rbx,rcx` hands `mx` the
  value of `b`.
 
- That returned 60 instead of 0: `rgb-to-hsl` called red yellow, and
- `color-test` had been failing on the selector for as long as the leaf
- register file has existed. Drop the division and it does not reproduce.
- Drop a parameter and it does not reproduce. This is the shape.
-
- Pinned by its ANSWERS. No benchmark can see this -- it is a wrong answer,
- not a slow one -- and no verifier can either: the entry moves are emitted
- before the blocks and are not LIR instructions, so `[alloc-check: ok]` below
- is a verdict on a function whose prologue the verifier never looked at.
-
   pmv-clash : Integer, Integer, Integer, Integer, Integer -> Integer
   pmv-clash (a) (b) (c) (d) (e) =
     if d == a then let raw = (b - c) * 60 / e
       in if raw < 0 then raw + 360 else raw
     else if d == b then (c - a) * 60 / e + 120
     else (a - b) * 60 / e + 240
-
- The function result is a use. `s` is both the result and the source of the
- one join move the then-arm makes, and the else-arm's division keeps the dead
- let alive through simplification. A coalescer that counts only instruction
- operands sees a single use, folds the add into the join vreg, and the result
- reads a vreg nothing defines -- RAX by default, so the else path answered
- the division: coal-result 5 -2 said -50 where it must say 6. The then path
- answers 6 either way, which is why the shape survives a spot check.
 
   coal-result : Integer, Integer -> Integer
   coal-result (a) (b) = let s = a + 1 in let y = (if b > 0 then s else 100 / b) in s

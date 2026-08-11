@@ -198,11 +198,11 @@ if ($LASTEXITCODE -ne 0) {
     } else {
         $rawBytes = [System.IO.File]::ReadAllBytes($rawOut)
         $enc = [System.Text.UTF8Encoding]::new($false)
+        # The page is a CCE stream. Decoding it a byte at a time turned every
+        # character above tier 0 into '?' in the shipped HTML; ConvertFrom-CceBytes
+        # reads the multi-byte sequences.
         $outBytes = [System.Collections.Generic.List[byte]]::new($rawBytes.Length * 3)
-        foreach ($b in $rawBytes) {
-            $u = if ($b -lt $script:CceToUnicode.Length) { $script:CceToUnicode[$b] } else { 63 }
-            $outBytes.AddRange($enc.GetBytes([string][char]$u))
-        }
+        $outBytes.AddRange($enc.GetBytes((ConvertFrom-CceBytes $rawBytes)))
         $pageOut = Join-Path $OutDir 'fishtank-wasm.html'
         [System.IO.File]::WriteAllBytes($pageOut, $outBytes.ToArray())
         Write-Host "[fishtank-wasm] HTML: $pageOut ($((Get-Item $pageOut).Length) bytes)"

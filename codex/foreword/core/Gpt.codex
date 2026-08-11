@@ -1,16 +1,6 @@
 Chapter: Gpt
   cites Foreword chapter Maybe
 
- Runtime GPT partition table reader and writer. Reads GPT headers
- and partition entries from disk via block-read-sector, writes new
- GPT partition tables via block-write-sector. Operates on live
- block devices, not compile-time buffers.
-
- To gpt-read gives Maybe GptDisk, parsing the GPT on the current drive.
- To gpt-read-partition gives Maybe GptPartition, reading a single entry.
- To gpt-write-table writes a fresh GPT to the current drive.
- To gpt-wipe-quick zeros the GPT headers and first megabyte.
-
  We say:
 
 Section: Constants
@@ -196,11 +186,6 @@ Section: Read GPT
  Neither is hypothetical -- a signature check can pass on a sector this
  reader never wrote, and with no disk attached the buffer is whatever the
  block layer hands back.
-
- So refuse the header rather than divide by what it says. This is the same
- rule fat16-parse-bpb already applies to bytes-per-sector, and for the same
- reason: a value that is about to be a divisor is checked before the
- arithmetic, not after it.
 
   gpt-entry-size-max : Integer = 512
 
@@ -405,12 +390,6 @@ Section: Partition Layout
 
 Section: Write Partition Entries
 
- Entries are packed four to a sector and the sector is written when the fourth
- lands. A partition count that is not a multiple of four therefore leaves the
- last few entries sitting in the buffer, and the zero-fill that follows stepped
- straight over that sector to the next boundary -- so the buffer was discarded
- and the entries never reached the disk.
-
  Every realistic count is 1, 2 or 3, so **this wrote an empty partition table
  every time it was called.** It survived because nothing called it: the shipped
  boot images get their GPT from `build/build-img.ps1` on the host, and the one
@@ -418,10 +397,6 @@ Section: Write Partition Entries
  block-select selected nothing. The first time an install reached a real second
  drive, the header and the protective MBR landed correctly and the entry sector
  was 512 zero bytes.
-
- The fix is the flush: when the real entries run out mid-sector, write what is
- in the buffer before moving on. The tail of that sector is already zero,
- because the buffer is zeroed at the start of each sector.
 
   gpt-write-entries : List GptPartEntry, Integer, Integer, Integer -> [Device.Block] Integer
   gpt-write-entries (parts) (buf) (start-lba) (i) =
@@ -496,11 +471,6 @@ Section: Well-Known GUIDs
     else gpt-guid-eq-loop a b (i + 1)
 
 Section: Finding A Partition By Type
-
- Answers the FIRST partition carrying a given type GUID, or None. A disk
- with two partitions of the same type is not an error here -- the caller
- decides what that means -- but for the fact store it is why the installer
- writes exactly one.
 
   gpt-find-by-type : GptDisk, List Integer -> Maybe GptPartition
   gpt-find-by-type (disk) (type-guid) =

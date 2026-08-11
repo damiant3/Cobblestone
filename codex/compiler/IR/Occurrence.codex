@@ -1,16 +1,6 @@
 Chapter: Occurrence
   cites Codex chapter Build Settings (max-recursion-depth)
 
- The occurrence analyser: the highest-leverage pre-pass in the GHC
- simplifier architecture. For a
- definition it answers, per binder in that definition, how many times
- the binder is referenced within its scope -- Dead (0), Once, or Many
- (two or more). That single fact is what a GHC-style simplifier
- (WS-D3, not this unit) consumes to make two rewrites free and safe:
- drop dead let-bindings -- DCE stops being a pass -- and inline an
- occurs-once binding unconditionally, because inlining a value used
- exactly once neither duplicates work nor grows code.
-
  This unit is an ANALYSIS. It reads IRExpr and returns a result; it
  rewrites nothing and it is not wired into the pipeline that produces
  binaries. It is dead code in the shipping compiler -- parsed and
@@ -44,12 +34,6 @@ Chapter: Occurrence
  classified independently. The tree is correctly nested (the 2.22 bug
  was the emitter's flat table, never the tree), so lexical scope is
  just structural recursion.
-
- An IrDoBind scopes over the statements AFTER it, not the whole block:
- a bind's classification is read from the free map of the rest of the
- sequence, and the name is removed from that map before it rises past
- the bind. The do-notation the 2.22 lowering fix made real is a
- sequence in which each bind scopes over the tail.
 
  The walk is depth-bounded by the compiler's shared recursion budget,
  so a pathological IR is reported as unwalked rather than hung -- the
@@ -94,12 +78,6 @@ Section: Occurrence Count
 
 Section: Occurrence Map
 
- A map from free name to its count, and the walk's result: the free map
- of a subtree together with the classifications collected for every
- binder seen inside it. The binder list threads through the walk as an
- accumulator so its order is the traversal order -- a subtree's binders
- before the binder that scopes them -- and is deterministic.
-
   OccEntry = record {
    name : Text,
    count : OccCount
@@ -120,12 +98,6 @@ Section: Occurrence Map
   occ-map-get (m) (n) =
    let i = occ-map-find m n 0 (list-length m)
    in if i < 0 then OccDead else (list-at m i).count
-
- Recording a name that is already present bumps it -- Once becomes Many,
- Many stays Many -- which is why any collision in a union lands on Many:
- both sides already carry at least one occurrence. A name not yet
- present is stored with the count the other side brought, so a subtree
- that already reached Many keeps it.
 
   occ-insert : List OccEntry, Text, OccCount -> List OccEntry
   occ-insert (m) (n) (c) =
@@ -154,10 +126,6 @@ Section: Occurrence Map
    else let e = list-at m i
    in occ-remove-loop (if (e.name) == n then acc else list-push acc e) m n (i + 1) len
 
- Binding a name: its classification is read from the free map at the
- binder, the entry is appended to the binder list, and the name is
- stripped from the free map that rises above the binder.
-
   occ-bind-one : Text, List OccEntry, List OccEntry -> OccResult
   occ-bind-one (n) (free) (binders) =
    OccResult {
@@ -166,11 +134,6 @@ Section: Occurrence Map
    }
 
 Section: Expression Walk
-
- One pass over the tree. Each node returns the free map of its subtree
- and the binder list accumulated through it; the accumulator threads
- left to right so a parent hands each child the binders its earlier
- children produced.
 
   occ-expr : IRExpr, List OccEntry, Integer -> OccResult
   occ-expr (e) (acc) (depth) =
@@ -239,9 +202,6 @@ Section: Expression Walk
    in let r = occ-expr (f.value) acc depth
    in occ-fields fs (r.binders) depth (i + 1) len (occ-union freeacc (r.free))
 
- A lambda's parameters are binders over its body: each is classified
- against the body's free map and stripped from it.
-
   occ-bind-params : List IRParam, List OccEntry, List OccEntry, Integer, Integer -> OccResult
   occ-bind-params (ps) (free) (binders) (i) (len) =
    if i >= len then OccResult { free = free, binders = binders }
@@ -270,10 +230,6 @@ Section: Expression Walk
       binders = list-push (rrest.binders) (OccEntry { name = n, count = occ-map-get (rrest.free) n })
      }
 
- A branch's pattern binds over its guard and body only. Guard and body
- are analysed, their maps unioned, and each pattern variable classified
- and stripped; the surviving map joins the scrutinee's above.
-
   occ-branches : List IRBranch, List OccEntry, List OccEntry, Integer, Integer, Integer -> OccResult
   occ-branches (bs) (free) (binders) (depth) (i) (len) =
    if i >= len then OccResult { free = free, binders = binders }
@@ -298,9 +254,6 @@ Section: Expression Walk
    if i >= len then OccResult { free = free, binders = binders }
    else let r = occ-bind-pat free (list-at ps i) binders depth
    in occ-bind-pat-list (r.free) ps (r.binders) depth (i + 1) len
-
- A handle clause binds its operation parameters and resume name over
- its body.
 
   occ-clauses : List IRHandleClause, List OccEntry, List OccEntry, Integer, Integer, Integer -> OccResult
   occ-clauses (cs) (free) (binders) (depth) (i) (len) =
@@ -334,13 +287,6 @@ Section: Definition Analysis
    if i >= len then acc
    else let p = list-at ps i
    in occ-classify-params ps free (i + 1) len (list-push acc (OccEntry { name = p.name, count = occ-map-get free (p.name) }))
-
- A rendering of the analysis for a whole chapter, one line per
- definition as `OCC defname: name=Class, name=Class`. The `occ-report`
- pass in Passes.codex returns these lines through the same out-of-band
- violation channel `ir-check` uses, so `-Passes occ-report` dumps the
- analysis of every definition to the compile log without rewriting a
- single node.
 
   occ-report-chapter : IRChapter -> List Text
   occ-report-chapter (ch) = occ-report-defs (ch.defs) 0 (list-length (ch.defs)) []

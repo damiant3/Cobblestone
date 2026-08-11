@@ -2,9 +2,6 @@ Chapter: X86-64 Code Generator
   cites Codex chapter VM Profile
   cites Codex chapter Build Settings (max-emit-work)
 
- State records, constants, rodata tables, register allocation, and
- byte-patching helpers used throughout the x86-64 code generator.
-
 Section: Record Types
   X86_64ExitMode =
    | ExitRepl
@@ -62,18 +59,6 @@ Section: Record Types
    saved-next-local : Integer between 0 and 65535,
    saved-next-temp : Integer between 0 and 65535
   }
-
- One let binding's proven integer range, for the emit-boundary prover.
-
- The prover that decides whether a bounds check can be elided is handed
- an expression, not a scope -- `value-fits-field` gets a record field's
- VALUE and nothing around it. So a `let` outside that value was invisible
- to it, and every bound proved at a binding was lost at its use. The
- checker's twin (`aexpr-proven-range`) never had this problem because it
- walks with an environment. `range-env` on CodegenState is that
- environment: `emit-let` binds the name while the body is emitted and
- puts the previous environment back afterwards, so the prover sees the
- bindings actually in scope at the point it is asked.
 
   RangeBind = record {
    rb-name : Text,
@@ -222,12 +207,6 @@ Section: Constants
  whose register windows sit above 3 GB were skipped, and why the machine
  talks to its devices almost entirely through port I/O.
 
- So we map it: one more page directory, identity, present, read-write,
- and non-executable. It costs 4 KB of page table and nothing at runtime.
- The consequence to know about is that a stray pointer above 3 GB now
- reaches the bus instead of faulting -- which is what it would do on real
- hardware, where these addresses are decoded by devices and not by RAM.
-
   bare-metal-device-pd-index : Integer = bare-metal-pd-count
 
   bare-metal-device-page-start : Integer = bare-metal-pd-count * 512
@@ -237,23 +216,6 @@ Section: Constants
   bare-metal-total-pd-count : Integer = bare-metal-pd-count + 1
 
 Section: Rodata Tables
-
- The rodata tables below read `cce-to-unicode-table` from `Foreword
- chapter CCE`. This chapter used to carry its own 128-entry copy under
- a heading that said it was "inlined from Foreword CCE to avoid
- duplicate-definition conflict during self-compilation" -- which had it
- backwards, because copying the table is what produced the conflict.
- The two were byte-identical when the copy was removed, so nothing an
- emitted binary contains changes; what changes is that the encoding the
- whole compiler rests on now has one definition instead of two that
- nothing compared.
-
- No `cites` line is needed and none is added: foreword names are
- globally in scope, and `Foreword--CCE` is already in the compiler's
- own compilation unit -- that co-presence is precisely what made the
- duplicate a live CDX3006 rather than a theoretical one. With one
- definition left there is nothing for a mention to be ambiguous
- between.
 
   cce-to-unicode-byte-table : List Integer
   cce-to-unicode-byte-table = for x in cce-to-unicode-table -> int-mod x 256
@@ -735,20 +697,6 @@ Section: State Helpers
  That is the whole point of the guard, and it only appears once the
  overrun is bigger than whatever happens to sit next door.
 
- Whether the code just emitted ended in an unconditional jump is a fact
- the emitter needs (emit-jmp-end and emit-if-to-local both skip a join
- jump when the branch before it already transferred control) and it used
- to be GUESSED, by reading the byte five back from code-len and asking
- whether it was 0xE9. That byte is only the jump's opcode when the last
- instruction happens to be a five-byte `jmp rel32`; it is otherwise
- whatever an unrelated encoding put there. `add rcx, r13` assembles to
- `4c 01 e9`, so a then-branch ending in that add followed by a four-byte
- store put an 0xE9 exactly five back, the guess said "already jumped",
- the join jump was omitted, and the then-branch fell straight through
- into the else -- which then overwrote the result. Silent wrong
- arithmetic, and it depended on the byte layout, so it appeared and
- vanished with the parameter count.
-
  So the fact is recorded instead of read back. A jump is five bytes and
  0xE9 is unambiguously `jmp rel32` in 64-bit mode, so an append of
  exactly that shape IS one; anything else leaves last-jmp-end where it
@@ -765,7 +713,6 @@ Section: State Helpers
    in if list-length bytes == 5 & list-at bytes 0 == 233
       then __record-set st1 "last-jmp-end" new-len
       else st1
-
 
   record-func-offset : CodegenState, Text -> CodegenState
   record-func-offset (st) (name) =
@@ -830,13 +777,6 @@ Section: State Helpers
     range-env = []
    }
 
- A function's scratch is everything the emitter rebuilds per definition:
- the register bindings, the temp and local counters, the peak watermarks,
- and the TCO loop record. The offset table is deliberately not scratch --
- its entry is pushed once per definition and survives a discarded
- emission, which is what lets emit-function retry a mispredicted minimal
- leaf through the standard path without naming the function twice.
-
   reset-func-scratch : CodegenState -> CodegenState
   reset-func-scratch (st1) =
    let st2 = __record-set st1 "locals" (fresh-empty-locals 0)
@@ -869,15 +809,6 @@ Section: State Helpers
    in let st0a = __record-set st "fo-names" n1
    in let st1 = __record-set st0a "fo-offsets" o1
    in reset-func-scratch st1
-
- A discarded emission leaves its bytes behind as unreachable padding
- rather than rewinding the code buffer. Rewinding would strand the patch
- entries the attempt recorded -- call sites, rodata fixups, stack-guard
- checks all name a code position -- and those lists are the pre-allocated
- accumulators, so they cannot be truncated without losing the capacity
- list-push depends on. Re-pointing the offset entry at the live emission
- costs one in-place store and leaves every stale patch aimed at bytes no
- caller can reach.
 
   repoint-func-offset : CodegenState -> CodegenState
   repoint-func-offset (st) =
@@ -963,14 +894,6 @@ Section: Register Allocation
    in st-append-code st0 (mov-store reg-rsp value-reg offset)
    else let offset = -((local - spill-base + 1) * 8 + 32)
    in st-append-code st0 (mov-store reg-rbp value-reg offset)
-
- The width of the load-local scratch rotation, named because two places
- need it and only one of them is this one. tco-result-is-scratch asks
- whether a value the tail-call shuffle is holding sits in a register a
- direct move is about to reclaim, and it used to answer with its own
- hand-written copy of the list below. A rotation whose membership is
- recorded in two places is the shape that put a wrong argument in a
- parameter twice already.
 
   load-local-scratch-count : Integer = 3
 
@@ -1100,26 +1023,6 @@ Section: Byte Patching
     then check-call-patch-targets (st-add-error st cdx-unresolved-func-offset ("Unresolved call to '" & target & "' (redirected to __unresolved_trap)") synthetic-span) fm (i + 1)
     else check-call-patch-targets st fm (i + 1)
 
- A func-addr reference that resolves to nothing is patched to
- __unresolved_trap by apply-func-addr-patches-direct, exactly as an
- unresolved call is -- the difference is that a call is CALLED and traps,
- while a func-addr becomes a VALUE and traps only if something later
- calls it. Both are broken programs and both must be refused here.
-
- This check used to require `trap == -1` as well, which made it dead:
- __unresolved_trap is always emitted, so the condition never held and the
- reference was silently redirected to it. The program then compiled clean
- and died at runtime with !EXC=06 (the trap's ud2) and no diagnostic
- anywhere. The call-patch check next to it has no such clause; this one
- was written in its shape and lost its teeth to one extra conjunct.
-
- The common way to reach it: a BUILTIN in value position. A builtin is
- emitted at its call site (emit-builtin), so no function offset exists to
- take the address of, and `apply-it print-line-uni` compiled and crashed.
- The message says that rather than making the reader deduce it from a
- patch-table word -- the name resolved, it type-checked, and the only
- honest thing left to say is that there is no value to pass.
-
   check-func-addr-targets : CodegenState, OffsetTable, Integer -> CodegenState
   check-func-addr-targets (st) (fm) (i) =
    if i == list-length (st.fa-targets) then st
@@ -1182,11 +1085,9 @@ Section: Byte Patching
     then check-effect-op-reads st (i + 1)
     else check-effect-op-reads (st-add-error st cdx-unhandled-effect-op ("Effect operation '" & name & "' is read, but no handler in this chapter ever gives it a value; the read would yield zero") synthetic-span) (i + 1)
 
-
   align-16 : Integer -> Integer
   align-16 (n) =
    let r = int-mod n 16
    in if r == 0 then n else n + 16 - r
-
 
 Page 2 of 14

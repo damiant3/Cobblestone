@@ -14,16 +14,6 @@ Chapter: GopNvme
  create one I/O queue pair, then read and write are two opcodes on
  the I/O queue.
 
- Everything is polled and fuel-bounded, like every driver on this
- boot path: completions are recognized by their phase tag, a bit the
- controller flips on each pass around the completion ring, so a
- stale entry from the previous lap can never be mistaken for an
- answer. Data travels by PRP: the first pointer may sit anywhere in
- a page, the second names the next page when a transfer crosses one,
- and by keeping each command to eight sectors no transfer ever needs
- the third form, the PRP list. A two-megabyte seed is a few hundred
- commands, each answered in microseconds.
-
  The registers live behind a 64-bit BAR that real firmware may park
  above four gigabytes, beyond the boot identity map -- the same
  lesson the xHCI driver learned -- so the BAR is relocated into the
@@ -63,12 +53,6 @@ Section: Opcodes
   nv-adm-identify : Integer = 6
 
 Section: Controller State
-
- Queue positions live in a state block in memory: submission tail,
- completion head, and the expected phase tag for each of the two
- queue pairs. The phase expectation starts at one -- a freshly
- started controller writes its first lap of completions with the
- tag set -- and flips whenever the head wraps.
 
   nv-st-adm-tail : Integer = 0
   nv-st-adm-head : Integer = 4
@@ -145,10 +129,6 @@ Section: Command Encoding
     in let d10 = poke-32 sqe 40 (bit-or qid (bit-shl (entries - 1) 16))
     in poke-32 sqe 44 (bit-or 1 (bit-shl cqid 16))
 
- A transfer's second PRP is the next page boundary when the run
- crosses one, and zero when it does not; at eight sectors per
- command no run can touch a third page.
-
   nvme-prp2 : Integer, Integer -> Integer
   nvme-prp2 (buf) (len) =
     let edge = bit-and buf (-4096) + 4096
@@ -163,12 +143,6 @@ Section: Command Encoding
     in poke-32 sqe 48 (count - 1)
 
 Section: Queue Execution
-
- Ring the submission doorbell with the new tail, then poll the
- completion queue until the entry at the head carries the expected
- phase tag. The status field of dword three answers the command;
- zero is success. Consuming the entry advances the head, flips the
- phase on wrap, and acknowledges through the completion doorbell.
 
   nvme-doorbell : NvmeCtl, Integer, Integer -> Integer
   nvme-doorbell (c) (idx) (val) =
@@ -274,10 +248,6 @@ Section: Bring-Up
     in if s /= 0 then 0
     else nvme-ns-sectors data
 
- CNS 1 identifies the CONTROLLER rather than a namespace; the model
- number is plain ASCII at bytes 24 through 63 of the returned page.
- Returns the page address, or zero when the command fails.
-
   nvme-identify-ctrl : NvmeCtl -> Integer
   nvme-identify-ctrl (c) =
     let data = alloc-zeroed 4096 4096
@@ -365,13 +335,6 @@ Section: Bring-Up
 
 Section: Published Handle
 
- The bring-up resets the controller and creates queues, far too
- heavy to repeat per read the way the stateless AHCI dispatch does,
- so the first successful connect publishes its handle to fixed
- cells and every later call rebuilds the record from them -- the
- same pattern as the USB disk, magic written LAST so firmware
- residue cannot impersonate a handle.
-
   nvme-cells : Integer = 36672
   nvme-cells-magic : Integer = #314D564E
 
@@ -437,11 +400,6 @@ Section: Read and Write
     in if ok == False then False
     else nvme-rw-run c op (lba + n) (count - n) (dest + n * 512)
 
- A write ends with an NVM flush: the controller may hold a volatile
- write cache, and the identity a ceremony just saved must survive
- the power button -- the same discipline as the IDE path's FLUSH
- CACHE.
-
   nvme-flush : NvmeCtl -> Boolean
   nvme-flush (c) =
     let sqe = nvme-io-slot c
@@ -462,9 +420,6 @@ Section: Read and Write
     else if nvme-rw-run c nv-op-write lba count src == False then 0
     else if nvme-flush c then 1 else 0
   end
-
- The single-sector read hands back a fresh buffer, or zero: the
- shape disk-read-sector's dispatch wants.
 
   nvme-read-sector : Integer -> [Device.Port] Integer
   nvme-read-sector (lba) = act

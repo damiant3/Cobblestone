@@ -26,7 +26,7 @@ New-Item -ItemType Directory -Force $stage0Dir | Out-Null
 Copy-Item -Force $CodexCdx (Join-Path $stage0Dir 'Codex.cdx')
 
 
-$samples = @(@{ Name = 'exc-div-zero'; Pattern = '!EXC='; NeedStack = $true }, @{ Name = 'exc-null-read'; Pattern = '!EXC='; NeedStack = $true }, @{ Name = 'exc-gpf'; Pattern = '!EXC='; NeedStack = $true }, @{ Name = 'exc-deep-frames'; Pattern = '!EXC='; NeedStack = $true; NeedFrames = 3 }, @{ Name = 'exc-stack-heap'; Pattern = 'OUT OF MEMORY'; NeedStack = $false; TimeoutSec = 90 })
+$samples = @(@{ Name = 'exc-div-zero'; Pattern = '!EXC='; NeedStack = $true }, @{ Name = 'exc-null-read'; Pattern = '!EXC='; NeedStack = $true }, @{ Name = 'exc-gpf'; Pattern = '!EXC='; NeedStack = $true }, @{ Name = 'exc-deep-frames'; Pattern = '!EXC='; NeedStack = $true; NeedFrames = 3 }, @{ Name = 'exc-stack-heap'; Pattern = '!EXC=08'; NeedStack = $false; TimeoutSec = 90 })
 
 $pass = 0
 $fail = 0

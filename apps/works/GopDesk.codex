@@ -48,9 +48,6 @@ Section: Palette and Layout
  belongs to nobody. The exact ones are the bar (College Navy 002244), the
  body text (Wolf Grey A5ACAF) and the hint line (Action Green 69BE28).
 
- dk-col-warn stays amber deliberately and is NOT re-themed: a warning
- painted in the brand palette is a warning that reads as decoration.
-
   dk-col-bar : Integer = #002244
   dk-col-wall : Integer = #001428
   dk-col-task : Integer = #000E1C
@@ -69,18 +66,7 @@ Section: Palette and Layout
   dk-line-h : Integer = 18
   dk-para-gap : Integer = 6
 
- The footer reserves one line height plus padding, because desk-shutdown
- paints its result inside the panel and a window sized to the body exactly
- would put that line on the desktop behind it.
-
   dk-win-pad-b : Integer = 30
-
- The chrome used `theme-terminal`, whose `pal-primary` is a generic
- terminal green shared with twenty-four consumers across twelve apps, so
- the sidebar buttons were the one part of the desktop that no palette
- change here could reach. This theme is built from the constants above
- instead, which keeps the re-theme inside this chapter: nothing else in
- the tree renders through it, and no other app's recorded frame moves.
 
   dk-palette : Palette
   dk-palette = Palette {
@@ -150,34 +136,13 @@ Section: Chrome
  over a 24-pixel taskbar row. The compositor lays it out against the real
  panel rectangle and paints it in software.
 
- A panel is born flexible (wn-flex 1); chrome that owns a fixed edge
- must say so, or the row splits the panel with its flexible sibling.
-
   desk-sidebar : Integer -> WidgetNode
   desk-sidebar (dummy) =
     widget-set-flex (widget-set-min (widget-panel "sidebar" DirColumn 1 [widget-label "brand" "CODEX", widget-button "files" "Files", widget-button "scene" "3D View", widget-button "calc" "Calc", widget-button "cal" "Calendar", widget-button "issues" "Issues", widget-button "diffusion" "Diffusion", widget-button "monitor" "Monitor", widget-set-flex (widget-label "sidebar-spacer" "") 1, widget-button "shutdown" "Shutdown"]) 160 0) 0
 
- The brand label carries a minimum width. It has none by nature, and it
- read `CODEX` only because the compositor used to draw label text past the
- node's bounds; once text is cut to its own rectangle the label is exactly
- as wide as the layout made it, which was four characters.
-
   desk-taskbar : Integer -> WidgetNode
   desk-taskbar (dummy) =
     widget-set-flex (widget-set-min (widget-panel "taskbar" DirRow 4 [widget-set-min (widget-label "task-brand" "CODEX") 56 0, widget-set-flex (widget-label "task-spacer" "") 1]) 0 24) 0
-
- A pane hands back a WidgetNode and this puts it in the content panel, so
- the compositor lays the sidebar and taskbar out around it and the pane
- never learns the sidebar's width. GopScene and GopFiles predate this and
- each compute that offset themselves, which GopScene's own prose records
- as two files that "have to agree by hand".
-
- The right column opens with a spacer the height of the top bar, because
- `desk-topbar` paints over the laid-out tree afterwards. Without it the
- first row of any pane's content is drawn and then covered, which is what
- the calculator's display line did on its first capture. The sidebar is
- deliberately NOT given one: its brand label has always sat under the bar,
- and moving it is a change to the desktop's own frame rather than to this.
 
   desk-chrome-with : WidgetNode, Integer -> WidgetNode
   desk-chrome-with (content) (s) =
@@ -189,31 +154,15 @@ Section: Chrome
 
 Section: Drawing
 
- Body text prefers the TrueType font read off the stick's own ESP;
- without one the CBF bitmap font stands in, and a status line names
- which is on the glass.
-
   desk-line : Integer, Integer, Integer, CbfFont, Integer, GopFont, Integer, Integer, Text, Integer -> Integer
   desk-line (base) (stride) (h) (font) (s) (tf) (x) (y) (t) (fg) =
     if tf.gf-ok then gfont-text tf base stride h x y t fg
     else gop-draw-text base stride font x y t fg s 0
 
- Wrapping is by character count against the panel's inner width. The CBF
- glyph cell is 8 pixels wide at scale 1, which is exactly what
- gop-draw-text advances, so a line inside this count cannot overflow the
- bitmap path; the TrueType face is proportional and narrower at the same
- scale, so the same count is a safe bound for it too. A line that ran off
- the right edge was unreadable rather than ugly -- the text past the panel
- is simply not on the glass.
-
   dk-wrap-cols : Integer -> Integer
   dk-wrap-cols (s) =
     let c = (dk-win-w * s - 20 * s) / (8 * s)
     in if c < 8 then 8 else c
-
- The last space at or before the limit. Answering 0 means the run has no
- break in it, and the caller cuts at the limit instead -- a word longer
- than the panel is clipped by one line rather than looping forever.
 
   dk-break : Text, Integer, Integer, Integer -> Integer
   dk-break (t) (limit) (i) (best) =
@@ -263,10 +212,6 @@ Section: Drawing
     in let l = desk-line base stride h font s tf x y (substring t 0 cut) fg
     in dk-wrap-draw base stride h font s tf x (y + 18 * s) (substring t skip (n - skip)) fg cols
 
- The blue bar is the dev console's own header row, which is where this
- shell's visual language came from: white on blue at the top edge, with
- the clock at the right end.
-
   desk-topbar : Integer, Integer, Integer, CbfFont, Integer -> Integer
   desk-topbar (base) (w) (stride) (font) (s) =
     let bar = gop-fill-rect base stride 0 0 w (dk-bar-h * s) dk-col-bar
@@ -288,18 +233,12 @@ Section: Drawing
     in let y3 = y2 + (dk-wrap-count (dk-para-font tf) cols * dk-line-h + dk-para-gap) * s
     in dk-wrap-draw base stride h font s tf tx y3 dk-para-hint dk-col-hint cols
 
- The bounded tree comes back to the caller: it is the hit-test map
- that makes the sidebar buttons live.
-
   desk-draw : Integer, Integer, Integer, Integer, CbfFont, Integer, GopFont -> WidgetNode
   desk-draw (base) (w) (h) (stride) (font) (s) (tf) =
     let laid = comp-render base stride font (desk-chrome 0) dk-theme w h
     in let bar = desk-topbar base w stride font s
     in let win = desk-window base w h stride font s tf
     in laid
-
- The clock sits at the right end of the blue top bar, repainting its own
- patch in the bar's colour so a redraw leaves no seam.
 
   desk-draw-clock : Integer, Integer, Integer, Integer, CbfFont, Text -> Integer
   desk-draw-clock (base) (w) (h) (stride) (font) (t) =
@@ -312,8 +251,6 @@ Section: Drawing
 
 Section: Clock Gate
 
- The gate is the RTC second turning over, not the PIT tick cell.
-
  It was the tick cell (28672, ~18 ticks per second) until 2026-08-04,
  when the ASUS TUF answered `pit=979` twice, 3405 seconds apart: the
  timer interrupt stops on that board at about 54 seconds and never
@@ -324,17 +261,7 @@ Section: Clock Gate
  read off ports 0x70/0x71 with no interrupt, no PIC and no handler in
  the path; a machine that boots has one.
 
- An unreadable second changes nothing and the loop asks again.
-
   desk-second-cell : Integer = 8
-
- The input state rides the clock, because the clock is the one thing on
- this desktop that repaints on its own. A keyboard that enumerates and
- never delivers is invisible in every other row -- the desk simply does
- not respond -- and on a machine with no serial port an unresponsive
- screen cannot be told from a hung one. `ev` is interrupt completions and
- `sc` is decoded scancodes; GopUsbKbd's own note enumerates what the pair
- distinguishes and which state no bed here can produce.
 
  The eight raw report bytes, because on the ASUS TUF 2026-08-04 the pair
  above read `ev` climbing and `sc` stuck at 0 -- reports arrive and decode
@@ -391,16 +318,8 @@ Section: Monitor
  question the whole 2026-08-02 display campaign was about, and it answers
  it on the glass without a serial port.
 
- The label and the value are drawn at two ABSOLUTE x positions rather
- than one padded string. The CBF cell is 8 pixels and the TrueType face
- is proportional, so a column produced by padding lands in a different
- place in each font; two positions land in the same place in both.
-
   dk-mon-x : Integer = 160
   dk-mon-row-h : Integer = 18
- The value column clears the longest label with a gap rather than by
- eye: "framebuffer" is 11 CBF cells, 88 pixels at scale 1, and a column
- at 88 puts the value hard against it with no space at all.
 
   dk-mon-val-dx : Integer = 100
   dk-mon-tick-cell : Integer = 28672
@@ -413,10 +332,6 @@ Section: Monitor
     let x = dk-mon-x + 12 * s
     in let lbl = desk-line base stride h font s tf x y k dk-col-hint
     in desk-line base stride h font s tf (x + dk-mon-val-dx * s) y v dk-col-text
-
- The pane is the content rectangle, so the sidebar, the top bar, the
- taskbar and the running clock stay on the glass around it. Those chrome
- sizes are this chapter's own constants, unlike GopScene's copies.
 
   desk-mon-draw : Integer, Integer, Integer, Integer, CbfFont, Integer, GopFont, UsbKbd, UsbMouse, AcpiInfo, Text, Integer -> Integer
   desk-mon-draw (base) (w) (h) (stride) (font) (s) (tf) (kbd) (mouse) (ai) (clk) (ticks) =
@@ -448,11 +363,6 @@ Section: Monitor
  re-walking the ACPI tables every second would be work with no answer
  that can change.
 
- The restore is on EVERY path out of an iteration, not only the painting
- one. GopUsbKbd's idle pump allocates nothing today, but on a board it
- runs a three-phase state machine per poll, and the cost of an open pane
- should not rest on a claim another chapter makes and nothing re-checks.
-
   desk-mon-loop : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, AcpiInfo -> [Device.Port] Integer
   desk-mon-loop (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (ai) = act
     let mark = __heap-save
@@ -480,10 +390,6 @@ Section: Monitor
     end
   end
 
- The gate cell is set to a value no second can hold, so the FIRST
- iteration paints. Left at whatever was there, the pane would show the
- desktop it replaced for up to a second, which reads as a dead button.
-
   desk-monitor : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer -> [Device.Port] Integer
   desk-monitor (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) = act
     hd <- cursor-hide cs base stride
@@ -498,17 +404,6 @@ Section: Monitor
   end
 
 Section: Calculator
-
- The calculator pane. `GopCalc` owns the arithmetic and hands back a
- widget tree; this owns the loop and the chrome, so the compositor lays
- the pane out inside the content panel with the sidebar and taskbar
- around it.
-
- It repaints ONLY on a key that changed the state. `gcalc-key` answers
- whether anything moved, so a held or unrecognised key costs a poll and
- nothing else, and an idle calculator writes no pixels. That is the same
- promise the desktop's own loop makes and the reason there is no tick
- gate here: nothing in this pane changes on its own.
 
   desk-calc-paint : Integer, Integer, Integer, Integer, CbfFont, Integer -> Integer
   desk-calc-paint (base) (w) (h) (stride) (font) (ks) =
@@ -595,30 +490,12 @@ Section: Calendar
 
 Section: Issues
 
- The issue tracker's list view. The database is built ONCE on entry and
- held for the life of the pane: `tk-init-tracker-db` creates four tables
- AND SEEDS THEM -- its last line is `tk-seed-tracker s4` -- so calling
- the seeder again on its result inserts every issue twice, which is what
- the first capture of this pane showed: 28 rows, 14 issues, each listed
- with itself. Doing it per keystroke would also rebuild the catalog to
- answer a filter change. `ds` cells 32 and 40 hold the filter and the
- selected row, so the state survives leaving and re-entering the pane.
-
- The seeded store is the point of this rung rather than a limitation of
- it: the rows are inserted into a real catalog and queried back through
- the executor, so what reaches the glass has been through the data layer
- rather than around it.
-
   desk-trk-paint : Integer, Integer, Integer, Integer, CbfFont, DbServer, Integer, Integer -> Integer
   desk-trk-paint (base) (w) (h) (stride) (font) (srv) (filter) (sel) =
     let bg = gop-fill-rect base stride 0 0 w h dk-col-wall
     in let tree = gtk-tree srv filter sel
     in let laid = comp-render base stride font (desk-chrome-with tree (ui-scale w)) dk-theme w h
     in desk-topbar base w stride font (ui-scale w)
-
- Up and down move the selection, `f` cycles the filter, and anything else
- costs a poll. Repainting only on a key that moved something keeps an idle
- pane silent, the same promise the calculator makes.
 
   desk-trk-rows : DbServer, Integer -> Integer
   desk-trk-rows (srv) (filter) =
@@ -671,14 +548,6 @@ Section: Issues
 
 Section: Diffusion
 
- The AssetForge screen. It is UNFINISHED and the pane says so on the glass
- rather than only in a backlog: Generate is a button nothing dispatches on,
- and the line under the preview names `works-backlog` WORKS-3. A dead
- control that admits it is a different thing from one that pretends.
-
- Painted once, then the loop waits for Esc. Nothing in this screen changes
- on its own, because nothing is generating.
-
   desk-dif-paint : Integer, Integer, Integer, Integer, CbfFont -> Integer
   desk-dif-paint (base) (w) (h) (stride) (font) =
     let bg = gop-fill-rect base stride 0 0 w h dk-col-wall
@@ -710,19 +579,11 @@ Section: Diffusion
 
 Section: Loop
 
- The self tail call keeps the loop constant-stack; the pet flag build
- keeps the watchdog quiet.
-
   desk-widget-hit : WidgetNode, Integer, Integer, Text -> Boolean
   desk-widget-hit (root) (mx) (my) (id) =
     when ev-hit-widget root mx my
       is Just (wgt) -> wgt.wn-id == id
       is None -> False
-
- Returning from an app repaints the whole desktop. The cursor hides
- BEFORE the repaint (restore then clear -- clearing alone bakes the
- old cursor pixels into the next saved patch wherever the repaint
- does not cover them) and is re-placed after.
 
   desk-files : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer -> [Device.Port] Integer
   desk-files (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) = act
@@ -733,12 +594,25 @@ Section: Loop
     in desk-loop base w h stride font tf kbd mouse ds cs root
   end
 
+ The bracket is not decoration. `gsc-run` allocates the render target and
+ its depth buffer outside any extent of its own, measured at 4,617,256
+ bytes for one visit at 1024x768 and the same again for the next, and the
+ boot image gives Codex a 128 MB heap (`build-option-a.ps1 -AllocPages
+ 32768`, which is `cdx-to-pe`'s `-HeapPages`) rather than the ~3 GB a
+ codex-vm bed hands out. Without this, every trip into the pane spends the
+ arena that the shot path's sector buffers are drawn from, permanently,
+ and no bed at the default memory size can express the cost.
+
   desk-scene : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer -> [Device.Port] Integer
   desk-scene (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) = act
-    r <- gsc-run base w h stride font kbd cs
-    let root = desk-draw base w h stride font (ui-scale w) tf
-    in let c0 = if mouse.um-ok then cursor-update cs base stride w h (ui-scale w) (mouse-x mouse) (mouse-y mouse) else 0
-    in desk-loop base w h stride font tf kbd mouse ds cs root
+    let mark = __heap-save
+    in act
+      r <- gsc-run base w h stride font kbd cs
+      let dropped = __heap-restore mark
+      in let root = desk-draw base w h stride font (ui-scale w) tf
+      in let c0 = if mouse.um-ok then cursor-update cs base stride w h (ui-scale w) (mouse-x mouse) (mouse-y mouse) else 0
+      in desk-loop base w h stride font tf kbd mouse ds cs root
+    end
   end
 
  F12 writes the live frame to the boot stick as SHhhmmss.BMP and paints
@@ -765,11 +639,6 @@ Section: Loop
     r <- desk-shot base w h stride font
     desk-loop base w h stride font tf kbd mouse ds cs root
   end
-
- The desktop is the last thing standing on this machine, so Escape does
- NOT leave it. There is nothing behind it to return to and a stray keypress
- that blanks the screen reads as a crash. Shutdown is the way out, and it
- is a deliberate click rather than one key.
 
   desk-shutdown : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, WidgetNode -> [Device.Port] Integer
   desk-shutdown (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (root) = act
@@ -805,10 +674,6 @@ Section: Loop
     else if bye then desk-shutdown base w h stride font tf kbd mouse ds cs root
     else desk-loop base w h stride font tf kbd mouse ds cs root
   end
-
- The TrueType face comes off the boot medium through the same mount
- every storage screen uses; a stick without one leaves gf-ok False
- and the desk speaks CBF.
 
   desk-font : Integer -> [Device.Port] GopFont
   desk-font (dummy) = act

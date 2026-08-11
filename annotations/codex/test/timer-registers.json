@@ -1,0 +1,98 @@
+[
+  {
+    "target": "chapter:TimerRegisters",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-05",
+    "body": "What this does not cover: that a comparator match reaches an interrupt service routine. The delivery path exists -- a match routes through the IOAPIC redirection entry to a vector and is queued for injection -- but an arbitrary vector lands in __interrupt_common, takes the not-a-timer branch, and returns without leaving a mark anywhere a guest can read. So the last rung is exercised by a hand-run, not by this test, and the gap is stated here rather than papered over.",
+    "thread": null
+  },
+  {
+    "target": "section:Spin",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-05",
+    "body": "A busy loop whose only job is to let host time pass. It reads the HPET counter each turn because a read is a VM exit, and the host only gets to advance its device models when the guest leaves.",
+    "thread": null
+  },
+  {
+    "target": "section:HPET counter",
+    "kind": "discovery",
+    "author": "reek",
+    "date": "2026-08-05",
+    "body": "Two claims. First, the counter is measured from when the machine started, so its high half is still zero and its low half is a small number -- the raw host counter it used to return is a count since the host booted, which on any machine that has been up for an hour has a non-zero high half. Second, it advances.",
+    "thread": null
+  },
+  {
+    "target": "function:hpet-counter-report",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-05",
+    "body": "Both readings are taken inside one act block and the verdict is decided there. A zero-argument definition is re-evaluated at every mention, so naming the two readings separately and comparing the names does not compare two moments -- it re-reads the clock at comparison time, in whatever order the comparison evaluates, and reported a perfectly live counter as frozen.",
+    "thread": null
+  },
+  {
+    "target": "section:HPET enable bit",
+    "kind": "invariant",
+    "author": "reek",
+    "date": "2026-08-05",
+    "body": "ENABLE_CNF halts the main counter, and a halted counter must hold its value rather than resume as though time had passed. The ordinary reason to stop the HPET is to read a consistent 64-bit value across a 32-bit bus, and a counter that jumped while it was supposedly stopped defeats exactly that. The counter ran free of this bit before.",
+    "thread": null
+  },
+  {
+    "target": "section:HPET comparator",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-05",
+    "body": "Arm timer 0 one tick past the current count with its interrupt enabled, then spin. A comparator that is compared sets the status bit; the one that was only stored never did.",
+    "thread": null
+  },
+  {
+    "target": "section:LAPIC current count",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-05",
+    "body": "Arm the local APIC timer periodic on a vector of its own, then read the Current Count twice with time in between. It counts down, so the second read must be below the first. Returning the Initial Count made these equal forever.",
+    "thread": null
+  },
+  {
+    "target": "section:LAPIC period derives from the count",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-05",
+    "body": "The period was a fixed 55 ms whatever the guest asked for, so Initial Count and the divide configuration were decoration. This is the claim that can see the difference, and it needs no clock of its own.",
+    "thread": null
+  },
+  {
+    "target": "function:arm-and-drop",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-05",
+    "body": "Over a fixed interval the counter falls by (elapsed / period) of its initial count. When the period DERIVES from that count the two cancel: the absolute drop depends only on the interval and the divisor, so doubling the initial count leaves the drop unchanged. When the period is a constant, the drop doubles with the count. So arming twice, once at N and once at 2N, and spinning the same distance both times tells the two models apart without measuring time at all.",
+    "thread": null
+  },
+  {
+    "target": "function:lapic-period-verdict",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-05",
+    "body": "A derived period puts the ratio at about one and a hardcoded one at about two, so the halfway mark separates them with room on both sides for the jitter of two separately timed spins.",
+    "thread": null
+  },
+  {
+    "target": "section:PIT counter",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-05",
+    "body": "Program channel 0 with a known divisor in lobyte/hibyte access mode, then read the counter twice. The reads must differ from each other and must not both be zero, which is all the broken model could ever say.",
+    "thread": null
+  },
+  {
+    "target": "section:Entry",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-05",
+    "body": "The counter-latch command is modelled -- it freezes the count and, being a channel selector with no access field, no longer has its zero read as an access mode and written over the channel's configuration. Neither property is asserted here, and the attempt is worth recording: a check that the two halves of a latched read differ passes against a codex-vm with no latch at all, because the counter moves between the two reads either way. It could not fail, so it is not here. Pinning the latch wants a channel whose count is predictable enough to recognise a stale half, which the free-running model does not give.",
+    "thread": null
+  }
+]

@@ -10,11 +10,11 @@ Chapter: ConcatCodexSelfScript
 
 Section: Parameters
 
-  concat-params : List ShellParam = [sh-param "CodexDir" SptString, sh-param "OutFile" SptString]
+  concat-params : List ShellParam = [sh-param-optional "CodexDir" SptString, sh-param-optional "OutFile" SptString]
 
 Section: S01 -- Preamble
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScIf (SeNot (SeVar "CodexDir")) [ScAssign "CodexDir" (SeRaw "Join-Path $Repo 'codex\\compiler'")] [], ScAssign "CodexDir" (SeRaw "(Resolve-Path $CodexDir).Path"), ScAssign "ForewordDir" (SeRaw "Join-Path $Repo 'codex\\foreword\\core'"), ScBlank, ScDotNetCallAssign "lines" "System.Collections.Generic.List[string]" "new" []]
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'quire-map.ps1')"), ScIf (SeNot (SeVar "CodexDir")) [ScAssign "CodexDir" (SeRaw "Join-Path $Repo 'codex\\compiler'")] [], ScAssign "CodexDir" (SeRaw "(Resolve-Path $CodexDir).Path"), ScAssign "ForewordDir" (SeRaw "Join-Path $Repo 'codex\\foreword\\core'"), ScBlank, ScDotNetCallAssign "lines" "System.Collections.Generic.List[string]" "new" []]
 
 Section: S02 -- Add-WithQuire Helper
 
@@ -22,11 +22,11 @@ Section: S02 -- Add-WithQuire Helper
 
 Section: S03 -- Cited Forewords Scan
 
-  s03 : List ShellCmd = [ScComment "1. Cited forewords -- scan compiler source, transitively resolve", ScAssign "citePat" (SeLit "^\\s*cites\\s+Foreword\\s+chapter\\s+([A-Za-z_][A-Za-z0-9_-]*)"), ScDotNetCallAssign "queue" "System.Collections.Generic.Queue[string]" "new" [], ScRaw "Get-ChildItem $CodexDir -Recurse -Depth 2 -Filter '*.codex' -File | ForEach-Object {", ScRaw "    foreach ($l in [System.IO.File]::ReadAllLines($_.FullName)) {", ScRaw "        if ($l -match $citePat) { $queue.Enqueue($matches[1]) }", ScRaw "    }", ScRaw "}"]
+  s03 : List ShellCmd = [ScComment "1. Cited library chapters -- scan compiler source, transitively resolve.", ScComment "The quire table must agree with compile.ps1's Resolve-CiteOrder or the", ScComment "gate's raw concat and the per-compile resolution disagree about what a", ScComment "unit is. The cite pattern comes from build/quire-map.ps1 and is not built", ScComment "here; what stays local is the POLICY, an allowlist over the shared", ScComment "registry, so a quire added to the registry does not silently join the", ScComment "compiler's unit.", ScRaw "$libQuireNames = @('Foreword', 'Math')", ScRaw "$libQuireDirs = [ordered]@{}", ScForEach "q" (SeVar "libQuireNames") [ScIf (SeNot (SeRaw "$QuireDirs[$q]")) [ScRaw "throw \"concat-codex-self: quire '$q' is not registered in build/quire-map.ps1\""] [], ScRaw "$libQuireDirs[$q] = Join-Path $Repo $QuireDirs[$q]"], ScAssign "citePat" (SeVar "StrictCitePat"), ScDotNetCallAssign "queue" "System.Collections.Generic.Queue[object]" "new" [], ScRaw "Get-ChildItem $CodexDir -Recurse -Depth 2 -Filter '*.codex' -File | ForEach-Object {", ScRaw "    foreach ($l in [System.IO.File]::ReadAllLines($_.FullName)) {", ScRaw "        if ($l -match $citePat -and $libQuireDirs.Contains($matches[1])) { $queue.Enqueue(@{ Quire = $matches[1]; Name = $matches[2] }) }", ScRaw "    }", ScRaw "}"]
 
 Section: S04 -- Foreword Transitive Resolution
 
-  s04 : List ShellCmd = [ScDotNetCallAssign "seen" "System.Collections.Generic.HashSet[string]" "new" [], ScAssign "ordered" (SeRaw "@()"), ScRaw "while ($queue.Count -gt 0) {", ScRaw "    $fw = $queue.Dequeue()", ScRaw "    if (-not $seen.Add($fw)) { continue }", ScRaw "    $fwPath = Join-Path $ForewordDir \"$fw.codex\"", ScRaw "    if (-not (Test-Path -PathType Leaf $fwPath)) { continue }", ScRaw "    $fwLines = [System.IO.File]::ReadAllLines($fwPath)", ScRaw "    foreach ($l in $fwLines) {", ScRaw "        if ($l -match $citePat) { $queue.Enqueue($matches[1]) }", ScRaw "    }", ScRaw "    $ordered += @{ Name = $fw; Path = $fwPath }", ScRaw "}", ScRaw "[array]::Reverse($ordered)", ScDotNetCallAssign "emitted" "System.Collections.Generic.HashSet[string]" "new" [], ScForEach "entry" (SeVar "ordered") [ScIf (SeNot (SeRaw "$emitted.Add($entry.Name)")) [ScContinue] [], ScRaw "Add-WithQuire -Path $entry.Path -Quire 'Foreword'"]]
+  s04 : List ShellCmd = [ScDotNetCallAssign "seen" "System.Collections.Generic.HashSet[string]" "new" [], ScAssign "ordered" (SeRaw "@()"), ScRaw "while ($queue.Count -gt 0) {", ScRaw "    $fw = $queue.Dequeue()", ScRaw "    if (-not $seen.Add(\"$($fw.Quire)|$($fw.Name)\")) { continue }", ScRaw "    $fwPath = Join-Path $libQuireDirs[$fw.Quire] \"$($fw.Name).codex\"", ScRaw "    if (-not (Test-Path -PathType Leaf $fwPath)) { continue }", ScRaw "    $fwLines = [System.IO.File]::ReadAllLines($fwPath)", ScRaw "    foreach ($l in $fwLines) {", ScRaw "        if ($l -match $citePat -and $libQuireDirs.Contains($matches[1])) { $queue.Enqueue(@{ Quire = $matches[1]; Name = $matches[2] }) }", ScRaw "    }", ScRaw "    $ordered += @{ Quire = $fw.Quire; Name = $fw.Name; Path = $fwPath }", ScRaw "}", ScRaw "[array]::Reverse($ordered)", ScDotNetCallAssign "emitted" "System.Collections.Generic.HashSet[string]" "new" [], ScForEach "entry" (SeVar "ordered") [ScIf (SeNot (SeRaw "$emitted.Add(\"$($entry.Quire)|$($entry.Name)\")")) [ScContinue] [], ScRaw "Add-WithQuire -Path $entry.Path -Quire $entry.Quire"]]
 
 Section: S05 -- Name Comparer
 

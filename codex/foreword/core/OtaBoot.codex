@@ -5,14 +5,6 @@ Chapter: OtaBoot
   cites Foreword chapter Hkdf
   cites Foreword chapter Maybe
 
- The boot selector: steps 5 through 7 of the OTA firmware update design,
- which described a machine that did not exist. Everything up to activation was built -- an image is
- staged, gated and activated -- and then the device rebooted into it and
- nothing ever checked again. An image that passed Gate B and arrived in
- flash broken had no second gate, and an image that booted and died had
- no way back. That is the whole automatic-rollback story, and it was a
- diagram.
-
  The selector is deliberately small, because it runs in EVERY boot, not
  only after an update: read one word, maybe hash one bank, choose a bank.
  No policy engine, no trust lattice, no CDX parse. Gate B already decided
@@ -86,12 +78,6 @@ Section: The Record
 
 Section: The Transitions
 
- Pure, so they can be reasoned about without a device. Each is one step
- of the design's steps 5 to 7.
-
- Marking a candidate resets the attempt count: this image has not had its
- chances yet.
-
   ota-mark-candidate : BootRecord, BootSlot -> BootRecord
   ota-mark-candidate (r) (c) = BootRecord {
    br-primary = r.br-primary,
@@ -140,9 +126,6 @@ Section: The Transitions
      br-attempts = 0
     }
 
- The decision itself, given whether the candidate's bytes verified. The
- primary is the answer to every doubt.
-
   boot-select : BootRecord, Boolean -> BootSlot
   boot-select (r) (candidate-ok) =
    when r.br-candidate
@@ -151,10 +134,6 @@ Section: The Transitions
       if candidate-ok == False then r.br-primary
       else if r.br-attempts > boot-attempt-limit then r.br-primary
       else c
-
- A candidate that has run out of attempts or failed its hash is not
- merely skipped for this boot -- it is abandoned, so the next boot does
- not pay to hash it again forever.
 
   boot-give-up : BootRecord, Boolean -> Boolean
   boot-give-up (r) (candidate-ok) =
@@ -194,19 +173,12 @@ Section: The Flash Half
   boot-candidate-length : Integer -> Integer
   boot-candidate-length (rec-addr) = boot-read-word (rec-addr + boot-len-offset)
 
- The flag write is the commit point and is one aligned word.
-
   boot-store : Integer, Integer, BootRecord -> [Flash, Device.Mmio] Integer
   boot-store (bank) (rec-addr) (r) = act
    b0 <- flash-open-bank bank
    b1 <- flash-write-word b0 (rec-addr + boot-flag-offset) (boot-flag-word r)
    flash-seal-bank b1
   end
-
- Step 5. The digest and the length go down first and the flag last, in a
- separate cycle. Lose power in between and the next boot finds a marker
- that does not claim a candidate, reads no digest, and boots the
- firmware it already had.
 
   boot-mark : Integer, Integer, BootRecord, BootSlot, List Integer, Integer -> [Flash, Device.Mmio] Integer
   boot-mark (bank) (rec-addr) (r) (cand) (digest) (len) = act
@@ -245,10 +217,6 @@ Section: The Selector
     is SlotA -> a-addr
     is SlotB -> b-addr
 
- A candidate past its limit is not hashed. There is no point paying for a
- digest over an image that has already used its chances, and the answer
- is the same either way.
-
   boot-check : BootRecord, Integer, Integer -> Boolean
   boot-check (counted) (rec-addr) (slot-addr) =
    if counted.br-attempts > boot-attempt-limit then False
@@ -277,9 +245,6 @@ Section: The Selector
    in when r.br-candidate
     is None -> r.br-primary
     is Just (c) -> boot-run-candidate bank rec-addr (slot-address c slot-a-addr slot-b-addr) r c
-
- Step 7. The firmware that just booted says it is healthy, and only then
- does the candidate become the primary.
 
   boot-commit : Integer, Integer -> [Flash, Device.Mmio] Integer
   boot-commit (bank) (rec-addr) =

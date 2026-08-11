@@ -4,31 +4,6 @@ Chapter: TcpReliability
   cites Net chapter Ethernet
   cites Foreword chapter Console
 
- The guest TCP stack survives a lossy or slow peer. This drives the pure
- NetworkStack -- no NIC, no emulator NAT -- so it tests the guest stack itself.
-
- A server session is brought to ESTABLISHED by a handshake (SYN, then a GET that
- rides in on the establishing ACK). Each test below starts from that same
- established session (referencing `established` re-runs the handshake, so the
- tests do not alias one shared session).
-
- RETRANSMISSION. The server sends a two-byte response, which arms the retransmit
- timer. With the outbox flushed and no ACK arriving, one tick leaves the outbox
- empty (rexmit1=0) and the third tick re-queues the response (rexmit3=1). A stack
- with no retransmission would show 0 at both -- the frame the peer missed would be
- gone. The control is the next test: an ACK that covers the response clears the
- stash, so three ticks re-queue nothing (acked3=0).
-
- RECEIVE WINDOW. A duplicate of already-delivered data (a lossy peer resending
- after losing our ACK) is dropped (dupdata=0), and so is a segment starting beyond
- the advertised window (windata=0); an in-order segment at recv-next is accepted
- (indata=1). Without the window check the duplicate and the out-of-window segment
- would both be delivered and corrupt the byte stream.
-
- TIME_WAIT. An active close reaches TIME_WAIT (twstate=TIME_WAIT); four ticks age
- it to CLOSED (afterwait=CLOSED) rather than leaving it for an external idle
- reclaim. Without aging it would sit in TIME_WAIT forever.
-
  We say:
 
 Section: Wire Fixtures
@@ -52,6 +27,20 @@ Section: Wire Fixtures
 
   c-syn : List Integer = mkc 1000 0 tcp-flag-syn []
   c-getack : List Integer = mkc 1001 5001 psh get-bytes
+
+  tick-n : NetSession, Integer -> NetSession
+  tick-n (s) (n) = if n <= 0 then s else tick-n ((net-tick s).session) (n - 1)
+
+  fill-n : NetSession, Integer -> NetSession
+  fill-n (s) (n) = if n <= 0 then s else fill-n ((net-send s resp-bytes).session) (n - 1)
+
+ A retransmit must resend the OLDEST unacked segment, so the arm reads the
+ sequence number back out of the frame that actually reached the outbox
+ rather than trusting the queue's own bookkeeping. Ethernet 14 plus IPv4 20
+ puts the TCP header at 34, and the sequence number is the second word of it.
+
+  frame-seq : List Integer -> Integer
+  frame-seq (f) = read-be32 f 38
 
 Section: Server Session
   srv0 : NetSession = net-session-new srv-mac srv-ip gw-ip 80 0 cli-ip 5000
@@ -78,6 +67,61 @@ Section: Entry
         print-line-uni ("dupdata=" & show (list-length (dup.data)))
         print-line-uni ("windata=" & show (list-length (bw.data)))
         print-line-uni ("indata=" & show (list-length (ino.data)))
+      end
+      let bo0 = set-outbox ((net-send established resp-bytes).session) []
+      in let bo3 = set-outbox (tick-n bo0 3) []
+      in let bo3b = tick-n bo3 3
+      in let bo6 = tick-n bo3 6
+      in act
+        print-line-uni ("backoff3=" & show (list-length (bo3b.outbox)))
+        print-line-uni ("backoff6=" & show (list-length (bo6.outbox)))
+      end
+      let g140 = tick-n bo0 140
+      in let g141 = tick-n bo0 141
+      in act
+        print-line-uni ("giveup140=" & tcp-state-name ((g140.conn).state))
+        print-line-uni ("giveup141=" & tcp-state-name ((g141.conn).state))
+      end
+      let cli0 = net-session-new cli-mac cli-ip gw-ip 50000 80 srv-ip 1000
+      in let syn0 = set-outbox ((net-connect cli0).session) []
+      in let fin0 = set-outbox ((net-close established).session) []
+      in act
+        print-line-uni ("synrexmit=" & show (list-length ((tick-n syn0 3).outbox)))
+        print-line-uni ("finrexmit=" & show (list-length ((tick-n fin0 3).outbox)))
+      end
+      let two = set-outbox ((net-send ((net-send established resp-bytes).session) resp-bytes).session) []
+      in let two-rx = (tick-n two 3)
+      in let two-acked = (net-process-frame two (mkc 1019 5003 tcp-flag-ack [])).session
+      in act
+        print-line-uni ("qdepth2=" & show (list-length (two.rexmit-queue)))
+        print-line-uni ("qacks=" & show ((list-at (two.rexmit-queue) 0).rx-ack) & " " & show ((list-at (two.rexmit-queue) 1).rx-ack))
+        print-line-uni ("qrexmit=" & show (list-length (two-rx.outbox)))
+        print-line-uni ("qoldest=" & show (frame-seq (list-at (two-rx.outbox) 0)))
+        print-line-uni ("qpartial=" & show (list-length (two-acked.rexmit-queue)))
+        print-line-uni ("qpartialrto=" & show (two-acked.rexmit-rto))
+      end
+      let full = fill-n established 9
+      in act
+        print-line-uni ("qcap=" & show (list-length (full.rexmit-queue)))
+        print-line-uni ("qrefuse=" & (net-send full resp-bytes).output)
+        print-line-uni ("qfinover=" & show (list-length (((net-close full).session).rexmit-queue)))
+      end
+      let r-sent = (net-send established resp-bytes).session
+      in let r-waited = tick-n r-sent 2
+      in let r-acked = (net-process-frame r-waited (mkc 1019 5003 tcp-flag-ack [])).session
+      in let r-again = (net-send r-acked resp-bytes).session
+      in act
+        print-line-uni ("rtt-srtt=" & show (r-acked.srtt) & " rttvar=" & show (r-acked.rttvar))
+        print-line-uni ("rtt-rto=" & show (r-again.rexmit-rto))
+      end
+      let k-sent = (net-send established resp-bytes).session
+      in let k-lost = tick-n k-sent 4
+      in let k-acked = (net-process-frame k-lost (mkc 1019 5003 tcp-flag-ack [])).session
+      in let k-again = (net-send k-acked resp-bytes).session
+      in act
+        print-line-uni ("karn-resent=" & show ((list-at (k-lost.rexmit-queue) 0).rx-resent))
+        print-line-uni ("karn-srtt=" & show (k-acked.srtt))
+        print-line-uni ("karn-rto=" & show (k-again.rexmit-rto))
       end
       let stw = (net-process-frame ((net-close established).session) (mkc 1019 5002 finack [])).session
       in let tw-conn = stw.conn

@@ -356,8 +356,8 @@ in this document is only ever the number some run actually produced; per-test
 re-measurement retires the rows it covers and does not license editing a
 total nobody measured. Re-run before trusting any of these figures.
 
-`codex/test/errors/` holds **172** expected-failure tests (measured
-2026-07-31; this line said 162 on 07-16).
+`codex/test/errors/` holds **173** expected-failure tests (measured
+2026-08-10; this line said 172 on 07-31 and 162 on 07-16).
 
 ## What the standing gate does not cover
 
@@ -374,9 +374,21 @@ three board-driver tests are in the battery via a `.vmargs` sidecar carrying
 `-board-mmio`, so a plain battery covers more than it once did, but the gate
 still does not.
 
-**Applications.** The gate compiles the compiler, not `apps/`. After a
-merge-down, recompile the app your CL is about, or a break introduced by
-somebody else's merge ships unseen under a green gate.
+**Applications: the gate DOES cover these now, as of main 13855.**
+`build/build.ps1`'s `app-sweep` phase runs
+`sweep-app-classes.ps1 -Check -Jobs 8` over every app entry chapter and
+fails the gate on a regression against `build/app-sweep-baseline.txt`. It
+runs LAST because it copies the seed over `build-output/bare-metal/Codex.cdx`
+to compile with, which would clobber the stage0 the fixed-point phases
+compare; by then SUT === seed is proven, so the seed it picks up is the
+compiler that run built. Both arms were proven before it was wired in: a
+sabotaged entry chapter turns the gate red naming it, and reverting turns
+it green. Cost measured 2026-08-06: 191 s of a 517 s gate.
+
+**Six app entry points do not compile DELIBERATELY** and are catalogued
+with their reasons in `build/app-sweep-baseline.txt`. Read that file
+before touching any of them, and before reading a non-zero dirty count as
+a regression: the check compares against the baseline, not against zero.
 
 **Backends other than x86. A BVT pin is an x86 pin.** The gate compiles the
 compiler and boots x86; it never boots a plug, so it is silent about ARM64
@@ -415,6 +427,50 @@ the way `.expected` already declares the output. Until that exists, a guard of
 this class is verified by hand, in two arms, and the account goes in the CL:
 see `docs/Designs/Active/Compiler/ProportionalDecks.md` for one worked
 example, including the probe and the reason its result was negative.
+
+## Standing bed facts (each cost a session; do not relearn)
+
+Consolidated 2026-08-08 out of the retired per-agent workplans.
+
+- **Desk rehearsals in codex-vm MUST pass `-disk`.** With no disk the
+  font-mount fallback resets the controller after the HID walk and the
+  mouse handle dies, bed-only. The image itself is fine.
+- **`build/boot/test-ovmf.ps1` boots a TEMP COPY**
+  (`$env:TEMP\ovmf-disk-<workspace>.img`), so guest disk writes do not
+  persist to the input file. To chain two boots, copy that temp file back
+  as the next run's input. `-Keys` takes Set-1 make codes (`88` is F12);
+  `-KeyDelayMs 4000` survives TCG-speed keygen.
+- **A pane F12 shot takes roughly 16 to 110 s in the bed**, because
+  `med-selected` is unset under DeskVm so every sector op pays the AHCI
+  and NVMe probes before falling through to IDE. **A capture deadline
+  under two minutes reads as a dead key**, and the guest genuinely IS
+  blocked inside `shot-take`, so it is indistinguishable from a hang.
+  `build/desk.ps1 -ShotDelayMs` defaults to 6000. Give the capture two
+  minutes and **verify by scanning the disk copy for the `SH*.BMP`
+  directory entry, not only by the on-glass verdict.** Before calling an
+  input-driven bed incapable, price the work the keystroke starts: a
+  1280x800 screenshot is 3,072,054 bytes, and a negative control shorter
+  than the write can only ever return what it returned.
+- **`print-line` emits CCE; `print-line-uni` converts at the I/O
+  boundary.** A hand-written probe using `print-line` renders as garbage
+  and looks exactly like a miscompile. The control that settles it is any
+  existing `codex/test` unit through the same path.
+- **A hand-rolled compile-and-run harness must DELETE its artifacts
+  first.** `Test-Path $cdx` finds the PREVIOUS run's binary, so a failed
+  compile is indistinguishable from a pass the moment a stale artifact
+  exists, and the second run of any harness is where this starts.
+- **An unreferenced definition is not a reached path.** A sabotage that
+  puts an undefined name in a new top-level definition nothing calls
+  compiles clean. Sabotage a call site inside a body that RUNS, and treat
+  an arm that does not fail as a bug in the arm.
+- **`check-generated-scripts.ps1`'s RUN phase is intermittently flaky and
+  retries once.** A generator can compile clean (exit 0, a full `.cdx`)
+  and still leave a zero-byte `emitted.txt`. Not reproduced in 240 runs of
+  the kernel that had just failed, and `test-run.ps1`'s own two
+  empty-output paths were silent throughout, so neither is the cause. The
+  check prints a `note:` line when the retry saves it. **If that line
+  starts appearing every run, the flake has become a defect and the retry
+  is hiding it.**
 
 ## Battery architecture
 
@@ -530,7 +586,7 @@ quoting; every number here rots (L-COUNT).
 The 880 are not skipped, filtered, or reported. `test-cross-batch.ps1:67`
 globs `codex/test/*.codex` and `codex/test/ops/*.codex` and nothing else,
 non-recursively, while the x86 battery globs six directories
-(`test.ps1:157`). So `apps/` (351), `forewords/` (316), `errors/` (172),
+(`test.ps1:157`). So `apps/` (364), `forewords/` (316), `errors/` (173),
 `lib/` (40) and `examples/` (1) are outside the cross battery's field of
 view. **A test in those directories has never run on ARM64 or RISC-V and
 its absence produces no line of output.** That is the difference between a
@@ -1158,6 +1214,30 @@ reach. No instrument was built for them: there is no evidence of drift, and a
 permanent checker for a gap with a zero hit rate is the maintenance cost that
 outweighs the discovery.
 
+### In `prose-anchor`, `prose-consistency` and `prose-smoke` the prose IS the fixture
+
+These three are tests OF the prose system, so their column-2 prose is the
+subject under test, not commentary about the code beside it. CLAUDE.md rule 12
+says to delete prose in files you are already changing; **these three files are
+the exception, and the failure mode is asymmetric.**
+
+Verified against the source 2026-08-07 (blu's finding, routed to the fleet):
+`prose-anchor.diag` is `1101`, and the block that raises it is the last one,
+`To absent-def (n) gives an Integer.` at `prose-anchor.codex:34`. `absent-def`
+has no definition in the chapter, deliberately. Cut that block and the test
+goes RED, which is the safe direction because you find out.
+
+**Cut any of its siblings instead and the test stays GREEN while pinning much
+less.** The blocks at lines 4-15 and the `first-def` / `second-def` /
+`third-def` templates are what pin the two defects the chapter exists for: that
+the consistency check looks a named function up among ALL definitions rather
+than comparing every block against index zero, and that a prose token is built
+before the lexer advances past its line rather than after. `.diag` is still
+satisfied by line 34 alone, so nothing reports the loss.
+
+That is the same shape as the severity gap above -- a sidecar that keeps
+passing after the thing it was protecting has gone.
+
 ### A single-line `.expected` outside the skip list is NOT the same defect
 
 Worth recording as a negative so nobody re-runs it. The skip census found seven
@@ -1698,7 +1778,17 @@ served work; it does not print a constant.
 which gives the CCE code point and not the ASCII one, so the hash's own hex digits go
 out as CCE bytes. Sending ASCII does not error -- the server simply never finds the
 work and answers "not here", which reads exactly like a working server with an empty
-store. Encode through `$script:UnicodeToCce` (`vm-config.ps1`).
+store. **Encode through `ConvertTo-CceBytes` (`build/vm-config.ps1`), and
+decode through `ConvertFrom-CceBytes` -- never by indexing
+`$script:UnicodeToCce` a byte at a time.** CCE is three tiers and
+multi-byte (1 byte below 128, 2 below 2176, 3 below 67712, 4 above, with
+the tier base added back on decode), so a byte-at-a-time table lookup is
+correct only for tier 0 and silently corrupts everything above it rather
+than refusing. The 256-slot reverse map exists for the tier-0 case and
+skips the entries above 255 deliberately; a `% 256` fold over it would
+land Cyrillic 1072 on 48 and silently remap the digit `0`. Thirteen
+`run.ps1` scripts still encode one byte at a time, and that is safe only
+because every one of them encodes the fixed literal `"IR-CCE"`.
 
 **And the trap that cost the most: `-shl` on a `[byte]` in PowerShell keeps the left
 operand's width.** `$b[1] -shl 8` shifts the bit off the end and yields 0, so every
@@ -1886,7 +1976,7 @@ pattern that misparsed. Again the count matches the diagnosis.
 **On demand. Not in `build.ps1`, not in `test.ps1`.** It boots a VM and takes a
 couple of minutes. Run it when you touch an operator, an emitter comparison
 path, a condition code, or an immediate encoder, and before a public push.
-`codex/test/int-min-literal.codex` pins the literal band as a cheap standing
+`codex/test/ops/int-min-literal.codex` pins the literal band as a cheap standing
 check that does not need the harness.
 
 The guard beside it is `CDX9010`. `emit-comparison` now takes the operand type
@@ -2495,6 +2585,13 @@ floor** -- which exists because an empty actual compared against an
 accidentally-emptied pin is the classic function that always answers the same
 thing. A pin nobody can fail is a comment.
 
+**The pin is RED on purpose as of 2026-08-05, and it is a stale pin rather
+than a defect.** 113 lines pinned against 119 emitted; the six extra lines
+are `math-isqrt` / `math-isqrt-loop`, both carrying `[check: ok]`. Damian
+parked LIR that day, so nobody re-recorded it. **Whoever picks LIR back up
+re-records it**; do not `-Accept` it as a drive-by, and do not report it as
+a regression.
+
 **`-Accept` records whatever the compiler just did, including whatever it did
 wrong** -- the same hazard as `test-gui.ps1 -Accept` and the same rule: it
 prints the delta it is about to accept, and you read every line before you
@@ -2552,7 +2649,7 @@ as a green that means nothing.**
 
 ## Expected-Failure Tests
 
-172 tests in `codex/test/errors/` verify that the compiler rejects
+173 tests in `codex/test/errors/` verify that the compiler rejects
 invalid programs with the correct diagnostic codes. Each has a
 `.failing` sidecar listing the expected CDX error codes. Examples:
 `apply-non-function` (CDX2001), `duplicate-def` (CDX3002),
@@ -2731,7 +2828,9 @@ legible. A real `expect-text` is worth building against that font.
 read "or against GuiOS once its font fallback is fixed -- which is a defect on
 its own merits, since a diskless GuiOS currently draws unreadable text to a
 real screen." The fallback was fixed after this section was written:
-`gui-load-fallback` (`apps/guios/GuiShell.codex`) now sets `fonts-loaded` to
+`gui-load-fallback` (`apps/guios/GuiShell.codex`, a historical reference:
+that chapter was retired when the desk moved to `apps/works/GopDesk.codex`
+via GopBoot) set `fonts-loaded` to
 **0** rather than rasterizing `px-pixel-font` into all three roles, so a
 diskless boot dispatches through `Kernel chapter BitmapFont` -- an 8x16 bitmap
 of 128 glyphs compiled into the binary -- and the synthesized font this
@@ -2848,8 +2947,9 @@ the existing battery could see, because no GOP app was tested at all:
 `GopQr` paints findings as QR codes on the GOP framebuffer and
 `tools/qr-read.ps1` turns a photograph back into the exact bytes. That pair
 is R-1 of `TheSilentKeyboard.md` -- the output channel a hardware campaign
-is not allowed to launch without -- and it is what
-`docs/HardwareSitting.md` spends its human on.
+is not allowed to launch without. Since 2026-08-05 probes screenshot
+themselves to the stick (F12), and the QR path is the fallback for boots
+where the disk stack is itself under test.
 
 Only the encoder had a test (`codex/test/qr-encode.codex`). **The decoder,
 the half a sitting actually depends on, had nothing pointed at it, and it

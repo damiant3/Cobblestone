@@ -1,0 +1,58 @@
+[
+  {
+    "target": "chapter:X86-64 Code Generator",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "process-set-scope is the write counterpart, and it is PRIVILEGED. A process that could set another process's scope could set its own, and a scope it chose itself is not a limit -- it is a capability amplification with an extra step. So the helper tests cap-capability-admin against the CALLER, the same bit process-kill and identity-set-proc test, and answers -1 to anyone else. The verified loader holds that bit; an application does not.",
+    "thread": null
+  },
+  {
+    "target": "chapter:X86-64 Code Generator",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "It is deliberately NOT a way to widen your own grant: the loader calls it to write a scope INTO a slot before the process it belongs to is started, which is the only moment a scope is anyone's to choose.",
+    "thread": null
+  },
+  {
+    "target": "chapter:X86-64 Code Generator",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "process-get-scope answers what a process is permitted to name, the way process-get-cap answers what it is permitted to do. It hands back the Text stored at proc-scope-offset -- the scope the boot grant wrote for proc 0, or the one a parent copied into a child at spawn.",
+    "thread": null
+  },
+  {
+    "target": "function:emit-process-get-scope-helper",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "It NEVER hands back a null. A process index out of range, and a cell that was never written (any process that declared no filesystem scope), both fall through to a static empty Text. That matters because the caller is Fat16, which will do text-starts-with on the answer: a zero here would be a null pointer dereference inside the filesystem, and an empty scope is also the honest answer -- the empty prefix admits every path, which is exactly what an unscoped grant means.",
+    "thread": null
+  },
+  {
+    "target": "function:emit-process-set-network-scope-helper",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The network twins of the two scope helpers above, reading and writing proc-net-scope-offset instead of proc-scope-offset. process-set is the loader's privileged writer (cap-capability-admin, denies -1 otherwise); process-get never hands back a null (out-of-range or an unwritten cell both fall to a static empty Text, and an empty authority admits every host, which is what an unscoped network grant means). The caller is the fetch chokepoint, which does authority-admits on the answer.",
+    "thread": null
+  },
+  {
+    "target": "function:emit-chan-send-block-helper",
+    "kind": "invariant",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Blocking on a channel is block-then-recheck, exactly as process-wait is, and for the same reason. A sender that finds the channel full commits its slot to BLOCKED and switches away; but a receiver can drain the channel and run its wake (emit-chan-wake-blocked-sender) in the window between the fullness check and the BLOCKED commit, find no blocked sender, and move on -- and the sender then blocks on a wake that has already come and gone. So after committing BLOCKED the sender re-reads the channel: if room now exists it claims BLOCKED -> RUNNING with a cmpxchg and, on winning, jumps to the write path to complete the send itself; on losing the cmpxchg a receiver has already rendezvous'd it, so it relinquishes to __idle_dispatch and is resumed normally; if still full it blocks as before. The receiver's recv-block path is the mirror image (re-read count, retry the read). The retry jump is a patched forward jump, not a hand-computed backward offset -- st-append-code buffers into a flush cache, so code-len on an un-flushed state is not an instruction's final position; patch-jmp-at flushes first. Proven by the yield-injection mutant.",
+    "thread": null
+  },
+  {
+    "target": "function:emit-net-status-helper",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A denial returns -1, the same answer these helpers already give for an absent NIC. That conflation is deliberate: from the caller's seat \"you may not\" and \"there is nothing there\" are both \"you got nothing\", and neither is a lie.",
+    "thread": null
+  }
+]

@@ -1,17 +1,6 @@
 Chapter: FieldCacheTextLit
   cites Foreword chapter Console
 
- A field read twice in one call, with a string literal argument between the two
- reads, must give the same answer both times.
-
- It did not. The emitter caches a field access in the register it loaded it into,
- so a second read of `b.items` in the same expression reuses that register
- instead of loading again. `emit-text-lit` writes RAX with a hardcoded mov-ri64
- before it calls alloc-temp, and alloc-temp only evicts the register it hands
- out -- so the literal destroyed RAX while the cache went on claiming `b.items`
- was still there. The second read then used RAX, which by then held the address
- of the literal, and `list-length` returned the LITERAL's length word.
-
  So `list-length [7, 8, 9]` returned 9: the character count of "read-text". No
  crash, no diagnostic, just a wrong number -- and the self-compile could not see
  it, because the compiler's own instance of this shape
@@ -20,14 +9,6 @@ Chapter: FieldCacheTextLit
  find no match, which is the answer it wanted anyway. It only became visible as a
  crash when a program's heap layout put a non-canonical pointer
  after the list.
-
- The literal must stay LONGER than the list is, or the walk stays in bounds and
- the test passes while broken. "read-text" is nine characters; the list is three.
-
- The empty-literal line was written as a control and is not one: `""` is still a
- text literal, still writes RAX, and returned 0 -- its own length word. Any
- literal triggers this, so the only honest control is the direct read, which
- never had a literal to cross.
 
  We say:
 

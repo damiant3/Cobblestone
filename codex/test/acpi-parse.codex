@@ -1,25 +1,7 @@
 Chapter: AcpiParseTest
   cites Works chapter GopAcpi
 
- Builds an ACPI table set in a heap buffer and parses it. The bytes are
- laid down from the ACPI specification -- signatures, lengths, and every
- field at its spec offset -- not from the parser's own idea of where
- things live, so a parser that reads PM1a_CNT_BLK from the wrong offset
- reports the event block and fails here. The fixture's ground truth was
- generated independently in Python.
-
- SLP_TYPa is 5 and SLP_TYPb is 7, deliberately not the zero that QEMU's
- own _S5_ happens to carry: a driver that skips the AML decode and
- hardcodes the value it saw on one emulator cannot pass.
-
- Both root-table shapes are covered. A revision 0 RSDP offers only the
- RSDT and its 32-bit entries; a revision 2 RSDP offers the XSDT and its
- 64-bit entries and must be preferred. The final case corrupts one RSDP
- byte and expects the checksum to reject the whole thing.
-
 Section: Layout
-
- Offsets within the blob, matching the fixture generator.
 
   off-rsdp : Integer = 0
   off-rsdt : Integer = 256
@@ -59,10 +41,6 @@ Section: Writers
     in let p2 = poke-byte a 2 b2
     in poke-byte a 3 b3
 
- Every SDT header carries revision, an OEM id, an OEM table id, and an
- OEM revision. Their bytes matter only to the checksum, but the fixture
- writes real ones so it is a table a firmware could have published.
-
   wr-bytes : Integer, Integer, List Integer, Integer -> Integer
   wr-bytes (a) (o) (bs) (i) =
     if i >= list-length bs then 0
@@ -82,10 +60,6 @@ Section: Writers
     poke-byte t ckoff (int-mod (256 - int-mod (acpi-sum t 0 len 0) 256) 256)
 
 Section: Tables
-
- MADT: local APIC address at 36, flags at 40, then a Type 0 processor
- entry (length 8) and a Type 1 I/O APIC entry (length 12) whose address
- sits four bytes into the structure.
 
   build-madt : Integer -> Integer
   build-madt (b) =
@@ -171,10 +145,6 @@ Section: Tables
     in let e1 = wr64 x 44 (b + off-madt)
     in store-cksum x 52 9
 
- The RSDP is not an SDT: its signature is eight bytes, its first
- checksum covers only the first twenty, and revision 2 adds a length, a
- 64-bit XSDT pointer, and a second checksum over the whole thing.
-
   build-rsdp : Integer, Integer -> Integer
   build-rsdp (b) (rev) =
     let r = b + off-rsdp
@@ -203,9 +173,6 @@ Section: Tables
     in build-rsdp b rev
 
 Section: Report
-
- Table addresses are reported as offsets from the blob base, so the
- expected output does not depend on where the heap happened to be.
 
   yn : Boolean -> Text
   yn (v) = if v then "yes" else "no"
@@ -247,28 +214,16 @@ Section: Cases
     let built = build-all b rev
     in acpi-parse (b + off-rsdp)
 
- Corrupting one byte of the OEM id leaves the signature intact and the
- revision intact, so only the checksum can catch it.
-
   case-corrupt : Integer -> AcpiInfo
   case-corrupt (b) =
     let built = build-all b 2
     in let bad = poke-byte (b + off-rsdp) 10 88
     in acpi-parse (b + off-rsdp)
 
- A zero pointer is the honest "firmware exposed no ACPI" answer.
-
   case-null : Integer -> AcpiInfo
   case-null (dummy) = acpi-parse 0
 
 Section: Scan Cases
-
- The memory search, on a window of heap rather than on the BIOS area,
- so it runs anywhere. Four arms, and each fails for one reason only.
-
- The window is aligned up to 16 first: the scan steps by 16 from where
- it is told to start, and a window that began mid-paragraph would move
- every arm's answer for a reason that has nothing to do with the arm.
 
   scan-window : Integer = 2048
 
@@ -300,10 +255,6 @@ Section: Scan Cases
   scan-empty (sa) =
     let z = zero-fill sa 0 scan-window
     in acpi-scan-range sa (sa + 1024)
-
- Reported as an offset from the window, and 0 already means "not
- found", so a hit at offset 0 would be ambiguous. No arm places one
- there.
 
   scan-report : Integer, Integer -> Text
   scan-report (sa) (hit) = if hit == 0 then "none" else "+" & show (hit - sa)

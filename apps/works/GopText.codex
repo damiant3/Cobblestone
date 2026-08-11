@@ -6,19 +6,6 @@ Chapter: GopText
   cites Kernel chapter Keyboard
   cites Foreword chapter StringUtils
 
- A single-line text field on the GOP framebuffer (B2.1). Scancodes
- come from the kernel key-buffer cell -- fed by the keyboard IRQ the
- runtime-init spine installs (GopKey), and by the USB HID pump when
- the machine's keyboard is USB (H2b): the read loop takes a UsbKbd
- and polls through kbd-take, which pumps the interrupt endpoint and
- then consumes the cell. With no USB keyboard the pump is a flag test
- and the loop is unchanged. The kernel keyboard chapter's pure layout
- machinery (kb-process-scancode) turns scancodes into CCE characters
- with shift, caps, and dead-key handling. The field echoes as it
- edits, draws a block cursor after the text, supports backspace, and
- can mask its echo with asterisks for passphrase entry. Enter returns
- the buffer.
-
  We say:
 
 Section: Field
@@ -38,10 +25,6 @@ Section: Field
   }
 
 Section: Drawing
-
- The field paints its own background one cursor cell wider than its
- capacity, draws the text (or one asterisk per character when masked),
- and places a solid block cursor in the cell after the last character.
 
   gt-draw : GtField, Text -> Integer
   gt-draw (f) (buf) =
@@ -116,19 +99,50 @@ Section: Input Loop
 
   hpet-base : Integer = 4275044352
 
-  gt-read-line : GtField, UsbKbd, Text, KbState, Integer -> [Device.Port, Device.Mmio] GtLine
-  gt-read-line (f) (k) (buf) (st) (ent) = act
+ A field that stops accepting keys used to leave a blank screen: the
+ wizard paints its vitals from the WAIT loop, and this is not that loop,
+ so the one screen where input can die silently was the one screen with
+ no instrument. These two blocks are that instrument, and they are drawn
+ rather than printed so nothing allocates on a poll that never returns.
+
+ Left block alternates every gt-beat-mask polls. Blinking means this loop
+ is still turning and the keyboard is delivering nothing; frozen means the
+ loop itself stopped. Right block is red once the controller has been
+ handed back to firmware, which on a machine with no legacy emulation is
+ a one-way door and means no key can ever arrive again.
+
+  gt-beat-mask : Integer = 65535
+
+  gt-beat-live : Integer = 65280
+
+  gt-beat-dark : Integer = 4210752
+
+  gt-beat-released : Integer = 16711680
+
+  gt-heartbeat : GtField, Integer, Integer -> Integer
+  gt-heartbeat (f) (n) (rel) =
+    let cw = 8 * f.gf-scale
+    in let ch = 16 * f.gf-scale
+    in let bx = f.gf-x + (f.gf-wchars + 2) * cw
+    in let col = if bit-and (n / (gt-beat-mask + 1)) 1 == 0 then gt-beat-live else gt-beat-dark
+    in let a = gop-fill-rect f.gf-base f.gf-stride bx f.gf-y cw ch col
+    in let rcol = if rel /= 0 then gt-beat-released else gt-beat-dark
+    in gop-fill-rect f.gf-base f.gf-stride (bx + 2 * cw) f.gf-y cw ch rcol
+
+  gt-read-line : GtField, UsbKbd, Text, KbState, Integer, Integer -> [Device.Port, Device.Mmio] GtLine
+  gt-read-line (f) (k) (buf) (st) (ent) (n) = act
     sc <- kbd-take k
     hp <- if sc == 0 then 0 else read-mmio hpet-base 240
-    if sc == 0 then gt-read-line f k buf st ent
+    beat <- if bit-and n gt-beat-mask == 0 then gt-heartbeat f n (kbd-released 0) else 0
+    if sc == 0 then gt-read-line f k buf st ent (n + 1)
     else if sc == 28 then GtLine { gl-text = buf, gl-entropy = ent }
     else let ev = kb-process-scancode st (__narrow sc)
-    in gt-read-line f k (gt-apply f buf ev) (ev.state) (ent * 1099511628211 + hp * 31 + peek-qword 28672 0 + sc)
+    in gt-read-line f k (gt-apply f buf ev) (ev.state) (ent * 1099511628211 + hp * 31 + peek-qword 28672 0 + sc) (n + 1)
   end
 
   gt-input : GtField, UsbKbd -> [Device.Port, Device.Mmio] GtLine
   gt-input (f) (k) = act
     h0 <- read-mmio hpet-base 240
     d <- gt-draw f ""
-    gt-read-line f k "" kb-state-new h0
+    gt-read-line f k "" kb-state-new h0 0
   end

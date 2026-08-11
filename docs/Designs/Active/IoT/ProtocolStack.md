@@ -1,7 +1,8 @@
 # IoT Protocol Stack: CoAP, MQTT, LwM2M
 
 **Created**: 2026-06-12 (reek)
-**Updated**: 2026-07-14 (reek) -- peer auth shipped; status corrected.
+**Updated**: 2026-08-09 (blu) -- DTLS send-side fragmentation shipped;
+three stale "still open" claims corrected in place.
 **Status**: The DTLS 1.3 structural build (D0-D3) is **done**, and
 **peer authentication shipped 2026-07-13** (X.509 with Ed25519 certs,
 RFC 8410): two real endpoints complete an *authenticated* handshake in
@@ -11,8 +12,164 @@ now narrow and specific: no application traffic keys (the endpoint
 derives handshake secrets only), no fragmentation reassembly, and the
 handshake flights travel as DTLSPlaintext. **So `coaps://` still does not
 exist and ETSI 5.5 / CRA 1(c) remain transport-gated**.
-Also still missing across the wider stack: **TCP retransmit**, and the
-CoAP/MQTT/LwM2M binding layers in `codex/os/net`.
+Also still missing across the wider stack: the CoAP/MQTT/LwM2M binding
+layers in `codex/os/net`. (This line said **TCP retransmit** as well;
+that was wrong when written -- see the 2026-08-08 correction below.)
+
+**CORRECTION, 2026-08-05: the tree has moved past the status above, and
+the body below reads stale in the done direction.** What the tree now
+shows, with evidence:
+
+- Application traffic keys ARE derived and app data is sealed/opened at
+  epoch 3 (`codex/os/net/DtlsEndpoint.codex`: `dtls-ep-derive-app`,
+  `dtls-ep-send-app`, `dtls-ep-recv-app`).
+- Handshake flights after ServerHello travel protected at epoch 2
+  (`DtlsEndpoint.codex:133-147`).
+- `CoapEndpoint` and `MqttEndpoint` exist (`codex/foreword/encode/`)
+  with wire halves `tools/coap-client.codex`, `tools/coap-server.codex`,
+  `tools/mqtt-client.codex`, plus `coap-loopback` and
+  `build/coap-interop-test.ps1`. (This line said a general LwM2M client is
+  still absent. It landed 2026-08-09 as `codex/os/net/Lwm2mClient.codex`;
+  see the 2026-08-09 entry above.)
+- RSA verification exists (`codex/foreword/core/Rsa.codex`:
+  `rsa-verify-pkcs1-sha256`, `rsa-verify-pss-sha256` over `CryptoBig`),
+  with `X509Chain`, `TlsEndpoint` and `TrustAnchors` in
+  `codex/foreword/encode/`.
+- `dtls-ep-random` now takes caller entropy via `dtls-ep-new`'s random
+  argument.
+
+**BACKLOGGED, Damian's ruling 2026-08-09: any TLS or DTLS version
+uplifting.** That covers the third-party DTLS 1.3 handshake oracle and the
+OpenSSL 3.5 requirement below. The reason is priority, not doubt about the
+gap: there is no working web server and no working browser yet, and
+chasing a protocol version ahead of them is cart before horse. **Do not
+pick this up, and do not install a newer OpenSSL for it.** The finding
+stays recorded below so nobody re-derives it; it is simply not next.
+
+Still recorded but NOT open work: the third-party DTLS handshake oracle,
+blocked on a tool version (below). **The general LwM2M client landed 2026-08-09**
+(`codex/os/net/Lwm2mClient.codex`): Registration, Update, Deregister and
+the Device Management interface (Read, Write, Execute) over a flat object
+tree, pure on DtlsEndpoint's precedent, gated by
+`codex/test/apps/lwm2m-client`. Bootstrap, Observe/Notify and Access
+Control are NOT in it and are each their own unit.
+
+**Building it found a defect in CoAP that had never been reachable.**
+`coap-uri-path-option` puts a whole path in ONE Uri-Path option, and RFC
+7252 section 6.4 step 7 requires one option per segment with no slash in
+the value (section 5.10.1). Every path this tree had ever asked for was a
+single segment -- "temperature", "actuator", and "codex" in
+`coap-interop-test.ps1` -- which is the one case where the two spellings
+agree, so the interop harness passed against a real server and proved
+nothing about multi-segment paths. An LwM2M path is `/3/0/1`.
+`coap-uri-path-options` and `coap-uri-query-options` split correctly;
+`coap-find-options` reads a repeated option as the ordered sequence it is,
+which `coap-find-option` cannot. Also added: `coap-opt-location-path` (8)
+and `coap-204-changed`. **`coap-204-deleted` is misnamed** -- it is
+`coap-response-code 2 2`, which is 2.02 Deleted; the value is right and the
+name is not, left alone rather than renamed under an unrelated change.
+
+**The RTT-derived retransmit interval landed 2026-08-09, and the reason it
+sat open was wrong.** It was recorded as needing a calibrated tick, since
+no caller drives `net-tick` at a known rate. The estimator never needed
+one. RFC 6298 is a ratio between a measured round trip and a retransmit
+interval, and a ratio is right at any steady tick rate; only a value
+expressed in seconds would need calibration, and nothing here is. The
+fixed 3 ticks it replaces was wrong in both directions at once, too eager
+on a slow link and too patient on a fast one. `net-rtt-update` carries
+`srtt` scaled by 8 and `rttvar` by 4 in the standard integer form, and
+**Karn's algorithm is honoured**: `rx-resent` is per segment, so an ack for
+anything retransmitted yields no sample. Pinned by `codex/test/tcp-reliability`:
+`rtt-rto=6` where a 2-tick round trip gives `srtt=16 rttvar=4`, against
+`karn-rto=3` where the same ack follows a retransmission and the estimator
+is correctly left untouched.
+
+**"Third-party DTLS interop" was one item and is now two, one of them
+done.** The fragmentation layer HAS a third-party oracle as of 2026-08-09:
+`codex/test/dtls-openssl-fragments` reassembles real OpenSSL records, and
+`build/dtls-fragment-interop.ps1` regenerates them. The full handshake does
+not, and **what blocks it is a tool version rather than a decision**:
+OpenSSL gained DTLS 1.3 in 3.5, and 3.2.4 is what is installed (measured
+2026-08-09 against both the mingw64 and usr/bin builds; Python's `ssl`
+exposes no DTLS at any version). This was previously recorded as needing a
+ruling on outside dependencies. That was wrong: six interop harnesses
+already shell out to OpenSSL and Python (`tls-interop-test.ps1` and five
+others), so the precedent was settled long ago and nobody needed to decide
+anything.
+
+**Fragmentation is closed in BOTH directions as of 2026-08-09.** Receive
+landed 2026-08-08; send landed the following day once the MTU question
+was decided rather than deferred, at 1200 bytes of UDP payload
+(`dtls-ep-mtu`) with a 1024-byte fragment body. See section D2b below,
+which carries the derivation of both numbers and the pre-authentication
+fault the receive wiring closed.
+
+**TCP retransmit is NOT one of them, and the "no RTO timer" claim below
+was already false when this correction was written** (measured
+2026-08-08 against `codex/os/net/NetworkStack.codex`). It is not in
+`tcp-step`, which is why a reader looking there found nothing: the timer
+lives one layer up in `NetSession`, which is the layer that owns frames
+and has somewhere to put one. `net-send` arms `rexmit-frame` with the
+built frame and `rexmit-ack` with the sequence number that would retire
+it, `net-tick` counts down and re-sends on expiry, and
+`net-receive-segment` disarms on a covering ACK.
+
+What 2026-08-08 added, gated by `codex/test/tcp-reliability`: the
+interval now doubles (3, 6, 12, 24, 48 ticks), the retry count is
+bounded at 5 and the connection is declared CLOSED rather than
+retransmitting forever, and `net-connect`/`net-close` arm the timer so a
+lost SYN or FIN is retried -- previously only data segments were, which
+left connection setup, the least reliable moment on a lossy link, with
+no retransmission at all.
+
+**What is still missing, stated so nobody reads the above as done:**
+
+- ~~**One segment deep.**~~ **FIXED.** `rexmit-queue` holds up to
+  `net-rexmit-capacity` = 8 `RexmitSeg` entries, one timer per
+  connection owned by the oldest unacked segment (RFC 6298 section 5).
+  An expiry retransmits the head only; a cumulative ACK retires every
+  entry it covers and restarts the timer at the base interval with the
+  retry count reset, because an ACK that retires anything is evidence
+  the path is alive.
+
+  **The bound is refused, not grown.** A send that would exceed the
+  capacity answers `send queue full` and does not send. There is no
+  collector, so an unbounded queue would let a peer that has stopped
+  acking choose our memory ceiling.
+
+  Measured against the pre-change chapter on the two-send case: the old
+  code retransmits sequence 5003, the SECOND send, because the second
+  `net-send` had overwritten `rexmit-frame` and segment 5001 was
+  unrecoverable. The new code retransmits 5001. `codex/test/tcp-reliability`
+  carries `qoldest` for exactly that, reading the sequence number back out
+  of the frame that reached the outbox rather than trusting the queue's own
+  bookkeeping.
+- **No RTT measurement.** The RTO is a tick count, not RFC 6298
+  SRTT/RTTVAR, and a tick is whatever period the caller drives the
+  session at. The backoff is real; the base interval is a constant
+  nobody derived from a measured path.
+- ~~**The ACK comparison does not handle sequence wraparound.**~~
+  **FIXED, and it was worse than this entry said.** There were two
+  defects, not one: the comparisons were ordinary integer compares, AND
+  the in-memory counters were never wrapped at all, so `send-next` grew
+  past 2^32 unbounded while everything arriving from the wire came back
+  truncated by `read-be32`. `Tcp.codex` now carries `tcp-seq-wrap`,
+  `tcp-seq-diff` and the three RFC 793 serial comparisons; the counters
+  wrap on store in `set-send-next`, `set-recv-next` and
+  `tcp-new-connection`, so the twelve sites that increment a sequence
+  number are each fixed once.
+
+  **Recorded because the interaction is the part worth knowing:** on its
+  own this produced spurious retransmits past 4 GB. Combined with the
+  bounded-retry give-up added the same day, it produced a *closed
+  connection* -- the wrapped ACK failed the compare, the retransmit was
+  never disarmed, and the retry ceiling then declared a healthy
+  connection dead. A safety bound placed over a wrong comparison converts
+  a performance bug into a correctness one. `codex/test/tcp-seqwrap`
+  pins it: the `wrapclose` arm answers CLOSED against the pre-change
+  chapters and ESTABLISHED now.
+
+**Ruling 2026-08-05 (Damian): RESURFACED as the base of the IoT chain.** The remainder is live work in the ProtocolStack -> OTAFirmwareUpdate -> ComplianceEvidence chain. The TCP segment queue is closed 2026-08-08, and DTLS fragmentation is closed in BOTH directions as of 2026-08-09: receive through `ep-reasm`, send at a 1200-byte MTU with a 1024-byte fragment body, derived in D2b below. **That list is now empty of open work.** The RTT-derived retransmit interval and the general LwM2M client both landed 2026-08-09, and the third-party DTLS handshake oracle was BACKLOGGED the same day (Damian: no TLS or DTLS version uplifting; there is no working web server or browser yet, so it is cart before horse).
 
 **2026-07-13: Open Question 1 is now answered, the answer moved the
 plan, and phase D0 has shipped.** The foreword `Tls` audit came back
@@ -74,11 +231,16 @@ absent" list below is now historical rather than descriptive.
    name, and nothing else. LwM2M mandates DTLS; `coaps://` requires it;
    the compliance story requires it. This is the largest single hole in
    the IoT stack.
-2. **TCP retransmission.** `tcp-step` is a working 10-state machine
-   with no RTO timer and no segment queue: an unacked segment is lost
-   forever on a lossy link. MQTT keepalive and QoS 1/2 assume a
-   reliable stream, so MQTT over the real network is not trustworthy
-   until this lands.
+2. ~~**TCP retransmission.**~~ **PARTLY CLOSED -- see the 2026-08-08
+   correction at the top, which has the measurement and the three
+   remaining holes.** `tcp-step` does indeed have no RTO timer and never
+   will: it is a pure state machine and the timer lives in `NetSession`.
+   The single-segment depth and the wraparound-unsafe compare are both
+   closed. **What survives of this gap is the absent RTT measurement, and
+   nothing else.** MQTT keepalive and QoS 1/2 assume a reliable stream;
+   they now have a bounded, multi-segment, oldest-first retransmit over a
+   correct sequence space, driven by a tick count nobody has calibrated
+   against a real path.
 3. **No binding layer.** `codex/os/net` has 32 modules and not one of
    them is a `CoapEndpoint`, `MqttConnection`, or `LwM2mClient`. The
    codecs are pure functions nobody calls over a socket. Until the
@@ -89,8 +251,11 @@ absent" list below is now historical rather than descriptive.
 
 - **UDP**: datagram build/parse, pure, working. CoAP's substrate.
 - **TCP**: 10-state machine, functional event/action stepping
-  (`tcp-step`), TcpConnection records. **No retransmission** -- an
-  unacked segment is lost forever on a lossy link.
+  (`tcp-step`), TcpConnection records, and RFC 793 serial sequence
+  arithmetic (`tcp-seq-wrap`/`-diff`/`-lt`/`-le`/`-ge`). Retransmission is
+  in `NetSession` (`NetworkStack.codex`), not here: an 8-deep
+  oldest-first queue, exponential backoff, bounded at 5 retries, covering
+  SYN, data and FIN, refusing a send past the bound.
 - **Framing/TcpTransport**: length-prefixed LE32 message framing
   over TCP (used by plugs and TrustTransport).
 - **DNS, DHCP, NTP, HTTP**: working client implementations.
@@ -125,9 +290,135 @@ absent" list below is now historical rather than descriptive.
 
 | Gap | Why it blocks | Work |
 |---|---|---|
-| TCP retransmission | MQTT keepalive + QoS assume a reliable stream | RTO timer + segment queue in tcp-step's functional style; TimingWheel foreword chapter drives timers |
+| TCP retransmission (RTT estimate only) | MQTT keepalive + QoS assume a reliable stream | Timer, backoff, bounded retry, an 8-deep oldest-first queue and serial sequence arithmetic all exist in `NetSession`; what is left is an RTT-derived interval, which needs a clock the session does not have |
 | TLS 1.3 client | MQTT to any cloud broker | Audit foreword Tls; complete: X25519 (DiffieHellman chapter) + HKDF + AES-GCM/ChaCha20 exist, so the work is handshake + record layer, not primitives |
 | DTLS 1.2/1.3 | CoAP security (coaps://), LwM2M mandates it | Record layer over UDP: retransmitting flights, cookie exchange, epoch/sequence in AEAD nonce; shares handshake core with TLS work |
+
+### The clock exists. One production caller drives it. (measured 2026-08-09, val)
+
+The row above says the retransmission gap needs "a clock the session does
+not have". Measured, the position is worse and more specific than that:
+**the clock exists and almost nothing turns it.**
+
+`net-tick` (`NetworkStack.codex:459`) is what ages a connection: it fires
+the RTO, counts `rexmit-tries`, and at `net-rto-max-tries` declares the peer
+dead, clearing the retransmit queue and setting `TcpClosed` (line 464).
+`transport-tick` (`TcpTransport.codex:115`) wraps it. **Census of every
+mention in the tree, excluding definitions: `WebServer.codex:270`, and two
+tests (`tcp-reliability.codex`, `tcp-seqwrap.codex`). That is the whole
+list.** L-UNCALLED.
+
+So in every program except `WebServer` -- all 60 language plugs, `HttpFetch`,
+`TrustTransport`, `Arm64NetIO`, the other servers -- **no retransmission is
+ever sent, the RTT estimator never runs, and a connection is never declared
+dead.** The RTT-derived interval added at 14272 is unreachable from those
+paths.
+
+**The failure this produces is a HANG, and it was previously recorded as a
+truncation.** `net-io-send-drain` (`NetIO.codex:113`) loops while
+`net-rexmit-full`, polling for a frame. Its only other exit is
+`tries > 50000000`. Nothing in that loop advances the clock, so a segment
+that is lost is never retransmitted and the ACK that would drain the queue
+can never be provoked. Two measurements pin it:
+
+- **The 50,000,000 cap is not reachable in practice.** The sibling loop
+  with the identical cap (`net-io-accept`) was still polling after **180
+  seconds** with no peer. So "the drain gives up at its fuel cap" is not an
+  outcome any caller sees.
+- **A peer that ANSWERS does not help either.** Nothing outside `net-tick`
+  clears `rexmit-queue` except `net-rexmit-prune` on an ACK, so a RST or FIN
+  closes the connection while leaving the queue full, and the drain keeps
+  spinning on a connection that is already dead.
+
+**What this is not.** It is not a missing failure channel on
+`TcpTransportState`, which is how it was carried in `CurrentPlan` until this
+measurement. Once the clock runs, `net-tick` already sets `TcpClosed` on
+give-up and the caller can read `(ts.session).conn.state`; no new record
+field and no 23-site construction sweep is needed.
+
+**DECIDED AND LANDED 2026-08-09 (blu): the I/O loops tick on a poll count,
+not on a wall clock.** `NetIO` now carries `net-io-tick-interval = 100000`
+and `net-io-max-polls = 50000000`, and `net-io-send-drain`,
+`net-io-recv-wait` and `net-io-recv-raw` each spend one `transport-tick`
+plus an outbox flush every `net-io-tick-interval` polls. All three also
+return as soon as the connection reads `TcpClosed`, which is what makes a
+RST end the loop instead of leaving it spinning on a full queue.
+
+**Why a poll count and not HPET.** The only wall clock in the tree is
+`Hpet`, an x86 MMIO read at `#FED00000`, and `NetIO` is compiled into the
+transpiled plug lanes and the ARM64 path as well, so citing it would put an
+x86 device read under all of them. The estimator asks only that the rate be
+steady (the section above), which a poll count is.
+
+**Why 100000, and this is the constraint to preserve if either constant
+moves.** Give-up must be reachable strictly inside the fuel cap, or a dead
+peer ends the loop by fuel, which returns exactly what an ordinary timeout
+returns and reports nothing. Measured by `codex/test/net-io-clock`, which
+counts the ladder rather than asserting it: 141 ticks with no RTT sample,
+288 with the RTO clamped at `net-rto-max-ticks`. 288 * 100000 = 28,800,000
+polls against a 50,000,000 cap.
+
+**Measured end to end, not only by inspection** (2026-08-09, seed
+`B3C1BAA8F961D247`, codex-vm, no peer on the wire). A session with one
+unacked segment handed to `net-io-recv-raw` came back **CLOSED, queue
+empty, `now-ticks` 141** after 263 s: the full unmeasured ladder ran
+inside the poll loop and ended by give-up. The same program before this
+change returns ESTABLISHED with `now-ticks` 0. 141 ticks at 100000 polls
+is 14.1M polls in 263 s, so a poll cost about 18.6 us in that bed --
+**that is the emulated NIC's number and not a property of the design; a
+tick is a count and its duration is whatever the caller's poll loop
+costs.** The battery arm (`codex/test/net-io-clock`) pre-ages the session
+to one tick short of give-up so it proves the same chain in one interval
+and 2 s. Sabotaged by pushing `net-io-tick-interval` past the fuel cap, it
+fails.
+
+`net-io-accept` deliberately does NOT tick. It is entered on a fresh
+listening transport with nothing queued and no close timer, so a tick
+there advances `now-ticks` and allocates a session for it and buys
+nothing. This is the loop val measured at 180 s without reaching its cap;
+that measurement stands and is about the cap, not about the clock.
+
+**The stack now has TWO tick rates, and this change is what made that
+true.** `net-io-tick-interval` is 100000 polls; `web-sweep-interval`
+(`WebServer.codex:263`) is 1000000, and it is what ages every connection
+in the concurrent mux, because `web-mux-loop` polls
+`net-driver-recv-frame` itself rather than going through a NetIO wait. The
+two meet in one place, verified by reading the chain rather than assumed:
+`web-mux-drain` -> `web-send-http` -> `net-io-send-raw` ->
+`net-io-send-chunk` -> `net-io-send-drain`, so a mux connection is aged at
+1000000 while idle and at 100000 while its retransmit queue is full.
+
+The estimator's premise is that the rate is STEADY, and across that
+boundary it is not: an `srtt` sampled under the sweep's rate is spent as
+an RTO under the drain's, which makes the retransmit fire about ten times
+earlier in real time than the sample implied. **Not fixed, deliberately.**
+The condition needs 8 segments unacked, it only arises when the peer has
+already stalled, which is when a timer running fast is the harmless
+direction, and there is no web server in service to measure a better
+number against. The clean repair is not to copy the constant across:
+`web-sweep-interval` does two jobs, aging the clock and pacing the idle
+reaper (`web-idle-max` counts sweeps), so unifying the rate means
+separating those two first.
+
+**Two parts of the census this did NOT close, both measured 2026-08-09.**
+
+- `net-io-wait-established` has a **10000**-poll cap, not fifty million, so
+  it already terminates and no tick can fire inside it at any sane
+  interval. The consequence is that a lost SYN is never retransmitted:
+  `net-connect` queues it, `transport-connect` sends it once, and a connect
+  that gets no SYN-ACK fails after 10000 polls. That is a capability gap,
+  not a hang, and it is separate work.
+- **The ARM64 path is worse than untimed and it is the 14317 defect, still
+  live.** `arm64-net-io-send-chunk` (`Arm64NetIO.codex:102`) calls
+  `net-send` and advances by `arm64-net-mss` without reading the result's
+  refusal and without any `net-rexmit-full` check at all, so past
+  `net-rexmit-capacity * net-mss` = 11,200 bytes it silently drops
+  everything it thinks it sent. The x86 path was fixed at main 14317; this
+  copy never was. Its loops do not tick either. Not fixed here because
+  there is no ARM64 bed on this box to run the change against.
+
+**Owner: blu** (`codex/os/net/**`). Raised by val out of C2, which is where
+the symptom surfaced; C2 does not own the fix.
 
 > **Superseded 2026-07-13.** This section used to end: *"The crypto floor
 > is already in place and constant-time (Sha256, Ed25519, AesGcm,
@@ -313,15 +604,102 @@ Malformed input fails closed. A truncated header and a header whose
 rather than read out of bounds -- a datagram protocol is handed rubbish
 constantly, and trusting a length field is the attack.
 
-**Still open inside D2b, stated rather than implied:**
+**Fragmentation: CLOSED IN BOTH DIRECTIONS.** Receive landed 2026-08-08,
+send 2026-08-09.
 
-- **Fragmentation reassembly.** The header carries the fragment fields
-  and the parser reads them, but only unfragmented messages are emitted
-  and a fragmented peer flight is not reassembled. A handshake message
-  larger than the path MTU will fail against a peer that fragments.
-- **Peer authentication of any kind.** A Finished that verifies proves
-  the peer holds the same handshake secret. It says nothing about *who*
-  the peer is. The credential question is still open (below).
+  The endpoint reassembles a fragmented peer flight through `ep-reasm`
+  and `dtls-ep-on-frag`, and it now cuts its own oversized messages
+  through `dtls-ep-wrap-into` / `dtls-ep-seal-into`, each fragment
+  becoming its own record with its own record sequence number.
+
+  **The MTU was a decision and it has been made: 1200 bytes of UDP
+  payload (`dtls-ep-mtu`), 1024 of fragment body (`dtls-ep-frag-body`).**
+  1200 is not a measurement -- an endpoint with no clock, no ICMP and no
+  socket cannot make one, and RFC 9147 §4.4 leaves the value to the
+  implementation. It is the number chosen so that no path has to be
+  measured: 1200 + 40 (IPv6) + 8 (UDP) = 1248, inside the 1280 every IPv6
+  link must carry (RFC 8200 §5) and far inside Ethernet's 1500. QUIC
+  fixed on 1200 for the same reason (RFC 9000 §14.1). The 1024 body limit
+  is the MTU less the worst framing we emit -- 5 bytes of unified header,
+  1 inner content type, a 16-byte tag, 12 bytes of message header, 34 in
+  all -- with the remaining 142 bytes of slack there so an outer tunnel
+  does not force the constant to be re-derived. Measured: the largest
+  record in a fragmented flight is 1058, which is 1024 + 34 exactly.
+
+  **The control run is the only arm that can see this change.** Gated by
+  `codex/test/apps/dtls-fragmented-flight`, whose server carries a
+  four-certificate chain (a 1368-byte Certificate message). Against
+  `DtlsEndpoint.codex#13` the flight is 4 records with a largest of
+  **1402** and `within-mtu=False`; after, 5 records, largest **1058**,
+  `within-mtu=True`. Every other arm -- `client-done`, `server-done`,
+  `agree` -- passes on BOTH revisions, because both endpoints are in one
+  process and no path is ever involved. A test without the size arm would
+  have certified the broken build.
+
+  **Wiring the receive half fixed a REMOTELY TRIGGERABLE FAULT, and that
+  was not what the work set out to do.** Before it, a handshake fragment
+  with a non-zero `fragment_offset` went straight to the hello parser
+  carrying a body shorter than its own declared length, and the guest
+  died: `!EXC=06` at RIP 0x120a7b, CR2 0x1a00000, reproduced twice at the
+  same address on `DtlsEndpoint.codex#12`. Worse than the crash, the
+  fragment BEFORE it was answered: a partial ClientHello drew a full
+  HelloRetryRequest (`half-hrr` measured 1, now 0). Both are
+  pre-authentication, on a datagram anyone can send.
+
+  It was the CONTROL run that found it, not the feature work. The arms
+  were written to show reassembly working and the pre-change arm was
+  expected to answer 0; it faulted instead.
+
+  The class is closed rather than the instance: after the change the
+  parser only ever receives a body whose length equals its declared
+  length, either by the fast path (offset 0, fragment length equal to
+  length) or out of reassembly. A short but SELF-CONSISTENT hello is a
+  different input and is still reachable, so `runt-out` hands the server
+  a self-declared 8-byte ClientHello and pins that it neither faults nor
+  goes silent.
+
+  Send: `dtls-msg-fragments` splits at a caller-given body
+  size, each fragment carrying the WHOLE message length with its own
+  offset and fragment length. A body that fits emits one fragment
+  byte-identical to `dtls-msg-encode`, so nothing that did not need
+  fragmenting changed -- which is why `dtls-loopback`,
+  `dtls-auth-loopback`, `dtls-app-loopback` and `dtls-fragmented-hello`
+  all pass unmodified across the send-side change. Receive: `DtlsReasm` accumulates fragments for one
+  `message_seq`, out of order, tolerating duplicates and overlaps,
+  because a retransmitted flight is not obliged to be cut where the first
+  copy was. Bounded at 16 fragments and 16384 bytes, refusing rather than
+  allocating, since the peer choosing those numbers is not authenticated
+  yet. Gated by `codex/test/dtls-fragment`, which pins the negatives too:
+  a gap reports incomplete rather than assembling short, and an over-long
+  declared length or a fragment running past the end is refused.
+
+  **And gated against an implementation we did not write**, which
+  `dtls-fragment` cannot be: it cuts with `dtls-msg-fragments` and rejoins
+  with `DtlsReasm`, so it cannot separate a correct implementation from two
+  consistently wrong ones. `codex/test/dtls-openssl-fragments` carries real
+  DTLS records captured from OpenSSL 3.2.4 through a recording UDP proxy.
+  The capture gave us more than a fragmented message: **OpenSSL
+  retransmitted the flight and refragmented it at different boundaries**
+  (0+261, 261+347, 608+179, then 0+347, 347+347, 694+93). Our own generator
+  cuts the same way twice and can never produce that case, which RFC 9147
+  section 5.2 nonetheless requires a receiver to tolerate. Four arms: each
+  transmission alone, a mixed delivery interleaving fragments from BOTH cuts
+  out of order and overlapping, and a gapped negative. The first three
+  reassemble to the same SHA-256 that OpenSSL and Python independently
+  compute over the same message; the fourth reports incomplete. Regenerate
+  with `build/dtls-fragment-interop.ps1 -Regenerate`, which mints a fresh
+  chain, so a rerun confirms the property over different bytes rather than
+  replaying the frozen ones.
+  **Peer authentication was listed here as open and is not.** It shipped
+  2026-07-13 and the header of this file has said so since; this bullet
+  simply outlived it. The observation it made is still true -- a Finished
+  that verifies proves the peer holds the same handshake secret and says
+  nothing about *who* the peer is -- but the answer exists:
+  `dtls-ep-with-anchors`, `x509-verify-peer` and `dtls-ep-authenticated`,
+  gated by `codex/test/apps/dtls-auth-loopback`, which pins
+  `client-authenticated=True` on the good path and False on all four bad
+  ones (no anchor, MITM key_share, anonymous downgrade, wrong expected
+  name). Corrected 2026-08-09 (blu).
 
 **D2c -- The hello bodies. SHIPPED 2026-07-13 (fester).**
 `codex/foreword/encode/DtlsHello.codex`, gated by
@@ -392,12 +770,17 @@ against a passive eavesdropper, defeated by an active man-in-the-middle
 who runs one handshake with each side. Certificate and CertificateVerify
 now exist and the MITM is defeated in the battery -- see the A1-A5
 sections below. **The anonymous mode still exists beside the
-authenticated one, and it is still not secure.** Also still open:
-application traffic keys (the endpoint derives handshake secrets only),
-fragmentation reassembly, and record-protecting the handshake flights
-(they travel as DTLSPlaintext
-today). Until D-auth lands, `coaps://` does not exist and nothing built on
-this is secure.
+authenticated one, and it is still not secure.**
+
+**The three items this paragraph listed as open are all closed, and the
+sentence that followed them outlived its own heading.** It read "Until
+D-auth lands, `coaps://` does not exist" in a paragraph whose first line
+says D-auth SHIPPED. Corrected 2026-08-09 (blu): application traffic keys
+are derived and app data is sealed at epoch 3 (`dtls-ep-derive-app`,
+`dtls-ep-send-app`); the handshake flights after ServerHello travel
+protected at epoch 2, not as DTLSPlaintext; fragmentation is closed in
+both directions (D2b above). What still gates `coaps://` is third-party
+interop, not any of these.
 
 The credential model is **decided (Damian, 2026-07-13): X.509.** PSK and
 raw public key were rejected as not good enough. D0-D3 are

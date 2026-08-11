@@ -1304,18 +1304,6 @@ Section: Apply
   a64-add-shadow-warning (st) (msg) =
    __record-set st "extra" (__record-set (st.extra) "wcet-reports" (list-push ((st.extra).wcet-reports) msg))
 
- A read of a file on a target that has no filesystem. There is no block
- driver behind these calls on arm64, so the honest answer is to refuse
- the compile and say which call cannot be served. Answering the empty
- string instead is what this reports: the caller named a path, got "",
- and could not tell that apart from an empty file. `run.ps1` fails the
- build on the tag, so the refusal is a compile error and not a warning
- somebody reads later.
-
- The write path is deliberately NOT here. `write-file` answers 0, which
- the callers already read as failure -- `fs-layer` prints "<write failed>"
- on this lane and is telling the truth. Only the reads lie.
-
   a64-emit-unsupported-read : A64State, Text -> A64EmitResult
   a64-emit-unsupported-read (st) (name) =
    let msg = "[UNSUPPORTED] " & name & ": arm64 has no filesystem, and a read cannot be served"
@@ -1352,24 +1340,12 @@ Section: Apply
    let msg = "[UNSUPPORTED] " & name & ": x86 control registers and CPUID do not exist on this target (refused by design)"
    in a64-emit-int-lit (a64-add-shadow-warning st msg) 0
 
- The builtin-List pattern intrinsics, refused for a third reason: they
- are not implemented on this lane and there is no honest value to
- answer with. A `when` on a builtin List desugars to a length test plus
- __list-head and __list-tail over an O(1) tail view, and none of the
- three exists in the arm64 runtime.
-
  Before this arm they fell through the dispatch tail to a plain call to
  an undefined symbol. Measured on codex/test/list-pattern: the compile
  reported OK and every line of the program then faulted
  (!A64FAULT ESR=0x02000000, an illegal instruction). That is worse than
  the port hole it resembles, because a length that answers garbage
  selects the wrong arm and the whole match is decided by it.
-
- Refusing is the honest answer while the intrinsics are unimplemented.
- The arms match on the name alone, no arity gate, so a partial
- application refuses too. codex/test/list-pattern.cross-refusal pins
- that the refusal fires; lose these arms and that test compiles clean
- and the row goes red.
 
   a64-emit-unsupported-list : A64State, Text -> A64EmitResult
   a64-emit-unsupported-list (st) (name) =
@@ -1902,7 +1878,9 @@ Section: Field Layout
   a64-resolve-record-fields : A64State, CodexType -> List RecordField
   a64-resolve-record-fields (st) (ty) =
    when ty
-    is RecordTy (rn) (tvars) (fields) -> fields
+    is RecordTy (rn) (tvars) (fields) ->
+     if list-length fields > 0 then fields
+     else a64-find-record-fields-in-defs ((st.extra).type-defs) (rn.value) 0
     is ConstructedTy (tname) (args) -> a64-find-record-fields-in-defs ((st.extra).type-defs) (tname.value) 0
     is TypeCon (tname) -> a64-find-record-fields-in-defs ((st.extra).type-defs) (tname.value) 0
     is otherwise -> []
@@ -1924,17 +1902,6 @@ Section: Field Layout
    in list-push (a64-afields-to-rfields afields (i + 1)) (RecordField { name = af.name, type-val = rty })
 
   a64-atype-to-codex-type : ATypeExpr -> CodexType
-  a64-atype-to-codex-type (at) =
-   when at
-    is ABoundedIntType (base) (lo) (hi) (mode) (sp) -> IntegerTy lo hi mode
-    is ANamedType (n) (sp) ->
-     if n.value == "Boolean" then BooleanTy
-     else if n.value == "Text" then TextTy
-     else if n.value == "Integer" then IntegerTy (0 - 4611686018427387904) 4611686018427387904 OvError
-     else if n.value == "Real" then real-f64
-     else if n.value == "Char" then CharTy
-     else ConstructedTy n []
-    is otherwise -> IntegerTy (0 - 4611686018427387904) 4611686018427387904 OvError
-
+  a64-atype-to-codex-type (at) = atype-to-codex-type at
 
 Page 2 of 3

@@ -1,8 +1,6 @@
 Chapter: WASM Emitter
   cites Foreword chapter CCE
 
- Generates WebAssembly text format (.wat) from the IR.
-
 Section: Keywords and Sanitization
 
   wat-keywords : List Text =
@@ -249,16 +247,12 @@ Section: Type Lookups
   field-index-from-ctx : WasmCtx, CodexType, Text -> Integer
   field-index-from-ctx (ctx) (ty) (field-name) =
    when ty
-    is RecordTy (name) (args) (fields) -> find-record-field-index fields field-name 0
+    is RecordTy (name) (args) (fields) ->
+     if list-length fields > 0 then find-record-field-index fields field-name 0
+     else find-record-field-index (record-fields-by-name (ctx.type-defs) (name.value) 0) field-name 0
     is ConstructedTy (name) (args) -> find-record-field-index (resolve-record-fields (ctx.type-defs) (name.value) 0) field-name 0
     is TypeCon (name) -> find-record-field-index (resolve-record-fields (ctx.type-defs) (name.value) 0) field-name 0
     is otherwise -> 0
-
-  field-count-from-type : CodexType, Text -> Integer
-  field-count-from-type (ty) (rec-name) =
-   when ty
-    is RecordTy (name) (args) (fields) -> list-length fields
-    is otherwise -> 1
 
   find-typedef-by-name : List ATypeDef, Text, Integer -> Integer
   find-typedef-by-name (tds) (name) (i) =
@@ -641,15 +635,6 @@ Section: Expression Emission
     is IrDoExec (e) (sp) -> if is-last then emit-wat-expr ctx e else "(drop " & emit-wat-expr ctx e & ") ") & (if is-last then "" else emit-wat-act-stmts ctx stmts (i + 1))
 
 Section: Apply Emission
-
- A unit-type constructor (e.g. the base ctor a `unit family` member calls,
- like AbsorbedDose in `Gray n = AbsorbedDose (n * 1000000)`) has no function
- def -- it is identity, erased at codegen the way x86 erases it. It is neither
- a builtin nor a variant ctor, and it never appears in `m.defs`, so its arity
- lookup is -1. The frontend rejects genuinely unresolved names before IR, so a
- fall-through name absent from the arity map is exactly a unit ctor: emit its
- single argument. Without this the plug emitted `call $AbsorbedDose` to a func
- that does not exist and wat2wasm refused the module (CurrentPlan gap 9).
 
   emit-wat-apply : WasmCtx, IRExpr -> Text
   emit-wat-apply (ctx) (e) =

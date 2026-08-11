@@ -13,60 +13,84 @@ Chapter: CompileArm64Script
 
 Section: Parameters
 
-  compilearm64-params : List ShellParam = [sh-param "Src" SptString, sh-param "Out" SptString, sh-param-default "MemMB" SptInt (SeInt 3072)]
+  workdir-doc : List Text =
+    ["Where the intermediate IR, its log, and the wire bytes are written. The",
+     "default keeps them as build-output/last-compile.* because that is the",
+     "file you reach for when one compile misbehaves. They are the only shared",
+     "paths in this pipeline (compile.ps1 and run.ps1 use GetTempFileName",
+     "throughout), so a caller running several compiles at once must give each",
+     "its own directory or they overwrite each other's IR."]
+
+  smp-doc : List Text =
+    ["Emit the PSCI CPU_ON sequence in __start (multi-core programs only).",
+     "Undefined on boards without PSCI -- see run.ps1."]
+
+  compilearm64-params : List ShellParam = [sh-param "Src" SptString, sh-param "Out" SptString, sh-param-default "MemMB" SptInt (SeInt 3072), sh-doc workdir-doc (sh-param-default "WorkDir" SptString (SeLit "")), sh-doc smp-doc (sh-switch "Smp")]
+
+Section: S00 -- Usage
+
+  s00 : List ShellCmd =
+    [ScComment "Usage:",
+     ScComment "  plugs/arm64/compile-arm64.ps1 -Src <source.codex> -Out <out.elf>",
+     ScComment "",
+     ScComment "Pipeline:",
+     ScComment "  source.codex -> compiler (IR mode) -> ARM64 codegen plug -> wire bytes",
+     ScComment "  -> parse wire -> build ELF64 -> out.elf",
+     ScComment "",
+     ScComment "The ARM64 plug must be built first: plugs/arm64/build.ps1"]
 
 Section: S01 -- Preamble
 
   s01 : List ShellCmd =
-    [ScSetStrictMode, ScSetErrorStop, ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot '..' '..' '..' 'build' 'vm-config.ps1')"), ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path"), ScAssign "PlugDir" (SeRaw "(Resolve-Path $PSScriptRoot).Path"), ScAssign "OutDir" (SeRaw "Join-Path $PlugDir 'build-output'"), ScMkdir (SeVar "OutDir")]
+    [ScSetStrictMode, ScSetErrorStop, ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot '..' '..' '..' 'build' 'vm-config.ps1')"), ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path"), ScAssign "PlugDir" (SeRaw "(Resolve-Path $PSScriptRoot).Path"), ScAssign "OutDir" (SeRaw "if ($WorkDir) { $WorkDir } else { Join-Path $PlugDir 'build-output' }"), ScMkdir (SeVar "OutDir")]
 
 Section: S02 -- Phase 1: Compile to IR
 
   s02 : List ShellCmd =
     let fail-ir = [ScWriteError (SeRaw "\"FAIL: IR compile step exited $LASTEXITCODE; see $LogFile\""), ScExit (SeInt 3)]
-    in [ScAssign "IrFile" (SeRaw "Join-Path $OutDir 'last-compile.ir'"), ScAssign "LogFile" (SeRaw "Join-Path $OutDir 'compile-ir.log'"), ScAssign "compileScript" (SeRaw "Join-Path $Repo 'build' 'compile.ps1'"), ScEcho (SeRaw "\"[arm64-compile] Compiling $Src to IR...\""), ScRaw "& pwsh -NoProfile -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce -MemMB $MemMB", ScIf (SeNot (SeExitCodeEq 0)) fail-ir []]
+    in [ScComment "Phase 1: compile to IR", ScAssign "IrFile" (SeRaw "Join-Path $OutDir 'last-compile.ir'"), ScAssign "LogFile" (SeRaw "Join-Path $OutDir 'compile-ir.log'"), ScAssign "compileScript" (SeRaw "Join-Path $Repo 'build' 'compile.ps1'"), ScEcho (SeRaw "\"[arm64-compile] Compiling $Src to IR...\""), ScRaw "& pwsh -NoProfile -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce -MemMB $MemMB", ScIf (SeNot (SeExitCodeEq 0)) fail-ir []]
 
 Section: S03 -- Phase 2: ARM64 codegen plug
 
   s03 : List ShellCmd =
     let fail-plug = [ScWriteError (SeRaw "\"FAIL: ARM64 codegen plug exited $LASTEXITCODE\""), ScExit (SeInt 4)]
-    in [ScAssign "WireFile" (SeRaw "Join-Path $OutDir 'last-compile.arm64.bin'"), ScAssign "RunScript" (SeRaw "Join-Path $PlugDir 'run.ps1'"), ScEcho (SeRaw "\"[arm64-compile] Running ARM64 codegen plug...\""), ScRaw "& pwsh -NoProfile -File $RunScript -IrInput $IrFile -Out $WireFile", ScIf (SeNot (SeExitCodeEq 0)) fail-plug []]
+    in [ScComment "Phase 2: codegen via ARM64 plug", ScAssign "WireFile" (SeRaw "Join-Path $OutDir 'last-compile.arm64.bin'"), ScAssign "RunScript" (SeRaw "Join-Path $PlugDir 'run.ps1'"), ScEcho (SeRaw "\"[arm64-compile] Running ARM64 codegen plug...\""), ScRaw "$runArgs = @('-NoProfile','-File',$RunScript,'-IrInput',$IrFile,'-Out',$WireFile)", ScIf (SeVar "Smp") [ScRaw "$runArgs += '-Smp'"] [], ScRaw "& pwsh @runArgs", ScIf (SeNot (SeExitCodeEq 0)) fail-plug []]
 
 Section: S04 -- Phase 3: Parse wire preamble
 
   s04 : List ShellCmd =
-    [ScReadBytes "rawWire" (SeVar "WireFile"), ScAssign "wireOff" (SeInt 0), ScForLoop "wi" (SeInt 0) (SeRaw "$wi -lt [Math]::Min(64, $rawWire.Length - 12)") (SeRaw "$wi++") [ScRaw "$cl = [BitConverter]::ToInt32($rawWire, $wi)", ScRaw "$dl = [BitConverter]::ToInt32($rawWire, $wi + 4)", ScRaw "$fc = [BitConverter]::ToInt32($rawWire, $wi + 8)", ScIf (SeRaw "$cl -gt 0 -and $cl -lt 16000000 -and $dl -ge 0 -and $dl -lt 1000000 -and $fc -gt 0 -and $fc -lt 10000 -and ($wi + 12 + $cl + $dl) -le $rawWire.Length + 64") [ScAssign "wireOff" (SeVar "wi"), ScBreak] []], ScRaw "$wireBytes = New-Object byte[] ($rawWire.Length - $wireOff)", ScRaw "[Array]::Copy($rawWire, $wireOff, $wireBytes, 0, $wireBytes.Length)", ScRaw "$codeLen = [BitConverter]::ToInt32($wireBytes, 0)", ScRaw "$dataLen = [BitConverter]::ToInt32($wireBytes, 4)", ScRaw "$funcCount = [BitConverter]::ToInt32($wireBytes, 8)", ScEcho (SeRaw "\"[arm64-compile] Wire: code=$codeLen data=$dataLen funcs=$funcCount\"")]
+    [ScComment "Phase 3: parse wire protocol and build ELF64", ScReadBytes "rawWire" (SeVar "WireFile"), ScComment "Skip leading serial preamble (find the wire header: first byte where", ScComment "a plausible code-len int32 lives)", ScAssign "wireOff" (SeInt 0), ScForLoop "wi" (SeInt 0) (SeRaw "$wi -lt [Math]::Min(64, $rawWire.Length - 12)") (SeRaw "$wi++") [ScRaw "$cl = [BitConverter]::ToInt32($rawWire, $wi)", ScRaw "$dl = [BitConverter]::ToInt32($rawWire, $wi + 4)", ScRaw "$fc = [BitConverter]::ToInt32($rawWire, $wi + 8)", ScIf (SeRaw "$cl -gt 0 -and $cl -lt 16000000 -and $dl -ge 0 -and $dl -lt 1000000 -and $fc -gt 0 -and $fc -lt 10000 -and ($wi + 12 + $cl + $dl) -le $rawWire.Length + 64") [ScAssign "wireOff" (SeVar "wi"), ScBreak] []], ScRaw "$wireBytes = New-Object byte[] ($rawWire.Length - $wireOff)", ScRaw "[Array]::Copy($rawWire, $wireOff, $wireBytes, 0, $wireBytes.Length)", ScRaw "$codeLen = [BitConverter]::ToInt32($wireBytes, 0)", ScRaw "$dataLen = [BitConverter]::ToInt32($wireBytes, 4)", ScRaw "$funcCount = [BitConverter]::ToInt32($wireBytes, 8)", ScEcho (SeRaw "\"[arm64-compile] Wire: code=$codeLen data=$dataLen funcs=$funcCount\"")]
 
 Section: S05 -- Extract code and data
 
   s05 : List ShellCmd =
-    [ScAssign "codeStart" (SeInt 12), ScAssign "dataStart" (SeRaw "$codeStart + $codeLen"), ScRaw "$code = New-Object byte[] $codeLen", ScRaw "[Array]::Copy($wireBytes, $codeStart, $code, 0, $codeLen)", ScRaw "$data = New-Object byte[] $dataLen", ScRaw "[Array]::Copy($wireBytes, $dataStart, $data, 0, $dataLen)"]
+    [ScComment "Extract code and data", ScAssign "codeStart" (SeInt 12), ScAssign "dataStart" (SeRaw "$codeStart + $codeLen"), ScRaw "$code = New-Object byte[] $codeLen", ScRaw "[Array]::Copy($wireBytes, $codeStart, $code, 0, $codeLen)", ScRaw "$data = New-Object byte[] $dataLen", ScRaw "[Array]::Copy($wireBytes, $dataStart, $data, 0, $dataLen)"]
 
 Section: S06 -- Parse function table
 
   s06 : List ShellCmd =
-    let inner-loop = [ScIf (SeRaw "$pos + 6 -gt $wireBytes.Length") [ScBreak] [], ScRaw "$nameLen = [BitConverter]::ToInt16($wireBytes, $pos)", ScRaw "$sb = [System.Text.StringBuilder]::new($nameLen)", ScForLoop "ci" (SeInt 0) (SeRaw "$ci -lt $nameLen") (SeRaw "$ci++") [ScRaw "$cce = $wireBytes[$pos + 2 + $ci]", ScIf (SeRaw "$cce -lt $CceToUnicode.Length") [ScRaw "[void]$sb.Append([char]$CceToUnicode[$cce])"] [ScRaw "[void]$sb.Append('?')"]]]
-    in let after-name = [ScRaw "$fname = $sb.ToString()", ScRaw "$foff = [BitConverter]::ToInt32($wireBytes, $pos + 2 + $nameLen)", ScIf (SeRaw "$fi -eq 0") [ScAssign "entryOffset" (SeVar "foff")] [], ScRaw "[void]$funcEntries.Add(@{ Name = $fname; Offset = $foff })", ScRaw "$pos = $pos + 2 + $nameLen + 4"]
-    in [ScAssign "funcOff" (SeRaw "$dataStart + $dataLen"), ScAssign "entryOffset" (SeInt 0), ScDotNetCallAssign "funcEntries" "System.Collections.Generic.List[object]" "new" [], ScAssign "pos" (SeVar "funcOff"), ScForLoop "fi" (SeInt 0) (SeRaw "$fi -lt $funcCount") (SeRaw "$fi++") [ScSequence inner-loop, ScSequence after-name]]
+    let inner-loop = [ScIf (SeRaw "$pos + 6 -gt $wireBytes.Length") [ScBreak] [], ScRaw "$nameLen = [BitConverter]::ToInt16($wireBytes, $pos)"]
+    in let after-name = [ScComment "nameLen is a BYTE count, not a character count. The offset arithmetic below", ScComment "advances by it either way, but the name is a CCE stream, and reading it one", ScComment "byte per character answers '?' for everything above tier 0.", ScComment "The $nameLen -gt 0 guard is not defensive padding: PowerShell's range operator", ScComment "counts DOWN when the end is below the start, so a zero-length name would slice", ScComment "$wireBytes[n+2..n+1] and yield two bytes rather than none.", ScRaw "$fname = if ($nameLen -gt 0) { ConvertFrom-CceBytes $wireBytes[($pos + 2)..($pos + 1 + $nameLen)] } else { '' }", ScRaw "$foff = [BitConverter]::ToInt32($wireBytes, $pos + 2 + $nameLen)", ScIf (SeRaw "$fi -eq 0") [ScAssign "entryOffset" (SeVar "foff")] [], ScRaw "[void]$funcEntries.Add(@{ Name = $fname; Offset = $foff })", ScRaw "$pos = $pos + 2 + $nameLen + 4"]
+    in [ScComment "Parse function table: extract entry point and build symbol map.", ScAssign "funcOff" (SeRaw "$dataStart + $dataLen"), ScAssign "entryOffset" (SeInt 0), ScDotNetCallAssign "funcEntries" "System.Collections.Generic.List[object]" "new" [], ScAssign "pos" (SeVar "funcOff"), ScForLoop "fi" (SeInt 0) (SeRaw "$fi -lt $funcCount") (SeRaw "$fi++") [ScSequence inner-loop, ScSequence after-name]]
 
 Section: S07 -- Build ELF64 header
 
   s07 : List ShellCmd =
-    [ScRaw "$loadAddr = [uint64]0x40000000", ScAssign "headerSize" (SeInt 64), ScAssign "phdrSize" (SeInt 56), ScAssign "phdrCount" (SeInt 1), ScRaw "$headersEnd = $headerSize + $phdrSize * $phdrCount", ScRaw "$textStart = [int](($headersEnd + 15) -band 0xFFFFFFF0)", ScRaw "$textEnd = $textStart + $codeLen", ScRaw "$rodataStart = [int](($textEnd + 7) -band 0xFFFFFFF8)", ScRaw "[uint64]$entry = $loadAddr + [uint64]$textStart + [uint64]$entryOffset", ScRaw "$segFilesz = $rodataStart + $dataLen - $textStart", ScRaw "$segMemsz = $segFilesz + 0x1000000"]
+    [ScComment "Build ELF64 (minimal: single LOAD segment)", ScRaw "$loadAddr = [uint64]0x40100000", ScAssign "headerSize" (SeInt 64), ScAssign "phdrSize" (SeInt 56), ScAssign "phdrCount" (SeInt 1), ScRaw "$headersEnd = $headerSize + $phdrSize * $phdrCount", ScRaw "$textStart = [int](($headersEnd + 15) -band 0xFFFFFFF0)", ScRaw "$textEnd = $textStart + $codeLen", ScRaw "$rodataStart = [int](($textEnd + 7) -band 0xFFFFFFF8)", ScRaw "[uint64]$entry = $loadAddr + [uint64]$textStart + [uint64]$entryOffset", ScRaw "$segFilesz = $rodataStart + $dataLen - $textStart", ScComment "The 240 MB heap reservation looks like the reason the run phase is slow --", ScComment "every renode.log says \"Loading block of 251669168 bytes\" -- and it is not.", ScComment "Measured 2026-07-21, same ELF, same board, only this field changed: three", ScComment "runs at 12.54/12.55/12.61s against three at 12.69/12.76/12.65s. The", ScComment "quarter-gigabyte zero-fill costs about 130 ms, one per cent, and dropping it", ScComment "does not make eight Renode slots stop flaking either. A test is 12.6s", ScComment "because RenoTimeout is a flat 10s sleep plus ~2.6s of Renode start and", ScComment "teardown; that sleep is the whole cost. Left as it was: this is a program", ScComment "header on every ELF for both architectures, a loader other than Renode may", ScComment "rightly rely on the zero-fill, and one per cent does not buy that risk.", ScRaw "$segMemsz = $segFilesz + 0x0F000000  # 240MB heap"]
 
 Section: S08 -- Write ELF64 binary
 
   s08-ehdr : List ShellCmd =
-    [ScRaw "$elf = [System.IO.MemoryStream]::new()", ScRaw "$bw = [System.IO.BinaryWriter]::new($elf)", ScRaw "$bw.Write([byte[]]@(0x7F, 0x45, 0x4C, 0x46))", ScRaw "$bw.Write([byte]2)", ScRaw "$bw.Write([byte]1)", ScRaw "$bw.Write([byte]1)", ScRaw "$bw.Write([byte[]]::new(9))", ScRaw "$bw.Write([uint16]2)", ScRaw "$bw.Write([uint16]183)", ScRaw "$bw.Write([uint32]1)", ScRaw "$bw.Write([uint64]$entry)", ScRaw "$bw.Write([uint64]$headerSize)"]
+    [ScRaw "$elf = [System.IO.MemoryStream]::new()", ScRaw "$bw = [System.IO.BinaryWriter]::new($elf)", ScComment "ELF64 header", ScRaw "$bw.Write([byte[]]@(0x7F, 0x45, 0x4C, 0x46))  # magic", ScRaw "$bw.Write([byte]2)    # class: 64-bit", ScRaw "$bw.Write([byte]1)    # data: LSB", ScRaw "$bw.Write([byte]1)    # version", ScRaw "$bw.Write([byte[]]::new(9))  # padding", ScRaw "$bw.Write([uint16]2)  # type: EXEC", ScRaw "$bw.Write([uint16]183) # machine: AArch64", ScRaw "$bw.Write([uint32]1)  # version", ScRaw "$bw.Write([uint64]$entry)  # entry", ScRaw "$bw.Write([uint64]$headerSize) # phoff"]
 
   s08-ehdr2 : List ShellCmd =
-    [ScRaw "$bw.Write([uint64]0)", ScRaw "$bw.Write([uint32]0)", ScRaw "$bw.Write([uint16]$headerSize)", ScRaw "$bw.Write([uint16]$phdrSize)", ScRaw "$bw.Write([uint16]$phdrCount)", ScRaw "$bw.Write([uint16]0)", ScRaw "$bw.Write([uint16]0)", ScRaw "$bw.Write([uint16]0)"]
+    [ScRaw "$bw.Write([uint64]0)  # shoff", ScRaw "$bw.Write([uint32]0)  # flags", ScRaw "$bw.Write([uint16]$headerSize) # ehsize", ScRaw "$bw.Write([uint16]$phdrSize) # phentsize", ScRaw "$bw.Write([uint16]$phdrCount) # phnum", ScRaw "$bw.Write([uint16]0)  # shentsize", ScRaw "$bw.Write([uint16]0)  # shnum", ScRaw "$bw.Write([uint16]0)  # shstrndx"]
 
   s08-phdr : List ShellCmd =
-    [ScRaw "$bw.Write([uint32]1)", ScRaw "$bw.Write([uint32]7)", ScRaw "$bw.Write([uint64]$textStart)", ScRaw "$bw.Write([uint64]($loadAddr + $textStart))", ScRaw "$bw.Write([uint64]($loadAddr + $textStart))", ScRaw "$bw.Write([uint64]$segFilesz)", ScRaw "$bw.Write([uint64]$segMemsz)", ScRaw "$bw.Write([uint64]0x10000)"]
+    [ScComment "Program header (single RWX LOAD)", ScRaw "$bw.Write([uint32]1)  # PT_LOAD", ScRaw "$bw.Write([uint32]7)  # PF_RWX", ScRaw "$bw.Write([uint64]$textStart) # offset", ScRaw "$bw.Write([uint64]($loadAddr + $textStart)) # vaddr", ScRaw "$bw.Write([uint64]($loadAddr + $textStart)) # paddr", ScRaw "$bw.Write([uint64]$segFilesz) # filesz", ScRaw "$bw.Write([uint64]$segMemsz) # memsz", ScRaw "$bw.Write([uint64]0x1000) # align"]
 
   s08-payload : List ShellCmd =
-    [ScRaw "$padding = $textStart - $headersEnd", ScIf (SeRaw "$padding -gt 0") [ScRaw "$bw.Write([byte[]]::new($padding))"] [], ScRaw "$bw.Write($code)", ScRaw "$rodataPad = $rodataStart - $textEnd", ScIf (SeRaw "$rodataPad -gt 0") [ScRaw "$bw.Write([byte[]]::new($rodataPad))"] [], ScRaw "$bw.Write($data)", ScRaw "$bw.Flush()", ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "Out", SeRaw "$elf.ToArray()"], ScRaw "$bw.Close()"]
+    [ScComment "Padding to text start", ScRaw "$padding = $textStart - $headersEnd", ScIf (SeRaw "$padding -gt 0") [ScRaw "$bw.Write([byte[]]::new($padding))"] [], ScComment "Code", ScRaw "$bw.Write($code)", ScComment "Padding to rodata", ScRaw "$rodataPad = $rodataStart - $textEnd", ScIf (SeRaw "$rodataPad -gt 0") [ScRaw "$bw.Write([byte[]]::new($rodataPad))"] [], ScComment "Data", ScRaw "$bw.Write($data)", ScRaw "$bw.Flush()", ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "Out", SeRaw "$elf.ToArray()"], ScRaw "$bw.Close()"]
 
   s08 : List ShellCmd = [ScSequence s08-ehdr, ScSequence s08-ehdr2, ScSequence s08-phdr, ScSequence s08-payload]
 
@@ -76,11 +100,11 @@ Section: S09 -- Write symbol map
     [ScForLoop "mi" (SeInt 0) (SeRaw "$mi -lt $funcEntries.Count") (SeRaw "$mi++") [ScRaw "$fe = $funcEntries[$mi]", ScRaw "[uint64]$addr = $loadAddr + [uint64]$textStart + [uint64]$fe.Offset", ScRaw "$nextOff = if ($mi + 1 -lt $funcEntries.Count) { $funcEntries[$mi + 1].Offset } else { $codeLen }", ScRaw "$fsize = $nextOff - $fe.Offset", ScRaw "[void]$mapLines.Add(\"0x$($addr.ToString('X8').PadLeft(8,'0')) $fsize $($fe.Name)\")"]]
 
   s09 : List ShellCmd =
-    [ScDotNetCallAssign "mapFile" "System.IO.Path" "ChangeExtension" [SeVar "Out", SeLit ".map"], ScDotNetCallAssign "mapLines" "System.Collections.Generic.List[string]" "new" [], ScRaw "[void]$mapLines.Add('# ARM64 Symbol Map'); [void]$mapLines.Add('# Address         Size  Name')", ScSequence s09-loop, ScDotNetCall "System.IO.File" "WriteAllLines" [SeVar "mapFile", SeVar "mapLines"], ScRaw "$sz = (Get-Item $Out).Length", ScEcho (SeRaw "\"[arm64-compile] OK: $Out ($sz bytes, entry=0x$($entry.ToString('X')), map=$mapFile)\"")]
+    [ScComment "Write symbol map", ScDotNetCallAssign "mapFile" "System.IO.Path" "ChangeExtension" [SeVar "Out", SeLit ".map"], ScDotNetCallAssign "mapLines" "System.Collections.Generic.List[string]" "new" [], ScRaw "[void]$mapLines.Add('# ARM64 Symbol Map'); [void]$mapLines.Add('# Address         Size  Name')", ScSequence s09-loop, ScDotNetCall "System.IO.File" "WriteAllLines" [SeVar "mapFile", SeVar "mapLines"], ScRaw "$sz = (Get-Item $Out).Length", ScEcho (SeRaw "\"[arm64-compile] OK: $Out ($sz bytes, entry=0x$($entry.ToString('X')), map=$mapFile)\"")]
 
 Section: Assembly
 
-  compilearm64-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08, ScBlank, ScSequence s09]
+  compilearm64-body : List ShellCmd = [ScSequence s00, ScBlank, ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08, ScBlank, ScSequence s09]
 
   compilearm64-script : ShellScript = sh-script "compile-arm64" "Compile a Codex source file to an ARM64 ELF binary" compilearm64-params compilearm64-body
 

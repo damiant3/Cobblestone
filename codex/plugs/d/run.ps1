@@ -35,7 +35,7 @@ try {
     $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $PlugCdx, '-mem', '3072', '-headless') `
         -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
     # Send IR over TCP to plug
-    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 9100)
+    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 9108)
     $listener.Start()
     $deadline = (Get-Date).AddSeconds(30)
     while (-not $listener.Pending() -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }

@@ -1,5 +1,1051 @@
 # The Hardware Sitting -- Run Sheet
 
+## FLOWN 2026-08-10: the Welcome Back hang did NOT reproduce, and it is NOT fixed
+
+`seed/Codex.img` `4564D27F6C28EF09`, on the ASUS. Ceremony on first boot,
+then Welcome Back on the second boot, and the passphrase was accepted and
+the identity unlocked. **The hang the previous stick showed is unexplained
+and is recorded as an open intermittent, not as closed.**
+
+**Do not read this as a fix.** The only change to the boot payload between
+the stick that hung and the one that did not is the heartbeat added to
+`gt-read-line` (`apps/works/GopText.codex`): two `gop-fill-rect` calls every
+65,536 polls and a `kbd-released` read. That is diagnostic drawing. There is
+no mechanism by which it repairs a keyboard, and nobody has offered one.
+
+**The instrument, and the baseline it just produced.** Passphrase entry is
+the one wizard screen with no vitals line: `spin=/sc=` and the
+"Handed back to firmware" status come from the wizard's WAIT loop, and
+entry runs in GopText, which painted nothing. It now paints two blocks to
+the right of the field.
+
+| Left | Right | Reading |
+|---|---|---|
+| blinking | dark | poll loop turning, controller still ours |
+| frozen | dark | the input loop itself stopped; not a keyboard fault |
+| either | red | handed back to firmware, and on this board that is a one-way door |
+
+**Measured on this flight through a SUCCESSFUL entry: left blinking, right
+dark.** That is the healthy baseline. A future hang showing blinking-and-dark
+therefore means the keyboard stopped delivering while the loop and the
+controller ownership stayed healthy, which indicts the xHCI/HID path and
+exonerates the fallback.
+
+**Why no bed can settle this.** QEMU presents one clean keyboard; the ASUS
+presents four keyboard-shaped interfaces behind a Unifying receiver, which
+is the topology that produced the completion-steal defect in Update 38. The
+unlock path also reads `IDENTITY.DAT` off the ESP over USB mass storage
+immediately before taking keyboard input, on the same controller, which is
+WORKS-9's neighbourhood. The bed runs the whole path green.
+
+## READY TO FLY: `asdeflight.img`, B2 Finding 4. Boot, read four rows, pull.
+
+**The 2026-08-10 flight of this image returned nothing, and the probe was
+at fault, not the machine.** The mount was a PRECONDITION: `gfat-mount-esp`
+failed, the probe painted `no ESP -- nothing can be banked, read the glass`
+and returned before a single stage ran. Nothing touched the NIC. Two boots
+had already established that a wedge leaves the glass readable
+(2026-08-05 below: rows painted, machine stalled, rows still there), so
+abandoning the flight for want of a file bank was never justified. Fixed:
+the rows paint whether or not a volume mounts, and the markers are written
+when one happens to be there.
+
+**Why it would not mount is not established and the next boot answers it
+itself.** `gpt-esp-start` checks the `EFI PART` signature and no CRC, and
+`build/flash-usb.ps1:198-207` records, measured 2026-07-29, that ONE
+eject-and-reinsert on a Windows machine rewrites LBA 1 and moves
+`PartitionEntryLBA` from 2 to 2047, which holds zeros. Firmware validates
+CRCs and falls back to the backup GPT, which is why a stick our reader
+cannot mount still boots. That fits, and it is a hypothesis: the image
+itself was checked clean (ESP at entry 0, LBA 2048, type GUID byte-exact,
+`PartitionEntryLBA=2`), and plugging the stick in to look would be the
+very act that rewrites it. The probe now prints WHICH of the seven mount
+stages failed, off diag cell 80, which GopFat16 has always recorded.
+**Operationally: flash, verify, PULL, and do not reinsert.**
+
+**Provenance.** Rebuilt 2026-08-10 off blu after the merge-down at 14529,
+seed `AF4E14D9703985AC`, current against main 14528:
+
+```powershell
+build/boot/build-option-a.ps1 -Src build/boot/diag/AsdeStageProbe.codex `
+    -Kernel seed/Codex.cdx -Ebs -Out build/boot/asdeflight.img
+```
+
+16 MB, PE 256512, seed 2755007, FAT16 spc=1 clusters=26350. SHA-256
+`4145AA691A6049BE0EAFCFE96CDFD6445F697861598ED975B045CD9C99C0BD7D`. This is
+the image both bed runs below were re-measured against after the rebuild; a
+further rebuild is a different image and its readings would be unmeasured.
+The earlier build against seed `F9AA716852BF72C7` (SHA-256 `4426B04B...`)
+read identically in both beds and is superseded, not contradicted.
+
+**Note the absent `-Uefi`, which is deliberate.** `build-option-a.ps1`
+gained that switch on 2026-08-10 and its own comment calls it mandatory for
+a payload that touches the disk under firmware. It is mandatory for a
+payload that reads the disk THROUGH firmware, and this one does not: `-Ebs`
+exits boot services precisely so the NIC and the medium are driven by our
+own code, which is the whole point of a driver-truth probe. The two are
+mutually exclusive; do not add `-Uefi` to the command above.
+
+### The boot, and the only thing to do
+
+Boot from the stick. Read the rows. Pull it. There is no keypress.
+
+Four outcomes, and each is a different next move:
+
+| What the glass shows | What it means |
+|---|---|
+| no eligible row | the scan or the BAR, not the NIC |
+| eligible, no touch row | the first MMIO read wedges |
+| touch row, no `ASDE=0` row | the RESET wedges, and ASDE is exonerated |
+| `ASDE=0` paints, `ASDE=1` wedges | **Finding 4 confirmed on metal** |
+| both arms paint | ASDE is not the wedge; read `SPEED` on each row |
+
+**The ASDE=0 arm runs FIRST**, which is the whole reason this ordering
+matters: the arm the datasheet says is correct gets to fly before the arm
+that may hang the box. 82583V 12349 on bit 5: *"the MAC ignores the speed
+indicated by the PHY ... This bit must be set to 0b in the 82583V."*
+
+**Bed state, stated including what it does not cover.** Re-measured against
+the rebuilt image, 2026-08-10. Under codex-vm all four stage rows paint and
+the two arms differ as the datasheet describes: `ASDE=0 ... SPEED=1000
+ASDV=10 aneg=y STATUS=130` against `ASDE=1 ... SPEED=10 ASDV=10 aneg=y
+STATUS=2`. Under real OVMF with a USB disk the bank works, `bank live,
+ASDE0.TXT written=y`.
+
+```powershell
+tools/codex-vm.exe -kernel build/boot/asdeflight.img -uefi -gop `
+    -e1000 -e1000-phy-link -e1000-asde -screenshot out.bmp -screenshot-delay 3000
+build/boot/test-ovmf.ps1 -Img build/boot/asdeflight.img -Out ovmf.png -UsbDisk -Seconds 20
+```
+
+`-screenshot-delay` has to be under about 5 s: the probe halts with
+interrupts off when it is done, and the screenshot timer lives in the run
+loop, so a delay past the halt takes no picture at all rather than the
+finished screen. The codex-vm bed carries no medium, so it reads `no bank,
+mount stage 1 (GPT header read failed)` there, which is the mount-stage
+decoder working and not a fault. OVMF has no e1000 attached, so its NIC row
+is `REJECTED ... verdict=below-window`: each bed covers one half, and only
+the stick covers both at once. **No bed reproduces the wedge**, and none
+can: nothing in either datasheet in this tree says what a part does when
+the bit is set against instruction, so modelling a hang would be inventing
+the cause this flight exists to find.
+
+## FLOWN 2026-08-09: `worksflight.img`. WORKS-8 PASSED on metal; the second shot failed below FAT, in the USB driver.
+
+Shot 1 landed and is correct: `SH171156.BMP`, 2,359,350 bytes, 4609
+clusters, 1024x768x24, and it renders. Shot 2 failed with
+`s7 m3 c256 p2 w14`. The returned volume answers all four questions
+cleanly: every chain matches its file's size, no overlaps, no clusters
+allocated to nothing, both FAT copies identical. Nothing needed rolling
+back because on `w14` the chain existed only in the in-memory FAT and
+`gfat-flush-fat` never ran.
+
+`w14` is `gfat-w-data`: one 32 KB data-phase transfer returned no
+completion event within `xhci-fuel` = 1000000 spins
+(`GopUsbMsc.codex:319`, `GopXhci.codex:63`). A timeout, not a stall.
+**Cause unmeasured**, and two candidates are already excluded by reading
+rather than argument: not an oversized transfer (`msc-write-into` chunks
+at `msc-chunk` = 64) and not ring wrap (each push waits for its own
+completion, so one TRB is outstanding). Routed to reek, whose files those
+are, with the discriminator for the next flight: on a data-phase timeout,
+reset-recover and retry the chunk once.
+
+**The tools this needed now exist**, and `## Reading the returned stick`
+below no longer costs an hour: `build/dump-usb.ps1` freezes the device to
+a file, `build/fat16-walk.ps1` answers the four questions off that file.
+Run the walker on the PRE-FLIGHT image first. That control caught three
+defects in the walker itself and none was visible against the returned
+stick alone.
+
+**Evidence:** `build-output/returned-stick.img` on blu, SHA-256
+`E0DCC8AF1A113AC3506BA8EC06EEED2570B3F43297F19887B51A29368D23DA85`, read
+raw with Windows never mounting the volume.
+
+**What actually flew was NOT `18F3AA32285BFF80`.** That image was built at
+04:00 and the depot seed moved under it during the day, so it was rebuilt
+from the same recipe immediately before flashing: SHA-256
+`9A5705B9C55E23BC...`, 16 MB, PE 683520, seed 2,753,304
+(`02DE3DEE074FEAE7`), FAT16 spc=1 clusters=26350. The digest in the
+superseded section below is the morning's build and is kept only so the
+two are not confused.
+
+### The arm was NOT "press F12 twice", and the sheet said it was
+
+A virgin image lands on the first-boot wizard, so `wizard-run` takes the
+fresh path and the operator walks it before any desktop exists: **Enter**,
+a passphrase typed twice, a sentence of entropy, **Enter** to skip
+upstream, keygen, **Enter**, **Enter** at the interface menu (Graphical UI
+is row 0 and already selected), and only then **F12**, **F12**. Nine
+interactions where this sheet promised two. Say so for any future stick
+that ships without an identity on it, and note that the wizard's identity
+save is itself a FAT write that runs before the arm does.
+
+## THE SHOT-2 TIMEOUT ABOVE IS THREE DEFECTS DEEP AND ALL THREE ARE FIXED, 2026-08-09 (reek, main 14447)
+
+blu sent the measurement and explicitly no cause, which was the right call.
+The cause was not one thing.
+
+**1. A timeout recovered nothing at all.** `msc-issue` runs recovery only for
+`trb-cc-stall`; a timed-out transfer answers 0, so `msc-code-ok` said False and
+the command returned with the TRB still outstanding and the device mid-BOT.
+blu read this correctly from the source.
+
+**2. The recovery that existed was the WRONG COMMAND for this state and would
+have failed on the board too.** `xhci-recover-endpoint` leads with Reset
+Endpoint, which xHCI 4.6.8 defines only for a HALTED endpoint. A timeout leaves
+the endpoint RUNNING with a TD pending, so the controller answers Context State
+Error and recovery refuses. Stop Endpoint is the command for that state, and it
+was already in the chapter, used by nothing.
+
+**3. Stop Endpoint's own mandatory event then poisoned the next transfer.**
+xHCI 4.6.9 requires a Stopped transfer event before the command completion. The
+command wait latches it, being a transfer event for a slot and DCI it was not
+waiting for, and the next real transfer takes it out of the latch and reads it
+as its own answer: the retried CBW came back `lastcc=27`, Stopped - Length
+Invalid. The latch is drained after the stop now.
+
+Defects 2 and 3 were both in code that had never once executed (L-UNCALLED).
+
+**Measured, one probe and one image, only the drop index moving:**
+
+| arm | write | retry cell |
+|---|---|---|
+| control, no drop | verify=True | 0 |
+| drop 30 (write data phase) | **verify=True** | 3, lba 200 |
+| drop 34 | **verify=True** | 3, lba 200 |
+| drop 26 (bulk read phase) | **verify=True** | 3, lba 128 |
+
+Staged through the fixes the same arm answered retry=1 (recovery refused), then
+2 (recovered, re-issue poisoned), then 3. A pass/fail cell would have said
+"still broken" three times (L-STATES).
+
+**Two bed capabilities exist now because none of this was reachable before:**
+`-usb-bot-drop N` swallows the Nth bulk transfer event, and codex-vm implements
+Bulk-Only Mass Storage Reset. Both in `docs/OperatorsManual.md`.
+
+**What is still NOT answered, and it is blu's original question.** Nothing here
+says why the ASUS timed out. `xhci-fuel` is a SPIN COUNT, not a duration: the
+loop reads three ordinary memory locations, so a million iterations is some
+number of milliseconds that varies with the box, and nobody has ever converted
+it. Cell 85 now carries the smallest fuel any COMPLETED transfer left behind,
+and on the next flight it is the discriminator -- a small `f` says the budget
+was marginal, an `f` near 1000000 says the fuel is innocent and the device
+stopped answering. **Under codex-vm it reads exactly 1000000: this bed completes
+every transfer before the guest spins once, so no bed has ever put a single spin
+of pressure on that constant.** The retry makes a shot-2 timeout survivable
+either way; it does not explain it.
+
+## SUPERSEDED, kept for the a5flight half: TWO STICKS, TWO BOOTS. `worksflight.img` (`18F3AA32285BFF80`) and `a5flight.img` (`1910F172AAF7E13B`). Both built and bed-verified. Not a proposal.
+
+**Damian directed this stick work on 2026-08-09 and asked for minimum
+boots, one if possible.** That lifts the standing "flights are not
+proposed for WORKS-8" ruling for this sitting by his direction rather than
+by anyone asking.
+
+**This sitting is TWO boots, one per stick, because `BOOTX64.EFI` is one
+file and the two arms need different ones.** blu's is GopBoot; reek's A5 is
+the compiler itself. There is no arrangement that makes them one boot, and
+the second boot is about ninety seconds of Damian's time, not a campaign.
+
+**Both images are built and bed-verified. Neither is a proposal.**
+
+| stick | image | arm | what Damian does |
+|---|---|---|---|
+| 1 | `worksflight.img` (`18F3AA32285BFF80`) | WORKS-8 FAT write path | boot, press **F12 twice**, pull the stick |
+| 2 | ~~`a5flight.img`~~ superseded by `a5flight2.img` | A5, the compiler compiles on the box | boot, wait for `DISK-OUT: OK OUT.CDX 84660` on screen, pull the stick |
+
+Order does not matter. **The B2 ASDE arm is on neither image** (it wedges
+the real part deterministically), so nothing here can be lost to it.
+
+**Provenance.** Built 2026-08-09 off blu at main-merged (seed
+`A1EBA5A03016A128`):
+
+```powershell
+build/boot/build-option-a.ps1 -Src apps/works/GopBoot.codex `
+    -Kernel seed/Codex.cdx -Ebs -Out build/boot/worksflight.img
+```
+
+16 MB, PE 683520, seed 2731952, FAT16 spc=1 clusters=26350.
+
+**It must be a FRESH build and no flown image will do.** The WORKS-8 write
+path landed in main 14169 on 2026-08-08 16:56. `ceremonyboot.img`
+(`C423418D`) flew 2026-08-05 and `deskboot.img` earlier still, so every
+image already on the shelf predates the fix by three days and would
+answer a question nobody is asking.
+
+**Bed state before flashing, stated including what was NOT checked.**
+The image boots under `codex-vm -uefi -gop`, reaches the payload with no
+host crash, and paints a non-blank 640x480 frame. **What has NOT been
+verified in the bed is the F12 write itself** -- the arm below is the
+first exercise of that path on this image, which is the point of flying
+it. Do not read "boots and paints" as "the write path is proven".
+
+### The boot, and the only thing to type
+
+Press **F12 twice**. That is the whole arm. Everything else this sitting
+wants is read off the stick afterwards.
+
+The taskbar posts the verdict. **Photograph only if it says FAILED**;
+a pass is read off the stick and needs no glass.
+
+### What it answers
+
+WORKS-8 (`apps/works/works-backlog.md`): four defects closed in the bed in
+main 14169 and its subdirectory follow-up, **none of which has ever run on
+metal** -- a failed write leaking its chain, an allocator bound running
+274 entries past the end of the volume, a write-stage instrument that
+could not name a failure, and the live-chain collision guard that
+descends into subdirectories. Diag **cell 83** is the write stage and
+paints `w`; a write failure used to read `s7` (MOUNT) and name nothing.
+
+### Off the returned stick
+
+Read the shot files and cell 83. A pass is a shot file present on the
+volume with cell 83 reading `w`.
+
+## FLOWN 2026-08-09, WROTE NOTHING: `a5flight.img`. Do not re-fly it as built.
+
+The A5 stick came back with the volume byte-identical to what was flashed
+apart from LBA 0 and 1, which `flash-usb.ps1 -SpecFit` writes itself. The
+board wrote nothing, and it could not have: the payload's block I/O is raw
+IDE port access and the stick is USB mass storage. Reproduced in the bed by
+running `codex-vm -uefi` with no `-disk` (divide by zero in the BPB parse).
+`docs/Designs/Active/Compiler/MetalOutputSink.md` has the mechanism and the
+fix, which is a UEFI block write helper and is seed-affecting.
+
+**REBUILT AND BED-VERIFIED 2026-08-10 as `a5flight2.img`** (the Stick 2
+section below is that image, not this one). `a5flight.img` itself is dead:
+do not flash it.
+
+**The arm below is kept because the procedure is right and only the payload
+is wrong.** Re-fly it when the payload is rebuilt with `-Uefi` plus that
+helper, at which point the compiler's own diagnostics also land on ConOut
+and the boot stops being silent.
+
+**Two procedure findings from this flight, both of which cost a trip:**
+
+1. **"Wait for the drive LED" is not a procedure.** The ASUS has no drive
+   LED to watch and the payload prints to a UART the board does not have,
+   so the operator had no way to know whether the run had finished. The
+   answer is not a longer wait: a payload whose result is read off the
+   volume must say when it is done, on a channel the box actually has.
+   `-Uefi` gives ConOut for free and is the fix here.
+2. **An arm read off the volume must be flown on a virgin image** -- see
+   the rule two sections down. This flight's stick already carried the
+   answer files.
+
+## FLOWN 2026-08-10, WROTE NOTHING: `a5flight2.img`. The `-Uefi` payload did not fix it, and the arm could not say why.
+
+Returned stick diffed against the master over all 16 MB: **exactly two sectors
+differ, LBA 0 and LBA 1**, which are the two `flash-usb.ps1 -SpecFit` rewrites.
+Root directory holds `EFI`, `SOURCE.SRC`, `CODEX` and nothing else. The same
+signature as the 2026-08-09 flight.
+
+The screen showed the stub's dark green and never changed.
+
+**The arm was built wrong and that is the finding worth keeping.** Its only
+success signal was `DISK-OUT:` over ConOut, and `__uefi_print` had never
+rendered a character on this board. It is compiled into every binary we ship
+and, until this payload, was called by nothing on metal (L-UNCALLED). So the
+one channel the arm depended on was the one channel nobody had tested, and a
+dead payload and a working payload with no output look identical. Green plus
+silence eliminated nothing.
+
+`build/boot/blockladder.img` below is the replacement instrument. Do not
+re-fly `a5flight2.img` or `a5bigflight.img` until the ladder says which stage
+dies; they share the payload and will return the same two sectors.
+
+## Superseded by the flight above: `a5flight2.img`, SHA-256 `B453C906 8248AB3D C26A080C EAE52123 2030E82B 64913F47 108F2090 92AB2A56`. A5, the compiler runs on the box.
+
+**Nothing is typed. Boot it, wait for the screen to say
+`DISK-OUT: OK OUT.CDX 84660`, then pull the stick.** That line is the
+whole procedure: this payload is built `-Uefi`, so `print-line-uni`
+dispatches to `__uefi_print` and the compiler's own diagnostics land on
+ConOut, which the ASUS has. The previous flight told the operator to
+watch a drive LED the board does not have, on a payload that printed to
+a UART it does not have either, and that cost a trip.
+
+Expect `SIZE:84660` first and `DISK-OUT:` a moment later. A blank screen
+for a minute is the compile running. `DISK-OUT:` reading anything other
+than `OK` is a finding worth bringing back, not a failed sitting.
+
+### What it answers
+
+**A5: the compiler compiles a program on real hardware and hands back the
+artifact.** The compiler boots as `BOOTX64.EFI`, reads `SOURCE.SRC` off the
+volume through the GPT, compiles it, and writes `OUT.CDX` and `OUT.TXT`
+back to the same volume through the foreword FAT writer. Three blockers
+closed to get here (`docs/Designs/Active/Compiler/MetalOutputSink.md`), and
+**every one of them has only ever run in the bed**. What metal adds that no
+bed can: the writer has never once run on real USB storage at any size.
+
+### Off the returned stick
+
+Two files in the volume root:
+
+- `OUT.TXT` -- one line. A pass reads exactly `OK OUT.CDX 84660`.
+- `OUT.CDX` -- 84,660 bytes, and its SHA-256 must be
+  `ACF9823E4680986F206ED0B4C619159F800E40D809ED1A8D903DF0BD9ED864D8`.
+
+That hash is the whole point of the arm: it is the SAME source compiled on
+the host, so an exact match means the compiler on the box produced a
+bit-for-bit identical artifact. A short or absent `OUT.CDX` with a present
+`OUT.TXT` means the write path failed partway and is a finding, not a
+wasted trip.
+
+**Extract with one `-Name` per invocation.** `pwsh -File` passes every
+argument as a literal string, so `-Name OUT.CDX,OUT.TXT` arrives as one
+name and answers `MISSING: OUT.CDX,OUT.TXT` -- which reads exactly like a
+board that wrote nothing.
+
+The second, independent check, because a matching hash only says the bytes
+agree with the host: run the returned artifact. `a5src.codex` sums `i*i`
+for `i` in 1..100, so `build/test-run.ps1 -Kernel OUT.CDX` must print
+`A5 338350`. That number comes from the arithmetic, not from a previous
+run, which is what makes it an oracle rather than a golden.
+
+### Provenance, and how to rebuild it
+
+Built 2026-08-10 at main 14468, kernel `seed/Codex.cdx` `F9AA716852BF72C7`.
+**The seed must carry the guarded UEFI block helpers (main 14433) and the
+UEFI block path (main 14398)**; an older seed writes over raw IDE ports,
+which is what made the first flight return a byte-identical stick.
+
+**The payload cannot be the depot seed.** The seed is built in plain `Exit`
+mode. The compiler has to be recompiled in `ExitUefi` mode, which is what
+puts reads and writes on `EFI_BLOCK_IO_PROTOCOL` instead of IDE:
+
+```powershell
+build/concat-codex-self.ps1 -CodexDir codex/compiler -OutFile Codex.codex
+build/compile.ps1 -Src Codex.codex -Out a5uefi.cdx -Log a5uefi.log `
+    -Kernel seed/Codex.cdx -Uefi -TimeoutSec 1800
+build/cdx-to-pe.ps1 -CdxInput a5uefi.cdx -Out a5.efi `
+    -EntryStart -HeapPages 32768 -Stdin "DISK`nSOURCE.SRC`n"
+build/build-img.ps1 -PeInput a5.efi -Out build/boot/a5flight2.img `
+    -Source build/boot/a5src.codex -TotalSectors 32768
+```
+
+`-Uefi` is the one flag the last flight lacked, so confirm it moved
+something rather than trusting it: the same source built plain is
+2,754,800 bytes and built `-Uefi` is 2,739,216.
+
+`build/boot/a5src.codex` is the program being compiled, 246 bytes, and it
+is **LF-only on purpose**: the DISK path does not apply `utf8-to-cce` and
+CR has no CCE code point, so a CRLF source dies at the first line ending.
+
+### NEVER FLASH AN IMAGE THAT HAS BEEN BOOTED IN THE BED
+
+**This arm was one boot away from being unable to fail, 2026-08-09.** The
+image was built, then bed-tested by pointing `codex-vm -disk` AT IT, and
+the guest wrote its `OUT.CDX` and `OUT.TXT` into that same file. That
+post-run image was then flashed. **The stick therefore already carried the
+answer files, with the exact SHA-256 this sheet says to check for**, so a
+board that wrote nothing would have returned a perfect pass.
+
+It is not a hypothetical: the stick was written and pulled before the
+contamination was caught.
+
+The rule, and it applies to every arm that reads its result off the
+volume: **the bed test runs on a COPY, and the master is proven virgin
+before it is flashed.** Grepping the image for the answer file's directory
+entry takes a second:
+
+```powershell
+# must print nothing before this image goes near a stick
+$b=[IO.File]::ReadAllBytes('build/boot/a5flight.img')
+# search for the 8.3 entry "OUT     CDX"
+```
+
+`build/read-stick.ps1 -ImageFile <img> -Name OUT.CDX -OutDir <dir>` is the
+supported version of that check and answers `MISSING: OUT.CDX` on a clean
+image.
+
+**Calibrate it in the same breath, because `MISSING` is also what it says
+when it cannot read the volume at all.** Ask it for `SOURCE.SRC`, which is
+on every one of these images: a `complete, 1 clusters` beside the two
+`MISSING` lines is what turns them into a measurement. `a5flight2.img` was
+cleared this way on 2026-08-10 (`SOURCE.SRC` sha256 `31901D22...`).
+
+The general shape is the one this project keeps paying for: an instrument
+that cannot fail. An arm whose evidence is a file that was already present
+does not test anything, and it looks exactly like the arm that does.
+
+### Bed-verified 2026-08-10 on a COPY, master untouched
+
+`codex-vm -kernel a5bed.img -uefi -disk a5bed.img -headless`, where
+`a5bed.img` is a copy. The guest printed `SIZE:84660` and
+`DISK-OUT: OK OUT.CDX 84660`, and the UART took 8 bytes for the whole run,
+which is how the sheet knows those lines went out over ConOut rather than
+the serial port the board lacks.
+
+Three checks, and the third is the one that is not circular:
+
+| check | result |
+|---|---|
+| `OUT.CDX` off the bed volume | 84,660 bytes, magic `CDX1`, 166-cluster chain complete |
+| against the host compile of the same source | byte-identical, `ACF9823E...` both sides |
+| the artifact RUN | prints `A5 338350`, which is the arithmetic's answer |
+
+The master `build/boot/a5flight2.img` still hashes
+`B453C906...` after all of it, and its root directory holds `EFI`,
+`SOURCE.SRC` and `CODEX` and nothing else.
+
+**What none of this reaches**, and it is the reason for the trip: every
+byte above moved through codex-vm's `EFI_BLOCK_IO_PROTOCOL` model, on IDE
+underneath. The board's is real firmware over real USB mass storage, and
+that path has never once carried a write (L-OPTIONAL).
+
+## THE LADDER: `blockladder.img`, SHA-256 `FF5CC67F 3BA48A59 261B7C62 B3D02427 21F2D022 FEA3AED8 5DEFC3DF E0A5551A`. Fly this before either A5 stick.
+
+**Flight 1 of the ladder, 2026-08-10, was GREEN and it was the ladder's own
+fault.** That build printed to ConOut BEFORE painting on every rung, so its
+first act on the board was a firmware call, and a firmware call that does not
+return takes the colour channel with it. Green was therefore the only reachable
+answer for any failure at or before the first print, which is the whole span the
+instrument existed to divide up. The volume came back with LBA 30000 still
+zeroed, so nothing was written, and nothing else can be concluded from it.
+
+The build named above paints first and prints second, which is what having two
+channels was supposed to buy. **A green screen from THIS build means what the
+table says**; a green screen from `837F79FA...` did not.
+
+### FLIGHT 2, 2026-08-10: WHITE. The UEFI block write path works on this board.
+
+Every rung passed, and the write was confirmed ON THE MEDIUM rather than taken
+from the guest's own readback. The stick came back and LBA 30000 reads
+`A5 3C 90 43 4F 44 45 58 ...` with the `55AA` signature intact: the boot sector
+copy the probe writes, byte 0 replaced by the `0xA5` marker, while LBA 2048
+still reads `EB` there. Both previous A5 flights left that sector zeroed, so
+this is the discriminator that told those two apart from this one.
+
+So on this board, under firmware and after the kernel installs its own CR3:
+`LocateProtocol(EFI_BLOCK_IO)` returns a working interface, `ReadBlocks`
+delivers a real sector, and `WriteBlocks` lands bytes that survive a power
+cycle. **The CR3-remap hypothesis is dead** -- firmware calls survive the
+remap; it had been recorded as unmeasured and it did not hold up.
+
+What this does NOT show: the ladder writes ONE sector through one
+`block-write-sector`. The A5 sink writes 2.7 MB through `fat16-write-segments`.
+The primitive is proven on metal, that sink's use of it is not.
+
+CYAN is still the one rung never seen to fire. This flight went past it to
+white without stopping, so nothing about it changed.
+
+**Read the colour. Nothing is typed and nothing needs reading off the volume.**
+It answers in under a second and then holds its colour, so boot it, look, and
+power off.
+
+| screen | meaning | where the fault is |
+|---|---|---|
+| firmware's own screen | never loaded | boot selection or medium |
+| solid dark BLUE | died inside the stub | `AllocatePages`, `GetMemoryMap`, `ExitBootServices` |
+| solid dark GREEN | stub handed off, payload said nothing | died before its first instruction, or the handoff block is absent |
+| **CYAN** | payload alive, framebuffer usable | the SystemTable cell is zero |
+| **YELLOW** | SystemTable live | `LocateProtocol(EFI_BLOCK_IO)` found nothing |
+| **MAGENTA** | a sector came back off the disk | its bytes-per-sector is not 512 |
+| **ORANGE** | the BPB parses | the scratch write or its readback failed |
+| **WHITE** | **everything worked** | nothing; the write path is good on this board |
+
+Dark green and dark blue are the stub's. Everything from cyan up is the
+payload's, and each colour means the stage NAMED IN THE ROW ABOVE IT passed.
+
+### What makes this different from the two flights that told us nothing
+
+Its channel is the framebuffer, which is the only output already demonstrated
+to reach a human on this box: you have been seeing the stub's green all along.
+
+**"It never prints on metal, so nothing depends on ConOut" stood here and was
+false.** It printed on every rung, and it printed FIRST, which is strictly worse
+than not having the second channel at all: the colour could only appear if the
+firmware call ahead of it returned. Ordering is the whole content of the fix.
+The payload still prints, because the bed reads those lines to force each rung,
+but no paint waits on a print now.
+
+And **every rung has been forced and watched in the bed**, which is the part
+the last two arms skipped. `build/ladder-arm.ps1` runs them:
+
+| arm | forced how | last stage painted |
+|---|---|---|
+| pass | normal | `wrote` (WHITE) |
+| nodisk | no `-disk`, so `LocateProtocol` returns NOT_FOUND | `systab` (YELLOW) |
+| badbpb | bytes-per-sector zeroed on the `-disk` image only | `read` (MAGENTA) |
+| small | 16384-sector volume, so the scratch LBA does not exist | `bpb` (ORANGE) |
+
+The harness compares against those expectations and exits non-zero on any
+disagreement; a deliberately wrong expectation was run and it reported
+`MISMATCH` and exit 1, so the comparison is not decorative.
+
+Two further defects were caught on 2026-08-10, both of which had been reporting
+a stage as passed when it had not:
+
+- **The read rung tested the pointer, not the sector.** `buf /= 0` is true
+  whenever a buffer was allocated, so a read that delivered 512 zero bytes
+  passed. It now requires the `0x55AA` signature. A payload built WITHOUT
+  `-Uefi` reads down the bare-metal path to a controller that is not there and
+  gets exactly those zeros: before the fix it painted magenta and marched on,
+  after the fix it holds yellow. That control was run.
+- **`build-option-a.ps1` could not build a UEFI-mode payload at all** -- it never
+  passed `compile.ps1 -Uefi` -- and the failure is silent, because such a payload
+  boots and paints normally. It now takes `-Uefi`, and the ladder must be built
+  with it.
+
+The harness also refuses to run when either source file is newer than the image.
+It had reported a clean four-arm pass against a stale image minutes after a
+compile error, which is a green result for source that never compiled.
+
+**CYAN is the one rung never seen to fire.** The stub primes the SystemTable
+cell and nothing in the bed can unprime it. Treat a cyan screen as an
+uncalibrated reading and tell whoever built the ladder.
+
+Two defects the calibration caught before anyone carried a stick, both of
+which would have shown you a colour that meant the opposite of the truth:
+the stage painted its colour BEFORE checking whether the stage passed, and
+the failure path was a pure non-terminating loop that the optimizer deleted
+outright, so a failed stage fell through and kept going.
+
+### Off the returned stick
+
+Optional, and independent of what you saw. The pass arm writes `0xA5` to the
+first byte of LBA 30000, which is inside the facts region and read by nothing:
+
+```powershell
+$b=[IO.File]::ReadAllBytes('<stick dump>'); $b[30000*512]   # 165 means the board wrote
+```
+
+Measured in the bed: 165 on the passing arm, 0 on the master and 0 on an arm
+that failed earlier, so it separates a real write from a self-report.
+
+## Stick 3: `a5bigflight.img`, SHA-256 `C133E507 A6A79CE3 3A9C1943 B29FEE24 3626DF4E D5C2A4F6 EEE56E28 3A3C3350`. The compiler compiles ITSELF on the box.
+
+**Same procedure as stick 2, longer wait.** Boot it, wait for
+`DISK-OUT: OK OUT.CDX 2754800`, pull the stick. **4.7 minutes in the bed**,
+so give it fifteen before calling it hung; USB is slower than the IDE the
+bed runs on.
+
+Identical payload to stick 2. The only difference is `SOURCE.SRC`: 2,768,194
+bytes of concatenated compiler source instead of a 246-byte program.
+
+### What it answers, and it is the whole of A5
+
+Stick 2 asks whether the sink can write an artifact on real hardware. This
+one asks whether **the compiler can reproduce itself there**, which is the
+claim the project is actually built on.
+
+### Off the returned stick
+
+- `OUT.TXT` -- one line, exactly `OK OUT.CDX 2754800`.
+- `OUT.CDX` -- 2,754,800 bytes, SHA-256
+  `CECC9D948088B4B73A3097D1EADF225355C5202632E1D09753AD3D651981C675`.
+
+**That hash is not just the host's answer. It is the compiler itself.** The
+plain-mode compiler built from this same source hashes `CECC9D94...`, and
+compiling this source with it reproduces `CECC9D94...` again, so the artifact
+the board hands back is a bit-for-bit copy of a compiler that is a fixed
+point of itself. A board that returns those exact bytes has reproduced the
+compiler from source, on its own hardware, with nothing from this desk in
+the loop but the input file.
+
+Bed-verified 2026-08-10 on a COPY, master untouched and re-checked virgin
+afterwards. `OUT.CDX` came off the volume at 5,381 clusters, complete, and
+hashed `CECC9D94...` -- equal to the host control AND to the compiler binary
+that produced it. UART took 8 bytes for the run, so the two status lines went
+over ConOut as on stick 2.
+
+**Do not rebuild this image larger.** A 65536-sector version of exactly this
+image crashes codex-vm on the host before the guest starts
+(`OperatorsManual`, "Exit code 49374"). At 32768 sectors the 13 MB ESP holds
+the 2.59 MB payload, the 2.77 MB source and the 2.75 MB artifact with room
+left, which is why this one is 16 MB.
+
+### Provenance
+
+Same payload as stick 2, so the same recipe up to `cdx-to-pe.ps1`. Only the
+last line differs:
+
+```powershell
+build/build-img.ps1 -PeInput a5.efi -Out build/boot/a5bigflight.img `
+    -Source Codex.codex -TotalSectors 32768
+```
+
+where `Codex.codex` is `build/concat-codex-self.ps1 -CodexDir codex/compiler`.
+The source on the volume must hash the same as the one on disk: measured
+`BA459257...` both sides.
+
+### Bed state, stated including what metal adds
+
+Run on a COPY of the master (see the rule above): the serial ring came back
+`all_consumed=1`, the compiler read `SOURCE.SRC` off the volume, and
+`OUT.CDX` extracted back out of the FAT by an independent host-side reader
+is **byte-identical to the host compile**, with `OUT.TXT` reading
+`OK OUT.CDX 84644`. 14 seconds. The master was re-checked virgin afterwards.
+
+`build/read-stick.ps1` is the reader, and it is calibrated rather than
+trusted: on the booted copy it returns `OUT.CDX` at the expected SHA-256,
+and on the virgin master it returns `MISSING: OUT.CDX`. Both arms measured
+2026-08-09. It reads `\\.\PhysicalDriveN` directly so that Windows never
+mounts the returned stick and allocates clusters on it.
+
+**What the bed cannot answer is the storage.** codex-vm's disk is IDE and
+the ASUS boots USB mass storage over BOT, so the one thing this arm exists
+to exercise is the one thing no bed has ever run. Do not read the green bed
+as the write path being proven on the box.
+
+### The ASDE arm is NOT on this image, deliberately
+
+Track B's B2 Finding 4 (CTRL.ASDE, the `NicAsde` stage) is metal-gated and
+was considered for this boot. **CurrentPlan records that the ASDE arm
+WEDGES the real part deterministically** (hang after `entering bring-up`),
+so anything sequenced after it in a single boot is lost. It is not worth
+risking the WORKS-8 reading, which is ready now, against an arm that ends
+the boot. If it ever rides a desk boot it must be LAST or behind an
+explicit keypress taken after the F12 shots are on the volume.
+
+## NOT SCHEDULED, AND NOT A REQUEST FOR A FLIGHT: the WORKS-8 FAT write-path arm. Ride it on the next boot that happens for its own reasons.
+
+**Damian's standing ruling is that flights are not proposed for the F12
+work.** This arm asks for no boot of its own, no image of its own and no
+extra keystroke beyond an F12 that most desk boots take anyway. It is
+written down so that whenever a stick next flies carrying GopBoot or
+GopDesk, the reading is free instead of missed. If nothing flies, nothing
+is owed.
+
+**What it would confirm.** WORKS-8 (`apps/works/works-backlog.md`) closed
+four defects in the FAT write path in the bed -- a failed write leaking
+its chain, an allocator bound that ran 274 entries past the end of the
+volume, a diag instrument that could not name a write failure, and the
+live-chain collision guard reinstated after main 14141 reverted the one
+that refused correct writes. **None of it has run on metal.** Everything
+below reads off a stick that has already flown; the only live step is
+pressing F12 twice.
+
+### In flight: press F12 twice, and photograph only if the taskbar says FAILED
+
+Two consecutive shots is the exact case that failed under 13613 -- the
+first landed and the second was refused -- so one shot proves less than
+two. Take them from the desktop, a few seconds apart.
+
+On success the taskbar paints `shot SHhhmmss.BMP ok` and there is
+nothing to read. On failure it paints `shot write FAILED s.. m.. c..
+p.. w..`, and **`w` is the new cell; photograph the whole line.** Before
+main 14169 that line had no `w` at all and every write failure reported
+`s7`, which is the MOUNT stage answering "ok" and naming nothing.
+
+| `w` | What it says happened | The measurement that settles it |
+|---|---|---|
+| line has no `w` | An image older than main 14169 | Nothing to read here; note the image digest |
+| `20` | The writer reported SUCCESS while the taskbar said FAILED | The two disagree, so one of them is the defect, not the write path. Photograph and stop |
+| `17` or `8` | The collision guard REFUSED the allocation | Whether a real collision existed is answerable only off the returned stick -- see the overlap check below. **Do not call this a returning regression on the strength of this cell.** It is the collision class, and the class has two branches that look identical here |
+| `12` | The allocator found no free cluster inside the volume | Whether the volume is genuinely full is the cluster count in the stick check below |
+| `13` | A FAT flush write failed | Storage-layer; `c` and `p` on the same line carry the MSC completion code and BOT phase |
+| `14` | The data write came up short | Storage-layer; same `c` and `p` |
+| `15` | The root directory had no free slot | Count the root entries on the returned stick |
+| `16` | The directory entry write failed, and the chain WAS rolled back | The stick is clean; the failure is the directory sector write |
+| `116` | Same, and **the rollback also failed** | The stick is DIRTY: a chain is allocated with no entry naming it. The orphan check below measures how much |
+| `2`-`7` | The single-cluster path, not the shot path | A shot is megabytes; if a shot reports these, the size branch is the thing to look at |
+
+Do not infer a cause from `w` alone. Each row names the next
+measurement, and every one of them is taken off the stick afterwards,
+not at the board.
+
+### Off the returned stick -- a raw read, no writes, no reflash
+
+**Read the physical device, and do not let Windows mount it read/write.**
+This is not a formality and it is the step most likely to be skipped:
+Windows writes to a FAT volume it mounts (`System Volume Information`,
+recycle-bin metadata) before anyone has read a byte, and those writes
+ALLOCATE CLUSTERS. Question 3 below counts clusters allocated to nothing,
+so an ordinary mount manufactures the exact evidence the question asks
+about, and it is unrecoverable once done. Read `\\.\PhysicalDriveN`
+directly, the way the 2026-08-07 measurement did (raw read, ESP at LBA
+2048).
+
+**There is no tool for this yet, and that is the real cost of this
+section.** Nothing in `build/` or `tools/` walks a FAT chain off a
+physical device; `build/flash-usb.ps1` is the only raw-device script and
+it writes. Whoever runs this writes the walker first. It is a
+read-only PowerShell job against the four questions below and needs no
+gate, but it is an hour that the rest of this section does not look like
+it costs.
+
+Four questions, all mechanical:
+
+1. **Are both BMPs there**, with plausible sizes? Two consecutive shots
+   both landing is the headline; under 13613 the second did not.
+2. **Do their chains overlap each other, or any other file's?** Walk each
+   chain from its directory entry. This is what answers a `w17`: the
+   guard refusing when no collision exists is a false positive and is the
+   13613 failure returning; the guard refusing when the chains really do
+   share a cluster is the guard doing its job. **The stick decides which,
+   and nothing at the board can.**
+3. **Are there orphans** -- clusters marked used in the FAT that no
+   directory entry reaches? This is the leak measurement, and it has a
+   known prior: a failed shot used to strand 4,609 clusters, about 2.3
+   MB. The number to hope for is zero.
+4. **Is any allocated cluster numbered above the volume's highest valid
+   one?** On the 2026-08-07 ESP that was 26,350, against a FAT with room
+   for 26,624 entries. Nothing above 26,350 should ever be marked used.
+   This one did not fire on the last flight either, so a clean reading
+   confirms rather than surprises.
+
+Questions 3 and 4 are the ones a returning stick has never been asked.
+They need no flight of their own and can be run against any stick that
+comes back from any boot carrying main 14169 or later.
+
+## FLOWN 2026-08-05, GREEN: `ceremonyboot.img` (`C423418DF6FC9DC7D13CA47F8820B373899C1DFA189A1E7D0D5144480FE0A383`). The ceremony flight. Damian: "it all worked."
+
+**Flight verdict, same day it was flashed:** the full first-boot
+ceremony ran on the ASUS keyboard; `IDENTITY.DAT` (124 bytes, exactly
+the version-1 record size) is on the stick's ESP -- the USB
+mass-storage WRITE path works on the real ASMedia -- and the B3.6
+unlock passed on the returning boot. The F12 desktop shot from the
+flight (`SH160738.BMP`, 16:07:38, top bar `k4 e98n0s0 |e0n0 |e131n50
+|e0n0`) was retrieved to `build-output/ceremony-flight-shots/` and is
+embedded in `docs/TailorsFitting.md`, the first-boot document this
+flight illustrates. A2's ceremony campaign closes on this flight. (The
+stick moved on to reek's probes the same day; this image and its
+identity are off the stick, and the ceremony artifact remains at
+`build/boot/ceremonyboot.img`.)
+
+The pre-flight record below stands as flown.
+
+Flashed to the stick 2026-08-05 15:57, write-back verified byte for byte
+(`build-output/flash.log`). Damian's flight-3 F12 shot (`SH041503.BMP`)
+was retrieved off the stick first: `build-output/flight3-shots/`.
+
+Built `build/boot/build-option-a.ps1 -Src apps/works/GopBoot.codex
+-Kernel seed/Codex.cdx -Ebs -Out build/boot/ceremonyboot.img` against
+depot seed `52E0A3A00218E19F`. The payload is GopBoot: the first-boot
+ceremony (GopWizard), the three-row interface menu (main 13223 --
+Graphical UI is row 0 and the DEFAULT; Dev Console and Serial REPL are
+gone, filed WORKS-5), the B3.6 unlock (main 13213), and the desktop,
+all carrying the fixed input stack (per-interface walk main 13096,
+per-(slot,DCI) latch main 13133).
+
+Rehearsed on byte-copies of THIS file, both beds:
+
+- codex-vm `-uefi -hid-combo -hid-nak-unchanged -hid-keys`, image as its
+  own disk: fresh ceremony to the menu; second boot unlocked with the
+  public-key match; three wrong passphrases landed on Identity Locked.
+- OVMF q35 `-UsbDisk -UsbKbd -NoPs2` (real firmware, the boot medium
+  reachable ONLY through our USB stack): the whole ceremony typed over
+  USB HID, IDENTITY.DAT written through GopUsbMsc, and the second boot
+  read it back and painted Identity Unlocked; a spare Enter at the menu
+  entered the desktop with TrueType from the ESP.
+
+### The boots, and what to type
+
+**Boot 1 (fresh ceremony):** bars -> trace lines -> keyboard table ->
+"Welcome to Codex", Press Enter to begin (30 s window; any key holds it
+open -- **if it expires untouched the controller is handed back to
+firmware, which costs the USB stick and keyboard for that boot:
+power-cycle and start over rather than reading anything from what
+follows**). Then: passphrase + confirm (4+ characters -- **REMEMBER IT,
+boot 2 is the whole point**), a random sentence, then the upstream
+server address (a network feature; Enter alone skips it, and skipping
+is right for this flight), then the Identity Created screen --
+**photograph it: the save row is a verdict** -- then Enters through the
+storage/disks/xhci/wake screens to the menu. Enter on Graphical UI
+(the default row) opens the desktop.
+
+**Boot 2 (the B3.6 verdict):** from the desktop, Shutdown powers the
+machine off (proven flight 3), or return to the menu and take Restart;
+either way, boot the stick again -- nothing is reflashed in between.
+It should open "Welcome Back" with the fingerprint and ask for the
+passphrase. Type boot 1's passphrase. Photograph the result either
+way. A deliberate wrong-passphrase run (three times -> Identity
+Locked, stick unchanged) is optional and can ride any later boot.
+
+| Read | Verdict |
+|---|---|
+| Boot 1 Identity Created says "Saved to the stick as IDENTITY.DAT." | The USB mass-storage WRITE path works on the ASMedia; B3 persistence holds on metal |
+| Boot 1 says "Could not save to the stick." | The ceremony ran and the write path is the defect; photograph the screen. Boot 2 will re-run the fresh ceremony, which is the same reading from the other side |
+| Boot 2 opens "Welcome Back" with a fingerprint | IDENTITY.DAT was written AND parses -- the CIDN record round-trips through the real stick |
+| Boot 2 says "Identity Unlocked ... The public key matches" | **B3.6 closes on metal** |
+| Boot 2 answers "Wrong passphrase" to the RIGHT passphrase | Decrypt path wrong on metal only; the fingerprint on screen names which identity it read. Photograph |
+| Boot 2 says the identity "cannot be read" | The file exists but mount/read/parse failed; photograph the trace lines |
+| Boot 2 runs the fresh ceremony again | Boot 1's save silently failed or did not survive; pairs with boot 1's save row |
+| The ceremony keyboard is dead | Read the top-bar `k`/`e`/`n`/`s` counters against the flight-3 conventions further down this file |
+
+Photographs to bring home: boot 1's Identity Created screen, boot 2's
+result screen, and anything that looks off on the menu (it should be
+three rows, Graphical UI highlighted).
+
+## FLOWN 2026-08-05 19:10, THE STORAGE ANSWER IS BANKED: `msc-align.img` (`4A2C05F5A3675234`).
+
+The window did its job: F12 landed `SH191008.BMP` (retrieved to
+`build-output/msc-align-shots/`, pixel-exact) BEFORE the ASDE arm
+wedged the machine -- same last row as the first boot, `ASDE:
+eligible at 0:31.6 -- entering bring-up`, so **the wedge is
+deterministic, two boots**. The blu outbox entry stands with that
+upgrade. The readings, from the shot:
+
+- **`ALIGNED  addr=#..._751c0000 off=0     ok=y chk=e173b96d`**
+- **`CROSSING addr=#..._751cfc00 off=64512 ok=y chk=e173b96d`**
+- **`data identical=y`** -- a 32 KB bulk TRB crossing a 64 KB
+  boundary delivers byte-identical data ON THE REAL CONTROLLER.
+  A4b's crossing question, answered with a checksum pair.
+- **`LIVENESS lba=60506128 (sectors+16) ok=n`** -- the DERIVED
+  out-of-range arm fires on the real 28.9 GB stick
+  (`sectors=60506112`), which is what makes the two green rows
+  claimable; the 2026-08-04 boot voided this exact arm.
+
+The stick still carries this image; it reflashes for whatever flies
+next.
+
+Flashed and byte-verified (`build-output/flash-msc-align2.log`).
+
+The `A1C0F205` boot (below) proved the ASDE arm wedges the machine on
+the real I219, and because `shot-wait` ran AFTER that arm, F12 never
+armed and the storage rows were on the glass with no way to capture
+them. The rebuild inserts GopShot's `shot-window` (red 13355) between
+the storage rows and the ASDE arm: a 20-second RTC-bounded stretch
+(spin-fueled against a dead clock) in which F12 works exactly as in
+the open-ended wait, painted as "F12 now saves the screen (20s
+window), then the arm under test runs". The storage answer gets
+banked BEFORE the arm that is allowed to hang. Re-gated under OVMF
+`-UsbDisk -UsbKbd -NoPs2`: all rows reproduced, F12 during the window
+wrote a 3,072,054-byte BMP extracted intact from the image.
+
+At the bench: boot, read the four storage rows, **press F12 inside
+the 20-second window**, and let the ASDE arm run (it will likely
+wedge again -- that is now a reading, not a loss; the shot is already
+on the stick). Then pull and hand the stick back.
+
+## FLOWN 2026-08-05, WEDGED IN THE ASDE ARM: `msc-align.img` (`A1C0F205BDA1D78B`).
+
+Boot verdict from the glass: the four storage rows painted, then
+`ASDE: scanning bus 0`, then `ASDE: eligible at 0:31.6 -- entering
+bring-up`, then the machine stalled. **The first metal execution of
+`na-bring-up` wedges on the real I219** -- the exact risk that made
+the arm ride last, now measured. F12 never armed (shot-wait was
+downstream of the wedge), so this boot's storage rows went uncaptured;
+the rebuild above fixes that ordering. Finding routed to blu via
+red's outbox: every E1000e wait is fueled and the Option A path maps
+the [3 GB, 4 GB) MMIO hole (the xHCI probe read its BAR at
+`#df430000` on the same boot path), so no software loop explains a
+stall -- the suspect is the device ceasing to complete MMIO reads
+after the bare `CTRL.RST` that `na-bring-up` opens with, on a part
+whose PHY the ME owns.
+
+## FLOWN 2026-08-05 18:35: `xhci-probe.img` (`AF3A6B4551453001`) on the ASUS. THE FIRST PIXEL-EXACT PROBE READING.
+
+One boot, one F12, no camera. The probe wrote its own screen through
+the disk stack it was testing; `SH183500.BMP` (2,359,350 bytes,
+intact) is retrieved to `build-output/xhci-probe-shots/`. The rows,
+for reek to fold into A4 (the shot is the record; these are the
+headlines):
+
+- **`MSC: rung=6 disk usable`, `dev on ctl0 port=8 speed=3 slot=4`** --
+  the disk sits ABOVE ROOT PORT 7, the first observation of it
+  anywhere; no bed can seat a disk there. `sectors=60506112` (the real
+  stick), `blocksize=512`, `cfgv=1 cfgep=1`.
+- **`SET-CONFIG completion: USB TRANSACTION ERROR  retry: success`** --
+  the first SET_CONFIGURATION errors on the wire and the EP0
+  recover-then-retry gets past it, pixel-recorded.
+- Controller `8086:a12f` at 0:20.0, caplen=128, `slots=64 ports=26`,
+  connected mask `#000001a2` (ports 1, 5, 7, 8). `xHCI seen=2
+  opened=1`: a second row `ctl1 0000:0000 at 0:0.0 NEVER-OPENED` --
+  a zero-ID controller entry worth reek's eye.
+- `ENUMERATED kbd=y mouse=y disk=y`; HID EP `bInterval asked=255 ->
+  Interval set=10`, `wMaxPacket 4 -> 4`, `speed=2 dci=5`.
+- The 2.3 MB write landing intact IS the metal write proof for the F12
+  path on this controller.
+
+The pre-flight record below stands as flown.
+
+## The pre-flight record for both probes: rebuilt WITH F12 SCREENSHOTS, re-gated 2026-08-05.
+
+Damian's ruling after the ceremony flight: no more photographing probe
+screens -- the probes now carry the desk's F12 screenshot-to-stick
+(red 13330). Both probe images are rebuilt and re-gated; the earlier
+`9F1559AA`/`38883476` builds (flashed 16:31, boots read but not
+photographed) are SUPERSEDED. Press F12 on the probe screen and the
+frame lands on the ESP as `SHhhmmss.BMP`; the bottom row paints the
+verdict. Retrieval: mount the stick's ESP elevated and copy, as for
+the desk's shots.
+
+What changed in the probes: `probe-halt` is now `shot-wait` (GopShot):
+`medium-select` runs once, and the shot writes ONLY to a medium whose
+ESP carries our own `CODEX.CDX` -- a stick that lacks it paints "F12
+shots OFF" and never writes anywhere, so a machine's internal drives
+are never touched. That guard is why both images now CARRY THE SEED
+(built without `-Seed ''`).
+
+Rebuilt against depot seed `E0B667443430D9C7` with
+`-Kernel seed/Codex.cdx -Font '' -Source '' -Ebs`:
+
+| Image | SHA256 (16) | OVMF gate (re-run on these files) |
+|---|---|---|
+| `build/boot/xhci-probe.img` | `AF3A6B4551453001` | green, `-UsbDisk -UsbKbd -NoPs2`: `rung=6 disk usable`, `SET-CONFIG completion: success`; F12 wrote a 3,072,054-byte BMP whose bytes were EXTRACTED from the image and render seamlessly |
+| `build/boot/msc-align.img` | `A1C0F205BDA1D78B` | green, `-UsbDisk -UsbKbd -NoPs2`: `ALIGNED ok=y chk=e173b96d`, `CROSSING ok=y chk=e173b96d`, `data identical=y`, `LIVENESS lba=32784 ok=n`, both ASDE breadcrumbs (`scanning bus 0` -> `candidate REJECTED by vendor/BAR gate`); F12 shot extracted intact the same way |
+
+**Bed finding from the F12 proof, codex-vm only (routed to reek):**
+the same F12 write under codex-vm lands a FAT whose entries from 5803
+on hold the in-memory value four ENTRIES back (`disk[N] = mem[N-4]`,
+an 8-byte duplication mid-stream), so the chain reads 4 clusters then
+EOC and the file truncates. QEMU (above) and metal (flight 3's desk
+F12, byte-complete `SH160738.BMP`) both write correctly, so the
+suspect is codex-vm's MSC bulk-write model, plausibly at a 64 KB
+buffer crossing -- the exact TRB question msc-align asks for READS.
+
+**UPDATE, reek 2026-08-06, on red's preserved artifact: red withdrew the
+`disk[N] = mem[N-4]` index shift, and the corrected reading is an
+off-by-four in the ALLOCATOR's view -- the file starts at 5799, inside
+`CODEX.CDX`'s own chain, where the first free cluster was 5803.
+Confirmed independently: the failing image first differs from the
+pristine one at FAT1 offset 11,606, entry 5803. The codex-vm TRB
+data-buffer alignment mask (removed main 13448) fits those numbers
+exactly and is REFUTED as the cause anyway: run on red's own pristine
+image, red's key timeline and red's 1024x768 geometry, mask-restored and
+mask-removed builds both give start=5803 chain=4609, and neither
+presents an unaligned TRB. The remaining variable is which codex-vm
+revision red's run used. The GopFat16 gap red names -- nothing verifies
+a cluster about to be taken lies outside an existing chain -- is real
+independently of the diagnosis.**
+
+**DOES NOT REPRODUCE, reek 2026-08-06. Do not plan against this
+paragraph until it is re-measured.** Same repro, probe rebuilt from
+the documented line at seed `E0B667443430D9C7`: the SH entry writes
+`cluster=5804 size=921654` and the chain is 1801 clusters terminating
+`0xFFFF`, which is exactly `ceil(921654/512)`; the BMP walked out of
+that chain is 921,654 bytes and its own header filesize field agrees.
+FAT1 and FAT2 identical. The walker was calibrated by shifting the FAT
+right by 8 bytes from 5804 and reports a runaway chain, so it can see
+the failure. Nothing in the write path moved after the measurement
+(`codex-vm.c` 13238, `GopUsbMsc` 13133, `GopFat16` 13111), so the
+difference is in the run rather than the source, and red holds the
+only failing artifact -- `xhci-probe.img` is a local build artifact in
+no depot, so `AF3A6B45` cannot be fetched. Also worth knowing before
+comparing image hashes across workspaces: the identical build line and
+seed produced `7D7A0E54` here, not `AF3A6B45`.
+
+`msc-align.img` flashes after the xhci boot, same flasher line.
+
+`msc-align.img` carries blu's FIXED `NicAsde` stage (main 13187). Its two
+breadcrumb rows both paint: `ASDE: scanning bus 0` then `ASDE: candidate
+REJECTED by vendor/BAR gate`, which is the correct verdict for QEMU's
+default NIC and means the bring-up half is still unexercised by any bed.
+**No bed exercises it, and none can today.** `test-ovmf.ps1` has no NIC
+selection switch; under `-UsbDisk -UsbKbd -NoPs2` its NIC IS Intel
+(`vendor=32902`) and is rejected on `verdict=below-window`,
+`bar=2164654080`, so nothing reaches `na-touch` or `na-bring-up`. The
+flight is the only instrument for the bring-up half.
+
+**The derived liveness LBA works.** `lba=32784` is `md-sectors + 16` off
+the 16 MB image and comes back `ok=n`, so the failure channel is live and
+the two rows above it are claimable. That is the arm that read `ok=y` on
+the ASUS and voided the whole rung.
+
+**No bed can show either probe with the disk above root port 7, and the
+sitting will be the first observation of it.** QEMU refuses USB
+attachment past its eighth port whatever HCSPARAMS1 claims; codex-vm can
+seat the stick anywhere (`-xhci-ports 26 -usb-disk-port 10`) but both
+probes are GOP-only and codex-vm cannot screenshot a spinning payload --
+measured twice today, with and without `-headless`, no BMP either time.
+The ASUS answers with the stick on port 9. Mirroring the probe rows to
+serial would make that bed readable without a body; it is not done, and
+it is a change to an artifact that is about to fly.
+
 ## FLOWN 2026-08-05, ALL GREEN: `deskboot.img` (`ADA7CC4D9837B66097B89745EB7699445F9E8FCC8F5CEE6D04F074BEE0BFA004`). The completion-steal fix. Flight 3.
 
 **Flight 3 verdict, Damian on the glass: "it all works." The mouse
@@ -440,7 +1486,7 @@ and the ASUS did not boot it, and because every failure path in
 nothing to read. Two things changed as a result and both are load-bearing
 below: the stub now paints two liveness colours (main 12073), and the
 artifact that flies must be ON this ladder before it is flashed. The full
-account is `docs/Stories/TheStickDidNotBoot.md`.
+account is `docs/PM/Active/Stories/TheStickDidNotBoot.md`.
 
 **ATTEMPT 2 (2026-07-29) FLEW AND THE STICK BOOTS.** Three of the four
 rungs went up, all four sitting questions came back answered, and nothing
@@ -737,20 +1783,25 @@ CL 12115 is SUPERSEDED and that image must not fly.**
 # Rung 1. Display, channel order, AND THE PANEL MODE. No input, halts.
 # It flies first because rung 2's QR capacity depends on the mode this reports.
 build/boot/build-option-a.ps1 -Src build/boot/diag/SceneProbe.codex `
-    -Out build/boot/scene-probe.img -Seed '' -Font '' -Source '' -Kernel seed/Codex.cdx
+    -Out build/boot/scene-probe.img -Seed '' -Font '' -Source '' -Kernel seed/Codex.cdx -Ebs
 
 # Rung 2. The combined inventory probe. See rung 2 for the QR body budget.
 build/boot/build-option-a.ps1 -Src build/boot/diag/Inventory.codex `
-    -Out build/boot/inventory.img -Seed '' -Font '' -Source '' -Kernel seed/Codex.cdx
+    -Out build/boot/inventory.img -Seed '' -Font '' -Source '' -Kernel seed/Codex.cdx -Ebs
 
 # Rung 3, conditional. The 64 KB TRB boundary question. No input, halts.
 build/boot/build-option-a.ps1 -Src build/boot/diag/MscAlignProbe.codex `
-    -Out build/boot/msc-align.img -Seed '' -Font '' -Source '' -Kernel seed/Codex.cdx
+    -Out build/boot/msc-align.img -Seed '' -Font '' -Source '' -Kernel seed/Codex.cdx -Ebs
 
 # Rung 4, conditional. Three timed phases, and the only WRITE evidence.
 build/boot/build-option-a.ps1 -Src build/boot/diag/KbdDiagProbe.codex `
-    -Out build/boot/kbd-probe.img -Seed '' -Font '' -Source '' -Kernel seed/Codex.cdx
+    -Out build/boot/kbd-probe.img -Seed '' -Font '' -Source '' -Kernel seed/Codex.cdx -Ebs
 ```
+
+**`-Ebs` is now ON all four lines** (reek, 2026-08-05). It was on none of
+them while the block below said the switch was the half that mattered, so
+the correction lived only in prose and every copy-paste rebuilt a
+two-driver measurement. None of these four payloads calls ConIn or ConOut.
 
 **`seed/Codex.img` is NOT built for this attempt.** Boot 3 is not on the
 attempt-2 ladder, for the reason in its own block below, so do not spend
@@ -1536,11 +2587,15 @@ known failure. Remove this only when the console reaches its menu under
 OVMF, then re-run the ladder end to end before anyone sits down. Details
 in the boot 3 block below, which is retained deliberately.
 
-**A5, the compiler running on the box.** Not a sitting-2 ask, on reek's
-own instruction. It needs a working console and keyboard, so it sits
-behind boot 3, which is blocked. Do not budget a compile-on-metal rung.
-If boot 3 unexpectedly becomes available, ask reek then and they will
-write the scripted sequence against what the box actually did.
+**A5, the compiler running on the box.** Not a sitting-2 ask. It needs a
+working console and keyboard, so it sat behind boot 3, which was blocked
+when this was written. **Both halves of that premise have moved and
+neither has been re-checked here: A5 is UNOWNED and an owner for it is a
+ruling Damian owes (`docs/PM/CurrentPlan.md`), and the ceremony flight
+since typed the full ceremony on the ASUS keyboard.** Do not budget a
+compile-on-metal rung on the strength of this paragraph in either
+direction. Re-derive whether boot 3 is still blocked, and take the owner
+from CurrentPlan rather than from here.
 
 **A separate control image.** Declined; see the liveness colour table
 above.

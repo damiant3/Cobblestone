@@ -1,0 +1,442 @@
+[
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "The ARM64 half of the LIR retarget, step 4: the target descriptor, its physical mapping, and the dispatch that routes a function through the LIR when every construct in it is whitelisted. The whitelisted set: the function with no instructions (step 4b), straight-line integer add/subtract/multiply in a leaf (step 4c), the comparison, branch and return that make up a returning `if` (step 4e), the call (step 4f), the `LiMove`/`LiJump` join that makes up a non-returning `if` (step 4g), the flag-setting `tst` a power-of-two remainder fuses to (step 4h), and the eight-byte `LiLoad` a constructor pattern reads its tag and its fields with (step 4i). Step 4d gives them a frame, so an allocation that spills or reaches the callee-saved pool is emitted rather than declined. Everything else falls back to the tree emitter (`a64-emit-function`), byte for byte.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "doctrine",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "This chapter exists to be the place where \"the register file is data\" stops being a claim about x86-64 and becomes a second entry in the table. The allocator, the structural verifier and the allocation verifier are the compiler's own, bundled into this plug by `-WithLir`; nothing here reimplements them. What is written here is only what a machine has to say about itself: which physical register each abstract index means, which registers are the selector's scratch, and where a spill slot lives.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-lir-phys",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "Nineteen registers where x86-64 has nine, and the design doc names the consequence rather than celebrating it: ARM64 will look better than x86-64 here for reasons that say nothing about the allocator's quality. The comparison that means anything is against the ARM64 tree emitter.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "warning",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "The pool structure that indexes the mapping above. It sits here beside the mapping for the reason `X86_64Lir.codex` gives: `nregs` is the length of `a64-lir-phys`, and two files cannot be trusted to keep that true.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-lir-scratch-reg",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "They are not `x12` through `x15`: those four are the TREE emitter's rotating temp pool (`a64-alloc-temp`). Keeping the two allocators off each other's registers costs nothing here, because a function is emitted entirely by one path or entirely by the other, and it means a half-finished ratchet cannot produce a function where the two disagree about who owns a register.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "There is no frame pointer, and that is not an omission: nothing here walks a frame chain, so the register it would cost buys nothing. There is no stack guard either, which is x86-64's reasoning for a pure leaf and is weaker here now that a call is admitted; the ARM64 tree emitter emits none for any function, so this matches the path it falls back to rather than diverging from it.",
+    "thread": null
+  },
+  {
+    "target": "type:A64LirFrame",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "The three counts travel together because they are read together at four sites and the epilogue has to agree with the prologue on all of them. `haslr` arrived third and threading a third parameter through the same four signatures is what this record exists to stop.",
+    "thread": null
+  },
+  {
+    "target": "section:Entry Moves",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "A parameter arrives where the ABI puts it and has to reach where the allocator put it. The plan is the compiler's (`IR/Lir.codex`, Section: Entry Moves), computed in abstract indices and simulated there against the assignment, so what is left here is the mapping from an abstract index to a physical register. That split is the point: the ordering logic is the part that was wrong on x86-64 for ten sessions, and it is now written once and checked once rather than per backend.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "warning",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "The staging index the planner uses for a cycle is `nregs`, one past the allocatable file. Here that is `x10`, the same scratch an oversized immediate uses -- safe, because entry moves all run before the first instruction is selected, so the two uses cannot overlap.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "discovery",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "**The first whitelisted construct is the function with no instructions at all.** It is not a shape anyone would think to name, and reading the lowering is what found it: `ident (x) = x` lowers to `b0: => v0`, `konst = 42` to `b0: => #42`, and `pick2 (a) (b) = b` to `b0: => v1`. One block, zero instructions, and a result operand. Whole classes of real definition land here: an identity, a constant, an accessor that selects one of its arguments.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "**The second whitelisted construct is straight-line integer arithmetic in a leaf** (step 4c): a single block whose every instruction is a `LiBin` over `LoAdd`, `LoSub` or `LoMul`. `diff (a) (b) = a - b` lowers to `b0: v2 = sub v0 v1 => v2`, `addup (a) (b) (c) = a + b + c` to `b0: v3 = add v0 v1; v4 = add v3 v2 => v4`, and `poly (x) = x * x + x` to `b0: v1 = mul v0 v0; v2 = add v1 v0 => v2`. These were read off the compiler with `build/compile.ps1 -Passes lir-dump` rather than inferred from the lowering source, which is the practice 4b established.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-lir-op-ok",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "`LoRem` and `LoDiv` are excluded. They are the operators whose registers are not the allocator's to choose on x86, and while ARM64's `sdiv`/`msub` are three-operand and fix nothing (which is why this descriptor answers -1 on both axes), a remainder still needs two instructions and a scratch, and one construct per changelist is the ratchet.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "**The third construct is control flow** (step 4e): `LiCmp` and its sibling `LiTest` set flags, `LiBranch` reads them, and `LiRet` leaves. Together they are the whole of an `if` whose arms both return, which is the shape the lowering produces for `math-min (a) (b) = if a < b then a else b`: `b0: cmp v0 v1; br lt b1 b2 | b1: ret v0 | b2: ret v1`. This is the first multi-block function the selector emits, and therefore the first that needs a block-offset table and branch fixups.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "**The fifth and sixth constructs are `LiMove` and `LiJump`** (step 4g), which together admit the OTHER `if` shape: the one whose arms do NOT return but compute into a shared vreg and jump to a join, where the joined value is used. `let v = if c > 0 then 3 else 4 in v` lowers to `b0: cmp v0 #0; br gt b1 b2 | b1: v_s = mov #3; jmp b3 | b2: v_s = mov #4; jmp b3 | b3: => v_s`, and `(if c > 0 then 10 else 20) + 1` puts the `add` in the join block rather than leaving it empty. `LiMove` copies an operand into a vreg -- the same reg-to-reg-or-slot move the entry planner emits, but with a `LirValue` source rather than an abstract index -- and `LiJump` is the unconditional sibling of `LiBranch`, sharing its fixup machinery and its fall-through elision.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "invariant",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "**This backend needs none of x86-64's `canon` fall-through machinery, and that is a property of the two emit models rather than a shortcut.** x86-64 routes every return through one shared epilogue block, so two arms both ending `LiJump exit` land on the same synthetic block and the elision has to canonise an empty exit to the epilogue or emit a five-byte jump to the instruction underneath (the CL 8600 bug). Here each `LiRet` carries its own inline epilogue and the join's arms fall out the bottom: the exit block is always the last one lowered (`lower-def-to-lir` pushes the current block last), a jump to it resolves through the offset table to wherever it physically sits, and eliding only ever happens against the LITERAL next block, which is always a safe fall-through. So `a64-lir-next-id` reads the literal next id and no canonicalisation is needed for correctness.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "**The seventh construct is `LiTest`** (step 4h), `LiCmp`'s bitwise-AND sibling: x86's `test` sets flags from an AND, and AArch64 spells it `tst`, which is `ands xzr` and sets Z exactly as `test` does. It appears only where the compiler fuses a power-of-two remainder against zero -- `math-mod n 2 == 0` becomes `test v0 #1`, `math-mod n 4 == 0` becomes `test v0 #3` -- so a following `br eq` tests `(v & mask) == 0`.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "discovery",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "It was recorded here twice as unfireable, and both records were wrong. The fusion is not the obstacle: the compiler produces it perfectly well in an ordinary file. The obstacle was that the PLUG received an un-inlined wire, so `math-mod n 2 == 0` arrived as a call and lowered to `LiCmp` on the call's result. That is closed: the IR emitters run the pass pipeline now, so the remainder is inlined before the wire and the `test` shape reaches this selector. `codex/test/lir-test-cross` pins it. The two guards in that file -- `lt-mod3` divides by three, `lt-modone` compares against one -- keep their `rem`, and `LoRem` stays outside the whitelist, so those two decline to the tree emitter while the three power-of-two shapes take the LIR path. That split is exactly what the pin wants: the same answers by different instructions.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "doctrine",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "The standing lesson, learned here from the other direction than 4e's: \"nothing can fire this\" is a measurement with a date on it, not a property, and the measurement has to be taken on the PLUG's lowering rather than the compiler's `-Passes lir-dump`.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "The argument placement is NOT written here. It is `IR/Lir.codex`'s `lir-amv-for`, planned in abstract register indices and simulated there against the assignment, and this chapter supplies only the index-to-register mapping -- the same split step 4d made for the entry moves and for the same reason: an ordering bug in a backend-local copy of a parallel move is the defect that survived ten sessions of green benches on x86-64.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "warning",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "A call whose target is not a definition this module will emit is declined rather than emitted, and the reason is specific to this backend. An ARM64 call is a placeholder instruction plus a patch record, and `a64-patch-calls` leaves the placeholder ALONE when the name does not resolve -- so an unresolved call is a `nop`, the call silently does not happen, and the caller reads whatever was in `x0`. That is a wrong answer with no diagnostic anywhere, so the gate is on the name resolving, not on the call being emittable.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "**The eighth construct is `LiLoad`** (step 4i), the memory read a constructor pattern is made of and the last per-construct arm this backend was missing. `when s is Circle (r) -> ...` lowers to a load of the variant tag from `[sv + 0]`, a `LiCmp` against the constructor's declaration index, a `LiBranch`, and then one load per bound field at its packed offset. Every other instruction in that shape was already whitelisted, so the loads are the whole of what this notch buys: with them, a variant match compiles here instead of falling back.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-lir-known-arity",
+    "kind": "warning",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "`a64-find-func-arity` answers 0 for a name it does not hold, which is the same answer it gives a real nullary function, so it cannot be asked this question. This one answers -1 for absent and the recorded arity otherwise.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "Only a backward reference is admitted: `func-names` holds the definitions emitted so far, and this gate runs before the current function registers itself, so a self-call and a call to anything defined later in the module are both declined. That is coverage given up on purpose. The alternative is a pre-scan of the module, and it is worth having only once something in the corpus is declined for this reason and not for another.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-lir-call-ok",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "The arity must match as well as the name resolve. Runtime helpers are recorded with arity zero (`a64-record-func`), so requiring equality is what keeps a two-argument call to a helper that is not a two-argument function out.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "That is why the zero-instruction emitter reads the parameter index rather than the allocation, and it is worth saying plainly rather than leaving it to be inferred: **that construct does not consume the register assignment.** The allocator and both verifiers still run over it, so the descriptor was exercised by real ARM64 functions from the first notch, but its bytes do not depend on what they answered. **The arithmetic construct does consume it**, which is why the two share a dispatch and not an emitter, and why a descriptor error can reach an emitted byte from 4c onward and could not before.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "**A function whose every path returns has no result operand and no exit to fall into**, which is what `rets` says, and the selector used to decline on it because a single block with no terminator was all it could emit. It is now the ordinary case for an `if`: each `LiRet` carries its own answer and its own epilogue, and the exit block the lowering still appends (`b3: => #0`) is unreachable and emits nothing.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-lir-selects",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "A function that does NOT return from every path used to have to be a single block, because reaching a second one without returning needed a `LiJump`. With `LiJump` whitelisted that restriction is gone: the only non-returning shape still handled specially is the zero-instruction function, whose result is a parameter index read directly rather than an allocated vreg. Everything else, returning or not, single-block or many, goes to the whitelist check, and the framed emitter reads its result out of the allocation.",
+    "thread": null
+  },
+  {
+    "target": "type:A64LirTry",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "A declined function answers `handled = False` and the caller keeps the tree emitter. `punctual` and the bounded-signature guards that x86-64 checks are not repeated here: the plug receives IR that the compiler has already checked, and the flags those gates read are compiler-side.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "The emission for a zero-instruction function is the whole function: register the name and arity exactly as the tree path's `a64-reset-func-state` does, place the result in `x0`, and return. There is no prologue and no epilogue, which is not a shortcut -- a body with no instructions makes no call, touches no stack and allocates nothing, so a frame would be dead weight. The ARM64 tree emitter's own frameless path reaches the same conclusion for the same reason and emits no frame either.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-lir-emit-result-param",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "A result already in `x0` emits nothing: parameter zero arrives there, so `mov x0, x0` is elided rather than written.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "An operand of an arithmetic instruction, resolved to a physical register. A vreg in a register reads its allocation; a vreg in a spill slot is loaded, and an immediate is materialised, into the scratch register the caller names. The two scratches exist so that an instruction whose operands both need one still has somewhere to put each, and they are consumed inside a single instruction's selection, so nothing outlives its use.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-lir-emit-alu",
+    "kind": "warning",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "`LoRem` and `LoDiv` emit nothing rather than an instruction that would be wrong. They cannot arrive -- `a64-lir-op-ok` excludes them and the whitelist runs before selection -- and the arms exist because the match must be exhaustive. Emitting an `add` for a remainder to satisfy the type checker would turn a whitelist slip into a silent miscompile; emitting nothing turns it into a visibly missing instruction. `Emit/X86_64Lir.codex` makes the same choice at the same place for the same reason.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-lir-dst-reg",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "A destination in a spill slot is computed into the first scratch and then stored. Writing into `x10` is safe even when `x10` is also an operand, because the ALU is three-operand and reads both sources before it writes: that is the same machine property that let the aliasing case go away entirely at step 4c, reappearing here as the reason a destination needs no third scratch.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-lir-load-into",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "A move copies an operand into a vreg's location. It loads the source into a named physical register rather than returning one the way `a64-lir-src` does, because the move's destination IS a named register in the common case and a slot store otherwise, and loading straight into the destination register skips the mov-through-scratch an immediate would otherwise pay. A source already in the destination register elides, which is why the coalesced join chains that leave a `mov x0, x0` cost nothing.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "A memory read: eight bytes from `[base + off]` into the destination's location. The width and the sign flag are not parameters here because the whitelist has already settled both -- `a64-lir-load-ok` admits only width eight, and an eight-byte load fills the register, so there is nothing to extend and the sign flag has no effect to have. `Emit/X86_64Lir.codex`'s `lir-sel-load` takes both, because it carries the four narrow widenings beside this same case, and that is the shape this grows into when the missing encodings land.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "invariant",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "A branch is emitted before its targets' addresses are known, so each one leaves a placeholder and a fixup naming the block it meant. Blocks are laid out in list order, which the lowering guarantees is topological, and the offset table is indexed by block ID rather than by list position -- the ids are handed out eagerly and a nested `if` numbers its own blocks above the join it jumps to, so the two orders genuinely differ (`if-nest` runs b0, b1, b4, b5, b6, b2, b3).",
+    "thread": null
+  },
+  {
+    "target": "type:A64LirFix",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "Which successor falls through decides how many instructions this costs. When the next block in the layout is the false successor, the conditional branch to the true successor is the whole of it; when it is the true successor, the condition is inverted and the branch goes to the false one. Only when neither is adjacent does it cost a conditional and an unconditional. The lowering emits the true arm first, so the inverted case is the common one and this is the difference between matching the tree emitter and paying an extra branch on every `if`.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-lir-emit-jump",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "An unconditional jump, the terminator a join arm ends on. It is `LiBranch`'s two-target tail with the condition dropped: when the target is the block laid out next it falls through and emits nothing, and otherwise it leaves a placeholder `b` and a fixup with cond -1, which `a64-lir-apply-fixups` patches to an unconditional `b rel`. The fall-through elision is safe against the literal next id for the reason the whitelist prose gives: eliding reaches the block that physically follows, and a jump that is emitted resolves through the offset table wherever its target sits.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-lir-emit-ret",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "A return carries its own result and its own epilogue, which is why a function whose arms all return needs no shared exit. The result is placed while the frame still stands, for the reason the straight-line result gives.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "One step of the argument plan. The abstract indices are mapped by `a64-lir-emv-phys`, which is the entry moves' mapping and is the right one to share: both planners name the same file and the same staging index, and two mappings that must agree are one mapping.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-lir-emit-amv",
+    "kind": "warning",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "`AmvImm` names an argument POSITION rather than carrying a value, so the plan stays free of 64-bit literals; the immediate is read back out of the call's own operand list here. The `LvReg` arm cannot arrive -- the planner only emits `AmvImm` for an operand it read as `LvImm` -- and it emits nothing rather than a wrong instruction, the choice `a64-lir-emit-alu` makes at the same kind of unreachable arm.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "discovery",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "**That same property makes the planner's cycle-breaking unfired on this backend, and it is worth writing down rather than leaving as implied coverage.** A cycle needs an argument whose source is another argument's destination, which needs a value sitting in `x0..x7` at a call -- and the allocator has just been described as never leaving one there. Measured rather than reasoned: with `lir-amv-blocked` disabled entirely, every function in `codex/test/lir-call-cross` still answers correctly and the emitted bytes are unchanged, while zeroing the planner's fuel so it emits NO moves changes seven of its ten answers. So the plan is load-bearing and its ORDERING is not, here. The ordering is checked by `codex/test/lir-check.a64-expected`, which runs the planner and its simulation over the corpus under the probe descriptors.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-lir-emit-call",
+    "kind": "warning",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "One reading trap, recorded because it cost a build: in a chain of calls the `mov` immediately after a `bl` is the previous call's RESULT move, not the next call's first argument move. Reading `callchain`'s listing the other way makes the ordering logic look fired when it is not.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-lir-next-id",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "One block: record where it starts, then emit it. `nextid` is the id of the block that will be laid out immediately after this one, or -1 for the last, and it is what the branch above reads to decide whether it can fall through.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-lir-result-loc",
+    "kind": "discovery",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "**The spill-slot arm here is not fired by `codex/test/lir-frame-cross` and probably cannot be.** The result of a straight-line block is the last instruction's destination, whose interval starts where its operands die, so a register is always free for it. It is written as the correct thing rather than the tested thing, because the alternative arm to write is one that silently answers the wrong register. The two spill arms that ARE fired are the operand load and the destination store.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-lir-zero-insn",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "The zero-instruction construct needs no frame and takes none: its body makes no call, touches no stack and allocates nothing. The arithmetic construct takes one only when the allocation asked for it, so a leaf that fits in registers still emits exactly the bytes step 4c emitted.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-lir-frame-of",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "The whole body: the frame, the entry moves, every block in list order, the branch fixups once the offsets are known, and -- only when some path does NOT return -- the trailing result and epilogue that a fall-through exit needs. A function whose every path returns has already returned from each of them.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "The gates, in the order that costs least. `lower-def-to-lir` is the expensive one and runs last of the cheap checks.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "The whitelist is checked before the allocator, so a function the selector cannot emit costs a lowering and nothing more.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "doctrine",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "**A verifier violation declines rather than halting, and that is a deliberate divergence from x86-64.** `Emit/X86_64Lir.codex` halts the build, because there the selector's output would be written and a silent fallback would hide an allocator defect behind working bytes. Here there is no diagnostic channel to halt with: `A64State` carries no error bag, the wire protocol is the plug's only output, and writing to it would corrupt the binary it is carrying. Declining is the honest remaining option, and it is safe in the narrow sense that matters: the fallback is the tree emitter, which is what compiles the function today. What it costs is visibility, and the cross battery is what would surface a wrong answer.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "discovery",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "**`opening` is declined, and finding out why cost a regression.** On this backend the entry point is not an ordinary function: `a64-emit-function` appends `integer-to-text` and `print-line-uni` calls after its body so the program prints what `opening` returned. `opening : Integer = 0` lowers to `b0: => #0`, which is squarely inside this whitelist, so the selector claimed it, emitted `li x0, 0; ret`, and the program printed nothing at all. That is `codex/test/list-append-perf-N8-L7`, which went PASS to FAIL on the lane and was the only regression in 356 tests. The general lesson is worth more than the gate: **the tree path had a special case attached to a function NAME, and a whitelist written in terms of instruction shapes cannot see it.**",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "**The arithmetic arm carries a gate the whitelist cannot express, because it is a question about the ALLOCATION and not about the instructions.** Step 4c emitted no prologue, no epilogue and no entry moves, and so declined three things: a spill slot, a callee-saved register, and a parameter that did not stay in the register it arrived in. The frame and the entry moves lift all three, so what is left is one bound.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "discovery",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "Measured rather than assumed, on the shapes in `codex/test/lir-frame-cross`: an eight-parameter tree reaches eleven live values and so reaches the callee-saved pool, and a right-leaning spine reaches twenty and so spills.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Arm64 LIR Register File",
+    "kind": "discovery",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "**What no shape in that file reaches is a displaced parameter, and it is worth knowing why rather than reading the entry-move code as covered by it.** Every parameter is given interval start `-1`, expiry is `fin < start`, so no parameter expires against another; all are live together through the parameter sweep and each takes the lowest free register in the argument window, in vreg order, which is the one it arrived in. Only a call, a division or a hint can break that, and until step 4f this whitelist admitted no call and no division while the allocator never hints a parameter. The planner was fired anyway, and not here: `codex/test/lir-check.a64-expected` runs it over the real corpus under an ARM64-shaped descriptor where calls DO displace parameters, and pins both the plan and its simulation.",
+    "thread": null
+  },
+  {
+    "target": "function:a64-lir-alloc-ok",
+    "kind": "rationale",
+    "author": "fester",
+    "date": "2026-08-05",
+    "body": "**A call is admitted now, so this paragraph's premise is retired and the mapping it was waiting on is live.** A displaced parameter is reachable in principle from a function that calls something before its last use of a parameter; whether any shape in `codex/test/lir-call-cross` actually reaches one is a measurement and not an assumption, and the pin above is still where the ordering itself is checked.",
+    "thread": null
+  }
+]

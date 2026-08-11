@@ -1,0 +1,66 @@
+[
+  {
+    "target": "chapter:GopDisk",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "AHCI (GopAhci, B3.1b) -- modern boards, q35, both machines in our matrix. Found by PCI class; the HBA fetches the sector by DMA.",
+    "thread": null
+  },
+  {
+    "target": "chapter:GopDisk",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "AHCI is tried first because a board with both usually presents the boot disk on the AHCI controller, and the legacy ports may answer for an empty compatibility channel.",
+    "thread": null
+  },
+  {
+    "target": "section:Status Polling",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Wait for BSY to clear. Returns the last status byte read; the caller checks ERR. Fuel-bounded: exhaustion returns the busy status so the caller sees BSY still set and treats it as a failure.",
+    "thread": null
+  },
+  {
+    "target": "function:ide-read-chunk",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Program the count and LBA once, then drain `count` sectors, waiting for DRQ before each. Returns 1 on success.",
+    "thread": null
+  },
+  {
+    "target": "section:Medium Selection",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Dispatch order answers \"which controller responds\", not \"which medium is mine\" -- and on a real machine the internal SATA disk responds on AHCI before the boot stick responds on USB, so every read above this layer would come from the WRONG disk. The selection cells fix the medium by content: GopMedium probes each candidate (does its ESP carry our own CODEX.CDX?) by steering these cells and locks the winner. While the magic is present, every read and write in this chapter goes straight to the selected medium; without it, the dispatch order below stands, which is also how the probe itself reads. The magic is written LAST, so firmware residue in the cells cannot impersonate a selection.",
+    "thread": null
+  },
+  {
+    "target": "function:disk-read-selected",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Bulk read through the selected medium when one is locked, else through whichever controller answers. AHCI is tried first and does the whole thing in one DMA; the IDE fallback chunks it; USB mass storage is last because its bring-up is the heaviest and boards present fixed disks on the other two. On a machine that booted from a USB stick with no other disk, USB is the only path that answers.",
+    "thread": null
+  },
+  {
+    "target": "function:disk-write-selected",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Bulk write through the selected medium when one is locked, else through whichever controller answers. AHCI DMAs the whole run; IDE chunks it and issues one flush at the end; USB rides last, same order as reads -- a write must land on the same medium a read would have come from.",
+    "thread": null
+  },
+  {
+    "target": "section:Dispatch",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Try the selected medium, else AHCI, then legacy IDE, then USB mass storage. `dr-via` names the controller that answered so the caller can say which path reached the disk -- on a boot screen that distinction is the difference between \"we read the stick\" and \"we read something\".",
+    "thread": null
+  }
+]

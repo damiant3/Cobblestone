@@ -1,0 +1,282 @@
+[
+  {
+    "target": "chapter:FactArchive",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The live log grows forever, and everything in it is equally present: the edition of a file written this morning and the edition it superseded a decade ago cost the same sector. There has never been a way to move the old one anywhere. Compaction cannot: it collapses two entries only when they are the same kind and the same bytes, because a compactor that cannot prove two facts are the same must keep both.",
+    "thread": null
+  },
+  {
+    "target": "chapter:FactArchive",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "So the base. The active repository records the signature of one compressed artifact and calls it the base, and from that moment the live log is not the history -- it is the delta on top of a base. A git packfile is this. An LSM tree's lower levels are this.",
+    "thread": null
+  },
+  {
+    "target": "chapter:FactArchive",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The distinction this chapter exists to hold is that archiving is NOT deleting. An archived fact is still addressable by its hash, still verifies against it, and is still retrievable; the live log simply stops carrying the bytes and starts carrying a signed record of where they went. A store that has archived can still NAME everything it ever held. Only a store that forgets answers \"not found\". That is what keeps the founding promise -- a published definition exists forever -- while still reclaiming the sectors.",
+    "thread": null
+  },
+  {
+    "target": "chapter:FactArchive",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Where the artifact lives afterwards is a deployment concern and none of this chapter's business. It names it, signs it, and verifies it when handed it back. Whether the bytes sit on a second disk, an object store, a tape, or a peer answering a by-hash fetch is somebody else's decision, and encoding one here would be this chapter exceeding its authority.",
+    "thread": null
+  },
+  {
+    "target": "section:Kind And Codec",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Kind 41, beside 39 (a path retired) and 40 (an index snapshot). The codec is named in the record rather than assumed by the reader, which is what makes changing it later a new base instead of a migration.",
+    "thread": null
+  },
+  {
+    "target": "function:persist-kind-base",
+    "kind": "invariant",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Lz4 is the codec because when this shipped it was one of the few chapters in the compression quire that actually compressed: Deflate emitted stored blocks and Gzip wrapped that Deflate, so both GREW the artifact. Those two chapters have since been deleted rather than fixed, so Lz4 is now the only codec there is. A working gzip would probably be the better base if one existed -- not because of interop, which gzip always had even when it compressed nothing, but because it is the format every decoder on earth already reads. Moving is a new base, not a migration, which is the point of naming the codec in the record.",
+    "thread": null
+  },
+  {
+    "target": "function:fa-no-prev",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A base with no predecessor names one anyway. An empty field in a pipe-delimited line is a decoder's problem, and this line has enough fields already.",
+    "thread": null
+  },
+  {
+    "target": "section:The Base Record",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Both hashes are signed, and that is not belt-and-braces. The artifact hash is what you check on the bytes you were handed BEFORE you decompress them, which is the only order that can refuse a decompression bomb -- verify first, expand second. The plain hash is what you check on what came out, which catches a decoder that is subtly wrong rather than absent. A codec bug that silently produced different bytes would otherwise be indistinguishable from history.",
+    "thread": null
+  },
+  {
+    "target": "function:base-empty",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The base of a store that has never archived. It is not a base and it does not verify -- no signer, no signature -- which is what an archival that found nothing to move should hand back.",
+    "thread": null
+  },
+  {
+    "target": "function:base-signing-head",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The signature binds everything the record asserts except itself: both hashes, the codec, the count, what it covers, what it supersedes, and the attribution. An assertion is signed the way a tombstone is signed, and for the same reason -- an unauthenticated assertion is exactly the hole the store exists to close.",
+    "thread": null
+  },
+  {
+    "target": "section:Wire Form",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Ten pipe-delimited fields. No field can contain a pipe: the hashes and the signature are hex, the codec is a bare word, the counts are decimal, and the fingerprints are colon-separated hex.",
+    "thread": null
+  },
+  {
+    "target": "section:Reading The Log's Own Bytes",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A range of the live log, copied out as it sits. This is the whole reason the artifact is a fact log rather than something shaped like one.",
+    "thread": null
+  },
+  {
+    "target": "function:fa-bytes-of",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The byte-at-a-time accumulation is honest about its cost: it is linear in the range and allocates a cons per byte. An archival is a tool a human runs, not a path anything walks, so this is the cheap kind of expensive.",
+    "thread": null
+  },
+  {
+    "target": "function:fa-read-range",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The sector numbers throughout this chapter are RELATIVE to the store's base LBA, as they are in DiskFacts and AppPersist. The base rides down from the store rather than being resolved here; a chapter that walks a log has no business asking a disk where its partitions are.",
+    "thread": null
+  },
+  {
+    "target": "section:Building A Base",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Compress the range, hash both forms, sign the assertion. The caller chooses the cut and says what the base supersedes; nothing here decides that, because choosing a cut requires knowing what is still current and that is the index's question, not this chapter's.",
+    "thread": null
+  },
+  {
+    "target": "section:Verifying A Base",
+    "kind": "invariant",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The same shape a tombstone verifies by: the signer must be a key the manifest holds at or above the threshold, and the signature must cover what the record claims.",
+    "thread": null
+  },
+  {
+    "target": "section:Opening An Archive",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The order of the three checks is the design. Verify the record first, so an untrusted base is refused before its bytes are touched at all. Verify the compressed bytes second, BEFORE expanding them, so a bomb is refused while it is still small. Only then decompress, and check what came out against the plain hash the same signature covered.",
+    "thread": null
+  },
+  {
+    "target": "function:archive-open",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A refusal is None. There is deliberately no variant saying which check failed: a caller holding an archive it cannot open has one recourse either way, and a differentiated refusal tells whoever handed it over which lie to fix.",
+    "thread": null
+  },
+  {
+    "target": "function:def-archivable",
+    "kind": "invariant",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "What this buys is the invariant: archive, rebuild, and the TREE is unchanged. Not the history -- wi-works loses the archived editions, which is the whole point, and they are in the base, still addressable and still verifying.",
+    "thread": null
+  },
+  {
+    "target": "section:Walking The Log",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Sector, size, kind and content per entry. The layout is FactLog's, asked for rather than known.",
+    "thread": null
+  },
+  {
+    "target": "function:fa-scan-log",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The reads go through AppPersist's helpers rather than the block builtins. AppPersist grounds Device.Block and does not publish it, so this chapter stays effect-free like the rest of the repository readers. Reaching for block-read-sector directly is what CDX2031 stops, and correctly: this chapter has no business declaring itself a source of hardware effects.",
+    "thread": null
+  },
+  {
+    "target": "section:Choosing The Cut",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The cut is a PREFIX boundary, not a filter. A base is a contiguous range of the log copied out verbatim, so the archivable facts have to be at the bottom: the cut is the sector of the first fact that must stay, and everything below it goes. One fact that must stay near the start of the log stops the whole archival, and that is correct rather than unfortunate -- it is the difference between moving a range and rewriting history.",
+    "thread": null
+  },
+  {
+    "target": "section:Running An Archival",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "Copy the prefix out, shift what is left down over it, and record the base. The order matters: the artifact is built from the sectors BEFORE they are overwritten, and the base record is appended after the shift so it sits at the new head rather than in the range it describes.",
+    "thread": null
+  },
+  {
+    "target": "function:fa-shift",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "One sector at a time, low to high, through one reused buffer. Low-to-high is the safe direction here because the destination is always BELOW the source: an earlier write can never clobber a sector this loop has yet to read.",
+    "thread": null
+  },
+  {
+    "target": "function:archive-run",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "A store with nothing archivable is returned untouched, and says so with a cut equal to the log start and an empty artifact. That is the common case: a young log is all current.",
+    "thread": null
+  },
+  {
+    "target": "section:Reading A Work That May Have Left",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The difference between a tier and an amnesia, in one function. A hash the live log does not hold is not therefore unknown: if a base exists, the work may be in it, and the store can still NAME the artifact that would answer. What it must never do is claim the work is gone.",
+    "thread": null
+  },
+  {
+    "target": "chapter:FactArchive",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "WorkInBase carries the artifact hash and not the work, because resolving it needs bytes this box may not be holding. That is deployment's problem, and fetching them by hash is 6.2's.",
+    "thread": null
+  },
+  {
+    "target": "chapter:FactArchive",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The live half is asked of the INDEX, not of DiskFacts. disk-read-fact answers from the store's in-memory map, which app-write-fact never populates -- and disk-load keys that map by the hash of the stored LINE, not by the hash of the content the line describes. It is an index of records; wi-works is an index of works, and a work's hash is what a quotation names. Asking the wrong one answers None for everything and reports every work as archived, which is how this was caught.",
+    "thread": null
+  },
+  {
+    "target": "chapter:FactArchive",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The middle answer is WorkAskBase and not WorkInBase, and the difference is the whole honesty of this function. A store holding a base CANNOT tell an archived work from one it never had: deciding that needs the artifact, which it may not be holding. So the answer it can give is \"not in the live log; here is the base to ask\" -- a direction, not a claim. Naming that variant WorkInBase would have it assert membership it cannot check, and a hash nobody ever stored would come back as archived.",
+    "thread": null
+  },
+  {
+    "target": "type:WorkLookup",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The consequence, stated rather than hidden: once a base exists, WorkUnknown is only reachable when there is no base at all. A store cannot say \"never stored\" without reading its own history. Fixing that means putting membership evidence in the base record -- a Bloom filter over the archived hashes would do it in a few hundred bytes, and `codex/foreword/core/BloomFilter.codex` already exists -- and it is a real option, not done here because nobody has needed it.",
+    "thread": null
+  },
+  {
+    "target": "section:Reading A Work Out Of The Base",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "This is what makes the tier answer instead of only pointing. work-lookup can say \"ask the base\"; this is the asking. Without it, \"an archived work is still retrievable\" is a claim about bytes rather than a thing anybody can do.",
+    "thread": null
+  },
+  {
+    "target": "chapter:FactArchive",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The plain bytes are a fact log, so they are walked with FactLog's own readers rather than a second set written for a byte list -- that would be a fresh copy of the layout, which is exactly what FactLog exists to prevent and what AppPersist had to be cured of. The readers want an address, so the bytes go into a buffer once and each entry is read at `buf + offset`.",
+    "thread": null
+  },
+  {
+    "target": "function:base-resolve",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The whole path, in one call: verify the base, refuse the bytes if they are not what it signed, expand them, and find the work. A caller holding an artifact and a hash needs nothing else.",
+    "thread": null
+  },
+  {
+    "target": "section:The Base In The Active Repository",
+    "kind": "warning",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The record lives in the live log as a fact, which is what \"record the signature in the active repository as the base\" means. The base records are never archived themselves -- they are small, one per archival rather than one per fact, and they are the lineage. Keeping them is what lets a store that holds only the newest artifact still account for every base that ever existed.",
+    "thread": null
+  },
+  {
+    "target": "function:base-current",
+    "kind": "rationale",
+    "author": "reek",
+    "date": "2026-08-06",
+    "body": "The current base is the newest verified kind-41 in log order. An unsigned or untrusted base record is not the base, however recently it was appended.",
+    "thread": null
+  }
+]

@@ -34,15 +34,28 @@ param(
     [Parameter(Mandatory=$true)] [string]$Output,
     [int]$MemMB = 4096,
     [int]$TimeoutSec = 120,
-    [int]$Port = 9100,
+    [int]$Port = 0,
     [byte]$Tag = 1
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'vm-config.ps1')
+. (Join-Path $PSScriptRoot 'plug-ports.ps1')
 
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+
+# The port is the plug's, not this script's. It used to default to 9100 for
+# every plug, which is the constant build/plug-ports.ps1 exists to un-duplicate:
+# the guest dials its own port in net-session-new and the NAT maps that straight
+# through, so listening on anything else hangs the run with no diagnostic.
+# Derived from the plug path rather than passed, so a caller cannot get it wrong
+# by omission.
+if ($Port -eq 0) {
+    if ($Plug -match '[\\/]plugs[\\/]([^\\/]+)[\\/]') { $Port = Get-PlugPort $Matches[1] }
+    else { throw "run-plug: cannot tell which plug '$Plug' is, so cannot derive its port. Pass -Port, or run it from codex/plugs/<name>/." }
+}
+Assert-PlugPortFree -Port $Port -Plug $Plug
 
 if (-not (Test-Path -PathType Leaf $Plug)) {
     [Console]::Error.WriteLine("MISSING plug: $Plug"); exit 2

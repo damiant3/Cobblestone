@@ -1,6 +1,8 @@
 Chapter: Mesh
   cites Math chapter Matrix4
   cites Math chapter Quaternion
+  cites Math chapter Cordic
+  cites Foreword chapter MathLib
 
  Vertex buffer and index buffer types for 3D geometry. Fixed-point
  (scale 1000). Vertices carry position, normal, UV, and color.
@@ -120,11 +122,6 @@ Section: Primitive Generators
     ]
     in mesh-new verts indices
 
- The plane winds the same way the cube's top face does. Both carry a +y
- normal, so both must present the same face to a viewer above them; the
- order below was once the mirror of the cube's, which made the one
- primitive in this chapter that a backface test would discard.
-
   mesh-plane : Integer, Integer -> Mesh
   mesh-plane (half-w) (half-h) =
     let verts = [
@@ -155,6 +152,147 @@ Section: Primitive Generators
       1, 4, 3, 1, 3, 2
     ]
     in mesh-new verts indices
+
+Section: Round Primitive Generators
+
+ CORDIC trig is about 0.1 per cent, so ring vertices sit within a few
+ milli of the ideal circle; the vertex and index counts and the seam
+ UVs are exact regardless.
+
+  msg-grid-indices : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  msg-grid-indices (segs) (rings) (i) (j) (acc) =
+    if i >= rings then acc
+    else if j >= segs then msg-grid-indices segs rings (i + 1) 0 acc
+    else let a = i * (segs + 1) + j
+    in let b = a + 1
+    in let c = a + segs + 1
+    in let d = c + 1
+    in let acc2 = list-push (list-push (list-push acc a) b) d
+    in let acc3 = list-push (list-push (list-push acc2 a) d) c
+    in msg-grid-indices segs rings i (j + 1) acc3
+
+  mesh-sphere : Integer, Integer, Integer -> Mesh
+  mesh-sphere (radius) (segs) (rings) =
+    let verts = msg-sphere-verts radius segs rings 0 0 []
+    in mesh-new verts (msg-grid-indices segs rings 0 0 [])
+
+  msg-sphere-verts : Integer, Integer, Integer, Integer, Integer, List Vertex -> List Vertex
+  msg-sphere-verts (radius) (segs) (rings) (i) (j) (acc) =
+    if i > rings then acc
+    else if j > segs then msg-sphere-verts radius segs rings (i + 1) 0 acc
+    else let phi = cordic-sincos (cordic-pi * i / rings)
+    in let theta = cordic-sincos (cordic-two-pi * j / segs)
+    in let ny = phi.cos-val
+    in let ring-r = phi.sin-val
+    in let nx = ring-r * theta.cos-val / 1000
+    in let nz = ring-r * theta.sin-val / 1000
+    in let vtx = vertex (radius * nx / 1000) (radius * ny / 1000) (radius * nz / 1000) nx ny nz (j * 1000 / segs) (i * 1000 / rings) #FFFFFF
+    in msg-sphere-verts radius segs rings i (j + 1) (list-push acc vtx)
+
+ The cylinder is a side grid of two rows plus two capped fans. The side
+ rows share the rim positions but carry radial normals; the cap rims
+ repeat them with axial normals, because one vertex cannot serve both.
+
+  mesh-cylinder : Integer, Integer, Integer -> Mesh
+  mesh-cylinder (radius) (half-h) (segs) =
+    let side = msg-cyl-side radius half-h segs 0 0 []
+    in let capped = msg-cyl-caps radius half-h segs side
+    in let idx = msg-grid-indices segs 1 0 0 []
+    in let top-base = 2 * (segs + 1)
+    in let bot-base = top-base + segs + 2
+    in let idx2 = msg-fan-indices top-base segs True 0 idx
+    in mesh-new capped (msg-fan-indices bot-base segs False 0 idx2)
+
+  msg-cyl-side : Integer, Integer, Integer, Integer, Integer, List Vertex -> List Vertex
+  msg-cyl-side (radius) (half-h) (segs) (row) (j) (acc) =
+    if row > 1 then acc
+    else if j > segs then msg-cyl-side radius half-h segs (row + 1) 0 acc
+    else let t = cordic-sincos (cordic-two-pi * j / segs)
+    in let y = if row == 0 then half-h else 0 - half-h
+    in let vtx = vertex (radius * t.cos-val / 1000) y (radius * t.sin-val / 1000) (t.cos-val) 0 (t.sin-val) (j * 1000 / segs) (row * 1000) #FFFFFF
+    in msg-cyl-side radius half-h segs row (j + 1) (list-push acc vtx)
+
+ Each cap is a centre vertex followed by segs+1 rim copies. The fan
+ winds one way for the +y cap and the other for the -y cap.
+
+  msg-cyl-caps : Integer, Integer, Integer, List Vertex -> List Vertex
+  msg-cyl-caps (radius) (half-h) (segs) (acc) =
+    let top = msg-cap-ring radius half-h 1000 segs 0 (list-push acc (vertex 0 half-h 0 0 1000 0 500 500 #FFFFFF))
+    in msg-cap-ring radius (0 - half-h) (-1000) segs 0 (list-push top (vertex 0 (0 - half-h) 0 0 (-1000) 0 500 500 #FFFFFF))
+
+  msg-cap-ring : Integer, Integer, Integer, Integer, Integer, List Vertex -> List Vertex
+  msg-cap-ring (radius) (y) (ny) (segs) (j) (acc) =
+    if j > segs then acc
+    else let t = cordic-sincos (cordic-two-pi * j / segs)
+    in let vtx = vertex (radius * t.cos-val / 1000) y (radius * t.sin-val / 1000) 0 ny 0 (500 + t.cos-val / 2) (500 + t.sin-val / 2) #FFFFFF
+    in msg-cap-ring radius y ny segs (j + 1) (list-push acc vtx)
+
+  msg-fan-indices : Integer, Integer, Boolean, Integer, List Integer -> List Integer
+  msg-fan-indices (base) (segs) (flip) (j) (acc) =
+    if j >= segs then acc
+    else let r0 = base + 1 + j
+    in let r1 = base + 2 + j
+    in let acc2 = if flip then list-push (list-push (list-push acc base) r1) r0
+      else list-push (list-push (list-push acc base) r0) r1
+    in msg-fan-indices base segs flip (j + 1) acc2
+
+ The cone's side is one triangle per segment against a per-segment apex
+ copy, so each slant normal survives instead of averaging to the axis.
+
+  mesh-cone : Integer, Integer, Integer -> Mesh
+  mesh-cone (radius) (height) (segs) =
+    let slant = math-isqrt (height * height + radius * radius)
+    in let rim = msg-cone-rim radius height slant segs 0 []
+    in let apexed = msg-cone-apexes radius height slant segs 0 rim
+    in let based = msg-cap-ring radius 0 (-1000) segs 0 (list-push apexed (vertex 0 0 0 0 (-1000) 0 500 500 #FFFFFF))
+    in let side-idx = msg-cone-side-indices segs 0 []
+    in mesh-new based (msg-fan-indices (2 * segs + 1) segs False 0 side-idx)
+
+  msg-cone-rim : Integer, Integer, Integer, Integer, Integer, List Vertex -> List Vertex
+  msg-cone-rim (radius) (height) (slant) (segs) (j) (acc) =
+    if j > segs then acc
+    else let t = cordic-sincos (cordic-two-pi * j / segs)
+    in let nx = height * t.cos-val / slant
+    in let nz = height * t.sin-val / slant
+    in let ny = radius * 1000 / slant
+    in let vtx = vertex (radius * t.cos-val / 1000) 0 (radius * t.sin-val / 1000) nx ny nz (j * 1000 / segs) 1000 #FFFFFF
+    in msg-cone-rim radius height slant segs (j + 1) (list-push acc vtx)
+
+  msg-cone-apexes : Integer, Integer, Integer, Integer, Integer, List Vertex -> List Vertex
+  msg-cone-apexes (radius) (height) (slant) (segs) (j) (acc) =
+    if j >= segs then acc
+    else let t = cordic-sincos (cordic-two-pi * j / segs + cordic-pi / segs)
+    in let nx = height * t.cos-val / slant
+    in let nz = height * t.sin-val / slant
+    in let ny = radius * 1000 / slant
+    in let vtx = vertex 0 height 0 nx ny nz (j * 1000 / segs + 500 / segs) 0 #FFFFFF
+    in msg-cone-apexes radius height slant segs (j + 1) (list-push acc vtx)
+
+ Side triangle j: rim j, apex j, rim j+1. Rim vertices are 0..segs and
+ apex copies follow at segs+1..2*segs.
+
+  msg-cone-side-indices : Integer, Integer, List Integer -> List Integer
+  msg-cone-side-indices (segs) (j) (acc) =
+    if j >= segs then acc
+    else let acc2 = list-push (list-push (list-push acc j) (j + 1)) (segs + 1 + j)
+    in msg-cone-side-indices segs (j + 1) acc2
+
+  mesh-torus : Integer, Integer, Integer, Integer -> Mesh
+  mesh-torus (major) (minor) (segs-u) (segs-v) =
+    let verts = msg-torus-verts major minor segs-u segs-v 0 0 []
+    in mesh-new verts (msg-grid-indices segs-u segs-v 0 0 [])
+
+  msg-torus-verts : Integer, Integer, Integer, Integer, Integer, Integer, List Vertex -> List Vertex
+  msg-torus-verts (major) (minor) (segs-u) (segs-v) (i) (j) (acc) =
+    if i > segs-v then acc
+    else if j > segs-u then msg-torus-verts major minor segs-u segs-v (i + 1) 0 acc
+    else let ph = cordic-sincos (cordic-two-pi * i / segs-v)
+    in let th = cordic-sincos (cordic-two-pi * j / segs-u)
+    in let ring = major + minor * ph.cos-val / 1000
+    in let nx = ph.cos-val * th.cos-val / 1000
+    in let nz = ph.cos-val * th.sin-val / 1000
+    in let vtx = vertex (ring * th.cos-val / 1000) (minor * ph.sin-val / 1000) (ring * th.sin-val / 1000) nx (ph.sin-val) nz (j * 1000 / segs-u) (i * 1000 / segs-v) #FFFFFF
+    in msg-torus-verts major minor segs-u segs-v i (j + 1) (list-push acc vtx)
 
 Section: Mesh Bounds
 

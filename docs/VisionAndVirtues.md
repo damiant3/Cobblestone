@@ -122,8 +122,9 @@ reaching for it prematurely.
 ### 9. One Thing at a Time
 
 Each file does one thing. Each Chapter does one thing. Each CL does
-one thing. The compiler is ~57,466 lines across 63 files (measured
-2026-07-31; this line said 55,900 on 07-25). A wrong change in one
+one thing. The compiler is ~53,652 lines across 63 files (measured
+2026-08-09; this line said 57,466 on 07-31 and 55,900 on 07-25, so it is
+now falling rather than rising). A wrong change in one
 place surfaces as a silent corruption three pipeline stages later.
 
 ### 10. Read the Literature
@@ -171,6 +172,24 @@ choose thorough. The whitespace cleanup that finds real bugs. The 200
 edits done one at a time. The drudgery that catches what cleverness
 misses. This project optimizes for correctness of result, not speed of
 delivery.
+
+We did not get to this place by saying no to hard work (Damian,
+2026-08-05, ruling GO on rewriting the IR wire the day after the
+desktop first ran on real hardware).
+
+## The Spirit
+
+The project theme song is **"Crazy He Calls Me"** (Sigman/Russell,
+1949, the Billie Holiday recording). It is a Fallout 4 callback -- the
+song that plays over the wasteland while somebody quietly rebuilds
+civilization from scraps -- and it is a nod to the reception Linus got
+in 1991 for announcing that one person was building a new operating
+system from nothing: they call it crazy right up until it boots. The
+song's creed is the project's, and the old Seabees motto says the same
+thing in engineer's language: the difficult we do immediately; the
+impossible takes a little longer. A self-hosting compiler was
+difficult. An OS with its own drivers on consumer hardware was
+difficult. The rest just takes a little longer.
 
 ---
 

@@ -106,8 +106,21 @@ Order matters; shelve before anything else touches the tree.
    resume recipe (unshelve which CL, run which command first); every
    trap hit this session worth not rediscovering. Update the
    MEMORY.md index hook if the description changed.
-5. **Update `docs/Agents/<agent>-workplan.md`** top section -- the
-   fleet-visible version of the same, plus any OTHER-AGENTS warnings.
+5. **Move everything out of `docs/Agents/<agent>-workplan.md` and leave
+   it EMPTY.** That file is scratch for the session that is ending, so
+   nothing may survive in it. Each thing goes to exactly one home:
+   - open work that spans lanes -> `docs/PM/CurrentPlan.md` (a closed
+     item is DELETED there, not annotated)
+   - open work belonging to one app or quire -> that register
+     (`apps/<app>/<app>-backlog.md`, `codex/<quire>/<quire>-backlog.md`)
+   - a durable fact -> the doc that owns the subject
+     (`OperatorsManual`, `ExaminersAssay`, `DevelopersGuide`,
+     `HardwareSitting`, the owning design, `LESSONS.md`)
+   - a finding another lane needs -> the same owning doc. **Do not
+     start a findings outbox**; that channel was retired 2026-08-08.
+
+   The test is mechanical: if a line in your workplan would still be
+   true and useful next week, it is in the wrong file.
 6. **Sweep for orphans.** Kill stray VMs/background tasks this
    session started; note any deliberately left running.
 7. **Final message.** Resting-state summary the user can skim in
@@ -117,10 +130,13 @@ Order matters; shelve before anything else touches the tree.
 ## Rules
 
 - The handoff is complete only when a fresh session could resume
-  from MEMORY.md + the workplan alone, with zero conversation
-  context. Test your writeup against that standard before finishing.
+  from MEMORY.md + CurrentPlan + your (empty) workplan alone, with
+  zero conversation context. Test your writeup against that standard
+  before finishing. If resuming would need something only your
+  workplan held, that thing was never moved to its owning doc and the
+  handoff is not done.
 - Wrapping with work shelved and documented is success, not failure.
   A half-finished unit pushed past the context wall is failure.
 - If the session is in the middle of a red gate or an undiagnosed
   failure, the handoff must say so in the first line of both the
-  memory file and the workplan -- never bury a red gate.
+  memory file and CurrentPlan -- never bury a red gate.

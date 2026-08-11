@@ -1,0 +1,97 @@
+Chapter: DtlsOpensslFragmentsTest
+  cites Encode chapter Dtls
+  cites Encode chapter DtlsMessage
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ Reassembly against fragments THIS PROJECT DID NOT PRODUCE. Every other
+ fragmentation test in the tree cuts a message with dtls-msg-fragments and
+ rejoins it with DtlsReasm, which cannot tell a correct implementation from
+ two consistently wrong ones -- the failure BrotliBeatsOpus.md exists to
+ describe. These records are bytes off the wire from OpenSSL 3.2.4
+ s_server, captured through a recording UDP proxy; the regeneration recipe
+ is build/dtls-fragment-interop.ps1 -Regenerate.
+
+ DTLS 1.2 is the version captured, and it is the RIGHT oracle for this
+ chapter even though our endpoint is 1.3-only. The handshake message header
+ and its fragmentation rules are byte-identical between RFC 6347 section
+ 4.2.2 and RFC 9147 section 5.2: same 12-byte header, same uint24
+ fragment_offset and fragment_length, same requirement that the length
+ field carry the WHOLE message. What differs between the two versions is
+ the record layer and the key schedule, and neither is under test here. No
+ DTLS 1.3 peer was available to capture: OpenSSL gained DTLS 1.3 in 3.5 and
+ 3.2.4 is what is installed.
+
+ The capture handed us something better than a fragmented message. OpenSSL
+ retransmitted the flight and REFRAGMENTED IT AT DIFFERENT BOUNDARIES:
+ %s, then %s. RFC 9147 section 5.2 requires a receiver
+ to tolerate exactly that, and until now the claim rested on our own
+ generator, which cuts the same way twice and can never produce the case.
+
+Section: The Capture
+
+%s
+Section: Reassembly
+
+  add-rec : DtlsReasm, List Integer -> DtlsReasm
+  add-rec (r) (rec) =
+    when dtls-plain-decode rec
+      is None -> r
+      is Just (p) -> add-frag r (p.dpr-fragment)
+
+  add-frag : DtlsReasm, List Integer -> DtlsReasm
+  add-frag (r) (bs) =
+    when dtls-msg-parse bs
+      is None -> r
+      is Just (m) -> dtls-reasm-add r m
+
+  digest-of : DtlsReasm -> Text
+  digest-of (r) =
+    when dtls-reasm-message r
+      is None -> "incomplete"
+      is Just (m) -> sha256-to-hex (sha256 (m.dm-body))
+
+  shape-of : DtlsReasm -> Text
+  shape-of (r) =
+    when dtls-reasm-message r
+      is None -> "none"
+      is Just (m) -> "type=" & show (m.dm-type) & " len=" & show (m.dm-length) & " body=" & show (list-length (m.dm-body))
+
+Section: The Arms
+
+ One: the flight as OpenSSL first sent it.
+
+  first : DtlsReasm = add-rec (add-rec (add-rec dtls-reasm-new ossl-x1-r0) ossl-x1-r1) ossl-x1-r2
+
+ Two: the retransmission, cut at different offsets. Same bytes or the
+ reassembler is sensitive to where the peer chose to cut, which is the
+ defect this arm exists to catch.
+
+  second : DtlsReasm = add-rec (add-rec (add-rec dtls-reasm-new ossl-x2-r0) ossl-x2-r1) ossl-x2-r2
+
+ Three: the case a single implementation cannot generate. Fragments from
+ BOTH cuts, out of order and overlapping, which is what a real receiver
+ sees when a flight is retransmitted before the first copy finished
+ arriving.
+
+  mixed : DtlsReasm =
+    add-rec (add-rec (add-rec (add-rec dtls-reasm-new ossl-x1-r0) ossl-x2-r1) ossl-x2-r0) ossl-x1-r2
+
+ Four: the negative. Drop the middle fragment and the message must report
+ incomplete rather than assemble short. A reassembler that answers with
+ whatever it has is the one that hands a truncated Certificate to a parser.
+
+  gapped : DtlsReasm = add-rec (add-rec dtls-reasm-new ossl-x1-r0) ossl-x1-r2
+
+Section: Entry
+  opening : [Console] Nothing = act
+    print-line-uni ("first  " & shape-of first)
+    print-line-uni ("first  sha=" & digest-of first)
+    print-line-uni ("second " & shape-of second)
+    print-line-uni ("second sha=" & digest-of second)
+    print-line-uni ("mixed  " & shape-of mixed)
+    print-line-uni ("mixed  sha=" & digest-of mixed)
+    print-line-uni ("gapped " & shape-of gapped)
+    print-line-uni ("gapped sha=" & digest-of gapped)
+  end

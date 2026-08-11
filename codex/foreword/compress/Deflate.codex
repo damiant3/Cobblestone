@@ -6,35 +6,15 @@ Chapter: Deflate
  the block type per block rather than once for the whole stream, and a decoder
  for all of them.
 
- This chapter used to emit stored blocks only. That was correct RFC 1951 and it
- was not compression: a stored block is the input verbatim behind a five-byte
- header, so deflate-compress returned MORE bytes than it was given, and every
- caller reaching for Gzip -- the de facto name for "make this smaller" -- got a
- valid gzip stream 23 bytes larger than its input. Nothing caught it for the
- same reason nothing ever catches a pass-through: the tests asserted a
- round-trip, and a pipe round-trips perfectly. A ROUND-TRIP TEST CANNOT TELL A
- COMPRESSOR FROM A PIPE. The tests here now assert the output is SMALLER, which
- is the one assertion a stored-block implementation cannot pass.
-
  What compression is, in this format: repeated byte runs become back-references,
  and the resulting symbols are entropy-coded. Both halves are needed. Literals
  alone under the fixed code cost 8 bits each for 0-143 -- no gain whatsoever over
  the input -- so it is the back-references that pay and the fixed code that makes
  them cheap.
 
- The matcher is Lz77's, and it now reaches exactly as far as RFC 1951 allows: a
- 32768-byte window and matches up to 258. It used to stop at 255 and 255, which
- was never a format limit but the limit of a brute-force scan; Lz77 indexes
- positions by a hash chain now, so the window costs nothing to widen. Borrowing a
- matcher we already have and already test beats writing a second one.
-
  A match may reach back past the start of the block it lands in. That is ordinary
  RFC 1951 -- the window spans blocks, the decoder has the earlier output, and the
  per-block chooser below cuts blocks on the token stream for exactly that reason.
-
- BTYPE=02 (dynamic Huffman, where the code table is built from the data and
- shipped with the block) closes most of the remaining ratio gap against zlib on
- skewed data. It is deflate-compress-dynamic, below.
 
  What the fixed code cannot do is decline. It spends nine bits on every byte
  144..255, so high-byte or random input comes out LARGER than it went in.
@@ -42,21 +22,6 @@ Chapter: Deflate
  worst case is the stored block -- the input plus a five-byte header -- and
  never the fixed code's growth. A caller that means "make this smaller, and
  never larger" wants deflate-compress-best.
-
- It chooses per BLOCK, not once per stream. A stream is a sequence of blocks and
- each carries its own BTYPE, so an input that changes character part-way through
- -- text then noise, prose then compressed data -- does not have to pay one
- compromise across both halves. The whole-stream candidates are still built and
- still compete, so the per-block stream can win but never lose.
-
- To deflate-compress gives RFC 1951 fixed-Huffman compressed bytes.
- To deflate-compress-dynamic gives RFC 1951 dynamic-Huffman compressed bytes,
- with a code table built from the data's own frequencies.
- To deflate-compress-stored gives RFC 1951 stored-block bytes, which compress
- nothing and are the honest answer for data that does not compress.
- To deflate-compress-best gives the smallest stream it can build, choosing a
- block type per block.
- To deflate-decompress gives the original bytes from any block type.
 
  We say:
 
@@ -118,21 +83,12 @@ Section: The Bit Writer
     if w.bw-nbits == 0 then w
     else BitWriter { bw-bytes = list-push (w.bw-bytes) (w.bw-cur), bw-cur = 0, bw-nbits = 0 }
 
- Choosing a block type means measuring three encodings of the same tokens, and
- the measurement is the encoding: bw-pos counts the bits a writer holds, so a
- candidate costs exactly what it writes and no separate size model can drift
- away from the emitter.
-
  The three candidates are not written onto the real stream. bw-fork makes a
  writer that keeps only the bit PHASE -- the partial byte in flight -- and starts
  with no bytes, so each candidate holds one block rather than a copy of the whole
  output so far. bw-join then appends the winner. This is what keeps the memory
  bounded by the block and not by the stream: three candidates over a long input
  would otherwise retain three copies of everything already emitted.
-
- The join is exact because the candidate began in the same phase: its first
- completed byte IS the byte the real writer was part-way through, so appending
- its bytes and taking its phase reproduces the stream bit for bit.
 
   bw-pos : BitWriter -> Integer
   bw-pos (w) = list-length (w.bw-bytes) * 8 + w.bw-nbits
@@ -229,23 +185,8 @@ Section: Length And Distance Codes
 
 Section: Compression (Fixed Huffman)
 
- A fixed-Huffman block has no length cap -- only a stored block does -- so a
- whole input fits in one, and deflate-compress emits exactly that.
-
- The block itself is written by dfl-fixed-block, which takes a writer and a
- BFINAL flag and gives a writer back rather than finishing a stream. All three
- encoders are shaped that way, because per-block type selection needs to put
- blocks of different types into ONE bit stream: a fixed or dynamic block does not
- end on a byte boundary, so a chooser cannot concatenate three finished streams,
- it has to keep writing into the same one.
-
  The header is three bits: BFINAL, then BTYPE=01, both least-significant-bit
  first, which puts 0b011 in the low bits of the first byte of a final block.
-
- It emits from TOKENS rather than driving the matcher itself. The token sequence
- is what dh-tokenize already produces for the dynamic path, so tokenizing once
- and encoding it three ways replaces three separate matcher runs over the same
- input.
 
   deflate-compress : List Integer -> List Integer
   deflate-compress (input) =
@@ -448,27 +389,9 @@ Section: Dynamic Huffman -- Compression
     | DhLit (Integer)
     | DhMat (Integer) (Integer)
 
- The matcher keeps a hash chain now, so tokenizing carries the two tables. They
- are built here rather than by the caller because they must not outlive one
- tokenization -- they are mutated in place, and a pair shared between two calls
- would offer positions from the wrong input. Callers see the same four arguments
- they always did.
-
   dh-tokenize : List Integer, Integer, Integer, List DhTok -> List DhTok
   dh-tokenize (input) (pos) (len) (acc) =
     dh-tokenize-go input pos len acc (lz77-new-table lz77-hash-size) (lz77-new-table lz77-window-size) 8 0 lz77-max-match
-
- Tokenizing a slice of a longer input, with the bytes BEFORE it available to match
- against. Deflate never needs this -- it tokenizes a whole input at once -- but
- Brotli cuts its input into meta-blocks and a copy distance there reaches back
- through everything already emitted, not just through the current meta-block. A
- matcher started fresh at each cut cannot see any of it, so the window is the
- meta-block whatever the header declares.
-
- Seeding walks the history inserting positions without emitting tokens, so the
- chains point at real earlier positions and the match search is unchanged. The
- seed is bounded by the matcher's own window, since a candidate further back than
- that is rejected anyway.
 
  The caller states its own longest match, because the two formats that read this
  tokenizer do not share one. Deflate passes RFC 1951's 258; Brotli passes its own,
@@ -691,12 +614,6 @@ Section: Compression (Stored Blocks)
     in let data = deflate-slice input pos chunk 0 []
     in header & data & deflate-emit-blocks input total (pos + chunk)
 
- The same block written into a stream rather than onto a byte array. It aligns
- after the header, then puts LEN, NLEN and the bytes through the writer, so a
- stored block can sit between two compressed ones. The padding is charged to the
- candidate, which is right: mid-stream a stored block costs up to seven bits more
- than it does at the start, and the chooser should see that.
-
   dfl-stored-block : BitWriter, List Integer, Integer, Integer, Integer -> BitWriter
   dfl-stored-block (w) (input) (off) (len) (bfinal) =
     let w0 = bw-align (bw-bits (bw-bits w bfinal 1) 0 2)
@@ -721,23 +638,9 @@ Section: Compression (Stored Blocks)
 
 Section: Compression (Per-Block Choice)
 
- Each of the three encoders emits a complete, self-describing stream with BFINAL
- set, so deflate-decompress reads whichever one it is handed, and picking the
- shortest of the three is already never longer than the stored block. What that
- whole-stream pick cannot do is change its mind part-way through an input. One
- BTYPE has to cover everything, so a file that is half text and half compressed
- data or noise pays one compromise across both halves: choose dynamic and the
- noisy half inflates, choose stored and the text half is not compressed at all.
-
  RFC 1951 does not ask for that compromise. A stream is a SEQUENCE of blocks and
  every block carries its own BTYPE, so the text half can be dynamic and the noisy
  half stored, in one stream, with the type chosen where the data changes.
-
- That is what dfl-chunked does. It cuts the token stream into regions, and for
- each region writes all three block types into forked writers, keeps whichever
- came out shortest in BITS, and joins it. Because the candidates all start from
- the same bit phase the comparison is exact, and because the winner is a writer
- already holding the encoded block there is nothing to encode twice.
 
  The region is a target, not a boundary: a match cannot be split, so a region
  ends at the first token that reaches deflate-region bytes of output. Regions are
@@ -796,10 +699,6 @@ Section: Compression (Per-Block Choice)
     in let w2 = bw-join w best
     in if bfinal == 1 then bw-finish w2
     else dfl-chunked input toks te nt (off + nbytes) w2
-
- One tokenization feeds all four candidates. The matcher used to run three times
- over the same input; now it runs once and the token sequence is encoded four
- ways, which is the cheaper half of this change.
 
   deflate-shorter : List Integer, List Integer -> List Integer
   deflate-shorter (a) (b) =
@@ -880,9 +779,6 @@ Section: Decoding A Fixed Symbol
 
 Section: Decompression
 
- Both block types, dispatched on BTYPE. A stored block realigns to the byte
- boundary and copies verbatim; a fixed block reads symbols until end-of-block.
-
   deflate-decompress : List Integer -> List Integer
   deflate-decompress (input) =
     deflate-blocks (BitReader { br-bytes = input, br-pos = 0 }) []
@@ -897,8 +793,6 @@ Section: Decompression
     else if btype == 1 then deflate-after-fixed (deflate-fixed-block r2 acc) bfinal
     else if btype == 2 then deflate-after-fixed (deflate-dynamic-block r2 acc) bfinal
     else acc
-
- A stored block's LEN and NLEN sit on the byte boundary after the header bits.
 
   deflate-after-stored : BitReader, Integer, List Integer -> List Integer
   deflate-after-stored (r) (bfinal) (acc) =
@@ -943,12 +837,6 @@ Section: Decompression
     else deflate-blocks (st.ds-reader) (st.ds-out)
 
 Section: Decoding A Dynamic Block
-
- The mirror of the dynamic encoder. Read HLIT/HDIST/HCLEN, read the code-length
- code lengths in their permuted order and build that table, decode the literal
- and distance code lengths through it (with the 16/17/18 run codes), build those
- two tables, then decode symbols exactly as the fixed path does but through the
- data's own codes.
 
   DhLenRead = record {
     dl-list : List Integer,

@@ -1,0 +1,90 @@
+[
+  {
+    "target": "chapter:Passes",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Runs the IR-to-IR passes as an ordered pipeline. The pipeline is data -- a list of pass names -- so a pass can be switched off, reordered, or ablated by editing one list instead of rethreading a call chain. Dispatch is deliberately by name rather than through function-valued record fields: one list names the passes, one function maps a name to its transform, and nothing else has to exist for a pass to be registered.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Passes",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "`ir-check` is a checker in a rewriter's clothing. It is registered like any other pass so it can be placed anywhere -- and more than once -- in the pipeline: `passes=fold-constants,ir-check,inline-leaf-calls, ir-check` brackets each rewriter with a validation of what it produced. It returns the chapter unchanged and reports through the violation channel instead. It is deliberately NOT in `default-ir-pipeline`: the shipping compiler pays nothing for a validator it never runs, and the validator is wanted exactly when a pass is under suspicion.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Passes",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "`occ-report` is the same shape, but on the OTHER channel: an analysis wearing a rewriter's clothing. It runs the occurrence analyser (`occ-report-chapter`) over every definition and returns the chapter UNCHANGED, reporting each definition's per-binder classifications -- one `OCC <def>: name=Class, name=Class` line per definition -- as **infos, not violations**. That distinction is the whole reason the result carries two lists. `ir-check`'s findings are errors: malformed IR means the binary is not the program, so the compile halts. `occ-report`'s findings are information about well-formed IR, so they ride the info channel, do not halt, and never claim to be an error -- running `-Passes occ-report` reports the classifications AND still emits a binary. It exists so the analyser can be driven over real lowered IR and its answers read from the compile log, before any pass consumes them. Like `ir-check` it is NOT in `default-ir-pipeline`.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Passes",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "`simplify` is a real rewriter -- the GHC-style simplifier (`IR/Simplify.codex`) -- that folds constants, propagates literals, and takes the known arm of a decided `if`, iterated to a fixpoint. It returns the rewritten chapter AND, on the info channel, one line with its rewrite count, so `-Passes simplify` both transforms the program and reports how much it did. It is opt-in and NOT in `default-ir-pipeline`: it absorbs the rules of the hardcoded `fold-constants` pass but does not yet replace it, so the shipping compiler's output is unchanged until that swap lands as its own CL.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Passes",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "`inline-single-caller` is phase 2 of inlining (`IR/Lowering.codex`). It inlines a definition referenced exactly once in the chapter, which costs no duplication and lets emit-time dead-code elimination drop the original, so it admits a wider body shape than `inline-leaf-calls` does. It IS in `default-ir-pipeline`, and unlike `simplify` it did not wait behind a flag.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Passes",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The argument for leaving it off was that it does nothing for the compiler. That was a misreading of one metric: the deck does not move, but ten kilobytes come off the binary. A capability behind a flag is a capability the next person does not know to ask for, and finding it switched off years later with no reason recorded is worse than either shipping it or deleting it.",
+    "thread": null
+  },
+  {
+    "target": "function:default-ir-pipeline",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "`inline-cost-based` (`IR/Lowering.codex`) inlines a body of at most `inline-cost-ceiling` operation nodes at every saturated call site, whatever its reference count -- the first pass that duplicates on purpose. It is opt-in (`passes=+inline-cost-based`) and deliberately NOT in `default-ir-pipeline`, and unlike `simplify` the reason is a measurement, recorded at the ceiling constant in `Core/BuildSettings.codex`: on the selfhost every ceiling grew the binary and none made the compiled compiler faster. Building it also surfaced the template-reuse hazard `subst-once`'s record arm now guards against, which phase 2 could reach through nothing but a census miss; that account is at `subst-once`.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Passes",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Each violation is tagged with the slot that produced it, so a pipeline carrying `ir-check` twice says which of the two fired -- that is the whole point of the exercise, attributing malformed IR to the pass that made it. A pass that reports nothing costs nothing here: the tagging loop sees an empty list and returns.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Passes",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The per-pass frontier marks are behind `trace` and not on by default, because an info line reaches every compile log: `PIPELINE` already does, and three `.expected` files in the tree capture it. Three more lines per compile would have to be rewritten into all of them, which is a lot of churn to carry for an instrument that is read during an investigation and ignored the rest of the time.",
+    "thread": null
+  },
+  {
+    "target": "chapter:Passes",
+    "kind": "discovery",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "What the marks answer. In the FRONTEND, `-Measure` and `-IrCce` differ only by this pipeline: `emit-measure` calls `compile-frontend` and `emit-ir-cce` calls `compile-frontend-ir`, both are `compile-frontend-passes` with `run-passes` False and True, and `lower-chapter` sits ABOVE that branch, so lowering runs in both. They differ a second time after the frontend, in what they emit, and that half is not what these marks measure.",
+    "thread": null
+  },
+  {
+    "target": "section:Configuration",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The pipeline arrives on the mode line as `passes=name,name` -- comma separated, no spaces -- and the split lives here so the grammar sits beside the registry it names. The knob is the ablation surface: a pass that cannot be switched off cannot be measured, and the middle-end campaign scores pipeline configurations against each other rather than trusting any pass on reputation.",
+    "thread": null
+  }
+]

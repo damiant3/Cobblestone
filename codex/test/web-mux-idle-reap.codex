@@ -6,18 +6,6 @@ Chapter: WebMuxIdleReap
   cites Works chapter Http
   cites Foreword chapter Console
 
- An idle connection is aged out. A client connects and sends one request, then
- goes silent: it never sends another request and never closes. The idle sweep
- bumps the connection's idle count each pass and reaps it once it reaches
- web-idle-max (5) passes without traffic -- the slowloris bound.
-
- After the first GET the connection has served 1 and is one connection. Four
- sweeps leave it alive (idle 4). The load-bearing control comes next: a second
- GET arrives, which resets the idle count to zero, and four more sweeps still
- leave it alive -- eight sweeps total, so a reap driven by a fixed sweep count
- rather than by inactivity would have removed it by now. The ninth sweep (the
- fifth since the reset) reaps it, so the connection count drops to 0.
-
  We say:
 
 Section: Wire Fixtures
@@ -46,7 +34,7 @@ Section: Route
   test-route (req) = http-json "{\"ok\":true}"
 
 Section: Sweep Helper
-  sweep-n : WebMux, Integer -> [Network.Write] WebMux
+  sweep-n : WebMux, Integer -> [Network.Read, Network.Write] WebMux
   sweep-n (m) (n) =
     if n <= 0 then m
     else act
@@ -55,7 +43,7 @@ Section: Sweep Helper
     end
 
 Section: Entry
-  opening : [Console, Network.Write] Nothing = act
+  opening : [Console, Network.Read, Network.Write] Nothing = act
     let m0 = WebMux { listen = net-io-listen (fresh-listen-transport 80), conns = [], served = 0 }
     in act
       m1 <- web-mux-feed test-route m0 a-syn 80

@@ -1,20 +1,6 @@
 Chapter: SwarmKernel
   cites Gpu chapter DeviceEffect
 
- A flow-field swarm, as a [Device] compute kernel. One GPU thread owns one
- particle. Each thread reads its particle's state (px, py, vx, vy) from an
- input buffer, steers its velocity toward a procedural flow field derived
- from position and time (fixed-point trig), integrates with inertia so the
- paths curve smoothly, wraps around the screen, and writes the new state to
- an output buffer. The host ping-pongs the two buffers each frame.
-
- This is emitter-tractable today: pure helpers plus one act-block kernel with
- buffer loads and stores, no per-neighbour loop. True neighbour-based boids
- (separation/alignment/cohesion) needs a bounded loop over the state buffer,
- which is recursion in Codex and requires recursion-to-loop lowering plus
- storage-pointer helper parameters in the WGSL plug -- the next emitter
- milestone.
-
  We say:
 
 Section: Screen
@@ -48,10 +34,6 @@ Section: Fixed-Point Trig
 
 Section: Flow Field
 
- The flow angle at a point cycles across space and drifts with time, giving
- a few large vortices that evolve. cos/sin of the angle give the target
- velocity direction; sw-speed scales the magnitude.
-
   sw-flow-ang : Integer, Integer, Integer -> Integer
   sw-flow-ang (px) (py) (frame) =
     sw-wrap ((sw-sin (px * 5 + frame * 4) + sw-sin (py * 5 - frame * 3)) * 3 + frame * 2)
@@ -61,9 +43,6 @@ Section: Flow Field
 
   sw-flow-vy : Integer, Integer, Integer -> Integer
   sw-flow-vy (px) (py) (frame) = sw-sin (sw-flow-ang px py frame) * sw-speed / 1000
-
- Inertia: ease the velocity toward the flow so paths curve instead of
- snapping. Positions wrap toroidally.
 
   sw-new-vx : Integer, Integer, Integer, Integer -> Integer
   sw-new-vx (px) (py) (vx) (frame) = (vx * 7 + sw-flow-vx px py frame) / 8
@@ -81,8 +60,6 @@ Section: Flow Field
   sw-new-py (px) (py) (vy) (frame) = sw-wrap-pos (py + sw-new-vy px py vy frame) sw-height
 
 Section: Swarm Kernel
-
- One thread per particle. Read state from inb, write advanced state to outb.
 
   swarm-step : Integer, Integer, Integer, Integer -> [Device] Integer
   swarm-step (inb) (outb) (frame) (gid) = act

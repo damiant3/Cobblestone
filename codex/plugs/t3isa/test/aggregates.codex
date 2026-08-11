@@ -1,0 +1,99 @@
+Chapter: T3 Aggregates
+
+ The v2 gate program for the T3ISA plug. Where gate.codex asks whether
+ arithmetic and control flow cross a non-binary boundary, this one asks
+ whether AGGREGATES do: a record on a word-addressed machine with no bytes,
+ a variant with a tag, and a match that takes one apart.
+
+ It is built to make a wrong answer visible rather than to exercise a
+ feature list. The record is constructed with its fields in the OPPOSITE
+ order to their declaration, so an emitter that stored by written position
+ rather than by declared index reports 3 and 7 the wrong way round. The
+ payloads are distinct, so a value read from the wrong offset cannot
+ coincide with a right one.
+
+ Every band is written out. `Small = Integer between 0 and 1000000` would be
+ a nominally distinct type rather than an alias, so the band is repeated:
+ a bare Integer is the full 64-bit range and does not fit a 27-trit word.
+
+Section: Body
+
+  Point = record {
+   px : Integer between 0 and 1000000,
+   py : Integer between 0 and 1000000
+  }
+
+  Segment = record {
+   from-pt : Point,
+   to-pt : Point
+  }
+
+  Tri = TFalse | TUnknown | TTrue
+
+  Shape =
+   | Dot
+   | Line (Integer between 0 and 1000000)
+   | Rect (Integer between 0 and 1000000) (Integer between 0 and 1000000)
+
+ Kleene disjunction, the three-valued logic this machine's TMIN and TMAX
+ implement natively. Here it is a match over three nullary constructors,
+ which is the shape carrying no payload at all.
+
+  tri-code : Tri -> Integer between 0 and 1000000
+  tri-code (t) = __narrow (when t
+   is TFalse -> 0
+   is TUnknown -> 1
+   is TTrue -> 2)
+
+  tri-or : Tri, Tri -> Tri
+  tri-or (a) (b) = when a
+   is TTrue -> TTrue
+   is TFalse -> b
+   is TUnknown -> tri-or-unknown b
+
+  tri-or-unknown : Tri -> Tri
+  tri-or-unknown (b) = when b
+   is TTrue -> TTrue
+   is otherwise -> TUnknown
+
+ A match with payloads and bindings. The guarded shape is written as an if
+ inside the arm, which is where a Cons-style guard would have to go anyway.
+
+  area : Shape -> Integer between 0 and 1000000
+  area (s) = __narrow (when s
+   is Dot -> 0
+   is Line (n) -> n
+   is Rect (w) (h) -> if w == h then 100 else w * h)
+
+  manhattan : Point -> Integer between 0 and 1000000
+  manhattan (p) = p.px + p.py
+
+ Built with the fields in the opposite order to their declaration. This is
+ the arm that distinguishes an emitter resolving field indices from the type
+ definition from one storing by written position.
+
+  swapped : Integer between 0 and 1000000, Integer between 0 and 1000000 -> Point
+  swapped (a) (b) = Point { py = b, px = a }
+
+ A record nested in a record, so the pointer stored in a field has to be a
+ pointer the reader can follow.
+
+  seg-span : Segment -> Integer between 0 and 1000000
+  seg-span (s) = manhattan (s.to-pt) - manhattan (s.from-pt)
+
+  opening : [Console] Nothing = act
+    let p = swapped 3 7
+    in print-line-uni ("point = " & show (p.px) & " " & show (p.py))
+    let q = swapped 3 7
+    in print-line-uni ("manhattan = " & show (manhattan q))
+    let s = Segment { from-pt = swapped 1 1, to-pt = swapped 4 6 }
+    in print-line-uni ("span = " & show (seg-span s))
+    print-line-uni ("dot = " & show (area Dot))
+    print-line-uni ("line 11 = " & show (area (Line 11)))
+    print-line-uni ("rect 3 4 = " & show (area (Rect 3 4)))
+    print-line-uni ("rect 5 5 = " & show (area (Rect 5 5)))
+    print-line-uni ("or F U = " & show (tri-code (tri-or TFalse TUnknown)))
+    print-line-uni ("or U T = " & show (tri-code (tri-or TUnknown TTrue)))
+    print-line-uni ("or U U = " & show (tri-code (tri-or TUnknown TUnknown)))
+    print-line-uni ("or F F = " & show (tri-code (tri-or TFalse TFalse)))
+  end

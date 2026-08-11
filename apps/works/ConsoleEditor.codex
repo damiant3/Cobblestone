@@ -8,6 +8,7 @@ Chapter: ConsoleEditor
   cites UI chapter Overlay
   cites UI chapter Widget
   cites Foreword chapter FileSystem
+  cites Foreword chapter TextSearch
   cites Foreword chapter Maybe
   cites Foreword chapter Tuple
 
@@ -241,17 +242,6 @@ Section: Editing
 
 Section: Save
 
- write-file answers whether the write landed, and that answer is the whole
- reason it returns Boolean rather than Nothing: the disk can be full, the
- root directory can be full, and a subdirectory target is refused outright
- while the parent-directory walk is unwritten. Every one of those is
- ordinary. So the answer is read here rather than dropped -- a save that
- failed leaves the buffer dirty and says so, because a buffer marked clean
- over a write that never landed is the editor throwing the author's work
- away and reporting success. That is precisely what the old write-file
- builtin did before it was deleted, and it is not worth reinventing one
- layer up.
-
   editor-save : EditorState -> [FileSystem.Write] EditorState
   editor-save (e) = act
     let content = join-editor-lines (e.lines) 0 (e.line-count) ""
@@ -381,16 +371,6 @@ Section: Find and Replace
       else replace-in-line-loop line old new (i + 1) line-len old-len (acc & char-to-text (char-at line i))
     else replace-in-line-loop line old new (i + 1) line-len old-len (acc & char-to-text (char-at line i))
 
-  count-occurrences : Text, Text -> Integer
-  count-occurrences (line) (query) =
-    count-occ-loop line query 0 (text-length line) (text-length query) 0
-
-  count-occ-loop : Text, Text, Integer, Integer, Integer, Integer -> Integer
-  count-occ-loop (line) (query) (i) (line-len) (q-len) (acc) =
-    if i + q-len > line-len then acc
-    else if substring line i q-len == query then count-occ-loop line query (i + q-len) line-len q-len (acc + 1)
-    else count-occ-loop line query (i + 1) line-len q-len acc
-
   editor-ensure-visible : EditorState -> EditorState
   editor-ensure-visible (e) =
     if e.cursor-line < e.scroll-top then __record-set e "scroll-top" (e.cursor-line)
@@ -491,13 +471,6 @@ Section: Go To Line
 
 Section: Annotation Authoring
 
- Writer-role surface (H2). The cursor is a coordinate in source;
- author-annotation lifts that coordinate to a definition target,
- builds an Annotation, signs it via KeyManager, and stores both
- the plain annotation in AnnotationFact (read by CodeBrowser at
- H1) and the SignedAnnotation alongside (kept on the editor for
- later publish via H7). No outbound, no trust check yet.
-
   AuthoredAnnotation = record {
     fact-store : AnnotationFact,
     signed : SignedAnnotation
@@ -592,11 +565,6 @@ Section: Inbound Notification
 
 Section: Notification Filtering
 
- Of the queued payloads, the relevant subset for the editor is
- those whose target-chapter matches the file open in the editor.
- file-path-to-chapter is a heuristic -- it strips the directory
- and the .codex suffix.
-
   file-path-to-chapter : Text -> Text
   file-path-to-chapter (path) = strip-codex-suffix (basename path)
 
@@ -644,11 +612,6 @@ Section: Notification Filtering
 
 Section: Notification Widgets
 
- Three render shapes per Damian's framing -- throbber (subtle
- status-line dot), toast (auto-dismissing overlay), overlay
- (modal-ish review panel). The driver chooses based on user
- preference; this chapter just emits widget trees.
-
   notification-throbber-text : EditorNotifications, EditorState -> Text
   notification-throbber-text (n) (e) =
     let count = unseen-relevant-count n e
@@ -688,11 +651,6 @@ Section: Notification Widgets
     in overlay-popup "editor-notifications-overlay" x y 400 h widget
 
 Section: Verdict Subscription
-
- H10: the annotator-side counterpart to H8. When a verdict
- arrives on a proposal this editor authored, surface it. The
- user can fetch the superseding fact or show a diff; both are
- queued as PendingAction values and consumed by the driver.
 
   IncomingVerdict = record {
     verdict : Verdict,
@@ -758,11 +716,6 @@ Section: Verdict Subscription
     in count-unseen-verdicts q (i + 1) n (acc + inc)
 
 Section: Sync Actions
-
- fetch-new-fact and show-diff are queue-only here. The driver
- dequeues with take-pending-actions and dispatches to repo +
- transport. The editor doesn't know about TCP or disk; it only
- knows it wanted to do something with a proposal-id.
 
   queue-fetch-fact : EditorVerdicts, Text -> EditorVerdicts
   queue-fetch-fact (v) (proposal-id) =

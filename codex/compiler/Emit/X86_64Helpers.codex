@@ -1,17 +1,5 @@
 Chapter: X86-64 Code Generator
 
- Runtime helper state records, entry point, I/O boundary helpers,
- VMX, UEFI console, allocator, task scheduler, buffer helpers, and
- binary output. Process lifecycle in X86_64ProcessHelpers.codex;
- IPC and network in X86_64IPCHelpers.codex.
- helpers (CCE<->Unicode conversion, serial I/O), buffer helpers, and
-
- binary-output helpers. Text/number helpers live in
-
- X86_64TextHelpers.codex; list helpers in X86_64ListHelpers.codex.
-
-
-
 Section: State Records
 
   StrEqHeadResult = record {
@@ -21,8 +9,6 @@ Section: State Records
     len-ne-pos : Integer between 0 and 4294967295
 
   }
-
-
 
   StrEqLoopResult = record {
 
@@ -34,8 +20,6 @@ Section: State Records
 
   }
 
-
-
   ItoaZeroResult = record {
 
     cg : CodegenState,
@@ -43,8 +27,6 @@ Section: State Records
     skip-digits-pos : Integer between 0 and 4294967295
 
   }
-
-
 
   StrConcatCheckResult = record {
 
@@ -54,8 +36,6 @@ Section: State Records
 
   }
 
-
-
   StrConcatFastResult = record {
 
     cg : CodegenState,
@@ -64,8 +44,6 @@ Section: State Records
 
   }
 
-
-
   HelpResult1 = record {
 
     cg : CodegenState,
@@ -73,8 +51,6 @@ Section: State Records
     p1 : Integer between 0 and 4294967295
 
   }
-
-
 
   HelpResult2 = record {
 
@@ -85,8 +61,6 @@ Section: State Records
     p2 : Integer between 0 and 4294967295
 
   }
-
-
 
   HelpResult3 = record {
 
@@ -99,8 +73,6 @@ Section: State Records
     p3 : Integer between 0 and 4294967295
 
   }
-
-
 
   HelpResult4 = record {
 
@@ -116,25 +88,9 @@ Section: State Records
 
   }
 
-
-
 Section: Helpers Entry Point
 
 Section: I/O Boundary Helpers
-
-
-
- emit-uart-poll-drain inlines the UART RX drain that the IRQ-4 handler
-
- in X86_64Boot performs on each interrupt. Brackets the LSR-read +
-
- ring-write critical section in CLI/STI so the ISR cannot race the
-
- polling read on the same write_pos slot. Saves and restores rcx;
-
- trashes rax, rdx, rsi, rdi.
-
-
 
   emit-uart-poll-drain : CodegenState -> CodegenState
 
@@ -184,8 +140,6 @@ Section: I/O Boundary Helpers
 
    in st-append-code ststi (pop-r reg-rcx)
 
-
-
   emit-cce-to-unicode-helper : CodegenState -> CodegenState
 
   emit-cce-to-unicode-helper (st) =
@@ -199,8 +153,6 @@ Section: I/O Boundary Helpers
    in let st4 = st-append-code st3 (movzx-byte reg-rax reg-rax 0)
 
    in st-append-code st4 x86-ret
-
-
 
   emit-unicode-to-cce-helper : CodegenState -> CodegenState
 
@@ -1088,8 +1040,6 @@ Section: I/O Boundary Helpers
 
    in st-append-code st60 x86-ret
 
-
-
   emit-read-line-cce-helper : CodegenState -> CodegenState
 
   emit-read-line-cce-helper (st) =
@@ -1289,8 +1239,6 @@ Section: I/O Boundary Helpers
    in let st2 = emit-call-to st1 "__bare_metal_read_serial"
 
    in st-append-code st2 x86-ret
-
-
 
   emit-bare-metal-read-serial : CodegenState -> CodegenState
 
@@ -1544,8 +1492,6 @@ Section: I/O Boundary Helpers
   emit-read-serial-cce-helper : CodegenState -> CodegenState
   emit-read-serial-cce-helper (st) = emit-bare-metal-read-serial-cce st
 
-
-
   emit-runtime-helpers : CodegenState -> CodegenState
 
   emit-runtime-helpers (st) =
@@ -1670,7 +1616,11 @@ Section: I/O Boundary Helpers
 
     is otherwise -> emit-block-read-sector-helper st32
 
-   in let st34 = emit-block-write-sector-helper st33
+   in let st34 = when st33.exit-mode
+
+    is ExitUefi -> emit-uefi-block-write-sector-helper st33
+
+    is otherwise -> emit-block-write-sector-helper st33
 
    in let st35 = emit-peek-byte-helper st34
 
@@ -1858,28 +1808,6 @@ Section: I/O Boundary Helpers
 
    in emit-fs-servicer-helpers st90
 
- The default FileSystem handler stubs. Emitted only when
- the program cites FileSystem -- read-text always appears in that effect's
- definition, so its handler slot existing is exactly the signal that the
- servicer workers (fat16-servicer-read / -write, in FileSystem.codex,
- which cites Fat16) are present to be called. A program that never names
- the effect emits neither stub, so its finalize carries no unresolved
- reference to a worker it does not have.
-
- Each stub is the compiler's default discharge for one FileSystem op. It
- checks the running process's direction bit (cap-filesystem-read for a
- read, -write for a write) against its own capability word -- so a program
- GRANTED FileSystem.Read that performs write-file is refused here, which is
- the runtime half of the grant that nothing enforced before. On a pass it
- raises the kernel fs-elevated cell, which the block syscalls honour in
- place of cap-block-device (emit-block-elev-gate), calls the fat16 worker,
- and lowers the cell again. The elevation is inline and has no callable
- name of its own on purpose: a bare elevate primitive would let any
- program raise the cell and then drive block-write-sector directly, which
- is the exact bypass this design exists to close. The stub is safe to name
- because it gates itself before it elevates. Path scope is not re-checked
- here; fat16 already enforces it (fat16-scope-admits).
-
   emit-fs-servicer-helpers : CodegenState -> CodegenState
   emit-fs-servicer-helpers (st) =
    if find-effect-op-addr (st.effect-op-addrs) "read-text" 0 (list-length (st.effect-op-addrs)) < 0 then st
@@ -1951,15 +1879,6 @@ Section: I/O Boundary Helpers
    in let st6 = st-append-code st5 (li reg-rax 0)
    in let st7 = st-append-code st6 (mov-store reg-rdi reg-rax 0)
    in st-append-code st7 [195]
-
- The dump is frame-free and prints only through the data-channel
- serial primitives the exception dump uses. Its original form printed
- the header through the control channel (which nothing services in a
- standalone run, so the ready-spin hung forever) and inlined
- emit-print-text, whose alloc-local frame slots stomp the caller's
- frame inside a frameless helper. Counts and samples print as hex
- qwords: PROF:<count> then one PROF:<rip> line per sample. Returns
- the sample count.
 
   emit-prof-string : CodegenState, List Integer, Integer -> CodegenState
   emit-prof-string (st) (chars) (i) =
@@ -2109,8 +2028,6 @@ Section: I/O Boundary Helpers
    in let st43 = st-append-code st42 (pop-r reg-rbp)
 
    in st-append-code st43 [195]
-
-
 
   emit-uefi-print-no-nl-helper : CodegenState -> CodegenState
   emit-uefi-print-no-nl-helper (st) =
@@ -2295,11 +2212,7 @@ Section: I/O Boundary Helpers
 
    in st-append-code st0 [15, 11]
 
-
-
 Section: VMX Helpers
-
-
 
   emit-vmxon-helper : CodegenState -> CodegenState
 
@@ -2317,8 +2230,6 @@ Section: VMX Helpers
 
    in st-append-code st1 x86-ret
 
-
-
   emit-vmclear-helper : CodegenState -> CodegenState
 
   emit-vmclear-helper (st) =
@@ -2334,8 +2245,6 @@ Section: VMX Helpers
    in let st1 = st-append-code st0 [102, 15, 199, 55]
 
    in st-append-code st1 x86-ret
-
-
 
   emit-vmptrld-helper : CodegenState -> CodegenState
 
@@ -2353,8 +2262,6 @@ Section: VMX Helpers
 
    in st-append-code st1 x86-ret
 
-
-
   emit-vmlaunch-helper : CodegenState -> CodegenState
 
   emit-vmlaunch-helper (st) =
@@ -2370,8 +2277,6 @@ Section: VMX Helpers
    in let st1 = st-append-code st0 [15, 1, 194]
 
    in st-append-code st1 x86-ret
-
-
 
   emit-vmresume-helper : CodegenState -> CodegenState
 
@@ -2389,8 +2294,6 @@ Section: VMX Helpers
 
    in st-append-code st1 x86-ret
 
-
-
   emit-vmread-helper : CodegenState -> CodegenState
 
   emit-vmread-helper (st) =
@@ -2407,8 +2310,6 @@ Section: VMX Helpers
 
    in st-append-code st1 x86-ret
 
-
-
   emit-vmwrite-helper : CodegenState -> CodegenState
 
   emit-vmwrite-helper (st) =
@@ -2424,8 +2325,6 @@ Section: VMX Helpers
    in let st1 = st-append-code st0 [15, 121, 254]
 
    in st-append-code st1 x86-ret
-
-
 
   emit-vmlaunch-full-helper : CodegenState -> CodegenState
 
@@ -2475,8 +2374,6 @@ Section: VMX Helpers
 
    in st1
 
-
-
   emit-vmresume-full-helper : CodegenState -> CodegenState
 
   emit-vmresume-full-helper (st) =
@@ -2525,8 +2422,6 @@ Section: VMX Helpers
 
    in st1
 
-
-
   emit-rdmsr-helper : CodegenState -> CodegenState
 
   emit-rdmsr-helper (st) =
@@ -2542,8 +2437,6 @@ Section: VMX Helpers
    in let st1 = st-append-code st0 [137, 249, 15, 50, 72, 193, 226, 32, 72, 9, 208]
 
    in st-append-code st1 x86-ret
-
-
 
   emit-wrmsr-helper : CodegenState -> CodegenState
 
@@ -2561,17 +2454,11 @@ Section: VMX Helpers
 
    in st-append-code st1 x86-ret
 
-
-
 Section: UEFI Console Helpers
-
-
 
   uefi-load-conout : List Integer
 
   uefi-load-conout = [72, 139, 4, 37] & write-i32 uefi-systab-addr & [72, 139, 72, 64]
-
-
 
  The Microsoft x64 convention firmware is called under requires 32 bytes of
  shadow space and RSP 16-byte aligned at the call. RBX is saved because it is
@@ -2584,8 +2471,6 @@ Section: UEFI Console Helpers
   uefi-call-conout (func-offset) =
 
     [65, 82, 83, 72, 137, 203, 72, 131, 236, 32] & [255, 83, func-offset] & [72, 131, 196, 32, 91, 65, 90]
-
-
 
   emit-uefi-set-attr-helper : CodegenState -> CodegenState
 
@@ -2607,8 +2492,6 @@ Section: UEFI Console Helpers
 
    in st-append-code st6 x86-ret
 
-
-
   emit-uefi-clear-screen-helper : CodegenState -> CodegenState
 
   emit-uefi-clear-screen-helper (st) =
@@ -2624,8 +2507,6 @@ Section: UEFI Console Helpers
    in let st4 = st-append-code st3 (pop-r reg-rbp)
 
    in st-append-code st4 x86-ret
-
-
 
   emit-uefi-set-cursor-helper : CodegenState -> CodegenState
 
@@ -2651,8 +2532,6 @@ Section: UEFI Console Helpers
 
    in st-append-code st8 x86-ret
 
-
-
   emit-uefi-enable-cursor-helper : CodegenState -> CodegenState
 
   emit-uefi-enable-cursor-helper (st) =
@@ -2673,8 +2552,6 @@ Section: UEFI Console Helpers
 
    in st-append-code st6 x86-ret
 
-
-
   emit-uefi-set-mode-helper : CodegenState -> CodegenState
 
   emit-uefi-set-mode-helper (st) =
@@ -2694,8 +2571,6 @@ Section: UEFI Console Helpers
    in let st6 = st-append-code st5 (pop-r reg-rbp)
 
    in st-append-code st6 x86-ret
-
-
 
  uefi-read-key reads the PS/2 keyboard, not a UEFI system table. After
  ExitBootServices there is no system table at any address -- the old
@@ -2721,8 +2596,6 @@ Section: UEFI Console Helpers
    in let st4 = st-append-code st3 [72, 37, 255, 0, 0, 0]
 
    in st-append-code st4 x86-ret
-
-
 
  Reads ConIn, which is EFI_SIMPLE_TEXT_INPUT_PROTOCOL at SystemTable+48, and
  calls ReadKeyStroke at vtable offset 8 into an EFI_INPUT_KEY at [rsp+72].
@@ -2821,11 +2694,7 @@ Section: UEFI Console Helpers
 
    in st-append-code st32 x86-ret
 
-
-
 Section: Allocator Helpers
-
-
 
   emit-alloc-helper : CodegenState -> CodegenState
 
@@ -2870,11 +2739,7 @@ Section: Allocator Helpers
    in let st22 = patch-jcc-at st21 skip-pos (st21.code-len)
    in st-append-code st22 (pop-r reg-r11)
 
-
-
 Section: Task Scheduler Helpers
-
-
 
   emit-task-yield-helper : CodegenState -> CodegenState
 
@@ -2949,8 +2814,6 @@ Section: Task Scheduler Helpers
    in let st29y = st-append-code st28y (pop-r reg-rbx)
 
    in st-append-code st29y [195]
-
-
 
   emit-task-entry-helper : CodegenState -> CodegenState
 
@@ -3064,8 +2927,6 @@ Section: Buffer Helpers
 
    in st-append-code st22 (pop-r reg-r13 & pop-r reg-r12 & pop-r reg-rbx & x86-ret)
 
-
-
   emit-buf-read-bytes-helper : CodegenState -> CodegenState
 
   emit-buf-read-bytes-helper (st) =
@@ -3135,8 +2996,6 @@ Section: Buffer Helpers
    in let st29 = st-append-code st28 (mov-rr reg-rax reg-rbx)
 
    in st-append-code st29 (pop-r reg-r14 & pop-r reg-r13 & pop-r reg-r12 & pop-r reg-rbx & x86-ret)
-
-
 
 Section: Binary Output
 
@@ -3340,8 +3199,6 @@ Section: Binary Output
 
    in st-append-code st47 x86-ret
 
-
-
   emit-linked-list-to-list-helper : CodegenState -> CodegenState
 
   emit-linked-list-to-list-helper (st) =
@@ -3440,10 +3297,6 @@ Section: Binary Output
 
    in st-append-code st40 x86-ret
 
-
-
-
-
   emit-block-read-helper : CodegenState -> CodegenState
 
   emit-block-read-helper (st) =
@@ -3476,8 +3329,6 @@ Section: Binary Output
 
    in st-append-code st9 x86-ret
 
-
-
   emit-block-write-helper : CodegenState -> CodegenState
 
   emit-block-write-helper (st) =
@@ -3505,8 +3356,6 @@ Section: Binary Output
    in let st7 = st-append-code st6 (pop-r reg-rbp)
 
    in st-append-code st7 x86-ret
-
-
 
   emit-block-read-sector-helper : CodegenState -> CodegenState
 
@@ -3541,8 +3390,6 @@ Section: Binary Output
    in let st10 = st-append-code st9 (pop-r reg-r12 & pop-r reg-rbx & pop-r reg-rbp)
 
    in st-append-code st10 x86-ret
-
-
 
   emit-uefi-block-read-sector-helper : CodegenState -> CodegenState
 
@@ -3580,7 +3427,13 @@ Section: Binary Output
 
    in let st12 = st-append-code st11 (mov-load reg-rax reg-rax 0)
 
-   in let st13 = st-append-code st12 (mov-load reg-rbx reg-rax 96)
+   in let st12a = st-append-code st12 (test-rr reg-rax reg-rax)
+
+   in let fail-systab = st12a.code-len
+
+   in let st12b = st-append-code st12a (jcc cc-e 0)
+
+   in let st13 = st-append-code st12b (mov-load reg-rbx reg-rax 96)
 
    in let st14 = st-append-code st13 [72, 141, 76, 36, 48]
 
@@ -3590,9 +3443,21 @@ Section: Binary Output
 
    in let st17 = st-append-code st16 [72, 255, 147, 64, 1, 0, 0]
 
-   in let st18 = st-append-code st17 [76, 139, 108, 36, 64]
+   in let st17a = st-append-code st17 (test-rr reg-rax reg-rax)
 
-   in let st19 = st-append-code st18 [73, 139, 69, 8]
+   in let fail-locate = st17a.code-len
+
+   in let st17b = st-append-code st17a (jcc cc-ne 0)
+
+   in let st18 = st-append-code st17b [76, 139, 108, 36, 64]
+
+   in let st18a = st-append-code st18 (test-rr reg-r13 reg-r13)
+
+   in let fail-iface = st18a.code-len
+
+   in let st18b = st-append-code st18a (jcc cc-e 0)
+
+   in let st19 = st-append-code st18b [73, 139, 69, 8]
 
    in let st20 = st-append-code st19 [139, 16]
 
@@ -3606,17 +3471,164 @@ Section: Binary Output
 
    in let st25 = st-append-code st24 [73, 255, 85, 24]
 
-   in let st26 = st-append-code st25 (mov-rr reg-r10 reg-r15)
+   in let st25a = st-append-code st25 (test-rr reg-rax reg-rax)
+
+   in let fail-read = st25a.code-len
+
+   in let st25b = st-append-code st25a (jcc cc-ne 0)
+
+   in let st26 = st-append-code st25b (mov-rr reg-r10 reg-r15)
 
    in let st27 = st-append-code st26 [76, 137, 240]
 
-   in let st28 = st-append-code st27 [72, 129, 196, 88, 0, 0, 0]
+   in let done-jmp = st27.code-len
+
+   in let st27a = st-append-code st27 (jmp 0)
+
+   in let fail-pos = st27a.code-len
+
+   in let st27b = st-append-code st27a (mov-rr reg-r10 reg-r15)
+
+   in let st27c = st-append-code st27b (li reg-rax 0)
+
+   in let done-pos = st27c.code-len
+
+   in let st28 = st-append-code st27c [72, 129, 196, 88, 0, 0, 0]
 
    in let st29 = st-append-code st28 (pop-r reg-r15 & pop-r reg-r14 & pop-r reg-r13 & pop-r reg-r12 & pop-r reg-rbx & pop-r reg-rbp)
 
-   in st-append-code st29 x86-ret
+   in let st30 = st-append-code st29 x86-ret
 
+   in let p1 = patch-jcc-at st30 fail-systab fail-pos
 
+   in let p2 = patch-jcc-at p1 fail-locate fail-pos
+
+   in let p3 = patch-jcc-at p2 fail-iface fail-pos
+
+   in let p4 = patch-jcc-at p3 fail-read fail-pos
+
+   in patch-jmp-at p4 done-jmp done-pos
+
+ EFI_BLOCK_IO_PROTOCOL is Revision at 0, Media at 8, Reset at 0x10, ReadBlocks
+ at 0x18, WriteBlocks at 0x20, FlushBlocks at 0x28. The flush is not optional
+ here: the operator pulls the stick, and a write left in the firmware's cache
+ is a write that did not happen.
+
+ R10 is the Codex heap pointer and is volatile in the Microsoft x64 ABI, so the
+ firmware may clobber it. It is saved in R15 and restored. RBX and R12 to R15
+ are non-volatile there, which is why values survive across the calls.
+
+  emit-uefi-block-write-sector-helper : CodegenState -> CodegenState
+
+  emit-uefi-block-write-sector-helper (st) =
+
+   let fn-off = st.code-len
+
+   in let n = list-push (st.fo-names) "block-write-sector"
+
+   in let o = list-push (st.fo-offsets) fn-off
+
+   in let st0 = __record-set (__record-set st "fo-names" n) "fo-offsets" o
+
+   in let st1 = st-append-code st0 (push-r reg-rbp & mov-rr reg-rbp reg-rsp & push-r reg-rbx & push-r reg-r12 & push-r reg-r13 & push-r reg-r14 & push-r reg-r15)
+
+   in let st2 = st-append-code st1 [72, 129, 236, 88, 0, 0, 0]
+
+   in let st3 = st-append-code st2 (mov-rr reg-r12 reg-rdi)
+
+   in let st4 = st-append-code st3 (mov-rr reg-r14 reg-rsi)
+
+   in let st5 = st-append-code st4 (mov-rr reg-r15 reg-r10)
+
+   in let st7 = st-append-code st5 [199, 68, 36, 48, 33, 91, 78, 150]
+
+   in let st8 = st-append-code st7 [199, 68, 36, 52, 89, 100, 210, 17]
+
+   in let st9 = st-append-code st8 [199, 68, 36, 56, 142, 57, 0, 160]
+
+   in let st10 = st-append-code st9 [199, 68, 36, 60, 201, 105, 114, 59]
+
+   in let st11 = st-append-code st10 (li reg-rax uefi-systab-addr)
+
+   in let st12 = st-append-code st11 (mov-load reg-rax reg-rax 0)
+
+   in let st12a = st-append-code st12 (test-rr reg-rax reg-rax)
+
+   in let fail-systab = st12a.code-len
+
+   in let st12b = st-append-code st12a (jcc cc-e 0)
+
+   in let st13 = st-append-code st12b (mov-load reg-rbx reg-rax 96)
+
+   in let st14 = st-append-code st13 [72, 141, 76, 36, 48]
+
+   in let st15 = st-append-code st14 [72, 49, 210]
+
+   in let st16 = st-append-code st15 [76, 141, 68, 36, 64]
+
+   in let st17 = st-append-code st16 [72, 255, 147, 64, 1, 0, 0]
+
+   in let st17a = st-append-code st17 (test-rr reg-rax reg-rax)
+
+   in let fail-locate = st17a.code-len
+
+   in let st17b = st-append-code st17a (jcc cc-ne 0)
+
+   in let st18 = st-append-code st17b [76, 139, 108, 36, 64]
+
+   in let st18a = st-append-code st18 (test-rr reg-r13 reg-r13)
+
+   in let fail-iface = st18a.code-len
+
+   in let st18b = st-append-code st18a (jcc cc-e 0)
+
+   in let st19 = st-append-code st18b [73, 139, 69, 8]
+
+   in let st20 = st-append-code st19 [139, 16]
+
+   in let st21 = st-append-code st20 [76, 137, 233]
+
+   in let st22 = st-append-code st21 [77, 137, 224]
+
+   in let st23 = st-append-code st22 [73, 199, 193, 0, 2, 0, 0]
+
+   in let st24 = st-append-code st23 [76, 137, 116, 36, 32]
+
+   in let st25 = st-append-code st24 [73, 255, 85, 32]
+
+   in let st26 = st-append-code st25 (mov-rr reg-r12 reg-rax)
+
+   in let st27 = st-append-code st26 [76, 137, 233]
+
+   in let st28 = st-append-code st27 [73, 255, 85, 40]
+
+   in let st29 = st-append-code st28 (mov-rr reg-rax reg-r12)
+
+   in let done-jmp = st29.code-len
+
+   in let st29a = st-append-code st29 (jmp 0)
+
+   in let fail-pos = st29a.code-len
+
+   in let st29b = st-append-code st29a (li reg-rax 2)
+
+   in let done-pos = st29b.code-len
+
+   in let st30 = st-append-code st29b (mov-rr reg-r10 reg-r15)
+
+   in let st31 = st-append-code st30 [72, 129, 196, 88, 0, 0, 0]
+
+   in let st32 = st-append-code st31 (pop-r reg-r15 & pop-r reg-r14 & pop-r reg-r13 & pop-r reg-r12 & pop-r reg-rbx & pop-r reg-rbp)
+
+   in let st33 = st-append-code st32 x86-ret
+
+   in let q1 = patch-jcc-at st33 fail-systab fail-pos
+
+   in let q2 = patch-jcc-at q1 fail-locate fail-pos
+
+   in let q3 = patch-jcc-at q2 fail-iface fail-pos
+
+   in patch-jmp-at q3 done-jmp done-pos
 
   emit-block-write-sector-helper : CodegenState -> CodegenState
 
@@ -3637,8 +3649,6 @@ Section: Binary Output
    in let st3 = st-append-code st2 (li reg-rax 0)
 
    in st-append-code st3 x86-ret
-
-
 
  peek-byte, poke-byte and peek-qword carry the same window guard as
  peek-32 / poke-32. Without it a byte-wise or qword writer would reach
@@ -3677,8 +3687,6 @@ Section: Binary Output
 
    in patch-jcc-at st5 (g.deny-offset) fail-pos
 
-
-
   emit-poke-byte-helper : CodegenState -> CodegenState
 
   emit-poke-byte-helper (st) =
@@ -3709,8 +3717,6 @@ Section: Binary Output
 
    in patch-jcc-at st6 (g.deny-offset) fail-pos
 
-
-
   emit-read-mmio-helper : CodegenState -> CodegenState
 
   emit-read-mmio-helper (st) =
@@ -3728,8 +3734,6 @@ Section: Binary Output
    in let st2 = st-append-code st1 [72, 15, 182, 7]
 
    in st-append-code st2 x86-ret
-
-
 
   emit-poke-mmio-helper : CodegenState -> CodegenState
 
@@ -3791,13 +3795,6 @@ Section: Binary Output
 
    in patch-jcc-at st5 (g.deny-offset) fail-pos
 
- The 32-bit MMIO pair reaches memory the same way poke-32 does, so it
- carries the same window guard. Without it, Device.Mmio would be a way
- around Gpu.Memory: a chapter that declared the board row could write
- the rasterizer's command buffer through read-mmio-32 and poke-mmio-32
- and never earn bit 18. These are driver-rate, not memo-rate, so the
- guard costs them nothing worth counting.
-
   emit-poke-mmio-32-helper : CodegenState -> CodegenState
 
   emit-poke-mmio-32-helper (st) =
@@ -3828,8 +3825,6 @@ Section: Binary Output
 
    in patch-jcc-at st6 (g.deny-offset) fail-pos
 
-
-
   emit-port-in-byte-helper : CodegenState -> CodegenState
 
   emit-port-in-byte-helper (st) =
@@ -3849,8 +3844,6 @@ Section: Binary Output
    in let st3 = st-append-code st2 [236]
 
    in st-append-code st3 x86-ret
-
-
 
   emit-port-out-byte-helper : CodegenState -> CodegenState
 
@@ -3874,8 +3867,6 @@ Section: Binary Output
 
    in st-append-code st4 x86-ret
 
-
-
   emit-port-in-16-helper : CodegenState -> CodegenState
 
   emit-port-in-16-helper (st) =
@@ -3895,8 +3886,6 @@ Section: Binary Output
    in let st3 = st-append-code st2 [102, 237]
 
    in st-append-code st3 x86-ret
-
-
 
   emit-port-out-16-helper : CodegenState -> CodegenState
 
@@ -3919,8 +3908,6 @@ Section: Binary Output
    in let st4 = st-append-code st3 (li reg-rax 0)
 
    in st-append-code st4 x86-ret
-
-
 
   emit-port-in-32-helper : CodegenState -> CodegenState
 
@@ -3951,8 +3938,6 @@ Section: Binary Output
    in let st6 = st-append-code st5 x86-ret
 
    in patch-jcc-at st6 (g.deny-offset) fail-pos
-
-
 
   emit-port-out-32-helper : CodegenState -> CodegenState
 
@@ -3986,8 +3971,6 @@ Section: Binary Output
 
    in patch-jcc-at st7 (g.deny-offset) fail-pos
 
-
-
   emit-peek-32-helper : CodegenState -> CodegenState
 
   emit-peek-32-helper (st) =
@@ -4016,8 +3999,6 @@ Section: Binary Output
 
    in patch-jcc-at st5 (g.deny-offset) fail-pos
 
-
-
   emit-peek-qword-helper : CodegenState -> CodegenState
 
   emit-peek-qword-helper (st) =
@@ -4045,8 +4026,6 @@ Section: Binary Output
    in let st5 = st-append-code st4 x86-ret
 
    in patch-jcc-at st5 (g.deny-offset) fail-pos
-
-
 
   emit-poke-32-helper : CodegenState -> CodegenState
 
@@ -4078,8 +4057,6 @@ Section: Binary Output
 
    in patch-jcc-at st6 (g.deny-offset) fail-pos
 
-
-
   emit-flush-tlb-helper : CodegenState -> CodegenState
 
   emit-flush-tlb-helper (st) =
@@ -4100,8 +4077,6 @@ Section: Binary Output
 
    in st-append-code st3 x86-ret
 
-
-
   emit-cpu-read-cr0-helper : CodegenState -> CodegenState
 
   emit-cpu-read-cr0-helper (st) =
@@ -4117,8 +4092,6 @@ Section: Binary Output
    in let st1 = st-append-code st0 [15, 32, 192]
 
    in st-append-code st1 x86-ret
-
-
 
   emit-cpu-read-cr3-helper : CodegenState -> CodegenState
 
@@ -4136,8 +4109,6 @@ Section: Binary Output
 
    in st-append-code st1 x86-ret
 
-
-
   emit-cpuid-prologue : CodegenState -> CodegenState
 
   emit-cpuid-prologue (st) =
@@ -4150,8 +4121,6 @@ Section: Binary Output
 
    in st-append-code st3 [15, 162]
 
-
-
   emit-cpuid-epilogue : CodegenState -> CodegenState
 
   emit-cpuid-epilogue (st) =
@@ -4159,8 +4128,6 @@ Section: Binary Output
    let st1 = st-append-code st [91]
 
    in st-append-code st1 x86-ret
-
-
 
   emit-cpuid-named : CodegenState, Text -> CodegenState
 
@@ -4174,8 +4141,6 @@ Section: Binary Output
 
    in __record-set (__record-set st "fo-names" n) "fo-offsets" o
 
-
-
   emit-cpu-cpuid-eax-helper : CodegenState -> CodegenState
 
   emit-cpu-cpuid-eax-helper (st) =
@@ -4183,8 +4148,6 @@ Section: Binary Output
    let st0 = emit-cpuid-named st "cpu-cpuid-eax"
 
    in emit-cpuid-epilogue (emit-cpuid-prologue st0)
-
-
 
   emit-cpu-cpuid-ebx-helper : CodegenState -> CodegenState
 
@@ -4196,8 +4159,6 @@ Section: Binary Output
 
    in emit-cpuid-epilogue (st-append-code st1 [72, 137, 216])
 
-
-
   emit-cpu-cpuid-ecx-helper : CodegenState -> CodegenState
 
   emit-cpu-cpuid-ecx-helper (st) =
@@ -4208,8 +4169,6 @@ Section: Binary Output
 
    in emit-cpuid-epilogue (st-append-code st1 [72, 137, 200])
 
-
-
   emit-cpu-cpuid-edx-helper : CodegenState -> CodegenState
 
   emit-cpu-cpuid-edx-helper (st) =
@@ -4219,8 +4178,6 @@ Section: Binary Output
    in let st1 = emit-cpuid-prologue st0
 
    in emit-cpuid-epilogue (st-append-code st1 [72, 137, 208])
-
-
 
   emit-alloc-bytes-helper : CodegenState -> CodegenState
 
@@ -4240,8 +4197,6 @@ Section: Binary Output
 
    in st-append-code st2 x86-ret
 
-
-
   emit-block-sector-count-helper : CodegenState -> CodegenState
 
   emit-block-sector-count-helper (st) =
@@ -4259,8 +4214,6 @@ Section: Binary Output
    in let st2 = st-append-code st1 [15, 5]
 
    in st-append-code st2 x86-ret
-
-
 
   emit-block-select-helper : CodegenState -> CodegenState
 
@@ -4280,8 +4233,6 @@ Section: Binary Output
 
    in st-append-code st2 x86-ret
 
-
-
   emit-key-load-helper : CodegenState -> CodegenState
 
   emit-key-load-helper (st) =
@@ -4300,8 +4251,6 @@ Section: Binary Output
 
    in st-append-code st2 x86-ret
 
-
-
   emit-key-zero-helper : CodegenState -> CodegenState
 
   emit-key-zero-helper (st) =
@@ -4319,8 +4268,6 @@ Section: Binary Output
    in let st2 = st-append-code st1 [15, 5]
 
    in st-append-code st2 x86-ret
-
-
 
   emit-key-status-helper : CodegenState -> CodegenState
 

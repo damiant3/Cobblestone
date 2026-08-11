@@ -1,26 +1,7 @@
 Chapter: RecheckEffects
   cites Recheck chapter RecheckCore
 
- Stage 3. Re-derives the two claims that reached this wire only in
- C2.3a: no call escapes the effect row its caller declares, and every
- linear parameter is used exactly once on every path.
-
- Before that change neither claim was checkable from IR text at all. A
- `linear T` and a `T` produced byte-identical output, and an arrow's
- effect row was bound and discarded, so a function lost its effects the
- moment it took a parameter. Both facts were enforced by the front end
- and thrown away at the boundary. That is why this stage is last: the
- input did not exist.
-
 Section: Effect Rows
-
- Effects reach a signature by two routes and both have to be read, or the
- check reports against a declaration it failed to see. A nullary
- definition's effects ride in EffectfulTy, because its type is not an
- arrow and has no row to carry them. A multi-parameter function is
- curried, so its row sits on an inner arrow and the outer one is empty:
- reading only the outermost row would find nothing declared on exactly
- the functions that declare the most.
 
   rc-names-to-labels : List Name, Integer, Integer, List EffectLabel -> List EffectLabel
   rc-names-to-labels (ns) (i) (len) (acc) =
@@ -42,11 +23,6 @@ Section: Effect Rows
   rc-append-labels (acc) (xs) (i) (len) =
    if i >= len then acc
    else rc-append-labels (list-push acc (list-at xs i)) xs (i + 1) len
-
- An effect is covered when the caller declares it by name, or declares the
- family a dotted operation belongs to: a body performing `Console.Write`
- is within a signature that declares `Console`, which is how the effect
- declarations in this tree are written.
 
   rc-chars-eq : Text, Text, Integer, Integer -> Boolean
   rc-chars-eq (a) (b) (i) (len) =
@@ -75,11 +51,6 @@ Section: Effect Rows
 
 Section: Linear Use Counting
 
- A linear parameter must be mentioned exactly once. Counting mentions is
- the whole of it at this stage: a name used twice is a double use and a
- name never used is a leak, and both are refused by the front end
- (CDX2061 and CDX2063), so either one appearing here is a disagreement.
-
   rc-count-name : IRExpr, Text, Integer -> Integer
   rc-count-name (x) (n) (fuel) =
    if fuel <= 0 then 0
@@ -100,10 +71,6 @@ Section: Linear Use Counting
     is IrFork (b) (t) (sp) -> rc-count-name b n (fuel - 1)
     is IrAwait (b) (t) (sp) -> rc-count-name b n (fuel - 1)
     is otherwise -> 0
-
- The two arms of a conditional are alternatives, not a sequence: a value
- consumed once in each branch is consumed once on every path. Adding them
- would report every correct use in an if as a double use.
 
   rc-count-branch : IRExpr, IRExpr, Text, Integer -> Integer
   rc-count-branch (a) (b) (n) (fuel) =
@@ -134,24 +101,6 @@ Section: Linear Use Counting
    in if here > rest then here else rest
 
 Section: Grounded Effects
-
- A chapter grounds the hardware effects it is the SOURCE of, and its
- bodies may then perform exactly those without declaring them. The table
- rides the wire as "slug\neffect" entries and a def's entries are the ones
- whose slug half equals its own chapter-slug. Because a slug can hold no
- newline, comparing up to the separator is an exact slug match and never a
- prefix collision with a longer slug.
-
- The grounded names JOIN the declared set rather than short-circuiting the
- check, which is the whole of why this is not an exemption: a chapter that
- grounds Device.Port and performs Device.Mmio is still reported, and the
- dotted family rule in rc-eff-covered applies to a grounded name exactly
- as it does to a declared one.
-
- Until 2026-08-04 this table was not on the wire at all and could not be
- consulted. It cost 90 of the 97 findings of the first complete sweep,
- every one of them a chapter carrying a grounds clause, and the test for
- the grounds feature itself was among them.
 
   rc-ground-sep : Text, Integer, Integer -> Integer
   rc-ground-sep (s) (i) (len) =
@@ -223,10 +172,6 @@ Section: The Checks
   rc-eff-stmts (w) (d) (dec) (ss) (i) (len) =
    if i >= len then w
    else rc-eff-stmts (rc-eff-walk w d dec (ir-act-stmt-expr (list-at ss i))) d dec ss (i + 1) len
-
- A callee whose own type carries effect labels is performing them, so the
- caller must declare them. This is the boundary the README sentence claims
- cannot be crossed undeclared.
 
   rc-eff-name-check : RcWalk, Text, List EffectLabel, Text, CodexType -> RcWalk
   rc-eff-name-check (w) (d) (declared) (n) (t) =

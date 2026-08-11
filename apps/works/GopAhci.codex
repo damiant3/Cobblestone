@@ -77,10 +77,6 @@ Section: Bit Helpers
     let m = a - 1
     in (v + m) - bit-and (v + m) m
 
- Bump-allocate `size` bytes aligned to `align` (a power of two) and zero
- them. The HBA reads these structures by DMA, so a stale byte is a real
- command; zeroing is not hygiene, it is correctness.
-
   alloc-zeroed : Integer, Integer -> Integer
   alloc-zeroed (size) (align) =
     let raw = __heap-save
@@ -106,19 +102,10 @@ Section: Controller Discovery
   ahci-no-hba : AhciHba
   ahci-no-hba = AhciHba { hba-ok = False, hba-abar = 0, hba-port = 0 }
 
- Enable memory space (bit 1) and bus master (bit 2). Bus master is what
- lets the HBA write our buffer; without it the command completes and the
- buffer stays empty.
-
   ahci-enable : PciDevice -> [Device.Port] Integer
   ahci-enable (d) =
     let cmd = pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) 4
     in pci-write-config (d.pci-bus) (d.pci-dev) (d.pci-func) 4 (bit-or cmd 6)
-
- A board can carry several SATA disks on one HBA; `ahci-find-nth`
- opens the n-th of them, counted in port order, so a caller choosing
- a MEDIUM (GopDisk's selection cells) can address each disk rather
- than whichever answers first.
 
   ahci-find : [Device.Port] AhciHba
   ahci-find = ahci-find-nth 0
@@ -147,10 +134,6 @@ Section: Controller Discovery
 
   port-addr : Integer, Integer -> Integer
   port-addr (abar) (port) = abar + ahci-port-base + port * ahci-port-size
-
- A port counts only when it is implemented, its PHY reports a device
- with communication established (SSTS.DET == 3), and its signature is a
- plain SATA disk (an ATAPI drive answers a different command set).
 
   ahci-pick-nth : Integer, Integer, Integer, Integer -> Integer
   ahci-pick-nth (abar) (pi) (i) (n) =
@@ -189,10 +172,6 @@ Section: Port Start and Stop
     in poke-32 p px-cmd (bit-or c1 px-cmd-st)
 
 Section: Command Construction
-
- Command header slot 0: five dwords of command FIS, one PRDT entry.
- Bit 6 of the first dword marks a write (host to device); a read leaves
- it clear.
 
   ahci-write-header-w : Integer, Integer, Boolean -> Integer
   ahci-write-header-w (clb) (ctba) (is-write) =
@@ -246,9 +225,6 @@ Section: Sector Read
     ar-ok : Boolean,
     ar-buf : Integer
   }
-
- Wait for the command-issue bit to clear. A task-file error (IS.TFES)
- aborts the wait: the command failed and the buffer is meaningless.
 
   ahci-wait-ci : Integer, Integer, Integer -> Integer
   ahci-wait-ci (p) (slot-mask) (fuel) =

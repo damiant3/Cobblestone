@@ -3,22 +3,9 @@ Chapter: Culling
   cites Math chapter Quaternion
   cites Engine chapter Mesh
 
- Visibility culling. Extracts six frustum planes from the view-
- projection matrix, tests AABBs against the frustum, and performs
- backface culling using screen-space winding order. Near-plane
- triangle clipping via Sutherland-Hodgman in homogeneous coords.
-
  We say:
 
 Section: Frustum Planes
-
- The plane coefficients come straight out of a Mat4, which is Real, so they
- are Real. They were integers from the era when Mat4 was fixed-point, which
- is why extraction could not type-check at all: every one of the twenty-four
- coefficients was a Real being dropped into an integer field. A normalized
- plane's a, b and c are a unit normal and d is a signed distance in world
- units, so the AABB test below is a plain dot product with no thousandths in
- it.
 
   FrustumPlane = record {
     fp-a : Real,
@@ -113,68 +100,6 @@ Section: Backface Culling
   cull-backface (ax) (ay) (bx) (by) (cx) (cy) =
     let cross = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
     in cross > 0
-
-Section: Near-Plane Clipping (Sutherland-Hodgman)
-
-  ClipVertex = record {
-    cv-x : Integer, cv-y : Integer, cv-z : Integer, cv-w : Integer,
-    cv-nx : Integer, cv-ny : Integer, cv-nz : Integer,
-    cv-u : Integer, cv-v : Integer
-  }
-
-  clip-near-plane : ClipVertex, ClipVertex, ClipVertex -> List ClipVertex
-  clip-near-plane (a) (b) (c) =
-    let a-in = a.cv-w > 0
-    in let b-in = b.cv-w > 0
-    in let c-in = c.cv-w > 0
-    in let count = (if a-in then 1 else 0) + (if b-in then 1 else 0) + (if c-in then 1 else 0)
-    in if count == 3 then [a, b, c]
-    else if count == 0 then []
-    else if count == 1 then clip-one-inside a b c a-in b-in c-in
-    else clip-two-inside a b c a-in b-in c-in
-
-  clip-one-inside : ClipVertex, ClipVertex, ClipVertex, Boolean, Boolean, Boolean -> List ClipVertex
-  clip-one-inside (a) (b) (c) (a-in) (b-in) (c-in) =
-    if a-in then
-      let ab = clip-intersect a b
-      in let ac = clip-intersect a c
-      in [a, ab, ac]
-    else if b-in then
-      let ba = clip-intersect b a
-      in let bc = clip-intersect b c
-      in [ba, b, bc]
-    else let ca = clip-intersect c a
-    in let cb = clip-intersect c b
-    in [ca, cb, c]
-
-  clip-two-inside : ClipVertex, ClipVertex, ClipVertex, Boolean, Boolean, Boolean -> List ClipVertex
-  clip-two-inside (a) (b) (c) (a-in) (b-in) (c-in) =
-    if a-in then if b-in then
-      let bc = clip-intersect b c
-      in let ac = clip-intersect a c
-      in [a, b, bc, a, bc, ac]
-    else let ab = clip-intersect a b
-    in let cb = clip-intersect c b
-    in [a, ab, cb, a, cb, c]
-    else let ba = clip-intersect b a
-    in let ca = clip-intersect c a
-    in [ba, b, c, ba, c, ca]
-
-  clip-intersect : ClipVertex, ClipVertex -> ClipVertex
-  clip-intersect (inside) (outside) =
-    let dw = inside.cv-w - outside.cv-w
-    in let t = if dw == 0 then 500 else inside.cv-w * 1000 / dw
-    in ClipVertex {
-      cv-x = inside.cv-x + (outside.cv-x - inside.cv-x) * t / 1000,
-      cv-y = inside.cv-y + (outside.cv-y - inside.cv-y) * t / 1000,
-      cv-z = inside.cv-z + (outside.cv-z - inside.cv-z) * t / 1000,
-      cv-w = inside.cv-w + (outside.cv-w - inside.cv-w) * t / 1000,
-      cv-nx = inside.cv-nx + (outside.cv-nx - inside.cv-nx) * t / 1000,
-      cv-ny = inside.cv-ny + (outside.cv-ny - inside.cv-ny) * t / 1000,
-      cv-nz = inside.cv-nz + (outside.cv-nz - inside.cv-nz) * t / 1000,
-      cv-u = inside.cv-u + (outside.cv-u - inside.cv-u) * t / 1000,
-      cv-v = inside.cv-v + (outside.cv-v - inside.cv-v) * t / 1000
-    }
 
 Section: Formatting
 

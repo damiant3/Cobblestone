@@ -423,13 +423,35 @@ completeness. The register audit is now complete; these are what remain.
 | 1 | 10 ms MDIO settle | **Arm built, driver fixed, both verified in the bed.** Still untested on metal |
 | 2 | MDIO slow mode | **Arm built, driver fixed, both verified in the bed.** Still untested on metal |
 | 3 | Page register | **Implemented, in the model and the driver.** Still untested on metal |
-| 4 | CTRL.ASDE | Derived, not reproduced |
+| 4 | CTRL.ASDE | **Arm built, driver fixed, both verified in the bed.** Still untested on metal |
 
-Finding 4 has not been observed failing. It is a divergence between the
-driver and a cited document, found by reading; no bed arm exercises it and
-no metal flight has tested it. Treat it as a hypothesis for B2b, not a
-diagnosed cause, and do not let a later summary promote it. It is one bit,
-which makes it the cheapest of the four to settle on a flight.
+**Finding 4 closed in the bed 2026-08-10.** It could not be exercised before
+because the model had no ASDE bit and no speed fields at all: only RST and SLU
+were defined, STATUS carried neither SPEED nor ASDV, and `na-line` had been
+printing both off a register nothing ever wrote. Both read 10 Mb/s on every arm
+that has ever run, which is an instrument that cannot fail (L-FALSIF). The
+finding was unreachable because the bed could not express it.
+
+`-e1000-asde` gives STATUS its SPEED and ASDV fields and makes CTRL.ASDE choose
+which source SPEED comes from, per 12349 and 12640. `e1000-link-up` now clears
+the bit. Measured with `codex/test/e1000-asde-speed`:
+
+- **Five arms green**: ASDE set reads SPEED=10, ASDE clear reads 1000, the arms
+  differ, the driver clears the bit, and the driver reads 1000.
+- **Control** (arm off, same binary): three rows collapse -- `asde clear speed`
+  1000 to 10, `arms differ` yes to no, `driver gets 1000` yes to no. So the arm
+  is doing the work.
+- **Sabotage** (driver sets ASDE again, arm on): exactly the two driver rows
+  flip and the two bed rows do not move.
+- All fourteen existing tests reaching this driver still pass.
+
+**What this does NOT establish, and it is the same caution finding 1 carries.**
+Nothing here says the ASUS wedges for this reason. The datasheet says the bit
+"must be set to 0b" and does not say what a part does when software disobeys,
+so the model implements only the behaviour the sentence describes and invents
+no failure. A bed that hung here would be manufacturing a cause. Whether metal
+ever cared is a question only a flight answers, and `AsdeStageProbe` now runs
+the ASDE=0 arm first so that flight can tell the reset from the bit.
 
 **Findings 2 and 3 closed together on 2026-08-04**, because slow mode
 cannot be set without the page register. `-e1000-mdio-slow` gates MDIO

@@ -1,20 +1,6 @@
 Chapter: Passes
 
- Runs the IR-to-IR passes as an ordered pipeline. The pipeline is
- data -- a list of pass names -- so a pass can be switched off,
- reordered, or ablated by editing one list instead of rethreading a
- call chain. Dispatch is deliberately by name rather than through
- function-valued record fields: one list names the passes, one
- function maps a name to its transform, and nothing else has to
- exist for a pass to be registered.
-
 Section: Pass Result
-
- A pass returns its chapter and whatever it has to say about it. The
- rewriters have nothing to say and return the empty list; the checker
- rewrites nothing and returns everything it found. One shape carries
- both, because a pipeline with two kinds of pass in it is a pipeline
- with two ways to be wired wrong.
 
   IRPassResult = record {
    chapter : IRChapter,
@@ -29,57 +15,6 @@ Section: Pass Registry
  arrives with it; until then the pipeline must never turn a bad
  name into a changed program.
 
- `ir-check` is a checker in a rewriter's clothing. It is registered
- like any other pass so it can be placed anywhere -- and more than once
- -- in the pipeline: `passes=fold-constants,ir-check,inline-leaf-calls,
- ir-check` brackets each rewriter with a validation of what it
- produced. It returns the chapter unchanged and reports through the
- violation channel instead. It is deliberately NOT in
- `default-ir-pipeline`: the shipping compiler pays nothing for a
- validator it never runs, and the validator is wanted exactly when a
- pass is under suspicion.
-
- `occ-report` is the same shape, but on the OTHER channel: an analysis
- wearing a rewriter's clothing. It runs the occurrence analyser
- (`occ-report-chapter`) over every definition and returns the chapter
- UNCHANGED, reporting each definition's per-binder classifications -- one
- `OCC <def>: name=Class, name=Class` line per definition -- as **infos,
- not violations**. That distinction is the whole reason the result
- carries two lists. `ir-check`'s findings are errors: malformed IR means
- the binary is not the program, so the compile halts. `occ-report`'s
- findings are information about well-formed IR, so they ride the info
- channel, do not halt, and never claim to be an error -- running
- `-Passes occ-report` reports the classifications AND still emits a
- binary. It exists so the analyser can be driven over real lowered IR
- and its answers read from the compile log, before any pass consumes
- them. Like `ir-check` it is NOT in `default-ir-pipeline`.
-
- `simplify` is a real rewriter -- the GHC-style simplifier
- (`IR/Simplify.codex`) -- that folds constants, propagates literals, and
- takes the known arm of a decided `if`, iterated to a fixpoint. It
- returns the rewritten chapter AND, on the info channel, one line with
- its rewrite count, so `-Passes simplify` both transforms the program
- and reports how much it did. It is opt-in and NOT in
- `default-ir-pipeline`: it absorbs the rules of the hardcoded
- `fold-constants` pass but does not yet replace it, so the shipping
- compiler's output is unchanged until that swap lands as its own CL.
-
- `lir-dump` is on the analysis channel like `occ-report`: it lowers each
- definition to the flat LIR (`IR/Lir.codex`, step 5), runs the structural
- verifier, and reports one `LIR <def>: ...` line per definition -- the dump
- plus the check result, or a note that the function was outside the
- whitelist. It rewrites nothing and emits a binary, so `-Passes lir-dump`
- drives the real lowering over real IR and reads the answer from the
- compile log, before any allocator consumes it. NOT in
- `default-ir-pipeline`.
-
- `inline-single-caller` is phase 2 of inlining (`IR/Lowering.codex`).
- It inlines a definition referenced exactly once in the chapter, which
- costs no duplication and lets emit-time dead-code elimination drop the
- original, so it admits a wider body shape than `inline-leaf-calls`
- does. It IS in `default-ir-pipeline`, and unlike `simplify` it did not
- wait behind a flag.
-
  It shipped opt-in for exactly one changelist while the measurements were
  taken, and they came back with nothing to weigh against it. Same
  compiler, pass off then on: the selfhost binary went 2,514,844 to
@@ -89,13 +24,6 @@ Section: Pass Registry
  the compiler, and the reason for the caution -- read 286,227,712 both
  ways, so the substituted bodies cost it nothing measurable.
 
- The argument for leaving it off was that it does nothing for the
- compiler. That was a misreading of one metric: the deck does not move,
- but ten kilobytes come off the binary. A capability behind a flag is a
- capability the next person does not know to ask for, and finding it
- switched off years later with no reason recorded is worse than either
- shipping it or deleting it.
-
  Unlike the other passes, `lir-dump` does NOT execute inside this
  pipeline: the constructor-pattern increment needs its scrutinee's
  resolved `SumTy`, and this pipeline runs before the RESOLVE phase. So the
@@ -103,18 +31,6 @@ Section: Pass Registry
  the LIR report from `lir-report-if` after RESOLVE and LIFT, over the same
  `cdx-chapter` the emitter consumes. The pipeline name is still the
  trigger; only the execution site moved.
-
- `inline-cost-based` (`IR/Lowering.codex`) inlines a body of at most
- `inline-cost-ceiling` operation nodes at every saturated call site,
- whatever its reference count -- the first pass that duplicates on
- purpose. It is opt-in (`passes=+inline-cost-based`) and deliberately
- NOT in `default-ir-pipeline`, and unlike `simplify` the reason is a
- measurement, recorded at the ceiling constant in
- `Core/BuildSettings.codex`: on the selfhost every ceiling grew the
- binary and none made the compiled compiler faster. Building it also
- surfaced the template-reuse hazard `subst-once`'s record arm now
- guards against, which phase 2 could reach through nothing but a
- census miss; that account is at `subst-once`.
 
   default-ir-pipeline : List Text
   default-ir-pipeline = ["fold-constants", "inline-leaf-calls", "inline-single-caller"]
@@ -138,12 +54,6 @@ Section: Pipeline
  far; every allocation is the pass's own, on whatever deck the caller
  placed the run.
 
- Each violation is tagged with the slot that produced it, so a pipeline
- carrying `ir-check` twice says which of the two fired -- that is the
- whole point of the exercise, attributing malformed IR to the pass that
- made it. A pass that reports nothing costs nothing here: the tagging
- loop sees an empty list and returns.
-
  The run reports the pipeline it actually ran, as its first info, so the
  compile log names its own passes. This is not decoration: `passes=` on the
  mode line REPLACES the default rather than adding to it, and a caller that
@@ -160,20 +70,6 @@ Section: Pipeline
   pipeline-names-text (names) (i) (n) (acc) =
    if i >= n then acc
    else pipeline-names-text names (i + 1) n (if acc == "" then list-at names i else acc & "," & list-at names i)
-
- The per-pass frontier marks are behind `trace` and not on by default, because
- an info line reaches every compile log: `PIPELINE` already does, and three
- `.expected` files in the tree capture it. Three more lines per compile would
- have to be rewritten into all of them, which is a lot of churn to carry for an
- instrument that is read during an investigation and ignored the rest of the
- time.
-
- What the marks answer. In the FRONTEND, `-Measure` and `-IrCce` differ only by
- this pipeline: `emit-measure` calls `compile-frontend` and `emit-ir-cce` calls
- `compile-frontend-ir`, both are `compile-frontend-passes` with `run-passes`
- False and True, and `lower-chapter` sits ABOVE that branch, so lowering runs in
- both. They differ a second time after the frontend, in what they emit, and that
- half is not what these marks measure.
 
  Measured 2026-08-04 on the compiler's own source (2,999,659 bytes, CDX path):
  `fold-constants` +10,052,336, `inline-leaf-calls` +685,944,
@@ -210,13 +106,6 @@ Section: Pipeline
    else tag-pass-violations (list-push acc ("pass " & integer-to-text slot & ": " & (list-at vs i))) slot vs (i + 1) len
 
 Section: Configuration
-
- The pipeline arrives on the mode line as `passes=name,name` -- comma
- separated, no spaces -- and the split lives here so the grammar sits
- beside the registry it names. The knob is the ablation surface: a
- pass that cannot be switched off cannot be measured, and the
- middle-end campaign scores pipeline configurations against each
- other rather than trusting any pass on reputation.
 
   parse-pipeline-names : Text -> List Text
   parse-pipeline-names (names) = text-split names ","

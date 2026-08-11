@@ -1,0 +1,74 @@
+[
+  {
+    "target": "chapter:X86-64 Code Generator",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A process is handed from one core to another through its state word, and the only claimable state is READY. This used to save its context, mark ITSELF ready, and only then go looking for a replacement -- which is correct on one core, where nobody else is looking, and fatal the moment an application processor is dispatching: it advertises a process as claimable while its own core is still standing inside it. An AP claims the slot, this core finds no replacement, takes the no-switch path and carries on running -- and now two cores are executing one process on one stack.",
+    "thread": null
+  },
+  {
+    "target": "chapter:X86-64 Code Generator",
+    "kind": "invariant",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "So: secure a replacement with a successful cmpxchg FIRST, and only then mark yourself READY. A core standing in a process never advertises it. The no-switch path therefore has nothing to undo -- it never published, so its state is still RUNNING and it simply returns.",
+    "thread": null
+  },
+  {
+    "target": "chapter:X86-64 Code Generator",
+    "kind": "warning",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A core that runs out of work is still standing on the stack of the process it was last running, and that process is about to become claimable -- process-wait marks itself BLOCKED and the wake loop will mark it READY the moment the child it waits on exits. Another core claims it and resumes it on that stack. If the parked core is still sitting there, the two of them are now on one stack, and the first interrupt or fault on the parked core pushes a frame straight through the other core's process. That is what a first attempt at this got wrong, and it showed up as a double fault with RSP=0 and a core executing inside the process table.",
+    "thread": null
+  },
+  {
+    "target": "chapter:X86-64 Code Generator",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "So the parked core LEAVES THE STACK FIRST and scans afterwards. It takes its own idle stack, one per core, in always-present low memory below the EBDA -- the same region the application processors already idle in, whose slot 0 was never used because AP stacks are handed out from index 1.",
+    "thread": null
+  },
+  {
+    "target": "chapter:X86-64 Code Generator",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "It knows which stack is its own because it knows its core id, and it knows its core id because whoever claimed the process it was running stamped it into proc-core-offset. That is the entire per-core identity mechanism: a core asks the process it is standing in.",
+    "thread": null
+  },
+  {
+    "target": "chapter:X86-64 Code Generator",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Entered with the core id in R15. Never returns: it either resumes a process or halts until the next interrupt and scans again.",
+    "thread": null
+  },
+  {
+    "target": "function:emit-process-exit-status-helper",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "The unary process-exit: store the status, then join the nullary exit path. The cell is spawn-initialized to zero and __proc_entry overwrites it with the closure's return value, so exiting through the unary form, through a plain return, and through process-exit-self all leave a defined status for a waiter to read.",
+    "thread": null
+  },
+  {
+    "target": "function:emit-process-spawn-on-core-helper",
+    "kind": "rationale",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "A closure spawned pinned to one core. The second argument is the core the child must run on; from then on only that core's idle-dispatch, preempt scan or yield will ever claim it. The pin travels through spawn-affinity-addr, so there is no second copy of the ninety-line spawn body to keep in step: write the cell, then tail-jump into process-spawn, which stamps the pin onto the child and resets the cell to -1 for the next spawn. RDI still carries the closure across the jump and process-spawn's own capability check still runs; RSI carries the core into the cell.",
+    "thread": null
+  },
+  {
+    "target": "chapter:X86-64 Code Generator",
+    "kind": "invariant",
+    "author": "blu",
+    "date": "2026-08-05",
+    "body": "Waiting is block-then-recheck, because the child can exit in the window between the up-front alive check and the commit to BLOCKED. The waiter writes its blocked-on target first and the BLOCKED state word last, so the exiting child's wake loop -- which matches on state == BLOCKED and blocked-on == itself -- never sees a half-set pair. Then, having committed, the waiter re-reads the child: a child that has already gone FREE or ZOMBIE means the wake loop ran before the commit and missed it, so the waiter rescues itself back to RUNNING and returns rather than blocking on a wake that will never come. Either the child sees the waiter BLOCKED and wakes it, or the waiter sees the child dead and wakes itself; the ordering rules out both missing.",
+    "thread": null
+  }
+]

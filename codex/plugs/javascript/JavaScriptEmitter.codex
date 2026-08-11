@@ -2,8 +2,6 @@ Chapter: JavaScript Emitter
   cites Foreword chapter RankedTextSet
   cites Foreword chapter CCE
 
- Generates JavaScript source code from the IR.
-
 Section: Keywords and Sanitization
 
   js-keywords : RankedTextSet
@@ -27,12 +25,29 @@ Section: Keywords and Sanitization
    in if is-js-keyword s then "_" & s
       else s
 
+  js-slash-pos : Text , Integer , Integer -> Integer
+  js-slash-pos (f) (i) (len) =
+   if i >= len then (-1)
+   else if char-to-text (char-at f i) == "/" then i
+   else js-slash-pos f (i + 1) len
+
+  js-field : Text -> Text
+  js-field (f) =
+   let slash = js-slash-pos f 0 (text-length f)
+   in if slash >= 0 then js-sanitize (substring f 0 slash)
+      else js-sanitize f
+
 Section: Arity Map
 
   ArityEntry = record {
    name : Text,
    arity : Integer between 0 and 255,
    generic-count : Integer between 0 and 255
+  }
+
+  JsCtx = record {
+   arities : List ArityEntry,
+   type-defs : List ATypeDef
   }
 
   bsearch-arity-pos : List ArityEntry , Text , Integer , Integer -> Integer
@@ -183,11 +198,11 @@ Section: Expression Emission
 
   js-max-emit-depth : Integer = 256
 
-  js-emit-expr : IRExpr , List ArityEntry -> Text
-  js-emit-expr (e) (arities) = js-emit-expr-at e arities 0
+  js-emit-expr : IRExpr , JsCtx -> Text
+  js-emit-expr (e) (ctx) = js-emit-expr-at e ctx 0
 
-  js-emit-expr-at : IRExpr , List ArityEntry , Integer -> Text
-  js-emit-expr-at (e) (arities) (depth) =
+  js-emit-expr-at : IRExpr , JsCtx , Integer -> Text
+  js-emit-expr-at (e) (ctx) (depth) =
    if depth >= js-max-emit-depth then "undefined"
    else when e
     is IrIntLit (n) (sp) -> integer-to-text n & "n"
@@ -195,28 +210,28 @@ Section: Expression Emission
     is IrTextLit (s) (sp) -> "\"" & js-escape-text s & "\""
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> integer-to-text n & "n"
-    is IrName (n) (ty) (sp) -> js-emit-name n ty arities
-    is IrBinary (op) (l) (r) (ty) (sp) -> js-emit-binary op l r arities
-    is IrNegate (operand) (nty) (sp) -> "(-" & js-emit-expr-at operand arities (depth + 1) & ")"
-    is IrIf (c) (t) (el) (ty) (sp) -> "(" & js-emit-expr-at c arities (depth + 1) & " ? " & js-emit-expr-at t arities (depth + 1) & " : " & js-emit-expr-at el arities (depth + 1) & ")"
-    is IrLet (name) (ty) (val) (body) (sp) -> js-emit-let name val body arities
-    is IrApply (f) (a) (ty) (sp) -> js-emit-apply e arities
-    is IrLambda (params) (body) (ty) (sp) -> js-emit-lambda params body arities
-    is IrList (elems) (ty) (sp) -> js-emit-list elems arities
-    is IrMatch (scrut) (branches) (ty) (sp) -> js-emit-match scrut branches arities
-    is IrAct (stmts) (ty) (sp) -> js-emit-act stmts arities
-    is IrHandle (eff) (body) (clauses) (ty) (sp) -> js-emit-expr-at body arities (depth + 1)
-    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> js-emit-expr-at body arities (depth + 1)
-    is IrRecord (name) (fields) (ty) (sp) -> js-emit-record name fields arities
-    is IrFieldAccess (rec) (field) (ty) (sp) -> js-emit-expr-at rec arities (depth + 1) & "." & js-sanitize field
-    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "({ ..." & js-emit-expr-at rec arities (depth + 1) & ", " & js-sanitize field & ": " & js-emit-expr-at val arities (depth + 1) & " })"
-    is IrFork (body) (ty) (sp) -> "Promise.resolve().then(() => (" & js-emit-expr-at body arities (depth + 1) & ")(null))"
-    is IrAwait (task) (ty) (sp) -> "(await " & js-emit-expr-at task arities (depth + 1) & ")"
-    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> emit-js-try max body fb fail-stmts arities
+    is IrName (n) (ty) (sp) -> js-emit-name n ty ctx
+    is IrBinary (op) (l) (r) (ty) (sp) -> js-emit-binary op l r ctx
+    is IrNegate (operand) (nty) (sp) -> "(-" & js-emit-expr-at operand ctx (depth + 1) & ")"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(" & js-emit-expr-at c ctx (depth + 1) & " ? " & js-emit-expr-at t ctx (depth + 1) & " : " & js-emit-expr-at el ctx (depth + 1) & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> js-emit-let name val body ctx
+    is IrApply (f) (a) (ty) (sp) -> js-emit-apply e ctx
+    is IrLambda (params) (body) (ty) (sp) -> js-emit-lambda params body ctx
+    is IrList (elems) (ty) (sp) -> js-emit-list elems ctx
+    is IrMatch (scrut) (branches) (ty) (sp) -> js-emit-match scrut branches ctx
+    is IrAct (stmts) (ty) (sp) -> js-emit-act stmts ctx
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> js-emit-expr-at body ctx (depth + 1)
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> js-emit-expr-at body ctx (depth + 1)
+    is IrRecord (name) (fields) (ty) (sp) -> js-emit-record name fields ty ctx
+    is IrFieldAccess (rec) (field) (ty) (sp) -> js-emit-expr-at rec ctx (depth + 1) & "." & js-field field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "({ ..." & js-emit-expr-at rec ctx (depth + 1) & ", " & js-field field & ": " & js-emit-expr-at val ctx (depth + 1) & " })"
+    is IrFork (body) (ty) (sp) -> "Promise.resolve().then(() => (" & js-emit-expr-at body ctx (depth + 1) & ")(null))"
+    is IrAwait (task) (ty) (sp) -> "(await " & js-emit-expr-at task ctx (depth + 1) & ")"
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> emit-js-try max body fb fail-stmts ctx
     is IrError (msg) (ty) (sp) -> "(() => { throw new Error(\"" & js-escape-text msg & "\"); })()"
 
-  js-emit-name : Text , CodexType , List ArityEntry -> Text
-  js-emit-name (n) (ty) (arities) =
+  js-emit-name : Text , CodexType , JsCtx -> Text
+  js-emit-name (n) (ty) (ctx) =
    if n == "read-line" then "(require('readline-sync').question(''))"
    else if n == "show" then "String"
    else if n == "negate" then "((x) => -x)"
@@ -228,14 +243,14 @@ Section: Expression Emission
    else if n == "__linked-list-empty" then "[]"
    else if n == "get-args" then "process.argv"
    else if n == "current-dir" then "process.cwd()"
-   else if text-length n > 0 & is-upper-letter (char-code (char-at n 0)) then js-emit-name-upper n ty arities
-   else let ar = lookup-arity arities n
+   else if text-length n > 0 & is-upper-letter (char-code (char-at n 0)) then js-emit-name-upper n ty ctx
+   else let ar = lookup-arity (ctx.arities) n
    in if ar == 0 then js-sanitize n & "()"
       else if ar >= 2 then js-emit-partial-wrappers 0 ar & js-sanitize n & "(" & js-emit-partial-params 0 ar & ")"
       else js-sanitize n
 
-  js-emit-name-upper : Text , CodexType , List ArityEntry -> Text
-  js-emit-name-upper (n) (ty) (arities) =
+  js-emit-name-upper : Text , CodexType , JsCtx -> Text
+  js-emit-name-upper (n) (ty) (ctx) =
    when ty
     is FunTy (p) (fnrow) (r) -> js-sanitize n
     is otherwise -> js-sanitize n & "()"
@@ -251,18 +266,18 @@ Section: Expression Emission
    if i == count then ""
    else "(_p" & integer-to-text i & "_) => " & js-emit-partial-wrappers (i + 1) count
 
-  js-emit-binary : IRBinaryOp , IRExpr , IRExpr , List ArityEntry -> Text
-  js-emit-binary (op) (l) (r) (arities) =
+  js-emit-binary : IRBinaryOp , IRExpr , IRExpr , JsCtx -> Text
+  js-emit-binary (op) (l) (r) (ctx) =
    when op
-    is IrAppendText -> "(" & js-emit-expr l arities & " + " & js-emit-expr r arities & ")"
-    is IrAppendList -> "[..." & js-emit-expr l arities & ", ..." & js-emit-expr r arities & "]"
-    is IrConsList -> "[" & js-emit-expr l arities & ", ..." & js-emit-expr r arities & "]"
-    is IrPowInt -> "(" & js-emit-expr l arities & " ** " & js-emit-expr r arities & ")"
-    is IrAddVec -> "(" & js-emit-expr l arities & ".map((v,i) => v + " & js-emit-expr r arities & "[i]))"
-    is IrSubVec -> "(" & js-emit-expr l arities & ".map((v,i) => v - " & js-emit-expr r arities & "[i]))"
-    is IrMulVec -> "(" & js-emit-expr l arities & ".map((v,i) => v * " & js-emit-expr r arities & "[i]))"
-    is IrDivVec -> "(" & js-emit-expr l arities & ".map((v,i) => v / " & js-emit-expr r arities & "[i]))"
-    is otherwise -> "(" & js-emit-expr l arities & " " & js-emit-bin-op op & " " & js-emit-expr r arities & ")"
+    is IrAppendText -> "(" & js-emit-expr l ctx & " + " & js-emit-expr r ctx & ")"
+    is IrAppendList -> "[..." & js-emit-expr l ctx & ", ..." & js-emit-expr r ctx & "]"
+    is IrConsList -> "[" & js-emit-expr l ctx & ", ..." & js-emit-expr r ctx & "]"
+    is IrPowInt -> "(" & js-emit-expr l ctx & " ** " & js-emit-expr r ctx & ")"
+    is IrAddVec -> "(" & js-emit-expr l ctx & ".map((v,i) => v + " & js-emit-expr r ctx & "[i]))"
+    is IrSubVec -> "(" & js-emit-expr l ctx & ".map((v,i) => v - " & js-emit-expr r ctx & "[i]))"
+    is IrMulVec -> "(" & js-emit-expr l ctx & ".map((v,i) => v * " & js-emit-expr r ctx & "[i]))"
+    is IrDivVec -> "(" & js-emit-expr l ctx & ".map((v,i) => v / " & js-emit-expr r ctx & "[i]))"
+    is otherwise -> "(" & js-emit-expr l ctx & " " & js-emit-bin-op op & " " & js-emit-expr r ctx & ")"
 
   js-emit-bin-op : IRBinaryOp -> Text
   js-emit-bin-op (op) =
@@ -287,14 +302,14 @@ Section: Expression Emission
     is IrAppendList -> "+"
     is IrConsList -> "+"
 
-  js-emit-let : Text , IRExpr , IRExpr , List ArityEntry -> Text
-  js-emit-let (name) (val) (body) (arities) =
-   "((" & js-sanitize name & ") => " & js-emit-expr body arities & ")(" & js-emit-expr val arities & ")"
+  js-emit-let : Text , IRExpr , IRExpr , JsCtx -> Text
+  js-emit-let (name) (val) (body) (ctx) =
+   "((" & js-sanitize name & ") => " & js-emit-expr body ctx & ")(" & js-emit-expr val ctx & ")"
 
-  js-emit-lambda : List IRParam , IRExpr , List ArityEntry -> Text
-  js-emit-lambda (params) (body) (arities) =
-   if list-length params == 0 then "(() => " & js-emit-expr body arities & ")"
-   else "(" & js-emit-lambda-params params 0 (list-length params) & js-emit-expr body arities & ")"
+  js-emit-lambda : List IRParam , IRExpr , JsCtx -> Text
+  js-emit-lambda (params) (body) (ctx) =
+   if list-length params == 0 then "(() => " & js-emit-expr body ctx & ")"
+   else "(" & js-emit-lambda-params params 0 (list-length params) & js-emit-expr body ctx & ")"
 
   js-emit-lambda-params : List IRParam , Integer , Integer -> Text
   js-emit-lambda-params (params) (i) (len) =
@@ -302,67 +317,99 @@ Section: Expression Emission
    else let p = list-at params i
    in "(" & js-sanitize (p.name) & ") => " & js-emit-lambda-params params (i + 1) len
 
-  js-emit-list : List IRExpr , List ArityEntry -> Text
-  js-emit-list (elems) (arities) =
-   "[" & js-emit-list-elems elems 0 arities & "]"
+  js-emit-list : List IRExpr , JsCtx -> Text
+  js-emit-list (elems) (ctx) =
+   "[" & js-emit-list-elems elems 0 ctx & "]"
 
-  js-emit-list-elems : List IRExpr , Integer , List ArityEntry -> Text
-  js-emit-list-elems (elems) (i) (arities) =
+  js-emit-list-elems : List IRExpr , Integer , JsCtx -> Text
+  js-emit-list-elems (elems) (i) (ctx) =
    if i == list-length elems then ""
-   else if i == list-length elems - 1 then js-emit-expr (list-at elems i) arities
-   else js-emit-expr (list-at elems i) arities & ", " & js-emit-list-elems elems (i + 1) arities
+   else if i == list-length elems - 1 then js-emit-expr (list-at elems i) ctx
+   else js-emit-expr (list-at elems i) ctx & ", " & js-emit-list-elems elems (i + 1) ctx
 
-  js-emit-record : Text , List IRFieldVal , List ArityEntry -> Text
-  js-emit-record (name) (fields) (arities) =
-   js-sanitize name & "(" & js-emit-record-args fields 0 arities & ")"
+ A clamping bounded field saturates at its declared band. JavaScript stores
+ whatever it is given, so the saturation has to be emitted here from the
+ field's declared type or it is silently lost. The bounds are BigInt
+ literals because every integer this plug emits is a BigInt.
 
-  js-emit-record-args : List IRFieldVal , Integer , List ArityEntry -> Text
-  js-emit-record-args (fields) (i) (arities) =
+  js-lookup-rec-field-ty : List RecordField , Text , Integer -> CodexType
+  js-lookup-rec-field-ty (fields) (name) (i) =
+   if i == list-length fields then ErrorTy
+   else let f = list-at fields i
+   in if f.name.value == name then f.type-val
+      else js-lookup-rec-field-ty fields name (i + 1)
+
+  js-resolve-rec-fields : JsCtx , Name , List RecordField -> List RecordField
+  js-resolve-rec-fields (ctx) (rn) (rf) =
+   if list-length rf > 0 then rf
+   else record-fields-by-name (ctx.type-defs) (rn.value) 0
+
+  js-clamp-field-val : JsCtx , CodexType , Text , Text -> Text
+  js-clamp-field-val (ctx) (rec-ty) (field-name) (val-text) =
+   when rec-ty
+    is RecordTy (rn) (ra) (rf) ->
+     let ft = js-lookup-rec-field-ty (js-resolve-rec-fields ctx rn rf) field-name 0
+     in when ft
+      is IntegerTy (lo) (hi) (mode) ->
+       when mode
+        is OvClamping -> "((_v) => _v < " & integer-to-text lo & "n ? " & integer-to-text lo & "n : (_v > " & integer-to-text hi & "n ? " & integer-to-text hi & "n : _v))(" & val-text & ")"
+        is otherwise -> val-text
+      is otherwise -> val-text
+    is otherwise -> val-text
+
+  js-emit-record : Text , List IRFieldVal , CodexType , JsCtx -> Text
+  js-emit-record (name) (fields) (ty) (ctx) =
+   js-sanitize name & "(" & js-emit-record-args fields 0 ty ctx & ")"
+
+  js-emit-record-args : List IRFieldVal , Integer , CodexType , JsCtx -> Text
+  js-emit-record-args (fields) (i) (rec-ty) (ctx) =
    if i == list-length fields then ""
    else let f = list-at fields i
-   in js-emit-expr (f.value) arities & (if i < list-length fields - 1 then ", " else "") & js-emit-record-args fields (i + 1) arities
+   in let val-text = js-emit-expr (f.value) ctx
+   in let clamped = js-clamp-field-val ctx rec-ty (f.name) val-text
+   in clamped & (if i < list-length fields - 1 then ", " else "") & js-emit-record-args fields (i + 1) rec-ty ctx
 
-  js-emit-apply-args : List IRExpr , List ArityEntry , Integer -> Text
-  js-emit-apply-args (args) (arities) (i) =
+  js-emit-apply-args : List IRExpr , JsCtx , Integer -> Text
+  js-emit-apply-args (args) (ctx) (i) =
    if i == list-length args then ""
-   else if i == list-length args - 1 then js-emit-expr (list-at args i) arities
-        else js-emit-expr (list-at args i) arities & ", " & js-emit-apply-args args arities (i + 1)
+   else if i == list-length args - 1 then js-emit-expr (list-at args i) ctx
+        else js-emit-expr (list-at args i) ctx & ", " & js-emit-apply-args args ctx (i + 1)
 
-  js-emit-match : IRExpr , List IRBranch , List ArityEntry -> Text
-  js-emit-match (scrut) (branches) (arities) =
-   "((_s) => " & js-emit-match-branches branches arities 0 0 & ")(" & js-emit-expr scrut arities & ")"
+  js-emit-match : IRExpr , List IRBranch , JsCtx -> Text
+  js-emit-match (scrut) (branches) (ctx) =
+   "((_s) => " & js-emit-match-branches branches ctx 0 0 & ")(" & js-emit-expr scrut ctx & ")"
 
-  js-emit-match-branches : List IRBranch , List ArityEntry , Integer , Integer -> Text
-  js-emit-match-branches (branches) (arities) (i) (opens) =
+  js-emit-match-branches : List IRBranch , JsCtx , Integer , Integer -> Text
+  js-emit-match-branches (branches) (ctx) (i) (opens) =
    if i == list-length branches then " : (() => { throw new Error(\"Non-exhaustive match\"); })()" & js-close-parens opens
    else let b = list-at branches i
-   in js-emit-match-branch b branches arities i opens
+   in js-emit-match-branch b branches ctx i opens
 
-  js-emit-match-branch : IRBranch , List IRBranch , List ArityEntry , Integer , Integer -> Text
-  js-emit-match-branch (b) (branches) (arities) (i) (opens) =
+  js-emit-match-branch : IRBranch , List IRBranch , JsCtx , Integer , Integer -> Text
+  js-emit-match-branch (b) (branches) (ctx) (i) (opens) =
    when b.pattern
     is IrLitPat (text) (ty) (sp) ->
      let sep = if i > 0 then " : " else ""
-     in sep & "(_s === " & text & " ? " & js-emit-expr (b.body) arities & js-emit-match-branches branches arities (i + 1) (opens + 1)
+     in sep & "(_s === " & text & " ? " & js-emit-expr (b.body) ctx & js-emit-match-branches branches ctx (i + 1) (opens + 1)
     is IrCtorPat (name) (subs) (ty) (sp) ->
      let sep = if i > 0 then " : " else ""
-     in if is-mktup-name name then sep & "((() => { const [" & js-emit-tuple-pat-names subs 0 & "] = _s; return " & js-emit-expr (b.body) arities & "; })())" & js-emit-match-branches branches arities (i + 1) opens
-     else sep & "(_s.tag === \"" & name & "\" ? " & js-emit-ctor-pattern-body subs (b.body) arities 0 & js-emit-match-branches branches arities (i + 1) (opens + 1)
+     in if is-mktup-name name then sep & "((() => { const [" & js-emit-tuple-pat-names subs 0 & "] = _s; return " & js-emit-expr (b.body) ctx & "; })())" & js-emit-match-branches branches ctx (i + 1) opens
+     else sep & "(_s.tag === \"" & name & "\" ? " & js-emit-ctor-pattern-body subs (b.body) ctx 0 & js-emit-match-branches branches ctx (i + 1) (opens + 1)
     is IrVarPat (name) (ty) (sp) ->
      let sep = if i > 0 then " : " else ""
-     in sep & "((" & js-sanitize name & ") => " & js-emit-expr (b.body) arities & ")(_s)" & js-close-parens opens
+     in sep & "((" & js-sanitize name & ") => " & js-emit-expr (b.body) ctx & ")(_s)" & js-close-parens opens
     is IrWildPat (sp) ->
      let sep = if i > 0 then " : " else ""
-     in sep & js-emit-expr (b.body) arities & js-close-parens opens
+     in sep & js-emit-expr (b.body) ctx & js-close-parens opens
     is IrVecPat (pats) (ty) (sp) ->
      let sep = if i > 0 then " : " else ""
-     in sep & js-emit-expr (b.body) arities & js-close-parens opens
+     in sep & js-emit-expr (b.body) ctx & js-close-parens opens
 
-  js-emit-ctor-pattern-body : List IRPat , IRExpr , List ArityEntry , Integer -> Text
-  js-emit-ctor-pattern-body (subs) (body) (arities) (i) =
+  js-emit-ctor-pattern-body : List IRPat , IRExpr , JsCtx , Integer -> Text
+  js-emit-ctor-pattern-body (subs) (body) (ctx) (i) =
    let bindings = js-collect-ctor-bindings subs 0
-   in if list-length bindings == 0 then js-emit-expr body arities
-      else "(() => { " & js-emit-ctor-binding-stmts bindings 0 & "return " & js-emit-expr body arities & "; })()"
+   in if list-length bindings == 0 then js-emit-expr body ctx
+      else "(() => { " & js-emit-ctor-binding-stmts bindings 0 & "return " & js-emit-expr body ctx & "; })()"
 
   CtorBinding = record {
    var-name : Text,
@@ -387,55 +434,55 @@ Section: Expression Emission
    if n == 0 then ""
    else ")" & js-close-parens (n - 1)
 
-  emit-js-try : Integer , List IRActStmt , List IRActStmt , List IRActStmt , List ArityEntry -> Text
-  emit-js-try (max) (body) (fb) (fail-stmts) (arities) =
-   let body-text = js-emit-act body arities
-   in let fb-text = js-emit-act fb arities
-   in let fail-text = js-emit-act fail-stmts arities
+  emit-js-try : Integer , List IRActStmt , List IRActStmt , List IRActStmt , JsCtx -> Text
+  emit-js-try (max) (body) (fb) (fail-stmts) (ctx) =
+   let body-text = js-emit-act body ctx
+   in let fb-text = js-emit-act fb ctx
+   in let fail-text = js-emit-act fail-stmts ctx
    in "(() => { let _try_ok = false; let _try_result; for (let _try_i = 0; _try_i < " & integer-to-text max & "; _try_i++) { try { _try_result = " & body-text & "; _try_ok = true; break; } catch (_e) {} } if (_try_ok) return _try_result; try { return " & fb-text & "; } catch (_e) { return " & fail-text & "; } })()"
 
-  js-emit-act : List IRActStmt , List ArityEntry -> Text
-  js-emit-act (stmts) (arities) =
-   "(() => {\n" & js-emit-act-stmts stmts 0 (list-length stmts) arities & "})()"
+  js-emit-act : List IRActStmt , JsCtx -> Text
+  js-emit-act (stmts) (ctx) =
+   "(() => {\n" & js-emit-act-stmts stmts 0 (list-length stmts) ctx & "})()"
 
-  js-emit-act-stmts : List IRActStmt , Integer , Integer , List ArityEntry -> Text
-  js-emit-act-stmts (stmts) (i) (len) (arities) =
+  js-emit-act-stmts : List IRActStmt , Integer , Integer , JsCtx -> Text
+  js-emit-act-stmts (stmts) (i) (len) (ctx) =
    if i == len then ""
    else let s = list-at stmts i
-   in js-emit-act-stmt s arities & js-emit-act-stmts stmts (i + 1) len arities
+   in js-emit-act-stmt s ctx & js-emit-act-stmts stmts (i + 1) len ctx
 
-  js-emit-act-stmt : IRActStmt , List ArityEntry -> Text
-  js-emit-act-stmt (s) (arities) =
+  js-emit-act-stmt : IRActStmt , JsCtx -> Text
+  js-emit-act-stmt (s) (ctx) =
    when s
-    is IrDoBind (name) (ty) (val) (sp) -> "    const " & js-sanitize name & " = " & js-emit-expr val arities & ";\n"
-    is IrDoExec (e) (sp) -> "    " & js-emit-expr e arities & ";\n"
+    is IrDoBind (name) (ty) (val) (sp) -> "    const " & js-sanitize name & " = " & js-emit-expr val ctx & ";\n"
+    is IrDoExec (e) (sp) -> "    " & js-emit-expr e ctx & ";\n"
 
-  js-emit-apply : IRExpr , List ArityEntry -> Text
-  js-emit-apply (e) (arities) =
+  js-emit-apply : IRExpr , JsCtx -> Text
+  js-emit-apply (e) (ctx) =
    let chain = collect-apply-chain e []
    in let root = chain.root
    in let args = chain.args
    in when root
-    is IrName (n) (ty) (sp) -> js-emit-apply-named n ty args arities e
-    is otherwise -> js-emit-expr-curried e arities
+    is IrName (n) (ty) (sp) -> js-emit-apply-named n ty args ctx e
+    is otherwise -> js-emit-expr-curried e ctx
 
-  js-emit-apply-named : Text , CodexType , List IRExpr , List ArityEntry , IRExpr -> Text
-  js-emit-apply-named (n) (ty) (args) (arities) (original) =
-   let builtin-result = js-try-builtin n args arities
+  js-emit-apply-named : Text , CodexType , List IRExpr , JsCtx , IRExpr -> Text
+  js-emit-apply-named (n) (ty) (args) (ctx) (original) =
+   let builtin-result = js-try-builtin n args ctx
    in if text-length builtin-result > 0 then builtin-result
-   else if is-mktup-name n then "[" & js-emit-apply-args args arities 0 & "]"
-   else if text-length n > 0 & is-upper-letter (char-code (char-at n 0)) then js-sanitize n & "(" & js-emit-apply-args args arities 0 & ")"
-   else let ar = lookup-arity arities n
-   in if ar > 1 & list-length args == ar then js-sanitize n & "(" & js-emit-apply-args args arities 0 & ")"
+   else if is-mktup-name n then "[" & js-emit-apply-args args ctx 0 & "]"
+   else if text-length n > 0 & is-upper-letter (char-code (char-at n 0)) then js-sanitize n & "(" & js-emit-apply-args args ctx 0 & ")"
+   else let ar = lookup-arity (ctx.arities) n
+   in if ar > 1 & list-length args == ar then js-sanitize n & "(" & js-emit-apply-args args ctx 0 & ")"
       else if ar > 1 & list-length args < ar then let remaining = ar - list-length args
-        in js-emit-partial-wrappers 0 remaining & js-sanitize n & "(" & js-emit-apply-args args arities 0 & ", " & js-emit-partial-params 0 remaining & ")"
-      else js-emit-expr-curried original arities
+        in js-emit-partial-wrappers 0 remaining & js-sanitize n & "(" & js-emit-apply-args args ctx 0 & ", " & js-emit-partial-params 0 remaining & ")"
+      else js-emit-expr-curried original ctx
 
-  js-emit-expr-curried : IRExpr , List ArityEntry -> Text
-  js-emit-expr-curried (e) (arities) =
+  js-emit-expr-curried : IRExpr , JsCtx -> Text
+  js-emit-expr-curried (e) (ctx) =
    when e
-    is IrApply (f) (a) (ty) (sp) -> js-emit-expr f arities & "(" & js-emit-expr a arities & ")"
-    is otherwise -> js-emit-expr e arities
+    is IrApply (f) (a) (ty) (sp) -> js-emit-expr f ctx & "(" & js-emit-expr a ctx & ")"
+    is otherwise -> js-emit-expr e ctx
 
  The character predicates test CCE BANDS and must never be handed to a
  JavaScript regular expression over `String.fromCharCode`. Codex text is
@@ -448,77 +495,78 @@ Section: Expression Emission
  two-band letter test would otherwise repeat its argument four times, and
  the argument is an arbitrary expression.
 
-  js-try-builtin : Text , List IRExpr , List ArityEntry -> Text
-  js-try-builtin (n) (args) (arities) =
-   if n == "show" then "String(" & js-emit-expr (list-at args 0) arities & ")"
-   else if n == "negate" then "(-" & js-emit-expr (list-at args 0) arities & ")"
-   else if n == "print-line-uni" then "console.log(" & js-emit-expr (list-at args 0) arities & ")"
-   else if n == "print-error-uni" then "console.error(" & js-emit-expr (list-at args 0) arities & ")"
-   else if n == "text-length" then "BigInt(" & js-emit-expr (list-at args 0) arities & ".length)"
-   else if n == "char-to-text" then "String.fromCharCode(Number(" & js-emit-expr (list-at args 0) arities & "))"
-   else if n == "is-letter" then "((c)=>(c>=13&&c<=64)||(c>=97&&c<=127))(Number(" & js-emit-expr (list-at args 0) arities & "))"
-   else if n == "is-digit" then "((c)=>c>=3&&c<=12)(Number(" & js-emit-expr (list-at args 0) arities & "))"
-   else if n == "is-whitespace" then "((c)=>c>=1&&c<=2)(Number(" & js-emit-expr (list-at args 0) arities & "))"
-   else if n == "text-to-integer" then "BigInt(" & js-emit-expr (list-at args 0) arities & ")"
-   else if n == "integer-to-text" then "String(" & js-emit-expr (list-at args 0) arities & ")"
-   else if n == "char-code" then js-emit-expr (list-at args 0) arities
-   else if n == "code-to-char" then js-emit-expr (list-at args 0) arities
-   else if n == "char-code-at" then "BigInt(" & js-emit-expr (list-at args 0) arities & ".charCodeAt(Number(" & js-emit-expr (list-at args 1) arities & ")))"
-   else if n == "list-length" then "BigInt(" & js-emit-expr (list-at args 0) arities & ".length)"
-   else if n == "open-file" then "require('fs').readFileSync(" & js-emit-expr (list-at args 0) arities & ")"
-   else if n == "read-all" then js-emit-expr (list-at args 0) arities & ".toString()"
+  js-try-builtin : Text , List IRExpr , JsCtx -> Text
+  js-try-builtin (n) (args) (ctx) =
+   if n == "__narrow" then js-emit-expr (list-at args 0) ctx
+   else if n == "show" then "String(" & js-emit-expr (list-at args 0) ctx & ")"
+   else if n == "negate" then "(-" & js-emit-expr (list-at args 0) ctx & ")"
+   else if n == "print-line-uni" then "console.log(" & js-emit-expr (list-at args 0) ctx & ")"
+   else if n == "print-error-uni" then "console.error(" & js-emit-expr (list-at args 0) ctx & ")"
+   else if n == "text-length" then "BigInt(" & js-emit-expr (list-at args 0) ctx & ".length)"
+   else if n == "char-to-text" then "String.fromCharCode(Number(" & js-emit-expr (list-at args 0) ctx & "))"
+   else if n == "is-letter" then "((c)=>(c>=13&&c<=64)||(c>=97&&c<=127))(Number(" & js-emit-expr (list-at args 0) ctx & "))"
+   else if n == "is-digit" then "((c)=>c>=3&&c<=12)(Number(" & js-emit-expr (list-at args 0) ctx & "))"
+   else if n == "is-whitespace" then "((c)=>c>=1&&c<=2)(Number(" & js-emit-expr (list-at args 0) ctx & "))"
+   else if n == "text-to-integer" then "BigInt(" & js-emit-expr (list-at args 0) ctx & ")"
+   else if n == "integer-to-text" then "String(" & js-emit-expr (list-at args 0) ctx & ")"
+   else if n == "char-code" then js-emit-expr (list-at args 0) ctx
+   else if n == "code-to-char" then js-emit-expr (list-at args 0) ctx
+   else if n == "char-code-at" then "BigInt(" & js-emit-expr (list-at args 0) ctx & ".charCodeAt(Number(" & js-emit-expr (list-at args 1) ctx & ")))"
+   else if n == "list-length" then "BigInt(" & js-emit-expr (list-at args 0) ctx & ".length)"
+   else if n == "open-file" then "require('fs').readFileSync(" & js-emit-expr (list-at args 0) ctx & ")"
+   else if n == "read-all" then js-emit-expr (list-at args 0) ctx & ".toString()"
    else if n == "close-file" then "undefined"
-   else if n == "read-text" then "require('fs').readFileSync(" & js-emit-expr (list-at args 0) arities & ", 'utf8')"
-   else if n == "write-file" & list-length args == 2 then "require('fs').writeFileSync(" & js-emit-expr (list-at args 0) arities & ", " & js-emit-expr (list-at args 1) arities & ")"
-   else if n == "file-exists" & list-length args == 1 then "require('fs').existsSync(" & js-emit-expr (list-at args 0) arities & ")"
-   else if n == "char-at" & list-length args == 2 then "BigInt(" & js-emit-expr (list-at args 0) arities & ".charCodeAt(Number(" & js-emit-expr (list-at args 1) arities & ")))"
-   else if n == "substring" & list-length args == 3 then js-emit-expr (list-at args 0) arities & ".substring(Number(" & js-emit-expr (list-at args 1) arities & "), Number(" & js-emit-expr (list-at args 1) arities & " + " & js-emit-expr (list-at args 2) arities & "))"
-   else if n == "list-at" & list-length args == 2 then js-emit-expr (list-at args 0) arities & "[Number(" & js-emit-expr (list-at args 1) arities & ")]"
-   else if n == "list-snoc" & list-length args == 2 then "[..." & js-emit-expr (list-at args 0) arities & ", " & js-emit-expr (list-at args 1) arities & "]"
-   else if n == "list-insert-at" & list-length args == 3 then "(() => { const _l = [...(" & js-emit-expr (list-at args 0) arities & ")]; _l.splice(Number(" & js-emit-expr (list-at args 1) arities & "), 0, " & js-emit-expr (list-at args 2) arities & "); return _l; })()"
-   else if n == "list-set-at" & list-length args == 3 then "(() => { const _l = [...(" & js-emit-expr (list-at args 0) arities & ")]; _l[Number(" & js-emit-expr (list-at args 1) arities & ")] = " & js-emit-expr (list-at args 2) arities & "; return _l; })()"
-   else if n == "text-replace" & list-length args == 3 then js-emit-expr (list-at args 0) arities & ".replaceAll(" & js-emit-expr (list-at args 1) arities & ", " & js-emit-expr (list-at args 2) arities & ")"
-   else if n == "text-compare" & list-length args == 2 then "BigInt(" & js-emit-expr (list-at args 0) arities & " < " & js-emit-expr (list-at args 1) arities & " ? -1 : " & js-emit-expr (list-at args 0) arities & " > " & js-emit-expr (list-at args 1) arities & " ? 1 : 0)"
-   else if n == "text-concat-list" & list-length args == 1 then js-emit-expr (list-at args 0) arities & ".join(\"\")"
-   else if n == "text-split" & list-length args == 2 then js-emit-expr (list-at args 0) arities & ".split(" & js-emit-expr (list-at args 1) arities & ")"
-   else if n == "text-contains" & list-length args == 2 then js-emit-expr (list-at args 0) arities & ".includes(" & js-emit-expr (list-at args 1) arities & ")"
-   else if n == "text-starts-with" & list-length args == 2 then js-emit-expr (list-at args 0) arities & ".startsWith(" & js-emit-expr (list-at args 1) arities & ")"
-   else if n == "bit-and" & list-length args == 2 then "(" & js-emit-expr (list-at args 0) arities & " & " & js-emit-expr (list-at args 1) arities & ")"
-   else if n == "bit-or" & list-length args == 2 then "(" & js-emit-expr (list-at args 0) arities & " | " & js-emit-expr (list-at args 1) arities & ")"
-   else if n == "bit-xor" & list-length args == 2 then "(" & js-emit-expr (list-at args 0) arities & " ^ " & js-emit-expr (list-at args 1) arities & ")"
-   else if n == "bit-shl" & list-length args == 2 then "(" & js-emit-expr (list-at args 0) arities & " << " & js-emit-expr (list-at args 1) arities & ")"
-   else if n == "bit-shr" & list-length args == 2 then "(" & js-emit-expr (list-at args 0) arities & " >> " & js-emit-expr (list-at args 1) arities & ")"
-   else if n == "bit-not" & list-length args == 1 then "(~" & js-emit-expr (list-at args 0) arities & ")"
-   else if n == "int-mod" & list-length args == 2 then "(((_a, _b) => { const _abs = _b < 0n ? -_b : _b; const _r = _a % _abs; return _r < 0n ? _r + _abs : _r; })(" & js-emit-expr (list-at args 0) arities & ", " & js-emit-expr (list-at args 1) arities & "))"
-   else if n == "min" & list-length args == 2 then "((" & js-emit-expr (list-at args 0) arities & ") < (" & js-emit-expr (list-at args 1) arities & ") ? (" & js-emit-expr (list-at args 0) arities & ") : (" & js-emit-expr (list-at args 1) arities & "))"
-   else if n == "max" & list-length args == 2 then "((" & js-emit-expr (list-at args 0) arities & ") > (" & js-emit-expr (list-at args 1) arities & ") ? (" & js-emit-expr (list-at args 0) arities & ") : (" & js-emit-expr (list-at args 1) arities & "))"
-   else if n == "abs" & list-length args == 1 then "((" & js-emit-expr (list-at args 0) arities & ") < 0n ? -(" & js-emit-expr (list-at args 0) arities & ") : (" & js-emit-expr (list-at args 0) arities & "))"
-   else if n == "fork" & list-length args == 1 then "Promise.resolve().then(() => (" & js-emit-expr (list-at args 0) arities & ")(null))"
-   else if n == "await" & list-length args == 1 then "(await " & js-emit-expr (list-at args 0) arities & ")"
-   else if n == "par" & list-length args == 2 then "await Promise.all(" & js-emit-expr (list-at args 1) arities & ".map(_x_ => Promise.resolve().then(() => (" & js-emit-expr (list-at args 0) arities & ")(_x_))))"
-   else if n == "race" & list-length args == 1 then "await Promise.race(" & js-emit-expr (list-at args 0) arities & ".map(_t_ => Promise.resolve().then(() => _t_(null))))"
-   else if n == "process-exit" & list-length args == 1 then "process.exit(Number(" & js-emit-expr (list-at args 0) arities & "))"
+   else if n == "read-text" then "require('fs').readFileSync(" & js-emit-expr (list-at args 0) ctx & ", 'utf8')"
+   else if n == "write-file" & list-length args == 2 then "require('fs').writeFileSync(" & js-emit-expr (list-at args 0) ctx & ", " & js-emit-expr (list-at args 1) ctx & ")"
+   else if n == "file-exists" & list-length args == 1 then "require('fs').existsSync(" & js-emit-expr (list-at args 0) ctx & ")"
+   else if n == "char-at" & list-length args == 2 then "BigInt(" & js-emit-expr (list-at args 0) ctx & ".charCodeAt(Number(" & js-emit-expr (list-at args 1) ctx & ")))"
+   else if n == "substring" & list-length args == 3 then js-emit-expr (list-at args 0) ctx & ".substring(Number(" & js-emit-expr (list-at args 1) ctx & "), Number(" & js-emit-expr (list-at args 1) ctx & " + " & js-emit-expr (list-at args 2) ctx & "))"
+   else if n == "list-at" & list-length args == 2 then js-emit-expr (list-at args 0) ctx & "[Number(" & js-emit-expr (list-at args 1) ctx & ")]"
+   else if n == "list-snoc" & list-length args == 2 then "[..." & js-emit-expr (list-at args 0) ctx & ", " & js-emit-expr (list-at args 1) ctx & "]"
+   else if n == "list-insert-at" & list-length args == 3 then "(() => { const _l = [...(" & js-emit-expr (list-at args 0) ctx & ")]; _l.splice(Number(" & js-emit-expr (list-at args 1) ctx & "), 0, " & js-emit-expr (list-at args 2) ctx & "); return _l; })()"
+   else if n == "list-set-at" & list-length args == 3 then "(() => { const _l = [...(" & js-emit-expr (list-at args 0) ctx & ")]; _l[Number(" & js-emit-expr (list-at args 1) ctx & ")] = " & js-emit-expr (list-at args 2) ctx & "; return _l; })()"
+   else if n == "text-replace" & list-length args == 3 then js-emit-expr (list-at args 0) ctx & ".replaceAll(" & js-emit-expr (list-at args 1) ctx & ", " & js-emit-expr (list-at args 2) ctx & ")"
+   else if n == "text-compare" & list-length args == 2 then "BigInt(" & js-emit-expr (list-at args 0) ctx & " < " & js-emit-expr (list-at args 1) ctx & " ? -1 : " & js-emit-expr (list-at args 0) ctx & " > " & js-emit-expr (list-at args 1) ctx & " ? 1 : 0)"
+   else if n == "text-concat-list" & list-length args == 1 then js-emit-expr (list-at args 0) ctx & ".join(\"\")"
+   else if n == "text-split" & list-length args == 2 then js-emit-expr (list-at args 0) ctx & ".split(" & js-emit-expr (list-at args 1) ctx & ")"
+   else if n == "text-contains" & list-length args == 2 then js-emit-expr (list-at args 0) ctx & ".includes(" & js-emit-expr (list-at args 1) ctx & ")"
+   else if n == "text-starts-with" & list-length args == 2 then js-emit-expr (list-at args 0) ctx & ".startsWith(" & js-emit-expr (list-at args 1) ctx & ")"
+   else if n == "bit-and" & list-length args == 2 then "(" & js-emit-expr (list-at args 0) ctx & " & " & js-emit-expr (list-at args 1) ctx & ")"
+   else if n == "bit-or" & list-length args == 2 then "(" & js-emit-expr (list-at args 0) ctx & " | " & js-emit-expr (list-at args 1) ctx & ")"
+   else if n == "bit-xor" & list-length args == 2 then "(" & js-emit-expr (list-at args 0) ctx & " ^ " & js-emit-expr (list-at args 1) ctx & ")"
+   else if n == "bit-shl" & list-length args == 2 then "(" & js-emit-expr (list-at args 0) ctx & " << " & js-emit-expr (list-at args 1) ctx & ")"
+   else if n == "bit-shr" & list-length args == 2 then "(" & js-emit-expr (list-at args 0) ctx & " >> " & js-emit-expr (list-at args 1) ctx & ")"
+   else if n == "bit-not" & list-length args == 1 then "(~" & js-emit-expr (list-at args 0) ctx & ")"
+   else if n == "int-mod" & list-length args == 2 then "(((_a, _b) => { const _abs = _b < 0n ? -_b : _b; const _r = _a % _abs; return _r < 0n ? _r + _abs : _r; })(" & js-emit-expr (list-at args 0) ctx & ", " & js-emit-expr (list-at args 1) ctx & "))"
+   else if n == "min" & list-length args == 2 then "((" & js-emit-expr (list-at args 0) ctx & ") < (" & js-emit-expr (list-at args 1) ctx & ") ? (" & js-emit-expr (list-at args 0) ctx & ") : (" & js-emit-expr (list-at args 1) ctx & "))"
+   else if n == "max" & list-length args == 2 then "((" & js-emit-expr (list-at args 0) ctx & ") > (" & js-emit-expr (list-at args 1) ctx & ") ? (" & js-emit-expr (list-at args 0) ctx & ") : (" & js-emit-expr (list-at args 1) ctx & "))"
+   else if n == "abs" & list-length args == 1 then "((" & js-emit-expr (list-at args 0) ctx & ") < 0n ? -(" & js-emit-expr (list-at args 0) ctx & ") : (" & js-emit-expr (list-at args 0) ctx & "))"
+   else if n == "fork" & list-length args == 1 then "Promise.resolve().then(() => (" & js-emit-expr (list-at args 0) ctx & ")(null))"
+   else if n == "await" & list-length args == 1 then "(await " & js-emit-expr (list-at args 0) ctx & ")"
+   else if n == "par" & list-length args == 2 then "await Promise.all(" & js-emit-expr (list-at args 1) ctx & ".map(_x_ => Promise.resolve().then(() => (" & js-emit-expr (list-at args 0) ctx & ")(_x_))))"
+   else if n == "race" & list-length args == 1 then "await Promise.race(" & js-emit-expr (list-at args 0) ctx & ".map(_t_ => Promise.resolve().then(() => _t_(null))))"
+   else if n == "process-exit" & list-length args == 1 then "process.exit(Number(" & js-emit-expr (list-at args 0) ctx & "))"
    else if n == "get-args" then "process.argv"
    else if n == "current-dir" then "process.cwd()"
-   else if n == "get-env" & list-length args == 1 then "(process.env[" & js-emit-expr (list-at args 0) arities & "] || \"\")"
-   else if n == "write-binary" & list-length args == 1 then "(() => { const _bl = " & js-emit-expr (list-at args 0) arities & "; process.stdout.write(Buffer.from(_bl.map(Number))); })()"
-   else if n == "__record-set" & list-length args == 3 then js-emit-record-set args arities
-   else if n == "text-ends-with" & list-length args == 2 then js-emit-expr (list-at args 0) arities & ".endsWith(" & js-emit-expr (list-at args 1) arities & ")"
-   else if n == "text-to-double-bits" & list-length args == 1 then "(() => { const _buf = new ArrayBuffer(8); new Float64Array(_buf)[0] = parseFloat(" & js-emit-expr (list-at args 0) arities & "); return new DataView(_buf).getBigInt64(0, true); })()"
-   else if n == "list-files" & list-length args == 2 then "require('fs').readdirSync(" & js-emit-expr (list-at args 0) arities & ").filter(_f => _f.match(new RegExp(" & js-emit-expr (list-at args 1) arities & ".replaceAll('*', '.*').replaceAll('?', '.'))))"
-   else if n == "list-directories" & list-length args == 1 then "require('fs').readdirSync(" & js-emit-expr (list-at args 0) arities & ", { withFileTypes: true }).filter(_d => _d.isDirectory()).map(_d => _d.name)"
-   else if n == "write-binary-file" & list-length args == 2 then "(() => { const _bl = " & js-emit-expr (list-at args 1) arities & "; require('fs').writeFileSync(" & js-emit-expr (list-at args 0) arities & ", Buffer.from(_bl.map(Number))); })()"
-   else if n == "create-directory" & list-length args == 1 then "require('fs').mkdirSync(" & js-emit-expr (list-at args 0) arities & ", { recursive: true })"
-   else if n == "path-combine" & list-length args == 2 then "require('path').join(" & js-emit-expr (list-at args 0) arities & ", " & js-emit-expr (list-at args 1) arities & ")"
-   else if n == "path-filename" & list-length args == 1 then "require('path').basename(" & js-emit-expr (list-at args 0) arities & ")"
-   else if n == "run-process" & list-length args == 2 then "require('child_process').execSync(" & js-emit-expr (list-at args 0) arities & " + ' ' + " & js-emit-expr (list-at args 1) arities & ", { encoding: 'utf8' })"
-   else if n == "run-process-full" & list-length args == 2 then "(() => { try { const _o = require('child_process').execSync(" & js-emit-expr (list-at args 0) arities & " + ' ' + " & js-emit-expr (list-at args 1) arities & ", { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }); return ProcessResult(_o, '', 0n); } catch(_e) { return ProcessResult(_e.stdout || '', _e.stderr || '', BigInt(_e.status || 1)); } })()"
-   else if n == "set-state" & list-length args == 1 then "(_js_state_value = " & js-emit-expr (list-at args 0) arities & ")"
+   else if n == "get-env" & list-length args == 1 then "(process.env[" & js-emit-expr (list-at args 0) ctx & "] || \"\")"
+   else if n == "write-binary" & list-length args == 1 then "(() => { const _bl = " & js-emit-expr (list-at args 0) ctx & "; process.stdout.write(Buffer.from(_bl.map(Number))); })()"
+   else if n == "__record-set" & list-length args == 3 then js-emit-record-set args ctx
+   else if n == "text-ends-with" & list-length args == 2 then js-emit-expr (list-at args 0) ctx & ".endsWith(" & js-emit-expr (list-at args 1) ctx & ")"
+   else if n == "text-to-double-bits" & list-length args == 1 then "(() => { const _buf = new ArrayBuffer(8); new Float64Array(_buf)[0] = parseFloat(" & js-emit-expr (list-at args 0) ctx & "); return new DataView(_buf).getBigInt64(0, true); })()"
+   else if n == "list-files" & list-length args == 2 then "require('fs').readdirSync(" & js-emit-expr (list-at args 0) ctx & ").filter(_f => _f.match(new RegExp(" & js-emit-expr (list-at args 1) ctx & ".replaceAll('*', '.*').replaceAll('?', '.'))))"
+   else if n == "list-directories" & list-length args == 1 then "require('fs').readdirSync(" & js-emit-expr (list-at args 0) ctx & ", { withFileTypes: true }).filter(_d => _d.isDirectory()).map(_d => _d.name)"
+   else if n == "write-binary-file" & list-length args == 2 then "(() => { const _bl = " & js-emit-expr (list-at args 1) ctx & "; require('fs').writeFileSync(" & js-emit-expr (list-at args 0) ctx & ", Buffer.from(_bl.map(Number))); })()"
+   else if n == "create-directory" & list-length args == 1 then "require('fs').mkdirSync(" & js-emit-expr (list-at args 0) ctx & ", { recursive: true })"
+   else if n == "path-combine" & list-length args == 2 then "require('path').join(" & js-emit-expr (list-at args 0) ctx & ", " & js-emit-expr (list-at args 1) ctx & ")"
+   else if n == "path-filename" & list-length args == 1 then "require('path').basename(" & js-emit-expr (list-at args 0) ctx & ")"
+   else if n == "run-process" & list-length args == 2 then "require('child_process').execSync(" & js-emit-expr (list-at args 0) ctx & " + ' ' + " & js-emit-expr (list-at args 1) ctx & ", { encoding: 'utf8' })"
+   else if n == "run-process-full" & list-length args == 2 then "(() => { try { const _o = require('child_process').execSync(" & js-emit-expr (list-at args 0) ctx & " + ' ' + " & js-emit-expr (list-at args 1) ctx & ", { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }); return ProcessResult(_o, '', 0n); } catch(_e) { return ProcessResult(_e.stdout || '', _e.stderr || '', BigInt(_e.status || 1)); } })()"
+   else if n == "set-state" & list-length args == 1 then "(_js_state_value = " & js-emit-expr (list-at args 0) ctx & ")"
    else if n == "get-state" then "_js_state_value"
-   else if n == "run-state" & list-length args == 2 then "(() => { const _saved = _js_state_value; _js_state_value = " & js-emit-expr (list-at args 0) arities & "; try { return (" & js-emit-expr (list-at args 1) arities & "); } finally { _js_state_value = _saved; } })()"
+   else if n == "run-state" & list-length args == 2 then "(() => { const _saved = _js_state_value; _js_state_value = " & js-emit-expr (list-at args 0) ctx & "; try { return (" & js-emit-expr (list-at args 1) ctx & "); } finally { _js_state_value = _saved; } })()"
    else if n == "__linked-list-empty" then "[]"
-   else if n == "__linked-list-push" & list-length args == 2 then "(() => { const _ll = " & js-emit-expr (list-at args 0) arities & "; _ll.push(" & js-emit-expr (list-at args 1) arities & "); return _ll; })()"
-   else if n == "__linked-list-to-list" & list-length args == 1 then js-emit-expr (list-at args 0) arities
+   else if n == "__linked-list-push" & list-length args == 2 then "(() => { const _ll = " & js-emit-expr (list-at args 0) ctx & "; _ll.push(" & js-emit-expr (list-at args 1) ctx & "); return _ll; })()"
+   else if n == "__linked-list-to-list" & list-length args == 1 then js-emit-expr (list-at args 0) ctx
    else if n == "__heap-save" then "0n"
    else if n == "__heap-restore" & list-length args == 1 then "0n"
    else if n == "__heap-advance" & list-length args == 1 then "0n"
@@ -531,52 +579,52 @@ Section: Expression Emission
    else if n == "__buf-write-byte" & list-length args == 3 then "0n"
    else if n == "__buf-write-bytes" & list-length args == 3 then "0n"
    else if n == "__buf-read-bytes" & list-length args == 3 then "[]"
-   else if n == "dom-get-by-id" & list-length args == 1 then "document.getElementById(" & js-emit-expr (list-at args 0) arities & ")"
-   else if n == "dom-query" & list-length args == 1 then "document.querySelector(" & js-emit-expr (list-at args 0) arities & ")"
-   else if n == "dom-query-all" & list-length args == 1 then "Array.from(document.querySelectorAll(" & js-emit-expr (list-at args 0) arities & "))"
-   else if n == "dom-create" & list-length args == 1 then "document.createElement(" & js-emit-expr (list-at args 0) arities & ")"
-   else if n == "dom-set-text" & list-length args == 2 then "(" & js-emit-expr (list-at args 0) arities & ".textContent = " & js-emit-expr (list-at args 1) arities & ")"
-   else if n == "dom-set-html" & list-length args == 2 then "(" & js-emit-expr (list-at args 0) arities & ".innerHTML = " & js-emit-expr (list-at args 1) arities & ")"
-   else if n == "dom-get-text" & list-length args == 1 then "(" & js-emit-expr (list-at args 0) arities & ".textContent || \"\")"
-   else if n == "dom-append" & list-length args == 2 then js-emit-expr (list-at args 0) arities & ".appendChild(" & js-emit-expr (list-at args 1) arities & ")"
-   else if n == "dom-remove" & list-length args == 1 then js-emit-expr (list-at args 0) arities & ".remove()"
-   else if n == "dom-set-attr" & list-length args == 3 then js-emit-expr (list-at args 0) arities & ".setAttribute(" & js-emit-expr (list-at args 1) arities & ", " & js-emit-expr (list-at args 2) arities & ")"
-   else if n == "dom-get-attr" & list-length args == 2 then "(" & js-emit-expr (list-at args 0) arities & ".getAttribute(" & js-emit-expr (list-at args 1) arities & ") || \"\")"
-   else if n == "dom-set-style" & list-length args == 3 then "(" & js-emit-expr (list-at args 0) arities & ".style[" & js-emit-expr (list-at args 1) arities & "] = " & js-emit-expr (list-at args 2) arities & ")"
-   else if n == "dom-add-class" & list-length args == 2 then js-emit-expr (list-at args 0) arities & ".classList.add(" & js-emit-expr (list-at args 1) arities & ")"
-   else if n == "dom-remove-class" & list-length args == 2 then js-emit-expr (list-at args 0) arities & ".classList.remove(" & js-emit-expr (list-at args 1) arities & ")"
-   else if n == "dom-toggle-class" & list-length args == 2 then js-emit-expr (list-at args 0) arities & ".classList.toggle(" & js-emit-expr (list-at args 1) arities & ")"
-   else if n == "dom-has-class" & list-length args == 2 then js-emit-expr (list-at args 0) arities & ".classList.contains(" & js-emit-expr (list-at args 1) arities & ")"
-   else if n == "dom-closest" & list-length args == 2 then js-emit-expr (list-at args 0) arities & ".closest(" & js-emit-expr (list-at args 1) arities & ")"
-   else if n == "dom-dataset-get" & list-length args == 2 then "(" & js-emit-expr (list-at args 0) arities & ".dataset[" & js-emit-expr (list-at args 1) arities & "] || \"\")"
-   else if n == "dom-on-click" & list-length args == 2 then js-emit-expr (list-at args 0) arities & ".addEventListener(\"click\", " & js-emit-expr (list-at args 1) arities & ")"
-   else if n == "dom-on-change" & list-length args == 2 then js-emit-expr (list-at args 0) arities & ".addEventListener(\"change\", " & js-emit-expr (list-at args 1) arities & ")"
-   else if n == "dom-on-input" & list-length args == 2 then js-emit-expr (list-at args 0) arities & ".addEventListener(\"input\", " & js-emit-expr (list-at args 1) arities & ")"
-   else if n == "dom-on-key" & list-length args == 2 then js-emit-expr (list-at args 0) arities & ".addEventListener(\"keydown\", " & js-emit-expr (list-at args 1) arities & ")"
+   else if n == "dom-get-by-id" & list-length args == 1 then "document.getElementById(" & js-emit-expr (list-at args 0) ctx & ")"
+   else if n == "dom-query" & list-length args == 1 then "document.querySelector(" & js-emit-expr (list-at args 0) ctx & ")"
+   else if n == "dom-query-all" & list-length args == 1 then "Array.from(document.querySelectorAll(" & js-emit-expr (list-at args 0) ctx & "))"
+   else if n == "dom-create" & list-length args == 1 then "document.createElement(" & js-emit-expr (list-at args 0) ctx & ")"
+   else if n == "dom-set-text" & list-length args == 2 then "(" & js-emit-expr (list-at args 0) ctx & ".textContent = " & js-emit-expr (list-at args 1) ctx & ")"
+   else if n == "dom-set-html" & list-length args == 2 then "(" & js-emit-expr (list-at args 0) ctx & ".innerHTML = " & js-emit-expr (list-at args 1) ctx & ")"
+   else if n == "dom-get-text" & list-length args == 1 then "(" & js-emit-expr (list-at args 0) ctx & ".textContent || \"\")"
+   else if n == "dom-append" & list-length args == 2 then js-emit-expr (list-at args 0) ctx & ".appendChild(" & js-emit-expr (list-at args 1) ctx & ")"
+   else if n == "dom-remove" & list-length args == 1 then js-emit-expr (list-at args 0) ctx & ".remove()"
+   else if n == "dom-set-attr" & list-length args == 3 then js-emit-expr (list-at args 0) ctx & ".setAttribute(" & js-emit-expr (list-at args 1) ctx & ", " & js-emit-expr (list-at args 2) ctx & ")"
+   else if n == "dom-get-attr" & list-length args == 2 then "(" & js-emit-expr (list-at args 0) ctx & ".getAttribute(" & js-emit-expr (list-at args 1) ctx & ") || \"\")"
+   else if n == "dom-set-style" & list-length args == 3 then "(" & js-emit-expr (list-at args 0) ctx & ".style[" & js-emit-expr (list-at args 1) ctx & "] = " & js-emit-expr (list-at args 2) ctx & ")"
+   else if n == "dom-add-class" & list-length args == 2 then js-emit-expr (list-at args 0) ctx & ".classList.add(" & js-emit-expr (list-at args 1) ctx & ")"
+   else if n == "dom-remove-class" & list-length args == 2 then js-emit-expr (list-at args 0) ctx & ".classList.remove(" & js-emit-expr (list-at args 1) ctx & ")"
+   else if n == "dom-toggle-class" & list-length args == 2 then js-emit-expr (list-at args 0) ctx & ".classList.toggle(" & js-emit-expr (list-at args 1) ctx & ")"
+   else if n == "dom-has-class" & list-length args == 2 then js-emit-expr (list-at args 0) ctx & ".classList.contains(" & js-emit-expr (list-at args 1) ctx & ")"
+   else if n == "dom-closest" & list-length args == 2 then js-emit-expr (list-at args 0) ctx & ".closest(" & js-emit-expr (list-at args 1) ctx & ")"
+   else if n == "dom-dataset-get" & list-length args == 2 then "(" & js-emit-expr (list-at args 0) ctx & ".dataset[" & js-emit-expr (list-at args 1) ctx & "] || \"\")"
+   else if n == "dom-on-click" & list-length args == 2 then js-emit-expr (list-at args 0) ctx & ".addEventListener(\"click\", " & js-emit-expr (list-at args 1) ctx & ")"
+   else if n == "dom-on-change" & list-length args == 2 then js-emit-expr (list-at args 0) ctx & ".addEventListener(\"change\", " & js-emit-expr (list-at args 1) ctx & ")"
+   else if n == "dom-on-input" & list-length args == 2 then js-emit-expr (list-at args 0) ctx & ".addEventListener(\"input\", " & js-emit-expr (list-at args 1) ctx & ")"
+   else if n == "dom-on-key" & list-length args == 2 then js-emit-expr (list-at args 0) ctx & ".addEventListener(\"keydown\", " & js-emit-expr (list-at args 1) ctx & ")"
    else if n == "dom-body" then "document.body"
-   else if n == "dom-get-value" & list-length args == 1 then "(" & js-emit-expr (list-at args 0) arities & ".value || \"\")"
-   else if n == "dom-set-value" & list-length args == 2 then "(" & js-emit-expr (list-at args 0) arities & ".value = " & js-emit-expr (list-at args 1) arities & ")"
-   else if n == "dom-prevent-default" & list-length args == 1 then js-emit-expr (list-at args 0) arities & ".preventDefault()"
-   else if n == "dom-stop-propagation" & list-length args == 1 then js-emit-expr (list-at args 0) arities & ".stopPropagation()"
-   else if n == "dom-event-target" & list-length args == 1 then js-emit-expr (list-at args 0) arities & ".target"
-   else if n == "dom-event-key" & list-length args == 1 then js-emit-expr (list-at args 0) arities & ".key"
-   else if n == "set-timeout" & list-length args == 2 then "setTimeout(" & js-emit-expr (list-at args 0) arities & ", Number(" & js-emit-expr (list-at args 1) arities & "))"
-   else if n == "set-interval" & list-length args == 2 then "setInterval(" & js-emit-expr (list-at args 0) arities & ", Number(" & js-emit-expr (list-at args 1) arities & "))"
-   else if n == "clear-interval" & list-length args == 1 then "clearInterval(Number(" & js-emit-expr (list-at args 0) arities & "))"
-   else if n == "json-parse" & list-length args == 1 then "JSON.parse(" & js-emit-expr (list-at args 0) arities & ")"
-   else if n == "json-stringify" & list-length args == 1 then "JSON.stringify(" & js-emit-expr (list-at args 0) arities & ")"
-   else if n == "console-log" & list-length args == 1 then "console.log(" & js-emit-expr (list-at args 0) arities & ")"
-   else if n == "dom-not-null" & list-length args == 1 then "(" & js-emit-expr (list-at args 0) arities & " != null)"
+   else if n == "dom-get-value" & list-length args == 1 then "(" & js-emit-expr (list-at args 0) ctx & ".value || \"\")"
+   else if n == "dom-set-value" & list-length args == 2 then "(" & js-emit-expr (list-at args 0) ctx & ".value = " & js-emit-expr (list-at args 1) ctx & ")"
+   else if n == "dom-prevent-default" & list-length args == 1 then js-emit-expr (list-at args 0) ctx & ".preventDefault()"
+   else if n == "dom-stop-propagation" & list-length args == 1 then js-emit-expr (list-at args 0) ctx & ".stopPropagation()"
+   else if n == "dom-event-target" & list-length args == 1 then js-emit-expr (list-at args 0) ctx & ".target"
+   else if n == "dom-event-key" & list-length args == 1 then js-emit-expr (list-at args 0) ctx & ".key"
+   else if n == "set-timeout" & list-length args == 2 then "setTimeout(" & js-emit-expr (list-at args 0) ctx & ", Number(" & js-emit-expr (list-at args 1) ctx & "))"
+   else if n == "set-interval" & list-length args == 2 then "setInterval(" & js-emit-expr (list-at args 0) ctx & ", Number(" & js-emit-expr (list-at args 1) ctx & "))"
+   else if n == "clear-interval" & list-length args == 1 then "clearInterval(Number(" & js-emit-expr (list-at args 0) ctx & "))"
+   else if n == "json-parse" & list-length args == 1 then "JSON.parse(" & js-emit-expr (list-at args 0) ctx & ")"
+   else if n == "json-stringify" & list-length args == 1 then "JSON.stringify(" & js-emit-expr (list-at args 0) ctx & ")"
+   else if n == "console-log" & list-length args == 1 then "console.log(" & js-emit-expr (list-at args 0) ctx & ")"
+   else if n == "dom-not-null" & list-length args == 1 then "(" & js-emit-expr (list-at args 0) ctx & " != null)"
    else if n == "dom-document" then "document"
    else if n == "dom-window" then "window"
    else ""
 
-  js-emit-record-set : List IRExpr , List ArityEntry -> Text
-  js-emit-record-set (args) (arities) =
+  js-emit-record-set : List IRExpr , JsCtx -> Text
+  js-emit-record-set (args) (ctx) =
    let field-name = when (list-at args 1)
     is IrTextLit (s) (sp) -> s
     is otherwise -> ""
-   in "Object.freeze({ ..." & js-emit-expr (list-at args 0) arities & ", " & js-sanitize field-name & ": " & js-emit-expr (list-at args 2) arities & " })"
+   in "Object.freeze({ ..." & js-emit-expr (list-at args 0) ctx & ", " & js-sanitize field-name & ": " & js-emit-expr (list-at args 2) ctx & " })"
 
 Section: Tail Call Optimization
 
@@ -643,15 +691,15 @@ Section: Definition Emission
     is TypeApply (body) (tyarg) -> js-is-effectful-from-params body n
     is otherwise -> False
 
-  js-emit-def : IRDef , List ArityEntry -> Text
-  js-emit-def (d) (arities) =
-   if js-should-tco d then js-emit-tco-def d arities
-   else js-emit-normal-def d arities
+  js-emit-def : IRDef , JsCtx -> Text
+  js-emit-def (d) (ctx) =
+   if js-should-tco d then js-emit-tco-def d ctx
+   else js-emit-normal-def d ctx
 
-  js-emit-normal-def : IRDef , List ArityEntry -> Text
-  js-emit-normal-def (d) (arities) =
+  js-emit-normal-def : IRDef , JsCtx -> Text
+  js-emit-normal-def (d) (ctx) =
    let effectful = js-is-effectful d
-   in "function " & js-sanitize (d.name) & "(" & js-emit-def-params (d.params) 0 & ") {\n" & (if effectful then "    " & js-emit-expr (d.body) arities & ";\n" else "    return " & js-emit-expr (d.body) arities & ";\n") & "}\n"
+   in "function " & js-sanitize (d.name) & "(" & js-emit-def-params (d.params) 0 & ") {\n" & (if effectful then "    " & js-emit-expr (d.body) ctx & ";\n" else "    return " & js-emit-expr (d.body) ctx & ";\n") & "}\n"
 
   js-emit-def-params : List IRParam , Integer -> Text
   js-emit-def-params (params) (i) =
@@ -659,54 +707,54 @@ Section: Definition Emission
    else let p = list-at params i
    in js-sanitize (p.name) & (if i < list-length params - 1 then ", " else "") & js-emit-def-params params (i + 1)
 
-  js-emit-tco-def : IRDef , List ArityEntry -> Text
-  js-emit-tco-def (d) (arities) =
-   "function " & js-sanitize (d.name) & "(" & js-emit-def-params (d.params) 0 & ") {\n    while (true) {\n" & js-emit-tco-body (d.body) (d.name) (d.params) arities 0 & "    }\n}\n"
+  js-emit-tco-def : IRDef , JsCtx -> Text
+  js-emit-tco-def (d) (ctx) =
+   "function " & js-sanitize (d.name) & "(" & js-emit-def-params (d.params) 0 & ") {\n    while (true) {\n" & js-emit-tco-body (d.body) (d.name) (d.params) ctx 0 & "    }\n}\n"
 
-  js-emit-tco-body : IRExpr , Text , List IRParam , List ArityEntry , Integer -> Text
-  js-emit-tco-body (e) (func-name) (params) (arities) (depth) =
+  js-emit-tco-body : IRExpr , Text , List IRParam , JsCtx , Integer -> Text
+  js-emit-tco-body (e) (func-name) (params) (ctx) (depth) =
    when e
     is IrIf (c) (t) (el) (ty) (sp) ->
-     "        if (" & js-emit-expr c arities & ") {\n" & js-emit-tco-body t func-name params arities depth & "        } else {\n" & js-emit-tco-body el func-name params arities depth & "        }\n"
+     "        if (" & js-emit-expr c ctx & ") {\n" & js-emit-tco-body t func-name params ctx depth & "        } else {\n" & js-emit-tco-body el func-name params ctx depth & "        }\n"
     is IrLet (name) (ty) (val) (body) (sp) ->
-     "        const " & js-sanitize name & " = " & js-emit-expr val arities & ";\n" & js-emit-tco-body body func-name params arities depth
+     "        const " & js-sanitize name & " = " & js-emit-expr val ctx & ";\n" & js-emit-tco-body body func-name params ctx depth
     is IrMatch (scrut) (branches) (ty) (sp) ->
-     js-emit-tco-match scrut branches func-name params arities depth
+     js-emit-tco-match scrut branches func-name params ctx depth
     is IrApply (f) (a) (rty) (sp) ->
-     if js-is-self-call e func-name then js-emit-tco-jump e params arities
-     else "        return " & js-emit-expr e arities & ";\n"
-    is IrAct (stmts) (ty) (sp) -> js-emit-tco-act stmts func-name params arities depth
-    is otherwise -> "        return " & js-emit-expr e arities & ";\n"
+     if js-is-self-call e func-name then js-emit-tco-jump e params ctx
+     else "        return " & js-emit-expr e ctx & ";\n"
+    is IrAct (stmts) (ty) (sp) -> js-emit-tco-act stmts func-name params ctx depth
+    is otherwise -> "        return " & js-emit-expr e ctx & ";\n"
 
-  js-emit-tco-match : IRExpr , List IRBranch , Text , List IRParam , List ArityEntry , Integer -> Text
-  js-emit-tco-match (scrut) (branches) (func-name) (params) (arities) (depth) =
+  js-emit-tco-match : IRExpr , List IRBranch , Text , List IRParam , JsCtx , Integer -> Text
+  js-emit-tco-match (scrut) (branches) (func-name) (params) (ctx) (depth) =
    let s-var = js-tco-scrut-var depth
-   in "        const " & s-var & " = " & js-emit-expr scrut arities & ";\n" & js-emit-tco-match-branches branches func-name params arities 0 True depth
+   in "        const " & s-var & " = " & js-emit-expr scrut ctx & ";\n" & js-emit-tco-match-branches branches func-name params ctx 0 True depth
 
   js-tco-scrut-var : Integer -> Text
   js-tco-scrut-var (depth) =
    if depth == 0 then "_tco_s" else "_tco_s" & integer-to-text depth
 
-  js-emit-tco-match-branches : List IRBranch , Text , List IRParam , List ArityEntry , Integer , Boolean , Integer -> Text
-  js-emit-tco-match-branches (branches) (func-name) (params) (arities) (i) (is-first) (depth) =
+  js-emit-tco-match-branches : List IRBranch , Text , List IRParam , JsCtx , Integer , Boolean , Integer -> Text
+  js-emit-tco-match-branches (branches) (func-name) (params) (ctx) (i) (is-first) (depth) =
    if i == list-length branches then ""
    else let b = list-at branches i
-   in js-emit-tco-match-branch b func-name params arities i is-first depth & js-emit-tco-match-branches branches func-name params arities (i + 1) False depth
+   in js-emit-tco-match-branch b func-name params ctx i is-first depth & js-emit-tco-match-branches branches func-name params ctx (i + 1) False depth
 
-  js-emit-tco-match-branch : IRBranch , Text , List IRParam , List ArityEntry , Integer , Boolean , Integer -> Text
-  js-emit-tco-match-branch (b) (func-name) (params) (arities) (idx) (is-first) (depth) =
+  js-emit-tco-match-branch : IRBranch , Text , List IRParam , JsCtx , Integer , Boolean , Integer -> Text
+  js-emit-tco-match-branch (b) (func-name) (params) (ctx) (idx) (is-first) (depth) =
    let s-var = js-tco-scrut-var depth
    in when b.pattern
-    is IrWildPat (sp) -> "        {\n" & js-emit-tco-body (b.body) func-name params arities (depth + 1) & "        }\n"
-    is IrVecPat (pats) (ty) (sp) -> "        {\n" & js-emit-tco-body (b.body) func-name params arities (depth + 1) & "        }\n"
-    is IrVarPat (name) (ty) (sp) -> "        {\n            const " & js-sanitize name & " = " & s-var & ";\n" & js-emit-tco-body (b.body) func-name params arities (depth + 1) & "        }\n"
+    is IrWildPat (sp) -> "        {\n" & js-emit-tco-body (b.body) func-name params ctx (depth + 1) & "        }\n"
+    is IrVecPat (pats) (ty) (sp) -> "        {\n" & js-emit-tco-body (b.body) func-name params ctx (depth + 1) & "        }\n"
+    is IrVarPat (name) (ty) (sp) -> "        {\n            const " & js-sanitize name & " = " & s-var & ";\n" & js-emit-tco-body (b.body) func-name params ctx (depth + 1) & "        }\n"
     is IrCtorPat (name) (subs) (ty) (sp) ->
-     if is-mktup-name name then "        {\n            const [" & js-emit-tuple-pat-names subs 0 & "] = " & s-var & ";\n" & js-emit-tco-body (b.body) func-name params arities (depth + 1) & "        }\n"
+     if is-mktup-name name then "        {\n            const [" & js-emit-tuple-pat-names subs 0 & "] = " & s-var & ";\n" & js-emit-tco-body (b.body) func-name params ctx (depth + 1) & "        }\n"
      else let keyword = if is-first then "if" else "else if"
-     in "        " & keyword & " (" & s-var & ".tag === \"" & name & "\") {\n" & js-emit-tco-ctor-bindings subs s-var 0 & js-emit-tco-body (b.body) func-name params arities (depth + 1) & "        }\n"
+     in "        " & keyword & " (" & s-var & ".tag === \"" & name & "\") {\n" & js-emit-tco-ctor-bindings subs s-var 0 & js-emit-tco-body (b.body) func-name params ctx (depth + 1) & "        }\n"
     is IrLitPat (text) (ty) (sp) ->
      let keyword = if is-first then "if" else "else if"
-     in "        " & keyword & " (" & s-var & " === " & text & ") {\n" & js-emit-tco-body (b.body) func-name params arities (depth + 1) & "        }\n"
+     in "        " & keyword & " (" & s-var & " === " & text & ") {\n" & js-emit-tco-body (b.body) func-name params ctx (depth + 1) & "        }\n"
 
   js-emit-tco-ctor-bindings : List IRPat , Text , Integer -> Text
   js-emit-tco-ctor-bindings (subs) (match-var) (i) =
@@ -720,15 +768,15 @@ Section: Definition Emission
     is IrVarPat (name) (ty) (sp) -> "            const " & js-sanitize name & " = " & match-var & ".field" & integer-to-text i & ";\n"
     is otherwise -> ""
 
-  js-emit-tco-jump : IRExpr , List IRParam , List ArityEntry -> Text
-  js-emit-tco-jump (e) (params) (arities) =
+  js-emit-tco-jump : IRExpr , List IRParam , JsCtx -> Text
+  js-emit-tco-jump (e) (params) (ctx) =
    let chain = collect-apply-chain e []
-   in js-emit-tco-temps (chain.args) params arities 0 & js-emit-tco-assigns params 0 & "        continue;\n"
+   in js-emit-tco-temps (chain.args) params ctx 0 & js-emit-tco-assigns params 0 & "        continue;\n"
 
-  js-emit-tco-temps : List IRExpr , List IRParam , List ArityEntry , Integer -> Text
-  js-emit-tco-temps (args) (params) (arities) (i) =
+  js-emit-tco-temps : List IRExpr , List IRParam , JsCtx , Integer -> Text
+  js-emit-tco-temps (args) (params) (ctx) (i) =
    if i == list-length args then ""
-   else "        const _tco_" & integer-to-text i & " = " & js-emit-expr (list-at args i) arities & ";\n" & js-emit-tco-temps args params arities (i + 1)
+   else "        const _tco_" & integer-to-text i & " = " & js-emit-expr (list-at args i) ctx & ";\n" & js-emit-tco-temps args params ctx (i + 1)
 
   js-emit-tco-assigns : List IRParam , Integer -> Text
   js-emit-tco-assigns (params) (i) =
@@ -736,25 +784,25 @@ Section: Definition Emission
    else let p = list-at params i
    in "        " & js-sanitize (p.name) & " = _tco_" & integer-to-text i & ";\n" & js-emit-tco-assigns params (i + 1)
 
-  js-emit-tco-act : List IRActStmt , Text , List IRParam , List ArityEntry , Integer -> Text
-  js-emit-tco-act (stmts) (func-name) (params) (arities) (depth) =
-   js-emit-tco-act-stmts stmts func-name params arities depth 0 (list-length stmts)
+  js-emit-tco-act : List IRActStmt , Text , List IRParam , JsCtx , Integer -> Text
+  js-emit-tco-act (stmts) (func-name) (params) (ctx) (depth) =
+   js-emit-tco-act-stmts stmts func-name params ctx depth 0 (list-length stmts)
 
-  js-emit-tco-act-stmts : List IRActStmt , Text , List IRParam , List ArityEntry , Integer , Integer , Integer -> Text
-  js-emit-tco-act-stmts (stmts) (func-name) (params) (arities) (depth) (i) (len) =
+  js-emit-tco-act-stmts : List IRActStmt , Text , List IRParam , JsCtx , Integer , Integer , Integer -> Text
+  js-emit-tco-act-stmts (stmts) (func-name) (params) (ctx) (depth) (i) (len) =
    if i == len then "        return;\n"
    else let s = list-at stmts i
    in let is-last = i == len - 1
    in if is-last then when s
-     is IrDoExec (e) (sp) -> js-emit-tco-body e func-name params arities depth
-     is IrDoBind (name) (ty) (val) (sp) -> "        const " & js-sanitize name & " = " & js-emit-expr val arities & ";\n        return;\n"
-    else js-emit-tco-act-stmt s arities & js-emit-tco-act-stmts stmts func-name params arities depth (i + 1) len
+     is IrDoExec (e) (sp) -> js-emit-tco-body e func-name params ctx depth
+     is IrDoBind (name) (ty) (val) (sp) -> "        const " & js-sanitize name & " = " & js-emit-expr val ctx & ";\n        return;\n"
+    else js-emit-tco-act-stmt s ctx & js-emit-tco-act-stmts stmts func-name params ctx depth (i + 1) len
 
-  js-emit-tco-act-stmt : IRActStmt , List ArityEntry -> Text
-  js-emit-tco-act-stmt (s) (arities) =
+  js-emit-tco-act-stmt : IRActStmt , JsCtx -> Text
+  js-emit-tco-act-stmt (s) (ctx) =
    when s
-    is IrDoBind (name) (ty) (val) (sp) -> "        const " & js-sanitize name & " = " & js-emit-expr val arities & ";\n"
-    is IrDoExec (e) (sp) -> "        " & js-emit-expr e arities & ";\n"
+    is IrDoBind (name) (ty) (val) (sp) -> "        const " & js-sanitize name & " = " & js-emit-expr val ctx & ";\n"
+    is IrDoExec (e) (sp) -> "        " & js-emit-expr e ctx & ";\n"
 
 Section: Chapter Emission
 
@@ -788,17 +836,17 @@ Section: Chapter Emission
     is UnitTy (n) (inner) -> js-sanitize "opening" & "();\n"
     is otherwise -> "console.log(" & js-sanitize "opening" & "());\n"
 
-  js-emit-defs-loop : List IRDef , Integer , Integer , List ArityEntry -> Text
-  js-emit-defs-loop (defs) (i) (len) (arities) =
+  js-emit-defs-loop : List IRDef , Integer , Integer , JsCtx -> Text
+  js-emit-defs-loop (defs) (i) (len) (ctx) =
    if i == len then ""
-   else js-emit-def (list-at defs i) arities & "\n" & js-emit-defs-loop defs (i + 1) len arities
+   else js-emit-def (list-at defs i) ctx & "\n" & js-emit-defs-loop defs (i + 1) len ctx
 
   emit-javascript-chapter : IRChapter , List ATypeDef -> Text
   emit-javascript-chapter (m) (type-defs) =
-   let arities = build-arity-map (m.defs) 0 []
+   let ctx = JsCtx { arities = build-arity-map (m.defs) 0 [], type-defs = type-defs }
    in let header = "\"use strict\";\nlet _js_state_value = 0n;\n\n"
    in let types = js-emit-type-defs type-defs 0
-   in let defs = js-emit-defs-loop (m.defs) 0 (list-length (m.defs)) arities
+   in let defs = js-emit-defs-loop (m.defs) 0 (list-length (m.defs)) ctx
    in let entry = js-emit-entry (js-opening-return-type (m.defs))
    in header & types & defs & entry
 

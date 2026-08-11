@@ -2,21 +2,31 @@
 
 ## Status
 
-**Phase 1 is complete.** All nine chapters ship in
-`codex/foreword/engine/`: Mesh, Scene3D, Renderer3D, Material, Texture,
-GameLoop, Input, AssetTable, Audio3D. The complete 3D pipeline from mesh
-to framebuffer runs on bare metal with no OS, no libc, no external
-dependencies. Every byte is Codex.
+**Ruling 2026-08-05 (Damian): Phase 2 rides A6.** The shadow-mapping /
+SIMD / terrain remainder begins with whoever takes CurrentPlan's A6 (3D
+on screen); this document is that owner's design.
 
-Four chapters from later phases landed early and are also in the tree:
-`Culling`, `Skinning`, `PostProcess`, and `DebugDraw`.
+**Phase 1 is complete, and the Phase 2 shadow-mapping deliverable is
+complete** (red, A6 arc, dev CLs 13644/13663/13676/13695): near-plane
+clipping (Sutherland-Hodgman in clip space), per-pixel lit shading
+(Gouraud and Phong paths, SpotLight3D both), frustum and backface
+culling wired into the render path, and shadow mapping
+(`r3d-render-shadowed`: ortho light frustum from the scene's world
+bounds, depth-only pass, per-vertex light-space coords interpolated per
+pixel; bias `r3d-shadow-bias = 3000`). Per-pixel code is integer-only
+and allocation-free, pinned by `engine-render-heap`; the calibrated
+tests are `engine-near-clip`, `engine-shading`, `engine-culling`,
+`engine-shadow`.
 
-**Next: Phase 2 -- shadow mapping.** The `DepthBuffer` type Phase 1 built
-for the main pass is exactly what a light-space depth pass needs; the
-work is a second render target rendered from the light's point of view
-and a light-space compare in the shading stage. See "Shadow Mapping
-(Phase 2)" below. SIMD math and skeletal animation are the other Phase 2
-items; skinning is already in.
+**The tree, measured 2026-08-06: 42 chapters, 7,916 lines in
+`codex/foreword/engine/`.** The 9+4 chapter inventory this section used
+to carry was two baselines stale; re-measure before quoting (L-COUNT).
+
+**Remaining Phase 2 items:** SIMD math and skeletal animation (skinning
+is in). Also open from the A6 arc: `Texture.codex` exists but is not
+wired into `r3d-render-mesh`; mesh generators
+(sphere/cylinder/cone/torus) are missing; GopScene does not yet call
+the shadowed entry (a separate, visible desk change).
 
 ---
 

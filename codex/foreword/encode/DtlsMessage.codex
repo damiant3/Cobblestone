@@ -7,9 +7,6 @@ Chapter: DtlsMessage
  The DTLS 1.3 handshake message layer (RFC 9147 sections 5.2 and 7).
  Phase D2b: the framing the D2a machine sequences but does not encode.
 
- Three things live here, and the first one is the reason the chapter
- exists at all.
-
  THE TRANSCRIPT RULE. RFC 9147 section 5.2, and it is worth quoting
  because getting it wrong produces a Finished that verifies against
  itself and against no peer on earth: the message transcript is computed
@@ -30,31 +27,6 @@ Chapter: DtlsMessage
  THE ACK. RFC 9147 section 7. A list of record numbers, each an epoch
  and a sequence number, saying what actually arrived. It is what lets a
  flight stop being retransmitted.
-
- What is NOT here, stated rather than implied: fragmentation REASSEMBLY.
- The header carries fragment_offset and fragment_length and the parser
- reads them, but this chapter emits only unfragmented messages and does
- not reassemble a fragmented peer flight. A handshake message larger
- than the path MTU will therefore fail against a peer that fragments.
- That is a real gap, it is on the register, and it must not be described
- as working.
-
- Nor is there any peer authentication. A Finished that verifies proves
- the peer holds the same handshake secret; it says nothing about who the
- peer is. The credential question is still open.
-
- To dtls-msg-encode gives List Integer,
-   framing one handshake message with the 12-byte DTLS header, unfragmented.
-
- To dtls-msg-to-transcript gives List Integer,
-   stripping the DTLS header fields off a received message so the TLS 1.3
-   transcript form is what reaches the hash.
-
- To dtls-finished-msg gives List Integer,
-   framing a Finished as a DTLS handshake message with its message_seq.
-
- To dtls-ack-encode gives List Integer,
-   encoding an ACK over the record numbers that arrived.
 
  We say:
 
@@ -96,13 +68,38 @@ Section: Framing
 
  The wire form: msg_type, uint24 length, uint16 message_seq, uint24
  fragment_offset, uint24 fragment_length, body. Twelve bytes of header.
- This chapter emits whole messages, so fragment_offset is 0 and
- fragment_length equals length -- see the reassembly gap above.
 
   dtls-msg-encode : Integer, Integer, List Integer -> List Integer
   dtls-msg-encode (msg-type) (message-seq) (body) =
     let n = list-length body
     in [msg-type] & dtls-be24 n & dtls-be16 message-seq & dtls-be24 0 & dtls-be24 n & body
+
+ A fragment carries the length of the WHOLE message, not of its own piece:
+ the uint24 length field is the message and fragment_length is the piece.
+ Emitting the piece's size in both is the mistake that makes a receiver
+ believe the first fragment is a complete short message, and it is invisible
+ against a receiver that reassembles the same way.
+
+  dtls-msg-encode-frag : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  dtls-msg-encode-frag (msg-type) (message-seq) (total-len) (frag-offset) (frag-body) =
+    [msg-type] & dtls-be24 total-len & dtls-be16 message-seq & dtls-be24 frag-offset & dtls-be24 (list-length frag-body) & frag-body
+
+ A body that fits in one fragment produces exactly one fragment, and it is
+ byte-identical to dtls-msg-encode's output, so fragmenting is never a
+ behaviour change for a message that did not need it.
+
+  dtls-msg-fragments : Integer, Integer, List Integer, Integer -> List (List Integer)
+  dtls-msg-fragments (msg-type) (message-seq) (body) (max-body) =
+    if max-body <= 0 then [dtls-msg-encode msg-type message-seq body]
+    else dtls-frag-loop msg-type message-seq body max-body 0 []
+
+  dtls-frag-loop : Integer, Integer, List Integer, Integer, Integer, List (List Integer) -> List (List Integer)
+  dtls-frag-loop (msg-type) (message-seq) (body) (max-body) (off) (acc) =
+    let n = list-length body
+    in if off >= n & list-length acc > 0 then acc
+    else let take = if n - off > max-body then max-body else n - off
+    in let piece = dtls-slice-at body off take
+    in dtls-frag-loop msg-type message-seq body max-body (off + take) (list-push acc (dtls-msg-encode-frag msg-type message-seq n off piece))
 
  The transcript form. RFC 9147 section 5.2: no message_seq, no
  fragment_offset, no fragment_length. What is left is exactly the TLS 1.3
@@ -126,6 +123,113 @@ Section: Framing
     in let flen = dtls-rd24 bs 9
     in if 12 + flen > list-length bs then None
     else Just (DtlsMsg { dm-type = list-at bs 0, dm-length = len, dm-seq = seq, dm-frag-offset = foff, dm-frag-length = flen, dm-body = dtls-slice-at bs 12 flen })
+
+Section: Reassembly
+
+ RFC 9147 section 5.2 requires a receiver to accept a message split across
+ datagrams, in any order, and to tolerate a peer that refragments the same
+ message differently when it retransmits the flight. Both follow from
+ flights being retransmitted whole: the second copy of a message is not
+ obliged to be cut where the first one was, so fragments overlap and repeat
+ as a matter of course rather than as an attack.
+
+ The bounds are attacker-facing rather than tidy-minded. A peer we have not
+ authenticated yet chooses the declared length and the fragment count, so
+ both are refused past a ceiling instead of being allocated for. A
+ handshake message over 16384 bytes is refused outright; sixteen fragments
+ is the retained maximum.
+
+  dtls-reasm-max-frags : Integer = 16
+  dtls-reasm-max-len : Integer = 16384
+
+  DtlsFrag = record {
+    df-offset : Integer,
+    df-bytes : List Integer
+  }
+
+  DtlsReasm = record {
+    dr-active : Boolean,
+    dr-type : Integer,
+    dr-seq : Integer,
+    dr-length : Integer,
+    dr-frags : List DtlsFrag
+  }
+
+  dtls-reasm-new : DtlsReasm
+  dtls-reasm-new = DtlsReasm { dr-active = False, dr-type = 0, dr-seq = 0, dr-length = 0, dr-frags = [] }
+
+  dtls-reasm-start : DtlsMsg -> DtlsReasm
+  dtls-reasm-start (m) =
+    DtlsReasm { dr-active = True, dr-type = m.dm-type, dr-seq = m.dm-seq, dr-length = m.dm-length, dr-frags = [] }
+
+ A fragment for a different message_seq is not an error and must not be
+ dropped: it is the next message of the flight arriving while the previous
+ one is still incomplete. The buffer restarts on it rather than refusing it,
+ which is the behaviour that lets a flight make progress when its first
+ message was lost outright.
+
+  dtls-reasm-add : DtlsReasm, DtlsMsg -> DtlsReasm
+  dtls-reasm-add (r) (m) =
+    if m.dm-length > dtls-reasm-max-len then r
+    else if m.dm-frag-offset + m.dm-frag-length > m.dm-length then r
+    else if list-length (m.dm-body) /= m.dm-frag-length then r
+    else let base = if r.dr-active & r.dr-seq == m.dm-seq & r.dr-type == m.dm-type then r else dtls-reasm-start m
+    in if list-length (base.dr-frags) >= dtls-reasm-max-frags then base
+    else DtlsReasm { dr-active = True, dr-type = base.dr-type, dr-seq = base.dr-seq, dr-length = base.dr-length, dr-frags = list-push (base.dr-frags) (DtlsFrag { df-offset = m.dm-frag-offset, df-bytes = m.dm-body }) }
+
+ Coverage is the furthest point reachable from zero by repeatedly taking any
+ fragment that starts at or before it. Recomputing from scratch each pass is
+ what makes an overlapping or duplicated fragment harmless: the answer
+ depends on the union of the fragments and not on the order they arrived.
+ At most sixteen passes over sixteen entries.
+
+  dtls-reasm-covered : DtlsReasm -> Integer
+  dtls-reasm-covered (r) = dtls-cov-rounds (r.dr-frags) 0 0
+
+  dtls-cov-rounds : List DtlsFrag, Integer, Integer -> Integer
+  dtls-cov-rounds (fs) (covered) (round) =
+    if round >= dtls-reasm-max-frags then covered
+    else let next = dtls-cov-pass fs covered 0
+    in if next <= covered then covered
+    else dtls-cov-rounds fs next (round + 1)
+
+  dtls-cov-pass : List DtlsFrag, Integer, Integer -> Integer
+  dtls-cov-pass (fs) (covered) (i) =
+    if i >= list-length fs then covered
+    else let f = list-at fs i
+    in let f-end = f.df-offset + list-length (f.df-bytes)
+    in let c2 = if f.df-offset <= covered & f-end > covered then f-end else covered
+    in dtls-cov-pass fs c2 (i + 1)
+
+  dtls-reasm-complete : DtlsReasm -> Boolean
+  dtls-reasm-complete (r) = r.dr-active & dtls-reasm-covered r >= r.dr-length
+
+  dtls-reasm-body : DtlsReasm -> List Integer
+  dtls-reasm-body (r) = dtls-asm-loop (r.dr-frags) (r.dr-length) 0 []
+
+  dtls-asm-loop : List DtlsFrag, Integer, Integer, List Integer -> List Integer
+  dtls-asm-loop (fs) (total) (pos) (acc) =
+    if pos >= total then acc
+    else let pick = dtls-asm-find fs pos 0 (-1)
+    in if pick < 0 then acc
+    else let f = list-at fs pick
+    in let f-end = f.df-offset + list-length (f.df-bytes)
+    in let take = f-end - pos
+    in dtls-asm-loop fs total f-end (acc & dtls-slice-at (f.df-bytes) (pos - f.df-offset) take)
+
+  dtls-asm-find : List DtlsFrag, Integer, Integer, Integer -> Integer
+  dtls-asm-find (fs) (pos) (i) (best) =
+    if i >= list-length fs then best
+    else let f = list-at fs i
+    in let f-end = f.df-offset + list-length (f.df-bytes)
+    in let ok = f.df-offset <= pos & f-end > pos
+    in let better = if best < 0 then True else f-end > (list-at fs best).df-offset + list-length ((list-at fs best).df-bytes)
+    in dtls-asm-find fs pos (i + 1) (if ok & better then i else best)
+
+  dtls-reasm-message : DtlsReasm -> Maybe DtlsMsg
+  dtls-reasm-message (r) =
+    if dtls-reasm-complete r == False then None
+    else Just (DtlsMsg { dm-type = r.dr-type, dm-length = r.dr-length, dm-seq = r.dr-seq, dm-frag-offset = 0, dm-frag-length = r.dr-length, dm-body = dtls-slice-at (dtls-reasm-body r) 0 (r.dr-length) })
 
 Section: Finished
 

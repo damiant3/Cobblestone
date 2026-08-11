@@ -6,29 +6,12 @@ Chapter: DtlsHandshake
  The DTLS 1.3 handshake machine (RFC 9147 sections 5.1, 5.7, 5.8, 7).
  Phase D2 of the protocol stack plan.
 
- This is a pure function of state and event, in the tcp-step style:
- step : State, Event -> (State, List Action). It performs no I/O, sets
- no timers itself, and sends nothing. It decides, and the binding layer
- (D3) does. That is what makes a datagram protocol -- whose whole
- difficulty is loss, reordering and duplication -- testable as an
- ordinary battery sample: a scripted event sequence in, an action trace
- out, no network and no peer.
-
  What it is not: it does not authenticate anybody. The credential
  question (PSK vs raw public key vs X.509) is still deliberately open,
  and the flight machine is agnostic to it -- it sequences flights,
  retransmits them, and runs the cookie exchange. Whether the peer's
  certificate is acceptable is a verdict handed in from outside. Do not
  read a completed handshake here as a trusted peer.
-
- To dtls-hs-step gives DtlsHsStep,
-   advancing the client handshake by one event and returning the actions to take.
-
- To dtls-cookie gives List Integer,
-   computing the stateless HelloRetryRequest cookie for a client address.
-
- To dtls-amplification-ok gives Boolean,
-   reporting whether a send stays inside the RFC 9147 three-times anti-amplification limit.
 
  We say:
 
@@ -81,12 +64,6 @@ Section: Types
  that is globally in scope and an OS chapter that is not. Dormant only
  while no program cites both transports -- co-cite them and it is a
  duplicate-constructor error at best and the wrong arm at worst.
-
- This side was renamed rather than the TCP side for two reasons: six use
- sites against twenty, and the name is more accurate afterwards. The
- remaining `Act*` constructors here and in `TcpAction` are unprefixed
- too, and no other pair collides today; that a whole namespace is shared
- by two variants is a wider problem than this rename fixes.
 
   DtlsAction =
     | ActSendFlight (Integer)
@@ -157,9 +134,6 @@ Section: The Step
       is PhWaitServerHello -> dtls-hs-send st dtls-flight-ch2 PhWaitServerHello now cookie
       is otherwise -> dtls-hs-idle st
 
- The server's flight 4 landed. Keys are deliverable now, and the client
- sends its own flight 5 and waits to be acknowledged.
-
   dtls-hs-on-server-flight : DtlsHsState, Integer -> DtlsHsStep
   dtls-hs-on-server-flight (st) (now) =
     when st.hs-phase
@@ -182,10 +156,6 @@ Section: The Step
       is otherwise -> dtls-hs-idle st
 
 Section: Retransmission
-
- RFC 9147 section 5.8.2. Double on every retransmission, clamp at 60
- seconds, and -- our bound, not the RFC's -- give up after
- dtls-hs-max-retries rather than retrying into a black hole forever.
 
  A connected machine ignores timers. A failed one stays failed. Neither
  is an accident: a stale timer arriving after the handshake completed is

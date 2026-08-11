@@ -102,12 +102,14 @@ $BvtTests = @(
     'codex\test\induction-assoc.codex'         # Stage 5b: multi-var induction via nested for-all -- append-assoc (induct on named `as`, bs/cs opaque)
     'codex\test\reverse-reverse.codex'         # Stage 5b FLAGSHIP: reverse (reverse xs) === xs via append-nil/append-assoc/reverse-append (applicable lemmas + app-cong + capture-avoiding normalizer)
     'codex\test\induction-param.codex'         # Stage 5c: induction over a PARAMETRIC type Lst a (checker resolves applied ConstructedTy to its SumTy)
+    'codex\test\kleene-tribool.codex'          # three-valued logic: tnot (tnot t) === t and tor t TTrue === TTrue over three NULLARY constructors, so every arm is Refl with no IH -- the induction path with no recursive field
 
     # --- Error rejection (diagnostic path) ---
     'codex\test\errors\normalize-false.codex'  # Stage 3 soundness tripwire: flip On === On is FALSE (flip On reduces to Off), must reject CDX2001
     'codex\test\errors\induction-unsound.codex' # Stage 4b/5 soundness tripwire: Succ case proved by Refl (not cong ih) is FALSE, must reject CDX2001
     'codex\test\errors\induction-list-unsound.codex' # Stage 5 tripwire: N-ary peel injectivity -- MyCons case by Refl is FALSE, must reject CDX2001
     'codex\test\errors\reverse-reverse-unsound.codex' # Stage 5b tripwire: reverse-reverse MyCons step by cong ih alone (no reverse-append lemma) must reject CDX2001
+    'codex\test\errors\kleene-excluded-middle.codex' # excluded middle over Kleene logic: tor t (tnot t) === TTrue holds at TFalse and TTrue and is FALSE at TUnknown, so TWO of three arms prove and one cannot. Rejects CDX2001 'Con:TTrue vs Con:TUnknown'. A partial refusal, which is what makes it a tripwire for the per-constructor subgoal rather than for the claim as a whole
     'codex\test\errors\type-mismatch.codex'    # type error detection
     'codex\test\errors\unknown-name.codex'     # undefined name detection
     'codex\test\errors\non-exhaustive-match.codex'  # exhaustiveness checker

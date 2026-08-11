@@ -1,0 +1,1612 @@
+Chapter: T3ISA Emitter
+
+ Lowers the Codex typed IR to T3ISA assembly text, the balanced-ternary
+ 27-trit machine defined by the external maniT project.
+
+ T3ISA is designed and specified by Manish Jagdish Thatte. This emitter is
+ an independent implementation written from the published specification
+ alone, docs/t3isa-reference.md at tag t3isa-spec-v1.3 in
+ https://github.com/manishthatte/maniTC, and from no other part of that
+ project. Their emulator is used as a black-box oracle over its published
+ command line; their backend is not read.
+
+ The assembly form, the register roles and the syscall numbers are that
+ project's specification, not ours: arguments arrive in R1 through R8, a
+ single return value leaves in R1, R26 is the stack pointer growing down
+ from 60,000 in a 65,536 word address space, R0 always reads zero, and
+ every register is caller-save. Syscall 1 prints an integer, 3 a string
+ and 4 a newline. Strings are not addressable memory on this machine; a
+ string literal is an entry in a sidecar table and its "address" is an
+ index into that table, which is why text is emitted into a .data section
+ rather than laid out in memory.
+
+ The overflow story is the one place the target is kinder than the source.
+ T3ISA arithmetic SATURATES at the 27-trit boundary, so OvClamping needs no
+ lowering at all, and OvWrapping has no meaning here because wrapping is
+ defined by a binary modulus. That is refused rather than approximated.
+
+Section: Emitter Configuration
+
+ A word holds at most 3,812,798,742,493, so a Codex integer declared wider
+ than that does not fit and is refused rather than silently truncated. The
+ immediate field of a standard instruction is three trits, so any constant
+ outside plus or minus 13 has to be materialised with TLIT into a scratch
+ register first; t3-sp-adjust and the slot helpers below are the only
+ places that matters.
+
+  t3-word-max : Integer
+  t3-word-max = 3812798742493
+
+  t3-imm-max : Integer
+  t3-imm-max = 13
+
+  t3-max-args : Integer
+  t3-max-args = 8
+
+  t3-scratch-a : Text
+  t3-scratch-a = "R9"
+
+  t3-scratch-b : Text
+  t3-scratch-b = "R10"
+
+  t3-scratch-addr : Text
+  t3-scratch-addr = "R21"
+
+ The address space is 65,536 words, and spec v1.3 section 3 gives the
+ reference emulator's layout within it: the stack starts at 60,000 and grows
+ down, module globals sit at 61,000, emulator scratch at 62,000, and their
+ own allocator runs up from 63,000 to the top. Only the address space is
+ architectural; the rest is that emulator's arrangement, so the free run an
+ aggregate can live in is what lies below the stack's start and above the
+ string pseudo-addresses at code_size + 1024. The base, the ceiling and the
+ cell holding the bump pointer sit inside that run: 32,768 is far above the
+ string addresses, and 49,152 leaves 10,848 words of stack below 60,000.
+ MEASURED 2026-08-10 rather than assumed: words at 32,768, 32,771, 40,000
+ and 49,151 all store and load back, through the direct and the offset form
+ alike.
+
+ The earlier revision of the reference gave the initial stack pointer as
+ 65,535 and their allocator base as "about 50,000", and this chapter was
+ built on those numbers. Both were corrected in v1.3. The region chosen here
+ is clear under either reading, which is why the correction moved no code.
+
+  t3-heap-base : Integer
+  t3-heap-base = 32768
+
+  t3-heap-ceiling : Integer
+  t3-heap-ceiling = 49152
+
+  t3-heap-cell : Integer
+  t3-heap-cell = 32767
+
+Section: Context
+
+  T3Slot = record {
+   name : Text,
+   index : Integer
+  }
+
+  T3Arity = record {
+   fn-name : Text,
+   fn-arity : Integer
+  }
+
+  T3Ctx = record {
+   env : List T3Slot,
+   next-slot : Integer,
+   sp-delta : Integer,
+   label-n : Integer,
+   strings : List Text,
+   arities : List T3Arity,
+   refusals : List Text,
+   fn-tag : Text,
+   type-defs : List ATypeDef
+  }
+
+  T3Res = record {
+   code : Text,
+   ctx : T3Ctx
+  }
+
+  t3-empty-ctx : List T3Arity, List ATypeDef -> T3Ctx
+  t3-empty-ctx (ars) (tds) =
+   T3Ctx {
+    env = [],
+    next-slot = 0,
+    sp-delta = 0,
+    label-n = 0,
+    strings = [],
+    arities = ars,
+    refusals = [],
+    fn-tag = "",
+    type-defs = tds
+   }
+
+ Every expression emitter leaves exactly one word on the stack, so sp-delta
+ moves by a statically known amount at every point and a local's address is
+ always sp-delta plus its frame index. That invariant is what lets a pure
+ recursive walk address locals correctly under arbitrary nesting; break it
+ in one arm and every load in the enclosing function reads the wrong word.
+
+  t3-push-delta : T3Ctx -> T3Ctx
+  t3-push-delta (c) =
+   T3Ctx { env = c.env, next-slot = c.next-slot, sp-delta = c.sp-delta + 1,
+           label-n = c.label-n, strings = c.strings, arities = c.arities,
+           refusals = c.refusals, fn-tag = c.fn-tag, type-defs = c.type-defs }
+
+  t3-pop-delta : T3Ctx -> T3Ctx
+  t3-pop-delta (c) =
+   T3Ctx { env = c.env, next-slot = c.next-slot, sp-delta = c.sp-delta - 1,
+           label-n = c.label-n, strings = c.strings, arities = c.arities,
+           refusals = c.refusals, fn-tag = c.fn-tag, type-defs = c.type-defs }
+
+  t3-bump-label : T3Ctx -> T3Ctx
+  t3-bump-label (c) =
+   T3Ctx { env = c.env, next-slot = c.next-slot, sp-delta = c.sp-delta,
+           label-n = c.label-n + 1, strings = c.strings, arities = c.arities,
+           refusals = c.refusals, fn-tag = c.fn-tag, type-defs = c.type-defs }
+
+  t3-bind-slot : T3Ctx, Text -> T3Ctx
+  t3-bind-slot (c) (n) =
+   T3Ctx { env = list-push (c.env) (T3Slot { name = n, index = c.next-slot }),
+           next-slot = c.next-slot + 1, sp-delta = c.sp-delta,
+           label-n = c.label-n, strings = c.strings, arities = c.arities,
+           refusals = c.refusals, fn-tag = c.fn-tag, type-defs = c.type-defs }
+
+  t3-add-string : T3Ctx, Text -> T3Ctx
+  t3-add-string (c) (s) =
+   T3Ctx { env = c.env, next-slot = c.next-slot, sp-delta = c.sp-delta,
+           label-n = c.label-n, strings = list-push (c.strings) s,
+           arities = c.arities, refusals = c.refusals, fn-tag = c.fn-tag,
+           type-defs = c.type-defs }
+
+  t3-refuse-ctx : T3Ctx, Text -> T3Ctx
+  t3-refuse-ctx (c) (why) =
+   T3Ctx { env = c.env, next-slot = c.next-slot, sp-delta = c.sp-delta,
+           label-n = c.label-n, strings = c.strings, arities = c.arities,
+           refusals = list-push (c.refusals) why, fn-tag = c.fn-tag,
+           type-defs = c.type-defs }
+
+  t3-reset-fn : T3Ctx, Text -> T3Ctx
+  t3-reset-fn (c) (tag) =
+   T3Ctx { env = [], next-slot = 0, sp-delta = 0, label-n = c.label-n,
+           strings = c.strings, arities = c.arities, refusals = c.refusals,
+           fn-tag = tag, type-defs = c.type-defs }
+
+Section: Environment Lookup
+
+  t3-slot-of : List T3Slot, Text -> Integer
+  t3-slot-of (env) (n) = t3-slot-of-loop env n (list-length env - 1)
+
+ Scanned newest-first so an inner let shadows an outer binding of the same
+ name, which is what the source language means and what the IR preserves.
+
+  t3-slot-of-loop : List T3Slot, Text, Integer -> Integer
+  t3-slot-of-loop (env) (n) (i) =
+   if i < 0 then -1
+   else let s = list-at env i
+   in if s.name == n then s.index
+   else t3-slot-of-loop env n (i - 1)
+
+  t3-arity-of : List T3Arity, Text -> Integer
+  t3-arity-of (ars) (n) = t3-arity-of-loop ars n 0
+
+  t3-arity-of-loop : List T3Arity, Text, Integer -> Integer
+  t3-arity-of-loop (ars) (n) (i) =
+   if i >= list-length ars then -1
+   else let a = list-at ars i
+   in if a.fn-name == n then a.fn-arity
+   else t3-arity-of-loop ars n (i + 1)
+
+Section: Name Sanitization
+
+ T3ISA label names allow alphanumerics, underscore, dot and the qualified
+ marker. Codex names are kebab-case, so the hyphens become underscores.
+
+  t3-sanitize : Text -> Text
+  t3-sanitize (n) = text-replace n "-" "_"
+
+Section: Instruction Helpers
+
+  t3-line : Text -> Text
+  t3-line (s) = "    " & s & "\n"
+
+  t3-label-line : Text -> Text
+  t3-label-line (l) = "  " & l & ":\n"
+
+  t3-fresh-label : T3Ctx -> Text
+  t3-fresh-label (c) = c.fn-tag & "_L" & show (c.label-n)
+
+ A stack push is two instructions and it is the only thing that moves the
+ stack pointer during a body, so sp-delta and this pair must stay in step.
+
+  t3-push : Text -> Text
+  t3-push (r) = t3-line "TSUB  R26, R26, #1" & t3-line ("STORE " & r & ", [R26+#0]")
+
+  t3-pop : Text -> Text
+  t3-pop (r) = t3-line ("LOAD  " & r & ", [R26+#0]") & t3-line "TADD  R26, R26, #1"
+
+ The immediate field is three trits. Anything wider has to go through TLIT
+ into a scratch register, which is why every stack and slot access below
+ asks whether its offset fits before choosing a form.
+
+  t3-fits-imm : Integer -> Boolean
+  t3-fits-imm (k) = if k > t3-imm-max then False else if k < 0 - t3-imm-max then False else True
+
+  t3-sp-adjust : Text, Integer -> Text
+  t3-sp-adjust (op) (n) =
+   if n == 0 then ""
+   else if t3-fits-imm n then t3-line (op & "  R26, R26, #" & show n)
+   else t3-line ("TLIT  " & t3-scratch-addr & ", #" & show n) & t3-line (op & "  R26, R26, " & t3-scratch-addr)
+
+  t3-load-slot : T3Ctx, Text, Integer -> Text
+  t3-load-slot (c) (r) (slot) =
+   let off = c.sp-delta + slot
+   in if t3-fits-imm off then t3-line ("LOAD  " & r & ", [R26+#" & show off & "]")
+   else t3-load-slot-far r off
+
+  t3-load-slot-far : Text, Integer -> Text
+  t3-load-slot-far (r) (off) =
+   t3-line ("TLIT  " & t3-scratch-addr & ", #" & show off)
+   & t3-line ("TADD  " & t3-scratch-addr & ", R26, " & t3-scratch-addr)
+   & t3-line ("LOAD  " & r & ", [" & t3-scratch-addr & "+#0]")
+
+  t3-store-slot : T3Ctx, Text, Integer -> Text
+  t3-store-slot (c) (r) (slot) =
+   let off = c.sp-delta + slot
+   in if t3-fits-imm off then t3-line ("STORE " & r & ", [R26+#" & show off & "]")
+   else t3-store-slot-far r off
+
+  t3-store-slot-far : Text, Integer -> Text
+  t3-store-slot-far (r) (off) =
+   t3-line ("TLIT  " & t3-scratch-addr & ", #" & show off)
+   & t3-line ("TADD  " & t3-scratch-addr & ", R26, " & t3-scratch-addr)
+   & t3-line ("STORE " & r & ", [" & t3-scratch-addr & "+#0]")
+
+Section: Allocation
+
+ A bump allocator in a fixed memory cell. There is no register to keep it in:
+ every register on this machine is caller-save, so a pointer held across a
+ call would be lost, and the emulator's own allocator is reached only through
+ syscalls that hand back opaque handles rather than addresses a LOAD can use.
+ The cell is the only representation that survives a call.
+
+ R22 carries the object address out of this sequence and every field store
+ below reads it, so nothing between the allocation and the last store may
+ write R22.
+
+  t3-alloc-code : Integer, Text -> Text
+  t3-alloc-code (n) (lbl) =
+   t3-const-into "R21" t3-heap-cell
+   & t3-line "LOAD  R22, [R21+#0]"
+   & t3-const-into "R23" n
+   & t3-line "TADD  R24, R22, R23"
+   & t3-const-into "R25" t3-heap-ceiling
+   & t3-line "TCMP  R23, R24, R25"
+   & t3-line ("TBRANCH R23, " & lbl & "_hbad, " & lbl & "_hok, " & lbl & "_hok")
+   & t3-label-line (lbl & "_hbad")
+   & t3-line "TLIT  R1, #1"
+   & t3-line "TDIV  R1, R1, R0"
+   & t3-label-line (lbl & "_hok")
+   & t3-const-into "R21" t3-heap-cell
+   & t3-line "STORE R24, [R21+#0]"
+
+ Exhaustion traps rather than running on. The heap grows toward the stack, so
+ an unguarded bump would overwrite live frames and answer with corrupted data
+ instead of failing, which is the shape of wrongness this backend exists to
+ refuse. Division by zero is the fault used because it is the only one this
+ machine is measured to raise.
+
+ The cell address is re-materialised before the store rather than assumed to
+ have survived in R21, because a wide constant would have used R21 as its own
+ scratch. Two words to remove an invariant nothing would have checked.
+
+  t3-heap-init : Text
+  t3-heap-init =
+   t3-const-into "R21" t3-heap-cell
+   & t3-const-into "R22" t3-heap-base
+   & t3-line "STORE R22, [R21+#0]"
+
+ An object field is at a small offset, but the immediate is only three trits,
+ so a record wider than thirteen fields needs the address computed. R23 is the
+ scratch because R22 holds the object.
+
+  t3-store-obj : Text, Integer -> Text
+  t3-store-obj (r) (k) =
+   if t3-fits-imm k then t3-line ("STORE " & r & ", [R22+#" & show k & "]")
+   else t3-const-into "R23" k & t3-line "TADD  R23, R22, R23" & t3-line ("STORE " & r & ", [R23+#0]")
+
+  t3-load-obj : Text, Integer -> Text
+  t3-load-obj (r) (k) =
+   if t3-fits-imm k then t3-line ("LOAD  " & r & ", [R22+#" & show k & "]")
+   else t3-const-into "R23" k & t3-line "TADD  R23, R22, R23" & t3-line ("LOAD  " & r & ", [R23+#0]")
+
+Section: Aggregate Layout
+
+ A record is its fields in DECLARED order, one word each. A variant is a tag
+ word followed by the constructor's fields, the tag being the constructor's
+ position in the type's own list. Both indices come from the type definitions
+ the IR carries beside the chapter, never from the order a literal happened to
+ write its fields in, so a record built with its fields out of order reads back
+ correctly.
+
+  t3-find-field : List RecordField, Text, Integer -> Integer
+  t3-find-field (fs) (n) (i) =
+   if i >= list-length fs then 0 - 1
+   else if (list-at fs i).name.value == n then i
+   else t3-find-field fs n (i + 1)
+
+  t3-find-ctor : List SumCtor, Text, Integer -> Integer
+  t3-find-ctor (cs) (n) (i) =
+   if i >= list-length cs then 0 - 1
+   else if (list-at cs i).name.value == n then i
+   else t3-find-ctor cs n (i + 1)
+
+  t3-type-name : CodexType -> Text
+  t3-type-name (ty) =
+   when ty
+    is RecordTy (n) (a) (f) -> n.value
+    is SumTy (n) (a) (c) -> n.value
+    is ConstructedTy (n) (a) -> n.value
+    is EffectfulTy (es) (ss) (inner) -> t3-type-name inner
+    is otherwise -> ""
+
+ A type carries its own fields when it is a RecordTy and only names them when
+ it is a ConstructedTy, so both roads are tried before the field is given up
+ on.
+
+  t3-record-fields : List ATypeDef, CodexType -> List RecordField
+  t3-record-fields (tds) (ty) =
+   when ty
+    is RecordTy (n) (a) (fs) -> if list-length fs > 0 then fs else record-fields-by-name tds (n.value) 0
+    is otherwise -> record-fields-by-name tds (t3-type-name ty) 0
+
+  t3-sum-ctors : List ATypeDef, CodexType -> List SumCtor
+  t3-sum-ctors (tds) (ty) =
+   when ty
+    is SumTy (n) (a) (cs) -> if list-length cs > 0 then cs else sum-ctors-by-name tds (n.value) 0
+    is otherwise -> sum-ctors-by-name tds (t3-type-name ty) 0
+
+  t3-field-index : List ATypeDef, CodexType, Text -> Integer
+  t3-field-index (tds) (ty) (fname) = t3-find-field (t3-record-fields tds ty) fname 0
+
+  t3-ctor-index : List ATypeDef, CodexType, Text -> Integer
+  t3-ctor-index (tds) (ty) (name) = t3-find-ctor (t3-sum-ctors tds ty) name 0
+
+ The declared type of a field or of a constructor's argument, which is where a
+ narrow in that position finds its band. The design's own table names three
+ positions a band can be held in and this is the third of them.
+
+  t3-field-type : List ATypeDef, CodexType, Text -> CodexType
+  t3-field-type (tds) (ty) (fname) =
+   let fs = t3-record-fields tds ty
+   in let i = t3-find-field fs fname 0
+   in if i < 0 then ErrorTy else (list-at fs i).type-val
+
+  t3-ctor-field-type : List ATypeDef, CodexType, Text, Integer -> CodexType
+  t3-ctor-field-type (tds) (ty) (name) (i) =
+   let cs = t3-sum-ctors tds ty
+   in let ci = t3-find-ctor cs name 0
+   in if ci < 0 then ErrorTy
+   else let flds = (list-at cs ci).fields
+   in if i >= list-length flds then ErrorTy else list-at flds i
+
+ The type of a subexpression, needed only so a field access can name the
+ record it is reaching into. A field-access node carries the FIELD's type, not
+ the record's, so the record type has to come from the receiver.
+
+  t3-expr-type : IRExpr -> CodexType
+  t3-expr-type (e) =
+   when e
+    is IrName (n) (ty) (sp) -> ty
+    is IrRecord (n) (fs) (ty) (sp) -> ty
+    is IrApply (f) (a) (ty) (sp) -> ty
+    is IrFieldAccess (r) (f) (ty) (sp) -> ty
+    is IrIf (cnd) (th) (el) (ty) (sp) -> ty
+    is IrMatch (s) (bs) (ty) (sp) -> ty
+    is IrLet (n) (ty) (v) (b) (sp) -> t3-expr-type b
+    is otherwise -> ErrorTy
+
+Section: Record Construction
+
+ Fields are evaluated in the order written, onto the stack, and only then is
+ the object allocated and the values popped back into their declared slots.
+ Allocating first would leave the object pointer live across the evaluation of
+ every remaining field, and a nested construction inside one of them would
+ take R22 away.
+
+  t3-emit-record : T3Ctx, List IRFieldVal, CodexType, Integer -> T3Res
+  t3-emit-record (c) (fs) (ty) (depth) =
+   let order = t3-field-order (c.type-defs) ty fs 0 []
+   in if t3-has-missing order 0 then t3-refuse c ("record whose field layout is not recoverable: " & t3-type-name ty)
+   else t3-emit-record-go c fs ty order depth
+
+  t3-field-order : List ATypeDef, CodexType, List IRFieldVal, Integer, List Integer -> List Integer
+  t3-field-order (tds) (ty) (fs) (i) (acc) =
+   if i >= list-length fs then acc
+   else t3-field-order tds ty fs (i + 1) (list-push acc (t3-field-index tds ty ((list-at fs i).name)))
+
+  t3-has-missing : List Integer, Integer -> Boolean
+  t3-has-missing (xs) (i) =
+   if i >= list-length xs then False
+   else if list-at xs i < 0 then True
+   else t3-has-missing xs (i + 1)
+
+  t3-emit-record-go : T3Ctx, List IRFieldVal, CodexType, List Integer, Integer -> T3Res
+  t3-emit-record-go (c) (fs) (ty) (order) (depth) =
+   let n = list-length fs
+   in let ev = t3-emit-field-vals c fs ty 0 depth ""
+   in let c1 = t3-drop-deltas (ev.ctx) n
+   in let lbl = t3-fresh-label c1
+   in let c2 = t3-push-delta (t3-bump-label c1)
+   in T3Res { code = ev.code & t3-alloc-code n lbl & t3-store-fields order (n - 1) "" & t3-push "R22", ctx = c2 }
+
+  t3-emit-field-vals : T3Ctx, List IRFieldVal, CodexType, Integer, Integer, Text -> T3Res
+  t3-emit-field-vals (c) (fs) (ty) (i) (depth) (acc) =
+   if i >= list-length fs then T3Res { code = acc, ctx = c }
+   else let fv = list-at fs i
+   in let want = t3-field-type (c.type-defs) ty (fv.name)
+   in let s = t3-emit-expr-expecting c (fv.value) (depth + 1) want
+   in t3-emit-field-vals (s.ctx) fs ty (i + 1) depth (acc & s.code)
+
+ Popped in reverse, because the last value written is the one on top.
+
+  t3-store-fields : List Integer, Integer, Text -> Text
+  t3-store-fields (order) (i) (acc) =
+   if i < 0 then acc
+   else t3-store-fields order (i - 1) (acc & t3-pop "R9" & t3-store-obj "R9" (list-at order i))
+
+Section: Variant Construction
+
+  t3-emit-ctor : T3Ctx, Text, CodexType, Integer, List IRExpr, Integer -> T3Res
+  t3-emit-ctor (c) (name) (ty) (tag) (args) (depth) =
+   let n = list-length args
+   in let ev = t3-emit-ctor-args c args name ty 0 depth ""
+   in let c1 = t3-drop-deltas (ev.ctx) n
+   in let lbl = t3-fresh-label c1
+   in let c2 = t3-push-delta (t3-bump-label c1)
+   in let tagw = t3-const-into "R9" tag & t3-store-obj "R9" 0
+   in let body = ev.code & t3-alloc-code (n + 1) lbl & tagw & t3-store-ctor-fields (n - 1) ""
+   in T3Res { code = body & t3-push "R22", ctx = c2 }
+
+  t3-emit-ctor-args : T3Ctx, List IRExpr, Text, CodexType, Integer, Integer, Text -> T3Res
+  t3-emit-ctor-args (c) (args) (name) (ty) (i) (depth) (acc) =
+   if i >= list-length args then T3Res { code = acc, ctx = c }
+   else let want = t3-ctor-field-type (c.type-defs) ty name i
+   in let s = t3-emit-expr-expecting c (list-at args i) (depth + 1) want
+   in t3-emit-ctor-args (s.ctx) args name ty (i + 1) depth (acc & s.code)
+
+  t3-store-ctor-fields : Integer, Text -> Text
+  t3-store-ctor-fields (i) (acc) =
+   if i < 0 then acc
+   else t3-store-ctor-fields (i - 1) (acc & t3-pop "R9" & t3-store-obj "R9" (i + 1))
+
+Section: Field Access
+
+ THE IR ALREADY CARRIES THE RESOLVED FIELD INDEX, AND ONLY AT THE ACCESS.
+ A field-access node names its field `px/0`, name and declared index joined
+ by a slash, while the field-val nodes of a record literal name theirs plainly
+ as `px`. So the two halves of the same record are described differently: the
+ reader is handed the answer and the writer is not. Measured 2026-08-10 on the
+ IR text for this plug's own aggregates program.
+
+ The suffix is used when it is there, because it is the compiler's own
+ resolution and cannot drift from it. The lookup through the type definitions
+ is kept and CROSS-CHECKED against it rather than being merely a fallback: the
+ two roads to a field's offset should never disagree, so a disagreement is a
+ refusal and not a preference. It costs one comparison and cannot fire on a
+ well-formed chapter.
+
+  t3-field-base-name : Text -> Text
+  t3-field-base-name (n) = list-at (text-split n "/") 0
+
+  t3-field-slash-index : Text -> Integer
+  t3-field-slash-index (n) =
+   let parts = text-split n "/"
+   in if list-length parts < 2 then 0 - 1
+   else text-to-integer (list-at parts (list-length parts - 1))
+
+  t3-emit-field-access : T3Ctx, IRExpr, Text, Integer -> T3Res
+  t3-emit-field-access (c) (rec) (fname) (depth) =
+   let direct = t3-field-slash-index fname
+   in let looked = t3-field-index (c.type-defs) (t3-expr-type rec) (t3-field-base-name fname)
+   in if direct >= 0 & looked >= 0 & direct /= looked
+    then t3-refuse c ("field ." & fname & " resolves to offset " & show direct & " by name and " & show looked & " by type definition")
+   else t3-emit-field-access-at c rec (if direct >= 0 then direct else looked) fname depth
+
+  t3-emit-field-access-at : T3Ctx, IRExpr, Integer, Text, Integer -> T3Res
+  t3-emit-field-access-at (c) (rec) (idx) (fname) (depth) =
+   if idx < 0 then t3-refuse c ("field access whose record type is not recoverable from the receiver: ." & fname)
+   else t3-emit-field-access-go c rec idx depth
+
+  t3-emit-field-access-go : T3Ctx, IRExpr, Integer, Integer -> T3Res
+  t3-emit-field-access-go (c) (rec) (idx) (depth) =
+   let s = t3-emit-expr-at c rec (depth + 1)
+   in let c1 = t3-pop-delta (s.ctx)
+   in let c2 = t3-push-delta c1
+   in T3Res { code = s.code & t3-pop "R22" & t3-load-obj "R9" idx & t3-push "R9", ctx = c2 }
+
+Section: Refusal
+
+ A refusal is a line in the output AND an entry in the context, so a
+ malformed program cannot produce an artifact that merely looks short. The
+ runner greps for the marker and fails; emitting something plausible for a
+ construct this backend cannot express is the one outcome that would make
+ the whole experiment worthless.
+
+  t3-refuse : T3Ctx, Text -> T3Res
+  t3-refuse (c) (why) =
+   let c2 = t3-refuse-ctx c why
+   in let c3 = t3-push-delta c2
+   in T3Res { code = t3-line ("; !UNSUPPORTED: " & why) & t3-line "TLIT  R9, #0" & t3-push "R9", ctx = c3 }
+
+ The statement-context refusal leaves the stack alone. An expression
+ refusal must still push, because every expression arm pushes and an
+ unbalanced one would corrupt every frame offset above it.
+
+  t3-refuse-void : T3Ctx, Text -> T3Res
+  t3-refuse-void (c) (why) =
+   T3Res { code = t3-line ("; !UNSUPPORTED: " & why), ctx = t3-refuse-ctx c why }
+
+Section: Integer Range Check
+
+ A Codex integer band wider than a 27-trit word cannot be represented, and
+ the failure would be a wrong answer rather than a crash, so it is refused
+ at the type rather than at the value.
+
+  t3-int-ty-fits : CodexType -> Boolean
+  t3-int-ty-fits (ty) =
+   when ty
+    is IntegerTy (lo) (hi) (ov) -> if hi > t3-word-max then False else if lo < 0 - t3-word-max then False else True
+    is otherwise -> True
+
+  t3-ov-supported : CodexType -> Boolean
+  t3-ov-supported (ty) =
+   when ty
+    is IntegerTy (lo) (hi) (ov) -> t3-ov-mode-ok ov
+    is otherwise -> True
+
+  t3-ov-mode-ok : OverflowMode -> Boolean
+  t3-ov-mode-ok (m) =
+   when m
+    is OvWrapping -> False
+    is otherwise -> True
+
+Section: Binary Operators
+
+ TADD, TSUB, TMUL, TDIV and TMOD are the machine's own arithmetic and need
+ no lowering. Comparison is the interesting case: TCMP writes the SIGN of
+ the difference, minus one, zero or plus one, into a register, and a Codex
+ boolean is zero or one. Each relation is therefore a small arithmetic
+ recovery from that sign rather than a branch, which is why TMIN, TMAX and
+ TNEG appear here at all.
+
+  t3-arith-mnemonic : IRBinaryOp -> Text
+  t3-arith-mnemonic (op) =
+   when op
+    is IrAddInt -> "TADD"
+    is IrSubInt -> "TSUB"
+    is IrMulInt -> "TMUL"
+    is IrDivInt -> "TDIV"
+    is IrRemInt -> "TMOD"
+    is IrAnd -> "TMIN"
+    is IrOr -> "TMAX"
+    is otherwise -> ""
+
+  t3-is-comparison : IRBinaryOp -> Boolean
+  t3-is-comparison (op) =
+   when op
+    is IrEq -> True
+    is IrNotEq -> True
+    is IrLt -> True
+    is IrGt -> True
+    is IrLtEq -> True
+    is IrGtEq -> True
+    is otherwise -> False
+
+ Given s = sign(l - r) in the scratch register, gt is max(s, 0) and lt is
+ the negation of min(s, 0). Everything else is one subtraction away.
+
+  t3-cmp-recover : IRBinaryOp -> Text
+  t3-cmp-recover (op) =
+   when op
+    is IrGt -> t3-cmp-gt
+    is IrLtEq -> t3-cmp-gt & t3-cmp-invert
+    is IrLt -> t3-cmp-lt
+    is IrGtEq -> t3-cmp-lt & t3-cmp-invert
+    is IrNotEq -> t3-cmp-ne
+    is IrEq -> t3-cmp-ne & t3-cmp-invert
+    is otherwise -> ""
+
+  t3-cmp-gt : Text
+  t3-cmp-gt = t3-line "TMAX  R9, R9, R0"
+
+  t3-cmp-lt : Text
+  t3-cmp-lt = t3-line "TMIN  R9, R9, R0" & t3-line "TNEG  R9, R9"
+
+ Nonzero either way is not-equal: max(s,0) plus negated min(s,0) is one
+ exactly when the sign is nonzero, and zero when the operands are equal.
+
+  t3-cmp-ne : Text
+  t3-cmp-ne =
+   t3-line "TMAX  R10, R9, R0"
+   & t3-line "TMIN  R9, R9, R0"
+   & t3-line "TNEG  R9, R9"
+   & t3-line "TADD  R9, R9, R10"
+
+  t3-cmp-invert : Text
+  t3-cmp-invert = t3-line "TLIT  R10, #1" & t3-line "TSUB  R9, R10, R9"
+
+Section: Expression Emission
+
+ Every arm leaves exactly one word on the stack. Depth is fuelled because
+ a malformed IR tree would otherwise recurse without bound on a machine
+ with no stack guard.
+
+  t3-emit-expr : T3Ctx, IRExpr -> T3Res
+  t3-emit-expr (c) (e) = t3-emit-expr-at c e 0
+
+  t3-emit-expr-at : T3Ctx, IRExpr, Integer -> T3Res
+  t3-emit-expr-at (c) (e) (depth) =
+   if depth >= 256 then t3-refuse c "expression nesting beyond 256"
+   else when e
+    is IrIntLit (n) (sp) -> t3-emit-int-lit c n
+    is IrBoolLit (b) (sp) -> t3-emit-const c (if b then 1 else 0)
+    is IrCharLit (n) (sp) -> t3-emit-const c n
+    is IrTextLit (s) (sp) -> t3-emit-text-lit c s
+    is IrName (n) (ty) (sp) -> t3-emit-name c n ty depth
+    is IrNegate (inner) (ty) (sp) -> t3-emit-negate c inner depth
+    is IrBinary (op) (l) (r) (ty) (sp) -> t3-emit-binary c op l r ty depth
+    is IrIf (cnd) (th) (el) (ty) (sp) -> t3-emit-if c cnd th el depth
+    is IrLet (n) (ty) (v) (body) (sp) -> t3-emit-let c n v body depth
+    is IrApply (f) (a) (ty) (sp) -> t3-emit-apply c e depth
+    is IrAct (stmts) (ty) (sp) -> t3-emit-act c stmts depth
+    is IrRecord (n) (fs) (ty) (sp) -> t3-emit-record c fs ty depth
+    is IrFieldAccess (r) (f) (ty) (sp) -> t3-emit-field-access c r f depth
+    is IrMatch (s) (bs) (ty) (sp) -> t3-emit-match c s bs depth
+    is IrNumLit (n) (sp) -> t3-refuse c "real literal: IEEE 754 has no ternary form"
+    is IrList (xs) (ty) (sp) -> t3-refuse c "list literal: a List is a growable value and this backend has a bump allocator with no reclamation"
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> t3-refuse c ("field store: this backend builds records once and does not mutate them: ." & f)
+    is IrLambda (ps) (b) (ty) (sp) -> t3-refuse c "lambda"
+    is otherwise -> t3-refuse c "unsupported IR form"
+
+Section: Materialising a Constant
+
+ TLIT carries a 13-trit immediate, which reaches only plus or minus 797,161
+ against the word's 3,812,798,742,493. The encoding of an out-of-range
+ immediate is a rem_euclid, so it WRAPS rather than failing, and an emitter
+ that ignores the limit produces a plausible wrong number. Anything wider is
+ built from balanced base-3^13 digits with TSHI, which multiplies by a power
+ of three. Three digits cover the whole word range.
+
+  t3-wide-max : Integer
+  t3-wide-max = 797161
+
+  t3-digit-base : Integer
+  t3-digit-base = 1594323
+
+  t3-bal-digit : Integer -> Integer
+  t3-bal-digit (n) =
+   let r = int-mod n t3-digit-base
+   in if r > t3-wide-max then r - t3-digit-base else r
+
+  t3-bal-rest : Integer -> Integer
+  t3-bal-rest (n) = (n - t3-bal-digit n) / t3-digit-base
+
+ This emits the immediate form, `TSHI Rd, Ra, #n`. The shift of 13 is
+ exactly the 3-trit immediate's limit. Spec v1.3 resolves every
+ three-address right-hand side as rhs = regs[r3] + imm, so the register
+ form is equally legal and, re-measured 2026-08-10, equally correct; the
+ immediate form is kept here because a shift amount known at compile time
+ costs an instruction to put in a register and buys nothing.
+
+ Measured 2026-08-09 against the previous emulator the register form
+ answered 1 rather than 1594323, a silent multiply by 3^0 that did not
+ fault. That behaviour changed in v1.3, and the guards this chapter and
+ the encoder carried against it are gone. Recorded
+ because it is the one place where trusting the reference over a
+ measurement would have been right and the measurement was the thing that
+ aged.
+
+  t3-const-into : Text, Integer -> Text
+  t3-const-into (r) (n) =
+   if n <= t3-wide-max then (if n >= 0 - t3-wide-max then t3-line ("TLIT  " & r & ", #" & show n) else t3-const-wide r n)
+   else t3-const-wide r n
+
+  t3-const-wide : Text, Integer -> Text
+  t3-const-wide (r) (n) =
+   let d0 = t3-bal-digit n
+   in let n1 = t3-bal-rest n
+   in let d1 = t3-bal-digit n1
+   in let n2 = t3-bal-rest n1
+   in t3-line ("TLIT  " & r & ", #" & show n2)
+    & t3-const-shift-add r d1
+    & t3-const-shift-add r d0
+
+  t3-const-shift-add : Text, Integer -> Text
+  t3-const-shift-add (r) (d) =
+   t3-line ("TSHI  " & r & ", " & r & ", #13")
+   & t3-line ("TLIT  " & t3-scratch-addr & ", #" & show d)
+   & t3-line ("TADD  " & r & ", " & r & ", " & t3-scratch-addr)
+
+  t3-emit-const : T3Ctx, Integer -> T3Res
+  t3-emit-const (c) (n) =
+   let c2 = t3-push-delta c
+   in T3Res { code = t3-const-into "R9" n & t3-push "R9", ctx = c2 }
+
+ A literal outside the word range is refused for the same reason a wide
+ integer type is: the alternative is a saturated value that reads as data.
+
+  t3-emit-int-lit : T3Ctx, Integer -> T3Res
+  t3-emit-int-lit (c) (n) =
+   if n > t3-word-max then t3-refuse c ("integer literal exceeds the 27-trit word: " & show n)
+   else if n < 0 - t3-word-max then t3-refuse c ("integer literal below the 27-trit word: " & show n)
+   else t3-emit-const c n
+
+ A text literal becomes a .data entry. Its address is resolved by the
+ assembler, so the emitter only has to name it consistently.
+
+  t3-emit-text-lit : T3Ctx, Text -> T3Res
+  t3-emit-text-lit (c) (s) =
+   let idx = list-length (c.strings)
+   in let c2 = t3-add-string c s
+   in let c3 = t3-push-delta c2
+   in T3Res { code = t3-line ("TLIT  R9, #str" & show idx) & t3-push "R9", ctx = c3 }
+
+  t3-emit-name : T3Ctx, Text, CodexType, Integer -> T3Res
+  t3-emit-name (c) (n) (ty) (depth) =
+   let slot = t3-slot-of (c.env) n
+   in if slot >= 0 then t3-emit-local c slot
+   else if n == "True" then t3-emit-const c 1
+   else if n == "False" then t3-emit-const c 0
+   else if t3-arity-of (c.arities) n == 0 then t3-emit-call c n 0 ""
+   else if t3-ctor-index (c.type-defs) ty n >= 0 then t3-emit-ctor c n ty (t3-ctor-index (c.type-defs) ty n) [] depth
+   else t3-refuse c ("name not in scope, not a nullary function and not a constructor: " & n)
+
+  t3-emit-local : T3Ctx, Integer -> T3Res
+  t3-emit-local (c) (slot) =
+   let ld = t3-load-slot c "R9" slot
+   in let c2 = t3-push-delta c
+   in T3Res { code = ld & t3-push "R9", ctx = c2 }
+
+  t3-emit-negate : T3Ctx, IRExpr, Integer -> T3Res
+  t3-emit-negate (c) (inner) (depth) =
+   let s = t3-emit-expr-at c inner (depth + 1)
+   in let c2 = t3-pop-delta (s.ctx)
+   in let c3 = t3-push-delta c2
+   in T3Res { code = s.code & t3-pop "R9" & t3-line "TNEG  R9, R9" & t3-push "R9", ctx = c3 }
+
+Section: Binary Emission
+
+ Left then right, both on the stack, then popped in reverse so the right
+ operand lands in the scratch B register and the left in scratch A. Doing
+ it through the stack rather than through registers is what makes
+ arbitrary nesting correct on a machine where every register is
+ caller-save and a nested call would otherwise clobber a held operand.
+
+  t3-emit-binary : T3Ctx, IRBinaryOp, IRExpr, IRExpr, CodexType, Integer -> T3Res
+  t3-emit-binary (c) (op) (l) (r) (ty) (depth) =
+   if t3-ov-supported ty == False then t3-refuse c "wrapping overflow has no ternary meaning"
+   else if t3-int-ty-fits ty == False then t3-refuse c "integer band wider than a 27-trit word"
+   else t3-emit-binary-go c op l r depth
+
+  t3-emit-binary-go : T3Ctx, IRBinaryOp, IRExpr, IRExpr, Integer -> T3Res
+  t3-emit-binary-go (c) (op) (l) (r) (depth) =
+   let ls = t3-emit-expr-at c l (depth + 1)
+   in let rs = t3-emit-expr-at (ls.ctx) r (depth + 1)
+   in let popped = t3-pop-delta (t3-pop-delta (rs.ctx))
+   in let pre = ls.code & rs.code & t3-pop t3-scratch-b & t3-pop t3-scratch-a
+   in t3-emit-binary-op popped op pre
+
+  t3-emit-binary-op : T3Ctx, IRBinaryOp, Text -> T3Res
+  t3-emit-binary-op (c) (op) (pre) =
+   if t3-is-comparison op then t3-emit-compare c op pre
+   else t3-emit-arith c op pre
+
+  t3-emit-arith : T3Ctx, IRBinaryOp, Text -> T3Res
+  t3-emit-arith (c) (op) (pre) =
+   let m = t3-arith-mnemonic op
+   in if m == "" then t3-emit-arith-other c op pre
+   else let c2 = t3-push-delta c
+   in T3Res { code = pre & t3-line (m & "  R9, R9, R10") & t3-push "R9", ctx = c2 }
+
+ Text append as a VALUE has no form here. fmt::concat is declared in their
+ stdlib but is not among the 9 of 31 fmt natives the T3 backend implements
+ (spec v1.3, section 8), so a program using it fails at ASSEMBLE time with
+ an undefined label rather than at run time. Earlier revisions listed it at
+ syscall 142, where no handler has ever existed. Strings are not
+ addressable either, so there is nothing to build a joined string in.
+ Append survives only where it is being printed, which t3-print-parts
+ linearises into one print per leaf.
+
+  t3-emit-arith-other : T3Ctx, IRBinaryOp, Text -> T3Res
+  t3-emit-arith-other (c) (op) (pre) =
+   when op
+    is IrAppendText -> t3-refuse c "text append outside a print: fmt::concat is not among the fmt natives the T3 backend implements, so it fails at assemble time, and strings are not addressable"
+    is otherwise -> t3-refuse c (t3-other-op-reason op)
+
+ A real operation is named as such rather than lumped in with the rest,
+ because it is the sharpest of the failures predicted in advance and the
+ whole point is to report WHICH assumption the IR carried, not that
+ something went wrong.
+
+  t3-other-op-reason : IRBinaryOp -> Text
+  t3-other-op-reason (op) =
+   if t3-is-real-op op then "real arithmetic: IEEE 754 is a binary format by construction and has no ternary form"
+   else if t3-is-vec-op op then "vector arithmetic: T3ISA has no SIMD"
+   else "binary operator with no T3ISA form"
+
+  t3-is-real-op : IRBinaryOp -> Boolean
+  t3-is-real-op (op) =
+   when op
+    is IrAddNum -> True
+    is IrSubNum -> True
+    is IrMulNum -> True
+    is IrDivNum -> True
+    is IrAddRealApprox -> True
+    is IrSubRealApprox -> True
+    is IrMulRealApprox -> True
+    is IrDivRealApprox -> True
+    is IrAddRealTrapping -> True
+    is IrSubRealTrapping -> True
+    is IrMulRealTrapping -> True
+    is IrDivRealTrapping -> True
+    is IrAddRealSaturating -> True
+    is IrSubRealSaturating -> True
+    is IrMulRealSaturating -> True
+    is IrDivRealSaturating -> True
+    is IrApproxEq -> True
+    is IrApproxEqExact -> True
+    is otherwise -> False
+
+  t3-is-vec-op : IRBinaryOp -> Boolean
+  t3-is-vec-op (op) =
+   when op
+    is IrAddVec -> True
+    is IrSubVec -> True
+    is IrMulVec -> True
+    is IrDivVec -> True
+    is IrLtVec -> True
+    is IrGtVec -> True
+    is IrLtEqVec -> True
+    is IrGtEqVec -> True
+    is otherwise -> False
+
+  t3-emit-compare : T3Ctx, IRBinaryOp, Text -> T3Res
+  t3-emit-compare (c) (op) (pre) =
+   let c2 = t3-push-delta c
+   in let cmp = t3-line "TCMP  R9, R9, R10"
+   in T3Res { code = pre & cmp & t3-cmp-recover op & t3-push "R9", ctx = c2 }
+
+Section: Control Flow
+
+ TBRANCH reads the register directly rather than FLAGS and dispatches on
+ its sign, so a boolean condition takes the positive arm at one and the
+ zero arm at zero. The negative arm goes to the else label too: a Codex
+ boolean is never negative, and sending it anywhere else would turn a
+ corrupt value into a wild jump.
+
+  t3-emit-if : T3Ctx, IRExpr, IRExpr, IRExpr, Integer -> T3Res
+  t3-emit-if (c) (cnd) (th) (el) (depth) =
+   let cs = t3-emit-expr-at c cnd (depth + 1)
+   in let c1 = t3-pop-delta (cs.ctx)
+   in let lbl = t3-fresh-label c1
+   in let c2 = t3-bump-label c1
+   in t3-emit-if-arms c2 (cs.code) lbl th el depth
+
+  t3-emit-if-arms : T3Ctx, Text, Text, IRExpr, IRExpr, Integer -> T3Res
+  t3-emit-if-arms (c) (cond-code) (lbl) (th) (el) (depth) =
+   let ts = t3-emit-expr-at c th (depth + 1)
+   in let c-else = t3-pop-delta (ts.ctx)
+   in let es = t3-emit-expr-at c-else el (depth + 1)
+   in T3Res { code = t3-if-code cond-code lbl (ts.code) (es.code), ctx = es.ctx }
+
+ Both arms leave one word, so the merge point is balanced and sp-delta
+ after the whole form is the same whichever arm ran.
+
+  t3-if-code : Text, Text, Text, Text -> Text
+  t3-if-code (cond-code) (lbl) (then-code) (else-code) =
+   cond-code
+   & t3-pop "R9"
+   & t3-line ("TBRANCH R9, " & lbl & "_then, " & lbl & "_else, " & lbl & "_else")
+   & t3-label-line (lbl & "_then")
+   & then-code
+   & t3-line ("JUMP  " & lbl & "_end")
+   & t3-label-line (lbl & "_else")
+   & else-code
+   & t3-label-line (lbl & "_end")
+
+ A let evaluates its value, stores it into a fresh frame slot, and then
+ emits the body with the name bound. The slot is never reused, so the
+ frame pre-pass counting lets is what sizes the frame.
+
+  t3-emit-let : T3Ctx, Text, IRExpr, IRExpr, Integer -> T3Res
+  t3-emit-let (c) (n) (v) (body) (depth) =
+   let vs = t3-emit-expr-at c v (depth + 1)
+   in let c1 = t3-pop-delta (vs.ctx)
+   in let c2 = t3-bind-slot c1 n
+   in let slot = t3-slot-of (c2.env) n
+   in let store = t3-pop "R9" & t3-store-slot c1 "R9" slot
+   in let bs = t3-emit-expr-at c2 body (depth + 1)
+   in T3Res { code = vs.code & store & bs.code, ctx = bs.ctx }
+
+Section: Match
+
+ The scrutinee is evaluated once into a frame slot, because every branch has
+ to read it and the branches run at different stack depths. Each branch is a
+ test that jumps to the NEXT branch's label on failure, then its bindings,
+ then its guard, then its body, then a jump to the end. Branch i's failure
+ label is branch i+1's entry, so the chain needs no patching pass, which is
+ what makes a single forward walk enough on a machine whose assembler resolves
+ labels for us.
+
+ A match that falls off the end traps. The type checker proves exhaustiveness
+ before the IR is written, so this is unreachable in a well-formed program;
+ emitting nothing there would leave the stack short by one word and every
+ offset above it wrong, which is a corrupted answer rather than a failure.
+
+  t3-emit-match : T3Ctx, IRExpr, List IRBranch, Integer -> T3Res
+  t3-emit-match (c) (scrut) (bs) (depth) =
+   let ss = t3-emit-expr-at c scrut (depth + 1)
+   in let c1 = t3-pop-delta (ss.ctx)
+   in let mlbl = t3-fresh-label c1
+   in let c2 = t3-bind-slot (t3-bump-label c1) (mlbl & "_s")
+   in let slot = t3-slot-of (c2.env) (mlbl & "_s")
+   in let store = t3-pop "R9" & t3-store-slot c1 "R9" slot
+   in let br = t3-emit-branches c2 bs slot mlbl 0 depth
+   in T3Res { code = ss.code & store & br.code, ctx = t3-push-delta (br.ctx) }
+
+ Each branch is emitted from the SAME stack depth, so the depth is wound back
+ between them rather than accumulating: only one branch runs.
+
+  t3-emit-branches : T3Ctx, List IRBranch, Integer, Text, Integer, Integer -> T3Res
+  t3-emit-branches (c) (bs) (slot) (mlbl) (i) (depth) =
+   if i >= list-length bs then T3Res { code = t3-match-fail mlbl i, ctx = c }
+   else let one = t3-emit-branch c (list-at bs i) slot mlbl i depth
+   in let rest = t3-emit-branches (t3-pop-delta (one.ctx)) bs slot mlbl (i + 1) depth
+   in T3Res { code = one.code & rest.code, ctx = rest.ctx }
+
+  t3-match-fail : Text, Integer -> Text
+  t3-match-fail (mlbl) (i) =
+   t3-label-line (mlbl & "_b" & show i)
+   & t3-line "TLIT  R1, #1"
+   & t3-line "TDIV  R1, R1, R0"
+   & t3-label-line (mlbl & "_end")
+
+  t3-emit-branch : T3Ctx, IRBranch, Integer, Text, Integer, Integer -> T3Res
+  t3-emit-branch (c) (br) (slot) (mlbl) (i) (depth) =
+   let next = mlbl & "_b" & show (i + 1)
+   in let t = t3-emit-pattern c (br.pattern) slot next mlbl i
+   in let g = t3-emit-guard (t.ctx) (br.guard) next mlbl i depth
+   in let b = t3-emit-expr-at (g.ctx) (br.body) (depth + 1)
+   in let head = t3-label-line (mlbl & "_b" & show i)
+   in T3Res { code = head & t.code & g.code & b.code & t3-line ("JUMP  " & mlbl & "_end"), ctx = b.ctx }
+
+ A guard that is the literal True is the shape every unguarded branch parses
+ to, and it emits nothing.
+
+  t3-emit-guard : T3Ctx, IRExpr, Text, Text, Integer, Integer -> T3Res
+  t3-emit-guard (c) (g) (next) (mlbl) (i) (depth) =
+   when g
+    is IrBoolLit (v) (sp) -> if v then T3Res { code = "", ctx = c } else T3Res { code = t3-line ("JUMP  " & next), ctx = c }
+    is otherwise -> t3-emit-guard-test c g next mlbl i depth
+
+  t3-emit-guard-test : T3Ctx, IRExpr, Text, Text, Integer, Integer -> T3Res
+  t3-emit-guard-test (c) (g) (next) (mlbl) (i) (depth) =
+   let s = t3-emit-expr-at c g (depth + 1)
+   in let c1 = t3-pop-delta (s.ctx)
+   in let ok = mlbl & "_g" & show i
+   in T3Res { code = s.code & t3-pop "R9" & t3-line ("TBRANCH R9, " & ok & ", " & next & ", " & next) & t3-label-line ok, ctx = c1 }
+
+Section: Patterns
+
+ A pattern emits its test and its bindings together, because a constructor
+ pattern's bindings are only valid once its tag has matched.
+
+  t3-emit-pattern : T3Ctx, IRPat, Integer, Text, Text, Integer -> T3Res
+  t3-emit-pattern (c) (p) (slot) (next) (mlbl) (i) =
+   when p
+    is IrWildPat (sp) -> T3Res { code = "", ctx = c }
+    is IrVarPat (n) (ty) (sp) -> t3-bind-scrutinee c n slot
+    is IrLitPat (v) (ty) (sp) -> t3-emit-lit-pattern c v slot next
+    is IrCtorPat (n) (subs) (ty) (sp) -> t3-emit-ctor-pattern c n subs ty slot next
+    is otherwise -> t3-refuse-void c "pattern form with no T3ISA lowering"
+
+  t3-bind-scrutinee : T3Ctx, Text, Integer -> T3Res
+  t3-bind-scrutinee (c) (n) (slot) =
+   let c1 = t3-bind-slot c n
+   in let dst = t3-slot-of (c1.env) n
+   in T3Res { code = t3-load-slot c "R9" slot & t3-store-slot c "R9" dst, ctx = c1 }
+
+ A boolean pattern spells its value as a name, which is why the two are
+ written out here rather than parsed as numbers.
+
+  t3-pat-lit-value : Text -> Integer
+  t3-pat-lit-value (t) =
+   if t == "True" then 1
+   else if t == "False" then 0
+   else text-to-integer t
+
+  t3-emit-lit-pattern : T3Ctx, Text, Integer, Text -> T3Res
+  t3-emit-lit-pattern (c) (v) (slot) (next) =
+   let ld = t3-load-slot c "R9" slot
+   in let cmp = t3-const-into "R10" (t3-pat-lit-value v) & t3-line "TCMP  R9, R9, R10"
+   in T3Res { code = ld & cmp & t3-line ("TBRANCH R9, " & next & ", " & t3-lit-ok next & ", " & next) & t3-label-line (t3-lit-ok next), ctx = c }
+
+ The equal case is the ZERO arm of the three-way branch, so the label it needs
+ is derived from the failure label rather than taking another counter.
+
+  t3-lit-ok : Text -> Text
+  t3-lit-ok (next) = next & "_eq"
+
+ The tag is at offset zero and the constructor's fields follow it. Only a name
+ or a wildcard is accepted underneath, because a nested pattern would need a
+ test tree this walk does not build, and matching it loosely would accept
+ values the source rejects.
+
+  t3-emit-ctor-pattern : T3Ctx, Text, List IRPat, CodexType, Integer, Text -> T3Res
+  t3-emit-ctor-pattern (c) (n) (subs) (ty) (slot) (next) =
+   let tag = t3-ctor-index (c.type-defs) ty n
+   in if tag < 0 then t3-refuse-void c ("constructor pattern whose type is not recoverable: " & n)
+   else if t3-subs-simple subs 0 == False then t3-refuse-void c ("nested pattern under constructor " & n & ": only a name or a wildcard is accepted")
+   else t3-emit-ctor-pattern-go c subs tag slot next
+
+  t3-subs-simple : List IRPat, Integer -> Boolean
+  t3-subs-simple (subs) (i) =
+   if i >= list-length subs then True
+   else when list-at subs i
+    is IrVarPat (n) (ty) (sp) -> t3-subs-simple subs (i + 1)
+    is IrWildPat (sp) -> t3-subs-simple subs (i + 1)
+    is otherwise -> False
+
+  t3-emit-ctor-pattern-go : T3Ctx, List IRPat, Integer, Integer, Text -> T3Res
+  t3-emit-ctor-pattern-go (c) (subs) (tag) (slot) (next) =
+   let ok = next & "_tag"
+   in let ld = t3-load-slot c "R22" slot
+   in let test = t3-load-obj "R23" 0
+    & t3-const-into "R24" tag
+    & t3-line "TCMP  R23, R23, R24"
+    & t3-line ("TBRANCH R23, " & next & ", " & ok & ", " & next)
+    & t3-label-line ok
+   in let b = t3-bind-ctor-fields c subs 0 ""
+   in T3Res { code = ld & test & b.code, ctx = b.ctx }
+
+ R22 still holds the scrutinee here, which is why the binds read through
+ t3-load-obj and nothing between the tag test and the last bind may write it.
+
+  t3-bind-ctor-fields : T3Ctx, List IRPat, Integer, Text -> T3Res
+  t3-bind-ctor-fields (c) (subs) (i) (acc) =
+   if i >= list-length subs then T3Res { code = acc, ctx = c }
+   else when list-at subs i
+    is IrVarPat (n) (ty) (sp) ->
+     let c1 = t3-bind-slot c n
+     in let dst = t3-slot-of (c1.env) n
+     in t3-bind-ctor-fields c1 subs (i + 1) (acc & t3-load-obj "R9" (i + 1) & t3-store-slot c "R9" dst)
+    is otherwise -> t3-bind-ctor-fields c subs (i + 1) acc
+
+Section: Application
+
+ An application is flattened to a root and its arguments. Only a direct
+ call of a known definition, a recognised console or format builtin, is
+ supported; a call through a value would need an indirect CALLR and a
+ closure representation this backend does not have.
+
+  t3-emit-apply : T3Ctx, IRExpr, Integer -> T3Res
+  t3-emit-apply (c) (e) (depth) =
+   let chain = collect-apply-chain e []
+   in when chain.root
+    is IrName (n) (nty) (sp) -> t3-emit-known-call c n (chain.args) depth (t3-apply-type e) nty
+    is otherwise -> t3-refuse c "call through a computed function value"
+
+  t3-apply-type : IRExpr -> CodexType
+  t3-apply-type (e) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> ty
+    is otherwise -> ErrorTy
+
+  t3-emit-known-call : T3Ctx, Text, List IRExpr, Integer, CodexType, CodexType -> T3Res
+  t3-emit-known-call (c) (n) (args) (depth) (rty) (fty) =
+   if n == "show" then t3-refuse c "show outside a print: fmt::show_int at syscall 14 would build the handle, but this backend has no Text value to put it in"
+   else if n == "print-line-uni" then t3-emit-print c args depth
+   else if n == "int-rem" then t3-emit-builtin2 c args depth t3-rem-body
+   else if n == "int-mod" then t3-emit-builtin2 c args depth t3-mod-body
+   else if n == "__narrow" then t3-emit-narrow c args depth rty
+   else if t3-ctor-index (c.type-defs) rty n >= 0 then t3-emit-ctor c n rty (t3-ctor-index (c.type-defs) rty n) args depth
+   else t3-emit-user-call c n args depth fty
+
+Section: Checked Narrow
+
+ __narrow asserts at runtime that a value lies in a declared band. THE NODE
+ DOES NOT CARRY THE BAND: it is typed
+
+   (apply (name "__narrow" (fn int-default int-default)) <arg> int-default)
+
+ default to default, whatever band was asserted. The band is in the IR, but
+ it is held by the ENCLOSING CONTEXT, and which context depends on where the
+ narrow sits. Measured 2026-08-09 across three positions: at a def's return
+ it is the def's own type `(fn int-default (int 0 100 ov-error))`; at a call
+ argument it is the callee's parameter type
+ `(name "takes-small" (fn (int 0 100 ov-error) ...))`; at a record field it
+ is the field's declaration in the type-defs.
+
+ So the check IS emittable, and this emitter takes the band from the
+ position rather than from the node. A narrow anywhere else is refused,
+ because a weaker check that looks like the real one is the failure this
+ backend exists to avoid: emitting a word-range test where the source asked
+ for `0 and 100` would pass two million and read as an enforced bound.
+
+ This paragraph described the band as ABSENT until it was measured properly.
+ It was not absent; the instrument was a look at the node, which cannot show
+ a band the context holds. The lesson is L-ERASED's inverse and worth as
+ much: before reporting that an artifact has lost something, look at what
+ encloses it.
+
+ The trap is a deliberate division by zero, which is the only fault this
+ machine is known to raise. The published reference says division by zero
+ returns 0 as emulator-defined behaviour and not a fault; MEASURED, the
+ emulator prints "TRAP: division by zero" and stops. The reference is wrong
+ about it and the measured behaviour is the one relied on here.
+
+  t3-is-narrow-apply : IRExpr -> Boolean
+  t3-is-narrow-apply (e) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> t3-root-is-narrow f
+    is otherwise -> False
+
+  t3-root-is-narrow : IRExpr -> Boolean
+  t3-root-is-narrow (f) =
+   when f
+    is IrName (n) (ty) (sp) -> n == "__narrow"
+    is otherwise -> False
+
+ Emit a subexpression whose expected type is known from its position. Only
+ __narrow cares; everything else ignores the band and goes the usual way.
+
+  t3-emit-expr-expecting : T3Ctx, IRExpr, Integer, CodexType -> T3Res
+  t3-emit-expr-expecting (c) (e) (depth) (expected) =
+   if t3-is-narrow-apply e then t3-emit-narrow-banded c e depth expected
+   else t3-emit-expr-at c e depth
+
+  t3-emit-narrow-banded : T3Ctx, IRExpr, Integer, CodexType -> T3Res
+  t3-emit-narrow-banded (c) (e) (depth) (expected) =
+   let chain = collect-apply-chain e []
+   in if list-length (chain.args) /= 1 then t3-refuse c "__narrow takes one argument"
+   else when expected
+    is IntegerTy (lo) (hi) (ov) -> t3-emit-narrow-checked c (chain.args) depth lo hi
+    is otherwise -> t3-refuse c "__narrow where the declared band is not recoverable from the position"
+
+  t3-emit-narrow-checked : T3Ctx, List IRExpr, Integer, Integer, Integer -> T3Res
+  t3-emit-narrow-checked (c) (args) (depth) (lo) (hi) =
+   if hi > t3-word-max then t3-refuse c "__narrow band wider than a 27-trit word"
+   else if lo < 0 - t3-word-max then t3-refuse c "__narrow band wider than a 27-trit word"
+   else t3-emit-narrow-code c args depth lo hi
+
+ Reached only when a narrow turns up somewhere the band cannot be read off
+ the position. Refused rather than approximated.
+
+  t3-emit-narrow : T3Ctx, List IRExpr, Integer, CodexType -> T3Res
+  t3-emit-narrow (c) (args) (depth) (rty) =
+   t3-refuse c "__narrow where the declared band is not recoverable from the position"
+
+  t3-fn-param-type : CodexType, Integer -> CodexType
+  t3-fn-param-type (ty) (i) =
+   when ty
+    is FunTy (p) (row) (r) -> if i == 0 then p else t3-fn-param-type r (i - 1)
+    is ForAllTy (id) (b) -> t3-fn-param-type b i
+    is EffectfulTy (es) (ss) (inner) -> t3-fn-param-type inner i
+    is otherwise -> ErrorTy
+
+  t3-emit-narrow-code : T3Ctx, List IRExpr, Integer, Integer, Integer -> T3Res
+  t3-emit-narrow-code (c) (args) (depth) (lo) (hi) =
+   let s = t3-emit-expr-at c (list-at args 0) (depth + 1)
+   in let c1 = t3-pop-delta (s.ctx)
+   in let lbl = t3-fresh-label c1
+   in let c2 = t3-push-delta (t3-bump-label c1)
+   in let note = t3-line ("; __narrow: assert " & show lo & " <= v <= " & show hi)
+   in T3Res { code = s.code & t3-pop "R9" & note & t3-narrow-check lo hi lbl & t3-push "R9", ctx = c2 }
+
+ Two comparisons folded into one sign: minus one if below the floor, minus
+ one if above the ceiling, so their sum is negative exactly when the value
+ is out of band and the three-way branch needs no second test.
+
+  t3-narrow-check : Integer, Integer, Text -> Text
+  t3-narrow-check (lo) (hi) (lbl) =
+   t3-const-into "R11" lo
+   & t3-line "TCMP  R12, R9, R11"
+   & t3-line "TMIN  R12, R12, R0"
+   & t3-const-into "R11" hi
+   & t3-line "TCMP  R13, R11, R9"
+   & t3-line "TMIN  R13, R13, R0"
+   & t3-line "TADD  R12, R12, R13"
+   & t3-line ("TBRANCH R12, " & lbl & "_nok, " & lbl & "_nok, " & lbl & "_nbad")
+   & t3-label-line (lbl & "_nbad")
+   & t3-line "TLIT  R1, #1"
+   & t3-line "TDIV  R1, R1, R0"
+   & t3-label-line (lbl & "_nok")
+
+ TMOD is the TRUNCATING remainder, measured against the oracle on all three
+ sign combinations: -7 mod 3 is -1, 7 mod -3 is 1, -7 mod -3 is -1. That is
+ Codex int-rem exactly, and it is NOT int-mod. The published reference says
+ only "Rd = Ra mod Rb", which does not distinguish them, and choosing wrong
+ here is silent for positive operands and wrong for negative ones.
+
+  t3-rem-body : Text
+  t3-rem-body = t3-line "TMOD  R9, R9, R10"
+
+ The Euclidean remainder is the truncating one plus the divisor's magnitude
+ when it came out negative. Absolute value is max(b, -b); the flag is the
+ negated min of the sign with zero, which is one exactly when the remainder
+ is below zero.
+
+  t3-mod-body : Text
+  t3-mod-body =
+   t3-line "TMOD  R11, R9, R10"
+   & t3-line "TNEG  R12, R10"
+   & t3-line "TMAX  R12, R10, R12"
+   & t3-line "TCMP  R13, R11, R0"
+   & t3-line "TMIN  R13, R13, R0"
+   & t3-line "TNEG  R13, R13"
+   & t3-line "TMUL  R13, R13, R12"
+   & t3-line "TADD  R9, R11, R13"
+
+  t3-emit-builtin2 : T3Ctx, List IRExpr, Integer, Text -> T3Res
+  t3-emit-builtin2 (c) (args) (depth) (body) =
+   if list-length args /= 2 then t3-refuse c "builtin takes two arguments"
+   else t3-emit-builtin2-go c args depth body
+
+  t3-emit-builtin2-go : T3Ctx, List IRExpr, Integer, Text -> T3Res
+  t3-emit-builtin2-go (c) (args) (depth) (body) =
+   let ls = t3-emit-expr-at c (list-at args 0) (depth + 1)
+   in let rs = t3-emit-expr-at (ls.ctx) (list-at args 1) (depth + 1)
+   in let c1 = t3-pop-delta (t3-pop-delta (rs.ctx))
+   in let c2 = t3-push-delta c1
+   in let pre = ls.code & rs.code & t3-pop t3-scratch-b & t3-pop t3-scratch-a
+   in T3Res { code = pre & body & t3-push "R9", ctx = c2 }
+
+  t3-syscall-print-int : Text
+  t3-syscall-print-int = t3-line "SYSCALL #1"
+
+ THERE ARE NO FIRST-CLASS TEXT VALUES ON THIS BACKEND. Strings are not in
+ addressable memory; a literal is an entry in a sidecar table and its
+ handle is an index into it.
+
+ The reason used to be that the machine could not build one. Earlier
+ revisions of the reference put fmt::show_int at 140 and fmt::concat at
+ 142, and measured 2026-08-09, the emulator answered "TRAP: unknown
+ syscall" for both, because no handler has ever existed at those numbers.
+ Spec v1.3 gives the real ones. Re-measured 2026-08-10: syscall 14 with 42
+ in R1, then syscall 3, prints "42", so show_int does work and does hand
+ back a printable handle. fmt::concat is a different case and still cannot
+ be reached at all, being one of the 22 of 31 fmt natives the T3 backend
+ does not implement.
+
+ So `show` is now a backend choice rather than a machine limit: what is
+ missing is a Text representation in this emitter to carry the handle,
+ not a way to make one. Append remains impossible either way.
+
+ What CAN be done is emit a line. A print of an append tree linearises into
+ one syscall per leaf: a literal prints with print_str, an integer with
+ print_int, and the newline comes once at the end. That is the general
+ lowering of formatted output for a target with no string heap, not a
+ special case of any one program, and it is why print-line-uni is handled
+ by walking its argument rather than by evaluating it.
+
+  t3-emit-print : T3Ctx, List IRExpr, Integer -> T3Res
+  t3-emit-print (c) (args) (depth) =
+   if list-length args /= 1 then t3-refuse c "print-line-uni takes one argument"
+   else let p = t3-print-parts c (list-at args 0) depth
+   in let c2 = t3-push-delta (p.ctx)
+   in T3Res { code = p.code & t3-line "SYSCALL #4" & t3-line "TLIT  R9, #0" & t3-push "R9", ctx = c2 }
+
+ Each part emits its own print and leaves the stack as it found it.
+
+  t3-print-parts : T3Ctx, IRExpr, Integer -> T3Res
+  t3-print-parts (c) (e) (depth) =
+   if depth >= 256 then t3-refuse-void c "print nesting beyond 256"
+   else when e
+    is IrBinary (op) (l) (r) (ty) (sp) -> t3-print-append c op l r depth
+    is IrTextLit (s) (sp) -> t3-print-literal c s
+    is IrApply (f) (a) (ty) (sp) -> t3-print-apply c e depth
+    is otherwise -> t3-print-int-expr c e depth
+
+  t3-print-append : T3Ctx, IRBinaryOp, IRExpr, IRExpr, Integer -> T3Res
+  t3-print-append (c) (op) (l) (r) (depth) =
+   when op
+    is IrAppendText ->
+     let ls = t3-print-parts c l (depth + 1)
+     in let rs = t3-print-parts (ls.ctx) r (depth + 1)
+     in T3Res { code = ls.code & rs.code, ctx = rs.ctx }
+    is otherwise -> t3-print-int-expr c (IrBinary op l r ErrorTy synthetic-span) depth
+
+  t3-print-literal : T3Ctx, Text -> T3Res
+  t3-print-literal (c) (s) =
+   let idx = list-length (c.strings)
+   in let c2 = t3-add-string c s
+   in T3Res { code = t3-line ("TLIT  R1, #str" & show idx) & t3-line "SYSCALL #3", ctx = c2 }
+
+ A `show` under a print is the integer path: print_int renders it directly,
+ which is the same rendering fmt::show_int would have produced had it
+ existed.
+
+  t3-print-apply : T3Ctx, IRExpr, Integer -> T3Res
+  t3-print-apply (c) (e) (depth) =
+   let chain = collect-apply-chain e []
+   in when chain.root
+    is IrName (n) (nty) (sp) -> t3-print-named c n (chain.args) e depth
+    is otherwise -> t3-print-int-expr c e depth
+
+  t3-print-named : T3Ctx, Text, List IRExpr, IRExpr, Integer -> T3Res
+  t3-print-named (c) (n) (args) (e) (depth) =
+   if n == "show" then (if list-length args == 1 then t3-print-int-expr c (list-at args 0) depth
+                        else t3-refuse-void c "show takes one argument")
+   else t3-print-int-expr c e depth
+
+  t3-print-int-expr : T3Ctx, IRExpr, Integer -> T3Res
+  t3-print-int-expr (c) (e) (depth) =
+   let s = t3-emit-expr-at c e (depth + 1)
+   in let c1 = t3-pop-delta (s.ctx)
+   in T3Res { code = s.code & t3-pop "R1" & t3-line "SYSCALL #1", ctx = c1 }
+
+  t3-emit-builtin1 : T3Ctx, List IRExpr, Integer, Text -> T3Res
+  t3-emit-builtin1 (c) (args) (depth) (call) =
+   if list-length args /= 1 then t3-refuse c "builtin takes one argument"
+   else let s = t3-emit-expr-at c (list-at args 0) (depth + 1)
+   in let c1 = t3-pop-delta (s.ctx)
+   in let c2 = t3-push-delta c1
+   in T3Res { code = s.code & t3-pop "R1" & call & t3-push "R1", ctx = c2 }
+
+  t3-emit-builtin1-void : T3Ctx, List IRExpr, Integer, Text -> T3Res
+  t3-emit-builtin1-void (c) (args) (depth) (call) =
+   if list-length args /= 1 then t3-refuse c "builtin takes one argument"
+   else let s = t3-emit-expr-at c (list-at args 0) (depth + 1)
+   in let c1 = t3-pop-delta (s.ctx)
+   in let c2 = t3-push-delta c1
+   in T3Res { code = s.code & t3-pop "R1" & call & t3-line "TLIT  R9, #0" & t3-push "R9", ctx = c2 }
+
+ Arguments are evaluated left to right onto the stack and only then popped
+ into R1 upward. Because the last one pushed is the last argument, the
+ pops run from the highest register down.
+
+  t3-emit-user-call : T3Ctx, Text, List IRExpr, Integer, CodexType -> T3Res
+  t3-emit-user-call (c) (n) (args) (depth) (fty) =
+   let want = t3-arity-of (c.arities) n
+   in if want < 0 then t3-refuse c ("call to an unknown function: " & n)
+   else if want /= list-length args then t3-refuse c ("partial or over-applied call: " & n)
+   else if list-length args > t3-max-args then t3-refuse c ("more than eight arguments: " & n)
+   else t3-emit-call-args c n args depth fty
+
+  t3-emit-call-args : T3Ctx, Text, List IRExpr, Integer, CodexType -> T3Res
+  t3-emit-call-args (c) (n) (args) (depth) (fty) =
+   let ev = t3-emit-args c args 0 depth "" fty
+   in t3-emit-call (ev.ctx) n (list-length args) (ev.code)
+
+ Each argument is emitted knowing the parameter type it is going into, which
+ is where a __narrow in argument position finds its band.
+
+  t3-emit-args : T3Ctx, List IRExpr, Integer, Integer, Text, CodexType -> T3Res
+  t3-emit-args (c) (args) (i) (depth) (acc) (fty) =
+   if i >= list-length args then T3Res { code = acc, ctx = c }
+   else let s = t3-emit-expr-expecting c (list-at args i) (depth + 1) (t3-fn-param-type fty i)
+   in t3-emit-args (s.ctx) args (i + 1) depth (acc & s.code) fty
+
+  t3-emit-call : T3Ctx, Text, Integer, Text -> T3Res
+  t3-emit-call (c) (n) (argc) (pre) =
+   let c1 = t3-drop-deltas c argc
+   in let c2 = t3-push-delta c1
+   in let body = pre & t3-pop-args argc & t3-line ("CALL  " & t3-sanitize n) & t3-push "R1"
+   in T3Res { code = body, ctx = c2 }
+
+  t3-drop-deltas : T3Ctx, Integer -> T3Ctx
+  t3-drop-deltas (c) (k) =
+   if k <= 0 then c else t3-drop-deltas (t3-pop-delta c) (k - 1)
+
+  t3-pop-args : Integer -> Text
+  t3-pop-args (argc) = t3-pop-args-loop argc ""
+
+  t3-pop-args-loop : Integer, Text -> Text
+  t3-pop-args-loop (i) (acc) =
+   if i <= 0 then acc
+   else t3-pop-args-loop (i - 1) (acc & t3-pop ("R" & show i))
+
+Section: Act Blocks
+
+ An act block runs its statements in order and answers the value of the
+ last one. A bound name gets a frame slot exactly as a let does.
+
+  t3-emit-act : T3Ctx, List IRActStmt, Integer -> T3Res
+  t3-emit-act (c) (stmts) (depth) =
+   if list-length stmts == 0 then t3-emit-const c 0
+   else t3-emit-act-loop c stmts 0 depth ""
+
+  t3-emit-act-loop : T3Ctx, List IRActStmt, Integer, Integer, Text -> T3Res
+  t3-emit-act-loop (c) (stmts) (i) (depth) (acc) =
+   if i >= list-length stmts then T3Res { code = acc, ctx = c }
+   else let last = i == list-length stmts - 1
+   in let s = t3-emit-act-stmt c (list-at stmts i) depth last
+   in t3-emit-act-loop (s.ctx) stmts (i + 1) depth (acc & s.code)
+
+ Every statement but the last has its value dropped, which keeps the stack
+ balanced across a block of any length.
+
+  t3-emit-act-stmt : T3Ctx, IRActStmt, Integer, Boolean -> T3Res
+  t3-emit-act-stmt (c) (st) (depth) (last) =
+   when st
+    is IrDoExec (e) (sp) -> t3-emit-act-exec c e depth last
+    is IrDoBind (n) (ty) (e) (sp) -> t3-emit-act-bind c n e depth last
+    is otherwise -> t3-refuse c "unsupported act statement"
+
+  t3-emit-act-exec : T3Ctx, IRExpr, Integer, Boolean -> T3Res
+  t3-emit-act-exec (c) (e) (depth) (last) =
+   let s = t3-emit-expr-at c e (depth + 1)
+   in if last then s
+   else let c2 = t3-pop-delta (s.ctx)
+   in T3Res { code = s.code & t3-sp-adjust "TADD" 1, ctx = c2 }
+
+  t3-emit-act-bind : T3Ctx, Text, IRExpr, Integer, Boolean -> T3Res
+  t3-emit-act-bind (c) (n) (e) (depth) (last) =
+   let s = t3-emit-expr-at c e (depth + 1)
+   in let c1 = t3-pop-delta (s.ctx)
+   in let c2 = t3-bind-slot c1 n
+   in let slot = t3-slot-of (c2.env) n
+   in let store = t3-pop "R9" & t3-store-slot c1 "R9" slot
+   in t3-emit-act-bind-tail c2 (s.code & store) slot last
+
+  t3-emit-act-bind-tail : T3Ctx, Text, Integer, Boolean -> T3Res
+  t3-emit-act-bind-tail (c) (pre) (slot) (last) =
+   if last == False then T3Res { code = pre, ctx = c }
+   else let c2 = t3-push-delta c
+   in T3Res { code = pre & t3-load-slot c "R9" slot & t3-push "R9", ctx = c2 }
+
+Section: Frame Sizing
+
+ A let never reuses a slot, so the frame is the parameter count plus every
+ binder in the body. Counting them up front is what lets the prologue
+ allocate once and the body never move the stack pointer except to push.
+
+  t3-count-binders : IRExpr -> Integer
+  t3-count-binders (e) =
+   when e
+    is IrLet (n) (ty) (v) (b) (sp) -> 1 + t3-count-binders v + t3-count-binders b
+    is IrIf (cnd) (th) (el) (ty) (sp) -> t3-count-binders cnd + t3-count-binders th + t3-count-binders el
+    is IrBinary (op) (l) (r) (ty) (sp) -> t3-count-binders l + t3-count-binders r
+    is IrNegate (inner) (ty) (sp) -> t3-count-binders inner
+    is IrApply (f) (a) (ty) (sp) -> t3-count-binders f + t3-count-binders a
+    is IrAct (stmts) (ty) (sp) -> t3-count-stmt-binders stmts 0 0
+    is IrMatch (s) (bs) (ty) (sp) -> 1 + t3-count-binders s + t3-count-branch-binders bs 0 0
+    is IrRecord (n) (fs) (ty) (sp) -> t3-count-field-binders fs 0 0
+    is IrFieldAccess (r) (f) (ty) (sp) -> t3-count-binders r
+    is otherwise -> 0
+
+ A match adds a slot for the scrutinee, and every branch adds one per name its
+ pattern binds. A frame short by one is not a crash: it is every local above
+ the shortfall reading the wrong word.
+
+  t3-count-branch-binders : List IRBranch, Integer, Integer -> Integer
+  t3-count-branch-binders (bs) (i) (acc) =
+   if i >= list-length bs then acc
+   else let b = list-at bs i
+   in let n = t3-count-pat-binders (b.pattern) + t3-count-binders (b.body) + t3-count-binders (b.guard)
+   in t3-count-branch-binders bs (i + 1) (acc + n)
+
+  t3-count-pat-binders : IRPat -> Integer
+  t3-count-pat-binders (p) =
+   when p
+    is IrVarPat (n) (ty) (sp) -> 1
+    is IrCtorPat (n) (subs) (ty) (sp) -> t3-count-sub-binders subs 0 0
+    is otherwise -> 0
+
+  t3-count-sub-binders : List IRPat, Integer, Integer -> Integer
+  t3-count-sub-binders (subs) (i) (acc) =
+   if i >= list-length subs then acc
+   else t3-count-sub-binders subs (i + 1) (acc + t3-count-pat-binders (list-at subs i))
+
+  t3-count-field-binders : List IRFieldVal, Integer, Integer -> Integer
+  t3-count-field-binders (fs) (i) (acc) =
+   if i >= list-length fs then acc
+   else t3-count-field-binders fs (i + 1) (acc + t3-count-binders ((list-at fs i).value))
+
+  t3-count-stmt-binders : List IRActStmt, Integer, Integer -> Integer
+  t3-count-stmt-binders (stmts) (i) (acc) =
+   if i >= list-length stmts then acc
+   else t3-count-stmt-binders stmts (i + 1) (acc + t3-count-one-stmt (list-at stmts i))
+
+  t3-count-one-stmt : IRActStmt -> Integer
+  t3-count-one-stmt (st) =
+   when st
+    is IrDoExec (e) (sp) -> t3-count-binders e
+    is IrDoBind (n) (ty) (e) (sp) -> 1 + t3-count-binders e
+    is otherwise -> 0
+
+Section: Definition Emission
+
+  t3-emit-def : T3Ctx, IRDef -> T3Res
+  t3-emit-def (c) (d) =
+   let np = list-length (d.params)
+   in if np > t3-max-args then t3-refuse c ("more than eight parameters: " & d.name)
+   else t3-emit-def-go c d np
+
+  t3-emit-def-go : T3Ctx, IRDef, Integer -> T3Res
+  t3-emit-def-go (c) (d) (np) =
+   let tag = t3-sanitize (d.name)
+   in let c0 = t3-reset-fn c tag
+   in let c1 = t3-bind-params c0 (d.params) 0
+   in let frame = np + t3-count-binders (d.body)
+   in let bs = t3-emit-expr-expecting c1 (d.body) 0 (strip-fun-args (d.type-val))
+   in T3Res { code = t3-def-code tag frame np (bs.code), ctx = bs.ctx }
+
+  t3-bind-params : T3Ctx, List IRParam, Integer -> T3Ctx
+  t3-bind-params (c) (ps) (i) =
+   if i >= list-length ps then c
+   else let p = list-at ps i
+   in t3-bind-params (t3-bind-slot c (p.name)) ps (i + 1)
+
+ The prologue allocates the whole frame and spills the incoming argument
+ registers into their slots, because every register is caller-save and the
+ first nested call would otherwise lose them.
+
+  t3-def-code : Text, Integer, Integer, Text -> Text
+  t3-def-code (tag) (frame) (np) (body) =
+   t3-label-line tag
+   & t3-sp-adjust "TSUB" frame
+   & t3-spill-params np 0 ""
+   & body
+   & t3-pop "R1"
+   & t3-sp-adjust "TADD" frame
+   & t3-line "RET"
+
+  t3-spill-params : Integer, Integer, Text -> Text
+  t3-spill-params (np) (i) (acc) =
+   if i >= np then acc
+   else t3-spill-params np (i + 1) (acc & t3-line ("STORE R" & show (i + 1) & ", [R26+#" & show i & "]"))
+
+Section: Chapter Emission
+
+  t3-emit-defs : T3Ctx, List IRDef, Integer, Text -> T3Res
+  t3-emit-defs (c) (defs) (i) (acc) =
+   if i >= list-length defs then T3Res { code = acc, ctx = c }
+   else let d = list-at defs i
+   in let s = t3-emit-def c d
+   in t3-emit-defs (s.ctx) defs (i + 1) (acc & "\n" & s.code)
+
+  t3-build-arities : List IRDef, Integer, List T3Arity -> List T3Arity
+  t3-build-arities (defs) (i) (acc) =
+   if i >= list-length defs then acc
+   else let d = list-at defs i
+   in let a = T3Arity { fn-name = d.name, fn-arity = list-length (d.params) }
+   in t3-build-arities defs (i + 1) (list-push acc a)
+
+ The program starts by jumping to opening, this language's entry point,
+ and ends when that function returns: the emulator halts on a RET with an
+ empty call stack, so no HALT is needed, which is fortunate because their
+ front end never emits one and its opcode has never been measured.
+
+  emit-t3isa-chapter : IRChapter, List ATypeDef -> Text
+  emit-t3isa-chapter (chap) (tds) =
+   let ars = t3-build-arities (chap.defs) 0 []
+   in let c0 = t3-empty-ctx ars tds
+   in let r = t3-emit-defs c0 (chap.defs) 0 ""
+   in t3-assemble-output (r.ctx) (r.code)
+
+  t3-assemble-output : T3Ctx, Text -> Text
+  t3-assemble-output (c) (body) =
+   t3-header & t3-heap-init & t3-line "JUMP  opening" & body & "\n" & t3-data-section (c.strings)
+
+  t3-header : Text
+  t3-header =
+   "; T3ISA assembly, emitted by the Codex t3isa plug\n; 27-trit balanced ternary word machine\n\n"
+
+  t3-data-section : List Text -> Text
+  t3-data-section (ss) =
+   if list-length ss == 0 then "" else ".data:\n" & t3-data-lines ss 0 ""
+
+  t3-data-lines : List Text, Integer, Text -> Text
+  t3-data-lines (ss) (i) (acc) =
+   if i >= list-length ss then acc
+   else t3-data-lines ss (i + 1) (acc & "  str" & show i & ": .string \"" & t3-escape (list-at ss i) & "\"\n")
+
+ A quote inside a literal must be escaped for the assembler to find the
+ closing delimiter, and a backslash must be escaped so it is not read as
+ the start of one.
+
+  t3-escape : Text -> Text
+  t3-escape (s) = text-replace (text-replace s "\\" "\\\\") "\"" "\\\""

@@ -218,8 +218,10 @@ between the two arms, which is the point: the same work, less room.
 `codex/test/apps/foreword-all-compile`, 3,125,731 bytes against the compiler's
 2,993,576 -- and letting it derive 105 would move a currently-passing test in
 the one direction nothing has measured. The derivation clamps at 100 instead.
-It already carries `decks=150` in a `.flags` sidecar, so it was never going to
-derive anything anyway.
+It already carries a `.flags` sidecar, so it was never going to derive anything
+anyway. **The sidecar says `decks=200`, not the 150 written here, and the
+COMPILER-6 section below measures why: that unit requires at least 131 and the
+derivation's ceiling is 100, so the sidecar is the only reason it compiles.**
 
 *"If real per-phase usage is superlinear in unit size, a linear scale
 over-reserves for small inputs. That is the safe direction."* **It is not
@@ -240,7 +242,9 @@ tree rather than from a small app, and both are pathological on purpose:
 `list-literal-too-large` (one 131,038-character line holding a 65,536-element
 literal) refuses at 12 and compiles at 16, and `shell-build-keep` refuses at 24
 and compiles at 28 on a 26,164-byte unit, needing 28 times what its length
-predicts. `deck-scale-min` is 32.
+predicts. `deck-scale-min` was 32 when this was written and is **64** in the
+source; the COMPILER-6 section below re-measures what the floor has to clear,
+and it is neither of these two units any more.
 
 Validated by sweeping **all 1674 entry points** at the derived default: zero
 CDX9002, zero crashes. An earlier setting of 12 was swept the same way and
@@ -253,6 +257,188 @@ every gate path reserves exactly what it did before and a green gate would look
 identical if the derivation did nothing at all. The corpus sweep and the
 paired `-Measure` arms above are the instrument; do not read the gate as
 evidence for this feature.
+
+### COMPILER-6 answered 2026-08-09: it tracks, over a range almost nothing occupies
+
+The open question was whether deck derivation tracks unit growth or whether 64
+is just a value that works. Measured over every quire against seed
+`A66E54F57CBAEBFD`, with `build/deck-headroom.ps1`, which is the runner this
+validation never had.
+
+**The linear term is consulted for fifteen units.** It only beats the floor
+above `deck-scale-min * anchor / (100 * margin)` = 957,944 bytes, and it only
+falls under the clamp below `anchor / margin` = 1,496,788. That window is a
+1.56x range of unit length and the corpus puts 15 entry points in it. Of 2814
+measurable entry points, **2798 derive the floor, 15 derive from the linear
+term, and 1 derives the clamp** -- and the one at the clamp is the compiler's
+own unit. So the floor is not a fallback under the formula. It IS the
+derivation.
+
+**The clamp is already too low for a unit that exists, and this doc talked
+itself out of noticing.** The section above dismissed
+`codex/test/apps/foreword-all-compile` with "it already carries `decks=150` in
+a `.flags` sidecar, so it was never going to derive anything anyway". The
+sidecar says `decks=200`, not 150, and it is load-bearing rather than
+incidental. Measured 2026-08-09: at `decks=200` its LOWER deck uses 437,990,744
+bytes, which requires a scale of **131** -- and `-Measure` runs no IR pipeline,
+so the shipping LOWER is larger still, which is what the other 69 points of the
+sidecar are for. **The derivation cannot hand any unit more than 100.** At the
+100 it would derive, the shipping path refuses with `CDX9002: Deck overflow in
+LOWER`, so nothing is silently wrong; the unit compiles only because the
+sidecar overrides the derivation.
+
+That is also why this unit is absent from the sweep's 2814. At its derived
+scale the `-Measure` path does not refuse, it **crashes in `bag-add+0x21` with
+a general protection fault**, on both 3072 MB and 8192 MB. That is C2's open
+item -- a starved LOWER faulting instead of raising on the non-CDX path -- now
+reproduced on a real corpus unit at its own default rather than on a probe at a
+hand-picked floor. The CDX path at the identical scale raises correctly, which
+is the asymmetry C2 records.
+
+**Where the linear term does run, it is well behaved.** Across those 15 the
+required scale runs 22 to 37 against a derived 64 to 96, a margin of 2.58x to
+2.91x, and DESUGAR binds on every one. Requirement is close to linear in unit
+length over that range, which is the one place the estimate was ever asked to
+be.
+
+**The two tightest units in the tree are the two the derivation cannot reach,
+and they are tighter than anything it governs:**
+
+| | binding | derived | required | margin |
+|---|---|---|---|---|
+| `codex/build/vmconfigScript`, worst of 46 | CHECK-RESOLVE | 64, the floor | **43** | **1.49** |
+| the compiler's own unit | DESUGAR | 100, the clamp | **67** | **1.49** |
+| the rest of the Shell quire | CHECK-RESOLVE | 64, the floor | 34-42 | 1.52-1.88 |
+| `apps/works/GopBoot` | DESUGAR | 96, linear | 37 | 2.59 |
+| the other 14 in the band | DESUGAR | 67-82, linear | 22-31 | 2.6-2.9 |
+
+Outside those 47 units nothing in the tree is closer than 2.13x, and 2543 of
+2818 need a scale of 7 or less.
+
+The Shell quire sits below the band's lower edge at 70 to 102 KB and takes the
+floor; the compiler sits above its upper edge and takes the clamp. **Everything
+the formula actually governs has twice the margin of either.** That is the
+answer: the derivation tracks growth, accurately, over exactly the units that
+did not need it.
+
+**The floor's margin is 1.49x, not the 4x the app corpus suggests, and the
+binding case has moved.** 64 was chosen as double the 32 that broke, from
+`list-literal-too-large` (16) and `shell-build-keep` (28). Today
+`shell-build-keep` needs 30 and the Shell quire needs 34 to 43. Nothing in the
+app corpus comes close: outside `codex/build` and the compiler the worst is
+`GopBoot` at 37 with 2.59x.
+
+**It is moving, and the compiler is not what is moving it.** `checkappsScript`
+is recorded above as byte-identical at 33 on 2026-08-05; bisected 2026-08-09 it
+refuses at 34 and compiles at 36. Its CHECK deck usage is byte-identical
+(209,427,632) under seeds `AEB5ED2B5043C7C1`, `065D92E60292492D` and
+`A66E54F57CBAEBFD`, which span COMPILER-4 and both halves of COMPILER-5, so the
+requirement grew with the units and the floor is a constant that does not
+follow them. The gate leg below watches the 47 units this reaches; outside
+them the next 20 per cent arrives as a CDX9002 wherever it lands first.
+
+**The guards are intact.** 48 units bisected by output equality: 184 compiles
+over the Shell quire at 44 through 56, plus the compiler at 40 through 95 and
+`shell-build-keep` at 24 through 32. Every starved arm answered CDX9002 naming
+its own phase, zero crashes, zero binaries that compiled but differed, and the
+knob was monotonic on all 48. The silent arm this doc records for `checkappsScript` at 32
+does not reproduce -- it is a clean refusal now.
+
+**Corrections this measurement forced**, all three now fixed in
+`opening.codex`: the anchor is not the length that maps to 100, it maps to 200
+and clamps, so the derivation stops tracking at HALF the anchor; anchor
+staleness is not safe in both directions, and the compiler shrank 247,317 bytes
+below it, which is the unsafe direction; and `deck-scale-min` is 64, not the 32
+this doc said at the section above.
+
+### CHECK is two constraints on one deck, and reading one of them was wrong by up to 29 per cent
+
+The first version of the runner was exact where DESUGAR bound and 7 to 29 per
+cent LOW on every CHECK-bound unit, which is every one of the tightest rows
+above. The cause is not the check-keep deck, which is what the section above
+first guessed and published as untested.
+
+`compile-type-check` measures the CHECK deck at `check-metrics` and then keeps
+allocating on that same deck: `resolved-env`, `sorted-all0` and `sorted-et0`
+are all deck-recorded afterwards, and they are what `post-ov-bag` exists to
+catch. So the reported `used` was the deck partway through the phase.
+
+**The two guards are also different, and that difference is load-bearing.** The
+check body stops a guard band short of the ceiling
+(`deck-short-of check-ceiling demand-check-guard-band`) while the resolve tail
+is compared against the CEILING ITSELF (`__deck-pos > check-ceiling`). So the
+tail may spend the band and the body may not, and the requirement is
+
+```
+required = max( ceil(CHECK / perPoint), ceil((CHECK-RESOLVE - band) / perPoint) )
+```
+
+`compile-type-check` now measures the deck a second time as `CHECK-RESOLVE`,
+which is two lines and one PhaseMetrics record per compile. Both measurements
+are kept because `memo-graph` sizes the memo table from the first one, so
+moving it later would make that sizing depend on itself.
+
+**The model was written from the source and then predicted two answers before
+they were measured.** It reproduced the two flips already bisected (30 and 36)
+and predicted 39 and 43 where bisection had only bracketed them to (38,40] and
+(42,44]; both held, with clean CDX9002 from CHECK at 38 and 42. Two exact
+points would have been a calibration. Two predictions are a model.
+
+| unit | binding | model | bisected |
+|---|---|---|---|
+| `build/output/Codex.codex` | DESUGAR | 67 | 67 |
+| `codex/test/shell-build-keep` | CHECK-RESOLVE | 30 | 30 |
+| `codex/build/checkappsScript` | CHECK-RESOLVE | 36 | 36 |
+| `codex/build/lintunusedcitesScript` | CHECK-RESOLVE | 39 | **39, predicted** |
+| `codex/build/vmconfigScript` | CHECK-RESOLVE | 43 | **43, predicted** |
+
+**What the runner still cannot see.** `-Measure` runs no IR pipeline, so its
+LOWER is understated. No LOWER-bound unit is closer than 8x, so it changes
+nothing today, and a LOWER-bound row is the one kind that still wants the
+expensive instrument. The runner also warns and refuses to be quoted if the
+kernel it was given reports no `CHECK-RESOLVE` deck, because that kernel
+predates this fix and every CHECK-bound row under it is low.
+
+### The gate leg, 2026-08-09
+
+`build/build.ps1` runs `deck-headroom.ps1 -Quire codex\build -WithSelf
+-MinMargin 1.25 -Fresh` between `gen-scripts` and `app-sweep`. 23 s over 47
+units at `-Jobs 8`, in a 493 s gate.
+
+The assertion is derived/required, not a point count, because the two tight
+cases have different denominators: `vmconfigScript` needs 43 against a floor of
+64, the compiler's own unit 67 against a clamp of 100. A point-count threshold
+passes the clamped unit at any size. 1.25 trips the quire at 52 and the
+compiler at 80.
+
+Raising `deck-scale-min` is the floor-side remedy and is not free:
+`(demand-check-floor - band) / 100` is 6,710,886 bytes per scale point, so 64
+to 80 is +107 MB of reservation per compile on every unit that takes the floor.
+The clamp side has no such lever; `derive-deck-scale` cannot exceed 100 and a
+`.flags` override is the only route.
+
+Arms: `-MinMargin 1.25` exits 0; `1.55` exits 1 naming both ends; a
+pre-`CHECK-RESOLVE` kernel (seed `#221`) exits 1 refusing to report, since such
+a kernel understates every CHECK-bound row by 7 to 29 per cent. `-Fresh` is
+required or the script serves cached logs.
+
+**Corpus, re-measured against seed `D4DC1FE059613C2F`.** 2818 measurable units;
+derivation source 2802 floor, 15 linear, 1 clamp. Every unit under 2.0x margin
+is one of the 47 watched. Tightest outside them is 2.13x (`shell-build-keep`,
+`ShellBuild`, CHECK-RESOLVE at 30 of 64), next rung 2.61x. None needs more than
+its derived scale. Binding phase: 2125 under the 2 MB minimum workspace, 490
+DESUGAR, 119 CHECK-RESOLVE, 65 CHECK, 17 LOWER, 2 SCOPE. **The 2.13x pair is in
+`codex/foreword`, which this leg does not cover**; add its quire if it moves.
+Full corpus is `pwsh build/deck-headroom.ps1`, about 25 minutes, manual.
+
+**`foreword-all-compile` needs 137 and ships at 200 (1.46x), bisected by output
+equality against the same seed.** 100/120/131/136 refuse with `CDX9002` in
+LOWER and emit nothing; 137 emits 118,710 bytes; 138 through 200 are
+byte-identical to 137. It is absent from the 2818 because it crashes on the
+`-Measure` path at its derived scale (`bag-add+0x21`, C2's item), so the cheap
+instrument cannot reach it; the "at least 131" this doc used to carry came from
+that path and is 4.4 per cent low. Not watched by the leg: it needs a real
+compile at 27.5 s, and its remedy is one number in one sidecar.
 
 ## What this does and does not fix
 
@@ -602,4 +788,6 @@ The validation prescribed here -- compile the app corpus at the new default,
 confirm zero CDX9002, re-run `deck-floor-test.ps1` -- is what found the two
 density outliers that set the floor. It was worth every second of the sweep and
 should be re-run by anyone who changes `deck-scale-min`, `deck-scale-margin` or
-`deck-scale-anchor`. It is not automated and does not gate.
+`deck-scale-anchor`. **It is automated as of 2026-08-09 --
+`build/deck-headroom.ps1`, about 25 minutes over the whole corpus at
+`-Jobs 8`** -- and it still does not gate.

@@ -176,6 +176,25 @@ foreach ($p in $builtPlugs) {
             }
         }
 
+        # A builtin the plug has no arm for is passed through as an ordinary
+        # call, and nothing downstream complains: the target's own toolchain
+        # or runtime is the first thing to notice, long after the plug said
+        # OK. __narrow went that way in 40 plugs at once. Emitting the
+        # argument alone is correct on every high-level target, so the token
+        # should be gone; a plug that emits a call must also emit a
+        # definition, as html does. clojure and scheme sanitise it to
+        # --narrow, hence the two spellings. Match the whole token: a bare
+        # `narrow` also matches a USER function whose name happens to contain
+        # it, and that scored every folding plug as a failure.
+        $narrowHits = [regex]::Matches($content, '(__|--)narrow')
+        $narrowDef = '(?i)((function|def|static|fun|func|dynamic|sub|procedure|val|var|let)\b[^\n]*(__|--)narrow\s*\()|((__|--)narrow\s*\([^)]*\)\s*(=>|\{|=|:))'
+        if ($narrowHits.Count -gt 0 -and $content -notmatch $narrowDef) {
+            Write-Host "  FAIL  $p/$t (${size}B, ${elapsed}s) emits __narrow with no definition"
+            $failCount++
+            $results += "$p/$t`tFAIL`t__narrow emitted undefined"
+            continue
+        }
+
         if ($missing.Count -gt 0) {
             Write-Host "  WARN  $p/$t (${size}B, ${elapsed}s) missing: $($missing -join ', ')"
             $results += "$p/$t`tWARN`tmissing markers: $($missing -join ', ')"

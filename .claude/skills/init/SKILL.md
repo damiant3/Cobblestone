@@ -30,8 +30,11 @@ story taxed every session of every agent, every day.
 
 ## Step 1 -- Identify yourself
 
-Run `Get-Location`. Your agent name is the last 3 characters of the
-directory name (e.g. `NewRepository-val` -> **val**). You are agent
+Run `Get-Location`. Your agent name is everything to the RIGHT of the
+first `-` in the directory name (e.g. `NewRepository-val` -> **val**,
+`NewRepository-fester` -> **fester**). Split on the separator; do not
+take a fixed number of characters. This said "the last 3 characters"
+until 2026-08-05, which gives fester "ter" and reek "eek". You are agent
 **XXX** for this session.
 
 ## Step 2 -- Read memory
@@ -46,18 +49,25 @@ All three run concurrently. Their reports come back small; the files
 they read never enter your context.
 
 **Agent A -- the open work:**
-- `docs/PM/CurrentPlan.md` -- return the top gaps in priority order,
-  named concretely, with a word on which are unowned. Skip every entry
-  marked `Deferred`. "The project is in good shape" is a failed report.
+- `docs/PM/CurrentPlan.md` **in full** -- return every open item in
+  priority order, named concretely, with its owner and a word on which
+  are unowned. Skip every entry marked `Deferred`. "The project is in
+  good shape" is a failed report. Since 2026-08-08 this file is the
+  fleet's ONLY cross-lane register of open work; there are no per-agent
+  workplans, so a gap missing from this report is a gap nobody sees.
 
-**Agent B -- Perforce process and the fleet:**
+**Agent B -- Perforce process, and the workplans:**
 - `docs/Agents/PerforceProcess.md` and
   `docs/Agents/CoordinationProtocol.md` -- return the gate-dance and
   build-token checklists.
-- Glob `docs/Agents/*-workplan.md`, read every match. Return each
-  agent's current state and critical-path rows. **Quote VERBATIM every
-  findings-outbox entry addressed to you or to the fleet** -- a
-  paraphrased finding loses the part that mattered.
+- Glob `docs/Agents/*-workplan.md` and read every match. **These are
+  EMPTY BY DESIGN since 2026-08-08** and hold only a session's
+  in-flight lane state (what is shelved, what is mid-gate). Return
+  anything actually in one, and say "all empty" when they are, which
+  is the expected answer. **A workplan carrying work items, standing
+  facts or messages to other lanes is a DEFECT to report**: that
+  content belongs in CurrentPlan, a backlog, or the doc that owns the
+  subject, and somebody's handoff did not finish.
 
 **Agent C -- active designs (catalog only):**
 - Glob `docs/Designs/Active/**/*`; read each match with `limit: 60`
@@ -138,8 +148,8 @@ AgentGrid is not managing this workspace -- skip.
 - **Open work:** the top 3-5 items from Agent A that are actionable now
   and in your lane, named concretely; omit `Deferred` entries; a green
   battery is not the absence of work
-- **Outbox entries addressed to you** (from Agent B), absorbed before
-  picking work
+- **Anything the plan says only Damian can decide**, from CurrentPlan's
+  rulings queue
 - End with: "Ready for instructions."
 
 Keep the report compact. Do not recite doc contents back to the reader

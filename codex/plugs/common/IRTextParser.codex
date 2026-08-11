@@ -1,18 +1,8 @@
 Chapter: IR Text Parser
 
- Inverse of codex/Emit/IRTextEmitter.codex. Reads S-expression IR text
- (the wire format the main compiler emits in IR mode) and reconstructs
- IRChapter + List ATypeDef. Plug entry chapters cite this and forward
- the parsed result into a target-specific emitter.
-
- Three layers:
    1. tokenize : Text -> List SExpToken
    2. build-tree : List SExpToken -> SExp
    3. walk-* : SExp -> {IRChapter, IRDef, IRExpr, ...}
-
- Spans are not in the wire format. The walkers populate every span
- field with synthetic-span; downstream emitters that don't read span
- (CSharpEmitter et al.) work unchanged.
 
 Section: Token Types
 
@@ -31,9 +21,6 @@ Section: Tree Types
 
 Section: Parse Result
 
- Top-level result of walking the chapter form. Wraps both produced
- records since the plug entry needs both.
-
   ParsedIR = record {
    chapter : IRChapter,
    meta : IRTextMeta,
@@ -42,10 +29,6 @@ Section: Parse Result
   }
 
 Section: Tokenize
-
- Single-pass tokenizer. Returns list of tokens in source order. White
- space (CCE space, LF) separates tokens; '(' and ')' are structural;
- '"' begins a string with backslash escapes.
 
  Every recursion here is a SELF call, and that is load-bearing: the
  emitter turns only self tail calls into jumps (is-self-call gates the
@@ -123,9 +106,6 @@ Section: Tokenize
 
 Section: Tree Builder
 
- Stack-based parser. parse-sexp returns one SExp and the next token
- index. The top-level form is always a single SExp (the chapter).
-
   TreeResult = record {
    tree : SExp,
    next : Integer
@@ -156,11 +136,6 @@ Section: Tree Builder
      in parse-list-body tokens (r.next) len (list-push acc (r.tree))
 
 Section: Tree Helpers
-
- Coercions used pervasively by walkers. SExp is sum-typed but every
- walker knows the expected shape -- these helpers extract values while
- falling back to safe defaults so a malformed input degrades rather
- than crashes.
 
   sexp-atom : SExp -> Text
   sexp-atom (e) =
@@ -277,9 +252,6 @@ Section: OverflowMode + BinaryOp
 
 Section: CodexType
 
- Bare atom forms map to nullary type variants. Paren forms have an
- atom head plus payload; dispatch on head atom.
-
   parse-type : SExp -> CodexType
   parse-type (e) =
    when e
@@ -327,12 +299,6 @@ Section: CodexType
    else if head == "tyapply" then TypeApply (parse-type (list-at xs 1)) (parse-type (list-at xs 2))
    else ErrorTy
 
- The row is optional and trails the two type positions, so IR text emitted
- before the row was published parses to the same empty row it always did.
- Every arrow used to be rebuilt as empty-row unconditionally, which made
- the effect claim unrecoverable on this side even once the emitter
- published it.
-
   parse-type-fn : List SExp -> CodexType
   parse-type-fn (xs) =
    let row = if list-length xs > 3 then parse-row (list-at xs 3) else empty-row
@@ -360,14 +326,14 @@ Section: CodexType
   parse-type-sum (xs) =
    let name = make-name (sexp-str (list-at xs 1))
    in let args = parse-type-args (sexp-list (list-at xs 2))
-   in let ctors = parse-sum-ctors (sexp-list (list-at xs 3))
+   in let ctors = if list-length xs > 3 then parse-sum-ctors (sexp-list (list-at xs 3)) else []
    in SumTy name args ctors
 
   parse-type-record : List SExp -> CodexType
   parse-type-record (xs) =
    let name = make-name (sexp-str (list-at xs 1))
    in let args = parse-type-args (sexp-list (list-at xs 2))
-   in let fields = parse-record-fields (sexp-list (list-at xs 3))
+   in let fields = if list-length xs > 3 then parse-record-fields (sexp-list (list-at xs 3)) else []
    in RecordTy name args fields
 
   parse-type-ctd : List SExp -> CodexType
@@ -413,6 +379,114 @@ Section: CodexType
    in let ty = parse-type (list-at inner 2)
    in parse-record-fields-loop xs (i + 1) len (list-push acc (RecordField { name = name, type-val = ty }))
 
+Section: Type Def Resolution
+
+ The recovery is exact for an explicitly bounded integer and an
+ approximation otherwise: a bare `Integer` and an unrecognised form both
+ answer the default width, so a consumer can tell a declared band from a
+ default one only by the band being present.
+
+  is-real-atom-name : Text -> Boolean
+  is-real-atom-name (n) =
+   n == "real" | n == "real-approx" | n == "real-trapping" | n == "real-saturating"
+   | n == "real-approx-trapping" | n == "real-approx-saturating"
+
+  atype-to-codex-type : ATypeExpr -> CodexType
+  atype-to-codex-type (at) =
+   when at
+    is ABoundedIntType (base) (lo) (hi) (mode) (sp) -> IntegerTy lo hi mode
+    is ALinearType (inner) (sp) -> atype-to-codex-type inner
+    is AAppType (ctor) (args) (sp) -> atype-app-to-codex-type ctor args
+    is ANamedType (n) (sp) ->
+     if is-real-atom-name (n.value) then parse-type-atom (n.value)
+     else if n.value == "Boolean" then BooleanTy
+     else if n.value == "Text" then TextTy
+     else if n.value == "Integer" then int-ty-default
+     else if n.value == "Real" then real-f64
+     else if n.value == "Char" then CharTy
+     else if n.value == "Nothing" then NothingTy
+     else if n.value == "Proof" then ProofTy
+     else ConstructedTy n []
+    is otherwise -> int-ty-default
+
+ A qualifier on a Real is an application ARGUMENT in the surface syntax, not a
+ distinct node: `Real approximate` parses to `a-app (a-named "Real") (args
+ (a-named "approximate"))`, and the words are interpreted only by
+ `resolve-real-quals` in the type checker. This is the mirror of that
+ interpretation, and it has to exist because the surface form is ambiguous on
+ its own -- `approximate` is spelled exactly like a type variable, and the
+ declaration even carries it as one. Keep the arms below in step with
+ `TypeChecker.codex` `resolve-applied-type` / `resolve-real-quals`; the two
+ are a pair, and drift between them is a silent wrong type rather than an error.
+
+  atype-app-to-codex-type : ATypeExpr, List ATypeExpr -> CodexType
+  atype-app-to-codex-type (ctor) (args) =
+   when ctor
+    is ANamedType (name) (s) ->
+     if name.value == "List" then
+      (if list-length args == 1 then ListTy (atype-to-codex-type (list-at args 0)) else ListTy ErrorTy)
+     else if name.value == "LinkedList" then
+      (if list-length args == 1 then LinkedListTy (atype-to-codex-type (list-at args 0)) else LinkedListTy ErrorTy)
+     else if name.value == "Real" then atype-real-quals name args 0 RwF64 RmDefault True
+     else if name.value == "Vector" then
+      (if list-length args == 2 then VectorTy (atype-vector-len (list-at args 0)) (atype-to-codex-type (list-at args 1))
+       else VectorTy 2 ErrorTy)
+     else ConstructedTy name (atypes-to-codex-types args 0 [])
+    is AAppType (inner-ctor) (inner-args) (s) -> atype-app-to-codex-type inner-ctor (inner-args & args)
+    is otherwise -> atype-to-codex-type ctor
+
+  atype-real-quals : Name, List ATypeExpr, Integer, RealWidth, RealMode, Boolean -> CodexType
+  atype-real-quals (name) (args) (i) (w) (m) (all-quals) =
+   if list-length args == 0 then real-f64
+   else if i >= list-length args then
+    (if all-quals then RealTy w m else ConstructedTy name (atypes-to-codex-types args 0 []))
+   else let word = when (list-at args i) is ANamedType (qt) (qs) -> qt.value is otherwise -> ""
+    in if word == "approximate" then atype-real-quals name args (i + 1) RwF32 m all-quals
+    else if word == "trapping" then atype-real-quals name args (i + 1) w RmTrapping all-quals
+    else if word == "saturating" then atype-real-quals name args (i + 1) w RmSaturating all-quals
+    else atype-real-quals name args (i + 1) w m False
+
+  atype-vector-len : ATypeExpr -> Integer
+  atype-vector-len (a) =
+   when a
+    is ANamedType (n) (s) -> text-to-integer (n.value)
+    is otherwise -> 0
+
+  atypes-to-codex-types : List ATypeExpr, Integer, List CodexType -> List CodexType
+  atypes-to-codex-types (as) (i) (acc) =
+   if i >= list-length as then acc
+   else atypes-to-codex-types as (i + 1) (list-push acc (atype-to-codex-type (list-at as i)))
+
+  arec-fields-to-rfields : List ARecordFieldDef, Integer, List RecordField -> List RecordField
+  arec-fields-to-rfields (afs) (i) (acc) =
+   if i >= list-length afs then acc
+   else let af = list-at afs i
+   in arec-fields-to-rfields afs (i + 1) (list-push acc (RecordField { name = af.name, type-val = atype-to-codex-type (af.type-expr) }))
+
+  record-fields-by-name : List ATypeDef, Text, Integer -> List RecordField
+  record-fields-by-name (tds) (name) (i) =
+   if i >= list-length tds then []
+   else when list-at tds i
+    is ARecordTypeDef (dn) (tparams) (afields) (recmut) (sp) ->
+     if dn.value == name then arec-fields-to-rfields afields 0 []
+     else record-fields-by-name tds name (i + 1)
+    is otherwise -> record-fields-by-name tds name (i + 1)
+
+  avar-ctors-to-sumctors : List AVariantCtorDef, Integer, List SumCtor -> List SumCtor
+  avar-ctors-to-sumctors (acs) (i) (acc) =
+   if i >= list-length acs then acc
+   else let ac = list-at acs i
+   in avar-ctors-to-sumctors acs (i + 1) (list-push acc (SumCtor { name = ac.name, fields = atypes-to-codex-types (ac.fields) 0 [], return-type = [] }))
+
+  sum-ctors-by-name : List ATypeDef, Text, Integer -> List SumCtor
+  sum-ctors-by-name (tds) (name) (i) =
+   if i >= list-length tds then []
+   else when list-at tds i
+    is AVariantTypeDef (tn) (tps) (ctors) (sp) ->
+     if tn.value == name then avar-ctors-to-sumctors ctors 0 []
+     else sum-ctors-by-name tds name (i + 1)
+    is otherwise -> sum-ctors-by-name tds name (i + 1)
+
   parse-text-list : List SExp -> List Text
   parse-text-list (xs) = parse-text-list-loop xs 1 (list-length xs) []
 
@@ -430,12 +504,6 @@ Section: CodexType
    else parse-name-list-loop xs (i + 1) len (list-push acc (make-name (sexp-str (list-at xs i))))
 
 Section: Prose Blocks and Annotations
-
- The chapter header carries one (pb anchor text) per prose block and one
- (ann kind target body) per annotation. A block's transition and template
- are re-derivable from its text and are not sent, so they read back as
- PtNone and PtNoTemplate; the offset ordered the blocks against the defs
- before they were written and is not sent either.
 
   parse-prose-blocks : List SExp -> List ProseBlock
   parse-prose-blocks (xs) = parse-prose-blocks-loop xs 1 (list-length xs) []
@@ -488,6 +556,8 @@ Section: ATypeExpr
    else if head == "a-eff" then parse-atype-eff xs
    else if head == "a-bounded" then ABoundedIntType (parse-atype-expr (list-at xs 1)) (sexp-int (list-at xs 2)) (sexp-int (list-at xs 3)) (parse-ov-mode (sexp-atom (list-at xs 4))) synthetic-span
    else if head == "a-linear" then ALinearType (parse-atype-expr (list-at xs 1)) synthetic-span
+   else if head == "a-propeq" then APropEqType (parse-atype-expr (list-at xs 1)) (parse-atype-expr (list-at xs 2)) synthetic-span
+   else if head == "a-forall" then AForallType (make-name "") (ANamedType (make-name "Unknown") synthetic-span) (ANamedType (make-name "Unknown") synthetic-span) synthetic-span
    else ANamedType (make-name "Unknown") synthetic-span
 
   parse-atype-eff : List SExp -> ATypeExpr
@@ -529,7 +599,13 @@ Section: ATypeDef
    let name = make-name (sexp-str (list-at xs 1))
    in let tparams = parse-name-list (sexp-list (list-at xs 2))
    in let fields = parse-rec-field-defs (sexp-list (list-at xs 3))
-   in ARecordTypeDef name tparams fields False synthetic-span
+   in ARecordTypeDef name tparams fields (rec-def-mutable-p xs 4 (list-length xs)) synthetic-span
+
+  rec-def-mutable-p : List SExp, Integer, Integer -> Boolean
+  rec-def-mutable-p (xs) (i) (len) =
+   if i >= len then False
+   else if sexp-head (list-at xs i) == "mutable" then True
+   else rec-def-mutable-p xs (i + 1) len
 
   parse-var-def : List SExp -> ATypeDef
   parse-var-def (xs) =
@@ -606,9 +682,6 @@ Section: IRPattern
    else parse-pat-subs-loop xs (i + 1) len (list-push acc (parse-pat (list-at xs i)))
 
 Section: IRExpr
-
- The big dispatcher. Mirrors ir-emit-expr in the emitter -- same atom
- names, same field order.
 
   parse-expr : SExp -> IRExpr
   parse-expr (e) =

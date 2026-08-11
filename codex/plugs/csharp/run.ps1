@@ -62,7 +62,7 @@ $irBytes = [System.IO.File]::ReadAllBytes($IrFile)
 Write-Host "[csharp-run] IR: $($irBytes.Length) bytes"
 
 # -- Phase 2: Start TCP listener -------------------------------------
-$plugPort = 9100
+$plugPort = 9107
 $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $plugPort)
 $listener.Start()
 Write-Host "[csharp-run] Listening on port $plugPort"

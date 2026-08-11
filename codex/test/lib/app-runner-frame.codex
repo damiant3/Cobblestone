@@ -6,47 +6,12 @@ Chapter: AppRunnerFrame
   cites UI chapter Widget
   cites UI chapter Theme
 
- The frame loop GuiOS actually runs on. `GuiShell` is the only consumer
- and it reaches nine of this chapter's definitions: `bare-app-new` once at
- boot, then `bare-app-tick`, `bare-app-input`, `bare-app-set-root` at five
- sites, `bare-app-set-quit` on Escape, and the `ba-quit` and `ba-state`
- field reads. Everything drawn on a GuiOS screen passes through that loop.
-
- The menu helpers are a different case and are asked here too. Nothing in
- the tree calls `bare-app-open-menu`, `bare-app-close-menu`,
- `bare-app-close-all-menus`, `bare-app-has-menu`, `bare-app-has-any-menu`
- or `bare-menu-width` -- not GuiShell, not any app. They are latent, so
- these lines pin them before a caller arrives rather than after.
-
- The two menu queries are asked together on purpose. `bare-app-has-any-menu`
- reads `os-count` and `bare-app-has-menu` walks the overlay list, so they
- are two different answers to one question and can disagree. This chapter
- prints both beside the raw count so a disagreement is visible rather than
- inferred.
-
- The GuiOS golden frames are not coverage for any of this. They compare
- pixels of a painted desktop; a frame counter that never advances, a
- `set-root` that discards state, and a menu that cannot be closed all paint
- an identical first frame.
-
- Measured 2026-07-28 against seed 104567BE: every reading below is
- CORRECT. The chapter is pinned rather than repaired. Three sabotages were
- fired to establish that these lines can fail, each on exactly its own
- rows:
-
- - `bare-app-tick-step` carrying `ba.ba-state` instead of the ticked
    `st2` collapses the frame line to 0 0 0 0 and takes the three rows
    downstream of it that read a frame. The dimensions, the triangle
    budget and all four menu rows hold.
- - `bare-app-set-root` writing `app-frame = 0` moves the set-root row and
    nothing else at all.
- - `overlay-dismiss` keeping the old `os-count` after filtering moves the
    close row and the agreement row to `one=2/1`, with the two-menu and
    empty states holding.
-
- The menu-width row needs no sabotage: it asks three lists whose answers
- must differ from each other, so a width that ignored its items could not
- produce them.
 
  We say:
 
@@ -85,9 +50,6 @@ Section: The apps under test
   app0 : BareApp
   app0 = bare-app-new root-a theme-terminal 640 480 4096
 
- A neutral input reports no movement and no key, which is the common case
- in the shell: most frames arrive with nothing pressed.
-
   quiet : RawInput
   quiet = raw-input-new 640 480
 
@@ -102,11 +64,6 @@ Section: Construction
     in "new: frame=" & f & " quit=" & q & " w=" & w & " h=" & h & " tris=" & t & " root=" & root-of app0
 
 Section: The frame counter
-
- Asked three times because a counter that always answers the same thing
- looks exactly like one that works, and asked on a QUIET input because
- that is the frame the shell sees most often. A loop that only advances
- when something is pressed would still pass a single-tick reading.
 
   tick1 : BareApp
   tick1 = bare-app-tick-step app0 quiet
@@ -124,10 +81,6 @@ Section: The frame counter
     in let d = show (frame-of tick3)
     in "frames: start=" & a & " t1=" & b & " t2=" & c & " t3=" & d
 
- The dimensions and the triangle budget are carried through the tick by
- hand, field by field, so they are the rows a mistake in that copy would
- move. They are the control for every reading below.
-
   line-tick-carries : Text =
     let w = show (tick3.ba-width)
     in let h = show (tick3.ba-height)
@@ -137,11 +90,6 @@ Section: The frame counter
     in "tick carries: w=" & w & " h=" & h & " tris=" & t & " quit=" & q & " root=" & r
 
 Section: Setting the root
-
- `shell-set-view`, `shell-rebuild`, `shell-nav-up`, `shell-nav-down` and
- `shell-sidebar-click` all rebuild the whole tree and hand it here, every
- time the user moves. A `set-root` that reset the frame or dropped the
- quit flag would strand the shell on frame zero forever.
 
   after-root : BareApp
   after-root = bare-app-set-root tick3 root-b
@@ -166,21 +114,12 @@ Section: Setting quit
 
 Section: What the caller still holding the app sees
 
- `shell-set-view` passes `ss.ss-app` in and stores the result in a fresh
- ShellState, so the original is discarded and an in-place write would be
- invisible there. It is read AFTER the call here, not snapshotted before,
- because a Text bound before the call records what the app HAD been and
- could never disagree with itself.
-
   line-alias : Text =
     let original = root-of tick3
     in let f = show (frame-of tick3)
     in "alias: original-after=" & original & " frame-after=" & f
 
 Section: The menu helpers
-
- Latent. Two menus are opened so that closing one by id can be told apart
- from closing everything, which a single menu cannot express.
 
   menu-items : List Text
   menu-items = ["Open", "Save", "Quit"]
@@ -212,17 +151,6 @@ Section: The menu helpers
     in let a = show (count-of m-closed-all)
     in let any = yn (bare-app-has-any-menu m-closed-all)
     in "menu close: one=" & c & " file=" & f & " edit=" & e & " all=" & a & " any=" & any
-
- The stored count against the entries actually locatable by walking. These
- are two different derivations of one number: `os-count` is a field the
- stack maintains, and `bare-app-has-menu` reaches each entry through
- `overlay-find`. An entry removed without the count following, or a count
- decremented without the entry going, shows up here and nowhere else.
-
- Asking `bare-app-has-any-menu` against `count-of` instead would be a line
- that cannot fail, because both read `os-count`. That was the first draft
- of this line. An identity between two callers of one field tests the
- callers, not the field.
 
   findable : BareApp -> Integer
   findable (ba) =

@@ -1,22 +1,5 @@
 Chapter: Lz77
 
- LZ77 compression and decompression. Encodes repeated byte sequences
- as back-references (offset, length). Window size 32768, max match 258.
- Token format: 0 + literal byte, or 1 + offset + length for a match.
-
- The window was 255 bytes and the longest match 255, which was not a format
- limit anywhere -- RFC 1951 permits 32768 and 258, and Brotli permits far more.
- It was the limit of a brute-force scan: every position compared against every
- earlier position in the window, so widening the window multiplied the work by
- the same factor. At 32768 that scan is a hundred and twenty-eight times slower
- and simply cannot be run.
-
- So the search changed shape before the window could grow. Positions are indexed
- by a hash of the three bytes starting there, and the candidates for a position
- are the chain of earlier positions with the same hash, walked newest first. The
- window is now a bound on the chain rather than a range to sweep, and the cost
- stops depending on it.
-
  THE CHAIN IS A HINT, NOT A FACT. Every candidate it offers is verified by
  comparing the actual bytes, so a chain that is stale, truncated or wrong costs
  RATIO and never correctness. That is what makes the two cheap bounds below safe:
@@ -36,20 +19,10 @@ Section: Constants
  came to 933 bytes against .NET's 170, and roughly 271 needless commands is where
  that difference lived.
 
- The cap is now a parameter of the search, and this constant is what Deflate's own
- callers pass. Raising the constant instead would have been shorter and would have
- emitted invalid Deflate, which nothing in the tree can currently catch: Deflate's
- oracle harness was deleted with the compression stack.
-
   lz77-window-size : Integer = 32768
   lz77-window-mask : Integer = 32767
   lz77-min-match : Integer = 3
   lz77-max-match : Integer = 258
-
- The hash is over three bytes, which is the shortest match worth taking. Sixteen
- thousand buckets against a window of thirty-two thousand keeps chains short
- without spending a slot per position, and collisions cost only a wasted
- comparison because the bytes are checked anyway.
 
   lz77-hash-size : Integer = 16384
   lz77-hash-mask : Integer = 16383
@@ -60,13 +33,6 @@ Section: Constants
 
   lz77-chain-limit : Integer = 128
 
- A WIDER WINDOW IS NOT FREE, and this is what pays for it.
-
- A match costs a length code and a distance code, and a distant one costs more
- distance bits. A literal costs whatever the entropy coder charges for it. Those
- two prices decide whether a match is worth taking at all, and a greedy matcher
- that takes every match it finds is answering that question without asking it.
-
  At a 255-byte window it could not do much harm: nothing was far enough away for
  the distance to cost much. At 32768 it can, and it did. On input drawn from a
  sixteen-symbol alphabet a literal is worth four bits, so a four-byte match
@@ -74,16 +40,6 @@ Section: Constants
  odd bits of codes, and a mixed test case grew by THREE PER CENT the moment the
  window was widened. Every case with byte-valued literals improved at the same
  time, which is what makes this a pricing question and not a bug.
-
- So the matcher estimates both prices. The literal price is taken once per
- tokenization from how many distinct bytes the input uses -- a crude proxy for its
- entropy, but the right shape and nearly free. The match price is the twelve-odd
- bits of length and distance codes plus a bit per doubling of the distance. A
- match is taken when it plausibly saves.
-
- It is an ESTIMATE and it is allowed to be wrong: being wrong costs ratio, the
- same as any other thing the chain guesses at. What it cannot do is make the
- output invalid, so it is safe to keep crude.
 
   lz77-match-overhead : Integer = 12
 
@@ -93,12 +49,6 @@ Section: Token Type
     | Lz77Match (Integer) (Integer)
 
 Section: The Hash Chain
-
- Two tables. head holds, for each hash, the most recent position that started
- there; prev holds, for each position modulo the window, the position that head
- pointed at when this one was inserted. Following prev from head therefore walks
- the positions sharing a hash, newest first, and a position falls out of reach on
- its own once the window has wrapped past it.
 
  Both tables are MUTATED IN PLACE. list-set-at writes the slot and hands back the
  same list, so inserting threads only head through the recursion while prev is
@@ -115,9 +65,6 @@ Section: The Hash Chain
     if i >= n then acc
     else lz77-fill n (i + 1) (list-push acc (0 - 1))
 
- A position with fewer than three bytes left cannot start a match, and says so
- with a negative hash rather than reading past the end.
-
   lz77-hash-at : List Integer, Integer, Integer -> Integer
   lz77-hash-at (input) (pos) (len) =
     if pos + 2 >= len then 0 - 1
@@ -130,28 +77,12 @@ Section: The Hash Chain
     else let p2 = list-set-at prev (bit-and pos lz77-window-mask) (list-at head h)
     in list-set-at head h pos
 
- Every position a match covers is indexed too, not just the one it starts at. A
- match consumes several positions at once, and leaving them out of the chains
- costs later positions the matches that would have started inside it.
-
   lz77-insert-run : List Integer, Integer, Integer, Integer, List Integer, List Integer -> List Integer
   lz77-insert-run (input) (pos) (count) (len) (head) (prev) =
     if count <= 0 then head
     else lz77-insert-run input (pos + 1) (count - 1) len (lz77-insert input pos len head prev) prev
 
 Section: Compression
-
- THE PRICE ONLY MAKES SENSE FOR AN ENTROPY-CODED CONSUMER. Lz77's own token
- format is not one: a literal costs a tag and a byte, two slots, while a match
- costs three whatever its length or distance. A match of the minimum length
- already replaces six slots with three, so every match this chapter finds is
- worth taking and there is no decision to make. Handing the estimate a literal
- price nothing can outbid says exactly that.
-
- Measured the hard way: pricing this chapter's own output as if literals were
- four bits made a nine-byte input compress to eighteen slots instead of nine,
- because a three-symbol alphabet reads as one bit per literal and no match can
- beat that. The prices are Deflate's and Brotli's, not this format's.
 
   lz77-raw-lit-bits : Integer = 64
 
@@ -195,10 +126,6 @@ Section: Compression
     in if nxt >= cand then lz77-settle input pos off2 len2 lit-bits
     else lz77-walk input pos len prev nxt (steps + 1) off2 len2 lit-bits cap
 
- How many bits a literal is worth, guessed from the size of the alphabet the
- input uses. Two distinct bytes is one bit, sixteen is four, a full byte range is
- eight.
-
  It is measured LOCALLY, over the next few thousand bytes, and not once over the
  whole input. That is not a refinement; it is the difference between the estimate
  working and doing nothing. An input whose halves differ -- a stretch of
@@ -206,9 +133,6 @@ Section: Compression
  that showed the problem -- has 256 distinct bytes taken as a whole, so a single
  global reading reports eight bits everywhere and prices the cheap half wrong. It
  was measured that way first and moved the answer by two bytes.
-
- Recomputing every lz77-est-window bytes costs one pass over the input in total,
- since each recompute walks its own chunk once and the chunks do not overlap.
 
   lz77-est-window : Integer = 4096
 
@@ -243,17 +167,6 @@ Section: Compression
     if best-len < lz77-min-match then Lz77Literal (list-at input pos)
     else if lz77-worth best-len (pos - best-off) lit-bits then Lz77Match (pos - best-off) best-len
     else Lz77Literal (list-at input pos)
-
- Lazy matching, which is the other thing a greedy scan gets wrong. Taking a match
- the moment one is found forecloses a longer one starting one byte later, and the
- longer one is usually worth more than the literal it costs to wait. So a match
- that is not already the longest possible looks at what the next position would
- find, and yields to it.
-
- The next position is searched WITHOUT this one having been inserted, so it sees
- a slightly smaller candidate set than it will when its turn comes. That is the
- chain being a hint again: the comparison is a little conservative and never
- wrong.
 
   lz77-find-lazy : List Integer, Integer, Integer, List Integer, List Integer, Integer, Integer -> Lz77Token
   lz77-find-lazy (input) (pos) (len) (head) (prev) (lit-bits) (cap) =

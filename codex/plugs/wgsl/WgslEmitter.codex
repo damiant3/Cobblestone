@@ -13,10 +13,6 @@ Chapter: WGSL Emitter
  gid comes from @builtin(global_invocation_id). Every other function becomes
  a plain WGSL helper function.
 
- Each kernel is namespaced (its own bind group and a name prefix on its
- bindings) so multiple kernels coexist in one module without binding or
- identifier collisions.
-
 Section: Name Sanitization
 
   wgsl-sanitize : Text -> Text
@@ -179,9 +175,6 @@ Section: Math Intrinsics
 
 Section: Expression Emission
 
- wgsl-expr produces a pure WGSL expression string. Statements (let chains,
- device stores, act binds) are handled by wgsl-body and wgsl-act.
-
   wgsl-expr : WgslCtx, IRExpr -> Text
   wgsl-expr (ctx) (e) = wgsl-expr-at ctx e 0
 
@@ -233,7 +226,8 @@ Section: Expression Emission
    let chain = collect-apply-chain e []
    in when (chain.root)
     is IrName (n) (ty) (sp) ->
-     if wgsl-is-device-load n then wgsl-emit-device-load ctx (chain.args) depth
+     if n == "__narrow" then wgsl-expr-at ctx (list-at (chain.args) 0) (depth + 1)
+     else if wgsl-is-device-load n then wgsl-emit-device-load ctx (chain.args) depth
      else if wgsl-is-math-intrinsic n then wgsl-math-builtin n & "(" & wgsl-emit-fargs ctx (chain.args) depth & ")"
      else wgsl-sanitize n & "(" & wgsl-emit-args ctx (chain.args) depth & ")"
     is otherwise -> "0"
@@ -262,11 +256,6 @@ Section: Expression Emission
    in let piece = wgsl-arg-piece ctx (list-at args i) depth
    in wgsl-emit-args-loop ctx args (i + 1) (acc & sep & piece) depth
 
- A buffer argument passed to a helper becomes a storage pointer: inside a kernel
- (kprefix set) the buffer is a module binding, so pass its address; inside a
- helper (kprefix empty) the buffer is already a pointer parameter, so pass it
- through by name.
-
   wgsl-arg-piece : WgslCtx, IRExpr, Integer -> Text
   wgsl-arg-piece (ctx) (a) (depth) =
    when a
@@ -294,11 +283,6 @@ Section: Expression Emission
    in wgsl-emit-fargs-loop ctx args (i + 1) (acc & sep & wgsl-fexpr ctx (list-at args i))
 
 Section: Statement Body Emission
-
- wgsl-body emits a statement block for a function or kernel body. Let
- bindings become WGSL let statements; a tail if becomes structured
- if/else; a tail device-store becomes an assignment; any other tail
- becomes a return (for helper functions) or a bare store (for kernels).
 
   wgsl-body : WgslCtx, IRExpr, Boolean, Integer -> Text
   wgsl-body (ctx) (e) (is-kernel) (depth) =
@@ -373,10 +357,6 @@ Section: Act Block Emission
       & wgsl-act ctx stmts is-kernel (i + 1) depth
 
 Section: Buffer Discovery
-
- Scan a kernel body for the parameter names used as the base (first
- argument) of a device-load or device-store. Those parameters are the
- storage buffers.
 
   wgsl-collect-buffers : IRExpr, List Text -> List Text
   wgsl-collect-buffers (e) (acc) =
@@ -515,9 +495,6 @@ Section: Recursion to Loop
   wgsl-loop-move (ctx) (ps) (args) =
    wgsl-loop-move-temps-b ctx ps args (ctx.buffers) 0 & wgsl-loop-move-assign-b ps (ctx.buffers) 0 & "    continue;\n"
 
- Buffer (pointer) parameters are loop-invariant: they are not vars and are not
- reassigned on the tail call, so skip their move temp and their move assign.
-
   wgsl-loop-move-temps-b : WgslCtx, List IRParam, List IRExpr, List Text, Integer -> Text
   wgsl-loop-move-temps-b (ctx) (ps) (args) (bufs) (i) =
    if i >= list-length args then ""
@@ -558,11 +535,6 @@ Section: Recursion to Loop
      wgsl-loop-act ctx selfn ps stmts 0 depth
     is otherwise ->
      wgsl-loop-tail ctx selfn ps e
-
- A loop iteration whose body is an act block (e.g. a buffer-reading fold that
- device-loads other elements each step): each act bind becomes a `let`, and the
- final statement is processed as the loop tail so a self-call still becomes a
- parallel-move + continue.
 
   wgsl-loop-act : WgslCtx, Text, List IRParam, List IRActStmt, Integer, Integer -> Text
   wgsl-loop-act (ctx) (selfn) (ps) (stmts) (i) (depth) =
@@ -658,11 +630,6 @@ Section: Kernel Emission
     & "}\n\n"
 
 Section: Reachability
-
- Only helper functions transitively called from a kernel are emitted, so
- unused foreword glue (thread-index accessors and the like, pulled in by
- cites) never lands in the shader module as invalid WGSL. Kernel-less
- modules fall back to emitting every helper.
 
   wgsl-add-name : Text, List Text -> List Text
   wgsl-add-name (n) (acc) =

@@ -1,7 +1,14 @@
+# quire-map.ps1 -- Single quire registry and cite resolver
+# Generated from Codex Shell DSL. Do not edit by hand.
+[CmdletBinding()]
+param(
+)
+
 # The single quire registry and cite resolver. Dot-source this file;
 # never copy the map. Every script that resolves
-# `cites <Quire> chapter <Name>` (bundlers, compile, test batch,
-# plug builds, linters) must take $QuireDirs and $CitePat from here.
+#   cites <Quire> chapter <Name>
+# (bundlers, compile, test batch, plug builds, linters) must take
+# $QuireDirs and $CitePat from here.
 # Add new quires HERE and nowhere else. Paths are repo-relative.
 
 $QuireDirs = @{
@@ -92,6 +99,7 @@ $QuireDirs = @{
     'CircuitsMfg' = 'apps\circuits\Manufacturing'
 }
 
+
 function New-CitePattern {
     # Alternation sorted longest-first so 'Games' wins over 'Game'.
     #
@@ -121,17 +129,18 @@ function New-CitePattern {
 # alternation of the registered keys, which is the whole point: a cite naming a
 # quire nobody registered now MATCHES, is walked, and fails loudly instead of
 # vanishing. Three shapes it has to accept that the lenient one cannot:
-#
+# 
 #   cites Foreword chapter Sha256                     plain
 #   cites Codex chapter Build Settings                a name with a SPACE
 #   cites Codex chapter Build Settings (max-depth)    ...and a trailing note
-#
+# 
 # Real headers include 'AST Nodes', 'Build Settings' and 'Diagnostic Bag', and
 # the convention annotates a cite with the definition it wanted. The lenient
 # name capture stops at the space and reads that last line as name 'Build'.
 $StrictCitePat = '^\s*cites\s+([A-Za-z_][A-Za-z0-9_]*)\s+chapter\s+([A-Za-z_][A-Za-z0-9_ -]*?)\s*(?:\(.*)?$'
 
 $CitePat = New-CitePattern
+
 
 function Get-CiteKey {
     # Cites name a chapter two different ways and both are in the tree:
@@ -171,6 +180,7 @@ function Get-PresentChapterNames {
     }
     return $present
 }
+
 
 function Resolve-CiteOrder {
     # DFS post-order over the cite graph: a chapter's dependencies always
@@ -264,6 +274,7 @@ function Resolve-CiteOrder {
     return ,$ordered
 }
 
+
 function Get-DiagRegions {
     # Maps a unit line number back to the file it came from.
     #
@@ -309,6 +320,7 @@ function Convert-DiagLine {
     }
     return $Line
 }
+
 
 function Format-CiteChapters {
     # Renders resolved chapters as concatenation-ready lines, renaming

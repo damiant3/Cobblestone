@@ -58,10 +58,6 @@ Section: Deck
 
 Section: Hand Storage
 
- Hands are stored in a flat list of 52 slots per player (player*52 + card-slot).
- hand-sizes tracks how many cards each player holds.
- A slot value of 1 means the player holds that card index, 0 means not held.
-
   gf-hand-has : GoFishState, Integer, Integer -> Boolean
   gf-hand-has (s) (player) (card-idx) =
     list-at (s.hands) (player * 52 + card-idx) == 1
@@ -247,17 +243,18 @@ Section: AI Strategy
     in if cnt > best-count then gf-best-rank-loop s player (rank + 1) rank cnt
     else gf-best-rank-loop s player (rank + 1) best-rank best-count
 
-  gf-ai-target : GoFishState, Integer -> Integer
-  gf-ai-target (s) (player) =
-    gf-target-loop s player 0 (rng-mod player s.num-players) 0
+  gf-ai-target : GoFishState, Integer, Integer -> Integer
+  gf-ai-target (s) (player) (rank) =
+    gf-target-loop s player rank 0 (-1) (-1)
 
-  gf-target-loop : GoFishState, Integer, Integer, Integer, Integer -> Integer
-  gf-target-loop (s) (player) (i) (best-target) (best-size) =
+  gf-target-loop : GoFishState, Integer, Integer, Integer, Integer, Integer -> Integer
+  gf-target-loop (s) (player) (rank) (i) (best-target) (best-score) =
     if i >= s.num-players then best-target
-    else if i == player then gf-target-loop s player (i + 1) best-target best-size
+    else if i == player then gf-target-loop s player rank (i + 1) best-target best-score
     else let sz = list-at (s.hand-sizes) i
-    in if sz > best-size then gf-target-loop s player (i + 1) i sz
-    else gf-target-loop s player (i + 1) best-target best-size
+    in let score = if gf-count-rank-in-hand s i rank > 0 then 1000 + sz else sz
+    in if score > best-score then gf-target-loop s player rank (i + 1) i score
+    else gf-target-loop s player rank (i + 1) best-target best-score
 
 Section: Turn
 
@@ -267,8 +264,11 @@ Section: Turn
     else let player = s.current-player
     in let rank = gf-ai-rank-to-ask s player
     in let cnt-held = gf-count-rank-in-hand s player rank
-    in if cnt-held == 0 then gf-advance-player s
-    else let target = gf-ai-target s player
+    in if cnt-held == 0 then
+      let s2 = gf-draw-card s player
+      in let s3 = gf-check-game-over s2
+      in gf-advance-player s3
+    else let target = gf-ai-target s player rank
     in let target-has = gf-count-rank-in-hand s target rank
     in if target-has > 0 then
       let s2 = gf-transfer-rank s target player rank

@@ -1,0 +1,91 @@
+Chapter: EngineShadow
+  cites Foreword chapter Console
+  cites Engine chapter Renderer3D
+  cites Engine chapter Scene3D
+  cites Engine chapter Mesh
+  cites Engine chapter Material
+  cites Math chapter Matrix4
+  cites Game chapter Color
+
+Section: Scene
+
+ A cube on a plane under one directional key light. The light's rays
+ travel opposite its to-light vector, so the shadow must land on the
+ plane's +x, -z side of the cube, and a shadowed fragment must answer
+ EXACTLY the ambient-only colour, which is computable by hand from the
+ material and the ambient level.
+
+  rw : Integer = 320
+  rh : Integer = 240
+
+  sky : Integer = #14141E
+
+  ground-rgb : Rgb
+  ground-rgb = rgb 90 80 62
+
+  ambient-level : Integer = 260
+
+  test-scene : Scene3DState
+  test-scene =
+    let cam = camera3d-new (vec3-new 0.0 2600.0 5200.0) (vec3-new 0.0 300.0 0.0) 0.785
+    in let scene = scene3d-new cam
+    in let ground = sn3-with-mesh "ground" (mesh-plane 2500 2500) (emat-flat ground-rgb)
+    in let cube = sn3-set-pos (sn3-with-mesh "cube" (mesh-cube 450) (emat-shiny (rgb 90 130 210) 32)) 0.0 450.0 0.0
+    in let s2 = scene3d-add (scene3d-add scene ground) cube
+    in let key = dir-light (vec3-new (-400.0) 800.0 400.0) (rgb 255 250 235) 850
+    in scene3d-set-ambient (scene3d-add-light s2 key) ambient-level
+
+Section: Instrument
+
+  amb-packed : Integer
+  amb-packed = rgb-to-packed (rgb-scale ground-rgb ambient-level)
+
+  px : List Integer, Integer, Integer -> Integer
+  px (p) (x) (y) = list-at p (y * rw + x)
+
+  count-amb : List Integer, Integer, Integer, Integer -> Integer
+  count-amb (p) (i) (n) (acc) =
+    if i >= n then acc
+    else if list-at p i == amb-packed then count-amb p (i + 1) n (acc + 1)
+    else count-amb p (i + 1) n acc
+
+  render-cost : Scene3DState, Integer, Integer -> Integer
+  render-cost (scene) (w) (h) =
+    let tgt = r3d-target-new w h sky
+    in let a = alloc-bytes 0
+    in let d = r3d-render-shadowed tgt scene 256
+    in let b = alloc-bytes 0
+    in b - a
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let fb-sh = r3d-render-scene-shadowed test-scene rw rh 256
+    in let fb-pl = r3d-render-scene test-scene rw rh
+    in let sh-in = px (fb-sh.fb-pixels) 180 170
+    in let pl-in = px (fb-pl.fb-pixels) 180 170
+    in let sh-lit = px (fb-sh.fb-pixels) 60 190
+    in let pl-lit = px (fb-pl.fb-pixels) 60 190
+    in let sh-cube = px (fb-sh.fb-pixels) 140 110
+    in let pl-cube = px (fb-pl.fb-pixels) 140 110
+    in let amb-count = count-amb (fb-sh.fb-pixels) 0 (rw * rh) 0
+    in let cost-small = render-cost test-scene 320 240
+    in let cost-large = render-cost test-scene 640 480
+    in act
+      print-line-uni ("shadow is exact ambient  : " & yn (sh-in == amb-packed))
+      print-line-uni ("same pixel lit in plain  : " & yn (pl-in /= amb-packed & pl-in /= sky))
+      print-line-uni ("lit plane pixel unchanged: " & yn (sh-lit == pl-lit))
+      print-line-uni ("cube pixel unchanged     : " & yn (sh-cube == pl-cube))
+      print-line-uni ("shadow area is real      : " & yn (amb-count > 200 & amb-count < 20000))
+      print-line-uni ("shadow cost pixel-free   : " & yn (cost-small == cost-large))
+      print-line-uni ("shadowed sample          : " & show sh-in)
+      print-line-uni ("plain sample             : " & show pl-in)
+      print-line-uni ("ambient constant         : " & show amb-packed)
+      print-line-uni ("shadow pixel count       : " & show amb-count)
+    end
+  end
+
+Page 1

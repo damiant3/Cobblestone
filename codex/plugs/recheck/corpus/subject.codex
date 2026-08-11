@@ -1,16 +1,7 @@
 Chapter: RecheckSubject
   grounds Device.Port
-
- The mutation corpus subject. Deliberately exercises exactly the forms
- the rechecker examines: a sum with two constructors of different payload
- types, a match that takes both apart, bounded-integer signatures, a
- linear parameter, and an effectful function reached from the entry
- point.
-
- Payload types differ between the two constructors on purpose. A subject
- whose constructors both carried Integer could not distinguish a
- sub-pattern bound at the wrong field type from one bound correctly,
- which is the property those mutations are aimed at.
+  cites Foreword chapter Tuple
+  cites Foreword chapter ListUtils
 
 Section: Definitions
 
@@ -18,17 +9,69 @@ Section: Definitions
    | Dim (Integer)
    | Bright (Text)
 
- A second sum exists so the corpus can plant a constructor that resolves
- as a name but does not belong to the sum its reference is typed to build.
- With one sum type that mutation is indistinguishable from an unbound
- name, and it was: the arm meant to catch it never ran.
-
   Weather =
    | Fair (Integer)
    | Foul (Text)
 
+  Box (a) =
+   | Wrap (a)
+
+  unbox : Box Integer -> Integer
+  unbox (b) =
+   when b
+    is Wrap (k) -> k
+
+  boxed : Integer -> Box Integer
+  boxed (n) = Wrap n
+
   narrow : Integer between 0 and 10 -> Integer between 0 and 20
   narrow (n) = n * 2
+
+  halve : Integer between 0 and 20 -> Integer between 0 and 10
+  halve (n) = n / 2
+
+  cdx-sample : Integer = 200
+
+  code-sink : Integer between 0 and 255 -> Integer
+  code-sink (n) = n
+
+  Reading = record { level : Integer between 0 and 200 }
+
+  read-level : Reading -> Integer
+  read-level (r) = code-sink (r.level)
+
+  Pick =
+   | Low
+   | High
+
+  arm-pick : Pick, Integer between 0 and 20 -> Integer between 0 and 30
+  arm-pick (p) (n) =
+   when p
+    is Low -> n
+    is High -> 5
+
+  heap-mark : Integer -> Integer between 0 and 4294967295
+  heap-mark (z) =
+   let p = __heap-save
+   in p
+
+  Modes = record { plain : Integer between 0 and 255, wrapped : Integer between 0 and 255 wrapping }
+
+  take-plain : Integer between 0 and 255 -> Integer
+  take-plain (n) = 1
+
+  take-wrapping : Integer between 0 and 255 wrapping -> Integer
+  take-wrapping (n) = 2
+
+  mode-both-ways : Modes -> Integer
+  mode-both-ways (m) = take-plain (m.wrapped) + take-wrapping (m.plain)
+
+  pair-it : Integer, Text -> (Integer, Text)
+  pair-it (n) (t) = (n, t)
+
+  pair-fst : Integer, Text -> Integer
+  pair-fst (n) (t) =
+   when pair-it n t is (a, b) -> a
 
   shade-of : Shade -> Text
   shade-of (s) =
@@ -42,32 +85,77 @@ Section: Definitions
     is Fair (k) -> show k
     is Foul (t) -> t
 
+ The spine-substitution shapes. A comprehension desugars to `map-list`, whose
+ result the compiler records with its type variables STILL ON THE WIRE, so
+ the argument reaches its consumer carrying `(tvar 25)` and nothing local can
+ decide the comparison.
+
+ `via-if` is the arm the corpus mutates and its consumer is an ORDINARY
+ FUNCTION on purpose. `via-comp` hands the same expression to the constructor
+ `Node`, and a constructor's declared payload is separately policed by
+ `ctor-ref-payload-type`, so corrupting it would be caught with or without a
+ spine substitution and would measure nothing.
+
+ `via-fn` and `via-named` are CONTROLS and both say the same thing from
+ different directions: the compiler instantiates these. `via-named` writes a
+ NAMED function where the lambda would go; `via-fn` is the lambda shape that
+ `lower-lambda` now records with its actual type. Both reach their consumer
+ with no variable left, which is what says the surviving abstentions belong
+ to the `if`-bodied lambda specifically and not to comprehensions, to
+ lambdas, or to `map-list`.
+
+  Tree =
+   | Leaf (Integer)
+   | Node (List Tree)
+
+  bump-tree : Tree -> Tree
+  bump-tree (t) = t
+
+  wrap-kids : List Tree -> Tree
+  wrap-kids (ks) = Node ks
+
+  via-comp : (Tree -> Tree), List Tree -> Tree
+  via-comp (f) (kids) = Node (for k in kids -> f k)
+
+  via-fn : (Tree -> Tree), List Tree -> Tree
+  via-fn (f) (kids) = wrap-kids (for k in kids -> f k)
+
+  via-named : List Tree -> Tree
+  via-named (kids) = Node (map-list bump-tree kids)
+
+ `via-if`'s lambda body is an `if`, which the compiler records as the bare
+ type variable while both arms carry `Tree`. It needs the witness taken one
+ level down and is the only shape here that does. Its consumer is a separate
+ function from `via-fn`'s so the two mutations cannot collide on one anchor.
+
+  hold-kids : List Tree -> Tree
+  hold-kids (ks) = Node ks
+
+  via-if : (Tree -> Tree), List Tree -> Tree
+  via-if (f) (kids) = hold-kids (for k in kids -> if count-tree k > 0 then f k else k)
+
+  count-tree : Tree -> Integer
+  count-tree (t) =
+   when t
+    is Leaf (n) -> n
+    is Node (kids) -> list-length kids
+
   label : Integer -> Text
   label (n) = show n & "!"
 
   consume-once : linear Integer -> Integer
   consume-once (q) = q + 1
 
- touch performs port-out-byte, a [Device.Port] intrinsic, while its own
- signature is pure. That is legal ONLY because this chapter grounds
- Device.Port, so the mutation that deletes the grounds entry from the
- wire must come back DISAGREE. Without a grounded def here, the check
- that consults the table could be deleted outright and the corpus would
- not notice.
-
   touch : Integer -> Integer
   touch (p) =
    let w = port-out-byte p 0
    in w
 
- Everything must be reachable from the entry point or the IR prunes it,
- so the effectful arm is called rather than merely defined.
-
   announce : Text -> [Console] Nothing
   announce (m) = print-line-uni m
 
   opening : [Console] Nothing = act
-   announce (shade-of (Bright "hi") & shade-of (Dim 3) & label (narrow 5) & weather-of (Fair 1) & show (consume-once 9) & show (touch 128))
+   announce (shade-of (Bright "hi") & shade-of (Dim 3) & label (narrow 5) & weather-of (Fair 1) & show (consume-once 9) & show (touch 128) & show (unbox (boxed 7)) & show (pair-fst 4 "z") & show (halve 8) & show (code-sink cdx-sample) & show (read-level (Reading { level = 5 })) & show (arm-pick Low 7) & show (heap-mark 1) & show (mode-both-ways (Modes { plain = 1, wrapped = 2 })) & show (count-tree (via-comp bump-tree [])) & show (count-tree (via-fn bump-tree [])) & show (count-tree (via-if bump-tree [])) & show (count-tree (via-named [])))
   end
 
 Page 1
