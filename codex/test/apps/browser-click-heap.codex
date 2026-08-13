@@ -1,0 +1,72 @@
+Chapter: BrowserClickHeapTest
+  cites Browser chapter Browser
+  cites Browser chapter BrowserTheme
+  cites Browser chapter Display
+  cites Browser chapter Tab
+  cites UI chapter Widget
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ The browser holds the laid-out widget tree so a page link can be hit-tested
+ against bounds that exist. This measures the thing that makes keeping it
+ safe: a click cycle must leave the heap exactly where it found it.
+
+ It matters because the pane loop never returns, and a bump allocator
+ reclaims only by returning or by an explicit restore. Anything a cycle
+ allocates and does not release is permanent. `apps/browser/opening.codex`
+ already ran out of memory once for that reason.
+
+ The discipline being measured is the ORDER. A cycle releases to
+ `bs-laid-mark` BEFORE it dispatches, never after: the tree is the tip of the
+ heap, the new state is allocated above where it stood, and a release that
+ came second would have to free memory underneath state that must survive.
+ `browser-click-code` answers an Integer precisely so the hit can be read out
+ of the tree while it is alive and still mean something once it is gone.
+
+ The rows report a DELTA per cycle and not a frontier, because a frontier is
+ a count and counts in this tree have all been wrong. Zero is the claim.
+
+ y=200 at x=200 is page background: it is above the first link row, which
+ `browser-click-links` records at 240. That is the case that has to be free,
+ because it is every click that lands on nothing.
+
+Section: Test
+
+  cycle : BrowserState -> BrowserState
+  cycle (st) =
+    let code = browser-click-code st 200 200
+    in let released = __heap-restore (st.bs-laid-mark)
+    in let next = browser-apply-click st 200 200 code
+    in let mark = __heap-save
+    in let laid = widget-layout (browser-render next) (next.bs-theme) (layout-rect 0 0 1024 768)
+    in browser-memo-laid next laid mark
+
+  spin : BrowserState, Integer, Integer -> Integer
+  spin (st) (i) (n) =
+    if i >= n then __heap-save
+    else spin (cycle st) (i + 1) n
+
+  from-fresh : Integer -> Integer
+  from-fresh (n) =
+    let st = browser-init 1024 768 browser-theme-default display-init-text-fallback
+    in let mark = __heap-save
+    in let laid = widget-layout (browser-render st) (st.bs-theme) (layout-rect 0 0 1024 768)
+    in spin (browser-memo-laid st laid mark) 0 n
+
+ Each measurement releases to its own base, so the second starts from the
+ same frontier as the first and the subtraction is not measuring the first
+ run's residue.
+
+  measure : Integer -> Integer
+  measure (n) =
+    let base = __heap-save
+    in let top = from-fresh n
+    in let released = __heap-restore base
+    in top - base
+
+  opening : [Console] Nothing =
+    let one = measure 1
+    in let many = measure 51
+    in act
+      print-line-uni ("per-cycle=" & integer-to-text ((many - one) / 50))
+    end

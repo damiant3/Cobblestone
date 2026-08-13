@@ -10,7 +10,7 @@ Section: Top Level
 
   emit-powershell : ShellScript -> Text
   emit-powershell (script) =
-    let header = "# " & script.ss-name & ".ps1 -- " & script.ss-description & "\n# Generated from Codex Shell DSL. Do not edit by hand.\n"
+    let header = "# " & script.ss-name & ".ps1 -- " & script.ss-description & "\n" & generated-banner
     in let binding = "[CmdletBinding()]\nparam(\n"
     in let params = emit-ps-params (script.ss-params) 0 (list-length (script.ss-params))
     in let body = emit-ps-cmds (script.ss-body) 0 0 (list-length (script.ss-body))
@@ -25,10 +25,16 @@ Section: Parameters
     in let doc-attr = emit-ps-param-doc (p.sp-doc) 0
     in let mandatory-attr = if p.sp-mandatory then "    [Parameter(Mandatory=$true)]\n" else ""
     in let choice-attr = if list-length (p.sp-choices) == 0 then "" else "    [ValidateSet(" & emit-ps-choices (p.sp-choices) 0 & ")]\n"
+    in let extra-attr = emit-ps-param-attrs (p.sp-attrs) 0
     in let type-attr = emit-ps-param-type (p.sp-type)
     in let default-val = when p.sp-default is Just (e) -> " = " & emit-ps-expr e is None -> ""
     in let sep = if i < len - 1 then ",\n" else "\n"
-    in doc-attr & mandatory-attr & choice-attr & "    " & type-attr & "$" & p.sp-name & default-val & sep & emit-ps-params params (i + 1) len
+    in doc-attr & mandatory-attr & choice-attr & extra-attr & "    " & type-attr & "$" & p.sp-name & default-val & sep & emit-ps-params params (i + 1) len
+
+  emit-ps-param-attrs : List Text, Integer -> Text
+  emit-ps-param-attrs (attrs) (i) =
+    if i >= list-length attrs then ""
+    else "    [" & list-at attrs i & "]\n" & emit-ps-param-attrs attrs (i + 1)
 
   emit-ps-param-doc : List Text, Integer -> Text
   emit-ps-param-doc (lines) (i) =
@@ -176,6 +182,11 @@ Section: Commands -- Flow Control
       is ScTry (body) (catch-cmds) (finally-cmds) ->
         let tb = emit-ps-cmds body (indent + 1) 0 (list-length body)
         in let cp = if list-length catch-cmds == 0 then (if list-length finally-cmds == 0 then " catch {}" else "") else " catch {\n" & emit-ps-cmds catch-cmds (indent + 1) 0 (list-length catch-cmds) & pad & "}"
+        in let fp = if list-length finally-cmds == 0 then "" else " finally {\n" & emit-ps-cmds finally-cmds (indent + 1) 0 (list-length finally-cmds) & pad & "}"
+        in pad & "try {\n" & tb & pad & "}" & cp & fp
+      is ScTryCatch (body) (exc-type) (catch-cmds) (finally-cmds) ->
+        let tb = emit-ps-cmds body (indent + 1) 0 (list-length body)
+        in let cp = " catch [" & exc-type & "] {\n" & emit-ps-cmds catch-cmds (indent + 1) 0 (list-length catch-cmds) & pad & "}"
         in let fp = if list-length finally-cmds == 0 then "" else " finally {\n" & emit-ps-cmds finally-cmds (indent + 1) 0 (list-length finally-cmds) & pad & "}"
         in pad & "try {\n" & tb & pad & "}" & cp & fp
       is ScStartProcess (spec) ->

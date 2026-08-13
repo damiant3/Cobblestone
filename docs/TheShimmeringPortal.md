@@ -35,11 +35,32 @@ pwsh build\build-apps.ps1 -Only notes
 `build-apps.ps1` discovers apps by convention, not by a list: every
 artifact `apps/<dir>/web/<name>.html` pairs with the chapter
 `apps/<dir>/<Name>Page.codex` (or `<Name>WebPage.codex`) whose base
-name, minus the suffix and lowercased, equals `<name>`. **74 pages are
-built this way today** -- mail, notes, maps, music, markets, globe,
-fishtank, cvmm, the 40-odd gpushow demos, and the rest. Adding an app is
+name, minus the suffix and lowercased, equals `<name>`. Adding an app is
 adding a Page chapter and an (initially empty) `web/<name>.html` under
 Perforce. No script edit.
+
+**Re-measure this before quoting it** (L-COUNT). Measured 2026-08-11 by
+running the script: 74 `apps/*/web/*.html` artifacts on disk, 44 Page
+chapters, and **28 apps actually discovered** -- books, calendar,
+capture, chat, compliance, fishtank, fitness, gpu, bridge, imagetools,
+iot, landing, mail, maps, markets, music, news, notes, perf, photos,
+piano, podcasts, pomodoro, publisher, realtime, recorder, tasks,
+weather. This paragraph said "74 pages are built this way today" until
+that run. **The other 46 are orphans: an artifact with no Page chapter
+to regenerate it.** `apps/gpushow/` is 40 of them and holds no `.codex`
+at all, only `web/`; cvmm contributes 2, and globe, radio, starmap and
+one fishtank page one each. The script warns `no unique Page chapter`
+and continues, so the count it prints is the truth and the artifact
+count is not.
+
+When both `<Name>Page.codex` and `<Name>WebPage.codex` match the same
+artifact, **`WebPage` wins**: that is the browser build of an app whose
+plain `Page` is a component used by something else. Two matching
+chapters with no `WebPage` among them is not a tie the script breaks --
+it warns and skips the app, so a page silently stops regenerating.
+`build-apps.ps1` also rebuilds the HTML plug itself if
+`codex/plugs/html/build-output/html-plug.cdx` is absent, which is what
+makes it work from a clean `build-output`.
 
 The output is a real page: `<div id="app">`, a `<style>` block, and one
 `<script>` block holding the transpiled chapter plus the plug's JS
@@ -585,7 +606,7 @@ apps/webapp/                 The browser runtime contract (quire: WebApp)
   README.md
 
 build/
-  build-apps.ps1             Builds all 74 apps/<x>/web/<x>.html from Page chapters
+  build-apps.ps1             Builds every apps/<x>/web/<x>.html that has a Page chapter
   bundle-app.ps1             Inlines transitive cites into one .codex
   compile.ps1                Source -> CDX or IR (-IrCce). -Log is mandatory
   build-magic-pages.ps1      CodexMagic *Page.codex -> apps/games/codexmagic/web/*.html

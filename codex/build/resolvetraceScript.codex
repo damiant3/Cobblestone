@@ -16,8 +16,8 @@ Section: S01 -- Preamble and validation
 
   s01 : List ShellCmd =
     let map-default = [ScAssign "MapFile" (SeStaticCall "System.IO.Path" "ChangeExtension" [SeVar "TraceFile", SeLit ".map"])]
-    in let no-map = [ScWriteError (SeRaw "\"Symbol map not found: $MapFile\""), ScExit (SeInt 1)]
-    in let no-trace = [ScWriteError (SeRaw "\"Trace file not found: $TraceFile\""), ScExit (SeInt 1)]
+    in let no-map = [ScRaw "Write-Error \"Symbol map not found: $MapFile\"", ScExit (SeInt 1)]
+    in let no-trace = [ScRaw "Write-Error \"Trace file not found: $TraceFile\"", ScExit (SeInt 1)]
     in [ScSetStrictMode, ScSetErrorStop, ScBlank, ScIf (SeNot (SeVar "MapFile")) map-default [], ScIf (SeNot (SeFileExists (SeVar "MapFile"))) no-map [], ScIf (SeNot (SeFileExists (SeVar "TraceFile"))) no-trace []]
 
 Section: S02 -- Parse symbol map
@@ -38,7 +38,7 @@ Section: S04 -- Parse trace entries
 
   s04-binary : List ShellCmd =
     let trunc = [ScRaw "Write-Warning \"Trace file truncated\"", ScRaw "$count = [Math]::Floor(($bytes.Length - 8) / 16)"]
-    in [ScReadBytes "bytes" (SeVar "TraceFile"), ScIf (SeIntLt (SeProperty (SeVar "bytes") "Length") (SeInt 8)) [ScWriteError (SeLit "Trace file too small"), ScExit (SeInt 1)] [], ScRaw "$count = [BitConverter]::ToInt64($bytes, 0)", ScIf (SeRaw "$bytes.Length -lt 8 + $count * 16") trunc [], ScForLoop "i" (SeInt 0) (SeRaw "$i -lt $count") (SeRaw "$i++") [ScRaw "$off = 8 + $i * 16", ScRaw "$entries.Add(@([BitConverter]::ToInt64($bytes, $off), [BitConverter]::ToInt64($bytes, $off + 8)))"]]
+    in [ScReadBytes "bytes" (SeVar "TraceFile"), ScIf (SeIntLt (SeProperty (SeVar "bytes") "Length") (SeInt 8)) [ScRaw "Write-Error \"Trace file too small\"; exit 1"] [], ScRaw "$count = [BitConverter]::ToInt64($bytes, 0)", ScIf (SeRaw "$bytes.Length -lt 8 + $count * 16") trunc [], ScForLoop "i" (SeInt 0) (SeRaw "$i -lt $count") (SeRaw "$i++") [ScRaw "$off = 8 + $i * 16", ScRaw "$entries.Add(@([BitConverter]::ToInt64($bytes, $off), [BitConverter]::ToInt64($bytes, $off + 8)))"]]
 
   s04 : List ShellCmd =
     let text-branch = [ScSequence s04-text]

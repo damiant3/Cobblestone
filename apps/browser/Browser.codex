@@ -48,7 +48,9 @@ Section: State
     bs-show-trust-prompt : Boolean,
     bs-pending-trust : Maybe PendingTrust,
     bs-display       : DisplayState,
-    bs-history       : BrowsingHistory
+    bs-history       : BrowsingHistory,
+    bs-laid          : Maybe WidgetNode,
+    bs-laid-mark     : Integer
   }
 
   BrowserFocus =
@@ -66,7 +68,7 @@ Section: State
 
 Section: Initialization
 
-  browser-init : Integer, Integer, Theme, DisplayState -> [Network.Read, Network.Write] BrowserState
+  browser-init : Integer, Integer, Theme, DisplayState -> BrowserState
   browser-init (w) (h) (theme) (ds) =
     let comp = compositor-new w h browser-bg
     in let first-tab = tab-new 1 "New Tab" "codex://local/newtab"
@@ -93,11 +95,13 @@ Section: Initialization
       bs-show-trust-prompt = False,
       bs-pending-trust = None,
       bs-display = ds,
-      bs-history = history-new 500
+      bs-history = history-new 500,
+      bs-laid = None,
+      bs-laid-mark = 0
     }
     end
 
-  load-new-tab-content : Tab, SandboxConfig, TrustStore, ContentCacheState, Integer, Integer -> [Network.Read, Network.Write] Tab
+  load-new-tab-content : Tab, SandboxConfig, TrustStore, ContentCacheState, Integer, Integer -> Tab
   load-new-tab-content (t) (sandbox) (trust) (cache) (vw) (vh) =
     let vp-h = vh - chrome-height
     in act
@@ -146,8 +150,8 @@ Section: Rendering
     in let addr-bar = browser-render-address-bar state
     in let viewport = browser-render-viewport state
     in let chrome = widget-panel "chrome" DirColumn 0 [
-          widget-set-min tab-bar state.bs-window-width chrome-tab-bar-height,
-          widget-set-min addr-bar state.bs-window-width chrome-address-bar-height,
+          widget-set-flex (widget-set-min tab-bar state.bs-window-width chrome-tab-bar-height) 0,
+          widget-set-flex (widget-set-min addr-bar state.bs-window-width chrome-address-bar-height) 0,
           widget-set-flex viewport 1
         ]
     in if state.bs-show-trust-prompt
@@ -251,7 +255,7 @@ Section: Tab Management
   browser-active-tab (state) =
     tab-find-by-id state.bs-tabs state.bs-active-tab
 
-  browser-new-tab : BrowserState -> [Network.Read, Network.Write] BrowserState
+  browser-new-tab : BrowserState -> BrowserState
   browser-new-tab (state) =
     let id = state.bs-next-tab-id
     in let t = tab-new id "New Tab" "codex://local/newtab"
@@ -264,7 +268,7 @@ Section: Tab Management
       in __record-set s4 "bs-dirty" True
     end
 
-  browser-close-tab : BrowserState, Integer -> [Network.Read, Network.Write] BrowserState
+  browser-close-tab : BrowserState, Integer -> BrowserState
   browser-close-tab (state) (id) =
     let remaining = tab-remove state.bs-tabs id
     in if list-length remaining == 0
@@ -317,7 +321,7 @@ Section: Tab Management
 
 Section: Navigation
 
-  browser-navigate : BrowserState, Text -> [Network.Read, Network.Write] BrowserState
+  browser-navigate : BrowserState, Text -> BrowserState
   browser-navigate (state) (address) =
     let active = browser-active-tab state
     in when active
@@ -332,7 +336,7 @@ Section: Navigation
       end
       is None -> state
 
-  browser-go-back : BrowserState -> [Network.Read, Network.Write] BrowserState
+  browser-go-back : BrowserState -> BrowserState
   browser-go-back (state) =
     let active = browser-active-tab state
     in when active
@@ -348,7 +352,7 @@ Section: Navigation
           else state
       is None -> state
 
-  browser-go-forward : BrowserState -> [Network.Read, Network.Write] BrowserState
+  browser-go-forward : BrowserState -> BrowserState
   browser-go-forward (state) =
     let active = browser-active-tab state
     in when active
@@ -364,7 +368,7 @@ Section: Navigation
           else state
       is None -> state
 
-  browser-reload : BrowserState -> [Network.Read, Network.Write] BrowserState
+  browser-reload : BrowserState -> BrowserState
   browser-reload (state) =
     let active = browser-active-tab state
     in when active
@@ -390,7 +394,7 @@ Section: Trust Prompt Flow
     in let s3 = __record-set s2 "bs-focus" FocusTrustPrompt
     in __record-set s3 "bs-dirty" True
 
-  browser-trust-allow-once : BrowserState -> [Network.Read, Network.Write] BrowserState
+  browser-trust-allow-once : BrowserState -> BrowserState
   browser-trust-allow-once (state) =
     when state.bs-pending-trust
       is None -> browser-dismiss-trust state
@@ -398,7 +402,7 @@ Section: Trust Prompt Flow
         let dismissed = browser-dismiss-trust state
         in browser-navigate dismissed pt.pt-address
 
-  browser-trust-always : BrowserState -> [Network.Read, Network.Write] BrowserState
+  browser-trust-always : BrowserState -> BrowserState
   browser-trust-always (state) =
     when state.bs-pending-trust
       is None -> browser-dismiss-trust state
@@ -429,17 +433,21 @@ Section: Trust Prompt Flow
 
 Section: Mouse Hit Testing
 
-  browser-handle-mouse-click : BrowserState, Integer, Integer -> [Network.Read, Network.Write] BrowserState
+  browser-handle-mouse-click : BrowserState, Integer, Integer -> BrowserState
   browser-handle-mouse-click (state) (mx) (my) =
+    browser-apply-click state mx my (browser-click-code state mx my)
+
+  browser-apply-click : BrowserState, Integer, Integer, Integer -> BrowserState
+  browser-apply-click (state) (mx) (my) (code) =
     if my < chrome-tab-bar-height
     then browser-handle-tab-bar-click state mx my
     else if my < chrome-height
     then browser-handle-address-bar-click state mx my
     else if state.bs-show-trust-prompt
     then browser-handle-trust-click state mx my
-    else browser-handle-page-click state mx my
+    else browser-apply-page-code state code
 
-  browser-handle-tab-bar-click : BrowserState, Integer, Integer -> [Network.Read, Network.Write] BrowserState
+  browser-handle-tab-bar-click : BrowserState, Integer, Integer -> BrowserState
   browser-handle-tab-bar-click (state) (mx) (my) =
     let tab-count = list-length state.bs-tabs
     in let tab-width = 120
@@ -451,7 +459,7 @@ Section: Mouse Hit Testing
       then browser-new-tab state
       else state
 
-  browser-handle-address-bar-click : BrowserState, Integer, Integer -> [Network.Read, Network.Write] BrowserState
+  browser-handle-address-bar-click : BrowserState, Integer, Integer -> BrowserState
   browser-handle-address-bar-click (state) (mx) (my) =
     let nav-btn-width = 28
     in if mx < nav-btn-width
@@ -463,7 +471,7 @@ Section: Mouse Hit Testing
       else let s1 = __record-set state "bs-focus" FocusAddressBar
         in __record-set s1 "bs-dirty" True
 
-  browser-handle-trust-click : BrowserState, Integer, Integer -> [Network.Read, Network.Write] BrowserState
+  browser-handle-trust-click : BrowserState, Integer, Integer -> BrowserState
   browser-handle-trust-click (state) (mx) (my) =
     let vp = page-viewport-rect state
     in let prompt-y = vp.lr-y + vp.lr-h / 4
@@ -478,51 +486,110 @@ Section: Mouse Hit Testing
           else browser-trust-deny state
       else state
 
-  browser-handle-page-click : BrowserState, Integer, Integer -> [Network.Read, Network.Write] BrowserState
-  browser-handle-page-click (state) (mx) (my) =
-    let active = browser-active-tab state
-    in when active
-      is Just (t) ->
-        let target = widget-click-target t mx (my - chrome-height)
-        in when target
-          is Just (widget-id) ->
-            if text-starts-with widget-id "link-"
-            then let addr = widget-link-address widget-id
-              in browser-navigate state addr
-            else if text-starts-with widget-id "media-"
-            then browser-handle-media-click state t widget-id
-            else __record-set state "bs-focus" FocusPageContent
-          is None -> __record-set state "bs-focus" FocusPageContent
-      is None -> state
+ A click is answered in two steps, because the tree that has to be hit-tested
+ and the state that has to survive the click cannot both be held on a bump
+ allocator at once. The laid-out tree is the tip of the heap, so releasing it
+ has to happen BEFORE the new state is allocated, and the hit therefore has
+ to leave the tree as a value that owns no heap. `browser-click-code` answers
+ an Integer. A `Maybe Text` would not do: the id points into the tree and the
+ `Just` cell sits above it, so both die at the release.
 
-  browser-handle-media-click : BrowserState, Tab, Text -> BrowserState
-  browser-handle-media-click (state) (t) (widget-id) =
-    let ev = media-click-to-event widget-id
-    in when ev
+ It reads `bs-laid`, which is the tree that was actually DRAWN. The tree in
+ `tab-content` is the raw one the page builder returned and every node in it
+ carries `layout-rect-zero`, because `widget-layout` builds a fresh node
+ rather than writing bounds into the one it is given.
+
+  browser-click-code : BrowserState, Integer, Integer -> Integer
+  browser-click-code (state) (mx) (my) =
+    when state.bs-laid
+      is None -> 0
+      is Just (tree) ->
+        when widget-find-at-point tree mx my
+          is None -> 0
+          is Just (widget-id) -> widget-id-code widget-id
+
+ A click that lands on nothing is the common case -- it is every click on
+ page background -- so it is the one that must not allocate. Writing the
+ focus unconditionally costs 8 bytes each time, measured, and on a bump
+ allocator inside a loop that never returns those become permanent. The
+ guard makes the miss free.
+
+  browser-focus-page : BrowserState -> BrowserState
+  browser-focus-page (state) =
+    when state.bs-focus
+      is FocusPageContent -> state
+      is FocusAddressBar -> __record-set state "bs-focus" FocusPageContent
+      is FocusTrustPrompt -> __record-set state "bs-focus" FocusPageContent
+      is FocusTabBar -> __record-set state "bs-focus" FocusPageContent
+
+  browser-apply-page-code : BrowserState, Integer -> BrowserState
+  browser-apply-page-code (state) (code) =
+    if code == 0 then browser-focus-page state
+    else if code < 10 then browser-navigate state (code-link-address code)
+    else when browser-active-tab state
+      is None -> state
+      is Just (t) -> browser-apply-media-code state t code
+
+  browser-apply-media-code : BrowserState, Tab, Integer -> BrowserState
+  browser-apply-media-code (state) (t) (code) =
+    when code-media-event code
       is None -> state
       is Just (mev) ->
         let updated = tab-media-event t mev
         in let s1 = __record-set state "bs-tabs" (tab-replace state.bs-tabs updated)
         in __record-set s1 "bs-dirty" True
 
-  media-click-to-event : Text -> Maybe MediaEvent
-  media-click-to-event (widget-id) =
-    if widget-id == "media-play" then Just MediaPlay
-    else if widget-id == "media-pause" then Just MediaPause
-    else if widget-id == "media-stop" then Just MediaStop
-    else if widget-id == "media-back" then Just MediaSkipBack
-    else if widget-id == "media-fwd" then Just MediaSkipForward
-    else if widget-id == "media-mute" then Just MediaToggleMute
-    else if widget-id == "media-vol-up" then Just MediaVolumeUp
-    else if widget-id == "media-vol-down" then Just MediaVolumeDown
-    else if widget-id == "media-fs" then Just MediaToggleFullscreen
-    else None
+ The mark is stored beside the tree because only the holder of both can free
+ it: the caller releases to `bs-laid-mark`, allocates the new state above it,
+ and memoizes again. Whoever memoizes must take the mark BEFORE building the
+ tree it stores.
 
-  widget-click-target : Tab, Integer, Integer -> Maybe Text
-  widget-click-target (t) (mx) (my) =
-    when t.tab-content
-      is Just (tree) -> widget-find-at-point tree mx my
-      is None -> None
+  browser-memo-laid : BrowserState, WidgetNode, Integer -> BrowserState
+  browser-memo-laid (state) (tree) (mark) =
+    let s1 = __record-set state "bs-laid" (Just tree)
+    in __record-set s1 "bs-laid-mark" mark
+
+  widget-id-code : Text -> Integer
+  widget-id-code (widget-id) =
+    if widget-id == "link-hello" then 1
+    else if widget-id == "link-about" then 2
+    else if widget-id == "link-dash" then 3
+    else if widget-id == "link-trust" then 4
+    else if widget-id == "link-settings" then 5
+    else if widget-id == "link-media" then 6
+    else if widget-id == "media-play" then 11
+    else if widget-id == "media-pause" then 12
+    else if widget-id == "media-stop" then 13
+    else if widget-id == "media-back" then 14
+    else if widget-id == "media-fwd" then 15
+    else if widget-id == "media-mute" then 16
+    else if widget-id == "media-vol-up" then 17
+    else if widget-id == "media-vol-down" then 18
+    else if widget-id == "media-fs" then 19
+    else 0
+
+  code-link-address : Integer -> Text
+  code-link-address (code) =
+    if code == 1 then "codex://local/hello"
+    else if code == 2 then "codex://local/about"
+    else if code == 3 then "codex://local/dashboard"
+    else if code == 4 then "codex://local/trust"
+    else if code == 5 then "codex://local/settings"
+    else if code == 6 then "codex://local/media"
+    else ""
+
+  code-media-event : Integer -> Maybe MediaEvent
+  code-media-event (code) =
+    if code == 11 then Just MediaPlay
+    else if code == 12 then Just MediaPause
+    else if code == 13 then Just MediaStop
+    else if code == 14 then Just MediaSkipBack
+    else if code == 15 then Just MediaSkipForward
+    else if code == 16 then Just MediaToggleMute
+    else if code == 17 then Just MediaVolumeUp
+    else if code == 18 then Just MediaVolumeDown
+    else if code == 19 then Just MediaToggleFullscreen
+    else None
 
   widget-find-at-point : WidgetNode, Integer, Integer -> Maybe Text
   widget-find-at-point (node) (x) (y) =
@@ -541,19 +608,9 @@ Section: Mouse Hit Testing
           is Just (id) -> Just id
           is None -> find-child-at-point (list-drop children 1) x y parent-id
 
-  widget-link-address : Text -> Text
-  widget-link-address (widget-id) =
-    if widget-id == "link-hello" then "codex://local/hello"
-    else if widget-id == "link-about" then "codex://local/about"
-    else if widget-id == "link-dash" then "codex://local/dashboard"
-    else if widget-id == "link-trust" then "codex://local/trust"
-    else if widget-id == "link-settings" then "codex://local/settings"
-    else if widget-id == "link-media" then "codex://local/media"
-    else ""
-
 Section: Address Bar Key Handling
 
-  browser-handle-address-key : BrowserState, Integer -> [Network.Read, Network.Write] BrowserState
+  browser-handle-address-key : BrowserState, Integer -> BrowserState
   browser-handle-address-key (state) (k) =
     if k == 13
       then let address = address-bar-submit state.bs-address-bar
@@ -575,7 +632,7 @@ Section: Address Bar Key Handling
 
 Section: Page Key Handling
 
-  browser-handle-page-key : BrowserState, Event, Integer -> [Network.Read, Network.Write] BrowserState
+  browser-handle-page-key : BrowserState, Event, Integer -> BrowserState
   browser-handle-page-key (state) (ev) (k) =
     let active = browser-active-tab state
     in when active
@@ -643,17 +700,17 @@ Section: Render Pipeline
 
 Section: Main Loop
 
-  browser-run : BrowserState -> [Console, Network.Read, Network.Write] Nothing
+  browser-run : BrowserState -> [Console] Nothing
   browser-run (state) = act
-    print-line "Codex Browser v0.1"
-    print-line ("  Window: " & show state.bs-window-width & "x" & show state.bs-window-height)
-    print-line ("  Tabs: " & show (list-length state.bs-tabs))
-    print-line ("  Cache: " & show (cache-size state.bs-cache) & " entries")
-    print-line "  Ready."
+    print-line-uni "Codex Browser v0.1"
+    print-line-uni ("  Window: " & show state.bs-window-width & "x" & show state.bs-window-height)
+    print-line-uni ("  Tabs: " & show (list-length state.bs-tabs))
+    print-line-uni ("  Cache: " & show (cache-size state.bs-cache) & " entries")
+    print-line-uni "  Ready."
     browser-event-loop state
   end
 
-  browser-event-loop : BrowserState -> [Console, Network.Read, Network.Write] Nothing
+  browser-event-loop : BrowserState -> [Console] Nothing
   browser-event-loop (state) = act
     let ticked = browser-tick-media state 16
     in let presented = if ticked.bs-dirty
@@ -668,7 +725,7 @@ Section: Main Loop
     end
   end
 
-  browser-dispatch-event : BrowserState, Event -> [Network.Read, Network.Write] BrowserState
+  browser-dispatch-event : BrowserState, Event -> BrowserState
   browser-dispatch-event (state) (ev) =
     when ev.ev-kind
       is EvKeyDown (k) (mods) ->
@@ -689,13 +746,13 @@ Section: Main Loop
         in __record-set s2 "bs-dirty" True
       is otherwise -> state
 
-  browser-handle-trust-key : BrowserState, Integer -> [Network.Read, Network.Write] BrowserState
+  browser-handle-trust-key : BrowserState, Integer -> BrowserState
   browser-handle-trust-key (state) (k) =
     if k == 27 then browser-trust-deny state
       else if k == 13 then browser-trust-allow-once state
       else state
 
-  browser-apply-action : BrowserState, BrowserAction -> [Network.Read, Network.Write] BrowserState
+  browser-apply-action : BrowserState, BrowserAction -> BrowserState
   browser-apply-action (state) (action) =
     when action
       is ActionNone -> state

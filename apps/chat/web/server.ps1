@@ -15,8 +15,10 @@ $script:NextConvId = 1
 $script:NextMsgId  = 1
 
 # ── State Persistence ───────────────────────────────────────────
-$StateFile = Join-Path $WebDir 'data\chat-state.json'
+$StateDir  = Join-Path $WebDir 'data'
+$StateFile = Join-Path $StateDir 'chat-state.json'
 function Save-State {
+    if (-not (Test-Path $StateDir)) { New-Item -ItemType Directory -Path $StateDir | Out-Null }
     $state = @{
         accounts  = $script:Accounts
         sessions  = $script:Sessions

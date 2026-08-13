@@ -24,7 +24,10 @@ if (-not (Test-Path -PathType Leaf $PlugCdx)) {
 
 # -- Phase 1: Codex source -> IR text --------------------------------
 $compileScript = Join-Path $Repo 'build\compile.ps1'
-& pwsh -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce
+# text-plug: js-try-builtin dispatches on the CALL NAME, so a pass that
+# substitutes a body and deletes the call is an interception the emitter never
+# gets to make. See text-plug-ir-pipeline in Passes.codex.
+& pwsh -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce -Passes 'text-plug'
 if ($LASTEXITCODE -ne 0) {
     [Console]::Error.WriteLine("FAIL: IR emit step exited $LASTEXITCODE; see $LogFile")
     exit 3

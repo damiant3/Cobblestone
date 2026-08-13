@@ -5,6 +5,7 @@ Chapter: GopScene
   cites Works chapter GopRtc
   cites Kernel chapter BitmapFont
   cites Engine chapter Renderer3D
+  cites Engine chapter GpuScene
   cites Engine chapter Scene3D
   cites Engine chapter Mesh
   cites Engine chapter Material
@@ -75,13 +76,36 @@ Section: Loop
 
   gsc-shadow-map : Integer = 256
 
-  gsc-frame : R3dTriState, Scene3DState, Integer, Integer, Integer, Integer, CbfFont, Integer, Integer -> Integer
-  gsc-frame (tgt) (scene) (angle) (sky) (base) (stride) (font) (ch) (sh) =
-    let c = r3d-target-clear tgt sky
-    in let posed = scene3d-set-camera scene (gsc-camera angle)
-    in let d = if sh == 1 then r3d-render-shadowed tgt posed gsc-shadow-map else r3d-render-into tgt posed
-    in let b = gsc-blit-rows (base + gsc-sidebar-w * 4) stride (tgt.r3t-base) (tgt.r3t-w) (tgt.r3t-h) 0
-    in gop-draw-text base stride font (gsc-sidebar-w + 8) (ch - 16) "3D: software pipeline, no GPU. S toggles shadows. F12 shoots. Esc returns." 65280 1 0
+ The host rasterizer fills its map in C, so it can afford a far finer one
+ than the software pass, which builds its 256 in Codex a triangle at a time.
+ The map covers the whole scene bounds, and the ground is 3000 units across,
+ so at 256 a single texel lands on many screen pixels and every shadow edge
+ arrives as texel-shaped teeth.
+
+  gsc-shadow-map-gpu : Integer = 1024
+
+ The two paths are not a fallback pair: the software one is the reference
+ and stays reachable on a box that has the rasterizer, which is what makes
+ a parity comparison possible at all. G swaps between them.
+
+  gsc-label-sw : Text = "3D: software pipeline. S toggles shadows, G the GPU. F12 shoots. Esc returns."
+
+  gsc-label-gpu : Text = "3D: host rasterizer, culled, shadow-mapped. S toggles shadows, G software."
+
+  gsc-frame : R3dTriState, Scene3DState, Integer, Integer, Integer, Integer, CbfFont, Integer, Integer, Integer, GpuView -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  gsc-frame (tgt) (scene) (angle) (sky) (base) (stride) (font) (ch) (sh) (gpu) (gv) = act
+    let posed = scene3d-set-camera scene (gsc-camera angle)
+    in if gpu == 1 then act
+      g <- if sh == 1 then gs-render-shadowed posed gv sky gsc-shadow-map-gpu else gs-render-in posed gv sky
+      let bg = gop-fill-rect base stride gsc-sidebar-w (ch - gsc-label-band) (tgt.r3t-w) gsc-label-band sky
+      in gop-draw-text base stride font (gsc-sidebar-w + 8) (ch - 16) gsc-label-gpu 65280 1 0
+    end
+    else
+      let c = r3d-target-clear tgt sky
+      in let d = if sh == 1 then r3d-render-shadowed tgt posed gsc-shadow-map else r3d-render-into tgt posed
+      in let b = gsc-blit-rows (base + gsc-sidebar-w * 4) stride (tgt.r3t-base) (tgt.r3t-w) (tgt.r3t-h) 0
+      in gop-draw-text base stride font (gsc-sidebar-w + 8) (ch - 16) gsc-label-sw 65280 1 0
+  end
 
  The frame is bracketed because there is no collector and this loop has
  no bound: left open, an unbracketed frame's heap is gone for good, and
@@ -147,8 +171,11 @@ Section: Loop
     end
   end
 
-  gsc-loop : R3dTriState, Scene3DState, Integer, Integer, Integer, CbfFont, Integer, UsbKbd, Integer, Integer, Integer, Integer -> [Device.Port] Integer
-  gsc-loop (tgt) (scene) (sky) (base) (stride) (font) (ch) (kbd) (scr-base) (w) (h) (sh) = act
+  gsc-angle : Integer, Integer -> Integer
+  gsc-angle (now) (mins) = int-mod (((if now < 0 then 0 else now) + (gsc-bcd mins) * 60) * 105) gsc-turn
+
+  gsc-loop : R3dTriState, Scene3DState, Integer, Integer, Integer, CbfFont, Integer, UsbKbd, Integer, Integer, Integer, Integer, Integer, GpuView -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  gsc-loop (tgt) (scene) (sky) (base) (stride) (font) (ch) (kbd) (scr-base) (w) (h) (sh) (gpu) (gv) = act
     let mark = __heap-save
     in act
       sc <- gsc-poll kbd gsc-poll-steps
@@ -156,19 +183,20 @@ Section: Loop
       else if sc == 88 then act
         s <- gsc-shot scr-base w h stride font
         let d = __heap-restore mark
-        in gsc-loop tgt scene sky base stride font ch kbd scr-base w h sh
+        in gsc-loop tgt scene sky base stride font ch kbd scr-base w h sh gpu gv
       end
       else if sc == 31 then
         let d = __heap-restore mark
-        in gsc-loop tgt scene sky base stride font ch kbd scr-base w h (1 - sh)
+        in gsc-loop tgt scene sky base stride font ch kbd scr-base w h (1 - sh) gpu gv
+      else if sc == 34 then
+        let d = __heap-restore mark
+        in gsc-loop tgt scene sky base stride font ch kbd scr-base w h sh (1 - gpu) gv
       else act
         now <- rtc-seconds 0
         mins <- rtc-read 2
-        let tsec = (if now < 0 then 0 else now) + (gsc-bcd mins) * 60
-        in let angle = int-mod (tsec * 105) gsc-turn
-        in let f = gsc-frame tgt scene angle sky base stride font ch sh
-        in let dropped = __heap-restore mark
-        in gsc-loop tgt scene sky base stride font ch kbd scr-base w h sh
+        f <- gsc-frame tgt scene (gsc-angle now mins) sky base stride font ch sh gpu gv
+        let dropped = __heap-restore mark
+        in gsc-loop tgt scene sky base stride font ch kbd scr-base w h sh gpu gv
       end
     end
   end
@@ -176,7 +204,20 @@ Section: Loop
   gsc-bcd : Integer -> Integer
   gsc-bcd (n) = (n / 16) * 10 + int-mod n 16
 
-  gsc-run : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, Integer -> [Device.Port] Integer
+ The viewport is released on the way out rather than left armed. Nothing
+ else on the desk reaches the rasterizer today, so a stale rect would not
+ be visible until something did, which is the kind of debt that surfaces
+ as somebody else's bug.
+
+ The view stops short of the label row. The host rasterizer clears its
+ whole viewport and draws a frame far faster than the glass is sampled,
+ so a label inside the rect reads as absent about as often as present.
+ The software path does not have the problem because a frame there costs
+ about a second.
+
+  gsc-label-band : Integer = 20
+
+  gsc-run : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
   gsc-run (base) (w) (h) (stride) (font) (kbd) (cs) = act
     hd <- cursor-hide cs base stride
     let s = ui-scale w
@@ -186,7 +227,10 @@ Section: Loop
     in let ch = h - gsc-taskbar-h * s - top
     in let tgt = r3d-target-new cw ch sky
     in let scene = gsc-scene 0
-    in gsc-loop tgt scene sky (base + top * stride * 4) stride font ch kbd base w h 1
+    in act
+      r <- gsc-loop tgt scene sky (base + top * stride * 4) stride font ch kbd base w h 1 0 (gv-new gsc-sidebar-w top cw (ch - gsc-label-band))
+      gs-viewport-release
+    end
   end
 
 Page 1

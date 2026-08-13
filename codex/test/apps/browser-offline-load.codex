@@ -1,0 +1,51 @@
+Chapter: BrowserOfflineLoadTest
+  cites Browser chapter PageRuntime
+  cites Browser chapter PageSandbox
+  cites Browser chapter TrustManager
+  cites Browser chapter ContentCache
+  cites Foreword chapter Console
+
+ `resolve-and-load` is the browser's default load path and is local-only, so
+ that the app carries no Network effect and `GopDesk`, which embeds it as a
+ pane, does not have to declare one up its whole chain to `opening`.
+
+ This pins both halves. A `codex://local` address still loads, so the
+ narrowing did not break the pages that work; a named host answers
+ PageFetchError rather than reaching for a socket.
+
+ The stronger guard is the one that cannot be read from the output: this
+ chapter's `opening` declares `[Console]` alone. If the `NamedAddress` arm
+ is ever wired back to `load-remote-page`, `resolve-and-load` regains
+ `Network.Read, Network.Write`, and THIS FILE STOPS COMPILING with CDX2031
+ rather than quietly passing. The recorded numbers are the weaker half.
+
+Section: Test
+
+  res-code : PageLoadResult -> Integer
+  res-code (r) =
+    when r
+      is PageLoaded (tree) (title) (caps) -> 1
+      is PageCompileError (m) -> 2
+      is PageFetchError (m) -> 3
+      is PageTrustDenied (t) -> 4
+      is PageSizeDenied (s) -> 5
+
+  res-title : PageLoadResult -> Text
+  res-title (r) =
+    when r
+      is PageLoaded (tree) (title) (caps) -> title
+      is PageCompileError (m) -> m
+      is PageFetchError (m) -> m
+      is PageTrustDenied (t) -> "trust"
+      is PageSizeDenied (s) -> "size"
+
+  probe : Text -> PageLoadResult
+  probe (addr) =
+    resolve-and-load addr sandbox-default-config (trust-store-new []) (cache-new 64) 800 600
+
+  opening : [Console] Nothing = act
+    print-line-uni (integer-to-text (res-code (probe "codex://local/newtab")))
+    print-line-uni (integer-to-text (res-code (probe "codex://local/hello")))
+    print-line-uni (integer-to-text (res-code (probe "codex://example.com/page")))
+    print-line-uni (res-title (probe "codex://example.com/page"))
+  end

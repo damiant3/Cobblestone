@@ -192,7 +192,7 @@ Emit chapters render that model to Bash, Ksh, or PowerShell.
 
 These are not auto-loaded. User code must `cites` them explicitly.
 
-### codex (63 modules) -- The Compiler
+### codex (64 modules) -- The Compiler
 
 The self-hosted compiler, in `codex/compiler/`. Subdirectories: Ast,
 Core, Emit, IR, Semantics, Syntax, Types. Do not modify without reading

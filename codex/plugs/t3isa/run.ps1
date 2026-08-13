@@ -3,7 +3,7 @@
 # proven in spec/.
 #
 # The assembler is the one validated byte-for-byte against the external
-# compiler's own output; see docs/Designs/Active/Compiler/T3IsaPlug.md.
+# compiler's own output; see docs/Designs/Done/Compiler/T3IsaPlug.md.
 [CmdletBinding()]
 param(
   [Parameter(Mandatory=$true)][string]$Src,

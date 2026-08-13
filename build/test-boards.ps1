@@ -1,13 +1,9 @@
-# test-boards.ps1 -- Cross-architecture board tests via Renode.
-#
-# Compiles a hello-world program for each target architecture,
-# boots the ELF on the matching Renode virtual board, captures
-# UART output, and verifies the expected string appears.
-#
-# Usage:
-#   build/test-boards.ps1              # all boards
-#   build/test-boards.ps1 -Arch arm64  # ARM64 only
-#   build/test-boards.ps1 -Arch riscv64
+# test-boards.ps1 -- Cross-architecture board tests via Renode
+# GENERATED FROM THE CODEX SHELL DSL. Do not edit by hand.
+# A hand edit here must NOT be submitted. Change the generator under
+# codex/build/, regenerate, and submit the generator and this file
+# together. Until then build/check-generated-scripts.ps1 reports this
+# file as drifted, and the next regeneration discards the edit.
 [CmdletBinding()]
 param(
     [ValidateSet('all','arm64','riscv64')]
@@ -26,12 +22,15 @@ New-Item -ItemType Directory -Force $OutDir | Out-Null
 $SeedCdx = Join-Path $Repo 'seed\Codex.cdx'
 $Stage0 = Join-Path $Repo 'build-output\bare-metal\Codex.cdx'
 New-Item -ItemType Directory -Force (Split-Path $Stage0) | Out-Null
-if (-not (Test-Path $Stage0)) { Copy-Item -Force $SeedCdx $Stage0 }
+if ((-not (Test-Path -PathType Leaf $Stage0))) {
+    Copy-Item -Force $SeedCdx $Stage0
+}
 
-if (-not $RenodeExe) {
+if ((-not $RenodeExe)) {
     Write-RenodeSkip
     exit 0
 }
+
 
 $HelloSrc = Join-Path $OutDir 'hello-board.codex'
 @"
@@ -43,24 +42,28 @@ Section: Main
   end
 "@ | Set-Content $HelloSrc -Encoding UTF8
 
+
 $boards = @(
     @{ Name = 'arm64';   Plug = 'arm64';  Compile = 'compile-arm64.ps1'; Board = 'codex-arm64.repl';   Expected = 'BOARD-TEST-OK' },
     @{ Name = 'riscv64'; Plug = 'riscv';  Compile = 'compile-riscv.ps1'; Board = 'codex-riscv64.repl'; Expected = 'BOARD-TEST-OK' }
 )
 
-if ($Arch -ne 'all') { $boards = $boards | Where-Object { $_.Name -eq $Arch } }
+if (($Arch -ne 'all')) {
+    $boards = $boards | Where-Object { $_.Name -eq $Arch }
+}
 
 $pass = 0; $fail = 0; $skip = 0
 
+
 foreach ($b in $boards) {
     $plugCdx = Join-Path $Repo "codex\plugs\$($b.Plug)\build-output\$($b.Plug)-plug.cdx"
-    if (-not (Test-Path $plugCdx)) {
+    if ((-not (Test-Path -PathType Leaf $plugCdx))) {
         Write-Host "  SKIP  $($b.Name): plug not built ($plugCdx)" -ForegroundColor Yellow
         $skip++; continue
     }
 
     $boardRepl = Join-Path $Repo "tools\renode\codex\$($b.Board)"
-    if (-not (Test-Path $boardRepl)) {
+    if ((-not (Test-Path -PathType Leaf $boardRepl))) {
         Write-Host "  SKIP  $($b.Name): board definition missing ($boardRepl)" -ForegroundColor Yellow
         $skip++; continue
     }
@@ -72,13 +75,16 @@ foreach ($b in $boards) {
     $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     & pwsh -NoProfile -File $compileScript -Src $HelloSrc -Out $elfOut 2>&1 | Out-Null
     $ErrorActionPreference = $prev
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $elfOut)) {
+    if (((-not ($LASTEXITCODE -eq 0)) -or (-not (Test-Path -PathType Leaf $elfOut)))) {
         Write-Host " FAIL (compile)" -ForegroundColor Red
         $fail++; continue
     }
 
+
     $uartLog = Join-Path $OutDir "uart-$($b.Name).log"
-    if (Test-Path $uartLog) { Remove-Item $uartLog -Force }
+    if ((Test-Path -PathType Leaf $uartLog)) {
+        Remove-Item -Force -ErrorAction SilentlyContinue $uartLog
+    }
 
     $elfPath = (Resolve-Path $elfOut).Path -replace '\\','/'
     $boardPath = (Resolve-Path $boardRepl).Path -replace '\\','/'
@@ -102,9 +108,10 @@ foreach ($b in $boards) {
     $ErrorActionPreference = $prev
     Start-Sleep -Milliseconds 500
 
-    if (Test-Path $uartLog) {
+
+    if ((Test-Path -PathType Leaf $uartLog)) {
         $uart = Get-Content $uartLog -Raw -ErrorAction SilentlyContinue
-        if ($uart -and $uart -match [regex]::Escape($b.Expected)) {
+        if (($uart -and $uart -match [regex]::Escape($b.Expected))) {
             Write-Host " PASS" -ForegroundColor Green
             $pass++
         } else {
@@ -116,8 +123,10 @@ foreach ($b in $boards) {
         Write-Host " FAIL (no uart log)" -ForegroundColor Red
         $fail++
     }
+
 }
 
-Write-Host ""
+
+Write-Host ''
 Write-Host "Board tests: $pass pass, $fail fail, $skip skip" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 exit $fail

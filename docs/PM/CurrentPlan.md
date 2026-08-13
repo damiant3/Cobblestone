@@ -78,8 +78,23 @@ open as WORKS-9.
   propose flights or sittings for this row.** He directed the 2026-08-09
   sitting himself, which is what lifted it once; it is not lifted
   generally, and the follow-up now belongs to reek's driver anyway.
-  Whether the stick comes off `ceremonyboot.img` (`C423418D`) is fester's
-  call.
+  The open question of whether the stick came off `ceremonyboot.img`
+  (`C423418D`) is **settled 2026-08-11: reek reflashed disk 2 with
+  `a5bigflight.img`, dumping all 16 MB first.** No objection to the
+  reflash -- the row is reek's driver now and the ceremony campaign
+  closed green on 2026-08-05. What it exposed is worth a line here:
+  `ceremonyboot.img` was NEVER in the depot, in any stream, at any
+  revision, while `docs/HardwareSitting.md` said it "remains at
+  `build/boot/ceremonyboot.img`". Corrected there. **The one thing not
+  reproducible from source is the 124-byte `IDENTITY.DAT` the guest
+  wrote to the ESP on real hardware, and the only copy was reek's
+  p4-ignored `build-output/stick-before-20260811.img` (`629821CF...`) --
+  one gate `clean` from deletion, which is exactly how blu's three
+  preserved sticks were lost the same day.** Rescued to
+  `D:\Projects\stick-archive\stick-before-20260811.img`, verified byte
+  for byte, outside every workspace. Whether 16 MB of it earns a depot
+  slot is Damian's call, not mine; every other flown image beside it is
+  checked in.
 - **A5 (reek, prepped 2026-08-08, NOT FLOWN): the compiler runs on the
   box.** The mechanism exists and is now proven in the bed. The compiler's
   `DISK` mode reads two stdin lines (the word `DISK`, then a path), mounts
@@ -213,13 +228,57 @@ open as WORKS-9.
      `WriteBlocks` all work under firmware after the kernel installs its own
      CR3.
 
-     **Still open: the sink's own 2.7 MB write has never run on metal.** The
-     ladder proves one `block-write-sector`, not `fat16-write-segments`. The two
-     A5 sticks stay grounded until their flight arm is rebuilt with the ladder's
-     reporting order (paint before print, no report waiting on a firmware call)
-     and its failures forced in the bed -- the two silent flights are now best
-     explained by their own first ConOut call, which is an inference from the
-     ladder's flights and not a measurement of those payloads.
+     **The sink's own 2.7 MB write still has not run on metal, but the arm for
+     it now exists and is calibrated** (`sinkladder.img`, 2026-08-10). The block
+     ladder proves one `block-write-sector`, not `fat16-write-segments`;
+     `apps/works/SinkLadderProbe.codex` drives the real write and the streaming
+     oracle and reports as a colour, paint before print. Bed: all six rungs
+     green, `chain=5364 bad=0`, and every rung below WHITE forced by
+     `build/sink-arm.ps1`, positive control included. **FLOWN 2026-08-11 and it
+     is RED on metal: the screen held ORANGE, the last line was `SINKLADDER bpb
+     continuing`, and the returned stick's root holds no `BIG.CDX` at all.** The
+     BPB parsed and `fat16-write-segments` created no directory entry, so the
+     fault is at or before the first allocation rather than in the chain walk.
+     Neither the bed nor the glass separates hung from faulted here, and the
+     next arm needs a heartbeat INSIDE `sl-fill` and between write segments,
+     because the rung printing reports only the stage that already passed. Full
+     account and the preserved stick image in `docs/HardwareSitting.md`. **This
+     was blu flashing and Damian flying; the finding is reek's to act on, and
+     the A5 sticks stay grounded behind it.**
+
+     **The compiler paints now, so the two A5 sticks are no longer blind
+     (2026-08-11, reek).** `codex/compiler/Core/BootPaint.codex` gives the DISK
+     path six rungs -- CYAN entered, YELLOW stdin said DISK, MAGENTA volume
+     mounted, ORANGE source read, BLUE compile finished, WHITE `OUT.CDX` on the
+     volume -- and every one is forced and watched by `build/disk-arm.ps1`,
+     CYAN's failure included. WHITE re-reads the directory rather than trusting
+     the writer, because with the medium read-only the writer answered True 833
+     failed host writes in a row. **This did NOT need foreword-level GOP code**;
+     the entry above said it did and that was wrong: `peek-qword` / `poke-32`
+     are builtins and a chapter under `codex/compiler/` is answered by presence
+     in the unit. Operator and arm tables in `docs/HardwareSitting.md`.
+
+     **Both sticks are rebuilt and bed-verified, so what is left is a flight.**
+     `a5flight2.img` is now `A90E7DA0...` and returns `OUT.CDX` at 84,660 bytes
+     hashing `ACF9823E...`; `a5bigflight.img` is `9E6E35AC...` and returns
+     2,759,023 bytes hashing `9E823495...`, which is a fixed point of itself
+     (compiling the same source with it reproduces it). Both were run on COPIES
+     with the masters re-checked virgin, both painted through to WHITE, and the
+     reader's negative arm fires on each virgin master. The two silent flights
+     remain best explained by their own first ConOut call, which is an inference
+     from the ladder's flights and not a measurement of those payloads -- and
+     these sticks are what would settle it.
+
+     **The rebuild found one defect and it would have cost the flight.**
+     `build/boot/a5src.codex` is stored `unicode+C`, the client's `LineEnd` is
+     `local`, so every sync on Windows writes it CRLF: 246 bytes in the depot,
+     257 on disk. `build-img.ps1 -Source` copies what it is handed, so the
+     image built straight from the workspace file died at `CDX1000` on line 5
+     and the ladder stopped at ORANGE. The recipe now normalises to LF and says
+     why. **The durable fix belongs to whoever owns the Shell DSL generators:
+     `build-img.ps1` is generated from `codex/build/buildimgScript.codex` and
+     should normalise or refuse a CRLF `-Source`, because nothing else on that
+     path can see the problem.**
 
   **Source must be LF.** The stdin path applies `utf8-to-cce`; the DISK path
   does not, and CR has no CCE code point, so a CRLF file fails at the first
@@ -239,13 +298,48 @@ open as WORKS-9.
   break, returns LINES USED so the caller owns its vertical space, no
   allocation), landed WITH its first caller, not bare. Convert live
   surfaces; do not sweep the retired probes.
-- **A6 residue (red). Damian's grading after flight 2: "not critical
-  right now."** The shadowed scene on metal is choppy to the point of
-  unwatchable (CPU-only software render, seconds per frame); shadow
-  quality is primitive. Candidates when re-graded: smaller or filtered
-  shadow map, per-frame cost profiling on metal, scene simplification, or
-  the parked GPU path. **Do not pick this up ahead of the items above
-  without a ruling.**
+- **A6: the desk 3D View GPU path (val, Damian-directed 2026-08-11).** The old
+  "not critical" grading is superseded: Damian ruled val onto the parked GPU path.
+  **LANDED on main:** (a) **14668** (seed-affecting) -- `runtime-init` re-grants the
+  manifest cap mask to proc 0 after re-initializing the proc table, fixing a LATENT
+  defect where it zeroed the cap word so ANY payload calling runtime-init lost all
+  manifest caps (only surfaced now because only GPU ports/mem are cap-guarded); seed
+  converged to **2759215, content A078BD8F**. (b) **14673** (app) -- the desk detects
+  a usable GPU (port 0x403) and registers the 3D View app only when one is present,
+  else omits the sidebar button and deads the dispatch; on a real machine with no GPU
+  driver (the ASUS 970) it correctly does not appear. (c) **14691** (app + `codex-vm`,
+  no seed) -- **Stages 1 and 2: the pane RENDERS through the host rasterizer.** A
+  viewport (scissor) rect in `codex-vm` confines the clear, depth clear, triangle bbox
+  and the fullscreen atmosphere glow; a new `Engine chapter GpuScene` holds the GPU
+  scene path `EngineDemo` carried privately, now parameterized by a view rect, and
+  EngineDemo loses its copies rather than the tree gaining a second implementation.
+  `G` swaps paths in the pane. **The viewport ports are the OUT side of 0x403 and
+  0x40F, deliberately inside the 0x400-0x417 window `gpu-port-hi` guards: a port above
+  it would be reachable without holding `Gpu.Compute`,** and staying inside kept the CL
+  off the seed (`Sut` byte-identical to seed, 0 differing bytes).
+  (d) **14703** (app + `codex-vm`, no seed) -- **Stages 3 and 4: SHADOW MAPPING.** A
+  light-space depth pass into a host-side buffer plus a per-fragment compare carried
+  across from `r3d-shadow-test` unchanged: same fixed point, same bias of 3000, outside
+  the map counts as LIT, and a shadowed fragment takes the AMBIENT colour, which is what
+  `r3d-cover-sh` does with `sc-amb`. **No port was free inside the guarded window**, so
+  the map size rides on 0x402 (which until now only ever carried a zero) and the pass
+  flag rides in the count word at 0x400; the per-vertex light position goes in a
+  parallel array at 0xBE500000 rather than the shared 72-byte triangle record, six of
+  whose words are UV where a non-zero value selects the texture path.
+  **Parity is measured, at 75.1 per cent shadow-mask IoU.** A direct pixel compare
+  between the renderers is meaningless (one ground is a checkerboard, the other flat),
+  so each is differenced against ITSELF with shadows off and the two masks compared;
+  both controls read exactly 0 (no mask in the sky over 39055 samples, none on chrome).
+  **REMAINING: Stage 5 only** -- decide whether the GPU path becomes the DEFAULT.
+  Software is still the default; it is now a judgement about which look is wanted
+  rather than a missing capability, and the honest inputs are the 75.1 per cent and the
+  two differences below. Known and deliberately unfixed: the ground is flat-shaded
+  because the rasterizer's texture unit is hardwired to the earth-globe sampler, and a
+  triangle straddling the near plane is dropped whole rather than clipped (this orbit
+  distance never reaches it). App + `codex-vm` (NOT seed, no token); `codex-vm.c` is a
+  shared tool, coordinate with reek before an exe rebuild. val memory
+  `val-gpu-desk-render` carries the port constraint, the cull pairing that is easy to
+  get wrong, and the frozen-clock rule without which the two arms are not comparable.
 - A2, A3, A4 and A7 are CLOSED on metal.
 
 ## Track B -- the network (blu). Metal-gated: advances at sittings, not before.
@@ -274,21 +368,15 @@ open as WORKS-9.
   **B4** serve the repository protocol. EdgeMesh Phase 2
   (`docs/Designs/Active/Features/EdgeMeshGameServers.md`) is the consumer
   waiting on B2-B4; nothing to do there until the track lands.
-- **The ARM64 send path silently drops everything past 11,200 bytes, and
-  it is the 14317 defect in a second copy** (read 2026-08-09, blu).
-  `arm64-net-io-send-chunk` (`Arm64NetIO.codex:102`) calls `net-send` and
-  advances by `arm64-net-mss` without reading the refusal and with no
-  `net-rexmit-full` check at all, so past `net-rexmit-capacity * net-mss`
-  the bytes are gone with a clean return. The x86 path was fixed at main
-  14317 and this copy was not. Its loops do not tick either, so the poll
-  clock landed 2026-08-09 does not reach it. **Not fixed because there is
-  no ARM64 bed on this box**; it wants the Oracle Cloud lane or a cross
-  boot, not a blind edit.
-- **A lost SYN is never retransmitted.** `net-io-wait-established` runs to
-  a 10000-poll cap, far below `net-io-tick-interval`, so no tick can fire
-  inside it: `net-connect` arms the timer and `transport-connect` sends the
-  SYN once, and a connect that gets no SYN-ACK simply fails. A hang it is
-  not; a capability gap it is.
+- The ARM64 send path and the lost SYN are both closed (fester,
+  2026-08-10). `arm64-net-io-send-chunk` reads the refusal and drains,
+  the ARM64 loops tick, and `net-io-wait-established` ticks and gives up
+  rather than running out a cap below one tick interval. **There IS an
+  ARM64 bed on this box**, which is what the entry was blocked on:
+  `build/test-cross-batch.ps1 -Arch arm64` runs under Renode, and
+  `arm64-send-refusal` is a no-peer arm that PASSES there. What that bed
+  cannot reach is virtio RX and a real peer, so the drain's own polling
+  is still unrun on metal.
 - **The e1000 BAR window hazard is unowned, not urgent, and measured
   2026-08-07.** `e1000-window-lo`/`-hi` do not track
   `bare-metal-ram-size`; they track `bare-metal-pd-count`, which is
@@ -317,6 +405,23 @@ open as WORKS-9.
     a complete Wheeler DDC wants is DONE -- the C# arm parsed raw source and
     emitted a byte-identical CDX on demand this cycle -- so the residual is
     the quine and nothing smaller.
+  - **OPEN, and named on purpose because the README now states it publicly:
+    build the self-reproducing quine that DEFEATS the witness.** The two
+    sabotage arms proved the boundary is a quine and nothing smaller; the
+    quine itself is the falsification arm for that boundary, and until it
+    exists the "sole survivor is a quine" claim is reasoned, not measured.
+    It is a real construction: a trojan that recognises it is compiling the
+    compiler and writes a copy of its own injector into the emitted IR, so
+    stage1 and stage2 inherit it across two generations. The tractable
+    injection point is the IR TEXT emitter (`ir-emit-def`,
+    `IRTextEmitter.codex:820`), because IR text is the interchange format and
+    a self-reproducing string is easier to get right than self-referential
+    IR nodes. Test it with the exact procedure in `OperatorsManual` "The
+    witness has a negative control": build the trojaned compiler from
+    sabotaged source with the clean seed, REVERT the source, then confirm
+    stage2 MATCHES the tampered build (green) rather than the clean seed.
+    val's, follows from the sabotage work; ~4 min per emit/build/compare
+    cycle and high iteration, so budget it as a session, not a wedge.
 - **C2 (val): the independent rechecker. R1 to R4 are all published and
   enforced, and the abstention set is 1 finding from 1365.** All three
   classes are now closed:
@@ -504,25 +609,67 @@ open as WORKS-9.
   - **C2.5 stage 4 (proof terms) stays deferred unless Damian calls for
     it.**
 
-## The Shell DSL backport (blu) -- closed except for two decisions
+## The Shell DSL backport -- drift closing is live again
 
-Ten tractable generators are converted and the parse class is gated
-(`check-generated-scripts.ps1` compiles every generator, dead target or
-not, and hard-fails on PowerShell parse errors with no baseline).
-**There is no next generator to pick up; continuing this lane needs
-Damian's direction.** What remains:
+The parse class is gated (`check-generated-scripts.ps1` compiles every
+generator, dead target or not, and hard-fails on PowerShell parse errors
+with no baseline). Re-measured 2026-08-11: **45 generators, 12 drifted,
+0 broken, 1 dead target.** Every generated script now opens with
+`generated-banner` (`ShellTypes`), which says a hand edit must not be
+submitted; a file carrying it is exactly a file that matches its
+generator, and the thirteen still baselined deliberately do not carry
+it.
+
+**Closing a drift IS the next thing to pick up** (Damian's direction
+2026-08-10, superseding "there is no next generator"). `test-run`,
+`compile` and `compare-codex-semantic` were closed by fester on
+2026-08-10 and 2026-08-11 and are the three worked examples, written up
+in `docs/Designs/Active/Build/Build.md`: read the drift, judge each
+shipped-only line as behaviour or convention, port only behaviour, then
+install the emitted script under a two-arm compare with a control that
+shows the comparison can fail. The three are deliberately different
+shapes. `test-run`: nothing needed porting. `compile`: about twenty real
+behaviours did, one of which the DSL could not express until
+`ShellParam` gained `sp-attrs`. `compare-codex-semantic`: **the
+generator was partly RIGHT and the shipped script partly WRONG**, so
+neither side could simply be installed over the other, and the shipped
+error was a false PASS in the sem-equiv gate leg (see the
+OperatorsManual note on its precedence table). `run-plug` followed the
+same day: a BARE `catch` where the shipped script catches
+`[System.IO.IOException]`, which turns any fault in the receive loop
+into "plug produced no output" and blames the plug. `bvt` followed and is
+the one that shows what the campaign is for: **its generator's test list
+held 16 of the 75 tests**, so adopting it unread would have dropped 59
+from the gate (every ECDSA/X.509/TLS test, every proof, the whole
+repository set) while the BVT went on printing PASS. It was also missing
+the `.disk` sidecar handling entirely. **Eight non-backlogged generators
+remain**, `test-compile-batch` (201 drift lines) the largest and
+`run-plug-chain` (32) the smallest. What remains:
 
 - **The four stubs (`test`, `cdx-to-pe`, `build`, `build-img`) are
   BACKLOGGED**, Damian's ruling 2026-08-06: "backlog it, that isn't our
   mission." They emit roughly a third of their scripts and hold the bulk
   of the drift lines, so the drift total never approaches zero while they
   stand. That is expected, not a failure.
-- **`plug-build` and `plug-run` are an UNADOPTED DESIGN, not dead code,
-  and deleting them would throw it away.** Both are generic parameterized
-  drivers, the latter carrying the whole TCP wire protocol. What ships
-  instead is 60 hand-copied `build.ps1` and 60 `run.ps1`. Adopting the
-  pair would delete roughly 220 KB of duplication. **A decision for
-  Damian, not a cleanup.**
+- **`plug-build` and `plug-run` are ADOPTED** (Damian's ruling
+  2026-08-10, reek). Both now ship as `build/plug-run.ps1` and
+  `build/plug-build.ps1`, so both generators have a live target and are
+  drift-checked; only `testrunBashScript` sits in the dead-target blind
+  spot now. 38 standard TCP plugs delegate to `plug-run` from a shim that
+  compiles to IR and passes `-PlugCdx`, `-MemMB` and the port literal --
+  the literal stays so `check-plug-ports.ps1` still checks both halves.
+  `run.ps1` across all 55 plugs went 200,784 -> 107,101 bytes.
+
+  The remaining 17 are deliberately untouched and are not a residue to
+  close: the file-I/O family (`wasm`, `wgsl`, `spirv`, `ptx`,
+  `winforms`, `html`) does not speak TCP at all, and
+  `arm64`/`riscv`/`elf`/`pe`/`img`/`csharp`/`maui`/`recheck`/`t3isa`/`wpf`/`javascript`
+  carry extra phases. `plug-build` drives `Build-TranspilerPlug` without
+  `-WithLir`, so it cannot build `arm64` or `riscv`; the 55 `build.ps1`
+  were already ~330 bytes each over the shared
+  `codex/plugs/common/plug-build-lib.ps1` and were left alone, since
+  routing them through the driver would save nothing and add a process
+  launch each.
 
 ## The annotation campaign -- COMPLETE 2026-08-07
 
@@ -536,10 +683,46 @@ sweep**; a future pass starts from the ledger, not from a guess. The
 method and its traps are in
 `docs/Designs/Active/Compiler/Annotations.md` section E.
 
+## Bare `print-line` prints raw CCE -- 192 sites, unowned
+
+Found 2026-08-11 (blu) closing the browser's garbled banner. **`print-line`
+is the RAW builtin**: `Types/Builtins.codex` lowers it through
+`emit-print-line-raw-builtin`, which writes the internal CCE bytes at the
+serial port with no conversion at the I/O boundary. `print-line-uni` is the
+one that converts, and it is the only line-printer
+`codex/foreword/core/Console.codex` actually declares. The name is the whole
+trap: the unadorned one is wrong and the suffixed one is right.
+
+It does not fail loudly -- it prints, and the bytes are wrong in a way that
+reads as a font or terminal fault. `Codex Browser v0.1` arrived as `2` then
+`$:` (`C` is CCE 50 = ASCII `'2'`, `e` is 13 = carriage return, `B` is 58 =
+`':'`), and it was carried in the browser backlog as a display problem for
+weeks.
+
+`DevelopersGuide.md` is where these came from and is fixed: all three of its
+`Effects and Act Blocks` examples said `print-line`, and its `effect Console`
+block declared a `print-line` the platform does not have.
+
+**192 bare call sites remain** (measured 2026-08-11, `apps/` and `codex/`,
+excluding `build-output/` and `old/`). Heaviest: `apps/fishtank` 43,
+`apps/market/tests` 24, `apps/fontai` 16, `apps/radio` 18 across app and
+tests, `apps/vision` 8, `apps/secrets` 7, `codex/test` 7,
+`codex/compiler/Emit` 5. The browser's 10 are done (main 14572 and the CL
+that carries this note).
+
+**Each site needs judging, not a sweep.** Raw is CORRECT for a wire emitter
+whose payload newlines are CCE bytes inside the Text -- that is what
+`print-line-raw` and `print-text` are for, and `IRTextEmitter.codex` says so
+in its own prose. A regex pass would convert those too and corrupt the wire
+format. An app printing status for a human is the case that is simply wrong.
+Unowned; it splits cleanly by app, so it can go to whoever is standing in
+each one.
+
 ## Rulings Damian owes (the only queue that blocks)
 
-1. Whether the Shell DSL lane continues, and whether `plug-build` /
-   `plug-run` are adopted (roughly 220 KB of duplication either way).
+1. Whether the Shell DSL lane continues. (The `plug-build` / `plug-run`
+   half of this was ruled on 2026-08-10 and is done; see the section
+   above.)
 2. An owner for A5.
 
 ## File claims (one owner at a time)
@@ -547,11 +730,23 @@ method and its traps are in
 | File | Claimed by |
 |---|---|
 | `tools/codex-vm.c` | FREE -- one owner at a time, announce before you start |
-| `apps/works/GopDesk.codex`, `GopBoot.codex`, `GopWizard.codex`, `apps/guios/**` | red |
+| `apps/works/GopBoot.codex`, `GopWizard.codex`, `apps/guios/**` | red |
+| `apps/works/GopDesk.codex` | FREE -- announce before you start |
 | `apps/works/GopXhci.codex`, `GopUsb*.codex` | reek |
 | `codex/os/kernel/E1000e.codex`, `codex/os/net/**` | blu |
 | `codex/plugs/csharp/**`, `build/` DDC harness | fester |
 | `codex/plugs/recheck/**` | val |
+
+`GopDesk.codex` was claimed by red and is released 2026-08-11 (blu, at
+Damian's direction) because the claim had stopped describing anything: three
+agents changed that one file on 2026-08-11 alone -- blu 14641 (mouse in every
+pane), val 14673 (GPU-gated 3D View) and blu's Appearance pane. A claim
+nobody honours is worse than no claim, because it reads as coordination
+while providing none. **It cost something real this time**: val and blu
+independently took `ds` cell 48, which no gate could catch because each
+change is green alone, and the collision surfaced only in the merge. If you
+are going into this file, say so first, and check which `ds` cells are
+already spoken for in the Appearance section.
 
 ## Standing rules that gate nothing but bind everyone
 

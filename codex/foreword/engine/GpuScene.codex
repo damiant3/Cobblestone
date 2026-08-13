@@ -1,0 +1,338 @@
+Chapter: GpuScene
+  cites Engine chapter Scene3D
+  cites Engine chapter Renderer3D
+  cites Engine chapter Mesh
+  cites Engine chapter Material
+  cites Engine chapter Culling
+  cites Math chapter Matrix4
+  cites Game chapter Color
+
+ The host-rasterizer path for a Scene3D, beside Renderer3D's software one.
+ The rasterizer draws straight to the framebuffer rather than into a
+ target the caller places, so a view rect travels to it as a viewport.
+
+ We say:
+
+Section: View Rect
+
+ The rasterizer's viewport is two ports carrying packed coordinates:
+ 0x403 takes (x << 16) | y for the origin and 0x40F takes the same for
+ the inclusive far corner, where a zero disarms it and restores the full
+ screen. Both are the OUT side of a port whose IN side answers something
+ else, which is what keeps them inside the 0x400-0x417 window the
+ capability guard covers.
+
+  GpuView = record {
+    gv-x : Integer,
+    gv-y : Integer,
+    gv-w : Integer,
+    gv-h : Integer
+  }
+
+  gv-new : Integer, Integer, Integer, Integer -> GpuView
+  gv-new (x) (y) (w) (h) = GpuView { gv-x = x, gv-y = y, gv-w = w, gv-h = h }
+
+  gs-vp-origin : Integer = #403
+
+  gs-vp-extent : Integer = #40F
+
+  gs-viewport-set : GpuView -> [Gpu.Compute] Integer
+  gs-viewport-set (gv) = act
+    o <- gpu-out gs-vp-origin ((gv.gv-x) * 65536 + (gv.gv-y))
+    gpu-out gs-vp-extent ((gv.gv-x + gv.gv-w - 1) * 65536 + (gv.gv-y + gv.gv-h - 1))
+  end
+
+  gs-viewport-release : [Gpu.Compute] Integer
+  gs-viewport-release = gpu-out gs-vp-extent 0
+
+Section: Frame
+
+ The command buffer sits at 0xBE000000, one slab under the framebuffer.
+
+  gs-cmd : Integer = #BE000000
+
+ The rasterizer's own buffer holds far more, but a frame that reaches this
+ cap loses whatever it was about to submit NEXT with nothing said, so the
+ number wants to stay well above any scene that goes through here. The
+ desk's is about 400 triangles.
+
+  gs-max-tris : Integer = 1024
+
+  gs-render-in : Scene3DState, GpuView, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  gs-render-in (scene) (gv) (sky) = act
+    v <- gs-viewport-set gv
+    gs-flush sky (gs-build scene gv gs-shadow-off)
+  end
+
+  gs-render-full : Scene3DState, GpuView, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  gs-render-full (scene) (gv) (sky) = act
+    v <- gs-viewport-release
+    gs-flush sky (gs-build scene gv gs-shadow-off)
+  end
+
+  gs-build : Scene3DState, GpuView, GsShadow -> [Gpu.Memory] Integer
+  gs-build (scene) (gv) (sh) =
+    let vp = camera3d-vp (scene.s3-camera)
+    in gs-build-cmds scene vp (frustum-extract vp) gv sh 0 (scene3d-count scene) 0
+
+  gs-flush : Integer, Integer -> [Gpu.Compute] Integer
+  gs-flush (sky) (tri-count) = act
+    w1 <- gpu-out #401 sky
+    w2 <- gpu-out #402 0
+    gpu-out #400 tri-count
+  end
+
+Section: Shadowed Frame
+
+ Two passes. The first rasterizes the scene from the light into the depth map
+ and is culled against the light's own frustum, which is why it builds from
+ lvp rather than the camera; the second is the ordinary frame, and the
+ rasterizer samples the map it just filled. A scene with no directional light
+ has nothing to cast from and renders unshadowed.
+
+  gs-render-shadowed : Scene3DState, GpuView, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  gs-render-shadowed (scene) (gv) (sky) (map-size) =
+    when r3d-first-dir (scene.s3-lights) 0 (list-length (scene.s3-lights))
+      is None -> gs-render-in scene gv sky
+      is Just (dir) -> gs-render-two-pass scene gv sky map-size (r3d-light-vp scene dir)
+
+  gs-render-two-pass : Scene3DState, GpuView, Integer, Integer, Mat4 -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  gs-render-two-pass (scene) (gv) (sky) (map-size) (lvp) = act
+    arm <- gpu-out #402 map-size
+    cast <- gpu-out #400 (gs-build-cmds scene lvp (frustum-extract lvp) (gv-new 0 0 map-size map-size) gs-shadow-depth 0 (scene3d-count scene) 0 + gs-shadow-flag)
+    v <- gs-viewport-set gv
+    gs-flush sky (gs-build scene gv (GsShadow { gsh-on = 1, gsh-lm = lvp, gsh-size = map-size }))
+  end
+
+Section: Shadow Map
+
+ The rasterizer keeps the light-space depth buffer host-side and samples it
+ itself; what has to cross is the per-vertex light-space position, and the
+ 72-byte triangle record has no room for it (six of its words are UV, and a
+ non-zero UV is what selects the texture path). So it goes in a parallel
+ array at 0xBE500000, ten ints per triangle: (lx, ly, ld) per vertex and then
+ the colour a shadowed fragment takes.
+
+ lx and ly are shadow-map pixels scaled by 1000 and ld is on the same 0..1e6
+ scale as the depth buffer. That is the fixed point `r3d-project-clip-sw`
+ already produces, and matching it is what lets the two renderers put the
+ shadow in the same place.
+
+  gs-light-addr : Integer = #BE500000
+
+ Port 0x402 carries the map size instead of a depth clear, and the count word
+ at 0x400 carries this bit to mean a depth-only pass into the map. Neither is
+ a new port: there is none free inside the 0x400-0x417 window the capability
+ guard covers.
+
+  gs-shadow-flag : Integer = 1073741824
+
+  GsShadow = record {
+    gsh-on : Integer,
+    gsh-lm : Mat4,
+    gsh-size : Integer
+  }
+
+  gs-shadow-off : GsShadow
+  gs-shadow-off = GsShadow { gsh-on = 0, gsh-lm = mat4-identity, gsh-size = 0 }
+
+ The depth pass shades NOTHING. Its target is a depth map, so a colour there
+ is work nothing reads, and Renderer3D says so in as many words above
+ r3d-render-unlit-dispatch. Getting this wrong is expensive rather than
+ cosmetic: gs-pow loops once per unit of shininess, which is 32 for the cube
+ and 64 for the sphere, per light, per triangle, twice a frame.
+
+  gs-shadow-depth : GsShadow
+  gs-shadow-depth = GsShadow { gsh-on = 2, gsh-lm = mat4-identity, gsh-size = 0 }
+
+  GsLight = record {
+    gl-x : Integer,
+    gl-y : Integer,
+    gl-d : Integer
+  }
+
+  gs-lproj : Vertex, Mat4, Integer -> GsLight
+  gs-lproj (v) (lmvp) (size) =
+    let clip = mat4-transform-vec4 lmvp (Vec4 { v4x = real-from-int (v.vp-x), v4y = real-from-int (v.vp-y), v4z = real-from-int (v.vp-z), v4w = 1.0 })
+    in if clip.v4w <= 0.0 then GsLight { gl-x = 0 - 1, gl-y = 0 - 1, gl-d = 0 }
+    else let fs = real-from-int size
+    in GsLight {
+      gl-x = real-to-int ((clip.v4x / clip.v4w * 0.5 + 0.5) * fs * 1000.0),
+      gl-y = real-to-int ((0.5 - clip.v4y / clip.v4w * 0.5) * fs * 1000.0),
+      gl-d = real-to-int ((clip.v4z / clip.v4w + 1.0) * 500000.0)
+    }
+
+  gs-write-light : Integer, GsLight, GsLight, GsLight, Integer -> [Gpu.Memory] Integer
+  gs-write-light (idx) (a) (b) (c) (shadow-color) =
+    let off = idx * 40
+    in gpu-mem-write gs-light-addr off (a.gl-x) + gpu-mem-write gs-light-addr (off + 4) (a.gl-y) + gpu-mem-write gs-light-addr (off + 8) (a.gl-d) + gpu-mem-write gs-light-addr (off + 12) (b.gl-x) + gpu-mem-write gs-light-addr (off + 16) (b.gl-y) + gpu-mem-write gs-light-addr (off + 20) (b.gl-d) + gpu-mem-write gs-light-addr (off + 24) (c.gl-x) + gpu-mem-write gs-light-addr (off + 28) (c.gl-y) + gpu-mem-write gs-light-addr (off + 32) (c.gl-d) + gpu-mem-write gs-light-addr (off + 36) shadow-color
+
+ A shadowed fragment takes the ambient colour rather than a darkened one,
+ which is what `r3d-cover-sh` does with `sc-amb`.
+
+  gs-ambient-color : EngineMaterial, Integer -> Integer
+  gs-ambient-color (mat) (ambient) = rgb-to-packed (rgb-scale (mat.emat-albedo) ambient)
+
+Section: Shading Selection
+
+ The rasterizer interpolates the three vertex colours it is given, so a
+ material that asks for a smooth surface gets one shade per VERTEX and a flat
+ one gets a single shade reused. Shading per face is what made every curved
+ surface facet: the sphere and the torus arrive here as many small triangles
+ whose interpolation had nothing to interpolate.
+
+ Phong joins Gouraud here rather than getting its own arm. Per-pixel normals
+ are not reachable across this wire, so the honest options were per-vertex or
+ per-face, and per-vertex is the closer of the two.
+
+  gs-smooth : EngineMaterial -> Boolean
+  gs-smooth (mat) = when mat.emat-shading
+    is FlatShaded -> False
+    is Unlit -> False
+    is GouraudShaded -> True
+    is PhongShaded -> True
+
+  gs-face-color : Vertex, Vertex, Vertex, Mat4, EngineMaterial, List Light3D, Vec3, Integer -> Integer
+  gs-face-color (v0) (v1) (v2) (model) (mat) (lights) (eye) (ambient) =
+    rgb-to-packed (gs-shade (mat4-transform-point model (vec3-new (real-from-int (v0.vp-x + v1.vp-x + v2.vp-x) / 3.0) (real-from-int (v0.vp-y + v1.vp-y + v2.vp-y) / 3.0) (real-from-int (v0.vp-z + v1.vp-z + v2.vp-z) / 3.0))) (gs-face-normal v0 v1 v2) eye mat lights ambient)
+
+  gs-vert-color : Vertex, Mat4, EngineMaterial, List Light3D, Vec3, Integer -> Integer
+  gs-vert-color (v) (model) (mat) (lights) (eye) (ambient) =
+    rgb-to-packed (gs-shade (mat4-transform-point model (vec3-new (real-from-int (v.vp-x)) (real-from-int (v.vp-y)) (real-from-int (v.vp-z)))) (mat4-v3-normalize (vec3-new (real-from-int (v.vn-x)) (real-from-int (v.vn-y)) (real-from-int (v.vn-z)))) eye mat lights ambient)
+
+Section: Command Build
+
+  gs-build-cmds : Scene3DState, Mat4, Frustum, GpuView, GsShadow, Integer, Integer, Integer -> [Gpu.Memory] Integer
+  gs-build-cmds (scene) (vp) (fr) (gv) (sh) (i) (n) (tri-offset) =
+    if i >= n then tri-offset
+    else let node = scene3d-node-at scene i
+    in gs-build-cmds scene vp fr gv sh (i + 1) n (if node.sn3-visible then gs-node-cmds scene vp fr gv sh node i tri-offset else tri-offset)
+
+  gs-node-cmds : Scene3DState, Mat4, Frustum, GpuView, GsShadow, SceneNode3D, Integer, Integer -> [Gpu.Memory] Integer
+  gs-node-cmds (scene) (vp) (fr) (gv) (sh) (node) (idx) (tri-offset) =
+    when node.sn3-mesh
+      is None -> tri-offset
+      is Just (mesh) ->
+        let model = scene3d-world-matrix scene idx
+        in if gs-culled fr mesh model then tri-offset
+        else let nsh = if sh.gsh-on == 1 then GsShadow { gsh-on = 1, gsh-lm = mat4-mul (sh.gsh-lm) model, gsh-size = sh.gsh-size } else sh
+        in gs-mesh-cmds mesh model (mat4-mul vp model) gv nsh (node.sn3-material) (scene.s3-lights) (scene.s3-camera.c3-eye) (scene.s3-ambient) tri-offset 0 (mesh.mesh-index-count)
+
+  gs-culled : Frustum, Mesh, Mat4 -> Boolean
+  gs-culled (fr) (mesh) (model) = when frustum-test-aabb fr (r3d-world-bounds (mesh-bounds mesh) model)
+    is FrOutside -> True
+    is FrInside -> False
+    is FrIntersect -> False
+
+  gs-mesh-cmds : Mesh, Mat4, Mat4, GpuView, GsShadow, EngineMaterial, List Light3D, Vec3, Integer, Integer, Integer, Integer -> [Gpu.Memory] Integer
+  gs-mesh-cmds (mesh) (model) (mvp) (gv) (sh) (mat) (lights) (eye) (ambient) (tri-idx) (i) (n) =
+    if i >= n then tri-idx
+    else if tri-idx >= gs-max-tris then tri-idx
+    else let v0 = mesh-vertex-at mesh (mesh-index-at mesh i)
+    in let v1 = mesh-vertex-at mesh (mesh-index-at mesh (i + 1))
+    in let v2 = mesh-vertex-at mesh (mesh-index-at mesh (i + 2))
+    in let p0 = gs-proj v0 mvp gv
+    in let p1 = gs-proj v1 mvp gv
+    in let p2 = gs-proj v2 mvp gv
+    in let area = (p1.gp-sx - p0.gp-sx) * (p2.gp-sy - p0.gp-sy) - (p1.gp-sy - p0.gp-sy) * (p2.gp-sx - p0.gp-sx)
+    in let casting = sh.gsh-on == 2
+    in if (if casting then area <= 0 else area >= 0) then gs-mesh-cmds mesh model mvp gv sh mat lights eye ambient tri-idx (i + 3) n
+    else if p0.gp-behind + p1.gp-behind + p2.gp-behind > 0 then gs-mesh-cmds mesh model mvp gv sh mat lights eye ambient tri-idx (i + 3) n
+    else let depth-only = casting
+    in let smooth = if depth-only then False else gs-smooth mat
+    in let color = if depth-only then 0 else if smooth then 0 else gs-face-color v0 v1 v2 model mat lights eye ambient
+    in let c0 = if smooth then gs-vert-color v0 model mat lights eye ambient else color
+    in let c1 = if smooth then gs-vert-color v1 model mat lights eye ambient else color
+    in let c2 = if smooth then gs-vert-color v2 model mat lights eye ambient else color
+    in let offset = tri-idx * 72
+    in gs-mesh-next (gpu-mem-write gs-cmd offset (p0.gp-sx) + gpu-mem-write gs-cmd (offset + 4) (p0.gp-sy) + gpu-mem-write gs-cmd (offset + 8) (p1.gp-sx) + gpu-mem-write gs-cmd (offset + 12) (p1.gp-sy) + gpu-mem-write gs-cmd (offset + 16) (p2.gp-sx) + gpu-mem-write gs-cmd (offset + 20) (p2.gp-sy) + gpu-mem-write gs-cmd (offset + 24) c0 + gpu-mem-write gs-cmd (offset + 28) c1 + gpu-mem-write gs-cmd (offset + 32) c2 + gpu-mem-write gs-cmd (offset + 36) (p0.gp-depth) + gpu-mem-write gs-cmd (offset + 40) (p1.gp-depth) + gpu-mem-write gs-cmd (offset + 44) (p2.gp-depth) + gpu-mem-write gs-cmd (offset + 48) 0 + gpu-mem-write gs-cmd (offset + 52) 0 + gpu-mem-write gs-cmd (offset + 56) 0 + gpu-mem-write gs-cmd (offset + 60) 0 + gpu-mem-write gs-cmd (offset + 64) 0 + gpu-mem-write gs-cmd (offset + 68) 0 + (if sh.gsh-on == 1 then gs-write-light tri-idx (gs-lproj v0 (sh.gsh-lm) (sh.gsh-size)) (gs-lproj v1 (sh.gsh-lm) (sh.gsh-size)) (gs-lproj v2 (sh.gsh-lm) (sh.gsh-size)) (gs-ambient-color mat ambient) else 0)) mesh model mvp gv sh mat lights eye ambient tri-idx i n
+
+  gs-mesh-next : Integer, Mesh, Mat4, Mat4, GpuView, GsShadow, EngineMaterial, List Light3D, Vec3, Integer, Integer, Integer, Integer -> [Gpu.Memory] Integer
+  gs-mesh-next (w) (mesh) (model) (mvp) (gv) (sh) (mat) (lights) (eye) (ambient) (tri-idx) (i) (n) =
+    gs-mesh-cmds mesh model mvp gv sh mat lights eye ambient (tri-idx + 1) (i + 3) n
+
+Section: Projection
+
+ A Vertex holds integer world coordinates and Mat4 is Real, so the
+ projection converts in on the way to clip space and back out to the
+ integer pixel grid the command buffer wants. The perspective divide is
+ the whole reason clip.v4w has to be Real: at 1.0 it is a true
+ homogeneous w.
+
+ gp-behind reports a vertex at or behind the eye. The rasterizer has no
+ near plane and interpolates whatever it is given, so a triangle with one
+ vertex behind the camera projects to a coordinate that is not merely
+ offscreen but wrong, and it lands as a wedge across the frame. The
+ caller drops the whole triangle; the viewport keeps such a wedge inside
+ the pane, but inside the pane is where it would be seen.
+
+  GsProj = record {
+    gp-sx : Integer,
+    gp-sy : Integer,
+    gp-depth : Integer,
+    gp-behind : Integer
+  }
+
+  gs-proj : Vertex, Mat4, GpuView -> GsProj
+  gs-proj (v) (mvp) (gv) =
+    let clip = mat4-transform-vec4 mvp (Vec4 { v4x = real-from-int (v.vp-x), v4y = real-from-int (v.vp-y), v4z = real-from-int (v.vp-z), v4w = 1.0 })
+    in if clip.v4w <= 0.0 then GsProj { gp-sx = 0 - 9999, gp-sy = 0 - 9999, gp-depth = 999999, gp-behind = 1 }
+    else let ndc-x = clip.v4x / clip.v4w
+    in let ndc-y = clip.v4y / clip.v4w
+    in let ndc-z = clip.v4z / clip.v4w
+    in let half-w = real-from-int (gv.gv-w / 2)
+    in let half-h = real-from-int (gv.gv-h / 2)
+    in GsProj { gp-sx = gv.gv-x + real-to-int (half-w + ndc-x * half-w), gp-sy = gv.gv-y + real-to-int (half-h - ndc-y * half-h), gp-depth = real-to-int ((ndc-z + 1.0) * 500000.0), gp-behind = 0 }
+
+  gs-face-normal : Vertex, Vertex, Vertex -> Vec3
+  gs-face-normal (v0) (v1) (v2) =
+    mat4-v3-normalize (vec3-new (real-from-int (v0.vn-x + v1.vn-x + v2.vn-x) / 3.0) (real-from-int (v0.vn-y + v1.vn-y + v2.vn-y) / 3.0) (real-from-int (v0.vn-z + v1.vn-z + v2.vn-z) / 3.0))
+
+Section: Shading
+
+  gs-shade : Vec3, Vec3, Vec3, EngineMaterial, List Light3D, Integer -> Rgb
+  gs-shade (center) (normal) (eye) (mat) (lights) (ambient) =
+    let base = rgb-scale (mat.emat-albedo) ambient
+    in gs-accum center normal eye mat lights base 0 (list-length lights)
+
+  gs-accum : Vec3, Vec3, Vec3, EngineMaterial, List Light3D, Rgb, Integer, Integer -> Rgb
+  gs-accum (center) (normal) (eye) (mat) (lights) (acc) (i) (n) =
+    if i >= n then acc
+    else let light = list-at lights i
+    in let contrib = when light
+      is DirLight (dir) (col) (intensity) ->
+        let to-light = mat4-v3-normalize dir
+        in let ndl = gs-unit-to-milli (vec3-dot normal to-light)
+        in let diffuse = if ndl > 0 then ndl * mat.emat-diffuse / 1000 else 0
+        in let reflect = gs-reflect (gs-negate to-light) normal
+        in let to-eye = mat4-v3-normalize (vec3-subtract eye center)
+        in let rdv = gs-unit-to-milli (vec3-dot reflect to-eye)
+        in let spec = if rdv > 0 then if ndl > 0 then gs-pow rdv (mat.emat-shininess) * mat.emat-specular / 1000 else 0 else 0
+        in let total = (diffuse + spec) * intensity / 1000
+        in rgb-scale (rgb-multiply (mat.emat-albedo) col) (gs-clamp total 0 1000)
+      is PtLight (pos) (col) (intensity) (radius) -> rgb 0 0 0
+      is SpotLight3D (pos) (dir) (col) (intensity) (angle) (falloff) -> rgb 0 0 0
+    in gs-accum center normal eye mat lights (rgb-add acc contrib) (i + 1) n
+
+Section: Helpers
+
+ Vec3 is Real and lighting stays on the integer 0..1000 scale that Rgb
+ and EngineMaterial speak, so a dot product crosses back at exactly one
+ place: gs-unit-to-milli.
+
+  gs-unit-to-milli : Real -> Integer
+  gs-unit-to-milli (x) = real-to-int (x * 1000.0)
+
+  gs-reflect : Vec3, Vec3 -> Vec3
+  gs-reflect (inc) (n) = let d = vec3-dot inc n in vec3-subtract inc (vec3-scale n (2.0 * d))
+
+  gs-negate : Vec3 -> Vec3
+  gs-negate (v) = vec3-new (0.0 - v.vx) (0.0 - v.vy) (0.0 - v.vz)
+
+  gs-pow : Integer, Integer -> Integer
+  gs-pow (b) (e) = if e <= 0 then 1000 else gs-pow b (e - 1) * b / 1000
+
+  gs-clamp : Integer, Integer, Integer -> Integer
+  gs-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+Page 1

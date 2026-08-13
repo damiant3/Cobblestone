@@ -14,8 +14,11 @@ $LogFile = Join-Path $PSScriptRoot 'build-output\run.log'
 if (-not (Test-Path $PlugCdx)) { [Console]::Error.WriteLine("MISSING: $PlugCdx"); exit 2 }
 
 # Phase 1: source -> IR-CCE
+# text-plug: a browser primitive is a Codex stub (set-render (fn) = 0) whose
+# real body is this plug's JS runtime function of the same name, so the inline
+# passes must not delete the call. See text-plug-ir-pipeline in Passes.codex.
 $IrFile = Join-Path $PSScriptRoot 'build-output\last-run.ir'
-& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $Src -Out $IrFile -Log $LogFile -IrCce
+& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $Src -Out $IrFile -Log $LogFile -IrCce -Passes 'text-plug'
 if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine("FAIL: IR; see $LogFile"); exit 3 }
 Write-Host "[html-run] IR: $((Get-Item $IrFile).Length) bytes (CCE)"
 

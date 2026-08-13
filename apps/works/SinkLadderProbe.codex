@@ -1,0 +1,201 @@
+Chapter: SinkLadderProbe
+  cites Works chapter MetalLadder
+  cites Foreword chapter Fat16
+  cites Foreword chapter Maybe
+
+ The compiler's metal output sink, at CDX scale, reporting as a colour.
+
+ BlockLadderProbe proved ONE block-write-sector on the ASUS. The sink calls
+ fat16-write-segments, which allocates a chain, rewrites both FAT copies and
+ walks 5364 clusters on top of that primitive, and none of that has ever run
+ on the board. codex/test/apps/fat-sink-big.codex asks exactly this question
+ and answers it over print-line-uni, which is the channel that has never
+ rendered a character there -- the same defect that spent two A5 flights.
+
+ The write and the streaming oracle are fat-sink-big's, unchanged in
+ substance. What is new is the reporting: paint precedes print on every rung,
+ so a rung that dies inside a firmware call still leaves its colour standing.
+
+ We say:
+
+Section: Cells
+
+ uefi-systab-addr, the cell cdx-to-pe.ps1 primes before it jumps.
+
+  sl-systab-cell : Integer = 30704
+
+  sl-part-lba : Integer = 2048
+
+  sl-path : Text = "BIG.CDX"
+
+Section: Payload
+
+ The current seed CDX size. This is the number that matters: a smaller write
+ would not exercise the chain length the real artifact needs.
+
+  sl-size : Integer = 2745998
+
+ The calibration. At 0 the verify is the real one; at 1 every byte must be
+ reported bad and the ladder must stop at BLUE. An oracle that cannot report
+ bad is not evidence (L-FALSIF).
+
+  sl-shift : Integer = 0
+
+  sl-pat : Integer -> Integer
+  sl-pat (i) = int-mod (i * 7 + i / 513) 251
+
+  sl-fill : Integer, Integer, Integer -> Integer
+  sl-fill (buf) (i) (n) =
+    if i >= n then 0
+    else let w = poke-byte buf i (sl-pat i)
+    in sl-fill buf (i + 1) n
+
+Section: Rungs
+
+  sl-truth : Boolean -> Integer
+  sl-truth (b) = if b then 1 else 0
+
+ The read rung tests the CONTENT, not the pointer: a payload built without
+ UEFI mode reads down the bare-metal path, gets 512 zero bytes, and passes a
+ pointer test every time.
+
+  sl-read-ok : Integer -> Integer
+  sl-read-ok (buf) =
+    if buf == 0 then 0
+    else if peek-byte buf 510 /= 85 then 0
+    else if peek-byte buf 511 /= 170 then 0
+    else 1
+
+  sl-step : Text, Integer, Integer, Integer -> [Console] Nothing
+  sl-step (tag) (ok) (colour) (prev) = act
+    fb <- ladder-pass ok colour prev
+    print-line-uni ("SINKLADDER " & tag & " ok=" & show ok & " painted fb=" & show fb)
+    h <- ladder-hold-if ok prev
+    print-line-uni ("SINKLADDER " & tag & " continuing")
+  end
+
+Section: Streaming Verify
+
+  sl-check-sector : Integer, Integer, Integer, Integer, Integer -> Integer
+  sl-check-sector (buf) (k) (bps) (off) (bad) =
+    if k >= bps then bad
+    else if off + k >= sl-size then bad
+    else if peek-byte buf k /= sl-pat (off + k + sl-shift) then sl-check-sector buf (k + 1) bps off (bad + 1)
+    else sl-check-sector buf (k + 1) bps off bad
+
+  sl-check-cluster : Fat16Volume, Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  sl-check-cluster (vol) (cluster) (s) (off) (bad) =
+    if s >= (vol.vol-sectors-per-cluster) then bad
+    else if off >= sl-size then bad
+    else let h = __heap-save
+    in act
+      buf <- block-read-sector (fat16-cluster-sector vol cluster + s)
+      sl-cluster-step vol cluster s off bad buf h
+    end
+
+  sl-cluster-step : Fat16Volume, Integer, Integer, Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  sl-cluster-step (vol) (cluster) (s) (off) (bad) (buf) (h) =
+    let b2 = sl-check-sector buf 0 (vol.vol-bytes-per-sector) off bad
+    in let z = __heap-restore h
+    in sl-check-cluster vol cluster (s + 1) (off + (vol.vol-bytes-per-sector)) b2
+
+  sl-walk : Fat16Volume, Integer, Integer, Integer -> [Device.Block] Integer
+  sl-walk (vol) (cluster) (off) (bad) =
+    if off >= sl-size then bad
+    else if fat16-is-end cluster then bad
+    else if cluster < 2 then bad
+    else let h = __heap-save
+    in act
+      b2 <- sl-check-cluster vol cluster 0 off bad
+      nxt <- fat16-next-cluster vol cluster
+      sl-walk-next vol nxt off b2 h
+    end
+
+  sl-walk-next : Fat16Volume, Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  sl-walk-next (vol) (nxt) (off) (bad) (h) =
+    let z = __heap-restore h
+    in sl-walk vol nxt (off + fat16-bytes-per-cluster vol) bad
+
+  sl-chain-count : Fat16Volume, Integer, Integer -> [Device.Block] Integer
+  sl-chain-count (vol) (cluster) (n) =
+    if fat16-is-end cluster then n
+    else if cluster < 2 then n
+    else if n > 100000 then n
+    else let h = __heap-save
+    in act
+      nxt <- fat16-next-cluster vol cluster
+      sl-count-next vol nxt n h
+    end
+
+  sl-count-next : Fat16Volume, Integer, Integer, Integer -> [Device.Block] Integer
+  sl-count-next (vol) (nxt) (n) (h) =
+    let z = __heap-restore h
+    in sl-chain-count vol nxt (n + 1)
+
+Section: Reporting
+
+  sl-entry-size : Maybe Fat16DirEntry -> Integer
+  sl-entry-size (m) = when m
+    is Just (e) -> e.de-size
+    is None -> 0 - 1
+
+  sl-entry-cluster : Maybe Fat16DirEntry -> Integer
+  sl-entry-cluster (m) = when m
+    is Just (e) -> e.de-cluster
+    is None -> 0
+
+ The write rung demands the recorded size AND the chain length, not just the
+ writer's own True. A writer that returns ok having linked nothing leaves a
+ first cluster below 2, which sl-walk answers 0 for -- indistinguishable from
+ a clean verify. Requiring the chain the size implies is what stops a vacuous
+ run painting WHITE.
+
+  sl-want-chain : Fat16Volume -> Integer
+  sl-want-chain (vol) =
+    let bpc = fat16-bytes-per-cluster vol
+    in (sl-size + bpc - 1) / bpc
+
+  sl-write-ok : Boolean, Integer, Integer, Integer -> Integer
+  sl-write-ok (ok) (size) (chain) (want) =
+    if size /= sl-size then 0
+    else if chain /= want then 0
+    else if ok then 1
+    else 0
+
+Section: Entry
+
+  opening : [Console, Device.Block] Integer = act
+    a <- sl-step "entered" 1 ladder-cyan ladder-red
+    b <- sl-step "systab" (sl-truth (peek-qword sl-systab-cell 0 /= 0)) ladder-yellow ladder-cyan
+    sb <- block-read-sector sl-part-lba
+    c <- sl-step "read" (sl-read-ok sb) ladder-magenta ladder-yellow
+    v0 <- fat16-init sl-part-lba
+    d <- sl-step "bpb" (sl-truth (v0.vol-bytes-per-sector == 512)) ladder-orange ladder-magenta
+    sl-write-and-verify v0
+  end
+
+  sl-write-and-verify : Fat16Volume -> [Console, Device.Block] Integer
+  sl-write-and-verify (v0) =
+    let buf = __heap-save
+    in let adv = __heap-advance (bit-and (sl-size + 511) (0 - 512))
+    in let f = sl-fill buf 0 sl-size
+    in let h0 = __heap-save
+    in act
+      ok <- fat16-write-segments sl-path [] buf sl-size []
+      sl-after-write ok h0
+    end
+
+  sl-after-write : Boolean, Integer -> [Console, Device.Block] Integer
+  sl-after-write (ok) (h0) =
+    let h1 = __heap-save
+    in act
+      vol <- fat16-init sl-part-lba
+      entry <- fat16-resolve-path vol sl-path
+      chain <- sl-chain-count vol (sl-entry-cluster entry) 0
+      e <- sl-step "wrote" (sl-write-ok ok (sl-entry-size entry) chain (sl-want-chain vol)) ladder-blue ladder-orange
+      print-line-uni ("SINK size=" & show (sl-entry-size entry) & " want=" & show sl-size & " first=" & show (sl-entry-cluster entry) & " chain=" & show chain & " wantchain=" & show (sl-want-chain vol) & " arena=" & show (h1 - h0))
+      bad <- sl-walk vol (sl-entry-cluster entry) 0 0
+      f <- sl-step "verified" (sl-truth (bad == 0)) ladder-white ladder-blue
+      print-line-uni ("SINK bad=" & show bad & " shift=" & show sl-shift)
+      ladder-hold ladder-white
+    end

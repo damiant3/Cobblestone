@@ -24,7 +24,7 @@ $ErrorActionPreference = 'Stop'
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
 $outDir = Join-Path $PSScriptRoot 'build-output'
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-if (-not (Test-Path $Manitc)) { throw "the oracle is not built: $Manitc. See docs/Designs/Active/Compiler/T3IsaPlug.md." }
+if (-not (Test-Path $Manitc)) { throw "the oracle is not built: $Manitc. See docs/Designs/Done/Compiler/T3IsaPlug.md." }
 
 function Get-OracleOutput([string]$t3b) {
   $raw = & $Manitc run-t3 $t3b 2>&1 | Out-String

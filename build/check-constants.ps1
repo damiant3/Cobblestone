@@ -1,5 +1,9 @@
 # check-constants.ps1 -- Verify seed constants hash matches compiler source
-# Generated from Codex Shell DSL. Do not edit by hand.
+# GENERATED FROM THE CODEX SHELL DSL. Do not edit by hand.
+# A hand edit here must NOT be submitted. Change the generator under
+# codex/build/, regenerate, and submit the generator and this file
+# together. Until then build/check-generated-scripts.ps1 reports this
+# file as drifted, and the next regeneration discards the edit.
 [CmdletBinding()]
 param(
     [switch]$Update

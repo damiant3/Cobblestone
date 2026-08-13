@@ -74,7 +74,13 @@ Section: Keywords and Sanitization
    in let s2 = text-replace s1 "\"" "\\\""
    in let s3 = text-replace s2 "\n" "\\n"
    in let s4 = text-replace s3 "'" "\\'"
-   in s4
+   in text-replace s4 "</" "<\\/"
+
+ The HTML parser ends an inline script at the first `</script`, inside a
+ JavaScript string literal or not, so a program that prints one truncates
+ its own page and the remainder parses as stray text. `<\/` is an identity
+ escape in JavaScript and reads as `</` at runtime. This must stay AFTER the
+ backslash rule above, or that rule doubles the backslash this one inserts.
 
   html-indent : Integer -> Text
   html-indent (n) =
@@ -248,9 +254,15 @@ Section: Apply
    let chain = collect-apply-chain e []
    in when (chain.root)
     is IrName (n) (ty) (sp) -> if is-mktup-name n then "[" & emit-js-apply-args (chain.args) arities indent 0 & "]"
+     else if n == "__record-set" & list-length (chain.args) == 3 then emit-js-record-set (chain.args) arities indent
      else let func = emit-js-expr (chain.root) arities indent
      in let args = emit-js-apply-args (chain.args) arities indent 0
-     in func & "(" & args & ")"
+     in let supplied = list-length (chain.args)
+     in let ar = lookup-arity arities n
+     in if ar > supplied & supplied > 0 then
+         let remaining = ar - supplied
+         in html-partial-wrappers 0 remaining & func & "(" & args & ", " & html-partial-params 0 remaining & ")"
+        else func & "(" & args & ")"
     is otherwise -> let func = emit-js-expr (chain.root) arities indent
      in let args = emit-js-apply-args (chain.args) arities indent 0
      in func & "(" & args & ")"
@@ -348,6 +360,24 @@ Section: Records
   emit-js-record : Text, List IRFieldVal, List ArityEntry, Integer -> Text
   emit-js-record (name) (fields) (arities) (indent) =
    "{ _type: \"" & name & "\"" & emit-js-record-fields fields arities indent 0 & " }"
+
+  html-partial-params : Integer, Integer -> Text
+  html-partial-params (i) (count) =
+   if i == count then ""
+   else if i == count - 1 then "_p" & integer-to-text i & "_"
+   else "_p" & integer-to-text i & "_" & ", " & html-partial-params (i + 1) count
+
+  html-partial-wrappers : Integer, Integer -> Text
+  html-partial-wrappers (i) (count) =
+   if i == count then ""
+   else "(_p" & integer-to-text i & "_) => " & html-partial-wrappers (i + 1) count
+
+  emit-js-record-set : List IRExpr, List ArityEntry, Integer -> Text
+  emit-js-record-set (args) (arities) (indent) =
+   let field-name = when (list-at args 1)
+    is IrTextLit (s) (sp) -> s
+    is otherwise -> ""
+   in "{ ..." & emit-js-expr (list-at args 0) arities indent & ", " & html-sanitize field-name & ": " & emit-js-expr (list-at args 2) arities indent & " }"
 
   emit-js-record-fields : List IRFieldVal, List ArityEntry, Integer, Integer -> Text
   emit-js-record-fields (fields) (arities) (indent) (i) =
@@ -498,7 +528,7 @@ Section: Chapter Emission
   emit-html-chapter (m) (meta) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
    in let title = if meta.chapter-title == "" then "Codex App" else meta.chapter-title
-   in let builtins = "function print_line_uni(s) { const el = document.createElement('div'); el.textContent = s; document.getElementById('app').appendChild(el); }\nfunction print_line(s) { print_line_uni(s); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return s.length; }\nfunction text_replace(s, a, b) { return s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1 : a > b ? 1 : 0; }\nfunction substring(s, start, len) { return s.slice(start, start + len); }\nfunction char_to_text(c) { return c; }\nfunction char_code_at(s, i) { return s.charCodeAt(i); }\nfunction int_mod(a, b) { return Math.trunc(a) % Math.trunc(b); }\nfunction list_snoc(xs, x) { return [...xs, x]; }\nfunction list_length(xs) { return xs.length; }\nfunction list_at(xs, i) { return xs[i]; }\nfunction list_push(xs, x) { return [...xs, x]; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return c.charCodeAt ? c.charCodeAt(0) : c; }\nfunction char_at(s, i) { return s[i]; }\nfunction negate(n) { return -n; }\nfunction bit_xor(a,b){return (Math.trunc(a)^Math.trunc(b));}\nfunction bit_and(a,b){return (Math.trunc(a)&Math.trunc(b));}\nfunction bit_or(a,b){return (Math.trunc(a)|Math.trunc(b));}\nfunction bit_shl(a,n){return (Math.trunc(a)<<n);}\nfunction bit_shr(a,n){return (Math.trunc(a)>>n);}\nfunction bit_shru(a,n){return (Math.trunc(a)>>>n);}\nfunction bit_not(a){return (~Math.trunc(a));}\nfunction __narrow(n) { return n; }\n\n"
+   in let builtins = "function print_line_uni(s) { const el = document.createElement('div'); el.textContent = s; document.getElementById('app').appendChild(el); }\nfunction print_line(s) { print_line_uni(s); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return s.length; }\nfunction text_replace(s, a, b) { return s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1 : a > b ? 1 : 0; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_ends_with(s, suf) { return s.endsWith(suf); }\nfunction substring(s, start, len) { return s.slice(start, start + len); }\nfunction char_to_text(c) { return c; }\nfunction char_code_at(s, i) { return s.charCodeAt(i); }\nfunction int_mod(a, b) { return Math.trunc(a) % Math.trunc(b); }\nfunction list_snoc(xs, x) { return [...xs, x]; }\nfunction list_length(xs) { return xs.length; }\nfunction list_at(xs, i) { return xs[i]; }\nfunction list_push(xs, x) { return [...xs, x]; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return c.charCodeAt ? c.charCodeAt(0) : c; }\nfunction char_at(s, i) { return s[i]; }\nfunction negate(n) { return -n; }\nfunction bit_xor(a,b){return (Math.trunc(a)^Math.trunc(b));}\nfunction bit_and(a,b){return (Math.trunc(a)&Math.trunc(b));}\nfunction bit_or(a,b){return (Math.trunc(a)|Math.trunc(b));}\nfunction bit_shl(a,n){return (Math.trunc(a)<<n);}\nfunction bit_shr(a,n){return (Math.trunc(a)>>n);}\nfunction bit_shru(a,n){return (Math.trunc(a)>>>n);}\nfunction bit_not(a){return (~Math.trunc(a));}\nfunction __narrow(n) { return n; }\n\n"
    in let types-text = emit-js-type-defs type-defs 0
    in let defs-text = emit-js-defs (m.defs) 0 arities
    in let arity = lookup-arity arities "opening"

@@ -1,7 +1,9 @@
-# Concatenate codex/ source with quire-prefixed chapters and any
-# cited foreword chapters preloaded. Chapters within each subdirectory
-# are topologically sorted so cited chapters appear before consumers.
-# Writes to stdout (or -OutFile).
+# concat-codex-self.ps1 -- Concatenate codex/ source with quire-prefixed chapters and cited foreword chapters preloaded
+# GENERATED FROM THE CODEX SHELL DSL. Do not edit by hand.
+# A hand edit here must NOT be submitted. Change the generator under
+# codex/build/, regenerate, and submit the generator and this file
+# together. Until then build/check-generated-scripts.ps1 reports this
+# file as drifted, and the next regeneration discards the edit.
 [CmdletBinding()]
 param(
     [string]$CodexDir,
@@ -13,11 +15,14 @@ $ErrorActionPreference = 'Stop'
 
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 . (Join-Path $PSScriptRoot 'quire-map.ps1')
-if (-not $CodexDir) { $CodexDir = Join-Path $Repo 'codex\compiler' }
-$CodexDir   = (Resolve-Path $CodexDir).Path
+if ((-not $CodexDir)) {
+    $CodexDir = Join-Path $Repo 'codex\compiler'
+}
+$CodexDir = (Resolve-Path $CodexDir).Path
 $ForewordDir = Join-Path $Repo 'codex\foreword\core'
 
 $lines = [System.Collections.Generic.List[string]]::new()
+
 
 function Add-WithQuire {
     param([string]$Path, [string]$Quire)
@@ -34,24 +39,20 @@ function Add-WithQuire {
     $lines.Add('')
 }
 
-# 1. Cited library chapters -- scan compiler source for
-#    "cites <LibraryQuire> chapter X", then transitively resolve each
-#    pulled chapter's own library cites. The quire table must agree
-#    with compile.ps1's Resolve-CiteOrder (same quires, same
-#    "Quire--Chapter" prefix) or the gate's raw concat and the
-#    per-compile resolution disagree about what a unit is.
-#
-# The pattern comes from build/quire-map.ps1 and is not built here.
-# What stays local is the POLICY, not the syntax: the compiler's unit
-# admits library quires only, so $libQuireNames is an allowlist over the
-# shared registry rather than a second copy of it. A quire added to the
-# registry does not silently join the compiler's unit, and a cite whose
-# syntax the registry accepts is read the same way here as everywhere
-# else.
+
+# 1. Cited library chapters -- scan compiler source, transitively resolve.
+# The quire table must agree with compile.ps1's Resolve-CiteOrder or the
+# gate's raw concat and the per-compile resolution disagree about what a
+# unit is. The cite pattern comes from build/quire-map.ps1 and is not built
+# here; what stays local is the POLICY, an allowlist over the shared
+# registry, so a quire added to the registry does not silently join the
+# compiler's unit.
 $libQuireNames = @('Foreword', 'Math')
 $libQuireDirs = [ordered]@{}
 foreach ($q in $libQuireNames) {
-    if (-not $QuireDirs[$q]) { throw "concat-codex-self: quire '$q' is not registered in build/quire-map.ps1" }
+    if ((-not $QuireDirs[$q])) {
+        throw "concat-codex-self: quire '$q' is not registered in build/quire-map.ps1"
+    }
     $libQuireDirs[$q] = Join-Path $Repo $QuireDirs[$q]
 }
 $citePat = $StrictCitePat
@@ -61,6 +62,8 @@ Get-ChildItem $CodexDir -Recurse -Depth 2 -Filter '*.codex' -File | ForEach-Obje
         if ($l -match $citePat -and $libQuireDirs.Contains($matches[1])) { $queue.Enqueue(@{ Quire = $matches[1]; Name = $matches[2] }) }
     }
 }
+
+
 $seen = [System.Collections.Generic.HashSet[string]]::new()
 $ordered = @()
 while ($queue.Count -gt 0) {
@@ -77,24 +80,20 @@ while ($queue.Count -gt 0) {
 [array]::Reverse($ordered)
 $emitted = [System.Collections.Generic.HashSet[string]]::new()
 foreach ($entry in $ordered) {
-    if (-not $emitted.Add("$($entry.Quire)|$($entry.Name)")) { continue }
+    if ((-not $emitted.Add("$($entry.Quire)|$($entry.Name)"))) {
+        continue
+    }
     Add-WithQuire -Path $entry.Path -Quire $entry.Quire
 }
 
-# Ordinal name comparer for FileInfo / DirectoryInfo arrays.
+
+# Ordinal name comparer for FileInfo / DirectoryInfo arrays
 $nameCmp = [System.Collections.Generic.Comparer[object]]::Create({
     param($a, $b)
     [System.StringComparer]::Ordinal.Compare($a.Name, $b.Name)
 })
 
-# Topological sort: files within a subdirectory may cite each other via
-# "cites <QuireName> chapter <ChapterName>". Cited files must appear
-# before consumers so the repl-mode compiler sees definitions in order.
-# Topological sort within a subdirectory. Uses file stems as keys (not
-# chapter names, which can collide across split files). Resolves cites
-# by mapping chapter names back to the file that defines them; when
-# multiple files share a chapter name, the first alphabetically wins
-# the mapping but all files are emitted.
+
 function Sort-ByDeps {
     param([System.IO.FileInfo[]]$Files, [string]$QuireName)
     if ($Files.Count -le 1) { return $Files }
@@ -116,6 +115,7 @@ function Sort-ByDeps {
             if ($l -match $internalCite) { $deps[$stem] += $matches[2] }
         }
     }
+
     $result = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
     $visited = [System.Collections.Generic.HashSet[string]]::new()
     $visiting = [System.Collections.Generic.HashSet[string]]::new()
@@ -136,14 +136,16 @@ function Sort-ByDeps {
     return $result.ToArray()
 }
 
-# 2. Root .codex (depth 0), sorted ordinal.
+
+# 2. Root .codex (depth 0), sorted ordinal
 $rootFiles = @(Get-ChildItem $CodexDir -Filter '*.codex' -File)
 [Array]::Sort($rootFiles, $nameCmp)
 foreach ($f in $rootFiles) {
     Add-WithQuire -Path $f.FullName -Quire ''
 }
 
-# 3. Subdirs (depth 1), each .codex prefixed with subdir name, sorted ordinal.
+
+# 3. Subdirs (depth 1), each .codex prefixed with subdir name
 $subDirs = @(Get-ChildItem $CodexDir -Directory)
 [Array]::Sort($subDirs, $nameCmp)
 foreach ($d in $subDirs) {
@@ -155,6 +157,7 @@ foreach ($d in $subDirs) {
         Add-WithQuire -Path $f.FullName -Quire $quire
     }
 }
+
 
 $body = ($lines -join "`n") + "`n"
 if ($OutFile) {

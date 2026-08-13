@@ -1,10 +1,16 @@
 # The T3ISA plug: a non-binary target as an adversarial test of the plug thesis
 
-*alpha, 2026-08-09. The PLUG is still a proposal and nothing of it has been
-built or run; every number about it is either read out of a source file in
-this tree or quoted from a published external spec, and each is marked as one
-or the other. The Kleene proof probe described at the end IS built, run and in
-the BVT.*
+*CLOSED 2026-08-11. The experiment ran, the question it was written to answer
+is answered, and this document is the account. The plug is built, gated and
+landed in `codex/plugs/t3isa`; the Kleene proof probe is in the BVT. Read
+"State" for what holds and "What is left, and why it is not being done now"
+for the follow-ons that were deliberately not taken.*
+
+*This header said "the PLUG is still a proposal and nothing of it has been
+built or run" until the day it was closed, two days after step two shipped a
+green gate. It is left visible rather than quietly overwritten because it is
+the ordinary way a live design goes wrong: the sections below were kept
+current every step, and the one line nobody re-reads was not.*
 
 ## What is being proposed
 
@@ -986,6 +992,43 @@ toolchain**, which is on this machine only: `D:\Toolchain-Ternary` for
 `manitc.exe` and `D:\Projects\maniTC-main` for the example corpus. They are
 landed as the executable record of how the encoding was derived, not as a
 gate. Nothing in `build/build.ps1` reaches them.
+
+## What is left, and why it is not being done now
+
+**Damian's ruling, 2026-08-11: closed, revisit when the specification next
+moves.** The result is academic to us in the precise sense that it changes
+nothing we ship: no product of this tree runs on a ternary machine, and the
+finding it produced -- that the IR's binary assumptions are thin enough for a
+non-binary target to be a plug -- is already banked in the README and here.
+The OS is the priority. A follow-on that deepens a result we already have
+loses to work that does not yet exist.
+
+Three things are named and not taken. None is a defect and none blocks
+anything; they are recorded here so that a session picking this up later does
+not rediscover the list, and in `codex/plugs/plugs-backlog.md` so it is
+reachable from the register that owns the quire.
+
+1. **v3, and what a list COSTS.** The honest question is not whether a list
+   can be emitted. It is what a growable value costs on a bump allocator with
+   no reclamation and 16 kilowords of heap, which is a different experiment
+   from the one this design ran.
+2. **`show` outside a print.** Possible since v1.3 (`fmt::show_int`, syscall
+   14, measured working). The blocker is now ours rather than the machine's:
+   this emitter has no Text value to carry the returned handle. Text append
+   stays impossible either way, `fmt::concat` not being implemented on T3.
+3. **The heap syscall trade.** `heap_alloc_words` (218) could replace the
+   hand-rolled allocator. It is a trade, not an improvement: one syscall
+   against our eleven instructions, against a dependence on a region they are
+   free to move, and which moved once already.
+
+**What a later session must re-do rather than trust.** The plug was proven
+against `t3isa-spec-v1.3` and two oracle builds that exist on this machine
+only. If the specification has moved, every row of "Target behaviour the plug
+is built on" is a measurement whose date has passed: re-measure it against the
+new emulator before believing a green gate, because four of the seven rows
+moved between v1.0 and v1.3 and one of them (`TSHR` rounding) would have been
+silent and wrong had the emitter depended on it. L-COUNT applies to the size
+table for the same reason.
 
 **There are two oracles and the difference matters.**
 `target\release\manitc.exe` is the v1.0 build the encoding was derived against;

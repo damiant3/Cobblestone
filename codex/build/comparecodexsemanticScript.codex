@@ -34,6 +34,24 @@ Section: S02 -- SemDef Class
      ScRaw "    }",
      ScRaw "}"]
 
+Section: S02b -- Canonicalize-TypeName
+
+ A type parameter may be written bare or parenthesized, and `HamtEntry a` and
+ `HamtEntry (a)` are the same type. The text emitter canonicalizes to the
+ parenthesized form, so a chapter written in the bare style keys differently
+ in source and stage1 and reads as a dropped definition: an emitter
+ information-loss claim where nothing was lost. Parens are already normalized
+ away inside bodies; this is the header doing the same.
+
+  s02b : List ShellCmd =
+    [ScRaw "function Canonicalize-TypeName([string]$n) {",
+     ScRaw "    $parts = @(($n -replace '[()]', ' ') -split '\\s+' | Where-Object { $_ -ne '' })",
+     ScRaw "    if ($parts.Count -le 1) { return $n }",
+     ScRaw "    $head = $parts[0]",
+     ScRaw "    $params = @($parts[1..($parts.Count - 1)] | ForEach-Object { \"($_)\" })",
+     ScRaw "    return \"$head $($params -join ' ')\"",
+     ScRaw "}"]
+
 Section: S03 -- Parse-OneDef Function
 
   s03 : List ShellCmd =
@@ -44,7 +62,7 @@ Section: S03 -- Parse-OneDef Function
      ScRaw "    if ($isType) {",
      ScRaw "        $eqPos = $firstLine.IndexOf(' =')",
      ScRaw "        if ($eqPos -lt 0) { return @($null, ($start + 1)) }",
-     ScRaw "        $name = $firstLine.Substring(0, $eqPos).Trim()",
+     ScRaw "        $name = Canonicalize-TypeName $firstLine.Substring(0, $eqPos).Trim()",
      ScRaw "    } else {",
      ScRaw "        $colonPos = $firstLine.IndexOf(' : ')",
      ScRaw "        if ($colonPos -lt 0) { return @($null, ($start + 1)) }",
@@ -213,12 +231,12 @@ Section: S07 -- Operator Precedence Helpers
      ScBlank,
      ScRaw "function Get-OpPrec([string]$tok) {",
      ScRaw "    switch ($tok) {",
-     ScRaw "        '||' { return 1 } '&' { return 2 } '|' { return 2 }",
-     ScRaw "        '==' { return 3 } '/=' { return 3 } '<' { return 3 } '>' { return 3 } '<=' { return 3 } '>=' { return 3 }",
-     ScRaw "        '++' { return 4 } '::' { return 4 }",
-     ScRaw "        '+' { return 5 } '-' { return 5 }",
-     ScRaw "        '*' { return 6 } '/' { return 6 } '%' { return 6 }",
-     ScRaw "        '^' { return 7 }",
+     ScRaw "        '||' { return 1 } '|' { return 2 } '&' { return 3 }",
+     ScRaw "        '==' { return 4 } '/=' { return 4 } '<' { return 4 } '>' { return 4 } '<=' { return 4 } '>=' { return 4 }",
+     ScRaw "        '::' { return 5 }",
+     ScRaw "        '+' { return 6 } '-' { return 6 }",
+     ScRaw "        '*' { return 7 } '/' { return 7 } '%' { return 7 }",
+     ScRaw "        '^' { return 8 }",
      ScRaw "        '.' { return 20 }",
      ScRaw "        default { return 0 }",
      ScRaw "    }",
@@ -311,8 +329,19 @@ Section: S09 -- Normalize and Collapse Functions
   s09 : List ShellCmd =
     [ScRaw "function Normalize-OpAliases([System.Collections.Generic.List[string]]$tokens) {",
      ScRaw "    for ($i = 0; $i -lt $tokens.Count; $i++) {",
-     ScRaw "        if ($tokens[$i] -eq '&' -and $i -gt 0 -and $i -lt $tokens.Count - 1) { $tokens[$i] = '++' }",
      ScRaw "        if ($tokens[$i] -eq ',' -and $i + 1 -lt $tokens.Count -and $tokens[$i+1].Length -gt 0 -and [char]::IsUpper($tokens[$i+1][0])) { $tokens[$i] = '->' }",
+     ScRaw "    }",
+     ScRaw "    for ($i = $tokens.Count - 2; $i -ge 0; $i--) {",
+     ScRaw "        if ($tokens[$i] -eq '#' -and $tokens[$i+1] -match '^[0-9A-Fa-f_]+$') {",
+     ScRaw "            $hex = $tokens[$i+1] -replace '_',''",
+     ScRaw "            $u = [System.Convert]::ToUInt64($hex, 16)",
+     ScRaw "            $v = [System.BitConverter]::ToInt64([System.BitConverter]::GetBytes($u), 0)",
+     ScRaw "            if ($v -ge 0) {",
+     ScRaw "                $tokens.RemoveAt($i+1); $tokens[$i] = \"$v\"",
+     ScRaw "            } else {",
+     ScRaw "                $tokens[$i] = '-'; $tokens[$i+1] = \"$(-([System.Numerics.BigInteger]$v))\"",
+     ScRaw "            }",
+     ScRaw "        }",
      ScRaw "    }",
      ScRaw "    for ($i = $tokens.Count - 2; $i -ge 0; $i--) {",
      ScRaw "        if ($tokens[$i] -eq '__linked-list-empty' -and $tokens[$i+1] -eq '0') {",
@@ -327,7 +356,7 @@ Section: S09 -- Normalize and Collapse Functions
      ScBlank,
      ScRaw "function Collapse-Whitespace([string]$text) {",
      ScRaw "    $tokens = [System.Collections.Generic.List[string]]::new()",
-     ScRaw "    foreach ($m in [regex]::Matches($text, '[a-zA-Z0-9_][a-zA-Z0-9_\\-]*|\"(?:\\\\.|[^\"\\\\])*\"|''(?:\\\\.|[^''\\\\])*''|\\+\\+|::|->|<-|<=|>=|/=|&&|\\|\\||\\S')) {",
+     ScRaw "    foreach ($m in [regex]::Matches($text, '[a-zA-Z0-9_][a-zA-Z0-9_\\-]*|\"(?:\\\\.|[^\"\\\\])*\"|''(?:\\\\.|[^''\\\\])*''|::|->|<-|<=|>=|/=|&&|\\|\\||\\S')) {",
      ScRaw "        $tokens.Add($m.Value)",
      ScRaw "    }",
      ScRaw "    Normalize-OpAliases $tokens",
@@ -373,7 +402,7 @@ Section: S10 -- Parse Phase
      ScRaw "    }",
      ScRaw "}",
      ScBlank,
-     ScAssign "s1Defs" (SeRaw "Parse-Stage1 $stage1Text")]
+     ScAssign "s1Defs" (SeAsArray (SeRaw "Parse-Stage1 $stage1Text"))]
 
 Section: S11 -- Match Phase
 
@@ -491,12 +520,13 @@ Section: S14 -- Verdict
   s14 : List ShellCmd =
     let show-dropped = [ScEcho (SeLit "Dropped:"), ScForEach "d" (SeVar "dropped") [ScEcho (SeRaw "\"  $($d.Chapter): $($d.Name) (line $($d.LineNo))\"")]]
     in let show-mismatches = [ScEcho (SeLit "Body mismatches:"), ScForEach "m" (SeVar "bodyMismatchList") [ScEcho (SeRaw "\"  $m\"")]]
-    in let fail-body = [ScAssign "totalS0" (SeRaw "($s0Chapters.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum"), ScEcho (SeLit "=== Semantic Equivalence FAIL ==="), ScEcho (SeRaw "\"Source: $totalS0 defs  Stage1: $($s1Defs.Count) defs  Matched: $($matched.Count)\""), ScEcho (SeRaw "\"Dropped: $($dropped.Count)  Body mismatches: $bodyMismatches\""), ScIf (SeRaw "$dropped.Count -gt 0") show-dropped [], ScIf (SeRaw "$bodyMismatchList.Count -gt 0") show-mismatches []]
+    in let count-defs = [ScAssign "totalS0" (SeInt 0), ScForEach "k" (SeAsArray (SeProperty (SeVar "s0Chapters") "Keys")) [ScRaw "$totalS0 += @($s0Chapters[$k]).Count"]]
+    in let fail-body = [ScSequence count-defs, ScEcho (SeLit "=== Semantic Equivalence FAIL ==="), ScEcho (SeRaw "\"Source: $totalS0 defs  Stage1: $($s1Defs.Count) defs  Matched: $($matched.Count)\""), ScEcho (SeRaw "\"Dropped: $($dropped.Count)  Body mismatches: $bodyMismatches\""), ScIf (SeRaw "$dropped.Count -gt 0") show-dropped [], ScIf (SeRaw "$bodyMismatchList.Count -gt 0") show-mismatches []]
     in [ScComment "Verdict", ScAssign "pass" (SeRaw "$dropped.Count -eq 0 -and $bodyMismatches -eq 0"), ScBlank, ScIf (SeNot (SeVar "pass")) fail-body [], ScBlank, ScRaw "exit $(if ($pass) { 0 } else { 1 })"]
 
 Section: Assembly
 
-  sem-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08, ScBlank, ScSequence s09, ScBlank, ScSequence s10, ScBlank, ScSequence s11, ScBlank, ScSequence s12, ScBlank, ScSequence s13, ScBlank, ScSequence s14]
+  sem-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s02b, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08, ScBlank, ScSequence s09, ScBlank, ScSequence s10, ScBlank, ScSequence s11, ScBlank, ScSequence s12, ScBlank, ScSequence s13, ScBlank, ScSequence s14]
 
   sem-script : ShellScript = sh-script "compare-codex-semantic" "Semantic equivalence check between source Codex and stage1 emitter output" sem-params sem-body
 

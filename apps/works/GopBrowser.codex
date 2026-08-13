@@ -1,0 +1,135 @@
+Chapter: GopBrowser
+  cites Works chapter GopComposite
+  cites Works chapter GopDraw
+  cites Works chapter GopUsbKbd
+  cites Works chapter GopUsbMouse
+  cites Browser chapter Browser
+  cites Browser chapter BrowserTheme
+  cites Browser chapter Display
+  cites UI chapter Widget
+  cites UI chapter Event
+  cites UI chapter KeyInput
+  cites Kernel chapter BitmapFont
+
+ The browser as a desk pane. The browser is otherwise a standalone program
+ that owns the machine, and three of its assumptions have to be answered
+ here rather than changed there.
+
+ It normally sets its own video mode. `display-init-text-fallback` hands it
+ a DisplayState with `ds-active` False, which makes `display-present` a
+ no-op, so the browser never touches the Bochs VBE ports and never writes
+ 0xBF000000. The desk's framebuffer, from the handoff cells, stays the only
+ scanout. Nothing about the browser's rendering is lost by this: the pane
+ paints the same `browser-render` tree through `comp-render`, which walks it
+ straight to `base`/`stride` and skips the intermediate 786,432-element
+ Framebuf the standalone path builds.
+
+ The two keyboards are different alphabets, not different encodings.
+ `kbd-take` answers raw Set-1 scancodes; the browser's `map-key-event`
+ compares against `key-*` constants and `char-code` values, which is what
+ `poll-key` produces. `poll-key-decode` is the existing converter between
+ them and is what makes the chords work.
+
+ Modifiers are tracked here because a Set-1 stream carries them as their own
+ make and break codes, and the browser wants them as a mask on the event.
+
+Section: Modifier Tracking
+
+  gbr-mod-shift : Integer = 1
+  gbr-mod-ctrl : Integer = 2
+  gbr-mod-alt : Integer = 4
+
+  gbr-is-mod : Integer -> Boolean
+  gbr-is-mod (sc) =
+    sc == 29 | sc == 157 | sc == 42 | sc == 170 | sc == 54 | sc == 182 | sc == 56 | sc == 184
+
+  gbr-mods : Integer, Integer -> Integer
+  gbr-mods (mods) (sc) =
+    if sc == 29 then bit-or mods gbr-mod-ctrl
+    else if sc == 157 then bit-and mods 5
+    else if sc == 42 then bit-or mods gbr-mod-shift
+    else if sc == 54 then bit-or mods gbr-mod-shift
+    else if sc == 170 then bit-and mods 6
+    else if sc == 182 then bit-and mods 6
+    else if sc == 56 then bit-or mods gbr-mod-alt
+    else if sc == 184 then bit-and mods 3
+    else mods
+
+Section: Pane
+
+ The cursor is drawn INTO the framebuffer over a saved copy of what it
+ covers, so a repaint underneath it would leave the save buffer describing
+ pixels that no longer exist and the next move would stamp them back. The
+ order here is the same one `desk-loop` uses and it is not interchangeable:
+ hide (which restores the background), repaint, then update (which saves the
+ NEW background and draws).
+
+ The frame mark used to sit inside that bracket and the tree died with it,
+ which is why a page link was not clickable: the only tree with real bounds
+ on it was the one being thrown away. The tree is kept now, and the mark is
+ kept with it in `bs-laid-mark`, so the pane can release exactly this frame's
+ allocations later. The mark is taken before `browser-render`, so the raw
+ tree is inside the released span too and only the laid-out one is reachable
+ afterwards.
+
+  gbr-repaint : Integer, Integer, Integer, Integer, CbfFont, UsbMouse, Integer, Integer, BrowserState -> BrowserState
+  gbr-repaint (base) (w) (h) (stride) (font) (mouse) (cs) (s) (st) =
+    let hd = cursor-hide cs base stride
+    in let frame = __heap-save
+    in let laid = comp-render base stride font (browser-render st) (st.bs-theme) w h s
+    in let memo = browser-memo-laid st laid frame
+    in let cu = if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
+    in memo
+
+ An event releases the memoized tree BEFORE it dispatches, never after. The
+ new state a dispatch builds is allocated above the frontier, so a release
+ that came second would have to free memory underneath state that must
+ survive, which a bump allocator cannot do. That ordering is the whole reason
+ `browser-click-code` answers an Integer: the hit has to be read out of the
+ tree while it is still alive and still be meaningful once it is gone.
+
+ The idle branches restore `mark` instead, which is ABOVE the tree, so the
+ memo survives a poll that found nothing. Steady state is exactly one tree.
+
+  gbr-loop : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer, BrowserState, Integer -> [Device.Port] Integer
+  gbr-loop (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) (s) (st) (mods) = act
+    let mark = __heap-save
+    in act
+      sc <- kbd-take kbd
+      let mv = mouse-pump mouse w h
+      in let cu = if mv == 1 then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
+      in let hit = mv == 1 & mouse-clicked mouse
+      in if sc == 1 then
+        let d = __heap-restore mark
+        in 0
+      else if hit then
+        let mx = comp-hit-x (mouse-x mouse) s
+        in let my = comp-hit-y (mouse-y mouse) s
+        in let code = browser-click-code st mx my
+        in let d = __heap-restore (st.bs-laid-mark)
+        in let next = browser-apply-click st mx my code
+        in let shown = gbr-repaint base w h stride font mouse cs s next
+        in gbr-loop base w h stride font kbd mouse cs s shown mods
+      else if sc == 0 then
+        let d = __heap-restore mark
+        in gbr-loop base w h stride font kbd mouse cs s st mods
+      else if gbr-is-mod sc then
+        let d = __heap-restore mark
+        in gbr-loop base w h stride font kbd mouse cs s st (gbr-mods mods sc)
+      else if sc >= 128 then
+        let d = __heap-restore mark
+        in gbr-loop base w h stride font kbd mouse cs s st mods
+      else
+        let key = poll-key-decode sc mods
+        in let d = __heap-restore (st.bs-laid-mark)
+        in let next = browser-dispatch-event st (event-key-down key mods 0)
+        in let shown = gbr-repaint base w h stride font mouse cs s next
+        in gbr-loop base w h stride font kbd mouse cs s shown mods
+    end
+  end
+
+  gbr-run : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer -> [Device.Port] Integer
+  gbr-run (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) (s) =
+    let st = browser-init w h browser-theme-default display-init-text-fallback
+    in let shown = gbr-repaint base w h stride font mouse cs s st
+    in gbr-loop base w h stride font kbd mouse cs s shown 0

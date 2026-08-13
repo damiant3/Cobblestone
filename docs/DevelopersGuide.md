@@ -459,7 +459,7 @@ branch, so `for x in xs do f x` is a parse error (CDX1000 at the `do`).
 ```
   greet : Text -> [Console] Nothing
   greet (name) = act
-   print-line ("Hello, " & name)
+   print-line-uni ("Hello, " & name)
   end
 ```
 
@@ -468,7 +468,7 @@ branch, so `for x in xs do f x` is a parse error (CDX1000 at the `do`).
 ```
   act
    line <- read-line
-   print-line line
+   print-line-uni line
   end
 ```
 
@@ -479,9 +479,37 @@ Effect declarations:
 
 ```
   effect Console where
-    print-line : Text -> [Console] Nothing
-    read-line  : [Console] Text
+    print-line-uni : Text -> [Console.Write] Nothing
+    read-line      : [Console.Read] Text
 ```
+
+**Print through `print-line-uni`. `print-line` is the RAW one, and the
+name is the trap.** The three blocks above said `print-line` until
+2026-08-11, and the effect block declared a `print-line` that
+`codex/foreword/core/Console.codex` does not have -- it declares
+`print-line-uni` and `read-line`, with the split `Console.Write` /
+`Console.Read` rows shown above. Anything copied from here therefore got
+the BUILTIN of that name (`Types/Builtins.codex`), which lowers to
+`emit-print-line-raw-builtin` and writes the internal CCE bytes straight
+at the serial port with no conversion at the I/O boundary. Rule 5 puts
+that conversion at the boundary and nowhere else, and `print-line-uni`
+(`emit-print-line-builtin`) is where it lives.
+
+It does not fail loudly. It prints, and the bytes are wrong in a way that
+reads as a font or terminal problem. `Codex Browser v0.1` came out as
+```
+2
+$:
+```
+because CCE orders letters by English frequency: `C` is 50, which is
+ASCII `'2'`; `e` is 13, which is a carriage return, hence the stray line
+break; `x` is 36, `'$'`; `B` is 58, `':'`. The browser shipped that banner
+for weeks and it was read as a display fault. Measured 2026-08-11: 192
+bare `print-line` call sites remain across `apps/` and `codex/`.
+
+`print-line-raw` and `print-text` are the honest names for the raw
+behaviour and are what a wire emitter should say when it means it --
+`print-text` is the same raw byte loop without the terminator.
 
 ## Operators
 

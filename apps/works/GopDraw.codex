@@ -15,6 +15,78 @@ Section: Cursor
   cursor-w : Integer = 8
   cursor-h : Integer = 12
 
+  cursor-col-edge : Integer = 1052688
+  cursor-col-fill : Integer = 16777215
+
+ The arrow, one byte of bitmask per row, bit 7 leftmost. Two masks rather
+ than one because a pointer has to stay visible over both a dark wall and a
+ lit panel: the edge is drawn dark, the fill white, and a pixel in neither
+ is left alone so the background shows through the notch under the tail.
+
+   r0   E.......      r6   EFFFFFE.
+   r1   EE......      r7   EFFFFFFE
+   r2   EFE.....      r8   EFFFEEEE
+   r3   EFFE....      r9   EFFE....
+   r4   EFFFE...      r10  EFFE....
+   r5   EFFFFE..      r11  EEEE....
+
+ These are functions rather than a `List Integer` constant, and that is not
+ style. A top-level list constant is rebuilt at every mention
+ (DevelopersGuide, `sha256-h0`), so `list-at cursor-mask r` inside the pixel
+ loop would allocate a fresh twelve-element list per pixel, on a routine
+ that runs on every mouse move with no GC underneath it. The row masks are
+ also hoisted out of the column loop, so the comparison chain runs once per
+ row rather than once per pixel.
+
+  cursor-edge-mask : Integer -> Integer
+  cursor-edge-mask (r) =
+    if r == 0 then 128
+    else if r == 1 then 192
+    else if r == 2 then 160
+    else if r == 3 then 144
+    else if r == 4 then 136
+    else if r == 5 then 132
+    else if r == 6 then 130
+    else if r == 7 then 129
+    else if r == 8 then 143
+    else if r == 9 then 144
+    else if r == 10 then 144
+    else if r == 11 then 240
+    else 0
+
+  cursor-fill-mask : Integer -> Integer
+  cursor-fill-mask (r) =
+    if r == 2 then 64
+    else if r == 3 then 96
+    else if r == 4 then 112
+    else if r == 5 then 120
+    else if r == 6 then 124
+    else if r == 7 then 126
+    else if r == 8 then 112
+    else if r == 9 then 96
+    else if r == 10 then 96
+    else 0
+
+  cursor-paint-cols : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  cursor-paint-cols (base) (stride) (mx) (my) (s) (cwc) (py) (em) (fm) (px) =
+    if px >= cwc then 0
+    else let lc = px / s
+    in let e = bit-and (bit-shru em (7 - lc)) 1
+    in let f = bit-and (bit-shru fm (7 - lc)) 1
+    in let w = if e == 1 then gop-put base stride (mx + px) (my + py) cursor-col-edge
+          else if f == 1 then gop-put base stride (mx + px) (my + py) cursor-col-fill
+          else 0
+    in cursor-paint-cols base stride mx my s cwc py em fm (px + 1)
+
+  cursor-paint-rows : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  cursor-paint-rows (base) (stride) (mx) (my) (s) (cwc) (chc) (py) =
+    if py >= chc then 0
+    else let lr = py / s
+    in let em = cursor-edge-mask lr
+    in let fm = cursor-fill-mask lr
+    in let w = cursor-paint-cols base stride mx my s cwc py em fm 0
+    in cursor-paint-rows base stride mx my s cwc chc (py + 1)
+
   cursor-save-cols : Integer, Integer, Integer, Integer, Integer -> Integer
   cursor-save-cols (cs) (base) (stride) (r) (c) =
     if c >= peek-32 cs 12 then 0
@@ -58,8 +130,7 @@ Section: Cursor
     in let s2 = poke-32 cs 12 cwc
     in let s3 = poke-32 cs 16 chc
     in let sv = cursor-save-rows cs base stride 0
-    in let d0 = gop-fill-rect base stride mx my cwc chc 1052688
-    in let d1 = if cwc > 2 * s then (if chc > 2 * s then gop-fill-rect base stride (mx + s) (my + s) (cwc - 2 * s) (chc - 2 * s) 16777215 else 0) else 0
+    in let d0 = cursor-paint-rows base stride mx my s cwc chc 0
     in poke-32 cs 0 1
 
 Section: Pixel
@@ -157,3 +228,15 @@ Section: Scale
 
   ui-scale : Integer -> Integer
   ui-scale (w) = if w >= 1024 then 2 else 1
+
+ The WIDGET layer scales separately from the hand-drawn one, and the reason is
+ that a widget tree's minimum sizes are written in the space it is laid out in.
+ Every app tree in this tree was authored against 1024x768, so dividing that
+ space to scale the chrome does not shrink the chrome, it shrinks the ROOM: at
+ scale 2 a 1024x768 panel lays out in 512x384 and the calculator loses four of
+ its fifteen keys off the bottom. Measured 2026-08-11. So this stays 1 until
+ the panel is big enough that halving it still leaves more room than 1024x768
+ gave, which is why the step is at 1600 and not at 1024.
+
+  ui-wscale : Integer -> Integer
+  ui-wscale (w) = if w >= 1600 then 2 else 1

@@ -24,15 +24,62 @@ Perforce-only, no `.git`). It is done from a `-main` copy-up workspace: a
 `.git` repo sits alongside the Perforce client root, Perforce syncs main
 into that dir, and git tracks the same files and pushes them public.
 
-The `.git` belongs to no single agent -- whoever runs the release holds
-it. Every `-main` workspace syncs the identical `//Codex/main` tree, so the
-`.git` can be copied between them (`robocopy <src>\.git <dst>\.git /E`) and
-works at once: the working tree already matches, so `git status` shows
-exactly the changes since the last push. Update 35 onward runs the release
-from `NewRepository-reek-main`; earlier pushes ran from
-`NewRepository-fester-main`. Either is valid -- the release agent's own
-`-main` workspace is the default, and no one workspace is "in charge" of
-the mirror.
+**The agent Damian asks to push is in charge of that release.** Not a
+standing owner, not the workspace a previous release happened to run from
+-- the assignment is the authority, and it lasts for that push. Damian's
+ruling, 2026-08-12.
+
+Being in charge means finding the `.git` yourself. Every `-main` workspace
+syncs the identical `//Codex/main` tree, so the `.git` can be copied
+between them (`robocopy <src>\.git <dst>\.git /E`) and works at once: the
+working tree already matches, so `git status` shows exactly the changes
+since the last push. **Take it from the last agent that actually pushed --
+the one whose remote state is current -- and either run the release there
+or robocopy that `.git` to where you are working.**
+
+**Find it by asking the remote, not by reading a name off this paragraph
+and not by comparing dates.** Several `-main` workspaces hold a stale
+`.git` from an older release and they are indistinguishable by name. A date
+comparison is not enough either: measured 2026-08-12, `red-main` carried a
+2026-08-09 commit that was NEWER than `reek-main`'s and had never been
+pushed at all, so a newest-wins sort is ambiguous exactly where it matters.
+The remote tip is the only thing that settles it:
+
+```powershell
+$remote = (git ls-remote https://github.com/damiant3/NewRepository.git master) -split '\s+' |
+          Select-Object -First 1
+foreach ($w in Get-ChildItem D:\Projects -Directory -Filter 'NewRepository-*-main') {
+    if (-not (Test-Path "$($w.FullName)\.git")) { continue }
+    $sha  = git -C $w.FullName rev-parse HEAD
+    $date = git -C $w.FullName log -1 --format='%ad' --date=short
+    git -C $w.FullName cat-file -e "$remote^{commit}" 2>$null; $known = $?
+    $mark = if ($sha -eq $remote) { 'AT REMOTE TIP' }
+            elseif ($known)       { 'has the tip, local commits ahead' }
+            else                  { 'does NOT have the remote tip -- stale' }
+    '{0,-26} {1} {2}  {3}' -f $w.Name, $date, $sha.Substring(0, 8), $mark
+}
+```
+
+Take the one at the remote tip. "Has the tip, local commits ahead" is also
+usable and means someone committed without pushing; find out why before you
+build on it. Anything reporting stale is a copy from an older release and
+must not be pushed from -- doing so re-uploads a history the remote already
+has and leaves a divergence to reconcile without forcing.
+
+Measured 2026-08-12 with the above, github master at `4175119c`:
+
+| workspace | HEAD | |
+|---|---|---|
+| `fester-main` | 2026-07-08 `6ac4ee35` | stale (Update 34) |
+| `reek-main` | 2026-07-24 `b1c50258` | stale (Update 36) |
+| `red-main` | 2026-08-09 `9f92c703` | stale, and newer than reek's |
+| `val-main` | 2026-08-10 `4175119c` | **at the remote tip** |
+
+That table is a reading, not a rule. It is here to show what the command
+prints and what the stale case looks like; re-run the command every time.
+This section named a fixed workspace until 2026-08-12 and it had been wrong
+for four days -- a named workspace in a doc is a count carried forward by
+another route (L-COUNT).
 
 ## Remotes and branch mapping (mismatched, watch out)
 

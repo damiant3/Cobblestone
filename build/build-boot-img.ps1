@@ -1,5 +1,9 @@
 # build-boot-img.ps1 -- Build seed/Codex.img, the bootable UEFI dev-console image
-# Generated from Codex Shell DSL. Do not edit by hand.
+# GENERATED FROM THE CODEX SHELL DSL. Do not edit by hand.
+# A hand edit here must NOT be submitted. Change the generator under
+# codex/build/, regenerate, and submit the generator and this file
+# together. Until then build/check-generated-scripts.ps1 reports this
+# file as drifted, and the next regeneration discards the edit.
 [CmdletBinding()]
 param(
     # -Agent additionally generates a bundled agent (build/make-agent-bundle.ps1)
@@ -153,7 +157,7 @@ if ((-not (Test-Path -PathType Leaf $SourceFile))) {
 # partition -- at the old 16384 it fitted with almost nothing to spare and
 # -Agent would not have fitted at all.
 Write-Host '  Building GPT disk image...'
-& pwsh -NoProfile -File $ImgScript -PeInput $BootPe -Out $ImgOut -Seed $Seed -Source $SourceFile -TotalSectors 32768 @AgentArgs
+& pwsh -NoProfile -File $ImgScript -PeInput $BootPe -Out $ImgOut -Seed $Seed -Source $SourceFile -SourceDir (Join-Path $Repo 'codex\compiler') -TotalSectors 32768 @AgentArgs
 if (((-not ($LASTEXITCODE -eq 0)) -or (-not (Test-Path -PathType Leaf $ImgOut)))) {
     Write-Host 'FAIL: IMG build failed'
     exit 1

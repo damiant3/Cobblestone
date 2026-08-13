@@ -5,9 +5,14 @@ Chapter: VgaGraphics
 
  VGA graphics mode via Bochs VBE extensions. QEMU's standard VGA
  emulates the Bochs Display Adapter interface through I/O ports
- 0x01CE (index) and 0x01CF (data). Provides a linear framebuffer
- at physical address 0xFD000000 (QEMU default for stdvga PCI BAR).
- Supports 32-bit color (XRGB8888).
+ 0x01CE (index) and 0x01CF (data). Supports 32-bit color (XRGB8888).
+
+ The framebuffer address is the one number here that is ours rather than
+ the Bochs interface's, so it is the one worth stating. codex-vm scans
+ out of 0xBF000000 in guest RAM (`GOP_FB_ADDR`), which is also what its
+ UEFI GOP publishes as FrameBufferBase, so that address is the display on
+ both boot paths. It is NOT the stdvga PCI BAR at 0xFD000000, which this
+ chapter used to name and which nothing maps.
 
  We say:
 
@@ -61,9 +66,9 @@ Section: Mode Setting
     in let w1 = vbe-write vbe-reg-xres width
     in let w2 = vbe-write vbe-reg-yres height
     in let w3 = vbe-write vbe-reg-bpp bpp
-    in let w4 = vbe-write vbe-reg-enable vbe-enable-flag
+    in let w4 = vbe-write vbe-reg-enable (vbe-enable-flag + vbe-lfb-flag)
     in let pitch = width * (bpp / 8)
-    in GfxMode { gfx-width = width, gfx-height = height, gfx-bpp = bpp, gfx-pitch = pitch, gfx-fb-base = 655360, gfx-active = True }
+    in GfxMode { gfx-width = width, gfx-height = height, gfx-bpp = bpp, gfx-pitch = pitch, gfx-fb-base = gfx-find-fb, gfx-active = True }
 
   gfx-640x480 : GfxMode
   gfx-640x480 = gfx-set-mode 640 480 32
@@ -75,7 +80,7 @@ Section: Mode Setting
   gfx-1024x768 = gfx-set-mode 1024 768 32
 
   gfx-find-fb : Integer
-  gfx-find-fb = 4244635648
+  gfx-find-fb = 3204448256
 
 Section: Pixel Operations
   gfx-pixel-offset : GfxMode, Integer, Integer -> Integer
@@ -88,11 +93,7 @@ Section: Pixel Operations
     else if x >= mode.gfx-width then 0
     else if y >= mode.gfx-height then 0
     else let off = gfx-pixel-offset mode x y
-    in let bank = off / 65536
-    in let local = off - bank * 65536
-    in let wb = vbe-write vbe-reg-bank bank
-    in let packed = rgb-to-packed color
-    in wb + poke-32 655360 local packed
+    in poke-32 (mode.gfx-fb-base) off (rgb-to-packed color)
 
   gfx-get-pixel : GfxMode, Integer, Integer -> Rgb
   gfx-get-pixel (mode) (x) (y) =

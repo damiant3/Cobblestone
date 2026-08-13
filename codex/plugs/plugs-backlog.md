@@ -13,13 +13,21 @@ The target's own toolchain or runtime is the first thing to notice, and
 for most of these plugs nothing downstream ever runs. Assume silence is
 silence, not agreement (L-GAP).
 
-## 1.2 -- Fourteen plugs emit a DIVISION where a record field access belongs
+## 1.2 -- THIRTY-SIX plugs emit a DIVISION where a record field access belongs
 
 The IR spells a field as `name/slot` (`ir-field-with-index`,
-`compiler/Emit/IRTextEmitter.codex`); only html and csharp ever learned
-to strip the slot, and python and javascript were fixed in main 13199.
-**Still wrong: ada, clojure, d, electron, elixir, flutter, fortran, go,
-groovy, gtk, haskell, pascal, react, ruby.**
+`compiler/Emit/IRTextEmitter.codex`), and a plug that does not strip the
+slot emits the whole thing as an expression.
+
+**This entry said "fourteen" and named them. Measured 2026-08-11 by
+running every plug and grepping its output, it is thirty-six** (L-COUNT).
+The fourteen were the ones anyone had read; the rest were never checked.
+
+| | plugs |
+|---|---|
+| **leak the slot (36)** | ada, angular, clojure, cobol, compose, d, electron, elixir, flutter, fortran, go, groovy, gtk, haskell, java, julia, kotlin, lua, nim, objc, ocaml, pascal, perl, php, qt, react, ruby, rust, scala, scheme, svelte, swift, swiftui, typescript, vue, zig |
+| **clean (6)** | python, html, csharp, javascript, wasm, recheck |
+| **emits no field reference at all (1)** | babbage -- a different gap, not this one |
 
 Slot 0 divides by zero and crashes, slot 1 divides by one and is
 SILENTLY CORRECT, slot 2+ is silently wrong; the map-lookup plugs (go,
@@ -27,10 +35,68 @@ flutter, groovy, elixir) get a silently missing key instead and need
 different handling than a substring before the slash. Copy `py-field` /
 `js-field`.
 
-Deferred because none of these has a runtime wired into
-`build/plug-oracle-test.ps1`, so the change cannot be verified today.
-**This wants two or three more oracle arms first, and an owner. A blind
-sweep would be a compiling change, not a correct one.**
+**The deferral is lifted for DETECTING it.** This entry used to say the
+change "cannot be verified today" because no runtime is wired into
+`build/plug-oracle-test.ps1`. That is the standard for proving a fix
+CORRECT and it still holds. It is not the standard for seeing the
+defect, which is visible in the emitted text with no runtime at all:
+
+```powershell
+# 10 lines of Codex; the whole probe is a record built and one field read
+pwsh build/compile.ps1 -Src <probe>.codex -Out probe.ir -Log probe.log -IrCce
+pwsh build/plug-run.ps1 -IrInput probe.ir -Out out.txt `
+    -PlugCdx codex/plugs/<name>/build-output/<name>-plug.cdx -Port <its port>
+Select-String -Path out.txt -Pattern 'a/0'      # a hit IS the defect
+```
+
+The probe is `Pair = record { a : Integer }` with
+`print-line-uni (integer-to-text (Pair { a = 7 }).a)`. Emitted today:
+haskell `(a/0 Pair { a = 7 })`, ruby `Pair.new(7).a/0`, go
+`map[...]{"a": 7}["a/0"]`, against python's correct `Pair(a=7).a`.
+**The oracle is validated against the arm that is known-good:** python
+was fixed in 13199 and the grep clears it, so the check discriminates
+rather than merely firing. Each plug's port is the `-Port` literal in its
+own `run.ps1`; passing the wrong one hangs the listener and exits 5,
+which looks nothing like a pass.
+
+Still wants an owner, and a fix still wants a reviewer or a runtime
+per language. A blind sweep would be a compiling change, not a correct
+one.
+
+## 1.11 -- Nothing rebuilds the transpiler plug binaries, and it bit
+
+`codex/plugs/*/build-output/*-plug.cdx` is NOT in the depot
+(`build-output/` is in `.p4ignore`), so every workspace carries its own
+copies and they are only as fresh as the last time somebody ran that
+plug's `build.ps1` by hand.
+
+**Measured 2026-08-11.** 44 plug binaries in this workspace dated
+2026-08-06; the shared `codex/plugs/common/IRTextParser.codex` last
+changed 2026-08-08 (changes 14182, 14206). Against IR containing a
+record construction, **37 of 38 runnable plugs faulted** -- `!EXC=06`,
+invalid opcode, inside `parse-type-record` -- and after
+`codex/plugs/<name>/build.ps1` for each, **38 of 38 produced output**.
+Only python survived stale. A rebuild is about 3 seconds per plug and
+150 seconds for all 49.
+
+**Read that result narrowly: 38 of 38 means they no longer CRASH, not
+that they are correct.** Entry 1.2 above was measured on those same
+rebuilt binaries and 36 of them emit the wrong thing while exiting 0.
+That is the standing hazard at the top of this file, arriving exactly as
+described.
+
+Nothing in the gate closes this. `plug-binary` rebuilds only the six
+binary backends (riscv, arm64, t3isa, elf, pe, img). `plug-smoke`
+rebuilds a plug **only if its CDX is MISSING**, and then runs four of
+them (typescript, python, rust, ptx) against a single input,
+`codex/plugs/test-input/hello.codex`, which has no record in it -- so
+the one path that faulted was the one path never exercised. **The gap is
+the input as much as the staleness**: 38 of 38 stale plugs handle
+`hello.codex` perfectly.
+
+Wants: a staleness check or an unconditional rebuild in `plug-smoke`,
+and a second smoke input carrying a record. Both are cheap; neither has
+an owner.
 
 ## 1.7 -- Which plugs emit `list-push` as an unconditional in-place append?
 
@@ -145,3 +211,63 @@ prerequisite, and option A's own risks are measured closed.
 
 `afields-to-rfields` fills every `type-val` with `ErrorTy`. Pre-existing
 gap, not a regression from any step.
+
+## 1.10 -- ARM64 has no process/capability kernel (COMPILER-1 has no ARM64 counterpart)
+
+The ARM64 target (`codex/plugs/arm64/`) boots a bare runtime with no
+kernel: no process table, no capability cell, no scope cells, no
+boot-time population, and no syscall/servicer path. The whole
+process/cap/scope builtin layer is a hardcoded stub in
+`Arm64CodeGen2.codex:1500-1508`: `process-get-pid`=0, `process-get-cap`=0,
+`process-get-scope`/`-network-scope`="" (`a64-emit-empty-text`),
+`process-set-scope`/`-network-scope`=-1, `process-restrict-cap`=-1. FS and
+net effects are hard-refused before any check: `read-file` /
+`read-file-raw` / `uefi-read-file` emit "arm64 has no filesystem"
+(`a64-emit-unsupported-read`, `:1473-1480`), `net-send-raw`/`net-recv-raw`
+return 0 (`:1507-1508`).
+
+**Consequence.** The x86-64 runtime scope and capability enforcement
+shipped and tested under COMPILER-1 (`codex/compiler/compiler-backlog.md`)
+has NO ARM64 counterpart, so a scoped or capability-restricted program is
+silently unenforced on ARM64. The arch-independent library predicates
+(`fat16-scope-admits`, `net-scope-admits`) are never reached there, and
+would read "" if they were.
+
+**Parity is the whole chain, not a getter fix:** a process table with
+cap/scope cells (mirror `X86_64Boot.codex:421,432,433`), boot population
+(mirror `emit-set-boot-scope`/`emit-grant-cap-mask` into
+`Arm64Runtime.codex` `__start`, ~`:1957`), real load/store codegen for the
+seven stubs plus an `emit-check-capability` analog, and an SVC/servicer
+path so effect ops reach the library gates. A QEMU/Renode cross bed DOES
+exist now (`build/test-cross-batch.ps1 -Arch arm64 -UseQemu` boots each
+test and asserts UART against `.expected`; `build/boot-arm64.ps1` for one
+image); the runtime scope/cap tests are `.no-cross`-excluded today with
+the reason "the cross lane boots a bare runtime with no kernel", and those
+exclusions lift once the machinery lands. Major effort and its own
+initiative, not a quick parity fix. Recorded 2026-08-11 (val); the bed
+availability is what makes it newly actionable.
+
+## 1.12 -- T3ISA: three follow-ons named and not taken (closed, not open)
+
+The t3isa plug is FINISHED and its design is folded to
+`docs/Designs/Done/Compiler/T3IsaPlug.md`. This entry exists so the three
+follow-ons that design names are reachable from the register that owns the
+quire, not because any of them is work waiting for an owner. **Damian's
+ruling 2026-08-11: closed, revisit when the specification next moves.** Do
+not pick one up as filler.
+
+1. **v3: what a `List` COSTS** on a bump allocator with no reclamation and
+   16 kilowords of heap. The question is the cost, not the feasibility.
+2. **`show` outside a print.** `fmt::show_int` (syscall 14) is measured
+   working since spec v1.3; the blocker is ours, the emitter having no Text
+   value to carry the handle. Text append stays impossible (`fmt::concat` is
+   not implemented on T3).
+3. **The heap syscall trade.** `heap_alloc_words` (218) against our
+   hand-rolled allocator: one syscall versus eleven instructions, bought
+   with a dependence on a region that has moved once already.
+
+**Before believing a green t3isa gate later, re-measure the target.** Four of
+the seven load-bearing target facts moved between spec v1.0 and v1.3, and one
+(`TSHR` rounding) would have been silent and wrong. The oracles are on this
+machine only (`D:\Toolchain-Ternary`), so `codex/plugs/t3isa/gate.ps1` cannot
+run anywhere else and nothing in `build/build.ps1` reaches it.

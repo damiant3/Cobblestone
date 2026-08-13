@@ -1,23 +1,24 @@
-# compare-codex-semantic.ps1
-# Semantic equivalence check between source Codex and stage1 emitter output.
-# Ported from tools/Codex.Cli/Program.SemEquiv.cs (deleted CL 690).
-#
-# Usage: compare-codex-semantic.ps1 -Source <source.codex> -Stage1 <stage1.codex> [-Show <name>]
-#
-# Parses defs from both files, matches by name (with chapter-prefix demangling),
-# normalizes whitespace/parens/type-vars, compares bodies.
-# Exit 0 = PASS, exit 1 = FAIL.
+# compare-codex-semantic.ps1 -- Semantic equivalence check between source Codex and stage1 emitter output
+# GENERATED FROM THE CODEX SHELL DSL. Do not edit by hand.
+# A hand edit here must NOT be submitted. Change the generator under
+# codex/build/, regenerate, and submit the generator and this file
+# together. Until then build/check-generated-scripts.ps1 reports this
+# file as drifted, and the next regeneration discards the edit.
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][string]$Source,
-    [Parameter(Mandatory)][string]$Stage1,
-    [string]$Show
+    [Parameter(Mandatory=$true)]
+    [string]$Source,
+    [Parameter(Mandatory=$true)]
+    [string]$Stage1,
+    [string]$Show = ''
 )
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $sourceText = [System.IO.File]::ReadAllText($Source).Replace("`r`n", "`n")
 $stage1Text = [System.IO.File]::ReadAllText($Stage1).Replace("`r`n", "`n")
+
 
 class SemDef {
     [string]$Name
@@ -31,14 +32,7 @@ class SemDef {
     }
 }
 
-# A type parameter may be written bare or parenthesized -- `HamtEntry a` and
-# `HamtEntry (a)` are the same type. The text emitter canonicalizes to the
-# parenthesized form, so a chapter written in the bare style (Hamt, Channel,
-# Queue, SessionTypes, FunnelHash, ElasticHash, Concurrent, ElasticBloom)
-# would key differently in source and stage1 and be reported as a dropped
-# definition -- an emitter information-loss claim where nothing was lost.
-# Canonicalize both sides. Parens are already normalized away inside bodies;
-# this is the header doing the same.
+
 function Canonicalize-TypeName([string]$n) {
     $parts = @(($n -replace '[()]', ' ') -split '\s+' | Where-Object { $_ -ne '' })
     if ($parts.Count -le 1) { return $n }
@@ -46,6 +40,7 @@ function Canonicalize-TypeName([string]$n) {
     $params = @($parts[1..($parts.Count - 1)] | ForEach-Object { "($_)" })
     return "$head $($params -join ' ')"
 }
+
 
 function Parse-OneDef([string[]]$lines, [int]$start, [string]$chapter) {
     $firstLine = $lines[$start]
@@ -110,6 +105,7 @@ function Parse-OneDef([string[]]$lines, [int]$start, [string]$chapter) {
     return @($def, $j)
 }
 
+
 function Parse-Stage0([string]$text) {
     $chapters = [ordered]@{}
     $slugs = [System.Collections.Generic.List[string]]::new()
@@ -171,6 +167,7 @@ function Parse-Stage0([string]$text) {
     return @($chapters, $slugs)
 }
 
+
 function Parse-Stage1([string]$text) {
     $defs = [System.Collections.Generic.List[object]]::new()
     $lines = $text.Split("`n")
@@ -186,6 +183,7 @@ function Parse-Stage1([string]$text) {
     }
     return $defs
 }
+
 
 function Demangle-Name([string]$name, [string[]]$slugsSorted) {
     foreach ($slug in $slugsSorted) {
@@ -206,17 +204,18 @@ function Demangle-Names([string]$body, [string[]]$slugsSorted) {
     return $text
 }
 
+
 $script:scopeKws = @('if','when','let','act','match','lambda','\','handle','fork','await','trying')
 $script:nonAtomKws = @('let','in','act','end','qed','match','when','is','if','then','else','lambda','handle','fork','await','of','where','with')
 
 function Get-OpPrec([string]$tok) {
     switch ($tok) {
-        '||' { return 1 } '&' { return 2 } '|' { return 2 }
-        '==' { return 3 } '/=' { return 3 } '<' { return 3 } '>' { return 3 } '<=' { return 3 } '>=' { return 3 }
-        '::' { return 4 }
-        '+' { return 5 } '-' { return 5 }
-        '*' { return 6 } '/' { return 6 } '%' { return 6 }
-        '^' { return 7 }
+        '||' { return 1 } '|' { return 2 } '&' { return 3 }
+        '==' { return 4 } '/=' { return 4 } '<' { return 4 } '>' { return 4 } '<=' { return 4 } '>=' { return 4 }
+        '::' { return 5 }
+        '+' { return 6 } '-' { return 6 }
+        '*' { return 7 } '/' { return 7 } '%' { return 7 }
+        '^' { return 8 }
         '.' { return 20 }
         default { return 0 }
     }
@@ -229,6 +228,7 @@ function Is-AtomToken([string]$tok) {
     if (-not ([char]::IsLetterOrDigit($c) -or $c -eq '_')) { return $false }
     return $tok -notin $script:nonAtomKws
 }
+
 
 function Find-MatchingClose([System.Collections.Generic.List[string]]$tokens, [int]$openIdx) {
     $depth = 1
@@ -254,10 +254,8 @@ function Strip-RedundantParens([System.Collections.Generic.List[string]]$tokens)
             $innerLen = $close - $i - 1
             if ($innerLen -le 0) { $tokens.RemoveAt($close); $tokens.RemoveAt($i); $changed = $true; break }
             if ($innerLen -eq 1) { $tokens.RemoveAt($close); $tokens.RemoveAt($i); $changed = $true; break }
-            # ( [ ... ] ) -- parens around a bracketed expression are always redundant
             if ($tokens[$i+1] -eq '[') {
-                $bracketClose = Find-MatchingClose $tokens $i  # finds the ) not ]
-                # check if inner is exactly one [...] group
+                $bracketClose = Find-MatchingClose $tokens $i
                 $depth3 = 0; $allBracketed = $true
                 for ($k = $i+1; $k -lt $close; $k++) {
                     if ($tokens[$k] -eq '[') { $depth3++ } elseif ($tokens[$k] -eq ']') { $depth3-- }
@@ -265,7 +263,6 @@ function Strip-RedundantParens([System.Collections.Generic.List[string]]$tokens)
                 }
                 if ($allBracketed) { $tokens.RemoveAt($close); $tokens.RemoveAt($i); $changed = $true; break }
             }
-
             $first = $tokens[$i + 1]
             if ($first -in $script:scopeKws) {
                 $nextTok = if ($close -lt $tokens.Count - 1) { $tokens[$close + 1] } else { $null }
@@ -273,7 +270,6 @@ function Strip-RedundantParens([System.Collections.Generic.List[string]]$tokens)
                 if ($rp -eq 0) { $tokens.RemoveAt($close); $tokens.RemoveAt($i); $changed = $true; break }
                 continue
             }
-
             $innerOps = [System.Collections.Generic.List[object]]::new()
             $depth2 = 0; $afterOp = $false
             for ($k = $i + 1; $k -lt $close; $k++) {
@@ -284,12 +280,10 @@ function Strip-RedundantParens([System.Collections.Generic.List[string]]$tokens)
                 if ($opP -gt 0 -and $afterOp) { $innerOps.Add(@($tokens[$k], $opP)); $afterOp = $false }
                 elseif ($opP -eq 0) { $afterOp = $true }
             }
-
             $prev = if ($i -gt 0) { $tokens[$i - 1] } else { $null }
             $next = if ($close -lt $tokens.Count - 1) { $tokens[$close + 1] } else { $null }
             $lp = if ($prev) { $p = Get-OpPrec $prev; if ($p -gt 0) { $p } elseif ($prev -in ')',']','}') { $AppPrec } elseif (Is-AtomToken $prev) { $AppPrec } else { 0 } } else { 0 }
             $rp = if ($next) { $p = Get-OpPrec $next; if ($p -gt 0) { $p } elseif ($next -in '(','[','{') { $AppPrec } elseif (Is-AtomToken $next) { $AppPrec } else { 0 } } else { 0 }
-
             if ($innerOps.Count -eq 0) {
                 $leftOK = $lp -lt $AppPrec -or $lp -eq 0
                 $rightOK = $rp -le $AppPrec -or $rp -eq 0
@@ -307,12 +301,11 @@ function Strip-RedundantParens([System.Collections.Generic.List[string]]$tokens)
     }
 }
 
+
 function Normalize-OpAliases([System.Collections.Generic.List[string]]$tokens) {
     for ($i = 0; $i -lt $tokens.Count; $i++) {
         if ($tokens[$i] -eq ',' -and $i + 1 -lt $tokens.Count -and $tokens[$i+1].Length -gt 0 -and [char]::IsUpper($tokens[$i+1][0])) { $tokens[$i] = '->' }
     }
-    # Normalize #HEX literals to decimal (the text emitter canonicalizes hex
-    # literals to their decimal value; bit-pattern semantics, two's complement)
     for ($i = $tokens.Count - 2; $i -ge 0; $i--) {
         if ($tokens[$i] -eq '#' -and $tokens[$i+1] -match '^[0-9A-Fa-f_]+$') {
             $hex = $tokens[$i+1] -replace '_',''
@@ -325,7 +318,6 @@ function Normalize-OpAliases([System.Collections.Generic.List[string]]$tokens) {
             }
         }
     }
-    # Normalize (__linked-list-empty 0) or __linked-list-empty 0 → [] (emitter desugars list literal)
     for ($i = $tokens.Count - 2; $i -ge 0; $i--) {
         if ($tokens[$i] -eq '__linked-list-empty' -and $tokens[$i+1] -eq '0') {
             if ($i -gt 0 -and $i + 2 -lt $tokens.Count -and $tokens[$i-1] -eq '(' -and $tokens[$i+2] -eq ')') {
@@ -368,13 +360,13 @@ function Alpha-NormalizeTypeVars([string]$sig) {
     return $sb.ToString()
 }
 
-# -- Parse --
+
+# Parse
 $r0 = Parse-Stage0 $sourceText
 $s0Chapters = $r0[0]
 $slugs = $r0[1]
 $slugsSorted = $slugs.ToArray() | Sort-Object { $_.Length } -Descending
 
-# Demangle stage0 chapter-prefixed names
 foreach ($ch in @($s0Chapters.Keys)) {
     $defs = $s0Chapters[$ch]
     for ($di = 0; $di -lt $defs.Count; $di++) {
@@ -383,7 +375,8 @@ foreach ($ch in @($s0Chapters.Keys)) {
     }
 }
 
-$s1Defs = Parse-Stage1 $stage1Text
+$s1Defs = @(Parse-Stage1 $stage1Text)
+
 
 # Build collision set
 $nameToChapters = @{}
@@ -412,7 +405,7 @@ for ($i = 0; $i -lt $s1Defs.Count; $i++) {
     else { $d.Chapter = '?' }
 }
 
-# -- Match --
+# Match
 $s1ByKey = @{}
 foreach ($d in $s1Defs) {
     $key = "$($d.Chapter)|$($d.Name)"
@@ -432,6 +425,7 @@ foreach ($ch in $s0Chapters.Keys) {
 }
 $extra = @($s1Defs | Where-Object { -not $s0Keys.ContainsKey("$($_.Chapter)|$($_.Name)") })
 
+
 # Resolve colliding defs by body/sig match
 $extraByName = @{}
 foreach ($d in $extra) {
@@ -439,8 +433,8 @@ foreach ($d in $extra) {
     if (-not $extraByName.ContainsKey($d.Name)) { $extraByName[$d.Name] = [System.Collections.Generic.List[object]]::new() }
     $extraByName[$d.Name].Add($d)
 }
-$resolvedDropped = @()
 $resolvedExtra = [System.Collections.Generic.HashSet[object]]::new()
+$resolvedDropped = @()
 foreach ($s0 in $dropped) {
     if (-not $extraByName.ContainsKey($s0.Name)) { continue }
     $body0 = Collapse-Whitespace (Demangle-Names $s0.Body $slugsSorted)
@@ -467,7 +461,8 @@ foreach ($s0 in $dropped) {
 $dropped = [System.Collections.Generic.List[object]]::new(@($dropped | Where-Object { $_ -notin $resolvedDropped }))
 $extra = @($extra | Where-Object { -not $resolvedExtra.Contains($_) })
 
-# -- Compare --
+
+# Compare
 $bodyMatches = 0; $bodyMismatches = 0
 $sigMatches = 0; $sigMismatches = 0
 $bodyMismatchList = [System.Collections.Generic.List[string]]::new()
@@ -487,21 +482,30 @@ foreach ($pair in $matched) {
     }
 }
 
-# -- Verdict --
+
+# Verdict
 $pass = $dropped.Count -eq 0 -and $bodyMismatches -eq 0
 
-if (-not $pass) {
-    $totalS0 = ($s0Chapters.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum
-    Write-Host "=== Semantic Equivalence FAIL ==="
+if ((-not $pass)) {
+    $totalS0 = 0
+    foreach ($k in @($s0Chapters.Keys)) {
+        $totalS0 += @($s0Chapters[$k]).Count
+    }
+
+    Write-Host '=== Semantic Equivalence FAIL ==='
     Write-Host "Source: $totalS0 defs  Stage1: $($s1Defs.Count) defs  Matched: $($matched.Count)"
     Write-Host "Dropped: $($dropped.Count)  Body mismatches: $bodyMismatches"
     if ($dropped.Count -gt 0) {
-        Write-Host "Dropped:"
-        foreach ($d in $dropped) { Write-Host "  $($d.Chapter): $($d.Name) (line $($d.LineNo))" }
+        Write-Host 'Dropped:'
+        foreach ($d in $dropped) {
+            Write-Host "  $($d.Chapter): $($d.Name) (line $($d.LineNo))"
+        }
     }
     if ($bodyMismatchList.Count -gt 0) {
-        Write-Host "Body mismatches:"
-        foreach ($m in $bodyMismatchList) { Write-Host "  $m" }
+        Write-Host 'Body mismatches:'
+        foreach ($m in $bodyMismatchList) {
+            Write-Host "  $m"
+        }
     }
 }
 

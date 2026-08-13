@@ -9,12 +9,13 @@ Chapter: Opening
   cites Foreword chapter Console
   cites Foreword chapter Maybe
   cites UI chapter Event
+  cites UI chapter KeyInput
   cites Kernel chapter DiskFacts
   cites Kernel chapter AppLog
 
 Section: Entry Point
 
-  opening : [Console, Network.Read, Network.Write] Nothing
+  opening : [Console] Nothing
   opening = act
     let disk = disk-load
     in let width = 1024
@@ -29,10 +30,10 @@ Section: Entry Point
       in let restored = __record-set state1 "bs-trust-store" trust
       in let disk2 = app-log-info disk "browser" ("Browser started, " & show (history-count hist) & " history entries") 0
       in act
-        print-line "Codex Browser v0.1"
-        print-line ("  Disk: " & show (disk-fact-count disk2) & " facts")
-        print-line ("  History: " & show (history-count hist) & " entries")
-        print-line ("  Display: " & format-display ds)
+        print-line-uni "Codex Browser v0.1"
+        print-line-uni ("  Disk: " & show (disk-fact-count disk2) & " facts")
+        print-line-uni ("  History: " & show (history-count hist) & " entries")
+        print-line-uni ("  Display: " & format-display ds)
         browser-run-persistent restored disk2
       end
     end
@@ -45,21 +46,36 @@ Section: Persistent Event Loop
     bps-disk : DiskFactStore
   }
 
-  browser-run-persistent : BrowserState, DiskFactStore -> [Console, Network.Read, Network.Write] Nothing
-  browser-run-persistent (state) (disk) = act
-    let ticked = browser-tick-media state 16
-    in let presented = if ticked.bs-dirty
-          then let fb = browser-render-frame ticked
-            in let w = browser-present ticked fb
-            in __record-set ticked "bs-dirty" False
-          else ticked
+  browser-run-persistent : BrowserState, DiskFactStore -> [Console] Nothing
+  browser-run-persistent (state) (disk) =
+    let loop-mark = __heap-save
     in act
-      ev <- browser-poll-event
-      handled <- browser-dispatch-event presented ev
-      let persisted = browser-check-persist handled disk state
-      in browser-run-persistent (persisted.bps-browser) (persisted.bps-disk)
+      let ticked = browser-tick-media state 16
+      in let presented = if ticked.bs-dirty
+            then let frame-mark = __heap-save
+              in let fb = browser-render-frame ticked
+              in let w = browser-present ticked fb
+              in let reclaimed = __heap-restore frame-mark
+              in __record-set ticked "bs-dirty" False
+            else ticked
+      in act
+        let k = poll-key
+        in if k == 0 & browser-idle-reclaimable state
+          then let reclaimed = __heap-restore loop-mark
+            in browser-run-persistent state disk
+          else act
+            handled <- browser-dispatch-event presented (event-key-down k poll-mods 0)
+            let persisted = browser-check-persist handled disk state
+            in browser-run-persistent (persisted.bps-browser) (persisted.bps-disk)
+          end
+      end
     end
-  end
+
+  browser-idle-reclaimable : BrowserState -> Boolean
+  browser-idle-reclaimable (state) =
+    when browser-active-tab state
+      is None -> True
+      is Just (t) -> if tab-has-player t then False else True
 
   browser-check-persist : BrowserState, DiskFactStore, BrowserState -> BrowserPersistState
   browser-check-persist (after) (disk) (before) =
