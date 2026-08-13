@@ -16,13 +16,13 @@ Section: S01 -- Preamble
 
   s01-kernel : List ShellCmd =
     let given = [ScAssign "Stage0" (SeVar "Kernel"), ScIf (SeNot (SeFileExists (SeVar "Stage0"))) [ScWriteError (SeRaw "\"MISSING: $Stage0 - the -Kernel you asked for is not there\""), ScExit (SeInt 2)] []]
-    in let defaulted = [ScAssign "Stage0" (SeLit "build-output\\bare-metal\\Codex.cdx"), ScIf (SeNot (SeFileExists (SeVar "Stage0"))) [ScWriteError (SeRaw "\"MISSING: $Stage0 - run build.ps1 first, or pass -Kernel seed\\Codex.cdx\""), ScExit (SeInt 2)] []]
+    in let defaulted = [ScAssign "Stage0" (SeRaw "Join-Path 'build-output' 'bare-metal' 'Codex.cdx'"), ScIf (SeNot (SeFileExists (SeVar "Stage0"))) [ScWriteError (SeRaw "\"MISSING: $Stage0 - run build.ps1 first, or pass -Kernel seed\\Codex.cdx\""), ScExit (SeInt 2)] []]
     in [ScIf (SeVar "Kernel") given defaulted]
 
   s01-drift : List ShellCmd =
     let differs = [ScWriteError (SeRaw "\"NOTE: this kernel is NOT seed\\Codex.cdx [$seedHash]. It is whatever build.ps1 last left in build-output. Pass -Kernel to choose.\"")]
     in let check = [ScAssign "seedHash" (SeRaw "(Get-FileHash -Algorithm SHA256 $seedPath).Hash.Substring(0, 16)"), ScIf (SeStringNeq (SeVar "seedHash") (SeVar "kernelHash")) differs []]
-    in [ScIf (SeNot (SeVar "Kernel")) [ScAssign "seedPath" (SeRaw "Join-Path (Split-Path $PSScriptRoot) 'seed\\Codex.cdx'"), ScIf (SeFileExists (SeVar "seedPath")) check []] []]
+    in [ScIf (SeNot (SeVar "Kernel")) [ScAssign "seedPath" (SeRaw "Join-Path (Split-Path $PSScriptRoot) 'seed' 'Codex.cdx'"), ScIf (SeFileExists (SeVar "seedPath")) check []] []]
 
   s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'vm-config.ps1')"), ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'work-wire.ps1')"), ScBlank, ScSequence s01-kernel, ScAssign "kernelHash" (SeRaw "(Get-FileHash -Algorithm SHA256 $Stage0).Hash.Substring(0, 16)"), ScWriteError (SeRaw "\"kernel: $Stage0 [$kernelHash]\""), ScBlank, ScSequence s01-drift]
 
@@ -63,7 +63,10 @@ Section: S06 -- VM Launch
     let timeout = [ScRaw "Stop-VmGraceful -ProcessId $proc.Id", ScSetContent (SeVar "Log") (SeLit "FAIL: VM timed out"), ScExit (SeInt 3)]
     in let retry = [ScWriteError (SeRaw "\"  compile: no output with ${curMem}MB, retrying with 3072MB\""), ScAssign "curMem" (SeInt 3072), ScContinueLabel "compile_loop"]
     in let no-out = [ScSetContent (SeVar "Log") (SeLit "FAIL: no output"), ScIf (SeFileExists (SeVar "stderrFile")) [ScAddContent (SeVar "Log") (SeRaw "(Get-Content $stderrFile -Raw)")] [], ScExit (SeInt 4)]
-    in [ScAssign "vmArgs" (SeArrayLiteral [SeLit "-kernel", SeVar "Stage0", SeLit "-input", SeVar "inputFile", SeLit "-output", SeVar "outputFile", SeLit "-mem", SeRaw "\"$curMem\"", SeLit "-headless"]), ScIf (SeVar "MemNoCap") [ScAppend "vmArgs" (SeLit "-mem-nocap")] [], ScIf (SeVar "DiskFile") [ScAppend "vmArgs" (SeArrayLiteral [SeLit "-disk", SeVar "DiskFile"])] [], ScRaw "$proc = Start-Process -FilePath $vmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile", ScRaw "$proc.WaitForExit($TimeoutSec * 1000)", ScIf (SeNot (SeProperty (SeVar "proc") "HasExited")) timeout [], ScIf (SeOr (SeNot (SeFileExists (SeVar "outputFile"))) (SeRaw "(Get-Item $outputFile).Length -eq 0")) [ScIf (SeAnd (SeRaw "$attempt -lt $maxAttempts") (SeIntLt (SeVar "curMem") (SeInt 3072))) retry no-out] []]
+    in let codex-vm-arm = [ScAssign "vmArgs" (SeArrayLiteral [SeLit "-kernel", SeVar "Stage0", SeLit "-input", SeVar "inputFile", SeLit "-output", SeVar "outputFile", SeLit "-mem", SeRaw "\"$curMem\"", SeLit "-headless"]), ScIf (SeVar "MemNoCap") [ScAppend "vmArgs" (SeLit "-mem-nocap")] [], ScIf (SeVar "DiskFile") [ScAppend "vmArgs" (SeArrayLiteral [SeLit "-disk", SeVar "DiskFile"])] [], ScRaw "$proc = Start-Process -FilePath $vmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile", ScRaw "$proc.WaitForExit($TimeoutSec * 1000)", ScIf (SeNot (SeProperty (SeVar "proc") "HasExited")) timeout []]
+    in let fail-qemu = [ScSetContent (SeVar "Log") (SeLit "FAIL: VM timed out"), ScExit (SeInt 3)]
+    in let qemu-arm = [ScRaw "# No codex-vm on this host: the QEMU fallback serves the same", ScRaw "# -input/-output contract over the serial wire, and the parsing", ScRaw "# below cannot tell the difference. (-MemNoCap needs no translation:", ScRaw "# the 3040 MB cap is codex-vm's, and the 0xFE8 cell the QEMU path", ScRaw "# seeds already carries the real -m value.)", ScRaw "$ok = Invoke-VmCompileFallback -Kernel $Stage0 -InputFile $inputFile -OutputFile $outputFile -MemMB $curMem -TimeoutSec $TimeoutSec -DiskFile $DiskFile", ScIf (SeNot (SeVar "ok")) fail-qemu []]
+    in [ScIf (SeRaw "$script:UseCodexVm") codex-vm-arm qemu-arm, ScIf (SeOr (SeNot (SeFileExists (SeVar "outputFile"))) (SeRaw "(Get-Item $outputFile).Length -eq 0")) [ScIf (SeAnd (SeRaw "$attempt -lt $maxAttempts") (SeIntLt (SeVar "curMem") (SeInt 3072))) retry no-out] []]
 
 Section: S07 -- Parse
 
