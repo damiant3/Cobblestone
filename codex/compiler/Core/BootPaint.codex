@@ -1,0 +1,195 @@
+Chapter: BootPaint
+
+ The compiler's report channel on a board with no serial port and no proven
+ ConOut. The screen is the only channel demonstrated to reach a human on the
+ ASUS, which is why this paints; the trace is for the bed and comes after the
+ paint on every rung, so a rung that dies inside its own print has already left
+ its colour standing.
+
+ The contract is the ladder's: the LAST COLOUR STANDING names the last stage
+ passed. A stage paints on success and the payload spins on failure, so a dead
+ machine still reports. The operator table lives in docs/HardwareSitting.md.
+
+ Works chapter MetalLadder says all of this for a payload in the apps quire and
+ cannot be cited from here: the compiler is the `codex` quire and apps are two
+ quires to its right. It needs no foreword code either -- peek-qword, peek-32
+ and poke-32 are builtins, so the whole channel is arithmetic.
+
+ We say:
+
+Section: Handoff
+
+ The block cdx-to-pe.ps1's UEFI stub writes before it jumps, and its layout is
+ that stub's contract rather than ours. The magic is the eight ASCII bytes
+ "CDXHANDF" read as one little-endian quadword; the framebuffer base is the
+ quadword at +16; width and height share the one at +24 and stride the one at
+ +32, because the stub stores those four as 32-bit fields.
+
+ The stub writes the header unconditionally and jumps over the body when
+ LocateProtocol(GOP) returned nothing, so a zero base means "no framebuffer",
+ which is also the answer when there is no block at all. That is what makes
+ every rung below free on a run that is not a flight.
+
+  bp-cell : Integer = 126976
+
+  bp-magic : Integer = 5063257923364865091
+
+  bp-present : Integer -> Boolean
+  bp-present (dummy) = peek-qword bp-cell 0 == bp-magic
+
+  bp-base : Integer -> Integer
+  bp-base (dummy) = if bp-present 0 then peek-qword bp-cell 16 else 0
+
+  bp-w : Integer -> Integer
+  bp-w (dummy) = bit-and (peek-qword bp-cell 24) 4294967295
+
+  bp-h : Integer -> Integer
+  bp-h (dummy) = bit-shru (peek-qword bp-cell 24) 32
+
+  bp-stride : Integer -> Integer
+  bp-stride (dummy) = bit-and (peek-qword bp-cell 32) 4294967295
+
+Section: Palette
+
+ Framebuffer pixels are B,G,R,X in memory order and poke-32 stores
+ little-endian, so a 0xRRGGBB literal lands correctly.
+
+  bp-cyan : Integer = 65535
+
+  bp-yellow : Integer = 16776960
+
+  bp-magenta : Integer = 16711935
+
+  bp-orange : Integer = 16744448
+
+  bp-blue : Integer = 255
+
+  bp-white : Integer = 16777215
+
+ Green is absent because the stub holds dark green while it runs, so a green
+ screen already means the payload never reached its first rung. Red is the
+ first rung's predecessor and nothing ever paints it, so a red screen would
+ mean the palette itself is being read wrong.
+
+  bp-red : Integer = 16711680
+
+Section: Channel
+
+  bp-cols : Integer, Integer, Integer, Integer, Integer -> Integer
+  bp-cols (base) (stride) (y) (w) (colour) =
+    if w <= 0 then 0
+    else let p = poke-32 base ((y * stride + w - 1) * 4) colour
+    in bp-cols base stride y (w - 1) colour
+
+  bp-rows : Integer, Integer, Integer, Integer, Integer -> Integer
+  bp-rows (base) (stride) (w) (h) (colour) =
+    if h <= 0 then 0
+    else let r = bp-cols base stride (h - 1) w colour
+    in bp-rows base stride w (h - 1) colour
+
+ The readback answers whether the store landed at the base the stub published.
+ It does NOT answer whether that base is the panel: measured 2026-08-11 under
+ codex-vm, every rung of two ladders read its colour back from 0xBF000000 and
+ the framebuffer codex-vm screenshots was black. OperatorsManual, "A PAINTED
+ LADDER DOES NOT SHOW UP IN -screenshot".
+
+  bp-paint : Integer -> Integer
+  bp-paint (colour) =
+    let b = bp-base 0
+    in if b == 0 then 0
+    else let f = bp-rows b (bp-stride 0) (bp-w 0) (bp-h 0) colour
+    in if peek-32 b 0 == colour then 1 else 0
+
+ bp-hold repaints rather than spinning on an empty loop. A pure
+ non-terminating function is not a halt: the optimizer removed the first
+ version of the ladder's outright, so a FAILED stage fell through and painted
+ the colour that means the stage passed. The framebuffer writes are what make
+ this one survive.
+
+  bp-hold : Integer -> Integer
+  bp-hold (colour) =
+    let f = bp-paint colour
+    in bp-hold colour
+
+ Every hold is guarded, and that is the difference between this and the
+ ladder's. A probe runs only on the board, so an unguarded spin has still
+ reported. The compiler runs everywhere, and an unguarded hold turns a
+ host-side compile error into a hang.
+
+  bp-hold-if-armed : Integer -> Integer
+  bp-hold-if-armed (colour) =
+    if bp-base 0 == 0 then 0 else bp-hold colour
+
+  bp-hold-when : Boolean, Integer -> Integer
+  bp-hold-when (yes) (colour) = if yes then bp-hold-if-armed colour else 0
+
+  bp-truth : Boolean -> Integer
+  bp-truth (b) = if b then 1 else 0
+
+  bp-armed : Integer -> Boolean
+  bp-armed (dummy) = bp-base 0 /= 0
+
+  bp-pass : Integer, Integer, Integer -> Integer
+  bp-pass (ok) (colour) (prev) =
+    if ok == 0 then bp-paint prev else bp-paint colour
+
+  bp-hold-if : Integer, Integer -> Integer
+  bp-hold-if (ok) (prev) = if ok == 0 then bp-hold-if-armed prev else 0
+
+Section: Trace
+
+ The trace is what the BED reads, and it is not the flight's channel: a run
+ with no handoff block says nothing at all, so a normal compile's output is
+ byte-for-byte what it was. It comes after the paint on every rung, which is
+ the ladder's whole contract -- a rung that dies inside its own print has
+ already left its colour standing.
+
+ codex-vm's `-screenshot` is not a substitute. Measured 2026-08-11: the sink
+ ladder reported `painted fb=1` on four rungs and the BMP came back black on
+ the same run, so the bed's screen and the bed's trace do not agree and only
+ the trace has ever been checked against a flight.
+
+ Every trace line is built INSIDE its guard. Codex is strict, so a
+ `disk-say (... & ...)` would concatenate on every call and leave the string in
+ an arena nothing reclaims -- on a run that then prints nothing, and on
+ `opening`'s rung that means every compile the fleet runs.
+
+  disk-mark : Text, Integer, Integer, Integer -> [Console] Nothing
+  disk-mark (tag) (ok) (colour) (prev) = act
+   fb <- bp-pass ok colour prev
+   disk-trace tag ok fb
+  end
+
+  disk-trace : Text, Integer, Integer -> [Console] Nothing
+  disk-trace (tag) (ok) (fb) =
+    if bp-armed 0
+    then print-line-uni ("DISK-LADDER " & tag & " ok=" & show ok & " painted fb=" & show fb & " base=" & show (bp-base 0))
+    else print-text ""
+
+ disk-stop is the last thing a stage does, never the first. A hold that ran
+ before the stage's own diagnostic swallowed it: CODEGEN-HALTED and
+ DISK-OUT: FAILED both stopped being printed on an armed run, which took the
+ two states they name off the trace the bed reads.
+
+  disk-stop : Boolean, Integer -> [Console] Nothing
+  disk-stop (yes) (colour) = act
+   h <- bp-hold-when yes colour
+   disk-stopped colour
+  end
+
+  disk-stopped : Integer -> [Console] Nothing
+  disk-stopped (colour) =
+    if bp-armed 0 then print-line-uni ("DISK-LADDER stopped at " & show colour)
+    else print-text ""
+
+  disk-rung : Text, Integer, Integer, Integer -> [Console] Nothing
+  disk-rung (tag) (ok) (colour) (prev) = act
+   disk-mark tag ok colour prev
+   h <- bp-hold-if ok prev
+   disk-continuing tag
+  end
+
+  disk-continuing : Text -> [Console] Nothing
+  disk-continuing (tag) =
+    if bp-armed 0 then print-line-uni ("DISK-LADDER " & tag & " continuing")
+    else print-text ""

@@ -8,82 +8,19 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-. (Join-Path $PSScriptRoot '..' '..' '..' 'build' 'vm-config.ps1')
+$Repo    = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
+$OutDir  = Join-Path $PSScriptRoot 'build-output'
+$IrFile  = Join-Path $OutDir 'last-run.ir'
+$LogFile = Join-Path $OutDir 'run.log'
 
-$Repo     = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
-$PlugDir  = (Resolve-Path $PSScriptRoot).Path
-$PlugCdx  = Join-Path $PlugDir 'build-output\python-plug.cdx'
-$IrDir    = Join-Path $PlugDir 'build-output'
-$IrFile   = Join-Path $IrDir 'last-run.ir'
-$LogFile  = Join-Path $IrDir 'run.log'
-
-if (-not (Test-Path -PathType Leaf $PlugCdx)) {
-    [Console]::Error.WriteLine("MISSING: $PlugCdx -- run plugs/python/build.ps1 first")
-    exit 2
+& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $Src -Out $IrFile -Log $LogFile -IrCce 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $IrFile)) {
+    [Console]::Error.WriteLine("FAIL: IR compile failed; see $LogFile")
+    exit 4
 }
 
-# -- Phase 1: Codex source -> IR text --------------------------------
-$compileScript = Join-Path $Repo 'build\compile.ps1'
-& pwsh -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce
-if ($LASTEXITCODE -ne 0) {
-    [Console]::Error.WriteLine("FAIL: IR emit step exited $LASTEXITCODE; see $LogFile")
-    exit 3
-}
-$irBytes = [System.IO.File]::ReadAllBytes($IrFile)
-Write-Host "[python-run] IR: $($irBytes.Length) bytes"
-
-# -- Phase 2: Start TCP listener -------------------------------------
-$plugPort = 9131
-$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $plugPort)
-$listener.Start()
-Write-Host "[python-run] Listening on port $plugPort"
-
-# -- Phase 3: Boot plug CDX ------------------------------------------
-$stderrFile = [System.IO.Path]::GetTempFileName()
-    $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $PlugCdx, '-mem', '3072', '-headless') `
-        -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
-# Accept TCP connection from plug
-    $deadline = [DateTime]::UtcNow.AddSeconds(30)
-    while (-not $listener.Pending()) {
-        if ([DateTime]::UtcNow -gt $deadline) {
-            [Console]::Error.WriteLine("FAIL: plug did not connect within 30s")
-            exit 5
-        }
-        Start-Sleep -Milliseconds 50
-    }
-    $tcpClient = $listener.AcceptTcpClient()
-    $tcpStream = $tcpClient.GetStream()
-    $listener.Stop()
-    Write-Host "[python-run] Plug connected"
-
-    # -- Phase 4: Send IR as framed message (tag=1) ------------------
-    $msgLen = $irBytes.Length + 1
-    $header = [BitConverter]::GetBytes([int]$msgLen)
-    $tcpStream.Write($header, 0, 4)
-    $tcpStream.WriteByte(1)
-    $tcpStream.Write($irBytes, 0, $irBytes.Length)
-    $tcpStream.Flush()
-    Write-Host "[python-run] Sent IR ($($irBytes.Length) bytes)"
-
-    # -- Phase 5: Receive output until plug sends FIN ----------------
-    $tcpStream.ReadTimeout = 120000
-    $allBytes = [System.Collections.Generic.List[byte]]::new(65536)
-    $readBuf = [byte[]]::new(8192)
-    try {
-        while ($true) {
-            $n = $tcpStream.Read($readBuf, 0, $readBuf.Length)
-            if ($n -le 0) { break }
-            for ($bi = 0; $bi -lt $n; $bi++) { $allBytes.Add($readBuf[$bi]) }
-        }
-    } catch {}
-    $outText = [System.Text.Encoding]::UTF8.GetString($allBytes.ToArray())
-    [System.IO.File]::WriteAllText($Out, $outText, [System.Text.UTF8Encoding]::new($false))
-    Write-Host "[python-run] OK: $Out ($($outText.Length) chars)"
-
-    $tcpClient.Close()
-
-    # -- Phase 5b: Drain serial for diagnostic output -----------------
-    if ($proc -and -not $proc.HasExited) {
-        try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {}
-    }
-    Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue
+& pwsh -NoProfile -File (Join-Path $Repo 'build\plug-run.ps1') `
+    -IrInput $IrFile -Out $Out `
+    -PlugCdx (Join-Path $OutDir 'python-plug.cdx') `
+    -MemMB 3072 -Port 9131
+exit $LASTEXITCODE

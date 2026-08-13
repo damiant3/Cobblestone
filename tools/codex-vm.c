@@ -5588,6 +5588,32 @@ static void gpu_cine_pace(void);
 static void gpu_composite_band(unsigned int *fb, int w, int h, int y0, int y1);
 static void sync_shadow_buffers(void);
 static int gpu_last_tri_count = 0;
+/* GPU viewport (scissor) rect, inclusive; see gpu_clip_rect for the ports. */
+static int gpu_vp_x0 = 0, gpu_vp_y0 = 0, gpu_vp_x1 = 0, gpu_vp_y1 = 0;
+static int gpu_vp_active = 0;
+/* Shadow map: a light-space depth buffer the main pass samples. Host-side,
+   because nothing in the guest ever reads it. */
+static unsigned int *gpu_shadow_buf = NULL;
+static int gpu_shadow_size = 0;
+static int gpu_shadow_pending = 0;
+/* Set in the count word at port 0x400 to mean "rasterize into the shadow map
+   instead of the screen". Counts never approach this. */
+#define GPU_SHADOW_FLAG 0x40000000u
+/* r3d-shadow-bias in Renderer3D.codex. Matched so the two renderers put the
+   acne threshold in the same place. */
+#define GPU_SHADOW_BIAS 3000
+/* Per-triangle light-space data for the shadow compare, parallel to the
+   command buffer rather than inside it: the 72-byte triangle record is
+   written by every rasterizer client in the tree, and six of its words are
+   already spoken for as UV (a non-zero UV is what selects the texture path).
+   Ten ints per triangle -- (lx,ly,ld) per vertex, then the colour a shadowed
+   fragment takes. lx and ly are shadow-map pixels scaled by 1000 and ld is on
+   the same 0..1e6 scale as the depth buffer, which is the fixed point the
+   software renderer's r3d-project-clip-sw already produces. */
+#define GPU_LIGHT_ADDR 0xBE500000ULL
+#define GPU_LIGHT_STRIDE 40
+static void gpu_shadow_begin(int size);
+static void gpu_shadow_render(int count);
 static float gpu_light[3] = {0, 0, -1};
 static float gpu_eye[3] = {0, 0, -1};
 static unsigned long long gpu_tex_guest_addr = 0;
@@ -11056,14 +11082,64 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
                 gop_stride = gop_stride_opt > w ? gop_stride_opt : w;
                 gop_active = 1; vbe_active = 1;
                 if (!gop_fb) gop_fb = (unsigned char *)calloc(1, GOP_FB_SIZE);
+                /* The startup path commits this region only when gop_active is
+                   already set, and a VBE mode set turns it on HERE, at runtime,
+                   long after that. sync_shadow_buffers then reads the
+                   framebuffer out of guest RAM bounded against guest_mem_size,
+                   which the region is inside, so the bound passes and the
+                   memcpy reads reserved uncommitted address space: 0xC0000005
+                   on a READ, one line after the mode set. Same defect as the
+                   oversized-disk write (main 14494), other direction. */
+                guest_commit_range(0xBE000000ULL,
+                    (GOP_FB_ADDR + (unsigned long long)((size_t)gop_stride * gop_height * 4)) - 0xBE000000ULL);
                 fprintf(stderr, "VBE: mode set %dx%d fb=0x%llx\n", w, h, (unsigned long long)VBE_FB_ADDR);
             }
         }
         /* GPU triangle rasterizer commands */
         else if (port == 0x400) {
-            gpu_rasterize_triangles(val);
-            if (gpu_cine) { gpu_cinematic_post(); sync_shadow_buffers(); gpu_cine_pace(); }
-            else gpu_atmosphere_glow();
+            if ((unsigned int)val & GPU_SHADOW_FLAG) {
+                gpu_shadow_render((int)((unsigned int)val & ~GPU_SHADOW_FLAG));
+            } else {
+                gpu_rasterize_triangles(val);
+                /* The glow is a fullscreen post-process that reads fb[0] as the
+                   background colour and blooms every edge against it. Inside a
+                   viewport that background is the desktop, not the scene, so it
+                   would bloom the chrome and paint outside the pane. */
+                if (gpu_cine) { gpu_cinematic_post(); sync_shadow_buffers(); gpu_cine_pace(); }
+                else if (!gpu_vp_active) gpu_atmosphere_glow();
+                /* A pane renders inside a desktop that is not otherwise
+                   redrawing, and the guest's loop has nothing to wait on, so
+                   this path free-runs: measured at 271 fps on the desk's 3D
+                   view. Nothing consumes frames at that rate, and producing
+                   them saturates the rasterizer threads and the display copy,
+                   which is why the paced software renderer could feel smoother
+                   than the unpaced fast one. The sleep lands inside a port
+                   write, so the guest thread idles rather than spinning. Only
+                   the pane path is paced: a program that owns the screen keeps
+                   the behaviour it has always had. */
+                else gpu_cine_pace();
+                /* One shadow map serves one main pass. A frame that wants
+                   shadows re-arms; a frame that does not simply stops sending
+                   the size, so nothing has to disarm. */
+                gpu_shadow_pending = 0;
+            }
+        }
+        /* Viewport origin: (x0 << 16) | y0. See gpu_clip_rect for why 0x403. */
+        else if (port == 0x403) {
+            gpu_vp_x0 = (int)((val >> 16) & 0xFFFF);
+            gpu_vp_y0 = (int)(val & 0xFFFF);
+        }
+        /* Viewport extent, inclusive: (x1 << 16) | y1. Zero disarms, which is
+           unambiguous because an armed viewport whose far corner is the origin
+           would be a single pixel at (0,0) and no caller wants that. */
+        else if (port == 0x40F) {
+            if (val == 0) {
+                gpu_vp_active = 0;
+            } else {
+                gpu_vp_x1 = (int)((val >> 16) & 0xFFFF);
+                gpu_vp_y1 = (int)(val & 0xFFFF);
+                gpu_vp_active = 1;
+            }
         }
         else if (port == 0x410) {
             gpu_cine = (int)val;
@@ -11123,8 +11199,12 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         else if (port == 0x40E) {
             gpu_fade_clear(val);
         }
+        /* Zero keeps the original meaning, a main depth clear. A size arms the
+           shadow map instead, which is why this needed no new port: there is
+           none free inside the 0x400-0x417 window the capability guard covers. */
         else if (port == 0x402) {
-            gpu_clear_depth();
+            if (val == 0) gpu_clear_depth();
+            else gpu_shadow_begin((int)val);
         }
         else if (port == 0x404) {
             gpu_light[0] = (float)(int)val / 1000.0f;
@@ -11659,8 +11739,11 @@ static int try_inject_serial_interrupt(void) {
  *   [0] x0  [1] y0  [2] x1  [3] y1  [4] x2  [5] y2  [6] color  [7] depth
  * Port 0x400 OUT: value = triangle count, rasterize all triangles
  * Port 0x401 OUT: value = XRGB color, clear framebuffer
- * Port 0x402 OUT: value = 0, clear depth buffer
+ * Port 0x402 OUT: value = 0, clear depth buffer; value = N, arm an NxN shadow map
  * Port 0x403 IN:  returns 1 (GPU present capability check)
+ * Port 0x403 OUT: viewport origin (x0 << 16) | y0
+ * Port 0x40F OUT: viewport extent, inclusive (x1 << 16) | y1; 0 disarms
+ * Port 0x400 OUT with GPU_SHADOW_FLAG: depth-only pass into the shadow map
  */
 #define GPU_CMD_ADDR   0xBE000000ULL
 /* Command-buffer capacity. The rasterizer used to stop dead at 16384
@@ -11677,13 +11760,39 @@ static int try_inject_serial_interrupt(void) {
 #define GPU_DEPTH_ADDR 0xBE800000ULL
 #define GPU_DEPTH_FAR  999999
 
+/* Viewport (scissor) rect, inclusive. The rasterizer draws fullscreen to the
+   GOP framebuffer, which is correct for a demo that owns the screen and wrong
+   for a pane inside a desktop: the clear wipes the chrome and geometry lands
+   over it. Armed, every write below is confined to the rect.
+
+   The two ports are 0x403 and 0x40F because the compiler's cap guard covers
+   0x400-0x417 and nothing above (`gpu-port-hi` in X86_64Boot.codex), so a port
+   at 0x418 would be reachable without holding Gpu.Compute. Both are IN-only
+   today (GPU present probe, asset-size high word) and IN and OUT are separate
+   directions, so the OUT side of each was free -- the same overloading the
+   asset loader documents at port 0x417. */
+static void gpu_clip_rect(int w, int h, int *cx0, int *cy0, int *cx1, int *cy1) {
+    if (gpu_vp_active) {
+        *cx0 = gpu_vp_x0 < 0 ? 0 : gpu_vp_x0;
+        *cy0 = gpu_vp_y0 < 0 ? 0 : gpu_vp_y0;
+        *cx1 = gpu_vp_x1 >= w ? w - 1 : gpu_vp_x1;
+        *cy1 = gpu_vp_y1 >= h ? h - 1 : gpu_vp_y1;
+    } else {
+        *cx0 = 0; *cy0 = 0; *cx1 = w - 1; *cy1 = h - 1;
+    }
+}
+
 static void gpu_clear_fb(int color) {
     gpu_frame_ready = 0;
     if (gop_host_gpu_refuses()) return;
     if (!gop_active || GOP_FB_ADDR + (unsigned long long)gop_width * gop_height * 4 > guest_mem_size) return;
     unsigned int *fb = (unsigned int *)((unsigned char *)guest_mem + GOP_FB_ADDR);
-    int total = gop_width * gop_height;
-    for (int i = 0; i < total; i++) fb[i] = (unsigned int)color;
+    int cx0, cy0, cx1, cy1;
+    gpu_clip_rect(gop_width, gop_height, &cx0, &cy0, &cx1, &cy1);
+    for (int y = cy0; y <= cy1; y++) {
+        unsigned int *row = fb + (size_t)y * gop_width;
+        for (int x = cx0; x <= cx1; x++) row[x] = (unsigned int)color;
+    }
 }
 
 /* Persistence clear: blend the frame ~7/8 toward the target color instead
@@ -11709,8 +11818,71 @@ static void gpu_clear_depth(void) {
     if (gop_host_gpu_refuses()) return;
     if (GPU_DEPTH_ADDR + (unsigned long long)gop_width * gop_height * 4 > guest_mem_size) return;
     unsigned int *db = (unsigned int *)((unsigned char *)guest_mem + GPU_DEPTH_ADDR);
-    int total = gop_width * gop_height;
-    for (int i = 0; i < total; i++) db[i] = GPU_DEPTH_FAR;
+    int cx0, cy0, cx1, cy1;
+    gpu_clip_rect(gop_width, gop_height, &cx0, &cy0, &cx1, &cy1);
+    for (int y = cy0; y <= cy1; y++) {
+        unsigned int *row = db + (size_t)y * gop_width;
+        for (int x = cx0; x <= cx1; x++) row[x] = GPU_DEPTH_FAR;
+    }
+}
+
+static inline long long gpu_edge(int ax, int ay, int bx, int by, int px, int py);
+
+/* Size the light-space depth buffer and clear it to far. The guest sends the
+   size rather than the emulator picking one, so the shadow map matches the
+   software renderer's own map-size argument. */
+static void gpu_shadow_begin(int size) {
+    if (size < 16) size = 16;
+    if (size > 4096) size = 4096;
+    if (size != gpu_shadow_size || !gpu_shadow_buf) {
+        unsigned int *nb = (unsigned int *)realloc(gpu_shadow_buf, (size_t)size * size * 4);
+        if (!nb) return;
+        gpu_shadow_buf = nb;
+        gpu_shadow_size = size;
+    }
+    int total = gpu_shadow_size * gpu_shadow_size;
+    for (int i = 0; i < total; i++) gpu_shadow_buf[i] = GPU_DEPTH_FAR;
+    gpu_shadow_pending = 1;
+}
+
+/* Depth-only rasterization into the shadow map. Deliberately not
+   gpu_rasterize_band: this target is size x size rather than the screen, the
+   viewport is a screen rect and must not apply in light space, and at a few
+   hundred triangles over a 256x256 buffer the threading would cost more than
+   it saves. */
+static void gpu_shadow_render(int count) {
+    if (!gpu_shadow_buf || gpu_shadow_size <= 0) return;
+    if (GPU_CMD_ADDR + (unsigned long long)count * 72 > guest_mem_size) return;
+    unsigned char *cmd = (unsigned char *)guest_mem + GPU_CMD_ADDR;
+    int s = gpu_shadow_size;
+    for (int t = 0; t < count && t < GPU_MAX_TRIS; t++) {
+        int *tri = (int *)(cmd + t * 72);
+        int x0 = tri[0], y0 = tri[1], x1 = tri[2], y1 = tri[3], x2 = tri[4], y2 = tri[5];
+        int d0 = tri[9], d1 = tri[10], d2 = tri[11];
+        int minx = x0 < x1 ? (x0 < x2 ? x0 : x2) : (x1 < x2 ? x1 : x2);
+        int miny = y0 < y1 ? (y0 < y2 ? y0 : y2) : (y1 < y2 ? y1 : y2);
+        int maxx = x0 > x1 ? (x0 > x2 ? x0 : x2) : (x1 > x2 ? x1 : x2);
+        int maxy = y0 > y1 ? (y0 > y2 ? y0 : y2) : (y1 > y2 ? y1 : y2);
+        if (minx < 0) minx = 0; if (miny < 0) miny = 0;
+        if (maxx >= s) maxx = s - 1; if (maxy >= s) maxy = s - 1;
+        if (minx > maxx || miny > maxy) continue;
+        long long area = gpu_edge(x0, y0, x1, y1, x2, y2);
+        if (area == 0) continue;
+        int sign = area > 0 ? 1 : -1;
+        long long abs_area = area > 0 ? area : -area;
+        for (int y = miny; y <= maxy; y++) {
+            for (int x = minx; x <= maxx; x++) {
+                long long bw0 = gpu_edge(x1, y1, x2, y2, x, y) * sign;
+                long long bw1 = gpu_edge(x2, y2, x0, y0, x, y) * sign;
+                long long bw2 = gpu_edge(x0, y0, x1, y1, x, y) * sign;
+                if (bw0 >= 0 && bw1 >= 0 && bw2 >= 0) {
+                    int depth = (int)(((long long)d0 * bw0 + (long long)d1 * bw1 + (long long)d2 * bw2) / abs_area);
+                    int idx = y * s + x;
+                    if ((unsigned int)depth < gpu_shadow_buf[idx]) gpu_shadow_buf[idx] = (unsigned int)depth;
+                }
+            }
+        }
+    }
 }
 
 /* 64-bit: the guest hands us raw screen coordinates with nothing clipping
@@ -12047,12 +12219,24 @@ static void gpu_rasterize_band(unsigned int *fb, unsigned int *db, unsigned char
         int additive = 0;
         int use_texture = (u0 | v0t | u1 | v1t | u2 | v2t) != 0;
         if (gpu_cine) { additive = u0; use_texture = 0; }  /* u0: 0 opaque, 1 hard-add, 2 soft radial sprite (center u1,v1t radius u2) */
+        int lx0 = 0, ly0 = 0, lsd0 = 0, lx1 = 0, ly1 = 0, lsd1 = 0, lx2 = 0, ly2 = 0, lsd2 = 0, shadow_color = 0;
+        int use_shadow = gpu_shadow_pending && gpu_shadow_buf && gpu_shadow_size > 0;
+        if (use_shadow) {
+            int *lt = (int *)((unsigned char *)guest_mem + GPU_LIGHT_ADDR + (size_t)t * GPU_LIGHT_STRIDE);
+            lx0 = lt[0]; ly0 = lt[1]; lsd0 = lt[2];
+            lx1 = lt[3]; ly1 = lt[4]; lsd1 = lt[5];
+            lx2 = lt[6]; ly2 = lt[7]; lsd2 = lt[8];
+            shadow_color = lt[9];
+        }
         int minx = x0 < x1 ? (x0 < x2 ? x0 : x2) : (x1 < x2 ? x1 : x2);
         int miny = y0 < y1 ? (y0 < y2 ? y0 : y2) : (y1 < y2 ? y1 : y2);
         int maxx = x0 > x1 ? (x0 > x2 ? x0 : x2) : (x1 > x2 ? x1 : x2);
         int maxy = y0 > y1 ? (y0 > y2 ? y0 : y2) : (y1 > y2 ? y1 : y2);
-        if (minx < 0) minx = 0; if (miny < 0) miny = 0;
-        if (maxx >= w) maxx = w - 1; if (maxy >= h) maxy = h - 1;
+        int cx0, cy0, cx1, cy1;
+        gpu_clip_rect(w, h, &cx0, &cy0, &cx1, &cy1);
+        if (minx < cx0) minx = cx0; if (miny < cy0) miny = cy0;
+        if (maxx > cx1) maxx = cx1; if (maxy > cy1) maxy = cy1;
+        if (minx > maxx || miny > maxy) continue;
         /* Skip triangles entirely outside this band */
         if (maxy < band_y0 || miny > band_y1) continue;
         if (miny < band_y0) miny = band_y0;
@@ -12156,6 +12340,46 @@ static void gpu_rasterize_band(unsigned int *fb, unsigned int *db, unsigned char
                         } else {
                             pixel = gpu_lerp_color(c0, c1, c2, bw0, bw1, bw2, abs_area);
                         }
+                        /* Same test the software renderer makes in
+                           r3d-shadow-test: interpolate the light-space
+                           position, sample the map, and take the shadowed
+                           colour when this fragment is further from the light
+                           than whatever the map recorded. Outside the map is
+                           lit, not shadowed, which is what keeps geometry
+                           beyond the light's extent from going black. */
+                        /* The map is far coarser than the screen -- one texel
+                           covers many pixels on a ground plane this large --
+                           so a single in/out sample puts texel-shaped teeth
+                           along every shadow edge. Averaging a 3x3
+                           neighbourhood turns that boundary into ten steps
+                           between lit and shadowed, which is what the eye
+                           reads as an edge rather than a comb. Off the map
+                           counts as lit, so geometry beyond the light's
+                           extent does not darken at the border. */
+                        if (use_shadow) {
+                            long long tx = ((long long)lx0 * bw0 + (long long)lx1 * bw1 + (long long)lx2 * bw2) / abs_area / 1000;
+                            long long ty = ((long long)ly0 * bw0 + (long long)ly1 * bw1 + (long long)ly2 * bw2) / abs_area / 1000;
+                            if (tx >= 0 && ty >= 0 && tx < gpu_shadow_size && ty < gpu_shadow_size) {
+                                long long fl = ((long long)lsd0 * bw0 + (long long)lsd1 * bw1 + (long long)lsd2 * bw2) / abs_area;
+                                int lit = 0;
+                                for (int oy = -1; oy <= 1; oy++) {
+                                    for (int ox = -1; ox <= 1; ox++) {
+                                        long long sx = tx + ox, sy = ty + oy;
+                                        if (sx < 0 || sy < 0 || sx >= gpu_shadow_size || sy >= gpu_shadow_size) { lit++; continue; }
+                                        unsigned int md = gpu_shadow_buf[sy * gpu_shadow_size + sx];
+                                        if (fl <= (long long)md + GPU_SHADOW_BIAS) lit++;
+                                    }
+                                }
+                                if (lit < 9) {
+                                    int lr = (pixel >> 16) & 0xFF, lg = (pixel >> 8) & 0xFF, lb = pixel & 0xFF;
+                                    int sr = ((unsigned int)shadow_color >> 16) & 0xFF, sg = ((unsigned int)shadow_color >> 8) & 0xFF, sb = (unsigned int)shadow_color & 0xFF;
+                                    int rr = sr + (lr - sr) * lit / 9;
+                                    int rg = sg + (lg - sg) * lit / 9;
+                                    int rb = sb + (lb - sb) * lit / 9;
+                                    pixel = ((unsigned int)rr << 16) | ((unsigned int)rg << 8) | (unsigned int)rb;
+                                }
+                            }
+                        }
                         fb[idx] = pixel;
                         db[idx] = (unsigned int)depth;
                     }
@@ -12179,6 +12403,12 @@ static void gpu_rasterize_triangles(int count) {
     }
     if (GPU_CMD_ADDR + (unsigned long long)count * 72 > guest_mem_size) return;
     if (GOP_FB_ADDR + (unsigned long long)gop_width * gop_height * 4 > guest_mem_size) return;
+    /* The band function reads the light buffer per triangle. If the guest asked
+       for more triangles than that region can hold, drop the shadow compare
+       rather than read past the end of guest RAM. */
+    if (gpu_shadow_pending &&
+        GPU_LIGHT_ADDR + (unsigned long long)count * GPU_LIGHT_STRIDE > guest_mem_size)
+        gpu_shadow_pending = 0;
     unsigned int *fb = (unsigned int *)((unsigned char *)guest_mem + GOP_FB_ADDR);
     unsigned int *db = (unsigned int *)((unsigned char *)guest_mem + GPU_DEPTH_ADDR);
     int w = gop_width, h = gop_height;

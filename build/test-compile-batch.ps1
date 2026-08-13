@@ -1,9 +1,15 @@
-# Batch compiler: boots one VM in REPL mode, feeds all test sources
-# sequentially. One VM boot for the entire batch.
+# test-compile-batch.ps1 -- Batch compiler -- boots one VM in REPL mode and feeds all test sources sequentially. One VM boot for the entire batch
+# GENERATED FROM THE CODEX SHELL DSL. Do not edit by hand.
+# A hand edit here must NOT be submitted. Change the generator under
+# codex/build/, regenerate, and submit the generator and this file
+# together. Until then build/check-generated-scripts.ps1 reports this
+# file as drifted, and the next regeneration discards the edit.
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory=$true)] [string]$ListFile,
-    [Parameter(Mandatory=$true)] [string]$OutRoot,
+    [Parameter(Mandatory=$true)]
+    [string]$ListFile,
+    [Parameter(Mandatory=$true)]
+    [string]$OutRoot,
     [int]$PCore = 1
 )
 
@@ -13,11 +19,13 @@ Set-Location (Join-Path $PSScriptRoot '..')
 [Environment]::CurrentDirectory = (Get-Location).Path
 . (Join-Path $PSScriptRoot 'vm-config.ps1')
 
+
 $sources = @(Get-Content -Path $ListFile | Where-Object { $_.Trim() -ne '' })
 if ($sources.Count -eq 0) { exit 0 }
 $resolveSw = [System.Diagnostics.Stopwatch]::StartNew()
 
 . (Join-Path $PSScriptRoot 'quire-map.ps1')
+
 
 function Resolve-Source {
     param([string]$SrcPath)
@@ -40,6 +48,7 @@ function Resolve-Source {
     # battery is the path that matters for a `.failing` position pin.
     return @{ Text = $sb.ToString(); Regions = (Get-DiagRegions -Ordered $ordered -SrcPath $SrcPath) }
 }
+
 
 $regionsByName = @{}
 
@@ -76,6 +85,7 @@ for ($i = 0; $i -lt $sources.Count; $i++) {
 }
 if ($testNames.Count -eq 0) { exit 0 }
 
+
 $inputFile = [System.IO.Path]::GetTempFileName()
 [System.IO.File]::WriteAllText($inputFile, $inputSb.ToString(), [System.Text.UTF8Encoding]::new($false))
 $outputFile = [System.IO.Path]::GetTempFileName()
@@ -93,6 +103,7 @@ if (-not $proc.HasExited) { Stop-VmGraceful -ProcessId $proc.Id }
 $batchSw.Stop()
 $parseSw = [System.Diagnostics.Stopwatch]::StartNew()
 
+
 # Parse output: text lines interleaved with binary CDX blocks. Newlines are
 # found with a native string scan, not a PowerShell byte loop: when a batch
 # VM dies mid-binary the framing is lost and the remainder of the output is
@@ -103,6 +114,7 @@ $parseSw = [System.Diagnostics.Stopwatch]::StartNew()
 $raw = if (Test-Path $outputFile) { [System.IO.File]::ReadAllBytes($outputFile) } else { [byte[]]::new(0) }
 $rawStr = [System.Text.Encoding]::GetEncoding(28591).GetString($raw)
 $pos = 0; $testIdx = 0
+
 
 function NextLine {
     if ($script:pos -ge $raw.Length) { return $null }
@@ -117,6 +129,7 @@ function NextLine {
 }
 
 function SkipBytes { param([int]$n); $script:pos = [Math]::Min($script:pos + $n, $raw.Length) }
+
 
 $vmDead = $false
 $LogCap = 2000
@@ -148,6 +161,7 @@ function Get-NextMarkerAt {
     $j = $rawStr.IndexOf("`n$Marker", [Math]::Max(0, $From - 1), [System.StringComparison]::Ordinal)
     if ($j -ge 0) { return $j + 1 } else { return -1 }
 }
+
 
 # One native marker search per test instead of a per-line walk. A test's
 # region ends at the next protocol marker standing at a line start: SIZE:
@@ -246,6 +260,7 @@ while ($testIdx -lt $testNames.Count -and $pos -lt $raw.Length -and -not $vmDead
     $testIdx++
 }
 
+
 while ($testIdx -lt $testNames.Count) {
     $name = $testNames[$testIdx]; $testOut = Join-Path $OutRoot $name
     New-Item -ItemType Directory -Force -Path $testOut | Out-Null
@@ -253,6 +268,7 @@ while ($testIdx -lt $testNames.Count) {
     "FAIL: VM died before this test" | Set-Content -Path (Join-Path $testOut 'build.log') -Encoding UTF8
     $testIdx++
 }
+
 
 $parseSw.Stop()
 Remove-Item -Force $inputFile, $outputFile, $stderrFile -ErrorAction SilentlyContinue

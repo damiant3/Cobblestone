@@ -93,6 +93,40 @@ function Get-AppDirCount {
     @(Get-ChildItem -Path $p -Directory).Count
 }
 
+# The BVT's own test list, read out of build/bvt.ps1. README states its size
+# and that number went unmanaged: the line said "75 tests in 18.8s" with the
+# 18.8s from a run nobody could reproduce and no claim on the check count at
+# all. The counts are structural (the list, and how many entries have an
+# .expected to run) so they belong here; the elapsed time does not, and was
+# removed from the doc rather than pinned.
+function Get-BvtTestPaths {
+    $p = Join-Path $repo 'build/bvt.ps1'
+    if (-not (Test-Path -PathType Leaf $p)) { return @() }
+    $m = [regex]::Match([System.IO.File]::ReadAllText($p), '\$BvtTests\s*=\s*@\((.*?)\n\)', 'Singleline')
+    if (-not $m.Success) { return @() }
+    @([regex]::Matches($m.Groups[1].Value, "'([^']+\.codex)'") | ForEach-Object { $_.Groups[1].Value })
+}
+
+function Get-BvtTestCount { @(Get-BvtTestPaths).Count }
+
+function Get-BvtCheckCount {
+    $paths = @(Get-BvtTestPaths)
+    if ($paths.Count -eq 0) { return -1 }
+    # Every test is compiled; the ones carrying an .expected are also run.
+    $run = @($paths | Where-Object { Test-Path (Join-Path $repo ($_ -replace '\.codex$', '.expected')) })
+    $paths.Count + $run.Count
+}
+
+# Source only, for the same reason as Get-PlugModuleCount: apps/*/build-output/
+# holds generated .codex, so counting it makes the claim depend on what this
+# workspace last built rather than on the depot revision.
+function Get-AppModuleCount {
+    $p = Join-Path $repo 'apps'
+    if (-not (Test-Path $p)) { return -1 }
+    @(Get-ChildItem -Path $p -Filter *.codex -File -Recurse |
+        Where-Object { $_.FullName -notmatch '[\\/]build-output[\\/]' }).Count
+}
+
 # The seed digests are the reason this file grew a text mode. README ships
 # them to the public, nothing re-read them, and on 2026-07-31 every one was
 # wrong: the size by 108,817 bytes, the SHA-256 and MD5 entirely, and the
@@ -246,53 +280,129 @@ $claims = @(
        Group = 1
        Expect = { Get-FileDigest 'seed/Codex.img' 'SHA256' } }
 
+    # Repointed 2026-08-12. README was rewritten at rev 25 and every pattern
+    # below stopped matching, so eight claims plus all sixteen quire rows went
+    # silently unchecked -- the NOMATCH failure this script was written to make
+    # visible, arriving for real. The counts they had stopped watching had
+    # drifted by then: foreword 430 -> 431, plug modules 145 -> 148, apps
+    # modules 1,010 -> 1,008, compiler 63 files -> 64. Patterns now track the
+    # README's current shape; the quire table simply lost its bold.
     @{ Name = 'compiler files (README)'
        Doc = 'README.md'
-       Pattern = '~[\d,]+ lines across (\d+) `\.codex` files'
+       Pattern = 'Self-hosted compiler \((\d+) files, [\d,]+ lines\)'
        Group = 1; TolPct = 0
        Expect = { Get-CodexFileCount 'codex/compiler' -Recurse } }
 
     @{ Name = 'compiler lines (README)'
        Doc = 'README.md'
-       Pattern = '~([\d,]+) lines across \d+ `\.codex` files'
+       Pattern = 'Self-hosted compiler \(\d+ files, ([\d,]+) lines\)'
        Group = 1; TolPct = 2
        Expect = { Get-CodexLineCount 'codex/compiler' } }
 
     @{ Name = 'library modules (README)'
        Doc = 'README.md'
-       Pattern = '\*\*(\d+) library modules\*\* \(\d+ foreword \+ \d+ OS\)'
+       Pattern = '\*\*(\d+) library modules across \d+ quires\*\* \(\d+ foreword \+ \d+ OS\)'
        Group = 1; TolPct = 0
        Expect = { (Get-CodexFileCount 'codex/foreword' -Recurse) + (Get-CodexFileCount 'codex/os' -Recurse) } }
 
     @{ Name = 'foreword modules (README)'
        Doc = 'README.md'
-       Pattern = '\*\*\d+ library modules\*\* \((\d+) foreword \+ \d+ OS\)'
+       Pattern = '\*\*\d+ library modules across \d+ quires\*\* \((\d+) foreword \+ \d+ OS\)'
        Group = 1; TolPct = 0
        Expect = { Get-CodexFileCount 'codex/foreword' -Recurse } }
 
     @{ Name = 'os modules (README)'
        Doc = 'README.md'
-       Pattern = '\*\*\d+ library modules\*\* \(\d+ foreword \+ (\d+) OS\)'
+       Pattern = '\*\*\d+ library modules across \d+ quires\*\* \(\d+ foreword \+ (\d+) OS\)'
+       Group = 1; TolPct = 0
+       Expect = { Get-CodexFileCount 'codex/os' -Recurse } }
+
+    # The same three facts again in the Library Quires preamble. They disagreed
+    # with the headline by a module on 2026-07-31 and again on 2026-08-12, so
+    # both statements are checked rather than one.
+    @{ Name = 'quire preamble modules (README)'
+       Doc = 'README.md'
+       Pattern = '\*\*(\d+) modules\*\* \(\d+ foreword, \d+ OS\)'
+       Group = 1; TolPct = 0
+       Expect = { (Get-CodexFileCount 'codex/foreword' -Recurse) + (Get-CodexFileCount 'codex/os' -Recurse) } }
+
+    @{ Name = 'quire preamble foreword (README)'
+       Doc = 'README.md'
+       Pattern = '\*\*\d+ modules\*\* \((\d+) foreword, \d+ OS\)'
+       Group = 1; TolPct = 0
+       Expect = { Get-CodexFileCount 'codex/foreword' -Recurse } }
+
+    @{ Name = 'foreword modules (README tree)'
+       Doc = 'README.md'
+       Pattern = 'foreword/\s+(\d+) library modules across \d+ quires'
+       Group = 1; TolPct = 0
+       Expect = { Get-CodexFileCount 'codex/foreword' -Recurse } }
+
+    @{ Name = 'os modules (README tree)'
+       Doc = 'README.md'
+       Pattern = 'observe \((\d+) modules\)'
        Group = 1; TolPct = 0
        Expect = { Get-CodexFileCount 'codex/os' -Recurse } }
 
     @{ Name = 'plug count (README)'
        Doc = 'README.md'
-       Pattern = '\((\d+) plugs, \d+ source modules\)'
+       Pattern = '(\d+) plugs, \d+ source modules'
        Group = 1; TolPct = 0
        Expect = { Get-PlugCount } }
 
     @{ Name = 'plug modules (README)'
        Doc = 'README.md'
-       Pattern = '\(\d+ plugs, (\d+) source modules\)'
+       Pattern = '\d+ plugs, ([\d,]+) source modules'
        Group = 1; TolPct = 0
        Expect = { Get-PlugModuleCount } }
 
     @{ Name = 'apps (README)'
        Doc = 'README.md'
-       Pattern = '\*\*(\d+) apps\*\*, all written in Codex'
+       Pattern = '(\d+) applications, [\d,]+ modules'
        Group = 1; TolPct = 0
        Expect = { Get-AppDirCount } }
+
+    # Source only, for the reason Get-PlugModuleCount is: apps/*/build-output/
+    # holds generated .codex and the number would then move with what you built.
+    @{ Name = 'app modules (README)'
+       Doc = 'README.md'
+       Pattern = '\d+ applications, ([\d,]+) modules'
+       Group = 1; TolPct = 0
+       Expect = { Get-AppModuleCount } }
+
+    # Both statements of the apps fact. The headline and the tree block
+    # disagreed on 2026-08-12 (1,010 against 1,008) because only one of them
+    # was ever in front of a reader who was editing it. A regex takes the FIRST
+    # match, so a second copy of a fact is unchecked unless it is anchored.
+    @{ Name = 'apps (README tree)'
+       Doc = 'README.md'
+       Pattern = 'apps/\s+(\d+) applications, [\d,]+ modules'
+       Group = 1; TolPct = 0
+       Expect = { Get-AppDirCount } }
+
+    @{ Name = 'app modules (README tree)'
+       Doc = 'README.md'
+       Pattern = 'apps/\s+\d+ applications, ([\d,]+) modules'
+       Group = 1; TolPct = 0
+       Expect = { Get-AppModuleCount } }
+
+    @{ Name = 'test files (README)'
+       Doc = 'README.md'
+       Pattern = 'OS integration tests \(([\d,]+) files\)'
+       Group = 1; TolPct = 0
+       Expect = { Get-CodexFileCount 'codex/test' -Recurse } }
+
+    @{ Name = 'BVT tests (README)'
+       Doc = 'README.md'
+       Pattern = 'gates on is (\d+) tests'
+       Group = 1; TolPct = 0
+       Expect = { Get-BvtTestCount } }
+
+    @{ Name = 'BVT checks (README)'
+       Doc = 'README.md'
+       Pattern = 'for (\d+) checks'
+       Group = 1; TolPct = 0
+       Expect = { Get-BvtCheckCount } }
 )
 
 # The README per-quire table. Same generated shape as the codex.os rows below,
@@ -319,7 +429,7 @@ foreach ($q in $readmeQuires) {
     $claims += @{
         Name = "README quire $($q.Label)"
         Doc = 'README.md'
-        Pattern = "\| \*\*$($q.Label)\*\* \| ``$($q.Path)/`` \| (\d+) \|"
+        Pattern = "\| $($q.Label) \| ``$($q.Path)/`` \| (\d+) \|"
         Group = 1; TolPct = 0
         Expect = [scriptblock]::Create("Get-CodexFileCount '$($q.Path)' -Recurse")
     }

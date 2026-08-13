@@ -666,7 +666,7 @@ Section: Shadow Mapping
       is None -> 0
       is Just (mesh) ->
         let lmvp = mat4-mul lvp (scene3d-world-matrix scene idx)
-        in r3d-render-tris-unlit st mesh lmvp (node.sn3-material) (st.r3t-w / 2) (st.r3t-h / 2) 0 (mesh.mesh-index-count)
+        in r3d-render-tris-caster st mesh lmvp (node.sn3-material) (st.r3t-w / 2) (st.r3t-h / 2) 0 (mesh.mesh-index-count)
 
   r3d-project-clip-sw : ClipVert, Integer, Integer, R3dShadow -> ProjVert
   r3d-project-clip-sw (v) (half-w) (half-h) (sh) =
@@ -920,6 +920,39 @@ Section: Unlit Triangle Rendering
     in let color = rgb-to-packed (mat.emat-albedo)
     in let drawn = r3d-raster-fan st poly 1 color half-w half-h
     in r3d-render-tris-unlit st mesh mvp mat half-w half-h (i + 3) n
+
+ The depth map is filled from the surfaces facing AWAY from the light, not
+ the ones facing it. A lit surface that casts its own depth sits at exactly
+ the distance it is then compared against, so it shadows itself wherever the
+ comparison rounds the wrong way, and the bias that would cover it at a
+ grazing angle is far larger than one that keeps contact shadows. Filling
+ from the far side moves the recorded depth a whole object-thickness behind
+ the lit surface and the question stops being close. Measured on the desk's
+ cube: 5470 self-shadowed pixels on one face before, 0 after, with the cast
+ shadows unchanged.
+
+ The winding is flipped by swapping the two fan vertices rather than by
+ giving the rasterizer a cull direction, so `cull-backface` and
+ `r3d-rasterize-tri` are the same ones every other path uses.
+
+  r3d-render-tris-caster : R3dTriState, Mesh, Mat4, EngineMaterial, Integer, Integer, Integer, Integer -> Integer
+  r3d-render-tris-caster (st) (mesh) (mvp) (mat) (half-w) (half-h) (i) (n) =
+    if i >= n then 0
+    else let c0 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh i)) mvp mat4-identity
+    in let c1 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh (i + 1))) mvp mat4-identity
+    in let c2 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh (i + 2))) mvp mat4-identity
+    in let poly = r3d-clip-tri c0 c1 c2
+    in let drawn = r3d-raster-fan-cast st poly 1 (rgb-to-packed (mat.emat-albedo)) half-w half-h
+    in r3d-render-tris-caster st mesh mvp mat half-w half-h (i + 3) n
+
+  r3d-raster-fan-cast : R3dTriState, List ClipVert, Integer, Integer, Integer, Integer -> Integer
+  r3d-raster-fan-cast (st) (poly) (i) (color) (half-w) (half-h) =
+    if i + 1 >= list-length poly then 0
+    else let p0 = r3d-project-clip (list-at poly 0) half-w half-h
+    in let pa = r3d-project-clip (list-at poly (i + 1)) half-w half-h
+    in let pb = r3d-project-clip (list-at poly i) half-w half-h
+    in let hit = if cull-backface (p0.pv-sx) (p0.pv-sy) (pa.pv-sx) (pa.pv-sy) (pb.pv-sx) (pb.pv-sy) then 0 else r3d-rasterize-tri st p0 pa pb color
+    in r3d-raster-fan-cast st poly (i + 1) color half-w half-h
 
 Section: Flat/Phong Triangle Rendering
 

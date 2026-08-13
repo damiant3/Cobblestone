@@ -12,6 +12,7 @@ Chapter: Opening
   cites Emit chapter X86-64 Code Generator (x86-64-emit-cdx, x86-64-emit-cdx-with-exit-mode, ir-chapter-with-proofs, keep-proof-defs, X86_64ExitMode, ExitRepl, Exit, X86_64WatchdogMode, WatchdogProgress, WatchdogPet, pmap-self-test, pmap-escape-count, pmap-escape-count-quiet, pmap-escape-list-quiet, pmap-escape-reached, utf8-to-cce, lir-target-x86)
   cites Semantics chapter Name Resolution (resolve-chapter, check-entry-point-duplicate, check-duplicate-cites, check-cites-resolve, count-typecheck-units)
   cites Codex chapter LirTargets (lir-target-a64-shape, lir-target-narrow-shape)
+  cites Codex chapter BootPaint (disk-rung, disk-mark, disk-stop, bp-pass, bp-truth, bp-cyan, bp-yellow, bp-magenta, bp-orange, bp-blue, bp-white, bp-red)
   cites Foreword chapter CCE (to-unicode)
 
 Section: Compile Flags
@@ -176,6 +177,7 @@ Section: Compile Flags
    let v = mode-flag-text mode "passes="
    in if v == "" then default-ir-pipeline
       else if v == "none" then []
+      else if v == "text-plug" then text-plug-ir-pipeline
       else if text-starts-with v "+" then default-ir-pipeline & parse-pipeline-names (substring v 1 (text-length v - 1))
       else parse-pipeline-names v
 
@@ -1493,9 +1495,15 @@ Section: Entry Point
   emit-binary-size (result) =
    list-length (result.header-bytes) + result.content-len + list-length (result.tail-bytes)
 
+  disk-halted : Boolean -> [Console] Nothing
+  disk-halted (to-disk) = act
+   print-line-uni "CODEGEN-HALTED: errors in bag; no binary emitted"
+   disk-stop to-disk bp-orange
+  end
+
   emit-binary-tail : EmitChapterResult, Boolean -> [Console, FileSystem, Device.Block] Nothing
   emit-binary-tail (result) (to-disk) =
-   if bag-has-errors (result.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no binary emitted"
+   if bag-has-errors (result.bag) then disk-halted to-disk
    else act
     print-line-uni ("SIZE:" & integer-to-text (emit-binary-size result))
     if to-disk then emit-binary-to-disk result
@@ -1525,22 +1533,49 @@ Section: Entry Point
 
   emit-binary-to-disk : EmitChapterResult -> [Console, Device.Block] Nothing
   emit-binary-to-disk (result) = act
+   disk-rung "compiled" 1 bp-blue bp-orange
    ok <- fat16-write-segments "OUT.CDX" (result.header-bytes) (result.content-buf) (result.content-len) (result.tail-bytes)
    emit-disk-verdict ok (emit-binary-size result)
   end
 
+ The verdict re-reads the directory instead of taking the writer's word.
+ Measured 2026-08-11: with the medium read-only, codex-vm printed
+ `WARN: cannot reopen disk ... for write` on every sector and
+ fat16-write-segments still answered True, so a rung that trusted `ok` was a
+ rung that could not fail.
+
+  disk-entry-size : Maybe Fat16DirEntry -> Integer
+  disk-entry-size (m) = when m
+    is Just (e) -> e.de-size
+    is None -> 0 - 1
+
+  disk-landed : Boolean, Integer, Integer -> Integer
+  disk-landed (ok) (got) (want) =
+    if got /= want then 0
+    else if ok then 1
+    else 0
+
   emit-disk-verdict : Boolean, Integer -> [Console, Device.Block] Nothing
   emit-disk-verdict (ok) (size) = act
-   let line = if ok then "OK OUT.CDX " & integer-to-text size else "FAILED"
+   vol <- fat16-boot-volume
+   entry <- fat16-resolve-path vol "OUT.CDX"
+   emit-disk-say (disk-landed ok (disk-entry-size entry) size) size (disk-entry-size entry)
+  end
+
+  emit-disk-say : Integer, Integer, Integer -> [Console, Device.Block] Nothing
+  emit-disk-say (landed) (size) (got) = act
+   disk-mark "wrote" landed bp-white bp-blue
+   let line = if landed == 1 then "OK OUT.CDX " & integer-to-text size else "FAILED " & integer-to-text got & " of " & integer-to-text size
    in act
     v <- fat16-write-file "OUT.TXT" line
     print-line-uni ("DISK-OUT: " & line)
+    disk-stop True (if landed == 1 then bp-white else bp-blue)
    end
   end
 
   emit-binary-tail-with-map : EmitChapterResult, Boolean -> [Console, FileSystem, Device.Block] Nothing
   emit-binary-tail-with-map (result) (to-disk) =
-   if bag-has-errors (result.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no binary emitted"
+   if bag-has-errors (result.bag) then disk-halted to-disk
    else act
     print-line-uni ("SIZE:" & integer-to-text (emit-binary-size result))
     if to-disk then emit-binary-to-disk result
@@ -1712,18 +1747,36 @@ Section: Entry Point
 
   emit-from-disk : Text -> [Console, FileSystem] Nothing
   emit-from-disk (mode) = act
+   disk-rung "mode" 1 bp-yellow bp-cyan
    path-result <- read-line
    vol <- fat16-boot-volume
+   disk-rung "volume" (bp-truth (vol.vol-bytes-per-sector == 512)) bp-magenta bp-yellow
    when path-result
     is Just (path) ->
       when fat16-read-text vol path
         is Just (source) ->
-          let foreword-prefix = disk-resolve-forewords vol source mode
+          let o = bp-pass 1 bp-orange bp-magenta
+          in let foreword-prefix = disk-resolve-forewords vol source mode
           in let full = foreword-prefix & source
           in let flags = parse-mode-flags mode (text-length full)
           in emit-cdx full mode flags True
-        is None -> print-line-uni ("DISK: file not found: " & path)
-    is None -> print-line-uni "DISK: no path on stdin"
+        is None -> disk-no-source ("DISK: file not found: " & path)
+    is None -> disk-no-source "DISK: no path on stdin"
+  end
+
+ The volume rung reads the BPB rather than the mount's own answer.
+ fat16-boot-volume returns a record whatever the medium said, so a payload
+ built without UEFI mode reads down the bare-metal path, gets zeroes, and
+ mounts a volume that satisfies every pointer test.
+
+ The source rung paints on the way through and does not trace, because
+ `mode` is intact in this frame and damaged one call deeper. The next rung's
+ line names it: nothing reaches `compiled` without ORANGE having been painted.
+
+  disk-no-source : Text -> [Console] Nothing
+  disk-no-source (why) = act
+   disk-rung "source" 0 bp-orange bp-magenta
+   print-line-uni why
   end
 
   compile-plain : Text, Text, Text, CompileFlags -> [Console, FileSystem] Nothing
@@ -1782,10 +1835,17 @@ Section: Entry Point
   end
 
   opening : [Console, FileSystem, Device.Block] Nothing = act
+   disk-rung "entered" 1 bp-cyan bp-red
    mode-result <- read-line
    when mode-result
     is Just (mode) -> dispatch-on-mode mode
-    is None -> print-line-uni "Codex: no input mode on stdin"
+    is None -> disk-no-mode 0
+  end
+
+  disk-no-mode : Integer -> [Console] Nothing
+  disk-no-mode (dummy) = act
+   disk-rung "mode" 0 bp-yellow bp-cyan
+   print-line-uni "Codex: no input mode on stdin"
   end
 
 Page 1

@@ -122,9 +122,9 @@ reaching for it prematurely.
 ### 9. One Thing at a Time
 
 Each file does one thing. Each Chapter does one thing. Each CL does
-one thing. The compiler is ~53,652 lines across 63 files (measured
-2026-08-09; this line said 57,466 on 07-31 and 55,900 on 07-25, so it is
-now falling rather than rising). A wrong change in one
+one thing. The compiler is ~54,148 lines across 64 files (measured
+2026-08-12; this line said 53,652 on 08-09, 57,466 on 07-31 and 55,900 on
+07-25, so the fall has stopped and it is rising again). A wrong change in one
 place surfaces as a silent corruption three pipeline stages later.
 
 ### 10. Read the Literature

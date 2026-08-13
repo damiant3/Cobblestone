@@ -1,0 +1,61 @@
+Chapter: DeskCursorArrowTest
+  cites Works chapter GopDraw
+  cites Foreword chapter Console
+
+ The desktop cursor was a filled rectangle until 2026-08-11 and is now an
+ arrow, which means it no longer paints every pixel of the box it reserves.
+ That is the whole risk in the change: `cursor-save-rows` and
+ `cursor-rest-rows` still save and restore the FULL cwc-by-chc rect, so the
+ restore is a superset of what the arrow paints, and a cursor that stopped
+ erasing itself would leave a trail of arrows across the desktop rather than
+ one cursor.
+
+ It is measured against a framebuffer in memory rather than a display,
+ because neither `-mouse` nor `-hid-combo` drives the desk's USB mouse in
+ this bed -- both were tried and the cursor stayed where `desk-run` first
+ painted it, so no screenshot can show a move.
+
+ The pattern is `i + 1000`, which cannot collide with either cursor colour
+ (1052688 and 16777215) at this size, so a pixel differing from the pattern
+ is cursor ink and nothing else. Painting 56 pixels twice while only 56 ever
+ differ is what proves the erase.
+
+Section: Test
+
+  cur-fb-w : Integer = 32
+  cur-fb-h : Integer = 32
+
+  cur-fill : Integer, Integer -> Integer
+  cur-fill (base) (i) =
+    if i >= cur-fb-w * cur-fb-h then 0
+    else let w = poke-32 base (i * 4) (i + 1000)
+    in cur-fill base (i + 1)
+
+  cur-diff : Integer, Integer, Integer -> Integer
+  cur-diff (base) (i) (acc) =
+    if i >= cur-fb-w * cur-fb-h then acc
+    else let same = peek-32 base (i * 4) == i + 1000
+    in cur-diff base (i + 1) (acc + (if same then 0 else 1))
+
+  cur-alloc : Integer -> Integer
+  cur-alloc (size) =
+    let raw = __heap-save
+    in let adv = __heap-advance (size + 64)
+    in (raw + 63) - bit-and (raw + 63) 63
+
+  opening : [Console] Nothing = act
+    let base = cur-alloc (cur-fb-w * cur-fb-h * 4)
+    in let cs = cur-alloc 2048
+    in let p0 = cur-fill base 0
+    in let u1 = cursor-update cs base cur-fb-w cur-fb-w cur-fb-h 1 2 2
+    in let d1 = cur-diff base 0 0
+    in let u2 = cursor-update cs base cur-fb-w cur-fb-w cur-fb-h 1 16 16
+    in let d2 = cur-diff base 0 0
+    in let hd = cursor-hide cs base cur-fb-w
+    in let d3 = cur-diff base 0 0
+    in act
+      print-line-uni (integer-to-text d1)
+      print-line-uni (integer-to-text d2)
+      print-line-uni (integer-to-text d3)
+    end
+  end

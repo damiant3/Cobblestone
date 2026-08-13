@@ -10,18 +10,21 @@ Chapter: TestDiskCompileScript
 
 Section: Parameters
 
-  tdc-params : List ShellParam = [sh-param-default "SampleSrc" SptString (SeLit "codex\\test\\absorb-outer-lambda.codex"), sh-param-default "Expected" SptString (SeLit "12"), sh-param-default "PCore" SptInt (SeInt 1)]
+ The sample has to be CITE-FREE. The image plug embeds it raw as SOURCE.SRC
+ and the compiler reads it from the disk inside the VM, so nothing resolves
+ a cites line on the way in; a sample with one compiles on the host in step
+ 1a and then fails in step 2 for a reason the output does not name.
+
+  tdc-params : List ShellParam = [sh-param-default "SampleSrc" SptString (SeLit "codex\\test\\field-range-proven.codex"), sh-param-default "Expected" SptString (SeLit "12"), sh-param-default "PCore" SptInt (SeInt 1)]
 
 Section: S01 -- Preamble
 
-  s01 : List ShellCmd =
-    let fail-stage0 = [ScWriteError (SeRaw "\"FAIL: no compiler CDX at $Stage0\""), ScExit (SeInt 1)]
-    in [ScSetStrictMode, ScSetErrorStop, ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'vm-config.ps1')"), ScBlank, ScAssign "root" (SeRaw "Split-Path $PSScriptRoot"), ScAssign "outDir" (SeRaw "Join-Path $root 'build-output\\disk-compile-test'"), ScIf (SeNot (SeDirExists (SeVar "outDir"))) [ScMkdir (SeVar "outDir")] [], ScAssign "compile" (SeRaw "Join-Path $PSScriptRoot 'compile.ps1'"), ScAssign "runScript" (SeRaw "Join-Path $PSScriptRoot 'test-run.ps1'"), ScEcho (SeLit "=== DISK compile test ===")]
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'vm-config.ps1')"), ScBlank, ScAssign "root" (SeRaw "Split-Path $PSScriptRoot"), ScAssign "outDir" (SeRaw "Join-Path $root 'build-output\\disk-compile-test'"), ScIf (SeNot (SeDirExists (SeVar "outDir"))) [ScMkdir (SeVar "outDir")] [], ScAssign "compile" (SeRaw "Join-Path $PSScriptRoot 'compile.ps1'"), ScAssign "runScript" (SeRaw "Join-Path $PSScriptRoot 'test-run.ps1'"), ScEchoStyled (SeLit "=== DISK compile test ===") ClBrightCyan True]
 
 Section: S02 -- Step 1a: Compile source to CDX
 
   s02 : List ShellCmd =
-    let fail-cdx = [ScEcho (SeLit "FAIL: CDX compile failed"), ScIf (SeFileExists (SeVar "cdxLog")) [ScRaw "Get-Content $cdxLog | Write-Host"] [], ScExit (SeInt 1)]
+    let fail-cdx = [ScEchoStyled (SeLit "FAIL: CDX compile failed") ClBrightRed True, ScIf (SeFileExists (SeVar "cdxLog")) [ScRaw "Get-Content $cdxLog | Write-Host"] [], ScExit (SeInt 1)]
     in [ScEcho (SeLit "Step 1a: Compile source to CDX..."), ScAssign "imgOut" (SeRaw "Join-Path $outDir 'disk-test.img'"), ScAssign "cdxOut" (SeRaw "Join-Path $outDir 'disk-test.cdx'"), ScAssign "cdxLog" (SeRaw "Join-Path $outDir 'cdx-build.log'"), ScRaw "& pwsh -NoProfile -File $compile -Src $SampleSrc -Out $cdxOut -Log $cdxLog -PCore $PCore", ScIf (SeOr (SeRaw "$LASTEXITCODE -ne 0") (SeNot (SeFileExists (SeVar "cdxOut")))) fail-cdx []]
 
 Section: S03 -- Step 1b: CDX to PE via plug
@@ -41,8 +44,18 @@ Section: S05 -- Step 2: Boot compiler with IMG as IDE disk
   s05 : List ShellCmd =
     let fail-no-stage0 = [ScEcho (SeRaw "\"FAIL: no compiler CDX at $Stage0\""), ScExit (SeInt 1)]
     in let fail-vm = [ScEcho (SeLit "FAIL: VM did not start"), ScExit (SeInt 1)]
-    in let fail-ready = [ScEcho (SeLit "FAIL: no READY"), ScExit (SeInt 1)]
-    in [ScEcho (SeLit "Step 2: DISK compile..."), ScAssign "Stage0" (SeRaw "Join-Path $root 'build-output\\bare-metal\\Codex.cdx'"), ScIf (SeNot (SeFileExists (SeVar "Stage0"))) fail-no-stage0 [], ScRaw "$diskArgs = @('-drive', \"file=$imgOut,format=raw,if=ide,index=0\")", ScRaw "$run = Start-VmRun -Kernel $Stage0 -ConnectTimeoutSec 10 -MemMB 3072 -PCore $PCore -ExtraArgs $diskArgs", ScIf (SeNot (SeVar "run")) fail-vm [], ScIf (SeNot (SeRaw "(Read-VmReady -Conn $run.Conn -TimeoutSec 30)")) fail-ready []]
+    in [ScEcho (SeLit "Step 2: DISK compile..."), ScAssign "Stage0" (SeRaw "Join-Path $root 'build-output\\bare-metal\\Codex.cdx'"), ScIf (SeNot (SeFileExists (SeVar "Stage0"))) fail-no-stage0 [], ScRaw "$diskArgs = @('-drive', \"file=$imgOut,format=raw,if=ide,index=0\")", ScRaw "$run = Start-VmRun -Kernel $Stage0 -ConnectTimeoutSec 10 -MemMB 3072 -PCore $PCore -ExtraArgs $diskArgs", ScIf (SeNot (SeVar "run")) fail-vm []]
+
+Section: S05b -- Inside the VM's lifetime
+
+ The try opens only once $run holds a VM. Everything above it can exit, and
+ the finally below dereferences $run.Conn, so anything that exits before the
+ assignment would die in the cleanup under Set-StrictMode and take its own
+ diagnostic with it.
+
+  s05b : List ShellCmd =
+    let fail-ready = [ScEcho (SeLit "FAIL: no READY"), ScExit (SeInt 1)]
+    in [ScIf (SeNot (SeRaw "(Read-VmReady -Conn $run.Conn -TimeoutSec 30)")) fail-ready []]
 
 Section: S06 -- Send DISK mode commands and read response
 
@@ -58,7 +71,7 @@ Section: S07 -- Read lines until SIZE: or CODEGEN-HALTED
 Section: S08 -- Validate and read binary
 
   s08 : List ShellCmd =
-    let fail-compile = [ScEcho (SeRaw "\"FAIL: DISK compile failed (status=$status)\""), ScForEach "ll" (SeVar "logLines") [ScEcho (SeRaw "\"  $ll\"")], ScExit (SeInt 1)]
+    let fail-compile = [ScEchoStyled (SeRaw "\"FAIL: DISK compile failed (status=$status)\"") ClBrightRed True, ScForEach "ll" (SeVar "logLines") [ScEcho (SeRaw "\"  $ll\"")], ScExit (SeInt 1)]
     in let fail-read = [ScEcho (SeLit "FAIL: binary read incomplete"), ScExit (SeInt 1)]
     in [ScIf (SeOr (SeStringNeq (SeVar "status") (SeLit "size")) (SeRaw "$binSize -le 0")) fail-compile [], ScEcho (SeRaw "\"  Compiled: $binSize bytes\""), ScRaw "$binBytes = Read-StreamBytes -Stream $stream -Count $binSize -TimeoutSec 60", ScIf (SeOr (SeNot (SeVar "binBytes")) (SeRaw "$binBytes.Length -ne $binSize")) fail-read [], ScAssign "cdxOut" (SeRaw "Join-Path $outDir 'disk-compiled.cdx'"), ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "cdxOut", SeVar "binBytes"], ScEcho (SeRaw "\"  Written: $cdxOut\"")]
 
@@ -70,13 +83,13 @@ Section: S10 -- Step 3: Boot compiled CDX and check output
 
   s10 : List ShellCmd =
     let fail-run = [ScEcho (SeLit "FAIL: runtime failed"), ScExit (SeInt 1)]
-    in let pass = [ScEcho (SeLit "PASS: DISK compile mode works")]
-    in let fail-mismatch = [ScEcho (SeLit "FAIL: output mismatch"), ScExit (SeInt 1)]
+    in let pass = [ScEchoStyled (SeLit "PASS: DISK compile mode works") ClBrightGreen True]
+    in let fail-mismatch = [ScEchoStyled (SeLit "FAIL: output mismatch") ClBrightRed True, ScExit (SeInt 1)]
     in [ScEcho (SeLit "Step 3: Run compiled CDX..."), ScAssign "actual" (SeRaw "Join-Path $outDir 'runtime.actual'"), ScRaw "& pwsh -NoProfile -File $runScript -Kernel $cdxOut -OutFile $actual -PCore $PCore", ScIf (SeRaw "$LASTEXITCODE -ne 0") fail-run [], ScRaw "$output = if (Test-Path $actual) { (Get-Content -Raw $actual).TrimEnd() } else { '' }", ScEcho (SeRaw "\"  Output: '$output'\""), ScEcho (SeRaw "\"  Expected: '$Expected'\""), ScIf (SeStringEq (SeVar "output") (SeVar "Expected")) pass fail-mismatch]
 
 Section: Assembly
 
-  tdc-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScTry [ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08] [] s09, ScBlank, ScSequence s10]
+  tdc-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScTry [ScSequence s05b, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08] [] s09, ScBlank, ScSequence s10]
 
   tdc-script : ShellScript = sh-script "test-disk-compile" "Test DISK compile mode end-to-end" tdc-params tdc-body
 

@@ -1,0 +1,59 @@
+Chapter: DeskBrowserPaneTest
+  cites Works chapter GopBrowser
+  cites Browser chapter BrowserEvent
+  cites UI chapter Event
+  cites UI chapter KeyInput
+  cites Foreword chapter Console
+
+ The desk pane's own job is translation, and translation is what this pins.
+ The desk's keyboard answers raw Set-1 scancodes; the browser's
+ `map-key-event` compares against `key-*` constants and `char-code` values,
+ which is what `poll-key` produces and not what a scancode is. `gbr-mods`
+ tracks the modifiers because a Set-1 stream carries them as their own make
+ and break codes rather than as a mask.
+
+ Each row feeds a scancode and a modifier mask through the pane's converter
+ into the browser's action mapping, so a break in either half shows up as a
+ wrong action rather than as a pane that silently ignores a chord. Ctrl+t is
+ the one that would have caught a mask that never got set: with mods 0 it
+ maps to ActionNone, which is exactly what a pane with no modifier tracking
+ would do to every chord a browser cares about.
+
+Section: Test
+
+  act-code : BrowserAction -> Integer
+  act-code (a) =
+    when a
+      is ActionNewTab -> 1
+      is ActionCloseTab -> 2
+      is ActionFocusAddress -> 3
+      is ActionReload -> 4
+      is ActionBack -> 5
+      is ActionForward -> 6
+      is ActionScrollUp -> 7
+      is ActionScrollDown -> 8
+      is ActionNone -> 0
+      is otherwise -> 9
+
+  pane-action : Integer, Integer -> Integer
+  pane-action (sc) (mods) =
+    act-code (map-key-event (event-key-down (poll-key-decode sc mods) mods 0))
+
+  mod-fold : Integer, List Integer, Integer, Integer -> Integer
+  mod-fold (mods) (scs) (i) (n) =
+    if i >= n then mods
+    else mod-fold (gbr-mods mods (list-at scs i)) scs (i + 1) n
+
+  opening : [Console] Nothing = act
+    print-line-uni (integer-to-text (pane-action 20 gbr-mod-ctrl))
+    print-line-uni (integer-to-text (pane-action 20 0))
+    print-line-uni (integer-to-text (pane-action 17 gbr-mod-ctrl))
+    print-line-uni (integer-to-text (pane-action 38 gbr-mod-ctrl))
+    print-line-uni (integer-to-text (pane-action 19 gbr-mod-ctrl))
+    print-line-uni (integer-to-text (pane-action 72 0))
+    print-line-uni (integer-to-text (pane-action 80 0))
+    print-line-uni (integer-to-text (mod-fold 0 [29] 0 1))
+    print-line-uni (integer-to-text (mod-fold 0 [29, 42] 0 2))
+    print-line-uni (integer-to-text (mod-fold 0 [29, 42, 157] 0 3))
+    print-line-uni (integer-to-text (mod-fold 0 [29, 42, 157, 170] 0 4))
+  end

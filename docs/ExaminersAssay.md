@@ -365,6 +365,27 @@ total nobody measured. Re-run before trusting any of these figures.
 while broken. None is a defect in the gate; all three are things it was never
 pointed at.
 
+**Transpiler plugs: the `plug-smoke` phase is four plugs, one input, and a
+binary it may not have rebuilt.** It runs typescript, python, rust and ptx
+against `codex/plugs/test-input/hello.codex`, and it rebuilds a plug **only
+if that plug's CDX is missing**. `codex/plugs/*/build-output/*-plug.cdx` is
+not in the depot, so those binaries are as old as the last hand run of the
+plug's own `build.ps1`.
+
+Both halves of that were load-bearing on 2026-08-11. Forty-four plug
+binaries in one workspace dated 08-06 against a shared
+`codex/plugs/common/IRTextParser.codex` last changed 08-08; **37 of 38
+runnable plugs faulted with an invalid opcode in `parse-type-record` on IR
+containing a record construction, and 38 of 38 handled `hello.codex`
+perfectly.** `hello.codex` has no record in it, so the phase was green
+throughout. Rebuilding every plug took 150 s and made all 38 produce output.
+
+**A green `plug-smoke` therefore means four plugs, of whatever vintage, on
+one record-free program.** After touching anything in `codex/plugs/common`,
+rebuild the plugs yourself; the gate will not. And do not read "produces
+output" as "correct" -- of those 38 rebuilt plugs, 36 emit a field access as
+a division (`codex/plugs/plugs-backlog.md` 1.2) while exiting 0.
+
 **Devices and MMIO.** The gate exercises no device model beyond what the
 compiler itself touches. After a change to a driver, a board or codex-vm,
 run `build/boards-test.ps1`, the `hda-audio` / `mic-peak` / `display-ops`
@@ -711,6 +732,50 @@ measuring other agents and calling it test cost.
 count can be re-derived by anyone later; an elapsed number cannot, because
 the conditions are gone. This is the same rule as stating the pattern beside
 a survey and the seed beside a battery result.
+
+### The BVT's own compare step can die with a PowerShell type error, once
+
+Seen 2026-08-11 (fester) in the gate's `test-bvt` phase, in the parallel
+run block, immediately after `trust-vouch-depth`:
+
+```
+InvalidOperation: 32 | $actual = $actual.TrimEnd("`n")
+  Method invocation failed because [System.Object[]] does not contain a
+  method named 'TrimEnd'.
+```
+
+The line is `build/bvt.ps1:283`; the "32" is the offset inside the
+`ForEach-Object -Parallel` block, not a file line. It is the HARNESS
+failing, not a test: `Get-Content $runOut -Raw` handed back an array
+where a single string was expected, so no verdict was reached for that
+test and the phase aborted.
+
+**It did not reproduce.** BVT standalone passed 135/135 immediately
+after, and a second full `build/build.ps1` was green end to end. The
+mechanism is not established and this note deliberately does not guess
+one. Recorded so the next person to hit it knows it has been seen once,
+is not caused by whatever they just changed, and is worth a re-run before
+any investigation. If it recurs, capture `$runOut` and its directory
+before anything else: the answer is in what that path matched.
+
+### The BVT has NO retry, so contention reads as a red gate
+
+The batch retries contention-shaped failures (next section). `build/bvt.ps1`
+does not, and it runs 8 compiles at a time at roughly 3 GB each.
+
+Measured 2026-08-11 with another agent's VM live on the box: a gate run
+reported `induction-assoc` and `reverse-reverse` as `FAIL (compile)` while
+every other one of the 75 passed. Both are the heaviest proof units in the
+list. Compiled alone against the same `build/output/Sut.cdx` immediately
+afterwards, both exit 0 and emit 84,577 bytes, and the next full gate was
+green with the identical script.
+
+So a BVT compile failure confined to the heavy proof tests, on a box that
+is not idle, is contention until shown otherwise. **Confirm it the cheap
+way before believing it**: compile the named test alone with
+`build/compile.ps1 -Kernel build/output/Sut.cdx` and read the exit code. A
+red BVT with a broad spread of failures is a different thing and is not
+this.
 
 ### A load flake is retried before it is believed
 

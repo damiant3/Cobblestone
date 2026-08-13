@@ -72,6 +72,38 @@ other than what it is:
    and compares every definition body. Mismatches indicate the emitter
    lost information.
 
+   **Its operator precedence table is a COPY of the compiler's and has
+   to track it.** `Strip-RedundantParens` decides whether a paren is
+   load-bearing by comparing precedences, so a table that disagrees with
+   `operator-precedence` in `codex/compiler/Syntax/ParserCore.codex`
+   makes the leg either reject correct output or accept wrong output.
+   Measured 2026-08-11: the shipped table gave `&` and `|` the SAME
+   precedence where the compiler gives Ampersand 3 and Pipe 2, so
+   `(a | b) & c` normalized to `a | b & c` and the two compared EQUAL.
+   The table now carries the compiler's own numbers. If you change
+   `operator-precedence`, change this table in
+   `codex/build/comparecodexsemanticScript.codex` in the same CL.
+
+   **Be precise about what that cost, because it is narrower than it
+   sounds.** The compiler parses these correctly and the text emitter
+   preserves the parens, so no verdict this leg ever returned was wrong.
+   The old table stripped the parens from the source side AND the stage1
+   side equally, so the two still matched. What it produced was a BLIND
+   SPOT: measured 2026-08-11 over the compiler's own source, four
+   definitions normalize differently under the corrected table --
+   `join-title-parts` and `scan-class-instance-defs`
+   (`Syntax/Parser.codex:1245`, `:1522`), `normalize-list-insert-at` and
+   `normalize-list-prim` (`Types/TypeChecker.codex:309`, `:250`). All
+   four mix boolean `|` and `&`. For those four, the leg was comparing a
+   form whose grouping had already been destroyed, so an emitter that
+   reassociated `|` against `&` there would not have been caught.
+
+   Two things it still does NOT know, both pre-existing and both
+   unmeasured against real output: its tokenizer has no `|>` (it lexes
+   as `|` then `>`), and no `===`, `~` or `~0`, all of which the
+   compiler's table ranks. Nothing has yet shown these matter on the
+   compiler's own source, which is the only corpus the leg runs on.
+
 7. **Text fixed point**: The SUT emits stage1.codex, then emits
    stage1.codex again to produce stage2.codex. SHA-256 of stage1 must
    equal SHA-256 of stage2. This proves the text emitter is idempotent.
@@ -167,7 +199,7 @@ else is still hand-edited.
 ## The Desktop On The Dev Box (`build/desk.ps1`)
 
 ```powershell
-build/desk.ps1                                  # interactive window at 1280x800
+build/desk.ps1                                  # interactive window at 1600x900
 build/desk.ps1 -Width 1920 -Height 1080         # any mode codex-vm will give you
 build/desk.ps1 -Force                           # recompile even if the CDX is current
 build/desk.ps1 -Shot shot.bmp                   # headless, one frame, then exit
@@ -175,6 +207,17 @@ build/desk.ps1 -Keys '4000:4'                   # scancode timeline: 33 = f, 4 =
 build/desk.ps1 -Rtc 2026-07-30T06:00:00         # freeze the taskbar clock
 build/desk.ps1 -Disk seed/Codex.img             # give the Files pane a real ESP
 ```
+
+**Two scales, and they step at different widths.** `ui-scale` drives the
+hand-drawn surfaces (topbar, welcome window, clock, cursor) and doubles at
+1024. `ui-wscale` drives the WIDGET layer and doubles at 1600, because the
+widget tree is laid out in LOGICAL pixels at `w / ui-wscale`: doubling it
+does not enlarge the chrome so much as halve the ROOM, and every app tree in
+the depot is written against 1024x768. Measured 2026-08-11: at scale 2 a
+1024-wide panel lays out in 512x384 and the calculator loses four of its
+fifteen keys off the bottom, so the widget step stays at 1600 where half the
+panel is still at least as much room as 1024x768 ever gave. Below 1600 the
+widget layer is scale 1 and the desk is pixel-for-pixel what it always was.
 
 **`-Disk` copies the image to `build-output/` and attaches the copy.**
 codex-vm writes back and flushes to the host, so attaching a depot
@@ -359,6 +402,19 @@ codex-vm -kernel file.cdx [options]
 | `-trace-file <file>` | -- | Write execution trace to file |
 
 Environment: `CODEX_VM_NO_TIMER=1` disables PIT timer interrupts.
+
+**There is no `-timeout` flag, and an unknown flag is ignored in silence.**
+Measured 2026-08-11: `-timeout` appears zero times in `tools/codex-vm.c`, so
+`-timeout 20` parses as two arguments the loop above matches nothing against
+and drops. The run is UNBOUNDED. Every recipe in this file that carries one --
+including the disk-image reproduction below -- ended when its guest crashed,
+which is why nobody noticed; point one at a guest that does not crash and it
+runs until the host kills it. The wall budget lives in the harness instead:
+`build/test-run.ps1` enforces `$wallBudgetMs`. For a bounded run by hand, use
+`-screenshot <file> -screenshot-delay <ms>`, which exits after the capture and
+gives a visual record as well. **This cost a browser soak an hour of wall clock
+on 2026-08-11**, and the trap is the shape of it: the flag looks accepted, the
+command works, and it is only wrong on the runs you most want bounded.
 
 #### Emulated Hardware
 
@@ -757,6 +813,17 @@ newline ONLY. A comma-joined timeline silently injects its FIRST event and
 prints no error, because the parser skips to the next `;` or newline and
 discards the rest of the line.
 
+**`HID: first key event sc=NN` prints NN in HEX, and nothing on the line
+says so.** Read it as decimal and an injected 80 reads back as `sc=50`,
+which looks like the wrong key arrived when it is the right one. On
+2026-08-11 that cost a false backlog entry: four injected arrow keys
+changed nothing on screen, the trace was read as decimal, and the
+keyboard path was filed as the suspect. The keys were being delivered
+perfectly and the page simply had nothing to scroll. When a scripted key
+seems not to arrive, convert the trace before blaming the route, and
+prefer a chord with an unmistakable effect -- `-keys 29,20,157` is
+Ctrl+T, and a browser tab either appears or does not.
+
 **Mouse (absolute, I/O ports 0xE1-0xE4).** The guest reads the mouse
 through four ports rather than shared memory (which WHP does not keep
 coherent between the window thread and the vCPU).
@@ -875,6 +942,81 @@ protocol → compile-arm64/riscv.ps1 (ELF) → Renode (UART capture).
 - RISC-V: heap register must be S1/x9 (not t3/x28 which collides
   with temp allocator)
 
+### TAILING A LIVE VM LOG WITH `Get-Content` CAN KILL THE VM
+
+A harness that polls a running codex-vm's redirected stderr or stdout to
+watch for progress must open those files **sharing write**. Plain
+`Get-Content` does not, and the writer's next write into the locked file
+fails, which takes the VM down.
+
+**What it looks like is not a file error. It is a guest that dies partway
+through, silently, always around the same place.** Measured 2026-08-10 on
+`build/sink-arm.ps1`: its pass arm ran a 2.7 MB FAT write and died after the
+same rung on three consecutive runs, with no fault line, no `EXC`, and
+nothing in either stream. The identical image invoked by hand -- same flags,
+same `-output`, no polling -- reached its last rung every time. Two earlier
+runs of the same harness had passed, and the only thing that changed between
+them was the addition of the poll.
+
+The tell is that shape: **an arm that fails under the harness and passes by
+hand is the harness perturbing the run**, not a flaky guest. `-output` was
+the obvious suspect and was wrong -- adding it to the by-hand run changed
+nothing, which is what ruled it out.
+
+Read a live log like this instead:
+
+```powershell
+$fs = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+                      ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+$sr = New-Object IO.StreamReader($fs)
+$text = $sr.ReadToEnd(); $sr.Close(); $fs.Close()
+```
+
+Reading the streams AFTER the process is gone, which is what
+`build/ladder-arm.ps1` does, is unaffected -- there is no writer left to
+lock out. This only bites a harness that watches progress while the VM runs,
+and the reason to watch is real: without it, an arm that holds its colour by
+repainting never exits and costs its whole deadline.
+
+### READING A COLOUR OUT OF `-screenshot`: DECODE THE BMP BYTE BY BYTE
+
+`-screenshot` works, and a payload's paint DOES show up in it. Verified
+2026-08-11 across four payloads: a minimal paint probe and `blockladder.img`
+both render `FFFFFF`, `sinkladder.img` renders `FF8000` mid-write, and
+`a5flight2.img` renders `FFFFFF`.
+
+**This section previously said the opposite, and that was a defect in the
+reader, not in codex-vm.** The claim was that a ladder reporting
+`painted fb=1` produced a black BMP. It came from this expression:
+
+```powershell
+($b[$i+2] -shl 16) -bor ($b[$i+1] -shl 8) -bor $b[$i]     # WRONG
+```
+
+`$b[$i]` indexes a `byte[]`, and PowerShell shifts a `[byte]` at BYTE width, so
+both shifted terms are 0 and the result is the blue channel alone. Orange
+(`FF 80 00`) decoded as `000000` and read as black; white decoded as `0000FF`
+and read as "not white". Every conclusion drawn from it was wrong.
+
+Cast, or read the channels separately and do not combine them:
+
+```powershell
+$b = [IO.File]::ReadAllBytes($bmp)
+$off = [BitConverter]::ToInt32($b,10); $w = [BitConverter]::ToInt32($b,18)
+$h = [BitConverter]::ToInt32($b,22)
+$stride = [int][math]::Floor(($w * 24 + 31) / 32) * 4
+$i = $off + ($h - 1) * $stride          # BMP is bottom-up; this is the TOP row
+'R={0:X2} G={1:X2} B={2:X2}' -f $b[$i+2], $b[$i+1], $b[$i]
+```
+
+The general shape is worth more than the recipe: **a decoder that renders two
+different inputs as the same glyph is the `peek-32` sentinel trap again**, and
+it cost a false section in this file plus a harness built around the belief
+that the bed could not see a colour at all.
+
+`-screenshot <file> -screenshot-delay <ms>` also EXITS after the capture, which
+is the only bounded way to run a payload that holds its colour by repainting.
+
 ### Killing codex-vm by NAME kills the whole fleet's
 
 `Stop-Process -Name codex-vm -Force`, and every spelling of it
@@ -923,6 +1065,64 @@ re-run before diagnosing.** `text-stage1`, `text-stage2`, `sem-equiv`
 and the BVT's compile steps are the long codex-vm runs and therefore the
 wide targets. A failure that vanishes on re-run was never in your tree,
 and the expensive mistake is bisecting your own change to find it.
+
+### Rebuild the transpiler plugs yourself; nothing else does
+
+`codex/plugs/*/build-output/*-plug.cdx` is not a depot file --
+`build-output/` is in `.p4ignore` -- so each workspace has its own, and
+they are only as fresh as the last hand run of that plug's `build.ps1`.
+A merge-down brings you new plug SOURCE and leaves your binaries where
+they were.
+
+```powershell
+pwsh codex\plugs\rust\build.ps1                  # one plug, about 3 seconds
+Get-ChildItem codex\plugs -Directory | ForEach-Object {
+  $b = Join-Path $_.FullName 'build.ps1'
+  if (Test-Path $b) { & pwsh -NoProfile -File $b *> $null }
+}                                                # all of them, about 150 s
+```
+
+**Do this after any change under `codex/plugs/common/`**, which every plug
+bundles. On 2026-08-11 a workspace held 44 plug binaries from 08-06 against
+a shared `IRTextParser.codex` from 08-08, and 37 of 38 runnable plugs died
+with an invalid opcode in `parse-type-record` the moment the IR contained a
+record construction. The gate does not catch it: `plug-smoke` rebuilds a
+plug only when its CDX is MISSING, and tests four of them on one
+record-free program. Symptom to recognise: the plug VM exits `code=-1` and
+the harness reports `plug produced no output` (exit 6).
+
+Timestamps are the fast check -- compare
+`Get-ChildItem codex\plugs\*\build-output\*-plug.cdx` against
+`codex\plugs\common\*.codex`.
+
+### `build/clean-zombies.ps1` is that fleet-wide kill, on purpose
+
+It purges orphaned `qemu-system-x86_64`, `codex-vm` and `wsl` processes
+after a SIGKILL-style abort (a `taskkill /F`, a harness OOM, a wedged WSL
+VM) left the traps in the test, build and 3stage harnesses unable to run.
+It is scoped by process NAME, which is exactly what the section above
+warns about, and that is deliberate: an orphan has no workspace left to
+scope it to.
+
+**So it is safe between test runs and destructive during one.** It kills
+any VM regardless of which agent started it, and the receiving agent sees
+the truncated-artifact failures tabulated above rather than anything that
+names a kill. Do not run it while another agent may be mid-gate.
+
+```powershell
+powershell -NoProfile -File build/clean-zombies.ps1
+```
+
+**It never calls `wsl --shutdown` unless `vmmemWSL` is already up, and
+that fast path is not a micro-optimisation.** `wsl.exe` SPINS THE VM UP
+IN ORDER TO SHUT IT DOWN, so the unconditional call costs minutes on a
+box where WSL was simply idle. The same fast-path rule covers the other
+two names: a process that is not running is skipped rather than asked
+about.
+
+This doctrine had no home but the script's own header comment until
+2026-08-11, when adopting the generator dropped the header. Nothing else
+in the tree described the tool.
 
 ## Self-Host Compilation Protocol
 
@@ -1037,14 +1237,44 @@ build converges one-pass with the change baked into the seed's own
 prologues, and `Sut.cdx` is then the signed fixed point. Always rebuild
 until the build reports one pass before submitting a codegen seed.
 
-**But a codegen change can be VERIFIED without any of that.** `build.ps1`
-leaves the SUT at `build-output/bare-metal/Codex.cdx`, which is the
-compiler `compile.ps1` boots by default, so a gate followed by rebuilding
-whatever app you care about compiles that app with the changed compiler
-and no seed is written or submitted anywhere. The seed rebuild above is
-how a codegen change LANDS, not how you find out whether it works. Worth
-knowing before queueing for a seed cycle to answer a question one gate
-already answers.
+**But a codegen change can be VERIFIED without any of that.** A gate
+followed by rebuilding whatever app you care about compiles that app with
+the changed compiler, and no seed is written or submitted anywhere. The
+seed rebuild above is how a codegen change LANDS, not how you find out
+whether it works. Worth knowing before queueing for a seed cycle to
+answer a question one gate already answers.
+
+**Pass `-Kernel` when you do, because the default is not what you think.**
+This paragraph said `build-output/bare-metal/Codex.cdx` "is the SUT"
+until 2026-08-11. It is not, and it is not the seed either.
+`Build-Cdx` and `Build-Text` in `build.ps1` each copy their own kernel
+over that path before running, so it ends up holding whichever kernel the
+LAST compile phase used, not whichever artifact the run produced.
+Measured after each of two green `build.ps1` runs on 2026-08-11, its
+content hash equalled `seed/Codex.cdx` exactly (`AF4E14D9703985AC`),
+because the phases after `plug-binary` compile against the seed.
+
+That is the dangerous direction. Verifying a codegen change with the
+default kernel boots the OLD compiler, the emitted wire is unchanged, and
+the honest reading of that is "my fix did nothing" when the fix was never
+in the binary under test. It has already produced a wrong answer: a
+per-chapter sweep of `apps/works` reported roughly 80 of 84 chapters
+compiling where the real figure against the depot seed was about 55,
+because `build-output` held a kernel from before the `file-exists`
+builtin was removed and every chapter calling it still resolved. The
+sweep was measuring a compiler that no longer existed.
+
+So `compile.ps1` prints the kernel and its digest on stderr on every run,
+and warns when you did not ask for one and it is not the seed. Read the
+line. If you are measuring anything at all, name the kernel:
+
+```powershell
+build/compile.ps1 -Src x.codex -Out x.cdx -Log x.log -Kernel build/output/Sut.cdx
+```
+
+`build/output/Sut.cdx` is what a gate just built; `seed/Codex.cdx` is the
+shipped compiler. Compare the printed digest against the one you think
+you are testing.
 
 (The CDX fixed-point check compares content ignoring the signature bytes,
 so a signed `Sut` and the unsigned `stage1` still register as one pass when
@@ -1174,9 +1404,16 @@ byte while the warning prints.
 
 ### Running the DDC end to end
 
-This is a release gate (release skill, step 4). Measured 2026-08-10 against
-seed `AF4E14D9`: 96 differing bytes, all inside the signature region, none
-outside it.
+This is a release gate (release skill, step 4).
+
+**The pass has two conditions: the arm's output is the same LENGTH as
+`seed/Codex.cdx`, and ZERO bytes differ outside the signature region at
+offsets 40..135.** How many differ inside it is not a criterion and must
+not be quoted as one -- 96 is the region's WIDTH, and two unrelated
+signatures agree at a given byte about one time in 256, so a run differing
+in 95 of the 96 is ordinary. Measured 2026-08-10 against seed `AF4E14D9`:
+96. Measured 2026-08-12 against seed `527C2C75`: 95, on both arms
+independently.
 
 ```powershell
 $R = 'D:\Projects\NewRepository-<agent>-main'
@@ -1189,11 +1426,29 @@ $R = 'D:\Projects\NewRepository-<agent>-main'
 #    Codex.cs, Nullable disable, LangVersion latest.
 dotnet build "$R\build-output\ddc-arm\CodexCs.csproj" -c Release
 
-# 3. Same bytes to both arms: mode line, source, trailing 0x04, UTF-8 no BOM.
-#    Feed to CodexCs.exe on stdin and keep stdout as BYTES.
-
-# 4. Slice at the CDX1 magic, then compare to seed/Codex.cdx.
+# 3 and 4 are build/ddc-witness.ps1. It builds ONE input file and feeds it to
+#    BOTH arms, slices each at the CDX1 magic and applies the two conditions.
+build/ddc-witness.ps1 -Repo $R -Source "$R\codex\plugs\csharp\build-output\Codex.codex"
 ```
+
+**Steps 3 and 4 were prose here until 2026-08-12 and nothing ran them**, so
+each release re-derived by hand the one proof that does not take the
+compiler's word for anything. The part that is easy to get wrong is
+reconstructing the exact bytes `compile.ps1` feeds the compiler (the mode
+line is `CDX repl`, because the seed is built `-Repl`), and a wrong
+reconstruction makes the C# arm disagree for a reason that has nothing to do
+with trust. So the runner hands the SAME input to both arms and **treats the
+Codex arm reproducing the shipped seed as the precondition for the C# arm's
+answer meaning anything**; if it does not, the run is INCONCLUSIVE rather
+than red.
+
+**`build-output/` does not survive a gate run**, and both DDC prerequisites
+live there: the `ddc-arm` csproj scaffold and `csharp-plug.cdx`. Expect to
+rebuild the plug (`plugs/csharp/build.ps1 -Force`) and re-create the csproj
+on any release where a gate has run since the last one. The plug's builder
+takes no `-Kernel` and resolves `build-output/bare-metal/Codex.cdx` against
+the process working directory, so stage the seed under audit there first or
+the witness certifies the wrong compiler.
 
 **Four things that will give you a false answer, three of them measured
 here on 2026-08-10.**
@@ -1250,13 +1505,43 @@ and only the bytes move:
   the IR this time, but stage2 still reconstructed the honest compiler,
   because `A'` merely failed to fold -- it did not teach its output to fail
   to fold.
+- **Frontend IR emission** (`X86_64Helpers.codex` `emit-read-line-helper`,
+  the same one `[144]` nop as the code-generator arm, PLUS
+  `IRTextEmitter.codex` `ir-emit-def` returning that function's trojaned IR
+  def verbatim whenever it emits that function): stage2 == `X` byte-for-byte
+  (SHA `EEDFECC9...`) and both differ from the clean seed by 2,104,373 bytes.
+  **This one is NOT caught by the byte-comparison.** The hook makes `A'` write
+  the trojaned `emit-read-line-helper` into the IR of clean source, so the C#
+  arm builds a trojaned stage1 and stage2 carries the same payload as `X`. It
+  is NOT self-reproducing: `ir-emit-def` substitutes a static def and stage1
+  never re-emits IR. Its own control is the code-generator arm above -- the
+  same nop with no hook, which IS caught -- so the hook is the only variable
+  that flips the verdict from caught to survived. Measured 2026-08-11.
 
-**The boundary is self-reproducing versus not, not frontend versus
-backend.** Any payload living only in the binary is caught, anywhere,
-because the double-compile rebuilds the compiler from clean source. The one
-payload that would survive is a self-reproducing quine, which is why the
-residual hole is a high bar and not the loose "the seed sits upstream." If
-you add a DDC sabotage arm to a harness, confirm the probe FIRES first
+**The boundary is "reaches the readable intermediate" versus not, not
+"self-reproducing" versus not (corrected 2026-08-11).** The frontend-IR arm
+survives with no self-reproduction, so the earlier "the one payload that
+would survive is a self-reproducing quine" was too narrow. What holds: a
+payload living only in the binary is caught anywhere (arms one and two),
+because the rebuild starts from clean source; a payload survives the
+byte-comparison only if `A'` writes it into the IR that becomes the C#.
+
+**And that is the neutralization, not a leak.** A survivor is, by
+construction, sitting AS READABLE TEXT in the IR and in the emitted C#:
+measured, the injected `st7z` / `[144]` was greppable in both. So the two
+halves cover the whole space. The byte-comparison catches anything hidden
+only in the binary (arms one and two, the classic Thompson shape). Anything
+that slips past it had to reach the IR that becomes the C#, and is therefore
+visible as text that can be grepped, diffed across re-emissions, and
+content-addressed. Thompson's attack depends on the payload being invisible
+because a binary is unreadable; here there is no invisible surviving form. **A
+trojan hidden in the binary is caught by the rebuild; a trojan that survives
+the rebuild is not hidden.** That readable-intermediate property, not the
+byte-comparison alone, is what defends against the Thompson attack here. See
+"The residual hole, stated plainly" below for the two upstream seed positions
+this covers.
+
+If you add a DDC sabotage arm to a harness, confirm the probe FIRES first
 (stage2 must differ from a clean build) before trusting a red verdict --
 an inert edit that never reaches the output is a vacuous arm.
 
@@ -1553,7 +1838,42 @@ matters because a harness that only captures `-output` sees an empty
 serial log and a nonzero exit and reads it as a guest that produced
 nothing. **Redirect stderr or the diagnosis is invisible.**
 
-**OPEN DEFECT, measured 2026-08-09 (blu): setting VBE mode crashes the
+**FIXED 2026-08-10 (blu). Setting a VBE mode activated the framebuffer at
+runtime without committing the guest region the emulator reads back.** The
+same defect as the oversized-disk crash below, other direction: that one
+wrote past the commit, this one read out of it.
+
+The startup path commits `0xBE000000..GOP_FB_ADDR+fb` only when
+`gop_active` is ALREADY set, and the failing run's own log line says it is
+not (`gop=0`), so the region stayed `MEM_RESERVE`. The Bochs VBE handler
+then sets `gop_active` and `vbe_active` at runtime and allocates only the
+HOST buffer. `sync_shadow_buffers` bounds its memcpy against
+`guest_mem_size` -- `0xBF000000 + fb` is inside 3 GB, so the bound passes --
+and reads reserved uncommitted address space. `guest_commit_range` is the
+existing remedy and the GPU texture and asset upload paths already call it
+from this same I/O handler; the VBE handler did not.
+
+**The read runs on an exit counter (`exits % 64`), and that is what makes
+this expensive to probe.** A guest that sets the mode and returns exits
+before the counter comes round and passes on a broken emulator: the first
+probe written for this did exactly that, twice, and the second version
+added 8 filler lines that bought 8 exits because serial is ring-buffered
+rather than a port write per byte. `codex/test/vbe-mode-set` calls
+`vbe-read` 200 times for the port pairs, and sums every value into its
+answer so nothing can elide them. Measured both arms on one binary: depot
+`codex-vm.exe#92` faults the host (exit 49374, no serial), the fixed build
+prints `1 2 0 204800 1024` at 612 exits.
+
+**That test got its exits from drawing until 2026-08-10, and the change
+that made drawing fast disarmed it silently.** When `gfx-put-pixel` stopped
+banking (below), the exits fell from 1011 to 211, the pre-fix binary stopped
+crashing, and the recorded output did not move a single byte -- a guard
+reporting exactly what a working one reports. If you change what this test
+draws, re-run the old binary before believing it still guards anything.
+
+The original measurement, unchanged:
+
+**Measured 2026-08-09 (blu): setting VBE mode crashes the
 host.** `apps/browser/opening.codex` compiles clean (493057 bytes off seed
 `A1EBA5A03016A128`) and dies immediately on boot:
 

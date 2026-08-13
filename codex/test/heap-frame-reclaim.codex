@@ -1,0 +1,60 @@
+Chapter: HeapFrameReclaim
+  cites Game chapter Rasterizer
+  cites UI chapter Font
+  cites Foreword chapter Console
+
+ Guards the shape the browser's event loop was given on 2026-08-11. That loop
+ never returns, so on a bump allocator with no GC nothing it allocates is ever
+ reclaimed by returning: it ran the heap from 6 MB to the guard page at
+ 0xb9e00000 and printed OUT OF MEMORY about two seconds after boot. The fix
+ reclaims at two marks, and both halves are checked here.
+
+ The frame half is the one that can fail SILENTLY, which is why it is measured
+ by signature rather than by survival. Rendering inside a mark and restoring
+ after the blit is only sound while nothing built during the render is still
+ reachable afterwards; if that stops holding, the second render draws over
+ memory the first one is still using and the pixels change while the program
+ keeps running. Comparing every round against round one catches that, and the
+ recorded signature has to be non-zero or a framebuffer that renders nothing
+ at all would satisfy the comparison.
+
+Section: Test
+
+  fb-sum : Framebuf, Integer, Integer, Integer -> Integer
+  fb-sum (fb) (x) (y) (acc) =
+    if y >= 7 then acc
+    else if x >= 24 then fb-sum fb 0 (y + 1) acc
+    else fb-sum fb (x + 1) y (acc + fb-get fb x y)
+
+  frame-signature : Integer -> Integer
+  frame-signature (ink) =
+    let fb = fb-new 24 7 0
+    in let drawn = font-draw-text fb font-5x7 "Hea" 0 0 ink 0
+    in fb-sum drawn 0 0 0
+
+  frame-rounds : Integer, Integer, Integer -> Integer
+  frame-rounds (n) (expected) (bad) =
+    if n <= 0 then bad
+    else let mark = __heap-save
+      in let sig = frame-signature 1
+      in let reclaimed = __heap-restore mark
+      in let sig-bad = if sig == expected then 0 else 1
+      in let mark-bad = if __heap-save == mark then 0 else 1
+      in frame-rounds (n - 1) expected (bad + sig-bad + mark-bad)
+
+  idle-rounds : Integer, Integer, Integer -> Integer
+  idle-rounds (n) (start) (bad) =
+    if n <= 0 then bad
+    else let mark = __heap-save
+      in let junk = fb-new 8 8 3
+      in let reclaimed = __heap-restore mark
+      in idle-rounds (n - 1) start (bad + (if __heap-save == start then 0 else 1))
+
+  opening : [Console] Nothing = act
+    let first = frame-signature 1
+    in act
+      print-line-uni (integer-to-text first)
+      print-line-uni (integer-to-text (frame-rounds 5 first 0))
+      print-line-uni (integer-to-text (idle-rounds 1000 __heap-save 0))
+    end
+  end

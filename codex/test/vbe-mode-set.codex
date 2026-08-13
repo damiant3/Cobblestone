@@ -1,0 +1,44 @@
+Chapter: VbeModeSetTest
+  cites Kernel chapter VgaGraphics
+  cites Game chapter Color
+  cites Foreword chapter Console
+
+ Guards the sibling of main 14494: a VBE mode set activates the emulator's
+ framebuffer at runtime, and it read the guest region back uncommitted,
+ faulting the HOST rather than the guest. 1 alone means the mode set took
+ the process down.
+
+ `spin` is what makes this able to fail, and it reads the VBE registers
+ rather than drawing. The faulting read runs on an exit counter, so a probe
+ that sets the mode and returns crosses no boundary and passes on a broken
+ emulator. The first version of this test got its exits from the bank write
+ behind every pixel, which was fine until `gfx-put-pixel` stopped issuing
+ one: the pixel path went linear, the exits fell from 1011 to 211, the
+ output did not move a byte, and the guard was gone. Each `vbe-read` is its
+ own port pair whatever the drawing code does, and every value is summed
+ into the answer so nothing can elide it.
+
+Section: Test
+
+  paint : GfxMode, Integer -> Integer
+  paint (m) (n) =
+    if n <= 0 then 0
+    else gfx-put-pixel m n 10 rgb-white + paint m (n - 1)
+
+  spin : Integer -> Integer
+  spin (n) =
+    if n <= 0 then 0
+    else vbe-read vbe-reg-xres + spin (n - 1)
+
+  survived : GfxMode -> [Console] Nothing
+  survived (m) = act
+    print-line-uni "2"
+    print-line-uni (integer-to-text (paint m 400))
+    print-line-uni (integer-to-text (spin 200))
+    print-line-uni (integer-to-text m.gfx-width)
+  end
+
+  opening : [Console] Nothing = act
+    print-line-uni "1"
+    survived (gfx-set-mode 1024 768 32)
+  end

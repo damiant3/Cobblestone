@@ -27,6 +27,20 @@ Section: Flush Outbox
    in let cleared = set-outbox ((st.transport).session) []
    in Arm64NetIOState { vnet = vnet1, transport = TcpTransportState { session = cleared, recv-buf = [], recv-base = (st.transport).recv-base, recv-len = (st.transport).recv-len, recv-cap = (st.transport).recv-cap, messages-sent = (st.transport).messages-sent, messages-received = (st.transport).messages-received } }
 
+Section: The Poll Clock
+
+  arm64-net-io-max-polls : Integer = 50000000
+  arm64-net-io-tick-interval : Integer = 100000
+
+  arm64-net-io-conn-closed : Arm64NetIOState -> Boolean
+  arm64-net-io-conn-closed (st) = when ((((st.transport).session).conn).state)
+    is TcpClosed -> True
+    is otherwise -> False
+
+  arm64-net-io-tick : Arm64NetIOState -> Arm64NetIOState
+  arm64-net-io-tick (st) =
+   arm64-flush-transport-outbox (Arm64NetIOState { vnet = st.vnet, transport = transport-tick (st.transport) })
+
 Section: Listen and Accept
 
   arm64-net-io-listen : Arm64NetIOState -> Arm64NetIOState
@@ -59,18 +73,23 @@ Section: Receive
   }
 
   arm64-net-io-recv-loop : Arm64NetIOState, Integer -> Arm64RecvResult
-  arm64-net-io-recv-loop (st) (tries) =
-   if tries > 50000000 then Arm64RecvResult { state = st, tag = 0, body = [], has-message = False }
+  arm64-net-io-recv-loop (st) (tries) = arm64-net-io-recv-poll st tries 0
+
+  arm64-net-io-recv-poll : Arm64NetIOState, Integer, Integer -> Arm64RecvResult
+  arm64-net-io-recv-poll (st) (tries) (since) =
+   if tries > arm64-net-io-max-polls then Arm64RecvResult { state = st, tag = 0, body = [], has-message = False }
+   else if arm64-net-io-conn-closed st then Arm64RecvResult { state = st, tag = 0, body = [], has-message = False }
+   else if since >= arm64-net-io-tick-interval then arm64-net-io-recv-poll (arm64-net-io-tick st) (tries + 1) 0
    else let hp = __heap-save
    in let recv = virtio-net-poll-frame (st.vnet)
    in if recv.has-frame == False then let restored = __heap-restore hp
-     in arm64-net-io-recv-loop st (tries + 1)
+     in arm64-net-io-recv-poll st (tries + 1) (since + 1)
    else let st1 = Arm64NetIOState { vnet = recv.state, transport = st.transport }
    in let r = transport-process-frame (st1.transport) (recv.frame)
    in let st2 = Arm64NetIOState { vnet = st1.vnet, transport = r.transport }
    in let st3 = arm64-flush-transport-outbox st2
    in if r.has-message then Arm64RecvResult { state = st3, tag = r.tag, body = r.body, has-message = True }
-   else arm64-net-io-recv-loop st3 (tries + 1)
+   else arm64-net-io-recv-poll st3 (tries + 1) (since + 1)
 
 Section: Receive Raw (no framing)
 
@@ -81,31 +100,55 @@ Section: Receive Raw (no framing)
   }
 
   arm64-net-io-recv-raw : Arm64NetIOState, Integer -> Arm64RawRecvResult
-  arm64-net-io-recv-raw (st) (tries) =
-   if tries > 50000000 then Arm64RawRecvResult { state = st, data = [], has-data = False }
+  arm64-net-io-recv-raw (st) (tries) = arm64-net-io-recv-raw-poll st tries 0
+
+  arm64-net-io-recv-raw-poll : Arm64NetIOState, Integer, Integer -> Arm64RawRecvResult
+  arm64-net-io-recv-raw-poll (st) (tries) (since) =
+   if tries > arm64-net-io-max-polls then Arm64RawRecvResult { state = st, data = [], has-data = False }
+   else if arm64-net-io-conn-closed st then Arm64RawRecvResult { state = st, data = [], has-data = False }
+   else if since >= arm64-net-io-tick-interval then arm64-net-io-recv-raw-poll (arm64-net-io-tick st) (tries + 1) 0
    else let hp = __heap-save
    in let recv = virtio-net-poll-frame (st.vnet)
    in if recv.has-frame == False then let restored = __heap-restore hp
-     in arm64-net-io-recv-raw st (tries + 1)
+     in arm64-net-io-recv-raw-poll st (tries + 1) (since + 1)
    else let st1 = Arm64NetIOState { vnet = recv.state, transport = st.transport }
    in let r = net-process-frame ((st1.transport).session) (recv.frame)
    in let ts1 = TcpTransportState { session = r.session, recv-buf = (st1.transport).recv-buf, recv-base = (st1.transport).recv-base, recv-len = (st1.transport).recv-len, recv-cap = (st1.transport).recv-cap, messages-sent = (st1.transport).messages-sent, messages-received = (st1.transport).messages-received }
    in let st2 = Arm64NetIOState { vnet = st1.vnet, transport = ts1 }
    in let st3 = arm64-flush-transport-outbox st2
    in if list-length (r.data) > 0 then Arm64RawRecvResult { state = st3, data = r.data, has-data = True }
-   else arm64-net-io-recv-raw st3 (tries + 1)
+   else arm64-net-io-recv-raw-poll st3 (tries + 1) (since + 1)
 
 Section: Send
 
   arm64-net-mss : Integer = 1400
+
+  arm64-net-io-send-drain : Arm64NetIOState, Integer, Integer -> Arm64NetIOState
+  arm64-net-io-send-drain (st) (tries) (since) =
+   if tries > arm64-net-io-max-polls then st
+   else if net-rexmit-full ((st.transport).session) == False then st
+   else if arm64-net-io-conn-closed st then st
+   else if since >= arm64-net-io-tick-interval then arm64-net-io-send-drain (arm64-net-io-tick st) (tries + 1) 0
+   else let hp = __heap-save
+   in let recv = virtio-net-poll-frame (st.vnet)
+   in if recv.has-frame == False then let restored = __heap-restore hp
+     in arm64-net-io-send-drain st (tries + 1) (since + 1)
+   else let st1 = Arm64NetIOState { vnet = recv.state, transport = st.transport }
+   in let r = net-process-frame ((st1.transport).session) (recv.frame)
+   in let fed = transport-feed-raw (TcpTransportState { session = r.session, recv-buf = (st1.transport).recv-buf, recv-base = (st1.transport).recv-base, recv-len = (st1.transport).recv-len, recv-cap = (st1.transport).recv-cap, messages-sent = (st1.transport).messages-sent, messages-received = (st1.transport).messages-received }) (r.data)
+   in let st2 = Arm64NetIOState { vnet = st1.vnet, transport = fed }
+   in arm64-net-io-send-drain (arm64-flush-transport-outbox st2) (tries + 1) (since + 1)
 
   arm64-net-io-send-chunk : Arm64NetIOState, List Integer, Integer, Integer -> Arm64NetIOState
   arm64-net-io-send-chunk (st) (data) (off) (total) =
    if off >= total then st
    else let stop = if off + arm64-net-mss > total then total else off + arm64-net-mss
    in let chunk = transport-slice data off stop
-   in let r = net-send ((st.transport).session) chunk
-   in let st1 = Arm64NetIOState { vnet = st.vnet, transport = TcpTransportState { session = r.session, recv-buf = (st.transport).recv-buf, recv-base = (st.transport).recv-base, recv-len = (st.transport).recv-len, recv-cap = (st.transport).recv-cap, messages-sent = (st.transport).messages-sent, messages-received = (st.transport).messages-received } }
+   in let std = arm64-net-io-send-drain st 0 0
+   in if net-rexmit-full ((std.transport).session) then std
+   else if arm64-net-io-conn-closed std then std
+   else let r = net-send ((std.transport).session) chunk
+   in let st1 = Arm64NetIOState { vnet = std.vnet, transport = TcpTransportState { session = r.session, recv-buf = (std.transport).recv-buf, recv-base = (std.transport).recv-base, recv-len = (std.transport).recv-len, recv-cap = (std.transport).recv-cap, messages-sent = (std.transport).messages-sent, messages-received = (std.transport).messages-received } }
    in let st2 = arm64-flush-transport-outbox st1
    in arm64-net-io-send-chunk st2 data (off + arm64-net-mss) total
 

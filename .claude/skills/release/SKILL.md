@@ -69,9 +69,22 @@ the zero-fill is a safety net, not a crutch holding something together.
 Run the DDC end to end and compare against the seed being shipped. Recipe
 and the traps are in `OperatorsManual.md`, "Running the DDC end to end".
 
-The pass is exact: the Roslyn arm's stage2 is the same byte count as
-`seed/Codex.cdx`, and the only differing bytes are the 96 in the signature
-region at offsets 40..135. **Zero differing bytes outside that region.**
+The pass is exact, and it has two conditions and only two: the Roslyn arm's
+stage2 is the same byte count as `seed/Codex.cdx`, and **zero differing
+bytes outside the signature region at offsets 40..135.**
+
+**How many bytes differ INSIDE that region is not a criterion.** This step
+said "the only differing bytes are the 96", and 96 is the WIDTH of the
+region rather than a result: two unrelated signatures agree at a given byte
+about one time in 256, so a run differing in 95 of the 96 is the ordinary
+case and not a failure. Measured 2026-08-12 at seed `527C2C75`: 95, on both
+arms independently. Quoting the width as the expected count is a count
+carried forward (L-COUNT), and the direction it fails in is the expensive
+one -- a future release measures 95, reads it as the witness not holding,
+and goes looking for a trojan.
+
+`build/ddc-witness.ps1` runs steps 3 and 4 and applies exactly the two
+conditions above.
 
 **This is the one proof the other three cannot substitute for.** The
 battery, the sweep and the poison build all ask the compiler about itself;

@@ -1,5 +1,98 @@
 # The Hardware Sitting -- Run Sheet
 
+## QUICKREF: returned sticks live in `D:\Projects\stick-archive\`
+
+Damian's ruling, 2026-08-11. **Dump a stick before you flash over it, put
+the dump there, and add a row below.** Nothing else in this document is
+worth reading first if you are holding a stick.
+
+```powershell
+# 1. dump before flashing. ELEVATED -- it opens \\.\PhysicalDrive raw.
+#    -DiskNumber, not -Disk. Read-only: no writes and no mount, which is
+#    the point, because mounting a FAT volume makes Windows allocate
+#    clusters and manufacture the evidence question 3 asks about.
+pwsh build\dump-usb.ps1 -DiskNumber 2 -Out D:\Projects\stick-archive\<what>-<yyyymmdd>.img
+
+# 2. record the hash, and quote THIS path from then on
+(Get-FileHash D:\Projects\stick-archive\<what>-<yyyymmdd>.img -Algorithm SHA256).Hash
+```
+
+| in the archive | SHA-256 | what it is |
+|---|---|---|
+| `stick-before-20260811.img` | `629821CF E8A9F876 EC2A9FD9 C4C61B47 3D93B821 681DB014 5B0E6DFD D2683A03` | the ceremony boot that flew green 2026-08-05, read off disk 2 by reek on 08-11 before `a5bigflight.img` went over it. **The only copy**: `ceremonyboot.img` was never in the depot in any stream at any revision. Carries the 124-byte `IDENTITY.DAT` the guest wrote to the ESP on real ASMedia hardware. |
+
+**Why not `build-output/`, which is where everyone put them until now:**
+the `clean` phase of every gate run wipes it, and a gate is the most
+likely next thing anyone does. Blu lost three preserved returned sticks
+to that on 2026-08-11; reek's survived the same day only by not having
+run a gate yet. `build-output/` is also p4-ignored, so nothing in the
+depot notices the loss. `D:\Projects\stick-archive\` is outside every
+workspace, so no `clean` owns it and no `sync -f` reaches it -- verified
+by running a full gate over it after the first file landed.
+
+**Archive what came BACK, not what you built.** A built image is a recipe
+away and belongs in `build/boot/` under Perforce with the rest. A
+returned stick is evidence, there is exactly one of it, and if it holds
+anything the guest itself wrote there is no rebuilding it. The eight
+other 16 MB images sitting in the fleet's `build-output/` directories on
+2026-08-11 were all built, which is why none of them was rescued.
+
+**Say where, in this document, in the entry for that flight.** Older
+entries say only "on blu's box", and that vagueness is half of what made
+`build-output/` look like a safe habit.
+
+## FLOWN 2026-08-11, ALL GREEN: `browserflight.img`. THE MOUSE AND THE BROWSER WORK ON METAL.
+
+`browserflight.img`, SHA-256 `1A5F8B05 B77A6AD0 14620F20 AC1E1061 6C27DB3A
+67898FA9 F16E74A7 E9CA8BA2`. Built from main the same hour, GopBoot payload,
+flown by Damian.
+
+**Damian's report, and every clause of it is a separate first:** "the arrow
+cursor works, it clicks, those clicks work, the app works, the pages
+render."
+
+That closes WORKS-10, which is deleted from `apps/works/works-backlog.md`
+rather than annotated. **Its measurement survives here because it is still
+true and still costs a session if rediscovered:**
+
+**No scripted input in this workspace's bed moves the desk's cursor**,
+measured 2026-08-11 with a probe. On plain `-mouse` the USB mouse does not
+enumerate at all -- `um-ok` is false, because that flag drives the guios
+I/O-port pointer at 0xE1-0xE4 and not the USB stack. Under `-hid-combo` it
+DOES enumerate and reports flow: a tight `mouse-pump` loop read the scripted
+position back within 640 exits. And the cursor still stays exactly where
+`desk-run` warped it, counted by cursor ink at (320,240) on the desktop and
+inside a pane alike.
+
+So the pointer, the arrow glyph, the click dispatch and the page hit test
+had all shipped without one end-to-end run between them. **Do not read a
+green bed run as evidence about the pointer in either direction.**
+
+**What this specifically proves, because "the mouse works" is four claims:**
+
+| claim | how the flight settled it |
+|---|---|
+| the USB mouse enumerates and delivers on this board | the arrow moved |
+| the arrow glyph renders and its save-buffer discipline holds | it tracked without smearing |
+| `desk-loop`'s click-to-open-a-pane dispatch works | a pane opened |
+| the browser's laid-tree hit test works | pages navigated |
+
+The last of those is the change that landed as main 14621 the same day and
+had never run outside a test: the browser keeps the tree that was actually
+DRAWN in `bs-laid` and hit-tests THAT, because the tree in `tab-content` is
+the raw builder output with `layout-rect-zero` on every node.
+
+Off-bed, clicking is pinned without a pointer at all by
+`codex/test/apps/browser-click-dispatch` for the chrome,
+`codex/test/apps/browser-click-links` for page links, and
+`codex/test/apps/desk-calc-click` for the calculator keypad. Those say what
+the app does with a coordinate; only a flight says a coordinate arrives.
+
+**The bed and the board disagreed in the SAFE direction here**, which is
+worth noting beside the two flights above where they disagreed the other
+way. The bed could not move a cursor and the board could. Nothing was
+wrong; the instrument was.
+
 ## FLOWN 2026-08-10: the Welcome Back hang did NOT reproduce, and it is NOT fixed
 
 `seed/Codex.img` `4564D27F6C28EF09`, on the ASUS. Ceremony on first boot,
@@ -38,7 +131,59 @@ unlock path also reads `IDENTITY.DAT` off the ESP over USB mass storage
 immediately before taking keyboard input, on the same controller, which is
 WORKS-9's neighbourhood. The bed runs the whole path green.
 
-## READY TO FLY: `asdeflight.img`, B2 Finding 4. Boot, read four rows, pull.
+## FLOWN 2026-08-11: `asdeflight.img` -- the RESET wedges, ASDE exonerated. The bank did NOT write, second flight running.
+
+Flashed by blu, flown by Damian. **Two rows were read off the glass and
+transcribed verbatim:**
+
+```
+eligible at 0:31.6 -- entering bring up
+read-only touch mmio=3745513472 status=1074266240 ctrl=1573440
+```
+
+In hex: `mmio=0xDF400000` (the BAR), `status=0x40080080`, `ctrl=0x180240`.
+**`CTRL.SLU` is bit 6 and it is SET**, which the datasheet in this tree
+requires: "The Set Link Up bit MUST be set to 1b to permit the MAC to
+recognize the link signal from the PHY" (`docs/Reference/
+Intel_82583V_Datasheet.txt`, the CTRL bit table). The remaining bits are
+recorded and NOT decoded here; decoding them from memory is how a guess
+becomes a fact in a doc, and nobody has read their definitions for this
+flight.
+
+**THE VERDICT: the RESET wedges, and ASDE IS EXONERATED.** Damian confirmed
+on the glass that nothing sits below the touch row, which is the table's
+third outcome exactly. The probe read MMIO successfully -- the touch row
+carries live register values, so the BAR is right and the first read does
+not wedge -- and then died in the RESET before either arm ran.
+
+**Finding 4 is UNTESTED, not disproved.** The ASDE bit was never written,
+because the run never reached the arm that writes it. The next flight is not
+a repeat of this one: the wedge is now upstream of the thing this image was
+built to test, so the reset path is what needs instrumenting, and B2's
+question waits behind it.
+
+**THE FILE BANK DID NOT WRITE, AND THAT IS ESTABLISHED.** The returned stick
+differs from the master in exactly two sectors, LBA 0 and LBA 1, which are
+the two rewrites `flash-usb.ps1 -SpecFit` performs itself; the root
+directory is byte-for-byte the master's `EFI`, `CODEX.CDX`, `CMUNSS.TTF`.
+The 2026-08-10 rebuild was made because the previous flight "returned
+nothing", and its fix was that "the rows paint whether or not a volume
+mounts, and the markers are written". **The painting half worked and the
+markers half did not**, so this is the second consecutive flight of this arm
+whose entire readout is a human reading glass, which is exactly the
+dependency that lost the verdict above. Bed state said `bank live, ASDE0.TXT
+written=y` under OVMF with a USB disk, so the bed and the board disagree and
+the bed is the one that passes.
+
+**The raw image of this returned stick is DESTROYED**, the same way and for
+the same reason as the sinkladder one: preserved to
+`build-output/asdeflight-returned-20260811.img`, SHA-256 `F07B8564
+5D80CDFC E7FB00B3 53A9B1C4 094FAFBA B33525D0 B926AA96 D9322F1F`, deleted by
+a later gate's `clean` phase. The two-sector diff against the master was
+measured and recorded BEFORE the loss, so "the board wrote nothing" stands
+as a reading; a re-diff is no longer possible.
+
+## THE ARM, kept for the next flight: `asdeflight.img`, B2 Finding 4. Boot, read four rows, pull.
 
 **The 2026-08-10 flight of this image returned nothing, and the probe was
 at fault, not the machine.** The mount was a PRECONDITION: `gfat-mount-esp`
@@ -252,7 +397,7 @@ the second boot is about ninety seconds of Damian's time, not a campaign.
 | stick | image | arm | what Damian does |
 |---|---|---|---|
 | 1 | `worksflight.img` (`18F3AA32285BFF80`) | WORKS-8 FAT write path | boot, press **F12 twice**, pull the stick |
-| 2 | ~~`a5flight.img`~~ superseded by `a5flight2.img` | A5, the compiler compiles on the box | boot, wait for `DISK-OUT: OK OUT.CDX 84660` on screen, pull the stick |
+| 2 | ~~`a5flight.img`~~ superseded by `a5flight2.img` (rebuilt 2026-08-11) | A5, the compiler compiles on the box | boot, wait for the screen to go **WHITE**, pull the stick |
 
 Order does not matter. **The B2 ASDE arm is on neither image** (it wedges
 the real part deterministically), so nothing here can be lost to it.
@@ -351,22 +496,24 @@ one channel the arm depended on was the one channel nobody had tested, and a
 dead payload and a working payload with no output look identical. Green plus
 silence eliminated nothing.
 
-`build/boot/blockladder.img` below is the replacement instrument. Do not
-re-fly `a5flight2.img` or `a5bigflight.img` until the ladder says which stage
-dies; they share the payload and will return the same two sectors.
+`build/boot/blockladder.img` below is the replacement instrument. **That
+grounding is LIFTED as of 2026-08-11: the compiler carries the ladder itself
+now** (`codex/compiler/Core/BootPaint.codex`), so both A5 images were rebuilt
+with a painted payload and a silent return is no longer possible. Fly the
+block ladder and the sink ladder first anyway -- they are strictly smaller
+tests of the same write path.
 
-## Superseded by the flight above: `a5flight2.img`, SHA-256 `B453C906 8248AB3D C26A080C EAE52123 2030E82B 64913F47 108F2090 92AB2A56`. A5, the compiler runs on the box.
+## Stick 2, REBUILT 2026-08-11 with the painted payload: `a5flight2.img`, SHA-256 `A90E7DA0 BFFBDBA6 1F37E653 EF384306 056324FB A0EB73BF D3F0F80E 549DB0B0`. A5, the compiler runs on the box.
 
-**Nothing is typed. Boot it, wait for the screen to say
-`DISK-OUT: OK OUT.CDX 84660`, then pull the stick.** That line is the
-whole procedure: this payload is built `-Uefi`, so `print-line-uni`
-dispatches to `__uefi_print` and the compiler's own diagnostics land on
-ConOut, which the ASUS has. The previous flight told the operator to
-watch a drive LED the board does not have, on a payload that printed to
-a UART it does not have either, and that cost a trip.
+**Nothing is typed. Boot it, wait for the screen to go WHITE, then pull the
+stick.** The colour is the procedure. `DISK-OUT: OK OUT.CDX 84660` appears
+beside it if ConOut renders, which it has never been shown to do on this
+board; that is why the screen and not the line is what you read. The colour
+table is in "THE A5 STICKS NOW PAINT TOO" below, and any colour short of
+WHITE names the stage that failed.
 
-Expect `SIZE:84660` first and `DISK-OUT:` a moment later. A blank screen
-for a minute is the compile running. `DISK-OUT:` reading anything other
+A blank screen for a minute is the compile running. `DISK-OUT:` reading
+anything other
 than `OK` is a finding worth bringing back, not a failed sitting.
 
 ### What it answers
@@ -406,7 +553,13 @@ run, which is what makes it an oracle rather than a golden.
 
 ### Provenance, and how to rebuild it
 
-Built 2026-08-10 at main 14468, kernel `seed/Codex.cdx` `F9AA716852BF72C7`.
+**Rebuilt 2026-08-11 at main 14644**, kernel `seed/Codex.cdx`
+`AF4E14D9703985AC`, so the payload carries the DISK ladder. Bed-verified on a
+COPY: all six rungs green, `OUT.CDX` extracted at 84,660 bytes hashing
+`ACF9823E...`, equal to the host control; the virgin master answers
+`MISSING: OUT.CDX`, which is what makes that a measurement. Master re-checked
+virgin afterwards.
+
 **The seed must carry the guarded UEFI block helpers (main 14433) and the
 UEFI block path (main 14398)**; an older seed writes over raw IDE ports,
 which is what made the first flight return a byte-identical stick.
@@ -422,16 +575,31 @@ build/compile.ps1 -Src Codex.codex -Out a5uefi.cdx -Log a5uefi.log `
 build/cdx-to-pe.ps1 -CdxInput a5uefi.cdx -Out a5.efi `
     -EntryStart -HeapPages 32768 -Stdin "DISK`nSOURCE.SRC`n"
 build/build-img.ps1 -PeInput a5.efi -Out build/boot/a5flight2.img `
-    -Source build/boot/a5src.codex -TotalSectors 32768
+    -Source <an LF copy of build/boot/a5src.codex> -TotalSectors 32768
 ```
 
 `-Uefi` is the one flag the last flight lacked, so confirm it moved
 something rather than trusting it: the same source built plain is
-2,754,800 bytes and built `-Uefi` is 2,739,216.
+2,759,023 bytes and built `-Uefi` is 2,743,191.
 
-`build/boot/a5src.codex` is the program being compiled, 246 bytes, and it
-is **LF-only on purpose**: the DISK path does not apply `utf8-to-cce` and
-CR has no CCE code point, so a CRLF source dies at the first line ending.
+**NORMALISE THE SOURCE TO LF YOURSELF. It is not LF in your workspace and
+this cost a rebuild on 2026-08-11.** The DISK path does not apply
+`utf8-to-cce` and CR has no CCE code point, so a CRLF source dies at the
+first line ending -- and `build/boot/a5src.codex` is stored `unicode+C` with
+the client's `LineEnd: local`, so **every sync on Windows writes it CRLF**:
+246 bytes in the depot, 257 on disk. `build-img.ps1` copies whatever it is
+handed, so the image built straight from the workspace file compiles to
+`CDX1000: Expected token kind mismatch` at 5:40 and stops the ladder at
+ORANGE. That is the ladder earning its keep on its first real use -- the old
+arm would have returned a silent stick. Write the LF copy into
+`build-output/` and point `-Source` at that:
+
+```powershell
+$t = [IO.File]::ReadAllText('build/boot/a5src.codex') -replace "`r`n", "`n"
+[IO.File]::WriteAllText($lf, $t, [Text.UTF8Encoding]::new($false))
+```
+
+The concat is already LF, so only this one file needs it.
 
 ### NEVER FLASH AN IMAGE THAT HAS BEEN BOOTED IN THE BED
 
@@ -486,9 +654,12 @@ Three checks, and the third is the one that is not circular:
 | against the host compile of the same source | byte-identical, `ACF9823E...` both sides |
 | the artifact RUN | prints `A5 338350`, which is the arithmetic's answer |
 
-The master `build/boot/a5flight2.img` still hashes
+The master `build/boot/a5flight2.img` still hashed
 `B453C906...` after all of it, and its root directory holds `EFI`,
-`SOURCE.SRC` and `CODEX` and nothing else.
+`SOURCE.SRC` and `CODEX` and nothing else. (That is the PRE-REBUILD master.
+The image was rebuilt 2026-08-11 with the painted payload and now hashes
+`A90E7DA0...`; the three checks above were re-run against it and gave the
+same three answers.)
 
 **What none of this reaches**, and it is the reason for the trip: every
 byte above moved through codex-vm's `EFI_BLOCK_IO_PROTOCOL` model, on IDE
@@ -615,14 +786,296 @@ $b=[IO.File]::ReadAllBytes('<stick dump>'); $b[30000*512]   # 165 means the boar
 Measured in the bed: 165 on the passing arm, 0 on the master and 0 on an arm
 that failed earlier, so it separates a real write from a self-report.
 
-## Stick 3: `a5bigflight.img`, SHA-256 `C133E507 A6A79CE3 3A9C1943 B29FEE24 3626DF4E D5C2A4F6 EEE56E28 3A3C3350`. The compiler compiles ITSELF on the box.
+## CORRECTED 2026-08-11: the stick blu found was NOT established to have flown, and blu's evidence for it is DESTROYED.
 
-**Same procedure as stick 2, longer wait.** Boot it, wait for
-`DISK-OUT: OK OUT.CDX 2754800`, pull the stick. **4.7 minutes in the bed**,
-so give it fifteen before calling it hung; USB is slower than the IDE the
-bed runs on.
+**blu wrote in this section that an unclaimed stick "flew, and it came back
+without its answer file". THAT CLAIM WAS NOT SUPPORTED AND IS WITHDRAWN.**
+It is kept as a correction rather than deleted because both the reasoning
+error and the evidence loss are worth more than the claim was.
 
-Identical payload to stick 2. The only difference is `SOURCE.SRC`: 2,768,194
+What blu actually observed, on the stick it was about to overwrite for the
+sinkladder flight: **`EFI`, `SOURCE.SRC` 2,769,366, `CODEX.CDX` 2,755,007,
+`IDENTITY.DAT` 124, and no `OUT.CDX`.** That much is a reading.
+
+**The error.** blu argued the guest must have written `IDENTITY.DAT`
+"because no master image in blu's tree carries one", and that the
+`SOURCE.SRC` size matched no A5 master. Both checks ran against BLU'S
+masters only. reek builds its own images in its own workspace, and reek
+reports flashing `a5bigflight.img` onto this very stick on 2026-08-11 after
+dumping its prior contents. A survey of one workspace was read as a survey
+of all of them -- the same shape as the CCE tier-1 error recorded under the
+em-dash rule: an instrument pointed at part of the question, reported as an
+answer to the whole of it.
+
+**What is settled, measured 2026-08-11 against files that still exist:**
+
+| image | root directory |
+|---|---|
+| reek `build-output/stick-before-20260811.img` (`629821CF`) | `EFI`, `CODEX.CDX` 2,755,007, `CMUNSS.TTF`, `IDENTITY.DAT` 124 -- no `SOURCE.SRC` |
+| reek `build/boot/a5bigflight.img` (`9E6E35AC`, rebuilt 12:44) | `EFI`, `SOURCE.SRC` 2,779,145 -- no `CODEX.CDX`, no `IDENTITY.DAT` |
+| what blu read off the stick (~11:00) | `EFI`, `SOURCE.SRC` 2,769,366, `CODEX.CDX` 2,755,007, `IDENTITY.DAT` 124 |
+
+**THE A5 MASTERS MOVED MID-DAY, which is reek's note and it matters more
+than the withdrawn claim did.** The numbers blu compared against are the
+masters as they stood BEFORE reek's rebuild -- `a5bigflight.img` held
+2,768,194 then and 2,779,145 now, `a5flight2.img` held 246. **Do not re-run
+this discriminator against today's images and expect the same numbers.** A
+size comparison against a file that is rebuilt during the same session is
+not a stable discriminator at all, and that is the second reason the
+original claim could not have carried the weight put on it.
+
+So the stick blu read matches NEITHER reek's before-dump NOR reek's current
+master, and reek's master was rebuilt after blu's read, so the image reek
+actually flashed is not on disk anywhere. **The question cannot be settled
+now.** It is not evidence of a flight and it is not evidence against one.
+
+**AND BLU DESTROYED ITS OWN COPY.** `build/build.ps1` line 157 is
+`Remove-Item -Recurse -Force build-output` in its `clean` phase. blu
+preserved three raw stick images into `build-output/` and then ran the gate
+twice, which deleted all three: `returned-stick-20260811.img`,
+`sinkladder-returned-20260811.img` and `asdeflight-returned-20260811.img`.
+Their SHA-256s were published to main in changes 14629 and 14641 with an
+instruction to ask blu for the files. **Do not ask; they are gone.**
+
+### NEVER PRESERVE A RETURNED STICK UNDER `build-output/`
+
+`build-output/` is wiped by the `clean` phase of every single gate run, and
+a gate is the most likely next thing anyone does. It is also p4-ignored, so
+nothing in the depot notices. Put a returned stick somewhere the build does
+not own and record where; `docs/HardwareSitting.md` says only "on blu's box"
+in older entries, which is what made this look like a safe habit.
+
+This is why reek's `stick-before-20260811.img` survived and blu's three did
+not: same directory, but reek had not run a gate since.
+
+**That one is now out of the trap. `D:\Projects\stick-archive\stick-before-20260811.img`**,
+copied 2026-08-11 (fester) and verified byte for byte:
+`629821CFE8A9F876EC2A9FD9C4C61B473D93B821681DB0145B0E6DFDD2683A03` on both
+sides, 16,777,216 bytes. That path is outside every workspace, so no gate's
+`clean` owns it and no `sync -f` reaches it. **This is the only surviving
+copy of the ceremony boot that flew green on 2026-08-05** -- see that entry
+below -- and specifically of the 124-byte `IDENTITY.DAT` the guest wrote to
+the ESP on real ASMedia hardware, which is not reproducible from source.
+reek's copy still exists and is still doomed; quote the `stick-archive` one
+from here on.
+
+Swept the fleet's `build-output/` directories the same day for anything else
+in this position: eight other images of 16 MB, all BUILT rather than
+returned (`desk-*`, `mscalign-*`, `era-ceremony`, across red, val-main and
+fester-main), so all reproducible and none rescued. **The distinction that
+matters is returned-or-built, not size**: a built image is a recipe away, a
+returned one is evidence and there is exactly one of it.
+
+## FLOWN 2026-08-11, ORANGE: `sinkladder.img` reached `fat16-write-segments` and nothing came back. reek's to read.
+
+Flashed by blu, flown by Damian. **The screen held ORANGE and the last two
+lines were `SINKLADDER bpb ok=1 painted fb=1` and `SINKLADDER bpb
+continuing`.**
+
+**Read the rungs in the order the code runs them, because ORANGE is the bpb
+rung's PASS colour and not a fault colour.** `ladder-pass ok colour prev`
+paints `colour` when ok is 1, so `bpb ok=1` painted orange BECAUSE the BPB
+parsed, and `ladder-hold-if` holds only when ok is 0. `bpb continuing`
+therefore means it did not hold: it entered `sl-write-and-verify`. The
+screen then stays orange through the 2.7 MB `__heap-advance`, through
+`sl-fill` poking 2,745,998 bytes one at a time, and through
+`fat16-write-segments`, and only changes when the `wrote` rung paints BLUE.
+
+**The returned stick settles what the glass could not.** Root directory:
+`EFI`, `CODEX.CDX`, `CMUNSS.TTF` and nothing else -- byte-for-byte the
+master's own listing, no `BIG.CDX` at all. So the run did not stall partway
+through a chain; **no directory entry was ever created**, which puts the
+fault at or before the first allocation rather than in the chain walk.
+**The raw image of this returned stick is DESTROYED.** It was preserved to
+`build-output/sinkladder-returned-20260811.img`, SHA-256 `9FBD844E
+AAEE618F 98118CE1 4BEC8E3C BFCA9AC5 035821C2 3C21AF15 26890307`, and the
+`clean` phase of a later gate run deleted it (see the correction section at
+the top of this file). **The finding above survives because it was written
+down: the root listing and the absence of `BIG.CDX` are recorded readings,
+not inferences from a file.** The bytes behind them are not recoverable.
+
+**What the flight did NOT establish, stated because the glass alone cannot.**
+Whether it hung or faulted, and whether the operator's wait exceeded the
+write's duration. The run sheet's own advice is several minutes, about five
+in the bed under `-uefi`, and USB is slower. `ladder-pass`'s comment says
+the printing exists so a held colour is no longer "indistinguishable from a
+run still in progress" -- and it half-achieves that: the text names the
+stage that passed, and nothing reports progress INSIDE the stage that
+follows. A heartbeat inside `sl-fill` or between write segments is what
+would separate slow from dead on the next flight. That is reek's call.
+
+**`print-line-uni` rendered on this box.** The chapter's own prose calls it
+"the channel that has never rendered a character on this box and cost two A5
+flights", and two of its lines were read off this flight. Recorded as an
+observation rather than a measurement: nobody has confirmed whether those
+lines were read from the box's glass or from elsewhere, and that question is
+worth one sentence on the next sitting.
+
+## SUPERSEDED by the flight above, kept for the recipe and the arm table: `sinkladder.img`, SHA-256 `34A6BC00 2DE3EA8D D45AE00F 144FD0B3 0762A235 A585C18A A17896D9 8430735B`.
+
+The block ladder proves ONE `block-write-sector`. The A5 sink writes 2.7 MB
+through `fat16-write-segments`, which allocates a 5364-cluster chain, rewrites
+both FAT copies and walks the chain on top of that primitive. **None of that
+has run on the board.** This is the instrument for it: the same write and the
+same streaming oracle as `codex/test/apps/fat-sink-big.codex`, which asks this
+question and answers it over `print-line-uni` -- the channel that has never
+rendered a character on this box and cost two A5 flights.
+
+Paint precedes print on every rung, so a rung that dies inside a firmware call
+still leaves its colour standing.
+
+**Read the colour.** It writes 2.7 MB, so give it several minutes before
+calling it hung; the bed takes about five under `-uefi` and USB is slower.
+
+| screen | meaning | where the fault is |
+|---|---|---|
+| solid dark GREEN | stub handed off, payload said nothing | died before its first instruction |
+| **CYAN** | payload alive, framebuffer usable | the SystemTable cell is zero |
+| **YELLOW** | SystemTable live | `LocateProtocol(EFI_BLOCK_IO)` found nothing |
+| **MAGENTA** | a sector came back off the disk | its bytes-per-sector is not 512 |
+| **ORANGE** | the BPB parses | `fat16-write-segments` did not land 2,745,998 bytes on a 5364-cluster chain |
+| **BLUE** | **the 2.7 MB write landed** | the streaming verify found bytes that differ |
+| **WHITE** | **everything worked** | nothing; the sink's own write is good on this board |
+
+Each colour means the stage NAMED IN THE ROW ABOVE IT passed. Green is
+deliberately not a rung colour: the stub holds dark green, so a green screen
+already means the payload never started.
+
+**Every rung below WHITE is forced and watched in the bed** by
+`build/sink-arm.ps1`:
+
+| arm | forced how | last stage painted |
+|---|---|---|
+| pass | normal | `verified` (WHITE) |
+| shift | payload rebuilt with `sl-shift = 1`, so the oracle must reject every byte | `wrote` (BLUE) |
+| nodisk | no `-disk`, so `LocateProtocol` returns NOT_FOUND | `systab` (YELLOW) |
+| badbpb | bytes-per-sector zeroed on the `-disk` image only | `read` (MAGENTA) |
+| small | 9216-sector volume: 5014 clusters against the 5364 the payload needs | `bpb` (ORANGE) |
+
+The `shift` arm is the one that makes `bad=0` a measurement. It writes
+identically -- same size, same chain 5364, same 84,840 bytes of arena -- and
+only the oracle changes, so a WHITE screen means the bytes on the medium were
+checked and matched, not that the check ran and could not fail (L-FALSIF).
+
+**`small` was wrong in the direction that passes, and it is worth knowing
+why.** The first version copied the block ladder's `-TotalSectors 16384`, but
+that arm fails there because LBA 30000 does not exist in an 8 MB image, which
+has nothing to do with free space: 8 MB still leaves ~6 MB free, the 2.7 MB
+write succeeded and the arm painted WHITE. The harness now reads the cluster
+count out of `build-img`'s own output and `sl-size` out of the chapter, and
+REFUSES the arm rather than running it when the volume could hold the payload.
+
+CYAN is still the one rung never seen to fire, for the same reason as on the
+block ladder: the stub primes the SystemTable cell and nothing in the bed can
+unprime it.
+
+### Off the returned stick
+
+`BIG.CDX`, 2,745,998 bytes, each byte `i` equal to `(i * 7 + i / 513) mod 251`.
+Verifying it off the stick repeats on the host what the payload claims to have
+checked in the guest, which is the point: the guest's own readback is the
+writer grading itself.
+
+```powershell
+$b=[IO.File]::ReadAllBytes('<BIG.CDX off the stick>')
+$bad=0; for($i=0;$i -lt $b.Length;$i++){ if($b[$i] -ne ((($i*7 + [int][Math]::Floor($i/513)) % 251))){$bad++} }
+"$($b.Length) bytes, $bad bad"
+```
+
+## FLOWN 2026-08-11, WROTE NOTHING, AND THE LADDER DID NOT FIRE: `a5bigflight.img`. The rung is too late, and the section below overstated what it buys.
+
+Third A5 flight, third identical result. **Screen held the stub's dark green for
+the full twenty minutes. Returned stick diffed against the master over all
+16 MB: exactly two sectors differ, LBA 0 and LBA 1, which are `flash-usb.ps1
+-SpecFit`'s own rewrites. Root directory holds `EFI`, `SOURCE.SRC` and
+`CODEX`, and NO `OUT.CDX`.** The board wrote nothing and painted nothing.
+
+**So the payload dies between the stub's jump and the first line of `opening`,
+which is upstream of the first rung.** That is a defect in the instrument: the
+ladder below reports stages of `opening`, and nothing in it can see a payload
+that never reaches `opening`. Green is the only thing it could ever have said
+about this failure, which is exactly what the pre-ladder arm said.
+
+What the bed shows about the difference, measured the same day
+(`build/boot/diag/EntryProbe.codex`, one rung and nothing else):
+
+| build | screen | result |
+|---|---|---|
+| no `-EntryStart`, heap 512 | CYAN | runs, paints, exits clean |
+| `-EntryStart`, heap 512 | none | halts `IF=0` at RIP `0x1071e8` before `opening` |
+| `-EntryStart`, heap 32768 (the A5 flags) | none | same |
+
+`-EntryStart` is the variable and the heap size is not. **Every payload that
+has ever painted on this board is built WITHOUT it** (`build-option-a.ps1`
+never passes it), and **every silent A5 flight has had it**, because
+`block-read-sector` needs the bare-metal runtime init it turns on. That is a
+correlation across three flights and one bed matrix, not a diagnosis: the A5
+compiler payload DOES run to completion in the bed with `-EntryStart`, so the
+bed does not yet reproduce the board's failure for the artifact that flew.
+
+**Do not re-fly either A5 stick until a payload with the A5 flags has been
+shown to paint anything at all.** The next instrument is that and nothing
+else, and it boots in seconds instead of twenty minutes.
+
+## The stick sections' colour table, 2026-08-11 (reek). Correct as far as it goes, and it does not go far enough: see the flight above.
+
+The compiler carries the ladder itself now, in `codex/compiler/Core/BootPaint.codex`,
+so a metal compile reports as a colour rather than only as a line on a channel
+that has never rendered a character on this board. **This is what grounded the
+two A5 sticks and it is no longer a reason to keep them grounded.**
+
+**Read the colour. `DISK-OUT:` is a bonus if ConOut happens to work.**
+
+| screen | meaning | where the fault is |
+|---|---|---|
+| solid dark GREEN | stub handed off, payload said nothing | died before its first instruction |
+| **CYAN** | `opening` reached, framebuffer usable | the stub's serial prefill gave no mode line |
+| **YELLOW** | stdin said `DISK` | `LocateProtocol(EFI_BLOCK_IO)` found nothing, or the BPB is not 512 bytes per sector |
+| **MAGENTA** | the boot volume mounted | `SOURCE.SRC` is not on the volume, or would not read |
+| **ORANGE** | the source read off the volume | it did not compile; expect `CODEGEN-ERRORS` beside it |
+| **BLUE** | the compile finished | `OUT.CDX` is not on the volume at the size the compile produced |
+| **WHITE** | **everything worked** | nothing; the artifact is on the medium |
+
+Each colour means the stage NAMED IN THE ROW ABOVE IT passed. WHITE is a
+re-read of the directory, not the writer's own answer, so a short or absent
+`OUT.CDX` cannot paint it.
+
+**Every rung is forced and watched in the bed** by `build\disk-arm.ps1`:
+
+| arm | forced how | last stage passed |
+|---|---|---|
+| pass | normal | `wrote` (WHITE) |
+| nomode | payload built with no `cdx-to-pe -Stdin`, so `read-line` answers None | `entered` (CYAN) |
+| badbpb | bytes-per-sector zeroed on the `-disk` image only | `mode` (YELLOW) |
+| nosource | image built with no `-Source` | `volume` (MAGENTA) |
+| badsource | `SOURCE.SRC` naming an undefined function | `source` (ORANGE) |
+| nowrite | every free cluster marked bad in both FAT copies | `compiled` (BLUE) |
+
+Unlike the two ladders above, **CYAN's failure IS forced here**: a payload
+built without `-Stdin` reaches `opening`, gets nothing from the serial ring
+and holds CYAN. The stub cannot unprime the SystemTable cell, but it can be
+told not to prime the input ring.
+
+**A read-only image does NOT force `nowrite`, and that is worth knowing before
+anyone reaches for it.** codex-vm serves the guest from an in-memory image and
+only flushes to the host file, so 833 `WARN: cannot reopen disk ... for write`
+lines went past while the guest wrote, re-read and verified `OUT.CDX` at
+84,561 bytes and painted WHITE. The medium the guest sees was never read-only.
+Filling the FAT is what actually fails the allocator.
+
+## Stick 3, REBUILT 2026-08-11 with the painted payload: `a5bigflight.img`, SHA-256 `9E6E35AC 101CFC7A AAD1CCEC 6EFD2C04 565738F6 ABC43D5D BB1D1408 07E115FF`. The compiler compiles ITSELF on the box.
+
+**Same procedure as stick 2, longer wait.** Boot it, wait for the screen to
+go WHITE, pull the stick. `DISK-OUT: OK OUT.CDX 2759023` appears beside it if
+ConOut renders. The 2026-08-10 build took **4.7 minutes in the bed** and this
+one finished inside a 600-second deadline (the payload holds WHITE and never
+exits, so the run was stopped rather than timed). Give it twenty before
+calling it hung; USB is slower than the IDE the bed runs on. Any colour short of
+WHITE names the stage that failed, and BLUE specifically means the compile
+finished and the artifact did not land -- which is the answer this stick
+exists to distinguish from a dead machine.
+
+Identical payload to stick 2. The only difference is `SOURCE.SRC`: 2,779,145
 bytes of concatenated compiler source instead of a 246-byte program.
 
 ### What it answers, and it is the whole of A5
@@ -633,23 +1086,24 @@ claim the project is actually built on.
 
 ### Off the returned stick
 
-- `OUT.TXT` -- one line, exactly `OK OUT.CDX 2754800`.
-- `OUT.CDX` -- 2,754,800 bytes, SHA-256
-  `CECC9D948088B4B73A3097D1EADF225355C5202632E1D09753AD3D651981C675`.
+- `OUT.TXT` -- one line, exactly `OK OUT.CDX 2759023`.
+- `OUT.CDX` -- 2,759,023 bytes, SHA-256
+  `9E823495EB7AF7A23EBD300DB8BCEE831ABE9D239F730A526380E18BE40B7F9A`.
 
 **That hash is not just the host's answer. It is the compiler itself.** The
-plain-mode compiler built from this same source hashes `CECC9D94...`, and
-compiling this source with it reproduces `CECC9D94...` again, so the artifact
-the board hands back is a bit-for-bit copy of a compiler that is a fixed
-point of itself. A board that returns those exact bytes has reproduced the
-compiler from source, on its own hardware, with nothing from this desk in
-the loop but the input file.
+plain-mode compiler built from this same source hashes `9E823495...`, and
+compiling this source with it reproduces `9E823495...` again (measured, both
+2,759,023 bytes), so the artifact the board hands back is a bit-for-bit copy
+of a compiler that is a fixed point of itself. A board that returns those
+exact bytes has reproduced the compiler from source, on its own hardware,
+with nothing from this desk in the loop but the input file.
 
-Bed-verified 2026-08-10 on a COPY, master untouched and re-checked virgin
-afterwards. `OUT.CDX` came off the volume at 5,381 clusters, complete, and
-hashed `CECC9D94...` -- equal to the host control AND to the compiler binary
-that produced it. UART took 8 bytes for the run, so the two status lines went
-over ConOut as on stick 2.
+Bed-verified 2026-08-11 on a COPY, master untouched and re-checked virgin
+afterwards. All six rungs green; `OUT.CDX` came off the volume at 5,389
+clusters, complete, and hashed `9E823495...` -- equal to the host control AND
+to the compiler binary that produced it. The virgin master answers
+`MISSING: OUT.CDX`, which is the reader's negative arm and what makes the
+positive one evidence.
 
 **Do not rebuild this image larger.** A 65536-sector version of exactly this
 image crashes codex-vm on the host before the guest starts
@@ -669,21 +1123,25 @@ build/build-img.ps1 -PeInput a5.efi -Out build/boot/a5bigflight.img `
 
 where `Codex.codex` is `build/concat-codex-self.ps1 -CodexDir codex/compiler`.
 The source on the volume must hash the same as the one on disk: measured
-`BA459257...` both sides.
+`7BCF4941...` both sides, 2,779,145 bytes. The concat writes LF, so this one
+needs no normalising -- unlike stick 2's, and check rather than assume.
 
 ### Bed state, stated including what metal adds
 
-Run on a COPY of the master (see the rule above): the serial ring came back
-`all_consumed=1`, the compiler read `SOURCE.SRC` off the volume, and
-`OUT.CDX` extracted back out of the FAT by an independent host-side reader
-is **byte-identical to the host compile**, with `OUT.TXT` reading
-`OK OUT.CDX 84644`. 14 seconds. The master was re-checked virgin afterwards.
+Run on a COPY of the master (see the rule above), 2026-08-11: the compiler
+read `SOURCE.SRC` off the volume, painted every rung through to WHITE, and
+`OUT.CDX` extracted back out of the FAT by an independent host-side reader is
+**byte-identical to the host compile** at 2,759,023 bytes, with `OUT.TXT`
+reading `OK OUT.CDX 2759023`. The master was re-checked virgin afterwards.
+(This paragraph carried stick 2's 84,644 and its 14 seconds until this
+rebuild; the two sticks share a payload and the numbers had drifted across.)
 
 `build/read-stick.ps1` is the reader, and it is calibrated rather than
 trusted: on the booted copy it returns `OUT.CDX` at the expected SHA-256,
 and on the virgin master it returns `MISSING: OUT.CDX`. Both arms measured
-2026-08-09. It reads `\\.\PhysicalDriveN` directly so that Windows never
-mounts the returned stick and allocates clusters on it.
+again on this rebuild, for both sticks. It reads `\\.\PhysicalDriveN`
+directly so that Windows never mounts the returned stick and allocates
+clusters on it, and `-ImageFile` is the arm used here.
 
 **What the bed cannot answer is the storage.** codex-vm's disk is IDE and
 the ASUS boots USB mass storage over BOT, so the one thing this arm exists
@@ -801,10 +1259,41 @@ unlock passed on the returning boot. The F12 desktop shot from the
 flight (`SH160738.BMP`, 16:07:38, top bar `k4 e98n0s0 |e0n0 |e131n50
 |e0n0`) was retrieved to `build-output/ceremony-flight-shots/` and is
 embedded in `docs/TailorsFitting.md`, the first-boot document this
-flight illustrates. A2's ceremony campaign closes on this flight. (The
-stick moved on to reek's probes the same day; this image and its
-identity are off the stick, and the ceremony artifact remains at
-`build/boot/ceremonyboot.img`.)
+flight illustrates. A2's ceremony campaign closes on this flight.
+
+**The parenthesis that used to close this entry was wrong in both
+halves, and it mattered.** It said the stick had moved on to reek's
+probes the same day, so that "this image and its identity are off the
+stick, and the ceremony artifact remains at
+`build/boot/ceremonyboot.img`". Checked 2026-08-11:
+`p4 files "//Codex/*/build/boot/ceremonyboot.img"` answers **no such
+file(s) in any stream, at any revision**, and `deskboot.img` likewise.
+Neither flown image was ever checked in, although every other boot image
+beside them was (`a5flight`, `a5flight2`, `a5bigflight`, `blockladder`).
+And the stick had NOT moved on: reek read disk 2 on 2026-08-11 and found
+this same desk/ceremony boot still on it, `CODEX.CDX` at 2755007 bytes
+with `CMUNSS.TTF` and a guest-written `IDENTITY.DAT` of 124 bytes.
+
+So for six days the only copy of a green flight's artifact was the
+physical stick, while this document said it was in the tree. reek dumped
+all 16 MB before reflashing (`629821CF...`, in reek's p4-ignored
+`build-output/`) and flashed `a5bigflight.img` over it, which is the only
+reason the bytes still exist at all.
+
+**What is preserved and what is not.** The flight's CONCLUSIONS are
+safe: the verdict table below, the F12 shot in
+`build-output/ceremony-flight-shots/`, and the walkthrough in
+`docs/TailorsFitting.md`. The image is REBUILDABLE from
+`apps/works/DeskBoot.codex` and `codex/os/verify/WakeCeremony.codex` plus
+the recipe below. What is not reproducible is the 124-byte
+`IDENTITY.DAT` the guest itself wrote to the ESP on real ASMedia
+hardware -- the single physical artifact of that write path working on
+metal. It exists now only inside that dump, and the dump was itself one
+gate run from deletion: `build-output/` is wiped by every gate's `clean`
+phase, which is how blu's three preserved sticks were already lost the
+same day. **Rescued 2026-08-11 to
+`D:\Projects\stick-archive\stick-before-20260811.img`**, verified byte for
+byte; see NEVER PRESERVE A RETURNED STICK UNDER `build-output/` above.
 
 The pre-flight record below stands as flown.
 

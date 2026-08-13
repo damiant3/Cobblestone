@@ -227,9 +227,10 @@ builds every time.
 ### 4. One thing at a time
 
 Do one thing. Test it. Commit it. Then do the next thing. Do not batch.
-Do not "while I'm here." The compiler is ~53,652 lines of Codex across
-63 files (measured 2026-08-09; this line said 57,466 on 07-31 and 55,900
-on 07-25, so it is now falling rather than rising). A wrong
+Do not "while I'm here." The compiler is ~54,148 lines of Codex across
+64 files (measured 2026-08-12; this line said 53,652 on 08-09, 57,466 on
+07-31 and 55,900 on 07-25, so the fall has stopped and it is rising
+again). A wrong
 change in one place surfaces as a silent corruption three pipeline stages
 later.
 

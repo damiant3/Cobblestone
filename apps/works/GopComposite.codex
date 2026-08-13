@@ -1,4 +1,5 @@
 Chapter: GopComposite
+  cites Foreword chapter MathLib
   cites Works chapter GopDraw
   cites UI chapter Widget
   cites UI chapter Theme
@@ -28,11 +29,150 @@ Chapter: GopComposite
 
  We say:
 
+Section: Decoration
+
+ The framebuffer is 32-bit XRGB with no alpha channel and no read-modify-write
+ blend anywhere in this path, so a shadow here is a hard offset rectangle and
+ a gradient is an exact per-row (or per-column) colour, never a blend against
+ what is already there. A shadow therefore paints BEFORE the box it belongs to
+ and is overwritten by it.
+
+  comp-chan : Integer, Integer -> Integer
+  comp-chan (c) (sh) = bit-and (bit-shru c sh) 255
+
+  comp-lerp : Integer, Integer, Integer, Integer -> Integer
+  comp-lerp (a) (b) (i) (n) =
+    if n <= 1 then a
+    else let d = n - 1
+    in let j = if i > d then d else i
+    in let r = (comp-chan a 16 * (d - j) + comp-chan b 16 * j) / d
+    in let g = (comp-chan a 8 * (d - j) + comp-chan b 8 * j) / d
+    in let bl = (comp-chan a 0 * (d - j) + comp-chan b 0 * j) / d
+    in bit-shl r 16 + bit-shl g 8 + bl
+
+  comp-corner-r : CornerStyle -> Integer
+  comp-corner-r (c) = when c
+    is CornerSharp -> 0
+    is CornerRound (r) -> r
+    is CornerBevel (r) -> r
+
+ A bevel steps in one pixel per row. A round corner steps in by the horizontal
+ half-chord of a circle of radius r whose centre sits r pixels in from the
+ corner, so the inset at a row d below the top is r - isqrt(r^2 - (r-d)^2).
+
+ A radius larger than half the box would inset every row and erase the widget,
+ so it is clamped to what the box can hold before it is used anywhere.
+
+ Every length in a style is a LOGICAL pixel and every rectangle handed to these
+ is a DEVICE rectangle, so a radius, a border width or a shadow offset is
+ multiplied by the scale here while a bound arrives already multiplied.
+
+  comp-fit-r : CornerStyle, Integer, Integer, Integer -> Integer
+  comp-fit-r (c) (w) (h) (s) = math-min (comp-corner-r c * s) (math-min w h / 2)
+
+  comp-corner-inset : CornerStyle, Integer, Integer, Integer, Integer -> Integer
+  comp-corner-inset (c) (w) (h) (y) (s) =
+    let k = comp-fit-r c w h s
+    in if k <= 0 then 0
+    else let d = math-min y (h - 1 - y)
+    in if d >= k then 0
+    else when c
+      is CornerSharp -> 0
+      is CornerBevel (r) -> k - d
+      is CornerRound (r) -> let dy = k - d in k - math-isqrt (k * k - dy * dy)
+
+  comp-row-h : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  comp-row-h (base) (stride) (bx) (bw) (y) (x) (xend) (a) (b) =
+    if x >= xend then 0
+    else let p = gop-put base stride x y (comp-lerp a b (x - bx) bw)
+    in comp-row-h base stride bx bw y (x + 1) xend a b
+
+  comp-rows : Integer, Integer, LayoutRect, CornerStyle, Integer, Integer, Boolean, Boolean, Integer, Integer -> Integer
+  comp-rows (base) (stride) (r) (cs) (c0) (c1) (grad) (horiz) (y) (s) =
+    if y >= r.lr-h then 0
+    else let ins = comp-corner-inset cs (r.lr-w) (r.lr-h) y s
+    in let w = box-clamp0 (r.lr-w - 2 * ins)
+    in let x = r.lr-x + ins
+    in let flat = if grad then comp-lerp c0 c1 y (r.lr-h) else c0
+    in let one = if w <= 0 then 0 else if grad & horiz then comp-row-h base stride (r.lr-x) (r.lr-w) (r.lr-y + y) x (x + w) c0 c1 else gop-fill-rect base stride x (r.lr-y + y) w 1 flat
+    in comp-rows base stride r cs c0 c1 grad horiz (y + 1) s
+
+  comp-border-box : LayoutRect, WidgetStyle -> LayoutRect
+  comp-border-box (b) (st) =
+    let m = st.ws-margin
+    in let bw = box-clamp0 (b.lr-w - edges-h m)
+    in let bh = box-clamp0 (b.lr-h - edges-v m)
+    in layout-rect (b.lr-x + m.edge-left) (b.lr-y + m.edge-top) bw bh
+
+  comp-fill-box : Integer, Integer, LayoutRect, WidgetStyle, Integer, Integer -> Integer
+  comp-fill-box (base) (stride) (r) (st) (bg) (s) =
+    let g = st.ws-gradient
+    in let on = g.gr-enabled
+    in let c0 = if on then g.gr-start-color else bg
+    in let c1 = if on then g.gr-end-color else bg
+    in let horiz = on & (g.gr-vertical == False)
+    in comp-rows base stride r ((st.ws-border).bdr-corner) c0 c1 on horiz 0 s
+
+  comp-shadow : Integer, Integer, LayoutRect, WidgetStyle, Integer -> Integer
+  comp-shadow (base) (stride) (r) (st) (s) =
+    let sh = st.ws-shadow
+    in if sh.sh-enabled == False then 0
+    else let sr = layout-rect (r.lr-x + sh.sh-offset-x * s) (r.lr-y + sh.sh-offset-y * s) (r.lr-w) (r.lr-h)
+    in comp-rows base stride sr ((st.ws-border).bdr-corner) (sh.sh-color) (sh.sh-color) False False 0 s
+
+ The sides stop short of the corner radius at each end, which is what makes a
+ square outline read as a rounded one without tracing the arc a second time.
+
+  comp-border : Integer, Integer, LayoutRect, Border, Integer -> Integer
+  comp-border (base) (stride) (r) (bd) (s) =
+    let k = comp-fit-r (bd.bdr-corner) (r.lr-w) (r.lr-h) s
+    in let ih = box-clamp0 (r.lr-w - 2 * k)
+    in let iv = box-clamp0 (r.lr-h - 2 * k)
+    in let tw = (bd.bdr-top).brd-width * s
+    in let bw = (bd.bdr-bottom).brd-width * s
+    in let lw = (bd.bdr-left).brd-width * s
+    in let rw = (bd.bdr-right).brd-width * s
+    in let d0 = if tw > 0 & ih > 0 then gop-fill-rect base stride (r.lr-x + k) (r.lr-y) ih tw ((bd.bdr-top).brd-color) else 0
+    in let d1 = if bw > 0 & ih > 0 then gop-fill-rect base stride (r.lr-x + k) (r.lr-y + r.lr-h - bw) ih bw ((bd.bdr-bottom).brd-color) else 0
+    in let d2 = if lw > 0 & iv > 0 then gop-fill-rect base stride (r.lr-x) (r.lr-y + k) lw iv ((bd.bdr-left).brd-color) else 0
+    in if rw > 0 & iv > 0 then gop-fill-rect base stride (r.lr-x + r.lr-w - rw) (r.lr-y + k) rw iv ((bd.bdr-right).brd-color) else 0
+
+  comp-accent : Integer, Integer, LayoutRect, AccentBorder, Integer -> Integer
+  comp-accent (base) (stride) (r) (ab) (s) =
+    if ab.ab-enabled == False then 0
+    else let n = ab.ab-width * s
+    in if n <= 0 then 0
+    else if ab.ab-side == 0 then gop-fill-rect base stride (r.lr-x) (r.lr-y) (r.lr-w) n (ab.ab-color)
+    else if ab.ab-side == 1 then gop-fill-rect base stride (r.lr-x + r.lr-w - n) (r.lr-y) n (r.lr-h) (ab.ab-color)
+    else if ab.ab-side == 2 then gop-fill-rect base stride (r.lr-x) (r.lr-y + r.lr-h - n) (r.lr-w) n (ab.ab-color)
+    else gop-fill-rect base stride (r.lr-x) (r.lr-y) n (r.lr-h) (ab.ab-color)
+
+  comp-mul-rect : LayoutRect, Integer -> LayoutRect
+  comp-mul-rect (r) (s) = layout-rect (r.lr-x * s) (r.lr-y * s) (r.lr-w * s) (r.lr-h * s)
+
+  comp-box : Integer, Integer, LayoutRect, WidgetStyle, Integer, Integer -> Integer
+  comp-box (base) (stride) (b) (st) (bg) (s) =
+    let r = comp-mul-rect (comp-border-box b st) s
+    in if r.lr-w <= 0 | r.lr-h <= 0 then 0
+    else let sh = comp-shadow base stride r st s
+    in let f = comp-fill-box base stride r st bg s
+    in let d = comp-border base stride r (st.ws-border) s
+    in comp-accent base stride r (st.ws-accent-border) s
+
 Section: Node Drawing
 
-  comp-text : Integer, Integer, CbfFont, LayoutRect, Integer, Integer, Text, Integer -> Integer
-  comp-text (base) (stride) (font) (b) (dx) (dy) (t) (fg) =
-    gop-draw-text base stride font (b.lr-x + dx) (b.lr-y + dy) t fg 1 0
+  comp-glyph-h : Integer = 16
+
+  comp-cell-w : Integer = 8
+
+  comp-text : Integer, Integer, CbfFont, LayoutRect, Text, Integer, Integer -> Integer
+  comp-text (base) (stride) (font) (c) (t) (fg) (s) =
+    let gh = comp-glyph-h * s
+    in let dy = if c.lr-h > gh then (c.lr-h - gh) / 2 else 0
+    in gop-draw-text base stride font (c.lr-x) (c.lr-y + dy) t fg s 0
+
+  comp-cols : LayoutRect, Integer -> Integer
+  comp-cols (c) (s) = c.lr-w / (comp-cell-w * s)
 
   comp-gauge-fill : Integer, Integer, LayoutRect, Integer, Integer, Integer -> Integer
   comp-gauge-fill (base) (stride) (b) (v) (mx) (fg) =
@@ -47,21 +187,24 @@ Section: Node Drawing
     else if text-length t <= cols then t
     else substring t 0 cols
 
-  comp-input : Integer, Integer, CbfFont, LayoutRect, Text, Integer, Integer, Integer -> Integer
-  comp-input (base) (stride) (font) (b) (t) (cursor) (fg) (bg) =
-    let fill = gop-fill-rect base stride (b.lr-x) (b.lr-y) (b.lr-w) (b.lr-h) bg
-    in let cols = (b.lr-w - 8) / 8
-    in let txt = comp-text base stride font b 4 4 (comp-fit t cols) fg
-    in let want = b.lr-x + 4 + cursor * 8
-    in let hi = b.lr-x + b.lr-w - 2
+  comp-input : Integer, Integer, CbfFont, LayoutRect, LayoutRect, WidgetStyle, Text, Integer, Integer, Integer -> Integer
+  comp-input (base) (stride) (font) (b) (c) (st) (t) (cursor) (fg) (s) =
+    let fill = comp-box base stride b st (st.ws-bg) s
+    in let txt = comp-text base stride font c (comp-fit t (comp-cols c s)) fg s
+    in let gh = comp-glyph-h * s
+    in let want = c.lr-x + cursor * comp-cell-w * s
+    in let hi = c.lr-x + c.lr-w - 1
     in let cx = if want > hi then hi else want
-    in gop-fill-rect base stride cx (b.lr-y + 3) 1 (if b.lr-h > 6 then b.lr-h - 6 else 1) fg
+    in let ch = if c.lr-h < gh then c.lr-h else gh
+    in let dy = if c.lr-h > gh then (c.lr-h - gh) / 2 else 0
+    in if ch <= 0 | cx < c.lr-x then 0
+    else gop-fill-rect base stride cx (c.lr-y + dy) s ch fg
 
-  comp-custom : Integer, Integer, LayoutRect, Text, Integer, Integer -> Integer
-  comp-custom (base) (stride) (b) (tag) (fg) (bg) =
+  comp-custom : Integer, Integer, LayoutRect, LayoutRect, WidgetStyle, Text, Integer, Integer -> Integer
+  comp-custom (base) (stride) (b) (c) (st) (tag) (fg) (s) =
     if tag == "event-dot"
-    then gop-fill-rect base stride (b.lr-x + b.lr-w / 2 - 3) (b.lr-y + b.lr-h / 2 - 3) 6 6 fg
-    else gop-fill-rect base stride (b.lr-x) (b.lr-y) (b.lr-w) (b.lr-h) bg
+    then gop-fill-rect base stride (c.lr-x + c.lr-w / 2 - 3 * s) (c.lr-y + c.lr-h / 2 - 3 * s) (6 * s) (6 * s) fg
+    else comp-box base stride b st (st.ws-bg) s
 
  A node's TONE overrides the style's foreground: `tone-success` paints a
  label green wherever the theme would have painted it plain. It is how
@@ -74,42 +217,59 @@ Section: Node Drawing
   comp-fg : Theme, WidgetNode, WidgetStyle -> Integer
   comp-fg (th) (node) (st) = theme-tone-fg th (node.wn-tone) (st.ws-fg)
 
-  comp-draw-node : Integer, Integer, CbfFont, WidgetNode, Theme -> Integer
-  comp-draw-node (base) (stride) (font) (node) (th) =
+  comp-draw-node : Integer, Integer, CbfFont, WidgetNode, Theme, Integer -> Integer
+  comp-draw-node (base) (stride) (font) (node) (th) (s) =
     let st = widget-resolve-style node th
     in let b = node.wn-bounds
+    in let c = comp-mul-rect (box-content-from-style b st) s
     in let fg = comp-fg th node st
     in when node.wn-kind
-      is WkPanel -> gop-fill-rect base stride (b.lr-x) (b.lr-y) (b.lr-w) (b.lr-h) (st.ws-bg)
-      is WkSeparator -> gop-fill-rect base stride (b.lr-x) (b.lr-y) (b.lr-w) (b.lr-h) (st.ws-fg)
-      is WkLabel (t) -> comp-text base stride font b 4 3 (comp-fit t ((b.lr-w - 4) / 8)) fg
+      is WkPanel -> comp-box base stride b st (st.ws-bg) s
+      is WkSeparator -> comp-box base stride b st (st.ws-fg) s
+      is WkLabel (t) -> comp-text base stride font c (comp-fit t (comp-cols c s)) fg s
       is WkButton (t) ->
-        let bg = gop-fill-rect base stride (b.lr-x) (b.lr-y) (b.lr-w) (b.lr-h) (st.ws-bg)
-        in comp-text base stride font b 8 4 (comp-fit t ((b.lr-w - 8) / 8)) fg
+        let bg = comp-box base stride b st (st.ws-bg) s
+        in comp-text base stride font c (comp-fit t (comp-cols c s)) fg s
       is WkGauge (v) (mx) ->
-        let bg = gop-fill-rect base stride (b.lr-x) (b.lr-y) (b.lr-w) (b.lr-h) (st.ws-bg)
-        in comp-gauge-fill base stride b v mx fg
-      is WkInput (t) (c) -> comp-input base stride font b t c fg (st.ws-bg)
-      is WkCustom (tag) -> comp-custom base stride b tag fg (st.ws-bg)
+        let bg = comp-box base stride b st (st.ws-bg) s
+        in comp-gauge-fill base stride c v mx fg
+      is WkInput (t) (cur) -> comp-input base stride font b c st t cur fg s
+      is WkCustom (tag) -> comp-custom base stride b c st tag fg s
       is otherwise -> 0
 
 Section: Tree Walk
 
-  comp-walk : Integer, Integer, CbfFont, WidgetNode, Theme -> Integer
-  comp-walk (base) (stride) (font) (node) (th) =
-    let d = comp-draw-node base stride font node th
-    in comp-walk-kids base stride font (node.wn-children) th 0
+  comp-walk : Integer, Integer, CbfFont, WidgetNode, Theme, Integer -> Integer
+  comp-walk (base) (stride) (font) (node) (th) (s) =
+    let d = comp-draw-node base stride font node th s
+    in comp-walk-kids base stride font (node.wn-children) th 0 s
 
-  comp-walk-kids : Integer, Integer, CbfFont, List WidgetNode, Theme, Integer -> Integer
-  comp-walk-kids (base) (stride) (font) (kids) (th) (i) =
+  comp-walk-kids : Integer, Integer, CbfFont, List WidgetNode, Theme, Integer, Integer -> Integer
+  comp-walk-kids (base) (stride) (font) (kids) (th) (i) (s) =
     if i >= list-length kids then 0
-    else let w = comp-walk base stride font (list-at kids i) th
-    in comp-walk-kids base stride font kids th (i + 1)
+    else let w = comp-walk base stride font (list-at kids i) th s
+    in comp-walk-kids base stride font kids th (i + 1) s
 
 Section: Render
 
-  comp-render : Integer, Integer, CbfFont, WidgetNode, Theme, Integer, Integer -> WidgetNode
-  comp-render (base) (stride) (font) (root) (th) (w) (h) =
-    let laid = widget-layout root th (layout-rect 0 0 w h)
-    in let d = comp-walk base stride font laid th
+ THE TREE IS LAID OUT IN LOGICAL PIXELS AND PAINTED IN DEVICE PIXELS. The
+ layout runs against `w / s` by `h / s`, so a theme's 4-pixel padding, a
+ 160-pixel sidebar and every app's own minimum sizes are written once and
+ come out the same physical size at any resolution. Only this chapter
+ multiplies, which is why nothing else had to learn about scale.
+
+ The bounds on the returned tree are therefore LOGICAL. A hit test against
+ pointer coordinates, which are device, must divide them by the same `s`;
+ `comp-hit-x` and `comp-hit-y` are here so no caller invents that itself.
+
+  comp-hit-x : Integer, Integer -> Integer
+  comp-hit-x (mx) (s) = mx / s
+
+  comp-hit-y : Integer, Integer -> Integer
+  comp-hit-y (my) (s) = my / s
+
+  comp-render : Integer, Integer, CbfFont, WidgetNode, Theme, Integer, Integer, Integer -> WidgetNode
+  comp-render (base) (stride) (font) (root) (th) (w) (h) (s) =
+    let laid = widget-layout root th (layout-rect 0 0 (w / s) (h / s))
+    in let d = comp-walk base stride font laid th s
     in laid

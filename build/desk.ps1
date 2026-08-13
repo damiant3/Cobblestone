@@ -11,8 +11,12 @@
 # couple of seconds with nothing to flash and no firmware in the way.
 [CmdletBinding()]
 param(
-    [int]$Width  = 1280,
-    [int]$Height = 800,
+    # 1600 is the step where the widget layer scales (GopDraw ui-wscale), so the
+    # chrome comes up at twice the size instead of stranding a 1024-sized UI in a
+    # big frame. 1920x1080 works too; this default is the one that fits inside a
+    # 1920 monitor once the window has a title bar.
+    [int]$Width  = 1600,
+    [int]$Height = 900,
     [int]$Mem    = 3072,
     # Compile even when the CDX is newer than the source.
     [switch]$Force,
@@ -24,7 +28,9 @@ param(
     [string]$Shot = '',
     [int]$ShotDelayMs = 6000,
     # Scancode timeline, 't:scancode' separated by ';' or newlines. 33 is f,
-    # 4 is 3, 1 is Esc.
+    # 18 is e, 4 is 3, 1 is Esc. Two ADJACENT entries with the same code
+    # deliver as one: under -hid-nak-unchanged an unchanged report is NAKed,
+    # so alternate codes rather than repeating one to drive a pane.
     [string]$Keys = '',
     # Freeze the clock so a captured frame is comparable against a recorded
     # one; the taskbar paints the CMOS RTC and is otherwise host state.
@@ -102,7 +108,7 @@ if ($Shot) {
 }
 
 Write-Host "[desk] ${Width}x${Height}; desk paints about 1.5s after launch"
-Write-Host "[desk] keys: f Files, 3 3D View, c Calc, l Calendar, i Issues, d Diffusion, m Monitor; Esc leaves a pane."
+Write-Host "[desk] keys: f Files, e Edit, 3 3D View, c Calc, l Calendar, i Issues, d Diffusion, m Monitor; Esc leaves a pane."
 Write-Host "[desk] the desk itself does not exit by key: Shutdown (bottom-left) or Stop-Process."
 
 if ($Wait) {

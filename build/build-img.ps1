@@ -36,6 +36,12 @@ param(
     # manifest is unverifiable and a manifest with no model names nothing.
     [string]$Agent = '',
     [string]$AgentManifest = '',
+    # A directory of .codex chapters, written INDIVIDUALLY into an SRC
+    # subdirectory of the ESP. -Source puts the whole tree on as one
+    # concatenated file, which is what the compiler reads and what no person
+    # can edit; this puts the chapters on as themselves. Both, not either:
+    # the concat is the build input and these are the editable copies.
+    [string]$SourceDir = '',
     [int]$TotalSectors = 16384,
     # Format the ESP as FAT32 instead of FAT16 -- the layout every vendor
     # stick and every volume past 2 GB actually carries. A REAL FAT32 volume
@@ -447,6 +453,74 @@ if ($agentBytes.Length -gt 0) {
     $manCluster = Alloc-File $manBytes
     Add-DirEntry $rootOff $rootIdx "AGENT   MAN" 0x20 $manCluster $manBytes.Length
     $rootIdx++
+}
+
+# The chapters as individual files, in SRC/.
+#
+# A FAT short name is eight characters and three, uppercase, with no dot
+# stored, so `X86_64CodeGen.codex` cannot survive as itself. It becomes
+# X86_64CO.COD, and the mangling is lossy and collides: six pairs of chapters
+# in codex/compiler share their first eight characters. Collisions take a
+# digit in the last position, and SRC/INDEX.TXT carries every short name
+# against the path it came from, so the stick explains its own naming without
+# anyone consulting this script.
+#
+# The extension is COD and deliberately not CDX: CDX is the seed binary at the
+# root, and a source file wearing that extension would be the one confusion
+# worth avoiding on a medium whose whole point is to be self-explaining.
+if ($SourceDir -and (Test-Path $SourceDir)) {
+    $chapters = @(Get-ChildItem -Path $SourceDir -Recurse -Filter *.codex -File | Sort-Object FullName)
+    if ($chapters.Count -gt 0) {
+        $taken = @{}
+        $shorts = @()
+        $indexLines = @()
+        foreach ($ch in $chapters) {
+            $stem = ($ch.BaseName.ToUpper() -replace '[^A-Z0-9]', '_')
+            if ($stem.Length -gt 8) { $stem = $stem.Substring(0, 8) }
+            $stem = $stem.PadRight(8)
+            if ($taken.ContainsKey($stem)) {
+                $n = $taken[$stem]
+                $taken[$stem] = $n + 1
+                $stem = $stem.Substring(0, 7) + ([string]$n)
+            } else {
+                $taken[$stem] = 1
+            }
+            $shorts += $stem
+            $rel = $ch.FullName.Substring((Resolve-Path $SourceDir).Path.Length).TrimStart('\', '/')
+            $indexLines += ($stem.Trim() + '.COD  ' + ($rel -replace '\\', '/'))
+        }
+        $indexBytes = [System.Text.Encoding]::ASCII.GetBytes(($indexLines -join "`n") + "`n")
+
+        # The directory is allocated first and in one run, so its clusters are
+        # contiguous and one flat offset addresses every entry. The bump
+        # allocator is what makes that true; it stops being true the moment
+        # anything else allocates in the middle.
+        $srcEntries = 2 + $chapters.Count + 1
+        $srcDirClusters = [int][Math]::Ceiling(($srcEntries * 32) / $clustSz)
+        $srcDirCluster = $script:nextCluster
+        for ($c = 0; $c -lt $srcDirClusters; $c++) {
+            $cn = $srcDirCluster + $c
+            Set-Fat $cn $(if ($c -eq $srcDirClusters - 1) { $EOC } else { $cn + 1 })
+        }
+        $script:nextCluster += $srcDirClusters
+        $srcDirOff = $dataOff + ($srcDirCluster - 2) * $clustSz
+
+        Add-DirEntry $srcDirOff 0 ".          " 0x10 $srcDirCluster 0
+        Add-DirEntry $srcDirOff 1 "..         " 0x10 0 0
+        $sIdx = 2
+        for ($i = 0; $i -lt $chapters.Count; $i++) {
+            $bytes = [System.IO.File]::ReadAllBytes($chapters[$i].FullName)
+            $cl = Alloc-File $bytes
+            Add-DirEntry $srcDirOff $sIdx ($shorts[$i] + 'COD') 0x20 $cl $bytes.Length
+            $sIdx++
+        }
+        $idxCl = Alloc-File $indexBytes
+        Add-DirEntry $srcDirOff $sIdx "INDEX   TXT" 0x20 $idxCl $indexBytes.Length
+
+        Add-DirEntry $rootOff $rootIdx "SRC        " 0x10 $srcDirCluster 0
+        $rootIdx++
+        Write-Host "[build-img] SRC/ holds $($chapters.Count) chapters as files, $(($chapters | Measure-Object Length -Sum).Sum) bytes, plus INDEX.TXT"
+    }
 }
 
 # Volume label entry in root

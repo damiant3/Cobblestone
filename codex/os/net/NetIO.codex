@@ -103,19 +103,27 @@ Section: Connect and Wait
    end
 
   net-io-wait-established : TcpTransportState, Integer -> [Network.Read, Network.Write] TcpTransportState
-  net-io-wait-established (ts) (tries) =
-   if tries > 10000 then ts
+  net-io-wait-established (ts) (tries) = net-io-wait-established-poll ts tries 0
+
+  net-io-wait-established-poll : TcpTransportState, Integer, Integer -> [Network.Read, Network.Write] TcpTransportState
+  net-io-wait-established-poll (ts) (tries) (since) =
+   if tries > net-io-max-polls then ts
+   else if net-io-conn-closed ts then ts
+   else if since >= net-io-tick-interval then act
+     ticked <- flush-transport-outbox (transport-tick ts)
+     net-io-wait-established-poll ticked (tries + 1) 0
+   end
    else let hp = __heap-save
    in act
     frame <- net-driver-recv-frame
     if list-length frame == 0 then let restored = __heap-restore hp
-      in net-io-wait-established ts (tries + 1)
+      in net-io-wait-established-poll ts (tries + 1) (since + 1)
     else let r = transport-process-frame ts frame
     in act
       ts1 <- flush-transport-outbox (r.transport)
       when (ts1.session).conn.state
        is TcpEstablished -> ts1
-       is otherwise -> net-io-wait-established ts1 (tries + 1)
+       is otherwise -> net-io-wait-established-poll ts1 (tries + 1) (since + 1)
     end
    end
 

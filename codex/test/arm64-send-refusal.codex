@@ -1,0 +1,72 @@
+Chapter: Arm64SendRefusal
+  cites Kernel chapter Arm64Pci
+  cites Kernel chapter VirtioPci
+  cites Kernel chapter VirtioNet
+  cites Net chapter Arm64NetIO
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
+  cites Net chapter Tcp
+  cites Foreword chapter Console
+
+Section: A Card Nothing Reaches
+
+ The refused send returns before any queue is polled and before any frame
+ is flushed, so the device record only has to exist. Every base address
+ here is zero, and a poll through it answers "no frame" forever rather
+ than faulting, which is why the connection is closed as well: a drain
+ that ran anyway would spend its whole fuel cap instead of ending the arm.
+
+  dead-pci : Arm64PciDevice = Arm64PciDevice { pci-bus = 0, pci-dev = 0, pci-func = 0, pci-vendor = 0, pci-device-id = 0, pci-class = 0, pci-subclass = 0, pci-header-type = 0 }
+  dead-dev : VirtioDevice = VirtioDevice { pci-dev = dead-pci, common-base = 0, notify-base = 0, notify-off-multiplier = 0, isr-base = 0, device-cfg-base = 0 }
+  dead-q : VirtqueueState = VirtqueueState { desc-base = 0, avail-base = 0, used-base = 0, queue-size = 0, free-head = 0, avail-idx = 0, last-used-idx = 0, notify-addr = 0 }
+  dead-vnet : VirtioNetState = VirtioNetState { device = dead-dev, rx-queue = dead-q, tx-queue = dead-q, mac = [82, 84, 0, 18, 52, 86] }
+
+Section: A Session With No Room Left
+
+  cli-mac : List Integer = [82, 85, 10, 0, 2, 2]
+  cli-ip : List Integer = [10, 0, 2, 100]
+  srv-ip : List Integer = [10, 0, 2, 15]
+  gw-ip : List Integer = [10, 0, 2, 2]
+
+  seg0 : RexmitSeg = RexmitSeg { rx-frame = [], rx-ack = 0, rx-sent = 0, rx-resent = False }
+
+  fill-queue : Integer, List RexmitSeg -> List RexmitSeg
+  fill-queue (n) (acc) = if n <= 0 then acc else fill-queue (n - 1) (list-push acc seg0)
+
+  base-sess : NetSession = net-session-new cli-mac cli-ip gw-ip 50000 80 srv-ip 1000
+
+  stalled : NetSession =
+    let closed = set-conn base-sess (tcp-set-state (base-sess.conn) TcpClosed)
+    in set-rexmit closed (fill-queue net-rexmit-capacity []) 3 0
+
+Section: Payload
+
+  mk-bytes : Integer, List Integer -> List Integer
+  mk-bytes (n) (acc) = if n <= 0 then acc else mk-bytes (n - 1) (list-push acc 65)
+
+  payload-len : Integer = 50000
+
+Section: Entry
+
+ A refused send that advances anyway slices every chunk it walks past, so
+ the cost of the call is the count of chunks it tried. Measured 2026-08-10
+ by removing the guard: 593,152 bytes against 16,400 for the one slice a
+ stop pays. The threshold is 44,800, which is 2.7x above the stopping arm
+ and 13x below the walking one, so neither sits near it.
+
+  opening : [Console] Nothing = act
+    let data = mk-bytes payload-len []
+    in let st0 = Arm64NetIOState { vnet = dead-vnet, transport = transport-new stalled }
+    in let chunks = payload-len / arm64-net-mss
+    in act
+      print-line-uni ("queued=" & show (list-length ((st0.transport).session).rexmit-queue) & " full=" & show (net-rexmit-full ((st0.transport).session)))
+      print-line-uni ("chunks-if-it-walks=" & show chunks)
+      let h0 = __heap-save
+      in let st1 = arm64-net-io-send-chunk st0 data 0 payload-len
+      in let used = __heap-save - h0
+      in act
+        print-line-uni ("sent-anything=" & show (list-length (((st1.transport).session).outbox) > 0))
+        print-line-uni ("stopped-at-first-refusal=" & show (used < arm64-net-mss * 8 * 4))
+      end
+    end
+  end

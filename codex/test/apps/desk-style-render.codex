@@ -1,0 +1,141 @@
+Chapter: DeskStyleRenderTest
+  cites Works chapter GopDesk
+  cites Works chapter GopComposite
+  cites Works chapter GopDraw
+  cites UI chapter Widget
+  cites UI chapter Theme
+  cites UI chapter Layout
+  cites UI chapter BoxModel
+  cites UI chapter Event
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+  cites Kernel chapter BitmapFont
+
+ The compositor honours the adornments the theme record has always carried,
+ and the Appearance pane can turn each of them off again.
+
+ Every probe is taken at coordinates read back OUT of the laid tree rather
+ than written here as literals: `comp-border-box` answers where a node's
+ background actually lands, so a layout change moves the probe with it
+ instead of quietly sampling the wall.
+
+Section: Geometry
+
+  sr-w : Integer = 120
+  sr-h : Integer = 60
+  sr-cells : Integer = 7200
+  sr-bytes : Integer = 28800
+
+Section: Helpers
+
+  zero-fill : Integer, Integer, Integer -> Integer
+  zero-fill (b) (i) (n) = if i >= n then 0 else let p = poke-32 b i 0 in zero-fill b (i + 4) n
+
+  px : Integer, Integer, Integer -> Integer
+  px (b) (x) (y) = peek-32 b ((y * sr-w + x) * 4)
+
+  diff : Integer, Integer, Integer, Integer -> Integer
+  diff (a) (b) (i) (acc) =
+    if i >= sr-cells then acc
+    else let d = if peek-32 a (i * 4) /= peek-32 b (i * 4) then 1 else 0
+    in diff a b (i + 1) (acc + d)
+
+  sr-tree : Integer -> WidgetNode
+  sr-tree (tall) =
+    widget-panel "root" DirColumn 0 [widget-set-min (widget-button "b" "Hi") 100 tall]
+
+  sr-paint : Integer, CbfFont, Theme, WidgetNode -> WidgetNode
+  sr-paint (buf) (font) (th) (tree) =
+    let z = zero-fill buf 0 sr-bytes
+    in comp-render buf sr-w font tree th sr-w sr-h 1
+
+  sr-box : WidgetNode, Theme -> LayoutRect
+  sr-box (laid) (th) =
+    let kid = list-at (laid.wn-children) 0
+    in comp-border-box (kid.wn-bounds) (widget-resolve-style kid th)
+
+  yn : Boolean -> Text
+  yn (v) = if v then "yes" else "no"
+
+Section: Row Reachability
+
+  sr-code-at : WidgetNode, Integer, Integer -> Integer
+  sr-code-at (laid) (x) (y) =
+    when ev-hit-widget laid x y
+      is Just (wgt) -> dk-style-id-code (wgt.wn-id)
+      is None -> 0
+
+  sr-scan-row : WidgetNode, Integer, Integer, Integer -> Integer
+  sr-scan-row (laid) (seen) (x) (y) =
+    if x >= 1024 then 0
+    else let c = sr-code-at laid x y
+    in let p = if c /= 0 then poke-byte seen c 1 else 0
+    in sr-scan-row laid seen (x + 8) y
+
+  sr-scan : WidgetNode, Integer, Integer -> Integer
+  sr-scan (laid) (seen) (y) =
+    if y >= 768 then 0
+    else let r = sr-scan-row laid seen 0 y
+    in sr-scan laid seen (y + 8)
+
+  sr-seen-text : Integer, Integer, Text -> Text
+  sr-seen-text (seen) (i) (acc) =
+    if i >= 16 then acc
+    else if peek-byte seen i == 1 then sr-seen-text seen (i + 1) (acc & " " & integer-to-text i)
+    else sr-seen-text seen (i + 1) acc
+
+Section: Main
+
+  opening : [Console] Nothing =
+    let font = cbf-init
+    in let a = alloc-zeroed sr-bytes 64
+    in let b = alloc-zeroed sr-bytes 64
+
+    in let th-flat = dk-theme-of 0 0
+    in let la = sr-paint a font th-flat (sr-tree 40)
+    in let ra = sr-box la th-flat
+    in let mid = ra.lr-x + ra.lr-w / 2
+    in let flat-edge = px a mid (ra.lr-y)
+    in let flat-top = px a mid (ra.lr-y + 1)
+    in let flat-bot = px a mid (ra.lr-y + ra.lr-h - 2)
+
+    in let th-bdr = dk-theme-of 0 dk-adorn-border
+    in let lb = sr-paint b font th-bdr (sr-tree 40)
+    in let rb = sr-box lb th-bdr
+    in let bdr-edge = px b (rb.lr-x + rb.lr-w / 2) (rb.lr-y)
+    in let bdr-corner = px b (rb.lr-x) (rb.lr-y)
+    in let d-bdr = diff a b 0 0
+
+    in let th-gr = dk-theme-of 0 dk-adorn-gradient
+    in let lg = sr-paint b font th-gr (sr-tree 40)
+    in let rg = sr-box lg th-gr
+    in let gr-top = px b (rg.lr-x + rg.lr-w / 2) (rg.lr-y + 1)
+    in let gr-bot = px b (rg.lr-x + rg.lr-w / 2) (rg.lr-y + rg.lr-h - 2)
+
+    in let th-rd = dk-theme-of 0 (dk-adorn-border + dk-adorn-round)
+    in let lr = sr-paint b font th-rd (sr-tree 40)
+    in let rr = sr-box lr th-rd
+    in let rd-corner = px b (rr.lr-x) (rr.lr-y)
+
+    in let th-s3 = dk-theme-of 3 0
+    in let ls = sr-paint b font th-s3 (sr-tree 40)
+    in let d-scheme = diff a b 0 0
+
+    in let seen = alloc-zeroed 16 64
+    in let ds = alloc-zeroed 64 64
+    in let gp = poke-32 ds desk-gpu-cell 1
+    in let ap = poke-32 ds dk-adorn-cell dk-adorn-default
+    in let styled = widget-layout (desk-chrome-with (dk-style-tree 0 dk-adorn-default) 1024 ds) (dk-theme-ds ds) (layout-rect 0 0 1024 768)
+    in let sc = sr-scan styled seen 0
+
+    in act
+      print-line-uni ("flat fill is uniform  : " & yn (flat-top == flat-bot))
+      print-line-uni ("flat has no border    : " & yn (flat-edge == flat-top))
+      print-line-uni ("border paints an edge : " & yn (bdr-edge /= flat-top & d-bdr > 0))
+      print-line-uni ("gradient varies down  : " & yn (gr-top /= gr-bot))
+      print-line-uni ("round clips a corner  : " & yn (rd-corner /= bdr-corner))
+      print-line-uni ("radius clamps to box  : " & yn (comp-fit-r (CornerRound 40) 10 60 1 == 5))
+      print-line-uni ("scheme repaints       : " & yn (d-scheme > 0))
+      print-line-uni ("rows reachable        :" & sr-seen-text seen 0 "")
+    end
+

@@ -56,12 +56,16 @@ Measured 2026-08-03, except where an item gives its own date.
 
    **Diverse double-compiling.** The whole compiler is rendered to C# by a
    plug, built by Roslyn -- a toolchain with no ancestry in this project --
-   and that compiler then compiles the Codex compiler's own source. Its
-   output is **2,755,007 bytes against the shipped seed's 2,755,007, with
-   96 differing bytes, every one of them inside the signature region at
-   offsets 40..135 and none outside it.** The signature is stamped by the
-   sign phase rather than emitted by the compiler. That is Wheeler's
-   `stage2 == X`. **And the witness has been shown to fail.** A check that
+   and that compiler then compiles the Codex compiler's own source.
+   Measured 2026-08-10 against the seed shipped that day (`AF4E14D9`,
+   2,755,007 bytes), its output was **2,755,007 bytes against that seed's
+   2,755,007, with 96 differing bytes, every one of them inside the
+   signature region at offsets 40..135 and none outside it.** The signature
+   is stamped by the sign phase rather than emitted by the compiler. That is
+   Wheeler's `stage2 == X`. The seed has been rebuilt since; the witness is
+   a release gate and is re-run against whatever seed a release ships, so
+   this figure names the run it came from rather than standing in for the
+   current one. **And the witness has been shown to fail.** A check that
    has only ever come back green proves nothing, so we poisoned the
    compiler on purpose. Inject a payload into the code generator: the
    witness goes red by 2.2 million bytes and reconstructs the honest
@@ -115,7 +119,7 @@ Measured 2026-08-03, except where an item gives its own date.
    count per function against an optional budget. No production language
    has this combination -- Ada Ravenscar is global and needs external WCET
    tools, Rust has nothing, MISRA-C is external linters.
-6. **590 library modules across 22 quires** (430 foreword + 160 OS): data
+6. **591 library modules across 22 quires** (431 foreword + 160 OS): data
    structures, crypto, a full TCP/IP stack with TLS 1.3 and X.509 peer
    verification, 3D and game engines, AI inference, encoding, math,
    compression, a themeable UI toolkit, and hard real-time primitives.
@@ -146,7 +150,7 @@ Measured 2026-08-03, except where an item gives its own date.
    name rather than approximated: IEEE 754 is binary by construction and
    wrapping is defined by a binary modulus, so those are the measured edge
    of the claim.
-   `docs/Designs/Active/Compiler/T3IsaPlug.md` has the account.
+   `docs/Designs/Done/Compiler/T3IsaPlug.md` has the account.
 
    T3ISA is designed and specified by Manish Jagdish Thatte. Our plug is an
    independent implementation written from the published specification
@@ -172,33 +176,34 @@ Measured 2026-08-03, except where an item gives its own date.
     aimed at being the first platform where the compiler proves firmware
     meets Cyber Resilience Act requirements by construction.
 
-**66 applications, 1,010 modules**, all written in Codex and compiled by
+**66 applications, 1,008 modules**, all written in Codex and compiled by
 the seed; 33 carry a web front end through the HTML plug. Catalog:
 [docs/CuratorsCatalogue.md](docs/CuratorsCatalogue.md).
 
-**Test battery: 1,433 tests across six tiers, 1,402 pass, 0 fail, 31
-skip.** The BVT subset that `build/build.ps1` gates on is 75 tests in
-18.8s.
+**Test battery: 1,446 tests, 1,399 pass, 0 fail, 47 skip** (measured
+2026-08-12 at seed `527C2C75`). The BVT subset that `build/build.ps1`
+gates on is 75 tests, compiled and then run where an `.expected` exists,
+for 135 checks; its phase of the gate takes about 19s.
 
 ---
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (2,755,007 bytes) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (2,759,449 bytes) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `AF4E14D9703985AC` |
-| SHA-256 | `AF4E14D9703985AC62690F56097A7AB77B7693C375400D9DF0ECD03D3448685B` |
-| MD5 | `0E47F9CDEEF50EB6614E29899CC12101` |
+| Content hash prefix | `527C2C75092B0F9A` |
+| SHA-256 | `527C2C75092B0F9A7806260E9E578BE5DD1043BEE713479C740241160E931A99` |
+| MD5 | `7756F83823663E2FE32A51F134ABC459` |
 
 **`seed/Codex.img`** (16,777,216 bytes) -- bootable GPT disk image, the
 first-boot ceremony.
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `4564D27F6C28EF09F9E1F4503FA998E4317061FBB3369CC20073BBF3F890ADD2` |
+| SHA-256 | `5672AC1FDC0492A0964C5BC7B69E15070A9875684A0EDA13429136C864823610` |
 
 Boot it on a UEFI machine and it runs its own first-boot ceremony on the
 GOP framebuffer with no OS beneath it: choose an interface, walk the
@@ -488,7 +493,7 @@ is preserved regardless of Tier 1 and 2 support.
 ## Library Quires
 
 Code outside the compiler is organized into **22 quires** (library
-namespaces) holding **590 modules** (430 foreword, 160 OS). Quires cite
+namespaces) holding **591 modules** (431 foreword, 160 OS). Quires cite
 each other as `cites Game chapter AStar`; the quire name is the last
 segment of the directory name, capitalized. Full catalog:
 [docs/DevelopersRulebook.md](docs/DevelopersRulebook.md).
@@ -499,7 +504,7 @@ segment of the directory name, capitalized. Full catalog:
 | Encode | `codex/foreword/encode/` | 75 |
 | UI | `codex/foreword/ui/` | 50 |
 | AI | `codex/foreword/ai/` | 43 |
-| Engine | `codex/foreword/engine/` | 42 |
+| Engine | `codex/foreword/engine/` | 43 |
 | Game | `codex/foreword/game/` | 26 |
 | Signal | `codex/foreword/signal/` | 14 |
 | Math | `codex/foreword/math/` | 14 |
@@ -509,8 +514,8 @@ segment of the directory name, capitalized. Full catalog:
 | Sim | `codex/foreword/sim/` | 7 |
 | Shell | `codex/foreword/shell/` | 5 |
 | Boards | `codex/boards/` | 9 |
-| OS (excl. net, kernel) | `codex/os/*/` | 84 |
-| Net | `codex/os/net/` | 38 |
+| OS (excl. net, kernel) | `codex/os/*/` | 85 |
+| Net | `codex/os/net/` | 39 |
 | Kernel | `codex/os/kernel/` | 36 |
 
 ---
@@ -519,13 +524,13 @@ segment of the directory name, capitalized. Full catalog:
 
 ```
 codex/
-  compiler/      Self-hosted compiler (63 files, 57.5K lines)
-  foreword/      430 library modules across 13 quires
+  compiler/      Self-hosted compiler (64 files, 54,148 lines)
+  foreword/      431 library modules across 13 quires
   boards/        Board HAL drivers -- 9 target boards
   os/            Kernel, net, trust, verify, sched, dev, observe (160 modules)
-  plugs/         55 plugs, 145 source modules -- IR-text-driven emitters
-  test/          Compiler samples + OS integration tests (1,403 across 6 tiers)
-apps/            66 applications, 1,010 modules
+  plugs/         55 plugs, 148 source modules -- IR-text-driven emitters
+  test/          Compiler samples + OS integration tests (1,449 files)
+apps/            66 applications, 1,008 modules
 annotations/     On-disk annotation sidecars (JSON facts)
 build/           Build and test harness (PowerShell)
 tools/           codex-vm, status server, USB writer, VS extensions

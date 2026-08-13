@@ -1,0 +1,783 @@
+Chapter: GopEdit
+  cites Works chapter GopDraw
+  cites Works chapter GopFat16
+  cites Works chapter GopFiles
+  cites Works chapter GopShot
+  cites Works chapter GopUsbKbd
+  cites Works chapter GopUsbMouse
+  cites Works chapter SyntaxHighlight
+  cites UI chapter KeyInput
+  cites Kernel chapter BitmapFont
+  cites Foreword chapter Fat16
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+
+Section: Capacity
+
+ Eight megabytes of buffer and 262,144 line slots, which is 9 MB against the
+ 128 MB the Option A image gives Codex. The size is set by the file this
+ pane exists to open rather than by a round number: the boot stick carries
+ the whole tree as one `SOURCE.SRC`, measured 2,769,366 bytes on
+ `seed/Codex.img`, and it grows. A megabyte was the first choice here and it
+ refused the only source file on the medium.
+
+ They are allocated on FIRST ENTRY to the pane, not at desk start, and kept
+ for the rest of the session. A boot that never opens the editor pays
+ nothing, one that opens it fifty times pays once.
+
+ A file bigger than the buffer is REFUSED with its size on the glass rather
+ than truncated. `gfat-read-file-bulk` sizes its own read from the directory
+ entry and takes no capacity, so it would run off the end of a smaller
+ destination and corrupt whatever the heap put there; the size is therefore
+ checked before the read, not after.
+
+  ged-cap : Integer = 8388608
+  ged-max-lines : Integer = 262144
+
+Section: The State Block
+
+  ged-init : Integer -> Integer
+  ged-init (es) =
+    let buf = alloc-zeroed ged-cap 64
+    in let idx = alloc-zeroed (ged-max-lines * 4) 64
+    in let a = poke-32 es 0 buf
+    in let b = poke-32 es 4 idx
+    in let c = poke-32 es 8 0
+    in poke-32 es 12 0
+
+  ged-ensure : Integer -> Integer
+  ged-ensure (es) = if peek-32 es 0 == 0 then ged-init es else 0
+
+  ged-buf : Integer -> Integer
+  ged-buf (es) = peek-32 es 0
+
+  ged-idx : Integer -> Integer
+  ged-idx (es) = peek-32 es 4
+
+  ged-size : Integer -> Integer
+  ged-size (es) = peek-32 es 8
+
+  ged-count : Integer -> Integer
+  ged-count (es) = peek-32 es 12
+
+  ged-dirty : Integer -> Integer
+  ged-dirty (es) = peek-32 es 16
+
+  ged-mark-dirty : Integer -> Integer
+  ged-mark-dirty (es) = poke-32 es 16 1
+
+  ged-verdict : Integer -> Integer
+  ged-verdict (es) = peek-32 es 20
+
+  ged-set-verdict : Integer, Integer -> Integer
+  ged-set-verdict (es) (v) = poke-32 es 20 v
+
+Section: The Line Index
+
+  ged-lf : Integer = 10
+
+ The scan is two levels deep on purpose. A single per-byte recursion over
+ the whole buffer pushes one frame per byte: measured 2026-08-11 against
+ `SOURCE.SRC` at 2,769,366 bytes, that took about 64 MB of stack and
+ double-faulted (`!EXC=08`, CR2 one page under the guard). Chunking bounds
+ both levels at 4,096 frames for a buffer of any size, which is what the
+ pixel loops in GopShot do for the same reason.
+
+  ged-chunk : Integer = 4096
+
+  ged-scan-bytes : Integer, Integer, Integer, Integer, Integer -> Integer
+  ged-scan-bytes (buf) (idx) (i) (stop) (line) =
+    if i >= stop then line
+    else if line >= ged-max-lines then line
+    else if peek-byte buf i == ged-lf then
+      let w = poke-32 idx (line * 4) (i + 1)
+      in ged-scan-bytes buf idx (i + 1) stop (line + 1)
+    else ged-scan-bytes buf idx (i + 1) stop line
+
+  ged-scan : Integer, Integer, Integer, Integer, Integer -> Integer
+  ged-scan (buf) (idx) (n) (i) (line) =
+    if i >= n then line
+    else if line >= ged-max-lines then line
+    else let stop = if i + ged-chunk > n then n else i + ged-chunk
+    in let c = ged-scan-bytes buf idx i stop line
+    in ged-scan buf idx n stop c
+
+  ged-reindex : Integer -> Integer
+  ged-reindex (es) =
+    let idx = ged-idx es
+    in let z = poke-32 idx 0 0
+    in let c = ged-scan (ged-buf es) idx (ged-size es) 0 1
+    in let p = poke-32 es 12 c
+    in c
+
+  ged-line-start : Integer, Integer -> Integer
+  ged-line-start (es) (i) = peek-32 (ged-idx es) (i * 4)
+
+  ged-line-end : Integer, Integer -> Integer
+  ged-line-end (es) (i) =
+    if i + 1 >= ged-count es then ged-size es
+    else let nxt = ged-line-start es (i + 1)
+    in if nxt > 0 then nxt - 1 else 0
+
+  ged-line-len : Integer, Integer -> Integer
+  ged-line-len (es) (i) =
+    let n = ged-line-end es i - ged-line-start es i
+    in if n < 0 then 0 else n
+
+Section: Bytes To Text
+
+ The bytes on the medium are ASCII, because the image writer converted each
+ CCE code point out through `to-unicode` on the way in. Each one comes back
+ through `from-unicode` to be a Codex character again. Reading them as CCE
+ directly is the boundary bug this project has shipped more than once, and
+ here it would render every letter as the wrong glyph.
+
+  ged-chars : Integer, Integer, Integer, Text -> Text
+  ged-chars (buf) (i) (stop) (acc) =
+    if i >= stop then acc
+    else let b = peek-byte buf i
+    in let ch = if b < 32 then " " else char-to-text (code-to-char (from-unicode b))
+    in ged-chars buf (i + 1) stop (acc & ch)
+
+ A line is built only as far as it can be DRAWN. Building all of it costs
+ the square of its length, because `acc & ch` copies the accumulator every
+ character, and none of that work reaches the glass: the runs are clipped to
+ the panel a moment later. The tree's longest line is 131,038 characters
+ (`codex/test/errors/list-literal-too-large.codex`), which is about eight
+ billion bytes of copying for one row of one frame. That file is not in
+ today's `SOURCE.SRC`, whose longest line is 1,090, but nothing stops the
+ next concatenation from carrying it.
+
+  ged-line-text : Integer, Integer, Integer -> Text
+  ged-line-text (es) (i) (cols) =
+    let st = ged-line-start es i
+    in let en = ged-line-end es i
+    in let cap = if en - st > cols then st + cols else en
+    in ged-chars (ged-buf es) st cap ""
+
+Section: Editing The Block
+
+ Insert and delete move the tail of the buffer by one byte. Both are
+ chunked for the reason the scan is: a byte-at-a-time recursion over the
+ whole tail is one stack frame per byte, and the tail can be megabytes.
+
+ The cost is honest and it is the price of a flat buffer: a keystroke at the
+ top of a 2.7 MB file moves 2.7 MB. On a chapter-sized file it is nothing.
+ A gap buffer is the standard cure and this is not one.
+
+  ged-up-bytes : Integer, Integer, Integer -> Integer
+  ged-up-bytes (buf) (i) (stop) =
+    if i < stop then 0
+    else let w = poke-byte buf (i + 1) (peek-byte buf i)
+    in ged-up-bytes buf (i - 1) stop
+
+  ged-shift-up : Integer, Integer, Integer -> Integer
+  ged-shift-up (buf) (at) (top) =
+    if top < at then 0
+    else let stop = if top - ged-chunk + 1 < at then at else top - ged-chunk + 1
+    in let m = ged-up-bytes buf top stop
+    in ged-shift-up buf at (stop - 1)
+
+  ged-down-bytes : Integer, Integer, Integer -> Integer
+  ged-down-bytes (buf) (i) (stop) =
+    if i >= stop then 0
+    else let w = poke-byte buf (i - 1) (peek-byte buf i)
+    in ged-down-bytes buf (i + 1) stop
+
+  ged-shift-down : Integer, Integer, Integer -> Integer
+  ged-shift-down (buf) (at) (size) =
+    if at >= size then 0
+    else let stop = if at + ged-chunk > size then size else at + ged-chunk
+    in let m = ged-down-bytes buf at stop
+    in ged-shift-down buf stop size
+
+  ged-insert : Integer, Integer, Integer -> Integer
+  ged-insert (es) (at) (b) =
+    let size = ged-size es
+    in if size + 1 > ged-cap then 0
+    else let m = ged-shift-up (ged-buf es) at (size - 1)
+    in let w = poke-byte (ged-buf es) at b
+    in let s = poke-32 es 8 (size + 1)
+    in let d = ged-mark-dirty es
+    in ged-reindex es
+
+  ged-delete : Integer, Integer -> Integer
+  ged-delete (es) (at) =
+    let size = ged-size es
+    in if at >= size then 0
+    else if at < 0 then 0
+    else let m = ged-shift-down (ged-buf es) (at + 1) size
+    in let s = poke-32 es 8 (size - 1)
+    in let d = ged-mark-dirty es
+    in ged-reindex es
+
+  ged-at : Integer, Integer, Integer -> Integer
+  ged-at (es) (cur) (col) = ged-line-start es cur + col
+
+Section: Names On The Medium
+
+ A FAT short name is eleven bytes, eight of base and three of extension,
+ space-padded, with no dot stored. The Text comes back out of the directory
+ entry with the dot put in, so it has to be taken apart again to write one.
+
+ `char-code` answers CCE, not ASCII, so every character crossing back to the
+ medium goes through `to-unicode`. This is the boundary bug the tree has
+ shipped more than once, and here it would write a file whose name no
+ firmware could find.
+
+  ged-spaces : Integer, Integer, Integer -> Integer
+  ged-spaces (buf) (i) (n) =
+    if i >= n then 0
+    else let w = poke-byte buf i 32
+    in ged-spaces buf (i + 1) n
+
+  ged-fill-name : Integer, Text, Integer, Integer, Integer -> Integer
+  ged-fill-name (dst) (name) (i) (n) (off) =
+    if i >= n then 0
+    else let w = poke-byte dst off (to-unicode (char-code (char-at name i)))
+    in ged-fill-name dst name (i + 1) n (off + 1)
+
+  ged-dot : Text, Integer -> Integer
+  ged-dot (name) (i) =
+    if i >= text-length name then -1
+    else if char-at name i == char-at "." 0 then i
+    else ged-dot name (i + 1)
+
+  ged-base-of : Text -> Text
+  ged-base-of (name) =
+    let d = ged-dot name 0
+    in if d < 0 then name else substring name 0 d
+
+  ged-ext-of : Text -> Text
+  ged-ext-of (name) =
+    let d = ged-dot name 0
+    in if d < 0 then "" else substring name (d + 1) (text-length name - d - 1)
+
+  ged-bak-text : Text -> Text
+  ged-bak-text (name) = ged-base-of name & ".BAK"
+
+  ged-name-83 : Text, Text -> Integer
+  ged-name-83 (base) (ext) =
+    let buf = alloc-zeroed 16 16
+    in let sp = ged-spaces buf 0 11
+    in let bn = if text-length base > 8 then 8 else text-length base
+    in let en = if text-length ext > 3 then 3 else text-length ext
+    in let f1 = ged-fill-name buf base 0 bn 0
+    in let f2 = ged-fill-name buf ext 0 en 8
+    in buf
+
+Section: Save, And The One Hot Backup
+
+ Damian's rule, 2026-08-11: every save keeps a backup so the save can be
+ undone, and ONE generation is enough. Two saves back is asking too much.
+
+ The backup costs no data movement, because a FAT directory entry is only a
+ name, a first cluster and a size. The old content is not copied to
+ `NAME.BAK`; `NAME.BAK` is pointed AT it, and the new content is written to
+ a fresh chain under `NAME`. The previous backup's chain is released first,
+ which is what makes it one generation.
+
+ That also closes a defect rather than adding one. `gfat-slot-in-sector`
+ matches an existing name before it takes a free slot, so an overwrite
+ already reuses its own directory slot -- but nothing released the old
+ chain, so every overwrite until now would have orphaned the previous
+ clusters: allocated, unnamed, unrecoverable without a scan. Here the old
+ chain always ends up owned by a name.
+
+ THE WINDOW, stated because it is real: between the backup entry landing and
+ the new write completing, `NAME` and `NAME.BAK` name the SAME chain. A
+ power loss there costs no data -- both names read the old content -- but a
+ later delete of one would free clusters the other still uses. Closing it
+ needs a rename, which this FAT writer does not have.
+
+  ged-v-ok : Integer = 1
+  ged-v-nofile : Integer = 2
+  ged-v-nofat : Integer = 3
+  ged-v-nobak : Integer = 4
+  ged-v-nowrite : Integer = 5
+  ged-v-saving : Integer = 6
+  ged-v-reverted : Integer = 7
+  ged-v-nobakfile : Integer = 8
+  ged-v-bakbig : Integer = 9
+
+  ged-verdict-text : Integer -> Text
+  ged-verdict-text (v) =
+    if v == ged-v-ok then "saved; previous is .BAK"
+    else if v == ged-v-nofile then "no directory entry"
+    else if v == ged-v-nofat then "the FAT would not load"
+    else if v == ged-v-nobak then "no room for .BAK entry"
+    else if v == ged-v-nowrite then shot-diag-text "write failed"
+    else if v == ged-v-saving then "SAVING, do not power off"
+    else if v == ged-v-reverted then ".BAK loaded; F2 keeps it"
+    else if v == ged-v-nobakfile then "no .BAK: nothing saved yet"
+    else if v == ged-v-bakbig then ".BAK is past the buffer"
+    else ""
+
+  ged-release-prev : Fat16Volume, Integer, Maybe Fat16DirEntry -> [Device.Port] Boolean
+  ged-release-prev (vol) (fat) (prev) = act
+    when prev
+      is None -> True
+      is Just (p) -> act
+        let r = gfat-chain-release vol fat (p.de-cluster) 65536
+        in gfat-flush-fat vol fat
+      end
+    end
+  end
+
+  ged-commit : Integer, Fat16Volume, Text, Fat16DirEntry, Integer -> [Device.Port] Integer
+  ged-commit (es) (vol) (name) (entry) (fat) = act
+    let bakbuf = ged-name-83 (ged-base-of name) "BAK"
+    in act
+      slot <- gfat-find-slot vol bakbuf
+      if slot < 0 then ged-v-nobak
+      else act
+        de <- gfat-write-dir-entry bakbuf slot (entry.de-cluster) (entry.de-size) (vol.vol-bytes-per-sector)
+        if de == False then ged-v-nobak
+        else act
+          ok <- gfat-write-file vol (ged-name-83 (ged-base-of name) (ged-ext-of name)) (ged-buf es) (ged-size es)
+          if ok == False then ged-v-nowrite
+          else let c = poke-32 es 16 0
+          in ged-v-ok
+        end
+      end
+    end
+  end
+
+ Revert LOADS the backup into the buffer rather than copying it over the file
+ on the medium, and that is the whole trick: the file on disk is untouched,
+ the pane is dirty, and F2 then writes the recovered content back -- which in
+ turn makes the content you are abandoning the new `.BAK`. One generation
+ gives you undo and redo of a save out of the same mechanism, with no second
+ backup slot and no rename.
+
+  ged-revert : Integer, Fat16Volume, Text -> [Device.Port] Integer
+  ged-revert (es) (vol) (name) = act
+    let bak = ged-bak-text name
+    in act
+      e <- gfat-resolve vol bak
+      when e
+        is None -> ged-v-nobakfile
+        is Just (entry) ->
+          if entry.de-size > ged-cap then ged-v-bakbig
+          else act
+            got <- gfat-read-file-bulk vol bak (ged-buf es)
+            let p = poke-32 es 8 got
+            in let c = ged-reindex es
+            in let d = ged-mark-dirty es
+            in ged-v-reverted
+          end
+      end
+    end
+  end
+
+  ged-save : Integer, Fat16Volume, Text -> [Device.Port] Integer
+  ged-save (es) (vol) (name) = act
+    e <- gfat-resolve vol name
+    when e
+      is None -> ged-v-nofile
+      is Just (entry) -> act
+        prev <- gfat-resolve vol (ged-bak-text name)
+        f <- gfat-load-fat vol
+        if f.gft-ok == False then ged-v-nofat
+        else act
+          rel <- ged-release-prev vol (f.gft-buf) prev
+          ged-commit es vol name entry (f.gft-buf)
+        end
+      end
+    end
+  end
+
+Section: Geometry
+
+ The panel, its rows and its close box are GopFiles' measures, so the two
+ panes are the same window and a change to one moves both.
+
+  ged-col-w : Integer -> Integer
+  ged-col-w (s) = 8 * s
+
+  ged-gutter : Integer -> Integer
+  ged-gutter (s) = 6 * ged-col-w s
+
+  ged-text-x : Integer, Integer -> Integer
+  ged-text-x (w) (s) = gfl-px w s + 10 * s + ged-gutter s
+
+  ged-cols : Integer, Integer -> Integer
+  ged-cols (w) (s) =
+    let c = (gfl-pw w s - 20 * s - ged-gutter s) / ged-col-w s
+    in if c < 8 then 8 else c
+
+  ged-col-cursor : Integer = #FFD060
+  ged-col-gutter : Integer = #4A5468
+  ged-col-row : Integer = #24304C
+  ged-col-more : Integer = #FFB040
+
+  ged-num : Integer, Integer -> Text
+  ged-num (n) (width) =
+    let t = show n
+    in if text-length t >= width then t
+    else ged-num-pad t width
+
+  ged-num-pad : Text, Integer -> Text
+  ged-num-pad (t) (width) =
+    if text-length t >= width then t
+    else ged-num-pad (" " & t) width
+
+Section: Drawing One Line
+
+  ged-draw-runs : Integer, Integer, CbfFont, Integer, Integer, Integer, Text, List SynRun, Integer, Integer -> Integer
+  ged-draw-runs (base) (stride) (font) (s) (x0) (y) (line) (runs) (i) (cols) =
+    if i >= list-length runs then 0
+    else let r = list-at runs i
+    in let st = r.sr-start
+    in if st >= cols then 0
+    else let room = cols - st
+    in let take = if r.sr-len > room then room else r.sr-len
+    in let t = substring line st take
+    in let d = gop-draw-text base stride font (x0 + st * ged-col-w s) y t (syn-colour (r.sr-class)) s 0
+    in ged-draw-runs base stride font s x0 y line runs (i + 1) cols
+
+  ged-draw-row : Integer, Integer, Integer, Integer, Integer, CbfFont, Integer, Integer, Integer, Integer -> Integer
+  ged-draw-row (base) (w) (h) (stride) (s) (font) (es) (idx) (row) (cur) =
+    let y = gfl-rows-y0 h s + row * gfl-row-h s
+    in let hl = if idx == cur then gop-fill-rect base stride (gfl-px w s) y (gfl-pw w s) (gfl-row-h s) ged-col-row else 0
+    in let gt = gop-draw-text base stride font (gfl-px w s + 10 * s) (y + s) (ged-num (idx + 1) 5) ged-col-gutter s 0
+    in let cols = ged-cols w s
+    in let line = ged-line-text es idx cols
+    in let runs = ged-draw-runs base stride font s (ged-text-x w s) (y + s) line (syn-line line) 0 cols
+    in if ged-line-len es idx > cols
+      then gop-draw-text base stride font (ged-text-x w s + cols * ged-col-w s) (y + s) ">" ged-col-more s 0
+      else 0
+
+  ged-draw-rows : Integer, Integer, Integer, Integer, Integer, CbfFont, Integer, Integer, Integer, Integer -> Integer
+  ged-draw-rows (base) (w) (h) (stride) (s) (font) (es) (top) (cur) (row) =
+    if row >= gfl-rows-vis h s then 0
+    else if top + row >= ged-count es then 0
+    else let d = ged-draw-row base w h stride s font es (top + row) row cur
+    in ged-draw-rows base w h stride s font es top cur (row + 1)
+
+Section: Drawing The Pane
+
+  ged-caret : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  ged-caret (base) (w) (h) (stride) (s) (top) (cur) (col) =
+    let row = cur - top
+    in let cols = ged-cols w s
+    in if row < 0 then 0
+    else if row >= gfl-rows-vis h s then 0
+    else if col > cols then 0
+    else gop-fill-rect base stride (ged-text-x w s + col * ged-col-w s) (gfl-rows-y0 h s + row * gfl-row-h s) s (gfl-row-h s) ged-col-cursor
+
+  ged-status : Integer, Integer, Integer -> Text
+  ged-status (es) (cur) (col) =
+    let flag = if ged-dirty es == 1 then " [+]" else ""
+    in let said = ged-verdict-text (ged-verdict es)
+    in let tail = if said == "" then "" else "   " & said
+    in "L" & show (cur + 1) & ":" & show (col + 1) & flag & "  " & show (ged-count es) & " lines  " & show (ged-size es) & " bytes" & tail
+
+  ged-draw : Integer, Integer, Integer, Integer, Integer, CbfFont, Integer, Text, Integer, Integer, Integer -> Integer
+  ged-draw (base) (w) (h) (stride) (s) (font) (es) (name) (top) (cur) (col) =
+    let f = gfl-draw-frame base w h stride s font ("Edit  " & name)
+    in let px = gfl-px w s
+    in let py = gfl-py h s
+    in let hdr = gop-draw-text base stride font (px + 10 * s) (py + 26 * s) (ged-status es cur col) gfl-col-bright s 0
+    in let rows = ged-draw-rows base w h stride s font es top cur 0
+    in let car = ged-caret base w h stride s top cur col
+    in gop-draw-text base stride font (px + 10 * s) (py + gfl-ph h s - 18 * s) "Type to edit   Bksp/Del remove   F2 save   F3 load .BAK   Esc back" gfl-col-green s 0
+
+  ged-repaint : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbMouse, Integer, Integer, Text, Integer, Integer, Integer -> Integer
+  ged-repaint (base) (w) (h) (stride) (s) (font) (mouse) (cs) (es) (name) (top) (cur) (col) =
+    let hd = cursor-hide cs base stride
+    in let d = ged-draw base w h stride s font es name top cur col
+    in if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
+
+Section: Moving
+
+ Set-1 make codes, the same table every other pane reads: 72 up, 80 down,
+ 75 left, 77 right, 73 page up, 81 page down, 71 home, 79 end, 28 enter,
+ 1 escape, 88 F12.
+
+  ged-clamp-col : Integer, Integer, Integer -> Integer
+  ged-clamp-col (es) (line) (col) =
+    let n = ged-line-len es line
+    in if col > n then n else col
+
+  ged-clamp-top : Integer, Integer, Integer -> Integer
+  ged-clamp-top (cur) (top) (vis) =
+    if cur < top then cur
+    else if cur >= top + vis then cur - vis + 1
+    else top
+
+  ged-cur-of : Integer, Integer, Integer, Integer -> Integer
+  ged-cur-of (sc) (cur) (n) (vis) =
+    let last = if n <= 0 then 0 else n - 1
+    in if sc == 72 then (if cur > 0 then cur - 1 else 0)
+    else if sc == 80 then (if cur < last then cur + 1 else last)
+    else if sc == 73 then (if cur - vis < 0 then 0 else cur - vis)
+    else if sc == 81 then (if cur + vis > last then last else cur + vis)
+    else cur
+
+  ged-col-of : Integer, Integer, Integer, Integer -> Integer
+  ged-col-of (es) (sc) (col) (line) =
+    if sc == 75 then (if col > 0 then col - 1 else 0)
+    else if sc == 77 then col + 1
+    else if sc == 71 then 0
+    else if sc == 79 then ged-line-len es line
+    else col
+
+Section: The Editor Loop
+
+ Every iteration is bracketed. A repaint builds a Text and a run list for
+ each visible line and drops both before the next key is read, so a session
+ at the pane costs what one frame costs rather than what all of them do.
+
+ The loop dispatches to ITSELF and to nothing else, and that is the whole
+ reason the next position is computed by pure functions instead of by a
+ handler per key. A first cut routed the idle path through a `ged-key`
+ helper that called the loop back, and a cycle of two functions is not a
+ self-tail-call: every keyboard poll left frames behind, about 64 MB of them
+ in fifteen seconds, and the pane double-faulted (`!EXC=08`) with the stack
+ one page under its guard. Nothing about the key handling was wrong. The
+ shape of the recursion was.
+
+  ged-shift-of : Integer, Integer -> Integer
+  ged-shift-of (mods) (sc) =
+    if sc == 42 | sc == 54 then 1
+    else if sc == 170 | sc == 182 then 0
+    else mods
+
+  ged-printable : Integer -> Boolean
+  ged-printable (ch) = ch >= 32 & ch < 127
+
+  ged-loop : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer, Fat16Volume, Text, Integer, Integer, Integer, Integer -> [Device.Port] Integer
+  ged-loop (base) (w) (h) (stride) (s) (font) (kbd) (mouse) (cs) (es) (vol) (name) (top) (cur) (col) (mods) = act
+    let mark = __heap-save
+    in act
+      sc <- kbd-take kbd
+      let n = ged-count es
+      in let vis = gfl-rows-vis h s
+      in let mv = mouse-pump mouse w h
+      in let cu = if mv == 1 then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
+      in let closed = mv == 1 & mouse-clicked mouse & gfl-close-hit w h s (mouse-x mouse) (mouse-y mouse)
+      in let md = ged-shift-of mods sc
+      in let ch = apply-mods (scancode-to-keycode sc) md
+      in let at = ged-at es cur col
+      in let cur2 = ged-cur-of sc cur n vis
+      in let col2 = ged-clamp-col es cur2 (ged-col-of es sc col cur2)
+      in let top2 = ged-clamp-top cur2 top vis
+      in let moved = cur2 /= cur | col2 /= col | top2 /= top
+      in if sc == 1 then let d = __heap-restore mark in 0
+      else if closed then let d = __heap-restore mark in 0
+      else if sc == 88 then act
+        st <- ged-shot base w h stride font
+        let d = __heap-restore mark
+        in ged-loop base w h stride s font kbd mouse cs es vol name top cur col md
+      end
+      else if sc == 60 then act
+        let sv0 = ged-set-verdict es ged-v-saving
+        in let p0 = ged-repaint base w h stride s font mouse cs es name top cur col
+        in act
+          v <- ged-save es vol name
+          let sv = ged-set-verdict es v
+          in let p = ged-repaint base w h stride s font mouse cs es name top cur col
+          in let d = __heap-restore mark
+          in ged-loop base w h stride s font kbd mouse cs es vol name top cur col md
+        end
+      end
+      else if sc == 61 then act
+        v <- ged-revert es vol name
+        let sv = ged-set-verdict es v
+        in let p = ged-repaint base w h stride s font mouse cs es name 0 0 0
+        in let d = __heap-restore mark
+        in ged-loop base w h stride s font kbd mouse cs es vol name 0 0 0 md
+      end
+      else if sc == 28 then
+        let e = ged-insert es at ged-lf
+        in let t3 = ged-clamp-top (cur + 1) top vis
+        in let p = ged-repaint base w h stride s font mouse cs es name t3 (cur + 1) 0
+        in let d = __heap-restore mark
+        in ged-loop base w h stride s font kbd mouse cs es vol name t3 (cur + 1) 0 md
+      else if sc == 14 & col > 0 then
+        let e = ged-delete es (at - 1)
+        in let p = ged-repaint base w h stride s font mouse cs es name top cur (col - 1)
+        in let d = __heap-restore mark
+        in ged-loop base w h stride s font kbd mouse cs es vol name top cur (col - 1) md
+      else if sc == 14 & cur > 0 then
+        let back = ged-line-len es (cur - 1)
+        in let e = ged-delete es (ged-line-start es cur - 1)
+        in let t3 = ged-clamp-top (cur - 1) top vis
+        in let p = ged-repaint base w h stride s font mouse cs es name t3 (cur - 1) back
+        in let d = __heap-restore mark
+        in ged-loop base w h stride s font kbd mouse cs es vol name t3 (cur - 1) back md
+      else if sc == 83 then
+        let e = ged-delete es at
+        in let p = ged-repaint base w h stride s font mouse cs es name top cur col
+        in let d = __heap-restore mark
+        in ged-loop base w h stride s font kbd mouse cs es vol name top cur col md
+      else if ged-printable ch then
+        let e = ged-insert es at ch
+        in let p = ged-repaint base w h stride s font mouse cs es name top cur (col + 1)
+        in let d = __heap-restore mark
+        in ged-loop base w h stride s font kbd mouse cs es vol name top cur (col + 1) md
+      else let p = if moved then ged-repaint base w h stride s font mouse cs es name top2 cur2 col2 else 0
+      in let d = __heap-restore mark
+      in ged-loop base w h stride s font kbd mouse cs es vol name top2 cur2 col2 md
+    end
+  end
+
+  ged-shot : Integer, Integer, Integer, Integer, CbfFont -> [Device.Port] Integer
+  ged-shot (base) (w) (h) (stride) (font) = act
+    let mark = __heap-save
+    in act
+      t <- shot-take base w h stride
+      let s = ui-scale w
+      in let bg = gop-fill-rect base stride (200 * s) (h - 28 * s + 4 * s) (300 * s) (16 * s) #000E1C
+      in let tx = gop-draw-text base stride font (204 * s) (h - 28 * s + 6 * s) t #69BE28 s 0
+      in let d = __heap-restore mark
+      in 0
+    end
+  end
+
+Section: Opening A File
+
+  ged-open : Integer, Fat16Volume, Text, Integer -> [Device.Port] Integer
+  ged-open (es) (vol) (name) (size) = act
+    got <- gfat-read-file-bulk vol name (ged-buf es)
+    let p = poke-32 es 8 got
+    in let c = ged-reindex es
+    in got
+  end
+
+  ged-too-big : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Text, Integer -> [Device.Port] Integer
+  ged-too-big (base) (w) (h) (stride) (s) (font) (kbd) (mouse) (cs) (name) (size) = act
+    hd <- cursor-hide cs base stride
+    let f = gfl-draw-frame base w h stride s font ("Edit  " & name)
+    in let m = gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + 26 * s) (show size & " bytes is past the " & show ged-cap & " byte buffer") ged-col-more s 0
+    in let t = gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + gfl-ph h s - 18 * s) "Esc back" gfl-col-green s 0
+    in let cu = if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
+    in ged-wait base w h stride s font kbd mouse cs
+  end
+
+  ged-wait : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer -> [Device.Port] Integer
+  ged-wait (base) (w) (h) (stride) (s) (font) (kbd) (mouse) (cs) = act
+    sc <- kbd-take kbd
+    let mv = mouse-pump mouse w h
+    in let cu = if mv == 1 then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
+    in let back = mv == 1 & mouse-clicked mouse & gfl-close-hit w h s (mouse-x mouse) (mouse-y mouse)
+    in if sc == 1 then 0
+    else if back then 0
+    else ged-wait base w h stride s font kbd mouse cs
+  end
+
+Section: The File List
+
+  ged-list-draw : Integer, Integer, Integer, Integer, Integer, CbfFont, List Fat16DirEntry, Integer, Integer, Integer -> Integer
+  ged-list-draw (base) (w) (h) (stride) (s) (font) (entries) (sel) (top) (i) =
+    let n = list-length entries
+    in if top + i >= n then 0
+    else if i >= gfl-rows-vis h s then 0
+    else let idx = top + i
+    in let y = gfl-rows-y0 h s + i * gfl-row-h s
+    in let hl = if idx == sel then gop-fill-rect base stride (gfl-px w s) y (gfl-pw w s) (gfl-row-h s) gfl-col-sel else 0
+    in let e = list-at entries idx
+    in let fg = if idx == sel then gfl-col-bright else gfl-col-text
+    in let t = gop-draw-text base stride font (gfl-px w s + 10 * s) (y + s) (gfl-row-text e) fg s 0
+    in ged-list-draw base w h stride s font entries sel top (i + 1)
+
+  ged-list-paint : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbMouse, Integer, List Fat16DirEntry, Integer, Integer -> Integer
+  ged-list-paint (base) (w) (h) (stride) (s) (font) (mouse) (cs) (entries) (sel) (top) =
+    let hd = cursor-hide cs base stride
+    in let f = gfl-draw-frame base w h stride s font "Edit  choose a file"
+    in let hdr = gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + 26 * s) (gfl-pad "name" 16 & "size") gfl-col-dim s 0
+    in let rows = ged-list-draw base w h stride s font entries sel top 0
+    in let hint = gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + gfl-ph h s - 18 * s) "Up/Down move   Enter open   Esc back" gfl-col-green s 0
+    in if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
+
+  ged-files-only : List Fat16DirEntry, Integer, List Fat16DirEntry -> List Fat16DirEntry
+  ged-files-only (entries) (i) (acc) =
+    if i >= list-length entries then acc
+    else let e = list-at entries i
+    in if gfl-is-dir e then ged-files-only entries (i + 1) acc
+    else ged-files-only entries (i + 1) (list-push acc e)
+
+  ged-activate : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer, Fat16Volume, List Fat16DirEntry, Integer, Integer -> [Device.Port] Integer
+  ged-activate (base) (w) (h) (stride) (s) (font) (kbd) (mouse) (cs) (es) (vol) (entries) (sel) (top) = act
+    let e = list-at entries sel
+    in if e.de-size > ged-cap then act
+      b <- ged-too-big base w h stride s font kbd mouse cs (e.de-name) (e.de-size)
+      let p = ged-list-paint base w h stride s font mouse cs entries sel top
+      in ged-list-loop base w h stride s font kbd mouse cs es vol entries sel top
+    end
+    else act
+      got <- ged-open es vol (e.de-name) (e.de-size)
+      let p = ged-repaint base w h stride s font mouse cs es (e.de-name) 0 0 0
+      in act
+        r <- ged-loop base w h stride s font kbd mouse cs es vol (e.de-name) 0 0 0 0
+        let p2 = ged-list-paint base w h stride s font mouse cs entries sel top
+        in ged-list-loop base w h stride s font kbd mouse cs es vol entries sel top
+      end
+    end
+  end
+
+ Flat for the same reason `ged-loop` is, and it was not: a first cut sent
+ every selection change through a `ged-list-move` that called the loop back,
+ which is a two-function cycle rather than a self-tail-call, and it also
+ skipped the `__heap-restore` on the way. Both cost a mouse sweep across the
+ rows, which is the ordinary way a person picks a file.
+
+  ged-list-sel : Integer, Integer, Integer, Integer -> Integer
+  ged-list-sel (sc) (sel) (n) (hover) =
+    if sc == 72 then (if sel > 0 then sel - 1 else 0)
+    else if sc == 80 then (if sel < n - 1 then sel + 1 else sel)
+    else if hover >= 0 then hover
+    else sel
+
+  ged-list-loop : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer, Fat16Volume, List Fat16DirEntry, Integer, Integer -> [Device.Port] Integer
+  ged-list-loop (base) (w) (h) (stride) (s) (font) (kbd) (mouse) (cs) (es) (vol) (entries) (sel) (top) = act
+    let mark = __heap-save
+    in act
+      sc <- kbd-take kbd
+      let n = list-length entries
+      in let mv = mouse-pump mouse w h
+      in let cu = if mv == 1 then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
+      in let clicked = mv == 1 & mouse-clicked mouse
+      in let hover = if mv == 1 then gfl-row-at w h s top n (mouse-x mouse) (mouse-y mouse) else -1
+      in let sel2 = ged-list-sel sc sel n hover
+      in let top2 = gfl-clamp-top sel2 top (gfl-rows-vis h s)
+      in let moved = sel2 /= sel | top2 /= top
+      in if sc == 1 then let d = __heap-restore mark in 0
+      else if clicked & gfl-close-hit w h s (mouse-x mouse) (mouse-y mouse) then let d = __heap-restore mark in 0
+      else if (clicked & hover >= 0) | (sc == 28 & n > 0) then act
+        let d = __heap-restore mark
+        in ged-activate base w h stride s font kbd mouse cs es vol entries sel2 top2
+      end
+      else let p = if moved then ged-list-paint base w h stride s font mouse cs entries sel2 top2 else 0
+      in let d = __heap-restore mark
+      in ged-list-loop base w h stride s font kbd mouse cs es vol entries sel2 top2
+    end
+  end
+
+Section: Entry
+
+  ged-run : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer -> [Device.Port] Integer
+  ged-run (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) (es) = act
+    m <- gfat-mount-esp
+    let a = ged-ensure es
+    in let s = ui-scale w
+    in if m.gm-ok == False then act
+      hd <- cursor-hide cs base stride
+      f <- gfl-draw-frame base w h stride s font "Edit"
+      t <- gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + 26 * s) "no FAT ESP on the boot medium" gfl-col-dim s 0
+      t2 <- gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + gfl-ph h s - 18 * s) "Esc back" gfl-col-green s 0
+      cu <- if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
+      ged-wait base w h stride s font kbd mouse cs
+    end
+    else act
+      let vol = m.gm-vol
+      in let root-flag = if gfat-is32 vol then vol.vol-root-start else -1
+      in act
+        ents <- gfl-list-cur vol [root-flag]
+        let files = ged-files-only ents 0 []
+        in let p = ged-list-paint base w h stride s font mouse cs files 0 0
+        in ged-list-loop base w h stride s font kbd mouse cs es vol files 0 0
+      end
+    end
+  end

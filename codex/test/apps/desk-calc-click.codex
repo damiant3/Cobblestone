@@ -1,0 +1,100 @@
+Chapter: DeskCalcClickTest
+  cites Works chapter GopDesk
+  cites Works chapter GopCalc
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Event
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ Every key on the calculator keypad is reachable with the pointer.
+
+ The pane hit-tests by laying its tree out again rather than by memoizing
+ the drawn one, and that is safe here for a reason the browser could not
+ use: the calculator's state is a `poke-32` block, not heap, so nothing is
+ allocated above the tree that a release would take with it. The bounds are
+ the same either way, because `comp-render` lays out exactly the tree the
+ paint hands it and nothing else.
+
+ The scan hoists the layout OUT of the probe deliberately. `dk-calc-hit`
+ lays the tree out on every call, which is right for a click that happens
+ when a person moves their hand and wrong for a test that probes thousands
+ of points: at one layout per point this would run for minutes and measure
+ the layout rather than the mapping. The two spot checks below still go
+ through `dk-calc-hit` itself, so the bundled function is not left untested.
+
+ The expected scancodes are the ones `gcalc-key` already dispatches:
+ 2 to 11 are digits 1-9 then 0, 12 is minus, 13 is plus, 28 is equals, 53 is
+ divide, 55 is multiply. Fifteen buttons, and the keypad draws no C, so 46
+ (clear) is keyboard-only and its absence here is correct rather than a gap.
+
+Section: Test
+
+  hit-at : WidgetNode, Integer, Integer -> Integer
+  hit-at (laid) (x) (y) =
+    when ev-hit-widget laid x y
+      is Just (wgt) -> gcalc-id-scan (wgt.wn-id)
+      is None -> 0
+
+  scan-row : WidgetNode, Integer, Integer, Integer -> Integer
+  scan-row (laid) (seen) (x) (y) =
+    if x >= 1024 then 0
+    else let sc = hit-at laid x y
+    in let p = if sc /= 0 then poke-byte seen sc 1 else 0
+    in scan-row laid seen (x + 8) y
+
+  scan-grid : WidgetNode, Integer, Integer -> Integer
+  scan-grid (laid) (seen) (y) =
+    if y >= 768 then 0
+    else let r = scan-row laid seen 0 y
+    in scan-grid laid seen (y + 8)
+
+ THE SCALED PATH IS TESTED BY ITS OWN ARITHMETIC, not by a second sweep.
+ Above 1600 the tree is laid out in LOGICAL pixels at half the panel and the
+ pointer still arrives in DEVICE pixels, so `dk-calc-hit` divides. A wrong
+ divide is invisible to the 1024 sweep, which runs at scale 1 where dividing
+ by one hides it. This finds the first logical point that hits any key, then
+ asks `dk-calc-hit` for the DEVICE point at twice those coordinates: the two
+ must answer the same key, and they can only do that if the divide is right.
+
+  yn2 : Boolean -> Text
+  yn2 (v) = if v then "yes" else "no"
+
+  fh-row : WidgetNode, Integer, Integer -> Integer
+  fh-row (laid) (x) (y) =
+    if x >= 960 then 0 - 1
+    else if hit-at laid x y /= 0 then x
+    else fh-row laid (x + 4) y
+
+  fh : WidgetNode, Integer -> Integer
+  fh (laid) (y) =
+    if y >= 540 then 0 - 1
+    else let x = fh-row laid 0 y
+    in if x >= 0 then x * 1000 + y else fh laid (y + 4)
+
+  seen-text : Integer, Integer, Text -> Text
+  seen-text (seen) (i) (acc) =
+    if i >= 64 then acc
+    else if peek-byte seen i == 1 then seen-text seen (i + 1) (acc & " " & integer-to-text i)
+    else seen-text seen (i + 1) acc
+
+  opening : [Console] Nothing =
+    let ks = alloc-zeroed 64 64
+    in let seen = alloc-zeroed 64 64
+    in let ds = alloc-zeroed 64 64
+    in let ap = poke-32 ds dk-adorn-cell dk-adorn-default
+    in let gp = poke-32 ds desk-gpu-cell 1
+    in let laid = widget-layout (desk-chrome-with (gcalc-tree ks) 1024 ds) (dk-theme-ds ds) (layout-rect 0 0 1024 768)
+    in let g = scan-grid laid seen 0
+    in let hd-tree = widget-layout (desk-chrome-with (gcalc-tree ks) 1920 ds) (dk-theme-ds ds) (layout-rect 0 0 960 540)
+    in let hd-p = fh hd-tree 0
+    in let hd-x = hd-p / 1000
+    in let hd-y = int-mod hd-p 1000
+    in let hd-logical = if hd-p < 0 then 0 else hit-at hd-tree hd-x hd-y
+    in let hd-device = if hd-p < 0 then 0 else dk-calc-hit 1920 1080 ks (hd-x * 2) (hd-y * 2) ds
+    in act
+      print-line-uni ("reachable" & seen-text seen 0 "")
+      print-line-uni ("miss sc=" & integer-to-text (dk-calc-hit 1024 768 ks 0 0 ds))
+      print-line-uni ("sidebar sc=" & integer-to-text (dk-calc-hit 1024 768 ks 60 300 ds))
+      print-line-uni ("hd logical == device: " & yn2 (hd-logical /= 0 & hd-logical == hd-device))
+    end

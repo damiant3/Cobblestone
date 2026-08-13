@@ -1,6 +1,7 @@
 Chapter: EngineDemo
   cites Foreword chapter Console
   cites Engine chapter Scene3D
+  cites Engine chapter GpuScene
   cites Engine chapter Mesh
   cites Engine chapter Material
   cites Math chapter Matrix4
@@ -16,7 +17,6 @@ Chapter: EngineDemo
 
 Section: Constants
 
-  gpu-cmd : Integer = #BE000000
   sw : Integer = 640
   sh : Integer = 480
   kb-addr : Integer = 28680
@@ -24,14 +24,14 @@ Section: Constants
 Section: Entry
 
   opening : [Console, Device.Port, Gpu.Compute, Gpu.Memory] Nothing = act
-    result <- demo-main gpu-cmd
+    result <- demo-main 0
     print-line-uni result
   end
 
   demo-main : Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Text
-  demo-main (cmd) =
+  demo-main (dummy) =
     let scene = demo-build-scene
-    in demo-loop scene cmd 0 300 6000 0
+    in demo-loop scene 0 300 6000 0
 
 Section: Scene
 
@@ -51,107 +51,13 @@ Section: Scene
 
 Section: GPU Render (build cmd buffer + fire)
 
-  demo-gpu-render : Scene3DState, Integer, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
-  demo-gpu-render (scene) (cmd) (yaw) (pitch) (dist) =
-    let cam = demo-orbit yaw pitch dist
-    in let s2 = scene3d-set-camera scene cam
-    in let vp = camera3d-vp cam
-    in demo-flush (gpu-build-cmds s2 vp cmd 0 (scene3d-count s2) 0)
+  demo-view : GpuView = gv-new 0 0 sw sh
 
-  demo-flush : Integer -> [Device.Port, Gpu.Compute] Integer
-  demo-flush (tri-count) = act
-    w1 <- gpu-out 1025 #101028
-    w2 <- gpu-out 1026 0
-    gpu-out 1024 tri-count
-  end
+  demo-sky : Integer = #101028
 
-  gpu-build-cmds : Scene3DState, Mat4, Integer, Integer, Integer, Integer -> [Gpu.Memory] Integer
-  gpu-build-cmds (scene) (vp) (cmd) (i) (n) (tri-offset) =
-    if i >= n then tri-offset
-    else let node = scene3d-node-at scene i
-    in gpu-build-cmds scene vp cmd (i + 1) n (if node.sn3-visible then gpu-node-cmds scene vp cmd node i tri-offset else tri-offset)
-
-  gpu-node-cmds : Scene3DState, Mat4, Integer, SceneNode3D, Integer, Integer -> [Gpu.Memory] Integer
-  gpu-node-cmds (scene) (vp) (cmd) (node) (idx) (tri-offset) =
-    when node.sn3-mesh
-      is None -> tri-offset
-      is Just (mesh) ->
-        let model = scene3d-world-matrix scene idx
-        in let mvp = mat4-mul vp model
-        in gpu-mesh-cmds mesh model mvp (node.sn3-material) (scene.s3-lights) (scene.s3-camera.c3-eye) (scene.s3-ambient) cmd tri-offset 0 (mesh.mesh-index-count)
-
-  gpu-mesh-cmds : Mesh, Mat4, Mat4, EngineMaterial, List Light3D, Vec3, Integer, Integer, Integer, Integer, Integer -> [Gpu.Memory] Integer
-  gpu-mesh-cmds (mesh) (model) (mvp) (mat) (lights) (eye) (ambient) (cmd) (tri-idx) (i) (n) =
-    if i >= n then tri-idx
-    else if tri-idx >= 1024 then tri-idx
-    else let v0 = mesh-vertex-at mesh (mesh-index-at mesh i)
-    in let v1 = mesh-vertex-at mesh (mesh-index-at mesh (i + 1))
-    in let v2 = mesh-vertex-at mesh (mesh-index-at mesh (i + 2))
-    in let p0 = gpu-proj v0 mvp
-    in let p1 = gpu-proj v1 mvp
-    in let p2 = gpu-proj v2 mvp
-    in let area = (p1.gp-sx - p0.gp-sx) * (p2.gp-sy - p0.gp-sy) - (p1.gp-sy - p0.gp-sy) * (p2.gp-sx - p0.gp-sx)
-    in if area >= 0 then gpu-mesh-cmds mesh model mvp mat lights eye ambient cmd tri-idx (i + 3) n
-    else let normal = gpu-face-normal v0 v1 v2
-    in let world = mat4-transform-point model (vec3-new (real-from-int (v0.vp-x + v1.vp-x + v2.vp-x) / 3.0) (real-from-int (v0.vp-y + v1.vp-y + v2.vp-y) / 3.0) (real-from-int (v0.vp-z + v1.vp-z + v2.vp-z) / 3.0))
-    in let color = rgb-to-packed (gpu-shade world normal eye mat lights ambient)
-    in let offset = tri-idx * 72
-    in gpu-mesh-next (gpu-mem-write cmd offset (p0.gp-sx) + gpu-mem-write cmd (offset + 4) (p0.gp-sy) + gpu-mem-write cmd (offset + 8) (p1.gp-sx) + gpu-mem-write cmd (offset + 12) (p1.gp-sy) + gpu-mem-write cmd (offset + 16) (p2.gp-sx) + gpu-mem-write cmd (offset + 20) (p2.gp-sy) + gpu-mem-write cmd (offset + 24) color + gpu-mem-write cmd (offset + 28) color + gpu-mem-write cmd (offset + 32) color + gpu-mem-write cmd (offset + 36) (p0.gp-depth) + gpu-mem-write cmd (offset + 40) (p1.gp-depth) + gpu-mem-write cmd (offset + 44) (p2.gp-depth) + gpu-mem-write cmd (offset + 48) 0 + gpu-mem-write cmd (offset + 52) 0 + gpu-mem-write cmd (offset + 56) 0 + gpu-mem-write cmd (offset + 60) 0 + gpu-mem-write cmd (offset + 64) 0 + gpu-mem-write cmd (offset + 68) 0) mesh model mvp mat lights eye ambient cmd tri-idx i n
-
-  gpu-mesh-next : Integer, Mesh, Mat4, Mat4, EngineMaterial, List Light3D, Vec3, Integer, Integer, Integer, Integer, Integer -> [Gpu.Memory] Integer
-  gpu-mesh-next (w) (mesh) (model) (mvp) (mat) (lights) (eye) (ambient) (cmd) (tri-idx) (i) (n) =
-    gpu-mesh-cmds mesh model mvp mat lights eye ambient cmd (tri-idx + 1) (i + 3) n
-
-Section: Projection
-
-  GpuProj = record { gp-sx : Integer, gp-sy : Integer, gp-depth : Integer }
-
- A Vertex holds integer world coordinates and Mat4 is Real, so the
- projection converts in on the way to clip space and back out to the
- integer pixel grid the command buffer wants. The perspective divide is
- the whole reason clip.v4w has to be Real: at 1.0 it is a true
- homogeneous w, where the old fixed-point code carried thousandths.
-
-  gpu-proj : Vertex, Mat4 -> GpuProj
-  gpu-proj (v) (mvp) =
-    let clip = mat4-transform-vec4 mvp (Vec4 { v4x = real-from-int (v.vp-x), v4y = real-from-int (v.vp-y), v4z = real-from-int (v.vp-z), v4w = 1.0 })
-    in if clip.v4w <= 0.0 then GpuProj { gp-sx = -9999, gp-sy = -9999, gp-depth = 999999 }
-    else let ndc-x = clip.v4x / clip.v4w
-    in let ndc-y = clip.v4y / clip.v4w
-    in let ndc-z = clip.v4z / clip.v4w
-    in let half-w = real-from-int (sw / 2)
-    in let half-h = real-from-int (sh / 2)
-    in GpuProj { gp-sx = real-to-int (half-w + ndc-x * half-w), gp-sy = real-to-int (half-h - ndc-y * half-h), gp-depth = real-to-int ((ndc-z + 1.0) * 500000.0) }
-
-  gpu-face-normal : Vertex, Vertex, Vertex -> Vec3
-  gpu-face-normal (v0) (v1) (v2) =
-    mat4-v3-normalize (vec3-new (real-from-int (v0.vn-x + v1.vn-x + v2.vn-x) / 3.0) (real-from-int (v0.vn-y + v1.vn-y + v2.vn-y) / 3.0) (real-from-int (v0.vn-z + v1.vn-z + v2.vn-z) / 3.0))
-
-Section: Shading
-
-  gpu-shade : Vec3, Vec3, Vec3, EngineMaterial, List Light3D, Integer -> Rgb
-  gpu-shade (center) (normal) (eye) (mat) (lights) (ambient) =
-    let base = rgb-scale (mat.emat-albedo) ambient
-    in gpu-accum center normal eye mat lights base 0 (list-length lights)
-
-  gpu-accum : Vec3, Vec3, Vec3, EngineMaterial, List Light3D, Rgb, Integer, Integer -> Rgb
-  gpu-accum (center) (normal) (eye) (mat) (lights) (acc) (i) (n) =
-    if i >= n then acc
-    else let light = list-at lights i
-    in let contrib = when light
-      is DirLight (dir) (col) (intensity) ->
-        let to-light = mat4-v3-normalize dir
-        in let ndl = gpu-unit-to-milli (vec3-dot normal to-light)
-        in let diffuse = if ndl > 0 then ndl * mat.emat-diffuse / 1000 else 0
-        in let reflect = gpu-reflect (gpu-negate to-light) normal
-        in let to-eye = mat4-v3-normalize (vec3-subtract eye center)
-        in let rdv = gpu-unit-to-milli (vec3-dot reflect to-eye)
-        in let spec = if rdv > 0 then if ndl > 0 then gpu-pow rdv (mat.emat-shininess) * mat.emat-specular / 1000 else 0 else 0
-        in let total = (diffuse + spec) * intensity / 1000
-        in rgb-scale (rgb-multiply (mat.emat-albedo) col) (gpu-clamp total 0 1000)
-      is PtLight (pos) (col) (intensity) (radius) -> rgb 0 0 0
-      is SpotLight3D (pos) (dir) (col) (intensity) (angle) (falloff) -> rgb 0 0 0
-    in gpu-accum center normal eye mat lights (rgb-add acc contrib) (i + 1) n
+  demo-gpu-render : Scene3DState, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  demo-gpu-render (scene) (yaw) (pitch) (dist) =
+    gs-render-full (scene3d-set-camera scene (demo-orbit yaw pitch dist)) demo-view demo-sky
 
 Section: Animation Loop
 
@@ -160,29 +66,29 @@ Section: Animation Loop
  is why the frame is two functions: __heap-restore has to run on the far
  side of an effectful call, and a let cannot bind one.
 
-  demo-loop : Scene3DState, Integer, Integer, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Text
-  demo-loop (scene) (cmd) (yaw) (pitch) (dist) (frame) = act
+  demo-loop : Scene3DState, Integer, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Text
+  demo-loop (scene) (yaw) (pitch) (dist) (frame) = act
     dummy <- port-in-byte 96
     let sc = peek-byte kb-addr 0
     in let ack = poke-byte kb-addr 0 0
     in let yaw2 = yaw + 8
     in if sc == 16 then "quit"
     else let y3 = if sc == 75 then yaw2 - 200 else if sc == 77 then yaw2 + 200 else yaw2
-    in let p2 = if sc == 72 then gpu-clamp (pitch + 100) (-700) 700 else if sc == 80 then gpu-clamp (pitch - 100) (-700) 700 else pitch
-    in let d2 = if sc == 78 then gpu-clamp (dist - 500) 2000 20000 else if sc == 74 then gpu-clamp (dist + 500) 2000 20000 else dist
-    in demo-frame scene cmd y3 p2 d2 frame
+    in let p2 = if sc == 72 then gs-clamp (pitch + 100) (-700) 700 else if sc == 80 then gs-clamp (pitch - 100) (-700) 700 else pitch
+    in let d2 = if sc == 78 then gs-clamp (dist - 500) 2000 20000 else if sc == 74 then gs-clamp (dist + 500) 2000 20000 else dist
+    in demo-frame scene y3 p2 d2 frame
   end
 
-  demo-frame : Scene3DState, Integer, Integer, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Text
-  demo-frame (scene) (cmd) (yaw) (pitch) (dist) (frame) =
+  demo-frame : Scene3DState, Integer, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Text
+  demo-frame (scene) (yaw) (pitch) (dist) (frame) =
     let hp = __heap-save
-    in demo-frame-done scene cmd yaw pitch dist frame hp
+    in demo-frame-done scene yaw pitch dist frame hp
 
-  demo-frame-done : Scene3DState, Integer, Integer, Integer, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Text
-  demo-frame-done (scene) (cmd) (yaw) (pitch) (dist) (frame) (hp) = act
-    w <- demo-gpu-render scene cmd yaw pitch dist
+  demo-frame-done : Scene3DState, Integer, Integer, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Text
+  demo-frame-done (scene) (yaw) (pitch) (dist) (frame) (hp) = act
+    w <- demo-gpu-render scene yaw pitch dist
     let restored = __heap-restore hp
-    in demo-loop scene cmd yaw pitch dist (frame + 1)
+    in demo-loop scene yaw pitch dist (frame + 1)
   end
 
 Section: Orbit Camera
@@ -196,24 +102,6 @@ Section: Orbit Camera
     in camera3d-new (vec3-new (real-from-int (sy * cp * dist / 1000000)) (real-from-int (sp * dist / 1000)) (real-from-int (cy * cp * dist / 1000000))) (vec3-new 0.0 500.0 0.0) 0.785
 
 Section: Helpers
-
- Vec3 is Real, so normalization and reflection are the Matrix4
- primitives rather than the fixed-point integer routines this demo used
- to carry. Lighting stays on the integer 0..1000 scale that Rgb and
- EngineMaterial speak, so a dot product crosses back at exactly one
- place: gpu-unit-to-milli.
-
-  gpu-unit-to-milli : Real -> Integer
-  gpu-unit-to-milli (x) = real-to-int (x * 1000.0)
-
-  gpu-reflect : Vec3, Vec3 -> Vec3
-  gpu-reflect (inc) (n) = let d = vec3-dot inc n in vec3-subtract inc (vec3-scale n (2.0 * d))
-
-  gpu-negate : Vec3 -> Vec3
-  gpu-negate (v) = vec3-new (0.0 - v.vx) (0.0 - v.vy) (0.0 - v.vz)
-
-  gpu-pow : Integer, Integer -> Integer
-  gpu-pow (b) (e) = if e <= 0 then 1000 else gpu-pow b (e - 1) * b / 1000
 
   gpu-sin : Integer -> Integer
   gpu-sin (raw) =
@@ -235,8 +123,5 @@ Section: Helpers
 
   gpu-wrap : Integer -> Integer
   gpu-wrap (a) = let m = a - (a / 6283) * 6283 in if m < 0 then m + 6283 else m
-
-  gpu-clamp : Integer, Integer, Integer -> Integer
-  gpu-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
 
 Page 1

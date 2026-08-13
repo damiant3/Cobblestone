@@ -71,6 +71,21 @@ Section: The Loop Itself
     let sent = (net-send established resp-bytes).session
     in set-rexmit sent (sent.rexmit-queue) 1 net-rto-max-tries
 
+Section: The Connect Loop
+
+ net-connect arms its SYN into the retransmit queue like any other segment,
+ so the only thing a lost SYN needs is a loop that turns the clock. The arm
+ is the live loop's shape again, aged to one tick short of give-up: a wait
+ that ticks ends CLOSED, and one that cannot ends SYN_SENT with the SYN
+ still queued. syn-retransmit is the other half, and it is arithmetic --
+ the frame a tick puts back in the outbox when the tries are not spent.
+
+  client0 : NetSession = net-session-new cli-mac cli-ip gw-ip 50000 80 srv-ip 1000
+  syn-sent : NetSession = (net-connect client0).session
+  syn-primed : NetSession = set-rexmit syn-sent (syn-sent.rexmit-queue) 1 net-rto-max-tries
+  syn-fresh : NetSession = set-rexmit syn-sent (syn-sent.rexmit-queue) 1 0
+  syn-ticked : NetSession = (net-tick syn-fresh).session
+
 Section: Entry
   opening : [Console, Network.Read, Network.Write] Nothing = act
     let quick = (net-send established resp-bytes).session
@@ -91,6 +106,13 @@ Section: Entry
         r <- net-io-recv-raw ts0 0
         let ts1 = r.transport
         in print-line-uni ("live-end=" & tcp-state-name (((ts1.session).conn).state) & " queued=" & show (list-length ((ts1.session).rexmit-queue)) & " ticks=" & show ((ts1.session).now-ticks))
+        print-line-uni ("syn-armed=" & tcp-state-name ((syn-sent.conn).state) & " queued=" & show (list-length (syn-sent.rexmit-queue)))
+        print-line-uni ("syn-retransmit=" & show (list-length (syn-ticked.outbox)) & " tries=" & show (syn-ticked.rexmit-tries))
+        let cs0 = transport-new syn-primed
+        in act
+          cs1 <- net-io-wait-established cs0 0
+          print-line-uni ("connect-end=" & tcp-state-name (((cs1.session).conn).state) & " queued=" & show (list-length ((cs1.session).rexmit-queue)) & " ticks=" & show ((cs1.session).now-ticks))
+        end
       end
     end
   end

@@ -475,6 +475,87 @@ pointer rather than the sector, and `build-option-a.ps1` had no way to pass
 `compile.ps1 -Uefi`, so it produced payloads that boot and paint but whose block
 reads return zeros.
 
+### The sink's own arm, built and calibrated 2026-08-10 (`sinkladder.img`)
+
+`apps/works/SinkLadderProbe.codex` is the instrument for the question the block
+ladder cannot answer: `fat16-write-segments` at 2.7 MB on metal. It drives the
+same write and the same streaming oracle as `codex/test/apps/fat-sink-big.codex`
+and reports as a screen colour, paint before print on every rung.
+
+**This is why it is a probe and not the compiler.** The compiler cannot cite
+`Works chapter MetalLadder`: the quire order is `codex.foreword -> codex ->
+codex.os -> apps` (`DevelopersRulebook.md:236`), so a painted rung inside
+`emit-from-disk` needs new foreword-level GOP code, which is the cost this
+design already recorded as "strictly more work, not on the critical path". A
+probe in the apps quire asks the sink question today, at no seed risk, and it
+is also the cheaper test to run first: if the 2.7 MB write fails on metal, a
+rebuilt compiler arm was wasted work.
+
+Bed result, all six rungs green: `size=2745998 want=2745998 first=5903
+chain=5364 wantchain=5364 arena=84840 bad=0`. The chain is `ceil(2745998/512)`
+and is DEMANDED by the write rung rather than merely printed, because a writer
+that returns True having linked nothing leaves a first cluster below 2, which
+the walk answers 0 for and is indistinguishable from a clean verify.
+
+**Every rung below WHITE is forced in the bed** by `build/sink-arm.ps1`
+(`pass`/`shift`/`nodisk`/`badbpb`/`small`); the table is in
+`docs/HardwareSitting.md`. The `shift` arm is the positive control and it fires:
+a payload rebuilt with `sl-shift = 1` writes identically -- same size, same
+chain, same 84,840 bytes of arena -- and reports the verify bad, stopping at
+BLUE. So a WHITE screen is a measurement rather than an instrument that cannot
+fail (L-FALSIF).
+
+**What this still does not answer.** It proves the SINK on metal, not the
+compiler using it. Fly the sink ladder first -- it is strictly smaller, and a
+red there would mean the compiler arm cannot work either.
+
+### The compiler's own arm, built and calibrated 2026-08-11 (`build/disk-arm.ps1`)
+
+**The remaining half is closed, and it cost less than this design said it
+would.** The paragraph above priced a painted rung inside `emit-from-disk` at
+"new foreword-level GOP code" because the compiler cannot cite
+`Works chapter MetalLadder`. It does not need the foreword. `peek-qword`,
+`peek-32` and `poke-32` are BUILTINS (`Types/Builtins.codex:112-114`), so the
+whole channel is arithmetic with no library behind it, and a chapter in
+`codex/compiler/` is answered by presence in the unit rather than through the
+quire registry (`quire-map.ps1`, `Get-PresentChapterNames`). It landed as
+`codex/compiler/Core/BootPaint.codex`, 130 lines, cited as
+`cites Codex chapter BootPaint`. No foreword change, no new quire.
+
+Six rungs on the DISK path: CYAN `opening` entered, YELLOW stdin said `DISK`,
+MAGENTA the boot volume's BPB is 512, ORANGE the source read off the volume,
+BLUE the compile finished, WHITE `OUT.CDX` is on the volume at that size. The
+operator table and the forced-arm table are in `docs/HardwareSitting.md`.
+
+Three things this arm had to get right that the design did not anticipate.
+
+**WHITE re-reads the directory. It does not take the writer's answer.**
+Measured 2026-08-11 with the medium read-only: codex-vm printed
+`WARN: cannot reopen disk ... for write` 833 times, `fat16-write-segments`
+still answered True, and a rung trusting `ok` painted WHITE over a host file
+that had not changed. `emit-disk-verdict` now re-mounts, resolves `OUT.CDX`
+and compares `de-size` against the size the compile produced, which is the
+same discipline `SinkLadderProbe` needed for the same reason (L-FALSIF).
+`DISK-OUT: FAILED` gained the two numbers, so the line says what was short.
+
+**Every hold is guarded on the handoff block being present, and the trace is
+too.** The compiler runs on hosts and in the bed as well as on the board, so an
+unguarded spin would turn a compile error into a hang and an unguarded print
+would put six lines into every compile's stdout. A run with no handoff block
+paints nothing, holds nothing and says nothing.
+
+**`mode` is not passed one call deeper to make room for a rung.** The
+corruption recorded above is undiagnosed, so `emit-from-disk` keeps its own
+frame: the source rung paints through a `let` in the existing chain and does
+not trace, and the rung after it names the state instead.
+
+**The bed's screen is not the bed's channel.** codex-vm's `-screenshot` came
+back black on runs where the payload reported `painted fb=1` and named
+`base=0xBF000000`, which is the address codex-vm itself screenshots. So all
+three ladders calibrate from the printed rung lines, deliberately, and the
+colours remain verified only on metal. `OperatorsManual.md`, "A PAINTED LADDER
+DOES NOT SHOW UP IN -screenshot".
+
 ## The one thing this must not do: go through `List Integer`
 
 `fat16-write-binary-file` takes `List Integer`, and `list-at` scales the index
