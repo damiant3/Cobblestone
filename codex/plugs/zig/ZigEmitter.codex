@@ -77,11 +77,31 @@ Section: Type Mapping
     is VectorTy (vn) (vt) -> "@Vector(" & show vn & ", " & emit-zig-type vt & ")"
     is VectorMaskTy (vn) -> "@Vector(" & show vn & ", bool)"
     is FunTy (p) (fnrow) (r) -> "*const fn (" & emit-zig-type p & ") " & emit-zig-type r
+    is EffectfulTy (effs) (scopes) (inner) -> emit-zig-type inner
+    is ForAllEff (c) (inner) -> emit-zig-type inner
     is RecordTy (n) (a) (f) -> zig-sanitize (n.value)
     is SumTy (n) (a) (c) -> zig-sanitize (n.value)
     is ConstructedTy (n) (a) -> zig-sanitize (n.value)
     is TypeCon (n) -> zig-sanitize (n.value)
     is otherwise -> "anyopaque"
+
+  zig-peel-return : CodexType, Integer -> CodexType
+  zig-peel-return (ty) (n) =
+   when ty
+    is EffectfulTy (effs) (scopes) (inner) -> zig-peel-return inner n
+    is ForAllEff (c) (inner) -> zig-peel-return inner n
+    is FunTy (p) (fnrow) (r) -> if n <= 0 then ty else zig-peel-return r (n - 1)
+    is otherwise -> ty
+
+  zig-type-is-void : CodexType -> Boolean
+  zig-type-is-void (ty) =
+   when ty
+    is VoidTy -> True
+    is NothingTy -> True
+    is ProofTy -> True
+    is EffectfulTy (effs) (scopes) (inner) -> zig-type-is-void inner
+    is ForAllEff (c) (inner) -> zig-type-is-void inner
+    is otherwise -> False
 
 Section: Arity Map
 
@@ -143,14 +163,14 @@ Section: Builtin Emitter
 
   zig-builtin-emitters : List ZigBuiltinEmitter =
    sort-zig-builtins [
-    ZigBuiltinEmitter { name = "print-line", emit = \args arities -> "std.debug.print(\"{s}\\n\", .{" & emit-zig-expr (list-at args 0) arities & "})" },
-    ZigBuiltinEmitter { name = "print-line-raw", emit = \args arities -> "std.debug.print(\"{s}\\n\", .{" & emit-zig-expr (list-at args 0) arities & "})" },
-    ZigBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "std.debug.print(\"{s}\\n\", .{" & emit-zig-expr (list-at args 0) arities & "})" },
-    ZigBuiltinEmitter { name = "print-uni", emit = \args arities -> "std.debug.print(\"{s}\", .{" & emit-zig-expr (list-at args 0) arities & "})" },
-    ZigBuiltinEmitter { name = "print-error", emit = \args arities -> "std.debug.print(\"{s}\\n\", .{" & emit-zig-expr (list-at args 0) arities & "})" },
-    ZigBuiltinEmitter { name = "print-error-uni", emit = \args arities -> "std.debug.print(\"{s}\\n\", .{" & emit-zig-expr (list-at args 0) arities & "})" },
-    ZigBuiltinEmitter { name = "show", emit = \args arities -> "std.fmt.allocPrint(std.heap.page_allocator, \"{}\", .{" & emit-zig-expr (list-at args 0) arities & "}) catch \"<show>\"" },
-    ZigBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "std.fmt.allocPrint(std.heap.page_allocator, \"{}\", .{" & emit-zig-expr (list-at args 0) arities & "}) catch \"<itoa>\"" },
+    ZigBuiltinEmitter { name = "print-line", emit = \args arities -> "cx_print_line(" & emit-zig-expr (list-at args 0) arities & ")" },
+    ZigBuiltinEmitter { name = "print-line-raw", emit = \args arities -> "cx_print_line(" & emit-zig-expr (list-at args 0) arities & ")" },
+    ZigBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "cx_print_line(" & emit-zig-expr (list-at args 0) arities & ")" },
+    ZigBuiltinEmitter { name = "print-uni", emit = \args arities -> "cx_print(" & emit-zig-expr (list-at args 0) arities & ")" },
+    ZigBuiltinEmitter { name = "print-error", emit = \args arities -> "cx_print_line(" & emit-zig-expr (list-at args 0) arities & ")" },
+    ZigBuiltinEmitter { name = "print-error-uni", emit = \args arities -> "cx_print_line(" & emit-zig-expr (list-at args 0) arities & ")" },
+    ZigBuiltinEmitter { name = "show", emit = \args arities -> "cx_show_int(" & emit-zig-expr (list-at args 0) arities & ")" },
+    ZigBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "cx_show_int(" & emit-zig-expr (list-at args 0) arities & ")" },
     ZigBuiltinEmitter { name = "text-length", emit = \args arities -> emit-zig-expr (list-at args 0) arities & ".len" },
     ZigBuiltinEmitter { name = "list-length", emit = \args arities -> emit-zig-expr (list-at args 0) arities & ".len" },
     ZigBuiltinEmitter { name = "list-at", emit = \args arities -> emit-zig-expr (list-at args 0) arities & "[" & emit-zig-expr (list-at args 1) arities & "]" },
@@ -233,7 +253,10 @@ Section: Binary Operator Mapping
   emit-zig-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
   emit-zig-binary (op) (l) (r) (arities) =
    when op
-    is IrAppendText -> "std.mem.concat(.{" & emit-zig-expr l arities & ", " & emit-zig-expr r arities & "})"
+    is IrAppendText -> "cx_concat(" & emit-zig-expr l arities & ", " & emit-zig-expr r arities & ")"
+    is IrDivInt -> "@divTrunc(" & emit-zig-expr l arities & ", " & emit-zig-expr r arities & ")"
+    is IrRemInt -> "@rem(" & emit-zig-expr l arities & ", " & emit-zig-expr r arities & ")"
+    is IrPowInt -> "std.math.pow(i64, " & emit-zig-expr l arities & ", " & emit-zig-expr r arities & ")"
     is IrAnd -> "(" & emit-zig-expr l arities & " and " & emit-zig-expr r arities & ")"
     is IrOr -> "(" & emit-zig-expr l arities & " or " & emit-zig-expr r arities & ")"
     is otherwise -> "(" & emit-zig-expr l arities & " " & zig-bin-op-symbol op & " " & emit-zig-expr r arities & ")"
@@ -296,10 +319,10 @@ Section: Expression Emission
     is IrIf (c) (t) (el) (ty) (sp) -> "(if (" & emit-zig-expr-at c arities (depth + 1) & ") " & emit-zig-expr-at t arities (depth + 1) & " else " & emit-zig-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "blk: { const " & zig-sanitize name & " = " & emit-zig-expr-at val arities (depth + 1) & "; break :blk " & emit-zig-expr-at body arities (depth + 1) & "; }"
     is IrApply (f) (a) (ty) (sp) -> emit-zig-apply e arities
-    is IrLambda (params) (body) (ty) (sp) -> "struct { fn call(" & emit-zig-lambda-params params 0 & ") anyopaque { return " & emit-zig-expr body arities & "; } }.call"
+    is IrLambda (params) (body) (ty) (sp) -> "struct { fn call(" & emit-zig-lambda-params params 0 & ") " & emit-zig-type (zig-peel-return ty (list-length params)) & " { return " & emit-zig-expr body arities & "; } }.call"
     is IrList (elems) (ty) (sp) -> ".{" & emit-zig-list-elems elems 0 arities & "}"
     is IrMatch (scrut) (branches) (ty) (sp) -> emit-zig-match scrut branches arities
-    is IrAct (stmts) (ty) (sp) -> emit-zig-act stmts arities
+    is IrAct (stmts) (ty) (sp) -> emit-zig-act stmts arities (zig-type-is-void ty)
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-zig-expr-at body arities (depth + 1)
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-zig-expr-at body arities (depth + 1)
     is IrRecord (name) (fields) (ty) (sp) -> emit-zig-record name fields arities
@@ -307,7 +330,7 @@ Section: Expression Emission
     is IrFieldStore (rec) (field) (val) (ty) (sp) -> "blk: { var _r = " & emit-zig-expr-at rec arities (depth + 1) & "; _r." & zig-sanitize field & " = " & emit-zig-expr-at val arities (depth + 1) & "; break :blk _r; }"
     is IrFork (body) (ty) (sp) -> emit-zig-expr-at body arities (depth + 1)
     is IrAwait (task) (ty) (sp) -> emit-zig-expr-at task arities (depth + 1)
-    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> emit-zig-act body arities
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> emit-zig-act body arities (zig-type-is-void ty)
     is IrError (msg) (ty) (sp) -> "@panic(\"" & zig-escape-text msg & "\")"
 
 Section: Lambda and List Helpers
@@ -315,8 +338,10 @@ Section: Lambda and List Helpers
   emit-zig-lambda-params : List IRParam, Integer -> Text
   emit-zig-lambda-params (params) (i) =
    if i == list-length params then ""
-   else if i == list-length params - 1 then zig-sanitize ((list-at params i).name) & ": anyopaque"
-   else zig-sanitize ((list-at params i).name) & ": anyopaque, " & emit-zig-lambda-params params (i + 1)
+   else let p = list-at params i
+   in let one = zig-sanitize (p.name) & ": " & emit-zig-type (p.type-val)
+   in if i == list-length params - 1 then one
+   else one & ", " & emit-zig-lambda-params params (i + 1)
 
   emit-zig-list-elems : List IRExpr, Integer, List ArityEntry -> Text
   emit-zig-list-elems (elems) (i) (arities) =
@@ -360,18 +385,32 @@ Section: Match Emission
 
 Section: Act Emission
 
-  emit-zig-act : List IRActStmt, List ArityEntry -> Text
-  emit-zig-act (stmts) (arities) =
-   "blk: { " & emit-zig-act-stmts stmts 0 arities & " }"
+ The block's value is its last executed statement. A void act ends with a
+ bare `break :blk` so the block types as void and `return <block>` works in
+ a void function; a valued act breaks with the final statement's value, and
+ only an act whose last statement binds (or an empty act) needs the
+ trailing break.
 
-  emit-zig-act-stmts : List IRActStmt, Integer, List ArityEntry -> Text
-  emit-zig-act-stmts (stmts) (i) (arities) =
-   if i == list-length stmts then "break :blk undefined;"
+  emit-zig-act : List IRActStmt, List ArityEntry, Boolean -> Text
+  emit-zig-act (stmts) (arities) (voidp) =
+   let len = list-length stmts
+   in let needs-tail = if len == 0 then True
+      else when (list-at stmts (len - 1))
+       is IrDoBind (name) (ty) (val) (sp) -> True
+       is IrDoExec (e) (sp) -> False
+   in let tail = if needs-tail then (if voidp then "break :blk; " else "break :blk undefined; ") else ""
+   in "blk: { " & emit-zig-act-stmts stmts 0 arities voidp & tail & "}"
+
+  emit-zig-act-stmts : List IRActStmt, Integer, List ArityEntry, Boolean -> Text
+  emit-zig-act-stmts (stmts) (i) (arities) (voidp) =
+   if i == list-length stmts then ""
    else let s = list-at stmts i
    in let is-last = i == list-length stmts - 1
    in (when s
     is IrDoBind (name) (ty) (val) (sp) -> "const " & zig-sanitize name & " = " & emit-zig-expr val arities & "; "
-    is IrDoExec (e) (sp) -> if is-last then "break :blk " & emit-zig-expr e arities & "; " else "_ = " & emit-zig-expr e arities & "; ") & emit-zig-act-stmts stmts (i + 1) arities
+    is IrDoExec (e) (sp) ->
+     if is-last then (if voidp then "_ = " & emit-zig-expr e arities & "; break :blk; " else "break :blk " & emit-zig-expr e arities & "; ")
+     else "_ = " & emit-zig-expr e arities & "; ") & emit-zig-act-stmts stmts (i + 1) arities voidp
 
 Section: Apply Emission
 
@@ -405,13 +444,16 @@ Section: Definition Emission
   emit-zig-def (d) (arities) =
    let name = zig-sanitize (d.name)
    in let params-text = emit-zig-def-params (d.params) 0
-   in "fn " & name & "(" & params-text & ") anyopaque {\n    return " & emit-zig-expr (d.body) arities & ";\n}\n\n"
+   in let ret = emit-zig-type (zig-peel-return (d.type-val) (list-length (d.params)))
+   in "fn " & name & "(" & params-text & ") " & ret & " {\n    return " & emit-zig-expr (d.body) arities & ";\n}\n\n"
 
   emit-zig-def-params : List IRParam, Integer -> Text
   emit-zig-def-params (params) (i) =
    if i == list-length params then ""
-   else if i == list-length params - 1 then zig-sanitize ((list-at params i).name) & ": anyopaque"
-   else zig-sanitize ((list-at params i).name) & ": anyopaque, " & emit-zig-def-params params (i + 1)
+   else let p = list-at params i
+   in let one = zig-sanitize (p.name) & ": " & emit-zig-type (p.type-val)
+   in if i == list-length params - 1 then one
+   else one & ", " & emit-zig-def-params params (i + 1)
 
   emit-zig-defs : List IRDef, Integer, List ArityEntry -> Text
   emit-zig-defs (defs) (i) (arities) =
@@ -420,12 +462,14 @@ Section: Definition Emission
 
 Section: Chapter Emission
 
+  zig-prelude : Text =
+   "const std = @import(\"std\");\n\nfn cx_concat(a: []const u8, b: []const u8) []const u8 {\n    return std.mem.concat(std.heap.page_allocator, u8, &.{ a, b }) catch @panic(\"oom\");\n}\n\nfn cx_show_int(n: i64) []const u8 {\n    return std.fmt.allocPrint(std.heap.page_allocator, \"{d}\", .{n}) catch @panic(\"oom\");\n}\n\nfn cx_print_line(s: []const u8) void {\n    std.debug.print(\"{s}\\n\", .{s});\n}\n\nfn cx_print(s: []const u8) void {\n    std.debug.print(\"{s}\", .{s});\n}\n\n"
+
   emit-zig-chapter : IRChapter, List ATypeDef -> Text
   emit-zig-chapter (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
-   in let header = "const std = @import(\"std\");\n\n"
    in let types-text = emit-zig-type-defs type-defs 0
    in let defs-text = emit-zig-defs (m.defs) 0 arities
-   in header & types-text & defs-text & "pub fn main() void {\n    " & zig-sanitize opening-entry-point & "();\n}\n"
+   in zig-prelude & types-text & defs-text & "pub fn main() void {\n    " & zig-sanitize opening-entry-point & "();\n}\n"
 
 Page 1
