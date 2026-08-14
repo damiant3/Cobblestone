@@ -2,7 +2,7 @@
 
 **Created**: 2026-06-12 (reek)
 **Status**: Design -- not yet started
-**Upstream**: All six IoT design docs, `docs/PM/IoT/Compliance/`
+**Upstream**: All six IoT design docs, `docs/Reference/IoT/Compliance/`
 
 ## Purpose
 

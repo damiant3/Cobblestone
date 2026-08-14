@@ -5,6 +5,7 @@ Chapter: GopWizard
   cites Works chapter GopRtc
   cites Works chapter GopUsbKbd
   cites Works chapter GopFat16
+  cites Works chapter GopZone
   cites Kernel chapter BitmapFont
   cites Foreword chapter Ed25519
   cites Foreword chapter Sha256
@@ -199,7 +200,7 @@ Section: Welcome
     in let t4 = wz-text c 6 "This is first boot. We will:" wz-col-text
     in let t5 = wz-text c 7 "  1. Generate your identity (Ed25519 keypair)" wz-col-text
     in let t6 = wz-text c 8 "  2. Configure an upstream server (optional)" wz-col-text
-    in let t7 = wz-text c 9 "  3. Choose your preferred interface" wz-col-text
+    in let t7 = wz-text c 9 "  3. Set your timezone and choose your interface" wz-col-text
     in let t8 = wz-text c 11 "Press Enter to begin." wz-col-green
     in let t9 = wz-text c 13 ("Keyboard: " & (if (c.wz-kbd).uk-ok then "USB HID" else "PS/2")) wz-col-text
     in wz-wait-enter c
@@ -246,6 +247,48 @@ Section: Upstream
     t3 <- wz-text c 4 "or press Enter alone to skip." wz-col-text
     s <- gt-input (wz-field c 6 48 False) (c.wz-kbd)
     s
+  end
+
+Section: Timezone
+
+ Asked at first boot because a machine that does not know where it is
+ shows the wrong time to everyone who reads it, and the answer is one
+ keystroke to change and nobody's secret. It is stored beside the
+ identity on the stick, and the pane in Accessories changes it later.
+
+ The offset is a DISPLAY offset and is never written to the MC146818,
+ for the reason `GopZone` records: the top bar reads that part directly.
+
+  wz-zone-draw : WzCtx, Integer -> [Device.Port] Integer
+  wz-zone-draw (c) (z) =
+    let d0 = wz-clear c
+    in let t0 = wz-text c 0 "Timezone" wz-col-title
+    in let t1 = wz-text c 2 "The hardware clock keeps the time for this machine." wz-col-text
+    in let t2 = wz-text c 3 "Choose the offset this device should report." wz-col-text
+    in let t3 = wz-text c 5 ("    " & zone-text z) wz-col-green
+    in let t4 = wz-text c 7 "Up and Down change it. Enter accepts." wz-col-text
+    in wz-text c 9 "UTC is the default and is never a guess about where you are." wz-col-text
+
+  wz-zone-loop : WzCtx, Integer -> [Device.Port] Integer
+  wz-zone-loop (c) (z) = act
+    d <- wz-zone-draw c z
+    wz-zone-keys c z
+  end
+
+  wz-zone-keys : WzCtx, Integer -> [Device.Port] Integer
+  wz-zone-keys (c) (z) = act
+    sc <- kbd-take (c.wz-kbd)
+    if sc == 28 then z
+    else if sc == 72 then wz-zone-loop c (zone-clamp (z + 1))
+    else if sc == 80 then wz-zone-loop c (zone-clamp (z - 1))
+    else wz-zone-keys c z
+  end
+
+  wz-zone : WzCtx -> [Device.Port] Integer
+  wz-zone (c) = act
+    z <- wz-zone-loop c 0
+    s <- zone-save z
+    z
   end
 
 Section: Key Generation
@@ -473,13 +516,29 @@ Section: Flow
 
   wz-unlock-attempts : Integer = 3
 
+ wz-auto-pass is a DEVELOPMENT passphrase and offers no protection: it is
+ four characters in a public mirror, so any identity it wraps is unlocked
+ by anyone who reads this line. It exists because a returning stick
+ otherwise costs a typed passphrase at the machine before the desk can be
+ reached, and the bench boots dozens of times a day. An identity wrapped
+ with a real passphrase does not match it, falls through to the prompt,
+ and is unaffected.
+
+  wz-auto-pass : Text = "abc123"
+
   wz-welcome-back : WzCtx -> [Device.Port, Device.Mmio] Integer
   wz-welcome-back (c) = act
     wid <- wz-load-identity
     when wid
       is None -> wz-back-unreadable c
-      is Just (w) -> wz-unlock-screen c w 1 ""
+      is Just (w) -> wz-auto-unlock c w
   end
+
+  wz-auto-unlock : WzCtx, WzIdentity -> [Device.Port, Device.Mmio] Integer
+  wz-auto-unlock (c) (w) =
+    when wz-unlock-try w wz-auto-pass
+      is Just (_) -> wz-unlocked c w
+      is None -> wz-unlock-screen c w 1 ""
 
   wz-back-unreadable : WzCtx -> [Device.Port] Integer
   wz-back-unreadable (c) =
@@ -551,6 +610,7 @@ Section: Flow
         sent <- wz-entropy c
         t4 <- wz-trace c 6 "wz: upstream screen"
         up <- wz-upstream c
+        tz <- wz-zone c
         t5 <- wz-trace c 6 "wz: keygen..."
         wid <- wz-keygen (pp.gl-text) (sent.gl-text) (pp.gl-entropy * 2654435761 + sent.gl-entropy * 40503 + up.gl-entropy)
         t6 <- wz-trace c 6 "wz: save identity..."

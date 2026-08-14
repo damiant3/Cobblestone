@@ -1,0 +1,163 @@
+Chapter: GopFish
+  cites Engine chapter Scene3D
+  cites Engine chapter Mesh
+  cites Engine chapter Material
+  cites Engine chapter Texture
+  cites Engine chapter Renderer3D
+  cites Engine chapter GpuScene
+  cites Works chapter GopScene
+  cites Works chapter GopDraw
+  cites Math chapter Cordic
+  cites Game chapter Color
+
+Section: Dimensions
+
+ Engine units, at the scale GopScene's own scene works at: roughly
+ thousands per metre, with the floor plane sized to the tank interior.
+
+  gf-tank-w : Integer = 4200
+  gf-tank-d : Integer = 3000
+  gf-eye : Real = 900.0
+  gf-orbit : Real = 4.6
+  gf-turn : Integer = 6283
+
+Section: Palette
+
+  gf-sand : Rgb = rgb 214 198 158
+  gf-kelp : Rgb = rgb 46 132 74
+  gf-rock : Rgb = rgb 96 104 112
+  gf-coral : Rgb = rgb 232 118 96
+  gf-clown : Rgb = rgb 242 128 42
+  gf-tang : Rgb = rgb 58 128 226
+  gf-tetra : Rgb = rgb 214 210 96
+
+Section: Camera
+
+  gf-camera : Integer -> Camera3D
+  gf-camera (angle) =
+    let ca = real-from-int (cordic-cos angle)
+    in let sa = real-from-int (cordic-sin angle)
+    in camera3d-new (vec3-new (ca * gf-orbit) gf-eye (sa * gf-orbit)) (vec3-new 0.0 500.0 0.0) 0.785
+
+Section: Fish
+
+ Scaling a sphere rather than building a hull mesh keeps a fish at the
+ triangle count mesh-sphere already costs, which is what lets the shoal
+ stay in the software pipeline's budget as well as the GPU's.
+
+  gf-eye-dark : Rgb = rgb 18 18 24
+
+ Heading is milliradians: cordic works in them and gf-turn is 2 pi at that
+ scale, so the same number serves the quaternion after a divide.
+
+  gf-yaw : Integer -> Quat
+  gf-yaw (head) =
+    quat-from-axis-angle (vec3-new 0.0 1.0 0.0) (real-from-int head / 1000.0)
+
+  gf-dir-x : Integer -> Real
+  gf-dir-x (head) = real-from-int (cordic-cos (int-mod head gf-turn)) / 1000.0
+
+  gf-dir-z : Integer -> Real
+  gf-dir-z (head) = real-from-int (cordic-sin (int-mod head gf-turn)) / 1000.0
+
+ The tail is a cone tipped a quarter turn about Z so its axis lies along
+ the body rather than up, then flattened in Z so it reads as a fin and
+ not a spike.
+
+  gf-add-fish : Scene3DState, Text, Rgb, Real, Real, Real, Integer, Integer -> Scene3DState
+  gf-add-fish (s) (name) (colour) (x) (y) (z) (head) (size) =
+    let q = gf-yaw head
+    in let dx = gf-dir-x head
+    in let dz = gf-dir-z head
+    in let len = real-from-int size
+    in let tilt = quat-from-axis-angle (vec3-new 0.0 0.0 1.0) 1.5708
+    in let body-m = sn3-with-mesh (name & "-body") (mesh-sphere size 12 8) (emat-shiny colour 28)
+    in let body = sn3-set-rot (sn3-set-scale (sn3-set-pos body-m x y z) 2.0 0.95 0.55) q
+    in let tail-m = sn3-with-mesh (name & "-tail") (mesh-cone (size * 4 / 5) (size * 6 / 5) 8) (emat-color colour)
+    in let tail-p = sn3-set-pos tail-m (x - dx * len * 2.1) y (z - dz * len * 2.1)
+    in let tail = sn3-set-rot (sn3-set-scale tail-p 1.0 1.15 0.22) (quat-multiply q tilt)
+    in let dors-m = sn3-with-mesh (name & "-dorsal") (mesh-cone (size / 2) (size * 4 / 5) 6) (emat-color colour)
+    in let dors-p = sn3-set-pos dors-m (x - dx * len * 0.3) (y + len * 0.75) (z - dz * len * 0.3)
+    in let dors = sn3-set-rot (sn3-set-scale dors-p 1.0 1.0 0.25) q
+    in let eye-m = sn3-with-mesh (name & "-eye") (mesh-sphere (size / 5) 6 5) (emat-flat gf-eye-dark)
+    in let eye = sn3-set-pos eye-m (x + dx * len * 1.4) (y + len * 0.2) (z + dz * len * 1.4)
+    in scene3d-add (scene3d-add (scene3d-add (scene3d-add s body) tail) dors) eye
+
+  gf-swim-x : Integer, Integer, Real -> Real
+  gf-swim-x (tick) (phase) (radius) =
+    real-from-int (cordic-cos (int-mod (tick + phase) gf-turn)) * radius
+
+  gf-swim-z : Integer, Integer, Real -> Real
+  gf-swim-z (tick) (phase) (radius) =
+    real-from-int (cordic-sin (int-mod (tick + phase) gf-turn)) * radius
+
+Section: Planting
+
+  gf-kelp-blade : Text, Real, Real, Integer -> SceneNode3D
+  gf-kelp-blade (name) (x) (z) (height) =
+    let mat = emat-set-double-sided (emat-color gf-kelp) True
+    in let m = sn3-with-mesh name (mesh-cylinder 70 height 7) mat
+    in sn3-set-scale (sn3-set-pos m x (real-from-int (height / 2)) z) 1.0 1.0 0.35
+
+  gf-stone : Text, Real, Real, Integer -> SceneNode3D
+  gf-stone (name) (x) (z) (size) =
+    let m = sn3-with-mesh name (mesh-sphere size 8 6) (emat-color gf-rock)
+    in sn3-set-scale (sn3-set-pos m x 0.0 z) 1.3 0.6 1.1
+
+  gf-coral-fan : Text, Real, Real, Integer -> SceneNode3D
+  gf-coral-fan (name) (x) (z) (size) =
+    let m = sn3-with-mesh name (mesh-torus size (size / 4) 10 7) (emat-color gf-coral)
+    in sn3-set-pos m x (real-from-int size) z
+
+Section: The Scene
+
+  gf-scene : Integer -> Scene3DState
+  gf-scene (tick) =
+    let sand = etx-checkerboard 8 8 1 (etx-pack-rgb 214 198 158) (etx-pack-rgb 176 158 120)
+    in let floor-mat = emat-set-texture (emat-flat gf-sand) sand
+    in let floor = sn3-with-mesh "floor" (mesh-plane gf-tank-w gf-tank-d) floor-mat
+    in let rock-a = gf-stone "rock-a" (-1500.0) (-700.0) 320
+    in let rock-b = gf-stone "rock-b" 1300.0 600.0 260
+    in let coral-a = gf-coral-fan "coral-a" 900.0 (-900.0) 240
+    in let kelp-a = gf-kelp-blade "kelp-a" (-1900.0) 400.0 1400
+    in let kelp-b = gf-kelp-blade "kelp-b" (-1600.0) 900.0 1000
+    in let kelp-c = gf-kelp-blade "kelp-c" 1800.0 (-400.0) 1200
+    in let ca = int-mod (tick + 0) gf-turn
+    in let ta = int-mod (tick + 2100) gf-turn
+    in let ea = int-mod (tick + 4200) gf-turn
+    in let key = dir-light (vec3-new (-200.0) 1200.0 300.0) (rgb 226 244 255) 780
+    in let s0 = scene3d-new (gf-camera (int-mod tick gf-turn))
+    in let s1 = scene3d-add s0 floor
+    in let s2 = scene3d-add s1 rock-a
+    in let s3 = scene3d-add s2 rock-b
+    in let s4 = scene3d-add s3 coral-a
+    in let s5 = scene3d-add s4 kelp-a
+    in let s6 = scene3d-add s5 kelp-b
+    in let s7 = scene3d-add s6 kelp-c
+    in let s8 = gf-add-fish s7 "clown" gf-clown (gf-dir-x ca * 1400.0) 620.0 (gf-dir-z ca * 1400.0) (ca + 1571) 150
+    in let s9 = gf-add-fish s8 "tang" gf-tang (gf-dir-x ta * 900.0) 980.0 (gf-dir-z ta * 900.0) (ta + 1571) 190
+    in let s10 = gf-add-fish s9 "tetra" gf-tetra (gf-dir-x ea * 1800.0) 400.0 (gf-dir-z ea * 1800.0) (ea + 1571) 110
+    in scene3d-set-ambient (scene3d-add-light s10 key) 330
+
+Section: Run
+
+ The shell gsc-run is, with gf-scene in place of gsc-scene. gsc-frame
+ already takes the scene as a parameter, so the renderer itself needs no
+ fishtank-specific arm.
+
+  gf-run : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  gf-run (base) (w) (h) (stride) (font) (kbd) (cs) (gpu) = act
+    hd <- cursor-hide cs base stride
+    let s = ui-scale w
+    in let sky = rgb-to-packed (rgb 12 38 64)
+    in let top = gsc-topbar-h * s
+    in let cw = w - gsc-sidebar-w
+    in let ch = h - gsc-taskbar-h * s - top
+    in let tgt = r3d-target-new cw ch sky
+    in act
+      r <- gsc-loop tgt gf-scene sky (base + top * stride * 4) stride font ch kbd base w h 1 gpu (gv-new gsc-sidebar-w top cw (ch - gsc-label-band))
+      gs-viewport-release
+    end
+  end
+
+Page 1

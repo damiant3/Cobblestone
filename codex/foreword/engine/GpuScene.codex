@@ -51,6 +51,41 @@ Section: Frame
 
   gs-cmd : Integer = #BE000000
 
+ The texture staging buffer sits just past the shadow light array, which is
+ forty bytes per triangle and so ends well before this, in the same slab the
+ array already proves is writable.
+
+ The commit value is the wire format, not a doorbell. 0 is TerrainGen's
+ original wire, three packed RGB bytes a pixel sampled bilinear and shaded as a
+ globe; 1 is one 32-bit 0x00RRGGBB word a pixel, which is what an
+ EngineTexture already holds, sampled nearest and shaded as an ordinary
+ surface.
+
+  gs-tex-buf : Integer = #BE520000
+
+  gs-tex-write : List Integer, Integer, Integer, Integer -> [Gpu.Memory] Integer
+  gs-tex-write (px) (i) (n) (acc) =
+    if i >= n then acc
+    else gs-tex-write px (i + 1) n (acc + gpu-mem-write gs-tex-buf (i * 4) (list-at px i))
+
+  gs-tex-upload : EngineTexture -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  gs-tex-upload (tex) = act
+    let w = tex.etx-width
+    in let h = tex.etx-height
+    in act
+      wr <- gs-tex-write (tex.etx-pixels) 0 (w * h) 0
+      a <- gpu-out #408 gs-tex-buf
+      b <- gpu-out #409 w
+      c <- gpu-out #40A h
+      gpu-out #40B 1
+    end
+  end
+
+  gs-has-tex : EngineMaterial -> Boolean
+  gs-has-tex (mat) = when mat.emat-texture
+    is None -> False
+    is Just (t) -> True
+
  The rasterizer's own buffer holds far more, but a frame that reaches this
  cap loses whatever it was about to submit NEXT with nothing said, so the
  number wants to stay well above any scene that goes through here. The
@@ -236,7 +271,7 @@ Section: Command Build
     in let p2 = gs-proj v2 mvp gv
     in let area = (p1.gp-sx - p0.gp-sx) * (p2.gp-sy - p0.gp-sy) - (p1.gp-sy - p0.gp-sy) * (p2.gp-sx - p0.gp-sx)
     in let casting = sh.gsh-on == 2
-    in if (if casting then area <= 0 else area >= 0) then gs-mesh-cmds mesh model mvp gv sh mat lights eye ambient tri-idx (i + 3) n
+    in if area >= 0 then gs-mesh-cmds mesh model mvp gv sh mat lights eye ambient tri-idx (i + 3) n
     else if p0.gp-behind + p1.gp-behind + p2.gp-behind > 0 then gs-mesh-cmds mesh model mvp gv sh mat lights eye ambient tri-idx (i + 3) n
     else let depth-only = casting
     in let smooth = if depth-only then False else gs-smooth mat
@@ -244,8 +279,15 @@ Section: Command Build
     in let c0 = if smooth then gs-vert-color v0 model mat lights eye ambient else color
     in let c1 = if smooth then gs-vert-color v1 model mat lights eye ambient else color
     in let c2 = if smooth then gs-vert-color v2 model mat lights eye ambient else color
+    in let textured = if depth-only then False else gs-has-tex mat
+    in let tu0 = if textured then v0.vu else 0
+    in let tv0 = if textured then v0.vv else 0
+    in let tu1 = if textured then v1.vu else 0
+    in let tv1 = if textured then v1.vv else 0
+    in let tu2 = if textured then v2.vu else 0
+    in let tv2 = if textured then v2.vv else 0
     in let offset = tri-idx * 72
-    in gs-mesh-next (gpu-mem-write gs-cmd offset (p0.gp-sx) + gpu-mem-write gs-cmd (offset + 4) (p0.gp-sy) + gpu-mem-write gs-cmd (offset + 8) (p1.gp-sx) + gpu-mem-write gs-cmd (offset + 12) (p1.gp-sy) + gpu-mem-write gs-cmd (offset + 16) (p2.gp-sx) + gpu-mem-write gs-cmd (offset + 20) (p2.gp-sy) + gpu-mem-write gs-cmd (offset + 24) c0 + gpu-mem-write gs-cmd (offset + 28) c1 + gpu-mem-write gs-cmd (offset + 32) c2 + gpu-mem-write gs-cmd (offset + 36) (p0.gp-depth) + gpu-mem-write gs-cmd (offset + 40) (p1.gp-depth) + gpu-mem-write gs-cmd (offset + 44) (p2.gp-depth) + gpu-mem-write gs-cmd (offset + 48) 0 + gpu-mem-write gs-cmd (offset + 52) 0 + gpu-mem-write gs-cmd (offset + 56) 0 + gpu-mem-write gs-cmd (offset + 60) 0 + gpu-mem-write gs-cmd (offset + 64) 0 + gpu-mem-write gs-cmd (offset + 68) 0 + (if sh.gsh-on == 1 then gs-write-light tri-idx (gs-lproj v0 (sh.gsh-lm) (sh.gsh-size)) (gs-lproj v1 (sh.gsh-lm) (sh.gsh-size)) (gs-lproj v2 (sh.gsh-lm) (sh.gsh-size)) (gs-ambient-color mat ambient) else 0)) mesh model mvp gv sh mat lights eye ambient tri-idx i n
+    in gs-mesh-next (gpu-mem-write gs-cmd offset (p0.gp-sx) + gpu-mem-write gs-cmd (offset + 4) (p0.gp-sy) + gpu-mem-write gs-cmd (offset + 8) (p1.gp-sx) + gpu-mem-write gs-cmd (offset + 12) (p1.gp-sy) + gpu-mem-write gs-cmd (offset + 16) (p2.gp-sx) + gpu-mem-write gs-cmd (offset + 20) (p2.gp-sy) + gpu-mem-write gs-cmd (offset + 24) c0 + gpu-mem-write gs-cmd (offset + 28) c1 + gpu-mem-write gs-cmd (offset + 32) c2 + gpu-mem-write gs-cmd (offset + 36) (p0.gp-depth) + gpu-mem-write gs-cmd (offset + 40) (p1.gp-depth) + gpu-mem-write gs-cmd (offset + 44) (p2.gp-depth) + gpu-mem-write gs-cmd (offset + 48) tu0 + gpu-mem-write gs-cmd (offset + 52) tv0 + gpu-mem-write gs-cmd (offset + 56) tu1 + gpu-mem-write gs-cmd (offset + 60) tv1 + gpu-mem-write gs-cmd (offset + 64) tu2 + gpu-mem-write gs-cmd (offset + 68) tv2 + (if sh.gsh-on == 1 then gs-write-light tri-idx (gs-lproj v0 (sh.gsh-lm) (sh.gsh-size)) (gs-lproj v1 (sh.gsh-lm) (sh.gsh-size)) (gs-lproj v2 (sh.gsh-lm) (sh.gsh-size)) (gs-ambient-color mat ambient) else 0)) mesh model mvp gv sh mat lights eye ambient tri-idx i n
 
   gs-mesh-next : Integer, Mesh, Mat4, Mat4, GpuView, GsShadow, EngineMaterial, List Light3D, Vec3, Integer, Integer, Integer, Integer -> [Gpu.Memory] Integer
   gs-mesh-next (w) (mesh) (model) (mvp) (gv) (sh) (mat) (lights) (eye) (ambient) (tri-idx) (i) (n) =

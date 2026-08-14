@@ -395,7 +395,7 @@ codex-vm -kernel file.cdx [options]
 | `-mouse <script>` | -- | Scripted pointer: `t:x,y,btn` events separated by `;` (t = ms from boot, btn bit 0 left / 1 right / 2 middle). Injected straight into the guest, so no host cursor moves and no window takes focus. Works headless. |
 | `-mouse-file <file>` | -- | Same, read from a file (one event per line, `#` comments). Use for drags, which run to dozens of samples. |
 | `-keys-file <file>` | -- | Timeline keyboard: `t:scancode` per line, on the same clock as `-mouse`. Lets a script interleave typing with clicks (the older `-keys` fires on a fixed start+interval). **The event separators are `;` and newline ONLY.** `inject_keyt_parse` skips leading `;`, newline, `\r`, space and tab, but after each event its trailing skip runs to the next `;` or newline, so **a comma-joined timeline silently injects its FIRST event and discards the rest of the line with no error printed.** Cost four boots to find. Re-derive any probe arm that rode a multi-key timeline before building on it. |
-| `-rtc <stamp>` | host clock | Freeze the emulated CMOS RTC at `YYYY-MM-DDTHH:MM:SS` (the `T` may be a space). Day-of-week is computed from the date, not accepted. **This is what makes a guest that paints the time comparable against a recorded frame** -- without it the clock is host state the test cannot twist, which is why GuiOS was believed to be un-goldenable. It also turns the update-in-progress simulation OFF (a frozen clock cannot express UIP), so it is for frames and never for testing the RTC itself: anything asserting on clock behaviour must run without it. |
+| `-rtc <stamp>` | host clock | Freeze the emulated CMOS RTC at `YYYY-MM-DDTHH:MM:SS` (the `T` may be a space). Day-of-week is computed from the date, not accepted. **This is what makes a guest that paints the time comparable against a recorded frame** -- without it the clock is host state the test cannot twist, which is why GuiOS was believed to be un-goldenable. It also turns the update-in-progress simulation OFF (a frozen clock cannot express UIP), so it is for frames and never for testing the RTC itself: anything asserting on clock behaviour must run without it. **It stops the HPET main counter as well**, pinned to `(minute*60 + second) * HPET_HZ` so the two clocks tell the same time and moving the stamp forward a second moves an HPET-driven animation forward a second. That was added when the desk's 3D orbit moved to the HPET: a guest animating off a hardware counter is exactly as uncomparable as one painting the wall clock, and freezing only the RTC would have left every existing capture recipe reproducing a different frame each run. Frozen-clock frames across that change were required to be byte-identical, and were. The counter therefore does not advance under this flag, so **anything that WAITS on the HPET must run without it** -- today that is `E1000e` and `NicAsde`, and no test sidecar passes `-rtc`. |
 | `-screenshot <file>` | -- | Save GOP framebuffer as BMP on exit |
 | `-screenshot-delay <ms>` | 0 | Delay before screenshot capture |
 | `-args <string>` | -- | Boot arguments string (accessible to guest) |
@@ -437,13 +437,9 @@ register, and one added to the ready count at cell 4080. The BSP spins on
 that count (bounded -- it gives up and continues single-core rather than
 hanging) before carrying on.
 
-This used to be a shortcut, and the shortcut hid the whole problem: codex-vm
-read a 64-bit entry address out of GPA 0x1000 and configured each AP's CR3,
-CR4, EFER, GDTR, IDTR and core id from the host. SMP worked here and could
-not have worked on a physical machine, where the vector field is the only
-thing an AP is told. Nothing changed about the guest when this was fixed
-except that it now does the work; three real defects in the guest surfaced
-the moment it had to (see `docs/ArchitectsSketchbook.md`).
+The vector field is the only thing an AP is told, here as on a physical
+machine. `docs/ArchitectsSketchbook.md` has the three guest-side
+requirements that follow from it.
 
 **An AP runs processes.** It goes to `__idle_dispatch`, the same routine
 the boot processor goes to when it runs out of work, claims a READY slot
@@ -457,8 +453,7 @@ of the table and executed it. Six children *finishing* would prove
 nothing -- one core does that.
 
 **A process on an AP is preempted.** The PIT's IRQ reaches the boot
-processor alone, so an AP used to run whatever it was given until that
-process yielded, blocked or exited. Each AP now arms its own **LAPIC
+processor alone, so each AP arms its own **LAPIC
 timer** at bring-up -- periodic, on vector 48 -- and raises IF, so a
 scheduling tick arrives on every core. codex-vm emulates the timer
 per-core (`lapic_timers[]`) and injects the vector from each AP's own
@@ -481,12 +476,11 @@ different core, `-1` meaning any. `codex/test/smp-halt.codex` and
 scheduler model but not in the bare-metal dispatcher, which scans a shared
 process table rather than per-core queues.
 
-**Proc 0 does not migrate**, and this line used to say it was permitted by
-design and merely unproven. Three guards forbid it: `__idle_dispatch` starts
+**Proc 0 does not migrate.** Three guards forbid it: `__idle_dispatch` starts
 each core's scan at its own id so an AP never reaches slot 0, and both
 preemption scans skip slot 0 when the claiming core is not the boot
-processor. Its affinity field says `0` to match; it said `-1`, "any core",
-which is what the old claim was read off. `codex/test/smp-proc0-pinned.codex`
+processor. Its affinity field says `0` to match.
+`codex/test/smp-proc0-pinned.codex`
 pins it, and pins it in the only way that means anything: slot 0's core stamp
 must still be the boot processor's after a run in which an AP demonstrably
 claimed a process, an AP was demonstrably preempted, and some other slot's
@@ -554,7 +548,7 @@ accessed via I/O ports 0x400-0x40F:
 | 0x407 | OUT | Set eye direction X (Y/Z copied from light) |
 | 0x408 | OUT | Set texture guest address |
 | 0x409-0x40A | OUT | Set texture width/height |
-| 0x40B | OUT | Commit texture upload (copy from guest RAM) |
+| 0x40B | OUT | Commit texture upload, and the value IS the wire format (0 or 1) |
 | 0x40C | OUT | Asset load: guest address of a null-terminated host path |
 | 0x40D | OUT | Asset load: guest destination address |
 | 0x40E | OUT | Fade-clear framebuffer toward an XRGB color |
@@ -562,8 +556,7 @@ accessed via I/O ports 0x400-0x40F:
 | 0x40E | IN | Asset load: low 32 bits of bytes loaded |
 | 0x40F | IN | Asset load: high 32 bits of bytes loaded |
 
-The light/eye/texture rows above were off by one until 2026-07-13. The
-asset-load execute is 0x417 and **not** 0x40E, which the OUT chain matches
+The asset-load execute is 0x417 and **not** 0x40E, which the OUT chain matches
 first as the fade-clear: an asset load fired at 0x40E silently faded the sky
 and reported zero bytes read. 0x40E OUT (fade) and 0x40E IN (size) do not
 collide, so the size read-back keeps its port.
@@ -571,6 +564,70 @@ collide, so the size read-back keeps its port.
 Includes depth buffering, per-vertex normals, diffuse+specular
 lighting, texture mapping with bilinear filtering, procedural Earth
 texture generation, and atmospheric glow post-processing.
+
+**The commit value at 0x40B declares the texture, not just the doorbell**, and
+the two modes are not interchangeable. **0** is the original wire: three packed
+RGB bytes per pixel, which is what `apps/globe/TerrainGen.codex` writes with
+`poke-byte`, sampled bilinear with both axes inverted and shaded by the
+earth-globe shader. **1** is one 32-bit `0x00RRGGBB` word per pixel, which is
+what a Codex `EngineTexture` holds and what `gpu-mem-write` writes, sampled
+nearest with both axes wrapping and shaded by a plain modulate of the
+interpolated vertex colour, matching `Renderer3D`'s `r3d-tex-px`.
+
+The globe shading is not a filter that can be left on. It reads the UVs as
+SPHERICAL COORDINATES, fabricates a per-pixel sphere normal from them, lights
+that, and adds a Fresnel atmosphere rim worth up to +140 blue. On a ground plane
+it turns a correctly sampled tan texel (`6E5F4B`) into `405A9C`, a blue that
+looks like some other object's albedo rather than like a shading bug, which cost
+four wrong hypotheses before a probe was pointed at it.
+
+**A viewport-confined frame is double buffered; a full-screen one is not.** A
+frame arrives as a clear on one port and a draw on another, and the rasterizer
+writes into the GOP framebuffer the display thread is reading, so between those
+two writes the target holds nothing but the clear colour. Measured on the desk
+pane at the instant between them: **1,123,200 of 1,123,200 pixels**, every
+frame. That window is what a headless capture occasionally returns as a pane of
+pure sky with the label still drawn beside it, and what reads on the glass as
+the pane flickering while it animates.
+
+So when a viewport is armed the frame is built in a host back buffer and
+presented in one copy at the end of the rasterize; the same reading afterwards
+is 333,663, which is the previous complete frame's real sky. **A program that
+owns the whole screen has no viewport armed and still draws directly**, so it
+keeps this window -- the globe demo will hand back a bare-background frame now
+and then for exactly this reason, and that is the capture, not the renderer.
+
+**`GPU_SHADOW_SLOPE` is 16 and the number was swept, twice.** The first sweep
+used a CUBE FACE and settled on 6; flat geometry cannot show what a curved
+surface does, and a sphere in the desk scene still carried visible acne at that
+setting. Re-swept measuring acne as the sphere's difference from the same frame
+with shadows off, against the ground shadow measured the same way: 6 gives 350
+acne pixels and 132,287 of shadow, 16 gives 0 and 131,691, 24 gives 0 and
+131,200, 40 gives 0 and 130,137. 16 is the knee rather than the largest value
+that works. The software renderer reads 0 acne at every setting, so this was the
+host path alone off parity.
+
+**Single-pixel rasterizer probe.** Set `CODEX_GPU_PROBE=x,y` and codex-vm prints
+one line per triangle that covers that screen pixel, whether it wins or loses the
+depth test:
+
+```
+GPUPROBE f=8 tri=0 tex=1 uv=(0,0 1000,1000 1000,0) c=(C2C0B8 C2C0B8 C2C0B8)
+         interp=(716,303) texel=6E5F4B mode=1 d=982321 pixel=534736
+```
+
+It answers "which triangle drew here, from what UVs, sampling what, and what did
+it emit" in one run, and it costs nothing when the variable is unset. It is the
+right first instrument for any "wrong colour in the pane" question: a census of
+the frame tells you a colour is wrong, and only this tells you which triangle and
+which stage produced it.
+
+The same switch prints one line per rasterize carrying the triangle count, the
+screen and depth extents of the whole submitted batch, and how much of the
+VISIBLE framebuffer is currently the clear colour. The extents separate "the
+guest culled everything" from "the guest submitted geometry that landed
+somewhere unexpected" without a rebuild, and the last figure is what turns an
+intermittent flicker into a deterministic reading.
 
 **Serial I/O.** Ring buffer at GPA 0x500000 (1 MB). Source input is
 pre-loaded from `-input` file. Output captured from guest UART writes
@@ -584,19 +641,12 @@ ARP (responds for gateway), DHCP (offers 10.0.2.15/24), DNS, TCP
 forwarding, and UDP forwarding (see below). Port forwarding via
 `-portfwd` for host-to-guest TCP connections.
 
-**DHCP is answered, and until 2026-07-30 it was not** -- the same shape as
-the DNS correction below, in the same entry, found the same way. This line
-has claimed the NAT offers 10.0.2.15/24 by DHCP for as long as it has
-existed. There was no server: a DISCOVER on port 67 fell through to
-`nat_handle_udp_tx` and out to a host socket that nothing answers, so the
-guest waited out its fuel and configured nothing. Nothing noticed because
-nothing in the tree had ever sent a DISCOVER -- `Dhcp.codex` builds the
-messages and parses the replies and says of itself "pure logic, no I/O",
-and there was no caller. The server now answers DISCOVER with an OFFER and
-REQUEST with an ACK carrying mask, router, DNS and a 3600-second lease, and
-`codex/test/dhcp-acquire` is the guest that asks. **A model nobody drives
-and a document nobody checks fail in the same direction, which is the
-reassuring one.**
+**DHCP is answered.** The server answers DISCOVER with an OFFER and REQUEST
+with an ACK carrying mask, router, DNS and a 3600-second lease.
+`codex/test/dhcp-acquire` is the guest that asks, and it is what keeps this
+row honest: `Dhcp.codex` builds the messages and parses the replies but
+performs no I/O of its own, so without a caller neither the model nor this
+document has anything testing it.
 
 **`-dhcp-lease <seconds>` sets the lease the NAT offers; the default is
 3600.** It exists because the default cannot be tested: a client renews at
@@ -630,13 +680,57 @@ negotiated state.
 | `-e1000-phy-link` | STATUS.LU requires auto-negotiation complete, not merely CTRL.SLU |
 | `-e1000-mdio-window` | MDIC answers nothing for 10 ms after CTRL.RST (I219 datasheet 9.2) |
 | `-e1000-mdio-slow` | MDIO reads answer E until page 769 register 16 bit 10 is set (I219 9.2) |
+| `-e1000-ctrl-ro` | CTRL is READ-ONLY: writes discarded whole, register keeps the firmware value |
+
+### The xdiag cell registry
+
+`xdiag-put`/`xdiag-get` (`GopXhci`) index one flat array of 32-bit cells at
+`xhci-diag`. Every subsystem that wants a breadcrumb takes cells out of it,
+**nothing arbitrates, and no compiler or gate ever looked**. Two owners of one
+cell is green everywhere and surfaces as a wrong number on a photograph of a
+boot screen.
+
+| cells | owner |
+|---|---|
+| 0..19 | xHCI scalars (GopXhci's own map, literal offsets) |
+| 20..27 | xHCI port cells, `20 + port`, `xhci-port-cells` = 8 |
+| 28..46 | xHCI ownership, release and BAR scalars |
+| 47 | `usb-hid-cell-count`, the HID bind counter |
+| 48..63 | xHCI controller table, `48 + i*4`, four controllers |
+| 64..69 | `xhci-ep-base` block, six words |
+| 70..87 | MSC and FAT cells (`msc-cell-*`, `gfat-cell-*`) |
+| 96..111 | `usb-hid-note` block, `usb-hid-cell-base + idx*4`, four devices |
+
+`msc-cell-end` = 80 is an EXCLUSIVE bound for `xdiag-zero`, not a stored cell,
+which is why it may equal another owner's first cell.
+
+**The HID block was at 80 until 2026-08-13, four cells deep into storage
+territory**, overlapping `gfat-cell-stage` 80, `msc-cell-lastcc` 81,
+`msc-cell-phase` 82, `gfat-cell-write` 83, `xhci-cell-fuel-left` 84,
+`msc-cell-fuel-lo` 85, `msc-cell-fail-lba` 86 and `msc-cell-retry` 87. It
+stayed invisible because the writers run in order and neither reads the other:
+`usb-attach` binds HID and fills 80..95, then the mount and any disk I/O
+overwrite 80..87. So the storage diagnostics were correct and **DeskBoot's
+first two HID table rows were showing storage state under device-descriptor
+labels**. In the other direction a cell the storage path did not write on a
+given boot kept its HID value, which is how an F12 mount failure came to
+report `gfat-cell-write` as 1964712320 -- not a write stage, but HID device
+0's report buffer address.
+
+`build/check-xdiag-cells.ps1` is the runner. It fails on an overlap between
+declared blocks, on two named constants claiming one cell, and on a named
+constant outside every declared block. **A subsystem taking a RANGE must
+declare it in that script's table**, because a computed base is invisible to a
+constant scan. It deliberately does not parse the ~90 literal `xdiag-put 19`
+calls in GopXhci; those are that chapter's private map.
+
 | `-e1000-asde` | STATUS answers SPEED and ASDV, and CTRL.ASDE picks which source SPEED comes from (82583V 12349, 12590) |
 
 `-e1000-phy-link` is the one worth knowing about. It is **off by default**,
 so every run that predates it keeps the SLU-only link it was measured
 against; with it on, a driver that never brings the PHY up gets no link,
-which is the I219's real behaviour and the failure that was previously
-invisible here. `codex/test/e1000-phy` runs under it and
+which is the I219's real behaviour and a failure the default bed cannot
+show. `codex/test/e1000-phy` runs under it and
 `codex/test/e1000-phy-absent` runs under `-e1000-no-phy`.
 
 `-e1000-mdio-window` is also off by default and is the arm for the settle
@@ -660,6 +754,32 @@ because this bed's MAC has nothing to sense. `codex/test/e1000-asde-speed`
 runs under it with `-e1000-phy-link`. **It does not reproduce the metal wedge
 and must not be read as evidence about it.**
 
+`-e1000-ctrl-ro` is the newest and it is **measured on metal, not invented**.
+Damian's Intel I219-V at `00:1f.6`, 2026-08-13: the driver cleared `CTRL.SLU`
+and read `CTRL` straight back, four rows across two flights, and got
+`0x180240` -- the firmware value, SLU still set -- every time. `CTRL.ASDE`
+refused to set on the same flights. **MDIC writes work on that part**, so
+this is `CTRL` specifically and not the CSR write path: `e1000-phy-write`
+writes MDIC at `0x0020`, polls it ready, and succeeds on every arm.
+
+Two consequences, and the second is the one that cost a day. The link comes
+up **anyway**, over MDIO, because `na-phy-kick` reaches the PHY and the CTRL
+write was never load-bearing. And with CTRL discarded, `e1000-reset` never
+sets RST, so `e1000-await-reset` sees it clear on its first read and answers
+`settled=1` -- **a reset that never happened, reporting exactly like one that
+completed.** On 2026-08-13 that read as "the reset works on a warm part", and
+a whole cold-versus-warm hypothesis got built on an event that never
+occurred. `codex/test/e1000-ctrl-ro` pins all of it, including a row that
+deliberately reads the same with the arm and without it, because no aggregate
+can tell those two resets apart.
+
+Nothing public in this tree states that CTRL is read-only to the host, so the
+flag models the OBSERVATION and claims no mechanism. What the datasheet does
+say is that the I219 is the PHY and the MAC lives in the PCH, whose link
+configuration belongs to the integrated LAN controller and the ME
+(I219 datasheet Table 5-1, and 9.2's note that the LAN controller configures
+the LCD registers).
+
 `-e1000-mdio-slow` is the third of these and also off by default. The PHY
 model has pages now: registers 0-15 are the IEEE set and answer in every
 page, registers 16-31 at page 0 keep the flat behaviour they always had,
@@ -673,26 +793,15 @@ A PHY reset clears the paged state, so a driver that sets slow mode before
 resetting the PHY loses it; `codex/test/e1000-mdio-slow` catches that
 ordering specifically.
 
-**DNS is answered, and until 2026-07-14 it was not.** This entry used
-to say the NAT handled "DNS (forwards to host)" and "TCP/UDP
-forwarding". Neither was true of UDP: the UDP branch of
-`nat_handle_tx` was an empty block whose entire body was the comment
-`/* UDP -- minimal DNS forwarding could go here */`, so every DNS query
-any guest ever sent was silently dropped and every lookup timed out.
-Nothing noticed, because nothing in the tree could make a network call.
-
-A query to port 53 is now answered by `nat_handle_dns`: it walks the
-QNAME, resolves it with `getaddrinfo` -- the **host's own resolver**, so
+**DNS is answered.** A query to port 53 is handled by `nat_handle_dns`: it
+walks the QNAME, resolves it with `getaddrinfo` -- the **host's own resolver**, so
 the hosts file, the search domain and whatever DNS the host actually
 uses all apply, and no packet leaves the process -- and dresses the
 answer as a DNS response the guest's resolver parses. Only QTYPE=A/IN
 is answered; anything else returns NXDOMAIN rather than a lie.
 
-**General UDP forwarding is implemented** (2026-07-23). This entry said
-the opposite until then: every UDP datagram to a port other than 53 was
-dropped, which is why CoAP could not reach a server, NTP could not reach
-a time source, and no datagram protocol in the tree was testable. A
-guest-originated datagram now opens a **UDP flow** -- a host socket
+**General UDP forwarding is implemented.** A
+guest-originated datagram opens a **UDP flow** -- a host socket
 remembered by (guest port, destination port, destination address) -- and
 its replies are framed back to the port the guest sent from. A flow is
 not a connection: there is no handshake and nothing to retransmit, so it
@@ -729,10 +838,8 @@ transfer ring processing. Three device slots:
 - Slot 2: HID keyboard (interrupt IN, generates scan codes)
 - Slot 3: UVC camera (isochronous transfers). Delivers a 160x120 YUYV
   colour-bar test pattern: eight vertical bars 20 px wide, luma
-  alternating 16 and 235 by bar. An isochronous TRB that sets IOC now
-  gets a transfer event (Short Packet when the frame is smaller than the
-  buffer); it used to copy the data and post nothing, so a driver waiting
-  on the completion waited forever while its buffer filled.
+  alternating 16 and 235 by bar. An isochronous TRB that sets IOC gets a
+  transfer event (Short Packet when the frame is smaller than the buffer).
 - Root port 4: a **high-speed hub** with a **full-speed keyboard** behind
   its one downstream port (hub class descriptor, GET_PORT_STATUS,
   SET/CLEAR_PORT_FEATURE). Device personality keys off the root port AND
@@ -786,9 +893,8 @@ drives GOP applications with; see `docs/ExaminersAssay.md`.
 interval does not exist.** That model completes every interrupt IN TRB at
 doorbell time, so the guest's armed TD is consumed with whatever the
 held-key set held then and nothing stays armed for a later report to land
-in. It was the default until 2026-08-06 and is why scripted input was
-unreliable in desk beds. Measured on `usb-kbd-multi`, hold width the only
-variable, three runs per cell, before and after the flip:
+in. Measured on `usb-kbd-multi`, hold width the only variable, three runs
+per cell:
 
 | hold | `-hid-instant-complete` | default (NAK) |
 |---|---|---|
@@ -985,9 +1091,8 @@ repainting never exits and costs its whole deadline.
 both render `FFFFFF`, `sinkladder.img` renders `FF8000` mid-write, and
 `a5flight2.img` renders `FFFFFF`.
 
-**This section previously said the opposite, and that was a defect in the
-reader, not in codex-vm.** The claim was that a ladder reporting
-`painted fb=1` produced a black BMP. It came from this expression:
+**A ladder that reports `painted fb=1` against an apparently black BMP is
+almost always the reader.** This expression is the usual cause:
 
 ```powershell
 ($b[$i+2] -shl 16) -bor ($b[$i+1] -shl 8) -bor $b[$i]     # WRONG
@@ -995,8 +1100,8 @@ reader, not in codex-vm.** The claim was that a ladder reporting
 
 `$b[$i]` indexes a `byte[]`, and PowerShell shifts a `[byte]` at BYTE width, so
 both shifted terms are 0 and the result is the blue channel alone. Orange
-(`FF 80 00`) decoded as `000000` and read as black; white decoded as `0000FF`
-and read as "not white". Every conclusion drawn from it was wrong.
+(`FF 80 00`) decodes as `000000` and reads as black; white decodes as `0000FF`
+and reads as "not white".
 
 Cast, or read the channels separately and do not combine them:
 
@@ -1245,8 +1350,8 @@ whether it works. Worth knowing before queueing for a seed cycle to
 answer a question one gate already answers.
 
 **Pass `-Kernel` when you do, because the default is not what you think.**
-This paragraph said `build-output/bare-metal/Codex.cdx` "is the SUT"
-until 2026-08-11. It is not, and it is not the seed either.
+`build-output/bare-metal/Codex.cdx` is not the SUT, and it is not the seed
+either.
 `Build-Cdx` and `Build-Text` in `build.ps1` each copy their own kernel
 over that path before running, so it ends up holding whichever kernel the
 LAST compile phase used, not whichever artifact the run produced.
@@ -1431,9 +1536,9 @@ dotnet build "$R\build-output\ddc-arm\CodexCs.csproj" -c Release
 build/ddc-witness.ps1 -Repo $R -Source "$R\codex\plugs\csharp\build-output\Codex.codex"
 ```
 
-**Steps 3 and 4 were prose here until 2026-08-12 and nothing ran them**, so
-each release re-derived by hand the one proof that does not take the
-compiler's word for anything. The part that is easy to get wrong is
+**Steps 3 and 4 are scripted rather than prose**, because doing them by hand
+re-derives the one proof that does not take the compiler's word for
+anything. The part that is easy to get wrong is
 reconstructing the exact bytes `compile.ps1` feeds the compiler (the mode
 line is `CDX repl`, because the seed is built `-Repl`), and a wrong
 reconstruction makes the C# arm disagree for a reason that has nothing to do
@@ -1864,8 +1969,8 @@ answer so nothing can elide them. Measured both arms on one binary: depot
 `codex-vm.exe#92` faults the host (exit 49374, no serial), the fixed build
 prints `1 2 0 204800 1024` at 612 exits.
 
-**That test got its exits from drawing until 2026-08-10, and the change
-that made drawing fast disarmed it silently.** When `gfx-put-pixel` stopped
+**This test is easy to disarm silently.** It once took its exits from
+drawing, and when `gfx-put-pixel` stopped
 banking (below), the exits fell from 1011 to 211, the pre-fix binary stopped
 crashing, and the recorded output did not move a single byte -- a guard
 reporting exactly what a working one reports. If you change what this test
@@ -1939,6 +2044,11 @@ and runs to completion under `-uefi -disk`, with no host fault. The entry
 below is the original measurement, kept because it is what made the cause
 findable in one sitting. It said the cause was NOT pinned, and that was
 true when written; it is pinned now and the account is above.
+
+The `-timeout 60` below is a transcript of what was typed, not a recipe:
+that flag does not exist and was silently ignored, exactly as the section
+above records. **Do not copy this line.** To bound a run, use
+`-screenshot` with `-screenshot-delay`, which exits after the capture.
 
 ```
 tools/codex-vm.exe -kernel X.img -uefi -disk X.img -headless -timeout 60
@@ -2312,13 +2422,12 @@ above 0x100000000 whenever `-mem` exceeds 4 GB, and `AllocateAnyPages`
 allocates top-down from `guest_mem_size - 1 MB`: a guest that believes
 either one touches memory the map has to cover.
 
-It was a fixed 4 GB until 2026-08-08, and before that a fixed 2 GB. Both were
-the same defect at different thresholds -- the emulator advertised memory it
-did not map, so at `-mem 8192` it returned 0x1f7f00000 from its own
-allocator and then triple-faulted the guest on that address. **A fault of
-that shape was the bed, not the payload.** If you are reading an old account
-that says a UEFI run above `-mem 4096` is meaningless, that is why, and it
-no longer holds.
+**A UEFI fault of that shape is the bed, not the payload.** Earlier builds
+pinned this at a fixed 4 GB, and before that 2 GB, so the emulator advertised
+memory it did not map: at `-mem 8192` it returned 0x1f7f00000 from its own
+allocator and then triple-faulted the guest on that address. An older account
+calling a UEFI run above `-mem 4096` meaningless is describing that, and it
+does not hold now.
 
 Past 64 GB the map stops growing and says so on stderr, naming the address
 above which memory is advertised and not mapped. It does not fault silently.
@@ -2334,7 +2443,7 @@ two paths do not share a memory model:
 | `build/desk.ps1`, any `codex-vm -kernel *.cdx` | the bare-metal model above: heap 6 MB up to `-mem`, default 3072 |
 
 `-AllocPages` is `cdx-to-pe.ps1`'s `-HeapPages` under another name; the
-name is kept because probe commands in `docs/HardwareSitting.md` pass it.
+name is kept because probe commands in `docs/Hardware/HardwareSitting.md` pass it.
 
 This is what hid the A6 F12 regression for a week. Six bed arms across two
 agents could not express a 4.6 MB per-visit leak, and the post-mortem
@@ -2475,11 +2584,11 @@ poison battery the kernel was still `3AF5763C`, the poison seed, and nothing
 said so. `compile.ps1` prints the kernel and its digest on every run for
 exactly this class of mistake -- read that line.
 
-**`-Jobs 8`, and a release run is not an exception.** This recipe said `-Jobs 4`
-until 2026-08-02 and the 4 was the dead XMP workaround described under "The
-parallelism default" in `ExaminersAssay.md`: the box's DDR5 was running a
-profile it was not stable at, that was fixed 2026-07-22, and the harness default
-went back to 8 while the release recipes kept the halved number. Measured
+**`-Jobs 8`, and a release run is not an exception.** A `-Jobs 4` in any
+older recipe is the dead XMP workaround described under "The parallelism
+default" in `ExaminersAssay.md`: the box's DDR5 was running a profile it was
+not stable at, and that was fixed 2026-07-22. Do not copy the lower number
+forward. Measured
 2026-08-02 on the poison run that carried it: **977 s in the compile phase at 4
 slots on a 12-core box.** Damian's ruling is that 8 is the standard everywhere,
 including release proofs. The contention classes that motivated the caution are
@@ -2492,8 +2601,7 @@ command above says `-Tier all` on purpose. A poison run over `lang` proves
 `lang`, and the apps, forewords and lib tiers allocate shapes it never
 reaches.
 
-**Do not expect a specific pass count here.** This text used to say "Expected:
-105 pass, 0 fail" against a battery that no longer exists; the `lang` tier
+**Do not expect a specific pass count here.** The `lang` tier
 alone measured 674 total / 649 pass / 25 skip on 2026-07-28. The number to
 check is **fail=0**, and the rollup's own run-over-run delta (`newly red`) is
 a better instrument than any count written down in a document.
@@ -2535,8 +2643,30 @@ needed internally.
    Copy-Item -Force build/output/SutMap.map seed/Codex.map
    ```
 
-   The non-repl binary differs from the `-Repl` seed only in unnamed
-   padding; every named function offset is byte-identical (cross-check
-   against the seed's embedded MAP1 if unsure), so the text map is exact.
+   `compile.ps1` captures the `MAP:` block into a SIDECAR `<out>.map`
+   file, not into the log. Grepping the log for `MAP:` finds nothing and
+   reads as the step having failed; the map is `build/output/SutMap.map`.
+
+   **The non-repl binary is NOT nearly-identical to the `-Repl` seed, and
+   the map is exact anyway.** Measured 2026-08-14 at seed `D9A6A7A2`: the
+   two binaries differ in **255,683 bytes**, first difference at offset 8,
+   spread the whole length of the file. What is identical is the thing the
+   map depends on -- comparing the two embedded MAP1 tables entry by entry
+   gives **0 name mismatches and 0 offset mismatches** across all 5,126
+   functions, with one size difference (`__start`, 9545 against 9556: the
+   last function in the image, carrying the 8-byte file-size delta). The
+   layout is shared; only the bytes sitting inside it are not.
+
+   This paragraph used to say the two "differ only in unnamed padding". A
+   byte diff refutes that in one command, and an agent who runs one is left
+   believing the map is unsafe to install when it is fine. So validate the
+   MAP, not the binary: every address in the text map must sit at a
+   constant delta from the same name in the seed's embedded MAP1, and that
+   delta must be the `0x100000` load base. Measured that way the installed
+   map answers one delta for all 5,126 symbols with no unmatched names.
+   That check is worth keeping because it fails loudly on the case that
+   actually hurts -- a map minted from compiler source that has moved ahead
+   of the seed, which is confident nonsense that nothing else announces.
+
    The embedded MAP1 in each CDX is authoritative for crash reports
    regardless -- the text map only feeds `-Break` and `Resolve-Rip`.

@@ -1,7 +1,3 @@
-Now I have a thorough picture. Let me write the formal grammar for Codex Prose -- the load-bearing subset of English that is mathematically unambiguous.Now I have everything I need. Let me write the formal grammar specification.Damian. Here it is. The razor applied to English. I've read every word of the book, and every line of those two codex files. This grammar is derived from first principles, not patched onto existing English.
-
----
-
 # Codex Prose Language (CPL) -- Formal Grammar Specification
 
 ## Preamble: The Founding Axiom

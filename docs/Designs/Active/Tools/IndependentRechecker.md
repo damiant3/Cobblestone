@@ -1047,10 +1047,10 @@ Per the on-demand contract in `CLAUDE.md` step 5:
 
 ## 13. Cross-references
 
-- `docs/Reference/ClaimsCalibration.md` -- the claim register; the
+- `docs/PM/Done/ClaimsCalibration.md` -- the claim register; the
   README sentence in section 1 belongs there with whatever the
   kill-rate ends up being
-- `docs/Reference/TrustedComputingBase.md` -- section 4 ranks the proof
+- `docs/PM/Done/TrustedComputingBase.md` -- section 4 ranks the proof
   layer; this document is an instrument for that ranking, not a change
   to it
 - `docs/Designs/Done/Language/ProofTotalityProbe.md` -- the probe

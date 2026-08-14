@@ -1,0 +1,300 @@
+Chapter: GopConsole
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Theme
+  cites Works chapter GopFat16
+  cites Works chapter DevHypervisor
+
+Section: Shape
+
+ A line is stored as the bytes the medium and the keyboard both speak, not
+ as CCE, for the reason GopEdit's buffer is: they arrive through
+ apply-mods and leave through from-unicode, and reading them as CCE
+ directly renders every letter as the wrong glyph.
+
+ The row count is what FITS, not what is wanted. Nothing clips a widget
+ panel to its box: at sixteen rows an `ls SRC` drew its last three lines
+ outside the frame and over the prompt. The depth is therefore chosen for
+ the shortest pane rather than the tallest, and a taller one simply shows
+ the same twelve with slack under them.
+
+  gcon-cols : Integer = 96
+  gcon-rows : Integer = 12
+
+Section: The State Block
+
+  gcon-init : Integer -> Integer
+  gcon-init (ns) =
+    let inp = alloc-zeroed gcon-cols 64
+    in let scroll = alloc-zeroed (gcon-rows * gcon-cols) 64
+    in let a = poke-32 ns 0 inp
+    in let b = poke-32 ns 4 0
+    in let c = poke-32 ns 8 scroll
+    in poke-32 ns 12 0
+
+  gcon-ensure : Integer -> Integer
+  gcon-ensure (ns) = if peek-32 ns 0 == 0 then gcon-init ns else 0
+
+  gcon-inp : Integer -> Integer
+  gcon-inp (ns) = peek-32 ns 0
+
+  gcon-len : Integer -> Integer
+  gcon-len (ns) = peek-32 ns 4
+
+  gcon-scroll : Integer -> Integer
+  gcon-scroll (ns) = peek-32 ns 8
+
+  gcon-count : Integer -> Integer
+  gcon-count (ns) = peek-32 ns 12
+
+Section: Bytes And Text
+
+  gcon-chars : Integer, Integer, Integer, Text -> Text
+  gcon-chars (buf) (i) (stop) (acc) =
+    if i >= stop then acc
+    else let b = peek-byte buf i
+    in let ch = if b < 32 then " " else char-to-text (code-to-char (from-unicode b))
+    in gcon-chars buf (i + 1) stop (acc & ch)
+
+  gcon-put : Integer, Integer, Text, Integer, Integer -> Integer
+  gcon-put (buf) (off) (t) (i) (n) =
+    if i >= n then n
+    else let b = to-unicode (char-code-at t i)
+    in let w = poke-byte buf (off + i) (if b < 32 then 32 else b)
+    in gcon-put buf off t (i + 1) n
+
+  gcon-blank : Integer, Integer, Integer, Integer -> Integer
+  gcon-blank (buf) (off) (i) (n) =
+    if i >= n then n
+    else let w = poke-byte buf (off + i) 0
+    in gcon-blank buf off (i + 1) n
+
+  gcon-row-text : Integer, Integer -> Text
+  gcon-row-text (ns) (r) =
+    let off = r * gcon-cols
+    in gcon-chars (gcon-scroll ns) off (off + gcon-cols) ""
+
+  gcon-input-text : Integer -> Text
+  gcon-input-text (ns) = gcon-chars (gcon-inp ns) 0 (gcon-len ns) ""
+
+Section: Scrollback
+
+ Full means shift, not wrap. A ring would spare the copy and cost the
+ caller an origin to reason about on every read; sixteen rows of ninety-six
+ bytes is 1,440 bytes moved on a line nobody can type faster than.
+
+  gcon-shift : Integer, Integer, Integer -> Integer
+  gcon-shift (buf) (i) (n) =
+    if i >= n then n
+    else let b = peek-byte buf (i + gcon-cols)
+    in let w = poke-byte buf i b
+    in gcon-shift buf (i + 1) n
+
+ Wrapped at a width the NARROWEST pane can show, not at gcon-cols. The
+ first long line this pane ever printed was the VT-x diagnostic, and it ran
+ off the right edge with the half naming the fix outside the panel. A
+ diagnostic that is cut where it stops being obvious is worse than a short
+ one, so a long push becomes as many rows as it needs.
+
+  gcon-wrap : Integer = 62
+
+  gcon-push : Integer, Text -> Integer
+  gcon-push (ns) (t) =
+    if text-length t > gcon-wrap then
+      let head = substring t 0 gcon-wrap
+      in let tail = substring t gcon-wrap (text-length t - gcon-wrap)
+      in let p = gcon-push-one ns head
+      in gcon-push ns ("  " & tail)
+    else gcon-push-one ns t
+
+  gcon-push-one : Integer, Text -> Integer
+  gcon-push-one (ns) (t) =
+    let buf = gcon-scroll ns
+    in let c = gcon-count ns
+    in let room = c < gcon-rows
+    in let s = if room then 0 else gcon-shift buf 0 ((gcon-rows - 1) * gcon-cols)
+    in let r = if room then c else gcon-rows - 1
+    in let off = r * gcon-cols
+    in let z = gcon-blank buf off 0 gcon-cols
+    in let n = if text-length t > gcon-cols then gcon-cols else text-length t
+    in let p = gcon-put buf off t 0 n
+    in poke-32 ns 12 (if room then c + 1 else c)
+
+Section: Commands
+
+ The command table is the pane's own and is deliberately small. The shell
+ the rest of this app already has (ShellDispatch) parses a line to a Command
+ and answers a DispatchResult with no Console effect anywhere in it, so it
+ plugs in here without change -- but it cites thirteen chapters across Trust,
+ Verify, OS and Observe, and pulling that cone into GopDesk is a dependency
+ decision rather than a wiring one.
+
+  gcon-word : Text, Integer, Integer -> Text
+  gcon-word (t) (i) (n) =
+    if i >= n then t
+    else if substring t i 1 == " " then substring t 0 i
+    else gcon-word t (i + 1) n
+
+  gcon-head : Text -> Text
+  gcon-head (t) = gcon-word t 0 (text-length t)
+
+  gcon-rest : Text -> Text
+  gcon-rest (t) =
+    let h = text-length (gcon-head t)
+    in if h >= text-length t then "" else substring t (h + 1) (text-length t - h - 1)
+
+  gcon-help : Text = "help  echo <text>  ls [dir]  vmx  seed  clear"
+
+ The guest compile in VmCompile cannot start without VT-x, and whether this
+ machine has it has never been read on metal -- only under codex-vm, where
+ IA32_FEATURE_CONTROL measured 1 on 2026-07-27, the encoding of firmware
+ with VT-x switched off. DevHypervisor already knows how to say why in one
+ sentence; the console is the first surface that can ask it on the real box
+ without a serial cable.
+
+  gcon-vmx : Integer -> Integer
+  gcon-vmx (ns) =
+    let fc = vmx-feature-control
+    in let p = gcon-push ns ("IA32_FEATURE_CONTROL = " & show fc)
+    in if vmx-available
+      then let a = gcon-push ns "VT-x available"
+      in gcon-push ns ("VMX revision id " & show vmx-read-revision-id)
+      else gcon-push ns vmx-unavailable-reason
+
+ `vm-compile` wants the seed as a List Integer, and 2.7 MB of boxed
+ integers was named as the wall waiting behind VT-x. `seed` measures it
+ instead of arguing about it: it reads CODEX.CDX off the volume, converts
+ the whole thing, and reports the heap the conversion actually cost and
+ the seconds it took. It needs no VT-x, so the answer is available in the
+ bed and on metal alike.
+
+  gcon-buf-list : Integer, Integer, Integer, List Integer -> List Integer
+  gcon-buf-list (buf) (i) (n) (acc) =
+    if i >= n then acc
+    else gcon-buf-list buf (i + 1) n (list-push acc (peek-byte buf i))
+
+  gcon-seed : Integer -> [Device.Port] Integer
+  gcon-seed (ns) = act
+    m <- gfat-mount-esp
+    if m.gm-ok == False then gcon-push ns "no FAT volume on the boot medium"
+    else act
+      f <- gfat-read-file (m.gm-vol) "CODEX.CDX"
+      if f.gf-ok == False then gcon-push ns "CODEX.CDX: cannot read"
+      else act
+        t0 <- rtc-seconds 0
+        let h0 = __heap-save
+        in let bs = gcon-buf-list (f.gf-buf) 0 (f.gf-len) []
+        in let h1 = __heap-save
+        in act
+          t1 <- rtc-seconds 0
+          let p1 = gcon-push ns ("CODEX.CDX " & show (f.gf-len) & " bytes")
+          in let p2 = gcon-push ns ("list " & show (list-length bs) & " elems  heap +" & show (h1 - h0) & " bytes")
+          in gcon-push ns ("elapsed " & show (t1 - t0) & "s (rtc, wraps at 60)")
+        end
+      end
+    end
+  end
+
+  gcon-ls-rows : Integer, List Fat16DirEntry, Integer, Integer -> Integer
+  gcon-ls-rows (ns) (entries) (i) (n) =
+    if i >= n then n
+    else let e = list-at entries i
+    in let sz = if gfl-is-dir e then "<DIR>" else show (e.de-size)
+    in let p = gcon-push ns ("  " & gfl-pad (e.de-name) 16 & sz)
+    in gcon-ls-rows ns entries (i + 1) n
+
+  gcon-ls : Integer, Text -> [Device.Port] Integer
+  gcon-ls (ns) (arg) = act
+    m <- gfat-mount-esp
+    if m.gm-ok == False then gcon-push ns "no FAT volume on the boot medium"
+    else act
+      let vol = m.gm-vol
+      in if text-length arg == 0 then act
+        ents <- gfat-list-root vol
+        gcon-ls-rows ns ents 0 (list-length ents)
+      end
+      else act
+        e <- gfat-resolve vol arg
+        when e
+          is None -> gcon-push ns (arg & ": not found")
+          is Just (entry) ->
+            if gfl-is-dir entry == False then gcon-push ns (arg & ": not a directory")
+            else act
+              ents <- gfat-list-dir vol (entry.de-cluster)
+              gcon-ls-rows ns ents 0 (list-length ents)
+            end
+        end
+      end
+    end
+  end
+
+  gcon-exec : Integer, Text -> [Device.Port] Integer
+  gcon-exec (ns) (line) =
+    let cmd = gcon-head line
+    in if text-length cmd == 0 then act 0 end
+    else if cmd == "help" then act gcon-push ns gcon-help end
+    else if cmd == "echo" then act gcon-push ns (gcon-rest line) end
+    else if cmd == "ls" then gcon-ls ns (gcon-rest line)
+    else if cmd == "vmx" then act gcon-vmx ns end
+    else if cmd == "seed" then gcon-seed ns
+    else if cmd == "clear" then act poke-32 ns 12 0 end
+    else act gcon-push ns (cmd & ": no such command") end
+
+Section: Keys
+
+  gcon-type : Integer, Integer -> Integer
+  gcon-type (ns) (ch) =
+    let n = gcon-len ns
+    in if n >= gcon-cols then 0
+    else let w = poke-byte (gcon-inp ns) n ch
+    in poke-32 ns 4 (n + 1)
+
+  gcon-back : Integer -> Integer
+  gcon-back (ns) =
+    let n = gcon-len ns
+    in if n <= 0 then 0 else poke-32 ns 4 (n - 1)
+
+  gcon-enter : Integer -> [Device.Port] Integer
+  gcon-enter (ns) = act
+    let line = gcon-input-text ns
+    in act
+      p <- act gcon-push ns ("> " & line) end
+      r <- gcon-exec ns line
+      poke-32 ns 4 0
+    end
+  end
+
+  gcon-shift-of : Integer, Integer -> Integer
+  gcon-shift-of (mods) (sc) =
+    if sc == 42 | sc == 54 then 1
+    else if sc == 170 | sc == 182 then 0
+    else mods
+
+  gcon-key : Integer, Integer, Integer -> [Device.Port] Integer
+  gcon-key (ns) (sc) (md) =
+    if sc == 28 then gcon-enter ns
+    else if sc == 14 then act gcon-back ns end
+    else if sc >= 128 then act 0 end
+    else let ch = apply-mods (scancode-to-keycode sc) md
+    in if ch >= 32 & ch < 127 then act gcon-type ns ch end
+    else act 0 end
+
+Section: Widget Tree
+
+  gcon-lines : Integer, Integer, Integer, List WidgetNode -> List WidgetNode
+  gcon-lines (ns) (i) (n) (acc) =
+    if i >= n then acc
+    else gcon-lines ns (i + 1) n (list-push acc (widget-label ("gcon-l" & show i) (gcon-row-text ns i)))
+
+  gcon-tree : Integer -> WidgetNode
+  gcon-tree (ns) =
+    let rows = gcon-lines ns 0 (gcon-count ns) []
+    in let body = widget-set-flex (widget-panel "gcon-out" DirColumn 0 rows) 1
+    in let prompt = widget-set-min (widget-label "gcon-in" ("> " & gcon-input-text ns & "_")) 0 20
+    in let help = widget-label "gcon-help" "type a command   Enter runs   Esc returns"
+    in widget-panel "gcon-root" DirColumn 6 [
+      body,
+      widget-separator "gcon-sep",
+      prompt,
+      help
+    ]

@@ -4,6 +4,7 @@ Chapter: GopScene
   cites Works chapter GopShot
   cites Works chapter GopRtc
   cites Kernel chapter BitmapFont
+  cites Kernel chapter Hpet
   cites Engine chapter Renderer3D
   cites Engine chapter GpuScene
   cites Engine chapter Scene3D
@@ -43,15 +44,31 @@ Section: Scene
     in let sa = real-from-int (cordic-sin angle)
     in camera3d-new (vec3-new (ca * gsc-radius) gsc-eye-height (sa * gsc-radius)) (vec3-new 0.0 300.0 0.0) 0.785
 
+ The ground texture is named rather than inlined because two places have to
+ agree on it exactly: the scene the software path samples, and the single
+ upload gsc-run hands the rasterizer.
+
+  gsc-ground-tex : EngineTexture
+  gsc-ground-tex = etx-checkerboard 8 8 1 (etx-pack-rgb 170 150 120) (etx-pack-rgb 110 95 75)
+
+ Every primitive here takes a HALF-extent, so a placement is the centre and the
+ body reaches half the size in each direction. The cube sits at 900 rather than
+ 450 for that reason: mesh-cube 900 is 1800 across, and at 450 it stood 450
+ units THROUGH the floor. The ball and the ring are pushed out along z far
+ enough to clear the cube's 1800-unit box, the ball by 300 and the ring by 700,
+ which are the smallest moves that separate them. All three had intersected
+ since the scene was written; a flat untextured ground and a broken shadow pass
+ are what kept it from being visible.
+
   gsc-scene : Integer -> Scene3DState
   gsc-scene (dummy) =
     let scene = scene3d-new (gsc-camera 0)
-    in let checker = etx-checkerboard 8 8 1 (etx-pack-rgb 170 150 120) (etx-pack-rgb 110 95 75)
+    in let checker = gsc-ground-tex
     in let ground = sn3-with-mesh "ground" (mesh-plane 3000 3000) (emat-set-texture (emat-flat (rgb 240 240 240)) checker)
-    in let cube = sn3-set-pos (sn3-with-mesh "cube" (mesh-cube 900) (emat-shiny (rgb 90 130 210) 32)) (-900.0) 450.0 0.0
+    in let cube = sn3-set-pos (sn3-with-mesh "cube" (mesh-cube 900) (emat-shiny (rgb 90 130 210) 32)) (-900.0) 900.0 0.0
     in let pyr = sn3-set-pos (sn3-with-mesh "pyr" (mesh-pyramid 600 1100) emat-red) 1100.0 0.0 (-300.0)
-    in let ball = sn3-set-pos (sn3-with-mesh "ball" (mesh-sphere 700 12 8) emat-gold) 300.0 700.0 1400.0
-    in let ring = sn3-set-pos (sn3-with-mesh "ring" (mesh-torus 650 220 12 8) (emat-set-shading (emat-color (rgb 60 180 90)) GouraudShaded)) (-2000.0) 220.0 1200.0
+    in let ball = sn3-set-pos (sn3-with-mesh "ball" (mesh-sphere 700 12 8) emat-gold) 300.0 700.0 1700.0
+    in let ring = sn3-set-pos (sn3-with-mesh "ring" (mesh-torus 650 220 12 8) (emat-set-shading (emat-color (rgb 60 180 90)) GouraudShaded)) (-2000.0) 220.0 1900.0
     in let s2 = scene3d-add (scene3d-add (scene3d-add (scene3d-add (scene3d-add scene ground) cube) pyr) ball) ring
     in let key = dir-light (vec3-new (-400.0) 800.0 400.0) (rgb 255 250 235) 850
     in scene3d-set-ambient (scene3d-add-light s2 key) 260
@@ -84,9 +101,10 @@ Section: Loop
 
   gsc-shadow-map-gpu : Integer = 1024
 
- The two paths are not a fallback pair: the software one is the reference
- and stays reachable on a box that has the rasterizer, which is what makes
- a parity comparison possible at all. G swaps between them.
+ Which path starts is the caller's to say, and the desk says the host
+ rasterizer when the machine has one and software when it does not. Either
+ stays reachable through G on a box with the rasterizer, which is what makes
+ a parity comparison possible at all.
 
   gsc-label-sw : Text = "3D: software pipeline. S toggles shadows, G the GPU. F12 shoots. Esc returns."
 
@@ -174,8 +192,8 @@ Section: Loop
   gsc-angle : Integer, Integer -> Integer
   gsc-angle (now) (mins) = int-mod (((if now < 0 then 0 else now) + (gsc-bcd mins) * 60) * 105) gsc-turn
 
-  gsc-loop : R3dTriState, Scene3DState, Integer, Integer, Integer, CbfFont, Integer, UsbKbd, Integer, Integer, Integer, Integer, Integer, GpuView -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
-  gsc-loop (tgt) (scene) (sky) (base) (stride) (font) (ch) (kbd) (scr-base) (w) (h) (sh) (gpu) (gv) = act
+  gsc-loop : R3dTriState, (Integer -> Scene3DState), Integer, Integer, Integer, CbfFont, Integer, UsbKbd, Integer, Integer, Integer, Integer, Integer, GpuView -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  gsc-loop (tgt) (build) (sky) (base) (stride) (font) (ch) (kbd) (scr-base) (w) (h) (sh) (gpu) (gv) = act
     let mark = __heap-save
     in act
       sc <- gsc-poll kbd gsc-poll-steps
@@ -183,26 +201,54 @@ Section: Loop
       else if sc == 88 then act
         s <- gsc-shot scr-base w h stride font
         let d = __heap-restore mark
-        in gsc-loop tgt scene sky base stride font ch kbd scr-base w h sh gpu gv
+        in gsc-loop tgt build sky base stride font ch kbd scr-base w h sh gpu gv
       end
       else if sc == 31 then
         let d = __heap-restore mark
-        in gsc-loop tgt scene sky base stride font ch kbd scr-base w h (1 - sh) gpu gv
+        in gsc-loop tgt build sky base stride font ch kbd scr-base w h (1 - sh) gpu gv
       else if sc == 34 then
         let d = __heap-restore mark
-        in gsc-loop tgt scene sky base stride font ch kbd scr-base w h sh (1 - gpu) gv
+        in gsc-loop tgt build sky base stride font ch kbd scr-base w h sh (1 - gpu) gv
       else act
         now <- rtc-seconds 0
         mins <- rtc-read 2
-        f <- gsc-frame tgt scene (gsc-angle now mins) sky base stride font ch sh gpu gv
+        f <- gsc-frame tgt (build now) (gsc-orbit now mins) sky base stride font ch sh gpu gv
         let dropped = __heap-restore mark
-        in gsc-loop tgt scene sky base stride font ch kbd scr-base w h sh gpu gv
+        in gsc-loop tgt build sky base stride font ch kbd scr-base w h sh gpu gv
       end
     end
   end
 
   gsc-bcd : Integer -> Integer
   gsc-bcd (n) = (n / 16) * 10 + int-mod n 16
+
+ The orbit runs off the HPET counter, not the RTC seconds register. Both give
+ 105 milliradians a second and a turn in just under a minute, but the RTC has a
+ one-second granularity, so the pane rendered 43 identical frames and then
+ jumped six degrees: measured, 17,945 pixels of a 250x170 patch changed between
+ one RTC second and the next. That reads as an animation running at a frame a
+ second no matter how fast the renderer is.
+
+ The HPET counter is read, never waited on, so the ASUS killing its timer
+ INTERRUPT about 54 seconds after boot does not reach this. A board with no
+ HPET answers a zero period, and a halted counter answers zero ticks; the RTC
+ expression is still there for both.
+
+ `hpet-start` is called here rather than once at entry because the counter is
+ HALTED until something sets the enable bit, and a halted counter reads a
+ constant -- which does not look like a missing clock, it looks like an
+ animation that has stopped. E1000e starts it at the point of use for the same
+ reason. It answers the existing config when the bit is already set, so the
+ repeat costs two MMIO reads.
+
+  gsc-orbit : Integer, Integer -> Integer
+  gsc-orbit (now) (mins) =
+    let started = hpet-start
+    in let tps = hpet-ticks-per-second
+    in let ticks = hpet-ticks
+    in if tps <= 0 then gsc-angle now mins
+    else if ticks <= 0 then gsc-angle now mins
+    else int-mod (ticks * 105 / tps) gsc-turn
 
  The viewport is released on the way out rather than left armed. Nothing
  else on the desk reaches the rasterizer today, so a stale rect would not
@@ -217,8 +263,14 @@ Section: Loop
 
   gsc-label-band : Integer = 20
 
-  gsc-run : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
-  gsc-run (base) (w) (h) (stride) (font) (kbd) (cs) = act
+ The texture uploads ONCE here, not in the frame. It is the same checker every
+ iteration, and the commit costs a host-side allocation, a copy out of guest RAM
+ and a line of host diagnostic output per call: driven from gsc-frame it fired
+ 301 times in a nine-second capture, which is invisible headless and turns the
+ interactive pane into about a frame a second with a visible flicker.
+
+  gsc-run : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  gsc-run (base) (w) (h) (stride) (font) (kbd) (cs) (gpu) = act
     hd <- cursor-hide cs base stride
     let s = ui-scale w
     in let sky = rgb-to-packed (rgb 20 20 30)
@@ -226,9 +278,9 @@ Section: Loop
     in let cw = w - gsc-sidebar-w
     in let ch = h - gsc-taskbar-h * s - top
     in let tgt = r3d-target-new cw ch sky
-    in let scene = gsc-scene 0
     in act
-      r <- gsc-loop tgt scene sky (base + top * stride * 4) stride font ch kbd base w h 1 0 (gv-new gsc-sidebar-w top cw (ch - gsc-label-band))
+      tx <- if gpu == 1 then gs-tex-upload gsc-ground-tex else 0
+      r <- gsc-loop tgt gsc-scene sky (base + top * stride * 4) stride font ch kbd base w h 1 gpu (gv-new gsc-sidebar-w top cw (ch - gsc-label-band))
       gs-viewport-release
     end
   end

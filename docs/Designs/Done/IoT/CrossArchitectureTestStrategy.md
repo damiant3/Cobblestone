@@ -8,7 +8,7 @@
 Renode, not full parity.** Pending: fix the 2 failures, and decide
 whether the cross battery becomes a build gate or stays an out-of-band
 tier. See "Where This Actually Stands" below.
-**Upstream**: `docs/PM/IoT/AGENT-PROMPT.md` deliverable 6,
+**Upstream**: `docs/Reference/IoT/AGENT-PROMPT.md` deliverable 6,
 `docs/Designs/IoT/Active/BackendArchitecture.md` (phases B1-B3)
 
 ## Where This Actually Stands
@@ -82,7 +82,7 @@ carries the known-good encodings. Sources of truth for the
 vectors: the frozen C# encoders in `old/` (transcribed outputs,
 not executed -- the tree stays retired) cross-checked against the
 ARM ARM / RISC-V spec encodings catalogued in
-`docs/PM/IoT/Architecture/`. These tests run on x86 like any other
+`docs/Reference/IoT/Architecture/`. These tests run on x86 like any other
 sample -- the cross encoders are exercised by every battery run
 forever, at zero new infrastructure cost.
 

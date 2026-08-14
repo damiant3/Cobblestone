@@ -468,9 +468,36 @@ Section: Bring-up
    if e1000-reset mmio == 0 then e1000-absent
    else e1000-init-after-reset (mmio)
 
+ A device this driver could not reset arrives in whatever state firmware
+ and the manageability engine left it, and on the I219 that is the ONLY
+ state available: CTRL is read-only there, so the RST write in e1000-reset
+ is discarded and e1000-await-reset answers settled on its first read. The
+ receiver may still be running against a ring belonging to somebody else,
+ and the ring registers must not be reprogrammed underneath a live one.
+
+ Disabling receive and transmit is therefore done unconditionally rather
+ than only when the reset failed. On a part that did reset these registers
+ are already zero and the writes cost two MMIO cycles; on a part that did
+ not, they are the only thing standing between setup-rx and a receive path
+ that reports healthy and never receives. Measured 2026-08-13 under
+ -e1000-ctrl-ro -e1000-preconfigured: present yes, link up yes, mac valid
+ yes, send accepted 1, and recv happened NO.
+
+  e1000-quiesce-ms : Integer = 10
+
+  e1000-quiesce : Integer -> Integer
+  e1000-quiesce (mmio) =
+   let r = e1000-write mmio e1000-reg-rctl 0
+   in let t = e1000-write mmio e1000-reg-tctl 0
+   in let started = hpet-start
+   in let rate = hpet-ticks-per-second
+   in if rate <= 0 then e1000-settle-spin mmio e1000-settle-spin-fuel
+   else e1000-await-ticks hpet-ticks ((rate * e1000-quiesce-ms) / 1000) 0
+
   e1000-init-after-reset : Integer -> E1000Device
   e1000-init-after-reset (mmio) =
-   let rx-ring = e1000-alloc-aligned (e1000-rx-count * e1000-desc-size) 16
+   let quiet = e1000-quiesce mmio
+   in let rx-ring = e1000-alloc-aligned (e1000-rx-count * e1000-desc-size) 16
    in let tx-ring = e1000-alloc-aligned (e1000-tx-count * e1000-desc-size) 16
    in let rx-bufs = e1000-alloc-aligned (e1000-rx-count * e1000-buf-size) 16
    in let tx-bufs = e1000-alloc-aligned (e1000-tx-count * e1000-buf-size) 16

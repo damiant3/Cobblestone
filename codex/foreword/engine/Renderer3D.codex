@@ -482,11 +482,10 @@ Section: Per-Pixel Shading
     else if w1 < 0 then 0
     else if w2 < 0 then 0
     else let depth = r3d-interp-depth a b c w0 w1 w2 1000
-    in let shadowed = if ctx.sc-sh-base == 0 then False else r3d-shadow-test ctx a b c w0 w1 w2
-    in let color = if shadowed then ctx.sc-amb
-      else if ctx.sc-mode == 1 then r3d-gouraud-px (ctx.sc-g0) (ctx.sc-g1) (ctx.sc-g2) w0 w1 w2
-      else if ctx.sc-mode == 3 then ctx.sc-g0
-      else r3d-phong-px ctx ((a.pv-nx * w0 + b.pv-nx * w1 + c.pv-nx * w2) / 1000) ((a.pv-ny * w0 + b.pv-ny * w1 + c.pv-ny * w2) / 1000) ((a.pv-nz * w0 + b.pv-nz * w1 + c.pv-nz * w2) / 1000)
+    in let lit = if ctx.sc-sh-base == 0 then 9 else r3d-shadow-lit ctx a b c w0 w1 w2
+    in let color = if lit == 0 then ctx.sc-amb
+      else if lit >= 9 then r3d-shade-px ctx a b c w0 w1 w2
+      else r3d-blend-sh (r3d-shade-px ctx a b c w0 w1 w2) (ctx.sc-amb) lit
     in let final = when ctx.sc-tex
       is None -> color
       is Just (tex) -> r3d-tex-px tex a b c w0 w1 w2 color
@@ -517,17 +516,58 @@ Section: Per-Pixel Shading
   r3d-ctx-with-tex : R3dShadeCtx, EngineMaterial -> R3dShadeCtx
   r3d-ctx-with-tex (ctx) (mat) = __record-set ctx "sc-tex" (mat.emat-texture)
 
-  r3d-shadow-test : R3dShadeCtx, ProjVert, ProjVert, ProjVert, Integer, Integer, Integer -> Boolean
-  r3d-shadow-test (ctx) (a) (b) (c) (w0) (w1) (w2) =
+ A fully shadowed fragment never reaches the shading arms, which is why this
+ is a function rather than a binding at the call site: a `let` there would
+ evaluate Phong for every shadowed pixel as well.
+
+  r3d-shade-px : R3dShadeCtx, ProjVert, ProjVert, ProjVert, Integer, Integer, Integer -> Integer
+  r3d-shade-px (ctx) (a) (b) (c) (w0) (w1) (w2) =
+    if ctx.sc-mode == 1 then r3d-gouraud-px (ctx.sc-g0) (ctx.sc-g1) (ctx.sc-g2) w0 w1 w2
+    else if ctx.sc-mode == 3 then ctx.sc-g0
+    else r3d-phong-px ctx ((a.pv-nx * w0 + b.pv-nx * w1 + c.pv-nx * w2) / 1000) ((a.pv-ny * w0 + b.pv-ny * w1 + c.pv-ny * w2) / 1000) ((a.pv-nz * w0 + b.pv-nz * w1 + c.pv-nz * w2) / 1000)
+
+  r3d-sh-tap : R3dShadeCtx, Integer, Integer, Integer, Integer -> Integer
+  r3d-sh-tap (ctx) (ld) (sx) (sy) (bias) =
+    if sx < 0 then 1
+    else if sy < 0 then 1
+    else if sx >= ctx.sc-sh-size then 1
+    else if sy >= ctx.sc-sh-size then 1
+    else let md = peek-32 (ctx.sc-sh-base) ((sy * ctx.sc-sh-size + sx) * 4)
+    in if ld <= md + bias then 1 else 0
+
+  r3d-sh-taps : R3dShadeCtx, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  r3d-sh-taps (ctx) (ld) (tx) (ty) (bias) (oy) (ox) (acc) =
+    if oy > 1 then acc
+    else if ox > 1 then r3d-sh-taps ctx ld tx ty bias (oy + 1) (0 - 1) acc
+    else let h = r3d-sh-tap ctx ld (tx + ox) (ty + oy) bias
+    in r3d-sh-taps ctx ld tx ty bias oy (ox + 1) (acc + h)
+
+  r3d-shadow-lit : R3dShadeCtx, ProjVert, ProjVert, ProjVert, Integer, Integer, Integer -> Integer
+  r3d-shadow-lit (ctx) (a) (b) (c) (w0) (w1) (w2) =
     let tx = (a.pv-lx * w0 + b.pv-lx * w1 + c.pv-lx * w2) / 1000000
     in let ty = (a.pv-ly * w0 + b.pv-ly * w1 + c.pv-ly * w2) / 1000000
-    in if tx < 0 then False
-    else if ty < 0 then False
-    else if tx >= ctx.sc-sh-size then False
-    else if ty >= ctx.sc-sh-size then False
+    in if tx < 0 then 9
+    else if ty < 0 then 9
+    else if tx >= ctx.sc-sh-size then 9
+    else if ty >= ctx.sc-sh-size then 9
     else let ld = (a.pv-ld * w0 + b.pv-ld * w1 + c.pv-ld * w2) / 1000
-    in let md = peek-32 (ctx.sc-sh-base) ((ty * ctx.sc-sh-size + tx) * 4)
-    in ld > md + ctx.sc-sh-bias
+    in let dlo = r3d-min (r3d-min (a.pv-ld) (b.pv-ld)) (c.pv-ld)
+    in let dhi = r3d-max (r3d-max (a.pv-ld) (b.pv-ld)) (c.pv-ld)
+    in let xlo = r3d-min (r3d-min (a.pv-lx) (b.pv-lx)) (c.pv-lx)
+    in let xhi = r3d-max (r3d-max (a.pv-lx) (b.pv-lx)) (c.pv-lx)
+    in let ylo = r3d-min (r3d-min (a.pv-ly) (b.pv-ly)) (c.pv-ly)
+    in let yhi = r3d-max (r3d-max (a.pv-ly) (b.pv-ly)) (c.pv-ly)
+    in let span = r3d-max ((xhi - xlo) / 1000) ((yhi - ylo) / 1000)
+    in let slope = (dhi - dlo) / (r3d-max span 1)
+    in let bias = ctx.sc-sh-bias + slope * r3d-shadow-slope
+    in r3d-sh-taps ctx ld tx ty bias (0 - 1) (0 - 1) 0
+
+  r3d-blend-sh : Integer, Integer, Integer -> Integer
+  r3d-blend-sh (lit-color) (sh-color) (lit) =
+    let r = r3d-chan sh-color 16 + (r3d-chan lit-color 16 - r3d-chan sh-color 16) * lit / 9
+    in let g = r3d-chan sh-color 8 + (r3d-chan lit-color 8 - r3d-chan sh-color 8) * lit / 9
+    in let bl = r3d-chan sh-color 0 + (r3d-chan lit-color 0 - r3d-chan sh-color 0) * lit / 9
+    in bit-or (bit-shl r 16) (bit-or (bit-shl g 8) bl)
 
   r3d-raster-fan-sh : R3dTriState, List ClipVert, Integer, R3dShadeCtx, Integer, Integer -> Integer
   r3d-raster-fan-sh (st) (poly) (i) (ctx) (half-w) (half-h) =
@@ -600,7 +640,17 @@ Section: Shadow Mapping
     rs-vp : Mat4
   }
 
-  r3d-shadow-bias : Integer = 3000
+ The shadow comparison is `ld > md + bias + slope * factor`. The base covers
+ depth quantisation on a surface square to the light, where one map texel
+ spans little depth. The slope term covers a surface seen at a grazing angle,
+ where one texel spans a lot of it; a base large enough to cover that case on
+ its own detaches a shadow from the object casting it. Measured on the
+ cube-on-plane test, a flat base of 3000 with no slope term lost 62 per cent
+ of the cast shadow and left it hanging away from the cube.
+
+  r3d-shadow-bias : Integer = 500
+
+  r3d-shadow-slope : Integer = 6
 
   r3d-first-dir : List Light3D, Integer, Integer -> Maybe Vec3
   r3d-first-dir (lights) (i) (n) =
@@ -921,19 +971,12 @@ Section: Unlit Triangle Rendering
     in let drawn = r3d-raster-fan st poly 1 color half-w half-h
     in r3d-render-tris-unlit st mesh mvp mat half-w half-h (i + 3) n
 
- The depth map is filled from the surfaces facing AWAY from the light, not
- the ones facing it. A lit surface that casts its own depth sits at exactly
- the distance it is then compared against, so it shadows itself wherever the
- comparison rounds the wrong way, and the bias that would cover it at a
- grazing angle is far larger than one that keeps contact shadows. Filling
- from the far side moves the recorded depth a whole object-thickness behind
- the lit surface and the question stops being close. Measured on the desk's
- cube: 5470 self-shadowed pixels on one face before, 0 after, with the cast
- shadows unchanged.
-
- The winding is flipped by swapping the two fan vertices rather than by
- giving the rasterizer a cull direction, so `cull-backface` and
- `r3d-rasterize-tri` are the same ones every other path uses.
+ The depth map is filled from the surfaces facing the light. Filling it from
+ the far side instead removes self-shadowing for free, and it was tried, but
+ it fails for any object RESTING on the surface that receives its shadow: the
+ object's underside is then coplanar with the receiver, so the recorded depth
+ equals the receiving fragment's own depth and no bias can separate them. A
+ cube on a plane lost its whole contact shadow that way.
 
   r3d-render-tris-caster : R3dTriState, Mesh, Mat4, EngineMaterial, Integer, Integer, Integer, Integer -> Integer
   r3d-render-tris-caster (st) (mesh) (mvp) (mat) (half-w) (half-h) (i) (n) =
@@ -949,8 +992,8 @@ Section: Unlit Triangle Rendering
   r3d-raster-fan-cast (st) (poly) (i) (color) (half-w) (half-h) =
     if i + 1 >= list-length poly then 0
     else let p0 = r3d-project-clip (list-at poly 0) half-w half-h
-    in let pa = r3d-project-clip (list-at poly (i + 1)) half-w half-h
-    in let pb = r3d-project-clip (list-at poly i) half-w half-h
+    in let pa = r3d-project-clip (list-at poly i) half-w half-h
+    in let pb = r3d-project-clip (list-at poly (i + 1)) half-w half-h
     in let hit = if cull-backface (p0.pv-sx) (p0.pv-sy) (pa.pv-sx) (pa.pv-sy) (pb.pv-sx) (pb.pv-sy) then 0 else r3d-rasterize-tri st p0 pa pb color
     in r3d-raster-fan-cast st poly (i + 1) color half-w half-h
 

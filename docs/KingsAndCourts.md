@@ -121,7 +121,7 @@ compile-time bounded-execution enforcement:
 
 ## 2. EU Cyber Resilience Act (CRA)
 
-Full mapping: `docs/Reference/CRA-Compliance-Matrix.md`
+Full mapping: `docs/Designs/Active/IoT/CRA-Compliance-Matrix.md`
 
 The CRA (Regulation 2024/2847) requires all products with digital
 elements sold in the EU to meet essential cybersecurity requirements.
@@ -167,9 +167,9 @@ prevents the relevant vulnerability classes:
   `substring` traps on an out-of-range start or length, and `char-at` /
   `char-code-at` trap on an index outside the text.
 
-  **That last sentence is here because the row was false until 2026-07-27,
-  and the way it was false is the reason this document is audited at all.**
-  `substring` took its start and length on trust and copied that many bytes,
+  **The bounds READ is the part that has to keep being checked, and it is
+  why this document is audited at all.**
+  `substring` once took its start and length on trust and copied that many bytes,
   with no clamp against the source and no non-negative check. It was an
   unchecked heap read: with a second text allocated after the first,
   `substring a 0 40` on a five-byte string returned the whole of the next
@@ -206,7 +206,7 @@ prevents the relevant vulnerability classes:
 
 ## 3. ETSI EN 303 645
 
-Full mapping: `docs/Reference/ETSI-303645-Mapping.md`
+Full mapping: `docs/Designs/Active/IoT/ETSI-303645-Mapping.md`
 
 ETSI EN 303 645 is the European standard for consumer IoT security,
 with 33 mandatory provisions across 13 categories. Codex satisfies or
@@ -231,7 +231,7 @@ technical control.
 **Five ETSI provisions were withdrawn on 2026-07-27** and this table's
 counts are the standard's, not a tally of what is met. The withdrawn set is
 5.4-2, 5.5-4, 5.5-6, 5.6-4 and 5.11-1; each named a mechanism that does not
-exist, and `docs/Reference/ETSI-303645-Mapping.md` records the measurement
+exist, and `docs/Designs/Active/IoT/ETSI-303645-Mapping.md` records the measurement
 beside each one. Read that file before quoting a coverage figure from this
 one.
 
@@ -290,7 +290,7 @@ It is the default state.
 
 ## 4. IEC 62443 (Industrial Automation)
 
-Full mapping: `docs/Reference/IEC62443-Evidence.md`
+Full mapping: `docs/Designs/Active/IoT/IEC62443-Evidence.md`
 
 IEC 62443 is the international standard for industrial automation
 and control system (IACS) security. Codex maps to the component-level
@@ -375,10 +375,10 @@ guarantees.
 
 ## Cross-References
 
-- `docs/Reference/CRA-Compliance-Matrix.md` -- CRA requirement mapping
-- `docs/Reference/ETSI-303645-Mapping.md` -- ETSI provision mapping
-- `docs/Reference/IEC62443-Evidence.md` -- IEC 62443 evidence mapping
-- `docs/PM/IoT/` -- compliance summaries, protocol references, hardware specs
-- `docs/PM/Stories/Vision/CodexIoTPlan.md` -- IoT strategic prospectus
+- `docs/Designs/Active/IoT/CRA-Compliance-Matrix.md` -- CRA requirement mapping
+- `docs/Designs/Active/IoT/ETSI-303645-Mapping.md` -- ETSI provision mapping
+- `docs/Designs/Active/IoT/IEC62443-Evidence.md` -- IEC 62443 evidence mapping
+- `docs/Reference/IoT/` -- compliance summaries, protocol references, hardware specs
+- `docs/PM/Projects/CodexIoTPlan.md` -- IoT strategic prospectus
 - `codex/foreword/punctual/` -- the punctual library (8 chapters)
 - `codex/foreword/core/ComplianceEvidence.codex` -- automated evidence report

@@ -70,7 +70,7 @@ open as WORKS-9.
   `GopXhci` and is routed to him with a discriminator rather than a cause.
   **WORKS-8 is CLOSED and deleted; that second-write gap is open as
   WORKS-9 against the driver, not against the FAT writer.**
-  Detail in `apps/works/works-backlog.md` and `docs/HardwareSitting.md`;
+  Detail in `apps/works/works-backlog.md` and `docs/Hardware/HardwareSitting.md`;
   the stick is read with the new `build/dump-usb.ps1` and
   `build/fat16-walk.ps1`. `desk-files` -> `gfl-run` has
   the same unbracketed shape as the leak, much smaller, untouched.
@@ -84,7 +84,7 @@ open as WORKS-9.
   reflash -- the row is reek's driver now and the ceremony campaign
   closed green on 2026-08-05. What it exposed is worth a line here:
   `ceremonyboot.img` was NEVER in the depot, in any stream, at any
-  revision, while `docs/HardwareSitting.md` said it "remains at
+  revision, while `docs/Hardware/HardwareSitting.md` said it "remains at
   `build/boot/ceremonyboot.img`". Corrected there. **The one thing not
   reproducible from source is the 124-byte `IDENTITY.DAT` the guest
   wrote to the ESP on real hardware, and the only copy was reek's
@@ -242,7 +242,7 @@ open as WORKS-9.
      Neither the bed nor the glass separates hung from faulted here, and the
      next arm needs a heartbeat INSIDE `sl-fill` and between write segments,
      because the rung printing reports only the stage that already passed. Full
-     account and the preserved stick image in `docs/HardwareSitting.md`. **This
+     account and the preserved stick image in `docs/Hardware/HardwareSitting.md`. **This
      was blu flashing and Damian flying; the finding is reek's to act on, and
      the A5 sticks stay grounded behind it.**
 
@@ -256,7 +256,7 @@ open as WORKS-9.
      failed host writes in a row. **This did NOT need foreword-level GOP code**;
      the entry above said it did and that was wrong: `peek-qword` / `poke-32`
      are builtins and a chapter under `codex/compiler/` is answered by presence
-     in the unit. Operator and arm tables in `docs/HardwareSitting.md`.
+     in the unit. Operator and arm tables in `docs/Hardware/HardwareSitting.md`.
 
      **Both sticks are rebuilt and bed-verified, so what is left is a flight.**
      `a5flight2.img` is now `A90E7DA0...` and returns `OUT.CDX` at 84,660 bytes
@@ -269,20 +269,34 @@ open as WORKS-9.
      from the ladder's flights and not a measurement of those payloads -- and
      these sticks are what would settle it.
 
-     **The rebuild found one defect and it would have cost the flight.**
-     `build/boot/a5src.codex` is stored `unicode+C`, the client's `LineEnd` is
-     `local`, so every sync on Windows writes it CRLF: 246 bytes in the depot,
-     257 on disk. `build-img.ps1 -Source` copies what it is handed, so the
-     image built straight from the workspace file died at `CDX1000` on line 5
-     and the ladder stopped at ORANGE. The recipe now normalises to LF and says
-     why. **The durable fix belongs to whoever owns the Shell DSL generators:
-     `build-img.ps1` is generated from `codex/build/buildimgScript.codex` and
-     should normalise or refuse a CRLF `-Source`, because nothing else on that
-     path can see the problem.**
+     **The rebuild found one defect and it would have cost the flight. It is
+     now fixed in the compiler, and it was never one file.** `build/boot/a5src.codex`
+     is stored `unicode+C`, the client's `LineEnd` is `local`, so every sync on
+     Windows writes it CRLF: 246 bytes in the depot, 257 on disk.
+     `build-img.ps1 -Source` copies what it is handed, so the image built
+     straight from the workspace file died at `CDX1000` on line 5 and the
+     ladder stopped at ORANGE. **Measured 2026-08-13: 2439 of 2508 `.codex`
+     files in the tree carry CR on disk**, so every A5 image built from
+     workspace sources had this defect and `-SourceDir`, which walks the tree,
+     had it for every chapter it copied.
 
-  **Source must be LF.** The stdin path applies `utf8-to-cce`; the DISK path
-  does not, and CR has no CCE code point, so a CRLF file fails at the first
-  line ending (measured: CDX1000 at 11:43 on a 41-character line 11).
+  **Source no longer has to be LF, and the old account of why was wrong.**
+  `utf8-to-cce` was never what saved the stdin path: byte 13 is below 128, so
+  it passes through untouched, and the function returns its argument unchanged
+  when the file holds no high bytes at all. What drops CR is
+  `__bare_metal_read_serial` itself (`X86_64Helpers.codex:1319`), which
+  compares the byte to 13 and skips the store and the length increment, BEFORE
+  its CCE table lookup. The DISK path had no equivalent: `fat16-byte-to-cce`
+  handed 13 to `from-unicode`, which answers -1, and `code-to-char (-1)`
+  produced **CCE 255** where the line ending was, which is the character the
+  lexer refuses with CDX1000.
+  **Fixed at the same layer the serial reader uses it.** `fat16-read-source`
+  drops byte 13 before CCE conversion and is what the compiler's two disk
+  source reads call (`opening.codex:978` for cited chapters, `:1756` for the
+  source); `fat16-read-text` is unchanged, so the ten test consumers and
+  `FileSystem.codex` see exactly what they saw before. `codex/test/fat16-source-cr`
+  carries the arm: a CRLF file and an LF file now read to the identical text,
+  with `fat16-read-text` as the control showing the 255 still present.
 - **Native GOP resolution and diag word wrap (red, scoped by Damian
   2026-08-07).** The 1024 is the ASUS firmware's GraphicsConsole mode,
   activated by the stub's own ClearScreen; nothing ever calls SetMode.
@@ -330,16 +344,68 @@ open as WORKS-9.
   between the renderers is meaningless (one ground is a checkerboard, the other flat),
   so each is differenced against ITSELF with shadows off and the two masks compared;
   both controls read exactly 0 (no mask in the sky over 39055 samples, none on chrome).
-  **REMAINING: Stage 5 only** -- decide whether the GPU path becomes the DEFAULT.
-  Software is still the default; it is now a judgement about which look is wanted
-  rather than a missing capability, and the honest inputs are the 75.1 per cent and the
-  two differences below. Known and deliberately unfixed: the ground is flat-shaded
-  because the rasterizer's texture unit is hardwired to the earth-globe sampler, and a
-  triangle straddling the near plane is dropped whole rather than clipped (this orbit
-  distance never reaches it). App + `codex-vm` (NOT seed, no token); `codex-vm.c` is a
+  **A6 IS CLOSED (2026-08-13).** Stage 5 landed at main 14818 on Damian's ruling
+  that the GPU path is the default iff the machine has one, software otherwise;
+  the desk also stopped GATING the pane on the present probe, since otherwise the
+  software case was unreachable and the second half of the ruling could not
+  happen. On metal with no rasterizer the pane now opens and runs software at
+  roughly 1 fps -- slow, but reachable, where before it was hidden.
+
+  **A shadow regression shipped in Update 40 behind a skip and is now fixed
+  (14796, 14805).** `codex/test/engine-shadow` is unskipped. The skip said to
+  re-mint the oracle; re-minting would have blessed the regression. 14721 filled
+  the depth map from the faces facing AWAY from the light, which for an object
+  RESTING on its receiver is COPLANAR with that receiver, so `md` equalled `ld`
+  and no bias could shadow it -- the shadow detached from its object. Front-face
+  casting plus a slope-scaled bias restores it (ground shadow 738 -> 1929 against
+  a 1942 pre-regression control, self-shadow acne 0), and the software path now
+  runs the host's 3x3 filtered compare so both renderers match on edges too.
+  **Second-depth shadow mapping is wrong for anything standing on the surface it
+  shadows; that is the durable lesson.**
+
+  The GPU ground texture is DONE, main 14859 (val, 2026-08-13). The pane
+  renders the checkerboard and the blue artifact that blocked CL 14844 is
+  explained: the host's textured branch IS the earth-globe shader, which reads
+  UVs as spherical coordinates, fabricates a sphere normal, and adds a Fresnel
+  atmosphere rim worth up to +140 blue. Applied to ordinary ground it mapped
+  texel 6E5F4B to exactly 405A9C, which resembled the cube albedo by
+  coincidence of hue and is why four geometry hypotheses failed. A single-pixel
+  host probe (`CODEX_GPU_PROBE=x,y`, shipped in that CL) named the drawing
+  triangle as the ground itself, sampling the correct texel.
+
+  Two claims this register carried are now measured FALSE and are corrected
+  here rather than left to mislead again. **`apps/globe/TerrainGen.codex` HAS
+  driven ports 0x408-0x40B since they were written** (it commits 0, and
+  GlobeDemo uses it), so "no caller" was wrong; and **`poke-byte` exists** --
+  TerrainGen packs three RGB bytes a pixel with it, and the host sampled three
+  bytes a pixel bilinear. CL 14844 had changed that wire to 32-bit words, which
+  read the globe's texture misaligned; the commit value now carries the format
+  as well as the shading, 0 being the original three-byte bilinear globe wire
+  restored verbatim and 1 one 32-bit word a pixel sampled nearest.
+
+  Also known and deliberately unfixed: a triangle straddling the near plane is
+  dropped whole rather than clipped (this orbit distance never reaches it).
+  App + `codex-vm` (NOT seed, no token); `codex-vm.c` is a
   shared tool, coordinate with reek before an exe rebuild. val memory
   `val-gpu-desk-render` carries the port constraint, the cull pairing that is easy to
   get wrong, and the frozen-clock rule without which the two arms are not comparable.
+- **A8 the desk build loop (fester). The edit half is DONE and the blocker is
+  GONE: VT-x IS AVAILABLE ON THE ASUS, measured on metal 2026-08-13.** Plan,
+  roads and traps in `docs/Designs/Active/OS/DeskBuildLoop.md` -- read that
+  before touching any of it, because one of the three obvious approaches is
+  ruled out there. Landed: the Edit pane descends into `SRC/` and saves back
+  into it (14802, WORKS-20 closed), a Console pane in the desk (14815), and a
+  `vmx` command that reads `IA32_FEATURE_CONTROL` from the desktop (14829).
+  **`VmCompile` and `DevHypervisor` are COMPLETE, not stubs** -- a real Intel
+  VMX hypervisor written in Codex. `vmxprobe.img` flew on disk 2 and read
+  `IA32_FEATURE_CONTROL = 5` (lock set, VMX-outside-SMX set) with revision id
+  4, against the 1 the bed reports. **Do not re-measure this in the bed and
+  conclude anything**: two codex-vm readings agreed with each other, and both
+  were irrelevant to the hardware. So Road A is the road and Road C needs no
+  pricing. **The next wall is the arena, not the wiring** -- `vm-compile`
+  takes the seed as `List Integer`, 2.7 MB as boxed integers, which nobody has
+  measured; start with `SRC/NAME.COD` at 307 bytes, the smallest thing on the
+  stick.
 - A2, A3, A4 and A7 are CLOSED on metal.
 
 ## Track B -- the network (blu). Metal-gated: advances at sittings, not before.
@@ -355,15 +421,67 @@ open as WORKS-9.
   sabotage. **This says nothing about why metal wedges** -- the datasheet
   does not say what a part does when the bit is set, so the model invents
   no failure.
-  **The ASDE arm WEDGES the machine deterministically on the real part**
-  (hang after `entering bring-up`), so anything riding `na-bring-up` on
-  metal hangs the boot. `AsdeStageProbe` now runs **ASDE=0 before ASDE=1**,
-  which is what makes the next flight decisive: a wedge before any arm row
-  indicts the reset, ASDE=0 painting and ASDE=1 wedging indicts the bit the
-  datasheet says to clear, and both arms painting exonerates ASDE here.
-  Rows paint whether or not a volume mounts (the 2026-08-10 flight returned
-  nothing because the mount was a precondition), and a failed mount now
-  names which of the seven stages failed instead of printing "no ESP".
+  **CTRL IS READ-ONLY ON THIS PART (boots 3 and 4, 2026-08-13).** Clearing
+  `CTRL.SLU` and reading it straight back gives `0x180240` unchanged, and
+  `CTRL.ASDE` refuses to set even on an arm running first from the firmware
+  state. **MDIC writes DO work** (`e1000-phy-write` writes MDIC at `0x0020`
+  and polls it ready, and succeeds every arm), so the CSR write path is
+  fine and CTRL specifically refuses. **B2c is NOT blocked**: RX/TX needs
+  RCTL, TCTL, the ring registers and RAL/RAH, none of them CTRL.
+  **Finding 4 is CLOSED**: ASDE is inert because the bit is not writable.
+  **Two claims below are now wrong and are corrected in the run sheet.**
+  The link is brought up by `na-phy-kick` over MDIO, not by our CTRL write.
+  And the reset "not wedging on a warm part" describes an event that never
+  happened: the `CTRL|RST` write is discarded, RST is never set, and
+  `e1000-await-reset` answers `settled=1` on its first read. **Do not
+  pursue the cold-versus-warm reset hypothesis.** What wedged the box on
+  08-11 is unexplained again, and it was not CTRL.RST.
+  **No further sittings are needed to develop this.** `codex-vm
+  -e1000-ctrl-ro` reproduces the board exactly and `codex/test/e1000-ctrl-ro`
+  pins it, with a control proving three of its six rows flip when the arm
+  is off.
+  **FLOWN 2026-08-13: THE LINK COMES UP ON THE REAL I219.** Touch reads
+  `LU=0` with a live cable; both arms then read `LU=1 FD=1 SPEED=1000`, and
+  `ICR` carries Link Status Change. The touch row is read before any write
+  and is byte-identical to the 08-11 flight, so it is the control that says
+  our code did it rather than the PHY doing it alone. **B2 link bring-up is
+  ACHIEVED and B2c (RX/TX on the real part) is unblocked.** The account,
+  with the full decode, is `docs/Hardware/HardwareSitting.md` at the top.
+  **The reset did NOT wedge**, on the same driver code that wedged on
+  08-11; the only change was ORDER, with the arms warming the part before
+  RST fired. One observation, not a mechanism -- but `e1000-init` resets
+  cold, which is the order that wedged, so it is worth a discriminating
+  flight (cold reset first, then warm).
+  **Finding 4 is still NOT answered.** Both arms returned identical values
+  where the bed has them differing sharply, and three explanations survive:
+  ASDE is inert, the write does not stick (the probe never reads `CTRL`
+  back), or arm 2 inherited arm 1's link. The arms are not independent,
+  which is a defect in the probe. Next arm: read `CTRL` back after each
+  write, run `ASDE=1` first from cold, print the bound USB VID:PID.
+  **The F12 bank failed as a TRANSPORT failure, not a GPT one**, and that
+  refutes the eject-and-reinsert hypothesis the run sheet carried: stage 1
+  means the read itself failed (`c4` = USB transaction error in the CBW
+  phase, `l1` = the GPT header sector, recovery failed). Not WORKS-9, whose
+  signature is a data-phase timeout with no completion event; `f945044` of
+  1000000 clears fuel by WORKS-9's own criterion.
+  **The 2026-08-11 flight settled which step wedges, and it is the RESET,
+  not ASDE.** Two rows painted, eligible and the read-only touch
+  (`STATUS=0x40080080 CTRL=0x180240`, so the BAR is right and reads
+  complete), and nothing below them. ASDE is UNTESTED rather than
+  disproved: the bit was never written.
+  **`AsdeStageProbe` was rebuilt 2026-08-13 and the order is reversed.**
+  Both arms now run with NO RESET at all -- `na-bring-up-after` is
+  `na-bring-up` minus the reset, and firmware leaves `CTRL.SLU` set -- so
+  Finding 4 gets answered whether or not the reset is ever solved, and the
+  reading is banked ABOVE the step known to kill the box (L-BANK). The
+  reset then rides last, split into its five MMIO operations with a row
+  before each, so the glass names which one did not return (L-STATES).
+  The driver is deliberately unchanged from the flown build: moving the
+  reset path would make a different outcome uninterpretable.
+  Bed-verified both ways. **The arm is `build/boot/asdeflight.img` and the
+  procedure is `docs/Hardware/HardwareSitting.md`, the section headed "THE
+  ARM, kept for the next flight"** -- it carries the outcome table, the new
+  SHA-256 and the 2500 ms screenshot delay. **Awaiting a sitting.**
 - Then **B2c** RX/TX on the real part, **B3** the TCP/IP stack over it,
   **B4** serve the repository protocol. EdgeMesh Phase 2
   (`docs/Designs/Active/Features/EdgeMeshGameServers.md`) is the consumer
@@ -683,7 +801,7 @@ sweep**; a future pass starts from the ledger, not from a guess. The
 method and its traps are in
 `docs/Designs/Active/Compiler/Annotations.md` section E.
 
-## Bare `print-line` prints raw CCE -- 192 sites, unowned
+## Bare `print-line` printed raw CCE -- CLOSED in the primitive, premise now inverted
 
 Found 2026-08-11 (blu) closing the browser's garbled banner. **`print-line`
 is the RAW builtin**: `Types/Builtins.codex` lowers it through
@@ -703,20 +821,28 @@ weeks.
 `Effects and Act Blocks` examples said `print-line`, and its `effect Console`
 block declared a `print-line` the platform does not have.
 
-**192 bare call sites remain** (measured 2026-08-11, `apps/` and `codex/`,
-excluding `build-output/` and `old/`). Heaviest: `apps/fishtank` 43,
-`apps/market/tests` 24, `apps/fontai` 16, `apps/radio` 18 across app and
-tests, `apps/vision` 8, `apps/secrets` 7, `codex/test` 7,
-`codex/compiler/Emit` 5. The browser's 10 are done (main 14572 and the CL
-that carries this note).
+**CLOSED 2026-08-13 by blu, in the PRIMITIVE, and the premise above is now
+INVERTED. Do not start the sweep this section describes.** Main 14806/14809:
+`print-line` lowers through `emit-print-line-builtin` and CONVERTS; the
+byte-exact one is now named `print-line-raw`. So the unadorned name is the
+RIGHT one and the 192-site sweep is not work that exists.
 
-**Each site needs judging, not a sweep.** Raw is CORRECT for a wire emitter
-whose payload newlines are CCE bytes inside the Text -- that is what
-`print-line-raw` and `print-text` are for, and `IRTextEmitter.codex` says so
-in its own prose. A regex pass would convert those too and corrupt the wire
-format. An app printing status for a human is the case that is simply wrong.
-Unowned; it splits cleanly by app, so it can go to whoever is standing in
-each one.
+Re-measured 2026-08-13: **85 bare sites**, not 192, and they are correct by
+default. `apps/fishtank` went 43 to 1. Heaviest now are `opening.codex` 31,
+`RadioStationMain` 9, `FontExtract` 9, `FontTrain` 7, `ChatServer` 5.
+
+**The residual is the OPPOSITE hazard and it is much smaller:** a WIRE emitter
+still calling the unadorned name now gets converted bytes where it needs exact
+ones. blu pinned the two known ones (the fishtank page emitters) to
+`print-line-raw` and proved the bytes unmoved, same SHA and byte-identical
+serial stream. Anything else that emits a wire format through `print-line`
+wants the same treatment, and that is an audit of emitters rather than a sweep
+of call sites.
+
+**This entry is kept rather than deleted because the trap it documents
+reversed direction**, and a reader who half-remembers the old rule will reach
+for the wrong name. L-COUNT and "prefer the fix in the primitive": the sweep
+was 192 sites of per-site judgement and the primitive change closed all of it.
 
 ## Rulings Damian owes (the only queue that blocks)
 

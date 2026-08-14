@@ -9,8 +9,8 @@ cases.** AArch64 and RV64 both emit, disassemble, and wrap ELF from
 taxonomy proposed below was never built and is not how the port
 happened. Residual work: **RV32 and Thumb-2 codegen** -- only the
 encoders exist for those.
-**Upstream**: `docs/PM/Stories/Vision/CodexIoTPlan.md` Phase 1,
-`docs/PM/IoT/AGENT-PROMPT.md` deliverable 1
+**Upstream**: `docs/PM/Projects/CodexIoTPlan.md` Phase 1,
+`docs/Reference/IoT/AGENT-PROMPT.md` deliverable 1
 
 ## The Problem
 

@@ -1,0 +1,53 @@
+Chapter: ClockEncodeTest
+  cites Foreword chapter Console
+  cites Works chapter GopClock
+
+ The clock pane writes the MC146818, and codex-vm ignores every CMOS
+ write (`tools/codex-vm.c`, "write to CMOS -- ignore"), so no bed run can
+ tell a correct write from a broken one. The port writes are two
+ instructions; the risk is all in the encoding, which is pure and can be
+ checked here.
+
+ The round trip is the test rather than a table of expected bytes: a
+ table would agree with whatever the code does today if it were generated
+ from it, while `decode (encode h) == h` for every hour in every mode
+ fails loudly when either half drifts. All four modes are exercised
+ because the part chooses them, not us: BCD or binary, 12-hour or
+ 24-hour.
+
+Section: Modes
+
+  mode-bcd-12 : Integer = 0
+  mode-bcd-24 : Integer = 2
+  mode-bin-12 : Integer = 4
+  mode-bin-24 : Integer = 6
+
+Section: Round Trip
+
+  hours-ok : Integer, Integer, Integer -> Integer
+  hours-ok (b) (h) (acc) =
+    if h > 23 then acc
+    else hours-ok b (h + 1) (if clk-decode-hour (clk-encode-hour h b) b == h then acc + 1 else acc)
+
+  plain-ok : Integer, Integer, Integer, Integer -> Integer
+  plain-ok (b) (v) (hi) (acc) =
+    if v > hi then acc
+    else plain-ok b (v + 1) hi (if rtc-decode (clk-encode v b) (bit-and b rtc-binary-bit) == v then acc + 1 else acc)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("bcd 0..59      : " & integer-to-text (plain-ok mode-bcd-24 0 59 0) & " of 60")
+    print-line-uni ("binary 0..59   : " & integer-to-text (plain-ok mode-bin-24 0 59 0) & " of 60")
+    print-line-uni ("bcd year 0..99 : " & integer-to-text (plain-ok mode-bcd-24 0 99 0) & " of 100")
+    print-line-uni ("hours bcd 24   : " & integer-to-text (hours-ok mode-bcd-24 0 0) & " of 24")
+    print-line-uni ("hours bcd 12   : " & integer-to-text (hours-ok mode-bcd-12 0 0) & " of 24")
+    print-line-uni ("hours bin 24   : " & integer-to-text (hours-ok mode-bin-24 0 0) & " of 24")
+    print-line-uni ("hours bin 12   : " & integer-to-text (hours-ok mode-bin-12 0 0) & " of 24")
+    print-line-uni ("midnight bcd12 : " & integer-to-text (clk-encode-hour 0 mode-bcd-12))
+    print-line-uni ("noon bcd12     : " & integer-to-text (clk-encode-hour 12 mode-bcd-12))
+    print-line-uni ("13h bcd12      : " & integer-to-text (clk-encode-hour 13 mode-bcd-12))
+    print-line-uni ("23h bcd24      : " & integer-to-text (clk-encode-hour 23 mode-bcd-24))
+  end
+
+Page 1

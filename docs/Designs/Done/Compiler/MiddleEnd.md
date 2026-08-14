@@ -28,7 +28,7 @@ rather than re-arguing it.
 Codex has no middle end. `Emit/` is 18,814 of the compiler's 36,389 lines
 (**52%**); `IR/` is 2,191 lines and hosts exactly two hardcoded transforms.
 Every other optimization is a peephole at the point of emission, and
-`docs/Reference/CodegenAnalysis.md` records the ceiling: fib/fact/gcd/sum
+`docs/Designs/Done/Compiler/CodegenAnalysis.md` records the ceiling: fib/fact/gcd/sum
 plateaued at CL 3400 and twenty subsequent CLs moved them by zero. gcd is +156%
 over the F# JIT. **The structural cause:** `IRExpr` (`IR/IRChapter.codex:23`) is
 a name-based expression *tree* -- not SSA, not a CFG, no basic blocks, no
@@ -233,7 +233,7 @@ registry, an ordered pipeline as data, per-pass enable/options. Wire a
 fixed point required, no behavior change. Then the knobs. The memory pattern
 (correction 6) is decided and documented here, and `MEASURE` grows per-pass HWM.
 
-### Step 3 -- ablation harness -- **DONE** (`build/ablate.ps1`, log in `docs/Reference/AblationRuns.md`)
+### Step 3 -- ablation harness -- **DONE** (`build/ablate.ps1`, log in `docs/Designs/Active/Compiler/AblationRuns.md`)
 
 A script over the pass config that scores each configuration on seed size,
 bench static counts (`bench/compare.ps1` mechanism), and self-compile wall

@@ -323,7 +323,7 @@ one direction that causes harm.
 
 ## 4. Why nothing caught it
 
-The tree does contain a check for exactly this. `docs/HardwareSitting.md`,
+The tree does contain a check for exactly this. `docs/Hardware/HardwareSitting.md`,
 section 0, "Preconditions -- BLOCKING":
 
 > | **R8** | `seed/Codex.img` refreshed from the current seed | **A seed
@@ -523,7 +523,7 @@ tree gave him a false yes if he checked.
 There is a second defect in the vicinity, and it deserves separate treatment
 because it is not the same failure and conflating them would muddy both.
 
-`docs/HardwareSitting.md`, Boot 3, carries an explicit block:
+`docs/Hardware/HardwareSitting.md`, Boot 3, carries an explicit block:
 
 > **DO NOT RUN THIS RUNG YET, and do not flash the console stick.**
 > The reason changed on 2026-07-29 and the rung is still not ready.
@@ -580,13 +580,13 @@ Measured today:
 
 | Document | Depot revision | Last changed |
 |---|---|---|
-| `docs/HardwareSitting.md` | **#4** | CL 11870 |
+| `docs/Hardware/HardwareSitting.md` | **#4** | CL 11870 |
 | `docs/Agents/fester-workplan.md` | **#124** | CL 12032 |
 
 Main was at CL 12041 when this was written. The workplan has been revised
 four times since the run sheet last moved: CL 11977, 11983, 12010, 12032.
 Both documents are fester's. One governs the sitting -- his own workplan says
-so, at line 13: *"`docs/HardwareSitting.md` governs: every question
+so, at line 13: *"`docs/Hardware/HardwareSitting.md` governs: every question
 answerable before the sitting is answered before it."*
 
 So the document he declares authoritative for the scarcest resource in the
@@ -946,7 +946,7 @@ thing the sitting exists to do.
 | A6 | On disk, `Codex.cdx` and `Codex.img` share LastWriteTime 7/29/2026 2:07:57 PM | `Get-Item` |
 | A7 | `build/build-boot-img.ps1` defaults `-Out` to the depot artifact `seed\Codex.img` | source, lines 10-23 |
 | A8 | The gate dance mandates `p4 sync -f` before any build | `docs/Agents/PerforceProcess.md`, step 2 |
-| A9 | `docs/HardwareSitting.md` at #4, CL 11870 | `p4 filelog` |
+| A9 | `docs/Hardware/HardwareSitting.md` at #4, CL 11870 | `p4 filelog` |
 | A10 | `docs/Agents/fester-workplan.md` at #124, CL 12032; main head CL 12041 | `p4 filelog`, `p4 changes` |
 | A11 | R8 is BLOCKING, names the img/seed split, predicts "the failure that looks like a compiler bug", and is discharged by "Ask red, do not infer" | `HardwareSitting.md` section 0 |
 | A12 | Run sheet step 1 does invoke `build/build-boot-img.ps1` | `HardwareSitting.md` section 1 |

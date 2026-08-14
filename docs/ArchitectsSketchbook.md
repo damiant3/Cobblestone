@@ -77,9 +77,9 @@ Fixed addresses for runtime state. Defined in
 | 34592 | nic-tx-buf-addr | 1536 | NIC transmit buffer |
 | 36128 | try-fail-flag-addr | 8 | Try/fail exception flag |
 | 36200 | **ap-dispatch-count-addr** | 8 | Processes claimed by a core whose id is not zero. Only `__idle_dispatch` writes it, and the BSP's id is always zero, so a value above zero is evidence an application processor took a process out of the table and ran it. Read by `codex/test/smp-dispatch.codex` |
-| 36240 | **devint-count-addr** | 8 | Interrupts taken on a vector that is neither the PIT's (32) nor the local timer's (48). `__interrupt_common` answers those two specially and used to return from every other vector without leaving a mark, so a delivered device interrupt and a dropped one were indistinguishable from inside the guest. Incremented with a locked add; the timer vectors branch away before reaching it, so the periodic tick cannot appear here |
+| 36240 | **devint-count-addr** | 8 | Interrupts taken on a vector that is neither the PIT's (32) nor the local timer's (48). `__interrupt_common` answers those two specially and returns from every other vector, so without this cell a delivered device interrupt and a dropped one are indistinguishable from inside the guest. Incremented with a locked add; the timer vectors branch away before reaching it, so the periodic tick cannot appear here |
 | 36248 | **devint-last-vec-addr** | 8 | The vector of the most recent such interrupt. A test programs a line, then demands that line answered rather than merely that something arrived. Read with 36240 by `codex/test/hpet-interrupt.codex` |
-| 36256 | **ap-id-next-addr** | 8 | The next core id to hand out. An application processor no longer arrives with its id in a register the host set -- it starts in real mode knowing nothing -- so the last act of its trampoline is a locked exchange-add here. The boot processor seeds it with 1 before the start-up IPI and keeps 0 for itself. A dense counter rather than the LAPIC id: the value indexes four arrays of `smp-max-cores` entries, and a LAPIC id is an identifier, not an index |
+| 36256 | **ap-id-next-addr** | 8 | The next core id to hand out. An application processor starts in real mode knowing nothing, with no id in any register, so the last act of its trampoline is a locked exchange-add here. The boot processor seeds it with 1 before the start-up IPI and keeps 0 for itself. A dense counter rather than the LAPIC id: the value indexes four arrays of `smp-max-cores` entries, and a LAPIC id is an identifier, not an index |
 | 36264 | **net-driver-cb** | 56 | Which NIC the network seam is bound to, and its six addresses: card selector at +0 (0 = NE2000, 1 = e1000), then mmio, rx-ring, rx-bufs, ctrl-blk, tx-ring, tx-bufs at +8 through +48. Written once by `net-driver-bind-e1000` (`codex/os/net/NetDriver.codex`) with the selector LAST, so a half-written block is never live. Zero until something binds, which is why a guest that never probes PCI keeps serving off the NE2000. The seam takes no device argument, and a module-level record binding is a recipe rather than a cell that allocates again on every reference, so this is the only place the bound card can live |
 
 **Do not claim a cell in this band without grepping `tools/codex-vm.c` AND
@@ -306,8 +306,8 @@ BuildSettings.codex`, Demand Decks section). The heap range
 [6 MB, 2 GB) boots with its PD entries not-present and a #PF handler
 commits identity 2 MB pages on first touch, so a floor costs address
 space, not memory -- physical consumption is what a phase actually
-writes. The survey-multiplier system that previously sized decks from
-source length was deleted 2026-07-07.
+writes. Floors are flat rather than derived; see "Why the floors are flat"
+below.
 The pipeline has 6 TEXT-mode frontend phases plus emit. CDX mode adds
 RESOLVE, LIFT, and INLINE between LOWER and EMIT (CL 2429 split the
 frontend so TEXT skips those). ConstructedTy resolution and lambda
@@ -336,13 +336,11 @@ dead decks are reclaimed at phase boundaries:
   first, bounded LOWER scratch above it, `rewrite-ir-chapter`
   deep-copies survivors into the reservation.
 
-Measured 2026-07-18 on a **2.53 MB** selfhost source with
+Measured 2026-07-21 on a **2.81 MB** selfhost source with
 `build/compile.ps1 -Measure`, which prints one `DECK-<n>:phase=<NAME> ...`
-line per phase. Re-measure with that switch; do not quote this table.
-
-Re-measured 2026-07-21 on a **2.81 MB** selfhost source, post CL 10026
-(the cite-fallback allocation fix) and the write-path
-guards (SCOPE/CHECK/LOWER floors up by their 8 MB guard bands).
+line per phase, post CL 10026 (the cite-fallback allocation fix) and the
+write-path guards (SCOPE/CHECK/LOWER floors up by their 8 MB guard bands).
+Re-measure with that switch; do not quote this table.
 
 **What the SCOPE deck actually holds** (deck-pos probes at each phase
 step, 2026-07-21): `scope-adefs-ll` 0.3 MB, the cite bags 3.0 MB, and
@@ -367,13 +365,12 @@ moving those PatResult wrappers off the deck is the lever.
 | LIFT | 104 MB (CDX only) | 37.0 MB | 13.8x | 2.8x | standard |
 | EMIT | per-func | -- | -- | -- | streaming (CL 3793) |
 
-**PARSE keep was 241 MB and is now 11.1 MB.** This row said 95.4x source and
-1.59x headroom, and it was measuring a defect rather than a workload:
-`copy-sx-text` rematerialized every text unconditionally while its siblings
-`copy-sx-token` and `copy-sx-span` shared anything below the reservation base.
-Giving it the same `address-of t < b` guard took the deck from 254 MB to
+**PARSE keep is 11.1 MB, and it reads as small because `copy-sx-text` carries
+the `address-of t < b` guard its siblings `copy-sx-token` and `copy-sx-span`
+have.** Without it that walk rematerializes every text unconditionally instead
+of sharing anything below the reservation base, which costs 254 MB against
 11.6 MB on the same input. A survivor-copy that expands 21x over the scratch
-it reads was never plausible; the tell was that the ratio GREW with input
+it reads is never plausible; the tell is a ratio that GROWS with input
 size (0.09x on a 2.9 KB source, 21x on this one), which is duplication of
 something shared, not structure.
 
@@ -386,26 +383,23 @@ walk because `lower-chapter` is deck-wrapped (CL 2968). An intra-compiler
 `cites Codex chapter X` always takes that fallback (the concat prefixes
 chapters by directory, so `Codex--X` never matches), and 25 such cites
 stood in the unit at ~5.4 MB each. Fixed in CL 10026 (in-place compare):
-LOWER fell 266.7 to 158.1 MB and its cost is no longer superlinear in
+LOWER fell 266.7 to 158.1 MB and its cost is not superlinear in
 citations. The tight rows are now DESUGAR (1.76x MEASURE, ~1.5x in CDX
 mode, where it is the binding phase: `-Decks 65` refuses naming DESUGAR
 and 70 compiles) and SCOPE (1.71x). Those are the rows to watch.
 
-**The row that was wrong for a year is PARSE.** This table recorded
-"PARSE scratch 32.6 MB, 23x" and the register recorded "PARSE scratch runs
-at roughly 96x". Both described the wrong deck, and neither could be
-checked because MEASURE emitted a positional list with no phase names. The
-95x deck is **PARSE keep** -- the reservation the copy walk fills -- and the
-scratch it is copied out of is **4.6x**, sitting under a 384 MB floor it
-uses 3 per cent of. The scratch floor was raised to 384 MB on the strength
-of a number that belonged to its neighbour.
+**Name the deck before quoting its ratio: PARSE has two and they differ by
+20x.** The 95x deck is **PARSE keep**, the reservation the copy walk fills.
+The scratch it is copied out of is **4.6x**, sitting under a 384 MB floor it
+uses 3 per cent of. MEASURE emits phase names now; a positional list cannot
+tell the two apart, and a floor sized from the wrong one is how that scratch
+floor reached 384 MB.
 
-**LOWER was the tightest deck at that measurement (1.26x), and nothing was
-watching it.** The attention was all on PARSE. An under-reserved floor does
-not raise CDX9002 -- it dies in a `#GP` with no diagnostic,
-so the phase closest to its floor is the one most worth a pre-flight bound.
+**An under-reserved floor does not raise CDX9002** -- it dies in a `#GP` with
+no diagnostic, so the phase closest to its floor is the one most worth a
+pre-flight bound, whether or not it is the phase drawing attention.
 
-**RESOLVE and LIFT are no longer "not reported".** Both rows above were
+**RESOLVE and LIFT** were
 measured 2026-07-21 by an in-loop `__deck-pos` probe rather than through the
 metrics list, which is a cheaper instrument than fixing the list-push problem
 below and answers the question the floors actually pose. RESOLVE decomposes as
@@ -465,11 +459,11 @@ runs at 2-6x headroom under every floor.
 
 ### Why the floors are flat, not derived
 
-The compiler used to size each phase deck from a formula over the source
-length (`survey-*-mul`). **That system is deleted.** The multipliers could
-not be sized honestly -- they were non-monotonic (20 worked, 25 did not,
-40 silently miscompiled a grown self-compile), and an under-reservation
-corrupted the heap rather than raising a diagnostic.
+Deriving each phase deck from a formula over the source length
+(`survey-*-mul`) was tried and abandoned. The multipliers could not be sized
+honestly: they were non-monotonic (20 worked, 25 did not, 40 silently
+miscompiled a grown self-compile), and an under-reservation corrupted the
+heap rather than raising a diagnostic.
 
 The fix was structural, not numeric: flat generous floors over
 demand-paged address space. Type-dense plug source and the selfhost draw
@@ -601,7 +595,7 @@ Emit deck
 ### Accumulator Capacity
 
 `accum-capacity` = **65536** (defined in `codex/compiler/Core/BuildSettings.codex`
--- this line said 32768 until it was re-measured; do not carry it forward).
+-- re-measure it there; do not carry this number forward).
 
 All accumulator lists are pre-allocated via `__list-with-capacity`.
 `list-push` writes in-place with no allocation as long as the list
@@ -617,10 +611,6 @@ Measured, not assumed: built with `accum-capacity` at 16, the compiler
 emits a factorial whose call-patch target is the empty string, and the
 only complaint is `CDX2040: Unresolved call to ''`. This is why the
 accumulators are sized once on the deck and why the guard exists.
-
-**That guard was written and never called** until 2026-07-16 -- this
-paragraph asserted it ran for as long as it did not. A guard defined and
-left unwired is worth exactly what no guard is worth.
 
 ### Emit Output Buffers
 
@@ -740,13 +730,12 @@ compiler's reservations are taken from a low frontier and land below
 the page, and `build` carries its own ceiling test as belt-and-braces
 regardless (`deck-reservation-guard`, `Core/PhaseAllocator.codex`).
 
-**An earlier revision of this paragraph said the guard page therefore
-does not catch the whole-compiler `-IrCce` overrun. That was measured
-against a binary with no guard page in it and is retracted.** The SUT's
-boot code is emitted by the SEED, so an emitter change reaches stage1
-and not the SUT; ablated against `seed/Codex.cdx#586` (crash) and
-`#587` (OUT OF MEMORY, no ceiling test present), the page alone is what
-fixes it. And a STACK that
+**The guard page does catch the whole-compiler `-IrCce` overrun.**
+Ablated against `seed/Codex.cdx#586` (crash) and `#587` (OUT OF MEMORY,
+no ceiling test present), the page alone is what fixes it. Measuring this
+takes care: the SUT's boot code is emitted by the SEED, so an emitter
+change reaches stage1 and not the SUT, and a run against the SUT is
+measuring a binary with no guard page in it. And a STACK that
 grows down into it cannot take a #PF at all (the CPU cannot deliver the
 frame onto the faulting stack), so that arm arrives as a double fault on
 IST1 and an `!EXC` dump rather than an OUT OF MEMORY line.
@@ -830,11 +819,10 @@ nothing at runtime. `bare-metal-device-pd-index`, `-device-page-start`,
 
 This is where everything x86 puts above RAM lives: the LAPIC at
 0xFEE00000, the IOAPIC at 0xFEC00000, the HPET at 0xFED00000, and every
-PCI BAR codex-vm advertises. Until 2026-07-13 the tables stopped at
-`bare-metal-ram-size` and all of it was unmapped, which is why codex-vm's
-device model reaches almost everything through port I/O rather than MMIO --
-**the device model grew around a ceiling that is now gone.** Reach for
-MMIO first when adding a device.
+PCI BAR codex-vm advertises. The tables once stopped at
+`bare-metal-ram-size` with all of this unmapped, which is why codex-vm's
+device model reaches almost everything through port I/O rather than MMIO.
+**That ceiling is gone.** Reach for MMIO first when adding a device.
 
 The `#PF` handler and `emit-demand-unmap` both address the PDs as one
 flat array of 8-byte entries based at 0xA000; the device PD extends that
@@ -842,10 +830,10 @@ array contiguously (page 1536's entry lands at 0xD000, which is exactly
 where PD 3 begins), so their arithmetic is unchanged. The demand range
 only ever spans pages 3..1024, so it never reaches the device PD.
 
-The consequence to know: **a stray pointer above 3 GB now reaches the
+The consequence to know: **a stray pointer above 3 GB reaches the
 bus instead of faulting.** That is what it would do on real hardware,
 where those addresses are decoded by devices rather than by RAM -- but it
-does mean the page tables no longer catch a wild high pointer for you.
+does mean the page tables do not catch a wild high pointer for you.
 
 ### Demand Paging (2026-07-07, hardened 2026-07-06 val CLs 7207-7210)
 
@@ -898,15 +886,10 @@ that count -- on `pause`, not `hlt`: nothing sends the BSP an interrupt
 when an AP checks in, so a halted BSP would never wake. The spin is fuel
 capped, so a core that never answers costs a delay and not the boot.
 
-**The start-up IPI's vector field is a page number, and it is now the
-only channel there is.** On silicon that field names the 4 KB page an AP
+**The start-up IPI's vector field is a page number, and it is the only
+channel there is.** On silicon that field names the 4 KB page an AP
 begins executing in, which caps the entry below 1 MB and requires a
-real-mode trampoline. codex-vm used to sidestep the mechanism entirely --
-it read a full 64-bit entry address out of GPA 0x1000 and dropped the AP
-straight into long mode with CR3, EFER, a GDT and its core id in RDI all
-supplied by the host -- so SMP worked under the emulator and could not
-have worked on metal, and the trampoline that metal needs was untestable
-because nothing would ever have run it. Both ends are honest now: codex-vm
+real-mode trampoline. codex-vm
 starts an AP at `vector<<12` in real mode with reset control registers and
 nothing in RDI, and `ap-tramp-blob` is 177 bytes of 16-bit, 32-bit and
 64-bit code that carries a core the rest of the way. Every SMP test
@@ -920,9 +903,8 @@ reading order suggests, and the core runs until its first timer tick and
 then general-protection-faults on the way back out, because selector 24 in
 the runtime table is a TSS and a TSS is not a code segment. **CR4 must
 carry OSFXSR**, or the first packed instruction in the first process the
-core resumes is an invalid opcode. And **the AP entry must `lidt`**: the
-host used to point each AP's IDTR at the real IDT, so nothing in the guest
-ever did, and without it the first tick after `sti` dispatches through the
+core resumes is an invalid opcode. And **the AP entry must `lidt`**:
+without it the first tick after `sti` dispatches through the
 real-mode interrupt vector table. That last one presents as cores that
 check in and then never claim a process, which looks nothing like a
 missing IDT.
@@ -1007,8 +989,7 @@ running one gets the right allocator by resuming it. Whether the
 question.
 
 **Every core has a clock.** The PIT's IRQ reaches the boot processor
-alone, so an AP used to run whatever it was given until that process
-yielded, blocked or exited. Each AP now arms its **own local APIC timer**
+alone, so each AP arms its **own local APIC timer**
 at bring-up (`emit-ap-timer-init`, `X86_64Boot.codex`): it enables its
 LAPIC, programs the LVT timer periodic on **vector 48**, sets the initial
 count, and only then raises IF. A process on an application processor is
@@ -1031,8 +1012,7 @@ Evidence lives at cell **36216** (`ap-preempt-count-addr`): every timer
 interrupt taken on a core whose id is not zero bumps it, and the BSP's id
 is always zero. `codex/test/smp-preempt.codex` reads it.
 
-**Three things this paragraph used to list as missing are now built**, and it
-said otherwise for long enough to be worth naming. An idle core **halts**
+**Halting, affinity and work stealing are all built.** An idle core **halts**
 (`st-append-code s15 hlt` in `__idle_dispatch`, `X86_64ProcessHelpers.codex`);
 the timer lands on its idle stack and the handler drops ticks whose SP is in
 that band, which is what makes halting safe. **Affinity** is real and on the
@@ -1044,18 +1024,14 @@ though the bare-metal dispatcher scans a shared process table rather than
 per-core queues, so there it is not-applicable rather than missing. Tests:
 `codex/test/smp-halt.codex`, `codex/test/smp-affinity.codex`.
 
-**Proc 0 does not migrate, and this document used to say the opposite.** It
-recorded proc-0 migration as permitted-by-design but unproven, on the strength
-of the affinity field, which held `-1` -- "any core" everywhere else in the
-table. The scheduler forbade it in three separate places the whole time.
+**Proc 0 does not migrate.** The scheduler forbids it in three separate places.
 `__idle_dispatch` starts each core's scan at its own id and wraps to 1, so an
 application processor never reaches slot 0; and both preemption scans skip slot
 0 outright when the claiming core is not the boot processor, each with its own
 written account of the corruption that guard prevents. Slot 0 owns the boot
-stack and the main heap. The field now reads `0`, which is what the machine
-does; on the boot processor the affinity test compares 0 against core 0 and
-passes exactly as the wildcard did, and on every other core slot 0 was already
-unreachable.
+stack and the main heap. Its affinity field reads `0` to match: on the boot
+processor the affinity test compares 0 against core 0 and passes, and on
+every other core slot 0 is unreachable anyway.
 
 `codex/test/smp-proc0-pinned.codex` pins it. It reads slot 0's core stamp after
 a four-core run and requires it to still be the boot processor, with three
@@ -1133,7 +1109,7 @@ C and JIT reference columns (cl.exe, the .NET JITs) were measured
 2026-06-12 and do not move. The four primordial benches carry the full
 reference set; the elaborate benches have no in-tree x86 C/JIT reference,
 so only the Codex count is shown. Full optimization history and per-CL
-breakdown: `docs/Reference/CodegenAnalysis.md`.
+breakdown: `docs/Designs/Done/Compiler/CodegenAnalysis.md`.
 
 | Bench    | Codex | C /Od | C /O2 | C# JIT | F# JIT |
 |----------|------:|------:|------:|-------:|-------:|
@@ -1149,9 +1125,9 @@ breakdown: `docs/Reference/CodegenAnalysis.md`.
 
 \* `collatz` moved when the bounded-division fix landed and the count above predates
 it -- **re-measure before quoting.** Its `n` is an unbounded `Integer`, so
-`n / 2` and `int-mod n 2` can no longer take the one-instruction
+`n / 2` and `int-mod n 2` cannot take the one-instruction
 shift/mask: those are correct only for a dividend proven non-negative,
-and for any other they now lower to `idiv`, which is what truncation
+and for any other they lower to `idiv`, which is what truncation
 actually is. The binary grew 16 bytes; the other eight benches are
 byte-identical. The shortcut is recoverable at the source rather than in
 the emitter -- declaring `n : Integer between 1 and ...` proves the
@@ -1181,13 +1157,11 @@ named bindings. The LIR selector carries a Wimmer linear-scan allocator and is
 live in the default pipeline. Measured 2026-07-19
 (`docs/Designs/Done/Compiler/LIR.md`), it takes **all nine** `bench/codex`
 functions and against the tree emitter is **neutral on seven and one instruction
-ahead on `ack` and `collatz`**. This paragraph called it flatly
-"instruction-neutral" for a while, which was both out of date and easy to
-misread as the selector declining functions -- it declines none of them.
+ahead on `ack` and `collatz`**. It declines none of them.
 
-**Beating the tree by more than a margin of one is NOT the next frontier, and
-this paragraph said it was until 2026-07-23.** It was measured and it is not
-available: `docs/Designs/Done/Compiler/LIR.md` section 12 is the closing note.
+**Beating the tree by more than a margin of one is not available, and that
+was measured rather than assumed.** `docs/Designs/Done/Compiler/LIR.md`
+section 12 is the closing note.
 The short version is two independent negatives. The spills that remain are the
 register file rather than the allocator -- one program (`bench/codex/regstress`)
 under three register-file descriptors and one unchanged allocator spills 13, 6

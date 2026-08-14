@@ -229,16 +229,38 @@ Section: The HID Interface Walk
  time so a boot that dies later still photographs with its devices
  named.
 
+ These cells were at 80 until 2026-08-13 and that was FOUR CELLS DEEP into
+ territory GopUsbMsc and GopFat16 already owned. Four devices at four words
+ each is 80..95, against msc-cell-lastcc 81, msc-cell-phase 82,
+ gfat-cell-write 83, xhci-cell-fuel-left 84, msc-cell-fuel-lo 85,
+ msc-cell-fail-lba 86, msc-cell-retry 87 and gfat-cell-stage 80.
+
+ It was invisible because the two writers run in order and neither reads
+ the other. usb-attach binds HID first and fills 80..95; the mount and any
+ disk I/O then run and overwrite 80..87, so the MSC and FAT diagnostics
+ were right and the FIRST TWO ROWS of DeskBoot's HID table were showing
+ storage state wearing device-descriptor labels. In the other direction, a
+ cell the storage path never writes on a given boot keeps its HID value: on
+ 2026-08-13 an F12 mount failure reported gfat-cell-write as 1964712320,
+ which is not a write stage, it is HID device 0's report buffer address.
+
+ The registry that says who owns what is docs/OperatorsManual.md, and
+ build/check-xdiag-cells.ps1 fails the build on an overlap.
+
+  usb-hid-cell-base : Integer = 96
+  usb-hid-cell-max : Integer = 4
+  usb-hid-cell-count : Integer = 47
+
   usb-hid-note : XhciHost, UsbDev, Integer, Boolean, Boolean, Integer -> Integer
   usb-hid-note (xh) (dev) (dci) (raw) (mouse) (buf) =
-    let idx = xdiag-get 47
-    in let c = xdiag-put 47 (idx + 1)
-    in if idx >= 4 then 0
+    let idx = xdiag-get usb-hid-cell-count
+    in let c = xdiag-put usb-hid-cell-count (idx + 1)
+    in if idx >= usb-hid-cell-max then 0
     else let dbuf = alloc-zeroed 64 64
     in let g = usb-get-descriptor xh dev 1 0 dbuf 18
     in let vid = if g then bit-or (peek-byte dbuf 8) (bit-shl (peek-byte dbuf 9) 8) else 0
     in let pid = if g then bit-or (peek-byte dbuf 10) (bit-shl (peek-byte dbuf 11) 8) else 0
-    in let base = 80 + idx * 4
+    in let base = usb-hid-cell-base + idx * 4
     in let w0 = xdiag-put base (bit-or (bit-shl vid 16) pid)
     in let w1 = xdiag-put (base + 1) (bit-or (bit-shl (dev.ud-port) 24) (bit-and (dev.ud-route) #FFFFF))
     in let w2 = xdiag-put (base + 2) (bit-or dci (bit-or (if raw then 256 else 0) (bit-or (if mouse then 512 else 0) (bit-shl (dev.ud-speed) 12))))

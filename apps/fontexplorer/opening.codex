@@ -9,6 +9,7 @@ Chapter: Opening
   cites UI chapter Layout
   cites UI chapter Theme
   cites UI chapter Event
+  cites UI chapter KeyInput
   cites UI chapter Binding
   cites UI chapter Scroll
 
@@ -24,70 +25,70 @@ Section: Application State
 
 Section: Window Layout
 
-  build-explorer-window : ExplorerState -> Widget
+  build-explorer-window : ExplorerState -> WidgetNode
   build-explorer-window (state) =
-    let title = widget-label "Codex Font Explorer" 24
+    let title = widget-label "title" "Codex Font Explorer"
     in let weight-slider = widget-slider "Weight" 100 900 state.es-preview.ps-weight
     in let italic-slider = widget-slider "Italic" 0 1000 state.es-preview.ps-italic
     in let temp-slider = widget-slider "Temperature" 0 1000 state.es-preview.ps-temperature
-    in let text-input = widget-text-field "Preview text" state.es-preview.ps-sample-text
-    in let export-btn = widget-button "Export TTF" 0
-    in let style-label = widget-label (style-to-name state.es-preview.ps-weight state.es-preview.ps-italic) 14
-    in let controls = layout-vertical [
+    in let text-input = widget-input "Preview text" state.es-preview.ps-sample-text 0
+    in let export-btn = widget-button "Export TTF" "Export TTF"
+    in let style-label = widget-label "style" (style-to-name state.es-preview.ps-weight state.es-preview.ps-italic)
+    in let controls = widget-panel "controls" DirColumn 8 [
       title,
-      layout-spacer 8,
       weight-slider,
       italic-slider,
       temp-slider,
       style-label,
-      layout-spacer 12,
       text-input,
-      layout-spacer 8,
       export-btn
     ]
-    in let preview-upper = widget-label "ABCDEFGHIJKLMNOPQRSTUVWXYZ" 36
-    in let preview-lower = widget-label "abcdefghijklmnopqrstuvwxyz 0123456789" 28
-    in let preview-sample = widget-label state.es-preview.ps-sample-text 20
-    in let preview-kern = widget-label "AVA To Ty WA VA LT" 32
-    in let preview = layout-vertical [
+    in let preview-upper = widget-label "preview-upper" "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    in let preview-lower = widget-label "preview-lower" "abcdefghijklmnopqrstuvwxyz 0123456789"
+    in let preview-sample = widget-label "preview-sample" state.es-preview.ps-sample-text
+    in let preview-kern = widget-label "preview-kern" "AVA To Ty WA VA LT"
+    in let preview = widget-panel "preview" DirColumn 12 [
       preview-upper,
       preview-lower,
-      layout-spacer 16,
       preview-sample,
-      layout-spacer 12,
       preview-kern
     ]
-    in layout-horizontal [
-      layout-fixed-width controls 280,
-      layout-spacer 16,
+    in widget-panel "explorer" DirRow 16 [
+      widget-set-min controls 280 0,
       preview
     ]
 
 Section: Event Handling
 
+  clamp-range : Integer, Integer, Integer -> Integer
+  clamp-range (v) (lo) (hi) =
+    if v < lo then lo else if v > hi then hi else v
+
   handle-explorer-event : ExplorerState, Event -> ExplorerState
   handle-explorer-event (state) (event) =
-    when event
-      is SliderChanged (name) (value) ->
-        if name == "Weight" then
-          let ps = preview-set-weight state.es-preview value
-          in state.es-preview = ps
-        else if name == "Italic" then
-          let ps = preview-set-italic state.es-preview value
-          in state.es-preview = ps
-        else if name == "Temperature" then
-          let ps = preview-set-temperature state.es-preview value
-          in state.es-preview = ps
-        else state
-      is TextChanged (name) (value) ->
-        if name == "Preview text" then
-          let ps = preview-set-text state.es-preview value
-          in state.es-preview = ps
-        else state
-      is ButtonClicked (name) (id) ->
-        if name == "Export TTF" then export-current-font state
-        else state
+    when event.ev-kind
+      is EvKeyDown (k) (mods) -> handle-explorer-key state (key-upper k)
       is otherwise -> state
+
+  handle-explorer-key : ExplorerState, Integer -> ExplorerState
+  handle-explorer-key (state) (k) =
+    if k == key-up then
+      let ps = preview-set-weight state.es-preview (clamp-range (state.es-preview.ps-weight + 50) 100 900)
+      in state.es-preview = ps
+    else if k == key-down then
+      let ps = preview-set-weight state.es-preview (clamp-range (state.es-preview.ps-weight - 50) 100 900)
+      in state.es-preview = ps
+    else if k == key-right then
+      let ps = preview-set-italic state.es-preview (clamp-range (state.es-preview.ps-italic + 100) 0 1000)
+      in state.es-preview = ps
+    else if k == key-left then
+      let ps = preview-set-italic state.es-preview (clamp-range (state.es-preview.ps-italic - 100) 0 1000)
+      in state.es-preview = ps
+    else if k == char-code 'T' then
+      let ps = preview-set-temperature state.es-preview (clamp-range (state.es-preview.ps-temperature + 100) 0 1000)
+      in state.es-preview = ps
+    else if k == char-code 'E' then export-current-font state
+    else state
 
 Section: Export
 
@@ -127,7 +128,9 @@ Section: Entry Point
       es-export-path = "FontExplorer-output.ttf"
     }
     in let window = build-explorer-window state
-    in print-line "Window built. Ready."
-    in print-line ("  Controls: Weight, Italic, Temperature sliders")
-    in print-line ("  Preview: " & state.es-preview.ps-sample-text)
+    in act
+      print-line "Window built. Ready."
+      print-line "  Keys: Up/Down weight, Left/Right italic, T temperature, E export"
+      print-line ("  Preview: " & state.es-preview.ps-sample-text)
+    end
   end

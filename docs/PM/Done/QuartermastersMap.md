@@ -8,7 +8,7 @@ RealBitcast cross-arch parity, PatchEntry.value bound, and more), and
 **none of them is tracked anywhere else.** Do not treat a dig here as
 tracked just because it is written down.
 
-The successor to `docs/FabledTreasureMap.md`, drawn for a different
+The successor to `docs/PM/Done/FabledTreasureMap.md`, drawn for a different
 purpose. The old map recorded treasure found in passing -- deferred
 wins an agent tripped over while digging for something else. This map
 is deliberate: work that is **scoped well enough to delegate**, so
@@ -385,7 +385,7 @@ gates. Belongs to fester by prior claim; anyone else coordinate
 first.
 
 **Pointers:** old map entry #2 restoration notes
-(`docs/FabledTreasureMap.md`), `docs/Agents/blu-workplan.md`
+(`docs/PM/Done/FabledTreasureMap.md`), `docs/Agents/blu-workplan.md`
 (EffectRows deferred odds).
 
 ---

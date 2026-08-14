@@ -1,0 +1,214 @@
+Chapter: GopStyleKit
+  cites UI chapter Theme
+
+ A design language, not a colour scheme.
+
+ The desk had four "schemes" and every one of them was a Palette: the
+ same 1px border, the same padding, the same flat fill, in different
+ colours. That is why picking `lcars` gave LCARS ORANGE and not LCARS.
+ A look is made of more than hue -- how hard the corners are, whether a
+ surface faces the light or sits in a well, how much air a control is
+ given, whether the ground is a gradient or a flat block.
+
+ A `DesignLanguage` is those decisions, once, for a whole interface. It
+ answers a Theme, so nothing downstream of it needs to know these exist.
+
+ The five here are deliberately far apart, because a vocabulary that only
+ spans two similar looks proves nothing about the vocabulary:
+
+   FLIGHT DECK  matte, sunk, square, tight. Panels are recessed wells and
+                controls stand proud of them, which is the arrangement of
+                every overhead panel on a 747: you find a switch with your
+                hand before you find it with your eyes.
+
+   CHEVY 57     chrome and lacquer. Wide bright bevels, deep round
+                corners, saturated body colour under a bright rail. The
+                bezel IS the design; a dial without one looks unfinished.
+
+   LCARS        flat blocks, no bevels at all, heavy rounding, black
+                ground. The look is the SILHOUETTE, so anything that adds
+                depth to a block is wrong here.
+
+   TERMINAL     hairline square, no depth, minimal air. What a phosphor
+                screen affords.
+
+   SLATE        the desk's own: soft gradient, no outline, quiet.
+
+ We say:
+
+Section: The Language
+
+ `dl-relief` is the one that carries the most: 0 flat, 1 controls raised
+ out of the ground, 2 ground recessed and controls raised. It is a single
+ number because a design language picks ONE lighting story and applies it
+ everywhere; mixing them per widget is how an interface stops looking
+ like one thing.
+
+  DesignLanguage = record {
+    dl-name : Text,
+    dl-palette : Palette,
+    dl-corner : CornerStyle,
+    dl-relief : Integer between 0 and 2,
+    dl-bevel-w : Integer between 0 and 16,
+    dl-pad-x : Integer between 0 and 64,
+    dl-pad-y : Integer between 0 and 64,
+    dl-gap : Integer between 0 and 64,
+    dl-outline : Integer between 0 and 8,
+    dl-gradient : Boolean
+  }
+
+Section: Deriving Colour
+
+ A bevel needs a lighter and a darker version of the surface it sits on,
+ and a design language should not have to name six colours to get them.
+ These lift and drop a channel at a time with saturating arithmetic, so a
+ surface already at white gets no lighter and one at black no darker
+ rather than wrapping into a different hue.
+
+  sk-chan : Integer, Integer -> Integer
+  sk-chan (c) (sh) = bit-and (bit-shru c sh) 255
+
+  sk-clamp8 : Integer -> Integer
+  sk-clamp8 (v) = if v < 0 then 0 else if v > 255 then 255 else v
+
+  sk-shift : Integer, Integer -> Integer
+  sk-shift (c) (d) =
+    bit-shl (sk-clamp8 (sk-chan c 16 + d)) 16
+    + bit-shl (sk-clamp8 (sk-chan c 8 + d)) 8
+    + sk-clamp8 (sk-chan c 0 + d)
+
+  sk-lighter : Integer -> Integer
+  sk-lighter (c) = sk-shift c 64
+
+  sk-darker : Integer -> Integer
+  sk-darker (c) = sk-shift c (0 - 56)
+
+Section: Surfaces
+
+ Three surface kinds, built from the language rather than named one by
+ one. The ground a pane sits on, a control that can be pressed, and a
+ well that holds a reading.
+
+  sk-bevel-for : DesignLanguage, Integer, Boolean -> Bevel
+  sk-bevel-for (dl) (c) (raised) =
+    if dl.dl-relief == 0 then bevel-none
+    else if raised then bevel-raised (sk-lighter c) (sk-darker c) (dl.dl-bevel-w)
+    else bevel-recessed (sk-lighter c) (sk-darker c) (dl.dl-bevel-w)
+
+  sk-border : DesignLanguage, Integer -> Border
+  sk-border (dl) (c) = if dl.dl-outline == 0 then border-none else border-uniform (dl.dl-outline) c (dl.dl-corner)
+
+  sk-grad : DesignLanguage, Integer -> Gradient
+  sk-grad (dl) (c) = if dl.dl-gradient then gradient-v (sk-lighter c) c else gradient-none
+
+ The ground. Relief 2 sinks it, which is what puts a flight deck's panel
+ behind its switches; relief 1 leaves it flat and lets only the controls
+ stand up.
+
+  sk-ground : DesignLanguage -> WidgetStyle
+  sk-ground (dl) =
+    let p = dl.dl-palette
+    in let bd = sk-border dl (p.pal-border)
+    in let pad = edges-uniform (dl.dl-pad-y)
+    in let gr = sk-grad dl (p.pal-bg)
+    in let bv = if dl.dl-relief == 2 then sk-bevel-for dl (p.pal-bg) False else bevel-none
+    in widget-style-surface (p.pal-bg) (p.pal-fg) bd pad edges-zero gr bv
+
+  sk-control : DesignLanguage, Integer, Integer -> WidgetStyle
+  sk-control (dl) (bg) (fg) =
+    let bd = sk-border dl bg
+    in let pad = edges-xy (dl.dl-pad-x) (dl.dl-pad-y)
+    in let mar = edges-uniform (dl.dl-gap / 2)
+    in let gr = sk-grad dl bg
+    in let bv = sk-bevel-for dl bg True
+    in widget-style-surface bg fg bd pad mar gr bv
+
+  sk-well : DesignLanguage, Integer, Integer -> WidgetStyle
+  sk-well (dl) (bg) (fg) =
+    let bd = sk-border dl ((dl.dl-palette).pal-border)
+    in let pad = edges-xy (dl.dl-pad-x) (dl.dl-pad-y)
+    in let mar = edges-uniform (dl.dl-gap / 2)
+    in let bv = sk-bevel-for dl bg False
+    in widget-style-surface bg fg bd pad mar gradient-none bv
+
+Section: The Theme
+
+  sk-theme : DesignLanguage -> Theme
+  sk-theme (dl) =
+    let p = dl.dl-palette
+    in Theme {
+      th-name = dl.dl-name,
+      th-palette = p,
+      th-panel = state-styles-flat (sk-ground dl),
+      th-button = StateStyles {
+        ss-normal = sk-control dl (p.pal-primary) (p.pal-bg),
+        ss-hover = sk-control dl (p.pal-accent) (p.pal-bg),
+        ss-pressed = sk-well dl (p.pal-secondary) (p.pal-fg),
+        ss-disabled = sk-control dl (p.pal-muted) (p.pal-bg),
+        ss-focused = sk-control dl (p.pal-accent) (p.pal-bg)
+      },
+      th-label = state-styles-flat (widget-style 0 (p.pal-fg) border-none edges-zero (edges-uniform (dl.dl-gap / 2))),
+      th-input = StateStyles {
+        ss-normal = sk-well dl (p.pal-bg) (p.pal-fg),
+        ss-hover = sk-well dl (p.pal-bg) (p.pal-fg),
+        ss-pressed = sk-well dl (p.pal-bg) (p.pal-fg),
+        ss-disabled = sk-well dl (p.pal-muted) (p.pal-muted),
+        ss-focused = sk-well dl (p.pal-bg) (p.pal-accent)
+      },
+      th-gauge = state-styles-flat (sk-well dl (p.pal-bg) (p.pal-primary)),
+      th-separator = state-styles-flat (widget-style (p.pal-border) (p.pal-border) border-none edges-zero (edges-xy 0 4))
+    }
+
+Section: The Languages
+
+  sk-pal-flightdeck : Palette
+  sk-pal-flightdeck = Palette {
+    pal-bg = #3A3F3D, pal-fg = #E6E6DF,
+    pal-primary = #6E7671, pal-secondary = #2A2E2C,
+    pal-accent = #E8A317, pal-muted = #5A605C,
+    pal-error = #D6452C, pal-success = #4FB552,
+    pal-warning = #E8A317, pal-border = #23100A
+  }
+
+  sk-pal-chevy : Palette
+  sk-pal-chevy = Palette {
+    pal-bg = #0E5C6B, pal-fg = #FFF6E6,
+    pal-primary = #D9E5E8, pal-secondary = #0A4653,
+    pal-accent = #E0322F, pal-muted = #7E9AA1,
+    pal-error = #E0322F, pal-success = #4FB552,
+    pal-warning = #F2C14E, pal-border = #F2F6F7
+  }
+
+  sk-flightdeck : DesignLanguage
+  sk-flightdeck = DesignLanguage {
+    dl-name = "flightdeck", dl-palette = sk-pal-flightdeck, dl-corner = CornerSharp,
+    dl-relief = 2, dl-bevel-w = 1, dl-pad-x = 10, dl-pad-y = 4, dl-gap = 4,
+    dl-outline = 0, dl-gradient = False
+  }
+
+  sk-chevy : DesignLanguage
+  sk-chevy = DesignLanguage {
+    dl-name = "chevy", dl-palette = sk-pal-chevy, dl-corner = CornerRound 8,
+    dl-relief = 1, dl-bevel-w = 2, dl-pad-x = 14, dl-pad-y = 6, dl-gap = 6,
+    dl-outline = 0, dl-gradient = True
+  }
+
+ LCARS gets relief 0 on purpose. Its blocks are meant to read as shapes
+ cut out of the ground, and a bevel on one is the single fastest way to
+ stop it looking like LCARS.
+
+  sk-lcars : DesignLanguage
+  sk-lcars = DesignLanguage {
+    dl-name = "lcars", dl-palette = palette-lcars, dl-corner = CornerRound 12,
+    dl-relief = 0, dl-bevel-w = 0, dl-pad-x = 16, dl-pad-y = 6, dl-gap = 6,
+    dl-outline = 0, dl-gradient = False
+  }
+
+  sk-terminal : DesignLanguage
+  sk-terminal = DesignLanguage {
+    dl-name = "terminal", dl-palette = palette-terminal, dl-corner = CornerSharp,
+    dl-relief = 0, dl-bevel-w = 0, dl-pad-x = 6, dl-pad-y = 3, dl-gap = 2,
+    dl-outline = 0, dl-gradient = False
+  }
+
+Page 1

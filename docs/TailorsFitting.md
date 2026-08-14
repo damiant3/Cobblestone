@@ -15,7 +15,7 @@ The ceremony lives in `apps/works/GopWizard.codex` (payload
 `apps/works/GopBoot.codex`, image built by
 `build/boot/build-option-a.ps1`). The crypto path is pinned headless by
 `codex/test/apps/first-boot-ceremony`; flight records live in
-`docs/HardwareSitting.md`.
+`docs/Hardware/HardwareSitting.md`.
 
 ## The fitting
 

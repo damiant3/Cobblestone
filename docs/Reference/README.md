@@ -1,7 +1,26 @@
 # Reference Library
 
-External research papers archived in the repo so they survive paywalls,
-URL rot, and editorial revisions.
+External documentation, and our briefs of it. Everything here states what
+somebody outside this project says: a specification, a datasheet, a paper, a
+standard, another project's code. A brief belongs here when it carries a
+`Source` line and adds no claim of ours.
+
+Our own output does not live here, whatever its subject. A measurement, a
+mapping of Codex onto a standard, a position doc or a proposal is our work
+and goes to `docs/Designs/`.
+
+## What is in here
+
+| | |
+|---|---|
+| Papers and specs | The original PDF or text, archived (see Convention below) |
+| Service model notes | What a device's spec guarantees, with a section number per claim: `xHCI_ServiceModel_Notes.md`, `E1000_ServiceModel_Notes.md` |
+| Spec summaries | `UEFI_*_Summary.md`, `BrotliFormat.md`, `SIMD_Architecture_References.md` |
+| Surveys of external projects | See the table at the bottom |
+| Archived codebases | `AiComp/`, with its own `PROVENANCE.md` |
+| Readings of external work | `Chlipala-StructureAndGuarantees.md`, `CornellReview.md`, `MiddleEndLiterature.md`, `IRISA_Research_Harvest.md`, `Optimal_Bounds_Open_Addressing.md`, `AMD_SVM_Hypervisor_Patterns.md` |
+| Somebody else's reading of us | `CopilotWebCritique.md` |
+| `IoT/` | Briefs of the IoT standards, protocols and parts. Has its own README |
 
 ## Convention
 

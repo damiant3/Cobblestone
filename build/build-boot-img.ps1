@@ -33,6 +33,19 @@ param(
     # reachable by name, and install-boot-test.ps1 asks for it explicitly
     # because it asserts that payload's banner (L-FALLBACK).
     [string]$BootSource = 'apps\works\GopBoot.codex',
+    # An existing IDENTITY.DAT to put on the image. A stick without one boots
+    # into the first-boot wizard instead of the desk, so every freshly built
+    # image costs a passphrase, an entropy screen and a keygen at the machine
+    # before anything can be tested. Pass one that came OFF the target and the
+    # image boots straight to the desk.
+    # 
+    # Opt-in and never defaulted, because the key inside is the whole trust
+    # story: an identity belongs to the machine that generated it, and an image
+    # built with a key made in the bed puts a bed-generated key on a flown
+    # stick. build-img.ps1 hard-errors on a path that does not exist rather
+    # than falling back, since a silent fallback is discovered at the machine
+    # after a flash.
+    [string]$Identity = '',
     # GopBoot is an interactive poll loop that makes no heap progress, so the
     # watchdog has to be petted rather than inferred from progress. This is the
     # one compile-mode difference between the two payloads, and it follows the
@@ -156,8 +169,12 @@ if ((-not (Test-Path -PathType Leaf $SourceFile))) {
 # ~2.8 MB source, and build-img refuses a payload over 90 per cent of the
 # partition -- at the old 16384 it fitted with almost nothing to spare and
 # -Agent would not have fitted at all.
+$IdentityArgs = @()
+if ($Identity) {
+    $IdentityArgs = @('-Identity', $Identity)
+}
 Write-Host '  Building GPT disk image...'
-& pwsh -NoProfile -File $ImgScript -PeInput $BootPe -Out $ImgOut -Seed $Seed -Source $SourceFile -SourceDir (Join-Path $Repo 'codex\compiler') -TotalSectors 32768 @AgentArgs
+& pwsh -NoProfile -File $ImgScript -PeInput $BootPe -Out $ImgOut -Seed $Seed -Source $SourceFile -SourceDir (Join-Path $Repo 'codex\compiler') -TotalSectors 32768 @AgentArgs @IdentityArgs
 if (((-not ($LASTEXITCODE -eq 0)) -or (-not (Test-Path -PathType Leaf $ImgOut)))) {
     Write-Host 'FAIL: IMG build failed'
     exit 1

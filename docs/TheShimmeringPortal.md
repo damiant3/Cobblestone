@@ -45,8 +45,7 @@ chapters, and **28 apps actually discovered** -- books, calendar,
 capture, chat, compliance, fishtank, fitness, gpu, bridge, imagetools,
 iot, landing, mail, maps, markets, music, news, notes, perf, photos,
 piano, podcasts, pomodoro, publisher, realtime, recorder, tasks,
-weather. This paragraph said "74 pages are built this way today" until
-that run. **The other 46 are orphans: an artifact with no Page chapter
+weather. **The other 46 are orphans: an artifact with no Page chapter
 to regenerate it.** `apps/gpushow/` is 40 of them and holds no `.codex`
 at all, only `web/`; cvmm contributes 2, and globe, radio, starmap and
 one fishtank page one each. The script warns `no unique Page chapter`
@@ -581,7 +580,7 @@ gap that is still open stays on this list until it is closed.
 | Portal chrome (`apps/games/app.js`, `index.html`, `style.css`) | **OPEN** -- hand-written; not compiled from Codex. The 34 classic game pages are hand-written too (their engines are not) |
 | CodexMagic web (`magic.js`, `card-render.js`) | **OPEN** -- the `*Page.codex` chapters are compiled, but the pages are post-processed to inject two hand-written JS files |
 
-Design references: `docs/Reference/UICapabilityMap.md`
+Design references: `docs/Designs/Done/Tools/UICapabilityMap.md`
 (cross-platform coverage matrix), `apps/webapp/design/Done/BaseTemplate.md`
 (why the WebApp quire exists).
 
@@ -657,7 +656,7 @@ apps/games/                  Hand-built portal + Codex engines
   magic/                     Magic engine sources (no web assets)
 
 docs/
-  Reference/UICapabilityMap.md       Cross-platform coverage matrix
+  Designs/Done/Tools/UICapabilityMap.md       Cross-platform coverage matrix
   apps/webapp/design/Done/BaseTemplate.md   Why the WebApp quire exists
 ```
 
