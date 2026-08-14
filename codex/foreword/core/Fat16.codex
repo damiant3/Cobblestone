@@ -1251,11 +1251,17 @@ Section: Asking Whether A File Is There
  -- and it is the same reasoning the prose above gives for asking the volume
  rather than a counter.
 
- The constant survives as the FALLBACK, for the case with no readable GPT at
- all: no disk, or a raw image with no partition table. gpt-read answers None
- there (a sector of zeroes fails the MBR signature check), and 2048 is as
- good a guess as we had before. Behaviour on our own images is unchanged,
- because their one ESP is at 2048 and it parses.
+ NO READABLE GPT DOES NOT MEAN LBA 2048. UEFI firmware hands a payload booted
+ from a GPT disk its own PARTITION as the block device (LoadedImage's
+ DeviceHandle), and through that handle LBA 0 is the volume's first sector --
+ the BPB itself -- while LBA 1 is a FAT sector that fails the GPT header
+ check. So when gpt-read answers None, LBA 0 is probed as a BPB first: byte
+ 11 is the FAT boot record's bytes-per-sector low byte and 13 its
+ sectors-per-cluster, and both are probed RAW before fat16-init is allowed
+ near the sector, because fat16-parse-bpb divides by both and a protective
+ MBR holds zeroes there. A raw FAT image with no partition table also mounts
+ through this probe. 2048 survives as the last resort: no disk, or nothing
+ that parses, and 2048 is as good a guess as it ever was.
 
   fat16-fallback-partition-start : Integer = 2048
 
@@ -1268,8 +1274,21 @@ Section: Asking Whether A File Is There
     disk <- gpt-read
     when disk
       is Just (d) -> fat16-first-usable (d.gd-partitions) 0 (list-length (d.gd-partitions))
-      is None -> fat16-init fat16-fallback-partition-start
+      is None -> fat16-boot-volume-nogpt
   end
+
+  fat16-boot-volume-nogpt : [Device.Block] Fat16Volume
+  fat16-boot-volume-nogpt = act
+    buf <- block-read-sector 0
+    fat16-boot-volume-probe buf
+  end
+
+  fat16-boot-volume-probe : Integer -> [Device.Block] Fat16Volume
+  fat16-boot-volume-probe (buf) =
+    let bps = peek-byte buf 11 + peek-byte buf 12 * 256
+    in let spc = peek-byte buf 13
+    in if (bps == 512) & (spc > 0) then fat16-init 0
+       else fat16-init fat16-fallback-partition-start
 
   fat16-first-usable : List GptPartition, Integer, Integer -> [Device.Block] Fat16Volume
   fat16-first-usable (parts) (i) (n) =

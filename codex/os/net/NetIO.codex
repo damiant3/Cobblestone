@@ -26,21 +26,29 @@ Chapter: NetIO
 Section: The Poll Clock
 
  A tick here is a count of empty polls and not a duration, because this
- layer has no clock: the only wall clock in the tree is Hpet, an x86 MMIO
- read, and NetIO is compiled into the transpiled plug lanes and ARM64 as
- well. NetworkStack's estimator asks only that the rate be steady, which a
- poll count is.
+ layer has no clock. How many polls that count should be is a question
+ about the DRIVER underneath, so NetDriver answers it: it measures the rate
+ once at bring-up and NetIO reads the answer. A guest that never brings the
+ driver up reads NetDriver's fallback, which is the 100000 this line held
+ until 2026-08-14, so nothing that was tuned against the NE2000 moves.
 
- The value is bounded from above by the fuel cap on the loops below. Give
- up takes at most 288 ticks: net-rto-max-tries is 5 and every backoff
- interval is clamped at net-rto-max-ticks 48, so 48 for the first interval
- and 48 for each of the five retries. At 100000 polls per tick that is
- 28,800,000 polls, inside the 50,000,000 cap, so a loop waiting on a peer
- that has gone away ends by give-up, which sets TcpClosed and says so,
- rather than by fuel, which returns the same value as an ordinary timeout.
+ Both numbers were wall-clock constants wearing tick clothing, and both had
+ to move together. Give up takes at most 288 ticks: net-rto-max-tries is 5
+ and every backoff interval is clamped at net-rto-max-ticks 48, so 48 for
+ the first interval and 48 for each of the five retries. The fuel cap has
+ to sit above that ladder or a loop waiting on a peer that has gone away
+ ends by FUEL, which returns exactly what an ordinary timeout returns,
+ instead of by give-up, which sets TcpClosed and says so. Expressing the
+ cap in ticks is what keeps that true at any measured rate; at the fallback
+ interval it is 50,000,000, the literal this line carried before.
 
-  net-io-max-polls : Integer = 50000000
-  net-io-tick-interval : Integer = 100000
+  net-io-max-ticks : Integer = 500
+
+  net-io-tick-interval : Integer
+  net-io-tick-interval = net-driver-poll-interval
+
+  net-io-max-polls : Integer
+  net-io-max-polls = net-io-tick-interval * net-io-max-ticks
 
   net-io-conn-closed : TcpTransportState -> Boolean
   net-io-conn-closed (ts) = when ((ts.session).conn).state

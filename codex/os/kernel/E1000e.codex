@@ -586,7 +586,7 @@ Section: Transmit
    in let next = int-mod (idx + 1) e1000-tx-count
    in let saved = poke-32 ((d.e-ctrl-blk) + e1000-cb-tx-next) 0 next
    in let kick = e1000-write (d.e-mmio) e1000-reg-tdt next
-   in e1000-await-tx desc 0
+   in e1000-await-tx desc
 
  The command byte sits at bit 24 of the third descriptor word, above
  the sixteen-bit length at bit 0 and the checksum-offset byte at bit 16
@@ -597,11 +597,57 @@ Section: Transmit
 
   e1000-tx-fuel : Integer = 1000000
 
-  e1000-await-tx : Integer, Integer -> Integer
-  e1000-await-tx (desc) (i) =
+ The transmit wait is bounded by the CLOCK, and the fuel below it is only a
+ backstop for a machine with no usable HPET. It was a bare spin count until
+ 2026-08-14, and the count was a duration nobody had worked out.
+
+ Measured on this box: one million iterations of exactly this loop shape
+ cost 605 microseconds, because a descriptor status byte is a RAM read that
+ the card DMAd into memory, with no register access anywhere in the loop.
+ So `e1000-tx-fuel` was a 605 microsecond budget. A 1500-byte frame takes 12
+ microseconds on the wire at 1 Gb/s, 120 at 100 Mb/s and **1200 at 10 Mb/s**,
+ so the budget expired BEFORE the frame could physically leave, and
+ `e1000-send-frame` returns this value directly: on a 10 Mb/s link every send
+ would have reported failure while the frame went out anyway. The part
+ negotiated 1000 Mb/s on the ASUS, which is the only reason this never
+ showed.
+
+ The clock is read once per BATCH, not once per iteration. `hpet-ticks` is
+ an MMIO read and this loop's whole character is that it does not make one;
+ checking it per iteration would slow the loop by about three orders of
+ magnitude and measure the clock rather than the descriptor. A batch of 4096
+ is about 2.5 microseconds, which is the granularity of the deadline and is
+ far finer than any link needs.
+
+  e1000-tx-window-ms : Integer = 20
+  e1000-tx-batch : Integer = 4096
+  e1000-tx-batch-fuel : Integer = 100000
+
+  e1000-await-tx-batch : Integer, Integer -> Integer
+  e1000-await-tx-batch (desc) (i) =
+   if i <= 0 then 0
+   else if bit-and (peek-byte desc 12) e1000-tx-status-dd /= 0 then 1
+   else e1000-await-tx-batch desc (i - 1)
+
+  e1000-await-tx-clocked : Integer, Integer, Integer, Integer -> Integer
+  e1000-await-tx-clocked (desc) (start) (want) (fuel) =
+   if e1000-await-tx-batch desc e1000-tx-batch == 1 then 1
+   else if fuel <= 0 then 0
+   else if (hpet-ticks - start) >= want then 0
+   else e1000-await-tx-clocked desc start want (fuel - 1)
+
+  e1000-await-tx-spin : Integer, Integer -> Integer
+  e1000-await-tx-spin (desc) (i) =
    if i >= e1000-tx-fuel then 0
    else if bit-and (peek-byte desc 12) e1000-tx-status-dd /= 0 then 1
-   else e1000-await-tx desc (i + 1)
+   else e1000-await-tx-spin desc (i + 1)
+
+  e1000-await-tx : Integer -> Integer
+  e1000-await-tx (desc) =
+   let started = hpet-start
+   in let rate = hpet-ticks-per-second
+   in if rate <= 0 then e1000-await-tx-spin desc 0
+   else e1000-await-tx-clocked desc hpet-ticks ((rate * e1000-tx-window-ms) / 1000) e1000-tx-batch-fuel
 
   e1000-write-bytes : Integer, List Integer, Integer, Integer -> Integer
   e1000-write-bytes (base) (bs) (i) (len) =

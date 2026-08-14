@@ -1,0 +1,112 @@
+Chapter: CheckPlugPortsScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Foreword chapter List
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ We say:
+
+Section: Parameters
+
+  cpp-params : List ShellParam = []
+
+Section: Concatenation
+
+  cpp-cat-from : List ShellExpr, Integer -> ShellExpr
+  cpp-cat-from (xs) (i) = if i >= list-length xs then SeLit "" else if i == list-length xs - 1 then list-at xs i else SeConcat (list-at xs i) (cpp-cat-from xs (i + 1))
+
+  cpp-cat : List ShellExpr -> ShellExpr
+  cpp-cat (xs) = cpp-cat-from xs 0
+
+Section: S01 -- Why this exists
+
+  cpp-doctrine : List ShellCmd = [ScComment "A plug's TCP port is ONE fact written in TWO places: <Name>Plug.codex dials it", ScComment "in net-session-new, and the plug's run.ps1 listens on it. The NAT maps the", ScComment "guest's destination port straight to the host port, so if the two disagree the", ScComment "guest dials a port nobody is listening on and the run hangs until it times out", ScComment "with no diagnostic. That is the failure this exists to make impossible.", ScComment "", ScComment "build/plug-ports.ps1 is the authority. This checks both halves against it.", ScComment "", ScComment "Exit 1 on any mismatch, 0 when every plug agrees."]
+
+Section: S02 -- The table is the authority
+
+  cpp-table : ShellExpr = SeVar "script:PlugPorts"
+
+  s02 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))), ScRunDot (SePathJoin SeScriptRoot (SeLit "plug-ports.ps1")), ScBlank, ScAssign "bad" (SeInt 0), ScAssign "ok" (SeInt 0), ScAssign "seen" SeHashLiteral]
+
+Section: S03 -- No two plugs may share a port
+
+  cpp-want : ShellExpr = SeIndex cpp-table (SeVar "name")
+
+  cpp-dup-msg : ShellExpr = SeFormat (SeLit "  {0,-12} port {1} DUPLICATE, already assigned to {2}") [SeVar "name", SeVar "want", SeIndex (SeVar "seen") (SeVar "want")]
+
+  cpp-dup : List ShellCmd = [ScAssign "want" cpp-want, ScIf (SeMethodCall (SeVar "seen") "ContainsKey" [SeVar "want"]) [ScEcho cpp-dup-msg, ScIncrement "bad"] [], ScSetIndex "seen" (SeVar "want") (SeVar "name")]
+
+Section: S04 -- The guest half
+
+  cpp-dir : ShellExpr = SePathJoin (SeVar "Repo") (SeConcat (SeLit "codex\\plugs\\") (SeVar "name"))
+
+  cpp-dials : ShellExpr = SeMatch (SeFileText (SeProperty SeItem "FullName")) "net-session-new"
+
+  cpp-guest-scan : ShellExpr = SeAsArray (SePipe (SeListFiles (SeVar "dir") "*Plug.codex" False) [StWhere cpp-dials])
+
+  cpp-no-guest : ShellExpr = SeFormat (SeLit "  {0,-12} NO GUEST SOURCE dialing a port") [SeVar "name"]
+
+  cpp-port-pat : Text = "net-session-new\\s+\\S+\\s+\\S+\\s+\\S+\\s+\\d+\\s+(\\d+)\\s"
+
+  cpp-unreadable : ShellExpr = SeFormat (SeLit "  {0,-12} {1}: no readable port") [SeVar "name", SeProperty (SeVar "g") "Name"]
+
+  cpp-guest-msg : ShellExpr = SeFormat (SeLit "  {0,-12} GUEST {1} dials {2}, table says {3}") [SeVar "name", SeProperty (SeVar "g") "Name", SeVar "got", SeVar "want"]
+
+  cpp-port-line : ShellExpr = SeAsArray (SePipe (SeStaticCall "System.IO.File" "ReadAllLines" [SeProperty (SeVar "g") "FullName"]) [StWhere (SeMatch SeItem cpp-port-pat), StTake 1])
+
+  cpp-compare : List ShellCmd = [ScAssign "got" (SeCast "int" (SeIndex (SeVar "matches") (SeInt 1))), ScIf (SeNot (SeIntEq (SeVar "got") (SeVar "want"))) [ScEcho cpp-guest-msg, ScIncrement "bad"] [ScIncrement "ok"]]
+
+  cpp-g-body : List ShellCmd = [ScAssign "hit" cpp-port-line, ScIf (SeIntEq (SeCount (SeVar "hit")) (SeInt 0)) [ScEcho cpp-unreadable, ScIncrement "bad", ScContinue] [], ScAssign "line" (SeIndex (SeVar "hit") (SeInt 0)), ScIf (SeMatch (SeVar "line") cpp-port-pat) cpp-compare [ScEcho cpp-unreadable, ScIncrement "bad"]]
+
+  cpp-guest : List ShellCmd = [ScAssign "dir" cpp-dir, ScIf (SeDirExists (SeVar "dir")) [ScAssign "guest" cpp-guest-scan] [ScAssign "guest" (SeArrayLiteral [])], ScIf (SeIntEq (SeCount (SeVar "guest")) (SeInt 0)) [ScEcho cpp-no-guest, ScIncrement "bad", ScContinue] [], ScForEach "g" (SeVar "guest") cpp-g-body]
+
+Section: S05 -- The host half
+
+  cpp-run : ShellExpr = SePathJoin (SeVar "dir") (SeLit "run.ps1")
+
+  cpp-four-digit : ShellExpr = SeStaticCall "regex" "Matches" [SeFileText (SeVar "run"), SeLit "\\b(\\d{4})\\b"]
+
+  cpp-digits : ShellExpr = SeCast "int" (SeProperty (SeIndex (SeProperty (SeVar "mm") "Groups") (SeInt 1)) "Value")
+
+  cpp-in-window : ShellExpr = SeAnd (SeIntGe (SeVar "v") (SeInt 9100)) (SeIntLe (SeVar "v") (SeInt 9199))
+
+  cpp-collect : List ShellCmd = [ScAssign "v" cpp-digits, ScIf cpp-in-window [ScSetIndex "hitSet" (SeVar "v") (SeBool True)] []]
+
+  cpp-no-port : ShellExpr = SeFormat (SeLit "  {0,-12} run.ps1 names no plug port") [SeVar "name"]
+
+  cpp-host-msg : ShellExpr = SeFormat (SeLit "  {0,-12} HOST run.ps1 uses {1}, table says {2}") [SeVar "name", SeJoin (SeVar "hits") (SeLit ","), SeVar "want"]
+
+  cpp-host-wrong : ShellExpr = SeOr (SeIntGt (SeCount (SeVar "hits")) (SeInt 1)) (SeNot (SeIntEq (SeIndex (SeVar "hits") (SeInt 0)) (SeVar "want")))
+
+  cpp-run-body : List ShellCmd = [ScAssign "hitSet" SeHashLiteral, ScForEach "mm" cpp-four-digit cpp-collect, ScAssign "hits" (SeAsArray (SePipe (SeProperty (SeVar "hitSet") "Keys") [StSort])), ScIf (SeIntEq (SeCount (SeVar "hits")) (SeInt 0)) [ScEcho cpp-no-port, ScIncrement "bad"] [ScIf cpp-host-wrong [ScEcho cpp-host-msg, ScIncrement "bad"] [ScIncrement "ok"]]]
+
+  cpp-host : List ShellCmd = [ScAssign "run" cpp-run, ScIf (SeFileExists (SeVar "run")) cpp-run-body []]
+
+Section: S06 -- Every plug, in name order
+
+  cpp-body-one : List ShellCmd = [ScSequence cpp-dup, ScSequence cpp-guest, ScSequence cpp-host]
+
+  s06 : List ShellCmd = [ScForEach "name" (SePipe (SeProperty cpp-table "Keys") [StSort]) cpp-body-one]
+
+Section: S07 -- The verdict
+
+  cpp-bad-line : ShellExpr = cpp-cat [SeLit "check-plug-ports: ", SeVar "bad", SeLit " MISMATCH, ", SeVar "ok", SeLit " agreed"]
+
+  cpp-ok-line : ShellExpr = cpp-cat [SeLit "check-plug-ports: OK (", SeVar "ok", SeLit " halves agreed across ", SeProperty cpp-table "Count", SeLit " plugs)"]
+
+  s07 : List ShellCmd = [ScEcho (SeLit ""), ScIf (SeIntGt (SeVar "bad") (SeInt 0)) [ScEcho cpp-bad-line, ScExit (SeInt 1)] [], ScEcho cpp-ok-line, ScExit (SeInt 0)]
+
+Section: Assembly
+
+  cpp-full : List ShellCmd = [ScSequence cpp-doctrine, ScBlank, ScSequence s02, ScBlank, ScSequence s06, ScBlank, ScSequence s07]
+
+  cpp-script : ShellScript = sh-script "check-plug-ports" "hold the guest and host halves of a plug's port together." cpp-params cpp-full
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell cpp-script)
+  end
+
+Page 1

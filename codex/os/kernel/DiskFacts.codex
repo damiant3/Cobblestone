@@ -163,17 +163,44 @@ Section: Buffer Utilities
 
   unpack-text (buf) (off) (len) =
 
-    unpack-text-loop buf off len 0 ""
+    text-concat-list (unpack-text-chars buf off len 0 [])
 
-  unpack-text-loop : Integer, Integer, Integer, Integer, Text -> Text
+ The characters are collected into a LIST and joined once. Appending to the
+ Text on every byte reallocates and copies the whole accumulator each time,
+ so the intermediates grow as the square of the length and on a machine with
+ no GC every one of them is live until the caller returns.
 
-  unpack-text-loop (buf) (off) (len) (i) (acc) =
+ Measured 2026-08-14 through cdx-serve, which reads a stored work through
+ this function: 48 KB served in 23 s and 64 KB died with OUT OF MEMORY. That
+ message is the STACK guard firing on a stack/heap collision and reads as
+ heap exhaustion to everyone who meets it, so it was checked rather than
+ assumed: the faulting RSP was 712 bytes below the stack base, so nothing had
+ recursed, and the watchdog's last RIP was inside __str_concat. After this
+ change the same server returns 190 KB in 41 s, and 64 KB in 19 s, which is
+ less than the 48 KB took before.
+
+ **64 KB is where it died THERE and is not where this function fails.** In
+ isolation the old body reaches 64 KB comfortably; it broke inside cdx-serve
+ because that heap was already carrying the work index and the transport's
+ receive buffer, and the accumulator only had to supply the last of the arena.
+ Measured alone it dies at 256 KB, which is what codex/test/diskfacts-unpack-large
+ is sized to, because an arm built from the 64 KB symptom passes against the
+ defect it was written for.
+
+ It mattered because 39 of the 874 chapters in this tree are over 50 KB,
+ TypeChecker at 186,205 bytes among them, so the repository could not serve
+ the compiler's own largest sources.
+
+ fat16-bytes-to-text had the identical shape and was changed to this idiom at
+ main 14371. This is the same fix in the second place it was needed.
+
+  unpack-text-chars : Integer, Integer, Integer, Integer, List Text -> List Text
+
+  unpack-text-chars (buf) (off) (len) (i) (acc) =
 
     if i >= len then acc
 
-    else let ch = char-to-text (code-to-char (peek-byte buf (off + i)))
-
-         in unpack-text-loop buf off len (i + 1) (acc & ch)
+    else unpack-text-chars buf off len (i + 1) (list-push acc (char-to-text (code-to-char (peek-byte buf (off + i)))))
 
 Section: Hash Utilities
 

@@ -403,13 +403,68 @@ predates this fix and every CHECK-bound row under it is low.
 
 `build/build.ps1` runs `deck-headroom.ps1 -Quire codex\build -WithSelf
 -MinMargin 1.25 -Fresh` between `gen-scripts` and `app-sweep`. 23 s over 47
-units at `-Jobs 8`, in a 493 s gate.
+units at `-Jobs 8`, in a 493 s gate. **The quire is 57 units as of 2026-08-14**
+and grows every time a script is lifted to the Shell DSL, so re-measure the
+count rather than quoting it; the 23 s and 493 s are from the 47-unit run and
+have not been re-taken.
 
 The assertion is derived/required, not a point count, because the two tight
-cases have different denominators: `vmconfigScript` needs 43 against a floor of
-64, the compiler's own unit 67 against a clamp of 100. A point-count threshold
-passes the clamped unit at any size. 1.25 trips the quire at 52 and the
-compiler at 80.
+cases have different denominators: `vmconfigScript` needs 46 against a floor of
+64 (re-measured 2026-08-14 at seed `8D405FDF`; this said 43), the compiler's own
+unit 67 against a clamp of 100. A point-count threshold passes the clamped unit
+at any size. 1.25 trips the quire at 52 and the compiler at 80.
+
+### CHECK-RESOLVE is bound by the resolved ENVIRONMENT, not by unit size
+
+**Measured 2026-08-14, and the anti-correlation is the whole point:**
+`checkdoccountsScript` at 101,042 bytes needed 52 of 64, where
+`vmconfigScript` at 116,795 bytes needs 46. **The bigger unit needs less.** An
+author who reads a tight CHECK-RESOLVE row as "my chapter is too long" will cut
+the wrong thing and it will not move.
+
+CHECK-RESOLVE is the resolve tail -- `resolved-env`, `sorted-all0`,
+`sorted-et0` -- so what it tracks is the size of the resolved environment. Top
+level definition count against required scale, over the tightest units in
+`codex/build`:
+
+| top-level defs | required | unit |
+|---|---|---|
+| 96 | 56 | `ablatedoctrineScript` (before) |
+| 93 | 52 | `checkdoccountsScript` (before) |
+| 46 | 42 | `checkxdiagcellsScript` |
+| 45 | 41 | `checkplugtypesScript` |
+| 32 | 39 | `checkconstantsScript` |
+| 24 | 46 | `vmconfigScript` (47,716 bytes of source) |
+
+Size is a real but second-order term -- `vmconfigScript` reaches 46 on 24
+definitions because its expressions are enormous -- and the first-order term is
+how many names the chapter binds at top level.
+
+**So the author-side remedy is to inline single-use bindings, and it is
+cheap.** Two chapters landed red on 2026-08-14 at 1.14 and 1.23 because they
+were written giving nearly every sub-expression its own name; inlining took
+them to 25 and 52 names, 45 required each, margin 1.42. Nothing else about
+either chapter changed.
+
+**Raising `deck-scale-min` is the wrong lever for this.** It is a whole-corpus
+constant costing 6,710,886 bytes of reservation per point per unit, and the
+condition is one chapter's naming style. Reach for it when the corpus moves,
+not when one unit does.
+
+**For a `codex/build` generator chapter the restructure is provably safe**, and
+that matters because the emitted `.ps1` is a checked-in artifact:
+`build/check-generated-scripts.ps1` recompiles the generator and diffs the
+result against the shipped file, so match with 0 drift after the change IS
+proof the output is byte-identical. Inline freely, then check. There is a floor
+on how far to take it: fully inlined, `ablatedoctrineScript` reached 43 with a
+single 25,800-character line. One binding per section costs 2 points and brings
+the longest line to 6,173, which is `vmconfigScript`'s order. Take the 2 points.
+
+**A `codex/build/*Script.codex` is a unit this leg measures**, seed-affecting or
+not. Both red chapters were verified with `check-generated-scripts` and per
+script control arms and never with `build/build.ps1`, on the reasoning that a
+generator is not seed-affecting. True, and irrelevant: proving the OUTPUT is
+right says nothing about whether the chapter COMPILES within its deck.
 
 Raising `deck-scale-min` is the floor-side remedy and is not free:
 `(demand-check-floor - band) / 100` is 6,710,886 bytes per scale point, so 64

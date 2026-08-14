@@ -41,7 +41,7 @@ Section: Expression Lowering
         is otherwise -> resolved
      in let else-ir = lower-expr-at e2 hint-0 ctx (depth + 1)
      in let else-ty = ir-expr-type else-ir
-     in let result-ty = merge-ty hint-0 else-ty
+     in let result-ty = branch-recorded-ty (merge-ty hint-0 else-ty) (if-witness-ty then-ty-0 else-ty)
      in let then-ir = if ty-has-error then-ty-0 & ty-has-error result-ty == False
         then lower-expr-at t result-ty ctx (depth + 1)
         else then-ir-0
@@ -622,6 +622,37 @@ Section: Let and Lambda
    else if ty-has-typevars body-ty then ty
    else subst-type-vars-from-arg declared-ret body-ty ty
 
+  branch-recorded-ty : CodexType, CodexType -> CodexType
+  branch-recorded-ty (ty) (witness) =
+   if ty-has-typevars ty == False then ty
+   else if usable-witness-ty witness == False then ty
+   else subst-type-vars-from-arg ty witness ty
+
+  usable-witness-ty : CodexType -> Boolean
+  usable-witness-ty (t) =
+   if ty-has-error t then False
+   else if ty-has-typevars t then False
+   else ty-admits-widening t == False
+
+  ty-admits-widening : CodexType -> Boolean
+  ty-admits-widening (t) =
+   when t
+    is IntegerTy (lo) (hi) (m) -> True
+    is RealTy (w) (m) -> True
+    is otherwise -> False
+
+  if-witness-ty : CodexType, CodexType -> CodexType
+  if-witness-ty (then-ty) (else-ty) =
+   if usable-witness-ty then-ty then then-ty else else-ty
+
+  match-witness-ty : List IRBranch, Integer, Integer -> CodexType
+  match-witness-ty (branches) (i) (len) =
+   if i == len then ErrorTy
+   else let b = list-at branches i
+   in let body-ty = ir-expr-type (b.body)
+   in if usable-witness-ty body-ty then body-ty
+   else match-witness-ty branches (i + 1) len
+
   bind-lambda-to-ctx : LowerCtx, List Name, CodexType, Integer -> LowerCtx
   bind-lambda-to-ctx (ctx) (params) (ty) (i) =
    if i == list-length params then ctx
@@ -687,7 +718,7 @@ Section: Match Lowering
    else let branches = lower-match-arms-loop arms ty scrut-ty ctx 0 (list-length arms)
    in let result-ty = when ty
       is ErrorTy -> infer-match-type branches 0 (list-length branches)
-      is otherwise -> ty
+      is otherwise -> branch-recorded-ty ty (match-witness-ty branches 0 (list-length branches))
    in deck-record (IrMatch scrut-ir branches result-ty sp)
 
   list-elem-of : CodexType -> CodexType

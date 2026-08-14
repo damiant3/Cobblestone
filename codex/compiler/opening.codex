@@ -1,6 +1,6 @@
 Chapter: Opening
   grounds Device.Port, Device.Block
-  cites Codex chapter Phase Allocator (phase-start, phase-measure, phase-compact, phase-compact-poison, PhaseStart, PhaseMetrics, deck-short-of)
+  cites Codex chapter Phase Allocator (phase-start, phase-measure, phase-took, phase-compact, phase-compact-poison, PhaseStart, PhaseMetrics, deck-short-of)
   cites Foreword chapter Maybe
   cites Foreword chapter Fat16
   cites Foreword chapter ImportGate
@@ -12,8 +12,8 @@ Chapter: Opening
   cites Emit chapter X86-64 Code Generator (x86-64-emit-cdx, x86-64-emit-cdx-with-exit-mode, ir-chapter-with-proofs, keep-proof-defs, X86_64ExitMode, ExitRepl, Exit, X86_64WatchdogMode, WatchdogProgress, WatchdogPet, pmap-self-test, pmap-escape-count, pmap-escape-count-quiet, pmap-escape-list-quiet, pmap-escape-reached, utf8-to-cce, lir-target-x86)
   cites Semantics chapter Name Resolution (resolve-chapter, check-entry-point-duplicate, check-duplicate-cites, check-cites-resolve, count-typecheck-units)
   cites Codex chapter LirTargets (lir-target-a64-shape, lir-target-narrow-shape)
-  cites Codex chapter BootPaint (disk-rung, disk-mark, disk-stop, bp-pass, bp-truth, bp-cyan, bp-yellow, bp-magenta, bp-orange, bp-blue, bp-white, bp-red)
-  cites Foreword chapter CCE (to-unicode)
+  cites Codex chapter BootPaint (disk-rung, disk-mark, disk-stop, bp-pass, bp-truth, bp-paint, bp-progress, bp-progress-height, bp-hold-band-if-armed, bp-rtc-seconds, bp-rtc-date-text, bp-hms-text, bp-poke64, bp-log-count-cell, bp-log-start-cell, bp-log-rows, bp-cyan, bp-yellow, bp-magenta, bp-orange, bp-blue, bp-white, bp-red)
+  cites Foreword chapter CCE (to-unicode, from-unicode, cce-to-unicode-table)
 
 Section: Compile Flags
 
@@ -1562,6 +1562,25 @@ Section: Entry Point
    emit-disk-say (disk-landed ok (disk-entry-size entry) size) size (disk-entry-size entry)
   end
 
+ The footer: verdict, total wall seconds, then the phase table the pipeline
+ banked through bp-log-phase. A row's first qword is eight packed label
+ bytes; unpacking stops at the first zero byte.
+
+  disk-unpack8 : Integer, Integer, Text -> Text
+  disk-unpack8 (v) (i) (acc) =
+   if i >= 8 then acc
+   else let b = int-mod (bit-shru v (i * 8)) 256
+   in if b == 0 then acc
+   else disk-unpack8 v (i + 1) (acc & char-to-text (code-to-char (from-unicode b)))
+
+  disk-print-phases : Integer, Integer -> [Console] Nothing
+  disk-print-phases (i) (n) =
+   if i >= n then print-text ""
+   else act
+    print-line-uni ("PHASE " & disk-unpack8 (peek-qword (bp-log-rows + i * 24) 0) 0 "" & " " & integer-to-text (peek-qword (bp-log-rows + i * 24) 8) & "s heap " & integer-to-text (peek-qword (bp-log-rows + i * 24) 16) & "MB")
+    disk-print-phases (i + 1) n
+   end
+
   emit-disk-say : Integer, Integer, Integer -> [Console, Device.Block] Nothing
   emit-disk-say (landed) (size) (got) = act
    disk-mark "wrote" landed bp-white bp-blue
@@ -1569,9 +1588,18 @@ Section: Entry Point
    in act
     v <- fat16-write-file "OUT.TXT" line
     print-line-uni ("DISK-OUT: " & line)
+    t <- disk-build-footer landed
     disk-stop True (if landed == 1 then bp-white else bp-blue)
    end
   end
+
+  disk-build-footer : Integer -> [Console] Nothing
+  disk-build-footer (landed) =
+   if bp-armed 0 == False then print-text ""
+   else act
+    p <- disk-print-phases 0 (peek-qword bp-log-count-cell 0)
+    print-line-uni ("BUILD " & (if landed == 1 then "YAY" else "NAY") & " " & bp-hms-text (bp-rtc-seconds 0) & " total " & integer-to-text (phase-took (peek-qword bp-log-start-cell 0) (bp-rtc-seconds 0)) & "s")
+   end
 
   emit-binary-tail-with-map : EmitChapterResult, Boolean -> [Console, FileSystem, Device.Block] Nothing
   emit-binary-tail-with-map (result) (to-disk) =
@@ -1749,19 +1777,19 @@ Section: Entry Point
   emit-from-disk (mode) = act
    disk-rung "mode" 1 bp-yellow bp-cyan
    path-result <- read-line
-   vol <- fat16-boot-volume
+   vol <- disk-locate-volume
    disk-rung "volume" (bp-truth (vol.vol-bytes-per-sector == 512)) bp-magenta bp-yellow
-   when path-result
-    is Just (path) ->
-      when fat16-read-source vol path
-        is Just (source) ->
-          let o = bp-pass 1 bp-orange bp-magenta
-          in let foreword-prefix = disk-resolve-forewords vol source mode
-          in let full = foreword-prefix & source
-          in let flags = parse-mode-flags mode (text-length full)
-          in emit-cdx full mode flags True
-        is None -> disk-no-source ("DISK: file not found: " & path)
-    is None -> disk-no-source "DISK: no path on stdin"
+   d <- disk-diag path-result
+   m <- disk-diag-mem vol
+   v <- disk-diag-vol vol
+   when disk-source vol disk-default-path
+     is Just (source) ->
+       let o = bp-pass 1 bp-orange bp-magenta
+       in let foreword-prefix = disk-resolve-forewords vol source mode
+       in let full = foreword-prefix & source
+       in let flags = parse-mode-flags mode (text-length full)
+       in emit-cdx full mode flags True
+     is None -> disk-no-source ("DISK: file not found: " & disk-default-path)
   end
 
  The volume rung reads the BPB rather than the mount's own answer.
@@ -1773,10 +1801,285 @@ Section: Entry Point
  `mode` is intact in this frame and damaged one call deeper. The next rung's
  line names it: nothing reaches `compiled` without ORANGE having been painted.
 
+ On this box every sector of the source is a separate firmware Block I/O call
+ over USB, and a 2.78 MB source is 5,429 of them. The bed's disk is an
+ in-memory image, so the same read costs nothing there and the difference does
+ not appear until a stick is in a machine.
+
+ The two phases are counted separately because they fail differently. The
+ chain walk is I/O and is slow only on metal; the conversion is arithmetic and
+ costs the same in both. Which of them a stall lands in is what no flight has
+ been able to say.
+
+ The counter starts AT the threshold so the first bar is drawn before the
+ first sector is asked for. A heartbeat whose first beat is minutes away
+ answers the question too late to be worth having.
+
+  disk-read-report-every : Integer
+  disk-read-report-every = 64
+
+  disk-convert-chunk : Integer
+  disk-convert-chunk = 65536
+
+  disk-sector-total : Fat16Volume, Integer -> Integer
+  disk-sector-total (vol) (size) =
+   (size + (vol.vol-bytes-per-sector) - 1) / (vol.vol-bytes-per-sector)
+
+  disk-read-tick : Integer, Integer, Integer -> Integer
+  disk-read-tick (since) (n) (total) =
+   if since < disk-read-report-every then 0
+   else bp-progress n total 0 bp-white
+
+  disk-read-chain : Fat16Volume, Integer, Integer, Integer, List Integer, Integer, Integer, Integer -> [Device.Block] List Integer
+  disk-read-chain (vol) (cluster) (remaining) (sector-off) (acc) (n) (since) (total) =
+   if remaining <= 0 then acc
+   else if fat16-is-end cluster then acc
+   else act
+    t <- disk-read-tick since n total
+    buf <- block-read-sector (fat16-cluster-sector vol cluster + sector-off)
+    disk-read-step vol cluster remaining sector-off acc buf n (if since < disk-read-report-every then since + 1 else 0) total
+   end
+
+  disk-read-step : Fat16Volume, Integer, Integer, Integer, List Integer, Integer, Integer, Integer, Integer -> [Device.Block] List Integer
+  disk-read-step (vol) (cluster) (remaining) (sector-off) (acc) (buf) (n) (since) (total) =
+   let bytes-this = if remaining < (vol.vol-bytes-per-sector) then remaining else (vol.vol-bytes-per-sector)
+   in let acc2 = fat16-copy-bytes buf 0 bytes-this acc
+   in let next-sector-off = sector-off + 1
+   in if next-sector-off >= (vol.vol-sectors-per-cluster)
+     then disk-read-chain vol (fat16-next-cluster vol cluster) (remaining - bytes-this) 0 acc2 (n + 1) since total
+     else disk-read-chain vol cluster (remaining - bytes-this) next-sector-off acc2 (n + 1) since total
+
+ The chunking exists for the bar and for nothing else: fat16-source-chars
+ threads its accumulator, so converting in pieces pushes onto the same list
+ the single call would have built and the text is identical either way.
+
+  disk-convert : List Integer, List Integer, Integer, Integer, List Text -> Text
+  disk-convert (tbl) (bs) (i) (len) (acc) =
+   if i >= len then text-concat-list acc
+   else let p = bp-progress i len bp-progress-height bp-cyan
+   in let hi = if i + disk-convert-chunk > len then len else i + disk-convert-chunk
+   in disk-convert tbl bs hi len (fat16-source-chars tbl bs i hi acc)
+
+ The board's state, printed as integers only. Every previous build died before
+ its first line here, and each of them built that line out of the path Text --
+ so nothing below touches the path as text until its length has been shown to
+ be sane. The addresses are proc 0's filesystem and network scope
+ (proc-table-base + proc-scope-offset / + proc-net-scope-offset) and the serial
+ ring's write and read positions (serial-write-pos-addr, serial-read-pos-addr),
+ all in X86_64Boot.codex.
+
+  disk-diag-stamp : Integer
+  disk-diag-stamp = 20260815
+
+  disk-diag : Maybe Text -> [Console] Nothing
+  disk-diag (pr) = act
+   print-line-uni ("DIAG stamp " & integer-to-text disk-diag-stamp)
+   print-line-uni ("DIAG scope " & integer-to-text (peek-qword 20544 0) & " net " & integer-to-text (peek-qword 20504 0))
+   print-line-uni ("DIAG ring w " & integer-to-text (peek-qword 28704 0) & " r " & integer-to-text (peek-qword 28712 0))
+   disk-diag-path pr
+  end
+
+ Where things LIVE, and whether painting moves them. The 2026-08-13 flight of
+ a5fix.img read every field of the volume record as 71777214294589695, which
+ is 00FF00FF00FF00FF -- two MAGENTA pixels -- after the volume rung's magenta
+ fill, on a board where the same binary under OVMF reads them correctly. So
+ either the record's memory is being painted over, or the record pointer has
+ come to point into painted memory, and the addresses decide which: the
+ record's own address against the handoff's base + h*stride*4 extent, read
+ raw off the block the stub published. The stomp pair reads one field, paints
+ the full field magenta again, and reads it back: a value that MOVES convicts
+ the paint live, with every address needed for the arithmetic already on the
+ glass.
+
+  disk-diag-mem : Fat16Volume -> [Console] Nothing
+  disk-diag-mem (vol) = act
+   print-line-uni ("DIAG mem vol " & integer-to-text (address-of vol) & " heap " & integer-to-text __heap-save)
+   print-line-uni ("DIAG hand base " & integer-to-text (peek-qword 126976 16) & " wh " & integer-to-text (peek-qword 126976 24) & " stride " & integer-to-text (peek-qword 126976 32))
+   print-line-uni ("DIAG stomp pre " & integer-to-text (vol.vol-bytes-per-sector))
+   p <- bp-paint bp-magenta
+   print-line-uni ("DIAG stomp post " & integer-to-text (vol.vol-bytes-per-sector))
+  end
+
+ Which volume was actually mounted. fat16-boot-volume takes the first usable
+ GPT partition and the ladder only ever checked bytes-per-sector, so any real
+ FAT volume on the machine passes -- including one on a different disk, which
+ would mount cleanly and hold no SOURCE.SRC. Our own image is part 2048, root
+ 32 sectors, 26591 total.
+
+  disk-diag-vol : Fat16Volume -> [Console] Nothing
+  disk-diag-vol (vol) = act
+   print-line-uni ("DIAG vol part " & integer-to-text (vol.vol-part-start) & " bps " & integer-to-text (vol.vol-bytes-per-sector) & " spc " & integer-to-text (vol.vol-sectors-per-cluster))
+   print-line-uni ("DIAG vol fat " & integer-to-text (vol.vol-fat-start) & " root " & integer-to-text (vol.vol-root-start) & " ents " & integer-to-text (vol.vol-root-entry-count))
+   print-line-uni ("DIAG vol data " & integer-to-text (vol.vol-data-start) & " total " & integer-to-text (vol.vol-total-sectors) & " clusters " & integer-to-text (vol.vol-cluster-count))
+  end
+
+ Measured on the ASUS 2026-08-13: the three lines above print and this one does
+ not, and the None arm would have printed too, so the Maybe read-line returns
+ for the SECOND call cannot be dispatched on at all. The first call's value is
+ sound -- the mode line reaches dispatch-on-mode and selects DISK. The ring is
+ sound: write 32, read 16, both lines consumed, the sixteen extra bytes are the
+ UART poll's phantoms and sit past the read point. So the bytes are right and
+ the value built from them is not. Left here as the record of what was measured;
+ the path below no longer depends on it.
+
+  disk-diag-path : Maybe Text -> [Console] Nothing
+  disk-diag-path (pr) = print-line-uni "DIAG path SKIPPED (see chapter note)"
+
+ The name is fixed by the image builder: build-img -Source always writes
+ SOURCE.SRC, and the stub's second stdin line has never said anything else.
+
+  disk-default-path : Text
+  disk-default-path = "SOURCE.SRC"
+
+ The device behind block-read-sector depends on how the block helper bound
+ it. Bound through LoadedImage->DeviceHandle the firmware hands a PARTITION,
+ whose LBA 0 is the volume's own boot sector and whose GPT read fails; bound
+ through the LocateProtocol fallback it is a raw disk, and on a board with
+ more than one the firmware chooses which. So the mount is a ladder judged
+ by content rather than by the BPB alone -- a foreign FAT volume parses
+ cleanly and holds no source file: take the GPT walk if the source resolves
+ on it, then partition-relative LBA 0, and otherwise keep the GPT walk's
+ answer so the geometry that gets printed is the mount that refused.
+
+  disk-vol-has-source : Fat16Volume -> [Device.Block] Boolean
+  disk-vol-has-source (vol) =
+   if fat16-vol-is-usable vol == False then False
+   else when fat16-resolve-path vol disk-default-path
+     is Just (e) -> True
+     is None -> False
+
+  disk-locate-volume : [Device.Block] Fat16Volume
+  disk-locate-volume = act
+   g <- fat16-boot-volume
+   ok <- disk-vol-has-source g
+   if ok then g else disk-locate-volume-zero g
+  end
+
+ fat16-parse-bpb divides by the bytes-per-sector and sectors-per-cluster it
+ reads off the sector, so LBA 0 is probed raw before fat16-init is allowed
+ near it: on a raw disk LBA 0 is a protective MBR whose byte 11 is zero, and
+ handing that to the parser is the divide fault Fat16's own prose warns
+ about. 11 and 13 are the FAT BPB's bytes-per-sector and sectors-per-cluster
+ offsets.
+
+  disk-locate-volume-zero : Fat16Volume -> [Device.Block] Fat16Volume
+  disk-locate-volume-zero (g) = act
+   buf <- block-read-sector 0
+   disk-locate-volume-zero-buf g buf
+  end
+
+  disk-locate-volume-zero-buf : Fat16Volume, Integer -> [Device.Block] Fat16Volume
+  disk-locate-volume-zero-buf (g) (buf) =
+   let bps = peek-byte buf 11 + peek-byte buf 12 * 256
+   in let spc = peek-byte buf 13
+   in if (bps == 512) & (spc > 0) then disk-locate-volume-zero-init g else g
+
+  disk-locate-volume-zero-init : Fat16Volume -> [Device.Block] Fat16Volume
+  disk-locate-volume-zero-init (g) = act
+   z <- fat16-init 0
+   ok <- disk-vol-has-source z
+   if ok then z else g
+  end
+
+  disk-diag-len : Text, Integer -> [Console] Nothing
+  disk-diag-len (p) (n) = act
+   print-line-uni ("DIAG path len " & integer-to-text n)
+   disk-diag-chars p n
+  end
+
+  disk-diag-chars : Text, Integer -> [Console] Nothing
+  disk-diag-chars (p) (n) =
+   if n <= 0 then print-line-uni "DIAG path EMPTY"
+   else if n > 64 then print-line-uni "DIAG path len INSANE"
+   else print-line-uni ("DIAG path c0 " & integer-to-text (char-code-at p 0)
+     & " c1 " & integer-to-text (char-code-at p (if n > 1 then 1 else 0))
+     & " c2 " & integer-to-text (char-code-at p (if n > 2 then 2 else 0))
+     & " c3 " & integer-to-text (char-code-at p (if n > 3 then 3 else 0)))
+
+ Each step announces itself BEFORE it acts, so the last line on the glass names
+ the step that did not return rather than the last one that did.
+
+ The build header. Wall clock off the CMOS RTC (armed-guarded, zeroes in any
+ bed with no handoff), then the log cells are zeroed so the footer's phase
+ table starts empty, and the start second is banked for the footer's total.
+
+  disk-build-header : Text -> [Console] Nothing
+  disk-build-header (path) =
+   if bp-armed 0 == False then print-text ""
+   else act
+    print-line-uni ("BUILD " & bp-rtc-date-text 0 & " " & bp-hms-text (bp-rtc-seconds 0) & " " & path)
+    z <- bp-poke64 bp-log-count-cell 0
+    s <- bp-poke64 bp-log-start-cell (bp-rtc-seconds 0)
+    print-text ""
+   end
+
+  disk-source : Fat16Volume, Text -> [Console, Device.Block] Maybe Text
+  disk-source (vol) (path) = act
+   hd <- disk-build-header path
+   print-line-uni ("DISK-SOURCE resolving [" & path & "] over " & integer-to-text (disk-root-sectors vol) & " root sectors")
+   disk-source-found vol path
+  end
+
+  disk-source-found : Fat16Volume, Text -> [Console, Device.Block] Maybe Text
+  disk-source-found (vol) (path) =
+   when fat16-resolve-path vol path
+     is Just (entry) -> disk-source-read vol entry
+     is None -> None
+
+  disk-source-read : Fat16Volume, Fat16DirEntry -> [Console, Device.Block] Maybe Text
+  disk-source-read (vol) (entry) = act
+   print-line-uni ("DISK-SOURCE found cluster " & integer-to-text (entry.de-cluster) & " size " & integer-to-text (entry.de-size) & " sectors " & integer-to-text (disk-sector-total vol (entry.de-size)))
+   disk-source-bytes vol entry
+  end
+
+ The checksum is FNV-1a over the raw bytes as read, printed before the CCE
+ conversion so a conversion defect cannot contaminate the fingerprint. The
+ offset basis and prime are FNV's own constants; the products wrap, which is
+ what FNV requires and what bare imul does.
+
+  disk-fnv : List Integer, Integer, Integer, Integer -> Integer
+  disk-fnv (bs) (i) (n) (h) =
+   if i >= n then h
+   else disk-fnv bs (i + 1) n ((bit-xor h (list-at bs i)) * 1099511628211)
+
+ The seed constant is FNV-1a 64's offset basis, #CBF29CE484222325, written
+ as its two's-complement decimal because that hex form is the tree's first
+ literal past i64-max and the text emitter does not round-trip it -- the
+ gate's semantic-equivalence pass flags the body (2026-08-14). Same bit
+ pattern, so every fingerprint printed before the rewrite is still valid.
+
+  disk-build-fnv : Fat16DirEntry, List Integer -> [Console] Nothing
+  disk-build-fnv (entry) (bs) =
+   if bp-armed 0 == False then print-text ""
+   else print-line-uni ("SOURCE " & integer-to-text (entry.de-size) & " bytes fnv " & integer-to-text (disk-fnv bs 0 (list-length bs) (0 - 3750763034362895579)))
+
+  disk-source-bytes : Fat16Volume, Fat16DirEntry -> [Console, Device.Block] Maybe Text
+  disk-source-bytes (vol) (entry) = act
+   bs <- disk-read-chain vol (entry.de-cluster) (entry.de-size) 0 [] 0 disk-read-report-every (disk-sector-total vol (entry.de-size))
+   f <- disk-build-fnv entry bs
+   Just (disk-convert cce-to-unicode-table bs 0 (list-length bs) [])
+  end
+
+  disk-root-sectors : Fat16Volume -> Integer
+  disk-root-sectors (vol) =
+   ((vol.vol-root-entry-count) * 32 + (vol.vol-bytes-per-sector) - 1) / (vol.vol-bytes-per-sector)
+
+ The print comes FIRST. disk-rung holds on a failed rung and never returns, so
+ a reason printed after it is a reason nobody has ever read: both of these
+ callers looked identical on the glass for as long as the ladder has existed.
+
+ The memory line prints LAST, in the failure path itself, because the
+ firmware console scrolls and keeps no history: the 2026-08-13 boot printed
+ the addresses that would have settled the corruption question and they were
+ off the top of the glass before the failure line landed. The last lines are
+ the only ones an operator can photograph.
+
   disk-no-source : Text -> [Console] Nothing
   disk-no-source (why) = act
-   disk-rung "source" 0 bp-orange bp-magenta
    print-line-uni why
+   print-line-uni ("DIAG heap " & integer-to-text __heap-save & " hand base " & integer-to-text (peek-qword 126976 16) & " wh " & integer-to-text (peek-qword 126976 24) & " stride " & integer-to-text (peek-qword 126976 32))
+   h <- bp-hold-band-if-armed bp-magenta
+   print-line-uni "DISK-LADDER stopped at source"
   end
 
   compile-plain : Text, Text, Text, CompileFlags -> [Console, FileSystem] Nothing

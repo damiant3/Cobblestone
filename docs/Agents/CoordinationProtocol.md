@@ -349,6 +349,68 @@ Set-Content "$mbox\outbox\fetch-tls.json" '{ "to": "red", "text": "fetch-tls lan
   second before reading it, so a half-written file is not mistaken for a
   malformed one, but an atomic write is still the honest way to do it.
 
+**Writing straight into another agent's `inbox/` is not a shortcut for
+this, and it fails silently.** The file lands, it looks delivered, and no
+terminal line is ever typed -- so the addressee sees it at their next
+init instead of now. Measured 2026-08-14: two replies to an agent who was
+BLOCKED behind a red gate sat unread in their inbox for a quarter of an
+hour that way, while the sender believed they had answered. The routing
+is the whole value of the channel; going around it leaves you with a file
+drop that is slower than the depot it replaced.
+
+**The check that matters is SENDER-side: your own `outbox/sent/` is the
+receipt.** AgentGrid moves a message there when it routes it. If it is
+not there, you did not send it, and no wording of the file can make that
+false. Watch it leave `outbox/` within a few seconds; if it is still
+sitting in `outbox/`, AgentGrid is not running and nobody got it.
+
+**Use that one, because the failure this rule exists for is a SENDER
+failure.** Both agents on 2026-08-14 believed they had answered. Neither
+was wrong about what they wrote; both were wrong about whether it left.
+A receiver-side check cannot catch that, because the sender is not the
+receiver.
+
+Receiver-side, to diagnose a message somebody else sent you, the tell is
+the SCHEMA: AgentGrid writes exactly `at`, `from`, `text` and nothing
+else, where a hand-dropped file carries whatever its author invented.
+Measured 2026-08-14 across seven messages in one inbox -- three routed
+with `at,from,text`, four hand-dropped with `body,from,subject`.
+**Treat it as evidence, not proof** (blu's point, and it is right): a
+hand-drop that happened to use those three field names would pass it.
+`outbox/sent` cannot be fooled that way; the schema can.
+
+**The filename is not a tell at all**, and it was recorded here as one
+for a few hours on 2026-08-14. Both agents that day hand-dropped, one
+mimicking the routed naming convention exactly, millisecond field and
+all, and the other not. The rule was written from the second and would
+have called all four of the first routed. A convention two authors
+follow differently decides nothing.
+
+### Broadcasts
+
+`to: fleet` types a line into EVERY other agent's terminal. It interrupts
+the whole fleet mid-thought, so the bar is that it is worth that many
+interruptions and the format is that it fits in one.
+
+**Two forms, and only two.**
+
+A QUESTION -- one question, answerable in one line, that you need
+answered by another agent rather than by Damian.
+
+A POINTER -- one line of what happened plus where the detail is. Send
+the detail as a normal message FIRST, then broadcast the line that names
+it. **A broadcast is never the container for the detail**, because the
+cost of a broadcast is paid by everyone and the detail is wanted by one.
+
+Three lines, hard. Say what you want back or say "no reply needed"; a
+broadcast that leaves the fleet guessing whether they owe an answer costs
+a reply from each of them. **Answer a broadcast to its SENDER, never to
+`fleet`** -- only the asker wanted it, and a broadcast reply costs
+everyone again.
+
+The `/broadcast` skill (`.claude/skills/broadcast/SKILL.md`) is the
+runner for this and carries the composition rules.
+
 To receive: messages arrive **twice**, exactly like a build grant. A
 `[fleet message from <agent>]` line is typed into your terminal, and a
 copy lands in your `inbox/`. The inbox copy is the durable one -- if your
@@ -356,17 +418,26 @@ terminal was not running, the typed line is lost and the file is still
 there at next launch. **Read your `inbox/` at init.**
 
 **Delete an inbox message once you have absorbed it.** The deletion is
-the acknowledgement, and it is the same consumption rule the workplan
-findings outbox already uses.
+the acknowledgement. It works here and did not work in the retired
+workplan outbox for one reason: your inbox is YOUR directory, so
+acknowledging costs you nothing. There, the addressee had to delete an
+entry from the author's file in the author's stream, and so nobody ever
+did.
 
-### What goes here, and what still goes in the workplan
+### What goes here, and where the record goes
 
-The channel carries the **notification**; the workplan carries the
-**record**. A finding another lane's plan depends on still belongs in
-your workplan's `## Cross-lane` section, because that is what survives a
-session and what the next agent reads at init. What the channel adds is
-that red hears about it in the next second instead of after two merges,
-and that the notification costs no submit, no merge and no token.
+The channel carries the **notification** and it is not a record of
+anything. What the channel adds is that the addressee hears about it in
+the next second instead of after two merges, and that the notification
+costs no submit, no merge and no token.
+
+**The durable fact goes in the doc that OWNS the subject, the moment it
+is verified** -- a reference doc (`OperatorsManual`, `ExaminersAssay`,
+`DevelopersGuide`, `HardwareSitting`), the design that owns the
+capability, `LESSONS.md` for a lesson, or the relevant backlog for a gap.
+Cross-lane open work goes in `docs/PM/CurrentPlan.md`. It does **not**
+go in a workplan: those are empty by design and hold only the current
+session's lane state.
 
 Use it for: a defect that invalidates another lane's measurements, a
 contract change, a capability someone is waiting on, "I am taking this
@@ -374,8 +445,8 @@ item so do not duplicate it."
 
 Do not use it for: status updates nobody asked for, anything Damian
 should be told instead, or a conversation. It is a notification channel,
-not chat -- if a message needs a reply, what it actually needed was a
-workplan entry.
+not chat -- if a message needs two rounds, the second round belongs in
+the doc that owns the subject.
 
 ## Notes from the first run (val, 2026-07-13)
 
@@ -399,48 +470,35 @@ workplan entry.
   nothing to do with your change. `p4 -c <main-client> sync //Codex/main/...`
   first, every time.
 
-## Workplan Cross-Lane Protocol (added 2026-07-27, red)
+## Workplan Cross-Lane Protocol -- RETIRED 2026-08-08
 
-The build token serializes BUILDS. Nothing serialized FINDINGS, and the fleet
-has paid for that twice in one week: val and blu built the same `fetch-tls`
-work an hour apart, and the Real-comparison fix invalidated numbers other
-lanes had already recorded. This protocol is the findings channel. It lives
-in the workplans because the workplans are the one document every agent reads
-at every init.
+This section prescribed a `## Cross-lane` section in every workplan, with
+critical-path rows and a date-stamped findings outbox that the ADDRESSEE
+deleted once absorbed. **All of it is retired at Damian's direction and
+must not be restarted.** CLAUDE.md is the authority: the workplans were
+emptied, `docs/Agents/<agent>-workplan.md` is scratch for the current
+session's lane state only, and *"do not start a findings outbox anywhere."*
 
-Every workplan carries a `## Cross-lane` section directly under its header
-note, with two parts.
+The account of why is in CLAUDE.md and is worth reading before anyone
+proposes it again, because the idea is a good one that failed for two
+mechanical reasons. A durable fact parked in a status file is read once at
+init and then reasoned about from memory instead of re-read. And an entry
+was deleted by the ADDRESSEE from the AUTHOR's file in the author's stream,
+which is a cross-workspace write on somebody else's document, so it almost
+never happened: a true, unfixed finding about a switch that does not exist
+sat in one outbox for a day and reached nobody. An entry addressed "for the
+fleet" had no addressee at all and could never be cleared by anyone.
 
-**1. Critical-path rows.** A table of the items in YOUR lane that another
-lane or the current push depends on. One row per item: the item, who depends
-on it, and its state with a date and CL number. Update the row IN THE SAME
-SESSION the state changes -- landed on main, went red, got blocked, got cut.
-A row nobody depends on does not belong in the table.
+What replaced it, and the split is the point:
 
-**2. Findings outbox.** Date-stamped entries addressed `for <agent>` or
-`for fleet`, each a finding the addressee's plan depends on: a defect that
-invalidates their assumptions or recorded measurements, a contract change
-(`poll-key` moving to CCE is the canonical example), or a landed capability
-they were waiting on. One or two lines each; the CL is the record. Not
-process notes, not diligence, not anything already in `ExaminersAssay` or a
-trap list.
+- The **notification** goes through Fleet Messages above -- instant, no
+  submit, no merge, no token.
+- The **record** goes into the doc that owns the subject, the moment it is
+  verified. Cross-lane open work goes in `docs/PM/CurrentPlan.md`, which is
+  the fleet's only cross-lane register; an item originating in one app or
+  quire goes to that register.
 
-The consumption rule is what keeps it short: **the ADDRESSEE deletes the
-entry from the author's outbox once it is absorbed into their own plan.**
-The deletion is the acknowledgement, and a workplan edit is docs-only, so it
-needs no token. An entry addressed `for fleet` is deleted by its author once
-every active workplan reflects it. If an entry survives three of the
-addressee's sessions untouched, tell Damian: the channel is being ignored.
-
-At session start, after init has read the workplans: absorb every outbox
-entry addressed to you BEFORE picking work, and check the critical-path rows
-of any lane yours depends on. Before starting an item, write your pick into
-your own workplan (val's rule, now fleet-wide): a register entry naming
-unowned work is a collision waiting to happen, and the workplan row is what
-prevents the second `fetch-tls`.
-
-What this protocol is NOT: it does not replace `For other agents` trap lists
-(durable machine facts stay there), it does not replace CL descriptions (the
-record), and it is not a status feed for Damian (rule 10 governs that). It is
-the narrow channel for "your plan depends on this and you do not know it
-yet."
+The section is kept rather than deleted because it was live for twelve days
+and agents who learned the fleet under it will look for it. Finding a
+retirement notice is cheap; finding nothing and rebuilding the channel from
+memory is not.

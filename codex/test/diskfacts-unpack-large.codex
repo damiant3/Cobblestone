@@ -1,0 +1,66 @@
+Chapter: DiskFactsUnpackLarge
+  cites Kernel chapter DiskFacts
+
+ unpack-text is how a stored work's source comes back off the disk, so its
+ cost is the repository's cost. It appended to the accumulator Text on every
+ byte until 2026-08-14, which reallocates and copies the whole accumulator
+ each time, and it now collects the characters into a list and joins them
+ once.
+
+ THE SIZE IS MEASURED AND THE OBVIOUS SIZE IS WRONG. cdx-serve died with OUT
+ OF MEMORY serving a 64 KB work and served 48 KB in 23 s, so 64 KB looks like
+ the cliff and is not: the old body reaches 64 KB comfortably in isolation and
+ passes every check this arm makes. It failed THERE because that heap was
+ already carrying the work index and the transport's receive buffer, and the
+ quadratic accumulator only had to supply the last of the arena. An arm sized
+ from that symptom would have been green against the very defect it was
+ written for, which is how a test comes to certify nothing.
+
+ Measured instead, with the old body deliberately restored: it survives 64 KB,
+ and dies at 256 KB. So the arm is 256 KB, which is also the first power of
+ two above the largest chapter in this tree (TypeChecker, 186,205 bytes). The
+ fixed body runs it in under a second.
+
+ Sabotage confirmed 2026-08-14: with the pre-2026-08-14 body in place this
+ file answers OUT OF MEMORY and prints none of its four lines.
+
+Section: Fixtures
+
+  n : Integer = 262144
+
+ The buffer is allocated ONCE in opening and threaded, not bound at module
+ level. A module-level binding here is a RECIPE and not a cell: every
+ reference runs alloc-bytes again, so a fill loop that named it would
+ allocate 256 KB per byte and exhaust the arena before unpack-text was ever
+ reached. The first draft of this file did exactly that and blamed the
+ subject.
+
+ A repeating 26-character cycle rather than a constant, so a body that
+ returned the right LENGTH of the wrong characters is still caught, and one
+ that dropped or duplicated a byte shifts every probe after the drop.
+
+  fill : Integer, Integer -> Integer
+  fill (buf) (i) =
+   if i >= n then 0
+   else let p = poke-byte buf i (65 + int-mod i 26)
+   in fill buf (i + 1)
+
+  expect-at : Integer -> Integer
+  expect-at (i) = 65 + int-mod i 26
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let buf = alloc-bytes n
+    in let f = fill buf 0
+    in let t = unpack-text buf 0 n
+    in let len = text-length t
+    in act
+      print-line-uni ("length   : " & show len)
+      print-line-uni ("first ok : " & (if char-code-at t 0 == expect-at 0 then "yes" else "no"))
+      print-line-uni ("middle ok: " & (if char-code-at t (n / 2) == expect-at (n / 2) then "yes" else "no"))
+      print-line-uni ("last ok  : " & (if char-code-at t (n - 1) == expect-at (n - 1) then "yes" else "no"))
+    end
+  end
+
+Page 1

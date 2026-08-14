@@ -95,11 +95,20 @@ open as WORKS-9.
   for byte, outside every workspace. Whether 16 MB of it earns a depot
   slot is Damian's call, not mine; every other flown image beside it is
   checked in.
-- **A5 (reek, prepped 2026-08-08, NOT FLOWN): the compiler runs on the
-  box.** The mechanism exists and is now proven in the bed. The compiler's
-  `DISK` mode reads two stdin lines (the word `DISK`, then a path), mounts
-  the boot volume through the GPT, reads the source AND its cites off the
-  volume, and emits.
+- **A5 (reek): SHIPPED 2026-08-14, FLOWN GREEN.** The compiler booted the
+  ASUS from bare UEFI, read its own 2.8 MB source off the stick, compiled
+  itself in about a minute, and wrote `OUT.CDX` back **byte-identical to
+  the host control** (2,790,018 bytes, `AB3A207EFB9279A6`), with `OUT.TXT`
+  reading `OK OUT.CDX 2790018`. The account, the flight card, and the
+  build discipline are the 2026-08-14 entry in
+  `docs/Hardware/HardwareSitting.md`; the retro is
+  `docs/PM/Active/Stories/TheBedThatAlwaysSaidYes.md` (lessons L-FREEDOM,
+  L-REHEARSE). The returned stick is `a5flight-returned-20260814.img` in
+  the archive. The history below stands as the campaign record.
+
+  The compiler's `DISK` mode reads two stdin lines (the word `DISK`, then
+  a path), mounts the boot volume through the GPT, reads the source AND
+  its cites off the volume, and emits.
 
   **Baseline: booted from an 8 MB image with the seed as the PE payload and
   the program as `SOURCE.SRC`, the compiler read the source off the volume
@@ -482,8 +491,56 @@ open as WORKS-9.
   procedure is `docs/Hardware/HardwareSitting.md`, the section headed "THE
   ARM, kept for the next flight"** -- it carries the outcome table, the new
   SHA-256 and the 2500 ms screenshot delay. **Awaiting a sitting.**
-- Then **B2c** RX/TX on the real part, **B3** the TCP/IP stack over it,
-  **B4** serve the repository protocol. EdgeMesh Phase 2
+- **B3 TCP over the real part: the stack now holds a real TCP conversation
+  over the e1000, and it did not before 2026-08-14 (blu, main pending).**
+  Nothing had ever run TCP over that card: every TCP test in the tree
+  (`tcp-reliability`, `tcp-seqwrap`, `tcp-listen-reclaim`, `net-io-clock`)
+  cites `NetworkStack`/`Tcp`/`Ethernet` and touches no NIC at all, and the 55
+  plugs that DO speak TCP over a wire all ride the NE2000. DHCP over the
+  e1000 was the whole of it, and DHCP is one UDP exchange.
+  **The blocker was a wall-clock constant wearing tick clothing, and it lands
+  on metal.** `NetIO` counted a tick as 100000 empty receive polls. Measured:
+  one million empty polls cost **15.52 s on the NE2000 and 0.029 s on the
+  e1000**, because an NE2000 poll is a port IN and therefore a VM exit while
+  an e1000 poll reads a descriptor out of RAM -- which is what the real
+  I219-V does too. Every bound in `NetworkStack` is a count of ticks, so the
+  same four constants meant give-up at 219 s on one card and **405 ms** on
+  the other, with the first SYN retransmit at **8.6 ms**. That chapter's own
+  prose argued this could not happen; the argument covers the ESTIMATOR,
+  where srtt is in the same ticks, and not the fixed counts. Corrected in
+  place rather than left to mislead again.
+  **`net-driver-calibrate` measures the rate once at bring-up** against HPET
+  and stores it in cell 36328, and `net-io-tick-interval` /
+  `net-io-max-polls` derive from it. A guest that never brings a driver up
+  reads the old 100000, so every plug keeps the numbers it was tuned with.
+  Achieved: tick 105 ms on the NE2000 and 66 ms on the e1000, a 540x spread
+  closed to 1.6x. `codex/test/net-poll-calibrated` pins it with the OLD
+  constant as its own built-in control, which reads out of band on both
+  cards -- so the arm can be seen to fail.
+  **A second defect underneath, in `tools/codex-vm.c`.** A retransmitted SYN
+  re-entered the NAT's new-connection branch, opened a second host socket
+  over the first and leaked it, and the guest's payload went to a socket
+  nobody had accepted. A SYN retransmit is correct TCP, so the bed could not
+  express one at all. Isolated three ways on one guest binary: old exe + old
+  stack FAILS (4 SYNs), new exe + old stack PASSES (3 SYNs), new exe + new
+  stack PASSES (1 SYN).
+  **What is NOT proven: this is the bed, not the board.** The e1000 model's
+  poll is a RAM read like the real part's, which is why the calibration is
+  expected to hold, but no flight has measured it. The arm is bed-only
+  because it needs a host TCP peer; 30 existing tests, `nat-conn-churn`,
+  `cdx-serve` and `tls-interop` are green, and the gate is green.
+- **The metal questions this track has left are QUEUED, not scheduled:
+  `docs/Hardware/HardwareSitting.md`, the section headed "THE SITTING QUEUE"
+  at the top of the file** (opened 2026-08-14 at Damian's direction). Five
+  questions, NIC-1 to NIC-5, designed to ride ONE boot in an order that is
+  argued rather than preferred: the pure reads bank first because a write
+  destroys their control, and the arm that could hang the box goes last.
+  **Damian's standing ruling still holds and this section does not soften
+  it: agents do not propose flights.** The queue exists so that a sitting he
+  decides to hold does not spend its first half hour being designed. NIC-2
+  is the one that matters most -- whether the poll-rate calibration transfers
+  to the real part is the single assumption B3 and B4 now rest on.
+- Then **B4** serve the repository protocol. EdgeMesh Phase 2
   (`docs/Designs/Active/Features/EdgeMeshGameServers.md`) is the consumer
   waiting on B2-B4; nothing to do there until the track lands.
 - The ARM64 send path and the lost SYN are both closed (fester,
@@ -557,12 +614,42 @@ open as WORKS-9.
     every consumer, this rechecker and every transpiler plug alike. Fixed by
     recording the lambda's actual type; no `ir-emit-type` change was needed.
     Whole compiler after: **AGREE 4821, DISAGREE 0, UNSUPPORTED 0, IMPROVED
-    4** -- 88 of the 92 now close in the ARTIFACT and the rechecker derives
-    the remaining 4, and they agree. **The remaining 4 are the same defect
-    one level down** (an `if`- or `when`-bodied lambda, whose body type is
-    itself the bare variable) and are open, not fixed. Account in
-    `IndependentRechecker.md`; the control that was the evidence and was read
-    as a fact is L-CONTROL.
+    4** -- 88 of the 92 closed in the ARTIFACT and the rechecker derived the
+    remaining 4. Account in `IndependentRechecker.md`; the control that was
+    the evidence and was read as a fact is L-CONTROL.
+  - **The remaining 4: CLOSED 2026-08-14, 4 to 0** (val 15022, main 15023,
+    seed-affecting, seed converged at 2760410). They were the same defect one
+    level down, in the BRANCHING NODE rather than the lambda -- but **this
+    register's account of WHY was wrong and the correction is the useful
+    part.** It said the body's "own recorded type is the bare variable, so
+    there is nothing concrete to substitute." The branch bodies were concrete
+    the whole time: in `fold-expr`'s `for stmt in ss -> when stmt` both arms
+    type as `(sum "IRActStmt")`. The node DISCARDED that. `lower-match`
+    already had `infer-match-type`, which derives the type from the arms, and
+    consulted it only `when ty is ErrorTy`; a bare type variable is not
+    ErrorTy, so it took `is otherwise -> ty` and threw the derived type away.
+    The `if` is the same shape through `merge-ty`, which answers `a` unless
+    `a` is ErrorTy. Both now consult a witness and `lower-lambda`'s existing
+    substitution propagates it, so no change was needed there.
+    **Whole compiler: AGREE 4862, DISAGREE 0, UNSUPPORTED 0, IMPROVED 0,
+    SINGLE-WITNESS 0**, kill-rate 27/27 with a passing control, and
+    `tvar-spine-branch-arms` still CAUGHT -- unlike the lambda fix, this one
+    cost the rechecker no arm. **The rechecker now raises exactly ONE finding
+    against the whole compiler**, the underived range below.
+    - A witness is sound only where the unifier admits no widening, which it
+      does for integers and reals at a non-argument position, so those are
+      refused and every other form is nominal or invariant. **A first attempt
+      guarded agreement with `types-equal` and measured NO CHANGE AT ALL**:
+      that function fell through to `otherwise -> False` for ten of the 26
+      CodexType variants, so it answered "not equal" on two identical sum
+      types and every witness was rejected. Never a soundness gap -- its only
+      caller is a fast-path short-circuit in `unify-resolved` whose
+      fall-through unifies those forms correctly -- but a trap for the next
+      caller, so **it is now total** (Damian's call: fix it rather than
+      document around it). **The fast path it was declining is worth nothing
+      measurable**: same input, old compiler against new, 11.8/11.96/12.41 s
+      against 11.8/12.38/12.30 s, a noise floor of about 0.4 s. The value is
+      that the trap is gone, not speed.
   - **92 nested type variables: CLOSED 2026-08-10, 92 to 0.** Spine-scoped
     substitution, plug only, no compiler change and no seed. Stage 1 over
     the whole compiler is **AGREE 4820, DISAGREE 0, UNSUPPORTED 0**, against
@@ -727,67 +814,34 @@ open as WORKS-9.
   - **C2.5 stage 4 (proof terms) stays deferred unless Damian calls for
     it.**
 
-## The Shell DSL backport -- drift closing is live again
+## The Shell DSL backport -- CLOSED 2026-08-14, now ambient
 
-The parse class is gated (`check-generated-scripts.ps1` compiles every
-generator, dead target or not, and hard-fails on PowerShell parse errors
-with no baseline). Re-measured 2026-08-11: **45 generators, 12 drifted,
-0 broken, 1 dead target.** Every generated script now opens with
-`generated-banner` (`ShellTypes`), which says a hand edit must not be
-submitted; a file carrying it is exactly a file that matches its
-generator, and the thirteen still baselined deliberately do not carry
-it.
+**Damian's ruling 2026-08-14: tie it up, take it off the board, keep it as a
+routine check rather than a campaign.** Re-measured at seed `D9A6A7A2` on the
+day it closed (L-COUNT -- do not copy these forward): **46 generators checked,
+4 drifted, 0 broken, 1 dead target.** The 4 are exactly the backlogged stubs
+(`test`, `cdx-to-pe`, `build`, `build-img`), which stay backlogged by the
+2026-08-06 ruling. **Every ordinary generator in the tree matches the script it
+ships beside.** The entry that stood here said 12 drifted with eight generators
+left to close, and it was a full campaign out of date.
 
-**Closing a drift IS the next thing to pick up** (Damian's direction
-2026-08-10, superseding "there is no next generator"). `test-run`,
-`compile` and `compare-codex-semantic` were closed by fester on
-2026-08-10 and 2026-08-11 and are the three worked examples, written up
-in `docs/Designs/Active/Build/Build.md`: read the drift, judge each
-shipped-only line as behaviour or convention, port only behaviour, then
-install the emitted script under a two-arm compare with a control that
-shows the comparison can fail. The three are deliberately different
-shapes. `test-run`: nothing needed porting. `compile`: about twenty real
-behaviours did, one of which the DSL could not express until
-`ShellParam` gained `sp-attrs`. `compare-codex-semantic`: **the
-generator was partly RIGHT and the shipped script partly WRONG**, so
-neither side could simply be installed over the other, and the shipped
-error was a false PASS in the sem-equiv gate leg (see the
-OperatorsManual note on its precedence table). `run-plug` followed the
-same day: a BARE `catch` where the shipped script catches
-`[System.IO.IOException]`, which turns any fault in the receive loop
-into "plug produced no output" and blames the plug. `bvt` followed and is
-the one that shows what the campaign is for: **its generator's test list
-held 16 of the 75 tests**, so adopting it unread would have dropped 59
-from the gate (every ECDSA/X.509/TLS test, every proof, the whole
-repository set) while the BVT went on printing PASS. It was also missing
-the `.disk` sidecar handling entirely. **Eight non-backlogged generators
-remain**, `test-compile-batch` (201 drift lines) the largest and
-`run-plug-chain` (32) the smallest. What remains:
+What keeps it closed is two mechanisms, neither of which is a campaign:
 
-- **The four stubs (`test`, `cdx-to-pe`, `build`, `build-img`) are
-  BACKLOGGED**, Damian's ruling 2026-08-06: "backlog it, that isn't our
-  mission." They emit roughly a third of their scripts and hold the bulk
-  of the drift lines, so the drift total never approaches zero while they
-  stand. That is expected, not a failure.
-- **`plug-build` and `plug-run` are ADOPTED** (Damian's ruling
-  2026-08-10, reek). Both now ship as `build/plug-run.ps1` and
-  `build/plug-build.ps1`, so both generators have a live target and are
-  drift-checked; only `testrunBashScript` sits in the dead-target blind
-  spot now. 38 standard TCP plugs delegate to `plug-run` from a shim that
-  compiles to IR and passes `-PlugCdx`, `-MemMB` and the port literal --
-  the literal stays so `check-plug-ports.ps1` still checks both halves.
-  `run.ps1` across all 55 plugs went 200,784 -> 107,101 bytes.
+- **The banner.** Every generated script opens with `generated-banner`, so a
+  file carrying it is exactly a file that matches its generator. That is the
+  hard rule at the top, and it is what discourages the hand edit.
+- **`build/check-generated-scripts.ps1`**, a leg of `build/build.ps1` at about
+  61 s. It fails on a BROKEN generator or a NEWLY drifted one, never on the
+  baselined four. Since 2026-08-14 it also reports the other direction: a
+  script under `build/` that no generator emits, against
+  `build/handwritten-scripts.txt`. **That half is report-only and must stay
+  that way** -- 93 of 135 scripts under `build/` have no generator and most are
+  meant not to (probes, flight arms, interop harnesses, one-offs). Gating it
+  would be 93 reds whose answer is always "expected", which is the failure the
+  drift baseline already exists to avoid.
 
-  The remaining 17 are deliberately untouched and are not a residue to
-  close: the file-I/O family (`wasm`, `wgsl`, `spirv`, `ptx`,
-  `winforms`, `html`) does not speak TCP at all, and
-  `arm64`/`riscv`/`elf`/`pe`/`img`/`csharp`/`maui`/`recheck`/`t3isa`/`wpf`/`javascript`
-  carry extra phases. `plug-build` drives `Build-TranspilerPlug` without
-  `-WithLir`, so it cannot build `arm64` or `riscv`; the 55 `build.ps1`
-  were already ~330 bytes each over the shared
-  `codex/plugs/common/plug-build-lib.ps1` and were left alone, since
-  routing them through the driver would save nothing and add a process
-  launch each.
+Method, traps and every worked example are in
+`docs/Designs/Active/Build/Build.md`; read that before touching a generator.
 
 ## The annotation campaign -- COMPLETE 2026-08-07
 
@@ -844,12 +898,31 @@ reversed direction**, and a reader who half-remembers the old rule will reach
 for the wrong name. L-COUNT and "prefer the fix in the primitive": the sweep
 was 192 sites of per-site judgement and the primitive change closed all of it.
 
+## The cost model -- proposed 2026-08-14, unscheduled
+
+`docs/Designs/Active/Features/CostModel.md` (blu, at Damian's direction).
+**Damian has ruled the SHAPE: it sits in the same part of the rainbow as
+`punctual`,** so it is a declared property checked transitively and refused at
+compile time, not a document reviewers are asked to remember.
+
+The gap is `punctual`-shaped because `punctual` forbids the case: CDX6002
+refuses heap allocation outright, so a `punctual` function is one that does
+not allocate, and there is no way to say "this function allocates, in
+proportion to its input" or anything that checks it. All three defects
+measured on 2026-08-14 live in that middle -- `unpack-text` appending per byte
+(main 15054), `NetIO`'s tick as a count of polls and `e1000-await-tx`'s fuel
+(main 15013, 15028). Each was semantically correct, each was green, and two
+produced WRONG BEHAVIOUR rather than slow behaviour.
+
+It is a proposal with zero implementation and it is not scheduled. The open
+questions are in section 5 and the sharp one is what instrument keeps it
+honest, since the type rules only got teeth because the rechecker abstains
+where the guide is silent and nothing equivalent exists for cost.
+
 ## Rulings Damian owes (the only queue that blocks)
 
-1. Whether the Shell DSL lane continues. (The `plug-build` / `plug-run`
-   half of this was ruled on 2026-08-10 and is done; see the section
-   above.)
-2. An owner for A5.
+(empty -- A5's owner question closed itself when reek shipped it
+2026-08-14.)
 
 ## File claims (one owner at a time)
 

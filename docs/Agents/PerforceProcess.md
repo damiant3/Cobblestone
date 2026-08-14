@@ -1131,8 +1131,26 @@ Common agent client names:
 In a multi-stream topology, content often reaches a target through indirect
 paths (e.g. Mountain → RESTRUCTURE → main). `interchanges` only tracks
 direct integration records and will permanently show CLs whose content
-arrived via a sibling stream -- there is no supported way to clear these
-entries without touching every file from the original CL.
+arrived via a sibling stream.
+
+**These entries cannot be cleared, and this is not the "touch every file
+from the original CL" case.** Measured 2026-08-14 against val 14509, which
+`interchanges` still listed after every one of its nine files had been
+verified byte-identical between val and main: the FILE-level integration
+records are all present, so the depot refuses to open any of them, and it
+is only the CHANGE-level attribution that is missing. All three routes
+answer and do nothing:
+
+| Command | Answer |
+|---|---|
+| `p4 copy -f --from val <file>` | `File(s) up-to-date.` |
+| `p4 merge -F --from val <file>` | `All revision(s) already integrated.` |
+| `p4 copy -n --from val` (whole stream) | `File(s) up-to-date.` |
+
+`p4 integrate -f` does not apply at all: it answers `Must use a stream
+view to merge into //Codex/main`. So when `diff2` is clean, a lingering
+`interchanges` row is finished business. Do not chase it, and do not
+report it as a loose end.
 
 Use `p4 diff2` instead -- it compares actual content:
 

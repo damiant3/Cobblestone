@@ -1,0 +1,69 @@
+Chapter: NetPollCalibrated
+  cites Net chapter NetDriver
+  cites Net chapter NetIO
+  cites Kernel chapter Hpet
+
+ NetIO measures time in empty receive polls, and how long a poll takes is a
+ property of the driver underneath rather than of NetIO. Measured 2026-08-14,
+ one million empty polls cost 15.52 s on the NE2000 model and 0.029 s on the
+ e1000: an NE2000 poll is a port IN and therefore a VM exit, an e1000 poll
+ reads a descriptor already in RAM. Every bound in NetworkStack is a count of
+ ticks, so the fixed 100000 that shipped until 2026-08-14 put the e1000's
+ initial SYN retransmit at 8.6 ms and abandoned a live peer after 405 ms,
+ while the NE2000 took 219 s to notice a peer had gone.
+
+ The judge is a BAND and not a number because a duration is not reproducible.
+ 10 ms to 1000 ms excludes both measured failures with margin in each
+ direction, and it is what the arm below and the control below it are both
+ read against.
+
+Section: Judges
+
+  band-lo-ms : Integer = 10
+  band-hi-ms : Integer = 1000
+
+  in-band : Integer -> Text
+  in-band (ms) = if ms >= band-lo-ms & ms <= band-hi-ms then "in band" else "out of band"
+
+  spin : Integer -> [Network.Read] Integer
+  spin (n) =
+   if n <= 0 then 0
+   else let hp = __heap-save
+   in act
+    f <- net-driver-recv-frame
+    let r = __heap-restore hp
+    in spin (n - 1)
+   end
+
+  time-polls : Integer -> [Network.Read] Integer
+  time-polls (n) =
+   let rate = hpet-ticks-per-second
+   in let t0 = hpet-ticks
+   in act
+    z <- spin n
+    let t1 = hpet-ticks
+    in (t1 - t0) * 1000 / rate
+   end
+
+Section: Entry
+
+ The control is the same judge applied to the interval NetIO used to carry.
+ It is what makes the row above a measurement: without it a band this wide
+ would report "in band" whatever the calibration did, and the arm could not
+ be seen to fail. On the e1000 the old constant is 2.9 ms and on the NE2000
+ it is 1.55 s, so the control reads out of band on either card.
+
+  opening : [Console, Network.Read, Network.Write] Nothing = act
+    card <- net-driver-bring-up
+    let iv = net-io-tick-interval
+    in act
+      calibrated <- time-polls iv
+      fallback <- time-polls net-driver-poll-fallback
+      print-line-uni ("card       : " & net-driver-card-name card)
+      print-line-uni ("calibrated : " & in-band calibrated)
+      print-line-uni ("control    : " & in-band fallback)
+      print-line-uni ("fuel clears: " & (if net-io-max-polls > iv * 288 then "yes" else "no"))
+    end
+  end
+
+Page 1

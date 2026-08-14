@@ -66,7 +66,12 @@ param(
     # capability layout, port count) that catches controller-model
     # assumptions in GopXhci. A second opinion on the bring-up until a real
     # Intel controller is in hand.
-    [switch]$NecXhci
+    [switch]$NecXhci,
+    # Guest RAM in MB. The default matches the historical hardcoded 2048; a
+    # payload whose stub asks AllocatePages for more heap than fits below it
+    # (the A5 compiler wants 1.5 GB+) needs this raised, or the allocation
+    # fails DARK BLUE before the payload runs a line.
+    [int]$MemMB = 2048
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -113,7 +118,7 @@ if ($inUse.Count -gt 0) {
 $machineArg = if ($NoPs2) { "$Machine,i8042=off" } else { $Machine }
 # pflash ORDER MATTERS: OVMF expects CODE at unit 0 and VARS at unit 1.
 $qargs = @(
-    '-accel','tcg','-m','2048','-machine',$machineArg,
+    '-accel','tcg','-m',"$MemMB",'-machine',$machineArg,
     '-drive', "if=pflash,format=raw,unit=0,readonly=on,file=$code",
     '-drive', "if=pflash,format=raw,unit=1,file=$varsCopy"
 )
