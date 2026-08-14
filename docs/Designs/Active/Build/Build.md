@@ -69,6 +69,242 @@ the console and report success, which is silent data loss.
 These launch or kill host processes. They are the boundary, not the
 work.
 
+## The Windows-dependency ledger (Damian's direction 2026-08-14)
+
+**The question is not which scripts have a generator. It is which ones have
+to survive when Windows becomes a dependency we drop.** Those are different
+questions with different answers, and the generator model answers neither:
+a `codex/build/*Script.codex` authors its logic in Codex and **emits
+PowerShell**, so the artifact that runs is still a `.ps1` and still needs a
+host. Generators are single-source-of-truth for the host-side build. They
+are not a path off the host.
+
+Re-measured 2026-08-14 after seven lifts, over the 86 scripts under `build/`
+that no generator emits, by what each one actually touches (re-derive, never
+copy -- L-COUNT):
+
+| Host dependency | Count | What it means when Windows goes |
+|---|---|---|
+| `codex-vm` and nothing else | 36 | The dependency EVAPORATES. Booting a VM to run a Codex program is exactly what Codex OS stops needing. |
+| touches `codex-vm` at all | 56 | The 36 above plus 20 that also touch something else. |
+| a foreign implementation (openssl, mosquitto, a browser, Roslyn, .NET Brotli) | 20 | Needs a foreign peer by definition. Not portable, and see the trap below. |
+| nothing at all (pure computation) | 11 | Nothing blocks a port -- but see what that class actually held, below. |
+| Perforce | 9 | Goes when the repository protocol replaces Perforce. |
+| Renode | 5 | Cross-arch emulation; a host tool for a host job. |
+| host sockets | 5 | Becomes our own stack once Track B lands. |
+| raw disk / USB through the Windows API | 3 | Blocked on Codex OS device drivers, not on a port. |
+
+The rows overlap: a script can touch several, and 36 of the 86 touch
+`codex-vm` alone. The classifier is
+`build/check-generated-scripts.ps1`'s inventory plus a grep for those
+markers; it is a starting point for judgement, not a verdict, because what
+a script IMPORTS is not always what it depends on.
+
+**So the work sorts into four outcomes, and only the first is a port.**
+
+1. **LIFT.** Real work that survives, with no witness role. It becomes a
+   Codex program that runs natively, not a generator that emits a script.
+2. **KEEP FOREIGN.** Being outside Codex is load-bearing.
+3. **EVAPORATES.** The script exists only to bridge something PowerShell
+   cannot do and Codex OS does natively. It is deleted, not ported.
+4. **DIES WITH WHAT IT DRIVES.** Perforce, Renode, USB flashing, VM launch.
+
+### Outcome 2 is the trap, and it is the expensive one
+
+**A script whose value is INDEPENDENCE cannot be ported into Codex without
+destroying the thing it was for.** Porting it citing our own chapters turns
+a control into a tautology, and the port still passes, which is why this
+would not be caught by running it. Three of them say so in their own
+headers and were nearly lost to a mechanical sweep:
+
+- `make-fat16-subdir.ps1`: "written from the FAT16 spec rather than from
+  `Fat16.codex`. That independence is the whole point: a fixture built by
+  the code under test proves only that the code agrees with itself."
+- `oracle-cce.ps1`: "Every answer here is adjudicated by the HOST's Unicode
+  tables, never by another Codex answer." Same for `oracle-scalar.ps1` and
+  `oracle-vector.ps1`.
+- `fat16-walk.ps1`: the independent reader for returned-flight evidence. It
+  reads a FILE and never a device, because mounting a FAT volume lets
+  Windows write `System Volume Information` into it, which allocates
+  clusters, which is the exact evidence its third question asks about.
+
+`ddc-witness.ps1` is the same class one level up: the Roslyn arm IS the
+witness, and a Codex reimplementation of it witnesses nothing.
+
+**When Windows goes, these do not become Codex programs. They need a
+different foreign host.** That is a real open question and it is not
+answered here; naming it is the point, because the alternative is
+discovering it by porting an oracle into its own subject.
+
+### Outcome 3, which is easy to miss
+
+`cce-grep.ps1` exists because `Select-String` over a CCE file returns ZERO
+MATCHES rather than failing, which reads exactly like "the thing is not in
+there" -- it cost a false reading on 2026-08-06 against a 15.3 MB `-IrCce`
+artifact. On Codex OS, CCE is the native encoding and grep is grep. The
+tool is not ported. It ceases to have a reason to exist.
+
+Look for this shape before porting anything: a script that reimplements one
+of our own formats in PowerShell is usually outcome 3, not outcome 1.
+
+### Order to take them in
+
+Outcome 1 first, and the pure-computation ones before the `codex-vm` ones,
+because the pure ones need no Codex OS capability that does not exist yet.
+**Classify each one against the four outcomes BEFORE writing any Codex**,
+and quote the header if it claims independence.
+
+### What the pure-computation class actually held (measured 2026-08-14)
+
+Nine were lifted: `check-sidecars`, `check-facts-guid`,
+`check-effect-vocab`, `check-plug-ports`, `check-xdiag-cells`,
+`check-plug-types`, `check-cdx-registry`, `check-doc-counts`,
+`ablate-doctrine`. Each was verified against the shipped script on a clean
+tree AND on a control tree firing every message path it has, because two
+arms agreeing on a PASS is two instruments agreeing about nothing.
+
+**Four of the nine shipped a defect fix the A/B surfaced**, and every one
+of the four was invisible while the script was passing:
+
+- `check-xdiag-cells` and `check-cdx-registry` walked hashtable keys in
+  bucket order, so their findings printed in a different order run to run.
+  Only visible once the check FAILS.
+- `check-facts-guid` returned a byte array behind a unary comma to defeat
+  PowerShell unrolling it; every caller only ever joined it, so the trap is
+  gone rather than re-expressed.
+- **`ablate-doctrine -Score` had never printed its table.** The two report
+  lines are bare format expressions, so they go to the OUTPUT stream, and
+  the caller does `$v = Invoke-Score ...` and captures them. The exit code
+  still worked by accident: `$v` was an array, and `-eq` on an array
+  filters rather than compares, so `'PASS'` being present read as true.
+
+**That is the argument for lifting a script you believe is fine.** Nothing
+here was found by reading. Each one was found by running the two versions
+side by side and looking at what came out.
+
+### A generator chapter is a compiled unit. Run the gate.
+
+**Two of the nine went to main red and blu found them, not me.** I verified
+every lift with `check-generated-scripts` plus a control arm per script, and
+never ran `build/build.ps1`, on the reasoning that a `codex/build/*Script.codex`
+is not seed-affecting. That reasoning is true and irrelevant: `build.ps1` runs
+`deck-headroom.ps1 -Quire codex\build -WithSelf -MinMargin 1.25`, so **every
+chapter in this quire is a unit the standing gate measures**, seed or no seed.
+Main was red for the whole fleet and a docs-only CL was held behind it.
+
+Two arms proving the OUTPUT is right say nothing about whether the chapter
+COMPILES within its deck. Those are different questions and the second one has
+its own runner.
+
+### What CHECK-RESOLVE is actually bound by, because it is not size
+
+`checkdoccounts` at 101,042 bytes needed 52 of 64 where `vmconfigScript` at
+116,795 needs 46 -- unit length **anti**-correlates. CHECK-RESOLVE is the
+resolve tail (`resolved-env`, `sorted-all0`, `sorted-et0`) and it tracks the
+resolved ENVIRONMENT. Measured 2026-08-14 across the tightest units in the
+quire:
+
+| top-level defs | required |
+|---|---|
+| 96 | 56 (`ablatedoctrine`, before) |
+| 93 | 52 (`checkdoccounts`, before) |
+| 46 | 42 (`checkxdiagcells`) |
+| 45 | 41 (`checkplugtypes`) |
+| 32 | 39 (`checkconstants`) |
+
+**Naming every sub-expression is what costs.** Both chapters carried roughly
+twice the binding count of anything else in the quire because that is how the
+port was written. Inlining the single-use bindings brought them to 25 and 52
+names, 45 required each, margin 1.42.
+
+Raising `deck-scale-min` would have been the wrong fix: it is a whole-corpus
+constant, and it would spend every unit's headroom to cover one author's style.
+
+**Restructuring a generator is safe to do aggressively, and the proof is
+mechanical.** `check-generated-scripts` recompiles the generator and diffs the
+result against the shipped `.ps1`, so match / 0 drift after the change IS proof
+the emitted script is byte-identical. Inline freely, then check.
+
+There is a floor on how far to take it. Fully inlined, `ablatedoctrineScript`
+was 16 names and required 43 -- and a single 25,800-character line. Keeping one
+binding per section costs 2 points (45, margin 1.42) and brings the longest
+line to 6,173, which is `vmconfigScript`'s order. Take the two points.
+
+`check-doc-counts` was the interesting one, because a claim carried its
+measurement as a `scriptblock` and sixteen more were built with
+`[scriptblock]::Create` over an interpolated string. **The DSL has no
+scriptblock node and should not grow one for this.** A claim names its
+measurement by VERB now and one dispatcher resolves it, which is the same
+table-plus-reader shape the script already applies to the docs it checks.
+The dispatcher THROWS on an unknown verb: a silent `$null` compares as 0 or
+-1 and lands in the report as a drift or a missing directory, which is a
+wrong answer wearing the costume of a real one.
+
+**`ablate-doctrine -SelfTest` and `-Setup` refuse on main, and its own
+guard is why.** `check-doc-counts` gained README.md claims on 2026-07-31
+and `ablate-doctrine`'s `$scoredDocs` was never extended, so
+`Assert-ScoredDocsCoverChecker` throws. That guard is doing exactly its
+job. **The fix is not one line:** adding `README.md` means the scratch
+tree also needs `seed/`, `apps/` and `build/bvt.ps1` junctioned in, or
+every README claim reports NOPATH and every arm scores FAIL for a reason
+that has nothing to do with the candidate -- which is the failure the
+guard's own comment predicts. It is a design decision about what the
+scratch tree carries, and it is open.
+
+**Then the class ran out, and the reason is worth keeping.** Re-measured
+after those nine, ten scripts still classify as pure computation, and
+**only `ablate-doctrine` was a lift**:
+
+| Script | Outcome | Why |
+|---|---|---|
+| `brotli-tables-verify` | 2 | Checks our three Brotli tables against RFC 7932's PUBLISHED bytes and their CRC-32s. The five sibling `brotli-*` scripts that recovered those tables from .NET now classify under the foreign row, which is where they belong; all six are the same class. |
+| `mint-factlog-fixture` | 2 | Authored from the FactLog spec rather than by running DiskFacts, for exactly the reason its own header gives. |
+| `make-fat16-subdir`, `fat16-walk` | 2 | Already named above. |
+| `cce-grep` | 3 | Already named above. |
+| `plug-ports` | -- | The port table itself, dot-sourced by its readers. Generating it moves the single source of truth into a `.codex`, which is a decision, not a port. |
+| `qr-decode-test` | 2 | Turns a photograph back into bytes through `tools/qr-read.ps1`. The decoder is the half a hardware sitting depends on, and judging it with our own encoder is the tautology this doc keeps warning about. |
+| `registry-probe`, `test-app-gui` | -- | Classifier misses, not pure at all: the first launches a VM (and is hardcoded to another agent's workspace by design, per its own header), the second drives a headless GUI battery. |
+| `ablate-doctrine` | 1 | Lifted 2026-08-14. A harness whose subject is an agent is not a reason to leave it behind: Codex OS still talks to agents (Damian's ruling), so the agent-facing half is a capability to build, not a blocker. |
+
+**Outcome 1 is now empty in the pure-computation class.** Everything left
+there is outcome 2 or 3, the `plug-ports` decision, or a classifier miss.
+The next lifting work is the `codex-vm` 36, and every one of those needs
+Codex OS to have the capability the VM is standing in for.
+
+**Note what the two re-measurements of this same list disagreed about.**
+The first said 21 pure, the second 11, this one 10, and the membership
+changed under all three -- five `brotli-*` scripts moved out on a marker
+the earlier pass did not test for. **The classifier is the artifact; the
+count is downstream of it.** Quote a number from here only with the marker
+set that produced it, and re-derive rather than copy (L-COUNT).
+
+**The "21 pure computation" figure in the table above was a classifier
+artifact and the classifier is the thing to distrust.** It matched a marker
+set; scripts that shell out to `compile.ps1`, launch a browser, or open an
+`HttpListener` fell through it and read as pure. `check-app-pages` needs
+Edge and a web server. `test-app-gui` drives a headless GUI battery.
+`registry-probe` launches a VM and is hardcoded to another agent's
+workspace. **Read the script before believing the row**, which the ledger
+already says about the classifier and which cost a second pass anyway.
+
+### Two things the lifts found in the scripts themselves
+
+**`ScForLoop` cannot express an increment.** Its step is emitted verbatim,
+so `SeAdd (SeVar "i") (SeInt 1)` produces `for (...; ...; ($i + 1))`, which
+evaluates and discards. That is an infinite loop, not a wrong answer, so no
+arm returns to report it. `SeRaw "$i++"` is the step that works. Caught by
+reading the emitted script; nothing else would have.
+
+**A hashtable walked in bucket order prints differently run to run.** .NET
+randomises string hashing per process, so `foreach ($k in $h.Keys)` over a
+findings map is stable within a run and not across runs.
+`check-xdiag-cells` flipped its two claimants on roughly one run in three
+and `check-cdx-registry` reordered five findings freely. The verdict never
+moves; the text does, which is enough to make a failure nobody can diff.
+Both sort their key loops now. **Look for this in any check that walks a
+hashtable to build its output**, and note that a green run never shows it:
+it is only visible once the check fails.
+
 ## Architecture
 
 ```
@@ -193,14 +429,55 @@ it, run it, without leaving the machine.
 
 ## The Shell DSL generators (the `build/*.ps1` half of the migration)
 
+**THE CAMPAIGN IS CLOSED (Damian's ruling 2026-08-14) and what remains is
+ambient.** It was taken off `docs/PM/CurrentPlan.md` the same day; this
+section is now the only home for the method, and it is kept because the traps
+below are what a future generator change walks into, not because there is a
+queue.
+
 **The parse class is closed and gated.** `check-generated-scripts.ps1`
 compiles every generator, dead target or not, and hard-fails on PowerShell
 parse errors with NO baseline. **Re-measure the counts, never copy them**
-(L-COUNT): measured 2026-08-11 with the campaign finished, 45
-generators, 4 drifted, 0 broken, 1 dead target. **The four that remain
-are exactly the backlogged stubs** (`test`, `cdx-to-pe`, `build`,
-`build-img`); every ordinary generator in the tree now matches the
-script it ships beside and carries the banner.
+(L-COUNT): measured 2026-08-14 at seed `D9A6A7A2`, 46 generators checked,
+4 drifted, 0 broken, 1 dead target. **The four that remain are exactly the
+backlogged stubs** (`test`, `cdx-to-pe`, `build`, `build-img`); every
+ordinary generator in the tree matches the script it ships beside and carries
+the banner.
+
+### The inventory: the drift that runs the other way (added 2026-08-14)
+
+Everything above reads the tree GENERATOR-FIRST, so it is structurally blind
+to the commoner failure: **an agent writes a new `build/*.ps1` and never
+writes the `.codex` that emits it.** No amount of drift checking sees that,
+because there is no generator to check.
+
+`check-generated-scripts.ps1` now also enumerates `build/*.ps1`, subtracts
+everything a generator claims, and compares the remainder against
+`build/handwritten-scripts.txt`. Only a name absent from that file prints,
+and the inventory NEVER changes the exit code.
+
+**Report-only is a decision, not an omission.** Measured 2026-08-14: **93 of
+135 scripts under `build/` have no generator**, and most are meant not to --
+probes, flight arms, interop harnesses, mint-fixture one-offs, and
+`check-generated-scripts.ps1` itself, which has to run when the generators
+are broken. "Every script needs a generator" is not the policy and never
+was, so a gate here would be 93 reds whose answer is always the expected
+one, which is precisely the reader-training failure the drift baseline was
+built to avoid. Whether a new script wants a generator is a judgement, so
+the check surfaces it and stops; answer it by writing the `.codex`, or by
+recording the name with `-Update`.
+
+Both arms were fired before this was called done, because an instrument
+nobody has seen fire is not evidence. Planting `build/zzz-probe-arm.ps1`
+reports it and exits 0; deleting a name from the inventory reports it as
+newly hand-written; adding a name for a script that does not exist reports
+it as gone. A clean tree prints nothing.
+
+**`-Update` writes two records and either may be read-only under Perforce.**
+It used to `Set-Content` both unconditionally, so a run in a workspace where
+the drift baseline was not `p4 edit`ed wrote the inventory and then died on
+the baseline, leaving one record updated and the other not. It now writes
+only what changed and says so.
 
 `plug-build` and `plug-run` were adopted 2026-08-10 and ship as
 `build/plug-build.ps1` and `build/plug-run.ps1`. Both carried defects
@@ -213,6 +490,19 @@ reachable by the parse check** -- both emit text PowerShell parses
 happily. A live target is what turns a generator from compiled into
 checked, so give a new one its target in the same change. Only
 `testrunBashScript` sits in that blind spot now.
+
+38 standard TCP plugs delegate to `plug-run` from a shim that compiles to IR
+and passes `-PlugCdx`, `-MemMB` and the port literal; the literal stays so
+`check-plug-ports.ps1` still checks both halves. `run.ps1` across all 55
+plugs went 200,784 to 107,101 bytes. **The remaining 17 are deliberately
+untouched and are not a residue to close**: the file-I/O family (`wasm`,
+`wgsl`, `spirv`, `ptx`, `winforms`, `html`) does not speak TCP at all, and
+`arm64`/`riscv`/`elf`/`pe`/`img`/`csharp`/`maui`/`recheck`/`t3isa`/`wpf`/`javascript`
+carry extra phases. `plug-build` drives `Build-TranspilerPlug` without
+`-WithLir`, so it cannot build `arm64` or `riscv`; the 55 `build.ps1` were
+already ~330 bytes each over the shared
+`codex/plugs/common/plug-build-lib.ps1` and were left alone, since routing
+them through the driver would save nothing and add a process launch each.
 
 `test-run` was closed 2026-08-10 (fester) and is the worked example of the
 method below: its whole 63-line drift was comments and formatting, so

@@ -1,0 +1,81 @@
+Chapter: CheckSidecarsScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ We say:
+
+Section: Parameters
+
+  cs-default-root : ShellExpr = SePathJoin (SePathParent SeScriptRoot) (SeLit "codex/test")
+
+  cs-params : List ShellParam = [sh-param-default "TestRoot" SptString cs-default-root]
+
+Section: S01 -- Why this exists
+
+  cs-doctrine : List ShellCmd = [ScComment "A sidecar names a test. This asserts the test exists.", ScComment "", ScComment "test.ps1 resolves every sidecar next to its source: for codex/test/apps/", ScComment "foo.codex it looks for codex/test/apps/foo.skip, and a foo.skip one", ScComment "directory up is read by nothing. Such a file is not inert -- it reads like", ScComment "a decision. diagnostic-boot carried a .skip in the wrong directory saying", ScComment "\"blocks waiting for keyboard input\"; the skip applied to nothing, the test", ScComment "was compiled but never run because it had no .expected, and the reason was", ScComment "wrong anyway (the shell reads serial, not the keyboard). Three claims, none", ScComment "true, and the skip inventory in docs/ExaminersAssay.md quoted it as a", ScComment "legitimate skip for months.", ScComment "", ScComment "db-mini-test.skip was the same shape with no test at all behind it: the", ScComment "only record of a real CDX2000 defect was a sidecar for a .codex that has", ScComment "never existed in main. That gap is recorded in docs/ExaminersAssay.md,", ScComment "named by the chapter it is actually in.", ScComment "", ScComment "Exit 1 on any sidecar whose .codex sibling is missing."]
+
+Section: S02 -- The sidecar extensions
+
+  cs-ext-list : List ShellExpr = [SeLit ".skip", SeLit ".slow", SeLit ".fatal", SeLit ".expected", SeLit ".stdin", SeLit ".keys", SeLit ".disk", SeLit ".disk2", SeLit ".disk-src", SeLit ".failing", SeLit ".diag", SeLit ".smp", SeLit ".vmargs", SeLit ".no-cross", SeLit ".cross-refusal", SeLit ".cross-budget"]
+
+  s02 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "exts" (SeArrayLiteral cs-ext-list), ScAssign "orphans" (SeArrayLiteral []), ScAssign "checked" (SeInt 0)]
+
+Section: S03 -- Every sidecar wants a .codex beside it
+
+  cs-repo : ShellExpr = SePathParent SeScriptRoot
+
+  cs-relative : ShellExpr = SeSubstringFrom (SeProperty (SeVar "f") "FullName") (SeAdd (SeTextLength cs-repo) (SeInt 1))
+
+  cs-sibling : ShellExpr = SePathJoin (SeProperty (SeVar "f") "DirectoryName") (SeConcat (SeProperty (SeVar "f") "BaseName") (SeLit ".codex"))
+
+  cs-check-one : List ShellCmd = [ScIncrement "checked", ScAssign "sibling" cs-sibling, ScIf (SeNot (SeFileExists (SeVar "sibling"))) [ScAppend "orphans" cs-relative] []]
+
+  cs-of-ext : ShellExpr = SePipe (SeVar "allFiles") [StWhere (SeStringEq (SeProperty SeItem "Extension") (SeVar "ext"))]
+
+  s03 : List ShellCmd = [ScAssign "allFiles" (SeAsArray (SeListFiles (SeVar "TestRoot") "*" True)), ScForEach "ext" (SeVar "exts") [ScForEach "f" cs-of-ext cs-check-one]]
+
+Section: S04 -- A .disk-src names a SECOND test
+
+  cs-peer-note : List ShellCmd = [ScComment "A .disk-src names a SECOND test -- the one whose freshly compiled CDX becomes", ScComment "this test's disk -- so it has a second way to point at nothing. A typo there", ScComment "does not fail until a battery run, which is the expensive place to find it."]
+
+  cs-peer-read : ShellExpr = SeIfElse (SeVar "peerRaw") (SeTrim (SeVar "peerRaw")) (SeLit "")
+
+  cs-names-nothing : ShellExpr = SeConcat (SeProperty (SeVar "f") "Name") (SeLit " names no test")
+
+  cs-names-missing : ShellExpr = SeConcat (SeConcat (SeConcat (SeConcat (SeProperty (SeVar "f") "Name") (SeLit " names '")) (SeVar "peer")) (SeLit "', and no ")) (SeConcat (SeVar "peer") (SeLit ".codex exists"))
+
+  cs-peer-glob : ShellExpr = SeListFiles (SeVar "TestRoot") "*.codex" True
+
+  cs-peer-file : ShellExpr = SeConcat (SeVar "peer") (SeLit ".codex")
+
+  cs-peer-found : ShellExpr = SeCount (SePipe cs-peer-glob [StWhere (SeStringEq (SeProperty SeItem "Name") cs-peer-file)])
+
+  cs-peer-body : List ShellCmd = [ScAssign "peerRaw" (SeFileFirstLine (SeProperty (SeVar "f") "FullName")), ScAssign "peer" cs-peer-read, ScIf (SeStringEq (SeVar "peer") (SeLit "")) [ScAppend "orphans" cs-names-nothing, ScContinue] [], ScIf (SeIntEq cs-peer-found (SeInt 0)) [ScAppend "orphans" cs-names-missing] []]
+
+  s04 : List ShellCmd = [ScSequence cs-peer-note, ScForEach "f" (SeListFiles (SeVar "TestRoot") "*.disk-src" True) cs-peer-body]
+
+Section: S05 -- The verdict
+
+  cs-fail-head : ShellExpr = SeConcat (SeConcat (SeLit "FAIL: ") (SeCount (SeVar "orphans"))) (SeLit " orphaned sidecar(s) -- no .codex beside them:")
+
+  cs-fail-body : List ShellCmd = [ScEcho cs-fail-head, ScForEach "o" (SeVar "orphans") [ScEcho (SeConcat (SeLit "  ") (SeVar "o"))], ScEcho (SeLit "A sidecar next to no test configures nothing and asserts something."), ScEcho (SeLit "Move it beside its .codex, or delete it -- but if it records a real"), ScEcho (SeLit "defect, write the defect down beside the code it describes first."), ScExit (SeInt 1)]
+
+  cs-ok-line : ShellExpr = SeConcat (SeConcat (SeLit "sidecars ok (") (SeVar "checked")) (SeLit " checked, 0 orphaned)")
+
+  s05 : List ShellCmd = [ScIf (SeIntGt (SeCount (SeVar "orphans")) (SeInt 0)) cs-fail-body [], ScEcho cs-ok-line, ScExit (SeInt 0)]
+
+Section: Assembly
+
+  cs-body : List ShellCmd = [ScSequence cs-doctrine, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05]
+
+  cs-script : ShellScript = sh-script "check-sidecars" "A sidecar names a test. This asserts the test exists." cs-params cs-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell cs-script)
+  end
+
+Page 1

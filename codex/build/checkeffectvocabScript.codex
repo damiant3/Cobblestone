@@ -1,0 +1,96 @@
+Chapter: CheckEffectVocabScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Foreword chapter List
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ We say:
+
+Section: Parameters
+
+  cev-params : List ShellParam = []
+
+Section: Concatenation
+
+  cev-cat-from : List ShellExpr, Integer -> ShellExpr
+  cev-cat-from (xs) (i) = if i >= list-length xs then SeLit "" else if i == list-length xs - 1 then list-at xs i else SeConcat (list-at xs i) (cev-cat-from xs (i + 1))
+
+  cev-cat : List ShellExpr -> ShellExpr
+  cev-cat (xs) = cev-cat-from xs 0
+
+Section: S01 -- Why this exists
+
+  cev-doctrine : List ShellCmd = [ScComment "check-effect-vocab.ps1 -- guard the foreword `effect` declarations against", ScComment "the capability vocabulary. That gap closed 2026-07-18 with this script as the", ScComment "permanent answer rather than an interim one.", ScComment "", ScComment "THIS GUARD IS THE END STATE. DO NOT TRY TO REPLACE IT WITH A DERIVATION.", ScComment "", ScComment "The capability model used to live in five hand-maintained expansions across", ScComment "three quires. Four of them are gone: capability-vocabulary, manifest-cap-id,", ScComment "boot-cap-mask-for and cdx-cap-to-kern-bits are all projections of one table", ScComment "now (codex/foreword/core/Capability.codex), so the guards that reconciled", ScComment "them -- check-cap-tables.ps1 and the in-compiler check-cap-vocab-coherent --", ScComment "were deleted along with the states they watched for.", ScComment "", ScComment "The fifth cannot be. An `effect <Name> where ...` declaration is a SYNTAX", ScComment "form carrying its own operation signatures, and Codex has no metaprogramming", ScComment "that generates declarations from data. No table can emit one. The foreword", ScComment "effect declarations therefore cannot derive from the capability table, and a", ScComment "build-time guard comparing the two is the only instrument that will ever", ScComment "cover this list.", ScComment "", ScComment "A new foreword effect with no capability, or a capability with no effect,", ScComment "would otherwise drift in silence. This is that guard.", ScComment "", ScComment "The two lists are deliberately NOT 1:1. Some effects are pure or local and", ScComment "carry no hardware capability (State, Time, Random); some capabilities are not", ScComment "surfaced as a foreword effect (Concurrent, Capability, Flash). Those", ScComment "exceptions are listed below. Anything NOT accounted for on either side fails", ScComment "the build, so adding an effect or a capability forces a deliberate decision", ScComment "about its counterpart rather than a silent divergence."]
+
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit "..")))]
+
+Section: S02 -- The foreword effect declarations
+
+  cev-effect-pattern : Text = "^\\s+effect\\s+(\\w+)\\s+where\\s*$"
+
+  cev-scan-line : List ShellCmd = [ScIf (SeMatch (SeVar "line") cev-effect-pattern) [ScSetIndex "effectSet" (SeIndex (SeVar "matches") (SeInt 1)) (SeBool True)] []]
+
+  cev-scan-file : List ShellCmd = [ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [SeProperty (SeVar "f") "FullName"]) cev-scan-line]
+
+  s02 : List ShellCmd = [ScComment "foreword effect declarations: `  effect <Name> where` under codex/foreword", ScAssign "fwDir" (SePathJoin (SeVar "Repo") (SeLit "codex\\foreword")), ScAssign "effectSet" SeHashLiteral, ScForEach "f" (SeListFiles (SeVar "fwDir") "*.codex" True) cev-scan-file, ScAssign "effects" (SeAsArray (SePipe (SeProperty (SeVar "effectSet") "Keys") [StSort]))]
+
+Section: S03 -- The capability base names
+
+  cev-cap-note : List ShellCmd = [ScComment "the capability names: the rows of capability-table in the foreword.", ScComment "This used to read the capability-vocabulary array literal in", ScComment "TypeChecker.codex. That literal is gone -- capability-vocabulary is a", ScComment "projection of this table now -- so reading the vocabulary would be reading", ScComment "this table through one indirection. Read the source instead.", ScComment "", ScComment "Base names only: a row named \"Gpu.Compute\" answers to the effect \"Gpu\", and", ScComment "the Read/Write refinements the vocabulary adds are directions rather than", ScComment "capabilities. The effect name is the part before the first dot."]
+
+  cev-cap-pattern : Text = "cs-name\\s*=\\s*\"([^\"]+)\""
+
+  cev-cap-line : List ShellCmd = [ScIf (SeMatch (SeVar "line") cev-cap-pattern) [ScAssign "base" (SeIndex (SeSplit (SeIndex (SeVar "matches") (SeInt 1)) "\\.") (SeInt 0)), ScSetIndex "vocabSet" (SeVar "base") (SeBool True)] []]
+
+  s03 : List ShellCmd = [ScSequence cev-cap-note, ScAssign "capFile" (SePathJoin (SeVar "Repo") (SeLit "codex\\foreword\\core\\Capability.codex")), ScAssign "vocabSet" SeHashLiteral, ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "capFile"]) cev-cap-line, ScAssign "vocabBase" (SeAsArray (SePipe (SeProperty (SeVar "vocabSet") "Keys") [StSort]))]
+
+Section: S04 -- Nothing parsed is a broken instrument
+
+  cev-parsed-nothing : ShellExpr = SeOr (SeIntEq (SeCount (SeVar "effects")) (SeInt 0)) (SeIntEq (SeCount (SeVar "vocabBase")) (SeInt 0))
+
+  cev-parse-msg : ShellExpr = cev-cat [SeLit "ERROR: parsed no effects (", SeCount (SeVar "effects"), SeLit ") or no vocabulary (", SeCount (SeVar "vocabBase"), SeLit ") -- a file moved or its shape changed"]
+
+  s04 : List ShellCmd = [ScIf cev-parsed-nothing [ScEcho cev-parse-msg, ScExit (SeInt 1)] []]
+
+Section: S05 -- The intended asymmetry
+
+  cev-no-cap : List ShellExpr = [SeLit "State", SeLit "Time", SeLit "Random"]
+
+  cev-no-effect : List ShellExpr = [SeLit "Concurrent", SeLit "Capability", SeLit "Flash", SeLit "Process"]
+
+  s05 : List ShellCmd = [ScComment "intended asymmetry", ScAssign "effectsWithoutCap" (SeArrayLiteral cev-no-cap), ScAssign "capsWithoutEffect" (SeArrayLiteral cev-no-effect), ScAssign "errs" (SeArrayLiteral [])]
+
+Section: S06 -- Each side must account for the other
+
+  cev-effect-msg : ShellExpr = cev-cat [SeLit "foreword effect '", SeVar "e", SeLit "' has no row in the capability table (codex/foreword/core/Capability.codex) and is not a known cap-less effect -- add a '", SeVar "e", SeLit "' row, or add '", SeVar "e", SeLit "' to $effectsWithoutCap in this script if it is deliberately capability-free"]
+
+  cev-cap-msg : ShellExpr = cev-cat [SeLit "capability '", SeVar "c", SeLit "' (capability-table, foreword) has no foreword 'effect ", SeVar "c", SeLit " where' declaration and is not a known effect-less capability -- add the effect, or add '", SeVar "c", SeLit "' to $capsWithoutEffect in this script if it is deliberately effect-free"]
+
+  cev-effect-unmatched : ShellExpr = SeAnd (SeNot (SeContains (SeVar "vocabBase") (SeVar "e"))) (SeNot (SeContains (SeVar "effectsWithoutCap") (SeVar "e")))
+
+  cev-cap-unmatched : ShellExpr = SeAnd (SeNot (SeContains (SeVar "effects") (SeVar "c"))) (SeNot (SeContains (SeVar "capsWithoutEffect") (SeVar "c")))
+
+  s06 : List ShellCmd = [ScForEach "e" (SeVar "effects") [ScIf cev-effect-unmatched [ScAppend "errs" cev-effect-msg] []], ScForEach "c" (SeVar "vocabBase") [ScIf cev-cap-unmatched [ScAppend "errs" cev-cap-msg] []]]
+
+Section: S07 -- The verdict
+
+  cev-ok-msg : ShellExpr = cev-cat [SeLit "Effect/vocabulary tables MATCH (", SeCount (SeVar "effects"), SeLit " foreword effects, ", SeCount (SeVar "vocabBase"), SeLit " capability base names; ", SeCount (SeVar "effectsWithoutCap"), SeLit " cap-less effects + ", SeCount (SeVar "capsWithoutEffect"), SeLit " effect-less caps allowed)"]
+
+  cev-fail-body : List ShellCmd = [ScEcho (SeLit "WARNING: the foreword effect declarations and the capability table have DRIFTED"), ScForEach "er" (SeVar "errs") [ScEcho (SeConcat (SeLit "  ") (SeVar "er"))], ScExit (SeInt 1)]
+
+  s07 : List ShellCmd = [ScIf (SeIntGt (SeCount (SeVar "errs")) (SeInt 0)) cev-fail-body [], ScEcho cev-ok-msg, ScExit (SeInt 0)]
+
+Section: Assembly
+
+  cev-body : List ShellCmd = [ScSequence cev-doctrine, ScBlank, ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07]
+
+  cev-script : ShellScript = sh-script "check-effect-vocab" "Guard the foreword effect declarations against the capability vocabulary" cev-params cev-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell cev-script)
+  end
+
+Page 1

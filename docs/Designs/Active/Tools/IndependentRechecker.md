@@ -732,10 +732,77 @@ That is the "both" position of the fork below, reached by measurement rather
 than chosen. Gate green, hard fixed point in one pass.
 
 **The 4 that remain are the same defect one level down**, deliberately not
-fixed here: an `if`- or `when`-bodied lambda has a body whose own recorded
-type is the bare variable, so there is nothing concrete to substitute.
-`fold-expr`, `inline-leaf-calls-in-chapter`,
-`inline-single-caller-in-chapter`, `inline-cost-based-in-chapter`.
+fixed here: an `if`- or `when`-bodied lambda. `fold-expr`,
+`inline-leaf-calls-in-chapter`, `inline-single-caller-in-chapter`,
+`inline-cost-based-in-chapter`. (This paragraph also said the body's "own
+recorded type is the bare variable, so there is nothing concrete to
+substitute." That was wrong; see the section below, which closes them.)
+
+### The last 4: the branching node, not the body (2026-08-14)
+
+**CLOSED, 4 to 0** (val 15022, main 15023, seed-affecting, seed converged at
+2760410). The rechecker now raises exactly ONE finding against the whole
+compiler: the underived range in `compile-type-check`.
+
+**The recorded reason was wrong, and that is the part worth keeping.** The
+branch bodies were never bare variables. In `fold-expr`'s
+`for stmt in ss -> when stmt is IrDoBind ... is IrDoExec ...` both arms type
+as `(sum "IRActStmt")`, concrete and identical, and the node discarded them:
+
+```
+lower-match    result-ty = when ty is ErrorTy -> infer-match-type branches
+                                    is otherwise -> ty
+lower-expr-at  result-ty = merge-ty hint-0 else-ty     -- answers `a` unless
+                                                          `a` is ErrorTy
+```
+
+`infer-match-type` ALREADY derives the type from the arms, and was consulted
+only when there was no expectation at all. A bare type variable is not
+ErrorTy, so it took the other arm. The instrument that settled it was a
+probe returning a type that could never legitimately appear (`BooleanTy`)
+from the new helper: the node came back `boolean`, which proved the path ran
+and moved the question from "is my code reached" to "why is the witness
+rejected".
+
+| | before | after |
+|---|---|---|
+| `fold-expr`'s `stmt` lambda | `(fn (tvar 72) (tvar 73))` | `(fn (tvar 72) (sum "IRActStmt" (args)))` |
+| the three `inline-*-in-chapter` | `(fn (tvar 72) (tvar 73))` | `(fn (tvar 72) (record-ty "IRDef" (args)))` |
+
+`lower-lambda` needed no change: its existing substitution propagates the
+now-concrete body type to the lambda for free.
+
+**The witness rule.** One arm's type may stand for the whole node only where
+the unifier admits no widening. It DOES admit widening for integers and reals
+at a non-argument position -- merely overlapping ranges unify -- so two arms
+can legitimately carry different bounds and the first is not the join.
+`ty-admits-widening` refuses those; every other form is nominal or invariant,
+so arms that unified against one variable cannot differ. A too-narrow recorded
+bound is exactly the silent wrongness this lane exists to catch.
+
+**`types-equal` could not compare two identical sum types, and that is fixed
+rather than documented** (`Types/Unification`, same CL). It had arms for the
+primitives, `UnitTy`, `VectorTy`, `TypeCon` and `TypeApply` and fell through
+to `otherwise -> False` for the other ten variants, so the first attempt at
+the guard above rejected every witness and a working fix measured as no change
+at all. It was never a soundness gap -- its only caller is the short-circuit
+at `unify-resolved`, where `False` merely declines a fast path -- but a
+predicate that answers "not equal" for two identical types is a trap for the
+next caller whatever its call site does today.
+
+**Whole compiler, `-Passes none`, against the shipped seed: AGREE 4862,
+DISAGREE 0, UNSUPPORTED 0, IMPROVED 0, SINGLE-WITNESS 0** (was IMPROVED 4,
+SINGLE-WITNESS 4). Kill-rate **27/27** with a passing control, and
+`tvar-spine-branch-arms` is still CAUGHT -- unlike the lambda fix, this one
+costs the rechecker no arm.
+
+**`run.ps1` could serve a STALE IR and did, twice, during this work.** It
+gated the compile on `error CDX`, but an unresolvable cite is `error 3010:`
+with no prefix, so a failed compile passed the check and `last-run.ir` from a
+previous session was rechecked and reported as a verdict -- a plausible,
+entirely fictitious "before" reading, once from a four-day-old artifact. The
+IR is now deleted before the compile and the pattern matches the number form,
+so a silent failure is an ABSENT IR rather than a stale one.
 
 **A control was the evidence and it was read as a fact.** `control-let`, the
 same comprehension bound through a `let` first, came out clean while the

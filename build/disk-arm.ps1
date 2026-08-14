@@ -253,8 +253,14 @@ foreach ($name in $names) {
             $actual['badbpb'] = Invoke-Arm 'badbpb' $k $d $false
         }
         'nosource' {
+            # disk-no-source prints its reason BEFORE the hold band, and the
+            # hold paints without a source-rung ok=0 line -- a printed reason
+            # must never wait on a paint that repaints the screen over it. So
+            # this arm is judged like badsource: by the halt line, not the
+            # trace tail.
             $k = New-Image 'nosource' $efiIn ''
-            $actual['nosource'] = Invoke-Arm 'nosource' $k $k $false
+            $r = Invoke-Arm 'nosource' $k $k $false
+            $actual['nosource'] = if (Read-Halt 'nosource' 'DISK: file not found') { 'volume' } else { $r }
         }
         'badsource' {
             $k = New-Image 'badsource' $efiIn $badSrc

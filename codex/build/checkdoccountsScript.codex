@@ -1,0 +1,160 @@
+Chapter: CheckDocCountsScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Foreword chapter List
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ We say:
+
+Section: Parameters
+
+Section: Concatenation
+
+  ccd-cat-from : List ShellExpr, Integer -> ShellExpr
+  ccd-cat-from (xs) (i) = if i >= list-length xs then SeLit "" else if i == list-length xs - 1 then list-at xs i else SeConcat (list-at xs i) (ccd-cat-from xs (i + 1))
+
+  ccd-cat : List ShellExpr -> ShellExpr
+  ccd-cat (xs) = ccd-cat-from xs 0
+
+Section: S01 -- Why this exists
+
+Section: S02 -- Counting .codex files and lines
+
+  ccd-rel-path : ShellExpr = SePathJoin (SeVar "treeRoot") (SeVar "Rel")
+
+  ccd-file-body : List ShellCmd = [ScAssign "p" ccd-rel-path, ScIf (SeNot (SeDirExists (SeVar "p"))) [ScReturn (SeInt (0 - 1))] [], ScIf (SeVar "Recurse") [ScReturn (SeCount (SeListFiles (SeVar "p") "*.codex" True))] [], ScReturn (SeCount (SeListFiles (SeVar "p") "*.codex" False))]
+
+  ccd-line-body : List ShellCmd = [ScAssign "p" ccd-rel-path, ScIf (SeNot (SeDirExists (SeVar "p"))) [ScReturn (SeInt (0 - 1))] [], ScAssign "n" (SeInt 0), ScForEach "f" (SeListFiles (SeVar "p") "*.codex" True) [ScIncrementBy "n" (SeCount (SeStaticCall "System.IO.File" "ReadAllLines" [SeProperty (SeVar "f") "FullName"]))], ScReturn (SeVar "n")]
+
+  s02 : List ShellCmd = [ScFunction "Get-CodexFileCount" [sh-param "Rel" SptString, sh-param "Recurse" SptBool] ccd-file-body, ScBlank, ScFunction "Get-CodexLineCount" [sh-param "Rel" SptString] ccd-line-body]
+
+Section: S03 -- Counting plugs
+
+  ccd-plug-dirs : ShellExpr = SeStaticCall "System.IO.Directory" "GetDirectories" [SeVar "p"]
+
+  ccd-has-build : ShellExpr = SeFileExists (SePathJoin (SeVar "d") (SeLit "build.ps1"))
+
+  ccd-plugs-body : List ShellCmd = [ScAssign "p" (SePathJoin (SeVar "treeRoot") (SeLit "codex/plugs")), ScIf (SeNot (SeDirExists (SeVar "p"))) [ScReturn (SeInt (0 - 1))] [], ScAssign "n" (SeInt 0), ScForEach "d" ccd-plug-dirs [ScIf ccd-has-build [ScIncrement "n"] []], ScReturn (SeVar "n")]
+
+  ccd-plug-one : List ShellCmd = [ScIf (SeNot ccd-has-build) [ScContinue] [], ScForEach "f" (SeListFiles (SeVar "d") "*.codex" True) [ScIf (SeMatch (SeProperty (SeVar "f") "FullName") "[\\\\/]build-output[\\\\/]") [ScContinue] [], ScIncrement "n"]]
+
+  ccd-plugmod-body : List ShellCmd = [ScAssign "p" (SePathJoin (SeVar "treeRoot") (SeLit "codex/plugs")), ScIf (SeNot (SeDirExists (SeVar "p"))) [ScReturn (SeInt (0 - 1))] [], ScAssign "n" (SeInt 0), ScForEach "d" ccd-plug-dirs ccd-plug-one, ScReturn (SeVar "n")]
+
+  s03 : List ShellCmd = [ScFunction "Get-PlugCount" [] ccd-plugs-body, ScBlank, ScSequence [ScComment "Source only. Counting build-output/ made this claim depend on local build", ScComment "state: the same depot revision measured 191 in a dev workspace and 147 in", ScComment "the main one, because a plug's generated plug-source.codex is a .codex file", ScComment "too. A claim whose value moves with what you last built is not a claim, and", ScComment "-Repo against a second tree is what caught it."], ScFunction "Get-PlugModuleCount" [] ccd-plugmod-body]
+
+Section: S04 -- Counting apps
+
+Section: S05 -- The BVT's own test list
+
+Section: S06 -- Bytes and digests
+
+  ccd-bytes-body : List ShellCmd = [ScAssign "p" ccd-rel-path, ScIf (SeNot (SeFileExists (SeVar "p"))) [ScReturn (SeInt (0 - 1))] [], ScReturn (SeFileSize (SeVar "p"))]
+
+  ccd-digest-body : List ShellCmd = [ScAssign "p" ccd-rel-path, ScIf (SeNot (SeFileExists (SeVar "p"))) [ScReturn (SeLit "")] [], ScIf (SeStringEq (SeVar "Algorithm") (SeLit "MD5")) [ScHashFile "MD5" "h" (SeVar "p"), ScReturn (SeVar "h")] [], ScHashFile "SHA256" "h" (SeVar "p"), ScReturn (SeVar "h")]
+
+  s06 : List ShellCmd = [ScSequence [ScComment "The seed digests are the reason this file grew a text mode. README ships", ScComment "them to the public, nothing re-read them, and on 2026-07-31 every one was", ScComment "wrong: the size by 108,817 bytes, the SHA-256 and MD5 entirely, and the", ScComment "same artifact was stated at three different sizes in three places. A digest", ScComment "is exactly as mechanically checkable as a count and rots the same way."], ScFunction "Get-FileBytes" [sh-param "Rel" SptString] ccd-bytes-body, ScBlank, ScFunction "Get-FileDigest" [sh-param "Rel" SptString, sh-param "Algorithm" SptString] ccd-digest-body, ScBlank, ScSequence [ScComment "Head AND tail. Printing a leading slice alone made a one-digit tail", ScComment "difference render as two identical strings, which reads as the checker", ScComment "malfunctioning rather than as the digest being wrong. Found by sabotage:", ScComment "flipping the last hex digit produced a DRIFT whose two columns matched."], ScFunction "Format-Digest" [sh-param "D" SptString] [ScIf (SeIntLe (SeTextLength (SeVar "D")) (SeInt 20)) [ScReturn (SeVar "D")] [], ScReturn (ccd-cat [SeSubstring (SeVar "D") 0 8, SeLit "..", SeSubstringFrom (SeVar "D") (SeSub (SeTextLength (SeVar "D")) (SeInt 8))])]]
+
+Section: S07 -- The measurement a claim names
+
+  ccd-arm : Text, ShellExpr -> ShellCmd
+  ccd-arm (verb) (answer) = ScIf (SeStringEq (SeVar "Fn") (SeLit verb)) [ScReturn answer] []
+
+  ccd-call1 : Text -> ShellExpr
+  ccd-call1 (fn) = SeCallArgs fn [SaPos (SeVar "Arg")]
+
+  ccd-call0 : Text -> ShellExpr
+  ccd-call0 (fn) = SeCallArgs fn []
+
+  ccd-files : Boolean -> ShellExpr
+  ccd-files (r) = SeCallArgs "Get-CodexFileCount" [SaPos (SeVar "Arg"), SaPos (SeBool r)]
+
+  ccd-digest-of : Text -> ShellExpr
+  ccd-digest-of (a) = SeCallArgs "Get-FileDigest" [SaPos (SeVar "Arg"), SaPos (SeLit a)]
+
+Section: S08 -- The claims
+
+  ccd-num : Text, Text, Text, Integer, Text, Text -> ShellExpr
+  ccd-num (name) (doc) (pat) (tol) (fn) (arg) = SeRecord [SfField "Name" (SeLit name), SfField "Doc" (SeLit doc), SfField "Pattern" (SeLit pat), SfField "Group" (SeInt 1), SfField "TolPct" (SeInt tol), SfField "Kind" (SeLit "number"), SfField "Fn" (SeLit fn), SfField "Arg" (SeLit arg)]
+
+  ccd-txt : Text, Text, Text, Text, Text -> ShellExpr
+  ccd-txt (name) (doc) (pat) (fn) (arg) = SeRecord [SfField "Name" (SeLit name), SfField "Doc" (SeLit doc), SfField "Pattern" (SeLit pat), SfField "Group" (SeInt 1), SfField "TolPct" (SeInt 0), SfField "Kind" (SeLit "text"), SfField "Fn" (SeLit fn), SfField "Arg" (SeLit arg)]
+
+  ccd-add : ShellExpr -> ShellCmd
+  ccd-add (r) = ScAppend "claims" r
+
+  ccd-rulebook : Text = "docs/DevelopersRulebook.md"
+
+  ccd-readme : Text = "README.md"
+
+  ccd-claims-a : List ShellCmd = [ccd-add (ccd-num "compiler files (CLAUDE)" "CLAUDE.md" "The compiler is ~[\\d,]+ lines of Codex across\\s+(\\d+)\\s+files" 0 "files-r" "codex/compiler"), ccd-add (ccd-num "compiler lines (CLAUDE)" "CLAUDE.md" "The compiler is ~([\\d,]+) lines of Codex across\\s+\\d+\\s+files" 2 "lines" "codex/compiler"), ccd-add (ccd-num "compiler files (Vision)" "docs/VisionAndVirtues.md" "The compiler is ~[\\d,]+ lines across\\s+(\\d+)\\s+files" 0 "files-r" "codex/compiler"), ccd-add (ccd-num "compiler lines (Vision)" "docs/VisionAndVirtues.md" "The compiler is ~([\\d,]+) lines across\\s+\\d+\\s+files" 2 "lines" "codex/compiler"), ccd-add (ccd-num "codex.foreword modules" ccd-rulebook "### codex\\.foreword \\((\\d+) modules" 0 "files" "codex/foreword/core"), ccd-add (ccd-num "codex.foreword.encode modules" ccd-rulebook "### codex\\.foreword\\.encode \\((\\d+) modules" 0 "files" "codex/foreword/encode"), ccd-add (ccd-num "codex.foreword.ui modules" ccd-rulebook "### codex\\.foreword\\.ui \\((\\d+) modules\\)" 0 "files" "codex/foreword/ui"), ccd-add (ccd-num "compiler modules (Rulebook)" ccd-rulebook "### codex \\((\\d+) modules\\)" 0 "files-r" "codex/compiler"), ccd-add (ccd-num "codex.os modules" ccd-rulebook "### codex\\.os \\((\\d+) modules\\)" 0 "files-r" "codex/os"), ccd-add (ccd-num "codex.plugs count" ccd-rulebook "### codex\\.plugs \\((\\d+) plugs" 0 "plugs" ""), ccd-add (ccd-num "ui modules (Portal)" "docs/TheShimmeringPortal.md" "codex/foreword/ui/\\s+(\\d+) modules" 0 "files" "codex/foreword/ui"), ccd-add (ccd-num "errors tests (Assay, state)" "docs/ExaminersAssay.md" "holds \\*\\*(\\d+)\\*\\* expected-failure tests" 0 "files" "codex/test/errors"), ccd-add (ccd-num "errors tests (Assay, section)" "docs/ExaminersAssay.md" "(\\d+) tests in `codex/test/errors/` verify" 0 "files" "codex/test/errors")]
+
+  ccd-claims-b : List ShellCmd = [ccd-add (ccd-num "seed cdx bytes (README)" ccd-readme "\\*\\*`seed/Codex\\.cdx`\\*\\* \\(([\\d,]+) bytes" 0 "bytes" "seed/Codex.cdx"), ccd-add (ccd-txt "seed cdx sha256 (README)" ccd-readme "seed/Codex\\.cdx.*?\\| SHA-256 \\| `([0-9A-Fa-f]{64})`" "sha256" "seed/Codex.cdx"), ccd-add (ccd-txt "seed cdx md5 (README)" ccd-readme "seed/Codex\\.cdx.*?\\| MD5 \\| `([0-9A-Fa-f]{32})`" "md5" "seed/Codex.cdx"), ccd-add (ccd-num "seed img bytes (README)" ccd-readme "\\*\\*`seed/Codex\\.img`\\*\\* \\(([\\d,]+) bytes" 0 "bytes" "seed/Codex.img"), ccd-add (ccd-txt "seed img sha256 (README)" ccd-readme "seed/Codex\\.img.*?\\| SHA-256 \\| `([0-9A-Fa-f]{64})`" "sha256" "seed/Codex.img")]
+
+  ccd-claims-c : List ShellCmd = [ccd-add (ccd-num "compiler files (README)" ccd-readme "Self-hosted compiler \\((\\d+) files, [\\d,]+ lines\\)" 0 "files-r" "codex/compiler"), ccd-add (ccd-num "compiler lines (README)" ccd-readme "Self-hosted compiler \\(\\d+ files, ([\\d,]+) lines\\)" 2 "lines" "codex/compiler"), ccd-add (ccd-num "library modules (README)" ccd-readme "\\*\\*(\\d+) library modules across \\d+ quires\\*\\* \\(\\d+ foreword \\+ \\d+ OS\\)" 0 "lib-modules" ""), ccd-add (ccd-num "foreword modules (README)" ccd-readme "\\*\\*\\d+ library modules across \\d+ quires\\*\\* \\((\\d+) foreword \\+ \\d+ OS\\)" 0 "files-r" "codex/foreword"), ccd-add (ccd-num "os modules (README)" ccd-readme "\\*\\*\\d+ library modules across \\d+ quires\\*\\* \\(\\d+ foreword \\+ (\\d+) OS\\)" 0 "files-r" "codex/os")]
+
+  ccd-claims-d : List ShellCmd = [ccd-add (ccd-num "quire preamble modules (README)" ccd-readme "\\*\\*(\\d+) modules\\*\\* \\(\\d+ foreword, \\d+ OS\\)" 0 "lib-modules" ""), ccd-add (ccd-num "quire preamble foreword (README)" ccd-readme "\\*\\*\\d+ modules\\*\\* \\((\\d+) foreword, \\d+ OS\\)" 0 "files-r" "codex/foreword"), ccd-add (ccd-num "foreword modules (README tree)" ccd-readme "foreword/\\s+(\\d+) library modules across \\d+ quires" 0 "files-r" "codex/foreword"), ccd-add (ccd-num "os modules (README tree)" ccd-readme "observe \\((\\d+) modules\\)" 0 "files-r" "codex/os"), ccd-add (ccd-num "plug count (README)" ccd-readme "(\\d+) plugs, \\d+ source modules" 0 "plugs" ""), ccd-add (ccd-num "plug modules (README)" ccd-readme "\\d+ plugs, ([\\d,]+) source modules" 0 "plug-modules" ""), ccd-add (ccd-num "apps (README)" ccd-readme "(\\d+) applications, [\\d,]+ modules" 0 "app-dirs" ""), ccd-add (ccd-num "app modules (README)" ccd-readme "\\d+ applications, ([\\d,]+) modules" 0 "app-modules" "")]
+
+  ccd-claims-e : List ShellCmd = [ccd-add (ccd-num "apps (README tree)" ccd-readme "apps/\\s+(\\d+) applications, [\\d,]+ modules" 0 "app-dirs" ""), ccd-add (ccd-num "app modules (README tree)" ccd-readme "apps/\\s+\\d+ applications, ([\\d,]+) modules" 0 "app-modules" ""), ccd-add (ccd-num "test files (README)" ccd-readme "OS integration tests \\(([\\d,]+) files\\)" 0 "files-r" "codex/test"), ccd-add (ccd-num "BVT tests (README)" ccd-readme "gates on is (\\d+) tests" 0 "bvt-tests" ""), ccd-add (ccd-num "BVT checks (README)" ccd-readme "for (\\d+) checks" 0 "bvt-checks" "")]
+
+  s08 : List ShellCmd = [ScAssign "claims" (SeArrayLiteral []), ScSequence ccd-claims-a, ScBlank, ScSequence [ScComment "README.md is the public face and was the one doc with no coverage here.", ScComment "Audited 2026-07-31: every count and digest below had drifted, several by", ScComment "more than 2x, and the same fact appeared in three places disagreeing with", ScComment "itself. These rows exist so that cannot recur silently."], ScSequence ccd-claims-b, ScBlank, ScSequence [ScComment "Repointed 2026-08-12. README was rewritten at rev 25 and every pattern", ScComment "below stopped matching, so eight claims plus all sixteen quire rows went", ScComment "silently unchecked -- the NOMATCH failure this script was written to make", ScComment "visible, arriving for real. The counts they had stopped watching had", ScComment "drifted by then: foreword 430 -> 431, plug modules 145 -> 148, apps", ScComment "modules 1,010 -> 1,008, compiler 63 files -> 64. Patterns now track the", ScComment "README's current shape; the quire table simply lost its bold."], ScSequence ccd-claims-c, ScBlank, ScSequence [ScComment "The same three facts again in the Library Quires preamble. They disagreed", ScComment "with the headline by a module on 2026-07-31 and again on 2026-08-12, so", ScComment "both statements are checked rather than one."], ScSequence ccd-claims-d, ScBlank, ScSequence [ScComment "Both statements of the apps fact. The headline and the tree block", ScComment "disagreed on 2026-08-12 (1,010 against 1,008) because only one of them", ScComment "was ever in front of a reader who was editing it. A regex takes the FIRST", ScComment "match, so a second copy of a fact is unchecked unless it is anchored."], ScSequence ccd-claims-e]
+
+Section: S09 -- The generated rows
+
+  ccd-quire : Text, Text -> ShellExpr
+  ccd-quire (label) (path) = SeRecord [SfField "Label" (SeLit label), SfField "Path" (SeLit path)]
+
+  ccd-q-label : ShellExpr = SeProperty (SeVar "q") "Label"
+
+  ccd-q-path : ShellExpr = SeProperty (SeVar "q") "Path"
+
+  ccd-q-record : ShellExpr = SeRecord [SfField "Name" (SeConcat (SeLit "README quire ") ccd-q-label), SfField "Doc" (SeLit "README.md"), SfField "Pattern" (ccd-cat [SeLit "\\| ", ccd-q-label, SeLit " \\| `", ccd-q-path, SeLit "/` \\| (\\d+) \\|"]), SfField "Group" (SeInt 1), SfField "TolPct" (SeInt 0), SfField "Kind" (SeLit "number"), SfField "Fn" (SeLit "files-r"), SfField "Arg" ccd-q-path]
+
+  s09 : List ShellCmd = [ScComment "The README per-quire table. Same generated shape as the codex.os rows below,", ScComment "and the same reason: these are the numbers that drift fastest.", ScAssign "readmeQuires" (SeArrayLiteral [ccd-quire "Foreword" "codex/foreword/core", ccd-quire "Game" "codex/foreword/game", ccd-quire "AI" "codex/foreword/ai", ccd-quire "UI" "codex/foreword/ui", ccd-quire "Signal" "codex/foreword/signal", ccd-quire "Compress" "codex/foreword/compress", ccd-quire "Encode" "codex/foreword/encode", ccd-quire "Math" "codex/foreword/math", ccd-quire "Sim" "codex/foreword/sim", ccd-quire "Punctual" "codex/foreword/punctual", ccd-quire "Engine" "codex/foreword/engine", ccd-quire "GPU" "codex/foreword/gpu", ccd-quire "Shell" "codex/foreword/shell", ccd-quire "Boards" "codex/boards", ccd-quire "Net" "codex/os/net", ccd-quire "Kernel" "codex/os/kernel"]), ScForEach "q" (SeVar "readmeQuires") [ScAppend "claims" ccd-q-record], ScBlank, ScComment "The per-sub-quire rows of the codex.os table. These drift most and are the", ScComment "cheapest to check, so they are generated rather than written out.", ScForEach "q" (SeArrayLiteral [SeLit "core", SeLit "dev", SeLit "kernel", SeLit "net", SeLit "observe", SeLit "replay", SeLit "sched", SeLit "trust", SeLit "verify"]) [ScAppend "claims" (SeRecord [SfField "Name" (ccd-cat [SeLit "codex.os.", SeVar "q", SeLit " modules"]), SfField "Doc" (SeLit "docs/DevelopersRulebook.md"), SfField "Pattern" (ccd-cat [SeLit "\\| codex\\.os\\.", SeVar "q", SeLit " \\| (\\d+) \\|"]), SfField "Group" (SeInt 1), SfField "TolPct" (SeInt 0), SfField "Kind" (SeLit "number"), SfField "Fn" (SeLit "files"), SfField "Arg" (SeConcat (SeLit "codex/os/") (SeVar "q"))])]]
+
+Section: S10 -- Reading each claim
+
+  ccd-row : Text, ShellExpr, ShellExpr -> ShellExpr
+  ccd-row (status) (said) (measured) = SeRecord [SfField "Status" (SeLit status), SfField "Claim" (SeProperty (SeVar "c") "Name"), SfField "Doc" (SeProperty (SeVar "c") "Doc"), SfField "Said" said, SfField "Measured" measured]
+
+  ccd-dash : ShellExpr = SeLit "-"
+
+  ccd-fail-row : Text -> List ShellCmd
+  ccd-fail-row (status) = [ScAppend "rows" (ccd-row status ccd-dash ccd-dash), ScIncrement "bad", ScContinue]
+
+  ccd-capture : ShellExpr = SeProperty (SeIndex (SeProperty (SeVar "m") "Groups") (SeProperty (SeVar "c") "Group")) "Value"
+
+  ccd-measured : ShellExpr = SeCallArgs "Measure-Claim" [SaPos (SeProperty (SeVar "c") "Fn"), SaPos (SeProperty (SeVar "c") "Arg")]
+
+  ccd-verdict : ShellExpr = SeIfElse (SeVar "ok") (SeLit "ok") (SeLit "DRIFT")
+
+  ccd-short : ShellExpr -> ShellExpr
+  ccd-short (e) = SeCallArgs "Format-Digest" [SaPos e]
+
+  ccd-text-row : ShellExpr = SeRecord [SfField "Status" ccd-verdict, SfField "Claim" (SeProperty (SeVar "c") "Name"), SfField "Doc" (SeProperty (SeVar "c") "Doc"), SfField "Said" (ccd-short (SeVar "said")), SfField "Measured" (ccd-short (SeVar "measured"))]
+
+  ccd-text-arm : List ShellCmd = [ScSequence [ScComment "Digests. Compared case-insensitively because the doc may write them", ScComment "in either case; an empty measurement means the artifact is missing."], ScAssign "said" ccd-capture, ScAssign "measured" ccd-measured, ScIf (SeStaticCall "string" "IsNullOrEmpty" [SeVar "measured"]) [ScAppend "rows" (ccd-row "NOPATH" (ccd-short (SeVar "said")) ccd-dash), ScIncrement "bad", ScContinue] [], ScAssign "ok" (SeStringEq (SeVar "said") (SeVar "measured")), ScAppend "rows" ccd-text-row, ScIf (SeNot (SeVar "ok")) [ScIncrement "bad"] [], ScContinue]
+
+  ccd-num-row : ShellExpr = SeRecord [SfField "Status" ccd-verdict, SfField "Claim" (SeProperty (SeVar "c") "Name"), SfField "Doc" (SeProperty (SeVar "c") "Doc"), SfField "Said" (SeVar "said"), SfField "Measured" (SeVar "measured")]
+
+  ccd-num-arm : List ShellCmd = [ScAssign "said" (SeCast "int" (SeReplace ccd-capture "," (SeLit ""))), ScAssign "measured" ccd-measured, ScIf (SeIntLt (SeVar "measured") (SeInt 0)) [ScAppend "rows" (ccd-row "NOPATH" (SeVar "said") ccd-dash), ScIncrement "bad", ScContinue] [], ScAssign "ok" (SeIfElse (SeAnd (SeIntGt (SeProperty (SeVar "c") "TolPct") (SeInt 0)) (SeIntGt (SeVar "measured") (SeInt 0))) (SeIntLe (SeDiv (SeMul (SeStaticCall "math" "Abs" [SeSub (SeVar "said") (SeVar "measured")]) (SeRaw "100.0")) (SeVar "measured")) (SeProperty (SeVar "c") "TolPct")) (SeIntEq (SeVar "said") (SeVar "measured"))), ScAppend "rows" ccd-num-row, ScIf (SeNot (SeVar "ok")) [ScIncrement "bad"] []]
+
+  ccd-one-claim : List ShellCmd = [ScAssign "docPath" (SePathJoin (SeVar "treeRoot") (SeProperty (SeVar "c") "Doc")), ScIf (SeNot (SeMethodCall (SeVar "cache") "ContainsKey" [SeProperty (SeVar "c") "Doc"])) [ScIf (SeNot (SeFileExists (SeVar "docPath"))) (ccd-fail-row "NODOC") [], ScSetIndex "cache" (SeProperty (SeVar "c") "Doc") (SeStaticCall "System.IO.File" "ReadAllText" [SeVar "docPath"])] [], ScAssign "text" (SeIndex (SeVar "cache") (SeProperty (SeVar "c") "Doc")), ScAssign "m" (SeStaticCall "regex" "Match" [SeVar "text", SeProperty (SeVar "c") "Pattern", SeLit "Singleline"]), ScIf (SeNot (SeProperty (SeVar "m") "Success")) (ccd-fail-row "NOMATCH") [], ScIf (SeStringEq (SeProperty (SeVar "c") "Kind") (SeLit "text")) ccd-text-arm [], ScSequence ccd-num-arm]
+
+  s10 : List ShellCmd = [ScAssign "cache" SeHashLiteral, ScAssign "rows" (SeArrayLiteral []), ScAssign "bad" (SeInt 0), ScForEach "c" (SeVar "claims") ccd-one-claim]
+
+Section: S11 -- The report and the verdict
+
+Section: Assembly
+
+  ccd-full : List ShellCmd = [ScSequence [ScComment "Never carry a count forward. This is the thing that re-measures them.", ScComment "", ScComment "CLAUDE.md says never carry a count forward. ExaminersAssay.md says it twice", ScComment "and adds that a count is only ever the number some run actually produced.", ScComment "Saying so has not worked, because saying so is not an instrument. Measured", ScComment "2026-07-25, with every one of these sentences already in the tree:", ScComment "", ScComment "  claim                                   said    measured", ScComment "  compiler files (CLAUDE.md)              55      63", ScComment "  compiler files (VisionAndVirtues.md)    60      63", ScComment "  codex.foreword modules                  119     120", ScComment "  codex.foreword.ui modules               47      48", ScComment "  codex.os.kernel modules                 33      34", ScComment "  codex/test/errors tests                 132     162", ScComment "", ScComment "Nothing could see any of it, for exactly the reason nothing could see an", ScComment "orphaned sidecar or an unregistered CDX code: there was no reader. This is", ScComment "the reader. Each claim is a regex over a doc plus a measurement over the", ScComment "tree, and a disagreement is a failure with both numbers printed.", ScComment "", ScComment "A claim whose pattern no longer matches is ALSO a failure. A doc that", ScComment "changed shape has quietly stopped being checked, which is the same defect", ScComment "one step earlier and is invisible by construction.", ScComment "", ScComment "Not wired into build.ps1. Wiring it in is a decision about everyone's gate,", ScComment "not this script's to make.", ScComment "", ScComment "Exit 1 on any drift or any unmatched pattern.", ScComment "", ScComment "-Repo points the whole check at a tree other than this script's own. It", ScComment "exists for build/ablate-doctrine.ps1, which stands up a scratch tree a", ScComment "candidate agent can edit and then has to score the result without touching", ScComment "the real workspace. Default is the parent of this script, so every existing", ScComment "caller is unchanged."], ScBlank, ScSequence [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "treeRoot" (SeIfElse (SeStringNeq (SeVar "Repo") (SeLit "")) (SePathResolve (SeVar "Repo")) (SePathParent SeScriptRoot))], ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence [ScFunction "Get-AppDirCount" [] [ScAssign "p" (SePathJoin (SeVar "treeRoot") (SeLit "apps")), ScIf (SeNot (SeDirExists (SeVar "p"))) [ScReturn (SeInt (0 - 1))] [], ScReturn (SeCount (SeStaticCall "System.IO.Directory" "GetDirectories" [SeVar "p"]))], ScBlank, ScSequence [ScComment "Source only, for the same reason as Get-PlugModuleCount: apps/*/build-output/", ScComment "holds generated .codex, so counting it makes the claim depend on what this", ScComment "workspace last built rather than on the depot revision."], ScFunction "Get-AppModuleCount" [] [ScAssign "p" (SePathJoin (SeVar "treeRoot") (SeLit "apps")), ScIf (SeNot (SeDirExists (SeVar "p"))) [ScReturn (SeInt (0 - 1))] [], ScReturn (SeCount (SePipe (SeListFiles (SeVar "p") "*.codex" True) [StWhere (SeNot (SeMatch (SeProperty SeItem "FullName") "[\\\\/]build-output[\\\\/]"))]))]], ScBlank, ScSequence [ScSequence [ScComment "The BVT's own test list, read out of build/bvt.ps1. README states its size", ScComment "and that number went unmanaged: the line said \"75 tests in 18.8s\" with the", ScComment "18.8s from a run nobody could reproduce and no claim on the check count at", ScComment "all. The counts are structural (the list, and how many entries have an", ScComment ".expected to run) so they belong here; the elapsed time does not, and was", ScComment "removed from the doc rather than pinned."], ScFunction "Get-BvtTestPaths" [] [ScAssign "p" (SePathJoin (SeVar "treeRoot") (SeLit "build/bvt.ps1")), ScIf (SeNot (SeFileExists (SeVar "p"))) [ScReturn (SeArrayLiteral [])] [], ScAssign "m" (SeStaticCall "regex" "Match" [SeStaticCall "System.IO.File" "ReadAllText" [SeVar "p"], SeLit "\\$BvtTests\\s*=\\s*@\\((.*?)\\n\\)", SeLit "Singleline"]), ScIf (SeNot (SeProperty (SeVar "m") "Success")) [ScReturn (SeArrayLiteral [])] [], ScReturn (SeAsArray (SePipe (SeStaticCall "regex" "Matches" [SeProperty (SeIndex (SeProperty (SeVar "m") "Groups") (SeInt 1)) "Value", SeLit "'([^']+\\.codex)'"]) [StMap (SeProperty (SeIndex (SeProperty SeItem "Groups") (SeInt 1)) "Value")]))], ScBlank, ScFunction "Get-BvtTestCount" [] [ScReturn (SeCount (SeCallArgs "Get-BvtTestPaths" []))], ScBlank, ScFunction "Get-BvtCheckCount" [] [ScAssign "paths" (SeAsArray (SeCallArgs "Get-BvtTestPaths" [])), ScIf (SeIntEq (SeCount (SeVar "paths")) (SeInt 0)) [ScReturn (SeInt (0 - 1))] [], ScComment "Every test is compiled; the ones carrying an .expected are also run.", ScAssign "run" (SeAsArray (SePipe (SeVar "paths") [StWhere (SeFileExists (SePathJoin (SeVar "treeRoot") (SeReplace SeItem "\\.codex$" (SeLit ".expected"))))])), ScReturn (SeAdd (SeCount (SeVar "paths")) (SeCount (SeVar "run")))]], ScBlank, ScSequence s06, ScBlank, ScSequence [ScSequence [ScComment "A claim names its measurement by verb rather than carrying a scriptblock.", ScComment "An unknown verb THROWS: a silent $null would compare as 0 or -1 and read as", ScComment "a drift or a missing directory, which is a wrong answer wearing the costume", ScComment "of a real one."], ScFunction "Measure-Claim" [sh-param "Fn" SptString, sh-param "Arg" SptString] [ccd-arm "files-r" (ccd-files True), ccd-arm "files" (ccd-files False), ccd-arm "lines" (ccd-call1 "Get-CodexLineCount"), ccd-arm "bytes" (ccd-call1 "Get-FileBytes"), ccd-arm "sha256" (ccd-digest-of "SHA256"), ccd-arm "md5" (ccd-digest-of "MD5"), ccd-arm "plugs" (ccd-call0 "Get-PlugCount"), ccd-arm "plug-modules" (ccd-call0 "Get-PlugModuleCount"), ccd-arm "app-dirs" (ccd-call0 "Get-AppDirCount"), ccd-arm "app-modules" (ccd-call0 "Get-AppModuleCount"), ccd-arm "bvt-tests" (ccd-call0 "Get-BvtTestCount"), ccd-arm "bvt-checks" (ccd-call0 "Get-BvtCheckCount"), ccd-arm "lib-modules" (SeAdd (SeCallArgs "Get-CodexFileCount" [SaPos (SeLit "codex/foreword"), SaPos (SeBool True)]) (SeCallArgs "Get-CodexFileCount" [SaPos (SeLit "codex/os"), SaPos (SeBool True)])), ScThrow (SeConcat (SeConcat (SeLit "Measure-Claim: no such measurement '") (SeVar "Fn")) (SeLit "'"))]], ScBlank, ScSequence s08, ScBlank, ScSequence s09, ScBlank, ScSequence s10, ScBlank, ScSequence [ScIf (SeNot (SeVar "Quiet")) [ScForEach "r" (SeVar "rows") [ScEcho (SeFormat (SeLit "{0,-8} {1,-30} said {2,-8} measured {3,-8} {4}") [SeProperty (SeVar "r") "Status", SeProperty (SeVar "r") "Claim", SeProperty (SeVar "r") "Said", SeProperty (SeVar "r") "Measured", SeProperty (SeVar "r") "Doc"])], ScEcho (SeLit "")] [], ScBlank, ScIf (SeIntGt (SeVar "bad") (SeInt 0)) [ScEcho (ccd-cat [SeLit "FAIL: ", SeVar "bad", SeLit " of ", SeCount (SeVar "rows"), SeLit " doc count claim(s) do not hold."]), ScSequence [ScEcho (SeLit "DRIFT   the doc states a number the tree no longer produces. Re-measure and edit the doc."), ScEcho (SeLit "NOMATCH the claim pattern no longer matches. The doc changed shape and stopped being"), ScEcho (SeLit "        checked; fix the pattern here, or the doc, but do not leave it unmatched."), ScEcho (SeLit "NOPATH  the directory a claim measures does not exist.")], ScExit (SeInt 1)] [], ScEcho (ccd-cat [SeLit "doc counts ok (", SeCount (SeVar "rows"), SeLit " claims checked, 0 drifted)"]), ScExit (SeInt 0)]]
+
+  ccd-script : ShellScript = sh-script "check-doc-counts" "Never carry a count forward. This is the thing that re-measures them." [sh-switch "Quiet", sh-param-default "Repo" SptString (SeLit "")] ccd-full
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell ccd-script)
+  end
+
+Page 1

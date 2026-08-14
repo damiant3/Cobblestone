@@ -57,15 +57,18 @@ Measured 2026-08-03, except where an item gives its own date.
    **Diverse double-compiling.** The whole compiler is rendered to C# by a
    plug, built by Roslyn -- a toolchain with no ancestry in this project --
    and that compiler then compiles the Codex compiler's own source.
-   Measured 2026-08-10 against the seed shipped that day (`AF4E14D9`,
-   2,755,007 bytes), its output was **2,755,007 bytes against that seed's
-   2,755,007, with 96 differing bytes, every one of them inside the
+   Measured 2026-08-14 against the seed shipped that day (`8D405FDF`,
+   2,793,222 bytes), its output was **2,793,222 bytes against that seed's
+   2,793,222, with 96 differing bytes, every one of them inside the
    signature region at offsets 40..135 and none outside it.** The signature
    is stamped by the sign phase rather than emitted by the compiler. That is
-   Wheeler's `stage2 == X`. The seed has been rebuilt since; the witness is
-   a release gate and is re-run against whatever seed a release ships, so
-   this figure names the run it came from rather than standing in for the
-   current one. **And the witness has been shown to fail.** A check that
+   Wheeler's `stage2 == X`. The witness is a release gate and is re-run
+   against whatever seed a release ships, so this figure names the run it
+   came from rather than standing in for any later one. How many bytes
+   differ INSIDE the signature region is not a criterion: 96 is the width
+   of the region, and two unrelated signatures agree at a given byte about
+   one time in 256, so a run differing in 95 is equally ordinary.
+   **And the witness has been shown to fail.** A check that
    has only ever come back green proves nothing, so we poisoned the
    compiler on purpose. Inject a payload into the code generator: the
    witness goes red by 2.2 million bytes and reconstructs the honest
@@ -180,8 +183,8 @@ Measured 2026-08-03, except where an item gives its own date.
 the seed; 33 carry a web front end through the HTML plug. Catalog:
 [docs/CuratorsCatalogue.md](docs/CuratorsCatalogue.md).
 
-**Test battery: 1,451 tests, 1,405 pass, 0 fail, 46 skip** (measured
-2026-08-13 at seed `D9A6A7A2`). The BVT subset that `build/build.ps1`
+**Test battery: 1,454 tests, 1,427 pass, 0 fail, 27 skip** (measured
+2026-08-14 at seed `8D405FDF`). The BVT subset that `build/build.ps1`
 gates on is 75 tests, compiled and then run where an `.expected` exists,
 for 135 checks; its phase of the gate takes about 19s.
 
@@ -189,21 +192,21 @@ for 135 checks; its phase of the gate takes about 19s.
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (2,759,577 bytes) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (2,793,222 bytes) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `D9A6A7A2BF162346` |
-| SHA-256 | `D9A6A7A2BF162346E9E9F443A192F6E5B23B2733F5CF1AAF5AE8886BD1F73D1E` |
-| MD5 | `9AD9200295AA74F26D110CFE5CA27923` |
+| Content hash prefix | `8D405FDFF57EDA83` |
+| SHA-256 | `8D405FDFF57EDA836C5BBD28EACDB8A2F9289F5DF5621BAD9CB08776C529D349` |
+| MD5 | `221DD5BAAF5D928094F30EEED02971DC` |
 
 **`seed/Codex.img`** (16,777,216 bytes) -- bootable GPT disk image, the
 first-boot ceremony.
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `B9E7A3628F59F50AF5E133A029128C771487A52F5BD54717BB75C9FA0B0F75A8` |
+| SHA-256 | `226356FB7BF13A3A46B80813DA0659DB5F4A111C84D48DF7024639A672C6E94A` |
 
 Boot it on a UEFI machine and it runs its own first-boot ceremony on the
 GOP framebuffer with no OS beneath it: choose an interface, walk the

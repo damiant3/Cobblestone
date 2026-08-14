@@ -1,0 +1,93 @@
+Chapter: CheckFactsGuidScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ We say:
+
+Section: Parameters
+
+  cfg-params : List ShellParam = []
+
+Section: S01 -- Why this exists
+
+  cfg-doctrine : List ShellCmd = [ScComment "The fact-store partition type GUID exists in three places and they must", ScComment "agree. A runner, not a promise: a copied constant is exactly the divergence", ScComment "Foreword chapter FactLog exists to prevent, and the three copies are here", ScComment "because the alternatives are worse -- the IMG plug is its own compilation", ScComment "unit and citing Gpt would drag Device.Block into an image writer, and", ScComment "build/build-img.ps1 is PowerShell and cites nothing.", ScComment "", ScComment "  codex/foreword/core/Gpt.codex        gpt-codex-facts-guid   (the reader)", ScComment "  codex/plugs/img/GptWriter.codex      gpt-codex-facts-guid   (the plug)", ScComment "  build/build-img.ps1                  a [byte[]] literal     (the shipped stick)", ScComment "", ScComment "A disagreement is silent and expensive: the stick is written with one type", ScComment "and the guest looks for another, so the store finds no region, refuses every", ScComment "write, and reports \"0 disk facts\" forever with nothing anywhere saying why.", ScComment "", ScComment "Exit 1 on disagreement. Wired into build/build.ps1."]
+
+  s01 : List ShellCmd = [ScSetErrorStop, ScSetStrictMode, ScBlank, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit "..")))]
+
+Section: S02 -- Fail
+
+  cfg-fail : ShellCmd = ScFunction "Fail" [sh-param "msg" SptString] [ScEcho (SeConcat (SeLit "FAIL: ") (SeVar "msg")), ScExit (SeInt 1)]
+
+  cfg-fail-with : ShellExpr -> ShellCmd
+  cfg-fail-with (m) = ScRun "Fail" [m]
+
+Section: S03 -- Reading a GUID out of a file
+
+  cfg-path : ShellExpr = SePathJoin (SeVar "Repo") (SeVar "relPath")
+
+  cfg-missing : ShellCmd = ScIf (SeNot (SeFileExists (SeVar "path"))) [cfg-fail-with (SeConcat (SeVar "relPath") (SeLit " is missing"))] []
+
+  cfg-unreadable : ShellCmd = cfg-fail-with (SeConcat (SeVar "relPath") (SeLit " : could not read the byte list"))
+
+  cfg-count-msg : ShellExpr = SeConcat (SeConcat (SeConcat (SeVar "relPath") (SeLit " : GUID has ")) (SeCount (SeVar "bytes"))) (SeLit " bytes, want 16")
+
+  cfg-guard-count : ShellCmd = ScIf (SeNot (SeIntEq (SeCount (SeVar "bytes")) (SeInt 16))) [cfg-fail-with cfg-count-msg] []
+
+  cfg-answer : ShellCmd = ScReturn (SeJoin (SeVar "bytes") (SeLit ","))
+
+  cfg-decl-lines : Text -> ShellExpr
+  cfg-decl-lines (pat) = SeAsArray (SePipe (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "path"]) [StWhere (SeMatch SeItem pat), StTake 1])
+
+  cfg-no-decl : ShellExpr -> ShellCmd
+  cfg-no-decl (msg) = ScIf (SeIntEq (SeCount (SeVar "hits")) (SeInt 0)) [cfg-fail-with msg] []
+
+  cfg-codex-body : List ShellCmd = [ScAssign "path" cfg-path, cfg-missing, ScAssign "hits" (cfg-decl-lines "gpt-codex-facts-guid\\s*:\\s*List Integer\\s*=\\s*\\["), cfg-no-decl (SeConcat (SeVar "relPath") (SeLit " declares no gpt-codex-facts-guid")), ScAssign "line" (SeIndex (SeVar "hits") (SeInt 0)), ScIf (SeNot (SeMatch (SeVar "line") "\\[([^\\]]*)\\]")) [cfg-unreadable] [], ScAssign "bytes" (SeAsArray (SePipe (SeSplit (SeIndex (SeVar "matches") (SeInt 1)) ",") [StMap (SeCast "int" (SeTrim SeItem))])), cfg-guard-count, cfg-answer]
+
+  cfg-hex-byte : ShellExpr = SeCast "int" (SeConcat (SeLit "0x") (SeReplace (SeTrim SeItem) "^0x" (SeLit "")))
+
+  cfg-ps-body : List ShellCmd = [ScAssign "path" cfg-path, cfg-missing, ScAssign "hits" (cfg-decl-lines "WBytes \\$fsOff \\(\\[byte\\[\\]\\]@\\("), cfg-no-decl (SeConcat (SeVar "relPath") (SeLit " writes no fact-store type GUID")), ScAssign "line" (SeIndex (SeVar "hits") (SeInt 0)), ScIf (SeNot (SeMatch (SeVar "line") "@\\(([^\\)]*)\\)")) [cfg-unreadable] [], ScAssign "bytes" (SeAsArray (SePipe (SeSplit (SeIndex (SeVar "matches") (SeInt 1)) ",") [StMap cfg-hex-byte])), cfg-guard-count, cfg-answer]
+
+  s03 : List ShellCmd = [cfg-fail, ScBlank, ScComment "the two Codex sources: a decimal list on the gpt-codex-facts-guid line", ScFunction "Get-CodexGuid" [sh-param "relPath" SptString] cfg-codex-body, ScBlank, ScComment "the PowerShell writer: a hex [byte[]] literal on the marked line", ScFunction "Get-Ps1Guid" [sh-param "relPath" SptString] cfg-ps-body]
+
+Section: S04 -- The three sources must agree
+
+  cfg-gpt-path : Text = "codex/foreword/core/Gpt.codex"
+
+  cfg-writer-path : Text = "codex/plugs/img/GptWriter.codex"
+
+  cfg-img-path : Text = "build/build-img.ps1"
+
+  cfg-read-codex : Text -> ShellExpr
+  cfg-read-codex (p) = SeCallArgs "Get-CodexGuid" [SaPos (SeLit p)]
+
+  cfg-mismatch-line : ShellExpr = SeConcat (SeConcat (SeVar "sp") (SeLit ": ")) (SeVar "sb")
+
+  cfg-loop-body : List ShellCmd = [ScAssign "sp" (SeIndex (SeVar "paths") (SeVar "i")), ScAssign "sb" (SeIndex (SeVar "guids") (SeVar "i")), ScIf (SeStringNeq (SeVar "sb") (SeVar "reference")) [ScAppend "bad" cfg-mismatch-line] []]
+
+  s04 : List ShellCmd = [ScAssign "paths" (SeArrayLiteral [SeLit cfg-gpt-path, SeLit cfg-writer-path, SeLit cfg-img-path]), ScAssign "guids" (SeArrayLiteral [cfg-read-codex cfg-gpt-path, cfg-read-codex cfg-writer-path, SeCallArgs "Get-Ps1Guid" [SaPos (SeLit cfg-img-path)]]), ScAssign "reference" (SeIndex (SeVar "guids") (SeInt 0)), ScAssign "bad" (SeArrayLiteral []), ScForLoop "i" (SeInt 0) (SeIntLt (SeVar "i") (SeCount (SeVar "guids"))) (SeRaw "$i++") cfg-loop-body]
+
+Section: S05 -- The verdict
+
+  cfg-ref-line : ShellExpr = SeConcat (SeConcat (SeConcat (SeLit "  ") (SeIndex (SeVar "paths") (SeInt 0))) (SeLit ": ")) (SeVar "reference")
+
+  cfg-fail-body : List ShellCmd = [ScEcho (SeLit "FAIL: the fact-store partition type GUID disagrees across writers."), ScEcho cfg-ref-line, ScForEach "b" (SeVar "bad") [ScEcho (SeConcat (SeLit "  ") (SeVar "b"))], ScExit (SeInt 1)]
+
+  cfg-ok-line : ShellExpr = SeConcat (SeConcat (SeLit "check-facts-guid: OK (") (SeCount (SeVar "guids"))) (SeLit " sources agree)")
+
+  s05 : List ShellCmd = [ScIf (SeIntGt (SeCount (SeVar "bad")) (SeInt 0)) cfg-fail-body [], ScEcho cfg-ok-line, ScExit (SeInt 0)]
+
+Section: Assembly
+
+  cfg-body : List ShellCmd = [ScSequence cfg-doctrine, ScBlank, ScSequence s01, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05]
+
+  cfg-script : ShellScript = sh-script "check-facts-guid" "The fact-store partition type GUID must agree across all three writers" cfg-params cfg-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell cfg-script)
+  end
+
+Page 1

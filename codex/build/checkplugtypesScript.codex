@@ -1,0 +1,129 @@
+Chapter: CheckPlugTypesScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Foreword chapter List
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ We say:
+
+Section: Parameters
+
+  cpt-params : List ShellParam = [sh-switch "Update"]
+
+Section: Concatenation
+
+  cpt-cat-from : List ShellExpr, Integer -> ShellExpr
+  cpt-cat-from (xs) (i) = if i >= list-length xs then SeLit "" else if i == list-length xs - 1 then list-at xs i else SeConcat (list-at xs i) (cpt-cat-from xs (i + 1))
+
+  cpt-cat : List ShellExpr -> ShellExpr
+  cpt-cat (xs) = cpt-cat-from xs 0
+
+Section: S01 -- Why this exists
+
+  cpt-doctrine : List ShellCmd = [ScComment "the IR text wire is a closed contract", ScComment "", ScComment "codex/plugs/common/IRTextParser.codex calls itself \"Inverse of", ScComment "codex/Emit/IRTextEmitter.codex\". Nothing checked that, and for a long time", ScComment "it was not true: the emitter could write forms the parser could not read,", ScComment "and each one fell through to a PLAUSIBLE DEFAULT rather than a diagnostic", ScComment "-- (vector-mask N) read back as ErrorTy, (a-linear T) as ANamedType", ScComment "\"Unknown\", (unit-def ..) as an empty record. Silent, and invisible to", ScComment "x86-64, which never crosses this wire.", ScComment "", ScComment "The baseline is EMPTY as of the CL that closed that gap: every form", ScComment "the emitter writes has a parser arm. That is the state to keep. A new", ScComment "entry in the baseline is a hole someone chose to leave open, and the", ScComment "reason belongs in the CL description that added it.", ScComment "", ScComment "That is the shape the IrNegate miscompile had: a hand-maintained copy that", ScComment "quietly stopped agreeing, latent until a program took the one path where", ScComment "the two answers differed. It answered -(-2.5) as 1.7 on ARM64 and RISC-V", ScComment "while x86-64 said 2.5. The residue this script baselines is latent TODAY;", ScComment "the point is to fail the build the moment a NEW divergence appears.", ScComment "", ScComment "Usage: check-plug-types.ps1 [-Update]", ScComment "  Without -Update: prints OK or the new divergences + exits 0 or 1", ScComment "  With -Update: rewrites the baseline (read the delta before taking it)"]
+
+  cpt-missing : ShellExpr = SeConcat (SeLit "check-plug-types: missing ") (SeVar "f")
+
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))), ScAssign "EmitFile" (SePathJoin (SeVar "Repo") (SeLit "codex\\compiler\\Emit\\IRTextEmitter.codex")), ScAssign "ParseFile" (SePathJoin (SeVar "Repo") (SeLit "codex\\plugs\\common\\IRTextParser.codex")), ScAssign "BaseFile" (SePathJoin (SeVar "Repo") (SeLit "build\\plug-wire-baseline.txt")), ScBlank, ScForEach "f" (SeArrayLiteral [SeVar "EmitFile", SeVar "ParseFile"]) [ScIf (SeNot (SeFileExists (SeVar "f"))) [ScEcho cpt-missing, ScExit (SeInt 1)] []]]
+
+Section: S02 -- What the emitter can WRITE
+
+  cpt-emit-note : List ShellCmd = [ScComment "Two forms, and missing the second is what made the first cut of this script", ScComment "useless: a compound \"(head ..\" and a bare atom \"real\". Collecting only the", ScComment "first reported 58 phantom divergences -- every bare atom the parser accepts", ScComment "looked unreachable -- which is a gate nobody would read twice."]
+
+  cpt-head : ShellExpr = SeProperty (SeIndex (SeProperty (SeVar "m") "Groups") (SeLit "h")) "Value"
+
+  cpt-collect : Text -> ShellCmd
+  cpt-collect (set) = ScSetIndex set cpt-head (SeBool True)
+
+  cpt-compound : Text = "\"\\((?<h>[a-z][a-z0-9\\-]*)(?=[ \"])"
+
+  cpt-bare : Text = "->\\s*\"(?<h>[a-z][a-z0-9\\-]*)\"\\s*$"
+
+  cpt-emit-line : List ShellCmd = [ScIf (SeMatch (SeVar "line") "^\\s*$") [ScContinue] [], ScForEach "m" (SeStaticCall "regex" "Matches" [SeVar "line", SeLit cpt-compound]) [cpt-collect "emitted"], ScForEach "m" (SeStaticCall "regex" "Matches" [SeVar "line", SeLit cpt-bare]) [cpt-collect "emitted"]]
+
+  s02 : List ShellCmd = [ScSequence cpt-emit-note, ScAssign "emitted" SeHashLiteral, ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "EmitFile"]) cpt-emit-line]
+
+Section: S03 -- What the parser can READ
+
+  cpt-parse-note : List ShellCmd = [ScComment "Also two forms. The parser dispatches on a head atom with `head == \"x\"`,", ScComment "but reads the chapter's named sections positionally through", ScComment "`walk-named-* xs \"title\"` -- so a check that models only the first accuses", ScComment "the parser of not handling forms it handles fine."]
+
+  cpt-dispatch : Text = "(?:head|a)\\s*==\\s*\"(?<h>[a-z][a-z0-9\\-]*)\""
+
+  cpt-named : Text = "(?:walk-named-\\w+|find-named-form)\\s+\\w+\\s+\"(?<h>[a-z][a-z0-9\\-]*)\""
+
+  cpt-parse-line : List ShellCmd = [ScForEach "m" (SeStaticCall "regex" "Matches" [SeVar "line", SeLit cpt-dispatch]) [cpt-collect "accepted"], ScForEach "m" (SeStaticCall "regex" "Matches" [SeVar "line", SeLit cpt-named]) [cpt-collect "accepted"]]
+
+  s03 : List ShellCmd = [ScSequence cpt-parse-note, ScAssign "accepted" SeHashLiteral, ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "ParseFile"]) cpt-parse-line]
+
+Section: S04 -- An empty side compares clean against anything
+
+  cpt-broken-note : List ShellCmd = [ScComment "An empty side compares clean against anything. A check that cannot fail", ScComment "is a comment, so refuse rather than report OK."]
+
+  cpt-empty : ShellExpr = SeOr (SeIntEq (SeProperty (SeVar "emitted") "Count") (SeInt 0)) (SeIntEq (SeProperty (SeVar "accepted") "Count") (SeInt 0))
+
+  cpt-broken-msg : ShellExpr = cpt-cat [SeLit "check-plug-types: FAILED to extract (emitted=", SeProperty (SeVar "emitted") "Count", SeLit " accepted=", SeProperty (SeVar "accepted") "Count", SeLit ")"]
+
+  s04 : List ShellCmd = [ScIf cpt-empty [ScSequence cpt-broken-note, ScEcho cpt-broken-msg, ScEcho (SeLit "  the extraction broke, not the wire -- fix this script before trusting a green"), ScExit (SeInt 1)] []]
+
+Section: S05 -- The forms consumed by position
+
+  cpt-pos-note : List ShellCmd = [ScComment "Structural wrappers the parser consumes BY POSITION, not by dispatch.", ScComment "", ScComment "These are not divergences and must not be baselined as if they were. The", ScComment "parser reaches them through its caller and reads from index 1 onward,", ScComment "deliberately skipping slot 0: walk-chapter takes `list-at xs 1` without ever", ScComment "looking at the head, parse-def and parse-text-list do the same. Listing them", ScComment "as \"known holes\" would put three benign entries in a file whose whole value", ScComment "is that every line in it is a real gap someone should close.", ScComment "", ScComment "`strs` additionally only ever appears in PROSE in the emitter (a comment", ScComment "describing the wrapper), never in an emitted literal."]
+
+  cpt-positional : List ShellExpr = [SeLit "chapter", SeLit "def", SeLit "strs", SeLit "args", SeLit "params", SeLit "sum-ctors", SeLit "record-fields", SeLit "tparams", SeLit "ctors", SeLit "fields", SeLit "effs", SeLit "scopes"]
+
+  cpt-unaccepted : ShellExpr = SeNot (SeMethodCall (SeVar "accepted") "ContainsKey" [SeItem])
+
+  cpt-not-positional : ShellExpr = SeNot (SeContains (SeVar "positional") SeItem)
+
+  s05 : List ShellCmd = [ScSequence cpt-pos-note, ScAssign "positional" (SeArrayLiteral cpt-positional), ScAssign "divergent" (SeAsArray (SePipe (SeProperty (SeVar "emitted") "Keys") [StWhere cpt-unaccepted, StWhere cpt-not-positional, StSort]))]
+
+Section: S06 -- Rewriting the baseline
+
+  cpt-header : List ShellExpr = [SeLit "# plug-wire-baseline.txt -- generated by build/check-plug-types.ps1 -Update", SeLit "#", SeLit "# Forms codex/compiler/Emit/IRTextEmitter.codex can WRITE that", SeLit "# codex/plugs/common/IRTextParser.codex cannot READ. Each reads back as a", SeLit "# plausible default, not an error, so nothing downstream notices.", SeLit "#", SeLit "# This file is the KNOWN residue. The check fails on anything not listed", SeLit "# here. Shrinking it is the work -- give each form a parser arm. Growing it", SeLit "# needs a reason in the CL description.", SeLit ""]
+
+  cpt-updated : ShellExpr = cpt-cat [SeLit "baseline updated: ", SeCount (SeVar "divergent"), SeLit " known divergence(s)"]
+
+  cpt-update-body : List ShellCmd = [ScAssign "header" (SeArrayLiteral cpt-header), ScSetContent (SeVar "BaseFile") (SeAdd (SeVar "header") (SeVar "divergent")), ScEcho cpt-updated, ScForEach "d" (SeVar "divergent") [ScEcho (SeConcat (SeLit "  ") (SeVar "d"))], ScExit (SeInt 0)]
+
+  s06 : List ShellCmd = [ScIf (SeVar "Update") cpt-update-body []]
+
+Section: S07 -- The baseline is the contract
+
+  cpt-no-base : ShellExpr = SeConcat (SeConcat (SeLit "check-plug-types: no baseline at ") (SeVar "BaseFile")) (SeLit " -- run with -Update")
+
+  cpt-real-line : ShellExpr = SeAnd (SeNot (SeMatch SeItem "^\\s*#")) (SeMatch SeItem "\\S")
+
+  cpt-baseline : ShellExpr = SeAsArray (SePipe (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "BaseFile"]) [StWhere cpt-real-line, StMap (SeTrim SeItem)])
+
+  s07 : List ShellCmd = [ScIf (SeNot (SeFileExists (SeVar "BaseFile"))) [ScEcho cpt-no-base, ScExit (SeInt 1)] [], ScBlank, ScAssign "baseline" cpt-baseline, ScBlank, ScAssign "new" (SeAsArray (SePipe (SeVar "divergent") [StWhere (SeNot (SeContains (SeVar "baseline") SeItem))])), ScAssign "fixed" (SeAsArray (SePipe (SeVar "baseline") [StWhere (SeNot (SeContains (SeVar "divergent") SeItem))]))]
+
+Section: S08 -- The verdict
+
+  cpt-new-head : ShellExpr = cpt-cat [SeLit "check-plug-types: FAIL -- ", SeCount (SeVar "new"), SeLit " new wire divergence(s)"]
+
+  cpt-new-line : ShellExpr = cpt-cat [SeLit "  (", SeVar "h", SeLit " ...) is emitted by IRTextEmitter and read by no parser arm"]
+
+  cpt-new-body : List ShellCmd = [ScEcho cpt-new-head, ScForEach "h" (SeVar "new") [ScEcho cpt-new-line], ScEcho (SeLit ""), ScEcho (SeLit "  The emitter writes this; the plug parser falls through to a default."), ScEcho (SeLit "  ARM64 and RISC-V will read a plausible wrong value. x86-64 cannot fail"), ScEcho (SeLit "  on it -- it never crosses this wire -- so no x86 test will catch it."), ScEcho (SeLit "  Add the parser arm, or record it: build/check-plug-types.ps1 -Update"), ScExit (SeInt 1)]
+
+  cpt-fixed-head : ShellExpr = cpt-cat [SeLit "check-plug-types: OK -- and ", SeCount (SeVar "fixed"), SeLit " baselined divergence(s) are gone:"]
+
+  cpt-fixed-body : List ShellCmd = [ScEcho cpt-fixed-head, ScForEach "h" (SeVar "fixed") [ScEcho (SeConcat (SeConcat (SeLit "  ") (SeVar "h")) (SeLit " (now parsed -- drop it from the baseline)"))], ScExit (SeInt 0)]
+
+  cpt-ok-line : ShellExpr = cpt-cat [SeLit "check-plug-types: OK (", SeProperty (SeVar "emitted") "Count", SeLit " emitted, ", SeProperty (SeVar "accepted") "Count", SeLit " accepted, ", SeCount (SeVar "divergent"), SeLit " known)"]
+
+  s08 : List ShellCmd = [ScIf (SeIntGt (SeCount (SeVar "new")) (SeInt 0)) cpt-new-body [], ScBlank, ScIf (SeIntGt (SeCount (SeVar "fixed")) (SeInt 0)) cpt-fixed-body [], ScBlank, ScEcho cpt-ok-line, ScExit (SeInt 0)]
+
+Section: Assembly
+
+  cpt-full : List ShellCmd = [ScSequence cpt-doctrine, ScBlank, ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08]
+
+  cpt-script : ShellScript = sh-script "check-plug-types" "the IR text wire is a closed contract" cpt-params cpt-full
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell cpt-script)
+  end
+
+Page 1

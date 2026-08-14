@@ -654,6 +654,72 @@ half its lease, so nothing observes a renewal inside a run that lasts
 seconds. `codex/test/dhcp-renew` asks for four, which puts the renewal two
 seconds in, and it is the only reason that test can exist.
 
+**An empty receive poll costs 540x more on the NE2000 than on the e1000, and
+a guest that counts polls is counting two different things.** Measured
+2026-08-14, one million empty polls through `net-driver-recv-frame`: **15.52 s
+on the NE2000, 0.029 s on the e1000.** An NE2000 poll is a port IN and
+therefore a VM exit; an e1000 poll reads a descriptor the model already wrote
+into guest RAM, which is also what the real I219-V does. Anything in a guest
+that uses a poll count as a stand-in for elapsed time is therefore calibrated
+against whichever card it was written on, and `NetIO`'s tick was calibrated
+against the NE2000 -- see `net-driver-poll-cell` in `ArchitectsSketchbook.md`.
+This is a property of the two device models and not of any one guest, so
+expect it to bite anything else that counts polls.
+
+**The test for whether a spin count in this tree is secretly a duration, and
+the audit that came out of it (2026-08-14).** The question is not how big the
+number is, it is **what the loop body touches**, because that decides whether
+the bed and the metal agree:
+
+| the loop polls | cost per iteration | bed vs metal | verdict |
+|---|---|---|---|
+| a register, MMIO or port I/O | a VM exit in the bed, a bus read on metal | comparable, within a small factor | a count is a poor duration but it will not surprise you |
+| **memory the device DMAd** (a descriptor status byte, a completion-queue phase bit, a flag another core sets) | a RAM read, no exit at all | **hundreds of times apart** | **the count is a hidden duration and it is probably wrong** |
+| nothing external (a recursion or parse guard) | irrelevant | irrelevant | not a duration, leave it alone |
+
+Measured on this box for the third row: **one million iterations of a bare
+`peek-byte` status poll cost 605 microseconds.** That is the number to price
+any RAM-polling budget against.
+
+Swept 2026-08-14 over `codex/**` and `apps/**`: 36 named budgets of 1000 or
+more. Almost all are honest give-up caps where the value never had to mean a
+duration. The RAM-polling ones, which are the class above, are:
+
+- **`e1000-tx-fuel` (`E1000e.codex`) WAS one and is FIXED.** At 1,000,000 it
+  was a 605 microsecond budget against a 1500-byte frame that takes 1200
+  microseconds on the wire at 10 Mb/s, and `e1000-send-frame` returns the
+  result directly, so every send on a slow link would have reported failure
+  while the frame went out anyway. Now bounded by HPET at 20 ms with the spin
+  as the no-clock fallback; `codex/test/e1000-tx-deadline` pins it with the
+  old path as its own control, in a band that cannot overlap.
+- **`arm64-net-io-tick-interval` (`Arm64NetIO.codex`) is one and is NOT fixed**,
+  because this lane has no counter read. What is missing is written out in
+  that chapter's own Poll Clock section, including the derived
+  `sysreg-cntvct-el0` value and the warning that half of it is seed-affecting.
+- **`nvme-fuel` (`GopNvme.codex`)** polls a completion-queue phase bit, which
+  is DMAd memory. Not measured, not mine, named here because it is the same
+  shape.
+- **`xhci-fuel` (`GopXhci.codex`)** is already open as WORKS-9, which states
+  the problem exactly: it is a spin count nobody has converted to a duration
+  on that box, and no bed can, because codex-vm completes every transfer
+  before the guest spins once.
+- **`smp-wait-fuel` (`X86_64Boot.codex`)** polls a RAM flag another core sets.
+  Boot-time only and it has never failed, but it is the same shape.
+
+`ahci-fuel`, `ide-poll-fuel`, `rtc-uip-fuel` and the other `e1000-*-fuel`
+constants poll registers and sit in the first row, so they are not urgent.
+
+**A retransmitted SYN is handled, and before 2026-08-14 it was not.** A SYN
+for a connection the NAT already had fell through the new-connection branch,
+opened a second host socket over the first and leaked it, and the guest's
+payload then went to a socket no listener had accepted -- the guest saw its
+data vanish and the peer saw a reset. It now answers a duplicate SYN with
+silence while the host connect is still in flight (`nat_poll_connect` sends
+the SYN+ACK when the socket is writable) and by resending the SYN+ACK once the
+connection is up. Nothing in the tree had ever made a guest retransmit a SYN,
+which is why it survived: it took running TCP over the e1000, where the poll
+cost above puts the guest's first retransmit at 8.6 ms.
+
 **The NAT is one wire, and `-e1000-nat` moves it to the Intel card.** The
 e1000 model is absent unless a flag selects it, and by default its transmit
 path sums the frame rather than sending it. With `-e1000-nat` the frame goes

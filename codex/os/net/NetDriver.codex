@@ -2,6 +2,7 @@ Chapter: NetDriver
   cites Kernel chapter Ne2k
   cites Kernel chapter E1000e
   cites Kernel chapter Pci
+  cites Kernel chapter Hpet
   cites Foreword chapter Maybe
 
 Section: The Bound Card
@@ -59,11 +60,92 @@ Section: Bring-up
  reason it holds no device knowledge of its own: no device-ID table, no
  quirk, no register.
 
-  net-driver-bring-up : Integer
+  net-driver-bring-up : [Network.Read] Integer
   net-driver-bring-up =
-   when e1000-find pci-scan-all
+   let card = when e1000-find pci-scan-all
      is Just (d) -> net-driver-bind-e1000 (e1000-init d)
      is None -> net-card-ne2k
+   in act
+    p <- net-driver-calibrate
+    let w = poke-32 net-driver-poll-cell 0 p
+    in card
+   end
+
+Section: The Poll Clock
+
+ NetIO counts empty receive polls where another stack would read a clock,
+ and the cost of one poll is a property of the DRIVER rather than of NetIO.
+ An NE2000 poll is a port IN and therefore a VM exit; an e1000 poll reads a
+ descriptor the card already wrote into RAM. Measured 2026-08-14 under
+ codex-vm, one million empty polls: 15.52 s on the NE2000, 0.029 s on the
+ e1000. 540 to one, and the real I219-V is a RAM read like the e1000.
+
+ Every bound in NetworkStack is denominated in ticks, and the ratio between
+ a measured round trip and a retransmit interval does hold at any steady
+ rate, which is what that chapter's own argument rests on. What does not
+ hold is anything pinned at a FIXED count of ticks: the initial RTO before
+ a sample exists, the floor, the 48-tick clamp and the 141-tick give-up are
+ wall-clock quantities in tick clothing. At 100000 polls a tick the e1000
+ retransmits a SYN after 8.6 ms and abandons a live peer after 405 ms.
+
+ So the interval is measured here, once, against the only clock this quire
+ has. A guest that never calls net-driver-bring-up never pays for it and
+ reads the fallback, which is the constant NetIO shipped: every plug keeps
+ the numbers it was tuned with.
+
+  net-driver-poll-cell : Integer = 36328
+
+  net-driver-tick-ms : Integer = 100
+  net-driver-poll-fallback : Integer = 100000
+  net-driver-poll-floor : Integer = 1000
+  net-driver-cal-batch : Integer = 1000
+  net-driver-cal-fuel : Integer = 200000
+
+ The clock is read once per BATCH and not once per poll. hpet-ticks is an
+ MMIO read, which on the NE2000 costs about what the poll costs and on the
+ e1000 costs hundreds of times more, so a per-poll clock check would
+ measure the clock rather than the card and would answer nearly the same
+ number for both.
+
+  net-driver-poll-batch : Integer -> [Network.Read] Integer
+  net-driver-poll-batch (n) =
+   if n <= 0 then 0
+   else let hp = __heap-save
+   in act
+    f <- net-driver-recv-frame
+    let r = __heap-restore hp
+    in net-driver-poll-batch (n - 1)
+   end
+
+  net-driver-cal-loop : Integer, Integer, Integer -> [Network.Read] Integer
+  net-driver-cal-loop (deadline) (n) (fuel) =
+   if fuel <= 0 then n
+   else if hpet-ticks >= deadline then n
+   else act
+    z <- net-driver-poll-batch net-driver-cal-batch
+    net-driver-cal-loop deadline (n + net-driver-cal-batch) (fuel - 1)
+   end
+
+ Calibration runs before any session exists, so a frame it polls up and
+ drops is a frame that had no owner. Doing this lazily on the first connect
+ or accept would not have that property: there the frame it dropped could
+ be the SYN.
+
+  net-driver-calibrate : [Network.Read] Integer
+  net-driver-calibrate =
+   let started = hpet-start
+   in let rate = hpet-ticks-per-second
+   in if rate <= 0 then net-driver-poll-fallback
+   else let deadline = hpet-ticks + (rate * net-driver-tick-ms) / 1000
+   in act
+    n <- net-driver-cal-loop deadline 0 net-driver-cal-fuel
+    if n < net-driver-poll-floor then net-driver-poll-floor else n
+   end
+
+  net-driver-poll-interval : Integer
+  net-driver-poll-interval =
+   let v = bit-and (peek-32 net-driver-poll-cell 0) #FFFFFFFF
+   in if v < net-driver-poll-floor then net-driver-poll-fallback else v
 
   net-driver-card-name : Integer -> Text
   net-driver-card-name (c) = if c == net-card-e1000 then "e1000" else "ne2000"

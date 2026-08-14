@@ -37,12 +37,23 @@ $compileScript = Join-Path $Repo 'build' 'compile.ps1'
 $compileArgs = @('-NoProfile', '-File', $compileScript, '-Src', $Src, '-Out', $IrFile,
                  '-Log', $LogFile, '-IrCce', '-Kernel', $(if ($Kernel) { $Kernel } else { Join-Path $Repo 'seed\Codex.cdx' }))
 if ($Passes) { $compileArgs += @('-Passes', $Passes) }
+# A failed compile must not be able to serve the PREVIOUS run's IR. Twice on
+# 2026-08-14 it did: the compile died, both checks below passed anyway, and the
+# plug rechecked a four-day-old artifact while reporting a plausible verdict.
+# Deleting the file first means a silent failure is an absent IR, not a stale
+# one, which is the only failure mode that cannot be misread as a measurement.
+Remove-Item -Force $IrFile -ErrorAction SilentlyContinue
+
 & pwsh @compileArgs 2>&1 | Out-Null
 
 # compile.ps1 reports success on a failed compile, so the log is the gate.
-if (Select-String -Path $LogFile -Pattern 'error CDX' -Quiet) {
+# NOT every compiler error is spelled `error CDX`: an unresolvable cite is
+# `error 3010:` with no prefix, and matching only the CDX form let that class
+# through. Match the number form too.
+$errPat = 'error (CDX|\d{4}:)'
+if (Select-String -Path $LogFile -Pattern $errPat -Quiet) {
     [Console]::Error.WriteLine("FAIL: source did not compile; see $LogFile")
-    Select-String -Path $LogFile -Pattern 'error CDX' | Select-Object -First 5 |
+    Select-String -Path $LogFile -Pattern $errPat | Select-Object -First 5 |
         ForEach-Object { [Console]::Error.WriteLine("  $($_.Line)") }
     exit 4
 }

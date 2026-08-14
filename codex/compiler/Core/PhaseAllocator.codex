@@ -1,8 +1,9 @@
 Chapter: Phase Allocator
+  cites Codex chapter BootPaint (bp-rtc-seconds, bp-log-phase)
 
 Section: Primitives
 
-  pitch : Integer -> Integer between 0 and 4294967295
+  pitch : Integer -> Integer
   pitch (size) =
    let p = __heap-save
    in let advanced = __heap-advance size
@@ -61,27 +62,38 @@ Section: Mountain Base
 Section: Phase Measurement
 
   PhaseStart = record {
-   bivy-origin : Integer between 0 and 4294967295,
-   deck-origin : Integer between 0 and 4294967295
+   bivy-origin : Integer,
+   deck-origin : Integer,
+   started : Integer
   }
 
   PhaseMetrics = record {
    label : Text,
-   bivy-origin : Integer between 0 and 4294967295,
-   bivy-hwm : Integer between 0 and 4294967295,
-   deck-origin : Integer between 0 and 4294967295,
-   deck-end : Integer between 0 and 4294967295
+   bivy-origin : Integer,
+   bivy-hwm : Integer,
+   deck-origin : Integer,
+   deck-end : Integer
   }
 
   phase-start : PhaseStart
   phase-start =
    let bivy = pitch 0
-   in PhaseStart { bivy-origin = bivy, deck-origin = __deck-pos }
+   in PhaseStart { bivy-origin = bivy, deck-origin = __deck-pos, started = bp-rtc-seconds 0 }
+
+ The log row is banked as the phase closes: label, wall seconds (RTC,
+ armed-guarded, zero everywhere but a flight), and megabytes of bivy growth.
+ bp-log-phase also advances the painted phase strip, which is what keeps a
+ long silent phase legible on a board whose only channel is the glass.
+
+  phase-took : Integer, Integer -> Integer
+  phase-took (started) (now) =
+   if now >= started then now - started else now - started + 86400
 
   phase-measure : PhaseStart, Text -> PhaseMetrics
   phase-measure (ps) (label) =
    let hwm = __heap-save
    in let deck-now = __deck-pos
+   in let lg = bp-log-phase label (phase-took (ps.started) (bp-rtc-seconds 0)) ((hwm - (ps.bivy-origin)) / 1048576)
    in deck-record (PhaseMetrics {
     label = label,
     bivy-origin = ps.bivy-origin,

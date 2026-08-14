@@ -18,7 +18,17 @@ param(
     # Enter at __start so the bare-metal runtime init runs. Required by any\n    # payload that reads a disk through block-read-sector; see the block below.
     [switch]$EntryStart,
     # Text to pre-load into the serial input ring, so a payload that reads stdin\n    # can run on a board with no serial port. See the block near BivySaveAddr.
-    [string]$Stdin = ''
+    [string]$Stdin = '',
+    # Force the heap to a fixed physical base via AllocateAddress instead of
+    # AllocateAnyPages. This is the L-FREEDOM bed arm: OVMF satisfies AnyPages
+    # below 4 GB at every RAM size, AMI satisfies it from the top of a big
+    # board, and the divergence is what turned a >4 GB heap into the a5heap
+    # flight's seven-hour hang (HardwareSitting, 2026-08-14). -HeapAt
+    # 0x140000000 under `test-ovmf.ps1 -MemMB 8192` puts the heap at 5 GB and
+    # makes the bed as hostile as the board. Probe arm only, never a flight:
+    # with a nonzero requested base the stub's unwritten-cell 'B' check is
+    # vacuous, because the cell is seeded with the base instead of zero.
+    [long]$HeapAt = 0
 )
 
 Set-StrictMode -Version Latest
@@ -175,6 +185,12 @@ $SysTableAddr = 0x8000
 # zeroed by the page-table build before any helper could read it. Must match
 # X86_64Boot.codex.
 $UefiSystabAddr = 30704
+# uefi-imghandle-addr: the ImageHandle the firmware passed in RCX at entry,
+# kept in r14 by the stub. The UEFI block helpers bind Block I/O through
+# LoadedImage->DeviceHandle from this handle, so they talk to the medium the
+# image booted from rather than whatever LocateProtocol enumerates first.
+# Must match X86_64Boot.codex.
+$UefiImgHandleAddr = 30712
 
 # --- Assemble the UEFI app stub ---
 $ms = [System.IO.MemoryStream]::new()
@@ -258,6 +274,14 @@ $GopGuid = [byte[]]@(
 # booted by a stub that does NOT publish it say so instead of reading whatever
 # happens to be at the address.
 $HandoffAddr = 0x1F000
+
+# Proc 0's scope cells. proc-table-base, proc-scope-offset and
+# proc-net-scope-offset in X86_64Boot.codex; the pid is 0 because
+# emit-load-current-proc derives it from RSP and this stub sets RSP outside the
+# spawn pool. These must move together with those constants.
+$ProcTableBase       = 20480
+$ProcScopeOffset     = 64
+$ProcNetScopeOffset  = 24
 
 # Offsets into the protocol, which are the spec's to choose and not ours:
 #   GOP  + 0x18 -> Mode
@@ -500,17 +524,60 @@ Mark 'c'                                                        # code pages are
 # what fails under edk2 -- measured 2026-07-29, and it fails at 64 MB as well as
 # at 512 MB, so it is the ADDRESS that is unavailable and not the size. The
 # status was ignored, so the stub then used 512 MB it did not own as its stack.
-$bw.Write([byte[]]@(0x48, 0xB8))                                # mov rax, $HeapCeiling
-$bw.Write([BitConverter]::GetBytes([long]$HeapCeiling))
-$bw.Write([byte[]]@(0x48, 0x89, 0x44, 0x24, 0x38))              # mov [rsp+0x38], rax (ceiling IN)
-$bw.Write([byte[]]@(0x48, 0xC7, 0xC1, 0x01, 0x00, 0x00, 0x00))  # mov rcx, 1 (AllocateMaxAddress)
+# AllocateAnyPages, NOT AllocateMaxAddress against the 3 GB ceiling. The
+# ceiling exists for -EntryStart payloads whose page tables map only [0, 3 GB);
+# THIS stub never loads CR3, firmware paging stays, and a heap anywhere in RAM
+# is fine. The ceiling was worse than useless on real firmware: the a5fix
+# flight of 2026-08-13 came back with every heap record reading
+# 00FF00FF00FF00FF -- two MAGENTA pixels -- because the heap pointer ended up
+# AT the framebuffer and every repaint bulldozed the guest's own records. Two
+# mechanisms produce exactly that and both are refused below instead of
+# trusted: a firmware that answers success without writing the returned base
+# into the in/out cell (the old code seeded that cell with the ceiling, so an
+# unwritten cell READ BACK as 0xC0000000, this board's framebuffer base), and
+# a heap range that genuinely overlaps the framebuffer aperture.
+if ($HeapAt -ne 0) {
+    $bw.Write([byte[]]@(0x48, 0xB8))                            # mov rax, HeapAt
+    $bw.Write([BitConverter]::GetBytes([long]$HeapAt))
+    $bw.Write([byte[]]@(0x48, 0x89, 0x44, 0x24, 0x38))          # mov [rsp+0x38], rax (requested base)
+    $bw.Write([byte[]]@(0x48, 0xC7, 0xC1, 0x02, 0x00, 0x00, 0x00))  # mov rcx, 2 (AllocateAddress)
+} else {
+    $bw.Write([byte[]]@(0x31, 0xC0))                                # xor eax, eax
+    $bw.Write([byte[]]@(0x48, 0x89, 0x44, 0x24, 0x38))              # mov [rsp+0x38], rax (sentinel 0)
+    $bw.Write([byte[]]@(0x48, 0xC7, 0xC1, 0x00, 0x00, 0x00, 0x00))  # mov rcx, 0 (AllocateAnyPages)
+}
 $bw.Write([byte[]]@(0x48, 0xC7, 0xC2, 0x02, 0x00, 0x00, 0x00))  # mov rdx, 2 (EfiLoaderData)
 $bw.Write([byte[]]@(0x49, 0xC7, 0xC0))                          # mov r8, HeapPages
 $bw.Write([BitConverter]::GetBytes([int]$HeapPages))
 $bw.Write([byte[]]@(0x4C, 0x8D, 0x4C, 0x24, 0x38))              # lea r9, [rsp+0x38]
 $bw.Write([byte[]]@(0x49, 0x8B, 0x47, 0x60))                    # mov rax, [r15+0x60]
 $bw.Write([byte[]]@(0xFF, 0x50, 0x28))                          # call [rax+0x28]
-AssertAllocOk 'H'                                               # H = heap allocation
+AssertAllocOk 'H'                                               # H = heap allocation status
+# 'B' = firmware said success but never wrote the returned base: the sentinel
+# is still zero, and using it as a heap would put the guest at address 0.
+$bw.Write([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x38))              # mov rax, [rsp+0x38]
+$bw.Write([byte[]]@(0x48, 0x85, 0xC0))                          # test rax, rax
+$bw.Write([byte[]]@(0x75, 0x0D))                                # jnz +13 (over the panic)
+AllocPanic 'B'
+# 'V' = the framebuffer aperture [r12, r12 + r13*4) intersects the first
+# 256 MB of the heap, where every early record and deck lives -- the observed
+# catastrophic mode, refused loudly instead of being erased by the guest's own
+# first repaint. Deliberately NOT the whole heap range: a 2.5 GB arena in a
+# bed legitimately spans an in-RAM framebuffer it never grows into, and a
+# whole-range test would refuse every codex-vm boot. r12/r13 are GopAcquire's
+# base and pixel count, callee-saved and untouched since; rax is the heap base.
+$bw.Write([byte[]]@(0x4D, 0x85, 0xE4))                          # test r12, r12
+$bw.Write([byte[]]@(0x74, 0x2E))                                # jz +46 (no fb -> skip)
+$bw.Write([byte[]]@(0x4C, 0x89, 0xE9))                          # mov rcx, r13
+$bw.Write([byte[]]@(0x48, 0xC1, 0xE1, 0x02))                    # shl rcx, 2
+$bw.Write([byte[]]@(0x4C, 0x01, 0xE1))                          # add rcx, r12  (fb end)
+$bw.Write([byte[]]@(0x48, 0x39, 0xC8))                          # cmp rax, rcx
+$bw.Write([byte[]]@(0x73, 0x1F))                                # jae +31 (heap base >= fb end -> skip)
+$bw.Write([byte[]]@(0x48, 0xBA, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00))  # mov rdx, 0x10000000 (256 MB)
+$bw.Write([byte[]]@(0x48, 0x01, 0xC2))                          # add rdx, rax  (record-arena end)
+$bw.Write([byte[]]@(0x49, 0x39, 0xD4))                          # cmp r12, rdx
+$bw.Write([byte[]]@(0x73, 0x0D))                                # jae +13 (fb >= arena end -> skip)
+AllocPanic 'V'
 Mark 'h'                                                        # heap pages are ours
 
 # A GDT that SYSCALL can actually be given.
@@ -583,6 +650,8 @@ $bw.Write([byte[]]@(0x4C, 0x89, 0x3C, 0x25))                    # mov [SysTableA
 $bw.Write([BitConverter]::GetBytes([int]$SysTableAddr))
 $bw.Write([byte[]]@(0x4C, 0x89, 0x3C, 0x25))                    # mov [UefiSystabAddr], r15
 $bw.Write([BitConverter]::GetBytes([int]$UefiSystabAddr))
+$bw.Write([byte[]]@(0x4C, 0x89, 0x34, 0x25))                    # mov [UefiImgHandleAddr], r14
+$bw.Write([BitConverter]::GetBytes([int]$UefiImgHandleAddr))
 
 # r10 = the heap base the firmware actually gave us, not a hoped-for constant.
 $bw.Write([byte[]]@(0x4C, 0x8B, 0x54, 0x24, 0x38))              # mov r10, [rsp+0x38]
@@ -641,6 +710,32 @@ $bw.Write([byte[]]@(0x4C, 0x89, 0x17))                          # mov [rdi], r10
 # Store 0 at bivy-save-addr
 $bw.Write([byte[]]@(0x48, 0xBF))                                 # mov rdi, BivySaveAddr
 $bw.Write([BitConverter]::GetBytes([long]$BivySaveAddr))
+$bw.Write([byte[]]@(0x48, 0x89, 0x07))                          # mov [rdi], rax
+
+# Empty proc 0's filesystem and network scope.
+#
+# emit-start writes these (X86_64Chapter.codex, emit-set-boot-scope) and a stub
+# that calls opening directly never runs emit-start, so on a board they hold
+# whatever the firmware left in memory. fat16-scope-admits reads the filesystem
+# one before EVERY resolve and refuses the disk unless it is empty or a prefix
+# of the path, so a payload built without -EntryStart mounts its volume and
+# then finds no file on it. codex-vm zeroes RAM, so a bed run has always read
+# the empty text this now writes, and no bed could express the failure.
+$bw.Write([byte[]]@(0x48, 0x31, 0xC0))                          # xor rax, rax
+$bw.Write([byte[]]@(0x48, 0xBF))                                 # mov rdi, proc0 fs scope
+$bw.Write([BitConverter]::GetBytes([long]($ProcTableBase + $ProcScopeOffset)))
+$bw.Write([byte[]]@(0x48, 0x89, 0x07))                          # mov [rdi], rax
+$bw.Write([byte[]]@(0x48, 0xBF))                                 # mov rdi, proc0 net scope
+$bw.Write([BitConverter]::GetBytes([long]($ProcTableBase + $ProcNetScopeOffset)))
+$bw.Write([byte[]]@(0x48, 0x89, 0x07))                          # mov [rdi], rax
+# Cell 36320 (guard-page-base-addr) is the same class: emit-start writes it and
+# only -EntryStart runs emit-start, so on a board it holds firmware leftovers.
+# deck-reservation-guard peeks it before EVERY deck build and pokes a byte at
+# the value it reads whenever the reservation crosses it -- garbage that clears
+# the 1 GB plausibility floor turns that into a stray write at a firmware-owned
+# address. Beds read zero here (QEMU/codex-vm zero RAM), so no bed can express it.
+$bw.Write([byte[]]@(0x48, 0xBF))                                 # mov rdi, 36320 (guard-page base)
+$bw.Write([BitConverter]::GetBytes([long]36320))
 $bw.Write([byte[]]@(0x48, 0x89, 0x07))                          # mov [rdi], rax
 
 # Pre-load the serial input ring, for a board with no serial port.
@@ -768,6 +863,8 @@ if ($ExitBootServices) {
     $bw.Write([BitConverter]::GetBytes([int]$SysTableAddr))
     $bw.Write([byte[]]@(0x48, 0x89, 0x04, 0x25))                   # mov [UefiSystabAddr], rax
     $bw.Write([BitConverter]::GetBytes([int]$UefiSystabAddr))
+    $bw.Write([byte[]]@(0x48, 0x89, 0x04, 0x25))                   # mov [UefiImgHandleAddr], rax
+    $bw.Write([BitConverter]::GetBytes([int]$UefiImgHandleAddr))
 }
 
 # Program the SYSCALL MSRs, exactly as the bare-metal entry does in

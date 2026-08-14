@@ -1116,6 +1116,11 @@ static int hid_nak_tracing(void) {
     return hid_nak_trace;
 }
 static volatile int hid_input_changed = 0;
+static long hid_reringe_calls = 0; /* input-changed re-ring passes */
+static long hid_service_laps = 0;  /* HID service-thread laps */
+/* The scripted-timeline zero. It was a local in main until the pointer
+   timeline had to be applied from the service thread as well. */
+static LARGE_INTEGER hid_timebase;
 static volatile int hid_mouse_fresh = 0;
 static unsigned char hid_nak_last[XHCI_MAX_SLOTS + 1][32][8];
 static unsigned char hid_nak_seen[XHCI_MAX_SLOTS + 1][32];
@@ -1442,6 +1447,15 @@ static int xhci_expected_interval(int speed, int b_interval) {
 static int xhci_expected_esit(int max_packet) {
     return xhci_calibrate_periodic ? max_packet + 1 : max_packet;
 }
+
+/* The transfer-ring walk now has two callers on two threads: the guest's
+   doorbell write on the VP thread, and the HID service thread standing in for
+   a controller polling a periodic endpoint. One lock over both, taken only
+   around the walk itself. */
+static CRITICAL_SECTION xhci_db_lock;
+static int xhci_db_lock_ready = 0;
+static void xhci_db_lock_enter(void) { if (xhci_db_lock_ready) EnterCriticalSection(&xhci_db_lock); }
+static void xhci_db_lock_leave(void) { if (xhci_db_lock_ready) LeaveCriticalSection(&xhci_db_lock); }
 
 static void xhci_handle_doorbell(int db, unsigned int val) {
     if (db == 0) {
@@ -2473,7 +2487,11 @@ static void xhci_write(unsigned long long offset, unsigned int val) {
     }
     if (offset >= 0x800 && offset < 0xC00) {
         int db = (int)(offset - 0x800) / 4;
+        /* Serialised against the HID service thread, which walks the same
+           transfer rings on behalf of a periodic endpoint. */
+        xhci_db_lock_enter();
         xhci_handle_doorbell(db, val);
+        xhci_db_lock_leave();
     }
 }
 
@@ -7125,6 +7143,33 @@ static void nat_handle_tx(unsigned char *frame, int len) {
                 src_ip[0], src_ip[1], src_ip[2], src_ip[3], sport,
                 dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3], dport);
             NatConn *c = nat_find(sport, dport, dst_ip);
+            /* A SYN for a connection we already have is a RETRANSMITTED
+               SYN, not a new one, and it must not re-enter the branch
+               below: that opens a second host socket over c->sock, leaks
+               the first handle, and leaves the guest's payload going to a
+               socket no listener ever accepted. The guest sees its data
+               vanish and the peer sees a reset.
+               A guest retransmits when it has not been answered, so the
+               two live states want opposite things. state 1 is a connect
+               still in flight and the answer is silence: nat_poll_connect
+               sends the SYN+ACK the moment the socket is writable, which
+               is what a real network makes the guest wait for. state >= 2
+               means we already answered and the guest did not hear it, so
+               resend that SYN+ACK rather than leaving it to time out.
+               Nothing made a guest retransmit a SYN until TCP ran over
+               the e1000 model, whose empty receive poll costs a RAM read
+               where the NE2000's costs a VM exit, so the guest's
+               tick-denominated RTO fires about 540x sooner. */
+            if (c && c->active && !c->forwarded) {
+                if (c->state >= 2) {
+                    nat_build_tcp_frame(nat_guest_mac(), c->dst_ip, guest_ip,
+                                        c->dst_port, c->guest_port,
+                                        c->ack_offset, c->guest_isn + 1,
+                                        0x12, /* SYN+ACK */
+                                        NULL, 0);
+                }
+                return;
+            }
             if (!c) c = nat_alloc();
             if (!c) return;
             c->active = 1;
@@ -8667,40 +8712,109 @@ static DWORD WINAPI drip_feed_thread(LPVOID arg) {
     return 0;
 }
 
-/* HID kick thread, and it is the drip-feed's disease one device over.
-   Interrupt-IN delivery under -hid-nak-unchanged happens in the main loop:
-   scripted samples are applied there and the re-ring that completes an
-   armed TD runs there too. The main loop runs only when the guest exits,
-   and a pane loop is pure guest memory -- kbd-take, mouse-pump's event-ring
-   peek, a compare -- so it exits for nothing and the pointer is delivered
-   at the 55 ms kicker's cadence instead of the input's.
+/* Apply any scripted pointer sample whose time has come, then re-ring every
+   HID interrupt endpoint left NAKing so its armed TD can complete.
 
-   Real silicon has no such coupling: a periodic endpoint is polled by the
-   controller every bInterval whatever the CPU is doing. So this is bed
-   fidelity, not a guest defect, and cancelling is the same benign shove
-   the drip feed and the timer kicker already use.
+   Scripted samples go through the same fields the window proc writes, press
+   latch included, so the guest cannot tell a script from a hand. The re-ring
+   is what makes delivery track the INPUT rather than the guest's poll cadence,
+   and it only works because the NAK model leaves a TD armed. Under
+   -hid-instant-complete it is skipped, and skipping it is not why that model
+   drops narrow keystrokes: measured 2026-08-06, running it unconditionally
+   fires twice (make and break) and produces no report, because that model
+   already drained the ring at the guest's last doorbell.
+
+   Called from the main loop and from the HID service thread, which is why the
+   whole body is under xhci_db_lock: the two threads must not interleave the
+   timeline cursor, the pending-sample fields or the ring walk.
+
+   mouse_only is what the service thread passes, and it is not a
+   micro-optimisation. Servicing every HID endpoint off-thread lost keystrokes
+   outright -- usb-hid-combo went got=30 to got=0 -- because the keyboard's
+   make/break pair and its unchanged-report latch were being walked
+   concurrently with the main loop applying them. The pointer is the endpoint
+   that needed rescuing; the keyboard is delivered exactly where it always
+   was. */
+static void hid_service_pending(int mouse_only) {
+    xhci_db_lock_enter();
+    if (inject_mouse_idx < inject_mouse_count && perf_freq.QuadPart) {
+        LARGE_INTEGER mnow;
+        QueryPerformanceCounter(&mnow);
+        double mel = (double)(mnow.QuadPart - hid_timebase.QuadPart) * 1000.0 / perf_freq.QuadPart;
+        while (inject_mouse_idx < inject_mouse_count &&
+               mel >= inject_mouse[inject_mouse_idx].t_ms) {
+            InjectMouse *ev = &inject_mouse[inject_mouse_idx++];
+            int prev_btn = pending_mouse_btn;
+            LONG pressed = (LONG)(ev->btn & ~prev_btn);
+            if (pressed) InterlockedOr(&pending_mouse_btn_latch, pressed);
+            pending_mouse_abs_x = ev->x;
+            pending_mouse_abs_y = ev->y;
+            pending_mouse_btn = ev->btn;
+            pending_mouse_valid = 1;
+            hid_mouse_fresh = 1;
+            hid_input_changed = 1;
+        }
+    }
+
+    if (!hid_nak_unchanged || !hid_input_changed) { xhci_db_lock_leave(); return; }
+    hid_reringe_calls++;
+    /* Only the full pass may clear the flag. A mouse-only pass that cleared it
+       would swallow the keyboard's turn. */
+    if (!mouse_only) hid_input_changed = 0;
+    if (hid_nak_tracing() && hid_nak_dbg < 8) {
+        hid_nak_dbg++;
+        fprintf(stderr, "HIDNAK: input changed, re-ringing seen endpoints (ctl=%p)\n", (void *)hid_nak_ctl);
+    }
+    struct xhci_state *nak_saved = xcur;
+    if (hid_nak_ctl) xcur = hid_nak_ctl;
+    for (int nak_s = 1; nak_s <= XHCI_MAX_SLOTS; nak_s++)
+        for (int nak_e = 2; nak_e < 32; nak_e++)
+            if (hid_nak_seen[nak_s][nak_e]) {
+                if (mouse_only && !(hid_combo && nak_e == 5)) continue;
+                xhci_handle_doorbell(nak_s, (unsigned int)nak_e);
+            }
+    xcur = nak_saved;
+    xhci_db_lock_leave();
+}
+
+/* The HID service thread: it is what a controller polling a periodic endpoint
+   does, and nothing else in the model was doing it.
+
+   Interrupt-IN delivery used to run only in the main loop, and the main loop
+   runs only when the guest exits. A desk PANE loop is pure guest memory --
+   kbd-take, mouse-pump's event-ring peek, a compare -- so it exits for
+   nothing, and the pointer arrived at the 55 ms timer kicker's cadence. The
+   desktop escaped it for one accidental reason: desk-clock reads the CMOS
+   every trip, which is a port exit. Real silicon has no such coupling, so
+   this is bed fidelity rather than a guest defect.
+
+   Cancelling the VP to force main-loop laps was the first attempt and it only
+   reached two thirds: measured, delivery tracked the CANCEL round trip at
+   ~66/s, and Sleep(0) here -- kicking without bound -- measured the same,
+   because a cancel raised while the VP is not running is dropped. Servicing
+   directly off this thread removes the exit path from the question entirely,
+   which is why the ring walk is under xhci_db_lock.
+
+   And then the thread's own lap rate was the cap: Sleep(1) at the default
+   15.6 ms quantum measured 61.8 laps a second, one report a lap, 65.6
+   reports/s. timeBeginPeriod(1) at the CreateThread site takes it to 507.
 
    Measured with a pointer driven at 100 samples/s, before -> after:
-   Calendar 17.8 -> 65.8 reports/s, Calc 18.0 -> 65.8, desktop 102.2 ->
-   102.2 (the arm that was already right, unmoved). The Calendar pane's
-   loop repaints nothing at all, which is what rules its old 17.8 out of
-   being repaint cost; the desktop only ever escaped this because
-   desk-clock reads the CMOS every trip, which is a port exit.
+   Calendar 17.8 -> 102.2 reports/s, Calc 18.0 -> 102.2, Files 102.2, against
+   the desktop's 102.2 unmoved -- every pane now saturates the input. The
+   Calendar pane's loop repaints nothing at all, which is what ruled its old
+   17.8 out of being repaint cost.
 
-   The residual 66 against 102 is NOT the kick cadence: Sleep(0) here,
-   which kicks without bound, measures 65.6 -- identical. Whatever caps it
-   is downstream of this thread and is not diagnosed.
-
-   Gated so a run with no pointer activity is untouched: it wakes on the
-   slow lap unless a scripted sample is still due or the window thread has
-   left input undelivered. */
+   Gated so a run with no pointer activity is untouched: it wakes on the slow
+   lap unless a scripted sample is still due or input is undelivered. */
 static DWORD WINAPI hid_kick_thread(LPVOID arg) {
     (void)arg;
     while (!shutdown_requested) {
         if (hid_nak_unchanged &&
             (hid_input_changed || inject_mouse_idx < inject_mouse_count)) {
             Sleep(1);
-            if (partition) WHvCancelRunVirtualProcessor(partition, 0, 0);
+            hid_service_laps++;
+            hid_service_pending(1);
         } else {
             Sleep(20);
         }
@@ -9738,7 +9852,15 @@ static void set_initial_regs(void) {
         WHV_REGISTER_NAME uefi_names[5] = { WHvX64RegisterRcx, WHvX64RegisterRdx, WHvX64RegisterGdtr, WHvX64RegisterIdtr, WHvX64RegisterR10 };
         WHV_REGISTER_VALUE uefi_vals[5];
         memset(uefi_vals, 0, sizeof(uefi_vals));
-        uefi_vals[0].Reg64 = 0;            /* ImageHandle */
+        uefi_vals[0].Reg64 = 2;            /* ImageHandle -- nonzero pseudo-handle.
+                                              Real firmware never passes NULL, and the guest's
+                                              block helpers treat a zero stashed handle as "no
+                                              stub primed it" and skip the LoadedImage binding
+                                              entirely; HandleProtocol above ignores the handle
+                                              value, so 2 exercises the same chain the board
+                                              runs (2, not 1, so a guest confusing ImageHandle
+                                              with the boot-disk DeviceHandle would be caught
+                                              rather than accidentally right). */
         uefi_vals[1].Reg64 = UEFI_TABLE_PAGE; /* SystemTable */
         uefi_vals[2].Table.Base = 0xA000;   /* GDT base */
         uefi_vals[2].Table.Limit = 39;      /* 5 entries * 8 - 1 (TSS is 16 bytes) */
@@ -13520,6 +13642,7 @@ int main(int argc, char **argv) {
 
     LARGE_INTEGER screenshot_start;
     QueryPerformanceCounter(&screenshot_start);
+    hid_timebase = screenshot_start;
 
     if (watch_addr) watch_init();
 
@@ -13652,6 +13775,12 @@ int main(int argc, char **argv) {
     WHV_RUN_VP_EXIT_CONTEXT ctx;
     /* Start drip-feed thread for input overflow */
     CreateThread(NULL, 0, drip_feed_thread, NULL, 0, NULL);
+    InitializeCriticalSection(&xhci_db_lock);
+    xhci_db_lock_ready = 1;
+    /* The service thread's whole job is a millisecond-scale lap, and at the
+       default 15.6 ms quantum its Sleep(1) measured 61.8 laps a second --
+       which is exactly the rate the pointer was then delivered at. */
+    timeBeginPeriod(1);
     CreateThread(NULL, 0, hid_kick_thread, NULL, 0, NULL);
 
     unsigned long long exits = 0;
@@ -14358,55 +14487,7 @@ int main(int argc, char **argv) {
             }
         }
 
-        /* Scripted pointer injection: apply every sample whose scheduled time
-           has arrived, through the same fields the window proc writes -- press
-           latch included -- so the guest cannot distinguish it from a real hand. */
-        if (inject_mouse_idx < inject_mouse_count) {
-            LARGE_INTEGER mnow;
-            QueryPerformanceCounter(&mnow);
-            double mel = (double)(mnow.QuadPart - screenshot_start.QuadPart) * 1000.0 / perf_freq.QuadPart;
-            while (inject_mouse_idx < inject_mouse_count &&
-                   mel >= inject_mouse[inject_mouse_idx].t_ms) {
-                InjectMouse *ev = &inject_mouse[inject_mouse_idx++];
-                int prev_btn = pending_mouse_btn;
-                LONG pressed = (LONG)(ev->btn & ~prev_btn);
-                if (pressed) InterlockedOr(&pending_mouse_btn_latch, pressed);
-                pending_mouse_abs_x = ev->x;
-                pending_mouse_abs_y = ev->y;
-                pending_mouse_btn = ev->btn;
-                pending_mouse_valid = 1;
-                hid_mouse_fresh = 1;
-                hid_input_changed = 1;
-            }
-        }
-
-        /* Input arrived, so re-ring every HID interrupt endpoint that was
-           left NAKing; its pending TD can complete now. Same thread as the
-           MMIO doorbell path, so the ring walk cannot race the guest's own
-           doorbells.
-
-           This is what makes delivery track the input instead of the
-           guest's poll cadence, and it only works because the NAK model
-           left a TD armed. Under -hid-instant-complete it is skipped, and
-           skipping it is not the reason that model drops narrow
-           keystrokes: measured 2026-08-06, running the re-ring
-           unconditionally fires it twice (make and break) and produces no
-           report, because that model already drained the ring at the
-           guest's last doorbell. There is nothing to deliver into. */
-        if (hid_nak_unchanged && hid_input_changed) {
-            hid_input_changed = 0;
-            if (hid_nak_tracing() && hid_nak_dbg < 8) {
-                hid_nak_dbg++;
-                fprintf(stderr, "HIDNAK: input changed, re-ringing seen endpoints (ctl=%p)\n", (void *)hid_nak_ctl);
-            }
-            struct xhci_state *nak_saved = xcur;
-            if (hid_nak_ctl) xcur = hid_nak_ctl;
-            for (int nak_s = 1; nak_s <= XHCI_MAX_SLOTS; nak_s++)
-                for (int nak_e = 2; nak_e < 32; nak_e++)
-                    if (hid_nak_seen[nak_s][nak_e])
-                        xhci_handle_doorbell(nak_s, (unsigned int)nak_e);
-            xcur = nak_saved;
-        }
+        hid_service_pending(0);
 
         if (inject_key_idx < inject_key_count) {
             LARGE_INTEGER now;
@@ -14461,6 +14542,14 @@ int main(int argc, char **argv) {
                             (elapsed_ms > 0) ? xhci_mouse_doorbells * 1000.0 / elapsed_ms : 0.0);
                         fprintf(stderr, "DIAG: syncs=%ld sync-fps=%.1f\n", shadow_sync_count,
                             (elapsed_ms > 0) ? shadow_sync_count * 1000.0 / elapsed_ms : 0.0);
+                        /* The HID service thread's lap rate BOUNDS the report
+                           rate: one lap delivers at most one report, so a lap
+                           rate below the input rate is the whole story and
+                           reads from outside as a slow pointer. It sat at 61.8
+                           until timeBeginPeriod(1) was asked for. */
+                        fprintf(stderr, "DIAG: service-laps=%ld lap-rate=%.1f/s rerings=%ld rering-rate=%.1f/s\n",
+                            hid_service_laps, (elapsed_ms > 0) ? hid_service_laps * 1000.0 / elapsed_ms : 0.0,
+                            hid_reringe_calls, (elapsed_ms > 0) ? hid_reringe_calls * 1000.0 / elapsed_ms : 0.0);
                 }
                 fprintf(stderr, "DIAG: frames=%d elapsed=%.0fms fps=%.1f tris/frame=%d slices=%d stacks=%d\n",
                     gpu_frame_count, elapsed_ms, fps, gpu_last_tri_count,

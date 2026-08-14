@@ -29,8 +29,62 @@ Section: Flush Outbox
 
 Section: The Poll Clock
 
-  arm64-net-io-max-polls : Integer = 50000000
+ These two came across from NetIO when this chapter was written and they
+ carry NetIO's problem with them. A tick is a count of empty polls, every
+ retransmit bound in NetworkStack is a count of ticks, and so the interval
+ is a wall-clock quantity written as a count. Measured on the x86 side
+ 2026-08-14: one million empty polls cost 15.52 s against an NE2000, whose
+ poll is a port IN and therefore a VM exit, and 0.029 s against an e1000,
+ whose poll reads a descriptor already in RAM. Same 100000, and it meant
+ giving up on a peer after 219 s on one card and after 405 ms on the other.
+
+ A virtio descriptor read is the second kind. So this interval is very
+ probably on the 405 ms side, and it is NOT measured: the only ARM64 bed
+ here is Renode, which is an interpreting simulator, so the ratio between a
+ RAM read and an MMIO read under it is not physical and a number taken there
+ would not justify a constant.
+
+ NetDriver solved this on x86 by measuring the rate once at bring-up against
+ HPET (`net-driver-calibrate`, cell 36328). THE SAME FIX BELONGS HERE AND
+ THIS CHAPTER CANNOT REACH IT YET, because nothing on this lane reads a
+ counter: `Arm64Timer` has `read-cntfrq-el0`, which gives the frequency, and
+ there is no `read-cntvct-el0` to give the count. The whole of what is
+ missing, for whoever takes it:
+
+   1. `sysreg-cntvct-el0 : Integer = #5F02` in
+      `codex/foreword/core/Arm64Encoder.codex`, beside the three CNT
+      registers already there. **That file is the foreword, so this half is
+      seed-affecting and wants the build token.** The value is derived, not
+      guessed: the encoding those three use is
+      `((op0-2) << 14) | (op1 << 11) | (CRn << 7) | (CRm << 3) | op2`, which
+      reproduces `sysreg-cntfrq-el0` #5F00, `sysreg-cntp-tval-el0` #5F10 and
+      `sysreg-cntp-ctl-el0` #5F11 exactly, and CNTVCT_EL0 is op0 3, op1 3,
+      CRn 14, CRm 0, op2 2.
+   2. `a64-rt-read-cntvct-el0 = arm64-mrs 0 sysreg-cntvct-el0 & arm64-ret`
+      in `codex/plugs/arm64/Arm64Runtime.codex`, recorded and emitted the
+      way `read-cntfrq-el0` is. The emit chain there is numbered
+      sequentially, so inserting into it renumbers what follows.
+   3. Then this section calibrates exactly as NetDriver does: poll in
+      batches, read the counter once per batch and not once per poll, and
+      keep a floor so a dead counter cannot produce a zero interval.
+
+ Until that lands, the interval below is the uncalibrated constant and is
+ known to be wrong rather than believed to be right.
+
   arm64-net-io-tick-interval : Integer = 100000
+
+ The cap is expressed in ticks rather than as a second literal, which is
+ what keeps it above the give-up ladder whatever the interval becomes.
+ net-rto-max-tries is 5 and every backoff is clamped at net-rto-max-ticks
+ 48, so give-up takes at most 288 ticks; a cap below that ends the loop by
+ FUEL, which returns exactly what an ordinary timeout returns, instead of by
+ give-up, which sets TcpClosed and says so. At the interval above it is
+ 50000000, the literal this line carried before.
+
+  arm64-net-io-max-ticks : Integer = 500
+
+  arm64-net-io-max-polls : Integer
+  arm64-net-io-max-polls = arm64-net-io-tick-interval * arm64-net-io-max-ticks
 
   arm64-net-io-conn-closed : Arm64NetIOState -> Boolean
   arm64-net-io-conn-closed (st) = when ((((st.transport).session).conn).state)
@@ -48,9 +102,14 @@ Section: Listen and Accept
    let r = net-listen ((st.transport).session)
    in Arm64NetIOState { vnet = st.vnet, transport = TcpTransportState { session = r.session, recv-buf = (st.transport).recv-buf, recv-base = (st.transport).recv-base, recv-len = (st.transport).recv-len, recv-cap = (st.transport).recv-cap, messages-sent = (st.transport).messages-sent, messages-received = (st.transport).messages-received } }
 
+ Accept spelled its cap as a bare 50000000 until 2026-08-14 while the named
+ constant sat six lines above holding the same value. Latent rather than
+ live, which is the point: changing the constant moved every other loop in
+ this chapter and left this one behind, and nothing would have said so.
+
   arm64-net-io-accept : Arm64NetIOState, Integer -> Arm64NetIOState
   arm64-net-io-accept (st) (tries) =
-   if tries > 50000000 then st
+   if tries > arm64-net-io-max-polls then st
    else let hp = __heap-save
    in let recv = virtio-net-poll-frame (st.vnet)
    in if recv.has-frame == False then let restored = __heap-restore hp

@@ -6,6 +6,12 @@ Damian's ruling, 2026-08-11. **Dump a stick before you flash over it, put
 the dump there, and add a row below.** Nothing else in this document is
 worth reading first if you are holding a stick.
 
+Damian's ruling, 2026-08-14. **No flash without a same-bytes full-loop
+bed rehearsal, and a board defect is not closed until a bed arm
+expresses it.** The recipe and the account are the 2026-08-14 A5 entry
+below; the lessons are L-REHEARSE and L-FREEDOM in
+`docs/PM/Active/Stories/LESSONS.md`.
+
 ```powershell
 # 1. dump before flashing. ELEVATED -- it opens \\.\PhysicalDrive raw.
 #    -DiskNumber, not -Disk. Read-only: no writes and no mount, which is
@@ -23,6 +29,11 @@ pwsh build\dump-usb.ps1 -DiskNumber 2 -Out D:\Projects\stick-archive\<what>-<yyy
 | `before-asdeflight-20260813.img` | `AAEC57B9 A51E0FFD 1FD72EC2 396938B9 25538610 103DA90A 53C9FE07 932F8C56` | read off disk 2 by blu on 08-13 before `asdeflight.img` went over it. **Not a duplicate of anything already here** -- it differs from `vmxprobe-returned-20260813.img` and from every other row. Root directory holds `BOOTX64.EFI` and `SOURCE.SRC` and **no `CODEX.CDX`**, so it is a source-carrying image rather than the vmxprobe already on file. Owner unidentified; whoever recognises it should say so in this row. |
 | `vmxprobe-returned-20260813.img` | `2FCF8F98 994DFE45 7ABE6E6F BEC323F8 D6DFE479 477FA2C0 B761A90C 154AD0CE` | the VT-x flight as it came back 2026-08-13. Carries a 124-byte `IDENTITY.DAT` whose key was generated on the ASUS during the first-boot wizard: **the only copy**. Six sectors differ from what was flashed and all six are named in that flight's entry. |
 | `before-vmxprobe-20260813.img` | `190911B8 988A645D 622DAB1F C9664AAC C94560E8 2642D462 92758EB1 CB93FC1C` | disk 2 as it stood 2026-08-13 16:31, read off before `vmxprobe.img` went over it. A diagnostic image, per Damian; not known to have flown. Dumped under the standing ruling rather than because it was believed precious. |
+| `before-a5fix-20260813.img` | `E4959969 BE674761 4AF93CD6 0EFFCD8D 8BC1DC7A 1980EB1F 005F2EF0 77E05BBA` | disk 2 as it stood 2026-08-13 21:20, read off before `a5fix.img` went over it. Differs from `vmxprobe-returned-20260813.img` although no flight intervened, so something on the host touched the stick between the two dumps -- which is the standing ruling paying for itself. |
+| `a5fix-returned-20260813.img` | `089DF895 2473E9F6 9E3A7EAA 225B6E3A FD54CD15 78D141F6 D9C1361A F1661A18` | the a5fix flight as it came back 2026-08-13 21:45: the MAGENTA stall whose DIAG lines read every volume field as 00FF00FF00FF00FF, two magenta pixels. Photographed; the account is in the a5fix entry. Dumped before `a5mem.img` went over it. |
+| `a5mem-returned-20260813.img` | `86C3DD60 FF710EC6 0B4973D8 BF13F626 C19A4EEA B61262F2 2F80F0F6 3EAAC5FD` | the a5mem instrument flight as it came back 2026-08-13: the run whose DIAG mem lines scrolled off the glass before the failure line landed. Dumped before `a5heap.img` went over it. |
+| `a5heap-returned-20260814.img` | `AC4AF338 76DDDD36 FA5C1550 09DC114B 6542A4DB 2083E465 1150271E 1489AED0` | the a5heap flight as it came back 2026-08-14 after seven-plus hours of ORANGE. Root holds SOURCE.SRC and **no OUT.CDX, no OUT.TXT**: the guest died before writing a byte, which is what the UD2-at-pitch diagnosis in the 2026-08-14 entry predicted. Dumped before `a5flight.img` went over it. |
+| `a5flight-returned-20260814.img` | `5ED8A6D4 5343819A 545EA7A7 97682A81 84251F71 7254A96F 36BB018E E2160F99` | THE GREEN A5 FLIGHT as it came back 2026-08-14. Root holds `OUT.CDX` (2,790,018 bytes, `AB3A207EFB9279A6`, byte-identical to the host control) and `OUT.TXT` ("OK OUT.CDX 2790018"), both written by the compiler running on the ASUS. The account is in the 2026-08-14 entry. |
 
 **Why not `build-output/`, which is where everyone put them until now:**
 the `clean` phase of every gate run wipes it, and a gate is the most
@@ -43,6 +54,254 @@ other 16 MB images sitting in the fleet's `build-output/` directories on
 **Say where, in this document, in the entry for that flight.** Older
 entries say only "on blu's box", and that vagueness is half of what made
 `build-output/` look like a safe habit.
+
+## THE SITTING QUEUE: what is waiting on metal, in the order it should fly
+
+**This is a queue Damian draws from, not a request.** His standing ruling
+holds: agents do not propose flights or sittings. What this section exists
+for is that when he has the time and his back can take it, the sitting is
+already designed, the order is already argued, and nobody spends the first
+half hour of it deciding what to ask. Opened 2026-08-14 at his direction.
+
+**The scarce resource is his back, not compute.** Everything below is
+therefore organised as ONE stick and ONE boot answering as many questions as
+it can, rather than as a ladder of flights. A question that cannot ride the
+same boot as the others says so and says why.
+
+### The standing shape, and every one of these was bought with a lost flight
+
+1. **One image, many arms.** Two flights cost twice what one does and the
+   second one is the expensive half.
+2. **Bank before you risk (L-BANK).** Order the arms so the cheapest and
+   most irreversible readings land on the glass before anything that could
+   kill the box. **What wedged the machine on 2026-08-11 is still
+   unexplained** and it was NOT `CTRL.RST` (that write is discarded on this
+   part, see the 08-13 entry). So treat a reset, a ring reprogram or a
+   receiver enable as potentially terminal, and put them last, after
+   everything they could take down with them.
+3. **A pure READ comes before any write, always.** The touch row is the
+   control that separates "our code did it" from "the firmware had already
+   done it", and once anything has been written that control cannot be
+   recovered on that boot. This is what made the 08-13 link result a
+   measurement rather than a hope.
+4. **Every arm paints a row.** The glass is the only channel that has never
+   failed. **The F12 bank HAS failed**: 2026-08-13 returned `no esp s1 m3 c4
+   p1 w1964712320 f945044 l1 r1`, a USB transaction error in the CBW phase
+   reading the GPT header sector, so the screenshot never reached the stick.
+   Design for the photograph and treat a written bank as a bonus.
+5. **Write down what a pass and a fail look like BEFORE it flies.** A
+   photograph of a number nobody predicted is a number nobody can read. Put
+   the expected value in the row's own table below.
+6. **Name what would falsify it.** An arm that cannot fail has not measured
+   anything, and this sheet has shipped two of those.
+7. **Bed-verify with a control and a negative arm first**, including forcing
+   the failure the arm exists to catch. The bed cannot answer these
+   questions, but it can prove the instrument is not broken.
+
+### The queue
+
+| # | Question | Owner | Unblocks | Risk to the box |
+|---|---|---|---|---|
+| NIC-1 | Does the real part arrive with its receiver already running? | blu | B2c, and the honesty of `-e1000-preconfigured` | none, pure read |
+| NIC-2 | How long is an empty receive poll on the real I219-V? | blu | B3, B4, every retransmit bound in the stack | none, read and poll only |
+| NIC-3 | Does a frame actually move, in and out, on the real part? | blu | B2c | writes rings, enables RX/TX |
+| NIC-4 | Can the stack hold a real TCP conversation with a real peer? | blu | B3, then B4 | as NIC-3 |
+| NIC-5 | What wedged the box on 2026-08-11? | blu | nothing; it is the one open unknown | terminal by construction |
+
+**Fly them in that order on one boot.** The order is not a preference: NIC-1
+must precede NIC-3 because a write destroys its control, NIC-2 must precede
+NIC-3 because a wedge in NIC-3 loses NIC-2's reading, and NIC-5 goes last
+because it is the arm most likely to end the boot.
+
+### NIC-1. Does the real part arrive with its receiver already running?
+
+**Why it matters.** `e1000-quiesce` exists because `e1000-setup-rx`
+programmed the ring registers before disabling the receiver, which on a part
+that never resets yields `recv happened: no` with every other aggregate
+reading healthy. `codex/test/e1000-unresettable` pins that with
+`-e1000-preconfigured`, and **that model's premise is inferred, not
+measured**: nobody has read `RCTL` off the real board before touching it.
+If the real part arrives with `RCTL.EN` clear, the fix is still correct but
+the model is describing a hazard this board does not have, and that belongs
+in the record.
+
+**The arm.** A read-only touch row, before `net-driver-bring-up` and before
+any write at all: `RCTL`, `TCTL`, `RDBAL`, `RDLEN`, `STATUS`, `CTRL`.
+
+**Pass** is not a value, it is a reading, and either answer is a result.
+`RCTL` bit 1 set means the receiver is live on arrival and the model is
+right. Clear means it is not.
+
+**Falsified by** `STATUS` or `CTRL` reading as `0xFFFFFFFF` or `0`, which
+says the BAR is wrong and every other number on the screen is noise. The
+08-13 flight read `STATUS=0x40080080 CTRL=0x180240`, so those two are the
+known-good pair to compare against.
+
+### NIC-2. How long is an empty receive poll on the real I219-V?
+
+**Why it matters, and it is the reason this queue exists at all.** `NetIO`
+counts a tick as a number of empty receive polls, and until main 15013 that
+number was the fixed 100000 calibrated against the NE2000. Measured in the
+bed 2026-08-14: one million empty polls cost **15.52 s on the NE2000 and
+0.029 s on the e1000**, because an NE2000 poll is a port IN and therefore a
+VM exit while an e1000 poll reads a descriptor already in RAM. Every bound
+in `NetworkStack` is a count of ticks, so that spread meant give-up at 219 s
+on one card and 405 ms on the other. `net-driver-calibrate` now measures the
+rate at bring-up and stores it in cell 36328.
+
+**The real part reads its descriptor out of RAM exactly as the model does,
+which is WHY the calibration is expected to hold, and that expectation has
+never been measured.** It is the single assumption the whole of B3 and B4
+now rest on.
+
+**The arm** is `codex/test/net-poll-calibrated` with its band judgement
+replaced by the raw numbers, because on metal the number IS the new fact:
+print the card, the calibrated interval, `hpet-ticks-per-second`, the
+measured milliseconds for one calibrated interval, and the measured
+milliseconds for the old 100000 constant as the built-in control.
+
+| row | bed, e1000 | bed, NE2000 | what metal decides |
+|---|---|---|---|
+| `interval` | 2,266,000 | 7,000 | the poll cost on the real part |
+| `tick ms` | 66 | 105 | in the 10..1000 band or not |
+| `control ms` | 2.9 | 1550 | what the old constant would have meant on this board |
+
+**Pass:** `tick ms` inside 10..1000. **Fail:** outside it, which says the
+calibration does not transfer to the real part and every retransmit bound is
+wrong on metal in a way no bed can see.
+
+**Falsified by** `hpet-ticks-per-second` reading 0 or absurd, which voids
+every duration on the screen. Print it, do not assume it.
+
+### NIC-3. Does a frame actually move, in and out?
+
+**Why it matters.** B2 proved the LINK comes up (08-13: touch reads `LU=0`
+with a live cable, both arms then read `LU=1 FD=1 SPEED=1000`). B2c's fix is
+bed-only. Nothing has put a byte on the wire from this board.
+
+**The arm.** After NIC-1 and NIC-2 have painted: bring up, send a broadcast
+ARP or a DHCP DISCOVER, and poll for anything at all. Paint the descriptor
+status words, not just a verdict, because "nothing came back" and "the ring
+never advanced" are different failures and only the descriptors separate
+them.
+
+**Pass:** any received frame with a non-zero length. **Fail with a
+discriminator:** RDH/RDT moved but no frame means the ring is being written
+and we are not reading it; neither moved means the receiver is not running.
+
+**This is the first arm that writes.** Everything above it is already on the
+glass by now, which is the whole point of the ordering.
+
+### NIC-4. A real TCP conversation with a real peer
+
+**Why it matters.** As of main 15013 the stack holds a real TCP
+conversation over the e1000 MODEL, against a real Windows peer through
+codex-vm's NAT, including under the real-part arms. On metal there is no
+NAT: the peer is whatever is on Damian's LAN.
+
+**Do not schedule this until NIC-2 and NIC-3 have passed.** It rests on
+both, and a failure here with either of them unmeasured is uninterpretable.
+
+**The arm** wants a peer that answers without negotiation, and the fewest
+moving parts is a fixed IP and an ICMP echo before any TCP is attempted, so
+that "the network does not answer" and "our TCP is wrong" are separable.
+
+**Falsified by** the absence of a control: if nothing on the LAN answers a
+ping from a known-good machine on the same cable, the arm proves nothing and
+the sitting should stop there.
+
+### NIC-5. What wedged the box on 2026-08-11?
+
+**It is the one open unknown in this track, and the entry that used to
+explain it is wrong.** The 08-11 flight wedged and it was read as
+`CTRL.RST`; 08-13 established `CTRL` is read-only on this part, so `RST` was
+never set and `e1000-await-reset` answers `settled=1` on its first read
+without anything having happened. **Do not pursue the cold-versus-warm reset
+hypothesis, it is dead.** What actually wedged the machine is unaccounted
+for.
+
+**This arm goes last on any boot it rides, because it is the arm designed to
+reproduce a hang.** Everything else must already be photographed.
+
+**It may not be worth flying at all**, and that is a real option: the
+capability it threatens is one nobody needs, the fleet has worked around it,
+and an unexplained wedge that nothing triggers costs less than a boot that
+ends early. Left in the queue because an unexplained hang on the machine we
+are building an OS for is worth a line, not because it is scheduled.
+
+### NOT in this queue, and why
+
+- **The register audit.** COMPLETE. Do not re-run it, and `e1000-phy-addr =
+  1` is correct, do not "fix" it.
+- **ASDE.** CLOSED. The bit is not writable on this part, measured across
+  two flights with `CTRLback=0x180240 ASDEbit=n` and all four SLU rows
+  unchanged after clearing SLU.
+- **The cold-versus-warm reset.** Dead, see NIC-5.
+- **Anything the bed can answer.** `-e1000-ctrl-ro`, `-e1000-phy-link` and
+  `-e1000-preconfigured` reproduce this board on every row that has been
+  compared, and B2c was found and fixed entirely in the bed. A question that
+  a flag can ask does not earn a sitting.
+
+## FLOWN 2026-08-14, GREEN: A5 COMPLETE. The compiler compiled itself on the ASUS and wrote the result back byte-identical.
+
+**The flight:** `a5flight.img` (2026-08-14 build, SHA `DBE8DC52 5CD36AA4
+4497C916 3B52B5D9 9099B592 E41132D0 B9C1811673704D78`, 16 MB; not the
+2026-08-09 image of the same name). Boot from bare UEFI, BUILD header
+with datetime, file, bytes and FNV fingerprint, WHITE read bar over
+5,489 sectors, CYAN, ORANGE about one minute with the painted phase
+strip advancing, blue write stage, white hold. Returned stick carries
+`OUT.CDX` 2,790,018 bytes `AB3A207EFB9279A6`, **byte-identical to the
+host control** (seed x current tree, plain CDX mode), plus `OUT.TXT`
+"OK OUT.CDX 2790018".
+
+**The defect that held A5 for days, and why no bed ever saw it:** the
+ASUS's AMI firmware satisfies AllocateAnyPages from the TOP of RAM, so
+the payload's heap lands ABOVE 4 GB. Several compiler types declared
+heap pointers as `Integer between 0 and 4294967295`, and bounded
+signatures are enforced with UD2 traps (X86_64.codex, bounded
+signatures stage B). The first `pitch` at compile start trapped, the
+firmware's own exception handler wedged with nothing on the glass, and
+the screen froze on whatever was last painted: the seven-hour ORANGE
+of the a5heap flight. OVMF and codex-vm allocate BELOW 4 GB at every
+tested RAM size, so no stock bed could express the condition. It was
+reproduced by patching the stub to AllocateAddress at a fixed 5 GB
+base under an 8 GB OVMF bed (#UD at `pitch+0x46`), and the fix
+verified the same way.
+
+**Fixed:** widened the heap-address-carrying types to plain `Integer`
+(`PhaseAllocator.codex`: `pitch` return, `PhaseStart`, `PhaseMetrics`;
+`EmitAllocator.codex`: `code-buffer`, `data-buffer`). The stub also
+zeroes cell 36320 (`guard-page-base-addr`), which only `emit-start`
+writes and which is firmware garbage in a UEFI tenant.
+
+**Build facts that cost this campaign a day, in one place:**
+
+- **Firmware-TENANT flight payloads MUST be compiled `compile.ps1
+  -Uefi`.** The flag puts `uefi` on the mode line and the compiler emits
+  firmware-tenant I/O helpers. Without it the payload gets the
+  bare-metal helpers, reads zeroes down that path, and fails its volume
+  mount with `volume ok=0` under any firmware, bed or board. The
+  exception is deliberate and documented at the `-Ebs` driver-truth
+  probes below: a post-ExitBootServices payload drives the medium with
+  our own drivers and must NOT carry `-Uefi`; the two are mutually
+  exclusive by design, so read which kind of payload you are building
+  before applying either absolute.
+- **Flight images MUST be built `-TotalSectors 32768`** (16 MB). The
+  8 MB default leaves a 6 MB ESP, and PE (2.6 MB) + SOURCE.SRC
+  (2.8 MB) + OUT.CDX (2.8 MB) do not fit: the compile succeeds and the
+  write-back dies `DISK-OUT: FAILED -1`. The BUILD NAY footer caught
+  this in the bed before it cost a flash.
+- **Kernels are interchangeable.** The depot seed, the archived Suts
+  and the pre-fix seed all compile the same source to byte-identical
+  CDX, measured three ways 2026-08-14. Chasing a "bad kernel" here is
+  chasing a ghost; check the mode line and the image geometry first.
+- The full self-compile takes ~83 s under the OVMF bed and about a
+  minute on the board. The "UEFI bed is 25x slower" figure from
+  2026-08-13 does not reproduce with the current payload.
+
+**Cosmetic defect, open:** the success path paints the white hold band
+over the BUILD YAY footer text, so the verdict is unreadable on the
+glass at the end. The footer should print after the band or above it.
 
 ## FLOWN 2026-08-13, GREEN: `vmxprobe.img`. VT-x IS AVAILABLE ON THE ASUS.
 
@@ -1468,15 +1727,256 @@ What the bed shows about the difference, measured the same day
 
 `-EntryStart` is the variable and the heap size is not. **Every payload that
 has ever painted on this board is built WITHOUT it** (`build-option-a.ps1`
-never passes it), and **every silent A5 flight has had it**, because
-`block-read-sector` needs the bare-metal runtime init it turns on. That is a
-correlation across three flights and one bed matrix, not a diagnosis: the A5
-compiler payload DOES run to completion in the bed with `-EntryStart`, so the
-bed does not yet reproduce the board's failure for the artifact that flew.
+never passes it), and **every silent A5 flight has had it.**
 
-**Do not re-fly either A5 stick until a payload with the A5 flags has been
-shown to paint anything at all.** The next instrument is that and nothing
-else, and it boots in seconds instead of twenty minutes.
+### What `-EntryStart` actually does, and why it cannot work on this box
+
+The paragraph that used to sit here said `block-read-sector` needs the
+bare-metal runtime init the flag turns on, called the pattern a correlation
+rather than a diagnosis, and grounded both A5 sticks. **The first clause was
+stale and the grounding was the wrong conclusion.** `-Uefi` compile mode (CL
+14398) moved block I/O onto firmware helpers, which is AFTER the 2026-08-08
+measurement the flag's own comment block cites.
+
+`-EntryStart` enters at `__start`, and `__start` is not an init. Read it at
+`X86_64Chapter.codex:364-444`: `cli`, reload RSP from `ram-size-addr`, point
+the deck at `bare-metal-heap-base`, build a PML4 and load CR3, load its own
+IDT and TSS, remap the PIC, **`emit-wait-for-tick` (line 434)**, then
+`emit-ata-init` (437), `emit-smp-init`, `emit-nic-init`. That is a bare-metal
+hardware takeover executed while UEFI boot services are still live and while
+the payload still needs those services for every disk read and every ConOut
+write. codex-vm emulates exactly that legacy hardware, so it passes in the
+bed. This box does not, so the tick never arrives. **A twenty-minute hold on
+the stub's own dark green is a spin loop, not a crash**, which is what all
+three flights were.
+
+**Why nobody saw it: the stub's entire progress and failure channel is a wire
+this box does not have.** `Mark`/`AllocPanic` (`cdx-to-pe.ps1:205-227`) write
+one letter to COM1 and COM2 and halt. There is no serial port on the ASUS. The
+stub does paint, but only two states: dark blue if it dies inside itself, dark
+green once control passes to the guest (`cdx-to-pe.ps1:239-243`). **All three
+flights were green, so every allocation succeeded and the stub handed off
+cleanly** -- which rules the stub out entirely and puts the fault in `__start`.
+
+**`-HeapPages` is inert under `-EntryStart`,** because `__start` discards the
+firmware's allocation two instructions in. That is why the bed matrix above
+found heap size not to be the variable: it was not being used. Drop the flag
+and the number starts mattering: at the old 32768 pages (128 MB) the
+self-compile dies OUT OF MEMORY with the deck past the stack top, and at
+393216 (1.5 GB) it faults in `compile-type-check` having reached 1,567 MB.
+
+### Measured 2026-08-11: the payload runs with no `-EntryStart` at all
+
+`-Uefi`, **no `-EntryStart`**, `-HeapPages 655360` (2.5 GB), the full
+2,779,145-byte concatenated compiler source. All six rungs, WHITE,
+`DISK-OUT: OK OUT.CDX 2759023`. `OUT.CDX` walked back out of the image over
+its 5,389-cluster chain is **byte-identical to the host compile**, SHA-256
+`9E823495 EB7AF7A2 3EBD300D B8BCEE83 1ABE9D23 9F730A52 6380E18B E40B7F9A`.
+
+No compiler change, no build-script change, no seed. Only the flags moved.
+
+**The honest gap: the bed still does not reproduce the board's failure.**
+`-EntryStart` works in codex-vm. The mechanism above is read out of the source,
+not observed on the board. What IS measured is that the payload flown on
+2026-08-11 needs none of it and produces the right bytes without it.
+
+## MEASURED ON METAL 2026-08-13: four facts, from the first flight that printed numbers.
+
+The DIAG build (`disk-diag`, stamp in `opening.codex`) prints integers only,
+immediately after the volume rung, and every value below is read off the ASUS.
+
+1. **The board runs exactly what is flashed.** The stamp printed. Three earlier
+   sittings had produced identical screens across three different builds, and
+   "the board is running something else" was a live hypothesis; it is dead.
+2. **`scope 0 net 0`.** The proc-0 scope cells are clean, so the scope gate was
+   NOT the cause. It was fixed in the stub the same day on the strength of a
+   sabotage arm that proved a dirty cell is SUFFICIENT to produce the symptom.
+   Sufficient is not necessary, and the board said so. The stub fix stays --
+   the cells genuinely were uninitialised without `-EntryStart` -- but it bought
+   nothing here.
+3. **`ring w 32 r 16`, against `w 16 r 16` in every bed.** `emit-read-line-helper`
+   polls COM2's LSR at 0x2FD and `emit-uart-poll-drain` polls COM1's at 0x3FD
+   before every character. **A machine with no 16550 floats those ports to
+   0xFF, so bit 0 reads as "data ready" forever** and the drain appends one
+   phantom byte per character read: 16 characters consumed, 16 phantoms, 32.
+   Bounded (one byte per call, no loop) and harmless here because they land past
+   the read position, but it is a real defect on any board without a UART and
+   codex-vm cannot express it -- its UART honestly reports empty.
+4. **`read-line`'s SECOND result cannot be dispatched on.** `DIAG path len`
+   never printed and neither did its `None` arm, so the failure is the `when`
+   itself, not `text-length`. The first call's value is sound (the mode line
+   reaches `dispatch-on-mode` and selects DISK) and the ring contents are sound
+   (`r 16`, both lines consumed). The bytes are right and the value built from
+   them is wrong. Not yet diagnosed.
+
+**With the path replaced by the literal `SOURCE.SRC`, `fat16-resolve-path` still
+answered None on metal.** So the refusal is in the scan, with the scope proven
+open. The volume is the live suspect and is unmeasured: `fat16-boot-volume`
+takes the first usable GPT partition and the ladder only ever checked
+bytes-per-sector, which any real FAT volume on the machine passes -- including
+one on a different disk, which would mount cleanly and hold no `SOURCE.SRC`.
+`disk-diag-vol` prints the geometry to settle it; our own image is
+`part 2048 bps 512 spc 1 / fat 2049 root 2257 ents 512 / data 2289 total 26591`.
+
+**An instrument defect that destroyed evidence, and it was mine.**
+`disk-no-source` printed its reason and then `disk-rung` repainted the WHOLE
+SCREEN magenta and held, erasing the text milliseconds after it appeared -- on
+a board whose only log is the glass. The operator saw "text, then solid
+magenta" and the diagnosis was gone. Failure holds now paint a band along the
+bottom (`bp-hold-band`), so a printed reason survives the colour that follows
+it. Generalises: on this board, never repaint full-screen after printing.
+
+## CONFIRMED ON METAL 2026-08-13: `-EntryStart` spins forever on this board.
+
+`a5bigflight.img` (which carries the flag) was flown and held the stub's dark
+green for over twenty minutes, never painting CYAN, and the returned stick had
+no `OUT.CDX`. That is the `emit-wait-for-tick` spin the section above predicted
+from the source, now observed. **The prediction was made 2026-08-11 and the
+flight that tested it was flown by mistake**: reek flashed a `-EntryStart`
+image over a returned no-`-EntryStart` stick that was stalling at MAGENTA, so
+the same trip also cost the magenta datum. Every A5 image must be built
+without the flag; `build/boot/a5flight.img`, `a5flight2.img` and
+`a5bigflight.img` all carry it and all three are dead.
+
+## DIAGNOSED AND FIXED 2026-08-13: every MAGENTA stall was the WRONG VOLUME. Fly `a5fix.img`, SHA-256 `4FA6CB66 8F5C3313 EA757719 C5912023 B27277FC 719A86CC D4AA147B 3BDB0A41`.
+
+**The mechanism.** The `-Uefi` block helpers bound their device with
+`LocateProtocol`, which returns the FIRST Block I/O handle in the firmware's
+handle database, and the UEFI spec leaves that order unspecified. Every bed
+has exactly one disk, so no bed could ever present a wrong first handle
+(L-GAP); a real machine presents raw disks AND per-partition handles for
+everything attached, in whatever order its firmware built them. A foreign FAT
+volume mounts cleanly (`bps == 512` is the only thing the volume rung checks)
+and holds no `SOURCE.SRC`, which is exactly the metal picture: volume rung
+green, literal path unresolvable, scope clean.
+
+**The fix (CL 14694), three layers, each with a fallback to the old path:**
+the stub stashes the firmware's ImageHandle at cell 30712 beside the
+SystemTable; both UEFI block helpers bind
+`ImageHandle -> LoadedImage -> DeviceHandle -> Block I/O` (the device the
+image BOOTED from, mandatory protocols only) and fall back to
+`LocateProtocol` when the cell is zero or any link refuses;
+`fat16-boot-volume` probes LBA 0 as a BPB before the 2048 fallback, because a
+DeviceHandle is normally a PARTITION handle, through which LBA 0 is the
+volume's own boot sector and the GPT read fails. The probe reads bytes 11/13
+raw before letting `fat16-init` near the sector -- `fat16-parse-bpb` divides
+by both, and a protective MBR holds zeroes there (the `disk-arm` nosource arm
+hung on exactly that divide until the probe went in). The DISK path's mount
+is a ladder judged by resolving `SOURCE.SRC`, not by the BPB alone.
+
+**Bed evidence, all on seed `CE8246EB` + this CL's source:**
+
+| arm | result |
+|---|---|
+| `disk-arm.ps1`, all six arms, codex-vm | calibrated: pass wrote, every forced failure painted its stage |
+| OVMF (real UEFI), USB stick only | **end to end**: LoadedImage gave the PARTITION handle, GPT read failed, LBA-0 probe mounted `part 0`, source found, compiled, `DISK-OUT: OK OUT.CDX 84593`, artifact **byte-identical to the host compile** (`9DBC101E...`) |
+| OVMF, decoy FAT disk seated at SATA index 0 | identical green run -- the wrong-disk topology cannot reach the fix |
+| codex-vm, full 2.8 MB self-compile at `-HeapPages 655360` | `OK OUT.CDX 2780236`, **byte-identical to the host control** (`4AA809C4...`), 5,431-cluster chain complete |
+| OVMF, OLD binding (stub without the cell) + decoy | vacuous: OVMF happened to order the stick's raw disk first and it passed, so **no bed reproduces the ASUS's ordering**; the metal evidence stands alone, and the fix does not depend on ordering at all |
+
+Two things the OVMF arms surfaced beyond the volume: `__uefi_print` DOES
+render on real firmware (every DIAG line above came off OVMF's ConOut), and
+128 MB is no longer enough heap for any real compile without `-EntryStart`
+(`OUT OF MEMORY` after the source resolve; the bed had been hiding it because
+`-EntryStart` payloads ignore `-HeapPages` entirely, L-ARENA). The flight
+image carries 2.5 GB.
+
+**The flight card, one boot:**
+
+- Image: `build/boot/a5fix.img` (in the depot with CL 14694). Payload is the
+  compiler `-Uefi` on seed `CE8246EB`, no `-EntryStart`, `-HeapPages 655360`,
+  `SOURCE.SRC` = the LF 2,800,253-byte concatenated compiler source.
+- Colours are the `a5noentry` table below, plus: MAGENTA with a growing WHITE
+  bar is the source read (5,469 firmware calls over USB -- minutes), a CYAN
+  bar is the CCE conversion, ORANGE is the compile and holds blind for up to
+  40 minutes, WHITE is done -- pull the stick. A failure now prints its
+  reason and holds a band along the bottom instead of repainting the screen,
+  and the DIAG lines (`vol part/fat/root/data`, `DISK-SOURCE resolving`) name
+  the mounted volume either way: `part 0` means the LoadedImage partition
+  binding, `part 2048` means the raw-disk walk, anything else convicts the
+  mount on the glass.
+
+## SUPERSEDED, do not fly: `a5paint.img` (`89A82514...`) and `a5noentry.img` (`9E3ED8B3...`). Both payloads bind their disk with bare `LocateProtocol` and carry the wrong-volume defect above. The colour table and heartbeat-bar design below are current; the images are not.
+
+## The a5paint recipe (superseded by a5fix.img; kept for the bar design and the bed recipe)
+
+On the post-14789 seed (`570B8B94B730ADD5`), so it carries fester's CR fix.
+No `-EntryStart`, `-HeapPages 655360`.
+
+```powershell
+build/concat-codex-self.ps1 -CodexDir codex/compiler -OutFile Codex2.codex
+build/compile.ps1 -Src Codex2.codex -Out a5paint.cdx -Log a5paint.log `
+    -Kernel seed/Codex.cdx -Uefi -TimeoutSec 1800
+build/cdx-to-pe.ps1 -CdxInput a5paint.cdx -Out a5paint.efi `
+    -HeapPages 655360 -Stdin "DISK`nSOURCE.SRC`n"          # NO -EntryStart
+build/build-img.ps1 -PeInput a5paint.efi -Out build/boot/a5paint.img `
+    -Source Codex2.codex -TotalSectors 32768
+```
+
+Guest self-compile is byte-identical to the host control: both 2,761,987
+bytes, SHA-256 `95CF4446 5243FBAB 121EC09F 481B3AE9 37F2AB48 373132A9
+0AA83EDE 489D0448`, `OUT.TXT` reading `OK OUT.CDX 2761987`, chain 5,395
+clusters complete. The control is `compile.ps1` on the same source with the
+same seed.
+
+**The bar was watched firing, which is the only reason it is worth flying.**
+At a 500 ms screenshot the field is MAGENTA with a white read bar at y=0..11
+spanning 159 of 160 sampled columns and a cyan convert bar at y=12..23
+spanning 140 of 160; by 800 ms the screen is ORANGE and both bars are gone.
+The bed's disk is in memory, so the whole read and conversion finish inside
+1.5 s there and a later capture cannot see them -- on USB the same work is
+5,429 firmware calls.
+
+**What the operator now reads.** MAGENTA with a growing white bar is the source
+read; MAGENTA with a growing cyan bar is the CCE conversion; MAGENTA with a
+STATIONARY bar is a stall, and which bar it is says which phase. MAGENTA with
+no bar at all is one of the two silent fatals in `disk-no-source`, which still
+paint the same colour and still swallow their reason.
+
+## The a5noentry arm (superseded by a5fix.img; its flight stalled MAGENTA, which is the wrong-volume defect above; its colour table is current)
+
+Disk 2 (` USB DISK 2.0`, 28.9 GB), full 16 MB readback verified. Identical
+payload and source to `a5bigflight.img`; **the only changes are the two flags**,
+and both are forced by the section above.
+
+```powershell
+build/cdx-to-pe.ps1 -CdxInput a5uefi.cdx -Out a5noentry.efi `
+    -HeapPages 655360 -Stdin "DISK`nSOURCE.SRC`n"          # NO -EntryStart
+build/build-img.ps1 -PeInput a5noentry.efi -Out a5noentry.img `
+    -Source <an LF copy of the concatenated compiler source> -TotalSectors 32768
+```
+
+`a5uefi.cdx` is the compiler compiled `-Uefi`. **The source copy must be LF**:
+the depot file is stored `unicode+C` with client `LineEnd: local`, so every
+Windows sync writes CRLF and the payload dies `CDX1000` partway in.
+
+The flashed image carries `EFI/BOOT/BOOTX64.EFI` and `SOURCE.SRC` and **no
+`OUT.CDX`**, so the file's presence on the returned stick is evidence rather
+than residue.
+
+| screen | meaning |
+|---|---|
+| unchanged | never loaded |
+| **DARK BLUE** | the 2.5 GB `AllocatePages` below the 3 GB ceiling failed. Lower `-HeapPages`, reflash |
+| **DARK GREEN** | died before its first instruction, as the three `-EntryStart` flights did |
+| CYAN | reached `opening`, no mode line off the prefilled ring |
+| YELLOW | block I/O or the BPB failed |
+| MAGENTA | volume mounted, `SOURCE.SRC` would not read |
+| **ORANGE** | **read the source and is compiling** |
+| BLUE | compiled, `OUT.CDX` did not land |
+| **WHITE** | done, the artifact is on the medium |
+
+**ORANGE is not a stall and this is the thing to tell whoever is at the board.**
+The screen holds it for the entire compile with nothing changing -- 14 minutes
+in the bed at this heap size, longer over USB. That blind hold is what made the
+sink-ladder flight get pulled early and lose its answer. Give it 40 minutes
+before calling it hung. WHITE never exits; the payload repaints forever, so
+pull the stick once it turns.
+
+**Two failure colours, two opposite fixes**, which is the whole point of
+flying it this way: DARK BLUE means the heap ask was too big for what the
+firmware could find below 3 GB, ORANGE-forever means it was too small for the
+compile.
 
 ## The stick sections' colour table, 2026-08-11 (reek). Correct as far as it goes, and it does not go far enough: see the flight above.
 

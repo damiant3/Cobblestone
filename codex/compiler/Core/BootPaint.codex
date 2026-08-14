@@ -1,4 +1,5 @@
 Chapter: BootPaint
+  grounds Device.Port
 
  The compiler's report channel on a board with no serial port and no proven
  ConOut. The screen is the only channel demonstrated to reach a human on the
@@ -87,11 +88,29 @@ Section: Channel
     else let r = bp-cols base stride (h - 1) w colour
     in bp-rows base stride w (h - 1) colour
 
+  bp-band : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  bp-band (base) (stride) (w) (y) (yend) (colour) =
+    if y >= yend then 0
+    else let r = bp-cols base stride y w colour
+    in bp-band base stride w (y + 1) yend colour
+
+ A phase that runs for minutes with no rung of its own leaves one colour
+ standing, and a stalled payload and a working one are then the same picture.
+ The bar is that phase's only report on a board with no serial port, so it is
+ drawn before the work it measures rather than after it.
+
+  bp-progress-height : Integer
+  bp-progress-height = 12
+
+  bp-progress : Integer, Integer, Integer, Integer -> Integer
+  bp-progress (done) (total) (y) (colour) =
+    let b = bp-base 0
+    in if b == 0 then 0
+    else if total <= 0 then 0
+    else bp-band b (bp-stride 0) ((bp-w 0) * done / total) y (y + bp-progress-height) colour
+
  The readback answers whether the store landed at the base the stub published.
- It does NOT answer whether that base is the panel: measured 2026-08-11 under
- codex-vm, every rung of two ladders read its colour back from 0xBF000000 and
- the framebuffer codex-vm screenshots was black. OperatorsManual, "A PAINTED
- LADDER DOES NOT SHOW UP IN -screenshot".
+ It does NOT answer whether that base is the panel.
 
   bp-paint : Integer -> Integer
   bp-paint (colour) =
@@ -120,6 +139,21 @@ Section: Channel
   bp-hold-if-armed (colour) =
     if bp-base 0 == 0 then 0 else bp-hold colour
 
+ A full-screen hold repaints over the text ConOut just wrote, and on a board
+ whose only log is the glass that destroys the report the operator was meant to
+ read. This holds in a band along the bottom instead, so a printed diagnosis
+ survives the colour that follows it.
+
+  bp-hold-band : Integer -> Integer
+  bp-hold-band (colour) =
+    let b = bp-base 0
+    in let f = bp-band b (bp-stride 0) (bp-w 0) ((bp-h 0) - bp-progress-height) (bp-h 0) colour
+    in bp-hold-band colour
+
+  bp-hold-band-if-armed : Integer -> Integer
+  bp-hold-band-if-armed (colour) =
+    if bp-base 0 == 0 then 0 else bp-hold-band colour
+
   bp-hold-when : Boolean, Integer -> Integer
   bp-hold-when (yes) (colour) = if yes then bp-hold-if-armed colour else 0
 
@@ -136,6 +170,122 @@ Section: Channel
   bp-hold-if : Integer, Integer -> Integer
   bp-hold-if (ok) (prev) = if ok == 0 then bp-hold-if-armed prev else 0
 
+Section: Clock
+
+ The CMOS RTC through ports 0x70/0x71, which is the only wall clock a
+ UEFI-tenant payload has without installing a timer. External format:
+ register 0 is seconds, 2 minutes, 4 hours, 7 day of month, 8 month, 9 year;
+ register 10 bit 7 is update-in-progress and a read taken while it is set can
+ tear; register 11 bit 2 set means binary values, clear means BCD. Reads are
+ armed-guarded so nothing outside a flight touches the ports.
+
+  bp-cmos : Integer -> Integer
+  bp-cmos (reg) =
+   let s = port-out-byte 112 reg
+   in port-in-byte 113
+
+  bp-bcd : Integer, Integer -> Integer
+  bp-bcd (mode) (v) =
+   if bit-and mode 4 == 4 then v
+   else (v / 16) * 10 + int-mod v 16
+
+  bp-rtc-wait : Integer -> Integer
+  bp-rtc-wait (fuel) =
+   if fuel <= 0 then 0
+   else if bit-and (bp-cmos 10) 128 == 0 then 0
+   else bp-rtc-wait (fuel - 1)
+
+  bp-rtc-seconds : Integer -> Integer
+  bp-rtc-seconds (dummy) =
+   if bp-armed 0 == False then 0
+   else let w = bp-rtc-wait 100000
+   in let mode = bp-cmos 11
+   in bp-bcd mode (bp-cmos 4) * 3600 + bp-bcd mode (bp-cmos 2) * 60 + bp-bcd mode (bp-cmos 0)
+
+  bp-2d : Integer -> Text
+  bp-2d (n) = if n < 10 then "0" & integer-to-text n else integer-to-text n
+
+  bp-rtc-date-text : Integer -> Text
+  bp-rtc-date-text (dummy) =
+   if bp-armed 0 == False then "0000-00-00"
+   else let w = bp-rtc-wait 100000
+   in let mode = bp-cmos 11
+   in "20" & bp-2d (bp-bcd mode (bp-cmos 9)) & "-" & bp-2d (bp-bcd mode (bp-cmos 8)) & "-" & bp-2d (bp-bcd mode (bp-cmos 7))
+
+  bp-hms-text : Integer -> Text
+  bp-hms-text (s) = bp-2d (s / 3600) & ":" & bp-2d (int-mod (s / 60) 60) & ":" & bp-2d (int-mod s 60)
+
+Section: Phase Log
+
+ The compile's own build log, banked while the pipeline runs. The pipeline is
+ pure and its metrics records die before the footer, so phase-measure pokes
+ one row per phase into the spare half of the handoff page -- the stub owns
+ 126976..131071 and writes 48 bytes of it -- and the DISK footer walks the
+ rows after the verdict. A row is three qwords: the label's first eight
+ characters packed one byte each, the wall seconds the phase took, and the
+ megabytes its bivy grew. The strip is the live half: one segment painted per
+ phase at y 24..35, under the two progress bars, so an ORANGE hold shows
+ which phase it is sitting in.
+
+  bp-log-count-cell : Integer = 128000
+
+  bp-log-start-cell : Integer = 128008
+
+  bp-log-rows : Integer = 128016
+
+  bp-log-row-max : Integer = 24
+
+  bp-poke64 : Integer, Integer -> Integer
+  bp-poke64 (addr) (v) =
+   let lo = poke-32 addr 0 (int-mod v 4294967296)
+   in poke-32 addr 4 (v / 4294967296)
+
+  bp-pack8 : Text, Integer, Integer, Integer -> Integer
+  bp-pack8 (t) (i) (n) (acc) =
+   if i >= 8 | i >= n then acc
+   else bp-pack8 t (i + 1) n (acc + bit-shl (int-mod (to-unicode (char-code (char-at t i))) 256) (i * 8))
+
+  bp-strip-colour : Integer -> Integer
+  bp-strip-colour (i) =
+   when int-mod i 6
+    is 0 -> bp-cyan
+    is 1 -> bp-yellow
+    is 2 -> bp-white
+    is 3 -> bp-orange
+    is 4 -> bp-blue
+    is otherwise -> bp-red
+
+  bp-seg-cols : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  bp-seg-cols (base) (stride) (y) (x0) (n) (colour) =
+   if n <= 0 then 0
+   else let p = poke-32 base ((y * stride + x0 + n - 1) * 4) colour
+   in bp-seg-cols base stride y x0 (n - 1) colour
+
+  bp-seg-rows : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  bp-seg-rows (base) (stride) (x0) (n) (y) (yend) (colour) =
+   if y >= yend then 0
+   else let r = bp-seg-cols base stride y x0 n colour
+   in bp-seg-rows base stride x0 n (y + 1) yend colour
+
+  bp-strip : Integer -> Integer
+  bp-strip (i) =
+   let b = bp-base 0
+   in if b == 0 then 0
+   else let seg = (bp-w 0) / bp-log-row-max
+   in bp-seg-rows b (bp-stride 0) (int-mod i bp-log-row-max * seg) seg 24 36 (bp-strip-colour i)
+
+  bp-log-phase : Text, Integer, Integer -> Integer
+  bp-log-phase (label) (took) (mb) =
+   if bp-armed 0 == False then 0
+   else let i = peek-qword bp-log-count-cell 0
+   in if i >= bp-log-row-max then 0
+   else let row = bp-log-rows + i * 24
+   in let p0 = bp-poke64 row (bp-pack8 label 0 (text-length label) 0)
+   in let p1 = bp-poke64 (row + 8) took
+   in let p2 = bp-poke64 (row + 16) mb
+   in let c = bp-poke64 bp-log-count-cell (i + 1)
+   in bp-strip i
+
 Section: Trace
 
  The trace is what the BED reads, and it is not the flight's channel: a run
@@ -143,11 +293,6 @@ Section: Trace
  byte-for-byte what it was. It comes after the paint on every rung, which is
  the ladder's whole contract -- a rung that dies inside its own print has
  already left its colour standing.
-
- codex-vm's `-screenshot` is not a substitute. Measured 2026-08-11: the sink
- ladder reported `painted fb=1` on four rungs and the BMP came back black on
- the same run, so the bed's screen and the bed's trace do not agree and only
- the trace has ever been checked against a flight.
 
  Every trace line is built INSIDE its guard. Codex is strict, so a
  `disk-say (... & ...)` would concatenate on every call and leave the string in
