@@ -2,7 +2,7 @@
 
 Survey of what exists, what's stubbed, and what's needed to implement
 the proof system described in the type system design doc
-(`docs/Reference/03-TYPE-SYSTEM.md`).
+(`docs/Designs/Done/MM1/03-TYPE-SYSTEM.md`).
 
 ## What the Design Says
 

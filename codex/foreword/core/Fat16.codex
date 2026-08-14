@@ -1182,6 +1182,24 @@ Section: File Reading
       is Just (bs) -> Just (fat16-bytes-to-text bs 0 (list-length bs) "")
       is None -> None
 
+ Byte 13 is dropped rather than mapped. It is the one byte in a text file that
+ from-unicode answers -1 for, so code-to-char would place an invalid character
+ where a line ending was. __bare_metal_read_serial drops the same byte before
+ its own CCE lookup, so a source arriving over the wire and the same source
+ arriving off a volume have to agree here or the two compiles differ.
+
+  fat16-source-chars : List Integer, List Integer, Integer, Integer, List Text -> List Text
+  fat16-source-chars (tbl) (bs) (i) (len) (acc) =
+    if i >= len then acc
+    else if list-at bs i == 13 then fat16-source-chars tbl bs (i + 1) len acc
+    else fat16-source-chars tbl bs (i + 1) len (list-push acc (char-to-text (code-to-char (fat16-byte-to-cce tbl (list-at bs i)))))
+
+  fat16-read-source : Fat16Volume, Text -> [Device.Block] Maybe Text
+  fat16-read-source (vol) (path) =
+    when fat16-read-bytes vol path
+      is Just (bs) -> Just (text-concat-list (fat16-source-chars cce-to-unicode-table bs 0 (list-length bs) []))
+      is None -> None
+
   fat16-file-exists : Fat16Volume, Text -> [Device.Block] Boolean
   fat16-file-exists (vol) (path) =
     when fat16-resolve-path vol path

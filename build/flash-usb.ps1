@@ -342,7 +342,7 @@ if ($Log) { Stop-Transcript | Out-Null }
 # the header CRCs are recomputed over the new values while the array CRC is left
 # stale. Both GPTs then fail validation and Windows itself reports the disk as
 # MBR. Firmware sees no partitions, which is the "firmware never lists the
-# stick" failure in docs/HardwareSitting.md section 3b.
+# stick" failure in docs/Hardware/HardwareSitting.md section 3b.
 #
 # Isolated with a control rather than inferred. Same stick, one flash: three
 # consecutive raw reads returned byte-identical, correct GPTs (EntryLBA=2,

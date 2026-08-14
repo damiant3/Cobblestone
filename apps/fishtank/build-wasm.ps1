@@ -192,11 +192,24 @@ if ($LASTEXITCODE -ne 0) {
 } else {
     Write-Host "[fishtank-wasm] Page CDX: $pageCdx ($((Get-Item $pageCdx).Length) bytes)"
     $rawOut = [System.IO.Path]::GetTempFileName()
-    & pwsh -NoProfile -File (Join-Path $Repo 'build\test-run.ps1') -Kernel $pageCdx -OutFile $rawOut
-    if ($LASTEXITCODE -ne 0) {
+    # Capture straight from codex-vm, NOT through build/test-run.ps1. That
+    # script strips every CR from the stream (test-run.ps1:100) because a
+    # serial test wants CRLF normalised -- but CCE 'e' IS code 13, so routing
+    # a CCE payload through it deletes every 'e' in the page: <head> shipped
+    # as <had> and <title> as <titl>. It also reads the stream with
+    # ReadAllText, which mangles the multi-byte sequences ConvertFrom-CceBytes
+    # below exists to decode.
+    & $script:CodexVmBin -kernel $pageCdx -output $rawOut -mem 3072 -headless | Out-Null
+    # codex-vm returns a non-zero process exit even on a clean run, which is
+    # why test-run.ps1 gates on the output file rather than the exit code.
+    if ((-not (Test-Path -PathType Leaf $rawOut)) -or (Get-Item $rawOut).Length -eq 0) {
         Write-Warning "HTML assembly run failed"
     } else {
         $rawBytes = [System.IO.File]::ReadAllBytes($rawOut)
+        # The serial stream opens with a SOH; drop just that one byte.
+        if ($rawBytes.Length -gt 0 -and $rawBytes[0] -eq 1) {
+            $rawBytes = $rawBytes[1..($rawBytes.Length - 1)]
+        }
         $enc = [System.Text.UTF8Encoding]::new($false)
         # The page is a CCE stream. Decoding it a byte at a time turned every
         # character above tier 0 into '?' in the shipped HTML; ConvertFrom-CceBytes
@@ -211,3 +224,8 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "[fishtank-wasm] done"
+# codex-vm leaves a non-zero LASTEXITCODE behind even on a clean run, and it is
+# the last thing this script invokes. Failures above are reported with
+# Write-Warning, not an exit code, so say so explicitly rather than handing the
+# caller the VM's.
+exit 0

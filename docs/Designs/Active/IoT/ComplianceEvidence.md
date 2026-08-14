@@ -10,14 +10,14 @@ does not exist.** Built:
 `EvidencePlug` that Constraint 2 below makes the architectural centre
 of this design -- nothing emits a signed evidence package alongside a
 firmware build today. That plug is the remaining work.
-**Upstream**: `docs/PM/IoT/AGENT-PROMPT.md` deliverable 4,
-`docs/PM/IoT/Compliance/` (EU CRA, ETSI EN 303 645, NISTIR 8259,
+**Upstream**: `docs/Reference/IoT/AGENT-PROMPT.md` deliverable 4,
+`docs/Reference/IoT/Compliance/` (EU CRA, ETSI EN 303 645, NISTIR 8259,
 IEC 62443), prospectus Phase 3
 
 ## Note: This Doc Duplicates the Compliance Matrix
 
 The per-requirement tables below now exist in a second place:
-`docs/Reference/CRA-Compliance-Matrix.md`. Two hand-maintained copies of
+`docs/Designs/Active/IoT/CRA-Compliance-Matrix.md`. Two hand-maintained copies of
 the same requirement mapping is precisely the staleness problem this
 design was written to abolish, and the copies will diverge -- one of them
 already will have by the time this is read.
@@ -217,11 +217,11 @@ export plus the rendering in Evidence.html.
 
 ### Threat model integration
 
-The evidence package cross-references `docs/Reference/ThreatModel.md` for each
+The evidence package cross-references `docs/Designs/Active/IoT/ThreatModel.md` for each
 claim. Where a requirement maps to an attack class:
 
 - The claim cites the specific attack (e.g., "CRA 2(a): memory
-  corruption -- see docs/Reference/ThreatModel.md §1.1") and the defense
+  corruption -- see docs/Designs/Active/IoT/ThreatModel.md §1.1") and the defense
   mechanism.
 - The residual risk register entries (R1-R10) are included in the
   evidence as an appendix. Each residual states: what is not

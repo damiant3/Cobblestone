@@ -188,8 +188,8 @@ it could not keep are disclosed instead of asserted. **D1 (the record
 layer) is unblocked and is the next CL.** See **The Crypto Floor:
 Audited** and **DTLS: The Build Plan** below.
 
-**Upstream**: `docs/PM/IoT/AGENT-PROMPT.md` deliverable 3,
-references in `docs/PM/IoT/Protocols/`
+**Upstream**: `docs/Reference/IoT/AGENT-PROMPT.md` deliverable 3,
+references in `docs/Reference/IoT/Protocols/`
 
 ## The Problem
 

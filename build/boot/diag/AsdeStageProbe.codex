@@ -12,12 +12,20 @@ Chapter: AsdeStageProbe
   cites Works chapter GopShot
   cites Dev chapter NicAsde
 
- B2 Finding 4, and the question is which ARM wedges rather than whether
- one does. 82583V CTRL bit 5: "When set to 1b, the MAC ignores the speed
- indicated by the PHY ... This bit must be set to 0b in the 82583V." The
- ASDE=0 arm therefore runs FIRST. A wedge before any arm row indicts the
- reset; ASDE=0 painting and ASDE=1 wedging indicts the bit the datasheet
- says to clear; both arms painting exonerates ASDE on this part.
+ The 2026-08-11 flight settled which step wedges: two rows painted, the
+ eligible row and the read-only touch, and nothing below them. The box
+ died inside e1000-reset, upstream of both arms this image existed to
+ compare, so ASDE is untested rather than disproved and the reset is the
+ subject now.
+
+ That inverts the order. 82583V CTRL bit 5 -- "When set to 1b, the MAC
+ ignores the speed indicated by the PHY ... This bit must be set to 0b in
+ the 82583V" -- is still the question, and na-bring-up-after is already
+ the whole of the bring-up except the reset. Firmware hands this part over
+ with CTRL.SLU set (CTRL=0x180240 on that flight, SLU being bit 6), so
+ both arms can be compared without pulsing RST at all. They run FIRST,
+ and the reset rides LAST, split into the five MMIO operations e1000-reset
+ performs so the last row names the one that did not return.
 
  The 2026-08-10 flight of this probe returned nothing, and the reason was
  in this file: the mount was a PRECONDITION, so a volume that would not
@@ -28,6 +36,8 @@ Chapter: AsdeStageProbe
  leaves the glass intact (HardwareSitting, 2026-08-05: rows painted, then
  the machine stalled, rows still readable), so the glass is a bank for a
  person standing at the board, which is every sitting we have ever had.
+ The 08-11 stick came back with nothing written, so the glass is the only
+ bank that has ever worked here and the ordering above is what it buys.
 
  The markers remain because they cost nothing here: each is under one
  cluster, so it takes the small-file path and one 512-byte transfer, and
@@ -108,12 +118,113 @@ Section: Rows
    let lines = gop-draw-text-wrap base stride font 40 y s col scale w
    in y + lines * 16 * scale + 6
 
+Section: The SLU Discriminator
+
+ The 08-13 arms and the ASDE readback together leave one question open and
+ it is the one that matters before B2c. Every CTRL bit this probe has ever
+ written is a bit that cannot report whether the WRITE took: SLU was
+ already set by firmware, ASDE does not stick, and RST self-clears, so
+ "never written" and "written and completed" both read as settled=1. If
+ CTRL is not writable by us at all then the link came up over MDIO and the
+ CTRL write contributes nothing -- which matters because RX/TX bring-up
+ writes RCTL, TCTL and the ring registers, and a silent CSR write path
+ would surface there as a receive path that never receives.
+
+ So: clear a bit that IS currently set, and read it back. SLU is the only
+ one available, and s2 is the whole experiment -- if SLU still reads as set
+ immediately after we cleared it, CTRL is read-only to us and no link
+ behaviour is needed to know it. s3 then asks the slower question of
+ whether the MAC's link view follows. s4 restores the register.
+
+  asde-clear-slu : Integer = #FFFFFFFF - e1000-ctrl-slu
+
+  asde-slu-line : Text, Integer, Integer -> Text
+  asde-slu-line (label) (ctrl) (status) =
+   let a = label & " CTRL=" & show ctrl
+   in let b = a & " SLUbit=" & na-yn (bit-and ctrl e1000-ctrl-slu)
+   in let c = b & " STATUS=" & show status
+   in c & " LU=" & na-yn (bit-and status na-lu)
+
+  asde-slu-test : Integer, Integer, CbfFont, Integer, Integer, Integer, Integer -> [Device.Mmio] Integer
+  asde-slu-test (base) (stride) (font) (scale) (y0) (w) (mmio) =
+   let c0 = e1000-read mmio e1000-reg-ctrl
+   in let s0 = e1000-read mmio e1000-reg-status
+   in let y1 = arow base stride font y0 scale (asde-slu-line "SLU s1 before:" c0 s0) 9474192 w
+   in let wclr = e1000-write mmio e1000-reg-ctrl (bit-and c0 asde-clear-slu)
+   in let c1 = e1000-read mmio e1000-reg-ctrl
+   in let s1 = e1000-read mmio e1000-reg-status
+   in let y2 = arow base stride font y1 scale (asde-slu-line "SLU s2 cleared:" c1 s1) 16776960 w
+   in asde-slu-after base stride font scale y2 w mmio c0
+
+  asde-slu-after : Integer, Integer, CbfFont, Integer, Integer, Integer, Integer, Integer -> [Device.Mmio] Integer
+  asde-slu-after (base) (stride) (font) (scale) (y2) (w) (mmio) (c0) =
+   let st = e1000-settle-mdio mmio
+   in let c2 = e1000-read mmio e1000-reg-ctrl
+   in let s2 = e1000-read mmio e1000-reg-status
+   in let y3 = arow base stride font y2 scale (asde-slu-line "SLU s3 after 10ms:" c2 s2) 16776960 w
+   in let wr = e1000-write mmio e1000-reg-ctrl c0
+   in let st2 = e1000-settle-mdio mmio
+   in let c3 = e1000-read mmio e1000-reg-ctrl
+   in let s3 = e1000-read mmio e1000-reg-status
+   in arow base stride font y3 scale (asde-slu-line "SLU s4 restored:" c3 s3) 65280 w
+
 Section: Stages
 
- Stage 2 is the read-only touch, stage 3 is ASDE=0 and stage 4 is ASDE=1.
- Each row is painted BEFORE the touch that follows it, so the last row on
- the glass names the last thing that completed and the first thing that
- did not.
+ Stage 2 is the read-only touch, stages 3 and 4 are the two arms with no
+ reset, and the staged reset is stages 5 to 9. Each row is painted BEFORE
+ the touch that follows it, so the last row on the glass names the last
+ thing that completed and the first thing that did not.
+
+ The reset is now ONE row, not five. The five-stage split existed to name
+ which MMIO operation wedged the box, and it has been answered twice: a
+ warm reset completes on this part. It is kept here only as a control
+ against the 08-13 reading, and it costs two rows instead of seven because
+ the glass has run out of room -- at 1280 wide the font scales to 2, so a
+ row is 38 pixels and only about twenty fit. The staged version is in the
+ depot history if a wedge ever comes back.
+
+  asde-reset-brief : Integer, Integer, CbfFont, Integer, Integer, Integer, Integer -> [Device.Mmio] Integer
+  asde-reset-brief (base) (stride) (font) (scale) (y0) (w) (mmio) =
+   let y1 = arow base stride font y0 scale "RESET: warm reset, the control for 08-13" 16755200 w
+   in let settled = e1000-reset mmio
+   in let t = na-touch mmio
+   in let a = "RESET done: settled=" & show settled & " CTRL=" & show (t.nt-ctrl)
+   in arow base stride font y1 scale (a & " STATUS=" & show (t.nt-status)) 65280 w
+ The 2026-08-13 flight returned IDENTICAL values from both arms where the
+ bed has them differing sharply, and could not say why, because three
+ explanations survived it: ASDE does nothing on this part, the ASDE write
+ does not stick, or the second arm inherited a link the first had already
+ established. Two of those are closed here.
+
+ CTRL is read back after each arm and printed, so a bit that does not
+ stick is visible rather than inferred. And ASDE=1 runs FIRST, from the
+ state firmware left, so the arm that sets the bit is the one with nothing
+ ahead of it -- on 08-13 it ran second and its reading could always have
+ been the first arm's link showing through.
+
+  asde-arm-line : Text, NicAsdeArm, Integer -> Text
+  asde-arm-line (label) (arm) (ctrl) =
+   let a = na-line label arm
+   in let b = a & " CTRLback=" & show ctrl
+   in b & " ASDEbit=" & na-yn (bit-and ctrl e1000-ctrl-asde)
+
+  asde-arms : GfatMount, Integer, Integer, CbfFont, Integer, Integer, Integer, Integer -> [Device.Port, Device.Mmio] Integer
+  asde-arms (m) (base) (stride) (font) (scale) (y3) (w) (mmio) =
+   let y4 = arow base stride font y3 scale "ASDE: no-reset arms, ASDE=1 FIRST from the firmware state" 9474192 w
+   in let on = na-bring-up-after mmio True
+   in let onctrl = e1000-read mmio e1000-reg-ctrl
+   in let y5 = arow base stride font y4 scale (asde-arm-line "ASDE=1 first" on onctrl) 65280 w
+   in act
+    m3 <- asde-mark m 3 ("stage3 asde1 first " & na-line "ASDE=1" on)
+    let off = na-bring-up-after mmio False
+    in let offctrl = e1000-read mmio e1000-reg-ctrl
+    in let y6 = arow base stride font y5 scale (asde-arm-line "ASDE=0 second" off offctrl) 65280 w
+    in act
+      m4 <- asde-mark m 4 ("stage4 asde0 second " & na-line "ASDE=0" off)
+      y7 <- asde-slu-test base stride font scale y6 w mmio
+      asde-reset-brief base stride font scale y7 w mmio
+    end
+   end
 
   asde-armed : GfatMount, Integer, Integer, CbfFont, Integer, Integer, Integer, PciDevice -> [Device.Port, Device.Mmio] Integer
   asde-armed (m) (base) (stride) (font) (scale) (y1) (w) (dev) =
@@ -125,17 +236,7 @@ Section: Stages
     in let y3 = arow base stride font y2 scale (na-touch-line mmio touch) 16776960 w
     in act
       m2 <- asde-mark m 2 ("stage2 touch STATUS=" & show (touch.nt-status) & " CTRL=" & show (touch.nt-ctrl))
-      let off = na-bring-up mmio False
-      in let y4 = arow base stride font y3 scale (na-line "ASDE=0" off) 65280 w
-      in act
-        m3 <- asde-mark m 3 ("stage3 asde0 " & na-line "ASDE=0" off)
-        let on = na-bring-up mmio True
-        in let y5 = arow base stride font y4 scale (na-line "ASDE=1" on) 65280 w
-        in act
-          m4 <- asde-mark m 4 ("stage4 asde1 " & na-line "ASDE=1" on)
-          y5
-        end
-      end
+      asde-arms m base stride font scale y3 w mmio
     end
    end
 
@@ -169,7 +270,7 @@ Section: Entry
     ri <- runtime-init 0
     att <- usb-attach
     let bg = gop-fill-rect base stride 0 0 w h 1710638
-    in let y0 = arow base stride font 40 scale "ASDE STAGE PROBE -- B2 Finding 4" 65535 w
+    in let y0 = arow base stride font 40 scale "ASDE STAGE PROBE -- B2: does a CTRL write reach this part at all?" 65535 w
     in act
       m <- gfat-mount-esp
       m0 <- asde-mark m 0 "stage0 mounted, write path live"

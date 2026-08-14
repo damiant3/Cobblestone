@@ -88,6 +88,12 @@ another route (L-COUNT).
 - The local branch is **master**.
 - Push: `git push github master` and `git push gitlab master:main`.
 
+**They are not equal in standing.** GitHub is the face of the project: it is
+where people read it and where pull requests arrive. GitLab exists as a backup
+in case GitHub goes away somehow, and Damian barely ever looks at it (his
+words, 2026-08-13). Push both, but do not treat GitLab silence as a signal or
+its state as a thing to reconcile against.
+
 ## The push procedure (one "Update N" commit per push)
 
 1. Sync the main workspace to the intended head:
@@ -155,3 +161,12 @@ un-serve bytes already cloned or cached by GitHub or GitLab.
   it if stale before a release; it is not part of a seed rebuild.
 - Refresh `seed/Codex.map`: the `-Repl` seed build never emits the MAP
   block, so nothing else refreshes it.
+- **Close out any outside pull requests whose work this push makes public** --
+  thanks, the commit, the tweaks made on top, a link to the GitHubUpdate
+  entry, then close. **They arrive on GitHub** (`damiant3/NewRepository`);
+  GitLab `damiant3/Codex` is a backup against GitHub going away and is barely
+  looked at, so do not wait on its state. The whole procedure, including how
+  such a PR gets into Perforce in the first place and why it is never merged
+  where it was opened, is in `docs/Agents/PerforceProcess.md`, "An outside
+  pull request". **The release agent is the one who owes the contributor
+  this**, because the release is the moment the claim becomes checkable.

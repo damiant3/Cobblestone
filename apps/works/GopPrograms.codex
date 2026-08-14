@@ -1,0 +1,152 @@
+Chapter: GopPrograms
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Theme
+
+ The launcher. The sidebar was a flat column of one button per app, so
+ every app cost a row of the only column there is, and at 1024x768 it was
+ full at thirteen. Groups here rather than rows there is what makes the
+ fourteenth app free.
+
+ An entry answers the SCANCODE its key would have produced. `desk-loop`
+ already turns a scancode into a pane, so the launcher adds no second
+ dispatch table -- the one nobody presses is the one that rots, which is
+ the reason `GopCalc` does the same with its keypad. Adding an app here
+ means adding it to `gpr-entries` and nothing else.
+
+ We say:
+
+Section: Geometry
+
+  gpr-sel-cell : Integer = 0
+
+Section: The Programs
+
+ Each entry is a group name, a label, and the scancode the desk already
+ answers for that pane. A row whose group repeats the row above it is
+ drawn without a heading, so the group column is the sort order and the
+ heading at once.
+
+  GprEntry = record {
+    ge-group : Text,
+    ge-label : Text,
+    ge-scan : Integer
+  }
+
+  gpr-entries : List GprEntry = [
+    GprEntry { ge-group = "Accessories", ge-label = "Clock", ge-scan = 37 },
+    GprEntry { ge-group = "Accessories", ge-label = "Calculator", ge-scan = 46 },
+    GprEntry { ge-group = "Accessories", ge-label = "Calendar", ge-scan = 38 },
+    GprEntry { ge-group = "Accessories", ge-label = "Aquarium", ge-scan = 16 },
+    GprEntry { ge-group = "Productivity", ge-label = "Editor", ge-scan = 18 },
+    GprEntry { ge-group = "Productivity", ge-label = "Issues", ge-scan = 23 },
+    GprEntry { ge-group = "Productivity", ge-label = "Files", ge-scan = 33 },
+    GprEntry { ge-group = "Productivity", ge-label = "Console", ge-scan = 20 },
+    GprEntry { ge-group = "Productivity", ge-label = "Browser", ge-scan = 48 },
+    GprEntry { ge-group = "Graphics", ge-label = "3D View", ge-scan = 4 },
+    GprEntry { ge-group = "Graphics", ge-label = "Diffusion", ge-scan = 32 },
+    GprEntry { ge-group = "Settings", ge-label = "Appearance", ge-scan = 30 },
+    GprEntry { ge-group = "Settings", ge-label = "System Info", ge-scan = 50 }
+  ]
+
+  gpr-count : Integer
+  gpr-count = list-length gpr-entries
+
+  gpr-at : Integer -> GprEntry
+  gpr-at (i) = list-at gpr-entries i
+
+Section: State
+
+  gpr-sel : Integer -> Integer
+  gpr-sel (ps) = peek-32 ps gpr-sel-cell
+
+  gpr-set-sel : Integer, Integer -> Integer
+  gpr-set-sel (ps) (i) =
+    poke-32 ps gpr-sel-cell (if i < 0 then 0 else if i >= gpr-count then gpr-count - 1 else i)
+
+  gpr-ensure : Integer -> Integer
+  gpr-ensure (ps) = gpr-set-sel ps (gpr-sel ps)
+
+Section: The Tree
+
+ A heading is drawn only when the group changes, so the first row of each
+ group carries it and the rest do not.
+
+  gpr-heads : Integer -> Boolean
+  gpr-heads (i) =
+    if i <= 0 then True
+    else (gpr-at i).ge-group /= (gpr-at (i - 1)).ge-group
+
+  gpr-mark : Integer, Integer -> Text
+  gpr-mark (i) (sel) = if i == sel then "> " else "  "
+
+  gpr-key-name : Integer -> Text
+  gpr-key-name (sc) =
+    if sc == 20 then "t"
+    else if sc == 18 then "e"
+    else if sc == 33 then "f"
+    else if sc == 4 then "3"
+    else if sc == 16 then "q"
+    else if sc == 32 then "d"
+    else if sc == 48 then "b"
+    else if sc == 23 then "i"
+    else if sc == 38 then "l"
+    else if sc == 46 then "c"
+    else if sc == 50 then "m"
+    else if sc == 30 then "a"
+    else if sc == 37 then "k"
+    else "?"
+
+  gpr-row : Integer, Integer -> WidgetNode
+  gpr-row (i) (sel) =
+    let e = gpr-at i
+    in widget-set-min (widget-button ("gpr-" & e.ge-label) (gpr-mark i sel & e.ge-label & "   (" & gpr-key-name (e.ge-scan) & ")")) 0 22
+
+ Two columns, not one. Nothing clips a widget panel to its box, so a
+ single column of sixteen rows drew straight through the help line and
+ the taskbar below it -- measured on the glass, not feared. Splitting the
+ groups across columns is also what a program manager looks like, so the
+ shape that fits is the shape that was wanted.
+
+ `gpr-split` is an ENTRY index and must land on a group boundary, or the
+ group whose rows it cuts loses its heading in the second column.
+
+  gpr-split : Integer = 9
+
+  gpr-rows : Integer, Integer, Integer, List WidgetNode -> List WidgetNode
+  gpr-rows (i) (stop) (sel) (acc) =
+    if i >= stop then acc
+    else let acc1 = if gpr-heads i then list-push acc (widget-set-min (widget-label ("gpr-h-" & (gpr-at i).ge-group) ((gpr-at i).ge-group)) 0 20) else acc
+    in gpr-rows (i + 1) stop sel (list-push acc1 (gpr-row i sel))
+
+  gpr-tree : Integer -> WidgetNode
+  gpr-tree (ps) =
+    let sel = gpr-sel ps
+    in let left = widget-panel "gpr-left" DirColumn 2 (gpr-rows 0 gpr-split sel [])
+    in let right = widget-panel "gpr-right" DirColumn 2 (gpr-rows gpr-split gpr-count sel [])
+    in let cols = widget-panel "gpr-cols" DirRow 8 [widget-set-flex left 1, widget-set-flex right 1]
+    in let help = widget-set-min (widget-label "gpr-help" "up/down choose   Enter opens   Esc returns") 0 20
+    in widget-panel "gpr-pane" DirColumn 6 [widget-set-flex cols 1, help]
+
+Section: Keys
+
+ The answer is a scancode the desk already dispatches, or 0 for "nothing
+ happened". Escape is the caller's business and is not handled here.
+
+  gpr-key : Integer, Integer -> Integer
+  gpr-key (ps) (sc) =
+    if sc == 72 then let d = gpr-set-sel ps (gpr-sel ps - 1) in 0
+    else if sc == 80 then let d = gpr-set-sel ps (gpr-sel ps + 1) in 0
+    else if sc == 28 then (gpr-at (gpr-sel ps)).ge-scan
+    else 0
+
+ A clicked row answers the same scancode its Enter would have, and the id
+ carries the label because that is what the widget was built with.
+
+  gpr-id-scan : Text, Integer -> Integer
+  gpr-id-scan (id) (i) =
+    if i >= gpr-count then 0
+    else if id == ("gpr-" & (gpr-at i).ge-label) then (gpr-at i).ge-scan
+    else gpr-id-scan id (i + 1)
+
+Page 1

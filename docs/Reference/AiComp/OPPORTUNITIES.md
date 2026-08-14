@@ -44,7 +44,7 @@ below**, and it is why §3 is ordered the way it is rather than by payoff.
 Every optimization we have is a peephole *at the point of emission*:
 destination-driven emit, staged operands through R8/R9, reg-left/reg-right
 folds, `cmp`-immediate fusion, NOP elision, power-of-two strength reduction.
-`docs/Reference/CodegenAnalysis.md` records thirty-odd CLs of this work, and
+`docs/Designs/Done/Compiler/CodegenAnalysis.md` records thirty-odd CLs of this work, and
 it is genuinely good work -- but read its own table and the ceiling is visible:
 
 > *"fib/fact/gcd/sum function-body instruction counts plateaued at CL 3400."*

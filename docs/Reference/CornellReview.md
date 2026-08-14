@@ -164,7 +164,7 @@ implementing a proper liveness analysis for register allocation. The
 current fixed-assignment scheme leaves R8 and R9 unused and spills
 to the stack when more than 4 locals are needed. A liveness-based
 allocator could use all available registers and reduce spill traffic.
-The codegen analysis (`docs/Reference/CodegenAnalysis.md`)
+The codegen analysis (`docs/Designs/Done/Compiler/CodegenAnalysis.md`)
 identifies register pressure as the next frontier -- the gap between
 Codex and the .NET JITs on `gcd` and `sum` is primarily due to the
 JITs' linear-scan allocation of named bindings.

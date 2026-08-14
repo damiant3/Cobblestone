@@ -220,8 +220,8 @@ and total).
 
 ## 8. Cross-References
 
-- `docs/Reference/ClaimsCalibration.md` -- the register
-- `docs/Reference/TrustedComputingBase.md` -- §4 ranking
+- `docs/PM/Done/ClaimsCalibration.md` -- the register
+- `docs/PM/Done/TrustedComputingBase.md` -- §4 ranking
 - `codex/compiler/Types/TypeChecker.codex` -- register-all-defs, elab-claim-apps, Induction Checking
 - `codex/compiler/Emit/X86_64.codex:804-826` -- is-proof-def / erasure
 

@@ -11,12 +11,59 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# Locate codex-vm binary
-$script:CodexVmBin = Join-Path (Split-Path $PSScriptRoot) 'tools\codex-vm.exe'
-if ((-not (Test-Path -PathType Leaf $script:CodexVmBin))) {
-    [Console]::Error.WriteLine("codex-vm not found at $($script:CodexVmBin). Build with tools/build-vm.ps1.")
-    throw "codex-vm not found at $($script:CodexVmBin). Build with tools/build-vm.ps1."
+# Locate a VM host. codex-vm (the WHP hypervisor) is the primary and is
+# Windows-only; QEMU is the fallback and the only host on Linux/WSL. Both
+# paths are live: a missing codex-vm is not an error, and the hard failure
+# is reserved for having NEITHER host. CODEX_VM_HOST=qemu forces the
+# fallback on a box that HAS codex-vm, which is the only way to exercise
+# the QEMU path from Windows without hiding the binary.
+$script:CodexVmBin = Join-Path (Split-Path $PSScriptRoot) 'tools' 'codex-vm.exe'
+$script:UseCodexVm = (Test-Path -PathType Leaf $script:CodexVmBin) -and ($env:CODEX_VM_HOST -ne 'qemu')
+$script:FallbackVmBin = $env:QEMU_BIN
+if ((-not $script:FallbackVmBin)) { $script:FallbackVmBin = $env:QEMU_BIN_WHPX }
+if ((-not $script:FallbackVmBin)) {
+    if ($IsWindows) {
+        # A side-loaded versioned install wins over the in-place one, newest
+        # first, so a new QEMU can be trialled without disturbing what the
+        # rest of the machine uses: D:\qemu-11.1.0 beats D:\Program Files\qemu.
+        # A directory whose suffix is not a version sorts last rather than
+        # throwing.
+        $sideload = @()
+        foreach ($root in @('D:\', 'C:\')) {
+            foreach ($d in (Get-ChildItem -Path $root -Directory -Filter 'qemu-*' -ErrorAction SilentlyContinue)) {
+                $exe = Join-Path $d.FullName 'qemu-system-x86_64.exe'
+                if (Test-Path -PathType Leaf $exe) {
+                    $v = [version]'0.0'
+                    if (-not [version]::TryParse(($d.Name -replace '^qemu-', ''), [ref]$v)) { $v = [version]'0.0' }
+                    $sideload += [pscustomobject]@{ Exe = $exe; Ver = $v }
+                }
+            }
+        }
+        foreach ($s in ($sideload | Sort-Object Ver -Descending)) { $script:FallbackVmBin = $s.Exe; break }
+        if ((-not $script:FallbackVmBin)) {
+            foreach ($p in @('D:\Program Files\qemu\qemu-system-x86_64.exe', 'C:\Program Files\qemu\qemu-system-x86_64.exe')) {
+                if (Test-Path -PathType Leaf $p) {
+                    $script:FallbackVmBin = $p; break
+                }
+            }
+        }
+    } else {
+        $qemuCmd = Get-Command qemu-system-x86_64 -ErrorAction SilentlyContinue
+        if ($qemuCmd) { $script:FallbackVmBin = $qemuCmd.Source }
+    }
 }
+if ((-not $script:UseCodexVm) -and (-not $script:FallbackVmBin)) {
+    [Console]::Error.WriteLine("no VM host: codex-vm not at $($script:CodexVmBin) (build with tools/build-vm.ps1) and no qemu-system-x86_64 (install qemu or set QEMU_BIN).")
+    throw "no VM host: codex-vm not at $($script:CodexVmBin) and no qemu-system-x86_64."
+}
+# The fallback accelerator: whpx on Windows, tcg on Linux, and CODEX_ACCEL
+# overrides either. kvm is the opt-in rather than the Linux default because
+# measured 2026-08-12 under WSL2 the nested-virt vmexit tax on byte-wise
+# serial I/O makes it slower than plain TCG for small compiles (18-63s
+# against ~11s). The name is kept, not just the flags: Start-VmRun's
+# platform arguments depend on WHICH accelerator this is.
+$script:FallbackAccel = if ($env:CODEX_ACCEL) { $env:CODEX_ACCEL } elseif ($IsWindows) { 'whpx' } else { 'tcg' }
+$script:FallbackAccelFlags = @('-accel', $script:FallbackAccel)
 
 
 # CCE encode/decode tables -- shared by plug run scripts.
@@ -254,7 +301,7 @@ function ConvertFrom-CceBytes([byte[]]$Bytes) {
 $script:MapCache = @{}
 $script:Map1Cache = @{}
 
-function Get-DefaultKernel { Join-Path (Split-Path $PSScriptRoot) 'seed\Codex.cdx' }
+function Get-DefaultKernel { Join-Path (Split-Path $PSScriptRoot) 'seed' 'Codex.cdx' }
 
 # Parse the MAP1 block out of a CDX. Returns $null when the file has none.
 function Get-Map1Symbols {
@@ -322,7 +369,7 @@ function Get-Symbols {
     if (-not $Kernel) { $Kernel = Get-DefaultKernel }
     $syms = Get-Map1Symbols $Kernel
     if ($syms) { return $syms }
-    $fallback = Join-Path (Split-Path $PSScriptRoot) 'seed\Codex.map'
+    $fallback = Join-Path (Split-Path $PSScriptRoot) 'seed' 'Codex.map'
     if (Test-Path $fallback) {
         Write-Warning "no MAP1 in '$Kernel'; falling back to $fallback, which may describe a different binary."
         return Get-TextMapSymbols $fallback
@@ -473,17 +520,9 @@ function Normalize-TripleNewlines {
 }
 
 
-# TCP socket helpers (for explorer server and legacy TCP plugs)
-$script:UseCodexVm = Test-Path -PathType Leaf $script:CodexVmBin
-$script:FallbackVmBin = $env:QEMU_BIN_WHPX
-if ((-not $script:FallbackVmBin)) {
-    foreach ($p in @('D:\Program Files\qemu\qemu-system-x86_64.exe', 'C:\Program Files\qemu\qemu-system-x86_64.exe')) {
-        if (Test-Path -PathType Leaf $p) {
-            $script:FallbackVmBin = $p; break
-        }
-    }
-}
-$script:FallbackAccelFlags = @('-accel', 'whpx')
+# TCP socket helpers (for explorer server and legacy TCP plugs).
+# Host discovery ($script:UseCodexVm, $script:FallbackVmBin, accel flags)
+# happens once at the top of this file.
 $script:AgentSlot = switch -Wildcard ((Split-Path -Leaf (Get-Location).Path)) { '*-nib' { 1 }; default { 0 } }
 $script:PerSlot = 3700
 
@@ -609,13 +648,43 @@ function Start-VmRun {
     )
     if ($script:UseCodexVm) { return Start-CodexVmRun @PSBoundParameters }
     if (-not $script:FallbackVmBin) { Write-Host "No fallback VM"; return $null }
+    # QEMU needs two things pre-boot that codex-vm does for the guest, and
+    # both track the ACCELERATOR, not the host OS. Measured on Windows
+    # 2026-08-13, seed 9B84FA86, qemu 11.0.0, boot to READY on the ctrl serial:
+    #
+    #   accel  -cpu max  0xfe8 loader   boots
+    #   whpx   no        no             no     <- what this path shipped before
+    #   whpx   yes       yes            no
+    #   whpx   no        yes            YES
+    #   tcg    no        no             no
+    #   tcg    no        yes            no
+    #   tcg    yes       yes            YES
+    #
+    # The 0xFE8 cell is the guest RAM size ("dynamic RSP", ram-size-addr in
+    # Emit/X86_64Boot.codex); without it the boot stub computes RSP from
+    # zeroed memory and triple-faults before the first serial byte. Every
+    # accelerator needs it. (data-len=4 not 8: QEMU's generic loader asserts
+    # data_len < 8, and -m stays under 4 GB.)
+    #
+    # -cpu max is required under TCG, whose default qemu64 model lacks
+    # features the seed uses, and is FATAL under WHPX, which passes the host
+    # model through already.
+    #
+    # kernel-irqchip=off is what WHPX needs. Under KVM the userspace-APIC
+    # path it forces is deprecated and the guest dies before READY, while
+    # the in-kernel irqchip boots clean -- so drop the flag exactly there.
+    $ramBytes = [long]$MemMB * 1048576
+    $platformArgs = @('-device', ('loader,addr=0xfe8,data=0x{0:x},data-len=4' -f $ramBytes))
+    if ($script:FallbackAccel -notmatch 'whpx') { $platformArgs = @('-cpu', 'max') + $platformArgs }
+    $machineArgs = @('-machine', 'kernel-irqchip=off')
+    if ($script:FallbackAccel -match 'kvm') { $machineArgs = @() }
     $stdoutFile = [System.IO.Path]::GetTempFileName()
     $stderrFile = [System.IO.Path]::GetTempFileName()
     for ($attempt = 0; $attempt -lt 4; $attempt++) {
         $dataPort = Get-VmPort -Attempt $attempt
         $ctrlPort = $dataPort + 1
-        $args = @($script:FallbackAccelFlags) + @(
-            '-machine', 'kernel-irqchip=off', '-kernel', $Kernel,
+        $args = @($script:FallbackAccelFlags) + $machineArgs + $platformArgs + @(
+            '-kernel', $Kernel,
             '-chardev', (Get-VmChardevData -Port $dataPort), '-chardev', (Get-VmChardevCtrl -Port $ctrlPort),
             '-serial', 'chardev:ch0', '-serial', 'chardev:ch1',
             '-device', 'isa-debug-exit,iobase=0xf4,iosize=0x04',
@@ -623,7 +692,13 @@ function Start-VmRun {
             '-display', 'none', '-no-reboot', '-m', "$MemMB"
         )
         if ($ExtraArgs.Count -gt 0) { $args += $ExtraArgs }
-        $proc = Start-Process -FilePath $script:FallbackVmBin -ArgumentList $args -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile
+        $startArgs = @{
+            FilePath = $script:FallbackVmBin; ArgumentList = $args; PassThru = $true
+            RedirectStandardOutput = $stdoutFile; RedirectStandardError = $stderrFile
+        }
+        # -WindowStyle throws on non-Windows editions of pwsh.
+        if ($IsWindows) { $startArgs.WindowStyle = 'Hidden' }
+        $proc = Start-Process @startArgs
         Start-Sleep -Milliseconds 500
         if ($proc.HasExited) { continue }
         $conn = Connect-Vm -DataPort $dataPort -CtrlPort $ctrlPort -TimeoutSec $ConnectTimeoutSec
@@ -661,4 +736,129 @@ function Start-CodexVmRun {
     }
     Remove-Item -Force $stdoutFile, $stderrFile -ErrorAction SilentlyContinue
     return $null
+}
+
+
+# The total byte length of a complete compile answer, or -1 while one has
+# not arrived yet: everything up to the first line starting SIZE:<n>, plus
+# n payload bytes after that line's newline. The trailer (MAP/PROF/HEAP
+# lines) comes after this point and is drained separately.
+function Get-SizePayloadEnd {
+    param([byte[]]$Bytes)
+    # ASCII decoding turns each byte into exactly one char (bytes beyond
+    # ASCII become '?'), so an index into this string is also an index
+    # into $Bytes -- which is what makes string matching safe on a buffer
+    # that is part text, part binary.
+    $text = [System.Text.Encoding]::ASCII.GetString($Bytes)
+    # The size line matches at a line start only, the same way the output
+    # parser in compile.ps1 matches it.
+    $sizeLine = [regex]::Match($text, '(?m)^SIZE:(\d+)')
+    if (-not $sizeLine.Success) { return -1 }
+    $lineEnd = $text.IndexOf("`n", $sizeLine.Index)
+    if ($lineEnd -lt 0) { return -1 }   # the SIZE line itself is still streaming in
+    $payloadStart = $lineEnd + 1
+    $payloadLength = [long]$sizeLine.Groups[1].Value
+    return $payloadStart + $payloadLength
+}
+
+
+# One compile through the QEMU fallback's serial wire, honouring codex-vm's
+# -input/-output file contract so compile.ps1 parses the result the same
+# way for both hosts: InputFile (mode line + assembled unit + EOT) streams
+# to the data serial once the guest says READY, and everything the guest
+# answers -- log lines, SIZE:<n>, the binary, the MAP/PROF/HEAP trailer --
+# lands byte-for-byte in OutputFile.
+#
+# The read stops when the SIZE payload is complete plus a short trailer
+# drain, not on idle alone: the guest stays running after a compile, so a
+# purely idle-based read always pays the full idle timeout.
+#
+# Returns $true when OutputFile holds a complete answer, INCLUDING a
+# compiler error report or crash dump -- those are the caller's to judge,
+# exactly as they are when codex-vm writes the file. $false means boot
+# failure, no READY, or deadline with no answer.
+function Invoke-VmCompileFallback {
+    param(
+        [string]$Kernel, [string]$InputFile, [string]$OutputFile,
+        [int]$MemMB = 3072, [int]$TimeoutSec = 600, [string]$DiskFile = ''
+    )
+    $extra = @()
+    if ($DiskFile) { $extra = @('-drive', "file=$DiskFile,format=raw,if=ide,index=0") }
+    $vm = Start-VmRun -Kernel $Kernel -MemMB $MemMB -ExtraArgs $extra
+    if (-not $vm) { return $false }
+    try {
+        if (-not (Read-VmReady -Conn $vm.Conn -TimeoutSec 120)) {
+            [Console]::Error.WriteLine("  qemu fallback: no READY from guest")
+            return $false
+        }
+        $stream = $vm.Conn.Data.GetStream()
+        $blob = [System.IO.File]::ReadAllBytes($InputFile)
+        # Sending the unit in one burst stalls intermittently on large
+        # units: the guest ends up waiting for bytes it never saw -- and a
+        # lost EOT is a hang on both sides -- while small compiles never
+        # hit it. codex-vm is immune because it preloads the input into
+        # guest RAM before boot. So give the guest's reader a moment after
+        # READY, then pace the stream in small flushed chunks; the cost is
+        # well under a second on a 500 KB unit.
+        Start-Sleep -Milliseconds 200
+        $chunkSize = 8192
+        for ($off = 0; $off -lt $blob.Length; $off += $chunkSize) {
+            $len = [Math]::Min($chunkSize, $blob.Length - $off)
+            $stream.Write($blob, $off, $len)
+            $stream.Flush()
+            Start-Sleep -Milliseconds 5
+        }
+
+        $out = [System.IO.MemoryStream]::new()
+        $buf = New-Object byte[] 65536
+        $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSec)
+        $needed = [long](-1)
+        $sawTerminalReport = $false
+        while ([DateTime]::UtcNow -lt $deadline) {
+            $stream.ReadTimeout = if ($needed -ge 0 -and $out.Length -ge $needed) { 2000 } else { 5000 }
+            $n = 0
+            try { $n = $stream.Read($buf, 0, $buf.Length) } catch { $n = -1 }
+            if ($n -eq 0) { break }
+            if ($n -lt 0) {
+                # Idle. Done if the payload is complete (the 2s pass above
+                # was the trailer drain), or if the guest sent a terminal
+                # report that has no SIZE line and never will.
+                if ($needed -ge 0 -and $out.Length -ge $needed) { break }
+                if ($sawTerminalReport) { break }
+                # A read timeout and an abortive socket close both arrive
+                # here as an exception. A dead guest has nothing more to
+                # send, and without this the second case spins the loop hot
+                # until the full deadline.
+                if ($vm.Process.HasExited) { break }
+                continue
+            }
+            $out.Write($buf, 0, $n)
+            if ($needed -lt 0) {
+                $bytes = $out.ToArray()
+                $needed = Get-SizePayloadEnd -Bytes $bytes
+                if ($needed -lt 0) {
+                    $txt = [System.Text.Encoding]::ASCII.GetString($bytes)
+                    if ($txt.Contains('!EXC') -or $txt.Contains('CODEGEN-HALTED') -or $txt.Contains('CODEGEN-ERRORS')) {
+                        $sawTerminalReport = $true
+                    }
+                }
+            }
+        }
+        [System.IO.File]::WriteAllBytes($OutputFile, $out.ToArray())
+        if (($needed -ge 0 -and $out.Length -ge $needed) -or $sawTerminalReport) { return $true }
+        [Console]::Error.WriteLine("  qemu fallback: deadline (${TimeoutSec}s) with no complete answer ($($out.Length) bytes so far)")
+        return $false
+    } finally {
+        if ($vm.Conn) {
+            if ($vm.Conn.Data) { try { $vm.Conn.Data.Dispose() } catch {} }
+            if ($vm.Conn.Ctrl) { try { $vm.Conn.Ctrl.Dispose() } catch {} }
+        }
+        # The guest never exits on its own after a compile; kill it now
+        # rather than paying Close-Vm's five-second wait for an exit that
+        # is not coming.
+        if ($vm.Process -and -not $vm.Process.HasExited) {
+            Stop-VmGraceful -ProcessId $vm.Process.Id -TimeoutMs 1000
+        }
+        Remove-Item -Force $vm.StdoutFile, $vm.StderrFile -ErrorAction SilentlyContinue
+    }
 }

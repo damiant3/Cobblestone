@@ -7,7 +7,7 @@ campaign (sixteen probe versions, five metal boots, 2026-07-29 to
 perfectly and then does nothing. The worked example is a USB keyboard,
 but the method is the deliverable. The flyable artifact is
 `build/boot/kbd-diag-v16.img` (digests in the root `README.md`); the
-per-flight record is `docs/HardwareSitting.md`.
+per-flight record is `docs/Hardware/HardwareSitting.md`.
 
 ## The success record
 
@@ -91,7 +91,7 @@ frozen between versions -- a photograph is only evidence if you know
 exactly which instrument took it. Each version changes as little as
 possible over the last. Write the READING TABLE -- what each possible
 value of each new row will mean -- into the run sheet BEFORE the
-flight (`docs/HardwareSitting.md`, "Reading it" tables); if you cannot
+flight (`docs/Hardware/HardwareSitting.md`, "Reading it" tables); if you cannot
 say in advance what a reading would prove, the instrument is not ready
 to fly.
 
@@ -118,7 +118,7 @@ bed catches that class.
 
 One command, no wrapper scripts, log readable by a non-elevated
 session; the full recipe and its reasoning live in
-`docs/HardwareSitting.md`:
+`docs/Hardware/HardwareSitting.md`:
 
 ```powershell
 Start-Process pwsh -Verb RunAs -PassThru -ArgumentList '-NoProfile','-File',
@@ -158,7 +158,7 @@ instrument (L-ORACLE).
 | Artifact | Location |
 |---|---|
 | Flyable diagnostic image + digests | `build/boot/kbd-diag-v16.img`, root `README.md` |
-| Per-flight run sheets and reading tables | `docs/HardwareSitting.md` |
+| Per-flight run sheets and reading tables | `docs/Hardware/HardwareSitting.md` |
 | Emulator failure-model flags | `docs/OperatorsManual.md` (CLI table) |
 | Spec PDFs + Grep text + cited derivations | `docs/Reference/` |
 | Stick build and flash for end users | `docs/UsersHandbook.md` |

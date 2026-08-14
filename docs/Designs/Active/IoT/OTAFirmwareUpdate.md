@@ -79,7 +79,7 @@ never halted. It now converts with `hkdf-words-to-bytes` and
 `ota-hash-eq` measures both lists instead of trusting a caller's length.
 Pinned by `codex/test/ota-gate-block`, which fails on the old code at the
 first check.
-**Upstream**: `docs/PM/IoT/AGENT-PROMPT.md` deliverable 5,
+**Upstream**: `docs/Reference/IoT/AGENT-PROMPT.md` deliverable 5,
 `docs/Designs/Active/IoT/ProtocolStack.md` (LwM2M/CoAP Block),
 `docs/Designs/Active/IoT/HardwareAbstractionLayer.md` (Flash effect),
 `codex/os/verify/` (5-phase verifier)

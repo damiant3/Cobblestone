@@ -1,0 +1,303 @@
+Chapter: GopClock
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Theme
+  cites Works chapter GopRtc
+  cites Works chapter GopZone
+
+ The clock accessory: what the machine thinks the time is, what that is
+ somewhere else, and the means to correct it.
+
+ The MC146818 is external hardware, so the details below are its spec and
+ not our design, and a reader cannot derive them from this code.
+
+   Status B bit 7 (SET) freezes the update cycle. It MUST be raised
+   before writing any time register and lowered afterwards, or the part
+   can begin an update between two of the writes and carry a half-written
+   time forward.
+
+   Status B bit 2 chooses binary over BCD, and bit 1 chooses 24-hour over
+   12-hour. Both are properties of the PART, not of us: a writer that
+   assumes BCD corrupts a binary part and vice versa, so every value is
+   encoded the way the part currently declares.
+
+   In 12-hour mode the hour register carries 1..12 with bit 7 meaning PM,
+   and midnight is 12 AM rather than 0. That encoding is why the hour is
+   the only field with a conversion either side of it.
+
+   Register 9 is a two-digit year. The century register is not reliably
+   present, so the year here is 2000 plus that value.
+
+ We say:
+
+Section: Registers
+
+  clk-reg-seconds : Integer = 0
+  clk-reg-minutes : Integer = 2
+  clk-reg-hours : Integer = 4
+  clk-reg-day : Integer = 7
+  clk-reg-month : Integer = 8
+  clk-reg-year : Integer = 9
+
+  clk-set-bit : Integer = 128
+  clk-h24-bit : Integer = 2
+  clk-pm-bit : Integer = 128
+
+Section: State
+
+ The zone is stored with twelve added to it so the cell never holds a
+ negative number: `peek-32` zero-extends, so a stored -5 would read back
+ as a large positive and the display would run off the end of the world.
+
+  clk-field-cell : Integer = 0
+  clk-editing-cell : Integer = 4
+  clk-zone-cell : Integer = 8
+  clk-h-cell : Integer = 12
+  clk-mi-cell : Integer = 16
+  clk-s-cell : Integer = 20
+  clk-d-cell : Integer = 24
+  clk-mo-cell : Integer = 28
+  clk-y-cell : Integer = 32
+  clk-ready-cell : Integer = 36
+
+  clk-zone-bias : Integer = zone-bias
+  clk-fields : Integer = 7
+
+  clk-field : Integer -> Integer
+  clk-field (ks) = peek-32 ks clk-field-cell
+
+  clk-editing : Integer -> Boolean
+  clk-editing (ks) = peek-32 ks clk-editing-cell == 1
+
+  clk-zone : Integer -> Integer
+  clk-zone (ks) = peek-32 ks clk-zone-cell - clk-zone-bias
+
+  clk-set-zone : Integer, Integer -> Integer
+  clk-set-zone (ks) (z) = poke-32 ks clk-zone-cell (zone-clamp z + clk-zone-bias)
+
+ The zone is read off the stick the first time the pane opens, not every
+ time, so a change made in this session is not overwritten by the file it
+ has not been written to yet.
+
+  clk-ensure : Integer -> [Device.Port] Integer
+  clk-ensure (ks) = act
+    if peek-32 ks clk-ready-cell == 1 then 0
+    else act
+      z <- zone-load
+      let r = poke-32 ks clk-ready-cell 1
+      in clk-set-zone ks z
+    end
+  end
+
+Section: Reading
+
+  clk-mode : Integer -> [Device.Port] Integer
+  clk-mode (d) = act
+    b <- rtc-read rtc-reg-status-b
+    b
+  end
+
+  clk-field-value : Integer, Integer -> [Device.Port] Integer
+  clk-field-value (reg) (b) = act
+    raw <- rtc-read reg
+    rtc-decode raw (bit-and b rtc-binary-bit)
+  end
+
+ The hour is read through the 12-hour encoding when the part is in it, so
+ everything above this line works in plain 0..23.
+
+  clk-decode-hour : Integer, Integer -> Integer
+  clk-decode-hour (raw) (b) =
+    let pm = bit-and raw clk-pm-bit /= 0
+    in let v = rtc-decode (bit-and raw 127) (bit-and b rtc-binary-bit)
+    in if bit-and b clk-h24-bit /= 0 then v
+    else if pm then (if v == 12 then 12 else v + 12)
+    else (if v == 12 then 0 else v)
+
+  clk-hour-now : Integer -> [Device.Port] Integer
+  clk-hour-now (b) = act
+    raw <- rtc-read clk-reg-hours
+    clk-decode-hour raw b
+  end
+
+Section: Writing
+
+  clk-write : Integer, Integer -> [Device.Port] Integer
+  clk-write (reg) (v) = act
+    w <- port-out-byte rtc-port-index reg
+    port-out-byte rtc-port-data v
+  end
+
+  clk-int-to-bcd : Integer -> Integer
+  clk-int-to-bcd (v) = bit-shl (v / 10) 4 + int-mod v 10
+
+  clk-encode : Integer, Integer -> Integer
+  clk-encode (v) (b) = if bit-and b rtc-binary-bit /= 0 then v else clk-int-to-bcd v
+
+  clk-encode-hour : Integer, Integer -> Integer
+  clk-encode-hour (h) (b) =
+    if bit-and b clk-h24-bit /= 0 then clk-encode h b
+    else if h == 0 then clk-encode 12 b
+    else if h < 12 then clk-encode h b
+    else if h == 12 then clk-encode 12 b + clk-pm-bit
+    else clk-encode (h - 12) b + clk-pm-bit
+
+ The whole write sits inside one SET window. Nothing between raising and
+ lowering that bit may fail or return early, which is why the values are
+ taken from the state block rather than computed here.
+
+  clk-commit : Integer -> [Device.Port] Integer
+  clk-commit (ks) = act
+    b <- rtc-read rtc-reg-status-b
+    f <- clk-write rtc-reg-status-b (bit-or b clk-set-bit)
+    w1 <- clk-write clk-reg-hours (clk-encode-hour (peek-32 ks clk-h-cell) b)
+    w2 <- clk-write clk-reg-minutes (clk-encode (peek-32 ks clk-mi-cell) b)
+    w3 <- clk-write clk-reg-seconds (clk-encode (peek-32 ks clk-s-cell) b)
+    w4 <- clk-write clk-reg-day (clk-encode (peek-32 ks clk-d-cell) b)
+    w5 <- clk-write clk-reg-month (clk-encode (peek-32 ks clk-mo-cell) b)
+    w6 <- clk-write clk-reg-year (clk-encode (peek-32 ks clk-y-cell) b)
+    r <- (clk-write rtc-reg-status-b b)
+    1
+  end
+
+  clk-load : Integer -> [Device.Port] Integer
+  clk-load (ks) = act
+    idle <- rtc-wait-idle rtc-uip-fuel
+    b <- clk-mode 0
+    h <- clk-hour-now b
+    mi <- clk-field-value clk-reg-minutes b
+    s <- clk-field-value clk-reg-seconds b
+    d <- clk-field-value clk-reg-day b
+    mo <- clk-field-value clk-reg-month b
+    y <- clk-field-value clk-reg-year b
+    let a = poke-32 ks clk-h-cell h
+    in let c = poke-32 ks clk-mi-cell mi
+    in let e = poke-32 ks clk-s-cell s
+    in let g = poke-32 ks clk-d-cell d
+    in let i = poke-32 ks clk-mo-cell mo
+    in let j = poke-32 ks clk-y-cell y
+    in let k = poke-32 ks clk-editing-cell 1
+    in poke-32 ks clk-field-cell 0
+  end
+
+Section: Formatting
+
+  clk-pad2 : Integer -> Text
+  clk-pad2 (v) = if v < 10 then "0" & show v else show v
+
+  clk-wrap24 : Integer -> Integer
+  clk-wrap24 (h) = int-mod (h + 24) 24
+
+  clk-hms : Integer, Integer, Integer -> Text
+  clk-hms (h) (mi) (s) = clk-pad2 h & ":" & clk-pad2 mi & ":" & clk-pad2 s
+
+  clk-month-name : Integer -> Text
+  clk-month-name (m) =
+    if m == 1 then "January" else if m == 2 then "February" else if m == 3 then "March"
+    else if m == 4 then "April" else if m == 5 then "May" else if m == 6 then "June"
+    else if m == 7 then "July" else if m == 8 then "August" else if m == 9 then "September"
+    else if m == 10 then "October" else if m == 11 then "November" else if m == 12 then "December"
+    else "?"
+
+  clk-date-text : Integer, Integer, Integer -> Text
+  clk-date-text (d) (mo) (y) = clk-month-name mo & " " & show d & ", " & show (2000 + y)
+
+Section: Fields
+
+  clk-field-name : Integer -> Text
+  clk-field-name (f) =
+    if f == 0 then "Hour" else if f == 1 then "Minute" else if f == 2 then "Second"
+    else if f == 3 then "Day" else if f == 4 then "Month" else if f == 5 then "Year"
+    else "Zone"
+
+  clk-field-cell-of : Integer -> Integer
+  clk-field-cell-of (f) =
+    if f == 0 then clk-h-cell else if f == 1 then clk-mi-cell else if f == 2 then clk-s-cell
+    else if f == 3 then clk-d-cell else if f == 4 then clk-mo-cell else clk-y-cell
+
+  clk-field-max : Integer -> Integer
+  clk-field-max (f) =
+    if f == 0 then 23 else if f == 1 then 59 else if f == 2 then 59
+    else if f == 3 then 31 else if f == 4 then 12 else 99
+
+  clk-field-min : Integer -> Integer
+  clk-field-min (f) = if f == 3 | f == 4 then 1 else 0
+
+  clk-bump : Integer, Integer -> Integer
+  clk-bump (ks) (delta) =
+    let f = clk-field ks
+    in if f == 6 then clk-set-zone ks (clk-zone ks + delta)
+    else let c = clk-field-cell-of f
+    in let lo = clk-field-min f
+    in let hi = clk-field-max f
+    in let v = peek-32 ks c + delta
+    in poke-32 ks c (if v < lo then hi else if v > hi then lo else v)
+
+  clk-field-text : Integer, Integer -> Text
+  clk-field-text (ks) (f) =
+    if f == 6 then zone-text (clk-zone ks)
+    else if f == 5 then show (2000 + peek-32 ks clk-y-cell)
+    else clk-pad2 (peek-32 ks (clk-field-cell-of f))
+
+Section: The Tree
+
+  clk-row : Integer, Integer -> WidgetNode
+  clk-row (ks) (f) =
+    let mark = if clk-field ks == f then "> " else "  "
+    in widget-set-min (widget-button ("clk-f-" & clk-field-name f) (mark & clk-field-name f & "   " & clk-field-text ks f)) 0 22
+
+ Two columns for the seven fields, because the face above them already
+ takes most of the pane and nothing clips a widget panel to its box: in
+ one column the last two fields drew through the help line and out the
+ bottom. Measured on the glass at 1600x900.
+
+  clk-rows : Integer, Integer, Integer, List WidgetNode -> List WidgetNode
+  clk-rows (ks) (i) (stop) (acc) =
+    if i >= stop then acc
+    else clk-rows ks (i + 1) stop (list-push acc (clk-row ks i))
+
+  clk-split : Integer = 4
+
+ The live face reads the part every repaint rather than caching, so a
+ clock left open does not drift away from the hardware it is showing.
+
+  clk-tree : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> WidgetNode
+  clk-tree (ks) (h) (mi) (s) (d) (mo) (y) =
+    let z = clk-zone ks
+    in let face = widget-panel "clk-face" DirColumn 4 [
+      widget-set-min (widget-label "clk-now" ("This machine    " & clk-hms h mi s)) 0 26,
+      widget-set-min (widget-label "clk-date" ("                " & clk-date-text d mo y)) 0 22,
+      widget-set-min (widget-label "clk-zone" (zone-text z & "         " & clk-hms (clk-wrap24 (h + z)) mi s)) 0 22
+    ]
+    in if clk-editing ks == False then
+      widget-panel "clk-pane" DirColumn 8 [
+        widget-set-flex face 1,
+        widget-set-min (widget-label "clk-help" "s sets the clock   Esc returns") 0 20
+      ]
+    else let left = widget-panel "clk-edit-l" DirColumn 2 (clk-rows ks 0 clk-split [])
+    in let right = widget-panel "clk-edit-r" DirColumn 2 (clk-rows ks clk-split clk-fields [])
+    in widget-panel "clk-pane" DirColumn 8 [
+      face,
+      widget-set-flex (widget-panel "clk-edit" DirRow 8 [widget-set-flex left 1, widget-set-flex right 1]) 1,
+      widget-set-min (widget-label "clk-help2" "up/down change   left/right field   Enter writes it   Esc cancels") 0 20
+    ]
+
+Section: Keys
+
+ The answer says what the CALLER must do, because reading and writing the
+ part are effects and this is not the place for either: 0 nothing,
+ 1 redraw, 2 load the registers and start editing, 3 leave the pane,
+ 4 commit what was edited.
+
+  clk-key : Integer, Integer -> Integer
+  clk-key (ks) (sc) =
+    if sc == 1 then (if clk-editing ks then let d = poke-32 ks clk-editing-cell 0 in 1 else 3)
+    else if clk-editing ks == False then (if sc == 31 then 2 else 0)
+    else if sc == 72 then let d = clk-bump ks 1 in 1
+    else if sc == 80 then let d = clk-bump ks (0 - 1) in 1
+    else if sc == 75 then let d = poke-32 ks clk-field-cell (int-mod (clk-field ks + clk-fields - 1) clk-fields) in 1
+    else if sc == 77 then let d = poke-32 ks clk-field-cell (int-mod (clk-field ks + 1) clk-fields) in 1
+    else if sc == 28 then 4
+    else 0
+
+Page 1

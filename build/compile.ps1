@@ -55,7 +55,7 @@ if ($Kernel) {
         exit 2
     }
 } else {
-    $Stage0 = 'build-output\bare-metal\Codex.cdx'
+    $Stage0 = Join-Path 'build-output' 'bare-metal' 'Codex.cdx'
     if ((-not (Test-Path -PathType Leaf $Stage0))) {
         [Console]::Error.WriteLine("MISSING: $Stage0 - run build.ps1 first, or pass -Kernel seed\Codex.cdx")
         exit 2
@@ -66,7 +66,7 @@ $kernelHash = (Get-FileHash -Algorithm SHA256 $Stage0).Hash.Substring(0, 16)
 [Console]::Error.WriteLine("kernel: $Stage0 [$kernelHash]")
 
 if ((-not $Kernel)) {
-    $seedPath = Join-Path (Split-Path $PSScriptRoot) 'seed\Codex.cdx'
+    $seedPath = Join-Path (Split-Path $PSScriptRoot) 'seed' 'Codex.cdx'
     if ((Test-Path -PathType Leaf $seedPath)) {
         $seedHash = (Get-FileHash -Algorithm SHA256 $seedPath).Hash.Substring(0, 16)
         if (($seedHash -ne $kernelHash)) {
@@ -215,19 +215,32 @@ try {
         if ((Test-Path -PathType Leaf $outputFile)) {
             [System.IO.File]::WriteAllBytes($outputFile, [byte[]]::new(0))
         }
-        $vmArgs = @('-kernel', $Stage0, '-input', $inputFile, '-output', $outputFile, '-mem', "$curMem", '-headless')
-        if ($MemNoCap) {
-            $vmArgs += '-mem-nocap'
-        }
-        if ($DiskFile) {
-            $vmArgs += @('-disk', $DiskFile)
-        }
-        $proc = Start-Process -FilePath $vmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
-        $proc.WaitForExit($TimeoutSec * 1000)
-        if ((-not $proc.HasExited)) {
-            Stop-VmGraceful -ProcessId $proc.Id
-            Set-Content -Path $Log -Value 'FAIL: VM timed out' -Encoding UTF8
-            exit 3
+        if ($script:UseCodexVm) {
+            $vmArgs = @('-kernel', $Stage0, '-input', $inputFile, '-output', $outputFile, '-mem', "$curMem", '-headless')
+            if ($MemNoCap) {
+                $vmArgs += '-mem-nocap'
+            }
+            if ($DiskFile) {
+                $vmArgs += @('-disk', $DiskFile)
+            }
+            $proc = Start-Process -FilePath $vmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
+            $proc.WaitForExit($TimeoutSec * 1000)
+            if ((-not $proc.HasExited)) {
+                Stop-VmGraceful -ProcessId $proc.Id
+                Set-Content -Path $Log -Value 'FAIL: VM timed out' -Encoding UTF8
+                exit 3
+            }
+        } else {
+            # No codex-vm on this host: the QEMU fallback serves the same
+            # -input/-output contract over the serial wire, and the parsing
+            # below cannot tell the difference. (-MemNoCap needs no translation:
+            # the 3040 MB cap is codex-vm's, and the 0xFE8 cell the QEMU path
+            # seeds already carries the real -m value.)
+            $ok = Invoke-VmCompileFallback -Kernel $Stage0 -InputFile $inputFile -OutputFile $outputFile -MemMB $curMem -TimeoutSec $TimeoutSec -DiskFile $DiskFile
+            if ((-not $ok)) {
+                Set-Content -Path $Log -Value 'FAIL: VM timed out' -Encoding UTF8
+                exit 3
+            }
         }
         if (((-not (Test-Path -PathType Leaf $outputFile)) -or (Get-Item $outputFile).Length -eq 0)) {
             if (($attempt -lt $maxAttempts -and ($curMem -lt 3072))) {

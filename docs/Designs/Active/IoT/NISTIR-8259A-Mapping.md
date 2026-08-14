@@ -114,7 +114,7 @@ exists on this box. The rows say loopback-tested only.
 ## What this audit did not do
 
 It read the baseline's six capability titles from
-`docs/PM/IoT/Compliance/NISTIR-8259-Summary.md` and NIST's published titles,
+`docs/Reference/IoT/Compliance/NISTIR-8259-Summary.md` and NIST's published titles,
 **not from the 8259A PDF**, which is not in the tree. The sub-elements NIST
 lists under each capability were not walked one by one, so "Satisfied" means
 the stated mechanism was fired and holds, not that every sub-element of that

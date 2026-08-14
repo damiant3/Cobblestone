@@ -5,8 +5,7 @@
 A foreword quire is a library package marked `"foreword": true` in its
 `codex.project.json`. Foreword modules compile before user code.
 
-**They are not automatically in scope, and this line said they were
-until 2026-07-19.** A foreword chapter contributes its names only when
+**They are not automatically in scope.** A foreword chapter contributes its names only when
 it is cited into the compilation unit; `cites Foreword chapter X` is
 what puts X's definitions within reach, exactly as for any other quire.
 What "foreword" buys is that the quire resolves without a path and its
@@ -262,10 +261,9 @@ together rather than fixing only the one that moved.
    functions.
 
 7. **A seed rebuild is decided by REACHABILITY, and a new foreword
-   module is not automatically reachable.** This rule read "New foreword
-   modules require a seed rebuild. Adding or removing a module from a
-   foreword quire changes what the compiler bakes in." **Measured
-   2026-07-26 and it is false**: `CryptoBig` and `Rsa` were added to
+   module is not automatically reachable.** Adding a module to a foreword
+   quire does not by itself change what the compiler bakes in. Measured
+   2026-07-26: `CryptoBig` and `Rsa` were added to
    `codex/foreword/core` in one changelist and `build/output/Sut.cdx`
    came out byte-identical to `seed/Codex.cdx`.
 

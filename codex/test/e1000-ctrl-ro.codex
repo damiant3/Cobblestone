@@ -1,0 +1,92 @@
+Chapter: E1000CtrlRo
+  cites Foreword chapter Maybe
+  cites Kernel chapter E1000e
+  cites Kernel chapter Pci
+  cites Dev chapter NicAsde
+
+ CTRL is read-only to the driver on Damian's Intel I219-V, measured on
+ metal 2026-08-13: the probe cleared CTRL.SLU and read CTRL straight back
+ four times across two flights and got 0x180240, the firmware value, every
+ time. MDIC writes work on that same part, so this is CTRL and not the CSR
+ write path. -e1000-ctrl-ro is the arm that reproduces it.
+
+ The row that pays is settled-lies-about-reset. With CTRL discarded,
+ e1000-reset never sets RST, so e1000-await-reset sees it clear on its
+ first read and answers 1 -- a reset that never happened, reporting as one
+ that completed. That is what read as "the reset works on a warm part" on
+ 2026-08-13, and no aggregate can tell the two apart.
+
+Section: Fixtures
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  clear-slu : Integer = #FFFFFFFF - e1000-ctrl-slu
+
+Section: Judges
+
+ A write that is refused leaves the bit it tried to clear still set.
+
+  slu-write-refused : PciDevice -> Boolean
+  slu-write-refused (dev) =
+   let mmio = na-mmio-of dev
+   in let c0 = e1000-read mmio e1000-reg-ctrl
+   in let w = e1000-write mmio e1000-reg-ctrl (bit-and c0 clear-slu)
+   in bit-and (e1000-read mmio e1000-reg-ctrl) e1000-ctrl-slu /= 0
+
+ Firmware left SLU set, and the refusal is what preserves it.
+
+  ctrl-is-firmware-value : PciDevice -> Boolean
+  ctrl-is-firmware-value (dev) =
+   let mmio = na-mmio-of dev
+   in e1000-read mmio e1000-reg-ctrl == #180240
+
+  asde-does-not-stick : PciDevice -> Boolean
+  asde-does-not-stick (dev) =
+   let mmio = na-mmio-of dev
+   in let arm = na-bring-up-after mmio True
+   in bit-and (e1000-read mmio e1000-reg-ctrl) e1000-ctrl-asde == 0
+
+ The link comes up anyway, because na-phy-kick reaches the PHY over MDIO
+ and the CTRL write was never load-bearing.
+
+  link-up-without-ctrl : PciDevice -> Boolean
+  link-up-without-ctrl (dev) =
+   let mmio = na-mmio-of dev
+   in (na-bring-up-after mmio False).na-gave == na-gave-ok
+
+  mdic-still-writable : PciDevice -> Boolean
+  mdic-still-writable (dev) =
+   let mmio = na-mmio-of dev
+   in na-phy-kick mmio == 1
+
+ settled=1 from a reset that never ran. This row reads the SAME with the
+ arm and without it, deliberately, and that identity IS the finding: no
+ aggregate distinguishes a reset that completed from one that was
+ discarded, so a green here is not evidence a reset happened. Do not
+ "fix" it into a discriminating row; the point is that it cannot be one.
+
+  reset-answers-one-either-way : PciDevice -> Boolean
+  reset-answers-one-either-way (dev) =
+   let mmio = na-mmio-of dev
+   in e1000-reset mmio == 1
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let scan = pci-scan-bus 0
+    in act
+      when e1000-find scan
+        is Just (dev) -> act
+          print-line-uni ("slu write refused: " & yn (slu-write-refused dev))
+          print-line-uni ("ctrl is firmware : " & yn (ctrl-is-firmware-value dev))
+          print-line-uni ("asde not sticking: " & yn (asde-does-not-stick dev))
+          print-line-uni ("mdic still writes: " & yn (mdic-still-writable dev))
+          print-line-uni ("link up anyway   : " & yn (link-up-without-ctrl dev))
+          print-line-uni ("reset says 1 too: " & yn (reset-answers-one-either-way dev))
+        end
+        is None -> print-line-uni ("candidate found : no")
+    end
+  end
+
+Page 1

@@ -20,6 +20,9 @@ pwsh build\dump-usb.ps1 -DiskNumber 2 -Out D:\Projects\stick-archive\<what>-<yyy
 | in the archive | SHA-256 | what it is |
 |---|---|---|
 | `stick-before-20260811.img` | `629821CF E8A9F876 EC2A9FD9 C4C61B47 3D93B821 681DB014 5B0E6DFD D2683A03` | the ceremony boot that flew green 2026-08-05, read off disk 2 by reek on 08-11 before `a5bigflight.img` went over it. **The only copy**: `ceremonyboot.img` was never in the depot in any stream at any revision. Carries the 124-byte `IDENTITY.DAT` the guest wrote to the ESP on real ASMedia hardware. |
+| `before-asdeflight-20260813.img` | `AAEC57B9 A51E0FFD 1FD72EC2 396938B9 25538610 103DA90A 53C9FE07 932F8C56` | read off disk 2 by blu on 08-13 before `asdeflight.img` went over it. **Not a duplicate of anything already here** -- it differs from `vmxprobe-returned-20260813.img` and from every other row. Root directory holds `BOOTX64.EFI` and `SOURCE.SRC` and **no `CODEX.CDX`**, so it is a source-carrying image rather than the vmxprobe already on file. Owner unidentified; whoever recognises it should say so in this row. |
+| `vmxprobe-returned-20260813.img` | `2FCF8F98 994DFE45 7ABE6E6F BEC323F8 D6DFE479 477FA2C0 B761A90C 154AD0CE` | the VT-x flight as it came back 2026-08-13. Carries a 124-byte `IDENTITY.DAT` whose key was generated on the ASUS during the first-boot wizard: **the only copy**. Six sectors differ from what was flashed and all six are named in that flight's entry. |
+| `before-vmxprobe-20260813.img` | `190911B8 988A645D 622DAB1F C9664AAC C94560E8 2642D462 92758EB1 CB93FC1C` | disk 2 as it stood 2026-08-13 16:31, read off before `vmxprobe.img` went over it. A diagnostic image, per Damian; not known to have flown. Dumped under the standing ruling rather than because it was believed precious. |
 
 **Why not `build-output/`, which is where everyone put them until now:**
 the `clean` phase of every gate run wipes it, and a gate is the most
@@ -40,6 +43,298 @@ other 16 MB images sitting in the fleet's `build-output/` directories on
 **Say where, in this document, in the entry for that flight.** Older
 entries say only "on blu's box", and that vagueness is half of what made
 `build-output/` look like a safe habit.
+
+## FLOWN 2026-08-13, GREEN: `vmxprobe.img`. VT-x IS AVAILABLE ON THE ASUS.
+
+**Damian read three lines off the glass:**
+
+```
+IA32_FEATURE_CONTROL = 5
+VT-x available
+VMX revision id 4
+```
+
+**5 is `101`: bit 0 lock set, bit 2 VMX-outside-SMX set.** That is
+firmware with VT-x switched ON and locked, and it is a different number
+from the 1 the bed reports. **The bed was never a proxy for this box on
+this question**, which is the durable half: two independent measurements
+under codex-vm both said 1, agreed with each other, and were both
+irrelevant to the hardware. An instrument can be reproducible and still
+be pointed at the wrong thing.
+
+**The revision id is a real read, not a default.** `vmx-read-revision-id`
+(`apps/works/DevHypervisor.codex:41`) returns 0 when `vmx-available` is
+False and otherwise masks bits 0-30 of `IA32_VMX_BASIC`, so a non-zero
+answer proves the MSR was reached. 4 is lower than the values Intel
+parts usually report; it does not matter and must not be "corrected",
+because the VMCS has to be stamped with whatever THIS processor reports
+and that is exactly what the code does.
+
+This unblocks Road A in `docs/Designs/Active/OS/DeskBuildLoop.md`. The
+next wall there is the arena, not the wiring.
+
+**The wizard behaved as documented on metal**, first-boot path walked by
+hand.
+
+### What the machine wrote, read off the returned stick
+
+Dumped to `D:\Projects\stick-archive\vmxprobe-returned-20260813.img`,
+SHA-256 `2FCF8F98 994DFE45 7ABE6E6F BEC323F8 D6DFE479 477FA2C0
+B761A90C 154AD0CE`. Compared sector by sector against the image that was
+flashed: **exactly six sectors differ, and all six are explained.**
+
+| LBA | What |
+|---|---|
+| 0, 1 | `flash-usb.ps1 -SpecFit` rewrites these itself; not the guest |
+| 2118 | FAT copy 0, the entry for cluster 17705 |
+| 2222 | FAT copy 1, the same entry |
+| 2257 | root directory, the `IDENTITY.DAT` slot |
+| 19992 | the file's one data sector |
+
+`IDENTITY.DAT` is **124 bytes**, matching both the bed run and the
+2026-08-05 ceremony stick. **Both FAT copies are identical**, so the
+guest's FAT writer maintains the mirror rather than leaving copy 1
+stale -- worth knowing, because a stale second FAT is invisible until
+some other reader picks it. `SOURCE.SRC`, `CODEX.CDX` and all 64
+chapters under `SRC/` are byte-for-byte what was flashed: the wizard
+touched nothing it did not own.
+
+**This dump carries a private key generated on the ASUS.** It is the
+only copy, which is the whole reason the archive rule exists.
+
+Flight record of the image below.
+
+## THE IMAGE: `vmxprobe.img`
+
+`vmxprobe.img`, SHA-256 `8E95E062 AF2EED56 0554B331 1D845B98 DF59251E
+87B199CB 794A2B28 42EBA697`. Built from main 14829 by
+`build/build-boot-img.ps1`. Flashed to disk 2 (` USB DISK 2.0`, 28.9 GB)
+2026-08-13 16:32 with `-SpecFit -Force`: all 16,777,216 bytes read back
+matching, four SpecFit sectors verified individually
+(`build-output/flash-vmxprobe.log`).
+
+**The whole flight is three keystrokes and one photograph.** At the desk:
+press **`t`** for the Console pane, type **`vmx`**, press **Enter**.
+
+**Bring back the literal text, not a summary.** It prints
+`IA32_FEATURE_CONTROL` (MSR 58) as a number, then either a VMX revision
+ID or a sentence naming why VMX is unavailable. Both halves are wanted:
+the number is the measurement, the sentence is the diagnosis. It wraps
+at 62 columns, so it may run to two lines and both are needed.
+
+**Why it is worth a boot.** Everything in `DevHypervisor` gates on
+`vmx-available`. Under codex-vm that MSR reads **1** -- lock bit set,
+VMX-outside-SMX clear, the encoding of firmware with VT-x switched off
+-- measured 2026-07-27 and independently reproduced 2026-08-13 through
+this console, a different surface on a different day. **It has never
+been read on metal**, because until the console pane existed no surface
+could ask: Dev Console needs a UART the ASUS does not have. That one
+number picks the road in
+`docs/Designs/Active/OS/DeskBuildLoop.md`: VT-x present wires
+`vm-compile-cdx` to a `compile` command, VT-x absent kills Road A and
+sends the work to Road C. Nothing else settles it.
+
+**A FRESH IMAGE NEED NOT COST A WIZARD ANY MORE.** `build-img.ps1` and
+`build-boot-img.ps1` take **`-Identity <path>`** since 2026-08-13, which
+writes an existing `IDENTITY.DAT` into the ESP root, and
+`wz-identity-present` is exactly a `gfat-file-size` on that name. The
+identity off this flight is at
+`D:\Projects\stick-archive\IDENTITY-asus-20260813.DAT`. **Use one that
+came off the TARGET machine**: an image built with a key generated in the
+bed puts a bed-generated key on a flown stick, which is the failure the
+section below describes. A path that does not exist is a hard error
+rather than a silent fall back to the wizard, because a silent fall back
+is discovered at the machine, after a flash.
+
+**`-Identity` alone gets you to the desk LOCKED, which is not the same as
+unlocked, and the first version of this section got that wrong.** With an
+identity on the volume and no keys injected, the boot stops at "Welcome
+Back / Passphrase to unlock" (measured at 7 s), and it only moves on
+because the no-keyboard fallback resolves the screen for it. The desk is
+then reached with the identity never unlocked. Reaching the desk is
+therefore NOT evidence that an identity was accepted: the two look
+identical from the last frame, which is exactly why the last frame was
+the wrong place to look.
+
+**`wz-auto-pass` closes that.** `GopWizard` tries a development
+passphrase before drawing the prompt, so a returning stick reaches
+"Identity Unlocked" with the fingerprint and "The public key matches the
+stored identity" on the glass (measured at 7 s), then the desk. The
+constant is four characters in a public mirror and protects nothing; an
+identity wrapped with a real passphrase does not match it, falls through
+to the prompt, and is unaffected.
+
+**Four Enter-gated screens stand between the wizard and the menu** --
+Storage, Disks, xHCI, Wake -- each a `wz-wait-enter`. One Enter with key
+repeat flushes all four and lands in the menu, which reads as the boot
+"ending early". Nothing is wrong when that happens; each screen also
+auto-advances on its own after about 30 s. **Measured 2026-08-13: with no
+keys at all, the desk is up and stable at 90 s**, clock ticking. If a boot
+looks stuck, wait before concluding.
+
+**A FRESH IMAGE WITHOUT `-Identity` BOOTS TO THE WIZARD, NOT THE DESK.** It
+carries no `IDENTITY.DAT`. Expect GopBoot menu -> Welcome -> Passphrase
+-> Confirm -> Entropy -> Upstream -> **Timezone** -> keygen -> Identity
+Created (with a fingerprint) -> Storage -> choose interface, and only
+then the desk. The Timezone screen is Up/Down and Enter and writes
+`TIMEZONE.DAT` beside the identity (main 14907); it defaults to UTC,
+which is the one offset that is never a guess about where the machine
+is.
+Measured end to end in the bed at under 50 seconds including ECDSA
+keygen: it is a minute of typing, not a wait, and it is not a fault.
+That walk happens ON THE METAL BOX deliberately -- see the section below
+on why pre-running the wizard in the bed and flashing that image puts a
+bed-generated private key on the flown stick.
+
+## FLOWN 2026-08-13, third and fourth boots: CTRL IS READ-ONLY ON THIS PART, and two claims below are wrong because of it.
+
+Two more boots the same evening, and between them they close B2's register
+question and correct the entry beneath this one.
+
+**Boot 3** added a `CTRL` readback after each arm. Both arms answered
+`CTRLback=1573440 ASDEbit=n` -- `0x180240`, the firmware value, with the
+ASDE bit refusing to set even on the arm that ran FIRST from the firmware
+state, which was the flight built to remove the inheritance confound.
+
+**Boot 4** cleared `CTRL.SLU` and read it straight back. All four rows:
+`CTRL=1573440 SLUbit=y STATUS=1074266243 LU=y`. **The bit we cleared did not
+clear.** CTRL writes are discarded whole on this part.
+
+**What is NOT broken, and this is the half that matters for B2c: MDIC writes
+work.** `phy=y` on every arm means `e1000-phy-write` succeeded, and it works
+by writing MDIC at `0x0020` and polling until the MAC sets Ready. That is a
+CSR write and it lands. So the CSR write path is fine and `CTRL` specifically
+refuses. **RX/TX needs `RCTL`, `TCTL`, `RDBAL/H`, `RDLEN`, `RDH/RDT`,
+`TDBAL/H`, `TDLEN`, `TDH/TDT`, `RAL/RAH` and not `CTRL` at all**, so B2c is
+not blocked by this.
+
+### Two corrections to the entry below, both mine
+
+**"The link came up under our code" is right; my attribution was wrong.** The
+link is brought up by `na-phy-kick` over MDIO. The CTRL write in
+`na-bring-up-after` contributes nothing and never did.
+
+**"The reset did not wedge when the arms run first" describes an event that
+never happened.** `e1000-reset` writes `CTRL|RST`; that write is discarded, so
+RST is never set, so `e1000-await-reset` sees it clear on its FIRST read and
+answers `settled=1`. A reset that never ran is indistinguishable from one that
+completed. The cold-versus-warm hypothesis in that entry was built on this and
+should not be pursued: there is no evidence any reset has ever executed on this
+part. What wedged the box on 08-11 is therefore **unexplained again**, and it
+was not `CTRL.RST`.
+
+**No more sittings are needed to work on this.** `codex-vm -e1000-ctrl-ro`
+reproduces the board: same `CTRLback`, same `ASDEbit=n`, same `SLUbit=y`
+through all four SLU rows, same `settled=1`, and `LU=y` anyway.
+`codex/test/e1000-ctrl-ro` pins it, with a control run proving three of its
+six rows flip when the arm is off.
+
+## FLOWN 2026-08-13: `asdeflight.img` -- THE LINK COMES UP ON THE REAL I219, and the reset does not wedge when the arms run first.
+
+`asdeflight.img`, SHA-256 `BB99E629 4F5DE5FB 731E3F8C 72720D4D 92AFA489
+D2407844 B6BF172B 357F48A7`. Flashed by blu, flown by Damian, cable in a
+live switch with the link light lit at the port. **Every row painted, and
+the machine did not wedge at any point.** Rows transcribed at the board:
+
+```
+read-only touch mmio=3745513472 STATUS=1074266240 CTRL=1573440
+ASDE=0 noreset gave=ok phy=y LU=y FD=y SPEED=1000 ASDV=10 aneg=n STATUS=1074266243
+ASDE=1 noreset  (same values)
+RESET done: settled=1 ICR=260 STATUS=1074267267
+```
+
+| row | STATUS | LU | FD | SPEED |
+|---|---|---|---|---|
+| touch (read-only, before any write) | `0x40080080` | **0** | 0 | 1000 |
+| `ASDE=0 noreset` | `0x40080083` | **1** | 1 | 1000 |
+| `ASDE=1 noreset` | `0x40080083` | **1** | 1 | 1000 |
+| `RESET done` | `0x40080483` | 1 | 1 | 1000 |
+
+**THE TOUCH ROW IS BYTE-IDENTICAL TO THE 08-11 FLIGHT** -- `STATUS=0x40080080`,
+`CTRL=0x180240`, `mmio=0xDF400000`. Same part, same firmware handoff state,
+so the two flights are directly comparable and the difference is ours.
+
+**The link came up under our code, and the touch row is what proves it.** It
+is read before the probe writes anything, and it reads `LU=0` WITH the cable
+connected and the link light lit. So the PHY was negotiating with the switch
+on its own while the MAC had no link, and `LU` went to 1 only after
+`na-bring-up-after` ran. `ICR=0x104` carries bit 2, Link Status Change: the
+link changed state during the run. The link light alone could not have
+established this, because a powered PHY out of reset negotiates regardless of
+what the driver does -- the read-only touch is the control that separates the
+two, which is the whole reason it is read before any write.
+
+**The reset did NOT wedge, on the same driver code that wedged on 08-11.**
+`settled=1`, so `CTRL.RST` self-cleared. The only thing this build changed is
+ORDER: on 08-11 `na-bring-up` pulsed RST on a cold part as the first write
+after firmware handoff; here both arms ran first, so the PHY had been
+soft-reset over MDIO and `CTRL.SLU` written before RST fired. **A reset on a
+warmed part is evidently not the same operation as a reset on a cold one.**
+That is a hypothesis with one observation behind it, not a settled mechanism,
+and the discriminating flight is a probe that resets cold FIRST and then warm.
+It matters beyond this probe: `e1000-init` (`E1000e.codex`) resets cold, which
+is precisely the order that wedged.
+
+**Finding 4 is NOT settled, and the arms being identical is not the same as
+ASDE being inert.** In the bed the two arms differ sharply (`SPEED=1000
+STATUS=130` against `SPEED=10 STATUS=2`); on metal they are the same value.
+Three explanations survive this flight and it cannot separate them:
+
+1. ASDE genuinely does nothing on this part;
+2. the ASDE write does not stick, and **the probe never reads `CTRL` back to
+   check** -- the arm row prints STATUS only;
+3. arm 2 inherited a link arm 1 had already established, so there was nothing
+   left to change. **The arms are not independent**, which is a defect in the
+   probe's design rather than in the reading.
+
+The next arm reads `CTRL` back after each write and runs `ASDE=1` first from
+cold. Until then, do not record Finding 4 as answered.
+
+**Loose thread: `aneg=n` while `LU=1` at 1000 Mb/s full duplex.** Autoneg-done
+is not set in BMSR yet the link is up at gigabit. Either the BMSR read is
+landing on the wrong page or the link came up without autoneg completing.
+Unexplained, not chased, and it does not affect the readings above.
+
+### The F12 bank failed, and it says why -- it is a transport failure, not the GPT
+
+F12 answered `no esp s1 m3 c4 p1 w1964712320 f945044 l1 r1`. Decoded against
+the source rather than from memory:
+
+| cell | value | meaning | defined at |
+|---|---|---|---|
+| `s` | 1 | `gfat-stage-hdr`, the GPT header read FAILED | `GopFat16.codex:84` |
+| `m` | 3 | `med-kind-usb`, the USB medium was selected | `GopDisk.codex` |
+| `c` | 4 | `trb-cc-usb-transaction-error` -- a real completion event, code 4 | `GopUsbKbd.codex:46` |
+| `p` | 1 | `msc-ph-cbw`, it failed in the Command Block Wrapper phase | `GopUsbMsc.codex` |
+| `w` | 1964712320 | `gfat-cell-write`, never written on a READ path: uninitialized, meaningless here | `GopFat16.codex:101` |
+| `f` | 945044 | smallest fuel any COMPLETED transfer left, of `xhci-fuel` = 1000000 | `GopXhci.codex:63` |
+| `l` | 1 | fail LBA 1, which IS the GPT header sector | |
+| `r` | 1 | `msc-retry-recover-failed`: reset recovery ran and failed | `GopUsbMsc.codex:75` |
+
+**This REFUTES the standing hypothesis in the arm section below.** That
+hypothesis is that one eject-and-reinsert rewrites LBA 1 and moves
+`PartitionEntryLBA` from 2 to 2047, so our reader cannot mount a stick that
+still boots. That predicts a SUCCESSFUL read carrying the wrong CONTENT, which
+lands on `gfat-stage-sig` (2) or `gfat-stage-guid` (4). What happened is stage
+**1**: the read itself failed. The content theory cannot produce a failed read.
+The stick had also been flashed an hour earlier with `-SpecFit` and full
+byte-for-byte readback verification, so the medium was known good.
+
+**It is also NOT WORKS-9.** That is a data-phase timeout with NO completion
+event. This is a completion event ARRIVING, with an error, in the command
+phase, before any data moves. And `f945044` of 1,000,000 clears fuel by
+WORKS-9's own stated criterion ("an `f` near 1000000 says the fuel is innocent
+and the device stopped answering").
+
+**What it does not settle**, and the alternative is cheap to state: the ASUS
+presents several USB interfaces behind a Unifying receiver, and nothing here
+proves the MSC driver bound the STICK rather than some other bulk endpoint. A
+CBW answered with a transaction error is what binding the wrong device would
+also look like. The next probe that cares should print the bound device's
+VID:PID beside `m`.
+
+**Three consecutive flights of this arm have now failed to mount**, and this is
+the first one that says anything about why.
 
 ## FLOWN 2026-08-11, ALL GREEN: `browserflight.img`. THE MOUSE AND THE BROWSER WORK ON METAL.
 
@@ -183,7 +478,25 @@ a later gate's `clean` phase. The two-sector diff against the master was
 measured and recorded BEFORE the loss, so "the board wrote nothing" stands
 as a reading; a re-diff is no longer possible.
 
-## THE ARM, kept for the next flight: `asdeflight.img`, B2 Finding 4. Boot, read four rows, pull.
+## THE ARM AS FLOWN 2026-08-13 (result above): `asdeflight.img`, B2. Boot, read the rows top to bottom, pull.
+
+**This arm has flown and its result is the entry at the top of this file.**
+What follows is the procedure it was flown with, kept because the next B2 arm
+is a variation on it rather than a replacement: read `CTRL` back after each
+write, run `ASDE=1` first from cold, and print the bound USB device's VID:PID.
+Do not re-fly this image expecting a new answer to Finding 4; it cannot give
+one, for the reasons in that entry.
+
+**Rebuilt 2026-08-13 after the 08-11 flight, and the order of the arms is
+reversed.** That flight died in `e1000-reset`, upstream of both arms the
+image existed to compare, so the reading it was built to take was never
+taken. The two arms now run FIRST and without any reset at all, and the
+reset rides last, split into the five MMIO operations `e1000-reset`
+performs so the glass can name which one did not return.
+
+**The driver is unchanged from the flown build, deliberately.** If the
+reset path moved, the staged reset below would no longer be measuring the
+sequence that wedged and a different outcome would be uninterpretable.
 
 **The 2026-08-10 flight of this image returned nothing, and the probe was
 at fault, not the machine.** The mount was a PRECONDITION: `gfat-mount-esp`
@@ -208,20 +521,19 @@ very act that rewrites it. The probe now prints WHICH of the seven mount
 stages failed, off diag cell 80, which GopFat16 has always recorded.
 **Operationally: flash, verify, PULL, and do not reinsert.**
 
-**Provenance.** Rebuilt 2026-08-10 off blu after the merge-down at 14529,
-seed `AF4E14D9703985AC`, current against main 14528:
+**Provenance.** Rebuilt 2026-08-13 off blu, seed `D9A6A7A2BF162346`:
 
 ```powershell
 build/boot/build-option-a.ps1 -Src build/boot/diag/AsdeStageProbe.codex `
     -Kernel seed/Codex.cdx -Ebs -Out build/boot/asdeflight.img
 ```
 
-16 MB, PE 256512, seed 2755007, FAT16 spc=1 clusters=26350. SHA-256
-`4145AA691A6049BE0EAFCFE96CDFD6445F697861598ED975B045CD9C99C0BD7D`. This is
-the image both bed runs below were re-measured against after the rebuild; a
-further rebuild is a different image and its readings would be unmeasured.
-The earlier build against seed `F9AA716852BF72C7` (SHA-256 `4426B04B...`)
-read identically in both beds and is superseded, not contradicted.
+16 MB, PE 259584, seed 2759577, FAT16 spc=1 clusters=26350. SHA-256
+`BB99E629 4F5DE5FB 731E3F8C 72720D4D 92AFA489 D2407844 B6BF172B 357F48A7`.
+This is the image both bed runs below were re-measured against after the
+rebuild; a further rebuild is a different image and its readings would be
+unmeasured. The 08-10 build (PE 256512, seed `AF4E14D9703985AC`, SHA-256
+`4145AA69...`) is the one that flew on 08-11 and is superseded.
 
 **Note the absent `-Uefi`, which is deliberate.** `build-option-a.ps1`
 gained that switch on 2026-08-10 and its own comment calls it mandatory for
@@ -231,37 +543,145 @@ exits boot services precisely so the NIC and the medium are driven by our
 own code, which is the whole point of a driver-truth probe. The two are
 mutually exclusive; do not add `-Uefi` to the command above.
 
-### The boot, and the only thing to do
+### Flashing it, in paths that exist on this box
 
-Boot from the stick. Read the rows. Pull it. There is no keypress.
+Self-contained on purpose. The flash recipes further down this file belong
+to other flights and name **other agents' workspaces**; a reader who scrolls
+to the first `flash-usb.ps1` block finds red's `deskboot.img` under
+`D:\Projects\NewRepository-red\`, which is correct there and wrong here.
 
-Four outcomes, and each is a different next move:
-
-| What the glass shows | What it means |
-|---|---|
-| no eligible row | the scan or the BAR, not the NIC |
-| eligible, no touch row | the first MMIO read wedges |
-| touch row, no `ASDE=0` row | the RESET wedges, and ASDE is exonerated |
-| `ASDE=0` paints, `ASDE=1` wedges | **Finding 4 confirmed on metal** |
-| both arms paint | ASDE is not the wedge; read `SPEED` on each row |
-
-**The ASDE=0 arm runs FIRST**, which is the whole reason this ordering
-matters: the arm the datasheet says is correct gets to fly before the arm
-that may hang the box. 82583V 12349 on bit 5: *"the MAC ignores the speed
-indicated by the PHY ... This bit must be set to 0b in the 82583V."*
-
-**Bed state, stated including what it does not cover.** Re-measured against
-the rebuilt image, 2026-08-10. Under codex-vm all four stage rows paint and
-the two arms differ as the datasheet describes: `ASDE=0 ... SPEED=1000
-ASDV=10 aneg=y STATUS=130` against `ASDE=1 ... SPEED=10 ASDV=10 aneg=y
-STATUS=2`. Under real OVMF with a USB disk the bank works, `bank live,
-ASDE0.TXT written=y`.
+Archive whatever is on the stick first, per the QUICKREF at the top of this
+file: a returned stick is evidence and there is exactly one of it.
 
 ```powershell
-tools/codex-vm.exe -kernel build/boot/asdeflight.img -uefi -gop `
-    -e1000 -e1000-phy-link -e1000-asde -screenshot out.bmp -screenshot-delay 3000
+Get-Disk | Where-Object BusType -eq 'USB'      # find N -- check it twice
+(Get-FileHash D:\Projects\NewRepository-blu\build\boot\asdeflight.img -Algorithm SHA256).Hash
+Start-Process pwsh -Verb RunAs -PassThru -ArgumentList '-NoProfile','-File',
+  'D:\Projects\NewRepository-blu\build\flash-usb.ps1','-Image','D:\Projects\NewRepository-blu\build\boot\asdeflight.img',
+  '-DiskNumber','N','-SpecFit','-Force','-Log','D:\Projects\NewRepository-blu\build-output\flash.log'
+```
+
+Confirm the hash matches the digest above before flashing. **Flash, verify,
+PULL, and do not reinsert** -- one eject-and-reinsert on Windows rewrites
+LBA 1 and is the standing suspect for the mount failures on this arm.
+
+### Before you boot: the cable
+
+**Plug the Ethernet port into a live switch or router.** This line did not
+exist until 2026-08-13 and its absence was the largest hole in the sheet.
+Every value the probe prints is link state -- `LU`, `FD`, `SPEED`, `ASDV`,
+`aneg` -- so with no link partner both arms report the same nothing and the
+flight cannot compare them, which is the one thing it exists to do. It also
+changes how long a HEALTHY run takes: `NicAsde.codex:37-43` records that an
+arm on a part with no link is "indistinguishable from a hang".
+
+The port is the one behind the Intel I219-V, which the probe reports as
+`eligible at 0:31.6`. There is a second NIC on this board, a Realtek at
+`06:00.0`, and the probe gates it out on vendor and BAR
+(`NicAsde.codex:183-191`), so a different address on that row is itself a
+finding.
+
+### The boot, and the only thing to do
+
+Boot from the stick. Read the rows.
+
+**Then press F12, and only then pull the stick.** The probe ends in
+`shot-wait`, which paints `F12 saves the screen to the stick` at the bottom
+of the glass and waits for it (`apps/works/GopShot.codex:156,161-185`).
+This sheet said "there is no keypress" until 2026-08-13, which was wrong,
+and wrong in the most expensive available place: two consecutive flights of
+this arm came home with nothing but a human reading glass, and F12 is the
+channel that answers exactly that. It needs a mounted volume and this board
+has never given us one, so it may do nothing -- which is why the photograph
+below is still the primary record and not a backup.
+
+**Photograph the whole screen**, because the rows below the arms are as
+much of the reading as the arms are.
+
+**Give it 60 seconds before you decide a row is the last row.** The
+last-row-is-the-answer rule is the whole method and it is worthless without
+a dwell time. Where the number comes from: each arm budgets 2000 ms of link
+wait if HPET reports a rate and falls back to 2,000,000 blind register
+reads if it does not (`NicAsde.codex:62-85`), and the reset stage polls up
+to 1,000,000 times with no clock at all. Under codex-vm with a link the
+whole probe finishes in under 4 seconds; on metal, where an MDIO
+transaction is tens of microseconds, it is slower and nobody has measured
+by how much. 60 seconds is generous on purpose.
+
+The rows come in three groups and the LAST one painted is the answer. The
+expected good outcome is now that every row paints, including the reset
+ones: that is a different shape from the previous flight, where a wedge in
+the middle was the anticipated result.
+
+**Before believing any arm row, read its `STATUS=`.** `na-spd` decodes the
+zero register to `SPEED=10 ASDV=10` (`NicAsde.codex:134-138`), so an arm
+that painted off a dead part is not blank -- it reads as a plausible
+10 Mb/s line. `STATUS=0` on an arm means the part had already gone quiet
+BEFORE the row you are looking at, and the table below is then answering
+about the wrong row. The touch row read `STATUS=0x40080080` on 08-11 and
+the bed reads `STATUS=130`; a `0` there is the tell. This is the same trap
+`CurrentPlan.md` records for every arm flown before 08-10, where SPEED and
+ASDV came off a register nothing wrote.
+
+| Last row on the glass | What it means | Next move |
+|---|---|---|
+| no eligible row | the scan or the BAR, not the NIC | read `verdict=` on the REJECTED row |
+| eligible, no touch row | the first MMIO read wedges | the BAR is wrong, not the driver |
+| touch, no `ASDE=0 noreset` row | writing MDIO or CTRL wedges, with no reset involved | the PHY kick is the subject, not the reset |
+| `ASDE=0 noreset` paints with a NON-ZERO `STATUS=`, `ASDE=1 noreset` does not paint | **the ASDE bit itself wedges this part** | Finding 4 answered without the reset ever running |
+| an arm paints but its `STATUS=0` | the part went quiet BEFORE that row, and the row is a null reading | treat the row above it as the last real one |
+| both arms paint, `RESET s5` does not | the arms' MDIO and CTRL writes complete and the first write of the RESET does not | the reset sequence, not writing as such |
+| `RESET s5` paints, `s6` does not | the IMC write completed and the next read did not | a write kills the block |
+| `RESET s7` paints, `s8` does not | **CTRL.RST itself wedges**, which is the folklore | stop pulsing RST on this part |
+| `RESET s8` paints, `s9` does not | reads stop completing while polling for RST to clear | the 1M-read loop is the hang; it needs a clock |
+| every row paints | nothing wedges any more | read the two arms and compare `SPEED`/`ASDV` |
+
+**Both arms run before any reset, and that is the whole point of this
+build.** `na-bring-up-after` is `na-bring-up` with the reset removed and
+nothing else changed, and firmware hands this part over with `CTRL.SLU`
+already set (`CTRL=0x180240` on the 08-11 flight, SLU being bit 6), so the
+comparison the lane needs does not depend on the reset working. 82583V
+12349 on bit 5: *"the MAC ignores the speed indicated by the PHY ... This
+bit must be set to 0b in the 82583V."*
+
+**If the arms paint and the reset then wedges, B2 is unblocked anyway.** The
+reading is banked above the wedge, which is the arrangement the previous two
+flights did not have.
+
+**Bed state, stated including what it does not cover.** Re-measured against
+the rebuilt image, 2026-08-13. Under codex-vm every row paints, and the two
+arms differ as the datasheet describes **without a reset having run**:
+`ASDE=0 noreset ... SPEED=1000 ASDV=10 aneg=y STATUS=130` against
+`ASDE=1 noreset ... SPEED=10 ASDV=10 aneg=y STATUS=2`. Those are the same
+two readings the reset-based arms produced before, which is the useful
+control: in this bed the reset was contributing nothing observable. The
+staged reset then paints `s5` through `s9` and `RESET done: settled=1 ICR=0
+STATUS=0`. Under real OVMF with a USB disk the bank works, `bank live,
+ASDE0.TXT written=y`, and its NIC is rejected on the BAR gate.
+
+```powershell
+tools/codex-vm.exe -kernel build/boot/asdeflight.img -uefi -gop -headless `
+    -e1000 -e1000-phy-link -e1000-asde -screenshot out.bmp -screenshot-delay 2500
 build/boot/test-ovmf.ps1 -Img build/boot/asdeflight.img -Out ovmf.png -UsbDisk -Seconds 20
 ```
+
+**`-headless` is not optional in a shared box.** codex-vm refuses to open a
+second on-screen display -- `ERROR: another codex-vm display window is
+already running` -- so the windowed form of this command fails outright
+whenever any other agent has a VM up, and it fails by writing no screenshot,
+which reads exactly like the probe finishing early. Measured 2026-08-13,
+where a run of val's cost a re-measurement of the delay figure below before
+the cause was found. `-headless` still captures.
+
+**2500, not 3000.** This build finishes sooner than the flown one, because
+neither arm pays for a reset any more. Measured 2026-08-13: at 800, 1500 and
+2500 ms codex-vm writes the finished screen; at 4000 it writes **no file at
+all**, and the run ends `Guest halted with IF=0 after 203879 exits`. The
+mechanism behind that halt is NOT established -- `shot-wait` with no medium
+falls into `shot-spin`, which is an unbounded recursion rather than a halt
+(`GopShot.codex:158-159,183`), so something else is ending the run. The
+timing above is measured and the reason for it is not; do not repeat a
+mechanism for it from this paragraph.
 
 `-screenshot-delay` has to be under about 5 s: the probe halts with
 interrupts off when it is done, and the screenshot timer lives in the run
@@ -575,31 +995,72 @@ build/compile.ps1 -Src Codex.codex -Out a5uefi.cdx -Log a5uefi.log `
 build/cdx-to-pe.ps1 -CdxInput a5uefi.cdx -Out a5.efi `
     -EntryStart -HeapPages 32768 -Stdin "DISK`nSOURCE.SRC`n"
 build/build-img.ps1 -PeInput a5.efi -Out build/boot/a5flight2.img `
-    -Source <an LF copy of build/boot/a5src.codex> -TotalSectors 32768
+    -Source build/boot/a5src.codex -TotalSectors 32768
 ```
 
 `-Uefi` is the one flag the last flight lacked, so confirm it moved
 something rather than trusting it: the same source built plain is
 2,759,023 bytes and built `-Uefi` is 2,743,191.
 
-**NORMALISE THE SOURCE TO LF YOURSELF. It is not LF in your workspace and
-this cost a rebuild on 2026-08-11.** The DISK path does not apply
-`utf8-to-cce` and CR has no CCE code point, so a CRLF source dies at the
-first line ending -- and `build/boot/a5src.codex` is stored `unicode+C` with
-the client's `LineEnd: local`, so **every sync on Windows writes it CRLF**:
-246 bytes in the depot, 257 on disk. `build-img.ps1` copies whatever it is
-handed, so the image built straight from the workspace file compiles to
-`CDX1000: Expected token kind mismatch` at 5:40 and stops the ladder at
-ORANGE. That is the ladder earning its keep on its first real use -- the old
-arm would have returned a silent stick. Write the LF copy into
-`build-output/` and point `-Source` at that:
+**Point `-Source` straight at the workspace file. The hand-normalising step
+that used to stand here is gone, and so is the defect it worked around**
+(main 14789). A CRLF source no longer needs anything done to it: the
+compiler's disk reads go through `fat16-read-source`, which drops byte 13
+before CCE conversion, exactly as `__bare_metal_read_serial` has always done
+for the wire. `codex/test/fat16-source-cr` holds the arm.
 
-```powershell
-$t = [IO.File]::ReadAllText('build/boot/a5src.codex') -replace "`r`n", "`n"
-[IO.File]::WriteAllText($lf, $t, [Text.UTF8Encoding]::new($false))
-```
+**A payload built before 14789 still has the defect**, so an image is only as
+tolerant as the compiler inside it. If an old payload stops the ladder at
+ORANGE on a source you believe is good, check the payload's date before
+anything else.
 
-The concat is already LF, so only this one file needs it.
+### A FRESHLY BUILT IMAGE DOES NOT BOOT TO THE DESK. IT BOOTS TO A WIZARD.
+
+**Measured 2026-08-13 in the bed, and it is not written down anywhere else.**
+`build/build-boot-img.ps1` produces an image with no `IDENTITY.DAT`, and
+`wizard-run` branches on exactly that: no identity means the FRESH path, a
+multi-screen first-boot flow, and the desk is on the far side of it. Every
+stick flown so far already carried an identity, which is why the long path
+has never been described.
+
+An operator who expects the desk and gets a passphrase prompt will read it
+as a hang or a wrong image. It is neither.
+
+**Fresh stick, in order.** Each screen ends on Enter:
+
+| Screen | What it wants |
+|---|---|
+| GopBoot menu | Enter on `Graphical UI` (item 0, already selected) |
+| Welcome | Enter |
+| Passphrase | 4+ characters, Enter |
+| Confirm | the same, Enter |
+| Entropy | type a random sentence, Enter |
+| Upstream Server | Enter alone skips it |
+| *(keygen runs here)* | no input |
+| Identity Created | shows the fingerprint, Enter |
+| Storage | GPT / BOOTX64.EFI / CODEX.CDX readback, Enter |
+| ... then `Press Enter to choose your interface` | |
+
+**The whole flow including ECDSA keygen completed inside 50 s in the bed**,
+driven entirely by scripted keys, so it is not a slow step to wait out on
+metal -- budget a minute of typing, not a coffee.
+
+**A stick that already has an identity takes the SHORT path**: `Welcome
+Back`, one passphrase, `Identity Unlocked`, Enter. Three wrong attempts
+leaves the identity locked for that boot and **the stick unchanged** --
+it does not erase anything.
+
+**Do not pre-run the wizard in the bed and then flash that image.** It works,
+and it puts a private key GENERATED IN THE BED onto the stick. The identity
+is the whole point of the trust story; it should be created on the machine
+that will carry it. This is a different reason from the contamination rule
+below and it bites in a quieter way -- the artifact looks perfect.
+
+`build/read-stick.ps1 -ImageFile <img> -Name IDENTITY.DAT` answers `MISSING`
+on a virgin image and prints a 124-byte file on one that has been through the
+wizard. **Calibrate it in the same breath** (the rule below): ask it for
+`SOURCE.SRC` too, because `MISSING` is also what it says when it cannot read
+the volume at all.
 
 ### NEVER FLASH AN IMAGE THAT HAS BEEN BOOTED IN THE BED
 
@@ -842,7 +1303,7 @@ instruction to ask blu for the files. **Do not ask; they are gone.**
 `build-output/` is wiped by the `clean` phase of every single gate run, and
 a gate is the most likely next thing anyone does. It is also p4-ignored, so
 nothing in the depot notices. Put a returned stick somewhere the build does
-not own and record where; `docs/HardwareSitting.md` says only "on blu's box"
+not own and record where; `docs/Hardware/HardwareSitting.md` says only "on blu's box"
 in older entries, which is what made this look like a safe habit.
 
 This is why reek's `stick-before-20260811.img` survived and blu's three did

@@ -40,7 +40,17 @@ param(
     # seed/Codex.img is a real ESP and browses. codex-vm writes back and
     # flushes to the host, so this COPIES the image to build-output and
     # attaches the copy rather than letting a guest edit the depot artifact.
-    [string]$Disk = '',
+    # Defaulted rather than empty, and the pointer is why. With no disk the ESP
+    # mount falls through to the USB medium, GopUsbMsc calls xhci-connect, and
+    # that brings the controller up a SECOND time -- halt plus HCRST -- on the
+    # controller usb-attach had already bound the keyboard and mouse to.
+    # Measured: with no disk the guest resets the controller twice and then
+    # rings no endpoint at all; with one it resets once and rings both (slot 5
+    # ep 3, slot 2 ep 5) and the pointer moves. The keyboard survives either way
+    # only because codex-vm keeps feeding the legacy mailbox, which is what hid
+    # this for so long. The defect is WORKS-23; this default is the bed carrying
+    # a disk the way the real machine does, not a fix for it.
+    [string]$Disk = 'seed/Codex.img',
     [switch]$Wait
 )
 
@@ -75,7 +85,12 @@ if ($stale) {
     Write-Host "[desk] using existing $Out (pass -Force to rebuild)"
 }
 
-$vmArgs = @('-kernel', $Out, '-gop-width', $Width, '-gop-height', $Height, '-mem', $Mem)
+# -hid-combo, always. Without it codex-vm's HID device carries ONE interface, a
+# boot keyboard, so usb-attach finds no pointer at all: the Monitor pane reads
+# "mouse no" and the window's mouse events have nothing to be delivered on. With
+# it the same pane reads "mouse yes". Two interfaces on one device is also the
+# shape the ASUS answered on 2026-08-04, so this is the bed matching the metal.
+$vmArgs = @('-kernel', $Out, '-gop-width', $Width, '-gop-height', $Height, '-mem', $Mem, '-hid-combo')
 
 if ($Keys) {
     $keyFile = Join-Path $outDir 'desk-keys.txt'

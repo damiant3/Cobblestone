@@ -10,7 +10,7 @@ the map is also a record of instincts that paid off.
 Entry format: what / where found / the win / the dig / pointer.
 
 **This map is fully dug up** (every entry claimed or debunked as of
-2026-07-03). The successor is `docs/QuartermastersMap.md` -- drawn
+2026-07-03). The successor is `docs/PM/Done/QuartermastersMap.md` -- drawn
 deliberately for delegation rather than filled with finds-in-passing.
 New deferred finds still land here; new scoped, delegatable work goes
 on the Quartermaster's Map.

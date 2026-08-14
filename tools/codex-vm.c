@@ -135,6 +135,16 @@ static unsigned char vk_to_scancode(int vk) {
 /* ══ Mouse State ══ */
 #define MOUSE_BUF_ADDR 28684
 static int mouse_captured = 0;
+/* Pointer grab, Ctrl+Alt+G, the same chord QEMU uses.
+   The guest's pointer is a RELATIVE boot mouse: the host sends
+   clamp(host_position - guest_position) and the guest converges on it. Ungrabbed
+   that works, but the host keeps its own cursor, so two pointers are on screen
+   and they only line up once enough reports have closed the gap at 127 px a
+   time. Grabbed, the host cursor is hidden and pinned to the middle of the
+   client area and every move is measured from there, so the motion is unbounded
+   and there is exactly one pointer to look at. */
+static int mouse_grabbed = 0;
+static int grab_warping = 0;   /* our own SetCursorPos raises WM_MOUSEMOVE too */
 static volatile unsigned char pending_mouse[3] = {0};
 static volatile int pending_mouse_valid = 0;
 static volatile int pending_mouse_abs_x = 0, pending_mouse_abs_y = 0, pending_mouse_btn = 0;
@@ -1174,6 +1184,12 @@ static int hid_kbd_carries_keys(int kind_hid_or_hub) {
    carries, so a large jump arrives as several reports exactly as a real
    mouse delivers it. Buttons are the live state plus the press latch, the
    same edge guarantee the absolute port path gives. */
+/* How often the guest actually COLLECTS a pointer report. The pointer is
+   relative and converges at 127 px a report, so this rate, not the delta cap,
+   is what decides whether the cursor tracks or hops: a loop that polls slowly
+   makes the pointer jump the whole accumulated distance at once. */
+static long hid_mouse_reports = 0;
+static long xhci_mouse_doorbells = 0;
 static int hid_mouse_last_x = 0, hid_mouse_last_y = 0;
 static int hid_mouse_delta_clamp(int d) {
     if (d > 127) return 127;
@@ -1591,6 +1607,16 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
         xcur->cr_ccs = ccs;
     } else if (db >= 1 && db <= XHCI_MAX_SLOTS) {
         /* Transfer ring doorbell for a device slot -- process transfer TRBs */
+        /* Counted to separate a guest that arms rarely from one that arms often
+           into an endpoint that yields rarely.
+
+           It does NOT count trips round the guest's loop, and reading it that
+           way is what sent WORKS-26 to the repaint path for a day. The
+           input-changed re-ring in the main loop calls this function on the
+           guest's behalf, so a host re-ring lands in this counter exactly as a
+           guest doorbell does. What the number actually measures is how often
+           the endpoint was serviced, whoever asked. */
+        if (db == 2 && val == 5) xhci_mouse_doorbells++;
         /* The guest wrote TRBs at the transfer ring address stored in the
            device context's endpoint context. For simplicity, we process
            control transfers (SETUP+DATA+STATUS) by pattern matching. */
@@ -1955,6 +1981,7 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                     if (is_combo_mouse) {
                         memset(report, 0, 8);
                         build_hid_mouse_report(report);
+                        hid_mouse_reports++;
                         /* A clamped delta leaves a remainder; stay fresh so
                            the next TRB drains it as silicon would. */
                         if (hid_nak_unchanged)
@@ -2857,6 +2884,11 @@ static LARGE_INTEGER hpet_epoch;
    HPET_HZ overflows 64 bits on a long run. */
 #define HPET_HZ 14318180ULL
 
+/* Defined here rather than beside the RTC because hpet_now reads them; the
+   comment explaining the flag is at the RTC device. */
+static int rtc_fixed = 0;
+static SYSTEMTIME rtc_fixed_st;
+
 /* Raw elapsed count since the epoch below, in HPET ticks. */
 static unsigned long long hpet_raw(void) {
     static LARGE_INTEGER freq;
@@ -2877,7 +2909,23 @@ static unsigned long long hpet_raw(void) {
    otherwise gets a counter that jumped while it was supposedly stopped.
    `frozen` is the value at the moment of the stop; the epoch is rolled
    forward on restart so the count continues from there. */
+/* -rtc stops the HPET as well, and stops it at the second the caller named.
+   The flag exists so a captured frame can be compared against a recorded one,
+   and a guest that animates off a hardware counter is exactly as
+   uncomparable as one that paints the wall clock. Pinning it to
+   (minute*60 + second) * HPET_HZ rather than to zero keeps the two clocks
+   telling the same time, so a caller who moves -rtc forward a second still
+   moves the animation forward a second, which is what every existing capture
+   recipe assumes.
+
+   Nothing that reads the HPET runs under -rtc -- the readers are E1000e and
+   NicAsde, and no test sidecar passes the flag -- so a counter that does not
+   advance cannot strand a timeout here. */
 static unsigned long long hpet_now(void) {
+    if (rtc_fixed) {
+        return ((unsigned long long)rtc_fixed_st.wMinute * 60ULL
+              + (unsigned long long)rtc_fixed_st.wSecond) * (unsigned long long)HPET_HZ;
+    }
     if (!(hpet.config & 1)) return hpet.frozen;
     return hpet.frozen + hpet_raw();
 }
@@ -3965,6 +4013,54 @@ static int e1000_strict_filter  = 0;
    both exist rather than one. */
 static int e1000_fault_no_phy   = 0;
 static int e1000_fault_phy_err  = 0;
+/* -e1000-ctrl-ro: CTRL is READ-ONLY to the driver. Writes are discarded
+   whole and the register keeps the value firmware left in it.
+
+   THIS IS MEASURED, not invented. Damian's ASUS, Intel I219-V at 00:1f.6,
+   2026-08-13: the driver cleared CTRL.SLU and read CTRL straight back, four
+   rows across two flights, and it answered 0x180240 -- the firmware value,
+   SLU still set -- every time. The same flights showed CTRL.ASDE refusing
+   to set. STATUS reads, MDIC reads AND MDIC WRITES all work on that part,
+   so this is CTRL specifically and NOT the CSR write path: e1000-phy-write
+   writes MDIC at 0x0020 and polls it ready, and it succeeds every arm.
+
+   The I219 is the PHY; the MAC is inside the PCH and its link configuration
+   is owned by the integrated LAN controller and the ME, which is the split
+   the datasheet describes (Table 5-1, and 9.2's note that the LAN
+   controller configures the LCD registers). Nothing public in this tree
+   says CTRL is read-only to the host, so this flag models the OBSERVATION
+   and does not claim the mechanism.
+
+   Why it earns a flag: with CTRL writes discarded, e1000-reset never sets
+   RST, so e1000-await-reset sees it clear on its first read and answers
+   settled=1. A reset that never happened is indistinguishable from one that
+   completed, and on 2026-08-13 that read as "the reset works on a warm
+   part". OFF by default (L-FALLBACK): every existing green keeps the
+   writable-CTRL floor it was measured on. */
+static int e1000_ctrl_ro        = 0;
+#define E1000_CTRL_FIRMWARE_VALUE 0x180240u
+/* -e1000-preconfigured: the part arrives with the RECEIVER ALREADY RUNNING,
+   which is the state firmware and the ME leave a PCH LAN device in when the
+   driver cannot reset it.
+
+   This exists because -e1000-ctrl-ro made a second assumption visible.
+   e1000-reset is discarded on that part, so e1000-init proceeds on a device
+   nobody quiesced, and e1000-setup-rx programs RDBAL/RDBAH/RDLEN/RDH/RDT and
+   only THEN sets RCTL.EN. That order is correct after a reset, when the
+   receiver is already off, and it is undefined while the receiver is live:
+   the ring is being reprogrammed underneath a device that may be DMAing into
+   it.
+
+   The model refuses in a way the driver can notice. A ring register written
+   while RCTL.EN is set POISONS the ring and no frame is delivered into it.
+   Writing RCTL with EN clear is a real quiesce and clears the poison, so a
+   driver that disables the receiver, programs the ring and then enables
+   works, and one that programs under a live receiver gets silence.
+
+   OFF by default (L-FALLBACK): every existing green keeps the
+   freshly-reset-device floor it was measured on. */
+static int e1000_preconfigured  = 0;
+static int e1000_ring_poisoned  = 0;
 /* -e1000-phy-link: STATUS.LU requires the PHY to have finished
    auto-negotiation, not merely CTRL.SLU. OFF by default, deliberately: the
    default keeps the SLU-only behaviour every existing green was measured
@@ -4156,6 +4252,8 @@ static unsigned long long e1000_ring_base(int lo_reg, int hi_reg) {
    length and set DD|EOP. Stops at the tail, because the descriptors
    between head and tail belong to the driver and not to the device. */
 static void e1000_deliver_rx(void) {
+    /* A ring programmed under a live receiver never receives. */
+    if (e1000_ring_poisoned) return;
     unsigned long long ring = e1000_ring_base(E1000_REG_RDBAL, E1000_REG_RDBAH);
     unsigned int len = e1000_regs[E1000_REG_RDLEN / 4];
     if (!ring || !len) return;
@@ -4334,6 +4432,10 @@ static void e1000_write(unsigned long long off, unsigned int val) {
     if (off + 4 > E1000_BAR_SIZE) return;
     switch ((unsigned int)off) {
     case E1000_REG_CTRL:
+        /* Discarded whole: no store, no PHY reset, no MDIO window. A driver
+           that writes RST here and then polls for it sees it already clear,
+           which is what the real part does. */
+        if (e1000_ctrl_ro) return;
         /* RST is self-clearing on real silicon. Holding it set is the
            "device wedged in reset" refusal. */
         if (val & E1000_CTRL_RST) {
@@ -4350,8 +4452,21 @@ static void e1000_write(unsigned long long off, unsigned int val) {
         e1000_regs[E1000_REG_CTRL / 4] = val;
         return;
     case E1000_REG_RCTL:
+        /* Disabling the receiver IS the quiesce, and it is what makes the
+           ring safe to reprogram. Clearing the poison here is the whole
+           reward for doing it in the right order. */
+        if (!(val & E1000_RCTL_EN)) e1000_ring_poisoned = 0;
         e1000_regs[E1000_REG_RCTL / 4] = val;
         if (val & E1000_RCTL_EN) { e1000_deliver_rx(); if (e1000_nat) e1000_nat_rx(); }
+        return;
+    /* The ring's ADDRESS and LENGTH, not its tail: RDT is written on every
+       descriptor recycle during normal receive, so poisoning on it would
+       break the working path rather than the broken one. */
+    case E1000_REG_RDBAL:
+    case E1000_REG_RDBAH:
+    case E1000_REG_RDLEN:
+        if (e1000_regs[E1000_REG_RCTL / 4] & E1000_RCTL_EN) e1000_ring_poisoned = 1;
+        e1000_regs[off / 4] = val;
         return;
     case E1000_REG_RDT:
         e1000_regs[E1000_REG_RDT / 4] = val;
@@ -4515,6 +4630,23 @@ static int gop_stride_opt = 0;
 static unsigned char *gop_fb = NULL;  /* host-side framebuffer copy for rendering */
 static HWND vga_hwnd;  /* forward decl -- defined in VGA section */
 
+/* The title carries the geometry AND the grab state, from one place, because
+   they used to be written from two: a GOP SetMode rewrote the title with the
+   new resolution and silently wiped whatever the grab had put there. The guest
+   sets its mode after boot, so the hint vanished before it could be read. */
+static int vga_title_w = 0, vga_title_h = 0;
+
+static void vga_update_title(void) {
+    char t[160];
+    const char *hint = mouse_grabbed
+        ? "mouse GRABBED, Ctrl+Alt+G releases"
+        : "Ctrl+Alt+G grabs the mouse";
+    if (!vga_hwnd) return;
+    if (vga_title_w > 0) sprintf(t, "Codex VM - %dx%d  |  %s", vga_title_w, vga_title_h, hint);
+    else                 sprintf(t, "Codex VM  |  %s", hint);
+    SetWindowTextA(vga_hwnd, t);
+}
+
 /* The host-side triangle rasterizer and its post passes address the
    framebuffer densely, row pitch = visible width, in the band workers, the
    glow distance field and the bloom composite. Under a padded stride every
@@ -4577,8 +4709,8 @@ static unsigned long long uefi_image_size = 0; /* loaded PE size (BootServicesCo
 static int cmos_index = 0;        /* CMOS register selected via port 0x70 */
 static int rtc_lenient = 0;       /* -rtc-lenient: the old always-valid RTC */
 static unsigned int rtc_noise = 0x1234567u;
-static int rtc_fixed = 0;         /* -rtc <stamp>: the clock stands still */
-static SYSTEMTIME rtc_fixed_st;
+/* -rtc <stamp>: the clock stands still. Declared up beside the HPET, which
+   stops with it. */
 
 /* A guest that displays the time cannot be compared against a recorded frame,
    because the frame carries the host's clock and the host's clock never
@@ -5460,9 +5592,9 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             RECT r = {0, 0, gop_width, gop_height};
             AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
             SetWindowPos(vga_hwnd, NULL, 0, 0, r.right - r.left, r.bottom - r.top, SWP_NOMOVE | SWP_NOZORDER);
-            char title[64];
-            sprintf(title, "Codex VM - %dx%d", gop_width, gop_height);
-            SetWindowTextA(vga_hwnd, title);
+            vga_title_w = gop_width;
+            vga_title_h = gop_height;
+            vga_update_title();
         }
         fprintf(stderr, "GOP: SetMode %d → %dx%d fb=0x%llx\n", mode_num, gop_width, gop_height, GOP_FB_ADDR);
         break;
@@ -5580,6 +5712,15 @@ static volatile int vga_running = 1;
 static const char *screenshot_path = NULL;
 static int screenshot_delay_ms = 3000;
 static int gpu_frame_count = 0;
+/* Single-pixel rasterizer probe, off unless CODEX_GPU_PROBE=x,y[,frame] is set. */
+static int gpu_probe_on = 0, gpu_probe_x = -1, gpu_probe_y = -1, gpu_probe_frame = 8;
+static volatile long gpu_probe_lines = 0;
+static void gpu_probe_init(void) {
+    const char *e = getenv("CODEX_GPU_PROBE");
+    if (!e) return;
+    int f = 8;
+    if (sscanf(e, "%d,%d,%d", &gpu_probe_x, &gpu_probe_y, &f) >= 2) { gpu_probe_on = 1; gpu_probe_frame = f; }
+}
 static volatile int gpu_frame_ready = 0;
 static int gpu_cine = 0;               /* cinematic mode: additive sparks + bloom + grade (opt-in via port 0x410) */
 static long long gpu_cine_last = 0;    /* QPC of previous cine frame, for 60fps pacing */
@@ -5599,9 +5740,23 @@ static int gpu_shadow_pending = 0;
 /* Set in the count word at port 0x400 to mean "rasterize into the shadow map
    instead of the screen". Counts never approach this. */
 #define GPU_SHADOW_FLAG 0x40000000u
-/* r3d-shadow-bias in Renderer3D.codex. Matched so the two renderers put the
-   acne threshold in the same place. */
-#define GPU_SHADOW_BIAS 3000
+/* r3d-shadow-bias and r3d-shadow-slope in Renderer3D.codex. Matched so the two
+   renderers put the acne threshold in the same place. The base covers depth
+   quantisation on a surface square to the light; the slope term covers one seen
+   at a grazing angle, where a single map texel spans a lot of depth. A flat
+   base large enough to cover the grazing case on its own detaches a shadow from
+   the object casting it -- measured at 62 per cent of the cast shadow lost. */
+#define GPU_SHADOW_BIAS 500
+/* Swept against the desk scene, measuring acne on the SPHERE as the difference
+   from the same frame with shadows off, and the cast shadow on the ground the
+   same way. 6 (the old value) left 350 acne pixels on the sphere; 16 is where
+   they reach zero, and it costs 596 of 132,287 ground-shadow pixels, under half
+   a per cent. 24 and 40 also read zero acne and take more of the shadow, so 16
+   is the knee rather than the largest value that works. The old 6 was swept on
+   a CUBE FACE, where flat geometry hides what a curved surface shows: the
+   software renderer reads zero acne here at any setting, so this was the host
+   path alone being off parity. */
+#define GPU_SHADOW_SLOPE 16
 /* Per-triangle light-space data for the shadow compare, parallel to the
    command buffer rather than inside it: the 72-byte triangle record is
    written by every rasterizer client in the tree, and six of its words are
@@ -5623,6 +5778,9 @@ static unsigned long long asset_dest_addr = 0;
 static unsigned long long asset_last_size = 0;
 static unsigned char *earth_tex_data = NULL;
 static int earth_tex_w = 0, earth_tex_h = 0;
+/* 0 = globe shading (GlobeDemo, which uploads nothing and samples the
+   procedural earth), 1 = plain modulate. The commit port picks it. */
+static int gpu_tex_mode = 0;
 
 /* Shadow buffers: the VGA thread reads ONLY from these, never from guest_mem.
    The main loop copies guest_mem -> shadow between VP exits.  This avoids
@@ -5724,8 +5882,46 @@ static void vga_paint(HWND hwnd) {
     EndPaint(hwnd, &ps);
 }
 
+/* Centre of the client area, in screen coordinates: where the host cursor is
+   parked while grabbed and what every delta is measured against. */
+static void grab_centre(HWND hwnd, POINT *pt) {
+    RECT rc;
+    GetClientRect(hwnd, &rc);
+    pt->x = (rc.right - rc.left) / 2;
+    pt->y = (rc.bottom - rc.top) / 2;
+    ClientToScreen(hwnd, pt);
+}
+
+static void grab_set(HWND hwnd, int on) {
+    if (on == mouse_grabbed) return;
+    mouse_grabbed = on;
+    if (on) {
+        RECT rc;
+        POINT c;
+        GetClientRect(hwnd, &rc);
+        MapWindowPoints(hwnd, NULL, (POINT *)&rc, 2);
+        ClipCursor(&rc);
+        SetCapture(hwnd);
+        ShowCursor(FALSE);
+        grab_centre(hwnd, &c);
+        grab_warping = 1;
+        SetCursorPos(c.x, c.y);
+        vga_update_title();
+    } else {
+        ClipCursor(NULL);
+        ReleaseCapture();
+        ShowCursor(TRUE);
+        vga_update_title();
+    }
+}
+
 static LRESULT CALLBACK vga_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
+    case WM_KILLFOCUS:
+        /* A grab that outlives focus takes the pointer away from whatever the
+           operator switched to, which is the one behaviour nobody forgives. */
+        grab_set(hwnd, 0);
+        return 0;
     case WM_PAINT:
         vga_paint(hwnd);
         return 0;
@@ -5736,6 +5932,13 @@ static LRESULT CALLBACK vga_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     case WM_KEYDOWN: {
+        /* Ctrl+Alt+G is the emulator's, not the guest's: swallowed here so the
+           guest never sees a G it did not earn. */
+        if ((int)wp == 'G' && (GetKeyState(VK_CONTROL) & 0x8000) &&
+            (GetKeyState(VK_MENU) & 0x8000)) {
+            grab_set(hwnd, !mouse_grabbed);
+            return 0;
+        }
         unsigned char sc = vk_to_scancode((int)wp);
         if (sc) {
             kbd_enqueue(sc); kbd_irq_pending = 1;
@@ -5759,8 +5962,33 @@ static LRESULT CALLBACK vga_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (msg == WM_LBUTTONUP && mouse_captured) {
             ReleaseCapture(); mouse_captured = 0;
         }
-        pending_mouse_abs_x = (short)LOWORD(lp);
-        pending_mouse_abs_y = (short)HIWORD(lp);
+        if (mouse_grabbed) {
+            POINT c;
+            int cx, cy, dx, dy;
+            if (grab_warping) { grab_warping = 0; return 0; }
+            grab_centre(hwnd, &c);
+            {
+                POINT here = c;
+                ScreenToClient(hwnd, &here);
+                cx = here.x; cy = here.y;
+            }
+            dx = (short)LOWORD(lp) - cx;
+            dy = (short)HIWORD(lp) - cy;
+            if (msg == WM_MOUSEMOVE && (dx || dy)) {
+                int nx = pending_mouse_abs_x + dx;
+                int ny = pending_mouse_abs_y + dy;
+                if (nx < 0) nx = 0; if (ny < 0) ny = 0;
+                if (nx > gop_width - 1) nx = gop_width - 1;
+                if (ny > gop_height - 1) ny = gop_height - 1;
+                pending_mouse_abs_x = nx;
+                pending_mouse_abs_y = ny;
+                grab_warping = 1;
+                SetCursorPos(c.x, c.y);
+            }
+        } else {
+            pending_mouse_abs_x = (short)LOWORD(lp);
+            pending_mouse_abs_y = (short)HIWORD(lp);
+        }
         int prev_btn = pending_mouse_btn;
         int new_btn = 0;
         if (wp & MK_LBUTTON) new_btn |= 1;
@@ -5808,6 +6036,7 @@ static DWORD WINAPI vga_thread(LPVOID param) {
     vga_font = CreateFontA(CHAR_H, CHAR_W, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
         OEM_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
         NONANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN, "Courier New");
+    vga_update_title();   /* the hint is there before the guest sets a mode */
     SetTimer(vga_hwnd, VGA_TIMER_ID, 16, NULL);  /* refresh ~60Hz */
     MSG msg;
     while (vga_running && GetMessageA(&msg, NULL, 0, 0)) {
@@ -8433,6 +8662,47 @@ static DWORD WINAPI drip_feed_thread(LPVOID arg) {
             if (partition) WHvCancelRunVirtualProcessor(partition, 0, 0);
         } else {
             Sleep(50);
+        }
+    }
+    return 0;
+}
+
+/* HID kick thread, and it is the drip-feed's disease one device over.
+   Interrupt-IN delivery under -hid-nak-unchanged happens in the main loop:
+   scripted samples are applied there and the re-ring that completes an
+   armed TD runs there too. The main loop runs only when the guest exits,
+   and a pane loop is pure guest memory -- kbd-take, mouse-pump's event-ring
+   peek, a compare -- so it exits for nothing and the pointer is delivered
+   at the 55 ms kicker's cadence instead of the input's.
+
+   Real silicon has no such coupling: a periodic endpoint is polled by the
+   controller every bInterval whatever the CPU is doing. So this is bed
+   fidelity, not a guest defect, and cancelling is the same benign shove
+   the drip feed and the timer kicker already use.
+
+   Measured with a pointer driven at 100 samples/s, before -> after:
+   Calendar 17.8 -> 65.8 reports/s, Calc 18.0 -> 65.8, desktop 102.2 ->
+   102.2 (the arm that was already right, unmoved). The Calendar pane's
+   loop repaints nothing at all, which is what rules its old 17.8 out of
+   being repaint cost; the desktop only ever escaped this because
+   desk-clock reads the CMOS every trip, which is a port exit.
+
+   The residual 66 against 102 is NOT the kick cadence: Sleep(0) here,
+   which kicks without bound, measures 65.6 -- identical. Whatever caps it
+   is downstream of this thread and is not diagnosed.
+
+   Gated so a run with no pointer activity is untouched: it wakes on the
+   slow lap unless a scripted sample is still due or the window thread has
+   left input undelivered. */
+static DWORD WINAPI hid_kick_thread(LPVOID arg) {
+    (void)arg;
+    while (!shutdown_requested) {
+        if (hid_nak_unchanged &&
+            (hid_input_changed || inject_mouse_idx < inject_mouse_count)) {
+            Sleep(1);
+            if (partition) WHvCancelRunVirtualProcessor(partition, 0, 0);
+        } else {
+            Sleep(20);
         }
     }
     return 0;
@@ -11220,7 +11490,14 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             gpu_eye[1] = gpu_light[1]; gpu_eye[2] = gpu_light[2];
         }
         else if (port == 0x408) {
-            gpu_tex_guest_addr = (unsigned long long)val;
+            /* Mask to 32 bits before widening. The port carries a guest address,
+               and any address at or above 2 GB has bit 31 set, so widening the
+               signed port value directly sign-extends it: #BE800000 arrived as
+               0xFFFFFFFFBE800000, the bounds check below rejected it, and the
+               upload was skipped in silence. Every buffer this rasterizer uses
+               lives in the [2GB,3GB) band, so this is the normal case, not an
+               edge one. */
+            gpu_tex_guest_addr = (unsigned long long)(unsigned int)val;
         }
         else if (port == 0x409) {
             gpu_tex_upload_w = (int)val;
@@ -11231,7 +11508,15 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         else if (port == 0x40B) {
             /* Commit: copy texture from guest RAM to rasterizer */
             if (gpu_tex_upload_w > 0 && gpu_tex_upload_h > 0) {
-                unsigned long long sz = (unsigned long long)gpu_tex_upload_w * gpu_tex_upload_h * 3;
+                /* The committed value declares the texture completely: 0 is the
+                   original wire, three packed RGB bytes a pixel written with
+                   poke-byte, sampled bilinear as a globe; 1 is one 32-bit
+                   0x00RRGGBB word a pixel, which is what a Codex EngineTexture
+                   holds and what gpu-mem-write writes, sampled nearest and
+                   shaded as an ordinary surface. TerrainGen has committed 0
+                   since this port was written, so 0 must keep its meaning. */
+                int mode = (val == 1) ? 1 : 0;
+                unsigned long long sz = (unsigned long long)gpu_tex_upload_w * gpu_tex_upload_h * (mode == 1 ? 4 : 3);
                 if (gpu_tex_guest_addr + sz <= guest_mem_size) {
                     /* This memcpy reads guest RAM from the host. If the guest
                        points us at a region it has never touched, those pages
@@ -11246,8 +11531,9 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
                         memcpy(earth_tex_data, src, sz);
                         earth_tex_w = gpu_tex_upload_w;
                         earth_tex_h = gpu_tex_upload_h;
-                        fprintf(stderr, "GPU texture uploaded from guest 0x%llx (%dx%d)\n",
-                                gpu_tex_guest_addr, earth_tex_w, earth_tex_h);
+                        gpu_tex_mode = mode;
+                        fprintf(stderr, "GPU texture uploaded from guest 0x%llx (%dx%d) mode %d\n",
+                                gpu_tex_guest_addr, earth_tex_w, earth_tex_h, gpu_tex_mode);
                     }
                 }
             }
@@ -11782,11 +12068,49 @@ static void gpu_clip_rect(int w, int h, int *cx0, int *cy0, int *cx1, int *cy1) 
     }
 }
 
+/* A frame arrives as a clear on one port and a draw on another, and the
+   rasterizer writes straight into the GOP framebuffer the display thread is
+   reading. Between those two writes the pane holds nothing but the clear
+   colour, and the display samples it there often enough to see it: captured
+   headless it produced a frame of pure sky with the label still drawn beside
+   it, and on the glass it reads as the pane flickering while it animates.
+
+   So a frame that is confined to a VIEWPORT is built in this back buffer and
+   presented in one copy at the end. Only that case changes: a program that
+   owns the whole screen has no viewport armed, still draws directly, and keeps
+   whatever timing it has today. Nothing but the rasterizer draws inside an
+   armed rect -- gsc-frame deliberately holds its label outside the band -- so
+   there is nothing in there for the copy to overwrite. */
+static unsigned int *gpu_back = NULL;
+
+static unsigned int *gpu_target_fb(void) {
+    unsigned int *fb = (unsigned int *)((unsigned char *)guest_mem + GOP_FB_ADDR);
+    if (!gpu_vp_active) return fb;
+    if (!gpu_back) gpu_back = (unsigned int *)calloc(GOP_MAX_W * GOP_MAX_H, sizeof(unsigned int));
+    return gpu_back ? gpu_back : fb;
+}
+
+static void gpu_present_viewport(void) {
+    if (!gpu_vp_active || !gpu_back) return;
+    unsigned int *fb = (unsigned int *)((unsigned char *)guest_mem + GOP_FB_ADDR);
+    int cx0, cy0, cx1, cy1;
+    gpu_clip_rect(gop_width, gop_height, &cx0, &cy0, &cx1, &cy1);
+    if (cx1 < cx0) return;
+    size_t span = (size_t)(cx1 - cx0 + 1) * sizeof(unsigned int);
+    for (int y = cy0; y <= cy1; y++) {
+        size_t off = (size_t)y * gop_width + cx0;
+        memcpy(fb + off, gpu_back + off, span);
+    }
+}
+
+static int gpu_last_clear_color = 0;
+
 static void gpu_clear_fb(int color) {
+    gpu_last_clear_color = color;
     gpu_frame_ready = 0;
     if (gop_host_gpu_refuses()) return;
     if (!gop_active || GOP_FB_ADDR + (unsigned long long)gop_width * gop_height * 4 > guest_mem_size) return;
-    unsigned int *fb = (unsigned int *)((unsigned char *)guest_mem + GOP_FB_ADDR);
+    unsigned int *fb = gpu_target_fb();
     int cx0, cy0, cx1, cy1;
     gpu_clip_rect(gop_width, gop_height, &cx0, &cy0, &cx1, &cy1);
     for (int y = cy0; y <= cy1; y++) {
@@ -12145,12 +12469,100 @@ static unsigned int gpu_sample_texture(int u1000, int v1000) {
     return ((unsigned int)r << 16) | ((unsigned int)g << 8) | (unsigned int)b;
 }
 
+/* The plain sampler, for a texture uploaded in mode 1: one 32-bit 0x00RRGGBB
+   word per pixel, which is what a Codex EngineTexture holds and what
+   gpu-mem-write writes. Both axes WRAP, because a texture tiled across a ground
+   plane needs repeat, and the sample is NEAREST because the software renderer
+   samples with etx-get and the two paths have to agree -- the desk's 8x8 checker
+   stretched over a 6000-unit plane puts one texel across hundreds of pixels, so
+   interpolating turns a checkerboard into a smooth wash. Mode 0's sampler above
+   keeps its packed-RGB bilinear read: TerrainGen has been writing three bytes a
+   pixel with poke-byte since that path was built. */
+static unsigned int gpu_sample_plain(int u1000, int v1000) {
+    if (!earth_tex_data) return 0x1A4888;
+    unsigned int *tex = (unsigned int *)earth_tex_data;
+    float fu = u1000 / 1000.0f, fv = v1000 / 1000.0f;
+    fu = fu - floorf(fu);
+    fv = fv - floorf(fv);
+    int ix = (int)(fu * earth_tex_w), iy = (int)(fv * earth_tex_h);
+    if (ix < 0) ix = 0; if (iy < 0) iy = 0;
+    if (ix >= earth_tex_w) ix = earth_tex_w - 1;
+    if (iy >= earth_tex_h) iy = earth_tex_h - 1;
+    return tex[iy * earth_tex_w + ix] & 0xFFFFFFu;
+}
+
 static unsigned int gpu_sample_earth(int u1000, int v1000) {
     if (earth_tex_data) return gpu_sample_texture(u1000, v1000);
     float lon = -180.0f + (u1000 / 1000.0f) * 360.0f;
     float lat = 90.0f - (v1000 / 1000.0f) * 180.0f;
     return earth_texel(lat, lon);
 }
+
+/* The globe shader. It reads the UVs as spherical coordinates and everything
+   after the sample follows from that: a fabricated sphere normal, polar ice,
+   specular on whatever looks like water, and a Fresnel atmosphere rim worth up
+   to +140 blue. Correct for a planet, wrong for any other textured surface,
+   which is why gpu_tex_mode decides between this and a plain modulate. */
+static unsigned int gpu_shade_globe(int u_interp, int v_interp) {
+    unsigned int tex;
+    if (v_interp < 140 || v_interp > 860) {
+        float pole_t = (v_interp < 140) ? v_interp / 140.0f : (1000 - v_interp) / 140.0f;
+        int u_fixed = (int)(500 + (u_interp - 500) * pole_t);
+        int v_edge = v_interp < 140 ? (int)(v_interp + (140 - v_interp) * (1.0f - pole_t)) : (int)(v_interp - (v_interp - 860) * (1.0f - pole_t));
+        unsigned int sampled = gpu_sample_earth(u_fixed, v_edge);
+        if (pole_t < 0.3f) {
+            unsigned int ice = 0xD8E0EC;
+            tex = color_lerp(ice, sampled, pole_t / 0.3f);
+        } else {
+            tex = sampled;
+        }
+    } else {
+        tex = gpu_sample_earth(u_interp, v_interp);
+    }
+    /* Per-pixel normal from UV (sphere) */
+    float px_lon = -3.14159f + (u_interp / 1000.0f) * 6.28318f;
+    float px_lat = 1.5708f - (v_interp / 1000.0f) * 3.14159f;
+    float clat = cosf(px_lat), slat = sinf(px_lat);
+    float clon = cosf(px_lon), slon = sinf(px_lon);
+    float nx = clat * clon, ny = slat, nz = clat * slon;
+    /* Diffuse lighting */
+    float ndl = nx*gpu_light[0] + ny*gpu_light[1] + nz*gpu_light[2];
+    float wrap = (ndl + 0.5f) / 1.5f;
+    if (wrap < 0) wrap = 0;
+    float intensity = 0.22f + wrap * 1.1f;
+    if (intensity > 1.4f) intensity = 1.4f;
+    /* View dot for Fresnel */
+    float nde = nx*gpu_eye[0] + ny*gpu_eye[1] + nz*gpu_eye[2];
+    if (nde < 0) nde = 0;
+    float fresnel = 1.0f - nde;
+    if (fresnel < 0) fresnel = 0;
+    float rim = fresnel * fresnel * fresnel;
+    /* Specular on water (detect by blue dominance in texture) */
+    float spec = 0;
+    int is_water = ((tex & 0xFF) > ((tex >> 16) & 0xFF) + 15);
+    if (is_water && ndl > 0) {
+        float hx = gpu_light[0]+gpu_eye[0], hy = gpu_light[1]+gpu_eye[1], hz = gpu_light[2]+gpu_eye[2];
+        float hlen = sqrtf(hx*hx+hy*hy+hz*hz);
+        if (hlen > 0.001f) { hx/=hlen; hy/=hlen; hz/=hlen; }
+        float ndh = nx*hx + ny*hy + nz*hz;
+        if (ndh > 0) {
+            float s4 = ndh*ndh*ndh*ndh;
+            float sharp = s4*s4*s4*s4; sharp *= 0.7f;
+            float broad = s4 * 0.12f;
+            spec = sharp + broad;
+        }
+    }
+    /* Combine */
+    float lat_abs = fabsf(px_lat * 57.2958f);
+    float rim_scale = (lat_abs > 65) ? 0.0f : (lat_abs > 45) ? (65 - lat_abs) / 20.0f : 1.0f;
+    int tr = (int)(((tex>>16)&0xFF) * intensity + spec * 255 + rim * rim_scale * 40);
+    int tg = (int)(((tex>>8)&0xFF) * intensity + spec * 255 + rim * rim_scale * 70);
+    int tb = (int)((tex&0xFF) * intensity + spec * 255 + rim * rim_scale * 140);
+    if (tr > 255) tr = 255; if (tg > 255) tg = 255; if (tb > 255) tb = 255;
+    if (tr < 0) tr = 0; if (tg < 0) tg = 0; if (tb < 0) tb = 0;
+    return ((unsigned int)tr << 16) | ((unsigned int)tg << 8) | (unsigned int)tb;
+}
+
 static inline unsigned int gpu_lerp_color(unsigned int c0, unsigned int c1, unsigned int c2,
                                            long long w0, long long w1, long long w2, long long area) {
     long long r0 = (c0 >> 16) & 0xFF, g0 = (c0 >> 8) & 0xFF, b0 = c0 & 0xFF;
@@ -12196,6 +12608,7 @@ static DWORD WINAPI gpu_band_thread(LPVOID param) {
 
 static void gpu_init_threads(void) {
     if (gpu_thread_count > 0) return;
+    gpu_probe_init();
     SYSTEM_INFO si; GetSystemInfo(&si);
     gpu_thread_count = si.dwNumberOfProcessors;
     if (gpu_thread_count > GPU_MAX_THREADS) gpu_thread_count = GPU_MAX_THREADS;
@@ -12220,6 +12633,7 @@ static void gpu_rasterize_band(unsigned int *fb, unsigned int *db, unsigned char
         int use_texture = (u0 | v0t | u1 | v1t | u2 | v2t) != 0;
         if (gpu_cine) { additive = u0; use_texture = 0; }  /* u0: 0 opaque, 1 hard-add, 2 soft radial sprite (center u1,v1t radius u2) */
         int lx0 = 0, ly0 = 0, lsd0 = 0, lx1 = 0, ly1 = 0, lsd1 = 0, lx2 = 0, ly2 = 0, lsd2 = 0, shadow_color = 0;
+        long long shadow_bias = GPU_SHADOW_BIAS;
         int use_shadow = gpu_shadow_pending && gpu_shadow_buf && gpu_shadow_size > 0;
         if (use_shadow) {
             int *lt = (int *)((unsigned char *)guest_mem + GPU_LIGHT_ADDR + (size_t)t * GPU_LIGHT_STRIDE);
@@ -12227,6 +12641,17 @@ static void gpu_rasterize_band(unsigned int *fb, unsigned int *db, unsigned char
             lx1 = lt[3]; ly1 = lt[4]; lsd1 = lt[5];
             lx2 = lt[6]; ly2 = lt[7]; lsd2 = lt[8];
             shadow_color = lt[9];
+            /* Per triangle, not per fragment: these are triangle constants. */
+            int dlo = lsd0 < lsd1 ? (lsd0 < lsd2 ? lsd0 : lsd2) : (lsd1 < lsd2 ? lsd1 : lsd2);
+            int dhi = lsd0 > lsd1 ? (lsd0 > lsd2 ? lsd0 : lsd2) : (lsd1 > lsd2 ? lsd1 : lsd2);
+            int xlo = lx0 < lx1 ? (lx0 < lx2 ? lx0 : lx2) : (lx1 < lx2 ? lx1 : lx2);
+            int xhi = lx0 > lx1 ? (lx0 > lx2 ? lx0 : lx2) : (lx1 > lx2 ? lx1 : lx2);
+            int ylo = ly0 < ly1 ? (ly0 < ly2 ? ly0 : ly2) : (ly1 < ly2 ? ly1 : ly2);
+            int yhi = ly0 > ly1 ? (ly0 > ly2 ? ly0 : ly2) : (ly1 > ly2 ? ly1 : ly2);
+            int spanx = (xhi - xlo) / 1000, spany = (yhi - ylo) / 1000;
+            int span = spanx > spany ? spanx : spany;
+            if (span < 1) span = 1;
+            shadow_bias = GPU_SHADOW_BIAS + (long long)(dhi - dlo) / span * GPU_SHADOW_SLOPE;
         }
         int minx = x0 < x1 ? (x0 < x2 ? x0 : x2) : (x1 < x2 ? x1 : x2);
         int miny = y0 < y1 ? (y0 < y2 ? y0 : y2) : (y1 < y2 ? y1 : y2);
@@ -12277,68 +12702,37 @@ static void gpu_rasterize_band(unsigned int *fb, unsigned int *db, unsigned char
                         }
                     } else if ((unsigned int)depth < db[idx]) {
                         unsigned int pixel;
+                        unsigned int probe_tex = 0;
+                        int probe_u = -1, probe_v = -1;
                         if (use_texture) {
                             int u_interp = (int)(((long long)u0 * bw0 + (long long)u1 * bw1 + (long long)u2 * bw2) / abs_area);
                             int v_interp = (int)(((long long)v0t * bw0 + (long long)v1t * bw1 + (long long)v2t * bw2) / abs_area);
-                            unsigned int tex;
-                            if (v_interp < 140 || v_interp > 860) {
-                                float pole_t = (v_interp < 140) ? v_interp / 140.0f : (1000 - v_interp) / 140.0f;
-                                int u_fixed = (int)(500 + (u_interp - 500) * pole_t);
-                                int v_edge = v_interp < 140 ? (int)(v_interp + (140 - v_interp) * (1.0f - pole_t)) : (int)(v_interp - (v_interp - 860) * (1.0f - pole_t));
-                                unsigned int sampled = gpu_sample_earth(u_fixed, v_edge);
-                                if (pole_t < 0.3f) {
-                                    unsigned int ice = 0xD8E0EC;
-                                    tex = color_lerp(ice, sampled, pole_t / 0.3f);
-                                } else {
-                                    tex = sampled;
-                                }
+                            probe_u = u_interp; probe_v = v_interp;
+                            if (gpu_tex_mode == 1) {
+                                /* The rule r3d-tex-px makes: modulate the shaded
+                                   vertex colour by the texel, so the two
+                                   renderers agree on a textured surface the way
+                                   they already agree on an untextured one. */
+                                unsigned int tex = gpu_sample_plain(u_interp, v_interp);
+                                unsigned int lit = gpu_lerp_color(c0, c1, c2, bw0, bw1, bw2, abs_area);
+                                int tr = (int)(((lit >> 16) & 0xFF) * ((tex >> 16) & 0xFF) / 255);
+                                int tg = (int)(((lit >> 8) & 0xFF) * ((tex >> 8) & 0xFF) / 255);
+                                int tb = (int)((lit & 0xFF) * (tex & 0xFF) / 255);
+                                pixel = ((unsigned int)tr << 16) | ((unsigned int)tg << 8) | (unsigned int)tb;
+                                probe_tex = tex;
                             } else {
-                                tex = gpu_sample_earth(u_interp, v_interp);
+                                pixel = gpu_shade_globe(u_interp, v_interp);
+                                if (gpu_probe_on) probe_tex = gpu_sample_earth(u_interp, v_interp);
                             }
-                            /* Per-pixel normal from UV (sphere) */
-                            float px_lon = -3.14159f + (u_interp / 1000.0f) * 6.28318f;
-                            float px_lat = 1.5708f - (v_interp / 1000.0f) * 3.14159f;
-                            float clat = cosf(px_lat), slat = sinf(px_lat);
-                            float clon = cosf(px_lon), slon = sinf(px_lon);
-                            float nx = clat * clon, ny = slat, nz = clat * slon;
-                            /* Diffuse lighting */
-                            float ndl = nx*gpu_light[0] + ny*gpu_light[1] + nz*gpu_light[2];
-                            float wrap = (ndl + 0.5f) / 1.5f;
-                            if (wrap < 0) wrap = 0;
-                            float intensity = 0.22f + wrap * 1.1f;
-                            if (intensity > 1.4f) intensity = 1.4f;
-                            /* View dot for Fresnel */
-                            float nde = nx*gpu_eye[0] + ny*gpu_eye[1] + nz*gpu_eye[2];
-                            if (nde < 0) nde = 0;
-                            float fresnel = 1.0f - nde;
-                            if (fresnel < 0) fresnel = 0;
-                            float rim = fresnel * fresnel * fresnel;
-                            /* Specular on water (detect by blue dominance in texture) */
-                            float spec = 0;
-                            int is_water = ((tex & 0xFF) > ((tex >> 16) & 0xFF) + 15);
-                            if (is_water && ndl > 0) {
-                                float hx = gpu_light[0]+gpu_eye[0], hy = gpu_light[1]+gpu_eye[1], hz = gpu_light[2]+gpu_eye[2];
-                                float hlen = sqrtf(hx*hx+hy*hy+hz*hz);
-                                if (hlen > 0.001f) { hx/=hlen; hy/=hlen; hz/=hlen; }
-                                float ndh = nx*hx + ny*hy + nz*hz;
-                                if (ndh > 0) {
-                                    float s4 = ndh*ndh*ndh*ndh;
-                                    float sharp = s4*s4*s4*s4; sharp *= 0.7f;
-                                    float broad = s4 * 0.12f;
-                                    spec = sharp + broad;
-                                }
-                            }
-                            /* Combine */
-                            float lat_abs = fabsf(px_lat * 57.2958f);
-                            float rim_scale = (lat_abs > 65) ? 0.0f : (lat_abs > 45) ? (65 - lat_abs) / 20.0f : 1.0f;
-                            int tr = (int)(((tex>>16)&0xFF) * intensity + spec * 255 + rim * rim_scale * 40);
-                            int tg = (int)(((tex>>8)&0xFF) * intensity + spec * 255 + rim * rim_scale * 70);
-                            int tb = (int)((tex&0xFF) * intensity + spec * 255 + rim * rim_scale * 140);
-                            if (tr > 255) tr = 255; if (tg > 255) tg = 255; if (tb > 255) tb = 255;
-                            if (tr < 0) tr = 0; if (tg < 0) tg = 0; if (tb < 0) tb = 0;
-                            pixel = ((unsigned int)tr << 16) | ((unsigned int)tg << 8) | (unsigned int)tb;
                         } else {
                             pixel = gpu_lerp_color(c0, c1, c2, bw0, bw1, bw2, abs_area);
+                        }
+                        if (gpu_probe_on && x == gpu_probe_x && y == gpu_probe_y && gpu_probe_lines++ < 80) {
+                            fprintf(stderr,
+                                "GPUPROBE f=%d tri=%d tex=%d uv=(%d,%d %d,%d %d,%d) c=(%06X %06X %06X) "
+                                "interp=(%d,%d) texel=%06X mode=%d d=%d pixel=%06X\n",
+                                gpu_frame_count, t, use_texture, u0, v0t, u1, v1t, u2, v2t, c0, c1, c2,
+                                probe_u, probe_v, probe_tex, gpu_tex_mode, depth, pixel);
                         }
                         /* Same test the software renderer makes in
                            r3d-shadow-test: interpolate the light-space
@@ -12367,7 +12761,7 @@ static void gpu_rasterize_band(unsigned int *fb, unsigned int *db, unsigned char
                                         long long sx = tx + ox, sy = ty + oy;
                                         if (sx < 0 || sy < 0 || sx >= gpu_shadow_size || sy >= gpu_shadow_size) { lit++; continue; }
                                         unsigned int md = gpu_shadow_buf[sy * gpu_shadow_size + sx];
-                                        if (fl <= (long long)md + GPU_SHADOW_BIAS) lit++;
+                                        if (fl <= (long long)md + shadow_bias) lit++;
                                     }
                                 }
                                 if (lit < 9) {
@@ -12382,6 +12776,9 @@ static void gpu_rasterize_band(unsigned int *fb, unsigned int *db, unsigned char
                         }
                         fb[idx] = pixel;
                         db[idx] = (unsigned int)depth;
+                    } else if (gpu_probe_on && x == gpu_probe_x && y == gpu_probe_y && gpu_probe_lines++ < 80) {
+                        fprintf(stderr, "GPUPROBE f=%d tri=%d tex=%d OCCLUDED d=%d db=%u\n",
+                                gpu_frame_count, t, use_texture, depth, db[idx]);
                     }
                 }
             }
@@ -12394,6 +12791,37 @@ static void gpu_rasterize_triangles(int count) {
     if (gop_host_gpu_refuses()) return;
     gpu_frame_count++;
     gpu_last_tri_count = count;
+    if (gpu_probe_on && gpu_probe_lines++ < 80) {
+        int n = count > GPU_MAX_TRIS ? GPU_MAX_TRIS : count;
+        int xlo = 1 << 30, xhi = -(1 << 30), ylo = 1 << 30, yhi = -(1 << 30);
+        long long dlo = 1LL << 62, dhi = -(1LL << 62);
+        unsigned char *cmd = (unsigned char *)guest_mem + GPU_CMD_ADDR;
+        for (int t = 0; t < n; t++) {
+            int *tri = (int *)(cmd + t * 72);
+            for (int v = 0; v < 3; v++) {
+                if (tri[v*2] < xlo) xlo = tri[v*2];
+                if (tri[v*2] > xhi) xhi = tri[v*2];
+                if (tri[v*2+1] < ylo) ylo = tri[v*2+1];
+                if (tri[v*2+1] > yhi) yhi = tri[v*2+1];
+                if (tri[9+v] < dlo) dlo = tri[9+v];
+                if (tri[9+v] > dhi) dhi = tri[9+v];
+            }
+        }
+        int cx0, cy0, cx1, cy1;
+        gpu_clip_rect(gop_width, gop_height, &cx0, &cy0, &cx1, &cy1);
+        /* What the DISPLAY would see if it sampled right now, between the clear
+           and the draw. Every pixel equal to the clear colour is the blank-pane
+           window; on the front buffer that is the whole rect. */
+        unsigned int *vis = (unsigned int *)((unsigned char *)guest_mem + GOP_FB_ADDR);
+        long long blank = 0, tot = 0;
+        for (int y = cy0; y <= cy1; y++)
+            for (int x = cx0; x <= cx1; x++) {
+                tot++;
+                if ((vis[(size_t)y * gop_width + x] & 0xFFFFFF) == ((unsigned int)gpu_last_clear_color & 0xFFFFFF)) blank++;
+            }
+        fprintf(stderr, "GPUPROBE f=%d submitted=%d x=%d..%d y=%d..%d d=%lld..%lld clip=%d,%d..%d,%d visible-blank=%lld/%lld\n",
+                gpu_frame_count, count, xlo, xhi, ylo, yhi, dlo, dhi, cx0, cy0, cx1, cy1, blank, tot);
+    }
     if (count > GPU_MAX_TRIS) {
         static int gpu_overflow_warned = 0;
         if (!gpu_overflow_warned) {
@@ -12409,7 +12837,7 @@ static void gpu_rasterize_triangles(int count) {
     if (gpu_shadow_pending &&
         GPU_LIGHT_ADDR + (unsigned long long)count * GPU_LIGHT_STRIDE > guest_mem_size)
         gpu_shadow_pending = 0;
-    unsigned int *fb = (unsigned int *)((unsigned char *)guest_mem + GOP_FB_ADDR);
+    unsigned int *fb = gpu_target_fb();
     unsigned int *db = (unsigned int *)((unsigned char *)guest_mem + GPU_DEPTH_ADDR);
     int w = gop_width, h = gop_height;
     unsigned char *cmd = (unsigned char *)guest_mem + GPU_CMD_ADDR;
@@ -12430,6 +12858,7 @@ static void gpu_rasterize_triangles(int count) {
         SetEvent(gpu_start_events[i]);
     }
     WaitForMultipleObjects(gpu_thread_count, done_events, TRUE, INFINITE);
+    gpu_present_viewport();
     gpu_frame_ready = 1;
 }
 
@@ -12612,7 +13041,10 @@ static void gpu_cine_pace(void) {
 
 /* ── Shadow buffer sync (main thread only, between VP exits) ───────── */
 
+static long shadow_sync_count = 0;
+
 static void sync_shadow_buffers(void) {
+    shadow_sync_count++;
     /* Copy VGA text buffer */
     if (VGA_BASE + sizeof(shadow_vga) <= guest_mem_size)
         memcpy(shadow_vga, (unsigned char *)guest_mem + VGA_BASE, sizeof(shadow_vga));
@@ -12812,6 +13244,21 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-e1000-phy-link")) { e1000_present = 1; e1000_phy_link = 1; }
         else if (!strcmp(argv[i], "-e1000-mdio-window")) { e1000_present = 1; e1000_mdio_window = 1; }
         else if (!strcmp(argv[i], "-e1000-mdio-slow")) { e1000_present = 1; e1000_mdio_slow = 1; }
+        else if (!strcmp(argv[i], "-e1000-preconfigured")) {
+            e1000_present = 1; e1000_preconfigured = 1;
+            /* Receiver live, with a ring already programmed somewhere the
+               driver knows nothing about. RDLEN is one descriptor so the
+               state is self-consistent rather than merely non-zero. */
+            e1000_regs[E1000_REG_RCTL / 4] = E1000_RCTL_EN;
+            e1000_regs[E1000_REG_RDLEN / 4] = 16;
+        }
+        else if (!strcmp(argv[i], "-e1000-ctrl-ro")) {
+            e1000_present = 1; e1000_ctrl_ro = 1;
+            /* Hand the guest the state the ASUS firmware hands it, so a
+               driver reading CTRL before writing sees SLU already set --
+               which is what makes the refusal invisible without a readback. */
+            e1000_regs[E1000_REG_CTRL / 4] = E1000_CTRL_FIRMWARE_VALUE;
+        }
         else if (!strcmp(argv[i], "-e1000-asde")) { e1000_present = 1; e1000_asde = 1; }
         else if (!strcmp(argv[i], "-keys-start") && i+1 < argc) inject_key_start_ms = atof(argv[++i]);
         else if (!strcmp(argv[i], "-keys-interval") && i+1 < argc) inject_key_interval_ms = atof(argv[++i]);
@@ -13205,6 +13652,7 @@ int main(int argc, char **argv) {
     WHV_RUN_VP_EXIT_CONTEXT ctx;
     /* Start drip-feed thread for input overflow */
     CreateThread(NULL, 0, drip_feed_thread, NULL, 0, NULL);
+    CreateThread(NULL, 0, hid_kick_thread, NULL, 0, NULL);
 
     unsigned long long exits = 0;
     int watch_hits = 0;
@@ -13997,6 +14445,23 @@ int main(int argc, char **argv) {
             double elapsed_ms = (double)(now.QuadPart - screenshot_start.QuadPart) * 1000.0 / perf_freq.QuadPart;
             if (elapsed_ms >= screenshot_delay_ms) {
                 double fps = (elapsed_ms > 0) ? gpu_frame_count * 1000.0 / elapsed_ms : 0;
+                /* Behind the probe switch: an unconditional extra DIAG line
+                   would land in every screenshot run, including the GUI tests.
+                   Gated on the environment DIRECTLY rather than on
+                   gpu_probe_on, which is set from gpu_init_threads and so only
+                   exists once the rasterizer has run -- a desk with no 3D pane
+                   open never set it, which is exactly where these lines were
+                   wanted. The braces matter too: without them the second line
+                   below escaped the guard and printed in every run. */
+                if (getenv("CODEX_GPU_PROBE")) {
+                    fprintf(stderr, "DIAG: mouse-reports=%ld report-rate=%.1f/s arms=%ld arm-rate=%.1f/s\n",
+                            hid_mouse_reports,
+                            (elapsed_ms > 0) ? hid_mouse_reports * 1000.0 / elapsed_ms : 0.0,
+                            xhci_mouse_doorbells,
+                            (elapsed_ms > 0) ? xhci_mouse_doorbells * 1000.0 / elapsed_ms : 0.0);
+                        fprintf(stderr, "DIAG: syncs=%ld sync-fps=%.1f\n", shadow_sync_count,
+                            (elapsed_ms > 0) ? shadow_sync_count * 1000.0 / elapsed_ms : 0.0);
+                }
                 fprintf(stderr, "DIAG: frames=%d elapsed=%.0fms fps=%.1f tris/frame=%d slices=%d stacks=%d\n",
                     gpu_frame_count, elapsed_ms, fps, gpu_last_tri_count,
                     0, 0);

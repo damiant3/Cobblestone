@@ -76,6 +76,48 @@ Section: Gradient
   gradient-h : Integer, Integer -> Gradient
   gradient-h (start) (stop) = Gradient { gr-start-color = __narrow start, gr-end-color = __narrow stop, gr-vertical = False, gr-enabled = True }
 
+Section: Bevel
+
+ A border says where a surface ENDS. A bevel says which way it FACES: a
+ lit edge along the top and left and a shaded edge along the bottom and
+ right reads as raised, and the same pair swapped reads as sunk. It is
+ the cheapest primitive that makes a surface look like an object rather
+ than a rectangle, which is what a physical control panel is made of --
+ chrome bezels around a dial, a switch guard standing proud, a recessed
+ well holding a gauge.
+
+ It is deliberately NOT expressible as a border with four different
+ colours. A border of differing sides is a border; a bevel is a light
+ source, and a theme that sets one is saying where the light comes from.
+ Keeping them apart is what lets a design language flip every surface
+ from raised to sunk without rewriting each side of each border.
+
+  Bevel = record {
+    bv-light : Integer between 0 and 16777215,
+    bv-shade : Integer between 0 and 16777215,
+    bv-width : Integer between 0 and 16,
+    bv-raised : Boolean,
+    bv-enabled : Boolean
+  }
+
+  bevel-none : Bevel
+  bevel-none = Bevel { bv-light = 0, bv-shade = 0, bv-width = 0, bv-raised = True, bv-enabled = False }
+
+  bevel-raised : Integer, Integer, Integer -> Bevel
+  bevel-raised (light) (shade) (w) = Bevel { bv-light = __narrow light, bv-shade = __narrow shade, bv-width = __narrow w, bv-raised = True, bv-enabled = True }
+
+  bevel-recessed : Integer, Integer, Integer -> Bevel
+  bevel-recessed (light) (shade) (w) = Bevel { bv-light = __narrow light, bv-shade = __narrow shade, bv-width = __narrow w, bv-raised = False, bv-enabled = True }
+
+ The top-left colour and the bottom-right colour, resolved once so a
+ renderer never has to remember which way round `bv-raised` reads.
+
+  bevel-tl : Bevel -> Integer
+  bevel-tl (b) = if b.bv-raised then b.bv-light else b.bv-shade
+
+  bevel-br : Bevel -> Integer
+  bevel-br (b) = if b.bv-raised then b.bv-shade else b.bv-light
+
 Section: Accent Border
   AccentBorder = record {
     ab-side : Integer between 0 and 3,
@@ -107,7 +149,8 @@ Section: Widget Style
     ws-min-height : Integer between 0 and 32767,
     ws-shadow : Shadow,
     ws-gradient : Gradient,
-    ws-accent-border : AccentBorder
+    ws-accent-border : AccentBorder,
+    ws-bevel : Bevel
   }
 
 Section: State Map
@@ -157,15 +200,22 @@ Section: Constructors
 
   widget-style : Integer, Integer, Border, Edges, Edges -> WidgetStyle
   widget-style (bg) (fg) (bdr) (pad) (mar) =
-    WidgetStyle { ws-bg = __narrow bg, ws-fg = __narrow fg, ws-border = bdr, ws-padding = pad, ws-margin = mar, ws-min-width = 0, ws-min-height = 0, ws-shadow = shadow-none, ws-gradient = gradient-none, ws-accent-border = accent-border-none }
+    WidgetStyle { ws-bg = __narrow bg, ws-fg = __narrow fg, ws-border = bdr, ws-padding = pad, ws-margin = mar, ws-min-width = 0, ws-min-height = 0, ws-shadow = shadow-none, ws-gradient = gradient-none, ws-accent-border = accent-border-none, ws-bevel = bevel-none }
 
   widget-style-sized : Integer, Integer, Border, Edges, Edges, Integer, Integer -> WidgetStyle
   widget-style-sized (bg) (fg) (bdr) (pad) (mar) (minw) (minh) =
-    WidgetStyle { ws-bg = __narrow bg, ws-fg = __narrow fg, ws-border = bdr, ws-padding = pad, ws-margin = mar, ws-min-width = __narrow minw, ws-min-height = __narrow minh, ws-shadow = shadow-none, ws-gradient = gradient-none, ws-accent-border = accent-border-none }
+    WidgetStyle { ws-bg = __narrow bg, ws-fg = __narrow fg, ws-border = bdr, ws-padding = pad, ws-margin = mar, ws-min-width = __narrow minw, ws-min-height = __narrow minh, ws-shadow = shadow-none, ws-gradient = gradient-none, ws-accent-border = accent-border-none, ws-bevel = bevel-none }
 
   widget-style-rich : Integer, Integer, Border, Edges, Edges, Shadow, Gradient, AccentBorder -> WidgetStyle
   widget-style-rich (bg) (fg) (bdr) (pad) (mar) (sh) (gr) (ab) =
-    WidgetStyle { ws-bg = __narrow bg, ws-fg = __narrow fg, ws-border = bdr, ws-padding = pad, ws-margin = mar, ws-min-width = 0, ws-min-height = 0, ws-shadow = sh, ws-gradient = gr, ws-accent-border = ab }
+    WidgetStyle { ws-bg = __narrow bg, ws-fg = __narrow fg, ws-border = bdr, ws-padding = pad, ws-margin = mar, ws-min-width = 0, ws-min-height = 0, ws-shadow = sh, ws-gradient = gr, ws-accent-border = ab, ws-bevel = bevel-none }
+
+ The constructor a design language reaches for: everything a surface can
+ say about how it is lit, in one call.
+
+  widget-style-surface : Integer, Integer, Border, Edges, Edges, Gradient, Bevel -> WidgetStyle
+  widget-style-surface (bg) (fg) (bdr) (pad) (mar) (gr) (bv) =
+    WidgetStyle { ws-bg = __narrow bg, ws-fg = __narrow fg, ws-border = bdr, ws-padding = pad, ws-margin = mar, ws-min-width = 0, ws-min-height = 0, ws-shadow = shadow-none, ws-gradient = gr, ws-accent-border = accent-border-none, ws-bevel = bv }
 
   state-styles-flat : WidgetStyle -> StateStyles
   state-styles-flat (s) = StateStyles { ss-normal = s, ss-hover = s, ss-pressed = s, ss-disabled = s, ss-focused = s }

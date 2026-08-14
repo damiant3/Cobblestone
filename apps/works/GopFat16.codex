@@ -717,7 +717,10 @@ Section: Writing
  risk and not the other one.
 
   gfat-write-small-file : Fat16Volume, Integer, Integer, Integer -> [Device.Port] Boolean
-  gfat-write-small-file (vol) (name-buf) (src) (size) = act
+  gfat-write-small-file (vol) (name-buf) (src) (size) = gfat-write-small-file-in vol name-buf src size (-1)
+
+  gfat-write-small-file-in : Fat16Volume, Integer, Integer, Integer, Integer -> [Device.Port] Boolean
+  gfat-write-small-file-in (vol) (name-buf) (src) (size) (dir) = act
     if size > (vol.vol-bytes-per-sector) * (vol.vol-sectors-per-cluster) then let s = gfat-note-write gfat-w-oversize in False
     else act
       f <- gfat-load-fat vol
@@ -727,17 +730,17 @@ Section: Writing
       else act
         clear <- gfat-chain-is-clear vol (f.gft-buf) free 1
         if clear == False then let s = gfat-note-write gfat-w-s-collide in False
-        else gfat-small-commit vol name-buf src size free
+        else gfat-small-commit vol name-buf src size free dir
       end
     end
   end
 
-  gfat-small-commit : Fat16Volume, Integer, Integer, Integer, Integer -> [Device.Port] Boolean
-  gfat-small-commit (vol) (name-buf) (src) (size) (free) = act
+  gfat-small-commit : Fat16Volume, Integer, Integer, Integer, Integer, Integer -> [Device.Port] Boolean
+  gfat-small-commit (vol) (name-buf) (src) (size) (free) (dir) = act
     dw <- disk-write-into (fat16-cluster-sector vol free) (vol.vol-sectors-per-cluster) src
     if dw == False then let s = gfat-note-write gfat-w-s-data in False
     else act
-      slot <- gfat-find-slot vol name-buf
+      slot <- gfat-find-slot-in vol name-buf dir
       if slot < 0 then let s = gfat-note-write gfat-w-s-noslot in False
       else act
         eoc <- gfat-mark-eoc vol free
@@ -756,8 +759,18 @@ Section: Writing
   end
 
   gfat-find-slot : Fat16Volume, Integer -> [Device.Port] Integer
-  gfat-find-slot (vol) (name-buf) = act
-    if gfat-is32 vol then gfat-dir-slot32 vol name-buf (vol.vol-root-start)
+  gfat-find-slot (vol) (name-buf) = gfat-find-slot-in vol name-buf (-1)
+
+ A directory below root is a cluster chain on both FAT16 and FAT32, which is
+ what gfat-dir-slot32 already walks; only the ROOT differs between them, and
+ only on FAT16, where it is a fixed sector run. So a dir under 2 means root
+ and takes the split, and anything else takes the chain walk on either
+ format. The name reads FAT32 and the function is not.
+
+  gfat-find-slot-in : Fat16Volume, Integer, Integer -> [Device.Port] Integer
+  gfat-find-slot-in (vol) (name-buf) (dir) = act
+    if dir >= 2 then gfat-dir-slot32 vol name-buf dir
+    else if gfat-is32 vol then gfat-dir-slot32 vol name-buf (vol.vol-root-start)
     else gfat-root-slot vol name-buf (vol.vol-root-start) (((vol.vol-root-entry-count) * 32 + (vol.vol-bytes-per-sector) - 1) / (vol.vol-bytes-per-sector)) 0
   end
 
@@ -945,9 +958,12 @@ Section: Multi-Cluster Writing
  __heap-save / __heap-restore.
 
   gfat-write-file : Fat16Volume, Integer, Integer, Integer -> [Device.Port] Boolean
-  gfat-write-file (vol) (name-buf) (src) (size) = act
+  gfat-write-file (vol) (name-buf) (src) (size) = gfat-write-file-in vol name-buf src size (-1)
+
+  gfat-write-file-in : Fat16Volume, Integer, Integer, Integer, Integer -> [Device.Port] Boolean
+  gfat-write-file-in (vol) (name-buf) (src) (size) (dir) = act
     let cbytes = (vol.vol-bytes-per-sector) * (vol.vol-sectors-per-cluster)
-    in if size <= cbytes then gfat-write-small-file vol name-buf src size
+    in if size <= cbytes then gfat-write-small-file-in vol name-buf src size dir
     else act
       f <- gfat-load-fat vol
       if f.gft-ok == False then let s = gfat-note-write gfat-w-fatload in False
@@ -957,19 +973,19 @@ Section: Multi-Cluster Writing
       else act
         clear <- gfat-chain-is-clear vol (f.gft-buf) first need
         if clear == False then let s = gfat-note-write gfat-w-collide in False
-        else gfat-big-commit vol (f.gft-buf) name-buf src size first need
+        else gfat-big-commit vol (f.gft-buf) name-buf src size first need dir
       end
     end
   end
 
-  gfat-big-commit : Fat16Volume, Integer, Integer, Integer, Integer, Integer, Integer -> [Device.Port] Boolean
-  gfat-big-commit (vol) (fat) (name-buf) (src) (size) (first) (need) = act
+  gfat-big-commit : Fat16Volume, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device.Port] Boolean
+  gfat-big-commit (vol) (fat) (name-buf) (src) (size) (first) (need) (dir) = act
     let sectors = (size + 511) / 512
     in act
       wr <- gfat-write-runs vol fat first sectors src 0
       if wr < sectors then let s = gfat-note-write gfat-w-data in False
       else act
-        slot <- gfat-find-slot vol name-buf
+        slot <- gfat-find-slot-in vol name-buf dir
         if slot < 0 then let s = gfat-note-write gfat-w-noslot in False
         else act
           ff <- gfat-flush-fat vol fat

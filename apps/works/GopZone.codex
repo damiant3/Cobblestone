@@ -1,0 +1,107 @@
+Chapter: GopZone
+  cites Works chapter GopFat16
+
+ Where the timezone lives, kept apart from both the clock pane and the
+ wizard because both write it and neither should have to cite the other.
+ The pane owns a widget tree and the wizard does not, so a shared home
+ that cites only the filesystem is what keeps the wizard's dependency
+ cone the size it is.
+
+ The offset is a DISPLAY offset. It is deliberately never written to the
+ MC146818: the top bar reads that part directly, and a zone that moved
+ the hardware clock would make the two disagree about the instant every
+ file on the stick is stamped with.
+
+ The file is eight bytes on the ESP root, and the layout is fixed so a
+ reader that is not this code can still tell what it found:
+
+   0..3   magic 'C' 'T' 'Z' '1'
+   4      offset plus twelve, so the byte is never negative
+   5..7   zero
+
+ Storing the offset biased is not decoration. A byte read back as a
+ number is unsigned, so a stored -5 would return 251 and the clock would
+ claim a zone that does not exist.
+
+ We say:
+
+Section: Range
+
+  zone-bias : Integer = 12
+  zone-min : Integer = 0 - 12
+  zone-max : Integer = 14
+
+  zone-clamp : Integer -> Integer
+  zone-clamp (z) = if z < zone-min then zone-min else if z > zone-max then zone-max else z
+
+  zone-pad2 : Integer -> Text
+  zone-pad2 (v) = if v < 10 then "0" & show v else show v
+
+  zone-text : Integer -> Text
+  zone-text (z) = if z < 0 then "UTC-" & zone-pad2 (0 - z) else "UTC+" & zone-pad2 z
+
+Section: The File
+
+  zone-magic0 : Integer = 67
+  zone-magic1 : Integer = 84
+  zone-magic2 : Integer = 90
+  zone-magic3 : Integer = 49
+
+  zone-file-len : Integer = 8
+
+  zone-name-bytes : Integer, Text, Integer -> Integer
+  zone-name-bytes (buf) (s) (i) =
+    if i >= text-length s then 0
+    else let w = poke-byte buf i (to-unicode (char-code (char-at s i)))
+    in zone-name-bytes buf s (i + 1)
+
+  zone-name : Integer
+  zone-name =
+    let b = __heap-save
+    in let adv = __heap-advance 16
+    in let w = zone-name-bytes b "TIMEZONEDAT" 0
+    in b
+
+Section: Saving
+
+  zone-save : Integer -> [Device.Port] Boolean
+  zone-save (z) = act
+    m <- gfat-mount-esp
+    if m.gm-ok == False then False
+    else
+      let buf = __heap-save
+      in let adv = __heap-advance 64
+      in let a = poke-byte buf 0 zone-magic0
+      in let b = poke-byte buf 1 zone-magic1
+      in let c = poke-byte buf 2 zone-magic2
+      in let d = poke-byte buf 3 zone-magic3
+      in let e = poke-byte buf 4 (zone-clamp z + zone-bias)
+      in let f = poke-byte buf 5 0
+      in let g = poke-byte buf 6 0
+      in let h = poke-byte buf 7 0
+      in gfat-write-small-file (m.gm-vol) zone-name buf zone-file-len
+  end
+
+Section: Loading
+
+ A stick with no timezone answers UTC, which is the only defensible
+ default: it is the one offset that is never a guess about where the
+ machine is.
+
+  zone-load : [Device.Port] Integer
+  zone-load = act
+    m <- gfat-mount-esp
+    if m.gm-ok == False then 0
+    else act
+      f <- gfat-read-file (m.gm-vol) "TIMEZONE.DAT"
+      if f.gf-ok == False then 0
+      else if f.gf-len < zone-file-len then 0
+      else if peek-byte (f.gf-buf) 0 /= zone-magic0 then 0
+      else if peek-byte (f.gf-buf) 1 /= zone-magic1 then 0
+      else if peek-byte (f.gf-buf) 2 /= zone-magic2 then 0
+      else if peek-byte (f.gf-buf) 3 /= zone-magic3 then 0
+      else zone-clamp (peek-byte (f.gf-buf) 4 - zone-bias)
+    end
+  end
+
+Page 1

@@ -1,0 +1,72 @@
+Chapter: E1000Unresettable
+  cites Foreword chapter Maybe
+  cites Kernel chapter E1000e
+  cites Kernel chapter Pci
+
+ The part this driver actually has to work on. Damian's Intel I219-V has a
+ read-only CTRL (measured 2026-08-13), so e1000-reset is discarded and the
+ device is never reset. It therefore arrives in whatever state firmware and
+ the manageability engine left it, which on a PCH LAN part means the
+ receiver may still be running against a ring the driver knows nothing
+ about.
+
+ The failure this pins is the quiet one. Before e1000-quiesce, a bring-up
+ under these two arms reported present yes, link up yes, mac valid yes and
+ send accepted 1, and received NOTHING -- every aggregate healthy and the
+ one thing the driver exists for silently absent. That is why the judge
+ below is a received FRAME and not a status bit: no register on this path
+ distinguishes a working receiver from a ring programmed underneath a live
+ one.
+
+Section: Fixtures
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+Section: Judges
+
+ e1000-init is called ONCE and the handle threaded, which is not style. The
+ model injects a fixed number of frames; a second init builds a second ring
+ and the injection budget is already spent, so a judge that re-inits reads
+ an empty ring and reports a broken receiver. The first version of this file
+ did exactly that and blamed the driver.
+
+  init-present : E1000Device -> Boolean
+  init-present (d) = d.e-present
+
+ Receive is the whole point. A driver that programs the ring without
+ disabling the receiver first gets silence here and health everywhere else.
+
+  recv-frame : E1000Device -> E1000RecvResult
+  recv-frame (d) = e1000-poll-frame d
+
+ The reset genuinely did not happen, and the driver must not have concluded
+ otherwise. This is the row that would have caught the 08-13 misreading.
+
+  reset-was-refused : Integer -> Boolean
+  reset-was-refused (mmio) =
+   let before = e1000-read mmio e1000-reg-ctrl
+   in let w = e1000-write mmio e1000-reg-ctrl (bit-or before e1000-ctrl-rst)
+   in e1000-read mmio e1000-reg-ctrl == before
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let scan = pci-scan-bus 0
+    in act
+      when e1000-find scan
+        is Just (dev) -> act
+          let d = e1000-init dev
+          in let r = recv-frame d
+          in act
+            print-line-uni ("present      : " & yn (init-present d))
+            print-line-uni ("ctrl refuses : " & yn (reset-was-refused (d.e-mmio)))
+            print-line-uni ("recv works   : " & yn (r.r-has-frame))
+            print-line-uni ("recv length  : " & show (list-length (r.r-frame)))
+          end
+        end
+        is None -> print-line-uni ("candidate found : no")
+    end
+  end
+
+Page 1

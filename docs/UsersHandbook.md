@@ -128,7 +128,7 @@ rebuilt yet.
 
 Flash it to a USB stick and boot from UEFI.
 
-**Taking it to a real machine?** Follow `docs/HardwareSitting.md`. It is the
+**Taking it to a real machine?** Follow `docs/Hardware/HardwareSitting.md`. It is the
 run sheet for release row R6: what to build, what to flash, the order the
 boots go in, what a pass looks like at each rung, and what to bring home. A
 sitting costs a human body, which is the scarcest device on the bus, and the
@@ -146,15 +146,14 @@ The sizing is an eighth of the medium off the top, capped at 128 MB and
 floored at 1 MB, applied by `build/build-img.ps1` and by
 `codex/plugs/img/GptWriter.codex` alike.
 
-**This paragraph was false until 2026-07-27 and the image was 8 MB.**
-`build-boot-img.ps1` never passed `-Seed`, so `CODEX.CDX` was never
-written to the image at all; and it passed `-Source` only when
-`build-output/Codex.codex` happened to be left over from a previous
-build in that workspace, so whether a stick carried its own source
-depended on scratch-directory state rather than on the commit. Two runs
-of the same script at the same revision could produce different images
-and neither said so. Both inputs are unconditional now and the concat is
-generated when it is missing. A stick that cannot verify or rebuild
+**Both inputs are unconditional, and the concat is generated when it is
+missing.** That matters because the failure it replaces was silent:
+`build-boot-img.ps1` once never passed `-Seed`, so `CODEX.CDX` reached no
+image at all, and it passed `-Source` only when `build-output/Codex.codex`
+happened to be left over from a previous build in that workspace. Whether a
+stick carried its own source depended on scratch-directory state rather than
+on the commit, and two runs of the same script at the same revision could
+produce different images with neither saying so. A stick that cannot verify or rebuild
 itself is not what is being promised here, so the claim belongs where
 the artifact can be checked against it.
 
@@ -213,8 +212,8 @@ USB keyboard delivering.
 Both require admin (UAC elevation). Find the disk number with
 `Get-Disk | Where-Object { $_.BusType -eq 'USB' }`.
 
-`-Image` is mandatory: this line used to omit it, and the script then
-stopped on PowerShell's parameter prompt inside the elevated window.
+`-Image` is mandatory. Omit it and the script stops on PowerShell's
+parameter prompt inside the elevated window, where you cannot see it.
 
 `-SpecFit` refits the GPT to the stick actually in your hand: the
 protective MBR spans the reported disk, the primary header's

@@ -68,7 +68,7 @@ etc.) with CSS from `Theme`/`BoxModel`/`Layout`. No code exists.
 | Legacy card glue | `tools/web/explorer/card-ui.js` (129 lines) | Legacy Gen 1 hybrid |
 | Legacy item glue | `tools/web/explorer/item-ui.js` (89 lines) | Legacy Gen 1 hybrid |
 | WebEmitter design | `docs/Designs/Active/Tools/WebEmitter.md` | Design only |
-| UICapabilityMap | `docs/Designs/Active/Tools/UICapabilityMap.md` | Design only |
+| UICapabilityMap | `docs/Designs/Done/Tools/UICapabilityMap.md` | Design only |
 
 ---
 

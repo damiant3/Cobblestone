@@ -253,8 +253,39 @@ Section: Names On The Medium
     let d = ged-dot name 0
     in if d < 0 then "" else substring name (d + 1) (text-length name - d - 1)
 
+ The open file is carried as a PATH once the picker can descend, so every
+ read goes through gfat-resolve unchanged. The two places that cannot take a
+ path are the 8.3 directory-entry buffers, which hold a bare leaf name, and
+ the slot search, which needs the containing directory as a cluster. The
+ cluster rides in the state block at 24 rather than through ged-loop, whose
+ ten recursive calls would each have grown a parameter that only two leaves
+ read. Root is 0 here, not -1: gfat-find-slot-in reads anything below 2 as
+ root, and a negative through peek-32 is a sign question nobody needs.
+
+  ged-last-slash : Text, Integer, Integer -> Integer
+  ged-last-slash (p) (i) (best) =
+    if i >= text-length p then best
+    else if substring p i 1 == "/" then ged-last-slash p (i + 1) i
+    else ged-last-slash p (i + 1) best
+
+  ged-leaf-of : Text -> Text
+  ged-leaf-of (p) =
+    let i = ged-last-slash p 0 (-1)
+    in if i < 0 then p else substring p (i + 1) (text-length p - i - 1)
+
+  ged-dir-text : Text -> Text
+  ged-dir-text (p) =
+    let i = ged-last-slash p 0 (-1)
+    in if i < 0 then "" else substring p 0 (i + 1)
+
+  ged-dir : Integer -> Integer
+  ged-dir (es) = peek-32 es 24
+
+  ged-set-dir : Integer, Integer -> Integer
+  ged-set-dir (es) (d) = poke-32 es 24 (if d < 2 then 0 else d)
+
   ged-bak-text : Text -> Text
-  ged-bak-text (name) = ged-base-of name & ".BAK"
+  ged-bak-text (name) = ged-dir-text name & ged-base-of (ged-leaf-of name) & ".BAK"
 
   ged-name-83 : Text, Text -> Integer
   ged-name-83 (base) (ext) =
@@ -326,15 +357,17 @@ Section: Save, And The One Hot Backup
 
   ged-commit : Integer, Fat16Volume, Text, Fat16DirEntry, Integer -> [Device.Port] Integer
   ged-commit (es) (vol) (name) (entry) (fat) = act
-    let bakbuf = ged-name-83 (ged-base-of name) "BAK"
+    let leaf = ged-leaf-of name
+    in let dir = ged-dir es
+    in let bakbuf = ged-name-83 (ged-base-of leaf) "BAK"
     in act
-      slot <- gfat-find-slot vol bakbuf
+      slot <- gfat-find-slot-in vol bakbuf dir
       if slot < 0 then ged-v-nobak
       else act
         de <- gfat-write-dir-entry bakbuf slot (entry.de-cluster) (entry.de-size) (vol.vol-bytes-per-sector)
         if de == False then ged-v-nobak
         else act
-          ok <- gfat-write-file vol (ged-name-83 (ged-base-of name) (ged-ext-of name)) (ged-buf es) (ged-size es)
+          ok <- gfat-write-file-in vol (ged-name-83 (ged-base-of leaf) (ged-ext-of leaf)) (ged-buf es) (ged-size es) dir
           if ok == False then ged-v-nowrite
           else let c = poke-32 es 16 0
           in ged-v-ok
@@ -638,10 +671,11 @@ Section: The Editor Loop
 
 Section: Opening A File
 
-  ged-open : Integer, Fat16Volume, Text, Integer -> [Device.Port] Integer
-  ged-open (es) (vol) (name) (size) = act
+  ged-open : Integer, Fat16Volume, Text, Integer, Integer -> [Device.Port] Integer
+  ged-open (es) (vol) (name) (size) (dir) = act
     got <- gfat-read-file-bulk vol name (ged-buf es)
     let p = poke-32 es 8 got
+    in let sd = ged-set-dir es dir
     in let c = ged-reindex es
     in got
   end
@@ -682,37 +716,67 @@ Section: The File List
     in let t = gop-draw-text base stride font (gfl-px w s + 10 * s) (y + s) (gfl-row-text e) fg s 0
     in ged-list-draw base w h stride s font entries sel top (i + 1)
 
-  ged-list-paint : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbMouse, Integer, List Fat16DirEntry, Integer, Integer -> Integer
-  ged-list-paint (base) (w) (h) (stride) (s) (font) (mouse) (cs) (entries) (sel) (top) =
+  ged-list-paint : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbMouse, Integer, List Fat16DirEntry, Integer, Integer, List Text -> Integer
+  ged-list-paint (base) (w) (h) (stride) (s) (font) (mouse) (cs) (entries) (sel) (top) (names) =
     let hd = cursor-hide cs base stride
-    in let f = gfl-draw-frame base w h stride s font "Edit  choose a file"
+    in let crumb = ged-prefix names 0 ""
+    in let f = gfl-draw-frame base w h stride s font (if text-length crumb == 0 then "Edit  choose a file" else "Edit  " & crumb)
     in let hdr = gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + 26 * s) (gfl-pad "name" 16 & "size") gfl-col-dim s 0
     in let rows = ged-list-draw base w h stride s font entries sel top 0
     in let hint = gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + gfl-ph h s - 18 * s) "Up/Down move   Enter open   Esc back" gfl-col-green s 0
     in if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
 
-  ged-files-only : List Fat16DirEntry, Integer, List Fat16DirEntry -> List Fat16DirEntry
-  ged-files-only (entries) (i) (acc) =
-    if i >= list-length entries then acc
-    else let e = list-at entries i
-    in if gfl-is-dir e then ged-files-only entries (i + 1) acc
-    else ged-files-only entries (i + 1) (list-push acc e)
+ Descending is GopFiles' two moves: push the cluster and the name, re-list,
+ and pop on the way back. The names stack is what builds the path handed to
+ gfat-resolve, so the picker and the save agree on where the file lives by
+ construction rather than by both being told.
 
-  ged-activate : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer, Fat16Volume, List Fat16DirEntry, Integer, Integer -> [Device.Port] Integer
-  ged-activate (base) (w) (h) (stride) (s) (font) (kbd) (mouse) (cs) (es) (vol) (entries) (sel) (top) = act
+  ged-prefix : List Text, Integer, Text -> Text
+  ged-prefix (names) (i) (acc) =
+    if i >= list-length names then acc
+    else ged-prefix names (i + 1) (acc & list-at names i & "/")
+
+  ged-activate : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer, Fat16Volume, List Fat16DirEntry, Integer, Integer, List Integer, List Text -> [Device.Port] Integer
+  ged-activate (base) (w) (h) (stride) (s) (font) (kbd) (mouse) (cs) (es) (vol) (entries) (sel) (top) (clusters) (names) = act
     let e = list-at entries sel
-    in if e.de-size > ged-cap then act
+    in if gfl-is-dir e then act
+      let c2 = list-push clusters (e.de-cluster)
+      in let n2 = list-push names (e.de-name)
+      in act
+        ents <- gfl-list-cur vol c2
+        let p = ged-list-paint base w h stride s font mouse cs ents 0 0 n2
+        in ged-list-loop base w h stride s font kbd mouse cs es vol ents 0 0 c2 n2
+      end
+    end
+    else if e.de-size > ged-cap then act
       b <- ged-too-big base w h stride s font kbd mouse cs (e.de-name) (e.de-size)
-      let p = ged-list-paint base w h stride s font mouse cs entries sel top
-      in ged-list-loop base w h stride s font kbd mouse cs es vol entries sel top
+      let p = ged-list-paint base w h stride s font mouse cs entries sel top names
+      in ged-list-loop base w h stride s font kbd mouse cs es vol entries sel top clusters names
     end
     else act
-      got <- ged-open es vol (e.de-name) (e.de-size)
-      let p = ged-repaint base w h stride s font mouse cs es (e.de-name) 0 0 0
+      let path = ged-prefix names 0 "" & e.de-name
       in act
-        r <- ged-loop base w h stride s font kbd mouse cs es vol (e.de-name) 0 0 0 0
-        let p2 = ged-list-paint base w h stride s font mouse cs entries sel top
-        in ged-list-loop base w h stride s font kbd mouse cs es vol entries sel top
+        got <- ged-open es vol path (e.de-size) (gfl-cur-dir clusters)
+        let p = ged-repaint base w h stride s font mouse cs es path 0 0 0
+        in act
+          r <- ged-loop base w h stride s font kbd mouse cs es vol path 0 0 0 0
+          let p2 = ged-list-paint base w h stride s font mouse cs entries sel top names
+          in ged-list-loop base w h stride s font kbd mouse cs es vol entries sel top clusters names
+        end
+      end
+    end
+  end
+
+  ged-back : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer, Fat16Volume, List Integer, List Text -> [Device.Port] Integer
+  ged-back (base) (w) (h) (stride) (s) (font) (kbd) (mouse) (cs) (es) (vol) (clusters) (names) = act
+    if list-length clusters <= 1 then 0
+    else act
+      let c2 = gfl-pop-int clusters
+      in let n2 = gfl-pop-text names
+      in act
+        ents <- gfl-list-cur vol c2
+        let p = ged-list-paint base w h stride s font mouse cs ents 0 0 n2
+        in ged-list-loop base w h stride s font kbd mouse cs es vol ents 0 0 c2 n2
       end
     end
   end
@@ -730,8 +794,8 @@ Section: The File List
     else if hover >= 0 then hover
     else sel
 
-  ged-list-loop : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer, Fat16Volume, List Fat16DirEntry, Integer, Integer -> [Device.Port] Integer
-  ged-list-loop (base) (w) (h) (stride) (s) (font) (kbd) (mouse) (cs) (es) (vol) (entries) (sel) (top) = act
+  ged-list-loop : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer, Fat16Volume, List Fat16DirEntry, Integer, Integer, List Integer, List Text -> [Device.Port] Integer
+  ged-list-loop (base) (w) (h) (stride) (s) (font) (kbd) (mouse) (cs) (es) (vol) (entries) (sel) (top) (clusters) (names) = act
     let mark = __heap-save
     in act
       sc <- kbd-take kbd
@@ -743,15 +807,21 @@ Section: The File List
       in let sel2 = ged-list-sel sc sel n hover
       in let top2 = gfl-clamp-top sel2 top (gfl-rows-vis h s)
       in let moved = sel2 /= sel | top2 /= top
-      in if sc == 1 then let d = __heap-restore mark in 0
-      else if clicked & gfl-close-hit w h s (mouse-x mouse) (mouse-y mouse) then let d = __heap-restore mark in 0
+      in if sc == 1 then act
+        let d = __heap-restore mark
+        in ged-back base w h stride s font kbd mouse cs es vol clusters names
+      end
+      else if clicked & gfl-close-hit w h s (mouse-x mouse) (mouse-y mouse) then act
+        let d = __heap-restore mark
+        in ged-back base w h stride s font kbd mouse cs es vol clusters names
+      end
       else if (clicked & hover >= 0) | (sc == 28 & n > 0) then act
         let d = __heap-restore mark
-        in ged-activate base w h stride s font kbd mouse cs es vol entries sel2 top2
+        in ged-activate base w h stride s font kbd mouse cs es vol entries sel2 top2 clusters names
       end
-      else let p = if moved then ged-list-paint base w h stride s font mouse cs entries sel2 top2 else 0
+      else let p = if moved then ged-list-paint base w h stride s font mouse cs entries sel2 top2 names else 0
       in let d = __heap-restore mark
-      in ged-list-loop base w h stride s font kbd mouse cs es vol entries sel2 top2
+      in ged-list-loop base w h stride s font kbd mouse cs es vol entries sel2 top2 clusters names
     end
   end
 
@@ -775,9 +845,8 @@ Section: Entry
       in let root-flag = if gfat-is32 vol then vol.vol-root-start else -1
       in act
         ents <- gfl-list-cur vol [root-flag]
-        let files = ged-files-only ents 0 []
-        in let p = ged-list-paint base w h stride s font mouse cs files 0 0
-        in ged-list-loop base w h stride s font kbd mouse cs es vol files 0 0
+        let p = ged-list-paint base w h stride s font mouse cs ents 0 0 []
+        in ged-list-loop base w h stride s font kbd mouse cs es vol ents 0 0 [root-flag] []
       end
     end
   end

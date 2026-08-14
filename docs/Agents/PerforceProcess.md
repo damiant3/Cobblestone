@@ -1,5 +1,37 @@
 # Perforce Process for Agents
 
+## THE ONE HABIT: shelve, merge down, unshelve. In that order.
+
+Almost every merge-down difficulty in this project is self-inflicted, and this
+is the command that prevents it. Do it BEFORE the copy-up, as a matter of
+course -- not after Perforce refuses one.
+
+```powershell
+p4 shelve -f -c <CL>          # every CL with open files; -f, or a re-shelve does nothing
+p4 revert -c <CL> //...       # the stream must be CLEAN for the merge to be trivial
+p4 merge -S //Codex/<agent> -r
+p4 resolve -at                # nothing of yours is in the way, so this is safe
+p4 submit -d "Merge down from main."
+p4 unshelve -s <CL> -c <CL>   # your edits come back on top of current main
+```
+
+**A merge-down onto a clean stream has nothing to conflict with.** That is the
+whole point. The resolve decisions agents keep agonising over -- which file
+takes `-am` and which takes `-at`, whether their own content survived -- exist
+only because they left edits in the way and then had to merge against
+themselves. Shelving first deletes the entire class of problem for one
+command.
+
+**Damian, 2026-08-13:** *"they seem to forget the key method to avoiding
+problems is to shelve all local edits, mergedown, then unshelve. It is getting
+tiresome seeing agents act all surprised and have to report their victory over
+it in every session on nearly every prompt."* It is not one agent. It is all
+of us.
+
+**And none of it is reportable** -- not the refusal, not the resolve choices,
+not that main moved underneath you. See the next section, which already said
+so.
+
 ## Read this file BEFORE you touch Perforce. Then never mention it again.
 
 This file exists so the traps below do not cost you anything. It is not a
@@ -101,6 +133,94 @@ revision, `p4 edit -t <its filetype>`, `p4 print -q -o <path>
 <file>#<rev>`, submit, then copy up again singly. Restore the FILETYPE
 too -- the corrupt revision came back as `unicode` where the workplan
 had been `unicode+C`.
+
+## An outside pull request: landing it, and crediting it
+
+**The mirror is downstream, so a PR is never merged where it was opened.**
+`//Codex/main` is the source of truth and the git remotes are a publish
+(`docs/Agents/PublicPush.md`). Clicking Merge on GitHub would put a commit on
+the mirror that Perforce does not have, and the next public push would either
+clobber it or fight it. The work is re-applied in Perforce and the PR is
+closed with credit. That asymmetry is the whole reason this section exists:
+the contributor did everything right and their change still cannot arrive the
+way their tooling expects.
+
+**Precedent: GitHub PR 63, Steve Howell, the QEMU fallback in `compile.ps1`
+and `vm-config.ps1`** -- the first contribution from outside the fleet,
+written up in `docs/PM/Active/GitHubUpdates/GitHubUpdate41.md`. Read that
+write-up before you land another one; it is what good looks like. It has
+landed in Perforce and is still open on the mirror, which is the ordering
+below working as intended rather than an oversight.
+
+### Landing it
+
+1. **Fetch the PR branch and read it whole before touching Perforce.** It was
+   written against the public tree, which is main at the last push, so it can
+   be behind. `gh pr checkout <n>` in the `-main` workspace that holds the
+   `.git` (PublicPush.md says how to find that workspace, and warns that
+   several hold a stale one).
+2. **Re-apply it in your DEV stream, not in the `-main` client.** Dev streams
+   are Perforce-only, so this is a file copy plus `p4 edit` / `p4 add`, then
+   the ordinary submit and copy-up. It is not an integrate; there is no branch
+   mapping between git and the depot.
+3. **Their commits do not become CLs.** One CL per coherent change is still the
+   rule. **Name the contributor and the PR number in the CL description** --
+   that is the only place the attribution survives inside Perforce, and CL
+   descriptions are not mirrored, so it is for us, not for them.
+4. **Gate it like your own work**, because it is yours now. A contributor
+   cannot run our gate, and "it came from a PR" is not a provenance that
+   substitutes for one.
+
+### Tweaks
+
+**Keep your changes separable from theirs and say what each one is for.**
+Update 41 lists four tweaks against PR 63 individually, each with the
+measurement that motivated it, and separates them from what the contributor
+built: *"The design and the first working version are his."* That sentence is
+the standard. Do not silently absorb a contribution into a CL that reads as
+though the fleet wrote it.
+
+**Where they are right and we were wrong, say so in the same breath.** The
+same entry records Steve naming the 0xFE8 private ABI as a compromise and
+concedes it: *"he is right ... Retiring the cheat is open work, not done
+work."* A credit that only flows one way is marketing.
+
+### Closing the PR at release
+
+**GitHub is where contributions arrive.** `damiant3/NewRepository` is the
+mirror people actually open PRs against. GitLab `damiant3/Codex` is a backup
+against GitHub disappearing and **Damian barely looks at it** (his words,
+2026-08-13), so do not go hunting there for contributions or wait on its
+state. If one ever does arrive on GitLab it is handled the same way, but
+nothing about the process below depends on it.
+
+Say which remote you mean anyway, since the two number independently and a
+bare "PR 4" will eventually be ambiguous.
+
+Prefer to keep it open until the push that carries the work goes public,
+because until then "this is in" is not true on any tree the contributor can
+see. As this is written, PR 63 has landed in Perforce and is still open on
+GitHub for exactly that reason.
+
+During the release (`PublicPush.md`), for each PR in the cycle:
+
+1. **Comment with thanks, the release it landed in, and the public commit**,
+   so the contributor can verify it themselves rather than take our word.
+2. **List the tweaks made on top**, with the reason for each. Someone who
+   wrote a thing is owed the diff against what they wrote.
+3. **Link the GitHubUpdate entry**, which is the durable account and is public.
+4. **Then close it**, referencing that commit.
+
+**The invariant is the contributor can check our claim, not the ordering.**
+Damian, 2026-08-13: *"obviously we are doing weird things outside normal git
+procedure, so we adapt and do the best we can."* Perforce-primary with two
+downstream mirrors is not a shape git tooling expects, and a rule that only
+works when every cycle is tidy will be broken and then ignored. So: if a PR
+has to be closed before its work is public, or was opened against a tree we
+have already moved past, **say that plainly in the comment and come back with
+the commit when it lands.** What is never acceptable is the silent close --
+to everyone outside the fleet that reads as a rejection, and it is the one
+outcome none of this is worth.
 
 ## The Golden Rule
 
@@ -414,6 +534,15 @@ the artifacts you claim to have added.** A doc that names a test is not
 evidence the test exists.
 
 ### An edit on top of an `integrate`-only open is DROPPED at submit
+**The ordering that avoids it, for a GENERATED file: submit the merge-down
+FIRST, then `p4 edit` and rebuild.** The trap is easiest to walk into with
+`tools/codex-vm.exe`, because a merge-down integrates it and rebuilding is the
+obvious next thing to do -- the binary then submits as the version that came
+DOWN, carrying none of your source change, and the first thing that notices is
+a test going red in somebody else's battery. `tools/build-vm.ps1` now REFUSES
+to build while its output is open for integrate, so this class is caught at the
+build rather than at the submit.
+
 
 **Symptom:** you merge down, `p4 resolve -at`, then edit the resolved file,
 verify your text is on disk, submit -- and the depot revision comes back
@@ -749,6 +878,42 @@ no interpolation) and visually scan for non-ASCII before submitting. If
 in doubt, pipe through `[System.Text.Encoding]::ASCII.GetString()` to
 catch offenders.
 
+### 5b. A `.expected` written with `-NoNewline` lands one byte short, and a `.Trim()` self-check will not see it
+
+**Symptom:** the test passes every way you check it by hand and arrives RED in
+the battery, classed as a new test that landed failing. Measured 2026-08-13
+(blu): `e1000-ctrl-ro` blocked a public release this way.
+
+**Cause, and it is two mistakes stacked.** `Set-Content -NoNewline` (or any
+byte-level CRLF normalisation applied afterwards) leaves the file ending on
+`...yes` where the guest emits `...yes\n`. The harness comparison is
+`build/test.ps1`:
+
+```powershell
+$expectedBytes = [System.IO.File]::ReadAllText($expectedFile) -replace "`r",''
+$actualBytes   = [System.IO.File]::ReadAllText($actual)
+if ($expectedBytes -eq $actualBytes) { PASS } else { FAIL_OUTPUT }
+```
+
+CR is stripped from expected, nothing is trimmed, and the comparison is exact.
+A missing trailing newline is a guaranteed fail. **Every good `.expected` in
+the tree ends with a trailing CRLF** -- check one before writing a new one.
+
+The second mistake is what let it through: verifying with
+`(Get-Content x) -join "`n").Trim()` on both sides normalises away exactly the
+difference the harness is looking for. **A hand check more forgiving than the
+runner is not a check** (L-SIDECAR). Use the runner's own rule:
+
+```powershell
+$exp = [System.IO.File]::ReadAllText("codex\test\$n.expected") -replace "`r",''
+$act = [System.IO.File]::ReadAllText($outFile)
+$exp -eq $act
+```
+
+**Fix:** append a trailing CRLF. `test-output\_results\<name>` holds only the
+verdict, not the output, so there is no diff to read after a battery run --
+reproduce with `build/test-run.ps1 -Kernel <cdx> -OutFile <f> -VmArgsFile
+<sidecar>` and compare with the rule above.
 ### 5. Test sidecars with CRLF or trailing newline corruption
 **Symptom:** A test that passes on first run fails after `p4 sync`. The output matches visually but differs by one byte.
 **Cause:** Perforce `text` type files get CRLF translation on Windows and an appended trailing newline. `.expected` sidecars are compared byte-for-byte against serial output (which is LF-only). A `text`-typed `.expected` file gains `\r` bytes and/or an extra `\n` that the runtime never emits.
@@ -804,6 +969,24 @@ catch offenders.
 - **`p4 submit` is refused while the CL still has a shelf** ("has shelved files").
   `p4 shelve -d -c <CL>` first. This bites on every CL where a gate follows a shelve,
   which is every CL that uses the build token.
+- **An agent's file edit can rewrite every line ending, and the diff then covers
+  the WHOLE FILE.** Most depot files are CRLF on disk; a harness edit tool can
+  write the result back as bare LF, so a five-line change reports as the entire
+  file replaced. Measured 2026-08-13 (blu) on one `.codex` and two `.md` files
+  in the same session, so it is the tool and not the file type.
+  It is worth catching because of what happens NEXT: a whole-file diff turns
+  the merge-down of any contended document into a conflict, and it hides the
+  change you actually made from anyone reviewing the CL. Check before you
+  submit -- if `p4 diff` shows far more lines than you touched, that is this:
+  ```powershell
+  $b=[IO.File]::ReadAllBytes($f); $crlf=0; $lf=0
+  for($i=0;$i -lt $b.Length;$i++){ if($b[$i] -eq 10){ if($i -gt 0 -and $b[$i-1] -eq 13){$crlf++} else {$lf++} } }
+  "$f CRLF=$crlf bareLF=$lf"
+  ```
+  Repair is a byte-level pass inserting `0x0D` before every bare `0x0A`; do it
+  at the byte level rather than through `Get-Content`/`Set-Content`, which will
+  also rewrite the encoding of a `unicode`-typed file. Re-diff afterwards and
+  confirm the count dropped to what you changed.
 - **A CL can be RENUMBERED on submit.** `p4 submit -c 9517` reported
   `Change 9517 renamed change 9520 and submitted`. Read the submit output for the final
   number rather than reusing the one you created; a workplan row citing the pre-submit

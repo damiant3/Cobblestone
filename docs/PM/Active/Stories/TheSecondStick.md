@@ -57,7 +57,7 @@ failure as a verdict on the stick.**
 verified all 16,777,216 bytes successfully, and then threw an exception on
 the readback of the last thirty-four sectors of the stick. The bytes on
 the medium were right. The reader was wrong. And
-`docs/HardwareSitting.md`, section 3, closed with this instruction to the
+`docs/Hardware/HardwareSitting.md`, section 3, closed with this instruction to the
 operator:
 
 > The flasher verifies the whole image by readback; if it reports a verify
@@ -471,7 +471,7 @@ Replace the sentence in section 3. State what a verify failure means
 (the readback disagreed), name both candidate causes, and give the
 discriminator: re-run once on the same stick, and a byte-identical failure
 in the same place indicts the tool, not the medium. This is a two-line
-edit to `docs/HardwareSitting.md` and it is the whole of the protection.
+edit to `docs/Hardware/HardwareSitting.md` and it is the whole of the protection.
 
 **2. Give the flasher a rehearsal step, on the dev box, before any
 sitting.** The run sheet already has a precedent for this and it is a good

@@ -28,7 +28,7 @@ never loaded or `LocateProtocol(GOP)` failed; blue alone means the stub
 died in allocation, `GetMemoryMap` or `ExitBootServices`; green alone
 means the payload died. Without them every one of those is a black
 screen, because every failure path in the stub ends at `fatal`, which is
-`jmp fatal`. `docs/HardwareSitting.md` boot 1 has the table.
+`jmp fatal`. `docs/Hardware/HardwareSitting.md` boot 1 has the table.
 
 ## PciProbe.codex
 

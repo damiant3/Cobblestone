@@ -698,6 +698,27 @@ Measure-Phase 'gen-scripts' {
     }
 }
 
+# -- two independent VM hosts, one source, compared byte for byte. This is a
+# TRUST check, not a correctness one: QEMU is a third-party binary whose
+# Authenticode signature cannot discriminate a good build from a hostile one,
+# because the publisher's signing certificate expired 2023-09-12 and the
+# binaries are still signed with it. Verification returns the same failure in
+# both worlds and there is nothing left to revoke, so the signature carries no
+# information. Two hosts that share no code agreeing on the output does carry
+# some. It skips silently on a machine with only one host, which is the normal
+# case away from this one. 6s.
+Measure-Phase 'vm-differential' {
+    $chkDiff = Join-Path $PSScriptRoot 'check-vm-differential.ps1'
+    if (Test-Path $chkDiff) {
+        & pwsh -NoProfile -File $chkDiff 2>&1 | ForEach-Object { Write-Host "  $_" }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host 'FAIL: the two VM hosts disagree on the compiler output'
+            Write-Host '      Detail: pwsh build/check-vm-differential.ps1'
+            exit 1
+        }
+    }
+}
+
 # -- deck headroom. These 47 units are every one in the tree under 2.0x margin;
 # the next tightest is 2.13x, in codex/foreword, which this does not cover.
 # 1.25 trips codex/build at 52 points and the compiler's own unit at 80, about

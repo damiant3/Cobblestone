@@ -180,8 +180,8 @@ Measured 2026-08-03, except where an item gives its own date.
 the seed; 33 carry a web front end through the HTML plug. Catalog:
 [docs/CuratorsCatalogue.md](docs/CuratorsCatalogue.md).
 
-**Test battery: 1,446 tests, 1,399 pass, 0 fail, 47 skip** (measured
-2026-08-12 at seed `527C2C75`). The BVT subset that `build/build.ps1`
+**Test battery: 1,451 tests, 1,405 pass, 0 fail, 46 skip** (measured
+2026-08-13 at seed `D9A6A7A2`). The BVT subset that `build/build.ps1`
 gates on is 75 tests, compiled and then run where an `.expected` exists,
 for 135 checks; its phase of the gate takes about 19s.
 
@@ -189,21 +189,21 @@ for 135 checks; its phase of the gate takes about 19s.
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (2,759,449 bytes) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (2,759,577 bytes) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `527C2C75092B0F9A` |
-| SHA-256 | `527C2C75092B0F9A7806260E9E578BE5DD1043BEE713479C740241160E931A99` |
-| MD5 | `7756F83823663E2FE32A51F134ABC459` |
+| Content hash prefix | `D9A6A7A2BF162346` |
+| SHA-256 | `D9A6A7A2BF162346E9E9F443A192F6E5B23B2733F5CF1AAF5AE8886BD1F73D1E` |
+| MD5 | `9AD9200295AA74F26D110CFE5CA27923` |
 
 **`seed/Codex.img`** (16,777,216 bytes) -- bootable GPT disk image, the
 first-boot ceremony.
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `5672AC1FDC0492A0964C5BC7B69E15070A9875684A0EDA13429136C864823610` |
+| SHA-256 | `B9E7A3628F59F50AF5E133A029128C771487A52F5BD54717BB75C9FA0B0F75A8` |
 
 Boot it on a UEFI machine and it runs its own first-boot ceremony on the
 GOP framebuffer with no OS beneath it: choose an interface, walk the
@@ -229,7 +229,12 @@ people's hardware in
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `ADA7CC4D9837B66097B89745EB7699445F9E8FCC8F5CEE6D04F074BEE0BFA004` |
+| SHA-256 | `CD47CFFCE4FCBF2BEFDA98091A59E2A9D70D701717C842996A20466826602DDF` |
+
+That digest is this build of the image, not a target to reproduce: the
+image embeds a concatenation of the tree's own source, so a rebuild from a
+different working tree answers a different hash by design. The seed inside
+it (`D9A6A7A2`) is the number that has to match.
 
 Flash to USB from an elevated PowerShell. **Pull the stick out when it is
 done -- do not eject it.** Windows rewrites the partition table when the

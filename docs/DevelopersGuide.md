@@ -70,12 +70,10 @@ Latin Extended letters. This is not a courtesy: the founding document asks for
 a language that exists for human reading, and a name a reader cannot write in
 their own alphabet fails that on the first line.
 
-**This was half true until 2026-07-27 and the half that was missing was the
-cheap one.** The lexer already accepted multi-byte characters through their own
-path, so Greek and Arabic names worked. What it refused were the **31 letters
-CCE carries in a single byte** -- sixteen accented Latin (`é è ê ë á à â ä ó ô
-ö ú ü ñ ç í`) and fifteen Cyrillic -- because `is-letter` tested one band,
-13..64, and those letters sit at 97..127. So `дом` compiled and `café` did not.
+`is-letter` tests two bands. 13..64 is the ASCII letters; 97..127 is the **31
+letters CCE carries in a single byte** -- sixteen accented Latin (`é è ê ë á à
+â ä ó ô ö ú ü ñ ç í`) and fifteen Cyrillic. Multi-byte characters reach the
+lexer by their own path.
 
 The reason it is two bands and not one wider band is worth stating, because the
 obvious fix is wrong: **CCE's punctuation sits between the letters.** 13..38 is
@@ -313,12 +311,11 @@ No `{ record | field = val }` sugar. Use `__record-set` to update a field.
 
 **`__record-set` is not a functional update.** It stores into the field
 and returns *the same record* (`emit-record-set-builtin`), so every
-holder of that record sees the change. This doc called it "functional"
-until 2026-07-16, and the type checker's environment was written against
-that reading: `env-bind-local` did `__record-set env "locals" ...`
-believing it produced a new env, and instead wrote each binding into its
-*caller's* environment. Locals then outlived their scope, and the
-checker rejected valid programs.
+holder of that record sees the change. Treating it as a functional update
+aliases silently: `env-bind-local` did `__record-set env "locals" ...` on
+the assumption it produced a new env, and instead wrote each binding into
+its *caller's* environment, so locals outlived their scope and the checker
+rejected valid programs.
 
 It is a controlled concession, and the condition on it is real: it is
 sound only while a single owner is threaded linearly through the value
@@ -377,11 +374,8 @@ apart.
 ```
 
 **`Circle (radius : Integer)` does not compile** -- it is CDX1000 at the
-colon, because the parser is reading a type there and a colon is not one.
-This page carried exactly that example until 2026-07-16 and nothing caught
-it: the compiler is the only reader that would have, and no chapter in the
-tree writes a variant that way, so there was nothing to contradict. If you
-want the fields named, that is what a record is for -- give the constructor
+colon, because the parser is reading a type there and a colon is not one. If
+you want the fields named, that is what a record is for -- give the constructor
 one as its payload (`| Circle (CircleDims)`), or name the variables at each
 `when`. Records are where names live.
 
@@ -594,13 +588,6 @@ parentheses:
 The one exception is `->`. A hyphen before `>` is the arrow, so `a->b` is
 `a` `->` `b` and never the name `a-`.
 
-**This page said the opposite until 2026-07-27** -- "negative literals in
-argument position must be parenthesized", with `list-push acc -1` marked
-WRONG. It was an accurate description of the parser and an inaccurate
-description of the language: `is-signed-literal-atom` had implemented the
-abutment rule for TYPES since long before, so `Integer between -1 and 255`
-worked while the same literal in an expression did not.
-
 The compiler folds `-(literal)` into `IrIntLit` at IR level.
 There is also a `negate` builtin but the unary operator is preferred.
 
@@ -639,11 +626,10 @@ i16, u32 or i32): `0 and 255`, `-128 and 127`, `0 and 4294967295`, and so
 on. Anything narrower is CDX1073. `wrapping` is the mode that asks for
 the modular arithmetic the machine already does, and the machine does it
 at the width of the store -- a one-byte store wraps mod 256 whatever the
-band says. Until 2026-07-28 a narrower band was accepted and quietly
-meant that instead, so `between 0 and 100 wrapping` held 200 and read
-`-1` back as 255. The static bounds prover reads the declared range off
-the declaration and elides checks on the strength of it, so an
-out-of-band value there puts a false range under every elision
+band says, so a narrower band would hold 200 in `between 0 and 100
+wrapping` and read `-1` back as 255. The static bounds prover reads the
+declared range off the declaration and elides checks on the strength of
+it, so an out-of-band value there puts a false range under every elision
 downstream. `clamping` is unaffected and IS band-relative: `between 0 and
 100 clamping` saturates at 100.
 
@@ -706,16 +692,11 @@ Bounds are enforced at the **function boundary**, not just at record
 construction (BoundedSignatures, 2026-07-03). A bounded parameter or
 return type is a real contract: a literal argument outside the range is
 a static error (CDX2050), and a value whose range cannot be proven
-raises **CDX2051** and the compile stops. Previously these were cosmetic
--- `inc-byte` declared `Integer between 0 and 255` could silently return
-301. The static bounds prover elides the check when it can prove the
-value fits (CDX2053).
+raises **CDX2051** and the compile stops. The static bounds prover elides
+the check when it can prove the value fits (CDX2053).
 
-**The compiler does not insert a runtime guard behind your back, and this
-paragraph said it did until 2026-07-27.** It read "where the value cannot
-be proven at compile time the callee inserts a precondition/postcondition
-guard that traps at runtime (Eiffel-style design-by-contract)". Measured:
-it refuses instead. `feed (x) = inc-byte x`, with `feed` taking a plain
+**The compiler does not insert a runtime guard behind your back.** It
+refuses instead. `feed (x) = inc-byte x`, with `feed` taking a plain
 `Integer`, does not compile:
 
 ```
@@ -728,10 +709,7 @@ The runtime trap is real, and `__narrow` is how you ask for it: write
 `inc-byte (__narrow x)` and an out-of-range value dies on a `UD2` at the
 callee's entry guard, with a postcondition guard on the return in the
 mirror case. So the design is refuse-by-default with an explicit opt-in,
-not an implicit contract. Two tests written against the old reading
-(`codex/test/bounded-param-trap`, `bounded-return-trap`) stopped
-compiling when CDX2051 landed and nobody noticed, because both are
-`.fatal` and nothing runs those.
+not an implicit contract.
 
 **`__narrow` does not carry its band on the node it emits, and a backend
 that reads only the node will drop the check.** In the IR the call is
@@ -1064,10 +1042,10 @@ compiler REFUSES, so it agrees where the compiler would stop the build, and
 a checker more permissive than the thing it audits is worse than no
 checker.
 
-The last row was missing until 2026-08-06 and the omission had a
-consequence: an independent implementation written from this table alone
-cannot reproduce the proof, reads the name at its declared type (a plain
-`Integer` is the FULL i64 range), and concludes the value does not fit.
+The last row is what lets an independent implementation reproduce the
+proof. Without it, such an implementation reads the name at its declared
+type (a plain `Integer` is the FULL i64 range) and concludes the value
+does not fit.
 Measured on `codex/test/const-narrow-proven.codex`, where `code-a` and
 `code-b` are module-level `Integer` constants used in a `0..255` field:
 
@@ -1086,12 +1064,9 @@ The prover resolved both names to their literals and unioned the branches.
 | CDX4010 | info | Bounds proven, runtime check elided |
 | CDX4020 | info | Proof definition erased (compile-time only) |
 
-CDX2053 was absent from this table until 2026-08-06, which is the more
-misleading of the two gaps: it is the code actually emitted for a proven
-field narrowing, and the compile quoted above emits no CDX4010 at all. A
-reader looking for evidence that a narrowing was proven, and grepping for
-the only code this table offered, would have found nothing and concluded
-the proof did not happen.
+CDX2053 is the code emitted for a proven field narrowing, and the compile
+quoted above emits no CDX4010 at all. Grep for CDX2053 when you want
+evidence that a narrowing was proven; CDX4010 will not be there.
 
 ## Linear Types
 
@@ -1330,8 +1305,8 @@ boundaries only. No `\t` or `\r` escapes -- use spaces and `\n`.
 
 Codex has no comments. No `//`, `--`, or `/* */`. Prose at column 2
 under `Section:` headers is the commentary layer. For machine-readable
-metadata, use the annotation sidecars in `annotations/` (see below); the
-inline `@` form was removed from the language on 2026-07-27.
+metadata, use the annotation sidecars in `annotations/` (see below). There
+is no inline `@` form.
 
 ### What prose must not contain
 
@@ -1349,13 +1324,10 @@ silently, and the rot is fast. Measured across all 2,114 source chapters on
   tracker, not a reference.)
 - one cited `CLAUDE.md` by rule number.
 
-**The count in this paragraph was itself wrong when it was written**, and the
-way it was wrong is the lesson. It said "exactly two", because the sweep
-searched for `docs/` paths and `CL` numbers and did not search for the word
-`BACKLOG`. The single BACKLOG reference it did catch surfaced only because that
-line happened to also name an agent. **A survey is a claim too, and it is bounded
-by the pattern you gave it** -- so state the pattern beside the count, and expect
-the shape you forgot to look for.
+**The pattern is stated beside the count on purpose.** That sweep searched
+for `docs/` paths, `CL` numbers and the word `BACKLOG`. A survey is a claim
+too, and it is bounded by the pattern it was given, so re-running this one
+against a shape none of those three catches will find more.
 
 State the substance instead. If the reason a constant is 2032 matters, say why
 it is 2032; a reader who has the file does not need to be sent somewhere else,
@@ -1543,17 +1515,9 @@ Everything outside is prose commentary -- human-readable, machine-ignored.
 
 ### Annotations live in sidecars, not in the source
 
-**`@` is not Codex syntax and has not been since 2026-07-27.** This section
-documented an inline form:
-
-```
- @rationale opening "Why this function exists"
- @invariant balance "Always non-negative after deposit"
-```
-
-It is removed from the language. `AtSign` is gone from the token set, the
-lexer no longer produces it, and `parse-annotation-line` is deleted. An `@`
-at column 2 is now ordinary prose; an `@` in code is a stray character and
+**`@` is not Codex syntax.** `AtSign` is not in the token set, the lexer
+does not produce it, and there is no `parse-annotation-line`. An `@`
+at column 2 is ordinary prose; an `@` in code is a stray character and
 takes the same path as any other, which is `ErrorToken` and a failed compile.
 Measured: `@bad` and `$bad` in the same position produce byte-identical
 diagnostics.
@@ -1625,8 +1589,7 @@ record's, so the record type has to come from the receiver expression.
 ## Pitfalls
 
 **Lines cannot start with `.`** A `.field` continuation on its own line
-is rejected with CDX1071 (it was previously silently dropped, surfacing
-as a misleading downstream type error). Keep field access on the
+is rejected with CDX1071. Keep field access on the
 receiver's line (`r.field`), or bind the receiver with a `let`.
 
 **Multi-line function application needs parens.** Outside `act` blocks,
@@ -1754,12 +1717,8 @@ Cross-arch note: the desugar targets the `__list-len`/`__list-head`/
 `__list-tail` intrinsics, which the ARM64/RISC-V plug lanes do not
 implement yet -- list matches are x86-64-only until they do. Both plugs
 **refuse** such a program rather than emitting one: the compile fails
-with `[UNSUPPORTED] __list-len` and the two others. Until 2026-07-28
-they compiled it clean and the call fell through to an undefined
-symbol, so a list match on those lanes produced a binary that printed
-nothing (riscv64) or faulted on every line (arm64), with no diagnostic
-anywhere.
-Proof arms were already structural: Stage 5 checks builtin-`List`
+with `[UNSUPPORTED] __list-len` and the two others.
+Proof arms are structural: Stage 5 checks builtin-`List`
 induction against a synthesized `Nil`/`Cons` view, and the proof
 normalizer reduces `list-length`, `list-push`/`list-snoc`, and
 literal-index `list-at` over those spines
@@ -1784,8 +1743,8 @@ that is `16 0d 15 11 21 0d 16`, not the `64 65 72 69 76 65 64` that any
 wire protocol means. To emit Text as bytes on a wire, convert at the I/O
 boundary: `to-unicode (char-code (char-at s i))` (cite `Foreword chapter
 CCE`). This bug is invisible in a round-trip test -- both sides agree --
-and it shipped a TLS SNI hostname and every key-schedule label in CCE
-until 2026-07-13.
+and it has already shipped a TLS SNI hostname and every key-schedule
+label in CCE.
 
 **`end` is a reserved keyword.** Cannot be used as a parameter name
 or identifier.
@@ -1884,8 +1843,8 @@ three uses depend on it: `Unifier.codex:876,884,891` use
 memo keys mix addresses in. Making it real moves all of those.
 `block-read-sector` is stubbed for the same reason (no block device). Code
 that needs a specific PROPERTY of an address should ask for that property
-directly: `live-type-tag` used to read a tag through `address-of` and now
-calls `variant-tag`, which returns a variant value's constructor index
+directly. `live-type-tag` asks `variant-tag` rather than `address-of`;
+`variant-tag` returns a variant value's constructor index
 (declaration order, zero-based). Its contract is variant values only, the
 same as `tag-equal`, because on bare metal both are a load of `[p+0]`; a
 plug emitting variant types as unrelated target types needs a tag member to
@@ -1938,9 +1897,8 @@ reproducing.
    run `build/test-self-verify.ps1` and it answers `SIGNATURE: False`,
    `AUTHOR-KEY-PRESENT: False`, `SIGNATURE INVALID`. Measured 2026-07-28.
 
-   This page said "use NewSeed.cdx" and `red-workplan.md` said "the
-   installed seed is the SIGNED Sut.cdx", and **both were half right**. The
-   full procedure when the bytes move is three steps, not one:
+   **Neither "use NewSeed.cdx" nor "install the signed Sut.cdx" is the whole
+   procedure.** When the bytes move it is three steps, not one:
 
    1. `Copy-Item build/output/NewSeed.cdx seed\Codex.cdx -Force` -- the
       fixed point, unsigned.

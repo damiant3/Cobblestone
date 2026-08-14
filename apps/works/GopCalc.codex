@@ -13,11 +13,28 @@ Section: Operators
 
 Section: State
 
+ THE CELLS HOLD SIGNED VALUES AND `peek-32` ZERO-EXTENDS. `poke-32`
+ stores the low 32 bits, so -4 goes in as 0xFFFFFFFC and comes back out
+ as 4294967292 unless the sign is put back. That is not only a display
+ fault: `gcalc-eval` reads the accumulator through this same accessor, so
+ a calculation chained onto a negative result was computing with the huge
+ positive as well. Both are fixed by sign-extending here rather than at
+ either use.
+
+ The desk relies on the opposite behaviour one cell over -- `GopDesk`
+ keeps heap ADDRESSES in `ds` cells precisely because `peek-32`
+ zero-extends and an address must not come back negative. Same builtin,
+ opposite requirement, which is why the correction belongs to whoever
+ knows what the cell means.
+
+  gcalc-sign32 : Integer -> Integer
+  gcalc-sign32 (v) = if v >= 2147483648 then v - 4294967296 else v
+
   gcalc-acc : Integer -> Integer
-  gcalc-acc (ks) = peek-32 ks 0
+  gcalc-acc (ks) = gcalc-sign32 (peek-32 ks 0)
 
   gcalc-cur : Integer -> Integer
-  gcalc-cur (ks) = peek-32 ks 8
+  gcalc-cur (ks) = gcalc-sign32 (peek-32 ks 8)
 
   gcalc-op : Integer -> Integer
   gcalc-op (ks) = peek-32 ks 16
@@ -32,6 +49,13 @@ Section: Operations
     in if cur > gcalc-digit-cap then 0
     else poke-32 ks 8 (cur * 10 + d)
 
+ With no operator pending there is nothing to evaluate, and the answer is
+ whichever of the two the person is actually working on. Taking `cur`
+ unconditionally is what made an operator pressed straight after `=`
+ throw the result away: `=` clears the operator and zeroes `cur`, so the
+ next operator evaluated "nothing" and stored that zero over the
+ accumulator -- 5 - 9 = + 1 = answered 1 instead of -3.
+
   gcalc-eval : Integer -> Integer
   gcalc-eval (ks) =
     let acc = gcalc-acc ks
@@ -41,7 +65,7 @@ Section: Operations
       else if op == op-sub then acc - cur
       else if op == op-mul then acc * cur
       else if op == op-div then (if cur /= 0 then acc / cur else 0)
-      else cur
+      else if cur /= 0 then cur else acc
     in let d1 = poke-32 ks 0 result
     in poke-32 ks 8 0
 

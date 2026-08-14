@@ -173,7 +173,7 @@ a human body.**
 
 Above those four sits a fifth guard, and it is the only one that speaks
 directly to the question "should a human be spent on this today". It is a
-block of prose in `docs/HardwareSitting.md`. It is correct, it is
+block of prose in `docs/Hardware/HardwareSitting.md`. It is correct, it is
 current, it is specific, and it is unenforced, because **it is prose, and
 prose has no runner.**
 
@@ -193,7 +193,7 @@ a guard of exactly that kind.
 
 ## 2. What the run sheet actually says
 
-`docs/HardwareSitting.md` is not a stub and it is not stale. It opens by
+`docs/Hardware/HardwareSitting.md` is not a stub and it is not stale. It opens by
 naming the exact cost this document is about:
 
 > Release row R6: *the stick boots on real hardware.* It is the only row

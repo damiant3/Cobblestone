@@ -36,6 +36,18 @@ param(
     # manifest is unverifiable and a manifest with no model names nothing.
     [string]$Agent = '',
     [string]$AgentManifest = '',
+    # An existing identity, written to the ESP root as IDENTITY.DAT. A stick
+    # WITHOUT this file boots into the first-boot wizard rather than the desk,
+    # so a freshly built image costs a passphrase, an entropy screen and a
+    # keygen before anything can be tested. Passing an identity that was
+    # generated on the target machine skips all of it.
+    #
+    # The key inside is the whole trust story, so this is deliberately opt-in
+    # and deliberately not defaulted to any path: an identity must be created
+    # on the machine that carries it, and an image built with a key generated
+    # in the bed puts a bed-generated key on the flown stick. Reuse one that
+    # came off the target, or leave this empty and walk the wizard.
+    [string]$Identity = '',
     # A directory of .codex chapters, written INDIVIDUALLY into an SRC
     # subdirectory of the ESP. -Source puts the whole tree on as one
     # concatenated file, which is what the compiler reads and what no person
@@ -82,8 +94,22 @@ if ($AgentManifest -and (Test-Path $AgentManifest)) { $manBytes = [System.IO.Fil
 if (($agentBytes.Length -gt 0) -ne ($manBytes.Length -gt 0)) {
     throw "-Agent and -AgentManifest go together: a model with no manifest cannot be verified, and a manifest with no model names nothing."
 }
+# A missing -Identity is a hard error rather than an empty byte array, unlike
+# every optional input above. Falling back silently would produce an image that
+# looks right, builds clean, and boots into the wizard the caller passed this
+# flag to avoid -- and the caller finds out at the machine, after a flash.
+if ($Identity) {
+    if (-not (Test-Path -PathType Leaf $Identity)) { throw "-Identity file not found: $Identity" }
+    $identBytes = [System.IO.File]::ReadAllBytes($Identity)
+    if ($identBytes.Length -eq 0) { throw "-Identity file is empty: $Identity" }
+} else { $identBytes = [byte[]]::new(0) }
 
 Write-Host "[build-img] PE=$($pe.Length) bytes  Source=$($srcBytes.Length) bytes  Seed=$($seedBytes.Length) bytes  Agent=$($agentBytes.Length) bytes  Image=$($ImageSize / 1MB) MB"
+if ($identBytes.Length -gt 0) {
+    Write-Host "[build-img] IDENTITY.DAT=$($identBytes.Length) bytes from $Identity -- skips the FIRST-BOOT WIZARD (keygen, entropy, confirm)"
+} else {
+    Write-Host "[build-img] no -Identity: this image runs the FIRST-BOOT WIZARD before the desk"
+}
 Write-Host "[build-img] ESP LBA $PartStart..$($PartStart + $PartSectors - 1) ($([math]::Round($PartSectors * $SectorSize / 1MB, 1)) MB)  facts LBA $FactsStart..$FactsEnd ($([math]::Round($FactsSectors * $SectorSize / 1MB, 1)) MB)"
 $payloadBytes = $pe.Length + $srcBytes.Length + $seedBytes.Length + $agentBytes.Length + $manBytes.Length
 if ($payloadBytes -gt ($PartSectors * $SectorSize * 0.9)) {
@@ -452,6 +478,11 @@ if ($agentBytes.Length -gt 0) {
     $rootIdx++
     $manCluster = Alloc-File $manBytes
     Add-DirEntry $rootOff $rootIdx "AGENT   MAN" 0x20 $manCluster $manBytes.Length
+    $rootIdx++
+}
+if ($identBytes.Length -gt 0) {
+    $identCluster = Alloc-File $identBytes
+    Add-DirEntry $rootOff $rootIdx "IDENTITYDAT" 0x20 $identCluster $identBytes.Length
     $rootIdx++
 }
 

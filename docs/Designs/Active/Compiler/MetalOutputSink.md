@@ -385,7 +385,7 @@ The done-signal problem is closed as a side effect: `-Uefi` puts
 The UART took 8 bytes for the whole run. The operator now has a line to wait
 for instead of a drive LED the ASUS does not have.
 
-Recipe and the returned-stick checks are in `docs/HardwareSitting.md`.
+Recipe and the returned-stick checks are in `docs/Hardware/HardwareSitting.md`.
 
 ### And the self-compile arm, same payload, bed-verified 2026-08-10
 
@@ -470,7 +470,7 @@ write on metal remains untested; only the one-sector primitive underneath it is
 proven.
 
 The rebuild also surfaced two defects that had been silently inflating results,
-both recorded in `docs/HardwareSitting.md`: the read rung tested the buffer
+both recorded in `docs/Hardware/HardwareSitting.md`: the read rung tested the buffer
 pointer rather than the sector, and `build-option-a.ps1` had no way to pass
 `compile.ps1 -Uefi`, so it produced payloads that boot and paint but whose block
 reads return zeros.
@@ -499,7 +499,7 @@ the walk answers 0 for and is indistinguishable from a clean verify.
 
 **Every rung below WHITE is forced in the bed** by `build/sink-arm.ps1`
 (`pass`/`shift`/`nodisk`/`badbpb`/`small`); the table is in
-`docs/HardwareSitting.md`. The `shift` arm is the positive control and it fires:
+`docs/Hardware/HardwareSitting.md`. The `shift` arm is the positive control and it fires:
 a payload rebuilt with `sl-shift = 1` writes identically -- same size, same
 chain, same 84,840 bytes of arena -- and reports the verify bad, stopping at
 BLUE. So a WHITE screen is a measurement rather than an instrument that cannot
@@ -525,7 +525,7 @@ quire registry (`quire-map.ps1`, `Get-PresentChapterNames`). It landed as
 Six rungs on the DISK path: CYAN `opening` entered, YELLOW stdin said `DISK`,
 MAGENTA the boot volume's BPB is 512, ORANGE the source read off the volume,
 BLUE the compile finished, WHITE `OUT.CDX` is on the volume at that size. The
-operator table and the forced-arm table are in `docs/HardwareSitting.md`.
+operator table and the forced-arm table are in `docs/Hardware/HardwareSitting.md`.
 
 Three things this arm had to get right that the design did not anticipate.
 

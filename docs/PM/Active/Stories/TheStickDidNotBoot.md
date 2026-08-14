@@ -78,7 +78,7 @@ one word:
 Cases 1 and 2 are the firmware's verdict on the disk. Case 3 is the stub.
 Case 4 is my Codex. Case 5 is the rendering. **These have nothing in
 common except the color of the screen**, and the next action is different
-for every one of them. `docs/HardwareSitting.md` already knows this: its
+for every one of them. `docs/Hardware/HardwareSitting.md` already knows this: its
 boot 1 table has separate rows for "nothing, no output, immediate halt"
 and "firmware never lists the stick", and it assigns them opposite
 conclusions. One ends the sitting for that machine. The other says
@@ -141,7 +141,7 @@ paper.
 
 ### 2.2 I chose the payload for the sitting and not for the ladder
 
-`docs/HardwareSitting.md` specifies a ladder of three boots, each
+`docs/Hardware/HardwareSitting.md` specifies a ladder of three boots, each
 answering **one named question**, and its boot 1 is `xhci-probe.img`,
 chosen for a stated reason: it is "the narrowest question, asked first,
 because every later answer depends on it."
@@ -602,7 +602,7 @@ The deepest issue here is not any of H1 through H5. It is that a boot of
 this stick produces one bit of information, and it needs to produce
 several.
 
-`docs/HardwareSitting.md` names this a precondition, not advice:
+`docs/Hardware/HardwareSitting.md` names this a precondition, not advice:
 
 > R-1 is a **precondition, not advice**: no hardware campaign launches
 > without an output channel that does not depend on the subsystem under

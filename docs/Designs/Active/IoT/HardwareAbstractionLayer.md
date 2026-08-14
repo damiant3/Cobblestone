@@ -11,7 +11,7 @@ and (2026-07-16) `Flash` -- the last being the only peripheral with a
 capability of its own. What the board chapters still do not do is thread
 those handles or declare per-peripheral effects. See "What
 Is Actually Built" below.
-**Upstream**: `docs/PM/IoT/AGENT-PROMPT.md` deliverable 2 (target boards)
+**Upstream**: `docs/Reference/IoT/AGENT-PROMPT.md` deliverable 2 (target boards)
 
 ## What Is Actually Built
 
@@ -211,7 +211,7 @@ typed shell around them is what remains.
 same shape.)
 
 Numbers come from RM0090, the ESP32-C6 TRM, and the BCM2711
-peripherals doc (catalogued in `docs/PM/IoT/Hardware/`). Every
+peripherals doc (catalogued in `docs/Reference/IoT/Hardware/`). Every
 constant is a named definition -- the TRACE-ALLOC incident taught
 that magic addresses baked into emit functions are a class hazard;
 board constants live in exactly one chapter per board.

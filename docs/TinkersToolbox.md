@@ -207,4 +207,4 @@ any board -- swap the `cites Boards chapter` line and rebuild.
 - `codex/boards/` -- 9 board implementations
 - `codex/test/*-drivers.codex` -- smoke tests
 - `docs/KingsAndCourts.md` -- regulatory compliance story
-- `docs/PM/IoT/` -- compliance summaries, protocol references, hardware specs
+- `docs/Reference/IoT/` -- compliance summaries, protocol references, hardware specs

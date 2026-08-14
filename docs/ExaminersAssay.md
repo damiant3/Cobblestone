@@ -32,7 +32,7 @@ Each test `foo.codex` may have sidecars that control its behavior:
 
 | Sidecar | Effect |
 |---------|--------|
-| `foo.expected` | Compile must succeed; runtime serial output must match. **Not byte-for-byte, whatever this row said until 2026-07-30** -- see the section below the table |
+| `foo.expected` | Compile must succeed; runtime serial output must match. **Not byte-for-byte** -- see the section below the table |
 | `foo.failing` | Compile must fail with the listed CDX error codes |
 | `foo.diag` | Compile must succeed and emit each listed CDX code at any severity (warning/info/error). One code per line (bare number or `CDX`-prefixed). Combine with `foo.expected` to also check runtime output. This is how warnings and infos are regression-tested. |
 | `foo.skip` | Skipped entirely; first line is the reason |
@@ -50,6 +50,35 @@ Each test `foo.codex` may have sidecars that control its behavior:
 A test with no sidecar compiles but is unverified (PASS_UNVERIFIED). Measured
 2026-07-27: only **11 of 456** tests in `codex/test` are in that state, and
 nearly all are deliberate crash demos. The assertions are healthy.
+
+### Reproducing one failure out of a battery run
+
+**`test-output/_results/<name>` holds the VERDICT ONLY** -- a single line like
+`FAIL_OUTPUT<tab><name>`. The actual output is not kept, so there is no diff
+to read after the fact and no amount of staring at that directory will produce
+one. Re-run the test to see what it said.
+
+**Re-run it with the sidecar, not with the flags copied out of it:**
+
+```powershell
+pwsh build/test-run.ps1 -Kernel <compiled>.cdx -OutFile x.out -VmArgsFile codex/test/<name>.vmargs
+```
+
+`-VmArgsFile` applies the same parsing the battery does, comments and blank
+lines included. Reading a `.vmargs` by hand and passing its contents to
+`-VmArgs` feeds the `#` comment lines to codex-vm as arguments and produces
+output unrelated to the test, which reads like a much more interesting failure
+than the one being chased. Measured 2026-08-13, twice in one evening, by two
+different agents.
+
+**Compare the way the harness compares.** `test.ps1` reads the whole
+`.expected`, strips CR, and tests `-eq` against the whole actual: nothing is
+trimmed at either end. A hand check that joins lines and `.Trim()`s both sides
+normalises away exactly the difference the runner is looking for, so it can
+call a genuine failure green -- and, on the same evening, wrongly flag a
+passing test as broken. **A check more forgiving than the runner is not a
+check.** The trailing-newline case this comes from is in
+`docs/Agents/PerforceProcess.md` trap 5b.
 
 ### An `.expected` comparison is not byte-for-byte, and 139 sidecars rely on that without anyone knowing
 
@@ -198,10 +227,8 @@ tests-not-to-audit would be one more claim with no runner behind it, which is
 the thing being audited.
 
 It is on-demand and not a gate, and that is the side of Damian's 2026-07-27
-ruling it belongs on. **This paragraph used to state that ruling wrongly**, as
-*"coverage machinery is declined, and any item phrased as 'X runs under no
-harness' needs asking first, default no"*. He corrected it the same day: the
-objection is to **putting harnesses in the standard battery**, not to building
+ruling it belongs on: the objection is to **putting harnesses in the standard
+battery**, not to building
 them. `-All` already runs about an hour and reports no failures almost every
 time, so growing it slows the fleet for no signal -- targeted collections
 invoked when pertinent are what is wanted, with the extra proofing saved for a
@@ -357,7 +384,7 @@ re-measurement retires the rows it covers and does not license editing a
 total nobody measured. Re-run before trusting any of these figures.
 
 `codex/test/errors/` holds **173** expected-failure tests (measured
-2026-08-10; this line said 172 on 07-31 and 162 on 07-16).
+2026-08-10).
 
 ## What the standing gate does not cover
 
@@ -502,7 +529,7 @@ Consolidated 2026-08-08 out of the retired per-agent workplans.
 features in a single VM boot, cutting battery time ~60%.
 
 **BVT mode is what `build/build.ps1` runs by default**: **73 tests**
-(measured 2026-07-29; this line said "a 10-test subset, ~18 s"). The list
+(measured 2026-07-29). The list
 and the reason for each entry are in `build/bvt.ps1` itself, which is the
 register -- count it there rather than quoting a number from here. That is
 the standing gate. The full battery (`build/test.ps1`) is Damian's tool and
@@ -1172,17 +1199,16 @@ Roughly **60** `.skip` sidecars under `codex/test/apps/` -- plus five
 annotation tests (`annotation-author`, `-driver`, `-migrate`, `-reader`,
 `-transport`) -- carry the reason **"stub: test body not yet written"**.
 
-This is not a defect list. It is coverage that was never written, and it
-was undocumented here until 2026-07-13. It is the single largest gap in
-what this document is supposed to measure, and it is tracked nowhere
-but here.
+This is not a defect list. It is coverage that was never written. It is the
+single largest gap in what this document is supposed to measure, and it is
+tracked nowhere but here.
 
 ### Legitimate Skips (cannot run headlessly)
 
 | Test | Reason |
 |------|--------|
 | vmx-launch-test, vmx-serial-test | VMX requires CPL 0 + VT-x; no nested VMX under WHPX. They reach `vmwrite` / `vmlaunch`, which genuinely need VMX operation |
-| vga-terminal-demo | Requires display + keyboard (`run-vga-demo.ps1`). This row also claimed 13 CDX2051 errors of its own; **compiled 2026-07-19 it has none**: zero errors of any code, 41 CDX4010 infos and 5 CDX3005 warnings. The skip is legitimate; the error count was stale |
+| vga-terminal-demo | Requires display + keyboard (`run-vga-demo.ps1`). Compiled 2026-07-19: zero errors of any code, 41 CDX4010 infos and 5 CDX3005 warnings |
 | vga-shell-test | Skipped as "blocks waiting for keyboard input" -- **but it carries a `.stdin`, so somebody believed it reads serial.** Both cannot be true. Read `VgaShell`'s input path and drive it with whichever sidecar matches; it is one of the two candidates left in this table |
 | firstboot-lite | Needs RDRAND, which codex-vm does not supply (the cell reads zero; the stub only fills it on real hardware). **Its skip was orphaned a directory up and applied to nothing** -- the test compiles on every `-Apps` run and has no `.expected`, so it is PASS_UNVERIFIED, not skipped. The orphan is deleted; the compile coverage is deliberately kept |
 | first-boot-ceremony | Output depends on RDRAND (different pubkey each boot) |
@@ -1201,10 +1227,9 @@ but here.
 |------|-------|
 | ~~db-mini-test~~ `Page.codex` | CDX2000: `emit-field-access` cannot resolve the type of a chained field access (`pg.header.slot-count`) -- 21 errors in that chapter alone. **There is no `db-mini-test`**: no such `.codex` has ever existed in main, and this row described a test by the name of the orphaned `.skip` that was the defect's only record. The defect is real and is recorded only here; the sidecar is gone. Do not go looking for the test -- write one. |
 
-`linalg-test` and `probability-test` were rows here and both are gone. `linalg-test`
-was re-measured 2026-07-27 by compiling and running it: it matches its `.expected`,
-`mat-mul` does not fault, and the claim was already contradicted eight sections
-above in this same file. `probability-test` was a real defect and is fixed.
+`linalg-test` and `probability-test` are deliberately not in this table.
+`linalg-test` matches its `.expected` and `mat-mul` does not fault, measured
+2026-07-27 by compiling and running it; `probability-test` is fixed.
 
 ### Slow Tests (`.slow`, run with `-Slow`)
 
@@ -1799,11 +1824,10 @@ ExplorerServer are each driven by a demo script and by nothing else, which is ho
 errors (CDX2031/CDX2033) that no battery could see: it did not compile, and nothing
 ever asked it to. A server only ever run by hand is a server nobody is checking.
 
-**Those errors are gone, measured 2026-07-20 (val), and this paragraph said
-otherwise in the present tense until then.** `WebServer.codex` cited by a real
-program compiles with **zero** errors and emits a binary, and so do
-`IdeaServer`, `ExplorerServer` and `Prism`. The history above is kept because it
-is why this harness exists; the claim that the chapter is broken is not true now.
+**Those errors are gone, measured 2026-07-20 (val).** `WebServer.codex` cited
+by a real program compiles with **zero** errors and emits a binary, and so do
+`IdeaServer`, `ExplorerServer` and `Prism`. The account above is kept because
+it is why this harness exists.
 
 **Do not re-measure this by compiling the chapter on its own, which is what makes
 the stale claim so easy to believe.** A library chapter has no `opening`, so under
@@ -1958,10 +1982,9 @@ fails at the defect rather than everywhere.
 
 ### Widened 2026-07-27, and it found a second defect immediately
 
-The section above used to end with a stated gap: no NaN, no infinity, no
-negative zero, because "this compiler has no literal for them." That reason
-was wrong. `bits-to-real` has existed since 2026-07-03 and builds any of them
-exactly from its bit pattern. Three axes were added, 376 cases became **1037**,
+NaN, infinity and negative zero are covered, and no literal is needed for
+them: `bits-to-real` builds any of them exactly from its bit pattern.
+Three axes were added, 376 cases became **1037**,
 and the first run found a **second first-order defect** that had nothing to do
 with floating point.
 
@@ -2622,10 +2645,9 @@ spill cliff fails the gate there.
 
 `codex/test/lir-check.lir-expected` records one line per definition: block
 structure, live-in sets, register assignment, and the verdicts of both the
-structural and the allocation verifier. **Until 2026-07-18 no harness read
-it.** Grepping the tree for the filename found three doc mentions and the
-test's own prose, and no runner -- so it was a snapshot of one past run going
-stale in silence.
+structural and the allocation verifier. **A harness reads it, and that is the
+whole point of the pin**: without a runner it is a snapshot of one past run
+going stale in silence.
 
 The correctness half was never the gap. `lir-check.expected` is a real
 `.expected` the battery checks, and it pins what those functions *compute*.
@@ -2686,9 +2708,9 @@ re-derived one**. A violation halts the build:
 | CDX9008 | allocation | a use whose assigned location holds a different value (clobbered by a call or division) |
 
 **All three have been observed to fire.** That matters more than it sounds: an
-unfired guard is worth exactly what no guard is worth, which is what
-`accum-at-capacity` proved by sitting uncalled while this document asserted it
-ran. CL 8867 proved only the *absence of false positives* (battery identical to
+unfired guard is worth exactly what no guard is worth, and `accum-at-capacity`
+sat uncalled for months while being counted as protection. CL 8867 proved only
+the *absence of false positives* (battery identical to
 baseline, fuzz clean). The fire tests were run separately, 2026-07-18, each by
 building a deliberately broken SUT and compiling with it:
 
