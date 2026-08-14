@@ -396,7 +396,11 @@ Section: Inbound Frame Processing
   net-process-arp (sess) (payload) =
     let pkt = arp-parse payload
     in let new-arp = arp-cache-add (sess.arp) (pkt.sender-ip) (pkt.sender-mac)
-    in NetResult { session = set-arp sess new-arp, output = "arp-learned", data = [] }
+    in let s1 = set-arp sess new-arp
+    in if (pkt.op == arp-op-request) & ip-equal (pkt.target-ip) (sess.local-ip)
+    then let reply = arp-build-reply (sess.local-mac) (sess.local-ip) (pkt.sender-mac) (pkt.sender-ip) (sess.local-mac)
+    in NetResult { session = set-outbox s1 ((s1.outbox) & [reply]), output = "arp-replied", data = [] }
+    else NetResult { session = s1, output = "arp-learned", data = [] }
 
  THIS CHECK WAS ABSENT UNTIL 2026-07-20 AND ITS ABSENCE WAS INVISIBLE, because
  nothing in the tree had ever run two connections at once. `net-receive-segment`
