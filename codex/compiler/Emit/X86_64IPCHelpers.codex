@@ -2342,6 +2342,25 @@ Section: IPC and Network Helpers
 
    in patch-jcc-at st54 cap-deny fail-pos
 
+ The body length is rounded UP to an even number of bytes before it sets
+ RBCR and derives the word count, because the transfer is REP INSW and
+ moves whole words. Rounding down instead left the final byte of an
+ odd-length frame unread while the helper still returned the full length,
+ so the caller read one byte of whatever the previous frame had left in
+ the buffer at that offset -- a real byte from the same stream, which
+ parses fine and is never diagnosed. Measured at 11 corrupt transfers in
+ 15 pushing a 191 KB payload to a plug.
+
+ This is the defect `ne2k_inject_rx` in tools/codex-vm.c pads around, and
+ the pad is why it stayed invisible: QEMU's ne2k_isa and real NE2000
+ hardware pad to the 60-byte minimum but not to even. The pad is still
+ correct and still welcome; it is no longer load bearing.
+
+ The extra byte is safe to move. The length check above rejects any body
+ over 1536, so an odd body is at most 1535 and rounding up transfers
+ 1536 -- exactly the receive buffer's size. The returned length is the
+ true one, so the pad byte is never read back out.
+
   emit-net-recv-raw-helper : CodegenState -> CodegenState
 
   emit-net-recv-raw-helper (st) =
@@ -2474,7 +2493,11 @@ Section: IPC and Network Helpers
 
    in let st56 = st-append-code st55 (pop-r reg-rcx)
 
-   in let st57 = st-append-code st56 (push-r reg-rcx)
+   in let st56a = st-append-code st56 (add-ri reg-rcx 1)
+
+   in let st56b = st-append-code st56a (and-ri reg-rcx (0 - 2))
+
+   in let st57 = st-append-code st56b (push-r reg-rcx)
 
    in let st58 = st-append-code st57 (li reg-rdx ne2k-rbcr0-port)
 
