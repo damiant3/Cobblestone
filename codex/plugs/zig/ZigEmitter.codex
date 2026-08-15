@@ -108,9 +108,32 @@ Section: Type Mapping
  made these signatures concrete enough to compare. Only the spine flattens:
  a parameter that is itself a function keeps its own shape.
 
+ A function VALUE is a closure, not a function pointer. Codex applies
+ partially -- a 4-argument function called with 2 yields something callable
+ with the remaining 2 -- and a `*const fn` has nowhere to keep the arguments
+ already supplied. So every function-typed position emits CxFnN: a captured
+ environment plus a trampoline that takes it back. Calling one is
+ `f.call(f.ctx, ...)`.
+
+ The arities are bounded because the prelude declares them. Going past the
+ end is a compile error rather than a quiet fall back to a pointer type,
+ which would fail later and further away.
+
+  zig-closure-type : Integer, Text, Text -> Text
+  zig-closure-type (n) (params) (result) =
+   if n < 1 | n > 4
+   then "@compileError(\"closure arity " & integer-to-text n & " unsupported\")"
+   else "CxFn" & integer-to-text n & "(" & params & ", " & result & ")"
+
+  zig-fn-param-count : CodexType -> Integer
+  zig-fn-param-count (ty) =
+   when zig-fn-spine ty
+    is FunTy (p) (fnrow) (r) -> 1 + zig-fn-param-count r
+    is otherwise -> 0
+
   emit-zig-fn-type : CodexType -> Text
   emit-zig-fn-type (ty) =
-   "*const fn (" & zig-fn-param-types ty & ") " & emit-zig-type (zig-fn-result ty)
+   zig-closure-type (zig-fn-param-count ty) (zig-fn-param-types ty) (emit-zig-type (zig-fn-result ty))
 
   zig-fn-spine : CodexType -> CodexType
   zig-fn-spine (ty) =
@@ -174,6 +197,13 @@ Section: Type Mapping
     is AEffectType (effs) (scopes) (tail) (ret) (s) -> zig-afn-param-types ret
     is otherwise -> ""
 
+  zig-afn-param-count : ATypeExpr -> Integer
+  zig-afn-param-count (te) =
+   when te
+    is AFunType (p) (r) (s) -> 1 + zig-afn-param-count r
+    is AEffectType (effs) (scopes) (tail) (ret) (s) -> zig-afn-param-count ret
+    is otherwise -> 0
+
   zig-afn-result : ATypeExpr -> ATypeExpr
   zig-afn-result (te) =
    when te
@@ -196,7 +226,7 @@ Section: Type Mapping
       is otherwise -> "anyopaque"
     is ABoundedIntType (b) (lo) (hi) (mode) (s) -> "i64"
     is AEffectType (effs) (scopes) (tail) (ret) (s) -> emit-zig-atype ret
-    is AFunType (p) (r) (s) -> "*const fn (" & zig-afn-param-types te & ") " & emit-zig-atype (zig-afn-result te)
+    is AFunType (p) (r) (s) -> zig-closure-type (zig-afn-param-count te) (zig-afn-param-types te) (emit-zig-atype (zig-afn-result te))
     is ALinearType (inner) (s) -> emit-zig-atype inner
     is otherwise -> "anyopaque"
 
@@ -546,8 +576,12 @@ Section: Name Mapping
  (enum member or union init), then zero-arity defs (constants compile
  to nullary functions, so the reference must call), then plain names.
 
-  emit-zig-name : Text, CodexType, ZigCtx -> Text
-  emit-zig-name (n) (ty) (ctx) =
+ A definition named but not called is a function VALUE, so it wraps into a
+ closure with nothing captured -- the same shape a partial application
+ produces, which is what keeps every function-typed position one type.
+
+  emit-zig-name : Text, CodexType, ZigCtx, Integer -> Text
+  emit-zig-name (n) (ty) (ctx) (d) =
    let mapped = zig-lookup-name zig-name-map n 0
    in if text-length mapped > 0 then mapped
    else let ci = zig-find-ctor (ctx.ctors) n 0
@@ -556,6 +590,8 @@ Section: Name Mapping
     in if c.enum-like then zig-sanitize (c.type-name) & "." & zig-sanitize n
        else zig-sanitize (c.type-name) & "{ ." & zig-sanitize n & " = {} }"
    else if lookup-arity (ctx.arities) n == 0 then zig-sanitize n & "()"
+   else if lookup-arity (ctx.arities) n >= 1 & zig-fn-param-count ty >= 1
+   then zig-closure-make n [] ctx d ty
    else zig-sanitize n
 
 Section: Binary Operator Mapping
@@ -787,7 +823,7 @@ Section: Expression Emission
     is IrTextLit (s) (sp) -> "\"" & zig-escape-text s & "\""
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> integer-to-text n
-    is IrName (n) (ty) (sp) -> emit-zig-name n ty ctx
+    is IrName (n) (ty) (sp) -> emit-zig-name n ty ctx d
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-zig-binary op l r ctx d
     is IrNegate (operand) (nty) (sp) -> "(-" & emit-zig-expr operand ctx (d + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(if (" & emit-zig-expr c ctx (d + 1) & ") " & emit-zig-expr t ctx (d + 1) & " else " & emit-zig-expr el ctx (d + 1) & ")"
@@ -978,16 +1014,102 @@ Section: Apply Emission
      let builtin = lookup-zig-builtin n args ctx d (zig-expr-type e)
      in if text-length builtin > 0 then builtin
      else let ci = zig-find-ctor (ctx.ctors) n 0
-     in if ci >= 0 then emit-zig-ctor-apply (list-at (ctx.ctors) ci) args ctx d
+     in if ci >= 0 then emit-zig-ctor-apply (list-at (ctx.ctors) ci) args ctx d (zig-ctor-type-args (zig-expr-type e))
+     else let ar = lookup-arity (ctx.arities) n
+     in if ar < 0 then zig-closure-invoke (zig-sanitize n) args ctx d
+        else if list-length args < ar then zig-closure-make n args ctx d (zig-expr-type e)
         else zig-sanitize n & "(" & emit-zig-call-args n args ctx d 0 & ")"
     is otherwise -> emit-zig-expr-curried e ctx d
 
-  emit-zig-ctor-apply : ZigCtorEntry, List IRExpr, ZigCtx, Integer -> Text
-  emit-zig-ctor-apply (c) (args) (ctx) (d) =
+ Codex applies partially: a 4-argument function called with 2 yields
+ something callable with the remaining 2. Zig has no closures, so an
+ undersaturated call becomes a struct capturing what was supplied plus a
+ trampoline that takes the rest and calls through. The struct is declared
+ inside the expression, so nothing hoists to the top level and each site
+ stands alone.
+
+ The remaining parameter types and the result come from the type of the
+ partial application itself, which is exactly the function type left over.
+ A name with no arity is not a definition, so it is a value already
+ holding a closure, and applying it goes through the trampoline.
+
+  zig-closure-args : List IRExpr, ZigCtx, Integer, Integer -> Text
+  zig-closure-args (args) (ctx) (d) (i) =
+   if i == list-length args then ""
+   else ", " & emit-zig-expr (list-at args i) ctx (d + 1) & zig-closure-args args ctx d (i + 1)
+
+  zig-closure-invoke : Text, List IRExpr, ZigCtx, Integer -> Text
+  zig-closure-invoke (f) (args) (ctx) (d) =
+   f & ".call(" & f & ".ctx" & zig-closure-args args ctx d 0 & ")"
+
+  zig-closure-fields : List IRExpr, ZigCtx, Integer -> Text
+  zig-closure-fields (args) (ctx) (i) =
+   if i == list-length args then ""
+   else "a" & integer-to-text i & ": " & emit-zig-type (zig-expr-type (list-at args i)) & ", "
+      & zig-closure-fields args ctx (i + 1)
+
+  zig-closure-inits : List IRExpr, ZigCtx, Integer, Integer -> Text
+  zig-closure-inits (args) (ctx) (d) (i) =
+   if i == list-length args then ""
+   else let one = ".a" & integer-to-text i & " = " & emit-zig-expr (list-at args i) ctx (d + 1)
+   in if i == list-length args - 1 then one
+      else one & ", " & zig-closure-inits args ctx d (i + 1)
+
+  zig-closure-env-refs : Text, Integer, Integer -> Text
+  zig-closure-env-refs (ev) (n) (i) =
+   if i >= n then ""
+   else ev & ".a" & integer-to-text i & ", " & zig-closure-env-refs ev n (i + 1)
+
+  zig-closure-pass : Integer, Integer -> Text
+  zig-closure-pass (n) (i) =
+   if i >= n then ""
+   else let one = "p" & integer-to-text i
+   in if i == n - 1 then one else one & ", " & zig-closure-pass n (i + 1)
+
+  zig-closure-params : CodexType, Integer -> Text
+  zig-closure-params (ty) (i) =
+   when zig-fn-spine ty
+    is FunTy (p) (fnrow) (r) ->
+     let rest = zig-closure-params r (i + 1)
+     in "p" & integer-to-text i & ": " & emit-zig-type p
+      & (if text-length rest == 0 then "" else ", " & rest)
+    is otherwise -> ""
+
+  zig-closure-make : Text, List IRExpr, ZigCtx, Integer, CodexType -> Text
+  zig-closure-make (n) (args) (ctx) (d) (pty) =
+   let rem = zig-fn-param-count pty
+   in let lbl = zig-label d
+   in let env = "_Env" & integer-to-text d
+   in let ev = "_e" & integer-to-text d
+   in let ret = emit-zig-type (zig-fn-result pty)
+   in let unpack = if list-length args == 0 then "_ = ctx; "
+      else "const " & ev & ": *@This() = @ptrCast(@alignCast(ctx)); "
+   in lbl & ": { const " & env & " = struct { " & zig-closure-fields args ctx 0
+    & "fn call(ctx: *anyopaque, " & zig-closure-params pty 0 & ") " & ret
+    & " { " & unpack & "return " & zig-sanitize n & "("
+    & zig-closure-env-refs ev (list-length args) 0 & zig-closure-pass rem 0 & "); } }; break :"
+    & lbl & " " & zig-closure-type rem (zig-fn-param-types pty) ret
+    & "{ .ctx = cx_new(" & env & "{ " & zig-closure-inits args ctx d 0 & " }), .call = &" & env & ".call }; }"
+
+ A generic type emits as a function from types to a type, so constructing
+ one names it applied: Tup2(A, B){ .MkTup2 = ... }. The arguments come from
+ the type of the construction itself, which is the only place they are
+ known -- the constructor map carries names and arity, not instantiations.
+ A non-generic type has no arguments and this contributes nothing.
+
+  zig-ctor-type-args : CodexType -> Text
+  zig-ctor-type-args (ty) =
+   when ty
+    is SumTy (n) (a) (c) -> zig-type-args a
+    is ConstructedTy (n) (a) -> zig-type-args a
+    is otherwise -> ""
+
+  emit-zig-ctor-apply : ZigCtorEntry, List IRExpr, ZigCtx, Integer, Text -> Text
+  emit-zig-ctor-apply (c) (args) (ctx) (d) (targs) =
    let tname = zig-sanitize (c.type-name)
    in let cname = zig-sanitize (c.ctor-name)
    in let boxed = zig-typedef-recursive ctx (c.type-name)
-   in let base = if boxed then tname & "S" else tname
+   in let base = if boxed then tname & "S" else tname & targs
    in let open = if boxed then "cx_new(" else ""
    in let close = if boxed then ")" else ""
    in if c.enum-like then tname & "." & cname
@@ -1067,6 +1189,10 @@ Section: Chapter Emission
 
   zig-prelude : Text =
    "const std = @import(\"std\");\n\n"
+   & "fn CxFn1(comptime A: type, comptime R: type) type {\n    return struct { ctx: *anyopaque, call: *const fn (*anyopaque, A) R };\n}\n"
+   & "fn CxFn2(comptime A: type, comptime B: type, comptime R: type) type {\n    return struct { ctx: *anyopaque, call: *const fn (*anyopaque, A, B) R };\n}\n"
+   & "fn CxFn3(comptime A: type, comptime B: type, comptime C: type, comptime R: type) type {\n    return struct { ctx: *anyopaque, call: *const fn (*anyopaque, A, B, C) R };\n}\n"
+   & "fn CxFn4(comptime A: type, comptime B: type, comptime C: type, comptime D: type, comptime R: type) type {\n    return struct { ctx: *anyopaque, call: *const fn (*anyopaque, A, B, C, D) R };\n}\n"
    & "fn CxList(comptime T: type) type {\n    return struct { items: std.ArrayListUnmanaged(T) = .empty };\n}\n"
    & "fn cx_ll_empty(comptime T: type) *CxList(T) {\n    const l = std.heap.page_allocator.create(CxList(T)) catch @panic(\"oom\");\n    l.* = .{};\n    return l;\n}\n"
    & "fn cx_ll_push(l: anytype, v: anytype) @TypeOf(l) {\n    l.items.append(std.heap.page_allocator, v) catch @panic(\"oom\");\n    return l;\n}\n"
