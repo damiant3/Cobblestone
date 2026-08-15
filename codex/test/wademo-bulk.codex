@@ -1,0 +1,71 @@
+Chapter: WaDemoBulkTest
+  cites WaDemo chapter WaBulk
+  cites WaDemo chapter WaSchema
+  cites Data chapter Schema
+  cites Data chapter Catalog
+  cites Data chapter Heap
+  cites Data chapter Row
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+Section: Fixture
+
+  n-rows : Integer = 2000
+
+  fill : WaBulk, Integer, Integer -> WaBulk
+  fill (st) (i) (n) =
+    if i >= n then st
+    else fill (wa-emit st (i / 1030) 1980 (i / 103) i (1980 - i) True (i * 7)) (i + 1) n
+
+  int-of : ColumnValue -> Integer
+  int-of (v) = when v
+    is ValInteger (n) -> n
+    is otherwise -> 0 - 1
+
+  bool-of : ColumnValue -> Text
+  bool-of (v) = when v
+    is ValBoolean (b) -> if b then "T" else "F"
+    is otherwise -> "?"
+
+  row-text : RowData -> Text
+  row-text (r) =
+    show (int-of (row-get-by-name r "county_id")) & "/"
+      & show (int-of (row-get-by-name r "year")) & "/"
+      & show (int-of (row-get-by-name r "sex_id")) & "/"
+      & show (int-of (row-get-by-name r "age_id")) & "/"
+      & show (int-of (row-get-by-name r "birth_year")) & "/"
+      & bool-of (row-get-by-name r "cohort_valid") & "/"
+      & show (int-of (row-get-by-name r "persons"))
+
+  sum-persons : List RowData, Integer, Integer, Integer -> Integer
+  sum-persons (rows) (i) (n) (acc) =
+    if i >= n then acc
+    else sum-persons rows (i + 1) n (acc + int-of (row-get-by-name (list-at rows i) "persons"))
+
+  expected-sum : Integer, Integer -> Integer
+  expected-sum (i) (acc) = if i >= n-rows then acc else expected-sum (i + 1) (acc + i * 7)
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+   let schema = table-schema wa-def-population
+   in let m0 = __heap-save
+   in let st = fill (wa-bulk-new schema) 0 n-rows
+   in let hf = wa-bulk-heap st "fact_population"
+   in let m1 = __heap-save
+   in let scan = heap-scan hf
+   in let created = wa-create-schema catalog-new
+   in let cat = wa-bulk-install (created.wcr-cat) wa-t-population st
+   in act
+    print-line-uni ("rows emitted: " & show (wa-bulk-rows st))
+    print-line-uni ("pages: " & show (hf.page-count))
+    print-line-uni ("bytes retained: " & show (m1 - m0) & ", per row " & show ((m1 - m0) / n-rows))
+    print-line-uni ("scan count: " & show (scan.scan-count))
+    print-line-uni ("first row: " & row-text (list-at (scan.rows) 0))
+    print-line-uni ("last row: " & row-text (list-at (scan.rows) (scan.scan-count - 1)))
+    print-line-uni ("persons sum: " & show (sum-persons (scan.rows) 0 (scan.scan-count) 0))
+    print-line-uni ("persons expected: " & show (expected-sum 0 0))
+    print-line-uni ("installed row count: " & show (catalog-table-row-count cat wa-t-population))
+   end
+  end

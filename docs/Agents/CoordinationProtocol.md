@@ -121,7 +121,13 @@ Write `build-request` containing JSON:
   none of your shelved files sit under a path that can invalidate a gate,
   the request is answered NO TOKEN NEEDED and you are not queued. Nothing
   is lost: you were free to submit the moment you asked.
-- `note` -- one line, shown to the human.
+- `note` -- one line, shown to the human. **Put the real duration in it when
+  you are asking for more than one gate pass.** A seed rebuild is three gate
+  passes by construction, and a pass measured 774 s on 2026-08-15, so the
+  cycle is roughly 40 minutes rather than the "about 12" that has been quoted
+  from a single pass. Re-measure rather than copying that number forward
+  (L-COUNT): samples on this box have ranged 8 to 13 minutes a pass. The
+  failure mode is under-quoting, which surprises the queue mid-hold.
 
 An empty `build-request` file is also accepted (legacy form): you get
 queued with no Perforce verification. Prefer the JSON form.
@@ -291,10 +297,11 @@ Set-Content "$mbox\status.json" '{ "state": "Building", "task": "gates for CL 47
 p4 shelve -f -c 4712        # your work is safe in the depot
 p4 revert //Codex/blu/...
 p4 sync -f //Codex/blu/...
-p4 clean codex/... apps/... docs/...
+p4 clean codex/... apps/...  # paths and what reads each: PerforceProcess P-STRAY
 p4 unshelve -s 4712 -c 4712
 p4 opened                   # LOOK at it before you build
-p4 diff -du                 # and look at the diff too
+p4 status                   # a dropped add: the preflight warns, it does not fail
+p4 diff -du //Codex/blu/... # PATHS, not -c <CL>, which is not a diff option (P-DIFFC)
 
 build/build.ps1             # gates
 
@@ -469,6 +476,24 @@ the doc that owns the subject.
   build silently uses old source and the gate fails for a reason that has
   nothing to do with your change. `p4 -c <main-client> sync //Codex/main/...`
   first, every time.
+
+## A many-CL arc takes ONE token, at the end (Damian, 2026-08-06)
+
+*"do the iterations on A6 locally, don't push each to main or take a token.
+just stack them for one push to main, but you can do builds locally on each
+step to keep the verification simple and cumulative."*
+
+**Iterate on your own stream: submit each step to `//Codex/<agent>`, run
+`build/build.ps1` locally per step, and keep the workspace seed current with
+the local Sut so verification stays cumulative.** Do NOT copy any
+intermediate CL to main, and do NOT request the token until the final push.
+The last push is then a normal seed-affecting copy-up: token, merge down,
+gate on the target, prove the seed, one copy-up.
+
+The reason is what the token is FOR. It buys a window in which main gains no
+seed-affecting change underneath a gate you already paid for, and that only
+has value at a real landing. Per-step tokens serialise the whole fleet behind
+cosmetic intermediate states, for a guarantee no intermediate state needs.
 
 ## Workplan Cross-Lane Protocol -- RETIRED 2026-08-08
 

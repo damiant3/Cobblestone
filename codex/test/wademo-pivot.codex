@@ -1,0 +1,86 @@
+Chapter: WaDemoPivotTest
+  cites WaDemo chapter WaLoad
+  cites WaDemo chapter WaBulk
+  cites WaDemo chapter NhgisCodebook
+  cites WaDemo chapter WaSchema
+  cites Data chapter Schema
+  cites Data chapter Heap
+  cites Data chapter Row
+  cites Foreword chapter Maybe
+
+Section: Fixture
+
+ The codebook block and the header line in the shapes a real extract uses,
+ including the quoting on every context field.
+
+  book-lines : List Text
+  book-lines = [
+    "    Time series AA: Persons: Male ~ Under 1 year",
+    "    Time series AB: Persons: Male ~ 1 year",
+    "    Time series AC: Persons: Female ~ Under 1 year",
+    "    Time series AD: Persons: Female ~ 1 year"
+  ]
+
+  series-list : List NcSeries
+  series-list = parse-book book-lines 0 []
+
+  parse-book : List Text, Integer, List NcSeries -> List NcSeries
+  parse-book (ls) (i) (acc) =
+    if i >= list-length ls then acc
+    else let s = nc-parse-series (list-at ls i)
+    in parse-book ls (i + 1) (if s.ncs-ok then list-push acc s else acc)
+
+  header : List Text
+  header = [
+    "GISJOIN", "STATE", "STATEFP", "STATENH", "COUNTY", "COUNTYFP", "COUNTYNH",
+    "A61AA1980", "A61AA1990", "A61AB1980", "A61AB1990",
+    "A61AC1980", "A61AC1990", "A61AD1980", "A61AD1990"
+  ]
+
+  line-adams : Text
+  line-adams = "" & (text-from-char (from-unicode 34)) & "G5300010" & (text-from-char (from-unicode 34))
+    & ",\"Washington\",\"53\",\"530\",\"Adams County\",\"001\",\"0010\",100,110,200,210,300,310,400,410"
+
+Section: Reporting
+
+  int-of : ColumnValue -> Integer
+  int-of (v) = when v
+    is ValInteger (n) -> n
+    is otherwise -> 0 - 1
+
+  row-text : RowData -> Text
+  row-text (r) =
+    "c" & show (int-of (row-get-by-name r "county_id"))
+      & " y" & show (int-of (row-get-by-name r "year"))
+      & " s" & show (int-of (row-get-by-name r "sex_id"))
+      & " a" & show (int-of (row-get-by-name r "age_id"))
+      & " b" & show (int-of (row-get-by-name r "birth_year"))
+      & " n" & show (int-of (row-get-by-name r "persons"))
+
+  dump : List RowData, Integer, Integer -> Text
+  dump (rows) (i) (n) =
+    if i >= n then ""
+    else row-text (list-at rows i) & (if i + 1 < n then "  |  " else "") & dump rows (i + 1) n
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+   let ss = series-list
+   in let plan = wa-build-plan ss header 7
+   in let schema = table-schema wa-def-population
+   in let r = wa-pivot-line (wa-bulk-new schema) plan 7 ss line-adams
+   in let hf = wa-bulk-heap (r.wlr-bulk) "fact_population"
+   in let scan = heap-scan hf
+   in act
+    print-line-uni ("series parsed: " & show (list-length ss))
+    print-line-uni ("plan: " & show (plan.wpl-ok) & " cols=" & show (plan.wpl-count) & " " & plan.wpl-msg)
+    print-line-uni ("plan[0] sex=" & show (wa-plan-sex (plan.wpl-buf) 0) & " age=" & show (wa-plan-age (plan.wpl-buf) 0) & " year=" & show (wa-plan-year (plan.wpl-buf) 0))
+    print-line-uni ("plan[3] sex=" & show (wa-plan-sex (plan.wpl-buf) 3) & " age=" & show (wa-plan-age (plan.wpl-buf) 3) & " year=" & show (wa-plan-year (plan.wpl-buf) 3))
+    print-line-uni ("plan[7] sex=" & show (wa-plan-sex (plan.wpl-buf) 7) & " age=" & show (wa-plan-age (plan.wpl-buf) 7) & " year=" & show (wa-plan-year (plan.wpl-buf) 7))
+    print-line-uni ("emitted: " & show (r.wlr-emitted))
+    print-line-uni ("rows: " & show (scan.scan-count))
+    print-line-uni (dump (scan.rows) 0 4)
+    print-line-uni (dump (scan.rows) 4 8)
+   end
+  end

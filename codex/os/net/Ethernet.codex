@@ -124,6 +124,35 @@ Section: IPv4
       in bit-and (bit-xor folded2 65535) 65535
     else ip-checksum hdr (i + 2) len (sum + read-be16 hdr i)
 
+ RFC 1071: the one's-complement sum of a range that INCLUDES the stored
+ checksum folds to 0xFFFF, so the complement this returns is zero exactly when
+ the checksum holds. Verifying therefore takes no arithmetic the builder does
+ not already have.
+
+ Twenty bytes, not IHL times four. This stack assumes IHL 5 everywhere --
+ ip-payload starts the payload at ip-header-size -- so a packet carrying IP
+ options is refused here rather than misparsed one layer up.
+
+ The length test is separate from the checksum because it catches a different
+ failure and the two must not report as one. A DMA truncation delivers a SHORT
+ frame whose header arrived intact, so the checksum still HOLDS while
+ total-length claims bytes that are not there; ip-payload then walks past the
+ end of the list. Measured 2026-08-15 before this test existed: a frame cut by
+ six bytes took the guest down with EXC=06 inside net-process-frame. Claimed
+ UNDER actual is the normal case rather than a fault, because Ethernet pads
+ every frame to 60 bytes.
+
+  ip-length-valid : List Integer -> Boolean
+  ip-length-valid (pkt) =
+    if list-length pkt < ip-header-size then False
+    else if ip-total-length pkt < ip-header-size then False
+    else ip-total-length pkt <= list-length pkt
+
+  ip-header-valid : List Integer -> Boolean
+  ip-header-valid (pkt) =
+    if list-length pkt < ip-header-size then False
+    else ip-checksum pkt 0 ip-header-size 0 == 0
+
   ip-build-packet : List Integer, List Integer, Integer, List Integer -> List Integer
   ip-build-packet (src-ip) (dst-ip) (proto) (payload) =
     let total-len = ip-header-size + list-length payload

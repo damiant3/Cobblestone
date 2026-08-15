@@ -158,7 +158,94 @@ as historical record only.
 
 ## The Rules
 
+### The meta-rule
+
+**Where two rules conflict, the higher tier wins, excepting nothing above
+it.** That is the whole of the ordering. It is stated once here rather than
+carved out inside each rule, which is how it used to work and why the
+precedence was only ever written down where somebody had already been burned.
+
+| tier | what it protects | rules |
+|---|---|---|
+| 1 | **Truth.** What you report and what you ship are what is actually so. | R-TRUE, R-GATE |
+| 2 | **The artifact.** Do not break the compiler or the seed. | R-READ, R-COST, R-CCE, R-OPENING, R-SIGN |
+| 3 | **Process.** How the work is done and with what tools. | R-DIAG, R-ONE, R-SHELL, R-NAIVE |
+| 4 | **Form.** How it reads. | R-REPORT, R-DASH, R-PROSE |
+
+Read it downward. A tier-4 rule never wins against a tier-1 rule: brevity
+does not get to soften a red gate, and a banned character does not get to
+delay saying a byte shipped wrong. Read upward it is the same statement, and
+the useful direction: **anything below can be spent to protect anything
+above.**
+
+**A direct instruction from Damian outranks every tier.** If a standing rule
+seems to forbid what he just asked for, say so in one sentence, then do what
+he asked. This is not a loophole; it is the actual hierarchy, and pretending
+otherwise produces agents that argue with the person they work for.
+
+### The out clause
+
+**When the rules genuinely disagree and the tiers do not settle it, stop and
+ask Damian.** Two rules in the same tier pulling opposite ways, or a case
+where you cannot tell which tier applies, is exactly what he wants to hear
+about. Asking there is cheap and always right.
+
+**"In doubt" means the rules disagree or do not cover it. It does not mean
+you have not read them.** Read first. If a rule already answers the question,
+execute and say nothing -- an ask that a rule already settles spends his
+attention to make you look careful, and he has said so in those words. The
+failure this clause exists to prevent is an agent guessing between two real
+obligations, not an agent skipping the file.
+
+### The tier is not a licence to skip a rule
+
+A lower tier still binds. Tier 4 losing to tier 1 in a *conflict* does not
+make tier 4 optional when nothing conflicts. Most of these rules never
+contend with each other at all, and for those the tier means nothing.
+
+### Citing a rule
+
+**Use the id, not the number.** Ids are stable across any future reordering;
+numbers are not, and there are at least three different numbered rule systems
+in this tree (`CLAUDE.md`, `CoordinationProtocol.md`, and per-design internal
+rules) all cited as a bare "rule N". `IndependentRechecker.md` uses "rule 8"
+for its own internal rule in one paragraph and for this file's rule 8 in a
+heading sixty lines later. Write `R-COST`, not "rule 8".
+
+The numbers below are kept for now so the 14 existing by-number citations
+across 11 docs still resolve. They are frozen, not maintained: a future
+reorder changes the order and the ids, and drops the numbers.
+
+| id | tier | was | the rule |
+|---|---|---|---|
+| R-TRUE | 1 | (inside 10) | Report failures in full. Honesty outranks brevity. |
+| R-GATE | 1 | 1 | The build is the test. Zero failures before copy-up. |
+| R-READ | 2 | 2 | Read before you write. |
+| R-COST | 2 | 8 | Every review assesses memory and time-complexity risk. |
+| R-CCE | 2 | 5 | CCE is the internal encoding. |
+| R-OPENING | 2 | 7 | The entry point is `opening`. |
+| R-SIGN | 2 | 9 | Signing is automatic. |
+| R-DIAG | 3 | 3 | Read before you build. |
+| R-ONE | 3 | 4 | One thing at a time. |
+| R-SHELL | 3 | 6 | PowerShell only, never the Bash tool. |
+| R-NAIVE | 3 | 13 | When you hold the answer key, spend a subagent. |
+| R-REPORT | 4 | 10 | Report the result, not the journey. |
+| R-DASH | 4 | 11 | The em-dash is banned. |
+| R-PROSE | 4 | 12 | Prose about our own code is banned. |
+
+### R-TRUE (tier 1). Report failures in full.
+
+**A red gate, a wrong byte shipped, a test you skipped, or a number you
+published and later found wrong is reported every time, in full.** No tier
+outranks this one, and nothing below it may be used as a reason to soften,
+delay, or omit a real failure.
+
+This was the highest-order rule in this file and it existed only as a clause
+inside R-REPORT, which is a tier-4 rule about brevity. That is precedence
+recorded at the scene of one accident. It is a rule.
+
 ### 1. The build is the test
+**`R-GATE`, tier 1.**
 
 Semantic equivalence of text mode, byte-identical text (pingpong), and
 byte-identical binary (hard fixed point), plus the BVT. The gate is ONE
@@ -173,6 +260,35 @@ build/compile.ps1 -Src X -Out Y -Log Z   # Compile one .codex file. -Log is MAND
 Every change that touches codegen must pass the gate before it is done.
 If the gate is red, shelve changes, notify Damian, and re-evaluate. To
 check one thing, compile and run that one test -- never a sweep.
+
+**Two traps sit in front of every one of those runs, and neither is visible
+at session start.** Both are documented, both have already produced a wrong
+published number, and both bite BEFORE you know you are doing seed or build
+work -- which is why they are named here rather than left to the on-demand
+row for `OperatorsManual.md`:
+
+- **Pass `-Kernel build\output\Sut.cdx` explicitly when verifying a codegen
+  change.** `build-output/bare-metal/Codex.cdx` is neither the SUT nor the
+  seed; each compile phase copies its own kernel over that path, so it holds
+  whichever kernel ran LAST. Verifying against the default boots the OLD
+  compiler, the wire is unchanged, and the honest reading is "my fix did
+  nothing". It has already reported ~80 of 84 chapters compiling where the
+  real figure was ~55. Read the `kernel:` digest `compile.ps1` prints on
+  every run. (`OperatorsManual.md`, "Pass `-Kernel` when you do".)
+- **A green gate does NOT tell you whether a seed is needed.** It proves
+  `Sut === stage1`; `Sut === seed` is a separate question. Measure it, never
+  predict it, and predicting has been wrong in both directions on the record.
+  **Use a whole-file hash of `build/output/Sut.cdx` against the DEPOT seed**
+  (`PerforceProcess.md` 4.3 prints it rather than trusting the workspace
+  copy). Signing is deterministic, so two independent builds of the same
+  source hash identically end to end: measured 2026-08-15, the depot seed and
+  a locally rebuilt `Sut.cdx` agree byte-for-byte across the signature region
+  as well as the content. The content hash at bytes 8-39 deliberately EXCLUDES
+  the signature, so reach for it only when comparing a signed artifact against
+  an unsigned one on purpose -- it cannot tell a properly signed seed from an
+  unsigned `NewSeed.cdx`, which is the trap `PerforceProcess.md` P-SIGNED
+  exists to name. (`OperatorsManual.md` seed management;
+  `DevelopersRulebook.md` on reachability deciding a seed, not directory.)
 
 **Run every parallel harness at `-Jobs 8`.** Damian's ruling, 2026-08-02:
 batteries, sweeps, cross batteries, release proofs, all of it. `test.ps1`,
@@ -208,12 +324,14 @@ The compiler emits CDX or text. Plugs receive IR or CDX over TCP and
 produce the final binary format.
 
 ### 2. Read before you write
+**`R-READ`, tier 2.**
 
 Do not modify code you have not read. Do not guess at file contents. Do
 not assume structure from names. The self-hosted compiler has subtle
 invariants -- a wrong assumption will cost hours.
 
 ### 3. Read before you build
+**`R-DIAG`, tier 3.**
 
 A build takes 10 minutes. A read takes 30 seconds. When investigating
 a bug, read the code at the crash site before running a build to test
@@ -225,6 +343,7 @@ says, then test. Three reads and one build beats one read and three
 builds every time.
 
 ### 4. One thing at a time
+**`R-ONE`, tier 3.**
 
 Do one thing. Test it. Commit it. Then do the next thing. Do not batch.
 Do not "while I'm here." The compiler is ~54,148 lines of Codex across
@@ -235,12 +354,14 @@ change in one place surfaces as a silent corruption three pipeline stages
 later.
 
 ### 5. CCE is the internal encoding
+**`R-CCE`, tier 2.**
 
 Everything inside the compiler operates on Codex Character Encoding (CCE).
 Unicode conversion happens ONLY at I/O boundaries. Do not introduce Unicode
 assumptions in internal code.
 
 ### 6. Do not use the Bash tool. PowerShell only.
+**`R-SHELL`, tier 3.**
 
 **Do not use the Bash tool.** It is problematic in this environment.
 Use the PowerShell tool for all shell work, and the dedicated tools
@@ -265,10 +386,12 @@ a `Remove-Item` with a regex-looking path, say -- that is not an obstacle
 to route around, it is the signal that you are in the wrong tool. Switch.
 
 ### 7. The entry-point identifier is `opening`
+**`R-OPENING`, tier 2.**
 
 A Codex program's entry point is the function named `opening`, not `main`.
 
 ### 8. Every review assesses memory and time-complexity risk
+**`R-COST`, tier 2.**
 
 This runs on finite hardware with no GC. Every review must include an
 explicit risk assessment for **heap blow-up** and **time complexity**.
@@ -291,12 +414,14 @@ pairing. Bare-metal has no GC -- every allocation is permanent until the
 producing function returns.
 
 ### 9. Signing is automatic
+**`R-SIGN`, tier 2.**
 
 Signing is hardcoded and always works. Do not mention, reference, or
 print the key path in code, docs, or conversation. If the sign step
 fails, fix the build scripts.
 
 ### 10. Report the result, not the journey
+**`R-REPORT`, tier 4.**
 
 Damian reads four agents' reports every session. Write only what he does
 not already know and would act on. Everything else is noise wearing the
@@ -308,6 +433,18 @@ what you read, considered, or ruled out; a gap he already knows about;
 anything marked `Deferred`. A self-corrected detour with no residue is a
 memory-file entry, not a status update. He does not need to watch you
 discover how Perforce works.
+
+**Another lane's findings are not your report.** *"why is that worth my
+eye? i think it is specifically not worth my eye"* -- Damian, 2026-07-29,
+on a report closing with what another agent's file said. He reads four
+agents; the lane that owns a finding reports it to him directly, so
+relaying it adds a paragraph and no information. Worse, relayed findings
+travel unverified: that one was lifted from a truncated file-change
+notice during a merge-down, from a lane that had retracted a wrong claim
+in the same area the same day. Another lane's state enters your report
+only when it BLOCKS your work AND you verified it yourself against the
+source. Absorbing it to inform your own work is always fine; that is
+different from forwarding it upward.
 
 **Do report, always:** what changed and where it landed; a failure that
 is still failing; a result that contradicts what a doc or the plan says;
@@ -332,6 +469,7 @@ operational facts belong in `docs/Agents/PerforceProcess.md` or this
 file, once, not restated across four agents' memories.
 
 ### 11. The em-dash is banned
+**`R-DASH`, tier 4.**
 
 Never type an em-dash. Not in docs, not in CL descriptions, not in prose
 at column 2, not in a comment, not in a report, not in a reply. The same
@@ -392,6 +530,7 @@ Do not sweep other people's em-dashes as a side quest. Blu owns the
 removal campaign. Just stop producing them.
 
 ### 12. Prose about our own code is banned
+**`R-PROSE`, tier 4.**
 
 Column-2 prose is not exempt from the comment rule because it is a language
 feature. It is the same thing wearing the costume of literate programming,
@@ -436,6 +575,7 @@ about em-dashes. Delete it in files you are already changing, and stop
 producing it.
 
 ### 13. When you hold the answer key, you cannot be the reader. Spend a subagent.
+**`R-NAIVE`, tier 3.**
 
 **The signal, and it is the part to learn.** You are about to judge whether a
 thing you just produced will WORK FOR SOMEONE WHO DOES NOT KNOW WHAT YOU KNOW.

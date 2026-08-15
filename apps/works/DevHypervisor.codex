@@ -11,12 +11,38 @@ Section: VMX Constants
 
   vmx-cr4-vmxe : Integer = 8192
   vmx-vmcs-size : Integer = 4096
+  vmx-page-size : Integer = 4096
+  vmx-large-page-size : Integer = 2097152
+  vmx-bytes-per-mb : Integer = 1048576
 
-  vmxon-region-addr : Integer = 8388608
-  vmcs-region-addr : Integer = 8392704
   guest-memory-base : Integer = 16777216
   guest-stack-top : Integer = 20971520
   guest-entry-point : Integer = 1048576
+
+Section: Region Allocation
+
+  vmx-align-up : Integer, Integer -> Integer
+  vmx-align-up (v) (a) =
+    let m = a - 1
+    in (v + m) - bit-and (v + m) m
+
+  vmx-zero-dwords : Integer, Integer, Integer -> Integer
+  vmx-zero-dwords (base) (i) (n) =
+    if i >= n then 0
+    else let w = poke-32 base (i * 4) 0
+    in vmx-zero-dwords base (i + 1) n
+
+  vmx-alloc-raw : Integer, Integer -> Integer
+  vmx-alloc-raw (size) (align) =
+    let raw = __heap-save
+    in let adv = __heap-advance (size + align)
+    in vmx-align-up raw align
+
+  vmx-alloc-zeroed : Integer, Integer -> Integer
+  vmx-alloc-zeroed (size) (align) =
+    let base = vmx-alloc-raw size align
+    in let z = vmx-zero-dwords base 0 (size / 4)
+    in base
 
 Section: VMX Capability MSRs
 
@@ -29,6 +55,7 @@ Section: VMX Capability MSRs
   msr-vmx-cr0-fixed1 : Integer = 1159
   msr-vmx-cr4-fixed0 : Integer = 1160
   msr-vmx-cr4-fixed1 : Integer = 1161
+  msr-vmx-procbased2 : Integer = 1163
   msr-low32-mask : Integer = 4294967295
 
  IA32_VMX_BASIC EXISTS ONLY ON A PROCESSOR IN WHICH VMX IS ENABLED, and
@@ -76,8 +103,10 @@ Section: VMCS Field Encodings
 
   vmcs-pin-based-controls : Integer = 16384
   vmcs-proc-based-controls : Integer = 16386
+  vmcs-secondary-controls : Integer = 16414
   vmcs-exit-controls : Integer = 16396
   vmcs-entry-controls : Integer = 16402
+  vmcs-ept-pointer : Integer = 8218
 
   vmcs-guest-es-limit : Integer = 18432
   vmcs-guest-cs-limit : Integer = 18434
@@ -203,16 +232,18 @@ Section: VMX Lifecycle
   vmx-enable (revision-id) =
     if vmx-available == False then VmxFailed vmx-err-no-vtx
     else let cr4 = vmx-fixed-cr4
-    in let w0 = vmx-init-region vmxon-region-addr revision-id
-    in let result = vmxon vmxon-region-addr
+    in let region = vmx-alloc-zeroed vmx-vmcs-size vmx-page-size
+    in let w0 = vmx-init-region region revision-id
+    in let result = vmxon region
     in VmxOk
 
   vmx-create-vmcs : Integer -> VmxStatus
   vmx-create-vmcs (revision-id) =
     if vmx-available == False then VmxFailed vmx-err-no-vtx
-    else let w0 = vmx-init-region vmcs-region-addr revision-id
-    in let c0 = vmclear vmcs-region-addr
-    in let l0 = vmptrld vmcs-region-addr
+    else let region = vmx-alloc-zeroed vmx-vmcs-size vmx-page-size
+    in let w0 = vmx-init-region region revision-id
+    in let c0 = vmclear region
+    in let l0 = vmptrld region
     in VmxOk
 
 Section: VMCS Setup
@@ -286,16 +317,19 @@ Section: VMCS Setup
     in let w11 = vmwrite vmcs-host-tr-sel 24
     in 0
 
-  vmcs-setup-controls : Integer
-  vmcs-setup-controls =
+  vmcs-setup-controls : Integer -> Integer
+  vmcs-setup-controls (eptp) =
     let pin = vmx-adjust-control msr-vmx-pinbased-ctls 0
-    in let proc = vmx-adjust-control msr-vmx-procbased-ctls 16777344
+    in let proc = vmx-adjust-control msr-vmx-procbased-ctls 2164260992
+    in let proc2 = vmx-adjust-control msr-vmx-procbased2 2
     in let exit-ctl = vmx-adjust-control msr-vmx-exit-ctls 512
     in let entry-ctl = vmx-adjust-control msr-vmx-entry-ctls 512
     in let w0 = vmwrite vmcs-pin-based-controls pin
     in let w1 = vmwrite vmcs-proc-based-controls proc
-    in let w2 = vmwrite vmcs-exit-controls exit-ctl
-    in let w3 = vmwrite vmcs-entry-controls entry-ctl
+    in let w2 = vmwrite vmcs-secondary-controls proc2
+    in let w3 = vmwrite vmcs-ept-pointer eptp
+    in let w4 = vmwrite vmcs-exit-controls exit-ctl
+    in let w5 = vmwrite vmcs-entry-controls entry-ctl
     in 0
 
 Section: VM Exit Handling
@@ -371,20 +405,23 @@ Section: Guest Page Tables
 
   guest-pt-base : Integer = 12582912
 
-  vm-build-pml4 : Integer
-  vm-build-pml4 =
-    let pml4 = guest-pt-base
-    in let pdpt = pml4 + 4096
-    in let pd = pdpt + 4096
-    in let w0 = poke-32 pml4 0 (bit-or (pdpt) 3)
+  vm-build-pml4 : Integer -> Integer
+  vm-build-pml4 (host-base) =
+    let pml4-gpa = guest-pt-base
+    in let pdpt-gpa = pml4-gpa + vmx-page-size
+    in let pd-gpa = pdpt-gpa + vmx-page-size
+    in let pml4 = host-base + pml4-gpa
+    in let pdpt = host-base + pdpt-gpa
+    in let pd = host-base + pd-gpa
+    in let w0 = poke-32 pml4 0 (bit-or pdpt-gpa 3)
     in let w1 = poke-32 pml4 4 0
-    in let w2 = vm-zero-rest pml4 8 4096
-    in let w3 = poke-32 pdpt 0 (bit-or pd 3)
+    in let w2 = vm-zero-rest pml4 8 vmx-page-size
+    in let w3 = poke-32 pdpt 0 (bit-or pd-gpa 3)
     in let w4 = poke-32 pdpt 4 0
-    in let w5 = vm-zero-rest pdpt 8 4096
-    in let w6 = vm-fill-pd pd 0 512
-    in let w7 = vm-zero-rest pd (512 * 8) 4096
-    in pml4
+    in let w5 = vm-zero-rest pdpt 8 vmx-page-size
+    in let w6 = vm-fill-pd pd 0 ept-entries-per-table
+    in let w7 = vm-zero-rest pd (ept-entries-per-table * 8) vmx-page-size
+    in pml4-gpa
 
   vm-fill-pd : Integer, Integer, Integer -> Integer
   vm-fill-pd (pd) (i) (count) =
@@ -401,6 +438,59 @@ Section: Guest Page Tables
     else let w = poke-32 base off 0
     in vm-zero-rest base (off + 4) limit
 
+Section: Extended Page Tables
+
+ Intel's encoding, not ours (SDM Vol 3C, 29.3.2 and 29.4.2). In an EPT entry
+ that maps a 2 MB page, bits 2:0 are read, write and execute, bits 5:3 carry
+ the EPT memory type, and bit 7 marks the entry as a leaf rather than a
+ pointer to the next table; the frame occupies bits 51:21. A non-leaf entry
+ carries the permission bits and the next table's address and nothing else.
+ The EPT pointer holds the memory type in bits 2:0 and the page-walk length
+ MINUS ONE in bits 5:3, so a four-level walk is written as three.
+
+  ept-perm-rwx : Integer = 7
+  ept-memtype-wb : Integer = 48
+  ept-leaf : Integer = 128
+  eptp-memtype-wb : Integer = 6
+  eptp-walk-length-4 : Integer = 24
+  ept-entries-per-table : Integer = 512
+
+  vm-poke-64 : Integer, Integer, Integer -> Integer
+  vm-poke-64 (base) (off) (value) =
+    let w0 = poke-32 base off (bit-and value msr-low32-mask)
+    in poke-32 base (off + 4) (bit-shru value 32)
+
+  vm-ept-leaf-entry : Integer -> Integer
+  vm-ept-leaf-entry (host-frame) =
+    bit-or host-frame (bit-or ept-perm-rwx (bit-or ept-memtype-wb ept-leaf))
+
+  vm-ept-table-entry : Integer -> Integer
+  vm-ept-table-entry (table-addr) = bit-or table-addr ept-perm-rwx
+
+  vm-eptp : Integer -> Integer
+  vm-eptp (pml4) = bit-or pml4 (bit-or eptp-memtype-wb eptp-walk-length-4)
+
+  vm-ept-fill-pd : Integer, Integer, Integer, Integer -> Integer
+  vm-ept-fill-pd (pd) (host-base) (i) (count) =
+    if i >= count then 0
+    else let w = vm-poke-64 pd (i * 8) (vm-ept-leaf-entry (host-base + i * vmx-large-page-size))
+    in vm-ept-fill-pd pd host-base (i + 1) count
+
+  vm-ept-leaf-count : Integer -> Integer
+  vm-ept-leaf-count (bytes) =
+    let n = bytes / vmx-large-page-size
+    in if n > ept-entries-per-table then ept-entries-per-table else n
+
+  vm-build-ept : Integer, Integer, Integer -> Integer
+  vm-build-ept (ept-base) (guest-host-base) (guest-bytes) =
+    let pml4 = ept-base
+    in let pdpt = pml4 + vmx-page-size
+    in let pd = pdpt + vmx-page-size
+    in let w0 = vm-poke-64 pml4 0 (vm-ept-table-entry pdpt)
+    in let w1 = vm-poke-64 pdpt 0 (vm-ept-table-entry pd)
+    in let w2 = vm-ept-fill-pd pd guest-host-base 0 (vm-ept-leaf-count guest-bytes)
+    in vm-eptp pml4
+
 Section: Guest Memory Loading
 
   vm-load-bytes-to-guest : Integer, List Integer, Integer, Integer -> Integer
@@ -415,6 +505,7 @@ Section: VM Run Loop
     | VmHalted
     | VmIoExit (VmExitInfo)
     | VmCrashed (VmExitInfo)
+    | VmRefused (Text)
 
   vm-launch-and-run : Integer -> VmRunResult
   vm-launch-and-run (max-exits) =
@@ -473,8 +564,10 @@ Section: Device-Aware VM Run
 
   vm-launch-with-devices : Integer, VmDevices -> VmFullResult
   vm-launch-with-devices (max-exits) (devs) =
-    let launch-status = vmlaunch
-    in vm-device-loop 0 max-exits devs
+    let launch-status = vmlaunch-full
+    in if launch-status /= 0
+      then VmFullResult { vfr-status = VmRefused "vmlaunch failed", vfr-devices = devs }
+    else vm-device-loop 0 max-exits devs
 
   vm-device-loop : Integer, Integer, VmDevices -> VmFullResult
   vm-device-loop (exits) (max-exits) (devs) =
@@ -539,28 +632,103 @@ Section: Device-Aware VM Run
   vm-inject-io-result : Integer -> Integer
   vm-inject-io-result (value) = vmwrite 25602 value
 
+Section: Guest Provisioning
+
+  guest-min-mb : Integer = 32
+
+  guest-max-mb : Integer
+  guest-max-mb = ept-entries-per-table * vmx-large-page-size / vmx-bytes-per-mb
+  guest-arena-reserve : Integer = 16777216
+  ram-size-addr : Integer = 4072
+
+  VmGuest = record {
+    vg-ok : Boolean,
+    vg-host-base : Integer,
+    vg-eptp : Integer,
+    vg-reason : Text
+  }
+
+  vm-ram-size : Integer
+  vm-ram-size =
+    peek-byte ram-size-addr 0 + bit-shl (peek-byte ram-size-addr 1) 8
+      + bit-shl (peek-byte ram-size-addr 2) 16 + bit-shl (peek-byte ram-size-addr 3) 24
+
+  vm-arena-free : Integer
+  vm-arena-free = vm-ram-size - __heap-save
+
+  vm-guest-refused : Text -> VmGuest
+  vm-guest-refused (why) =
+    VmGuest { vg-ok = False, vg-host-base = 0, vg-eptp = 0, vg-reason = why }
+
+ A raw CDX guest enters at `__start`, which loads RSP from `ram-size-addr`
+ and then stores its heap position to `deck-pos-addr`, both absolute
+ addresses inside the first 64 KB. Under EPT those are guest-physical, so
+ they land in this freshly allocated region rather than in the host's low
+ memory, and the region is handed over unzeroed: zeroing the whole guest
+ would be one store per dword across the entire allocation. Only the low
+ window is initialised, and the RAM size the guest will adopt as its stack
+ top is written there.
+
+  guest-low-init-bytes : Integer = 65536
+
+  vm-init-guest-low : Integer, Integer -> Integer
+  vm-init-guest-low (host-base) (guest-bytes) =
+    let z = vmx-zero-dwords host-base 0 (guest-low-init-bytes / 4)
+    in vm-poke-64 host-base ram-size-addr guest-bytes
+
+  vm-guest-sizing : Integer -> VmGuest
+  vm-guest-sizing (mb) =
+    if mb < guest-min-mb
+      then vm-guest-refused ("guest memory " & show mb & " MB is below the " & show guest-min-mb & " MB minimum")
+    else if mb > guest-max-mb
+      then vm-guest-refused ("guest memory " & show mb & " MB is above the " & show guest-max-mb & " MB maximum")
+    else let bytes = mb * vmx-bytes-per-mb
+    in let free = vm-arena-free
+    in if bytes + guest-arena-reserve >= free
+      then vm-guest-refused ("guest needs " & show bytes & " bytes and the arena has " & show free & " free")
+    else VmGuest { vg-ok = True, vg-host-base = 0, vg-eptp = 0, vg-reason = "" }
+
+  vm-prepare-guest : GuestConfig -> VmGuest
+  vm-prepare-guest (cfg) =
+    if vmx-available == False then vm-guest-refused vmx-unavailable-reason
+    else let sized = vm-guest-sizing (cfg.memory-mb)
+    in if sized.vg-ok == False then sized
+    else let bytes = cfg.memory-mb * vmx-bytes-per-mb
+    in let host-base = vmx-alloc-raw bytes vmx-large-page-size
+    in let ept-base = vmx-alloc-zeroed (3 * vmx-page-size) vmx-page-size
+    in let low = vm-init-guest-low host-base bytes
+    in VmGuest {
+      vg-ok = True,
+      vg-host-base = host-base,
+      vg-eptp = vm-build-ept ept-base host-base bytes,
+      vg-reason = ""
+    }
+
 Section: Full VM Setup
+
+  vm-setup-guest : GuestConfig, Integer, VmGuest, List Integer -> Integer
+  vm-setup-guest (cfg) (revision-id) (g) (guest-code) =
+    let e0 = vmx-enable revision-id
+    in let e1 = vmx-create-vmcs revision-id
+    in let pt = vm-build-pml4 (g.vg-host-base)
+    in let w0 = vm-load-bytes-to-guest (g.vg-host-base + cfg.entry-point) guest-code 0 (list-length guest-code)
+    in let w1 = vmcs-setup-guest-state (cfg.entry-point) guest-stack-top pt
+    in let w2 = vmcs-setup-host-state cpu-read-cr3
+    in vmcs-setup-controls (g.vg-eptp)
 
   vm-setup-and-launch : GuestConfig, Integer, List Integer -> VmRunResult
   vm-setup-and-launch (cfg) (revision-id) (guest-code) =
-    let e0 = vmx-enable revision-id
-    in let e1 = vmx-create-vmcs revision-id
-    in let pt = vm-build-pml4
-    in let w0 = vm-load-bytes-to-guest (cfg.entry-point) guest-code 0 (list-length guest-code)
-    in let w1 = vmcs-setup-guest-state (cfg.entry-point) guest-stack-top pt
-    in let w2 = vmcs-setup-host-state pt
-    in let w3 = vmcs-setup-controls
+    let g = vm-prepare-guest cfg
+    in if g.vg-ok == False then VmRefused (g.vg-reason)
+    else let w = vm-setup-guest cfg revision-id g guest-code
     in vm-launch-and-run 10000
 
   vm-setup-and-run-with-serial : GuestConfig, Integer, List Integer, List Integer -> VmFullResult
   vm-setup-and-run-with-serial (cfg) (revision-id) (guest-code) (serial-input) =
-    let e0 = vmx-enable revision-id
-    in let e1 = vmx-create-vmcs revision-id
-    in let pt = vm-build-pml4
-    in let w0 = vm-load-bytes-to-guest (cfg.entry-point) guest-code 0 (list-length guest-code)
-    in let w1 = vmcs-setup-guest-state (cfg.entry-point) guest-stack-top pt
-    in let w2 = vmcs-setup-host-state pt
-    in let w3 = vmcs-setup-controls
+    let g = vm-prepare-guest cfg
+    in if g.vg-ok == False
+      then VmFullResult { vfr-status = VmRefused (g.vg-reason), vfr-devices = vm-devices-new }
+    else let w = vm-setup-guest cfg revision-id g guest-code
     in let devs = vm-devices-with-input vm-devices-new serial-input
     in vm-launch-with-devices 1000000 devs
 

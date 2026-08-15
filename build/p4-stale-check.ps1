@@ -36,9 +36,55 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# A file that is on disk and not in the depot.
+#
+# This is the one that actually cost us. `p4 unshelve` prints
+#
+#     Can't clobber writable file <path>
+#
+# for a file opened for ADD whose copy is already on disk -- which is always,
+# because reverting an add leaves the file behind. It does NOT open the file.
+# The line above it says "unshelved, opened for add", so it reads like a
+# harmless warning. It is not: the add is gone from the changelist, the edits
+# in the same CL submit perfectly, and the new file is silently left out.
+#
+# Every test added during 2026-07-13 was lost this way -- smp-cores, smp-tss,
+# the SPIR-V probe and its checker -- while the register cheerfully named them as
+# pinned. Nothing caught it, because a dropped add is not a conflict, not a
+# stale revision, and not an unresolved file. It is simply absent.
+#
+# Reported as a warning, not a failure: scratch and lock files land here too,
+# and the operator is the one who knows which is which. Read the list.
+#
+# THIS RUNS FIRST, ABOVE THE nothing-opened RETURN, and that ordering is the
+# whole point of it. A CL whose contents are ALL adds -- a new test plus its
+# .expected, a new doc, a new probe -- that loses every add leaves NOTHING
+# OPENED. Below the return, this scan was skipped in exactly the case it exists
+# to catch, and the script answered "OK (nothing opened)", which is the most
+# reassuring thing it can say. Measured 2026-08-15.
+function Show-Untracked {
+    $untracked = @(p4 status 2>&1 | Select-String 'reconcile to add' | ForEach-Object { $_.Line })
+    if ($untracked) {
+        Write-Host ""
+        Write-Host "ON DISK BUT NOT IN THE DEPOT -- is one of these a p4 add that got dropped?"
+        Write-Host "(p4 unshelve reports it cannot clobber a writable file, and then does not open the add.)"
+        Write-Host ""
+        $untracked | ForEach-Object { Write-Host "    $_" }
+        Write-Host ""
+        Write-Host "  If a file here belongs in your change:  p4 add -c <CL> <file>"
+    }
+    return [bool]$untracked
+}
+
 $opened = if ($Change) { p4 opened -c $Change 2>&1 } else { p4 opened 2>&1 }
 if (-not $opened -or ($opened -join '') -match 'not opened on this client') {
-    Write-Host "p4-stale-check: OK (nothing opened)"
+    $anyUntracked = Show-Untracked
+    if ($anyUntracked) {
+        Write-Host ""
+        Write-Host "p4-stale-check: nothing opened, but SEE THE LIST ABOVE."
+    } else {
+        Write-Host "p4-stale-check: OK (nothing opened)"
+    }
     exit 0
 }
 
@@ -94,35 +140,7 @@ if ($stale) {
     $bad = $true
 }
 
-# A file that is on disk and not in the depot.
-#
-# This is the one that actually cost us. `p4 unshelve` prints
-#
-#     Can't clobber writable file <path>
-#
-# for a file opened for ADD whose copy is already on disk -- which is always,
-# because reverting an add leaves the file behind. It does NOT open the file.
-# The line above it says "unshelved, opened for add", so it reads like a
-# harmless warning. It is not: the add is gone from the changelist, the edits
-# in the same CL submit perfectly, and the new file is silently left out.
-#
-# Every test added during 2026-07-13 was lost this way -- smp-cores, smp-tss,
-# the SPIR-V probe and its checker -- while the register cheerfully named them as
-# pinned. Nothing caught it, because a dropped add is not a conflict, not a
-# stale revision, and not an unresolved file. It is simply absent.
-#
-# Reported as a warning, not a failure: scratch and lock files land here too,
-# and the operator is the one who knows which is which. Read the list.
-$untracked = @(p4 status 2>&1 | Select-String 'reconcile to add' | ForEach-Object { $_.Line })
-if ($untracked) {
-    Write-Host ""
-    Write-Host "ON DISK BUT NOT IN THE DEPOT -- is one of these a p4 add that got dropped?"
-    Write-Host "(p4 unshelve reports it cannot clobber a writable file, and then does not open the add.)"
-    Write-Host ""
-    $untracked | ForEach-Object { Write-Host "    $_" }
-    Write-Host ""
-    Write-Host "  If a file here belongs in your change:  p4 add -c <CL> <file>"
-}
+$null = Show-Untracked
 
 if ($bad) { Write-Host ""; Write-Host "p4-stale-check: FAIL"; exit 1 }
 Write-Host "p4-stale-check: OK (every open file is at depot head and resolved)"

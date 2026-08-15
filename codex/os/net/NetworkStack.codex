@@ -87,6 +87,20 @@ Section: Frame Wrapping
     in let cksum = ip-checksum padded 0 (list-length padded) 0
     in list-set-at (list-set-at tcp-bytes 16 (bit-shru cksum 8)) 17 (bit-and cksum 255)
 
+ The pseudo-header and the odd-length pad are the same two the builder above
+ constructs, because RFC 793 defines the checksum over exactly that shape and
+ the receiver has to reproduce it byte for byte. The stored field at 16..17 is
+ left in place: it is part of the sum, which is what makes a valid segment fold
+ to zero.
+
+  tcp-checksum-valid : List Integer, List Integer, List Integer -> Boolean
+  tcp-checksum-valid (tcp-bytes) (src-ip) (dst-ip) =
+    let tcp-len = list-length tcp-bytes
+    in if tcp-len < 20 then False
+    else let pseudo = tcp-pseudo-header src-ip dst-ip tcp-len
+    in let padded = if bit-and tcp-len 1 == 1 then pseudo & tcp-bytes & [0] else pseudo & tcp-bytes
+    in ip-checksum padded 0 (list-length padded) 0 == 0
+
   wrap-tcp-in-ip-eth : NetSession, List Integer, List Integer -> List Integer
   wrap-tcp-in-ip-eth (sess) (tcp-bytes) (dst-mac) =
     let tcp-ck = tcp-with-checksum tcp-bytes (sess.local-ip) (sess.conn.remote-ip)
@@ -415,7 +429,11 @@ Section: Inbound Frame Processing
   net-process-arp (sess) (payload) =
     let pkt = arp-parse payload
     in let new-arp = arp-cache-add (sess.arp) (pkt.sender-ip) (pkt.sender-mac)
-    in NetResult { session = set-arp sess new-arp, output = "arp-learned", data = [] }
+    in let s1 = set-arp sess new-arp
+    in if (pkt.op == arp-op-request) & ip-equal (pkt.target-ip) (sess.local-ip)
+    then let reply = arp-build-reply (sess.local-mac) (sess.local-ip) (pkt.sender-mac) (pkt.sender-ip) (sess.local-mac)
+    in NetResult { session = set-outbox s1 ((s1.outbox) & [reply]), output = "arp-replied", data = [] }
+    else NetResult { session = s1, output = "arp-learned", data = [] }
 
  THIS CHECK WAS ABSENT UNTIL 2026-07-20 AND ITS ABSENCE WAS INVISIBLE, because
  nothing in the tree had ever run two connections at once. `net-receive-segment`
@@ -456,12 +474,22 @@ Section: Inbound Frame Processing
     in let frame = [wrap-tcp-in-ip-eth sess ack (resolve-dst-mac sess)]
     in NetResult { session = set-outbox sess frame, output = "out-of-window", data = [] }
 
+ A segment that fails any of the three tests is DROPPED and not acknowledged, which
+ RFC 1122 4.2.3.2 requires: the sequence and port numbers an ACK would quote
+ are drawn from the bytes just found untrustworthy. The peer's retransmit
+ timer is what recovers it. The named output exists so a caller can see the
+ refusal happen, the way not-for-this-port already can.
+
   net-process-ip : NetSession, List Integer -> NetResult
   net-process-ip (sess) (ip-pkt) =
-    let proto = ip-proto ip-pkt
+    if ip-length-valid ip-pkt == False then NetResult { session = sess, output = "bad-ip-length", data = [] }
+    else if ip-header-valid ip-pkt == False then NetResult { session = sess, output = "bad-ip-checksum", data = [] }
+    else let proto = ip-proto ip-pkt
     in if proto == ip-proto-tcp then
       let tcp-data = ip-payload ip-pkt
-      in let seg = tcp-parse tcp-data
+      in if tcp-checksum-valid tcp-data (ip-src ip-pkt) (ip-dst ip-pkt) == False
+        then NetResult { session = sess, output = "bad-tcp-checksum", data = [] }
+      else let seg = tcp-parse tcp-data
       in if net-session-owns-segment sess seg == False
         then NetResult { session = sess, output = "not-for-this-port", data = [] }
       else if net-in-established sess & list-length (seg.payload) > 0 & net-seg-acceptable sess seg == False

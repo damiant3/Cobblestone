@@ -96,6 +96,7 @@ assumption a listed doc would have corrected.
 | Writing or reviewing `.codex` source | `docs/DevelopersGuide.md` (syntax, pitfalls); `docs/DevelopersRulebook.md` (quires, library rules, seed reachability) |
 | Compiler memory, allocators, decks, registers, SMP, page tables | `docs/ArchitectsSketchbook.md` |
 | Builds, `compile.ps1`, codex-vm flags, debugging, profiling, seed rebuild, release | `docs/OperatorsManual.md` |
+| EDITING or REGENERATING a `build/*.ps1` script | `docs/Designs/Active/Build/Build.md` -- the shipped scripts are hand-maintained and the drift runs the OTHER way from what "generated from" advertises, so regenerating one hands back a script that prompts headless |
 | Tests, sidecars, batteries, oracles, GUI tests, skip/diag semantics | `docs/ExaminersAssay.md` (~34k tokens -- Grep the section, never read whole) |
 | Web output, the HTML plug, browser apps, widgets | `docs/TheShimmeringPortal.md` |
 | IoT boards, board drivers, MMIO windows | `docs/TinkersToolbox.md` |

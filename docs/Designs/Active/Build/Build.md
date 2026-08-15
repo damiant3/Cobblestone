@@ -438,11 +438,117 @@ queue.
 **The parse class is closed and gated.** `check-generated-scripts.ps1`
 compiles every generator, dead target or not, and hard-fails on PowerShell
 parse errors with NO baseline. **Re-measure the counts, never copy them**
-(L-COUNT): measured 2026-08-14 at seed `D9A6A7A2`, 46 generators checked,
-4 drifted, 0 broken, 1 dead target. **The four that remain are exactly the
-backlogged stubs** (`test`, `cdx-to-pe`, `build`, `build-img`); every
-ordinary generator in the tree matches the script it ships beside and carries
-the banner.
+(L-COUNT): measured 2026-08-15 at seed `F3722EAC`, 55 generators checked,
+**0 drifted**, 0 broken, 1 dead target. **`build/generated-scripts-baseline.txt`
+is empty.** Every generator in the tree emits the script it ships beside, and
+every one of those scripts carries the banner.
+
+That is a stronger invariant than the file has ever held, and it is worth
+saying what it now buys: a drift of ANY size, in ANY generator, fails the gate.
+There is no residue for a new one to hide in. If you add a generator, its drift
+closes in the same change or the gate goes red.
+
+### All four backlogged stubs, closed 2026-08-15 (fester)
+
+Damian's direction, in order: "build and test are the two most important .ps1
+to have working in the backport... 100% fidelity", then "do those all". So
+`build`, `test`, `cdx-to-pe` and `build-img` closed in one session.
+
+### `build` and `test`
+
+**Neither was a stub, and the drift number said otherwise.** The shipped
+`build.ps1` ran 21 `Measure-Phase` blocks and the generator emitted 12; the
+nine missing were the whole second half of the gate, everything added since
+2026-08-06. Read by LINE COUNT the generator looked like a 39-line
+placeholder against an 816-line script, which is nonsense: the DSL packs a
+phase into one line, and 629 of the drift lines were the same phases in a
+different layout. **Count phases, not lines, before judging one of these.**
+
+What was genuinely absent from `build`, and is now ported: `Show-CompileFailure`
+(the shipped `Invoke-BuildCdx` calls it, the emitted one tailed the log, which
+is the one slice that says nothing); the stderr tail on an empty TEXT build;
+the seven pre-build guards (effect-vocab, p4-stale, sidecars, cdx-registry,
+facts-guid, doc-counts, plug-types) with the prose that says what each cost to
+learn; `jonquil`, `oracles`, `plug-binary`, `cross-smoke`, `plug-smoke`,
+`gen-scripts`, `vm-differential`, `deck-headroom`, `app-sweep`. Two defects
+went with it: the generator emitted `bvt.ps1 -Jobs 4` against the standing
+`-Jobs 8` ruling, and `ScCopy` emitted `Copy-Item -Force $SutCdx Join-Path
+$Repo '...'` with no parentheses, which PARSES and fails at runtime. Fixed at
+the call site (`SeRaw "(Join-Path ...)"`), not in the emitter, because
+`emit-ps-cmd-ext` passes `SeRaw` through verbatim and changing that would
+re-drift all 51 matching generators. Same class as the `test-boards`
+`Split-Path` bug; check the other `ScCopy` call sites before trusting one.
+
+`test` was the easier half despite the larger file: 744 executable lines on
+each side, **0 differing**. It had grown tiers, the `-ApprovedBy` refusal,
+kernel-provenance checking, `.diag` / `.disk-src` / `.disk2` / `.keys` /
+`.smp` / `.vmargs`, the rebatch rounds, the rollup and the run-over-run delta,
+and still carried a `-Fuzz` switch deleted from the script 2026-07-27.
+
+**Verification.** `build/build.ps1` GREEN end to end with the emitted script
+installed, 536.7 s, hard fixed point in one pass, `constants.hash` unchanged.
+For `test` the battery is not an agent's to run (R-GATE), so the arms were:
+0 differing executable lines, a clean `ParseFile`, and the refusal path
+executed both ways (no `-ApprovedBy`, and a wrong one) -- exit 1 each, with
+all 13 parameters binding in the shipped order.
+
+**`BuildScript.codex` and `cdxtopeScript.codex` now sit at exactly the 1.25
+deck floor: 51 of 64.** They pass with no headroom left. Anything added to
+either needs a new section binding in the same change (one binding per section
+buys 2 points), or `deck-headroom` goes red on the gate itself. That is why
+the derived generators are split at 55 lines per section rather than emitted
+as one list.
+
+### `cdx-to-pe` and `build-img`
+
+**These two were transcription problems, not design problems, and they were
+derived mechanically rather than typed.** `cdx-to-pe.ps1` is 1121 lines of
+hand-assembled x86-64 machine code and `build-img.ps1` 527 lines of GPT and
+FAT structure; hand-copying either into Codex string literals is where a wrong
+nibble gets in and nothing downstream would catch it. A throwaway transformer
+read each shipped line and emitted `ScRaw "<escaped>"`, splitting at 55 lines
+per section for the deck. Escaping is only `\` and `"` -- both files are pure
+ASCII with no tabs and no trailing whitespace, and a backtick is literal in a
+Codex string.
+
+**The arm that makes this safe is byte-identity of the ARTIFACT, not a line
+diff.** For `cdx-to-pe`, six flag arms (plain, `-ExitBootServices`,
+`-EntryStart`, `-Stdin`, `-HeapAt 0x140000000`, `-HeapPages 131072`) built
+`.efi` files with the old script and the new one: **all six pairs identical**,
+and the six hashes differ from EACH OTHER, so the comparison distinguishes the
+flag paths rather than passing on everything. For `build-img`, five arms
+(plain, `-Source`, `-Seed`, `-TotalSectors 131072 -Fat32`, `-TotalSectors
+65536`): **all five identical, five distinct hashes.** Executable-line diffs
+were 590/592 and 364/366, the only difference being the two mandatory
+parameters split one-per-line by `emit-ps-params`.
+
+**Two hazards found doing it, both worth knowing.**
+
+- **`build-img` is emitted by `buildimgScript.codex`, NOT
+  `buildbootimgScript.codex`.** Those are different scripts with confusingly
+  similar names, and `build-boot-img` was matching cleanly. Writing the new
+  generator into the wrong one destroyed a working generator and the checker
+  reported `build-img DRIFTED` twice in one table, which is the tell. **Read
+  the `sh-script "<name>"` line, not the filename**, before overwriting a
+  generator.
+- **`cdx-to-pe.ps1` carried two parameter doc lines with a LITERAL `\n    # `
+  in the middle** (`-EntryStart`, `-Stdin`), an artefact of an earlier
+  generation whose doc text was never split. Regenerating through `sp-doc`
+  splits them into real comment lines. Its `# Usage:` header line was dropped
+  rather than relocated: it named 3 of the 7 parameters, and the `sp-doc`
+  blocks that now render above each one are the live documentation.
+  `build-img`'s header block was PRESERVED by moving it to the top of the body
+  -- it carries the GPT layout and the reason the second partition exists,
+  which nothing else records.
+
+**One false positive in the checker fell out of this and is fixed.** The
+unhandled-node scan matched `<unknown-(?:cmd|expr)>` anywhere in the emitted
+text, and `build.ps1`'s own `gen-scripts` comment EXPLAINS what
+`# <unknown-cmd>` means. The moment that comment was generated rather than
+hand-written, the leg reported the build generator as broken: the check was
+describing itself. It now matches the stub FORMS -- a whole line for the
+command stub, quoted for the expression stub -- validated on six cases
+including an indented stub and the prose.
 
 ### The inventory: the drift that runs the other way (added 2026-08-14)
 
@@ -456,12 +562,12 @@ everything a generator claims, and compares the remainder against
 `build/handwritten-scripts.txt`. Only a name absent from that file prints,
 and the inventory NEVER changes the exit code.
 
-**Report-only is a decision, not an omission.** Measured 2026-08-14: **93 of
-135 scripts under `build/` have no generator**, and most are meant not to --
+**Report-only is a decision, not an omission.** Measured 2026-08-15: **85 of
+140 scripts under `build/` have no generator**, and most are meant not to --
 probes, flight arms, interop harnesses, mint-fixture one-offs, and
 `check-generated-scripts.ps1` itself, which has to run when the generators
 are broken. "Every script needs a generator" is not the policy and never
-was, so a gate here would be 93 reds whose answer is always the expected
+was, so a gate here would be 85 reds whose answer is always the expected
 one, which is precisely the reader-training failure the drift baseline was
 built to avoid. Whether a new script wants a generator is a judgement, so
 the check surfaces it and stops; answer it by writing the `.codex`, or by
@@ -892,8 +998,8 @@ identical modulo `@()` array literals and redundant parentheses.
   because `ExaminersAssay.md` and `OperatorsManual.md` both already own
   it. Grep for the doctrine's other home BEFORE installing over it.
 
-The four backlogged stubs (`test`, `cdx-to-pe`, `build`, `build-img`)
-remain Damian's decision, recorded in `docs/PM/CurrentPlan.md`.
+**All four were closed 2026-08-15 (fester); there are no backlogged stubs
+left and the baseline is empty.** The account is in the section above.
 
 Method, for whoever resumes it:
 
@@ -961,6 +1067,15 @@ the generator emits `[Parameter(Mandatory=$true)]` where the shipped
 script has none, so the shipped copy is the hand-FIXED one and the Codex
 is stale. Regenerating would hand back a script that prompts headless.
 Diff before regenerating one of these to fix a bug in it.
+
+**The instance that costs a boot, named 2026-08-15: `cdxtopeScript.codex`
+S06 ends at the `stack-min-rsp-addr` store and never writes cell 4072.**
+The shipped `cdx-to-pe.ps1` does, and that store is the whole of the fix
+for the reboot loop under real UEFI (`UsersHandbook.md`: 21 triple faults
+in 40 s before it, 0 after). S05 is stale the same way, still allocating
+the heap at the fixed `0x1000000` edk2 refuses. Regenerating this one
+hands back a stub that triple-faults instead of reporting, and no drift
+number distinguishes those lines from formatting.
 
 ## Priority Order
 

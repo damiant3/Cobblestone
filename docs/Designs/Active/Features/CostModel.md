@@ -1,10 +1,18 @@
 # The Cost Model
 *What Codex promises about allocation and time, and what it currently leaves to the caller's luck.*
 
-**Status: PROPOSAL. Zero implementation, never scheduled.** Nothing in this
-document exists in the tree. It is written up because three defects on
-2026-08-14 were one defect, and the shape they share is the shape this project
-already says it exists to remove.
+**Status: 3.1 and 3.2 are DONE. 3.3 remains a proposal and is unscheduled.**
+It is written up because three defects on 2026-08-14 were one defect, and the
+shape they share is the shape this project already says it exists to remove.
+
+- **3.1 is published**, in `DevelopersGuide.md` under Text, from the
+  measurements in 3.5 and 3.6 below. Text was the measured gap and is what
+  the table covers; the other families are still unwritten.
+- **3.2 is implemented.** `__out_of_memory` now prints `SP=` and `HEAP=`
+  after the `OUT OF MEMORY` line, so it names which side of the collision
+  ran away.
+- **3.3 is untouched** and still needs its instrument (section 5, question 2)
+  before it is worth starting.
 
 Opened 2026-08-14 (blu) at Damian's direction, adjacent to `CPL.md` in `Done/`.
 
@@ -244,9 +252,10 @@ and enforced property rather than a document. What is still open:
    need to be built before the check, not after.
 3. **What is it called?** Not decided here on purpose. It makes a different
    promise from `punctual` and should not borrow its name.
-4. **Are 3.1 and 3.2 worth doing ahead of any of it?** 3.1 is a prerequisite
-   regardless. 3.2 is a standing defect in a diagnostic. I would take both
-   without further ruling if asked.
+4. ~~**Are 3.1 and 3.2 worth doing ahead of any of it?**~~ CLOSED 2026-08-15:
+   both taken. 3.1 paid for itself immediately by catching 3.5's own
+   misattribution, which is the argument for measuring before publishing
+   rather than publishing what a prior session recorded.
 
 ## 6. What this document is NOT
 
@@ -255,3 +264,81 @@ and enforced property rather than a document. What is still open:
 - Not a claim that the three defects share a root cause in the code. They do
   not; they share a root cause in what the language promises.
 - Not scheduled, not started, and not a request for a ruling today.
+
+## 3.5 Measured 2026-08-14: reading a character through `to-unicode` costs 1,040 bytes
+
+**This section was headed "character-level Text access costs 1,040 bytes per
+character" and that attribution was wrong. Corrected 2026-08-15 by isolating
+the terms.** The two rows below that carried the cost BOTH called
+`to-unicode`, so the measurement never separated the accessor from the
+converter, and it charged the whole figure to the accessor. `to-unicode` is
+the entire cost. The accessors allocate nothing at all.
+
+| operation | bytes retained per character | measured |
+|---|---|---|
+| `char-code-at` | **0** | 08-15 |
+| `char-at` then `char-code` | **0** | 08-15 |
+| `text-length` | **0** | 08-15 |
+| `to-unicode` | **1,040** | 08-14, confirmed 08-15 |
+
+Measured on a 4,752-character line, constant per call rather than
+proportional to position. The 08-15 run carried a null arm reading exactly 0
+and a `to-unicode` arm reading 4,942,080, so the instrument is shown able to
+report both ends in the same run.
+
+**The correction matters because it inverts the advice.** The original
+reading says character access is ruinous and sends the reader to
+`text-split`, which cannot be substituted directly and which the section
+itself admits every integer parser in the tree defeats. The corrected reading
+is that character access is free and the fix is to stop calling `to-unicode`
+per character, which is a one-line change at every site and is what R-CCE
+already required.
+
+**The fleet had already measured this and it did not travel.**
+`BrotliDict.codex`'s Corpus prose says "DO NOT REACH FOR to-unicode HERE",
+having measured 120,000 characters at 125 MB through `to-unicode` against
+EIGHTY BYTES through `char-code-at` alone -- 1,041 bytes per character, the
+same constant, correctly attributed, written down in a chapter nobody
+re-reads. That is R-PROSE's complaint from the other side: the finding was
+true, it was in the right file, and it reached no one. It is in
+`DevelopersGuide.md` now.
+
+## 3.6 Measured 2026-08-15: `&` is quadratic in an accumulator
+
+The shape from section 1 -- `unpack-text` appending per byte, bounded by the
+arena and stated by nothing -- measured directly.
+
+| building a 2,000-character text | bytes retained |
+|---|---|
+| 200 appends with `&` | **203,200** |
+| `text-concat-list` over the same 200 pieces | **2,008** |
+
+`a & b` allocates a new text of `length(a) + length(b)` on every call, so an
+accumulator loop re-copies everything it has built so far, every iteration.
+The 101x here is at n = 200 and it grows with n: nothing about the call site
+says so, and `text-concat-list` -- one allocation, already in the tree --
+produces the identical result.
+
+**This is the 3.3 target shape exactly**: an accumulator in a self tail call
+where the accumulator is the argument that grows and the bound is the loop's
+own counter. A check that covers only this form would have refused
+`unpack-text`.
+
+The consequence at the use site: reading one 4,756-character CSV line costs
+about 5 MB. In a load of 40,170 cells that was 3,938 bytes per cell to READ
+against 100 bytes per cell to STORE. **Reading was thirty-nine times more
+expensive than storing**, which is the reverse of what anybody writing a loader
+would assume, and nothing in `DevelopersGuide` says otherwise.
+
+`text-split` at 11 bytes per character shows the cheap path exists. It cannot be
+substituted directly, because a split still yields Text fields and every integer
+parser in the tree walks characters: `Parse.codex`'s `parse-decimal-loop`,
+`BulkLoader`'s `text-to-int`, `Fat16`'s `fat16-text-bytes`. **Every text parser
+in the tree pays this**, including the compiler's own lexer.
+
+The app worked around it by bracketing the scan with `__heap-save` /
+`__heap-restore` and emitting from a pre-allocated integer buffer, which took
+the load from 3,938 to 96 bytes per row. That is a workaround at the call site
+for a cost that belongs in the primitive, and it is exactly the shape this
+document argues about: the fix was available only because somebody measured, and
+nothing would have told them to.

@@ -136,7 +136,7 @@ try {
     if ($Repl) {
         $baseMode = "$baseMode repl"
     }
-    if (((-not $Repl) -and $baseMode.StartsWith('CDX'))) {
+    if ($baseMode.StartsWith('CDX')) {
         $baseMode = "$baseMode map"
     }
     if ($Poison) {

@@ -271,3 +271,40 @@ the seven load-bearing target facts moved between spec v1.0 and v1.3, and one
 (`TSHR` rounding) would have been silent and wrong. The oracles are on this
 machine only (`D:\Toolchain-Ternary`), so `codex/plugs/t3isa/gate.ps1` cannot
 run anywhere else and nothing in `build/build.ps1` reaches it.
+
+## 1.13 -- The zig plug's central claim cannot be checked on this machine
+
+`build/plug-oracle-test.ps1` wires python, javascript and csharp. Zig is not
+wired and there is no zig toolchain on this box, so the arm that would decide
+Steve Howell's PR 64 does not exist here.
+
+**What that leaves unverified is not a detail.** His claim is that the emitted
+zig COMPILES AND RUNS byte-identical to bare metal on `Syntax/Lexer.codex`
+(61 tokens) and on the whole of `Syntax/Parser.codex` (2,059 lines, 18,812
+tokens, 202 defs). That is the strongest evidence any transpiler plug in this
+quire has ever had, and it is his measurement on his machine, not ours. What
+was verified here is that the plug builds, emits for a real subject, and gets
+the CCE text model right by hand-decode.
+
+The fix is a zig toolchain plus a wiring entry, which is a decision about what
+this box carries, not a code change. Until then a zig regression is invisible
+to every gate.
+
+## 1.14 -- Codex assumes deep recursion is free; a stack language does not
+
+Raised by PR 64 and worth stating once for the whole quire, because every plug
+targeting a conventional runtime meets it. `Parser.codex` at 18,812 tokens
+overflowed zig's 8 MB main-thread stack, and ReleaseFast does not rescue it --
+the calls sit inside labelled block expressions and LLVM does not turn them
+into loops.
+
+**The obvious answer is wrong and CSharpPlug already records why.** Emitting a
+loop for self-tail-calls does not close it: the case that reaches the limit is
+MUTUAL recursion (the lexer's `scan-token` -> `skip-prose-line` -> `scan-token`
+cycle), which no self-TCO pass can flatten. Both plugs now run the entry point
+on a thread with a big stack, 512 MB, the same constant, so they agree.
+
+It is a property of how codex source is written rather than of large input:
+bare metal answers deep recursion with a multi-gigabyte arena and .NET gives
+its main thread 1 MB. Anything targeting a language with a conventional stack
+needs the big-stack entry point, and 40-odd plugs do not have one.

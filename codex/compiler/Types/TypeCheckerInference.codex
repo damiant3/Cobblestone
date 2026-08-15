@@ -663,7 +663,6 @@ Section: Infer Application
           in let desc = if is-ctor-of-own-sum env head then "field of constructor '" & head & "'" else "bounded parameter"
           in lint-narrowing-check st env arg arg-ty declared-param span desc
     is otherwise -> st
-    is otherwise -> st
 
   is-ctor-of-own-sum : TypeEnv, Text -> Boolean
   is-ctor-of-own-sum (env) (name) =
@@ -1298,6 +1297,28 @@ Section: Infer Match
 
   check-match-exhaustiveness : UnificationState, CodexType, List AMatchArm, SourceSpan -> UnificationState
   check-match-exhaustiveness (st) (scrut-ty) (arms) (span) =
+   check-match-ctor-coverage (check-unreachable-arms st arms) scrut-ty arms span
+
+  first-unguarded-catchall : List AMatchArm, Integer, Integer -> Integer
+  first-unguarded-catchall (arms) (i) (len) =
+   if i == len then 0 - 1
+   else let arm = list-at arms i
+   in when (arm.pattern)
+    is AWildPat (s) | AVarPat (n) (s) ->
+     if is-trivial-guard (arm.guard) then i
+     else first-unguarded-catchall arms (i + 1) len
+    is otherwise -> first-unguarded-catchall arms (i + 1) len
+
+  check-unreachable-arms : UnificationState, List AMatchArm -> UnificationState
+  check-unreachable-arms (st) (arms) =
+   let len = list-length arms
+   in let ci = first-unguarded-catchall arms 0 len
+   in if ci < 0 then st
+   else if ci + 1 >= len then st
+   else __record-set st "bag" (bag-add (st.bag) (make-error cdx-unreachable-match-arm "This arm cannot be reached: an earlier arm matches every remaining value." ((list-at arms (ci + 1)).span)))
+
+  check-match-ctor-coverage : UnificationState, CodexType, List AMatchArm, SourceSpan -> UnificationState
+  check-match-ctor-coverage (st) (scrut-ty) (arms) (span) =
    let resolved0 = deep-resolve st scrut-ty
    in let resolved = when resolved0
       is ListTy (le) -> builtin-list-sumty le

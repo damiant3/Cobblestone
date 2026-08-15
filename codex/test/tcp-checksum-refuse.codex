@@ -1,0 +1,93 @@
+Chapter: TcpChecksumRefuse
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+  cites Foreword chapter Console
+
+ We say:
+
+Section: Wire Fixtures
+  srv-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  cli-mac : List Integer = [82, 85, 10, 0, 2, 2]
+  srv-ip : List Integer = [10, 0, 2, 15]
+  cli-ip : List Integer = [10, 0, 2, 100]
+  gw-ip : List Integer = [10, 0, 2, 2]
+
+  psh : Integer = bit-or tcp-flag-psh tcp-flag-ack
+  get-bytes : List Integer = [71, 69, 84, 32, 47, 32, 72, 84, 84, 80, 47, 49, 46, 49, 13, 10, 13, 10]
+
+ corrupt-at flips one bit in one byte AFTER tcp-with-checksum has run, so the
+ stored field is correct for the bytes the sender had and wrong for the bytes
+ the receiver gets. That is the shape of the PR 64 DMA truncation this check
+ exists to catch, and it is the only difference between the two arms.
+
+  corrupt-at : List Integer, Integer -> List Integer
+  corrupt-at (bytes) (i) = list-set-at bytes i (bit-xor (list-at bytes i) 1)
+
+  mk-frame : Integer, Integer, Integer, List Integer, Integer -> List Integer
+  mk-frame (seq) (ack) (flags) (payload) (flip) =
+    let seg = tcp-with-checksum (tcp-build-segment 50000 80 seq ack flags 8192 payload) cli-ip srv-ip
+    in let wire = if flip < 0 then seg else corrupt-at seg flip
+    in let ip = ip-build-packet cli-ip srv-ip ip-proto-tcp wire
+    in eth-build-frame srv-mac cli-mac eth-type-ipv4 ip
+
+  c-syn : List Integer = mk-frame 1000 0 tcp-flag-syn [] (0 - 1)
+
+Section: Server Session
+  srv0 : NetSession = net-session-new srv-mac srv-ip gw-ip 80 0 cli-ip 5000
+  listening : NetSession = (net-listen srv0).session
+  established : NetSession = (net-process-frame listening c-syn).session
+
+ The outbox is cleared because the handshake left its SYN-ACK in it. Counting
+ an uncleared outbox would report 1 for both arms and discriminate nothing,
+ which is the assertion this arm exists to make.
+
+  base : NetSession = set-outbox established []
+
+Section: The Two Arms
+
+ The control is not decoration. A checker that refuses everything and a checker
+ that works are indistinguishable on the corrupt arm alone, which is the whole
+ reason the absence of this check was invisible.
+
+  clean-frame : List Integer = mk-frame 1001 5001 psh get-bytes (0 - 1)
+  dirty-frame : List Integer = mk-frame 1001 5001 psh get-bytes 24
+
+  clean-result : NetResult = net-process-frame base clean-frame
+  dirty-result : NetResult = net-process-frame base dirty-frame
+
+ The IP header carries its own checksum and its own arm. Byte 16 is the first
+ byte of the source address, inside the twenty ip-header-valid sums.
+
+  bad-ip-frame : List Integer =
+    let ip = ip-build-packet cli-ip srv-ip ip-proto-tcp (tcp-with-checksum (tcp-build-segment 50000 80 1001 5001 psh 8192 get-bytes) cli-ip srv-ip)
+    in eth-build-frame srv-mac cli-mac eth-type-ipv4 (corrupt-at ip 16)
+
+  bad-ip-result : NetResult = net-process-frame base bad-ip-frame
+
+ A truncated receive is the arm the checksum cannot cover, because the checksum
+ is computed over the bytes that ARRIVED and the header is one of them. Before
+ ip-header-valid tested the length this frame took the guest down with EXC=06.
+
+  take : List Integer, Integer, Integer, List Integer -> List Integer
+  take (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else take xs (i + 1) n (list-push acc (list-at xs i))
+
+  cut-frame : List Integer = take clean-frame 0 (list-length clean-frame - 6) []
+  cut-result : NetResult = net-process-frame base cut-frame
+
+Section: Entry
+  opening : [Console] Nothing = act
+    print-line-uni ("clean-verdict=" & (clean-result.output))
+    print-line-uni ("clean-bytes=" & show (list-length (clean-result.data)))
+    print-line-uni ("dirty-verdict=" & (dirty-result.output))
+    print-line-uni ("dirty-bytes=" & show (list-length (dirty-result.data)))
+    print-line-uni ("clean-emitted=" & show (list-length ((clean-result.session).outbox)))
+    print-line-uni ("dirty-emitted=" & show (list-length ((dirty-result.session).outbox)))
+    print-line-uni ("bad-ip-verdict=" & (bad-ip-result.output))
+    print-line-uni ("cut-verdict=" & (cut-result.output))
+    print-line-uni ("cut-bytes=" & show (list-length (cut-result.data)))
+    print-line-uni ("checksum-valid-clean=" & show (tcp-checksum-valid (tcp-with-checksum (tcp-build-segment 50000 80 1001 5001 psh 8192 get-bytes) cli-ip srv-ip) cli-ip srv-ip))
+    print-line-uni ("checksum-valid-zero=" & show (tcp-checksum-valid (tcp-build-segment 50000 80 1001 5001 psh 8192 get-bytes) cli-ip srv-ip))
+  end

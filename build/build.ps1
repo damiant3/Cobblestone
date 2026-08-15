@@ -1,24 +1,32 @@
 # build.ps1 -- full compiler build, verification, and test.
-#
-# On success, prints only a story. On failure, prints technical details.
-# Phases: clean → source → CDX build → sign → canary → sem-equiv →
-#         text fixed point → CDX fixed point → test battery.
+# GENERATED FROM THE CODEX SHELL DSL. Do not edit by hand.
+# A hand edit here must NOT be submitted. Change the generator under
+# codex/build/, regenerate, and submit the generator and this file
+# together. Until then build/check-generated-scripts.ps1 reports this
+# file as drifted, and the next regeneration discards the edit.
 [CmdletBinding()]
-param()
+param(
+)
+
+# On success, prints only a story. On failure, prints technical details.
+# Phases: clean -> source -> CDX build -> sign -> canary -> jonquil ->
+#         sem-equiv -> text fixed point -> CDX fixed point -> battery ->
+#         oracles -> plugs -> generators -> decks -> app sweep.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'vm-config.ps1')
 
-$Repo      = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$OutDir    = Join-Path $PSScriptRoot 'output'
-$SeedCdx   = Join-Path $Repo 'seed\Codex.cdx'
-$SutCdx    = Join-Path $OutDir 'Sut.cdx'
-$CodexSrc  = Join-Path $OutDir 'Codex.codex'
-$Concat    = Join-Path $PSScriptRoot 'concat-codex-self.ps1'
-$Compile   = Join-Path $PSScriptRoot 'compile.ps1'
-$BuildLog  = Join-Path $OutDir 'build.log'
+$Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$OutDir = Join-Path $PSScriptRoot 'output'
+$SeedCdx = Join-Path $Repo 'seed\Codex.cdx'
+$SutCdx = Join-Path $OutDir 'Sut.cdx'
+$CodexSrc = Join-Path $OutDir 'Codex.codex'
+$Concat = Join-Path $PSScriptRoot 'concat-codex-self.ps1'
+$Compile = Join-Path $PSScriptRoot 'compile.ps1'
+$BuildLog = Join-Path $OutDir 'build.log'
+
 
 # A compile log ENDS in hundreds of `info CDX4010: bounds proven` lines, so
 # its tail is the one slice guaranteed to say nothing about why a build
@@ -53,10 +61,11 @@ function Show-CompileFailure {
     }
 }
 
+
 function Invoke-BuildCdx {
     param([string]$InputFile, [string]$Kernel, [string]$Output, [int]$MemMB = 3072)
     $logFile = [System.IO.Path]::GetTempFileName()
-    $tmpOut = Join-Path (Split-Path $Output) "build_cdx_tmp.cdx"
+    $tmpOut = Join-Path (Split-Path $Output) 'build_cdx_tmp.cdx'
     $stage0 = Join-Path $Repo 'build-output\bare-metal\Codex.cdx'
     New-Item -ItemType Directory -Force -Path (Split-Path $stage0) | Out-Null
     if ($Kernel -ne $stage0) { Copy-Item -Force $Kernel $stage0 }
@@ -75,10 +84,11 @@ function Invoke-BuildCdx {
     return $ok
 }
 
+
 function Invoke-BuildText {
     param([string]$InputFile, [string]$Kernel, [string]$Output, [int]$TextMemMB = 3072)
     $logFile = [System.IO.Path]::GetTempFileName()
-    $tmpOut = Join-Path (Split-Path $Output) "build_text_tmp.codex"
+    $tmpOut = Join-Path (Split-Path $Output) 'build_text_tmp.codex'
     $stage0 = Join-Path $Repo 'build-output\bare-metal\Codex.cdx'
     New-Item -ItemType Directory -Force -Path (Split-Path $stage0) | Out-Null
     if ($Kernel -ne $stage0) { Copy-Item -Force $Kernel $stage0 }
@@ -127,6 +137,7 @@ function Invoke-BuildText {
     }
 }
 
+
 # The CDX header embeds the compiler's own SHA-256 over the binary
 # content (text + padding + rodata) at bytes 8-39. This is the
 # canonical content identity: the sign step signs exactly these bytes,
@@ -149,6 +160,7 @@ function Measure-Phase([string]$Name, [scriptblock]$Block) {
     $script:phaseTimings[$Name] = $sw.Elapsed
 }
 
+
 Write-Host 'The day is warm, yet there is a cooling breeze.'
 
 # -- clean
@@ -165,6 +177,7 @@ Measure-Phase 'clean' {
         Where-Object { $_.FullName -notmatch '\\\.git\\' } |
         Remove-Item -Force -ErrorAction SilentlyContinue
 }
+
 
 # -- source
 Measure-Phase 'source-concat' {
@@ -203,6 +216,7 @@ if (Test-Path $chkConst) {
     & pwsh -NoProfile -File $chkConst 2>&1 | ForEach-Object { Write-Host "  $_" }
 }
 
+
 # The boot cap-bit table (compiler) and the verified-load cap-bit table (OS
 # loader) were two hand-written expansions of one name->bit map, and a drift
 # granted a binary different authority by which door it entered. They are one
@@ -226,6 +240,7 @@ if (Test-Path $chkEffVocab) {
     }
 }
 
+
 # A builtin name used to live in three hand-maintained lists across two
 # quires, and check-builtin-tables.ps1 reconciled them here. It carries one
 # row now (codex/compiler/Types/Builtins.codex: name, type, emitter), and
@@ -234,7 +249,7 @@ if (Test-Path $chkEffVocab) {
 
 # The gate compiles what is ON DISK, so the workspace has to be what the
 # agent thinks it is before any of the rest of this means anything.
-#
+# 
 # Two failures put a wrong workspace under a green gate, both of them
 # documented in the agent Perforce process notes since 2026-07-13, and both of
 # them hit again on 2026-07-21 by an agent who had read neither. That is the
@@ -246,11 +261,11 @@ if (Test-Path $chkEffVocab) {
 # refused with "Can't clobber writable file" and silently dropped from the
 # changelist, which is how four tests were lost while they were named as
 # pinned.
-#
+# 
 # Neither is a conflict, a stale revision the eye can see, or an unresolved
 # file, so nothing in the normal flow reports either one. Running the check by
 # hand was the plan and the plan failed twice; the gate runs it now.
-#
+# 
 # Skipped without Perforce (fresh clone, public mirror) -- there is no
 # workspace to be wrong.
 $chkP4 = Join-Path $PSScriptRoot 'p4-stale-check.ps1'
@@ -263,6 +278,7 @@ if ((Test-Path $chkP4) -and (Get-Command p4 -ErrorAction SilentlyContinue) -and
         exit 1
     }
 }
+
 
 # A sidecar is resolved next to its .codex, so one in the wrong directory
 # configures nothing while reading like a decision -- diagnostic-boot's
@@ -294,6 +310,7 @@ if (Test-Path $chkCdx) {
     }
 }
 
+
 # The fact store's partition type GUID is written by three producers -- the
 # reader in Foreword chapter Gpt, the IMG plug, and build/build-img.ps1 -- and
 # a disagreement is silent: the stick carries one type, the guest looks for
@@ -310,7 +327,7 @@ if (Test-Path $chkFactsGuid) {
 # Counts in the docs go stale, and "never carry a count forward" is written in
 # three places and enforced in none. check-doc-counts.ps1 is the reader; on a
 # clean tree it found six false claims, one of them wrong by thirty tests.
-#
+# 
 # OPT-IN, and deliberately so. Turning it on for everyone is a decision about
 # everyone's gate. It is on when either is true:
 #   $env:CODEX_CHECK_DOC_COUNTS = '1'      per run
@@ -328,6 +345,7 @@ if ($countsOn -and (Test-Path $chkCounts)) {
     }
 }
 
+
 # IRTextParser calls itself the inverse of IRTextEmitter and is not: the
 # emitter can write forms the parser reads as a plausible DEFAULT rather than
 # an error. x86-64 never crosses this wire, so no x86 test and no fixed point
@@ -343,6 +361,7 @@ if (Test-Path $chkWire) {
     }
 }
 
+
 Write-Host 'The latest in a series of personal crises seems insurmountable.'
 Write-Host 'You are being pulled apart in all directions.'
 Write-Host ''
@@ -356,6 +375,7 @@ Write-Host 'Yet this afternoon walk in the countryside slowly brings relaxation'
 Write-Host 'to your harried mind. The soil and strain of modern high-tech living'
 Write-Host 'begins to wash off in layers.'
 Write-Host ''
+
 
 # -- sign
 Copy-Item -Force $SutCdx (Join-Path $Repo 'build-output\bare-metal\Codex.cdx')
@@ -418,6 +438,7 @@ Section: Body
 }
 }
 
+
 Write-Host 'That willow tree near the stream looks comfortable and inviting.'
 
 # -- canary
@@ -456,6 +477,19 @@ Write-Host 'You settle beneath it and the buzz of dragonflies and the whisper'
 Write-Host 'of the willow''s swaying branches bring a deep peace.'
 Write-Host ''
 
+
+# -- the jonquil: IR quine visibility check. The trusting-trust defense holds
+# because a payload that survives the diverse rebuild must reach the readable
+# IR and is therefore visible as text. This enforces that: emit the certified
+# compiler's own IR and fail if any def re-emits itself (the DDC-QUINE-ARM
+# construction). Tripwire only, not the DDC witness; see build/jonquil.ps1.
+Measure-Phase 'jonquil' {
+    $jonquilScript = Join-Path $PSScriptRoot 'jonquil.ps1'
+    & pwsh -NoProfile -File $jonquilScript -Kernel $SutCdx -Src $CodexSrc -WorkDir (Join-Path $OutDir 'quine-check')
+    if ($LASTEXITCODE -ne 0) { exit 1 }
+}
+
+
 # -- size sanity check
 $seedSize = (Get-Item $SeedCdx).Length
 $sutSize = (Get-Item $SutCdx).Length
@@ -469,6 +503,7 @@ if ($drift -gt $maxDrift) {
 
 $textStage1 = Join-Path $OutDir 'stage1.codex'
 $textStage2 = Join-Path $OutDir 'stage2.codex'
+
 
 Write-Host 'Searching inward for tranquility and happiness, you close your eyes.'
 Measure-Phase 'text-stage1' {
@@ -492,6 +527,7 @@ Write-Host 'A high-pitched cascading sound like crystal wind-chimes impinges'
 Write-Host 'on your floating awareness.'
 Write-Host ''
 
+
 Measure-Phase 'text-stage2' {
     if (-not (Invoke-BuildText -InputFile $textStage1 -Kernel $SutCdx -Output $textStage2)) { exit 1 }
 }
@@ -506,6 +542,7 @@ Measure-Phase 'text-fixedpoint' {
         exit 1
     }
 }
+
 
 Write-Host 'As you open your eyes, you see a shimmering blueness rise from the ground.'
 Write-Host ''
@@ -537,6 +574,7 @@ Measure-Phase 'cdx-fixedpoint' {
     }
 }
 
+
 Write-Host 'Light seems to bend and distort around it, while the sound waves'
 Write-Host 'become so intense, they appear to become visible.'
 Write-Host ''
@@ -557,6 +595,7 @@ Measure-Phase 'test-bvt' {
         exit 1
     }
 }
+
 
 # -- the differential oracles: operator correctness against the HOST. The
 # fixed point cannot see an operator that is uniformly wrong, because it
@@ -581,12 +620,13 @@ Measure-Phase 'oracles' {
     }
 }
 
+
 # -- binary backend plugs: must build clean with the just-proven compiler.
 # Native code-emitting backends only (riscv/arm64/t3isa/elf/pe/img). The
 # transpiler/text plugs are secondary outputs and are NOT gated here. Plug
 # CDX is untracked build-output, so without this gate a compiler tightening
 # silently dark-ships every backend until someone rebuilds one by hand.
-#
+# 
 # t3isa emits balanced-ternary words for a 27-trit machine and belongs here
 # for the same reason as the rest. Only its BUILD is gated: its own gate
 # needs an external emulator that lives on one machine, and nothing here
@@ -616,6 +656,7 @@ Measure-Phase 'plug-binary' {
     }
 }
 
+
 # -- cross-arch execution: the binary leg above proves the arm64 and riscv
 # plugs BUILD, and nothing ran a byte of what they emit. That is how CL 8221
 # put a PSCI call in every ARM64 program's __start, killed the whole ARM64
@@ -633,6 +674,7 @@ Measure-Phase 'cross-smoke' {
         }
     }
 }
+
 
 # -- transpiler plug smoke: a representative subset must RUN end-to-end
 # (SUT IR -> framed TCP wire -> plug VM -> non-empty target text). The binary
@@ -672,6 +714,7 @@ Measure-Phase 'plug-smoke' {
     }
 }
 
+
 # -- the Shell DSL generators: codex/build/*Script.codex compile with the
 # just-proven compiler and emit the scripts the build itself runs on. Nothing
 # observed that. The deck-short miscompile emitted CORRUPT generator output
@@ -681,7 +724,7 @@ Measure-Phase 'plug-smoke' {
 # emitter answers `# <unknown-cmd>` for a node it does not handle instead of
 # failing, so a node added to ShellTypes and forgotten in BashEmit produces a
 # script that is wrong rather than missing.
-#
+# 
 # 26 of 42 generators were already behind their shipped script when this
 # became a gate, and porting each drift back by hand is a campaign. Those are
 # recorded in build/generated-scripts-baseline.txt and do not fail the build.
@@ -697,6 +740,7 @@ Measure-Phase 'gen-scripts' {
         }
     }
 }
+
 
 # -- two independent VM hosts, one source, compared byte for byte. This is a
 # TRUST check, not a correctness one: QEMU is a third-party binary whose
@@ -719,12 +763,13 @@ Measure-Phase 'vm-differential' {
     }
 }
 
+
 # -- deck headroom. These 47 units are every one in the tree under 2.0x margin;
 # the next tightest is 2.13x, in codex/foreword, which this does not cover.
 # 1.25 trips codex/build at 52 points and the compiler's own unit at 80, about
 # 20 per cent above each one's current requirement. Rationale, corpus numbers
 # and the cost of raising the floor are in ProportionalDecks.md.
-#
+# 
 # It runs HERE because it needs the compiler this run built and must not touch
 # build-output\bare-metal\Codex.cdx: by this point SUT === seed is proven, and
 # app-sweep below clobbers the bare-metal copy. 23s over 47 units.
@@ -744,6 +789,7 @@ Measure-Phase 'deck-headroom' {
     }
 }
 
+
 # -- the apps are the extended pin on the compiler: 267 entry chapters
 # against build/app-sweep-baseline.txt, which names the units known not to
 # compile and the reason. Anything dirty and not in that file is a compiler
@@ -751,7 +797,7 @@ Measure-Phase 'deck-headroom' {
 # NOTHING, so it caught nothing: the cons-typed-as-its-element miscompile
 # (main 13839) turned RadioStationMain dirty the day CL 13483 landed and
 # sat a full day unobserved.
-#
+# 
 # It runs LAST because it copies seed\Codex.cdx over
 # build-output\bare-metal\Codex.cdx to compile with, which would clobber
 # the stage0 the fixed-point phases are comparing. By here SUT === seed is
@@ -772,6 +818,7 @@ Measure-Phase 'app-sweep' {
         $swOut | Where-Object { $_ -match 'units:|CHECK|elapsed:' } | ForEach-Object { Write-Host "  $_" }
     }
 }
+
 
 Write-Host 'Something remains suspended in mid-air for a moment before falling'
 Write-Host 'to earth with a heavy thud.'

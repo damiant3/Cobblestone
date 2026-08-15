@@ -188,8 +188,16 @@ foreach ($s in $specs) {
     # Fired deliberately 2026-08-06 by deleting the ScReadBytes arm from
     # PowerShellEmit: the row moved to UNHANDLED NODES (1) and the check
     # failed, so the scan is not decoration.
+    # Match the stub FORMS, not the token anywhere in the text. The command
+    # stub is a whole line (`pad & "# <unknown-cmd>"`, PowerShellEmit:245 and
+    # BashEmit:112) and the expression stub is quoted (`"<unknown-expr>"`,
+    # PowerShellEmit:416). A bare substring search also matched a generated
+    # script's own PROSE about the stub: build.ps1's gen-scripts comment
+    # explains what `# <unknown-cmd>` means, so the moment that comment was
+    # generated rather than hand-written, the leg reported the build generator
+    # as broken. The check was describing itself.
     $madeText = Get-Content $emitted -Raw
-    $stubs = @([regex]::Matches($madeText, '<unknown-(?:cmd|expr)>')).Count
+    $stubs = @([regex]::Matches($madeText, '(?m)^[ \t]*# <unknown-cmd>[ \t]*$|"<unknown-expr>"')).Count
     if ($stubs -gt 0) {
         $rows += [pscustomobject]@{ Emits = $s.Emits; Status = "UNHANDLED NODES ($stubs)"; Lines = 0; Drift = $stubs }
         continue

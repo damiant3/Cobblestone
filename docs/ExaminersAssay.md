@@ -349,6 +349,27 @@ blocker) -- so a wrong summary on a correctly-named, correctly-raised code
 still passes. What it stops is the structural rot: a code with no
 documentation, and a table that describes codes the compiler no longer emits.
 
+**It scanned column-2 PROSE as though it were code, and that is the false
+green referred to elsewhere in this document.** The raise-site scan was a
+`cdx-[a-z0-9-]+` regex over every line of every `.codex` under
+`codex/compiler`, and it did not distinguish code from prose. `opening.codex`
+carried a sentence reading *"held the compiler's ONLY raise of
+`cdx-missing-cite`, so the code read as"* -- so **the sentence reporting that
+the raise site had been deleted was counted as the raise site**, and it was the
+only mention of that constant outside the catalogue. The row stayed green for
+13 days over a diagnostic nothing could raise. Fixed main 12435: skip column-2
+prose, and also scan host scripts for `error <N>:`, since `compile.ps1` and
+`test-compile-batch.ps1` raise CDX3010 as a bare literal with no `CDX` prefix.
+
+**The consequence for anyone deleting prose under CLAUDE.md rule 12: deleting
+prose can turn a gate RED.** Not because prose reaches the binary -- it does
+not -- but because a text-scanning HOST checker may be counting it. Expect that
+class, and read the red as the check finally telling the truth rather than as
+your deletion breaking something. The near-miss is worth the same warning: the
+first instinct on seeing the row go dead is to delete the registry row, and
+that would have deleted a live diagnostic. A survey is a claim bounded by the
+pattern you gave it; three spellings were searched and the code used a fourth.
+
 ## Current State (2026-07-13, seed 5A6B432B...)
 
 Both batteries were re-run from scratch on 2026-07-13. **These are
@@ -383,7 +404,7 @@ in this document is only ever the number some run actually produced; per-test
 re-measurement retires the rows it covers and does not license editing a
 total nobody measured. Re-run before trusting any of these figures.
 
-`codex/test/errors/` holds **173** expected-failure tests (measured
+`codex/test/errors/` holds **174** expected-failure tests (measured
 2026-08-10).
 
 ## What the standing gate does not cover
@@ -432,6 +453,13 @@ compare; by then SUT === seed is proven, so the seed it picks up is the
 compiler that run built. Both arms were proven before it was wired in: a
 sabotaged entry chapter turns the gate red naming it, and reverting turns
 it green. Cost measured 2026-08-06: 191 s of a 517 s gate.
+
+**The sweep compiles ENTRY chapters, and that is the shape of its gap.** A
+ported chapter with no `opening` and no citer is compiled by NOTHING in the
+gate: not by the sweep, which never reaches it, and not by the fixed-point
+phases, which only see what the compiler cites. It is not a silent failure, it
+is a silent absence, so the app going green says nothing about it. After
+porting a chapter, confirm something cites it or give it an entry point.
 
 **Six app entry points do not compile DELIBERATELY** and are catalogued
 with their reasons in `build/app-sweep-baseline.txt`. Read that file
@@ -534,6 +562,24 @@ and the reason for each entry are in `build/bvt.ps1` itself, which is the
 register -- count it there rather than quoting a number from here. That is
 the standing gate. The full battery (`build/test.ps1`) is Damian's tool and
 is not an agent command.
+
+**Do not add tests to `build/build.ps1` or `build/test.ps1`.** Damian's
+2026-07-27 ruling in its general form: *"the standard tests are plenty
+enough... the cost of discovery and fixup is lower than the cost of
+continuous maintenance."* Gate time is the scarcest shared resource. A
+standing test is paid by every agent on every run forever; a rotted one costs
+a single repair on the day somebody needs it, and that trade is why the
+coverage gate above was declined too.
+
+Three consequences worth stating, because each has been argued the wrong way:
+
+- **An orphan test that nothing runs is a deliberate tradeoff, not a
+  defect.** Do not adopt one into a harness to "fix" it.
+- **Anything phrased as "X runs under no harness" is a question for Damian,
+  not a work item**, and the default answer is no.
+- **A CDX verifier is not coverage machinery** -- always-on, microseconds,
+  halts the build on a wrong byte -- and stays in scope. The rule is about
+  tests that cost gate time, not about structural checks on an artifact.
 
 ### Foreword Battery (`build/test.ps1 -FW`)
 
@@ -2383,6 +2429,152 @@ CHECK, before the IR passes. Only the callee's own budget is lost, and the site
 that knows a punctual definition ended up bodyless is the emit-time dead-code
 prune, not the inliner.
 
+## The Receive Checksum (`codex/test/tcp-checksum-refuse`)
+
+Until 2026-08-15 nothing in `codex/os/net` verified a checksum on the way IN.
+`tcp-with-checksum` and `ip-checksum` were build-only, so a corrupted segment
+reached the parser unchallenged, and that is why the PR 64 DMA truncation --
+one byte of the previous frame substituted into every odd-length receive --
+was silent rather than diagnosed. Two independent defects, and the missing
+checker is why the first was invisible.
+
+**The arm exists because a checker that accepts everything and a checker that
+works are indistinguishable on well-formed traffic.** It flips one bit of one
+payload byte AFTER `tcp-with-checksum` has run, so the stored field is correct
+for the bytes the sender had and wrong for the bytes the receiver gets, and
+requires the segment refused. The control is the identical frame with the flip
+omitted and requires it delivered. A third arm corrupts the IP source address
+instead, a fourth truncates the frame, and two more call `tcp-checksum-valid`
+directly on a properly built segment and on a zero-checksum one.
+
+**The truncation arm found a crash, and it is the half a checksum cannot
+cover.** The checksum is computed over the bytes that ARRIVED, and on a
+DMA-truncated frame the IP header is one of them: it validates, while
+`total-length` still claims bytes that are not there, and `ip-payload` walks
+past the end of the list. Measured 2026-08-15 on a frame cut by six bytes,
+before `ip-length-valid` existed:
+
+```
+cut-ip-header-valid=True
+cut-claimed-total=58
+cut-actual-ip-bytes=52
+about-to-process
+!EXC=06 RIP=000000000010b739 ... R12=0000000000000034 R13=000000000000003a
+```
+
+`R12` is 52 and `R13` is 58, the two numbers that disagree. It never reached
+`survived`. That is a remotely reachable guest crash on the receive path, it is
+exactly the PR 64 truncation shape, and it was reachable before this work as
+well -- the checksum check did not introduce it and could not have caught it.
+`ip-length-valid` is a separate predicate from `ip-header-valid` so the two
+report as `bad-ip-length` and `bad-ip-checksum` rather than as one verdict:
+truncation and corruption send an operator to different places. Claimed length
+UNDER actual is normal and passes, because Ethernet pads every frame to 60
+bytes, which is why the live tests are unaffected.
+
+**The ablation is the evidence, not the green run.** Measured 2026-08-15 with
+the guard in `net-process-ip` replaced by `if False`:
+
+| line | with the check | ablated |
+|---|---|---|
+| `dirty-verdict` | `bad-tcp-checksum` | `received 18 bytes` |
+| `dirty-bytes` | 0 | 18 |
+| `dirty-emitted` | 0 | 1 |
+
+The ablated run DELIVERS the corrupted 18 bytes to the caller, which is the PR
+64 path itself rather than an analogue of it.
+
+Every control line is unmoved across the ablation, which is what says the three
+that move are measuring the check and not the harness.
+
+**Two traps this arm was written around, both of which cost a revision.** The
+outbox count is taken from a session whose handshake SYN-ACK has been cleared
+(`set-outbox established []`); against an uncleared session both arms read 1
+and the line discriminates nothing. And the refusal is a silent drop rather
+than a dup-ACK, per RFC 1122 4.2.3.2, so `dirty-emitted=0` is the assertion
+that no ACK quotes untrusted header fields back to the peer.
+
+**Eight existing test files had to be repaired, and that is the finding.**
+`tcp-reliability`, `tcp-seqwrap`, `net-io-clock`, `web-server-test` and the
+four `web-mux-*` tests all built inbound frames with `tcp-build-segment`, which
+leaves bytes 16..19 zero, and never called `tcp-with-checksum`. A real peer
+always computes the field and no fixture in the tree did. Each now computes it,
+and **every one of the eight reproduces its existing `.expected` byte for
+byte**, so the repair is faithful rather than an accommodation.
+
+The live path is covered separately and was not disturbed: `cdx-serve-test`
+and `nat-conn-churn-test` both pass with the check active, 80 of 80
+connections answered, because `codex-vm`'s NAT computes a correct
+pseudo-header TCP checksum (`tools/codex-vm.c`, `nat_build_tcp_frame`).
+
+## The Heap Guard Page (`build/guard-page-test.ps1`)
+
+Two arms against the 2 MB unmapped page below the boot stack's reserve: FIRE
+parks the frontier just under it and expects `OUT OF MEMORY`, CONTROL parks
+well clear and expects the program to survive. It is not in the standing gate;
+run it when you touch the guard, the allocator, or `__out_of_memory`.
+
+**The message now names which side ran away.** Measured 2026-08-15 on the SUT,
+the FIRE arm prints
+
+```
+OUT OF MEMORY
+SP=00000000bdfffec8 HEAP=00000000b9e00028
+```
+
+`HEAP` is 0x28 past the guard page address the harness computes independently
+(3118465024 = 0xB9E00000), so the reading is heap-ran-away with the stack 67 MB
+clear. Before this the line was bare `OUT OF MEMORY` and `OperatorsManual`
+records that it "has repeatedly been read as heap exhaustion" when it fires
+equally for a stack descending into the heap.
+
+**A third arm, LEAP, was RETIRED 2026-08-15, and what it covered is now
+uncovered.** It ran the whole-compiler `-IrCce` emit on the premise that the
+emit overruns the guard. That was true on 2026-08-04 and is not true now:
+measured 2026-08-15, the emit COMPLETES, writing a 15.7 MB `leap.ir` at a peak
+frontier of 1,305,881,760 bytes against a guard at 2,974 MB, 1.6 GB of
+headroom. The arm expected `OUT OF MEMORY`, got neither that nor a crash, and
+took its third branch, so **a healthy tree reported FAILED**.
+
+The script's own header already carried the refutation -- "the compiler's own
+peak frontier is ~1245 MB against a guard page at ~2974 MB" -- and that 1245 MB
+IS the retired arm's peak, stated four lines above the claim it contradicts.
+The arm had lost its subject rather than caught a regression (L-INSTRUMENT).
+
+**It was retired rather than kept red, because the signal was inverted.** The
+arm passed ONLY when the emit overran, so red was the healthy state and green
+would have meant the compiler got more expensive. A permanently red arm also
+trains the reader to discount reds, which is the argument `Build.md` makes for
+keeping the handwritten-scripts inventory report-only rather than a gate.
+
+**Re-aiming was tried and rejected on measurement.** Lowering `-MemMB` brings
+the guard down to the workload -- at 1280 MB it sits at 1,272,971,264, below
+the peak -- and the emit does then answer `OUT OF MEMORY`. But at that size the
+compiler legitimately needs more memory than exists, so the trip is correct
+behaviour rather than a runaway being caught, and the arm cannot distinguish
+them. That is the defect that got the `-Decks 450` arm rejected on 2026-08-04:
+at `-Decks 450` R10 lands above RSP immediately and the pre-existing prologue
+`cmp rsp, r10` catches it, so it prints `OUT OF MEMORY` against a compiler with
+no guard page at all. The 1280 MB run also printed no `SP=`/`HEAP=` line, so it
+was never even shown to have come through `__out_of_memory`.
+
+**State the hole rather than the arm count.** FIRE parks the frontier
+synthetically. Nothing now exercises the guard page under a genuine allocation
+walk, and restoring that needs a workload which overruns at NORMAL memory --
+which this tree no longer has.
+
+**The harness could not run at all until 2026-08-15, on any box where
+`QEMU_BIN` was unset.** `build/vm-config.ps1` used `$root` as a `foreach`
+variable in its QEMU side-load discovery, and a dot-source runs in the caller's
+scope, so it overwrote the caller's `$root` with `C:\` and the script died on
+`Cannot find path 'C:\build\guard-page-probe.codex'` before its first arm. Of
+the 19 build scripts that dot-source `vm-config.ps1`, this was the only one
+affected, because it is the only one that assigns `$root` BEFORE the dot-source
+and reads it after; `test-disk-compile.ps1` assigns after and overwrote the
+leaked value. Renamed to `$qroot`. The general shape is worth keeping: **a
+dot-sourced script shares the caller's scope, so every loop variable in one is
+part of its interface.**
+
 ## The IoT Protocols Against Foreign Implementations
 
 Two harnesses, both on-demand (they boot VMs and third-party servers), both
@@ -2682,7 +2874,17 @@ a regression.
 **`-Accept` records whatever the compiler just did, including whatever it did
 wrong** -- the same hazard as `test-gui.ps1 -Accept` and the same rule: it
 prints the delta it is about to accept, and you read every line before you
-take it. Register assignment legitimately moves on any allocator or selector
+take it. **The discriminator is not "did the number change" and not "is the
+code current": it is whether the new values are verified by something OTHER
+than the run that produced them.** A documented true value, a hand-computable
+check, a stated intent -- any one will do. Two calls the same day went opposite
+ways on it: `neural-test` re-minted correctly, because the old goldens had been
+minted while the activations were wrong in SHAPE and the new ones were
+checkable by hand (`sigmoid(1) = 0.7311 -> 731`); `files-parse` would have
+baked a defect in, because the new panel geometry had never been confirmed as
+intended. Absent an independent check, confirm the new behaviour is INTENDED
+before re-deriving anything from it, and bisect per file rather than assuming
+one cause covers every golden that moved. Register assignment legitimately moves on any allocator or selector
 change, so this pin is expected to need re-recording; that is what makes
 reading the diff the whole discipline rather than a formality.
 
@@ -2736,7 +2938,7 @@ as a green that means nothing.**
 
 ## Expected-Failure Tests
 
-173 tests in `codex/test/errors/` verify that the compiler rejects
+174 tests in `codex/test/errors/` verify that the compiler rejects
 invalid programs with the correct diagnostic codes. Each has a
 `.failing` sidecar listing the expected CDX error codes. Examples:
 `apply-non-function` (CDX2001), `duplicate-def` (CDX3002),

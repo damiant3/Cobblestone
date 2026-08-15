@@ -292,8 +292,11 @@ repaired:
 2. **`ram-size-addr` (cell 4072) was never initialised, and that is what
    made the failure invisible.** Every panic path begins by relocating
    the stack to `[4072]`: `__out_of_memory`, `__watchdog_panic` and
-   `emit-cpu-exception-dump` all do `mov rsp, [4072]`. Bare-metal
-   `__start` fills it; this stub did not, so the cell held zero, RSP
+   `emit-cpu-exception-dump` all do `mov rsp, [4072]`. Nothing in the
+   compiler fills it -- `__start` only loads RSP from it
+   (`X86_64Chapter.codex:376-377`) -- so on bare metal the harness writes
+   it before the guest runs (`codex-vm.c:13576`, or `-device
+   loader,addr=0xfe8` under QEMU). This stub did not, so the cell held zero, RSP
    became 0, and the handler's first push took `#PF` at `CR2 = -8`, then
    `#DF`, then a triple fault. **The guest was correctly detecting a
    stack/heap collision and calling the handler that exists to say so;

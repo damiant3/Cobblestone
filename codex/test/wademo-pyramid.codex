@@ -1,0 +1,110 @@
+Chapter: WaDemoPyramidTest
+  cites WaDemo chapter WaBulk
+  cites WaDemo chapter WaSchema
+  cites Data chapter Schema
+  cites Data chapter Catalog
+  cites Data chapter RelAlgebra
+  cites Data chapter Executor
+  cites Data chapter Row
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+Section: Fixture
+
+ Twenty single-year ages, both sexes, one county, one year. Persons is
+ (age + 1) * 10 + sex, so every band total is checkable by hand.
+
+  n-ages : Integer = 20
+  the-county : Integer = 1
+  the-year : Integer = 2020
+
+  load-facts : WaBulk, Integer -> WaBulk
+  load-facts (st) (i) =
+    if i >= n-ages * 2 then st
+    else let age = i / 2
+    in let sex = i - age * 2
+    in load-facts (wa-emit st the-county the-year sex age (the-year - age) True ((age + 1) * 10 + sex)) (i + 1)
+
+Section: The Banding
+
+ Zero-padded so lexical order is numeric order and the pyramid reads bottom up
+ without a sort key that the group-by would have to carry.
+
+  band-label : Integer -> Text
+  band-label (age) =
+    let lo = (age / 5) * 5
+    in pad2 lo & "-" & pad2 (lo + 4)
+
+  pad2 : Integer -> Text
+  pad2 (n) = if n < 10 then "0" & show n else show n
+
+  load-bands : Catalog, Integer -> Catalog
+  load-bands (cat) (age) =
+    if age >= n-ages then cat
+    else let schema = table-schema wa-def-band
+    in let r = catalog-insert-row cat wa-t-band (row-new schema [
+      ValInteger wa-banding-quinquennial, ValText "quinquennial", ValInteger age,
+      ValText (band-label age), ValInteger ((age / 5) * 5), ValInteger ((age / 5) * 5 + 4),
+      ValInteger (age / 5)
+    ])
+    in load-bands (r.cir-cat) (age + 1)
+
+Section: The Query
+
+ The pyramid, as relational algebra. The banding is a JOIN rather than a
+ computed group key, because `RelGroup` groups by column names only.
+
+  pyramid-plan : RelOp
+  pyramid-plan =
+    let p-county = PredColCmp "county_id" CmpEq (ValInteger the-county)
+    in let p-year = PredColCmp "year" CmpEq (ValInteger the-year)
+    in let p-band = PredColCmp "banding_id" CmpEq (ValInteger wa-banding-quinquennial)
+    in let facts = RelFilter (RelScan wa-t-population) (PredAnd p-county p-year)
+    in let bands = RelFilter (RelScan wa-t-band) p-band
+    in let joined = RelEquiJoin facts bands ["age_id"] ["age_id"]
+    in let agg = AggSpec { agg-func = AggSum "persons", agg-alias = "persons" }
+    in let grouped = RelGroup joined ["sex_id", "band_label"] [agg]
+    in RelSort grouped [SortSpec { sort-col = "band_label", sort-dir = SortAsc }, SortSpec { sort-col = "sex_id", sort-dir = SortAsc }]
+
+Section: Reporting
+
+  int-of : ColumnValue -> Integer
+  int-of (v) = when v
+    is ValInteger (n) -> n
+    is otherwise -> 0 - 1
+
+  text-of : ColumnValue -> Text
+  text-of (v) = when v
+    is ValText (t) -> t
+    is otherwise -> "?"
+
+  show-rows : List RowData, Integer, Integer -> Text
+  show-rows (rows) (i) (n) =
+    if i >= n then ""
+    else let r = list-at rows i
+    in "  " & text-of (row-get-by-name r "band_label")
+      & " sex " & show (int-of (row-get-by-name r "sex_id"))
+      & " = " & show (int-of (row-get-by-name r "persons"))
+      & (if i + 1 < n then "\n" else "")
+      & show-rows rows (i + 1) n
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+   let schema = table-schema wa-def-population
+   in let created = wa-create-schema catalog-new
+   in let bulk = load-facts (wa-bulk-new schema) 0
+   in let cat1 = wa-bulk-install (created.wcr-cat) wa-t-population bulk
+   in let cat2 = load-bands cat1 0
+   in let plan-text = rel-op-name pyramid-plan
+   in let result = query cat2 pyramid-plan
+   in act
+    print-line-uni ("facts: " & show (catalog-table-row-count cat2 wa-t-population))
+    print-line-uni ("bands: " & show (catalog-table-row-count cat2 wa-t-band))
+    print-line-uni ("plan top: " & plan-text)
+    print-line-uni ("query ok: " & show (result.qr-ok) & " " & result.qr-msg)
+    print-line-uni ("groups: " & show (result.qr-count))
+    print-line-uni (show-rows (result.qr-rows) 0 (result.qr-count))
+   end
+  end
