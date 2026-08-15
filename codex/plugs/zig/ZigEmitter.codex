@@ -75,6 +75,32 @@ Section: Type Mapping
    in if e.codex-name == name then e.zig-name
       else zig-lookup-type entries name (i + 1)
 
+ A generic type is emitted as a zig function from types to a type, and every
+ reference passes its arguments, so `Maybe Token` becomes `Maybe(Token)`.
+ Zig instantiates and memoises one concrete union per argument list, which is
+ monomorphisation with zig keeping the books -- and every signature that
+ mentions the type stays concrete, so a mistake is a compile error here
+ rather than something inferred and silently different.
+
+  zig-type-args : List CodexType -> Text
+  zig-type-args (args) =
+   if list-length args == 0 then ""
+   else "(" & zig-type-args-loop args 0 & ")"
+
+  zig-type-args-loop : List CodexType, Integer -> Text
+  zig-type-args-loop (args) (i) =
+   if i >= list-length args then ""
+   else let one = emit-zig-type (list-at args i)
+   in if i == list-length args - 1 then one
+      else one & ", " & zig-type-args-loop args (i + 1)
+
+  zig-tparam-params : List Name, Integer -> Text
+  zig-tparam-params (ps) (i) =
+   if i >= list-length ps then ""
+   else let one = "comptime " & zig-sanitize ((list-at ps i).value) & ": type"
+   in if i == list-length ps - 1 then one
+      else one & ", " & zig-tparam-params ps (i + 1)
+
   emit-zig-type : CodexType -> Text
   emit-zig-type (ty) =
    when ty
@@ -96,8 +122,8 @@ Section: Type Mapping
     is EffectfulTy (effs) (scopes) (inner) -> emit-zig-type inner
     is ForAllEff (c) (inner) -> emit-zig-type inner
     is RecordTy (n) (a) (f) -> zig-sanitize (n.value)
-    is SumTy (n) (a) (c) -> zig-sanitize (n.value)
-    is ConstructedTy (n) (a) -> zig-sanitize (n.value)
+    is SumTy (n) (a) (c) -> zig-sanitize (n.value) & zig-type-args a
+    is ConstructedTy (n) (a) -> zig-sanitize (n.value) & zig-type-args a
     is TypeCon (n) -> zig-sanitize (n.value)
     is otherwise -> "anyopaque"
 
@@ -370,8 +396,37 @@ Section: Builtin Emitter
     is EffectfulTy (effs) (scopes) (inner) -> zig-ll-elem inner
     is otherwise -> "i64"
 
+ __record-set names its field with a text literal, so the field is known
+ here and becomes a real field access rather than anything dynamic. The
+ record is copied and the field replaced: for a value record that yields a
+ new value, and for a mutable record -- which this emitter represents as a
+ pointer -- copying the pointer and storing through it mutates in place,
+ which is what bare metal does. A non-literal field name cannot be
+ compiled at all, so it becomes a zig compile error rather than a guess.
+
+  zig-record-set-field : IRExpr -> Text
+  zig-record-set-field (e) =
+   when e
+    is IrTextLit (s) (sp) -> zig-field-name s
+    is otherwise -> "@compileError(\"__record-set needs a literal field name\")"
+
+  zig-record-set : List IRExpr, ZigCtx, Integer -> Text
+  zig-record-set (args) (ctx) (d) =
+   let tmp = "_r" & integer-to-text d
+   in zig-label d & ": { var " & tmp & " = " & emit-zig-expr (list-at args 0) ctx (d + 1)
+    & "; " & tmp & "." & zig-record-set-field (list-at args 1)
+    & " = " & emit-zig-expr (list-at args 2) ctx (d + 1)
+    & "; break :" & zig-label d & " " & tmp & "; }"
+
   zig-builtin-emitters : List ZigBuiltinEmitter =
    sort-zig-builtins [
+    ZigBuiltinEmitter { name = "__record-set", emit = \args ctx d ty -> zig-record-set args ctx d },
+    ZigBuiltinEmitter { name = "text-starts-with", emit = \args ctx d ty -> "cx_text_starts_with(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "text-contains", emit = \args ctx d ty -> "cx_text_contains(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "text-concat-list", emit = \args ctx d ty -> "cx_text_concat_list(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "text-to-integer", emit = \args ctx d ty -> "cx_text_to_integer(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "text-split", emit = \args ctx d ty -> "cx_text_split(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "list-set-at", emit = \args ctx d ty -> "cx_list_set_at(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "print-line", emit = \args ctx d ty -> "cx_print_line(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "print-line-raw", emit = \args ctx d ty -> "cx_print_line(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "print-line-uni", emit = \args ctx d ty -> "cx_print_line(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
@@ -510,17 +565,64 @@ Section: Type Definition Emission
       & "const " & zig-sanitize (name.value) & " = *" & zig-sanitize (name.value) & "S;\n\n"
      else emit-zig-record-type (name.value) fields
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
-     emit-zig-sum-type (name.value) ctors
+     emit-zig-sum-type (name.value) ctors tparams
     is AUnitTypeDef (name) (unitbase) (s) -> ""
 
  All-nullary variants become plain enums so tag comparison and member
  references work directly; any payload forces union(enum), with a
  tuple struct for multi-field constructors.
 
-  emit-zig-sum-type : Text, List AVariantCtorDef -> Text
-  emit-zig-sum-type (name) (ctors) =
-   if variant-all-nullary ctors 0
+ A variant whose constructor payload holds the variant itself has no finite
+ size in zig, so such a type becomes a pointer alias -- the same shape the
+ mutable records already use here. Only a direct payload counts: a List of
+ the type is a pointer already and does not force boxing.
+
+  zig-atype-is-named : ATypeExpr, Text -> Boolean
+  zig-atype-is-named (te) (n) =
+   when te
+    is ANamedType (nm) (s) -> nm.value == n
+    is otherwise -> False
+
+  zig-ctor-fields-self-ref : List ATypeExpr, Integer, Text -> Boolean
+  zig-ctor-fields-self-ref (fs) (i) (n) =
+   if i >= list-length fs then False
+   else if zig-atype-is-named (list-at fs i) n then True
+   else zig-ctor-fields-self-ref fs (i + 1) n
+
+  zig-variant-self-recursive : Text, List AVariantCtorDef, Integer -> Boolean
+  zig-variant-self-recursive (n) (ctors) (i) =
+   if i >= list-length ctors then False
+   else if zig-ctor-fields-self-ref ((list-at ctors i).fields) 0 n then True
+   else zig-variant-self-recursive n ctors (i + 1)
+
+  zig-typedef-recursive-loop : List ATypeDef, Integer, Text -> Boolean
+  zig-typedef-recursive-loop (tds) (i) (n) =
+   if i >= list-length tds then False
+   else when (list-at tds i)
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     if name.value == n then zig-variant-self-recursive n ctors 0
+     else zig-typedef-recursive-loop tds (i + 1) n
+    is otherwise -> zig-typedef-recursive-loop tds (i + 1) n
+
+  zig-typedef-recursive : ZigCtx, Text -> Boolean
+  zig-typedef-recursive (ctx) (n) = zig-typedef-recursive-loop (ctx.typedefs) 0 n
+
+  zig-match-deref : ZigCtx, CodexType -> Text
+  zig-match-deref (ctx) (ty) =
+   when ty
+    is SumTy (n) (a) (c) -> if zig-typedef-recursive ctx (n.value) then ".*" else ""
+    is otherwise -> ""
+
+  emit-zig-sum-type : Text, List AVariantCtorDef, List Name -> Text
+  emit-zig-sum-type (name) (ctors) (tparams) =
+   if list-length tparams > 0
+   then "fn " & zig-sanitize name & "(" & zig-tparam-params tparams 0 & ") type {\n    return union(enum) {\n"
+      & emit-zig-union-ctors ctors 0 (list-length ctors) & "    };\n}\n\n"
+   else if variant-all-nullary ctors 0
    then "const " & zig-sanitize name & " = enum {\n" & emit-zig-enum-ctors ctors 0 (list-length ctors) & "};\n\n"
+   else if zig-variant-self-recursive name ctors 0
+   then "const " & zig-sanitize name & "S = union(enum) {\n" & emit-zig-union-ctors ctors 0 (list-length ctors) & "};\n"
+      & "const " & zig-sanitize name & " = *" & zig-sanitize name & "S;\n\n"
    else "const " & zig-sanitize name & " = union(enum) {\n" & emit-zig-union-ctors ctors 0 (list-length ctors) & "};\n\n"
 
   emit-zig-enum-ctors : List AVariantCtorDef, Integer, Integer -> Text
@@ -724,7 +826,7 @@ Section: Match Emission
 
   emit-zig-match : IRExpr, List IRBranch, ZigCtx, Integer -> Text
   emit-zig-match (scrut) (branches) (ctx) (d) =
-   "switch (" & emit-zig-expr scrut ctx (d + 1) & ") { " & emit-zig-match-arms branches 0 ctx d & " }"
+   "switch (" & emit-zig-expr scrut ctx (d + 1) & zig-match-deref ctx (zig-expr-type scrut) & ") { " & emit-zig-match-arms branches 0 ctx d & " }"
 
   emit-zig-match-arms : List IRBranch, Integer, ZigCtx, Integer -> Text
   emit-zig-match-arms (branches) (i) (ctx) (d) =
@@ -747,7 +849,7 @@ Section: Match Emission
       let binder = zig-pat-binder (list-at subs 0) 0
       in if (binder == "_") | (zig-occurs body binder == False)
          then "." & zig-sanitize name & " => " & emit-zig-expr body ctx (d + 1) & ", "
-         else "." & zig-sanitize name & " => |" & binder & "| " & emit-zig-expr body ctx (d + 1) & ", "
+         else "." & zig-sanitize name & " => |" & zig-sanitize binder & "| " & emit-zig-expr body ctx (d + 1) & ", "
      else if zig-any-sub-occurs subs 0 body == False
      then "." & zig-sanitize name & " => " & emit-zig-expr body ctx (d + 1) & ", "
      else "." & zig-sanitize name & " => |_p" & integer-to-text d & "| " & zig-label d & ": { " & emit-zig-pat-unpack subs 0 d body & "break :" & zig-label d & " " & emit-zig-expr body ctx (d + 1) & "; }, "
@@ -762,10 +864,17 @@ Section: Match Emission
    in if (binder == "_") == False & zig-occurs body binder then True
       else zig-any-sub-occurs subs (i + 1) body
 
+ The binder comes back as the IR spells it, not as zig spells it, because
+ its first job is to be looked up in the IR by zig-occurs. Sanitizing here
+ instead made every hyphenated binder invisible to that lookup -- `st-effs`
+ was searched for as `st_effs`, never found, and its capture was dropped as
+ unused, so the arm referred to a name it had not bound. Callers sanitize at
+ the point of emission.
+
   zig-pat-binder : IRPat, Integer -> Text
   zig-pat-binder (p) (i) =
    when p
-    is IrVarPat (name) (ty) (sp) -> zig-sanitize name
+    is IrVarPat (name) (ty) (sp) -> name
     is otherwise -> "_"
 
   emit-zig-pat-unpack : List IRPat, Integer, Integer, IRExpr -> Text
@@ -773,7 +882,7 @@ Section: Match Emission
    if i == list-length subs then ""
    else let binder = zig-pat-binder (list-at subs i) i
    in let line = if (binder == "_") | (zig-occurs body binder == False) then ""
-      else "const " & binder & " = _p" & integer-to-text d & "[" & integer-to-text i & "]; "
+      else "const " & zig-sanitize binder & " = _p" & integer-to-text d & "[" & integer-to-text i & "]; "
    in line & emit-zig-pat-unpack subs (i + 1) d body
 
 Section: Act Emission
@@ -827,10 +936,14 @@ Section: Apply Emission
   emit-zig-ctor-apply (c) (args) (ctx) (d) =
    let tname = zig-sanitize (c.type-name)
    in let cname = zig-sanitize (c.ctor-name)
+   in let boxed = zig-typedef-recursive ctx (c.type-name)
+   in let base = if boxed then tname & "S" else tname
+   in let open = if boxed then "cx_new(" else ""
+   in let close = if boxed then ")" else ""
    in if c.enum-like then tname & "." & cname
-   else if list-length args == 0 then tname & "{ ." & cname & " = {} }"
-   else if list-length args == 1 then tname & "{ ." & cname & " = " & emit-zig-expr (list-at args 0) ctx (d + 1) & " }"
-   else tname & "{ ." & cname & " = .{ " & emit-zig-apply-args args ctx d 0 & " } }"
+   else if list-length args == 0 then open & base & "{ ." & cname & " = {} }" & close
+   else if list-length args == 1 then open & base & "{ ." & cname & " = " & emit-zig-expr (list-at args 0) ctx (d + 1) & " }" & close
+   else open & base & "{ ." & cname & " = .{ " & emit-zig-apply-args args ctx d 0 & " } }" & close
 
   emit-zig-call-args : Text, List IRExpr, ZigCtx, Integer, Integer -> Text
   emit-zig-call-args (fname) (args) (ctx) (d) (i) =
@@ -871,7 +984,21 @@ Section: Definition Emission
    else let name = zig-sanitize (d.name)
    in let params-text = emit-zig-def-params (d.params) 0
    in let ret = emit-zig-type (zig-peel-return (d.type-val) (list-length (d.params)))
-   in "fn " & name & "(" & params-text & ") " & ret & " {\n    return " & emit-zig-expr (d.body) ctx 0 & ";\n}\n\n"
+   in "fn " & name & "(" & params-text & ") " & ret & " {\n"
+    & emit-zig-param-discards (d.params) 0 (d.body)
+    & "    return " & emit-zig-expr (d.body) ctx 0 & ";\n}\n\n"
+
+ A parameter the body never mentions is a hard error in zig, not a warning,
+ so a definition that ignores an argument needs the discard written out.
+ The occurs check reads the IR, so the name is compared unsanitized.
+
+  emit-zig-param-discards : List IRParam, Integer, IRExpr -> Text
+  emit-zig-param-discards (params) (i) (body) =
+   if i == list-length params then ""
+   else let p = list-at params i
+   in let line = if zig-occurs body (p.name) then ""
+      else "    _ = " & zig-sanitize (p.name) & ";\n"
+   in line & emit-zig-param-discards params (i + 1) body
 
   emit-zig-def-params : List IRParam, Integer -> Text
   emit-zig-def-params (params) (i) =
@@ -906,6 +1033,13 @@ Section: Chapter Emission
    & "fn cx_is_digit(c: i64) bool {\n    return c >= '0' and c <= '9';\n}\n"
    & "fn cx_new(v: anytype) *@TypeOf(v) {\n    const p = std.heap.page_allocator.create(@TypeOf(v)) catch @panic(\"oom\");\n    p.* = v;\n    return p;\n}\n"
    & "fn cx_concat(a: []const u8, b: []const u8) []const u8 {\n    return std.mem.concat(std.heap.page_allocator, u8, &.{ a, b }) catch @panic(\"oom\");\n}\n"
+   & "fn cx_text_starts_with(s: []const u8, p: []const u8) bool {\n    return std.mem.startsWith(u8, s, p);\n}\n"
+   & "fn cx_text_contains(h: []const u8, n: []const u8) bool {\n    return std.mem.indexOf(u8, h, n) != null;\n}\n"
+   & "fn cx_text_concat_list(l: anytype) []const u8 {\n    var out = std.ArrayListUnmanaged(u8).empty;\n    for (l.items.items) |p| out.appendSlice(std.heap.page_allocator, p) catch @panic(\"oom\");\n    return out.items;\n}\n"
+   & "fn cx_list_set_at(l: anytype, i: i64, v: anytype) @TypeOf(l) {\n    const c = cx_new(@TypeOf(l.*){ .items = .empty });\n    c.items.appendSlice(std.heap.page_allocator, l.items.items) catch @panic(\"oom\");\n    c.items.items[@intCast(i)] = v;\n    return c;\n}\n"
+   & "// Text is CCE here, so a decimal digit is byte 3 + d and minus is 73;\n// parsing this as ASCII would silently read zero.\n"
+   & "fn cx_text_to_integer(s: []const u8) i64 {\n    var acc: i64 = 0;\n    var neg = false;\n    for (s, 0..) |b, i| {\n        if (i == 0 and b == 73) { neg = true; continue; }\n        if (b < 3 or b > 12) continue;\n        acc = acc * 10 + @as(i64, b - 3);\n    }\n    return if (neg) -acc else acc;\n}\n"
+   & "fn cx_text_split(s: []const u8, sep: []const u8) *CxList([]const u8) {\n    const out = cx_ll_empty([]const u8);\n    if (sep.len == 0) return out;\n    var start: usize = 0;\n    while (std.mem.indexOfPos(u8, s, start, sep)) |p| {\n        _ = cx_ll_push(out, s[start..p]);\n        start = p + sep.len;\n    }\n    _ = cx_ll_push(out, s[start..]);\n    return out;\n}\n"
    & "const cce_table = [128]u32{ 0, 10, 32, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 101, 116, 97, 111, 105, 110, 115, 104, 114, 100, 108, 99, 117, 109, 119, 102, 103, 121, 112, 98, 118, 107, 106, 120, 113, 122, 69, 84, 65, 79, 73, 78, 83, 72, 82, 68, 76, 67, 85, 77, 87, 70, 71, 89, 80, 66, 86, 75, 74, 88, 81, 90, 46, 44, 33, 63, 58, 59, 39, 34, 45, 40, 41, 43, 61, 42, 60, 62, 47, 64, 35, 38, 95, 92, 124, 91, 93, 123, 125, 126, 96, 94, 36, 37, 233, 232, 234, 235, 225, 224, 226, 228, 243, 244, 246, 250, 252, 241, 231, 237, 1072, 1086, 1077, 1080, 1085, 1090, 1089, 1088, 1074, 1083, 1082, 1084, 1076, 1087, 1091 };\n"
    & "fn cx_cce_to_cp(c: i64) i64 {\n    if (c < 0 or c >= 128) @panic(\"cce multibyte code-to-char unsupported\");\n    return @intCast(cce_table[@intCast(c)]);\n}\n"
    & "fn cx_cp_to_cce(cp: i64) i64 {\n    for (cce_table, 0..) |u, i| {\n        if (u == cp) return @intCast(i);\n    }\n    @panic(\"codepoint not in cce single-byte table\");\n}\n"
