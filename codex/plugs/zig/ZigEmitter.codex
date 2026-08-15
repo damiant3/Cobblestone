@@ -635,6 +635,20 @@ Section: Builtin Emitter
     & " = " & zig-field-value-text rec-name field-name (list-at args 2) ctx d
     & "; break :" & zig-label d & " " & tmp & "; }"
 
+ Text is CCE in the interior -- on bare metal, in the C# plug and here --
+ because CCE is codex semantics and not a runtime encoding choice: `E` IS
+ 39, and CCE orders letters by frequency, so a plug holding UTF-8 would
+ disagree with bare metal on every comparison, ordering and substring
+ index. A target's own encoding appears at I/O and nowhere else, which for
+ this plug means cx_cce_to_utf8 on the way to the terminal.
+
+ A Char, though, is a CODEPOINT here, which is why char-code and
+ code-to-char convert rather than vanish the way they do in the C# plug.
+ That makes char-at the odd one out: it read the CCE byte and handed it
+ back untranslated, so `char-code (char-at s i)` fed a CCE code to a table
+ that wanted a codepoint and panicked. char-code-at is the one that answers
+ in CCE, and it stays a bare read.
+
   zig-builtin-emitters : List ZigBuiltinEmitter =
    sort-zig-builtins [
     ZigBuiltinEmitter { name = "__record-set", emit = \args ctx d ty -> zig-record-set args ctx d },
@@ -678,7 +692,7 @@ Section: Builtin Emitter
     ZigBuiltinEmitter { name = "__linked-list-to-list", emit = \args ctx d ty -> emit-zig-expr (list-at args 0) ctx (d + 1) },
     ZigBuiltinEmitter { name = "__deck-pos", emit = \args ctx d ty -> "0" },
     ZigBuiltinEmitter { name = "subj-deck-record", emit = \args ctx d ty -> emit-zig-expr (list-at args 0) ctx (d + 1) },
-    ZigBuiltinEmitter { name = "char-at", emit = \args ctx d ty -> "cx_char_at(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "char-at", emit = \args ctx d ty -> "cx_cce_to_cp(cx_char_at(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & "))" },
     ZigBuiltinEmitter { name = "negate", emit = \args ctx d ty -> "(-" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__narrow", emit = \args ctx d ty -> emit-zig-expr (list-at args 0) ctx (d + 1) },
     ZigBuiltinEmitter { name = "abs", emit = \args ctx d ty -> "@as(i64, @intCast(@abs(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")))" },
