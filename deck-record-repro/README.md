@@ -131,3 +131,42 @@ because it is the same shape as the `deck-record` intercept above:
 something the monolithic build makes invisible, which a subset build
 notices immediately. If you care about the subset property -- and the plug
 bundles are exactly that -- these are the cases that break it.
+
+## 5. An unreachable match arm passes without a word
+
+`Types/TypeCheckerInference.codex:665-666`, in `lint-arg-narrowing`:
+
+```
+   in when declared-param
+    is IntegerTy (lo) (hi) (mode) ->
+     ...
+    is otherwise -> st
+    is otherwise -> st
+```
+
+Two identical catch-alls at the same indentation, in the same `when`. The
+second cannot be reached. It looks like a copy-paste slip rather than
+intent, and it compiles silently.
+
+We scanned the rest of `codex/compiler` for the same shape and this is the
+**only** instance -- 97 other consecutive `is otherwise` pairs are nested
+`when` expressions where an inner catch-all sits directly above an outer
+one, which is legitimate. So the dead arm is a one-off; the diagnostic gap
+is the finding.
+
+**The gap.** Codex says a great deal about far subtler hazards. CDX3005
+spends a paragraph on shadowing a builtin, and rightly -- it explains that
+the danger is cost rather than answer, and cites the Hamt case that sent
+four chapters quadratic. CDX1070 refuses an application that ends at a
+newline and names three ways to fix it. Against that, an arm that can
+never run seems like something you would want to hear about, and nothing
+says anything.
+
+We noticed because zig rejects a second `else` prong outright, so the
+emitted code would not compile. Our plug drops the later catch-all, which
+is safe precisely because it is unreachable -- but the reason we looked was
+a zig error, not a codex one.
+
+Offered as a diagnostic suggestion rather than a bug: an unreachable-arm
+warning would have caught this, and the compiler already has the arm list
+in hand where it checks exhaustiveness.

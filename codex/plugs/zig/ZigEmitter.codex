@@ -652,6 +652,9 @@ Section: Builtin Emitter
     ZigBuiltinEmitter { name = "list-at", emit = \args ctx d ty -> "cx_list_at(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "list-push", emit = \args ctx d ty -> "cx_ll_push(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "list-insert-at", emit = \args ctx d ty -> "cx_ll_insert_at(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "__deck-enter", emit = \args ctx d ty -> "{}" },
+    ZigBuiltinEmitter { name = "__deck-exit", emit = \args ctx d ty -> "{}" },
+    ZigBuiltinEmitter { name = "__list-with-capacity", emit = \args ctx d ty -> "cx_ll_with_capacity(" & zig-ll-elem ty & ", " & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "text-compare", emit = \args ctx d ty -> "cx_text_compare(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "char-to-text", emit = \args ctx d ty -> "cx_char_to_text(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__linked-list-empty", emit = \args ctx d ty -> "cx_ll_empty(" & zig-ll-elem ty & ")" },
@@ -687,7 +690,9 @@ Section: Name Mapping
    [ZigNameEntry { codex-name = "True", zig-name = "true" },
     ZigNameEntry { codex-name = "False", zig-name = "false" },
     ZigNameEntry { codex-name = "Nothing", zig-name = "null" },
-    ZigNameEntry { codex-name = "__deck-pos", zig-name = "0" }]
+    ZigNameEntry { codex-name = "__deck-pos", zig-name = "0" },
+    ZigNameEntry { codex-name = "__deck-enter", zig-name = "0" },
+    ZigNameEntry { codex-name = "__deck-exit", zig-name = "0" }]
 
   zig-lookup-name : List ZigNameEntry, Text, Integer -> Text
   zig-lookup-name (entries) (name) (i) =
@@ -755,7 +760,10 @@ Section: Name Mapping
    in if ci >= 0 then
     let c = list-at (ctx.ctors) ci
     in if c.enum-like then zig-sanitize (c.type-name) & "." & zig-sanitize n
-       else zig-sanitize (c.type-name) & zig-ctor-type-args ty & "{ ." & zig-sanitize n & " = {} }"
+       else let boxed = zig-typedef-recursive ctx (c.type-name)
+       in let base = if boxed then zig-sanitize (c.type-name) & "S" else zig-sanitize (c.type-name) & zig-ctor-type-args ty
+       in if boxed then "cx_new(" & base & "{ ." & zig-sanitize n & " = {} })"
+          else base & "{ ." & zig-sanitize n & " = {} }"
    else if lookup-arity (ctx.arities) n == 0 then zig-sanitize n & "()"
    else if lookup-arity (ctx.arities) n >= 1 & zig-fn-param-count ty >= 1
    then zig-closure-make n [] ctx d ty
@@ -1096,9 +1104,10 @@ Section: Lambda and List Helpers
    in let env = "_Env" & integer-to-text d
    in let ret = emit-zig-type (zig-peel-return ty (list-length params))
    in let inner = zig-push-lambda-renames ctx params d 0
-   in lbl & ": { const " & env & " = struct { fn call(ctx: *anyopaque, "
+   in let cx = "_ctx" & integer-to-text d
+   in lbl & ": { const " & env & " = struct { fn call(" & cx & ": *anyopaque, "
     & emit-zig-lambda-params params 0 ty d ctx & ") " & ret
-    & " { _ = ctx; return " & emit-zig-expr body inner 0 & "; } }; break :"
+    & " { _ = " & cx & "; return " & emit-zig-expr body inner 0 & "; } }; break :"
     & lbl & " " & zig-closure-type (list-length params) (zig-lambda-param-types params 0 ty ctx) ret
     & "{ .ctx = cx_new(" & env & "{}), .call = &" & env & ".call }; }"
 
@@ -1231,7 +1240,15 @@ Section: Match Emission
   emit-zig-match-arms (branches) (i) (ctx) (d) (ex) (mty) =
    if i == list-length branches then ""
    else let b = list-at branches i
-   in emit-zig-match-arm (b.pattern) (b.body) (zig-expect ctx mty) d ex mty & emit-zig-match-arms branches (i + 1) ctx d ex mty
+   in let dup = zig-pat-is-catch-all (b.pattern) & zig-catch-all-before branches 0 i
+   in (if dup then "" else emit-zig-match-arm (b.pattern) (b.body) (zig-expect ctx mty) d ex mty)
+      & emit-zig-match-arms branches (i + 1) ctx d ex mty
+
+  zig-catch-all-before : List IRBranch, Integer, Integer -> Boolean
+  zig-catch-all-before (branches) (i) (stop) =
+   if i >= stop then False
+   else if zig-pat-is-catch-all ((list-at branches i).pattern) then True
+   else zig-catch-all-before branches (i + 1) stop
 
  Constructor arms bind payloads: one field binds by name directly; a
  tuple payload binds `_p<d>` and unpacks into consts inside a labeled
@@ -1286,7 +1303,7 @@ Section: Match Emission
      else "." & zig-sanitize name & " => |_p" & integer-to-text d & "| " & zig-label d & ": { " & emit-zig-pat-unpack subs 0 d body & "break :" & zig-label d & " " & emit-zig-expr body ctx (d + 1) & "; }, "
     is IrVarPat (name) (ty) (sp) -> "else => " & emit-zig-expr body ctx (d + 1) & ", "
     is IrWildPat (sp) -> "else => " & emit-zig-expr body ctx (d + 1) & ", "
-    is IrVecPat (pats) (ty) (sp) -> "else => " & emit-zig-expr body ctx (d + 1) & ", "
+    is IrVecPat (pats) (ty) (sp) -> "@compileError(\"zig plug: vector patterns not supported\"), "
 
   zig-any-sub-occurs : List IRPat, Integer, IRExpr -> Boolean
   zig-any-sub-occurs (subs) (i) (body) =
@@ -1597,10 +1614,11 @@ Section: Apply Emission
    in let env = "_Env" & integer-to-text d
    in let ev = "_e" & integer-to-text d
    in let ret = emit-zig-type (zig-fn-result pty)
-   in let unpack = if list-length args == 0 then "_ = ctx; "
-      else "const " & ev & ": *@This() = @ptrCast(@alignCast(ctx)); "
+   in let cx = "_ctx" & integer-to-text d
+   in let unpack = if list-length args == 0 then "_ = " & cx & "; "
+      else "const " & ev & ": *@This() = @ptrCast(@alignCast(" & cx & ")); "
    in lbl & ": { const " & env & " = struct { " & zig-closure-fields args ctx 0
-    & "fn call(ctx: *anyopaque, " & zig-closure-params pty 0 & ") " & ret
+    & "fn call(" & cx & ": *anyopaque, " & zig-closure-params pty 0 & ") " & ret
     & " { " & unpack & "return " & zig-sanitize n & "("
     & zig-closure-env-refs ev (list-length args) 0 & zig-closure-pass rem 0 & "); } }; break :"
     & lbl & " " & zig-closure-type rem (zig-fn-param-types pty) ret
@@ -1896,6 +1914,7 @@ Section: Chapter Emission
    & "fn cx_ll_concat(a: anytype, b: @TypeOf(a)) @TypeOf(a) {\n    const c = cx_new(@TypeOf(a.*){ .items = .empty });\n    c.items.appendSlice(std.heap.page_allocator, a.items.items) catch @panic(\"oom\");\n    c.items.appendSlice(std.heap.page_allocator, b.items.items) catch @panic(\"oom\");\n    return c;\n}\n"
    & "fn cx_ll_cons(v: anytype, l: anytype) @TypeOf(l) {\n    const c = cx_new(@TypeOf(l.*){ .items = .empty });\n    c.items.append(std.heap.page_allocator, v) catch @panic(\"oom\");\n    c.items.appendSlice(std.heap.page_allocator, l.items.items) catch @panic(\"oom\");\n    return c;\n}\n"
    & "fn cx_ll_insert_at(l: anytype, i: i64, v: anytype) @TypeOf(l) {\n    l.items.insert(std.heap.page_allocator, @intCast(i), v) catch @panic(\"oom\");\n    return l;\n}\n"
+   & "fn cx_ll_with_capacity(comptime T: type, n: i64) *CxList(T) {\n    _ = n;\n    return cx_ll_empty(T);\n}\n"
    & "fn cx_text_compare(a: []const u8, b: []const u8) i64 {\n    return switch (std.mem.order(u8, a, b)) { .lt => -1, .eq => 0, .gt => 1 };\n}\n"
    & "fn cx_char_to_text(c: i64) []const u8 {\n    const b = std.heap.page_allocator.alloc(u8, 1) catch @panic(\"oom\");\n    b[0] = @intCast(c);\n    return b;\n}\n"
    & "fn cx_list_len(l: anytype) i64 {\n    return @intCast(l.items.items.len);\n}\n"
