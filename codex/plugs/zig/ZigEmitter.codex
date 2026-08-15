@@ -470,11 +470,20 @@ Section: Builtin Emitter
 
   zig-ll-elem : CodexType -> Text
   zig-ll-elem (ty) =
+   let e = zig-ll-elem-opt ty
+   in if text-length e > 0 then e else "i64"
+
+ The annotation is not always a list type -- a type variable reaches here
+ unresolved -- so this answers "" for that rather than a default, and the
+ callers that have another source say so explicitly.
+
+  zig-ll-elem-opt : CodexType -> Text
+  zig-ll-elem-opt (ty) =
    when ty
     is ListTy (elem) -> emit-zig-type elem
     is LinkedListTy (elem) -> emit-zig-type elem
-    is EffectfulTy (effs) (scopes) (inner) -> zig-ll-elem inner
-    is otherwise -> "i64"
+    is EffectfulTy (effs) (scopes) (inner) -> zig-ll-elem-opt inner
+    is otherwise -> ""
 
  __record-set names its field with a text literal, so the field is known
  here and becomes a real field access rather than anything dynamic. The
@@ -614,12 +623,19 @@ Section: Binary Operator Mapping
     is IrApproxEq | IrApproxEqExact -> "=="
     is IrAnd -> "and"
     is IrOr -> "or"
-    is IrAppendText | IrAppendList | IrConsList -> "++"
+ The list operators have no symbol here on purpose: zig's ++ concatenates
+ comptime-known arrays, not the runtime CxList a codex list becomes, so
+ each has a runtime function and emit-zig-binary reaches it before this
+ table. Naming a symbol they cannot use is how they got emitted as ++.
+
+    is IrAppendText | IrAppendList | IrConsList -> "@compileError(\"list operator needs a runtime call\")"
 
   emit-zig-binary : IRBinaryOp, IRExpr, IRExpr, ZigCtx, Integer -> Text
   emit-zig-binary (op) (l) (r) (ctx) (d) =
    when op
     is IrAppendText -> "cx_concat(" & emit-zig-expr l ctx (d + 1) & ", " & emit-zig-expr r ctx (d + 1) & ")"
+    is IrAppendList -> "cx_ll_concat(" & emit-zig-expr l ctx (d + 1) & ", " & emit-zig-expr r ctx (d + 1) & ")"
+    is IrConsList -> "cx_ll_cons(" & emit-zig-expr l ctx (d + 1) & ", " & emit-zig-expr r ctx (d + 1) & ")"
     is IrDivInt -> "@divTrunc(" & emit-zig-expr l ctx (d + 1) & ", " & emit-zig-expr r ctx (d + 1) & ")"
     is IrRemInt -> "@rem(" & emit-zig-expr l ctx (d + 1) & ", " & emit-zig-expr r ctx (d + 1) & ")"
     is IrPowInt -> "std.math.pow(i64, " & emit-zig-expr l ctx (d + 1) & ", " & emit-zig-expr r ctx (d + 1) & ")"
@@ -826,7 +842,7 @@ Section: Expression Emission
     is IrName (n) (ty) (sp) -> emit-zig-name n ty ctx d
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-zig-binary op l r ctx d
     is IrNegate (operand) (nty) (sp) -> "(-" & emit-zig-expr operand ctx (d + 1) & ")"
-    is IrIf (c) (t) (el) (ty) (sp) -> "(if (" & emit-zig-expr c ctx (d + 1) & ") " & emit-zig-expr t ctx (d + 1) & " else " & emit-zig-expr el ctx (d + 1) & ")"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(if (" & emit-zig-expr c ctx (d + 1) & ") " & emit-zig-if-branch t ty el ctx d & " else " & emit-zig-if-branch el ty t ctx d & ")"
     is IrLet (name) (ty) (val) (body) (sp) ->
      if zig-is-seq-name name then zig-label d & ": { _ = " & emit-zig-expr val ctx (d + 1) & "; break :" & zig-label d & " " & emit-zig-expr body ctx (d + 1) & "; }"
      else if zig-occurs body name then zig-label d & ": { const " & zig-sanitize name & " = " & emit-zig-expr val ctx (d + 1) & "; break :" & zig-label d & " " & emit-zig-expr body ctx (d + 1) & "; }"
@@ -876,9 +892,31 @@ Section: Lambda and List Helpers
    in if i == list-length params - 1 then one
    else one & ", " & emit-zig-lambda-params params (i + 1)
 
+ A literal with elements carries its own answer: the first element's type
+ is what the list holds, and it needs no context at all. The annotation
+ still wins when it is a real list type, since a list can hold something
+ wider than its first element.
+
+ The two arms of an if have one type, so an empty list in one of them can
+ read it off the if itself, or failing that off the other arm. That is the
+ fourth context an empty list can learn from, after a record field decl,
+ a callee's parameter and a constructor payload.
+
+  emit-zig-if-branch : IRExpr, CodexType, IRExpr, ZigCtx, Integer -> Text
+  emit-zig-if-branch (b) (ity) (other) (ctx) (d) =
+   if zig-is-empty-list b
+   then let own = zig-ll-elem-opt ity
+    in let elem = if text-length own > 0 then own else zig-ll-elem-opt (zig-expr-type other)
+    in if text-length elem > 0 then "cx_ll_empty(" & elem & ")"
+       else emit-zig-expr b ctx (d + 1)
+   else emit-zig-expr b ctx (d + 1)
+
   emit-zig-list : List IRExpr, CodexType, ZigCtx, Integer -> Text
   emit-zig-list (elems) (ty) (ctx) (d) =
-   let et = zig-ll-elem ty
+   let annotated = zig-ll-elem-opt ty
+   in let et = if text-length annotated > 0 then annotated
+      else if list-length elems > 0 then emit-zig-type (zig-expr-type (list-at elems 0))
+      else "i64"
    in if list-length elems == 0 then "cx_ll_empty(" & et & ")"
       else "cx_ll_of(" & et & ", &[_]" & et & "{ " & emit-zig-list-elems elems 0 ctx d & " })"
 
@@ -1114,8 +1152,8 @@ Section: Apply Emission
    in let close = if boxed then ")" else ""
    in if c.enum-like then tname & "." & cname
    else if list-length args == 0 then open & base & "{ ." & cname & " = {} }" & close
-   else if list-length args == 1 then open & base & "{ ." & cname & " = " & emit-zig-expr (list-at args 0) ctx (d + 1) & " }" & close
-   else open & base & "{ ." & cname & " = .{ " & emit-zig-apply-args args ctx d 0 & " } }" & close
+   else if list-length args == 1 then open & base & "{ ." & cname & " = " & emit-zig-ctor-args c args ctx d 0 & " }" & close
+   else open & base & "{ ." & cname & " = .{ " & emit-zig-ctor-args c args ctx d 0 & " } }" & close
 
   emit-zig-call-args : Text, List IRExpr, ZigCtx, Integer, Integer -> Text
   emit-zig-call-args (fname) (args) (ctx) (d) (i) =
@@ -1134,6 +1172,45 @@ Section: Apply Emission
    if i == list-length args then ""
    else if i == list-length args - 1 then emit-zig-expr (list-at args i) ctx (d + 1)
    else emit-zig-expr (list-at args i) ctx (d + 1) & ", " & emit-zig-apply-args args ctx d (i + 1)
+
+ A constructor payload is the third place an empty list can learn what it
+ holds, alongside a record field decl and a callee's parameter. The
+ declared field type is on the variant's ctor, so the ctor being applied
+ names it.
+
+  zig-ctor-ll-elem : ZigCtx, Text, Text, Integer -> Text
+  zig-ctor-ll-elem (ctx) (tyname) (ctorname) (argi) =
+   zig-ctor-ll-scan (ctx.typedefs) 0 tyname ctorname argi
+
+  zig-ctor-ll-scan : List ATypeDef, Integer, Text, Text, Integer -> Text
+  zig-ctor-ll-scan (tds) (i) (tyname) (ctorname) (argi) =
+   if i >= list-length tds then ""
+   else when (list-at tds i)
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     if name.value == tyname then zig-ctor-field-scan ctors 0 ctorname argi
+     else zig-ctor-ll-scan tds (i + 1) tyname ctorname argi
+    is otherwise -> zig-ctor-ll-scan tds (i + 1) tyname ctorname argi
+
+  zig-ctor-field-scan : List AVariantCtorDef, Integer, Text, Integer -> Text
+  zig-ctor-field-scan (ctors) (i) (ctorname) (argi) =
+   if i >= list-length ctors then ""
+   else let c = list-at ctors i
+   in if c.name.value == ctorname
+      then (if argi >= list-length (c.fields) then ""
+            else zig-atype-ll-elem (list-at (c.fields) argi))
+      else zig-ctor-field-scan ctors (i + 1) ctorname argi
+
+  emit-zig-ctor-args : ZigCtorEntry, List IRExpr, ZigCtx, Integer, Integer -> Text
+  emit-zig-ctor-args (c) (args) (ctx) (d) (i) =
+   if i == list-length args then ""
+   else let a = list-at args i
+   in let one = if zig-is-empty-list a
+      then let elem = zig-ctor-ll-elem ctx (c.type-name) (c.ctor-name) i
+       in if text-length elem > 0 then "cx_ll_empty(" & elem & ")"
+          else emit-zig-expr a ctx (d + 1)
+      else emit-zig-expr a ctx (d + 1)
+   in if i == list-length args - 1 then one
+      else one & ", " & emit-zig-ctor-args c args ctx d (i + 1)
 
   emit-zig-expr-curried : IRExpr, ZigCtx, Integer -> Text
   emit-zig-expr-curried (e) (ctx) (d) =
@@ -1197,6 +1274,8 @@ Section: Chapter Emission
    & "fn cx_ll_empty(comptime T: type) *CxList(T) {\n    const l = std.heap.page_allocator.create(CxList(T)) catch @panic(\"oom\");\n    l.* = .{};\n    return l;\n}\n"
    & "fn cx_ll_push(l: anytype, v: anytype) @TypeOf(l) {\n    l.items.append(std.heap.page_allocator, v) catch @panic(\"oom\");\n    return l;\n}\n"
    & "fn cx_ll_of(comptime T: type, vs: []const T) *CxList(T) {\n    const l = cx_ll_empty(T);\n    l.items.appendSlice(std.heap.page_allocator, vs) catch @panic(\"oom\");\n    return l;\n}\n"
+   & "fn cx_ll_concat(a: anytype, b: @TypeOf(a)) @TypeOf(a) {\n    const c = cx_new(@TypeOf(a.*){ .items = .empty });\n    c.items.appendSlice(std.heap.page_allocator, a.items.items) catch @panic(\"oom\");\n    c.items.appendSlice(std.heap.page_allocator, b.items.items) catch @panic(\"oom\");\n    return c;\n}\n"
+   & "fn cx_ll_cons(v: anytype, l: anytype) @TypeOf(l) {\n    const c = cx_new(@TypeOf(l.*){ .items = .empty });\n    c.items.append(std.heap.page_allocator, v) catch @panic(\"oom\");\n    c.items.appendSlice(std.heap.page_allocator, l.items.items) catch @panic(\"oom\");\n    return c;\n}\n"
    & "fn cx_list_len(l: anytype) i64 {\n    return @intCast(l.items.items.len);\n}\n"
    & "fn cx_list_at(l: anytype, i: i64) @TypeOf(l.items.items[0]) {\n    return l.items.items[@intCast(i)];\n}\n"
    & "fn cx_text_len(s: []const u8) i64 {\n    return @intCast(s.len);\n}\n"
