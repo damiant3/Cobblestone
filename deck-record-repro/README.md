@@ -104,3 +104,30 @@ One trap for anyone tempted by a smaller change: the 256-byte chunk is
 deliberate. The inner loop is quadratic too, so cost is
 `N^2/2C + N*C/2` and 256 sits near the `sqrt(N)` optimum. Raising it
 alone makes things worse -- 8192 measured 4.6 GB and still died.
+
+## 4. TypeChecker uses `capability-names` without citing Capability
+
+Small, and only visible from outside a whole-foreword build.
+
+`Types/TypeChecker.codex:3400` is
+
+```
+  capability-vocabulary : List Text
+  capability-vocabulary = capability-names
+```
+
+and `capability-names` is defined in `foreword/core/Capability.codex:198`.
+TypeChecker's cites are Build Settings, Phase Allocator and Tuple. There
+is no cite for Capability.
+
+Nothing is broken in the real build, because the whole foreword is
+present and the name resolves. It surfaces when a subset of the compiler
+is bundled into one unit -- we hit it building a type-check subject for
+the plug oracle, where the bundler carries only what is named or cited and
+the definition was simply absent.
+
+Worth a one-line cite if you want the dependency declared. We mention it
+because it is the same shape as the `deck-record` intercept above:
+something the monolithic build makes invisible, which a subset build
+notices immediately. If you care about the subset property -- and the plug
+bundles are exactly that -- these are the cases that break it.
