@@ -672,8 +672,12 @@ Section: Type Definition Emission
 
   emit-zig-type-defs : List ATypeDef, Integer -> Text
   emit-zig-type-defs (tds) (i) =
-   if i == list-length tds then ""
-   else emit-zig-type-def (list-at tds i) & emit-zig-type-defs tds (i + 1)
+   text-concat-list (emit-zig-type-defs-loop tds i [])
+
+  emit-zig-type-defs-loop : List ATypeDef, Integer, List Text -> List Text
+  emit-zig-type-defs-loop (tds) (i) (acc) =
+   if i == list-length tds then acc
+   else emit-zig-type-defs-loop tds (i + 1) (list-push acc (emit-zig-type-def (list-at tds i)))
 
   emit-zig-type-def : ATypeDef -> Text
   emit-zig-type-def (td) =
@@ -890,14 +894,31 @@ Section: Expression Emission
   zig-hex-digit : Integer -> Text
   zig-hex-digit (d) = substring "0123456789abcdef" d 1
 
-  zig-escape-text : Text -> Text
-  zig-escape-text (s) = zig-escape-bytes s 0 (text-length s)
+ Escaping collects each 256-byte chunk's escapes in a list and joins once,
+ and the chunks likewise -- the shape CSharpPlug's bytes-to-text uses, for
+ the same reason. The obvious right-recursive `"\\x" & hi & lo & rest`
+ copies the whole remaining tail at every byte, so escaping N bytes
+ allocates about 2*N^2: 575 MB for a 17 KB literal, which fits, and 21 GB
+ for a 102 KB one, which does not. That is what stopped the emitter on
+ Parser.codex while ParserCore went through.
 
-  zig-escape-bytes : Text, Integer, Integer -> Text
-  zig-escape-bytes (s) (i) (len) =
-   if i >= len then ""
+  zig-escape-text : Text -> Text
+  zig-escape-text (s) =
+   text-concat-list (zig-escape-chunks s 0 (text-length s) [])
+
+  zig-escape-chunks : Text, Integer, Integer, List Text -> List Text
+  zig-escape-chunks (s) (off) (total) (acc) =
+   if off >= total then acc
+   else let stop = if off + 256 > total then total else off + 256
+   in let chunk = text-concat-list (zig-escape-chunk s off stop [])
+   in zig-escape-chunks s stop total (list-push acc chunk)
+
+  zig-escape-chunk : Text, Integer, Integer, List Text -> List Text
+  zig-escape-chunk (s) (i) (stop) (acc) =
+   if i >= stop then acc
    else let b = char-code-at s i
-   in "\\x" & zig-hex-digit (bit-shr b 4) & zig-hex-digit (bit-and b 15) & zig-escape-bytes s (i + 1) len
+   in let esc = "\\x" & zig-hex-digit (bit-shr b 4) & zig-hex-digit (bit-and b 15)
+   in zig-escape-chunk s (i + 1) stop (list-push acc esc)
 
 Section: Lambda and List Helpers
 
@@ -1319,12 +1340,41 @@ Section: Definition Emission
    in if i == list-length params - 1 then one
    else one & ", " & emit-zig-def-params params (i + 1)
 
+ Assembling the output has the same hazard as escaping it: joining N pieces
+ with a right-recursive `&` copies every piece it has not reached yet, so
+ the cost is the output size times the number of definitions rather than
+ the output size. Collect and join once.
+
   emit-zig-defs : List IRDef, Integer, ZigCtx -> Text
   emit-zig-defs (defs) (i) (ctx) =
-   if i == list-length defs then ""
-   else emit-zig-def (list-at defs i) ctx & emit-zig-defs defs (i + 1) ctx
+   text-concat-list (emit-zig-defs-loop defs i ctx [])
+
+  emit-zig-defs-loop : List IRDef, Integer, ZigCtx, List Text -> List Text
+  emit-zig-defs-loop (defs) (i) (ctx) (acc) =
+   if i == list-length defs then acc
+   else emit-zig-defs-loop defs (i + 1) ctx (list-push acc (emit-zig-def (list-at defs i) ctx))
 
 Section: Chapter Emission
+
+ Codex is written to recurse rather than loop, and bare metal answers that
+ with a multi-gigabyte arena for the stack. Zig gives a main thread 8 MB,
+ which is not enough: scan-class-instance-defs recurses once per token, so
+ Parser.codex at 18,812 tokens overflows and segfaults. ReleaseFast does
+ not rescue it -- the calls sit inside labelled block expressions and LLVM
+ does not turn them into loops.
+
+ So the entry point runs on a thread with a stack sized for the recursion
+ instead of borrowing whatever ulimit the caller happened to have. It is
+ address space, not memory; the pages commit as the recursion touches
+ them. Emitting a loop for self-tail-calls would be the better answer and
+ is a real emitter feature, not a prelude line.
+
+  zig-main : Text -> Text
+  zig-main (entry) =
+   "pub fn main() void {\n"
+   & "    const t = std.Thread.spawn(.{ .stack_size = 1 << 30 }, "
+   & zig-sanitize entry & ", .{}) catch @panic(\"spawn\");\n"
+   & "    t.join();\n}\n"
 
   zig-prelude : Text =
    "const std = @import(\"std\");\n\n"
@@ -1376,6 +1426,6 @@ Section: Chapter Emission
    }
    in let types-text = emit-zig-type-defs type-defs 0
    in let defs-text = emit-zig-defs (m.defs) 0 ctx
-   in zig-prelude & types-text & defs-text & "pub fn main() void {\n    " & zig-sanitize opening-entry-point & "();\n}\n"
+   in zig-prelude & types-text & defs-text & zig-main opening-entry-point
 
 Page 1
