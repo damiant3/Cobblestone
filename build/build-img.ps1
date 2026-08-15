@@ -1,27 +1,15 @@
-# Build a bootable GPT FAT16 disk image from a PE and optional source.
-#
-# Layout:
-#   Sector 0:     Protective MBR
-#   Sector 1:     GPT header
-#   Sectors 2-33: GPT entries (2 partitions)
-#   Sector 2048+: FAT ESP
-#     EFI/BOOT/BOOTX64.EFI  (the PE)
-#     SOURCE.SRC             (compiler source, if provided)
-#   Top of medium: the Codex fact store partition
-#   Last 33 sectors: backup GPT (entry array, then header AT the last sector)
-#
-# The second partition is why a booted stick can remember anything. DiskFacts
-# addresses its sectors relative to a partition of type
-# C0DE1A11-FAC7-4C0D-9E75-C0DEC0DE5EED, and on a disk that carries a partition
-# table and no such partition it refuses to write at all -- because writing
-# where it used to write ate the GPT. An image with one partition therefore
-# produces a stick whose dev console reports "0 disk facts" forever.
-#
-# Usage: build-img.ps1 -PeInput <file.efi> -Out <file.img> [-Source <file>] [-TotalSectors 16384]
+# build-img.ps1 -- Build a bootable GPT FAT16 disk image from a PE and optional source.
+# GENERATED FROM THE CODEX SHELL DSL. Do not edit by hand.
+# A hand edit here must NOT be submitted. Change the generator under
+# codex/build/, regenerate, and submit the generator and this file
+# together. Until then build/check-generated-scripts.ps1 reports this
+# file as drifted, and the next regeneration discards the edit.
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory=$true)] [string]$PeInput,
-    [Parameter(Mandatory=$true)] [string]$Out,
+    [Parameter(Mandatory=$true)]
+    [string]$PeInput,
+    [Parameter(Mandatory=$true)]
+    [string]$Out,
     [string]$Source = '',
     # A TrueType font, written to the ESP root as CMUNSS.TTF. The desktop
     # loads it through its own FAT driver post-EBS (H4c).
@@ -41,7 +29,7 @@ param(
     # so a freshly built image costs a passphrase, an entropy screen and a
     # keygen before anything can be tested. Passing an identity that was
     # generated on the target machine skips all of it.
-    #
+    # 
     # The key inside is the whole trust story, so this is deliberately opt-in
     # and deliberately not defaulted to any path: an identity must be created
     # on the machine that carries it, and an image built with a key generated
@@ -61,6 +49,26 @@ param(
     # lesson), so -TotalSectors must be >= ~70000 (34 MB).
     [switch]$Fat32
 )
+
+#
+# Layout:
+#   Sector 0:     Protective MBR
+#   Sector 1:     GPT header
+#   Sectors 2-33: GPT entries (2 partitions)
+#   Sector 2048+: FAT ESP
+#     EFI/BOOT/BOOTX64.EFI  (the PE)
+#     SOURCE.SRC             (compiler source, if provided)
+#   Top of medium: the Codex fact store partition
+#   Last 33 sectors: backup GPT (entry array, then header AT the last sector)
+#
+# The second partition is why a booted stick can remember anything. DiskFacts
+# addresses its sectors relative to a partition of type
+# C0DE1A11-FAC7-4C0D-9E75-C0DEC0DE5EED, and on a disk that carries a partition
+# table and no such partition it refuses to write at all -- because writing
+# where it used to write ate the GPT. An image with one partition therefore
+# produces a stick whose dev console reports "0 disk facts" forever.
+#
+# Usage: build-img.ps1 -PeInput <file.efi> -Out <file.img> [-Source <file>] [-TotalSectors 16384]
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -97,6 +105,7 @@ if (($agentBytes.Length -gt 0) -ne ($manBytes.Length -gt 0)) {
 # A missing -Identity is a hard error rather than an empty byte array, unlike
 # every optional input above. Falling back silently would produce an image that
 # looks right, builds clean, and boots into the wizard the caller passed this
+
 # flag to avoid -- and the caller finds out at the machine, after a flash.
 if ($Identity) {
     if (-not (Test-Path -PathType Leaf $Identity)) { throw "-Identity file not found: $Identity" }
@@ -152,6 +161,7 @@ W64 ($gptOff + 32) ($TotalSectors - 1) # AlternateLBA
 #
 # UEFI reserves a MINIMUM of 16,384 bytes for the partition entry array: 128
 # entries of 128 bytes, LBA 2 through 33, with FirstUsableLBA at 34. This
+
 # header used to declare NumberOfPartitionEntries=2 (a 256-byte array) while
 # putting FirstUsableLBA at 2048, and the tail already reserved the full 33
 # sectors -- LastUsableLBA is TotalSectors-34 immediately below -- so the image
@@ -207,6 +217,7 @@ WBytes ($peOff + 56) $pName
 $fsOff = $peOff + 128
 WBytes $fsOff ([byte[]]@(0x11,0x1A,0xDE,0xC0,0xC7,0xFA,0x0D,0x4C,0x9E,0x75,0xC0,0xDE,0xC0,0xDE,0x5E,0xED))
 WBytes ($fsOff + 16) ([byte[]]@(0xAA,0xBB,0xCC,0xDD,0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88,0x99,0xAA,0xBB,0xCD))
+
 W64 ($fsOff + 32) $FactsStart
 W64 ($fsOff + 40) $FactsEnd
 W64 ($fsOff + 48) 0           # Attributes
@@ -262,6 +273,7 @@ if ($Fat32) {
     # A REAL FAT32 volume has >= 65525 clusters -- UEFI classifies by cluster
     # count (the FAT12/16 mislabel lesson, CL 7289), so a smaller volume
     # formatted "FAT32" reads back as something else on real firmware.
+
     $reservedSectors = 32
     $rootDirSectors = 0
     $sectorsPerCluster = 0
@@ -318,6 +330,7 @@ if ($Fat32) {
     $rootEntries = 512
     $rootDirSectors = [int][Math]::Ceiling($rootEntries * 32 / $bytesPerSector)
 
+
     # Choose sectors-per-cluster so the cluster count lands SOLIDLY in the FAT16
     # range (4085..65524). UEFI firmware determines FAT type by cluster count, not
     # by the "FAT16" label string -- an 8 MB image at spc=4 yields ~3560 clusters,
@@ -372,6 +385,7 @@ $EOC = if ($Fat32) { 0x0FFFFFFF } else { 0xFFFF }
 function Set-Fat($cluster, $value) {
     if ($Fat32) {
         [BitConverter]::GetBytes([uint32]$value).CopyTo($img, $fat1Off + $cluster * 4)
+
         [BitConverter]::GetBytes([uint32]$value).CopyTo($img, $fat2Off + $cluster * 4)
     } else {
         [BitConverter]::GetBytes([ushort]$value).CopyTo($img, $fat1Off + $cluster * 2)
@@ -427,6 +441,7 @@ function Alloc-File([byte[]]$fileData) {
 
 # Create EFI directory (subdirectory)
 $efiCluster = $script:nextCluster
+
 $script:nextCluster++
 $clustSz = $sectorsPerCluster * $bytesPerSector
 $efiDirOff = $dataOff + ($efiCluster - 2) * $clustSz
@@ -482,6 +497,7 @@ if ($agentBytes.Length -gt 0) {
 }
 if ($identBytes.Length -gt 0) {
     $identCluster = Alloc-File $identBytes
+
     Add-DirEntry $rootOff $rootIdx "IDENTITYDAT" 0x20 $identCluster $identBytes.Length
     $rootIdx++
 }
@@ -537,6 +553,7 @@ if ($SourceDir -and (Test-Path $SourceDir)) {
         $srcDirOff = $dataOff + ($srcDirCluster - 2) * $clustSz
 
         Add-DirEntry $srcDirOff 0 ".          " 0x10 $srcDirCluster 0
+
         Add-DirEntry $srcDirOff 1 "..         " 0x10 0 0
         $sIdx = 2
         for ($i = 0; $i -lt $chapters.Count; $i++) {

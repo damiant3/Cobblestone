@@ -411,10 +411,23 @@ open as WORKS-9.
   4, against the 1 the bed reports. **Do not re-measure this in the bed and
   conclude anything**: two codex-vm readings agreed with each other, and both
   were irrelevant to the hardware. So Road A is the road and Road C needs no
-  pricing. **The next wall is the arena, not the wiring** -- `vm-compile`
-  takes the seed as `List Integer`, 2.7 MB as boxed integers, which nobody has
-  measured; start with `SRC/NAME.COD` at 307 bytes, the smallest thing on the
-  stick.
+  pricing. Also landed: EPT with the hypervisor's regions allocated rather
+  than sited at fixed physical addresses, `memory-mb` live and guarded by a
+  refusal (15147), and the device-path launch corrected to `vmlaunch-full`
+  (15161).
+
+  **The arena value is measured: `-AllocPages 131072`.** The shipping 32768 is
+  128 MB and cannot carry a 256 MB guest, so `vm-guest-sizing` refuses. An
+  Option A image at 131072 boots on real edk2 firmware under OVMF and paints
+  the desk; the same image in a 256 MB machine does not, so the bed can refuse
+  and the green is not vacuous. Recipe and numbers in the design,
+  `-AllocPages` band and its Int32 ceiling in `OperatorsManual`.
+
+  **What is open: whether the ASUS satisfies that allocation.** OVMF granting
+  512 MB below the aperture is the class of spec freedom L-FREEDOM is about
+  and AMI may answer otherwise; the stub raises `H` if it refuses. That is a
+  sitting question, not a bed one. After it, wiring `compile <path>` is a
+  dozen lines against pieces the console already has.
 - A2, A3, A4 and A7 are CLOSED on metal.
 
 ## Track B -- the network (blu). Metal-gated: advances at sittings, not before.
@@ -492,7 +505,8 @@ open as WORKS-9.
   ARM, kept for the next flight"** -- it carries the outcome table, the new
   SHA-256 and the 2500 ms screenshot delay. **Awaiting a sitting.**
 - **B3 TCP over the real part: the stack now holds a real TCP conversation
-  over the e1000, and it did not before 2026-08-14 (blu, main pending).**
+  over the e1000, and it did not before 2026-08-14 (blu; LANDED on main
+  15013, with the poll-count-as-duration class following at 15028).**
   Nothing had ever run TCP over that card: every TCP test in the tree
   (`tcp-reliability`, `tcp-seqwrap`, `tcp-listen-reclaim`, `net-io-clock`)
   cites `NetworkStack`/`Tcp`/`Ethernet` and touches no NIC at all, and the 55
@@ -552,51 +566,67 @@ open as WORKS-9.
   `arm64-send-refusal` is a no-peer arm that PASSES there. What that bed
   cannot reach is virtio RX and a real peer, so the drain's own polling
   is still unrun on metal.
-- **The e1000 BAR window hazard is unowned, not urgent, and measured
-  2026-08-07.** `e1000-window-lo`/`-hi` do not track
-  `bare-metal-ram-size`; they track `bare-metal-pd-count`, which is
-  `ceil(ram-size / 1 GB)`, because the device PD is the single gigabyte
-  PD at that index. At 3 GB the two readings coincide, so a `ram-size`
-  derivation looks right and is not. Deriving or guarding it drags the
-  whole x86 emitter across the quire boundary into a NIC test kernel, and
-  house practice spells every device base literally, so **making a shared
-  memory-map chapter is a design decision, not a cleanup.** Left as
-  measured.
+- **The e1000 BAR window hazard is CLOSED (reek, 2026-08-15).** The
+  window is derived now, from one place: `codex/foreword/core/MemoryMap.codex`
+  holds `bare-metal-ram-size`, `bare-metal-pd-count` and
+  `bare-metal-device-window-lo`/`-hi`, and the five sites that spelled
+  3221225472 and 4294967296 by hand cite it instead (`E1000e`, `GopXhci`,
+  `PciProbe`, `Inventory` twice). The derivation is off `pd-count`, not
+  off `ram-size`: the device PD is the single gigabyte PD at that index,
+  and the two readings coincide only when RAM is a whole number of
+  gigabytes.
+
+  **The objection that parked this was half right and worth keeping.**
+  Citing the emitter really would drag it across the boundary, because
+  `X86-64 Code Generator` is one chapter spread over 16 files. That is an
+  argument against that route and not against the derivation: a leaf
+  foreword chapter costs nothing on either side, and
+  `DevelopersRulebook.md` library rule 7 measures a cite at 3 bytes.
 
 ## Track C -- the trust audit
 
-- **C1 (fester): diverse double-compiling. The main claim is LANDED.**
-  - **State the residual hole every time C1 is reported. The witness has
-    been falsified, so the hole is now stated precisely.** Sabotage arms
+- **C1 (val): diverse double-compiling. The main claim is LANDED.**
+  - **State the residual hole every time C1 is reported.** Sabotage arms
     2026-08-10 (`OperatorsManual`, "The witness has a negative control")
     poisoned the code generator and then constant folding, each payload
     living only in the binary and in no source; both went RED against the
     tampered build and reconstructed the honest seed. **The measured
-    boundary is self-reproducing versus not:** any payload in the binary
-    alone is caught, because the double-compile rebuilds from clean source.
-    The sole survivor is a self-reproducing quine, which is a high bar, not
-    the loose "the seed sits upstream." The seed does still sit upstream
-    (it produced the IR and compiled the plug), and the `source -> IR` arm
-    a complete Wheeler DDC wants is DONE -- the C# arm parsed raw source and
-    emitted a byte-identical CDX on demand this cycle -- so the residual is
-    the quine and nothing smaller.
-  - **OPEN, and named on purpose because the README now states it publicly:
-    build the self-reproducing quine that DEFEATS the witness.** The two
-    sabotage arms proved the boundary is a quine and nothing smaller; the
-    quine itself is the falsification arm for that boundary, and until it
-    exists the "sole survivor is a quine" claim is reasoned, not measured.
-    It is a real construction: a trojan that recognises it is compiling the
-    compiler and writes a copy of its own injector into the emitted IR, so
-    stage1 and stage2 inherit it across two generations. The tractable
-    injection point is the IR TEXT emitter (`ir-emit-def`,
-    `IRTextEmitter.codex:820`), because IR text is the interchange format and
-    a self-reproducing string is easier to get right than self-referential
-    IR nodes. Test it with the exact procedure in `OperatorsManual` "The
-    witness has a negative control": build the trojaned compiler from
-    sabotaged source with the clean seed, REVERT the source, then confirm
-    stage2 MATCHES the tampered build (green) rather than the clean seed.
-    val's, follows from the sabotage work; ~4 min per emit/build/compare
-    cycle and high iteration, so budget it as a session, not a wedge.
+    boundary is "reaches the readable intermediate" versus not**
+    (`OperatorsManual`, corrected 2026-08-11). Any payload living only in
+    the binary is caught, because the double-compile rebuilds from clean
+    source; a payload survives the byte-comparison only if it reaches the IR
+    that becomes the C#, and is therefore VISIBLE as readable text. The
+    earlier "self-reproducing versus not" wording here was too narrow: the
+    frontend-IR arm (2026-08-11) survives with NO self-reproduction, so a
+    self-reproducing quine is one survivor, not the sole one. The seed still
+    sits upstream (it produced the IR and compiled the plug), and the
+    `source -> IR` arm a complete Wheeler DDC wants is DONE -- the C# arm
+    parsed raw source and emitted a byte-identical CDX on demand.
+  - **The self-reproducing quine carrier is MEASURED, not reasoned** (val,
+    2026-08-15, `docs/Test/Active/DDC-QUINE-ARM.md`). Trojaned `ir-emit-def`,
+    run over clean source, emits its own definition byte-identically in one
+    shot (D=2285; emitted == replace(D,"@QQ@",ir-quote(D)); both 4698 chars).
+    **The measurement corrected the framing.** `ir-emit-def` is the CARRIER,
+    not a witness-defeat: it touches IR-text emission only, and the shipped
+    seed is CDX whose emit path never calls `ir-emit-def`, so the pure quine
+    is INERT in the shipped artifact. Defeating the byte-comparison needs a
+    codegen payload PAIRED with the carrier, exactly as the frontend-IR arm
+    did (`ir-emit-def` hook + an `X86_64Helpers` nop). The old "build the
+    self-reproducing quine that DEFEATS the witness" task is retired: it
+    rested on the wrong premise, and a witness-defeating survivor was already
+    demonstrated (frontend-IR arm) and is greppable text either way.
+  - **DONE (val, 2026-08-15): the visibility claim now has a runner.** The
+    defense rests on a survivor being VISIBLE in the readable IR, and that
+    was asserted, not enforced -- a claim with no runner (L-BODY).
+    `build/jonquil.ps1` (the `jonquil` gate phase, named for the narcissus
+    flower: a def caught admiring its own reflection in the IR) emits the
+    compiler's own IR and FAILS the build if any def embeds, as string data,
+    the IR-def header for its OWN name -- the self-reproduction signature of
+    the `DDC-QUINE-ARM` construction. It is a tripwire for that construction,
+    NOT a complete quine detector (general detection is undecidable, Rice),
+    and it is ORTHOGONAL to the DDC witness (a machine-code-only trojan
+    leaves no IR trace, so this cannot see it and does not replace it). It
+    makes the readable-intermediate defense concrete rather than reasoned.
 - **C2 (val): the independent rechecker. R1 to R4 are all published and
   enforced, and the abstention set is 1 finding from 1365.** All three
   classes are now closed:
@@ -817,13 +847,28 @@ open as WORKS-9.
 ## The Shell DSL backport -- CLOSED 2026-08-14, now ambient
 
 **Damian's ruling 2026-08-14: tie it up, take it off the board, keep it as a
-routine check rather than a campaign.** Re-measured at seed `D9A6A7A2` on the
-day it closed (L-COUNT -- do not copy these forward): **46 generators checked,
-4 drifted, 0 broken, 1 dead target.** The 4 are exactly the backlogged stubs
-(`test`, `cdx-to-pe`, `build`, `build-img`), which stay backlogged by the
-2026-08-06 ruling. **Every ordinary generator in the tree matches the script it
-ships beside.** The entry that stood here said 12 drifted with eight generators
-left to close, and it was a full campaign out of date.
+routine check rather than a campaign.** Re-measured 2026-08-15 (L-COUNT -- do
+not copy these forward): **55 generators checked, 0 drifted, 0 broken, 1 dead
+target, and `build/generated-scripts-baseline.txt` is EMPTY.** Every generator
+in the tree emits the script it ships beside.
+
+**All four backlogged stubs were closed 2026-08-15 (fester), at Damian's
+direction: "build and test are the two most important .ps1 to have working in
+the backport... 100% fidelity", then "do those all".** None was a stub; all
+four carried real absences. `build` emitted 12 of the gate's 21 phases and was
+missing everything added since 2026-08-06, plus `-Jobs 4` against the standing
+`-Jobs 8` ruling and a `ScCopy` call site emitting PowerShell that parses and
+fails at runtime. `test` was missing tiers, the `-ApprovedBy` refusal and
+kernel-provenance checking, and still carried a `-Fuzz` switch deleted
+2026-07-27. `cdx-to-pe` and `build-img` were derived mechanically rather than
+transcribed, and verified by ARTIFACT byte-identity: six `.efi` arms and five
+`.img` arms, every pair identical, every hash distinct from its siblings so
+the comparison discriminates. Gate GREEN with all four installed. Account and
+traps in `docs/Designs/Active/Build/Build.md`.
+
+**What this buys, and it is the reason to keep it:** with the baseline empty, a
+drift of any size in any generator now fails the gate. There is no residue for
+a new one to hide in.
 
 What keeps it closed is two mechanisms, neither of which is a campaign:
 
@@ -831,13 +876,14 @@ What keeps it closed is two mechanisms, neither of which is a campaign:
   file carrying it is exactly a file that matches its generator. That is the
   hard rule at the top, and it is what discourages the hand edit.
 - **`build/check-generated-scripts.ps1`**, a leg of `build/build.ps1` at about
-  61 s. It fails on a BROKEN generator or a NEWLY drifted one, never on the
-  baselined four. Since 2026-08-14 it also reports the other direction: a
+  108 s. It fails on a BROKEN generator or a drifted one, and with the
+  baseline now empty there is no "never" left in that sentence: any drift is a
+  red. Since 2026-08-14 it also reports the other direction: a
   script under `build/` that no generator emits, against
   `build/handwritten-scripts.txt`. **That half is report-only and must stay
-  that way** -- 93 of 135 scripts under `build/` have no generator and most are
+  that way** -- 85 of 140 scripts under `build/` have no generator and most are
   meant not to (probes, flight arms, interop harnesses, one-offs). Gating it
-  would be 93 reds whose answer is always "expected", which is the failure the
+  would be 85 reds whose answer is always "expected", which is the failure the
   drift baseline already exists to avoid.
 
 Method, traps and every worked example are in
@@ -898,7 +944,7 @@ reversed direction**, and a reader who half-remembers the old rule will reach
 for the wrong name. L-COUNT and "prefer the fix in the primitive": the sweep
 was 192 sites of per-site judgement and the primitive change closed all of it.
 
-## The cost model -- proposed 2026-08-14, unscheduled
+## The cost model -- 3.1 and 3.2 SHIPPED, 3.3 unscheduled
 
 `docs/Designs/Active/Features/CostModel.md` (blu, at Damian's direction).
 **Damian has ruled the SHAPE: it sits in the same part of the rainbow as
@@ -914,10 +960,22 @@ measured on 2026-08-14 live in that middle -- `unpack-text` appending per byte
 (main 15013, 15028). Each was semantically correct, each was green, and two
 produced WRONG BEHAVIOUR rather than slow behaviour.
 
-It is a proposal with zero implementation and it is not scheduled. The open
-questions are in section 5 and the sharp one is what instrument keeps it
-honest, since the type rules only got teeth because the rechecker abstains
-where the guide is silent and nothing equivalent exists for cost.
+**Items 3.1 and 3.2 are DONE at main 15145.** 3.2 makes `__out_of_memory`
+name the resource (`SP=` and `HEAP=` from the two numbers the handler
+already held), and 3.1 publishes the measured Text costs in
+`docs/DevelopersGuide.md`. Measuring them corrected the design's own
+section 3.5: the accessors allocate ZERO and the 1,040 bytes belong to
+`to-unicode`, so the advice inverted from "reach for `text-split`" to "drop
+the per-character `to-unicode`". A second result was added as section 3.6 --
+`a & b` in an accumulator is quadratic, 203,200 bytes against
+`text-concat-list`'s 2,008 for the same 2,000 characters.
+
+**3.3 is what remains a proposal, with zero implementation and no
+schedule.** The open questions are in section 5 and the sharp one is
+unchanged: what instrument keeps it honest, since the type rules only got
+teeth because the rechecker abstains where the guide is silent and nothing
+equivalent exists for cost. A kill-rate corpus of known-quadratic
+accumulators would have to exist BEFORE the check, not after.
 
 ## Rulings Damian owes (the only queue that blocks)
 
@@ -933,7 +991,7 @@ where the guide is silent and nothing equivalent exists for cost.
 | `apps/works/GopDesk.codex` | FREE -- announce before you start |
 | `apps/works/GopXhci.codex`, `GopUsb*.codex` | reek |
 | `codex/os/kernel/E1000e.codex`, `codex/os/net/**` | blu |
-| `codex/plugs/csharp/**`, `build/` DDC harness | fester |
+| `codex/plugs/csharp/**`, `build/` DDC harness | val |
 | `codex/plugs/recheck/**` | val |
 
 `GopDesk.codex` was claimed by red and is released 2026-08-11 (blu, at
@@ -953,3 +1011,21 @@ Battery runs are Damian's (release proofs excepted, per the release
 skill). Goldens stay parked during active GUI work. No new platform-wide
 register. Prose about our own code is deleted in files you touch. The
 em-dash stays banned.
+
+### Declined, and therefore not available work
+
+Damian has ruled these out. They were carried in one agent's memory file,
+which is why they kept being re-proposed by everyone else; they are here so
+the ruling is reachable by whoever is about to spend a session on one.
+
+- **Line-level debug info.** A statement about what Codex is for, not a
+  scheduling call, so it does not come back when the calendar clears.
+- **An app compile gate.** Compiler work must not be coupled to app drift.
+- **The ARM64/RISC-V LIR retarget.** What landed stays; the rest is not
+  reopening.
+- **The store cutover** waits on infrastructure and is not available work.
+
+Declined is not deferred. Do not re-propose one of these, do not build a
+smaller version of it, and do not open a design that assumes it. If you
+think a ruling has been overtaken by events, that is one sentence to Damian,
+once.

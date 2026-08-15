@@ -29,8 +29,8 @@ if ((-not $script:FallbackVmBin)) {
         # A directory whose suffix is not a version sorts last rather than
         # throwing.
         $sideload = @()
-        foreach ($root in @('D:\', 'C:\')) {
-            foreach ($d in (Get-ChildItem -Path $root -Directory -Filter 'qemu-*' -ErrorAction SilentlyContinue)) {
+        foreach ($qroot in @('D:\', 'C:\')) {
+            foreach ($d in (Get-ChildItem -Path $qroot -Directory -Filter 'qemu-*' -ErrorAction SilentlyContinue)) {
                 $exe = Join-Path $d.FullName 'qemu-system-x86_64.exe'
                 if (Test-Path -PathType Leaf $exe) {
                     $v = [version]'0.0'

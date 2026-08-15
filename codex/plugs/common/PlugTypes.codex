@@ -27,3 +27,30 @@ Section: Plug Utilities
   deck-record : a -> a
   deck-record (x) = x
 
+ Every plug receives its IR as a byte list and needs it as Text, and this
+ is the only definition of that conversion. It lived in each plug instead,
+ where 42 of the 44 copies accumulated with `acc & chunk`: `&` copies both
+ sides, so the cost was quadratic and a 1.18 MB IR asked about 2.7 GB of a
+ 3 GB heap and died before emitting anything.
+
+ The 256-byte chunk is a chosen constant, not a round number. The inner
+ loop is quadratic too, so the total is N^2/2C + N*C/2, minimised near
+ C = sqrt(N); raising C alone makes it worse, and 8192 was measured at
+ 4.6 GB and still died.
+
+  bytes-to-text-chunk : List Integer, Integer, Integer, List Text -> List Text
+  bytes-to-text-chunk (bs) (i) (stop) (acc) =
+   if i >= stop then acc
+   else bytes-to-text-chunk bs (i + 1) stop (list-push acc (char-to-text (code-to-char (list-at bs i))))
+
+  bytes-to-text-chunks : List Integer, Integer, Integer, List Text -> List Text
+  bytes-to-text-chunks (bs) (off) (total) (acc) =
+   if off >= total then acc
+   else let stop = if off + 256 > total then total else off + 256
+   in let chunk = text-concat-list (bytes-to-text-chunk bs off stop [])
+   in bytes-to-text-chunks bs stop total (list-push acc chunk)
+
+  bytes-to-text : List Integer, Integer, Integer -> Text
+  bytes-to-text (bs) (off) (total) =
+   text-concat-list (bytes-to-text-chunks bs off total [])
+

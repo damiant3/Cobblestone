@@ -1,10 +1,31 @@
-# Compiler acceptance test harness -- batch mode.
-#
+# test.ps1 -- Compiler acceptance test harness -- batch mode.
+# GENERATED FROM THE CODEX SHELL DSL. Do not edit by hand.
+# A hand edit here must NOT be submitted. Change the generator under
+# codex/build/, regenerate, and submit the generator and this file
+# together. Until then build/check-generated-scripts.ps1 reports this
+# file as drifted, and the next regeneration discards the edit.
+[CmdletBinding()]
+param(
+    [string]$CodexCdx,
+    [int]$Jobs = 8,
+    [switch]$ErrorsOnly,
+    [switch]$NoErrors,
+    [switch]$Apps,
+    [switch]$FW,
+    [switch]$All,
+    [switch]$Lib,
+    [switch]$Slow,
+    [switch]$Fatal,
+    [string[]]$Tier = @(),
+    [string]$ApprovedBy,
+    [switch]$AllowStaleKernel
+)
+
 # Phase 1: batch-compile all non-skipped tests through persistent VM
 #           instances (one per job slot, repl-loop reuse).
 # Phase 2: run compiled tests that have .expected files (individual VM
 #           per test, parallel).
-#
+# 
 # Usage:
 #   build/test.ps1 [-CodexCdx FP] [-Jobs N] [-ErrorsOnly | -NoErrors]
 #   build/test.ps1 -Tier lang          # codex\test + codex\test\ops + codex\test\errors (the default)
@@ -25,16 +46,16 @@
 #   build/test.ps1 -All                # lang+lib+fw+apps+oracles
 #   build/test.ps1 -All -Slow          # include slow tests too
 #   build/test.ps1 -Fatal              # include fatal tests (GPF/exception demos)
-#
+# 
 # Legacy switches (-Apps/-FW/-Lib/-All) map onto tiers. -Fuzz was removed
 # 2026-07-27: codex\test\fuzz never existed. Every run writes
 # test-output\_results\_rollup.txt and a delta against the previous run
 # (test-output\last-run.json): newly red, fixed, added, removed.
-#
+# 
 # Every run requires -ApprovedBy damian. The battery is run by Damian or
 # with his per-run go-ahead, never on an agent's initiative -- see
 # CLAUDE.md rule 1. The gate below is deliberate; do not work around it.
-#
+# 
 # Sidecars (all optional, presence-driven):
 #   codex*.test\foo.expected  -- compile must SUCCEED, runtime output must match
 #   codex*.test\foo.failing   -- compile must FAIL with listed CDX error codes.
@@ -55,24 +76,9 @@
 #   codex*.test\foo.skip      -- skipped entirely (first line = reason)
 #   codex*.test\foo.slow      -- skipped unless -Slow is passed (first line = reason)
 #   codex*.test\foo.fatal     -- skipped unless -Fatal is passed (kills VM at runtime)
-#
+# 
 # Exit status: 0 iff every sample ends in its expected bucket.
-[CmdletBinding()]
-param(
-    [string]$CodexCdx,
-    [int]$Jobs = 8,
-    [switch]$ErrorsOnly,
-    [switch]$NoErrors,
-    [switch]$Apps,
-    [switch]$FW,
-    [switch]$All,
-    [switch]$Lib,
-    [switch]$Slow,
-    [switch]$Fatal,
-    [string[]]$Tier = @(),
-    [string]$ApprovedBy,
-    [switch]$AllowStaleKernel
-)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if ($ApprovedBy -ne 'damian') {
@@ -90,6 +96,7 @@ if ($ApprovedBy -ne 'damian') {
     Write-Host ''
     exit 1
 }
+
 Set-Location (Join-Path $PSScriptRoot '..')
 [Environment]::CurrentDirectory = (Get-Location).Path
 $Scope = if ($ErrorsOnly) { 'errors' } elseif ($NoErrors) { 'positive' } else { 'both' }
@@ -103,6 +110,7 @@ $TestLog = Join-Path $OutRoot 'test.log'
 Set-Content -Path $TestLog -Value '' -Encoding UTF8
 $env:CODEX_SWEEP_LOG = (Resolve-Path $TestLog).Path
 
+
 # ===========================================================================
 # Tiers. Named subsets so -All stops being the only word for "more". The
 # legacy switches map onto them; -ErrorsOnly/-NoErrors still narrow the lang
@@ -113,7 +121,7 @@ $env:CODEX_SWEEP_LOG = (Resolve-Path $TestLog).Path
 # pin goes wherever it helps, so the oracles run in -All and in the gate
 # (build.ps1) as well -- measured at 2s + 1s, they cost nothing worth
 # counting. The collections stay author-owned.
-#
+# 
 # `codex\test\ops` is the operator-correctness-by-operand-type axis, part
 # of the lang tier: pins for operators that were right on the operand types
 # somebody tested and wrong on one nobody did (the Real-comparison class),
@@ -143,6 +151,7 @@ $runSlow  = $Slow.IsPresent  -or $tiers.Contains('slow')
 # compiler. An explicit tier list is taken at its word -- `-Tier oracles`
 # alone runs the collections and no tests.
 if ($tiers.Count -eq 0) { [void]$tiers.Add('lang') }
+
 
 $machineSidecars = @('.smp', '.vmargs', '.disk', '.disk2', '.keys')
 function Test-MachineSidecar {
@@ -192,8 +201,9 @@ foreach ($pair in @(@{ Tier = 'traps'; Ext = '.fatal' }, @{ Tier = 'slow'; Ext =
     }
 }
 
+
 # --- Which compiler is on trial, and is it the one you think? ---------------
-#
+# 
 # The battery compiles every sample with build-output\bare-metal\Codex.cdx.
 # Nothing used to state which compiler that was, or check it: the digest was
 # computed at the END and written to the rollup as stage0=..., compared
@@ -202,7 +212,7 @@ foreach ($pair in @(@{ Tier = 'traps'; Ext = '.fatal' }, @{ Tier = 'slow'; Ext =
 # two seeds stale -- and reported 11 failures that were all the antique
 # compiler missing features the tests use. The run cost 12 minutes and nearly
 # blocked a release on defects that did not exist.
-#
+# 
 # So: name the kernel up front, and refuse to run one whose provenance is
 # unknown. Legitimate kernels are the depot seed (a fresh workspace) or the
 # last build's signed output (the normal edit-build-test loop). Anything else
@@ -273,6 +283,7 @@ function Restore-Kernel {
     }
 }
 
+
 # ===========================================================================
 # Pre-filter: handle skips, partition into compile lists
 # ===========================================================================
@@ -313,6 +324,7 @@ $toCompile = @($toCompile | Sort-Object {
 })
 
 Write-Host "Tests: $($tests.Count) total, $($tests.Count - $toCompile.Count) skipped, $($toCompile.Count) to compile ($Jobs batch slots)"
+
 
 # ===========================================================================
 # Phase 1: Batch compile -- one VM per job slot
@@ -362,15 +374,16 @@ $phase1Sw.Stop()
 Write-Host "Phase 1 (compile) complete in $([int]($phase1Sw.ElapsedMilliseconds/1000))s."
 $retrySw = [System.Diagnostics.Stopwatch]::StartNew()
 
+
 # ===========================================================================
 # Phase 1a: Contain batch-VM crashes.
-#
+# 
 # Exit 99 means the VM died before this test ran. A death also poisons the
 # results BEFORE it in the same session: the batch REPL carries state across
 # compiles, and a corrupted session reports phantom diagnostics (exit 7) or
 # crashes (exit 4) the test does not produce standalone. See
 # battery-triage-2026-07-23.
-#
+# 
 # The old design answered any death by re-running EVERY non-clean result
 # standalone and sequentially: 683 tests and 479 s on the 2026-07-27
 # baseline. Now, per round: the test that killed the VM (exit 4 with a !EXC
@@ -525,6 +538,7 @@ foreach ($src in $toCompile) {
 
 $retrySw.Stop()
 
+
 # ===========================================================================
 # Phase 1b: Classify compile results
 # ===========================================================================
@@ -676,6 +690,7 @@ foreach ($src in $toCompile) {
     })
 }
 
+
 # ===========================================================================
 # Phase 2: Run tests with .expected files (individual VM per test)
 # ===========================================================================
@@ -772,6 +787,7 @@ if ($needsRun.Count -gt 0) {
     Write-Host "Phase 2 (run) complete."
 }
 
+
 # ===========================================================================
 # Oracles tier: the author-owned differential collections, invoked and
 # reported here, never gated. reek owns oracle-scalar, blu owns
@@ -798,6 +814,7 @@ if ($tiers.Contains('oracles')) {
         Write-Host "  $o : $(if ($ok) { 'PASS' } else { 'FAIL' }) ($([int]($osw.ElapsedMilliseconds / 1000))s)  $tail"
     }
 }
+
 
 # ===========================================================================
 # Aggregate results
@@ -860,6 +877,7 @@ $unexpected = $buckets.FAIL_COMPILE.Count + $buckets.FAIL_EXPECTED_BUT_COMPILED.
             + $buckets.FAIL_FATAL_SURVIVED.Count + $buckets.FAIL_FATAL_EXC.Count
 
 Write-Host "total=$total  pass=$passed  fail=$unexpected  skip=$($buckets.SKIPPED.Count)"
+
 
 # ===========================================================================
 # Rollup and run-over-run delta. The rollup is one file a reader can act on
@@ -1002,6 +1020,7 @@ foreach ($k in $prev.Keys) { if ($existingNames.Contains($k)) { $carried[$k] = $
 foreach ($k in $statusOf.Keys) { $carried[$k] = $statusOf[$k] }
 @{ stamp = $runStamp; stage0 = $seedStamp; tiers = $tierLabel; status = $carried } |
     ConvertTo-Json -Depth 4 | Set-Content -Path $prevFile -Encoding UTF8
+
 
 $oracleFails = @($oracleResults | Where-Object { -not $_.Ok }).Count
 if ($unexpected -gt 0 -or $oracleFails -gt 0) {

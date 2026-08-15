@@ -18,7 +18,7 @@ cluster against the belief this sentence encouraged. When
 you relocate a foreword definition, budget a `cites` line for each
 caller of the old chapter.
 
-### codex.foreword (127 modules, measured 2026-07-31) -- Core
+### codex.foreword (128 modules, measured 2026-08-15) -- Core
 
 The standard library. Core types, collections, cryptography, text,
 data structures, networking, and system utilities.
@@ -276,6 +276,14 @@ together rather than fixing only the one that moved.
 
    Removing or renaming a module IS different, because something already
    cites it. So is adding a `cites` line anywhere in the closure.
+
+   **But a cite is not a dependency cost, and treating it as one declines
+   correct fixes.** A cite governs name visibility and unit assembly, not
+   what is emitted: unreached code is still eliminated, so citing a large
+   chapter to reach one definition does not drag the chapter in. Measured,
+   adding a cite moved two CDX artifacts by **3 bytes each**, which was the
+   longer name. Weigh a cite by whether the name belongs in scope, never by
+   the size of what sits behind it.
 
    The rule underneath all of it is the same one as for a new definition
    in an existing chapter: reachability, not directory. Compare

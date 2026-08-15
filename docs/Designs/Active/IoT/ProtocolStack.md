@@ -344,6 +344,27 @@ plus an outbox flush every `net-io-tick-interval` polls. All three also
 return as soon as the connection reads `TcpClosed`, which is what makes a
 RST end the loop instead of leaving it spinning on a full queue.
 
+**OPEN, and it is in the same two loops: the payload-free branch recurses
+without restoring the heap.** `net-io-recv-raw` takes a `heap-save` before
+reading a frame, but on the branch where a frame arrives carrying NO payload
+-- a bare ACK, an ARP, a FIN -- it recurses without the matching restore,
+because the transport state it has just updated has to survive the iteration.
+`net-io-recv-wait` has the identical shape. A polling read provokes exactly
+those frames, so a long poll leaks until the guest dies, and with no collector
+every byte of it is permanent. Recorded here rather than fixed because the
+repair is a real design question -- the state that must survive has to be
+lifted out of the reclaimed frame first, which is what the naive fix would
+throw away. The diagnostic signature if it bites in the field:
+**time-to-death scaling with guest MEMORY is heap exhaustion, not a hang**
+(measured elsewhere at 265 s on 3 GB against 615 s on 6 GB), and codex-vm
+prints nothing when a guest dies this way.
+
+Second-order and worth knowing before reading either signature: **the second
+argument of these loops is the try count to START AT, not a limit** (they give
+up at `net-io-max-polls`), so passing `0` asks for the longest possible wait.
+`mqtts-client.codex` starts high on purpose, so a read that will fail fails
+cheaply.
+
 **Why a poll count and not HPET.** The only wall clock in the tree is
 `Hpet`, an x86 MMIO read at `#FED00000`, and `NetIO` is compiled into the
 transpiled plug lanes and the ARM64 path as well, so citing it would put an

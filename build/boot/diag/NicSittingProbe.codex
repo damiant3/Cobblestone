@@ -1,0 +1,271 @@
+Chapter: NicSittingProbe
+  cites Works chapter GopUsb
+  cites Works chapter GopXhci
+  cites Works chapter GopFat16
+  cites Works chapter GopDraw
+  cites Kernel chapter BitmapFont
+  cites Works chapter GopHandoff
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+  cites Kernel chapter Pci
+  cites Kernel chapter Hpet
+  cites Kernel chapter E1000e
+  cites Works chapter GopShot
+  cites Dev chapter NicAsde
+
+ NIC-1, NIC-2 and NIC-3 of the sitting queue in `docs/Hardware/HardwareSitting.md`,
+ on one boot, in the order that section argues for. Read the rows top to bottom
+ and photograph. Every row is on the glass before the row below it is attempted,
+ because the glass is the only bank that has ever worked on this box.
+
+ THE ORDER IS THE DESIGN AND IT IS NOT A PREFERENCE.
+
+ Rows 1 and 2 are PURE READS. Nothing is written to the part above row 5, so
+ the touch is still a control: it separates what firmware left from what we
+ did, and once anything is written that control cannot be recovered on this
+ boot.
+
+ Row 3 is the poll-rate measurement and it also writes nothing to the device.
+ It polls a ring WE allocated and zeroed, so the descriptor's DD bit is clear
+ and `e1000-poll-raw` returns before it can touch anything: it reads the
+ control block, computes a descriptor address, reads one status byte, and
+ answers no-frame. That is the whole of an empty receive poll, which is the
+ quantity NIC-2 asks about, and it costs the part nothing.
+
+ Row 5 is `e1000-init`, which resets and programs rings. THAT is the step
+ under suspicion: the 2026-08-11 flight wedged inside `e1000-reset` and what
+ wedged it is still unexplained (it was NOT CTRL.RST, which this part
+ discards). So it goes last, after everything it could take down with it is
+ already painted.
+
+ WHAT THE ROWS ANSWER.
+
+ NIC-1: does the real part arrive with its receiver already running? Nobody
+ has read RCTL off this board before touching it. `e1000-quiesce` exists
+ because a live receiver over an unknown ring yields a bring-up that reports
+ healthy and receives nothing, and `-e1000-preconfigured` models that. The
+ model's premise is inferred and this row measures it. EITHER ANSWER IS A
+ RESULT.
+
+ NIC-2: how long is an empty receive poll on the real I219-V? Measured in the
+ bed 2026-08-14, one million empty polls cost 15.52 s on the NE2000 model and
+ 0.029 s on the e1000, and every retransmit bound in NetworkStack is a count
+ of ticks, so that spread meant giving up on a live peer after 219 s on one
+ card and 405 ms on the other. `net-driver-calibrate` now measures the rate at
+ bring-up. The reason it is expected to transfer to the real part is that the
+ real part reads its descriptor out of RAM exactly as the model does, and THAT
+ IS AN ARGUMENT AND NOT A MEASUREMENT. It is the single assumption B3 and B4
+ rest on. This row is the measurement.
+
+ NIC-3: does a frame actually move? The link comes up (2026-08-13) and nothing
+ has ever put a byte on the wire from this board or taken one off it.
+
+ THE LOOP IS BRACKETED AND THAT IS FAITHFUL, NOT A DISTORTION. `e1000-no-frame`
+ is a module-level record binding, which is a recipe rather than a cell, so
+ every empty poll allocates a fresh record. The real driver loops in `NetIO`
+ are wrapped in `__heap-save` / `__heap-restore` for exactly that reason, and
+ this loop is wrapped the same way. An unbracketed loop here would measure the
+ allocator walking the arena and would exhaust it long before a million polls.
+
+ We say:
+
+Section: Marker Files
+
+ An 8.3 directory name is eleven bytes with no dot.
+
+  nsp-name : Integer -> Integer
+  nsp-name (buf) =
+   let a = poke-byte buf 0 78
+   in let b = poke-byte buf 1 73
+   in let c = poke-byte buf 2 67
+   in let d = poke-byte buf 3 49
+   in let p1 = poke-byte buf 4 32
+   in let p2 = poke-byte buf 5 32
+   in let p3 = poke-byte buf 6 32
+   in let p4 = poke-byte buf 7 32
+   in let t = poke-byte buf 8 84
+   in let x = poke-byte buf 9 88
+   in poke-byte buf 10 84
+
+  nsp-bytes : Integer, Text, Integer -> Integer
+  nsp-bytes (buf) (s) (i) =
+   if i >= text-length s then i
+   else let b = poke-byte buf i (to-unicode (char-code (char-at s i)))
+   in nsp-bytes buf s (i + 1)
+
+  nsp-mark : GfatMount, Text -> [Device.Port] Boolean
+  nsp-mark (m) (body) =
+   if (m.gm-ok) == False then False
+   else let nb = alloc-zeroed 16 16
+   in let nm = nsp-name nb
+   in let n = text-length body
+   in let buf = alloc-zeroed 512 64
+   in let w = nsp-bytes buf body 0
+   in gfat-write-file (m.gm-vol) nb buf n
+
+  nsp-stage-name : Integer -> Text
+  nsp-stage-name (s) =
+   if s == gfat-stage-hdr then "GPT header read failed"
+   else if s == gfat-stage-sig then "no EFI PART signature"
+   else if s == gfat-stage-ents then "entry array read failed"
+   else if s == gfat-stage-guid then "no ESP GUID in the entry array"
+   else if s == gfat-stage-bpb then "BPB sector read failed"
+   else if s == gfat-stage-bps then "bytes-per-sector not 512"
+   else if s == gfat-stage-ok then "ok"
+   else "not asked"
+
+  nsp-bank-line : GfatMount, Boolean -> Text
+  nsp-bank-line (m) (wrote) =
+   if m.gm-ok then "bank live, NIC1.TXT written=" & (if wrote then "y" else "n")
+   else "no bank, mount stage " & show (xdiag-get gfat-cell-stage)
+        & " (" & nsp-stage-name (xdiag-get gfat-cell-stage)
+        & ") -- the rows below are the reading"
+
+Section: Rows
+
+  nrow : Integer, Integer, CbfFont, Integer, Integer, Text, Integer, Integer -> Integer
+  nrow (base) (stride) (font) (y) (scale) (s) (col) (w) =
+   let lines = gop-draw-text-wrap base stride font 40 y s col scale w
+   in y + lines * 16 * scale + 6
+
+  col-read : Integer = 9474192
+  col-good : Integer = 3394611
+  col-warn : Integer = 16755200
+  col-head : Integer = 65535
+
+Section: NIC-1, the read-only touch
+
+ RCTL bit 1 is EN. If it is set here, before we have written anything, the
+ receiver is running on arrival and `-e1000-preconfigured` is right about this
+ board. If it is clear, the model describes a hazard this part does not have
+ and that belongs in the record too.
+
+  nsp-rctl-line : Integer -> Text
+  nsp-rctl-line (mmio) =
+   let r = e1000-read mmio e1000-reg-rctl
+   in let t = e1000-read mmio e1000-reg-tctl
+   in "NIC-1 RCTL=" & show r & " EN=" & na-yn (bit-and r e1000-rctl-en)
+     & "  TCTL=" & show t & " EN=" & na-yn (bit-and t e1000-tctl-en)
+
+  nsp-ring-line : Integer -> Text
+  nsp-ring-line (mmio) =
+   "NIC-1 RDBAL=" & show (e1000-read mmio e1000-reg-rdbal)
+     & " RDLEN=" & show (e1000-read mmio e1000-reg-rdlen)
+     & " RDH=" & show (e1000-read mmio e1000-reg-rdh)
+     & " RDT=" & show (e1000-read mmio e1000-reg-rdt)
+
+Section: NIC-2, the poll rate
+
+ One million is the same count the bed measured, so the two numbers are
+ directly comparable without arithmetic on a photograph.
+
+  nsp-polls : Integer = 1000000
+
+  nsp-poll-loop : Integer, Integer, Integer, Integer, Integer -> Integer
+  nsp-poll-loop (mmio) (ring) (bufs) (cb) (n) =
+   if n <= 0 then 0
+   else let hp = __heap-save
+   in let r = e1000-poll-raw mmio ring bufs cb
+   in let rs = __heap-restore hp
+   in nsp-poll-loop mmio ring bufs cb (n - 1)
+
+ The ring is ours and zeroed, so DD is clear on every descriptor and the poll
+ always takes the no-frame path. Nothing here is written to the device.
+
+  nsp-poll-micros : Integer -> Integer
+  nsp-poll-micros (mmio) =
+   let ring = alloc-zeroed (e1000-rx-count * e1000-desc-size) 16
+   in let bufs = alloc-zeroed (e1000-rx-count * e1000-buf-size) 16
+   in let cb = alloc-zeroed e1000-cb-size 16
+   in let rate = hpet-ticks-per-second
+   in if rate <= 0 then -1
+   else let t0 = hpet-ticks
+   in let z = nsp-poll-loop mmio ring bufs cb nsp-polls
+   in let t1 = hpet-ticks
+   in (t1 - t0) * 1000000 / rate
+
+ A tick is what NetIO spends its retransmit bounds in. At the fallback
+ interval of 100000 polls the tick duration follows directly from the number
+ above. Through the full driver path that quantity was 1550 ms on the NE2000
+ and 2.9 ms on the e1000 model; this row polls e1000-poll-raw directly, which
+ is lighter, so its own bed figure is the one printed beside it.
+
+  nsp-tick-us : Integer -> Integer
+  nsp-tick-us (micros) = if micros < 0 then -1 else micros / 10
+
+Section: NIC-3, does a frame move
+
+ Promiscuous mode is set by our own bring-up (RCTL.UPE and RCTL.MPE), so any
+ frame on the wire lands in the ring. On a live switch there is always
+ background traffic within seconds, so this asks whether the receiver receives
+ at all rather than whether one specific peer answered.
+
+  nsp-recv-ms : Integer = 3000
+
+  nsp-await-frame : E1000Device, Integer, Integer, Integer -> E1000RecvResult
+  nsp-await-frame (d) (start) (want) (fuel) =
+   let hp = __heap-save
+   in let r = e1000-poll-raw (d.e-mmio) (d.e-rx-ring) (d.e-rx-bufs) (d.e-ctrl-blk)
+   in if r.r-has-frame then r
+   else let rs = __heap-restore hp
+   in if fuel <= 0 then e1000-no-frame
+   else if (hpet-ticks - start) >= want then e1000-no-frame
+   else nsp-await-frame d start want (fuel - 1)
+
+  nsp-bcast : List Integer = [255, 255, 255, 255, 255, 255]
+
+  nsp-probe-frame : List Integer -> List Integer
+  nsp-probe-frame (mac) =
+   nsp-bcast & mac & [8, 6, 0, 1, 8, 0, 6, 4, 0, 1] & mac
+     & [0, 0, 0, 0] & [0, 0, 0, 0, 0, 0] & [0, 0, 0, 0]
+
+Section: Entry
+
+  opening : [Device.Port, Device.Mmio] Integer
+  opening =
+   let base = boot-fb-base 0
+   in let w = boot-fb-w 0
+   in let h = boot-fb-h 0
+   in let stride = boot-fb-stride 0
+   in let font = cbf-init
+   in let scale = if w >= 1024 then 2 else 1
+   in act
+    ri <- runtime-init 0
+    att <- usb-attach
+    let bg = gop-fill-rect base stride 0 0 w h 1710638
+    in let y0 = nrow base stride font 40 scale "NIC SITTING PROBE -- NIC-1 arrival state, NIC-2 poll rate, NIC-3 does a frame move" col-head w
+    in act
+      m <- gfat-mount-esp
+      m0 <- nsp-mark m "nic sitting probe, rows on the glass"
+      let y1 = nrow base stride font y0 scale (nsp-bank-line m m0) (if m.gm-ok then col-read else col-warn) w
+      in let scan = pci-scan-all
+      in let yend = when e1000-find scan
+       is None -> nrow base stride font y1 scale "NO ELIGIBLE INTEL PART FOUND -- nothing below can run" col-warn w
+       is Just (d) ->
+         if na-eligible d == False then nrow base stride font y1 scale (na-reject-line d) col-warn w
+         else let y2 = nrow base stride font y1 scale ("eligible at " & show (d.pci-bus) & ":" & show (d.pci-dev) & "." & show (d.pci-func) & " verdict=" & na-verdict-text (e1000-bar-verdict (na-bar-of d))) col-read w
+         in let mmio = na-mmio-of d
+         in let t = na-touch mmio
+         in let y3 = nrow base stride font y2 scale (na-touch-line mmio t) col-read w
+         in let y4 = nrow base stride font y3 scale (nsp-rctl-line mmio) col-read w
+         in let y5 = nrow base stride font y4 scale (nsp-ring-line mmio) col-read w
+         in let started = hpet-start
+         in let hz = hpet-ticks-per-second
+         in let y6 = nrow base stride font y5 scale ("NIC-2 hpet-hz=" & show hz & " (0 or absurd voids every duration below)") col-read w
+         in let us = nsp-poll-micros mmio
+         in let y7 = nrow base stride font y6 scale ("NIC-2 " & show nsp-polls & " empty polls = " & show us & " us   bed same probe: 13034 us") col-good w
+         in let y8 = nrow base stride font y7 scale ("NIC-2 tick at the 100000 fallback = " & show (nsp-tick-us us) & " us   bed same probe: 1303 us") col-good w
+         in let y9 = nrow base stride font y8 scale "NIC-3 below writes to the part: e1000-init resets and programs rings. Everything above is already banked." col-warn w
+         in let dev = e1000-init d
+         in let ya = nrow base stride font y9 scale ("NIC-3 init present=" & (if dev.e-present then "y" else "n") & " macvalid=" & (if dev.e-mac-valid then "y" else "n") & " RDH=" & show (e1000-read mmio e1000-reg-rdh) & " RDT=" & show (e1000-read mmio e1000-reg-rdt)) col-read w
+         in let sent = e1000-send-frame dev (nsp-probe-frame (e1000-read-mac mmio))
+         in let yb = nrow base stride font ya scale ("NIC-3 send accepted=" & show sent & " (1 = the descriptor completed)") col-read w
+         in let s2 = hpet-ticks
+         in let got = nsp-await-frame dev s2 ((hz * nsp-recv-ms) / 1000) na-link-fuel-clocked
+         in let yc = nrow base stride font yb scale ("NIC-3 RECEIVED=" & (if got.r-has-frame then "YES" else "no") & " len=" & show (list-length (got.r-frame)) & " RDH=" & show (e1000-read mmio e1000-reg-rdh) & " RDT=" & show (e1000-read mmio e1000-reg-rdt)) (if got.r-has-frame then col-good else col-warn) w
+         in nrow base stride font yc scale "END OF ROWS -- photograph from the top, then F12 to bank" col-head w
+      in shot-wait base w h stride font (att.ua-kbd)
+    end
+   end
+
+Page 1

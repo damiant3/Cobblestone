@@ -211,6 +211,35 @@ When `__deck-exit` is called:
 Nesting is supported: inner `deck-record` calls increment/decrement
 the counter without swapping R10.
 
+## The runtime list header, and why hand-rolled builders corrupt silently
+
+Every runtime list is laid out `[capacity][count][slots...]`, and **the list
+pointer points at COUNT**, so the capacity sits at `[list-8]`. The inlined
+`list-at` reads the **SIGN** of `[list-8]`: negative means the grown/indirect
+form, whose elements live behind the pointer at `[list+8]`.
+
+**Any hand-rolled list builder in emitted code MUST write that header.**
+`__list-with-capacity`, `__linked_list_to_list` and `__list_concat_many` are
+the references to copy. A builder that writes slots and a count but no capacity
+produces a list that reads correctly everywhere except through the one path
+that consults the sign, so the corruption surfaces far from its cause.
+
+**It is invisible on a fresh VM and deterministic in the REPL, by design.**
+Zeros in never-touched memory make a missing capacity word look like a valid
+small positive capacity. The REPL loop's between-units 0xCD poison sweep is
+what turns the same defect into a reliable crash -- that sweep exists to
+convert this class from luck into a repro, so a bug that only appears in a
+batch session is evidence about the header before it is evidence about the
+batch.
+
+**A read-only instrument that allocates is a bug class here.** There is no
+GC, and walks run inside `deck-record`, so a diagnostic that builds a list,
+sorts, or formats a string is spending the deck it is standing on -- and it
+reports a healthy number right up until the phase it is measuring runs short.
+The diagnosis is one number: **print R10 across any suspect region.** R10
+climbing over a walk that is supposed only to read is the whole finding, and
+it costs nothing to look before writing the instrument a second time.
+
 ## Phase Allocator
 
 Defined in `codex/compiler/Core/PhaseAllocator.codex`. The compiler runs in

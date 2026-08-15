@@ -34,8 +34,9 @@ param(
 # changed shape has quietly stopped being checked, which is the same defect
 # one step earlier and is invisible by construction.
 # 
-# Not wired into build.ps1. Wiring it in is a decision about everyone's gate,
-# not this script's to make.
+# Wired into build.ps1, opt-in and off by default: it runs when the env var
+# CODEX_CHECK_DOC_COUNTS is 1, or a .doc-counts file sits in the repo root.
+# Turning it on for everyone is a decision about everyone's gate.
 # 
 # Exit 1 on any drift or any unmatched pattern.
 # 

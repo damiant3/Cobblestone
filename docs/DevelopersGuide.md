@@ -268,6 +268,12 @@ encoders in `Encode` do. The compiler enforces this: `unify-structural`
 compares integer bounds exactly in an argument position and by overlap
 everywhere else.
 
+**A branch mismatch is reported at the `if`, not at the branch that is
+wrong**, and the wrong branch is rarely the one that looks odd. `Page.codex`
+returned `-1` on one arm and a bounded `slot-count` on the other; the `-1`
+reads as the outlier and widening it changed nothing. **Widen the arm that
+reads a DECLARED field** -- that is the arm carrying the bound.
+
 That the literal needs an explicit widening is the honest reading, not a
 wart to be inferred away: under invariance `[c.cr]` really is a
 `List (Integer between 0 and 255)`, and calling it a `List Integer` is a
@@ -1297,6 +1303,43 @@ Which of the other 43 plugs have the same defect is unswept and is
 Internal encoding: CCE (Codex Character Encoding). Unicode at I/O
 boundaries only. No `\t` or `\r` escapes -- use spaces and `\n`.
 
+### What Text operations cost
+
+Measured 2026-08-15 against the depot seed, by reading `__heap-save`
+either side of each loop. The unit is bytes RETAINED on the bump
+allocator, which has no GC, so everything here is permanent until the
+producing function returns.
+
+| operation | allocation | cost |
+|---|---|---|
+| `char-code-at s i` | none | **0** |
+| `char-at s i` then `char-code` | none | **0** |
+| `text-length s` | none | **0** |
+| `substring s i n` | one text | 16 bytes per call at n = 4 |
+| `integer-to-text i` | one text | 16 bytes per call |
+| `a & b` | **a new text of length(a) + length(b)** | see below |
+| `text-concat-list xs` | one text | one allocation for the whole list |
+| `to-unicode cp` | **about a kilobyte** | **1,040 bytes per call** |
+
+**`&` copies both sides, so accumulating with it is quadratic.** Building
+a 2,000-character text by 200 appends of ten characters retained
+**203,200 bytes**; `text-concat-list` over the same 200 pieces retained
+**2,008 bytes** for the identical result. That is 101x, and the gap grows
+with the square of the number of appends, because each `&` allocates the
+whole accumulator again. Push the pieces onto a list and concatenate once.
+
+**`to-unicode` is the expensive character operation, and the accessors are
+not.** Reading characters costs nothing; converting each one back to
+Unicode costs 1,040 bytes a call, so a 4,752-character line read through
+`to-unicode` retains 4.9 MB. `BrotliDict.codex` measured the same constant
+independently at 120,000 characters for 125 MB. Stay in CCE (R-CCE says
+so anyway) and convert at the I/O boundary only -- which is the rule the
+cost was always enforcing.
+
+When a scan must allocate regardless, bracket it with `__heap-save` /
+`__heap-restore` and emit into a pre-allocated buffer. `apps/wademo`'s
+loader took a CSV row from 3,938 to 96 bytes per row that way.
+
 ## Booleans
 
 `True` / `False` -- capital T/F.
@@ -1595,6 +1638,18 @@ receiver's line (`r.field`), or bind the receiver with a `let`.
 **Multi-line function application needs parens.** Outside `act` blocks,
 newlines are whitespace. A bare multi-line application can misparse.
 
+**A bound expression must START on its binding line.** `let x =` followed
+by a newline and then `if ...` is CDX1023. A multi-line `if` is fine as
+long as its `then` arm begins on the binding line; it is the empty tail
+after `=` that is rejected, not the length of what follows.
+
+**`peek-32` zero-extends, so -1 is not a usable sentinel.** A diagnostic
+cell read back through `peek-32` can never answer negative, and code
+testing `< 0` on it is dead. Pick a sentinel above the field's real
+range instead. Note also that **`poke-qword` does not exist** although
+`peek-qword` does; use `poke-32` / `peek-32` for a heap pointer, which is
+safe because the arena is below 4 GB.
+
 **`show` vs `integer-to-text`.** Both convert Integer to Text. `show`
 is the standard builtin. Do not write `toString`, `str`, `to-string`.
 
@@ -1660,6 +1715,45 @@ every rebuild is permanent until the producing function returns.
 
 The same applies to a large data constant read per element: build it once and
 thread it, never re-reference it per position.
+
+**It is not only lists: a module-level binding of ANY shape is a recipe, not a
+cell, and this keeps being rediscovered as though it were several separate
+traps.** A module-level 8-field record costs 56 bytes **per reference**,
+measured 2026-07-29 at 100000 iterations -- exactly the same as rebuilding it
+inside the loop, against 0 for a control touching no record. So there is no
+module-level value to park a device handle, a bound driver or any
+allocated-once structure in; bind it once and thread it as a parameter.
+(`net-driver-cb` in the kernel metadata cells exists for that reason, and
+`ArchitectsSketchbook`'s table says so at its row.)
+
+Two consequences worth naming because each shipped:
+
+- **A nullary definition hands every caller a FRESH value.** `scratch =
+  alloc-zeroed n` reads like one shared buffer and is a fresh zeroed buffer per
+  mention, which made an AHCI test pass vacuously -- it asserted against a
+  buffer nothing had written.
+- **Returning a module-level constant allocates on the path that returns
+  nothing.** `e1000-poll-frame` allocates 32 bytes on every EMPTY poll for
+  exactly this reason, and `mat4-identity` re-allocates at every reference
+  inside a triangle loop.
+
+**`to-unicode` allocates about 1 KB per call.** It is correct at an I/O
+boundary and ruinous in a hot loop; convert once at the edge and carry CCE
+inside.
+
+**A setter that RETURNS the container costs per element, and a one-frame test
+cannot see it.** Two framebuffers exist and only one can back a screen. `Game
+chapter Rasterizer`'s `Framebuf` holds `fb-pixels : List Integer` and `fb-set`
+returns a `Framebuf`, so every pixel write builds a record: **24 bytes per
+pixel**, 18.9 MB for a single 1024x768 pass, permanent. `UI chapter PixelBuf`
+is `alloc-bytes` plus `poke-32`: **0 bytes per pixel**. Use PixelBuf for
+anything that repaints; Rasterizer and the renderers built on it are correct
+only in front of an offline rasterizer. `Renderer3D` was the third chapter
+caught by this (fixed, CL 11962; it paid the 24 bytes three times per covered
+pixel plus a record per candidate pixel). **Ask what a frame COSTS as a
+question separate from whether it is correct** -- with no collector, only one
+of those two usually has a test.
+
 **Long & chains.** A single expression with many `&` concatenations
 creates a deep IR tree. Break long chains into named helpers.
 
@@ -1748,6 +1842,36 @@ label in CCE.
 
 **`end` is a reserved keyword.** Cannot be used as a parameter name
 or identifier.
+
+**A TUPLE type mismatch has NO file and NO line.** `Desugarer` lowers a tuple
+to a `MkTupN` application carrying `synthetic-span`, so the diagnostic names
+neither the file nor the position and only the two types distinguish the site.
+Finding one across the whole compiler is tractable only because `type-desc`
+prints integer bounds now; it used to say `Integer vs Integer`, naming neither
+side. When a mismatch arrives with no location, look for a tuple first rather
+than doubting the diagnostic.
+
+**Effect rows do not propagate through the map-style helpers.** `maybe-map`,
+`par-map`, `cl-map`, `result-map` and `fuel-map` take `(a -> b)` with no effect
+variable, so they cannot map an effectful function at all -- the compiler
+refuses, correctly, and there is no way to spell the version that would work.
+`ListUtils.list-map` is `(a -> [e] b), List a -> [e] List b` and does
+propagate. The gap is ergonomic and the safety is the point; reach for
+`list-map`, or write the loop.
+
+**`deck-record` on a value you CONSTRUCT traps at runtime.** Building a variant
+as `deck-record (ListTy ...)` inside a plug compiled clean and then died with
+`EXC=06` at an address inside an unrelated foreword function -- a jump into
+nowhere, three pipeline stages from the cause. Constructing the variant
+directly fixed it outright, and that is what the surrounding code already did:
+`deck-record` belongs around values that came off the WIRE, not around ones you
+have just built. Two related warnings, both paid for: **a jump into an
+unrelated symbol is not automatically the short-deck miscompile** (compiling
+the same bundle at `-Decks 150` produced a byte-identical binary, one command
+and the hypothesis was dead), and **isolate by disabling rather than by
+reading** -- forcing the new code's entry point to an inert branch, then
+running the match while skipping the construction, named the constructor
+without reading a line of codegen.
 
 **A new foreword chapter silently SHADOWS an existing foreword name, and
 the error lands nowhere near the cause.** Foreword names are globally in

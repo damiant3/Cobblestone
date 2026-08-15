@@ -34,6 +34,7 @@ $QuireDirs = @{
     'UI' = 'codex\foreword\ui'; 'Dev' = 'codex\os\dev'
     'Magic' = 'apps\games\magic'; 'Games' = 'apps\games\classic'
     'Spark' = 'apps\spark'; 'Data' = 'apps\data'
+    'WaDemo' = 'apps\wademo'
     'Explorer' = 'apps\explorer'; 'FontExplorer' = 'apps\fontexplorer'
     'CodexMagic' = 'apps\games\codexmagic'
     'Mathbook' = 'apps\mathbook'

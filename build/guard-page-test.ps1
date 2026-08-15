@@ -13,10 +13,19 @@
 #
 #   FIRE arm     parks the frontier just below the guard page, then walks up
 #                into it in ~40-byte steps. Caught by the PAGE.
-#   LEAP arm     runs the whole-compiler -IrCce emit, the real overrun that
-#                blocks C1. Must report OUT OF MEMORY and not an !EXC. ~30 s.
-#                This is a GUARD PAGE arm: it fails against a seed without the
-#                page and passes with it, ceiling test or not.
+# A LEAP arm ran the whole-compiler -IrCce emit here until 2026-08-15, on the
+# premise that it overruns the guard. It does not any more: that emit completes,
+# writing 15.7 MB of IR at a peak frontier of 1,305,881,760 bytes, which is the
+# ~1245 MB the paragraph above already reports, 1.7 GB below the page. So the
+# arm reported FAILED on a healthy tree. It is NOT coming back by lowering
+# -MemMB to bring the guard down to the workload: at 1280 MB the compiler
+# legitimately needs more memory than it has, so the trip is correct behaviour
+# rather than a runaway being caught, and the arm cannot tell those apart --
+# the same defect that got the -Decks 450 arm rejected on 2026-08-04.
+#
+# What that costs is real and is not fixed here: FIRE parks the frontier
+# synthetically, so nothing now exercises the guard under a genuine allocation
+# walk. A replacement needs a workload that overruns at NORMAL memory.
 #
 # NOTE ON WHAT TO TEST AGAINST. An emitter change (emit-demand-unmap,
 # emit-pagefault-handler) does NOT appear in build-output/bare-metal/Codex.cdx:
@@ -28,6 +37,15 @@
 #                and must NOT print OUT OF MEMORY -- it is what stops a `build`
 #                that refuses everything, or a page that faults on everything,
 #                from passing.
+#
+# THE CONTROL PARK IS A CONSTANT AND -MemMB IS NOT, so the two disagree below
+# about 2.5 GB. Its park is a hardcoded 2,000,000,000 while the guard address is
+# derived from reported RAM, so at -MemMB 1280 the guard sits at 1,272,971,264
+# and the control parks 727 MB PAST it: the arm reports
+# "the control neither survived nor reported OOM" and the run goes red for a
+# reason that has nothing to do with the guard. Run this at the default memory.
+# (Useful for exactly one thing: it is the cheapest way to show the harness can
+# still report a failure at all.)
 #
 # The control is not decoration. Without it this script passes just as well
 # against a compiler that answers OUT OF MEMORY to everything, which is the
@@ -125,45 +143,11 @@ if ($null -ne $fire) {
   }
 } else { $failures++ }
 
-# The arm the page CANNOT catch, driven through the real compiler because
-# `build` lives in the compiler's own unit and no app can cite it. An inflated
-# -Decks scales every phase floor, so one deck reservation is a single advance
-# of gigabytes and steps clean over the 2 MB hole -- which is exactly how the
-# whole-compiler -IrCce frontier got above the guard unnoticed on 2026-08-04.
-# It is caught by the ceiling test inside `build` and reports through the same
-# __out_of_memory path, so the expected output matches the FIRE arm.
-#
-# The subject is the whole-compiler -IrCce emit, because it is the only case
-# measured to distinguish the fix. An inflated -Decks was tried as a cheaper
-# arm and REJECTED: at -Decks 450 the reservation is so oversized that R10
-# lands above RSP immediately and the pre-existing prologue `cmp rsp, r10`
-# catches it, so that arm prints OUT OF MEMORY against a compiler WITHOUT the
-# ceiling test and measures the wrong guard. Measured 2026-08-04; do not
-# reinstate it because it is faster.
-#
-# What this arm discriminates is the GUARD PAGE, not `build`'s ceiling test.
-# Ablated 2026-08-04: seed#586 (no page) dies `!EXC=0d` in __str_concat+0xF9;
-# seed#587 (page, no ceiling test) prints OUT OF MEMORY in 29 s. No measurement
-# separates the ceiling test from the page, so do not read a pass here as
-# evidence for it.
-$leapSrc = Join-Path $out 'compiler-unit.codex'
-$leapLog = Join-Path $out 'leap.log'
-Write-Host "guard-page-test: LEAP arm (whole-compiler -IrCce, expect OUT OF MEMORY not !EXC)"
-& (Join-Path $root 'build/concat-codex-self.ps1') -CodexDir codex/compiler -OutFile $leapSrc | Out-Null
-& (Join-Path $root 'build/compile.ps1') -Src $leapSrc -Out (Join-Path $out 'leap.ir') `
-  -Log $leapLog -Kernel $Kernel -IrCce 2>&1 | Out-Null
-$leap = if (Test-Path $leapLog) { Get-Content $leapLog -Raw } else { '' }
-if ($leap -match 'OUT OF MEMORY') {
-  Write-Host "  ok: the overrun was refused instead of corrupting the stack"
-} elseif ($leap -match 'EXC=' -or $leap -match 'CRASH in ') {
-  Write-Host "  FAIL: the overrun crossed the guard page and corrupted the stack"
-  ($leap -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 4) | ForEach-Object { "    $_" }
-  $failures++
-} else {
-  Write-Host "  FAIL: the emit neither refused nor crashed -- read $leapLog"
-  ($leap -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 4) | ForEach-Object { "    $_" }
-  $failures++
-}
+# The 2026-08-04 ablation is kept because it is the evidence the page works at
+# all, and it is not reproducible from the arms that remain: seed#586 (no page)
+# dies `!EXC=0d` in __str_concat+0xF9; seed#587 (page, no ceiling test) prints
+# OUT OF MEMORY in 29 s. No measurement separates the ceiling test from the
+# page, so do not read a FIRE pass as evidence for the ceiling test.
 
 # The control is what stops a `build` that refuses everything from passing, and
 # the shipping floors are exercised by every other compile in this script.
@@ -189,5 +173,5 @@ if ($failures -gt 0) {
   exit 1
 }
 Write-Host ""
-Write-Host "guard-page-test: PASS (a probe overrun and the real whole-compiler overrun both refused, healthy input untouched)"
+Write-Host "guard-page-test: PASS (a parked probe overrun was refused, healthy input untouched; no arm exercises a genuine allocation walk)"
 exit 0

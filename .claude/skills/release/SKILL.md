@@ -102,15 +102,25 @@ the DDC on the release is what surfaces it if it was missed.
 ## Step 5 -- Seed, map, and img
 - **Seed:** if a rebuild is due, follow the Developer's Guide seed
   procedure; verify the DEPOT digest after submit (PerforceProcess.md).
-- **Map:** refresh `seed/Codex.map`. The `-Repl` seed build never emits the
-  MAP block, so nothing else refreshes it (OperatorsManual
-  "Release-to-Public Gate", step 2). A stale map misresolves every crash.
+- **Map:** refresh `seed/Codex.map`. The seed build emits a map (every CDX
+  compile has since main 15088) but never installs it, so nothing else
+  refreshes the shipped one (OperatorsManual "Release-to-Public Gate",
+  step 2). A stale map misresolves every crash.
 - **Img:** rebuild `seed/Codex.img` (`build/build-boot-img.ps1`). It is a
   separate distribution artifact that drifts and is NOT part of a seed
   rebuild. A release ships a current img.
 
 ## Step 6 -- README and the GitHubUpdate report
 - Update `README.md`: the seed digest and any capability claims that moved.
+- **Re-measure the doc counts, which are off by default and only matter
+  here.** `pwsh build/check-doc-counts.ps1` prints a per-claim table and
+  exits 1 on any drift. The drifting claims live in `README.md`, so this is
+  the step that publishes them; during a dev cycle the same drift is noise
+  and the checker is correctly left off.
+- **Work `docs/PM/SomethingSeenDuringRelease.md`.** It is the parking lot for
+  things that are true all the time and only cost us at publication. Clear
+  the open entries, then mark them with this cycle's number rather than
+  deleting them.
 - Top off and rotate the update report: fill in the current
   `docs/PM/Active/GitHubUpdates/GitHubUpdateN.md` with this release's
   themes, then start the next `N+1` for the following cycle. The report

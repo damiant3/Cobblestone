@@ -1,10 +1,15 @@
-# Convert a CDX binary to a PE32+ UEFI application.
-#
-# Usage: cdx-to-pe.ps1 -CdxInput <file.cdx> -Out <file.efi> [-HeapPages <n>]
+# cdx-to-pe.ps1 -- Convert a CDX binary to a PE32+ UEFI application.
+# GENERATED FROM THE CODEX SHELL DSL. Do not edit by hand.
+# A hand edit here must NOT be submitted. Change the generator under
+# codex/build/, regenerate, and submit the generator and this file
+# together. Until then build/check-generated-scripts.ps1 reports this
+# file as drifted, and the next regeneration discards the edit.
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory=$true)] [string]$CdxInput,
-    [Parameter(Mandatory=$true)] [string]$Out,
+    [Parameter(Mandatory=$true)]
+    [string]$CdxInput,
+    [Parameter(Mandatory=$true)]
+    [string]$Out,
     [int]$HeapPages = 512,
     # Call GetMemoryMap + ExitBootServices (one stale-key retry) after the last
     # boot-services use, then cli and zero the SystemTable cells. This is what
@@ -15,9 +20,11 @@ param(
     # that need ConIn/ConOut (KeyProof, the dev console) must NOT set this;
     # driver-truth probes (KbdDiagProbe, XhciTruthProbe, MscAlignProbe) must.
     [switch]$ExitBootServices,
-    # Enter at __start so the bare-metal runtime init runs. Required by any\n    # payload that reads a disk through block-read-sector; see the block below.
+    # Enter at __start so the bare-metal runtime init runs. Required by any
+    # payload that reads a disk through block-read-sector; see the block below.
     [switch]$EntryStart,
-    # Text to pre-load into the serial input ring, so a payload that reads stdin\n    # can run on a board with no serial port. See the block near BivySaveAddr.
+    # Text to pre-load into the serial input ring, so a payload that reads stdin
+    # can run on a board with no serial port. See the block near BivySaveAddr.
     [string]$Stdin = '',
     # Force the heap to a fixed physical base via AllocateAddress instead of
     # AllocateAnyPages. This is the L-FREEDOM bed arm: OVMF satisfies AnyPages
@@ -86,6 +93,7 @@ function Find-FuncOffset([string]$name) {
     if ($mapCount -le 0) { return -1 }
     $pat = New-Object byte[] $name.Length
     for ($k = 0; $k -lt $name.Length; $k++) {
+
         $u = [int]$name[$k]
         if (-not $UniToCce.ContainsKey($u)) { return -1 }
         $pat[$k] = [byte]$UniToCce[$u]
@@ -141,6 +149,7 @@ if ($EntryStart) {
 # disk read, every key read and every console write in a Codex program is a
 # `syscall`, so a stub that does not program IA32_LSTAR produces a binary that
 # triple-faults on the first one. That is exactly what the UEFI dev console did
+
 # from the first image ever built until 2026-07-27 -- it reached `opening`, went
 # straight to read-superblock -> block-read-sector, issued `syscall` against an
 # unprogrammed MSR, landed at 0xa016, executed zeroes and wrote to address 0.
@@ -195,6 +204,7 @@ $UefiImgHandleAddr = 30712
 # --- Assemble the UEFI app stub ---
 $ms = [System.IO.MemoryStream]::new()
 $bw = [System.IO.BinaryWriter]::new($ms)
+
 
 # Refuse to continue on a failed AllocatePages, and say which one failed.
 #
@@ -251,6 +261,7 @@ function Mark([char]$c) { $bw.Write([byte[]](MarkBytes $c)) }
 # and died" from "we handed off and the guest said nothing" -- three states with
 # three different next actions. The retired option_a_stub.asm solved this with
 # two solid framebuffer fills (main 12073) while this stub had nothing, which is
+
 # why the marks were brought over here before that .asm was deleted.
 #
 # Same two colours at the same two points, so the one table serves every image:
@@ -306,6 +317,7 @@ $ProcNetScopeOffset  = 24
 # once, before anything that can fail. A firmware without GOP leaves R12 zero
 # and every later fill becomes a no-op, so this is additive: nothing that
 # worked before now depends on it.
+
 function GopAcquire() {
     $body = [System.Collections.Generic.List[byte]]::new()
     $body.AddRange([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x28))   # mov rax, [rsp+0x28]  (gop)
@@ -361,6 +373,7 @@ function GopAcquire() {
 function GopFill([int]$colour) {
     $body = [System.Collections.Generic.List[byte]]::new()
     $body.AddRange([byte[]]@(0x4C, 0x89, 0xE7))               # mov rdi, r12
+
     $body.AddRange([byte[]]@(0x44, 0x89, 0xE9))               # mov ecx, r13d
     $body.Add(0xB8)                                           # mov eax, colour
     $body.AddRange([BitConverter]::GetBytes([int]$colour))
@@ -416,6 +429,7 @@ function AcpiPublish() {
     $bw.Write([byte[]]@(0x49, 0xB9)); $bw.Write($Acpi20Guid, 8, 8)   # mov r9, guid[8..15]
 
     # Displacements are hand-computed against the layout below; the assertions
+
     # after it are what keep them honest if anything here is edited.
     $loop = [System.Collections.Generic.List[byte]]::new()
     $loop.AddRange([byte[]]@(0x48, 0x85, 0xC9))               # 0  test rcx, rcx
@@ -471,6 +485,7 @@ $bw.Write([byte[]]@(
 # the handoff block carried the SPLASH mode's geometry (1920x1080, stride
 # 2048) for a scanout the console had since switched (1024 px/row): every row
 # the payload wrote spanned two scanlines, which is the measured symptom set
+
 # exactly -- glyphs stretched, alternate lines black, long-line tails
 # overpainting the next row, and StrideProbe's width-stepped bar shattering
 # into eight aliased copies (4096/gcd(7680,4096) = 8). OVMF and codex-vm never
@@ -526,6 +541,7 @@ Mark 'c'                                                        # code pages are
 # status was ignored, so the stub then used 512 MB it did not own as its stack.
 # AllocateAnyPages, NOT AllocateMaxAddress against the 3 GB ceiling. The
 # ceiling exists for -EntryStart payloads whose page tables map only [0, 3 GB);
+
 # THIS stub never loads CR3, firmware paging stays, and a heap anywhere in RAM
 # is fine. The ceiling was worse than useless on real firmware: the a5fix
 # flight of 2026-08-13 came back with every heap record reading
@@ -541,6 +557,57 @@ if ($HeapAt -ne 0) {
     $bw.Write([BitConverter]::GetBytes([long]$HeapAt))
     $bw.Write([byte[]]@(0x48, 0x89, 0x44, 0x24, 0x38))          # mov [rsp+0x38], rax (requested base)
     $bw.Write([byte[]]@(0x48, 0xC7, 0xC1, 0x02, 0x00, 0x00, 0x00))  # mov rcx, 2 (AllocateAddress)
+} elseif ($ExitBootServices) {
+    # AN -Ebs PAYLOAD CANNOT USE AnyPages WHERE A FRAMEBUFFER EXISTS, and the
+    # 'V' guard below is what proves it rather than what causes it. Measured
+    # 2026-08-14: every -Ebs diag image built after the AnyPages change halts
+    # in the stub printing 'svcV', with RAX=0xB7F00000 (the heap firmware
+    # chose) and RDX=0xC7F00000 (its record arena end) straddling codex-vm's
+    # in-RAM framebuffer at 0xBF000000. The guard is CORRECT and the request
+    # was wrong: nothing had asked firmware to keep the heap clear of the
+    # aperture, so on any map where free RAM runs up to the framebuffer it
+    # will not.
+    #
+    # The ceiling therefore comes from the hardware and not from a constant.
+    # r12 is GopAcquire's framebuffer base, callee-saved and untouched since,
+    # and it is the same register the 'V' guard reads three instructions
+    # later. Allocating MaxAddress against it puts the whole heap below the
+    # aperture, so the condition the guard tests cannot arise.
+    #
+    # With no framebuffer (r12 = 0) there is no aperture to collide with and
+    # AnyPages is right, which is also the codex-vm -headless case.
+    #
+    # NOT applied to the A5 path, deliberately and by construction: this
+    # branch is reachable only under -ExitBootServices, so a payload that
+    # keeps firmware paging emits byte-identical bytes to before this change.
+    # Verified by hash, not by reading. The white screen is pinned.
+    # THE CEILING IS NOT THE FRAMEBUFFER BASE, and the first attempt at this
+    # fix used it and still tripped 'V'. The guard does not test the heap's
+    # real extent: it tests a FIXED 256 MB window from the heap base, on the
+    # reasoning that early records and decks live there. With a heap smaller
+    # than that window the two disagree -- at -HeapPages 32768 the heap is
+    # 128 MB, so a ceiling of r12 puts it at [r12-128MB, r12) which touches
+    # nothing, while the guard still measures 256 MB from the base and finds
+    # the aperture inside it. Measured: RAX=0xB7000000 with the framebuffer at
+    # 0xBF000000, heap ending exactly AT the aperture, and 'V' still raised.
+    #
+    # So the request is backed off far enough to satisfy the WINDOW rather
+    # than the heap, which leaves the guard untouched and therefore leaves the
+    # A5 path untouched. One extra megabyte so the arena end lands strictly
+    # below the aperture instead of exactly on it.
+    $ebsBackoff = [Math]::Max(0, 0x10000000 - ($HeapPages * 4096)) + 0x100000
+    $bw.Write([byte[]]@(0x4D, 0x85, 0xE4))                          # test r12, r12
+
+    $bw.Write([byte[]]@(0x74, 0x16))                                # jz +22 -> AnyPages
+    $bw.Write([byte[]]@(0x4C, 0x89, 0xE0))                          # mov rax, r12 (fb base)
+    $bw.Write([byte[]]@(0x48, 0x2D))                                # sub rax, ebsBackoff
+    $bw.Write([BitConverter]::GetBytes([int]$ebsBackoff))
+    $bw.Write([byte[]]@(0x48, 0x89, 0x44, 0x24, 0x38))              # mov [rsp+0x38], rax (ceiling)
+    $bw.Write([byte[]]@(0x48, 0xC7, 0xC1, 0x01, 0x00, 0x00, 0x00))  # mov rcx, 1 (AllocateMaxAddress)
+    $bw.Write([byte[]]@(0xEB, 0x0E))                                # jmp +14 -> over AnyPages
+    $bw.Write([byte[]]@(0x31, 0xC0))                                # xor eax, eax
+    $bw.Write([byte[]]@(0x48, 0x89, 0x44, 0x24, 0x38))              # mov [rsp+0x38], rax (sentinel 0)
+    $bw.Write([byte[]]@(0x48, 0xC7, 0xC1, 0x00, 0x00, 0x00, 0x00))  # mov rcx, 0 (AllocateAnyPages)
 } else {
     $bw.Write([byte[]]@(0x31, 0xC0))                                # xor eax, eax
     $bw.Write([byte[]]@(0x48, 0x89, 0x44, 0x24, 0x38))              # mov [rsp+0x38], rax (sentinel 0)
@@ -586,6 +653,7 @@ Mark 'h'                                                        # heap pages are
 # SS = STAR[47:32] + 8 and forces flat 64-bit CPL-0 attributes onto the hidden
 # halves. So it needs the GDT to hold a 64-bit code descriptor immediately
 # followed by a data descriptor, and it will run without one -- which is the
+
 # trap, because the selector VALUES are still installed and stay installed after
 # the handler returns.
 #
@@ -641,6 +709,7 @@ $bw.Write([byte[]]@(0x0F, 0x01, 0x54, 0x24, 0x48))              # lgdt [rsp+0x48
 #
 # 0x8000 is where the bare-metal __start looks for it; cell 36208 is where every
 # `uefi-*` function in the guest reads it. Normally __start copies one to the
+
 # other. This stub calls `opening` directly and __start never runs, so writing
 # only 0x8000 leaves 36208 holding zero -- and the guest then walks a null
 # SystemTable to reach ConOut. Some of those call sites test for null first and
@@ -676,10 +745,12 @@ $bw.Write([byte[]]@(0x48, 0x89, 0x07))                          # mov [rdi], rax
 #
 # Cell 4072 is where EVERY panic path relocates the stack before it can say
 # anything: `__out_of_memory` and `__watchdog_panic` both begin `mov rsp,
-# [4072]`, and so does emit-cpu-exception-dump. On bare metal `__start` fills it
-# -- the RAM size IS the stack top there (X86_64State.codex:206-208) -- and this
-# stub never did, so the cell held zero, every one of those handlers set RSP to
-# 0, and the first push took a #PF at CR2 = -8, then #DF, then a triple fault.
+# [4072]`, and so does emit-cpu-exception-dump. NOTHING in the compiler writes
+# it: `__start` LOADS RSP from it (X86_64Chapter.codex:376-377) and never stores.
+# On bare metal the harness fills it before the guest runs -- codex-vm.c:13576,
+# or `-device loader,addr=0xfe8` under QEMU -- and this stub never did, so the
+# cell held zero, every one of those handlers set RSP to 0, and the first push
+# took a #PF at CR2 = -8, then #DF, then a triple fault.
 #
 # That is what the dev console's "reboot-loop under real UEFI" actually was. The
 # guest was correctly detecting a stack/heap collision and calling the handler
@@ -694,6 +765,7 @@ $bw.Write([byte[]]@(0x48, 0x89, 0x07))                          # mov [rdi], rax
 # Store heap base at deck-pos-addr
 $bw.Write([byte[]]@(0x48, 0xBF))                                 # mov rdi, DeckPosAddr
 $bw.Write([BitConverter]::GetBytes([long]$DeckPosAddr))
+
 $bw.Write([byte[]]@(0x4C, 0x89, 0x17))                          # mov [rdi], r10
 
 # Store 0 at deck-bound-counter-addr
@@ -749,6 +821,7 @@ $bw.Write([byte[]]@(0x48, 0x89, 0x07))                          # mov [rdi], rax
 # The bytes are stored one at a time rather than through a data section because
 # this stub is hand-assembled and has no relocations to spend.
 if ($Stdin) {
+
     $sb = [System.Text.Encoding]::ASCII.GetBytes($Stdin)
     if ($sb.Length -gt 120) { throw "[cdx-to-pe] -Stdin is $($sb.Length) bytes; this emitter stores it with disp8 and tops out at 120." }
     $bw.Write([byte[]]@(0x48, 0xBF))                                # mov rdi, 0x500000
@@ -804,6 +877,7 @@ if ($ExitBootServices) {
     # GetMemoryMap + ExitBootServices, with the one stale-key retry the spec
     # anticipates (an allocation between the map read and the call invalidates
     # the key exactly once here, since nothing allocates in between -- the
+
     # retry covers firmware-internal churn). Slot layout keeps everything
     # ABOVE the 32-byte shadow space the callee owns: [rsp+0x28] MapSize,
     # [rsp+0x30] MapKey, [rsp+0x38] DescSize, [rsp+0x40] DescVersion,
@@ -859,6 +933,7 @@ if ($ExitBootServices) {
     # call through a live-looking pointer would execute freed firmware code.
     # Null makes every guarded path take its no-firmware branch instead.
     $bw.Write([byte[]]@(0x48, 0x31, 0xC0))                         # xor rax, rax
+
     $bw.Write([byte[]]@(0x48, 0x89, 0x04, 0x25))                   # mov [SysTableAddr], rax
     $bw.Write([BitConverter]::GetBytes([int]$SysTableAddr))
     $bw.Write([byte[]]@(0x48, 0x89, 0x04, 0x25))                   # mov [UefiSystabAddr], rax
@@ -914,6 +989,7 @@ function Write-Msr([long]$msr, [long]$value) {
 # descriptor for SS.
 Write-Msr $MsrStar   ([long]0x40 -shl 32)
 Write-Msr $MsrLstar  ([long]($ImageBase + $syscallFuncOff))
+
 Write-Msr $MsrSfmask 512                                        # 0x200, clear IF on entry
 
 # EFER |= SCE. Redundant under codex-vm, which already sets it, but the bare
@@ -969,6 +1045,7 @@ $stub = $ms.ToArray()
 
 # Patch the copy offsets: text data starts right after the stub
 # rbx = address of the getIP call instruction
+
 $rbxOff = $getIpOff  # offset of getIP within stub
 $textDataOff = $stub.Length - $rbxOff          # text starts after stub, relative to rbx
 $rodataDataOff = $stub.Length + $textSz - $rbxOff  # rodata after text
@@ -1024,6 +1101,7 @@ $hbw.Write([int]0)
 $hbw.Write([int]$imageSize); $hbw.Write([int]$HeaderSize); $hbw.Write([int]0)
 $hbw.Write([ushort]10)               # EFI Application
 $hbw.Write([ushort]0x0160)
+
 $hbw.Write([long]0); $hbw.Write([long]0)
 $hbw.Write([long]0); $hbw.Write([long]0)
 $hbw.Write([int]0); $hbw.Write([int]16)

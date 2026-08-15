@@ -12,6 +12,18 @@ expresses it.** The recipe and the account are the 2026-08-14 A5 entry
 below; the lessons are L-REHEARSE and L-FREEDOM in
 `docs/PM/Active/Stories/LESSONS.md`.
 
+Damian, 2026-08-05. **Say what the elevated command does BEFORE you fire
+it**, in the message, in the two categories that tell him what he is
+approving: **MOUNT-AND-COPY ONLY** (reads the stick, writes nothing) or
+**FLASH** (writes an image to a named disk -- give the disk number).
+*"when I see a uac, it blacks out the whole screen, so i don't know if
+its a mount or a flash you are running."* The secure-desktop overlay also
+swallows a stray keystroke, so prompts get dismissed by accident: if one
+goes unanswered, say what it is again before re-firing, and after two
+dismissals stop and wait for his word rather than firing a third. He is
+at a keyboard doing something else. This applies to every
+`Start-Process -Verb RunAs` in this file.
+
 ```powershell
 # 1. dump before flashing. ELEVATED -- it opens \\.\PhysicalDrive raw.
 #    -DiskNumber, not -Disk. Read-only: no writes and no mount, which is
@@ -102,9 +114,9 @@ same boot as the others says so and says why.
 
 | # | Question | Owner | Unblocks | Risk to the box |
 |---|---|---|---|---|
-| NIC-1 | Does the real part arrive with its receiver already running? | blu | B2c, and the honesty of `-e1000-preconfigured` | none, pure read |
-| NIC-2 | How long is an empty receive poll on the real I219-V? | blu | B3, B4, every retransmit bound in the stack | none, read and poll only |
-| NIC-3 | Does a frame actually move, in and out, on the real part? | blu | B2c | writes rings, enables RX/TX |
+| ~~NIC-1~~ | **ANSWERED 2026-08-14: no. `RCTL=0` at handoff.** | blu | done | none, pure read |
+| ~~NIC-2~~ | **ANSWERED 2026-08-14: 32606 us per million, 2.50x the bed. The calibration transfers.** | blu | done; opened B5 | none, read and poll only |
+| NIC-3 | Does a frame actually move, in and out, on the real part? **FLOWN 2026-08-14, WEDGED IN `e1000-init`. Next arm prints INSIDE it, one row per wait loop.** | blu | B2c | writes rings, enables RX/TX |
 | NIC-4 | Can the stack hold a real TCP conversation with a real peer? | blu | B3, then B4 | as NIC-3 |
 | NIC-5 | What wedged the box on 2026-08-11? | blu | nothing; it is the one open unknown | terminal by construction |
 
@@ -303,6 +315,206 @@ writes and which is firmware garbage in a UEFI tenant.
 over the BUILD YAY footer text, so the verdict is unreadable on the
 glass at the end. The footer should print after the band or above it.
 
+## FLOWN 2026-08-14: `nicsitting.img`. NIC-1 and NIC-2 ANSWERED. NIC-3 WEDGED IN `e1000-init`, and the ordering is why we still have the other two.
+
+Photograph only; the stick did not mount, so nothing banked. Every row below is
+read off the glass.
+
+```
+no bank, mount stage 2 (no EFI PART signature) -- the rows below are the reading
+eligible at 0:31.6 verdict=ok
+ASDE: read-only touch mmio=3745513472 STATUS=1074266240 CTRL=1573440
+NIC-1 RCTL=0 EN=n  TCTL=805564664 EN=n
+NIC-1 RDBAL=1551914016 RDLEN=0 RDH=0 RDT=0
+NIC-2 hpet-hz=23999999 (0 or absurd voids every duration below)
+NIC-2 1000000 empty polls = 32606 us   bed same probe: 13034 us
+NIC-2 tick at the 100000 fallback = 3260 us   bed same probe: 1303 us
+MIC-3 below writes to the part: e1000-init resets and programs rings. Everything above is already banked.
+```
+
+**and then nothing.** The screen holds with the NIC-3 banner as the last line.
+The next expression in `opening` is `e1000-init d`, so `e1000-init` was entered
+and did not return. That is the 2026-08-11 wedge, reproduced, and this time
+bracketed: everything before it is on the glass and the arrival state that
+precedes it is now known, which it was not on 08-11.
+
+**The ordering rule earned itself on this flight.** Had NIC-3 gone first, or had
+the rows been painted at the end, this boot would have produced one blank screen
+and no readings at all.
+
+### NIC-1: the part arrives COLD, and `-e1000-preconfigured` describes a hazard this board does not present to us
+
+`RCTL = 0x00000000`. Receiver flat off, EN clear. `TCTL = 0x3003F0F8`, EN clear,
+PSP set. `RDLEN=0 RDH=0 RDT=0` with `RDBAL = 0x5C805420` left stale from
+somebody, which is the signature of a driver that programmed a base and then had
+its length cleared rather than one that was never there.
+
+**State the claim at the right width.** What is measured is the state at the
+point OUR code runs, which is after `ExitBootServices`, and stopping a UEFI SNP
+driver at ExitBootServices is exactly when firmware would shut a receiver down.
+So this does NOT establish that firmware never ran the receiver. It establishes
+the only thing `e1000-quiesce` and `-e1000-preconfigured` actually need to be
+about: **at handoff to us, on this board, there is no live receiver over an
+unknown ring.** `e1000-quiesce` stays, cheap and harmless; its premise is now
+measured false here rather than inferred true everywhere.
+
+### NIC-2: THE CALIBRATION TRANSFERS. The single assumption B3 and B4 rest on is measured and holds.
+
+**32606 us on metal against 13034 us in the bed: a factor of 2.50.** Same order,
+and the probe prose named "within a factor of a few" as the pass before the
+flight rather than after it. The argument that the real part reads its
+descriptor out of RAM as the model does was an argument; it is now a
+measurement, and `net-driver-calibrate` measuring the rate at bring-up is the
+right shape on real silicon.
+
+Derived, and both are useful numbers nobody had:
+
+| quantity | metal | bed |
+|---|---|---|
+| empty `e1000-poll-raw` polls per second | 30,669,202 | 76,722,418 |
+| polls in a 100 ms tick, which is what calibration will answer | 3,066,920 | 7,672,242 |
+
+`hpet-hz = 23999999`, sane, so both durations above stand.
+
+### NIC-2's second row is a DEFECT, and it is fixable in the tree without metal
+
+`net-driver-poll-fallback = 100000` is the tick used when the HPET rate comes
+back unusable. On this metal 100000 polls is **3260 us against the 100 ms that
+constant is meant to mean: 30.7x short.** Every retransmit bound in
+`NetworkStack` is a count of ticks, so on any board where calibration cannot
+run, the 288-tick give-up fires at about 0.94 s instead of 28.8 s and the stack
+declares a live peer dead. That is the same defect class B3 was opened to fix,
+surviving in the path B3 did not measure.
+
+It does not have a free fix, and that is worth writing down rather than
+patching quietly. Sized for this metal the fallback is ~3,000,000; sized for the
+bed's e1000 ~7,700,000; sized for the NE2000 model, whose million polls cost
+15.52 s, ~640. **No constant is right for all three, which is the argument for
+calibration and against the fallback existing as a poll count at all.** Too
+short declares live peers dead; too long delays give-up by the same factor, so
+it is not simply the safe direction. Not fixed on this pass. Opened as B5.
+
+### What NIC-3 leaves open
+
+`e1000-init` does not return on the real I219-V. Two readings from the rows
+above are the first evidence anyone has about why, and both are one register
+read away from being confirmed or dropped on the next flight:
+
+- **`STATUS = 0x40080080`: LU clear.** The link is DOWN at read time, with the
+  cable in a live switch. The SPEED field reads 1000 but SPEED is meaningless
+  with LU clear. The 08-13 entry below says the link comes up on this part, and
+  both can be true: that reading was taken after our bring-up ran, this one
+  before it.
+- **`STATUS` bit 19 set**, which on the I217/I218/I219 family is PHY Reset
+  Asserted. A part whose PHY is asserting reconfiguration is a plausible way for
+  a reset-and-wait to spin forever, and `e1000-init` waiting on a link or a PHY
+  handshake that cannot complete is the shape that fits both this flight and
+  08-11.
+- `CTRL = 0x00180240`: SLU set, ASDE clear, RST and PHY-RST clear. Consistent
+  with the 08-13 finding that CTRL is read-only on this part.
+
+**The next NIC-3 arm should print inside `e1000-init` rather than around it** --
+a row per wait loop with its fuel remaining -- because the question is no longer
+whether it wedges but which wait it wedges in. NIC-4 and NIC-5 are unchanged and
+still behind it.
+
+## READY TO FLASH 2026-08-14: `nicsitting.img`. NIC-1, NIC-2 and NIC-3 on one boot.
+
+**SHA-256 `E7128273 5DA511E3 2B20D98E 7766B79A 0344261F F6F2D4FD 60735F73 4368E26F`**,
+16 MB, PE 266752, seed 2793222. Built off blu:
+
+```powershell
+pwsh build/boot/build-option-a.ps1 -Src build/boot/diag/NicSittingProbe.codex `
+    -Kernel seed/Codex.cdx -Ebs -Out build/boot/nicsitting.img
+```
+
+`-Ebs` and not `-Uefi`, for the reason the 08-13 arm gives: this payload drives
+the NIC and the medium with our own code, which is the whole point of a
+driver-truth probe.
+
+### THIS IMAGE COULD NOT BE BUILT AT ALL FOR MOST OF 2026-08-14
+
+**No `-Ebs` image built after main 15041 boots.** `AsdeStageProbe.codex`,
+unchanged source, the arm that flew on 08-13, rebuilt with that toolchain halts
+in the stub at 14 exits printing `svcV`. The 08-13 BINARY still boots in the
+same bed, so it was the build and not the bed. Cause: 15041 moved the heap
+request from `AllocateMaxAddress` against a 3 GB ceiling to `AllocateAnyPages`,
+which is correct for the A5 path that keeps firmware paging, and it lets
+firmware place the heap across the framebuffer. reek's own new `V` guard then
+refuses it, correctly. Fixed in `build/cdx-to-pe.ps1`, `-ExitBootServices` only,
+so the A5 stub is byte-identical and the white screen is pinned by construction
+rather than by inspection.
+
+**The ceiling is NOT the framebuffer base, and the first fix used it and still
+tripped `V`.** The guard measures a FIXED 256 MB window from the heap base
+rather than the heap's real extent, so a 128 MB heap ending exactly at the
+aperture still fails it. The request is backed off to satisfy the window.
+
+### The rows, in the order they paint, and what each answers
+
+| row | reads | a result is |
+|---|---|---|
+| bank | mount stage, `NIC1.TXT` written | either; the glass is the bank |
+| eligible | bus:dev.fn and BAR verdict | `0:31.6 verdict=ok`. **Anything else is a finding** and the probe stops there without touching it |
+| ASDE touch | `STATUS`, `CTRL`, before any write | 08-13 read `STATUS=1074266240 CTRL=1573440`. A wildly different pair means the BAR is wrong and every row below is noise |
+| **NIC-1** | `RCTL`, `TCTL`, `RDBAL/RDLEN/RDH/RDT` | **EITHER ANSWER.** `RCTL EN=y` means the receiver is live on arrival and `-e1000-preconfigured` is right about this board. `EN=n` means the model describes a hazard this part does not have |
+| **NIC-2** | 1,000,000 empty polls, in microseconds | the number IS the result. Bed, same probe: 13034 us, tick 1303 us. **Metal within a factor of a few confirms the calibration transfers; orders of magnitude out means every retransmit bound is wrong on metal** |
+| NIC-2 hpet | `hpet-ticks-per-second` | non-zero and sane. 0 or absurd VOIDS both durations above |
+| **NIC-3** | init, send accepted, RECEIVED, RDH/RDT | `RECEIVED=YES` with a length is the first frame this board has ever taken off the wire. `no` with RDH moved means the ring advanced and we did not read it; `no` with RDH still 0 means the receiver never ran |
+
+### What is deliberately NOT here
+
+NIC-4 (a real TCP conversation) needs NIC-2 and NIC-3 to have passed first and
+is uninterpretable before them. NIC-5 (what wedged the box on 08-11) is the arm
+designed to reproduce a hang and is not on this image at all.
+
+### Rehearsed as the exact bytes, per L-REHEARSE
+
+Three beds, all on the image whose hash is above:
+
+- codex-vm `-e1000 -e1000-phy-link`, no traffic: every row paints, `RECEIVED=no`.
+- codex-vm `-e1000-nat -e1000-phy-link`: **`RECEIVED=YES len=42 RDH=1 RDT=0`**.
+  That is the positive control and it is what makes the receive row an arm
+  rather than a decoration.
+- OVMF with a USB disk: stub marks `svchgxo` (the heap allocation the fix
+  above repairs), `bank live, NIC1.TXT written=y`, and the ineligible part
+  correctly `REJECTED ... verdict=below-window` with nothing touched.
+
+**The OVMF bed caught a safety defect in this probe and it is why that arm
+exists.** The first version gated on `e1000-find`, which is vendor and class
+only, and then read MMIO from whatever it found regardless of the BAR verdict.
+OVMF offered a device at `0:2.0` with `verdict=below-window` and the probe
+happily touched it. On this board that would be poking MMIO at an address the
+part does not own, which is the class of thing NIC-5 exists to explain. It now
+gates on `na-eligible`, vendor AND BAR, exactly as the flown arm does.
+
+### Flashing it
+
+Archive first, per the QUICKREF at the top of this file. **The dump needs
+elevation and somebody to accept the prompt.**
+
+```powershell
+pwsh build/dump-usb.ps1 -DiskNumber 2 -Out D:\Projects\stick-archive\before-nicsitting-20260814.img
+Get-Disk | Where-Object BusType -eq 'USB'      # confirm 2 is the stick, check it twice
+(Get-FileHash D:\Projects\NewRepository-blu\build\boot\nicsitting.img -Algorithm SHA256).Hash
+Start-Process pwsh -Verb RunAs -PassThru -ArgumentList '-NoProfile','-File',
+  'D:\Projects\NewRepository-blu\build\flash-usb.ps1','-Image','D:\Projects\NewRepository-blu\build\boot\nicsitting.img',
+  '-DiskNumber','2','-SpecFit','-Force','-Log','D:\Projects\NewRepository-blu\build-output\flash.log'
+```
+
+**Flash, verify, PULL, and do not reinsert.** One eject-and-reinsert on Windows
+rewrites LBA 1 and is the standing suspect for the mount failures on this arm.
+
+**Plug the Ethernet into a live switch or router before booting.** NIC-3 asks
+whether a frame arrives, and with no link partner it cannot. The port is the
+one behind the Intel I219-V, which the probe reports as `eligible at 0:31.6`.
+
+### The boot, and the only thing to do
+
+Boot from the stick. The rows paint top to bottom and the screen holds.
+Photograph from the top. F12 banks the screen to the stick if the medium
+mounts, and that is a bonus and not the reading: the F12 bank failed on 08-13
+with `no esp s1 m3 c4 p1`, a USB transaction error in the CBW phase.
 ## FLOWN 2026-08-13, GREEN: `vmxprobe.img`. VT-x IS AVAILABLE ON THE ASUS.
 
 **Damian read three lines off the glass:**

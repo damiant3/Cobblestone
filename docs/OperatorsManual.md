@@ -15,6 +15,10 @@ other than what it is:
 - **`tools/codex-vm.exe` is a versioned Perforce binary.** `build-vm.ps1`
   cannot relink it until `p4 edit tools/codex-vm.exe`; without that you get
   `LNK1104`, which reads like a missing file rather than a read-only one.
+  Open BOTH the `.c` and the `.exe`, and **after any merge-down that touched
+  the `.c`, relink before running anything**: a resolve takes main's binary
+  wholesale, so the exe on disk is no longer the one your source builds and
+  every measurement from it is about somebody else's revision.
 - **`build/run-plug.ps1` takes `-InFile`, not `-Input`** (`$Input` is a
   PowerShell automatic variable and shadows it). The request it sends is
   framed and **the reply is not**, so strip a header only when the length
@@ -227,6 +231,18 @@ Files pane browses `ESP:/` and lists `EFI/`, `SOURCE.SRC` and
 disk the pane says `no FAT ESP on the boot medium` and the font falls
 back; both are correct and neither is a fault.
 
+**An F12 shot from inside the desk takes 16 to 110 SECONDS in the bed, and a
+short deadline renders that as "F12 does not fire".** `med-selected` is unset
+under DeskVm, so every sector operation of the ~3 MB BMP write pays the
+AHCI+NVMe probe chain before falling through to IDE. Any capture deadline
+under two minutes reports a working key as a dead one -- twice filed as a
+finding here and twice refuted. Give it `-screenshot-delay 120000` or more,
+and verify by scanning the disk copy (`build-output/desk-Codex.img`) for the
+`SH*.BMP` FAT directory entry (`S`, `H`, six digits, `B`, `M`, `P`) rather
+than trusting the on-glass verdict. **The chaser that settles "did the key
+arrive" without waiting:** inject `S` after F12; if shadows do not toggle the
+loop is inside the shot, meaning the key landed and the arm is merely slow.
+
 GopDesk normally reaches the glass through an Option A boot image, which
 means flashing a stick or driving OVMF. `apps/works/DeskVm.codex` is the
 dev-box entry point instead: it reads codex-vm's own GOP cells (0x7C4,
@@ -358,7 +374,7 @@ codex-vm -kernel file.cdx [options]
 | `-usb-setcfg-fault-once <N>` | 0 | As `-usb-setcfg-fault`, but the fault applies to the FIRST SET_CONFIGURATION only and then clears. A TRANSIENT failure and a permanent one want opposite fixes in the host, so a bed that can only produce the permanent kind cannot show that a reading distinguishes them. Pair with the probe's `retry:` field: permanent gives `sc1=4 sc2=4`, transient gives `sc1=4 sc2=1`. |
 | `-usb-bot-drop <N>` | 0 | Swallow the Nth transfer event on a BULK endpoint (EP0 enumeration untouched), counting from 1. The data still moves and the completion code is still success; only the EVENT goes missing, so the guest spins its `xhci-fuel` out and reads no completion. This is the worksflight 2026-08-09 signature exactly: a 32 KB data phase answering `msc-ce-no-event` with no stall and a volume left clean on all four FAT questions. Nothing else can reach a guest's timeout path, and everything behind it -- Stop Endpoint recovery, the latch drain, BOT Reset Recovery, the chunk retry -- was unexecuted code before this flag existed. Also implemented with it: Bulk-Only Mass Storage Reset (`bmRequestType 0x21`, `bRequest 0xFF`), which clears the model's in-flight CBW; without it a retried command arrived while `bot.active` was still set and was consumed as write data. |
 | `-usb-no-unit-attention` | off (the condition is ON) | Restore the old always-ready storage target. **By default the device now presents the power-on UNIT ATTENTION every conforming SCSI target presents:** the first command after a controller reset answers CHECK CONDITION with sense key 0x06 / ASC 0x29, and the condition persists until REQUEST SENSE reads it. A host that skips that handshake sees its first real command fail on real hardware and used to pass here; `msc-wait-ready`'s retry loop had never executed. The condition is armed in the RESET path, not at init, because the guest issues HCRST during bring-up and would wipe it -- a sabotage arm that should have failed and did not is what found that. |
-| `-usb-disk-port <N>` | 1 | Carry the mass-storage device to root port N; its old port goes dark rather than answering as well. Pair with `-xhci-ports` to reproduce a device sitting where no reader can see it. **No bed could put a connected device above root port 7** before this: the model had four ports, and QEMU refuses attachment above its eighth whatever HCSPARAMS1 claims. The ASUS answered with the boot stick on port 9, past the probe's eight PORTSC rows, so a count of connected ports named none of them. `-xhci-ports 26 -usb-disk-port 10` reproduces the board's `port=9 speed=4`. |
+| `-usb-disk-port <N>` | 1 | Carry the mass-storage device to root port N; its old port goes dark rather than answering as well. Pair with `-xhci-ports` to reproduce a device sitting where no reader can see it. **No bed could put a connected device above root port 7** before this: the model had four ports, and QEMU refuses attachment above its eighth whatever HCSPARAMS1 claims. The ASUS answered with the boot stick on port 9, past the probe's eight PORTSC rows, so a count of connected ports named none of them. `-xhci-ports 26 -usb-disk-port 10` reproduces the board's `port=9 speed=4`. **Before believing a wide-port PASS, run the arm that must FAIL:** `-xhci-ports 8 -usb-disk-port 10` seats the disk past the declared port count, so the walk's own bound cannot reach it and the run has to report `connect=FAILED` (or `ok=0` on a `usb-attach` probe). Without that third arm a passing wide-port run is indistinguishable from a flag the emulator ignored. Better still, make the probe PRINT the port the walk settled on, so a vacuous run says `port=0` and convicts itself. |
 | `-usb-cfgval <N>` | 1 | The mass-storage device numbers its configuration N and **refuses any other value** with a STALL (USB 2.0 9.4.7 makes a bad configuration value a request error, and a control pipe reports one by stalling). `bConfigurationValue` is not an index and is not obliged to be 1. Use it on any driver that sends SET_CONFIGURATION: `msc-open-endpoints` sent a hardcoded 1 while every sibling driver read descriptor byte 5, and no bed could refuse it -- this model reported 1, and QEMU's `usb-storage` reports 1 and then accepts anything. |
 | `-usb-setcfg-fault <N>` | 0 | The mass-storage device answers SET_CONFIGURATION with completion code N whatever value is sent: 6 STALL, 4 USB Transaction Error. Reproduces the ASUS 2026-08-03 reading (`connect=FAILED`, rung 2) on the desk so the host's handling of a refusal can be built here. **It injects a symptom, not a cause.** Never use it to confirm a diagnosis -- a check fed a fault you selected will agree with you. |
 | `-xhci-calibrate-periodic` | off | Skew the model's EXPECTED Interval and Max ESIT Payload by one, so a correct driver is reported as MISMATCH. The periodic value check runs always and reports once per slot and DCI on stderr; this is the arm that shows it can say no. Use it whenever you are about to believe a MATCH. |
@@ -1188,6 +1204,66 @@ that the bed could not see a colour at all.
 `-screenshot <file> -screenshot-delay <ms>` also EXITS after the capture, which
 is the only bounded way to run a payload that holds its colour by repainting.
 
+### THE AD-HOC CHECK IS THE LEAST RELIABLE INSTRUMENT IN THE LOOP
+
+The section above is one instance of a general rule, and the rest of the
+instances cost a session each. **When a check you wrote in the moment
+disagrees with the product, distrust the check first**, and prefer the real
+harness to a reimplementation of it. Three false readings in one session were
+all the apparatus; the product was fine every time.
+
+- **Array splatting binds POSITIONALLY, and against `test-run.ps1` it DESTROYS
+  the file you name.** `$a = @('-Kernel', $k, '-OutFile', $o)` then
+  `& test-run.ps1 @a` puts the literal string `-Kernel` in `$Kernel` and the
+  KERNEL PATH in `$OutFile`; the no-output path then writes an empty file to
+  `$OutFile`, so every run truncates the kernel to 0 bytes. It reads as a
+  broken environment rather than a bad call, because the run "fails" and the
+  next run fails differently now that the kernel is empty. Use a HASHTABLE
+  splat (`@{ Kernel = ...; OutFile = ... }`), and when a test fails assert the
+  kernel still has content BEFORE believing the result: a 0-byte kernel and a
+  failing test are indistinguishable downstream.
+- **`2>&1` does not capture `Write-Host`. Use `*>&1`.** Most build scripts here
+  write progress that way, so `$t = & .\build.ps1 2>&1 | Out-String` leaves
+  `$t` EMPTY while the output scrolls past on the console. A pass test of the
+  form `if ($t -notmatch 'OK:')` then reports every arm failed; 44 plugs that
+  had all printed OK came back as 44 failures. The dangerous direction is the
+  mirror image: `-match 'FAIL'` over an empty string is False, so a real
+  failure passes silently. Check the exit code, which is never empty, and if
+  you must match text assert `$t.Length -gt 0` first.
+- **`Measure-Object -Line` silently DROPS EMPTY LINES, so it is the wrong
+  instrument for a file size and it never says so.** Measured 2026-08-15 on
+  `docs/Agents/PerforceProcess.md`: `(Get-Content $f).Count` = 500,
+  `Measure-Object -Line` = 405, and the file has exactly 95 blank lines. The
+  gap is the blanks, every time. It is dangerous precisely because 405 is a
+  plausible number for that file, and the usual place it lands is a CL
+  description quoting a size or a percentage cut, where nothing will ever
+  re-measure it (L-COUNT). Count with `(Get-Content $f).Count`, or count the
+  line-ending bytes; two instruments agreeing is the check.
+- **A pipeline that greps a command's output discards that command's error
+  message**, so a failed command reports as a clean result. `p4 diff -du -c
+  <CL> 2>&1 | Select-String '^\+' | Measure-Object` returns 0 for a CL with
+  164 added lines, because the `2>&1` folds `Invalid option: -c.` into the
+  stream and the `^\+` filter eats it. The command was never silent; the
+  pipeline silenced it. **`$LASTEXITCODE` survives the pipeline** and was 1
+  the whole time, so test that rather than the filtered count. The Perforce
+  instance is `P-DIFFC` in `docs/Agents/PerforceProcess.md`, but the shape is
+  general and this tree is full of `2>&1 | Select-String`.
+- **A one-element array unrolls to a scalar, and indexing a scalar STRING
+  yields a character.** The loud instance reads `unresolved symbol 'm'` for
+  `"main"`. The silent instance is the one to fear: a list of mnemonics
+  derived each as its initial letter and printed a clean, plausible, entirely
+  wrong opcode table. Force `@(...)` on the assignment or type the variable
+  `[string[]]`. The registry harness section in `ExaminersAssay.md` has the
+  same trap costing a green that could not have passed.
+- **Name a helper carefully; a short name can shadow an alias.** A comparison
+  helper called `H` bound to the `Get-History` alias, both hashes came back
+  empty, and the check printed EQUAL. Assert the expected length before
+  comparing -- two empty strings are equal, which is the exact shape of a
+  check that passes because it never ran.
+- **A substring match fails on wrapped prose.** Checking that a merge kept both
+  sides, with a phrase that spans a line break in the file, answers False for
+  both. Grep a short distinctive fragment, or the line number.
+
 ### Killing codex-vm by NAME kills the whole fleet's
 
 `Stop-Process -Name codex-vm -Force`, and every spelling of it
@@ -1373,6 +1449,15 @@ CDX binary, bootable via codex-vm or QEMU multiboot.
   no seed is needed. `build.ps1` proves the SUT is a fixed point of itself and
   never checks it against the depot seed. Full table and the two measured
   cases: `docs/DevelopersGuide.md`, Seed Rebuild Procedure.
+- **The SIZE of a seed-to-seed difference carries no information, so do not
+  read a change's reach off it in either direction.** Measured 2026-08-15
+  over the last seven seeds on main, consecutive pairs differ by 97 bytes,
+  2,354,783, 2,282,139, 1,211,880, 2,395,976, 364,032 and 2,536,593 -- four
+  orders of magnitude, and the first difference sits at offset 8 every time
+  because that is the content hash. A big diff is not evidence of a big
+  change and a small one is not evidence of a safe change. The hash compare
+  above answers whether a seed is needed; the gate answers whether the
+  compiler still agrees with itself. Nothing else is a reading.
 
 **Steps:**
 1. Run the full build: `build/build.ps1`. All phases must PASS.
@@ -1463,6 +1548,48 @@ hand-built compiler compared against `stage1.cdx` or the seed disagrees by
 Pass `-Repl` whenever the artifact is meant to BE the compiler; leave it off
 when compiling an ordinary program. L-SAMEVER: confirm the two things you
 are diffing were built the same way before concluding anything about either.
+
+**That difference is real codegen and is meant to stay.** `X86_64Chapter`
+ends the chapter on `st.exit-mode`: `Exit` emits the shutdown epilogue
+(`li rax,0`, `li rdx,244`, `out dx,al`, `hlt`, `jmp self`) and anything else
+emits a single `jmp repl-loop`. A REPL binary that shut the machine down
+would be the defect. Do not try to make the two byte-identical.
+
+**What was NOT meant to stay was `map` riding on the same switch**, which
+is why a compiler build emitted no symbol map. Fixed 2026-08-14; the two
+flags are independent in `compile.ps1` now, as they always were in
+`emit-cdx`.
+
+### Two ways a hand-run probe serves the LAST run's answer
+
+Both are silent, both look like a result, and both have produced a published
+number that was not about the change under test.
+
+**`build/compile.ps1` prints `True` on a FAILED compile.** The `True` is the
+script's own success, not the compiler's verdict, so a probe that reads it
+goes on to run whatever `.cdx` was already at that path. Delete the output
+first, gate on the log, and check the file exists afterwards:
+
+```powershell
+Remove-Item probe.cdx -ErrorAction SilentlyContinue
+build/compile.ps1 -Src probe.codex -Out probe.cdx -Log probe.log -Kernel seed/Codex.cdx
+if (Select-String -Path probe.log -Pattern "error CDX" -Quiet) { throw "compile failed" }
+```
+
+Match the number form as well as the `CDX` form when a harness does this for
+you: `error 3010: Unresolvable cite` carries no `CDX` prefix, and a checker
+matching only `error CDX` served a four-day-old IR file as a fresh verdict
+twice in one session. Comparing the output's `LastWriteTime` against the
+clock is the habit that catches the whole class.
+
+**`tools/codex-vm.exe -kernel X.cdx -headless` by hand prints NO program
+output, and does not error.** Measured 2026-08-08: one probe read as a crash
+(EXC=06) and a variant read as a clean silent exit, and a trivial
+`print-line-uni (show 15)` control run the same way ALSO printed nothing --
+so both readings were void, and the silence was the invocation rather than
+the subject. Run programs through `build/test-run.ps1`, which supplies
+`-output` and the comparison the battery uses. The control is what caught it,
+and it cost two cycles before one was run (L-SIDECAR).
 
 ## Diverse Double-Compiling (and why the C# plug is maintained)
 
@@ -1778,9 +1905,31 @@ toward hot call targets (WHP delivers the injected interrupt at the next
 instruction boundary), so prefer the host sampler for accurate weights.
 
 `build/prof-report.ps1 -Log <capture> -Map <symbol.map>` resolves either
-format's `*PROF:` lines into a hot-function histogram. Mint a fresh map
-by compiling the compiler source NON-repl (the `<out>.map` sidecar) --
-the seed map drifts (see the Release-to-Public Gate note).
+format's `*PROF:` lines into a hot-function histogram. **Compile it the
+way the thing you are profiling was compiled and use the `<out>.map`
+sidecar beside it.** That is now possible in both modes: until 2026-08-14
+`compile.ps1` appended the `map` flag only when `-Repl` was ABSENT, so a
+compiler build emitted no map at all and this line told you to mint one
+NON-repl instead. It no longer does, and you no longer need to.
+
+The coupling was in the driver, not the compiler. `emit-cdx` reads `repl`
+and `map` as two independent flags, and `emit-binary-tail-with-map` writes
+the same bytes as `emit-binary-tail` and then prints the `MAP:` lines --
+**the map never enters the binary.** Measured 2026-08-14: `CDX repl` and
+`CDX repl map` are byte-identical (84,607 both) and the second emits a
+4,786-byte map. The symbol map is built into `EmitChapterResult`
+regardless, so `map` only decides whether it is printed; it was being
+computed and thrown away on every compiler build.
+
+**How much a mismatched map actually costs, since the docs did not say.**
+Measured over the same 158-symbol program: the non-repl and repl maps
+differ on exactly ONE line, `__start`'s SIZE (9784 against 9773), and
+every symbol ADDRESS is identical. So a mode-mismatched map is not the
+scary case. **The stale case is** -- `seed/Codex.map` describing an older
+binary is what put a crash in `sorted-builtin-names` when the faulting
+function was `find-effect-op-addr` (2026-07-16, an hour). Now that a
+`-Repl` build emits `<out>.map`, `codex-vm`'s `-map` auto-probe finds the
+right file first and never reaches the `seed/Codex.map` fallback.
 
 **Re-concatenate before you mint, or the fresh map describes stale
 source.** `build/output/Codex.codex` is written by `build.ps1`'s source
@@ -1979,6 +2128,23 @@ Resolve-Name -Name "lookup-expr-type"          # -> 0x2F56FB (address)
 
 Both read `seed\Codex.map` by default; pass `-MapFile` to point at
 another map.
+
+**From a symbol to the emitted bytes.** `compile.ps1` writes a `<out>.map`
+sidecar of `0xADDR <size> <name>` rows, and the file offset of that address
+inside the CDX is `addr - 0x100000 + 224` (load address, then header). Dump
+with `[IO.File]::ReadAllBytes` and decode. Reading the bytes is faster than
+another round of ablation once the conditions are narrowed: ablation tells
+you which conditions matter, the bytes tell you what happened. One decoding
+trap worth naming, because it misreads as a different register: REX.R and
+REX.B extend the modrm fields, so `4c 8b 4d 90` is `mov r9,[rbp-0x70]` and
+not `rcx`.
+
+**Resolve a fault with the map belonging to the binary that faulted.** The
+`-map` auto-probe falls back to `seed/Codex.map` whatever was booted, so a
+boot-PE backtrace resolved against it is confident nonsense. The MAP1 map
+embedded in the CDX is authoritative, and its names are CCE -- which is why
+an ASCII grep of a `.cdx` for a symbol answers False for symbols that are
+certainly present.
 
 ### Breakpoints by Function Name
 
@@ -2324,6 +2490,39 @@ Both are the wrong instrument on a UEFI boot and both answer plausibly:
   the cell is not written on every allocation. It read as the base while R10
   was 22.9 MB above it.
 
+### A guest diagnostic has two channels, and only ONE of them is ever read
+
+| | port | emitter | who reads it |
+|---|---|---|---|
+| COM1 | 0x3F8 data, 0x3FD LSR | `emit-serial-wait-and-send` | `codex-vm -output`, so `test-run.ps1`, so every `.expected` |
+| COM2 | 0x2F8 data, 0x2FD LSR | `emit-control-wait-and-send` | the compile protocol only. **NOT captured to `-output`** |
+
+Both are in `codex/compiler/Emit/X86_64IO.codex`. **A diagnostic written to COM2
+is emitted and discarded**, so the code under it looks like code that never
+runs. `__out_of_memory` printed there for its whole life (fixed main 11837) and
+a correct, firing stack guard read as "the guard never fires" for as long as it
+did. Check which emitter a message goes through before concluding the path is
+dead. `emit-control-wait-and-send` also carries a 10000-spin bail-out that the
+serial one does not; the serial wait blocks until THR-empty.
+
+### The halt pattern, and `cli` is not optional
+
+Copy this (`emit-cpu-exception-dump`, `X86_64Boot.codex`); do not invent one:
+
+```
+emit-serial-drain-delay
+cli
+halt-pos = code-len
+hlt
+jmp (halt-pos - (code-len + 5))
+```
+
+**`hlt` with IF=1 is woken by the timer and the loop spins forever.** codex-vm
+exits on `Guest halted with IF=0`, that never comes, and the harness kills the
+run at its wall budget -- so a diagnostic that halted correctly is reported as a
+hang, which is a different bug with a different owner. Any halt you add to a
+guest path needs the `cli`.
+
 ### compile.ps1 Debug Flags
 
 | Flag | Purpose |
@@ -2410,6 +2609,12 @@ Turn the floors up for the one compile that needs it, build the seed
 that carries the higher default, then turn the knob back off. Without
 it, the only escape is a two-stage bootstrap through an intermediate
 seed.
+
+**`-EscapeCheck` on the selfhost needs `-Decks 200`** or it dies in a silent
+`#GP` in `copy-sx-pos`. The check allocates inside the walk, so it outgrows
+the stock floors on a unit the size of the compiler. Not new, and it
+reproduces on old seeds, so a fresh `#GP` there is not a regression you
+introduced.
 
 **Turning the knob DOWN is sharp.** An under-reserved floor does not
 raise `CDX9002` -- the parse keep-deck copy writes past the floor into
@@ -2510,6 +2715,27 @@ two paths do not share a memory model:
 
 `-AllocPages` is `cdx-to-pe.ps1`'s `-HeapPages` under another name; the
 name is kept because probe commands in `docs/Hardware/HardwareSitting.md` pass it.
+
+**A payload that hosts a VMX guest needs a bigger one, and 131072 (512 MB) is
+measured.** `vm-prepare-guest` allocates the guest's region out of this same
+arena, so 32768 cannot carry a 256 MB guest and `vm-guest-sizing` refuses every
+time. Measured 2026-08-15 under OVMF: an Option A image built
+`-AllocPages 131072 -Ebs -Uefi` boots on real edk2 firmware in a 2048 MB
+machine and paints the desk. The control is the same image in a 256 MB
+machine, which never reaches the paint at all -- one flat colour against five
+-- so the bed can say no and the green means something. **What this does NOT
+establish is the ASUS**: OVMF choosing to satisfy a 512 MB `AllocateMaxAddress`
+below the aperture is exactly the class of spec freedom L-FREEDOM is about, and
+AMI is free to answer differently. The stub raises `H` on a failed heap
+allocation, so a board that refuses says so rather than wandering.
+
+**`-AllocPages` above 524287 crashes `cdx-to-pe.ps1` rather than building.**
+`$ebsBackoff = [Math]::Max(0, 0x10000000 - ($HeapPages * 4096)) + 0x100000`
+picks the Int32 overload from the literal `0`, and past a 2 GB arena the
+subtraction no longer fits: `Cannot convert argument "val2", with value:
+"-2952790016"`. It fails loudly at build time and ships nothing wrong, and
+`$HeapCeiling` is 3 GB anyway, so the reachable band is 512 MB to 2 GB. `0L`
+would lift it if anyone ever needs more.
 
 This is what hid the A6 F12 regression for a week. Six bed arms across two
 agents could not express a 4.6 MB per-visit leak, and the post-mortem
@@ -2696,11 +2922,16 @@ needed internally.
 1. **Poison build passes** (above) -- the seed has no uninitialized-field
    dependencies.
 2. **Refresh `seed/Codex.map`.** This is the one artifact that silently
-   drifts: the seed is built `-Repl`, and `-Repl` mode does not emit the
-   text `MAP:` block that `compile.ps1` captures into `<out>.map`, so
-   neither the seed rebuild nor copy-to-main ever refreshes it.
-   Regenerate by compiling the compiler source NON-repl with the
-   published seed and copying the emitted map:
+   drifts. The reason is NOT that `-Repl` emits no map: it did not until
+   main 15088, and since then `compile.ps1` appends `map` to every CDX mode
+   including `-Repl` (`compile.ps1`:139-141), so the seed build does emit
+   one. What no step does is INSTALL it. `Invoke-BuildCdx` moves the `.cdx`
+   to its output name and leaves the sidecar behind as
+   `build/output/build_cdx_tmp.map` (`build.ps1`:72), where the next CDX
+   build overwrites it, and `Sut.map` never exists. So the conclusion is
+   unchanged -- nothing refreshes `seed/Codex.map` -- and the recipe below
+   still stands. Regenerate by compiling the compiler source NON-repl with
+   the published seed and copying the emitted map:
 
    ```powershell
    Copy-Item -Force seed/Codex.cdx build-output/bare-metal/Codex.cdx

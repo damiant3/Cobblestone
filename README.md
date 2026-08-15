@@ -122,7 +122,7 @@ Measured 2026-08-03, except where an item gives its own date.
    count per function against an optional budget. No production language
    has this combination -- Ada Ravenscar is global and needs external WCET
    tools, Rust has nothing, MISRA-C is external linters.
-6. **591 library modules across 22 quires** (431 foreword + 160 OS): data
+6. **592 library modules across 22 quires** (432 foreword + 160 OS): data
    structures, crypto, a full TCP/IP stack with TLS 1.3 and X.509 peer
    verification, 3D and game engines, AI inference, encoding, math,
    compression, a themeable UI toolkit, and hard real-time primitives.
@@ -179,7 +179,7 @@ Measured 2026-08-03, except where an item gives its own date.
     aimed at being the first platform where the compiler proves firmware
     meets Cyber Resilience Act requirements by construction.
 
-**66 applications, 1,008 modules**, all written in Codex and compiled by
+**67 applications, 1,019 modules**, all written in Codex and compiled by
 the seed; 33 carry a web front end through the HTML plug. Catalog:
 [docs/CuratorsCatalogue.md](docs/CuratorsCatalogue.md).
 
@@ -192,21 +192,25 @@ for 135 checks; its phase of the gate takes about 19s.
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (2,793,222 bytes) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (2,798,031 bytes) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `8D405FDFF57EDA83` |
-| SHA-256 | `8D405FDFF57EDA836C5BBD28EACDB8A2F9289F5DF5621BAD9CB08776C529D349` |
-| MD5 | `221DD5BAAF5D928094F30EEED02971DC` |
+| Content hash prefix | `93DCA70AF9BBBFE0` |
+| SHA-256 | `F3722EAC019ACD5A90BBED8579926D8BCFF516800FF42E68A88FFB8BF9FC7B72` |
+| MD5 | `BCB268FF36A94C529DD118618C853A2E` |
+
+The content hash is the 32 bytes the CDX header carries at offsets 8..39
+and it deliberately EXCLUDES the signature, so it is not a prefix of the
+file's SHA-256 and the two rows above do not agree by construction.
 
 **`seed/Codex.img`** (16,777,216 bytes) -- bootable GPT disk image, the
 first-boot ceremony.
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `226356FB7BF13A3A46B80813DA0659DB5F4A111C84D48DF7024639A672C6E94A` |
+| SHA-256 | `400D37EAE905C360660C8DBE49AFA298A68F12068D52D0DBA651A8697662A801` |
 
 Boot it on a UEFI machine and it runs its own first-boot ceremony on the
 GOP framebuffer with no OS beneath it: choose an interface, walk the
@@ -228,7 +232,7 @@ HID stack, panes opened by click, shutdown by button, and F12 writing
 the live screen to the stick as a BMP through the tree's own FAT16
 writer. The bring-up method that got it there is written down for other
 people's hardware in
-[docs/Designs/Active/Tools/HardwareBringUpPlaybook.md](docs/Designs/Active/Tools/HardwareBringUpPlaybook.md).
+[docs/Designs/Done/Tools/HardwareBringUpPlaybook.md](docs/Designs/Done/Tools/HardwareBringUpPlaybook.md).
 
 | Algorithm | Digest |
 |---|---|
@@ -237,7 +241,8 @@ people's hardware in
 That digest is this build of the image, not a target to reproduce: the
 image embeds a concatenation of the tree's own source, so a rebuild from a
 different working tree answers a different hash by design. The seed inside
-it (`D9A6A7A2`) is the number that has to match.
+it is the number that has to match, and it is whatever `seed/Codex.cdx`
+holds in the tree you build from.
 
 Flash to USB from an elevated PowerShell. **Pull the stick out when it is
 done -- do not eject it.** Windows rewrites the partition table when the
@@ -501,14 +506,14 @@ is preserved regardless of Tier 1 and 2 support.
 ## Library Quires
 
 Code outside the compiler is organized into **22 quires** (library
-namespaces) holding **591 modules** (431 foreword, 160 OS). Quires cite
+namespaces) holding **592 modules** (432 foreword, 160 OS). Quires cite
 each other as `cites Game chapter AStar`; the quire name is the last
 segment of the directory name, capitalized. Full catalog:
 [docs/DevelopersRulebook.md](docs/DevelopersRulebook.md).
 
 | Quire | Directory | Count |
 |---|---|---:|
-| Foreword | `codex/foreword/core/` | 127 |
+| Foreword | `codex/foreword/core/` | 128 |
 | Encode | `codex/foreword/encode/` | 75 |
 | UI | `codex/foreword/ui/` | 50 |
 | AI | `codex/foreword/ai/` | 43 |
@@ -533,12 +538,12 @@ segment of the directory name, capitalized. Full catalog:
 ```
 codex/
   compiler/      Self-hosted compiler (64 files, 54,148 lines)
-  foreword/      431 library modules across 13 quires
+  foreword/      432 library modules across 13 quires
   boards/        Board HAL drivers -- 9 target boards
   os/            Kernel, net, trust, verify, sched, dev, observe (160 modules)
   plugs/         55 plugs, 148 source modules -- IR-text-driven emitters
-  test/          Compiler samples + OS integration tests (1,449 files)
-apps/            66 applications, 1,008 modules
+  test/          Compiler samples + OS integration tests (1,466 files)
+apps/            67 applications, 1,019 modules
 annotations/     On-disk annotation sidecars (JSON facts)
 build/           Build and test harness (PowerShell)
 tools/           codex-vm, status server, USB writer, VS extensions

@@ -5,9 +5,11 @@ machine from the desk console, with the answer on the glass. The end state is
 a stick that carries its own source, its own compiler, and the proof the two
 agree, where a person can change the source and watch the proof move.
 
-**Status 2026-08-13 (updated after the flight): the edit half is done, the
-blocker is GONE, and Road A is the road.** VT-x is available on the ASUS,
-measured on metal. The road that looked cheapest (Road B) is still closed.
+**Status 2026-08-15: the edit half is done, the hypervisor is provisioned, and
+what is left is an arena the flying image can spare.** VT-x is available on
+the ASUS, measured on metal 2026-08-13. The road that looked cheapest (Road B)
+is still closed. Read "How the guest is provisioned" below before planning any
+of this.
 
 ## Where this is up to
 
@@ -16,7 +18,10 @@ measured on metal. The road that looked cheapest (Road B) is still closed.
 | Edit a chapter out of `SRC/` and save it back | DONE, main 14802 (WORKS-20) |
 | A console pane in the desk | DONE, main 14815 |
 | `vmx` probe reading `IA32_FEATURE_CONTROL` from the desk | DONE, main 14829 |
-| Compile from the console | BLOCKED, see below |
+| EPT, allocated regions, sizing refusal | DONE, main 15147 |
+| Device-path launch sets host state | DONE, main 15161 |
+| An arena big enough to hold a guest | OPEN, the only thing in the way |
+| Compile from the console | not started, a dozen lines after the arena |
 | Compare the result against `CODEX.CDX` on the same volume | not started |
 
 `seed/Codex.img` already carries all three of the things the demo needs, side
@@ -137,10 +142,90 @@ Still try a small chapter first when wiring `compile`, for the guest
 round trip rather than for memory: `SRC/NAME.COD` is 307 bytes and is the
 smallest thing on the stick.
 
-**What is NOT measured**: the guest side. `vm-compile` asks for a
-256 MB guest and hands the seed across a serial input built from it, and
-none of that has run anywhere, because codex-vm reports no VT-x and only
-metal can execute it.
+**What is NOT measured**: the guest side. It has not run anywhere, because
+codex-vm reports no VT-x and only metal can execute it.
+
+## How the guest is provisioned
+
+The guest runs under EPT, so guest physical addresses are translated and the
+guest cannot reach the host. `vm-prepare-guest` refuses before it allocates
+anything if VT-x is absent, if the request is outside 32 MB to `guest-max-mb`,
+or if the arena has less free than the request plus a 16 MB reserve; the bump
+allocator has no bounds check of its own, so this is the only thing standing
+between an oversized guest and a silent overrun.
+
+Given a size it takes one region for the guest and three pages for the EPT
+tables, maps guest physical to that region in 2 MB leaves, and hands back the
+EPTP. `GuestConfig.memory-mb` sizes it. `guest-max-mb` is derived from the
+512-leaf cap rather than written down twice, so the two cannot drift apart.
+
+The guest's low 64 KB is initialised and its RAM size written at
+`ram-size-addr`, because a raw CDX enters at `__start`, which loads RSP from
+there and then stores its heap position to `deck-pos-addr` and `heap-hwm-addr`.
+Those are guest-physical under EPT and land in the guest's own region; the rest
+of the region is handed over unzeroed, because zeroing it would be one store
+per dword across the whole allocation.
+
+`vmlaunch-full` and `vmresume-full` set HOST_RSP and HOST_RIP themselves:
+`emit-vmlaunch-full-helper` aims host RIP at the landing pad immediately past
+`vmlaunch`, so an exit returns 0 to the Codex caller and a failed launch
+returns 1. **Nothing in the `.codex` names those VMCS fields**, so grepping the
+Codex source for `vmcs-host-rip` finds nothing and answers a question about
+Codex rather than about the machine. Use the plain `vmlaunch` builtin and no
+host state is written at all.
+
+`codex/test/apps/vmx-ept-table` asserts the encoding in the bed, which it can
+do because building the tables is pure memory writes and needs no VT-x: leaf
+`0xB7`, non-leaf `0x07`, EPTP `0x1E`, the 2 MB leaf stride, the 512-leaf cap,
+both sizing refusals, and the RAM size landing where `__start` reads it.
+Sabotaging `ept-memtype-wb` to 0 moves the leaf row by exactly 48 and leaves
+the other two unmoved.
+
+**Do not relocate the guest instead of relying on EPT.** The obvious-looking
+alternative is to move the host's structures aside and patch the guest's
+addresses, but `ram-size-addr`, `deck-pos-addr` and `bare-metal-heap-base` are
+compile-time constants baked into every CDX by the code generator. Changing
+them means the guest is no longer the same `CODEX.CDX` that sits on the stick,
+which deletes the demo: the whole claim is that the compiler on the stick
+compiles itself.
+
+### What Road A still needs
+
+1. **An arena the flying image can spare. The value is measured: 131072.**
+   The Option A path is past ExitBootServices, so firmware cannot be asked for
+   pages at run time and the guest's region comes out of the same arena the
+   desk is using; at the shipping `-AllocPages 32768` a 256 MB guest refuses
+   every time.
+
+   ```powershell
+   pwsh build/boot/build-option-a.ps1 -Src apps/works/GopBoot.codex `
+     -Out build-output/desk.img -AllocPages 131072 -Kernel seed/Codex.cdx -Ebs -Uefi
+   pwsh build/boot/test-ovmf.ps1 -Img build-output/desk.img -Out build-output/ovmf.png -Seconds 30
+   ```
+
+   Measured 2026-08-15: that image boots on real edk2 firmware in a 2048 MB
+   machine and paints the desk (five colours, the `26,26,46` ground with grey,
+   orange, green and cyan on it). The control is the SAME image under
+   `-MemMB 256`, which never reaches the paint -- one flat colour -- so the
+   bed can refuse and this green is not vacuous. The guard's own arithmetic
+   was checked separately against four `-mem` values (3072, 1024, 512, 256):
+   `vm-arena-free` tracks the real top every time and the 256 MB request
+   refuses at exactly the point it should, so it is reading the machine rather
+   than a constant. Cell 4072 carries the stack top under UEFI and the RAM
+   size on bare metal, which is the top of the arena either way, which is why
+   one expression is right on both paths.
+
+   **This does not settle the ASUS.** OVMF satisfying a 512 MB
+   `AllocateMaxAddress` below the aperture is precisely the spec freedom
+   L-FREEDOM is about, and AMI may answer differently; the stub raises `H` on
+   a failed heap allocation, so a board that refuses will say so. Do not read
+   the bed's yes as the board's yes (L-ARENA cuts the other way here: the bed
+   is now the GENEROUS one about firmware, not about size).
+
+2. **Then wire `compile <path>`.** The console already has every other piece:
+   `gfat-read-file` for both the source and `CODEX.CDX`, `gcon-buf-list` for
+   the seed conversion, `unicode-bytes-to-text` for the source, and
+   `vmx-read-revision-id`. It is a dozen lines once 1 holds.
 
 ### Road B -- call the compiler in-process. Closed as a cheap option.
 

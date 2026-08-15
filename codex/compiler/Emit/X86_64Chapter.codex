@@ -20,7 +20,14 @@ Section: Bare-Metal Start
    in let st4 = st-append-code st3a (mov-load reg-rsp reg-rdi 0)
    in let st5 = st-append-code st4 (mov-rr reg-rbp reg-rsp)
    in let st6 = emit-oom-string st5 [79, 85, 84, 32, 79, 70, 32, 77, 69, 77, 79, 82, 89, 10] 0
-   in let st6a = emit-serial-drain-delay st6
+   in let st6c = emit-oom-string st6 [83, 80, 61] 0
+   in let st6d = st-append-code st6c (mov-rr reg-rdi reg-rbx)
+   in let st6e = emit-print-hex-qword-rdi st6d
+   in let st6f = emit-oom-string st6e [32, 72, 69, 65, 80, 61] 0
+   in let st6g = st-append-code st6f (mov-rr reg-rdi reg-r12)
+   in let st6h = emit-print-hex-qword-rdi st6g
+   in let st6i = emit-serial-wait-and-send st6h 10
+   in let st6a = emit-serial-drain-delay st6i
    in let st6b = st-append-code st6a cli
    in let st7 = st-append-code st6b hlt
    in st-append-code st7 (jmp (-6))
@@ -667,6 +674,7 @@ Section: Finalize
    user-arities = [],
    bag = empty-bag,
    deck-bound = False,
+   deck-record-intrinsic = False,
    effect-op-addrs = [],
    eo-reads = [],
    eo-handled = [],
@@ -1134,11 +1142,28 @@ Section: Binary Debug Map (MAP1)
    in let st-ret = __record-set st-eo2 "opening-ret-type" ret-ty
    in let arities = build-x86-arities defs-lifted 0 (list-length defs-lifted) []
    in let st-ar = __record-set st-ret "user-arities" arities
-   in let st-wc = emit-wcet-unchecked st-ar unchecked 0
+   in let pa-slug = def-chapter-slug defs-lifted "init-phase-allocator" 0 (list-length defs-lifted)
+   in let dr-slug = def-chapter-slug defs-lifted "deck-record" 0 (list-length defs-lifted)
+   in let st-dri = __record-set st-ar "deck-record-intrinsic" (pa-slug /= "" & pa-slug == dr-slug)
+   in let st-wc = emit-wcet-unchecked st-dri unchecked 0
    in let st0a = emit-runtime-helpers st-wc
    in let dx = __deck-exit
    in let st1 = emit-all-defs st0a defs-lifted 0
    in x86-64-finalize-cdx st1 (tramp.far-jump-patch-pos) (manifest-opening-effects tdefs) (manifest-opening-fs-scope tdefs) (manifest-opening-net-scope tdefs)
+
+ `deck-record` is a name, not a keyword, and PlugTypes ships its own
+ `deck-record : a -> a` so plug bundles type-check outside the kernel. The
+ intercept in emit-apply used to fire on the name alone, so a plug kernel
+ emitted __deck-enter / __deck-exit against a phase allocator it never
+ initialized. The discriminator is the DEFINING chapter: the intrinsic is
+ the one that lives beside init-phase-allocator, and a bundle that does not
+ carry the Phase Allocator chapter gets the plain identity call it declared.
+
+  def-chapter-slug : List IRDef, Text, Integer, Integer -> Text
+  def-chapter-slug (ds) (name) (i) (n) =
+   if i >= n then ""
+   else if ((list-at ds i).name) == name then (list-at ds i).chapter-slug
+   else def-chapter-slug ds name (i + 1) n
 
   assign-effect-op-addrs : List Text, Integer between 0 and 65535, Integer, List EffectOpAddr -> List EffectOpAddr
   assign-effect-op-addrs (names) (i) (len) (acc) =
