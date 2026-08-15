@@ -662,6 +662,8 @@ Section: Builtin Emitter
     ZigBuiltinEmitter { name = "print-line-raw", emit = \args ctx d ty -> "cx_print_line(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "print-line-uni", emit = \args ctx d ty -> "cx_print_line(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "print-uni", emit = \args ctx d ty -> "cx_print(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "print-text", emit = \args ctx d ty -> "cx_print(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "text-to-double-bits", emit = \args ctx d ty -> "cx_text_to_double_bits(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "print-error", emit = \args ctx d ty -> "cx_print_line(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "print-error-uni", emit = \args ctx d ty -> "cx_print_line(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "show", emit = \args ctx d ty -> "cx_show_int(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
@@ -680,7 +682,7 @@ Section: Builtin Emitter
     ZigBuiltinEmitter { name = "bit-shr", emit = \args ctx d ty -> "cx_shr(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "list-length", emit = \args ctx d ty -> "cx_list_len(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "list-at", emit = \args ctx d ty -> "cx_list_at(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
-    ZigBuiltinEmitter { name = "list-push", emit = \args ctx d ty -> "cx_ll_push(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "list-push", emit = \args ctx d ty -> "cx_ll_push(" & zig-list-arg-text args 0 1 ctx d & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "list-insert-at", emit = \args ctx d ty -> "cx_ll_insert_at(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__deck-enter", emit = \args ctx d ty -> "{}" },
     ZigBuiltinEmitter { name = "__deck-exit", emit = \args ctx d ty -> "{}" },
@@ -711,16 +713,66 @@ Section: Builtin Emitter
 
 Section: Name Mapping
 
+ A name the plug cannot place used to reach zig as itself, and zig said
+ "use of undeclared identifier text_to_double_bits" -- true, unhelpful, and
+ indistinguishable from a typo in the emitter. Three builtins the plug had
+ never implemented arrived that way at once in the lower milestone, each
+ reported as a mystery identifier rather than as the missing emitter it was.
+
+ Everything a name can legitimately be is enumerable: a rename in scope, a
+ local bound by an enclosing binder, an entry in the name map, a
+ constructor, a definition in the chapter, or a builtin. Nothing else
+ exists, so anything else is a gap in this plug and names itself.
+
+ bound-names is what makes this decidable. Before captures it did not
+ exist, and a bare name that was not a definition was assumed to be a
+ closure-valued local, which is exactly the assumption that let an
+ unimplemented builtin through as a call to a nonexistent closure.
+
+  zig-is-builtin : Text -> Boolean
+  zig-is-builtin (n) =
+   let len = list-length zig-builtin-emitters
+   in let pos = bsearch-zig-builtin-pos zig-builtin-emitters n 0 len
+   in if pos >= len then False
+      else (list-at zig-builtin-emitters pos).name == n
+
+  zig-name-known : ZigCtx, Text -> Boolean
+  zig-name-known (ctx) (n) =
+   if text-length (zig-renamed ctx n) > 0 then True
+   else if zig-in-texts (ctx.bound-names) n 0 then True
+   else if text-length (zig-lookup-name zig-name-map n 0) > 0 then True
+   else if zig-find-ctor (ctx.ctors) n 0 >= 0 then True
+   else if lookup-arity (ctx.arities) n >= 0 then True
+   else zig-is-builtin n
+
+  zig-unknown-name : Text -> Text
+  zig-unknown-name (n) =
+   "@compileError(\"zig plug: no emitter for " & n & "\")"
+
+
   ZigNameEntry = record {
    codex-name : Text,
    zig-name : Text
   }
+
+ The deck names answer 0 because this target has no deck: allocation is
+ page_allocator and the stack is whatever zig-main asks for, so the
+ frontier is nowhere and nothing is ever short of it. __heap-save reads as
+ the same answer for the same reason -- Lowering guards its per-def loop
+ with (ceiling > 0) and (__heap-save + guard-band >= ceiling), which with
+ a 0 frontier is "keep going", which is true here.
+
+ This is a semantic choice rather than a translation, so it is worth being
+ clear that it stays honest: bare metal decides saturation from real
+ memory, and a subject that saturates there and not here diverges in the
+ dump the oracle diffs. The choice is checked, not assumed.
 
   zig-name-map : List ZigNameEntry =
    [ZigNameEntry { codex-name = "True", zig-name = "true" },
     ZigNameEntry { codex-name = "False", zig-name = "false" },
     ZigNameEntry { codex-name = "Nothing", zig-name = "null" },
     ZigNameEntry { codex-name = "__deck-pos", zig-name = "0" },
+    ZigNameEntry { codex-name = "__heap-save", zig-name = "0" },
     ZigNameEntry { codex-name = "__deck-enter", zig-name = "0" },
     ZigNameEntry { codex-name = "__deck-exit", zig-name = "0" }]
 
@@ -798,7 +850,8 @@ Section: Name Mapping
    else if lookup-arity (ctx.arities) n == 0 then zig-sanitize n & "()"
    else if lookup-arity (ctx.arities) n >= 1 & zig-fn-param-count ty >= 1
    then zig-closure-make n [] ctx d ty
-   else zig-sanitize n
+   else if zig-name-known ctx n then zig-sanitize n
+   else zig-unknown-name n
 
 Section: Binary Operator Mapping
 
@@ -1571,7 +1624,7 @@ Section: Apply Emission
      else let ci = zig-find-ctor (ctx.ctors) n 0
      in if ci >= 0 then emit-zig-ctor-apply (list-at (ctx.ctors) ci) args ctx d (zig-ctor-type-args (zig-expr-type e))
      else let ar = lookup-arity (ctx.arities) n
-     in if ar < 0 then zig-closure-invoke (zig-local-ref ctx n) args ctx d
+     in if ar < 0 then (if zig-name-known ctx n then zig-closure-invoke (zig-local-ref ctx n) args ctx d else zig-unknown-name n)
         else if list-length args < ar then zig-closure-make n args ctx d (zig-expr-type e)
         else zig-sanitize n & "(" & zig-call-type-args ctx n args (zig-expr-type e)
              & emit-zig-call-args n args (zig-call-ctx ctx n args (zig-expr-type e)) d 0 & ")"
@@ -1760,11 +1813,20 @@ Section: Apply Emission
    else let one = zig-resolve-tvar (list-at ids i) d args resty 0
    in one & ", " & zig-call-type-args-loop ctx d ids (i + 1) args resty
 
+ A variable no argument mentions used to come out anyopaque, on the
+ reasoning that zig refuses anyopaque and so the gap could not pass
+ silently. It cannot, but it also cannot explain itself: zig reports
+ "opaque return type not allowed" against a CxFn1 instantiation and says
+ nothing about which callee, which variable, or that a type argument is
+ what went missing. Ten of these in one subject read as one mystery rather
+ than ten facts. The marker names the callee and the variable instead.
+
   zig-resolve-tvar : Integer between 0 and 4294967295, IRDef, List IRExpr, CodexType, Integer -> Text
   zig-resolve-tvar (id) (d) (args) (resty) (i) =
    if i >= list-length (d.params) | i >= list-length args
    then let fromres = zig-tvar-in id (zig-peel-return (d.type-val) (list-length (d.params))) resty
-    in if text-length fromres > 0 then fromres else "anyopaque"
+    in if text-length fromres > 0 then fromres
+       else "@compileError(\"zig plug: unresolved type variable T" & integer-to-text id & " of " & d.name & "\")"
    else let found = zig-tvar-in id ((list-at (d.params) i).type-val) (zig-expr-type (list-at args i))
    in if text-length found > 0 then found
       else zig-resolve-tvar id d args resty (i + 1)
@@ -1881,6 +1943,29 @@ Section: Apply Emission
  A constructor payload's declared field type is an ATypeExpr rather than a
  CodexType, so the expectation is carried as text -- the one place the
  mechanism cannot use zig-expect and says why.
+
+ A builtin argument is the fourth place an empty list can learn what it
+ holds, and the first where the answer is not a declaration. `list-push []
+ x` says nothing about the list and everything about x, so the element type
+ comes off the SIBLING argument: whatever is being pushed is what the list
+ holds. Three of these sit in lower-lazy, which builds a one-element
+ parameter list and two field lists this way.
+
+ Builtin emitters take their arguments as plain expressions with no
+ expectation attached, which is why zig-expect cannot reach here. This
+ helper is the narrow substitute -- it answers for one argument of one
+ builtin from another argument of the same call, and it stays honest by
+ refusing to guess: a sibling whose own type is unresolved falls through to
+ the ordinary emission and the empty-list marker fires as before.
+
+  zig-list-arg-text : List IRExpr, Integer, Integer, ZigCtx, Integer -> Text
+  zig-list-arg-text (args) (li) (ei) (ctx) (d) =
+   let a = list-at args li
+   in if zig-is-empty-list a == False then emit-zig-expr a ctx (d + 1)
+   else let elem = emit-zig-type (zig-expr-type (list-at args ei))
+   in if text-length elem > 0 & zig-is-unmapped elem == False
+      then "cx_ll_empty(" & elem & ")"
+      else emit-zig-expr a ctx (d + 1)
 
   emit-zig-ctor-arg : ZigCtorEntry, IRExpr, ZigCtx, Integer, Integer -> Text
   emit-zig-ctor-arg (c) (a) (ctx) (d) (i) =
@@ -2127,6 +2212,7 @@ Section: Chapter Emission
    & "fn cx_ll_insert_at(l: anytype, i: i64, v: anytype) @TypeOf(l) {\n    l.items.insert(std.heap.page_allocator, @intCast(i), v) catch @panic(\"oom\");\n    return l;\n}\n"
    & "fn cx_ll_with_capacity(comptime T: type, n: i64) *CxList(T) {\n    _ = n;\n    return cx_ll_empty(T);\n}\n"
    & "fn cx_text_compare(a: []const u8, b: []const u8) i64 {\n    return switch (std.mem.order(u8, a, b)) { .lt => -1, .eq => 0, .gt => 1 };\n}\n"
+   & "fn cx_text_to_double_bits(s: []const u8) i64 {\n    _ = s;\n    @panic(\"zig plug: text-to-double-bits unimplemented\");\n}\n"
    & "fn cx_char_to_text(c: i64) []const u8 {\n    const b = std.heap.page_allocator.alloc(u8, 1) catch @panic(\"oom\");\n    b[0] = @intCast(c);\n    return b;\n}\n"
    & "fn cx_list_len(l: anytype) i64 {\n    return @intCast(l.items.items.len);\n}\n"
    & "fn cx_list_at(l: anytype, i: i64) @TypeOf(l.items.items[0]) {\n    return l.items.items[@intCast(i)];\n}\n"
