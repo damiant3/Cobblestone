@@ -1357,22 +1357,32 @@ Section: Definition Emission
 Section: Chapter Emission
 
  Codex is written to recurse rather than loop, and bare metal answers that
- with a multi-gigabyte arena for the stack. Zig gives a main thread 8 MB,
- which is not enough: scan-class-instance-defs recurses once per token, so
- Parser.codex at 18,812 tokens overflows and segfaults. ReleaseFast does
- not rescue it -- the calls sit inside labelled block expressions and LLVM
- does not turn them into loops.
+ with a multi-gigabyte arena. Zig gives a main thread 8 MB, which is not
+ enough: scan-class-instance-defs recurses once per token, so Parser.codex
+ at 18,812 tokens overflows and segfaults. ReleaseFast does not rescue it,
+ since the calls sit inside labelled block expressions.
 
- So the entry point runs on a thread with a stack sized for the recursion
- instead of borrowing whatever ulimit the caller happened to have. It is
- address space, not memory; the pages commit as the recursion touches
- them. Emitting a loop for self-tail-calls would be the better answer and
- is a real emitter feature, not a prelude line.
+ This is the same wall CSharpPlug hit, and this is its answer -- run the
+ entry point on a thread with a big stack, reserved address space
+ committed on demand. Read the note above opening-on-big-stack there for
+ the part that matters most: the case that reaches the limit is MUTUAL
+ recursion, the lexer's scan-token -> skip-prose-line -> scan-token cycle,
+ and no amount of self-tail-call elimination flattens that. Emitting loops
+ for self-recursion would be a real feature and would still not remove the
+ need for this. .NET gives its main thread 1 MB and overflows on a 96-byte
+ chapter, so this is a property of the source rather than of large input.
+
+ 512 MB matches the C# default deliberately. What is NOT matched is its
+ CODEX_STACK_MB override: zig 0.16's environment API is mid-refactor
+ (std.posix.getenv is gone, std.process.Environ.Block differs by platform
+ and has no global on POSIX), and a knob is not worth version-fragile code
+ in every emitted program. Rebuild to change it.
 
   zig-main : Text -> Text
   zig-main (entry) =
    "pub fn main() void {\n"
-   & "    const t = std.Thread.spawn(.{ .stack_size = 1 << 30 }, "
+   & "    const stack_bytes: usize = 512 * 1024 * 1024;\n"
+   & "    const t = std.Thread.spawn(.{ .stack_size = stack_bytes }, "
    & zig-sanitize entry & ", .{}) catch @panic(\"spawn\");\n"
    & "    t.join();\n}\n"
 
