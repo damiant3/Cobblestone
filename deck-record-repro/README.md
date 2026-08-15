@@ -1,19 +1,22 @@
-# Three findings, runnable from this branch
+# Seven findings, runnable from this branch
 
 NOT FOR MERGE -- this directory exists so the findings are runnable; drop
 it whenever. The zig-plug changes in this PR and the `net-recv-raw` fix
 are separate and are meant to merge.
 
-All three came out of one exercise: building a standalone subject that
-does up-to-AST compilation (the real `Syntax/Lexer.codex`, then the
-parser chapters, plus a dump harness), compiling it two ways -- seed on
-bare metal as truth, and through the zig plug -- and requiring the two to
-agree byte for byte. The same oracle discipline as `plug-oracle-test`,
-with the compiler's own front end as the subject.
+They all came out of one exercise, run as a ladder: for each compiler
+phase, bundle the chapters that implement it into a standalone subject
+with a dump harness, compile it two ways -- seed on bare metal as truth,
+and through the zig plug -- and require the two to agree byte for byte.
+The same oracle discipline as `plug-oracle-test`, with the compiler's own
+source as the subject. Five rungs pass today: lex, parse, desugar, scope
+and check, the last of them running `Types/TypeChecker.codex` and friends
+over a real chapter.
 
-Two of the three only appear once a plug carries more payload than plugs
-usually carry. Nothing here is exotic; it is ordinary code meeting a
-bigger input.
+Several of these only appear once a plug carries more payload than plugs
+usually carry, and the later ones only appear once a plug meets code the
+earlier rungs never reached. Nothing here is exotic; it is ordinary code
+meeting a bigger input.
 
 ## 1. `net-recv-raw` truncates odd-length frames
 
@@ -170,3 +173,95 @@ a zig error, not a codex one.
 Offered as a diagnostic suggestion rather than a bug: an unreachable-arm
 warning would have caught this, and the compiler already has the arm list
 in hand where it checks exhaustiveness.
+
+## 6. `lift-lambdas` exists, and runs after the plug wire is written
+
+`codex/compiler/IR/LambdaLifting.codex` is a complete lambda-lifting pass:
+
+```
+lift-lambdas        : IRChapter, Integer -> IRChapter
+FreeVar             = record { name : Text, type-val : CodexType }
+collect-free-vars   : IRExpr, SkipListText, SkipListText, List FreeVar -> List FreeVar
+build-lifted-params : List FreeVar, List IRParam -> List IRParam
+build-partial-app   : Text, CodexType, List FreeVar, Integer, Integer, SourceSpan -> IRExpr
+```
+
+It has one caller, `opening.codex:831`, in the `cdx-chapter` path with its
+own LIFT phase and deck budget. The plug path is `emit-ir-cce`, which runs
+`compile-frontend-ir` and the named IR pipeline and never reaches it. So
+the IR on the wire still contains lambdas that close over enclosing
+locals, and nothing in the plug interface says so.
+
+**What that cost here.** Zig admits a comptime constant into a nested
+function and refuses a runtime value, so
+`map-list (\a -> resolve-type-expr tdm a) args` cannot be emitted as
+written: `tdm` is a parameter of the definition around it. Getting the
+check rung green meant adding free-variable analysis to the zig emitter --
+a list of the names that are runtime locals of the function being emitted,
+threaded through definition parameters, let bindings, match binders and
+act bindings, intersected with the names each lambda body mentions, with a
+shadowing rule so a lambda parameter that hides an enclosing local is not
+mistaken for a capture.
+
+Almost none of that was necessary. `lift-lambdas` rewrites the use site as
+a **partial application** of the lifted definition, and this plug already
+handled partial application -- `zig-closure-make` builds the environment
+struct and the trampoline, and predates this work. Lifted IR would have
+arrived in a form the plug already knew how to emit.
+
+`FreeVar` also carries `type-val`. The plug has no equivalent, so each
+capture's field type is `@TypeOf` of the value hoisted outside the
+environment struct, because read from within it the enclosing local is
+exactly what zig will not name. That works, but it is a workaround for
+type information this pass already computes.
+
+**Not a request to move it.** Lifting is a pessimization for any target
+that has closures, which is most of them: C#, JS, Haskell, Clojure and
+Elixir all want the lambda to stay a lambda. Running it before the fork
+would make the primary consumers worse to make the tertiary ones simpler.
+Opt-in is the right shape, and the mechanism for that already exists and
+is already used for a plug:
+
+```
+default-ir-pipeline   = ["fold-constants", "inline-leaf-calls", "inline-single-caller"]
+text-plug-ir-pipeline = ["fold-constants"]
+```
+
+`lift-lambdas` is a phase with its own deck budget rather than a
+registrable pass, so this is not a one-line change. But `passes=` is
+already the place where a plug says which transforms it wants.
+
+**The smaller export may be the better one.** This plug never wanted
+lifting. It kept each lambda where it was and only needed to know the
+lambda's free variables and their types. A plug targeting C would want the
+whole pass; a plug targeting a language with closures wants neither;
+this one wanted only the query. `collect-free-vars` is cheaper to expose
+than `lift-lambdas` and serves more targets.
+
+Offered as an observation with a measurement attached rather than a
+request. "Tertiary plugs pay this, that is the deal" is a legitimate
+answer.
+
+## 7. There is no `IRExpr` map or fold, so every plug rewrites the walk
+
+`Types/CodexTypeTree.codex` gives `codex-type-map-children` and
+`codex-type-fold-children`, and consumers build on those instead of
+re-enumerating the type constructors. `IRExpr` has no equivalent, so a plug
+that needs to ask anything about an IR subtree enumerates all 24 of them
+itself. This one has `zig-occurs`, a 24-arm `when` answering "does this
+expression mention this name", used to decide whether a `let` binding is
+dead, whether a parameter needs a discard, and which names a lambda
+captures. Finding 6's free-variable analysis is built on it.
+
+Stated as duplication rather than as a bug, because we went looking for the
+obvious hazard and did not find it. The one arm in `zig-occurs` that does
+not descend fully is `IrHandle`, which skips its clauses -- and this plug
+also drops handler clauses at emission, so the walk is consistent with the
+feature being unimplemented rather than with an oversight. `IrTry` and
+`IrWithTimeout` looked like gaps at first glance and are not: their first
+fields are `Integer`, not `IRExpr`.
+
+So the cost we can demonstrate is only that the walk had to be written, not
+that writing it went wrong. Worth weighing against the fact that the
+precedent for the fix is already in the tree: the type tree got its map and
+fold, and the IR did not.
