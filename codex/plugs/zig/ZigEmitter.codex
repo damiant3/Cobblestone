@@ -1039,6 +1039,19 @@ Section: Expression Emission
    if i >= list-length fs then False
    else zig-occurs ((list-at fs i).value) n | zig-occurs-fields fs (i + 1) n
 
+ A handled effect emits its body and NOTHING ELSE, which is right only
+ while there are no clauses to run: a handle with clauses that emits just
+ its body is a different program that compiles, the same trap IrVecPat set
+ when an unimplemented pattern rendered as a catch-all. With clauses it
+ refuses by name instead. This one is latent -- no subject in the ladder
+ reaches an effect handler yet -- and it is written down now because the
+ cost of finding it later is a wrong answer rather than an error.
+
+ IrWithTimeout, IrFork and IrAwait below drop a timeout, a fork and a wait
+ the same way. They are left alone deliberately: running the body inline is
+ a defensible reading of each for a single-threaded target, where dropping
+ a clause that was written to run is not.
+
   emit-zig-expr : IRExpr, ZigCtx, Integer -> Text
   emit-zig-expr (e) (ctx) (d) =
    if d >= zig-max-depth then "undefined"
@@ -1061,7 +1074,7 @@ Section: Expression Emission
     is IrList (elems) (ty) (sp) -> emit-zig-list elems ty ctx d
     is IrMatch (scrut) (branches) (ty) (sp) -> emit-zig-match scrut branches ctx d ty
     is IrAct (stmts) (ty) (sp) -> emit-zig-act stmts ctx d (zig-type-is-void ty)
-    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-zig-expr body ctx (d + 1)
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> if list-length clauses == 0 then emit-zig-expr body ctx (d + 1) else "@compileError(\"zig plug: effect handlers not supported\")"
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-zig-expr body ctx (d + 1)
     is IrRecord (name) (fields) (ty) (sp) -> emit-zig-record name fields ctx d (zig-ctor-type-args ty)
     is IrFieldAccess (rec) (field) (ty) (sp) -> emit-zig-expr rec ctx (d + 1) & "." & zig-field-name field
