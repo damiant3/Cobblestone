@@ -556,6 +556,8 @@ Section: Builtin Emitter
     ZigBuiltinEmitter { name = "list-length", emit = \args ctx d ty -> "cx_list_len(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "list-at", emit = \args ctx d ty -> "cx_list_at(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "list-push", emit = \args ctx d ty -> "cx_ll_push(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "list-insert-at", emit = \args ctx d ty -> "cx_ll_insert_at(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "char-to-text", emit = \args ctx d ty -> "cx_char_to_text(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__linked-list-empty", emit = \args ctx d ty -> "cx_ll_empty(" & zig-ll-elem ty & ")" },
     ZigBuiltinEmitter { name = "__linked-list-push", emit = \args ctx d ty -> "cx_ll_push(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__linked-list-to-list", emit = \args ctx d ty -> emit-zig-expr (list-at args 0) ctx (d + 1) },
@@ -869,7 +871,7 @@ Section: Expression Emission
      else if zig-occurs body name then zig-label d & ": { const " & zig-sanitize name & " = " & emit-zig-expr val ctx (d + 1) & "; break :" & zig-label d & " " & emit-zig-expr body ctx (d + 1) & "; }"
      else zig-label d & ": { _ = " & emit-zig-expr val ctx (d + 1) & "; break :" & zig-label d & " " & emit-zig-expr body ctx (d + 1) & "; }"
     is IrApply (f) (a) (ty) (sp) -> emit-zig-apply e ctx d
-    is IrLambda (params) (body) (ty) (sp) -> "struct { fn call(" & emit-zig-lambda-params params 0 & ") " & emit-zig-type (zig-peel-return ty (list-length params)) & " { return " & emit-zig-expr body ctx 0 & "; } }.call"
+    is IrLambda (params) (body) (ty) (sp) -> "struct { fn call(" & emit-zig-lambda-params params 0 ty & ") " & emit-zig-type (zig-peel-return ty (list-length params)) & " { return " & emit-zig-expr body ctx 0 & "; } }.call"
     is IrList (elems) (ty) (sp) -> emit-zig-list elems ty ctx d
     is IrMatch (scrut) (branches) (ty) (sp) -> emit-zig-match scrut branches ctx d
     is IrAct (stmts) (ty) (sp) -> emit-zig-act stmts ctx d (zig-type-is-void ty)
@@ -922,13 +924,30 @@ Section: Expression Emission
 
 Section: Lambda and List Helpers
 
-  emit-zig-lambda-params : List IRParam, Integer -> Text
-  emit-zig-lambda-params (params) (i) =
+ A synthesized lambda -- every `for` expression becomes one, since the
+ desugarer rewrites `for` into map-list -- carries no useful type on its
+ parameters, so reading p.type-val emits anyopaque, which zig refuses as a
+ parameter type outright. The lambda's OWN type is the function type, so
+ its spine has the answer; the parameter annotation is only the fallback.
+
+  zig-lambda-param-type : CodexType, Integer, IRParam -> Text
+  zig-lambda-param-type (ty) (i) (p) =
+   let fromty = zig-fn-nth-param ty i
+   in if text-length fromty > 0 then fromty else emit-zig-type (p.type-val)
+
+  zig-fn-nth-param : CodexType, Integer -> Text
+  zig-fn-nth-param (ty) (i) =
+   when zig-fn-spine ty
+    is FunTy (p) (fnrow) (r) -> if i == 0 then emit-zig-type p else zig-fn-nth-param r (i - 1)
+    is otherwise -> ""
+
+  emit-zig-lambda-params : List IRParam, Integer, CodexType -> Text
+  emit-zig-lambda-params (params) (i) (ty) =
    if i == list-length params then ""
    else let p = list-at params i
-   in let one = zig-sanitize (p.name) & ": " & emit-zig-type (p.type-val)
+   in let one = zig-sanitize (p.name) & ": " & zig-lambda-param-type ty i p
    in if i == list-length params - 1 then one
-   else one & ", " & emit-zig-lambda-params params (i + 1)
+   else one & ", " & emit-zig-lambda-params params (i + 1) ty
 
  A literal with elements carries its own answer: the first element's type
  is what the list holds, and it needs no context at all. The annotation
@@ -1398,6 +1417,8 @@ Section: Chapter Emission
    & "fn cx_ll_of(comptime T: type, vs: []const T) *CxList(T) {\n    const l = cx_ll_empty(T);\n    l.items.appendSlice(std.heap.page_allocator, vs) catch @panic(\"oom\");\n    return l;\n}\n"
    & "fn cx_ll_concat(a: anytype, b: @TypeOf(a)) @TypeOf(a) {\n    const c = cx_new(@TypeOf(a.*){ .items = .empty });\n    c.items.appendSlice(std.heap.page_allocator, a.items.items) catch @panic(\"oom\");\n    c.items.appendSlice(std.heap.page_allocator, b.items.items) catch @panic(\"oom\");\n    return c;\n}\n"
    & "fn cx_ll_cons(v: anytype, l: anytype) @TypeOf(l) {\n    const c = cx_new(@TypeOf(l.*){ .items = .empty });\n    c.items.append(std.heap.page_allocator, v) catch @panic(\"oom\");\n    c.items.appendSlice(std.heap.page_allocator, l.items.items) catch @panic(\"oom\");\n    return c;\n}\n"
+   & "fn cx_ll_insert_at(l: anytype, i: i64, v: anytype) @TypeOf(l) {\n    const c = cx_new(@TypeOf(l.*){ .items = .empty });\n    c.items.appendSlice(std.heap.page_allocator, l.items.items) catch @panic(\"oom\");\n    c.items.insert(std.heap.page_allocator, @intCast(i), v) catch @panic(\"oom\");\n    return c;\n}\n"
+   & "fn cx_char_to_text(c: i64) []const u8 {\n    const b = std.heap.page_allocator.alloc(u8, 1) catch @panic(\"oom\");\n    b[0] = @intCast(c);\n    return b;\n}\n"
    & "fn cx_list_len(l: anytype) i64 {\n    return @intCast(l.items.items.len);\n}\n"
    & "fn cx_list_at(l: anytype, i: i64) @TypeOf(l.items.items[0]) {\n    return l.items.items[@intCast(i)];\n}\n"
    & "fn cx_text_len(s: []const u8) i64 {\n    return @intCast(s.len);\n}\n"
