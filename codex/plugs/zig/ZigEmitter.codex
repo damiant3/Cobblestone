@@ -101,6 +101,39 @@ Section: Type Mapping
    in if i == list-length ps - 1 then one
       else one & ", " & zig-tparam-params ps (i + 1)
 
+ Definitions and calls are both flattened -- `fn f(a, b) T`, `f(x, y)` --
+ so a function TYPE has to flatten the same way. Emitting the curried
+ `fn (A) fn (B) T` here made every higher-order value disagree with the
+ function it actually named, which zig only noticed once the generic types
+ made these signatures concrete enough to compare. Only the spine flattens:
+ a parameter that is itself a function keeps its own shape.
+
+  emit-zig-fn-type : CodexType -> Text
+  emit-zig-fn-type (ty) =
+   "*const fn (" & zig-fn-param-types ty & ") " & emit-zig-type (zig-fn-result ty)
+
+  zig-fn-spine : CodexType -> CodexType
+  zig-fn-spine (ty) =
+   when ty
+    is EffectfulTy (effs) (scopes) (inner) -> zig-fn-spine inner
+    is ForAllEff (c) (inner) -> zig-fn-spine inner
+    is otherwise -> ty
+
+  zig-fn-param-types : CodexType -> Text
+  zig-fn-param-types (ty) =
+   when zig-fn-spine ty
+    is FunTy (p) (fnrow) (r) ->
+     let rest = zig-fn-param-types r
+     in if text-length rest == 0 then emit-zig-type p
+        else emit-zig-type p & ", " & rest
+    is otherwise -> ""
+
+  zig-fn-result : CodexType -> CodexType
+  zig-fn-result (ty) =
+   when zig-fn-spine ty
+    is FunTy (p) (fnrow) (r) -> zig-fn-result r
+    is otherwise -> zig-fn-spine ty
+
   emit-zig-type : CodexType -> Text
   emit-zig-type (ty) =
    when ty
@@ -118,7 +151,7 @@ Section: Type Mapping
     is LinkedListTy (elem) -> "*CxList(" & emit-zig-type elem & ")"
     is VectorTy (vn) (vt) -> "@Vector(" & show vn & ", " & emit-zig-type vt & ")"
     is VectorMaskTy (vn) -> "@Vector(" & show vn & ", bool)"
-    is FunTy (p) (fnrow) (r) -> "*const fn (" & emit-zig-type p & ") " & emit-zig-type r
+    is FunTy (p) (fnrow) (r) -> emit-zig-fn-type ty
     is EffectfulTy (effs) (scopes) (inner) -> emit-zig-type inner
     is ForAllEff (c) (inner) -> emit-zig-type inner
     is RecordTy (n) (a) (f) -> zig-sanitize (n.value)
@@ -130,6 +163,23 @@ Section: Type Mapping
  Record fields and ctor payloads are declared as ATypeExpr in the type
  defs the plug receives, so they get their own mapping onto the same
  zig names emit-zig-type produces.
+
+  zig-afn-param-types : ATypeExpr -> Text
+  zig-afn-param-types (te) =
+   when te
+    is AFunType (p) (r) (s) ->
+     let rest = zig-afn-param-types r
+     in if text-length rest == 0 then emit-zig-atype p
+        else emit-zig-atype p & ", " & rest
+    is AEffectType (effs) (scopes) (tail) (ret) (s) -> zig-afn-param-types ret
+    is otherwise -> ""
+
+  zig-afn-result : ATypeExpr -> ATypeExpr
+  zig-afn-result (te) =
+   when te
+    is AFunType (p) (r) (s) -> zig-afn-result r
+    is AEffectType (effs) (scopes) (tail) (ret) (s) -> zig-afn-result ret
+    is otherwise -> te
 
   emit-zig-atype : ATypeExpr -> Text
   emit-zig-atype (te) =
@@ -146,7 +196,7 @@ Section: Type Mapping
       is otherwise -> "anyopaque"
     is ABoundedIntType (b) (lo) (hi) (mode) (s) -> "i64"
     is AEffectType (effs) (scopes) (tail) (ret) (s) -> emit-zig-atype ret
-    is AFunType (p) (r) (s) -> "*const fn (" & emit-zig-atype p & ") " & emit-zig-atype r
+    is AFunType (p) (r) (s) -> "*const fn (" & zig-afn-param-types te & ") " & emit-zig-atype (zig-afn-result te)
     is ALinearType (inner) (s) -> emit-zig-atype inner
     is otherwise -> "anyopaque"
 
