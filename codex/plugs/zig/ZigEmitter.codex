@@ -222,7 +222,7 @@ Section: Type Mapping
       is ANamedType (bn) (bs) ->
        if (bn.value == "List") | (bn.value == "LinkedList")
        then "*CxList(" & emit-zig-atype (list-at args 0) & ")"
-       else zig-sanitize (bn.value)
+       else zig-sanitize (bn.value) & zig-atype-args args
       is otherwise -> "anyopaque"
     is ABoundedIntType (b) (lo) (hi) (mode) (s) -> "i64"
     is AEffectType (effs) (scopes) (tail) (ret) (s) -> emit-zig-atype ret
@@ -336,6 +336,23 @@ Section: Constructor Map
    when e
     is IrList (elems) (ty) (sp) -> list-length elems == 0
     is otherwise -> False
+
+ A generic type is a function from types to a type, so naming one in a
+ declaration has to apply it: a field of `Maybe Def` is Maybe(Def), not
+ Maybe. Dropping the arguments here is what left record fields declared as
+ the function rather than the type.
+
+  zig-atype-args : List ATypeExpr -> Text
+  zig-atype-args (args) =
+   if list-length args == 0 then ""
+   else "(" & zig-atype-args-loop args 0 & ")"
+
+  zig-atype-args-loop : List ATypeExpr, Integer -> Text
+  zig-atype-args-loop (args) (i) =
+   if i == list-length args then ""
+   else let one = emit-zig-atype (list-at args i)
+   in if i == list-length args - 1 then one
+      else one & ", " & zig-atype-args-loop args (i + 1)
 
   zig-atype-ll-elem : ATypeExpr -> Text
   zig-atype-ll-elem (te) =
@@ -597,7 +614,7 @@ Section: Name Mapping
    in if ci >= 0 then
     let c = list-at (ctx.ctors) ci
     in if c.enum-like then zig-sanitize (c.type-name) & "." & zig-sanitize n
-       else zig-sanitize (c.type-name) & "{ ." & zig-sanitize n & " = {} }"
+       else zig-sanitize (c.type-name) & zig-ctor-type-args ty & "{ ." & zig-sanitize n & " = {} }"
    else if lookup-arity (ctx.arities) n == 0 then zig-sanitize n & "()"
    else if lookup-arity (ctx.arities) n >= 1 & zig-fn-param-count ty >= 1
    then zig-closure-make n [] ctx d ty
@@ -948,23 +965,68 @@ Section: Record Emission
 
 Section: Match Emission
 
+ Codex allows a catch-all after every constructor has been named; zig
+ rejects the else prong as unreachable once the switch is exhaustive. When
+ the arms already cover the union the catch-all is dropped, which is
+ semantics-preserving precisely because it cannot be reached. Miscounting
+ costs a non-exhaustive-switch error rather than a wrong program.
+
+  zig-type-name-of : CodexType -> Text
+  zig-type-name-of (ty) =
+   when ty
+    is SumTy (n) (a) (c) -> n.value
+    is ConstructedTy (n) (a) -> n.value
+    is EffectfulTy (effs) (scopes) (inner) -> zig-type-name-of inner
+    is otherwise -> ""
+
+  zig-variant-ctor-count : List ATypeDef, Integer, Text -> Integer
+  zig-variant-ctor-count (tds) (i) (name) =
+   if i >= list-length tds then 0
+   else when (list-at tds i)
+    is AVariantTypeDef (nm) (tparams) (ctors) (s) ->
+     if nm.value == name then list-length ctors
+     else zig-variant-ctor-count tds (i + 1) name
+    is otherwise -> zig-variant-ctor-count tds (i + 1) name
+
+  zig-count-ctor-pats : List IRBranch, Integer -> Integer
+  zig-count-ctor-pats (bs) (i) =
+   if i >= list-length bs then 0
+   else let inc = when ((list-at bs i).pattern)
+     is IrCtorPat (name) (subs) (ty) (sp) -> 1
+     is otherwise -> 0
+   in inc + zig-count-ctor-pats bs (i + 1)
+
+  zig-match-exhaustive : ZigCtx, CodexType, List IRBranch -> Boolean
+  zig-match-exhaustive (ctx) (ty) (branches) =
+   let n = zig-variant-ctor-count (ctx.typedefs) 0 (zig-type-name-of ty)
+   in if n == 0 then False else zig-count-ctor-pats branches 0 >= n
+
   emit-zig-match : IRExpr, List IRBranch, ZigCtx, Integer -> Text
   emit-zig-match (scrut) (branches) (ctx) (d) =
-   "switch (" & emit-zig-expr scrut ctx (d + 1) & zig-match-deref ctx (zig-expr-type scrut) & ") { " & emit-zig-match-arms branches 0 ctx d & " }"
+   let ex = zig-match-exhaustive ctx (zig-expr-type scrut) branches
+   in "switch (" & emit-zig-expr scrut ctx (d + 1) & zig-match-deref ctx (zig-expr-type scrut) & ") { " & emit-zig-match-arms branches 0 ctx d ex & " }"
 
-  emit-zig-match-arms : List IRBranch, Integer, ZigCtx, Integer -> Text
-  emit-zig-match-arms (branches) (i) (ctx) (d) =
+  emit-zig-match-arms : List IRBranch, Integer, ZigCtx, Integer, Boolean -> Text
+  emit-zig-match-arms (branches) (i) (ctx) (d) (ex) =
    if i == list-length branches then ""
    else let b = list-at branches i
-   in emit-zig-match-arm (b.pattern) (b.body) ctx d & emit-zig-match-arms branches (i + 1) ctx d
+   in emit-zig-match-arm (b.pattern) (b.body) ctx d ex & emit-zig-match-arms branches (i + 1) ctx d ex
 
  Constructor arms bind payloads: one field binds by name directly; a
  tuple payload binds `_p<d>` and unpacks into consts inside a labeled
  block so the arm body sees its pattern variables.
 
-  emit-zig-match-arm : IRPat, IRExpr, ZigCtx, Integer -> Text
-  emit-zig-match-arm (pat) (body) (ctx) (d) =
+  zig-pat-is-catch-all : IRPat -> Boolean
+  zig-pat-is-catch-all (pat) =
    when pat
+    is IrVarPat (name) (ty) (sp) -> True
+    is IrWildPat (sp) -> True
+    is otherwise -> False
+
+  emit-zig-match-arm : IRPat, IRExpr, ZigCtx, Integer, Boolean -> Text
+  emit-zig-match-arm (pat) (body) (ctx) (d) (ex) =
+   if ex & zig-pat-is-catch-all pat then ""
+   else when pat
     is IrLitPat (text) (ty) (sp) -> text & " => " & emit-zig-expr body ctx (d + 1) & ", "
     is IrCtorPat (name) (subs) (ty) (sp) ->
      let nsubs = list-length subs
