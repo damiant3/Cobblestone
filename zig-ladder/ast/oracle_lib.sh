@@ -22,6 +22,9 @@ mode_flags() {
         lower) echo " decks=100" ;;
         fib)   echo " decks=100" ;;
         fibx)  echo " decks=160" ;;
+        # Same bundle as fibx -- the subject differs only by the 19KB of CCE
+        # riding in its Text literal -- so it needs the same deck scale.
+        scale) echo " decks=160" ;;
         # passes=text-plug drops the inline passes. Passes.codex says why in
         # so many words: "A plug that emits SOURCE resolves a call by its
         # name, so a pass that substitutes a body and deletes the call
@@ -162,7 +165,7 @@ ring_arm() {
 # asks here rather than carrying a list of its own.
 arm_for() {
     case "$1" in
-        fibx) echo ring_arm ;;
-        *)    echo zig_arm ;;
+        fibx|scale) echo ring_arm ;;
+        *)          echo zig_arm ;;
     esac
 }
