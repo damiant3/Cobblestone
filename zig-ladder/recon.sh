@@ -19,7 +19,7 @@ python3 - "$R" <<'PY'
 import sys
 r = sys.argv[1]
 src = open(f'{r}/Codex.codex', 'rb').read()
-open(f'{r}/compiler-ir.blob', 'wb').write(b"IR-CCE\n" + src + b"\x04")
+open(f'{r}/compiler-ir.blob', 'wb').write(b"IR-CCE passes=text-plug\n" + src + b"\x04")
 print(f"blob: {len(src)} bytes of source")
 PY
 
