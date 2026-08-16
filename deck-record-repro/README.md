@@ -1,4 +1,4 @@
-# Seven findings, runnable from this branch
+# Eight findings, runnable from this branch
 
 NOT FOR MERGE -- this directory exists so the findings are runnable; drop
 it whenever. The zig-plug changes in this PR and the `net-recv-raw` fix
@@ -265,3 +265,68 @@ So the cost we can demonstrate is only that the walk had to be written, not
 that writing it went wrong. Worth weighing against the fact that the
 precedent for the fix is already in the tree: the type tree got its map and
 fold, and the IR did not.
+
+## 8. passes=text-plug changes the IR's type vocabulary, and nothing says so
+
+`IR/Passes.codex` tells a plug that emits SOURCE to drop the inline passes,
+and says why in so many words:
+
+```
+ A plug that emits SOURCE resolves a call by its name, so a pass that
+ substitutes a body and deletes the call deletes the plug's only handle on
+ it. The inline passes are therefore absent here and must stay absent.
+
+  text-plug-ir-pipeline : List Text
+  text-plug-ir-pipeline = ["fold-constants"]
+```
+
+Good advice, and taking it changes more than which calls survive. It changes
+which TYPE CONSTRUCTORS reach the wire.
+
+`probe-forall-sort.codex` in this directory is the reproducer: bundle it
+with `codex/foreword/core/Sort.codex` and nothing else, compile IR-CCE, and
+read the def. Compile the same `sort-by` inside a large unit under each
+pipeline and the definition's type differs:
+
+```
+default-ir-pipeline    (fn (list (tvar 51)) (fn ... (list (tvar 51))))
+text-plug-ir-pipeline  (forall 51 (fn (list (tvar 51)) (fn ... (list (tvar 51)))))
+```
+
+With the inline passes on, a polymorphic definition arrives already
+specialised and its quantifier is gone. With them off it arrives quantified,
+and `ForAllTy` appears on the wire where the machine-code plugs reading the
+same IR-CCE never see it.
+
+**What it cost us.** This plug handled `ForAllEff`, the effect-level
+quantifier, in eight places, and `ForAllTy` in none -- so a quantified type
+had no arrows to count, could not be peeled to find a return type, and had
+no zig rendering at all. It surfaced as `sort-by` emitted with return type
+`void` around a body returning a list, three phases away from the cause, and
+only because zig objected to the mismatch. Six milestones had passed on the
+default pipeline without ever meeting the constructor.
+
+That is our defect to fix and we have fixed it. The finding is that nothing
+warns a plug author this is coming. The prose above is careful to say the
+inline passes matter to a source plug; it does not mention that following
+the advice widens the type vocabulary the plug must handle. A plug developed
+and tested against the default pipeline is not tested against the IR it will
+actually receive once it does the recommended thing.
+
+Worth a look across the fleet: any plug that emits source, uses
+`text-plug-ir-pipeline`, and has no `ForAllTy` arm has the same hole. The
+symptom is not a crash but a wrong type, which is the kind that travels.
+
+Two smaller notes from the same trail, neither demonstrated to have fired,
+both offered only as things we noticed:
+
+`lower-def` reads a definition's type with `lookup-type-bsearch types rn`,
+which answers `ErrorTy` from three separate paths -- empty list, position
+past the end, name mismatch at the position found -- and never distinguishes
+"no such binding" from "the binding is an error type". A definition that
+silently loses its type is hard to trace back from, as this one was.
+
+`zig-peel-return`'s analogue in any plug has the same shape: peeling N
+arrows off a type with fewer than N returns what is left rather than
+reporting the shortfall. Combined with the above, a missing type becomes a
+plausible wrong type rather than an error.

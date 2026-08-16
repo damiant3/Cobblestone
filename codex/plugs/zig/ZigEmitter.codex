@@ -135,10 +135,25 @@ Section: Type Mapping
   emit-zig-fn-type (ty) =
    zig-closure-type (zig-fn-param-count ty) (zig-fn-param-types ty) (emit-zig-type (zig-fn-result ty))
 
+ ForAllTy is the TYPE-level quantifier and this emitter handled only the
+ effect-level one. Every place ForAllEff is unwrapped below, ForAllTy has
+ to be unwrapped too, and it was unwrapped nowhere: a quantified type had
+ no arrows to count, could not be peeled, and had no zig rendering at all.
+ lower-def in the compiler does `strip-forall-ty full-type` for exactly
+ this reason -- the quantifier says which variables are bound, and the
+ shape underneath is the type.
+
+ It stayed invisible for eight rungs because the default IR pipeline
+ inlines, and an inlined definition arrives with its quantifier already
+ gone. Turning the inline passes off -- which Passes.codex says a plug
+ emitting SOURCE must do -- is what let a polymorphic definition reach the
+ plug still quantified, and sort-by was the first to arrive that way.
+
   zig-fn-spine : CodexType -> CodexType
   zig-fn-spine (ty) =
    when ty
     is EffectfulTy (effs) (scopes) (inner) -> zig-fn-spine inner
+    is ForAllTy (fid) (inner) -> zig-fn-spine inner
     is ForAllEff (c) (inner) -> zig-fn-spine inner
     is otherwise -> ty
 
@@ -176,6 +191,7 @@ Section: Type Mapping
     is VectorMaskTy (vn) -> "@Vector(" & show vn & ", bool)"
     is FunTy (p) (fnrow) (r) -> emit-zig-fn-type ty
     is EffectfulTy (effs) (scopes) (inner) -> emit-zig-type inner
+    is ForAllTy (fid) (inner) -> emit-zig-type inner
     is ForAllEff (c) (inner) -> emit-zig-type inner
     is RecordTy (n) (a) (f) -> zig-sanitize (n.value) & zig-type-args a
     is SumTy (n) (a) (c) -> zig-sanitize (n.value) & zig-type-args a
@@ -209,6 +225,7 @@ Section: Type Mapping
     is ListTy (elem) -> zig-tvar-ids elem acc
     is LinkedListTy (elem) -> zig-tvar-ids elem acc
     is EffectfulTy (effs) (scopes) (inner) -> zig-tvar-ids inner acc
+    is ForAllTy (fid) (inner) -> zig-tvar-ids inner acc
     is ForAllEff (c) (inner) -> zig-tvar-ids inner acc
     is ConstructedTy (n) (args) -> zig-tvar-ids-list args acc 0
     is SumTy (n) (args) (c) -> zig-tvar-ids-list args acc 0
@@ -230,6 +247,7 @@ Section: Type Mapping
    when decl
     is TypeVar (vid) -> if vid == id then emit-zig-type actual else ""
     is EffectfulTy (e) (s) (inner) -> zig-tvar-in id inner actual
+    is ForAllTy (fid) (inner) -> zig-tvar-in id inner actual
     is ForAllEff (c) (inner) -> zig-tvar-in id inner actual
     is ListTy (elem) -> zig-tvar-in-elem id elem actual
     is LinkedListTy (elem) -> zig-tvar-in-elem id elem actual
@@ -304,6 +322,7 @@ Section: Type Mapping
   zig-peel-return (ty) (n) =
    when ty
     is EffectfulTy (effs) (scopes) (inner) -> zig-peel-return inner n
+    is ForAllTy (fid) (inner) -> zig-peel-return inner n
     is ForAllEff (c) (inner) -> zig-peel-return inner n
     is FunTy (p) (fnrow) (r) -> if n <= 0 then ty else zig-peel-return r (n - 1)
     is otherwise -> ty
@@ -315,6 +334,7 @@ Section: Type Mapping
     is NothingTy -> True
     is ProofTy -> True
     is EffectfulTy (effs) (scopes) (inner) -> zig-type-is-void inner
+    is ForAllTy (fid) (inner) -> zig-type-is-void inner
     is ForAllEff (c) (inner) -> zig-type-is-void inner
     is otherwise -> False
 
@@ -1696,6 +1716,7 @@ Section: Apply Emission
     is LinkedListTy (elem) -> LinkedListTy (zig-subst-tvar elem id with-ty)
     is FunTy (p) (fnrow) (r) -> FunTy (zig-subst-tvar p id with-ty) fnrow (zig-subst-tvar r id with-ty)
     is EffectfulTy (e) (s) (inner) -> EffectfulTy e s (zig-subst-tvar inner id with-ty)
+    is ForAllTy (fid) (inner) -> ForAllTy fid (zig-subst-tvar inner id with-ty)
     is ForAllEff (c) (inner) -> ForAllEff c (zig-subst-tvar inner id with-ty)
     is otherwise -> ty
 
@@ -1724,6 +1745,7 @@ Section: Apply Emission
    when decl
     is TypeVar (vid) -> if vid == id then actual else VoidTy
     is EffectfulTy (e) (s) (inner) -> zig-tvar-in-type id inner actual
+    is ForAllTy (fid) (inner) -> zig-tvar-in-type id inner actual
     is ForAllEff (c) (inner) -> zig-tvar-in-type id inner actual
     is ListTy (elem) -> zig-tvar-in-elem-type id elem actual
     is LinkedListTy (elem) -> zig-tvar-in-elem-type id elem actual
