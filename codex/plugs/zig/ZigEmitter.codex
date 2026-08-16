@@ -419,6 +419,7 @@ Section: Type Mapping
     is IrMatch (scrut) (branches) (ty) (sp) -> ty
     is IrRecord (name) (fields) (ty) (sp) -> ty
     is IrLet (n) (ty) (v) (b) (sp) -> zig-expr-type b
+    is IrList (es) (ty) (sp) -> ListTy ty
     is otherwise -> VoidTy
 
   zig-is-text-type : CodexType -> Boolean
@@ -694,6 +695,18 @@ Section: Builtin Emitter
     is LinkedListTy (elem) -> emit-zig-type elem
     is EffectfulTy (effs) (scopes) (inner) -> zig-ll-elem-opt inner
     is otherwise -> ""
+
+ An IrList's own annotation is already the element type, so it renders
+ directly. It answers "" for the two types that carry no information --
+ an unresolved variable and the void a missing annotation becomes -- so
+ the callers' own fallbacks still run.
+
+  zig-elem-annotation : CodexType -> Text
+  zig-elem-annotation (ty) =
+   when ty
+    is VoidTy -> ""
+    is TypeVar (vid) -> ""
+    is otherwise -> emit-zig-type ty
 
  __record-set names its field with a text literal, so the field is known
  here and becomes a real field access rather than anything dynamic. The
@@ -1525,9 +1538,17 @@ Section: Lambda and List Helpers
        else emit-zig-expr b ctx (d + 1)
    else emit-zig-expr b ctx (d + 1)
 
+ IrList CARRIES ITS ELEMENT TYPE, NOT ITS OWN TYPE. IRChapter's
+ `ir-expr-type` is the authority and says so: `is IrList (es) (t) (s)
+ -> ListTy t`. This read it as the list type and peeled a level off,
+ which is invisible for scalar elements -- peeling Integer answers
+ nothing, and the first-element fallback beneath it is right -- and
+ wrong by exactly one level for a list OF lists: `List (List Boolean)`
+ emitted as a list of bool. Six rungs never built one.
+
   emit-zig-list : List IRExpr, CodexType, ZigCtx, Integer -> Text
   emit-zig-list (elems) (ty) (ctx) (d) =
-   let annotated = zig-ll-elem-opt ty
+   let annotated = zig-elem-annotation ty
    in let et = if text-length annotated > 0 then annotated
       else if list-length elems > 0 then emit-zig-type (zig-expr-type (list-at elems 0))
       else let fromctx = zig-ll-elem-opt (ctx.expected)
@@ -2187,11 +2208,26 @@ Section: Apply Emission
    in if i == list-length args - 1 then one
       else one & ", " & emit-zig-ctor-args c args ctx d (i + 1)
 
+ An apply whose root is not a name applies a VALUE, and every function
+ value in this emitter is a closure struct -- so it is invoked through
+ the struct, not with zig's call syntax. `(e.emit) st args` was emitted
+ as `e.emit(st)(args)` and zig answered that a CxFn2 is not a function.
+ The root is bound once before the invoke: repeating a field access
+ twice would read it twice, and nothing here promises that is free.
+
+ The whole chain is applied at once, which is also what makes the
+ arities line up: a CxFn2's call takes both arguments together, where
+ the curried form asked for one and then called the result again.
+
   emit-zig-expr-curried : IRExpr, ZigCtx, Integer -> Text
   emit-zig-expr-curried (e) (ctx) (d) =
-   when e
-    is IrApply (f) (a) (ty) (sp) -> emit-zig-expr f ctx (d + 1) & "(" & emit-zig-expr a ctx (d + 1) & ")"
-    is otherwise -> emit-zig-expr e ctx (d + 1)
+   let chain = collect-apply-chain e []
+   in let args = chain.args
+   in if list-length args == 0 then emit-zig-expr (chain.root) ctx (d + 1)
+   else let fv = "_f" & integer-to-text d
+   in zig-label d & ": { const " & fv & " = " & emit-zig-expr (chain.root) ctx (d + 1)
+    & "; break :" & zig-label d & " " & fv & ".call(" & fv & ".ctx"
+    & zig-closure-args args ctx d 0 & "); }"
 
 Section: Definition Emission
 
@@ -2345,8 +2381,80 @@ Section: Definition Emission
    }
    in "fn " & name & "(" & all-params & ") " & ret & " {\n"
     & zig-untrusted-return-note d
+    & zig-eval-quota (d.body)
     & emit-zig-param-discards (d.params) 0 (d.body)
     & "    return " & emit-zig-expr (d.body) (zig-push-bound-params (zig-push-param-renames ctx (d.params) 0) (d.params) 0) 0 & ";\n}\n\n"
+
+ Zig evaluates an array literal's shape at comptime and gives up after
+ 1000 backwards branches. The builtins table is one literal of about
+ two hundred records, each holding a closure, and it blows that quota;
+ the failure is a compiler resource limit rather than anything about
+ the program, and zig's own answer to it is @setEvalBranchQuota.
+
+ The quota is raised in every definition holding a literal of 32
+ elements or more, not in every definition: the statement is only
+ meaningful where a comptime evaluation happens beneath it, and
+ emitting it everywhere would put a line nothing reads in front of
+ several thousand function bodies.
+
+  zig-eval-quota-floor : Integer = 32
+
+  zig-eval-quota : IRExpr -> Text
+  zig-eval-quota (body) =
+   if zig-max-list-len body < zig-eval-quota-floor then ""
+   else "    @setEvalBranchQuota(1000000);\n"
+
+ The walk mirrors zig-occurs: same nodes, same reason to visit them,
+ and the same consequence for a node it forgets -- here a quota that
+ stays default under a literal that needed it, which fails loudly at
+ zig compile time.
+
+  zig-max2 : Integer, Integer -> Integer
+  zig-max2 (a) (b) = if a >= b then a else b
+
+  zig-max-list-len : IRExpr -> Integer
+  zig-max-list-len (e) =
+   when e
+    is IrList (es) (ty) (sp) -> zig-max2 (list-length es) (zig-max-list-len-list es 0)
+    is IrBinary (op) (l) (r) (ty) (sp) -> zig-max2 (zig-max-list-len l) (zig-max-list-len r)
+    is IrNegate (o) (ty) (sp) -> zig-max-list-len o
+    is IrIf (c) (t) (el) (ty) (sp) -> zig-max2 (zig-max-list-len c) (zig-max2 (zig-max-list-len t) (zig-max-list-len el))
+    is IrLet (m) (ty) (v) (b) (sp) -> zig-max2 (zig-max-list-len v) (zig-max-list-len b)
+    is IrApply (f) (a) (ty) (sp) -> zig-max2 (zig-max-list-len f) (zig-max-list-len a)
+    is IrLambda (ps) (b) (ty) (sp) -> zig-max-list-len b
+    is IrMatch (s) (bs) (ty) (sp) -> zig-max2 (zig-max-list-len s) (zig-max-list-len-branches bs 0)
+    is IrAct (ss) (ty) (sp) -> zig-max-list-len-stmts ss 0
+    is IrTry (mx) (b) (fb) (fs) (ty) (sp) -> zig-max2 (zig-max-list-len-stmts b 0) (zig-max2 (zig-max-list-len-stmts fb 0) (zig-max-list-len-stmts fs 0))
+    is IrHandle (eff) (b) (cs) (ty) (sp) -> zig-max-list-len b
+    is IrWithTimeout (secs) (effs) (scopes) (b) (ty) (sp) -> zig-max-list-len b
+    is IrRecord (nm) (fs) (ty) (sp) -> zig-max-list-len-fields fs 0
+    is IrFieldAccess (r) (f) (ty) (sp) -> zig-max-list-len r
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> zig-max2 (zig-max-list-len r) (zig-max-list-len v)
+    is IrFork (b) (ty) (sp) -> zig-max-list-len b
+    is IrAwait (t) (ty) (sp) -> zig-max-list-len t
+    is otherwise -> 0
+
+  zig-max-list-len-list : List IRExpr, Integer -> Integer
+  zig-max-list-len-list (es) (i) =
+   if i >= list-length es then 0
+   else zig-max2 (zig-max-list-len (list-at es i)) (zig-max-list-len-list es (i + 1))
+
+  zig-max-list-len-branches : List IRBranch, Integer -> Integer
+  zig-max-list-len-branches (bs) (i) =
+   if i >= list-length bs then 0
+   else zig-max2 (zig-max-list-len ((list-at bs i).body)) (zig-max-list-len-branches bs (i + 1))
+
+  zig-max-list-len-stmts : List IRActStmt, Integer -> Integer
+  zig-max-list-len-stmts (ss) (i) =
+   if i >= list-length ss then 0
+   else zig-max2 (when (list-at ss i)
+    is IrDoBind (m) (ty) (v) (sp) -> zig-max-list-len v
+    is IrDoExec (x) (sp) -> zig-max-list-len x) (zig-max-list-len-stmts ss (i + 1))
+
+  zig-max-list-len-fields : List IRFieldVal, Integer -> Integer
+  zig-max-list-len-fields (fs) (i) =
+   if i >= list-length fs then 0
+   else zig-max2 (zig-max-list-len ((list-at fs i).value)) (zig-max-list-len-fields fs (i + 1))
 
  A parameter the body never mentions is a hard error in zig, not a warning,
  so a definition that ignores an argument needs the discard written out.
