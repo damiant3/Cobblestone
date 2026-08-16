@@ -1,0 +1,80 @@
+Chapter: AgentMsgTruncatedTest
+  cites Trust chapter TrustTransport
+  cites Trust chapter AgentProtocol
+  cites Net chapter MessageFraming
+
+ Track D item 3. Every decode-*-body in TrustTransport chains next-offset off a
+ peer-supplied length, and eight of them then read a tag, direction or flag byte
+ with a bare list-at rather than frame-byte-at. A body that ends before that
+ offset is an out-of-bounds index, which is a guest kill and not a bad answer.
+ Each row below drives decode-agent-msg with an EMPTY body for a tag whose
+ decoder reaches one of those reads. Row 1 is the positive control: a real
+ message encoded by this chapter's own encoder and decoded back.
+
+ Stopping the fault is only half of it, because a truncated body still decodes to
+ a message with empty fields and node-eval-msg puts that in front of eval-policy.
+ The valid flag is the refusal, and it has two independent halves that the four
+ ablations separate. Reverting frame-byte-at to list-at kills the guest !EXC=06
+ on row 2. Removing the round-trip check flips all six truncation rows to
+ valid=True and leaves the unknown-tag row refused. Removing the tag check flips
+ ONLY the unknown-tag row: workreply-tagged and unknown-tag-same-body are the
+ same bytes under two tags, so that pair isolates agent-tag-known and nothing
+ else, which matters because decode-agent-msg's final else silently decodes any
+ unrecognised tag as a WorkReply. Removing the hello checks flips the two hello
+ rows and nothing above them.
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+  msg-shape : AgentMessage -> Text
+  msg-shape (m) = when m
+    is MsgPropose (p) -> let c = p.capability in "propose id=" & show (list-length (p.id)) & " cap=" & c.name
+    is MsgDeny (d) -> "deny id=" & show (list-length (d.id))
+    is MsgExplain (e) -> "explain id=" & show (list-length (e.id))
+    is MsgHandoff (h) -> "handoff id=" & show (list-length (h.id))
+    is MsgInterrupt (i) -> "interrupt id=" & show (list-length (i.id))
+    is otherwise -> "other"
+
+Section: Body
+  amt-cap : Capability = Capability { name = "Net.Send", direction = 1, scope = "peer" }
+
+  amt-good : AgentMessage = MsgPropose (ProposeMsg { id = [7, 7, 7], from = AgentIdentity { public-key = [1] }, to = AgentIdentity { public-key = [2] }, capability = amt-cap, context = [], expires = 99, signature = [3, 3] })
+
+  amt-workreply : AgentMessage = MsgWorkReply (WorkReplyMsg { from = AgentIdentity { public-key = [5] }, hash = "abc", payload = "xy" })
+
+  amt-cut : List Integer, Integer -> List Integer
+  amt-cut (bs) (n) = frame-slice bs 0 n
+
+  opening : [Console] Nothing =
+    let good-body = encode-agent-msg-body amt-good
+    in let d-good = decode-agent-msg-checked (encode-agent-msg amt-good) good-body
+    in let d-propose = decode-agent-msg-checked tag-propose []
+    in let d-explain = decode-agent-msg-checked tag-explain []
+    in let d-handoff = decode-agent-msg-checked tag-handoff []
+    in let d-deny = decode-agent-msg-checked tag-deny []
+    in let d-interrupt = decode-agent-msg-checked tag-interrupt []
+    in let d-cut = decode-agent-msg-checked tag-propose (amt-cut good-body 12)
+    in let wr-body = encode-agent-msg-body amt-workreply
+    in let d-unknown = decode-agent-msg-checked tag-hello wr-body
+    in let d-wr = decode-agent-msg-checked tag-work-reply wr-body
+    in let hello-body = frame-encode-bytes [1, 2, 3] & frame-encode-bytes [4, 5] & frame-le32 9
+    in let h-good = decode-hello-body-checked hello-body
+    in let h-cut = decode-hello-body-checked (amt-cut hello-body 9)
+    in let h-nodiff = decode-hello-body-checked (amt-cut hello-body 13)
+    in act
+      print-line-uni ("good: valid=" & show-bool (d-good.valid) & " " & msg-shape (d-good.message))
+      print-line-uni ("propose-empty: valid=" & show-bool (d-propose.valid) & " " & msg-shape (d-propose.message))
+      print-line-uni ("explain-empty: valid=" & show-bool (d-explain.valid) & " " & msg-shape (d-explain.message))
+      print-line-uni ("handoff-empty: valid=" & show-bool (d-handoff.valid) & " " & msg-shape (d-handoff.message))
+      print-line-uni ("deny-empty: valid=" & show-bool (d-deny.valid) & " " & msg-shape (d-deny.message))
+      print-line-uni ("interrupt-empty: valid=" & show-bool (d-interrupt.valid) & " " & msg-shape (d-interrupt.message))
+      print-line-uni ("propose-cut12: valid=" & show-bool (d-cut.valid))
+      print-line-uni ("workreply-tagged: valid=" & show-bool (d-wr.valid))
+      print-line-uni ("unknown-tag-same-body: valid=" & show-bool (d-unknown.valid))
+      print-line-uni ("hello-good: valid=" & show-bool (h-good.valid))
+      print-line-uni ("hello-cut9: valid=" & show-bool (h-cut.valid))
+      print-line-uni ("hello-nolen: valid=" & show-bool (h-nodiff.valid))
+    end
+
+Page 1

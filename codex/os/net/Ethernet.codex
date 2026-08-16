@@ -116,12 +116,19 @@ Section: ARP
     }
 
 Section: IPv4
+ RFC 1071. The odd-tail arm is load-bearing and its absence was silent: this
+ steps by two and read-be16 ANSWERS ZERO rather than failing when off + 2 runs
+ past the end, so a final odd byte contributed nothing and the caller got a
+ wrong checksum with no error. A trailing byte is summed as the HIGH half of
+ its word, which is what the padding a caller would otherwise supply does.
+
   ip-checksum : List Integer, Integer, Integer, Integer -> Integer
   ip-checksum (hdr) (i) (len) (sum) =
     if i >= len then
       let folded = bit-and sum 65535 + bit-shru sum 16
       in let folded2 = bit-and folded 65535 + bit-shru folded 16
       in bit-and (bit-xor folded2 65535) 65535
+    else if i + 1 >= len then ip-checksum hdr (i + 1) len (sum + bit-shl (list-at hdr i) 8)
     else ip-checksum hdr (i + 2) len (sum + read-be16 hdr i)
 
  RFC 1071: the one's-complement sum of a range that INCLUDES the stored

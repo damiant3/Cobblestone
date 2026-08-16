@@ -4645,6 +4645,37 @@ static int gop_stride = 640;
    the visible width could not fail here. 0 means "follow the width", the
    behaviour before this option existed. */
 static int gop_stride_opt = 0;
+/* The GOP mode table the guest can QueryMode/SetMode. Modes 0..2 are fixed
+   (640x480, 800x600, 1024x768); mode 3 is the CLI-selected -gop-width x
+   -gop-height when it matches none of them, so a bed run at 1600x900 is a
+   firmware whose largest mode is what the display supports (real firmware
+   boots in the panel's native mode and lists it). Without mode 3 a stub that
+   SetModes the largest enumerated mode would shrink every -gop-width run to
+   1024x768 while doing the right thing on a board. -gop-max-mode N caps
+   MaxMode (1 = a firmware with nothing to enumerate: the fallback arm). */
+static int gop_cli_w = 0, gop_cli_h = 0;
+static int gop_max_mode_opt = 0;
+static int gop_mode_count(void) {
+    int n = 3;
+    if (gop_cli_w && !((gop_cli_w == 640 && gop_cli_h == 480) ||
+                       (gop_cli_w == 800 && gop_cli_h == 600) ||
+                       (gop_cli_w == 1024 && gop_cli_h == 768))) n = 4;
+    if (gop_max_mode_opt > 0 && gop_max_mode_opt < n) n = gop_max_mode_opt;
+    return n;
+}
+static int gop_mode_dims(int mode, int *w, int *h) {
+    if (mode == 0) { *w = 640;  *h = 480; return 1; }
+    if (mode == 1) { *w = 800;  *h = 600; return 1; }
+    if (mode == 2) { *w = 1024; *h = 768; return 1; }
+    if (mode == 3 && gop_mode_count() > 3) { *w = gop_cli_w; *h = gop_cli_h; return 1; }
+    return 0;
+}
+static int gop_mode_index(int w, int h) {
+    int i, mw, mh;
+    for (i = 0; i < gop_mode_count(); i++)
+        if (gop_mode_dims(i, &mw, &mh) && mw == w && mh == h) return i;
+    return 0;
+}
 static unsigned char *gop_fb = NULL;  /* host-side framebuffer copy for rendering */
 static HWND vga_hwnd;  /* forward decl -- defined in VGA section */
 
@@ -4912,8 +4943,9 @@ static void uefi_setup_tables(void *mem) {
     W64(0x700 + 16,  TRAP(UEFI_TRAP_GOP_BLT));
     W64(0x700 + 24,  UEFI_TABLE_PAGE + 0x780);
     /* GOP_MODE at 0xF0780 */
-    *(int *)(base + 0x780) = 3;   /* MaxMode */
-    *(int *)(base + 0x784) = 0;   /* Mode */
+    gop_cli_w = gop_width; gop_cli_h = gop_height;
+    *(int *)(base + 0x780) = gop_mode_count();   /* MaxMode */
+    *(int *)(base + 0x784) = gop_mode_index(gop_width, gop_height);   /* Mode */
     W64(0x788, UEFI_TABLE_PAGE + 0x7C0);  /* Info pointer */
     W64(0x790, 36);               /* SizeOfInfo */
     W64(0x798, GOP_FB_ADDR);      /* FrameBufferBase */
@@ -5117,6 +5149,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         if (uefi_conout_remode && gop_active) {
             gop_width = 1024; gop_height = 768; gop_stride = 1024;
             unsigned char *gm = (unsigned char *)guest_mem + UEFI_TABLE_PAGE;
+            *(int *)(gm + 0x784) = 2;   /* Mode: the console's own 1024x768 is mode 2 */
             *(int *)(gm + 0x7C4) = gop_width;
             *(int *)(gm + 0x7C8) = gop_height;
             *(int *)(gm + 0x7E0) = gop_stride;
@@ -5572,32 +5605,57 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         break;
 
     case UEFI_TRAP_GOP_QUERYMODE: {
+        /* QueryMode(This, ModeNumber, SizeOfInfo*, Info**). The info block
+           it hands back is a SCRATCH copy at +0x2C0, not the current mode's
+           block at +0x7C0: it used to write the queried geometry over the
+           current mode's Info, so a stub that enumerated modes and then
+           re-read Mode->Info without a SetMode saw the LAST QUERIED mode, not
+           the one on the glass. A mode past MaxMode is EFI_INVALID_PARAMETER,
+           which is what a stub's "on any failure fall through" has to see. */
         int mode_num = (int)rdx;
-        int w = 640, h = 480;
-        if (mode_num == 1) { w = 800; h = 600; }
-        else if (mode_num == 2) { w = 1024; h = 768; }
+        int w, h;
+        if (mode_num < 0 || mode_num >= gop_mode_count() || !gop_mode_dims(mode_num, &w, &h)) {
+            rax_result = 0x8000000000000002ULL; /* EFI_INVALID_PARAMETER */
+            break;
+        }
         if (r8 > 0 && r8 + 8 <= guest_mem_size) {
             unsigned long long sz = 36;
             memcpy((unsigned char *)guest_mem + r8, &sz, 8);
         }
         if (arg_vals[3].Reg64 > 0 && arg_vals[3].Reg64 + 8 <= guest_mem_size) {
-            unsigned long long info_addr = UEFI_TABLE_PAGE + 0x7C0;
+            unsigned long long info_addr = UEFI_TABLE_PAGE + 0x2C0;
             memcpy((unsigned char *)guest_mem + arg_vals[3].Reg64, &info_addr, 8);
         }
-        unsigned char *info = (unsigned char *)guest_mem + UEFI_TABLE_PAGE + 0x7C0;
+        unsigned char *info = (unsigned char *)guest_mem + UEFI_TABLE_PAGE + 0x2C0;
+        memset(info, 0, 36);
         *(int *)(info + 4) = w;
         *(int *)(info + 8) = h;
-        *(int *)(info + 32) = w;   /* PixelsPerScanLine at standard info offset +32 */
+        *(int *)(info + 12) = 1;   /* PixelFormat (BGR), as the current block reports */
+        *(int *)(info + 32) = gop_stride_opt > w ? gop_stride_opt : w;   /* PixelsPerScanLine */
         break;
     }
     case UEFI_TRAP_GOP_SETMODE: {
         int mode_num = (int)rdx;
-        gop_width = 640; gop_height = 480;
-        if (mode_num == 1) { gop_width = 800; gop_height = 600; }
-        else if (mode_num == 2) { gop_width = 1024; gop_height = 768; }
+        int w, h;
+        if (mode_num < 0 || mode_num >= gop_mode_count() || !gop_mode_dims(mode_num, &w, &h)) {
+            rax_result = 0x8000000000000002ULL; /* EFI_UNSUPPORTED would also do; the stub only tests non-zero */
+            break;
+        }
+        gop_width = w; gop_height = h;
         gop_stride = gop_stride_opt > gop_width ? gop_stride_opt : gop_width;
         gop_active = 1;
         if (!gop_fb) gop_fb = (unsigned char *)calloc(1, GOP_FB_SIZE);
+        /* Same defect as the VBE mode set (main 14494) and the oversized-disk
+           write: the startup path commits the framebuffer region only when
+           gop_active was set on the command line and only to the initial
+           mode's extent, so a SetMode from a guest that booted headless (or
+           into a smaller mode) memset reserved uncommitted address space and
+           the HOST faulted (0xC0000005) inside this trap. Measured
+           2026-08-15 with the stub's mode selection: -gop-width 800 and the
+           default bed both crashed the host at SetMode 2, while a bed already
+           at the target mode did not. Commit before the first write. */
+        guest_commit_range(0xBE000000ULL,
+            (GOP_FB_ADDR + (unsigned long long)((size_t)gop_stride * gop_height * 4)) - 0xBE000000ULL);
         unsigned char *gm = (unsigned char *)guest_mem + UEFI_TABLE_PAGE;
         *(int *)(gm + 0x784) = mode_num;
         *(int *)(gm + 0x7C4) = gop_width;
@@ -13433,6 +13491,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-uefi-strict")) { uefi_mode = 1; uefi_strict = 1; }
         else if (!strcmp(argv[i], "-gop")) { gop_active = 1; }
         else if (!strcmp(argv[i], "-gop-width") && i+1 < argc) { gop_width = atoi(argv[++i]); gop_stride = gop_width; gop_active = 1; }
+        else if (!strcmp(argv[i], "-gop-max-mode") && i+1 < argc) { gop_max_mode_opt = atoi(argv[++i]); }
         else if (!strcmp(argv[i], "-gop-height") && i+1 < argc) { gop_height = atoi(argv[++i]); gop_active = 1; }
         else if (!strcmp(argv[i], "-gop-stride") && i+1 < argc) { gop_stride_opt = atoi(argv[++i]); gop_active = 1; }
         else if (!strcmp(argv[i], "-args") && i+1 < argc) boot_args = argv[++i];
@@ -13471,7 +13530,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Usage: codex-vm -kernel file.cdx [-input file.codex] [-output file.cdx]\n"
                         "       [-disk file.img] [-mem MB] [-mem-nocap] [-args STRING]\n"
                         "       [-watch 0xADDR] [-watch-size N] [-headless] [-uefi] [-uefi-strict]\n"
-                        "       [-gop] [-gop-width N] [-gop-height N] [-gop-stride N] [-keys sc,sc,..]\n"
+                        "       [-gop] [-gop-width N] [-gop-height N] [-gop-stride N] [-gop-max-mode N] [-keys sc,sc,..]\n"
                         "       [-portfwd hostport:guestport] ...\n");
         return 1;
     }

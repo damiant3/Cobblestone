@@ -45,6 +45,10 @@ pwsh build\dump-usb.ps1 -DiskNumber 2 -Out D:\Projects\stick-archive\<what>-<yyy
 | `a5fix-returned-20260813.img` | `089DF895 2473E9F6 9E3A7EAA 225B6E3A FD54CD15 78D141F6 D9C1361A F1661A18` | the a5fix flight as it came back 2026-08-13 21:45: the MAGENTA stall whose DIAG lines read every volume field as 00FF00FF00FF00FF, two magenta pixels. Photographed; the account is in the a5fix entry. Dumped before `a5mem.img` went over it. |
 | `a5mem-returned-20260813.img` | `86C3DD60 FF710EC6 0B4973D8 BF13F626 C19A4EEA B61262F2 2F80F0F6 3EAAC5FD` | the a5mem instrument flight as it came back 2026-08-13: the run whose DIAG mem lines scrolled off the glass before the failure line landed. Dumped before `a5heap.img` went over it. |
 | `a5heap-returned-20260814.img` | `AC4AF338 76DDDD36 FA5C1550 09DC114B 6542A4DB 2083E465 1150271E 1489AED0` | the a5heap flight as it came back 2026-08-14 after seven-plus hours of ORANGE. Root holds SOURCE.SRC and **no OUT.CDX, no OUT.TXT**: the guest died before writing a byte, which is what the UD2-at-pitch diagnosis in the 2026-08-14 entry predicted. Dumped before `a5flight.img` went over it. |
+| `before-nicring-20260815.img` | `8203934F C5658197 064B0A13 76D7CE71 7F34984C AA23100F C7B03F89 B84BBBCF` | disk 2 read off by blu 2026-08-16 before `nicring.img` went over it. **Byte-identical to `nicinit-returned-20260815.img`**, which is correct rather than a duplicate: nothing flew between the two, so the NIC-3 answer is what `nicring.img` was flashed over. Recorded so the equal hashes are not re-derived. The NIC-4 flight that followed banked nothing, so there is no returned-stick row for it -- the glass entry below is its whole record. |
+| `nicinit-returned-20260815.img` | `8203934F C5658197 064B0A13 76D7CE71 7F34984C AA23100F C7B03F89 B84BBBCF` | THE NIC-3 ANSWER as it came back 2026-08-15. Carries `SH205457.BMP` (2,359,350 bytes), the F12 bank of the glass, which is where every figure in that flight's entry comes from -- the first NIC arm whose reading was banked rather than photographed. Volume clean on all four questions. |
+| `before-nicinit-20260815.img` | `C127DA97 2BF30B0E 83EBAE0F E72A82F9 C39CE629 5079718F 49043220 E65534BA` | **The 2026-08-14 NIC flight (`nicsitting.img`) as it came back**, read off disk 2 by blu on 08-15 before `nicinit.img` went over it. **The only copy, and it was never dumped at the time**: that flight banked nothing because the stick did not mount, so the photograph was the whole record until this. Matches no other row here. |
+| `before-nicsitting-20260814.img` | `5ED8A6D4 5343819A 545EA7A7 97682A81 84251F71 7254A96F 36BB018E E2160F99` | **The same image as `a5flight-returned-20260814.img` below, and that is correct rather than a duplicate**: the green A5 flight's returned stick is exactly what `nicsitting.img` was flashed over. Stated here so nobody re-derives it from two equal hashes. |
 | `a5flight-returned-20260814.img` | `5ED8A6D4 5343819A 545EA7A7 97682A81 84251F71 7254A96F 36BB018E E2160F99` | THE GREEN A5 FLIGHT as it came back 2026-08-14. Root holds `OUT.CDX` (2,790,018 bytes, `AB3A207EFB9279A6`, byte-identical to the host control) and `OUT.TXT` ("OK OUT.CDX 2790018"), both written by the compiler running on the ASUS. The account is in the 2026-08-14 entry. |
 
 **Why not `build-output/`, which is where everyone put them until now:**
@@ -116,8 +120,8 @@ same boot as the others says so and says why.
 |---|---|---|---|---|
 | ~~NIC-1~~ | **ANSWERED 2026-08-14: no. `RCTL=0` at handoff.** | blu | done | none, pure read |
 | ~~NIC-2~~ | **ANSWERED 2026-08-14: 32606 us per million, 2.50x the bed. The calibration transfers.** | blu | done; opened B5 | none, read and poll only |
-| NIC-3 | Does a frame actually move, in and out, on the real part? **FLOWN 2026-08-14, WEDGED IN `e1000-init`. Next arm prints INSIDE it, one row per wait loop.** | blu | B2c | writes rings, enables RX/TX |
-| NIC-4 | Can the stack hold a real TCP conversation with a real peer? | blu | B3, then B4 | as NIC-3 |
+| ~~NIC-3~~ | **ANSWERED 2026-08-15: `e1000-init` does NOT hang. It completes in 93 s, of which 92.9 are `e1000-await-aneg` burning its 1,000,000 fuel at 92.89 us per MDIO read. Aneg never reports done; the link is up anyway. `RDH` moved 0 to 15.** | blu | B2c | done |
+| NIC-4 | Can the stack hold a real TCP conversation with a real peer? | blu | B3, then B4 | as NIC-3. **Flew 2026-08-16 and hung in `e1000-await-link`; fixed in 15588, ring question unanswered.** Needs a rebuild against a seed carrying the fix before it flies again |
 | NIC-5 | What wedged the box on 2026-08-11? | blu | nothing; it is the one open unknown | terminal by construction |
 
 **Fly them in that order on one boot.** The order is not a preference: NIC-1
@@ -314,6 +318,306 @@ writes and which is firmware garbage in a UEFI tenant.
 **Cosmetic defect, open:** the success path paints the white hold band
 over the BUILD YAY footer text, so the verdict is unreadable on the
 glass at the end. The footer should print after the band or above it.
+
+## FLOWN 2026-08-16: `nicring.img` HUNG in `e1000-init`. The ring question is still open, and the hang was the previous flight's fix.
+
+**Three rows painted, then nothing for over ten minutes.** Verbatim from the
+glass, which is the whole record because the bank did not mount:
+
+```
+NIC RING PROBE -- do frames actually move
+no bank, mount stage 2 -- the glass is the reading
+arrival RCTL=0 RDT=0 hpet=23999999
+```
+
+The next thing after that row is `e1000-init`, so the stop is inside it. **No
+`dd=` map was ever painted, so NIC-4 answered nothing about the ring.** That
+question is exactly where `nicinit.img` left it.
+
+**F12 BANKED NOTHING and the row said so before the hang.** `mount stage 2`
+means the ESP never mounted, so `RING.TXT` and any BMP were never written. The
+photograph is the only artifact. That is the second flight in a row where the
+bank failed and the glass carried the result; treat `nrp-bank-line`'s row as
+load-bearing rather than decorative.
+
+### The cause, which is not what the arm went up to ask
+
+`e1000-await-link` had **no deadline at all** -- a bare count of four million
+`STATUS` reads. It had never shown, because `e1000-await-aneg` burned 92.9
+seconds ahead of it and the link came up during that dead time, so this loop
+was answered on its first pass.
+
+Re-reading NIC-3's own number settles why: `e1000-await-aneg` **returned 0**
+after its full million. Aneg-done is never set on this part, while `STATUS.LU`
+comes up anyway and the part negotiates 1000 Mb/s. The 92.9 seconds were never
+auto-negotiation succeeding. Budgeting aneg to 3 s (15463) removed the dead
+time, and the four-million count then ran against a part whose link was still
+settling.
+
+**Fixed, blu 15588.** `e1000-link-wait`, a 5-second HPET budget with the clock
+read once per 4096-poll batch, which is the pattern `e1000-await-tx-clocked`
+already used in the same chapter. The count survives as the no-HPET path.
+Worst-case `e1000-init` is now 3 s + 5 s. `-e1000-no-link` reaches the timeout
+branch on the desk, so `codex/test/e1000-link-deadline` reproduces the metal
+symptom without a flight: 8,037,305 us with the budget against 21,862,178 us
+with the count it replaced, ablated.
+
+**15463 is not reverted.** It was correct and the regression was the same
+lane's; the defect it exposed is older than it.
+
+### What the next boot needs
+
+The ring question is unchanged and still worth a boot, but it should ride B3's
+sitting rather than take one of its own. A rebuilt `nicring.img` against a seed
+carrying 15588 is the arm; **it has NOT been rebuilt or bed-verified since**, so
+the card below describes bytes that are now superseded.
+
+---
+
+## SUPERSEDED BY THE ABOVE -- the pre-flight card for `nicring.img`
+
+`nicinit.img` ended `INIT COMPLETE RDH=15 RDT=15` where the bed gives `RDH=0`,
+and two opposite readings fit: the receiver filled all sixteen descriptors, so
+frames DO move; or `RDH` is not writable on this part the way `CTRL` is not,
+and nothing arrived. That arm could not separate them and said so. **This one
+paints the descriptors, which nobody has done.**
+
+```powershell
+pwsh build/boot/build-option-a.ps1 -Src build/boot/diag/NicRingProbe.codex `
+     -Kernel seed/Codex.cdx -Ebs -Out build/boot/nicring.img
+```
+
+| | |
+|---|---|
+| image | `build/boot/nicring.img`, 16,777,216 bytes |
+| SHA-256 | `2D4414F4 B249B3BF 734901FB 31262F10 8187CB47 7569A463 1FE8892F F2308CCE` |
+| probe source SHA-256 | `3702C478 4B67288A E40B5B50 058A7ADC 00F37ADA 1CD884A1 EB7850D1 0155BF44` |
+| built against seed | `55983566E35F314D` |
+
+### What each row should say, written before it flies
+
+| row | bed | what metal tells you |
+|---|---|---|
+| `arrival` | `RCTL=0 RDH=0 RDT=0` | compare with 08-15: `RCTL=0`, and `RDH` was 15 at the END of that flight, not at arrival |
+| `init took` | 21,018 us | **the aneg fix, re-verified.** Near 3,000,000 confirms it; near 92,892,733 says it did not take |
+| `after-init dd=` | `0000000000000000 set=0` | any `1` means the hardware filled that descriptor |
+| `after-listen dd=` | `0000000000000000 set=0` | 1.2 s of promiscuous listening on a live segment |
+| `sent ARP accepted=` | 1 | the transmit descriptor completed |
+| `reader control` | `tx desc 0 status=1 dd=1 READER WORKS` | **if this says BROKEN, discard every `dd` row above it** |
+| `RDH was N, wrote 7, read back` | `7 WRITABLE` | if it reads back anything else, `RDH` never tracked reception and the 08-15 `RDH=15` was a mirage |
+
+**The two answers.** Any `dd=1` on metal means frames move and B3 opens. All
+zeros WITH the reader control saying WORKS means nothing was received, and then
+`RDH` writability says whether the earlier 15 meant anything at all.
+
+### Why the reader control exists, and what it cost to get
+
+A DD reader pointed at the wrong byte reports zeros exactly as an idle ring
+does, so `dd=0000...` on its own is unfalsifiable. **Two attempts to get a
+positive DD in the bed failed**: the first ARP asked 0.0.0.0 for 0.0.0.0, which
+nothing answers, and a proper ARP for the NAT gateway is not answered either.
+The TRANSMIT descriptor settles it -- same sixteen-byte layout, same status
+byte at offset 12, done in bit 0, and `e1000-send-frame` only answers 1 after
+the hardware has written it.
+
+### Bed rehearsal, three ways, on the exact flight bytes at 1024x768
+
+- **Positive**: every row paints, `END OF ROWS` reached.
+- **Reader control**: `tx desc 0 status=1 dd=1 READER WORKS`.
+- **Ablation**: the reader moved to offset 13 reports `status=0 dd=0 READER
+  BROKEN, every dd above is meaningless`, with every other row unmoved.
+
+**One defect found in the instrument itself and fixed before it flew.** The
+listen loop read `hpet-ticks` every poll at a fuel of four million; an HPET read
+is a VM exit, so the clock dominated and the bed run stopped mid-probe. That is
+`e1000-aneg-fuel`'s defect one level out, in the instrument rather than the
+driver. It polls in chunks of 512 between clock reads now. **`nsp-await-frame`
+in `NicSittingProbe` has the same shape and was not changed** -- it flew inside
+its budget, but on luck rather than design, and the next arm to reuse it should
+chunk it.
+
+## FLOWN 2026-08-15: `nicinit.img`. NIC-3 ANSWERED. `e1000-init` does NOT hang -- it takes 93 seconds, and 92.9 of them are one loop.
+
+**Banked, not transcribed.** `SH205457.BMP`, 2,359,350 bytes, read off the
+returned stick. Every figure below is off that image.
+
+```
+no bank, mount stage 2 (no EFI PART signature) -- the rows below are the reading
+eligible at 0:31.6 verdict=ok
+arrival RCTL=0 EN=n TCTL=805564664 EN=n
+arrival RDBAL=1551914016 RDLEN=0 RDH=0 RDT=0 hpet=23999999
+s1  pcien=0 ctrl=1573440 (RST discarded here)
+s2  await-reset   ret 1 in 13us
+s3  settle-mdio   ret 1 in 10044us
+s4  quiesce       ret 1 in 10043us
+s5  alloc         ret 0 in 13us
+s6  clear-mta     ret 0 in 47us
+s7  setup-rx      ret 0 in 14us macok=y
+s8  setup-tx      ret 0 in 14us
+s9  phy-bring-up  ret 0 in 92892733us      <- bed: ret 1 in 163us
+s10 await-link    ret 1 in 13us
+INIT COMPLETE RDH=15 RDT=15
+```
+
+**The 2026-08-14 wedge was not a wedge.** Every step returned. It was a
+93-second spin read as a hang, which is exactly what the duration rows were
+built to separate and the reason this arm prints them at all.
+
+### The arithmetic names the loop, and it is a class we have already closed once
+
+`e1000-phy-bring-up` can return 0 three ways: the BMCR reset write fails, the
+aneg write fails, or `e1000-await-aneg` exhausts `e1000-aneg-fuel`. Only the
+third fits the number. **92,892,733 / 1,000,000 = 92.89 us per iteration**, and
+one iteration is one `e1000-phy-read`, which is one MDIO transaction. That is
+the right order for a real 2.5 MHz MDIO bus; a single `e1000-await-mdic`
+burning its 100,000 fuel would need 929 us per MMIO read, which is not.
+
+**So `e1000-aneg-fuel` is the poll-count-as-duration defect again**, in the
+e1000 driver rather than in `NetIO` where it was closed at main 15013 and
+15028. It is a COUNT. In the bed one MDIO read is free and a million is a
+blink; on the real part a million is 93 seconds.
+
+**AND IT WAS ALREADY KNOWN, which is the part worth carrying.** The cost was
+diagnosed on 2026-08-04, after the ASDE flight painted nothing:
+`NicAsde.codex` says it at `na-phy-kick`, and the annotation on
+`codex/test/e1000-asde-nolink` spells it out -- "a million iterations ... tens
+of microseconds ... bounded and indistinguishable from a hang". The fix taken
+then was to route AROUND the function rather than to bound it, so the driver
+kept the million and it cost a second flight eleven days later. **A workaround
+in one caller leaves the defect armed for every other caller**, and a boot
+read as a wedge is what that costs. This flight contributed the number, not
+the cause. Fixed in the driver now, bounded by a 3-second HPET budget.
+
+### What this flight leaves open
+
+- **Auto-negotiation never reported done, and the link is up anyway.** `s10`
+  answers 1 on its first read, so `STATUS.LU` is set while BMSR's aneg-done bit
+  never showed through our MDIO path. Consistent with 08-13, where the link came
+  up via `na-phy-kick` rather than our CTRL write. Whether we are reading the
+  wrong page, or firmware completed aneg before we asked and the latch had
+  already cleared, is the next question.
+- **`RDH` moved: 0 in the bed, 15 on metal, with `RDT=15`.** Either the receiver
+  filled the ring during the 93 seconds `phy-bring-up` was spinning -- which
+  would mean frames DO move and NIC-3's original question is answered yes -- or
+  `RDH` is not writable here the way `CTRL` is not. **This arm cannot separate
+  those and does not claim to.**
+- **The gfat mount failed at stage 2 again** (no EFI PART signature), so
+  `NIC3.TXT` was not written, while `GopShot`'s F12 write succeeded on the same
+  volume. Two write paths, one works. Not chased here.
+
+**The returned volume is clean on all four questions**: every chain matches its
+size, no overlaps, nothing allocated to nothing, FAT copies identical.
+
+## SUPERSEDED BY THE ABOVE -- the pre-flight card for `nicinit.img`
+
+**On disk 2 and verified.** The image hash was checked against the digest below
+before firing, disk 2 was confirmed USB, and `flash-usb` read all three fixup
+blobs back and reported the write flushed and read back byte for byte. Pull the
+stick and boot the ASUS from USB with CSM/Legacy off.
+
+**The dump taken before it is the more valuable artifact and it nearly did not
+exist.** `before-nicinit-20260815.img`, `C127DA97...`, matches nothing already
+in the archive, and there was no `nicsitting-returned` row at any point: this is
+the 2026-08-14 NIC flight's stick as it came back, captured for the first time
+and about a minute before the flash would have destroyed it. That flight banked
+nothing -- its own entry below says "photograph only, the stick did not mount"
+-- so this is the only physical evidence from it that exists. The standing
+archive-first ruling has now paid for itself twice in this file; the other time
+is `before-a5fix` differing from `vmxprobe-returned` with no flight between them.
+
+`nicsitting.img` proved `e1000-init` is entered and does not return. It did not
+say which of the ten loops inside it, because `e1000-init` is one expression.
+This arm performs that function's own sequence out of its own primitives, in
+its own order, and paints a row BEFORE each step. **The last row on the glass
+is the answer**: a step that returns overwrites its own row with a result and a
+duration, and a step that hangs leaves its `ENTERING` line standing.
+
+The driver is unchanged. What is reproduced rather than called is the body of
+`e1000-reset` and of `e1000-init-after-reset` -- the two functions whose
+interiors need rows -- transcribed operation for operation. That is the licence
+`AsdeStageProbe` took on 2026-08-13 and it is taken here for the same reason.
+
+```powershell
+pwsh build/boot/build-option-a.ps1 -Src build/boot/diag/NicInitProbe.codex `
+     -Kernel seed/Codex.cdx -Ebs -Out build/boot/nicinit.img
+```
+
+| | |
+|---|---|
+| image | `build/boot/nicinit.img`, 16,777,216 bytes |
+| SHA-256 | `4C6F61DA 133F5D42 FECD3C6B 4374B21B D46C5297 DF2D35E0 1EC4EB95 35582DFA` |
+| probe source SHA-256 | `85301EF6 A6D2C6B7 A8BA63C8 C333218F 1F82A6C8 90B6A37D C61085D0 AAA450CB` |
+| built against seed | `F3722EAC019ACD5A` |
+
+**THE RECIPE NO LONGER REPRODUCES THAT IMAGE HASH, and that is expected.** An
+option-a image is three moving parts -- the UEFI stub, the embedded
+`seed/Codex.cdx` shipped as `CODEX.CDX`, and the compiled payload -- and the
+hash moves when ANY of them does. Both of the first two moved within a day of
+this flash:
+
+| rebuilt | hash | why it moved |
+|---|---|---|
+| as flashed | `4C6F61DA 133F5D42...` | -- |
+| after the seed went to `55983566` | `231E9F40 1F5AB08D...` | the embedded seed |
+| after the GOP stub change, main 15469 | `2DBBD1B5 5A41DA35...` | the stub |
+
+**None of that is evidence about the flown stick.** It is byte-identical to
+what was bed-rehearsed in both directions, which is what the 2026-08-14 ruling
+asks for. A recorded hash its own recipe cannot reproduce is the shape that
+gets read as corruption, so: account for the stub and the seed first, and only
+then suspect the image.
+
+**One thing the stub change improves for anyone re-running this arm.** The
+probe is an `-Ebs` payload, so it is one of the non-`-EntryStart` ones whose
+stub now selects the largest enumerated mode. Measured: a rebuild comes up
+**1024x768 in the default bed** where the flown image comes up 640x480. The
+ASUS geometry is therefore the bed default now, and checking the row budget no
+longer needs `-gop-width 1024 -gop-height 768`.
+
+### What each row should say, written down before it flies
+
+Bed values at 1024x768 with `-e1000-nat`, which is the ASUS geometry. **The
+durations will differ on metal and that is the point of printing them**; what
+must not differ is which rows appear.
+
+| row | bed | what metal tells you |
+|---|---|---|
+| `arrival RCTL/TCTL` | `RCTL=0 EN=n TCTL=0 EN=n` | 08-14 read `RCTL=0 EN=n TCTL=805564664 EN=n`. Differs means the board did not arrive as it did last time and nothing below is comparable. |
+| `arrival RDBAL/RDLEN/RDH/RDT hpet` | all 0, `hpet=14318179` | 08-14 read `RDBAL=1551914016 RDLEN=0 RDH=0 RDT=0`, `hpet=23999999` |
+| `s1` | `pcien=0 ctrl=0` | `ctrl` is the arrival CTRL; RST is discarded on this part |
+| `s2 await-reset` | `ret 1 in 16us` | returns 1 on its first read because CTRL is read-only here |
+| `s3 settle-mdio` | `ret 1 in 10118us` | the datasheet's 10 ms window; 0 means the fuel ran out first |
+| `s4 quiesce` | `ret 1 in 10050us` | as above |
+| `s5 alloc` | `ret 0 in 43us` | arena only, no device access |
+| `s6 clear-mta` | `ret 0 in 717us` | a write per multicast entry |
+| `s7 setup-rx` | `ret 0 in 39us` | **this is the first step that enables the receiver** |
+| `s8 setup-tx` | `ret 0 in 60us` | |
+| `s9 phy-bring-up` | `ret 1 in 163us` | MDIO; 08-13 proved MDIO writes work on this part |
+| `s10 await-link` | `ret 1 in 19us` | 4,000,000 fuel. A large duration here with `ret 1` is the long-but-finite hypothesis; `ret 0` means the fuel ran out and the link never came up |
+| `INIT COMPLETE` | `RDH=0 RDT=15` | if this paints, `e1000-init` does not hang on this board |
+
+**Pass:** every row paints and `INIT COMPLETE` appears. **The interesting
+failure:** the rows stop, and the last one names its step. **What would
+falsify the whole arm:** all ten steps return and `INIT COMPLETE` paints, in
+which case `e1000-init` is NOT where the 08-14 boot stopped and the stall is
+somewhere this decomposition does not cover -- which is a real result and
+sends the next arm at the row painting itself.
+
+### Bed rehearsal, both directions
+
+Per Damian's 2026-08-14 ruling, same bytes, full loop.
+
+- **Positive**, `-gop-width 1024 -gop-height 768 -e1000-nat`: all ten steps
+  return, `INIT COMPLETE RDH=0 RDT=15`, no clipping.
+- **Negative**: a sabotage build with an unbounded spin in place of
+  `e1000-setup-rx` leaves `s7 ENTERING e1000-setup-rx` as the last row with
+  nothing after it. That is the instrument proving it can express the failure
+  it exists to catch. The sabotage source was deleted rather than shipped.
+
+**`-screenshot-delay` at 5000 and above gives `code=-1` and no BMP on this
+image; 0 and 2000 work.** Found by concluding the sabotage build was broken and
+then running the KNOWN-GOOD positive image with the same flag, which failed the
+same way. Capture the negative arm at 2000.
 
 ## FLOWN 2026-08-14: `nicsitting.img`. NIC-1 and NIC-2 ANSWERED. NIC-3 WEDGED IN `e1000-init`, and the ordering is why we still have the other two.
 
@@ -1346,7 +1650,7 @@ apart from LBA 0 and 1, which `flash-usb.ps1 -SpecFit` writes itself. The
 board wrote nothing, and it could not have: the payload's block I/O is raw
 IDE port access and the stick is USB mass storage. Reproduced in the bed by
 running `codex-vm -uefi` with no `-disk` (divide by zero in the BPB parse).
-`docs/Designs/Active/Compiler/MetalOutputSink.md` has the mechanism and the
+`docs/Designs/Done/Compiler/MetalOutputSink.md` has the mechanism and the
 fix, which is a UEFI block write helper and is seed-affecting.
 
 **REBUILT AND BED-VERIFIED 2026-08-10 as `a5flight2.img`** (the Stick 2
@@ -1413,7 +1717,7 @@ than `OK` is a finding worth bringing back, not a failed sitting.
 artifact.** The compiler boots as `BOOTX64.EFI`, reads `SOURCE.SRC` off the
 volume through the GPT, compiles it, and writes `OUT.CDX` and `OUT.TXT`
 back to the same volume through the foreword FAT writer. Three blockers
-closed to get here (`docs/Designs/Active/Compiler/MetalOutputSink.md`), and
+closed to get here (`docs/Designs/Done/Compiler/MetalOutputSink.md`), and
 **every one of them has only ever run in the bed**. What metal adds that no
 bed can: the writer has never once run on real USB storage at any size.
 
@@ -1836,6 +2140,62 @@ stage that passed, and nothing reports progress INSIDE the stage that
 follows. A heartbeat inside `sl-fill` or between write segments is what
 would separate slow from dead on the next flight. That is reek's call.
 
+**THE HEARTBEAT IS BUILT AND BED-VERIFIED, 2026-08-15 (reek). QUEUED, NOT
+PROPOSED.** `ladder-tick` paints a bar in a 24-row band BELOW the field, so the
+field still carries the last-colour-standing contract and only the band moves.
+The bar is BLUE: blue is the rung the stage is working toward, so a bar
+advancing under an ORANGE field is progress toward `wrote`, and a bar frozen
+part way is where it stopped.
+
+What the operator reads, and it is the distinction this flight could not make:
+
+| glass | means |
+|---|---|
+| orange field, blue bar advancing | the 2.7 MB fill is running |
+| orange field, blue bar full | the fill finished, the write has not returned |
+| orange field, blue bar EMPTY after having been full | inside `fat16-write-segments`, which is where the returned stick put the fault |
+| blue field | the write returned and the `wrote` rung passed |
+
+Measured in the bed at 640x480, one run to 150 s: 42 fill ticks for the
+2,745,998-byte payload at a 64 KB chunk, `bar=15` at the first and `bar=640` at
+the last, monotone in between, then `write entering bar=0` and the run still
+inside the write when it was killed. That last state is exactly the one the
+flight held ORANGE in and could not report.
+
+**The pixel figures are the bed's panel width and it has already moved.** As of
+main 15469 the stub picks the largest enumerated mode, so a plain option-a
+image comes up 1024x768 and the same run reads `bar=24` first and `bar=1024`
+last. What transfers is the FRACTION and the tick count: 42 chunks, the first
+tick at one 42nd of the width, the last at the full width. Compare those, not
+the pixels, and on the ASUS the width is the panel's own.
+
+The arithmetic is tested away from the glass
+(`codex/test/apps/ladder-bar-width`), because a bar that saturates early or
+wraps a 32-bit multiply needs no framebuffer to catch: at this payload
+`w * done` reaches 4,393,596,800 and a wrapped result reads as the bar jumping
+backwards mid-fill.
+
+**Reporting from INSIDE the chain walk is not done and needs a hook in
+`GopFat16`**, which is a different file and a different lane's. The bracket
+around the write is what exists.
+
+**WHICH BYTES ARE QUEUED, and why a rebuild is not the same card.** The image
+in the depot is `EC071C2C89B6E985...`, main 15426, and it is the one whose
+EXACT bytes ran the full pass arm to `verified` and WHITE. Its stub was built
+after red's heap backoff (15393) and BEFORE red 15469 and fester 15503, so it
+is not the stub the tree emits today.
+
+That cuts one way and it is worth being plain about it. **Flying this file as
+it stands is rehearsed.** Rebuilding it is not: as of those two changes every
+UEFI stub path emits bytes that have never flown, `-EntryStart` included, and
+three PE shapes gained a 512-byte section. A rebuild therefore needs its own
+full-mission bed run and the stub marked NEW on the flight card (L-REHEARSE),
+and the bar figures move as well, because the panel is 1024 wide now.
+
+Check before flashing: `p4 print -q -o <tmp> //Codex/main/build/boot/sinkladder.img`
+and hash it. If it is not `EC071C2C89B6E985...`, somebody rebuilt it and this
+paragraph is describing a file you do not have.
+
 **`print-line-uni` rendered on this box.** The chapter's own prose calls it
 "the channel that has never rendered a character on this box and cost two A5
 flights", and two of its lines were read off this flight. Recorded as an
@@ -1896,6 +2256,44 @@ has nothing to do with free space: 8 MB still leaves ~6 MB free, the 2.7 MB
 write succeeded and the arm painted WHITE. The harness now reads the cluster
 count out of `build-img`'s own output and `sl-size` out of the chapter, and
 REFUSES the arm rather than running it when the volume could hold the payload.
+
+**The staleness guard watched the wrong files and printed two false greens.**
+Found by fester 2026-08-16, fixed the same day. The arm never compiles; it runs
+the prebuilt `build/boot/sinkladder.img`, and the guard that stops it
+calibrating a stale payload named `SinkLadderProbe.codex` and
+`MetalLadder.codex` only. **The function this arm exists to exercise is
+`fat16-next-cluster`, which is in neither.** fester sabotaged
+`fat16-cluster-ok` to `cluster <= 100` against a 5,364-cluster chain, which must
+truncate, and `-Only pass` came back `verified` anyway: their rebuild had died
+on Access denied (`sinkladder.img` is a depot file and had not been opened for
+edit), the old image stayed in place, and no watched source had changed. A
+failed build and a passing arm were indistinguishable in that output.
+
+Two changes, and they answer different halves:
+
+- **The watched list is now the payload's transitive CITE CLOSURE**, walked
+  from `SinkLadderProbe.codex` at run time -- 11 chapters, `Fat16` among them.
+  A hand-written list goes stale the moment the payload's reach changes; a
+  derived one cannot. The arm refuses outright if the closure comes back
+  without `Fat16`, because a walk that lost the chapter under test is a broken
+  instrument rather than a clean run. Note it is deliberately NOT the whole
+  tree, which is what `build/desk.ps1` stats: the desk binary really does reach
+  all of it, this payload is one chapter and its cites, and an arm that cries
+  stale every time somebody touches an unrelated pane gets its guard commented
+  out.
+- **The verdict now carries the bytes that produced it**: the run prints the
+  image's hash and mtime, the seed's hash, and the closure size, above the arm
+  table and again beside it. No mtime comparison can see a rebuild that never
+  wrote, so the reader gets the identity to check instead.
+
+`seed/Codex.cdx` is knowingly absent from the mtime inputs and its hash is
+printed for that reason. This client is `nomodtime`, so a sync stamps the seed
+whether or not a byte moved, and every merge-down would refuse the arm for an
+identical compiler.
+
+Falsified both ways before shipping: with the tree untouched the guard passes
+and reports `img EC071C2C89B6E985`, the queued card; with `Fat16.codex` touched
+it refuses and names it.
 
 CYAN is still the one rung never seen to fire, for the same reason as on the
 block ladder: the stub primes the SystemTable cell and nothing in the bed can

@@ -44,7 +44,9 @@ Section: Handshake Over Transport
     let rr = transport-try-recv (sess.transport)
     in if rr.has-message == False then TrustConnectResult { session = sess, success = False, error = "no hello received" }
     else if rr.tag /= tag-hello then TrustConnectResult { session = TrustSession { transport = rr.transport, peer-key = [], peer-trust = 0, authenticated = False, messages-exchanged = sess.messages-exchanged }, success = False, error = "expected hello" }
-    else let hello = decode-hello-body (rr.body)
+    else let hd = decode-hello-body-checked (rr.body)
+    in if hd.valid == False then TrustConnectResult { session = TrustSession { transport = rr.transport, peer-key = [], peer-trust = 0, authenticated = False, messages-exchanged = sess.messages-exchanged }, success = False, error = "malformed hello" }
+    else let hello = hd.hello
     in let hr = hs-receive-hello hello challenge-nonce lattice required-difficulty
     in if hs-is-failed (hr.state) then TrustConnectResult { session = TrustSession { transport = rr.transport, peer-key = [], peer-trust = 0, authenticated = False, messages-exchanged = sess.messages-exchanged }, success = False, error = hs-failure-reason (hr.state) }
     else let sr = transport-send-message (rr.transport) tag-challenge (frame-encode-bytes challenge-nonce)
@@ -76,8 +78,11 @@ Section: Handshake Over Transport
     let rr = transport-try-recv (sess.transport)
     in if rr.has-message == False then TrustConnectResult { session = sess, success = False, error = "no prove received" }
     else if rr.tag /= tag-prove then TrustConnectResult { session = TrustSession { transport = rr.transport, peer-key = sess.peer-key, peer-trust = 0, authenticated = False, messages-exchanged = sess.messages-exchanged }, success = False, error = "expected prove" }
-    else let hr = hs-receive-prove challenge-nonce (sess.peer-key) lattice
-    in let score = hs-trust-score (hr.state)
+    else let pr = frame-decode-bytes (rr.body) 0
+    in if pr.valid == False then TrustConnectResult { session = TrustSession { transport = rr.transport, peer-key = sess.peer-key, peer-trust = 0, authenticated = False, messages-exchanged = sess.messages-exchanged }, success = False, error = "malformed prove" }
+    else let hr = hs-receive-prove challenge-nonce (sess.peer-key) (pr.value) lattice
+    in if hs-is-failed (hr.state) then TrustConnectResult { session = TrustSession { transport = rr.transport, peer-key = sess.peer-key, peer-trust = 0, authenticated = False, messages-exchanged = sess.messages-exchanged }, success = False, error = hs-failure-reason (hr.state) }
+    else let score = hs-trust-score (hr.state)
     in let sr = transport-send-message (rr.transport) tag-accept (frame-le32 score)
     in TrustConnectResult {
       session = TrustSession { transport = sr.transport, peer-key = sess.peer-key, peer-trust = __narrow score, authenticated = True, messages-exchanged = sess.messages-exchanged },
@@ -86,12 +91,26 @@ Section: Handshake Over Transport
     }
 
 Section: Hello Decode
+  HelloDecodeResult = record {
+    hello : HelloMsg,
+    valid : Boolean
+  }
+
   decode-hello-body : List Integer -> HelloMsg
   decode-hello-body (bs) =
     let kr = frame-decode-bytes bs 0
     in let nr = frame-decode-bytes bs (kr.next-offset)
     in let diff = frame-read-le32 bs (nr.next-offset)
     in HelloMsg { public-key = kr.value, pow-nonce = nr.value, pow-difficulty = __narrow diff }
+
+  decode-hello-body-checked : List Integer -> HelloDecodeResult
+  decode-hello-body-checked (bs) =
+    let kr = frame-decode-bytes bs 0
+    in let nr = frame-decode-bytes bs (kr.next-offset)
+    in if kr.valid == False then HelloDecodeResult { hello = decode-hello-body bs, valid = False }
+    else if nr.valid == False then HelloDecodeResult { hello = decode-hello-body bs, valid = False }
+    else if (nr.next-offset + 4) > list-length bs then HelloDecodeResult { hello = decode-hello-body bs, valid = False }
+    else HelloDecodeResult { hello = decode-hello-body bs, valid = True }
 
 Section: Agent Message Serialization
   encode-agent-msg : AgentMessage -> Integer
@@ -239,6 +258,57 @@ Section: Sub-Encoders
   bool-to-byte (b) = if b then 1 else 0
 
 Section: Agent Message Deserialization
+  AgentMsgDecodeResult = record {
+    message : AgentMessage,
+    valid : Boolean
+  }
+
+ The decoders below cannot fail: every read answers 0 or empty past the end, so
+ a truncated body yields a message with empty fields rather than a fault. That is
+ better than the crash and it is not safe, because node-eval-msg puts whatever
+ comes out in front of eval-policy. The check is a round trip against our own
+ encoder rather than a second walk of the format, which cannot drift from the
+ decoder the way a hand-written length model would, and which also refuses a body
+ that is not the canonical encoding of what it decoded to.
+
+  decode-agent-msg-checked : Integer, List Integer -> AgentMsgDecodeResult
+  decode-agent-msg-checked (tag) (body) =
+    if agent-tag-known tag == False then AgentMsgDecodeResult { message = decode-agent-msg tag body, valid = False }
+    else let msg = decode-agent-msg tag body
+    in AgentMsgDecodeResult { message = msg, valid = amsg-bytes-equal (encode-agent-msg-body msg) body }
+
+  agent-tag-known : Integer -> Boolean
+  agent-tag-known (t) =
+    if t == tag-propose then True
+    else if t == tag-grant then True
+    else if t == tag-deny then True
+    else if t == tag-explain then True
+    else if t == tag-narrate then True
+    else if t == tag-interrupt then True
+    else if t == tag-handoff then True
+    else if t == tag-annotate then True
+    else if t == tag-verdict then True
+    else if t == tag-sync-offer then True
+    else if t == tag-sync-reply then True
+    else if t == tag-work-request then True
+    else if t == tag-work-reply then True
+    else if t == tag-locate-request then True
+    else if t == tag-locate-reply then True
+    else if t == tag-announce-request then True
+    else if t == tag-announce-reply then True
+    else False
+
+  amsg-bytes-equal : List Integer, List Integer -> Boolean
+  amsg-bytes-equal (a) (b) =
+    if list-length a /= list-length b then False
+    else amsg-be-loop a b 0 (list-length a)
+
+  amsg-be-loop : List Integer, List Integer, Integer, Integer -> Boolean
+  amsg-be-loop (a) (b) (i) (n) =
+    if i >= n then True
+    else if list-at a i /= list-at b i then False
+    else amsg-be-loop a b (i + 1) n
+
   decode-agent-msg : Integer, List Integer -> AgentMessage
   decode-agent-msg (tag) (body) =
     if tag == tag-propose then MsgPropose (decode-propose-body body)
@@ -295,7 +365,7 @@ Section: Agent Message Deserialization
     in let r2 = frame-decode-bytes bs (r1.next-offset)
     in let r3 = frame-decode-bytes bs (r2.next-offset)
     in let r4 = frame-decode-bytes bs (r3.next-offset)
-    in let depth = decode-explain-depth (list-at bs (r4.next-offset))
+    in let depth = decode-explain-depth (frame-byte-at bs (r4.next-offset))
     in let r5 = frame-decode-bytes bs (r4.next-offset + 1)
     in ExplainMsg { id = r1.value, from = AgentIdentity { public-key = r2.value }, to = AgentIdentity { public-key = r3.value }, subject = r4.value, depth = depth, signature = r5.value }
 
@@ -313,7 +383,7 @@ Section: Agent Message Deserialization
     let r1 = frame-decode-bytes bs 0
     in let r2 = frame-decode-bytes bs (r1.next-offset)
     in let r3 = frame-decode-bytes bs (r2.next-offset)
-    in let reason = decode-interrupt-reason (list-at bs (r3.next-offset))
+    in let reason = decode-interrupt-reason (frame-byte-at bs (r3.next-offset))
     in let ar = decode-interrupt-action bs (r3.next-offset + 1)
     in let r4 = frame-decode-bytes bs (ar.next-offset)
     in InterruptMsg { id = r1.value, from = AgentIdentity { public-key = r2.value }, to = AgentIdentity { public-key = r3.value }, reason = reason, action = ar.action, authority = [], signature = r4.value }
@@ -326,8 +396,8 @@ Section: Agent Message Deserialization
     in let cr = decode-capability bs (r3.next-offset)
     in let sr = decode-scope bs (cr.next-offset)
     in let expires = frame-read-le64 bs (sr.next-offset)
-    in let revoke = list-at bs (sr.next-offset + 8)
-    in let audit = list-at bs (sr.next-offset + 9)
+    in let revoke = frame-byte-at bs (sr.next-offset + 8)
+    in let audit = frame-byte-at bs (sr.next-offset + 9)
     in let r4 = frame-decode-bytes bs (sr.next-offset + 10)
     in HandoffMsg { id = r1.value, from = AgentIdentity { public-key = r2.value }, to = AgentIdentity { public-key = r3.value }, capability = cr.cap, scope = sr.scope, expires = expires, revoke-from = revoke == 1, audit-required = audit == 1, signature = r4.value }
 
@@ -407,7 +477,7 @@ Section: Sub-Decoders
   decode-capability : List Integer, Integer -> CapDecodeResult
   decode-capability (bs) (off) =
     let nr = frame-decode-text bs off
-    in let dir = list-at bs (nr.next-offset)
+    in let dir = frame-byte-at bs (nr.next-offset)
     in let sr = frame-decode-text bs (nr.next-offset + 1)
     in CapDecodeResult { cap = Capability { name = nr.value, direction = __narrow dir, scope = sr.value }, next-offset = sr.next-offset }
 
@@ -418,7 +488,7 @@ Section: Sub-Decoders
 
   decode-scope : List Integer, Integer -> ScopeDecodeResult
   decode-scope (bs) (off) =
-    let dir = list-at bs off
+    let dir = frame-byte-at bs off
     in let pr = frame-decode-text bs (off + 1)
     in let dur = frame-read-le32 bs (pr.next-offset)
     in ScopeDecodeResult { scope = Scope { direction = __narrow dir, path = pr.value, duration = __narrow dur }, next-offset = __narrow (pr.next-offset + 4) }
@@ -430,7 +500,7 @@ Section: Sub-Decoders
 
   decode-denial-reason : List Integer, Integer -> DenialDecodeResult
   decode-denial-reason (bs) (off) =
-    let tag = list-at bs off
+    let tag = frame-byte-at bs off
     in if tag == 0 then DenialDecodeResult { reason = InsufficientTrust, next-offset = __narrow (off + 1) }
     else if tag == 1 then DenialDecodeResult { reason = PolicyViolation, next-offset = __narrow (off + 1) }
     else if tag == 2 then DenialDecodeResult { reason = Expired, next-offset = __narrow (off + 1) }
@@ -457,7 +527,7 @@ Section: Sub-Decoders
 
   decode-interrupt-action : List Integer, Integer -> ActionDecodeResult
   decode-interrupt-action (bs) (off) =
-    let tag = list-at bs off
+    let tag = frame-byte-at bs off
     in if tag == 0 then ActionDecodeResult { action = Pause, next-offset = __narrow (off + 1) }
     else if tag == 1 then ActionDecodeResult { action = Abort, next-offset = __narrow (off + 1) }
     else let br = frame-decode-bytes bs (off + 1)
@@ -493,10 +563,15 @@ Section: Send and Receive Agent Messages
       message = MsgDeny (DenyMsg { id = [], proposal = [], from = AgentIdentity { public-key = [] }, reason = InsufficientTrust, evidence = [], signature = [] }),
       has-message = False
     }
-    else let msg = decode-agent-msg (rr.tag) (rr.body)
-    in TrustRecvResult {
+    else let dr = decode-agent-msg-checked (rr.tag) (rr.body)
+    in if dr.valid == False then TrustRecvResult {
+      session = TrustSession { transport = rr.transport, peer-key = sess.peer-key, peer-trust = sess.peer-trust, authenticated = sess.authenticated, messages-exchanged = sess.messages-exchanged },
+      message = MsgDeny (DenyMsg { id = [], proposal = [], from = AgentIdentity { public-key = [] }, reason = InsufficientTrust, evidence = [], signature = [] }),
+      has-message = False
+    }
+    else TrustRecvResult {
       session = TrustSession { transport = rr.transport, peer-key = sess.peer-key, peer-trust = sess.peer-trust, authenticated = sess.authenticated, messages-exchanged = sess.messages-exchanged + 1 },
-      message = msg,
+      message = dr.message,
       has-message = True
     }
 

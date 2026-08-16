@@ -1,0 +1,64 @@
+Chapter: ArpCacheBound
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+  cites Foreword chapter Console
+
+ We say:
+
+Section: Fixtures
+  srv-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  srv-ip : List Integer = [10, 0, 2, 15]
+  gw-ip : List Integer = [10, 0, 2, 2]
+  gw-mac : List Integer = [82, 85, 10, 0, 2, 2]
+
+  srv0 : NetSession = net-session-new srv-mac srv-ip gw-ip 80 0 [10, 0, 2, 100] 5000
+
+ A distinct sender IP and MAC per frame, which is what an ordinary busy segment
+ looks like rather than an attack shape. 300 is past the 0..255 band that used
+ to kill the guest and past arp-cache-max.
+
+  arp-frame : Integer -> List Integer
+  arp-frame (i) =
+    let smac = [2, 0, 0, 0, bit-and (bit-shru i 8) 255, bit-and i 255]
+    in let sip = [10, 1, bit-and (bit-shru i 8) 255, bit-and i 255]
+    in arp-build-request smac sip srv-ip
+
+  flood : NetSession, Integer, Integer -> NetSession
+  flood (s) (i) (n) =
+    if i >= n then s
+    else flood ((net-process-frame s (arp-frame i)).session) (i + 1) n
+
+Section: The Arms
+
+ The gateway is learned FIRST and then the flood arrives. It must still be
+ there afterwards: that is the whole reason this refuses at capacity instead of
+ evicting, and an eviction policy would fail exactly this line.
+
+  gw-learned : NetSession =
+    set-arp srv0 (arp-cache-add (srv0.arp) gw-ip gw-mac)
+
+  after-flood : NetSession = flood gw-learned 0 300
+
+ Ten senders sent twice. Before the duplicate check this read 20.
+
+  dup-twice : NetSession = flood (flood srv0 0 10) 0 10
+
+ arp-cache-search bounds its walk by cache.count and NOT by the length of
+ entries, so the two have to move together. A count that runs ahead reads past
+ the live entries; one that lags stops short of them and a learned mapping goes
+ missing. Neither is visible from a lookup that happens to succeed, so it is
+ asserted directly.
+
+Section: Entry
+  opening : [Console] Nothing = act
+    print-line-uni ("gw-before=" & show (list-length (arp-cache-lookup (gw-learned.arp) gw-ip)))
+    print-line-uni ("count-after-300=" & show ((after-flood.arp).count))
+    print-line-uni ("capped-at-max=" & show ((after-flood.arp).count == arp-cache-max))
+    print-line-uni ("gw-survived-flood=" & show (mac-equal (arp-cache-lookup ((after-flood.arp)) gw-ip) gw-mac))
+    print-line-uni ("dup-twice-count=" & show ((dup-twice.arp).count))
+    print-line-uni ("dup-updates-not-appends=" & show ((dup-twice.arp).count == 10))
+    print-line-uni ("instep-flood=" & show (list-length ((after-flood.arp).entries) == (after-flood.arp).count))
+    print-line-uni ("instep-dup=" & show (list-length ((dup-twice.arp).entries) == (dup-twice.arp).count))
+    print-line-uni ("survived")
+  end

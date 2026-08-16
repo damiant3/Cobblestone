@@ -1,0 +1,65 @@
+Chapter: UsbDescGuardTest
+  cites Kernel chapter Usb
+  cites Kernel chapter UsbHid
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ The kernel-side half of the descriptor family, measured against the
+ Config-Descriptor Clamp pattern that `codex/test/apps/usb-cfg-total-guard`
+ established for the Works-side walks. Every byte here is the DEVICE's, and
+ `wTotalLength` is the device's own 16-bit claim about how many of them there
+ are.
+
+ `hid-scan-loop` bounded its offset against the caller's `total` and never
+ against the list it was indexing, so a total larger than the buffer walked off
+ the end. That is the same defect as the Works-side clamp, one layer down and
+ in the kernel.
+
+ The three `Usb.codex` parsers are here for the opposite reason: they already
+ guard their upper bound and degrade to zeroed records, and nothing asserted
+ that. A guard with no arm is one edit away from not being a guard.
+
+Section: Fixtures
+
+ A minimal well-formed configuration: a 9-byte config header, one 9-byte
+ interface descriptor of class 3 (HID), and one 7-byte interrupt IN endpoint.
+ 25 bytes, and wTotalLength at bytes 2 and 3 says so.
+
+  cfg-bytes : List Integer
+  cfg-bytes =
+    [9, 2, 25, 0, 1, 1, 0, 128, 50]
+    & [9, 4, 0, 0, 1, 3, 1, 1, 0]
+    & [7, 5, 129, 3, 8, 0, 10]
+
+ An 18-byte device descriptor: vendor 0x1234 at bytes 8-9, product 0x5678 at
+ 10-11, class 9 at byte 4, one configuration at byte 17.
+
+  dev-bytes : List Integer
+  dev-bytes = [18, 1, 0, 2, 9, 0, 0, 64, 52, 18, 120, 86, 0, 1, 1, 2, 3, 1]
+
+Section: Test
+
+  ifc-count : List HidInterface -> Integer
+  ifc-count (xs) = list-length xs
+
+  opening : [Console] Nothing =
+    let d = usb-parse-device-desc dev-bytes
+    in let dshort = usb-parse-device-desc [18, 1, 0, 2, 9]
+    in let e = usb-parse-endpoint cfg-bytes 18
+    in let epast = usb-parse-endpoint cfg-bytes 22
+    in let i = usb-parse-interface cfg-bytes 9
+    in let ipast = usb-parse-interface cfg-bytes 20
+    in act
+      print-line-uni ("device vendor=" & show (d.usb-vendor) & " product=" & show (d.usb-product) & " class=" & show (d.usb-class) & " configs=" & show (d.usb-num-configs))
+      print-line-uni ("device-short vendor=" & show (dshort.usb-vendor) & " class=" & show (dshort.usb-class) & " configs=" & show (dshort.usb-num-configs))
+      print-line-uni ("endpoint addr=" & show (e.ep-address) & " dir=" & show (e.ep-direction) & " type=" & show (e.ep-type) & " maxpkt=" & show (e.ep-max-packet) & " interval=" & show (e.ep-interval))
+      print-line-uni ("endpoint-past addr=" & show (epast.ep-address) & " maxpkt=" & show (epast.ep-max-packet))
+      print-line-uni ("interface num=" & show (i.if-number) & " class=" & show (i.if-class) & " sub=" & show (i.if-subclass) & " proto=" & show (i.if-protocol) & " eps=" & show (i.if-num-endpoints))
+      print-line-uni ("interface-past num=" & show (ipast.if-number) & " class=" & show (ipast.if-class))
+      print-line-uni ("le16 in=" & show (usb-le16 cfg-bytes 2) & " at-end=" & show (usb-le16 cfg-bytes 24) & " past=" & show (usb-le16 cfg-bytes 99))
+      print-line-uni ("scan honest total=25 ifaces=" & show (ifc-count (hid-scan-interfaces cfg-bytes 25)))
+      print-line-uni ("scan lying total=200 ifaces=" & show (ifc-count (hid-scan-interfaces cfg-bytes 200)))
+      print-line-uni ("scan huge total=65535 ifaces=" & show (ifc-count (hid-scan-interfaces cfg-bytes 65535)))
+      print-line-uni ("scan empty ifaces=" & show (ifc-count (hid-scan-interfaces [] 25)))
+    end
+  end

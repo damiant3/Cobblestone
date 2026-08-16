@@ -15,7 +15,25 @@
 # NOT ASCII: it orders letters by English frequency, so e is 13 and a is 15.
 # The table below was measured against the seed, not assumed.
 
-param([string]$Out = "codex/test/apps/factdisk-read.disk")
+# -Hostile mints the SAME three entries with two fields moved, for
+# codex/test/apps/factdisk-hostile-head.codex. It is minted here rather than
+# patched into the good image so the mutation is reviewable as source: an
+# opaque binary that differs from another opaque binary tells a later reader
+# nothing about which field is the lie.
+#
+#   superblock log head   5 -> 8,000,000   far past the 2048-sector medium
+#   entry 2 content len   49 -> 4,000,000,000   the entry lies about its own size
+#
+# Only the HEADER's length word is moved; entry 2's record text is left
+# well-formed, so the refusal being tested is the sector-span bound and not
+# the wire decoder's (that one is source-def-wire-guard, which needs no disk).
+param(
+  [string]$Out = "codex/test/apps/factdisk-read.disk",
+  [switch]$Hostile
+)
+if ($Hostile -and $Out -eq "codex/test/apps/factdisk-read.disk") {
+  $Out = "codex/test/apps/factdisk-hostile-head.disk"
+}
 
 $ErrorActionPreference = 'Stop'
 
@@ -63,18 +81,26 @@ $entries = @(
   @{ kind = $KINDDEF; ts = 33; text = "def456|src|Foreword|Signed|fp01|aabb|val|88|11|signed body" }
 )
 
+$LIE_LEN  = 4000000000    # u32, near the maximum: 7,812,501 sectors at 512
+$LIE_HEAD = 8000000       # a head large enough to admit that span
+
 $s = $LOGSTART
+$i = 0
 foreach ($e in $entries) {
   $base  = $s * $SECTOR
   $bytes = Get-CceBytes $e.text
+  # The stride stays TRUE to the real content even when the stored length
+  # lies, so entry 3 lands where it always did and stays a positive control.
+  $stored = if ($Hostile -and $i -eq 1) { $LIE_LEN } else { $bytes.Length }
   [BitConverter]::GetBytes([uint16]$e.kind).CopyTo($img, $base + $OFFK)
   [BitConverter]::GetBytes([int64]$e.ts).CopyTo($img, $base + $OFFTS)
-  [BitConverter]::GetBytes([uint32]$bytes.Length).CopyTo($img, $base + $OFFLEN)
+  [BitConverter]::GetBytes([uint32]$stored).CopyTo($img, $base + $OFFLEN)
   $bytes.CopyTo($img, $base + $HDR)
   $s = $s + [int][Math]::Ceiling(($HDR + $bytes.Length) / $SECTOR)
+  $i = $i + 1
 }
 
-$logHead = $s
+$logHead = if ($Hostile) { $LIE_HEAD } else { $s }
 
 # Superblock in sector 0. Sector 1 is left zeroed: its magic is absent, so
 # fd-gen answers -1 for it and it can never win the generation comparison.

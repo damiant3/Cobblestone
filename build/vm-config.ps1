@@ -270,11 +270,12 @@ function ConvertFrom-CceBytes([byte[]]$Bytes) {
 # data segment -- and that is the map these functions read. The text sidecar
 # (seed/Codex.map) is a fallback and an explicit override, never the default.
 #
-# The reason is drift, and it is not hypothetical. The seed is built -Repl, and
-# -Repl does not emit the text MAP: block that compile.ps1 captures into
-# <out>.map, so NEITHER a seed rebuild NOR a copy-up ever refreshes
-# seed/Codex.map. It is refreshed by one release-gate step that routine work does
-# not run. So the sidecar silently describes an older binary than the seed beside
+# The reason is drift, and it is not hypothetical. A compiler build does emit a
+# map (every CDX compile has since main 15088) and the build now carries it to
+# build/output/Sut.map, but NOTHING installs it over seed/Codex.map except one
+# release-gate step that routine work does not run. Measured 2026-08-15, the
+# installed sidecar had 5,140 of its 5,187 rows at the wrong address while every
+# name still resolved. So the sidecar silently describes an older binary than the seed beside
 # it, and the resolver answered from it with total confidence: on 2026-07-16 it
 # placed a crash in `sorted-builtin-names` when the faulting function was
 # `find-effect-op-addr`, a different function entirely, and cost an hour. The

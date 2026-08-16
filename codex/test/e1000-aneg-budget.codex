@@ -1,0 +1,45 @@
+Chapter: E1000AnegBudget
+  cites Kernel chapter E1000e
+  cites Foreword chapter Console
+
+ `e1000-await-aneg` used to be bounded by a count of a million. On the ASUS
+ 2026-08-15 that count cost 92,892,733 us, because every iteration is a full
+ MDIC transaction and a real MDIO bus answers in tens of microseconds where the
+ model answers instantly. It is bounded by a duration now.
+
+ WHAT THIS ARM CAN AND CANNOT REACH, said before the arms rather than after.
+ The timeout branch itself is unreachable here: the e1000 model reports
+ aneg-done on the first BMSR read, so `e1000-await-aneg` returns 1 before any
+ deadline is consulted. Forcing it needs an emulator flag. What IS testable is
+ the budget arithmetic, which is the half most likely to be silently wrong,
+ because a duration derived from a rate is exactly where a multiply and a
+ divide get transposed.
+
+ THE PROPERTY IS THE SAME WALL TIME AT DIFFERENT RATES. That is the whole point
+ of the change: a count gives different durations on different buses, a budget
+ gives the same one. Both real HPET rates this project has measured are here --
+ 23999999 from the ASUS and 14318179 from the bed -- and both must yield three
+ seconds.
+
+ We say:
+
+Section: Fixtures
+
+  metal-hz : Integer = 23999999
+  bed-hz : Integer = 14318179
+
+  seconds-of : Integer -> Integer
+  seconds-of (rate) = if rate <= 0 then (0 - 1) else (e1000-aneg-ticks rate) / rate
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("budget-ms=" & show e1000-aneg-ms)
+    print-line-uni ("metal-ticks=" & show (e1000-aneg-ticks metal-hz))
+    print-line-uni ("metal-seconds=" & show (seconds-of metal-hz))
+    print-line-uni ("bed-ticks=" & show (e1000-aneg-ticks bed-hz))
+    print-line-uni ("bed-seconds=" & show (seconds-of bed-hz))
+    print-line-uni ("same-wall-time=" & show (seconds-of metal-hz == seconds-of bed-hz))
+    print-line-uni ("zero-rate-ticks=" & show (e1000-aneg-ticks 0))
+    print-line-uni ("fuel-still-a-bound=" & show (e1000-aneg-fuel > 0))
+  end

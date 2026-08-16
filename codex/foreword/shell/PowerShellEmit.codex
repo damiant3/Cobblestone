@@ -284,6 +284,7 @@ Section: Expressions -- Leaf
   emit-ps-expr (e) =
     when e
       is SeLit (s) -> ps-quote s
+      is SeText (s) -> ps-dquote s
       is SeInt (n) -> show n
       is SeVar (name) -> "$" & name
       is SeEnvVar (name) -> "$env:" & name
@@ -430,6 +431,22 @@ Section: Helpers
 
   ps-quote : Text -> Text
   ps-quote (s) = "'" & text-replace s "'" "''" & "'"
+
+ SeText is the DOUBLE-quoted counterpart, and it exists because the single
+ quoting above is what forced authors to ScRaw. A message like
+ "MISSING: $Stage0 - not there" needs the dollar to interpolate, ps-quote
+ refuses it by design, and there was no other node -- so the author wrote a
+ SeRaw containing a hand-escaped PowerShell string. Measured 2026-08-16: 346
+ of the tree's escaped quotes lived inside SeRaw expression payloads for
+ exactly this reason.
+
+ Inside double quotes PowerShell's escape character is the BACKTICK, not the
+ backslash. The backtick is doubled first and the quote escaped second; the
+ other order would escape the backtick this function had just inserted. The
+ dollar is deliberately left alone, because interpolation is the whole point.
+
+  ps-dquote : Text -> Text
+  ps-dquote (s) = "\"" & text-replace (text-replace s "`" "``") "\"" "`\"" & "\""
 
   emit-ps-args : List ShellExpr, Integer -> Text
   emit-ps-args (args) (i) =

@@ -71,6 +71,30 @@ Section: The Superblock
     else if g1 > g0 then lh1 else lh0
   end
 
+Section: The Ceiling On One Entry
+
+ fd-head-credible bounds the walk and, through sector + nsec > end-sec, every
+ entry's allocation as well -- but it bounds them by the SIZE OF THE ATTACHED
+ MEDIUM, which is a number this code did not produce. On the store images this
+ reader is pointed at, a megabyte or a few, that is already tight. On a large
+ medium it is not: a superblock with a credible head and one entry declaring a
+ gigabyte of content asks alloc-bytes for a gigabyte on a guest that has three,
+ and there is no GC to take it back.
+
+ So one entry is capped independently of the medium. 4 MB against a content
+ length whose widest legitimate value is one chapter: the largest in the tree
+ measured 735,952 bytes on 2026-08-16, and the whole compiler source is 2.8 MB.
+ An over-long entry strides to the next sector, which is the resynchronisation
+ the walk already does for an entry that will not fit the log.
+
+ THIS GUARD HAS NO ARM and cannot cheaply have one, which is said here rather
+ than left to be discovered: reaching it needs a store image over 4 MB, because
+ on anything smaller the medium ceiling refuses the entry first. It is kept on
+ the campaign's own rule, that we do not size an allocation on a number we did
+ not produce, and not on a measurement.
+
+  fd-max-content-len : Integer = 4194304
+
 Section: Reading An Entry's Content
 
   fd-copy-sector : Integer, Integer, Integer, Integer -> Integer
@@ -137,6 +161,7 @@ Section: Walking The Log
   fd-fold-entry : Integer, Integer, FactBundle, Integer, Integer -> [Device.Block] FactBundle
   fd-fold-entry (sector) (end-sec) (acc) (buf) (clen) =
    if clen == 0 then fd-fold (sector + 1) end-sec acc
+   else if clen > fd-max-content-len then fd-fold (sector + 1) end-sec acc
    else let nsec = fl-sectors-for clen
    in if sector + nsec > end-sec then fd-fold (sector + 1) end-sec acc
    else let kind = fl-entry-kind buf
@@ -148,8 +173,27 @@ Section: Walking The Log
       end
       else fd-fold (sector + nsec) end-sec acc
 
+ A store cannot extend past the disk that holds it, so the device's own sector
+ count is the ceiling on the head. A count of zero or less is the no-drive
+ answer, DriveManager's own convention, and it must stay a pass rather than
+ become a refusal: with no disk the superblock has no magic, so the head is
+ already fl-fact-log-start and the walk ends before its first sector.
+
+ An incredible head refuses the WHOLE store rather than reading the prefix
+ that fits. The reasoning is val's, from the parallel work on this item: a
+ superblock that cannot be true is not one to trust part of. It is also what
+ keeps the per-entry span check honest, since that check is measured against
+ this same head.
+
+  fd-head-credible : Integer, Integer -> Boolean
+  fd-head-credible (log-head) (sector-count) =
+   if sector-count <= 0 then True else log-head <= sector-count
+
   store-read-bundle : FactBundle -> [Device.Block] FactBundle
   store-read-bundle (base) = act
    lh <- fd-log-head
-   fd-fold fl-fact-log-start lh base
+   n <- block-sector-count
+   if fd-head-credible lh n
+    then fd-fold fl-fact-log-start lh base
+    else act base end
   end

@@ -64,9 +64,14 @@ never in the framing's own `(text-lit "@Q")` / `(text-lit "Q@")`.
 
 Procedure:
 
-1. Compile the trojaned-placeholder compiler to IR-CCE and decode it. The CCE
-   map is in `codex/plugs/recheck/kill-rate.ps1`; invert it, and note byte 1 is
-   the newline.
+1. Compile the trojaned-placeholder compiler with `-IrUni` and read the emitted
+   IR text directly: the emitted `(text-lit "...")` is byte-identical to the
+   source literal and no decode is needed. This is the path `build/jonquil.ps1`
+   uses and the one the measurements below actually used. (`-IrCce` also works,
+   but then the emitted block is CCE bytes you must decode with the map in
+   `codex/plugs/recheck/kill-rate.ps1` inverted, byte 1 being the newline. There
+   is no reason to take that route for this arm; the earlier version of this
+   step prescribed it and it does not match what was run.)
 2. Extract `(def "ir-emit-def" ...)` and split it at the quoted slot into
    PRE and POST.
 3. `D = PRE + "@QQ@" + POST`, and write `"<esc(D)>"` as the source literal.
@@ -81,10 +86,24 @@ caught every escaping subtlety, and at full scale one cycle is minutes.
 
 ## Measured, 2026-08-15 (val)
 
-Run end to end against depot seed `8D405FDF`, IR-UNI, `-Kernel seed/Codex.cdx`.
+The full-scale run below was end to end against depot seed `8D405FDF`, IR-UNI,
+`-Kernel seed/Codex.cdx`. The toy was re-verified on the current seed
+(2026-08-15) and is seed-independent: it is a fact about `ir-emit-def`'s output
+format, not about any particular seed.
 
-- **Toy scale** (`QuineToy.codex`, one `quine-self` def): emitted def equals
-  `replace(D, "@QQ@", ir-quote(D))` byte-for-byte, both 1774 chars. One shot.
+- **Toy scale** (`docs/Test/Active/QuineToy.codex`, one `quine-self` def, IN the
+  depot -- this is the reproducible entry point, no longer session scratch).
+  Compiled over that source, the compiler emits the def
+  `(def "quine-self" "QuineToy" (params) text (text-lit "<ir-quote(D)>") 0 0)`,
+  whose text-lit content is `ir-quote(D)`, so the emitted def equals
+  `replace(D, "@QQ@", ir-quote(D))` byte-for-byte. `D` is 63 chars, the emitted
+  def 128; blanking the emitted def's own text-lit slot back to `@QQ@` returns
+  `D` exactly, and `build/jonquil.ps1` FIRES on it (the `quine-self` def carries
+  `(def \"quine-self\"` as text-lit data). One shot. The toy is the PASSIVE
+  textual fixed point -- a constant-string def whose source literal IS `D` --
+  which is what the active `text-replace ... (ir-quote t)` construction above
+  reduces to; it needs neither `text-replace` nor `ir-quote` callable, because
+  reproduction is checked against the emitted text, not computed at runtime.
 - **Full scale** (`ir-emit-def` in `IRTextEmitter.codex`, whole compiler concat,
   ~2.81 MB source, ~34 s to placeholder IR + ~41 s to the injected pass): the
   trojaned `ir-emit-def`, run over CLEAN source, emits its own trojaned
@@ -107,6 +126,31 @@ reaches the CDX needs a codegen site too (the manual's frontend-IR arm pairs the
 `ir-emit-def` hook with an `X86_64Helpers` nop for exactly this reason). What the
 quine adds is the self-reproduction mechanism, now measured rather than reasoned,
 and the confirmation that a survivor is greppable text end to end.
+
+## Reproduce the toy
+
+Two commands from the repo root, seconds each, no plug and no CCE decode:
+
+```powershell
+build/compile.ps1 -Src docs/Test/Active/QuineToy.codex -Out $env:TEMP\qt.ir `
+  -Log $env:TEMP\qt.log -Kernel seed/Codex.cdx -IrUni
+build/jonquil.ps1 -IrFile $env:TEMP\qt.log    # exits 1, flagging quine-self
+```
+
+The compile exits non-zero: the toy chapter has no `opening`, so codegen halts
+AFTER the IR is emitted. That is expected, and the IR log is complete (it carries
+`IR-BEGIN` / `IR-END`). Find the `(def "quine-self" ...)` line in the log; its
+text-lit content is the reproduction, and its embedded `(def \"quine-self\"` is
+both the self-reproduction and what jonquil catches. `-Out` and `-Log` must be
+ABSOLUTE paths (the `WriteAllBytes`-cwd trap below).
+
+To BUILD a fresh toy from a placeholder rather than run the committed one: compile
+a `quine-self : Text = "PLACEHOLDERXYZZY"` chapter, read the emitted def line, take
+`PRE` up to the text-lit's opening quote and `POST` from after its closing quote,
+set `D = PRE + "@QQ@" + POST`, and write the source literal as the escaped `D`
+(escape `\` and `"`; `ir-quote` is the exact inverse). Recompile: the emitted def
+now equals `replace(D, "@QQ@", ir-quote(D))`. PRE and POST are structure-only, so
+it converges in one shot.
 
 ## Running an arm without fooling yourself
 

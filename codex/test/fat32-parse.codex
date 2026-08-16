@@ -37,6 +37,25 @@ Section: Writers
     in let f32 = gfat-put-u32 b 36 516
     in gfat-put-u32 b 44 2
 
+ The fixtures above leave total sectors at zero, so their cluster count
+ is zero and every cluster is out of range -- which cannot tell a bound
+ that is right from one that is off by one. This one declares 40000
+ sectors, putting the highest valid cluster at 38937 and the first
+ invalid one at 38938.
+
+  build-bpb32-big : Integer -> Integer
+  build-bpb32-big (b) =
+    let z = zero-fill b 0 512
+    in let bps = gfat-put-u16 b 11 512
+    in let spc = poke-byte b 13 1
+    in let rsv = gfat-put-u16 b 14 32
+    in let nf = poke-byte b 16 2
+    in let f16 = gfat-put-u16 b 22 0
+    in let t16 = gfat-put-u16 b 19 0
+    in let t32 = gfat-put-u32 b 32 40000
+    in let f32 = gfat-put-u32 b 36 516
+    in gfat-put-u32 b 44 2
+
   build-bpb16 : Integer -> Integer
   build-bpb16 (b) =
     let z = zero-fill b 0 512
@@ -114,6 +133,12 @@ Section: Main
           print-line-uni (vol-line "bpb16" v16)
           print-line-uni ("is-end32 eoc=" & yn (gfat-is-end v32 268435448) & " below=" & yn (gfat-is-end v32 268435447) & " big=" & yn (gfat-is-end v32 70000))
           print-line-uni ("is-end16 eoc=" & yn (gfat-is-end v16 65528) & " big=" & yn (gfat-is-end v16 70000))
+          let wbig = build-bpb32-big b
+          in let vbig = gfat-parse-bpb 2048 b
+          in print-line-uni ("range32 clusters=" & show (vbig.vol-cluster-count) & " max=" & show (gfat-max-cluster vbig)
+            & " c0=" & yn (gfat-cluster-ok vbig 0) & " c1=" & yn (gfat-cluster-ok vbig 1)
+            & " c2=" & yn (gfat-cluster-ok vbig 2) & " last=" & yn (gfat-cluster-ok vbig 38937)
+            & " past=" & yn (gfat-cluster-ok vbig 38938) & " big=" & yn (gfat-cluster-ok vbig 70000))
           let f32 = build-fat32 (b + 512)
           in print-line-uni ("fat32 next2=" & show (gfat-fat-next v32 (b + 512) 2) & " next3=" & show (gfat-fat-next v32 (b + 512) 3) & " next4=" & show (gfat-fat-next v32 (b + 512) 4) & " next5=" & show (gfat-fat-next v32 (b + 512) 5) & " free=" & show (gfat-find-free v32 (b + 512) 2 128))
           let f16 = build-fat16 (b + 512)

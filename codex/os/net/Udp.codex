@@ -19,6 +19,43 @@ Section: Datagram Construction
     let len = udp-header-size + list-length payload
     in write-be16 src-port & write-be16 dst-port & write-be16 len & [0, 0] & payload
 
+Section: Checksums
+
+ RFC 768. The pseudo-header is the same shape TCP's is, with the UDP protocol
+ number and the UDP length, and the datagram is padded to an even byte count
+ for the sum without that pad going on the wire.
+
+ The two zero rules are not symmetric and both matter. A COMPUTED zero is
+ transmitted as 0xFFFF, because on IPv4 a stored zero is the encoding for "no
+ checksum here" and the two must not collide. A RECEIVED zero is accepted
+ without checking, for the same reason read the other way: refusing it would
+ refuse every peer that declines to compute one, which is legal, and included
+ this stack until the send half below existed.
+
+  udp-pseudo-header : List Integer, List Integer, Integer -> List Integer
+  udp-pseudo-header (src-ip) (dst-ip) (udp-len) =
+    src-ip & dst-ip & [0, ip-proto-udp] & write-be16 udp-len
+
+  udp-sum : List Integer, List Integer, List Integer -> Integer
+  udp-sum (udp-bytes) (src-ip) (dst-ip) =
+    let udp-len = list-length udp-bytes
+    in let pseudo = udp-pseudo-header src-ip dst-ip udp-len
+    in let padded = if bit-and udp-len 1 == 1 then pseudo & udp-bytes & [0] else pseudo & udp-bytes
+    in ip-checksum padded 0 (list-length padded) 0
+
+  udp-with-checksum : List Integer, List Integer, List Integer -> List Integer
+  udp-with-checksum (udp-bytes) (src-ip) (dst-ip) =
+    let raw = udp-sum udp-bytes src-ip dst-ip
+    in let cksum = if raw == 0 then 65535 else raw
+    in list-set-at (list-set-at udp-bytes 6 (bit-shru cksum 8)) 7 (bit-and cksum 255)
+
+  udp-checksum-valid : List Integer, List Integer, List Integer -> Boolean
+  udp-checksum-valid (udp-bytes) (src-ip) (dst-ip) =
+    if list-length udp-bytes < udp-header-size then False
+    else if read-be16 udp-bytes 4 /= list-length udp-bytes then False
+    else if read-be16 udp-bytes 6 == 0 then True
+    else udp-sum udp-bytes src-ip dst-ip == 0
+
 Section: Datagram Parsing
   udp-parse : List Integer -> UdpDatagram
   udp-parse (data) =
@@ -40,7 +77,7 @@ Section: Datagram Parsing
 Section: IP Integration
   udp-build-ip-packet : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
   udp-build-ip-packet (src-ip) (dst-ip) (src-port) (dst-port) (payload) =
-    let udp-data = udp-build src-port dst-port payload
+    let udp-data = udp-with-checksum (udp-build src-port dst-port payload) src-ip dst-ip
     in ip-build-packet src-ip dst-ip ip-proto-udp udp-data
 
   udp-build-frame : List Integer, List Integer, List Integer, List Integer, Integer, Integer, List Integer -> List Integer

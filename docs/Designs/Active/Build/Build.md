@@ -477,7 +477,29 @@ $Repo '...'` with no parentheses, which PARSES and fails at runtime. Fixed at
 the call site (`SeRaw "(Join-Path ...)"`), not in the emitter, because
 `emit-ps-cmd-ext` passes `SeRaw` through verbatim and changing that would
 re-drift all 51 matching generators. Same class as the `test-boards`
-`Split-Path` bug; check the other `ScCopy` call sites before trusting one.
+`Split-Path` bug.
+
+**That class has a runner now, and the sweep it replaces came back clean**
+(2026-08-15). Scanned across 345 scripts under `build/`, `codex/plugs/` and
+`apps/`: **0 occurrences**, so the two known instances were the only ones. But
+a sweep run once is an assertion with nothing behind it, and this class had
+already reached the tree twice, so `check-generated-scripts.ps1` gained a
+`BARE CMDLET ARG` leg that scans the EMITTED text -- before install, not after.
+It FAILS rather than warns, which is affordable precisely because the count is
+zero: a new one is a defect, never an expected answer.
+
+**It is a heuristic, and the honest statement of it is the span test.** A
+value-producing cmdlet (`Join-Path`, `Split-Path`, `Get-Content`, ...) counts
+only when it sits in the ARGUMENT LIST of a positional cmdlet
+(`Copy-Item`, `New-Item`, ...), with nothing between them that ends that list.
+Without the span test, `if (Test-Path $x) { Get-Content ... }` matches and the
+scan drowns in 29 correct lines, which is how the first version of it read.
+
+**Fired deliberately before it was trusted.** Reverting the `ScCopy` call site
+to the unparenthesised form made the leg report
+`build: BARE CMDLET ARG (1)` naming line 381 and the emitted text, exit 1;
+restoring it returned 55 generators, 0 drifted, 0 broken. Both arms, because a
+check nobody has watched fail is not evidence (L-FALSIF).
 
 `test` was the easier half despite the larger file: 744 executable lines on
 each side, **0 differing**. It had grown tiers, the `-ApprovedBy` refusal,
@@ -492,12 +514,16 @@ For `test` the battery is not an agent's to run (R-GATE), so the arms were:
 executed both ways (no `-ApprovedBy`, and a wrong one) -- exit 1 each, with
 all 13 parameters binding in the shipped order.
 
-**`BuildScript.codex` and `cdxtopeScript.codex` now sit at exactly the 1.25
-deck floor: 51 of 64.** They pass with no headroom left. Anything added to
-either needs a new section binding in the same change (one binding per section
-buys 2 points), or `deck-headroom` goes red on the gate itself. That is why
-the derived generators are split at 55 lines per section rather than emitted
-as one list.
+**The back-port put three chapters on the 1.25 deck floor at 51 of 64, and
+restructuring took the quire to 1.39 at 46. Closed 2026-08-15 (fester), the
+account is below.**
+
+**A correction, because the first version of this paragraph had the sign
+backwards.** It said a new section binding "buys 2 points". It costs them.
+`ProportionalDecks.md` and Update 42 both say it correctly -- "one binding per
+section costs 2 points of deck and buys THE FILE back", meaning it costs deck
+and buys readability -- and reading that as buying deck is how this paragraph
+came to advise the next author to do the thing that makes it worse.
 
 ### `cdx-to-pe` and `build-img`
 
@@ -540,6 +566,56 @@ parameters split one-per-line by `emit-ps-params`.
   `build-img`'s header block was PRESERVED by moving it to the top of the body
   -- it carries the GPT layout and the reason the second partition exists,
   which nothing else records.
+
+### The deck floor under `codex/build`, closed 2026-08-15 (fester)
+
+Damian's assignment after the back-port put `BuildScript`, `testScript` and
+`cdxtopeScript` on the floor at 51 of 64, where OK and out of room are the same
+number. Route taken: shrink what those chapters need. Not `-MinMargin`, which
+silences a correct instrument, and not `deck-scale-min`, which is a
+whole-corpus constant at 6,710,886 bytes of reservation per point per unit and
+the wrong lever for three chapters' structure.
+
+**The lever is the count of names bound at top level, and it was measured
+rather than assumed.** `cdxtopeScript` was regenerated at four section
+granularities over IDENTICAL body text, so binding count is the only variable:
+
+| sections | top-level defs | required | margin | unit length | longest line |
+|---|---|---|---|---|---|
+| 20 | 24 | 51 | 1.25 | 145,555 | 4,700 |
+| 10 | 14 | 48 | 1.33 | 144,995 | 9,040 |
+| 4 | 8 | 46 | 1.39 | 144,659 | 21,209 |
+| 1 | 5 | 45 | 1.42 | 144,491 | 72,466 |
+
+**Six points of required scale across a unit length that moves by less than one
+per cent.** That is the anti-correlation `ProportionalDecks.md` describes,
+reproduced on a chapter 45 per cent larger than the ones it was found on.
+
+Landed: `BuildScript` 30 sections to 10 (33 defs to 12), `testScript` 16 to 6
+(21 to 10), `cdxtopeScript` 20 to 4 (24 to 8). **Quire tightest 1.25 to 1.39,
+51 of 64 to 46**, and the three are no longer the constraint on their own --
+they now tie `vmconfigScript`, which was already at 46 before any of this.
+
+**Why 4 sections was acceptable here when the design chose readability at 2
+points for `ablatedoctrineScript`:** that chapter is hand-written and a 25,800
+character line is a real cost to whoever edits it. These three are DERIVED --
+the workflow is to change the `.ps1` and re-run the transformer, not to hand-
+edit a `ScRaw`. Line length costs less against a chapter nobody edits by hand,
+so the trade lands differently. Say which kind of chapter you have before
+copying either choice.
+
+**The merge was scripted, not hand-done, and the script refused the first
+run.** Hand-merging thirty list literals is where a dropped element gets in,
+and a dropped element is a silently shorter `build.ps1` that still passes a
+parse check. The script asserts every section lands in exactly one group; it
+threw on `build-body`, which is a `List ShellCmd` too and is not a section.
+
+**Proof the restructure changed nothing.** Drift 0 on all three, which for a
+generator IS byte-identity of the output. Beyond that: `build.ps1` 759
+non-blank lines emitted against 759 shipped, 0 differing, all 21 phases;
+`test.ps1` 968 against 968, 0 differing; and `cdx-to-pe.ps1` re-proved on the
+ARTIFACT across the same six `.efi` flag arms, every one still byte-identical
+to what the PRE-back-port script produced.
 
 **One false positive in the checker fell out of this and is fixed.** The
 unhandled-node scan matched `<unknown-(?:cmd|expr)>` anywhere in the emitted

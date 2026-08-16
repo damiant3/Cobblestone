@@ -1,0 +1,288 @@
+Chapter: NicInitProbe
+  cites Works chapter GopUsb
+  cites Works chapter GopXhci
+  cites Works chapter GopFat16
+  cites Works chapter GopDraw
+  cites Kernel chapter BitmapFont
+  cites Works chapter GopHandoff
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+  cites Kernel chapter Pci
+  cites Kernel chapter Hpet
+  cites Kernel chapter E1000e
+  cites Works chapter GopShot
+  cites Dev chapter NicAsde
+
+ NIC-3, second attempt. `nicsitting.img` flew 2026-08-14, answered NIC-1 and
+ NIC-2, and then painted `NIC-3 below writes to the part` and stopped. The next
+ expression was `e1000-init d`, so `e1000-init` was entered and did not return.
+
+ THIS PROBE DOES NOT CALL `e1000-init`. It performs that function's own
+ sequence, in its own order, out of its own primitives, with a row painted
+ BEFORE every step that can loop. The last row on the glass therefore names the
+ loop that did not return, which is the whole question (L-STATES).
+
+ EVERY STEP THAT RETURNS ALSO PRINTS ITS DURATION, and that is the second half
+ of the design. A step that never returns and a step that takes four minutes
+ look identical on a photograph of a stalled screen, and they are different
+ findings with different fixes. `e1000-await-link` alone is 4,000,000 polls of
+ an MMIO register; NIC-2 measured metal at 2.50x the bed for a RAM-side poll,
+ and an MMIO read crosses the PCH, so a long-but-finite spin is a live
+ hypothesis and this is what would distinguish it.
+
+ THE DRIVER IS UNCHANGED. Every call below is `E1000e`'s own, in `e1000-init`'s
+ own order, so a different outcome cannot be blamed on a different sequence.
+ The one thing reproduced rather than called is the BODY of `e1000-reset` and
+ of `e1000-init-after-reset`: those are the two functions whose interiors need
+ rows, and their bodies are transcribed operation for operation below. That is
+ the same licence `AsdeStageProbe` took on 2026-08-13 when it split the reset
+ into its five MMIO operations, and for the same reason.
+
+ WHAT IS BANKED BEFORE THE FIRST WRITE. The touch, RCTL/TCTL and the ring
+ registers, exactly as `nicsitting` painted them, so the arrival state is
+ comparable with 2026-08-14 row for row. If those differ from that flight, the
+ board did not arrive the way it did last time and nothing below is comparable
+ either -- that is why they are re-read rather than assumed answered.
+
+ We say:
+
+Section: Marker Files
+
+  nip-name : Integer -> Integer
+  nip-name (buf) =
+   let a = poke-byte buf 0 78
+   in let b = poke-byte buf 1 73
+   in let c = poke-byte buf 2 67
+   in let d = poke-byte buf 3 51
+   in let p1 = poke-byte buf 4 32
+   in let p2 = poke-byte buf 5 32
+   in let p3 = poke-byte buf 6 32
+   in let p4 = poke-byte buf 7 32
+   in let t = poke-byte buf 8 84
+   in let x = poke-byte buf 9 88
+   in poke-byte buf 10 84
+
+  nip-bytes : Integer, Text, Integer -> Integer
+  nip-bytes (buf) (s) (i) =
+   if i >= text-length s then i
+   else let b = poke-byte buf i (to-unicode (char-code (char-at s i)))
+   in nip-bytes buf s (i + 1)
+
+  nip-mark : GfatMount, Text -> [Device.Port] Boolean
+  nip-mark (m) (body) =
+   if (m.gm-ok) == False then False
+   else let nb = alloc-zeroed 16 16
+   in let nm = nip-name nb
+   in let n = text-length body
+   in let buf = alloc-zeroed 512 64
+   in let w = nip-bytes buf body 0
+   in gfat-write-file (m.gm-vol) nb buf n
+
+  nip-stage-name : Integer -> Text
+  nip-stage-name (s) =
+   if s == gfat-stage-hdr then "GPT header read failed"
+   else if s == gfat-stage-sig then "no EFI PART signature"
+   else if s == gfat-stage-ents then "entry array read failed"
+   else if s == gfat-stage-guid then "no ESP GUID in the entry array"
+   else if s == gfat-stage-bpb then "BPB sector read failed"
+   else if s == gfat-stage-bps then "bytes-per-sector not 512"
+   else if s == gfat-stage-ok then "ok"
+   else "not asked"
+
+  nip-bank-line : GfatMount, Boolean -> Text
+  nip-bank-line (m) (wrote) =
+   if m.gm-ok then "bank live, NIC3.TXT written=" & (if wrote then "y" else "n")
+   else "no bank, mount stage " & show (xdiag-get gfat-cell-stage)
+        & " (" & nip-stage-name (xdiag-get gfat-cell-stage)
+        & ") -- the rows below are the reading"
+
+Section: Rows
+
+  nrow : Integer, Integer, CbfFont, Integer, Integer, Text, Integer, Integer -> Integer
+  nrow (base) (stride) (font) (y) (scale) (s) (col) (w) =
+   let lines = gop-draw-text-wrap base stride font 40 y s col scale w
+   in y + lines * 16 * scale + 6
+
+  col-read : Integer = 9474192
+  col-good : Integer = 3394611
+  col-warn : Integer = 16755200
+  col-head : Integer = 65535
+  col-step : Integer = 16777088
+
+Section: Arrival State, re-read as the comparability control
+
+ THE ARRIVAL ROWS ARE COMPRESSED TO TWO LINES ON PURPOSE. Every line spent
+ above the steps is a line the steps do not get, and at the ASUS's scale 2 the
+ step rows are what the flight is for. The 2026-08-14 values are NOT printed
+ beside them: a photograph does not need the comparison, the doc has it, and
+ the four numbers below are what gets compared against that entry by eye.
+
+  nip-arrival-1 : Integer -> Text
+  nip-arrival-1 (mmio) =
+   let r = e1000-read mmio e1000-reg-rctl
+   in let t = e1000-read mmio e1000-reg-tctl
+   in "arrival RCTL=" & show r & " EN=" & na-yn (bit-and r e1000-rctl-en)
+     & " TCTL=" & show t & " EN=" & na-yn (bit-and t e1000-tctl-en)
+
+  nip-arrival-2 : Integer, Integer -> Text
+  nip-arrival-2 (mmio) (hz) =
+   "arrival RDBAL=" & show (e1000-read mmio e1000-reg-rdbal)
+     & " RDLEN=" & show (e1000-read mmio e1000-reg-rdlen)
+     & " RDH=" & show (e1000-read mmio e1000-reg-rdh)
+     & " RDT=" & show (e1000-read mmio e1000-reg-rdt)
+     & " hpet=" & show hz
+
+Section: Durations
+
+ A step's cost in microseconds, from the HPET, so a slow step reads as a number
+ rather than as a stall. hpet-hz is printed once above; if it is 0 or absurd
+ every duration below it is void and the row says so.
+
+  nip-us : Integer, Integer, Integer -> Integer
+  nip-us (t0) (t1) (rate) = if rate <= 0 then (0 - 1) else (t1 - t0) * 1000000 / rate
+
+ ONE LINE PER STEP, REPAINTED IN PLACE, and the reason is the glass rather than
+ tidiness. Twelve steps with a separate entering row and result row is
+ twenty-four lines; the bed paints at scale 1 and the ASUS at scale 2, so what
+ fits here overflows there, and `OperatorsManual` already records the scale-2
+ probe rows as the measured clipping surface. `nip-enter` paints ENTERING at y
+ and does NOT advance. `nip-ret` blanks that same y and paints the result over
+ it. So a step that returns costs one line and a step that HANGS leaves its own
+ ENTERING line as the last thing on the screen, which is the reading.
+
+  nip-line-h : Integer -> Integer
+  nip-line-h (scale) = 16 * scale + 6
+
+  nip-enter : Integer, Integer, CbfFont, Integer, Integer, Text, Integer -> Integer
+  nip-enter (base) (stride) (font) (y) (scale) (s) (w) =
+   let l = gop-draw-text-wrap base stride font 40 y s col-step scale w
+   in y
+
+  nip-ret : Integer, Integer, CbfFont, Integer, Integer, Text, Integer, Integer -> Integer
+  nip-ret (base) (stride) (font) (y) (scale) (s) (col) (w) =
+   let clr = gop-fill-rect base stride 0 y w (nip-line-h scale) 1710638
+   in let l = gop-draw-text-wrap base stride font 40 y s col scale w
+   in y + nip-line-h scale
+
+  nip-done : Text, Integer, Integer -> Text
+  nip-done (what) (us) (extra) =
+   what & " ret " & show extra & " in " & show us & "us"
+
+Section: Entry
+
+  opening : [Device.Port, Device.Mmio] Integer
+  opening =
+   let base = boot-fb-base 0
+   in let w = boot-fb-w 0
+   in let h = boot-fb-h 0
+   in let stride = boot-fb-stride 0
+   in let font = cbf-init
+   in let scale = if w >= 1024 then 2 else 1
+   in act
+    ri <- runtime-init 0
+    att <- usb-attach
+    let bg = gop-fill-rect base stride 0 0 w h 1710638
+    in let y0 = nrow base stride font 40 scale "NIC INIT PROBE -- last row names the loop that hung" col-head w
+    in act
+      m <- gfat-mount-esp
+      m0 <- nip-mark m "nic init probe, rows on the glass"
+      let y1 = nrow base stride font y0 scale (nip-bank-line m m0) (if m.gm-ok then col-read else col-warn) w
+      in let scan = pci-scan-all
+      in let yend = when e1000-find scan
+       is None -> nrow base stride font y1 scale "NO ELIGIBLE INTEL PART FOUND -- nothing below can run" col-warn w
+       is Just (d) ->
+         if na-eligible d == False then nrow base stride font y1 scale (na-reject-line d) col-warn w
+         else let y2 = nrow base stride font y1 scale ("eligible at " & show (d.pci-bus) & ":" & show (d.pci-dev) & "." & show (d.pci-func) & " verdict=" & na-verdict-text (e1000-bar-verdict (na-bar-of d))) col-read w
+         in let mmio = na-mmio-of d
+         in let t = na-touch mmio
+         in let started = hpet-start
+         in let hz = hpet-ticks-per-second
+         in let y4 = nrow base stride font y2 scale (nip-arrival-1 mmio) col-read w
+         in let y7 = nrow base stride font y4 scale (nip-arrival-2 mmio hz) col-read w
+
+         in let e1 = pci-enable-device d
+
+         in let y8 = nip-enter base stride font y7 scale "s1 ENTERING imc+ctrl+RST writes" w
+         in let a1 = e1000-write mmio e1000-reg-imc #FFFFFFFF
+         in let ctrl0 = e1000-read mmio e1000-reg-ctrl
+         in let a2 = e1000-write mmio e1000-reg-ctrl (bit-or ctrl0 e1000-ctrl-rst)
+         in let y8b = nip-ret base stride font y8 scale ("s1 pcien=" & show e1 & " ctrl=" & show ctrl0 & " (RST discarded here)") col-read w
+
+         in let y9 = nip-enter base stride font y8b scale "s2 ENTERING e1000-await-reset fuel 1000000" w
+         in let r0 = hpet-ticks
+         in let settled = e1000-await-reset mmio 0
+         in let r1 = hpet-ticks
+         in let y9b = nip-ret base stride font y9 scale (nip-done "s2 await-reset" (nip-us r0 r1 hz) settled) col-good w
+
+         in let ya = nip-enter base stride font y9b scale "s3 ENTERING e1000-settle-mdio fuel 200000" w
+         in let s0 = hpet-ticks
+         in let waited = e1000-settle-mdio mmio
+         in let s1 = hpet-ticks
+         in let yab = nip-ret base stride font ya scale (nip-done "s3 settle-mdio" (nip-us s0 s1 hz) waited) col-good w
+
+         in let a3 = e1000-write mmio e1000-reg-imc #FFFFFFFF
+         in let a4 = e1000-read mmio e1000-reg-icr
+
+         in let yb = nip-enter base stride font yab scale "s4 ENTERING e1000-quiesce RCTL=0 TCTL=0 +10ms" w
+         in let q0 = hpet-ticks
+         in let quiet = e1000-quiesce mmio
+         in let q1 = hpet-ticks
+         in let ybb = nip-ret base stride font yb scale (nip-done "s4 quiesce" (nip-us q0 q1 hz) quiet) col-good w
+
+         in let yc = nip-enter base stride font ybb scale "s5 ENTERING ring alloc + zero" w
+         in let g0 = hpet-ticks
+         in let rx-ring = e1000-alloc-aligned (e1000-rx-count * e1000-desc-size) 16
+         in let tx-ring = e1000-alloc-aligned (e1000-tx-count * e1000-desc-size) 16
+         in let rx-bufs = e1000-alloc-aligned (e1000-rx-count * e1000-buf-size) 16
+         in let tx-bufs = e1000-alloc-aligned (e1000-tx-count * e1000-buf-size) 16
+         in let ctrl-blk = e1000-alloc-aligned e1000-cb-size 8
+         in let cb-clear = e1000-zero-words ctrl-blk (e1000-cb-size / 4) 0
+         in let g1 = hpet-ticks
+         in let ycb = nip-ret base stride font yc scale (nip-done "s5 alloc" (nip-us g0 g1 hz) 0) col-good w
+
+         in let yd = nip-enter base stride font ycb scale "s6 ENTERING e1000-clear-mta" w
+         in let c0 = hpet-ticks
+         in let mta = e1000-clear-mta mmio 0
+         in let c1 = hpet-ticks
+         in let ydb = nip-ret base stride font yd scale (nip-done "s6 clear-mta" (nip-us c0 c1 hz) mta) col-good w
+
+         in let mac-ok = e1000-mac-present mmio
+         in let mac = if mac-ok then e1000-read-mac mmio else []
+         in let dev = E1000Device { e-mmio = mmio, e-rx-ring = rx-ring,
+                                    e-tx-ring = tx-ring, e-rx-bufs = rx-bufs,
+                                    e-tx-bufs = tx-bufs, e-ctrl-blk = ctrl-blk,
+                                    e-present = True, e-mac = mac,
+                                    e-mac-valid = mac-ok }
+
+         in let ye = nip-enter base stride font ydb scale "s7 ENTERING e1000-setup-rx (enables the receiver)" w
+         in let x0 = hpet-ticks
+         in let rx = e1000-setup-rx dev
+         in let x1 = hpet-ticks
+         in let yeb = nip-ret base stride font ye scale (nip-done "s7 setup-rx" (nip-us x0 x1 hz) rx & " macok=" & (if mac-ok then "y" else "n")) col-good w
+
+         in let yf = nip-enter base stride font yeb scale "s8 ENTERING e1000-setup-tx" w
+         in let z0 = hpet-ticks
+         in let tx = e1000-setup-tx dev
+         in let z1 = hpet-ticks
+         in let yfb = nip-ret base stride font yf scale (nip-done "s8 setup-tx" (nip-us z0 z1 hz) tx) col-good w
+
+         in let yg = nip-enter base stride font yfb scale "s9 ENTERING e1000-phy-bring-up (MDIO)" w
+         in let p0 = hpet-ticks
+         in let phy = e1000-phy-bring-up mmio
+         in let p1 = hpet-ticks
+         in let ygb = nip-ret base stride font yg scale (nip-done "s9 phy-bring-up" (nip-us p0 p1 hz) phy) col-good w
+
+         in let ctrl1 = e1000-read mmio e1000-reg-ctrl
+         in let slu = e1000-write mmio e1000-reg-ctrl (bit-and (bit-or ctrl1 e1000-ctrl-slu) e1000-clear-asde)
+         in let yh = nip-enter base stride font ygb scale "s10 ENTERING e1000-await-link fuel 4000000 MMIO reads" w
+         in let l0 = hpet-ticks
+         in let link = e1000-await-link mmio 0
+         in let l1 = hpet-ticks
+         in let yhb = nip-ret base stride font yh scale (nip-done "s10 await-link" (nip-us l0 l1 hz) link) (if link == 1 then col-good else col-warn) w
+
+         in nrow base stride font yhb scale ("INIT COMPLETE RDH=" & show (e1000-read mmio e1000-reg-rdh) & " RDT=" & show (e1000-read mmio e1000-reg-rdt) & " -- photograph, then F12") col-head w
+      in shot-wait base w h stride font (att.ua-kbd)
+    end
+   end
+
+Page 1

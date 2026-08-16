@@ -2,6 +2,7 @@ Chapter: Handshake
   cites Foreword chapter Maybe
   cites Net chapter MessageFraming
   cites Foreword chapter ProofOfWork
+  cites Foreword chapter Ed25519
   cites Trust chapter TrustLattice
 
  We say:
@@ -46,9 +47,23 @@ Section: Handshake State Machine
 
 Section: Receiver Side
 
+ An Ed25519 public key is 32 bytes and a signature is 64. ge-from-bytes reads
+ index 31 unconditionally and ed-list-drop computes len - 32, so a short key or
+ signature is an out-of-bounds read and a negative slice length inside the crypto
+ rather than a refusal here. Both lengths are checked before either reaches it.
+
+  hs-key-len : Integer = 32
+
+  hs-sig-len : Integer = 64
+
   hs-receive-hello : HelloMsg, List Integer, TrustLattice, Integer -> HandshakeResult
   hs-receive-hello (hello) (challenge-nonce) (lattice) (required-difficulty) =
-    if hello.pow-difficulty < required-difficulty
+    if list-length (hello.public-key) /= hs-key-len
+      then HandshakeResult {
+        state = HsFailed "malformed public key",
+        outbound = frame-encode tag-reject (frame-encode-text "public key must be 32 bytes")
+      }
+    else if hello.pow-difficulty < required-difficulty
       then HandshakeResult {
         state = HsFailed "insufficient difficulty",
         outbound = frame-encode tag-reject (frame-encode-text "insufficient proof-of-work difficulty")
@@ -63,9 +78,24 @@ Section: Receiver Side
       outbound = frame-encode tag-reject (frame-encode-text "invalid proof-of-work")
     }
 
-  hs-receive-prove : List Integer, List Integer, TrustLattice -> HandshakeResult
-  hs-receive-prove (expected-nonce) (peer-key) (lattice) =
-    let key-hex = bytes-to-hex-hs peer-key 0 (list-length peer-key) ""
+  hs-receive-prove : List Integer, List Integer, List Integer, TrustLattice -> HandshakeResult
+  hs-receive-prove (expected-nonce) (peer-key) (signed-nonce) (lattice) =
+    if list-length peer-key /= hs-key-len
+      then HandshakeResult {
+        state = HsFailed "malformed public key",
+        outbound = frame-encode tag-reject (frame-encode-text "public key must be 32 bytes")
+      }
+    else if list-length signed-nonce /= hs-sig-len
+      then HandshakeResult {
+        state = HsFailed "malformed signature",
+        outbound = frame-encode tag-reject (frame-encode-text "signature must be 64 bytes")
+      }
+    else if ed25519-verify peer-key expected-nonce signed-nonce == False
+      then HandshakeResult {
+        state = HsFailed "signature does not match challenge",
+        outbound = frame-encode tag-reject (frame-encode-text "signature does not match challenge")
+      }
+    else let key-hex = bytes-to-hex-hs peer-key 0 hs-key-len ""
     in let score = lattice-trust-score lattice key-hex
     in HandshakeResult {
       state = HsCompleted score,

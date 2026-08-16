@@ -152,7 +152,6 @@ $runSlow  = $Slow.IsPresent  -or $tiers.Contains('slow')
 # alone runs the collections and no tests.
 if ($tiers.Count -eq 0) { [void]$tiers.Add('lang') }
 
-
 $machineSidecars = @('.smp', '.vmargs', '.disk', '.disk2', '.keys')
 function Test-MachineSidecar {
     param([string]$Src)
@@ -283,7 +282,6 @@ function Restore-Kernel {
     }
 }
 
-
 # ===========================================================================
 # Pre-filter: handle skips, partition into compile lists
 # ===========================================================================
@@ -373,7 +371,6 @@ foreach ($proc in $compileProcs) {
 $phase1Sw.Stop()
 Write-Host "Phase 1 (compile) complete in $([int]($phase1Sw.ElapsedMilliseconds/1000))s."
 $retrySw = [System.Diagnostics.Stopwatch]::StartNew()
-
 
 # ===========================================================================
 # Phase 1a: Contain batch-VM crashes.
@@ -690,7 +687,6 @@ foreach ($src in $toCompile) {
     })
 }
 
-
 # ===========================================================================
 # Phase 2: Run tests with .expected files (individual VM per test)
 # ===========================================================================
@@ -815,7 +811,6 @@ if ($tiers.Contains('oracles')) {
     }
 }
 
-
 # ===========================================================================
 # Aggregate results
 # ===========================================================================
@@ -877,7 +872,6 @@ $unexpected = $buckets.FAIL_COMPILE.Count + $buckets.FAIL_EXPECTED_BUT_COMPILED.
             + $buckets.FAIL_FATAL_SURVIVED.Count + $buckets.FAIL_FATAL_EXC.Count
 
 Write-Host "total=$total  pass=$passed  fail=$unexpected  skip=$($buckets.SKIPPED.Count)"
-
 
 # ===========================================================================
 # Rollup and run-over-run delta. The rollup is one file a reader can act on
@@ -1020,7 +1014,6 @@ foreach ($k in $prev.Keys) { if ($existingNames.Contains($k)) { $carried[$k] = $
 foreach ($k in $statusOf.Keys) { $carried[$k] = $statusOf[$k] }
 @{ stamp = $runStamp; stage0 = $seedStamp; tiers = $tierLabel; status = $carried } |
     ConvertTo-Json -Depth 4 | Set-Content -Path $prevFile -Encoding UTF8
-
 
 $oracleFails = @($oracleResults | Where-Object { -not $_.Ok }).Count
 if ($unexpected -gt 0 -or $oracleFails -gt 0) {

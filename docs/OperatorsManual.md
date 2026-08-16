@@ -396,6 +396,7 @@ codex-vm -kernel file.cdx [options]
 | `-gop` | off | Activate GOP framebuffer (default 640x480) |
 | `-gop-width <N>` | 640 | GOP framebuffer width (implies `-gop`) |
 | `-gop-height <N>` | 480 | GOP framebuffer height (implies `-gop`) |
+| `-gop-max-mode <N>` | -- | Cap the GOP mode table's `MaxMode`. The UEFI GOP enumerates modes 0..2 (640x480, 800x600, 1024x768) plus, as mode 3, the `-gop-width x -gop-height` you set when it matches none of them, so a bed at 1600x900 is a firmware whose largest mode is what the display supports; `Mode->Mode` names the current one. `-gop-max-mode 1` is a firmware with nothing to enumerate, the fallback arm for a stub that picks the largest mode (`build/gop-mode-arm.ps1`). `QueryMode` answers into a scratch info block, not the current mode's; a mode past `MaxMode` is `EFI_INVALID_PARAMETER`; `SetMode` commits the framebuffer before it clears it (a runtime mode set from a headless boot faulted the HOST until it did). |
 | `-smp [N]` | 1 | Enable multi-core: N virtual processors (1-16, default 4 if N omitted). Creates WHP VPs, LAPIC, MADT with per-core entries. Core count written to GPA 0xFF8; boot code reads it to decide whether to send INIT/SIPI. |
 | `-portfwd [udp:]<host:guest>` | -- | Port forwarding from host to guest NIC (repeatable, max 8). TCP by default; `udp:` forwards datagrams instead, giving each host client a synthetic gateway source port so the guest's replies route back. Examples: `-portfwd 8080:80`, `-portfwd udp:15683:5683` |
 | `-natmap <guestdest:hostport>` | -- | Remap an OUTBOUND destination port (repeatable, max 16, TCP only). The opposite direction to `-portfwd`: when the guest dials `guestdest`, the NAT connects to the host on `hostport` instead of the port the guest asked for. Exists because a plug's port is compiled into it from `build/plug-ports.ps1`, so N copies of one plug all needed the same host listener and could not run at once. With this, each worker owns a private host port while running the same unmodified plug binary -- which is what lets `codex/plugs/recheck/sweep-all.ps1` go N-wide. Unmapped ports are untouched, so every existing invocation means what it always did. Example: `-natmap 9134:9250` |
@@ -413,7 +414,7 @@ codex-vm -kernel file.cdx [options]
 | `-keys-file <file>` | -- | Timeline keyboard: `t:scancode` per line, on the same clock as `-mouse`. Lets a script interleave typing with clicks (the older `-keys` fires on a fixed start+interval). **The event separators are `;` and newline ONLY.** `inject_keyt_parse` skips leading `;`, newline, `\r`, space and tab, but after each event its trailing skip runs to the next `;` or newline, so **a comma-joined timeline silently injects its FIRST event and discards the rest of the line with no error printed.** Cost four boots to find. Re-derive any probe arm that rode a multi-key timeline before building on it. |
 | `-rtc <stamp>` | host clock | Freeze the emulated CMOS RTC at `YYYY-MM-DDTHH:MM:SS` (the `T` may be a space). Day-of-week is computed from the date, not accepted. **This is what makes a guest that paints the time comparable against a recorded frame** -- without it the clock is host state the test cannot twist, which is why GuiOS was believed to be un-goldenable. It also turns the update-in-progress simulation OFF (a frozen clock cannot express UIP), so it is for frames and never for testing the RTC itself: anything asserting on clock behaviour must run without it. **It stops the HPET main counter as well**, pinned to `(minute*60 + second) * HPET_HZ` so the two clocks tell the same time and moving the stamp forward a second moves an HPET-driven animation forward a second. That was added when the desk's 3D orbit moved to the HPET: a guest animating off a hardware counter is exactly as uncomparable as one painting the wall clock, and freezing only the RTC would have left every existing capture recipe reproducing a different frame each run. Frozen-clock frames across that change were required to be byte-identical, and were. The counter therefore does not advance under this flag, so **anything that WAITS on the HPET must run without it** -- today that is `E1000e` and `NicAsde`, and no test sidecar passes `-rtc`. |
 | `-screenshot <file>` | -- | Save GOP framebuffer as BMP on exit |
-| `-screenshot-delay <ms>` | 0 | Delay before screenshot capture |
+| `-screenshot-delay <ms>` | 0 | Delay before screenshot capture. **Measured 2026-08-15 on a `build-option-a` UEFI probe image: 0 and 2000 capture; 5000 and 9000 give `code=-1` and NO BMP. RE-MEASURED after the GOP rewrite at main 15469 and unchanged**, which is worth saying because that rewrite touched QueryMode, SetMode and the framebuffer commit and would reasonably be assumed to have invalidated this row. The 120000 recommended above is for the DeskVm BMP-write path and was not re-measured here. Verified with a control, because the first reading looked like a broken payload: the KNOWN-GOOD image fails the same way at the same delay. If a capture goes missing, bisect the delay before suspecting the guest. |
 | `-args <string>` | -- | Boot arguments string (accessible to guest) |
 | `-trace-file <file>` | -- | Write execution trace to file |
 
@@ -1212,6 +1213,28 @@ disagrees with the product, distrust the check first**, and prefer the real
 harness to a reimplementation of it. Three false readings in one session were
 all the apparatus; the product was fine every time.
 
+- **`[uint32]0xFFFFFFFF` THROWS, because PowerShell parses `0xFFFFFFFF` as
+  Int32 minus one.** Measured 2026-08-15 writing a CRC32 helper to check GPT
+  fixtures: the seed line `$crc = [uint32]0xFFFFFFFF` threw on every call, the
+  catch-free loop reported every one of 26 fixtures as failing both CRCs, and
+  that read exactly like a corpus-wide finding. Write the constant in decimal
+  (`4294967295`, and `3988292384` for the polynomial). **Validate any checksum
+  helper against a published vector before believing a single answer from it**:
+  `CRC32("123456789")` is `0xCBF43926`, and one line asserting that turned the
+  false corpus-wide finding into a real 21-verify / 4-stub split.
+- **`[int]` ROUNDS in PowerShell, it does not truncate.** `[int](16895 / 512)`
+  is 33, not 32, so the usual `(n + d - 1) / d` ceiling idiom comes out one
+  high. Use `[Math]::Floor`. It landed a `FirstUsableLBA` one sector past where
+  it belonged in four disk fixtures, which is harmless and wrong, and the same
+  idiom in Codex is correct because Codex integer division truncates.
+- **PowerShell's error formatting ECHOES THE SOURCE LINE before the message,
+  and gutters the wrapped continuation with `|`.** So the FIRST occurrence of
+  your own message text in captured output is the uninterpolated source, not
+  the message: scoring refusal arms against `REFUSED: ([^.]+)` matched the
+  literal `$why` from the `throw` statement and failed four arms that were
+  working. Strip the gutters, collapse the wrap, and take the LAST match. And
+  clamp a captured string for DISPLAY only -- scoring against the clamped copy
+  failed the one arm whose phrase sat past column 74.
 - **Array splatting binds POSITIONALLY, and against `test-run.ps1` it DESTROYS
   the file you name.** `$a = @('-Kernel', $k, '-OutFile', $o)` then
   `& test-run.ps1 @a` puts the literal string `-Kernel` in `$Kernel` and the
@@ -1554,6 +1577,32 @@ ends the chapter on `st.exit-mode`: `Exit` emits the shutdown epilogue
 (`li rax,0`, `li rdx,244`, `out dx,al`, `hlt`, `jmp self`) and anything else
 emits a single `jmp repl-loop`. A REPL binary that shut the machine down
 would be the defect. Do not try to make the two byte-identical.
+
+**The quarter of a million differing bytes between the two modes are that
+one stub and nothing else (COMPILER-3, closed 2026-08-16).** The item was
+filed because a positional byte compare of the two arms reports ~9 per cent
+of the file different, first difference at offset 8, spread the whole
+length, which reads as an emitter that answers differently in the two
+modes. It is an artifact of comparing at absolute offsets. Measured against
+seed `55983566` on the 2,817,743-byte concatenation of `codex/compiler`,
+`-Repl` at 2,798,023 bytes against 2,798,031 without it, 258,186 bytes
+differing:
+
+| region | size | differing | what it is |
+|---|---|---|---|
+| header | 276 | 37 | the content hash at bytes 8-39, plus 5 length and offset fields |
+| code | 2,390,823 | 3,744 | 3,641 sites, every one a 32-bit absolute data address, all exactly +8; nothing unclassified |
+| data | 254,626 | 126,893 | identical under a +8 shift but for 9,136 embedded 64-bit pointers, themselves +8 |
+| MAP1 and tail | 152,298 | 127,512 | identical under a +8 shift but for ONE byte: `__start`'s size, 9545 against 9556 |
+
+`__start` is the last function in the code section, so the 11 bytes the
+`Exit` epilogue adds over `jmp repl-loop` push everything after it;
+alignment padding absorbs 3 and the rest of the file relocates by 8. The
+two embedded maps agree on all 5,194 names and offsets apart from that one
+size. Every differing byte in the code section is an address that moved,
+not an instruction that changed: **the emitter answers identically in both
+modes.** Control, and run it before believing any number here: the same arm
+compiled twice is byte-identical, so nothing in this is nondeterminism.
 
 **What was NOT meant to stay was `map` riding on the same switch**, which
 is why a compiler build emitted no symbol map. Fixed 2026-08-14; the two
@@ -2921,49 +2970,33 @@ needed internally.
 
 1. **Poison build passes** (above) -- the seed has no uninitialized-field
    dependencies.
-2. **Refresh `seed/Codex.map`.** This is the one artifact that silently
-   drifts. The reason is NOT that `-Repl` emits no map: it did not until
-   main 15088, and since then `compile.ps1` appends `map` to every CDX mode
-   including `-Repl` (`compile.ps1`:139-141), so the seed build does emit
-   one. What no step does is INSTALL it. `Invoke-BuildCdx` moves the `.cdx`
-   to its output name and leaves the sidecar behind as
-   `build/output/build_cdx_tmp.map` (`build.ps1`:72), where the next CDX
-   build overwrites it, and `Sut.map` never exists. So the conclusion is
-   unchanged -- nothing refreshes `seed/Codex.map` -- and the recipe below
-   still stands. Regenerate by compiling the compiler source NON-repl with
-   the published seed and copying the emitted map:
+2. **Refresh `seed/Codex.map`, and take it from the build.** The gate
+   already produces the right one. `compile.ps1` appends `map` to every CDX
+   mode, `-Repl` included (`compile.ps1`:139-141), and `Invoke-BuildCdx`
+   carries the sidecar with the binary it describes, so a gate run leaves
+   `build/output/Sut.map` beside `build/output/Sut.cdx`. Install that:
 
    ```powershell
-   Copy-Item -Force seed/Codex.cdx build-output/bare-metal/Codex.cdx
-   build/concat-codex-self.ps1 -CodexDir codex/compiler -OutFile build/output/Codex.codex
-   build/compile.ps1 -Src build/output/Codex.codex -Out build/output/SutMap.cdx -Log build/output/map.log
-   Copy-Item -Force build/output/SutMap.map seed/Codex.map
+   Copy-Item -Force build/output/Sut.map seed/Codex.map
    ```
 
-   `compile.ps1` captures the `MAP:` block into a SIDECAR `<out>.map`
-   file, not into the log. Grepping the log for `MAP:` finds nothing and
-   reads as the step having failed; the map is `build/output/SutMap.map`.
+   It is the shipping compiler's own map rather than a re-derivation.
+   Measured 2026-08-15 against the seed's embedded MAP1: **5,192 of 5,192
+   names, zero address differences, zero size differences.**
 
-   **The non-repl binary is NOT nearly-identical to the `-Repl` seed, and
-   the map is exact anyway.** Measured 2026-08-14 at seed `D9A6A7A2`: the
-   two binaries differ in **255,683 bytes**, first difference at offset 8,
-   spread the whole length of the file. What is identical is the thing the
-   map depends on -- comparing the two embedded MAP1 tables entry by entry
-   gives **0 name mismatches and 0 offset mismatches** across all 5,126
-   functions, with one size difference (`__start`, 9545 against 9556: the
-   last function in the image, carrying the 8-byte file-size delta). The
-   layout is shared; only the bytes sitting inside it are not.
+   **Nothing outside this step refreshes it, and the drift is total rather
+   than partial.** The same measurement against the `seed/Codex.map` in the
+   tree that day, minted at the previous release against seed `8D405FDF`:
+   every name still resolved and **5,140 of 5,187 rows sat at the wrong
+   address**. A stale map does not look stale. It looks like a map.
 
-   This paragraph used to say the two "differ only in unnamed padding". A
-   byte diff refutes that in one command, and an agent who runs one is left
-   believing the map is unsafe to install when it is fine. So validate the
-   MAP, not the binary: every address in the text map must sit at a
-   constant delta from the same name in the seed's embedded MAP1, and that
-   delta must be the `0x100000` load base. Measured that way the installed
-   map answers one delta for all 5,126 symbols with no unmatched names.
-   That check is worth keeping because it fails loudly on the case that
-   actually hurts -- a map minted from compiler source that has moved ahead
-   of the seed, which is confident nonsense that nothing else announces.
+   So validate rather than assume, and validate the MAP and not the binary:
+   read the seed's embedded MAP1 with `Get-Map1Symbols`
+   (`build/vm-config.ps1`, whose `Addr` already carries the `0x100000` load
+   base) and require every text-map row to match by name, address and size.
+   That check fails loudly on the case that actually hurts, a map minted
+   from compiler source that has moved ahead of the seed, which is
+   confident nonsense that nothing else announces.
 
    The embedded MAP1 in each CDX is authoritative for crash reports
    regardless -- the text map only feeds `-Break` and `Resolve-Rip`.

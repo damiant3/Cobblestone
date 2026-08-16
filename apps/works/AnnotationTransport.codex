@@ -198,9 +198,16 @@ Section: Inbound Dispatch
     if verify-annotate-envelope am then dispatch-annotate-after-envelope repo ed am threshold now
     else drop-inbound repo ed
 
+ The envelope check says who sent it; it does not say the payload arrived
+ whole. A truncated one decodes to empty fields that a legitimately empty
+ payload also produces, so it goes down the same road as any other message
+ this dispatcher declines to act on.
+
   dispatch-annotate-after-envelope : RepoState, EditorNotifications, AnnotateMsg, Integer, Integer -> InboundResult
   dispatch-annotate-after-envelope (repo) (ed) (am) (threshold) (now) =
-    let pp = decode-proposal-payload (am.payload)
+    let pr = decode-proposal-payload-checked (am.payload)
+    in if pr.valid == False then drop-inbound repo ed
+    else let pp = pr.payload
     in let sa = verify-annotation (repo.keyring) (pp.annotation)
     in dispatch-annotate-after-verify repo ed pp sa threshold now
 
@@ -228,8 +235,9 @@ Section: Inbound Dispatch
 
   dispatch-verdict-after-envelope : RepoState, EditorNotifications, VerdictMsg -> InboundResult
   dispatch-verdict-after-envelope (repo) (ed) (vm) =
-    let v = decode-verdict (vm.payload)
-    in dispatch-verdict-after-decode repo ed v
+    let vr = decode-verdict-checked (vm.payload)
+    in if vr.valid == False then drop-inbound repo ed
+    else dispatch-verdict-after-decode repo ed (vr.verdict)
 
   dispatch-verdict-after-decode : RepoState, EditorNotifications, Verdict -> InboundResult
   dispatch-verdict-after-decode (repo) (ed) (v) =

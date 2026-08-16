@@ -144,6 +144,37 @@ Section: Encode
 
 Section: Decode
 
+ The ninth field is a length read off the disk and it decides a substring, so
+ it is bounded against what is actually left of the line. Two runtime
+ behaviours make this load-bearing rather than tidy, and neither is derivable
+ from the code here (measured 2026-08-16): `substring` FAULTS on a length past
+ the end of the text and on a negative one, `!EXC=06` both times, so an
+ unbounded field is a guest kill on one hostile record rather than a bad
+ answer; and `text-to-integer` answers a NUMBER for text that is not one
+ ("abc" is 1511), so a corrupt field arrives as a plausible large length and
+ never as a zero.
+
+ A length SHORTER than what remains is still admitted, which is deliberate:
+ the encoder always writes the exact length, so only a longer one is provably
+ malformed, and refusing the short case would be a new refusal rather than a
+ bound. A refused record answers None, which is the answer this decoder
+ already gives for a line that is not in this format, and FactDisk's walk
+ already resynchronises on the next sector when it gets one.
+
+ THE CHECK SUBTRACTS AND MUST NOT SUM, and this is not a stylistic preference.
+ It was written as `p9 + 1 + clen > text-length line` and that form is DEFEATED
+ by the value an attacker picks. Measured 2026-08-16: `text-to-integer` answers
+ 9223372036854775807 for a nineteen-digit field, with no saturation and no
+ refusal, so the sum wraps to a negative number, the comparison is false, the
+ guard admits the record, and `substring` faults. The whole arm was run and the
+ guest died `!EXC=06` -- the exact kill the bound exists to stop, reachable
+ through the bound itself.
+
+ Subtracting cannot overflow here, and that is what makes it the right shape
+ rather than the tidier one. `p9` indexes a pipe that was FOUND, so it is less
+ than the length and `avail` lands in [0, length]. No attacker-supplied number
+ enters the arithmetic at all; `clen` is only ever compared against it.
+
   sdw-decode : Text -> Maybe SourceDefWire
   sdw-decode (line) =
    let p9 = sdw-nth-pipe line 9 0 0
@@ -152,7 +183,10 @@ Section: Decode
    in let parts = text-split header "|"
    in if list-length parts < 9 then None
    else let clen = text-to-integer (list-at parts 8)
-   in Just (SourceDefWire {
+   in let avail = text-length line - (p9 + 1)
+   in if clen < 0 then None
+   else if clen > avail then None
+   else Just (SourceDefWire {
      sdw-hash = list-at parts 0,
      sdw-path = list-at parts 1,
      sdw-quire = list-at parts 2,

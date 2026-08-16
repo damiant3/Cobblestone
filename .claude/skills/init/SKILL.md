@@ -98,6 +98,7 @@ assumption a listed doc would have corrected.
 | Builds, `compile.ps1`, codex-vm flags, debugging, profiling, seed rebuild, release | `docs/OperatorsManual.md` |
 | EDITING or REGENERATING a `build/*.ps1` script | `docs/Designs/Active/Build/Build.md` -- the shipped scripts are hand-maintained and the drift runs the OTHER way from what "generated from" advertises, so regenerating one hands back a script that prompts headless |
 | Tests, sidecars, batteries, oracles, GUI tests, skip/diag semantics | `docs/ExaminersAssay.md` (~34k tokens -- Grep the section, never read whole) |
+| A GOP desk pane, or taking a `ds` cell | `apps/works/works-desk-contract.md` -- the desk never unwinds, a pointer cell must be allocated in `desk-run`, and a pane-local heap mark does not reclaim the rebuilt root |
 | Web output, the HTML plug, browser apps, widgets | `docs/TheShimmeringPortal.md` |
 | IoT boards, board drivers, MMIO windows | `docs/TinkersToolbox.md` |
 | Compliance claims, punctual/WCET, regulatory mappings | `docs/KingsAndCourts.md` |

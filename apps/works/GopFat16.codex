@@ -5,6 +5,7 @@ Chapter: GopFat16
   cites Foreword chapter Fat32
   cites Foreword chapter Gpt
   cites Foreword chapter CCE
+  cites Encode chapter Crc32
   cites Foreword chapter Maybe
 
  The same mount also speaks FAT32 -- the format every vendor stick
@@ -32,17 +33,101 @@ Section: GPT
     & peek-byte buf 3 == 32 & peek-byte buf 4 == 80 & peek-byte buf 5 == 65
     & peek-byte buf 6 == 82 & peek-byte buf 7 == 84
 
+ The signature says the sector is a GPT header and nothing more. Both CRC32
+ fields the format carries were read by nobody until 2026-08-15, so a tampered
+ or half-written table parsed exactly like a good one, and the ESP start LBA
+ it hands out becomes the partition base every later read is relative to. A
+ garbage LBA is caught downstream by the geometry guard, because the volume it
+ lands on will not parse as FAT; an LBA moved to a DIFFERENT well-formed FAT is
+ not, and that is the case the array CRC exists to stop.
+
+ The table is threaded as a parameter for the reason the GUID list is: a list
+ constant is rebuilt at every mention, and crc32-table is 256 entries against
+ the GUID's sixteen. Naming it inside the byte loop would rematerialise the
+ whole table per byte over 16 KB.
+
+ The CRC is streamed a sector at a time and never held: the entry array is
+ NumberOfPartitionEntries * SizeOfPartitionEntry, 16 KB at our own 128 x 128,
+ and accumulating it into a buffer or a list would cost that much arena on a
+ path with no GC. A read failure answers -1, which no CRC can be, so a short
+ medium refuses rather than comparing against a fabricated zero.
+
+  gfat-crc32-buf : List Integer, Integer, Integer, Integer, Integer -> Integer
+  gfat-crc32-buf (tbl) (crc) (buf) (i) (len) =
+    if i >= len then crc
+    else gfat-crc32-buf tbl (bit-xor (list-at tbl (bit-and (bit-xor crc (peek-byte buf i)) 255)) (bit-shru crc 8)) buf (i + 1) len
+
+  gfat-crc32-zeros : List Integer, Integer, Integer -> Integer
+  gfat-crc32-zeros (tbl) (crc) (n) =
+    if n <= 0 then crc
+    else gfat-crc32-zeros tbl (bit-xor (list-at tbl (bit-and crc 255)) (bit-shru crc 8)) (n - 1)
+
+ UEFI computes the header CRC with the CRC field itself read as four zero
+ bytes, over HeaderSize bytes and not over the whole sector.
+
+  gpt-header-crc-ok : Integer -> Boolean
+  gpt-header-crc-ok (buf) =
+    let hsize = fat16-read-u32 buf 12
+    in if hsize < 92 then False
+    else if hsize > 512 then False
+    else let tbl = crc32-table
+    in let c0 = gfat-crc32-buf tbl 4294967295 buf 0 16
+    in let c1 = gfat-crc32-zeros tbl c0 4
+    in let c2 = gfat-crc32-buf tbl c1 buf 20 hsize
+    in bit-xor c2 4294967295 == fat16-read-u32 buf 16
+
+ NumberOfPartitionEntries and SizeOfPartitionEntry are the array CRC's OWN
+ EXTENT, so they are geometry and must be checked BEFORE the CRC that depends
+ on them: a corrupt count moves the window and a reader then computes a
+ perfectly valid CRC over the wrong bytes. The array must also fit between its
+ own LBA and FirstUsableLBA, which is where the table is required to live.
+
+  gpt-array-geom-ok : Integer -> Boolean
+  gpt-array-geom-ok (buf) =
+    let lba = fat16-read-u32 buf 72
+    in let cnt = fat16-read-u32 buf 80
+    in let sz = fat16-read-u32 buf 84
+    in let first-usable = fat16-read-u32 buf 40
+    in lba >= 2
+    & cnt >= 1 & cnt <= 1024
+    & sz >= 128 & sz <= 512
+    & int-mod sz 128 == 0
+    & lba + (cnt * sz + 511) / 512 <= first-usable
+
+  gpt-array-crc : List Integer, Integer, Integer, Integer, Integer -> [Device.Port] Integer
+  gpt-array-crc (tbl) (crc) (lba) (remaining) (i) = act
+    if remaining <= 0 then crc
+    else act
+      b <- disk-read-sector (lba + i)
+      if b.dr-ok == False then 0 - 1
+      else let n = if remaining < 512 then remaining else 512
+      in gpt-array-crc tbl (gfat-crc32-buf tbl crc (b.dr-buf) 0 n) lba (remaining - n) (i + 1)
+    end
+  end
+
+  gpt-array-crc-ok : Integer -> [Device.Port] Boolean
+  gpt-array-crc-ok (hdr) = act
+    c <- gpt-array-crc crc32-table 4294967295 (fat16-read-u32 hdr 72) ((fat16-read-u32 hdr 80) * (fat16-read-u32 hdr 84)) 0
+    if c < 0 then False else bit-xor c 4294967295 == fat16-read-u32 hdr 88
+  end
+
   gpt-esp-start : [Device.Port] Integer
   gpt-esp-start = act
     hdr <- disk-read-sector 1
     if hdr.dr-ok == False then let s = gfat-note-stage gfat-stage-hdr in 0
     else if gpt-sig-ok (hdr.dr-buf) == False then let s = gfat-note-stage gfat-stage-sig in 0
+    else if gpt-header-crc-ok (hdr.dr-buf) == False then let s = gfat-note-stage gfat-stage-hcrc in 0
+    else if gpt-array-geom-ok (hdr.dr-buf) == False then let s = gfat-note-stage gfat-stage-ageo in 0
     else act
-      ents <- disk-read-sector (fat16-read-u32 (hdr.dr-buf) 72)
-      if ents.dr-ok == False then let s = gfat-note-stage gfat-stage-ents in 0
-      else let e = gpt-scan-entries (ents.dr-buf) 0
-      in if e == 0 then let s = gfat-note-stage gfat-stage-guid in 0
-      else e
+      acrc <- gpt-array-crc-ok (hdr.dr-buf)
+      if acrc == False then let s = gfat-note-stage gfat-stage-acrc in 0
+      else act
+        ents <- disk-read-sector (fat16-read-u32 (hdr.dr-buf) 72)
+        if ents.dr-ok == False then let s = gfat-note-stage gfat-stage-ents in 0
+        else let e = gpt-scan-entries (ents.dr-buf) 0
+        in if e == 0 then let s = gfat-note-stage gfat-stage-guid in 0
+        else e
+      end
     end
   end
 
@@ -88,6 +173,10 @@ Section: Mount
   gfat-stage-bpb : Integer = 5
   gfat-stage-bps : Integer = 6
   gfat-stage-ok : Integer = 7
+  gfat-stage-geom : Integer = 8
+  gfat-stage-hcrc : Integer = 9
+  gfat-stage-ageo : Integer = 10
+  gfat-stage-acrc : Integer = 11
 
   gfat-note-stage : Integer -> Integer
   gfat-note-stage (s) = xdiag-put gfat-cell-stage s
@@ -147,12 +236,40 @@ Section: Mount
       vol-cluster-count = clusters
     }
 
+ The BPB fields are volume GEOMETRY: they decide WHERE every later read lands,
+ not how much is read, so a bogus one is REFUSED, never clamped. Clamping a
+ wrong geometry does not read less, it reads the wrong sectors and hands the
+ caller confident garbage, and the desk reads the compiler's own source off
+ this volume. The bounds are FAT invariants (external spec): sectors-per-cluster
+ is a power of two through 128, at least one reserved sector, one or two FATs, a
+ non-empty FAT, and fat-start / data-start landing inside the declared volume.
+
+  gfat-pow2-ok : Integer -> Boolean
+  gfat-pow2-ok (n) = n > 0 & bit-and n (n - 1) == 0
+
+  gfat-geometry-ok : Fat16Volume -> Boolean
+  gfat-geometry-ok (vol) =
+    let vol-end = (vol.vol-part-start) + (vol.vol-total-sectors)
+    in gfat-pow2-ok (vol.vol-sectors-per-cluster)
+    & (vol.vol-sectors-per-cluster) <= 128
+    & (vol.vol-reserved-sectors) >= 1
+    & (vol.vol-num-fats) >= 1
+    & (vol.vol-num-fats) <= 2
+    & (vol.vol-fat-sectors) > 0
+    & (vol.vol-total-sectors) > 0
+    & (vol.vol-cluster-count) > 0
+    & (vol.vol-fat-start) >= (vol.vol-part-start)
+    & (vol.vol-fat-start) < vol-end
+    & (vol.vol-data-start) > (vol.vol-fat-start)
+    & (vol.vol-data-start) < vol-end
+
   gfat-mount-at : Integer -> [Device.Port] GfatMount
   gfat-mount-at (part-start) = act
     b <- disk-read-sector part-start
     if b.dr-ok == False then let s = gfat-note-stage gfat-stage-bpb in GfatMount { gm-ok = False, gm-vol = gfat-null-vol }
     else let vol = gfat-parse-bpb part-start (b.dr-buf)
     in if vol.vol-bytes-per-sector /= 512 then let s = gfat-note-stage gfat-stage-bps in GfatMount { gm-ok = False, gm-vol = gfat-null-vol }
+    else if gfat-geometry-ok vol == False then let s = gfat-note-stage gfat-stage-geom in GfatMount { gm-ok = False, gm-vol = gfat-null-vol }
     else let s = gfat-note-stage gfat-stage-ok in GfatMount { gm-ok = True, gm-vol = vol }
   end
 
@@ -174,6 +291,18 @@ Section: FAT Chain
   gfat-is-end : Fat16Volume, Integer -> Boolean
   gfat-is-end (vol) (cluster) =
     if gfat-is32 vol then fat32-is-end cluster else fat16-is-end cluster
+
+ A cluster number arrives from a directory entry or a FAT slot, both of
+ which are volume data we did not produce. `fat16-cluster-sector` turns
+ it into an LBA by arithmetic alone, so a number above the volume's own
+ limit addresses sectors past the medium. The sentinel test above cannot
+ catch it: on FAT16 every value over 65528 already reads as end-of-chain,
+ but on FAT32 the whole band from the cluster count to 268435447 is
+ neither a sentinel nor addressable.
+
+  gfat-cluster-ok : Fat16Volume, Integer -> Boolean
+  gfat-cluster-ok (vol) (cluster) =
+    cluster >= 2 & cluster < gfat-max-cluster vol
 
   gfat-next-cluster : Fat16Volume, Integer -> [Device.Port] Integer
   gfat-next-cluster (vol) (cluster) = act
@@ -241,7 +370,7 @@ Section: Directory Search
   gfat-find-in-dir : Fat16Volume, Integer, Text -> [Device.Port] Maybe Fat16DirEntry
   gfat-find-in-dir (vol) (cluster) (name) = act
     if gfat-is-end vol cluster then None
-    else if cluster < 2 then None
+    else if gfat-cluster-ok vol cluster == False then None
     else act
       hit <- gfat-scan-cluster vol name (fat16-cluster-sector vol cluster) (vol.vol-sectors-per-cluster)
       when hit
@@ -342,7 +471,7 @@ Section: Directory Listing
       else act
         nxt <- gfat-next-cluster vol cluster
         if gfat-is-end vol nxt then acc
-        else if nxt < 2 then acc
+        else if gfat-cluster-ok vol nxt == False then acc
         else gfat-list-walk vol (fat16-cluster-sector vol nxt) (vol.vol-sectors-per-cluster) nxt acc
       end
     else act
@@ -356,7 +485,7 @@ Section: Directory Listing
 
   gfat-list-dir : Fat16Volume, Integer -> [Device.Port] List Fat16DirEntry
   gfat-list-dir (vol) (cluster) =
-    if cluster < 2 then []
+    if gfat-cluster-ok vol cluster == False then []
     else gfat-list-walk vol (fat16-cluster-sector vol cluster) (vol.vol-sectors-per-cluster) cluster []
 
   gfat-list-root : Fat16Volume -> [Device.Port] List Fat16DirEntry
@@ -375,7 +504,7 @@ Section: File Reading
   gfat-read-loop (vol) (cluster) (remaining) (dest) (written) (sector-off) = act
     if remaining <= 0 then written
     else if gfat-is-end vol cluster then written
-    else if cluster < 2 then written
+    else if gfat-cluster-ok vol cluster == False then written
     else act
       b <- disk-read-sector (fat16-cluster-sector vol cluster + sector-off)
       if b.dr-ok == False then written
@@ -448,6 +577,7 @@ Section: Bulk File Reading
   gfat-run-length : Fat16Volume, Integer, Integer, Integer, Integer -> Integer
   gfat-run-length (vol) (fat) (cluster) (cap) (n) =
     if n >= cap then n
+    else if gfat-cluster-ok vol cluster == False then n
     else let nxt = gfat-fat-next vol fat cluster
     in if nxt == cluster + 1 then gfat-run-length vol fat (cluster + 1) cap (n + 1)
     else n + 1
@@ -456,7 +586,7 @@ Section: Bulk File Reading
   gfat-read-runs (vol) (fat) (cluster) (sectors-left) (dest) (written) = act
     if sectors-left <= 0 then written
     else if gfat-is-end vol cluster then written
-    else if cluster < 2 then written
+    else if gfat-cluster-ok vol cluster == False then written
     else act
       let spc = vol.vol-sectors-per-cluster
       in let clusters-left = (sectors-left + spc - 1) / spc
@@ -632,7 +762,7 @@ Section: Writing
   gfat-dir-slot32 : Fat16Volume, Integer, Integer -> [Device.Port] Integer
   gfat-dir-slot32 (vol) (name-buf) (cluster) = act
     if gfat-is-end vol cluster then -1
-    else if cluster < 2 then -1
+    else if gfat-cluster-ok vol cluster == False then -1
     else act
       hit <- gfat-slot-in-cluster vol name-buf (fat16-cluster-sector vol cluster) (vol.vol-sectors-per-cluster)
       if hit >= 0 then hit
@@ -817,7 +947,7 @@ Section: Multi-Cluster Writing
   gfat-chain-release : Fat16Volume, Integer, Integer, Integer -> Integer
   gfat-chain-release (vol) (fat) (cluster) (fuel) =
     if fuel <= 0 then 0
-    else if cluster < 2 then 0
+    else if gfat-cluster-ok vol cluster == False then 0
     else if gfat-is-end vol cluster then 0
     else let nxt = gfat-fat-next vol fat cluster
     in let z = gfat-fat-put vol fat cluster 0
@@ -934,7 +1064,7 @@ Section: Multi-Cluster Writing
   gfat-write-runs (vol) (fat) (cluster) (sectors-left) (src) (written) = act
     if sectors-left <= 0 then written
     else if gfat-is-end vol cluster then written
-    else if cluster < 2 then written
+    else if gfat-cluster-ok vol cluster == False then written
     else act
       let spc = vol.vol-sectors-per-cluster
       in let clusters-left = (sectors-left + spc - 1) / spc

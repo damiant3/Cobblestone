@@ -1,0 +1,156 @@
+Chapter: GgufHostile
+  cites AI chapter Gguf
+
+ Track D item 16. Every read in this chapter is a bare list-at, which traps out
+ of range, so a length or count off the model file decides where a read lands
+ and a wrong one halts the machine. The two guards that existed checked the
+ wrong thing: gguf-parse-header admitted a 20-byte file and then read bytes
+ 16..23 of a header that is 24 bytes (gguf-header-bytes), and
+ gguf-skip-metadata checked the START offset against the data length without
+ checking that the read at that offset fits.
+
+ The path is reached. AgentBundle.ab-parse-model walks a model file off the
+ boot volume, and ab-window-step calls gguf-tensor-info-offset on a DELIBERATE
+ prefix of it, growing the window until the metadata block fits: a parser that
+ dies on a short buffer rather than answering -1 kills the guest on the one
+ path that is exercised every time a bundle loads.
+
+ Rows 1 and 2 are the positive controls. Rows 3 to 5 are shapes that already
+ refused before this arm existed and must keep refusing, so an over-eager guard
+ shows up here. Rows 6 to 11 are the kills.
+
+Section: Helpers
+
+ Every row computes its value INSIDE the print statement, through these two
+ helpers, rather than in a let above the act block. A let binding is evaluated
+ before the first line is printed, so the arm's first run against the unfixed
+ chapter died with no output at all and named its row only through RSI=0x14.
+ The rows are the evidence of where it died, so they have to be ordered.
+
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+  hdr-valid : List Integer -> Text
+  hdr-valid (bs) = let h = gguf-parse-header bs in show-bool (h.gh-valid)
+
+  hdr-counts : List Integer -> Text
+  hdr-counts (bs) =
+   let h = gguf-parse-header bs
+   in "valid=" & show-bool (h.gh-valid) & " tc=" & show (h.gh-tensor-count) & " mc=" & show (h.gh-metadata-count)
+
+  ti-row : List Integer -> Text
+  ti-row (bs) =
+   let t = gguf-parse-tensor-info bs 0
+   in "valid=" & show-bool (t.gti-valid) & " ndim=" & show (t.gti-ndim)
+
+Section: Files
+
+  ok-header : List Integer =
+    [71, 71, 85, 70, 3, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+  bad-magic : List Integer = [0, 0, 0, 0]
+
+ Twenty bytes: past the old `< 20` test and four short of the header it then
+ reads.
+
+  hdr-20 : List Integer =
+    [71, 71, 85, 70, 3, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]
+
+ A header declaring one metadata pair with nothing after it. The start offset
+ is already off the end, which is the one case gguf-skip-metadata caught.
+
+  md-none : List Integer =
+    [71, 71, 85, 70, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]
+
+ The same, with four bytes after it: the start offset is now inside the data
+ and the eight-byte key length read runs off the end.
+
+  kv-short : List Integer =
+    [71, 71, 85, 70, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+     1, 0, 0, 0]
+
+ A key length of 2^40. The value type is then read a terabyte past the file.
+
+  kv-keylen : List Integer =
+    [71, 71, 85, 70, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+     0, 0, 0, 0, 0, 1, 0, 0]
+
+ One key "x" and value type 8 (string), with nothing after it: the value's own
+ eight-byte length word is off the end.
+
+  kv-strlen : List Integer =
+    [71, 71, 85, 70, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+     1, 0, 0, 0, 0, 0, 0, 0, 120,
+     8, 0, 0, 0]
+
+ One key "x", value type 9 (array) of element type 8 (string), count 2^40. The
+ length walk visits every one of them.
+
+  kv-array : List Integer =
+    [71, 71, 85, 70, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+     1, 0, 0, 0, 0, 0, 0, 0, 120,
+     9, 0, 0, 0,
+     8, 0, 0, 0,
+     0, 0, 0, 0, 0, 1, 0, 0]
+
+ The same array kv cut after the value type, so the element type and count that
+ describe the array do not themselves fit.
+
+  kv-arrhdr : List Integer =
+    [71, 71, 85, 70, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+     1, 0, 0, 0, 0, 0, 0, 0, 120,
+     9, 0, 0, 0]
+
+ A tensor entry naming "x" and declaring 2^32 dimensions.
+
+  ti-ndim : List Integer =
+    [1, 0, 0, 0, 0, 0, 0, 0, 120, 0, 0, 0, 1]
+
+ Three bytes: the name length word itself does not fit.
+
+  ti-short : List Integer = [1, 0, 0]
+
+ A tensor entry whose name claims 100 bytes and carries one, so the dimension
+ count is read past the end.
+
+  ti-name : List Integer = [100, 0, 0, 0, 0, 0, 0, 0, 120]
+
+ One Q8_0 block: a two-byte scale then 32 quantised values, 34 bytes. One Q4_0
+ block: a two-byte scale then 16 nibble pairs, 18 bytes. The element count
+ reaches these from the tensor shape, which is read off the file, and neither
+ loop checked it against the buffer it was handed.
+
+  q8-one-block : List Integer =
+    [0, 60, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+     17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+
+  q4-one-block : List Integer =
+    [0, 60, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+
+Section: Body
+
+  opening : [Console] Nothing =
+    act
+      print-line-uni ("ok:        " & hdr-counts ok-header)
+      print-line-uni ("ok-off:    " & show (gguf-tensor-info-offset ok-header))
+      print-line-uni ("bad-magic: valid=" & hdr-valid bad-magic)
+      print-line-uni ("md-none:   " & show (gguf-tensor-info-offset md-none))
+      print-line-uni ("md-none-t: [" & gguf-metadata-text md-none "general.architecture" & "]")
+      print-line-uni ("hdr-20:    valid=" & hdr-valid hdr-20)
+      print-line-uni ("kv-short:  " & show (gguf-tensor-info-offset kv-short))
+      print-line-uni ("kv-short-t:[" & gguf-metadata-text kv-short "general.architecture" & "]")
+      print-line-uni ("kv-keylen: " & show (gguf-tensor-info-offset kv-keylen))
+      print-line-uni ("kv-keyln-t:[" & gguf-metadata-text kv-keylen "general.architecture" & "]")
+      print-line-uni ("kv-strlen: " & show (gguf-tensor-info-offset kv-strlen))
+      print-line-uni ("kv-array:  " & show (gguf-tensor-info-offset kv-array))
+      print-line-uni ("kv-arrhdr: " & show (gguf-tensor-info-offset kv-arrhdr))
+      print-line-uni ("ti-ndim:   " & ti-row ti-ndim)
+      print-line-uni ("ti-short:  " & ti-row ti-short)
+      print-line-uni ("ti-name:   " & ti-row ti-name)
+      print-line-uni ("dq8-fit:   " & show (list-length (gguf-dequant-q8-0 q8-one-block 0 32)))
+      print-line-uni ("dq8-over:  " & show (list-length (gguf-dequant-q8-0 q8-one-block 0 64)))
+      print-line-uni ("dq4-fit:   " & show (list-length (gguf-dequant-q4-0 q4-one-block 0 32)))
+      print-line-uni ("dq4-over:  " & show (list-length (gguf-dequant-q4-0 q4-one-block 0 64)))
+    end
+
+Page 1

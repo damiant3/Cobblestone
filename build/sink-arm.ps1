@@ -55,18 +55,94 @@ foreach ($f in @($Vm, $Img)) {
 # .img in place when the compile fails, so running this straight after a failed
 # build calibrates the OLD payload and prints a green result for source that
 # never compiled.
+#
+# THE LIST IS THE WHOLE TREE, NOT THE PROBE'S OWN TWO CHAPTERS, and that is the
+# fix for a hole that produced two false greens (fester, 2026-08-16). The guard
+# used to name SinkLadderProbe and MetalLadder only. The function this arm
+# EXISTS to exercise is `fat16-next-cluster` in the foreword, so a sabotaged
+# Fat16.codex -- `cluster <= 100` against a 5,364-cluster chain, which must
+# truncate -- passed the check silently, the failed rebuild left the old image
+# in place, and the arm printed `verified` twice for source that never
+# compiled. A hand-written list goes stale the moment the payload's reach
+# changes; the payload reaches the foreword and it always did.
+#
+# It is derived from the CITE GRAPH rather than from the whole tree, and the
+# difference matters in both directions. The whole tree is what `build/desk.ps1`
+# stats, because the desk binary really does reach all of it; this payload is
+# one chapter and its transitive cites, so statting the tree would refuse the
+# arm every time somebody touched a pane it has never heard of, and an arm that
+# cries stale on unrelated work gets its guard commented out. The closure below
+# was 11 files when this was written and it contains Fat16, which the run
+# prints and this comment therefore does not have to be right about.
 $Src  = Join-Path $Repo 'apps\works\SinkLadderProbe.codex'
-$srcs = @($Src, (Join-Path $Repo 'apps\works\MetalLadder.codex'))
-$imgTime = (Get-Item $Img).LastWriteTimeUtc
-foreach ($s in $srcs) {
-    if (-not (Test-Path $s)) { Write-Host "FAIL: source $s missing"; exit 1 }
-    if ((Get-Item $s).LastWriteTimeUtc -gt $imgTime) {
-        Write-Host "STALE: $(Split-Path $s -Leaf) is newer than sinkladder.img."
-        Write-Host "       Rebuild first (and check the compile actually succeeded):"
-        Write-Host "       build/boot/build-option-a.ps1 -Src apps/works/SinkLadderProbe.codex -Out build/boot/sinkladder.img -Kernel seed/Codex.cdx -Uefi"
-        exit 1
+if (-not (Test-Path $Src)) { Write-Host "FAIL: source $Src missing"; exit 1 }
+
+$byName = @{}
+foreach ($f in Get-ChildItem -Path (Join-Path $Repo 'apps'), (Join-Path $Repo 'codex') `
+                -Recurse -File -Filter *.codex -ErrorAction SilentlyContinue) {
+    $n = [IO.Path]::GetFileNameWithoutExtension($f.Name)
+    if (-not $byName.ContainsKey($n)) { $byName[$n] = $f }
+}
+$closure = [ordered]@{}
+$unresolved = @()
+$queue = [System.Collections.Queue]::new()
+$queue.Enqueue([IO.Path]::GetFileNameWithoutExtension($Src))
+while ($queue.Count -gt 0) {
+    $name = $queue.Dequeue()
+    if ($closure.Contains($name)) { continue }
+    if (-not $byName.ContainsKey($name)) { $unresolved += $name; continue }
+    $file = $byName[$name]
+    $closure[$name] = $file
+    # `cites <Quire> chapter <Name>` -- the header block, before any Section.
+    foreach ($line in Get-Content $file.FullName -ErrorAction SilentlyContinue) {
+        if ($line -match '^\s*Section:') { break }
+        if ($line -match '^\s*cites\s+\S+\s+chapter\s+(\S+)\s*$') { $queue.Enqueue($Matches[1]) }
     }
 }
+# A chapter name the closure could not resolve to a file is a HOLE in this
+# guard, not a curiosity: whatever it names is unwatched. Say so rather than
+# quietly checking a smaller set than advertised.
+if ($unresolved.Count -gt 0) {
+    Write-Host "note: $($unresolved.Count) cited chapter(s) not resolved to a file, so not watched: $($unresolved -join ', ')"
+}
+if (-not $closure.Contains('Fat16')) {
+    Write-Host 'FAIL: the cite closure does not contain Fat16, which is the chapter this arm exists to exercise.'
+    Write-Host '      Either the probe stopped citing it or the closure walk is broken. Do not trust a green from this run.'
+    exit 1
+}
+
+$imgTime = (Get-Item $Img).LastWriteTimeUtc
+# THE KERNEL IS DELIBERATELY NOT AN MTIME INPUT, and it is the one place this
+# guard is knowingly incomplete. A new seed does change the compiled payload,
+# so by rights `seed/Codex.cdx` belongs here -- but this client is `nomodtime`,
+# so a sync stamps the file with the sync time whether or not a byte moved, and
+# every merge-down would then refuse the arm for a seed that is identical.
+# A guard that refuses on every run is a guard that gets commented out. Its
+# hash goes in the provenance line instead: if it differs between two runs, the
+# compiler moved and the image is owed a rebuild.
+$newer = @(@($closure.Values) | Where-Object { $_ -and $_.LastWriteTimeUtc -gt $imgTime })
+if ($newer.Count -gt 0) {
+    $show = @($newer | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 5)
+    Write-Host "STALE: $($newer.Count) source file(s) are newer than sinkladder.img:"
+    foreach ($f in $show) { Write-Host "       $($f.Name)  $($f.LastWriteTimeUtc.ToString('u'))" }
+    if ($newer.Count -gt $show.Count) { Write-Host "       ... and $($newer.Count - $show.Count) more" }
+    Write-Host "       Rebuild first (and check the compile actually succeeded):"
+    Write-Host "       p4 edit build/boot/sinkladder.img"
+    Write-Host "       build/boot/build-option-a.ps1 -Src apps/works/SinkLadderProbe.codex -Out build/boot/sinkladder.img -Kernel seed/Codex.cdx -Uefi"
+    exit 1
+}
+
+# WHICH BYTES ANSWERED. The staleness guard cannot see a rebuild that never
+# wrote -- `sinkladder.img` is a depot file, so a rebuild without `p4 edit`
+# dies on Access denied and changes nothing, which no mtime comparison can
+# distinguish from not having rebuilt at all. So the verdict never travels
+# without the identity of the image that produced it: check this hash against
+# the one your build printed before believing a green.
+$imgHash = (Get-FileHash -Algorithm SHA256 $Img).Hash.Substring(0, 16)
+$seedPath = Join-Path $Repo 'seed\Codex.cdx'
+$seedHash = if (Test-Path $seedPath) { (Get-FileHash -Algorithm SHA256 $seedPath).Hash.Substring(0, 16) } else { '(no seed)' }
+$imgProv = "img $imgHash  $($imgTime.ToString('u'))  seed $seedHash  closure $($closure.Count) chapters"
+Write-Host "image: $imgProv"
 
 # Derived from the workspace, never a fixed path: two agents running this at
 # once must not read each other's images (L-SHARED).
@@ -258,6 +334,7 @@ if ($wanted -contains 'small') {
 
 $bad = 0
 Write-Host ''
+Write-Host "image:   $imgProv"
 Write-Host 'arm      expected   actual'
 Write-Host '-------  ---------  ---------'
 foreach ($name in $wanted) {

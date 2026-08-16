@@ -29,11 +29,36 @@ Section: BPB Parsing
     fat32-parse-bpb32 part-start buf next-free
   end
 
+ Byte 13 of the BPB is the divisor two lines below, and byte 11 sizes every
+ read on the volume. With no disk attached the block device hands back a
+ sector of zeroes, and dividing by that zero takes the machine out with
+ !EXC=00 before anything downstream gets the chance to notice a bad volume.
+ `Fat16` has answered a zeroed volume here since the same fault was found on
+ its side; this chapter had no such escape and divided regardless.
+
+  fat32-zero-volume : Integer -> Fat32Volume
+  fat32-zero-volume (part-start) =
+    Fat32Volume {
+      f32-part-start = part-start,
+      f32-bytes-per-sector = 0,
+      f32-sectors-per-cluster = 0,
+      f32-reserved-sectors = 0,
+      f32-num-fats = 0,
+      f32-fat-sectors = 0,
+      f32-root-cluster = 0,
+      f32-fat-start = 0,
+      f32-data-start = 0,
+      f32-total-clusters = 0,
+      f32-next-free = 0
+    }
+
   fat32-parse-bpb32 : Integer, Integer, Integer -> Fat32Volume
   fat32-parse-bpb32 (part-start) (buf) (next-free) =
     let bps = fat16-read-u16 buf 11
     in let spc = peek-byte buf 13
-    in let reserved = fat16-read-u16 buf 14
+    in if bps == 0 then fat32-zero-volume part-start
+    else if spc == 0 then fat32-zero-volume part-start
+    else let reserved = fat16-read-u16 buf 14
     in let nfats = peek-byte buf 16
     in let fat-sz = fat16-read-u32 buf 36
     in let root-cluster = fat16-read-u32 buf 44
@@ -41,7 +66,8 @@ Section: BPB Parsing
     in let data-start = fat-start + nfats * fat-sz
     in let total-sectors = fat16-read-u32 buf 32
     in let data-sectors = total-sectors - (reserved + nfats * fat-sz)
-    in let total-clusters = data-sectors / spc
+    in let raw-clusters = if data-sectors <= 0 then 0 else data-sectors / spc
+    in let total-clusters = if raw-clusters > 268435445 then 268435445 else raw-clusters
     in Fat32Volume {
       f32-part-start = part-start,
       f32-bytes-per-sector = bps,
@@ -71,10 +97,40 @@ Section: BPB Parsing
 
 Section: FAT Chain
 
+ Per the FAT specification data clusters number from 2, and the highest one a
+ volume has is its cluster count plus one. A cluster number arrives from a
+ directory entry or from a FAT slot, both bytes on a medium we did not
+ produce, and the read below turns one into a FAT sector address by
+ arithmetic alone. The refusal answers 268435455, end-of-chain in this
+ format's own 28-bit width, so a bad cluster truncates a chain instead of
+ reading a foreign sector.
+
+  fat32-last-cluster : Fat32Volume -> Integer
+  fat32-last-cluster (vol) = (vol.f32-total-clusters) + 1
+
+  fat32-cluster-ok : Fat32Volume, Integer -> Boolean
+  fat32-cluster-ok (vol) (cluster) =
+    cluster >= 2 & cluster <= fat32-last-cluster vol
+
+ The walkers below carry Brent's cycle detection, as `Fat16` does and for the
+ same reason: a cyclic chain is well formed at every step, so only a bound on
+ the walk catches it. A saved cluster, a power and a step count; each step
+ compares the next cluster against the saved one and re-saves on a doubling
+ schedule. It is Brent rather than Floyd because every step is a FAT sector
+ read and Floyd's hare would take two of them per iteration.
+
+ A count of clusters would not have served as the bound: it is computed from
+ BPB fields the image supplies, so the image would be setting it, and on this
+ format the clamped maximum is 268435445 -- finite, and far too many reads to
+ survive.
+
   fat32-next-cluster : Fat32Volume, Integer -> [Device.Block] Integer
   fat32-next-cluster (vol) (cluster) = act
-    buf <- block-read-sector ((vol.f32-fat-start) + (cluster * 4) / 512)
-    bit-and (fat16-read-u32 buf (int-mod (cluster * 4) 512)) 268435455
+    if fat32-cluster-ok vol cluster == False then 268435455
+    else act
+      buf <- block-read-sector ((vol.f32-fat-start) + (cluster * 4) / 512)
+      bit-and (fat16-read-u32 buf (int-mod (cluster * 4) 512)) 268435455
+    end
   end
 
   fat32-is-end : Integer -> Boolean
@@ -130,20 +186,39 @@ Section: FAT Write
     end
 
   fat32-find-chain-end : Fat32Volume, Integer -> [Device.Block] Integer
-  fat32-find-chain-end (vol) (cluster) = act
+  fat32-find-chain-end (vol) (cluster) =
+    fat32-find-chain-end-walk vol cluster cluster 1 0
+
+  fat32-find-chain-end-walk : Fat32Volume, Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  fat32-find-chain-end-walk (vol) (cluster) (saved) (power) (steps) = act
     next <- fat32-next-cluster vol cluster
-    if fat32-is-end next then cluster else fat32-find-chain-end vol next
+    if fat32-is-end next then cluster
+    else if next == saved then cluster
+    else if steps + 1 == power then fat32-find-chain-end-walk vol next next (power * 2) 0
+    else fat32-find-chain-end-walk vol next saved power (steps + 1)
   end
 
 Section: Directory Reading
 
   fat32-find-in-dir : Fat32Volume, Integer, Text -> [Device.Block] Maybe Fat16DirEntry
   fat32-find-in-dir (vol) (cluster) (name) =
+    fat32-find-in-dir-walk vol cluster name cluster 1 0
+
+  fat32-find-in-dir-walk : Fat32Volume, Integer, Text, Integer, Integer, Integer -> [Device.Block] Maybe Fat16DirEntry
+  fat32-find-in-dir-walk (vol) (cluster) (name) (saved) (power) (steps) =
     if fat32-is-end cluster then None
     else if cluster < 2 then None
     else when fat32-scan-dir-sectors vol name (fat32-cluster-sector vol cluster) (vol.f32-sectors-per-cluster)
       is Just (entry) -> Just entry
-      is None -> fat32-find-in-dir vol (fat32-next-cluster vol cluster) name
+      is None -> fat32-find-in-dir-step vol cluster name saved power steps
+
+  fat32-find-in-dir-step : Fat32Volume, Integer, Text, Integer, Integer, Integer -> [Device.Block] Maybe Fat16DirEntry
+  fat32-find-in-dir-step (vol) (cluster) (name) (saved) (power) (steps) = act
+    nxt <- fat32-next-cluster vol cluster
+    if nxt == saved then None
+    else if steps + 1 == power then fat32-find-in-dir-walk vol nxt name nxt (power * 2) 0
+    else fat32-find-in-dir-walk vol nxt name saved power (steps + 1)
+  end
 
   fat32-scan-dir-sectors : Fat32Volume, Text, Integer, Integer -> [Device.Block] Maybe Fat16DirEntry
   fat32-scan-dir-sectors (vol) (name) (sector) (remaining) =
@@ -226,9 +301,21 @@ Section: Root Listing
 
   fat32-list-dir-cluster : Fat32Volume, Integer, List Text -> [Device.Block] List Text
   fat32-list-dir-cluster (vol) (cluster) (acc) =
+    fat32-list-dir-walk vol cluster acc cluster 1 0
+
+  fat32-list-dir-walk : Fat32Volume, Integer, List Text, Integer, Integer, Integer -> [Device.Block] List Text
+  fat32-list-dir-walk (vol) (cluster) (acc) (saved) (power) (steps) =
     if fat32-is-end cluster then acc
     else if cluster < 2 then acc
-    else fat32-list-dir-cluster vol (fat32-next-cluster vol cluster) (fat32-list-dir-sectors (fat32-cluster-sector vol cluster) (vol.f32-sectors-per-cluster) acc)
+    else fat32-list-dir-step vol cluster (fat32-list-dir-sectors (fat32-cluster-sector vol cluster) (vol.f32-sectors-per-cluster) acc) saved power steps
+
+  fat32-list-dir-step : Fat32Volume, Integer, List Text, Integer, Integer, Integer -> [Device.Block] List Text
+  fat32-list-dir-step (vol) (cluster) (acc) (saved) (power) (steps) = act
+    nxt <- fat32-next-cluster vol cluster
+    if nxt == saved then acc
+    else if steps + 1 == power then fat32-list-dir-walk vol nxt acc nxt (power * 2) 0
+    else fat32-list-dir-walk vol nxt acc saved power (steps + 1)
+  end
 
   fat32-list-dir-sectors : Integer, Integer, List Text -> [Device.Block] List Text
   fat32-list-dir-sectors (sector) (remaining) (acc) =

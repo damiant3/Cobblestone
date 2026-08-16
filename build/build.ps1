@@ -6,6 +6,12 @@
 # file as drifted, and the next regeneration discards the edit.
 [CmdletBinding()]
 param(
+    # Non-public "internal" gate (Damian, 2026-08-16). Always proves the seed
+    # is a byte-identical self-fixed-point that boots; runs a regression phase
+    # ONLY when a file it depends on changed in this workspace. Everything else
+    # is caught by the next full gate. A public/release build passes no
+    # -Internal and runs every phase.
+    [switch]$Internal
 )
 
 # On success, prints only a story. On failure, prints technical details.
@@ -27,6 +33,40 @@ $Concat = Join-Path $PSScriptRoot 'concat-codex-self.ps1'
 $Compile = Join-Path $PSScriptRoot 'compile.ps1'
 $BuildLog = Join-Path $OutDir 'build.log'
 
+# Smart coverage for the internal gate. The CORE phases (clean, source-concat,
+# the pre-build guards, cdx-build, sign, canary, the text round-trip, the CDX
+# fixed point, test-bvt, oracles) always run: they are what certify the seed is
+# a byte-identical self-fixed-point that boots. The regression phases below run
+# only when a file they depend on changed in THIS workspace; skipped ones are
+# caught by the next full gate. Mapping, by what actually feeds each phase:
+#   jonquil / vm-differential  <- codex/compiler   (codegen and the DDC witness)
+#   plug-*                      <- codex/plugs or codex/compiler (codegen feeds plugs)
+#   gen-scripts / deck-headroom <- codex/build or build (the generators + their quire)
+#   app-sweep                   <- apps or codex/compiler (the compiler builds the apps)
+$SkipPhases = [System.Collections.Generic.HashSet[string]]::new()
+if ($Internal) {
+    $changed = @()
+    try { $changed = @(p4 opened 2>$null | ForEach-Object { (($_ -split '#')[0]) -replace '^//[^/]+/[^/]+/','' } | Where-Object { $_ }) } catch { }
+    $tCompiler = [bool]($changed | Where-Object { $_ -match '^codex/compiler/' })
+    $tPlugs    = [bool]($changed | Where-Object { $_ -match '^codex/plugs/' })
+    $tBuild    = [bool]($changed | Where-Object { $_ -match '^(codex/build/|build/)' })
+    $tApps     = [bool]($changed | Where-Object { $_ -match '^apps/' })
+    $runPhase = [ordered]@{
+        'jonquil'         = $tCompiler
+        'plug-binary'     = ($tPlugs -or $tCompiler)
+        'cross-smoke'     = ($tPlugs -or $tCompiler)
+        'plug-smoke'      = ($tPlugs -or $tCompiler)
+        'gen-scripts'     = $tBuild
+        'vm-differential' = $tCompiler
+        'deck-headroom'   = $tBuild
+        'app-sweep'       = ($tApps -or $tCompiler)
+    }
+    foreach ($k in $runPhase.Keys) { if (-not $runPhase[$k]) { [void]$SkipPhases.Add($k) } }
+    $ran = @($runPhase.Keys | Where-Object { $runPhase[$_] })
+    Write-Host ('  [internal gate] changed here: ' + $(if ($changed.Count) { ($changed | Sort-Object -Unique) -join ', ' } else { 'nothing opened' }))
+    Write-Host ('  [internal gate] core + BVT always, plus: ' + $(if ($ran.Count) { ($ran -join ', ') } else { '(nothing implicated)' }))
+    Write-Host ('  [internal gate] deferred to the next full gate: ' + $(if ($SkipPhases.Count) { (@($SkipPhases) | Sort-Object) -join ', ' } else { '(none)' }))
+}
 
 # A compile log ENDS in hundreds of `info CDX4010: bounds proven` lines, so
 # its tail is the one slice guaranteed to say nothing about why a build
@@ -79,11 +119,18 @@ function Invoke-BuildCdx {
         Show-CompileFailure -LogFile $logFile -Kept (Join-Path (Split-Path $Output) 'build-cdx-fail.log')
     } else {
         Move-Item -Force $tmpOut $Output
+        # compile.ps1 writes the symbol map to a <out>.map sidecar for every CDX
+        # compile, -Repl included, since main 15088. Carry it with the binary it
+        # describes, or it stays under the tmp name and the next build overwrites
+        # the map of the compiler that just shipped.
+        $tmpMap = [System.IO.Path]::ChangeExtension($tmpOut, '.map')
+        if (Test-Path $tmpMap) {
+            Move-Item -Force $tmpMap ([System.IO.Path]::ChangeExtension($Output, '.map'))
+        }
     }
-    Remove-Item -Force $logFile, $tmpOut -ErrorAction SilentlyContinue
+    Remove-Item -Force $logFile, $tmpOut, ([System.IO.Path]::ChangeExtension($tmpOut, '.map')) -ErrorAction SilentlyContinue
     return $ok
 }
-
 
 function Invoke-BuildText {
     param([string]$InputFile, [string]$Kernel, [string]$Output, [int]$TextMemMB = 3072)
@@ -137,7 +184,6 @@ function Invoke-BuildText {
     }
 }
 
-
 # The CDX header embeds the compiler's own SHA-256 over the binary
 # content (text + padding + rodata) at bytes 8-39. This is the
 # canonical content identity: the sign step signs exactly these bytes,
@@ -154,6 +200,10 @@ function Get-CdxContentHash {
 $buildTimer = [System.Diagnostics.Stopwatch]::StartNew()
 $phaseTimings = [ordered]@{}
 function Measure-Phase([string]$Name, [scriptblock]$Block) {
+    if ($script:SkipPhases -and $script:SkipPhases.Contains($Name)) {
+        Write-Host "  phase '$Name' skipped (internal gate; not implicated by this change)"
+        return
+    }
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     & $Block
     $sw.Stop()
@@ -177,7 +227,6 @@ Measure-Phase 'clean' {
         Where-Object { $_.FullName -notmatch '\\\.git\\' } |
         Remove-Item -Force -ErrorAction SilentlyContinue
 }
-
 
 # -- source
 Measure-Phase 'source-concat' {
@@ -240,7 +289,6 @@ if (Test-Path $chkEffVocab) {
     }
 }
 
-
 # A builtin name used to live in three hand-maintained lists across two
 # quires, and check-builtin-tables.ps1 reconciled them here. It carries one
 # row now (codex/compiler/Types/Builtins.codex: name, type, emitter), and
@@ -279,7 +327,6 @@ if ((Test-Path $chkP4) -and (Get-Command p4 -ErrorAction SilentlyContinue) -and
     }
 }
 
-
 # A sidecar is resolved next to its .codex, so one in the wrong directory
 # configures nothing while reading like a decision -- diagnostic-boot's
 # "blocks waiting for keyboard input" skip lived a directory above the test,
@@ -309,7 +356,6 @@ if (Test-Path $chkCdx) {
         exit 1
     }
 }
-
 
 # The fact store's partition type GUID is written by three producers -- the
 # reader in Foreword chapter Gpt, the IMG plug, and build/build-img.ps1 -- and
@@ -345,7 +391,6 @@ if ($countsOn -and (Test-Path $chkCounts)) {
     }
 }
 
-
 # IRTextParser calls itself the inverse of IRTextEmitter and is not: the
 # emitter can write forms the parser reads as a plausible DEFAULT rather than
 # an error. x86-64 never crosses this wire, so no x86 test and no fixed point
@@ -375,7 +420,6 @@ Write-Host 'Yet this afternoon walk in the countryside slowly brings relaxation'
 Write-Host 'to your harried mind. The soil and strain of modern high-tech living'
 Write-Host 'begins to wash off in layers.'
 Write-Host ''
-
 
 # -- sign
 Copy-Item -Force $SutCdx (Join-Path $Repo 'build-output\bare-metal\Codex.cdx')
@@ -477,7 +521,6 @@ Write-Host 'You settle beneath it and the buzz of dragonflies and the whisper'
 Write-Host 'of the willow''s swaying branches bring a deep peace.'
 Write-Host ''
 
-
 # -- the jonquil: IR quine visibility check. The trusting-trust defense holds
 # because a payload that survives the diverse rebuild must reach the readable
 # IR and is therefore visible as text. This enforces that: emit the certified
@@ -504,7 +547,6 @@ if ($drift -gt $maxDrift) {
 $textStage1 = Join-Path $OutDir 'stage1.codex'
 $textStage2 = Join-Path $OutDir 'stage2.codex'
 
-
 Write-Host 'Searching inward for tranquility and happiness, you close your eyes.'
 Measure-Phase 'text-stage1' {
     if (-not (Invoke-BuildText -InputFile $CodexSrc -Kernel $SutCdx -Output $textStage1)) { exit 1 }
@@ -526,7 +568,6 @@ Measure-Phase 'sem-equiv' {
 Write-Host 'A high-pitched cascading sound like crystal wind-chimes impinges'
 Write-Host 'on your floating awareness.'
 Write-Host ''
-
 
 Measure-Phase 'text-stage2' {
     if (-not (Invoke-BuildText -InputFile $textStage1 -Kernel $SutCdx -Output $textStage2)) { exit 1 }
@@ -574,7 +615,6 @@ Measure-Phase 'cdx-fixedpoint' {
     }
 }
 
-
 Write-Host 'Light seems to bend and distort around it, while the sound waves'
 Write-Host 'become so intense, they appear to become visible.'
 Write-Host ''
@@ -620,7 +660,6 @@ Measure-Phase 'oracles' {
     }
 }
 
-
 # -- binary backend plugs: must build clean with the just-proven compiler.
 # Native code-emitting backends only (riscv/arm64/t3isa/elf/pe/img). The
 # transpiler/text plugs are secondary outputs and are NOT gated here. Plug
@@ -656,7 +695,6 @@ Measure-Phase 'plug-binary' {
     }
 }
 
-
 # -- cross-arch execution: the binary leg above proves the arm64 and riscv
 # plugs BUILD, and nothing ran a byte of what they emit. That is how CL 8221
 # put a PSCI call in every ARM64 program's __start, killed the whole ARM64
@@ -675,7 +713,6 @@ Measure-Phase 'cross-smoke' {
     }
 }
 
-
 # -- transpiler plug smoke: a representative subset must RUN end-to-end
 # (SUT IR -> framed TCP wire -> plug VM -> non-empty target text). The binary
 # leg above proves plugs BUILD; this proves the wire protocol and plug runtime
@@ -684,24 +721,36 @@ Measure-Phase 'cross-smoke' {
 # gets one rebuild-and-retry (stale binary after IR drift), then fails loudly.
 Measure-Phase 'plug-smoke' {
     $smokePlugs = @('typescript', 'python', 'rust', 'ptx')
-    $smokeSrc = Join-Path $Repo 'codex\plugs\test-input\hello.codex'
+    $smokeSrcs = @('hello', 'record')
     $smokeDir = Join-Path $OutDir 'plug-smoke'
     New-Item -ItemType Directory -Force -Path $smokeDir | Out-Null
+    # A plug binary is only as fresh as the last hand run of its build.ps1, and
+    # 37 of 38 faulted on a record after common/IRTextParser.codex moved while
+    # this phase rebuilt only a MISSING binary (plugs-backlog 1.11). Rebuild
+    # when the CDX is older than any source the bundle is made from.
+    $smokeDeps = @(Get-ChildItem (Join-Path $Repo 'codex\plugs\common') -Filter *.codex)
+    foreach ($decl in @('codex\compiler\Core\Name.codex', 'codex\compiler\Core\SourceText.codex', 'codex\compiler\Types\CodexType.codex', 'codex\compiler\Ast\AstNodes.codex', 'codex\compiler\IR\IRChapter.codex')) {
+        $smokeDeps += Get-Item (Join-Path $Repo $decl)
+    }
     $smokeFail = @()
     foreach ($sp in $smokePlugs) {
         $spBuild = Join-Path $Repo "codex\plugs\$sp\build.ps1"
         $spCdx   = Join-Path $Repo "codex\plugs\$sp\build-output\$sp-plug.cdx"
-        $spOut   = Join-Path $smokeDir "$sp-hello.out"
         $spLog   = Join-Path $smokeDir "$sp-smoke.log"
-        if (-not (Test-Path $spCdx)) { & pwsh -NoProfile -File $spBuild *> $spLog }
-        $ok = $false
-        foreach ($attempt in 1..2) {
-            Remove-Item -Force $spOut -ErrorAction SilentlyContinue
-            & pwsh -NoProfile -File (Join-Path $Repo "codex\plugs\$sp\run.ps1") -Src $smokeSrc -Out $spOut *> $spLog
-            if ($LASTEXITCODE -eq 0 -and (Test-Path $spOut) -and (Get-Item $spOut).Length -gt 0) { $ok = $true; break }
-            if ($attempt -eq 1) { & pwsh -NoProfile -File $spBuild *>> $spLog }
+        $spNewest = ($smokeDeps + @(Get-ChildItem (Join-Path $Repo "codex\plugs\$sp") -Filter *.codex) | ForEach-Object { $_.LastWriteTimeUtc } | Sort-Object -Descending | Select-Object -First 1)
+        if (-not (Test-Path $spCdx) -or (Get-Item $spCdx).LastWriteTimeUtc -lt $spNewest) { & pwsh -NoProfile -File $spBuild *> $spLog }
+        foreach ($si in $smokeSrcs) {
+            $smokeSrc = Join-Path $Repo "codex\plugs\test-input\$si.codex"
+            $spOut = Join-Path $smokeDir "$sp-$si.out"
+            $ok = $false
+            foreach ($attempt in 1..2) {
+                Remove-Item -Force $spOut -ErrorAction SilentlyContinue
+                & pwsh -NoProfile -File (Join-Path $Repo "codex\plugs\$sp\run.ps1") -Src $smokeSrc -Out $spOut *>> $spLog
+                if ($LASTEXITCODE -eq 0 -and (Test-Path $spOut) -and (Get-Item $spOut).Length -gt 0) { $ok = $true; break }
+                if ($attempt -eq 1) { & pwsh -NoProfile -File $spBuild *>> $spLog }
+            }
+            if (-not $ok) { $smokeFail += "$sp/$si" }
         }
-        if (-not $ok) { $smokeFail += $sp }
     }
     if ($smokeFail.Count -gt 0) {
         Write-Host ''
@@ -741,7 +790,6 @@ Measure-Phase 'gen-scripts' {
     }
 }
 
-
 # -- two independent VM hosts, one source, compared byte for byte. This is a
 # TRUST check, not a correctness one: QEMU is a third-party binary whose
 # Authenticode signature cannot discriminate a good build from a hostile one,
@@ -762,7 +810,6 @@ Measure-Phase 'vm-differential' {
         }
     }
 }
-
 
 # -- deck headroom. These 47 units are every one in the tree under 2.0x margin;
 # the next tightest is 2.13x, in codex/foreword, which this does not cover.
@@ -788,7 +835,6 @@ Measure-Phase 'deck-headroom' {
         }
     }
 }
-
 
 # -- the apps are the extended pin on the compiler: 267 entry chapters
 # against build/app-sweep-baseline.txt, which names the units known not to
@@ -818,7 +864,6 @@ Measure-Phase 'app-sweep' {
         $swOut | Where-Object { $_ -match 'units:|CHECK|elapsed:' } | ForEach-Object { Write-Host "  $_" }
     }
 }
-
 
 Write-Host 'Something remains suspended in mid-air for a moment before falling'
 Write-Host 'to earth with a heavy thud.'

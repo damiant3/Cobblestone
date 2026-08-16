@@ -1,0 +1,119 @@
+Chapter: RepoFrameTruncatedTest
+  cites Works chapter RepoProtocol
+  cites Works chapter Annotation
+  cites Net chapter MessageFraming
+  cites Foreword chapter Console
+
+ A repository message arrives from a peer, so every length in it is the peer's
+ to choose and the buffer may stop anywhere. `frame-next-offset` clamps a
+ decoder's next offset to `list-length bs`, which makes it a valid SLICE BOUND
+ and not a valid INDEX: a decoder that then indexes at that offset reads one
+ past the end. `decode-annotation` and `decode-verdict-kind` both did.
+
+ The cut below is chosen so the boundary is exact rather than approximate. With
+ one-character fields the annotation encoding opens with three length-prefixed
+ texts at five bytes each -- hash, chapter, path -- so cutting at 15 leaves
+ `tr.next-offset` equal to `list-length`, which is precisely the index that used
+ to be out of range. `boundary` asserts that, so an arm that stops being the
+ boundary case announces itself instead of passing quietly.
+
+ The ablated arm is NOT carried in the test. Restoring the raw `list-at` faults
+ the guest (`!EXC=06`) rather than printing a wrong answer, so it kills the run
+ and cannot sit beside the guarded call the way the USB clamp's does. It was run
+ as a source edit instead, and `docs/ExaminersAssay.md` records what moved.
+
+Section: Test
+
+  cut : List Integer, Integer, Integer, List Integer -> List Integer
+  cut (xs) (n) (i) (acc) =
+    if i >= n then acc
+    else cut xs n (i + 1) (acc & [list-at xs i])
+
+  kind-name : AnnotationKind -> Text
+  kind-name (k) =
+    when k
+      is Rationale -> "Rationale"
+      is Invariant -> "Invariant"
+      is Warning -> "Warning"
+      is Discovery -> "Discovery"
+      is Doctrine -> "Doctrine"
+      is Todo -> "Todo"
+
+ The depth is swept rather than fixed. No-crash at ONE length passes just as
+ well on a build where the guard was never reached, so every cut from the empty
+ list to the whole frame is decoded and its kind recorded as one letter. A bound
+ that is right by accident at one length shows up as a discontinuity in the
+ fingerprint; a depth that faults takes the whole run with it and prints
+ nothing.
+
+  kind-letter : AnnotationKind -> Text
+  kind-letter (k) =
+    when k
+      is Rationale -> "r"
+      is Invariant -> "i"
+      is Warning -> "w"
+      is Discovery -> "D"
+      is Doctrine -> "d"
+      is Todo -> "t"
+
+  sweep : List Integer, Integer, Integer, Text -> Text
+  sweep (whole) (n) (i) (acc) =
+    if i > n then acc
+    else sweep whole n (i + 1) (acc & kind-letter ((decode-annotation (cut whole i 0 []) 0).annotation).kind)
+
+ The refusal channel is the second fingerprint. `valid` is what separates a
+ field that was legitimately empty from one that was cut off, and the two
+ sweeps read together are the whole claim: `kind` says what the decoder
+ ANSWERED at each depth and `valid` says whether it should have been believed.
+ They must not switch at the same byte -- the kind byte arrives at 16 and the
+ annotation is only whole at 34.
+
+  yn2 : Boolean -> Text
+  yn2 (v) = if v then "v" else "x"
+
+  sweep-valid : List Integer, Integer, Integer, Text -> Text
+  sweep-valid (whole) (n) (i) (acc) =
+    if i > n then acc
+    else sweep-valid whole n (i + 1) (acc & yn2 ((decode-annotation (cut whole i 0 []) 0).valid))
+
+  vk-name : VerdictKind -> Text
+  vk-name (k) =
+    when k
+      is Accept -> "Accept"
+      is Reject -> "Reject"
+      is Amend (t) -> "Amend " & t
+      is Abstain -> "Abstain"
+
+  sample : Annotation
+  sample = Annotation {
+    hash = "h",
+    target = AnnotationTarget { chapter = "c", path = "p" },
+    kind = Discovery,
+    author = "a",
+    body = "b",
+    timestamp = 7
+  }
+
+  opening : [Console] Nothing =
+    let whole = encode-annotation sample
+    in let short = cut whole 15 0 []
+    in let runt = cut whole 3 0 []
+    in let wr = decode-annotation whole 0
+    in let sr = decode-annotation short 0
+    in let rr = decode-annotation runt 0
+    in act
+      print-line-uni ("whole len=" & show (list-length whole) & " hash=" & (wr.annotation).hash & " kind=" & kind-name ((wr.annotation).kind) & " author=" & (wr.annotation).author & " body=" & (wr.annotation).body & " ts=" & show ((wr.annotation).timestamp))
+      print-line-uni ("boundary cut=15 len=" & show (list-length short) & " tr-next=" & show ((decode-target short (frame-decode-text short 0).next-offset).next-offset))
+      print-line-uni ("cut hash=" & (sr.annotation).hash & " chapter=" & ((sr.annotation).target).chapter & " kind=" & kind-name ((sr.annotation).kind) & " body=[" & (sr.annotation).body & "] ts=" & show ((sr.annotation).timestamp))
+      print-line-uni ("runt len=" & show (list-length runt) & " hash=[" & (rr.annotation).hash & "] kind=" & kind-name ((rr.annotation).kind))
+      print-line-uni ("verdict at-end kind=" & vk-name ((decode-verdict-kind whole (list-length whole)).kind) & " next=" & show ((decode-verdict-kind whole (list-length whole)).next-offset))
+      print-line-uni ("verdict past-end kind=" & vk-name ((decode-verdict-kind whole (list-length whole + 9)).kind) & " next=" & show ((decode-verdict-kind whole (list-length whole + 9)).next-offset))
+      print-line-uni ("byte-at in=" & show (frame-byte-at whole 0) & " at-end=" & show (frame-byte-at whole (list-length whole)) & " negative=" & show (frame-byte-at whole (0 - 1)))
+      print-line-uni ("sweep 0.." & show (list-length whole) & " = " & sweep whole (list-length whole) 0 "")
+      print-line-uni ("valid 0.." & show (list-length whole) & " = " & sweep-valid whole (list-length whole) 0 "")
+      print-line-uni ("whole valid=" & yn2 ((decode-annotation whole 0).valid) & " cut valid=" & yn2 ((decode-annotation short 0).valid) & " runt valid=" & yn2 ((decode-annotation runt 0).valid))
+      print-line-uni ("verdict at-end valid=" & yn2 ((decode-verdict-kind whole (list-length whole)).valid) & " in-range valid=" & yn2 ((decode-verdict-kind whole 0).valid))
+      print-line-uni ("verdict-checked whole valid=" & yn2 ((decode-verdict-checked whole).valid) & " runt valid=" & yn2 ((decode-verdict-checked runt).valid))
+    print-line-uni ("repo-has overflow off=" & yn2 (repo-has whole 9223372036854775807 8) & " n=" & yn2 (repo-has whole 0 9223372036854775807) & " both=" & yn2 (repo-has whole 9223372036854775807 9223372036854775807) & " sane=" & yn2 (repo-has whole 0 8))
+    end
+  end

@@ -70,7 +70,7 @@ Section: Response Parsing
     in let body-start = find-body-start bs 0 (list-length bs)
     in let body = if body-start >= list-length bs then ""
       else read-body-from-bytes bs body-start (list-length bs) ""
-    in HttpClientResponse { status-code = code, status-text = list-at parts 1, body = body, content-length = text-length body, valid = True }
+    in HttpClientResponse { status-code = code, status-text = list-at parts 1, body = body, content-length = text-length body, valid = code >= 0 }
 
   read-line-from-bytes : List Integer, Integer, Integer, Text -> Text
   read-line-from-bytes (bs) (i) (len) (acc) =
@@ -102,14 +102,16 @@ Section: Response Parsing
     else split-space-loop s (i + 1) len (cur & char-to-text (char-at s i)) acc
 
   parse-status-code : Text -> Integer
-  parse-status-code (s) = parse-code-loop s 0 (text-length s) 0
+  parse-status-code (s) =
+    if text-length s /= 3 then (-1)
+    else parse-code-loop s 0 3 0
 
   parse-code-loop : Text, Integer, Integer, Integer -> Integer
   parse-code-loop (s) (i) (len) (acc) =
     if i >= len then acc
     else let ch = char-code (char-at s i)
-    in if ch >= 3 then if ch <= 12 then parse-code-loop s (i + 1) len (acc * 10 + ch - 3) else acc
-    else acc
+    in if ch >= 3 then if ch <= 12 then parse-code-loop s (i + 1) len (acc * 10 + ch - 3) else (-1)
+    else (-1)
 
 Section: Content Length
 
@@ -146,13 +148,18 @@ Section: Content Length
     else if http-ascii-lower (list-at bs (off + j)) /= list-at needle j then False
     else http-cl-match bs off needle (j + 1) n
 
+  http-ascii-minus : Integer = to-unicode (char-code (char-at "-" 0))
+  http-cl-ceiling : Integer = 1000000000000000
+
   http-cl-value : List Integer, Integer, Integer, Integer, Boolean -> Integer
   http-cl-value (bs) (i) (header-end) (acc) (any) =
     if i >= header-end then (if any then acc else (-1))
+    else if acc >= http-cl-ceiling then (-1)
     else let b = list-at bs i
     in if b >= http-ascii-zero then
       if b <= http-ascii-nine then http-cl-value bs (i + 1) header-end (acc * 10 + b - http-ascii-zero) True
       else (if any then acc else http-cl-value bs (i + 1) header-end acc any)
+    else if b == http-ascii-minus then (if any then acc else (-1))
     else (if any then acc else http-cl-value bs (i + 1) header-end acc any)
 
 Section: Queries

@@ -1,0 +1,79 @@
+Chapter: UdpFrameGuard
+  cites Net chapter UdpIO
+  cites Net chapter Udp
+  cites Net chapter Ethernet
+  cites Foreword chapter Console
+
+ We say:
+
+Section: Wire Fixtures
+  srv-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  cli-mac : List Integer = [82, 85, 10, 0, 2, 2]
+  srv-ip : List Integer = [10, 0, 2, 15]
+  cli-ip : List Integer = [10, 0, 2, 100]
+
+  sk : UdpSocket = udp-io-open srv-mac srv-ip 68 cli-ip 67
+
+  good-frame : List Integer =
+    udp-build-frame srv-mac cli-mac cli-ip srv-ip 67 68 [1, 2, 3, 4, 5, 6, 7, 8]
+
+  other-port-frame : List Integer =
+    udp-build-frame srv-mac cli-mac cli-ip srv-ip 67 69 [1, 2, 3, 4, 5, 6, 7, 8]
+
+  take : List Integer, Integer, Integer, List Integer -> List Integer
+  take (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else take xs (i + 1) n (list-push acc (list-at xs i))
+
+  corrupt-at : List Integer, Integer -> List Integer
+  corrupt-at (bytes) (i) = list-set-at bytes i (bit-xor (list-at bytes i) 1)
+
+Section: The Arms
+
+ cut-frame is the one that used to take the guest down. It is a truncated
+ receive: the IP header arrived intact and still claims the bytes that were
+ lost, so the checksum holds and only the length disagrees.
+
+ runt-frame is shorter than an IP header, which is what makes `ip-proto`
+ index byte 9 of a list that does not have one.
+
+ bad-hdr-frame flips a byte inside the twenty the header checksum covers.
+
+ other-port-frame is the control that stops a guard which refuses everything
+ from passing alongside good-frame: it is well formed, and it must be refused
+ for a reason that is not the guard.
+
+  cut-frame : List Integer = take good-frame 0 (list-length good-frame - 6) []
+  runt-frame : List Integer = take good-frame 0 24 []
+  bad-hdr-frame : List Integer = corrupt-at good-frame 26
+
+ The UDP header starts at 34: 14 of Ethernet and 20 of IP. Its length field is
+ at 38 and its checksum at 40, and the payload begins at 42.
+
+ no-cksum-frame is the one that must be ACCEPTED. A stored zero means "not
+ computed" on IPv4 UDP, so refusing it would refuse every peer that declines to
+ compute one. It is the control against a checker that has become strict rather
+ than correct, and it is the arm most likely to be broken by a future edit.
+
+  zero-at : List Integer, Integer -> List Integer
+  zero-at (bytes) (i) = list-set-at bytes i 0
+
+  bad-cksum-frame : List Integer = corrupt-at good-frame 42
+  bad-len-frame : List Integer = corrupt-at good-frame 39
+  no-cksum-frame : List Integer = zero-at (zero-at (corrupt-at good-frame 42) 40) 41
+
+Section: Entry
+  opening : [Console] Nothing = act
+    print-line-uni ("good-len=" & show (list-length good-frame))
+    print-line-uni ("good-mine=" & show (udp-io-mine sk good-frame))
+    print-line-uni ("good-payload=" & show (list-length (udp-io-payload good-frame)))
+    print-line-uni ("other-port-mine=" & show (udp-io-mine sk other-port-frame))
+    print-line-uni ("cut-mine=" & show (udp-io-mine sk cut-frame))
+    print-line-uni ("runt-mine=" & show (udp-io-mine sk runt-frame))
+    print-line-uni ("bad-hdr-mine=" & show (udp-io-mine sk bad-hdr-frame))
+    print-line-uni ("good-cksum-nonzero=" & show (read-be16 good-frame 40 /= 0))
+    print-line-uni ("bad-cksum-mine=" & show (udp-io-mine sk bad-cksum-frame))
+    print-line-uni ("bad-len-mine=" & show (udp-io-mine sk bad-len-frame))
+    print-line-uni ("no-cksum-mine=" & show (udp-io-mine sk no-cksum-frame))
+    print-line-uni ("survived")
+  end

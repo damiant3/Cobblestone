@@ -75,19 +75,25 @@ Measured 2026-08-03, except where an item gives its own date.
    compiler. Inject one into constant folding instead: red again. In both
    cases stage2 lands exactly on the untampered seed and exposes the
    poisoned build, and in both the trojan existed only in the compiler
-   binary and in no source in the tree. **The measured boundary is not
-   frontend versus backend; it is self-reproducing versus not.** Any trojan
+   binary and in no source in the tree. **The measured boundary is
+   whether the payload reaches the readable intermediate, not whether it
+   self-reproduces** (corrected 2026-08-11 by a third arm). Any trojan
    that lives only in the binary is caught, anywhere in the compiler,
-   because the double-compile rebuilds it from clean source and a
-   payload that does not copy itself cannot survive the rebuild.
+   because the double-compile rebuilds it from clean source. A payload
+   survives the byte-comparison only if the poisoned compiler writes it
+   into the IR that becomes the C# -- measured with a hook that emits one
+   function's trojaned IR verbatim: stage2 then matches the poisoned
+   build byte for byte.
 
-   **The one thing that would survive, stated because it is the honest
-   limit: a self-reproducing quine** -- a trojan that recognises it is
-   compiling the compiler and writes a copy of its own injector into the
-   output, the attack Ken Thompson actually built. That is the residual,
-   and it is a high bar rather than a loose "the seed sits upstream." The
-   witness runs on every release, because it is the only proof here that
-   does not take the compiler's word for anything.
+   **And that is the neutralisation, not a leak.** A survivor is, by
+   construction, sitting as readable text in the IR and in the emitted C#
+   (the injected bytes were greppable in both), so it can be diffed across
+   re-emissions and content-addressed. Thompson's attack depends on the
+   payload being invisible because a binary is unreadable; here a trojan
+   hidden in the binary is caught by the rebuild, and a trojan that survives
+   the rebuild is not hidden. The witness runs on every release, because it
+   is the only proof here that does not take the compiler's word for
+   anything.
 
    **An independently written rechecker.** It reads the compiler's IR
    output as text and re-derives every type judgement in it, and is
@@ -192,14 +198,14 @@ for 135 checks; its phase of the gate takes about 19s.
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (2,798,031 bytes) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (2,800,207 bytes) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `93DCA70AF9BBBFE0` |
-| SHA-256 | `F3722EAC019ACD5A90BBED8579926D8BCFF516800FF42E68A88FFB8BF9FC7B72` |
-| MD5 | `BCB268FF36A94C529DD118618C853A2E` |
+| Content hash prefix | `6F2CE9BD66DA95EA` |
+| SHA-256 | `D230B11D910D437DE4039DB6C3092A0C98233108053D5EBAF4CF2A3272B7D7D6` |
+| MD5 | `A01DFC4F64CD9E9D066AE6C3C225C083` |
 
 The content hash is the 32 bytes the CDX header carries at offsets 8..39
 and it deliberately EXCLUDES the signature, so it is not a prefix of the
@@ -210,7 +216,7 @@ first-boot ceremony.
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `400D37EAE905C360660C8DBE49AFA298A68F12068D52D0DBA651A8697662A801` |
+| SHA-256 | `19F439DEC7B7AF922675A263D8A61125BAC8087FC70624A13003BE0A38ED0A7F` |
 
 Boot it on a UEFI machine and it runs its own first-boot ceremony on the
 GOP framebuffer with no OS beneath it: choose an interface, walk the
@@ -542,7 +548,7 @@ codex/
   boards/        Board HAL drivers -- 9 target boards
   os/            Kernel, net, trust, verify, sched, dev, observe (160 modules)
   plugs/         55 plugs, 148 source modules -- IR-text-driven emitters
-  test/          Compiler samples + OS integration tests (1,466 files)
+  test/          Compiler samples + OS integration tests (1,499 files)
 apps/            67 applications, 1,019 modules
 annotations/     On-disk annotation sidecars (JSON facts)
 build/           Build and test harness (PowerShell)

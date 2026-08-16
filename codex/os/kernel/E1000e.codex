@@ -330,15 +330,64 @@ Section: Reset and Link
     in if a < 0 then 0
     else e1000-await-aneg mmio 0
 
+ THE FUEL WAS A COUNT AND ON REAL MDIO A COUNT IS NOT A DURATION. Measured on
+ the ASUS 2026-08-15: this loop ran its full million at 92.89 us per iteration
+ and returned 0 after 92,892,733 us, which was 92.9 of the 93 seconds
+ `e1000-init` took and the reason the flight before it was read as a wedge.
+ Every iteration is a full MDIC transaction; on a 2.5 MHz MDIO bus that is tens
+ of microseconds, and in the bed the same million is free.
+
+ The cost was diagnosed on 2026-08-04 and NOT fixed here: `NicAsde` routed
+ around this function instead (see `na-phy-kick`), so the driver kept the
+ million and it cost a second flight eleven days later.
+
+ The time bound is borrowed from `e1000-settle-mdio` and `e1000-quiesce`, and
+ the same flight is the evidence they work: both asked for 10 ms through HPET
+ and returned in 10044 us and 10043 us on that board.
+
+ 3000 ms is a BUDGET, not a datasheet figure. Auto-negotiation on a healthy
+ link completes well inside a second; three seconds is generous enough not to
+ cut off a slow partner and short enough that a part which never reports done
+ costs three seconds instead of ninety-three.
+
+ THE FUEL SURVIVES as a second bound. With no HPET (rate 0) the counted path is
+ the only one there is, and if HPET stops advancing mid-loop the count is what
+ still ends it. Either bound fires.
+
+ THE TIMEOUT BRANCH HAS NO BED ARM and that is a gap rather than an oversight:
+ the model reports aneg done on the first read, so the loop returns 1 before a
+ deadline is ever consulted. Reaching it needs an emulator flag.
+ `codex/test/e1000-aneg-budget` pins the arithmetic; the behaviour rests on the
+ metal measurement above.
+
   e1000-aneg-fuel : Integer = 1000000
+  e1000-aneg-ms : Integer = 3000
+
+  e1000-aneg-ticks : Integer -> Integer
+  e1000-aneg-ticks (rate) = (rate * e1000-aneg-ms) / 1000
 
   e1000-await-aneg : Integer, Integer -> Integer
   e1000-await-aneg (mmio) (i) =
+   let rate = hpet-ticks-per-second
+   in if rate <= 0 then e1000-await-aneg-counted mmio i
+   else e1000-await-aneg-timed mmio hpet-ticks (e1000-aneg-ticks rate) i
+
+  e1000-await-aneg-counted : Integer, Integer -> Integer
+  e1000-await-aneg-counted (mmio) (i) =
    if i >= e1000-aneg-fuel then 0
    else let s = e1000-phy-read mmio e1000-phy-bmsr
     in if s < 0 then 0
     else if bit-and s e1000-bmsr-aneg-done /= 0 then 1
-    else e1000-await-aneg mmio (i + 1)
+    else e1000-await-aneg-counted mmio (i + 1)
+
+  e1000-await-aneg-timed : Integer, Integer, Integer, Integer -> Integer
+  e1000-await-aneg-timed (mmio) (start) (want) (i) =
+   if i >= e1000-aneg-fuel then 0
+   else let s = e1000-phy-read mmio e1000-phy-bmsr
+    in if s < 0 then 0
+    else if bit-and s e1000-bmsr-aneg-done /= 0 then 1
+    else if (hpet-ticks - start) >= want then 0
+    else e1000-await-aneg-timed mmio start want (i + 1)
 
  ASDE is CLEARED, and the datasheet is unusually blunt about it. 82583V
  CTRL, bit 5: "When set to 1b, the MAC ignores the speed indicated by the
@@ -354,7 +403,63 @@ Section: Reset and Link
    let p = e1000-phy-bring-up mmio
    in let ctrl = e1000-read mmio e1000-reg-ctrl
    in let w = e1000-write mmio e1000-reg-ctrl (bit-and (bit-or ctrl e1000-ctrl-slu) e1000-clear-asde)
-   in e1000-await-link mmio 0
+   in e1000-link-wait mmio
+
+ ANEG DOES NOT COMPLETE ON THIS PART AND THE LINK COMES UP ANYWAY. Measured on
+ the ASUS 2026-08-15: `e1000-await-aneg` ran its full million and returned 0,
+ so BMSR never reported aneg-done, while `STATUS.LU` did come up and the part
+ negotiated 1000 Mb/s. The two are independent readings and only the second one
+ decides whether frames can move, which is why SLU is set above and this loop
+ polls STATUS rather than the PHY.
+
+ THAT MADE THIS LOOP'S MISSING BUDGET INVISIBLE FOR AS LONG AS ANEG WAS SLOW.
+ The million-iteration aneg wait was 92.9 seconds of dead time during which the
+ link came up behind it, so by the time this ran the answer was already yes and
+ the count was never approached. Budgeting aneg at 3 s removed the dead time and
+ this loop then ran its full four million against a part whose link was still
+ settling: measured 2026-08-16, over ten minutes with no return, which reads as
+ a wedge. The regression was mine (15463); the defect is older and was masked.
+
+ THE CLOCK IS READ ONCE PER BATCH, not once per iteration, which is the pattern
+ `e1000-await-tx-clocked` already uses in this chapter and for the same reason:
+ a STATUS read is the cheap thing this loop is made of and an HPET read is not,
+ so checking the clock every pass would measure the clock. A batch of 4096 is
+ the granularity of the deadline and is far finer than a link needs.
+
+ 5000 ms is a BUDGET, not a datasheet figure. A gigabit link that is going to
+ come up does so in a few seconds; five is generous enough not to cut off a slow
+ switch and short enough that a part which never links fails in single-digit
+ seconds instead of never. Worst case init is now that plus the 3 s aneg budget.
+
+  e1000-link-window-ms : Integer = 5000
+  e1000-link-batch : Integer = 4096
+  e1000-link-batch-fuel : Integer = 100000
+
+  e1000-link-ticks : Integer -> Integer
+  e1000-link-ticks (rate) = (rate * e1000-link-window-ms) / 1000
+
+  e1000-link-wait : Integer -> Integer
+  e1000-link-wait (mmio) =
+   let started = hpet-start
+   in let rate = hpet-ticks-per-second
+   in if rate <= 0 then e1000-await-link mmio 0
+   else e1000-await-link-clocked mmio hpet-ticks (e1000-link-ticks rate) e1000-link-batch-fuel
+
+  e1000-await-link-batch : Integer, Integer -> Integer
+  e1000-await-link-batch (mmio) (i) =
+   if i <= 0 then 0
+   else if bit-and (e1000-read mmio e1000-reg-status) e1000-status-lu /= 0 then 1
+   else e1000-await-link-batch mmio (i - 1)
+
+  e1000-await-link-clocked : Integer, Integer, Integer, Integer -> Integer
+  e1000-await-link-clocked (mmio) (start) (want) (fuel) =
+   if e1000-await-link-batch mmio e1000-link-batch == 1 then 1
+   else if fuel <= 0 then 0
+   else if (hpet-ticks - start) >= want then 0
+   else e1000-await-link-clocked mmio start want (fuel - 1)
+
+ THE COUNT SURVIVES as the no-HPET path, exactly as the aneg fuel does. With no
+ usable clock the count is the only bound there is.
 
   e1000-await-link : Integer, Integer -> Integer
   e1000-await-link (mmio) (i) =

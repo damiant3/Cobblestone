@@ -1,0 +1,60 @@
+Chapter: E1000LinkBudget
+  cites Kernel chapter E1000e
+  cites Foreword chapter Console
+
+ `e1000-await-link` was bounded by a count of four million and nothing else. It
+ never showed while `e1000-await-aneg` was burning 92.9 seconds ahead of it,
+ because the link came up during that dead time and this loop was answered on
+ its first pass. Budgeting aneg exposed it: measured on the ASUS 2026-08-16,
+ over ten minutes with no return. It is bounded by a duration now.
+
+ WHAT THIS ARM COVERS, and what covers the rest. This one is arithmetic only:
+ the budget derivation and the poll coverage, which are the halves most likely
+ to be silently wrong and which need no device. The TIMEOUT BEHAVIOUR is not
+ here and does not need to be, because `-e1000-no-link` reaches it and
+ `codex/test/e1000-link-deadline` is that arm.
+
+ An earlier draft of this paragraph said the timeout branch was unreachable in
+ the bed, by analogy with `e1000-aneg-budget` where it genuinely is. That was
+ wrong and the flag had existed for some time: `e1000-asde-nolink` was already
+ running under it. The analogy was the whole of the reasoning and no one checked
+ it, which is the failure this project keeps writing down -- an instrument
+ pointed at part of the question and read as an answer to all of it.
+
+ THE PROPERTY IS THE SAME WALL TIME AT DIFFERENT RATES, which is the whole
+ point of a budget: a count gives different durations on different machines.
+ Both real HPET rates this project has measured are here, the ASUS 23999999 and
+ the bed 14318179, and both must yield five seconds.
+
+ THE SECOND PROPERTY IS THAT NOTHING GOT LESS SENSITIVE. Moving from a bare
+ count to a clocked batch must not reduce how many times the link can be polled
+ before giving up, or a slow link that used to be caught would start being
+ missed. batch * batch-fuel is the new ceiling and it must not fall below the
+ old four million.
+
+ We say:
+
+Section: Fixtures
+
+  metal-hz : Integer = 23999999
+  bed-hz : Integer = 14318179
+
+  seconds-of : Integer -> Integer
+  seconds-of (rate) = if rate <= 0 then (0 - 1) else (e1000-link-ticks rate) / rate
+
+  max-polls : Integer = e1000-link-batch * e1000-link-batch-fuel
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("window-ms=" & show e1000-link-window-ms)
+    print-line-uni ("metal-ticks=" & show (e1000-link-ticks metal-hz))
+    print-line-uni ("metal-seconds=" & show (seconds-of metal-hz))
+    print-line-uni ("bed-ticks=" & show (e1000-link-ticks bed-hz))
+    print-line-uni ("bed-seconds=" & show (seconds-of bed-hz))
+    print-line-uni ("same-wall-time=" & show (seconds-of metal-hz == seconds-of bed-hz))
+    print-line-uni ("zero-rate-ticks=" & show (e1000-link-ticks 0))
+    print-line-uni ("count-still-a-bound=" & show (e1000-link-fuel > 0))
+    print-line-uni ("max-polls=" & show max-polls)
+    print-line-uni ("no-less-sensitive=" & show (max-polls >= e1000-link-fuel))
+  end

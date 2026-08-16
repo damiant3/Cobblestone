@@ -2,6 +2,13 @@
 
 Works is the application layer of Codex OS: a UEFI-bootable developer console, a content-addressed repository protocol (replacing Git), and the tooling that ties the compiler, AI agents, test harness, and network services together into a self-contained bare-metal development environment.
 
+**Before you change the GOP desktop, read
+[works-desk-contract.md](works-desk-contract.md).** It carries the invariants
+that are not visible from inside any one pane: the `ds` cell map and the rule
+that a pointer cell must be allocated in `desk-run`, the base heap mark and how
+a pane exits, the cursor bracket, and why a pane takes the palette as a
+parameter. Open work is in [works-backlog.md](works-backlog.md).
+
 ## Modules
 
 ### UEFI Boot & Console Shell

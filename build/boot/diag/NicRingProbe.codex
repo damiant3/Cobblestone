@@ -1,0 +1,280 @@
+Chapter: NicRingProbe
+  cites Works chapter GopUsb
+  cites Works chapter GopXhci
+  cites Works chapter GopFat16
+  cites Works chapter GopDraw
+  cites Kernel chapter BitmapFont
+  cites Works chapter GopHandoff
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+  cites Kernel chapter Pci
+  cites Kernel chapter Hpet
+  cites Kernel chapter E1000e
+  cites Works chapter GopShot
+  cites Dev chapter NicAsde
+
+ NIC-3's ACTUAL QUESTION, which the 2026-08-15 flight did not settle. That
+ flight ended `INIT COMPLETE RDH=15 RDT=15` where the bed gives `RDH=0`. Two
+ readings fit and they are opposite: the receiver filled all sixteen
+ descriptors, so frames DO move; or `RDH` is not writable on this part the way
+ `CTRL` is not, and nothing was received at all. The descriptors decide it and
+ nobody has ever painted them.
+
+ THE DISCRIMINATOR IS THE DD BIT, one per descriptor, and it is a pure read.
+ A descriptor the hardware has filled has DD set and a non-zero length. If DD
+ is set across the ring, frames arrived. If DD is clear everywhere while `RDH`
+ reads 15, `RDH` is not tracking reception and the earlier reading was a
+ mirage. There is no third answer, which is what makes this worth a boot.
+
+ IT ALSO RE-VERIFIES TODAY'S FIX ON THE ONLY MACHINE THAT CAN FALSIFY IT.
+ `e1000-await-aneg` was a million-iteration count that cost 92,892,733 us on
+ this board; it is a 3-second HPET budget now. Row 2 times `e1000-init` end to
+ end, so a number near 3 s confirms the fix and a number near 93 s says it did
+ not take.
+
+ ORDER, per the standing shape. Everything read-only is painted before the one
+ write, because a write destroys the control it depends on and this board has
+ already eaten two flights.
+
+ We say:
+
+Section: Marker Files
+
+  nrp-name : Integer -> Integer
+  nrp-name (buf) =
+   let a = poke-byte buf 0 82
+   in let b = poke-byte buf 1 73
+   in let c = poke-byte buf 2 78
+   in let d = poke-byte buf 3 71
+   in let p1 = poke-byte buf 4 32
+   in let p2 = poke-byte buf 5 32
+   in let p3 = poke-byte buf 6 32
+   in let p4 = poke-byte buf 7 32
+   in let t = poke-byte buf 8 84
+   in let x = poke-byte buf 9 88
+   in poke-byte buf 10 84
+
+  nrp-bytes : Integer, Text, Integer -> Integer
+  nrp-bytes (buf) (s) (i) =
+   if i >= text-length s then i
+   else let b = poke-byte buf i (to-unicode (char-code (char-at s i)))
+   in nrp-bytes buf s (i + 1)
+
+  nrp-mark : GfatMount, Text -> [Device.Port] Boolean
+  nrp-mark (m) (body) =
+   if (m.gm-ok) == False then False
+   else let nb = alloc-zeroed 16 16
+   in let nm = nrp-name nb
+   in let n = text-length body
+   in let buf = alloc-zeroed 512 64
+   in let w = nrp-bytes buf body 0
+   in gfat-write-file (m.gm-vol) nb buf n
+
+  nrp-bank-line : GfatMount, Boolean -> Text
+  nrp-bank-line (m) (wrote) =
+   if m.gm-ok then "bank live, RING.TXT written=" & (if wrote then "y" else "n")
+   else "no bank, mount stage " & show (xdiag-get gfat-cell-stage) & " -- the glass is the reading"
+
+Section: Rows
+
+  nrow : Integer, Integer, CbfFont, Integer, Integer, Text, Integer, Integer -> Integer
+  nrow (base) (stride) (font) (y) (scale) (s) (col) (w) =
+   let lines = gop-draw-text-wrap base stride font 40 y s col scale w
+   in y + lines * 16 * scale + 6
+
+  col-read : Integer = 9474192
+  col-good : Integer = 3394611
+  col-warn : Integer = 16755200
+  col-head : Integer = 65535
+  col-step : Integer = 16777088
+
+Section: The Descriptor Ring
+
+ One character per descriptor so sixteen of them fit on one line and a
+ photograph can be read without counting commas.
+
+  nrp-dd-of : Integer, Integer -> Integer
+  nrp-dd-of (ring) (i) =
+   bit-and (peek-byte (ring + i * e1000-desc-size) 12) e1000-rx-status-dd
+
+  nrp-len-of : Integer, Integer -> Integer
+  nrp-len-of (ring) (i) =
+   let d = ring + i * e1000-desc-size
+   in bit-or (peek-byte d 8) (bit-shl (peek-byte d 9) 8)
+
+  nrp-dd-map : Integer, Integer, Text -> Text
+  nrp-dd-map (ring) (i) (acc) =
+   if i >= e1000-rx-count then acc
+   else nrp-dd-map ring (i + 1) (acc & (if nrp-dd-of ring i /= 0 then "1" else "0"))
+
+  nrp-dd-count : Integer, Integer, Integer -> Integer
+  nrp-dd-count (ring) (i) (acc) =
+   if i >= e1000-rx-count then acc
+   else nrp-dd-count ring (i + 1) (acc + (if nrp-dd-of ring i /= 0 then 1 else 0))
+
+  nrp-max-len : Integer, Integer, Integer -> Integer
+  nrp-max-len (ring) (i) (acc) =
+   if i >= e1000-rx-count then acc
+   else let l = nrp-len-of ring i
+   in nrp-max-len ring (i + 1) (if l > acc then l else acc)
+
+  nrp-ring-line : Text, Integer -> Text
+  nrp-ring-line (tag) (ring) =
+   tag & " dd=" & nrp-dd-map ring 0 ""
+     & " set=" & show (nrp-dd-count ring 0 0)
+     & " maxlen=" & show (nrp-max-len ring 0 0)
+
+Section: Frame Bytes
+
+ THE READER'S OWN CONTROL, and without it every `dd=0000...` above is worth
+ nothing. A DD reader pointed at the wrong byte or masking the wrong bit
+ reports zeros exactly as an idle ring does, so the two are indistinguishable
+ and the instrument cannot fail. The TRANSMIT descriptor settles it: it has the
+ same sixteen-byte layout and its status byte is at the same offset 12 with
+ done in bit 0, and `e1000-send-frame` only answers 1 after the hardware has
+ written that bit. So `accepted=1` with `dd=1` here proves the reader reads the
+ right byte of the right descriptor, on the bed and on metal alike, and
+ `accepted=1` with `dd=0` condemns every other row on the screen.
+
+  nrp-tx-dd : E1000Device -> Text
+  nrp-tx-dd (d) =
+   let nxt = bit-and (peek-32 ((d.e-ctrl-blk) + e1000-cb-tx-next) 0) #FFFFFFFF
+   in let idx = int-mod (nxt + e1000-tx-count - 1) e1000-tx-count
+   in let st = peek-byte ((d.e-tx-ring) + idx * e1000-desc-size) 12
+   in "reader control: tx desc " & show idx & " status=" & show st & " dd="
+     & (if bit-and st e1000-rx-status-dd /= 0 then "1 READER WORKS"
+        else "0 -- READER BROKEN, every dd above is meaningless")
+
+  nrp-first-set : Integer, Integer -> Integer
+  nrp-first-set (ring) (i) =
+   if i >= e1000-rx-count then (0 - 1)
+   else if nrp-dd-of ring i /= 0 then i
+   else nrp-first-set ring (i + 1)
+
+  nrp-hex : Integer, Integer, Integer, Text -> Text
+  nrp-hex (buf) (i) (n) (acc) =
+   if i >= n then acc
+   else nrp-hex buf (i + 1) n (acc & show (peek-byte buf i) & " ")
+
+  nrp-frame-line : Integer, Integer -> Text
+  nrp-frame-line (ring) (bufs) =
+   let idx = nrp-first-set ring 0
+   in if idx < 0 then "no descriptor has DD set -- nothing was received"
+   else "desc " & show idx & " len=" & show (nrp-len-of ring idx)
+        & " bytes " & nrp-hex (bufs + idx * e1000-buf-size) 0 14 ""
+
+Section: Probe Frame
+
+  nrp-bcast : List Integer = [255, 255, 255, 255, 255, 255]
+
+ A REAL ARP REQUEST FOR A REAL ADDRESS, and that is what makes the bed run a
+ control rather than a formality. The earlier version asked for 0.0.0.0 from
+ 0.0.0.0, which nothing answers, so every DD map read zeros -- and a DD reader
+ with the wrong offset or the wrong bit reads zeros too. The two were
+ indistinguishable, which is an instrument that cannot fail. Asking the bed's
+ NAT gateway for its address gets an answer, so the bed proves the reader works
+ before the flight relies on it.
+
+  nrp-src-ip : List Integer = [10, 0, 2, 15]
+  nrp-gw-ip : List Integer = [10, 0, 2, 2]
+
+  nrp-arp : List Integer -> List Integer
+  nrp-arp (mac) =
+   nrp-bcast & mac & [8, 6, 0, 1, 8, 0, 6, 4, 0, 1] & mac
+     & nrp-src-ip & [0, 0, 0, 0, 0, 0] & nrp-gw-ip
+
+ THE CLOCK IS NOT READ EVERY POLL, and this cost a rehearsal to learn. The
+ obvious loop checks `hpet-ticks` on each iteration, which is what
+ `nsp-await-frame` did; an HPET read is a VM exit in the bed and a device read
+ on metal, so at a fuel of four million the CLOCK dominates and the loop no
+ longer measures what it is polling. The bed run stopped mid-probe until the
+ fuel was cut to a thousand, which is far too little listening for a flight.
+
+ It is the same defect as `e1000-aneg-fuel`, one level out and in the
+ instrument rather than the driver: a count standing in for a duration. Polling
+ in chunks fixes both halves at once -- the device is polled `nrp-chunk` times
+ between clock reads, so the budget stays a real duration and the clock costs a
+ four-thousandth of what it did.
+
+  nrp-chunk : Integer = 512
+  nrp-rounds : Integer = 4000
+
+  nrp-poll-n : E1000Device, Integer -> E1000RecvResult
+  nrp-poll-n (d) (n) =
+   if n <= 0 then e1000-no-frame
+   else let hp = __heap-save
+   in let r = e1000-poll-raw (d.e-mmio) (d.e-rx-ring) (d.e-rx-bufs) (d.e-ctrl-blk)
+   in if r.r-has-frame then r
+   else let rs = __heap-restore hp
+   in nrp-poll-n d (n - 1)
+
+  nrp-wait : E1000Device, Integer, Integer, Integer -> E1000RecvResult
+  nrp-wait (d) (start) (want) (rounds) =
+   if rounds <= 0 then e1000-no-frame
+   else let r = nrp-poll-n d nrp-chunk
+   in if r.r-has-frame then r
+   else if (hpet-ticks - start) >= want then e1000-no-frame
+   else nrp-wait d start want (rounds - 1)
+
+Section: Entry
+
+  opening : [Device.Port, Device.Mmio] Integer
+  opening =
+   let base = boot-fb-base 0
+   in let w = boot-fb-w 0
+   in let h = boot-fb-h 0
+   in let stride = boot-fb-stride 0
+   in let font = cbf-init
+   in let scale = if w >= 1024 then 2 else 1
+   in act
+    ri <- runtime-init 0
+    att <- usb-attach
+    let bg = gop-fill-rect base stride 0 0 w h 1710638
+    in let y0 = nrow base stride font 40 scale "NIC RING PROBE -- do frames actually move" col-head w
+    in act
+      m <- gfat-mount-esp
+      m0 <- nrp-mark m "nic ring probe, rows on the glass"
+      let y1 = nrow base stride font y0 scale (nrp-bank-line m m0) (if m.gm-ok then col-read else col-warn) w
+      in let scan = pci-scan-all
+      in let yend = when e1000-find scan
+       is None -> nrow base stride font y1 scale "NO ELIGIBLE INTEL PART FOUND" col-warn w
+       is Just (dv) ->
+         if na-eligible dv == False then nrow base stride font y1 scale (na-reject-line dv) col-warn w
+         else let mmio = na-mmio-of dv
+         in let t = na-touch mmio
+         in let hz = hpet-ticks-per-second
+         in let y2 = nrow base stride font y1 scale ("arrival RCTL=" & show (e1000-read mmio e1000-reg-rctl) & " RDH=" & show (e1000-read mmio e1000-reg-rdh) & " RDT=" & show (e1000-read mmio e1000-reg-rdt) & " hpet=" & show hz) col-read w
+
+         in let i0 = hpet-ticks
+         in let d = e1000-init dv
+         in let i1 = hpet-ticks
+         in let initus = if hz <= 0 then (0 - 1) else (i1 - i0) * 1000000 / hz
+         in let y3 = nrow base stride font y2 scale ("init took " & show initus & "us  (aneg fix: expect ~3000000, the old count cost 92892733)") (if initus < 20000000 then col-good else col-warn) w
+
+         in let y4 = nrow base stride font y3 scale (nrp-ring-line "after-init" (d.e-rx-ring)) col-step w
+         in let y5 = nrow base stride font y4 scale ("after-init RDH=" & show (e1000-read mmio e1000-reg-rdh) & " RDT=" & show (e1000-read mmio e1000-reg-rdt)) col-read w
+
+         in let s0 = hpet-ticks
+         in let listened = nrp-wait d s0 ((hz * 1200) / 1000) nrp-rounds
+         in let y6 = nrow base stride font y5 scale (nrp-ring-line "after-listen" (d.e-rx-ring)) col-step w
+         in let y7 = nrow base stride font y6 scale (nrp-frame-line (d.e-rx-ring) (d.e-rx-bufs)) (if listened.r-has-frame then col-good else col-warn) w
+         in let y8 = nrow base stride font y7 scale ("poll says RECEIVED=" & (if listened.r-has-frame then "YES" else "no") & " len=" & show (list-length (listened.r-frame))) (if listened.r-has-frame then col-good else col-warn) w
+
+         in let sent = e1000-send-frame d (nrp-arp (e1000-read-mac mmio))
+         in let s1 = hpet-ticks
+         in let after = nrp-wait d s1 ((hz * 1200) / 1000) nrp-rounds
+         in let y9 = nrow base stride font y8 scale ("sent ARP accepted=" & show sent & "  then " & nrp-ring-line "after-send" (d.e-rx-ring)) col-step w
+
+         in let y9b = nrow base stride font y9 scale (nrp-tx-dd d) col-good w
+         in let ya = nrow base stride font y9b scale "THE ONE WRITE: RDH is set to 7 and read back. Everything above is banked." col-warn w
+         in let rdh0 = e1000-read mmio e1000-reg-rdh
+         in let wr = e1000-write mmio e1000-reg-rdh 7
+         in let rdh1 = e1000-read mmio e1000-reg-rdh
+         in let restore = e1000-write mmio e1000-reg-rdh rdh0
+         in let yb = nrow base stride font ya scale ("RDH was " & show rdh0 & ", wrote 7, read back " & show rdh1 & " -- " & (if rdh1 == 7 then "WRITABLE" else "NOT writable, so RDH never tracked reception")) (if rdh1 == 7 then col-good else col-warn) w
+         in nrow base stride font yb scale "END OF ROWS -- photograph from the top, then F12" col-head w
+      in shot-wait base w h stride font (att.ua-kbd)
+    end
+   end
+
+Page 1

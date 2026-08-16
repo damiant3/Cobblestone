@@ -28,9 +28,34 @@ Section: ARP Cache
     in if ip-equal (e.ip) ip then e.mac
     else arp-cache-search entries ip (i + 1) len
 
+ THE COUNT IS BANDED 0 TO 255 AND THIS APPENDED UNCONDITIONALLY, so the 256th
+ ARP frame wrote 256 into that band and the bounded-integer check refused it at
+ the function boundary: measured 2026-08-15, !EXC=06 with RSI holding 0x100.
+ net-process-arp learns from every frame that arrives, so any host on the
+ segment reached it, and re-sending the SAME ten senders took the count from 10
+ to 20 -- it never needed 256 distinct hosts, and gratuitous ARP on a busy
+ segment gets there by itself.
+
+ Refuse at capacity rather than evict. Eviction would let a flood push the
+ GATEWAY entry out, which is the one mapping this stack cannot work without and
+ is learned first, so refusing keeps what was already learned and drops only
+ the flood.
+
+  arp-cache-max : Integer = 64
+
+  arp-cache-index : List ArpEntry, List Integer, Integer, Integer -> Integer
+  arp-cache-index (entries) (ip) (i) (len) =
+    if i >= len then 0 - 1
+    else if ip-equal ((list-at entries i).ip) ip then i
+    else arp-cache-index entries ip (i + 1) len
+
   arp-cache-add : ArpCache, List Integer, List Integer -> ArpCache
   arp-cache-add (cache) (ip) (mac) =
-    ArpCache { entries = list-push (cache.entries) (ArpEntry { ip = ip, mac = mac }), count = cache.count + 1 }
+    let at = arp-cache-index (cache.entries) ip 0 (cache.count)
+    in if at >= 0
+      then ArpCache { entries = list-set-at (cache.entries) at (ArpEntry { ip = ip, mac = mac }), count = cache.count }
+    else if cache.count >= arp-cache-max then cache
+    else ArpCache { entries = list-push (cache.entries) (ArpEntry { ip = ip, mac = mac }), count = cache.count + 1 }
 
 Section: Network Session
   NetSession = record {

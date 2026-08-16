@@ -50,6 +50,33 @@ Section: Payload
     else let w = poke-byte buf i (sl-pat i)
     in sl-fill buf (i + 1) n
 
+ The fill is chunked so it can report. 2.7 MB poked one byte at a time is
+ minutes on the medium's own timescale and the ladder said nothing during it,
+ which is half of why the flight was unreadable. The bar is BLUE because blue
+ is the rung this stage is working toward: a bar advancing under an orange
+ field is progress toward `wrote`, and a bar frozen part way is where it died.
+ A chunk boundary rather than a modulo test per byte keeps the cost off the
+ inner loop.
+
+  sl-chunk : Integer = 65536
+
+  sl-fill-chunk : Integer, Integer, Integer -> Integer
+  sl-fill-chunk (buf) (i) (stop) =
+    if i >= stop then 0
+    else let w = poke-byte buf i (sl-pat i)
+    in sl-fill-chunk buf (i + 1) stop
+
+  sl-fill-beat : Integer, Integer, Integer -> [Console] Integer
+  sl-fill-beat (buf) (i) (n) =
+    if i >= n then 0
+    else let stop = if i + sl-chunk > n then n else i + sl-chunk
+    in let f = sl-fill-chunk buf i stop
+    in let x = ladder-tick ladder-blue stop n
+    in act
+      print-line-uni ("SINKLADDER fill " & show stop & "/" & show n & " bar=" & show x)
+      sl-fill-beat buf stop n
+    end
+
 Section: Rungs
 
   sl-truth : Boolean -> Integer
@@ -174,15 +201,33 @@ Section: Entry
     sl-write-and-verify v0
   end
 
+ The write is BRACKETED rather than instrumented from inside. `fat16-write-
+ segments` is one call that creates the file and writes the whole chain, so
+ there is no segment boundary out here to report on; what the bracket does
+ separate is the two phases the flight could not tell apart. An empty blue bar
+ under an orange field means the fill finished and the write did not return,
+ which is where the returned stick put the fault -- no directory entry at all.
+ A full bar means the write returned and the `wrote` rung is the next word.
+ Reporting from INSIDE the chain walk needs a hook in `GopFat16`, which is a
+ different file and, as of 2026-08-15, a different lane's.
+
   sl-write-and-verify : Fat16Volume -> [Console, Device.Block] Integer
   sl-write-and-verify (v0) =
     let buf = __heap-save
     in let adv = __heap-advance (bit-and (sl-size + 511) (0 - 512))
-    in let f = sl-fill buf 0 sl-size
-    in let h0 = __heap-save
     in act
-      ok <- fat16-write-segments sl-path [] buf sl-size []
-      sl-after-write ok h0
+      f <- sl-fill-beat buf 0 sl-size
+      let h0 = __heap-save
+      in let z = ladder-tick ladder-blue 0 sl-size
+      in act
+        print-line-uni ("SINKLADDER write entering bar=" & show z)
+        ok <- fat16-write-segments sl-path [] buf sl-size []
+        let x = ladder-tick ladder-blue sl-size sl-size
+        in act
+          print-line-uni ("SINKLADDER write returned ok=" & show (sl-truth ok) & " bar=" & show x)
+          sl-after-write ok h0
+        end
+      end
     end
 
   sl-after-write : Boolean, Integer -> [Console, Device.Block] Integer
