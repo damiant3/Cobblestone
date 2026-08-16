@@ -1,0 +1,53 @@
+Chapter: DefsChap
+
+  KKind =
+   | KIdent
+   | KEof
+
+  mutable LState = record {
+   source : Text,
+   offset : Integer between 0 and 4294967295,
+   line : Integer between 0 and 131071,
+   column : Integer between 0 and 4294967295,
+   file-id : Integer between 0 and 65535,
+   errors : LinkedList Integer,
+   prose-mode : Boolean
+  }
+
+  LStep =
+   | LTok (Integer) (LState)
+   | LEnd
+
+  LColl = record {
+   c-toks : LinkedList Integer,
+   c-errs : LinkedList Integer
+  }
+
+  mk-state : Text, Integer between 0 and 65535, LinkedList Integer -> LState
+  mk-state (src) (fid) (pre) =
+   LState { source = src, offset = 0, line = 1, column = 1, file-id = fid, errors = pre, prose-mode = False }
+
+  adv : LState -> LState
+  adv (st) =
+   LState { source = st.source, offset = st.offset + 1, line = st.line, column = st.column + 1, file-id = st.file-id, errors = st.errors, prose-mode = st.prose-mode }
+
+Chapter: UseChap
+
+  my-scan : LState -> LStep
+  my-scan (st) =
+   if st.offset >= 1 then LEnd
+   else LTok 7 (adv st)
+
+  my-collect : LState, LinkedList Integer, Integer -> LColl
+  my-collect (st) (acc) (ceiling) =
+   when my-scan st
+    is LTok (tok) (next) -> my-collect next (__linked-list-push acc tok) ceiling
+    is LEnd -> LColl { c-toks = __linked-list-push acc 99, c-errs = st.errors }
+
+  opening : [Console] Nothing = act
+    let raw = my-collect (mk-state "x" 1 (__linked-list-empty 0)) (__linked-list-empty 0) 0
+    in act
+      print-line-uni ("toks " & show (list-length (__linked-list-to-list (raw.c-toks))))
+      print-line-uni ("errs " & show (list-length (__linked-list-to-list (raw.c-errs))))
+    end
+  end

@@ -1,0 +1,60 @@
+Chapter: SelfProbe
+
+  mutable LState = record {
+   source : Text,
+   offset : Integer between 0 and 4294967295,
+   line : Integer between 0 and 131071,
+   column : Integer between 0 and 4294967295,
+   file-id : Integer between 0 and 65535,
+   errors : LinkedList Diagnostic,
+   prose-mode : Boolean
+  }
+
+  LStep =
+   | LTok (Token) (LState)
+   | LEnd
+
+  LColl = record {
+   c-toks : LinkedList Token,
+   c-errs : LinkedList Diagnostic
+  }
+
+  deck-rec : a -> a
+  deck-rec (x) = x
+
+  deck-record : a -> a
+  deck-record (x) = x
+
+  mk-state : Text, Integer between 0 and 65535, LinkedList Diagnostic -> LState
+  mk-state (src) (fid) (pre) =
+   LState { source = src, offset = 0, line = 1, column = 1, file-id = fid, errors = pre, prose-mode = False }
+
+  adv : LState -> LState
+  adv (st) =
+   LState { source = st.source, offset = st.offset + 1, line = st.line, column = st.column + 1, file-id = st.file-id, errors = st.errors, prose-mode = st.prose-mode }
+
+  mk-tok : TokenKind, Integer between 0 and 4294967295, LState -> Token
+  mk-tok (kind) (length) (st) =
+   deck-rec (Token { kind = kind, source = st.source, offset = st.offset, length = length, line = st.line, column = st.column, file-id = st.file-id })
+
+  my-scan : LState -> LStep
+  my-scan (st) =
+   if st.offset >= 1 then LEnd
+   else LTok (mk-tok (deck-rec Identifier) 1 st) (adv st)
+
+  my-collect : LState, LinkedList Token, Integer -> LColl
+  my-collect (st) (acc) (ceiling) =
+   when my-scan st
+    is LTok (tok) (next) ->
+     if tok.kind == EndOfFile then LColl { c-toks = __linked-list-push acc tok, c-errs = next.errors }
+      else my-collect next (__linked-list-push acc tok) ceiling
+    is LEnd ->
+     LColl { c-toks = __linked-list-push acc (mk-tok (deck-rec EndOfFile) 0 st), c-errs = st.errors }
+
+  opening : [Console] Nothing = act
+    let raw = my-collect (mk-state "x" 1 (__linked-list-empty 0)) (__linked-list-empty 0) 0
+    in act
+      print-line-uni ("toks " & show (list-length (__linked-list-to-list (raw.c-toks))))
+      print-line-uni ("errs " & show (list-length (__linked-list-to-list (raw.c-errs))))
+    end
+  end
