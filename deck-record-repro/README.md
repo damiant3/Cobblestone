@@ -1,4 +1,4 @@
-# Nine findings: five closed by Update 43, four open
+# Ten findings: five closed by Update 43, five open
 
 This directory holds the findings and the probes that make them runnable.
 It is discussion material rather than a proposed addition to the tree --
@@ -394,3 +394,70 @@ its target: zig demands the struct exist.
 
 Seed F3722EAC (Update 43), QEMU/TCG, verified against all three probes
 on 2026-08-16.
+
+## 10. `__record-set` mutates, and only two lines in the tree depend on it
+
+Every plug has to decide whether `__record-set r "f" v` returns a new
+record or the same one modified. Nothing in the language says. The
+declaration syntax offers a `mutable` keyword on records, which reads as
+a promise that plain records are values -- and `CodegenState` is a plain
+record.
+
+Bare metal does not read it that way. `emit-record-set-builtin`
+(X86_64Builtins.codex) evaluates the record to a pointer, stores the
+field through it with `emit-narrow-store-proven`, and returns that same
+pointer. There is no copy anywhere in the function, for mutable and
+plain records alike. The C# plug agrees:
+
+    _Buf.rset(record, __rs => { __rs.field = v; })
+
+a lambda that assigns through a reference and hands the object back. So
+the rule is that `__record-set` mutates. The `mutable` keyword selects
+something else -- whatever it selects, it is not this.
+
+The rule is invisible almost everywhere, because the ordinary shape is
+bind-the-result-and-use-the-result: 354 `__record-set` calls in the fibx
+subject and copy would serve for all but two of them. It takes an ALIAS
+-- reading a binding made before the update -- for the two answers to
+differ, and the x86 back end aliases in exactly two places:
+
+`X86_64Helpers.codex:1539`
+
+    in let st12c = emit-list-tail st12b
+    in let st14 = emit-text-concat-list st12b      <- st12b, not st12c
+
+`X86_64Helpers.codex:453-457`
+
+    in let st25 = st-append-code st24 (mov-store reg-r13 reg-r15 0)
+    in let st26 = st-append-code st25 (mov-rr reg-rax reg-r13)
+    in let st27 = st-append-code st26 (pop-r r15 & r14 & r13 & r12 & rbx)
+    in st-append-code st25 x86-ret                 <- st25, not st27
+
+Both are correct under mutation and both read as typos, the second
+especially: `emit-unicode-bytes-to-text-helper` sits twelve lines below
+with the identical shape and ends `st-append-code st27 x86-ret`. A
+reader cannot tell the pair apart by intent, only by running them.
+
+Under value semantics the damage is silent and specific. The emitted
+machine code loses `__list_tail`'s entire 69-byte body -- its name still
+recorded in the offset table, so the function count is unchanged -- and
+loses a 12-byte epilogue, leaving a helper that pushes five callee-saved
+registers and never pops them. 81 bytes short out of 45,432, found only
+by diffing the fibx subject's emitted code against bare metal.
+
+Three things might be worth doing, in ascending order of appetite:
+
+1. Say it somewhere. One sentence in the `__record-set` docs -- "returns
+   the record, mutated in place" -- costs nothing and every future plug
+   reads it.
+2. Rewrite the two sites to use the binding they mean (`st12c`, `st27`).
+   The output is identical under mutation and they stop reading as bugs.
+3. Decide what `mutable` on a record declaration is for, given that
+   plain records already have reference semantics. If it is vestigial,
+   dropping it removes a promise the implementation does not keep.
+
+Found by the fibx rung: the x86 code generator compiling fib, emitted
+two ways. The zig plug had given plain records value semantics on the
+strength of the declaration, which is why the divergence appeared at all
+-- and it is now one representation, a pointer, matching bare metal and
+C#. Seed F3722EAC (Update 43), QEMU/TCG, 2026-08-16.

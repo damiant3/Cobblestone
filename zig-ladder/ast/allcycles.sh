@@ -6,13 +6,17 @@
 set -e
 . "$(dirname "$0")/oracle_lib.sh"
 "$T/cycle.sh"
+# Both plugs come from the same ZigEmitter, and a sweep that refreshed
+# only one would report yesterday's emitter for whichever rungs use the
+# other.
+bash "$T/ast/ringplug_build.sh" > /dev/null
 echo "REBUILT"
 fail=0
-for m in lex parse desugar scope check lower text pingpong lir fib; do
+for m in lex parse desugar scope check lower text pingpong lir fib fibx; do
     echo "=== $m ==="
-    # NOT `zig_arm | head`: under a pipe the exit status is head's, so a
+    # NOT `arm | head`: under a pipe the exit status is head's, so a
     # failing rung reports nothing and the sweep still says it passed.
-    out=$(zig_arm "$m" 2>&1) || fail=1
+    out=$($(arm_for "$m") "$m" 2>&1) || fail=1
     printf '%s\n' "$out" | head -14
 done
 exit $fail

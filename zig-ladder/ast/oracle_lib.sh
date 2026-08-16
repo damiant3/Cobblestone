@@ -97,16 +97,11 @@ print(f"banked ast/{m}.truth: {len(lines)} lines")
 PY
 }
 
-# Push the IR through the plug (verified transfer -- see
-# TRANSPORT_CORRUPTION.md), run the emitted zig, diff against the truth.
-zig_arm() {
+# Run the emitted zig, diff against the truth. Shared by both arms: the
+# transport is what differs between them, never the verdict.
+zig_verdict() {
     local m=$1
-    cd $T
-    rm -f ast/${m}.zig
-    python3 -u plug_run_checked.py \
-        $REPO/codex/plugs/zig/build-output/zig-plug.cdx \
-        ast/${m}.ir ast/${m}.zig
-    cd ast
+    cd $T/ast
     # program output goes to stderr (std.debug.print); truth was serial bytes
     if timeout 600 zig run ${m}.zig 2> ${m}.zigout; then
         if diff <(tr -d '\r' < ${m}.truth) ${m}.zigout > ${m}.diff 2>&1; then
@@ -121,4 +116,40 @@ zig_arm() {
         head -40 ${m}.zigout
         return 1
     fi
+}
+
+# Push the IR through the plug over TCP (verified transfer -- see
+# TRANSPORT_CORRUPTION.md). The default arm: it exercises the
+# Codex-written network stack on every run, which is itself an oracle
+# surface and is where the odd-frame defect was caught.
+zig_arm() {
+    local m=$1
+    cd $T
+    rm -f ast/${m}.zig
+    python3 -u plug_run_checked.py \
+        $REPO/codex/plugs/zig/build-output/zig-plug.cdx \
+        ast/${m}.ir ast/${m}.zig
+    zig_verdict $m
+}
+
+# The ring arm, for subjects past the TCP intake ceiling: the receive
+# path costs ~130 bytes of guest heap per IR byte and fibx is 11.2 MB,
+# where read-serial-cce costs one. Same parser, same emitter, and the
+# ring plug is rebuilt from the same ZigEmitter -- only the transport
+# and the plug body differ.
+ring_arm() {
+    local m=$1
+    cd $T
+    rm -f ast/${m}.zig
+    python3 -u plug_run_ring.py ast/${m}.ir ast/${m}.zig
+    zig_verdict $m
+}
+
+# Which transport a rung needs is a property of the rung, so the sweep
+# asks here rather than carrying a list of its own.
+arm_for() {
+    case "$1" in
+        fibx) echo ring_arm ;;
+        *)    echo zig_arm ;;
+    esac
 }
