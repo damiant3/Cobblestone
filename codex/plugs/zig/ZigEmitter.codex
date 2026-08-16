@@ -496,7 +496,6 @@ Section: Constructor Map
   ZigCtx = record {
    arities : List ArityEntry,
    ctors : List ZigCtorEntry,
-   mutables : List Text,
    typedefs : List ATypeDef,
    irdefs : List IRDef,
    renamed-from : List Text,
@@ -597,22 +596,13 @@ Section: Constructor Map
       is otherwise -> "")
    else zig-param-ll-scan defs (i + 1) fname argi ctx
 
- Mutable records have reference semantics on bare metal: a field store
- mutates the object every holder sees. The zig emission mirrors that by
+ RECORDS have reference semantics on bare metal -- all of them, not
+ the ones spelled `mutable`: emit-record-set-builtin stores through the
+ record's pointer and returns that pointer, and a field store mutates
+ the object every holder sees. The zig emission mirrors that by
  declaring the struct as <Name>S and making the bare name an alias for
- *<Name>S, so every type reference is a pointer without threading the
- mutable set through type emission; only construction and field stores
- need to know.
-
-  build-mutable-set : List ATypeDef, Integer, List Text -> List Text
-  build-mutable-set (tds) (i) (acc) =
-   if i == list-length tds then acc
-   else let td = list-at tds i
-   in when td
-    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
-     if recmut then build-mutable-set tds (i + 1) (list-push acc (name.value))
-     else build-mutable-set tds (i + 1) acc
-    is otherwise -> build-mutable-set tds (i + 1) acc
+ *<Name>S, so every type reference is a pointer and no set of
+ privileged type names is threaded anywhere.
 
   zig-in-texts : List Text, Text, Integer -> Boolean
   zig-in-texts (xs) (n) (i) =
@@ -620,14 +610,9 @@ Section: Constructor Map
    else if list-at xs i == n then True
    else zig-in-texts xs n (i + 1)
 
-  zig-is-mutable-rec : ZigCtx, CodexType -> Boolean
-  zig-is-mutable-rec (ctx) (ty) =
-   when ty
-    is RecordTy (n) (a) (f) -> zig-in-texts (ctx.mutables) (n.value) 0
-    is ConstructedTy (n) (a) -> zig-in-texts (ctx.mutables) (n.value) 0
-    is TypeCon (n) -> zig-in-texts (ctx.mutables) (n.value) 0
-    is EffectfulTy (effs) (scopes) (inner) -> zig-is-mutable-rec ctx inner
-    is otherwise -> False
+ Records are pointers without exception now, so a field store is
+ always a store THROUGH one and never a copy-modify-return, and the
+ question zig-is-mutable-rec used to answer has no askers left.
 
   variant-all-nullary : List AVariantCtorDef, Integer -> Boolean
   variant-all-nullary (ctors) (i) =
@@ -733,7 +718,7 @@ Section: Builtin Emitter
    let tmp = "_r" & integer-to-text d
    in let rec-name = zig-type-name-of (zig-expr-type (list-at args 0))
    in let field-name = zig-record-set-plain-field (list-at args 1)
-   in zig-label d & ": { var " & tmp & " = " & emit-zig-expr (list-at args 0) ctx (d + 1)
+   in zig-label d & ": { const " & tmp & " = " & emit-zig-expr (list-at args 0) ctx (d + 1)
     & "; " & tmp & "." & zig-record-set-field (list-at args 1)
     & " = " & zig-field-value-text rec-name field-name (list-at args 2) ctx d
     & "; break :" & zig-label d & " " & tmp & "; }"
@@ -938,7 +923,6 @@ Section: Name Mapping
    in let ctx2 = ZigCtx {
     arities = ctx.arities,
     ctors = ctx.ctors,
-    mutables = ctx.mutables,
     typedefs = ctx.typedefs,
     irdefs = ctx.irdefs,
     renamed-from = from,
@@ -1033,10 +1017,7 @@ Section: Type Definition Emission
   emit-zig-type-def (td) =
    when td
     is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
-     if recmut
-     then "const " & zig-sanitize (name.value) & "S = struct {\n" & emit-zig-record-fields fields 0 & "};\n"
-      & "const " & zig-sanitize (name.value) & " = *" & zig-sanitize (name.value) & "S;\n\n"
-     else emit-zig-record-type (name.value) fields tparams
+     emit-zig-record-type (name.value) fields tparams
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      emit-zig-sum-type (name.value) ctors tparams
     is AUnitTypeDef (name) (unitbase) (s) -> ""
@@ -1125,12 +1106,38 @@ Section: Type Definition Emission
  generics went in; this did not, so SortPartition emitted as a plain
  struct holding a List of an undeclared `a`.
 
+ EVERY record is a pointer to a heap struct, which is the one
+ representation bare metal has: emit-record-set-builtin evaluates the
+ record to a pointer, stores the field through it, and returns that
+ same pointer -- there is no copy in it anywhere, and the C# plug's
+ _Buf.rset mutates through a reference for the same reason. A value
+ record diverges the moment a program reads a binding made before an
+ update, which is exactly what the x86 back end does at
+ X86_64Helpers 1539 and 457, and what cost 81 bytes of machine code
+ in fibx.
+
+ The `mutable` keyword therefore selects nothing here. It was the
+ emitter's own invention that plain records could be zig values, and
+ the two representations are collapsed back to the one the target
+ uses. The declared struct takes the S suffix and the bare name is
+ the pointer to it, generic or not.
+
   emit-zig-record-type : Text, List ARecordFieldDef, List Name -> Text
   emit-zig-record-type (name) (fields) (tparams) =
    if list-length tparams > 0
-   then "fn " & zig-sanitize name & "(" & zig-tparam-params tparams 0 & ") type {\n    return struct {\n"
-      & emit-zig-record-fields fields 0 & "    };\n}\n\n"
-   else "const " & zig-sanitize name & " = struct {\n" & emit-zig-record-fields fields 0 & "};\n\n"
+   then "fn " & zig-sanitize name & "S(" & zig-tparam-params tparams 0 & ") type {\n    return struct {\n"
+      & emit-zig-record-fields fields 0 & "    };\n}\n"
+      & "fn " & zig-sanitize name & "(" & zig-tparam-params tparams 0 & ") type {\n    return *"
+      & zig-sanitize name & "S(" & zig-tparam-args tparams 0 & ");\n}\n\n"
+   else "const " & zig-sanitize name & "S = struct {\n" & emit-zig-record-fields fields 0 & "};\n"
+      & "const " & zig-sanitize name & " = *" & zig-sanitize name & "S;\n\n"
+
+  zig-tparam-args : List Name, Integer -> Text
+  zig-tparam-args (tparams) (i) =
+   if i >= list-length tparams then ""
+   else let one = zig-sanitize ((list-at tparams i).value)
+   in if i == list-length tparams - 1 then one
+      else one & ", " & zig-tparam-args tparams (i + 1)
 
   emit-zig-record-fields : List ARecordFieldDef, Integer -> Text
   emit-zig-record-fields (fields) (i) =
@@ -1250,9 +1257,7 @@ Section: Expression Emission
     is IrFieldAccess (rec) (field) (ty) (sp) -> zig-field-receiver rec ctx d & "." & zig-field-name field
     is IrFieldStore (rec) (field) (val) (ty) (sp) ->
      let stored = zig-clamp-field-val ctx (zig-type-name-of (zig-expr-type rec)) (zig-plain-field-name field) (emit-zig-expr val ctx (d + 1))
-     in if zig-is-mutable-rec ctx (zig-expr-type rec)
-     then zig-label d & ": { const _r = " & emit-zig-expr rec ctx (d + 1) & "; _r." & zig-field-name field & " = " & stored & "; break :" & zig-label d & " _r; }"
-     else zig-label d & ": { var _r = " & emit-zig-expr rec ctx (d + 1) & "; _r." & zig-field-name field & " = " & stored & "; break :" & zig-label d & " _r; }"
+     in zig-label d & ": { const _r = " & emit-zig-expr rec ctx (d + 1) & "; _r." & zig-field-name field & " = " & stored & "; break :" & zig-label d & " _r; }"
     is IrFork (body) (ty) (sp) -> emit-zig-expr body ctx (d + 1)
     is IrAwait (task) (ty) (sp) -> emit-zig-expr task ctx (d + 1)
     is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> emit-zig-act body ctx d (zig-type-is-void ty)
@@ -1346,7 +1351,6 @@ Section: Lambda and List Helpers
    ZigCtx {
     arities = ctx.arities,
     ctors = ctx.ctors,
-    mutables = ctx.mutables,
     typedefs = ctx.typedefs,
     irdefs = ctx.irdefs,
     renamed-from = ctx.renamed-from,
@@ -1449,7 +1453,6 @@ Section: Lambda and List Helpers
    ZigCtx {
     arities = ctx.arities,
     ctors = ctx.ctors,
-    mutables = ctx.mutables,
     typedefs = ctx.typedefs,
     irdefs = ctx.irdefs,
     renamed-from = (ctx.renamed-from) & [from],
@@ -1625,9 +1628,7 @@ Section: Record Emission
 
   emit-zig-record : Text, List IRFieldVal, ZigCtx, Integer, Text -> Text
   emit-zig-record (name) (fields) (ctx) (d) (targs) =
-   if zig-in-texts (ctx.mutables) name 0
-   then "cx_new(" & zig-sanitize name & "S{ " & emit-zig-record-vals name fields 0 ctx d & " })"
-   else zig-sanitize name & targs & "{ " & emit-zig-record-vals name fields 0 ctx d & " }"
+   "cx_new(" & zig-sanitize name & "S" & targs & "{ " & emit-zig-record-vals name fields 0 ctx d & " })"
 
   emit-zig-record-vals : Text, List IRFieldVal, Integer, ZigCtx, Integer -> Text
   emit-zig-record-vals (recname) (fields) (i) (ctx) (d) =
@@ -1941,7 +1942,6 @@ Section: Apply Emission
    ZigCtx {
     arities = ctx.arities,
     ctors = ctx.ctors,
-    mutables = ctx.mutables,
     typedefs = ctx.typedefs,
     irdefs = ctx.irdefs,
     renamed-from = ctx.renamed-from,
@@ -1979,7 +1979,6 @@ Section: Apply Emission
    in let ctx2 = ZigCtx {
     arities = ctx.arities,
     ctors = ctx.ctors,
-    mutables = ctx.mutables,
     typedefs = ctx.typedefs,
     irdefs = ctx.irdefs,
     renamed-from = ctx.renamed-from,
@@ -2342,7 +2341,6 @@ Section: Definition Emission
    else let ctx2 = ZigCtx {
     arities = ctx.arities,
     ctors = ctx.ctors,
-    mutables = ctx.mutables,
     typedefs = ctx.typedefs,
     irdefs = ctx.irdefs,
     renamed-from = (ctx.renamed-from) & [nm],
@@ -2374,7 +2372,6 @@ Section: Definition Emission
    in let ctx = ZigCtx {
     arities = ctx0.arities,
     ctors = ctx0.ctors,
-    mutables = ctx0.mutables,
     typedefs = ctx0.typedefs,
     irdefs = ctx0.irdefs,
     renamed-from = ctx0.renamed-from,
@@ -2593,7 +2590,6 @@ Section: Chapter Emission
    let ctx = ZigCtx {
     arities = build-arity-map (m.defs) 0 [],
     ctors = build-ctor-map type-defs 0 [],
-    mutables = build-mutable-set type-defs 0 [],
     typedefs = type-defs,
     irdefs = m.defs,
     renamed-from = [],
