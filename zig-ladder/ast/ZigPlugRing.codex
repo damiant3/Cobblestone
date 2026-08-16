@@ -1,0 +1,39 @@
+Chapter: ZigPlugRing
+  cites Foreword chapter Maybe
+
+ The ring-fed plug body: the same parser and emitter as ZigPlug behind
+ the compiler's own serial-ring intake instead of the TCP stack. The
+ heap probe (IrmemHarness) measures the TCP receive path at ~130 bytes
+ of guest heap per byte of IR before the parser sees anything -- four
+ payload materializations per frame plus a per-character text
+ conversion, none of it restored, against a bump allocator that never
+ frees. read-serial-cce is a machine-code loop that builds the Text at
+ one byte per byte and stops only at NUL, which no IR-CCE byte ever is
+ (code 0 is reserved). That difference is what admits IRs past the TCP
+ intake ceiling.
+
+ The output side mimics the compiler's own text-plug wire -- a SIZE:
+ line, then the payload as raw CCE bytes -- so the host-side capture in
+ ring_compile.py works unchanged with this cdx as the kernel.
+
+Section: Body
+
+  opening : [Console, FileSystem] Nothing = act
+   mode-result <- read-line
+   when mode-result
+    is Just (mode) -> ring-plug-emit mode
+    is None -> print-line-uni "RINGPLUG-FAIL: no mode line"
+  end
+
+  ring-plug-emit : Text -> [Console, FileSystem] Nothing
+  ring-plug-emit (mode) = act
+   src <- read-serial-cce mode
+   let parsed = parse-ir-chapter src
+   in let output = emit-zig-chapter (parsed.chapter) (parsed.type-defs)
+   in act
+    print-line-uni ("SIZE:" & show (text-length output))
+    print-text output
+    print-line-uni ""
+    print-line-uni ("RINGPLUG-DONE ir=" & show (text-length src) & " defs=" & show (list-length ((parsed.chapter).defs)))
+   end
+  end
