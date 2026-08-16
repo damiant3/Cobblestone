@@ -58,11 +58,23 @@ Section: Keywords and Sanitization
    is-zig-keyword-loop zig-primitive-names s 0 (list-length zig-primitive-names)
    | is-zig-int-primitive s
 
+ The prelude declares these at file scope, and zig refuses a local that
+ shadows a file-scope declaration. Quoting cannot help -- @"std" and std
+ are the same identifier -- so these RENAME instead. X86_64Boot binds a
+ chain st, sta, stb, stc, std, ste; the sixth one is `std`.
+
+  zig-prelude-decls : List Text = ["std", "main", "cx_heap", "cx_hp"]
+
+  is-zig-prelude-decl : Text -> Boolean
+  is-zig-prelude-decl (s) =
+   is-zig-keyword-loop zig-prelude-decls s 0 (list-length zig-prelude-decls)
+
   zig-sanitize : Text -> Text
   zig-sanitize (name) =
    let s0 = text-replace name "-" "_"
    in let s = text-replace s0 "/" "_"
-   in if is-zig-keyword s | is-zig-primitive s then "@\"" & s & "\""
+   in if is-zig-prelude-decl s then s & "_"
+      else if is-zig-keyword s | is-zig-primitive s then "@\"" & s & "\""
       else s
 
  Names built by prefixing (_arg_, _lam<d>_, _v<d>_) must NOT go through
@@ -793,6 +805,7 @@ Section: Builtin Emitter
     ZigBuiltinEmitter { name = "__heap-restore", emit = \args ctx d ty -> "cx_heap_restore(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "peek-qword", emit = \args ctx d ty -> "cx_peek_qword(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "address-of", emit = \args ctx d ty -> "cx_address_of(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "variant-tag", emit = \args ctx d ty -> "cx_vtag(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__buf-write-byte", emit = \args ctx d ty -> "cx_buf_write_byte(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__buf-write-bytes", emit = \args ctx d ty -> "cx_buf_write_bytes(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "peek-byte", emit = \args ctx d ty -> "cx_peek_byte(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
@@ -847,6 +860,10 @@ Section: Name Mapping
   zig-unknown-name : Text -> Text
   zig-unknown-name (n) =
    "@compileError(\"zig plug: no emitter for " & n & "\")"
+
+  zig-refuse : Text -> Text
+  zig-refuse (why) =
+   "@compileError(\"zig plug: " & why & "\")"
 
 
   ZigNameEntry = record {
@@ -1061,11 +1078,15 @@ Section: Type Definition Emission
   zig-typedef-recursive : ZigCtx, Text -> Boolean
   zig-typedef-recursive (ctx) (n) = zig-typedef-recursive-loop (ctx.typedefs) 0 n
 
+ Whether a scrutinee needs `.*` is a question about the type's NAME, so it
+ asks the same way the exhaustiveness check does. Matching SumTy alone
+ answered "" for a ConstructedTy naming the very same self-recursive type,
+ and the two readings disagreed silently: emit-opening-result-print
+ switched on a CodexType-typed field and got a switch on the pointer.
+
   zig-match-deref : ZigCtx, CodexType -> Text
   zig-match-deref (ctx) (ty) =
-   when ty
-    is SumTy (n) (a) (c) -> if zig-typedef-recursive ctx (n.value) then ".*" else ""
-    is otherwise -> ""
+   if zig-typedef-recursive ctx (zig-type-name-of ty) then ".*" else ""
 
   emit-zig-sum-type : Text, List AVariantCtorDef, List Name -> Text
   emit-zig-sum-type (name) (ctors) (tparams) =
@@ -1152,7 +1173,15 @@ Section: Expression Emission
  blocks always sit at different depths, so `b<depth>` labels never
  collide along a nesting path.
 
-  zig-max-depth : Integer = 256
+ Every let in a chain costs a level, so the cap is a bound on how long a
+ function's let chain may be, not on how tangled its expressions are.
+ emit-common-interrupt-handler binds 336 in a row and was silently cut off
+ at 256, which is why exceeding the cap now refuses by name: the emitted
+ program is wrong either way, and a wrong answer that says so is worth more
+ than a quiet `undefined`. Raise this when a subject earns it -- the
+ evidence is a refusal naming the cap, never a mysterious diff.
+
+  zig-max-depth : Integer = 1024
 
   zig-label : Integer -> Text
   zig-label (d) = "b" & integer-to-text d
@@ -1231,7 +1260,7 @@ Section: Expression Emission
 
   emit-zig-expr : IRExpr, ZigCtx, Integer -> Text
   emit-zig-expr (e) (ctx) (d) =
-   if d >= zig-max-depth then "undefined"
+   if d >= zig-max-depth then zig-refuse ("expression nested past zig-max-depth (" & integer-to-text zig-max-depth & "); raise the cap")
    else when e
     is IrIntLit (n) (sp) -> integer-to-text n
     is IrNumLit (n) (sp) -> integer-to-text n & ".0"
@@ -2558,6 +2587,7 @@ Section: Chapter Emission
    & "fn cx_heap_restore(h: i64) i64 {\n    cx_hp = h;\n    return 0;\n}\n"
    & "fn cx_peek_qword(b: i64, off: i64) i64 {\n    cx_buf_want(b + off + 8);\n    var cx_v: i64 = 0;\n    var cx_j: i64 = 7;\n    while (cx_j >= 0) : (cx_j -= 1) cx_v = cx_v * 256 + cx_heap.items[@as(usize, @intCast(b + off + cx_j))];\n    return cx_v;\n}\n"
    & "// address-of answers 0 here by X86_64Compound's own account of\n// targets without it; the argument is still evaluated so its binding\n// stays used.\nfn cx_address_of(v: anytype) i64 {\n    _ = v;\n    return 0;\n}\n"
+   & "// variant-tag is the constructor's 0-based declaration index: bare\n// metal loads word 0 of the variant block (emit-variant-tag-builtin) and\n// writes find-ctor-tag there, and a union(enum)'s tag is numbered the same\n// way by declaration order. Self-recursive variants are pointers here, so\n// the pointer case dereferences first.\nfn cx_vtag(v: anytype) i64 {\n    return switch (@typeInfo(@TypeOf(v))) {\n        .pointer => @intCast(@intFromEnum(v.*)),\n        else => @intCast(@intFromEnum(v)),\n    };\n}\n"
    & "fn cx_buf_write_byte(b: i64, off: i64, v: i64) i64 {\n    cx_buf_want(b + off + 1);\n    cx_heap.items[@intCast(b + off)] = @intCast(@mod(v, 256));\n    return off + 1;\n}\n"
    & "fn cx_buf_write_bytes(b: i64, off: i64, vs: anytype) i64 {\n    const n: i64 = @intCast(vs.items.items.len);\n    cx_buf_want(b + off + n);\n    for (vs.items.items, 0..) |v, i| cx_heap.items[@as(usize, @intCast(b + off)) + i] = @intCast(@mod(v, 256));\n    return off + n;\n}\n"
    & "fn cx_peek_byte(b: i64, off: i64) i64 {\n    cx_buf_want(b + off + 1);\n    return cx_heap.items[@intCast(b + off)];\n}\n"
