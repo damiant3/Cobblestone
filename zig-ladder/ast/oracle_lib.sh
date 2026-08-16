@@ -126,9 +126,17 @@ zig_arm() {
     local m=$1
     cd $T
     rm -f ast/${m}.zig
-    python3 -u plug_run_checked.py \
+    # Transport chatter goes to a log, not to the caller: the sweep prints
+    # a bounded slice of each rung's output, and a transfer that narrates
+    # 25 lines pushed the verdict past the cut -- fibx passed SILENTLY,
+    # which reads exactly like a rung that never ran.
+    if ! python3 -u plug_run_checked.py \
         $REPO/codex/plugs/zig/build-output/zig-plug.cdx \
-        ast/${m}.ir ast/${m}.zig
+        ast/${m}.ir ast/${m}.zig > ast/${m}.transport.log 2>&1; then
+        echo "TRANSPORT FAILED for $m (ast/${m}.transport.log):"
+        tail -6 ast/${m}.transport.log
+        return 1
+    fi
     zig_verdict $m
 }
 
@@ -141,7 +149,12 @@ ring_arm() {
     local m=$1
     cd $T
     rm -f ast/${m}.zig
-    python3 -u plug_run_ring.py ast/${m}.ir ast/${m}.zig
+    if ! python3 -u plug_run_ring.py ast/${m}.ir ast/${m}.zig \
+        > ast/${m}.transport.log 2>&1; then
+        echo "TRANSPORT FAILED for $m (ast/${m}.transport.log):"
+        tail -6 ast/${m}.transport.log
+        return 1
+    fi
     zig_verdict $m
 }
 

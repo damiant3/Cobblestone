@@ -18,5 +18,12 @@ for m in lex parse desugar scope check lower text pingpong lir fib fibx; do
     # failing rung reports nothing and the sweep still says it passed.
     out=$($(arm_for "$m") "$m" 2>&1) || fail=1
     printf '%s\n' "$out" | head -14
+    # A rung that says nothing is not a rung that passed. fibx once
+    # exited 0 with its verdict truncated away, which reads identically
+    # to a rung that never ran.
+    case "$out" in
+        *ORACLE*|*TRANSPORT\ FAILED*) ;;
+        *) echo "NO VERDICT from $m -- treating as failure"; fail=1 ;;
+    esac
 done
 exit $fail
