@@ -1,0 +1,66 @@
+Chapter: E1000LinkDeadline
+  cites Foreword chapter Maybe
+  cites Kernel chapter E1000e
+  cites Kernel chapter Pci
+  cites Kernel chapter Hpet
+  cites Foreword chapter Console
+
+ THE METAL SYMPTOM, ON THE DESK. `e1000-await-link` was bounded by a count of
+ four million and by nothing else. With a cable in it the link came up on the
+ first poll and the count was never approached, so the missing deadline was
+ invisible for as long as `e1000-await-aneg` burned 92.9 seconds ahead of it.
+ Budgeting aneg removed that dead time and the loop then ran its full count
+ against a part whose link was still settling: over ten minutes with no return,
+ measured on the ASUS 2026-08-16.
+
+ `-e1000-no-link` is the bench condition, no cable and therefore no link, and it
+ drives the loop down the arm the flight found. The judge is that `e1000-link-up`
+ RETURNS AT ALL, and returns having spent a duration rather than a count.
+
+ The elapsed figure itself is not asserted, because it is a wall-clock reading on
+ a host under load and would be a flake. What is asserted is the band it falls
+ in, which is what the change actually promises: 3 s of aneg budget plus 5 s of
+ link budget, so a no-link init lands near 8 s and cannot be a count.
+
+ MEASURED, both arms, on this emulator 2026-08-16: 8,037,305 us with the budget
+ and 21,862,178 us with the count it replaced. The lower bound is the half that
+ discriminates and it is the deliberate one -- a count that happens to be slow
+ can land under a ceiling, but only a clock lands in a band. Note the ceiling is
+ the weaker assertion: on a faster host the old count would finish sooner and
+ could slip under 15 s, whereas the budget lands at 8 s on any host because the
+ clock, not the host, decides. On metal the same count did not finish in ten
+ minutes.
+
+ We say:
+
+Section: Fixtures
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  us-of : Integer, Integer, Integer -> Integer
+  us-of (t0) (t1) (hz) = if hz <= 0 then (0 - 1) else (t1 - t0) * 1000000 / hz
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let scan = pci-scan-bus 0
+    in act
+      when e1000-find scan
+        is Just (dev) -> act
+          let hz = hpet-ticks-per-second
+          in let t0 = hpet-ticks
+          in let d = e1000-init dev
+          in let t1 = hpet-ticks
+          in let us = us-of t0 t1 hz
+          in act
+            print-line-uni ("init returned   : yes")
+            print-line-uni ("device present  : " & yn (d.e-present))
+            print-line-uni ("link came up    : " & yn (e1000-has-link d))
+            print-line-uni ("inside deadline : " & yn (us < 15000000))
+            print-line-uni ("spent a duration: " & yn (us > 7000000))
+          end
+        end
+        is None -> print-line-uni ("candidate found : no")
+    end
+  end

@@ -1,0 +1,60 @@
+Chapter: HandshakeProveGuardTest
+  cites Trust chapter Handshake
+  cites Trust chapter TrustLattice
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha512
+
+ Track D item 2. Before this, hs-receive-prove took no signature at all: it
+ bound expected-nonce, never read it, and returned HsCompleted unconditionally
+ with the trust score of whatever key the peer had claimed in its hello. Rows 2
+ and 3 are the arms that were impossible to write against that version, because
+ there was no input that could make it refuse.
+
+ Each of the four guards was ablated and run. Removing the ed25519-verify call
+ flips row 2 to failed=False: a signature over a different message is accepted
+ with the impersonated key's trust score, which is the pre-fix behaviour.
+ Removing either LENGTH check does not merely soften a refusal, it kills the
+ guest: an empty signature and a 3-byte key both reach the crypto, where
+ ed-list-drop computes a negative slice length and ge-from-bytes reads index 31,
+ and the arm dies !EXC=06 before printing. Removing the hello key check flips
+ row 6 to failed=False.
+
+ t1-sk is RFC 8032 section 7.1 test vector 1, the same secret key
+ ed25519-sign-test uses, so the key and signatures here are checkable against a
+ published source rather than against our own encoder.
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+Section: Vectors
+  t1-sk : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  hpg-nonce : List Integer = [1, 2, 3, 4, 5, 6, 7, 8]
+
+  hpg-other : List Integer = [9, 9, 9, 9, 9, 9, 9, 9]
+
+  hpg-short-key : List Integer = [1, 2, 3]
+
+Section: Body
+  opening : [Console] Nothing =
+    let pk = ed25519-public-key t1-sk
+    in let sig = ed25519-sign t1-sk pk hpg-nonce
+    in let bad-sig = ed25519-sign t1-sk pk hpg-other
+    in let lat = lattice-add-direct lattice-empty (bytes-to-hex pk) 7000
+    in let r-good = hs-receive-prove hpg-nonce pk sig lat
+    in let r-wrong = hs-receive-prove hpg-nonce pk bad-sig lat
+    in let r-empty = hs-receive-prove hpg-nonce pk [] lat
+    in let r-shortkey = hs-receive-prove hpg-nonce hpg-short-key sig lat
+    in let h-good = hs-receive-hello (HelloMsg { public-key = pk, pow-nonce = [], pow-difficulty = 0 }) hpg-nonce lat 0
+    in let h-short = hs-receive-hello (HelloMsg { public-key = hpg-short-key, pow-nonce = [], pow-difficulty = 0 }) hpg-nonce lat 0
+    in act
+      print-line-uni ("prove-good: completed=" & show-bool (hs-is-completed (r-good.state)) & " score=" & show (hs-trust-score (r-good.state)))
+      print-line-uni ("prove-wrongsig: failed=" & show-bool (hs-is-failed (r-wrong.state)) & " " & hs-failure-reason (r-wrong.state))
+      print-line-uni ("prove-emptysig: failed=" & show-bool (hs-is-failed (r-empty.state)) & " " & hs-failure-reason (r-empty.state))
+      print-line-uni ("prove-shortkey: failed=" & show-bool (hs-is-failed (r-shortkey.state)) & " " & hs-failure-reason (r-shortkey.state))
+      print-line-uni ("hello-good: failed=" & show-bool (hs-is-failed (h-good.state)))
+      print-line-uni ("hello-shortkey: failed=" & show-bool (hs-is-failed (h-short.state)) & " " & hs-failure-reason (h-short.state))
+    end
+
+Page 1

@@ -49,10 +49,15 @@ Section: Receive Processing
     has-message : Boolean
   }
 
+  transport-drop-recv : TcpTransportState -> TcpTransportState
+  transport-drop-recv (ts) =
+    TcpTransportState { session = ts.session, recv-buf = [], recv-base = ts.recv-base, recv-len = 0, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
+
   transport-feed-raw : TcpTransportState, List Integer -> TcpTransportState
   transport-feed-raw (ts) (data) =
     let n = list-length data
-    in let w = __buf-write-bytes (ts.recv-base) (ts.recv-len) data
+    in if (ts.recv-len + n) > (ts.recv-cap) then ts
+    else let w = __buf-write-bytes (ts.recv-base) (ts.recv-len) data
     in TcpTransportState { session = ts.session, recv-buf = [], recv-base = ts.recv-base, recv-len = ts.recv-len + n, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
 
   transport-feed-data : TcpTransportState, List Integer -> TcpTransportState
@@ -69,7 +74,9 @@ Section: Receive Processing
   transport-try-recv (ts) =
     if ts.recv-len < 4 then TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
     else let msg-len = recv-buf-i32 ts 0
-    in let total = 4 + msg-len
+    in if msg-len < 1 then TransportRecvResult { transport = transport-drop-recv ts, tag = 0, body = [], has-message = False }
+    else if msg-len > (ts.recv-cap - 4) then TransportRecvResult { transport = transport-drop-recv ts, tag = 0, body = [], has-message = False }
+    else let total = 4 + msg-len
     in if ts.recv-len < total then TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
     else let tag = recv-buf-byte ts 4
     in let body = __buf-read-bytes (ts.recv-base) 5 (msg-len - 1)

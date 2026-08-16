@@ -27,6 +27,20 @@ Section: Constants
   gguf-vtype-array : Integer = 9
 
 Section: Byte Reading
+
+ Every read below indexes with list-at, which traps out of range, so a length
+ or count taken off the file decides where a read LANDS and a wrong one halts
+ the machine rather than answering badly. gguf-fits is asked before any read at
+ a file-supplied offset, and the answer is a refusal on the channel the caller
+ already has: negative one for a byte count, an empty text for a metadata
+ lookup, gh-valid or gti-valid False for a record.
+
+  gguf-fits : List Integer, Integer, Integer -> Boolean
+  gguf-fits (data) (off) (n) =
+    if off < 0 then False
+    else if n < 0 then False
+    else (off + n) <= list-length data
+
   gguf-read-u32 : List Integer, Integer -> Integer
   gguf-read-u32 (data) (off) =
     let b0 = list-at data off
@@ -93,7 +107,7 @@ Section: Header
 
   gguf-parse-header : List Integer -> GgufHeader
   gguf-parse-header (data) =
-    if list-length data < 20 then GgufHeader { gh-version = 0, gh-tensor-count = 0, gh-metadata-count = 0, gh-valid = False }
+    if list-length data < gguf-header-bytes then GgufHeader { gh-version = 0, gh-tensor-count = 0, gh-metadata-count = 0, gh-valid = False }
     else let magic = gguf-read-u32 data 0
     in if magic /= gguf-magic then GgufHeader { gh-version = 0, gh-tensor-count = 0, gh-metadata-count = 0, gh-valid = False }
     else GgufHeader { gh-version = gguf-read-u32 data 4, gh-tensor-count = gguf-read-u64 data 8, gh-metadata-count = gguf-read-u64 data 16, gh-valid = True }
@@ -134,31 +148,44 @@ Section: Metadata Walk
 
   gguf-value-bytes : List Integer, Integer, Integer -> Integer
   gguf-value-bytes (data) (off) (vtype) =
-    if vtype == gguf-vtype-string then 8 + gguf-read-u64 data off
+    if vtype == gguf-vtype-string
+      then (if gguf-fits data off 8 == False then -1 else 8 + gguf-read-u64 data off)
     else if vtype == gguf-vtype-array then gguf-array-bytes data off
     else gguf-scalar-width vtype
 
   gguf-array-bytes : List Integer, Integer -> Integer
   gguf-array-bytes (data) (off) =
-    let elem-type = gguf-read-u32 data off
+    if gguf-fits data off 12 == False then -1
+    else let elem-type = gguf-read-u32 data off
     in let count = gguf-read-u64 data (off + 4)
-    in let w = gguf-scalar-width elem-type
+    in if count < 0 then -1
+    else let w = gguf-scalar-width elem-type
     in if w >= 0 then 12 + count * w
     else if elem-type == gguf-vtype-string
-      then 12 + gguf-array-string-bytes data (off + 12) count 0
+      then let n = gguf-array-string-bytes data (off + 12) count 0
+           in if n < 0 then -1 else 12 + n
     else -1
+
+ The string-array walk needs no fuel cap. Every element it accepts consumes at
+ least its own eight-byte length word out of a finite file, so the fits test
+ ends the walk after at most one iteration per eight bytes of data however
+ large the declared count is.
 
   gguf-array-string-bytes : List Integer, Integer, Integer, Integer -> Integer
   gguf-array-string-bytes (data) (off) (count) (acc) =
     if count <= 0 then acc
+    else if gguf-fits data (off + acc) 8 == False then -1
     else let n = 8 + gguf-read-u64 data (off + acc)
     in gguf-array-string-bytes data off (count - 1) (acc + n)
 
   gguf-kv-bytes : List Integer, Integer -> Integer
   gguf-kv-bytes (data) (off) =
-    let key-len = gguf-read-u64 data off
-    in let vtype-off = off + 8 + key-len
-    in let vtype = gguf-read-u32 data vtype-off
+    if gguf-fits data off 8 == False then -1
+    else let key-len = gguf-read-u64 data off
+    in if key-len < 0 then -1
+    else let vtype-off = off + 8 + key-len
+    in if gguf-fits data vtype-off 4 == False then -1
+    else let vtype = gguf-read-u32 data vtype-off
     in let vb = gguf-value-bytes data (vtype-off + 4) vtype
     in if vb < 0 then -1 else 12 + key-len + vb
 
@@ -185,9 +212,11 @@ Section: Metadata Walk
   gguf-md-scan : List Integer, Integer, Integer, Text -> Text
   gguf-md-scan (data) (off) (remaining) (key) =
     if remaining <= 0 then ""
+    else if gguf-fits data off 8 == False then ""
     else let k = gguf-read-string data off
     in let vtype-off = off + k.gs-total-bytes
-    in let vtype = gguf-read-u32 data vtype-off
+    in if gguf-fits data vtype-off 4 == False then ""
+    else let vtype = gguf-read-u32 data vtype-off
     in let vb = gguf-value-bytes data (vtype-off + 4) vtype
     in if vb < 0 then ""
     else if k.gs-text == key
@@ -203,19 +232,32 @@ Section: Tensor Info
     gti-ndim : Integer,
     gti-shape : List Integer,
     gti-dtype : Integer,
-    gti-offset : Integer
+    gti-offset : Integer,
+    gti-valid : Boolean
   }
+
+ gti-valid is additive: a caller that ignores it reads exactly the fields main
+ read before, and a refused entry answers the empty name and zero dimensions it
+ would have answered for a file of zeroes. What it no longer does is trap. The
+ single fits test covers the shape, the dtype and the tensor offset together,
+ because ndim decides where the last two land.
+
+  gguf-tensor-info-refused : GgufTensorInfo =
+    GgufTensorInfo { gti-name = "", gti-ndim = 0, gti-shape = [], gti-dtype = -1, gti-offset = -1, gti-valid = False }
 
   gguf-parse-tensor-info : List Integer, Integer -> GgufTensorInfo
   gguf-parse-tensor-info (data) (off) =
-    let name = gguf-read-string data off
+    if gguf-fits data off 8 == False then gguf-tensor-info-refused
+    else let name = gguf-read-string data off
     in let ndim-off = off + name.gs-total-bytes
-    in let ndim = gguf-read-u32 data ndim-off
-    in let shape = gguf-read-shape data (ndim-off + 4) ndim 0 []
+    in if gguf-fits data ndim-off 4 == False then gguf-tensor-info-refused
+    else let ndim = gguf-read-u32 data ndim-off
+    in if gguf-fits data (ndim-off + 4) (ndim * 8 + 12) == False then gguf-tensor-info-refused
+    else let shape = gguf-read-shape data (ndim-off + 4) ndim 0 []
     in let dtype-off = ndim-off + 4 + ndim * 8
     in let dtype = gguf-read-u32 data dtype-off
     in let tensor-off = gguf-read-u64 data (dtype-off + 4)
-    in GgufTensorInfo { gti-name = name.gs-text, gti-ndim = ndim, gti-shape = shape, gti-dtype = dtype, gti-offset = tensor-off }
+    in GgufTensorInfo { gti-name = name.gs-text, gti-ndim = ndim, gti-shape = shape, gti-dtype = dtype, gti-offset = tensor-off, gti-valid = True }
 
   gguf-read-shape : List Integer, Integer, Integer, Integer, List Integer -> List Integer
   gguf-read-shape (data) (off) (ndim) (i) (acc) =
@@ -239,6 +281,16 @@ Section: Tensor Info
     else gguf-product dims (i + 1) len (acc * list-at dims i)
 
 Section: Q8_0 Dequantization
+
+ A Q8_0 block is a two-byte scale then 32 quantised values, 34 bytes; a Q4_0
+ block is a two-byte scale then 16 nibble pairs, 18 bytes. Neither loop takes a
+ length off the file, which is why the metadata guards do not cover them: the
+ element count arrives from the caller, and the caller gets it from the tensor
+ shape, which IS off the file. Each loop stops on the first block that does not
+ fit the buffer. That is a clamp rather than a refusal, and deliberately: the
+ count decides how many values come back, not where a read lands, so a short
+ buffer answers the values it actually holds instead of halting the machine.
+
   gguf-dequant-q8-0 : List Integer, Integer, Integer -> List Integer
   gguf-dequant-q8-0 (data) (off) (elements) =
     let blocks = elements / 32
@@ -248,7 +300,8 @@ Section: Q8_0 Dequantization
   gguf-dq8-loop (data) (off) (blocks) (b) (acc) =
     if b >= blocks then acc
     else let block-off = off + b * 34
-    in let scale-raw = bit-or (list-at data block-off) (bit-shl (list-at data (block-off + 1)) 8)
+    in if gguf-fits data block-off 34 == False then acc
+    else let scale-raw = bit-or (list-at data block-off) (bit-shl (list-at data (block-off + 1)) 8)
     in let scale = gguf-half-to-fixed scale-raw
     in let acc2 = gguf-dq8-block data (block-off + 2) scale 0 acc
     in gguf-dq8-loop data off blocks (b + 1) acc2
@@ -269,7 +322,8 @@ Section: Q4_0 Dequantization
   gguf-dq4-loop (data) (off) (blocks) (b) (acc) =
     if b >= blocks then acc
     else let block-off = off + b * 18
-    in let scale-raw = bit-or (list-at data block-off) (bit-shl (list-at data (block-off + 1)) 8)
+    in if gguf-fits data block-off 18 == False then acc
+    else let scale-raw = bit-or (list-at data block-off) (bit-shl (list-at data (block-off + 1)) 8)
     in let scale = gguf-half-to-fixed scale-raw
     in let acc2 = gguf-dq4-block data (block-off + 2) scale 0 acc
     in gguf-dq4-loop data off blocks (b + 1) acc2

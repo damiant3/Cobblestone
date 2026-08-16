@@ -186,6 +186,15 @@ Section: Response Parsing
     valid : Boolean
   }
 
+ ANSWER-COUNT IS WHAT WE PARSED, NOT WHAT THE WIRE CLAIMED. ancount is a
+ 16-bit field a peer chooses, and dns-parse-answers stops the moment off + 10
+ passes the end of the datagram, so the list is routinely shorter than the
+ header's number. Storing ancount here made the record describe a list that
+ does not exist, and both walkers below bounded themselves by it: measured
+ 2026-08-15, a header-only response claiming 100 answers died !EXC=06 with the
+ real length 0 in R12 and the claimed 100 in R13. The walkers now take their
+ bound from the list as well, so neither depends on this field being honest.
+
   dns-parse-response : List Integer -> DnsResponse
   dns-parse-response (data) =
     let dlen = list-length data
@@ -196,7 +205,7 @@ Section: Response Parsing
     in let ancount = read-be16 data 6
     in let q-end = dns-skip-questions data dns-header-size qdcount
     in let answers = dns-parse-answers data q-end ancount []
-    in DnsResponse { tx-id = tx-id, flags = flags, answer-count = ancount, answers = answers, valid = True }
+    in DnsResponse { tx-id = tx-id, flags = flags, answer-count = list-length answers, answers = answers, valid = True }
 
   dns-skip-questions : List Integer, Integer, Integer -> Integer
   dns-skip-questions (data) (off) (count) =
@@ -243,7 +252,7 @@ Section: Response Extraction
   dns-first-a-record : DnsResponse -> Maybe (List Integer)
   dns-first-a-record (resp) =
     if resp.valid == False then None
-    else dns-find-a-in-answers (resp.answers) 0 (resp.answer-count)
+    else dns-find-a-in-answers (resp.answers) 0 (list-length (resp.answers))
 
   dns-find-a-in-answers : List DnsAnswer, Integer, Integer -> Maybe (List Integer)
   dns-find-a-in-answers (answers) (i) (len) =
@@ -255,7 +264,7 @@ Section: Response Extraction
     else dns-find-a-in-answers answers (i + 1) len
 
   dns-first-a-ttl : DnsResponse -> Integer
-  dns-first-a-ttl (resp) = dns-find-a-ttl (resp.answers) 0 (resp.answer-count)
+  dns-first-a-ttl (resp) = dns-find-a-ttl (resp.answers) 0 (list-length (resp.answers))
 
   dns-find-a-ttl : List DnsAnswer, Integer, Integer -> Integer
   dns-find-a-ttl (answers) (i) (len) =

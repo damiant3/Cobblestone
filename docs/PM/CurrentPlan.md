@@ -8,6 +8,18 @@ channel were retired, their open items folded in here, and their durable
 facts moved into the reference docs that own them. A closed item is
 DELETED, not annotated.*
 
+*Pruned 2026-08-15 by red at Damian's direction ("we have closed a lot of
+things"). The file had grown to 1,100 lines of which about 900 were the
+campaign record of items already shipped: A5, A6, the F12 regression, C1, C2,
+the Shell DSL backport, the deck floor, the annotation campaign, the
+`print-line` inversion. Every durable fact in those accounts was checked to
+be in the doc that owns it before the paragraph went (`HardwareSitting.md`
+for the flights and the I219 findings, `DeskBuildLoop.md` and
+`OperatorsManual.md` for the arena, `Build.md` for the generators,
+`IndependentRechecker.md` and `DevelopersGuide.md` for the type rules,
+`ExaminersAssay.md` for the guards). If you are looking for how something
+was hunted, the GitHubUpdate for that cycle and the CL are where it lives.*
+
 **Where an item ORIGINATES in one app or quire, it lives in that
 register** (`apps/<app>/<app>-backlog.md`,
 `codex/<quire>/<quire>-backlog.md`) and is named here only if it blocks a
@@ -16,971 +28,402 @@ recreate `docs/PM/BACKLOG.md`.
 
 ## Where we stand, in three sentences
 
-The compiler is a hard fixed point of itself on bare metal and Update 38
-is on the public mirrors: the desktop boots from USB on the ASUS with
-keyboard, mouse, click-driven panes, shutdown and screenshot-to-stick,
-all through our own stack. Diverse double-compiling now closes on the
-whole compiler: an independently built Roslyn arm reproduces the shipped
-seed byte for byte except the 96-byte signature region, and an
-independently written rechecker agrees with the compiler on every
-definition of the compiler and the standard library. The A6 F12
-regression is root-caused and reverted on metal (main 14141: the guard
-meant to protect the FAT write path was itself refusing correct writes),
-which leaves no red item on the board. The class that guard covered is
-guarded again at main 14169 (A6 below), and that guard FLEW 2026-08-09 and
-passed: a shot landed correct on the ASUS and the returned volume was
-clean on every question the sitting asks. WORKS-8 is closed. What the
-flight exposed is one layer down, in the USB mass-storage driver, and is
-open as WORKS-9.
+The compiler is a hard fixed point of itself on bare metal, Update 43 is on
+the public mirrors, and on 2026-08-14 the compiler booted the ASUS from bare
+UEFI, compiled its own 2.8 MB source off the stick in about a minute, and
+wrote the result back byte-identical to the host control (A5, shipped). The
+trust audit has closed on the whole compiler: diverse double-compiling
+reproduces the seed except the signature region, the readable-intermediate
+defense has a runner (`jonquil`), and the independent rechecker raises one
+honest abstention against 4,862 definitions. The network has a link, a
+measured poll calibration that transfers to the real I219-V (NIC-2), and an
+`e1000-init` that was thought to wedge and turns out to take 93 seconds
+because one fuel count is 92.9 of them (NIC-3, answered 2026-08-15), and the
+fleet has spent the last two days finding that almost every parser of bytes
+we did not produce could be killed by a short frame -- which is the campaign
+that has no track yet, and gets one below.
 
 ## Track A -- the stick is an OS
 
-- **A6 F12 regression (fester). ROOT CAUSE FOUND AND REVERTED on metal,
-  main 14141.** Read `docs/PM/Active/Stories/TheShotThatWorkedOnce.md`
-  for how it was hunted (L-GREEN, L-ROUTE). Two contributors, both now
-  addressed:
-  - **The 13613 chain-free guard WAS the regression: it refuses correct
-    writes.** Measured on the ASUS -- the pre-guard build lands two
-    consecutive desk shots with clean non-overlapping chains, while head
-    refused the second at `s7 m3 c1 p3` (mount ok, last transfer
-    success) and no collision existed on the returned stick. Reverted at
-    main 14141.
-  - **A pane visit leaked 4,617,256 bytes permanently** (`gsc-run`
-    allocates render target and depth buffer outside any extent);
-    bracketed in `desk-scene` at main 14131/14133. Real, and not what
-    produced the one-shot-per-boot: exhausting the arena takes many
-    visits and the flights failed after one.
-  Separately, `GopScene` now polls the keyboard until the pump yields
-  rather than once per frame (main 14142): `kbd-pump-one` advances a
-  three-phase state machine one step per call, and the 3D pane's frame
-  costs about a second on metal, so Esc would not close the pane.
-  **The class 13613 guarded is guarded again as of main 14169** (blu),
-  by an in-memory check against the chains the ROOT directory claims
-  rather than a re-read of the FAT off the disk. It cannot repeat the
-  13613 failure by construction: what it cannot walk it leaves unmarked,
-  and unmarked never refuses. It descends into subdirectories, so it
-  covers `EFI/BOOT/BOOTX64.EFI`, and it carries the arm 13613 lacked --
-  a correct multi-cluster write that it must ADMIT -- alongside the one
-  that must refuse. **FLOWN 2026-08-09 AND IT PASSED** (blu): shot 1
-  landed correct on the ASUS at 1024x768x24 and the returned volume is
-  clean on all four questions -- chains match sizes, no overlaps, no
-  clusters allocated to nothing, both FAT copies identical. Shot 2 failed
-  BELOW FAT, `s7 m3 c256 p2 w14`: a 32 KB data-phase transfer with no
-  completion event inside `xhci-fuel`, which is reek's `GopUsbMsc` /
-  `GopXhci` and is routed to him with a discriminator rather than a cause.
-  **WORKS-8 is CLOSED and deleted; that second-write gap is open as
-  WORKS-9 against the driver, not against the FAT writer.**
-  Detail in `apps/works/works-backlog.md` and `docs/Hardware/HardwareSitting.md`;
-  the stick is read with the new `build/dump-usb.ps1` and
-  `build/fat16-walk.ps1`. `desk-files` -> `gfl-run` has
-  the same unbracketed shape as the leak, much smaller, untouched.
-  **Damian's standing ruling still holds for anything further here: do not
-  propose flights or sittings for this row.** He directed the 2026-08-09
-  sitting himself, which is what lifted it once; it is not lifted
-  generally, and the follow-up now belongs to reek's driver anyway.
-  The open question of whether the stick came off `ceremonyboot.img`
-  (`C423418D`) is **settled 2026-08-11: reek reflashed disk 2 with
-  `a5bigflight.img`, dumping all 16 MB first.** No objection to the
-  reflash -- the row is reek's driver now and the ceremony campaign
-  closed green on 2026-08-05. What it exposed is worth a line here:
-  `ceremonyboot.img` was NEVER in the depot, in any stream, at any
-  revision, while `docs/Hardware/HardwareSitting.md` said it "remains at
-  `build/boot/ceremonyboot.img`". Corrected there. **The one thing not
-  reproducible from source is the 124-byte `IDENTITY.DAT` the guest
-  wrote to the ESP on real hardware, and the only copy was reek's
-  p4-ignored `build-output/stick-before-20260811.img` (`629821CF...`) --
-  one gate `clean` from deletion, which is exactly how blu's three
-  preserved sticks were lost the same day.** Rescued to
-  `D:\Projects\stick-archive\stick-before-20260811.img`, verified byte
-  for byte, outside every workspace. Whether 16 MB of it earns a depot
-  slot is Damian's call, not mine; every other flown image beside it is
-  checked in.
-- **A5 (reek): SHIPPED 2026-08-14, FLOWN GREEN.** The compiler booted the
-  ASUS from bare UEFI, read its own 2.8 MB source off the stick, compiled
-  itself in about a minute, and wrote `OUT.CDX` back **byte-identical to
-  the host control** (2,790,018 bytes, `AB3A207EFB9279A6`), with `OUT.TXT`
-  reading `OK OUT.CDX 2790018`. The account, the flight card, and the
-  build discipline are the 2026-08-14 entry in
-  `docs/Hardware/HardwareSitting.md`; the retro is
-  `docs/PM/Active/Stories/TheBedThatAlwaysSaidYes.md` (lessons L-FREEDOM,
-  L-REHEARSE). The returned stick is `a5flight-returned-20260814.img` in
-  the archive. The history below stands as the campaign record.
-
-  The compiler's `DISK` mode reads two stdin lines (the word `DISK`, then
-  a path), mounts the boot volume through the GPT, reads the source AND
-  its cites off the volume, and emits.
-
-  **Baseline: booted from an 8 MB image with the seed as the PE payload and
-  the program as `SOURCE.SRC`, the compiler read the source off the volume
-  and emitted an 84,759-byte CDX BYTE-IDENTICAL to the host compile of the
-  same source with the same kernel.** Rebuild with `build/cdx-to-pe.ps1`
-  then `build/build-img.ps1 -Source`, and drive it with
-  `codex-vm -kernel seed\Codex.cdx -disk <img> -input` carrying
-  `DISK\nSOURCE.SRC\n`.
-
-  **A5 now runs end to end in the bed, 2026-08-09.** UEFI boot with NO
-  serial input of any kind: `stage1` as the PE payload via
-  `cdx-to-pe -EntryStart -HeapPages 32768 -Stdin "DISK\nSOURCE.SRC\n"`,
-  `build-img -Source`, then
-  `codex-vm -kernel <img> -uefi -disk <img> -headless`. The stub's prefill
-  survived `emit-start` (`all_consumed=1`), the compiler read `SOURCE.SRC`
-  off the volume and wrote **`OUT.CDX`, 84,462 bytes, byte-identical to the
-  host compile of the same source with the same kernel**, with `OUT.TXT`
-  reading `OK OUT.CDX 84462`. That run was on **raw IDE**, because the payload
-  was not compiled `-Uefi`, and IDE is not a transport the ASUS has. That is
-  why the flight below wrote nothing.
-
-  **THE COMPILER COMPILES ITSELF ON THE UEFI BLOCK PATH, 2026-08-09 (reek).**
-  Payload built with `compile.ps1 -Uefi`, so `block-read-sector` and
-  `block-write-sector` are both firmware helpers, at `-HeapPages 32768` (128 MB,
-  the flying envelope). The guest read a 2,766,116-byte `SOURCE.SRC` off the
-  volume, compiled it, and wrote **`OUT.CDX` at 2,753,312 bytes, byte-identical
-  to the host compile of the same source with the same kernel**, in 5.0 minutes.
-  A small source comes out byte-identical too (84,660). Serial produced ZERO
-  bytes: diagnostics went to ConOut, so nothing on this path needs a UART.
-
-  **The control is what makes that a measurement rather than a hope.** The same
-  image against codex-vm before 14398, whose UEFI `WriteBlocks` was a no-op,
-  changes 0 bytes and has no `OUT.CDX`. A payload on IDE would have written
-  there too, so the write provably went through UEFI Block I/O.
-
-  It also answers the read-path arena question by completing: 2.7 MB read and
-  compiled inside 128 MB. **What is left is metal itself.**
-
-  **Four things stood between that and a flight, none of them guesswork:**
-  1. **CLOSED at CL 14210.** `cdx-to-pe -EntryStart` runs the bare-metal
-     runtime init, so the payload's `block-read-sector` works under `-uefi`
-     and the CDX it emits is byte-identical to the host compile.
-  2. **CLOSED in the bed at CL 14235.** `cdx-to-pe -Stdin` prefills the
-     serial ring and `emit-start` zeroed it straight back (CL 14213).
-     `emit-start` now skips that zeroing when it sees `serial-primed-magic`
-     in cell 30696, clearing the cell as it goes so a warm restart still
-     zeroes. Only `serial-write-pos` is preserved; `serial-read-pos` is
-     still zeroed, which is correct because the stub sets it to 0 anyway.
-     Being codegen, it reaches a payload only through a compiler that
-     carries it, so the arm below was built from `stage1`, not `Sut`.
-  3. **CLOSED in the bed at CL 14245, not yet on metal.** `emit-cdx` sank to
-     Console, which is serial, and the ASUS has no UART. It now writes the
-     CDX to the volume through the foreword FAT writer
-     (`docs/Designs/Active/Compiler/MetalOutputSink.md`). Measured
-     2026-08-09 on codex-vm: a guest compile under `DISK` wrote `OUT.CDX` at
-     84,462 bytes, extracted back out of the FAT by an independent host
-     reader and **byte-identical to the host compile**, with `OUT.TXT`
-     reading `OK OUT.CDX 84462`; serial for that run fell from 84,616 bytes
-     to 122. The item also carried two allocation fixes in `Fat16.codex`:
-     the writer cost **55.8 bytes of arena per byte written** and now costs
-     **0.30**, which is what takes a 2.7 MB CDX off a ~144 MB projection
-     against a 128 MB arena.
-
-     **The 2.7 MB run is done, 2026-08-09.** A 2,745,998-byte payload (the
-     current seed CDX size) written by one `fat16-write-segments` call and
-     verified by streaming the FAT chain: chain 5364, recorded size exact,
-     `bad=0`, and the shifted-pattern control answers `bad=2745998` so the
-     oracle fires. Run twice, and the second is the one that matters: as a
-     UEFI PE payload at `-HeapPages 32768`, which is the flying image's whole
-     128 MB arena (L-ARENA), with the 2.7 MB buffer resident inside it. Net
-     arena for the write was 50,608 bytes. The ~144 MB projection is dead by
-     measurement. Recipe in the design.
-
-     **FLOWN 2026-08-09. It wrote nothing, and the cause is found and
-     bed-reproducible.** The returned stick differs from the flashed image
-     in exactly two sectors, LBA 0 and 1, which are the two
-     `flash-usb.ps1 -SpecFit` writes at flash time; the other 16 MB is
-     identical. The payload is the depot seed, compiled in plain `Exit`
-     mode, so its `block-read-sector` is **raw IDE port access**
-     (`X86_64Helpers.codex:1613-1617` dispatches on exit mode). `codex-vm
-     -disk` presents an IDE device and the ASUS boots USB mass storage,
-     so every bed run for this item passed on a transport the target does
-     not have. Dropping `-disk` reproduces it: `EXC=00`, divide by zero in
-     the BPB parse, nothing written.
-
-     **CLOSED at main 14398: the ExitUefi block path works end to end, read
-     and write.** `block-write-sector` has the exit-mode dispatch
-     `block-read-sector` already had, and `emit-uefi-block-write-sector-helper`
-     calls `WriteBlocks` at `+0x20` then `FlushBlocks` at `+0x28`. The flush is
-     not optional, because the operator pulls the stick.
-
-     The upstream blocker was that `uefi-systab-addr` was cell 36208 = 0x8D70,
-     which is entry 430 of the PML4 that `emit-build-process-page-tables` puts
-     at 0x8000 and zeroes wholesale. `cdx-to-pe.ps1` primes that cell before
-     jumping, and the page-table build ate exactly that write, so every
-     `uefi-*` helper dereferenced null. The cell is now 30704, below the
-     tables, and `emit-start` copies `0x8000` in only when it is still zero, so
-     a pointer an earlier stage primed survives. Measured under `-EntryStart`:
-     the cell read 0 with 0x8000 holding a PML4 entry, and now reads 983040 =
-     0xF0000, the real SystemTable.
-
-     **The write stayed invisible until codex-vm 14384 because
-     `UEFI_TRAP_BLK_WRITEBLOCKS` shared a case label with `BLK_RESET` and fell
-     through to a bare break**, returning EFI_SUCCESS and writing nothing, so
-     no bed could express a guest write at all. Same payload and same image,
-     only the emulator moving: 0 bytes changed and `PROBE.TXT` NOT FOUND,
-     against 37 bytes changed and `PROBE.TXT` at cluster 222 with exact
-     content, agreed by the guest's own readback and by a host-side FAT walker
-     that shares no code with the writer. ConOut echoes to stderr now too, so a
-     `-headless` UEFI payload is no longer mute (it landed only in the VGA text
-     buffer, where scrolling discards a line for good).
-
-     **CLOSED by measurement 2026-08-09: a 2,766,116-byte source reads and
-     compiles inside a 128 MB arena** (`-HeapPages 32768`), so the projection
-     that 2.7 MB needed 180 to 230 MB is dead. `fat16-bytes-to-text` stopped
-     rebuilding its accumulator per byte at main 14371 (blu); it is now one
-     `text-concat-list` over a char list. Reading into a buffer instead of two
-     intermediate collections is still the tidier shape, but nothing is blocked
-     on it.
-
-     **THE UEFI BLOCK WRITE PATH IS PROVEN ON THE ASUS, 2026-08-10 (main
-     14514).** `blockladder.img` flew white and the write was confirmed on the
-     medium, not from the guest's readback: LBA 30000 came back holding the
-     boot-sector copy with byte 0 replaced by `0xA5` and `55AA` intact, where
-     both earlier A5 flights left it zeroed. `LocateProtocol`, `ReadBlocks` and
-     `WriteBlocks` all work under firmware after the kernel installs its own
-     CR3.
-
-     **The sink's own 2.7 MB write still has not run on metal, but the arm for
-     it now exists and is calibrated** (`sinkladder.img`, 2026-08-10). The block
-     ladder proves one `block-write-sector`, not `fat16-write-segments`;
-     `apps/works/SinkLadderProbe.codex` drives the real write and the streaming
-     oracle and reports as a colour, paint before print. Bed: all six rungs
-     green, `chain=5364 bad=0`, and every rung below WHITE forced by
-     `build/sink-arm.ps1`, positive control included. **FLOWN 2026-08-11 and it
-     is RED on metal: the screen held ORANGE, the last line was `SINKLADDER bpb
-     continuing`, and the returned stick's root holds no `BIG.CDX` at all.** The
-     BPB parsed and `fat16-write-segments` created no directory entry, so the
-     fault is at or before the first allocation rather than in the chain walk.
-     Neither the bed nor the glass separates hung from faulted here, and the
-     next arm needs a heartbeat INSIDE `sl-fill` and between write segments,
-     because the rung printing reports only the stage that already passed. Full
-     account and the preserved stick image in `docs/Hardware/HardwareSitting.md`. **This
-     was blu flashing and Damian flying; the finding is reek's to act on, and
-     the A5 sticks stay grounded behind it.**
-
-     **The compiler paints now, so the two A5 sticks are no longer blind
-     (2026-08-11, reek).** `codex/compiler/Core/BootPaint.codex` gives the DISK
-     path six rungs -- CYAN entered, YELLOW stdin said DISK, MAGENTA volume
-     mounted, ORANGE source read, BLUE compile finished, WHITE `OUT.CDX` on the
-     volume -- and every one is forced and watched by `build/disk-arm.ps1`,
-     CYAN's failure included. WHITE re-reads the directory rather than trusting
-     the writer, because with the medium read-only the writer answered True 833
-     failed host writes in a row. **This did NOT need foreword-level GOP code**;
-     the entry above said it did and that was wrong: `peek-qword` / `poke-32`
-     are builtins and a chapter under `codex/compiler/` is answered by presence
-     in the unit. Operator and arm tables in `docs/Hardware/HardwareSitting.md`.
-
-     **Both sticks are rebuilt and bed-verified, so what is left is a flight.**
-     `a5flight2.img` is now `A90E7DA0...` and returns `OUT.CDX` at 84,660 bytes
-     hashing `ACF9823E...`; `a5bigflight.img` is `9E6E35AC...` and returns
-     2,759,023 bytes hashing `9E823495...`, which is a fixed point of itself
-     (compiling the same source with it reproduces it). Both were run on COPIES
-     with the masters re-checked virgin, both painted through to WHITE, and the
-     reader's negative arm fires on each virgin master. The two silent flights
-     remain best explained by their own first ConOut call, which is an inference
-     from the ladder's flights and not a measurement of those payloads -- and
-     these sticks are what would settle it.
-
-     **The rebuild found one defect and it would have cost the flight. It is
-     now fixed in the compiler, and it was never one file.** `build/boot/a5src.codex`
-     is stored `unicode+C`, the client's `LineEnd` is `local`, so every sync on
-     Windows writes it CRLF: 246 bytes in the depot, 257 on disk.
-     `build-img.ps1 -Source` copies what it is handed, so the image built
-     straight from the workspace file died at `CDX1000` on line 5 and the
-     ladder stopped at ORANGE. **Measured 2026-08-13: 2439 of 2508 `.codex`
-     files in the tree carry CR on disk**, so every A5 image built from
-     workspace sources had this defect and `-SourceDir`, which walks the tree,
-     had it for every chapter it copied.
-
-  **Source no longer has to be LF, and the old account of why was wrong.**
-  `utf8-to-cce` was never what saved the stdin path: byte 13 is below 128, so
-  it passes through untouched, and the function returns its argument unchanged
-  when the file holds no high bytes at all. What drops CR is
-  `__bare_metal_read_serial` itself (`X86_64Helpers.codex:1319`), which
-  compares the byte to 13 and skips the store and the length increment, BEFORE
-  its CCE table lookup. The DISK path had no equivalent: `fat16-byte-to-cce`
-  handed 13 to `from-unicode`, which answers -1, and `code-to-char (-1)`
-  produced **CCE 255** where the line ending was, which is the character the
-  lexer refuses with CDX1000.
-  **Fixed at the same layer the serial reader uses it.** `fat16-read-source`
-  drops byte 13 before CCE conversion and is what the compiler's two disk
-  source reads call (`opening.codex:978` for cited chapters, `:1756` for the
-  source); `fat16-read-text` is unchanged, so the ten test consumers and
-  `FileSystem.codex` see exactly what they saw before. `codex/test/fat16-source-cr`
-  carries the arm: a CRLF file and an LF file now read to the identical text,
-  with `fat16-read-text` as the control showing the 255 still present.
+- **WORKS-9 (reek). The USB mass-storage driver's second write, and the
+  sink's own 2.7 MB write on metal.** `sinkladder.img` FLEW 2026-08-11 and
+  was RED: the screen held ORANGE, `fat16-write-segments` created no
+  directory entry, so the fault is at or before the first allocation. The
+  next arm needs a heartbeat INSIDE `sl-fill` and between write segments,
+  because the rung printing reports only the stage that already passed.
+  Metal-gated; the arm and account are in `apps/works/works-backlog.md`
+  and `docs/Hardware/HardwareSitting.md`. **Damian's standing ruling: agents
+  do not propose flights or sittings.**
+- **A8 the desk build loop (fester).** Edit half done, hypervisor complete,
+  VT-x measured available on the ASUS, arena measured at `-AllocPages
+  131072`. Plan, roads and traps in `docs/Designs/Active/OS/DeskBuildLoop.md`.
+  **Open: whether the ASUS firmware grants that allocation** (L-FREEDOM; the
+  stub raises `H` if refused, and as of fester 15500 that is TRUE -- before it
+  the stub printed `H` and then ran on into a `#GP`, so the sheet's own
+  sentence was wrong about what the board would show) -- a sitting question.
+  **The arm is bed-proven in both directions and is NOT flight-ready**: it
+  builds with no `-Identity`, so it runs the first-boot wizard, and with no
+  source, so it cannot answer the compile loop, only the allocation. After it,
+  wiring
+  `compile <path>` into the Console pane is a dozen lines against pieces the
+  console already has.
 - **Native GOP resolution and diag word wrap (red, scoped by Damian
-  2026-08-07).** The 1024 is the ASUS firmware's GraphicsConsole mode,
-  activated by the stub's own ClearScreen; nothing ever calls SetMode.
-  Fix: after ClearScreen and before reading Mode->Info,
-  QueryMode-enumerate and SetMode the largest mode. The stub is
-  hand-assembled bytes with rel8 branch ceilings, so the loop is its own
-  body, and ON ANY FAILURE (QueryMode error, SetMode error, MaxMode 1) it
-  falls through to today's behavior. L-OPTIONAL applies: the bed's GOP is
-  more capable than AMI, so the fallback is the safety, not the bed. The
-  measured clipping surface is the scale-2 probe rows
-  (`build/boot/diag/*`); DeskBoot's trace rows are scale 1 and fit. The
-  wrap fix is a `gop-draw-text-wrap` primitive in GopDraw (word-boundary
-  break, returns LINES USED so the caller owns its vertical space, no
-  allocation), landed WITH its first caller, not bare. Convert live
-  surfaces; do not sweep the retired probes.
-- **A6: the desk 3D View GPU path (val, Damian-directed 2026-08-11).** The old
-  "not critical" grading is superseded: Damian ruled val onto the parked GPU path.
-  **LANDED on main:** (a) **14668** (seed-affecting) -- `runtime-init` re-grants the
-  manifest cap mask to proc 0 after re-initializing the proc table, fixing a LATENT
-  defect where it zeroed the cap word so ANY payload calling runtime-init lost all
-  manifest caps (only surfaced now because only GPU ports/mem are cap-guarded); seed
-  converged to **2759215, content A078BD8F**. (b) **14673** (app) -- the desk detects
-  a usable GPU (port 0x403) and registers the 3D View app only when one is present,
-  else omits the sidebar button and deads the dispatch; on a real machine with no GPU
-  driver (the ASUS 970) it correctly does not appear. (c) **14691** (app + `codex-vm`,
-  no seed) -- **Stages 1 and 2: the pane RENDERS through the host rasterizer.** A
-  viewport (scissor) rect in `codex-vm` confines the clear, depth clear, triangle bbox
-  and the fullscreen atmosphere glow; a new `Engine chapter GpuScene` holds the GPU
-  scene path `EngineDemo` carried privately, now parameterized by a view rect, and
-  EngineDemo loses its copies rather than the tree gaining a second implementation.
-  `G` swaps paths in the pane. **The viewport ports are the OUT side of 0x403 and
-  0x40F, deliberately inside the 0x400-0x417 window `gpu-port-hi` guards: a port above
-  it would be reachable without holding `Gpu.Compute`,** and staying inside kept the CL
-  off the seed (`Sut` byte-identical to seed, 0 differing bytes).
-  (d) **14703** (app + `codex-vm`, no seed) -- **Stages 3 and 4: SHADOW MAPPING.** A
-  light-space depth pass into a host-side buffer plus a per-fragment compare carried
-  across from `r3d-shadow-test` unchanged: same fixed point, same bias of 3000, outside
-  the map counts as LIT, and a shadowed fragment takes the AMBIENT colour, which is what
-  `r3d-cover-sh` does with `sc-amb`. **No port was free inside the guarded window**, so
-  the map size rides on 0x402 (which until now only ever carried a zero) and the pass
-  flag rides in the count word at 0x400; the per-vertex light position goes in a
-  parallel array at 0xBE500000 rather than the shared 72-byte triangle record, six of
-  whose words are UV where a non-zero value selects the texture path.
-  **Parity is measured, at 75.1 per cent shadow-mask IoU.** A direct pixel compare
-  between the renderers is meaningless (one ground is a checkerboard, the other flat),
-  so each is differenced against ITSELF with shadows off and the two masks compared;
-  both controls read exactly 0 (no mask in the sky over 39055 samples, none on chrome).
-  **A6 IS CLOSED (2026-08-13).** Stage 5 landed at main 14818 on Damian's ruling
-  that the GPU path is the default iff the machine has one, software otherwise;
-  the desk also stopped GATING the pane on the present probe, since otherwise the
-  software case was unreachable and the second half of the ruling could not
-  happen. On metal with no rasterizer the pane now opens and runs software at
-  roughly 1 fps -- slow, but reachable, where before it was hidden.
-
-  **A shadow regression shipped in Update 40 behind a skip and is now fixed
-  (14796, 14805).** `codex/test/engine-shadow` is unskipped. The skip said to
-  re-mint the oracle; re-minting would have blessed the regression. 14721 filled
-  the depth map from the faces facing AWAY from the light, which for an object
-  RESTING on its receiver is COPLANAR with that receiver, so `md` equalled `ld`
-  and no bias could shadow it -- the shadow detached from its object. Front-face
-  casting plus a slope-scaled bias restores it (ground shadow 738 -> 1929 against
-  a 1942 pre-regression control, self-shadow acne 0), and the software path now
-  runs the host's 3x3 filtered compare so both renderers match on edges too.
-  **Second-depth shadow mapping is wrong for anything standing on the surface it
-  shadows; that is the durable lesson.**
-
-  The GPU ground texture is DONE, main 14859 (val, 2026-08-13). The pane
-  renders the checkerboard and the blue artifact that blocked CL 14844 is
-  explained: the host's textured branch IS the earth-globe shader, which reads
-  UVs as spherical coordinates, fabricates a sphere normal, and adds a Fresnel
-  atmosphere rim worth up to +140 blue. Applied to ordinary ground it mapped
-  texel 6E5F4B to exactly 405A9C, which resembled the cube albedo by
-  coincidence of hue and is why four geometry hypotheses failed. A single-pixel
-  host probe (`CODEX_GPU_PROBE=x,y`, shipped in that CL) named the drawing
-  triangle as the ground itself, sampling the correct texel.
-
-  Two claims this register carried are now measured FALSE and are corrected
-  here rather than left to mislead again. **`apps/globe/TerrainGen.codex` HAS
-  driven ports 0x408-0x40B since they were written** (it commits 0, and
-  GlobeDemo uses it), so "no caller" was wrong; and **`poke-byte` exists** --
-  TerrainGen packs three RGB bytes a pixel with it, and the host sampled three
-  bytes a pixel bilinear. CL 14844 had changed that wire to 32-bit words, which
-  read the globe's texture misaligned; the commit value now carries the format
-  as well as the shading, 0 being the original three-byte bilinear globe wire
-  restored verbatim and 1 one 32-bit word a pixel sampled nearest.
-
-  Also known and deliberately unfixed: a triangle straddling the near plane is
-  dropped whole rather than clipped (this orbit distance never reaches it).
-  App + `codex-vm` (NOT seed, no token); `codex-vm.c` is a
-  shared tool, coordinate with reek before an exe rebuild. val memory
-  `val-gpu-desk-render` carries the port constraint, the cull pairing that is easy to
-  get wrong, and the frozen-clock rule without which the two arms are not comparable.
-- **A8 the desk build loop (fester). The edit half is DONE and the blocker is
-  GONE: VT-x IS AVAILABLE ON THE ASUS, measured on metal 2026-08-13.** Plan,
-  roads and traps in `docs/Designs/Active/OS/DeskBuildLoop.md` -- read that
-  before touching any of it, because one of the three obvious approaches is
-  ruled out there. Landed: the Edit pane descends into `SRC/` and saves back
-  into it (14802, WORKS-20 closed), a Console pane in the desk (14815), and a
-  `vmx` command that reads `IA32_FEATURE_CONTROL` from the desktop (14829).
-  **`VmCompile` and `DevHypervisor` are COMPLETE, not stubs** -- a real Intel
-  VMX hypervisor written in Codex. `vmxprobe.img` flew on disk 2 and read
-  `IA32_FEATURE_CONTROL = 5` (lock set, VMX-outside-SMX set) with revision id
-  4, against the 1 the bed reports. **Do not re-measure this in the bed and
-  conclude anything**: two codex-vm readings agreed with each other, and both
-  were irrelevant to the hardware. So Road A is the road and Road C needs no
-  pricing. Also landed: EPT with the hypervisor's regions allocated rather
-  than sited at fixed physical addresses, `memory-mb` live and guarded by a
-  refusal (15147), and the device-path launch corrected to `vmlaunch-full`
-  (15161).
-
-  **The arena value is measured: `-AllocPages 131072`.** The shipping 32768 is
-  128 MB and cannot carry a 256 MB guest, so `vm-guest-sizing` refuses. An
-  Option A image at 131072 boots on real edk2 firmware under OVMF and paints
-  the desk; the same image in a 256 MB machine does not, so the bed can refuse
-  and the green is not vacuous. Recipe and numbers in the design,
-  `-AllocPages` band and its Int32 ceiling in `OperatorsManual`.
-
-  **What is open: whether the ASUS satisfies that allocation.** OVMF granting
-  512 MB below the aperture is the class of spec freedom L-FREEDOM is about
-  and AMI may answer otherwise; the stub raises `H` if it refuses. That is a
-  sitting question, not a bed one. After it, wiring `compile <path>` is a
-  dozen lines against pieces the console already has.
-- A2, A3, A4 and A7 are CLOSED on metal.
+  2026-08-07). BED HALF DONE 2026-08-15; the metal half is a stick rebuild
+  and a photograph.** `gop-draw-text-wrap` landed earlier (`GopDraw.codex`).
+  The stub now picks the largest GOP mode the firmware enumerates before
+  reading `Mode->Info`, on every non-`-EntryStart` payload; every failure
+  falls through to today's behaviour; the flown A5 stub is byte-identical.
+  Six bed arms in `build/gop-mode-arm.ps1` including the ASUS-shaped one
+  (`-uefi-conout-remode` at 1600x900: 1024 in, 1600 out); ablation is the
+  main 15393 stub staying at 1024. Making the bed faithful (codex-vm's mode
+  table gains the CLI mode; `-gop-max-mode`; `QueryMode` scratch block;
+  `SetMode` commits the framebuffer) found and fixed a HOST crash on any
+  runtime mode set from a headless boot. Account: `ExaminersAssay.md` "The
+  GOP Mode Arms". **What is left is metal**: the ASUS's largest mode and
+  whether AMI's `SetMode` honours it are L-FREEDOM questions the bed cannot
+  answer; the next option-a stick built for any reason carries the change,
+  and the photograph answers it. Not a proposed flight.
+- **EVERY UEFI STUB PATH NOW CARRIES BYTES THAT HAVE NOT FLOWN, `-EntryStart`
+  included (fester main 15503; red 15469 for the non-EntryStart paths).**
+  15503 made the stub's allocation panics actually halt (`cli`/`hlt`/loop:
+  before ExitBootServices a bare `hlt` resumed on the next timer tick and
+  fell through into code that assumed the allocation succeeded), which
+  moved every arm's hash; measured with one CDX under the 15469 and 15503
+  scripts, all seven arms differ and the `-Ebs`, `-EntryStart -Ebs` and
+  `-Stdin` PEs grew a 512-byte section (120,320 to 120,832 bytes), a layout
+  shift. The depot stick images (`build/boot/a5*.img`, `sinkladder.img`,
+  `nicsitting.img` and the rest) predate both and are unchanged. **A rebuilt
+  image is L-DECODE territory: rehearse the exact bytes in the bed before
+  any flight (L-REHEARSE), and say in the flight card that the stub is new.**
+  The six mode arms (`build/gop-mode-arm.ps1`) pass on the 15503 stub.
+- **A 16 MB stick image is in the archive and not in the depot.** The only
+  copy of the 124-byte `IDENTITY.DAT` the guest wrote on real hardware is
+  `D:\Projects\stick-archive\stick-before-20260811.img`, outside every
+  workspace. Whether it earns a depot slot is in the rulings queue.
 
 ## Track B -- the network (blu). Metal-gated: advances at sittings, not before.
 
-- **B2 Intel I219-V link bring-up.** Register audit is COMPLETE; do not
-  re-run it, and `e1000-phy-addr = 1` is correct, do not "fix" it.
-  **Findings 1-4 are now closed in the bed** (4 on 2026-08-10). ASDE could
-  not be exercised before because the model had no ASDE bit and no speed
-  fields: `na-line` printed SPEED and ASDV off a register nothing wrote, so
-  both read 10 Mb/s on every arm ever run. `-e1000-asde` fills them,
-  `e1000-link-up` clears the bit per 82583V 12349, and
-  `codex/test/e1000-asde-speed` carries the arm with a control and a
-  sabotage. **This says nothing about why metal wedges** -- the datasheet
-  does not say what a part does when the bit is set, so the model invents
-  no failure.
-  **CTRL IS READ-ONLY ON THIS PART (boots 3 and 4, 2026-08-13).** Clearing
-  `CTRL.SLU` and reading it straight back gives `0x180240` unchanged, and
-  `CTRL.ASDE` refuses to set even on an arm running first from the firmware
-  state. **MDIC writes DO work** (`e1000-phy-write` writes MDIC at `0x0020`
-  and polls it ready, and succeeds every arm), so the CSR write path is
-  fine and CTRL specifically refuses. **B2c is NOT blocked**: RX/TX needs
-  RCTL, TCTL, the ring registers and RAL/RAH, none of them CTRL.
-  **Finding 4 is CLOSED**: ASDE is inert because the bit is not writable.
-  **Two claims below are now wrong and are corrected in the run sheet.**
-  The link is brought up by `na-phy-kick` over MDIO, not by our CTRL write.
-  And the reset "not wedging on a warm part" describes an event that never
-  happened: the `CTRL|RST` write is discarded, RST is never set, and
-  `e1000-await-reset` answers `settled=1` on its first read. **Do not
-  pursue the cold-versus-warm reset hypothesis.** What wedged the box on
-  08-11 is unexplained again, and it was not CTRL.RST.
-  **No further sittings are needed to develop this.** `codex-vm
-  -e1000-ctrl-ro` reproduces the board exactly and `codex/test/e1000-ctrl-ro`
-  pins it, with a control proving three of its six rows flip when the arm
-  is off.
-  **FLOWN 2026-08-13: THE LINK COMES UP ON THE REAL I219.** Touch reads
-  `LU=0` with a live cable; both arms then read `LU=1 FD=1 SPEED=1000`, and
-  `ICR` carries Link Status Change. The touch row is read before any write
-  and is byte-identical to the 08-11 flight, so it is the control that says
-  our code did it rather than the PHY doing it alone. **B2 link bring-up is
-  ACHIEVED and B2c (RX/TX on the real part) is unblocked.** The account,
-  with the full decode, is `docs/Hardware/HardwareSitting.md` at the top.
-  **The reset did NOT wedge**, on the same driver code that wedged on
-  08-11; the only change was ORDER, with the arms warming the part before
-  RST fired. One observation, not a mechanism -- but `e1000-init` resets
-  cold, which is the order that wedged, so it is worth a discriminating
-  flight (cold reset first, then warm).
-  **Finding 4 is still NOT answered.** Both arms returned identical values
-  where the bed has them differing sharply, and three explanations survive:
-  ASDE is inert, the write does not stick (the probe never reads `CTRL`
-  back), or arm 2 inherited arm 1's link. The arms are not independent,
-  which is a defect in the probe. Next arm: read `CTRL` back after each
-  write, run `ASDE=1` first from cold, print the bound USB VID:PID.
-  **The F12 bank failed as a TRANSPORT failure, not a GPT one**, and that
-  refutes the eject-and-reinsert hypothesis the run sheet carried: stage 1
-  means the read itself failed (`c4` = USB transaction error in the CBW
-  phase, `l1` = the GPT header sector, recovery failed). Not WORKS-9, whose
-  signature is a data-phase timeout with no completion event; `f945044` of
-  1000000 clears fuel by WORKS-9's own criterion.
-  **The 2026-08-11 flight settled which step wedges, and it is the RESET,
-  not ASDE.** Two rows painted, eligible and the read-only touch
-  (`STATUS=0x40080080 CTRL=0x180240`, so the BAR is right and reads
-  complete), and nothing below them. ASDE is UNTESTED rather than
-  disproved: the bit was never written.
-  **`AsdeStageProbe` was rebuilt 2026-08-13 and the order is reversed.**
-  Both arms now run with NO RESET at all -- `na-bring-up-after` is
-  `na-bring-up` minus the reset, and firmware leaves `CTRL.SLU` set -- so
-  Finding 4 gets answered whether or not the reset is ever solved, and the
-  reading is banked ABOVE the step known to kill the box (L-BANK). The
-  reset then rides last, split into its five MMIO operations with a row
-  before each, so the glass names which one did not return (L-STATES).
-  The driver is deliberately unchanged from the flown build: moving the
-  reset path would make a different outcome uninterpretable.
-  Bed-verified both ways. **The arm is `build/boot/asdeflight.img` and the
-  procedure is `docs/Hardware/HardwareSitting.md`, the section headed "THE
-  ARM, kept for the next flight"** -- it carries the outcome table, the new
-  SHA-256 and the 2500 ms screenshot delay. **Awaiting a sitting.**
-- **B3 TCP over the real part: the stack now holds a real TCP conversation
-  over the e1000, and it did not before 2026-08-14 (blu; LANDED on main
-  15013, with the poll-count-as-duration class following at 15028).**
-  Nothing had ever run TCP over that card: every TCP test in the tree
-  (`tcp-reliability`, `tcp-seqwrap`, `tcp-listen-reclaim`, `net-io-clock`)
-  cites `NetworkStack`/`Tcp`/`Ethernet` and touches no NIC at all, and the 55
-  plugs that DO speak TCP over a wire all ride the NE2000. DHCP over the
-  e1000 was the whole of it, and DHCP is one UDP exchange.
-  **The blocker was a wall-clock constant wearing tick clothing, and it lands
-  on metal.** `NetIO` counted a tick as 100000 empty receive polls. Measured:
-  one million empty polls cost **15.52 s on the NE2000 and 0.029 s on the
-  e1000**, because an NE2000 poll is a port IN and therefore a VM exit while
-  an e1000 poll reads a descriptor out of RAM -- which is what the real
-  I219-V does too. Every bound in `NetworkStack` is a count of ticks, so the
-  same four constants meant give-up at 219 s on one card and **405 ms** on
-  the other, with the first SYN retransmit at **8.6 ms**. That chapter's own
-  prose argued this could not happen; the argument covers the ESTIMATOR,
-  where srtt is in the same ticks, and not the fixed counts. Corrected in
-  place rather than left to mislead again.
-  **`net-driver-calibrate` measures the rate once at bring-up** against HPET
-  and stores it in cell 36328, and `net-io-tick-interval` /
-  `net-io-max-polls` derive from it. A guest that never brings a driver up
-  reads the old 100000, so every plug keeps the numbers it was tuned with.
-  Achieved: tick 105 ms on the NE2000 and 66 ms on the e1000, a 540x spread
-  closed to 1.6x. `codex/test/net-poll-calibrated` pins it with the OLD
-  constant as its own built-in control, which reads out of band on both
-  cards -- so the arm can be seen to fail.
-  **A second defect underneath, in `tools/codex-vm.c`.** A retransmitted SYN
-  re-entered the NAT's new-connection branch, opened a second host socket
-  over the first and leaked it, and the guest's payload went to a socket
-  nobody had accepted. A SYN retransmit is correct TCP, so the bed could not
-  express one at all. Isolated three ways on one guest binary: old exe + old
-  stack FAILS (4 SYNs), new exe + old stack PASSES (3 SYNs), new exe + new
-  stack PASSES (1 SYN).
-  **What is NOT proven: this is the bed, not the board.** The e1000 model's
-  poll is a RAM read like the real part's, which is why the calibration is
-  expected to hold, but no flight has measured it. The arm is bed-only
-  because it needs a host TCP peer; 30 existing tests, `nat-conn-churn`,
-  `cdx-serve` and `tls-interop` are green, and the gate is green.
-- **The metal questions this track has left are QUEUED, not scheduled:
-  `docs/Hardware/HardwareSitting.md`, the section headed "THE SITTING QUEUE"
-  at the top of the file** (opened 2026-08-14 at Damian's direction). Five
-  questions, NIC-1 to NIC-5, designed to ride ONE boot in an order that is
-  argued rather than preferred: the pure reads bank first because a write
-  destroys their control, and the arm that could hang the box goes last.
-  **Damian's standing ruling still holds and this section does not soften
-  it: agents do not propose flights.** The queue exists so that a sitting he
-  decides to hold does not spend its first half hour being designed. NIC-2
-  is the one that matters most -- whether the poll-rate calibration transfers
-  to the real part is the single assumption B3 and B4 now rest on.
-- Then **B4** serve the repository protocol. EdgeMesh Phase 2
-  (`docs/Designs/Active/Features/EdgeMeshGameServers.md`) is the consumer
-  waiting on B2-B4; nothing to do there until the track lands.
-- The ARM64 send path and the lost SYN are both closed (fester,
-  2026-08-10). `arm64-net-io-send-chunk` reads the refusal and drains,
-  the ARM64 loops tick, and `net-io-wait-established` ticks and gives up
-  rather than running out a cap below one tick interval. **There IS an
-  ARM64 bed on this box**, which is what the entry was blocked on:
-  `build/test-cross-batch.ps1 -Arch arm64` runs under Renode, and
-  `arm64-send-refusal` is a no-peer arm that PASSES there. What that bed
-  cannot reach is virtio RX and a real peer, so the drain's own polling
-  is still unrun on metal.
-- **The e1000 BAR window hazard is CLOSED (reek, 2026-08-15).** The
-  window is derived now, from one place: `codex/foreword/core/MemoryMap.codex`
-  holds `bare-metal-ram-size`, `bare-metal-pd-count` and
-  `bare-metal-device-window-lo`/`-hi`, and the five sites that spelled
-  3221225472 and 4294967296 by hand cite it instead (`E1000e`, `GopXhci`,
-  `PciProbe`, `Inventory` twice). The derivation is off `pd-count`, not
-  off `ram-size`: the device PD is the single gigabyte PD at that index,
-  and the two readings coincide only when RAM is a whole number of
-  gigabytes.
+The queue Damian draws from is `docs/Hardware/HardwareSitting.md`, "THE
+SITTING QUEUE" at the top of the file: five questions on one boot, in an
+order that is argued rather than preferred (bank before you risk, L-BANK).
+**NIC-1 and NIC-2 are ANSWERED (2026-08-14)**: the part arrives cold, and the
+poll-rate calibration transfers (32,606 us per million polls, 2.50x the
+bed), which was the single assumption B3 and B4 rested on and is now a
+measurement.
 
-  **The objection that parked this was half right and worth keeping.**
-  Citing the emitter really would drag it across the boundary, because
-  `X86-64 Code Generator` is one chapter spread over 16 files. That is an
-  argument against that route and not against the derivation: a leaf
-  foreword chapter costs nothing on either side, and
-  `DevelopersRulebook.md` library rule 7 measures a cite at 3 bytes.
+- **B2c, NIC-3: ANSWERED ON METAL 2026-08-15. `e1000-init` does NOT hang.**
+  It completes in 93 seconds and **92.9 of them are `e1000-await-aneg`
+  burning its 1,000,000 fuel at 92.89 us per MDIO read**. The 08-14 "wedge"
+  was that spin read as a hang. Full rows, banked rather than photographed,
+  in `HardwareSitting.md`.
+  **`e1000-aneg-fuel` was the poll-count-as-duration defect again, and it is
+  FIXED** (blu): `e1000-await-aneg` is bounded by a 3-second budget through
+  HPET, the way `e1000-settle-mdio` and `e1000-quiesce` already were, with the
+  count kept as a second bound for when HPET is absent or stops advancing.
+  **NIC-3 did not diagnose this and an earlier entry of mine implied it did.**
+  The cost was named on 2026-08-04, after the ASDE flight painted nothing --
+  it is written in `NicAsde.codex` at `na-phy-kick` and in the annotation on
+  `codex/test/e1000-asde-nolink`. What was done then was to route AROUND the
+  function; the driver kept the million, and it cost a second flight eleven
+  days later. NIC-3 contributed the number, not the cause.
+  **Two things the flight left open.** Auto-negotiation never reports done
+  while `STATUS.LU` is set, so `phy-bring-up` returns 0 against a link that
+  is up. And `RDH` moved 0 to 15 with `RDT=15`, which is either the receiver
+  filling the ring during those 93 seconds -- frames DO move -- or `RDH`
+  being unwritable as `CTRL` is; the arm cannot separate them.
+  Finding 4 (ASDE) still rides the same class: `build/boot/asdeflight.img`
+  is built, bed-verified both ways, and awaits a sitting.
+- **NIC-4 FLEW 2026-08-16 AND HUNG, and the hang was the aneg fix's own
+  consequence.** `nicring.img` painted its first three rows and stopped inside
+  `e1000-init`; more than ten minutes, no return, no bank (`mount stage 2`), so
+  the glass is the whole record. **Cause, and it is not what the arm went up to
+  ask.** NIC-3 had already measured `e1000-await-aneg` returning **0** after its
+  full million: aneg-done is never set on this part, while `STATUS.LU` comes up
+  anyway and the part negotiates 1000 Mb/s. So those 92.9 seconds were never
+  auto-negotiation succeeding -- they were dead time during which the link came
+  up behind them, and they masked the fact that `e1000-await-link` had **no
+  deadline at all**, only a count of four million. Budgeting aneg removed the
+  dead time and that count then ran against a part whose link was still
+  settling.
+  **FIXED, blu 15588**: `e1000-link-wait` gives it a 5-second HPET budget with
+  the clock read once per 4096-poll batch, the pattern `e1000-await-tx-clocked`
+  already used in the same chapter; the count survives as the no-HPET path.
+  Worst-case init is 3 s + 5 s. Two arms: `e1000-link-budget` (arithmetic) and
+  `e1000-link-deadline`, which reproduces the metal symptom on the desk under
+  `-e1000-no-link` -- 8,037,305 us with the budget against 21,862,178 us with
+  the count, ablated. **15463 is NOT reverted; it was right, and the regression
+  was mine too.** Not seed-affecting.
+  **The ring question NIC-4 went up to answer is still open**: no `dd=` map was
+  ever painted, so whether frames move is exactly where NIC-3 left it.
+- **B3, a real TCP conversation with a real peer.** The stack holds one in the
+  bed over the e1000 (main 15013/15028). No longer blocked by a hang or by the
+  93-second bring-up; the next sitting is the gate, and the ring question above
+  should ride the same boot rather than spend a flight of its own.
+- **NIC-5: what wedged the box on 2026-08-11.** It was NOT `CTRL.RST` (that
+  write is discarded on this part). Terminal by construction, flies last.
+- **B4, serve the repository protocol.** Unowned; blocked on B3. EdgeMesh
+  Phase 2 (`docs/Designs/Active/Features/EdgeMeshGameServers.md`) is the
+  consumer waiting on it.
+- **The untrusted-frame class in `codex/os/net` is blu's and the AUDIT IS
+  COMPLETE.** Landed: TCP and IP truncation (main 15245), UDP (15266),
+  `ip-checksum`'s odd tail (15287), the ARP cache (15310), DNS (15329), the
+  MessageFraming crash (15345) and its refusal channel (15375). Five of
+  those were remote guest kills; the smallest took four bytes.
+  **Audited and found SOUND, which is worth recording so nobody re-audits
+  them**: `WebServer`'s `Content-Length` path (an oversized length returns
+  -1 and keeps buffering; probed at 3, 18 and 25 digits), and `Tftp` and
+  `Syslog`, whose every walk takes its bound from `list-length` of the data
+  rather than from a wire field.
+  **`Tftp`, `Syslog` and `Icmp` have NO production caller** -- only tests --
+  so all three are latent rather than live, and the census already has them
+  as KAT-ONLY. **One latent cost rides with that**: `syslog-decode-bytes`
+  builds its body with the quadratic `acc &` accumulator (CostModel 3.6),
+  which under a wire-supplied length is arena exhaustion rather than a slow
+  path. Unreachable today; whoever gives `syslog-parse` a production caller
+  fixes the accumulator in the same change.
+  This is the network leg of Track D below, and it is done.
+- **MessageFraming's refusal channel is LANDED (blu). The caller sides are
+  open and belong to their lanes.** `FrameTextResult` and `FrameBytesResult`
+  now carry `valid`, set by `frame-fits`: the length prefix present and the
+  payload behind it. The pair that makes it worth anything is `[0,0,0,0]`
+  (zero bytes declared and present: empty, valid) against `[4,0,0,0]` (four
+  declared, absent: empty, INVALID) -- identical values, opposite validity,
+  which no caller could distinguish before. `MessageFraming` is the only
+  place in the tree that constructs either record, so this broke no caller;
+  `valid` is additive and a caller that ignores it sees exactly what main
+  15345 shipped. **What is open: nobody reads it yet.** `TrustTransport`,
+  `FactSync` and `ReplayCrf` chain decodes blind, and propagating validity
+  through them is their own change. `frame-decode-body` and
+  `frame-decode-length` return bare values with no room for a flag and are
+  deliberately unchanged.
+  **The historical note, kept because it was a corrected claim:** a signature
+  does NOT catch a truncated field. `codex/os/trust` has no verification at
+  all and the only verify on the path is `RepoProtocol.codex:107`, verdicts
+  only. **`apps/data/Protocol.codex` is the shape** (fester): it refuses on
+  `list-length bytes < needed` before taking anything.
+- **Two `RepoProtocol` caller crashes, reek's, and they never waited on the
+  channel.** `RepoProtocol.codex:323` and `decode-target` index a chained
+  offset with a raw `list-at`. `next-offset` clamps to `list-length`, which
+  is a valid slice bound and NOT a valid index, so both are out of range by
+  exactly one on a truncated frame. `frame-byte-at` (main 15345) is the drop-in.
+- **`ip-checksum` and `icmp-checksum` are now the same function.** Collapsing
+  them is the obvious follow-up and is NOT taken: every plug bundles
+  `Ethernet`, and `icmp-checksum` is the arm's independent witness. Whoever
+  takes it keeps a second implementation somewhere or the arm becomes
+  self-agreement. Unowned, low.
+- **ICMP is send-only** (`icmp-parse` has a test and no production caller).
+  Whether we answer a ping at all is a capability ruling, in the queue below;
+  nobody writes the receive side before it.
 
-## Track C -- the trust audit
+## Track C -- the trust audit (val)
 
-- **C1 (val): diverse double-compiling. The main claim is LANDED.**
-  - **State the residual hole every time C1 is reported.** Sabotage arms
-    2026-08-10 (`OperatorsManual`, "The witness has a negative control")
-    poisoned the code generator and then constant folding, each payload
-    living only in the binary and in no source; both went RED against the
-    tampered build and reconstructed the honest seed. **The measured
-    boundary is "reaches the readable intermediate" versus not**
-    (`OperatorsManual`, corrected 2026-08-11). Any payload living only in
-    the binary is caught, because the double-compile rebuilds from clean
-    source; a payload survives the byte-comparison only if it reaches the IR
-    that becomes the C#, and is therefore VISIBLE as readable text. The
-    earlier "self-reproducing versus not" wording here was too narrow: the
-    frontend-IR arm (2026-08-11) survives with NO self-reproduction, so a
-    self-reproducing quine is one survivor, not the sole one. The seed still
-    sits upstream (it produced the IR and compiled the plug), and the
-    `source -> IR` arm a complete Wheeler DDC wants is DONE -- the C# arm
-    parsed raw source and emitted a byte-identical CDX on demand.
-  - **The self-reproducing quine carrier is MEASURED, not reasoned** (val,
-    2026-08-15, `docs/Test/Active/DDC-QUINE-ARM.md`). Trojaned `ir-emit-def`,
-    run over clean source, emits its own definition byte-identically in one
-    shot (D=2285; emitted == replace(D,"@QQ@",ir-quote(D)); both 4698 chars).
-    **The measurement corrected the framing.** `ir-emit-def` is the CARRIER,
-    not a witness-defeat: it touches IR-text emission only, and the shipped
-    seed is CDX whose emit path never calls `ir-emit-def`, so the pure quine
-    is INERT in the shipped artifact. Defeating the byte-comparison needs a
-    codegen payload PAIRED with the carrier, exactly as the frontend-IR arm
-    did (`ir-emit-def` hook + an `X86_64Helpers` nop). The old "build the
-    self-reproducing quine that DEFEATS the witness" task is retired: it
-    rested on the wrong premise, and a witness-defeating survivor was already
-    demonstrated (frontend-IR arm) and is greppable text either way.
-  - **DONE (val, 2026-08-15): the visibility claim now has a runner.** The
-    defense rests on a survivor being VISIBLE in the readable IR, and that
-    was asserted, not enforced -- a claim with no runner (L-BODY).
-    `build/jonquil.ps1` (the `jonquil` gate phase, named for the narcissus
-    flower: a def caught admiring its own reflection in the IR) emits the
-    compiler's own IR and FAILS the build if any def embeds, as string data,
-    the IR-def header for its OWN name -- the self-reproduction signature of
-    the `DDC-QUINE-ARM` construction. It is a tripwire for that construction,
-    NOT a complete quine detector (general detection is undecidable, Rice),
-    and it is ORTHOGONAL to the DDC witness (a machine-code-only trojan
-    leaves no IR trace, so this cannot see it and does not replace it). It
-    makes the readable-intermediate defense concrete rather than reasoned.
-- **C2 (val): the independent rechecker. R1 to R4 are all published and
-  enforced, and the abstention set is 1 finding from 1365.** All three
-  classes are now closed:
-  - **THE LANE FOUND ITS FIRST REAL COMPILER DEFECT, and it is fixed
-    (2026-08-10, seed-affecting).** `lower-lambda` recorded the EXPECTED type
-    it was handed as the lambda's type -- at a polymorphic call, the callee's
-    declared parameter with its type variables still in it -- at the moment
-    the body had been lowered and its concrete type was in hand. `lower-let`
-    twenty lines above records the RESOLVED type. Not a soundness hole: every
-    program compiled correctly. But `subst-type-vars-from-arg` at every call
-    site learns the callee's variables by matching its declared parameter
-    against the argument's type, so a lambda argument matched itself, learned
-    nothing, and **the compiler resolved the instantiation and then discarded
-    it** -- the application's result type reached the wire uninstantiated for
-    every consumer, this rechecker and every transpiler plug alike. Fixed by
-    recording the lambda's actual type; no `ir-emit-type` change was needed.
-    Whole compiler after: **AGREE 4821, DISAGREE 0, UNSUPPORTED 0, IMPROVED
-    4** -- 88 of the 92 closed in the ARTIFACT and the rechecker derived the
-    remaining 4. Account in `IndependentRechecker.md`; the control that was
-    the evidence and was read as a fact is L-CONTROL.
-  - **The remaining 4: CLOSED 2026-08-14, 4 to 0** (val 15022, main 15023,
-    seed-affecting, seed converged at 2760410). They were the same defect one
-    level down, in the BRANCHING NODE rather than the lambda -- but **this
-    register's account of WHY was wrong and the correction is the useful
-    part.** It said the body's "own recorded type is the bare variable, so
-    there is nothing concrete to substitute." The branch bodies were concrete
-    the whole time: in `fold-expr`'s `for stmt in ss -> when stmt` both arms
-    type as `(sum "IRActStmt")`. The node DISCARDED that. `lower-match`
-    already had `infer-match-type`, which derives the type from the arms, and
-    consulted it only `when ty is ErrorTy`; a bare type variable is not
-    ErrorTy, so it took `is otherwise -> ty` and threw the derived type away.
-    The `if` is the same shape through `merge-ty`, which answers `a` unless
-    `a` is ErrorTy. Both now consult a witness and `lower-lambda`'s existing
-    substitution propagates it, so no change was needed there.
-    **Whole compiler: AGREE 4862, DISAGREE 0, UNSUPPORTED 0, IMPROVED 0,
-    SINGLE-WITNESS 0**, kill-rate 27/27 with a passing control, and
-    `tvar-spine-branch-arms` still CAUGHT -- unlike the lambda fix, this one
-    cost the rechecker no arm. **The rechecker now raises exactly ONE finding
-    against the whole compiler**, the underived range below.
-    - A witness is sound only where the unifier admits no widening, which it
-      does for integers and reals at a non-argument position, so those are
-      refused and every other form is nominal or invariant. **A first attempt
-      guarded agreement with `types-equal` and measured NO CHANGE AT ALL**:
-      that function fell through to `otherwise -> False` for ten of the 26
-      CodexType variants, so it answered "not equal" on two identical sum
-      types and every witness was rejected. Never a soundness gap -- its only
-      caller is a fast-path short-circuit in `unify-resolved` whose
-      fall-through unifies those forms correctly -- but a trap for the next
-      caller, so **it is now total** (Damian's call: fix it rather than
-      document around it). **The fast path it was declining is worth nothing
-      measurable**: same input, old compiler against new, 11.8/11.96/12.41 s
-      against 11.8/12.38/12.30 s, a noise floor of about 0.4 s. The value is
-      that the trap is gone, not speed.
-  - **92 nested type variables: CLOSED 2026-08-10, 92 to 0.** Spine-scoped
-    substitution, plug only, no compiler change and no seed. Stage 1 over
-    the whole compiler is **AGREE 4820, DISAGREE 0, UNSUPPORTED 0**, against
-    4776 / 0 / 44 before; kill-rate 28 of 28 with a passing control; 254 s
-    against a 255 s baseline. The unsound fix -- bind the argument's
-    variable from the parameter it flows into -- was NOT taken, and
-    `bounded-arg-into-plain-slot`, the arm that caught that shape in the
-    rejected stage-2 fix, still scores.
-    - **The honest half: IMPROVED 92, SINGLE-WITNESS 92.** Every comparison
-      the substitution decided was decided by a variable fixed from exactly
-      one witness, so it is tautological in that direction. Both counters
-      now print on the stage line so a fallen abstention count cannot be
-      read as more than it bought. What it does buy is a CONCRETE TYPE
-      where there was a variable, and two mutations confirmed MISSED before
-      and CAUGHT after say that comparison can now fail.
-    - **The conflict path has never fired in this tree and nothing tests
-      it.** A spine `apply-tvar-inconsistent` needs one variable with two
-      disagreeing witnesses, and no site in the compiler has two: where a
-      call carries enough information for a second witness the COMPILER
-      ALREADY INSTANTIATES IT and no variable reaches the wire. That also
-      retired a standing instruction in the design to write a
-      two-instantiations mutation, which cannot be written.
-    - Account in `IndependentRechecker.md`. The fork underneath is
-      untouched and still Damian's: whether the compiler should also EMIT
-      its instantiation. Deriving was taken first because it is plug only,
-      reversible, and is the arm that would check an emitted one.
-  - **3 overflow-mode findings: CLOSED, 3 to 0** (main 14456). This entry
-    said it was a ruling of the same shape as variance and that the lane
-    should not take it alone. **That was wrong, and the correction is the
-    useful part: the measurement decided it and taking the measurement was
-    the work.** Mode is accepted both directions at a parameter and inside
-    a type argument, while a BAND difference in the identical position is
-    refused with CDX2001. Published as `docs/DevelopersGuide.md` "Overflow
-    mode is not part of type identity". The invariance argument does not
-    carry over because a band is a claim about which VALUES a slot holds
-    and a mode is a claim about what happens at an OPERATION, governed by
-    the declared type at the site performing it; `list-set-at` through a
-    wide view falsifies a narrow view's claim, while a `wrapping` and an
-    `error` view over one list cannot falsify each other. The premise is
-    stated in the guide so it can be attacked: every mode preserves the
-    band. It also caught a LATENT FALSE DISAGREEMENT, `rc-ty-eq` answering
-    TyNeq on a mode difference where the compiler agrees, unfired only
-    because no such site exists today.
-  - **1 underived range**, one site in `compile-type-check` inside a very
-    large diagnostic expression. Left as an honest abstention, and it is now
-    the ONLY finding the rechecker raises against the whole compiler.
-  - **The type-variable rules are PUBLISHED and enforced, and the campaign
-    is closed** (stages 1, 2, 3 and 3b, 2026-08-08 and 2026-08-09; the
-    account is archived at
-    `docs/Designs/Done/Language/TypeVariableRules.md`).
-    `docs/DevelopersGuide.md` gained `## Type Variables`, `## Integer
-    literals` and `## Variance of Type Arguments`, each written from
-    measured arms with a control rather than transcribed from
-    `TypeChecker.codex`. Variance was the one real decision and Damian
-    ruled it INVARIANT on 2026-08-08; the rechecker enforces it and, since
-    stage 3b, so does the compiler, at a measured cost of fifteen source
-    sites in the whole tree. That closed the 1062 type-variable findings,
-    78 per cent of the abstention set. Whole compiler, 4815 definitions:
-    **DISAGREE 0 at all three stages** with the abstention counts unmoved,
-    kill-rate **21 of 21** with a passing control.
-  - **The motivating case is now REFUSED, re-measured 2026-08-09.**
-    `widen-view : List (Integer between 0 and 10) -> List Integer` compiled
-    clean when the ruling was made, which is what the ruling rested on, and
-    is now CDX2001 in both directions. A `List Integer -> List Integer`
-    control is still clean, so it is not a blanket refusal of `List`
-    signatures, and widening at an ordinary parameter is still clean, so
-    invariance still governs argument positions only. The archived design
-    keeps the earlier reading as the evidence that motivated the ruling.
-  - **R4, the integer bounds. CLOSED 2026-08-09, 299 to 6.** Re-measured
-    on the current source at 4820 definitions: the 299 was confirmed
-    exactly (198 + 101) before any change, so the 2026-08-08 figure was
-    right. **Its two halves were different problems**, which is the thing
-    worth carrying to the next class: one was a checker that had not
-    implemented rules the guide already published, the other was a rule the
-    guide had never published at all. Assuming which kind you have is the
-    mistake.
-    - **`bounds-underived` 101 to 3** (main 14407, 14413), and it was NOT
-      a specification gap. Two rows the guide's Static Bounds Prover table
-      ALREADY publishes and the compiler proves had no arm in the
-      rechecker: integer division, and a name bound at module level to a
-      literal. The second was almost the whole class, because a named
-      `cdx-*` code reaching one of four diagnostic constructors cannot be
-      read off its declared type, which is a plain `Integer`. Division on
-      its own moved NOTHING on the compiler, measured: no bounded slot
-      here is fed by one. Corpus arms `bounds-widened-dividend` and
-      `bounds-widened-constant`, each confirmed MISSED before and CAUGHT
-      after; kill-rate 21/22 to 23/23 with the control passing, and
-      DISAGREE stayed 0 at all three stages, so nothing became a false
-      disagreement. The three survivors are unrelated forms in
-      `compile-type-check`, `pitch` and `skip-newlines-pos`.
-    - **`apply-arg-int-bounds` 198 to 0** (main 14419, 14422), and this
-      half WAS a rule question. `docs/DevelopersGuide.md` gained "What a
-      bounded parameter admits": an integer argument is admitted iff its
-      PROVEN RANGE fits the parameter's declared range. Measured, with the
-      discriminating pair being the same field declared 0..1000, refused
-      at a 0..255 parameter directly and admitted through `int-mod ... 100`
-      because the prover derives 0..99, so the declared type cannot be what
-      decides. Overlap is not enough. The refusal is always CDX2051 from
-      the bounds prover and never CDX2001 from the type checker, which is
-      the sharp contrast with a type ARGUMENT under invariance. Stage 1 now
-      defers the site to `RecheckBounds`, the same division
-      `rc-wf-lit-into-int` already made for literals. `bounds-underived`
-      did NOT rise, so the sites are decided rather than re-abstained, and
-      DISAGREE stayed 0.
-      **A REMOVAL cannot be validated by the kill-rate and this is the
-      part to reuse.** An abstention is not a kill, so dropping one cannot
-      lower the score, and no arm had ever expected that kind: the harness
-      could not have noticed this change at all. The guard is therefore
-      deliberate. `bounds-widened-field-arg` was confirmed CAUGHT AGAINST
-      THE OLD PLUG BEFORE the change, which is what makes the bounds
-      stage's coverage measured rather than assumed, and it is labelled in
-      the file as not a sensitivity gain so it is not read as one later.
-    - **Two rows of that table were FALSE and are deleted** (main 14386).
-      `bit-and` and `bit-shru` were documented as proven and the compiler
-      refuses both, measured in the parameter and field forms, either
-      argument order, with controls. A missing row costs an independent
-      implementation a proof the compiler makes; a false row is the worse
-      direction, making it prove a range the compiler refuses.
-  - **Read before the next change to the rechecker's comparison logic.**
-    Stage 2 reported three disagreements and all three were the
-    rechecker's own, in one line: `rc-expr-ty` typed an integer literal as
-    `IntegerTy v v` where the compiler types it plain `Integer` (now
-    published as `DevelopersGuide.md` "Integer literals"). **The first fix
-    for them was wrong**, and it satisfied the sweep,
-    DISAGREE 0, the abstention counts and 21 of 21 while silently
-    blinding the checker to `fresh-row-id`, the one real compiler defect
-    this lane has found. Only a corpus arm written for the direction
-    being changed separated them (`bounded-arg-into-plain-slot`, sabotage
-    confirmed: exactly one row moves). Lesson L-CAPABILITY-LOST.
-  - **RE-DIAGNOSED 2026-08-09 and REASSIGNED to blu. It is not a
-    truncation and it does not need a failure channel.** This entry used
-    to say `net-io-send-chunk` truncates against a dead peer and that
-    `TcpTransportState` needs a failure channel, at a 23-site cost. Both
-    halves are wrong. `net-tick` is what ages a connection and declares a
-    peer dead, and **its only production caller in the whole tree is
-    `WebServer.codex:270`** (L-UNCALLED): every plug, `HttpFetch`,
-    `TrustTransport` and `Arm64NetIO` never retransmit and never declare a
-    peer dead. So the send drain waits for an ACK nothing can provoke, and
-    the symptom is a HANG, not a truncation. Measured: the 50,000,000 cap
-    is not reached in 180 s on the sibling loop, and a RST closes the
-    connection while leaving the queue full so an answering peer does not
-    help either. Once the clock runs, `net-tick` already sets `TcpClosed`
-    and the caller reads `(ts.session).conn.state`.
-    **CLOSED 2026-08-09 (blu): the loops tick on a poll count.**
-    `net-io-tick-interval = 100000` against a named `net-io-max-polls`, in
-    `net-io-send-drain`, `net-io-recv-wait` and `net-io-recv-raw`, each of
-    which now also returns on `TcpClosed`. A poll count and not HPET
-    because `NetIO` compiles into the plug lanes and the ARM64 path, where
-    an x86 MMIO read cannot go. `codex/test/net-io-clock` COUNTS the
-    give-up ladder (141 ticks unmeasured, 288 clamped) and then runs a real
-    poll loop against a peer that does not exist; sabotaged by pushing the
-    interval past the fuel cap, it fails. Two pieces are left and they are
-    in Track B.
-    Account and census in `docs/Designs/Active/IoT/ProtocolStack.md`,
-    "The clock exists. One production caller drives it."
-  - **The rechecker's second product still stands and is worth keeping in
-    view.** The abstention set is a map of where the LANGUAGE is
-    unspecified rather than a list of the checker's weaknesses, because
-    `IndependentRechecker.md` section 7 makes it abstain wherever the guide
-    is silent. That is what turned a sweep into three published guide
-    sections. R4's 299 are the same instrument still pointing at something.
-  - **C2.5 stage 4 (proof terms) stays deferred unless Damian calls for
-    it.**
+C1 (diverse double-compiling) and C2 (the independent rechecker) are LANDED
+and enforced; the accounts are `docs/Designs/Active/Tools/IndependentRechecker.md`,
+`docs/Test/Active/DDC-QUINE-ARM.md`, and `OperatorsManual.md` "The witness has
+a negative control". What is left is a ruling, a deferral, and two holes in
+the gate that the audit's own claims rest on:
 
-## The Shell DSL backport -- CLOSED 2026-08-14, now ambient
+- **COMPILER-5 (val, in flight, seed-affecting).** A hex literal past
+  i64-max (`#CBF29CE484222325`, bit 63 set) compiles but does not survive the
+  text round-trip: the emitter re-prints it to something that re-parses to a
+  different constant. That is a hole in the text half of the fixed point.
+  val holds the lexer / text-emitter integer path and will take the token for
+  the gate. Register entry in `codex/compiler/compiler-backlog.md`.
+- **COMPILER-3 is CLOSED, no defect (val, 2026-08-16).** The 255,683 bytes
+  were an artifact of comparing the two arms at absolute offsets. `__start`
+  is the last function, the `Exit` epilogue is 11 bytes longer than
+  `jmp repl-loop`, alignment absorbs 3, and the rest of the file relocates by
+  8: the data section and the embedded MAP1 are identical under a +8 shift,
+  and all 3,641 differing sites in the code section are 32-bit absolute data
+  addresses that are exactly +8, nothing unclassified. The two maps agree on
+  all 5,194 names and offsets but for `__start`'s own size. The same arm
+  compiled twice is byte-identical, so no nondeterminism is involved. **The
+  emitter answers identically in both modes; there is nothing to fix and the
+  fixed point has no hole here.** Account and the region table are in
+  `OperatorsManual.md` beside the existing `-Repl` warning; the backlog entry
+  is deleted.
+- **IRTypeEmission is DONE and the design is in `Done/`.** Step 4 landed at
+  main 13661 on 2026-08-06, emitter and plug parser together, and this entry
+  carried it as open for nine days afterwards. Re-measured 2026-08-15 against
+  seed 55983566: the whole-compiler `-IrCce` emit completes in 146.5 s for
+  15,723,893 bytes of IR, `builtins` (the definition the design says it dies
+  on) emits, and the compiler's own IR holds 153,363 by-reference `record-ty`
+  sites against 67 inline-structure ones. No sign-off is outstanding, from
+  Damian or from val's lane.
+- **The rechecker fork is Damian's**: whether the compiler should also EMIT
+  its type-variable instantiation, or the plug keeps deriving it (taken first
+  because plug-only and reversible). Rulings queue.
+- **C2.5 stage 4 (proof terms) stays deferred unless Damian calls for it.**
 
-**Damian's ruling 2026-08-14: tie it up, take it off the board, keep it as a
-routine check rather than a campaign.** Re-measured 2026-08-15 (L-COUNT -- do
-not copy these forward): **55 generators checked, 0 drifted, 0 broken, 1 dead
-target, and `build/generated-scripts-baseline.txt` is EMPTY.** Every generator
-in the tree emits the script it ships beside.
+## Track D -- bytes we did not produce (NEW 2026-08-15, RULED 2026-08-15)
 
-**All four backlogged stubs were closed 2026-08-15 (fester), at Damian's
-direction: "build and test are the two most important .ps1 to have working in
-the backport... 100% fidelity", then "do those all".** None was a stub; all
-four carried real absences. `build` emitted 12 of the gate's 21 phases and was
-missing everything added since 2026-08-06, plus `-Jobs 4` against the standing
-`-Jobs 8` ruling and a `ScCopy` call site emitting PowerShell that parses and
-fails at runtime. `test` was missing tiers, the `-ApprovedBy` refusal and
-kernel-provenance checking, and still carried a `-Fuzz` switch deleted
-2026-07-27. `cdx-to-pe` and `build-img` were derived mechanically rather than
-transcribed, and verified by ARTIFACT byte-identity: six `.efi` arms and five
-`.img` arms, every pair identical, every hash distinct from its siblings so
-the comparison discriminates. Gate GREEN with all four installed. Account and
-traps in `docs/Designs/Active/Build/Build.md`.
+**This is the campaign the fleet is already running without a name.** In the
+last two days: a short UDP frame, a 12-byte DNS response, 256 ARP frames and
+four bytes on the wire each killed the guest (blu, all fixed); a FAT volume
+with implausible geometry and a GPT with a bad CRC parsed like good ones
+(val, fester, fixed); `cdx-to-pe` trusted a length out of the file it was
+about to make bootable (fester, fixed); a USB config descriptor's total
+length was believed (reek, clamped); the FAT cluster walk trusted a cluster
+number read off the volume (WORKS-29, fester, fixed at 15367); and two
+`RepoProtocol` callers index a clamped offset by one too many (reek, waiting
+on blu 15330). Every one was found by reading, each was handed lane to lane
+in the inbox (blu -> fester -> reek -> val), and none of it is in a register
+as a class.
 
-**What this buys, and it is the reason to keep it:** with the baseline empty, a
-drift of any size in any generator now fails the gate. There is no residue for
-a new one to hide in.
+**The design already exists and its stage 0 is already approved.**
+`docs/Designs/Active/Features/VerifiedFormatParsing.md`: 75 hand-written
+format modules under `codex/foreword/encode/`, evidenced only by
+known-answer tests, which say nothing about malformed input. **Damian's
+ruling 2026-08-05: stage 0 -- an adversarial corpus for the existing parsers
+-- is schedulable background work, needs no design approval, is not
+seed-affecting, and any lane with slack may take it.** Nobody had.
 
-What keeps it closed is two mechanisms, neither of which is a campaign:
+**The census is DONE (red, 2026-08-15): `VerifiedFormatParsing.md` section
+10.** 141 parsers of foreign bytes across `encode/`, `os/net`, `os/verify`,
+`os/trust`, `os/kernel` and `apps/works`: **43 have a negative arm, 52 are
+KAT-only, 19 have no test on the parse at all**, 24 are encode-only. **It
+inverted the table this entry carried an hour earlier**, which said the
+trust-decision parsers were untouched: `Asn1` has six negative arms, `X509`
+a truncated real certificate, `X509Chain` six tamper arms, `TlsCert` and
+`Jwt` two each, and the guest loader (`CdxVerifier`, `VerifiedLoader`,
+`WakeCeremony`) has flipped-byte and bad-magic arms. **The naked rows are
+one level down**: the trust lattice's own `Handshake` `hs-receive-*` has NO
+test, `TrustTransport`'s capability decode and `PeerDiscovery` are round-trip
+only, `WebSocket` reads a 64-bit length ahead of the bytes on one RFC vector,
+`TcpTransport`'s length prefix has no adversarial arm, and the
+length-prefixed self-describing formats (`Cbor`, `MessagePack`, `Protobuf`,
+`Bencode`) are all KAT-only. Section 10.1 is the ranked work queue; take
+from it, do not fix the nearest parser. Section 10.3 says how a row can be
+wrong (the naming rule under-counts `J1939` and `Lorawan`; three UNSURE
+rows).
 
-- **The banner.** Every generated script opens with `generated-banner`, so a
-  file carrying it is exactly a file that matches its generator. That is the
-  hard rule at the top, and it is what discourages the hand edit.
-- **`build/check-generated-scripts.ps1`**, a leg of `build/build.ps1` at about
-  108 s. It fails on a BROKEN generator or a drifted one, and with the
-  baseline now empty there is no "never" left in that sentence: any drift is a
-  red. Since 2026-08-14 it also reports the other direction: a
-  script under `build/` that no generator emits, against
-  `build/handwritten-scripts.txt`. **That half is report-only and must stay
-  that way** -- 85 of 140 scripts under `build/` have no generator and most are
-  meant not to (probes, flight arms, interop harnesses, one-offs). Gating it
-  would be 85 reds whose answer is always "expected", which is the failure the
-  drift baseline already exists to avoid.
+**The second sweep is DONE (red, 2026-08-16): the rest of `codex/foreword/`,
+357 files, 43 decoder chapters, 21 of them reached from production code.**
+It adds 10.1 items 14-19 and moves the top of the queue: **`core/Gpt.codex`
+(item 14) admits any GPT entry-size 1..127 and then peeks 128 bytes past the
+512-byte sector buffer, count and start-lba off the disk unbounded, reached
+from `DiskFacts` and the `Fat16` boot path and inside the seed's reachable
+set; `core/FactDisk.codex` + `SourceDefWire` (item 15) size an allocation and
+a `substring` from disk-supplied lengths on the compiler's own `store` path;
+`ai/Gguf.codex` (item 16) walks u64 counts and strides off a model file
+behind a manifest whose signing key is read from the same manifest, reached
+from `DevConsole`; `core/Fat32.codex` (item 17) **DONE, fester 15558**: the
+BPB byte 13 divisor now answers a zero-volume rather than dividing (ablated,
+a zeroed sector raises `!EXC=00`) and `fat32-next-cluster` refuses a cluster
+outside the volume (ablated, it returns 109791427 and 0 off arbitrary
+sectors). Not seed-affecting, confirmed by `Sut` not moving. **The
+chain-cycle half is DONE too, fester 15617**: eight walkers across both
+chapters carry Brent's cycle detection, so a FAT looping `2 -> 3 -> 2` -- well
+formed at every step, every cluster a valid address -- terminates instead of
+spinning. A counting bound was tried first and MEASURED UNFIT (60.4 s and no
+output at 30,414 clusters, against 0.6 s for Brent on the same fixture): a
+finite bound is not a survivable one. Brent rather than Floyd because every
+step is a FAT sector read and Floyd's hare doubles them. Account in
+`ExaminersAssay.md` "The Chain Cycle Guard"; the FAT leg of Track D is
+closed.** The whole of `compress/` (Deflate, Lz4, Lz77, Rle, Brotli) has
+the classic negative-back-reference and unbounded-count shape and is LATENT:
+`lz4-decompress`'s one caller sits behind a signed-hash check in
+`FactArchive`, which nothing outside `codex/test` cites. The order to take
+them is written at the end of 10.1. Item 14 is DONE (red, 2026-08-16). **Item
+15 is reek's**: claimed twice on 2026-08-16 (reek in the file-claims table at
+main 15543, blu by fleet message minutes later), and the table below is the
+register, "one owner at a time"; a fleet message announces, the row is where a
+claim lands (fester's reading, adopted). blu is free, not overruled. 16 and
+17 are unowned and not seed-affecting.
 
-Method, traps and every worked example are in
-`docs/Designs/Active/Build/Build.md`; read that before touching a generator.
+The guard pattern is settled and documented (`ExaminersAssay.md`: "The UDP
+Frame Guard", "The CDX Input Guard", "The GPT Integrity Guard", "The FAT
+Geometry Guard", "The Config-Descriptor Clamp"): clamp rather than refuse
+where the length decides a slice, refuse where it decides WHERE a read lands
+(blu's split), fill the ablation gap with plausible entries not zeros, put
+the ablated call IN the arm, predict every expected value before it runs.
+**Owners RULED by Damian 2026-08-15: red wrote the census; val takes the
+session and trust-transport rows (10.1 items 1-5) after COMPILER-5, since the
+trust-decision row the ruling named turned out to be covered; blu holds the
+net leg.**
 
-## The annotation campaign -- COMPLETE 2026-08-07
+## The lanes -- RULED by Damian 2026-08-15
 
-Every chapter in the tree carrying column-2 prose is audited and
-recorded; zero remain. 19,972 prose lines survive and every one was kept
-on purpose, against the 64,450 rule 12 measured on 2026-07-28.
-**Coverage is `annotations/AUDITED.txt` membership and nothing else**,
-because an all-KEEP chapter cuts nothing and writes no sidecar, so run
-`-Apply` even when nothing will be cut. **Do not restart this as a
-sweep**; a future pass starts from the ledger, not from a guess. The
-method and its traps are in
-`docs/Designs/Active/Compiler/Annotations.md` section E.
+Approved as proposed. Each agent wraps its current business, then follows
+its lane in this order. An item here is a pointer; the register named beside
+it is where the detail lives. Re-read this table on every merge-down; it is
+the assignment, not a suggestion.
 
-## Bare `print-line` printed raw CCE -- CLOSED in the primitive, premise now inverted
+| agent | 1 | 2 | 3 |
+|---|---|---|---|
+| **blu** | the net leg of Track D: DONE, `codex/os/net`'s parsers all landed. Item 15 was claimed by reek in the table before blu's announce; blu stood down and shelved the finished `sdw-decode` half as CL 15544 on `//Codex/blu` (ungated). **Note for whoever ranks 10.2: blu's earlier "FactDisk's alloc is sound" was WRONG and is retracted** -- `fd-fold-entry:141` bounds `nsec` against `end-sec`, but `end-sec` is the superblock's own 64-bit log head (`FactLog:39`, `:85`), so the image sets its own bound. About 4.29 GB from a u32 `clen`. The census row was right | NIC-3 flown and answered; **NIC-4 flown 2026-08-16 and HUNG in `e1000-await-link`, fixed in 15588, ring question still open** (see Track B). Nothing is queued for a flight; the ring question should ride B3's boot rather than take one of its own | cost model 3.3 stays a proposal |
+| **val** | COMPILER-5 DONE (main 15410, seed 55983566; no emitter bug -- the sem-equiv normalizer already equates hex/decimal, the miss was a bare-hex-arg paren asymmetry, fixed by parenthesizing the FNV literal; backlog narrowed 15413) | Track D, `VerifiedFormatParsing.md` 10.1 items 1-3, re-ranked by reachability. ~~Item 1 `TcpTransport`~~ DONE (val 2026-08-15): the write overflow in `transport-feed-raw`, the `msg-len == 0` read of length -1, and a `msg-len` past `recv-cap - 4` that stalled the connection forever all refuse now; `codex/test/apps/tcp-transport-guard` is four arms with a positive control and every ablation run; account in `ExaminersAssay.md` "The Transport Length Guards". ~~Item 2 `Handshake`~~ DONE (val 2026-08-15): **the defect was not a bound. `hs-receive-prove` never took the peer's signature as a parameter at all, ignored the challenge nonce, and returned `HsCompleted` unconditionally with the claimed key's trust score, while `trust-complete-as-responder` threw the prove body away and set `authenticated = True` on every path -- so any peer that could hash could claim any identity in the lattice.** It now refuses a non-32-byte key, a non-64-byte signature, and a signature `ed25519-verify` rejects; both length checks also stop a remote guest kill. `codex/test/apps/handshake-prove-guard`, six arms, all four guards ablated; account in `ExaminersAssay.md` "The Handshake Prove Guards". **Reachability correction for the census: the four `TrustTransport` handshake entry points have NO caller in the tree, so item 2 was LATENT, not reached.** ~~Item 3 `TrustTransport` decode~~ DONE (val 2026-08-15), and this one WAS reached: `trust-recv` is called from `TrustNode`'s `node-recv-loop` and what it decodes reaches `eval-policy`. Eight sites read a tag or flag byte with a bare `list-at` past a peer-controlled offset and `decode-agent-msg tag-propose []` died `!EXC=06`; all eight now use `frame-byte-at`. With the fault gone a truncated body still decoded to an empty-fielded message that policy was asked about, so `decode-agent-msg-checked` answers a `valid` flag by round-tripping against our own encoder and `trust-recv` refuses; `agent-tag-known` separately closes the final `else` that decoded any unrecognised tag as a `WorkReply`; `decode-hello-body-checked` closes item 2's residual. `codex/test/apps/agent-msg-truncated`, twelve arms, four ablations; account in `ExaminersAssay.md` "The Agent Message Guards". **Track D lane 2 (items 1-3) is complete.** | ~~COMPILER-3~~ CLOSED 2026-08-16, no defect: the 255,683 bytes are a positional-diff artifact of an 11-byte exit stub relocating everything after `__start` by 8. Account in `OperatorsManual.md`, backlog entry deleted, Track C bullet above carries the summary. Lanes 1-3 done, so val draws from Track D by the take-order. ~~Item 15~~ was CLAIMED BY reek in this table 17 seconds before val's fleet announce and is reek's; val stood down and offered the finished shelf (CL 15548 on `//Codex/val`, ungated, measured against the superseded seed `55983566`). ~~Item 16 (`Gguf`)~~ DONE 2026-08-16, claimed in this table BEFORE announcing: every field was read with a bare `list-at`, `gguf-parse-header` refused a file under 20 bytes and then read bytes 16..23 of a 24-byte header, and `gguf-md-scan` had no offset check at all while `gguf-skip-metadata` had one, so the same file `gguf-tensor-info-offset` refuses killed the guest through `gguf-metadata-text`. `gguf-fits` now precedes every file-supplied read. Arm `codex/test/apps/gguf-hostile`: sixteen rows, three positive controls, **eleven guards ablated separately, each killing the guest at exactly its own row**; `build/gguf-foreign-test.ps1` still parses four real llama.cpp models up to 3,184 MB. Not seed-affecting, no token. Account in `ExaminersAssay.md` "The GGUF Bounds Guards". **Its dequant residue is CLOSED too** (reek found it, val verified and landed it at Damian's direction 2026-08-16): neither dequant loop takes a length off the file, so the metadata guards never reached them, and 64 elements from a one-block buffer died `!EXC=06` on the landed chapter. Both loops now stop on the first block that does not fit -- a clamp, because the count decides how many values come back and not where a read lands -- and `AgentBundle.ab-parse-model` now checks the `gti-valid` the first pass shipped with no caller. Arm is twenty rows, thirteen guards, each isolated by its own row. The item-15 content ceiling reek handed back LANDED at 15631 and moved the seed to `386C4F2012355C5D`. **HANDOFF 2026-08-16: val holds no CL, no shelf and no token, and every claims-table row it took for Track D is released. Nothing is in flight and nothing is assigned.** The three standing rows (the COMPILER-5 integer-literal path, `codex/plugs/csharp/**` with the DDC harness, `codex/plugs/recheck/**`) are lane ownerships rather than open work and are left for whoever picks that lane up. The one thing still owed to val's lane by somebody else is Damian's rulings-queue item 3, whether the compiler emits its type-variable instantiation or the recheck plug keeps deriving it. |
+| **fester** | ~~WORKS-29, the FAT cluster walk~~ DONE, main 15445: `gfat-cluster-ok` on nine walkers, `range32` census arm, ablation moves exactly one cell | A8: wire `compile <path>` into the Console pane once the ASUS allocation is answered; the sitting question stays queued | ~~re-measure IRTypeEmission step 4~~ DONE 2026-08-15: it had already landed at 13661 on 2026-08-06, design moved to `Done/`. Next: draw from `VerifiedFormatParsing.md` 10.1 by the rotation |
+| **reek** | ~~WORKS-12~~ DONE, main 15366: the cause was the desk never unwinding, not stranded pane state, so the fix is one base mark in `desk-run` rather than a bracket per pane; twelve panes reclaim, `desk-edit` deliberately not (its 9 MB lives in a `ds` pointer cell). Standing rules now in `apps/works/works-desk-contract.md`. ~~The `RepoProtocol` caller sites~~ DONE, main 15480 and 15494: eight bare reads use `frame-byte-at`, and the five wire consumers refuse a payload that did not fit rather than persisting an empty-fielded one | ~~WORKS-9's heartbeat~~ DONE, main 15426, bed-verified to WHITE; the queued card's provenance is in `HardwareSitting.md` and it needs a fresh full-mission run on any rebuild (its stub predates red 15469 and fester 15503) | ~~the rest of the USB descriptor family~~ DONE, main 15452: `hid-scan-loop`'s over-run clamped, the three `Usb.codex` parsers pinned, census rows corrected. Lane is clear; next item is a draw rather than a continuation |
+| **red** | ~~the Track D census~~ DONE, `VerifiedFormatParsing.md` section 10; items 4 and 5 (`http-parse-response`, the font off the stick) DONE 2026-08-15; census lane complete, the rest of 10.1 is the fleet's to draw from; `Cbor`/`MessagePack`/`Protobuf`/`Bencode`/IMAP/OAuth measured UNCALLED and demoted to latent. ~~The SECOND census sweep~~ DONE 2026-08-16 (Damian's direction): every `codex/foreword/` dir the first one skipped; 43 rows in 10.2, 10.1 items 14-19 added and the take order rewritten. ~~item 14 `core/Gpt.codex`~~ DONE 2026-08-16: `gpt-header-geom-ok` (the Works `gpt-array-geom-ok` transcribed), four `gpt-core-*` arms, `ExaminersAssay.md` "The Foreword GPT Geometry Guard". Next: item 16 (`Gguf`) or 17 (`Fat32`), whichever is still unowned | the SetMode half of the native-GOP item, in `codex/build/cdxtopeScript.codex` | the plugs register: ~~1.11~~ DONE 2026-08-15 (plug-smoke rebuilds a stale binary against every bundle input and runs a record-carrying second input); next plugs entry in the register's order is 1.2 |
 
-Found 2026-08-11 (blu) closing the browser's garbled banner. **`print-line`
-is the RAW builtin**: `Types/Builtins.codex` lowers it through
-`emit-print-line-raw-builtin`, which writes the internal CCE bytes at the
-serial port with no conversion at the I/O boundary. `print-line-uni` is the
-one that converts, and it is the only line-printer
-`codex/foreword/core/Console.codex` actually declares. The name is the whole
-trap: the unadorned one is wrong and the suffixed one is right.
+**Plugs are a rotation, not a lane.** `codex/plugs/plugs-backlog.md` has ten
+open entries; whoever finishes their column takes the next plugs entry in the
+register's order and says so in the file-claims table.
 
-It does not fail loudly -- it prints, and the bytes are wrong in a way that
-reads as a font or terminal fault. `Codex Browser v0.1` arrived as `2` then
-`$:` (`C` is CCE 50 = ASCII `'2'`, `e` is 13 = carriage return, `B` is 58 =
-`':'`), and it was carried in the browser backlog as a display problem for
-weeks.
+## The cost model -- 3.3 unscheduled (blu)
 
-`DevelopersGuide.md` is where these came from and is fixed: all three of its
-`Effects and Act Blocks` examples said `print-line`, and its `effect Console`
-block declared a `print-line` the platform does not have.
+`docs/Designs/Active/Features/CostModel.md`. 3.1 and 3.2 shipped (main
+15145). 3.3 is a proposal with zero implementation and no schedule; Damian
+has ruled its shape (`punctual`-adjacent, checked transitively, refused at
+compile time). The sharp open question is the instrument: a kill-rate corpus
+of known-quadratic accumulators has to exist BEFORE the check, or the check
+has no way to be wrong. Not a request for a ruling today.
 
-**CLOSED 2026-08-13 by blu, in the PRIMITIVE, and the premise above is now
-INVERTED. Do not start the sweep this section describes.** Main 14806/14809:
-`print-line` lowers through `emit-print-line-builtin` and CONVERTS; the
-byte-exact one is now named `print-line-raw`. So the unadorned name is the
-RIGHT one and the 192-site sweep is not work that exists.
+## Registers carrying unowned work that wants a lane
 
-Re-measured 2026-08-13: **85 bare sites**, not 192, and they are correct by
-default. `apps/fishtank` went 43 to 1. Heaviest now are `opening.codex` 31,
-`RadioStationMain` 9, `FontExtract` 9, `FontTrain` 7, `ChatServer` 5.
+Named here because a register nobody owns is a register nobody reads.
 
-**The residual is the OPPOSITE hazard and it is much smaller:** a WIRE emitter
-still calling the unadorned name now gets converted bytes where it needs exact
-ones. blu pinned the two known ones (the fishtank page emitters) to
-`print-line-raw` and proved the bytes unmoved, same SHA and byte-identical
-serial stream. Anything else that emits a wire format through `print-line`
-wants the same treatment, and that is an audit of emitters rather than a sweep
-of call sites.
-
-**This entry is kept rather than deleted because the trap it documents
-reversed direction**, and a reader who half-remembers the old rule will reach
-for the wrong name. L-COUNT and "prefer the fix in the primitive": the sweep
-was 192 sites of per-site judgement and the primitive change closed all of it.
-
-## The cost model -- 3.1 and 3.2 SHIPPED, 3.3 unscheduled
-
-`docs/Designs/Active/Features/CostModel.md` (blu, at Damian's direction).
-**Damian has ruled the SHAPE: it sits in the same part of the rainbow as
-`punctual`,** so it is a declared property checked transitively and refused at
-compile time, not a document reviewers are asked to remember.
-
-The gap is `punctual`-shaped because `punctual` forbids the case: CDX6002
-refuses heap allocation outright, so a `punctual` function is one that does
-not allocate, and there is no way to say "this function allocates, in
-proportion to its input" or anything that checks it. All three defects
-measured on 2026-08-14 live in that middle -- `unpack-text` appending per byte
-(main 15054), `NetIO`'s tick as a count of polls and `e1000-await-tx`'s fuel
-(main 15013, 15028). Each was semantically correct, each was green, and two
-produced WRONG BEHAVIOUR rather than slow behaviour.
-
-**Items 3.1 and 3.2 are DONE at main 15145.** 3.2 makes `__out_of_memory`
-name the resource (`SP=` and `HEAP=` from the two numbers the handler
-already held), and 3.1 publishes the measured Text costs in
-`docs/DevelopersGuide.md`. Measuring them corrected the design's own
-section 3.5: the accessors allocate ZERO and the 1,040 bytes belong to
-`to-unicode`, so the advice inverted from "reach for `text-split`" to "drop
-the per-character `to-unicode`". A second result was added as section 3.6 --
-`a & b` in an accumulator is quadratic, 203,200 bytes against
-`text-concat-list`'s 2,008 for the same 2,000 characters.
-
-**3.3 is what remains a proposal, with zero implementation and no
-schedule.** The open questions are in section 5 and the sharp one is
-unchanged: what instrument keeps it honest, since the type rules only got
-teeth because the rechecker abstains where the guide is silent and nothing
-equivalent exists for cost. A kill-rate corpus of known-quadratic
-accumulators would have to exist BEFORE the check, not after.
+- **`codex/plugs/plugs-backlog.md`: ten open entries and no owner on any.**
+  The largest: 1.2, thirty-six transpiler plugs emit a DIVISION where a
+  record field access belongs (detectable now without a runtime);
+  1.7 and 1.8, two unswept classes (`list-push` in place, records into a
+  mutable target -- kotlin is a measured silent no-op); 1.4, the spirv text
+  emitter drops a call and nothing gates it. The plugs are the transpilation
+  half of the founding vision and have had no lane since the T3ISA work
+  closed.
+- **`GitHubUpdate44.md`, open from 43:** the zig plug's byte-identical claim
+  (PR 64, Steve Howell) is unverifiable on this box with no zig toolchain
+  (ruling below); nothing exercises the guard page under a genuine
+  allocation walk since the LEAP arm was retired.
+- **`docs/Designs/Active/Compiler/CrossLaneFilesystem.md`**: steps 2-5 (a
+  VirtioBlk driver, block builtins, servicer, harness) unstarted since
+  Damian's 2026-08-05 resurfacing ruling; step 0 landed as a soft `[WARN]`
+  where the design prescribes a hard failure. reek did steps 0-1; the rest is
+  unowned.
+- **`docs/Designs/Active/OS/OracleCloudArm64.md`**: only Phase 5 remains
+  (validate the virtio drivers under QEMU, then image, upload, VCN, smoke).
+  Unowned.
+- **`docs/Designs/Active/Apps/WaDemo.md`** (blu): DESIGN, nothing built,
+  four open questions in its section 10.
 
 ## Rulings Damian owes (the only queue that blocks)
 
-(empty -- A5's owner question closed itself when reek shipped it
-2026-08-14.)
+Each of these has a lane waiting on it or a doc that cannot be settled
+without it. Nothing else is asked.
+
+1. **Answer a ping?** ICMP receive is a capability decision before anyone
+   writes `icmp-parse`'s production caller (Track B).
+2. **Learn ARP only from replies we solicited?** `net-process-arp` still
+   learns from any frame; narrowing it is a trust-model change and was
+   deliberately not slipped into the crash fix (blu, main 15310).
+3. **Emit the type-variable instantiation from the compiler, or keep
+   deriving it in the recheck plug?** (Track C, val's fork.)
+4. **A depot slot for `stick-before-20260811.img`** (16 MB, the only copy of
+   a hardware-written `IDENTITY.DAT`), or leave it in the archive.
+5. **A zig toolchain on this box**, so PR 64's central claim can be measured
+   here rather than taken from its author (`plugs-backlog` 1.13).
+6. **`check-vm-differential` has no retry** on the arm its own comment calls
+   hang-prone; a QEMU timeout reds the gate for everyone. Adding one needs the
+   line drawn between "arm produced no binary" (may retry) and "hosts
+   disagree" (must stay fatal). (red, 2026-08-15.)
+7. **Should `p4-stale-check`'s dropped-add scan FAIL the gate?** It warns,
+   deliberately, because scratch files land in the same list; P-CLOBBER calls
+   the dropped add the worst trap in the file. A middle option: fail only on
+   tracked extensions. (red, 2026-08-15.)
+8. **`widget-panel` flex defaulting to 0** is a tree-wide layout call the
+   browser backlog (BROWSER-2) says is not the browser's to make.
+9. ~~Track D ownership~~ RULED 2026-08-15: as proposed; see "The lanes".
 
 ## File claims (one owner at a time)
 
@@ -988,29 +431,34 @@ accumulators would have to exist BEFORE the check, not after.
 |---|---|
 | `tools/codex-vm.c` | FREE -- one owner at a time, announce before you start |
 | `apps/works/GopBoot.codex`, `GopWizard.codex`, `apps/guios/**` | red |
-| `apps/works/GopDesk.codex` | FREE -- announce before you start |
+| `apps/works/GopDesk.codex` | FREE -- announce before you start (reek announced WORKS-12 in it 2026-08-15) |
 | `apps/works/GopXhci.codex`, `GopUsb*.codex` | reek |
+| `apps/works/GopFat16.codex`, `Gpt*.codex` | FREE -- val released 2026-08-15, fester released it again after WORKS-29 landed at 15367; announce |
+| `apps/works/RepoProtocol.codex` (the two `list-at` caller sites) | reek |
 | `codex/os/kernel/E1000e.codex`, `codex/os/net/**` | blu |
+| the integer-literal lexer and text emitter (COMPILER-5) | val |
 | `codex/plugs/csharp/**`, `build/` DDC harness | val |
 | `codex/plugs/recheck/**` | val |
+| `codex/plugs/zig/**` and the zig entry in `build/plug-oracle-test.ps1` (plugs-backlog 1.13, the four measured defects) | val, 2026-08-16. Not seed-affecting. root is sweeping the other plugs for 1.2 and stays out of zig |
+| `deck-headroom` | fester |
+| `codex/foreword/shell/**` and `codex/build/*Script.codex` generators (the ScRaw removal and the readability campaign) | **reek, 2026-08-16, by Damian's direction** ("you can own this bit, as no other agents are actively workin on this code"). This moves the generators off fester's row, which kept `deck-headroom`. Catalog and order: `docs/Designs/Active/Build/ShellDslReadability.md` |
+| `codex/foreword/core/Fat16.codex`, `core/Fat32.codex` | FREE -- fester released 2026-08-16, items 12 and 17 and the chain-cycle half all landed (15550, 15560, 15617); announce |
+| `codex/foreword/core/FactDisk.codex`, `core/SourceDefWire.codex` (Track D 10.1 item 15, seed-affecting) | FREE -- val released 2026-08-16; item 15 landed at 15576 (reek) and its content-ceiling residue at 15631 (val, seed `386C4F2012355C5D`). Announce, and it takes the token |
+| `codex/foreword/ai/Gguf.codex` (Track D 10.1 item 16) | FREE -- val released 2026-08-16; item 16 landed at 15582 and its dequant residue after it. reek held it briefly for the residue and Damian moved reek elsewhere; reek CL 15583 is their parallel implementation and is superseded |
 
-`GopDesk.codex` was claimed by red and is released 2026-08-11 (blu, at
-Damian's direction) because the claim had stopped describing anything: three
-agents changed that one file on 2026-08-11 alone -- blu 14641 (mouse in every
-pane), val 14673 (GPU-gated 3D View) and blu's Appearance pane. A claim
-nobody honours is worse than no claim, because it reads as coordination
-while providing none. **It cost something real this time**: val and blu
-independently took `ds` cell 48, which no gate could catch because each
-change is green alone, and the collision surfaced only in the merge. If you
-are going into this file, say so first, and check which `ds` cells are
-already spoken for in the Appearance section.
+A claim nobody honours is worse than no claim (the `ds` cell 48 collision,
+2026-08-11). If you are going into `GopDesk.codex`, say so first, and check
+which `ds` cells are already spoken for in the Appearance section.
 
 ## Standing rules that gate nothing but bind everyone
 
 Battery runs are Damian's (release proofs excepted, per the release
 skill). Goldens stay parked during active GUI work. No new platform-wide
 register. Prose about our own code is deleted in files you touch. The
-em-dash stays banned.
+em-dash stays banned. `-Jobs 8` on every parallel harness. Do not lower
+`deck-headroom -MinMargin` to clear a red. `print-line` CONVERTS and
+`print-line-raw` is byte-exact (inverted 2026-08-13; a wire emitter wants
+`-raw`, everything else wants the plain name).
 
 ### Declined, and therefore not available work
 

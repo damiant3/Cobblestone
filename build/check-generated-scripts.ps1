@@ -129,6 +129,7 @@ $specs.Generator.FullName | Set-Content -Path $listFile -Encoding UTF8
 
 $rows = @()
 $parseErrs = @{}
+$bareHits = @{}
 foreach ($s in $specs) {
     $stem = [System.IO.Path]::GetFileNameWithoutExtension($s.Generator.Name)
     $dir = Join-Path $OutRoot $stem
@@ -217,6 +218,62 @@ foreach ($s in $specs) {
         if ($perr.Count -gt 0) {
             $parseErrs[$s.Emits] = $perr
             $rows += [pscustomobject]@{ Emits = $s.Emits; Status = "PARSE ERRORS ($($perr.Count))"; Lines = 0; Drift = $perr.Count }
+            continue
+        }
+    }
+
+    # The class that PARSES and fails at RUNTIME, which is the gap between the
+    # two scans above: a value-producing cmdlet emitted as a BARE positional
+    # argument to another cmdlet.
+    #
+    #   Copy-Item -Force $a Join-Path $b 'c'      Destination binds to the
+    #                                             STRING 'Join-Path', $b and
+    #                                             'c' become surplus positional
+    #                                             args, and it dies when run.
+    #   Copy-Item -Force $a (Join-Path $b 'c')    correct
+    #
+    # ParseFile is happy with the first form, so the scan above cannot see it,
+    # and the drift check cannot either while the shipped script carries the
+    # same bug. It has bitten twice: test-boards emitting `New-Item ... -Force
+    # Split-Path $Stage0` (fixed 2026-08-11 at the call site), and BuildScript's
+    # ScCopy emitting the exact Copy-Item line above (found 2026-08-15 while
+    # back-porting the gate, and live the moment the emitted script was
+    # installed over the hand-maintained one).
+    #
+    # Both fixes were at the CALL SITE rather than in the emitter: SeRaw is
+    # passed through verbatim by design, and parenthesising inside
+    # emit-ps-cmd-ext would re-drift every generator that currently matches.
+    # So the emitter cannot be made safe here and a scan is the only guard.
+    #
+    # Measured 2026-08-15 over 345 scripts under build/, codex/plugs/ and
+    # apps/: 0 occurrences. It FAILS rather than warns because it is at zero --
+    # a new one is a real defect, not a known residue. The span test is what
+    # keeps it honest: without it `if (Test-Path $x) { Get-Content ... }`
+    # matches and the scan drowns in 29 correct lines.
+    if ($s.Target -like '*.ps1') {
+        $bareInner = 'Join-Path|Split-Path|Resolve-Path|Get-Item|Get-Content|Get-ChildItem|Get-Date|Get-FileHash|New-Object'
+        $bareOuter = 'Copy-Item|Move-Item|Rename-Item|New-Item|Remove-Item|Set-Content|Add-Content|Out-File|Test-Path'
+        $bare = @()
+        $ln = 0
+        foreach ($line in (Get-Content $emitted)) {
+            $ln++
+            $t = $line.Trim()
+            if ($t.StartsWith('#') -or $t -notmatch "\b($bareOuter)\b") { continue }
+            foreach ($m in [regex]::Matches($t, "\b($bareInner)\b")) {
+                $pre = $t.Substring(0, $m.Index)
+                if ($pre -match '[\(\|=&]\s*$') { continue }
+                $oh = [regex]::Matches($pre, "\b($bareOuter)\b")
+                if ($oh.Count -eq 0) { continue }
+                $last = $oh[$oh.Count - 1]
+                # Anything that ends an argument list means this is a new
+                # statement, not an argument.
+                if ($pre.Substring($last.Index + $last.Length) -match '[{}|;)]') { continue }
+                $bare += "line ${ln}: $($m.Value) bare in: $t"
+            }
+        }
+        if ($bare.Count -gt 0) {
+            $bareHits[$s.Emits] = $bare
+            $rows += [pscustomobject]@{ Emits = $s.Emits; Status = "BARE CMDLET ARG ($($bare.Count))"; Lines = 0; Drift = $bare.Count }
             continue
         }
     }
@@ -366,6 +423,17 @@ if ($broken.Count -gt 0) {
         Write-Host "  An emitter answers '# <unknown-cmd>' for a node it does not handle rather"
         Write-Host "  than failing, so the script it writes is silently wrong, not absent."
         Write-Host "  Add the arm in BashEmit / KshEmit / the PowerShell emitter."
+    }
+    if ($bareHits.Count -gt 0) {
+        Write-Host "  A value-producing cmdlet emitted as a BARE positional argument. This"
+        Write-Host "  PARSES, so the parse check above cannot see it, and it fails when the"
+        Write-Host "  script is RUN. Parenthesise it at the CALL SITE in the generator --"
+        Write-Host "  SeRaw is passed through verbatim by design and fixing the emitter"
+        Write-Host "  would re-drift every generator that currently matches."
+        foreach ($k in ($bareHits.Keys | Sort-Object)) {
+            Write-Host "  ${k}:"
+            foreach ($e in $bareHits[$k]) { Write-Host "    $e" }
+        }
     }
     if ($parseErrs.Count -gt 0) {
         Write-Host "  Emitted text that PowerShell cannot parse is a script that cannot run"

@@ -1,0 +1,62 @@
+Chapter: FactDiskHostileHead
+  cites Foreword chapter FactDisk
+  cites Foreword chapter ImportGate
+  cites Foreword chapter FactStore
+  cites Foreword chapter Hamt
+  cites Foreword chapter Maybe
+
+ The factdisk-read vector with two fields moved, and nothing else:
+
+   superblock log head   5 -> 8,000,000   far past the 2048-sector medium
+   sector 3 content len  49 -> 4,000,000,000
+
+ Those two are one defect rather than two, and the head is the half that
+ enables it. fd-fold-entry bounds an entry's sector span on
+ `sector + nsec > end-sec`, and end-sec IS the head, so with an honest head of
+ 5 the 4e9 entry is already refused by the code as it stood. Only a head that
+ is itself a lie admits it: 4,000,000,000 bytes spans 7,812,501 sectors and
+ ends at 7,812,504, which clears a head of 8,000,000, and fd-entry-content
+ then asks alloc-bytes for 4,000,000,512 bytes on a 3 GB guest.
+
+ So the store is refused whole rather than read up to where it stops making
+ sense. The positive control moves accordingly: it is no longer "the good
+ entry still arrives" but "the bundle we were handed is given back intact".
+ A refusal that also dropped the caller's own facts would pass a count check
+ and lose the compiler its offered works.
+
+ codex/test/apps/factdisk-read is the other half of the control and is
+ deliberately left untouched: same reader, honest superblock, all three
+ entries still walked.
+
+ We say:
+
+Section: Reading a fact back
+
+  show-fact : Maybe Fact -> Text
+  show-fact (m) =
+    when m
+     is None -> "absent"
+     is Just (f) -> f.content & "/" & f.author & "/" & show (f.timestamp)
+
+Section: A bundle the caller already holds
+
+  prior : Fact
+  prior = Fact {
+    hash = "zzz999",
+    kind = DefinitionFact,
+    content = "from the blob",
+    author = "base",
+    timestamp = 1
+  }
+
+Section: Body
+
+  opening : [Console, Device.Block] Nothing = act
+    fresh <- store-read-bundle bundle-empty
+    print-line-uni ("count=" & show (fact-count (fresh.facts)))
+    print-line-uni ("lying-entry=" & show-fact (fact-load (fresh.facts) "abc123"))
+    print-line-uni ("honest-entry=" & show-fact (fact-load (fresh.facts) "def456"))
+    supplemented <- store-read-bundle (bundle-offer bundle-empty prior)
+    print-line-uni ("supplemented-count=" & show (fact-count (supplemented.facts)))
+    print-line-uni ("caller-fact-survives=" & show-fact (fact-load (supplemented.facts) "zzz999"))
+  end

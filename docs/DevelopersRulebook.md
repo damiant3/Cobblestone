@@ -293,6 +293,28 @@ together rather than fixing only the one that moved.
    predicted a seed and did not need one, and this rule predicted one for
    every new foreword module since it was written.
 
+   **When you need the answer BEFORE paying for a gate, ask the concat,
+   not the cite lines.** Grepping `codex/compiler/` for
+   `cites Foreword chapter X` under-reports, because the compiler unit is
+   assembled by `build/concat-codex-self.ps1` and a chapter can arrive
+   without the citation that would name it (L-SUBSET). Build the unit and
+   look in it:
+
+   ```powershell
+   pwsh build/concat-codex-self.ps1 -OutFile $scratch\unit.codex
+   Select-String -Path $scratch\unit.codex -Pattern "^Chapter: .*Fat16"
+   ```
+
+   **The chapters are QUIRE-PREFIXED in there** -- `Foreword--Fat16`, not
+   `Fat16` -- so a grep for `Chapter: Fat16` answers "absent" for a chapter
+   that is present, and answers it for every chapter you ask about, which
+   reads as a confident all-clear. Measured 2026-08-16: `Foreword--Fat16`
+   present, `Fat32`, `Gguf` and `ShellTypes` absent, which is why a Fat16
+   change moves `Sut` and a Fat32 change does not. The gate comparison
+   above is still the authority; this is how to predict it without one,
+   and how to tell whether someone else's merge-down has invalidated a
+   seed you already built.
+
 8. **Prose is exactly one space of indent, and a word is a keyword the
    moment it is not.** `scan-token` in `codex/compiler/Syntax/Lexer.codex`
    decides on `s.column == 2`: a line starting there is prose and its

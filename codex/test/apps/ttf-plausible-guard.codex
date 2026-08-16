@@ -1,0 +1,83 @@
+Chapter: TtfPlausibleGuard
+  cites Guios chapter FontLoad
+  cites Encode chapter TrueType
+
+Section: The Font
+  font-bytes : List Integer
+  font-bytes = [0, 1, 0, 0, 0, 7, 0, 64, 0, 2, 0, 48, 99, 109, 97, 112, 0, 0, 0, 0,
+    0, 0, 0, 124, 0, 0, 0, 52, 103, 108, 121, 102, 0, 0, 0, 0, 0, 0, 0, 176,
+    0, 0, 0, 52, 104, 101, 97, 100, 0, 0, 0, 0, 0, 0, 0, 228, 0, 0, 0, 54,
+    104, 104, 101, 97, 0, 0, 0, 0, 0, 0, 1, 28, 0, 0, 0, 36, 104, 109, 116, 120,
+    0, 0, 0, 0, 0, 0, 1, 64, 0, 0, 0, 12, 108, 111, 99, 97, 0, 0, 0, 0,
+    0, 0, 1, 76, 0, 0, 0, 16, 109, 97, 120, 112, 0, 0, 0, 0, 0, 0, 1, 92,
+    0, 0, 0, 6, 0, 0, 0, 1, 0, 3, 0, 1, 0, 0, 0, 12, 0, 4, 0, 40,
+    0, 0, 0, 6, 0, 4, 0, 1, 0, 2, 0, 32, 0, 65, 255, 255, 0, 0, 0, 32,
+    0, 65, 255, 255, 255, 225, 255, 193, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0,
+    0, 0, 2, 0, 2, 188, 0, 2, 0, 0, 1, 1, 1, 0, 0, 1, 0, 1, 0, 0,
+    0, 2, 188, 253, 68, 0, 0, 0, 0, 1, 0, 0, 0, 0, 80, 0, 0, 0, 0, 0,
+    95, 15, 60, 245, 0, 11, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 188, 0, 0, 0, 8, 0, 2, 0, 1,
+    0, 0, 0, 0, 0, 1, 0, 0, 2, 188, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0,
+    2, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3,
+    2, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10,
+    0, 0, 0, 20, 0, 0, 0, 52, 0, 1, 0, 0, 0, 3, 0, 0]
+
+Section: Buffer
+  into-buf : List Integer, Integer, Integer, Integer -> Integer
+  into-buf (bs) (base) (i) (n) =
+    if i >= n then base
+    else let d = poke-byte base i (list-at bs i)
+    in into-buf bs base (i + 1) n
+
+  load : List Integer -> Integer
+  load (bs) =
+    let base = __heap-save
+    in let d = __heap-advance (list-length bs + 1024)
+    in into-buf bs base 0 (list-length bs)
+
+  patch : List Integer, Integer, Integer -> List Integer
+  patch (bs) (at) (v) = list-set-at bs at v
+
+  take : List Integer, Integer -> List Integer
+  take (bs) (n) = take-loop bs n 0 []
+
+  take-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  take-loop (bs) (n) (i) (acc) =
+    if i >= n then acc
+    else take-loop bs n (i + 1) (list-push acc (list-at bs i))
+
+Section: Report
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+  report : Text, List Integer -> Text
+  report (name) (bs) =
+    let buf = load bs
+    in let ok = fb-ttf-plausible buf (list-length bs)
+    in if ok then
+      let font = fb-parse-ttf buf (list-length bs)
+      in let idx = ttf-cmap-lookup (font.tf-cmap) 65
+      in let g = fb-glyph-for-char buf font 65
+      in name & " plausible=True glyphs=" & show (font.tf-num-glyphs) & " A-idx=" & show idx & " A-contours=" & show (list-length (g.tg-contours))
+    else name & " plausible=False"
+
+  report-plausible : Text, List Integer -> Text
+  report-plausible (name) (bs) =
+    let buf = load bs
+    in name & " plausible=" & show-bool (fb-ttf-plausible buf (list-length bs))
+
+  opening : [Console] Nothing = act
+    print-line-uni (report "good" font-bytes)
+    print-line-uni (report "empty" [])
+    print-line-uni (report "runt" (take font-bytes 8))
+    print-line-uni (report "trunc-200" (take font-bytes 200))
+    print-line-uni (report "many-tables" (patch (patch font-bytes 4 255) 5 255))
+    print-line-uni (report "head-far" (patch (patch (patch font-bytes 52 255) 53 255) 54 255))
+    print-line-uni (report "glyphs-huge" (patch font-bytes 353 255))
+    print-line-uni (report "hmetrics-zero" (patch font-bytes 319 0))
+    print-line-uni (report "cmap-sub-far" (patch (patch (patch (patch font-bytes 132 255) 133 255) 134 255) 135 255))
+    print-line-uni (report-plausible "loca-flag-short" (patch font-bytes 279 0))
+    print-line-uni (report "glyph-past-end" (patch (patch font-bytes 344 0) 345 1))
+    print-line-uni "survived"
+  end

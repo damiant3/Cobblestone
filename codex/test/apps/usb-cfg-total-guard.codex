@@ -1,0 +1,106 @@
+Chapter: UsbCfgTotalGuardTest
+  cites Works chapter GopXhci
+  cites Works chapter GopUsb
+  cites Works chapter GopUsbKbd
+  cites Works chapter GopUsbMsc
+  cites Foreword chapter Console
+
+ A configuration descriptor arrives from the DEVICE, and wTotalLength is two
+ device-chosen bytes at offsets 2 and 3. The walks that read it iterate to it
+ over the buffer one control transfer filled, so a claim larger than the fetch
+ sends them through memory the device never wrote and the walk never owned.
+
+ The arms below build descriptors by hand rather than asking a device for one,
+ because codex-vm's emulated devices answer honestly and a harness that can
+ only produce well-formed input cannot tell a working guard from an absent one.
+
+ `poison` is the arm that matters. It allocates 512 bytes, puts a legal config
+ with one interface in the first 32, and plants a SECOND interface descriptor
+ at offset 300, past the 255 bytes a fetch would have delivered. Unclamped, the
+ walk claims 400 bytes and finds the planted one: a real answer read out of
+ memory the device did not send. Clamped, it stops at 255 and never sees it.
+ The two arms differ in nothing but the clamp.
+
+Section: Test
+
+  put-cfg-header : Integer, Integer -> Integer
+  put-cfg-header (buf) (total) =
+    let a = poke-byte buf 0 9
+    in let b = poke-byte buf 1 2
+    in let c = poke-byte buf 2 (bit-and total 255)
+    in let d = poke-byte buf 3 (bit-and (bit-shru total 8) 255)
+    in poke-byte buf 5 1
+
+ An interface descriptor: bLength 9, bDescriptorType 4, bInterfaceNumber n,
+ bAlternateSetting 0, bNumEndpoints 1, then class, subclass, protocol. Class 3
+ subclass 1 protocol 1 is the boot keyboard the HID walk looks for; class 8
+ subclass 6 protocol 80 is the bulk-only mass storage the disk walk looks for.
+
+  put-iface : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  put-iface (buf) (off) (num) (cls) (sub) (proto) =
+    let a = poke-byte buf off 9
+    in let b = poke-byte buf (off + 1) 4
+    in let c = poke-byte buf (off + 2) num
+    in let d = poke-byte buf (off + 3) 0
+    in let e = poke-byte buf (off + 4) 1
+    in let f = poke-byte buf (off + 5) cls
+    in let g = poke-byte buf (off + 6) sub
+    in poke-byte buf (off + 7) proto
+
+ The gap between the honest descriptors and the planted one is filled with
+ two-byte class-specific descriptors rather than left zero. A zero length byte
+ terminates every walk in the tree, so a zeroed gap stops the unclamped walk
+ before it reaches the plant and the arm would pass for the wrong reason. Live
+ heap under a running driver is not zeroed, which is the case being modelled.
+
+  fill-run : Integer, Integer, Integer -> Integer
+  fill-run (buf) (off) (endp) =
+    if off >= endp then 0
+    else let a = poke-byte buf off 2
+    in let b = poke-byte buf (off + 1) 33
+    in fill-run buf (off + 2) endp
+
+  yn : Boolean -> Text
+  yn (v) = if v then "yes" else "no"
+
+ The reason, not the refusal (fester's point 3): each line names WHICH number
+ came back, so a clamp that answers zero for everything is distinguishable from
+ one that answers the fetched length.
+
+  opening : [Console] Nothing =
+    let honest = alloc-zeroed 512 64
+    in let h1 = put-cfg-header honest 27
+    in let h2 = put-iface honest 9 0 8 6 80
+    in let h3 = put-iface honest 18 1 3 1 1
+
+    in let liar = alloc-zeroed 512 64
+    in let l1 = put-cfg-header liar 65535
+    in let l2 = put-iface liar 9 0 8 6 80
+
+    in let poison = alloc-zeroed 512 64
+    in let p1 = put-cfg-header poison 400
+    in let p2 = put-iface poison 9 0 8 6 80
+    in let pf = fill-run poison 18 300
+    in let p3 = put-iface poison 300 7 3 1 1
+
+    in let big = alloc-zeroed 512 64
+    in let b1 = put-cfg-header big 300
+    in let b2 = put-iface big 9 0 8 6 80
+
+    in let runt = alloc-zeroed 512 64
+    in let r1 = put-cfg-header runt 4
+
+    in let zero = alloc-zeroed 512 64
+    in let z1 = put-cfg-header zero 27
+    in let z2 = poke-byte zero 9 0
+
+    in act
+      print-line-uni ("honest total=" & show (usb-cfg-total honest 255) & " msc-iface=" & show (msc-find-interface honest 0 (usb-cfg-total honest 255)) & " boot-hid=" & yn (usb-has-boot-hid honest 0 (usb-cfg-total honest 255)))
+      print-line-uni ("liar total=" & show (usb-cfg-total liar 255) & " msc-iface=" & show (msc-find-interface liar 0 (usb-cfg-total liar 255)))
+      print-line-uni ("poison total=" & show (usb-cfg-total poison 255) & " hid-clamped=" & yn (usb-has-boot-hid poison 0 (usb-cfg-total poison 255)) & " hid-unclamped=" & yn (usb-has-boot-hid poison 0 400))
+      print-line-uni ("big total=" & show (usb-cfg-total big 255) & " msc-iface=" & show (msc-find-interface big 0 (usb-cfg-total big 255)))
+      print-line-uni ("runt total=" & show (usb-cfg-total runt 255) & " msc-iface=" & show (msc-find-interface runt 0 (usb-cfg-total runt 255)))
+      print-line-uni ("zerolen total=" & show (usb-cfg-total zero 255) & " msc-iface=" & show (msc-find-interface zero 0 (usb-cfg-total zero 255)))
+      print-line-uni ("cap-honoured=" & yn (usb-cfg-total liar 64 == 64))
+    end
+  end

@@ -75,13 +75,22 @@ Section: HID Device
 
 Section: Interface Scanning
 
+ total-len is wTotalLength, which the DEVICE chooses, and the buffer is however
+ much of the descriptor one control transfer actually fetched. Clamping here
+ rather than refusing is deliberate and is the same call the Works-side walks
+ make: a config larger than one transfer is ordinary hardware, so the walk
+ covers the bytes we hold and no more. Before this, a claimed total larger than
+ the buffer walked off the end: measured 2026-08-15 over a 25-byte config
+ claiming 200, `!EXC=06` with 25 in R12 and 200 in R13.
+
   hid-scan-interfaces : List Integer, Integer -> List HidInterface
   hid-scan-interfaces (config-desc) (total-len) =
-    hid-scan-loop config-desc 0 total-len [] None
+    let n = list-length config-desc
+    in hid-scan-loop config-desc 0 (if total-len > n then n else total-len) [] None
 
   hid-scan-loop : List Integer, Integer, Integer, List HidInterface, Maybe HidInterface -> List HidInterface
   hid-scan-loop (desc) (offset) (total) (acc) (current) =
-    if offset >= total then
+    if offset + 2 > total then
       when current is Just (iface) -> list-push acc iface is None -> acc
     else let desc-len = list-at desc offset
     in let desc-type = list-at desc (offset + 1)

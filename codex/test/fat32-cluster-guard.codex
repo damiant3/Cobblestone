@@ -1,0 +1,86 @@
+Chapter: Fat32ClusterGuard
+
+  cites Foreword chapter Fat32
+  cites Foreword chapter Fat16
+
+ Two guards on the same chapter, both of the shape red's item 14 settled:
+ refuse where the field decides WHERE a read lands.
+
+ The volume is built here rather than taken off a fixture. `fat32-parse-bpb32`
+ takes the sector as an argument, so a BPB written at the spec's own offsets
+ pins the cluster count exactly, and the boundary rows below mean something
+ the earlier fixture could not give them: handed a FAT16 disk this parser
+ reads offset 32 as zero and offset 36 as noise, and the cluster count comes
+ out NEGATIVE, which refuses every cluster for the wrong reason.
+
+Section: Writers
+
+  zero-fill : Integer, Integer, Integer -> Integer
+  zero-fill (b) (i) (n) =
+    if i >= n then 0 else let p = poke-byte b i 0 in zero-fill b (i + 1) n
+
+  put-u16 : Integer, Integer, Integer -> Integer
+  put-u16 (b) (o) (v) =
+    let lo = poke-byte b o (bit-and v 255)
+    in poke-byte b (o + 1) (bit-and (bit-shru v 8) 255)
+
+  put-u32 : Integer, Integer, Integer -> Integer
+  put-u32 (b) (o) (v) =
+    let a = put-u16 b o (bit-and v 65535)
+    in put-u16 b (o + 2) (bit-and (bit-shru v 16) 65535)
+
+ 40000 sectors, one sector per cluster, 32 reserved and two 516-sector FATs,
+ so the data region is 38936 sectors and the highest valid cluster is 38937.
+
+  build-bpb32 : Integer -> Integer
+  build-bpb32 (b) =
+    let z = zero-fill b 0 512
+    in let bps = put-u16 b 11 512
+    in let spc = poke-byte b 13 1
+    in let rsv = put-u16 b 14 32
+    in let nf = poke-byte b 16 2
+    in let f16 = put-u16 b 22 0
+    in let tot = put-u32 b 32 40000
+    in let f32 = put-u32 b 36 516
+    in put-u32 b 44 2
+
+Section: Reporting
+
+  yn : Boolean -> Text
+  yn (v) = if v then "yes" else "no"
+
+Section: Entry
+
+  opening : [Console, Device.Block] Nothing = act
+    let b = __heap-save
+    in let adv = __heap-advance 1024
+    in act
+      let z = zero-fill b 0 512
+      in let zv = fat32-parse-bpb32 2048 b 3
+      in print-line-uni ("zeroed bps=" & show (zv.f32-bytes-per-sector)
+        & " spc=" & show (zv.f32-sectors-per-cluster)
+        & " clusters=" & show (zv.f32-total-clusters))
+
+      let z2 = zero-fill b 0 512
+      in let s1 = put-u16 b 11 512
+      in let s2 = poke-byte b 13 0
+      in let sv = fat32-parse-bpb32 2048 b 3
+      in print-line-uni ("spc-zero-only clusters=" & show (sv.f32-total-clusters))
+
+      let w = build-bpb32 b
+      in let vol = fat32-parse-bpb32 2048 b 3
+      in act
+        print-line-uni ("clusters " & show (vol.f32-total-clusters) & " last " & show (fat32-last-cluster vol))
+        print-line-uni ("ok c0=" & yn (fat32-cluster-ok vol 0)
+          & " c1=" & yn (fat32-cluster-ok vol 1)
+          & " c2=" & yn (fat32-cluster-ok vol 2)
+          & " last=" & yn (fat32-cluster-ok vol (fat32-last-cluster vol))
+          & " past=" & yn (fat32-cluster-ok vol (fat32-last-cluster vol + 1))
+          & " big=" & yn (fat32-cluster-ok vol 70000000))
+        past <- fat32-next-cluster vol (fat32-last-cluster vol + 1)
+        print-line-uni ("next-past " & show past)
+        big <- fat32-next-cluster vol 70000000
+        print-line-uni ("next-big " & show big)
+      end
+    end
+  end

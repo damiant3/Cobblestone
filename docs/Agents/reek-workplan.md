@@ -2,23 +2,21 @@
 
 *Empty by design. Keep it that way.*
 
-**Open work does not live here.** Cross-lane items are in
-`docs/PM/CurrentPlan.md`; an item that originates in one app or quire
-is in that register (`apps/<app>/<app>-backlog.md`,
-`codex/<quire>/<quire>-backlog.md`).
+Emptied 2026-08-16 at handoff for the relaunch. Nothing is in flight, nothing
+is opened, no build token is held.
 
-**Durable facts do not live here either.** A fact goes to the doc that
-owns its subject the moment it is verified: `OperatorsManual` for the VM,
-builds and flags, `ExaminersAssay` for tests and beds, `DevelopersGuide`
-for the language, `HardwareSitting` for flights, the design that owns the
-capability, `LESSONS.md` for a lesson.
+Everything that was in here has a home that outlives a session, which is the
+whole point of the file being empty:
 
-**There is no findings outbox.** That channel was retired 2026-08-08. A
-finding another lane needs goes into the owning doc, where they will read
-it when they touch the subject, rather than into a status file nothing
-re-reads.
-
-This file is scratch for the CURRENT session's lane state only: what is
-shelved, what is mid-gate, what the next action is. Empty it at handoff.
-If it starts carrying work items, standing facts or messages to other
-agents, they are in the wrong place -- move them out and empty this again.
+- The shell DSL readability campaign, its catalog and its next steps:
+  `docs/Designs/Active/Build/ShellDslReadability.md`, section 9.
+- The `Gguf` dequant guest kill still live on main, and what is in shelf
+  15583: `docs/Designs/Active/Features/VerifiedFormatParsing.md`, row 16b.
+- The additive-bounds overflow class, 71 sites and 34 with a variable operand:
+  `ExaminersAssay.md` "A Bounds Guard That ADDS Can Be Overflowed", census
+  row 20.
+- The fact-store length guards: `ExaminersAssay.md` "The Fact Store Length
+  Guards", census row 15.
+- The sink arm's cite-closure staleness guard and the queued card's
+  provenance: `docs/Hardware/HardwareSitting.md`.
+- File claims and lane state: `docs/PM/CurrentPlan.md`.

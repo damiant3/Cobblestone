@@ -2507,6 +2507,1205 @@ and `nat-conn-churn-test` both pass with the check active, 80 of 80
 connections answered, because `codex-vm`'s NAT computes a correct
 pseudo-header TCP checksum (`tools/codex-vm.c`, `nat_build_tcp_frame`).
 
+## The UDP Frame Guard (`codex/test/udp-frame-guard`)
+
+The same truncation class as the TCP path above, found by asking the same
+question of UDP, and **worse in two ways that make it the more serious of the
+two**. `udp-io-mine` runs on EVERY frame the poll loop takes off the wire
+rather than only on frames already matched to a session, so any short frame of
+any protocol reaches it. And DHCP rides this path at boot through
+`dhcp-io-await` into `udp-io-recv`, so it sits on the first thing the machine
+does with a NIC.
+
+It read `ip-proto` (byte 9) and then walked `ip-payload` to the header's
+claimed total-length with no guard on either. Measured 2026-08-15 on a frame
+cut by six bytes: `!EXC=06` inside `udp-io-mine`, 30 actual IP bytes in R12
+against 36 claimed in R13.
+
+`ip-length-valid` and `ip-header-valid` now guard it, in ONE place:
+`udp-io-payload` and `udp-io-src-port` are reached only after `udp-io-mine`
+answers True, and `DhcpIO` parses no frame of its own.
+
+**The same chapter also gained a UDP checksum, in both directions.**
+`udp-build` wrote `[0, 0]` where the checksum belongs and nothing ever filled
+it, so we neither computed one nor checked one. RFC 768's two zero rules are
+not symmetric and the arms pin both: a COMPUTED zero goes out as 0xFFFF so it
+cannot be read as "not computed", and a RECEIVED zero is ACCEPTED without
+checking, because refusing it would refuse every peer that declines to compute
+one.
+
+**Eight arms. Two of them exist to catch a checker that has become strict
+rather than correct.**
+
+| arm | expects | why it is there |
+|---|---|---|
+| `good-frame` | True | a guard that refuses everything fails here |
+| `other-port-frame` | False | well formed, refused for a reason that is NOT the guard |
+| `cut-frame` | False | the truncation that used to kill the guest |
+| `runt-frame` | False | shorter than an IP header, so byte 9 does not exist |
+| `bad-hdr-frame` | False | a flipped byte inside the twenty the IP checksum covers |
+| `bad-cksum-frame` | False | a flipped PAYLOAD byte, checksum left in place |
+| `bad-len-frame` | False | a UDP length field that disagrees with the bytes present |
+| `no-cksum-frame` | **True** | the same corruption with the checksum ZEROED |
+
+`bad-cksum-frame` and `no-cksum-frame` are the discriminating pair and are
+worth reading together: identical corrupted payload, and the only difference
+is whether the checksum field is populated. One is refused and one is
+accepted. That is what says the acceptance is the RFC 768 rule being applied
+rather than the corruption going unnoticed. `good-cksum-nonzero` asserts we
+actually populate the field on send, which is the line that would have failed
+before this work at `0,0`.
+
+**Two ablations, each moving only its own arms.** Deleting the two header
+guards: the run prints `good-len`, `good-mine`, `good-payload` and
+`other-port-mine` correctly and then dies `!EXC=06` at `cut-mine`, never
+reaching `survived`. Deleting the `udp-checksum-valid` line instead:
+`bad-cksum-mine` and `bad-len-mine` flip to True and **every one of the other
+ten lines is unmoved**, `no-cksum-mine` included, which is what separates the
+checksum arm from the length arm from the acceptance control.
+
+**Run it with its sidecar, and this is a trap worth naming.** The DHCP tests
+beside it carry `.vmargs` (`-dhcp-lease 4`, `-e1000-nat`), and a hand-rolled
+runner that ignores those reports `dhcp-renew` and `dhcp-acquire-e1000` as
+FAILED against a healthy tree: the renewal cannot be observed inside a run at
+the default hour lease, and without `-e1000-nat` the Intel arm is its own
+NE2000 sibling. Both looked exactly like a regression from the guard and
+neither was.
+
+## The HTTP Response Guard (`codex/test/apps/http-response-guard`)
+
+Track D census item 4 (`VerifiedFormatParsing.md` 10.1): `http-parse-response`
+is what the browser's `PageFetcher` and `HttpFetch` hand a server's bytes
+to. Measured 2026-08-15 with fifteen arms BEFORE any change: the parser is
+crash-safe by construction (every walk is bounded by `list-length`, no
+declared length is trusted, high bytes and bare CRs pass through), and the
+two defects it had were both the same shape, an `acc * 10` accumulator on a
+plain `Integer`, which WRAPS rather than traps. A twenty-digit status token
+parsed to `code=7766279631452241919 valid=True`; a twenty-digit
+`Content-Length` parsed to the same number, and `Content-Length: -5` parsed
+to `5`. None crashes; each is a wire-supplied number believed.
+
+Now `parse-status-code` answers `-1` unless the token is exactly three
+digits (RFC 7230 says it always is) and `valid` follows it; `http-cl-value`
+answers `-1` on a leading minus and once the accumulator passes
+`http-cl-ceiling` (10^15), which is above anything `http-max-response` will
+ever read and below the wrap. Arms: `good` and `not-found` are the positive
+controls, `good-cl` the content-length control; `empty`, `runt`, `one-cr`
+are the pre-existing "fewer than two tokens" refusal; `status-only`,
+`no-blank`, `cr-only`, `high-body` must still be ACCEPTED (a guard that
+refuses everything fails here); `big-status`, `neg-status`, `big-cl`,
+`neg-cl` are the refusals. The pre-change run is the ablation record: those
+four arms read `7766279631452241919`, `0 valid=True`, `7766279631452241919`
+and `5` respectively, and every other line was unmoved by the change.
+`http-client-test`, `http-test` and `network-effect` still pass and the
+browser bundle compiles.
+
+**The server side treats the same header differently, on purpose (blu,
+2026-08-15).** `WebServer`'s `wb-parse-num` feeds `wb-request-total`; an
+oversized `Content-Length` makes the total exceed the bytes present and it
+answers `-1`, "keep buffering", probed sound at 3, 18 and 25 digits. So the
+server waits on an absurd length and the client refuses one. That is a
+decision, not an inconsistency: a server that refuses a long request drops a
+legitimate slow upload, while a client that believes a 20-digit
+`Content-Length` has already been lied to, and the client is the half where a
+wrapped or negative length reaches a slice. Do not "fix" either to match the
+other.
+
+## The TrueType Plausibility Guard (`codex/test/apps/ttf-plausible-guard`)
+
+Track D census item 5. The font the desk loads off the ESP (`CMUNSS.TTF`,
+`GopFont` `gfont-load`) is parsed by `apps/guios/FontLoad.codex`
+`fb-parse-ttf`, NOT by `codex/foreword/encode/TrueType.codex` `ttf-parse`
+(that one is reached only by `FontExtract`, which is red under FONTAI-1, and
+by `TrueTypeFont`, which nothing calls). `fb-parse-ttf` is a `peek-byte`
+parser: every 32-bit table offset in the directory, every loca entry and
+every cmap subtable offset became a raw address relative to the buffer,
+so a font from a stick could make the guest READ anywhere. Measured 2026-08-15
+with the guard ablated: an EMPTY buffer parsed to `glyphs=8295` off heap
+junk, and an 8-byte runt killed the guest, `!EXC=06` with `RDI=-1` (a
+`list-at` on an empty hmetrics list, `ttf-get-hmetric` reaching for index
+`length - 1`).
+
+`fb-ttf-plausible buf size` now runs before the parse and `gfont-load`
+answers `gfont-none` (the CBF fallback) when it says no. It reads only bytes
+already proven inside the buffer, in dependency order by nested `if` (the
+`&` operator is not a short circuit): the directory fits (`12 + tables*16`),
+all seven required tables are present with `offset + length <= size` and a
+per-table minimum (`head` 54, `maxp` 6, `hhea` 36), `numGlyphs >= 1`,
+`numHMetrics >= 1` and `*4` inside `hmtx`, `indexToLoc` is 0 or 1 and
+`(numGlyphs+1) * (2|4)` inside `loca`, and every cmap subtable offset lies
+inside `cmap` with the format-4 table's own length and segment count inside
+it. `fb-glyph-for-char` then clamps at glyph time: an index off the end of
+`loca`, a glyph shorter than its 10-byte header, or one whose end lies past
+the file all answer the empty glyph instead of reading.
+
+Arms, on the 356-byte hand-built font from `truetype-bridge-test`, one byte
+patched per arm: `good` (control: `glyphs=3 A-idx=2 A-contours=1`); `empty`,
+`runt`, `trunc-200`, `many-tables`, `head-far`, `glyphs-huge`,
+`hmetrics-zero`, `cmap-sub-far` all refused; `loca-flag-short` ACCEPTED
+(short loca still fits, so a guard that refuses every changed byte fails
+here); `glyph-past-end` accepted at the file level and answered by the
+glyph clamp, `A-contours=0` where the control has 1. Every value predicted
+before the run except the control's contour count, which is measured.
+
+**Residual, named:** `fb-read-simple-glyph` still reads end points,
+instructions, flags and coordinates relative to a glyph offset that is
+inside the file, but the counts it reads are wire-supplied 16-bit values,
+so a malformed glyph can read up to ~64 KB PAST its own end. That stays
+inside the `size + 1024` allocation's heap neighbourhood rather than the
+file, and produces a wrong glyph rather than a fault; bounding it against
+`next-off` is the next arm.
+
+## The GOP Mode Arms (`build/gop-mode-arm.ps1`)
+
+The UEFI stub (`build/cdx-to-pe.ps1`, generated from
+`codex/build/cdxtopeScript.codex`) now picks the largest GOP mode the
+firmware enumerates before it reads `Mode->Info`: the 1024 the ASUS painted
+at was the GraphicsConsole mode its own ClearScreen activated, and nothing
+had ever called `SetMode`. `GopSetLargestMode` runs only when
+`LocateProtocol(GOP)` succeeded and only on payloads without `-EntryStart`
+(the flown A5 stub is byte-identical, pinned by `.efi` hash on both
+`-EntryStart` arms). It reads `MaxMode`, skips everything when that is 1,
+`QueryMode`s each index keeping the largest `HRes * VRes`, and `SetMode`s
+the winner only if it differs from `Mode->Mode`. Every failure falls through:
+a `QueryMode` error skips that index, a `SetMode` error changes nothing, and
+the body reads `Mode->Info` from the firmware either way (L-OPTIONAL: the
+bed's GOP is friendlier than AMI, so the fallback is the safety).
+
+**The bed had to be made faithful first, and it found a host crash.**
+codex-vm's GOP advertised three fixed modes regardless of `-gop-width`, so
+the stub would have shrunk every 1600x900 desk run to 1024x768; the mode
+table now carries the CLI mode as mode 3 (`OperatorsManual`,
+`-gop-max-mode`). `QueryMode` also used to write the queried geometry over
+the CURRENT mode's info block, so an enumerate-then-read without a `SetMode`
+saw the last queried mode; it answers into a scratch block now. And the
+`SetMode` trap never committed the framebuffer for a runtime mode set:
+the default bed and `-gop-width 800` both crashed the HOST (`0xC0000005`
+inside the trap) at the stub's `SetMode 2` while a bed already at the target
+mode did not, the same class as the VBE mode set fixed at main 14494.
+
+Six arms, one PE, expected values written in the script before they run,
+read from codex-vm's own `GOP: SetMode` line and the BMP geometry at
+`-screenshot-delay 2000` (blu measured 5000+ writing no BMP on a UEFI probe,
+which reads exactly like a killed GOP):
+
+| arm | bed | SetMode | BMP |
+|---|---|---|---|
+| `default` | 640x480, MaxMode 3 | 2 | 1024x768 |
+| `desk1600` | `-gop-width 1600 -gop-height 900` | none (already largest) | 1600x900 |
+| `maxmode1` | `-gop-max-mode 1` | none (nothing to enumerate) | no framebuffer |
+| `remode` | `-uefi-conout-remode` at 1600x900: the ASUS shape | 3 | 1600x900 |
+| `gop800` | 800x600 | 2 | 1024x768 |
+| `gop` | `-gop` | 2 | 1024x768 |
+
+**Ablation:** the main 15393 stub under the `remode` arm stays at 1024x768
+with no `SetMode` line, which is what the ASUS photographs looked like. The
+metal half is a stick rebuild and a photograph and rides a sitting under
+the standing ruling; the bed cannot answer it (the ASUS's largest mode and
+whether AMI's `SetMode` honours it are the L-FREEDOM questions).
+
+## The CDX Input Guard (`build/cdx-guard-test.ps1`)
+
+Blu's audit handed round the fleet 2026-08-15: find the paths in your lane that
+parse bytes you did not produce, for a length trusted out of the data and for
+an integrity field computed on the way OUT and never checked on the way IN.
+`build/cdx-to-pe.ps1` had both, and it is the tool that turns a CDX into the
+bootable UEFI image.
+
+**Every header field it used was read out of the file and trusted.** `textOff`,
+`textSz`, `rodataOff`, `rodataSz` at offsets 168..199, and `mapCount` in the
+debug map, all reached `[Array]::Copy` and a `for` bound with no test against
+the file length. **And nothing checked the content hash at bytes 8..39**, which
+the compiler writes on every build (`cdx-build-header`, `X86_64Chapter.codex`)
+and which `build.ps1` already computes for its own fixed-point comparison. The
+field existed, was correct, and was never consulted on the way in.
+
+**Why the consequence is worse than a crash.** A header that survives while the
+content is short is the truncation shape, and the diagnostic would have been a
+raw `ArgumentException` naming no number. Worse, a header UNDERSTATING a
+section produces a PE that builds clean and dies on the metal with a black
+screen, which is the most expensive failure this project has.
+
+**Seven arms, and three of them must be ACCEPTED.** A checker that accepts
+everything and a checker that works are indistinguishable on a good CDX, and a
+checker that refuses everything passes a bare refusal count, so each refusal
+arm also names the reason it must give:
+
+| arm | want | reason asserted |
+|---|---|---|
+| good | ACCEPT | (none) |
+| unsigned, bytes 40..135 zeroed | ACCEPT | (none) |
+| six bytes off the tail | ACCEPT | (none) |
+| truncated into the content | REFUSE | `claims bytes up to` |
+| one bit flipped in the content | REFUSE | `content hash mismatch` |
+| magic clobbered | REFUSE | `magic is not CDX1` |
+| text size overstated by 4 KB | REFUSE | `do not tile` |
+
+**The unsigned arm is the RFC-768 analogue and it is the point.** A CDX built
+without the signing key carries 96 zero bytes where the signature goes, and
+that is legal, so the guard checks the HASH and not the signature. Refusing
+unsigned artifacts would have been a guard that looked strict and broke every
+ordinary build.
+
+**The tail-cut arm documents a LIMIT rather than hiding it.** Six bytes off the
+end lands in the debug map's string table; the string search is already bounded
+by the file length and a symbol it then fails to find refuses through the
+pre-existing `__syscall_handler` throw. Asserting a refusal there would claim a
+property the tool does not have.
+
+**Two checks, because neither subsumes the other.** The overstated-text arm is
+not truncated and its content hash is untouched -- the hash covers the region,
+not the header fields -- so only the tiling invariant catches it:
+`rodata-offset = text-offset + align-up code-len 8`, taken from the emitter,
+which this script already ASSUMED one screen down where `$textAligned` becomes
+`$dataVaddr`. Conversely the bit-flip arm has every length correct and only the
+hash disagrees. Length and integrity are different questions.
+
+**The ablation is the evidence, not the green run.** Measured 2026-08-15 with
+the guard block deleted and `Deny` stubbed to a no-op:
+
+| arm | with the guard | ablated |
+|---|---|---|
+| good | ACCEPT | ACCEPT |
+| unsigned | ACCEPT | ACCEPT |
+| tailcut | ACCEPT | ACCEPT |
+| truncated | REFUSE, `claims bytes up to` | refused by the WRONG check |
+| bitflip | REFUSE, `content hash mismatch` | **ACCEPT, 2,647,552-byte .efi** |
+| badmagic | REFUSE, `magic is not CDX1` | **ACCEPT, 2,647,552-byte .efi** |
+| bigtext | REFUSE, `do not tile` | **ACCEPT** |
+
+All three acceptance controls are unmoved, which is what says the four that
+move are measuring the guard and not the harness. The ablated bit-flip and
+bad-magic arms each emitted a bootable image from corrupted and from non-CDX
+input. The ablated truncation arm refuses only by accident, through the
+`__syscall_handler not found` throw, so it reports a missing symbol when the
+file is short and sends the operator to the wrong place.
+
+**Two traps in the harness itself, both of which cost a revision.**
+PowerShell's error formatting ECHOES THE SOURCE LINE before the message, so the
+first `REFUSED:` in captured output is the uninterpolated `$why` from the
+`throw` statement; scoring against it failed four arms that were working. And
+the message is hard-wrapped with `|` gutters, so the reason must be matched
+against the unwrapped text -- clamping the string for display before scoring it
+failed the one arm whose phrase sits past column 74.
+
+**Good input is unchanged.** All six `cdx-to-pe` flag arms (plain,
+`-ExitBootServices`, `-EntryStart`, `-Stdin`, `-HeapAt`, `-HeapPages 131072`)
+still produce `.efi` files byte-identical to the pre-guard script.
+
+**The SCOPE of the hash, stated because "hash verified" reads as more than it
+is.** The content hash covers `[224, contentEnd)` and therefore **does not
+cover the 224-byte header**. Outside the magic and the four fields the guard
+validates, a header field is neither hashed nor checked. Measured 2026-08-15 by
+corrupting byte 140, inside `cap-off`: **accepted, and the emitted `.efi` is
+byte-identical to a clean build.** That is the right outcome here -- this tool
+never reads `cap-off`, so the corruption cannot reach its output, and the
+identical artifact is the proof rather than the excuse. But a reader who takes
+this section as whole-file integrity would be wrong, and a later tool that DOES
+read those fields would need its own check. The prompt for measuring it was
+reek's note that a guard can pass for the wrong reason; the answer here is that
+it passes for a reason worth writing down.
+
+## The GPT Integrity Guard (`codex/test/apps/gpt-hdr-crc-guard`, `gpt-array-geom-guard`, `gpt-array-crc-guard`)
+
+The GPT half of the untrusted-volume audit, on top of val's FAT geometry guard
+below. `gpt-esp-start` checked the `EFI PART` signature and **neither CRC32**,
+so a tampered or half-written partition table parsed exactly like a good one,
+and the ESP start LBA it hands out is the base every later read is relative to.
+A garbage LBA was already caught downstream, because the volume it lands on
+will not parse as FAT. **An LBA moved to a DIFFERENT well-formed FAT was not**,
+and that is the case the array CRC exists to stop.
+
+**Three checks, in this order, and the order is the finding.**
+`NumberOfPartitionEntries` and `SizeOfPartitionEntry` are the array CRC's OWN
+EXTENT, so they are geometry and must be refused BEFORE the CRC that depends on
+them: a corrupt count moves the window and a reader then computes a perfectly
+valid CRC over the wrong bytes. So header CRC (stage 9), then array geometry
+(stage 10), then array CRC (stage 11).
+
+**Each arm changes ONE thing and leaves the volume otherwise perfect**, which is
+what makes them integrity arms rather than parsing arms:
+
+| arm | the single change | refuses at |
+|---|---|---|
+| `gpt-hdr-crc-guard` | one byte of the DiskGUID at header+56, which nothing in the chapter reads | 9 |
+| `gpt-array-geom-guard` | `NumberOfPartitionEntries` = 100000, header CRC RECOMPUTED so it still verifies | 10 |
+| `gpt-array-crc-guard` | one byte inside partition entry 5, far past the two populated entries | 11 |
+
+The array-CRC arm is the one worth reading twice. The ESP entry is untouched,
+the geometry is untouched, the header CRC is untouched, and the volume mounts
+and reads correctly in every other respect. **The array CRC is the only thing
+in the system that notices.** The geometry arm recomputes the header CRC on
+purpose, so its refusal cannot be stage 9 wearing stage 10's name.
+
+**Every expected output was PREDICTED before the arm was run** -- stage 9, 10
+and 11 written into the `.expected` files first -- so these are tests rather
+than recordings of whatever happened.
+
+**The ablation.** All three call sites replaced by `False`:
+
+| arm | with the guard | ablated |
+|---|---|---|
+| `gop-fat16` (positive) | `esp-start=64`, full read | UNMOVED |
+| `gop-fat16-geom-guard` (val's) | refuses at stage 8 | UNMOVED |
+| `gpt-hdr-crc-guard` | `esp-start=0 stage=9` | **`esp-start=64`** |
+| `gpt-array-geom-guard` | `esp-start=0 stage=10` | **`esp-start=64`** |
+| `gpt-array-crc-guard` | `esp-start=0 stage=11` | **`esp-start=64`** |
+
+Both controls unmoved, including val's, which is what says this guard runs
+ahead of the geometry one without disturbing what it measures. Ablated, all
+three arms hand out the ESP start LBA from a table that fails its own
+integrity fields.
+
+**FOUR EXISTING FIXTURES HAD TO BE REPAIRED, AND THAT IS THE FINDING.**
+`gop-fat16.disk`, `gop-fat16-geom-guard.disk`, `fat-write.disk` and
+`fat-write-guard.disk` are hand-built 64 KB images carrying the signature and
+the entry array with `HeaderSize`, `FirstUsableLBA` and **both CRC32 fields
+zero**. No fixture in the tree had a valid GPT CRC on the paths that now check
+one, because nothing had ever looked. Measured across the whole corpus: of 26
+GPT-bearing fixtures, **the 21 produced by `build/build-img.ps1` verify both
+CRCs** and only these four hand-built ones did not. Each now gets
+`HeaderSize=92`, `FirstUsableLBA=34`, and both CRCs computed in that order --
+the array CRC first, because the header CRC covers the field the array CRC
+lives in -- **and every one of the four reproduces its existing `.expected`
+byte for byte**, so the repair is faithful rather than an accommodation.
+
+`disk-facts-gpt-guard.disk` is a stub too and was deliberately LEFT ALONE: it
+belongs to `DiskFacts`, not this chapter, and its comment says it carries a
+sentinel through sector 2 on purpose.
+
+**Cost, because this runs at every mount.** The array CRC streams
+`NumberOfPartitionEntries * SizeOfPartitionEntry` bytes, 16 KB at our own
+128 x 128, a sector at a time with only the running CRC retained -- no buffer
+and no list, on a path with no GC. The 256-entry `crc32-table` is bound once
+and threaded as a parameter for the reason this chapter's own GUID comment
+gives: a list constant is rebuilt at every mention, so naming it inside the
+byte loop would rematerialise the whole table per byte. A read failure answers
+-1, which no CRC can be, so a short medium refuses rather than comparing
+against a fabricated zero.
+
+**One trap that did not bite and is worth recording anyway.** blu's warning
+that a hand-rolled runner ignoring a `.vmargs` sidecar reports healthy tests as
+failed was checked rather than assumed: all seven tests in this set carry a
+`.disk` and nothing else. `fat-write-big` does carry `.vmargs`, and it is
+skipped, so it cannot break here -- but whoever unskips it needs a fixture with
+a valid GPT.
+
+## The Foreword GPT Geometry Guard (`codex/test/apps/gpt-core-read`, `gpt-core-size-256`, `gpt-core-size-guard`, `gpt-core-count-guard`)
+
+Track D 10.1 item 14 (red, 2026-08-16). The three arms above guard the WORKS
+GPT reader, `GopFat16`'s `gpt-esp-start`. The FOREWORD reader,
+`codex/foreword/core/Gpt.codex` `gpt-read`, is a different function on a
+different path: `DiskFacts.codex:501` and `Fat16.codex:1258` call it, which is
+the compiler's own boot-volume walk and inside the seed's reachable set. It
+checked the signature and refused `SizeOfPartitionEntry` of 0 and above 512,
+and its own prose said that was the whole hazard. It was not: any entry size
+from 1 to 127 was admitted, `entries-per-sector = 512 / entry-size` and
+`off-in-sector` then run to `(512/es - 1) * es`, and `gpt-parse-entry` reads
+128 bytes from there (name at +56, 72 bytes long), which for every such size
+is past byte 511 of a 512-byte sector buffer. `peek-byte` on a raw buffer does
+not trap, so that is adjacent heap read as a partition entry, silently. The
+u32 count at header+80 was walked to the first zero type GUID with no
+ceiling, and the entry LBA at +72 was any u64.
+
+**The guard is the same test the Works layer already runs**, `gpt-array-geom-ok`
+transcribed as `gpt-header-geom-ok`: entry LBA at least 2, count 1..1024, size
+128..512 and a multiple of 128, and the array ending at or before
+`FirstUsableLBA`. Refuse, not clamp: every one of these decides WHERE a read
+lands (blu's split). Two layers now agree, so an image the desk mounts is an
+image the compiler's store reads, and a fixture that fails one fails both.
+
+**Fixtures.** `build/mint-gpt-core-fixtures.ps1` derives all four from
+`gop-fat16.disk` (val's, both CRCs valid): protective-MBR signature set at
+510/511, because the foreword reader requires it and the Works one does not,
+then ONE header field changed and the header CRC recomputed, so the refusal
+cannot come from anything but geometry. The minted control reproduces
+`gop-fat16.disk`'s header CRC `526e8cfd` and array CRC `db47cd74` exactly, which
+is what says the minter's CRC is the same function as val's.
+
+**Arms, every value written into `.expected` before the run:**
+
+| arm | the single change | expected | ablated (guard call replaced by the old `entry-size <= 0` test) |
+|---|---|---|---|
+| `gpt-core-read` (positive) | none | `gpt parts=1 esp=64` | unmoved |
+| `gpt-core-size-256` (accepted, not refused) | size 256, count 64 | `gpt parts=1 esp=64` | unmoved |
+| `gpt-core-size-guard` | size 64 | `gpt none` | **`gpt parts=1 esp=64`** |
+| `gpt-core-count-guard` | count 100000 | `gpt none` | **`gpt parts=1 esp=64`** |
+
+All four answered as predicted, and both refusal arms move under ablation.
+Read the size arm's ablated answer for what it is: entry 0 at offset 0 is the
+real ESP, entry 1 at offset 64 lands in entry 0's zero name bytes and stops the
+walk, so the ablated reader believes the size and answers a plausible table
+from a misaligned stride. The over-read itself (offset 448 + 128 on the eighth
+entry) is by inspection; this fixture has one populated entry and does not
+reach it, and an arm that did would be reading whatever the allocator put
+after the sector, which is not a value a `.expected` can pin.
+
+**What it does NOT do.** No CRC in the foreword reader, either one; the Works
+layer checks both and this item was the bounds. The 16384-byte array floor the
+spec requires is deliberately not enforced: 20 of the 33 GPT-bearing fixtures
+in `codex/test/` (every one `build/build-img.ps1` mints, and so every boot
+stick) carry `NumberOfPartitionEntries = 1`, and every one of the 33 was
+re-measured against the new test before it landed: all pass except the two
+100000-count arms and the size-64 arm, which are the ones meant to, and
+`disk-facts-gpt-guard.disk`, an all-zero header stub that was refused before
+(entry size 0) and is refused now.
+
+**Cost.** Four u32/u64 reads and one comparison chain per `gpt-read`, no
+allocation; the count ceiling makes the entry walk at most 1024 entries
+(256 sectors at 128 bytes) where before it was unbounded.
+
+## The FAT Geometry Guard (`codex/test/apps/gop-fat16-geom-guard`)
+
+Blu's same audit, one leg on from reek's Config-Descriptor Clamp (handoff
+blu -> fester -> reek -> val, 2026-08-15): `GopFat16` mounts a GPT+FAT volume the
+desk did not produce, and the ASUS reads the compiler's own source off that
+volume (A5). The BPB fields are volume GEOMETRY, not a read length:
+`sectors-per-cluster`, `reserved-sectors`, `num-fats` and `fat-sectors` decide
+WHERE every later read lands. Before this, `gfat-mount-at` refused only
+`bytes-per-sector /= 512`; a bogus `reserved` sent `fat-start` off the medium and
+the mount served the wrong sectors, silently.
+
+**Clamp is wrong here; refuse is right** (blu's split). A read-length field longer
+than the buffer clamps and you lose nothing you had. A geometry field does not
+bound a read, it relocates every read, so a clamped-but-wrong value reads the
+wrong place and hands the caller confident garbage: A5 compiling wrong source and
+never knowing is the exact failure the whole cascade started from. So
+`gfat-geometry-ok` REFUSES a volume whose sectors-per-cluster is not a power of
+two through 128, whose reserved count is zero, whose FAT count is not one or two,
+whose FAT is empty, or whose fat-start / data-start fall outside the declared
+volume. Every bound is a FAT-spec invariant, so no valid volume is refused, which
+the positive arm proves rather than asserts.
+
+**Two arms, and the negative one names its stage.** `gop-fat16` is the positive
+control: the well-formed image mounts, `mount=ok`, unchanged by the guard.
+`gop-fat16-geom-guard` is the negative: the same image with the BPB reserved count
+set to 0xFFFF. It prints `esp-start=64` -- GPT parsing still succeeds and bps is
+still 512, so the refusal is post-GPT geometry and nothing earlier -- and
+`geom-mount-ok=0 stage=8`, where 8 is `gfat-stage-geom` on xdiag cell 80. Ablate
+`gfat-geometry-ok` to `True` and the negative arm flips to `geom-mount-ok=1
+stage=7`: the mount accepts a volume that reads off the medium. Measured
+2026-08-15 (val), both directions on codex-vm, so the discrimination is asserted
+on every run and cannot rot into a tautology.
+
+## The FAT Cluster Range Guard (`codex/test/fat32-parse`, `range32` row)
+
+The leg after the geometry guard, same audit and same volume. Geometry decides
+where a mount lands; this is the cluster number that arrives AFTER a successful
+mount, out of a directory entry's `de-cluster` or out of a FAT slot, both of
+which are volume data. `fat16-cluster-sector` turns one into an LBA by
+arithmetic alone, so a number above the volume's own limit addresses sectors
+past the medium, and `gfat-fat-next` indexes the loaded FAT buffer at
+`cluster * 4` with no bound of its own.
+
+**The sentinel test could not catch it and must not be taught to.** Seven
+walkers guarded only `cluster < 2` plus `gfat-is-end`. On FAT16 that hides the
+gap, because every value over 65528 already reads as end-of-chain; on FAT32 the
+whole band from the cluster count to 268435447 is neither a sentinel nor
+addressable. Folding a range test into `gfat-is-end` would have covered every
+walker in one line and blinded the `is-end32 big=no` arm, which exists to
+observe WHICH WIDTH'S sentinel ran (L-INSTRUMENT). So the range question is a
+separate predicate, `gfat-cluster-ok`, and `gfat-is-end` still answers only its
+own.
+
+**The bound already existed.** `gfat-max-cluster` is the volume limit capped by
+the FAT's own capacity, and the write side used it while the read side did not.
+It is EXCLUSIVE -- `fat16-last-cluster vol + 1` -- which `gfat-mark-chain` and
+`gfat-chain-hits` already encoded as `cluster >= limit`, and which is why the
+predicate is `<` and not `<=`. Nine sites now take it: `gfat-find-in-dir`,
+`gfat-list-walk`, `gfat-list-dir`, `gfat-read-loop`, `gfat-read-runs`,
+`gfat-dir-slot32`, `gfat-write-runs`, `gfat-chain-release`, and
+`gfat-run-length`. The last is the one that is easy to miss: guarding the
+STARTING cluster still leaves the run walking upward under a cap taken from the
+file's own size, so a valid start could extend a contiguous run past the medium
+(L-CAPABILITY -- the entry check alone leaves the capability absent).
+
+**The arm is a census, not a threshold.** `range32` builds a FAT32 BPB
+declaring 40000 sectors, which puts the highest valid cluster at 38937, and
+prints the bound alongside the verdict at six points: `clusters=38936 max=38938
+c0=no c1=no c2=yes last=yes past=no big=no`. The earlier fixtures all leave
+total sectors at zero, so their cluster count is zero and every cluster is out
+of range, which cannot tell a correct bound from one that is off by one.
+**Ablated to `<=`, exactly one cell moves** -- `past=no` becomes `past=yes`,
+with `last` and `big` unchanged -- so the arm fails when and only when the bound
+is wrong at the boundary, and cannot be satisfied by one that is merely roughly
+right. Measured 2026-08-15 (fester), both directions on codex-vm.
+
+## A Count Is Not A Length (`codex/test/arp-cache-bound`, `codex/test/dns-answer-count`)
+
+Two crashes on the same shape, found a day apart in different chapters, and
+the pair is worth reading together because the shape is what generalises
+rather than either instance.
+
+**A count and the list it describes drift apart, and nothing is visible from a
+lookup that happens to succeed.** A walk bounded by the count indexes past the
+list; a walk bounded short of it loses entries. Neither shows up in ordinary
+traffic, because in ordinary traffic the two agree.
+
+| | the count | the list | what went wrong |
+|---|---|---|---|
+| ARP cache | `cache.count`, ours | `entries`, ours | both ours, and they had to be kept in step across an update-in-place |
+| DNS answers | `ancount`, **the peer's** | `answers`, ours | the peer's number bounded a walk over a list the peer did not build |
+
+**The ARP half was a bounded-integer refusal.** `arp-cache-add` appended into a
+`count` banded 0..255 with no duplicate check, so the 256th ARP frame wrote 256
+into that band: `!EXC=06`, `RSI=0x100` against a ceiling of `0xFF`. It never
+needed 256 distinct hosts, because re-sending the same ten senders took the
+count from 10 to 20. Fixed by updating in place and refusing past
+`arp-cache-max`; `gw-survived-flood` is the arm an eviction policy would fail,
+since evicting lets a flood push out the gateway.
+
+**The DNS half was twelve bytes.** `dns-parse-response` stored `ancount`
+verbatim while `dns-parse-answers` stops the moment `off + 10` passes the end
+of the datagram, so the list is routinely shorter than the header's number. A
+header-only response claiming 100 answers died `!EXC=06` in
+`dns-find-a-in-answers` with the real length 0 in R12 and the claimed 100 in
+R13. `HttpFetch.codex:167` parses a wire datagram and line 168 calls straight
+into it, and DNS answers are unauthenticated UDP. Fixed at both levels:
+`answer-count` is now what was parsed, and both walkers take their bound from
+`list-length` regardless of the field.
+
+**Both arms carry a positive control on the same path** (`honest` differing
+from `lying` only in the claimed count; the gateway learned before the flood),
+because a parser that answers "nothing here" to everything passes the crash arm
+on its own. Both reach a final `survived` line that the pre-fix runs never
+printed, which is what distinguishes a refusal from a trap.
+
+**The lesson generalises past these two.** Wherever a length, count or offset
+arrives beside the data it describes, ask which side produced each. If the
+count is the peer's, it is an assertion and not a fact. If both are ours, they
+are an invariant somebody has to maintain, and the maintenance is exactly where
+an edit breaks it.
+
+## The Transport Length Guards (`codex/test/apps/tcp-transport-guard`)
+
+Track D item 1, and the widest-reach parser in the census: `TcpTransport` carries
+the 4-byte length prefix on EVERY TCP transport we have. `NetIO`, `Arm64NetIO`,
+`TrustTransport` and all 51 plugs reach it through `plug-source`, and the only
+test on it fed one well-formed frame.
+
+Three separate defects, all in the recv path, all fed from the wire.
+`transport-feed-raw` wrote `data` at `recv-len` into `recv-base` with no check
+against `recv-cap`: `__buf-write-bytes` takes an offset and no capacity, so a
+peer sending more than 32 MB before a message completed wrote past the
+allocation. `transport-try-recv` then read a 4-byte `msg-len` off that buffer and
+used it two ways it could not survive: `msg-len = 0` gave
+`__buf-read-bytes base 5 (msg-len - 1)`, a read of length **-1**, and a `msg-len`
+above `recv-cap - 4` named a message that can never fit, so the connection waited
+for bytes it could never accumulate and never made progress again.
+
+**Refuse, not clamp** (blu's split, and geometry is not the reason here -- these
+ARE read lengths). A clamped over-cap write would still be a message we
+half-received and could not reassemble, and a clamped `msg-len` would hand the
+caller a body of somebody else's bytes. So the over-cap feed drops the frame and
+leaves the buffer untouched, and both malformed lengths reset `recv-len` to zero
+through `transport-drop-recv` and answer `has-message = False`.
+
+**Four arms, one positive, and every ablation was run.** The state is built by
+hand with a 16-byte `recv-cap` instead of `transport-new`'s 32 MB, because a test
+cannot feed 32 MB; row 1 feeds a well-formed frame through the same tiny state
+and still gets `has=True tag=2 body=2`, so a refusal below is the guard and not a
+dead path. Measured 2026-08-15 (val), each ablation moves exactly one row and no
+other: drop the `recv-cap` check in `transport-feed-raw` and row 2 reads
+`len=20 cap=16`, four bytes past the allocation; drop the `msg-len < 1` check and
+row 3 reads `has=True len=1`, the malformed frame accepted with the -1 read
+length having gone into `__buf-read-bytes` without faulting; drop the
+`recv-cap - 4` check and row 4 reads `len=4`, the stalled connection. The
+ablations are what make the four expected lines an assertion rather than a
+transcript.
+
+**No legitimate message is refused by the new ceiling**, and that is arithmetic
+rather than a hope: `recv-len` can never exceed `recv-cap`, so a message needing
+`4 + msg-len > recv-cap` bytes could never have completed under the old code
+either. The guard converts a permanent stall into a drop.
+
+## The Handshake Prove Guards (`codex/test/apps/handshake-prove-guard`)
+
+Track D item 2, and it turned out not to be a parsing bound at all. **The
+handshake did not authenticate anybody.** `hs-receive-prove` bound
+`expected-nonce`, never read it, never took the peer's signature as a parameter
+in the first place, and returned `HsCompleted` unconditionally with the trust
+score of whatever public key the peer had claimed in its hello. Its one caller,
+`trust-complete-as-responder`, received the prove message, discarded `rr.body`,
+and set `authenticated = True` on every path. Proof-of-work needs no private
+key, so anyone who could hash could claim any identity in the lattice and be
+believed.
+
+That survived because **nothing calls it** (L-UNCALLED). The four handshake entry
+points in `TrustTransport` have no caller anywhere in the tree, tests included,
+which also corrects the census's reachability note for this row: item 2 is
+LATENT, not reached, the same finding that demoted `WebSocket` and
+`PeerDiscovery`. It was fixed rather than demoted because a bounds bug in an
+uncalled parser is a bounds bug, while an authentication step that authenticates
+nothing is a trap for whoever wires it up.
+
+`hs-receive-prove` now takes the signature and refuses three ways: a public key
+that is not 32 bytes, a signature that is not 64, and a signature that
+`ed25519-verify` does not accept over the challenge nonce. **The two length
+checks are not defensive politeness.** `ge-from-bytes` reads index 31
+unconditionally and `ed-list-drop sig 32` computes `len - 32` as a slice length,
+so a short key or signature is an out-of-bounds read and a negative length inside
+the crypto. `hs-receive-hello` refuses a non-32-byte key too, which is the
+earlier refusal and also bounds `bytes-to-hex-hs`, whose accumulator is quadratic
+in a peer-supplied length.
+
+**Six arms, two of them positive, every guard ablated and run.** Row 1 is a real
+RFC 8032 vector-1 key signing the real challenge nonce, and it asserts
+`score=7000` rather than merely completing, so a disagreement between
+`bytes-to-hex-hs` and Ed25519's own `bytes-to-hex` would read as `score=0`
+instead of passing silently. Row 5 is a well-formed hello. Measured 2026-08-15
+(val): removing the `ed25519-verify` call flips row 2 to `failed=False`, a
+signature over a different message accepted with the impersonated key's score,
+which is the pre-fix behaviour reproduced exactly. **Removing either length check
+does not soften a refusal, it kills the guest**: both ablations die `!EXC=06`
+before printing a line, so those two guards stand between a peer and a remote
+crash of the node. Removing the hello key check flips row 6 alone.
+
+The residual is named rather than fixed: `decode-hello-body` still ignores the
+`valid` flag `frame-decode-bytes` now returns, so a truncated hello body decodes
+to a garbage `HelloMsg`. The key-length guard refuses the result, but the
+refusal reason will be the key rather than the truncation. That is Track D item
+3's change.
+
+## The Chain Cycle Guard (`codex/test/fat16-cycle-guard`)
+
+The other half of the two cluster guards, and the half they explicitly did not
+cover: those bound the cluster ADDRESS, this bounds the WALK. A FAT whose
+chain cycles -- 2 to 3 and back to 2 -- is well formed at every single step,
+`fat16-cluster-ok` answers yes to both numbers, and the walk never ends.
+`Fat16.codex` had said so in prose for some time without closing it.
+
+**Eight walkers, measured rather than taken from that prose, which is wrong in
+one direction.** `fat16-free-chain`, `fat16-find-free-slot-in-dir`,
+`fat16-find-name-slot-in-dir`, `fat16-find-in-cluster-dir`,
+`fat16-cluster-entries`; `fat32-find-chain-end`, `fat32-find-in-dir`,
+`fat32-list-dir-cluster`. **`fat16-read-cluster-bytes` is NOT among them**
+though the prose names it: it decrements a byte budget by at least one per
+step and stops at zero, so a cycle makes it re-read clusters and still
+terminate. Same for `fat32-read-cluster-bytes`, `fat32-alloc-loop` and
+`fat32-write-data-to-chain`, each bounded by a quantity that advances.
+
+**A COUNTING BOUND WAS TRIED FIRST AND MEASURED UNFIT. That measurement is
+the reason the shipped code is Brent's algorithm.** Fuel of cluster-count + 2
+is spec-derived -- a chain visits each cluster once -- and it does terminate.
+On the fixture (30,414 clusters, fuel 30,416) the cyclic walk **did not finish
+inside the harness window: 60.4 s, no output**. Dropping the fuel to 10
+returned in **0.6 s**, which is what proved the mechanism reached the walker
+rather than the bound going unread. **A finite bound is not a survivable
+one**, and on FAT32 the clamped ceiling is 268435447, far worse.
+
+**Brent, not Floyd, and the difference is the read count.** Floyd's hare
+takes two steps per iteration and every step here is a FAT sector read, so it
+costs about half again as many reads on healthy volumes. Brent advances one
+cursor exactly as the unguarded walk did, keeping a saved cluster, a power
+and a step count, and re-saving on a doubling schedule. A well-formed chain
+therefore pays one comparison per step and nothing else. Measured on the full
+30,414-cluster volume: **0.6 s**, against the counting bound's 60.4 s timeout
+on the same fixture.
+
+**blu's underlying point stands and is why the count is not the bound.**
+Cluster count is computed from BPB fields the image supplies
+(`Fat16.codex:88-90`, `Fat32.codex:43-44`), so a declared total-sector count
+would have been setting it: **a bound derived from untrusted bytes is not a
+bound**. The parse-time clamp is kept anyway -- 65524 on FAT16, 268435445 on
+FAT32 -- because it gives `fat32-alloc-loop`'s limit a real ceiling and stops
+Fat32's `data-sectors` going NEGATIVE, which is how the first Fat32 arm got a
+cluster count of -7454427426.
+
+**The arm's ablation is a HANG, not a moved row**, and that is a weaker
+signal worth naming. With the cycle check: **0.6 s**, `walk-terminated none`.
+With it bypassed: **61 s and no output**, reported as a timeout. The fixture
+is `fat16-alloc.disk` with both FAT copies patched to `2 -> 3 -> 2`, at full
+geometry -- because Brent is O(cycle) the arm does not need a shrunken volume
+to run fast, so it exercises the realistic 30,414-cluster case rather than an
+easier one.
+
+## The Foreword Fat32 Guards (`codex/test/fat32-cluster-guard`)
+
+Track D 10.1 item 17, and unlike item 12 it is **not seed-affecting**:
+`Fat32.codex:3` cites `Fat16`, not the reverse, so `Fat16` is pulled into the
+compiler unit and `Fat32` hangs off it without being pulled in. Measured two
+ways -- no `cites Foreword chapter Fat32` under `codex/compiler/`, and blu
+grepped the whole subtree for the bare word in case of a citation under
+another name. The citers are `DriveManager`, `DevConsoleBoot`, `GopFat16`,
+`FontLoad` and tests.
+
+**Two guards, both of red's item-14 shape: refuse where the field decides
+WHERE a read lands.**
+
+**The divisor.** `fat32-parse-bpb32` computed `total-clusters = data-sectors /
+spc` where `spc` is `peek-byte buf 13`, unchecked. `Fat16` has answered a
+zeroed sector with `fat16-zero-volume` since the same fault was found on its
+side, and its prose says exactly why: with no disk attached the block device
+hands back a sector of zeroes and dividing there takes the machine out with
+`!EXC=00`. This chapter had no such escape at all -- no zero-volume, no
+usability predicate -- and divided regardless. **Ablated, the arm reproduces
+that verbatim**: `!EXC=00 RIP=000000000010b1fb`, the guest dead before any
+caller could notice a bad volume.
+
+**The range.** `fat32-next-cluster` turned its argument into a FAT sector
+address by arithmetic alone. Same class as item 12 one format over; the
+refusal answers 268435455, end-of-chain in this format's own 28-bit width.
+**Ablated, `next-past` becomes 109791427 and `next-big` becomes 0** -- the
+unguarded read landed on arbitrary sectors and returned a cluster number that
+would send the walk anywhere.
+
+**The volume is built in the arm, not taken off a fixture, and that mattered.**
+The first version handed `fat16-alloc.disk` to a FAT32 parser: offset 32 reads
+zero and offset 36 reads noise, so the cluster count came out **negative** and
+every `ok` row read `no` -- the right answer for the wrong reason, and an arm
+that would have passed with no guard at all. A BPB written at the spec's own
+offsets (40000 sectors, spc 1, 32 reserved, two 516-sector FATs) puts the
+highest valid cluster at 38937 and makes the boundary rows mean something.
+
+**It needs no `.disk` sidecar**, checked rather than assumed: the BPB is
+synthetic and the guard refuses before `block-read-sector`, so the arm passes
+with no disk attached and a 16 MB fixture was kept out of the depot.
+
+**Regression.** `foreword-fat32` and `install-to-drive` both pass. The latter
+first read as a failure and was NOT one: it carries `.disk` AND `.disk2`, and
+a hand-run passing only `-DiskFile` measures the invocation rather than the
+code (L-SIDECAR).
+
+**NOT COVERED, and it is the same gap named against item 12.**
+`fat32-find-chain-end` (`:175`) recurses through `fat32-next-cluster` with no
+fuel and no cycle guard, reached from `fat32-alloc-chain` on the WRITE path. A
+chain that cycles within valid range still spins forever. These guards bound
+the cluster ADDRESS, not the walk; the walk is a different mechanism and is
+unmeasured.
+
+## The Foreword Cluster Guard (`codex/test/fat16-cluster-guard`)
+
+WORKS-29's class one layer down, in the chapter the COMPILER reads its own
+source through. `fat16-next-cluster` turned a cluster number read off the
+volume into a FAT sector address by arithmetic alone, with no bound; the
+bound it needed, `fat16-last-cluster`, was already in the chapter and used
+only by the allocator. The guard answers 65535 -- end-of-chain in this
+format's own width -- so a bad cluster truncates a file instead of reading a
+foreign sector, which is what the callers already handle.
+
+**The guard is inside `fat16-next-cluster`, not at the walkers, and that is
+the point.** There are about twenty call sites in the chapter and four
+outside it: `opening.codex` (:1849), `AgentBundle` (:348), `SinkLadderProbe`
+(:137, :153) and `GopFiles`. One guard covers every one of them without
+touching a caller.
+
+**THREE ARMS THAT PROVED NOTHING, recorded because each looked like
+evidence.** This is the useful half of the entry.
+
+1. **`build/sink-arm.ps1 -Only pass` is blind to this chapter.** It walks
+   5,364 clusters back through `fat16-next-cluster` and is the best-shaped
+   test in the tree for this change -- but it runs the PREBUILT
+   `build/boot/sinkladder.img` and never compiles. Its staleness guard
+   (lines 58-59) checks `SinkLadderProbe.codex` and `MetalLadder.codex` and
+   nothing in the foreword, so a `Fat16.codex` change passes it silently.
+   Sabotaging the bound to 100 against a 5,364-cluster chain left it
+   reporting `verified`. **It also reported `verified` after the build that
+   was meant to feed it had failed outright**, which is the exact failure its
+   own comment at lines 54-57 says it exists to prevent, one dependency level
+   up.
+2. **The eight disk-backed `fat16-*` arms do not reach the chain walk.**
+   `fat16-alloc`, `list`, `write`, `subdir`, `overwrite`, `dirgrow`, `mkdir`
+   and `source-cr` all pass with the guard REFUSING EVERY CLUSTER. The FAT16
+   root directory is a fixed sector region rather than a chain, and every file
+   on those fixtures fits in one cluster, so the walk is never entered
+   (L-NAMED).
+3. **The first sabotage was too gentle to move a row.** Making the guard
+   refuse everything makes `fat16-next-cluster` answer end-of-chain, and on a
+   one-cluster chain that is indistinguishable from the true answer. A
+   sabotage moving fewer rows than predicted is telling you the code is
+   shaped differently than you wrote down (L-SABOTAGE).
+
+**So the arm calls the function directly.** On the `fat16-alloc` fixture
+(30,414 clusters, highest valid 30,415) it prints the bound beside the
+verdict and then asks `fat16-next-cluster` for three clusters outside it:
+
+```
+clusters 30414 last 30415
+ok c0=no c1=no c2=yes last=yes past=no big=no
+next-c2-is-a-number True
+next-past 65535
+next-big 65535
+next-low 65535
+```
+
+**Ablated** (the guard bypassed in `fat16-next-cluster`), `next-past` and
+`next-big` both become **0**: the unguarded read went outside the FAT and
+came back with zeros, which on a populated volume is an arbitrary cluster
+number and a walk that continues into foreign sectors.
+
+**`next-low` does not move and is therefore not evidence.** Cluster 1's FAT
+slot legitimately holds 0xFFFF (the media descriptor), so that row reads the
+same guarded or not. It is kept because it pins the low side of the range,
+not because it discriminates; anyone reading this arm should know which of
+its rows can fail.
+
+## The Stub Panic That Did Not Halt (`build/cdx-to-pe.ps1`, `AllocPanic`)
+
+Found 2026-08-15 (fester) by firing the negative control for the A8 allocation
+question, and it is the whole argument for rule 6 of the sitting sheet: an arm
+that has only ever been seen agreeing has not measured anything.
+
+**The defect.** `AllocPanic` emitted `mov al,c` / `out 0x3F8` / `out 0x2F8` /
+`hlt`, with no `cli` and no halt loop. Every one of its five sites -- `C` code
+pages, `H` heap pages, `G` GDT page, `B` a null heap base, `V` the framebuffer
+straddling the record arena -- runs BEFORE ExitBootServices, where the firmware
+timer is live. A bare `hlt` therefore RESUMES on the next tick and execution
+falls through the panic into code that assumes the allocation succeeded.
+
+**What that looked like on the wire.** Forcing a refusal (a 2 GB heap in a
+640 MB bed) printed `s v c H V h g` and then an X64 `#GP` dump: the `H` panic
+fell through, the `V` panic fired on the garbage heap pointer and fell through
+too, the progress marks for the heap and GDT printed anyway, and the machine
+died in the firmware's exception handler. **A board refusing the allocation
+would have shown a crash, not a refusal**, and `CurrentPlan` told the reader
+in as many words that "the stub raises `H` if refused". That is L-MISROUTE:
+a sheet that pre-assigns the meaning of a failure the tool does not actually
+produce.
+
+**Why it had never been seen.** reek's `V` halt earlier the same day looked
+like a clean stop because that one fires AFTER ExitBootServices, where `IF=0`
+and the `hlt` sticks. The same instruction is terminal on one side of EBS and
+transparent on the other, which is exactly the kind of state a pass/fail arm
+cannot distinguish (L-STATES).
+
+**The fix and its cost.** `cli`, `hlt`, `jmp` back to the `hlt`. The panic
+block grows 13 bytes to 16, so the four displacements that skip it move with
+it: `jz`/`jnz`/`jae` +13 become +16 and the outer `jae +31` becomes +34. It
+cannot be made size-neutral without deleting the second UART write, which is a
+deliberate fallback (the operator has whatever port they happened to attach).
+**So the layout of every path shifts, including `-EntryStart`, whose bytes red
+had hash-pinned for A5.** Measured: all three arms change hash. That is a real
+cost and it is the L-DECODE class -- a code-size change has moved a store onto
+a page boundary in this tree before -- so the next A5 flight carries stub bytes
+that have not flown.
+
+**The arms, both directions, on the exact bytes.** Positive: `-AllocPages
+131072` in the default bed prints `s v c h g x o` before and after, so a
+successful boot is unchanged. Negative: the same build at `-AllocPages 500000`
+in a 640 MB bed printed `s v c H V h g` + `#GP` before and prints `s v c H`
+and stops after. **A first attempt at the control was invalid and is worth
+recording**: 512 MB requested in a 384 MB bed killed OVMF itself before the
+payload ran, and at 640 MB the firmware granted the 512 MB anyway, so two
+runs said "green" while proving nothing about refusal.
+
+## The Agent Message Guards (`codex/test/apps/agent-msg-truncated`)
+
+Track D item 3, and unlike item 2 this one is genuinely reached: `trust-recv` is
+called from `TrustNode`'s `node-recv-loop`, and what it decodes goes straight to
+`node-eval-msg`, which builds a `PolicyContext` out of the message and hands it
+to `eval-policy`. These are peer bytes deciding a policy question.
+
+**Two defects, and the first one is a remote kill.** Every `decode-*-body` in
+`TrustTransport` chains `next-offset` off a peer-supplied length, and eight of
+them then read a tag, direction or flag byte with a bare `list-at bs off` rather
+than `frame-byte-at`. A body that ends before that offset is an out-of-bounds
+index. Measured 2026-08-15: `decode-agent-msg tag-propose []` dies `!EXC=06`
+against the code as it stood. The repair is reek's drop-in from `RepoProtocol`,
+applied to all eight sites.
+
+**The second defect is what the crash was hiding.** With the reads made safe, a
+truncated body no longer faults; it decodes to a message with empty fields, and
+`eval-policy` is asked about it anyway. `MessageFraming`'s own prose already says
+this in the general case: handing back a truncated field is not safe, it is only
+better than the crash. So `decode-agent-msg-checked` answers a `valid` flag and
+`trust-recv` reports `has-message = False` when it is clear, which
+`node-recv-loop` already handles by moving to the next peer.
+
+**Validity is decided by a round trip against our own encoder**, not by a second
+walk of the format. `amsg-bytes-equal (encode-agent-msg-body msg) body` cannot
+drift from the decoder the way a hand-written length model would, it needs no new
+record on any of the seventeen body decoders, and it refuses a body that is not
+the canonical encoding of what it decoded to, which is the non-malleability
+property this design names in section 4 and gets here for free. The one question
+it raises and answers: it does NOT refuse the "trailing bytes are ignored"
+behaviour `work-serve` documents, because the transport's length prefix bounds
+`rr.body` before any of this runs, so trailing STREAM bytes never enter the body.
+
+The tag check is separate and needed on its own. `decode-agent-msg`'s final
+`else` decodes **any** unrecognised tag as a `WorkReply`, so a handshake tag
+carrying a well-formed work-reply body round-trips perfectly and would be
+accepted. `agent-tag-known` enumerates all seventeen.
+
+**Twelve arms, three of them positive, four ablations each moving only its own
+rows.** `workreply-tagged` and `unknown-tag-same-body` are the same bytes under
+two tags, which is what isolates `agent-tag-known` from the round trip. Reverting
+`frame-byte-at` kills the guest `!EXC=06`; removing the round-trip check flips
+all six truncation rows to `valid=True` and leaves the unknown-tag row refused;
+removing the tag check flips only that row; removing the hello checks flips only
+the two hello rows.
+
+`decode-hello-body-checked` closes the residual the handshake guards left open:
+`trust-respond-hello` now refuses a hello whose key or nonce field does not fit,
+or which has no room for the difficulty word, instead of feeding a garbage
+`HelloMsg` to `hs-receive-hello`.
+
+## The Fact Store Length Guards (`source-def-wire-guard`, `factdisk-hostile-head`)
+
+Track D item 15, and it is reached: `opening.codex:2101` calls
+`store-read-bundle` whenever the mode carries `store`, so these are bytes off a
+disk deciding what the compiler admits as a quoted work. Two lengths, two
+different failures, one test each.
+
+**The wire length is a guest kill, and the runtime is why.** `sdw-decode` ends
+with `substring line (p9 + 1) clen` where `clen` is the record's own ninth
+field. Two primitive behaviours make that fatal rather than merely wrong, and
+both were measured on 2026-08-16 rather than assumed: **`substring` faults
+`!EXC=06` on a length past the end of the text AND on a negative one**, and
+**`text-to-integer` answers a NUMBER for text that is not one** -- `"abc"` is
+1511 -- so a corrupt field arrives as a plausible large length and never as a
+zero. Against the code as it stood, `source-def-wire-guard` reached arm 4 and
+died with the hostile 99 sitting in R15.
+
+The bound is `clen < 0` or `clen > text-length line - (p9 + 1)`, and a length
+SHORTER than what remains is still admitted. That is deliberate: the encoder
+always writes the exact length, so only a longer one is provably malformed, and
+refusing the short case would be a new refusal rather than a bound. Arm 2 pins
+it (`clen` 4 against 12 characters still answers `[demo]`), which is what stops
+a later tightening from being mistaken for a fix.
+
+**It SUBTRACTS, and it shipped adding.** For one day the bound was
+`p9 + 1 + clen > text-length line`, which a nineteen-digit length field walks
+around: the sum wraps negative, the comparison reads false, and the record is
+admitted. "A Bounds Guard That ADDS Can Be Overflowed" below is the whole class
+and carries the measurement. **Arm 9 is the arm for it here, and why arms 4 to
+7 could not have caught it is the part worth keeping**: a length past the end
+and a negative length are both hostile and both kill the guest unguarded, but
+neither WRAPS, so a bound that fails only on overflow passes every one of them.
+An arm that probes a guard with plausible hostile values does not test the
+guard's own arithmetic. Ablated, restoring the additive form lets arms 1-8 pass
+and kills the guest at arm 9.
+
+**The log head is an allocation, and the two hostile fields are ONE defect.**
+`fd-log-head` reads a u64 off the superblock and it was the only ceiling on two
+things: `fd-fold` visits every sector up to it, and `fd-fold-entry` admits an
+entry's span on `sector + nsec > end-sec` alone -- where `end-sec` IS the head.
+So with an honest head of 5 an entry claiming 4,000,000,000 bytes is already
+refused by the code as it stood; only a head that is itself a lie admits it.
+That span is 7,812,501 sectors ending at 7,812,504, which clears a head of
+8,000,000, and `fd-entry-content` then asks `alloc-bytes` for 4,000,000,512
+bytes. **Ablated, that arm prints `OUT OF MEMORY` with the heap frontier at
+0xeecb3850 and the VM exits -1.**
+
+The ceiling is `block-sector-count`, because the medium knows better than the
+superblock does: a store cannot extend past the disk holding it. A count of
+zero or less is DriveManager's no-drive answer and stays a pass, on a path that
+cannot reach the defect anyway -- with no disk the superblock has no magic,
+`fd-gen` answers -1 twice, and the walk ends before its first sector.
+
+**An incredible head refuses the WHOLE store rather than the prefix that fits,
+and that posture is val's** from the parallel work on this item: a superblock
+that cannot be true is not one to trust part of. It also keeps the per-entry
+span check honest, since that check is measured against the same head. **The
+positive control moves with it**: it is no longer "the good entry still
+arrives" but "the bundle the caller handed in is given back intact", because a
+refusal that also dropped the caller's offered works would pass a count check
+and quietly cost the compiler its quotations. `factdisk-read` is the other half
+of the control and is deliberately untouched -- same reader, honest superblock,
+all three entries still walked.
+
+**A derived bound beats a constant here, and that is not a style preference.**
+val's parallel change ceilinged the head at `fd-max-log-sectors = 262144`. A
+constant cannot know how big the disk is: a head of 200,000 sits under it, so
+on a 128-sector fixture the store is accepted and the walk runs ~200,000 reads
+past the end of the medium. `block-sector-count` moves with the fixture and
+cannot be tuned past.
+
+**Still open, and it is val's to land:** a per-record cap. A large medium still
+permits one record to allocate most of it, which the head bound does not touch.
+val's `fd-max-content-len` (4 MB, shipped without an arm because reaching it
+needs a store image over 4 MB) is the answer to that and is not folded in here.
+This section previously carried a paragraph of mine arguing the cap could not
+be chosen because the format has never stated a maximum; that was
+rationalisation and it is deleted rather than defended.
+
+**The codegen citation belongs to blu and val**, who both found
+`emit-substring-bounds` at `X86_64Builtins.codex:666-681` while this lane was
+still measuring the crater from the outside.
+
+**Both fixtures are minted from the specification, not written by the writer
+under test** (`build/mint-factlog-fixture.ps1`, `-Hostile` for the second),
+which is the `BrotliBeatsOpus` discipline the original fixture was built under.
+The hostile one moves exactly two fields and leaves entry 2's record text
+well-formed, so the refusal under test is the sector-span bound and not the
+wire decoder's. Two controls guard the mint itself: the minter with the
+`-Hostile` code added still reproduces the good fixture byte-for-byte
+(`21AF003D625E3938`), and the hostile image it emits is byte-identical to the
+same two fields patched into the good one by hand. **Entry 3 is the positive
+control** -- untouched, and it must still arrive, which is what makes this an
+instrument rather than a crash that stopped crashing. Entry 2 must NOT arrive,
+because its own header is the thing that is lying.
+
+**The residue, and it ships without an arm (val, 2026-08-16).**
+`fd-head-credible` bounds the walk and every entry's allocation, but it bounds
+them by the SIZE OF THE ATTACHED MEDIUM, which is still a number this code did
+not produce. On the store images this reader is pointed at, a megabyte or a
+few, that is already tight; on a large medium it is not, and a superblock with
+a credible head plus one entry declaring a gigabyte asks `alloc-bytes` for a
+gigabyte on a guest that has three. `fd-max-content-len` caps one entry at
+4 MB independently of the medium, against a widest legitimate value of one
+chapter (the largest in the tree measured 735,952 bytes), and an over-long
+entry strides on exactly as an entry that will not fit the log already does.
+
+**Ablating it moves nothing any test can see, and that is stated rather than
+hidden.** Reaching it needs a store image over 4 MB, because on anything
+smaller the medium ceiling refuses the entry first, so the arm would cost a
+multi-megabyte fixture to exercise a guard whose whole purpose is the case the
+fixtures cannot reach. It is kept on the campaign's rule -- we do not size an
+allocation on a number we did not produce -- and not on a measurement. What IS
+measured is that it refuses nothing legitimate: `factdisk-read`,
+`factdisk-hostile-head`, `foreword-source-def-wire` and
+`build/test-quote-from-store.ps1` (`sorted=105`) all pass unchanged with it in.
+
+## The GGUF Bounds Guards (`codex/test/apps/gguf-hostile`)
+
+Track D item 16. `codex/foreword/ai/Gguf.codex` reads every field with a bare
+`list-at`, which traps out of range, so a length or count taken off a model
+file decides where a read LANDS and a wrong one halts the machine instead of
+answering badly. Not seed-affecting: only `apps/works/AgentBundle.codex` cites
+the chapter, and no compiler chapter does.
+
+**The path is reached and the shape of the caller makes it worse.**
+`ab-window-step` (`AgentBundle.codex:297`) calls `gguf-tensor-info-offset` on a
+DELIBERATE prefix of the file, growing the window until the metadata block
+fits. Handing the parser a short buffer is not the pathological case here, it
+is the normal one, and the parser answering `-1` is what the loop is built on.
+
+**Two guards existed and both checked the wrong thing.** `gguf-parse-header`
+refused a file under 20 bytes and then read bytes 16..23 of a header that
+`gguf-header-bytes` says is 24, so a 20-byte file passed the guard and trapped
+inside it. `gguf-skip-metadata` checked the START offset against the data
+length without checking that the read AT that offset fits, so a file four bytes
+longer than a header walked straight off the end. And the two walkers over the
+same block disagreed: measured against the unfixed chapter, the file that
+`gguf-tensor-info-offset` correctly refuses with `-1` is the same file that
+kills the guest through `gguf-metadata-text`, because `gguf-md-scan` carried no
+offset check at all.
+
+`gguf-fits data off n` is now asked before every read at a file-supplied
+offset, and each caller refuses on the channel it already had: `-1` for a byte
+count, `""` for a metadata lookup, `gh-valid` or the new `gti-valid` for a
+record. `gti-valid` is additive in the sense CurrentPlan describes for
+`MessageFraming`: a caller that ignores it reads exactly the fields it read
+before, and a refused entry answers the empty name and zero dimensions it would
+have answered for a file of zeroes. What it no longer does is trap.
+
+**The string-array walk needs no fuel cap and the chapter says why.** Every
+element it accepts consumes at least its own eight-byte length word out of a
+finite file, so the fits test ends the walk after one iteration per eight bytes
+however large the declared count is. That is a different answer from the fuel
+`Fat16` and `Fat32` need, and it is different because a FAT chain can revisit a
+cluster while this walk only moves forward.
+
+**Sixteen rows, three positive controls, ELEVEN guards each ablated
+separately, and every one killed the guest at exactly its own row:**
+
+| ablation | row it moved | | ablation | row it moved |
+|---|---|---|---|---|
+| header 24 back to 20 | `hdr-20` | | array header 12 | `kv-arrhdr` |
+| `md-scan` offset 8 | `md-none-t` | | array-string 8 | `kv-array` |
+| `md-scan` vtype 4 | `kv-keyln-t` | | tensor name 8 | `ti-short` |
+| `kv-bytes` offset 8 | `kv-short` | | tensor ndim 4 | `ti-name` |
+| `kv-bytes` vtype 4 | `kv-keylen` | | tensor shape span | `ti-ndim` |
+| string length 8 | `kv-strlen` | | | |
+
+Two arm-design notes worth keeping. The rows compute their values INSIDE the
+print statements through helpers, because the first version bound them in
+`let`s above the `act` block, every binding was evaluated before the first line
+printed, and the run died with no output at all and named its row only through
+`RSI=0x14`. And `md-none` and `md-none-t` are the same file through the two
+different walkers, which is what caught the disagreement between them.
+
+**Positive controls.** `gguf-test`, `ai-gguf`, `bundled-agent`,
+`foreword-all-compile` pass unchanged, and `build/gguf-foreign-test.ps1` parses
+four real llama.cpp models off this box, up to 3,184 MB, checking version,
+tensor count, kv count, architecture, tensor-table offset and first tensor name
+against an independent host parse. That harness is the one that matters: a
+tokenizer vocabulary is an array of tens of thousands of strings, which is
+exactly the shape the string-array guard sits in and exactly the shape a
+generated fixture never has.
+
+**The dequant path was outside the first pass and was still a guest kill.
+Found by reek, verified here against main's bytes before anything was
+changed.** The metadata guards do not reach it because neither loop takes a
+length off the file: the element count arrives from the caller, and the caller
+gets it from the tensor shape, which IS off the file. Measured on the landed
+chapter: 32 elements from a one-block buffer answers 32 values, and 64 from the
+same buffer dies `!EXC=06`. `gguf-dq8-loop` and `gguf-dq4-loop` now stop on the
+first block that does not fit, which also covers `gguf-dq8-block`'s values and
+`gguf-dq4-block`'s nibbles, since the whole 34 or 18 byte block is checked
+before either is entered.
+
+That one is a CLAMP where the rest of the chapter refuses, and the split is
+blu's: the count decides how many values come back, not where a read lands, so
+a short buffer answers the values it actually holds. Rows `dq8-fit` and
+`dq4-fit` are the positive controls that keep the well-formed case honest, and
+ablating either guard kills the guest at its own row and nowhere else. The arm
+is now twenty rows and **thirteen guards, each with a row that isolates it.**
+
+`AgentBundle.ab-parse-model` also now checks `gti-valid` rather than reporting
+a tensor name nothing validated. The refusal channel landed in the first pass
+with no caller asking for it, which is L-UNCALLED sitting in our own work.
+
+## A Bounds Guard That ADDS Can Be Overflowed (the whole class)
+
+Found by blu 2026-08-16 in reek's item-15 `sdw-decode` bound, one day after it
+landed. It is worth its own section because it is not one defect: **71 sites in
+the tree compare `a + b` against a length, and 34 of those have a non-constant
+second operand.**
+
+**The shape.** A guard reads a length off the wire, checks it is not negative,
+then asks whether the field fits:
+
+```
+    else if p9 + 1 + clen > text-length line then None
+```
+
+That is wrong whenever `clen` can be large enough to wrap the sum. Measured
+2026-08-16 on the seed: `text-to-integer` of a 19-digit field answers **i64
+max**, and `46 + 9223372036854775807` is **-9223372036854775763**. A negative
+sum is under any length, so the guard answers False and admits exactly the
+record it exists to refuse. blu ran it against main 15576 and the guest died
+`!EXC=06`.
+
+**The fix is to subtract, not to add a second check.** `clen > text-length line
+- (p9 + 1)` cannot wrap, because both operands are already bounded by the
+length of a thing that exists. A range check whose own arithmetic can overflow
+is not a range check.
+
+**`clen < 0` is not enough and that is the trap.** The original guard DID
+refuse a negative length, and a reader checking it sees a bounds test with a
+sign test in front of it and moves on. The value was bounded; the arithmetic
+was not.
+
+**`sdw-decode` itself was made subtractive at blu 15614**, and this is worth
+dating because for a day this section prescribed a fix the originating record
+did not yet have: the class was written up, `repo-has` was changed, and the
+site the class was found in still shipped the additive form. Its arm is arm 9
+of `source-def-wire-guard`. With it landed the untouched remainder below is 32
+rather than 33.
+
+`repo-has` in `RepoProtocol` had the same shape and was made subtractive in the
+same pass. **No live path was demonstrated there and the section says so**: all
+five call sites pass a constant `n` of 1 or 8, so nothing reachable overflows
+it. It was changed anyway, because the additive form is only safe while nobody
+adds a call site with a length off the wire, and re-proving that at every
+future call site is a worse deal than never needing to. Its arm is in
+`codex/test/apps/repo-frame-truncated`, four rows asking the predicate
+directly: a huge offset, a huge length, both huge, and a sane case that must
+still pass. **Ablated to the additive form, `off` and `both` flip to admitted
+while `sane` stays green**, which is the discrimination -- the guard starts
+saying yes to a read of eight bytes at offset i64 max.
+
+**The other 33 sites are NOT swept and are not claimed.** Most are probably
+safe: a constant addend (`off + 4`) cannot wrap unless the offset is already
+absurd, and several take their length from a u16 or u32 that cannot get near
+the ceiling. Judging that is per-site work in files with owners --
+`Tls`, `Dtls*`, `Asn1`, `TlsEndpoint` and `TlsCert` are the net leg's,
+`CCE` and `Pattern` and `TextScan` are foreword. The count is recorded here so
+the next person to touch one knows the idiom is a trap rather than rediscovering
+it.
+
 ## The Heap Guard Page (`build/guard-page-test.ps1`)
 
 Two arms against the 2 MB unmapped page below the boot stack's reserve: FIRE
@@ -3274,6 +4473,255 @@ Both must reassemble to the identical nine-line `KBDDIAG v8` report. With
 the fix reverted, direction 1 decodes nothing and direction 2 returns five
 lines: that is the control, and it fires.
 
+## The Config-Descriptor Clamp (`codex/test/apps/usb-cfg-total-guard`)
+
+The USB half of the audit blu started on the net stack. wTotalLength is two
+bytes at offsets 2 and 3 of a configuration descriptor, sixteen bits wide, and
+the DEVICE chooses them. Three identical unclamped readers walked to it over a
+256-byte buffer that one control transfer had filled with at most 255 bytes, so
+a device claiming 0xFFFF sent every walk in `GopUsb`, `GopUsbKbd`, `GopUsbMsc`
+and `CamCapture` through 64 KB of adjacent heap, acting on anything shaped like
+an interface descriptor. It is the enumeration path, so it runs on every device
+present at boot and on anything plugged in later. One `usb-cfg-total cfg cap`
+in `GopXhci` replaces all three.
+
+**A clamp and not a refusal, because a config larger than one transfer is
+legal.** RFC-768's zero-checksum rule has the same shape here: the guard must
+not turn ordinary hardware away. What the clamp says is only that the walk
+covers the bytes we actually fetched, and `cap` is what was REQUESTED of
+`usb-get-descriptor` rather than the allocation size, because the tail of the
+allocation was never written by anything.
+
+**The descriptors are built by hand.** codex-vm's emulated devices answer
+honestly, and a harness that can only produce well-formed input cannot tell a
+working guard from an absent one.
+
+**`poison` is the arm that carries the finding.** 512 bytes, a legal config
+with one mass-storage interface in the first 32, and a second interface
+descriptor -- boot HID, which the walk is looking for -- planted at offset 300,
+past any byte a fetch could have delivered. The gap between them is filled with
+two-byte class-specific descriptors rather than left zero: a zero length byte
+terminates every walk in the tree, so a zeroed gap would stop the unclamped
+walk before it reached the plant and the arm would pass for the wrong reason.
+Live heap under a running driver is not zeroed, and that is the case being
+modelled.
+
+| line | clamped | ablated (`if False`) |
+|---|---|---|
+| `liar total` (claims 65535) | 255 | 65535 |
+| `poison total` (claims 400) | 255 | 400 |
+| `poison hid-clamped` | **no** | **yes** |
+| `big total` (claims 300) | 255 | 300 |
+| `cap-honoured` | yes | no |
+| `honest`, `runt`, `zerolen` | unmoved | unmoved |
+
+`hid-clamped` is the line that matters: ablated, the walk reports a boot
+keyboard interface the device never sent, read out of memory past the fetch.
+`hid-unclamped` sits beside it in BOTH runs and is always `yes`, so the arm
+carries its own positive control and cannot rot into a tautology.
+
+Three acceptance controls are unmoved by the ablation, which is what says the
+five lines that move are measuring the clamp and not the harness. `honest` is
+the one that fails first if a future clamp refuses ordinary descriptors; `big`
+pins the legal case of a device whose config exceeds our fetch, and it must
+still find the interface that IS present.
+
+**The live path is the other control.** With the clamp in, the desk enumerates
+the emulated stick and the Files pane lists the ESP (`EFI`, `SOURCE.SRC`,
+`CODEX.CDX`, `SRC`), so the real xHCI-to-descriptor-walk-to-MSC-to-FAT chain is
+unaffected. The Monitor pane still reads `keyboard USB HID   mouse yes`.
+
+**The other defect class was already closed on this path and is worth saying
+so.** A Command Status Wrapper is checked on the way in: `msc-finish` requires
+the `USBS` signature, requires the tag to echo the one `msc-stamp-cbw` sent,
+and treats a phase error as a reset-and-fail. An MSC reply for the wrong
+command therefore cannot be read as the answer to this one.
+
+## The Truncated Repository Frame (`codex/test/apps/repo-frame-truncated`)
+
+The caller half of blu's framing work, handed over after the clamp landed
+(main 15345). `frame-next-offset` clamps a decoder's next offset to
+`list-length bs`, which makes it a valid SLICE BOUND and **not a valid index**.
+Two sites in `apps/works/RepoProtocol.codex` then indexed at exactly that
+offset with a raw `list-at`: `decode-annotation:323` and
+`decode-verdict-kind:399`. On a truncated frame both are out of range by
+exactly one. Both are `frame-byte-at` now, which answers 0 past the end.
+
+**The boundary is constructed, not approximated.** With one-character fields
+the annotation encoding opens with three length-prefixed texts at five bytes
+each, so cutting the buffer at 15 leaves `tr.next-offset` equal to
+`list-length`. The arm asserts that (`boundary cut=15 len=15 tr-next=15`), so
+an arm that stops being the boundary case says so rather than passing quietly.
+
+**The ablated call is NOT carried inside the arm, and that is a difference from
+the config-descriptor clamp above.** There the unguarded read stayed inside a
+larger allocation and could sit beside the guarded one on every run. Here it
+faults, so it kills the run instead of printing a wrong answer. Run as a source
+edit at site 323, restoring the raw `list-at`:
+
+```
+!EXC=06 RIP=0000000000112c37 ... RDI=000000000000000f RSI=000000000000000f
+```
+
+`0x0f` is 15, the same index the guarded arm asserts, and the guest dies before
+printing any of the seven lines. That is the whole finding: the fault lands on
+the boundary the test names.
+
+| line | guarded | ablated |
+|---|---|---|
+| all eight | printed | nothing printed, `!EXC=06` at index 15 |
+
+**The depth is swept, not fixed, and that is fester's point on the handoff:**
+no-crash at ONE length passes just as well on a build where the guard was never
+reached. Every cut from the empty list to the whole 34-byte frame is decoded and
+its kind recorded as one letter:
+
+```
+sweep 0..34 = rrrrrrrrrrrrrrrrDDDDDDDDDDDDDDDDDDD
+```
+
+Thirty-five depths, one discontinuity, and it sits exactly where the boundary
+arm says it should: `r` while the kind byte is absent and `frame-byte-at`
+answers 0, `D` for `Discovery` from cut 16 once the byte is present. A bound
+wrong by one moves that transition. A depth that faults takes the run with it
+and prints nothing at all, which is what the ablated build does at the very
+first depth.
+
+**What the guarded arms pin is safety, not correctness, and the doc should not
+overclaim it.** `cut hash=h chapter=c kind=Rationale body=[] ts=0` is a
+truncated message being handed on as though it were whole: byte 0 reads as
+`Rationale` because that is what `frame-byte-at` answers past the end. Refusing
+instead needs somewhere for the refusal to travel, and `FrameTextResult` carries
+only a value and an offset. That channel is open work and blu's;
+`MessageFraming.codex:29-37` states it. Two sites in the same file that step
+past a clamped offset, `decode-annotation:324` and `:336`, are deliberately left
+alone for the same reason: they are memory-safe and they yield empty fields.
+
+Not in the class and checked: `:230` and `:464` index internal lists rather
+than wire bytes, and `frame-read-le64` is built from `frame-read-le32`, so it
+inherited the fix.
+
+**The refusal channel is wired, and the two sweeps together are the claim.**
+`MessageFraming` gained `valid` on its result records (blu, main 15375), and
+every decode result in `RepoProtocol` now folds it. Two reads had no predicate
+to fold, because `frame-fits` answers for a length-prefixed field and these are
+raw spans: the annotation's single kind byte, and the eight bytes of a
+timestamp. `repo-has` is the predicate for those and lives in `RepoProtocol`,
+because the shape is that chapter's rather than the framing's.
+
+```
+sweep 0..34 = rrrrrrrrrrrrrrrrDDDDDDDDDDDDDDDDDDD
+valid 0..34 = xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxv
+```
+
+**They must not switch at the same byte, and they do not.** The kind sweep
+turns at 16, where the kind byte arrives; validity turns at 34, where the
+annotation is whole. A `valid` that merely tracked the last field read would
+switch with the kind, and this pair is what says it does not.
+
+The worst default in that chapter is now readable rather than silent:
+`decode-verdict-kind` past the end reads 0 through `frame-byte-at`, and 0 is
+`Accept`, so a truncated verdict decoded as an ACCEPTED one. The value is
+unchanged, because refusing is the caller's decision, but `verdict at-end
+valid=x` says the byte was never there.
+
+`decode-verdict` and `decode-proposal-payload` keep their signatures and are
+one-line readers of `decode-verdict-checked` and
+`decode-proposal-payload-checked`, so the walk happens once. Two walks that had
+to agree about validity would be two sources of truth about the same bytes,
+which is what this channel exists to remove.
+
+## The Wire Payload Refusal (`codex/test/apps/wire-payload-refuse`)
+
+The five consumers refuse now, and each takes the road it already had for a
+message not worth acting on: `accepted = False` in `FactSync`, `drop-inbound`
+in `AnnotationTransport`, the unchanged driver in `AnnotationDriver`. No new
+policy was invented; the only new fact is that a truncated payload is
+distinguishable from an empty one.
+
+**The message in this arm is neither corrupt nor forged, and that is the
+point.** It is a correctly signed envelope around a SHORT payload -- what an
+attacker who can cut a stream gets for free, and what a half-written frame
+produces by accident. The envelope is rebuilt over the truncated bytes rather
+than copied from the whole message, so the id and the signature are right FOR
+WHAT ARRIVED; reusing the original envelope would only have tested the id
+check, which already worked.
+
+```
+good  envelope=yes payload-valid=yes id=v1
+bad   envelope=yes payload-valid=no  id=v1
+bad kind-would-have-been=Accept
+consumer good accepted=yes bad accepted=no
+consumer good recv=1 bad recv=0
+```
+
+`envelope=yes` on both arms is the line that matters: authentication passed and
+told nobody anything about completeness. And the verdict the truncated message
+would have been persisted as is **Accept**, because `frame-byte-at` answers 0
+past the end and 0 is that tag.
+
+**Ablated** (the `FactSync` guard replaced by `if False`): `bad accepted=yes`,
+`bad recv=1`. The corrupted verdict is accepted and counted, which is what the
+tree did until 2026-08-15.
+
+`good` is the acceptance control and a guard that refuses everything fails it.
+`FactSync` is the consumer the arm drives because its verdict path checks the
+envelope and then decodes with no keyring in the way, so it is reachable
+without standing up a trust store; the other four are the same one-line shape.
+The two existing consumer tests, `fact-sync-wire-test` and
+`annotation-driver-test`, still match their expected output byte for byte,
+which is what says well-formed traffic is undisturbed.
+
+## The Kernel Descriptor Family (`codex/test/usb-desc-guard`)
+
+The kernel-side half of what `usb-cfg-total-guard` covers at the Works layer,
+and the third of the three USB rows in the Track D census. Two different
+outcomes in one arm, which is the point of running it.
+
+**`hid-scan-loop` was a real defect.** It bounded its offset against the
+caller's `total` and never against `list-length desc`, and that total is a
+device's own `wTotalLength`. Measured before the fix, a 25-byte configuration
+claiming 200:
+
+```
+scan honest total=25 ifaces=1
+!EXC=06 RIP=000000000010bdb6 ... R12=0000000000000019 R13=00000000000000c8
+```
+
+`0x19` is 25 and `0xc8` is 200 -- the buffer and the claim, the two numbers that
+disagree, in the registers. The honest arm above it had already answered, so the
+fault is the lying total and nothing else. Clamped at `hid-scan-interfaces`
+rather than refused, for the same reason the Works-side walk clamps: a
+configuration larger than one control transfer is ordinary hardware.
+
+**The three `Usb.codex` parsers were already correct, and that is worth an arm
+too.** `usb-parse-device-desc`, `usb-parse-endpoint`, `usb-parse-interface` and
+`usb-le16` all check their upper bound and degrade to zeroed records. Nothing
+asserted that, which the census recorded as KAT-ONLY: one hand-built
+well-formed array. A guard with no arm is one edit away from not being a guard,
+so `device-short`, `endpoint-past`, `interface-past` and `le16 past` pin the
+degrade.
+
+| arm | expects | why it is there |
+|---|---|---|
+| `device`, `endpoint`, `interface` | the real values | a clamp that refuses everything fails here |
+| `scan honest total=25` | 1 interface | the acceptance control for the scanner |
+| `scan lying total=200` | **1 interface** | the same answer as honest: clamped, not refused, and no invented interface |
+| `scan huge total=65535` | 1 interface | the device's field is 16 bits wide and this is all of it |
+| `scan empty` | 0 | a zero-length buffer with a non-zero total |
+| `device-short`, `endpoint-past`, `interface-past` | zeroed records | the degrade the parsers already did |
+
+`honest` and `lying` are the discriminating pair and are worth reading
+together: the buffer is identical and only the device's claim differs, so one
+answer for both is the clamp working rather than the walk getting lucky.
+
+**The negative offset is recorded and NOT guarded.** Every bound in
+`Usb.codex` is of the form `offset + n > list-length`, which a negative offset
+passes before indexing backwards. No caller can currently produce one --
+`hid-scan-loop` advances by a descriptor length and the Works-side walks start
+at zero -- so it is a hole with no way in, and closing it would be a guard
+against a caller that does not exist.
+
 ## Test Lifecycle
 
 ### Adding a Test
@@ -3316,3 +4764,75 @@ exhausted. These tests compile fine with individual VMs.
 Workaround: run `build/test.ps1 -Apps -Jobs 8` for more batch slots,
 or compile stubborn tests individually via `build/compile.ps1`.
 
+### The batch stream can lose bytes, and the loss lands on the wrong names
+
+Measured 2026-08-16, release battery at main 15671, kernel `D230B11D`, `-Jobs 8`.
+batch-0 (182 tests) delivered 180 `SIZE:` blocks. Everything through test 177
+was correct; at test 178 the stream lost bytes and every block after it was
+filed under the wrong name. `verifier-phase5-test.cdx` carried its own header
+(bytes 0..223 identical to a standalone compile, same 164,350-byte length) and
+a body that differed in 157,882 of 164,350 bytes; `repo-reclaim.cdx` WAS
+`ota-lwm2m-loopback` (SHA `A4103863`, test 181); `colophon-dogfood.cdx` WAS
+`web-server-test` (SHA `AB8F20CE`, test 182); tests 181 and 182 got exit 99 and
+were rebatched clean. All three shifted tests, compiled standalone with
+`compile.ps1 -Kernel seed\Codex.cdx` and run through `test-run.ps1` with their
+sidecars, matched `.expected` exactly. Ten VMs were live on the box at the time:
+the eight batch slots plus an `emit-compiler.ps1` IR run and a `dotnet build`.
+
+The parser in `test-compile-batch.ps1` assigns blocks to names by sequence and
+has no way to notice a lost block: a shortfall shows up only as `FAIL: VM died
+before this test` on the tail names and as byte-identical binaries under
+foreign names further up. Two things tell it apart from a compiler regression
+in a minute: hash the failing test's `.cdx` against a standalone compile
+(a shifted block matches ANOTHER test's standalone output exactly), and check
+whether the batch that produced it lost tail members to exit 99. Neither the
+lossy layer (guest serial, host `-output` writer, or the parser's marker walk)
+nor the role of host load is established; ten VMs is the only measurement.
+
+
+## The E1000 Bring-Up Budgets (`e1000-aneg-budget`, `e1000-link-budget`, `e1000-link-deadline`)
+
+Two loops in `e1000-init` were bounded by a count and neither could be. A count
+is not a duration, and on this part the two failures were serial: fixing the
+first exposed the second, which is the whole reason all three arms are here
+rather than one.
+
+**The measurement that reframed both.** NIC-3 (ASUS, 2026-08-15) recorded
+`e1000-await-aneg` running its full million at 92.89 us per MDIO read and
+**returning 0**. Aneg-done is never set on this part, while `STATUS.LU` comes up
+anyway and it negotiates 1000 Mb/s. So those 92.9 seconds were never
+auto-negotiation succeeding. They were dead time during which the link came up
+behind them, and they MASKED the fact that `e1000-await-link` had no deadline at
+all, only a bare count of four million `STATUS` reads. Budgeting aneg to 3 s
+removed the dead time and the count then ran against a link still settling:
+NIC-4, 2026-08-16, over ten minutes with no return, which reads as a wedge.
+
+**Two of the three arms are arithmetic only, and say so.** `e1000-aneg-budget`
+and `e1000-link-budget` assert the same wall time at both real HPET rates this
+project has measured (23999999 from the ASUS, 14318179 from the bed) and, for
+the link, that `batch * batch-fuel` is 409,600,000 so nothing got LESS sensitive
+than the count it replaced. The timeout branch is genuinely unreachable for
+aneg, because the model reports aneg-done on the first read.
+
+**`e1000-link-deadline` is the one that reproduces the metal symptom on the
+desk, and it exists because a claim of unreachability was wrong.** The budget
+arm's prose first asserted the link timeout was unreachable in the bed too, by
+analogy with aneg. `-e1000-no-link` had existed for some time and
+`e1000-asde-nolink` was already running under it; the analogy was the whole of
+the reasoning and nothing checked it. Under that flag `e1000-init` returns in
+**8,037,305 us** with the budget and **21,862,178 us** with the count it
+replaced, and the arm asserts the BAND rather than the figure, because a
+wall-clock reading on a loaded host is a flake.
+
+**The lower bound is the half that discriminates**, and the ceiling is the
+weaker assertion: a count that happens to be slow can land under a ceiling, but
+only a clock lands in a band. On a faster host the old count would finish sooner
+and could slip under 15 s; the budget lands near 8 s on any host because the
+clock decides, not the host. On metal the same count did not finish in ten
+minutes. Ablated, exactly one row moves.
+
+**The clock is read once per 4096-poll batch, not once per poll**, following
+`e1000-await-tx-clocked` in the same chapter. A `STATUS` read is the cheap thing
+the loop is made of and an HPET read is not, so a per-pass check would measure
+the clock rather than the link. The same defect one level out bit the NIC-4
+probe's own listen loop during rehearsal, at a fuel of four million.

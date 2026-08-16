@@ -1,0 +1,34 @@
+Chapter: Fat16CycleGuard
+
+  cites Foreword chapter Fat16
+  cites Foreword chapter Maybe
+
+ The fixture's FAT has been patched so cluster 2 points to 3 and 3 points
+ back to 2, in both FAT copies. Every number in that cycle is a VALID cluster
+ on this volume, so the address guard cannot see it: `fat16-cluster-ok`
+ answers yes to both, and the walk is well-formed at every single step. What
+ is malformed is the chain, and only a bound on the WALK catches it.
+
+ Searching a directory chain for a name that is not there is what forces the
+ whole walk: it cannot stop early on a hit. Without fuel this call does not
+ return, so the ablation of this arm is a HANG rather than a wrong answer,
+ and the harness reports it as a timeout. That is a weaker signal than a
+ moved row and it is worth saying so rather than dressing it up.
+
+Section: Reporting
+
+  yn : Boolean -> Text
+  yn (v) = if v then "yes" else "no"
+
+Section: Entry
+
+  opening : [Console, Device.Block] Nothing = act
+    vol <- fat16-init 2048
+    print-line-uni ("clusters " & show (vol.vol-cluster-count))
+    print-line-uni ("cycle-clusters-are-valid c2=" & yn (fat16-cluster-ok vol 2) & " c3=" & yn (fat16-cluster-ok vol 3))
+    two <- fat16-next-cluster vol 2
+    three <- fat16-next-cluster vol 3
+    print-line-uni ("fat 2->" & show two & " 3->" & show three)
+    hit <- fat16-find-in-cluster-dir vol 2 "NOSUCH.XXX"
+    print-line-uni (when hit is Just (e) -> "found " & (e.de-name) is None -> "walk-terminated none")
+  end

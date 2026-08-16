@@ -265,6 +265,25 @@ Section: Chrome
  invisible to the next person; a constant shows up in one grep.
 
   desk-console-cell : Integer = 36
+
+ The Edit pane's state block. `desk-edit` read this cell from the day it was
+ written and NOTHING ever wrote it, so `ged-run` was handed zero and
+ `ged-init` parked the editor's 8 MB buffer and 1 MB line index at physical
+ address 0. It worked because nothing else on this platform uses those bytes.
+ Measured 2026-08-15 on the desk under codex-vm: `peek-32 0 0` reads 0 before
+ the pane is opened and 0x639100 after, which is the buffer pointer.
+
+  desk-edit-cell : Integer = 28
+
+ The desk's base heap mark, taken in `desk-run` after the state blocks above
+ are allocated and BEFORE the first `root`. A pane visit restores to it on the
+ way out, which is what makes the visit free rather than 20 KB: the desk never
+ unwinds -- every pane tail-calls `desk-loop` again -- so without a restore the
+ root that visit rebuilds is stacked on top of the root it replaced, forever.
+ Nothing allocated after this mark survives a pane exit, so a pointer parked in
+ a `ds` cell must be allocated in `desk-run` above.
+
+  desk-mark-cell : Integer = 4
   desk-prog-cell : Integer = 44
   desk-clock-cell : Integer = 60
 
@@ -509,6 +528,7 @@ Section: Monitor
     in let f = desk-mon-row base stride h font s tf (y1 + 5 * r) "lapic" ("0x" & hex-i32 (ai.ai-lapic) & "   ioapic 0x" & hex-i32 (ai.ai-ioapic)) ds
     in let g = desk-mon-row base stride h font s tf (y1 + 6 * r) "power" ("S5 " & dk-yn (ai.ai-s5-ok) & "   reset " & dk-yn (ai.ai-reset-ok) & "   sci " & show (ai.ai-sci)) ds
     in let i = desk-mon-row base stride h font s tf (y1 + 7 * r) "clock" (clk & "   ticks " & show ticks) ds
+    in let j = desk-mon-row base stride h font s tf (y1 + 8 * r) "memory" ("heap frontier 0x" & hex-i64 __heap-save & "   desk mark 0x" & hex-i64 (peek-32 ds desk-mark-cell)) ds
     in desk-line base stride h font s tf (dk-mon-x + 12 * s) (top + ph - 20 * s) "Esc returns." (pal.pal-primary)
 
  Repainted on the same RTC-second gate the taskbar clock uses, so the
@@ -565,6 +585,7 @@ Section: Monitor
     in act
       r <- desk-mon-loop base w h stride font tf kbd mouse ds cs ai
       let hd2 = cursor-hide cs base stride
+      in let dropped = __heap-restore (peek-32 ds desk-mark-cell)
       in let root = desk-draw base w h stride font (ui-scale w) tf ds
       in let c0 = dk-cursor base w h stride cs mouse
       in desk-loop base w h stride font tf kbd mouse ds cs root
@@ -696,6 +717,7 @@ Section: The Console Pane
     in act
       r <- desk-console-loop base w h stride font tf kbd mouse ds cs ns 0
       let hd2 = cursor-hide cs base stride
+      in let dropped = __heap-restore (peek-32 ds desk-mark-cell)
       in let root = desk-draw base w h stride font (ui-scale w) tf ds
       in let c0 = dk-cursor base w h stride cs mouse
       in desk-loop base w h stride font tf kbd mouse ds cs root
@@ -796,6 +818,7 @@ Section: Clock
       c1 <- act dk-cursor base w h stride cs mouse end
       r <- desk-clock-loop base w h stride font tf kbd mouse ds cs ks (0 - 1)
       let hd2 = cursor-hide cs base stride
+      in let dropped = __heap-restore (peek-32 ds desk-mark-cell)
       in let root = desk-draw base w h stride font (ui-scale w) tf ds
       in let c0 = dk-cursor base w h stride cs mouse
       in desk-loop base w h stride font tf kbd mouse ds cs root
@@ -871,6 +894,7 @@ Section: Programs
     in act
       chosen <- desk-programs-loop base w h stride font tf kbd mouse ds cs ps
       let hd2 = cursor-hide cs base stride
+      in let dropped = __heap-restore (peek-32 ds desk-mark-cell)
       in let root = desk-draw base w h stride font (ui-scale w) tf ds
       in let c0 = dk-cursor base w h stride cs mouse
       in if chosen == 0 then desk-loop base w h stride font tf kbd mouse ds cs root
@@ -886,6 +910,7 @@ Section: Programs
     in act
       r <- desk-calc-loop base w h stride font tf kbd mouse ds cs ks
       let hd2 = cursor-hide cs base stride
+      in let dropped = __heap-restore (peek-32 ds desk-mark-cell)
       in let root = desk-draw base w h stride font (ui-scale w) tf ds
       in let c0 = dk-cursor base w h stride cs mouse
       in desk-loop base w h stride font tf kbd mouse ds cs root
@@ -939,6 +964,7 @@ Section: Calendar
     in act
       r <- desk-cal-loop base w h stride font tf kbd mouse ds cs
       let hd2 = cursor-hide cs base stride
+      in let dropped = __heap-restore (peek-32 ds desk-mark-cell)
       in let root = desk-draw base w h stride font (ui-scale w) tf ds
       in let c0 = dk-cursor base w h stride cs mouse
       in desk-loop base w h stride font tf kbd mouse ds cs root
@@ -1006,6 +1032,7 @@ Section: Issues
     in act
       r <- desk-trk-loop base w h stride font tf kbd mouse ds cs srv
       let hd2 = cursor-hide cs base stride
+      in let dropped = __heap-restore (peek-32 ds desk-mark-cell)
       in let root = desk-draw base w h stride font (ui-scale w) tf ds
       in let c0 = dk-cursor base w h stride cs mouse
       in desk-loop base w h stride font tf kbd mouse ds cs root
@@ -1045,6 +1072,7 @@ Section: Diffusion
     in act
       r <- desk-dif-loop base w h stride font tf kbd mouse ds cs
       let hd2 = cursor-hide cs base stride
+      in let dropped = __heap-restore (peek-32 ds desk-mark-cell)
       in let root = desk-draw base w h stride font (ui-scale w) tf ds
       in let c0 = dk-cursor base w h stride cs mouse
       in desk-loop base w h stride font tf kbd mouse ds cs root
@@ -1141,6 +1169,7 @@ Section: Appearance Pane
     in act
       r <- desk-style-loop base w h stride font tf kbd mouse ds cs
       let hd2 = cursor-hide cs base stride
+      in let dropped = __heap-restore (peek-32 ds desk-mark-cell)
       in let root = desk-draw base w h stride font (ui-scale w) tf ds
       in let c0 = dk-cursor base w h stride cs mouse
       in desk-loop base w h stride font tf kbd mouse ds cs root
@@ -1182,7 +1211,7 @@ Section: Loop
 
   desk-edit : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
   desk-edit (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) = act
-    r <- ged-run base w h stride font kbd mouse cs (peek-32 ds 28)
+    r <- ged-run base w h stride font kbd mouse cs (peek-32 ds desk-edit-cell)
     hd <- cursor-hide cs base stride
     let root = desk-draw base w h stride font (ui-scale w) tf ds
     in let c0 = dk-cursor base w h stride cs mouse
@@ -1193,7 +1222,8 @@ Section: Loop
   desk-files (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) = act
     r <- gfl-run base w h stride font kbd mouse cs
     hd <- cursor-hide cs base stride
-    let root = desk-draw base w h stride font (ui-scale w) tf ds
+    let dropped = __heap-restore (peek-32 ds desk-mark-cell)
+    in let root = desk-draw base w h stride font (ui-scale w) tf ds
     in let c0 = dk-cursor base w h stride cs mouse
     in desk-loop base w h stride font tf kbd mouse ds cs root
   end
@@ -1209,28 +1239,22 @@ Section: Loop
 
   desk-fish : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
   desk-fish (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) = act
-    let mark = __heap-save
-    in act
-      r <- gf-run base w h stride font kbd cs (dk-gpu ds)
-      let dropped = __heap-restore mark
-      in let hd = cursor-hide cs base stride
-      in let root = desk-draw base w h stride font (ui-scale w) tf ds
-      in let c0 = dk-cursor base w h stride cs mouse
-      in desk-loop base w h stride font tf kbd mouse ds cs root
-    end
+    r <- gf-run base w h stride font kbd cs (dk-gpu ds)
+    let dropped = __heap-restore (peek-32 ds desk-mark-cell)
+    in let hd = cursor-hide cs base stride
+    in let root = desk-draw base w h stride font (ui-scale w) tf ds
+    in let c0 = dk-cursor base w h stride cs mouse
+    in desk-loop base w h stride font tf kbd mouse ds cs root
   end
 
   desk-scene : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
   desk-scene (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) = act
-    let mark = __heap-save
-    in act
-      r <- gsc-run base w h stride font kbd cs (dk-gpu ds)
-      let dropped = __heap-restore mark
-      in let hd = cursor-hide cs base stride
-      in let root = desk-draw base w h stride font (ui-scale w) tf ds
-      in let c0 = dk-cursor base w h stride cs mouse
-      in desk-loop base w h stride font tf kbd mouse ds cs root
-    end
+    r <- gsc-run base w h stride font kbd cs (dk-gpu ds)
+    let dropped = __heap-restore (peek-32 ds desk-mark-cell)
+    in let hd = cursor-hide cs base stride
+    in let root = desk-draw base w h stride font (ui-scale w) tf ds
+    in let c0 = dk-cursor base w h stride cs mouse
+    in desk-loop base w h stride font tf kbd mouse ds cs root
   end
 
  F12 writes the live frame to the boot stick as SHhhmmss.BMP and paints
@@ -1272,6 +1296,7 @@ Section: Loop
     hd <- cursor-hide cs base stride
     r <- gbr-run base w h stride font kbd mouse cs (ui-scale w)
     let hd2 = cursor-hide cs base stride
+    in let dropped = __heap-restore (peek-32 ds desk-mark-cell)
     in let root = desk-draw base w h stride font (ui-scale w) tf ds
     in let c0 = dk-cursor base w h stride cs mouse
     in desk-loop base w h stride font tf kbd mouse ds cs root
@@ -1362,11 +1387,14 @@ Section: Loop
     in let ns = alloc-zeroed 64 64
     in let kp = poke-32 ds 24 ks
     in let np = poke-32 ds desk-console-cell ns
+    in let ep = poke-32 ds desk-edit-cell (alloc-zeroed 64 64)
+    in let ci = gcon-init ns
     in let pp = poke-32 ds desk-prog-cell (alloc-zeroed 64 64)
     in let kp2 = poke-32 ds desk-clock-cell (alloc-zeroed 64 64)
     in let gpk = poke-32 ds desk-gpu-cell gp
     in let ap = poke-32 ds dk-adorn-cell dk-adorn-default
     in let wp = mouse-warp mouse (w / 2) (h / 2)
+    in let bm = poke-32 ds desk-mark-cell __heap-save
     in let root = desk-draw base w h stride font s tf ds
     in let c0 = cursor-update cs base stride w h s (w / 2) (h / 2)
     in desk-loop base w h stride font tf kbd mouse ds cs root

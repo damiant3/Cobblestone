@@ -23,8 +23,15 @@
 # A def is emitted on one line as `  (def "NAME" ...)`. Its honest IR builds
 # the header `(def ` and the quoted name by SEPARATE concatenation, so the
 # contiguous escaped token `(def \"NAME\"` never appears in an honest def.
-# A quine that reproduces itself must embed that exact escaped self-header
-# inside a text literal, which is what this scans for.
+# The DDC-QUINE-ARM construction embeds that exact escaped self-header as ONE
+# contiguous text literal, which is what this scans for. That is NOT what a
+# quine MUST do: the same split-concatenation the honest emitter uses -- and
+# that the arm itself applies to its own `@QQ@` marker (DDC-QUINE-ARM.md) --
+# would spread the header across adjacent text-lits and slip this substring
+# scan, as would a mutual "A embeds B, B embeds A" pair (each def is checked
+# only against its OWN name). That is the Rice-undecidable tail the scope note
+# above disclaims; this catches the tractable single-def form, not the general
+# case.
 
 param(
     [string]$Repo   = (Split-Path -Parent $PSScriptRoot),

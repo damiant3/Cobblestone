@@ -1,0 +1,69 @@
+Chapter: SourceDefWireGuard
+  cites Foreword chapter SourceDefWire
+  cites Foreword chapter Maybe
+
+ The record's ninth field is a length, and it is read off the disk. Every arm
+ below is one hostile value of it against a line that is 12 characters long
+ after the ninth pipe.
+
+ Arms 1 to 3 are the shapes a WELL-FORMED record produces and a guard must not
+ refuse: the ordinary case, content running exactly to the end, and the empty
+ content whose offset is one past the last character. Arms 4 to 7 are hostile.
+ 4 and 5 kill the guest outright without the bound (measured 2026-08-16:
+ substring answers !EXC=06 both for a length past the end and for a negative
+ one), and 6 is the same kill wearing different clothes -- text-to-integer
+ answers 1511 for "abc" rather than failing, so a corrupt length field arrives
+ as a plausible large number rather than as a zero.
+
+ We say:
+
+Section: Reading the answer
+
+  show-decode : Maybe SourceDefWire -> Text
+  show-decode (m) =
+    when m
+     is None -> "refused"
+     is Just (w) -> "[" & w.sdw-content & "]"
+
+  show-fields : Maybe SourceDefWire -> Text
+  show-fields (m) =
+    when m
+     is None -> "refused"
+     is Just (w) -> w.sdw-hash & "/" & w.sdw-author & "/" & show (w.sdw-timestamp)
+
+Section: The lines
+
+ Nine pipes, then the content. Only the ninth field and the content differ
+ between arms.
+
+  line-ok : Text = "abc123|p/q|Quire|Chap|||val|77|12|demo content"
+  line-short : Text = "abc123|p/q|Quire|Chap|||val|77|4|demo content"
+  line-empty : Text = "abc123|p/q|Quire|Chap|||val|77|0|"
+  line-over : Text = "abc123|p/q|Quire|Chap|||val|77|99|demo content"
+  line-negative : Text = "abc123|p/q|Quire|Chap|||val|77|-5|demo content"
+  line-garbage : Text = "abc123|p/q|Quire|Chap|||val|77|abc|demo content"
+  line-nopipe : Text = "abc123|p/q|Quire|Chap|||val|77"
+
+ ARM 9 IS THE ONE THAT GOT PAST THE FIRST BOUND. The guard was written as
+ `p9 + 1 + clen > text-length line`, which is defeated by the value an attacker
+ chooses: text-to-integer answers 9223372036854775807 for this field, the sum
+ wraps negative, the comparison is false and the record is admitted. Run
+ against that guard on 2026-08-16 the guest died `!EXC=06`. A ceiling that the
+ attacker can reach around is not a ceiling, which is why the check subtracts
+ now, and why arms 4 and 5 alone could not have caught this.
+
+  line-overflow : Text = "abc123|p/q|Quire|Chap|||val|77|9223372036854775807|demo content"
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni ("1 ok=" & show-decode (sdw-decode line-ok))
+    print-line-uni ("2 short=" & show-decode (sdw-decode line-short))
+    print-line-uni ("3 empty=" & show-decode (sdw-decode line-empty))
+    print-line-uni ("4 over=" & show-decode (sdw-decode line-over))
+    print-line-uni ("5 negative=" & show-decode (sdw-decode line-negative))
+    print-line-uni ("6 garbage=" & show-decode (sdw-decode line-garbage))
+    print-line-uni ("7 nopipe=" & show-decode (sdw-decode line-nopipe))
+    print-line-uni ("8 fields-survive=" & show-fields (sdw-decode line-ok))
+    print-line-uni ("9 overflow=" & show-decode (sdw-decode line-overflow))
+  end

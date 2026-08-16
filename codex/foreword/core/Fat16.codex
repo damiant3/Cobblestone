@@ -71,6 +71,13 @@ Section: BPB Parsing
       vol-cluster-count = 0
     }
 
+ The cluster count is computed from BPB fields the image supplies -- a
+ declared total-sector count sets it, and everything derived from it. The FAT
+ specification caps a FAT16 volume at 65524 data clusters; past that the
+ format is FAT32 and not what this BPB claims. So a count above the format's
+ own maximum is refused down to that maximum, which is what makes
+ `fat16-chain-fuel` a bound rather than a number the image chooses.
+
   fat16-parse-bpb : Integer, Integer -> Fat16Volume
   fat16-parse-bpb (part-start) (buf) =
     let bps = fat16-read-u16 buf 11
@@ -87,7 +94,8 @@ Section: BPB Parsing
     in let data-start = root-start + root-dir-sectors
     in let total = fat16-total-sectors buf
     in let data-sectors = total - (data-start - part-start)
-    in let clusters = if data-sectors <= 0 then 0 else data-sectors / spc
+    in let raw-clusters = if data-sectors <= 0 then 0 else data-sectors / spc
+    in let clusters = if raw-clusters > 65524 then 65524 else raw-clusters
     in Fat16Volume {
       vol-part-start = part-start,
       vol-bytes-per-sector = bps,
@@ -117,10 +125,49 @@ Section: BPB Parsing
 
 Section: FAT Chain
 
+ Per the FAT specification data clusters number from 2, and the highest one a
+ volume has is `vol-cluster-count + 1`. A cluster number arrives from a
+ directory entry or from a FAT slot, both of which are bytes on a medium we
+ did not produce, and the two lines below turn one into a sector address by
+ arithmetic alone. Outside that range the address is not on the volume: below
+ 2 it runs backwards out of the data region, and above the count it runs past
+ the end of the medium.
+
+ The refusal answers 65535 because that is end-of-chain in this format's own
+ width, which is what the callers already handle -- a bad cluster truncates a
+ file instead of reading a foreign sector, the same way a failed sector read
+ does.
+
+  fat16-cluster-ok : Fat16Volume, Integer -> Boolean
+  fat16-cluster-ok (vol) (cluster) =
+    cluster >= 2 & cluster <= fat16-last-cluster vol
+
+ A FAT whose chain cycles is well formed at every step -- every cluster in it
+ is a valid address -- so only a bound on the WALK catches it. The walkers
+ below carry Brent's cycle detection: a saved cluster, a power, and a step
+ count. Each step compares the next cluster against the saved one and, when
+ the step count reaches the power, re-saves and doubles. A cycle is found
+ within about twice the tail plus the loop, and a chain that ends still ends.
+ On a `2 -> 3 -> 2` fixture that is three steps.
+
+ It is Brent rather than the more familiar Floyd because Floyd's hare takes
+ two steps per iteration and every step here is a FAT sector read, so Floyd
+ would cost about half again as many reads on healthy volumes. Brent advances
+ one cursor exactly as the unguarded walk did, so a well-formed chain pays
+ nothing but the comparison.
+
+ Two integers, not a count of clusters: a bound taken from the volume's own
+ declared size would be a number the image sets, and the cluster count is
+ computed from BPB fields that arrive on the medium.
+
+
   fat16-next-cluster : Fat16Volume, Integer -> [Device.Block] Integer
   fat16-next-cluster (vol) (cluster) = act
-    buf <- block-read-sector ((vol.vol-fat-start) + (cluster * 2) / (vol.vol-bytes-per-sector))
-    fat16-read-u16 buf (int-mod (cluster * 2) (vol.vol-bytes-per-sector))
+    if fat16-cluster-ok vol cluster == False then 65535
+    else act
+      buf <- block-read-sector ((vol.vol-fat-start) + (cluster * 2) / (vol.vol-bytes-per-sector))
+      fat16-read-u16 buf (int-mod (cluster * 2) (vol.vol-bytes-per-sector))
+    end
   end
 
   fat16-is-end : Integer -> Boolean
@@ -493,16 +540,26 @@ Section: Writing A Directory Entry
 
   fat16-find-free-slot-in-dir : Fat16Volume, Integer -> [Device.Block] Integer
   fat16-find-free-slot-in-dir (vol) (cluster) =
+    fat16-find-free-slot-walk vol cluster cluster 1 0
+
+  fat16-find-free-slot-walk : Fat16Volume, Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  fat16-find-free-slot-walk (vol) (cluster) (saved) (power) (steps) =
     if fat16-is-end cluster then 0 - 1
     else act
       found <- fat16-scan-dir-slot-sectors vol (fat16-cluster-sector vol cluster) (vol.vol-sectors-per-cluster)
-      fat16-free-slot-or-next vol cluster found
+      fat16-free-slot-or-next vol cluster found saved power steps
     end
 
-  fat16-free-slot-or-next : Fat16Volume, Integer, Integer -> [Device.Block] Integer
-  fat16-free-slot-or-next (vol) (cluster) (found) =
+  fat16-free-slot-or-next : Fat16Volume, Integer, Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  fat16-free-slot-or-next (vol) (cluster) (found) (saved) (power) (steps) = act
     if found >= 0 then found
-    else fat16-find-free-slot-in-dir vol (fat16-next-cluster vol cluster)
+    else act
+      nxt <- fat16-next-cluster vol cluster
+      if nxt == saved then 0 - 1
+      else if steps + 1 == power then fat16-find-free-slot-walk vol nxt nxt (power * 2) 0
+      else fat16-find-free-slot-walk vol nxt saved power (steps + 1)
+    end
+  end
 
   fat16-scan-dir-slot-sectors : Fat16Volume, Integer, Integer -> [Device.Block] Integer
   fat16-scan-dir-slot-sectors (vol) (sector) (remaining) =
@@ -655,14 +712,20 @@ Section: Creating A File
 
   fat16-free-chain : Fat16Volume, Integer -> [Device.Block] Integer
   fat16-free-chain (vol) (cluster) =
+    fat16-free-chain-walk vol cluster cluster 1 0
+
+  fat16-free-chain-walk : Fat16Volume, Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  fat16-free-chain-walk (vol) (cluster) (saved) (power) (steps) =
     if cluster < 2 then 0
     else if fat16-is-end cluster then 0
-    else fat16-free-chain-from vol cluster (fat16-next-cluster vol cluster)
+    else fat16-free-chain-from vol cluster (fat16-next-cluster vol cluster) saved power steps
 
-  fat16-free-chain-from : Fat16Volume, Integer, Integer -> [Device.Block] Integer
-  fat16-free-chain-from (vol) (cluster) (nxt) = act
+  fat16-free-chain-from : Fat16Volume, Integer, Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  fat16-free-chain-from (vol) (cluster) (nxt) (saved) (power) (steps) = act
     w <- fat16-write-fat-entry vol cluster 0
-    fat16-free-chain vol nxt
+    if nxt == saved then 0
+    else if steps + 1 == power then fat16-free-chain-walk vol nxt nxt (power * 2) 0
+    else fat16-free-chain-walk vol nxt saved power (steps + 1)
   end
 
   fat16-find-name-slot : Fat16Volume, Text -> [Device.Block] Integer
@@ -700,16 +763,26 @@ Section: Creating A File
 
   fat16-find-name-slot-in-dir : Fat16Volume, Integer, Text -> [Device.Block] Integer
   fat16-find-name-slot-in-dir (vol) (cluster) (name) =
+    fat16-find-name-slot-walk vol cluster name cluster 1 0
+
+  fat16-find-name-slot-walk : Fat16Volume, Integer, Text, Integer, Integer, Integer -> [Device.Block] Integer
+  fat16-find-name-slot-walk (vol) (cluster) (name) (saved) (power) (steps) =
     if fat16-is-end cluster then 0 - 1
     else act
       found <- fat16-name-slot-dir-sectors vol name (fat16-cluster-sector vol cluster) (vol.vol-sectors-per-cluster)
-      fat16-name-slot-or-next vol cluster name found
+      fat16-name-slot-or-next vol cluster name found saved power steps
     end
 
-  fat16-name-slot-or-next : Fat16Volume, Integer, Text, Integer -> [Device.Block] Integer
-  fat16-name-slot-or-next (vol) (cluster) (name) (found) =
+  fat16-name-slot-or-next : Fat16Volume, Integer, Text, Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  fat16-name-slot-or-next (vol) (cluster) (name) (found) (saved) (power) (steps) = act
     if found >= 0 then found
-    else fat16-find-name-slot-in-dir vol (fat16-next-cluster vol cluster) name
+    else act
+      nxt <- fat16-next-cluster vol cluster
+      if nxt == saved then 0 - 1
+      else if steps + 1 == power then fat16-find-name-slot-walk vol nxt name nxt (power * 2) 0
+      else fat16-find-name-slot-walk vol nxt name saved power (steps + 1)
+    end
+  end
 
   fat16-name-slot-dir-sectors : Fat16Volume, Text, Integer, Integer -> [Device.Block] Integer
   fat16-name-slot-dir-sectors (vol) (name) (sector) (remaining) =
@@ -1025,10 +1098,22 @@ Section: Cluster Directory Search
 
   fat16-find-in-cluster-dir : Fat16Volume, Integer, Text -> [Device.Block] Maybe Fat16DirEntry
   fat16-find-in-cluster-dir (vol) (cluster) (name) =
+    fat16-find-in-cluster-walk vol cluster name cluster 1 0
+
+  fat16-find-in-cluster-walk : Fat16Volume, Integer, Text, Integer, Integer, Integer -> [Device.Block] Maybe Fat16DirEntry
+  fat16-find-in-cluster-walk (vol) (cluster) (name) (saved) (power) (steps) =
     if fat16-is-end cluster then None
     else when fat16-scan-cluster-sectors vol name (fat16-cluster-sector vol cluster) (vol.vol-sectors-per-cluster)
       is Just (entry) -> Just entry
-      is None -> fat16-find-in-cluster-dir vol (fat16-next-cluster vol cluster) name
+      is None -> fat16-find-in-cluster-step vol cluster name saved power steps
+
+  fat16-find-in-cluster-step : Fat16Volume, Integer, Text, Integer, Integer, Integer -> [Device.Block] Maybe Fat16DirEntry
+  fat16-find-in-cluster-step (vol) (cluster) (name) (saved) (power) (steps) = act
+    nxt <- fat16-next-cluster vol cluster
+    if nxt == saved then None
+    else if steps + 1 == power then fat16-find-in-cluster-walk vol nxt name nxt (power * 2) 0
+    else fat16-find-in-cluster-walk vol nxt name saved power (steps + 1)
+  end
 
   fat16-scan-cluster-sectors : Fat16Volume, Text, Integer, Integer -> [Device.Block] Maybe Fat16DirEntry
   fat16-scan-cluster-sectors (vol) (name) (sector) (remaining) =
@@ -1426,11 +1511,17 @@ Section: Listing Any Directory
 
   fat16-cluster-entries : Fat16Volume, Integer, List Fat16DirEntry -> [Device.Block] List Fat16DirEntry
   fat16-cluster-entries (vol) (cluster) (acc) =
+    fat16-cluster-entries-walk vol cluster acc cluster 1 0
+
+  fat16-cluster-entries-walk : Fat16Volume, Integer, List Fat16DirEntry, Integer, Integer, Integer -> [Device.Block] List Fat16DirEntry
+  fat16-cluster-entries-walk (vol) (cluster) (acc) (saved) (power) (steps) =
     if fat16-is-end cluster then acc
     else act
       here <- fat16-cluster-entry-sectors vol (fat16-cluster-sector vol cluster) (vol.vol-sectors-per-cluster) acc
       next <- fat16-next-cluster vol cluster
-      fat16-cluster-entries vol next here
+      if next == saved then here
+      else if steps + 1 == power then fat16-cluster-entries-walk vol next here next (power * 2) 0
+      else fat16-cluster-entries-walk vol next here saved power (steps + 1)
     end
 
   fat16-cluster-entry-sectors : Fat16Volume, Integer, Integer, List Fat16DirEntry -> [Device.Block] List Fat16DirEntry

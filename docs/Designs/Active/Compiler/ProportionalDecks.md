@@ -451,6 +451,28 @@ constant costing 6,710,886 bytes of reservation per point per unit, and the
 condition is one chapter's naming style. Reach for it when the corpus moves,
 not when one unit does.
 
+**Re-measured 2026-08-15 (fester) as a controlled sweep, which the table above
+is not.** The rows above compare DIFFERENT chapters, so naming style and
+content vary together. `cdxtopeScript` was instead regenerated at four section
+granularities over byte-identical body text, leaving the binding count as the
+only variable:
+
+| top-level defs | required | margin | unit length |
+|---|---|---|---|
+| 24 | 51 | 1.25 | 145,555 |
+| 14 | 48 | 1.33 | 144,995 |
+| 8 | 46 | 1.39 | 144,659 |
+| 5 | 45 | 1.42 | 144,491 |
+
+**Six points of required scale while unit length moves 0.7 per cent.** The
+anti-correlation holds on a chapter 45 per cent larger than any in the table
+above, and the effect is monotone rather than a threshold, so a chapter can be
+tuned to a target margin instead of only rescued from a red.
+
+**Diminishing returns are real and the knee is early.** Halving the bindings
+from 24 to 14 buys 3 points; going from 8 to 5 buys 1 and costs a 72,466
+character line. The cheap points are the first ones.
+
 **For a `codex/build` generator chapter the restructure is provably safe**, and
 that matters because the emitted `.ps1` is a checked-in artifact:
 `build/check-generated-scripts.ps1` recompiles the generator and diffs the

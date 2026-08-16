@@ -1,0 +1,50 @@
+Chapter: DnsAnswerCount
+  cites Net chapter DnsResolver
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ We say:
+
+Section: Fixtures
+
+ A DNS header and nothing after it. qdcount 0, so the answer walk starts at 12
+ and stops immediately because off + 10 passes the end of a 12-byte datagram.
+ ancount is what the wire CLAIMS, and it is the only thing that differs between
+ the two arms.
+
+  hdr : Integer, Integer -> List Integer
+  hdr (qd) (an) =
+    [18, 52, 129, 128]
+    & [bit-and (bit-shru qd 8) 255, bit-and qd 255]
+    & [bit-and (bit-shru an 8) 255, bit-and an 255]
+    & [0, 0, 0, 0]
+
+  honest : List Integer = hdr 0 0
+  lying : List Integer = hdr 0 100
+
+  name-of : Maybe (List Integer) -> Text
+  name-of (m) = when m
+    is Just (ip) -> "just-" & show (list-length ip)
+    is None -> "none"
+
+Section: The Arms
+
+ honest is the positive control. A parser that refused everything, or one that
+ answered none to every question, would pass the lying arm on its own.
+
+  h : DnsResponse = dns-parse-response honest
+  l : DnsResponse = dns-parse-response lying
+
+Section: Entry
+  opening : [Console] Nothing = act
+    print-line-uni ("honest-valid=" & show (h.valid))
+    print-line-uni ("honest-count=" & show (h.answer-count))
+    print-line-uni ("honest-lookup=" & name-of (dns-first-a-record h))
+    print-line-uni ("honest-ttl=" & show (dns-first-a-ttl h))
+    print-line-uni ("lying-valid=" & show (l.valid))
+    print-line-uni ("lying-count=" & show (l.answer-count))
+    print-line-uni ("count-matches-list=" & show (l.answer-count == list-length (l.answers)))
+    print-line-uni ("lying-lookup=" & name-of (dns-first-a-record l))
+    print-line-uni ("lying-ttl=" & show (dns-first-a-ttl l))
+    print-line-uni ("survived")
+  end

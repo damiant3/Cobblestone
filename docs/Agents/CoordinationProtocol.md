@@ -93,16 +93,39 @@ agent's directory; reading theirs is fine).
 | `outbox/<file>` | agent | A message you are sending (see Fleet Messages) |
 | `inbox/<file>` | AgentGrid | Messages addressed to you |
 
+The `.agentgrid` pointer also carries `fleetStatus`: the path of the rollup
+described under **The Fleet Dashboard** below.
+
 ### status.json -- keep it fresh
 
-Write this whenever your activity changes. It drives the status dot and
-task label in the UI, and it is how other agents see what you are doing.
+Write this whenever your activity changes. It drives the status dot in the
+UI, it is your row on the fleet dashboard, and it is how a manager agent
+decides whether you are free to take work.
 
 ```json
-{ "state": "Working", "task": "fixing lexer fuel cap" }
+{ "state": "Working", "task": "fixing lexer fuel cap", "claim": ["codex/compiler/Lexer"] }
 ```
 
 Valid states: `Idle`, `Working`, `Building`, `WaitingForBuild`, `Error`.
+
+`claim` is the ground you are standing on: the paths, files or subsystems
+you are changing. One string or a list of them. It is what keeps two agents
+off the same code -- AgentGrid compares every live claim against every
+other, and when two overlap it tells BOTH of you so you can settle it
+between yourselves with a fleet message. Neither of you is stopped and
+neither is in the wrong; you are the two people who did not know. This is
+the channel for the failure that cost the fleet twice in one week, when val
+and blu built the same `fetch-tls` work an hour apart.
+
+Three things make the claim worth writing:
+
+- **Write it when you start, not when you finish.** A claim published after
+  the collision is a record of one.
+- **A claim only holds while you say you are on it.** Your claim is ignored
+  while your state is `Idle`, so standing down releases your ground with no
+  extra step and nothing to clean up.
+- **Omitting the field keeps your last claim; an empty list releases it.**
+  A status write that only updates `task` never silently drops your ground.
 
 ### build-request -- ask for the token
 
@@ -135,6 +158,18 @@ queued with no Perforce verification. Prefer the JSON form.
 Do not poll-spam: write the file once and wait. If you need to cancel,
 delete your `build-request` before it is granted, or write
 `build-complete` after it is granted.
+
+**Measured 2026-08-16 (val): deleting `build-request` while queued did NOT
+cancel the queue entry.** The request was deleted at about 02:58 after the
+lane stood down from the item it was queued for, and the grant arrived at
+03:17:33 regardless, 19 minutes later, so this is not a poll race. The
+sentence above describes the intent; what actually happens is that a
+withdrawn request is still granted and the token then sits with an agent who
+has nothing to build. **Until the coordinator is fixed, treat the deletion as
+advisory and write `build-complete` the moment an unwanted grant arrives** --
+that path works, and it is what released the token here. If you get a GO for
+a CL you no longer intend to land, do not gate it to be polite: releasing
+immediately is what the queue behind you needs.
 
 ## What Happens Next
 
@@ -194,6 +229,49 @@ input in your session. Obey it.
    mailbox. AgentGrid clears your grant and hands the token to the
    next agent in line. There are exactly two ways out of a hold: you
    submitted and released, or you released. See rule 8.
+
+## The Fleet Dashboard
+
+Everything above is your own mailbox. The **rollup** is the whole fleet in
+one file, rewritten by AgentGrid every second, and its path is the
+`fleetStatus` field of your `.agentgrid`:
+
+```powershell
+$fleet = Get-Content (Get-Content .agentgrid | ConvertFrom-Json).fleetStatus | ConvertFrom-Json
+$fleet.agents | Where-Object { $_.state -eq 'Idle' } | Select-Object agent, contextPercent
+```
+
+Read it; never write it. It carries, for every agent on this Perforce main:
+`state`, `task`, `claim`, `buildState`, who holds the token, who is queued
+behind them, and `conflictsWith`.
+
+**The unit is the Perforce main, not the project.** A fleet larger than one
+grid is split across several AgentGrid project configs that all submit to
+the same main, and they share one rollup, one token and one queue. Every
+agent racing you is in this file.
+
+**Two halves, deliberately not merged into one "state".** `state`, `task`
+and `claim` are what an agent SAYS. `terminalRunning`, `contextPercent` and
+`lastActivityUtc` are what AgentGrid OBSERVES, off the terminal and the
+Claude Code transcript. A crashed or wedged session goes on saying `Working`
+forever, so anyone assigning work off the self-report alone hands items to
+agents that are not there. **The honest reading of "idle" is a self-reported
+`Idle` OR a `lastActivityUtc` that has not moved in a long time**; the
+second needs no cooperation from the agent and cannot be stale in the
+direction that matters.
+
+(`terminalRunning` is what the AgentGrid instance holding the coordinator
+lock can see. If the terminals were launched from a DIFFERENT instance, it
+reads `false` for agents that are perfectly alive. `lastActivityUtc` does
+not have that problem: it comes off the transcript on disk and is the same
+for every instance. Trust the quiet time, not the flag.)
+
+Use it to answer: who is free, who is standing on the ground I am about to
+take, who is ahead of me in the queue, and who has burned so much context
+that handing them a large item is a waste. **That is what it is for -- so
+those questions cost nobody a turn.** Asking the fleet instead puts the
+question in five terminals, spends five agents' attention, and returns five
+answers of five different ages.
 
 ## Rules
 
@@ -256,6 +334,14 @@ input in your session. Obey it.
    one agent's debugging session becomes three agents' idle afternoon.
    The test: if the next ten minutes are an editor and not `p4 submit`,
    you should not be holding the token.
+9. **Publish your claim, and read the fleet's before you pick work.** Put
+   the ground you are taking in `status.json`'s `claim` when you START, and
+   check the rollup for an overlap before you start rather than after. The
+   token serialises BUILDS and nothing has ever serialised WORK: two agents
+   can spend a day on the same item without either doing anything wrong,
+   because neither had any way to know. That is not a build race and the
+   token was never going to catch it. A claim costs one line in a file you
+   are already writing.
 
 9. **Warm the caches BEFORE you request.** The hold is a mutex on the
    whole fleet, so a one-time cost paid inside it is paid by everyone
@@ -339,6 +425,34 @@ submit to your dev stream, copy up to main, wait for red to merge down.
 Two merges and minutes of latency to deliver one line, and every one of
 those merges is a chance to clobber somebody's file. Your mailbox is on
 local disk and every agent in the fleet can reach it.
+
+### A message is a pointer, not a container (Damian, 2026-08-16)
+
+**Every message, directed or broadcast, is a sentence or two at most: one
+claim, and where the detail lives.** That is still the single-line `text`
+field described below -- a sentence or two packed into one line, not a
+paragraph, and never a wall. The detail already has a home -- a CL number, a
+section of the doc that owns the subject, a `file:line` -- and the message
+NAMES that home instead of reproducing it. "Gpt geometry guard
+landed, red 15556, account in `ExaminersAssay` 'The Foreword GPT Geometry
+Guard'" is the whole message; the arms, the ablation and the fixture recipe
+are in the two places named, read when the reader gets there.
+
+The reason is the arithmetic of a fleet. Every recipient reads every message
+in full, in their own loaded context, mid-task. A wall of prose sent to one
+lane is that wall paid by everyone it reaches, and almost none of it changes
+what any of them does next. Restated detail is also detail that now exists
+twice and drifts from the CL that owns it, which is the mechanical failure
+the workplan outbox died of.
+
+**The test: would the reader act the same having read only the pointer, and
+opened the CL or doc if and when it became load-bearing?** If yes, the prose
+was swamp. This binds a directed note as hard as a broadcast: "taking item
+17, claimed in the file-claims table, reply if it is yours" needs no
+paragraph of what the item is, because the register already says what it is.
+When a message starts to argue a case, the case belongs in the CL
+description or the doc, and the message shrinks to the sentence that points
+at it.
 
 To send:
 
@@ -476,6 +590,18 @@ the doc that owns the subject.
   build silently uses old source and the gate fails for a reason that has
   nothing to do with your change. `p4 -c <main-client> sync //Codex/main/...`
   first, every time.
+
+## An internal seed land is a short hold now (Damian, 2026-08-16)
+
+A seed land used to hold the token for ~30 minutes: three full gate passes,
+two of them redundant against determinism. It is a few minutes now. The token
+holder gates with `build/build.ps1 -Internal` (smart coverage: the fixed-point
+core and BVT always, a regression phase only when a file it depends on
+changed), skips the convergence rebuild when the gate reports a one-pass fixed
+point, and replaces the parent rebuild at copy-up with `build/check-seed-orphans.ps1`.
+The mechanics and the why are in `PerforceProcess.md` 4.3b and 4.4; the point
+for the queue is that a hold behind you is minutes, not half an hour. The full
+`build/build.ps1` stays for public/release builds.
 
 ## A many-CL arc takes ONE token, at the end (Damian, 2026-08-06)
 

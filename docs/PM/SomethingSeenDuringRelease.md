@@ -27,9 +27,29 @@ count does.
 
 ## Open
 
-*Nothing open. Both entries below were worked in the run-up to Update 43.*
+*Nothing open. The Update 43 entries were worked in the run-up to that release;
+the Update 44 entry was found and worked during the release run at head 15686.*
 
 ## Done
+
+### Update 44 -- README's DDC paragraph restated a boundary the owning doc had already corrected
+
+`README.md` said the measured DDC boundary was "self-reproducing versus not"
+and that a self-reproducing quine was the one thing that would survive.
+`OperatorsManual.md` "The witness has a negative control" corrected both on
+2026-08-11 (a frontend-IR-emission hook survives WITHOUT self-reproduction, and
+the neutralisation is that a survivor is readable text in the IR and the C#).
+Update 43 shipped the stale paragraph. Reworded 2026-08-16 to the corrected
+statement. `check-doc-counts.ps1` cannot see this: it is a claim, not a count.
+
+```powershell
+# the two must agree on the boundary; the README paragraph is the copy
+Select-String README.md, docs/OperatorsManual.md -Pattern 'self-reproducing|readable intermediate' | ForEach-Object { "$($_.Filename):$($_.LineNumber): $($_.Line.Trim())" }
+```
+
+Also this run: the seed triple, the img SHA-256 and the test-file count
+(1,466 to 1,499) drifted as they do every cycle; `check-doc-counts.ps1` is 61
+claims, 0 drifted after the edit. All 14 repo-relative README links resolve.
 
 ### Update 43 -- README's only broken link, and a published seed that had gone stale
 

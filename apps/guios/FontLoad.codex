@@ -201,6 +201,94 @@ Section: Buffer-backed TTF Binary Helpers (O(1) access via peek-byte)
   fb-u32 (buf) (off) =
     peek-byte buf off * 16777216 + peek-byte buf (off + 1) * 65536 + peek-byte buf (off + 2) * 256 + peek-byte buf (off + 3)
 
+Section: Buffer-backed TTF Plausibility
+
+
+  ttf-tag-head-i : Integer = #68656164
+  ttf-tag-maxp-i : Integer = #6D617870
+  ttf-tag-hhea-i : Integer = #68686561
+  ttf-tag-hmtx-i : Integer = #686D7478
+  ttf-tag-cmap-i : Integer = #636D6170
+  ttf-tag-loca-i : Integer = #6C6F6361
+  ttf-tag-glyf-i : Integer = #676C7966
+
+  fb-find-table-len : Integer, Integer, Integer, Integer -> Integer
+  fb-find-table-len (buf) (off) (num) (tag) =
+    if num <= 0 then (-1)
+    else if fb-u32 buf off == tag then fb-u32 buf (off + 12)
+    else fb-find-table-len buf (off + 16) (num - 1) tag
+
+  fb-table-fits : Integer, Integer, Integer, Integer, Integer -> Boolean
+  fb-table-fits (buf) (num) (tag) (need) (size) =
+    let off = fb-find-table buf 12 num tag
+    in let len = fb-find-table-len buf 12 num tag
+    in if off < 0 then False
+    else if len < need then False
+    else if off > size then False
+    else off + len <= size
+
+  fb-ttf-plausible : Integer, Integer -> Boolean
+  fb-ttf-plausible (buf) (size) =
+    if size < 12 then False
+    else let num-tables = fb-u16 buf 4
+    in if num-tables < 7 then False
+    else if 12 + num-tables * 16 > size then False
+    else if fb-table-fits buf num-tables ttf-tag-head-i 54 size then
+      if fb-table-fits buf num-tables ttf-tag-maxp-i 6 size then
+        if fb-table-fits buf num-tables ttf-tag-hhea-i 36 size then
+          if fb-table-fits buf num-tables ttf-tag-hmtx-i 4 size then
+            if fb-table-fits buf num-tables ttf-tag-cmap-i 4 size then
+              if fb-table-fits buf num-tables ttf-tag-loca-i 2 size then
+                if fb-table-fits buf num-tables ttf-tag-glyf-i 0 size then fb-ttf-counts-plausible buf size num-tables
+                else False
+              else False
+            else False
+          else False
+        else False
+      else False
+    else False
+
+  fb-ttf-counts-plausible : Integer, Integer, Integer -> Boolean
+  fb-ttf-counts-plausible (buf) (size) (num) =
+    let head-off = fb-find-table buf 12 num ttf-tag-head-i
+    in let maxp-off = fb-find-table buf 12 num ttf-tag-maxp-i
+    in let hhea-off = fb-find-table buf 12 num ttf-tag-hhea-i
+    in let hmtx-len = fb-find-table-len buf 12 num ttf-tag-hmtx-i
+    in let loca-len = fb-find-table-len buf 12 num ttf-tag-loca-i
+    in let num-glyphs = fb-u16 buf (maxp-off + 4)
+    in let num-hmetrics = fb-u16 buf (hhea-off + 34)
+    in let idx-to-loc = fb-i16 buf (head-off + 50)
+    in if num-glyphs < 1 then False
+    else if num-hmetrics < 1 then False
+    else if num-hmetrics * 4 > hmtx-len then False
+    else if idx-to-loc == 0 then
+      if (num-glyphs + 1) * 2 > loca-len then False
+      else fb-ttf-cmap-plausible buf size num
+    else if idx-to-loc /= 1 then False
+    else if (num-glyphs + 1) * 4 > loca-len then False
+    else fb-ttf-cmap-plausible buf size num
+
+  fb-ttf-cmap-plausible : Integer, Integer, Integer -> Boolean
+  fb-ttf-cmap-plausible (buf) (size) (num) =
+    let cmap-off = fb-find-table buf 12 num ttf-tag-cmap-i
+    in let cmap-len = fb-find-table-len buf 12 num ttf-tag-cmap-i
+    in let num-sub = fb-u16 buf (cmap-off + 2)
+    in if 4 + num-sub * 8 > cmap-len then False
+    else fb-cmap4-plausible buf size cmap-off cmap-len (cmap-off + 4) num-sub 0
+
+  fb-cmap4-plausible : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  fb-cmap4-plausible (buf) (size) (cmap-off) (cmap-len) (off) (num) (i) =
+    if i >= num then False
+    else let sub = fb-u32 buf (off + 4)
+    in if sub + 2 > cmap-len then False
+    else if fb-u16 buf (cmap-off + sub) /= 4 then fb-cmap4-plausible buf size cmap-off cmap-len (off + 8) num (i + 1)
+    else if sub + 14 > cmap-len then False
+    else let table-len = fb-u16 buf (cmap-off + sub + 2)
+    in let seg-count = fb-u16 buf (cmap-off + sub + 6) / 2
+    in if sub + table-len > cmap-len then False
+    else if seg-count < 1 then False
+    else 16 + seg-count * 8 <= table-len
+
 Section: Buffer-backed TTF Parse
 
   fb-find-table : Integer, Integer, Integer, Integer -> Integer
@@ -432,9 +520,14 @@ Section: Buffer-backed TTF Parse
   fb-glyph-for-char : Integer, TtfFont, Integer -> TtfGlyph
   fb-glyph-for-char (buf) (font) (codepoint) =
     let glyph-idx = ttf-cmap-lookup (font.tf-cmap) codepoint
-    in let glyph-off = list-at (font.tf-loca) glyph-idx
+    in if glyph-idx < 0 then fb-make-empty-glyph (ttf-get-hmetric (font.tf-hmetrics) 0)
+    else if glyph-idx + 1 >= list-length (font.tf-loca) then fb-make-empty-glyph (ttf-get-hmetric (font.tf-hmetrics) 0)
+    else let glyph-off = list-at (font.tf-loca) glyph-idx
     in let next-off = list-at (font.tf-loca) (glyph-idx + 1)
-    in if glyph-off == next-off then fb-make-empty-glyph (ttf-get-hmetric (font.tf-hmetrics) glyph-idx)
+    in let hm = ttf-get-hmetric (font.tf-hmetrics) glyph-idx
+    in if glyph-off == next-off then fb-make-empty-glyph hm
+    else if next-off < glyph-off + 10 then fb-make-empty-glyph hm
+    else if (font.tf-glyf-off) + next-off > list-length (font.tf-buf) then fb-make-empty-glyph hm
     else fb-read-glyph buf (font.tf-glyf-off) glyph-off (font.tf-hmetrics) glyph-idx
 
 Section: Buffer-backed Glyph Rasterization

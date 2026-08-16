@@ -1,0 +1,88 @@
+Chapter: WirePayloadRefuseTest
+  cites Works chapter AnnotationTransport
+  cites Works chapter RepoProtocol
+  cites Works chapter KeyManager
+  cites Works chapter Annotation
+  cites Works chapter FactSync
+  cites Kernel chapter DiskFacts
+  cites Foreword chapter Console
+
+ A verified envelope says who sent the message. It says nothing about whether
+ the payload inside arrived whole, and until 2026-08-15 nothing downstream
+ asked: a truncated payload decoded to empty fields that a legitimately empty
+ one also produces, and the dispatcher acted on it.
+
+ The message below is not corrupt and not forged. It is a correctly signed
+ envelope around a SHORT payload, which is what an attacker who can cut a
+ stream gets for free and what a half-written frame produces by accident. The
+ envelope verifies in both arms -- that is the point, and `envelope=yes` on the
+ truncated arm is the line that says so.
+
+ `good` is the acceptance control. A guard that drops everything passes a
+ refusal count and fails here.
+
+Section: Fixtures
+
+  kp : Keypair
+  kp = generate-keypair [7, 7, 7, 7]
+
+  sample-verdict : Verdict
+  sample-verdict = Verdict {
+    id = "v1",
+    proposal-id = "p1",
+    author-fingerprint = kp.fingerprint,
+    kind = Accept,
+    reason = "looks right",
+    signature = [],
+    timestamp = 99
+  }
+
+  cut : List Integer, Integer, Integer, List Integer -> List Integer
+  cut (xs) (n) (i) (acc) =
+    if i >= n then acc
+    else cut xs n (i + 1) (acc & [list-at xs i])
+
+ The envelope is rebuilt over the truncated bytes rather than copied from the
+ whole message, so the id and the signature are correct FOR WHAT ARRIVED. A
+ test that reused the original envelope would be testing the id check, which
+ already worked.
+
+  envelope-over : List Integer -> VerdictMsg
+  envelope-over (payload) =
+    let id = envelope-id payload
+    in VerdictMsg {
+      id = id,
+      from = AgentIdentity { public-key = kp.public-key },
+      in-reply-to = [],
+      payload = payload,
+      signature = sign-content kp (envelope-content id (kp.fingerprint) "verdict")
+    }
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+Section: Test
+
+ The consumer is driven for real rather than stopped at the decode boundary.
+ FactSync's verdict path checks the envelope and then decodes, with no keyring
+ in the way, so it is the one consumer a test can reach without standing up a
+ trust store -- and `accepted` plus `ss-recv-count` are its own words for
+ whether the message counted.
+
+  st0 : SyncState
+  st0 = sync-init (disk-empty-in (DiskRegion { dr-base = 0 - 1, dr-limit = 0 })) kp
+
+  opening : [Console] Nothing =
+    let whole = encode-verdict sample-verdict
+    in let short = cut whole (list-length whole - 9) 0 []
+    in let good = envelope-over whole
+    in let bad = envelope-over short
+    in act
+      print-line-uni ("whole len=" & show (list-length whole) & " short len=" & show (list-length short))
+      print-line-uni ("good  envelope=" & yn (verify-verdict-envelope good) & " payload-valid=" & yn ((decode-verdict-checked (good.payload)).valid) & " id=" & (decode-verdict (good.payload)).id)
+      print-line-uni ("bad   envelope=" & yn (verify-verdict-envelope bad) & " payload-valid=" & yn ((decode-verdict-checked (bad.payload)).valid) & " id=" & (decode-verdict (bad.payload)).id)
+      print-line-uni ("bad kind-would-have-been=" & (when (decode-verdict (bad.payload)).kind is Accept -> "Accept" is Reject -> "Reject" is Amend (t) -> "Amend" is Abstain -> "Abstain"))
+      print-line-uni ("consumer good accepted=" & yn ((sync-receive st0 (MsgVerdict good) 1000).accepted) & " bad accepted=" & yn ((sync-receive st0 (MsgVerdict bad) 1000).accepted))
+      print-line-uni ("consumer good recv=" & show (((sync-receive st0 (MsgVerdict good) 1000).state).ss-recv-count) & " bad recv=" & show (((sync-receive st0 (MsgVerdict bad) 1000).state).ss-recv-count))
+    end
+  end

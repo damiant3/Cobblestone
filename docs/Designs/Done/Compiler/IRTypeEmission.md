@@ -4,6 +4,48 @@
 it prices changes the IR text, and the IR text is the wire contract the plugs
 parse, so it is not one lane's to take.*
 
+## DONE. Step 4 landed at main 13661, 2026-08-06
+
+**Everything below this section is the case for the change, kept as the
+record. It is no longer a proposal and its "what blocks C1" paragraph is
+stale.** `IRTextEmitter.codex:249-250` emit `(sum "Name" (args ...))` and
+`(record-ty "Name" (args ...))`; `ir-emit-sum-ctors` and
+`ir-emit-record-fields` no longer exist. The same CL moved the plug side,
+`codex/plugs/common/IRTextParser.codex`, so the wire contract changed on both
+ends together.
+
+The rider this document parked in the step 4 CL is also in:
+`ir-emit-atype-expr` (`IRTextEmitter.codex:269-285`) carries the arms it was
+missing -- `ALinearType`, `APropEqType`, `AForallType` and an `otherwise`
+catch-all -- and line 282 is the specific repair asked for,
+`AConstrainedType (cn) (cv) (body) (s) -> ir-emit-atype-expr body`, so a
+constraint can no longer swallow the `a-bounded` band emitted two lines above
+it.
+
+**Re-measured 2026-08-15 (fester) against seed 55983566E35F314D**, because the
+plan still carried step 4 as open and this document still said the emit dies:
+
+| | |
+|---|---|
+| whole-compiler `-IrCce` | COMPLETES, exit 0, 146.5 s |
+| IR emitted | 15,723,893 bytes |
+| peak heap frontier | 1,306,081,405 (in PARSE) |
+| frontier at emit | 367,455,373 in, 373,258,413 out |
+| `builtins` | emits; it is the definition this document says the emit dies on |
+| inline structure in the compiler's own IR | `record-ty` 153,363 sites against `record-fields` 47 and `sum-ctors` 20, and those 67 sit inside the 250 `type-def` declarations where structure belongs |
+
+Two things that measurement does NOT establish, said plainly because the
+numbers invite the stronger reading. The frontiers are phase-boundary
+`__heap-save` marks and the frontier DROPS between phases, so they are
+snapshots after restore rather than a running high-water mark: a transient
+spike inside emission on one definition is invisible to them, and the 5.8 MB
+pre-to-post-emit delta is residue, not a peak. And the peak being in parse is
+a fact about today's compiler, not a prediction about a larger one.
+
+The measurement agrees with `build/guard-page-test.ps1`, which recorded the
+same completion and 15.7 MB independently on a different seed, and whose LEAP
+arm was retired for reporting FAILED on a healthy tree.
+
 ## What is being decided
 
 Every IR node emits its own type IN FULL. `IRTextEmitter.codex:273` writes

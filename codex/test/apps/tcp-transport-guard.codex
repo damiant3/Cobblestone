@@ -1,0 +1,47 @@
+Chapter: TcpTransportGuardTest
+  cites Net chapter TcpTransport
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+  cites Net chapter MessageFraming
+  cites Foreword chapter Sha256
+
+ The negative arms for the two recv-path guards in TcpTransport. The state is
+ built by hand with a 16-byte recv buffer rather than transport-new's 32 MB one,
+ because a test cannot feed 32 MB. Row 1 is the positive control: a well-formed
+ frame still arrives, so a refusal below is the guard and not a dead path. Each
+ of the three ablations below was run and moves exactly one row. Ablate the
+ recv-cap check in transport-feed-raw and row 2 reads len=20, four bytes written
+ past the allocation. Ablate the msg-len < 1 check and row 3 reads has=True
+ len=1: the malformed frame is accepted, the -1 read length having been passed
+ to __buf-read-bytes without faulting. Ablate the recv-cap - 4 check and row 4
+ reads len=4, a connection that can never again make progress.
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+  tiny-transport : NetSession -> TcpTransportState
+  tiny-transport (sess) =
+    let base = __heap-save
+    in let adv = __heap-advance 16
+    in TcpTransportState { session = sess, recv-buf = [], recv-base = base, recv-len = 0, recv-cap = 16, messages-sent = 0, messages-received = 0 }
+
+Section: Body
+  opening : [Console] Nothing =
+    let sess = net-session-new [0, 0, 0, 0, 0, 1] [10, 0, 0, 1] [10, 0, 0, 254] 5000 80 [10, 0, 0, 2] 1000
+    in let good = frame-encode 2 [79, 75]
+    in let r-good = transport-try-recv (transport-feed-raw (tiny-transport sess) good)
+    in let over = transport-feed-raw (tiny-transport sess) [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    in let r-zero = transport-try-recv (transport-feed-raw (tiny-transport sess) [0, 0, 0, 0, 99])
+    in let t-zero = r-zero.transport
+    in let r-huge = transport-try-recv (transport-feed-raw (tiny-transport sess) [255, 255, 255, 255])
+    in let t-huge = r-huge.transport
+    in act
+      print-line-uni ("accept: has=" & show-bool (r-good.has-message) & " tag=" & show (r-good.tag) & " body=" & show (list-length (r-good.body)))
+      print-line-uni ("overflow: len=" & show (over.recv-len) & " cap=" & show (over.recv-cap))
+      print-line-uni ("zerolen: has=" & show-bool (r-zero.has-message) & " len=" & show (t-zero.recv-len))
+      print-line-uni ("hugelen: has=" & show-bool (r-huge.has-message) & " len=" & show (t-huge.recv-len))
+    end
+
+Page 1

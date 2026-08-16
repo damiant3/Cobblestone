@@ -179,23 +179,29 @@ Section: Read GPT
       gpt-read-after-hdr hdr-buf
     end
 
- THE ENTRY SIZE IS A DIVISOR AND IT COMES OFF THE DISK. gpt-read-entries
- computes entries-per-sector as 512 / entry-size, so a header claiming zero
- takes the machine out with !EXC=00; and one claiming more than 512 makes
- that quotient zero, so the very next division by it faults the same way.
- Neither is hypothetical -- a signature check can pass on a sector this
- reader never wrote, and with no disk attached the buffer is whatever the
- block layer hands back.
+ UEFI 2.10 section 5.3.2: SizeOfPartitionEntry is 128 times a power of two,
+ and the array at PartitionEntryLBA (at least LBA 2) ends before
+ FirstUsableLBA. The spec puts only a 16384-byte floor on the array; the
+ 1024-entry ceiling is ours and is the one GopFat16's gpt-array-geom-ok uses.
 
-  gpt-entry-size-max : Integer = 512
+  gpt-header-geom-ok : Integer -> Boolean
+  gpt-header-geom-ok (buf) =
+    let lba = gpt-read-u64 buf 72
+    in let cnt = gpt-read-u32 buf 80
+    in let sz = gpt-read-u32 buf 84
+    in let first-usable = gpt-read-u64 buf 40
+    in lba >= 2
+    & cnt >= 1 & cnt <= 1024
+    & sz >= 128 & sz <= 512
+    & sz - (sz / 128) * 128 == 0
+    & lba + (cnt * sz + 511) / 512 <= first-usable
 
   gpt-read-after-hdr : Integer -> [Device.Block] Maybe GptDisk
   gpt-read-after-hdr (hdr-buf) =
     if gpt-check-signature hdr-buf == False then None
+    else if gpt-header-geom-ok hdr-buf == False then None
     else let entry-size = gpt-read-u32 hdr-buf 84
-    in if entry-size <= 0 then None
-    else if entry-size > gpt-entry-size-max then None
-    else let disk-guid = gpt-read-guid hdr-buf 56
+    in let disk-guid = gpt-read-guid hdr-buf 56
     in let total-sectors = gpt-read-u64 hdr-buf 32 + 1
     in act
       parts <- gpt-read-entries (gpt-read-u64 hdr-buf 72) entry-size (gpt-read-u32 hdr-buf 80) 0 []

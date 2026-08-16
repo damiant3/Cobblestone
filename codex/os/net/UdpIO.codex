@@ -71,11 +71,23 @@ Section: Receive
       in udp-io-recv sk (fuel - 1)
     end
 
+ THE HEADER IS CHECKED BEFORE ANYTHING READS IT, and this is the only place
+ that has to do it: udp-io-payload and udp-io-src-port are reached only after
+ this answers True, and DhcpIO parses no frame of its own. Without the two
+ guards `ip-proto` indexes byte 9 of a list that may be shorter, and
+ `ip-payload` walks to the header's CLAIMED total-length off the end of the
+ received bytes. Measured 2026-08-15 on a frame cut by six bytes: EXC=06, 30
+ actual IP bytes against 36 claimed. This runs on every frame the poll loop
+ takes off the wire, and DHCP rides it at boot.
+
   udp-io-mine : UdpSocket, List Integer -> Boolean
   udp-io-mine (sk) (frame) =
     if eth-ethertype frame /= eth-type-ipv4 then False
     else let ip = eth-payload frame
-    in if ip-proto ip /= ip-proto-udp then False
+    in if ip-length-valid ip == False then False
+    else if ip-header-valid ip == False then False
+    else if ip-proto ip /= ip-proto-udp then False
+    else if udp-checksum-valid (ip-payload ip) (ip-src ip) (ip-dst ip) == False then False
     else let dg = udp-parse (ip-payload ip)
     in dg.dst-port == sk.us-local-port
 

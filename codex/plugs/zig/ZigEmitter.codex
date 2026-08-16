@@ -135,10 +135,25 @@ Section: Type Mapping
   emit-zig-fn-type (ty) =
    zig-closure-type (zig-fn-param-count ty) (zig-fn-param-types ty) (emit-zig-type (zig-fn-result ty))
 
+ ForAllTy is the TYPE-level quantifier and this emitter handled only the
+ effect-level one. Every place ForAllEff is unwrapped below, ForAllTy has
+ to be unwrapped too, and it was unwrapped nowhere: a quantified type had
+ no arrows to count, could not be peeled, and had no zig rendering at all.
+ lower-def in the compiler does `strip-forall-ty full-type` for exactly
+ this reason -- the quantifier says which variables are bound, and the
+ shape underneath is the type.
+
+ It stayed invisible for eight rungs because the default IR pipeline
+ inlines, and an inlined definition arrives with its quantifier already
+ gone. Turning the inline passes off -- which Passes.codex says a plug
+ emitting SOURCE must do -- is what let a polymorphic definition reach the
+ plug still quantified, and sort-by was the first to arrive that way.
+
   zig-fn-spine : CodexType -> CodexType
   zig-fn-spine (ty) =
    when ty
     is EffectfulTy (effs) (scopes) (inner) -> zig-fn-spine inner
+    is ForAllTy (fid) (inner) -> zig-fn-spine inner
     is ForAllEff (c) (inner) -> zig-fn-spine inner
     is otherwise -> ty
 
@@ -176,12 +191,85 @@ Section: Type Mapping
     is VectorMaskTy (vn) -> "@Vector(" & show vn & ", bool)"
     is FunTy (p) (fnrow) (r) -> emit-zig-fn-type ty
     is EffectfulTy (effs) (scopes) (inner) -> emit-zig-type inner
+    is ForAllTy (fid) (inner) -> emit-zig-type inner
     is ForAllEff (c) (inner) -> emit-zig-type inner
-    is RecordTy (n) (a) (f) -> zig-sanitize (n.value)
+    is RecordTy (n) (a) (f) -> zig-sanitize (n.value) & zig-type-args a
     is SumTy (n) (a) (c) -> zig-sanitize (n.value) & zig-type-args a
     is ConstructedTy (n) (a) -> zig-sanitize (n.value) & zig-type-args a
     is TypeCon (n) -> zig-sanitize (n.value)
-    is otherwise -> "anyopaque"
+    is TypeVar (id) -> "T" & integer-to-text id
+    is otherwise -> "@compileError(\"zig plug: no zig type for this codex type\")"
+
+ A definition quantified over type variables becomes a zig function taking
+ those types as comptime parameters, the same move generic TYPES already
+ make. Zig will not accept anyopaque as a parameter type at all, so
+ map-list : (a -> b), List a -> List b has nowhere to put a and b without
+ this.
+
+ CSharpPlug declares the equivalent and stops there, because C# infers a
+ call's type arguments. Zig does not infer a comptime type parameter, so
+ the call site has to name them, and naming them means recovering each
+ variable from the types actually passed.
+
+  zig-has-int : List (Integer between 0 and 4294967295), Integer between 0 and 4294967295, Integer -> Boolean
+  zig-has-int (xs) (n) (i) =
+   if i >= list-length xs then False
+   else if list-at xs i == n then True
+   else zig-has-int xs n (i + 1)
+
+  zig-tvar-ids : CodexType, List (Integer between 0 and 4294967295) -> List (Integer between 0 and 4294967295)
+  zig-tvar-ids (ty) (acc) =
+   when ty
+    is TypeVar (id) -> if zig-has-int acc id 0 then acc else acc & [id]
+    is FunTy (p) (fnrow) (r) -> zig-tvar-ids r (zig-tvar-ids p acc)
+    is ListTy (elem) -> zig-tvar-ids elem acc
+    is LinkedListTy (elem) -> zig-tvar-ids elem acc
+    is EffectfulTy (effs) (scopes) (inner) -> zig-tvar-ids inner acc
+    is ForAllTy (fid) (inner) -> zig-tvar-ids inner acc
+    is ForAllEff (c) (inner) -> zig-tvar-ids inner acc
+    is ConstructedTy (n) (args) -> zig-tvar-ids-list args acc 0
+    is SumTy (n) (args) (c) -> zig-tvar-ids-list args acc 0
+    is RecordTy (n) (args) (f) -> zig-tvar-ids-list args acc 0
+    is otherwise -> acc
+
+  zig-tvar-ids-list : List CodexType, List (Integer between 0 and 4294967295), Integer -> List (Integer between 0 and 4294967295)
+  zig-tvar-ids-list (types) (acc) (i) =
+   if i >= list-length types then acc
+   else zig-tvar-ids-list types (zig-tvar-ids (list-at types i) acc) (i + 1)
+
+ Recovering one variable: walk the declared type and the type actually
+ supplied in step, and answer with the zig type sitting where the variable
+ sits. An empty answer means this pair does not mention it, and the caller
+ tries the next one.
+
+  zig-tvar-in : Integer between 0 and 4294967295, CodexType, CodexType -> Text
+  zig-tvar-in (id) (decl) (actual) =
+   when decl
+    is TypeVar (vid) -> if vid == id then emit-zig-type actual else ""
+    is EffectfulTy (e) (s) (inner) -> zig-tvar-in id inner actual
+    is ForAllTy (fid) (inner) -> zig-tvar-in id inner actual
+    is ForAllEff (c) (inner) -> zig-tvar-in id inner actual
+    is ListTy (elem) -> zig-tvar-in-elem id elem actual
+    is LinkedListTy (elem) -> zig-tvar-in-elem id elem actual
+    is FunTy (p) (fnrow) (r) -> zig-tvar-in-fun id p r actual
+    is otherwise -> ""
+
+  zig-tvar-in-elem : Integer between 0 and 4294967295, CodexType, CodexType -> Text
+  zig-tvar-in-elem (id) (elem) (actual) =
+   when actual
+    is ListTy (ae) -> zig-tvar-in id elem ae
+    is LinkedListTy (ae) -> zig-tvar-in id elem ae
+    is EffectfulTy (e) (s) (inner) -> zig-tvar-in-elem id elem inner
+    is otherwise -> ""
+
+  zig-tvar-in-fun : Integer between 0 and 4294967295, CodexType, CodexType, CodexType -> Text
+  zig-tvar-in-fun (id) (p) (r) (actual) =
+   when actual
+    is FunTy (ap) (afnrow) (ar) ->
+     let fromp = zig-tvar-in id p ap
+     in if text-length fromp > 0 then fromp else zig-tvar-in id r ar
+    is EffectfulTy (e) (s) (inner) -> zig-tvar-in-fun id p r inner
+    is otherwise -> ""
 
  Record fields and ctor payloads are declared as ATypeExpr in the type
  defs the plug receives, so they get their own mapping onto the same
@@ -223,17 +311,18 @@ Section: Type Mapping
        if (bn.value == "List") | (bn.value == "LinkedList")
        then "*CxList(" & emit-zig-atype (list-at args 0) & ")"
        else zig-sanitize (bn.value) & zig-atype-args args
-      is otherwise -> "anyopaque"
+      is otherwise -> "@compileError(\"zig plug: no zig type for this applied type\")"
     is ABoundedIntType (b) (lo) (hi) (mode) (s) -> "i64"
     is AEffectType (effs) (scopes) (tail) (ret) (s) -> emit-zig-atype ret
     is AFunType (p) (r) (s) -> zig-closure-type (zig-afn-param-count te) (zig-afn-param-types te) (emit-zig-atype (zig-afn-result te))
     is ALinearType (inner) (s) -> emit-zig-atype inner
-    is otherwise -> "anyopaque"
+    is otherwise -> "@compileError(\"zig plug: no zig type for this type expression\")"
 
   zig-peel-return : CodexType, Integer -> CodexType
   zig-peel-return (ty) (n) =
    when ty
     is EffectfulTy (effs) (scopes) (inner) -> zig-peel-return inner n
+    is ForAllTy (fid) (inner) -> zig-peel-return inner n
     is ForAllEff (c) (inner) -> zig-peel-return inner n
     is FunTy (p) (fnrow) (r) -> if n <= 0 then ty else zig-peel-return r (n - 1)
     is otherwise -> ty
@@ -245,8 +334,34 @@ Section: Type Mapping
     is NothingTy -> True
     is ProofTy -> True
     is EffectfulTy (effs) (scopes) (inner) -> zig-type-is-void inner
+    is ForAllTy (fid) (inner) -> zig-type-is-void inner
     is ForAllEff (c) (inner) -> zig-type-is-void inner
     is otherwise -> False
+
+ Every node that CARRIES a type answers with it, and the one that does not
+ is the reason this list is long. IrLet holds the type of the name it
+ BINDS, not of the expression: `let len = list-length xs in ...` would
+ answer Integer, which is len's type and not the let's. A let is worth
+ whatever its body is worth, so it recurses.
+
+ Falling into otherwise means answering VoidTy, and void is a legitimate
+ codex type rather than a marker, so a missing arm here is indistinguishable
+ from a genuinely void expression. sort-by paid for that: its body is a let,
+ the let answered void, and with an empty type-val on the definition the
+ emitter had nothing better to fall back to, so it declared a function
+ returning void around a body returning a list.
+
+ IrLambda is missing ON PURPOSE and answering it costs five milestones. A
+ lambda handed to map-list carries the CALLEE's type variables, so a caller
+ asking "what type is this argument" gets `a -> b` in map-list's own
+ numbering. Resolving map-list's `a` against that answers `a` with itself,
+ and T26 reaches zig in a function that declares no such thing. Silence
+ here is what makes the resolver skip the lambda and recover the element
+ type from the list argument instead, which is the answer that works.
+
+ The other type-carrying nodes are absent for a duller reason: nothing has
+ needed them. A missing one shows up as a wrong void, loudly, the way this
+ one did.
 
   zig-expr-type : IRExpr -> CodexType
   zig-expr-type (e) =
@@ -259,6 +374,7 @@ Section: Type Mapping
     is IrIf (c) (t) (el) (ty) (sp) -> ty
     is IrMatch (scrut) (branches) (ty) (sp) -> ty
     is IrRecord (name) (fields) (ty) (sp) -> ty
+    is IrLet (n) (ty) (v) (b) (sp) -> zig-expr-type b
     is otherwise -> VoidTy
 
   zig-is-text-type : CodexType -> Boolean
@@ -317,12 +433,33 @@ Section: Constructor Map
    enum-like : Boolean
   }
 
+ renamed-from and renamed-to are parallel: a name emitted inside a lambda
+ body is looked up in the first and emitted as the matching entry of the
+ second. Zig forbids a nested function's parameter from shadowing an
+ enclosing one, and the desugarer produces exactly that -- `for p in pats`
+ inside desugar-pattern(p) -- so the lambda's parameter is renamed and its
+ body has to follow. A const alias does not avoid the rule; it reaches
+ into the nested struct's function too.
+
+ bound-names lists the codex names that are runtime locals of the zig
+ function being emitted -- its parameters, its let bindings, its match
+ binders. Top-level definitions are not in it and never need capturing.
+ A lambda intersects this list with the names its body mentions, and what
+ falls out is exactly what its environment has to carry, because zig lets
+ a nested function reach a comptime constant but not a runtime value.
+
   ZigCtx = record {
    arities : List ArityEntry,
    ctors : List ZigCtorEntry,
    mutables : List Text,
    typedefs : List ATypeDef,
-   irdefs : List IRDef
+   irdefs : List IRDef,
+   renamed-from : List Text,
+   renamed-to : List Text,
+   tvar-ids : List (Integer between 0 and 4294967295),
+   tvar-types : List CodexType,
+   expected : CodexType,
+   bound-names : List Text
   }
 
  An empty list literal reaches the IR without a concrete element type,
@@ -386,22 +523,34 @@ Section: Constructor Map
    in if f.name.value == fieldname then zig-atype-ll-elem (f.type-expr)
       else zig-field-ll-scan fields (i + 1) fieldname
 
+ The callee's declared parameter type, translated through whatever
+ bindings this call resolved -- a declaration read in the caller names the
+ callee's type variables until it is substituted.
+
+  zig-callee-param-type : ZigCtx, Text, Integer -> CodexType
+  zig-callee-param-type (ctx) (fname) (i) =
+   let di = zig-find-irdef (ctx.irdefs) 0 fname
+   in if di < 0 then VoidTy
+   else let d = list-at (ctx.irdefs) di
+   in if i >= list-length (d.params) then VoidTy
+      else zig-subst-ctx ((list-at (d.params) i).type-val) ctx
+
   zig-param-ll-elem : ZigCtx, Text, Integer -> Text
   zig-param-ll-elem (ctx) (fname) (argi) =
-   zig-param-ll-scan (ctx.irdefs) 0 fname argi
+   zig-param-ll-scan (ctx.irdefs) 0 fname argi ctx
 
-  zig-param-ll-scan : List IRDef, Integer, Text, Integer -> Text
-  zig-param-ll-scan (defs) (i) (fname) (argi) =
+  zig-param-ll-scan : List IRDef, Integer, Text, Integer, ZigCtx -> Text
+  zig-param-ll-scan (defs) (i) (fname) (argi) (ctx) =
    if i >= list-length defs then ""
    else let d = list-at defs i
    in if d.name == fname then
     (if argi >= list-length (d.params) then ""
-     else let pty = (list-at (d.params) argi).type-val
+     else let pty = zig-subst-ctx ((list-at (d.params) argi).type-val) ctx
      in when pty
       is ListTy (elem) -> emit-zig-type elem
       is LinkedListTy (elem) -> emit-zig-type elem
       is otherwise -> "")
-   else zig-param-ll-scan defs (i + 1) fname argi
+   else zig-param-ll-scan defs (i + 1) fname argi ctx
 
  Mutable records have reference semantics on bare metal: a field store
  mutates the object every holder sees. The zig emission mirrors that by
@@ -488,7 +637,7 @@ Section: Builtin Emitter
   zig-ll-elem : CodexType -> Text
   zig-ll-elem (ty) =
    let e = zig-ll-elem-opt ty
-   in if text-length e > 0 then e else "i64"
+   in if text-length e > 0 then e else "@compileError(\"zig plug: no element type for this list\")"
 
  The annotation is not always a list type -- a type variable reaches here
  unresolved -- so this answers "" for that rather than a default, and the
@@ -516,13 +665,35 @@ Section: Builtin Emitter
     is IrTextLit (s) (sp) -> zig-field-name s
     is otherwise -> "@compileError(\"__record-set needs a literal field name\")"
 
+  zig-record-set-plain-field : IRExpr -> Text
+  zig-record-set-plain-field (e) =
+   when e
+    is IrTextLit (s) (sp) -> zig-plain-field-name s
+    is otherwise -> ""
+
   zig-record-set : List IRExpr, ZigCtx, Integer -> Text
   zig-record-set (args) (ctx) (d) =
    let tmp = "_r" & integer-to-text d
+   in let rec-name = zig-type-name-of (zig-expr-type (list-at args 0))
+   in let field-name = zig-record-set-plain-field (list-at args 1)
    in zig-label d & ": { var " & tmp & " = " & emit-zig-expr (list-at args 0) ctx (d + 1)
     & "; " & tmp & "." & zig-record-set-field (list-at args 1)
-    & " = " & emit-zig-expr (list-at args 2) ctx (d + 1)
+    & " = " & zig-field-value-text rec-name field-name (list-at args 2) ctx d
     & "; break :" & zig-label d & " " & tmp & "; }"
+
+ Text is CCE in the interior -- on bare metal, in the C# plug and here --
+ because CCE is codex semantics and not a runtime encoding choice: `E` IS
+ 39, and CCE orders letters by frequency, so a plug holding UTF-8 would
+ disagree with bare metal on every comparison, ordering and substring
+ index. A target's own encoding appears at I/O and nowhere else, which for
+ this plug means cx_cce_to_utf8 on the way to the terminal.
+
+ A Char, though, is a CODEPOINT here, which is why char-code and
+ code-to-char convert rather than vanish the way they do in the C# plug.
+ That makes char-at the odd one out: it read the CCE byte and handed it
+ back untranslated, so `char-code (char-at s i)` fed a CCE code to a table
+ that wanted a codepoint and panicked. char-code-at is the one that answers
+ in CCE, and it stays a bare read.
 
   zig-builtin-emitters : List ZigBuiltinEmitter =
    sort-zig-builtins [
@@ -537,6 +708,8 @@ Section: Builtin Emitter
     ZigBuiltinEmitter { name = "print-line-raw", emit = \args ctx d ty -> "cx_print_line(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "print-line-uni", emit = \args ctx d ty -> "cx_print_line(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "print-uni", emit = \args ctx d ty -> "cx_print(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "print-text", emit = \args ctx d ty -> "cx_print(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "text-to-double-bits", emit = \args ctx d ty -> "cx_text_to_double_bits(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "print-error", emit = \args ctx d ty -> "cx_print_line(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "print-error-uni", emit = \args ctx d ty -> "cx_print_line(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "show", emit = \args ctx d ty -> "cx_show_int(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
@@ -555,13 +728,19 @@ Section: Builtin Emitter
     ZigBuiltinEmitter { name = "bit-shr", emit = \args ctx d ty -> "cx_shr(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "list-length", emit = \args ctx d ty -> "cx_list_len(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "list-at", emit = \args ctx d ty -> "cx_list_at(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
-    ZigBuiltinEmitter { name = "list-push", emit = \args ctx d ty -> "cx_ll_push(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "list-push", emit = \args ctx d ty -> "cx_ll_push(" & zig-list-arg-text args 0 1 ctx d & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "list-insert-at", emit = \args ctx d ty -> "cx_ll_insert_at(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "__deck-enter", emit = \args ctx d ty -> "{}" },
+    ZigBuiltinEmitter { name = "__deck-exit", emit = \args ctx d ty -> "{}" },
+    ZigBuiltinEmitter { name = "__list-with-capacity", emit = \args ctx d ty -> "cx_ll_with_capacity(" & zig-ll-elem ty & ", " & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "text-compare", emit = \args ctx d ty -> "cx_text_compare(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "char-to-text", emit = \args ctx d ty -> "cx_char_to_text(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__linked-list-empty", emit = \args ctx d ty -> "cx_ll_empty(" & zig-ll-elem ty & ")" },
     ZigBuiltinEmitter { name = "__linked-list-push", emit = \args ctx d ty -> "cx_ll_push(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__linked-list-to-list", emit = \args ctx d ty -> emit-zig-expr (list-at args 0) ctx (d + 1) },
     ZigBuiltinEmitter { name = "__deck-pos", emit = \args ctx d ty -> "0" },
     ZigBuiltinEmitter { name = "subj-deck-record", emit = \args ctx d ty -> emit-zig-expr (list-at args 0) ctx (d + 1) },
-    ZigBuiltinEmitter { name = "char-at", emit = \args ctx d ty -> "cx_char_at(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "char-at", emit = \args ctx d ty -> "cx_cce_to_cp(cx_char_at(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & "))" },
     ZigBuiltinEmitter { name = "negate", emit = \args ctx d ty -> "(-" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__narrow", emit = \args ctx d ty -> emit-zig-expr (list-at args 0) ctx (d + 1) },
     ZigBuiltinEmitter { name = "abs", emit = \args ctx d ty -> "@as(i64, @intCast(@abs(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")))" },
@@ -580,16 +759,68 @@ Section: Builtin Emitter
 
 Section: Name Mapping
 
+ A name the plug cannot place used to reach zig as itself, and zig said
+ "use of undeclared identifier text_to_double_bits" -- true, unhelpful, and
+ indistinguishable from a typo in the emitter. Three builtins the plug had
+ never implemented arrived that way at once in the lower milestone, each
+ reported as a mystery identifier rather than as the missing emitter it was.
+
+ Everything a name can legitimately be is enumerable: a rename in scope, a
+ local bound by an enclosing binder, an entry in the name map, a
+ constructor, a definition in the chapter, or a builtin. Nothing else
+ exists, so anything else is a gap in this plug and names itself.
+
+ bound-names is what makes this decidable. Before captures it did not
+ exist, and a bare name that was not a definition was assumed to be a
+ closure-valued local, which is exactly the assumption that let an
+ unimplemented builtin through as a call to a nonexistent closure.
+
+  zig-is-builtin : Text -> Boolean
+  zig-is-builtin (n) =
+   let len = list-length zig-builtin-emitters
+   in let pos = bsearch-zig-builtin-pos zig-builtin-emitters n 0 len
+   in if pos >= len then False
+      else (list-at zig-builtin-emitters pos).name == n
+
+  zig-name-known : ZigCtx, Text -> Boolean
+  zig-name-known (ctx) (n) =
+   if text-length (zig-renamed ctx n) > 0 then True
+   else if zig-in-texts (ctx.bound-names) n 0 then True
+   else if text-length (zig-lookup-name zig-name-map n 0) > 0 then True
+   else if zig-find-ctor (ctx.ctors) n 0 >= 0 then True
+   else if lookup-arity (ctx.arities) n >= 0 then True
+   else zig-is-builtin n
+
+  zig-unknown-name : Text -> Text
+  zig-unknown-name (n) =
+   "@compileError(\"zig plug: no emitter for " & n & "\")"
+
+
   ZigNameEntry = record {
    codex-name : Text,
    zig-name : Text
   }
 
+ The deck names answer 0 because this target has no deck: allocation is
+ page_allocator and the stack is whatever zig-main asks for, so the
+ frontier is nowhere and nothing is ever short of it. __heap-save reads as
+ the same answer for the same reason -- Lowering guards its per-def loop
+ with (ceiling > 0) and (__heap-save + guard-band >= ceiling), which with
+ a 0 frontier is "keep going", which is true here.
+
+ This is a semantic choice rather than a translation, so it is worth being
+ clear that it stays honest: bare metal decides saturation from real
+ memory, and a subject that saturates there and not here diverges in the
+ dump the oracle diffs. The choice is checked, not assumed.
+
   zig-name-map : List ZigNameEntry =
    [ZigNameEntry { codex-name = "True", zig-name = "true" },
     ZigNameEntry { codex-name = "False", zig-name = "false" },
     ZigNameEntry { codex-name = "Nothing", zig-name = "null" },
-    ZigNameEntry { codex-name = "__deck-pos", zig-name = "0" }]
+    ZigNameEntry { codex-name = "__deck-pos", zig-name = "0" },
+    ZigNameEntry { codex-name = "__heap-save", zig-name = "0" },
+    ZigNameEntry { codex-name = "__deck-enter", zig-name = "0" },
+    ZigNameEntry { codex-name = "__deck-exit", zig-name = "0" }]
 
   zig-lookup-name : List ZigNameEntry, Text, Integer -> Text
   zig-lookup-name (entries) (name) (i) =
@@ -606,19 +837,67 @@ Section: Name Mapping
  closure with nothing captured -- the same shape a partial application
  produces, which is what keeps every function-typed position one type.
 
+ The scan runs from the END so an inner lambda's binding wins over an
+ outer one of the same name, which is what shadowing means. Appending with
+ `&` rather than list-push is not a style choice: list-push writes in place
+ under capacity and returns the same list, so pushing onto a list the
+ caller still holds mutates it for every later caller. Done with list-push,
+ these renames escaped their lambda and reached every definition emitted
+ afterwards -- apat_span(p) emitted _lam3_p for its own parameter.
+
+  zig-renamed : ZigCtx, Text -> Text
+  zig-renamed (ctx) (n) =
+   zig-renamed-scan ctx n (list-length (ctx.renamed-from) - 1)
+
+  zig-renamed-scan : ZigCtx, Text, Integer -> Text
+  zig-renamed-scan (ctx) (n) (i) =
+   if i < 0 then ""
+   else if list-at (ctx.renamed-from) i == n then list-at (ctx.renamed-to) i
+   else zig-renamed-scan ctx n (i - 1)
+
+  zig-lambda-param-name : Text, Integer -> Text
+  zig-lambda-param-name (n) (d) = "_lam" & integer-to-text d & "_" & zig-sanitize n
+
+  zig-push-lambda-renames : ZigCtx, List IRParam, Integer, Integer -> ZigCtx
+  zig-push-lambda-renames (ctx) (params) (d) (i) =
+   if i >= list-length params then ctx
+   else let p = list-at params i
+   in let from = (ctx.renamed-from) & [p.name]
+   in let to = (ctx.renamed-to) & [zig-lambda-param-name (p.name) d]
+   in let ctx2 = ZigCtx {
+    arities = ctx.arities,
+    ctors = ctx.ctors,
+    mutables = ctx.mutables,
+    typedefs = ctx.typedefs,
+    irdefs = ctx.irdefs,
+    renamed-from = from,
+    renamed-to = to,
+    tvar-ids = ctx.tvar-ids,
+    tvar-types = ctx.tvar-types,
+    expected = ctx.expected,
+    bound-names = (ctx.bound-names) & [p.name]
+   }
+   in zig-push-lambda-renames ctx2 params d (i + 1)
+
   emit-zig-name : Text, CodexType, ZigCtx, Integer -> Text
   emit-zig-name (n) (ty) (ctx) (d) =
-   let mapped = zig-lookup-name zig-name-map n 0
+   let renamed = zig-renamed ctx n
+   in if text-length renamed > 0 then renamed
+   else let mapped = zig-lookup-name zig-name-map n 0
    in if text-length mapped > 0 then mapped
    else let ci = zig-find-ctor (ctx.ctors) n 0
    in if ci >= 0 then
     let c = list-at (ctx.ctors) ci
     in if c.enum-like then zig-sanitize (c.type-name) & "." & zig-sanitize n
-       else zig-sanitize (c.type-name) & zig-ctor-type-args ty & "{ ." & zig-sanitize n & " = {} }"
+       else let boxed = zig-typedef-recursive ctx (c.type-name)
+       in let base = if boxed then zig-sanitize (c.type-name) & "S" else zig-sanitize (c.type-name) & zig-ctor-type-args ty
+       in if boxed then "cx_new(" & base & "{ ." & zig-sanitize n & " = {} })"
+          else base & "{ ." & zig-sanitize n & " = {} }"
    else if lookup-arity (ctx.arities) n == 0 then zig-sanitize n & "()"
    else if lookup-arity (ctx.arities) n >= 1 & zig-fn-param-count ty >= 1
    then zig-closure-make n [] ctx d ty
-   else zig-sanitize n
+   else if zig-name-known ctx n then zig-sanitize n
+   else zig-unknown-name n
 
 Section: Binary Operator Mapping
 
@@ -686,7 +965,7 @@ Section: Type Definition Emission
      if recmut
      then "const " & zig-sanitize (name.value) & "S = struct {\n" & emit-zig-record-fields fields 0 & "};\n"
       & "const " & zig-sanitize (name.value) & " = *" & zig-sanitize (name.value) & "S;\n\n"
-     else emit-zig-record-type (name.value) fields
+     else emit-zig-record-type (name.value) fields tparams
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      emit-zig-sum-type (name.value) ctors tparams
     is AUnitTypeDef (name) (unitbase) (s) -> ""
@@ -770,9 +1049,17 @@ Section: Type Definition Emission
    else if i == list-length fs - 1 then emit-zig-atype (list-at fs i)
    else emit-zig-atype (list-at fs i) & ", " & emit-zig-ctor-payloads fs (i + 1)
 
-  emit-zig-record-type : Text, List ARecordFieldDef -> Text
-  emit-zig-record-type (name) (fields) =
-   "const " & zig-sanitize name & " = struct {\n" & emit-zig-record-fields fields 0 & "};\n\n"
+ A record quantified over type variables becomes a function from types to
+ a type, exactly as a variant does. emit-zig-sum-type learned this when
+ generics went in; this did not, so SortPartition emitted as a plain
+ struct holding a List of an undeclared `a`.
+
+  emit-zig-record-type : Text, List ARecordFieldDef, List Name -> Text
+  emit-zig-record-type (name) (fields) (tparams) =
+   if list-length tparams > 0
+   then "fn " & zig-sanitize name & "(" & zig-tparam-params tparams 0 & ") type {\n    return struct {\n"
+      & emit-zig-record-fields fields 0 & "    };\n}\n\n"
+   else "const " & zig-sanitize name & " = struct {\n" & emit-zig-record-fields fields 0 & "};\n\n"
 
   emit-zig-record-fields : List ARecordFieldDef, Integer -> Text
   emit-zig-record-fields (fields) (i) =
@@ -851,6 +1138,19 @@ Section: Expression Emission
    if i >= list-length fs then False
    else zig-occurs ((list-at fs i).value) n | zig-occurs-fields fs (i + 1) n
 
+ A handled effect emits its body and NOTHING ELSE, which is right only
+ while there are no clauses to run: a handle with clauses that emits just
+ its body is a different program that compiles, the same trap IrVecPat set
+ when an unimplemented pattern rendered as a catch-all. With clauses it
+ refuses by name instead. This one is latent -- no subject in the ladder
+ reaches an effect handler yet -- and it is written down now because the
+ cost of finding it later is a wrong answer rather than an error.
+
+ IrWithTimeout, IrFork and IrAwait below drop a timeout, a fork and a wait
+ the same way. They are left alone deliberately: running the body inline is
+ a defensible reading of each for a single-threaded target, where dropping
+ a clause that was written to run is not.
+
   emit-zig-expr : IRExpr, ZigCtx, Integer -> Text
   emit-zig-expr (e) (ctx) (d) =
    if d >= zig-max-depth then "undefined"
@@ -863,19 +1163,19 @@ Section: Expression Emission
     is IrName (n) (ty) (sp) -> emit-zig-name n ty ctx d
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-zig-binary op l r ctx d
     is IrNegate (operand) (nty) (sp) -> "(-" & emit-zig-expr operand ctx (d + 1) & ")"
-    is IrIf (c) (t) (el) (ty) (sp) -> "(if (" & emit-zig-expr c ctx (d + 1) & ") " & emit-zig-if-branch t ty el ctx d & " else " & emit-zig-if-branch el ty t ctx d & ")"
+    is IrIf (c) (t) (el) (ty) (sp) -> zig-pin-lit t el ("(if (" & emit-zig-expr c ctx (d + 1) & ") " & emit-zig-if-branch t ty el (zig-expect ctx ty) d & " else " & emit-zig-if-branch el ty t (zig-expect ctx ty) d & ")")
     is IrLet (name) (ty) (val) (body) (sp) ->
      if zig-is-seq-name name then zig-label d & ": { _ = " & emit-zig-expr val ctx (d + 1) & "; break :" & zig-label d & " " & emit-zig-expr body ctx (d + 1) & "; }"
-     else if zig-occurs body name then zig-label d & ": { const " & zig-sanitize name & " = " & emit-zig-expr val ctx (d + 1) & "; break :" & zig-label d & " " & emit-zig-expr body ctx (d + 1) & "; }"
+     else if zig-occurs body name then zig-label d & ": { const " & zig-sanitize name & " = " & emit-zig-expr val ctx (d + 1) & "; break :" & zig-label d & " " & emit-zig-expr body (zig-push-bound ctx name) (d + 1) & "; }"
      else zig-label d & ": { _ = " & emit-zig-expr val ctx (d + 1) & "; break :" & zig-label d & " " & emit-zig-expr body ctx (d + 1) & "; }"
     is IrApply (f) (a) (ty) (sp) -> emit-zig-apply e ctx d
-    is IrLambda (params) (body) (ty) (sp) -> "struct { fn call(" & emit-zig-lambda-params params 0 & ") " & emit-zig-type (zig-peel-return ty (list-length params)) & " { return " & emit-zig-expr body ctx 0 & "; } }.call"
+    is IrLambda (params) (body) (ty) (sp) -> zig-lambda-closure params body ty ctx d
     is IrList (elems) (ty) (sp) -> emit-zig-list elems ty ctx d
-    is IrMatch (scrut) (branches) (ty) (sp) -> emit-zig-match scrut branches ctx d
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-zig-match scrut branches ctx d ty
     is IrAct (stmts) (ty) (sp) -> emit-zig-act stmts ctx d (zig-type-is-void ty)
-    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-zig-expr body ctx (d + 1)
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> if list-length clauses == 0 then emit-zig-expr body ctx (d + 1) else "@compileError(\"zig plug: effect handlers not supported\")"
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-zig-expr body ctx (d + 1)
-    is IrRecord (name) (fields) (ty) (sp) -> emit-zig-record name fields ctx d
+    is IrRecord (name) (fields) (ty) (sp) -> emit-zig-record name fields ctx d (zig-ctor-type-args ty)
     is IrFieldAccess (rec) (field) (ty) (sp) -> emit-zig-expr rec ctx (d + 1) & "." & zig-field-name field
     is IrFieldStore (rec) (field) (val) (ty) (sp) ->
      if zig-is-mutable-rec ctx (zig-expr-type rec)
@@ -922,13 +1222,193 @@ Section: Expression Emission
 
 Section: Lambda and List Helpers
 
-  emit-zig-lambda-params : List IRParam, Integer -> Text
-  emit-zig-lambda-params (params) (i) =
+ An if whose branches are number literals peer-resolves to comptime_int or
+ comptime_float, and zig refuses to let a comptime-only value come out of a
+ runtime branch: `(moved.dead + (if (dead.ok) 0 else 1))` is rejected even
+ though the addition would have coerced it. Codex's Integer is i64 wherever
+ it lands and its Real is f64, so the if names that type outright and peer
+ resolution has a runtime type to agree on. Only a literal branch needs it;
+ every other expression already carries a runtime type of its own.
+
+  zig-is-int-lit : IRExpr -> Boolean
+  zig-is-int-lit (e) =
+   when e
+    is IrIntLit (n) (sp) -> True
+    is otherwise -> False
+
+  zig-is-num-lit : IRExpr -> Boolean
+  zig-is-num-lit (e) =
+   when e
+    is IrNumLit (n) (sp) -> True
+    is otherwise -> False
+
+  zig-pin-lit : IRExpr, IRExpr, Text -> Text
+  zig-pin-lit (t) (el) (s) =
+   if zig-is-int-lit t | zig-is-int-lit el then "@as(i64, " & s & ")"
+   else if zig-is-num-lit t | zig-is-num-lit el then "@as(f64, " & s & ")"
+   else s
+
+ A synthesized lambda -- every `for` expression becomes one, since the
+ desugarer rewrites `for` into map-list -- carries no useful type on its
+ parameters, so reading p.type-val emits anyopaque, which zig refuses as a
+ parameter type outright. The lambda's OWN type is the function type, so
+ its spine has the answer; the parameter annotation is only the fallback.
+
+ A lambda captures whatever enclosing locals its body names, and the plug
+ has to build that environment by hand. Nothing lifts lambdas before the IR
+ arrives, so `map-list (\a -> resolve-type-expr tdm a) args` reaches here
+ still naming tdm, a parameter of the definition around it. Zig admits a
+ comptime constant into a nested function and refuses a runtime value, so
+ the capture is copied into the environment struct the closure already
+ carries for partial application, and the body reads it back through the
+ environment pointer.
+
+ Each capture's field type is `@TypeOf` of the value, hoisted into a
+ constant OUTSIDE the struct: the struct's own field types are read from
+ within it, where the enclosing local is exactly what zig will not let us
+ name. Naming the type would mean tracking a type for every local, and
+ @TypeOf already knows.
+
+  zig-push-bound : ZigCtx, Text -> ZigCtx
+  zig-push-bound (ctx) (n) =
+   ZigCtx {
+    arities = ctx.arities,
+    ctors = ctx.ctors,
+    mutables = ctx.mutables,
+    typedefs = ctx.typedefs,
+    irdefs = ctx.irdefs,
+    renamed-from = ctx.renamed-from,
+    renamed-to = ctx.renamed-to,
+    tvar-ids = ctx.tvar-ids,
+    tvar-types = ctx.tvar-types,
+    expected = ctx.expected,
+    bound-names = (ctx.bound-names) & [n]
+   }
+
+  zig-push-bound-params : ZigCtx, List IRParam, Integer -> ZigCtx
+  zig-push-bound-params (ctx) (params) (i) =
+   if i >= list-length params then ctx
+   else let ctx2 = zig-push-bound ctx ((list-at params i).name)
+   in zig-push-bound-params ctx2 params (i + 1)
+
+  zig-push-bound-pats : ZigCtx, List IRPat, Integer -> ZigCtx
+  zig-push-bound-pats (ctx) (subs) (i) =
+   if i >= list-length subs then ctx
+   else let b = zig-pat-binder (list-at subs i) i
+   in let ctx2 = if b == "_" then ctx else zig-push-bound ctx b
+   in zig-push-bound-pats ctx2 subs (i + 1)
+
+ A bound name is a local by construction, so it resolves without the
+ constructor and nullary-definition arms emit-zig-name has to consider.
+ Going through those would let a local named like a builtin resolve to the
+ builtin at the one place where being wrong is silent: the capture's
+ initializer would read a different value than the body does.
+
+  zig-local-ref : ZigCtx, Text -> Text
+  zig-local-ref (ctx) (n) =
+   let r = zig-renamed ctx n
+   in if text-length r > 0 then r else zig-sanitize n
+
+  zig-params-have : List IRParam, Text, Integer -> Boolean
+  zig-params-have (params) (n) (i) =
+   if i >= list-length params then False
+   else if (list-at params i).name == n then True
+   else zig-params-have params n (i + 1)
+
+  zig-captures : ZigCtx, IRExpr, List IRParam, Integer, List Text -> List Text
+  zig-captures (ctx) (body) (params) (i) (acc) =
+   if i >= list-length (ctx.bound-names) then acc
+   else let n = list-at (ctx.bound-names) i
+   in let fresh = (zig-in-texts acc n 0 == False) & (zig-params-have params n 0 == False)
+   in let acc2 = if zig-occurs body n & fresh then acc & [n] else acc
+   in zig-captures ctx body params (i + 1) acc2
+
+  zig-capture-type-decls : ZigCtx, List Text, Integer, Integer -> Text
+  zig-capture-type-decls (ctx) (caps) (i) (d) =
+   if i >= list-length caps then ""
+   else "const _Cap" & integer-to-text d & "_" & integer-to-text i & " = @TypeOf("
+    & zig-local-ref ctx (list-at caps i) & "); "
+    & zig-capture-type-decls ctx caps (i + 1) d
+
+  zig-capture-fields : List Text, Integer, Integer -> Text
+  zig-capture-fields (caps) (i) (d) =
+   if i >= list-length caps then ""
+   else "c" & integer-to-text i & ": _Cap" & integer-to-text d & "_" & integer-to-text i & ", "
+    & zig-capture-fields caps (i + 1) d
+
+  zig-capture-inits : ZigCtx, List Text, Integer -> Text
+  zig-capture-inits (ctx) (caps) (i) =
+   if i >= list-length caps then ""
+   else " .c" & integer-to-text i & " = " & zig-local-ref ctx (list-at caps i) & ","
+    & zig-capture-inits ctx caps (i + 1)
+
+  zig-push-capture-renames : ZigCtx, List Text, Integer, Text -> ZigCtx
+  zig-push-capture-renames (ctx) (caps) (i) (ev) =
+   if i >= list-length caps then ctx
+   else let ctx2 = zig-rename-to ctx (list-at caps i) (ev & ".c" & integer-to-text i)
+   in zig-push-capture-renames ctx2 caps (i + 1) ev
+
+  zig-rename-to : ZigCtx, Text, Text -> ZigCtx
+  zig-rename-to (ctx) (from) (to) =
+   ZigCtx {
+    arities = ctx.arities,
+    ctors = ctx.ctors,
+    mutables = ctx.mutables,
+    typedefs = ctx.typedefs,
+    irdefs = ctx.irdefs,
+    renamed-from = (ctx.renamed-from) & [from],
+    renamed-to = (ctx.renamed-to) & [to],
+    tvar-ids = ctx.tvar-ids,
+    tvar-types = ctx.tvar-types,
+    expected = ctx.expected,
+    bound-names = ctx.bound-names
+   }
+
+  zig-lambda-param-types : List IRParam, Integer, CodexType, ZigCtx -> Text
+  zig-lambda-param-types (params) (i) (ty) (ctx) =
+   if i >= list-length params then ""
+   else let one = zig-lambda-param-type ty i (list-at params i) ctx
+   in if i == list-length params - 1 then one
+      else one & ", " & zig-lambda-param-types params (i + 1) ty ctx
+
+  zig-lambda-closure : List IRParam, IRExpr, CodexType, ZigCtx, Integer -> Text
+  zig-lambda-closure (params) (body) (ty) (ctx) (d) =
+   let lbl = zig-label d
+   in let env = "_Env" & integer-to-text d
+   in let ev = "_e" & integer-to-text d
+   in let cx = "_ctx" & integer-to-text d
+   in let caps = zig-captures ctx body params 0 []
+   in let ret = emit-zig-type (zig-peel-return ty (list-length params))
+   in let captured = zig-push-capture-renames ctx caps 0 ev
+   in let inner = zig-push-lambda-renames captured params d 0
+   in let unpack = if list-length caps == 0 then "_ = " & cx & "; "
+      else "const " & ev & ": *@This() = @ptrCast(@alignCast(" & cx & ")); "
+   in lbl & ": { " & zig-capture-type-decls ctx caps 0 d & "const " & env
+    & " = struct { " & zig-capture-fields caps 0 d & "fn call(" & cx & ": *anyopaque, "
+    & emit-zig-lambda-params params 0 ty d ctx & ") " & ret
+    & " { " & unpack & "return " & emit-zig-expr body inner 0 & "; } }; break :"
+    & lbl & " " & zig-closure-type (list-length params) (zig-lambda-param-types params 0 ty ctx) ret
+    & "{ .ctx = cx_new(" & env & "{" & zig-capture-inits ctx caps 0 & "}), .call = &" & env & ".call }; }"
+
+  zig-lambda-param-type : CodexType, Integer, IRParam, ZigCtx -> Text
+  zig-lambda-param-type (ty) (i) (p) (ctx) =
+   let fromty = zig-fn-nth-param (zig-subst-ctx ty ctx) i
+   in if text-length fromty > 0 then fromty
+      else emit-zig-type (zig-subst-ctx (p.type-val) ctx)
+
+  zig-fn-nth-param : CodexType, Integer -> Text
+  zig-fn-nth-param (ty) (i) =
+   when zig-fn-spine ty
+    is FunTy (p) (fnrow) (r) -> if i == 0 then emit-zig-type p else zig-fn-nth-param r (i - 1)
+    is otherwise -> ""
+
+  emit-zig-lambda-params : List IRParam, Integer, CodexType, Integer, ZigCtx -> Text
+  emit-zig-lambda-params (params) (i) (ty) (d) (ctx) =
    if i == list-length params then ""
    else let p = list-at params i
-   in let one = zig-sanitize (p.name) & ": " & emit-zig-type (p.type-val)
+   in let one = zig-lambda-param-name (p.name) d & ": " & zig-lambda-param-type ty i p ctx
    in if i == list-length params - 1 then one
-   else one & ", " & emit-zig-lambda-params params (i + 1)
+   else one & ", " & emit-zig-lambda-params params (i + 1) ty d ctx
 
  A literal with elements carries its own answer: the first element's type
  is what the list holds, and it needs no context at all. The annotation
@@ -954,7 +1434,9 @@ Section: Lambda and List Helpers
    let annotated = zig-ll-elem-opt ty
    in let et = if text-length annotated > 0 then annotated
       else if list-length elems > 0 then emit-zig-type (zig-expr-type (list-at elems 0))
-      else "i64"
+      else let fromctx = zig-ll-elem-opt (ctx.expected)
+       in if text-length fromctx > 0 then fromctx
+          else "@compileError(\"zig plug: no element type for this empty list\")"
    in if list-length elems == 0 then "cx_ll_empty(" & et & ")"
       else "cx_ll_of(" & et & ", &[_]" & et & "{ " & emit-zig-list-elems elems 0 ctx d & " })"
 
@@ -966,22 +1448,31 @@ Section: Lambda and List Helpers
 
 Section: Record Emission
 
-  emit-zig-record : Text, List IRFieldVal, ZigCtx, Integer -> Text
-  emit-zig-record (name) (fields) (ctx) (d) =
+ An empty list stored into a record field reads its element type off the
+ field's declaration. Both the literal `Rec { f = [] }` and the update
+ `__record-set r "f" []` land here, and they used to disagree: only the
+ literal looked the field up, so an update fell through to the no-context
+ marker.
+
+  zig-field-value-text : Text, Text, IRExpr, ZigCtx, Integer -> Text
+  zig-field-value-text (recname) (fieldname) (v) (ctx) (d) =
+   if zig-is-empty-list v == False then emit-zig-expr v ctx (d + 1)
+   else let elem = zig-record-field-ll-elem ctx recname fieldname
+   in if text-length elem > 0 then "cx_ll_empty(" & elem & ")"
+      else emit-zig-expr v ctx (d + 1)
+
+  emit-zig-record : Text, List IRFieldVal, ZigCtx, Integer, Text -> Text
+  emit-zig-record (name) (fields) (ctx) (d) (targs) =
    if zig-in-texts (ctx.mutables) name 0
    then "cx_new(" & zig-sanitize name & "S{ " & emit-zig-record-vals name fields 0 ctx d & " })"
-   else zig-sanitize name & "{ " & emit-zig-record-vals name fields 0 ctx d & " }"
+   else zig-sanitize name & targs & "{ " & emit-zig-record-vals name fields 0 ctx d & " }"
 
   emit-zig-record-vals : Text, List IRFieldVal, Integer, ZigCtx, Integer -> Text
   emit-zig-record-vals (recname) (fields) (i) (ctx) (d) =
    if i == list-length fields then ""
    else let f = list-at fields i
    in let sep = if i > 0 then ", " else ""
-   in let val = if zig-is-empty-list (f.value)
-      then let elem = zig-record-field-ll-elem ctx recname (zig-plain-field-name (f.name))
-       in if text-length elem > 0 then "cx_ll_empty(" & elem & ")"
-          else emit-zig-expr (f.value) ctx (d + 1)
-      else emit-zig-expr (f.value) ctx (d + 1)
+   in let val = zig-field-value-text recname (zig-plain-field-name (f.name)) (f.value) ctx d
    in sep & "." & zig-field-name (f.name) & " = " & val & emit-zig-record-vals recname fields (i + 1) ctx d
 
 Section: Match Emission
@@ -996,6 +1487,7 @@ Section: Match Emission
   zig-type-name-of (ty) =
    when ty
     is SumTy (n) (a) (c) -> n.value
+    is RecordTy (n) (a) (f) -> n.value
     is ConstructedTy (n) (a) -> n.value
     is EffectfulTy (effs) (scopes) (inner) -> zig-type-name-of inner
     is otherwise -> ""
@@ -1022,20 +1514,50 @@ Section: Match Emission
    let n = zig-variant-ctor-count (ctx.typedefs) 0 (zig-type-name-of ty)
    in if n == 0 then False else zig-count-ctor-pats branches 0 >= n
 
-  emit-zig-match : IRExpr, List IRBranch, ZigCtx, Integer -> Text
-  emit-zig-match (scrut) (branches) (ctx) (d) =
-   let ex = zig-match-exhaustive ctx (zig-expr-type scrut) branches
-   in "switch (" & emit-zig-expr scrut ctx (d + 1) & zig-match-deref ctx (zig-expr-type scrut) & ") { " & emit-zig-match-arms branches 0 ctx d ex & " }"
+ Every arm of a match has the match's type, so an empty list in one reads
+ it off the match -- the fifth context an empty list can learn from, after
+ a record field, a callee parameter, a constructor payload and an if arm.
 
-  emit-zig-match-arms : List IRBranch, Integer, ZigCtx, Integer, Boolean -> Text
-  emit-zig-match-arms (branches) (i) (ctx) (d) (ex) =
+  emit-zig-match : IRExpr, List IRBranch, ZigCtx, Integer, CodexType -> Text
+  emit-zig-match (scrut) (branches) (ctx) (d) (mty0) =
+   let mty = if text-length (zig-ll-elem-opt mty0) > 0 then mty0
+      else zig-arms-list-type branches 0 mty0
+   in let ex = zig-match-exhaustive ctx (zig-expr-type scrut) branches
+   in "switch (" & emit-zig-expr scrut ctx (d + 1) & zig-match-deref ctx (zig-expr-type scrut) & ") { " & emit-zig-match-arms branches 0 ctx d ex mty & " }"
+
+  emit-zig-match-arms : List IRBranch, Integer, ZigCtx, Integer, Boolean, CodexType -> Text
+  emit-zig-match-arms (branches) (i) (ctx) (d) (ex) (mty) =
    if i == list-length branches then ""
    else let b = list-at branches i
-   in emit-zig-match-arm (b.pattern) (b.body) ctx d ex & emit-zig-match-arms branches (i + 1) ctx d ex
+   in emit-zig-match-arm (b.pattern) (b.body) (zig-expect ctx mty) d ex mty
+      & emit-zig-match-arms branches (i + 1) ctx d ex mty
 
  Constructor arms bind payloads: one field binds by name directly; a
  tuple payload binds `_p<d>` and unpacks into consts inside a labeled
  block so the arm body sees its pattern variables.
+
+ A match's own type is not always resolved -- here the switch is the else
+ arm of an if, and the if carries the type. The arms are all the same type
+ as each other, so an arm that is not an empty list answers for the ones
+ that are. Same trick the if branches use on each other.
+
+  zig-arms-list-type : List IRBranch, Integer, CodexType -> CodexType
+  zig-arms-list-type (branches) (i) (fallback) =
+   if i >= list-length branches then fallback
+   else let b = list-at branches i
+   in if zig-is-empty-list (b.body) then zig-arms-list-type branches (i + 1) fallback
+   else let t = zig-expr-type (b.body)
+   in if text-length (zig-ll-elem-opt t) > 0 then t
+      else zig-arms-list-type branches (i + 1) fallback
+
+  emit-zig-arm-body : IRExpr, CodexType, ZigCtx, Integer -> Text
+  emit-zig-arm-body (body) (mty) (ctx) (d) =
+   if zig-is-empty-list body
+   then let elem = zig-ll-elem-opt mty
+    in let elem2 = if text-length elem > 0 then elem else zig-ll-elem-opt (ctx.expected)
+    in if text-length elem2 > 0 then "cx_ll_empty(" & elem2 & ")"
+       else emit-zig-expr body ctx (d + 1)
+   else emit-zig-expr body ctx (d + 1)
 
   zig-pat-is-catch-all : IRPat -> Boolean
   zig-pat-is-catch-all (pat) =
@@ -1044,25 +1566,26 @@ Section: Match Emission
     is IrWildPat (sp) -> True
     is otherwise -> False
 
-  emit-zig-match-arm : IRPat, IRExpr, ZigCtx, Integer, Boolean -> Text
-  emit-zig-match-arm (pat) (body) (ctx) (d) (ex) =
-   if ex & zig-pat-is-catch-all pat then ""
+  emit-zig-match-arm : IRPat, IRExpr, ZigCtx, Integer, Boolean, CodexType -> Text
+  emit-zig-match-arm (pat) (body0) (ctx) (d) (ex) (mty) =
+   let body = body0
+   in if ex & zig-pat-is-catch-all pat then ""
    else when pat
-    is IrLitPat (text) (ty) (sp) -> text & " => " & emit-zig-expr body ctx (d + 1) & ", "
+    is IrLitPat (text) (ty) (sp) -> text & " => " & emit-zig-arm-body body mty ctx d & ", "
     is IrCtorPat (name) (subs) (ty) (sp) ->
      let nsubs = list-length subs
-     in if nsubs == 0 then "." & zig-sanitize name & " => " & emit-zig-expr body ctx (d + 1) & ", "
+     in if nsubs == 0 then "." & zig-sanitize name & " => " & emit-zig-arm-body body mty ctx d & ", "
      else if nsubs == 1 then
       let binder = zig-pat-binder (list-at subs 0) 0
       in if (binder == "_") | (zig-occurs body binder == False)
          then "." & zig-sanitize name & " => " & emit-zig-expr body ctx (d + 1) & ", "
-         else "." & zig-sanitize name & " => |" & zig-sanitize binder & "| " & emit-zig-expr body ctx (d + 1) & ", "
+         else "." & zig-sanitize name & " => |" & zig-sanitize binder & "| " & emit-zig-expr body (zig-push-bound ctx binder) (d + 1) & ", "
      else if zig-any-sub-occurs subs 0 body == False
      then "." & zig-sanitize name & " => " & emit-zig-expr body ctx (d + 1) & ", "
-     else "." & zig-sanitize name & " => |_p" & integer-to-text d & "| " & zig-label d & ": { " & emit-zig-pat-unpack subs 0 d body & "break :" & zig-label d & " " & emit-zig-expr body ctx (d + 1) & "; }, "
+     else "." & zig-sanitize name & " => |_p" & integer-to-text d & "| " & zig-label d & ": { " & emit-zig-pat-unpack subs 0 d body & "break :" & zig-label d & " " & emit-zig-expr body (zig-push-bound-pats ctx subs 0) (d + 1) & "; }, "
     is IrVarPat (name) (ty) (sp) -> "else => " & emit-zig-expr body ctx (d + 1) & ", "
     is IrWildPat (sp) -> "else => " & emit-zig-expr body ctx (d + 1) & ", "
-    is IrVecPat (pats) (ty) (sp) -> "else => " & emit-zig-expr body ctx (d + 1) & ", "
+    is IrVecPat (pats) (ty) (sp) -> "@compileError(\"zig plug: vector patterns not supported\"), "
 
   zig-any-sub-occurs : List IRPat, Integer, IRExpr -> Boolean
   zig-any-sub-occurs (subs) (i) (body) =
@@ -1115,13 +1638,16 @@ Section: Act Emission
    if i == list-length stmts then ""
    else let s = list-at stmts i
    in let is-last = i == list-length stmts - 1
+   in let rest = when s
+    is IrDoBind (name) (ty) (val) (sp) -> if zig-is-seq-name name then ctx else zig-push-bound ctx name
+    is otherwise -> ctx
    in (when s
     is IrDoBind (name) (ty) (val) (sp) ->
      if zig-is-seq-name name then "_ = " & emit-zig-expr val ctx (d + 1) & "; "
      else "const " & zig-sanitize name & " = " & emit-zig-expr val ctx (d + 1) & "; "
     is IrDoExec (e) (sp) ->
      if is-last then (if voidp then "_ = " & emit-zig-expr e ctx (d + 1) & "; break :" & zig-label d & "; " else "break :" & zig-label d & " " & emit-zig-expr e ctx (d + 1) & "; ")
-     else "_ = " & emit-zig-expr e ctx (d + 1) & "; ") & emit-zig-act-stmts stmts (i + 1) ctx d voidp
+     else "_ = " & emit-zig-expr e ctx (d + 1) & "; ") & emit-zig-act-stmts stmts (i + 1) rest d voidp
 
 Section: Apply Emission
 
@@ -1137,9 +1663,10 @@ Section: Apply Emission
      else let ci = zig-find-ctor (ctx.ctors) n 0
      in if ci >= 0 then emit-zig-ctor-apply (list-at (ctx.ctors) ci) args ctx d (zig-ctor-type-args (zig-expr-type e))
      else let ar = lookup-arity (ctx.arities) n
-     in if ar < 0 then zig-closure-invoke (zig-sanitize n) args ctx d
+     in if ar < 0 then (if zig-name-known ctx n then zig-closure-invoke (zig-local-ref ctx n) args ctx d else zig-unknown-name n)
         else if list-length args < ar then zig-closure-make n args ctx d (zig-expr-type e)
-        else zig-sanitize n & "(" & emit-zig-call-args n args ctx d 0 & ")"
+        else zig-sanitize n & "(" & zig-call-type-args ctx n args (zig-expr-type e)
+             & emit-zig-call-args n args (zig-call-ctx ctx n args (zig-expr-type e)) d 0 & ")"
     is otherwise -> emit-zig-expr-curried e ctx d
 
  Codex applies partially: a 4-argument function called with 2 yields
@@ -1153,6 +1680,201 @@ Section: Apply Emission
  partial application itself, which is exactly the function type left over.
  A name with no arity is not a definition, so it is a value already
  holding a closure, and applying it goes through the trampoline.
+
+ Each variable is recovered from the first argument whose declared type
+ mentions it, falling back to the result. map-list needs both routes: `a`
+ comes from `List a` against the list passed, and `b` only from the result
+ `List b`, because the lambda's own type is as unresolved as the parameter
+ was. A variable no argument mentions emits anyopaque, which zig refuses
+ loudly rather than inferring something wrong.
+
+ A resolved type variable has to reach the arguments, not just the type
+ argument list. A lambda handed to map-list carries the CALLEE's variable
+ in its own type, and an empty list typed from the callee's declared
+ parameter carries it too -- emitted as-is, both name a variable that does
+ not exist in the caller. The call site already knows T36 is Token; these
+ rewrite the argument's type before it is emitted so the emitter never
+ sees a foreign variable.
+
+ Substituting the TYPE rather than threading a binding table through
+ emit-zig-type is what keeps this to one place. emit-zig-type is called
+ from three dozen functions and knows only the type it is given; it should
+ stay that way.
+
+  zig-subst-tvar : CodexType, Integer, CodexType -> CodexType
+  zig-subst-tvar (ty) (id) (with-ty) =
+   when ty
+    is TypeVar (vid) -> if vid == id then with-ty else ty
+    is ListTy (elem) -> ListTy (zig-subst-tvar elem id with-ty)
+    is LinkedListTy (elem) -> LinkedListTy (zig-subst-tvar elem id with-ty)
+    is FunTy (p) (fnrow) (r) -> FunTy (zig-subst-tvar p id with-ty) fnrow (zig-subst-tvar r id with-ty)
+    is EffectfulTy (e) (s) (inner) -> EffectfulTy e s (zig-subst-tvar inner id with-ty)
+    is ForAllTy (fid) (inner) -> ForAllTy fid (zig-subst-tvar inner id with-ty)
+    is ForAllEff (c) (inner) -> ForAllEff c (zig-subst-tvar inner id with-ty)
+    is otherwise -> ty
+
+  zig-subst-arg-type : CodexType, IRDef, List IRExpr, CodexType, List Integer, Integer -> CodexType
+  zig-subst-arg-type (ty) (d) (args) (resty) (ids) (i) =
+   if i >= list-length ids then ty
+   else let id = list-at ids i
+   in let bound = zig-resolve-tvar-type id d args resty 0
+   in zig-subst-arg-type (zig-subst-tvar ty id bound) d args resty ids (i + 1)
+
+ zig-resolve-tvar answers with emitted text because the type argument list
+ needs text. Substitution needs the TYPE, so the walk is shared and only
+ the answer differs.
+
+  zig-resolve-tvar-type : Integer, IRDef, List IRExpr, CodexType, Integer -> CodexType
+  zig-resolve-tvar-type (id) (d) (args) (resty) (i) =
+   if i >= list-length (d.params) | i >= list-length args
+   then zig-tvar-in-type id (zig-peel-return (d.type-val) (list-length (d.params))) resty
+   else let found = zig-tvar-in-type id ((list-at (d.params) i).type-val) (zig-expr-type (list-at args i))
+   in when found
+      is VoidTy -> zig-resolve-tvar-type id d args resty (i + 1)
+      is otherwise -> found
+
+  zig-tvar-in-type : Integer, CodexType, CodexType -> CodexType
+  zig-tvar-in-type (id) (decl) (actual) =
+   when decl
+    is TypeVar (vid) -> if vid == id then actual else VoidTy
+    is EffectfulTy (e) (s) (inner) -> zig-tvar-in-type id inner actual
+    is ForAllTy (fid) (inner) -> zig-tvar-in-type id inner actual
+    is ForAllEff (c) (inner) -> zig-tvar-in-type id inner actual
+    is ListTy (elem) -> zig-tvar-in-elem-type id elem actual
+    is LinkedListTy (elem) -> zig-tvar-in-elem-type id elem actual
+    is FunTy (p) (fnrow) (r) -> zig-tvar-in-fun-type id p r actual
+    is otherwise -> VoidTy
+
+  zig-tvar-in-elem-type : Integer, CodexType, CodexType -> CodexType
+  zig-tvar-in-elem-type (id) (elem) (actual) =
+   when actual
+    is ListTy (ae) -> zig-tvar-in-type id elem ae
+    is LinkedListTy (ae) -> zig-tvar-in-type id elem ae
+    is EffectfulTy (e) (s) (inner) -> zig-tvar-in-elem-type id elem inner
+    is otherwise -> VoidTy
+
+  zig-tvar-in-fun-type : Integer, CodexType, CodexType, CodexType -> CodexType
+  zig-tvar-in-fun-type (id) (p) (r) (actual) =
+   when actual
+    is FunTy (ap) (afnrow) (ar) ->
+     let fromp = zig-tvar-in-type id p ap
+     in when fromp
+        is VoidTy -> zig-tvar-in-type id r ar
+        is otherwise -> fromp
+    is EffectfulTy (e) (s) (inner) -> zig-tvar-in-fun-type id p r inner
+    is otherwise -> VoidTy
+
+ Every construct that knows what type its children must have says so, and
+ an empty list reads it. That is the whole mechanism: an empty list can
+ never answer for itself, so instead of asking each site to look the answer
+ up its own way, the site that knows tells the site that needs.
+
+  zig-expect : ZigCtx, CodexType -> ZigCtx
+  zig-expect (ctx) (ty) =
+   ZigCtx {
+    arities = ctx.arities,
+    ctors = ctx.ctors,
+    mutables = ctx.mutables,
+    typedefs = ctx.typedefs,
+    irdefs = ctx.irdefs,
+    renamed-from = ctx.renamed-from,
+    renamed-to = ctx.renamed-to,
+    tvar-ids = ctx.tvar-ids,
+    tvar-types = ctx.tvar-types,
+    expected = ty,
+    bound-names = ctx.bound-names
+   }
+
+ Two map-list calls in one expression each bind map-list's OWN type
+ variables, so the context ends up holding two bindings for the same id.
+ Substituting from the front let the outer call's binding reach the inner
+ lambda and type its parameter as the outer element type: the inner
+ `for fld in c.fields` came out taking a SumCtor because the enclosing
+ `for c in ctors` had already bound that variable. Bindings are appended as
+ the walk descends, so the innermost is last, and the scan runs from the
+ END -- the same shadowing rule, and the same answer, as the rename table.
+
+  zig-subst-ctx : CodexType, ZigCtx -> CodexType
+  zig-subst-ctx (ty) (ctx) =
+   zig-subst-all ty ctx (list-length (ctx.tvar-ids) - 1)
+
+  zig-subst-all : CodexType, ZigCtx, Integer -> CodexType
+  zig-subst-all (ty) (ctx) (i) =
+   if i < 0 then ty
+   else let one = zig-subst-tvar ty (list-at (ctx.tvar-ids) i) (list-at (ctx.tvar-types) i)
+   in zig-subst-all one ctx (i - 1)
+
+  zig-bind-tvars : ZigCtx, IRDef, List (Integer between 0 and 4294967295), Integer, List IRExpr, CodexType -> ZigCtx
+  zig-bind-tvars (ctx) (d) (ids) (i) (args) (resty) =
+   if i >= list-length ids then ctx
+   else let id = list-at ids i
+   in let bound = zig-resolve-tvar-type id d args resty 0
+   in let ctx2 = ZigCtx {
+    arities = ctx.arities,
+    ctors = ctx.ctors,
+    mutables = ctx.mutables,
+    typedefs = ctx.typedefs,
+    irdefs = ctx.irdefs,
+    renamed-from = ctx.renamed-from,
+    renamed-to = ctx.renamed-to,
+    tvar-ids = (ctx.tvar-ids) & [id],
+    tvar-types = (ctx.tvar-types) & [bound],
+    expected = ctx.expected,
+    bound-names = ctx.bound-names
+   }
+   in zig-bind-tvars ctx2 d ids (i + 1) args resty
+
+  zig-call-ctx : ZigCtx, Text, List IRExpr, CodexType -> ZigCtx
+  zig-call-ctx (ctx) (n) (args) (resty) =
+   let di = zig-find-irdef (ctx.irdefs) 0 n
+   in if di < 0 then ctx
+   else let d = list-at (ctx.irdefs) di
+   in let ids = zig-def-tvar-ids d
+   in if list-length ids == 0 then ctx
+   else zig-bind-tvars ctx d ids 0 args resty
+
+  zig-find-irdef : List IRDef, Integer, Text -> Integer
+  zig-find-irdef (defs) (i) (n) =
+   if i >= list-length defs then -1
+   else if (list-at defs i).name == n then i
+   else zig-find-irdef defs (i + 1) n
+
+  zig-call-type-args : ZigCtx, Text, List IRExpr, CodexType -> Text
+  zig-call-type-args (ctx) (n) (args) (resty) =
+   let di = zig-find-irdef (ctx.irdefs) 0 n
+   in if di < 0 then ""
+   else let d = list-at (ctx.irdefs) di
+   in let ids = zig-def-tvar-ids d
+   in if list-length ids == 0 then ""
+   else zig-call-type-args-loop ctx d ids 0 args resty
+
+  zig-call-type-args-loop : ZigCtx, IRDef, List (Integer between 0 and 4294967295), Integer, List IRExpr, CodexType -> Text
+  zig-call-type-args-loop (ctx) (d) (ids) (i) (args) (resty) =
+   if i >= list-length ids then ""
+   else let one = zig-resolve-tvar (list-at ids i) d args resty 0
+   in one & ", " & zig-call-type-args-loop ctx d ids (i + 1) args resty
+
+ A variable no argument mentions used to come out anyopaque, on the
+ reasoning that zig refuses anyopaque and so the gap could not pass
+ silently. It cannot, but it also cannot explain itself: zig reports
+ "opaque return type not allowed" against a CxFn1 instantiation and says
+ nothing about which callee, which variable, or that a type argument is
+ what went missing. Ten of these in one subject read as one mystery rather
+ than ten facts. The marker names the callee and the variable instead.
+
+  zig-resolve-tvar : Integer between 0 and 4294967295, IRDef, List IRExpr, CodexType, Integer -> Text
+  zig-resolve-tvar (id) (d) (args) (resty) (i) =
+   if i >= list-length (d.params) | i >= list-length args
+   then let fromres = zig-tvar-in id (zig-peel-return (d.type-val) (list-length (d.params))) resty
+    in if text-length fromres > 0 then fromres
+       else "@compileError(\"zig plug: unresolved type variable T" & integer-to-text id & " of " & d.name & "\")"
+   else let found = zig-tvar-in id ((list-at (d.params) i).type-val) (zig-expr-type (list-at args i))
+   in if text-length found > 0 then found
+      else zig-resolve-tvar id d args resty (i + 1)
+
+  zig-drop-trailing-comma : Text -> Text
+  zig-drop-trailing-comma (s) =
+   if text-length s < 2 then s else substring s 0 (text-length s - 2)
 
   zig-closure-args : List IRExpr, ZigCtx, Integer, Integer -> Text
   zig-closure-args (args) (ctx) (d) (i) =
@@ -1203,10 +1925,11 @@ Section: Apply Emission
    in let env = "_Env" & integer-to-text d
    in let ev = "_e" & integer-to-text d
    in let ret = emit-zig-type (zig-fn-result pty)
-   in let unpack = if list-length args == 0 then "_ = ctx; "
-      else "const " & ev & ": *@This() = @ptrCast(@alignCast(ctx)); "
+   in let cx = "_ctx" & integer-to-text d
+   in let unpack = if list-length args == 0 then "_ = " & cx & "; "
+      else "const " & ev & ": *@This() = @ptrCast(@alignCast(" & cx & ")); "
    in lbl & ": { const " & env & " = struct { " & zig-closure-fields args ctx 0
-    & "fn call(ctx: *anyopaque, " & zig-closure-params pty 0 & ") " & ret
+    & "fn call(" & cx & ": *anyopaque, " & zig-closure-params pty 0 & ") " & ret
     & " { " & unpack & "return " & zig-sanitize n & "("
     & zig-closure-env-refs ev (list-length args) 0 & zig-closure-pass rem 0 & "); } }; break :"
     & lbl & " " & zig-closure-type rem (zig-fn-param-types pty) ret
@@ -1222,6 +1945,7 @@ Section: Apply Emission
   zig-ctor-type-args (ty) =
    when ty
     is SumTy (n) (a) (c) -> zig-type-args a
+    is RecordTy (n) (a) (f) -> zig-type-args a
     is ConstructedTy (n) (a) -> zig-type-args a
     is otherwise -> ""
 
@@ -1242,11 +1966,7 @@ Section: Apply Emission
   emit-zig-call-args (fname) (args) (ctx) (d) (i) =
    if i == list-length args then ""
    else let a = list-at args i
-   in let one = if zig-is-empty-list a
-      then let elem = zig-param-ll-elem ctx fname i
-       in if text-length elem > 0 then "cx_ll_empty(" & elem & ")"
-          else emit-zig-expr a ctx (d + 1)
-      else emit-zig-expr a ctx (d + 1)
+   in let one = emit-zig-expr a (zig-expect ctx (zig-callee-param-type ctx fname i)) (d + 1)
    in if i == list-length args - 1 then one
       else one & ", " & emit-zig-call-args fname args ctx d (i + 1)
 
@@ -1260,6 +1980,41 @@ Section: Apply Emission
  holds, alongside a record field decl and a callee's parameter. The
  declared field type is on the variant's ctor, so the ctor being applied
  names it.
+
+ A constructor payload's declared field type is an ATypeExpr rather than a
+ CodexType, so the expectation is carried as text -- the one place the
+ mechanism cannot use zig-expect and says why.
+
+ A builtin argument is the fourth place an empty list can learn what it
+ holds, and the first where the answer is not a declaration. `list-push []
+ x` says nothing about the list and everything about x, so the element type
+ comes off the SIBLING argument: whatever is being pushed is what the list
+ holds. Three of these sit in lower-lazy, which builds a one-element
+ parameter list and two field lists this way.
+
+ Builtin emitters take their arguments as plain expressions with no
+ expectation attached, which is why zig-expect cannot reach here. This
+ helper is the narrow substitute -- it answers for one argument of one
+ builtin from another argument of the same call, and it stays honest by
+ refusing to guess: a sibling whose own type is unresolved falls through to
+ the ordinary emission and the empty-list marker fires as before.
+
+  zig-list-arg-text : List IRExpr, Integer, Integer, ZigCtx, Integer -> Text
+  zig-list-arg-text (args) (li) (ei) (ctx) (d) =
+   let a = list-at args li
+   in if zig-is-empty-list a == False then emit-zig-expr a ctx (d + 1)
+   else let elem = emit-zig-type (zig-expr-type (list-at args ei))
+   in if text-length elem > 0 & zig-is-unmapped elem == False
+      then "cx_ll_empty(" & elem & ")"
+      else emit-zig-expr a ctx (d + 1)
+
+  emit-zig-ctor-arg : ZigCtorEntry, IRExpr, ZigCtx, Integer, Integer -> Text
+  emit-zig-ctor-arg (c) (a) (ctx) (d) (i) =
+   if zig-is-empty-list a
+   then let elem = zig-ctor-ll-elem ctx (c.type-name) (c.ctor-name) i
+    in if text-length elem > 0 then "cx_ll_empty(" & elem & ")"
+       else emit-zig-expr a ctx (d + 1)
+   else emit-zig-expr a ctx (d + 1)
 
   zig-ctor-ll-elem : ZigCtx, Text, Text, Integer -> Text
   zig-ctor-ll-elem (ctx) (tyname) (ctorname) (argi) =
@@ -1287,11 +2042,7 @@ Section: Apply Emission
   emit-zig-ctor-args (c) (args) (ctx) (d) (i) =
    if i == list-length args then ""
    else let a = list-at args i
-   in let one = if zig-is-empty-list a
-      then let elem = zig-ctor-ll-elem ctx (c.type-name) (c.ctor-name) i
-       in if text-length elem > 0 then "cx_ll_empty(" & elem & ")"
-          else emit-zig-expr a ctx (d + 1)
-      else emit-zig-expr a ctx (d + 1)
+   in let one = emit-zig-ctor-arg c a ctx d i
    in if i == list-length args - 1 then one
       else one & ", " & emit-zig-ctor-args c args ctx d (i + 1)
 
@@ -1310,15 +2061,151 @@ Section: Definition Emission
   zig-skip-def : Text -> Boolean
   zig-skip-def (n) = n == "subj-deck-record"
 
+ A definition's own type-val is not reliably populated -- map-list-loop's
+ is unresolved, which is why it took no comptime parameters at all even
+ though its parameters plainly use T38 and T39, and why its return type
+ came out anyopaque. The parameters carry good types when the summary type
+ does not, so both are collected.
+
+ Peeling the return off type-val only works when type-val is populated.
+ When it is not -- map-list-loop again -- the body's own type is what the
+ definition actually returns, and it is the only source left.
+
+ A type-val carrying FEWER arrows than the definition has parameters is
+ not describing this definition, and peeling it cannot be trusted:
+ zig-peel-return stops when it runs out of arrows and hands back whatever
+ is left, so an unpopulated type-val peels to itself and an unpopulated
+ VoidTy peels to a perfectly valid "void". The marker check below cannot
+ see that, because void is a mapping rather than a gap -- sort-by emitted
+ as returning void while its body returned a list, and zig caught it only
+ because the body disagreed.
+
+ The arrow count is the test. It is not a guess about what the type should
+ have been: it is the observation that this type cannot be the type of a
+ definition taking this many parameters, whereupon the body's own type is
+ the answer, exactly as it is for an unmapped one.
+
+ Taking the return type off the body is the right answer but a silent one,
+ and how often it happens is worth knowing rather than guessing: sort-by
+ was caught only because its body returned a list into a void signature,
+ and a definition whose body really is void would have taken the wrong
+ answer without a word. The note is a zig comment, so counting them costs
+ nothing and cannot break a build.
+
+  zig-untrusted-return-note : IRDef -> Text
+  zig-untrusted-return-note (d) =
+   if zig-def-return-trusted d then ""
+   else "    // zig plug: return type from body; type-val has "
+    & integer-to-text (zig-fn-param-count (d.type-val)) & " arrows for "
+    & integer-to-text (list-length (d.params)) & " params\n"
+
+  zig-def-return-trusted : IRDef -> Boolean
+  zig-def-return-trusted (d) =
+   zig-fn-param-count (d.type-val) >= list-length (d.params)
+
+  zig-def-return-type : IRDef -> CodexType
+  zig-def-return-type (d) =
+   if zig-def-return-trusted d == False then zig-expr-type (d.body)
+   else let peeled = zig-peel-return (d.type-val) (list-length (d.params))
+   in if zig-is-unmapped (emit-zig-type peeled) then zig-expr-type (d.body) else peeled
+
+  zig-def-return-text : IRDef -> Text
+  zig-def-return-text (d) =
+   if zig-def-return-trusted d == False then emit-zig-type (zig-expr-type (d.body))
+   else let peeled = emit-zig-type (zig-peel-return (d.type-val) (list-length (d.params)))
+   in if zig-is-unmapped peeled then emit-zig-type (zig-expr-type (d.body)) else peeled
+
+ The marker is the signal. Which codex type an unpopulated type-val holds
+ is not something to guess at -- VoidTy was the guess and it was wrong --
+ but "emit-zig-type could not map it" is exactly what the marker records.
+
+  zig-is-unmapped : Text -> Boolean
+  zig-is-unmapped (t) =
+   if text-length t < 13 then False else substring t 0 13 == "@compileError"
+
+  zig-def-tvar-ids : IRDef -> List (Integer between 0 and 4294967295)
+  zig-def-tvar-ids (d) =
+   zig-def-param-tvars (d.params) 0 (zig-tvar-ids (d.type-val) [])
+
+  zig-def-param-tvars : List IRParam, Integer, List (Integer between 0 and 4294967295) -> List (Integer between 0 and 4294967295)
+  zig-def-param-tvars (params) (i) (acc) =
+   if i >= list-length params then acc
+   else zig-def-param-tvars params (i + 1) (zig-tvar-ids ((list-at params i).type-val) acc)
+
+ Zig forbids a parameter from shadowing a top-level declaration, and codex
+ does not: NameResolver has a global `builtins` and build-all-names-scope
+ takes a parameter called `builtins`. This is the same problem the lambda
+ parameters had, one scope out, so it takes the same answer -- rename the
+ parameter and carry the rename into the body.
+
+ The collision is with definitions, which is what emit-zig-defs writes at
+ the top level. Constructors and type names live there too, and a param
+ colliding with one of those would need the same treatment; nothing has
+ hit it yet, and the marker would not catch it because it is a name error
+ rather than a type error.
+
+  zig-param-shadows : ZigCtx, Text -> Boolean
+  zig-param-shadows (ctx) (n) =
+   zig-find-irdef (ctx.irdefs) 0 n >= 0
+
+  zig-def-param-name : ZigCtx, Text -> Text
+  zig-def-param-name (ctx) (n) =
+   if zig-param-shadows ctx n then "_arg_" & zig-sanitize n else zig-sanitize n
+
+  zig-push-param-renames : ZigCtx, List IRParam, Integer -> ZigCtx
+  zig-push-param-renames (ctx) (params) (i) =
+   if i >= list-length params then ctx
+   else let nm = (list-at params i).name
+   in if zig-param-shadows ctx nm == False then zig-push-param-renames ctx params (i + 1)
+   else let ctx2 = ZigCtx {
+    arities = ctx.arities,
+    ctors = ctx.ctors,
+    mutables = ctx.mutables,
+    typedefs = ctx.typedefs,
+    irdefs = ctx.irdefs,
+    renamed-from = (ctx.renamed-from) & [nm],
+    renamed-to = (ctx.renamed-to) & ["_arg_" & zig-sanitize nm],
+    tvar-ids = ctx.tvar-ids,
+    tvar-types = ctx.tvar-types,
+    expected = ctx.expected,
+    bound-names = ctx.bound-names
+   }
+   in zig-push-param-renames ctx2 params (i + 1)
+
+  zig-comptime-params : List (Integer between 0 and 4294967295), Integer -> Text
+  zig-comptime-params (ids) (i) =
+   if i >= list-length ids then ""
+   else "comptime T" & integer-to-text (list-at ids i) & ": type, "
+      & zig-comptime-params ids (i + 1)
+
   emit-zig-def : IRDef, ZigCtx -> Text
-  emit-zig-def (d) (ctx) =
+  emit-zig-def (d) (ctx0) =
    if zig-skip-def (d.name) then ""
    else let name = zig-sanitize (d.name)
-   in let params-text = emit-zig-def-params (d.params) 0
-   in let ret = emit-zig-type (zig-peel-return (d.type-val) (list-length (d.params)))
-   in "fn " & name & "(" & params-text & ") " & ret & " {\n"
+   in let params-text = emit-zig-def-params (d.params) 0 ctx0
+   in let tvars = zig-def-tvar-ids d
+   in let comptimes = zig-comptime-params tvars 0
+   in let all-params = if text-length params-text == 0
+      then zig-drop-trailing-comma comptimes
+      else comptimes & params-text
+   in let ret = zig-def-return-text d
+   in let ctx = ZigCtx {
+    arities = ctx0.arities,
+    ctors = ctx0.ctors,
+    mutables = ctx0.mutables,
+    typedefs = ctx0.typedefs,
+    irdefs = ctx0.irdefs,
+    renamed-from = ctx0.renamed-from,
+    renamed-to = ctx0.renamed-to,
+    tvar-ids = ctx0.tvar-ids,
+    tvar-types = ctx0.tvar-types,
+    expected = zig-def-return-type d,
+    bound-names = []
+   }
+   in "fn " & name & "(" & all-params & ") " & ret & " {\n"
+    & zig-untrusted-return-note d
     & emit-zig-param-discards (d.params) 0 (d.body)
-    & "    return " & emit-zig-expr (d.body) ctx 0 & ";\n}\n\n"
+    & "    return " & emit-zig-expr (d.body) (zig-push-bound-params (zig-push-param-renames ctx (d.params) 0) (d.params) 0) 0 & ";\n}\n\n"
 
  A parameter the body never mentions is a hard error in zig, not a warning,
  so a definition that ignores an argument needs the discard written out.
@@ -1332,13 +2219,13 @@ Section: Definition Emission
       else "    _ = " & zig-sanitize (p.name) & ";\n"
    in line & emit-zig-param-discards params (i + 1) body
 
-  emit-zig-def-params : List IRParam, Integer -> Text
-  emit-zig-def-params (params) (i) =
+  emit-zig-def-params : List IRParam, Integer, ZigCtx -> Text
+  emit-zig-def-params (params) (i) (ctx) =
    if i == list-length params then ""
    else let p = list-at params i
-   in let one = zig-sanitize (p.name) & ": " & emit-zig-type (p.type-val)
+   in let one = zig-def-param-name ctx (p.name) & ": " & emit-zig-type (p.type-val)
    in if i == list-length params - 1 then one
-   else one & ", " & emit-zig-def-params params (i + 1)
+   else one & ", " & emit-zig-def-params params (i + 1) ctx
 
  Assembling the output has the same hazard as escaping it: joining N pieces
  with a right-recursive `&` copies every piece it has not reached yet, so
@@ -1398,6 +2285,11 @@ Section: Chapter Emission
    & "fn cx_ll_of(comptime T: type, vs: []const T) *CxList(T) {\n    const l = cx_ll_empty(T);\n    l.items.appendSlice(std.heap.page_allocator, vs) catch @panic(\"oom\");\n    return l;\n}\n"
    & "fn cx_ll_concat(a: anytype, b: @TypeOf(a)) @TypeOf(a) {\n    const c = cx_new(@TypeOf(a.*){ .items = .empty });\n    c.items.appendSlice(std.heap.page_allocator, a.items.items) catch @panic(\"oom\");\n    c.items.appendSlice(std.heap.page_allocator, b.items.items) catch @panic(\"oom\");\n    return c;\n}\n"
    & "fn cx_ll_cons(v: anytype, l: anytype) @TypeOf(l) {\n    const c = cx_new(@TypeOf(l.*){ .items = .empty });\n    c.items.append(std.heap.page_allocator, v) catch @panic(\"oom\");\n    c.items.appendSlice(std.heap.page_allocator, l.items.items) catch @panic(\"oom\");\n    return c;\n}\n"
+   & "fn cx_ll_insert_at(l: anytype, i: i64, v: anytype) @TypeOf(l) {\n    l.items.insert(std.heap.page_allocator, @intCast(i), v) catch @panic(\"oom\");\n    return l;\n}\n"
+   & "fn cx_ll_with_capacity(comptime T: type, n: i64) *CxList(T) {\n    _ = n;\n    return cx_ll_empty(T);\n}\n"
+   & "fn cx_text_compare(a: []const u8, b: []const u8) i64 {\n    return switch (std.mem.order(u8, a, b)) { .lt => -1, .eq => 0, .gt => 1 };\n}\n"
+   & "fn cx_text_to_double_bits(s: []const u8) i64 {\n    _ = s;\n    @panic(\"zig plug: text-to-double-bits unimplemented\");\n}\n"
+   & "fn cx_char_to_text(c: i64) []const u8 {\n    const b = std.heap.page_allocator.alloc(u8, 1) catch @panic(\"oom\");\n    b[0] = @intCast(c);\n    return b;\n}\n"
    & "fn cx_list_len(l: anytype) i64 {\n    return @intCast(l.items.items.len);\n}\n"
    & "fn cx_list_at(l: anytype, i: i64) @TypeOf(l.items.items[0]) {\n    return l.items.items[@intCast(i)];\n}\n"
    & "fn cx_text_len(s: []const u8) i64 {\n    return @intCast(s.len);\n}\n"
@@ -1413,7 +2305,7 @@ Section: Chapter Emission
    & "fn cx_text_starts_with(s: []const u8, p: []const u8) bool {\n    return std.mem.startsWith(u8, s, p);\n}\n"
    & "fn cx_text_contains(h: []const u8, n: []const u8) bool {\n    return std.mem.indexOf(u8, h, n) != null;\n}\n"
    & "fn cx_text_concat_list(l: anytype) []const u8 {\n    var out = std.ArrayListUnmanaged(u8).empty;\n    for (l.items.items) |p| out.appendSlice(std.heap.page_allocator, p) catch @panic(\"oom\");\n    return out.items;\n}\n"
-   & "fn cx_list_set_at(l: anytype, i: i64, v: anytype) @TypeOf(l) {\n    const c = cx_new(@TypeOf(l.*){ .items = .empty });\n    c.items.appendSlice(std.heap.page_allocator, l.items.items) catch @panic(\"oom\");\n    c.items.items[@intCast(i)] = v;\n    return c;\n}\n"
+   & "fn cx_list_set_at(l: anytype, i: i64, v: anytype) @TypeOf(l) {\n    l.items.items[@intCast(i)] = v;\n    return l;\n}\n"
    & "// Text is CCE here, so a decimal digit is byte 3 + d and minus is 73;\n// parsing this as ASCII would silently read zero.\n"
    & "fn cx_text_to_integer(s: []const u8) i64 {\n    var acc: i64 = 0;\n    var neg = false;\n    for (s, 0..) |b, i| {\n        if (i == 0 and b == 73) { neg = true; continue; }\n        if (b < 3 or b > 12) continue;\n        acc = acc * 10 + @as(i64, b - 3);\n    }\n    return if (neg) -acc else acc;\n}\n"
    & "fn cx_text_split(s: []const u8, sep: []const u8) *CxList([]const u8) {\n    const out = cx_ll_empty([]const u8);\n    if (sep.len == 0) return out;\n    var start: usize = 0;\n    while (std.mem.indexOfPos(u8, s, start, sep)) |p| {\n        _ = cx_ll_push(out, s[start..p]);\n        start = p + sep.len;\n    }\n    _ = cx_ll_push(out, s[start..]);\n    return out;\n}\n"
@@ -1432,7 +2324,13 @@ Section: Chapter Emission
     ctors = build-ctor-map type-defs 0 [],
     mutables = build-mutable-set type-defs 0 [],
     typedefs = type-defs,
-    irdefs = m.defs
+    irdefs = m.defs,
+    renamed-from = [],
+    renamed-to = [],
+    tvar-ids = [],
+    tvar-types = [],
+    expected = VoidTy,
+    bound-names = []
    }
    in let types-text = emit-zig-type-defs type-defs 0
    in let defs-text = emit-zig-defs (m.defs) 0 ctx

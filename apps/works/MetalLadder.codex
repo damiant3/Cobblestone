@@ -45,6 +45,46 @@ Section: Channel
     else let f = gop-fill-rect b (boot-fb-stride 0) 0 0 (boot-fb-w 0) (boot-fb-h 0) colour
     in if peek-32 b 0 == colour then 1 else 0
 
+ A HEARTBEAT, for a stage that takes minutes. The rungs report the stage that
+ PASSED, so a stage in progress and a stage that died inside it paint the same
+ screen: the 2026-08-11 sink flight held ORANGE for both reasons and the
+ operator had no way to tell which, which is the whole of what that flight
+ failed to establish.
+
+ The bar goes in a BAND below the field rather than over it, so the field still
+ carries the last-colour-standing contract and only the band carries motion. It
+ clears the band before drawing, so a bar can go backwards when a new phase
+ resets it. It answers the painted width, which is what a bed asserts on: a
+ heartbeat nobody can measure is the same failure one level up.
+
+  ladder-band-h : Integer = 24
+
+ The width is separated from the painting so it can be tested without a
+ framebuffer. Everything that can be got wrong here is arithmetic -- a bar that
+ saturates early, one that overflows the panel, one that divides before
+ multiplying and reports zero for the whole first half -- and none of it needs
+ a screen to catch. `codex/test/apps/ladder-bar-width` is the arm.
+
+  ladder-bar-width : Integer, Integer, Integer -> Integer
+  ladder-bar-width (w) (done) (total) =
+    if total <= 0 then 0
+    else if done <= 0 then 0
+    else if done >= total then w
+    else w * done / total
+
+  ladder-tick : Integer, Integer, Integer -> Integer
+  ladder-tick (colour) (done) (total) =
+    let b = boot-fb-base 0
+    in if b == 0 then 0
+    else let w = boot-fb-w 0
+    in let h = boot-fb-h 0
+    in if h <= ladder-band-h then 0
+    else let y = h - ladder-band-h
+    in let x = ladder-bar-width w done total
+    in let clear = gop-fill-rect b (boot-fb-stride 0) 0 y w ladder-band-h 0
+    in let f = if x > 0 then gop-fill-rect b (boot-fb-stride 0) 0 y x ladder-band-h colour else 0
+    in x
+
  ladder-hold repaints rather than spinning on an empty loop. A pure
  non-terminating function is not a halt: the optimizer removed the first
  version of this outright, so a FAILED stage fell through and painted the

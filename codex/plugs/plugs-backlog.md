@@ -59,45 +59,26 @@ rather than merely firing. Each plug's port is the `-Port` literal in its
 own `run.ps1`; passing the wrong one hangs the listener and exits 5,
 which looks nothing like a pass.
 
-Still wants an owner, and a fix still wants a reviewer or a runtime
-per language. A blind sweep would be a compiling change, not a correct
-one.
+**The detector is a runner now: `build/check-plug-field-slot.ps1`** (red,
+2026-08-15). One probe (a two-field record, both fields read), compiled once
+to IR and fed to every plug whose `run.ps1` speaks TCP, each output grepped
+for `a/0` and `b/1`. Measured on first run: **38 plugs run, 35 leak, 3 clean**
+(`babbage`, `python`, `zig`); `pascal` leaks only slot 1, so it drops slot 0
+some other way and wants reading. The five that do not run over TCP
+(`csharp`, `html`, `javascript`, `wasm`, `recheck`) are outside the check
+and were measured clean by hand on 2026-08-11. The 35 are recorded in
+`build/plug-field-slot-baseline.txt`, a DEBT LIST: the check fails on a
+leaker not in it (a new plug copying an old emitter) and on `python`
+leaking (the oracle dead), and reports a baseline plug that has stopped
+leaking so the file shrinks. It is not in the gate; run it before and after
+touching any emitter's field access.
 
-## 1.11 -- Nothing rebuilds the transpiler plug binaries, and it bit
-
-`codex/plugs/*/build-output/*-plug.cdx` is NOT in the depot
-(`build-output/` is in `.p4ignore`), so every workspace carries its own
-copies and they are only as fresh as the last time somebody ran that
-plug's `build.ps1` by hand.
-
-**Measured 2026-08-11.** 44 plug binaries in this workspace dated
-2026-08-06; the shared `codex/plugs/common/IRTextParser.codex` last
-changed 2026-08-08 (changes 14182, 14206). Against IR containing a
-record construction, **37 of 38 runnable plugs faulted** -- `!EXC=06`,
-invalid opcode, inside `parse-type-record` -- and after
-`codex/plugs/<name>/build.ps1` for each, **38 of 38 produced output**.
-Only python survived stale. A rebuild is about 3 seconds per plug and
-150 seconds for all 49.
-
-**Read that result narrowly: 38 of 38 means they no longer CRASH, not
-that they are correct.** Entry 1.2 above was measured on those same
-rebuilt binaries and 36 of them emit the wrong thing while exiting 0.
-That is the standing hazard at the top of this file, arriving exactly as
-described.
-
-Nothing in the gate closes this. `plug-binary` rebuilds only the six
-binary backends (riscv, arm64, t3isa, elf, pe, img). `plug-smoke`
-rebuilds a plug **only if its CDX is MISSING**, and then runs four of
-them (typescript, python, rust, ptx) against a single input,
-`codex/plugs/test-input/hello.codex`, which has no record in it -- so
-the one path that faulted was the one path never exercised. **The gap is
-the input as much as the staleness**: 38 of 38 stale plugs handle
-`hello.codex` perfectly.
-
-Wants: a staleness check or an unconditional rebuild in `plug-smoke`,
-and a second smoke input carrying a record. Both are cheap; neither has
-an owner.
-
+Still wants an owner for the FIXES, and a fix still wants a reviewer or a
+runtime per language. A blind sweep would be a compiling change, not a
+correct one; the runner is what makes each reviewed fix visible. Measured
+2026-08-15: the only target toolchains on this box are node, python and
+dotnet, whose plugs are already clean, so none of the 35 can be run here;
+a fix is reviewed by reading against the language, or on a box that has it.
 ## 1.7 -- Which plugs emit `list-push` as an unconditional in-place append?
 
 Unswept. `list-push` is NOT unconditionally destructive on bare metal:
@@ -289,6 +270,51 @@ the CCE text model right by hand-decode.
 The fix is a zig toolchain plus a wiring entry, which is a decision about what
 this box carries, not a code change. Until then a zig regression is invisible
 to every gate.
+
+**zig 0.16.0 is on this box now (2026-08-16, Damian's direction): `D:\zig-0.16.0`,
+on the user PATH.** The plug targets 0.16 (`ZigEmitter` line ~2263 notes 0.16's
+env-API refactor), so it matches. The central claim is no longer unverifiable
+here; measured first-hand through the real plug binary:
+
+- **The plug's CORE is byte-identical to bare metal.** A subject doing `+`, `*`,
+  `-` (negative result), a record built and read through a variable, recursion
+  (`fib 10 = 55`), and text concat emits zig that compiles under 0.16 and prints
+  EXACTLY the bare-metal output. So the strong part of Steve Howell's claim
+  reproduces here, not just on his machine.
+- **The three known defects reproduce exactly**, all in `codex/test/plug-oracle-arith.codex`:
+  (1) `int-mod` emits `@compileError("zig plug: no emitter for int-mod")` (honest,
+  fail-loud); substituting the obvious `@rem` is WRONG on negative dividends
+  (`md -7 3` gives -1 where Euclidean is 2), so the fix is zig `@mod` plus the
+  sign correction, not `@rem`. (2) A record literal emits `Gauge{ .g = n }.g` and
+  0.16 rejects it (`error: expected ';'`); it needs `(Gauge{ .g = n }).g`.
+  (3) A clamping bounded field does not clamp: `gauge 150` emits 150 and
+  `gauge -150` emits -150, against the clamped 100 / -100.
+- **A FOURTH issue, not in Steve's three:** a list literal `[10, 20, 30, 40]` is
+  emitted with element type `void` (`&[_]void{ 10, 20, 30, 40 }`), so
+  `list-length` on a literal fails to compile (`comptime_int` vs `void`).
+  Element-type inference on a list literal is missing, likely the same
+  empty-list-element-type gap one context over.
+
+**The oracle arm is still NOT wired, on purpose** (it is red until those four
+land, the position stated in the PR-65 thread). When they are fixed the entry
+in `build/plug-oracle-test.ps1` is one line:
+`@{ Name='zig'; Cdx='codex\plugs\zig\build-output\zig-plug.cdx'; Ext='zig'; Exe='zig'; Args={param($f) @('run',$f)} }`
+-- and note the emitted program prints to STDERR (`std.debug.print`), which the
+harness's `2>&1` already captures.
+
+**PR 65 is carried in (red 15595, 2026-08-16): the eight-rung ladder rebased
+onto Update 43.** PR 64 is closed absorbed. The emitter replace was clean (the
+depot was byte-identical to his base) and the plug rebuilds, but the claim
+above is unchanged: still his measurement, not ours. **Three defects he found
+by hand-running the parser subject through the plug and did NOT fix, open
+here:** (1) no `int-mod` emitter, so floor-mod does not lower (the only integer
+remainder emitted is `IrRemInt -> @rem`, truncating); (2) a record literal is
+emitted without the parentheses zig needs before a field access, so
+`IrFieldAccess` on a literal yields `X{...}.field` rather than `(X{...}).field`;
+(3) bounded-field clamping is not emitted, so `IntegerTy (lo)(hi)(mode)` and
+`ABoundedIntType` both lower to bare `i64` with no clamp. All three are in the
+emitter and are the natural next rungs; none is reachable to a gate here for the
+same toolchain reason.
 
 ## 1.14 -- Codex assumes deep recursion is free; a stack language does not
 

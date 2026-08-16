@@ -28,15 +28,21 @@ overclaimed the half that matters most:
   (scratch and lock files land in that list too, and only the operator can tell
   them apart). So the list scrolls past inside a 13-minute build and the gate
   goes green.
-- **It does not run that scan at all when nothing is opened.** The script
-  returns at its `p4 opened` check, above the scan, printing
-  `p4-stale-check: OK (nothing opened)`. A CL whose contents are ALL adds -- a
-  new test plus its `.expected`, a new doc, a new probe -- that loses every add
-  leaves nothing opened, so the most reassuring message the script has is the
-  one you get in the worst case. Measured 2026-08-15 on
-  `BigWhite_Codex_red_main`: an untracked file on disk, `p4 status` naming it
-  `reconcile to add`, and the preflight printing `OK (nothing opened)` and
-  exiting 0. The scan now runs before that return, but it still only warns.
+- **The scan runs in BOTH paths, including when nothing is opened.** Read the
+  message, because two of them mean different things:
+  `nothing opened, but SEE THE LIST ABOVE` means a dropped add is on disk, and
+  the bare `OK (nothing opened)` now means clean. It still only warns either
+  way.
+
+  It did not always. The script used to return at its `p4 opened` check,
+  ABOVE the scan, so a CL whose contents are ALL adds -- a new test plus its
+  `.expected`, a new doc, a new probe -- that lost every add left nothing
+  opened and got the most reassuring message the script has in exactly the
+  worst case. Measured 2026-08-15 on `BigWhite_Codex_red_main`: an untracked
+  file on disk, `p4 status` naming it `reconcile to add`, and the preflight
+  printing `OK (nothing opened)` and exiting 0. Fixed at main 15124, which
+  moved the scan above the early return; re-verified at head 2026-08-15 on a
+  second workspace, `Show-Untracked` running at line 81 and the warning at 84.
 
 **So the gate does NOT refuse to run against a workspace that does not match
 the depot.** It refuses on the two revision failures and reports the third.
@@ -231,6 +237,7 @@ the same command; reach for a different command (L-FALSIF).
 | P-INTERCHANGE (L) | `p4 interchanges` shows phantom entries forever in a multi-stream topology, because content reaches a target through indirect paths and it tracks only direct integration records. These entries CANNOT be cleared: `copy -f`, `merge -F` and `copy -n` all answer "up-to-date" / "already integrated" and do nothing, and `integrate -f` refuses a stream view outright. | Use `p4 diff2 -q` -- it compares content. When `diff2` is clean, a lingering `interchanges` row is finished business. Do not chase it and do not report it as a loose end. |
 | P-RENUMBER | `p4 submit -c 9517` answers `Change 9517 renamed change 9520 and submitted`. A note citing the pre-submit number points at nothing. | Read the submit output for the final number rather than reusing the one you created. |
 | P-RESURRECT | A merge can RESURRECT a file a peer just deleted, and the copy-up carries it back. | Diff the copy's file list against the CL's and account for every difference in BOTH directions. Counting is not enough: the usual check asks what is MISSING, and here the problem is the EXTRA file, which matching totals hide. |
+| P-UNBRANCHED (L) | The other direction of P-RESURRECT, and it deletes a peer's work instead of restoring it. `p4 copy --from //Codex/<agent>` lists `//Codex/main/<file> - delete from //Codex/<agent>/<file>#none` for a file you never touched, and submitting that is a real delete on main. The stream is not behind: `p4 merge -n -S //Codex/<agent> -r` answers **`All revision(s) already integrated`** while the file is in neither the workspace nor `p4 have`, so Perforce has credited the branch without ever creating the file and no ordinary merge-down will fix it. Measured 2026-08-15 on `build/jonquil.ps1`, branched to main at 15170 and absent from reek across two later merge-downs. | Revert the copy first (`p4 -c <main-client> revert //Codex/main/...`), then re-branch that one file: `p4 merge -Af --from main <path>` (a stream view refuses `p4 integrate -f`, and `merge -f` is not an option), `p4 resolve -at`, submit it alone, then copy up again and read the list. Confirm the file is on disk with a plausible size before submitting; the branch resolve says nothing about content. |
 | P-SHELFSUBMIT | `p4 submit` is refused while the CL still has a shelf ("has shelved files"). Bites on every CL where a gate follows a shelve, which is every CL that uses the build token. | `p4 shelve -d -c <CL>` first. |
 | P-REMERGE | Copy-up refused with `Stream //Codex/<agent> cannot 'copy' over outstanding 'merge' changes`. Another agent landed while your gate ran. | Merge down again, submit the merge, then copy up. Budget two merge-downs per token hold. Your token does not prevent this and is not meant to: what lands under you is non-seed traffic, which takes no token. |
 | P-EOL | A five-line change reports as the entire file replaced, because an edit tool wrote the result back as bare LF over a CRLF file. It turns the merge-down of any contended document into a conflict and hides your real change from review. | If `p4 diff` shows far more lines than you touched, count the endings and repair at the BYTE level (section 4.2). Never through `Get-Content`/`Set-Content`, which also rewrites the encoding of a `unicode`-typed file. |
@@ -314,11 +321,81 @@ against `p4 changes //Codex/main/seed/Codex.cdx`, looking for a compiler CL newe
 than the newest seed CL), then **rebuild and submit the seed rather than
 reporting it.** It is a mechanical fix and the source is the authority.
 
+### 4.3b An internal seed land is fast now (Damian, 2026-08-16)
+
+A seed land used to pay THREE full `build/build.ps1` passes under the token:
+one to gate, one to "converge" the new seed, one to re-prove on the parent.
+Measured 2026-08-16 that was ~27 minutes of gating and two of the three passes
+were redundant against determinism. Internal lands now cost one fast gate and
+two second-long checks. **The full `build/build.ps1` is for PUBLIC/release
+builds only; internal lands use `build/build.ps1 -Internal`.**
+
+- **Gate with `-Internal`.** It always proves the seed is a byte-identical
+  self-fixed-point that boots (the fixed-point core plus the BVT); it runs a
+  regression phase (jonquil, the plug phases, gen-scripts, deck-headroom,
+  vm-differential, app-sweep) ONLY when a file that phase depends on changed in
+  your workspace, and defers the rest to the next full gate. Measured: a
+  foreword-parser change gates in ~2.5 min and a codegen change still pulls the
+  codegen-sensitive phases (app-sweep, jonquil, vm-differential), against ~8.6
+  min for the full gate. The phase-to-dependency map is in `build/build.ps1`
+  beside the `-Internal` switch.
+
+- **The convergence rebuild is unnecessary when the gate reports one-pass.**
+  If `-Internal` prints `SUT === stage1 -- hard fixed point in one pass` and
+  `build/output/Sut.cdx` differs from the on-disk seed (your change moved it),
+  install Sut and self-verify. Do NOT run the gate a second time to "converge":
+  a one-pass fixed point IS the proof that `seed := Sut` reproduces Sut, and
+  signing is deterministic, so the second full build only re-derives a hash you
+  already hold.
+
+  ```powershell
+  Copy-Item -Force build/output/Sut.cdx seed/Codex.cdx
+  build/test-self-verify.ps1        # THE SEED VERIFIES ITSELF -- seconds
+  ```
+
+  If the gate does NOT print one-pass (rare: the old seed compiled your source
+  to a Sut that is not yet a self-fixed-point), you are in the genuine
+  convergence case, not the fast one. Take the fallback in 4.4: install the
+  unsigned intermediate and rebuild until `SUT === stage1` in one pass.
+
 ### 4.4 Seed verification during copy-up (P-SIGNED)
 
-The seed in a copy-up CL must be a proven fixed point on the TARGET stream: the
-source concat can differ between workspaces, so a seed built on the child may
-not be what the parent produces.
+**The fast path: a copy-up needs no rebuild on the parent.** Signing is
+deterministic and measured (4.3): identical source hashes identically end to
+end, so a seed proven a fixed point on your stream IS the seed the parent
+produces, on two conditions, both checkable in seconds:
+
+1. **Your stream is fully merged down from main.** `p4 merge -n -S
+   //Codex/<agent> -r` prints nothing outstanding. If it does, merge, resolve,
+   re-gate, then copy up. **Caveat (P-UNBRANCHED): `merge -n` can answer "All
+   revision(s) already integrated" while a file is genuinely absent from your
+   stream.** The copy-up carries only the files you name, so a main source file
+   your stream is missing is exactly what the old parent rebuild caught and this
+   check does not. If you have any reason to doubt the streams share source
+   (a recent unbranched-file surprise, a partial sync), take the fallback and
+   gate on the parent, where the build sees the parent's actual source.
+2. **No untracked source would enter the seed.** `build/check-seed-orphans.ps1`
+   exits 0. This is the ONLY thing the old parent rebuild actually caught: a
+   `.codex` present on your workstream but not in Perforce is baked into the
+   seed you built and then not carried by the copy-up, so the parent's tracked
+   source stops reproducing it and main breaks. The check is a `p4 reconcile`
+   over codex/compiler and codex/foreword (both feed the seed -- a foreword
+   parser moved the seed on 2026-08-16), and it does in one second what the
+   9-minute rebuild did.
+
+With both green, the copy-up carries `seed/Codex.cdx` (the same Sut your gate
+signed) with the rest of your files; there is nothing to build on the parent.
+
+```powershell
+p4 merge -n -S //Codex/<agent> -r        # must be empty (fully merged down)
+build/check-seed-orphans.ps1             # must exit 0
+# then the ordinary per-file copy-up carries seed/Codex.cdx too
+```
+
+**The fallback, only when the fast path cannot certify:** if the orphan check
+names a file you mean to keep, `p4 add` it and re-gate; if you genuinely cannot
+show the streams share source, gate on the parent as before. The old procedure,
+kept for that case:
 
 ```powershell
 # On the PARENT workspace with the copy-up CL unshelved:
@@ -338,9 +415,6 @@ p4 edit -c <CL> //Codex/<PARENT>/seed/Codex.cdx
 # copy the proven seed into place
 p4 shelve -r -c <CL>
 ```
-
-Submit only after the content hash matches `Sut === stage1 === stage2` AND
-self-verify is green.
 
 ### 4.5 Recovering a shelf `p4 verify` calls BAD (P-SHELFBAD)
 

@@ -68,8 +68,19 @@ if (-not (Test-Path $Vm))  { throw "codex-vm not found: $Vm (build it with tools
 $outDir = Split-Path $Out -Parent
 if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir -Force | Out-Null }
 
+# Staleness is judged against every chapter the desk can reach, not against
+# DeskVm.codex alone. DeskVm is nine lines that call desk-run: it almost never
+# changes, so a check that stats only the entry file serves the PREVIOUS binary
+# after any edit to GopDesk or anything it cites, says "compiling" nowhere, and
+# reports the old build's behaviour as the new build's. Measured 2026-08-15: six
+# consecutive runs across two opposite versions of a pane produced frontier
+# readings within 700 bytes of each other, because all six ran one binary.
+$newest = Get-ChildItem -Path (Join-Path $Repo 'apps/works'), (Join-Path $Repo 'codex') `
+              -Filter '*.codex' -Recurse -File |
+          Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+
 $stale = $Force -or -not (Test-Path $Out) -or `
-         ((Get-Item $Src).LastWriteTimeUtc -gt (Get-Item $Out).LastWriteTimeUtc)
+         ($newest -and $newest.LastWriteTimeUtc -gt (Get-Item $Out).LastWriteTimeUtc)
 
 if ($stale) {
     Write-Host "[desk] compiling $([IO.Path]::GetFileName($Src)) against $Kernel"

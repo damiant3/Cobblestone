@@ -137,6 +137,7 @@ Section: Expressions -- Leaf
   emit-bash-expr (e) =
     when e
       is SeLit (s) -> bash-quote s
+      is SeText (s) -> bash-dquote s
       is SeInt (n) -> show n
       is SeVar (name) -> "\"$" & name & "\""
       is SeEnvVar (name) -> "\"$" & name & "\""
@@ -183,6 +184,19 @@ Section: Helpers
 
   bash-quote : Text -> Text
   bash-quote (s) = "\"" & s & "\""
+
+ SeText is an interpolating string, so it stays double-quoted here, but unlike
+ bash-quote above it escapes what would otherwise end the string or run a
+ command. In a Bash double-quoted string the escape is the backslash, and a
+ bare backtick starts a command substitution. Backslash is escaped first;
+ doing it later would escape the backslashes this function had just inserted.
+ The dollar is left alone, because interpolation is the point.
+
+  bash-dquote : Text -> Text
+  bash-dquote (s) =
+    let a = text-replace s "\\" "\\\\"
+    in let b = text-replace a "\"" "\\\""
+    in "\"" & text-replace b "`" "\\`" & "\""
 
   emit-bash-args : List ShellExpr, Integer -> Text
   emit-bash-args (args) (i) =

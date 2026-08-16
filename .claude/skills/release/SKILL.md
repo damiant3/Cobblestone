@@ -102,10 +102,11 @@ the DDC on the release is what surfaces it if it was missed.
 ## Step 5 -- Seed, map, and img
 - **Seed:** if a rebuild is due, follow the Developer's Guide seed
   procedure; verify the DEPOT digest after submit (PerforceProcess.md).
-- **Map:** refresh `seed/Codex.map`. The seed build emits a map (every CDX
-  compile has since main 15088) but never installs it, so nothing else
-  refreshes the shipped one (OperatorsManual "Release-to-Public Gate",
-  step 2). A stale map misresolves every crash.
+- **Map:** refresh `seed/Codex.map` by copying `build/output/Sut.map`, which
+  the gate leaves beside the binary it describes. Nothing outside this step
+  refreshes the shipped one, and a stale map misresolves nearly every symbol
+  rather than failing (OperatorsManual "Release-to-Public Gate", step 2, which
+  has the validation).
 - **Img:** rebuild `seed/Codex.img` (`build/build-boot-img.ps1`). It is a
   separate distribution artifact that drifts and is NOT part of a seed
   rebuild. A release ships a current img.
