@@ -1,0 +1,71 @@
+Chapter: Seeded
+
+  KKind =
+   | KIdent
+   | KEof
+
+  Tok = record {
+   kind : KKind,
+   source : Text,
+   offset : Integer,
+   length : Integer,
+   line : Integer,
+   column : Integer,
+   file-id : Integer
+  }
+
+  mutable LState = record {
+   source : Text,
+   offset : Integer,
+   line : Integer,
+   column : Integer,
+   file-id : Integer,
+   errors : LinkedList Integer,
+   prose-mode : Boolean
+  }
+
+  LStep =
+   | LTok (Tok) (LState)
+   | LEnd
+
+  LColl = record {
+   c-toks : LinkedList Tok,
+   c-errs : LinkedList Integer
+  }
+
+  mk-state : Text, Integer, LinkedList Integer -> LState
+  mk-state (src) (fid) (pre) =
+   LState { source = src, offset = 0, line = 1, column = 1, file-id = fid, errors = pre, prose-mode = False }
+
+  adv : LState -> LState
+  adv (st) =
+   LState { source = st.source, offset = st.offset + 1, line = st.line, column = st.column + 1, file-id = st.file-id, errors = st.errors, prose-mode = st.prose-mode }
+
+  mk-tok : KKind, Integer, LState -> Tok
+  mk-tok (kind) (length) (st) =
+   Tok { kind = kind, source = st.source, offset = st.offset, length = length, line = st.line, column = st.column, file-id = st.file-id }
+
+  my-scan : LState -> LStep
+  my-scan (st) =
+   if st.offset >= 1 then LEnd
+   else LTok (mk-tok KIdent 1 st) (adv st)
+
+  my-collect : LState, LinkedList Tok, Integer -> LColl
+  my-collect (st) (acc) (ceiling) =
+   when my-scan st
+    is LTok (tok) (next) ->
+     if tok.kind == KEof then LColl { c-toks = __linked-list-push acc tok, c-errs = next.errors }
+      else my-collect next (__linked-list-push acc tok) ceiling
+    is LEnd ->
+     LColl { c-toks = __linked-list-push acc (mk-tok KEof 0 st), c-errs = st.errors }
+
+  opening : [Console] Nothing = act
+    let e0 = __linked-list-push (__linked-list-empty 0) 42
+    in let raw = my-collect (mk-state "x" 1 e0) (__linked-list-empty 0) 0
+    in let errs = __linked-list-to-list (raw.c-errs)
+    in act
+      print-line-uni ("toks " & show (list-length (__linked-list-to-list (raw.c-toks))))
+      print-line-uni ("errs " & show (list-length errs))
+      print-line-uni ("e0 " & show (list-at errs 0))
+    end
+  end
