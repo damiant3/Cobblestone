@@ -1,24 +1,31 @@
 // F3 of the fib ladder: the emitted machine code, EXECUTED.
 //
-// The fibx rung proves the zig plug emits the same 45,432 bytes as bare
-// metal. It does not prove those bytes mean anything -- two emitters can
-// agree on a byte stream that no processor would run. This reads the dump
-// back, resolves the calls that finalize would have resolved, drops the
-// buffer into executable memory, and calls fib.
+// The fibx rung proves the zig plug emits the same CDX as bare metal. It
+// does not prove those bytes mean anything -- two emitters can agree on a
+// byte stream that no processor would run. This reads the dump back, drops
+// the content section into executable memory, and calls into it.
 //
 // Both dumps are run: fibx.truth (seed-compiled bare metal) and
 // fibx.zigout (through the zig plug). They are byte-identical, so they
 // must agree here too; running only one would leave open which side was
 // being trusted.
+//
+// Nothing is patched here. finalize resolved every call before serializing,
+// which is the whole difference between this and the pre-finalize rung.
 const std = @import("std");
 
-const Pair = struct { num: u64, name: []const u8 };
+// A symbol-map row: `0x<addr> <size> <name>`, exactly what the compiler
+// writes beside a .cdx. Addresses are absolute; the content buffer starts
+// at bare-metal-load-addr.
+const load_addr = 1048576;
+
+const Sym = struct { off: u64, size: u64, name: []const u8 };
 
 const Dump = struct {
-    code_len: u64,
-    code: []u8,
-    funcs: []const Pair,
-    calls: []const Pair,
+    header: []u8,
+    content: []u8,
+    tail: []u8,
+    syms: []const Sym,
 };
 
 // 0.16 routes file reads through an Io; a blocking one is two lines.
@@ -56,19 +63,31 @@ const Parser = struct {
         return line[key.len + 1 ..];
     }
 
-    // `--- funcs ---` and `--- calls ---` are both `<integer> <name>`,
-    // terminated by a lone dot.
-    fn pairs(self: *Parser, gpa: std.mem.Allocator) ![]const Pair {
-        var acc: std.ArrayList(Pair) = .empty;
+    fn count(self: *Parser, key: []const u8) u64 {
+        return std.fmt.parseInt(u64, self.headerValue(key), 10) catch
+            die("{s}: unreadable {s}", .{ self.path, key });
+    }
+
+    fn symbols(self: *Parser, gpa: std.mem.Allocator) ![]const Sym {
+        var acc: std.ArrayList(Sym) = .empty;
         while (true) {
             const line = self.next();
             if (std.mem.eql(u8, line, ".")) return acc.toOwnedSlice(gpa);
-            const sp = std.mem.indexOfScalar(u8, line, ' ') orelse
-                die("{s}: table row has no space: '{s}'", .{ self.path, line });
+            var t = std.mem.tokenizeScalar(u8, line, ' ');
+            const addr_s = t.next() orelse die("{s}: empty symbol row", .{self.path});
+            const size_s = t.next() orelse die("{s}: symbol row has no size: '{s}'", .{ self.path, line });
+            const name = t.next() orelse die("{s}: symbol row has no name: '{s}'", .{ self.path, line });
+            if (!std.mem.startsWith(u8, addr_s, "0x"))
+                die("{s}: symbol address is not hex: '{s}'", .{ self.path, line });
+            const addr = std.fmt.parseInt(u64, addr_s[2..], 16) catch
+                die("{s}: unreadable symbol address: '{s}'", .{ self.path, line });
+            if (addr < load_addr)
+                die("{s}: symbol below the load address: '{s}'", .{ self.path, line });
             try acc.append(gpa, .{
-                .num = std.fmt.parseInt(u64, line[0..sp], 10) catch
-                    die("{s}: table row has no integer: '{s}'", .{ self.path, line }),
-                .name = line[sp + 1 ..],
+                .off = addr - load_addr,
+                .size = std.fmt.parseInt(u64, size_s, 10) catch
+                    die("{s}: unreadable symbol size: '{s}'", .{ self.path, line }),
+                .name = name,
             });
         }
     }
@@ -83,67 +102,43 @@ const Parser = struct {
                 die("{s}: '{s}' is not a byte", .{ self.path, t }));
         }
         if (acc.items.len != want)
-            die("{s}: code-len says {d}, dump carries {d}", .{ self.path, want, acc.items.len });
+            die("{s}: section says {d} bytes, dump carries {d}", .{ self.path, want, acc.items.len });
         return acc.toOwnedSlice(gpa);
     }
 };
 
 fn parse(gpa: std.mem.Allocator, path: []const u8, text: []const u8) !Dump {
     var p = Parser{ .lines = std.mem.splitScalar(u8, text, '\n'), .path = path };
-    const errs = p.headerValue("check-errors");
-    if (!std.mem.eql(u8, errs, "0")) die("{s}: subject had {s} check errors", .{ path, errs });
-    _ = p.headerValue("ir-defs");
-    _ = p.headerValue("fo-names");
-    const code_len = std.fmt.parseInt(u64, p.headerValue("code-len"), 10) catch
-        die("{s}: unreadable code-len", .{path});
-    p.expect("--- funcs ---");
-    const funcs = try p.pairs(gpa);
-    p.expect("--- calls ---");
-    const calls = try p.pairs(gpa);
-    p.expect("--- code ---");
-    return .{ .code_len = code_len, .code = try p.bytes(gpa, code_len), .funcs = funcs, .calls = calls };
+    if (p.count("check-errors") != 0) die("{s}: subject had check errors", .{path});
+    _ = p.count("ir-defs");
+    if (p.count("emit-errors") != 0) die("{s}: emission put errors in the bag", .{path});
+    const header_len = p.count("header-len");
+    const content_len = p.count("content-len");
+    const tail_len = p.count("tail-len");
+    p.expect("--- symbols ---");
+    const syms = try p.symbols(gpa);
+    p.expect("--- header ---");
+    const header = try p.bytes(gpa, header_len);
+    p.expect("--- content ---");
+    const content = try p.bytes(gpa, content_len);
+    p.expect("--- tail ---");
+    const tail = try p.bytes(gpa, tail_len);
+    if (!std.mem.startsWith(u8, header, "CDX1"))
+        die("{s}: header does not start with the CDX1 magic", .{path});
+    return .{ .header = header, .content = content, .tail = tail, .syms = syms };
 }
 
-fn lookup(funcs: []const Pair, name: []const u8) ?u64 {
-    for (funcs) |f| if (std.mem.eql(u8, f.name, name)) return f.num;
+fn lookup(syms: []const Sym, name: []const u8) ?Sym {
+    for (syms) |s| if (std.mem.eql(u8, s.name, name)) return s;
     return null;
-}
-
-// The offset table records where each function starts, not how long it is,
-// so a function runs to whichever function starts next.
-fn functionEnd(d: Dump, start: u64) u64 {
-    var end = d.code_len;
-    for (d.funcs) |f| if (f.num > start and f.num < end) {
-        end = f.num;
-    };
-    return end;
-}
-
-// apply-call-patches-direct, transcribed: rel32 = target - (call site + 5),
-// written into the four bytes after the E8. Every displacement is relative
-// to the buffer, which is why the buffer can be loaded anywhere.
-//
-// Returns the sites that resolved to nothing. Bare metal diagnoses those at
-// finalize (CDX unresolved-func-offset); here they are only fatal if one
-// lands inside a function about to be called, which runFunc checks.
-fn patchCalls(gpa: std.mem.Allocator, d: Dump) ![]const u64 {
-    var unresolved: std.ArrayList(u64) = .empty;
-    const trap = lookup(d.funcs, "__unresolved_trap");
-    for (d.calls) |c| {
-        const target = lookup(d.funcs, c.name) orelse trap orelse {
-            try unresolved.append(gpa, c.num);
-            continue;
-        };
-        const rel: i32 = @intCast(@as(i64, @intCast(target)) - @as(i64, @intCast(c.num + 5)));
-        std.mem.writeInt(i32, d.code[c.num + 1 ..][0..4], rel, .little);
-    }
-    return unresolved.toOwnedSlice(gpa);
 }
 
 // The generated prologue pushes rbp/rbx/r12/r13/r14 but never r15, so this
 // does not take zig's word for what survives: every volatile and every
 // callee-saved register is declared clobbered. r10 carries the stack limit
-// the stack-guard compares against; zero means the guard never fires.
+// the stack-guard compares against; zero means the guard never fires -- and
+// after finalize the guard is a real branch to __out_of_memory, so this
+// matters more than it did before.
 fn callCodex(entry: usize, arg: i64) i64 {
     return asm volatile ("call *%[f]"
         : [ret] "={rax}" (-> i64),
@@ -156,9 +151,9 @@ fn callCodex(entry: usize, arg: i64) i64 {
 const Case = struct { n: i64, want: i64 };
 
 // fib is the recursive one -- the reason F3 is interesting, since its two
-// self-calls are the only thing the patcher has to get right. double is a
-// leaf that fits in five bytes with no frame at all, so it is an
-// independent check that the offsets carve where they claim to.
+// self-calls are the only thing finalize had to resolve inside it. double
+// is a leaf that fits in five bytes with no frame at all, so it is an
+// independent check that the symbol map points where it claims to.
 const subjects = [_]struct { name: []const u8, cases: []const Case }{
     .{ .name = "fib", .cases = &.{
         .{ .n = 0, .want = 0 },
@@ -174,21 +169,17 @@ const subjects = [_]struct { name: []const u8, cases: []const Case }{
     } },
 };
 
-fn runFunc(d: Dump, base: usize, unresolved: []const u64, name: []const u8, cases: []const Case) bool {
-    const start = lookup(d.funcs, name) orelse {
-        std.debug.print("no '{s}' in the offset table; names containing it:\n", .{name});
-        for (d.funcs) |f| if (std.mem.indexOf(u8, f.name, name) != null)
-            std.debug.print("  {d} {s}\n", .{ f.num, f.name });
+fn runFunc(d: Dump, base: usize, name: []const u8, cases: []const Case) bool {
+    const sym = lookup(d.syms, name) orelse {
+        std.debug.print("no '{s}' in the symbol map; names containing it:\n", .{name});
+        for (d.syms) |s| if (std.mem.indexOf(u8, s.name, name) != null)
+            std.debug.print("  {d} {s}\n", .{ s.off, s.name });
         die("cannot locate {s}", .{name});
     };
-    const end = functionEnd(d, start);
-    for (unresolved) |pos| if (pos >= start and pos < end)
-        die("a call at {d} is inside {s} and resolves to nothing", .{ pos, name });
-
-    std.debug.print("  {s} at {d}..{d} ({d} bytes)\n", .{ name, start, end, end - start });
+    std.debug.print("  {s} at {d} ({d} bytes)\n", .{ name, sym.off, sym.size });
     var ok = true;
     for (cases) |c| {
-        const got = callCodex(base + start, c.n);
+        const got = callCodex(base + sym.off, c.n);
         if (got != c.want) ok = false;
         std.debug.print("    {s}({d}) = {d}  (want {d}) {s}\n", .{
             name, c.n, got, c.want, if (got == c.want) "ok" else "WRONG",
@@ -200,10 +191,9 @@ fn runFunc(d: Dump, base: usize, unresolved: []const u64, name: []const u8, case
 fn runOne(io: std.Io, gpa: std.mem.Allocator, path: []const u8) !bool {
     const text = try readFile(io, gpa, path);
     const d = try parse(gpa, path, text);
-    const unresolved = try patchCalls(gpa, d);
 
     const page = std.heap.pageSize();
-    const len = (d.code.len + page - 1) / page * page;
+    const len = (d.content.len + page - 1) / page * page;
     const mem = try std.posix.mmap(
         null,
         len,
@@ -212,14 +202,14 @@ fn runOne(io: std.Io, gpa: std.mem.Allocator, path: []const u8) !bool {
         -1,
         0,
     );
-    @memcpy(mem[0..d.code.len], d.code);
+    @memcpy(mem[0..d.content.len], d.content);
 
-    std.debug.print("{s}: {d} bytes, {d} functions, {d} call sites, {d} unresolved\n", .{
-        path, d.code_len, d.funcs.len, d.calls.len, unresolved.len,
+    std.debug.print("{s}: {d} header + {d} content + {d} tail bytes, {d} symbols\n", .{
+        path, d.header.len, d.content.len, d.tail.len, d.syms.len,
     });
 
     var ok = true;
-    for (subjects) |s| ok = runFunc(d, @intFromPtr(mem.ptr), unresolved, s.name, s.cases) and ok;
+    for (subjects) |s| ok = runFunc(d, @intFromPtr(mem.ptr), s.name, s.cases) and ok;
     return ok;
 }
 
