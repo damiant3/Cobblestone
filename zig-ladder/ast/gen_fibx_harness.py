@@ -3,9 +3,10 @@
 through the TREE emitter and the output is fib's machine code. The state
 preparation is x86-64-emit-cdx-with-exit-mode's own sequence, copied
 verbatim with its default arguments and stopped just before finalize, so
-the harness makes no emission decisions of its own; it prints code-len
-and the workspace bytes, 32 to a line, and the byte stream is the oracle
-output.
+the harness makes no emission decisions of its own; it prints code-len,
+the function-offset table, the call-patch table, and the workspace bytes
+32 to a line, and all of that is the oracle output. The two tables are
+what F3 needs to find fib inside the buffer and resolve its self-calls.
 
 LowerStubs is NOT bundled for this milestone -- the real Types/Builtins
 rides along because the whole x86-64 code generator does, so bs-emit's
@@ -98,6 +99,20 @@ Section: Byte Dump
     end
   end
 
+ The offset table and the call-patch table are the only way to say which
+ bytes are which. Both are printed as `<integer> <name>` so one walker
+ serves them, and both go through the oracle: a plug that emitted the code
+ correctly but scrambled the tables would still be wrong.
+
+  fibx-print-pairs : List Integer, List Text, Integer, Integer -> [Console] Nothing
+  fibx-print-pairs (nums) (names) (i) (n) = act
+    if i >= n then print-line-uni "."
+    else act
+      print-line-uni (integer-to-text (list-at nums i) & " " & list-at names i)
+      fibx-print-pairs nums names (i + 1) n
+    end
+  end
+
 Section: Driver
 
   opening : [Console] Nothing = act
@@ -117,6 +132,10 @@ Section: Driver
       print-line-uni ("ir-defs " & show (list-length (ir.defs)))
       print-line-uni ("fo-names " & show (list-length (res.fo-names)))
       print-line-uni ("code-len " & show (res.code-len))
+      print-line-uni "--- funcs ---"
+      fibx-print-pairs (res.fo-offsets) (res.fo-names) 0 (list-length (res.fo-names))
+      print-line-uni "--- calls ---"
+      fibx-print-pairs (res.cp-offsets) (res.cp-targets) 0 (list-length (res.cp-targets))
       print-line-uni "--- code ---"
       fibx-print-bytes (res.workspace.code-buffer) 0 (res.code-len)
     end
