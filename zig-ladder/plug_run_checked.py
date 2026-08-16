@@ -29,10 +29,17 @@ import plug_run
 CHUNK_SIZES = [3000, 1500, 3500, 2500]
 
 def run_verified(plug_cdx, ir_path, out_path, port=9145, attempts=3,
-                 timeout=420, chunk_size=4096):
+                 timeout=420, chunk_size=4096, stall=120):
+
     """One transfer plus a proof. Falls back to agreement if the proof keeps
     failing, which would mean the kernel is segmenting somewhere we did not
     expect."""
+    # Both knobs scale with the IR: the full compiler's 15.7 MB needs an
+    # hour-class cap and minutes-class stall tolerance between writes;
+    # small rungs keep the defaults.
+    size = os.path.getsize(ir_path)
+    timeout = max(timeout, size // 4096)
+    stall = max(stall, size // 65536)
     for i in range(attempts):
         fd, tmp = tempfile.mkstemp(suffix=".plug-attempt")
         os.close(fd)
@@ -40,7 +47,7 @@ def run_verified(plug_cdx, ir_path, out_path, port=9145, attempts=3,
         os.close(fd)
         try:
             if not plug_run.run_plug(plug_cdx, ir_path, tmp, port=port,
-                                     chunk_size=chunk_size, timeout=timeout,
+                                     chunk_size=chunk_size, timeout=timeout, stall=stall,
                                      pcap=pcap):
                 print(f"[verified] attempt {i + 1}: transfer failed")
                 continue
@@ -61,9 +68,9 @@ def run_verified(plug_cdx, ir_path, out_path, port=9145, attempts=3,
             os.unlink(tmp)
             os.unlink(pcap)
     print("[verified] parity route exhausted; falling back to agreement")
-    return run_agreed(plug_cdx, ir_path, out_path, port=port, timeout=timeout)
+    return run_agreed(plug_cdx, ir_path, out_path, port=port, timeout=timeout, stall=stall)
 
-def run_agreed(plug_cdx, ir_path, out_path, port=9145, attempts=4, timeout=420):
+def run_agreed(plug_cdx, ir_path, out_path, port=9145, attempts=4, timeout=420, stall=120):
     fd, tmp = tempfile.mkstemp(suffix=".plug-attempt")
     os.close(fd)
     seen = {}
@@ -71,7 +78,7 @@ def run_agreed(plug_cdx, ir_path, out_path, port=9145, attempts=4, timeout=420):
         for i in range(attempts):
             cs = CHUNK_SIZES[i % len(CHUNK_SIZES)]
             if not plug_run.run_plug(plug_cdx, ir_path, tmp, port=port,
-                                     chunk_size=cs, timeout=timeout):
+                                     chunk_size=cs, timeout=timeout, stall=stall):
                 print(f"[agreed] attempt {i + 1} (chunk {cs}): transfer failed")
                 continue
             blob = open(tmp, "rb").read()

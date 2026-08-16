@@ -9,7 +9,7 @@ import time
 import codex_vm
 
 def run_plug(plug_cdx, ir_path, out_path, port=9145, mem_mb=3072, timeout=180,
-             chunk_size=4096, pcap=None, legacy=False):
+             chunk_size=4096, pcap=None, legacy=False, stall=120):
     ir = open(ir_path, "rb").read()
     # The guest loses the last byte of any odd-length frame (see
     # PLUG_IR_TRANSPORT.md). Frame parity follows TCP payload parity because
@@ -99,10 +99,20 @@ def run_plug(plug_cdx, ir_path, out_path, port=9145, mem_mb=3072, timeout=180,
         out = b""
         closed = False
         crashed = False
+        stalled = False
         serial = b""
         data.setblocking(False)
         t0 = time.time()
+        # timeout is a hard cap; the working criterion is STALL. A big IR
+        # keeps the guest computing for long stretches between writes, and
+        # a fixed wall clock fails a plug that is merely thorough -- the
+        # full-compiler IR emitted for seven minutes and was cut off
+        # mid-flow. Progress resets the stall window; only silence ends it.
+        last_progress = time.time()
         while time.time() - t0 < timeout:
+            if time.time() - last_progress > stall:
+                stalled = True
+                break
             # A crashed guest prints !EXC and halts, so waiting out the full
             # timeout learns nothing. Watch the serial console while we wait.
             try:
@@ -122,6 +132,7 @@ def run_plug(plug_cdx, ir_path, out_path, port=9145, mem_mb=3072, timeout=180,
                 closed = True
                 break
             out += chunk
+            last_progress = time.time()
         conn.close()
         data.setblocking(True)
 
@@ -142,8 +153,10 @@ def run_plug(plug_cdx, ir_path, out_path, port=9145, mem_mb=3072, timeout=180,
             print("FAIL: no bytes from plug")
             return False
         if not closed:
-            print(f"FAIL: plug never closed the socket ({len(out)} bytes in "
-                  f"{timeout}s); output would be truncated, discarding it")
+            why = (f"no bytes for {stall}s" if stalled
+                   else f"hard cap {timeout}s with data still flowing")
+            print(f"FAIL: plug never closed the socket ({len(out)} bytes; "
+                  f"{why}); output would be truncated, discarding it")
             return False
         open(out_path, "wb").write(out)
         print(f"wrote {out_path} ({len(out)} bytes)")
