@@ -18,7 +18,13 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import codex_vm  # noqa: E402
 
 HERE = pathlib.Path(__file__).parent
-EXPECTED = "6765"
+
+# Each rung's subject prints something only it can print, so the boot has a
+# specific answer to be right about rather than merely "some output".
+RUNGS = [
+    ("fibx", "6765"),
+    ("scale", "2147\n3\n11"),
+]
 
 
 def parse_sections(path):
@@ -47,7 +53,9 @@ def parse_sections(path):
     return sections
 
 
-def boot(dump_name, cdx_name):
+def boot_side(rung, side, expected):
+    dump_name = f"{rung}.{'truth' if side == 'truth' else 'zigout'}"
+    cdx_name = f"{rung}-from-{'truth' if side == 'truth' else 'zig'}.cdx"
     src = HERE / dump_name
     s = parse_sections(src)
     cdx = s["header"] + s["content"] + s["tail"]
@@ -56,18 +64,20 @@ def boot(dump_name, cdx_name):
     print(f"{dump_name} -> {cdx_name}: {len(cdx)} bytes "
           f"({len(s['header'])} header + {len(s['content'])} content + {len(s['tail'])} tail)")
 
-    out = codex_vm.run_cdx(str(out_path), timeout=120, idle_timeout=60)
-    lines = [l for l in out.decode(errors="replace").splitlines()
+    out = codex_vm.run_cdx(str(out_path), timeout=300, idle_timeout=120)
+    lines = [l.rstrip("\r") for l in out.decode(errors="replace").splitlines()
              if not l.startswith(("WD:", "HEAP:", "STACK:"))]
     printed = "\n".join(lines).strip()
-    ok = EXPECTED in printed
-    print(f"  booted, printed: {printed!r}  {'ok' if ok else 'WRONG (want ' + EXPECTED + ')'}")
+    ok = printed == expected
+    print(f"  booted, printed: {printed!r}  {'ok' if ok else 'WRONG (want ' + expected + ')'}")
     return ok
 
 
 if __name__ == "__main__":
-    results = [boot("fibx.truth", "fib-from-truth.cdx"),
-               boot("fibx.zigout", "fib-from-zig.cdx")]
+    results = []
+    for rung, expected in RUNGS:
+        for side in ("truth", "zigout"):
+            results.append(boot_side(rung, side, expected))
     if not all(results):
-        raise SystemExit("F4 FAIL: an emitted binary did not print fib 20")
-    print("F4 PASS: the emitted CDX boots and prints 6765")
+        raise SystemExit("F4 FAIL: an emitted binary printed the wrong thing")
+    print(f"F4 PASS: {len(results)} emitted binaries boot and print what their subjects say")
