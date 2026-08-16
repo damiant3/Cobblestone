@@ -1179,9 +1179,10 @@ Section: Expression Emission
     is IrRecord (name) (fields) (ty) (sp) -> emit-zig-record name fields ctx d (zig-ctor-type-args ty)
     is IrFieldAccess (rec) (field) (ty) (sp) -> zig-field-receiver rec ctx d & "." & zig-field-name field
     is IrFieldStore (rec) (field) (val) (ty) (sp) ->
-     if zig-is-mutable-rec ctx (zig-expr-type rec)
-     then zig-label d & ": { const _r = " & emit-zig-expr rec ctx (d + 1) & "; _r." & zig-field-name field & " = " & emit-zig-expr val ctx (d + 1) & "; break :" & zig-label d & " _r; }"
-     else zig-label d & ": { var _r = " & emit-zig-expr rec ctx (d + 1) & "; _r." & zig-field-name field & " = " & emit-zig-expr val ctx (d + 1) & "; break :" & zig-label d & " _r; }"
+     let stored = zig-clamp-field-val ctx (zig-type-name-of (zig-expr-type rec)) (zig-plain-field-name field) (emit-zig-expr val ctx (d + 1))
+     in if zig-is-mutable-rec ctx (zig-expr-type rec)
+     then zig-label d & ": { const _r = " & emit-zig-expr rec ctx (d + 1) & "; _r." & zig-field-name field & " = " & stored & "; break :" & zig-label d & " _r; }"
+     else zig-label d & ": { var _r = " & emit-zig-expr rec ctx (d + 1) & "; _r." & zig-field-name field & " = " & stored & "; break :" & zig-label d & " _r; }"
     is IrFork (body) (ty) (sp) -> emit-zig-expr body ctx (d + 1)
     is IrAwait (task) (ty) (sp) -> emit-zig-expr task ctx (d + 1)
     is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> emit-zig-act body ctx d (zig-type-is-void ty)
@@ -1457,10 +1458,45 @@ Section: Record Emission
 
   zig-field-value-text : Text, Text, IRExpr, ZigCtx, Integer -> Text
   zig-field-value-text (recname) (fieldname) (v) (ctx) (d) =
-   if zig-is-empty-list v == False then emit-zig-expr v ctx (d + 1)
-   else let elem = zig-record-field-ll-elem ctx recname fieldname
-   in if text-length elem > 0 then "cx_ll_empty(" & elem & ")"
-      else emit-zig-expr v ctx (d + 1)
+   let raw = (if zig-is-empty-list v == False then emit-zig-expr v ctx (d + 1)
+      else let elem = zig-record-field-ll-elem ctx recname fieldname
+      in if text-length elem > 0 then "cx_ll_empty(" & elem & ")"
+         else emit-zig-expr v ctx (d + 1))
+   in zig-clamp-field-val ctx recname fieldname raw
+
+ A clamping bounded field saturates on every store, not only at
+ construction: on bare metal, record literals, __record-set and field
+ stores all reach emit-clamping-checked-store. The three emission sites
+ here funnel through this lookup so they cannot drift apart.
+
+  zig-clamp-field-val : ZigCtx, Text, Text, Text -> Text
+  zig-clamp-field-val (ctx) (recname) (fieldname) (val-text) =
+   zig-clamp-def-scan (ctx.typedefs) 0 recname fieldname val-text
+
+  zig-clamp-def-scan : List ATypeDef, Integer, Text, Text, Text -> Text
+  zig-clamp-def-scan (tds) (i) (recname) (fieldname) (val-text) =
+   if i >= list-length tds then val-text
+   else when (list-at tds i)
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
+     if name.value == recname then zig-clamp-field-scan fields 0 fieldname val-text
+     else zig-clamp-def-scan tds (i + 1) recname fieldname val-text
+    is otherwise -> zig-clamp-def-scan tds (i + 1) recname fieldname val-text
+
+  zig-clamp-field-scan : List ARecordFieldDef, Integer, Text, Text -> Text
+  zig-clamp-field-scan (fields) (i) (fieldname) (val-text) =
+   if i >= list-length fields then val-text
+   else let f = list-at fields i
+   in if f.name.value == fieldname then zig-clamp-atype (f.type-expr) val-text
+      else zig-clamp-field-scan fields (i + 1) fieldname val-text
+
+  zig-clamp-atype : ATypeExpr, Text -> Text
+  zig-clamp-atype (te) (val-text) =
+   when te
+    is ABoundedIntType (b) (lo) (hi) (mode) (s) ->
+     when mode
+      is OvClamping -> "std.math.clamp(" & val-text & ", " & integer-to-text lo & ", " & integer-to-text hi & ")"
+      is otherwise -> val-text
+    is otherwise -> val-text
 
  A record literal is a curly-suffix expression in zig's grammar and no
  suffix may follow it directly: Gauge{ .g = n }.g is a parse error where
