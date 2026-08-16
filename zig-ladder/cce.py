@@ -3,7 +3,12 @@
 # Bands per codex/foreword/core/CCE.codex: 1 LF, 2 space, 3..12 digits,
 # 13..38 lowercase and 39..64 uppercase in frequency order, 65..96 punct.
 LOWER = "etaoinshrdlcumwfgypbvkjxqz"
-PUNCT = ' !"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~'
+# The punct band in CODEX FREQUENCY ORDER (CCE.codex / the zig prelude's
+# cce_table, codes 65..96) -- not ASCII order, which an earlier draft of
+# this file carried and never wired in, leaving <NN> placeholders where
+# every paren and quote should be. Codes 97+ are multibyte and stay
+# placeholders.
+PUNCT = '.,!?:;\'"-()+=*<>/@#&_\\|[]{}~`^$%'
 
 def _table():
     t = {}
@@ -13,6 +18,8 @@ def _table():
     for i, ch in enumerate(LOWER):
         t[13 + i] = ch
         t[39 + i] = ch.upper()
+    for i, ch in enumerate(PUNCT):
+        t[65 + i] = ch
     return t
 
 TABLE = _table()
