@@ -20,6 +20,7 @@ REPO="$(cd "$T/.." && pwd)"
 mode_flags() {
     case "$1" in
         lower) echo " decks=100" ;;
+        fib)   echo " decks=100" ;;
         # passes=text-plug drops the inline passes. Passes.codex says why in
         # so many words: "A plug that emits SOURCE resolves a call by its
         # name, so a pass that substitutes a body and deletes the call
