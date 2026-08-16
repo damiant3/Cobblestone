@@ -26,6 +26,63 @@ Section: Diagnostics
      else sx-kind (list-at xs 0)
     is otherwise -> sx-kind e
 
+Section: Transport Stages
+
+ The receive path, one measured stage per shape it takes on the way in.
+ A frame carries 1460 payload bytes (the negotiated MSS); each simulated
+ frame is accumulated byte by byte the way ne2k-read-from-buf reads the
+ NIC buffer, then sliced three more times the way eth-payload,
+ ip-payload, and tcp-parse each materialize the payload, then written
+ into the flat reassembly buffer the way transport-feed-raw does.
+ Nothing here is restored between frames, because the real receive loop
+ restores only on the empty-poll branch.
+
+  irmem-text-bytes : Text, Integer, Integer, List Integer -> List Integer
+  irmem-text-bytes (s) (i) (len) (acc) =
+   if i >= len then acc
+   else irmem-text-bytes s (i + 1) len (list-push acc (char-code (char-at s i)))
+
+  irmem-slice : List Integer, Integer, Integer, List Integer -> List Integer
+  irmem-slice (xs) (i) (stop) (acc) =
+   if i >= stop then acc
+   else irmem-slice xs (i + 1) stop (list-push acc (list-at xs i))
+
+  irmem-frame-sim : List Integer, Integer, Integer, Integer -> Integer
+  irmem-frame-sim (bs) (off) (n) (base) =
+   if off >= n then 0
+   else let stop = if off + 1460 > n then n else off + 1460
+   in let frame = irmem-slice bs off stop []
+   in let clen = list-length frame
+   in let s1 = irmem-slice frame 0 clen []
+   in let s2 = irmem-slice s1 0 clen []
+   in let s3 = irmem-slice s2 0 clen []
+   in let w = __buf-write-bytes base off s3
+   in irmem-frame-sim bs stop n base
+
+  irmem-transport-stage : Text -> [Console] Nothing
+  irmem-transport-stage (sample) = act
+    let n = text-length sample
+    in let h0 = __heap-save
+    in let bs = irmem-text-bytes sample 0 n []
+    in let h1 = __heap-save
+    in let base = __heap-save
+    in let adv = __heap-advance n
+    in let h2 = __heap-save
+    in let fs = irmem-frame-sim bs 0 n base
+    in let h3 = __heap-save
+    in let body = __buf-read-bytes base 0 n
+    in let h4 = __heap-save
+    in let txt = bytes-to-text body 0 n
+    in let h5 = __heap-save
+    in act
+      print-line-uni ("heap-bytes-build " & show (h1 - h0))
+      print-line-uni ("heap-frame-sim " & show (h3 - h2))
+      print-line-uni ("heap-buf-read " & show (h4 - h3))
+      print-line-uni ("heap-bytes-to-text " & show (h5 - h4))
+      print-line-uni ("transport-text-len " & show (text-length txt))
+    end
+  end
+
 Section: Driver
 
   opening : [Console] Nothing = act
@@ -53,5 +110,6 @@ Section: Driver
       print-line-uni ("heap-full-parse " & show (h3 - h2))
       print-line-uni ("defs " & show (list-length ((parsed.chapter).defs)))
       print-line-uni ("type-defs " & show (list-length (parsed.type-defs)))
+      irmem-transport-stage sample-ir
     end
   end
