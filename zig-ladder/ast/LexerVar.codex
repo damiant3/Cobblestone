@@ -1,0 +1,80 @@
+Chapter: Lexer
+
+Section: Constants
+  cc-newline : Integer = char-code '\n'
+
+Section: Lexer State
+  mutable LexState = record {
+   source : Text,
+   offset : Integer between 0 and 4294967295,
+   line : Integer between 0 and 131071,
+   column : Integer between 0 and 4294967295,
+   file-id : Integer between 0 and 65535,
+   errors : LinkedList Integer,
+   prose-mode : Boolean
+  }
+
+  make-lex-state : Text, Integer between 0 and 65535, LinkedList Integer -> LexState
+  make-lex-state (src) (fid) (pre-errors) =
+   LexState {
+    source = src,
+    offset = 0,
+    line = 1,
+    column = 1,
+    file-id = fid,
+    errors = pre-errors,
+    prose-mode = False
+   }
+
+  is-at-end : LexState -> Boolean
+  is-at-end (st) =
+   st.offset >= text-length (st.source)
+
+  peek-code : LexState -> Integer
+  peek-code (st) =
+   if is-at-end st then 0
+   else char-code-at (st.source) (st.offset)
+
+  advance-char : LexState -> LexState
+  advance-char (st) =
+   if peek-code st == cc-newline then LexState {
+     source = st.source,
+     offset = st.offset + 1,
+     line = st.line + 1,
+     column = 1,
+     file-id = st.file-id,
+     errors = st.errors,
+     prose-mode = st.prose-mode
+    }
+    else LexState {
+     source = st.source,
+     offset = st.offset + 1,
+     line = st.line,
+     column = st.column + 1,
+     file-id = st.file-id,
+     errors = st.errors,
+     prose-mode = st.prose-mode
+    }
+
+  LexStep =
+   | LexToken (Token) (LexState)
+   | LexEnd
+
+  make-token : TokenKind, Integer between 0 and 4294967295, LexState -> Token
+  make-token (kind) (length) (st) =
+   deck-record (Token {
+    kind = kind,
+    source = st.source,
+    offset = st.offset,
+    length = length,
+    line = st.line,
+    column = st.column,
+    file-id = st.file-id
+   })
+
+
+Section: Tokenize All
+  LexCollected = record {
+   collected-tokens : LinkedList Token,
+   collected-errors : LinkedList Integer
+  }
