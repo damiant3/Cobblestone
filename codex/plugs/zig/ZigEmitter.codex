@@ -1177,7 +1177,7 @@ Section: Expression Emission
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> if list-length clauses == 0 then emit-zig-expr body ctx (d + 1) else "@compileError(\"zig plug: effect handlers not supported\")"
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-zig-expr body ctx (d + 1)
     is IrRecord (name) (fields) (ty) (sp) -> emit-zig-record name fields ctx d (zig-ctor-type-args ty)
-    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-zig-expr rec ctx (d + 1) & "." & zig-field-name field
+    is IrFieldAccess (rec) (field) (ty) (sp) -> zig-field-receiver rec ctx d & "." & zig-field-name field
     is IrFieldStore (rec) (field) (val) (ty) (sp) ->
      if zig-is-mutable-rec ctx (zig-expr-type rec)
      then zig-label d & ": { const _r = " & emit-zig-expr rec ctx (d + 1) & "; _r." & zig-field-name field & " = " & emit-zig-expr val ctx (d + 1) & "; break :" & zig-label d & " _r; }"
@@ -1461,6 +1461,16 @@ Section: Record Emission
    else let elem = zig-record-field-ll-elem ctx recname fieldname
    in if text-length elem > 0 then "cx_ll_empty(" & elem & ")"
       else emit-zig-expr v ctx (d + 1)
+
+ A record literal is a curly-suffix expression in zig's grammar and no
+ suffix may follow it directly: Gauge{ .g = n }.g is a parse error where
+ (Gauge{ .g = n }).g is not.
+
+  zig-field-receiver : IRExpr, ZigCtx, Integer -> Text
+  zig-field-receiver (rec) (ctx) (d) =
+   when rec
+    is IrRecord (n) (fs) (t) (s) -> "(" & emit-zig-expr rec ctx (d + 1) & ")"
+    is otherwise -> emit-zig-expr rec ctx (d + 1)
 
   emit-zig-record : Text, List IRFieldVal, ZigCtx, Integer, Text -> Text
   emit-zig-record (name) (fields) (ctx) (d) (targs) =
