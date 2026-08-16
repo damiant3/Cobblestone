@@ -85,10 +85,16 @@ def run_plug(plug_cdx, ir_path, out_path, port=9145, mem_mb=3072, timeout=180,
             conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             step = chunk_size - (chunk_size % 2)
             off = 0
-            while off < len(msg):
-                conn.sendall(msg[off:off + step])
-                off += step
-                time.sleep(0.02)
+            try:
+                while off < len(msg):
+                    conn.sendall(msg[off:off + step])
+                    off += step
+                    time.sleep(0.02)
+            except OSError as e:
+                # A guest that dies mid-intake resets the connection; that is
+                # a failed attempt, not a driver crash.
+                print(f"FAIL: guest dropped the connection at byte {off}: {e}")
+                return False
             print(f"sent {len(msg)} bytes ({len(ir)} of IR) in {step}-byte writes")
 
         # The plug closing the socket is the ONLY end of stream. A quiet gap
