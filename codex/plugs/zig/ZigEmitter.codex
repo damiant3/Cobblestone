@@ -1712,6 +1712,11 @@ Section: Match Emission
    in if text-length (zig-ll-elem-opt t) > 0 then t
       else zig-arms-list-type branches (i + 1) fallback
 
+ EVERY arm's body goes through here, binders and catch-all included.
+ Only the two binderless shapes did, so an empty list in an `else` arm
+ or under a capture had no type to read and fell to the marker while
+ its sibling arm three lines above was typed correctly.
+
   emit-zig-arm-body : IRExpr, CodexType, ZigCtx, Integer -> Text
   emit-zig-arm-body (body) (mty) (ctx) (d) =
    if zig-is-empty-list body
@@ -1740,13 +1745,13 @@ Section: Match Emission
      else if nsubs == 1 then
       let binder = zig-pat-binder (list-at subs 0) 0
       in if (binder == "_") | (zig-occurs body binder == False)
-         then "." & zig-sanitize name & " => " & emit-zig-expr body ctx (d + 1) & ", "
-         else "." & zig-sanitize name & " => |" & zig-bind-name ctx binder d & "| " & emit-zig-expr body (zig-bind-push ctx binder d) (d + 1) & ", "
+         then "." & zig-sanitize name & " => " & emit-zig-arm-body body mty ctx d & ", "
+         else "." & zig-sanitize name & " => |" & zig-bind-name ctx binder d & "| " & emit-zig-arm-body body mty (zig-bind-push ctx binder d) d & ", "
      else if zig-any-sub-occurs subs 0 body == False
-     then "." & zig-sanitize name & " => " & emit-zig-expr body ctx (d + 1) & ", "
-     else "." & zig-sanitize name & " => |_p" & integer-to-text d & "| " & zig-label d & ": { " & emit-zig-pat-unpack subs 0 d body ctx & "break :" & zig-label d & " " & emit-zig-expr body (zig-push-bound-pats ctx subs 0 d) (d + 1) & "; }, "
-    is IrVarPat (name) (ty) (sp) -> "else => " & emit-zig-expr body ctx (d + 1) & ", "
-    is IrWildPat (sp) -> "else => " & emit-zig-expr body ctx (d + 1) & ", "
+     then "." & zig-sanitize name & " => " & emit-zig-arm-body body mty ctx d & ", "
+     else "." & zig-sanitize name & " => |_p" & integer-to-text d & "| " & zig-label d & ": { " & emit-zig-pat-unpack subs 0 d body ctx & "break :" & zig-label d & " " & emit-zig-arm-body body mty (zig-push-bound-pats ctx subs 0 d) d & "; }, "
+    is IrVarPat (name) (ty) (sp) -> "else => " & emit-zig-arm-body body mty ctx d & ", "
+    is IrWildPat (sp) -> "else => " & emit-zig-arm-body body mty ctx d & ", "
     is IrVecPat (pats) (ty) (sp) -> "@compileError(\"zig plug: vector patterns not supported\"), "
 
   zig-any-sub-occurs : List IRPat, Integer, IRExpr -> Boolean
