@@ -318,6 +318,31 @@ Section: Type Mapping
     is ForAllEff (c) (inner) -> zig-type-is-void inner
     is otherwise -> False
 
+ Every node that CARRIES a type answers with it, and the one that does not
+ is the reason this list is long. IrLet holds the type of the name it
+ BINDS, not of the expression: `let len = list-length xs in ...` would
+ answer Integer, which is len's type and not the let's. A let is worth
+ whatever its body is worth, so it recurses.
+
+ Falling into otherwise means answering VoidTy, and void is a legitimate
+ codex type rather than a marker, so a missing arm here is indistinguishable
+ from a genuinely void expression. sort-by paid for that: its body is a let,
+ the let answered void, and with an empty type-val on the definition the
+ emitter had nothing better to fall back to, so it declared a function
+ returning void around a body returning a list.
+
+ IrLambda is missing ON PURPOSE and answering it costs five milestones. A
+ lambda handed to map-list carries the CALLEE's type variables, so a caller
+ asking "what type is this argument" gets `a -> b` in map-list's own
+ numbering. Resolving map-list's `a` against that answers `a` with itself,
+ and T26 reaches zig in a function that declares no such thing. Silence
+ here is what makes the resolver skip the lambda and recover the element
+ type from the list argument instead, which is the answer that works.
+
+ The other type-carrying nodes are absent for a duller reason: nothing has
+ needed them. A missing one shows up as a wrong void, loudly, the way this
+ one did.
+
   zig-expr-type : IRExpr -> CodexType
   zig-expr-type (e) =
    when e
@@ -329,6 +354,7 @@ Section: Type Mapping
     is IrIf (c) (t) (el) (ty) (sp) -> ty
     is IrMatch (scrut) (branches) (ty) (sp) -> ty
     is IrRecord (name) (fields) (ty) (sp) -> ty
+    is IrLet (n) (ty) (v) (b) (sp) -> zig-expr-type b
     is otherwise -> VoidTy
 
   zig-is-text-type : CodexType -> Boolean
@@ -2030,14 +2056,48 @@ Section: Definition Emission
  When it is not -- map-list-loop again -- the body's own type is what the
  definition actually returns, and it is the only source left.
 
+ A type-val carrying FEWER arrows than the definition has parameters is
+ not describing this definition, and peeling it cannot be trusted:
+ zig-peel-return stops when it runs out of arrows and hands back whatever
+ is left, so an unpopulated type-val peels to itself and an unpopulated
+ VoidTy peels to a perfectly valid "void". The marker check below cannot
+ see that, because void is a mapping rather than a gap -- sort-by emitted
+ as returning void while its body returned a list, and zig caught it only
+ because the body disagreed.
+
+ The arrow count is the test. It is not a guess about what the type should
+ have been: it is the observation that this type cannot be the type of a
+ definition taking this many parameters, whereupon the body's own type is
+ the answer, exactly as it is for an unmapped one.
+
+ Taking the return type off the body is the right answer but a silent one,
+ and how often it happens is worth knowing rather than guessing: sort-by
+ was caught only because its body returned a list into a void signature,
+ and a definition whose body really is void would have taken the wrong
+ answer without a word. The note is a zig comment, so counting them costs
+ nothing and cannot break a build.
+
+  zig-untrusted-return-note : IRDef -> Text
+  zig-untrusted-return-note (d) =
+   if zig-def-return-trusted d then ""
+   else "    // zig plug: return type from body; type-val has "
+    & integer-to-text (zig-fn-param-count (d.type-val)) & " arrows for "
+    & integer-to-text (list-length (d.params)) & " params\n"
+
+  zig-def-return-trusted : IRDef -> Boolean
+  zig-def-return-trusted (d) =
+   zig-fn-param-count (d.type-val) >= list-length (d.params)
+
   zig-def-return-type : IRDef -> CodexType
   zig-def-return-type (d) =
-   let peeled = zig-peel-return (d.type-val) (list-length (d.params))
+   if zig-def-return-trusted d == False then zig-expr-type (d.body)
+   else let peeled = zig-peel-return (d.type-val) (list-length (d.params))
    in if zig-is-unmapped (emit-zig-type peeled) then zig-expr-type (d.body) else peeled
 
   zig-def-return-text : IRDef -> Text
   zig-def-return-text (d) =
-   let peeled = emit-zig-type (zig-peel-return (d.type-val) (list-length (d.params)))
+   if zig-def-return-trusted d == False then emit-zig-type (zig-expr-type (d.body))
+   else let peeled = emit-zig-type (zig-peel-return (d.type-val) (list-length (d.params)))
    in if zig-is-unmapped peeled then emit-zig-type (zig-expr-type (d.body)) else peeled
 
  The marker is the signal. Which codex type an unpopulated type-val holds
@@ -2128,6 +2188,7 @@ Section: Definition Emission
     bound-names = []
    }
    in "fn " & name & "(" & all-params & ") " & ret & " {\n"
+    & zig-untrusted-return-note d
     & emit-zig-param-discards (d.params) 0 (d.body)
     & "    return " & emit-zig-expr (d.body) (zig-push-bound-params (zig-push-param-renames ctx (d.params) 0) (d.params) 0) 0 & ";\n}\n\n"
 
