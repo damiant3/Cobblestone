@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-"""Generate FibxHarness.codex: F2 of the fib ladder -- the chain continues
-through the TREE emitter and the output is fib's machine code. The state
-preparation is x86-64-emit-cdx-with-exit-mode's own sequence, copied
-verbatim with its default arguments and stopped just before finalize, so
-the harness makes no emission decisions of its own; it prints code-len,
-the function-offset table, the call-patch table, and the workspace bytes
-32 to a line, and all of that is the oracle output. The two tables are
-what F3 needs to find fib inside the buffer and resolve its self-calls.
+"""Generate FibxHarness.codex: the fib ladder through the whole x86-64 back
+end, ending in a CDX binary.
+
+The driver calls x86-64-emit-cdx -- the compiler's own entry point -- and
+prints what it returns: the symbol map, then header-bytes, the content
+buffer and tail-bytes, 32 to a line. Earlier this harness carried a copy of
+x86-64-emit-cdx-with-exit-mode's body stopped just before finalize, because
+finalize's serialization belonged to a later rung. This is that rung, and
+the copy is gone: a copied driver is a driver that can drift.
+
+Restoring finalize also patches the code in place, so the offsets no longer
+need a call table beside them -- the symbol map (which is what the real
+compiler writes to the .cdx.map) is enough to find a function and call it.
 
 LowerStubs is NOT bundled for this milestone -- the real Types/Builtins
 rides along because the whole x86-64 code generator does, so bs-emit's
@@ -52,37 +57,6 @@ Section: Subject
   subject-text : Text
   subject-text = "{SUBJECT}"
 
-Section: Emission
-
- The body below is x86-64-emit-cdx-with-exit-mode line for line, with the
- x86-64-emit-cdx defaults substituted and finalize dropped: the oracle
- wants the emitted bytes, and finalize's serialization belongs to a later
- rung. A copied driver cannot drift into choices of its own.
-
-  fibx-emit : IRChapter, List TypeBinding -> CodegenState
-  fibx-emit (m) (tdefs) =
-   let emit-deck = emit-build (list-length (m.defs) * 65536 + 25165824)
-   in let de = __deck-enter
-   in let tramp = bare-metal-trampoline
-   in let st0 = x86-64-init-codegen-sorted tdefs
-   in let st-mode = __record-set st0 "exit-mode" Exit
-   in let st-poison = __record-set st-mode "poison-alloc" False
-   in let st-trace = __record-set st-poison "trace-alloc" False
-   in let st-wd = __record-set st-trace "watchdog-mode" WatchdogProgress
-   in let st-eo2 = __record-set st-wd "effect-op-addrs" (assign-effect-op-addrs (m.effect-op-names) 0 (list-length (m.effect-op-names)) [])
-   in let defs-lifted = m.defs
-   in let ret-ty = opening-bare-print-type defs-lifted
-   in let st-ret = __record-set st-eo2 "opening-ret-type" ret-ty
-   in let arities = build-x86-arities defs-lifted 0 (list-length defs-lifted) []
-   in let st-ar = __record-set st-ret "user-arities" arities
-   in let pa-slug = def-chapter-slug defs-lifted "init-phase-allocator" 0 (list-length defs-lifted)
-   in let dr-slug = def-chapter-slug defs-lifted "deck-record" 0 (list-length defs-lifted)
-   in let st-dri = __record-set st-ar "deck-record-intrinsic" (pa-slug /= "" & pa-slug == dr-slug)
-   in let st-wc = emit-wcet-unchecked st-dri [] 0
-   in let st0a = emit-runtime-helpers st-wc
-   in let dx = __deck-exit
-   in emit-all-defs st0a defs-lifted 0
-
 Section: Byte Dump
 
   fibx-line : Integer, Integer, Integer, List Text -> Text
@@ -99,17 +73,35 @@ Section: Byte Dump
     end
   end
 
- The offset table and the call-patch table are the only way to say which
- bytes are which. Both are printed as `<integer> <name>` so one walker
- serves them, and both go through the oracle: a plug that emitted the code
- correctly but scrambled the tables would still be wrong.
+ header-bytes and tail-bytes arrive as lists rather than in the workspace,
+ so they need their own walker; splitting on the source of the bytes rather
+ than on what they mean keeps both walkers dumb.
 
-  fibx-print-pairs : List Integer, List Text, Integer, Integer -> [Console] Nothing
-  fibx-print-pairs (nums) (names) (i) (n) = act
-    if i >= n then print-line-uni "."
+  fibx-list-line : List Integer, Integer, Integer, List Text -> Text
+  fibx-list-line (bs) (i) (hi) (acc) =
+   if i >= hi then text-concat-list acc
+   else fibx-list-line bs (i + 1) hi (list-push acc (integer-to-text (list-at bs i) & " "))
+
+  fibx-print-list : List Integer, Integer -> [Console] Nothing
+  fibx-print-list (bs) (i) = act
+    if i >= list-length bs then print-line-uni "."
     else act
-      print-line-uni (integer-to-text (list-at nums i) & " " & list-at names i)
-      fibx-print-pairs nums names (i + 1) n
+      print-line-uni (fibx-list-line bs i (if i + 32 < list-length bs then i + 32 else list-length bs) [])
+      fibx-print-list bs (i + 32)
+    end
+  end
+
+ The symbol map is what the real compiler writes beside a .cdx, and it is
+ the only thing that says which bytes are which. It goes through the oracle
+ too: a plug that emitted the code correctly but scrambled the map would
+ still be wrong.
+
+  fibx-print-lines : List Text, Integer -> [Console] Nothing
+  fibx-print-lines (ls) (i) = act
+    if i >= list-length ls then print-line-uni "."
+    else act
+      print-line-uni (list-at ls i)
+      fibx-print-lines ls (i + 1)
     end
   end
 
@@ -126,18 +118,22 @@ Section: Driver
     in let cst = cr.state
     in let sorted = sort-bindings (cr.types)
     in let ir = lower-chapter ch sorted cst (rr.ctor-names) [] skip-list-text-empty [] 0
-    in let res = fibx-emit ir sorted
+    in let res = x86-64-emit-cdx ir sorted
     in act
       print-line-uni ("check-errors " & show ((cst.bag).error-count))
       print-line-uni ("ir-defs " & show (list-length (ir.defs)))
-      print-line-uni ("fo-names " & show (list-length (res.fo-names)))
-      print-line-uni ("code-len " & show (res.code-len))
-      print-line-uni "--- funcs ---"
-      fibx-print-pairs (res.fo-offsets) (res.fo-names) 0 (list-length (res.fo-names))
-      print-line-uni "--- calls ---"
-      fibx-print-pairs (res.cp-offsets) (res.cp-targets) 0 (list-length (res.cp-targets))
-      print-line-uni "--- code ---"
-      fibx-print-bytes (res.workspace.code-buffer) 0 (res.code-len)
+      print-line-uni ("emit-errors " & show ((res.bag).error-count))
+      print-line-uni ("header-len " & show (list-length (res.header-bytes)))
+      print-line-uni ("content-len " & show (res.content-len))
+      print-line-uni ("tail-len " & show (list-length (res.tail-bytes)))
+      print-line-uni "--- symbols ---"
+      fibx-print-lines (res.symbol-map) 0
+      print-line-uni "--- header ---"
+      fibx-print-list (res.header-bytes) 0
+      print-line-uni "--- content ---"
+      fibx-print-bytes (res.content-buf) 0 (res.content-len)
+      print-line-uni "--- tail ---"
+      fibx-print-list (res.tail-bytes) 0
     end
   end
 '''
