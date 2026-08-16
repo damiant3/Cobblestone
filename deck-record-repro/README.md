@@ -1,4 +1,4 @@
-# Eight findings: five closed by Update 43, three open
+# Nine findings: five closed by Update 43, four open
 
 This directory holds the findings and the probes that make them runnable.
 It is discussion material rather than a proposed addition to the tree --
@@ -363,3 +363,34 @@ silently loses its type is hard to trace back from, as this one was.
 arrows off a type with fewer than N returns what is left rather than
 reporting the shortfall. Combined with the above, a missing type becomes a
 plausible wrong type rather than an error.
+
+## 9. An undefined type name in an annotation compiles without a word
+
+Misspell a value name anywhere and CDX3002 says so. Misspell a TYPE name
+in an annotation and nothing does: the unit compiles clean, runs, and
+answers correctly around the phantom.
+
+Three probes, each one chapter:
+
+- `probe-phantom-field.codex` -- a record field typed `List PhantomType`,
+  with `PhantomType` defined nowhere. Compiles with zero diagnostics; the
+  record is constructed with `[]` for the phantom field, the program runs
+  and prints its other field.
+- `probe-phantom-bare.codex` -- the field typed bare `PhantomBare`, no
+  List wrapper. Same silence.
+- `probe-phantom-sig.codex` -- a definition signature
+  `f : PhantomSig -> Integer`. Same silence, so the hole is not specific
+  to field position: type names in annotations are simply never
+  existence-checked the way value names are.
+
+Found by bundling: our lir subject carried `CodegenState` before its
+`TypeBinding` field type's chapter was in the unit, and bare metal
+accepted it -- then again with `RenameEntry`, which `TypeEnv` names in a
+field without citing ChapterScoper. The monolithic build always carries
+every definition, so the miss costs nothing there; a subset build sails
+through compilation and the mistake surfaces later, somewhere else, or
+never. The zig plug is stricter than the seed here only by accident of
+its target: zig demands the struct exist.
+
+Seed F3722EAC (Update 43), QEMU/TCG, verified against all three probes
+on 2026-08-16.
