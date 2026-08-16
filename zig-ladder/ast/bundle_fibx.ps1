@@ -5,7 +5,8 @@
 # definition -- the same grammar the IR-CCE wire carries.
 param(
     [string]$Harness = 'FibxHarness.codex',
-    [string]$OutName = 'fibx-subject.codex'
+    [string]$OutName = 'fibx-subject.codex',
+    [string]$PlugName = 'fibx-subject'
 )
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path
@@ -128,4 +129,4 @@ for ($i = 0; $i -lt $lines.Count; $i++) {
 }
 
 $preLines = Resolve-PlugForewords $lines
-Bundle-PlugSource -PreLines $preLines -Lines $lines -BundleSrc (Join-Path $here $OutName) -PlugName 'fibx-subject'
+Bundle-PlugSource -PreLines $preLines -Lines $lines -BundleSrc (Join-Path $here $OutName) -PlugName $PlugName
