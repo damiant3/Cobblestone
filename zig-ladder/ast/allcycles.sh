@@ -8,7 +8,7 @@ set -e
 "$T/cycle.sh"
 echo "REBUILT"
 fail=0
-for m in lex parse desugar scope check lower text pingpong lir; do
+for m in lex parse desugar scope check lower text pingpong lir fib; do
     echo "=== $m ==="
     # NOT `zig_arm | head`: under a pipe the exit status is head's, so a
     # failing rung reports nothing and the sweep still says it passed.
