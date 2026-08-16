@@ -25,12 +25,55 @@ Section: Keywords and Sanitization
   is-zig-keyword : Text -> Boolean
   is-zig-keyword (name) = is-zig-keyword-loop zig-keywords name 0 (list-length zig-keywords)
 
+ Zig refuses any declaration named like a primitive type, not just
+ keywords, and the x86 chapters bind names like f32 and i1 freely.
+ A quoted @"f32" is accepted where a bare f32 is not, so primitives
+ take the same rendering keywords already do. The integer forms are a
+ family, not a list: i or u followed by digits, any width.
+
+  zig-primitive-names : List Text =
+   ["bool", "void", "type", "anyerror", "anyopaque", "noreturn",
+    "isize", "usize", "comptime_int", "comptime_float",
+    "f16", "f32", "f64", "f80", "f128",
+    "c_char", "c_short", "c_ushort", "c_int", "c_uint",
+    "c_long", "c_ulong", "c_longlong", "c_ulonglong", "c_longdouble"]
+
+  zig-int-primitive-scan : Text, Integer, Integer -> Boolean
+  zig-int-primitive-scan (s) (i) (len) =
+   if i >= len then True
+   else let c = char-code-at s i
+   in if (c >= char-code '0') & (c <= char-code '9') then zig-int-primitive-scan s (i + 1) len
+   else False
+
+  is-zig-int-primitive : Text -> Boolean
+  is-zig-int-primitive (s) =
+   let len = text-length s
+   in if len < 2 then False
+   else let c0 = char-code-at s 0
+   in if (c0 == char-code 'i') | (c0 == char-code 'u') then zig-int-primitive-scan s 1 len
+   else False
+
+  is-zig-primitive : Text -> Boolean
+  is-zig-primitive (s) =
+   is-zig-keyword-loop zig-primitive-names s 0 (list-length zig-primitive-names)
+   | is-zig-int-primitive s
+
   zig-sanitize : Text -> Text
   zig-sanitize (name) =
    let s0 = text-replace name "-" "_"
    in let s = text-replace s0 "/" "_"
-   in if is-zig-keyword s then "@\"" & s & "\""
+   in if is-zig-keyword s | is-zig-primitive s then "@\"" & s & "\""
       else s
+
+ Names built by prefixing (_arg_, _lam<d>_, _v<d>_) must NOT go through
+ zig-sanitize: a quoted @"f32" inside a longer identifier is not zig.
+ The prefix already guarantees no keyword or primitive collision, so
+ the raw replacement is all they need.
+
+  zig-raw-ident : Text -> Text
+  zig-raw-ident (name) =
+   let s0 = text-replace name "-" "_"
+   in text-replace s0 "/" "_"
 
  Field names arrive from the IR as name/index pairs like errors/5; the
  index restates what the name already says, so accessors drop it.
@@ -749,9 +792,13 @@ Section: Builtin Emitter
     ZigBuiltinEmitter { name = "int-mod", emit = \args ctx d ty -> "cx_mod(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "bit-shru", emit = \args ctx d ty -> "cx_shru(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__heap-advance", emit = \args ctx d ty -> "cx_heap_advance(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "__heap-restore", emit = \args ctx d ty -> "cx_heap_restore(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "peek-qword", emit = \args ctx d ty -> "cx_peek_qword(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "address-of", emit = \args ctx d ty -> "cx_address_of(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__buf-write-byte", emit = \args ctx d ty -> "cx_buf_write_byte(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__buf-write-bytes", emit = \args ctx d ty -> "cx_buf_write_bytes(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "peek-byte", emit = \args ctx d ty -> "cx_peek_byte(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "__buf-read-bytes", emit = \args ctx d ty -> "cx_buf_read_bytes(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "min", emit = \args ctx d ty -> "@min(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "max", emit = \args ctx d ty -> "@max(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "fail", emit = \args ctx d ty -> "@panic(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" }
@@ -867,7 +914,7 @@ Section: Name Mapping
    else zig-renamed-scan ctx n (i - 1)
 
   zig-lambda-param-name : Text, Integer -> Text
-  zig-lambda-param-name (n) (d) = "_lam" & integer-to-text d & "_" & zig-sanitize n
+  zig-lambda-param-name (n) (d) = "_lam" & integer-to-text d & "_" & zig-raw-ident n
 
   zig-push-lambda-renames : ZigCtx, List IRParam, Integer, Integer -> ZigCtx
   zig-push-lambda-renames (ctx) (params) (d) (i) =
@@ -1177,7 +1224,7 @@ Section: Expression Emission
     is IrIf (c) (t) (el) (ty) (sp) -> zig-pin-lit t el ("(if (" & emit-zig-expr c ctx (d + 1) & ") " & emit-zig-if-branch t ty el (zig-expect ctx ty) d & " else " & emit-zig-if-branch el ty t (zig-expect ctx ty) d & ")")
     is IrLet (name) (ty) (val) (body) (sp) ->
      if zig-is-seq-name name then zig-label d & ": { _ = " & emit-zig-expr val ctx (d + 1) & "; break :" & zig-label d & " " & emit-zig-expr body ctx (d + 1) & "; }"
-     else if zig-occurs body name then zig-label d & ": { const " & zig-sanitize name & " = " & emit-zig-expr val ctx (d + 1) & "; break :" & zig-label d & " " & emit-zig-expr body (zig-push-bound ctx name) (d + 1) & "; }"
+     else if zig-occurs body name then zig-label d & ": { const " & zig-bind-name ctx name d & " = " & emit-zig-expr val ctx (d + 1) & "; break :" & zig-label d & " " & emit-zig-expr body (zig-bind-push ctx name d) (d + 1) & "; }"
      else zig-label d & ": { _ = " & emit-zig-expr val ctx (d + 1) & "; break :" & zig-label d & " " & emit-zig-expr body ctx (d + 1) & "; }"
     is IrApply (f) (a) (ty) (sp) -> emit-zig-apply e ctx d
     is IrLambda (params) (body) (ty) (sp) -> zig-lambda-closure params body ty ctx d
@@ -1297,18 +1344,42 @@ Section: Lambda and List Helpers
     bound-names = (ctx.bound-names) & [n]
    }
 
+ Zig forbids a local from shadowing a top-level declaration or an
+ enclosing local, and codex allows both. Definition parameters already
+ rename through zig-param-shadows; every other binder -- let, act bind,
+ match capture, pattern unpack -- goes through zig-bind-name for its
+ emitted spelling and zig-bind-push for the context its body sees. The
+ renamed form is depth-suffixed, and depths differ along any nesting
+ path, so renamed binders cannot collide with each other.
+
+  zig-binder-shadows : ZigCtx, Text -> Boolean
+  zig-binder-shadows (ctx) (n) =
+   (zig-find-irdef (ctx.irdefs) 0 n >= 0) | zig-in-texts (ctx.bound-names) n 0
+
+  zig-bind-name : ZigCtx, Text, Integer -> Text
+  zig-bind-name (ctx) (n) (d) =
+   if zig-binder-shadows ctx n then "_v" & integer-to-text d & "_" & zig-raw-ident n
+   else zig-sanitize n
+
+  zig-bind-push : ZigCtx, Text, Integer -> ZigCtx
+  zig-bind-push (ctx) (n) (d) =
+   let ctx1 = if zig-binder-shadows ctx n
+    then zig-rename-to ctx n ("_v" & integer-to-text d & "_" & zig-raw-ident n)
+    else ctx
+   in zig-push-bound ctx1 n
+
   zig-push-bound-params : ZigCtx, List IRParam, Integer -> ZigCtx
   zig-push-bound-params (ctx) (params) (i) =
    if i >= list-length params then ctx
    else let ctx2 = zig-push-bound ctx ((list-at params i).name)
    in zig-push-bound-params ctx2 params (i + 1)
 
-  zig-push-bound-pats : ZigCtx, List IRPat, Integer -> ZigCtx
-  zig-push-bound-pats (ctx) (subs) (i) =
+  zig-push-bound-pats : ZigCtx, List IRPat, Integer, Integer -> ZigCtx
+  zig-push-bound-pats (ctx) (subs) (i) (d) =
    if i >= list-length subs then ctx
    else let b = zig-pat-binder (list-at subs i) i
-   in let ctx2 = if b == "_" then ctx else zig-push-bound ctx b
-   in zig-push-bound-pats ctx2 subs (i + 1)
+   in let ctx2 = if b == "_" then ctx else zig-bind-push ctx b d
+   in zig-push-bound-pats ctx2 subs (i + 1) d
 
  A bound name is a local by construction, so it resolves without the
  constructor and nullary-definition arms emit-zig-name has to consider.
@@ -1395,12 +1466,25 @@ Section: Lambda and List Helpers
    in let inner = zig-push-lambda-renames captured params d 0
    in let unpack = if list-length caps == 0 then "_ = " & cx & "; "
       else "const " & ev & ": *@This() = @ptrCast(@alignCast(" & cx & ")); "
+   in let discards = zig-lambda-unused-discards params body d 0
    in lbl & ": { " & zig-capture-type-decls ctx caps 0 d & "const " & env
     & " = struct { " & zig-capture-fields caps 0 d & "fn call(" & cx & ": *anyopaque, "
     & emit-zig-lambda-params params 0 ty d ctx & ") " & ret
-    & " { " & unpack & "return " & emit-zig-expr body inner 0 & "; } }; break :"
+    & " { " & unpack & discards & "return " & emit-zig-expr body inner 0 & "; } }; break :"
     & lbl & " " & zig-closure-type (list-length params) (zig-lambda-param-types params 0 ty ctx) ret
     & "{ .ctx = cx_new(" & env & "{" & zig-capture-inits ctx caps 0 & "}), .call = &" & env & ".call }; }"
+
+ Zig refuses an unused function parameter, and a codex lambda may
+ legitimately ignore one -- the builtin table's `\s a -> f s` entries
+ do. A parameter the body never names gets an explicit discard beside
+ the environment unpack.
+
+  zig-lambda-unused-discards : List IRParam, IRExpr, Integer, Integer -> Text
+  zig-lambda-unused-discards (params) (body) (d) (i) =
+   if i >= list-length params then ""
+   else let p = list-at params i
+   in let one = if zig-occurs body (p.name) then "" else "_ = " & zig-lambda-param-name (p.name) d & "; "
+   in one & zig-lambda-unused-discards params body d (i + 1)
 
   zig-lambda-param-type : CodexType, Integer, IRParam, ZigCtx -> Text
   zig-lambda-param-type (ty) (i) (p) (ctx) =
@@ -1636,10 +1720,10 @@ Section: Match Emission
       let binder = zig-pat-binder (list-at subs 0) 0
       in if (binder == "_") | (zig-occurs body binder == False)
          then "." & zig-sanitize name & " => " & emit-zig-expr body ctx (d + 1) & ", "
-         else "." & zig-sanitize name & " => |" & zig-sanitize binder & "| " & emit-zig-expr body (zig-push-bound ctx binder) (d + 1) & ", "
+         else "." & zig-sanitize name & " => |" & zig-bind-name ctx binder d & "| " & emit-zig-expr body (zig-bind-push ctx binder d) (d + 1) & ", "
      else if zig-any-sub-occurs subs 0 body == False
      then "." & zig-sanitize name & " => " & emit-zig-expr body ctx (d + 1) & ", "
-     else "." & zig-sanitize name & " => |_p" & integer-to-text d & "| " & zig-label d & ": { " & emit-zig-pat-unpack subs 0 d body & "break :" & zig-label d & " " & emit-zig-expr body (zig-push-bound-pats ctx subs 0) (d + 1) & "; }, "
+     else "." & zig-sanitize name & " => |_p" & integer-to-text d & "| " & zig-label d & ": { " & emit-zig-pat-unpack subs 0 d body ctx & "break :" & zig-label d & " " & emit-zig-expr body (zig-push-bound-pats ctx subs 0 d) (d + 1) & "; }, "
     is IrVarPat (name) (ty) (sp) -> "else => " & emit-zig-expr body ctx (d + 1) & ", "
     is IrWildPat (sp) -> "else => " & emit-zig-expr body ctx (d + 1) & ", "
     is IrVecPat (pats) (ty) (sp) -> "@compileError(\"zig plug: vector patterns not supported\"), "
@@ -1664,13 +1748,13 @@ Section: Match Emission
     is IrVarPat (name) (ty) (sp) -> name
     is otherwise -> "_"
 
-  emit-zig-pat-unpack : List IRPat, Integer, Integer, IRExpr -> Text
-  emit-zig-pat-unpack (subs) (i) (d) (body) =
+  emit-zig-pat-unpack : List IRPat, Integer, Integer, IRExpr, ZigCtx -> Text
+  emit-zig-pat-unpack (subs) (i) (d) (body) (ctx) =
    if i == list-length subs then ""
    else let binder = zig-pat-binder (list-at subs i) i
    in let line = if (binder == "_") | (zig-occurs body binder == False) then ""
-      else "const " & zig-sanitize binder & " = _p" & integer-to-text d & "[" & integer-to-text i & "]; "
-   in line & emit-zig-pat-unpack subs (i + 1) d body
+      else "const " & zig-bind-name ctx binder d & " = _p" & integer-to-text d & "[" & integer-to-text i & "]; "
+   in line & emit-zig-pat-unpack subs (i + 1) d body ctx
 
 Section: Act Emission
 
@@ -1696,12 +1780,12 @@ Section: Act Emission
    else let s = list-at stmts i
    in let is-last = i == list-length stmts - 1
    in let rest = when s
-    is IrDoBind (name) (ty) (val) (sp) -> if zig-is-seq-name name then ctx else zig-push-bound ctx name
+    is IrDoBind (name) (ty) (val) (sp) -> if zig-is-seq-name name then ctx else zig-bind-push ctx name d
     is otherwise -> ctx
    in (when s
     is IrDoBind (name) (ty) (val) (sp) ->
      if zig-is-seq-name name then "_ = " & emit-zig-expr val ctx (d + 1) & "; "
-     else "const " & zig-sanitize name & " = " & emit-zig-expr val ctx (d + 1) & "; "
+     else "const " & zig-bind-name ctx name d & " = " & emit-zig-expr val ctx (d + 1) & "; "
     is IrDoExec (e) (sp) ->
      if is-last then (if voidp then "_ = " & emit-zig-expr e ctx (d + 1) & "; break :" & zig-label d & "; " else "break :" & zig-label d & " " & emit-zig-expr e ctx (d + 1) & "; ")
      else "_ = " & emit-zig-expr e ctx (d + 1) & "; ") & emit-zig-act-stmts stmts (i + 1) rest d voidp
@@ -2207,7 +2291,7 @@ Section: Definition Emission
 
   zig-def-param-name : ZigCtx, Text -> Text
   zig-def-param-name (ctx) (n) =
-   if zig-param-shadows ctx n then "_arg_" & zig-sanitize n else zig-sanitize n
+   if zig-param-shadows ctx n then "_arg_" & zig-raw-ident n else zig-sanitize n
 
   zig-push-param-renames : ZigCtx, List IRParam, Integer -> ZigCtx
   zig-push-param-renames (ctx) (params) (i) =
@@ -2221,7 +2305,7 @@ Section: Definition Emission
     typedefs = ctx.typedefs,
     irdefs = ctx.irdefs,
     renamed-from = (ctx.renamed-from) & [nm],
-    renamed-to = (ctx.renamed-to) & ["_arg_" & zig-sanitize nm],
+    renamed-to = (ctx.renamed-to) & ["_arg_" & zig-raw-ident nm],
     tvar-ids = ctx.tvar-ids,
     tvar-types = ctx.tvar-types,
     expected = ctx.expected,
@@ -2361,9 +2445,13 @@ Section: Chapter Emission
    & "fn cx_buf_want(n: i64) void {\n    const need: usize = @intCast(n);\n    if (cx_heap.items.len < need) cx_heap.appendNTimes(std.heap.page_allocator, 0, need - cx_heap.items.len) catch @panic(\"oom\");\n}\n"
    & "fn cx_heap_save() i64 {\n    return cx_hp;\n}\n"
    & "fn cx_heap_advance(n: i64) i64 {\n    cx_hp += n;\n    cx_buf_want(cx_hp);\n    return 0;\n}\n"
+   & "fn cx_heap_restore(h: i64) i64 {\n    cx_hp = h;\n    return 0;\n}\n"
+   & "fn cx_peek_qword(b: i64, off: i64) i64 {\n    cx_buf_want(b + off + 8);\n    var cx_v: i64 = 0;\n    var cx_j: i64 = 7;\n    while (cx_j >= 0) : (cx_j -= 1) cx_v = cx_v * 256 + cx_heap.items[@as(usize, @intCast(b + off + cx_j))];\n    return cx_v;\n}\n"
+   & "// address-of answers 0 here by X86_64Compound's own account of\n// targets without it; the argument is still evaluated so its binding\n// stays used.\nfn cx_address_of(v: anytype) i64 {\n    _ = v;\n    return 0;\n}\n"
    & "fn cx_buf_write_byte(b: i64, off: i64, v: i64) i64 {\n    cx_buf_want(b + off + 1);\n    cx_heap.items[@intCast(b + off)] = @intCast(@mod(v, 256));\n    return off + 1;\n}\n"
    & "fn cx_buf_write_bytes(b: i64, off: i64, vs: anytype) i64 {\n    const n: i64 = @intCast(vs.items.items.len);\n    cx_buf_want(b + off + n);\n    for (vs.items.items, 0..) |v, i| cx_heap.items[@as(usize, @intCast(b + off)) + i] = @intCast(@mod(v, 256));\n    return off + n;\n}\n"
    & "fn cx_peek_byte(b: i64, off: i64) i64 {\n    cx_buf_want(b + off + 1);\n    return cx_heap.items[@intCast(b + off)];\n}\n"
+   & "fn cx_buf_read_bytes(b: i64, off: i64, n: i64) *CxList(i64) {\n    cx_buf_want(b + off + n);\n    const l = cx_ll_empty(i64);\n    l.items.ensureTotalCapacity(std.heap.page_allocator, @intCast(n)) catch @panic(\"oom\");\n    var cx_j: i64 = 0;\n    while (cx_j < n) : (cx_j += 1) l.items.appendAssumeCapacity(cx_heap.items[@as(usize, @intCast(b + off + cx_j))]);\n    return l;\n}\n"
    & "fn cx_shru(a: i64, b: i64) i64 {\n    return @bitCast(@as(u64, @bitCast(a)) >> @as(u6, @intCast(b)));\n}\n"
    & "// int-mod is Euclidean, so the result lands in [0, |b|) regardless of\n// either sign, where @rem takes the dividend's sign.\n"
    & "fn cx_mod(a: i64, b: i64) i64 {\n    const m = if (b < 0) -b else b;\n    const r = @rem(a, m);\n    return if (r < 0) r + m else r;\n}\n"
@@ -2383,7 +2471,7 @@ Section: Chapter Emission
    & "fn cx_cce_to_cp(c: i64) i64 {\n    if (c < 0 or c >= 128) @panic(\"cce multibyte code-to-char unsupported\");\n    return @intCast(cce_table[@intCast(c)]);\n}\n"
    & "fn cx_cp_to_cce(cp: i64) i64 {\n    for (cce_table, 0..) |u, i| {\n        if (u == cp) return @intCast(i);\n    }\n    @panic(\"codepoint not in cce single-byte table\");\n}\n"
    & "fn cx_cce_to_utf8(s: []const u8) []const u8 {\n    var out: std.ArrayListUnmanaged(u8) = .empty;\n    const al = std.heap.page_allocator;\n    for (s) |b| {\n        if (b >= 128) @panic(\"cce multibyte print unsupported\");\n        const cp = cce_table[b];\n        if (cp < 128) {\n            out.append(al, @intCast(cp)) catch @panic(\"oom\");\n        } else if (cp < 2048) {\n            out.append(al, @intCast(192 + (cp >> 6))) catch @panic(\"oom\");\n            out.append(al, @intCast(128 + (cp & 63))) catch @panic(\"oom\");\n        } else {\n            out.append(al, @intCast(224 + (cp >> 12))) catch @panic(\"oom\");\n            out.append(al, @intCast(128 + ((cp >> 6) & 63))) catch @panic(\"oom\");\n            out.append(al, @intCast(128 + (cp & 63))) catch @panic(\"oom\");\n        }\n    }\n    return out.items;\n}\n"
-   & "fn cx_show_int(n: i64) []const u8 {\n    const ascii = std.fmt.allocPrint(std.heap.page_allocator, \"{d}\", .{n}) catch @panic(\"oom\");\n    const buf = std.heap.page_allocator.alloc(u8, ascii.len) catch @panic(\"oom\");\n    for (ascii, 0..) |ch, i| {\n        buf[i] = if (ch == '-') 73 else 3 + (ch - '0');\n    }\n    return buf;\n}\n"
+   & "fn cx_show_int(n: i64) []const u8 {\n    const ascii = std.fmt.allocPrint(std.heap.page_allocator, \"{d}\", .{n}) catch @panic(\"oom\");\n    const buf = std.heap.page_allocator.alloc(u8, ascii.len) catch @panic(\"oom\");\n    for (ascii, 0..) |cx_ch, cx_i| {\n        buf[cx_i] = if (cx_ch == '-') 73 else 3 + (cx_ch - '0');\n    }\n    return buf;\n}\n"
    & "fn cx_print_line(s: []const u8) void {\n    std.debug.print(\"{s}\\n\", .{cx_cce_to_utf8(s)});\n}\n"
    & "fn cx_print(s: []const u8) void {\n    std.debug.print(\"{s}\", .{cx_cce_to_utf8(s)});\n}\n\n"
 
