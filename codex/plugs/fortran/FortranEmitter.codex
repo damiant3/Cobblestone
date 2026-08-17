@@ -26,6 +26,22 @@ Section: Keywords and Sanitization
    in if fort-is-keyword s 0 then s & "_v"
       else s
 
+ The IR spells a record field as `name/slot`, so a field name reaches the
+ emitter as `a/0` and reads as a division. riscv resolves the slot and
+ needs it; every source plug wants the name.
+
+  fort-slash-pos : Text, Integer, Integer -> Integer
+  fort-slash-pos (f) (i) (len) =
+   if i >= len then (-1)
+   else if char-to-text (char-at f i) == "/" then i
+   else fort-slash-pos f (i + 1) len
+
+  fort-field : Text -> Text
+  fort-field (f) =
+   let slash = fort-slash-pos f 0 (text-length f)
+   in if slash >= 0 then fort-sanitize (substring f 0 slash)
+      else fort-sanitize f
+
   fort-escape : Text -> Text
   fort-escape (s) = text-replace s "'" "''"
 
@@ -204,7 +220,7 @@ Section: Expression Emission
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> fort-emit-expr-at body arities (depth + 1)
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> fort-emit-expr-at body arities (depth + 1)
     is IrRecord (name) (fields) (ty) (sp) -> fort-emit-record name fields arities
-    is IrFieldAccess (rec) (field) (ty) (sp) -> fort-emit-expr-at rec arities (depth + 1) & "%" & fort-sanitize field
+    is IrFieldAccess (rec) (field) (ty) (sp) -> fort-emit-expr-at rec arities (depth + 1) & "%" & fort-field field
     is IrFieldStore (rec) (field) (val) (ty) (sp) -> "0"
     is IrFork (body) (ty) (sp) -> fort-emit-expr-at body arities (depth + 1)
     is IrAwait (task) (ty) (sp) -> fort-emit-expr-at task arities (depth + 1)
@@ -324,7 +340,7 @@ Section: Expression Emission
    "open-file", "print-error-uni", "print-line-uni", "process-exit",
    "read-text", "show", "substring", "text-compare", "text-concat-list",
    "text-contains", "text-length", "text-replace", "text-split",
-   "text-starts-with", "text-to-integer", "write-file"]
+   "text-starts-with", "text-to-integer", "write-file", "list-push"]
 
   fort-find-builtin : List Text, Text, Integer -> Integer
   fort-find-builtin (names) (target) (i) =
@@ -385,7 +401,7 @@ Section: Expression Emission
    else if idx == 41 then "fort_text_split(" & fort-emit-expr (list-at args 0) arities & ", " & fort-emit-expr (list-at args 1) arities & ")"
    else if idx == 42 then "(index(" & fort-emit-expr (list-at args 0) arities & ", " & fort-emit-expr (list-at args 1) arities & ") == 1)"
    else if idx == 43 then "fort_text_to_integer(" & fort-emit-expr (list-at args 0) arities & ")"
-   else "fort_write_file(" & fort-emit-expr (list-at args 0) arities & ", " & fort-emit-expr (list-at args 1) arities & ")"
+   else if idx == 44 then "fort_write_file(" & fort-emit-expr (list-at args 0) arities & ", " & fort-emit-expr (list-at args 1) arities & ")"    else "fort_list_snoc(" & fort-emit-expr (list-at args 0) arities & ", " & fort-emit-expr (list-at args 1) arities & ")"
 
   fort-emit-bi-show : List IRExpr, List ArityEntry -> Text
   fort-emit-bi-show (args) (arities) =

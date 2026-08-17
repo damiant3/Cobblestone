@@ -110,6 +110,154 @@ Section: Function Emission
    if list-length (def.params) > 0 then has-tail-call (def.body) (def.name)
    else False
 
+  ip-mentions : IRExpr, Text -> Boolean
+  ip-mentions (e) (nm) =
+   when e
+    is IrIntLit (v) (sp) | IrNumLit (v) (sp) | IrBoolLit (v) (sp) | IrCharLit (v) (sp) -> False
+    is IrTextLit (t) (sp) -> False
+    is IrError (m) (ty) (sp) -> False
+    is IrName (n) (ty) (sp) -> n == nm
+    is IrNegate (x) (ty) (sp) -> ip-mentions x nm
+    is IrBinary (op) (l) (r) (ty) (sp) -> ip-mentions l nm | ip-mentions r nm
+    is IrIf (c) (t) (el) (ty) (sp) -> ip-mentions c nm | ip-mentions t nm | ip-mentions el nm
+    is IrLet (n) (ty) (v) (b) (sp) -> n == nm | ip-mentions v nm | ip-mentions b nm
+    is IrApply (f) (a) (ty) (sp) -> ip-mentions f nm | ip-mentions a nm
+    is IrLambda (ps) (b) (ty) (sp) -> ip-params-bind ps nm 0 | ip-mentions b nm
+    is IrList (es) (ty) (sp) -> ip-mentions-list es nm 0
+    is IrMatch (s) (bs) (ty) (sp) -> ip-mentions s nm | ip-mentions-branches bs nm 0
+    is IrAct (stmts) (ty) (sp) -> ip-mentions-stmts stmts nm 0
+    is IrRecord (n) (fs) (ty) (sp) -> ip-mentions-fields fs nm 0
+    is IrFieldAccess (r) (f) (ty) (sp) -> ip-mentions r nm
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> ip-mentions r nm | ip-mentions v nm
+    is otherwise -> True
+
+  ip-params-bind : List IRParam, Text, Integer -> Boolean
+  ip-params-bind (ps) (nm) (i) =
+   if i >= list-length ps then False
+   else if (list-at ps i).name == nm then True
+   else ip-params-bind ps nm (i + 1)
+
+  ip-mentions-list : List IRExpr, Text, Integer -> Boolean
+  ip-mentions-list (es) (nm) (i) =
+   if i >= list-length es then False
+   else if ip-mentions (list-at es i) nm then True
+   else ip-mentions-list es nm (i + 1)
+
+  ip-mentions-fields : List IRFieldVal, Text, Integer -> Boolean
+  ip-mentions-fields (fs) (nm) (i) =
+   if i >= list-length fs then False
+   else if ip-mentions ((list-at fs i).value) nm then True
+   else ip-mentions-fields fs nm (i + 1)
+
+  ip-mentions-stmts : List IRActStmt, Text, Integer -> Boolean
+  ip-mentions-stmts (stmts) (nm) (i) =
+   if i >= list-length stmts then False
+   else let hit = (when list-at stmts i
+     is IrDoBind (n) (t) (v) (sp) -> n == nm | ip-mentions v nm
+     is IrDoExec (v) (sp) -> ip-mentions v nm)
+   in if hit then True else ip-mentions-stmts stmts nm (i + 1)
+
+  ip-pat-binds : IRPat, Text -> Boolean
+  ip-pat-binds (p) (nm) =
+   when p
+    is IrVarPat (n) (ty) (sp) -> n == nm
+    is IrCtorPat (c) (subs) (ty) (sp) -> ip-pats-bind subs nm 0
+    is IrVecPat (subs) (ty) (sp) -> ip-pats-bind subs nm 0
+    is otherwise -> False
+
+  ip-pats-bind : List IRPat, Text, Integer -> Boolean
+  ip-pats-bind (ps) (nm) (i) =
+   if i >= list-length ps then False
+   else if ip-pat-binds (list-at ps i) nm then True
+   else ip-pats-bind ps nm (i + 1)
+
+  ip-mentions-branches : List IRBranch, Text, Integer -> Boolean
+  ip-mentions-branches (bs) (nm) (i) =
+   if i >= list-length bs then False
+   else let b = list-at bs i
+   in if ip-pat-binds (b.pattern) nm | ip-mentions (b.guard) nm | ip-mentions (b.body) nm then True
+   else ip-mentions-branches bs nm (i + 1)
+
+  ip-clean : IRExpr, Text -> Integer
+  ip-clean (e) (acc) = if ip-mentions e acc then 0 - 1 else 0
+
+  ip-join : Integer, Integer -> Integer
+  ip-join (a) (b) = if a < 0 | b < 0 then 0 - 1 else a + b
+
+  ip-walk : IRExpr, Boolean, Text, Text, Integer, Integer -> Integer
+  ip-walk (e) (tail) (acc) (fname) (k) (np) =
+   when e
+    is IrName (n) (ty) (sp) -> if n /= acc | tail then 0 else 0 - 1
+    is IrIf (c) (t) (el) (ty) (sp) ->
+     ip-join (ip-clean c acc) (ip-join (ip-walk t tail acc fname k np) (ip-walk el tail acc fname k np))
+    is IrLet (n) (ty) (v) (b) (sp) ->
+     if n == acc then 0 - 1
+     else ip-join (ip-clean v acc) (ip-walk b tail acc fname k np)
+    is IrApply (f) (a) (ty) (sp) ->
+     if tail & is-self-call e fname then
+      let args = flatten-tail-args e []
+      in if list-length args /= np then ip-clean e acc
+      else ip-walk-args args acc k 0 0
+     else ip-clean e acc
+    is IrMatch (s) (bs) (ty) (sp) ->
+     ip-join (ip-clean s acc) (ip-walk-branches bs tail acc fname k np 0 0)
+    is otherwise -> ip-clean e acc
+
+  ip-walk-branches : List IRBranch, Boolean, Text, Text, Integer, Integer, Integer, Integer -> Integer
+  ip-walk-branches (bs) (tail) (acc) (fname) (k) (np) (i) (total) =
+   if total < 0 then total
+   else if i >= list-length bs then total
+   else let b = list-at bs i
+   in if ip-pat-binds (b.pattern) acc then 0 - 1
+   else let here = ip-join (ip-clean (b.guard) acc) (ip-walk (b.body) tail acc fname k np)
+   in ip-walk-branches bs tail acc fname k np (i + 1) (ip-join total here)
+
+  ip-walk-args : List IRExpr, Text, Integer, Integer, Integer -> Integer
+  ip-walk-args (args) (acc) (k) (i) (total) =
+   if total < 0 then total
+   else if i >= list-length args then total
+   else let arg = list-at args i
+   in let here = if i /= k then ip-clean arg acc else ip-acc-arg arg acc
+   in ip-walk-args args acc k (i + 1) (ip-join total here)
+
+  ip-acc-arg : IRExpr, Text -> Integer
+  ip-acc-arg (arg) (acc) =
+   when arg
+    is IrName (n) (ty) (sp) -> if n == acc then 0 else 0 - 1
+    is IrTextLit (t) (sp) -> 0
+    is IrBinary (op) (l) (r) (ty) (sp) -> ip-acc-append op l r acc
+    is otherwise -> 0 - 1
+
+  ip-acc-append : IRBinaryOp, IRExpr, IRExpr, Text -> Integer
+  ip-acc-append (op) (l) (r) (acc) =
+   when op
+    is IrAppendText ->
+     (when l
+      is IrName (ln) (lt) (ls) -> if ln /= acc then 0 - 1 else if ip-mentions r acc then 0 - 1 else 1
+      is otherwise -> 0 - 1)
+    is otherwise -> 0 - 1
+
+  ip-param-is-text : CodexType -> Boolean
+  ip-param-is-text (ty) =
+   when ty
+    is TextTy -> True
+    is otherwise -> False
+
+  inplace-accumulators : IRDef, Integer, List Text -> List Text
+  inplace-accumulators (def) (i) (found) =
+   let params = def.params
+   in if i >= list-length params then found
+   else let p = list-at params i
+   in let ok = ip-param-is-text (p.type-val) & ip-walk (def.body) True (p.name) (def.name) i (list-length params) > 0
+   in inplace-accumulators def (i + 1) (if ok then list-push found (p.name) else found)
+
+  emit-inplace-entry-guards : CodegenState, List Text, Integer -> CodegenState
+  emit-inplace-entry-guards (st) (names) (i) =
+   if i >= list-length names then st
+   else let loaded = load-local st (lookup-local (st.locals) (list-at names i))
+   in let st1 = st-append-code (loaded.state) (mov-rr reg-rdi (loaded.reg))
+   in emit-inplace-entry-guards (emit-call-to st1 "__str_own") names (i + 1)
+
   st-set-tail-pos : CodegenState, Boolean -> CodegenState
   st-set-tail-pos (st) (v) =
    __record-set st "tco" (__record-set (st.tco) "in-tail-pos" v)
@@ -355,11 +503,25 @@ Section: Function Emission
    else if is-direct-tail-arg st (list-at args i) (list-at param-locals i) then tco-count-complex st args param-locals (i + 1) acc
    else tco-count-complex st args param-locals (i + 1) (acc + 1)
 
+ The identity comprehension is load-bearing and must not be removed.
+ temps arrives as st.tco.temp-locals, a field of the caller's long-lived
+ state, and __list_snoc extends its argument in place whenever that
+ argument is the topmost allocation. Growing the caller's list would hand
+ the next tail call in the same function the spill slots this one just
+ took. The comprehension builds its accumulator from an empty literal of
+ its own, so what tco-grow-temps pushes onto is linearly owned by
+ construction rather than by allocation order.
+
   tco-ensure-temps : CodegenState, List Integer, Integer -> TcoAllocResult
   tco-ensure-temps (st) (temps) (needed) =
    if list-length temps >= needed then TcoAllocResult { alloc-state = st, alloc-locals = temps }
+   else tco-grow-temps st (for r in temps -> r) needed
+
+  tco-grow-temps : CodegenState, List Integer, Integer -> TcoAllocResult
+  tco-grow-temps (st) (temps) (needed) =
+   if list-length temps >= needed then TcoAllocResult { alloc-state = st, alloc-locals = temps }
    else let loc = alloc-local st
-   in tco-ensure-temps (loc.state) (list-push temps (loc.reg)) needed
+   in tco-grow-temps (loc.state) (list-push temps (loc.reg)) needed
 
   emit-tail-call-general-shuffle : CodegenState, List IRExpr, List Integer, List Integer, List Integer -> CodegenState
   emit-tail-call-general-shuffle (st) (args) (temp-locals) (param-locals) (order) =
@@ -693,7 +855,8 @@ Section: Function Emission
        temp-locals = tco-alloc.alloc-locals,
        current-func = def.name,
        saved-next-local = st-a.next-local,
-       saved-next-temp = st-a.next-temp
+       saved-next-temp = st-a.next-temp,
+       inplace-params = []
       })
     else st3
    in let st5 = emit-to-local st4 (def.body) reg-rax (st4.tco.in-tail-pos)
@@ -745,8 +908,10 @@ Section: Function Emission
    in let pnames = for p in (def.params) -> p.name
    in let needs-temps = if is-tco & list-length (def.params) <= 4 then tails-all-direct (def.body) True (def.name) pnames == False else is-tco
    in let temp-count = if needs-temps then tco-max-complex (def.body) (def.name) pnames 0 else 0
-   in let st5 = if is-tco then let tco-alloc = if temp-count > 0 then pre-alloc-tco-temps st4 0 temp-count []
-    else TcoAllocResult { alloc-state = st4, alloc-locals = [] }
+   in let ip-names = if is-tco & st4.omit-frame-pointer == False then inplace-accumulators def 0 [] else []
+   in let st4i = emit-inplace-entry-guards st4 ip-names 0
+   in let st5 = if is-tco then let tco-alloc = if temp-count > 0 then pre-alloc-tco-temps st4i 0 temp-count []
+    else TcoAllocResult { alloc-state = st4i, alloc-locals = [] }
    in let st-a = tco-alloc.alloc-state
    in let p-locals = collect-param-locals (st-a.locals) (def.params) 0 []
    in let loop-top-pos = st-a.code-len
@@ -761,9 +926,10 @@ Section: Function Emission
        temp-locals = tco-alloc.alloc-locals,
        current-func = def.name,
        saved-next-local = st-b.next-local,
-       saved-next-temp = st-b.next-temp
+       saved-next-temp = st-b.next-temp,
+       inplace-params = ip-names
       })
-    else st4
+    else st4i
    in let st6 = emit-to-local st5 (def.body) reg-rax (st5.tco.in-tail-pos)
    in let st6g = emit-return-guard st6 def
    in let st7 = emit-epilogue st6g
@@ -2207,9 +2373,32 @@ Section: Expression Emission
    in let st7 = patch-jmp-at st6 jmp-end-pos (st6.code-len)
    in load-local st7 (result-loc.reg)
 
+  is-inplace-append : CodegenState, IRBinaryOp, IRExpr -> Boolean
+  is-inplace-append (st) (op) (left) =
+   when op
+    is IrAppendText ->
+     (when left
+      is IrName (n) (ty) (sp) -> st.tco.active & st.omit-frame-pointer == False & ip-name-listed (st.tco.inplace-params) n 0
+      is otherwise -> False)
+    is otherwise -> False
+
+  ip-name-listed : List Text, Text, Integer -> Boolean
+  ip-name-listed (names) (n) (i) =
+   if i >= list-length names then False
+   else if list-at names i == n then True
+   else ip-name-listed names n (i + 1)
+
+  emit-inplace-append : CodegenState, IRExpr, IRExpr -> EmitResult
+  emit-inplace-append (st) (left) (right) =
+   let r = emit-expr (st-set-tail-pos st False) right
+   in let st1 = st-append-code (r.state) (mov-rr reg-r9 (r.reg))
+   in let st2 = emit-operand-to st1 left reg-r8
+   in emit-helper-call-2-regs st2 reg-r8 reg-r9 "__str_concat_inplace"
+
   emit-binary : CodegenState, IRBinaryOp, IRExpr, IRExpr -> EmitResult
   emit-binary (st) (op) (left) (right) =
-   if is-append-list-op op then emit-append-list st left right
+   if is-inplace-append st op left then emit-inplace-append st left right
+   else if is-append-list-op op then emit-append-list st left right
    else if is-and-op op then emit-short-circuit-and st left right
    else if is-or-op op then emit-short-circuit-or st left right
    else when right

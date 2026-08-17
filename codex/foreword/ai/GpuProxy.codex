@@ -151,7 +151,8 @@ Section: Tensor to Buffer
 Section: Buffer to Tensor
   gpu-f32-bytes-to-tensor : List Integer, Integer, Integer -> Tensor
   gpu-f32-bytes-to-tensor (bytes) (rows) (cols) =
-    let data = gpu-f32-to-fixed-all bytes 0 (rows * cols) []
+    if gpu-elems-fit bytes rows cols == False then Tensor { data = [], rows = 0, cols = 0 }
+    else let data = gpu-f32-to-fixed-all bytes 0 (rows * cols) []
     in Tensor { data = data, rows = rows, cols = cols }
 
   gpu-f32-to-fixed-all : List Integer, Integer, Integer, List Integer -> List Integer
@@ -189,20 +190,48 @@ Section: Full Command Buffer
     if n <= 0 then acc
     else gpu-pad-to (n - 1) (list-push acc 0)
 
+Section: Read Bounds
+
+ The building side of this chapter is ours and the parsing side reads bytes a
+ device wrote. gpu-parse-result reaches offset 36, so it needs forty bytes.
+ Both tests are subtractive so a count that overflows cannot pass by wrapping.
+
+  gpu-can-read : List Integer, Integer, Integer -> Boolean
+  gpu-can-read (buf) (off) (n) =
+    if off < 0 then False
+    else if n < 0 then False
+    else off <= list-length buf - n
+
+  gpu-elems-fit : List Integer, Integer, Integer -> Boolean
+  gpu-elems-fit (bytes) (rows) (cols) =
+    if rows < 0 then False
+    else if cols < 0 then False
+    else if rows == 0 then True
+    else if cols == 0 then True
+    else rows <= list-length bytes / 4 / cols
+
 Section: Result Parsing
+  gpu-result-header-bytes : Integer = 40
+
   gpu-parse-result : List Integer -> GpuResult
   gpu-parse-result (buf) =
-    let status = gpu-read-u32 buf 0
+    if gpu-can-read buf 0 gpu-result-header-bytes == False
+      then GpuResult { gpu-result-rows = 0, gpu-result-cols = 0, gpu-result-status = gpu-status-error }
+    else let status = gpu-read-u32 buf 0
     in let rows = gpu-read-u32 buf 32
     in let cols = gpu-read-u32 buf 36
     in GpuResult { gpu-result-rows = rows, gpu-result-cols = cols, gpu-result-status = status }
 
 Section: Queries
   gpu-is-complete : List Integer -> Boolean
-  gpu-is-complete (buf) = gpu-read-u32 buf 0 == gpu-status-complete
+  gpu-is-complete (buf) =
+    if gpu-can-read buf 0 4 == False then False
+    else gpu-read-u32 buf 0 == gpu-status-complete
 
   gpu-is-error : List Integer -> Boolean
-  gpu-is-error (buf) = gpu-read-u32 buf 0 == gpu-status-error
+  gpu-is-error (buf) =
+    if gpu-can-read buf 0 4 == False then False
+    else gpu-read-u32 buf 0 == gpu-status-error
 
   format-gpu-cmd : GpuCommand -> Text
   format-gpu-cmd (cmd) =

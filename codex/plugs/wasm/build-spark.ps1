@@ -34,7 +34,10 @@ $IrFile = Join-Path $OutDir 'spark.ir'
 # check-mul raised from default 400 to 800 (Spark has ~10x record definitions per KB).
 # lower-mul raised from 300 to 500. headroom at 150% (default 120%).
 # These scale with source size so no manual tuning as source grows.
-& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $bundleSrc -Out $IrFile -Log $LogFile -IrCce -Survey "check-mul:800,lower-mul:500,headroom:150" -MemMB 4096
+# text-plug: this plug resolves a Codex call by its NAME, so the inline passes
+# must not substitute a body and delete the call. See text-plug-ir-pipeline in
+# codex/compiler/IR/Passes.codex, and run.ps1, which passes the same flag.
+& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $bundleSrc -Out $IrFile -Log $LogFile -IrCce -Passes 'text-plug' -Survey "check-mul:800,lower-mul:500,headroom:150" -MemMB 4096
 if ($LASTEXITCODE -ne 0) {
     Write-Error "FAIL: IR compile; see $LogFile"
     Get-Content $LogFile -ErrorAction SilentlyContinue | Select-Object -Last 20 | ForEach-Object { Write-Host "  $_" }

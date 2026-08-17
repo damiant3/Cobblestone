@@ -238,7 +238,8 @@ fester's claims row, which kept `deck-headroom`.
 | 1. Deprecate `ScRaw` / `SeRaw` in `ShellTypes` prose | DONE, main 15606 |
 | 2a. `SeText` + `msg`, all three emitters, arms | DONE |
 | 2b. `need-file`, `join-path`, `set`, `if-set` | next |
-| 3. Convert generators, one CL each | STARTED: `bootarm64Script`, 7 sites, `boot-arm64 match / 0 drift` |
+| 3. Convert generators, one CL each | STARTED: `bootarm64Script`, 7 sites, `boot-arm64 match / 0 drift` (main 15616) |
+| 3b. Lift red's `-Internal` fast gate into `BuildScript.codex` | DONE, main 15643. `build match 897 0` with an EMPTY `generated-scripts-baseline.txt` |
 | 4. Cmdlet residue | not until 1-3 are done, and against what is left |
 
 **The oracle held on the first real conversion**: seven `SeRaw` sites in
@@ -250,3 +251,33 @@ it is worth doing one generator per CL precisely so each one gets that proof.
 author of a style cannot judge whether it reads better to someone who does not
 already know what the script does (`R-NAIVE`). That is owed before the bulk
 conversion, not after.
+
+## 10. Handoff, 2026-08-16
+
+Written at the relaunch handoff so the next owner starts from what is true
+rather than from this document's opening paragraphs, which describe the problem
+and not the state.
+
+**Next action is step 2b**: `need-file`, `join-path`, `set`, `if-set` in
+`codex/foreword/shell/ShellBuild.codex`, sized in section 6. Then step 3 by
+generator, `quiremapScript` first for the reason in section 4.
+
+**The loop that works, and it is the point:** change the generator, run
+`build/check-generated-scripts.ps1 -Diff <name>` until the diff is empty, then
+gate. `match / 0 drift` is proof of byte-identical emission, so the restructure
+can be aggressive. Both conversions so far went that way on the first or second
+try.
+
+**One thing learned the hard way and worth inheriting.** `CDX1070` is why the
+walls exist, so the readable form REQUIRES naming the sub-block; there is no
+formatting-only fix. Splitting `g01` into `g01-head & g01b & g01-tail` is the
+worked example, and it cost nothing in emission.
+
+**The 25.9 per cent cmdlet residue is real and should not be forced.** `g01b`'s
+body is `ScRaw` on purpose: an ordered hashtable literal, a generic HashSet and
+a `$(if ...)` subexpression have no constructor. Converting those wants the
+node designed against real call sites, which is step 4 and is deliberately last.
+
+**Unclaimed and open**, in case the next owner wants the cheapest win: 33 of the
+34 generators in the section-4 table are untouched, and `quiremapScript` at 90
+per cent raw converts to one table plus a reader with no new nodes.

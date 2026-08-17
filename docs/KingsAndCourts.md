@@ -64,7 +64,8 @@ violated silently.
 
 ### The Solution
 
-The `punctual` keyword marks a function as having bounded execution.
+The `punctual` keyword marks a function as having a worst-case execution
+budget: an instruction count, with no heap, no recursion and no closures.
 The compiler enforces five structural restrictions at compile time:
 
 | CDX Code | Restriction | Why |
@@ -92,7 +93,7 @@ system integrator's responsibility.
 
 `codex.foreword.punctual` is an 8-chapter library where every function
 is `punctual`. It provides the primitives for real-time code without
-breaking the bounded-execution guarantee:
+breaking the worst-case execution budget guarantee:
 
 - **IntOps** -- clamped add/sub/mul, abs, min, max
 - **BitOps** -- and, or, xor, shift, rotate, popcount
@@ -105,8 +106,28 @@ breaking the bounded-execution guarantee:
 
 ### Prior Art Comparison
 
+### The Allocation Half: `bounded`
+
+`punctual` forbids the heap outright, which is right for hard real-time and
+leaves the middle unspoken: a function that legitimately allocates, in
+proportion to its input, with no way to declare it. `bounded <class>` is that
+declaration. It names a CEILING in the lattice `none < fixed < linear <
+growing`, the compiler infers the class from the body, and CDX6101 refuses
+when the inferred class exceeds the ceiling -- **transitively, exactly as
+CDX6001 does for `punctual`**, because one callee that copies an accumulator
+breaks the caller's promise.
+
+The two are siblings and neither subsumes the other: `punctual` is a claim
+about TIME with no heap at all, `bounded` a claim about ALLOCATION for code
+that must allocate. The first slice infers `linear` and `growing`; `none` and
+`fixed` are named rungs that are not inferred yet and are refused rather than
+accepted unchecked (CDX6103). `DevelopersGuide.md` has the proven/abstains
+table.
+
+### Prior Art Comparison
+
 No production language has this combination of per-function, opt-in,
-compile-time bounded-execution enforcement:
+compile-time execution and allocation enforcement:
 
 | Language | Mechanism | Scope | Compile-time? |
 |----------|-----------|-------|:-------------:|

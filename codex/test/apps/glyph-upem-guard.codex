@@ -1,0 +1,70 @@
+Chapter: GlyphUpemGuard
+  cites Encode chapter TrueType
+  cites Ui chapter GlyphRasterizer
+  cites Ui chapter TrueTypeFont
+
+ Track D item 19, the GlyphRasterizer leg. unitsPerEm is a raw 16-bit field of
+ the head table (TrueType.codex ttf-read-head reads it with ttf-u16 and
+ validates nothing), and gr-render-glyph:203 divides every outline coordinate by
+ it. TWO BYTES of a font file decide whether this chapter runs.
+
+ Measured on the unguarded chapter, both on this font with only those two bytes
+ changed:
+
+ upem = 0 kills the guest with !EXC=00, a divide error, on the first glyph
+ rendered (R12 = 0x20, the space).
+
+ upem = 1 kills it with !EXC=08, a DOUBLE FAULT, because every coordinate is
+ then multiplied by ppem with no divisor to bring it back: the width came out
+ 0x2bc1, 11201 pixels, and w * h sized the pixel buffer.
+
+ The font below is codex/test/truetype-bridge-test.codex's, byte for byte, with
+ unitsPerEm at offsets 246 and 247 rewritten per row. Row 1 is the control and
+ carries the whole arm: it is the SAME font at its real 1024, and it must still
+ render 96 glyphs at 9x11, or a guard that refused everything would pass both
+ hostile rows.
+
+Section: Font
+
+  test-font-bytes : List Integer
+  test-font-bytes = [0, 1, 0, 0, 0, 7, 0, 64, 0, 2, 0, 48, 99, 109, 97, 112, 0, 0, 0, 0,
+    0, 0, 0, 124, 0, 0, 0, 52, 103, 108, 121, 102, 0, 0, 0, 0, 0, 0, 0, 176,
+    0, 0, 0, 52, 104, 101, 97, 100, 0, 0, 0, 0, 0, 0, 0, 228, 0, 0, 0, 54,
+    104, 104, 101, 97, 0, 0, 0, 0, 0, 0, 1, 28, 0, 0, 0, 36, 104, 109, 116, 120,
+    0, 0, 0, 0, 0, 0, 1, 64, 0, 0, 0, 12, 108, 111, 99, 97, 0, 0, 0, 0,
+    0, 0, 1, 76, 0, 0, 0, 16, 109, 97, 120, 112, 0, 0, 0, 0, 0, 0, 1, 92,
+    0, 0, 0, 6, 0, 0, 0, 1, 0, 3, 0, 1, 0, 0, 0, 12, 0, 4, 0, 40,
+    0, 0, 0, 6, 0, 4, 0, 1, 0, 2, 0, 32, 0, 65, 255, 255, 0, 0, 0, 32,
+    0, 65, 255, 255, 255, 225, 255, 193, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0,
+    0, 0, 2, 0, 2, 188, 0, 2, 0, 0, 1, 1, 1, 0, 0, 1, 0, 1, 0, 0,
+    0, 2, 188, 253, 68, 0, 0, 0, 0, 1, 0, 0, 0, 0, 80, 0, 0, 0, 0, 0,
+    95, 15, 60, 245, 0, 11, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 188, 0, 0, 0, 8, 0, 2, 0, 1,
+    0, 0, 0, 0, 0, 1, 0, 0, 2, 188, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0,
+    2, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3,
+    2, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10,
+    0, 0, 0, 20, 0, 0, 0, 52, 0, 1, 0, 0, 0, 3, 0, 0]
+
+  with-upem : Integer -> List Integer
+  with-upem (v) = list-set-at (list-set-at test-font-bytes 246 (bit-shru v 8)) 247 (bit-and v 255)
+
+  row : Text, Integer -> Text
+  row (label) (v) = label & " " & format-ttf-bitmap-font (ttf-load-font (with-upem v) 16 "f")
+
+  row-aa : Text, Integer -> Text
+  row-aa (label) (v) = label & " " & format-ttf-bitmap-font (ttf-load-font-aa (with-upem v) 16 "f")
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni (row "1-control-1024" 1024)
+    print-line-uni (row-aa "2-control-aa-1024" 1024)
+    print-line-uni (row "3-upem-0" 0)
+    print-line-uni (row "4-upem-1" 1)
+    print-line-uni (row-aa "5-upem-0-aa" 0)
+    print-line-uni (row-aa "6-upem-1-aa" 1)
+    print-line-uni (row "7-upem-2048" 2048)
+  end
+
+Page 1

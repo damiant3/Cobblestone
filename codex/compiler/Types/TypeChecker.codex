@@ -1398,7 +1398,7 @@ Section: Check Chapter
   check-rt-no-alloc (st) (expr) (fn) =
    when expr
     is ANameExpr (n) (s) -> if is-rt-unsafe-name (n.value) then __record-set st "bag" (bag-add (st.bag) (make-error cdx-rt-heap-alloc ("[HardRealtime] function '" & fn & "' uses heap-allocating builtin '" & n.value & "'") s)) else st
-    is ABinaryExpr (l) (op) (r) (s) -> let st1 = check-rt-no-alloc (check-rt-no-alloc st l fn) r fn in when op is OpAppend -> __record-set st1 "bag" (bag-add (st1.bag) (make-error cdx-rt-heap-alloc ("[HardRealtime] function '" & fn & "' uses text concatenation (&)") s)) is otherwise -> st1
+    is ABinaryExpr (l) (op) (r) (s) -> let st1 = check-rt-no-alloc (check-rt-no-alloc st l fn) r fn in when op is OpAppend -> __record-set st1 "bag" (bag-add (st1.bag) (make-error cdx-rt-heap-alloc ("[HardRealtime] function '" & fn & "' uses text concatenation (&)") s)) is OpAnd -> (if expr-type-recorded-unsorted st1 s then __record-set st1 "bag" (bag-add (st1.bag) (make-error cdx-rt-heap-alloc ("[HardRealtime] function '" & fn & "' uses concatenation (&), which allocates") s)) else st1) is otherwise -> st1
     is AIfExpr (c) (t) (e) (s) -> check-rt-no-alloc (check-rt-no-alloc (check-rt-no-alloc st c fn) t fn) e fn
     is ALetExpr (bs) (b) (s) -> check-rt-no-alloc (check-rt-alloc-let-binds st bs fn 0 (list-length bs)) b fn
     is AApplyExpr (f) (a) (s) -> check-rt-no-alloc (check-rt-no-alloc st f fn) a fn
@@ -1513,6 +1513,277 @@ Section: Check Chapter
    else when (list-at stmts i)
     is AActExprStmt (e) (s) -> if has-self-call e fn then True else has-self-call-stmts stmts fn (i + 1) len
     is AActBindStmt (n) (e) (s) -> if has-self-call e fn then True else has-self-call-stmts stmts fn (i + 1) len
+
+Section: Cost Model 3.3 -- the growing rung
+
+ Cost Model 3.3, scored against `codex/test/cost/accumulator-corpus`. Damian
+ ruled the shape on 2026-08-16: the declaration is `bounded <class>`, a
+ CEILING in the lattice `none < fixed < linear < growing`, inferred bottom-up
+ from the body and refused transitively as CDX6001 is. This is the inference
+ for the top rung only -- it answers whether a definition is `growing` -- and
+ the declaration, the other three rungs and the refusal codes are not here.
+
+ It is reached only through the `cost-report` mode flag, which is off for
+ every ordinary compile, because nothing declares anything yet. Measured
+ against the corpus: 5 of 5 quadratic entries inferred growing, 4 of 5 linear
+ entries left alone, `n-fixed-appends` the one false positive. Section 7 of
+ `docs/Designs/Active/Features/CostModel.md` carries the table.
+
+ It raises an error rather than an info because nothing prints a bag's
+ non-error diagnostics on a compile that succeeds: `bag-diagnostics` is
+ defined in `DiagnosticBag.codex` and called from nowhere. An info here would
+ be a measurement that cannot be read.
+
+ The walk runs from the last definition backwards because the bag truncates
+ around twenty entries and a compilation unit puts the chapter under test
+ AFTER the foreword chapters it cites. Forward, the report is all
+ `ListUtils` and the subject never appears, which reads exactly like a check
+ that found nothing.
+
+  cost-apply-head : AExpr -> Text
+  cost-apply-head (e) = when e
+    is AApplyExpr (f) (a) (s) -> cost-apply-head f
+    is ANameExpr (n) (s) -> n.value
+    is otherwise -> ""
+
+ The spine is collected outermost-first, so the argument in source position
+ `i` of `n` sits at `n - 1 - i`.
+
+  cost-apply-args : AExpr, List AExpr -> List AExpr
+  cost-apply-args (e) (acc) = when e
+    is AApplyExpr (f) (a) (s) -> cost-apply-args f (list-push acc a)
+    is otherwise -> acc
+
+ RULE 2. An append whose right operand is an empty literal aliases rather
+ than copies, so it does not grow. `n-append-empty` is the corpus entry that
+ exists for this line, and without it a rule that reads the operator alone
+ flags a function that is linear.
+
+  cost-operand-grows : AExpr -> Boolean
+  cost-operand-grows (e) = when e
+    is AListExpr (elems) (s) -> list-length elems > 0
+    is ALitExpr (t) (k) (s) -> text-length t > 0
+    is otherwise -> True
+
+ RULE 1. The argument in position `i` is this function's own parameter `i`
+ appended to. That is the shape all three of the 2026-08-14 defects took.
+
+ The operator is `OpAnd` and NOT `OpAppend`, which cost a rebuild to find.
+ `desugar-bin-op` maps the `&` token to `OpAnd` (`Desugarer.codex:249`) and
+ nothing maps it to `OpAppend`; `infer-and` then dispatches on the LEFT
+ operand's resolved type, sending `BooleanTy` to logical-and and everything
+ else to concatenation. So `&` is one token doing two jobs and only the type
+ separates them. `OpAppend` reaches the AST only from the `show`-of-a-record
+ desugaring, which builds it synthetically.
+
+ RULE 3. The append is only a copy when the accumulator is not the topmost
+ allocation at the moment it runs. COMPILER-8 (main 16039) extends a Text
+ accumulator in place while it stays topmost, so a Text append with a
+ non-allocating right operand is linear; anything allocating BETWEEN the
+ appends pushes the accumulator off the frontier and the copy comes back. A
+ List append has no such path and copies unconditionally. The type comes from
+ `infer-and`, which records its append route at the binary span.
+
+ The right operand is read as allocating unless it is demonstrably not one,
+ which is question 1's abstain-toward-refusal in the only direction that is
+ safe here: a missed `growing` is the defect this check exists for, and a
+ false one is paid in a declaration an author can decline to write.
+
+  cost-arg-is-self-append : UnificationState, AExpr, Text -> Boolean
+  cost-arg-is-self-append (st) (arg) (pname) = when arg
+    is ABinaryExpr (l) (op) (r) (s) -> when op
+      is OpAnd -> cost-arg-is-name l pname & cost-operand-grows r & cost-append-copies st s r
+      is otherwise -> False
+    is otherwise -> False
+
+  cost-append-copies : UnificationState, SourceSpan, AExpr -> Boolean
+  cost-append-copies (st) (sp) (rhs) =
+   when (expr-type-scan st sp)
+    is TextTy -> cost-rhs-allocates rhs
+    is otherwise -> True
+
+  cost-rhs-allocates : AExpr -> Boolean
+  cost-rhs-allocates (e) = when e
+    is ALitExpr (t) (k) (s) -> False
+    is ANameExpr (n) (s) -> False
+    is AFieldAccess (obj) (f) (s) -> cost-rhs-allocates obj
+    is otherwise -> True
+
+  cost-arg-is-name : AExpr, Text -> Boolean
+  cost-arg-is-name (e) (pname) = when e
+    is ANameExpr (n) (s) -> n.value == pname
+    is otherwise -> False
+
+  cost-call-grows : UnificationState, List AExpr, List AParam, Integer, Integer, Integer -> Boolean
+  cost-call-grows (st) (args) (params) (i) (nargs) (nparams) =
+   if i >= nargs then False
+   else if i >= nparams then False
+   else if cost-arg-is-self-append st (list-at args (nargs - 1 - i)) ((list-at params i).name.value) then True
+   else cost-call-grows st args params (i + 1) nargs nparams
+
+  cost-expr-grows : UnificationState, AExpr, Text, List AParam -> Boolean
+  cost-expr-grows (st) (e) (self) (params) = when e
+    is AApplyExpr (f) (a) (s) ->
+      if cost-apply-head e == self
+       then let args = cost-apply-args e []
+            in cost-call-grows st args params 0 (list-length args) (list-length params)
+              | cost-expr-grows st f self params | cost-expr-grows st a self params
+      else cost-expr-grows st f self params | cost-expr-grows st a self params
+    is AIfExpr (c) (t) (el) (s) -> cost-expr-grows st c self params | cost-expr-grows st t self params | cost-expr-grows st el self params
+    is ALetExpr (bs) (b) (s) -> cost-binds-grow st bs self params 0 (list-length bs) | cost-expr-grows st b self params
+    is ABinaryExpr (l) (op) (r) (s) -> cost-expr-grows st l self params | cost-expr-grows st r self params
+    is AUnaryExpr (x) (s) -> cost-expr-grows st x self params
+    is AMatchExpr (sc) (arms) (s) -> cost-expr-grows st sc self params | cost-arms-grow st arms self params 0 (list-length arms)
+    is ALambdaExpr (ps) (b) (s) -> cost-expr-grows st b self params
+    is AListExpr (elems) (s) -> cost-elems-grow st elems self params 0 (list-length elems)
+    is ARecordExpr (n) (fields) (s) -> cost-fields-grow st fields self params 0 (list-length fields)
+    is AFieldAccess (obj) (f) (s) -> cost-expr-grows st obj self params
+    is AActExpr (stmts) (s) -> cost-stmts-grow st stmts self params 0 (list-length stmts)
+    is ATryExpr (mx) (b) (fb) (fl) (s) -> cost-stmts-grow st b self params 0 (list-length b) | cost-stmts-grow st fb self params 0 (list-length fb) | cost-stmts-grow st fl self params 0 (list-length fl)
+    is AHandleExpr (eff) (b) (cls) (s) -> cost-expr-grows st b self params
+    is AWithTimeoutExpr (t) (effs) (scopes) (b) (s) -> cost-expr-grows st b self params
+    is AFieldAssignExpr (rec) (f) (val) (s) -> cost-expr-grows st rec self params | cost-expr-grows st val self params
+    is ALazyExpr (inner) (s) -> cost-expr-grows st inner self params
+    is otherwise -> False
+
+  cost-binds-grow : UnificationState, List ALetBind, Text, List AParam, Integer, Integer -> Boolean
+  cost-binds-grow (st) (bs) (self) (params) (i) (len) =
+   if i >= len then False
+   else if cost-expr-grows st ((list-at bs i).value) self params then True
+   else cost-binds-grow st bs self params (i + 1) len
+
+  cost-arms-grow : UnificationState, List AMatchArm, Text, List AParam, Integer, Integer -> Boolean
+  cost-arms-grow (st) (arms) (self) (params) (i) (len) =
+   if i >= len then False
+   else let arm = list-at arms i
+   in if cost-expr-grows st (arm.guard) self params | cost-expr-grows st (arm.body) self params then True
+   else cost-arms-grow st arms self params (i + 1) len
+
+  cost-elems-grow : UnificationState, List AExpr, Text, List AParam, Integer, Integer -> Boolean
+  cost-elems-grow (st) (elems) (self) (params) (i) (len) =
+   if i >= len then False
+   else if cost-expr-grows st (list-at elems i) self params then True
+   else cost-elems-grow st elems self params (i + 1) len
+
+  cost-fields-grow : UnificationState, List AFieldExpr, Text, List AParam, Integer, Integer -> Boolean
+  cost-fields-grow (st) (fields) (self) (params) (i) (len) =
+   if i >= len then False
+   else if cost-expr-grows st ((list-at fields i).value) self params then True
+   else cost-fields-grow st fields self params (i + 1) len
+
+  cost-stmts-grow : UnificationState, List AActStmt, Text, List AParam, Integer, Integer -> Boolean
+  cost-stmts-grow (st) (stmts) (self) (params) (i) (len) =
+   if i >= len then False
+   else when (list-at stmts i)
+    is AActExprStmt (e) (s) -> if cost-expr-grows st e self params then True else cost-stmts-grow st stmts self params (i + 1) len
+    is AActBindStmt (n) (e) (s) -> if cost-expr-grows st e self params then True else cost-stmts-grow st stmts self params (i + 1) len
+
+  cost-def-grows : UnificationState, ADef -> Boolean
+  cost-def-grows (st) (def) = cost-expr-grows st (def.body) (def.name.value) (def.params)
+
+
+  cost-growth-bag : Boolean, List ADef, UnificationState -> DiagnosticBag
+  cost-growth-bag (enabled) (defs) (st) =
+   if enabled == False then empty-bag
+   else cost-growth-loop st defs (list-length defs - 1) (list-length defs) empty-bag
+
+  cost-growth-loop : UnificationState, List ADef, Integer, Integer, DiagnosticBag -> DiagnosticBag
+  cost-growth-loop (st) (defs) (i) (len) (bag) =
+   if i < 0 then bag
+   else let def = list-at defs i
+   in if cost-def-grows st def
+      then cost-growth-loop st defs (i - 1) len (bag-add bag (make-error cdx-cost-accumulator-growth ("'" & def.name.value & "' is inferred growing: an argument is its own parameter copied by & inside a self call") (def.span)))
+      else cost-growth-loop st defs (i - 1) len bag
+
+Section: Cost Model 3.3 -- the bounded declaration
+
+ `bounded <class> <name>` sits in `punctual`'s slot and declares a CEILING in
+ the lattice `none < fixed < linear < growing`. The parser records it as an
+ `AnnotationNode` with kind "bounded" and the class in the body, the same way
+ `punctual` records "hard-realtime", so nothing new is threaded through the
+ chapter record.
+
+ Only two rungs are decidable here today. The inference answers whether a
+ definition is `growing`; it does not distinguish `none` from `fixed` from
+ `linear`, because that needs an allocation count this pass does not compute.
+ So `bounded linear` and `bounded growing` are checked, and `bounded none` and
+ `bounded fixed` are REFUSED as unsupported rather than accepted unchecked.
+ That is the abstain-toward-refusal direction the ruling asks for: an
+ unchecked promise reads as a checked one and is worse than no promise.
+
+  cost-class-rank : Text -> Integer
+  cost-class-rank (c) =
+   if c == "none" then 0
+   else if c == "fixed" then 1
+   else if c == "linear" then 2
+   else if c == "growing" then 3
+   else 0 - 1
+
+ The growing set is closed under CALLS, which is what makes the refusal
+ transitive in the CDX6001 sense: `unpack-text` was linear in its own body and
+ quadratic because of what its callee did. One pass per definition is enough
+ to add every def that reaches a growing one, so the loop is bounded by the
+ definition count rather than run to a fixed point without a bound.
+
+  cost-growing-seed : UnificationState, List ADef, Integer, Integer, List Text -> List Text
+  cost-growing-seed (st) (defs) (i) (len) (acc) =
+   if i >= len then acc
+   else let d = list-at defs i
+   in if cost-def-grows st d then cost-growing-seed st defs (i + 1) len (list-push acc (d.name.value))
+   else cost-growing-seed st defs (i + 1) len acc
+
+  cost-growing-close : List ADef, List Text, Integer, Integer -> List Text
+  cost-growing-close (defs) (acc) (round) (rounds) =
+   if round >= rounds then acc
+   else let grown = cost-growing-step defs acc 0 (list-length defs) acc
+   in if list-length grown == list-length acc then acc
+   else cost-growing-close defs grown (round + 1) rounds
+
+  cost-growing-step : List ADef, List Text, Integer, Integer, List Text -> List Text
+  cost-growing-step (defs) (known) (i) (len) (acc) =
+   if i >= len then acc
+   else let d = list-at defs i
+   in if is-rt-name acc (d.name.value) 0 (list-length acc) then cost-growing-step defs known (i + 1) len acc
+   else if list-length (collect-rt-mentions (d.body) (d.name.value) known []) > 0
+     then cost-growing-step defs known (i + 1) len (list-push acc (d.name.value))
+   else cost-growing-step defs known (i + 1) len acc
+
+  cost-growing-set : UnificationState, List ADef -> List Text
+  cost-growing-set (st) (defs) =
+   let seed = cost-growing-seed st defs 0 (list-length defs) []
+   in if list-length seed == 0 then seed
+   else cost-growing-close defs seed 0 (list-length defs)
+
+  check-bounded-decls : UnificationState, List ADef, List AnnotationNode -> UnificationState
+  check-bounded-decls (st) (defs) (anns) =
+   if list-length anns == 0 then st
+   else let growing = cost-growing-set st defs
+   in check-bounded-loop st defs growing anns 0 (list-length anns)
+
+  check-bounded-loop : UnificationState, List ADef, List Text, List AnnotationNode, Integer, Integer -> UnificationState
+  check-bounded-loop (st) (defs) (growing) (anns) (i) (len) =
+   if i >= len then st
+   else let a = list-at anns i
+   in if a.kind == "bounded" then check-bounded-loop (check-bounded-one st defs growing a) defs growing anns (i + 1) len
+   else check-bounded-loop st defs growing anns (i + 1) len
+
+  check-bounded-one : UnificationState, List ADef, List Text, AnnotationNode -> UnificationState
+  check-bounded-one (st) (defs) (growing) (a) =
+   let rank = cost-class-rank (a.body)
+   in let span = cost-def-span defs (a.target) 0 (list-length defs)
+   in if rank < 0 then __record-set st "bag" (bag-add (st.bag) (make-error cdx-bounded-unknown-class ("'bounded " & a.body & "' on '" & a.target & "' names no class; the lattice is none < fixed < linear < growing") span))
+   else if rank < 2 then __record-set st "bag" (bag-add (st.bag) (make-error cdx-bounded-class-unsupported ("'bounded " & a.body & "' on '" & a.target & "' cannot be checked yet: only linear and growing are inferred. Use 'bounded linear', or 'punctual' for the no-heap promise") span))
+   else if rank >= 3 then st
+   else if is-rt-name growing (a.target) 0 (list-length growing)
+     then __record-set st "bag" (bag-add (st.bag) (make-error cdx-bounded-exceeded ("'" & a.target & "' declares bounded " & a.body & " but is inferred growing: an accumulator is copied by & inside a self call, here or in something it calls") span))
+   else st
+
+  cost-def-span : List ADef, Text, Integer, Integer -> SourceSpan
+  cost-def-span (defs) (name) (i) (len) =
+   if i >= len then synthetic-span
+   else let d = list-at defs i
+   in if d.name.value == name then d.span
+   else cost-def-span defs name (i + 1) len
 
 Section: Punctual Mutual Recursion
 
@@ -1810,7 +2081,8 @@ Section: Proof Acyclicity
    in let result = check-all-defs pre-st sorted-env (mod.defs) 0 def-count acc0 renames colliding assignments (mod.citations) slug-cache "" [] (mod.rt-names) tdm ceiling
    in let enter = __deck-enter
    in let cycle-st = check-rt-cycles (mod.defs) (mod.rt-names) (result.state)
-   in let proof-st = check-proof-cycles (mod.defs) (result.types) cycle-st
+   in let bounded-st = check-bounded-decls cycle-st (mod.defs) (mod.annotations)
+   in let proof-st = check-proof-cycles (mod.defs) (result.types) bounded-st
    in let grammar-st = check-proof-grammar (mod.defs) (result.types) proof-st
    in __record-set result "state" (check-stale-reads (mod.defs) grammar-st)
 

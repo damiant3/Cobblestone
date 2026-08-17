@@ -6,6 +6,22 @@ Section: Sanitization
   gtk-sanitize (name) =
    text-replace (text-replace name "-" "_") "'" ""
 
+ The IR spells a record field as `name/slot`, so a field name reaches the
+ emitter as `a/0` and reads as a division in every target that has one.
+ riscv resolves the slot and needs it; every source plug wants the name.
+
+  gtk-slash-pos : Text, Integer, Integer -> Integer
+  gtk-slash-pos (f) (i) (len) =
+   if i >= len then (-1)
+   else if char-to-text (char-at f i) == "/" then i
+   else gtk-slash-pos f (i + 1) len
+
+  gtk-field : Text -> Text
+  gtk-field (f) =
+   let slash = gtk-slash-pos f 0 (text-length f)
+   in if slash >= 0 then gtk-sanitize (substring f 0 slash)
+      else gtk-sanitize f
+
   gtk-escape : Text -> Text
   gtk-escape (s) =
    let s1 = text-replace s "\\" "\\\\"
@@ -79,8 +95,8 @@ Section: Expression Emission
     is IrMatch (scrut) (branches) (ty) (sp) -> emit-gtk-match scrut branches arities
     is IrAct (stmts) (ty) (sp) -> emit-gtk-act stmts arities
     is IrRecord (name) (fields) (ty) (sp) -> gtk-sanitize name & "(" & emit-gtk-record-fields fields arities 0 & ")"
-    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-gtk-expr rec arities & "." & gtk-sanitize field
-    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(lambda _r: (setattr(_r, '" & gtk-sanitize field & "', " & emit-gtk-expr val arities & "), _r)[-1])(" & emit-gtk-expr rec arities & ")"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-gtk-expr rec arities & "." & gtk-field field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(lambda _r: (setattr(_r, '" & gtk-field field & "', " & emit-gtk-expr val arities & "), _r)[-1])(" & emit-gtk-expr rec arities & ")"
     is IrFork (body) (ty) (sp) -> "__import__('concurrent.futures').ThreadPoolExecutor().submit(lambda: (" & emit-gtk-expr body arities & ")(None))"
     is IrAwait (task) (ty) (sp) -> "(" & emit-gtk-expr task arities & ").result()"
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-gtk-expr body arities

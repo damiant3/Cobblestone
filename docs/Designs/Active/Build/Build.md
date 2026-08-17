@@ -182,6 +182,26 @@ of the four was invisible while the script was passing:
 here was found by reading. Each one was found by running the two versions
 side by side and looking at what came out.
 
+### A shipped script with a generator is edited THROUGH the generator, whatever lane you are in
+
+**Rule.** Before submitting any CL that touches a script a generator emits
+(`build/*.ps1`, `codex/plugs/common/plug-build-lib.ps1`, anything
+`check-generated-scripts.ps1` lists), run
+`build/check-generated-scripts.ps1 -Diff <name>` and land the generator
+change in the same CL. The lane does not matter: a plug CL, a docs CL, an
+apps CL. If the checker is red, the CL is not done.
+
+**The case that earned it (main 15795, root, 2026-08-16).** A plugs CL added a
+`-CommonChapters` parameter and loop to `plug-build-lib.ps1` by hand, gated
+with the ARM64 cross bed only ("a plug is not seed-affecting"), and never
+invoked `check-generated-scripts` or `build.ps1`, so nothing observed that
+`codex/build/plugbuildlibScript.codex` still emitted the old script. The arm
+`plug-build-lib newly drifted` went red for every lane and a copy-up was held
+on it until main 15847 taught the generator the shipped lines. The cross bed
+was the right gate for what the CL did to the plug and the wrong gate for what
+it did to the script; the two are different questions and the second has its
+own runner, which is the same lesson as the section below in the other
+direction.
 ### A generator chapter is a compiled unit. Run the gate.
 
 **Two of the nine went to main red and blu found them, not me.** I verified

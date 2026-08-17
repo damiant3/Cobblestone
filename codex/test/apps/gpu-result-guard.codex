@@ -1,0 +1,66 @@
+Chapter: GpuResultGuard
+  cites AI chapter GpuProxy
+  cites AI chapter Tensor
+
+ Track D item 19, the ai/ leg. GpuProxy builds command buffers and parses result
+ buffers. The building side is ours; the PARSING side reads bytes a device wrote,
+ which is what puts it in this census.
+
+ gpu-read-u32:115 reads four bytes with four bare list-at calls.
+ gpu-parse-result:194 calls it at offsets 0, 32 and 36, so it needs forty bytes
+ and checks for none. gpu-is-complete and gpu-is-error need four and check for
+ none. gpu-f32-bytes-to-tensor:153 reads rows * cols elements at i * 4 with the
+ count coming from its caller and no comparison to the buffer at all.
+
+ codex/test/apps/gpu-proxy-test.codex is the runner that qualifies this chapter,
+ and every buffer it passes is one it just built itself: test-build-buffer parses
+ a 256-byte buffer it constructed two lines earlier. A device that returns
+ nothing, or returns less than it promised, is the case it cannot reach (L-GAP).
+
+ Rows 5 and 9 are the discriminators. Forty bytes is exactly enough for
+ gpu-parse-result and a tensor whose bytes end exactly at the last byte is
+ legitimate, so an off-by-one in either bound shows up there and in no hostile
+ row.
+
+Section: Buffers
+
+  empty : List Integer = []
+
+  short39 : List Integer = gpu-pad-to 39 []
+
+  exact40 : List Integer = gpu-pad-to 40 []
+
+  eight-f32 : List Integer = gpu-tensor-to-f32-bytes (tensor-from 2 2 [1000, 2000, 3000, 4000])
+
+Section: Helpers
+
+  show-ints : List Integer, Integer, Integer, Text -> Text
+  show-ints (xs) (i) (n) (acc) =
+   if i >= n then acc
+   else show-ints xs (i + 1) n (if i == 0 then show (list-at xs i) else acc & "," & show (list-at xs i))
+
+  parse-row : Text, List Integer -> Text
+  parse-row (label) (buf) =
+    let r = gpu-parse-result buf
+    in label & " status=" & show (r.gpu-result-status) & " rows=" & show (r.gpu-result-rows) & " cols=" & show (r.gpu-result-cols)
+
+  tensor-row : Text, List Integer, Integer, Integer -> Text
+  tensor-row (label) (bytes) (rows) (cols) =
+    let t = gpu-f32-bytes-to-tensor bytes rows cols
+    in label & " rows=" & show (t.rows) & " cols=" & show (t.cols) & " values=" & show (list-length (t.data)) & " [" & show-ints (t.data) 0 (list-length (t.data)) "" & "]"
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni (parse-row "1-real-buffer" (gpu-build-matmul-buffer (tensor-from 1 3 [1000, 1000, 1000]) (tensor-from 3 1 [1000, 1000, 1000])))
+    print-line-uni (tensor-row "2-tensor-honest" eight-f32 2 2)
+    print-line-uni (parse-row "3-empty" empty)
+    print-line-uni (parse-row "4-short39" short39)
+    print-line-uni (parse-row "5-exact40" exact40)
+    print-line-uni ("6-is-complete-empty " & show (gpu-is-complete empty) & " is-error-empty " & show (gpu-is-error empty))
+    print-line-uni (tensor-row "7-tensor-too-many" eight-f32 100 100)
+    print-line-uni (tensor-row "8-tensor-overflow" eight-f32 4294967296 4294967296)
+    print-line-uni (tensor-row "9-tensor-exact" eight-f32 4 1)
+  end
+
+Page 1

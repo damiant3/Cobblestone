@@ -1352,14 +1352,46 @@ Section: Apply
    let msg = "[UNSUPPORTED] " & name & ": builtin-List pattern matching is not implemented on arm64 (refused rather than miscompiled)"
    in a64-emit-int-lit (a64-add-shadow-warning st msg) 0
 
+ The subjects are the names emitted AFTER the runtime, and the set they are
+ checked against is the names the runtime itself recorded. Both come from
+ `func-names`, split at `runtime-funcs`, which `a64-emit-module` already
+ stores as the length of that list the moment `a64-emit-runtime` returns.
+ Nothing is written down twice, so a helper added to `Arm64Runtime` is
+ covered the day it is added.
+
+ It used to ask `a64-is-known-builtin`, a hand-written chain of 126 string
+ equalities. Measured 2026-08-16: the runtime registers 104 names and 85 of
+ them were absent from that chain, including `peek-16`, `poke-16` and every
+ MMIO, process and system-register accessor, so the overlap was 19 of 104.
+ `VirtioPci` defining `poke-16` in Codex left the correct `strh` helper
+ unreachable and drew no warning at all, while the same build printed twelve
+ warnings -- and every one of those twelve was the check reading the
+ RUNTIME's own registrations back out of `func-names` and reporting them as
+ user code. Starting at `runtime-funcs` is what makes a hit mean something.
+
+ A record FIELD sharing a helper's name cannot reach here, so nothing
+ excludes it: `func-names` holds emitted functions, and a field is never
+ one. That trap belongs to a source-text census, not to this check.
+
+  a64-name-in-prefix : List Text, Integer, Integer, Text -> Integer
+  a64-name-in-prefix (names) (i) (limit) (want) =
+   if i >= limit then 0
+   else if list-at names i == want then 1
+   else a64-name-in-prefix names (i + 1) limit want
+
   a64-check-builtin-collisions : A64State, List Text, Integer -> A64State
   a64-check-builtin-collisions (st) (names) (i) =
+   let rt = (st.extra).runtime-funcs
+   in a64-check-collisions-loop st names (if i < rt then rt else i) rt
+
+  a64-check-collisions-loop : A64State, List Text, Integer, Integer -> A64State
+  a64-check-collisions-loop (st) (names) (i) (rt) =
    if i >= list-length names then st
    else let name = list-at names i
-   in if a64-is-known-builtin name == 1
-    then let warn = "[WARN] user function '" & name & "' shadows ARM64 plug builtin"
-    in a64-check-builtin-collisions (a64-add-shadow-warning st warn) names (i + 1)
-    else a64-check-builtin-collisions st names (i + 1)
+   in if a64-name-in-prefix names 0 rt name == 1
+    then let warn = "[WARN] user function '" & name & "' shadows the ARM64 runtime helper of the same name; the helper is unreachable"
+    in a64-check-collisions-loop (a64-add-shadow-warning st warn) names (i + 1) rt
+    else a64-check-collisions-loop st names (i + 1) rt
 
   a64-emit-user-fn-call : A64State, Text, List IRExpr -> A64EmitResult
   a64-emit-user-fn-call (st) (name) (args) =
@@ -1496,15 +1528,15 @@ Section: Apply
    else if name == "__list-len" then a64-emit-unsupported-list st "__list-len"
    else if name == "__list-head" then a64-emit-unsupported-list st "__list-head"
    else if name == "__list-tail" then a64-emit-unsupported-list st "__list-tail"
-   else if name == "process-get-pid" then a64-emit-int-lit st 0
-   else if name == "process-get-scope" & list-length args == 1 then a64-emit-empty-text st
-   else if name == "process-get-network-scope" & list-length args == 1 then a64-emit-empty-text st
-   else if name == "process-set-scope" & list-length args == 2 then a64-emit-int-lit st (0 - 1)
-   else if name == "process-set-network-scope" & list-length args == 2 then a64-emit-int-lit st (0 - 1)
-   else if name == "process-get-cap" & list-length args == 1 then a64-emit-int-lit st 0
-   else if name == "process-restrict-cap" & list-length args == 2 then a64-emit-int-lit st (0 - 1)
-   else if name == "net-send-raw" & list-length args == 2 then a64-emit-int-lit st 0
-   else if name == "net-recv-raw" & list-length args == 1 then a64-emit-int-lit st 0
+   else if name == "process-get-scope" & list-length args == 1 then a64-emit-single-arg-call st "process-get-scope" (list-at args 0)
+   else if name == "process-get-network-scope" & list-length args == 1 then a64-emit-single-arg-call st "process-get-network-scope" (list-at args 0)
+   else if name == "process-set-scope" & list-length args == 2 then a64-emit-three-arg-call st "process-set-scope" args
+   else if name == "process-set-network-scope" & list-length args == 2 then a64-emit-three-arg-call st "process-set-network-scope" args
+   else if name == "process-get-cap" & list-length args == 1 then a64-emit-single-arg-call st "process-get-cap" (list-at args 0)
+   else if name == "process-restrict-cap" & list-length args == 2 then a64-emit-three-arg-call st "process-restrict-cap" args
+   else if name == "net-send-raw" & list-length args == 2 then a64-emit-three-arg-call st "net-send-raw" args
+   else if name == "net-recv-raw" & list-length args == 1 then a64-emit-single-arg-call st "net-recv-raw" (list-at args 0)
+   else if name == "net-get-hwaddr" & list-length args == 1 then a64-emit-single-arg-call st "net-get-hwaddr" (list-at args 0)
    else if name == "text-replace" & list-length args == 3 then a64-emit-three-arg-call st "text-replace" args
    else if name == "text-split" & list-length args == 2 then a64-emit-three-arg-call st "text-split" args
    else if name == "__buf-write-byte" & list-length args == 3 then a64-emit-three-arg-call st "__buf-write-byte" args

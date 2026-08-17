@@ -116,6 +116,12 @@ try {
         exit 6
     }
     [System.IO.File]::WriteAllBytes($Out, $allBytes.ToArray())
+    $truncHit = @()
+    if (Test-Path $stderrFile) { $truncHit = @(Select-String -Path $stderrFile -Pattern 'TRUNCATED sent=') }
+    if ($truncHit.Count -gt 0) {
+        [Console]::Error.WriteLine("FAIL: the plug could not send its whole output -- $($truncHit[0].Line.Trim())")
+        exit 7
+    }
     Write-Host "[plug-run] OK: $Out ($($allBytes.Count) bytes)"
 
 } finally {

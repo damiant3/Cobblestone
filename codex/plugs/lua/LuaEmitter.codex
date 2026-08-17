@@ -25,6 +25,22 @@ Section: Keywords and Sanitization
    in if is-lua-keyword s then "_" & s
       else s
 
+ The IR spells a record field as `name/slot`, so a field name reaches the
+ emitter as `a/0` and reads as a division in every target that has one.
+ riscv resolves the slot and needs it; every source plug wants the name.
+
+  lua-slash-pos : Text, Integer, Integer -> Integer
+  lua-slash-pos (f) (i) (len) =
+   if i >= len then (-1)
+   else if char-to-text (char-at f i) == "/" then i
+   else lua-slash-pos f (i + 1) len
+
+  lua-field : Text -> Text
+  lua-field (f) =
+   let slash = lua-slash-pos f 0 (text-length f)
+   in if slash >= 0 then lua-sanitize (substring f 0 slash)
+      else lua-sanitize f
+
   lua-escape-text : Text -> Text
   lua-escape-text (s) =
    let s1 = text-replace s "\\" "\\\\"
@@ -170,8 +186,8 @@ Section: Expression Emission
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-lua-expr-at body arities (depth + 1)
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-lua-expr-at body arities (depth + 1)
     is IrRecord (name) (fields) (ty) (sp) -> emit-lua-record name fields arities
-    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-lua-expr-at rec arities (depth + 1) & "." & lua-sanitize field
-    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(function() local _r = " & emit-lua-expr-at rec arities (depth + 1) & "; _r." & lua-sanitize field & " = " & emit-lua-expr-at val arities (depth + 1) & "; return _r end)()"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-lua-expr-at rec arities (depth + 1) & "." & lua-field field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(function() local _r = " & emit-lua-expr-at rec arities (depth + 1) & "; _r." & lua-field field & " = " & emit-lua-expr-at val arities (depth + 1) & "; return _r end)()"
     is IrFork (body) (ty) (sp) -> emit-lua-expr-at body arities (depth + 1)
     is IrAwait (task) (ty) (sp) -> emit-lua-expr-at task arities (depth + 1)
     is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> "(function() local ok, r = pcall(function() return " & emit-lua-act body arities & " end); if ok then return r else return " & emit-lua-act fb arities & " end end)()"
@@ -310,7 +326,8 @@ Section: Builtin Emitters
    LuaBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "tostring(" & emit-lua-expr (list-at args 0) arities & ")" },
    LuaBuiltinEmitter { name = "list-at", emit = \args arities -> emit-lua-expr (list-at args 0) arities & "[" & emit-lua-expr (list-at args 1) arities & " + 1]" },
    LuaBuiltinEmitter { name = "list-length", emit = \args arities -> "#" & emit-lua-expr (list-at args 0) arities },
-   LuaBuiltinEmitter { name = "list-snoc", emit = \args arities -> "(function() local _t = " & emit-lua-expr (list-at args 0) arities & "; _t[#_t + 1] = " & emit-lua-expr (list-at args 1) arities & "; return _t end)()" },
+   LuaBuiltinEmitter { name = "list-snoc", emit = \args arities -> "_cx_lpush(" & emit-lua-expr (list-at args 0) arities & ", " & emit-lua-expr (list-at args 1) arities & ")" },
+   LuaBuiltinEmitter { name = "list-push", emit = \args arities -> "_cx_lpush(" & emit-lua-expr (list-at args 0) arities & ", " & emit-lua-expr (list-at args 1) arities & ")" },
    LuaBuiltinEmitter { name = "max", emit = \args arities -> "math.max(" & emit-lua-expr (list-at args 0) arities & ", " & emit-lua-expr (list-at args 1) arities & ")" },
    LuaBuiltinEmitter { name = "min", emit = \args arities -> "math.min(" & emit-lua-expr (list-at args 0) arities & ", " & emit-lua-expr (list-at args 1) arities & ")" },
    LuaBuiltinEmitter { name = "negate", emit = \args arities -> "(-(" & emit-lua-expr (list-at args 0) arities & "))" },
@@ -392,7 +409,10 @@ Section: Chapter Emission
    let arities = build-arity-map (m.defs) 0 []
    in let types-text = emit-lua-type-defs type-defs 0
    in let defs-text = emit-lua-defs (m.defs) 0 arities
-   in types-text & defs-text & lua-sanitize opening-entry-point & "()\n"
+   in lua-prelude & types-text & defs-text & lua-sanitize opening-entry-point & "()\n"
+
+  lua-prelude : Text
+  lua-prelude = "local function _cx_lpush(_l, _v)\n  if #_l > 0 then _l[#_l + 1] = _v; return _l end\n  return { _v }\nend\n\n"
 
 Section: Tuple Helpers
 

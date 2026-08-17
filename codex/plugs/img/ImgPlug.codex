@@ -23,24 +23,30 @@ Section: Network Config
 
 Section: Streaming Send
 
-  spin-wait : Integer, Integer -> Integer
-  spin-wait (i) (n) =
-   if i >= n then 0
-   else spin-wait (i + 1) n
+ An image is sent from a BUFFER rather than a list, so this keeps a chunked
+ loop where `elf` and `pe` could hand the whole payload to
+ `net-io-send-raw-checked`: reading the image into one list would cost the
+ `__buf-read-bytes` blowup over every sector at once. What the loop no longer
+ does is ignore a refusal. `net-send` answers "send queue full" with the
+ session unchanged and the old loop advanced past it regardless, so a full
+ retransmit queue dropped that chunk and kept walking; the bytes either side
+ of the drop still arrived, which is corruption rather than truncation.
 
-  send-buf-loop : TcpTransportState, Integer, Integer, Integer -> [Network.Read, Network.Write] TcpTransportState
-  send-buf-loop (ts) (buf) (off) (remaining) =
-   if remaining <= 0 then ts
+  ImgSendResult = record {
+   is-transport : TcpTransportState,
+   is-sent : Integer,
+   is-complete : Boolean
+  }
+
+  send-buf-loop : TcpTransportState, Integer, Integer, Integer, Integer -> [Network.Read, Network.Write] ImgSendResult
+  send-buf-loop (ts) (buf) (off) (remaining) (sent) =
+   if remaining <= 0 then ImgSendResult { is-transport = ts, is-sent = sent, is-complete = True }
    else let chunk = if remaining > 1400 then 1400 else remaining
-   in let hp = __heap-save
    in let bs = __buf-read-bytes buf off chunk
-   in let r = net-send (ts.session) bs
-   in let restored = __heap-restore hp
-   in let ts1 = TcpTransportState { session = r.session, recv-buf = ts.recv-buf, recv-base = ts.recv-base, recv-len = ts.recv-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
    in act
-    ts2 <- flush-transport-outbox ts1
-    let w = spin-wait 0 10000000
-    in send-buf-loop ts2 buf (off + chunk) (remaining - chunk)
+    r <- net-io-send-raw-checked ts bs
+    if r.ns-complete then send-buf-loop (r.ns-transport) buf (off + chunk) (remaining - chunk) (sent + (r.ns-sent))
+       else ImgSendResult { is-transport = r.ns-transport, is-sent = sent + (r.ns-sent), is-complete = False }
    end
 
 Section: Drain
@@ -91,10 +97,10 @@ Section: Body
       in let w1 = fat32-write-all img-buf lay efi-bytes cdx-bytes
       in let restored = __heap-restore hp1
       in act
-       ts5 <- send-buf-loop (recv.transport) img-buf 0 img-bytes
-       ts6 <- net-io-close ts5
+       sent <- send-buf-loop (recv.transport) img-buf 0 img-bytes 0
+       ts6 <- net-io-close (sent.is-transport)
        drained <- drain-wait ts6 0
-       print-line-uni ("OK img=" & show (img-bytes + drained - drained) & " fat32 sectors=" & show total-sectors)
+       print-line-uni ("OK img=" & show (img-bytes + drained - drained) & " sent=" & show (sent.is-sent) & (if sent.is-complete then "" else " TRUNCATED") & " fat32 sectors=" & show total-sectors)
       end
      else
       let lay = fat16w-compute-layout total-sectors
@@ -102,10 +108,10 @@ Section: Body
       in let w1 = fat16w-write-all img-buf lay efi-bytes cdx-bytes source
       in let restored = __heap-restore hp1
       in act
-       ts5 <- send-buf-loop (recv.transport) img-buf 0 img-bytes
-       ts6 <- net-io-close ts5
+       sent <- send-buf-loop (recv.transport) img-buf 0 img-bytes 0
+       ts6 <- net-io-close (sent.is-transport)
        drained <- drain-wait ts6 0
-       print-line-uni ("OK img=" & show (img-bytes + drained - drained) & " fat16 sectors=" & show total-sectors)
+       print-line-uni ("OK img=" & show (img-bytes + drained - drained) & " sent=" & show (sent.is-sent) & (if sent.is-complete then "" else " TRUNCATED") & " fat16 sectors=" & show total-sectors)
       end
     else print-line-uni "FAIL"
    end

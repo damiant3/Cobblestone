@@ -33,6 +33,22 @@ Section: Keywords and Sanitization
    in if is-php-keyword s then "_" & s
       else s
 
+ The IR spells a record field as `name/slot`, so a field name reaches the
+ emitter as `a/0` and reads as a division in every target that has one.
+ riscv resolves the slot and needs it; every source plug wants the name.
+
+  php-slash-pos : Text, Integer, Integer -> Integer
+  php-slash-pos (f) (i) (len) =
+   if i >= len then (-1)
+   else if char-to-text (char-at f i) == "/" then i
+   else php-slash-pos f (i + 1) len
+
+  php-field : Text -> Text
+  php-field (f) =
+   let slash = php-slash-pos f 0 (text-length f)
+   in if slash >= 0 then php-sanitize (substring f 0 slash)
+      else php-sanitize f
+
   php-escape-text : Text -> Text
   php-escape-text (s) =
    let s1 = text-replace s "\\" "\\\\"
@@ -163,8 +179,8 @@ Section: Expression Emission
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-php-expr-at body arities (depth + 1)
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-php-expr-at body arities (depth + 1)
     is IrRecord (name) (fields) (ty) (sp) -> emit-php-record name fields arities
-    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-php-expr-at rec arities (depth + 1) & "->" & php-sanitize field
-    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(clone " & emit-php-expr-at rec arities (depth + 1) & ")->" & php-sanitize field & " = " & emit-php-expr-at val arities (depth + 1)
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-php-expr-at rec arities (depth + 1) & "->" & php-field field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(clone " & emit-php-expr-at rec arities (depth + 1) & ")->" & php-field field & " = " & emit-php-expr-at val arities (depth + 1)
     is IrFork (body) (ty) (sp) -> emit-php-expr-at body arities (depth + 1)
     is IrAwait (task) (ty) (sp) -> emit-php-expr-at task arities (depth + 1)
     is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> "(function() { try { return " & emit-php-act body arities & "; } catch (\\Exception $e) { return " & emit-php-act fb arities & "; } })()"
@@ -303,6 +319,7 @@ Section: Builtin Emitters
    PhpBuiltinEmitter { name = "list-at", emit = \args arities -> emit-php-expr (list-at args 0) arities & "[" & emit-php-expr (list-at args 1) arities & "]" },
    PhpBuiltinEmitter { name = "list-length", emit = \args arities -> "count(" & emit-php-expr (list-at args 0) arities & ")" },
    PhpBuiltinEmitter { name = "list-snoc", emit = \args arities -> "array_merge(" & emit-php-expr (list-at args 0) arities & ", [" & emit-php-expr (list-at args 1) arities & "])" },
+   PhpBuiltinEmitter { name = "list-push", emit = \args arities -> "array_merge(" & emit-php-expr (list-at args 0) arities & ", [" & emit-php-expr (list-at args 1) arities & "])" },
    PhpBuiltinEmitter { name = "max", emit = \args arities -> "max(" & emit-php-expr (list-at args 0) arities & ", " & emit-php-expr (list-at args 1) arities & ")" },
    PhpBuiltinEmitter { name = "min", emit = \args arities -> "min(" & emit-php-expr (list-at args 0) arities & ", " & emit-php-expr (list-at args 1) arities & ")" },
    PhpBuiltinEmitter { name = "negate", emit = \args arities -> "(-(" & emit-php-expr (list-at args 0) arities & "))" },

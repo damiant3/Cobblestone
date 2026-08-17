@@ -114,7 +114,7 @@ Section: Matching
       is PatMany (p) -> pat-match-many p input pos 0 ""
       is PatMany1 (p) -> pat-match-many1 p input pos
       is PatOptional (p) -> pat-match-optional p input pos
-      is PatRepeat (p) (n) -> pat-match-repeat p n input pos 0 ""
+      is PatRepeat (p) (n) -> pat-match-repeat p n input pos 0 0 ""
 
   pat-no-match : MatchResult
   pat-no-match = MatchResult { mr-matched = False, mr-consumed = 0, mr-value = "" }
@@ -180,8 +180,9 @@ Section: Compound Matchers
   pat-match-many : Pat, Text, Integer, Integer, Text -> MatchResult
   pat-match-many (p) (input) (pos) (total) (acc) =
     let r = pat-match p input pos
-    in if r.mr-matched then pat-match-many p input (pos + r.mr-consumed) (total + r.mr-consumed) (acc & r.mr-value)
-    else MatchResult { mr-matched = True, mr-consumed = total, mr-value = acc }
+    in if r.mr-matched == False then MatchResult { mr-matched = True, mr-consumed = total, mr-value = acc }
+    else if r.mr-consumed <= 0 then MatchResult { mr-matched = True, mr-consumed = total, mr-value = acc }
+    else pat-match-many p input (pos + r.mr-consumed) (total + r.mr-consumed) (acc & r.mr-value)
 
   pat-match-many1 : Pat, Text, Integer -> MatchResult
   pat-match-many1 (p) (input) (pos) =
@@ -194,11 +195,11 @@ Section: Compound Matchers
     in if r.mr-matched then r
     else MatchResult { mr-matched = True, mr-consumed = 0, mr-value = "" }
 
-  pat-match-repeat : Pat, Integer, Text, Integer, Integer, Text -> MatchResult
-  pat-match-repeat (p) (n) (input) (pos) (count) (acc) =
-    if count >= n then MatchResult { mr-matched = True, mr-consumed = pos, mr-value = acc }
+  pat-match-repeat : Pat, Integer, Text, Integer, Integer, Integer, Text -> MatchResult
+  pat-match-repeat (p) (n) (input) (pos) (count) (consumed) (acc) =
+    if count >= n then MatchResult { mr-matched = True, mr-consumed = consumed, mr-value = acc }
     else let r = pat-match p input pos
-    in if r.mr-matched then pat-match-repeat p n input (pos + r.mr-consumed) (count + 1) (acc & r.mr-value)
+    in if r.mr-matched then pat-match-repeat p n input (pos + r.mr-consumed) (count + 1) (consumed + r.mr-consumed) (acc & r.mr-value)
     else pat-no-match
 
 Section: Convenience

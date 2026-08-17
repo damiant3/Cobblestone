@@ -1,0 +1,130 @@
+Chapter: BrotliHostile
+  cites Compress chapter Brotli
+
+ Track D item 19, the Brotli half, and this chapter is the one where the
+ census verdict was "best defended by inspection". That turned out to be
+ right, so this arm adds no guards: it exists because "defended by
+ inspection" and "defended" are different claims, and the only hostile
+ vector the chapter had was the empty stream through brotli-valid.
+
+ Guarded-or-not aside, it qualifies under red's ruling of 2026-08-16: four
+ in-tree harnesses run it, plus build/brotli-interop-test.ps1 and
+ brotli-read-test.ps1.
+
+ WHAT THIS ARM DOES NOT DO, first, because a reader who assumes otherwise
+ will trust it for something it never tested. It does NOT exercise the
+ guards the census credits this chapter with. Measured by ablation
+ 2026-08-16: deleting the brotli-valid gate at :1834 moved NO row, and
+ widening the dist < 1 refusal at :2405 to an unreachable bound moved NO
+ row. Hostile HEADERS and truncated streams do not decode far enough to
+ reach a distance command. Reaching those guards needs a crafted bitstream
+ that gets through the meta-block header and the Huffman tables first, which
+ is a fuzz-corpus job and is not done.
+
+ Two things follow, and they are the findings rather than the arm.
+ brotli-valid:2502 is not load-bearing for anything constructible here: its
+ w <= 24 half is UNREACHABLE by inspection, since brotli-read-wbits:313 can
+ only answer 16, 17, 9..15 or 18..24, and its w < 10 half fires only for
+ wbits 9, where the decoder independently answers the empty list anyway.
+ And brotli-max-dist-w:325 clamps a distance to the bytes actually PRODUCED,
+ which is why reek's Deflate guard covering Brotli's :2408 call site never
+ fires here: the non-dictionary path cannot reach a negative source.
+
+ What the arm DOES establish is termination, which nothing else in the tree
+ asserts: brotli-test is a round trip through our own encoder, and the
+ interop harness carries one corrupted-stream control. Rows 6 and 7 run the
+ decoder end to end on bytes we did not write and require it to stop.
+
+ Rows 1 to 3 are the positive controls. Rows 4 and 5 report an exact length,
+ because both are derivable from the source; rows 6 and 7 report a bound,
+ because a mutated stream's exact output is not.
+
+Section: Helpers
+
+  list-equal : List Integer, List Integer, Integer, Integer -> Boolean
+  list-equal (a) (b) (i) (len) =
+    if i >= len then True
+    else if list-at a i == list-at b i then list-equal a b (i + 1) len
+    else False
+
+  check-rt : List Integer, Text -> Text
+  check-rt (input) (label) =
+    let c = brotli-compress input
+    in let d = brotli-decompress c
+    in let ok = if list-length d == list-length input then list-equal input d 0 (list-length input) else False
+    in label & "=" & if ok then "pass" else "fail"
+
+  make-repeated : Integer, Integer, Integer, List Integer -> List Integer
+  make-repeated (val) (n) (i) (acc) =
+    if i >= n then acc
+    else make-repeated val n (i + 1) (list-push acc val)
+
+  make-skew : Integer, Integer, List Integer -> List Integer
+  make-skew (n) (i) (acc) =
+    if i >= n then acc
+    else make-skew n (i + 1) (list-push acc (if i - (i / 8) * 8 == 0 then 66 else 65))
+
+  take-n : List Integer, Integer, Integer, List Integer -> List Integer
+  take-n (xs) (n) (i) (acc) =
+    if i >= n then acc
+    else if i >= list-length xs then acc
+    else take-n xs n (i + 1) (list-push acc (list-at xs i))
+
+  show-len : List Integer, Text -> Text
+  show-len (out) (label) = label & " len=" & show (list-length out)
+
+ A mutated stream's exact output is not derivable from the definition, so
+ these rows assert what the code actually promises: that the walk stops.
+ An arm that asserted a captured number would be an oracle copied from a run
+ of the code under test.
+
+  show-bounded : List Integer, Text -> Text
+  show-bounded (out) (label) =
+    label & " terminated bounded=" & (if list-length out < 1000000 then "True" else "False")
+
+ Row 5's header, derived from brotli-read-wbits:313 rather than guessed. Bit
+ 0 set sends it past the wbits=16 shorthand; bits 1..3 zero make n zero; bits
+ 4..6 equal to one make m one, so wbits is 8 + 1 = 9. brotli-valid:2507
+ refuses anything below 10, so the whole stream is refused before a single
+ symbol is decoded. That is byte 1 + 16 = 17.
+
+  wbits-nine : List Integer = [17]
+
+ Row 6 keeps a LEGAL window (bit 0 clear is the wbits=16 shorthand) and then
+ hands the decoder nothing but set bits, so brotli-valid passes and the
+ refusal, if any, has to come from the decode itself.
+
+  valid-header-garbage : List Integer = [0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255]
+
+  truncated : List Integer
+  truncated =
+    let full = brotli-compress (make-skew 600 0 [])
+    in take-n full (list-length full / 2) 0 []
+
+Section: Body
+
+ Each row runs between a heap mark and a restore, following brotli-test: a
+ decode of garbage is exactly the thing that allocates, and the rows must not
+ pay for each other.
+
+  row : Text -> [Console] Integer
+  row (t) = act
+    let mark = __heap-save
+    in act
+      print-line-uni t
+      let d = __heap-restore mark
+      in 0
+    end
+  end
+
+  opening : [Console] Nothing = act
+    a <- row (check-rt [] "1-empty")
+    b <- row (check-rt (make-repeated 65 200 0 []) "2-uniform-200")
+    c <- row (check-rt (make-skew 600 0 []) "3-skew-600")
+    d <- row (show-len (brotli-decompress []) "4-empty-input")
+    e <- row (show-len (brotli-decompress wbits-nine) "5-wbits-nine")
+    f <- row (show-bounded (brotli-decompress valid-header-garbage) "6-valid-header-garbage")
+    print-line-uni (show-bounded (brotli-decompress truncated) "7-truncated")
+  end
+
+Page 1

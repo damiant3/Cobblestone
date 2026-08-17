@@ -28,6 +28,22 @@ Section: Keywords and Sanitization
    in if is-rb-keyword s then s & "_"
       else s
 
+ The IR spells a record field as `name/slot`, so a field name reaches the
+ emitter as `a/0` and reads as a division in every target that has one.
+ riscv resolves the slot and needs it; every source plug wants the name.
+
+  rb-slash-pos : Text, Integer, Integer -> Integer
+  rb-slash-pos (f) (i) (len) =
+   if i >= len then (-1)
+   else if char-to-text (char-at f i) == "/" then i
+   else rb-slash-pos f (i + 1) len
+
+  rb-field : Text -> Text
+  rb-field (f) =
+   let slash = rb-slash-pos f 0 (text-length f)
+   in if slash >= 0 then rb-sanitize (substring f 0 slash)
+      else rb-sanitize f
+
   rb-escape-text : Text -> Text
   rb-escape-text (s) =
    let s1 = text-replace s "\\" "\\\\"
@@ -109,6 +125,7 @@ Section: Builtin Dispatch
    RbBuiltinEmitter { name = "list-at", emit = \args arities -> emit-rb-expr (list-at args 0) arities & "[" & emit-rb-expr (list-at args 1) arities & "]" },
    RbBuiltinEmitter { name = "list-length", emit = \args arities -> emit-rb-expr (list-at args 0) arities & ".length" },
    RbBuiltinEmitter { name = "list-snoc", emit = \args arities -> "(" & emit-rb-expr (list-at args 0) arities & " + [" & emit-rb-expr (list-at args 1) arities & "])" },
+   RbBuiltinEmitter { name = "list-push", emit = \args arities -> "(" & emit-rb-expr (list-at args 0) arities & " + [" & emit-rb-expr (list-at args 1) arities & "])" },
    RbBuiltinEmitter { name = "max", emit = \args arities -> "[" & emit-rb-expr (list-at args 0) arities & ", " & emit-rb-expr (list-at args 1) arities & "].max" },
    RbBuiltinEmitter { name = "min", emit = \args arities -> "[" & emit-rb-expr (list-at args 0) arities & ", " & emit-rb-expr (list-at args 1) arities & "].min" },
    RbBuiltinEmitter { name = "negate", emit = \args arities -> "(-(" & emit-rb-expr (list-at args 0) arities & "))" },
@@ -229,8 +246,8 @@ Section: Expression Emission
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-rb-expr-at body arities (depth + 1)
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-rb-expr-at body arities (depth + 1)
     is IrRecord (name) (fields) (ty) (sp) -> emit-rb-record name fields arities
-    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-rb-expr-at rec arities (depth + 1) & "." & rb-sanitize field
-    is IrFieldStore (rec) (field) (val) (ty) (sp) -> emit-rb-expr-at rec arities (depth + 1) & ".tap { |_r| _r." & rb-sanitize field & " = " & emit-rb-expr-at val arities (depth + 1) & " }"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-rb-expr-at rec arities (depth + 1) & "." & rb-field field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> emit-rb-expr-at rec arities (depth + 1) & ".tap { |_r| _r." & rb-field field & " = " & emit-rb-expr-at val arities (depth + 1) & " }"
     is IrFork (body) (ty) (sp) -> "Thread.new { " & emit-rb-expr-at body arities (depth + 1) & " }"
     is IrAwait (task) (ty) (sp) -> emit-rb-expr-at task arities (depth + 1) & ".value"
     is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> "begin; " & emit-rb-act body arities & "; rescue; " & emit-rb-act fb arities & "; end"

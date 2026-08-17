@@ -22,7 +22,7 @@ Section: S02 -- The sidecar extensions
 
   cs-ext-list : List ShellExpr = [SeLit ".skip", SeLit ".slow", SeLit ".fatal", SeLit ".expected", SeLit ".stdin", SeLit ".keys", SeLit ".disk", SeLit ".disk2", SeLit ".disk-src", SeLit ".failing", SeLit ".diag", SeLit ".smp", SeLit ".vmargs", SeLit ".no-cross", SeLit ".cross-refusal", SeLit ".cross-budget"]
 
-  s02 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "exts" (SeArrayLiteral cs-ext-list), ScAssign "orphans" (SeArrayLiteral []), ScAssign "checked" (SeInt 0)]
+  s02 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "exts" (SeArrayLiteral cs-ext-list), ScAssign "orphans" (SeArrayLiteral []), ScAssign "checked" (SeInt 0), ScAssign "noeol" (SeArrayLiteral []), ScAssign "expChecked" (SeInt 0)]
 
 Section: S03 -- Every sidecar wants a .codex beside it
 
@@ -58,19 +58,35 @@ Section: S04 -- A .disk-src names a SECOND test
 
   s04 : List ShellCmd = [ScSequence cs-peer-note, ScForEach "f" (SeListFiles (SeVar "TestRoot") "*.disk-src" True) cs-peer-body]
 
+Section: S04b -- An .expected must end in exactly one newline
+
+  cs-eol-note : List ShellCmd = [ScComment "An .expected with no trailing newline can never pass. test-run.ps1 writes", ScComment "($lines -join \"`n\") + \"`n\", so the actual always ends in one LF, and", ScComment "test.ps1 strips CR from the expected side only. LF is not one of the", ScComment "characters the culture-sensitive -eq ignores (SOH and NUL are, which is a", ScComment "separate and live hazard), so the mismatch is real and the test is simply", ScComment "unpassable. Three shipped that way in CL 15313 and sat red until a release", ScComment "battery found them: the failure is loud, but something has to be listening.", ScComment "Account in docs/ExaminersAssay.md, under the .expected recording rule."]
+
+  cs-exp-last : ShellExpr = SeSubstringFrom (SeVar "txt") (SeSub (SeTextLength (SeVar "txt")) (SeInt 1))
+
+  cs-eol-bad : ShellExpr = SeAnd (SeIntGt (SeTextLength (SeVar "txt")) (SeInt 0)) (SeStringNeq cs-exp-last SeNewline)
+
+  cs-eol-body : List ShellCmd = [ScIncrement "expChecked", ScAssign "txt" (SeFileText (SeProperty (SeVar "f") "FullName")), ScIf cs-eol-bad [ScAppend "noeol" cs-relative] []]
+
+  s04b : List ShellCmd = [ScSequence cs-eol-note, ScForEach "f" (SeListFiles (SeVar "TestRoot") "*.expected" True) cs-eol-body]
+
 Section: S05 -- The verdict
 
   cs-fail-head : ShellExpr = SeConcat (SeConcat (SeLit "FAIL: ") (SeCount (SeVar "orphans"))) (SeLit " orphaned sidecar(s) -- no .codex beside them:")
 
   cs-fail-body : List ShellCmd = [ScEcho cs-fail-head, ScForEach "o" (SeVar "orphans") [ScEcho (SeConcat (SeLit "  ") (SeVar "o"))], ScEcho (SeLit "A sidecar next to no test configures nothing and asserts something."), ScEcho (SeLit "Move it beside its .codex, or delete it -- but if it records a real"), ScEcho (SeLit "defect, write the defect down beside the code it describes first."), ScExit (SeInt 1)]
 
-  cs-ok-line : ShellExpr = SeConcat (SeConcat (SeLit "sidecars ok (") (SeVar "checked")) (SeLit " checked, 0 orphaned)")
+  cs-noeol-head : ShellExpr = SeConcat (SeConcat (SeLit "FAIL: ") (SeCount (SeVar "noeol"))) (SeLit " .expected file(s) with no trailing newline -- they cannot pass:")
 
-  s05 : List ShellCmd = [ScIf (SeIntGt (SeCount (SeVar "orphans")) (SeInt 0)) cs-fail-body [], ScEcho cs-ok-line, ScExit (SeInt 0)]
+  cs-noeol-body : List ShellCmd = [ScEcho cs-noeol-head, ScForEach "o" (SeVar "noeol") [ScEcho (SeConcat (SeLit "  ") (SeVar "o"))], ScEcho (SeLit "test-run.ps1 always terminates the actual with one LF, so a sidecar"), ScEcho (SeLit "without one can never match. Re-record it through build/test-run.ps1"), ScEcho (SeLit "rather than appending a byte by hand -- the same rule catches the CR,"), ScEcho (SeLit "the HEAP: lines and the leading SOH."), ScExit (SeInt 1)]
+
+  cs-ok-line : ShellExpr = SeConcat (SeConcat (SeConcat (SeConcat (SeLit "sidecars ok (") (SeVar "checked")) (SeLit " checked, 0 orphaned; ")) (SeVar "expChecked")) (SeLit " .expected, 0 without a trailing newline)")
+
+  s05 : List ShellCmd = [ScIf (SeIntGt (SeCount (SeVar "orphans")) (SeInt 0)) cs-fail-body [], ScIf (SeIntGt (SeCount (SeVar "noeol")) (SeInt 0)) cs-noeol-body [], ScEcho cs-ok-line, ScExit (SeInt 0)]
 
 Section: Assembly
 
-  cs-body : List ShellCmd = [ScSequence cs-doctrine, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05]
+  cs-body : List ShellCmd = [ScSequence cs-doctrine, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s04b, ScBlank, ScSequence s05]
 
   cs-script : ShellScript = sh-script "check-sidecars" "A sidecar names a test. This asserts the test exists." cs-params cs-body
 

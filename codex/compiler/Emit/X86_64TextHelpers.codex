@@ -158,24 +158,27 @@ Section: __itoa
    in emit-itoa-copy-and-epilogue st3
 
 Section: __str_concat
-  emit-str-concat-prologue : CodegenState -> StrConcatCheckResult
-  emit-str-concat-prologue (st) =
-    let st0 = record-func-offset st "__str_concat"
+  emit-str-concat-prologue : CodegenState, Text -> CodegenState
+  emit-str-concat-prologue (st) (name) =
+    let st0 = record-func-offset st name
    in let st1 = st-append-code st0 (push-r reg-rbx)
    in let st2 = st-append-code st1 (push-r reg-r12)
    in let st3 = st-append-code st2 (push-r reg-r13)
    in let st4 = st-append-code st3 (mov-rr reg-rbx reg-rdi)
    in let st5 = st-append-code st4 (mov-rr reg-r12 reg-rsi)
    in let st6 = st-append-code st5 (mov-load reg-rcx reg-rbx 0)
-   in let st7 = st-append-code st6 (mov-load reg-rdx reg-r12 0)
-   in let st8 = st-append-code st7 (mov-rr reg-r11 reg-rcx)
+   in st-append-code st6 (mov-load reg-rdx reg-r12 0)
+
+  emit-str-concat-topmost-check : CodegenState -> StrConcatCheckResult
+  emit-str-concat-topmost-check (st) =
+    let st8 = st-append-code st (mov-rr reg-r11 reg-rcx)
    in let st9 = st-append-code st8 (add-ri reg-r11 15)
    in let st10 = st-append-code st9 (and-ri reg-r11 (-8))
    in let st11 = st-append-code st10 (mov-rr reg-r13 reg-rbx)
    in let st12 = st-append-code st11 (add-rr reg-r13 reg-r11)
    in let st13 = st-append-code st12 (cmp-rr reg-r13 reg-r10)
    in let slow-path-pos = st13.code-len
-   in let st14 = st-append-code st13 (jmp 0)
+   in let st14 = st-append-code st13 (jcc cc-ne 0)
    in StrConcatCheckResult {
     cg = st14,
     slow-path-pos = slow-path-pos
@@ -217,10 +220,9 @@ Section: __str_concat
     fast-done-pos = fast-done-pos
    }
 
-  emit-str-concat-slow-alloc : CodegenState, Integer -> CodegenState
-  emit-str-concat-slow-alloc (st) (slow-path-pos) =
-    let st0 = patch-jmp-at st slow-path-pos (st.code-len)
-   in let st1 = st-append-code st0 (mov-rr reg-r13 reg-rcx)
+  emit-str-concat-slow-alloc : CodegenState -> CodegenState
+  emit-str-concat-slow-alloc (st) =
+    let st1 = st-append-code st (mov-rr reg-r13 reg-rcx)
    in let st2 = st-append-code st1 (add-rr reg-r13 reg-rdx)
    in let st3 = st-append-code st2 (mov-rr reg-rax reg-r10)
    in let st4 = st-append-code st3 (mov-rr reg-r11 reg-r13)
@@ -247,8 +249,8 @@ Section: __str_concat
    in let st11 = st-append-code st10 (jmp (loop1 - (st10.code-len + 5)))
    in patch-jcc-at st11 exit1-pos (st11.code-len)
 
-  emit-str-concat-slow-copy2 : CodegenState, Integer -> CodegenState
-  emit-str-concat-slow-copy2 (st) (fast-done-pos) =
+  emit-str-concat-slow-copy2 : CodegenState -> CodegenState
+  emit-str-concat-slow-copy2 (st) =
     let st0 = st-append-code st (mov-load reg-rcx reg-rbx 0)
    in let st1 = st-append-code st0 (mov-load reg-rdx reg-r12 0)
    in let st2 = st-append-code st1 (li reg-r11 0)
@@ -265,21 +267,51 @@ Section: __str_concat
    in let st11 = st-append-code st10 (mov-store-byte reg-rdi reg-rsi 8)
    in let st12 = st-append-code st11 (add-ri reg-r11 1)
    in let st13 = st-append-code st12 (jmp (loop2 - (st12.code-len + 5)))
-   in let st14 = patch-jcc-at st13 exit2-pos (st13.code-len)
-   in patch-jmp-at st14 fast-done-pos (st14.code-len)
+   in patch-jcc-at st13 exit2-pos (st13.code-len)
 
-  emit-str-concat : CodegenState -> CodegenState
-  emit-str-concat (st) =
-    let prologue = emit-str-concat-prologue st
-   in let st0 = emit-str-concat-fast-copy (prologue.cg)
-   in let fast = emit-str-concat-fast-bump st0
-   in let st1 = emit-str-concat-slow-alloc (fast.cg) (prologue.slow-path-pos)
-   in let st2 = emit-str-concat-slow-copy1 st1
-   in let st3 = emit-str-concat-slow-copy2 st2 (fast.fast-done-pos)
-   in let st4 = st-append-code st3 (pop-r reg-r13)
+  emit-str-concat-epilogue : CodegenState -> CodegenState
+  emit-str-concat-epilogue (st) =
+    let st4 = st-append-code st (pop-r reg-r13)
    in let st5 = st-append-code st4 (pop-r reg-r12)
    in let st6 = st-append-code st5 (pop-r reg-rbx)
    in st-append-code st6 x86-ret
+
+  emit-str-concat : CodegenState -> CodegenState
+  emit-str-concat (st) =
+    let st0 = emit-str-concat-prologue st "__str_concat"
+   in let st1 = emit-str-concat-slow-alloc st0
+   in let st2 = emit-str-concat-slow-copy1 st1
+   in let st3 = emit-str-concat-slow-copy2 st2
+   in emit-str-concat-epilogue st3
+
+Section: __str_concat_inplace
+  emit-str-concat-inplace : CodegenState -> CodegenState
+  emit-str-concat-inplace (st) =
+    let st0 = emit-str-concat-prologue st "__str_concat_inplace"
+   in let check = emit-str-concat-topmost-check st0
+   in let st1 = emit-str-concat-fast-copy (check.cg)
+   in let fast = emit-str-concat-fast-bump st1
+   in let st2 = patch-jcc-at (fast.cg) (check.slow-path-pos) ((fast.cg).code-len)
+   in let st3 = emit-str-concat-slow-alloc st2
+   in let st4 = emit-str-concat-slow-copy1 st3
+   in let st5 = emit-str-concat-slow-copy2 st4
+   in let st6 = patch-jmp-at st5 (fast.fast-done-pos) (st5.code-len)
+   in emit-str-concat-epilogue st6
+
+Section: __str_own
+  emit-str-own : CodegenState -> CodegenState
+  emit-str-own (st) =
+    let st0 = record-func-offset st "__str_own"
+   in let st1 = st-append-code st0 (mov-load reg-rcx reg-rdi 0)
+   in let st2 = st-append-code st1 (add-ri reg-rcx 15)
+   in let st3 = st-append-code st2 (and-ri reg-rcx (-8))
+   in let st4 = st-append-code st3 (add-rr reg-rcx reg-rdi)
+   in let st5 = st-append-code st4 (cmp-rr reg-rcx reg-r10)
+   in let skip-pos = st5.code-len
+   in let st6 = st-append-code st5 (jcc cc-ne 0)
+   in let st7 = st-append-code st6 (add-ri reg-r10 16)
+   in let st8 = patch-jcc-at st7 skip-pos (st7.code-len)
+   in st-append-code st8 x86-ret
 
 Section: __deck_str_concat
 
@@ -436,7 +468,10 @@ Section: __text_to_int
    in let st3 = st-append-code st2 (add-rr reg-rdx reg-r11)
    in let st4 = st-append-code st3 (movzx-byte reg-rdx reg-rdx 0)
    in let st5 = st-append-code st4 (sub-ri reg-rdx 3)
-   in let st6 = st-append-code st5 (push-r reg-rdx)
+   in let st5a = st-append-code st5 (cmp-ri reg-rdx 9)
+   in let not-digit-pos = st5a.code-len
+   in let st5b = st-append-code st5a (jcc cc-a 0)
+   in let st6 = st-append-code st5b (push-r reg-rdx)
    in let st7 = st-append-code st6 (mov-rr reg-rdx reg-rax)
    in let st8 = st-append-code st7 (shl-ri reg-rax 3)
    in let st9 = st-append-code st8 (add-rr reg-rax reg-rdx)
@@ -445,7 +480,8 @@ Section: __text_to_int
    in let st12 = st-append-code st11 (add-rr reg-rax reg-rdx)
    in let st13 = st-append-code st12 (add-ri reg-r11 1)
    in let st14 = st-append-code st13 (jmp (parse-loop - (st13.code-len + 5)))
-   in patch-jcc-at st14 parse-done-pos (st14.code-len)
+   in let st15 = patch-jcc-at st14 parse-done-pos (st14.code-len)
+   in patch-jcc-at st15 not-digit-pos (st15.code-len)
 
   emit-text-to-int : CodegenState -> CodegenState
   emit-text-to-int (st) =
@@ -1223,7 +1259,7 @@ Section: __text_split
    in let st5 = st-append-code st4 (push-r reg-r15)
    in let st6 = st-append-code st5 (mov-rr reg-rbx reg-rdi)
    in let st7 = st-append-code st6 (mov-load reg-r12 reg-rbx 0)
-   in let st8 = st-append-code st7 (movzx-byte reg-r13 reg-rsi 8)
+   in let st8 = st-append-code st7 (mov-rr reg-r13 reg-rsi)
    in let st8a = st-append-code st8 (mov-rr reg-rax reg-r12)
    in let st8b = st-append-code st8a (add-ri reg-rax 1)
    in let st8c = st-append-code st8b (mov-store reg-r10 reg-rax 0)
@@ -1237,22 +1273,52 @@ Section: __text_split
    in let st15 = st-append-code st14 (li reg-r11 0)
    in st-append-code st15 (mov-rr reg-rcx reg-r11)
 
-  emit-text-split-scan-head : CodegenState -> HelpResult2
+  TextSplitHead = record {
+   cg : CodegenState,
+   done-pos : Integer between 0 and 4294967295,
+   nd1 : Integer between 0 and 4294967295,
+   nd2 : Integer between 0 and 4294967295,
+   nd3 : Integer between 0 and 4294967295
+  }
+
+  emit-text-split-scan-head : CodegenState -> TextSplitHead
   emit-text-split-scan-head (st) =
-    let scan-loop = st.code-len
-   in let st0 = st-append-code st (cmp-rr reg-r11 reg-r12)
+    let st0 = st-append-code st (cmp-rr reg-r11 reg-r12)
    in let scan-done-pos = st0.code-len
    in let st1 = st-append-code st0 (jcc cc-ge 0)
-   in let st2 = st-append-code st1 (mov-rr reg-rax reg-rbx)
-   in let st3 = st-append-code st2 (add-rr reg-rax reg-r11)
-   in let st4 = st-append-code st3 (movzx-byte reg-rax reg-rax 8)
-   in let st5 = st-append-code st4 (cmp-rr reg-rax reg-r13)
-   in let not-delim-pos = st5.code-len
-   in let st6 = st-append-code st5 (jcc cc-ne 0)
-   in HelpResult2 {
-    cg = st6,
-    p1 = scan-done-pos,
-    p2 = not-delim-pos
+   in let st2 = st-append-code st1 (mov-load reg-rdx reg-r13 0)
+   in let st3 = st-append-code st2 (test-rr reg-rdx reg-rdx)
+   in let zero-pos = st3.code-len
+   in let st4 = st-append-code st3 (jcc cc-e 0)
+   in let st5 = st-append-code st4 (mov-rr reg-rax reg-r11)
+   in let st6 = st-append-code st5 (add-rr reg-rax reg-rdx)
+   in let st7 = st-append-code st6 (cmp-rr reg-rax reg-r12)
+   in let over-pos = st7.code-len
+   in let st8 = st-append-code st7 (jcc cc-g 0)
+   in let st9 = st-append-code st8 (li reg-rsi 0)
+   in let cmp-loop = st9.code-len
+   in let st10 = st-append-code st9 (cmp-rr reg-rsi reg-rdx)
+   in let matched-pos = st10.code-len
+   in let st11 = st-append-code st10 (jcc cc-ge 0)
+   in let st12 = st-append-code st11 (mov-rr reg-rax reg-rbx)
+   in let st13 = st-append-code st12 (add-rr reg-rax reg-r11)
+   in let st14 = st-append-code st13 (add-rr reg-rax reg-rsi)
+   in let st15 = st-append-code st14 (movzx-byte reg-rax reg-rax 8)
+   in let st16 = st-append-code st15 (mov-rr reg-rdi reg-r13)
+   in let st17 = st-append-code st16 (add-rr reg-rdi reg-rsi)
+   in let st18 = st-append-code st17 (movzx-byte reg-rdi reg-rdi 8)
+   in let st19 = st-append-code st18 (cmp-rr reg-rax reg-rdi)
+   in let mism-pos = st19.code-len
+   in let st20 = st-append-code st19 (jcc cc-ne 0)
+   in let st21 = st-append-code st20 (add-ri reg-rsi 1)
+   in let st22 = st-append-code st21 (jmp (cmp-loop - (st21.code-len + 5)))
+   in let st23 = patch-jcc-at st22 matched-pos (st22.code-len)
+   in TextSplitHead {
+    cg = st23,
+    done-pos = scan-done-pos,
+    nd1 = zero-pos,
+    nd2 = over-pos,
+    nd3 = mism-pos
    }
 
   emit-text-split-emit-seg : CodegenState, Integer -> CodegenState
@@ -1291,13 +1357,14 @@ Section: __text_split
    in let st15 = st-append-code st14 (add-rr reg-rax reg-r14)
    in let st16 = st-append-code st15 (mov-store reg-rax reg-rdi 8)
    in let st17 = st-append-code st16 (add-ri reg-r15 1)
-   in let st18 = st-append-code st17 (add-ri reg-r11 1)
+   in let st17a = st-append-code st17 (mov-load reg-rdx reg-r13 0)
+   in let st18 = st-append-code st17a (add-rr reg-r11 reg-rdx)
    in st-append-code st18 (mov-rr reg-rcx reg-r11)
 
-  emit-text-split-not-delim : CodegenState, Integer, Integer -> CodegenState
-  emit-text-split-not-delim (st) (not-delim-pos) (scan-loop) =
+  emit-text-split-not-delim : CodegenState, TextSplitHead, Integer -> CodegenState
+  emit-text-split-not-delim (st) (head) (scan-loop) =
     let st0 = st-append-code st (jmp (scan-loop - (st.code-len + 5)))
-   in let st1 = patch-jcc-at st0 not-delim-pos (st0.code-len)
+   in let st1 = patch-jcc-at (patch-jcc-at (patch-jcc-at st0 (head.nd1) (st0.code-len)) (head.nd2) (st0.code-len)) (head.nd3) (st0.code-len)
    in let st2 = st-append-code st1 (add-ri reg-r11 1)
    in st-append-code st2 (jmp (scan-loop - (st2.code-len + 5)))
 
@@ -1355,8 +1422,8 @@ Section: __text_split
    in let head = emit-text-split-scan-head st0
    in let st1 = emit-text-split-emit-seg (head.cg) scan-loop
    in let st2 = emit-text-split-seg-copy st1 scan-loop
-   in let st3 = emit-text-split-not-delim st2 (head.p2) scan-loop
-   in let st4 = emit-text-split-final-seg st3 (head.p1)
+   in let st3 = emit-text-split-not-delim st2 head scan-loop
+   in let st4 = emit-text-split-final-seg st3 (head.done-pos)
    in let st5 = emit-text-split-final-copy st4
    in emit-text-split-epilogue st5
 

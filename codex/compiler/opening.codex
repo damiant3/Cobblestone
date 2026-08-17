@@ -24,11 +24,12 @@ Section: Compile Flags
    deck-scale : Integer,
    phase-trace : Boolean,
    wire-trace : Boolean,
+   cost-report : Boolean,
    pipeline : List Text
   }
 
   compile-flags-default : CompileFlags
-  compile-flags-default = CompileFlags { prose = False, escape-check = False, poison-compact = False, deck-scale = 100, phase-trace = False, wire-trace = False, pipeline = default-ir-pipeline }
+  compile-flags-default = CompileFlags { prose = False, escape-check = False, poison-compact = False, deck-scale = 100, phase-trace = False, wire-trace = False, cost-report = False, pipeline = default-ir-pipeline }
 
  A floor is a guard band plus a workspace, and only the workspace scales. The
  band is what the phase's write-path check reserves to stop short in, so a
@@ -623,7 +624,8 @@ Section: Frontend
    in let check-ov = check-deck-overflow (check-end - check-origin) check-deck-height
    in let check-ov-bag = if check-ov == 1 | check-sat == 1 then deck-overflow-bag "CHECK" else no-overflow-bag
    in let check-esc-bag = escape-check-bag (flags.escape-check) check-metrics "CHECK"
-   in let check-bag = deck-record (bag-merge-all [check-bag0, check-ov-bag, check-esc-bag])
+   in let cost-bag = deck-record (cost-growth-bag (flags.cost-report) (sr.scoped.defs) (check-result.state))
+   in let check-bag = deck-record (bag-merge-all [check-bag0, check-ov-bag, check-esc-bag, cost-bag])
    in let check-heap-marks = deck-record (list-push (sr.heap-marks) h8)
    in let check-phase-metrics = deck-record (list-push (sr.phase-metrics) check-metrics)
    in if bag-has-errors check-bag
@@ -1292,6 +1294,27 @@ Section: Binary Compilation
   cdx-emit-roots : List Text
   cdx-emit-roots = ["opening", "fat16-servicer-read", "fat16-servicer-write"]
 
+ The IR handed to a native plug needs the same treatment for the same
+ reason, one lane over. A plug's block builtin is emitted machine code
+ that calls the Codex virtio driver (`Arm64Runtime.codex`, block device
+ helpers), and the compiler cannot see that caller, so pruning from
+ `opening` alone deletes the driver and the plug's branch resolves to
+ nothing. These roots are the driver's entry points, and they are exactly
+ as much a root as `fat16-servicer-read` is: reached from an emitter, not
+ from Codex.
+
+ Ruled 2026-08-16 (red): reachability is derived from the program's own
+ declaration and a disk program never cites a driver chapter to make its
+ disk exist. That would be a guarantee held by whoever remembers the
+ incantation (L-FREEDOM), which fails silently for the next reader.
+
+ **A new driver entry point must be added here.** Nothing checks that, and
+ the symptom is an unresolved-call warning naming the missing function
+ rather than anything at this line.
+
+  ir-emit-roots : List Text
+  ir-emit-roots = ["opening", "vb-capacity-auto", "vb-read-auto", "vb-write-auto"]
+
   compile-to-cdx-with-exit-mode : CompileFrontend, X86_64ExitMode, Boolean, X86_64WatchdogMode -> EmitChapterResult
   compile-to-cdx-with-exit-mode (fe) (exit-mode) (poison) (wd-mode) =
    if bag-has-errors (fe.bag) then EmitChapterResult { header-bytes = [], content-buf = 0, content-len = 0, tail-bytes = [], bag = fe.bag, symbol-map = [] }
@@ -1654,7 +1677,7 @@ Section: Entry Point
     if bag-has-errors (fe.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no IR emitted"
     else act
      print-line-uni "IR-BEGIN"
-     print-line-uni (emit-ir-chapter (ir-prune-unreachable (fe.ir) "opening") (fe.text-meta) (fe.type-defs))
+     print-line-uni (emit-ir-chapter (ir-prune-unreachable-roots (fe.ir) ir-emit-roots) (fe.text-meta) (fe.type-defs))
      print-line-uni "IR-END"
     end
     let h-post-emit = __heap-save
@@ -1679,7 +1702,7 @@ Section: Entry Point
     else let raw-defs = fe.ir.defs
      in act
       if flags.wire-trace then ir-trace-dce-cost raw-defs 0 (list-length raw-defs) else print-text ""
-      let ir = ir-prune-unreachable (fe.ir) "opening"
+      let ir = ir-prune-unreachable-roots (fe.ir) ir-emit-roots
       in let defs-len = list-length (ir.defs)
       in act
        if flags.wire-trace then ir-trace-def-sizes (ir.defs) 0 defs-len else print-text ""
@@ -1766,7 +1789,7 @@ Section: Entry Point
 
   parse-mode-flags : Text, Integer -> CompileFlags
   parse-mode-flags (mode) (unit-len) =
-   CompileFlags { prose = has-mode-flag mode "prose", escape-check = has-mode-flag mode "escape-check", poison-compact = has-mode-flag mode "poison-compact", deck-scale = effective-deck-scale mode unit-len, phase-trace = has-mode-flag mode "debug", wire-trace = has-mode-flag mode "wsz", pipeline = pipeline-of mode }
+   CompileFlags { prose = has-mode-flag mode "prose", escape-check = has-mode-flag mode "escape-check", poison-compact = has-mode-flag mode "poison-compact", deck-scale = effective-deck-scale mode unit-len, phase-trace = has-mode-flag mode "debug", wire-trace = has-mode-flag mode "wsz", cost-report = has-mode-flag mode "cost-report", pipeline = pipeline-of mode }
 
  The volume is resolved from the disk's own GPT rather than assumed to
  start at LBA 2048. That constant is only right for an image our own

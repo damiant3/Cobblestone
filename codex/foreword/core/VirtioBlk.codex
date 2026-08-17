@@ -1,0 +1,368 @@
+Chapter: VirtioBlk
+
+ The virtio-mmio transport, register layout and queue formats below are
+ the device's, not ours: they are fixed by the VIRTIO specification and a
+ reader cannot derive them from this code. Offsets, magic numbers, status
+ bits and descriptor field order are quoted from the spec and are the only
+ thing prose is carrying here.
+
+ Slot geometry is a MACHINE property and is therefore a parameter, not a
+ constant: QEMU virt puts virtio-mmio at 0x0a000000 with a 0x200 stride on
+ arm64, and at 0x10001000 with a 0x1000 stride on riscv64. Probe the
+ slots; do not assume one.
+
+Section: Register offsets
+
+  vb-off-magic : Integer = #000
+  vb-off-version : Integer = #004
+  vb-off-device-id : Integer = #008
+  vb-off-device-features : Integer = #010
+  vb-off-device-features-sel : Integer = #014
+  vb-off-driver-features : Integer = #020
+  vb-off-driver-features-sel : Integer = #024
+  vb-off-queue-sel : Integer = #030
+  vb-off-queue-num-max : Integer = #034
+  vb-off-queue-num : Integer = #038
+  vb-off-queue-ready : Integer = #044
+  vb-off-queue-notify : Integer = #050
+  vb-off-interrupt-status : Integer = #060
+  vb-off-interrupt-ack : Integer = #064
+  vb-off-status : Integer = #070
+  vb-off-queue-desc-lo : Integer = #080
+  vb-off-queue-desc-hi : Integer = #084
+  vb-off-queue-driver-lo : Integer = #090
+  vb-off-queue-driver-hi : Integer = #094
+  vb-off-queue-device-lo : Integer = #0A0
+  vb-off-queue-device-hi : Integer = #0A4
+  vb-off-config : Integer = #100
+
+ MagicValue spells "virt" little-endian. DeviceID 2 is a block device;
+ DeviceID 0 means the slot is present but empty, which is how QEMU pads
+ the array, so an empty slot is not the end of the scan.
+
+  vb-magic : Integer = #74726976
+  vb-device-id-block : Integer = 2
+  vb-version-modern : Integer = 2
+
+ Status bits, written cumulatively in this order by the spec's handshake.
+
+  vb-status-acknowledge : Integer = 1
+  vb-status-driver : Integer = 2
+  vb-status-driver-ok : Integer = 4
+  vb-status-features-ok : Integer = 8
+
+ Request header: type (4 bytes), reserved (4), sector (8). Type 0 is a
+ read, 1 a write. The status byte the device writes back is 0 for OK.
+
+  vb-req-read : Integer = 0
+  vb-req-write : Integer = 1
+  vb-req-status-ok : Integer = 0
+
+ Descriptor flags: NEXT chains, WRITE marks a buffer the DEVICE writes.
+
+  vb-desc-next : Integer = 1
+  vb-desc-write : Integer = 2
+
+  vb-sector-size : Integer = 512
+
+Section: Ring layout
+
+ One queue, and the layout is ours to choose subject to the spec's
+ alignment: the descriptor table must be 16-byte aligned, the available
+ ring 2-byte, and the used ring 4-byte. Putting the used ring on a 4096
+ boundary satisfies every version including legacy, at the cost of one
+ page.
+
+ Offsets are from the caller's ring base, which must itself be page
+ aligned and must not overlap code or heap. Where that is belongs to the
+ caller and not to this chapter: the plug knows its own memory map and
+ passes the base in.
+
+ An earlier draft of this paragraph named 0x40204000 and said a ring base
+ belongs ABOVE the heap with the heap bumped past it. Both halves went
+ stale within the day -- the ARM64 heap is at 0x40202000, and the rings
+ ended up at 0x40010000, below the heap AND below the ELF, in the gap
+ under the load address. A memory map named in the wrong chapter is a fact
+ with no owner, so this one names none.
+
+  vb-queue-size : Integer = 8
+
+  vb-ring-desc : Integer = 0
+  vb-ring-avail : Integer = 256
+  vb-ring-used : Integer = 4096
+  vb-ring-header : Integer = 8192
+  vb-ring-status : Integer = 8208
+
+  vb-ring-bytes : Integer = 12288
+
+Section: Register access
+
+  vb-read : Integer, Integer -> Integer
+  vb-read (base) (off) = bit-and (peek-32 (base + off) 0) #FFFFFFFF
+
+  vb-write : Integer, Integer, Integer -> Integer
+  vb-write (base) (off) (v) = poke-32 (base + off) 0 v
+
+Section: Probing
+
+ A slot is this device when the magic matches, the version is the modern
+ one, and the device id says block. Version 1 is the legacy transport
+ with a different queue-setup path (QueuePFN rather than the split
+ descriptor/driver/device addresses); it is REFUSED here rather than
+ half-supported, because a legacy device configured through the modern
+ registers accepts every write and then never completes a request.
+
+  vb-slot-is-block : Integer -> Boolean
+  vb-slot-is-block (base) =
+   if vb-read base vb-off-magic /= vb-magic then False
+   else if vb-read base vb-off-version /= vb-version-modern then False
+   else vb-read base vb-off-device-id == vb-device-id-block
+
+  vb-find-loop : Integer, Integer, Integer, Integer -> Integer
+  vb-find-loop (base) (stride) (count) (i) =
+   if i >= count then 0
+   else if vb-slot-is-block (base + i * stride) then base + i * stride
+   else vb-find-loop base stride count (i + 1)
+
+ Answers the base address of the first block device, or 0 when the scan
+ finds none.
+
+  vb-find : Integer, Integer, Integer -> Integer
+  vb-find (base) (stride) (count) = vb-find-loop base stride count 0
+
+Section: Initialisation
+
+ The spec's handshake, in its required order: reset by writing 0, then
+ ACKNOWLEDGE, DRIVER, feature negotiation, FEATURES_OK, queue setup, and
+ DRIVER_OK last. Reading FEATURES_OK back is not decoration: the device
+ clears it to refuse the feature set, and a driver that does not re-read
+ it proceeds against a device that has already declined.
+
+ No feature bits are requested. The block device's mandatory behaviour is
+ all this driver uses, and every optional feature it might offer changes
+ the request layout.
+
+  vb-init-status : Integer -> Integer
+  vb-init-status (base) =
+   let r0 = vb-write base vb-off-status 0
+   in let r1 = vb-write base vb-off-status vb-status-acknowledge
+   in let r2 = vb-write base vb-off-status (vb-status-acknowledge + vb-status-driver)
+   in let f0 = vb-write base vb-off-device-features-sel 0
+   in let f1 = vb-write base vb-off-driver-features-sel 0
+   in let f2 = vb-write base vb-off-driver-features 0
+   in let r3 = vb-write base vb-off-status (vb-status-acknowledge + vb-status-driver + vb-status-features-ok)
+   in bit-and (vb-read base vb-off-status) vb-status-features-ok
+
+ The queue is set to exactly `vb-queue-size` or the device is refused,
+ rather than accepting a smaller `QueueNumMax`. The ring slot is masked
+ with `vb-queue-size - 1`, which is only a correct modulo when the ring is
+ that size; taking a shorter queue would index past the available ring on
+ the ninth request and corrupt whatever follows it. A device offering
+ fewer than eight descriptors is refused loudly instead.
+
+  vb-setup-queue : Integer, Integer -> Integer
+  vb-setup-queue (base) (ring) =
+   let q0 = vb-write base vb-off-queue-sel 0
+   in let maxq = vb-read base vb-off-queue-num-max
+   in if maxq < vb-queue-size then 0
+   else let size = vb-queue-size
+   in let q1 = vb-write base vb-off-queue-num size
+   in let d0 = vb-write base vb-off-queue-desc-lo (bit-and (ring + vb-ring-desc) #FFFFFFFF)
+   in let d1 = vb-write base vb-off-queue-desc-hi (bit-shru (ring + vb-ring-desc) 32)
+   in let a0 = vb-write base vb-off-queue-driver-lo (bit-and (ring + vb-ring-avail) #FFFFFFFF)
+   in let a1 = vb-write base vb-off-queue-driver-hi (bit-shru (ring + vb-ring-avail) 32)
+   in let u0 = vb-write base vb-off-queue-device-lo (bit-and (ring + vb-ring-used) #FFFFFFFF)
+   in let u1 = vb-write base vb-off-queue-device-hi (bit-shru (ring + vb-ring-used) 32)
+   in let q2 = vb-write base vb-off-queue-ready 1
+   in size
+
+ Answers the negotiated queue size, or 0 if the device refused the
+ features or offers no queue 0.
+
+  vb-init : Integer, Integer -> Integer
+  vb-init (base) (ring) =
+   if vb-init-status base == 0 then 0
+   else let size = vb-setup-queue base ring
+   in if size == 0 then 0
+   else let ok = vb-write base vb-off-status (vb-status-acknowledge + vb-status-driver + vb-status-features-ok + vb-status-driver-ok)
+   in size
+
+Section: Capacity
+
+ Config offset 0 is the capacity in 512-byte sectors, 64 bits little
+ endian. The high word is read but only the low 32 bits are returned:
+ a disk beyond 2 TB is not addressable by the rest of this path anyway,
+ and silently truncating a real value is worse than refusing one.
+
+  vb-capacity : Integer -> Integer
+  vb-capacity (base) =
+   let hi = vb-read base (vb-off-config + 4)
+   in if hi /= 0 then 0 - 1
+   else vb-read base vb-off-config
+
+Section: One-call entry points
+
+ A plug's native builtin is a leaf routine with nowhere to hold state
+ between calls, so these take the machine's slot geometry as arguments and
+ do their own probing. That is also what keeps the geometry out of this
+ chapter: the caller knows which machine it is on, and this chapter never
+ has to.
+
+ Capacity needs no queue. It is the probe and two config reads, so it
+ exercises the MMIO path alone and answers before any ring exists, which
+ makes it the cheapest thing to point at a real device first.
+
+ Answers -1 when no block device is present, which `vb-capacity` also uses
+ for a capacity it cannot represent. Both mean "do not believe a size from
+ me", and neither can be confused with the 0 a device with no sectors
+ would report.
+
+  vb-capacity-auto : Integer, Integer, Integer -> Integer
+  vb-capacity-auto (mmio) (stride) (count) =
+   let dev = vb-find mmio stride count
+   in if dev == 0 then 0 - 1
+   else vb-capacity dev
+
+ A read has to probe and initialise as well, and it cannot do that on
+ every call: writing status 0 resets the device, so re-running the
+ handshake per read would reset a device that is already serving. The
+ answer is one cached word just past the rings, holding the device base
+ once the handshake has completed. Zero means not yet, which is also what
+ the memory reads as before anything writes it, so the cache needs no
+ separate initialisation.
+
+  vb-cache-offset : Integer = 12288
+
+  vb-ready : Integer, Integer, Integer, Integer -> Integer
+  vb-ready (mmio) (stride) (count) (ring) =
+   let cache = ring + vb-cache-offset
+   in let cached = bit-and (peek-32 cache 0) #FFFFFFFF
+   in if cached /= 0 then cached
+   else let dev = vb-find mmio stride count
+   in if dev == 0 then 0
+   else if vb-init dev ring == 0 then 0
+   else let w = poke-32 cache 0 dev
+   in dev
+
+ Answers 1 on success and 0 on any refusal. `dest` must have room for 512
+ bytes and is written by the DEVICE, so it must not be a Codex value the
+ collector may move; the plug hands it a freshly bumped heap address.
+
+  vb-read-auto : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  vb-read-auto (mmio) (stride) (count) (ring) (sector) (dest) =
+   let dev = vb-ready mmio stride count ring
+   in if dev == 0 then 0
+   else vb-read-sector dev ring sector dest
+
+  vb-write-auto : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  vb-write-auto (mmio) (stride) (count) (ring) (sector) (src) =
+   let dev = vb-ready mmio stride count ring
+   in if dev == 0 then 0
+   else vb-write-sector dev ring sector src
+
+Section: One read request
+
+ Three descriptors, which is the spec's shape for a block request: the
+ 16-byte header the driver writes, the data buffer the DEVICE writes, and
+ a one-byte status the device writes. Chaining is explicit through NEXT.
+
+  vb-put-desc : Integer, Integer, Integer, Integer, Integer -> Integer
+  vb-put-desc (d) (addr) (len) (flags) (next) =
+   let a0 = poke-32 d 0 (bit-and addr #FFFFFFFF)
+   in let a1 = poke-32 (d + 4) 0 (bit-shru addr 32)
+   in let l = poke-32 (d + 8) 0 len
+   in poke-32 (d + 12) 0 (bit-or (bit-and flags #FFFF) (bit-shl next 16))
+
+  vb-fill-header : Integer, Integer, Integer -> Integer
+  vb-fill-header (h) (kind) (sector) =
+   let t = poke-32 h 0 kind
+   in let r = poke-32 (h + 4) 0 0
+   in let s0 = poke-32 (h + 8) 0 (bit-and sector #FFFFFFFF)
+   in poke-32 (h + 12) 0 (bit-shru sector 32)
+
+ Both rings put a 2-byte flags field at offset 0 and a 2-byte index at
+ offset 2, so ONE aligned 32-bit read covers the pair and the index is its
+ high half. Reading a 32-bit word at ring+2 to get the index directly
+ would be an unaligned access, which is what the shift avoids.
+
+  vb-ring-idx : Integer -> Integer
+  vb-ring-idx (r) = bit-and (bit-shru (bit-and (peek-32 r 0) #FFFFFFFF) 16) #FFFF
+
+  vb-set-avail-idx : Integer, Integer -> Integer
+  vb-set-avail-idx (a) (idx) = poke-32 a 0 (bit-shl (bit-and idx #FFFF) 16)
+
+ An available-ring ENTRY is 16 bits, and the ring of them starts 4 bytes
+ into the structure, so every odd entry sits at an address that is 2 mod
+ 4. There is no `poke-16` builtin -- only `poke-byte`, `poke-32` and the
+ mmio forms -- and a `poke-32` there is an unaligned store.
+
+ On these lanes the MMU is off, so an unaligned store is not slow, it is
+ an ALIGNMENT FAULT. Measured 2026-08-16 on QEMU virt: entry 0 is at +4
+ and stores fine, entry 1 is at +6 and takes
+ `ESR=0000000096000061 FAR=0000000040010106` (data abort, DFSC 0x21) --
+ so the FIRST read of any program succeeded and the SECOND killed the
+ guest. Two byte stores, little end first, and the ring index no longer
+ decides whether the machine survives.
+
+  vb-put-avail-entry : Integer, Integer -> Integer
+  vb-put-avail-entry (e) (desc) =
+   let lo = poke-byte e 0 (bit-and desc #FF)
+   in poke-byte (e + 1) 0 (bit-and (bit-shru desc 8) #FF)
+
+ The used index is the completion signal. It is polled rather than waited
+ on because these lanes run with interrupts masked; the cap is the same
+ shape as every other polling loop in the tree, and a timeout answers 0
+ rather than spinning forever.
+
+ The wait is for the index to REACH a value, not to be non-zero. The ring
+ index is free-running across requests and wraps at 16 bits, so "has it
+ moved" is the only question that stays true on the second read and every
+ one after it.
+
+  vb-poll-fuel : Integer = 2000000
+
+  vb-await-used : Integer, Integer, Integer -> Integer
+  vb-await-used (ring) (want) (i) =
+   if i >= vb-poll-fuel then 0
+   else if vb-ring-idx (ring + vb-ring-used) == bit-and want #FFFF then 1
+   else vb-await-used ring want (i + 1)
+
+ A read and a write differ in exactly two fields: the header's type, and
+ whether the data descriptor is marked WRITE (which means the DEVICE
+ writes it). Everything else -- the three-descriptor chain, the available
+ ring entry, the index bump, the notify, the used-ring wait, the status
+ check -- is identical, so it is written once. The ring dance is where the
+ alignment fault lived, and a second copy of it is a second place for that
+ class of bug to hide.
+
+ Answers 1 on success and 0 on any refusal: a device that never completes,
+ or one that completes with a non-zero status byte. The data buffer must
+ have room for 512 bytes.
+
+  vb-request : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  vb-request (base) (ring) (kind) (sector) (buf) (data-flags) =
+   let h = ring + vb-ring-header
+   in let st = ring + vb-ring-status
+   in let d0 = ring + vb-ring-desc
+   in let hdr = vb-fill-header h kind sector
+   in let sclear = poke-byte st 0 #FF
+   in let e0 = vb-put-desc d0 h 16 vb-desc-next 1
+   in let e1 = vb-put-desc (d0 + 16) buf vb-sector-size (bit-or vb-desc-next data-flags) 2
+   in let e2 = vb-put-desc (d0 + 32) st 1 vb-desc-write 0
+   in let a = ring + vb-ring-avail
+   in let cur = vb-ring-idx a
+   in let want = bit-and (vb-ring-idx (ring + vb-ring-used) + 1) #FFFF
+   in let slot = vb-put-avail-entry (a + 4 + (bit-and cur (vb-queue-size - 1)) * 2) 0
+   in let bump = vb-set-avail-idx a (cur + 1)
+   in let n = vb-write base vb-off-queue-notify 0
+   in if vb-await-used ring want 0 == 0 then 0
+   else if bit-and (peek-byte st 0) #FF /= vb-req-status-ok then 0
+   else 1
+
+  vb-read-sector : Integer, Integer, Integer, Integer -> Integer
+  vb-read-sector (base) (ring) (sector) (dest) =
+   vb-request base ring vb-req-read sector dest vb-desc-write
+
+  vb-write-sector : Integer, Integer, Integer, Integer -> Integer
+  vb-write-sector (base) (ring) (sector) (src) =
+   vb-request base ring vb-req-write sector src 0

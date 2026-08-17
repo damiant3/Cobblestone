@@ -1025,7 +1025,34 @@ Section: Module Emission
          if rv-is-inline-2arg n2 then rv-has-any-call a fname | rv-has-any-call a2 fname else True
         is _ -> True
       is _ -> True
-    is otherwise -> False
+    is IrTextLit (v) (s) -> False
+    is IrIf (c) (th) (el) (t) (s) -> rv-has-any-call c fname | rv-has-any-call th fname | rv-has-any-call el fname
+    is IrLet (n) (t) (v) (b) (s) -> rv-has-any-call v fname | rv-has-any-call b fname
+    is IrLambda (ps) (b) (t) (s) -> False
+    is IrFieldAccess (r) (f) (t) (s) -> rv-has-any-call r fname
+    is IrFieldStore (r) (f) (v) (t) (s) -> rv-has-any-call r fname | rv-has-any-call v fname
+    is IrList (es) (t) (s) -> rv-list-has-any-call es fname 0
+    is IrRecord (n) (fs) (t) (s) -> rv-fields-have-any-call fs fname 0
+    is IrMatch (scrut) (branches) (t) (s) -> rv-has-any-call scrut fname | rv-branches-have-any-call branches fname 0
+    is otherwise -> True
+
+  rv-list-has-any-call : List IRExpr, Text, Integer -> Boolean
+  rv-list-has-any-call (es) (fname) (i) =
+   if i >= list-length es then False
+   else if rv-has-any-call (list-at es i) fname then True
+   else rv-list-has-any-call es fname (i + 1)
+
+  rv-fields-have-any-call : List IRFieldVal, Text, Integer -> Boolean
+  rv-fields-have-any-call (fs) (fname) (i) =
+   if i >= list-length fs then False
+   else if rv-has-any-call ((list-at fs i).value) fname then True
+   else rv-fields-have-any-call fs fname (i + 1)
+
+  rv-branches-have-any-call : List IRBranch, Text, Integer -> Boolean
+  rv-branches-have-any-call (branches) (fname) (i) =
+   if i >= list-length branches then False
+   else if rv-has-any-call ((list-at branches i).guard) fname | rv-has-any-call ((list-at branches i).body) fname then True
+   else rv-branches-have-any-call branches fname (i + 1)
 
   rv-body-needs-ra : IRExpr, Text -> Boolean
   rv-body-needs-ra (e) (fname) =
@@ -1051,7 +1078,7 @@ Section: Module Emission
       is _ -> True
     is IrMatch (scrut) (branches) (t) (s) ->
      rv-has-any-call scrut fname | rv-branches-need-ra branches fname 0
-    is otherwise -> False
+    is otherwise -> rv-has-any-call e fname
 
   rv-branches-need-ra : List IRBranch, Text, Integer -> Boolean
   rv-branches-need-ra (branches) (fname) (i) =
@@ -1339,14 +1366,33 @@ Section: Module Emission
    "suggested-vector-width",
    "mask-any", "mask-all", "mask-none", "mask-count"]
 
+ The twin of the ARM64 check, and the same repair. The subjects are the
+ names emitted AFTER the runtime and the set they are checked against is
+ what the runtime itself recorded; both are `func-names`, split at
+ `runtime-funcs`, which this chapter already stores. A helper added to
+ `RiscVRuntime` is covered the day it is added, and no hand list can drift
+ away from it. Scanning from 0 instead reported the runtime's own 109
+ registrations as user code.
+
+  rv-name-in-prefix : List Text, Integer, Integer, Text -> Integer
+  rv-name-in-prefix (names) (i) (limit) (want) =
+   if i >= limit then 0
+   else if list-at names i == want then 1
+   else rv-name-in-prefix names (i + 1) limit want
+
   rv-check-builtin-collisions : RvState, List Text, Integer -> RvState
   rv-check-builtin-collisions (st) (names) (i) =
+   let rt = st.runtime-funcs
+   in rv-check-collisions-loop st names (if i < rt then rt else i) rt
+
+  rv-check-collisions-loop : RvState, List Text, Integer, Integer -> RvState
+  rv-check-collisions-loop (st) (names) (i) (rt) =
    if i >= list-length names then st
    else let name = list-at names i
-   in if rv-name-in-list name rv-builtin-names 0
-    then let warn = "[WARN] user function '" & name & "' shadows RISC-V plug builtin"
-    in rv-check-builtin-collisions (__record-set st "wcet-reports" (list-push (st.wcet-reports) warn)) names (i + 1)
-    else rv-check-builtin-collisions st names (i + 1)
+   in if rv-name-in-prefix names 0 rt name == 1
+    then let warn = "[WARN] user function '" & name & "' shadows the RISC-V runtime helper of the same name; the helper is unreachable"
+    in rv-check-collisions-loop (__record-set st "wcet-reports" (list-push (st.wcet-reports) warn)) names (i + 1) rt
+    else rv-check-collisions-loop st names (i + 1) rt
 
   rv-opening-returns-int : CodexType -> Boolean
   rv-opening-returns-int (ty) =
@@ -1380,7 +1426,10 @@ Section: Module Emission
    in let st1a = __record-set st1 "effect-op-addrs" addrs
    in let htb = if list-length eff-ops > 0 then #80100000 else 0
    in let st1b = __record-set st1a "handler-table-base" htb
-   in let st2 = rv-emit-runtime st1b
+   in let st1c = __record-set st1b "boot-cap-mask" (pm-opening-cap-mask (chapter.defs))
+   in let st1d = __record-set st1c "boot-fs-scope" (pm-opening-fs-scope (chapter.defs))
+   in let st1e = __record-set st1d "boot-net-scope" (pm-opening-net-scope (chapter.defs))
+   in let st2 = rv-emit-runtime st1e
    in let st2b = __record-set st2 "runtime-funcs" (list-length (st2.func-names))
    in let st3 = rv-emit-all-defs st2b (chapter.defs) 0
    in let st3w = rv-check-builtin-collisions st3 (st3.func-names) 0

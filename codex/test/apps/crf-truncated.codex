@@ -1,0 +1,85 @@
+Chapter: CrfTruncatedTest
+  cites Replay chapter ReplayCrf
+  cites Replay chapter ReplayLog
+  cites Net chapter MessageFraming
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ A CRF is a replay log, so every length and the event count are whatever the
+ producer wrote and the buffer may stop anywhere. Two separate defects are under
+ test and they fail in different ways, which is why the fingerprints are read
+ apart rather than together.
+
+ THE CUT SWEEP is the truncation half. Every prefix of a whole CRF is decoded
+ and its success recorded as one letter. A bound that is right by accident at
+ one length shows up as a discontinuity; a depth that faults takes the run with
+ it and prints nothing. `decode-schedule-event` indexed `list-at bs (off + 8)`
+ raw, so a cut landing on a schedule event's reason byte faulted the guest
+ rather than answering.
+
+ THE COUNT ARM is the heap half. `crf-decode-events` was driven by the header's
+ le32 with no relation to the buffer, so the count below -- 4294967295 events
+ over a 27-byte log -- ran the loop four billion times pushing empty events.
+ Measured 2026-08-16 with the refusal removed from the loop: `OUT OF MEMORY`,
+ `SP=00000000bdfffbc8 HEAP=00000000b9e00010`, after 6 seconds. It kills the run
+ rather than printing a wrong answer, so this arm cannot sit ablated beside the
+ guarded one and the control was run as a source edit instead.
+
+Section: Helpers
+
+  yn : Boolean -> Text
+  yn (v) = if v then "v" else "x"
+
+  cut : List Integer, Integer, Integer, List Integer -> List Integer
+  cut (xs) (n) (i) (acc) =
+    if i >= n then acc
+    else cut xs n (i + 1) (acc & [list-at xs i])
+
+ The count field sits directly after the two framed header texts, so its offset
+ is derived from the encoding rather than hardcoded: 4 magic bytes, then each
+ text as a 4-byte length plus its bytes.
+
+  count-offset : Integer = 4 + 4 + 6 + 4 + 5
+
+  poke : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  poke (xs) (at) (v) (i) (acc) =
+    if i >= list-length xs then acc
+    else if i == at then poke xs at v (i + 1) (list-push acc v)
+    else poke xs at v (i + 1) (list-push acc (list-at xs i))
+
+  set-count-ff : List Integer -> List Integer
+  set-count-ff (bs) =
+    let b0 = poke bs count-offset 255 0 []
+    in let b1 = poke b0 (count-offset + 1) 255 0 []
+    in let b2 = poke b1 (count-offset + 2) 255 0 []
+    in poke b2 (count-offset + 3) 255 0 []
+
+Section: Test Data
+
+  event-session : ReplaySession =
+    let s0 = session-new "myprog" "myctx"
+    in let s1 = record-input s0 5 3 "recv" [10, 20, 30]
+    in let s2 = record-schedule s1 2 7 SchedChanSendBlock
+    in record-exit s2 1 0
+
+  sweep : List Integer, Integer, Integer, Text -> Text
+  sweep (whole) (n) (i) (acc) =
+    if i > n then acc
+    else sweep whole n (i + 1) (acc & yn ((crf-decode (cut whole i 0 [])).success))
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let whole = crf-encode event-session
+    in let empty = crf-encode (session-new "myprog" "myctx")
+    in let huge = set-count-ff empty
+    in let dr-whole = crf-decode whole
+    in let dr-huge = crf-decode huge
+    in act
+      print-line-uni ("whole len=" & show (list-length whole) & " ok=" & yn (dr-whole.success) & " events=" & show ((dr-whole.session).event-count))
+      print-line-uni ("count-offset=" & show count-offset & " empty-len=" & show (list-length empty))
+      print-line-uni ("huge-count ok=" & yn (dr-huge.success) & " err=" & dr-huge.error & " events=" & show ((dr-huge.session).event-count))
+      print-line-uni ("sweep 0.." & show (list-length whole) & " = " & sweep whole (list-length whole) 0 "")
+      print-line-uni ("has off=" & yn (crf-has whole 9223372036854775807 8) & " n=" & yn (crf-has whole 0 9223372036854775807) & " sane=" & yn (crf-has whole 0 8))
+    end
+  end

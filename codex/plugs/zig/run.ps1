@@ -13,7 +13,12 @@ $OutDir  = Join-Path $PSScriptRoot 'build-output'
 $IrFile  = Join-Path $OutDir 'last-run.ir'
 $LogFile = Join-Path $OutDir 'run.log'
 
-& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $Src -Out $IrFile -Log $LogFile -IrCce 2>&1 | Out-Null
+# -Passes 'text-plug' is what a SOURCE plug must receive: the default pipeline
+# inlines, and an inlined call site never reaches the emitter at all. Measured
+# on plug-oracle-arith, the default inlines the one call whose arguments are
+# both literals and both list-literal helpers, so the emitter is graded on a
+# program it is not handed in service (plugs-backlog 1.15).
+& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $Src -Out $IrFile -Log $LogFile -IrCce -Passes 'text-plug' 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $IrFile)) {
     [Console]::Error.WriteLine("FAIL: IR compile failed; see $LogFile")
     exit 4

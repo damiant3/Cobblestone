@@ -79,15 +79,35 @@ Section: Wire Codec
     if i >= len then acc
     else sync-enc-hashes-loop hs (i + 1) len (sync-append acc (frame-encode-text (list-at hs i)))
 
-  sync-decode-hashes : List Integer -> List Text
-  sync-decode-hashes (bs) =
-    sync-dec-hashes-loop bs 4 (frame-read-le32 bs 0) []
+ Both counts below are the peer's to choose and neither is bounded by the
+ buffer. A payload declaring four billion hashes over four bytes ran the loop
+ four billion times pushing empty text, which exhausts the heap rather than
+ answering wrongly. Stopping at the first element that does not fit bounds the
+ loop by the buffer, and the refusal travels so a caller can tell a truncated
+ bundle from an empty one.
 
-  sync-dec-hashes-loop : List Integer, Integer, Integer, List Text -> List Text
+  sync-has : List Integer, Integer, Integer -> Boolean
+  sync-has (bs) (off) (n) =
+    if off < 0 then False
+    else if n < 0 then False
+    else n <= list-length bs - off
+
+  SyncHashesResult = record {
+    hashes : List Text,
+    valid : Boolean
+  }
+
+  sync-decode-hashes : List Integer -> SyncHashesResult
+  sync-decode-hashes (bs) =
+    if sync-has bs 0 4 == False then SyncHashesResult { hashes = [], valid = False }
+    else sync-dec-hashes-loop bs 4 (frame-read-le32 bs 0) []
+
+  sync-dec-hashes-loop : List Integer, Integer, Integer, List Text -> SyncHashesResult
   sync-dec-hashes-loop (bs) (off) (remaining) (acc) =
-    if remaining <= 0 then acc
+    if remaining <= 0 then SyncHashesResult { hashes = acc, valid = True }
     else let tr = frame-decode-text bs off
-    in sync-dec-hashes-loop bs (tr.next-offset) (remaining - 1) (list-push acc (tr.value))
+    in if tr.valid == False then SyncHashesResult { hashes = acc, valid = False }
+    else sync-dec-hashes-loop bs (tr.next-offset) (remaining - 1) (list-push acc (tr.value))
 
   sync-encode-facts : List Fact -> List Integer
   sync-encode-facts (fs) =
@@ -98,15 +118,22 @@ Section: Wire Codec
     if i >= len then acc
     else sync-enc-facts-loop fs (i + 1) len (sync-append acc (sync-encode-fact (list-at fs i)))
 
-  sync-decode-facts : List Integer -> List Fact
-  sync-decode-facts (bs) =
-    sync-dec-facts-loop bs 4 (frame-read-le32 bs 0) []
+  SyncFactsResult = record {
+    facts : List Fact,
+    valid : Boolean
+  }
 
-  sync-dec-facts-loop : List Integer, Integer, Integer, List Fact -> List Fact
+  sync-decode-facts : List Integer -> SyncFactsResult
+  sync-decode-facts (bs) =
+    if sync-has bs 0 4 == False then SyncFactsResult { facts = [], valid = False }
+    else sync-dec-facts-loop bs 4 (frame-read-le32 bs 0) []
+
+  sync-dec-facts-loop : List Integer, Integer, Integer, List Fact -> SyncFactsResult
   sync-dec-facts-loop (bs) (off) (remaining) (acc) =
-    if remaining <= 0 then acc
+    if remaining <= 0 then SyncFactsResult { facts = acc, valid = True }
     else let fr = sync-decode-fact bs off
-    in sync-dec-facts-loop bs (fr.next-offset) (remaining - 1) (list-push acc (fr.fact))
+    in if fr.valid == False then SyncFactsResult { facts = acc, valid = False }
+    else sync-dec-facts-loop bs (fr.next-offset) (remaining - 1) (list-push acc (fr.fact))
 
   sync-encode-fact : Fact -> List Integer
   sync-encode-fact (f) =
@@ -114,17 +141,22 @@ Section: Wire Codec
 
   SyncFactResult = record {
     fact : Fact,
-    next-offset : Integer between 0 and 4294967295
+    next-offset : Integer between 0 and 4294967295,
+    valid : Boolean
   }
 
   sync-decode-fact : List Integer, Integer -> SyncFactResult
   sync-decode-fact (bs) (off) =
-    let k = sync-byte-kind (list-at bs off)
+    let k = sync-byte-kind (frame-byte-at bs off)
     in let hr = frame-decode-text bs (off + 1)
     in let cr = frame-decode-text bs (hr.next-offset)
     in let ar = frame-decode-text bs (cr.next-offset)
     in let ts = frame-read-le64 bs (ar.next-offset)
-    in SyncFactResult { fact = Fact { hash = hr.value, kind = k, content = cr.value, author = ar.value, timestamp = ts }, next-offset = __narrow (ar.next-offset + 8) }
+    in SyncFactResult {
+      fact = Fact { hash = hr.value, kind = k, content = cr.value, author = ar.value, timestamp = ts },
+      next-offset = __narrow (frame-next-offset bs (ar.next-offset + 8)),
+      valid = sync-has bs off 1 & hr.valid & cr.valid & ar.valid & sync-has bs (ar.next-offset) 8
+    }
 
   sync-kind-byte : FactKind -> Integer
   sync-kind-byte (k) = when k
@@ -156,10 +188,24 @@ Section: The Wire Verb
   fact-sync-make-offer (store) (me) =
     SyncOfferMsg { from = me, payload = sync-encode-hashes (fact-store-hashes store) }
 
+ A truncated offer and an empty offer are the same bytes to everything except
+ the refusal flag, and they must not mean the same thing. Answering a truncated
+ offer as though it offered nothing sends the peer every fact we hold, so the
+ refusal is a disclosure control here and not only a correctness one: a peer
+ that cuts its own offer short would otherwise harvest the whole store.
+
   fact-sync-answer-offer : BareFactStore, AgentIdentity, SyncOfferMsg -> SyncReplyMsg
   fact-sync-answer-offer (store) (me) (offer) =
-    SyncReplyMsg { from = me, payload = sync-encode-facts (fact-sync-facts-not-offered store (sync-decode-hashes (offer.payload))) }
+    let hr = sync-decode-hashes (offer.payload)
+    in if hr.valid == False then SyncReplyMsg { from = me, payload = sync-encode-facts [] }
+    else SyncReplyMsg { from = me, payload = sync-encode-facts (fact-sync-facts-not-offered store (hr.hashes)) }
+
+ A truncated reply is refused whole rather than absorbed up to the cut. A fact
+ store is the thing the trust lattice reasons over, so a half-read fact entering
+ it is worse than no sync at all, and the peer can always send the bundle again.
 
   fact-sync-absorb-reply : BareFactStore, SyncReplyMsg -> BareFactStore
   fact-sync-absorb-reply (store) (reply) =
-    fact-sync-apply store (sync-decode-facts (reply.payload))
+    let fr = sync-decode-facts (reply.payload)
+    in if fr.valid == False then store
+    else fact-sync-apply store (fr.facts)

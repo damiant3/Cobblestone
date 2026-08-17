@@ -63,8 +63,8 @@ Section: Expression Emission
     is IrMatch (scrut) (branches) (ty) (sp) -> emit-wf-match scrut branches arities indent
     is IrAct (stmts) (ty) (sp) -> emit-wf-act stmts arities indent
     is IrRecord (name) (fields) (ty) (sp) -> "new Dictionary<string,dynamic> { [\"_type\"] = \"" & name & "\"" & emit-wf-rec-fields fields arities indent 0 & " }"
-    is IrFieldAccess (rec) (field) (ty) (sp) -> "((" & emit-wf-expr rec arities indent & ")[\"" & field & "\"])"
-    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "((" & emit-wf-expr rec arities indent & ")[\"" & field & "\"] = " & emit-wf-expr val arities indent & ")"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> "((" & emit-wf-expr rec arities indent & ")[\"" & wf-field field & "\"])"
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "((" & emit-wf-expr rec arities indent & ")[\"" & wf-field field & "\"] = " & emit-wf-expr val arities indent & ")"
     is IrFork (body) (ty) (sp) -> "Task.Run(() => " & emit-wf-expr body arities indent & ")"
     is IrAwait (task) (ty) (sp) -> "(await " & emit-wf-expr task arities indent & ")"
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-wf-expr body arities indent
@@ -121,6 +121,23 @@ Section: Expression Emission
    if i == list-length elems then ""
    else let sep = if i > 0 then ", " else ""
    in sep & emit-wf-expr (list-at elems i) arities indent & emit-wf-elems elems arities indent (i + 1)
+
+ The IR spells a record field as `name/slot`. The construction side above
+ writes the field name RAW into the map key, so the read side must strip
+ the slot and sanitize nothing, or the two keys stop matching and the
+ lookup misses in silence.
+
+  wf-slash-pos : Text, Integer, Integer -> Integer
+  wf-slash-pos (f) (i) (len) =
+   if i >= len then (-1)
+   else if char-to-text (char-at f i) == "/" then i
+   else wf-slash-pos f (i + 1) len
+
+  wf-field : Text -> Text
+  wf-field (f) =
+   let slash = wf-slash-pos f 0 (text-length f)
+   in if slash >= 0 then substring f 0 slash
+      else f
 
   emit-wf-rec-fields : List IRFieldVal, List ArityEntry, Integer, Integer -> Text
   emit-wf-rec-fields (fields) (arities) (indent) (i) =

@@ -41,6 +41,32 @@ Section: Pass Registry
  is not a statement about IR: the machine-code plugs read the same IR-CCE
  and keep the full pipeline.
 
+ WHICH PLUGS TAKE THIS, ruled 2026-08-16: by-name resolution decides, not
+ target shape. Ask whether the plug's OUTPUT names the callee; if it does,
+ it takes this pipeline however low-level the target looks. `ptx`, `wasm`
+ and `wgsl` are ISA-shaped and all three take it, measured by emitting one
+ probe both ways and seeing a call site appear. `arm64` and `riscv` do not,
+ and they are settled by taking no IR-CCE at all rather than by being
+ assembly. Decide it by measuring a probe, not by reading the target's name:
+ 35 of 50 plugs shipped on the wrong pipeline until 2026-08-16 because
+ nobody had.
+
+ A plug that cannot express the probe cannot be classified by it. `t3isa`
+ is ternary and refuses IEEE 754 by construction, so a probe using `Real`
+ never reaches its call emission and answers nothing about it either way.
+ Measured with an integer-only probe 2026-08-16, it needs no entry here at
+ all: a def with a bounded boundary is never an inline candidate
+ (`Lowering.codex:1675`, so the band's entry and epilogue guards are not
+ spliced past), and `t3isa` refuses an unbanded integer, so no inline pass
+ can reach any program it accepts.
+
+ Two probe shapes answer nothing here, and both looked like answers. A
+ callee reached only with LITERAL arguments from inside an `act` is left
+ alone by the passes, so its arms match while measuring nothing. And a
+ chapter with no `opening` emits the foreword too, so its arms differ on
+ foreword definitions that are not the probe's. Give the probe an
+ `opening` and compare, or the reachable set is not the thing under test.
+
   text-plug-ir-pipeline : List Text
   text-plug-ir-pipeline = ["fold-constants"]
 

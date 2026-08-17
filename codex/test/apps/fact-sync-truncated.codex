@@ -1,0 +1,107 @@
+Chapter: FactSyncTruncatedTest
+  cites Trust chapter FactSync
+  cites Trust chapter AgentProtocol
+  cites Foreword chapter FactStore
+  cites Net chapter MessageFraming
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ A sync bundle arrives from a peer, so the element count and every field length
+ are the peer's to choose. Three things are under test.
+
+ THE ABSORB REFUSAL. A truncated reply must leave the store untouched rather
+ than merge the facts that arrived before the cut. The store is what the trust
+ lattice reasons over, so a half-read fact in it is worse than no sync.
+
+ THE OFFER REFUSAL, which is a disclosure control and not only a correctness
+ one. `fact-sync-answer-offer` replies with every fact the offer did not list.
+ A truncated offer decoded to a SHORT hash list, and a short list means fewer
+ facts excluded, so a peer that cut its own offer short harvested the whole
+ store. The arm below cuts an offer naming both of the responder's facts and
+ asserts the reply carries none of them.
+
+ THE COUNT ARM is the heap half. Both list decoders were driven by a leading
+ le32 with no relation to the buffer; the payload below declares 4294967295
+ elements over four bytes. The same shape ablated in `crf-decode-events` died
+ `OUT OF MEMORY` in 6 seconds rather than answering, so this arm kills the run
+ when it regresses instead of printing a wrong line.
+
+ THE LEAK ROW is the measurement that pays, and it needs its control read
+ beside it. Every prefix of the offer must draw ZERO facts, but so does a whole
+ offer that legitimately names both, so all-zeros alone proves nothing. The
+ control is `empty-offer reply-facts=2`, which shows disclosure is reachable at
+ all. Measured with the refusal removed from `fact-sync-answer-offer`, the row
+ read `22222222221111110`: a peer that cut its own offer short was handed the
+ responder's entire store.
+
+Section: Helpers
+
+  yn : Boolean -> Text
+  yn (v) = if v then "v" else "x"
+
+  mk : Text -> Fact
+  mk (h) = Fact { hash = h, kind = DefinitionFact, content = h, author = "", timestamp = 0 }
+
+  cut : List Integer, Integer, Integer, List Integer -> List Integer
+  cut (xs) (n) (i) (acc) =
+    if i >= n then acc
+    else cut xs n (i + 1) (acc & [list-at xs i])
+
+  me : AgentIdentity = AgentIdentity { public-key = [1] }
+
+  them : AgentIdentity = AgentIdentity { public-key = [2] }
+
+Section: Test Data
+
+ The responder holds h1 and h2. The offer names both, so a whole offer draws a
+ reply of nothing and only a MISREAD offer draws facts out of the store.
+
+  holder : BareFactStore = fact-store (fact-store fact-store-empty (mk "h1")) (mk "h2")
+
+  whole-offer : SyncOfferMsg = fact-sync-make-offer holder me
+
+  huge-count : List Integer = [255, 255, 255, 255]
+
+  reply-of : List Integer -> SyncReplyMsg
+  reply-of (payload) = SyncReplyMsg { from = them, payload = payload }
+
+  offer-of : List Integer -> SyncOfferMsg
+  offer-of (payload) = SyncOfferMsg { from = them, payload = payload }
+
+ Both sweeps run over every prefix. `offer` records whether the decode was
+ believed and `leak` records how many facts the reply handed back at that depth,
+ which is the number that must stay at zero until the offer is whole.
+
+  sweep-offer : List Integer, Integer, Integer, Text -> Text
+  sweep-offer (whole) (n) (i) (acc) =
+    if i > n then acc
+    else sweep-offer whole n (i + 1) (acc & yn ((sync-decode-hashes (cut whole i 0 [])).valid))
+
+  sweep-leak : List Integer, Integer, Integer, Text -> Text
+  sweep-leak (whole) (n) (i) (acc) =
+    if i > n then acc
+    else let r = fact-sync-answer-offer holder me (offer-of (cut whole i 0 []))
+    in let got = list-length ((sync-decode-facts (r.payload)).facts)
+    in sweep-leak whole n (i + 1) (acc & show got)
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let op = whole-offer.payload
+    in let reply = fact-sync-answer-offer holder me whole-offer
+    in let full-reply = fact-sync-answer-offer holder me (offer-of (sync-encode-hashes []))
+    in let cut-absorb = fact-sync-absorb-reply fact-store-empty (reply-of (cut (full-reply.payload) 12 0 []))
+    in let whole-absorb = fact-sync-absorb-reply fact-store-empty full-reply
+    in let huge-absorb = fact-sync-absorb-reply fact-store-empty (reply-of huge-count)
+    in act
+      print-line-uni ("offer len=" & show (list-length op) & " valid=" & yn ((sync-decode-hashes op).valid) & " hashes=" & show (list-length ((sync-decode-hashes op).hashes)))
+      print-line-uni ("whole-offer reply-facts=" & show (list-length ((sync-decode-facts (reply.payload)).facts)))
+      print-line-uni ("empty-offer reply-facts=" & show (list-length ((sync-decode-facts (full-reply.payload)).facts)))
+      print-line-uni ("whole-absorb count=" & show (fact-count whole-absorb) & " h1=" & yn (fact-has whole-absorb "h1"))
+      print-line-uni ("cut-absorb count=" & show (fact-count cut-absorb) & " h1=" & yn (fact-has cut-absorb "h1"))
+      print-line-uni ("huge-count valid=" & yn ((sync-decode-facts huge-count).valid) & " absorb=" & show (fact-count huge-absorb))
+      print-line-uni ("huge-hashes valid=" & yn ((sync-decode-hashes huge-count).valid))
+      print-line-uni ("offer-valid 0.." & show (list-length op) & " = " & sweep-offer op (list-length op) 0 "")
+      print-line-uni ("leak 0.." & show (list-length op) & " = " & sweep-leak op (list-length op) 0 "")
+    end
+  end

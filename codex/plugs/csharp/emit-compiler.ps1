@@ -70,7 +70,14 @@ if (-not $SkipIr) {
 
     # -- Phase 2: source -> IR (CCE) ----------------------------------
     Write-Host "[emit-compiler] compiling to IR (kernel=$Kernel, mem=${MemMB}MB)..."
-    & pwsh -NoProfile -File $CompileScript -Src $CodexSrc -Out $IrFile -Log $IrLog -IrCce -MemMB $MemMB -Kernel $Kernel
+    # text-plug: this plug emits SOURCE and resolves a Codex call by its NAME,
+    # so the inline passes must not substitute a body and delete the call. See
+    # text-plug-ir-pipeline in codex/compiler/IR/Passes.codex, and run.ps1,
+    # which passes the same flag for the -Src path. This is the WITNESS arm, so
+    # the flag was landed only after the full witness was run under it and held
+    # (2026-08-16): both arms reproduce seed/Codex.cdx byte for byte outside
+    # the signature region, 96 differing bytes and 0 outside.
+    & pwsh -NoProfile -File $CompileScript -Src $CodexSrc -Out $IrFile -Log $IrLog -IrCce -Passes 'text-plug' -MemMB $MemMB -Kernel $Kernel
     if ($LASTEXITCODE -ne 0) {
         [Console]::Error.WriteLine("FAIL: IR emit exited $LASTEXITCODE; see $IrLog")
         Get-Content $IrLog -ErrorAction SilentlyContinue | Select-Object -Last 15 | ForEach-Object { [Console]::Error.WriteLine("  $_") }

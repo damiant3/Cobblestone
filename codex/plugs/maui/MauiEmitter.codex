@@ -168,8 +168,8 @@ Section: Expression Emission
     is IrMatch (scrut) (branches) (ty) (sp) -> emit-maui-match scrut branches arities indent
     is IrAct (stmts) (ty) (sp) -> emit-maui-act stmts arities indent
     is IrRecord (name) (fields) (ty) (sp) -> "new Dictionary<string,dynamic> { [\"_type\"] = \"" & name & "\"" & emit-maui-rec-fields fields arities indent 0 & " }"
-    is IrFieldAccess (rec) (field) (ty) (sp) -> "((" & emit-maui-expr rec arities indent & ")[\"" & field & "\"])"
-    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "((" & emit-maui-expr rec arities indent & ")[\"" & field & "\"] = " & emit-maui-expr val arities indent & ")"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> "((" & emit-maui-expr rec arities indent & ")[\"" & maui-field field & "\"])"
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "((" & emit-maui-expr rec arities indent & ")[\"" & maui-field field & "\"] = " & emit-maui-expr val arities indent & ")"
     is IrFork (body) (ty) (sp) -> "Task.Run(() => " & emit-maui-expr body arities indent & ")"
     is IrAwait (task) (ty) (sp) -> "(await " & emit-maui-expr task arities indent & ")"
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-maui-expr body arities indent
@@ -243,6 +243,23 @@ Section: Expression Emission
    if i == list-length elems then ""
    else let sep = if i > 0 then ", " else ""
    in sep & emit-maui-expr (list-at elems i) arities indent & emit-maui-elems elems arities indent (i + 1)
+
+ The IR spells a record field as `name/slot`. The construction side above
+ writes the field name RAW into the map key, so the read side must strip
+ the slot and sanitize nothing, or the two keys stop matching and the
+ lookup misses in silence.
+
+  maui-slash-pos : Text, Integer, Integer -> Integer
+  maui-slash-pos (f) (i) (len) =
+   if i >= len then (-1)
+   else if char-to-text (char-at f i) == "/" then i
+   else maui-slash-pos f (i + 1) len
+
+  maui-field : Text -> Text
+  maui-field (f) =
+   let slash = maui-slash-pos f 0 (text-length f)
+   in if slash >= 0 then substring f 0 slash
+      else f
 
   emit-maui-rec-fields : List IRFieldVal, List ArityEntry, Integer, Integer -> Text
   emit-maui-rec-fields (fields) (arities) (indent) (i) =

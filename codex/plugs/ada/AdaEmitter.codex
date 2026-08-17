@@ -43,6 +43,22 @@ Section: Keywords and Sanitization
   ada-cap-sanitize : Text -> Text
   ada-cap-sanitize (name) = ada-capitalize (ada-sanitize name)
 
+ The IR spells a record field as `name/slot`, so a field name reaches the
+ emitter as `a/0` and reads as a division. riscv resolves the slot and
+ needs it; every source plug wants the name.
+
+  ada-slash-pos : Text, Integer, Integer -> Integer
+  ada-slash-pos (f) (i) (len) =
+   if i >= len then (-1)
+   else if char-to-text (char-at f i) == "/" then i
+   else ada-slash-pos f (i + 1) len
+
+  ada-field : Text -> Text
+  ada-field (f) =
+   let slash = ada-slash-pos f 0 (text-length f)
+   in if slash >= 0 then ada-cap-sanitize (substring f 0 slash)
+      else ada-cap-sanitize f
+
   ada-escape-text : Text -> Text
   ada-escape-text (s) = text-replace s "\"" "\"\""
 
@@ -238,8 +254,8 @@ Section: Expression Emission
     is IrMatch (scrut) (branches) (ty) (sp) -> emit-ada-match scrut branches arities
     is IrAct (stmts) (ty) (sp) -> emit-ada-act-expr stmts arities
     is IrRecord (name) (fields) (ty) (sp) -> emit-ada-record fields arities
-    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-ada-expr-at rec arities (depth + 1) & "." & ada-cap-sanitize field
-    is IrFieldStore (rec) (field) (val) (ty) (sp) -> emit-ada-expr-at rec arities (depth + 1) & "'Update(" & ada-cap-sanitize field & " => " & emit-ada-expr-at val arities (depth + 1) & ")"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-ada-expr-at rec arities (depth + 1) & "." & ada-field field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> emit-ada-expr-at rec arities (depth + 1) & "'Update(" & ada-field field & " => " & emit-ada-expr-at val arities (depth + 1) & ")"
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-ada-expr-at body arities (depth + 1)
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-ada-expr-at body arities (depth + 1)
     is IrFork (body) (ty) (sp) -> emit-ada-expr-at body arities (depth + 1)
@@ -312,7 +328,7 @@ Section: Expression Emission
    "print-error-uni", "print-line-uni", "process-exit", "read-text",
    "run-state", "set-state", "show", "substring", "text-compare",
    "text-concat-list", "text-contains", "text-replace", "text-split",
-   "text-starts-with", "text-to-integer", "write-file"]
+   "text-starts-with", "text-to-integer", "write-file", "list-push"]
 
   ada-find-builtin : List Text, Text, Integer -> Integer
   ada-find-builtin (names) (target) (i) =
@@ -375,7 +391,7 @@ Section: Expression Emission
    else if idx == 41 then emit-ada-expr (list-at args 0) arities
    else if idx == 42 then "(Index(" & emit-ada-expr (list-at args 0) arities & ", To_String(" & emit-ada-expr (list-at args 1) arities & ")) = 1)"
    else if idx == 43 then "Long_Long_Integer'Value(To_String(" & emit-ada-expr (list-at args 0) arities & "))"
-   else emit-ada-builtin-write-file args arities
+   else if idx == 44 then emit-ada-builtin-write-file args arities    else emit-ada-expr (list-at args 0) arities & " & (" & emit-ada-expr (list-at args 1) arities & ")"
 
   emit-ada-ctor-apply : Text, List IRExpr, List ArityEntry -> Text
   emit-ada-ctor-apply (n) (args) (arities) =

@@ -76,26 +76,56 @@ Section: Decode Session
     in let cr = frame-decode-text bs (pr.next-offset)
     in let event-count = frame-read-le32 bs (cr.next-offset)
     in let events-result = crf-decode-events bs (cr.next-offset + 4) event-count 0 []
-    in CrfDecodeResult {
-      session = ReplaySession { program-hash = pr.value, context-hash = cr.value, events = events-result, event-count = __narrow event-count, cursor = 0 },
+    in let session = ReplaySession { program-hash = pr.value, context-hash = cr.value, events = events-result.events, event-count = __narrow (list-length (events-result.events)), cursor = 0 }
+    in if pr.valid == False then CrfDecodeResult { session = session-new "" "", success = False, error = "truncated program hash" }
+    else if cr.valid == False then CrfDecodeResult { session = session-new "" "", success = False, error = "truncated context hash" }
+    else if crf-has bs (cr.next-offset) 4 == False then CrfDecodeResult { session = session-new "" "", success = False, error = "truncated event count" }
+    else if events-result.valid == False then CrfDecodeResult { session = session, success = False, error = "truncated events" }
+    else CrfDecodeResult {
+      session = session,
       success = True,
       error = ""
     }
 
-  crf-decode-events : List Integer, Integer, Integer, Integer, List ReplayEvent -> List ReplayEvent
+ The count is the peer's to choose and bears no relation to the buffer. Before
+ this, a header declaring four billion events over a short buffer ran the loop
+ four billion times pushing empties, which is a heap exhaustion rather than a
+ wrong answer. Stopping at the first event that does not fit is what bounds it:
+ the loop can no longer run more times than the buffer has bytes.
+
+  EventsDecodeResult = record {
+    events : List ReplayEvent,
+    valid : Boolean
+  }
+
+  crf-decode-events : List Integer, Integer, Integer, Integer, List ReplayEvent -> EventsDecodeResult
   crf-decode-events (bs) (off) (count) (i) (acc) =
-    if i >= count then acc
+    if i >= count then EventsDecodeResult { events = acc, valid = True }
     else let dr = crf-decode-event bs off
-    in crf-decode-events bs (dr.next-offset) count (i + 1) (list-push acc (dr.event))
+    in if dr.valid == False then EventsDecodeResult { events = acc, valid = False }
+    else crf-decode-events bs (dr.next-offset) count (i + 1) (list-push acc (dr.event))
 
   EventDecodeResult = record {
     event : ReplayEvent,
-    next-offset : Integer between 0 and 4294967295
+    next-offset : Integer between 0 and 4294967295,
+    valid : Boolean
   }
+
+ Subtractive for the reason repo-has is: `off + n <= list-length bs` overflows
+ when n comes off the wire, and a CRF arrives from wherever a replay log was
+ written. No call site here passes a wire length today, which is exactly the
+ condition that stops being true the moment somebody adds one.
+
+  crf-has : List Integer, Integer, Integer -> Boolean
+  crf-has (bs) (off) (n) =
+    if off < 0 then False
+    else if n < 0 then False
+    else n <= list-length bs - off
 
   crf-decode-event : List Integer, Integer -> EventDecodeResult
   crf-decode-event (bs) (off) =
-    let tag = list-at bs off
+    if crf-has bs off 1 == False then EventDecodeResult { event = ExitEvent 0 0, next-offset = __narrow (frame-next-offset bs off), valid = False }
+    else let tag = list-at bs off
     in if tag == crf-tag-input then decode-input-event bs (off + 1)
     else if tag == crf-tag-time then decode-time-event bs (off + 1)
     else if tag == crf-tag-spawn then decode-spawn-event bs (off + 1)
@@ -108,14 +138,14 @@ Section: Decode Session
     in let cap = frame-read-le32 bs (off + 4)
     in let tr = frame-decode-text bs (off + 8)
     in let br = frame-decode-bytes bs (tr.next-offset)
-    in EventDecodeResult { event = InputEvent agent cap (tr.value) (br.value), next-offset = br.next-offset }
+    in EventDecodeResult { event = InputEvent agent cap (tr.value) (br.value), next-offset = br.next-offset, valid = crf-has bs off 8 & tr.valid & br.valid }
 
   decode-time-event : List Integer, Integer -> EventDecodeResult
   decode-time-event (bs) (off) =
     let agent = frame-read-le32 bs off
     in let cap = frame-read-le32 bs (off + 4)
     in let logical-time = frame-read-le64 bs (off + 8)
-    in EventDecodeResult { event = TimeEvent agent cap logical-time, next-offset = __narrow (off + 16) }
+    in EventDecodeResult { event = TimeEvent agent cap logical-time, next-offset = __narrow (frame-next-offset bs (off + 16)), valid = crf-has bs off 16 }
 
   decode-spawn-event : List Integer, Integer -> EventDecodeResult
   decode-spawn-event (bs) (off) =
@@ -123,20 +153,20 @@ Section: Decode Session
     in let child = frame-read-le32 bs (off + 4)
     in let entry = frame-read-le32 bs (off + 8)
     in let caps = frame-read-le32 bs (off + 12)
-    in EventDecodeResult { event = SpawnEvent parent child entry caps, next-offset = __narrow (off + 16) }
+    in EventDecodeResult { event = SpawnEvent parent child entry caps, next-offset = __narrow (frame-next-offset bs (off + 16)), valid = crf-has bs off 16 }
 
   decode-schedule-event : List Integer, Integer -> EventDecodeResult
   decode-schedule-event (bs) (off) =
     let from = frame-read-le32 bs off
     in let to = frame-read-le32 bs (off + 4)
-    in let reason = decode-reason (list-at bs (off + 8))
-    in EventDecodeResult { event = ScheduleEvent from to reason, next-offset = __narrow (off + 9) }
+    in let reason = decode-reason (frame-byte-at bs (off + 8))
+    in EventDecodeResult { event = ScheduleEvent from to reason, next-offset = __narrow (frame-next-offset bs (off + 9)), valid = crf-has bs off 9 }
 
   decode-exit-event : List Integer, Integer -> EventDecodeResult
   decode-exit-event (bs) (off) =
     let agent = frame-read-le32 bs off
     in let code = frame-read-le32 bs (off + 4)
-    in EventDecodeResult { event = ExitEvent agent code, next-offset = __narrow (off + 8) }
+    in EventDecodeResult { event = ExitEvent agent code, next-offset = __narrow (frame-next-offset bs (off + 8)), valid = crf-has bs off 8 }
 
   decode-reason : Integer -> ScheduleReason
   decode-reason (b) =

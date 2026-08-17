@@ -1,7 +1,10 @@
 # The Cost Model
 *What Codex promises about allocation and time, and what it currently leaves to the caller's luck.*
 
-**Status: 3.1 and 3.2 are DONE. 3.3 remains a proposal and is unscheduled.**
+**Status: 3.1, 3.2 and 3.3 are DONE. 3.3 shipped as the `bounded` declaration
+(main 16020), with rule 3 of its inference at 16118.** It is a FIRST SLICE:
+`linear` and `growing` are inferred and checked, while `none` and `fixed` are
+named rungs the compiler refuses with CDX6103 rather than take on trust.
 It is written up because three defects on 2026-08-14 were one defect, and the
 shape they share is the shape this project already says it exists to remove.
 
@@ -11,8 +14,10 @@ shape they share is the shape this project already says it exists to remove.
 - **3.2 is implemented.** `__out_of_memory` now prints `SP=` and `HEAP=`
   after the `OUT OF MEMORY` line, so it names which side of the collision
   ran away.
-- **3.3 is untouched** and still needs its instrument (section 5, question 2)
-  before it is worth starting.
+- **3.3's INSTRUMENT is built** (2026-08-16, section 7): the kill-rate corpus
+  that question 2 said had to exist before the check. The declaration itself is
+  still untouched and still a proposal. What is open is no longer what the
+  instrument is, but what a check must score on it, which is a ruling.
 
 Opened 2026-08-14 (blu) at Damian's direction, adjacent to `CPL.md` in `Done/`.
 
@@ -237,25 +242,359 @@ unspecified freedom is still there afterwards.
 Damian has ruled on the shape: this sits with `punctual`, so it is a declared
 and enforced property rather than a document. What is still open:
 
-1. **How much of the general problem does the check attempt?** The answer
-   this project keeps arriving at is: publish exactly what is proven and
-   abstain loudly everywhere else, the way the Static Bounds Prover table in
-   `DevelopersGuide` does. The accumulator-in-a-self-tail-call shape covers
-   all three measured defects and is the obvious first and possibly only
-   target. Anything wider risks the false-refusal cost the variance ruling
-   had to weigh.
-2. **What is the instrument that keeps it honest?** The type rules got teeth
-   because the rechecker abstains wherever the guide is silent, which turned
-   silence into a visible count somebody had to argue down. There is no
-   equivalent for cost yet, and inventing one is most of the work. A kill-rate
-   corpus of known-quadratic accumulators is the obvious candidate and would
-   need to be built before the check, not after.
-3. **What is it called?** Not decided here on purpose. It makes a different
-   promise from `punctual` and should not borrow its name.
+1. ~~**How much of the general problem does the check attempt?**~~ RULED
+   2026-08-16 (Damian, via red): **a class, never a function of the inputs.**
+   The declaration is a CEILING in a small lattice and the compiler infers each
+   function's class bottom-up from its body, the way effect sets are inferred:
+
+   ```
+     none    < fixed          < linear         < growing
+     no heap   fixed bytes/call  one walk over    accumulator copied
+     (punctual) regardless of    an input, no     inside a loop, or
+                input            copies of the    a walk nested in
+                                 accumulator      a walk
+   ```
+
+   Worst case over the code's STRUCTURE and blind to data on purpose: bubble
+   sort is honestly `fixed` in heap whatever the data does to its time, and a
+   walk nested in a walk is `growing` even when the data would keep it small.
+   Its quadratic TIME is a WCET question and stays with `punctual`'s budget
+   number. Refusal is transitive exactly as CDX6001: a declared ceiling breaks
+   at the caller, at compile time, when a callee's inferred class exceeds it.
+   No declaration means no check, as with `punctual`; the bottom rung is
+   `punctual` minus the WCET budget and the effect ban, which is why the two
+   felt like siblings. Abstain toward refusal; the false-refusal cost is paid
+   in the declaration you can choose not to write. The keyword-free inference
+   is what blu is building as step 2, and the corpus grades its `growing` rung.
+
+   **FIRST SLICE SHIPPED (blu, 2026-08-16): two rungs of the four.** `linear`
+   and `growing` are inferred and checked; `none` and `fixed` are named in the
+   lattice and NOT yet inferred, so a declaration naming one is refused
+   (CDX6103) rather than accepted unchecked. That is this ruling's own
+   abstain-toward-refusal applied to the declaration itself: an unchecked
+   promise reads exactly like a checked one, which is worse than no promise.
+   **The four-class lattice above remains the target**; what shipped is a
+   subset that refuses honestly where it cannot yet decide, and `punctual`
+   already enforces the no-heap case that `none` describes.
+2. ~~**What is the instrument that keeps it honest?**~~ **THE CORPUS IS BUILT
+   (blu, 2026-08-16), which answers the "before the check, not after" half.
+   What it grades is still open.** `codex/test/cost/accumulator-corpus` is ten
+   entries, five quadratic and five linear, and section 7 is its account. The
+   question that remains is not what the instrument is but what a check has to
+   score on it to be worth shipping, and that is a ruling rather than a
+   measurement. **RULED 2026-08-16 (red, under Damian's go-forward): 9 of 10
+   SHIPS.** The bar is all five quadratic entries caught, and it is met. The
+   single miss is an OVER-REFUSAL, not a miss in the dangerous direction:
+   `n-fixed-appends` is a linear entry that the check flags, linear because
+   its append runs exactly four times however large the input gets. That is
+   the abstain-toward-refusal trade of question 1, and it is paid in a
+   declaration an author can decline to write. **A future rule that lifts the
+   over-refusal must keep 5 of 5 on the quadratic half**; trading a caught
+   quadratic for a quieter linear is the one move this corpus exists to
+   forbid. Section 8 has the ablation and the argument.
+   **REOPENED the same day, before anything shipped:** the rule that produced
+   that score tests the append rather than the allocation between appends, and
+   `&` extends in place while the accumulator is topmost. The 9 of 10 is the
+   score of an over-strong rule; the ruling stands on the SHAPE of the trade
+   and the number is being re-taken. Section 8.
+3. ~~**What is it called?**~~ RULED 2026-08-16 (Damian): **`bounded`**, in the
+   same slot as `punctual`, followed by the class:
+
+   ```
+     bounded linear unpack-text : Bytes -> Text
+     unpack-text (bs) = unpack-go bs 0 ""
+
+     unpack-go (bs) (i) (acc) =
+       if i == list-length bs then acc
+       else unpack-go bs (i + 1) (acc & byte-to-text (list-at bs i))
+   ```
+
+   which today compiles and is quadratic, and under the declaration is refused
+   with the site named:
+
+   ```
+     CDX6101 unpack-text declares bounded linear but calls unpack-go, inferred
+             growing: argument acc is copied by & at Unpack.codex:14 inside a
+             self tail call
+   ```
+
+   The diagnostic number is illustrative; blu allocates the real codes in
+   `CdxCodes.codex`.
 4. ~~**Are 3.1 and 3.2 worth doing ahead of any of it?**~~ CLOSED 2026-08-15:
    both taken. 3.1 paid for itself immediately by catching 3.5's own
    misattribution, which is the argument for measuring before publishing
    rather than publishing what a prior session recorded.
+
+## 8. The kill rate, measured (2026-08-16, blu)
+
+**This is the number question 2 asks for. The ruling it wants is whether it
+ships.** The `growing` inference of section 5 question 1 is built and scored
+against the corpus in section 7. It is compiler-side only: no declaration, no
+surface syntax, reached through a `cost-report` mode flag that is off for
+every ordinary compile, so the tree is unaffected either way (the standing
+gate is green with it in, 265 clean, 0 regressions).
+
+| rule set | positives caught | negatives left alone | total |
+|---|---|---|---|
+| rule 1 alone | 5 of 5 | 3 of 5 | 8 of 10 |
+| rule 1 + rule 2 | **5 of 5** | **4 of 5** | **9 of 10** |
+
+**This table is the 2026-08-16 measurement against the ten-entry corpus and it
+is superseded. Section 8b has the current one**, against eleven entries and a
+compiler that extends a Text accumulator in place; both the denominator and one
+entry's label changed underneath it, so the numbers here do not compare with
+the numbers there.
+
+- **Rule 1**: an argument in position *i* of a self call is that function's own
+  parameter *i* with `&` applied to it. **It fires on that shape AS SUCH and
+  does not ask whether anything allocates between the appends.**
+- **Rule 2**: an append whose right operand is an empty literal aliases rather
+  than copies, so it does not grow.
+
+**Rule 1 as stated is too strong, and the correction is pending (red and
+Damian, 2026-08-16).** `&` on Text is not an unconditional copy.
+`emit-str-concat-prologue` (`X86_64TextHelpers.codex:160-182`) computes
+`left_base + aligned(len(left))` and compares it against the allocation
+frontier in `r10`; when they meet, the left operand is the TOPMOST allocation
+and `emit-str-concat-fast-copy` rewrites its length in place and appends the
+bytes. Only otherwise does it branch to the copying slow path. That is the
+same three-path shape `__list_snoc` has and `DevelopersGuide.md` already
+documents for lists.
+
+So accumulating with `&` is linear while the accumulator stays topmost, and
+quadratic when something allocates BETWEEN the appends and pushes it off the
+frontier. `unpack-text` was quadratic for that second reason -- `byte-to-text`
+allocated between appends -- and not because `&` copies as such. **The rule
+that ships must test the intervening allocation, not the append.** Until it
+is re-scored the 9-of-10 above is the score of the over-strong rule and
+should not be quoted as the score of the check.
+
+**RESOLVED 2026-08-16, and the 9 of 10 stands as the score of what runs.**
+The in-place path is DEAD CODE and deliberately so. `emit-str-concat-prologue`
+ends `cmp-rr r13 r10` followed by `jmp 0` at
+`X86_64TextHelpers.codex:178` -- an UNCONDITIONAL jump, patched by
+`patch-jmp-at` (`:222`) to the slow path, where every real conditional in that
+file uses `jcc`. The comparison's result is discarded. `__str_concat` has
+fresh-allocated on every call since CL 2823 (2026-05-30, val, Bug 2), for
+aliasing safety. So `&` IS a copy today, three paths collapse to one, and the
+guide's Text sentence is right about what runs even though it is wrong about
+what the emitter contains.
+
+Two probes were built to get there and are kept as instruments rather than
+discarded: `codex/test/cost/literal-alloc` measures that a Text literal
+allocates NOTHING per evaluation (0 bytes at n and 4n) and that hoisting the
+literal out of the loop is byte-identical, which removes the obvious
+explanation; `codex/test/cost/str-concat-inplace` appends a fixed 64-character
+piece one, two and three times in a straight line and reads the deltas: 552
+then 616, climbing by exactly the piece length. In-place extension gives flat
+deltas. Growing deltas are copying, measured without a loop or a tail call to
+blame.
+
+**The consequence for the rule is a deferral, not a change.** Keying `growing`
+on an allocation BETWEEN the appends is the right shape for after COMPILER-8
+makes the linear-accumulator case in-place, and it is the wrong rule today:
+today `p-append-text` has nothing between its appends and is quadratic anyway,
+so a between-appends rule would score 4 of 5 on the quadratic half and breach
+the bar question 2 set. **The refinement therefore lands in the COMPILER-8 CL,
+with the semantics change that makes it true, and not before.** A rule and the
+optimisation it models have to move together or one of them is lying.
+
+### 8b. RULE 3, and the deferral above is now closed (2026-08-16, blu)
+
+COMPILER-8 landed at main 16039 and the deferral's own condition came true, so
+the refinement above is built. **Rule 3: a Text append with a non-allocating
+right operand does not grow; every List append does, and so does a Text append
+whose right operand allocates.** The type comes from `infer-and`, which records
+its append route at the binary span (the same record the CDX6002 fix
+installed), and the right operand is read as allocating unless it is a literal,
+a name, or a field access of one, which is question 1's abstain-toward-refusal
+pointed the only safe way.
+
+**The worry that caused the deferral did not survive contact.** It was that a
+between-appends rule would drop the quadratic half to 4 of 5. Measured on the
+eleven-entry corpus it does not: `p-append-show` is Text with an allocating
+right operand and is caught, so the quadratic half stays at 5 of 5.
+
+| rule set | positives caught | negatives left alone | total |
+|---|---|---|---|
+| rules 1 + 2 (what shipped) | 5 of 5 | 4 of 6 | 9 of 11 |
+| rules 1 + 2 + rule 3 | **5 of 5** | **5 of 6** | **10 of 11** |
+
+**Both rows are measured by ablation and neither is derived.** The shipped rule
+is not reconstructed on paper: the previous seed is still a compiler that
+carries it, so the ablation is that binary run over the SAME corpus in
+`cost-report` mode. It flags seven definitions to the refined rule's six, the
+difference is `p-append-text` alone, and nothing else moves. That is rule 3
+buying exactly the entry it was written to buy, on the same evidence standard
+rule 2 was measured to.
+
+**The surviving false positive is still `n-fixed-appends` and it is unchanged
+by any of this.** It is a List accumulator, so rule 3 never reaches it; the
+over-refusal COMPILER-7 asks to revisit is the same one, for the same reason,
+and this refinement neither helps nor hurts it.
+
+**Nothing outside the corpus was flagged**, six diagnostics in the whole
+compilation unit and all six in the corpus chapter, so the report is complete
+rather than truncated.
+
+Both numbers are measured by ablation, not derived. With rule 2 removed,
+`n-append-empty` joins the flagged set and nothing else moves, so rule 2 buys
+exactly the one entry the corpus put there to buy it.
+
+**The surviving false positive is `n-fixed-appends`, and it is the honest
+shape of the remaining cost.** It appends to a growing accumulator, in a self
+call, with the append operator, and is linear because the append runs exactly
+four times however large the input gets. Catching it needs a rule that decides
+whether the append count is bounded by a literal rather than by an input,
+which is real analysis and not a predicate. **Under "abstain toward refusal"
+(question 1's ruling) a false positive is the cheap direction**: it is paid in
+a declaration an author can choose not to write, whereas a missed `growing` is
+the defect this whole document exists for. On that reading 5 of 5 with one
+over-refusal is already the right side of the trade, and the third rule is a
+comfort improvement rather than a correctness one. That is the argument, not
+the decision.
+
+**Nothing outside the corpus was flagged.** Six diagnostics total across the
+whole compilation unit, all six in the corpus chapter, so the report is
+complete rather than truncated and no foreword chapter the corpus cites
+carries this shape.
+
+**Two things found while building it, and the second is a defect in shipped
+code.** First, `&` is `OpAnd` and not `OpAppend`: `desugar-bin-op` maps the
+token to `OpAnd` (`Desugarer.codex:249`), and `infer-and` then splits on the
+left operand's resolved type, sending `BooleanTy` to logical-and and
+everything else to concatenation. `OpAppend` reaches the AST only from the
+`show`-of-a-record desugaring. A rule matching `OpAppend` scores zero while
+reading as correct, which is what the first build did.
+
+Second, and it follows from the same fact: **`TypeChecker.codex:1401`'s
+punctual heap-allocation check matches `OpAppend` and cannot fire on a `&`
+written in source.** Its message says "uses text concatenation (&)". It can
+only ever see the synthetic nodes from `show`. So a `punctual` function doing
+text concatenation is not refused by CDX6002 today. That is reported here
+because this document owns the cost subject; the fix belongs with whoever owns
+`punctual`, and it wants a test either way (L-UNCALLED).
+
+**FIXED (blu, 2026-08-16).** `infer-and` already makes the only decision that
+separates the two jobs of `&`, so it now records the append route at the binary
+span through `record-expr-type`, and `check-rt-no-alloc` refuses an `OpAnd`
+carrying that record. Measured both directions on one file of three punctual
+concatenations: the depot seed compiles it clean at exit 0, the fixed compiler
+answers three CDX6002 at the three spans. The arm is
+`codex/test/errors/punctual-text-append` and the control is a punctual
+`is-imminent` in `codex/test/examples/missile-warning` folding two comparisons
+with a Boolean `&`, which must stay legal and is printed rather than merely
+compiled. The recorded type is the RESOLVED LEFT OPERAND, so the Text and List
+routes are now distinguishable to any later cost rule that needs to tell them
+apart.
+
+## 7. The kill-rate corpus (built 2026-08-16, blu)
+
+`codex/test/cost/accumulator-corpus`. Eleven entries: five quadratic, which a
+check MUST catch, and six linear, which it MUST NOT flag.
+
+**Two of those rows moved after COMPILER-8 (main 16039) made a Text
+accumulator extend in place, and the corpus is the thing that noticed.**
+`p-append-text` was measured quadratic at x12.7 when the corpus was built and
+is measured linear at x3.6 now, on identical source: it changed sides because
+the compiler changed underneath it, which is what a measured corpus is for and
+what a hand-labelled one would have hidden. `p-append-show` was added in the
+same pass as its pair, appending `show i` rather than a literal, so the Text
+half now carries both directions instead of only the one COMPILER-8 turned
+green.
+
+**Every label is measured, not declared.** Each entry runs at n, 2n and 4n and
+reports bytes retained across the call from `__heap-save`. Quadratic allocation
+quadruples into roughly sixteen times the bytes, linear into roughly four, and
+`verdict` thresholds the n-to-4n ratio at eight. Hand-labelling would have made
+the corpus an assertion with no runner, and it would have been graded by the
+same judgement that wrote it, which is the defect `battery-reorg` and
+`gpu/DeviceMath` are named for.
+
+| entry | n=64 | 4n=256 | ratio | label |
+|---|---|---|---|---|
+| `p-append-one` | 20,240 | 277,520 | x13.7 | quadratic |
+| `p-append-show` | 5,304 | 82,528 | x15.5 | quadratic |
+| `p-append-chunk` | 71,696 | 1,073,168 | x14.9 | quadratic |
+| `p-expand-blocks-old` | 140,304 | 2,134,032 | x15.2 | quadratic |
+| `p-syslog-body` | 20,240 | 277,520 | x13.7 | quadratic |
+| `p-append-text` | 72 | 264 | x3.6 | linear |
+| `n-push-one` | 528 | 2,064 | x3.9 | linear |
+| `n-push-block` | 4,112 | 16,400 | x3.9 | linear |
+| `n-fixed-appends` | 320 | 320 | x1.0 | linear |
+| `n-fresh-not-acc` | 7,232 | 28,768 | x3.9 | linear |
+| `n-append-empty` | 3,088 | 12,304 | x3.9 | linear |
+
+**The populations do not touch.** Worst positive x13.7, best negative x3.9, and
+the threshold sits in the gap between them rather than just past one side. The
+ratio is printed and not only the verdict, so a later reader can see the margin
+and judge whether eight is still the right cut; a row that says "quadratic" and
+nothing else hides exactly that.
+
+**The negatives are the half that makes it an instrument.** A corpus of
+quadratic cases alone cannot separate a good check from one that refuses every
+append, and that check scores a perfect kill rate. Four negatives look like
+positives to any test that reads for the append operator. `p-append-text` is
+the one that was not written that way and became it: `acc & "x"` in a self tail
+call is the textbook quadratic shape and is linear on this compiler, so it is
+now the row that separates a rule reading the OPERATOR from one reading the
+ALLOCATION. The other three were built for the job:
+`n-fixed-appends` appends to a growing accumulator in a self-tail-call but a
+constant four times however large n gets (flat at 320 bytes, the strongest row
+in the table); `n-fresh-not-acc` appends per iteration to something that is not
+the accumulator; `n-append-empty` appends the accumulator to an always-empty
+list, so the result aliases and nothing is copied. A static filter over `acc &`
+flags all three, which is the shape of the 575-findings-none-real result
+recorded for the subset-cites filter.
+
+**The corpus carries its own control.** Entries 4 and 7 are the same task in
+two implementations -- `pb-expand-blocks` as it was written and as it was
+fixed -- and they land on opposite verdicts from measurement alone, with no
+label doing the work. Entry 4 is also the one real instance with a published
+before and after: the chapter's prose records that at the default 4096 blocks
+the append form needed two to three gigabytes and died silently with exit zero
+and truncated output. At n=256 it already retains 2.1 MB against the fixed
+form's 16 KB.
+
+**Bytes RETAINED is the honest unit here and not an approximation.** Bare metal
+has no collector, so what a loop allocates and abandons is retained until the
+producing function returns. That is what makes a heap-pointer difference an
+exact measure rather than a sample.
+
+**It is run by `build/cost-corpus.ps1`, on demand, and it is NOT in the
+battery.** `codex\test\cost` is deliberately absent from `build/test.ps1`'s
+`$allDirs` and must stay absent: Damian's 2026-07-27 ruling is that harnesses
+are built and not gated (`ExaminersAssay.md`, "Build the instrument; do not gate
+it"). The script is what stops that being the same defect the corpus exists to
+avoid, one level up. **A corpus with no runner is an assertion with no runner,
+and the first version of this work shipped exactly that** -- ten measured rows,
+a recorded answer key, and nothing anywhere that would ever run them again. It
+was caught by handing the task to an agent that had not seen this work, which is
+the only reading that could have caught it, since the author knows how to run it
+by hand and therefore cannot notice that nobody else does.
+
+**The script checks the PROPERTIES, not the bytes.** Every `p-` entry must
+measure quadratic and every `n-` entry linear -- the name declares intent, the
+run measures it, and disagreement either way is the finding -- and the two
+populations must still not touch with 8 between them. A moved number is
+reported separately from a broken property, because an allocator change can move
+every figure in the table without invalidating anything. Ablated by declaring
+one linear entry quadratic, it fails twice, on the misdeclaration and on the
+collapsed separation.
+
+**What the corpus does not do.** It does not say what score a check must reach,
+which is a ruling. It does not cover the non-tail-recursive or mutually
+recursive forms; every entry is the accumulator-in-a-self-tail-call shape that
+question 1 names as the first and possibly only target, and `punctual` already
+needed a `punctual-mutual-recursion` refusal test, so that gap has bitten the
+sibling feature. **It tests no intermediate growth rate**: all ten entries sit
+at roughly x4 or x13-15, so nothing establishes where an n log n allocator
+lands, and the threshold of 8 is unvalidated against one. And it does not
+establish that the tree's **523** sites of `(acc & ` are mostly this shape --
+that count is the raw operator, unclassified, and classifying it is the next
+step rather than a claim made here. (This said 516 until 2026-08-16; the first
+figure came off a truncated grep and was carried into the document unchecked,
+which is L-COUNT committed in the same paragraph that calls the number raw.)
 
 ## 6. What this document is NOT
 

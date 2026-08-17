@@ -115,7 +115,7 @@ Section: Type Definition Emission
   emit-py-type-def (td) =
    when td
     is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
-     emit-py-record-type (name.value) fields
+     emit-py-record-type (name.value) fields recmut
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      if is-tup-type (name.value) then ""
      else emit-py-sum-type ctors
@@ -144,13 +144,14 @@ Section: Type Definition Emission
    if i == list-length fields then ""
    else "    field" & integer-to-text i & ": Any = None\n" & emit-py-ctor-fields fields (i + 1)
 
-  emit-py-record-type : Text, List ARecordFieldDef -> Text
-  emit-py-record-type (name) (fields) =
+  emit-py-record-type : Text, List ARecordFieldDef, Boolean -> Text
+  emit-py-record-type (name) (fields) (recmut) =
    let sname = py-sanitize name
+   in let deco = if recmut then "@dataclass\n" else "@dataclass(frozen=True)\n"
    in if list-length fields == 0 then
-    "@dataclass(frozen=True)\nclass " & sname & ":\n    pass\n\n"
+    deco & "class " & sname & ":\n    pass\n\n"
    else
-    "@dataclass(frozen=True)\nclass " & sname & ":\n" & emit-py-record-fields fields 0 & "\n"
+    deco & "class " & sname & ":\n" & emit-py-record-fields fields 0 & "\n"
 
   emit-py-record-fields : List ARecordFieldDef, Integer -> Text
   emit-py-record-fields (fields) (i) =
@@ -504,7 +505,8 @@ Section: Builtin Dispatch
    PyBuiltinEmitter { name = "list-at", emit = \args ctx -> emit-py-expr (list-at args 0) ctx & "[" & emit-py-expr (list-at args 1) ctx & "]" },
    PyBuiltinEmitter { name = "list-insert-at", emit = \args ctx -> "(lambda _l, _i, _v: (_l.insert(_i, _v), _l)[1])(" & emit-py-expr (list-at args 0) ctx & ", " & emit-py-expr (list-at args 1) ctx & ", " & emit-py-expr (list-at args 2) ctx & ")" },
    PyBuiltinEmitter { name = "list-set-at", emit = \args ctx -> "(lambda _l, _i, _v: (_l.__setitem__(_i, _v), _l)[1])(" & emit-py-expr (list-at args 0) ctx & ", " & emit-py-expr (list-at args 1) ctx & ", " & emit-py-expr (list-at args 2) ctx & ")" },
-   PyBuiltinEmitter { name = "list-snoc", emit = \args ctx -> "(lambda _l, _v: (_l.append(_v), _l)[1])(" & emit-py-expr (list-at args 0) ctx & ", " & emit-py-expr (list-at args 1) ctx & ")" },
+   PyBuiltinEmitter { name = "list-snoc", emit = \args ctx -> "_cx_lpush(" & emit-py-expr (list-at args 0) ctx & ", " & emit-py-expr (list-at args 1) ctx & ")" },
+   PyBuiltinEmitter { name = "list-push", emit = \args ctx -> "_cx_lpush(" & emit-py-expr (list-at args 0) ctx & ", " & emit-py-expr (list-at args 1) ctx & ")" },
    PyBuiltinEmitter { name = "text-compare", emit = \args ctx -> "(0 if " & emit-py-expr (list-at args 0) ctx & " == " & emit-py-expr (list-at args 1) ctx & " else (-1 if " & emit-py-expr (list-at args 0) ctx & " < " & emit-py-expr (list-at args 1) ctx & " else 1))" },
    PyBuiltinEmitter { name = "text-replace", emit = \args ctx -> emit-py-expr (list-at args 0) ctx & ".replace(" & emit-py-expr (list-at args 1) ctx & ", " & emit-py-expr (list-at args 2) ctx & ")" },
    PyBuiltinEmitter { name = "text-concat-list", emit = \args ctx -> "\"\".join(" & emit-py-expr (list-at args 0) ctx & ")" },
@@ -549,7 +551,7 @@ Section: Builtin Dispatch
    PyBuiltinEmitter { name = "set-state", emit = \args ctx -> "(lambda _v: (_py_state.__setitem__(0, _v), _v)[1])(" & emit-py-expr (list-at args 0) ctx & ")" },
    PyBuiltinEmitter { name = "run-state", emit = \args ctx -> emit-py-run-state args ctx },
    PyBuiltinEmitter { name = "__linked-list-empty", emit = \args ctx -> "[]" },
-   PyBuiltinEmitter { name = "__linked-list-push", emit = \args ctx -> "(lambda _l, _v: (_l.append(_v), _l)[1])(" & emit-py-expr (list-at args 0) ctx & ", " & emit-py-expr (list-at args 1) ctx & ")" },
+   PyBuiltinEmitter { name = "__linked-list-push", emit = \args ctx -> "_cx_lpush(" & emit-py-expr (list-at args 0) ctx & ", " & emit-py-expr (list-at args 1) ctx & ")" },
    PyBuiltinEmitter { name = "__linked-list-to-list", emit = \args ctx -> emit-py-expr (list-at args 0) ctx },
    PyBuiltinEmitter { name = "text-to-double-bits", emit = \args ctx -> "__import__('struct').unpack('q', __import__('struct').pack('d', float(" & emit-py-expr (list-at args 0) ctx & ")))[0]" },
    PyBuiltinEmitter { name = "run-process-full", emit = \args ctx -> emit-py-run-process-full args ctx },
@@ -911,10 +913,27 @@ Section: Chapter Emission
    in if d.name == opening-entry-point then list-length (d.params) > 0
       else opening-has-params-loop defs (i + 1)
 
+ CPython bounds recursion with a COUNTER, `sys.setrecursionlimit`, whose
+ default is 1000, and not with the size of a stack. Codex source recurses
+ deeply and mutually -- the compiler's own lexer cycles scan-token ->
+ skip-prose-line -> scan-token, which no self-TCO pass can flatten -- so a
+ program that answers correctly on bare metal raises RecursionError here at
+ depth 1000. Measured: the counter is the whole fix on 3.11, which stopped
+ consuming C stack for Python-to-Python calls, and a 512 MB thread with the
+ default counter still dies. threading.stack_size(512MB) is REFUSED on
+ Windows CPython, so the csharp plug's constant cannot be ported literally.
+
+  py-recursion-limit : Text =
+   "import sys\nsys.setrecursionlimit(1000000)\n"
+
   py-emit-entry : CodexType, Boolean -> Text
   py-emit-entry (ret-ty) (has-params) =
    if has-params then ""
-   else when ret-ty
+   else py-recursion-limit & py-emit-entry-call ret-ty
+
+  py-emit-entry-call : CodexType -> Text
+  py-emit-entry-call (ret-ty) =
+   when ret-ty
     is EffectfulTy (effs) (sc) (inner) -> py-sanitize opening-entry-point & "()\n"
     is NothingTy -> py-sanitize opening-entry-point & "()\n"
     is ProofTy -> py-sanitize opening-entry-point & "()\n"
@@ -926,7 +945,7 @@ Section: Chapter Emission
   emit-python-chapter : IRChapter, List ATypeDef -> Text
   emit-python-chapter (m) (type-defs) =
    let ctx = PyCtx { arities = build-arity-map (m.defs) 0 [], type-defs = type-defs }
-   in let header = "from dataclasses import dataclass\nfrom typing import Any\nimport struct\n\n_py_state = [0]\n\n"
+   in let header = "from dataclasses import dataclass\nfrom typing import Any\nimport struct\n\n_py_state = [0]\n\ndef _cx_lpush(_l, _v):\n    if _l:\n        _l.append(_v)\n        return _l\n    return [_v]\n\n"
    in let types-text = emit-py-type-defs type-defs 0
    in let defs-text = emit-py-defs (m.defs) 0 ctx
    in let ret-ty = opening-return-type (m.defs)

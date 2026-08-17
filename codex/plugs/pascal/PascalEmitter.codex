@@ -24,6 +24,22 @@ Section: Keywords and Sanitization
    in if pas-is-keyword s 0 then s & "_v"
       else s
 
+ The IR spells a record field as `name/slot`, so a field name reaches the
+ emitter as `a/0` and reads as a division. riscv resolves the slot and
+ needs it; every source plug wants the name.
+
+  pas-slash-pos : Text, Integer, Integer -> Integer
+  pas-slash-pos (f) (i) (len) =
+   if i >= len then (-1)
+   else if char-to-text (char-at f i) == "/" then i
+   else pas-slash-pos f (i + 1) len
+
+  pas-field : Text -> Text
+  pas-field (f) =
+   let slash = pas-slash-pos f 0 (text-length f)
+   in if slash >= 0 then pas-sanitize (substring f 0 slash)
+      else pas-sanitize f
+
   pas-escape : Text -> Text
   pas-escape (s) = text-replace s "'" "''"
 
@@ -142,7 +158,7 @@ Section: Expression Emission
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-pas-expr-at body arities (depth + 1)
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-pas-expr-at body arities (depth + 1)
     is IrRecord (name) (fields) (ty) (sp) -> "Make" & pas-sanitize name & "(" & emit-pas-field-vals fields 0 arities & ")"
-    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-pas-expr-at rec arities (depth + 1) & "." & pas-sanitize field
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-pas-expr-at rec arities (depth + 1) & "." & pas-field field
     is IrFieldStore (rec) (field) (val) (ty) (sp) -> "0"
     is IrFork (body) (ty) (sp) -> emit-pas-expr-at body arities (depth + 1)
     is IrAwait (task) (ty) (sp) -> emit-pas-expr-at task arities (depth + 1)
@@ -232,6 +248,125 @@ Section: Expression Emission
     is IrDoExec (e) (sp) -> emit-pas-expr e arities
     is IrDoBind (name) (ty) (val) (sp) -> emit-pas-expr val arities
 
+ A Pascal function body is statements, so an act block in the body position
+ emits one per statement rather than collapsing to its last.
+
+ Two of the builtins this plug maps reach Pascal PROCEDURES -- print-line-uni
+ is WriteLn and process-exit is Halt -- and a procedure has no result to
+ assign, so `Result := WriteLn(...)` does not compile. Those emit as a bare
+ call statement and everything else assigns to Result, which is valid for any
+ expression and leaves Result holding the last value-bearing statement.
+
+ emit-pas-act-expr above is the EXPRESSION position -- an act nested inside
+ another expression, where Pascal has nowhere to put a statement -- and still
+ answers only the last statement. That is a narrower case of the same gap and
+ it is still open.
+
+ A Codex binding becomes a Pascal assignment, and Pascal wants every
+ assignable name declared in a `var` block ahead of `begin`. Only a binding
+ in the body's own let-chain or act-statement list can be reached that way: an
+ IrLet nested inside another EXPRESSION has nowhere to put a statement, which
+ is the same hoisting gap emit-pas-act-expr has and is still open.
+
+ A name already declared as a parameter must NOT be redeclared, so the
+ collection is seeded with the parameter names and only what it gathers past
+ that seed reaches the var block. Rebinding a parameter then assigns the
+ parameter, which is what the source means.
+
+  pas-name-known : List Text, Text, Integer -> Boolean
+  pas-name-known (xs) (n) (i) =
+   if i >= list-length xs then False
+   else if list-at xs i == n then True
+   else pas-name-known xs n (i + 1)
+
+  pas-add-name : List Text, Text -> List Text
+  pas-add-name (xs) (n) = if pas-name-known xs n 0 then xs else list-push xs n
+
+  pas-collect-binds : IRExpr, List Text -> List Text
+  pas-collect-binds (e) (acc) =
+   when e
+    is IrLet (name) (ty) (val) (body) (sp) -> pas-collect-binds body (pas-add-name acc (pas-sanitize name))
+    is IrAct (stmts) (ty) (sp) -> pas-collect-act-binds stmts 0 acc
+    is otherwise -> acc
+
+  pas-collect-act-binds : List IRActStmt, Integer, List Text -> List Text
+  pas-collect-act-binds (stmts) (i) (acc) =
+   if i >= list-length stmts then acc
+   else let acc1 = when list-at stmts i
+       is IrDoBind (name) (ty) (val) (sp) -> pas-add-name acc (pas-sanitize name)
+       is IrDoExec (ex) (sp) -> acc
+   in pas-collect-act-binds stmts (i + 1) acc1
+
+  pas-seed-params : List IRParam, Integer, List Text -> List Text
+  pas-seed-params (params) (i) (acc) =
+   if i >= list-length params then acc
+   else pas-seed-params params (i + 1) (pas-add-name acc (pas-sanitize ((list-at params i).name)))
+
+  pas-names-from : List Text, Integer -> Text
+  pas-names-from (xs) (i) =
+   if i >= list-length xs then ""
+   else if i == list-length xs - 1 then list-at xs i
+   else list-at xs i & ", " & pas-names-from xs (i + 1)
+
+ The seed's LENGTH is taken before the collection runs, and that is not a
+ style choice. `list-push` extends in place when the backing array has spare
+ capacity and answers the same pointer, so reading `list-length seed` after
+ pushing onto it reads the GROWN list and the guard can never fire. That is
+ the pattern `docs/Designs/Done/Language/SAFE-MUTATION.md` marks unsafe, it
+ cost a build here, and an Integer bound first cannot be mutated under you.
+
+  pas-var-block : List IRParam, IRExpr -> Text
+  pas-var-block (params) (body) =
+   let seed = pas-seed-params params 0 []
+   in let nseed = list-length seed
+   in let all = pas-collect-binds body seed
+   in if list-length all <= nseed then ""
+      else "var " & pas-names-from all nseed & ": Variant;\n"
+
+  pas-last-bind-name : List IRActStmt -> Text
+  pas-last-bind-name (stmts) =
+   if list-length stmts == 0 then ""
+   else when list-at stmts (list-length stmts - 1)
+    is IrDoBind (name) (ty) (val) (sp) -> pas-sanitize name
+    is IrDoExec (e) (sp) -> ""
+
+  pas-proc-builtin : Text -> Boolean
+  pas-proc-builtin (n) = n == "print-line-uni" | n == "process-exit"
+
+  pas-head-name : IRExpr -> Text
+  pas-head-name (e) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> pas-head-name f
+    is IrName (n) (ty) (sp) -> n
+    is otherwise -> ""
+
+  emit-pas-act-stmts : List IRActStmt, Integer, List ArityEntry -> Text
+  emit-pas-act-stmts (stmts) (i) (arities) =
+   if i >= list-length stmts then ""
+   else let s = list-at stmts i
+   in let e = when s
+       is IrDoExec (ex) (sp) -> ex
+       is IrDoBind (name) (ty) (val) (sp) -> val
+   in let one = emit-pas-expr e arities
+   in let line = when s
+       is IrDoBind (nm) (ty) (v) (sp) -> "  " & pas-sanitize nm & " := " & one & ";\n"
+       is IrDoExec (ex) (sp) ->
+        if pas-proc-builtin (pas-head-name e) then "  " & one & ";\n"
+        else "  Result := " & one & ";\n"
+   in line & emit-pas-act-stmts stmts (i + 1) arities
+
+  emit-pas-body : IRExpr, List ArityEntry -> Text
+  emit-pas-body (e) (arities) =
+   when e
+    is IrAct (stmts) (ty) (sp) ->
+     if list-length stmts == 0 then "  Result := 0;\n"
+     else let body = emit-pas-act-stmts stmts 0 arities
+     in let lastb = pas-last-bind-name stmts
+     in if text-length lastb > 0 then body & "  Result := " & lastb & ";\n" else body
+    is IrLet (name) (ty) (val) (body) (sp) ->
+     "  " & pas-sanitize name & " := " & emit-pas-expr val arities & ";\n" & emit-pas-body body arities
+    is otherwise -> "  Result := " & emit-pas-expr e arities & ";\n"
+
 Section: Apply Emission
 
   emit-pas-apply : IRExpr, List ArityEntry -> Text
@@ -297,10 +432,11 @@ Section: Definition Emission
   emit-pas-def : IRDef, List ArityEntry -> Text
   emit-pas-def (d) (arities) =
    let name = pas-sanitize (d.name)
+   in let vars = pas-var-block (d.params) (d.body)
    in if list-length (d.params) == 0 then
-    "function " & name & ": Variant;\nbegin\n  Result := " & emit-pas-expr (d.body) arities & ";\nend;\n\n"
+    "function " & name & ": Variant;\n" & vars & "begin\n" & emit-pas-body (d.body) arities & "end;\n\n"
    else
-    "function " & name & "(" & emit-pas-def-params (d.params) 0 & "): Variant;\nbegin\n  Result := " & emit-pas-expr (d.body) arities & ";\nend;\n\n"
+    "function " & name & "(" & emit-pas-def-params (d.params) 0 & "): Variant;\n" & vars & "begin\n" & emit-pas-body (d.body) arities & "end;\n\n"
 
   emit-pas-def-params : List IRParam, Integer -> Text
   emit-pas-def-params (params) (i) =
@@ -341,7 +477,7 @@ Section: Chapter Emission
    if i >= list-length defs then ""
    else let d = list-at defs i
    in if d.name == opening-entry-point then
-    if list-length (d.params) == 0 then "WriteLn(" & pas-sanitize opening-entry-point & ");\n" else ""
+    if list-length (d.params) == 0 then pas-sanitize opening-entry-point & ";\n" else ""
    else pas-emit-entry-loop defs (i + 1)
 
 Page 1

@@ -36,6 +36,108 @@ Section: Bounded fields
   gauge : Integer -> Integer
   gauge (n) = (Gauge { g = n }).g
 
+Section: List literals
+
+ A statically typed target has to name the element type of a list before
+ it can build one, and a literal is the one place that type appears
+ nowhere but in the elements. Zig rejects the array outright when the
+ plug guesses wrong; C and Java would take a wrong guess and run. The
+ length and the element read are both here because a wrong element type
+ can still produce a list of the right length.
+
+  lit-len : Integer -> Integer
+  lit-len (n) = list-length [10, 20, 30, 40]
+
+  lit-at : Integer -> Integer
+  lit-at (i) = list-at [10, 20, 30, 40] i
+
+Section: List push
+
+ `list-push` and `list-snoc` are two SOURCE names for one operation and the
+ IR carries whichever the source wrote, so a plug that registers only one of
+ them emits a call to a function it never defines for the other. Sixteen
+ registered `list-snoc` alone while `list-push` is the spelling this codebase
+ uses, and nothing here saw it because this subject exercised neither name.
+
+  push-len : Integer -> Integer
+  push-len (n) = list-length (list-push [10, 20] n)
+
+  push-at : Integer -> Integer
+  push-at (n) = list-at (list-push [10, 20] n) 2
+
+  snoc-len : Integer -> Integer
+  snoc-len (n) = list-length (list-snoc [10, 20] n)
+
+ Aliasing is deliberately NOT asked about here. Measured on x86-64
+ 2026-08-16: after `let a = [] in let b = list-push a n in let c =
+ list-push a (n + 1)`, all three names report length 2 and the same element,
+ so `__list_snoc` extended the topmost allocation in place and returned the
+ same pointer both times. A non-empty literal behaves the same way. No
+ transpilation target reproduces that, and a row asserting it would fail every
+ plug that copies -- which is most of them -- while passing the ones that
+ append in place. It belongs in plugs-backlog 1.7, not in a cross-language
+ oracle.
+
+Section: Mutable records
+
+ A store into a `mutable` record field is the quietest thing a plug can get
+ wrong: emit it as an expression whose result is discarded and the program
+ compiles, runs, and answers the value the field had BEFORE the store. Kotlin
+ does exactly that (`rec.copy(field = value)` in statement position) and Scala
+ has the same shape, so this is not hypothetical. Nothing ran a plug's output
+ on a mutable record before this.
+
+ Two fields and two stores, because a plug can emit a single store correctly by
+ accident and still drop the second, and the read-back is what makes a
+ discarded store visible at all.
+
+  mutable Cell = record {
+    ca : Integer,
+    cb : Integer
+  }
+
+  store-one : Integer -> Integer
+  store-one (n) =
+    let c = Cell { ca = 0, cb = 0 }
+    in c.ca = n
+    in c.ca
+
+  store-two : Integer -> Integer
+  store-two (n) =
+    let c = Cell { ca = 0, cb = 0 }
+    in c.ca = n
+    in c.cb = c.ca + 1
+    in c.cb
+
+  store-untouched : Integer -> Integer
+  store-untouched (n) =
+    let c = Cell { ca = 0, cb = 7 }
+    in c.ca = n
+    in c.cb
+
+Section: Deep recursion
+
+ Codex source assumes deep recursion is free: bare metal answers it with a
+ multi-gigabyte arena. A conventional runtime answers it with a fixed stack or
+ a counter, and the case that reaches the limit is MUTUAL recursion, which no
+ self-tail-call pass can flatten. Both shapes are here because a self-only row
+ is green on every plug that has TCO and says nothing.
+
+  down : Integer -> Integer
+  down (n) = if n <= 0 then 0 else down (n - 1)
+
+  ping : Integer -> Integer
+  ping (n) = if n <= 0 then 0 else pong (n - 1)
+
+  pong : Integer -> Integer
+  pong (n) = if n <= 0 then 1 else ping (n - 1)
+
+ sum-to is the row nothing can flatten, because the call is not in tail
+ position, and the only recursion row whose answer is a large number rather
+ than 0: a plug that returns a wrong value instead of dying is caught here.
+
+  sum-to : Integer -> Integer
+  sum-to (n) = if n <= 0 then 0 else n + sum-to (n - 1)
 Section: Report
 
   opening : [Console] Nothing
@@ -60,4 +162,17 @@ Section: Report
    print-line-uni (show (gauge 150))
    print-line-uni (show (gauge (0 - 150)))
    print-line-uni (show (gauge 42))
+   print-line-uni (show (lit-len 0))
+   print-line-uni (show (lit-at 2))
+   print-line-uni (show (push-len 30))
+   print-line-uni (show (push-at 30))
+   print-line-uni (show (snoc-len 30))
+   print-line-uni (show (store-one 55))
+   print-line-uni (show (store-two 55))
+   print-line-uni (show (store-untouched 55))
+   print-line-uni (show (down 100000))
+   print-line-uni (show (ping 1000))
+   print-line-uni (show (ping 100000))
+   print-line-uni (show (sum-to 1000))
+   print-line-uni (show (sum-to 100000))
   end

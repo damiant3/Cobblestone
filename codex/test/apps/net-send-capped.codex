@@ -1,0 +1,79 @@
+Chapter: NetSendCapped
+  cites Net chapter NetIO
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
+  cites Net chapter Tcp
+  cites Foreword chapter Console
+
+Section: A Session With No Room Left
+
+ The setup is `arm64-send-refusal`'s, moved to the x86 path. Both refusal
+ arms are driven with the connection closed as well as the queue full, and
+ that is deliberate: `net-io-send-drain` returns at its own closed check
+ before it polls, so no arm here reaches `net-driver-recv-frame` and the
+ test needs no NIC. `net-rexmit-full` is tested before `net-io-conn-closed`
+ in the sender, so the full-queue arm is the one that answers first.
+
+ The last two arms are the state machine rather than the queue, and they are
+ the pair that has to disagree. CLOSE_WAIT means the PEER will send no more;
+ the local side may still send, and a plug answering a request over a
+ half-closed socket is exactly that case. SYN_SENT is not yet a connection
+ and must refuse. Both pass `net-rexmit-full` and `net-io-conn-closed`
+ -- CLOSE_WAIT and SYN_SENT are neither full nor `TcpClosed` -- so it is the
+ outbox that separates them, and a checked sender that tested only those two
+ predicates called both of them complete.
+
+  cli-mac : List Integer = [82, 85, 10, 0, 2, 2]
+  cli-ip : List Integer = [10, 0, 2, 100]
+  srv-ip : List Integer = [10, 0, 2, 15]
+  gw-ip : List Integer = [10, 0, 2, 2]
+
+  seg0 : RexmitSeg = RexmitSeg { rx-frame = [], rx-ack = 0, rx-sent = 0, rx-resent = False }
+
+  fill-queue : Integer, List RexmitSeg -> List RexmitSeg
+  fill-queue (n) (acc) = if n <= 0 then acc else fill-queue (n - 1) (list-push acc seg0)
+
+  base-sess : NetSession = net-session-new cli-mac cli-ip gw-ip 50000 80 srv-ip 1000
+
+  stalled : NetSession =
+    let closed = set-conn base-sess (tcp-set-state (base-sess.conn) TcpClosed)
+    in set-rexmit closed (fill-queue net-rexmit-capacity []) 3 0
+
+Section: Payload
+
+ 50,000 bytes is 35 chunks at `net-mss`, so a refusal that answered from
+ the wrong end of the buffer would report a five-digit `sent` rather than
+ zero.
+
+  mk-bytes : Integer, List Integer -> List Integer
+  mk-bytes (n) (acc) = if n <= 0 then acc else mk-bytes (n - 1) (list-push acc 65)
+
+  payload-len : Integer = 50000
+
+Section: Entry
+
+  opening : [Console, Network.Read, Network.Write] Nothing = act
+    let data = mk-bytes payload-len []
+    in let ts-stalled = transport-new stalled
+    in act
+      print-line-uni ("queue-full=" & show (net-rexmit-full stalled) & " cap-bytes=" & show (net-rexmit-capacity * net-mss))
+
+      r1 <- net-io-send-raw-checked ts-stalled data
+      print-line-uni ("stalled complete=" & show (r1.ns-complete) & " sent=" & show (r1.ns-sent) & " of " & show payload-len)
+
+      r2 <- net-io-send-text-checked ts-stalled "the quick brown fox"
+      print-line-uni ("stalled-text complete=" & show (r2.ns-complete) & " sent=" & show (r2.ns-sent))
+
+      r3 <- net-io-send-raw-checked ts-stalled []
+      print-line-uni ("empty complete=" & show (r3.ns-complete) & " sent=" & show (r3.ns-sent))
+
+      r4 <- net-io-send-raw-checked (transport-new (set-conn base-sess (tcp-set-state (base-sess.conn) TcpEstablished))) [65, 66, 67]
+      print-line-uni ("healthy complete=" & show (r4.ns-complete) & " sent=" & show (r4.ns-sent))
+
+      r5 <- net-io-send-raw-checked (transport-new (set-conn base-sess (tcp-set-state (base-sess.conn) TcpCloseWait))) [65, 66, 67]
+      print-line-uni ("close-wait complete=" & show (r5.ns-complete) & " sent=" & show (r5.ns-sent))
+
+      r6 <- net-io-send-raw-checked (transport-new (set-conn base-sess (tcp-set-state (base-sess.conn) TcpSynSent))) [65, 66, 67]
+      print-line-uni ("syn-sent complete=" & show (r6.ns-complete) & " sent=" & show (r6.ns-sent))
+    end
+  end

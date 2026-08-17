@@ -6,13 +6,28 @@ Chapter: TrueType
  (font design units); scaling to pixels is the rasterizer's job.
 
 Section: Binary Helpers
+
+ Every field of every table is read at a fixed offset from a table offset the
+ FILE supplied, so a file that stops early is read past its end rather than
+ refused. A byte outside the buffer answers zero, and a zero answer is what the
+ downstream guards are built to catch: a truncated head table yields
+ unitsPerEm 0, which GlyphRasterizer refuses, so a short font renders blank
+ rather than killing the guest. There is nowhere here to report a refusal to --
+ TtfFont carries no validity field -- which is why this reads as zeros instead.
+
+  ttf-byte-at : List Integer, Integer -> Integer
+  ttf-byte-at (buf) (off) =
+    if off < 0 then 0
+    else if off >= list-length buf then 0
+    else list-at buf off
+
   ttf-u8 : List Integer, Integer -> Integer
-  ttf-u8 (buf) (off) = list-at buf off
+  ttf-u8 (buf) (off) = ttf-byte-at buf off
 
   ttf-u16 : List Integer, Integer -> Integer
   ttf-u16 (buf) (off) =
-    let hi = list-at buf off
-    in let lo = list-at buf (off + 1)
+    let hi = ttf-byte-at buf off
+    in let lo = ttf-byte-at buf (off + 1)
     in hi * 256 + lo
 
   ttf-i16 : List Integer, Integer -> Integer
@@ -22,10 +37,10 @@ Section: Binary Helpers
 
   ttf-u32 : List Integer, Integer -> Integer
   ttf-u32 (buf) (off) =
-    let a = list-at buf off
-    in let b = list-at buf (off + 1)
-    in let c = list-at buf (off + 2)
-    in let d = list-at buf (off + 3)
+    let a = ttf-byte-at buf off
+    in let b = ttf-byte-at buf (off + 1)
+    in let c = ttf-byte-at buf (off + 2)
+    in let d = ttf-byte-at buf (off + 3)
     in a * 16777216 + b * 65536 + c * 256 + d
 
 Section: Table Directory
@@ -42,10 +57,10 @@ Section: Table Directory
 
   ttf-read-tag : List Integer, Integer -> Integer
   ttf-read-tag (buf) (off) =
-    let a = list-at buf off
-    in let b = list-at buf (off + 1)
-    in let c = list-at buf (off + 2)
-    in let d = list-at buf (off + 3)
+    let a = ttf-byte-at buf off
+    in let b = ttf-byte-at buf (off + 1)
+    in let c = ttf-byte-at buf (off + 2)
+    in let d = ttf-byte-at buf (off + 3)
     in a * 16777216 + b * 65536 + c * 256 + d
 
   ttf-read-dir : List Integer -> TtfDir
@@ -272,7 +287,9 @@ Section: Glyf Table
 
   ttf-get-hmetric : List TtfHMetric, Integer -> TtfHMetric
   ttf-get-hmetric (hmetrics) (idx) =
-    if idx >= list-length hmetrics then list-at hmetrics (list-length hmetrics - 1)
+    if list-length hmetrics == 0 then TtfHMetric { hm-advance = 0, hm-lsb = 0 }
+    else if idx < 0 then list-at hmetrics 0
+    else if idx >= list-length hmetrics then list-at hmetrics (list-length hmetrics - 1)
     else list-at hmetrics idx
 
   ttf-read-simple-glyph : List Integer, Integer, Integer, TtfHMetric -> TtfGlyph

@@ -1,0 +1,106 @@
+Chapter: DeflateHostile
+  cites Compress chapter Deflate
+
+ Track D item 19, the Deflate half. Two shapes, and unlike Lz4 and Lz77 they
+ fail differently from each other: one traps, the other never returns.
+
+ Guarded because something runs it (red's ruling, 2026-08-16): `Brotli.codex:2408`
+ calls `deflate-copy`, and `deflate-dynamic-test` round trips through
+ `deflate-decompress`.
+
+ Rows 1 to 5 are the positive controls, including the dynamic path, which is
+ the one the loop guard sits in.
+
+ Row 6 is the back-reference. `deflate-fixed-match:827` and
+ `deflate-dyn-loop:900` both pass `list-length acc - dist` to `deflate-copy`,
+ and `dist` comes off the stream through `dist-base`, which answers 24577 for
+ code 29 and 32769 for code 30, both larger than any output a short stream has
+ produced. It is called here DIRECTLY rather than through a crafted stream:
+ hand-assembling bit-exact hostile Deflate is a separate job, and the value of
+ this row is that it pins the guard where BOTH call sites and Brotli's third
+ one land.
+
+ Row 7 is the one that matters and it is not a crash. `br-bit:727` answers 0
+ past the end of the input, so a dynamic block whose bytes run out mid-symbol
+ keeps decoding zeros forever: `deflate-dyn-loop` never sees end-of-block,
+ pushes a literal per pass and allocates without bound. `deflate-blocks:788`
+ has an exhaustion check but it sits OUTSIDE the block loop, so nothing
+ observes it once decoding of a dynamic block has begun. Ablated, this row
+ does not print a wrong answer, it never prints at all.
+
+Section: Helpers
+
+  list-equal : List Integer, List Integer, Integer, Integer -> Boolean
+  list-equal (a) (b) (i) (len) =
+    if i >= len then True
+    else if list-at a i == list-at b i then list-equal a b (i + 1) len
+    else False
+
+  check-rt : List Integer, Text -> Text
+  check-rt (input) (label) =
+    let c = deflate-compress input
+    in let d = deflate-decompress c
+    in let ok = if list-length d == list-length input then list-equal input d 0 (list-length input) else False
+    in label & "=" & if ok then "pass" else "fail"
+
+  check-rt-dyn : List Integer, Text -> Text
+  check-rt-dyn (input) (label) =
+    let c = deflate-compress-dynamic input
+    in let d = deflate-decompress c
+    in let ok = if list-length d == list-length input then list-equal input d 0 (list-length input) else False
+    in label & "=" & if ok then "pass" else "fail"
+
+  make-repeated : Integer, Integer, Integer, List Integer -> List Integer
+  make-repeated (val) (n) (i) (acc) =
+    if i >= n then acc
+    else make-repeated val n (i + 1) (list-push acc val)
+
+ A skewed input, so the dynamic encoder has a reason to build a real table
+ rather than falling back to the fixed block.
+
+  make-skew : Integer, Integer, List Integer -> List Integer
+  make-skew (n) (i) (acc) =
+    if i >= n then acc
+    else make-skew n (i + 1) (list-push acc (if i - (i / 8) * 8 == 0 then 66 else 65))
+
+  take-n : List Integer, Integer, Integer, List Integer -> List Integer
+  take-n (xs) (n) (i) (acc) =
+    if i >= n then acc
+    else if i >= list-length xs then acc
+    else take-n xs n (i + 1) (list-push acc (list-at xs i))
+
+  show-len : List Integer, Text -> Text
+  show-len (out) (label) = label & " len=" & show (list-length out)
+
+ Row 7 reports a BOUND, not a length. The exact output of a truncated stream
+ depends on where the cut lands in the table, so an exact number here would be
+ an oracle copied from a run of the code under test rather than derived from
+ anything. What the guard promises is that the walk stops when the bits do,
+ and 10000 is far above what the remaining bits of a halved 400-byte stream
+ can encode and far below the unbounded growth the ablated loop produces.
+
+  show-bounded : List Integer, Text -> Text
+  show-bounded (out) (label) =
+    label & " terminated bounded=" & (if list-length out < 10000 then "True" else "False")
+
+ The truncated stream keeps its dynamic header and loses the tail, so the
+ tables build and the symbol decode runs out of bytes.
+
+  truncated-dyn : List Integer
+  truncated-dyn =
+    let full = deflate-compress-dynamic (make-skew 400 0 [])
+    in take-n full (list-length full / 2) 0 []
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni (check-rt [] "1-empty")
+    print-line-uni (check-rt [1, 2, 3] "2-tiny")
+    print-line-uni (check-rt [65, 66, 67, 68, 65, 66, 67, 68, 65, 66, 67, 68] "3-repeating")
+    print-line-uni (check-rt (make-repeated 42 100 0 []) "4-uniform-100")
+    print-line-uni (check-rt-dyn (make-skew 400 0 []) "5-dynamic-skew")
+    print-line-uni (show-len (deflate-copy [65, 66, 67] (0 - 24577) 3) "6-copy-negative-src")
+    print-line-uni (show-bounded (deflate-decompress truncated-dyn) "7-truncated-dynamic")
+  end
+
+Page 1

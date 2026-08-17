@@ -78,14 +78,20 @@ foreach ($tf in $allTests) {
     elseif (Test-Path "$dir\$name.fatal")   { $skipReason = "fatal" }
     elseif (Test-Path "$dir\$name.failing") { $skipReason = "error test" }
     elseif (Test-Path "$dir\$name.smp")     { $skipReason = "multi-core (build/test-cross-smp.ps1)" }
+    elseif (Test-Path "$dir\$name.disk")    { $skipReason = "block device (build/test-cross-disk.ps1)" }
     elseif (Test-Path "$dir\$name.no-cross") { $skipReason = "no-cross: " + (Get-Content -TotalCount 1 "$dir\$name.no-cross") }
     else {
         # A machine-sidecar test names its own ineligibility: the fixture is
-        # the x86 codex-vm (a disk image, an attached CDX, VM flags, a
-        # scancode timeline), and no cross board can mount it. Excluded here
-        # the way .smp routes multi-core tests elsewhere, so the exclusion
-        # cannot rot the way a hand-kept list would (BatteryReorg step 10).
-        foreach ($mc in 'disk','disk2','disk-src','vmargs','keys') {
+        # the x86 codex-vm (an attached CDX, VM flags, a scancode timeline),
+        # and no cross board can mount it. Excluded here the way .smp routes
+        # multi-core tests elsewhere, so the exclusion cannot rot the way a
+        # hand-kept list would (BatteryReorg step 10).
+        #
+        # A plain .disk left this group 2026-08-16: QEMU can attach one as a
+        # virtio-mmio block device, so it is ROUTED above rather than
+        # ineligible. .disk2 and .disk-src stay here -- a second image and a
+        # compile-this-test-onto-the-disk fixture are still codex-vm's.
+        foreach ($mc in 'disk2','disk-src','vmargs','keys') {
             if (Test-Path "$dir\$name.$mc") { $skipReason = "machine sidecar (.$mc)"; break }
         }
     }

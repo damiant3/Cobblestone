@@ -656,6 +656,41 @@ Section: Address Remap Helpers
    in let i = rv-rt-emit i (rv-mv rv-a0 rv-zero)
    in rv-rt-emit i rv-ret
 
+ A halfword at an odd address may trap on a hart without misaligned-access
+ support (the trap stub here has no dispatch, so it hangs); an even address
+ takes the single lhu/sh a 16-bit device register needs, an odd one two byte
+ accesses, little-endian, as the ARM64 twin does.
+
+  rv-rt-peek-16 : List Integer
+  rv-rt-peek-16 =
+   let i = []
+   in let i = rv-rt-emit i (rv-add rv-a0 rv-a0 rv-a1)
+   in let i = i & rv-remap-addr-insns rv-a0
+   in let i = rv-rt-emit i (rv-andi rv-t0 rv-a0 1)
+   in let i = rv-rt-emit i (rv-beq rv-t0 rv-zero 24)
+   in let i = rv-rt-emit i (rv-lbu rv-t1 rv-a0 1)
+   in let i = rv-rt-emit i (rv-lbu rv-a0 rv-a0 0)
+   in let i = rv-rt-emit i (rv-slli rv-t1 rv-t1 8)
+   in let i = rv-rt-emit i (rv-or rv-a0 rv-a0 rv-t1)
+   in let i = rv-rt-emit i (rv-j 8)
+   in let i = rv-rt-emit i (rv-lhu rv-a0 rv-a0 0)
+   in rv-rt-emit i rv-ret
+
+  rv-rt-poke-16 : List Integer
+  rv-rt-poke-16 =
+   let i = []
+   in let i = rv-rt-emit i (rv-add rv-a0 rv-a0 rv-a1)
+   in let i = i & rv-remap-addr-insns rv-a0
+   in let i = rv-rt-emit i (rv-andi rv-t0 rv-a0 1)
+   in let i = rv-rt-emit i (rv-beq rv-t0 rv-zero 20)
+   in let i = rv-rt-emit i (rv-sb rv-a0 rv-a2 0)
+   in let i = rv-rt-emit i (rv-srli rv-t1 rv-a2 8)
+   in let i = rv-rt-emit i (rv-sb rv-a0 rv-t1 1)
+   in let i = rv-rt-emit i (rv-j 8)
+   in let i = rv-rt-emit i (rv-sh rv-a0 rv-a2 0)
+   in let i = rv-rt-emit i (rv-mv rv-a0 rv-zero)
+   in rv-rt-emit i rv-ret
+
   rv-rt-peek-32 : List Integer
   rv-rt-peek-32 =
    let i = []
@@ -1793,6 +1828,577 @@ Section: Text Split (a0=text, a1=delimiter -> list of texts)
    in let i = rv-rt-emit i (rv-addi rv-sp rv-sp 80)
    in i & rv-ret
 
+Section: Process Table
+
+ The first 32 KiB of the image is the x86-64 low-memory mirror: `__start`
+ is one `j` over it and the words behind are zeros the .bin ships, so
+ `[#80000000, #80008000)` is RAM the program owns, and the MMIO helpers'
+ `+#80000000` remap lands x86-64's `proc-table-base` 20480 on this table
+ (`#80005000`), the two cells behind it (`#80006000`, `#80006008`) and the
+ tests' scratch at 28000 (`#80006D60`) exactly where the x86-64 map says.
+ The entry layout is x86-64's by offset (`X86_64Boot.codex` "Process Table
+ Layout": 256-byte entries, network scope at 24, exit status at 32,
+ capability word at 56, filesystem scope at 64), state words free 0, ready
+ 1, running 2, blocked 3, and bit 14 is Foreword Capability's
+ `cap-capability-admin`, the bit x86-64 demands of the CALLER before it will
+ restrict a word or store a scope. The running pid is a function of the
+ stack pointer as on x86-64 (`emit-slot-from-addr`): a stack inside the
+ spawn pool names its slot, any other stack is proc 0. `rv-li` of a value
+ outside signed 32 bits (every `#8xxxxxxx` and `#9xxxxxxx` here) expands
+ through `rv-li-64`, which uses t0 as its scratch (t1 when the target is
+ t0), so a base is loaded before anything lives in t0. This is the port of
+ `codex/plugs/arm64/Arm64Runtime.codex` "Process Table"; the design is
+ `docs/Designs/Done/Compiler/Arm64ProcessKernel.md`.
+
+  rv-mirror-window-bytes : Integer = #8000
+  rv-proc-table-base : Integer = #80005000
+  rv-current-proc-addr : Integer = #80006000
+  rv-proc-empty-text-addr : Integer = #80006008
+  rv-proc-entry-shift : Integer = 8
+  rv-proc-net-scope-offset : Integer = 24
+  rv-proc-exit-status-offset : Integer = 32
+  rv-proc-cap-offset : Integer = 56
+  rv-proc-scope-offset : Integer = 64
+  rv-proc-cap-admin-bit : Integer = 14
+  rv-proc-table-qwords : Integer = 514
+  rv-proc-state-running : Integer = 2
+  rv-spawn-pool-base : Integer = #90000000
+  rv-spawn-pool-span : Integer = #20000000
+  rv-spawn-slot-region-shift : Integer = 25
+
+  rv-rt-current-slot-in-t0 : List Integer -> List Integer
+  rv-rt-current-slot-in-t0 (i) =
+   let i = i & rv-li rv-t1 rv-spawn-pool-base
+   in let i = rv-rt-emit i (rv-sub rv-t0 rv-sp rv-t1)
+   in let i = i & rv-li rv-t1 rv-spawn-pool-span
+   in let inside = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-mv rv-t0 rv-zero)
+   in let done = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let shift-label = list-length i / 4
+   in let i = rv-rt-emit i (rv-srli rv-t0 rv-t0 rv-spawn-slot-region-shift)
+   in let end-label = list-length i / 4
+   in let i = rv-patch-insn-raw i inside (rv-bltu rv-t0 rv-t1 ((shift-label - inside) * 4))
+   in rv-patch-insn-raw i done (rv-j ((end-label - done) * 4))
+
+  rv-rt-proc-entry-in-a0 : List Integer -> List Integer
+  rv-rt-proc-entry-in-a0 (i) =
+   let i = rv-rt-emit i (rv-slli rv-a0 rv-a0 rv-proc-entry-shift)
+   in let i = i & rv-li rv-t1 rv-proc-table-base
+   in rv-rt-emit i (rv-add rv-a0 rv-a0 rv-t1)
+
+  rv-rt-proc-caller-cap-in-t0 : List Integer -> List Integer
+  rv-rt-proc-caller-cap-in-t0 (i) =
+   let i = i & rv-li rv-t2 rv-proc-table-base
+   in let i = rv-rt-current-slot-in-t0 i
+   in let i = rv-rt-emit i (rv-slli rv-t0 rv-t0 rv-proc-entry-shift)
+   in let i = rv-rt-emit i (rv-add rv-t0 rv-t0 rv-t2)
+   in rv-rt-emit i (rv-ld rv-t0 rv-t0 rv-proc-cap-offset)
+
+  rv-rt-proc-fail-minus-one : List Integer -> List Integer
+  rv-rt-proc-fail-minus-one (i) =
+   let i = i & rv-li rv-a0 (0 - 1)
+   in rv-rt-emit i rv-ret
+
+  rv-rt-proc-fail-empty-text : List Integer -> List Integer
+  rv-rt-proc-fail-empty-text (i) =
+   let i = i & rv-li rv-a0 rv-proc-empty-text-addr
+   in rv-rt-emit i rv-ret
+
+  rv-rt-process-get-pid : List Integer
+  rv-rt-process-get-pid =
+   let i = rv-rt-current-slot-in-t0 []
+   in let i = rv-rt-emit i (rv-mv rv-a0 rv-t0)
+   in rv-rt-emit i rv-ret
+
+  rv-rt-process-get-cap : List Integer
+  rv-rt-process-get-cap =
+   let i = rv-rt-emit [] (rv-addi rv-t2 rv-zero 16)
+   in let range-deny = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-proc-entry-in-a0 i
+   in let i = rv-rt-emit i (rv-ld rv-a0 rv-a0 rv-proc-cap-offset)
+   in let i = rv-rt-emit i rv-ret
+   in let fail-label = list-length i / 4
+   in let i = rv-rt-proc-fail-minus-one i
+   in rv-patch-insn-raw i range-deny (rv-bge rv-a0 rv-t2 ((fail-label - range-deny) * 4))
+
+  rv-rt-process-get-scope-at : Integer -> List Integer
+  rv-rt-process-get-scope-at (offset) =
+   let i = rv-rt-emit [] (rv-addi rv-t2 rv-zero 16)
+   in let range-deny = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-proc-entry-in-a0 i
+   in let i = rv-rt-emit i (rv-ld rv-a0 rv-a0 offset)
+   in let null-deny = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i rv-ret
+   in let fail-label = list-length i / 4
+   in let i = rv-rt-proc-fail-empty-text i
+   in let i = rv-patch-insn-raw i range-deny (rv-bge rv-a0 rv-t2 ((fail-label - range-deny) * 4))
+   in rv-patch-insn-raw i null-deny (rv-beq rv-a0 rv-zero ((fail-label - null-deny) * 4))
+
+  rv-rt-process-set-scope-at : Integer -> List Integer
+  rv-rt-process-set-scope-at (offset) =
+   let i = rv-rt-proc-caller-cap-in-t0 []
+   in let i = i & rv-li rv-t1 (bit-shl 1 rv-proc-cap-admin-bit)
+   in let i = rv-rt-emit i (rv-and rv-t0 rv-t0 rv-t1)
+   in let cap-deny = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-addi rv-t2 rv-zero 16)
+   in let range-deny = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-proc-entry-in-a0 i
+   in let i = rv-rt-emit i (rv-sd rv-a0 rv-a1 offset)
+   in let i = rv-rt-emit i (rv-mv rv-a0 rv-zero)
+   in let i = rv-rt-emit i rv-ret
+   in let fail-label = list-length i / 4
+   in let i = rv-rt-proc-fail-minus-one i
+   in let i = rv-patch-insn-raw i cap-deny (rv-beq rv-t0 rv-zero ((fail-label - cap-deny) * 4))
+   in rv-patch-insn-raw i range-deny (rv-bge rv-a0 rv-t2 ((fail-label - range-deny) * 4))
+
+  rv-rt-process-restrict-cap : List Integer
+  rv-rt-process-restrict-cap =
+   let i = rv-rt-proc-caller-cap-in-t0 []
+   in let i = i & rv-li rv-t1 (bit-shl 1 rv-proc-cap-admin-bit)
+   in let i = rv-rt-emit i (rv-and rv-t0 rv-t0 rv-t1)
+   in let cap-deny = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-addi rv-t2 rv-zero 16)
+   in let range-deny = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-proc-entry-in-a0 i
+   in let i = rv-rt-emit i (rv-ld rv-t0 rv-a0 rv-proc-cap-offset)
+   in let i = rv-rt-emit i (rv-addi rv-t1 rv-zero 1)
+   in let i = rv-rt-emit i (rv-sll rv-t1 rv-t1 rv-a1)
+   in let i = rv-rt-emit i (rv-xori rv-t1 rv-t1 (0 - 1))
+   in let i = rv-rt-emit i (rv-and rv-t0 rv-t0 rv-t1)
+   in let i = rv-rt-emit i (rv-sd rv-a0 rv-t0 rv-proc-cap-offset)
+   in let i = rv-rt-emit i (rv-mv rv-a0 rv-zero)
+   in let i = rv-rt-emit i rv-ret
+   in let fail-label = list-length i / 4
+   in let i = rv-rt-proc-fail-minus-one i
+   in let i = rv-patch-insn-raw i cap-deny (rv-beq rv-t0 rv-zero ((fail-label - cap-deny) * 4))
+   in rv-patch-insn-raw i range-deny (rv-bge rv-a0 rv-t2 ((fail-label - range-deny) * 4))
+
+  rv-emit-mirror-window : RvState -> RvState
+  rv-emit-mirror-window (st) =
+   let st1 = rv-emit st (rv-j rv-mirror-window-bytes)
+   in rv-emit-zero-words st1 (rv-mirror-window-bytes / 4 - 1)
+
+  rv-emit-zero-words : RvState, Integer -> RvState
+  rv-emit-zero-words (st) (n) =
+   if n <= 0 then st
+   else rv-emit-zero-words (rv-emit st [0, 0, 0, 0]) (n - 1)
+
+  rv-emit-proc-table-init : RvState -> RvState
+  rv-emit-proc-table-init (st) =
+   let st1 = rv-emit-li st rv-t1 rv-proc-table-base
+   in let st2 = rv-emit-li st1 rv-t2 rv-proc-table-qwords
+   in let loop = st2.insn-count
+   in let st3 = rv-emit st2 (rv-sd rv-t1 rv-zero 0)
+   in let st4 = rv-emit st3 (rv-addi rv-t1 rv-t1 8)
+   in let st5 = rv-emit st4 (rv-addi rv-t2 rv-t2 (0 - 1))
+   in let st6 = rv-emit st5 (rv-bne rv-t2 rv-zero ((loop - st5.insn-count) * 4))
+   in let st7 = rv-emit-li st6 rv-t1 rv-proc-table-base
+   in let st8 = rv-emit st7 (rv-addi rv-t2 rv-zero rv-proc-state-running)
+   in rv-emit st8 (rv-sd rv-t1 rv-t2 0)
+
+  rv-emit-or-into-cell : RvState, Integer, Integer -> RvState
+  rv-emit-or-into-cell (st) (addr) (mask) =
+   let st1 = rv-emit-li st rv-t1 addr
+   in let st2 = rv-emit st1 (rv-ld rv-t2 rv-t1 0)
+   in let st3 = rv-emit-li st2 rv-t0 mask
+   in let st4 = rv-emit st3 (rv-or rv-t2 rv-t2 rv-t0)
+   in rv-emit st4 (rv-sd rv-t1 rv-t2 0)
+
+  rv-emit-store-scope : RvState, Integer, Text -> RvState
+  rv-emit-store-scope (st) (addr) (scope) =
+   let saved-nt = st.next-temp
+   in let lit = rv-emit-text-lit st scope
+   in let st1 = rv-emit-li (lit.state) rv-t1 addr
+   in let st2 = rv-emit st1 (rv-sd rv-t1 (lit.reg) 0)
+   in __record-set st2 "next-temp" saved-nt
+
+  rv-emit-boot-grant : RvState -> RvState
+  rv-emit-boot-grant (st) =
+   let mask = st.boot-cap-mask
+   in let cap0 = rv-proc-table-base + rv-proc-cap-offset
+   in let st1 = if mask == 0 then st else rv-emit-or-into-cell st cap0 mask
+   in let st2 = rv-emit-store-scope st1 (rv-proc-table-base + rv-proc-scope-offset) (st.boot-fs-scope)
+   in let st3 = rv-emit-store-scope st2 (rv-proc-table-base + rv-proc-net-scope-offset) (st.boot-net-scope)
+   in rv-emit-or-into-cell st3 (rv-proc-table-base + 256 + rv-proc-cap-offset) 1
+
+  rv-emit-proc-helpers : RvState -> RvState
+  rv-emit-proc-helpers (st) =
+   let st1 = rv-record-func st "process-get-pid"
+   in let st2 = rv-emit-block st1 rv-rt-process-get-pid
+   in let st3 = rv-record-func st2 "process-get-cap"
+   in let st4 = rv-emit-block st3 rv-rt-process-get-cap
+   in let st5 = rv-record-func st4 "process-get-scope"
+   in let st6 = rv-emit-block st5 (rv-rt-process-get-scope-at rv-proc-scope-offset)
+   in let st7 = rv-record-func st6 "process-get-network-scope"
+   in let st8 = rv-emit-block st7 (rv-rt-process-get-scope-at rv-proc-net-scope-offset)
+   in let st9 = rv-record-func st8 "process-set-scope"
+   in let st10 = rv-emit-block st9 (rv-rt-process-set-scope-at rv-proc-scope-offset)
+   in let st11 = rv-record-func st10 "process-set-network-scope"
+   in let st12 = rv-emit-block st11 (rv-rt-process-set-scope-at rv-proc-net-scope-offset)
+   in let st13 = rv-record-func st12 "process-restrict-cap"
+   in rv-emit-block st13 rv-rt-process-restrict-cap
+
+Section: Capability Gates
+
+ The port of the ARM64 "Capability Gates" (x86-64's emit-check-capability,
+ inline at each network helper, every refusal -1, every admitted answer what
+ x86-64 answers with no NIC): there is no flags register here, so the check
+ leaves the tested bits in t0 and the caller branches on `beq t0, zero`.
+
+  rv-cap-network-read : Integer = 8
+  rv-cap-network-write : Integer = 9
+
+  rv-rt-check-capability : List Integer, Integer -> List Integer
+  rv-rt-check-capability (i) (bit) =
+   let i = rv-rt-proc-caller-cap-in-t0 i
+   in let i = i & rv-li rv-t1 (bit-shl 1 bit)
+   in rv-rt-emit i (rv-and rv-t0 rv-t0 rv-t1)
+
+  rv-rt-gated-zero : Integer -> List Integer
+  rv-rt-gated-zero (bit) =
+   let i = rv-rt-check-capability [] bit
+   in let cap-deny = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-mv rv-a0 rv-zero)
+   in let i = rv-rt-emit i rv-ret
+   in let fail-label = list-length i / 4
+   in let i = rv-rt-proc-fail-minus-one i
+   in rv-patch-insn-raw i cap-deny (rv-beq rv-t0 rv-zero ((fail-label - cap-deny) * 4))
+
+  rv-rt-net-get-hwaddr : List Integer
+  rv-rt-net-get-hwaddr =
+   let i = rv-rt-check-capability [] rv-cap-network-read
+   in let cap-deny = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-addi rv-t2 rv-zero 6)
+   in let range-deny = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-mv rv-a0 rv-zero)
+   in let i = rv-rt-emit i rv-ret
+   in let fail-label = list-length i / 4
+   in let i = rv-rt-proc-fail-minus-one i
+   in let i = rv-patch-insn-raw i cap-deny (rv-beq rv-t0 rv-zero ((fail-label - cap-deny) * 4))
+   in rv-patch-insn-raw i range-deny (rv-bge rv-a0 rv-t2 ((fail-label - range-deny) * 4))
+
+  rv-emit-net-helpers : RvState -> RvState
+  rv-emit-net-helpers (st) =
+   let st1 = rv-record-func st "net-status"
+   in let st2 = rv-emit-block st1 (rv-rt-gated-zero rv-cap-network-read)
+   in let st3 = rv-record-func st2 "net-recv-raw"
+   in let st4 = rv-emit-block st3 (rv-rt-gated-zero rv-cap-network-read)
+   in let st5 = rv-record-func st4 "net-send-raw"
+   in let st6 = rv-emit-block st5 (rv-rt-gated-zero rv-cap-network-write)
+   in let st7 = rv-record-func st6 "net-get-hwaddr"
+   in rv-emit-block st7 rv-rt-net-get-hwaddr
+
+Section: Process Lifecycle
+
+ The port of the ARM64 "Process Lifecycle" (design
+ `docs/Designs/Done/Compiler/Arm64ProcessLifecycle.md`): the cooperative half
+ of x86-64's model, a switch only at process-wait, process-yield or an exit.
+ Saved context is the callee-saved set at a call boundary: sp at 72, s1 (the
+ heap pointer) at 80, s2..s7 at 88..128, the resume address (ra) at 160,
+ the delivered status (a0 on resume) at 176, s8..s11 at 184..208, s0 at
+ 216. A child's region is pool + (slot << 25): heap from its base, stack
+ top 2 MiB above it. A closure is called the way rv-emit-closure-call calls
+ it: pointer in t2, code word at [t2], argument in a0.
+
+  rv-proc-state-ready : Integer = 1
+  rv-proc-state-blocked : Integer = 3
+  rv-proc-cap-process-create-bit : Integer = 12
+  rv-proc-saved-sp-offset : Integer = 72
+  rv-proc-saved-heap-offset : Integer = 80
+  rv-proc-closure-offset : Integer = 136
+  rv-proc-resume-offset : Integer = 160
+  rv-proc-saved-a0-offset : Integer = 176
+  rv-proc-saved-s0-offset : Integer = 216
+  rv-proc-blocked-on-offset : Integer = 248
+  rv-spawn-plain-region-bytes : Integer = #200000
+  rv-spawn-heap-stack-bytes : Integer = #100000
+  rv-spawn-slot-region-bytes : Integer = #2000000
+
+  rv-emit-slot-entry : RvState, Integer, Integer, Integer -> RvState
+  rv-emit-slot-entry (st) (slot-reg) (dst) (scratch) =
+   let st1 = rv-emit-li st scratch rv-proc-table-base
+   in let st2 = rv-emit st1 (rv-slli dst slot-reg rv-proc-entry-shift)
+   in rv-emit st2 (rv-add dst dst scratch)
+
+  rv-emit-current-entry : RvState, Integer -> RvState
+  rv-emit-current-entry (st) (dst) =
+   let st1 = rv-emit-li st rv-t2 rv-proc-table-base
+   in let cs = rv-rt-current-slot-in-t0 []
+   in let st2 = rv-emit-block st1 cs
+   in let st3 = rv-emit st2 (rv-slli dst rv-t0 rv-proc-entry-shift)
+   in rv-emit st3 (rv-add dst dst rv-t2)
+
+  rv-emit-save-context : RvState, Integer -> RvState
+  rv-emit-save-context (st) (entry) =
+   let st1 = rv-emit st (rv-sd entry rv-sp rv-proc-saved-sp-offset)
+   in let st2 = rv-emit st1 (rv-sd entry rv-s1 rv-proc-saved-heap-offset)
+   in let st3 = rv-emit st2 (rv-sd entry rv-s2 88)
+   in let st4 = rv-emit st3 (rv-sd entry rv-s3 96)
+   in let st5 = rv-emit st4 (rv-sd entry rv-s4 104)
+   in let st6 = rv-emit st5 (rv-sd entry rv-s5 112)
+   in let st7 = rv-emit st6 (rv-sd entry rv-s6 120)
+   in let st8 = rv-emit st7 (rv-sd entry rv-s7 128)
+   in let st9 = rv-emit st8 (rv-sd entry rv-ra rv-proc-resume-offset)
+   in let st10 = rv-emit st9 (rv-sd entry rv-zero rv-proc-saved-a0-offset)
+   in let st11 = rv-emit st10 (rv-sd entry rv-s8 184)
+   in let st12 = rv-emit st11 (rv-sd entry rv-s9 192)
+   in let st13 = rv-emit st12 (rv-sd entry rv-s10 200)
+   in let st14 = rv-emit st13 (rv-sd entry rv-s11 208)
+   in rv-emit st14 (rv-sd entry rv-s0 rv-proc-saved-s0-offset)
+
+  rv-emit-process-resume : RvState -> RvState
+  rv-emit-process-resume (st) =
+   let st0 = rv-record-func st "__process_resume"
+   in let st1 = rv-emit st0 (rv-ld rv-s2 rv-t2 88)
+   in let st2 = rv-emit st1 (rv-ld rv-s3 rv-t2 96)
+   in let st3 = rv-emit st2 (rv-ld rv-s4 rv-t2 104)
+   in let st4 = rv-emit st3 (rv-ld rv-s5 rv-t2 112)
+   in let st5 = rv-emit st4 (rv-ld rv-s6 rv-t2 120)
+   in let st6 = rv-emit st5 (rv-ld rv-s7 rv-t2 128)
+   in let st7 = rv-emit st6 (rv-ld rv-s8 rv-t2 184)
+   in let st8 = rv-emit st7 (rv-ld rv-s9 rv-t2 192)
+   in let st9 = rv-emit st8 (rv-ld rv-s10 rv-t2 200)
+   in let st10 = rv-emit st9 (rv-ld rv-s11 rv-t2 208)
+   in let st11 = rv-emit st10 (rv-ld rv-s0 rv-t2 rv-proc-saved-s0-offset)
+   in let st12 = rv-emit st11 (rv-ld rv-s1 rv-t2 rv-proc-saved-heap-offset)
+   in let st13 = rv-emit st12 (rv-ld rv-ra rv-t2 rv-proc-resume-offset)
+   in let st14 = rv-emit st13 (rv-ld rv-a0 rv-t2 rv-proc-saved-a0-offset)
+   in let st15 = rv-emit st14 (rv-ld rv-sp rv-t2 rv-proc-saved-sp-offset)
+   in rv-emit st15 rv-ret
+
+  rv-emit-idle-dispatch : RvState -> RvState
+  rv-emit-idle-dispatch (st) =
+   let st0 = rv-record-func st "__idle_dispatch"
+   in let scan-top = st0.insn-count
+   in let st1 = rv-emit st0 (rv-mv rv-t3 rv-zero)
+   in let st1a = rv-emit st1 (rv-addi rv-t4 rv-zero 16)
+   in let st1b = rv-emit st1a (rv-addi rv-t5 rv-zero rv-proc-state-ready)
+   in let loop = st1b.insn-count
+   in let st2 = rv-emit-slot-entry st1b rv-t3 rv-t2 rv-t1
+   in let st3 = rv-emit st2 (rv-ld rv-t6 rv-t2 0)
+   in let found-idx = st3.insn-count
+   in let st4 = rv-emit st3 rv-nop
+   in let st5 = rv-emit st4 (rv-addi rv-t3 rv-t3 1)
+   in let st6 = rv-emit st5 (rv-blt rv-t3 rv-t4 ((loop - st5.insn-count) * 4))
+   in let st7 = rv-emit st6 rv-wfi
+   in let st8 = rv-emit st7 (rv-j ((scan-top - st7.insn-count) * 4))
+   in let found = st8.insn-count
+   in let st9 = rv-emit st8 (rv-addi rv-t6 rv-zero rv-proc-state-running)
+   in let st10 = rv-emit st9 (rv-sd rv-t2 rv-t6 0)
+   in let st11 = rv-emit-call-to st10 "__process_resume"
+   in rv-patch-insn st11 found-idx (rv-beq rv-t6 rv-t5 ((found - found-idx) * 4))
+
+  rv-emit-proc-entry : RvState -> RvState
+  rv-emit-proc-entry (st) =
+   let st0 = rv-record-func st "__proc_entry"
+   in let st1 = rv-emit-current-entry st0 rv-t3
+   in let st2 = rv-emit st1 (rv-ld rv-t2 rv-t3 rv-proc-closure-offset)
+   in let st3 = rv-emit st2 (rv-mv rv-a0 rv-zero)
+   in let st4 = rv-emit st3 (rv-ld rv-t1 rv-t2 0)
+   in let st5 = rv-emit st4 (rv-jalr rv-ra rv-t1 0)
+   in let st6 = rv-emit-current-entry st5 rv-t3
+   in let st7 = rv-emit st6 (rv-sd rv-t3 rv-a0 rv-proc-exit-status-offset)
+   in rv-emit-call-to st7 "process-exit-self"
+
+  rv-emit-process-exit-self : RvState -> RvState
+  rv-emit-process-exit-self (st) =
+   let st0 = rv-record-func st "process-exit-self"
+   in let st1 = rv-emit-current-entry st0 rv-t3
+   in let st2 = rv-emit st1 (rv-mv rv-t4 rv-t0)
+   in let st3 = rv-emit st2 (rv-sd rv-t3 rv-zero 0)
+   in let st4 = rv-emit st3 (rv-ld rv-t5 rv-t3 rv-proc-exit-status-offset)
+   in let st5 = rv-emit st4 (rv-mv rv-t3 rv-zero)
+   in let st5a = rv-emit st5 (rv-addi rv-a1 rv-zero rv-proc-state-blocked)
+   in let st5b = rv-emit st5a (rv-addi rv-a2 rv-zero 16)
+   in let loop = st5b.insn-count
+   in let st6 = rv-emit-slot-entry st5b rv-t3 rv-t2 rv-t1
+   in let st7 = rv-emit st6 (rv-ld rv-t6 rv-t2 0)
+   in let skip1 = st7.insn-count
+   in let st8 = rv-emit st7 rv-nop
+   in let st9 = rv-emit st8 (rv-ld rv-t6 rv-t2 rv-proc-blocked-on-offset)
+   in let skip2 = st9.insn-count
+   in let st10 = rv-emit st9 rv-nop
+   in let st11 = rv-emit st10 (rv-sd rv-t2 rv-t5 rv-proc-saved-a0-offset)
+   in let st12 = rv-emit st11 (rv-addi rv-t6 rv-zero rv-proc-state-ready)
+   in let st13 = rv-emit st12 (rv-sd rv-t2 rv-t6 0)
+   in let next = st13.insn-count
+   in let st14 = rv-emit st13 (rv-addi rv-t3 rv-t3 1)
+   in let st15 = rv-emit st14 (rv-blt rv-t3 rv-a2 ((loop - st14.insn-count) * 4))
+   in let st16 = rv-emit-call-to st15 "__idle_dispatch"
+   in let st17 = rv-patch-insn st16 skip1 (rv-bne rv-t6 rv-a1 ((next - skip1) * 4))
+   in rv-patch-insn st17 skip2 (rv-bne rv-t6 rv-t4 ((next - skip2) * 4))
+
+  rv-emit-process-exit : RvState -> RvState
+  rv-emit-process-exit (st) =
+   let st0 = rv-record-func st "process-exit"
+   in let st1 = rv-emit st0 (rv-mv rv-t4 rv-a0)
+   in let st2 = rv-emit-current-entry st1 rv-t3
+   in let st3 = rv-emit st2 (rv-sd rv-t3 rv-t4 rv-proc-exit-status-offset)
+   in rv-emit-call-to st3 "process-exit-self"
+
+  rv-emit-process-wait : RvState -> RvState
+  rv-emit-process-wait (st) =
+   let st0 = rv-record-func st "process-wait"
+   in let st1 = rv-emit st0 (rv-mv rv-t4 rv-a0)
+   in let st1a = rv-emit st1 (rv-addi rv-t6 rv-zero 16)
+   in let range-idx = st1a.insn-count
+   in let st2 = rv-emit st1a rv-nop
+   in let st3 = rv-emit-slot-entry st2 rv-t4 rv-t3 rv-t1
+   in let st4 = rv-emit st3 (rv-ld rv-t6 rv-t3 0)
+   in let dead1-idx = st4.insn-count
+   in let st5 = rv-emit st4 rv-nop
+   in let st6 = rv-emit-current-entry st5 rv-t5
+   in let st7 = rv-emit-save-context st6 rv-t5
+   in let st8 = rv-emit st7 (rv-sd rv-t5 rv-t4 rv-proc-blocked-on-offset)
+   in let st9 = rv-emit st8 (rv-addi rv-t6 rv-zero rv-proc-state-blocked)
+   in let st10 = rv-emit st9 (rv-sd rv-t5 rv-t6 0)
+   in let st11 = rv-emit st10 (rv-ld rv-t6 rv-t3 0)
+   in let rescue-idx = st11.insn-count
+   in let st12 = rv-emit st11 rv-nop
+   in let st13 = rv-emit-call-to st12 "__idle_dispatch"
+   in let rescue = st13.insn-count
+   in let st14 = rv-emit st13 (rv-addi rv-t6 rv-zero rv-proc-state-running)
+   in let st15 = rv-emit st14 (rv-sd rv-t5 rv-t6 0)
+   in let dead = st15.insn-count
+   in let st16 = rv-emit st15 (rv-ld rv-a0 rv-t3 rv-proc-exit-status-offset)
+   in let st17 = rv-emit st16 rv-ret
+   in let fail = st17.insn-count
+   in let st18 = rv-emit-li st17 rv-a0 (0 - 1)
+   in let st19 = rv-emit st18 rv-ret
+   in let st20 = rv-patch-insn st19 range-idx (rv-bge rv-t4 rv-t6 ((fail - range-idx) * 4))
+   in let st21 = rv-patch-insn st20 dead1-idx (rv-beq rv-t6 rv-zero ((dead - dead1-idx) * 4))
+   in rv-patch-insn st21 rescue-idx (rv-beq rv-t6 rv-zero ((rescue - rescue-idx) * 4))
+
+  rv-emit-process-yield : RvState -> RvState
+  rv-emit-process-yield (st) =
+   let st0 = rv-record-func st "process-yield"
+   in let st1 = rv-emit-current-entry st0 rv-t5
+   in let st2 = rv-emit st1 (rv-mv rv-t4 rv-t0)
+   in let st3 = rv-emit st2 (rv-mv rv-t3 rv-t0)
+   in let st3a = rv-emit st3 (rv-addi rv-a1 rv-zero 16)
+   in let st3b = rv-emit st3a (rv-addi rv-a2 rv-zero rv-proc-state-ready)
+   in let loop = st3b.insn-count
+   in let st4 = rv-emit st3b (rv-addi rv-t3 rv-t3 1)
+   in let wrap-idx = st4.insn-count
+   in let st5 = rv-emit st4 rv-nop
+   in let cont = st5.insn-count
+   in let none-idx = st5.insn-count
+   in let st6 = rv-emit st5 rv-nop
+   in let st7 = rv-emit-slot-entry st6 rv-t3 rv-t2 rv-t1
+   in let st8 = rv-emit st7 (rv-ld rv-t6 rv-t2 0)
+   in let st9 = rv-emit st8 (rv-bne rv-t6 rv-a2 ((loop - st8.insn-count) * 4))
+   in let st10 = rv-emit-save-context st9 rv-t5
+   in let st11 = rv-emit st10 (rv-addi rv-t6 rv-zero rv-proc-state-ready)
+   in let st12 = rv-emit st11 (rv-sd rv-t5 rv-t6 0)
+   in let st13 = rv-emit st12 (rv-addi rv-t6 rv-zero rv-proc-state-running)
+   in let st14 = rv-emit st13 (rv-sd rv-t2 rv-t6 0)
+   in let st15 = rv-emit-call-to st14 "__process_resume"
+   in let wrap = st15.insn-count
+   in let st16 = rv-emit st15 (rv-mv rv-t3 rv-zero)
+   in let st17 = rv-emit st16 (rv-j ((cont - st16.insn-count) * 4))
+   in let none = st17.insn-count
+   in let st18 = rv-emit st17 (rv-mv rv-a0 rv-zero)
+   in let st19 = rv-emit st18 rv-ret
+   in let st20 = rv-patch-insn st19 wrap-idx (rv-bge rv-t3 rv-a1 ((wrap - wrap-idx) * 4))
+   in rv-patch-insn st20 none-idx (rv-beq rv-t3 rv-t4 ((none - none-idx) * 4))
+
+  rv-emit-region-bytes-in-t6 : RvState, Boolean -> RvEmitResult
+  rv-emit-region-bytes-in-t6 (st) (with-heap) =
+   if with-heap then
+    let st1 = rv-emit-li st rv-t6 rv-spawn-heap-stack-bytes
+    in let st2 = rv-emit st1 (rv-add rv-t6 rv-a1 rv-t6)
+    in let st3 = rv-emit-li st2 rv-t1 rv-spawn-slot-region-bytes
+    in let size-idx = st3.insn-count
+    in RvEmitResult { state = rv-emit st3 rv-nop, reg = size-idx }
+   else RvEmitResult { state = rv-emit-li st rv-t6 rv-spawn-plain-region-bytes, reg = 0 - 1 }
+
+  rv-emit-process-spawn : RvState -> RvState
+  rv-emit-process-spawn (st) =
+   let st1 = rv-emit-process-spawn-named st "process-spawn" False
+   in rv-emit-process-spawn-named st1 "process-spawn-with-heap" True
+
+  rv-emit-process-spawn-named : RvState, Text, Boolean -> RvState
+  rv-emit-process-spawn-named (st) (name) (with-heap) =
+   let st0 = rv-record-func st name
+   in let st1 = rv-emit st0 (rv-mv rv-a2 rv-a0)
+   in let cc = rv-rt-check-capability [] rv-proc-cap-process-create-bit
+   in let st2 = rv-emit-block st1 cc
+   in let deny-idx = st2.insn-count
+   in let st3 = rv-emit st2 rv-nop
+   in let st4 = rv-emit st3 (rv-addi rv-t3 rv-zero 1)
+   in let st4a = rv-emit st4 (rv-addi rv-t4 rv-zero 16)
+   in let loop = st4a.insn-count
+   in let full-idx = st4a.insn-count
+   in let st5 = rv-emit st4a rv-nop
+   in let st6 = rv-emit-slot-entry st5 rv-t3 rv-t5 rv-t1
+   in let st7 = rv-emit st6 (rv-ld rv-t6 rv-t5 0)
+   in let found-idx = st7.insn-count
+   in let st8 = rv-emit st7 rv-nop
+   in let st9 = rv-emit st8 (rv-addi rv-t3 rv-t3 1)
+   in let st10 = rv-emit st9 (rv-j ((loop - st9.insn-count) * 4))
+   in let found = st10.insn-count
+   in let st11 = rv-emit-li st10 rv-t1 rv-spawn-pool-base
+   in let st12 = rv-emit st11 (rv-slli rv-t6 rv-t3 rv-spawn-slot-region-shift)
+   in let st13 = rv-emit st12 (rv-add rv-t6 rv-t6 rv-t1)
+   in let st14 = rv-emit st13 (rv-sd rv-t5 rv-t6 rv-proc-saved-heap-offset)
+   in let st15 = rv-emit st14 (rv-mv rv-a3 rv-t6)
+   in let rb = rv-emit-region-bytes-in-t6 st15 with-heap
+   in let size-idx = rb.reg
+   in let st16 = rv-emit (rb.state) (rv-add rv-t6 rv-a3 rv-t6)
+   in let st17 = rv-emit st16 (rv-sd rv-t5 rv-t6 rv-proc-saved-sp-offset)
+   in let st18 = rv-emit st17 (rv-sd rv-t5 rv-a2 rv-proc-closure-offset)
+   in let st19 = rv-emit-load-func-addr st18 rv-t6 "__proc_entry"
+   in let st20 = rv-emit st19 (rv-sd rv-t5 rv-t6 rv-proc-resume-offset)
+   in let st21 = rv-emit-current-entry st20 rv-t4
+   in let st22 = rv-emit-copy-cell st21 rv-t4 rv-t5 rv-proc-cap-offset
+   in let st23 = rv-emit-copy-cell st22 rv-t4 rv-t5 rv-proc-scope-offset
+   in let st24 = rv-emit-copy-cell st23 rv-t4 rv-t5 rv-proc-net-scope-offset
+   in let st25 = rv-emit-zero-cells st24 rv-t5 [32, 88, 96, 104, 112, 120, 128, 176, 184, 192, 200, 208, 216, 248] 0
+   in let st26 = rv-emit st25 (rv-addi rv-t6 rv-zero rv-proc-state-ready)
+   in let st27 = rv-emit st26 (rv-sd rv-t5 rv-t6 0)
+   in let st28 = rv-emit st27 (rv-mv rv-a0 rv-t3)
+   in let st29 = rv-emit st28 rv-ret
+   in let fail = st29.insn-count
+   in let st30 = rv-emit-li st29 rv-a0 (0 - 1)
+   in let st31 = rv-emit st30 rv-ret
+   in let st31s = if size-idx < 0 then st31 else rv-patch-insn st31 size-idx (rv-bltu rv-t1 rv-t6 ((fail - size-idx) * 4))
+   in let st32 = rv-patch-insn st31s deny-idx (rv-beq rv-t0 rv-zero ((fail - deny-idx) * 4))
+   in let st33 = rv-patch-insn st32 full-idx (rv-bge rv-t3 rv-t4 ((fail - full-idx) * 4))
+   in rv-patch-insn st33 found-idx (rv-beq rv-t6 rv-zero ((found - found-idx) * 4))
+
+  rv-emit-copy-cell : RvState, Integer, Integer, Integer -> RvState
+  rv-emit-copy-cell (st) (src) (dst) (offset) =
+   let st1 = rv-emit st (rv-ld rv-t1 src offset)
+   in rv-emit st1 (rv-sd dst rv-t1 offset)
+
+  rv-emit-zero-cells : RvState, Integer, List Integer, Integer -> RvState
+  rv-emit-zero-cells (st) (entry) (offsets) (i) =
+   if i >= list-length offsets then st
+   else rv-emit-zero-cells (rv-emit st (rv-sd entry rv-zero (list-at offsets i))) entry offsets (i + 1)
+
+  rv-emit-lifecycle-helpers : RvState -> RvState
+  rv-emit-lifecycle-helpers (st) =
+   let st1 = rv-emit-process-resume st
+   in let st2 = rv-emit-idle-dispatch st1
+   in let st3 = rv-emit-proc-entry st2
+   in let st4 = rv-emit-process-exit-self st3
+   in let st5 = rv-emit-process-exit st4
+   in let st6 = rv-emit-process-wait st5
+   in let st7 = rv-emit-process-yield st6
+   in rv-emit-process-spawn st7
+
 Section: Emit All Runtime Helpers
 
   rv-emit-zero-memo : RvState, Integer, Integer -> RvState
@@ -1811,7 +2417,8 @@ Section: Emit All Runtime Helpers
   rv-emit-runtime : RvState -> RvState
   rv-emit-runtime (st) =
    let st1 = rv-record-func st "__start"
-   in let st1h = rv-emit st1 (rv-csrrs rv-t0 #F14 rv-zero)
+   in let st1w = rv-emit-mirror-window st1
+   in let st1h = rv-emit st1w (rv-csrrs rv-t0 #F14 rv-zero)
    in let bne-idx = st1h.insn-count
    in let st1p = rv-emit st1h rv-nop
    in let st2 = rv-emit-li st1p rv-sp #BFFF0000
@@ -1827,7 +2434,9 @@ Section: Emit All Runtime Helpers
    in let st3b1 = rv-emit-li st3b rv-t0 rv-ascii-to-cce-table-addr
    in let a2c-table = rv-build-ascii-to-cce [] 0
    in let st3b2 = rv-write-table-loop st3b1 rv-t0 a2c-table 0
-   in let st3c = rv-add-func-addr-fixup st3b2 rv-t0 "__trap_handler"
+   in let st3b3 = rv-emit-proc-table-init st3b2
+   in let st3b4 = rv-emit-boot-grant st3b3
+   in let st3c = rv-add-func-addr-fixup st3b4 rv-t0 "__trap_handler"
    in let st3d = rv-emit (rv-emit st3c rv-nop) rv-nop
    in let st3e = rv-emit st3d (rv-csrw #305 rv-t0)
    in let st4 = rv-add-call-patch st3e "opening"
@@ -1946,7 +2555,11 @@ Section: Emit All Runtime Helpers
    in let st95 = rv-record-func st94 "poke-byte"
    in let st95m = rv-record-func st95 "poke-mmio"
    in let st96 = rv-emit-block st95m rv-rt-poke-byte
-   in let st97 = rv-record-func st96 "peek-32"
+   in let st96a = rv-record-func st96 "peek-16"
+   in let st96b = rv-emit-block st96a rv-rt-peek-16
+   in let st96c = rv-record-func st96b "poke-16"
+   in let st96d = rv-emit-block st96c rv-rt-poke-16
+   in let st97 = rv-record-func st96d "peek-32"
    in let st97m = rv-record-func st97 "read-mmio-32"
    in let st98 = rv-emit-block st97m rv-rt-peek-32
    in let st99 = rv-record-func st98 "poke-32"
@@ -2034,6 +2647,9 @@ Section: Emit All Runtime Helpers
    in let st178 = rv-emit-li st177 rv-t2 rv-ascii-to-cce-table-addr
    in let st179 = rv-emit st178 (rv-add rv-t2 rv-t2 rv-a0)
    in let st180 = rv-emit st179 (rv-lbu rv-a0 rv-t2 0)
-   in rv-emit st180 rv-ret
+   in let st181 = rv-emit st180 rv-ret
+   in let st182 = rv-emit-proc-helpers st181
+   in let st183 = rv-emit-net-helpers st182
+   in rv-emit-lifecycle-helpers st183
 
 Page 1

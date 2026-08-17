@@ -22,6 +22,23 @@ the single source for those.
 - Sync the main client fully before anything else.
 
 ## Step 1 -- Prove the build end to end (the battery)
+
+**`-Tier all`, and it is not optional.** A bare `build/test.ps1` runs the
+`lang` tier ONLY. Measured at Update 45: bare is 756 tests, `-Tier all` is
+1,526, and the 770 in between are where the release blocker of that cycle
+was sitting. `OperatorsManual.md` says this in the poison recipe; this step
+used to say "the FULL battery" and leave the reader to find that out.
+
+```powershell
+build/test.ps1 -Tier all -Jobs 8 -ApprovedBy damian
+```
+
+**Read the kernel line it prints.** The battery uses
+`build/output/Sut.cdx`, which is whatever the LAST build left there and not
+necessarily the head you are releasing. Rebuild from the release source
+first and check the digest matches the seed you intend to ship, or step 1
+proves a compiler nobody is publishing (measured at Update 45: it did).
+
 Run the FULL battery once, as the proof. This is the one sanctioned battery
 run: a release IS the "proofing a build" exception to the standing
 never-run-the-battery rule, and the battery's approval gate is what a
@@ -83,8 +100,20 @@ carried forward (L-COUNT), and the direction it fails in is the expensive
 one -- a future release measures 95, reads it as the witness not holding,
 and goes looking for a trojan.
 
-`build/ddc-witness.ps1` runs steps 3 and 4 and applies exactly the two
-conditions above.
+`build/ddc-witness.ps1` runs step 4 and applies exactly the two conditions
+above. **It does NOT run step 3.** That script contains no poison phase at
+all; this line used to say it ran both, and following it would skip the
+poison build while reporting it done. Step 3 is its own recipe in
+`OperatorsManual.md` "How to Run a Poison Build", and it is `-Tier all`
+like step 1.
+
+**Step 4 needs three prerequisites that a gate destroys.** `build-output/`
+does not survive a gate run, so the csharp plug, the emitted `Codex.cs` and
+the `ddc-arm` csproj scaffold all have to be rebuilt on the seed under
+audit -- and the plug's builder takes no `-Kernel`, resolving
+`build-output/bare-metal/Codex.cdx` against the process working directory,
+so stage the audited seed there first or the witness certifies the wrong
+compiler. `OperatorsManual.md` has the four traps.
 
 **This is the one proof the other three cannot substitute for.** The
 battery, the sweep and the poison build all ask the compiler about itself;

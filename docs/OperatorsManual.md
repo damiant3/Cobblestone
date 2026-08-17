@@ -1892,6 +1892,20 @@ If you add a DDC sabotage arm to a harness, confirm the probe FIRES first
 (stage2 must differ from a clean build) before trusting a red verdict --
 an inert edit that never reaches the output is a vacuous arm.
 
+**`jonquil: FAIL -- no IR-BEGIN/IR-END` usually means the guest DIED, not
+that anything is wrong with the IR.** The phase compiles the whole compiler
+to IR under the SUT and greps the result; when the compile dies the log is
+near-empty and the grep reports the missing markers, which reads like a
+finding about the quine check. Look at the size of
+`build/output/quine-check/compiler.ir.log` before believing the message: a
+real run is about 15 MB, and the failure that produced this note was 5 bytes.
+Measured 2026-08-16 on a box with four agents gating at once; re-running the
+phase alone against the same `Sut.cdx` scanned 4,709 defs and passed, with
+nothing changed in between, and two later full gates were green. So it is a
+contention flake, and the cheap repair when someone owns this script is for
+the phase to distinguish an empty log from a real answer rather than
+attributing it to the IR.
+
 **Two source sites read as dead bindings and are NOT. Leave them alone.**
 `X86_64Helpers.codex:1539` binds `st12c = emit-list-tail st12b` and the next
 line continues from `st12b`; `X86_64Chapter.codex:450` binds

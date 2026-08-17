@@ -829,6 +829,7 @@ Section: Decompression
   deflate-copy : List Integer, Integer, Integer -> List Integer
   deflate-copy (out) (src) (remaining) =
     if remaining <= 0 then out
+    else if src < 0 then out
     else deflate-copy (list-push out (list-at out src)) (src + 1) (remaining - 1)
 
   deflate-after-fixed : DeflateState, Integer -> List Integer
@@ -883,9 +884,13 @@ Section: Decoding A Dynamic Block
     in let dlen = dh-fill alllen numLit numDist (dh-zeros 30 0 []) 0
     in deflate-dyn-loop (allread.dl-reader) acc (dh-table-of lllen 286) (dh-table-of dlen 30)
 
+  br-exhausted : BitReader -> Boolean
+  br-exhausted (r) = (r.br-pos) / 8 >= list-length (r.br-bytes)
+
   deflate-dyn-loop : BitReader, List Integer, DhTable, DhTable -> DeflateState
   deflate-dyn-loop (r) (acc) (ll) (dt) =
-    let d = dh-decode-sym r ll
+    if br-exhausted r then DeflateState { ds-reader = r, ds-out = acc }
+    else let d = dh-decode-sym r ll
     in let sym = d.dr-sym
     in let r2 = d.dr-reader
     in if sym == deflate-end-of-block then DeflateState { ds-reader = r2, ds-out = acc }

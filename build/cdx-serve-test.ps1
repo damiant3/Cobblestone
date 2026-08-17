@@ -155,6 +155,41 @@ try {
     $hLen = Read-Le32 $r2.Body $o; $o += 4 + $hLen
     $pLen = Read-Le32 $r2.Body $o
     Check "a miss is an empty payload, not an error" $pLen 0
+
+    # --- a peer sends a work-request whose body is cut short -------------------
+    # handle-conn called the RAW decode-agent-msg until 2026-08-16, so a body
+    # that declared more than it carried was decoded to short fields and served
+    # as though it were whole. decode-agent-msg-checked re-encodes what it
+    # decoded and compares bytes, so the declared-64/present-8 hash below cannot
+    # round-trip and the request is refused.
+    #
+    # The refusal is silence: handle-conn answers "malformed" to its own caller
+    # and sends nothing. So the arm is TWO questions, and the second is the one
+    # that matters -- a malformed frame must not take the server down with it.
+    Write-Host "`n--- a peer sends a truncated work-request ---"
+    $hashBytes = ConvertTo-CceBytes ('a' * 8)
+    $body = @(New-Le32 0) + @(New-Le32 64) + @($hashBytes)
+    $bodyBytes = [byte[]]($body | ForEach-Object { $_ })
+    $frame = [byte[]](@(New-Le32 ($bodyBytes.Length + 1)) + @([byte]17) + @($bodyBytes) | ForEach-Object { $_ })
+
+    $answered = $false
+    $c = [System.Net.Sockets.TcpClient]::new()
+    try {
+        $c.Connect('127.0.0.1', $HostPort)
+        $s = $c.GetStream()
+        $s.ReadTimeout = 8000
+        $s.Write($frame, 0, $frame.Length)
+        $s.Flush()
+        $hdr = New-Object byte[] 5
+        $n = $s.Read($hdr, 0, 5)
+        if ($n -gt 0) { $answered = $true }
+    } catch { $answered = $false } finally { $c.Dispose() }
+
+    Check "a truncated request draws no reply" $answered $false
+
+    $r3 = Ask $hash
+    if (-not $r3) { Write-Host "  FAIL  the server did not survive a malformed frame"; $fail++ }
+    else { Check "the server still serves after a malformed frame" $r3.Tag 18 }
 } finally {
     if ($proc -and -not $proc.HasExited) { Stop-VmGraceful -ProcessId $proc.Id }
     if (-not $KeepArtifacts) {

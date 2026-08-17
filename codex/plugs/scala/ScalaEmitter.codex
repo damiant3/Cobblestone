@@ -30,6 +30,22 @@ Section: Keywords and Sanitization
    in if is-sc-keyword s then "`" & s & "`"
       else s
 
+ The IR spells a record field as `name/slot`, so a field name reaches the
+ emitter as `a/0` and reads as a division in every target that has one.
+ riscv resolves the slot and needs it; every source plug wants the name.
+
+  sc-slash-pos : Text, Integer, Integer -> Integer
+  sc-slash-pos (f) (i) (len) =
+   if i >= len then (-1)
+   else if char-to-text (char-at f i) == "/" then i
+   else sc-slash-pos f (i + 1) len
+
+  sc-field : Text -> Text
+  sc-field (f) =
+   let slash = sc-slash-pos f 0 (text-length f)
+   in if slash >= 0 then sc-sanitize (substring f 0 slash)
+      else sc-sanitize f
+
   sc-escape-text : Text -> Text
   sc-escape-text (s) =
    let s1 = text-replace s "\\" "\\\\"
@@ -106,6 +122,7 @@ Section: Builtin Dispatch
    ScBuiltinEmitter { name = "list-at", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".asInstanceOf[List[Any]](" & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[Int])" },
    ScBuiltinEmitter { name = "list-length", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".asInstanceOf[List[Any]].length" },
    ScBuiltinEmitter { name = "list-snoc", emit = \args arities -> "(" & emit-sc-expr (list-at args 0) arities & ".asInstanceOf[List[Any]] :+ " & emit-sc-expr (list-at args 1) arities & ")" },
+   ScBuiltinEmitter { name = "list-push", emit = \args arities -> "(" & emit-sc-expr (list-at args 0) arities & ".asInstanceOf[List[Any]] :+ " & emit-sc-expr (list-at args 1) arities & ")" },
    ScBuiltinEmitter { name = "max", emit = \args arities -> "math.max(" & emit-sc-expr (list-at args 0) arities & ".asInstanceOf[Int], " & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[Int])" },
    ScBuiltinEmitter { name = "min", emit = \args arities -> "math.min(" & emit-sc-expr (list-at args 0) arities & ".asInstanceOf[Int], " & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[Int])" },
    ScBuiltinEmitter { name = "negate", emit = \args arities -> "(-(" & emit-sc-expr (list-at args 0) arities & ".asInstanceOf[Int]))" },
@@ -159,7 +176,7 @@ Section: Type Definition Emission
   emit-sc-type-def (td) =
    when td
     is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
-     emit-sc-record-type (name.value) fields
+     emit-sc-record-type (name.value) fields recmut
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      if is-tup-type (name.value) then ""
      else emit-sc-sum-type (name.value) ctors
@@ -186,17 +203,18 @@ Section: Type Definition Emission
    if i == list-length fields then ""
    else ", field" & integer-to-text i & ": Any" & emit-sc-ctor-fields-rest fields (i + 1)
 
-  emit-sc-record-type : Text, List ARecordFieldDef -> Text
-  emit-sc-record-type (name) (fields) =
+  emit-sc-record-type : Text, List ARecordFieldDef, Boolean -> Text
+  emit-sc-record-type (name) (fields) (recmut) =
    let sname = sc-sanitize name
-   in "case class " & sname & "(" & emit-sc-record-fields fields 0 & ")\n\n"
+   in "case class " & sname & "(" & emit-sc-record-fields fields 0 recmut & ")\n\n"
 
-  emit-sc-record-fields : List ARecordFieldDef, Integer -> Text
-  emit-sc-record-fields (fields) (i) =
+  emit-sc-record-fields : List ARecordFieldDef, Integer, Boolean -> Text
+  emit-sc-record-fields (fields) (i) (recmut) =
    if i == list-length fields then ""
    else let f = list-at fields i
    in let sep = if i > 0 then ", " else ""
-   in sep & sc-sanitize (f.name.value) & ": Any = null" & emit-sc-record-fields fields (i + 1)
+   in let binder = if recmut then "var " else "val "
+   in sep & binder & sc-sanitize (f.name.value) & ": Any = null" & emit-sc-record-fields fields (i + 1) recmut
 
 Section: Expression Emission
 
@@ -227,8 +245,8 @@ Section: Expression Emission
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-sc-expr-at body arities (depth + 1)
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-sc-expr-at body arities (depth + 1)
     is IrRecord (name) (fields) (ty) (sp) -> emit-sc-record name fields arities
-    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-sc-expr-at rec arities (depth + 1) & "." & sc-sanitize field
-    is IrFieldStore (rec) (field) (val) (ty) (sp) -> emit-sc-expr-at rec arities (depth + 1) & ".copy(" & sc-sanitize field & " = " & emit-sc-expr-at val arities (depth + 1) & ")"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-sc-expr-at rec arities (depth + 1) & "." & sc-field field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "{ val _r = " & emit-sc-expr-at rec arities (depth + 1) & "; _r." & sc-field field & " = " & emit-sc-expr-at val arities (depth + 1) & "; _r }"
     is IrFork (body) (ty) (sp) -> emit-sc-expr-at body arities (depth + 1)
     is IrAwait (task) (ty) (sp) -> emit-sc-expr-at task arities (depth + 1)
     is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> "try { " & emit-sc-act body arities & " } catch { case _: Exception => " & emit-sc-act fb arities & " }"

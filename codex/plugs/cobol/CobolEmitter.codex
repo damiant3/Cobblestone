@@ -22,6 +22,22 @@ Section: Keywords and Sanitization
   cobol-name : Text -> Text
   cobol-name (name) = cobol-upper (cobol-sanitize name)
 
+ The IR spells a record field as `name/slot`, so a field name reaches the
+ emitter as `a/0` and reads as a division. riscv resolves the slot and
+ needs it; every source plug wants the name.
+
+  cobol-slash-pos : Text, Integer, Integer -> Integer
+  cobol-slash-pos (f) (i) (len) =
+   if i >= len then (-1)
+   else if char-to-text (char-at f i) == "/" then i
+   else cobol-slash-pos f (i + 1) len
+
+  cobol-field : Text -> Text
+  cobol-field (f) =
+   let slash = cobol-slash-pos f 0 (text-length f)
+   in if slash >= 0 then cobol-name (substring f 0 slash)
+      else cobol-name f
+
   cobol-escape-text : Text -> Text
   cobol-escape-text (s) = text-replace s "\"" "\"\""
 
@@ -769,7 +785,7 @@ Section: Expression Emission
   emit-cobol-field-var : IRExpr, Text, List ArityEntry, CobolState -> CobolExprResult
   emit-cobol-field-var (rec) (field) (arities) (st) =
    let rec-r = emit-cobol-expr-to-var rec arities st
-   in let fn = cobol-name field
+   in let fn = cobol-field field
    in CobolExprResult {
     var-name = rec-r.var-name & "-" & fn,
     code = rec-r.code,

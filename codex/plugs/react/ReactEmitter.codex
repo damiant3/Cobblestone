@@ -6,6 +6,22 @@ Section: Sanitization
   react-sanitize (name) =
    text-replace (text-replace name "-" "_") "'" ""
 
+ The IR spells a record field as `name/slot`, so a field name reaches the
+ emitter as `a/0` and reads as a division in every target that has one.
+ riscv resolves the slot and needs it; every source plug wants the name.
+
+  react-slash-pos : Text, Integer, Integer -> Integer
+  react-slash-pos (f) (i) (len) =
+   if i >= len then (-1)
+   else if char-to-text (char-at f i) == "/" then i
+   else react-slash-pos f (i + 1) len
+
+  react-field : Text -> Text
+  react-field (f) =
+   let slash = react-slash-pos f 0 (text-length f)
+   in if slash >= 0 then react-sanitize (substring f 0 slash)
+      else react-sanitize f
+
   jsx-escape : Text -> Text
   jsx-escape (s) =
    let s1 = text-replace s "&" "&amp;"
@@ -87,8 +103,8 @@ Section: Expression Emission
     is IrMatch (scrut) (branches) (ty) (sp) -> emit-jsx-match scrut branches arities indent
     is IrAct (stmts) (ty) (sp) -> emit-jsx-act stmts arities indent
     is IrRecord (name) (fields) (ty) (sp) -> "{ _type: \"" & name & "\"" & emit-jsx-record-fields fields arities indent 0 & " }"
-    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-jsx-expr rec arities indent & "." & react-sanitize field
-    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(" & emit-jsx-expr rec arities indent & "." & react-sanitize field & " = " & emit-jsx-expr val arities indent & ")"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-jsx-expr rec arities indent & "." & react-field field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(" & emit-jsx-expr rec arities indent & "." & react-field field & " = " & emit-jsx-expr val arities indent & ")"
     is IrFork (body) (ty) (sp) -> "Promise.resolve().then(() => " & emit-jsx-expr body arities indent & ")"
     is IrAwait (task) (ty) (sp) -> "(await " & emit-jsx-expr task arities indent & ")"
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-jsx-expr body arities indent

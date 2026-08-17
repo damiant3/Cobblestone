@@ -101,9 +101,27 @@ Section: Serve Loop
       in let resp-len = list-length resp-bytes
       in let st1 = arm64-net-io-send-raw (recv.state) resp-bytes
       in let st2 = arm64-net-io-close st1
-      in WsResult { ws-state = st2, ws-diag = "ok:" & req.path & " recv=" & show (list-length (recv.data)) & " resp=" & show resp-len }
+      in WsResult { ws-state = st2, ws-diag = "ok:" & req.path & " len=" & show (text-length (req.path)) & " eq=" & ws-eq (req.path) & " codes=" & ws-codes (req.path) 0 (text-length (req.path)) "" & " recv=" & show (list-length (recv.data)) & " resp=" & show resp-len }
     else let st1 = arm64-net-io-close (recv.state)
       in WsResult { ws-state = st1, ws-diag = "no-data" }
+
+ The routed path came out `napinhealth` for a `/api/health` that the wire
+ dump shows arriving intact, and `unicode-bytes-to-text` was measured clean
+ on both lanes (`codex/test/bytes-to-text-2f.codex`). These two cells split
+ what is left. `ws-codes` prints the CCE code point of every character
+ beside the rendered text, so a path whose codes are right and whose
+ rendering is wrong means the DIAGNOSTIC is at fault and the server is
+ already correct; `/` is CCE 81 and `a` is 15. `ws-eq` prints the routing
+ comparison itself, so a True beside a 404 moves the fault past the parse
+ and into the route.
+
+  ws-codes : Text, Integer, Integer, Text -> Text
+  ws-codes (s) (i) (n) (acc) =
+   if i >= n then acc
+   else ws-codes s (i + 1) n (acc & " " & show (char-code (char-at s i)))
+
+  ws-eq : Text -> Text
+  ws-eq (p) = if p == "/api/health" then "MATCH" else "nomatch"
 
   ws-standard-route : Integer, Text -> Maybe HttpResponse
   ws-standard-route (count) (path) =
