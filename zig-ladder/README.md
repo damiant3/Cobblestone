@@ -17,6 +17,38 @@ The Update is not typed here by hand -- `seed_identity.py` derives it from the
 seed's own hash by finding the release note that names it, so the label cannot
 drift from the binary. Run it to see what a checkout is actually holding.
 
+## What this needs, and what it does not
+
+**It needs no changes to the Codex repository.** Everything Linux and QEMU
+specific lives here. The driver that boots the guest, `codex_vm.py`, is ours: it
+launches QEMU directly and re-implements the contracts the author's `codex-vm`
+host provides (the guest RAM size written at physical `0xFE8` before boot, the
+ring preload, the paced serial send) rather than calling `Start-VmRun` in
+`build/vm-config.ps1`. Every plug defect the ladder found was fixed in
+`ZigEmitter.codex` and carried upstream, so a checkout needs no patch to run
+this. That claim is checkable, and it should stay empty:
+
+    git diff upstream/master HEAD -- . ':(exclude)zig-ladder'
+
+**From the checkout, tracked and used unmodified:** `seed/Codex.cdx`,
+`build/concat-codex-self.ps1`, `codex/plugs/common/plug-build-lib.ps1`, the
+chapters under `codex/compiler/`, and `codex/test/plug-oracle-arith.codex` with
+its `.expected`.
+
+**From the checkout, NOT tracked:** `codex/plugs/zig/build-output/zig-plug.cdx`
+and `plug-source.codex`. These are products of the author's gated PowerShell
+build, not source, so a fresh clone does not have them and the rungs that use
+them fail on a missing file. Run that build once before the first sweep.
+
+**From the host:** `qemu-system-x86_64` (6.2.0), `python3` (3.10.12), PowerShell
+(7.5.4, for the bundlers, which are the author's tooling), and `zig` (0.16.0)
+for the arm under test. `/dev/kvm` is optional: `CODEX_ACCEL` selects the
+accelerator and the default is `tcg`.
+
+Two known warts, both the same shape: three scripts hardcode
+`~/.local/pwsh/pwsh`, and until every call site moves to `ladder_root.py` some
+scripts still find the checkout by counting directories up from themselves.
+
 ## What this is
 
 This directory holds a Diverse Double-Compiling check, in Wheeler's sense:
