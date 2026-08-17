@@ -6,6 +6,12 @@
 # a stale bank compares a new plug to an old answer and means nothing, so
 # this runs first after any seed change.
 #
+# The rung list is LADDER_RUNGS in oracle_lib.sh, shared with allcycles.sh.
+# This said `lex..pingpong` for a while after six more rungs existed, and
+# allcycles.sh had its own copy that was missing clamp: two lists, two
+# different ideas of what the ladder is, and a rung absent from one is a rung
+# whose truth goes stale while its diff still reports green.
+#
 # Ordered cheapest rung first and stops on the first failure, because the
 # failure modes here are shared -- a deck overflow or a ring-size wall hits
 # every rung the same way, and finding that out on lex costs minutes where
@@ -13,11 +19,11 @@
 set -e
 . "$(dirname "$0")/oracle_lib.sh"
 
-for m in lex parse desugar scope check lower text pingpong; do
+for m in $LADDER_RUNGS; do
     echo "############ re-banking $m"
     truth_arm "$m"
     echo "############ $m banked"
 done
 
-echo "############ all eight banked; sweeping the plug against the new bank"
+echo "############ all banked; sweeping the plug against the new bank"
 "$T/ast/allcycles.sh"

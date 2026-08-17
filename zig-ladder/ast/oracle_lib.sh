@@ -8,6 +8,12 @@
 T="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="$(cd "$T/.." && pwd)"
 
+# The ladder, cheapest first. allcycles.sh sweeps it and rebank_all.sh
+# re-banks it, and they must not disagree about what the ladder is: a rung
+# missing from one is a rung whose truth is stale while its diff still
+# reports green.
+LADDER_RUNGS="lex parse desugar scope check lower text pingpong lir fib fibx scale whole clamp"
+
 # Extra mode flags appended to the command line of BOTH blobs, per milestone.
 # Empty wherever the seed's derived deck scale is enough, so a milestone that
 # already passes keeps compiling byte for byte as it did.

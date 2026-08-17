@@ -12,7 +12,7 @@ set -e
 bash "$T/ast/ringplug_build.sh" > /dev/null
 echo "REBUILT"
 fail=0
-for m in lex parse desugar scope check lower text pingpong lir fib fibx scale whole; do
+for m in $LADDER_RUNGS; do
     echo "=== $m ==="
     # NOT `arm | head`: under a pipe the exit status is head's, so a
     # failing rung reports nothing and the sweep still says it passed.
