@@ -29,6 +29,7 @@ mode_flags() {
         # 2,398,065, so 160 * 2578233/2398065 = 172. Deck scale tracks the
         # unit, and guessing low here costs a ten-minute cycle to find out.
         whole) echo " decks=172" ;;
+        clamp) echo " decks=172" ;;
         # passes=text-plug drops the inline passes. Passes.codex says why in
         # so many words: "A plug that emits SOURCE resolves a call by its
         # name, so a pass that substitutes a body and deletes the call
@@ -169,7 +170,7 @@ ring_arm() {
 # asks here rather than carrying a list of its own.
 arm_for() {
     case "$1" in
-        fibx|scale|whole) echo ring_arm ;;
+        fibx|scale|whole|clamp) echo ring_arm ;;
         *)                echo zig_arm ;;
     esac
 }
