@@ -122,13 +122,42 @@ Measured 2026-08-03, except where an item gives its own date.
    unifier. Structural induction with per-constructor subgoals; the
    flagship proof is `reverse (reverse xs) === xs` through a four-lemma
    chain. All proofs erase at emit -- zero machine code, zero runtime cost.
-5. **Punctual functions: compile-time bounded execution.** The
-   `punctual` keyword rejects heap allocation, recursion, closures, bare
-   I/O and calls to non-punctual functions, and reports an instruction
-   count per function against an optional budget. No production language
-   has this combination -- Ada Ravenscar is global and needs external WCET
-   tools, Rust has nothing, MISRA-C is external linters.
-6. **592 library modules across 22 quires** (432 foreword + 160 OS): data
+5. **Declared cost, enforced by the compiler: `punctual` for time,
+   `bounded` for allocation.** The `punctual` keyword promises a worst-case
+   execution budget -- it rejects heap allocation, recursion, closures, any
+   effect in the signature, and calls to non-punctual functions, and reports
+   an instruction count per function against an optional budget. No
+   production language has that combination: Ada Ravenscar is global and
+   needs external WCET tools, Rust has nothing, MISRA-C is external linters.
+
+   `bounded` says the other half. It declares a CEILING on what a function
+   allocates -- `none < fixed < linear < growing` -- and the compiler infers
+   the class from the body and refuses when it exceeds the ceiling. The
+   refusal is transitive, which is the whole point: this function is linear
+   where you read it and quadratic underneath, and nothing said so before.
+   **This is the first slice: `linear` and `growing` are inferred and
+   checked; `none` and `fixed` are named rungs the compiler does not infer
+   yet and refuses to accept (CDX6103) rather than take on trust.**
+
+   ```
+     bounded linear unpack-text : List Integer -> Text
+     unpack-text (bs) = unpack-go bs 0 ""
+
+     unpack-go : List Integer, Integer, Text -> Text
+     unpack-go (bs) (i) (acc) =
+       if i == list-length bs then acc
+       else unpack-go bs (i + 1) (acc & byte-to-text (list-at bs i))
+   ```
+
+   Before, that compiled and ran, and quietly copied its accumulator once per
+   byte until the arena ran out. Now:
+
+   ```
+     CDX6101: 'unpack-text' declares bounded linear but is inferred growing:
+              an accumulator is copied by & inside a self call, here or in
+              something it calls
+   ```
+6. **593 library modules across 22 quires** (433 foreword + 160 OS): data
    structures, crypto, a full TCP/IP stack with TLS 1.3 and X.509 peer
    verification, 3D and game engines, AI inference, encoding, math,
    compression, a themeable UI toolkit, and hard real-time primitives.
@@ -198,14 +227,14 @@ for 135 checks; its phase of the gate takes about 19s.
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (2,800,207 bytes) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (2,827,487 bytes) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
 | Content hash prefix | `6F2CE9BD66DA95EA` |
-| SHA-256 | `D230B11D910D437DE4039DB6C3092A0C98233108053D5EBAF4CF2A3272B7D7D6` |
-| MD5 | `A01DFC4F64CD9E9D066AE6C3C225C083` |
+| SHA-256 | `270227BE0202EDBBCC97FB48B8C94F301E51F93C3FC2BB82D0FC88505E438CA1` |
+| MD5 | `7F22DCD855551ACB0BB40681487B5968` |
 
 The content hash is the 32 bytes the CDX header carries at offsets 8..39
 and it deliberately EXCLUDES the signature, so it is not a prefix of the
@@ -216,7 +245,7 @@ first-boot ceremony.
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `19F439DEC7B7AF922675A263D8A61125BAC8087FC70624A13003BE0A38ED0A7F` |
+| SHA-256 | `6F4DA98790E0207F1392B6E05DFE6135B377815F9CC8C16DBB5CA11D55D26EE8` |
 
 Boot it on a UEFI machine and it runs its own first-boot ceremony on the
 GOP framebuffer with no OS beneath it: choose an interface, walk the
@@ -512,14 +541,14 @@ is preserved regardless of Tier 1 and 2 support.
 ## Library Quires
 
 Code outside the compiler is organized into **22 quires** (library
-namespaces) holding **592 modules** (432 foreword, 160 OS). Quires cite
+namespaces) holding **593 modules** (433 foreword, 160 OS). Quires cite
 each other as `cites Game chapter AStar`; the quire name is the last
 segment of the directory name, capitalized. Full catalog:
 [docs/DevelopersRulebook.md](docs/DevelopersRulebook.md).
 
 | Quire | Directory | Count |
 |---|---|---:|
-| Foreword | `codex/foreword/core/` | 128 |
+| Foreword | `codex/foreword/core/` | 129 |
 | Encode | `codex/foreword/encode/` | 75 |
 | UI | `codex/foreword/ui/` | 50 |
 | AI | `codex/foreword/ai/` | 43 |
@@ -543,12 +572,12 @@ segment of the directory name, capitalized. Full catalog:
 
 ```
 codex/
-  compiler/      Self-hosted compiler (64 files, 54,148 lines)
-  foreword/      432 library modules across 13 quires
+  compiler/      Self-hosted compiler (64 files, 55,645 lines)
+  foreword/      433 library modules across 13 quires
   boards/        Board HAL drivers -- 9 target boards
   os/            Kernel, net, trust, verify, sched, dev, observe (160 modules)
   plugs/         55 plugs, 148 source modules -- IR-text-driven emitters
-  test/          Compiler samples + OS integration tests (1,499 files)
+  test/          Compiler samples + OS integration tests (1,532 files)
 apps/            67 applications, 1,019 modules
 annotations/     On-disk annotation sidecars (JSON facts)
 build/           Build and test harness (PowerShell)

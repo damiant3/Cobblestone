@@ -148,6 +148,29 @@ raw `-output` file.** That rule already existed for the CR and the
 `HEAP:` lines; the SOH is the part that survives the mistake silently,
 because the CR and the extra lines would fail loudly.
 
+**The same rule broken the other way: a MISSING trailing newline** (fester,
+2026-08-16). `test-run.ps1` writes `($lines -join "\n") + "\n"`, so the
+actual always ends in exactly one LF; the comparison strips CR from the
+expected side only. LF is NOT one of the ignorable characters above: with a
+literal newline in the right operand, `"abc" -eq "abc<LF>"` is False, where
+the SOH form on line 106 is True. So a sidecar with no final LF can never
+match, whatever else is right about it.
+
+**And that is the interesting part, because this failure is LOUD.** Three
+sidecars shipped in CL 15313 anyway (`gpt-hdr-crc-guard`,
+`gpt-array-crc-guard`, `gpt-array-geom-guard`) and sat unpassable until
+root's release battery found them on 2026-08-16. A loud failure still needs
+something to hear it, and the full battery is Damian's tool, so a test can
+land and never be run at all. Do not read "it would have failed" as "it
+would have been caught".
+
+Measured across every `.expected` under `codex/test` and `apps`: **1,273
+files, exactly those 3 without a final LF** (L-COUNT: re-measure, do not
+quote this). That ratio is why it is worth a runner rather than a rule --
+1,270 files already get it right, so a check fires on real defects and
+never spuriously. Unlike the ordinal-comparison repair above, this one is
+not a fleet-wide event: it is three files.
+
 **Why the comparison has not simply been changed to ordinal.** Making it
 `[string]::Equals(..., 'Ordinal')` is a two-word edit that turns **139 tests
 red in one run**, none of them for a real defect. The repair on the other
@@ -404,7 +427,7 @@ in this document is only ever the number some run actually produced; per-test
 re-measurement retires the rows it covers and does not license editing a
 total nobody measured. Re-run before trusting any of these figures.
 
-`codex/test/errors/` holds **174** expected-failure tests (measured
+`codex/test/errors/` holds **176** expected-failure tests (measured
 2026-08-10).
 
 ## What the standing gate does not cover
@@ -3678,7 +3701,17 @@ refuse a negative length, and a reader checking it sees a bounds test with a
 sign test in front of it and moves on. The value was bounded; the arithmetic
 was not.
 
-**`sdw-decode` itself was made subtractive at blu 15614**, and this is worth
+**Two boundary arms are still missing from `source-def-wire-guard`**, found
+2026-08-16 while clearing a superseded standalone draft of this test off disk.
+Arm 4 `over` is a FAR-over length and arm 9 `overflow` is the wrapping one, so
+nothing covers **over-by-one**, which is the value a fencepost error produces
+and the only one an off-by-one in `avail` would admit. Nothing covers content
+that CONTAINS the field delimiter either. Both were written and neither landed;
+whoever next touches the chapter should add them.
+
+**`sdw-decode` itself was made subtractive at main 15641** (this said 15614
+until 2026-08-16, a transposition that resolves to no changelist at all), and
+this is worth
 dating because for a day this section prescribed a fix the originating record
 did not yet have: the class was written up, `repo-has` was changed, and the
 site the class was found in still shipped the additive form. Its arm is arm 9
@@ -4137,7 +4170,7 @@ as a green that means nothing.**
 
 ## Expected-Failure Tests
 
-174 tests in `codex/test/errors/` verify that the compiler rejects
+176 tests in `codex/test/errors/` verify that the compiler rejects
 invalid programs with the correct diagnostic codes. Each has a
 `.failing` sidecar listing the expected CDX error codes. Examples:
 `apply-non-function` (CDX2001), `duplicate-def` (CDX3002),
@@ -4631,6 +4664,328 @@ one-line readers of `decode-verdict-checked` and
 to agree about validity would be two sources of truth about the same bytes,
 which is what this channel exists to remove.
 
+## The App Sweep Passed While An App Was Broken (2026-08-16)
+
+**A language change broke an app, the gate's app-sweep ran over it, and the
+gate was green.** Recorded because the sweep is the fleet's main evidence
+that 265 diverse programs still compile, and this is a case where that
+evidence was not being taken.
+
+`bounded` became a keyword at blu 16020, which collides with a bare `bounded`
+local. `apps/radio/RadioStation.codex:574` had one. Measured against the
+seed that CL shipped:
+
+```
+apps/radio/RadioStation.codex:574:14: error CDX1023: Expected 'in' after let bindings
+apps/radio/RadioStation.codex:574:22: error CDX1022: Expected 'else' in if expression (got '=')
+```
+
+The gate that landed it ran `app-sweep` for 153.5 s over **270 units and
+reported 265 clean, 5 known-dirty, 0 regressions.** `RadioStationMain` is not
+one of the five baseline entries, so it was not masked as known-dirty. root
+found the breakage from their own gate under the next token.
+
+**The unit is covered, which is what closes it.** The first reading of this
+was "perhaps the sweep does not compile that app". It does:
+`test-output\clssweep\_per-unit.csv` carries
+
+```
+"apps\radio\RadioStationMain.codex","0","0","False",""
+"apps\radio\tests\TestRadio.codex","0","0","False",""
+```
+
+and it carried the same clean row in the run where the app provably did not
+compile. **The aggregate is identical before and after the fix** -- 270 units,
+265 clean, 5 diagnostics, 0 regressions, both times -- so the sweep's answer
+does not depend on whether this app compiles. A covered unit reported clean
+while broken means the sweep compiled it with something that accepted
+`let bounded =`, and nothing that knows the keyword does.
+
+**Where that points, stated as a candidate rather than a conclusion.**
+`sweep-app-classes.ps1:48` takes its kernel from
+`build-output\bare-metal\Codex.cdx` rather than `build/output/Sut.cdx`, the
+path `CLAUDE.md`'s `-Kernel` trap already warns "holds whichever kernel ran
+LAST". Measured after the fact that path held a kernel which DOES know the
+keyword, so if staleness is the mechanism it depends on phase ordering during
+the run and is not visible afterwards -- which is exactly why the fix is to
+have the sweep NAME and PIN its kernel the way `compile.ps1 -Kernel` does,
+rather than to reason about ordering. root took that fix.
+
+**FIXED 2026-08-16 (root), and the mechanism was simpler than staleness.**
+`sweep-app-classes.ps1:48-50` COPIED `seed\Codex.cdx` over
+`build-output\bare-metal\Codex.cdx` and then let every `compile.ps1` default
+to that path, so the sweep always ran with the SEED. Inside a gate the seed
+on disk is the OLD compiler until the seed is converged and installed, which
+is every gate whose change moves the seed, and 16020's did: the sweep
+compiled 270 units with the pre-keyword compiler and was right that all of
+them compiled under it. Not phase ordering, not a race: the script chose the
+seed by construction. The fix: the sweep takes `-Kernel` (default
+`seed\Codex.cdx` for a hand run) and prints `kernel: <path> [digest]` first;
+`build.ps1`'s `app-sweep` phase passes `-Kernel $SutCdx`, through
+`BuildScript.codex` so `check-generated-scripts` stays at 0 drift; the
+stage0 copy is gone. Ablation, measured: with `let bounded` put back at
+`RadioStation.codex:574`, `sweep-app-classes.ps1 -Filter radio -Check
+-Kernel seed\Codex.cdx` (seed `0D239110`, post-keyword) answers `CHECK
+FAILED: 2 unit(s) regressed` (`RadioStationMain`, `TestRadio`, CDX1022
+CDX1023), and the same sweep with the pre-keyword seed `04D14348` answers
+`CHECK OK: 2 clean` -- the two answers the old script could not tell apart.
+
+**The reader's lesson is the cheaper one.** A green sweep is evidence that the
+sweep ran, not that the apps compile under the compiler you just built, until
+the sweep says which kernel it used.
+
+## The Bounded Declaration and Its Corpus (`bounded-exceeded`, `bounded-accepted`)
+
+Cost Model 3.3, blu 2026-08-16. `bounded <class>` declares a ceiling in
+`none < fixed < linear < growing`; the compiler infers the class and refuses
+when it is exceeded. Three arms, and the pairing is the point.
+
+**`codex/test/errors/bounded-exceeded` proves the refusal is TRANSITIVE, not
+local.** `walks` declares `bounded linear` and its body is a single call, so a
+check that only read the declared function's own body would pass it. It is
+refused because `grow-loop` underneath copies its accumulator:
+
+```
+bounded-exceeded.codex:24:3: error CDX6101: 'walks' declares bounded linear
+but is inferred growing: an accumulator is copied by & inside a self call,
+here or in something it calls
+```
+
+That is the `unpack-text` shape the feature exists for -- linear where you
+read it, quadratic below -- and an arm whose declared function did its own
+appending would not have tested it.
+
+**`codex/test/apps/bounded-accepted` is the control, and a refusal arm is
+worthless without it.** A check that refuses every `bounded` declaration
+scores a perfect refusal rate. The control declares `bounded linear` over a
+`list-push` accumulator and compiles and runs (`walks-ok 8 = 8`), and declares
+`bounded growing` over the very shape the other chapter is refused for
+(`grows-declared 4 = xxxx`). The two chapters differ in ONE thing: the
+callee's accumulator operator.
+
+**The kill rate is measured, not asserted**, against
+`codex/test/cost/accumulator-corpus`: 5 of 5 quadratic entries inferred
+`growing`, 4 of 5 linear entries left alone, with `n-fixed-appends` the single
+over-refusal. Both that number and the rule-1-alone number (8 of 10) are taken
+by ablation. `CostModel.md` sections 7 and 8 carry the tables; the corpus
+carries five linear entries written to look like the quadratic ones, which is
+what makes the score mean anything.
+
+**These arms run under the battery and not the standing gate**, which is the
+convention for `codex/test/errors` and `codex/test/apps` rather than an
+omission: `test.ps1` sweeps both tiers, `build.ps1`'s `app-sweep` covers the
+`apps/` entry chapters instead, and the BVT runs a named list neither is on.
+They were compiled and run by hand in both directions when written, and the
+README's `bounded linear unpack-text` example was compiled too rather than
+written from memory -- it refuses with the exact CDX6101 text the README
+quotes.
+
+## A Send That Cannot Finish Says So (`net-send-capped`)
+
+blu 2026-08-16, from the plugs lane's measurement in `plugs-backlog` 1.16.
+`net-io-send-chunk` returns the transport whether or not the bytes went, and
+`net-io-send-text-loop` then advances past a chunk that never left, so a plug
+whose send was refused printed `OK` anyway. The arm covers the refusal channel
+added to `NetIO`.
+
+**The cap was NOT the send path and it is not every plug, which is what a day
+of believing the headline would have cost.** Measured after the channel
+landed: `python` over the shared `build/plug-run.ps1` harness delivered
+**68,049 bytes** intact, exit 0, no truncation. 38 of the 55 plugs use that
+harness. What separates the capped ones is the RECEIVER: `wpf` has its own
+listener that half-closes its send side (`codex/plugs/wpf/run.ps1:93`,
+`Shutdown(SocketShutdown::Send)`) before reading the reply, and
+`plug-run.ps1` never does. Suppressing that one line took `wpf` from 11,200
+bytes and three files to 11,697 bytes and all five.
+
+**The root cause is the CLOSE_WAIT state handler, not the queue.** A peer's
+FIN moves the connection to `TcpCloseWait` (`Tcp.codex:284`), and
+`tcp-step-close-wait` answered `EvSend` with `ActError "peer closed"`.
+CLOSE_WAIT means the PEER will send no more; the local side may still send,
+and a plug answering a request over a half-closed socket is precisely that
+case. With that one arm made to build a segment like ESTABLISHED does, `wpf`
+delivers all 11,697 bytes WITH the half-close left in place.
+
+**Two hypotheses died on the way and both are worth recording, because each
+was plausible and each was wrong.** First: that the FIN made
+`net-io-conn-closed` true. It does not -- that predicate answers only on
+`TcpClosed`, and CLOSE_WAIT is a different state. Second: that CLOSE_WAIT's
+`ActNone` for `EvSegment` stopped acks draining the retransmit queue. It does
+not -- ack processing lives in `net-process-frame`
+(`NetworkStack.codex:408-413`) and runs regardless of TCP state, and
+ESTABLISHED answers `ActNone` to a bare ack too. The 11,200 is real but it is
+a CONSEQUENCE: it is how far the sender ran ahead before the drain first
+processed the FIN, and the sender runs ahead exactly to the queue capacity.
+Matching arithmetic is not a mechanism.
+
+**And the channel shipped hours earlier did not catch this case.** It tested
+`net-rexmit-full` and `net-io-conn-closed`, and in CLOSE_WAIT neither is true,
+so a send into a half-closed connection passed both guards, dropped its bytes,
+and reported complete. The predicate that holds for every refusal is the
+outbox: `net-send` produces no frame whenever the state machine declines, so a
+non-empty chunk that produced no frame did not go. Enumerating states was the
+error; asking whether anything was actually queued is state-independent.
+
+**The early stop is not the defect, and a fix that removed it would have
+passed a careless review.** `arm64-send-refusal` already pins the stop:
+walking the rest of the buffer after a refusal cost 593,152 bytes of slices
+against 16,400 for stopping, measured 2026-08-10. What was missing was that
+the stop was silent. Reading that arm BEFORE writing the fix is what kept
+the change additive.
+
+**Two instruments agree on the ceiling and neither was told the other's
+answer.** The plugs lane arrived at 11,200 bytes from the far end, by
+counting what a wpf emit delivered over four runs on one pinned IR. This arm
+computes `net-rexmit-capacity * net-mss` inside the guest and prints 11,200.
+A single number reproduced four times is one instrument repeated; two
+instruments that start from different ends are the evidence.
+
+```
+queue-full=True cap-bytes=11200
+stalled complete=False sent=0 of 50000
+stalled-text complete=False sent=0
+empty complete=True sent=0
+healthy complete=True sent=3
+close-wait complete=True sent=3
+syn-sent complete=False sent=0
+```
+
+**The last two rows are the pair that has to disagree**, and they are the
+whole reason the outbox predicate exists. Both states pass
+`net-rexmit-full` and `net-io-conn-closed`: neither is full and neither is
+`TcpClosed`. CLOSE_WAIT must SEND (the peer is done, we are not) and SYN_SENT
+must refuse (there is no connection yet). Ablated independently: with the
+`Tcp.codex` arm put back to `ActError`, `close-wait` alone flips to
+`complete=False sent=0`; with the outbox predicate removed, `syn-sent` alone
+flips to `complete=True sent=3`, reporting three bytes it never sent. Neither
+ablation moves the other row, so the two guards are not standing in for each
+other.
+
+**The controls are the reason the refusal rows count** (L-CONTROL). `empty`
+and `healthy` are the two ways `ns-complete` can legitimately be True, and
+`healthy` is the one that matters: it puts three bytes through an
+ESTABLISHED session and gets `sent=3`, so True is reachable on a real send
+and not only on the trivial zero-length path. Ablated -- the `net-rexmit-full`
+arm returning `ns-complete = True`, which is the pre-fix behaviour -- the two
+refusal rows flip to True and both controls stay True. An arm that only read
+True everywhere would look identical to a passing run without them.
+
+**No arm needs a NIC**, which is why this is an ordinary `codex/test/apps`
+entry rather than a harness script like `cdx-serve-test.ps1`.
+`net-io-send-drain` returns at its own closed check before it polls, so a
+session that is both queue-full and closed never reaches
+`net-driver-recv-frame`. `net-rexmit-full` is tested before
+`net-io-conn-closed` in the sender, so the full-queue arm is the one that
+answers.
+
+**Its runner is the battery, not the standing gate, and that is the
+convention for this directory rather than an omission.** `test.ps1` sweeps
+`codex\test\apps` wholesale through `$allDirs` (`:166`); `build.ps1`'s
+`app-sweep` phase is a different thing entirely -- it runs
+`sweep-app-classes.ps1` over the `apps/` entry chapters -- and the BVT runs a
+NAMED list (`bvt.ps1:103` onward) that this arm is not on. Neither is
+`agent-msg-truncated`, which is `TrustTransport`'s own refusal arm and
+predates all of this, nor `crf-truncated` or `fact-sync-truncated`. A
+refusal arm added here is run by `build/test.ps1 -Tier apps` and by nothing
+else, so it is compiled and run by hand when it is written and the
+`.expected` is recorded from that run.
+
+**The over-cap case on a LIVE connection is deliberately absent, and the
+reason is a finding.** A 12,600-byte send (nine chunks, so the queue fills on
+the ninth) over an established session produced NO output inside
+`test-run.ps1`'s 60-second wall budget (`build/test-run.ps1:28`); the run took
+61 seconds and the outfile was empty. The send pays `net-io-max-polls`, which
+is `net-driver-poll-interval * 500`, for each remaining chunk. This is the
+poll-count-as-duration shape a third time, after `e1000-await-aneg` and
+`e1000-link-wait`, now in the send path. It is recorded as an observation and
+not as a measurement: what is known is that it exceeds 60 seconds, not what it
+costs.
+
+**And the reading that came out of the source rather than the report.** The
+plugs entry describes a shortfall. `net-io-send-chunk` drains before every
+chunk, so a queue that frees again resumes sending while the unchecked text
+loop is still walking, and the far end is handed the bytes either side of the
+refusal with the refused ones missing from the middle. That is corruption
+rather than truncation. It is reasoned from the send path and is NOT
+reproduced here: the bed cannot free a retransmit queue mid-send without a
+peer, and every arm above uses a closed connection precisely to stay off the
+driver.
+
+## The Framing Refusal Reaches Its Consumers (`crf-truncated`, `fact-sync-truncated`)
+
+Track B item 7, blu 2026-08-16. `MessageFraming` set a `valid` flag on every
+decoded field at main 15375 and nothing downstream read it. Not seed-affecting:
+the compiler unit is `codex/compiler` plus cites resolved only within the
+`Foreword` and `Math` quires (`concat-codex-self.ps1` `$libQuireNames`), and
+Trust, Net and Replay are not in it. Confirmed against the depot seed after the
+gate rather than predicted.
+
+**One of the three named consumers never needed the change, and the plan said
+otherwise.** `CurrentPlan` listed `TrustTransport`, `FactSync` and `ReplayCrf`
+as chaining decodes blind. `TrustTransport` does not and never did:
+`decode-agent-msg-checked` RE-ENCODES the message it decoded and compares bytes,
+so it refuses a truncated body and a non-canonical encoding in one test, and
+three call sites act on the answer. Reading the source before writing against
+the brief is what caught it.
+
+**Two live raw indexes were sitting behind the missing flag**, both the
+`!EXC=06` class rather than the wrong-answer class: `list-at bs (off + 8)` in
+`decode-schedule-event` and `list-at bs off` in `sync-decode-fact`, each reached
+with an offset from a peer-driven loop.
+
+**The count-driven loops are the same defect and the more serious half.** Both
+chapters ran a loop whose trip count is a peer-supplied le32 with no relation to
+the buffer. Refusing on `valid` is what bounds them, because the loop can no
+longer run more times than the buffer has bytes. Measured with the refusal
+removed from `crf-decode-events`, a header declaring 4294967295 events over a
+27-byte log:
+
+```
+OUT OF MEMORY
+SP=00000000bdfffbc8 HEAP=00000000b9e00010
+```
+
+after 6 seconds. It kills the run rather than answering, so that arm cannot sit
+ablated beside the guarded one and the control was run as a source edit.
+
+**The disclosure finding is the one worth another lane's eye.**
+`fact-sync-answer-offer` replies with every fact the peer's offer did not list.
+A truncated offer decoded to a SHORT hash list, fewer hashes means fewer facts
+excluded, so **a peer that cut its own offer short was handed the responder's
+entire store.** The leak row sweeps every prefix of a 16-byte offer naming both
+of the responder's two facts and counts what came back:
+
+```
+leak 0..16 = 00000000000000000        guarded
+leak 0..16 = 22222222221111110        ablated
+```
+
+**All-zeros proves nothing on its own and the control is what makes it
+evidence** (L-CONTROL). A whole offer that legitimately names both facts also
+draws zero, so the row cannot distinguish refusing from excluding. The control
+is `empty-offer reply-facts=2`, which shows disclosure is reachable at all;
+without it the guarded row is a green that a permanently broken responder would
+also produce.
+
+`event-count` in a decoded session now reports the events actually decoded
+rather than the peer's claim, so a consumer iterating it cannot index past the
+list it was handed.
+
+**The gap was not in any of the three, and it was the live one.**
+`tools/cdx-serve.codex:117` called the RAW `decode-agent-msg`, bypassing the
+checked variant every other caller uses, so the single place in the tree that
+skipped the refusal was a SERVER taking frames off a socket. Closed in the same
+CL, with two arms in `build/cdx-serve-test.ps1` driving the real guest server
+over TCP.
+
+**The refusal is silence, so the arm asks twice.** `handle-conn` answers
+"malformed" to its own caller and sends nothing, and a test that only checked
+for no-reply would pass against a server that had simply died. The second
+question is the one that carries: a good request after the malformed one must
+still be served. Ablated to the raw decode, the first arm reports
+`got: True, want: False` -- the unfixed server decoded the declared-64/present-8
+hash to a short field and answered it as though it were whole.
+
 ## The Wire Payload Refusal (`codex/test/apps/wire-payload-refuse`)
 
 The five consumers refuse now, and each takes the road it already had for a
@@ -4836,3 +5191,684 @@ minutes. Ablated, exactly one row moves.
 the loop is made of and an HPET read is not, so a per-pass check would measure
 the clock rather than the link. The same defect one level out bit the NIC-4
 probe's own listen loop during rehearsal, at a fuel of four million.
+
+## The Lz4 Decompressor Guards (`codex/test/apps/lz4-hostile`)
+
+Track D item 19, the `Lz4` half. Every read in the decompressor was a bare
+`list-at`, so a literal count, a match offset or a match length taken off the
+stream decided where a read landed, and three separate hostile streams halted
+the machine. Not seed-affecting: `Lz4` is absent from the compiler's unit,
+measured with `build/concat-codex-self.ps1` rather than assumed.
+
+**The reason nothing had ever caught this is the shape of the only test.**
+`codex/test/lib/lz4-test` is a round trip through `lz4-compress`, so the
+decoder had only ever been handed bytes we wrote ourselves, and our encoder
+cannot emit a malformed stream. A round-trip suite cannot express the hostile
+half of a codec no matter how many vectors it carries (L-GAP).
+
+**Clamp, not refuse, and the caller is why.** `archive-expand`
+(`apps/works/FactArchive.codex:177`) decompresses and then compares
+`fa-hash-bytes` against the base record's digest, answering `None` on
+mismatch. The caller already holds a refusal channel, so the primitive only
+has to become total; adding a `valid` flag would have been machinery paying
+for a decision already made one frame up (L-LESS).
+
+| guard | the stream | unguarded |
+|---|---|---|
+| `lz4-fits` in `lz4-copy-literals` | a 35-byte literal run over a 2-byte stream | `!EXC=06`, `RSI=2` |
+| `lz4-fits input after-lit 2` | the offset's second byte one past the end | `!EXC=06`, `RSI=3` |
+| `offset <= 0` in `lz4-copy-match` | a back-reference of distance 0 | `!EXC=06`, `RSI=0` |
+| `src < 0` in `lz4-copy-match` | a back-reference 5 behind a 1-byte output | **no crash, `len=5`** |
+
+**The old two-byte offset guard tested one of its two bytes.** `after-lit >= len`
+admits `after-lit == len - 1`, and the very next line reads `after-lit + 1`.
+A guard that checks the start of a multi-byte field and not its end is the
+same defect `gguf-parse-header` had at a different width, and it is worth
+naming as a shape rather than as two incidents.
+
+**The fourth row is the one that pays, and it never crashed.** `safe-src`
+clamped a negative source index to 0 and carried on, so a back-reference
+pointing before the start of the output FABRICATED bytes the stream never
+encoded: five bytes out of a one-byte decode, all of them plausible, none of
+them refused. A crash is loud; this answered confidently. Ablated, it is the
+only row that moves without an exception, which is exactly why the arm reports
+a decoded LENGTH and first byte rather than pass or fail.
+
+**The bound is subtractive on purpose** (census row 20): `off <= list-length
+input - n`, never `off + n <= list-length input`, since a stream-supplied `n`
+is what makes the additive form wrap and admit what it exists to refuse.
+
+**There is no decompression bomb here and a cap for one was written and then
+deleted.** `lz4-read-extra-loop` consumes one input byte per 255 it adds and
+stops at the end of the input, so total output is bounded at about 256 times
+the input by the format's own structure. A ceiling at 255x could never fire,
+and an unfired guard is worth what no guard is worth. The unbounded-count
+shape the census names for `compress/` is real in `Rle` and `Deflate`, where
+a stream integer sizes an allocation directly; it is not real in `Lz4`.
+
+## The Lz77 Decompressor Guards (`codex/test/apps/lz77-hostile`)
+
+Track D item 19, the `Lz77` half, and the same three shapes one chapter over:
+`lz77-decompress` reads a back-reference distance and a match length out of
+the token list and hands the distance to `lz77-copy-match` as an index.
+
+**Guarded because something runs it** (red's ruling, 2026-08-16: guard a
+compress chapter with any caller, production or a harness that runs it;
+census-row the rest under L-UNCALLED). `lz77-test` round trips through it and
+`Deflate.codex` uses the chapter's table helpers throughout.
+
+| guard | the tokens | unguarded |
+|---|---|---|
+| `start < 0` | distance 5 against an empty output | `!EXC=06`, `RSI=-5` |
+| `off <= 0` | distance 0 after one literal | `!EXC=06`, `RSI=1` |
+| `mlen > lz77-max-match` | one token asking for 100000 | **no crash, `len=100001`** |
+
+**This chapter has the unbounded-count shape that `Lz4` turned out not to
+have, and the difference is worth stating because it is what decides whether
+a cap is worth writing.** In `Lz4` a long match is paid for one input byte
+per 255, so output is bounded at about 256 times the input by the format
+itself and a cap could never fire. Here ONE token carries the entire count
+as a raw integer, so a 5-element token list expands to 100001 bytes and
+nothing structural stops it. Same family, opposite answer.
+
+**The bound is the paired encoder's own ceiling, not a number picked for
+being round.** `lz77-compress` finds every match through
+`lz77-find-lazy ... lz77-max-match`, so 258 is precisely what it can emit and
+the guard cannot refuse a stream we produced. `Brotli` does not call
+`lz77-decompress` at all (it uses `deflate-copy` and the table helpers), so
+the larger Brotli match ceiling the constants prose describes does not reach
+this path. Checked before choosing the constant, because bounding a decoder
+below what its encoder emits breaks the round trip silently.
+
+**Rle is the counter-case and got no guard.** `codex/foreword/compress/Rle.codex`
+has no caller anywhere: `compress-rle` cites it and only prints a string,
+`foreword-all-compile` is compile-only, and the `rle-encode` and
+`rle-decompress` hits elsewhere in the tree belong to `apps/data/ColumnStore`
+and `encode/VideoCodec`, which define their own. Grepping the NAME rather
+than resolving the cite would have manufactured three callers it does not
+have.
+
+## The Deflate Decoder Guards (`codex/test/apps/deflate-hostile`)
+
+Track D item 19, the `Deflate` half, and the two hazards fail differently
+from each other: one traps, the other runs the machine out of memory.
+
+**The back-reference.** `deflate-fixed-match:827` and `deflate-dyn-loop:900`
+both hand `list-length acc - dist` to `deflate-copy`, and `dist` comes off the
+stream through `dist-base`, which answers 24577 for code 29 and 32769 for
+code 30 against any output a short stream has produced. `deflate-copy` now
+refuses a negative source. The arm calls it directly rather than through a
+crafted stream, and says so: hand-assembling bit-exact hostile Deflate is a
+separate job, and the row's value is that it pins the guard where all three
+call sites land, Brotli's `:2408` included.
+
+**The truncated dynamic block, which is the one that matters.** `br-bit:727`
+answers 0 past the end of the input, so a dynamic block whose bytes run out
+mid-symbol keeps decoding zeros forever, never reaches end-of-block, and
+pushes a literal per pass. `deflate-blocks:788` already had the exhaustion
+check and it is in the wrong place: OUTSIDE the block loop, so nothing
+observes it once a dynamic block has begun decoding. `br-exhausted` in
+`deflate-dyn-loop` is the same test moved to where the loop can see it.
+Ablated, the row does not print a wrong answer, it prints `OUT OF MEMORY`
+after six seconds.
+
+**Row 7 asserts a BOUND, not a length, and the reason is worth keeping.** The
+exact output of a truncated stream depends on where the cut lands in the
+table, so an exact number would be an oracle copied from a run of the code
+under test rather than derived from anything. What the guard promises is that
+the walk stops when the bits do.
+
+**A red interop result here was NOT this change, and the elimination is the
+record.** `build/brotli-interop-test.ps1` failed once with four probe rows
+missing and a `HOST CRASH: codex-vm faulted` at a guest write to
+`0x70a00000`. Measured across five runs: control green, `deflate-copy` guard
+alone green, `br-exhausted` alone green, and **the identical source that
+failed green on rerun**. One failure in five, not reproducible on the failing
+configuration, and the run names codex-vm itself as the faulting party. It is
+not in `test.ps1`, `bvt.ps1` or the release recipe, so it reds nobody's gate;
+it is recorded in `CurrentPlan.md` as an unowned intermittent rather than
+attributed to a change that cannot reproduce it.
+
+## The Brotli Termination Arm, and what it does NOT prove (`codex/test/apps/brotli-hostile`)
+
+Track D item 19, the `Brotli` half. **This arm adds no guards, and the useful
+result is a negative one: it does not exercise the guards the census credits
+this chapter with, and it says so in its own prose.**
+
+The census called `Brotli` "the best-defended by inspection" and that survived
+contact. What did not survive is the assumption that a hostile arm would
+therefore have something to catch.
+
+**Two ablations, neither of which moved a single row.** Deleting the
+`brotli-valid` gate at `:1834`: no change. Widening `:2405`'s `dist < 1`
+refusal to an unreachable bound: no change. Hostile HEADERS and truncated
+streams do not decode far enough to reach a distance command at all. Reaching
+those guards needs a crafted bitstream that clears the meta-block header and
+the Huffman tables first, which is a fuzz-corpus job and is NOT done. An arm
+shipped without those ablations would have read as coverage of the whole
+chapter and been believed.
+
+**`brotli-valid` is not load-bearing for any input constructible here, and
+half of it cannot fire at all.** `brotli-read-wbits:313` can only answer 16,
+17, 9..15 or 18..24, so the `w <= 24` test in `:2507` is unreachable by
+construction; the `w < 10` half fires only for `wbits = 9`, and for that input
+the decoder independently answers the empty list. Deleting the whole gate
+changes nothing measurable. It is an unfired guard in a chapter everyone
+believes is defended, which is the shape L-FALSIF is about.
+
+**What the arm does establish is TERMINATION on bytes we did not write**, and
+nothing else in the tree asserts it: `brotli-test` is a round trip through our
+own encoder, which cannot produce a malformed stream, and
+`brotli-interop-test.ps1` carries a single corrupted-stream control. Rows 6
+and 7 run the decoder end to end on garbage and on a halved stream and require
+it to stop, under a heap mark per row so the rows do not pay for each other.
+
+**Rows 4 and 5 report an exact length because both are derivable from the
+source; rows 6 and 7 report a bound because a mutated stream's output is not.**
+Row 5's single byte is derived, not guessed: bit 0 set skips the `wbits = 16`
+shorthand, bits 1..3 zero make `n` zero, bits 4..6 equal to one make `m` one,
+so `wbits` is 9 and the stream is refused before a symbol is decoded. That
+byte is 17.
+
+## The TLS Record Header Guard (`codex/test/apps/tls-record-guard`)
+
+Track D item 19, the `Tls` leg, under red's ruling extended past `compress/`
+on 2026-08-16. `tls-decode-record:96` read five header bytes with five bare
+`list-at` calls and no length check of any kind, so a record shorter than its
+own header killed the guest before a single field was interpreted. Ablated,
+an empty record dies `!EXC=06` at row 3.
+
+**The payload was never the hazard and the header always was.** `tls-slice:205`
+already refuses to read past the end and clamps, which is why the obvious
+worry -- a 16-bit length field driving a slice -- was already safe. The five
+unguarded bytes in front of it were not. Reading the length field's guard and
+concluding the function was defended is the mistake available here.
+
+**A clamp with no channel is a confident lie, which is the second guard.**
+With the header check alone, a record declaring 100 payload bytes with none
+behind it returns a well-formed `TlsRecord` with an empty payload and no way
+for a caller to tell it from a legitimately empty one. `tls-rec-valid` now
+answers whether the payload that arrived is the payload the record claimed.
+Ablated, exactly row 5 flips to `valid=True` and nothing else moves.
+
+**Row 6 is the discriminator and it is why the check is `payload == len`
+rather than a minimum size.** A record declaring zero payload bytes is
+legitimate TLS and must stay valid; a guard that refused every short record
+would pass rows 3, 4 and 5 and fail here.
+
+The existing `tls-test` decodes only what `tls-encode-record` just wrote, so
+the decoder had never been shown a record our own encoder did not produce --
+and a truncated read off a socket is precisely the record it cannot produce
+(L-GAP). The chapter is cited in production by `DtlsHello`, `DtlsMessage`,
+`TlsCert`, `TlsEndpoint` and `os/net/DtlsEndpoint`, none of which call this
+function today.
+
+Not seed-affecting: `Tls` is absent from the compiler unit, measured against
+a `Foreword--Fat16` positive control. `tls-test`, `tls-cert`, `tls13-record`,
+`tls13-schedule`, `tls-cv-schemes` and `dtls-fragmented-flight` are all still
+green after the record grew a field.
+
+## The Pbkdf Stored-Record Guards (`codex/test/apps/pbkdf-stored-guard`)
+
+Track D item 19, the `Pbkdf` leg, same ruling. `pbkdf-verify:157` walked both
+hashes to `list-length (result.pbr-hash)`, so the STORED record decided how far
+the read went while the rehash it was compared against was whatever length the
+parameters produced. A stored hash longer than the rehash indexes the rehash
+past its end. Ablated, row 3 dies `!EXC=06` with `R13=0x20` and `R14=0x40`
+against a 32-byte rehash, which is the walk arriving at index 32 of 32 bytes.
+
+**The fault is the smaller half of what that guard is for.** A stored hash
+SHORTER than the rehash never faults; it compares a prefix and agrees. Ablated
+and with row 3 removed so the kill does not mask it, `4-truncated-hash` reports
+`verify=True`: a stored record cut to any prefix of a real hash verifies
+against the right password, and eight bytes is a forgery cost of 2^64 down
+from 2^256. The length equality is checked before the constant-time walk, which
+is the same shape `AesGcm:196` and `EcdsaP256:511` already use.
+
+**Row 7 is the discriminator.** A 16-byte tag is a legitimate `pb-hash-length`,
+so a guard that demanded 32 bytes would pass rows 3 and 4 and fail only here.
+The check is rehash-length against stored-length, not either against a constant.
+
+The second guard is `pbkdf-final-block:133`. `count` is `list-length blocks /
+32`, and a `pb-block-count` of zero or less leaves the array empty, so `last`
+is `(0 - 1) * 32` and `pb-slice` reads at -32. Ablated, row 5 dies with
+`R12 = RSI = 0xffffffffffffffe0`. Rows 1 through 4 do not move under it, and
+rows 5 and 6 do not move under the first guard.
+
+**What this does NOT prove, because the census has been wrong in this exact
+way before.** Nothing in production hands `pbkdf-verify` a record it did not
+just compute. `crypto-vectors:81` and `:84` call it, which is what qualifies
+the chapter under the ruling; `apps/secrets` reaches `pbkdf-hash` at
+`VaultCrypto:77` but builds `PbkdfParams` from literals and never rebuilds a
+`PbkdfResult` from a file. The hostile stored record is reachable the moment a
+vault format persists one, and not before. The existing test hashes and
+verifies in the same breath, so the only records the function had ever seen
+were ones it had just produced (L-GAP).
+
+Not seed-affecting: `Pbkdf` is absent from the compiler unit against the same
+`Foreword--Fat16` control, and `crypto-vectors` is byte-identical to its
+sidecar after the change.
+
+Left alone deliberately: `pb-time-cost` and `pb-block-count` are an unbounded
+cost rather than an unbounded read, and clamping either would silently change
+the key derived for any caller already above the clamp. `apps/secrets` is one
+(`pbkdf-iterations` is 100000 against a chapter default of 3), so a clamp there
+is a stored-data break and belongs to whoever owns that format, not to a bounds
+pass. It is recorded in `apps/secrets/secrets-backlog.md`.
+
+## The ChaCha20Poly1305 Size Guards (`codex/test/apps/chachapoly-size-guard`)
+
+Track D item 19, same leg. RFC 8439 fixes the key at 32 bytes and the nonce at
+12, and nothing below this chapter checked either. **The interesting part is
+that ChaCha20 does not fail on a wrong size. It reinterprets the state.**
+
+`chacha-init-state:38` builds the state by CONCATENATION -- four constants, the
+key words, the counter, the nonce words -- and `chacha-words-from-bytes:88`
+takes `list-length bytes / 4`. So a wrong-sized input shifts which words of the
+state are which, and the rounds carry on over whatever lands at indices 0..15.
+
+Three consequences, all measured on the unguarded chapter BEFORE the guard was
+written, and all visible in one ablation run:
+
+| input | what happens | row |
+|---|---|---|
+| 16-byte nonce | four nonce words, 17-word state; the rounds and `chacha-add-states` both stop at 16, so the fourth is dropped and the keystream is **exactly** that of the 12-byte prefix | 5 |
+| 64-byte key | sixteen key words, so indices 0..15 are the constants and the first twelve key words and **the nonce never enters the state at all**; two different nonces give byte-identical ciphertext | 6, 7 |
+| 11-byte nonce | two nonce words, 15-word state, `chacha-qr state 3 7 11 15` reads index 15 and the guest dies (`RDI=0x0f`) | 8, 9 |
+
+Only the third one crashes. The first two are silent, and they are the worse
+pair: a repeated keystream under Poly1305 is exactly what this chapter's own
+opening says destroys it, and the 64-byte-key case repeats the keystream for
+EVERY message under that key regardless of nonce.
+
+**Rows 1 and 2 are the instrument's control and the arm is worthless without
+them.** They are two legitimate nonces, and they must produce different
+ciphertext -- otherwise rows 6 and 7 agreeing would prove nothing about the
+nonce being ignored, only that the probe cannot tell nonces apart. Ablated,
+rows 1 and 2 still differ while 6 and 7 agree, which is the finding.
+
+The guard is one predicate, `cp-params-ok`, refused at both entry points:
+`chacha20poly1305-decrypt` answers `None`, which the chapter already treats as
+the security answer rather than an error path, and
+`chacha20poly1305-encrypt` gains `cp-valid` so a caller can tell a refusal from
+a short message (the same reasoning as `tls-rec-valid`; a refusal with no
+channel is a confident lie). Ablating the encrypt guard moves rows 5 through 8
+and nothing else; ablating the decrypt guard moves only row 9.
+
+Not guarded, and it did not need to be: `poly-tags-equal:221` already checks
+`list-length a /= list-length b` before the constant-time walk, so the tag
+comparison never had the defect `pbkdf-verify` had. Checked rather than assumed.
+
+`Pbkdf` and this chapter are the same shape from opposite ends: there the
+untrusted length decided how far a read went, here the untrusted length decided
+what the bytes MEANT.
+
+Not seed-affecting: absent from the compiler unit against a `Foreword--Fat16`
+control. `codex/test/chacha20poly1305`, the RFC 8439 section 2.8.2 vector, is
+byte-identical after the change, which is what says the guard did not move the
+cipher. No production caller; that vector test is what qualifies the chapter.
+
+## The Decimal Scale Guards (`codex/test/apps/decimal-scale-guard`)
+
+Track D item 19, same leg, and the first fault in this campaign that is not
+`!EXC=06`. **10^18 is the largest power of ten a signed 64-bit integer holds.
+10^19 wraps negative. 10^64 is EXACTLY ZERO**, because 10^n is 2^n times 5^n
+and the low 64 bits have lost every factor of two by n = 64. `dec-pow10` is a
+DIVISOR in `dec-to-text`, `dec-whole-part`, `dec-frac-part`, `dec-div`,
+`dec-round` and `dec-truncate`, so a scale of 64 kills the guest with
+`!EXC=00`, a divide error.
+
+`dec-from-text:147` set `scale = text-length frac-str` with no bound, so the
+scale is the length of whatever text arrived. Sixty-four fraction digits is the
+whole exploit.
+
+**The scale has three producers and guarding the parser alone would have closed
+one door.** `dec-mul:48` ADDS the two scales, so two scale-32 values reach 64 by
+arithmetic with no text involved, and `dec-new` takes a scale from its caller
+directly. That is the shape blu caught on row 19 itself (L-CAPABILITY), one
+level down. The saturation therefore sits in `dec-pow10`, where every consumer
+must pass, and the two producers that take a scale from input clamp as well so
+the scale they report is the scale they actually carry.
+
+Three guards, three ablations, each moving its own rows and nothing else:
+
+| ablation | effect |
+|---|---|
+| `dec-pow10` saturation removed | row 6 dies `!EXC=00`; rows 1-5 unmoved |
+| `dec-from-text` clamp removed | rows 4 and 5 do NOT fault (the saturation catches them) but read `-8.0000000000000000000000000000000000000000000000597994509810618382` and `-5.00101065172474983726` for inputs beginning `1.1234` |
+| `dec-mul` clamp removed | row 7 reports scale 64; row 3, ordinary multiplication, is unmoved |
+
+**The middle row is the one to read.** Without the parser clamp there is no
+crash at all once `dec-pow10` is safe, and a legitimate-looking decimal string
+becomes a NEGATIVE number. A campaign that hunts faults would have fixed
+`dec-pow10`, seen the guest stop dying, and shipped that.
+
+Row 8 is the discriminator: eighteen digits is fully representable and must
+survive unclamped, so a guard that saturated at fifteen or ten would pass every
+hostile row and fail only there. Row 3 does the same job for `dec-mul`.
+
+**One thing measured and deliberately NOT changed.** `dec-find-dot:156`
+compares `char-code (char-at s i) == 65`, which reads as ASCII `A` and looks
+exactly like a typo for `.`. It is correct: in CCE the full stop IS 65 and `A`
+is 41, measured against the depot seed. Left alone, and recorded here because
+the next reader will reach for it (R-CCE).
+
+Not guarded: `dec-mul`'s `raw = a.dec-mantissa * b.dec-mantissa` can still
+overflow, and `dec-new` still takes any scale a caller names. Neither is a
+divisor or a read offset, and neither takes its value from parsed input.
+
+Not seed-affecting: absent from the compiler unit against a `Foreword--Fat16`
+control, `Sut.cdx` byte-identical to the depot seed after the gate.
+`codex/test/lib/decimal-test` is unchanged, and it is worth saying what that
+test does NOT do: it never calls `dec-from-text`, so the parser had no runner
+of any kind before this arm (L-GAP).
+
+## The Schedule Parser Guards (`codex/test/apps/schedule-parse-guard`)
+
+Track D item 19, same leg, and **the only chapter in this campaign with no
+memory-safety defect at all.** Eighteen malformed inputs were run against it
+before a line was written: empty text, one-word and two-word fragments, a bare
+`between`, a lone `:`, an `am` with no time, a twenty-digit interval, spaces
+only. Every one answered `None` or returned a `Sched`. Nothing faulted. Its
+index checks are genuinely complete, and that is worth recording as a result
+rather than a non-event.
+
+**What it did instead was ACCEPT.** Four shapes of malformed text produced a
+well-formed schedule that was not the one written, which is the same class as
+`Pbkdf`'s truncated hash and `Decimal`'s negative parse: no crash, wrong answer.
+
+| input | before | after |
+|---|---|---|
+| `weekly on wendsday at 9am` | `weekly Sun 9am` | `None` |
+| `every 5 minutes between 9am` | `every 300s`, window silently dropped | `None` |
+| `every 5 minutes between 9am and` | `every 300s between 9am and 12pm`, actually running to midnight | `None` |
+| `daily at 99999:99999` | `daily at 99987:99999pm` | `None` |
+
+The first is `sched-parse-day-name`'s final `else 0`: every unrecognised word
+was Sunday, so a misspelled day scheduled rather than failing. The second is
+`n >= 6` guarding the whole `between` clause instead of its arguments, so a
+clause too short to parse was dropped and the caller got an UNRESTRICTED
+schedule where a restricted one was asked for. The third defaults the stop hour
+to 24 and then renders it through `sched-format-hour`, which maps 24 to `12pm`
+-- a printed window that reads as noon and runs to midnight.
+
+Three guards, three ablations, each moving exactly its own rows and nothing
+else: the day-name sentinel (rows 7, 8), the `between` completeness check
+(rows 9, 10), the hour/minute/day-of-month ranges (rows 11 to 14).
+
+**Rows 1 to 6 and 15 are the controls and they carry the whole weight of the
+range checks.** A guard that answered `None` to everything would pass all eight
+hostile rows; only the legitimate forms catch it. `12:00am` (row 5) and
+`monthly on 31` (row 6) are the boundary pair, since a range check written as
+`hour > 0` or `day < 31` fails there and nowhere else.
+
+Not seed-affecting: absent from the compiler unit against a `Foreword--Fat16`
+control, `Sut.cdx` byte-identical to the depot seed after the gate.
+`codex/test/final-batch-test`, which is what qualifies this chapter, is
+byte-identical -- and it only ever passes well-formed strings, which is why
+none of the four was visible to it.
+
+## The Pattern Progress Guards (`codex/test/apps/pattern-progress-guard`)
+
+Track D item 19, same leg. Two defects, both measured before a line was written,
+and the first is the only heap exhaustion this campaign has produced from
+ordinary text rather than from a crafted binary.
+
+**`pat-match-many:181` recursed on whatever position its inner pattern left it
+at, without requiring that the position MOVE.** A pattern matching zero
+characters repeats forever, accumulating `acc & r.mr-value` on a heap with no
+collector. `many (lit "")` reaches `OUT OF MEMORY` in about seven seconds.
+
+**It is reachable from two words of English.** `pattern "many optional"`:
+`many` takes `pat-parse-many-of`, `optional` sits at the end of the token list
+so `pat-parse-optional` hits its `i >= n` case and answers `PatLiteral ""`, and
+the result is `PatMany (PatLiteral "")`. Measured: `OUT OF MEMORY`. Nothing in
+that input is malformed in any way a reader would notice.
+
+**`pat-match-repeat:199` answered `mr-consumed = pos`, the ABSOLUTE position,
+where every other matcher in the chapter answers a relative count.** At
+position 0 the two coincide, which is exactly why nothing caught it: every
+existing exercise of `exactly` starts at 0. At any other position the caller
+adds position-to-position and overshoots, so
+`and-then (lit "ab") (and-then (exactly 2 digit) (lit "cd"))` did NOT match
+`"ab12cd"` -- a plain false negative on a pattern that is obviously correct.
+
+| ablation | effect |
+|---|---|
+| zero-progress stop removed | row 8 dies `OUT OF MEMORY`; rows 1-7 unmoved |
+| `mr-consumed = pos` restored | row 5 reads `matched(4)` for a two-character match and row 6 reads `no match`; row 4 unmoved |
+
+**Row 4 is the discriminator and it is the whole reason the fix is a new
+accumulator rather than a subtraction.** The position-0 case was already
+correct; a "fix" that changed it would be trading one wrong answer for another,
+and only that row would say so.
+
+Not guarded: `PatRepeat p n` with a large `n` is still a long loop, but `n`
+comes from `exactly` at a call site and no path in the English parser
+constructs a `PatRepeat` at all, so there is no text that reaches it.
+
+Not seed-affecting: absent from the compiler unit against a `Foreword--Fat16`
+control, `Sut.cdx` byte-identical to the depot seed after the gate.
+`codex/test/final-batch-test` is byte-identical; it exercises `pat-match` only
+at position 0 and only with patterns that consume, which is precisely the
+blind spot both defects lived in (L-GAP).
+
+## The Glyph unitsPerEm Guards (`codex/test/apps/glyph-upem-guard`)
+
+Track D item 19, the `ui/` leg. **`unitsPerEm` is a raw 16-bit field of the
+head table and `gr-render-glyph:203` divides every outline coordinate by it.
+Two bytes of a font file decide whether this chapter runs at all.**
+`TrueType.codex ttf-read-head:89` reads it with `ttf-u16` and validates nothing.
+
+Both defects measured on the unguarded chapter, using
+`codex/test/truetype-bridge-test`'s own font byte for byte with only offsets
+246 and 247 rewritten:
+
+| unitsPerEm | result |
+|---|---|
+| 0 | `!EXC=00`, divide error, on the first glyph rendered (`R12=0x20`, the space) |
+| 1 | `!EXC=08`, **DOUBLE FAULT**: with no divisor to bring the coordinates back, the width came out `0x2bc1` (11,201 px) and `w * h` sized the pixel buffer |
+
+That is a third fault class for this campaign, after `!EXC=06` and `!EXC=00`.
+The `upem = 1` case is the more interesting: it is not a crash in the parser,
+it is an allocation whose size the file chose.
+
+`gr-upem-ok` refuses a non-positive `unitsPerEm` and answers a 1x1 blank glyph;
+`gr-clamp-dim` bounds each dimension at four times the requested ppem, floored
+at 16 and capped at 1024. Both `gr-render-glyph` and `gr-render-glyph-aa` take
+both guards, and the anti-aliased path is what sets the absolute cap, since it
+supersamples 4x4 and allocates sixteen times the pixels.
+
+Ablating the `upem` refusal kills row 3 with `!EXC=00` and leaves rows 1 and 2
+untouched. Ablating the dimension clamp kills row 4 with `!EXC=08` and leaves
+rows 1 to 3 untouched, row 3 still being refused by the other guard.
+
+**Rows 1, 2 and 7 are the controls and they carry the arm.** Rows 1 and 2 are
+the SAME font at its real 1024 and must still render 96 glyphs at 9x11, which
+a guard that refused everything would fail. Row 7 is a legitimately different
+`unitsPerEm` of 2048 rendering at 5x6: it is what says the clamp bounds the
+hostile case without touching ordinary scaling.
+
+**A finding in a chapter this lane does not own, verified and recorded here
+rather than fixed.** `ttf-u16:12` reads `list-at buf off` and
+`list-at buf (off + 1)` with no bounds check at all, so a TRUNCATED font kills
+the guest inside `ttf-parse` before `GlyphRasterizer` is reached. `encode/` was
+the first sweep's territory and `TrueType` is not in row 19; the census carries
+it as an open item.
+
+Not seed-affecting: `GlyphRasterizer` and `TrueTypeFont` both absent from the
+compiler unit against a `Foreword--Fat16` control, `Sut.cdx` byte-identical to
+the depot seed after the gate. `truetype-bridge-test`, `truetype-render-test`
+and `truetype-test` are all byte-identical.
+
+## The SafeTensors Read Bounds (`codex/test/apps/safetensors-bounds-guard`)
+
+Track D item 19, the `ai/` leg. **The header parser was already defended and the
+loaders were not**, which is the whole shape of this one. `st-parse-file`
+answers `valid=False` for a short file and for a garbage header, and
+`codex/test/forewords/foreword-safetensors.codex` already covered both. Nothing
+covered what happens once a WELL-FORMED header describes a tensor that is not
+there.
+
+`st-read-u32:48` reads four bytes with four bare `list-at` calls, and
+`st-read-f16-loop:209` and `st-read-bf16-loop:239` read theirs the same way. The
+offset is `st-data-offset + stm-offset-start` and the count is
+`st-element-count`, the PRODUCT of the declared shape. All of it comes out of
+the file's own JSON.
+
+Measured on the unguarded chapter: a header reading
+`"shape":[1000000],"data_offsets":[0,4000000]` in front of twenty bytes of
+payload dies `!EXC=06` with `R13=0xf4240` (1,000,000, the declared count)
+against `RSI=0x5e` (94, the bytes that arrived).
+
+`st-can-read` is written **subtractively** -- `count <= (list-length data - off)
+/ width` -- so a shape whose product overflows a 64-bit integer cannot pass by
+wrapping to a small number. Row 8 is that case, a shape of
+`[4294967296, 4294967296]`. This is the same construction as `lz4-fits` and for
+the same reason.
+
+Three call sites, three ablations, each killing exactly its own row (4, 5, 6)
+with `R13=0xf4240` and leaving the others untouched.
+
+**Row 9 is the discriminator.** A tensor whose declared bytes end exactly at the
+last byte of the file is legitimate and must still load; an off-by-one in the
+bound shows up there and in no hostile row.
+
+Recorded as cosmetic rather than fixed: row 8 reports `rows=4294967296` because
+`st-rows` returns the declared first dimension whatever it is, while
+`values=0` says nothing was read. No data is touched, so it is a label on a
+refused tensor and not a second defect.
+
+Not seed-affecting: absent from the compiler unit against a `Foreword--Fat16`
+control, `Sut.cdx` byte-identical to the depot seed after the gate.
+`foreword-safetensors` is byte-identical, including the two rows it labels
+`PINS A DEFECT`, which are about `I8` dispatch and are untouched by this.
+
+## The GPU Result Bounds (`codex/test/apps/gpu-result-guard`)
+
+Track D item 19, the last chapter of the row. **`GpuProxy` builds command
+buffers and parses result buffers, and only the second half belongs in this
+census**: the buffer it parses is what a device wrote.
+
+`gpu-read-u32:115` reads four bytes with four bare `list-at` calls.
+`gpu-parse-result:194` calls it at offsets 0, 32 and 36 -- so it needs forty
+bytes and checked for none. `gpu-is-complete` and `gpu-is-error` need four and
+checked for none. `gpu-f32-bytes-to-tensor:153` reads `rows * cols` elements
+with the count from its caller and no comparison to the buffer at all.
+
+Measured on the unguarded chapter: `gpu-parse-result []` dies `!EXC=06`. **An
+empty result buffer is not an exotic input. It is what a device that answered
+nothing returns.**
+
+Three guards, three ablations, each killing exactly its own row (3, 6, 7) and
+leaving every other row standing. Ablation C reports `R13=0x2710` (10,000
+elements) against `RSI=0x10` (16 bytes), which is the shape of the whole row 19
+campaign in one register pair.
+
+**Rows 5 and 9 are the discriminators.** Forty bytes is exactly enough for
+`gpu-parse-result` and must parse rather than refuse; a tensor whose bytes end
+exactly at the last byte must still load. An off-by-one in either bound shows
+up there and in no hostile row.
+
+`gpu-status-error` was already in this chapter's vocabulary, so a truncated
+result reports it rather than inventing a channel. `gpu-is-complete` and
+`gpu-is-error` both answer `False` on a short buffer, which is deliberate: a
+buffer too short to hold a status does not say the work completed and does not
+say it failed, and a caller polling on it waits rather than dying.
+
+Not seed-affecting: absent from the compiler unit against a `Foreword--Fat16`
+control, `Sut.cdx` byte-identical to the depot seed after the gate.
+`codex/test/apps/gpu-proxy-test` is byte-identical, and it is the runner that
+qualifies this chapter: every buffer it passes is one it built itself two lines
+earlier, which is why none of this was visible to it (L-GAP).
+
+## The Truncated Font Guard (`codex/test/apps/truetype-truncated-guard`)
+
+Row 19's residue: found while guarding `GlyphRasterizer`, recorded as unowned
+because `encode/` belongs to the first sweep, then assigned back to this lane.
+
+`ttf-u8:10`, `ttf-u16:14`, `ttf-u32:25` and `ttf-read-tag:45` all read with bare
+`list-at`, and **every field of every table is read at a fixed offset from a
+table offset the FILE supplied**. A file that stops early is read past its end
+rather than refused. Measured: `ttf-parse []` dies `!EXC=06`.
+
+**The point worth keeping is where this sat relative to the rest of the
+campaign.** The `ui/` leg's `upem` guards, landed hours earlier, are downstream
+of `ttf-parse`. A truncated font never reached them, because the call that was
+supposed to return the font killed the guest first. Guarding a consumer does
+nothing for an input its producer cannot survive.
+
+`ttf-byte-at` answers zero outside the buffer, and **zero was chosen because the
+downstream guard already catches it**: a truncated head table yields
+`unitsPerEm 0`, `gr-upem-ok` refuses that, and the font renders blank. The arm
+shows the whole chain -- eight truncation points, every one reporting
+`upem=0 render=1x1` rather than dying. `TtfFont` carries no validity field, so
+there is nowhere to report a refusal to; zeros plus a downstream refusal is the
+honest arrangement, and it is why this is not written as a `Maybe`.
+
+`ttf-get-hmetric:273` took the same treatment for a different reason: it answered
+`list-at hmetrics (list-length hmetrics - 1)` for an out-of-range index, which is
+`list-at hmetrics -1` when the list is empty, and a truncated `hmtx` makes it
+empty.
+
+Ablated, row 2 dies `!EXC=06` with `RSI=4` against a zero-length buffer, and
+**row 1 does not move** -- the intact 356-byte font still parses to 96 glyphs at
+9x11. That control is what says the guard did not simply start answering zero
+everywhere; row 10 re-reads `unitsPerEm` from the intact font and still gets
+1024.
+
+Not seed-affecting: `TrueType` absent from the compiler unit against a
+`Foreword--Fat16` control, `Sut.cdx` byte-identical to the depot seed after the
+gate. `truetype-bridge-test`, `truetype-render-test`, `truetype-test` and
+`glyph-upem-guard` are all byte-identical.
+
+## The Plug Self-Check Tier (`build/plug-selfcheck.ps1`)
+
+`build/plug-oracle-test.ps1` is the only thing in the tree that runs a plug's
+OUTPUT, and it does it by EXECUTING the emitted source, so it can only reach a
+plug whose target toolchain is on this box: python, javascript, csharp, zig,
+wasm. **Every binary and image emitter is outside it by construction.** There
+is no SPIR-V runtime here, and installing one to grade a plug is not the trade;
+the honest consequence was that those plugs had no runner at all.
+
+This tier is the other half: **checks whose assertion is the emitted ARTIFACT
+rather than its execution.** A SPIR-V word stream that validates and packs to a
+module with the right magic; a GPT image of the declared length carrying a
+protective MBR and an `EFI PART` header.
+
+**An exit code is not one of those assertions, and 1.25 is why the tier says
+so.** The `img` plug page-faulted before it sent anything, for as long as it
+had been broken, and the host wrote 1,400 bytes of a 16,777,216-byte image
+under an `OK` line. Every exit code in that chain was 0, because `img/run.ps1`
+reads until the socket closes inside a bare `catch {}` and a guest that dies
+mid-stream is indistinguishable from one that finished.
+
+Entries as of 2026-08-16, 4 checks in about 370 seconds including plug builds:
+
+| check | what it asserts |
+|---|---|
+| `spirv-text` | disassembly types consistent, constants at module scope, no dangling ids |
+| `spirv-binary` | three hand-built bad modules are REFUSED (duplicate id, id at or above bound, dangling reference) |
+| `spirv-emit` | the end-to-end word stream validates and the packed `.spv` carries magic `0x07230203` |
+| `img-image` | both filesystem paths deliver `TotalSectors * 512` bytes with `55AA` at 510 and `EFI PART` at 512 |
+
+**It is not in `build/build.ps1` and that is deliberate.** Every entry boots a
+VM, several twice, for plugs the seed does not depend on. Run it by hand, before
+a release, or when a plug changes.
+
+**Both directions were fired before this was called done.** Pointed at the
+pre-1.25 `img` binary the tier reports `IMG-FAT32: FAIL -- length 1,400,
+expected 16,777,216`, both paths, exit 1; pointed at the fixed one, 4 passed 0
+failed, exit 0. An unknown `-Only` name exits 2 rather than reporting a vacuous
+pass over an empty set, which is the failure mode a filtered harness has.
+
+**Every check that can take one is given `-Kernel`.** `test-spirv.ps1` did not
+have the parameter and its `run.ps1` passed none, so the probe compiled against
+whatever `build.ps1` last left in `build-output` -- measured here at
+`D230B11D910D437D` against a seed of `1A33FB0E5C703CBD`. Both now thread it and
+the tier defaults to `seed/Codex.cdx`.
+
+**What belongs here next.** `elf` and `pe` emit containers with checkable magic
+and section extents and have no arm; `t3isa` has `gate.ps1`, which is
+machine-only (`D:\Toolchain-Ternary`) and would be a permanent skip. The tier
+takes a plug the moment somebody writes an assertion over its artifact.

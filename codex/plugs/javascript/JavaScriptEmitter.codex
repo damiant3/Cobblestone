@@ -151,15 +151,17 @@ Section: Type Definition Emission
   js-emit-type-def (td) =
    when td
     is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
-     js-emit-record-type (name.value) fields 0
+     js-emit-record-type (name.value) fields 0 recmut
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      if is-tup-type (name.value) then ""
      else js-emit-variant-type ctors 0
     is AUnitTypeDef (name) (unitbase) (s) -> ""
 
-  js-emit-record-type : Text , List ARecordFieldDef , Integer -> Text
-  js-emit-record-type (name) (fields) (i) =
-   "function " & js-sanitize name & "(" & js-emit-record-params fields 0 & ") { return Object.freeze({ " & js-emit-record-fields fields 0 & " }); }\n"
+  js-emit-record-type : Text , List ARecordFieldDef , Integer , Boolean -> Text
+  js-emit-record-type (name) (fields) (i) (recmut) =
+   let open = if recmut then "return ({ " else "return Object.freeze({ "
+   in let close = if recmut then " });" else " });"
+   in "function " & js-sanitize name & "(" & js-emit-record-params fields 0 & ") { " & open & js-emit-record-fields fields 0 & close & " }\n"
 
   js-emit-record-params : List ARecordFieldDef , Integer -> Text
   js-emit-record-params (fields) (i) =
@@ -224,7 +226,7 @@ Section: Expression Emission
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> js-emit-expr-at body ctx (depth + 1)
     is IrRecord (name) (fields) (ty) (sp) -> js-emit-record name fields ty ctx
     is IrFieldAccess (rec) (field) (ty) (sp) -> js-emit-expr-at rec ctx (depth + 1) & "." & js-field field
-    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "({ ..." & js-emit-expr-at rec ctx (depth + 1) & ", " & js-field field & ": " & js-emit-expr-at val ctx (depth + 1) & " })"
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "((_r, _v) => (_r." & js-field field & " = _v, _r))(" & js-emit-expr-at rec ctx (depth + 1) & ", " & js-emit-expr-at val ctx (depth + 1) & ")"
     is IrFork (body) (ty) (sp) -> "Promise.resolve().then(() => (" & js-emit-expr-at body ctx (depth + 1) & ")(null))"
     is IrAwait (task) (ty) (sp) -> "(await " & js-emit-expr-at task ctx (depth + 1) & ")"
     is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> emit-js-try max body fb fail-stmts ctx
@@ -522,7 +524,7 @@ Section: Expression Emission
    else if n == "char-at" & list-length args == 2 then "BigInt(" & js-emit-expr (list-at args 0) ctx & ".charCodeAt(Number(" & js-emit-expr (list-at args 1) ctx & ")))"
    else if n == "substring" & list-length args == 3 then js-emit-expr (list-at args 0) ctx & ".substring(Number(" & js-emit-expr (list-at args 1) ctx & "), Number(" & js-emit-expr (list-at args 1) ctx & " + " & js-emit-expr (list-at args 2) ctx & "))"
    else if n == "list-at" & list-length args == 2 then js-emit-expr (list-at args 0) ctx & "[Number(" & js-emit-expr (list-at args 1) ctx & ")]"
-   else if n == "list-snoc" & list-length args == 2 then "[..." & js-emit-expr (list-at args 0) ctx & ", " & js-emit-expr (list-at args 1) ctx & "]"
+   else if (n == "list-snoc" | n == "list-push") & list-length args == 2 then "[..." & js-emit-expr (list-at args 0) ctx & ", " & js-emit-expr (list-at args 1) ctx & "]"
    else if n == "list-insert-at" & list-length args == 3 then "(() => { const _l = [...(" & js-emit-expr (list-at args 0) ctx & ")]; _l.splice(Number(" & js-emit-expr (list-at args 1) ctx & "), 0, " & js-emit-expr (list-at args 2) ctx & "); return _l; })()"
    else if n == "list-set-at" & list-length args == 3 then "(() => { const _l = [...(" & js-emit-expr (list-at args 0) ctx & ")]; _l[Number(" & js-emit-expr (list-at args 1) ctx & ")] = " & js-emit-expr (list-at args 2) ctx & "; return _l; })()"
    else if n == "text-replace" & list-length args == 3 then js-emit-expr (list-at args 0) ctx & ".replaceAll(" & js-emit-expr (list-at args 1) ctx & ", " & js-emit-expr (list-at args 2) ctx & ")"
@@ -826,8 +828,36 @@ Section: Chapter Emission
      if d.name == "opening" then js-strip-fun-args (d.type-val)
      else js-opening-return-loop defs (i + 1)
 
+ Codex source recurses deeply and MUTUALLY -- the compiler's own lexer cycles
+ scan-token -> skip-prose-line -> scan-token, which no self-tail-call pass can
+ flatten -- and node's main-thread stack cannot take it. Measured: 100,000
+ mutual frames raise RangeError on the main thread and complete on a worker
+ given 512 MB, the same constant the csharp and zig plugs use. node's
+ --stack-size is a process flag that emitted source cannot set, but
+ worker_threads takes resourceLimits.stackSizeMb, which it can.
+
+ The worker re-runs THIS file, so the module must be re-entrant: everything
+ above is definitions, and only the entry call is guarded by isMainThread. An
+ error inside the worker is re-raised on the main thread rather than swallowed,
+ which a bare `new Worker` would do.
+
+  js-worker-wrap : Text -> Text
+  js-worker-wrap (call) =
+   text-concat-list [
+   "const { Worker: _CxWorker, isMainThread: _cxIsMain } = require(\"worker_threads\");\n",
+   "if (_cxIsMain) {\n",
+   "  const _cxW = new _CxWorker(__filename, { resourceLimits: { stackSizeMb: 512 } });\n",
+   "  _cxW.on(\"error\", (e) => { process.exitCode = 1; throw e; });\n",
+   "  _cxW.on(\"exit\", (c) => { if (c !== 0) process.exitCode = c; });\n",
+   "} else {\n",
+   "  ", call,
+   "}\n"]
+
   js-emit-entry : CodexType -> Text
-  js-emit-entry (ret-ty) = when ret-ty
+  js-emit-entry (ret-ty) = js-worker-wrap (js-entry-call ret-ty)
+
+  js-entry-call : CodexType -> Text
+  js-entry-call (ret-ty) = when ret-ty
     is EffectfulTy (effs) (sc) (inner) -> js-sanitize "opening" & "();\n"
     is NothingTy -> js-sanitize "opening" & "();\n"
     is ProofTy -> js-sanitize "opening" & "();\n"

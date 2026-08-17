@@ -109,9 +109,16 @@ Section: Sequence Emission
     in let acc3 = lz4-emit-extra-length acc2 lit-len
     in lz4-copy-literals acc3 input anchor lit-len 0
 
+  lz4-fits : List Integer, Integer, Integer -> Boolean
+  lz4-fits (input) (off) (n) =
+    if off < 0 then False
+    else if n < 0 then False
+    else off <= list-length input - n
+
   lz4-copy-literals : List Integer, List Integer, Integer, Integer, Integer -> List Integer
   lz4-copy-literals (acc) (input) (start) (count) (i) =
     if i >= count then acc
+    else if lz4-fits input (start + i) 1 == False then acc
     else lz4-copy-literals (list-push acc (list-at input (start + i))) input start count (i + 1)
 
 Section: Decompression
@@ -129,7 +136,7 @@ Section: Decompression
     in let r = lz4-read-extra-length input (pos + 1) len lit-len
     in let acc2 = lz4-copy-literals acc input (r.next) (r.length) 0
     in let after-lit = r.next + r.length
-    in if after-lit >= len then acc2
+    in if lz4-fits input after-lit 2 == False then acc2
     else let offset = list-at input after-lit + bit-shl (list-at input (after-lit + 1)) 8
     in let mr = lz4-read-extra-length input (after-lit + 2) len (ml-code + lz4-min-match)
     in let acc3 = lz4-copy-match acc2 offset (mr.length) 0
@@ -155,9 +162,10 @@ Section: Decompression
   lz4-copy-match : List Integer, Integer, Integer, Integer -> List Integer
   lz4-copy-match (acc) (offset) (length) (i) =
     if i >= length then acc
+    else if offset <= 0 then acc
     else let src = list-length acc - offset
-    in let safe-src = if src < 0 then 0 else src
-    in lz4-copy-match (list-push acc (list-at acc safe-src)) offset length (i + 1)
+    in if src < 0 then acc
+    else lz4-copy-match (list-push acc (list-at acc src)) offset length (i + 1)
 
 Section: Helpers
 

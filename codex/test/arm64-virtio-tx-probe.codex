@@ -1,0 +1,235 @@
+Chapter: Arm64VirtioTxProbe
+  cites Kernel chapter Arm64Pci
+  cites Kernel chapter VirtioPci
+  cites Kernel chapter VirtioNet
+  cites Foreword chapter Maybe
+
+ A wire dump outside the guest showed slirp ARPing for 10.0.2.15 twice and
+ NOTHING from the guest, so the guest transmits nothing and the hostfwd SYN
+ never arrives. This probe splits that into states the serial console can
+ tell apart, because the console is the one channel that does not depend on
+ virtio-net.
+
+ It does NOT call virtio-net-send-frame: that function ends in
+ virtio-poll-used, whose 50-million-try cap returns exactly what a fast
+ success returns, so a timeout there is indistinguishable from a completion.
+ The send is inlined with a bounded poll that reports its own try count.
+
+ The QSEL line is printed and is NOT a verdict. It read 0 while the queue
+ select was broken, which is what first pointed at the cause, and it still
+ reads 0 now that TX demonstrably works -- so `queue_select` reading back 0
+ does not mean the selection failed, and an earlier version of this file
+ said it did. The signal that means something is `used-idx` advancing and a
+ frame appearing in a wire dump.
+
+ The states, in the order they discriminate:
+   notify-mult=0     the notify capability did not parse; every notify has
+                     been writing to the same address whatever the queue
+   used-idx stays 0  the device never completed the descriptor: it did not
+                     see the avail update, or the ring addresses it was
+                     given are not the ones being written
+   used-idx=1        the device consumed it and the frame is still absent
+                     from the wire, so the descriptor or the header is wrong
+
+Section: Frame
+
+ A 42-byte ARP request for 10.0.2.2 from 52:54:00:12:34:56 / 10.0.2.15,
+ built as a literal so no part of the net stack is on the path.
+
+  probe-arp : List Integer =
+   [255, 255, 255, 255, 255, 255,
+    82, 84, 0, 18, 52, 86,
+    8, 6,
+    0, 1, 8, 0, 6, 4, 0, 1,
+    82, 84, 0, 18, 52, 86,
+    10, 0, 2, 15,
+    0, 0, 0, 0, 0, 0,
+    10, 0, 2, 2]
+
+Section: Notify Burst
+
+ Seven, because the trace showed exactly three notifies and neither an
+ address nor a value interpretation of the three arms explains three
+ identical zeros. If the trace still shows three after this, the notifies
+ it is showing belong to the firmware's device and ours reach nothing.
+
+  probe-notify-burst : Integer, Integer, Integer -> Integer
+  probe-notify-burst (addr) (i) (n) =
+   if i >= n then 0
+   else let w = poke-32 addr 0 1
+   in probe-notify-burst addr (i + 1) n
+
+ poke-byte is the ONLY write width ever proven to reach this device:
+ virtio_set_status traced the ladder 1 -> 3 -> 11 -> 15 and that path uses
+ poke-byte. Every wide write was checked by reading it back, which cannot
+ tell a store that landed from one that never arrived.
+
+  probe-notify-burst-byte : Integer, Integer, Integer -> Integer
+  probe-notify-burst-byte (addr) (i) (n) =
+   if i >= n then 0
+   else let w = poke-byte addr 0 1
+   in probe-notify-burst-byte addr (i + 1) n
+
+  probe-poll-used-after-byte : Integer, Integer -> Integer
+  probe-poll-used-after-byte (notify-addr) (used-base) =
+   let b = probe-notify-burst-byte notify-addr 0 3
+   in probe-poll-used used-base 0 2000000
+
+Section: Capability Walk
+
+  probe-show-cap : Arm64PciDevice, Integer -> Text
+  probe-show-cap (d) (t) =
+   let c = virtio-find-cap d t
+   in if c == 0 then " t" & show t & "=absent"
+   else " t" & show t & "@" & show c
+     & ":bar" & show (ecam-read-8 (d.pci-bus) (d.pci-dev) (d.pci-func) (c + 4))
+     & "+" & show (ecam-read-32 (d.pci-bus) (d.pci-dev) (d.pci-func) (c + 8))
+     & ":len" & show (ecam-read-32 (d.pci-bus) (d.pci-dev) (d.pci-func) (c + 12))
+
+Section: Bounded Poll
+
+  probe-poll-used : Integer, Integer, Integer -> Integer
+  probe-poll-used (used-base) (tries) (cap) =
+   if tries >= cap then 0 - 1
+   else let bar = mmio-barrier
+   in let idx = bit-and (peek-16 used-base 2) #FFFF
+   in if idx == 0 then probe-poll-used used-base (tries + 1) cap
+   else tries
+
+Section: Device Discovery
+
+  probe-find-net : Arm64PciScanResult -> Arm64PciDevice
+  probe-find-net (scan) =
+   when arm64-pci-find-device scan #1AF4 #1041
+    is Just (d) -> d
+    is None -> when arm64-pci-find-device scan #1AF4 #1000
+      is Just (d2) -> d2
+      is None -> list-at (scan.devices) 0
+
+Section: Entry
+
+  opening : [Console] Integer = act
+    print-line-uni "arm64-virtio-tx-probe"
+    let scan = arm64-pci-scan-bus 0
+    in let dev = probe-find-net scan
+    in let bar4 = ecam-read-32 (dev.pci-bus) (dev.pci-dev) (dev.pci-func) 32
+    in let bars = if bit-and bar4 #FFFFFFF0 == 0 then arm64-pci-assign-bars dev arm64-pci-mmio-base else 0
+    in let enabled = arm64-pci-enable-device dev
+    in let vd = virtio-init-device dev
+    in act
+      print-line-uni ("dev=" & show (dev.pci-device-id)
+        & " common=" & show (vd.common-base)
+        & " notify=" & show (vd.notify-base)
+        & " notify-mult=" & show (vd.notify-off-multiplier)
+        & " isr=" & show (vd.isr-base)
+        & " devcfg=" & show (vd.device-cfg-base))
+      let features = virtio-negotiate vd vnet-feature-mac
+      in let rxq = virtio-setup-queue vd vnet-rx-queue vnet-queue-region
+      in let txq = virtio-setup-queue vd vnet-tx-queue (vnet-queue-region + #10000)
+      in let ok = virtio-set-status vd virtio-status-driver-ok
+      in act
+        print-line-uni ("feat=" & show features
+          & " txq-size=" & show (txq.queue-size)
+          & " desc=" & show (txq.desc-base)
+          & " avail=" & show (txq.avail-base)
+          & " used=" & show (txq.used-base)
+          & " notify-addr=" & show (txq.notify-addr))
+        let flen = list-length probe-arp
+        in let zero = virtio-zero-mem vnet-tx-region vnet-hdr-size
+        in let written = virtio-net-write-frame-bytes vnet-tx-region vnet-hdr-size probe-arp 0 flen
+        in let txq1 = virtio-submit-desc txq vnet-tx-region (vnet-hdr-size + flen) 0
+        in act
+          print-line-uni ("submitted len=" & show (vnet-hdr-size + flen)
+            & " avail-idx=" & show (txq1.avail-idx)
+            & " avail-idx-readback=" & show (bit-and (peek-16 (txq1.avail-base) 2) #FFFF)
+            & " ring0=" & show (bit-and (peek-16 (txq1.avail-base) 4) #FFFF)
+            & " used-before=" & show (bit-and (peek-16 (txq1.used-base) 2) #FFFF))
+          print-line-uni ("CROSS peek-32 avail+0=" & show (peek-32 (txq1.avail-base) 0)
+            & " want-65536 avail+4=" & show (peek-32 (txq1.avail-base) 4)
+            & " desc+12=" & show (peek-32 (txq1.desc-base) 12)
+            & " want-65536 desc+0=" & show (peek-32 (txq1.desc-base) 0)
+            & " desc+8=" & show (peek-32 (txq1.desc-base) 8))
+          print-line-uni ("QSEL readback="
+            & show (bit-and (bit-shru (peek-32 (vd.common-base) 20) 16) #FFFF)
+            & " status-half=" & show (bit-and (peek-32 (vd.common-base) 20) #FF)
+            & " (NOT a verdict, see below)")
+          print-line-uni ("OBSERVED-NOTIFY poke-32 returned "
+            & show (poke-32 (txq1.notify-addr) 0 1)
+            & " then used-idx=" & show (bit-and (peek-16 (txq1.used-base) 2) #FFFF))
+          print-line-uni ("DECODE notify+0=" & show (peek-32 (vd.notify-base) 0)
+            & " notify+4=" & show (peek-32 (vd.notify-base) 4)
+            & " common+0=" & show (peek-32 (vd.common-base) 0)
+            & " isr+0=" & show (peek-32 (vd.isr-base) 0)
+            & " 4294967295-means-unclaimed")
+          print-line-uni ("CAPS bar-base=" & show (arm64-pci-read-bar-base dev 4)
+            & probe-show-cap dev 1 & probe-show-cap dev 2
+            & probe-show-cap dev 3 & probe-show-cap dev 4)
+          print-line-uni ("BYTE-NOTIFY waited="
+            & show (probe-poll-used-after-byte (txq1.notify-addr) (txq1.used-base))
+            & " used-idx=" & show (bit-and (peek-16 (txq1.used-base) 2) #FFFF))
+          let burst = probe-notify-burst (txq1.notify-addr) 0 3
+          in let waited = probe-poll-used (txq1.used-base) 0 2000000
+          in act
+            print-line-uni ("after-notify waited=" & show waited
+              & " used-idx=" & show (bit-and (peek-16 (txq1.used-base) 2) #FFFF)
+              & " isr=" & show (peek-byte (vd.isr-base) 0)
+              & " status=" & show (peek-byte (vd.common-base) vio-cc-device-status))
+            let s0 = virtio-select-queue vd 0
+            in let noff0 = bit-and (peek-16 (vd.common-base) vio-cc-queue-notify-off) #FFFF
+            in let s1 = virtio-select-queue vd 1
+            in let noff1 = bit-and (peek-16 (vd.common-base) vio-cc-queue-notify-off) #FFFF
+            in act
+              print-line-uni ("notify-off q0=" & show noff0 & " q1=" & show noff1)
+              let armC = poke-32 (vd.notify-base) ((vd.notify-off-multiplier) * 1) 1
+              in let waitC = probe-poll-used (txq1.used-base) 0 2000000
+              in act
+                print-line-uni ("armC addr=base+mult val=1 waited=" & show waitC
+                  & " used-idx=" & show (bit-and (peek-16 (txq1.used-base) 2) #FFFF))
+                let armD = poke-32 (vd.notify-base) 0 1
+                in let waitD = probe-poll-used (txq1.used-base) 0 2000000
+                in act
+                  print-line-uni ("armD addr=base val=1 waited=" & show waitD
+                    & " used-idx=" & show (bit-and (peek-16 (txq1.used-base) 2) #FFFF))
+                  let fs0 = poke-32 (vd.common-base) vio-cc-device-feature-select 0
+                  in let flo = peek-32 (vd.common-base) vio-cc-device-feature
+                  in let fs1 = poke-32 (vd.common-base) vio-cc-device-feature-select 1
+                  in let fhi = peek-32 (vd.common-base) vio-cc-device-feature
+                  in let gs1 = poke-32 (vd.common-base) vio-cc-driver-feature-select 1
+                  in let ghi = peek-32 (vd.common-base) vio-cc-driver-feature
+                  in let sq = virtio-select-queue vd 1
+                  in act
+                    (print-line-uni ("FEATURES dev-lo=" & show flo
+                      & " dev-hi=" & show fhi
+                      & " drv-hi-readback=" & show ghi))
+                    let poison = poke-16 (vd.common-base) vio-cc-num-queues #1234
+                    in let echo = bit-and (peek-16 (vd.common-base) vio-cc-num-queues) #FFFF
+                    in let bar4raw = ecam-read-32 (dev.pci-bus) (dev.pci-dev) (dev.pci-func) 32
+                    in let cmd = ecam-read-16 (dev.pci-bus) (dev.pci-dev) (dev.pci-func) 4
+                    in act
+                      (print-line-uni ("CONTROL wrote 4660 to read-only num-queues, read back "
+                        & show echo
+                        & " (4660 means this region is RAM, not the device)"
+                        & " bar4raw=" & show bar4raw
+                        & " pcicmd=" & show cmd
+                        & " vendor=" & show (ecam-read-16 (dev.pci-bus) (dev.pci-dev) (dev.pci-func) 0)))
+                    (print-line-uni ("DEVICE readback q1"
+                      & " size=" & show (bit-and (peek-16 (vd.common-base) vio-cc-queue-size) #FFFF)
+                      & " enable=" & show (bit-and (peek-16 (vd.common-base) vio-cc-queue-enable) #FFFF)
+                      & " desc-lo=" & show (peek-32 (vd.common-base) vio-cc-queue-desc-lo)
+                      & " desc-hi=" & show (peek-32 (vd.common-base) vio-cc-queue-desc-hi)
+                      & " avail-lo=" & show (peek-32 (vd.common-base) vio-cc-queue-avail-lo)
+                      & " used-lo=" & show (peek-32 (vd.common-base) vio-cc-queue-used-lo)
+                      & " num-queues=" & show (bit-and (peek-16 (vd.common-base) vio-cc-num-queues) #FFFF)))
+                      0
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+Page 1

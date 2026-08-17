@@ -18,7 +18,7 @@ cluster against the belief this sentence encouraged. When
 you relocate a foreword definition, budget a `cites` line for each
 caller of the old chapter.
 
-### codex.foreword (128 modules, measured 2026-08-15) -- Core
+### codex.foreword (129 modules, measured 2026-08-16) -- Core
 
 The standard library. Core types, collections, cryptography, text,
 data structures, networking, and system utilities.
@@ -140,9 +140,17 @@ SpatialHash, Steering
 
 IntOps, BitOps, Saturate, FastMath, Trig, ColorOps, Kinematic, Endian
 
-Every function is `punctual`: no heap, no recursion, bounded
-instruction count. Safe to call from real-time, embedded, and
-interrupt contexts.
+Every function is `punctual`: no heap, no recursion, a worst-case
+execution budget in instructions. Safe to call from real-time, embedded,
+and interrupt contexts.
+
+`punctual` is the TIME promise and forbids the heap outright. Its sibling
+`bounded <class>` is the ALLOCATION promise for code that must allocate:
+it declares a ceiling in `none < fixed < linear < growing`, the compiler
+infers the class from the body, and CDX6101 refuses transitively when a
+callee exceeds it. Both are enforced properties, not documentation.
+`DevelopersGuide.md` under Bounded Functions has the syntax and the
+proven/abstains table.
 
 ### codex.foreword.engine (42 modules) -- 3D Game Engine
 

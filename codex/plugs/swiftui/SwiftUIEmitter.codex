@@ -7,6 +7,22 @@ Section: Sanitization
    let s = text-replace name "-" "_"
    in text-replace s "'" ""
 
+ The IR spells a record field as `name/slot`. The construction side of
+ this plug writes the field name RAW into the map key, so the read side
+ must strip the slot and sanitize nothing, or the two keys stop matching.
+
+  sw-slash-pos : Text, Integer, Integer -> Integer
+  sw-slash-pos (f) (i) (len) =
+   if i >= len then (-1)
+   else if char-to-text (char-at f i) == "/" then i
+   else sw-slash-pos f (i + 1) len
+
+  sw-field : Text -> Text
+  sw-field (f) =
+   let slash = sw-slash-pos f 0 (text-length f)
+   in if slash >= 0 then substring f 0 slash
+      else f
+
   swift-escape : Text -> Text
   swift-escape (s) =
    let s1 = text-replace s "\\" "\\\\"
@@ -64,7 +80,7 @@ Section: Expression Emission
     is IrMatch (scrut) (branches) (ty) (sp) -> emit-sw-match scrut branches arities indent
     is IrAct (stmts) (ty) (sp) -> emit-sw-act stmts arities indent
     is IrRecord (name) (fields) (ty) (sp) -> "[\"_type\": \"" & name & "\" as Any" & emit-sw-rec-fields fields arities indent 0 & "] as [String: Any]"
-    is IrFieldAccess (rec) (field) (ty) (sp) -> "((" & emit-sw-expr rec arities indent & " as! [String: Any])[\"" & field & "\"]!)"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> "((" & emit-sw-expr rec arities indent & " as! [String: Any])[\"" & sw-field field & "\"]!)"
     is IrFieldStore (rec) (field) (val) (ty) (sp) -> emit-sw-expr rec arities indent
     is IrFork (body) (ty) (sp) -> emit-sw-expr body arities indent
     is IrAwait (task) (ty) (sp) -> emit-sw-expr task arities indent

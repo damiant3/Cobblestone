@@ -1,6 +1,7 @@
 Chapter: SourceDefWire
 
   cites Foreword chapter Maybe
+  cites Foreword chapter CCE
 
  The wire format of a source-definition record in the fact store, in one
  place. A definition is written by RepoProtocolPersist (apps) and read by
@@ -145,14 +146,10 @@ Section: Encode
 Section: Decode
 
  The ninth field is a length read off the disk and it decides a substring, so
- it is bounded against what is actually left of the line. Two runtime
- behaviours make this load-bearing rather than tidy, and neither is derivable
- from the code here (measured 2026-08-16): `substring` FAULTS on a length past
- the end of the text and on a negative one, `!EXC=06` both times, so an
- unbounded field is a guest kill on one hostile record rather than a bad
- answer; and `text-to-integer` answers a NUMBER for text that is not one
- ("abc" is 1511), so a corrupt field arrives as a plausible large length and
- never as a zero.
+ it is bounded against what is actually left of the line. `substring` FAULTS
+ on a length past the end of the text and on a negative one, `!EXC=06` both
+ times (measured 2026-08-16), so an unbounded field is a guest kill on one
+ hostile record rather than a bad answer.
 
  A length SHORTER than what remains is still admitted, which is deliberate:
  the encoder always writes the exact length, so only a longer one is provably
@@ -175,6 +172,18 @@ Section: Decode
  than the length and `avail` lands in [0, length]. No attacker-supplied number
  enters the arithmetic at all; `clen` is only ever compared against it.
 
+  sdw-is-decimal : Text -> Boolean
+  sdw-is-decimal (s) =
+   let n = text-length s
+   in if n == 0 then False
+   else sdw-digits-from s 0 n
+
+  sdw-digits-from : Text, Integer, Integer -> Boolean
+  sdw-digits-from (s) (i) (n) =
+   if i >= n then True
+   else if is-digit (char-at s i) then sdw-digits-from s (i + 1) n
+   else False
+
   sdw-decode : Text -> Maybe SourceDefWire
   sdw-decode (line) =
    let p9 = sdw-nth-pipe line 9 0 0
@@ -182,6 +191,7 @@ Section: Decode
    else let header = substring line 0 p9
    in let parts = text-split header "|"
    in if list-length parts < 9 then None
+   else if sdw-is-decimal (list-at parts 8) == False then None
    else let clen = text-to-integer (list-at parts 8)
    in let avail = text-length line - (p9 + 1)
    in if clen < 0 then None

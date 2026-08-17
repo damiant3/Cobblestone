@@ -242,7 +242,58 @@ Section: Type Lookups
   afields-to-rfields (afs) (i) (acc) =
    if i >= list-length afs then acc
    else let af = list-at afs i
-   in afields-to-rfields afs (i + 1) (list-push acc (RecordField { name = af.name, type-val = ErrorTy }))
+   in afields-to-rfields afs (i + 1) (list-push acc (RecordField { name = af.name, type-val = atype-to-codex-type (af.type-expr) }))
+
+ A clamping bounded field saturates at its declared band. WebAssembly has no
+ integer min or max instruction -- i64.min and i64.max do not exist, only the
+ float forms -- so the clamp is two `select`s, each testing with i64.gt_s or
+ i64.lt_s. `select` yields its FIRST operand when the condition is non-zero.
+
+ The operand is repeated four times in the emitted text, so it must be a
+ `local.get` and never an arbitrary expression, or the value would be
+ evaluated four times. Both call sites store into `$_tv` first, which is what
+ makes the repetition safe.
+
+  WatBand = record {
+   clamps : Boolean,
+   blo : Integer,
+   bhi : Integer
+  }
+
+  wat-no-band : WatBand
+  wat-no-band = WatBand { clamps = False, blo = 0, bhi = 0 }
+
+  wat-atype-band : ATypeExpr -> WatBand
+  wat-atype-band (te) =
+   when te
+    is ABoundedIntType (b) (lo) (hi) (mode) (s) ->
+     when mode
+      is OvClamping -> WatBand { clamps = True, blo = lo, bhi = hi }
+      is otherwise -> wat-no-band
+    is otherwise -> wat-no-band
+
+  wat-band-in-afields : List ARecordFieldDef, Text, Integer -> WatBand
+  wat-band-in-afields (fs) (name) (i) =
+   if i >= list-length fs then wat-no-band
+   else if (list-at fs i).name.value == name then wat-atype-band ((list-at fs i).type-expr)
+   else wat-band-in-afields fs name (i + 1)
+
+  wat-band-for-field : List ATypeDef, Text, Integer -> WatBand
+  wat-band-for-field (tds) (field-name) (i) =
+   if i >= list-length tds then wat-no-band
+   else when list-at tds i
+    is ARecordTypeDef (n) (tp) (fds) (recmut) (sp) ->
+     let b = wat-band-in-afields fds field-name 0
+     in if b.clamps then b else wat-band-for-field tds field-name (i + 1)
+    is otherwise -> wat-band-for-field tds field-name (i + 1)
+
+  wat-clamp : WatBand, Text -> Text
+  wat-clamp (b) (v) =
+   if b.clamps == False then v
+   else let hi-c = "(i64.const " & integer-to-text (b.bhi) & ")"
+   in let lo-c = "(i64.const " & integer-to-text (b.blo) & ")"
+   in let hi-done = "(select " & hi-c & " " & v & " (i64.gt_s " & v & " " & hi-c & "))"
+   in "(select " & lo-c & " " & hi-done & " (i64.lt_s " & hi-done & " " & lo-c & "))"
 
   field-index-from-ctx : WasmCtx, CodexType, Text -> Integer
   field-index-from-ctx (ctx) (ty) (field-name) =
@@ -333,7 +384,7 @@ Section: Local Collection
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> collect-locals-expr body acc
     is IrRecord (name) (fields) (ty) (sp) -> collect-locals-fields fields (locals-add (locals-add acc "_rp") "_tv")
     is IrFieldAccess (rec) (field) (ty) (sp) -> collect-locals-expr rec acc
-    is IrFieldStore (rec) (field) (val) (ty) (sp) -> collect-locals-expr val (collect-locals-expr rec (locals-add acc "_rp"))
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> collect-locals-expr val (collect-locals-expr rec (locals-add (locals-add acc "_rp") "_tv"))
     is IrFork (body) (ty) (sp) -> collect-locals-expr body acc
     is IrAwait (task) (ty) (sp) -> collect-locals-expr task acc
     is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> collect-locals-stmts fail-stmts (collect-locals-stmts fb (collect-locals-stmts body acc))
@@ -474,8 +525,9 @@ Section: Expression Emission
    if i >= list-length fields then ""
    else let f = list-at fields i
    in let off = i * 8
+   in let band = wat-band-for-rec (ctx.type-defs) ty (f.name)
    in "(local.set $_tv " & emit-wat-expr-at ctx (f.value) (depth + 1) & ") " &
-      "(i64.store (i32.add (i32.wrap_i64 (local.get $_rp)) (i32.const " & integer-to-text off & ")) (local.get $_tv)) " & emit-wat-record-fields ctx fields ty (i + 1) depth
+      "(i64.store (i32.add (i32.wrap_i64 (local.get $_rp)) (i32.const " & integer-to-text off & ")) " & wat-clamp band "(local.get $_tv)" & ") " & emit-wat-record-fields ctx fields ty (i + 1) depth
 
   find-field-in-typedefs : List ATypeDef, Text, Integer -> Integer
   find-field-in-typedefs (tds) (field-name) (i) =
@@ -486,6 +538,59 @@ Section: Expression Emission
      in if idx >= 0 then idx else find-field-in-typedefs tds field-name (i + 1)
     is otherwise -> find-field-in-typedefs tds field-name (i + 1)
 
+ A field-access or field-store node spells its field `name/slot`, and those
+ two node kinds are the only ones that carry the slot: a `field-val` inside a
+ record construction carries the bare name. The slot is the authority, so it
+ is read rather than searched for. `find-field-in-typedefs` remains as the
+ fallback for a node with no slot, and it answers 0 for a name it cannot
+ find, which is why a plug that hands it the unstripped `name/slot` reads
+ slot 0 for every field in the program.
+
+  wat-slash-pos : Text, Integer, Integer -> Integer
+  wat-slash-pos (f) (i) (len) =
+   if i >= len then (-1)
+   else if char-to-text (char-at f i) == "/" then i
+   else wat-slash-pos f (i + 1) len
+
+  wat-field-bare : Text -> Text
+  wat-field-bare (f) =
+   let slash = wat-slash-pos f 0 (text-length f)
+   in if slash >= 0 then substring f 0 slash else f
+
+  wat-field-slot : List ATypeDef, Text -> Integer
+  wat-field-slot (tds) (f) =
+   let len = text-length f
+   in let slash = wat-slash-pos f 0 len
+   in if slash >= 0 then text-to-integer (substring f (slash + 1) (len - slash - 1))
+      else find-field-in-typedefs tds f 0
+
+ A band read by name across every typedef takes the first CLAMPING field of
+ that name, so a clamping field in one record clamps a same-named field in
+ another that does not declare a band. Where the record's own type is known,
+ which is every construction site, the band is read from THAT typedef.
+
+  wat-type-name : CodexType -> Text
+  wat-type-name (ty) =
+   when ty
+    is RecordTy (name) (args) (fields) -> name.value
+    is ConstructedTy (name) (args) -> name.value
+    is TypeCon (name) -> name.value
+    is otherwise -> ""
+
+  wat-band-in-typedef : List ATypeDef, Text, Text -> WatBand
+  wat-band-in-typedef (tds) (type-name) (field-name) =
+   let i = find-typedef-by-name tds type-name 0
+   in if i < 0 then wat-no-band
+      else when list-at tds i
+       is ARecordTypeDef (n) (tp) (fds) (recmut) (sp) -> wat-band-in-afields fds field-name 0
+       is otherwise -> wat-no-band
+
+  wat-band-for-rec : List ATypeDef, CodexType, Text -> WatBand
+  wat-band-for-rec (tds) (ty) (field-name) =
+   let tn = wat-type-name ty
+   in if text-length tn > 0 then wat-band-in-typedef tds tn field-name
+      else wat-band-for-field tds field-name 0
+
   find-afield-index : List ARecordFieldDef, Text, Integer -> Integer
   find-afield-index (fds) (name) (i) =
    if i >= list-length fds then -1
@@ -494,16 +599,18 @@ Section: Expression Emission
 
   emit-wat-field-access : WasmCtx, IRExpr, Text, CodexType, Integer -> Text
   emit-wat-field-access (ctx) (rec) (field-name) (result-ty) (depth) =
-   let idx = find-field-in-typedefs (ctx.type-defs) field-name 0
+   let idx = wat-field-slot (ctx.type-defs) field-name
    in let off = idx * 8
    in "(i64.load (i32.add (i32.wrap_i64 " & emit-wat-expr-at ctx rec (depth + 1) & ") (i32.const " & integer-to-text off & ")))"
 
   emit-wat-field-store : WasmCtx, IRExpr, Text, IRExpr, CodexType, Integer -> Text
   emit-wat-field-store (ctx) (rec) (field-name) (val) (result-ty) (depth) =
-   let idx = find-field-in-typedefs (ctx.type-defs) field-name 0
+   let idx = wat-field-slot (ctx.type-defs) field-name
    in let off = idx * 8
+   in let band = wat-band-for-field (ctx.type-defs) (wat-field-bare field-name) 0
    in "(local.set $_rp " & emit-wat-expr-at ctx rec (depth + 1) & ") " &
-      "(i64.store (i32.add (i32.wrap_i64 (local.get $_rp)) (i32.const " & integer-to-text off & ")) " & emit-wat-expr-at ctx val (depth + 1) & ") " &
+      "(local.set $_tv " & emit-wat-expr-at ctx val (depth + 1) & ") " &
+      "(i64.store (i32.add (i32.wrap_i64 (local.get $_rp)) (i32.const " & integer-to-text off & ")) " & wat-clamp band "(local.get $_tv)" & ") " &
       "(local.get $_rp)"
 
   emit-wat-list : WasmCtx, List IRExpr, Integer -> Text
@@ -694,7 +801,7 @@ Section: Apply Emission
     is IrTextLit (s) (sp) -> s
     is otherwise -> ""
    in let rec-ty = ir-expr-type rec-expr
-   in let idx = find-field-in-typedefs (ctx.type-defs) field-name 0
+   in let idx = wat-field-slot (ctx.type-defs) field-name
    in let off = idx * 8
    in "(local.set $_rp " & emit-wat-expr ctx rec-expr & ") " &
       "(local.set $_tv " & emit-wat-expr ctx val-expr & ") " &
@@ -720,7 +827,7 @@ Section: Apply Emission
    else if n == "substring" then "(call $substring " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & " " & emit-wat-expr ctx (list-at args 2) & ")"
    else if n == "list-length" then "(call $list_length " & emit-wat-expr ctx (list-at args 0) & ")"
    else if n == "list-at" then "(call $list_at " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
-   else if n == "list-push" then "(call $list_push " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
+   else if n == "list-push" | n == "list-snoc" then "(call $list_push " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
    else if n == "char-code" then emit-wat-expr ctx (list-at args 0)
    else if n == "code-to-char" then emit-wat-expr ctx (list-at args 0)
    else if n == "negate" then "(i64.sub (i64.const 0) " & emit-wat-expr ctx (list-at args 0) & ")"
@@ -849,12 +956,19 @@ Section: Definition Emission
 
 Section: WASI Runtime Helpers
 
-  wat-runtime-header : Integer -> Text
-  wat-runtime-header (heap-start) =
+ The two `env` imports are emitted only when the program calls them. A WASI
+ host supplies `wasi_snapshot_preview1` and nothing else, so importing
+ `blit_framebuf` and `on_key` unconditionally made EVERY emitted module fail
+ to instantiate -- `unknown import: env::blit_framebuf` under wasmtime -- which
+ is why nothing had ever run this plug's output. A browser host that does
+ provide them is unaffected: a program that calls them still declares them.
+
+  wat-runtime-header : Integer, Boolean, Boolean -> Text
+  wat-runtime-header (heap-start) (needs-blit) (needs-key) =
    "(module\n" &
    "  (import \"wasi_snapshot_preview1\" \"fd_write\" (func $fd_write (param i32 i32 i32 i32) (result i32)))\n" &
-   "  (import \"env\" \"blit_framebuf\" (func $blit_framebuf (param i32)))\n" &
-   "  (import \"env\" \"on_key\" (func $on_key_import (param i32) (result i32)))\n" &
+   (if needs-blit then "  (import \"env\" \"blit_framebuf\" (func $blit_framebuf (param i32)))\n" else "") &
+   (if needs-key then "  (import \"env\" \"on_key\" (func $on_key_import (param i32) (result i32)))\n" else "") &
    "  (memory (export \"memory\") 256)\n" &
    "  (global $heap_ptr (mut i32) (i32.const " & integer-to-text heap-start & "))\n" &
    "  (global $heap_start i32 (i32.const " & integer-to-text heap-start & "))\n" &
@@ -1080,12 +1194,13 @@ Section: Chapter Emission
    in let strings = strtab-assign-offsets raw-strings 0 1024 []
    in let heap-start = strtab-end-offset strings
    in let ctx = WasmCtx { arities = arities, strings = strings, type-defs = type-defs }
-   in let header = wat-runtime-header heap-start
    in let runtime = wat-runtime-funcs
    in let data-text = emit-data-sections strings 0
    in let types-text = emit-wat-type-defs type-defs 0
    in let defs-text = emit-wat-defs ctx (m.defs) 0
    in let entry = wat-emit-entry (m.defs)
+   in let body = runtime & types-text & defs-text & entry
+   in let header = wat-runtime-header heap-start (text-contains body "$blit_framebuf") (text-contains body "$on_key_import")
    in header & data-text & runtime & types-text & "\n" & defs-text & entry & ")\n"
 
   wasm-export-list : Text =

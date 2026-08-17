@@ -1,0 +1,96 @@
+Chapter: ChachaPolySizeGuard
+  cites Foreword chapter Aes
+  cites Foreword chapter Maybe
+  cites Foreword chapter ChaCha20Poly1305
+
+ Track D item 19, the ChaCha20Poly1305 leg. RFC 8439 fixes the key at 32 bytes
+ and the nonce at 12, and nothing below this chapter checked either.
+
+ Guarded because something runs it (red's ruling, extended to this leg
+ 2026-08-16): codex/test/chacha20poly1305.codex is the RFC 8439 section 2.8.2
+ vector and calls both entry points. There is no production caller.
+
+ chacha-init-state builds the ChaCha20 state by CONCATENATION -- four
+ constants, then the key words, then the counter, then the nonce words -- and
+ chacha-words-from-bytes takes list-length / 4, so a wrong-sized input does not
+ fail anywhere. It shifts which words of the state are which.
+
+ Measured on the unguarded chapter before this arm was written:
+
+ A nonce of 16 bytes gives four nonce words, a 17-word state, and the rounds
+ and chacha-add-states both stop at 16, so the extra word is dropped and the
+ keystream is EXACTLY the keystream of the 12-byte prefix. Two different
+ nonces, one keystream. That is Poly1305 nonce reuse, which this chapter's own
+ opening says destroys it.
+
+ A key of 64 bytes gives sixteen key words, so words 0..15 are the four
+ constants and the first twelve key words and the nonce never enters the state
+ at all. Two different nonces then give byte-identical ciphertext.
+
+ A nonce of 11 bytes gives two nonce words and a 15-word state, and
+ chacha-qr state 3 7 11 15 reads index 15. The guest dies.
+
+ Rows 1 and 2 are the instrument's control: two legitimate nonces must give
+ different ciphertext, or rows 6 and 7 agreeing would prove nothing.
+
+Section: Vector
+
+  k32 : List Integer =
+    [128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143,
+     144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159]
+
+  k64 : List Integer = k32 & k32
+
+  n12 : List Integer = [7, 0, 0, 0, 64, 65, 66, 67, 68, 69, 70, 71]
+
+  n12b : List Integer = [9, 0, 0, 0, 64, 65, 66, 67, 68, 69, 70, 71]
+
+  n16 : List Integer = n12 & [1, 2, 3, 4]
+
+  n11 : List Integer = [7, 0, 0, 0, 64, 65, 66, 67, 68, 69, 70]
+
+  plain : List Integer = [1, 2, 3, 4, 5, 6, 7, 8]
+
+  aad : List Integer = [80, 81, 82, 83]
+
+Section: Helpers
+
+  hex : List Integer -> Text
+  hex (bs) = hex-loop bs 0 (list-length bs) ""
+
+  hex-loop : List Integer, Integer, Integer, Text -> Text
+  hex-loop (bs) (i) (n) (acc) =
+    if i >= n then acc
+    else hex-loop bs (i + 1) n (acc & aes-hex-byte (list-at bs i))
+
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+  enc-row : Text, List Integer, List Integer -> Text
+  enc-row (label) (key) (nonce) =
+    let r = chacha20poly1305-encrypt key nonce plain aad
+    in label & " valid=" & show-bool (r.cp-valid) & " ct=" & hex (r.cp-ciphertext)
+
+  dec-row : Text, List Integer, List Integer -> Text
+  dec-row (label) (key) (nonce) =
+    let good = chacha20poly1305-encrypt k32 n12 plain aad
+    in let d = chacha20poly1305-decrypt key nonce (good.cp-ciphertext) aad (good.cp-tag)
+    in when d
+      is Just (p) -> label & " decrypt=" & hex p
+      is None -> label & " decrypt=REJECTED"
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni (enc-row "1-key32-nonce12" k32 n12)
+    print-line-uni (enc-row "2-key32-nonce12b" k32 n12b)
+    print-line-uni (dec-row "3-roundtrip" k32 n12)
+    print-line-uni (dec-row "4-wrong-nonce" k32 n12b)
+    print-line-uni (enc-row "5-nonce16" k32 n16)
+    print-line-uni (enc-row "6-key64-nonce12" k64 n12)
+    print-line-uni (enc-row "7-key64-nonce12b" k64 n12b)
+    print-line-uni (enc-row "8-nonce11" k32 n11)
+    print-line-uni (dec-row "9-decrypt-nonce11" k32 n11)
+  end
+
+Page 1

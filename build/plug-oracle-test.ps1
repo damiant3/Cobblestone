@@ -76,6 +76,39 @@ $Plugs = @(
        Ext  = 'js'
        Exe  = 'node'
        Args = { param($f) @($f) } }
+    @{ Name = 'zig'
+       Cdx  = 'codex\plugs\zig\build-output\zig-plug.cdx'
+       Ext  = 'zig'
+       Exe  = 'zig'
+       Args = { param($f) @('run', $f) } }
+    @{ Name = 'wasm'
+       Cdx  = 'codex\plugs\wasm\build-output\wasm-plug.cdx'
+       Ext  = 'wat'
+       Exe  = 'wasmtime'
+       # The wasm plug answers over the codex-vm output ring, not TCP, so it
+       # needs its own run.ps1 the way csharp does; -Ir keeps it on the same
+       # IR every other arm is graded against. Its output is WAT, which has to
+       # be assembled before it can run: wat2wasm is a second toolchain this
+       # entry depends on, and a missing one is reported loudly rather than
+       # quietly passing.
+       Transpile = {
+           param($ir, $srcOut)
+           & pwsh -NoProfile -File (Join-Path $Repo 'codex\plugs\wasm\run.ps1') -Ir $ir -Out $srcOut | Out-Null
+       }
+       Invoke = {
+           param($srcOut)
+           if (-not (Get-Command wat2wasm -ErrorAction SilentlyContinue)) { throw "wat2wasm is not on PATH; the WAT cannot be assembled" }
+           $mod = [System.IO.Path]::ChangeExtension($srcOut, '.wasm')
+           Remove-Item $mod -Force -ErrorAction SilentlyContinue
+           $asm = & wat2wasm $srcOut -o $mod 2>&1
+           if ($LASTEXITCODE -ne 0 -or -not (Test-Path -PathType Leaf $mod)) { throw "wat2wasm failed:`n$($asm -join "`n")" }
+           # Bare metal answers deep recursion with a multi-gigabyte arena, so a
+           # host stack small enough to refuse it is grading the HOST and not the
+           # plug. wasmtime's default max-wasm-stack cannot take the recursion
+           # rows; the module is unchanged either way (measured: 6 of 6 with this
+           # flag, 3 of 6 without).
+           & wasmtime run -W max-wasm-stack=268435456 $mod 2>&1
+       } }
     @{ Name = 'csharp'
        Cdx  = 'codex\plugs\csharp\build-output\csharp-plug.cdx'
        Ext  = 'cs'
@@ -143,10 +176,19 @@ if (-not ($truth -match '^-')) {
 }
 
 # ---------------------------------------------------------------------------
-# The IR the plugs receive. CCE, because the wire is CCE.
+# The IR the plugs receive. CCE, because the wire is CCE, and passes=text-plug
+# because that is what every source plug's run.ps1 sends in service. Scoring
+# the DEFAULT pipeline scored a program no plug is ever handed. Measured
+# 2026-08-16 on this subject through python: exactly one of the 20 sites
+# moved, `dv 7 3`, the only call whose arguments are both literals -- it was
+# emitted as the inlined division lambda instead of `dv(7, 3)`, and the other
+# 19 kept their calls. So the gap is narrow here, not the whole call surface.
+# It is still the wrong program to grade: the harness must score what the
+# plugs are sent, and a subject that later leans harder on leaf calls would
+# widen this silently.
 # ---------------------------------------------------------------------------
 $irFile = Join-Path $Work 'subject.ir'
-& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $Subject -Out $irFile -Log (Join-Path $Work 'subject.ir.log') -Kernel $Kernel -IrCce | Out-Null
+& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $Subject -Out $irFile -Log (Join-Path $Work 'subject.ir.log') -Kernel $Kernel -IrCce -Passes 'text-plug' | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Host "FAIL: subject did not compile to IR"; exit 3 }
 
 # ---------------------------------------------------------------------------

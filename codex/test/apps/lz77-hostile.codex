@@ -1,0 +1,83 @@
+Chapter: Lz77Hostile
+  cites Compress chapter Lz77
+
+ Track D item 19, the Lz77 half, and the same three shapes as Lz4 one chapter
+ over. `lz77-decompress` reads a back-reference distance and a match length
+ straight out of the token list and hands the distance to `lz77-copy-match`
+ as an index, so a hostile distance decides where a read lands.
+
+ Guarded because it has a caller that RUNS it (red's ruling, 2026-08-16):
+ `codex/test/apps/lz77-test` round trips through it, and `Deflate.codex` uses
+ the chapter's table helpers. `lz77-decompress` itself pairs only with
+ `lz77-compress`, which is what makes the length bound below exact rather
+ than invented.
+
+ Rows 1 to 4 are the positive controls. Rows 5 and 6 kill the guest without
+ the guards. Row 7 is the discriminator: it never crashed, it allocated.
+
+Section: Helpers
+
+ Computed inside the print statement, so a row that dies names itself by the
+ rows that printed before it.
+
+  list-equal : List Integer, List Integer, Integer, Integer -> Boolean
+  list-equal (a) (b) (i) (len) =
+    if i >= len then True
+    else if list-at a i == list-at b i then list-equal a b (i + 1) len
+    else False
+
+  check-rt : List Integer, Text -> Text
+  check-rt (input) (label) =
+    let compressed = lz77-compress input
+    in let decompressed = lz77-decompress compressed
+    in let ok = if list-length decompressed == list-length input then list-equal input decompressed 0 (list-length input) else False
+    in label & "=" & if ok then "pass" else "fail"
+
+  make-repeated : Integer, Integer, Integer, List Integer -> List Integer
+  make-repeated (val) (n) (i) (acc) =
+    if i >= n then acc
+    else make-repeated val n (i + 1) (list-push acc val)
+
+  show-decode : List Integer, Text -> Text
+  show-decode (tokens) (label) =
+    let out = lz77-decompress tokens
+    in label & " len=" & show (list-length out) & " first=" & (if list-length out == 0 then "none" else show (list-at out 0))
+
+Section: Hostile Token Lists
+
+ A match token is the triple [1, off, mlen] and a literal is the pair [0, b],
+ which is exactly what lz77-compress emits.
+
+ Row 5. A back-reference of distance 5 against an empty output. `start` is
+ -5 and `lz77-copy-match` indexes the output with it.
+
+  off-past-start : List Integer = [1, 5, 3]
+
+ Row 6. A distance of 0 after one literal. `start` lands on
+ `list-length output`, out of range by exactly one, which is the same
+ off-by-one Lz4's distance-0 case had.
+
+  off-zero : List Integer = [0, 65, 1, 0, 3]
+
+ Row 7. A match length of 100000 from a single token. Unlike Lz4, where a
+ long length has to be paid for one input byte per 255, ONE token here
+ carries the whole count, so nothing structural bounds it: the unguarded
+ decoder allocates 100001 bytes from a 5-element list and never faults.
+ lz77-compress cannot emit this, because it caps every match it finds at
+ lz77-max-match.
+
+  mlen-past-max : List Integer = [0, 65, 1, 1, 100000]
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni (check-rt [] "1-empty")
+    print-line-uni (check-rt [1, 2, 3] "2-tiny")
+    print-line-uni (check-rt [65, 66, 67, 68, 65, 66, 67, 68, 65, 66, 67, 68] "3-repeating")
+    print-line-uni (check-rt (make-repeated 42 100 0 []) "4-uniform-100")
+    print-line-uni (show-decode off-past-start "5-off-past-start")
+    print-line-uni (show-decode off-zero "6-off-zero")
+    print-line-uni (show-decode mlen-past-max "7-mlen-past-max")
+  end
+
+Page 1

@@ -197,6 +197,55 @@ Section: Send
   net-io-send-raw : TcpTransportState, List Integer -> [Network.Read, Network.Write] TcpTransportState
   net-io-send-raw (ts) (data) = net-io-send-chunk ts data 0 (list-length data)
 
+Section: Send, Checked
+
+ Testing the two refusal predicates is NOT enough and the first version of
+ this section did only that. `net-send` answers `ActError` and produces no
+ frame whenever the state machine declines the write, and in CLOSE_WAIT
+ neither `net-rexmit-full` nor `net-io-conn-closed` is true, so a send into a
+ half-closed connection passed both guards and dropped its bytes while
+ reporting complete. The predicate that holds for every such case is the
+ outbox: a non-empty chunk that produced no frame did not go.
+
+ The stop at a refused chunk is not the defect and must not be removed:
+ stopping costs one slice where walking the rest of the buffer cost 593,152
+ bytes of them against 16,400, measured 2026-08-10 and pinned by
+ `arm64-send-refusal`. The ceiling a caller runs into is arithmetic --
+ `net-rexmit-capacity` segments of `net-mss` bytes, 11,200 on today's
+ constants -- so a send above it stops at exactly the same offset every run.
+
+  NetSendResult = record {
+    ns-transport : TcpTransportState,
+    ns-sent : Integer,
+    ns-complete : Boolean
+  }
+
+  net-io-send-chunk-checked : TcpTransportState, List Integer, Integer, Integer -> [Network.Read, Network.Write] NetSendResult
+  net-io-send-chunk-checked (ts) (data) (off) (total) =
+   if off >= total then NetSendResult { ns-transport = ts, ns-sent = total, ns-complete = True }
+   else let stop = if off + net-mss > total then total else off + net-mss
+   in let chunk = transport-slice data off stop
+   in act
+    tsd <- net-io-send-drain ts 0 0
+    if net-rexmit-full (tsd.session) then NetSendResult { ns-transport = tsd, ns-sent = off, ns-complete = False }
+    else if net-io-conn-closed tsd then NetSendResult { ns-transport = tsd, ns-sent = off, ns-complete = False }
+    else let r = net-send (tsd.session) chunk
+    in let ts1 = TcpTransportState { session = r.session, recv-buf = tsd.recv-buf, recv-base = tsd.recv-base, recv-len = tsd.recv-len, recv-cap = tsd.recv-cap, messages-sent = tsd.messages-sent, messages-received = tsd.messages-received }
+    in if net-outbox-count (r.session) == 0 then NetSendResult { ns-transport = ts1, ns-sent = off, ns-complete = False }
+    else act
+      ts2 <- flush-transport-outbox ts1
+      net-io-send-chunk-checked ts2 data (off + net-mss) total
+    end
+   end
+
+  net-io-send-checked : TcpTransportState, Integer, List Integer -> [Network.Read, Network.Write] NetSendResult
+  net-io-send-checked (ts) (tag) (body) =
+   let framed = frame-encode tag body
+   in net-io-send-chunk-checked ts framed 0 (list-length framed)
+
+  net-io-send-raw-checked : TcpTransportState, List Integer -> [Network.Read, Network.Write] NetSendResult
+  net-io-send-raw-checked (ts) (data) = net-io-send-chunk-checked ts data 0 (list-length data)
+
 Section: Sending Text
 
  The conversion is the I/O boundary, so it goes through `to-unicode`:
@@ -219,6 +268,27 @@ Section: Sending Text
 
   net-io-send-text : TcpTransportState, Text -> [Network.Read, Network.Write] TcpTransportState
   net-io-send-text (ts) (t) = net-io-send-text-loop ts t 0 (text-length t)
+
+ `net-io-send-text-loop` advances its offset to `stop` whether or not the
+ chunk went out, so a refusal partway through does not end the walk. The
+ consequence is worse than the shortfall it was found as: `net-io-send-chunk`
+ drains before each chunk, so a queue that frees again resumes sending, and
+ the far end is then handed the bytes either side of the refusal with the
+ refused ones missing from the middle. The checked loop stops instead.
+
+  net-io-send-text-loop-checked : TcpTransportState, Text, Integer, Integer, Integer -> [Network.Read, Network.Write] NetSendResult
+  net-io-send-text-loop-checked (ts) (t) (off) (len) (sent) =
+   if off >= len then NetSendResult { ns-transport = ts, ns-sent = sent, ns-complete = True }
+   else let stop = if off + net-mss > len then len else off + net-mss
+   in let chunk = text-to-bytes-chunk t off stop []
+   in act
+    r <- net-io-send-chunk-checked ts chunk 0 (list-length chunk)
+    if r.ns-complete then net-io-send-text-loop-checked (r.ns-transport) t stop len (sent + (r.ns-sent))
+    else NetSendResult { ns-transport = r.ns-transport, ns-sent = sent + (r.ns-sent), ns-complete = False }
+   end
+
+  net-io-send-text-checked : TcpTransportState, Text -> [Network.Read, Network.Write] NetSendResult
+  net-io-send-text-checked (ts) (t) = net-io-send-text-loop-checked ts t 0 (text-length t) 0
 
 Section: Receive
 

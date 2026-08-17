@@ -170,7 +170,12 @@ function Build-TranspilerPlug {
         # carry 147 KB of allocator. Lir cites Build Settings and IR Chapter and
         # LirTargets cites Lir; all three end up in this one unit, so those cites
         # are stripped rather than resolved.
-        [switch]$WithLir
+        [switch]$WithLir,
+        # Chapters under codex/plugs/common bundled AFTER IRTextParser and
+        # BEFORE the plug's own: shared helpers a lane opts into by name
+        # (PlugManifest for the boot grant), so a second native lane picks
+        # up the same derivation instead of a copy.
+        [string[]]$CommonChapters = @()
     )
     $outDir    = Join-Path $PlugDir 'build-output'
     $outFile   = Join-Path $outDir "$PlugName-plug.cdx"
@@ -212,6 +217,9 @@ function Build-TranspilerPlug {
     }
     Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo 'codex\plugs\common\PlugTypes.codex') -Quire $plugQuire
     Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo 'codex\plugs\common\IRTextParser.codex') -Quire $plugQuire
+    foreach ($cc in $CommonChapters) {
+        Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo "codex\plugs\common\$cc.codex") -Quire $plugQuire
+    }
     foreach ($ch in $Chapters) {
         Add-PlugChapter -Lines $lines -Path (Join-Path $PlugDir "$ch.codex") -Quire $plugQuire
     }

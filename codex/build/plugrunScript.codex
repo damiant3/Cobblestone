@@ -50,7 +50,8 @@ Section: S08 -- Write output
 
   s08 : List ShellCmd =
     let no-output = [ScIf (SeNot (SeProperty (SeVar "proc") "HasExited")) [ScRaw "$proc.WaitForExit(5000)"] [], ScRaw "$stderr = if (Test-Path $stderrFile) { Get-Content $stderrFile -Raw } else { '' }", ScWriteError (SeRaw "\"FAIL: plug produced no output. stderr: $stderr\""), ScExit (SeInt 6)]
-    in [ScIf (SeRaw "$allBytes.Count -eq 0") no-output [], ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "Out", SeRaw "$allBytes.ToArray()"], ScEcho (SeRaw "\"[plug-run] OK: $Out ($($allBytes.Count) bytes)\"")]
+    in let truncated = [ScWriteError (SeRaw "\"FAIL: the plug could not send its whole output -- $($truncHit[0].Line.Trim())\""), ScExit (SeInt 7)]
+    in [ScIf (SeRaw "$allBytes.Count -eq 0") no-output [], ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "Out", SeRaw "$allBytes.ToArray()"], ScRaw "$truncHit = @()", ScRaw "if (Test-Path $stderrFile) { $truncHit = @(Select-String -Path $stderrFile -Pattern 'TRUNCATED sent=') }", ScIf (SeRaw "$truncHit.Count -gt 0") truncated [], ScEcho (SeRaw "\"[plug-run] OK: $Out ($($allBytes.Count) bytes)\"")]
 
 Section: S09 -- Cleanup
 

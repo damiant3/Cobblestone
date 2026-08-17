@@ -31,6 +31,22 @@ Section: Keywords and Sanitization
    in if is-ml-keyword s then s & "'"
       else s
 
+ The IR spells a record field as `name/slot`, so a field name reaches the
+ emitter as `a/0` and reads as a division in every target that has one.
+ riscv resolves the slot and needs it; every source plug wants the name.
+
+  ml-slash-pos : Text, Integer, Integer -> Integer
+  ml-slash-pos (f) (i) (len) =
+   if i >= len then (-1)
+   else if char-to-text (char-at f i) == "/" then i
+   else ml-slash-pos f (i + 1) len
+
+  ml-field : Text -> Text
+  ml-field (f) =
+   let slash = ml-slash-pos f 0 (text-length f)
+   in if slash >= 0 then ml-sanitize (substring f 0 slash)
+      else ml-sanitize f
+
   ml-escape-text : Text -> Text
   ml-escape-text (s) =
    let s1 = text-replace s "\\" "\\\\"
@@ -96,7 +112,7 @@ Section: Type Definition Emission
   emit-ml-type-def (td) =
    when td
     is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
-     emit-ml-record-type (name.value) fields
+     emit-ml-record-type (name.value) fields recmut
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      emit-ml-sum-type (name.value) ctors
     is AUnitTypeDef (name) (unitbase) (s) -> ""
@@ -122,17 +138,18 @@ Section: Type Definition Emission
    if i == list-length fields then ""
    else " * string" & emit-ml-ctor-fields-rest fields (i + 1)
 
-  emit-ml-record-type : Text, List ARecordFieldDef -> Text
-  emit-ml-record-type (name) (fields) =
+  emit-ml-record-type : Text, List ARecordFieldDef, Boolean -> Text
+  emit-ml-record-type (name) (fields) (recmut) =
    let sname = ml-sanitize name
-   in "type " & sname & " = { " & emit-ml-record-fields fields 0 & " }\n\n"
+   in "type " & sname & " = { " & emit-ml-record-fields fields 0 recmut & " }\n\n"
 
-  emit-ml-record-fields : List ARecordFieldDef, Integer -> Text
-  emit-ml-record-fields (fields) (i) =
+  emit-ml-record-fields : List ARecordFieldDef, Integer, Boolean -> Text
+  emit-ml-record-fields (fields) (i) (recmut) =
    if i == list-length fields then ""
    else let f = list-at fields i
    in let sep = if i > 0 then "; " else ""
-   in sep & ml-sanitize (f.name.value) & " : string" & emit-ml-record-fields fields (i + 1)
+   in let binder = if recmut then "mutable " else ""
+   in sep & binder & ml-sanitize (f.name.value) & " : string" & emit-ml-record-fields fields (i + 1) recmut
 
 Section: Expression Emission
 
@@ -163,8 +180,8 @@ Section: Expression Emission
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-ml-expr-at body arities (depth + 1)
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-ml-expr-at body arities (depth + 1)
     is IrRecord (name) (fields) (ty) (sp) -> emit-ml-record name fields arities
-    is IrFieldAccess (rec) (field) (ty) (sp) -> "(" & emit-ml-expr-at rec arities (depth + 1) & ")." & ml-sanitize field
-    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "{ " & emit-ml-expr-at rec arities (depth + 1) & " with " & ml-sanitize field & " = " & emit-ml-expr-at val arities (depth + 1) & " }"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> "(" & emit-ml-expr-at rec arities (depth + 1) & ")." & ml-field field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(let _r = " & emit-ml-expr-at rec arities (depth + 1) & " in _r." & ml-field field & " <- " & emit-ml-expr-at val arities (depth + 1) & "; _r)"
     is IrFork (body) (ty) (sp) -> emit-ml-expr-at body arities (depth + 1)
     is IrAwait (task) (ty) (sp) -> emit-ml-expr-at task arities (depth + 1)
     is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> "(try " & emit-ml-act body arities & " with _ -> " & emit-ml-act fb arities & ")"
@@ -308,6 +325,7 @@ Section: Builtin Emitter
     OcBuiltinEmitter { name = "list-at", emit = \args arities -> "(List.nth " & emit-ml-expr (list-at args 0) arities & " " & emit-ml-expr (list-at args 1) arities & ")" },
     OcBuiltinEmitter { name = "list-length", emit = \args arities -> "(List.length " & emit-ml-expr (list-at args 0) arities & ")" },
     OcBuiltinEmitter { name = "list-snoc", emit = \args arities -> "(" & emit-ml-expr (list-at args 0) arities & " @ [" & emit-ml-expr (list-at args 1) arities & "])" },
+    OcBuiltinEmitter { name = "list-push", emit = \args arities -> "(" & emit-ml-expr (list-at args 0) arities & " @ [" & emit-ml-expr (list-at args 1) arities & "])" },
     OcBuiltinEmitter { name = "max", emit = \args arities -> "(max " & emit-ml-expr (list-at args 0) arities & " " & emit-ml-expr (list-at args 1) arities & ")" },
     OcBuiltinEmitter { name = "min", emit = \args arities -> "(min " & emit-ml-expr (list-at args 0) arities & " " & emit-ml-expr (list-at args 1) arities & ")" },
     OcBuiltinEmitter { name = "negate", emit = \args arities -> "(- " & emit-ml-expr (list-at args 0) arities & ")" },

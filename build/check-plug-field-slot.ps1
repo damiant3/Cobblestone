@@ -50,14 +50,32 @@ $baseline = @()
 if (Test-Path $baselinePath) { $baseline = @(Get-Content $baselinePath | Where-Object { $_ -match '^[a-z0-9-]+$' }) }
 
 $plugRun = Join-Path $repo 'build/plug-run.ps1'
+
+# Five plugs do not speak the shared `plug-run.ps1` protocol and so were
+# outside this check entirely until 2026-08-16: `maui`, `winforms`, `wgsl` and
+# `ptx` use a serial pipeline (IR to a file, boot, read `-output`), and `wpf`
+# hand-rolls TCP because it answers with a DIRECTORY of files. Skipping them
+# was not neutral. Three of the four that emit a field reference at all were
+# leaking, in exactly the bare-map-key shape the reachable plugs had, and
+# nothing could see it while this check reported "0 of 38 clean".
+#
+# They are driven through their OWN run.ps1 with the probe as -Src, which also
+# exercises the real service path including `-Passes 'text-plug'`, and the grep
+# runs over whatever appears at -Out, file or directory. A plug that produces
+# nothing is a RUN FAILURE, never a pass.
+$ownRunner = @('maui', 'winforms', 'wpf', 'wgsl', 'ptx')
+
 $rows = @(); $leak = @(); $failed = @(); $newLeak = @(); $healed = @()
 foreach ($dir in Get-ChildItem (Join-Path $repo 'codex/plugs') -Directory | Sort-Object Name) {
     $runPs = Join-Path $dir.FullName 'run.ps1'
     if (-not (Test-Path $runPs)) { continue }
     $text = Get-Content $runPs -Raw
-    if ($text -notmatch 'plug-run\.ps1') { continue }
-    if ($text -notmatch '-Port\s+(\d+)') { continue }
-    $port = [int]$Matches[1]
+    $viaOwn = $ownRunner -contains $dir.Name
+    if (-not $viaOwn) {
+        if ($text -notmatch 'plug-run\.ps1') { continue }
+        if ($text -notmatch '-Port\s+(\d+)') { continue }
+    }
+    $port = if ($viaOwn) { 0 } else { [int]$Matches[1] }
     $mem = 2048; if ($text -match '-MemMB\s+(\d+)') { $mem = [int]$Matches[1] }
     $name = $dir.Name
     $cdx = Join-Path $dir.FullName "build-output/$name-plug.cdx"
@@ -67,10 +85,19 @@ foreach ($dir in Get-ChildItem (Join-Path $repo 'codex/plugs') -Directory | Sort
     }
     if (-not (Test-Path $cdx)) { $failed += $name; $rows += "{0,-12} NO BINARY" -f $name; continue }
     $out = Join-Path $work "$name.out"
-    Remove-Item $out -ErrorAction SilentlyContinue
-    & pwsh -NoProfile -File $plugRun -IrInput $ir -Out $out -PlugCdx $cdx -MemMB $mem -Port $port -TimeoutSec $TimeoutSec *> (Join-Path $work "$name-run.log")
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $out) -or (Get-Item $out).Length -eq 0) { $failed += $name; $rows += "{0,-12} RUN FAILED (exit $LASTEXITCODE)" -f $name; continue }
-    $hits = @(Select-String -Path $out -Pattern '\b[ab]/[01]\b' -AllMatches | ForEach-Object { $_.Matches } | ForEach-Object { $_.Value })
+    Remove-Item $out -Recurse -Force -ErrorAction SilentlyContinue
+    if ($viaOwn) {
+        & pwsh -NoProfile -File $runPs -Src $probe -Out $out *> (Join-Path $work "$name-run.log")
+    } else {
+        & pwsh -NoProfile -File $plugRun -IrInput $ir -Out $out -PlugCdx $cdx -MemMB $mem -Port $port -TimeoutSec $TimeoutSec *> (Join-Path $work "$name-run.log")
+    }
+    $emitted = @()
+    if (Test-Path $out) {
+        $emitted = if ((Get-Item $out).PSIsContainer) { @(Get-ChildItem $out -Recurse -File) } else { @(Get-Item $out) }
+    }
+    $emitted = @($emitted | Where-Object { $_.Length -gt 0 })
+    if ($LASTEXITCODE -ne 0 -or $emitted.Count -eq 0) { $failed += $name; $rows += "{0,-12} RUN FAILED (exit $LASTEXITCODE)" -f $name; continue }
+    $hits = @($emitted | ForEach-Object { Select-String -Path $_.FullName -Pattern '\b[ab]/[01]\b' -AllMatches } | ForEach-Object { $_.Matches } | ForEach-Object { $_.Value })
     $inBase = $baseline -contains $name
     if ($hits.Count -gt 0) {
         $leak += $name

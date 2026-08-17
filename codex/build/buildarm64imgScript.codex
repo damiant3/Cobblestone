@@ -10,7 +10,7 @@ Chapter: BuildArm64ImgScript
 
 Section: Parameters
 
-  arm64img-params : List ShellParam = [sh-param "PeInput" SptString, sh-param "Out" SptString, sh-param-default "Source" SptString (SeLit ""), sh-param-default "TotalSectors" SptInt (SeInt 65536)]
+  arm64img-params : List ShellParam = [sh-param "PeInput" SptString, sh-param "Out" SptString, sh-param-default "Source" SptString (SeLit ""), sh-param-default "TotalSectors" SptInt (SeInt 65536), sh-switch "Qcow2"]
 
 Section: S00 -- Usage
 
@@ -78,7 +78,11 @@ Section: S13 -- Write Files to Image
 
 Section: S14 -- Write Output
 
-  s14 : List ShellCmd = [ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "Out", SeVar "img"], ScEcho (SeRaw "\"[build-arm64-img] OK: $Out ($($img.Length / 1MB) MB, PE=$($pe.Length) src=$($srcBytes.Length))\"")]
+  s14-qcow2 : List ShellCmd =
+    let fail-conv = [ScRaw "throw \"qemu-img convert failed (exit $LASTEXITCODE)\""]
+    in [ScComment "OCI takes a QCOW2, not a raw image (Phase 5a)", ScAssign "QemuImg" (SeLit "D:\\Program Files\\qemu\\qemu-img.exe"), ScAssign "Qcow2Out" (SeRaw "[System.IO.Path]::ChangeExtension($Out, '.qcow2')"), ScRaw "& $QemuImg convert -f raw -O qcow2 $Out $Qcow2Out", ScIf (SeNot (SeExitCodeEq 0)) fail-conv [], ScEcho (SeRaw "\"[build-arm64-img] QCOW2: $Qcow2Out ($([Math]::Round((Get-Item $Qcow2Out).Length / 1KB)) KB on disk)\"")]
+
+  s14 : List ShellCmd = [ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "Out", SeVar "img"], ScEcho (SeRaw "\"[build-arm64-img] OK: $Out ($($img.Length / 1MB) MB, PE=$($pe.Length) src=$($srcBytes.Length))\""), ScIf (SeVar "Qcow2") s14-qcow2 []]
 
 Section: Assembly
 

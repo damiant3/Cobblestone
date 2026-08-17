@@ -1,0 +1,86 @@
+Chapter: PbkdfStoredGuard
+  cites Foreword chapter Pbkdf
+
+ Track D item 19, the Pbkdf leg. pbkdf-verify walked both hashes to the length
+ of the STORED one, so a stored record is what decides how far the read goes.
+
+ Guarded because something runs it (red's ruling, extended to this leg
+ 2026-08-16): crypto-vectors:81 and :84 call pbkdf-verify. Production does not
+ today. apps/secrets reaches pbkdf-hash from VaultCrypto:77 but builds its
+ parameters as literals and never rebuilds a PbkdfResult from a file, so the
+ hostile record below is not reachable through the vault as it stands.
+
+ The existing test hashes a record and verifies it in the same breath, so the
+ only records pbkdf-verify had ever seen were ones it had just produced itself
+ (L-GAP).
+
+ Row 4 is why the guard is not only about the fault. Eight bytes of a real
+ hash compared to eight bytes of a real rehash agree, so a stored record
+ truncated to any prefix verified TRUE against the right password.
+
+ Row 7 is the discriminator. A 16-byte tag is a legitimate parameter choice,
+ so a guard that demanded 32 bytes would show up there and nowhere else.
+
+Section: Helpers
+
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+  row : Text, List Integer, PbkdfResult -> Text
+  row (label) (password) (stored) =
+    label & " verify=" & show-bool (pbkdf-verify password stored) & " stored-len=" & show (list-length (stored.pbr-hash))
+
+Section: Parameters
+
+ Eight blocks and one pass, not the 4096 and 3 of the defaults: this arm is
+ about lengths and offsets, and the default parameters cost seconds per row.
+
+  cheap : PbkdfParams = PbkdfParams { pb-time-cost = 1, pb-block-count = 8, pb-hash-length = 32 }
+
+  short-tag : PbkdfParams = PbkdfParams { pb-time-cost = 1, pb-block-count = 8, pb-hash-length = 16 }
+
+ A block count of zero leaves the block array empty, and the last block then
+ sits at offset (0 - 1) * 32.
+
+  zero-blocks : PbkdfParams = PbkdfParams { pb-time-cost = 1, pb-block-count = 0, pb-hash-length = 32 }
+
+  negative-blocks : PbkdfParams = PbkdfParams { pb-time-cost = 1, pb-block-count = 0 - 1, pb-hash-length = 32 }
+
+Section: Records
+
+  pw : List Integer = [112, 97, 115, 115]
+
+  wrong : List Integer = [119, 114, 111, 110, 103]
+
+  salt : List Integer = [1, 2, 3, 4, 5, 6, 7, 8]
+
+  genuine : PbkdfResult = pbkdf-hash pw salt cheap
+
+ Sixty-four bytes where the rehash gives thirty-two. Unguarded, the walk
+ indexes the rehash at 32 and the guest dies.
+
+  doubled : PbkdfResult = PbkdfResult {
+    pbr-hash = (genuine.pbr-hash) & (genuine.pbr-hash),
+    pbr-salt = salt,
+    pbr-params = cheap
+  }
+
+  truncated : PbkdfResult = PbkdfResult {
+    pbr-hash = pb-take (genuine.pbr-hash) 8 0 [],
+    pbr-salt = salt,
+    pbr-params = cheap
+  }
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni (row "1-right-password" pw genuine)
+    print-line-uni (row "2-wrong-password" wrong genuine)
+    print-line-uni (row "3-doubled-hash" pw doubled)
+    print-line-uni (row "4-truncated-hash" pw truncated)
+    print-line-uni (row "5-zero-blocks" pw (pbkdf-hash pw salt zero-blocks))
+    print-line-uni (row "6-negative-blocks" pw (pbkdf-hash pw salt negative-blocks))
+    print-line-uni (row "7-short-tag" pw (pbkdf-hash pw salt short-tag))
+  end
+
+Page 1

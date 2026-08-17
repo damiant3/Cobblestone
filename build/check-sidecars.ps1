@@ -35,6 +35,8 @@ $ErrorActionPreference = 'Stop'
 $exts = @('.skip', '.slow', '.fatal', '.expected', '.stdin', '.keys', '.disk', '.disk2', '.disk-src', '.failing', '.diag', '.smp', '.vmargs', '.no-cross', '.cross-refusal', '.cross-budget')
 $orphans = @()
 $checked = 0
+$noeol = @()
+$expChecked = 0
 
 
 $allFiles = @(Get-ChildItem $TestRoot -Recurse -Filter '*' -File)
@@ -66,6 +68,24 @@ foreach ($f in Get-ChildItem $TestRoot -Recurse -Filter '*.disk-src' -File) {
 }
 
 
+# An .expected with no trailing newline can never pass. test-run.ps1 writes
+# ($lines -join "`n") + "`n", so the actual always ends in one LF, and
+# test.ps1 strips CR from the expected side only. LF is not one of the
+# characters the culture-sensitive -eq ignores (SOH and NUL are, which is a
+# separate and live hazard), so the mismatch is real and the test is simply
+# unpassable. Three shipped that way in CL 15313 and sat red until a release
+# battery found them: the failure is loud, but something has to be listening.
+# Account in docs/ExaminersAssay.md, under the .expected recording rule.
+
+foreach ($f in Get-ChildItem $TestRoot -Recurse -Filter '*.expected' -File) {
+    $expChecked++
+    $txt = (Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue)
+    if ((($txt.Length -gt 0) -and ($txt.Substring(($txt.Length - 1)) -ne "`n"))) {
+        $noeol += $f.FullName.Substring(((Split-Path $PSScriptRoot).Length + 1))
+    }
+}
+
+
 if ((@($orphans).Count -gt 0)) {
     Write-Host ([string]([string]'FAIL: ' + @($orphans).Count) + ' orphaned sidecar(s) -- no .codex beside them:')
     foreach ($o in $orphans) {
@@ -76,5 +96,16 @@ if ((@($orphans).Count -gt 0)) {
     Write-Host 'defect, write the defect down beside the code it describes first.'
     exit 1
 }
-Write-Host ([string]([string]'sidecars ok (' + $checked) + ' checked, 0 orphaned)')
+if ((@($noeol).Count -gt 0)) {
+    Write-Host ([string]([string]'FAIL: ' + @($noeol).Count) + ' .expected file(s) with no trailing newline -- they cannot pass:')
+    foreach ($o in $noeol) {
+        Write-Host ([string]'  ' + $o)
+    }
+    Write-Host 'test-run.ps1 always terminates the actual with one LF, so a sidecar'
+    Write-Host 'without one can never match. Re-record it through build/test-run.ps1'
+    Write-Host 'rather than appending a byte by hand -- the same rule catches the CR,'
+    Write-Host 'the HEAP: lines and the leading SOH.'
+    exit 1
+}
+Write-Host ([string]([string]([string]([string]'sidecars ok (' + $checked) + ' checked, 0 orphaned; ') + $expChecked) + ' .expected, 0 without a trailing newline)')
 exit 0

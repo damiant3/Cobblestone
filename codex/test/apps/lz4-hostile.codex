@@ -1,0 +1,96 @@
+Chapter: Lz4Hostile
+  cites Compress chapter Lz4
+
+ Track D item 19, the Lz4 half. Every read in the decompressor was a bare
+ list-at, which traps out of range, so a literal count, a match offset or a
+ match length off the stream decided where a read landed and a hostile one
+ halted the machine. The existing test is a round trip through our own
+ compressor, which can only produce well-formed streams, so nothing in the
+ tree had ever handed this decoder a byte it did not write itself.
+
+ Reached, behind a hash: archive-expand (apps/works/FactArchive.codex:177)
+ decompresses and then compares fa-hash-bytes against the base record's
+ digest, so a truncated answer is refused by the caller. That is why every
+ guard here CLAMPS -- stops and returns what was decoded -- rather than
+ growing a refusal channel the caller already has.
+
+ Rows 1 to 4 are the positive controls: real streams from lz4-compress,
+ which must round trip exactly as before. Rows 5 to 8 are the hostile
+ streams. Rows 5, 6 and 7 kill the guest without the guards; row 8 does not
+ crash unguarded and is the discriminator, because the old safe-src clamped
+ a negative source to index 0 and FABRICATED bytes that were never in the
+ stream.
+
+Section: Helpers
+
+ Every row computes inside the print statement rather than in a let above the
+ act block, so a row that dies names itself by the rows that printed before
+ it. gguf-hostile paid for this lesson.
+
+  list-equal : List Integer, List Integer, Integer, Integer -> Boolean
+  list-equal (a) (b) (i) (len) =
+    if i >= len then True
+    else if list-at a i == list-at b i then list-equal a b (i + 1) len
+    else False
+
+  check-rt : List Integer, Text -> Text
+  check-rt (input) (label) =
+    let compressed = lz4-compress input
+    in let decompressed = lz4-decompress compressed
+    in let ok = if list-length decompressed == list-length input then list-equal input decompressed 0 (list-length input) else False
+    in label & "=" & if ok then "pass" else "fail"
+
+  make-repeated : Integer, Integer, Integer, List Integer -> List Integer
+  make-repeated (val) (n) (i) (acc) =
+    if i >= n then acc
+    else make-repeated val n (i + 1) (list-push acc val)
+
+ A hostile row reports the LENGTH it decoded and the first byte, which is
+ what separates "stopped where it should" from "invented bytes".
+
+  show-decode : List Integer, Text -> Text
+  show-decode (input) (label) =
+    let out = lz4-decompress input
+    in label & " len=" & show (list-length out) & " first=" & (if list-length out == 0 then "none" else show (list-at out 0))
+
+Section: Hostile Streams
+
+ Row 5. Token F0 asks for a 15+ byte literal run and the extra-length byte
+ says 20, so the run is 35 bytes long against a 2-byte stream. Unguarded,
+ lz4-copy-literals reads input[2] and the guest dies. Guarded, the literal
+ copy stops at the end of the input and the offset read that follows does
+ not fit either, so nothing is decoded.
+
+  lit-past-end : List Integer = [240, 20]
+
+ Row 6. The offset is a two-byte field and the old guard only asked whether
+ its FIRST byte was inside the stream. Here after-lit is exactly len-1, so
+ the old test passed and the read of after-lit+1 went off the end.
+
+  offset-straddles-end : List Integer = [16, 65, 0]
+
+ Row 7. A back-reference with offset 0. Unguarded, src is list-length acc
+ and list-at acc (list-length acc) is out of range by exactly one.
+
+  offset-zero : List Integer = [16, 65, 0, 0]
+
+ Row 8. A back-reference reaching 5 bytes behind a 1-byte output. This one
+ never trapped: safe-src clamped the negative source to 0 and the decoder
+ answered five copies of a byte the stream never encoded.
+
+  offset-before-start : List Integer = [16, 65, 5, 0]
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni (check-rt [] "1-empty")
+    print-line-uni (check-rt [1, 2, 3] "2-tiny")
+    print-line-uni (check-rt [65, 66, 67, 68, 65, 66, 67, 68, 65, 66, 67, 68] "3-repeating")
+    print-line-uni (check-rt (make-repeated 42 100 0 []) "4-uniform-100")
+    print-line-uni (show-decode lit-past-end "5-lit-past-end")
+    print-line-uni (show-decode offset-straddles-end "6-offset-straddles-end")
+    print-line-uni (show-decode offset-zero "7-offset-zero")
+    print-line-uni (show-decode offset-before-start "8-offset-before-start")
+  end
+
+Page 1

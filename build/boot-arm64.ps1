@@ -80,7 +80,7 @@ $payload[0] = 2
 
 try {
     # Start TCP listener
-    $plugPort = 9100
+    $plugPort = 9128
     $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $plugPort)
     $listener.Start()
     $stderrFile = [System.IO.Path]::GetTempFileName()

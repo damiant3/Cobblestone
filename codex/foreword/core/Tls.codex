@@ -65,7 +65,8 @@ Section: Types
   TlsRecord = record {
     tls-rec-type : Integer,
     tls-rec-version : Integer,
-    tls-rec-payload : List Integer
+    tls-rec-payload : List Integer,
+    tls-rec-valid : Boolean
   }
 
   TlsClientHello = record {
@@ -93,13 +94,17 @@ Section: Record Layer
     let len = list-length payload
     in [content-type, 3, 3] & tls-be16 len & payload
 
+  tls-record-header-bytes : Integer = 5
+
   tls-decode-record : List Integer -> TlsRecord
   tls-decode-record (bytes) =
-    let rec-type = list-at bytes 0
+    if list-length bytes < tls-record-header-bytes
+      then TlsRecord { tls-rec-type = 0, tls-rec-version = 0, tls-rec-payload = [], tls-rec-valid = False }
+    else let rec-type = list-at bytes 0
     in let version = bit-or (bit-shl (list-at bytes 1) 8) (list-at bytes 2)
     in let len = bit-or (bit-shl (list-at bytes 3) 8) (list-at bytes 4)
     in let payload = tls-slice bytes 5 len []
-    in TlsRecord { tls-rec-type = rec-type, tls-rec-version = version, tls-rec-payload = payload }
+    in TlsRecord { tls-rec-type = rec-type, tls-rec-version = version, tls-rec-payload = payload, tls-rec-valid = list-length payload == len }
 
 Section: Client Hello
   tls-build-client-hello : TlsClientHello -> List Integer

@@ -32,6 +32,18 @@ the Update 44 entry was found and worked during the release run at head 15686.*
 
 ## Done
 
+### Update 45 -- the release skill's own step 1 and step 4 were wrong
+
+Nothing was open when this release started, and the release found two defects
+in the procedure rather than in the tree. Step 1 said "run the FULL battery"
+where a bare `build/test.ps1` runs the `lang` tier only (756 of 1,526 tests),
+and step 4 said `ddc-witness.ps1` runs steps 3 AND 4 when that script has no
+poison phase at all. Both are corrected in the skill. Recorded here because
+the class recurs: **a procedure step that names an outcome instead of a
+command is a step every reader executes differently.** Re-measure with
+`build/test.ps1 -Tier all` and by grepping the runner for the phase it is
+credited with.
+
 ### Update 44 -- README's DDC paragraph restated a boundary the owning doc had already corrected
 
 `README.md` said the measured DDC boundary was "self-reproducing versus not"

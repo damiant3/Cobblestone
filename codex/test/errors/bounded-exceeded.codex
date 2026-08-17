@@ -1,0 +1,39 @@
+Chapter: BoundedExceeded
+  cites Foreword chapter Console
+
+ Cost Model 3.3. `bounded <class> <name>` declares a CEILING in the lattice
+ `none < fixed < linear < growing`, and this chapter is the refusal arm: a
+ function that declares `bounded linear` and is inferred `growing`.
+
+ The refusal must be TRANSITIVE, which is the half a self-contained arm would
+ miss. `walks` is linear in its own body -- it calls a helper and returns what
+ the helper returns -- and it is refused because `grow-loop` copies its
+ accumulator inside a self call. That is the `unpack-text` shape the whole
+ feature exists for: linear where you read it, quadratic underneath.
+
+ The right operand must ALLOCATE, and this arm was rebuilt once because it
+ did not. It appended the literal `"x"`, and COMPILER-8 (main 16039) made a
+ Text accumulator extend in place while it stays topmost, so that function
+ became genuinely linear (`p-append-text`, x3.6 in
+ `codex/test/cost/accumulator-corpus`) and the declaration it was supposed to
+ break started holding. `show i` allocates BETWEEN the appends and pushes the
+ accumulator off the frontier, which is what still copies (`p-append-show`,
+ x15.5). Anything put here must be a shape the corpus measures quadratic.
+
+Section: The Callee
+
+  grow-loop : Integer, Integer, Text -> Text
+  grow-loop (n) (i) (acc) =
+    if i >= n then acc
+    else grow-loop n (i + 1) (acc & show i)
+
+Section: The Declaration That Cannot Hold
+
+  bounded linear walks : Integer -> Text
+  walks (n) = grow-loop n 0 ""
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (walks 4)
+  end

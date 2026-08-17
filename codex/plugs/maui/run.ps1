@@ -32,7 +32,10 @@ if (-not (Test-Path -PathType Leaf $PlugCdx)) {
 
 # -- Phase 1: Codex source -> IR-CCE ----------------------------------
 $compileScript = Join-Path $Repo 'build' 'compile.ps1'
-& pwsh -NoProfile -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce
+# text-plug: this plug resolves a Codex call by its NAME, so the inline passes
+# must not substitute a body and delete the call. See text-plug-ir-pipeline
+# in codex/compiler/IR/Passes.codex.
+& pwsh -NoProfile -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce -Passes 'text-plug'
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $IrFile)) {
     [Console]::Error.WriteLine("FAIL: IR compile failed; see $LogFile")
     exit 4

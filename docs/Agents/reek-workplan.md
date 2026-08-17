@@ -2,21 +2,25 @@
 
 *Empty by design. Keep it that way.*
 
-Emptied 2026-08-16 at handoff for the relaunch. Nothing is in flight, nothing
-is opened, no build token is held.
+Emptied 2026-08-16 at the second handoff of the day. Nothing is in flight,
+nothing is opened or shelved, no build token is held, and the workspace is
+clean.
 
 Everything that was in here has a home that outlives a session, which is the
 whole point of the file being empty:
 
-- The shell DSL readability campaign, its catalog and its next steps:
+- reek's next two items, both queued by red and NOT started:
+  `docs/PM/CurrentPlan.md`, the reek lane row.
+- Making the `tco-ensure-temps` reliance structural:
+  `codex/compiler/compiler-backlog.md`, COMPILER-7 (COMPILER-6 above it is
+  the closed measurement it rests on).
+- Track D row 19, closed whole, and the `encode/TrueType` residue:
+  `docs/Designs/Active/Features/VerifiedFormatParsing.md`, row 19.
+- The guard accounts for all eleven chapters guarded this session:
+  `docs/ExaminersAssay.md`.
+- The plug list-push and mutable-record work, its census and its
+  divergences: `codex/plugs/plugs-backlog.md`, items 1.7, 1.8 and 1.21.
+- The shell DSL readability campaign, its catalog and next steps:
   `docs/Designs/Active/Build/ShellDslReadability.md`, section 9.
-- The `Gguf` dequant guest kill still live on main, and what is in shelf
-  15583: `docs/Designs/Active/Features/VerifiedFormatParsing.md`, row 16b.
-- The additive-bounds overflow class, 71 sites and 34 with a variable operand:
-  `ExaminersAssay.md` "A Bounds Guard That ADDS Can Be Overflowed", census
-  row 20.
-- The fact-store length guards: `ExaminersAssay.md` "The Fact Store Length
-  Guards", census row 15.
-- The sink arm's cite-closure staleness guard and the queued card's
-  provenance: `docs/Hardware/HardwareSitting.md`.
+- The `pbkdf-iterations` cost finding: `apps/secrets/secrets-backlog.md`.
 - File claims and lane state: `docs/PM/CurrentPlan.md`.

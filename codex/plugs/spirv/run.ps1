@@ -1,6 +1,6 @@
 # Run SPIR-V plug: source -> IR-CCE -> plug CDX -> SPIR-V text
 [CmdletBinding()]
-param([Parameter(Mandatory=$true)][string]$Src, [Parameter(Mandatory=$true)][string]$Out)
+param([Parameter(Mandatory=$true)][string]$Src, [Parameter(Mandatory=$true)][string]$Out, [string]$Kernel = '')
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..' '..' '..' 'build' 'vm-config.ps1')
@@ -10,8 +10,15 @@ $LogFile = Join-Path $PSScriptRoot 'build-output\run.log'
 if (-not (Test-Path $PlugCdx)) { [Console]::Error.WriteLine("MISSING: $PlugCdx"); exit 2 }
 
 # Phase 1: source -> IR-CCE
+# text-plug: an OpFunctionCall is emitted from an IR call, so the inline passes
+# must not substitute a body and delete it. See text-plug-ir-pipeline in
+# codex/compiler/IR/Passes.codex.
 $IrFile = Join-Path $PSScriptRoot 'build-output\last-run.ir'
-& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $Src -Out $IrFile -Log $LogFile -IrCce
+# -Kernel pins the compiler the probe is measured against. With none,
+# compile.ps1 takes whatever build.ps1 last left in build-output, which is not
+# the seed and not anything this plug is being checked against.
+$kernelArgs = if ($Kernel) { @('-Kernel', $Kernel) } else { @() }
+& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $Src -Out $IrFile -Log $LogFile -IrCce -Passes 'text-plug' @kernelArgs
 if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine("FAIL: IR; see $LogFile"); exit 3 }
 Write-Host "[spirv-run] IR: $((Get-Item $IrFile).Length) bytes (CCE)"
 

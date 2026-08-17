@@ -1,0 +1,80 @@
+Chapter: TruetypeTruncatedGuard
+  cites Encode chapter TrueType
+  cites Ui chapter GlyphRasterizer
+  cites Ui chapter TrueTypeFont
+
+ Track D row 19 residue, found while guarding GlyphRasterizer and assigned back
+ to this lane. ttf-u8, ttf-u16, ttf-u32 and ttf-read-tag all read with bare
+ list-at, and every field of every table is read at a fixed offset from a table
+ offset the FILE supplied. A file that stops early is read past its end.
+
+ Measured before the guard: ttf-parse of a font truncated anywhere in its table
+ directory or its head table kills the guest. The whole ui/ leg's guards sit
+ downstream of a call that never returned.
+
+ The bytes below are codex/test/truetype-bridge-test.codex's font, byte for
+ byte, cut to a series of lengths: 0, 1, 11 (inside the offset table), 12
+ (exactly the offset table), 30 (inside the first table record), 60 (three
+ records in), 240 (inside the head table) and 355 (one byte short).
+
+ Row 1 is the control and carries the arm: the whole 356-byte font must still
+ parse to 96 glyphs at 9x11, or a guard that answered zero everywhere would
+ pass every truncated row and mean nothing.
+
+ Row 10 is the second control: unitsPerEm read back from the intact font must
+ still be 1024, which is what says ttf-byte-at did not start answering zero for
+ offsets that are in range.
+
+Section: Font
+
+  test-font-bytes : List Integer
+  test-font-bytes = [0, 1, 0, 0, 0, 7, 0, 64, 0, 2, 0, 48, 99, 109, 97, 112, 0, 0, 0, 0,
+    0, 0, 0, 124, 0, 0, 0, 52, 103, 108, 121, 102, 0, 0, 0, 0, 0, 0, 0, 176,
+    0, 0, 0, 52, 104, 101, 97, 100, 0, 0, 0, 0, 0, 0, 0, 228, 0, 0, 0, 54,
+    104, 104, 101, 97, 0, 0, 0, 0, 0, 0, 1, 28, 0, 0, 0, 36, 104, 109, 116, 120,
+    0, 0, 0, 0, 0, 0, 1, 64, 0, 0, 0, 12, 108, 111, 99, 97, 0, 0, 0, 0,
+    0, 0, 1, 76, 0, 0, 0, 16, 109, 97, 120, 112, 0, 0, 0, 0, 0, 0, 1, 92,
+    0, 0, 0, 6, 0, 0, 0, 1, 0, 3, 0, 1, 0, 0, 0, 12, 0, 4, 0, 40,
+    0, 0, 0, 6, 0, 4, 0, 1, 0, 2, 0, 32, 0, 65, 255, 255, 0, 0, 0, 32,
+    0, 65, 255, 255, 255, 225, 255, 193, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0,
+    0, 0, 2, 0, 2, 188, 0, 2, 0, 0, 1, 1, 1, 0, 0, 1, 0, 1, 0, 0,
+    0, 2, 188, 253, 68, 0, 0, 0, 0, 1, 0, 0, 0, 0, 80, 0, 0, 0, 0, 0,
+    95, 15, 60, 245, 0, 11, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 188, 0, 0, 0, 8, 0, 2, 0, 1,
+    0, 0, 0, 0, 0, 1, 0, 0, 2, 188, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0,
+    2, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3,
+    2, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10,
+    0, 0, 0, 20, 0, 0, 0, 52, 0, 1, 0, 0, 0, 3, 0, 0]
+
+  prefix : Integer -> List Integer
+  prefix (n) = prefix-loop n 0 []
+
+  prefix-loop : Integer, Integer, List Integer -> List Integer
+  prefix-loop (n) (i) (acc) =
+    if i >= n then acc
+    else if i >= list-length test-font-bytes then acc
+    else prefix-loop n (i + 1) (list-push acc (list-at test-font-bytes i))
+
+  row : Text, Integer -> Text
+  row (label) (n) =
+    let bytes = prefix n
+    in let f = ttf-parse bytes
+    in label & " bytes=" & show (list-length bytes) & " upem=" & show (f.tf-head.th-units-per-em) & " glyphs=" & show (f.tf-num-glyphs) & " render=" & format-ttf-bitmap-font (ttf-to-bitmap-font f 16 "t")
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni (row "01-full" 356)
+    print-line-uni (row "02-empty" 0)
+    print-line-uni (row "03-one" 1)
+    print-line-uni (row "04-eleven" 11)
+    print-line-uni (row "05-offset-table" 12)
+    print-line-uni (row "06-thirty" 30)
+    print-line-uni (row "07-sixty" 60)
+    print-line-uni (row "08-in-head" 240)
+    print-line-uni (row "09-one-short" 355)
+    print-line-uni ("10-upem-intact " & show ((ttf-parse test-font-bytes).tf-head.th-units-per-em))
+  end
+
+Page 1

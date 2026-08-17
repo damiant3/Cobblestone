@@ -1,0 +1,65 @@
+Chapter: Arm64VirtioBlkProbe
+  cites Kernel chapter Arm64Pci
+  cites Kernel chapter VirtioPci
+  cites Kernel chapter VirtioBlk
+  cites Foreword chapter Maybe
+
+ Phase 4 of OracleCloudArm64.md was "unmeasured, not passing": nothing in
+ any boot payload ever called VirtioBlk. This calls it.
+
+ It doubles as the control the virtio-net investigation lacks. VirtioBlk
+ rides the SAME VirtioPci transport as VirtioNet but is a different device
+ with one queue, and the disk it talks to is the one the firmware just
+ booted this image from, so the device is known good. If the read
+ succeeds, the transport works and the TX fault is net-specific. If it
+ fails the same way -- notify issued, used ring never advances -- the
+ fault is in the shared transport and VirtioNet is only where it was
+ noticed.
+
+ The oracle is the content of sector 0, not a pointer test: byte 510 is
+ 0x55 and byte 511 is 0xAA in any protective MBR, and byte 450 is 0xEE,
+ the GPT protective partition type. A read that returns 512 zero bytes
+ passes a "did we get a buffer" test and fails this one.
+
+Section: Device Discovery
+
+  bp-find-blk : Arm64PciScanResult -> Arm64PciDevice
+  bp-find-blk (scan) =
+   when arm64-pci-find-device scan #1AF4 #1042
+    is Just (d) -> d
+    is None -> when arm64-pci-find-device scan #1AF4 #1001
+      is Just (d2) -> d2
+      is None -> list-at (scan.devices) 0
+
+Section: Entry
+
+  opening : [Console] Integer = act
+    print-line-uni "arm64-virtio-blk-probe"
+    let scan = arm64-pci-scan-bus 0
+    in let dev = bp-find-blk scan
+    in let enabled = arm64-pci-enable-device dev
+    in act
+      print-line-uni ("pci count=" & show (scan.count)
+        & " vendor=" & show (dev.pci-vendor)
+        & " device=" & show (dev.pci-device-id))
+      let st = virtio-blk-init dev
+      in act
+        print-line-uni ("capacity=" & show (st.capacity)
+          & " sectors, queue-size=" & show ((st.queue).queue-size)
+          & " notify-addr=" & show ((st.queue).notify-addr))
+        let r = virtio-blk-read-sector st 0
+        in let d = r.data
+        in act
+          (print-line-uni ("read ok=" & show (r.ok)
+            & " len=" & show (list-length d)
+            & " b450=" & show (list-at d 450)
+            & " b510=" & show (list-at d 510)
+            & " b511=" & show (list-at d 511)
+            & " want 238 85 170"))
+          0
+        end
+      end
+    end
+  end
+
+Page 1

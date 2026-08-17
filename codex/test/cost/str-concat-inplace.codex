@@ -1,0 +1,85 @@
+Chapter: StrConcatInPlace
+
+  cites Foreword chapter Console
+
+ Is `__str_concat`'s in-place path EVER taken?
+
+ `emit-str-concat-prologue` (`X86_64TextHelpers.codex:160-182`) compares
+ `left_base + aligned(len(left))` against the allocation frontier and, when
+ they meet, `emit-str-concat-fast-copy` rewrites the length in place instead
+ of copying. `literal-alloc` showed a Text literal allocates nothing and that
+ hoisting it out of the loop changes nothing, so in `acc & "x"` the
+ accumulator IS the most recent allocation from the second iteration on and
+ the fast path should fire. It measured quadratic anyway.
+
+ So this asks the question without a loop, where nothing can be blamed on
+ recursion or tail calls: append the same piece one, two and three times in a
+ straight line and read the DELTAS. In-place extension costs one piece per
+ append. Copying costs the whole accumulator each time, so the deltas grow.
+
+Section: The Instrument
+
+  keep-text : Text -> Integer
+  keep-text (t) = text-length t
+
+  mk : Integer, Text -> Text
+  mk (n) (acc) = if n <= 0 then acc else mk (n - 1) (acc & "abcdefgh")
+
+Section: Arms
+
+ `piece` is built BEFORE any measurement so it is a heap value and not a
+ literal, and every arm below starts from `base-acc`, itself already on the
+ heap, so no arm's first append is the constant-left-operand case.
+
+  piece : Text = mk 8 ""
+
+  base-acc : Text = mk 8 ""
+
+  one : Text -> Text
+  one (p) = base-acc & p
+
+  two : Text -> Text
+  two (p) = (base-acc & p) & p
+
+  three : Text -> Text
+  three (p) = ((base-acc & p) & p) & p
+
+Section: Measurement
+
+  m-one : Integer
+  m-one =
+    let b = __heap-save
+    in let r = keep-text (one piece)
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-two : Integer
+  m-two =
+    let b = __heap-save
+    in let r = keep-text (two piece)
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-three : Integer
+  m-three =
+    let b = __heap-save
+    in let r = keep-text (three piece)
+    in let a = __heap-save
+    in (a - b) + r - r
+
+Section: Entry
+
+ The reading. `piece` is 64 characters and `base-acc` is 64. If the fast path
+ fires, two costs about one piece more than one, and three about one piece
+ more than two, so the deltas are flat. If every append copies, one costs
+ 128, two costs 128 + 192, three costs 128 + 192 + 256, and the deltas climb
+ by one piece each time.
+
+  opening : [Console] Nothing = act
+    print-line-uni ("piece-len=" & show (text-length piece) & " base-len=" & show (text-length base-acc))
+    print-line-uni ("one   = " & show m-one)
+    print-line-uni ("two   = " & show m-two)
+    print-line-uni ("three = " & show m-three)
+    print-line-uni ("delta two-one   = " & show (m-two - m-one))
+    print-line-uni ("delta three-two = " & show (m-three - m-two))
+  end

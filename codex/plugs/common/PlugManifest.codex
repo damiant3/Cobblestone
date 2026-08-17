@@ -1,0 +1,146 @@
+Chapter: Plug Manifest
+  cites Foreword chapter Capability
+
+Section: Opening
+
+  pm-find-opening : List IRDef, Integer -> Integer
+  pm-find-opening (defs) (i) =
+   if i >= list-length defs then 0 - 1
+   else if (list-at defs i).name == "opening" then i
+   else pm-find-opening defs (i + 1)
+
+  pm-opening-effects : List IRDef -> List Text
+  pm-opening-effects (defs) =
+   let i = pm-find-opening defs 0
+   in if i < 0 then [] else pm-type-effects ((list-at defs i).type-val) []
+
+  pm-opening-fs-scope : List IRDef -> Text
+  pm-opening-fs-scope (defs) = pm-opening-scope defs "FileSystem"
+
+  pm-opening-net-scope : List IRDef -> Text
+  pm-opening-net-scope (defs) = pm-opening-scope defs "Network"
+
+  pm-opening-scope : List IRDef, Text -> Text
+  pm-opening-scope (defs) (family) =
+   let i = pm-find-opening defs 0
+   in if i < 0 then "" else pm-type-scope ((list-at defs i).type-val) family ""
+
+Section: Effects on the Performing Spine
+
+  pm-type-effects : CodexType, List Text -> List Text
+  pm-type-effects (ty) (acc) =
+   when ty
+    is FunTy (p) (row) (r) -> pm-type-effects r (pm-label-names (row.labels) 0 (list-length (row.labels)) acc)
+    is ForAllTy (id) (b) -> pm-type-effects b acc
+    is ForAllEff (id) (b) -> pm-type-effects b acc
+    is EffectfulTy (effs) (sc) (inner) -> pm-type-effects inner (pm-name-values effs 0 (list-length effs) acc)
+    is otherwise -> acc
+
+  pm-label-names : List EffectLabel, Integer, Integer, List Text -> List Text
+  pm-label-names (ls) (i) (len) (acc) =
+   if i >= len then acc
+   else pm-label-names ls (i + 1) len (pm-add-name acc (((list-at ls i).name).value))
+
+  pm-name-values : List Name, Integer, Integer, List Text -> List Text
+  pm-name-values (ns) (i) (len) (acc) =
+   if i >= len then acc
+   else pm-name-values ns (i + 1) len (pm-add-name acc ((list-at ns i).value))
+
+  pm-type-scope : CodexType, Text, Text -> Text
+  pm-type-scope (ty) (family) (acc) =
+   when ty
+    is FunTy (p) (row) (r) -> pm-type-scope r family (pm-label-scope (row.labels) family 0 (list-length (row.labels)) acc)
+    is ForAllTy (id) (b) -> pm-type-scope b family acc
+    is ForAllEff (id) (b) -> pm-type-scope b family acc
+    is EffectfulTy (effs) (scs) (inner) -> pm-type-scope inner family (pm-name-scope effs scs family 0 (list-length effs) acc)
+    is otherwise -> acc
+
+  pm-name-scope : List Name, List Text, Text, Integer, Integer, Text -> Text
+  pm-name-scope (ns) (scs) (family) (i) (len) (acc) =
+   if i >= len then acc
+   else if text-length acc > 0 then acc
+   else if i >= list-length scs then acc
+   else let n = ((list-at ns i).value)
+   in let s = list-at scs i
+   in if pm-effect-base n == family & text-length s > 0
+      then pm-name-scope ns scs family (i + 1) len s
+      else pm-name-scope ns scs family (i + 1) len acc
+
+  pm-label-scope : List EffectLabel, Text, Integer, Integer, Text -> Text
+  pm-label-scope (ls) (family) (i) (len) (acc) =
+   if i >= len then acc
+   else if text-length acc > 0 then acc
+   else let l = list-at ls i
+   in let base = pm-effect-base ((l.name).value)
+   in if base == family & text-length (l.scope) > 0
+      then pm-label-scope ls family (i + 1) len (l.scope)
+      else pm-label-scope ls family (i + 1) len acc
+
+  pm-add-name : List Text, Text -> List Text
+  pm-add-name (acc) (n) =
+   if pm-name-in acc n 0 (list-length acc) then acc else list-push acc n
+
+  pm-name-in : List Text, Text, Integer, Integer -> Boolean
+  pm-name-in (xs) (n) (i) (len) =
+   if i >= len then False
+   else if list-at xs i == n then True
+   else pm-name-in xs n (i + 1) len
+
+Section: Names to Bits
+
+ The dot is compared by code point taken from a literal, because internal
+ text is CCE and a bare 46 is the letter H there, not a full stop.
+
+  pm-effect-base : Text -> Text
+  pm-effect-base (n) = pm-base-loop n 0 (text-length n)
+
+  pm-base-loop : Text, Integer, Integer -> Text
+  pm-base-loop (n) (i) (len) =
+   if i >= len then n
+   else if char-code (char-at n i) == char-code (char-at "." 0) then substring n 0 i
+   else pm-base-loop n (i + 1) len
+
+  pm-effect-member : Text -> Text
+  pm-effect-member (n) =
+   let base = pm-effect-base n
+   in if text-length base >= text-length n then ""
+      else substring n (text-length base + 1) (text-length n - text-length base - 1)
+
+  pm-cap-direction : List Text, Text -> Integer
+  pm-cap-direction (effs) (cap) =
+   let f = pm-dir-flags effs cap 0 (list-length effs) 0
+   in if bit-and f 4 /= 0 then cap-dir-readwrite
+      else if bit-and f 3 == 3 then cap-dir-readwrite
+      else if bit-and f 1 /= 0 then cap-dir-read
+      else if bit-and f 2 /= 0 then cap-dir-write
+      else cap-dir-readwrite
+
+  pm-dir-flags : List Text, Text, Integer, Integer, Integer -> Integer
+  pm-dir-flags (effs) (cap) (i) (len) (acc) =
+   if i >= len then acc
+   else let e = list-at effs i
+   in if pm-effect-base e /= cap then pm-dir-flags effs cap (i + 1) len acc
+      else if e == cap then pm-dir-flags effs cap (i + 1) len (bit-or acc 4)
+      else if pm-effect-member e == "Read" then pm-dir-flags effs cap (i + 1) len (bit-or acc 1)
+      else if pm-effect-member e == "Write" then pm-dir-flags effs cap (i + 1) len (bit-or acc 2)
+      else pm-dir-flags effs cap (i + 1) len (bit-or acc 4)
+
+  pm-cap-names : List Text, Integer, Integer, List Text -> List Text
+  pm-cap-names (effs) (i) (len) (acc) =
+   if i >= len then acc
+   else let e = list-at effs i
+   in let cover = if cap-id-for-name e >= 0 then e else pm-effect-base e
+   in if cap-id-for-name cover >= 0 then pm-cap-names effs (i + 1) len (pm-add-name acc cover)
+      else pm-cap-names effs (i + 1) len acc
+
+  pm-boot-cap-mask : List Text, List Text, Integer, Integer, Integer -> Integer
+  pm-boot-cap-mask (caps) (effs) (i) (len) (acc) =
+   if i >= len then acc
+   else let name = list-at caps i
+   in pm-boot-cap-mask caps effs (i + 1) len (bit-or acc (cap-bits-for-name name (pm-cap-direction effs name)))
+
+  pm-opening-cap-mask : List IRDef -> Integer
+  pm-opening-cap-mask (defs) =
+   let effs = pm-opening-effects defs
+   in let caps = pm-cap-names effs 0 (list-length effs) []
+   in pm-boot-cap-mask caps effs 0 (list-length caps) 0

@@ -252,8 +252,14 @@ Section: Page Table Setup
  PUD0 at 0x71000: entries 0-3 (0-4GB), entry 256 (ECAM at 0x4010000000)
  PUD1 at 0x77000: entry 0 (high MMIO at 0x8000000000, VirtIO BARs)
  PMD 0-3 at 0x72000-0x75000: 0-4GB (2MB blocks, normal memory,
-   except PMD1 entry 1 = 0x40200000-0x403FFFFF patched to device memory
+   except PMD0 entries 128-503 = 0x10000000-0x3EFFFFFF, the 32-bit PCI
+   MMIO window where every BAR lands, which are DEVICE memory, and
+   PMD1 entry 1 = 0x40200000-0x403FFFFF patched to device memory
    for VirtIO DMA buffers)
+
+ Entry 0 of PMD0 stays normal deliberately: the page tables themselves
+ live at 0x70000, and a translation walk through Device memory is
+ CONSTRAINED UNPREDICTABLE.
  PMD 4 at 0x76000: ECAM region (2MB blocks, device memory)
  PMD 5 at 0x78000: high MMIO region (2MB blocks, device memory)
 
@@ -285,6 +291,7 @@ Section: Page Table Setup
    & arm64-li 10 (pt-base + #8000 + 3)
    & arm64-str 10 9 0
    & a64pe-stub-fill-pmd (pt-base + #2000) 0
+   & a64pe-stub-fill-pmd-device-range (pt-base + #2000) 128 376 0
    & a64pe-stub-fill-pmd (pt-base + #3000) #40000000
    & a64pe-stub-patch-pmd-device (pt-base + #3000) 1 #40000000
    & a64pe-stub-fill-pmd (pt-base + #4000) #80000000
@@ -332,6 +339,32 @@ Section: Page Table Setup
    arm64-li 9 (pmd-base + entry-idx * 8)
    & arm64-li 10 (bit-or (phys-start + entry-idx * #200000) #405)
    & arm64-str 10 9 0
+
+ #405 rather than #401 is the whole difference: bit 2 is AttrIndx, so
+ these entries take MAIR attr1 (0x00, Device-nGnRnE) where the plain fill
+ takes attr0 (0xFF, Normal write-back cacheable). MAIR_EL1 is loaded with
+ the single value #FF, which puts 0x00 in attr1 by virtue of the register
+ being zero above its low byte.
+
+  a64pe-stub-fill-pmd-device-range : Integer, Integer, Integer, Integer -> List Integer
+  a64pe-stub-fill-pmd-device-range (pmd-base) (first) (count) (phys-base) =
+   let i = []
+   in let i = i & arm64-li 9 (pmd-base + first * 8)
+   in let i = i & arm64-li 10 (bit-or (phys-base + first * #200000) #405)
+   in let i = i & arm64-movz 12 0 0
+   in let i = i & arm64-li 13 count
+   in let loop = list-length i / 4
+   in let i = a64pe-emit i (arm64-cmp 12 13)
+   in let exit-idx = list-length i / 4
+   in let i = a64pe-emit i arm64-nop
+   in let i = a64pe-emit i (arm64-str 10 9 0)
+   in let i = a64pe-emit i (arm64-add-imm 9 9 8)
+   in let i = i & arm64-li 14 #200000
+   in let i = a64pe-emit i (arm64-add 10 10 14)
+   in let i = a64pe-emit i (arm64-add-imm 12 12 1)
+   in let i = a64pe-emit i (arm64-b ((loop - list-length i / 4) * 4))
+   in let exit-label = list-length i / 4
+   in a64pe-patch-insn i exit-idx (arm64-b-cond 10 ((exit-label - exit-idx) * 4))
 
 Section: MMU Configuration
 

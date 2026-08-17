@@ -863,8 +863,9 @@ type plus constructor and extractor functions. Downstream phases
 
 ## Punctual Functions
 
-A function marked `punctual` is proven to have bounded execution
-at compile time. The compiler enforces five structural restrictions:
+A function marked `punctual` is proven at compile time to have a fixed
+worst-case execution: an instruction budget, with no heap, no recursion
+and no closures. The compiler enforces five structural restrictions:
 
 | CDX Code | Restriction |
 |----------|------------|
@@ -895,6 +896,89 @@ which is the system integrator's responsibility.
 
 See `codex/test/examples/missile-warning.codex` for
 a real-world example with Ada/Ravenscar side-by-side comparison.
+
+## Bounded Functions
+
+`punctual` promises a worst-case execution budget and forbids the heap
+outright, which leaves the whole middle unspoken: a function that
+legitimately allocates, in proportion to its input, with no way to say so.
+`bounded` is that missing declaration. It sits in the same slot and names an
+allocation CLASS, which the declaration asserts as a CEILING:
+
+```
+  none    <  fixed          <  linear         <  growing
+  no heap    fixed bytes       one walk over     accumulator copied
+             per call,         an input, no      inside a loop, or an
+             whatever the      copies of the     ALLOCATING walk nested
+             input             accumulator       in a walk
+```
+
+```
+  bounded linear render-row : List Cell -> Text
+  render-row (cs) = row-go cs 0 ""
+```
+
+The compiler infers each function's class from its body and refuses when the
+inferred class exceeds the declared ceiling. **The refusal is transitive, as
+CDX6001 is for `punctual`**, and that is most of the value: a function can be
+linear in its own body and quadratic because of what a callee does, which is
+exactly the shape that produced the defect this feature was built for.
+
+**A callee does not need its own declaration.** The inference runs over every
+definition in the unit whether or not it is declared, so a `bounded linear`
+function is refused for an undeclared callee that copies an accumulator
+exactly as it would be for a declared one. Declaring a callee changes nothing
+about what the caller is held to; it only adds a ceiling the callee itself
+must meet.
+
+**The `linear` here is not the ownership `linear`.** They share a word and
+nothing else: ownership `linear` is a type discipline about how many times a
+value may be used, and this `linear` is a cost class about how much a function
+allocates. Context separates them -- one appears in a type, the other after
+`bounded` -- and the compiler reads the class by position, not by keyword.
+
+**`bounded` takes no numeric budget.** `punctual 128 f` is an instruction
+budget; `bounded 128 f` is not a thing, and the word after `bounded` is read
+as the class, so it answers CDX6102 naming what it saw. **`punctual` and
+`bounded` cannot both be written on one function today** -- the second
+declaration is a parse error (CDX1000). They would be redundant in any case:
+`punctual` forbids the heap outright, which is the `none` rung.
+
+| CDX Code | Meaning |
+|----------|---------|
+| CDX6101 | Inferred class exceeds the declared ceiling, here or through a callee |
+| CDX6102 | The declaration names no class in the lattice |
+| CDX6103 | The declaration names a rung that is not inferred yet |
+
+### What is proven, and what abstains
+
+**This first slice infers two rungs, not four.** `linear` and `growing` are
+decided; `none` and `fixed` are named in the lattice but not yet inferred, so
+declaring one is REFUSED (CDX6103) rather than accepted. An unchecked promise
+reads exactly like a checked one, so refusing is the honest direction and it
+matches the abstain-toward-refusal rule the feature is designed around. Use
+`punctual` for the no-heap promise, which is enforced (see CDX6002; the `&`
+gap in that check is compiler-owned and closing).
+
+| Written | Answer | Why |
+|---|---|---|
+| `bounded growing f` | always accepted | top of the lattice; nothing can exceed it |
+| `bounded linear f`, no accumulator copied | accepted | not inferred `growing` |
+| `bounded linear f`, `f` copies an accumulator | CDX6101 | inferred `growing` |
+| `bounded linear f`, a CALLEE copies one | CDX6101 | the refusal is transitive |
+| `bounded fixed f`, `bounded none f` | CDX6103 | rung not inferred yet; abstains toward refusal |
+| `bounded quick f` | CDX6102 | not a class |
+
+**What the inference is blind to, on purpose.** It is a worst case over the
+code's STRUCTURE and says nothing about data: a sort that is quadratic only on
+an adversarial input is still honestly `fixed` in heap, and its quadratic TIME
+is a WCET question that stays with `punctual`'s budget. What it currently
+recognises as `growing` is an accumulator parameter passed to a self call with
+`&` applied to it, which is the measured shape of the defects it was built
+from. Its score against `codex/test/cost/accumulator-corpus` is in
+`docs/Designs/Active/Features/CostModel.md` section 8, and the corpus carries
+linear entries written to look like the quadratic ones precisely so that score
+means something.
 
 ## Proofs and Dependent Types
 
@@ -1267,16 +1351,25 @@ caller that re-reads the old list -- must copy first (a
 `apps/games/classic/TicTacToe.codex` for the idiom and the aliasing
 bug it fixed).
 
-**`list-push` is NOT unconditionally destructive, and the exception is
-the empty list literal.** `__list_snoc`
+**`list-push` is NOT unconditionally destructive, and which path you get
+is POSITIONAL.** `__list_snoc`
 (`compiler/Emit/X86_64ListHelpers.codex`) has three paths: store in place
 and return the SAME pointer when the backing array has spare capacity;
 extend in place when the list is the topmost allocation; otherwise COPY
 to a fresh allocation and return a NEW pointer. `[]` has no spare
-capacity, so **`list-push [] x` returns a new list and leaves the
-original empty.** The compiler depends on exactly that: `tco-ensure-temps`
-(`X86_64.codex:359`) pushes onto `st.tco.temp-locals` and relies on the
-TcoState's list staying empty between tail calls.
+capacity, so the first path cannot fire for it, but the second still
+can: **a bare `[]` that is still the most recent allocation extends in
+place, and only a list with something allocated after it takes the copy
+path** (measured 2026-08-16). A record field, or any intervening
+allocation, is enough to move it. Do not rely on either outcome; the
+call site's allocation order decides it, and nothing enforces that order.
+
+`tco-ensure-temps` (`X86_64.codex`) is what taught us this, and it now
+shows the way to depend on nothing: it copies the caller's list with an
+identity comprehension (`for r in temps -> r`) and pushes onto the copy,
+whose accumulator `map-list` builds from an empty literal of its own. The
+freshness is structural rather than positional, and
+`codex/test/list-comprehension-copy` is the arm.
 
 The consequence is for anyone emitting Codex to another target. A plug
 that emits `list-push` as an in-place append is wrong, and the failure
@@ -1321,12 +1414,30 @@ producing function returns.
 | `text-concat-list xs` | one text | one allocation for the whole list |
 | `to-unicode cp` | **about a kilobyte** | **1,040 bytes per call** |
 
-**`&` copies both sides, so accumulating with it is quadratic.** Building
-a 2,000-character text by 200 appends of ten characters retained
-**203,200 bytes**; `text-concat-list` over the same 200 pieces retained
-**2,008 bytes** for the identical result. That is 101x, and the gap grows
-with the square of the number of appends, because each `&` allocates the
-whole accumulator again. Push the pieces onto a list and concatenate once.
+**`&` extends in place when the accumulator is linearly consumed, and
+copies both sides otherwise.** Since 2026-08-16 (COMPILER-8, root, main
+16039) the emitter selects `__str_concat_inplace` for a `&` whose left
+operand is a `Text` PARAMETER that the function only ever returns or
+appends into its own position of a self tail call (`acc & piece` as the
+accumulator argument, `acc` unchanged, or a literal to reset it, and no
+other mention of `acc` anywhere in the body). That helper extends the
+buffer while the accumulator is the most recent allocation and copies when
+it is not, and the function's entry pads a topmost incoming value off the
+frontier (`__str_own`), so a caller's alias is never extended under it; the
+guard is `codex/test/text-append-alias`, which the ablation that selects
+the helper for every `&` fails at `len=65`. Measured on
+`codex/test/cost/accumulator-corpus`: `p-append-text` retained 72 bytes at
+n = 64 and 264 at 4n, **x3.6, linear**, where the copying helper retained
+2,816 and 35,840, x12.7. **Everything else copies both sides and is
+quadratic**: a let-bound text appended in straight line, an accumulator
+that is also read, stored or passed elsewhere, a `&` whose left operand is
+`other & piece`, and any loop that allocates between the appends (`acc &
+show i` allocates the digits first, so the accumulator is no longer
+topmost and the append copies). Building a 2,000-character text by 200
+straight-line appends of ten characters retained **203,200 bytes** against
+**2,008 bytes** for `text-concat-list` over the same pieces (measured
+2026-08-15, unchanged by the in-place path). Where the shape is not the
+accumulator one, push the pieces onto a list and concatenate once.
 
 **`to-unicode` is the expensive character operation, and the accessors are
 not.** Reading characters costs nothing; converting each one back to
@@ -1393,7 +1504,7 @@ with CDX1060.
 
 ```
 let  in  if  then  else  when  is  otherwise  act  end
-record  mutable  punctual  unit  cites  quotes  trusting  above  grounds
+record  mutable  punctual  bounded  unit  cites  quotes  trusting  above  grounds
 claim  proof  qed  forall  exists  induction
 linear  effect  where  with  between  and  such  that
 class  instance  lazy
@@ -1648,7 +1759,15 @@ cell read back through `peek-32` can never answer negative, and code
 testing `< 0` on it is dead. Pick a sentinel above the field's real
 range instead. Note also that **`poke-qword` does not exist** although
 `peek-qword` does; use `poke-32` / `peek-32` for a heap pointer, which is
-safe because the arena is below 4 GB.
+safe because the arena is below 4 GB. **`peek-16` / `poke-16` are builtins
+since 2026-08-16 (root) and are real 16-bit accesses on every lane**
+(`movzx`/`mov word` on x86-64, `ldrh`/`strh` on ARM64, `lhu`/`sh` on
+RISC-V), at any offset, even or odd. Before that the only definitions were
+`VirtioPci.codex`'s Codex ones, a 32-bit read-modify-write of the
+4-aligned word, which reek caught on QEMU as 32-bit writes to 16-bit
+virtio registers and which put an odd-offset store two bytes early
+(`codex/test/poke16-width` is the arm; its `odd-bytes` line is what the
+old definition got wrong).
 
 **`show` vs `integer-to-text`.** Both convert Integer to Text. `show`
 is the standard builtin. Do not write `toString`, `str`, `to-string`.

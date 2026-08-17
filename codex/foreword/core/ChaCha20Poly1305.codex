@@ -25,8 +25,24 @@ Section: Types
 
   ChaChaPolyResult = record {
     cp-ciphertext : List Integer,
-    cp-tag : List Integer
+    cp-tag : List Integer,
+    cp-valid : Boolean
   }
+
+Section: Sizes
+
+ RFC 8439 fixes both at one size each, and ChaCha20 builds its state by
+ concatenation, so a key or nonce of any other length silently changes which
+ words of the state are which rather than being rejected anywhere below.
+
+  cp-key-bytes : Integer = 32
+
+  cp-nonce-bytes : Integer = 12
+
+  cp-params-ok : List Integer, List Integer -> Boolean
+  cp-params-ok (key) (nonce) =
+    if list-length key /= cp-key-bytes then False
+    else list-length nonce == cp-nonce-bytes
 
 Section: One-Time Key
 
@@ -58,8 +74,10 @@ Section: Encrypt
 
   chacha20poly1305-encrypt : List Integer, List Integer, List Integer, List Integer -> ChaChaPolyResult
   chacha20poly1305-encrypt (key) (nonce) (plaintext) (aad) =
-    let ct = chacha20-encrypt key nonce plaintext 1
-    in ChaChaPolyResult { cp-ciphertext = ct, cp-tag = chacha-poly-tag key nonce aad ct }
+    if cp-params-ok key nonce == False
+      then ChaChaPolyResult { cp-ciphertext = [], cp-tag = [], cp-valid = False }
+    else let ct = chacha20-encrypt key nonce plaintext 1
+    in ChaChaPolyResult { cp-ciphertext = ct, cp-tag = chacha-poly-tag key nonce aad ct, cp-valid = True }
 
 Section: Decrypt
 
@@ -70,7 +88,8 @@ Section: Decrypt
 
   chacha20poly1305-decrypt : List Integer, List Integer, List Integer, List Integer, List Integer -> Maybe (List Integer)
   chacha20poly1305-decrypt (key) (nonce) (ciphertext) (aad) (tag) =
-    let expected = chacha-poly-tag key nonce aad ciphertext
+    if cp-params-ok key nonce == False then None
+    else let expected = chacha-poly-tag key nonce aad ciphertext
     in if poly-tags-equal expected tag then Just (chacha20-encrypt key nonce ciphertext 1)
     else None
 

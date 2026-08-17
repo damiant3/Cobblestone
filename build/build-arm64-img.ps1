@@ -11,7 +11,8 @@ param(
     [Parameter(Mandatory=$true)]
     [string]$Out,
     [string]$Source = '',
-    [int]$TotalSectors = 65536
+    [int]$TotalSectors = 65536,
+    [switch]$Qcow2
 )
 
 # Wraps build-img.ps1 with ARM64-specific boot filename (BOOTAA64.EFI).
@@ -207,3 +208,16 @@ Add-DirEntry $rootOff ($(if ($srcBytes.Length -gt 0) { 4 } else { 3 })) 'CODEX  
 
 [System.IO.File]::WriteAllBytes($Out, $img)
 Write-Host "[build-arm64-img] OK: $Out ($($img.Length / 1MB) MB, PE=$($pe.Length) src=$($srcBytes.Length))"
+if ($Qcow2) {
+    # OCI takes a QCOW2, not a raw image (Phase 5a)
+    $QemuImg = 'D:\Program Files\qemu\qemu-img.exe'
+    $Qcow2Out = [System.IO.Path]::ChangeExtension($Out, '.qcow2')
+    & $QemuImg convert -f raw -O qcow2 $Out $Qcow2Out
+    if ((-not ($LASTEXITCODE -eq 0))) {
+        throw "qemu-img convert failed (exit $LASTEXITCODE)"
+    }
+    Write-Host "[build-arm64-img] QCOW2: $Qcow2Out ($([Math]::Round((Get-Item $Qcow2Out).Length / 1KB)) KB on disk)"
+}
+
+
+

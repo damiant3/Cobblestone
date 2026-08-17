@@ -1,0 +1,283 @@
+Chapter: AccumulatorCorpus
+  cites Foreword chapter Console
+
+ THE KILL-RATE CORPUS for Cost Model 3.3, section 5 question 2. It exists
+ before the check, and the reason it has to is that a check's kill rate is only
+ a number if the corpus already knows the answers.
+
+ EVERY LABEL HERE IS MEASURED, NOT DECLARED. Each entry runs at n, 2n and 4n
+ and reports bytes retained, taken from `__heap-save` either side of the call.
+ Quadratic allocation scales as n squared, so quadrupling n multiplies bytes by
+ about sixteen; linear multiplies by about four. `verdict` divides and thresholds
+ at eight, which is a wide gap because the two populations are 4 and 16 rather
+ than anything adjacent. A hand-labelled corpus would be an assertion with no
+ runner, and it would be graded by the same judgement that wrote it.
+
+ THE NEGATIVES ARE THE HALF THAT MATTERS. A corpus of quadratic cases alone
+ cannot tell a good check from one that refuses every append, and that check
+ scores a perfect kill rate. Entries 6 to 10 are linear and MUST NOT be flagged.
+ Three of them are written to look exactly like the positives to any test that
+ reads for `acc &`: `n-fixed-appends` appends to a growing accumulator but a
+ constant number of times, `n-fresh-not-acc` appends to something that is not
+ the accumulator, and `n-append-empty` appends to the accumulator with a list
+ that is always empty. A static filter over the append operator flags all three.
+
+ The numbers are bytes RETAINED, not bytes touched. Bare metal has no collector,
+ so what a loop allocates and abandons is exactly what is retained until the
+ producing function returns, which is what makes `__heap-save` an honest
+ instrument here rather than an approximation.
+
+Section: The Instrument
+
+  bytes-of : Integer -> Integer
+  bytes-of (marker) = marker
+
+  verdict : Integer, Integer -> Text
+  verdict (at-n) (at-4n) =
+    if at-n <= 0 then "degenerate"
+    else if at-4n / at-n >= 8 then "quadratic"
+    else "linear"
+
+ `keep` is what stops the measurement being optimised into nothing. Each entry
+ folds its result into an integer the caller prints, so the allocation cannot be
+ dead code. It is summed rather than discarded for the same reason.
+
+  keep : List Integer -> Integer
+  keep (xs) = list-length xs
+
+  keep-text : Text -> Integer
+  keep-text (t) = text-length t
+
+Section: Positives -- the check MUST catch these
+
+ 1. The canonical shape: a self-tail-call whose accumulator is appended to.
+    This is the form all three of the 2026-08-14 defects took.
+
+  p-append-one : Integer, Integer, List Integer -> List Integer
+  p-append-one (n) (i) (acc) =
+    if i >= n then acc
+    else p-append-one n (i + 1) (acc & [i])
+
+ 2. The same shape over Text rather than List, because the cost model's 3.1
+    table is about Text and the append operator is the same one.
+
+  p-append-text : Integer, Integer, Text -> Text
+  p-append-text (n) (i) (acc) =
+    if i >= n then acc
+    else p-append-text n (i + 1) (acc & "x")
+
+ 2b. The pair for entry 2, and the one that makes the Text half mean
+    something. Same accumulator, same operator, same self tail call; the only
+    difference is that the right operand ALLOCATES. Since COMPILER-8 (main
+    16039) a Text accumulator extends in place while it stays topmost, so
+    entry 2 is linear and this one is not: `show` allocates between the
+    appends and pushes the accumulator off the frontier, and the copy comes
+    back. This is the shape `unpack-text` had, which is the defect the whole
+    cost model was opened for.
+
+  p-append-show : Integer, Integer, Text -> Text
+  p-append-show (n) (i) (acc) =
+    if i >= n then acc
+    else p-append-show n (i + 1) (acc & show i)
+
+ 3. Appending a constant-size LIST rather than a single element. Same class,
+    and it is the form that reads most like ordinary concatenation.
+
+  p-append-chunk : Integer, Integer, List Integer -> List Integer
+  p-append-chunk (n) (i) (acc) =
+    if i >= n then acc
+    else p-append-chunk n (i + 1) (acc & [i, i, i, i])
+
+ 4. `pb-expand-blocks` as it was written before it was fixed. This is the one
+    REAL measured instance in the corpus with a published before and after:
+    the chapter's own prose records that at the default 4096 blocks this form
+    needed between two and three gigabytes and died silently below that, with
+    exit zero and truncated output, and that `list-push` fixed it. Entry 7 is
+    the fixed form, so the pair is a control on the corpus itself.
+
+  p-expand-blocks-old : Integer, Integer, List Integer -> List Integer
+  p-expand-blocks-old (n) (i) (acc) =
+    if i >= n then acc
+    else p-expand-blocks-old n (i + 1) (acc & [i, 0, 0, 0, 0, 0, 0, 0])
+
+ 5. The shape of `syslog-decode-bytes`, which the format census records as a
+    latent instance: a body accumulated with `acc &` under a wire-supplied
+    length. Latent because `syslog-parse` has no production caller.
+
+  p-syslog-body : Integer, Integer, List Integer -> List Integer
+  p-syslog-body (n) (i) (acc) =
+    if i >= n then acc
+    else p-syslog-body n (i + 1) (acc & [i - (i / 256) * 256])
+
+Section: Negatives -- the check MUST NOT flag these
+
+ 6. The fix for entry 1. `list-push` writes in place while the list is under
+    capacity and doubles when it is not, so the array costs its own size.
+
+  n-push-one : Integer, Integer, List Integer -> List Integer
+  n-push-one (n) (i) (acc) =
+    if i >= n then acc
+    else n-push-one n (i + 1) (list-push acc i)
+
+ 7. The fix for entry 4, which is what `pb-push-block` actually does today.
+
+  n-push-block : Integer, Integer, List Integer -> List Integer
+  n-push-block (n) (i) (acc) =
+    if i >= n then acc
+    else n-push-block n (i + 1) (n-push-eight acc i 0)
+
+  n-push-eight : List Integer, Integer, Integer -> List Integer
+  n-push-eight (acc) (v) (k) =
+    if k >= 8 then acc
+    else n-push-eight (list-push acc v) v (k + 1)
+
+ 8. HARD NEGATIVE. The accumulator is appended to, in a self-tail-call, with
+    the append operator, and the cost is linear in n because the append runs a
+    fixed FOUR times however large n gets. Any test that reads for the operator
+    flags this.
+
+  n-fixed-appends : Integer, Integer, List Integer -> List Integer
+  n-fixed-appends (n) (i) (acc) =
+    if i >= n then acc
+    else if i >= 4 then n-fixed-appends n (i + 1) acc
+    else n-fixed-appends n (i + 1) (acc & [i])
+
+ 9. HARD NEGATIVE. An append per iteration, to something that is NOT the
+    accumulator: the appended-to value is rebuilt small every time, so nothing
+    grows across iterations.
+
+  n-fresh-not-acc : Integer, Integer, List Integer -> List Integer
+  n-fresh-not-acc (n) (i) (acc) =
+    if i >= n then acc
+    else let fresh = [i] & [i + 1]
+    in n-fresh-not-acc n (i + 1) (list-push acc (list-at fresh 0))
+
+ 10. HARD NEGATIVE, and the narrowest of the three. The accumulator IS the
+     appended-to value and the append IS per-iteration, but the right operand
+     is always empty, so the result aliases and nothing is copied. It is a
+     silly function; it is here because it is the case a syntactic rule gets
+     wrong while an allocation-aware one does not.
+
+  n-append-empty : Integer, Integer, List Integer -> List Integer
+  n-append-empty (n) (i) (acc) =
+    if i >= n then acc
+    else n-append-empty n (i + 1) (acc & [])
+
+Section: Measurement
+
+  m-p-append-one : Integer -> Integer
+  m-p-append-one (n) =
+    let b = __heap-save
+    in let r = keep (p-append-one n 0 [])
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-p-append-text : Integer -> Integer
+  m-p-append-text (n) =
+    let b = __heap-save
+    in let r = keep-text (p-append-text n 0 "")
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-p-append-show : Integer -> Integer
+  m-p-append-show (n) =
+    let b = __heap-save
+    in let r = keep-text (p-append-show n 0 "")
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-p-append-chunk : Integer -> Integer
+  m-p-append-chunk (n) =
+    let b = __heap-save
+    in let r = keep (p-append-chunk n 0 [])
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-p-expand-blocks-old : Integer -> Integer
+  m-p-expand-blocks-old (n) =
+    let b = __heap-save
+    in let r = keep (p-expand-blocks-old n 0 [])
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-p-syslog-body : Integer -> Integer
+  m-p-syslog-body (n) =
+    let b = __heap-save
+    in let r = keep (p-syslog-body n 0 [])
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-n-push-one : Integer -> Integer
+  m-n-push-one (n) =
+    let b = __heap-save
+    in let r = keep (n-push-one n 0 [])
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-n-push-block : Integer -> Integer
+  m-n-push-block (n) =
+    let b = __heap-save
+    in let r = keep (n-push-block n 0 [])
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-n-fixed-appends : Integer -> Integer
+  m-n-fixed-appends (n) =
+    let b = __heap-save
+    in let r = keep (n-fixed-appends n 0 [])
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-n-fresh-not-acc : Integer -> Integer
+  m-n-fresh-not-acc (n) =
+    let b = __heap-save
+    in let r = keep (n-fresh-not-acc n 0 [])
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-n-append-empty : Integer -> Integer
+  m-n-append-empty (n) =
+    let b = __heap-save
+    in let r = keep (n-append-empty n 0 [])
+    in let a = __heap-save
+    in (a - b) + r - r
+
+Section: Entry
+
+ The base n is 64. Small on purpose: the positives are quadratic, so the point
+ separates long before the numbers get large, and a corpus that takes minutes
+ to run is one nobody runs.
+
+  base : Integer = 64
+
+ The ratio is printed and not only the verdict. A row that says "quadratic" and
+ nothing else hides how close it came to the threshold, and the margin is the
+ number that tells a later reader whether 8 is still the right cut. Reported in
+ tenths, integer arithmetic throughout.
+
+  ratio-tenths : Integer, Integer -> Integer
+  ratio-tenths (at-n) (at-4n) =
+    if at-n <= 0 then 0
+    else (at-4n * 10) / at-n
+
+  show-tenths : Integer -> Text
+  show-tenths (t) = show (t / 10) & "." & show (t - (t / 10) * 10)
+
+  row : Text, Integer, Integer, Integer -> Text
+  row (name) (at-n) (at-2n) (at-4n) =
+    name & " n=" & show at-n & " 2n=" & show at-2n & " 4n=" & show at-4n
+      & " x" & show-tenths (ratio-tenths at-n at-4n) & " " & verdict at-n at-4n
+
+  opening : [Console] Nothing = act
+    print-line-uni (row "p-append-one       " (m-p-append-one base) (m-p-append-one (base * 2)) (m-p-append-one (base * 4)))
+    print-line-uni (row "p-append-text      " (m-p-append-text base) (m-p-append-text (base * 2)) (m-p-append-text (base * 4)))
+    print-line-uni (row "p-append-show      " (m-p-append-show base) (m-p-append-show (base * 2)) (m-p-append-show (base * 4)))
+    print-line-uni (row "p-append-chunk     " (m-p-append-chunk base) (m-p-append-chunk (base * 2)) (m-p-append-chunk (base * 4)))
+    print-line-uni (row "p-expand-blocks-old" (m-p-expand-blocks-old base) (m-p-expand-blocks-old (base * 2)) (m-p-expand-blocks-old (base * 4)))
+    print-line-uni (row "p-syslog-body      " (m-p-syslog-body base) (m-p-syslog-body (base * 2)) (m-p-syslog-body (base * 4)))
+    print-line-uni (row "n-push-one         " (m-n-push-one base) (m-n-push-one (base * 2)) (m-n-push-one (base * 4)))
+    print-line-uni (row "n-push-block       " (m-n-push-block base) (m-n-push-block (base * 2)) (m-n-push-block (base * 4)))
+    print-line-uni (row "n-fixed-appends    " (m-n-fixed-appends base) (m-n-fixed-appends (base * 2)) (m-n-fixed-appends (base * 4)))
+    print-line-uni (row "n-fresh-not-acc    " (m-n-fresh-not-acc base) (m-n-fresh-not-acc (base * 2)) (m-n-fresh-not-acc (base * 4)))
+    print-line-uni (row "n-append-empty     " (m-n-append-empty base) (m-n-append-empty (base * 2)) (m-n-append-empty (base * 4)))
+  end

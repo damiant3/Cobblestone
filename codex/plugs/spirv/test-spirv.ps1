@@ -6,13 +6,14 @@
 # float ops carry the float result type, constants stay at module scope, and
 # no id is used without being defined.
 [CmdletBinding()]
-param()
+param([string]$Kernel = '')
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $Probe = Join-Path $PSScriptRoot 'test\spirv-probe.codex'
 $Out   = Join-Path $PSScriptRoot 'build-output\spirv-probe.spvasm'
-& pwsh -NoProfile -File (Join-Path $PSScriptRoot 'run.ps1') -Src $Probe -Out $Out
+$kernelArgs = if ($Kernel) { @('-Kernel', $Kernel) } else { @() }
+& pwsh -NoProfile -File (Join-Path $PSScriptRoot 'run.ps1') -Src $Probe -Out $Out @kernelArgs
 if ($LASTEXITCODE -ne 0) { Write-Host "FAIL: plug run failed"; exit 1 }
 
 $spv   = Get-Content $Out -Raw

@@ -49,7 +49,10 @@ if ($Ir) {
     $IrFile = (Resolve-Path $Ir).Path
 } elseif ($Src) {
     $compileScript = Join-Path $Repo 'build\compile.ps1'
-    & pwsh -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce -MemMB $MemMB
+    # text-plug: this plug resolves a Codex call by its NAME, so the inline
+    # passes must not substitute a body and delete the call. See
+    # text-plug-ir-pipeline in codex/compiler/IR/Passes.codex.
+    & pwsh -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce -Passes 'text-plug' -MemMB $MemMB
     if ($LASTEXITCODE -ne 0) {
         [Console]::Error.WriteLine("FAIL: IR emit step exited $LASTEXITCODE; see $LogFile")
         exit 3

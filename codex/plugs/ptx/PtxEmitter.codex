@@ -10,6 +10,23 @@ Section: Name Sanitization
   ptx-sanitize (name) =
    text-replace name "-" "_"
 
+ The IR spells a record field as `name/slot`. In this plug the field name
+ reaches only a trailing `//` comment, never emitted code, so the slot is a
+ blemish rather than a wrong program -- but it reads as a leak to any grep
+ looking for the real defect, which is reason enough to strip it.
+
+  ptx-slash-pos : Text, Integer, Integer -> Integer
+  ptx-slash-pos (f) (i) (len) =
+   if i >= len then (-1)
+   else if char-to-text (char-at f i) == "/" then i
+   else ptx-slash-pos f (i + 1) len
+
+  ptx-field : Text -> Text
+  ptx-field (f) =
+   let slash = ptx-slash-pos f 0 (text-length f)
+   in if slash >= 0 then substring f 0 slash
+      else f
+
 Section: Hex Formatting
 
   ptx-hex16 : Integer -> Text
@@ -326,11 +343,11 @@ Section: Expression Emission
      let sub = ptx-emit-expr-at ctx rec (depth + 1)
      in let r = ptx-fresh-reg (sub.ctx)
      in let c = ptx-bump-reg (sub.ctx)
-     in PtxResult { code = sub.code & c.indent & "ld.global.u64 " & r & ", [" & sub.result-reg & "]; // ." & field & "\n", result-reg = r, ctx = c }
+     in PtxResult { code = sub.code & c.indent & "ld.global.u64 " & r & ", [" & sub.result-reg & "]; // ." & ptx-field field & "\n", result-reg = r, ctx = c }
     is IrFieldStore (rec) (field) (val) (ty) (sp) ->
      let sr = ptx-emit-expr-at ctx rec (depth + 1)
      in let sv = ptx-emit-expr-at (sr.ctx) val (depth + 1)
-     in PtxResult { code = sr.code & sv.code & (sv.ctx).indent & "st.global.u64 [" & sr.result-reg & "], " & sv.result-reg & "; // ." & field & "\n", result-reg = sr.result-reg, ctx = sv.ctx }
+     in PtxResult { code = sr.code & sv.code & (sv.ctx).indent & "st.global.u64 [" & sr.result-reg & "], " & sv.result-reg & "; // ." & ptx-field field & "\n", result-reg = sr.result-reg, ctx = sv.ctx }
     is IrFork (body) (ty) (sp) ->
      ptx-emit-expr-at ctx body (depth + 1)
     is IrAwait (task) (ty) (sp) ->

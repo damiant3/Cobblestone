@@ -193,24 +193,60 @@ Section: Raster Output
     rg-pixels : List Integer
   }
 
+Section: Glyph Size Limits
+
+ unitsPerEm is a raw 16-bit field of the font file's head table (TrueType.codex
+ ttf-read-head), so a file may declare it 0, which every scale below divides by,
+ or 1, which multiplies every outline coordinate by ppem and sizes the pixel
+ buffer from the result.
+
+ The ceiling is four times the requested ppem, floored at 16 and capped at 1024.
+ A glyph is at most about twice its em box in practice, so four times ppem
+ cannot clip real type; the absolute cap bounds the buffer when a caller asks
+ for a very large ppem, and it is the anti-aliased path that sets it, since that
+ one supersamples 4x4 and allocates sixteen times this many pixels.
+
+  gr-dim-ceiling : Integer -> Integer
+  gr-dim-ceiling (ppem) =
+    let scaled = ppem * 4
+    in if scaled < 16 then 16
+    else if scaled > 1024 then 1024
+    else scaled
+
+  gr-clamp-dim : Integer, Integer -> Integer
+  gr-clamp-dim (v) (ppem) =
+    let ceiling = gr-dim-ceiling ppem
+    in if v < 1 then 1
+    else if v > ceiling then ceiling
+    else v
+
+  gr-upem-ok : TtfFont -> Boolean
+  gr-upem-ok (font) = font.tf-head.th-units-per-em > 0
+
+  gr-blank-glyph : Integer -> RasterGlyph
+  gr-blank-glyph (codepoint) =
+    RasterGlyph { rg-code = codepoint, rg-width = 1, rg-height = 1, rg-advance = 0, rg-pixels = gr-make-row 1 0 }
+
 Section: Glyph Rendering
   gr-render-glyph : TtfFont, Integer, Integer -> RasterGlyph
   gr-render-glyph (font) (codepoint) (ppem) =
-    let g = ttf-glyph-for-char font codepoint
+    if gr-upem-ok font == False then gr-blank-glyph codepoint
+    else let g = ttf-glyph-for-char font codepoint
     in let upem = font.tf-head.th-units-per-em
     in let x-off = -g.tg-x-min
     in let y-off = -g.tg-y-min
     in let w = (g.tg-x-max - g.tg-x-min) * ppem / upem + 1
     in let h = (g.tg-y-max - g.tg-y-min) * ppem / upem + 1
     in let adv = g.tg-advance * ppem / upem
+    in let gw = gr-clamp-dim w ppem
+    in let gh = gr-clamp-dim h ppem
     in if list-length (g.tg-contours) == 0 then
-      RasterGlyph { rg-code = codepoint, rg-width = gr-glyph-max w 1, rg-height = gr-glyph-max h 1, rg-advance = adv, rg-pixels = gr-make-row (gr-glyph-max w 1 * gr-glyph-max h 1) 0 }
+      RasterGlyph { rg-code = codepoint, rg-width = gw, rg-height = gh, rg-advance = adv, rg-pixels = gr-make-row (gw * gh) 0 }
     else let edges = gr-all-contour-edges (g.tg-contours) ppem upem x-off y-off 0 []
     in let y-min-px = 0
-    in let y-max-px = gr-glyph-max h 1
-    in let pixels = gr-render-edges edges (gr-glyph-max w 1) y-max-px y-min-px y-max-px
-    in let flipped = gr-flip-y pixels (gr-glyph-max w 1) y-max-px
-    in RasterGlyph { rg-code = codepoint, rg-width = gr-glyph-max w 1, rg-height = gr-glyph-max h 1, rg-advance = adv, rg-pixels = flipped }
+    in let pixels = gr-render-edges edges gw gh y-min-px gh
+    in let flipped = gr-flip-y pixels gw gh
+    in RasterGlyph { rg-code = codepoint, rg-width = gw, rg-height = gh, rg-advance = adv, rg-pixels = flipped }
 
   gr-glyph-max : Integer, Integer -> Integer
   gr-glyph-max (a) (b) = if a > b then a else b
@@ -253,15 +289,16 @@ Section: Batch Rendering
 Section: Anti-Aliased Rendering (4x4 Sub-Pixel)
   gr-render-glyph-aa : TtfFont, Integer, Integer -> RasterGlyph
   gr-render-glyph-aa (font) (codepoint) (ppem) =
-    let g = ttf-glyph-for-char font codepoint
+    if gr-upem-ok font == False then gr-blank-glyph codepoint
+    else let g = ttf-glyph-for-char font codepoint
     in let upem = font.tf-head.th-units-per-em
     in let x-off = -g.tg-x-min
     in let y-off = -g.tg-y-min
     in let w = (g.tg-x-max - g.tg-x-min) * ppem / upem + 1
     in let h = (g.tg-y-max - g.tg-y-min) * ppem / upem + 1
     in let adv = g.tg-advance * ppem / upem
-    in let gw = gr-glyph-max w 1
-    in let gh = gr-glyph-max h 1
+    in let gw = gr-clamp-dim w ppem
+    in let gh = gr-clamp-dim h ppem
     in if list-length (g.tg-contours) == 0 then
       RasterGlyph { rg-code = codepoint, rg-width = gw, rg-height = gh, rg-advance = adv, rg-pixels = gr-make-row (gw * gh) 0 }
     else let edges = gr-all-contour-edges (g.tg-contours) (ppem * 4) upem x-off y-off 0 []

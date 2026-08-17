@@ -43,6 +43,22 @@ Section: Types
     stm-offset-end : Integer
   }
 
+Section: Read Bounds
+
+ The offset is st-data-offset plus stm-offset-start and the count is the product
+ of the declared shape, all three taken from the file's own JSON header. The
+ test is written subtractively, count <= (length - off) / width, so a shape
+ whose product overflows a 64-bit integer cannot pass it by wrapping to a small
+ number.
+
+  st-can-read : List Integer, Integer, Integer, Integer -> Boolean
+  st-can-read (data) (off) (count) (width) =
+    if off < 0 then False
+    else if count < 0 then False
+    else if width <= 0 then False
+    else if off > list-length data then False
+    else count <= (list-length data - off) / width
+
 Section: Byte Reading
   st-read-u32 : List Integer, Integer -> Integer
   st-read-u32 (data) (off) =
@@ -173,7 +189,8 @@ Section: Tensor Loading (F32)
   st-load-f32 (data) (file) (meta) =
     let abs-start = file.st-data-offset + meta.stm-offset-start
     in let elements = st-element-count meta
-    in let values = st-read-f32-loop data abs-start elements 0 []
+    in if st-can-read data abs-start elements 4 == False then tensor-new 0 0
+    else let values = st-read-f32-loop data abs-start elements 0 []
     in tensor-from (st-rows meta) (st-cols meta) values
 
   st-read-f32-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
@@ -200,7 +217,8 @@ Section: Tensor Loading (F16)
   st-load-f16 (data) (file) (meta) =
     let abs-start = file.st-data-offset + meta.stm-offset-start
     in let elements = st-element-count meta
-    in let values = st-read-f16-loop data abs-start elements 0 []
+    in if st-can-read data abs-start elements 2 == False then tensor-new 0 0
+    else let values = st-read-f16-loop data abs-start elements 0 []
     in tensor-from (st-rows meta) (st-cols meta) values
 
   st-read-f16-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
@@ -230,7 +248,8 @@ Section: Tensor Loading (BF16)
   st-load-bf16 (data) (file) (meta) =
     let abs-start = file.st-data-offset + meta.stm-offset-start
     in let elements = st-element-count meta
-    in let values = st-read-bf16-loop data abs-start elements 0 []
+    in if st-can-read data abs-start elements 2 == False then tensor-new 0 0
+    else let values = st-read-bf16-loop data abs-start elements 0 []
     in tensor-from (st-rows meta) (st-cols meta) values
 
   st-read-bf16-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer

@@ -13,7 +13,10 @@ $OutDir  = Join-Path $PSScriptRoot 'build-output'
 $IrFile  = Join-Path $OutDir 'last-run.ir'
 $LogFile = Join-Path $OutDir 'run.log'
 
-& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $Src -Out $IrFile -Log $LogFile -IrCce 2>&1 | Out-Null
+# text-plug: this plug resolves a Codex call by its NAME, so the inline passes
+# must not substitute a body and delete the call. See text-plug-ir-pipeline
+# in codex/compiler/IR/Passes.codex.
+& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $Src -Out $IrFile -Log $LogFile -IrCce -Passes 'text-plug' 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $IrFile)) {
     [Console]::Error.WriteLine("FAIL: IR compile failed; see $LogFile")
     exit 4

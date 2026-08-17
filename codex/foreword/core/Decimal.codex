@@ -9,6 +9,23 @@ Section: Types
     dec-scale : Integer
   }
 
+Section: Scale Limit
+
+ 10^18 is the largest power of ten that fits a signed 64-bit integer: 10^19
+ wraps negative and 10^64 is exactly zero, because 10^n is 2^n times 5^n and
+ every factor of 2 is gone from the low 64 bits once n reaches 64. A scale of
+ 64 or more therefore makes dec-pow10 a zero divisor, and dec-to-text,
+ dec-whole-part, dec-frac-part, dec-div, dec-round and dec-truncate all divide
+ by it.
+
+  dec-max-scale-digits : Integer = 18
+
+  dec-clamp-scale : Integer -> Integer
+  dec-clamp-scale (n) =
+    if n < 0 then 0
+    else if n > dec-max-scale-digits then dec-max-scale-digits
+    else n
+
 Section: Construction
 
   dec-new : Integer, Integer -> Decimal
@@ -46,7 +63,12 @@ Section: Arithmetic
   dec-mul (a) (b) =
     let raw = a.dec-mantissa * b.dec-mantissa
     in let combined-scale = a.dec-scale + b.dec-scale
-    in Decimal { dec-mantissa = raw, dec-scale = combined-scale }
+    in let kept = dec-clamp-scale combined-scale
+    in let excess = combined-scale - kept
+    in Decimal {
+      dec-mantissa = if excess > dec-max-scale-digits then 0 else raw / dec-pow10 excess,
+      dec-scale = kept
+    }
 
   dec-div : Decimal, Decimal -> Decimal
   dec-div (a) (b) =
@@ -143,8 +165,9 @@ Section: Parsing
     let dot = dec-find-dot s 0 (text-length s)
     in if dot < 0 then Decimal { dec-mantissa = text-to-integer s * dec-pow10 default-scale, dec-scale = default-scale }
     else let whole-str = substring s 0 dot
-    in let frac-str = substring s (dot + 1) (text-length s - dot - 1)
-    in let scale = text-length frac-str
+    in let raw-frac = substring s (dot + 1) (text-length s - dot - 1)
+    in let scale = dec-clamp-scale (text-length raw-frac)
+    in let frac-str = substring raw-frac 0 scale
     in let whole = text-to-integer whole-str
     in let frac = text-to-integer frac-str
     in let sign = if whole < 0 then 0 - 1 else 1
@@ -175,7 +198,7 @@ Section: Queries
 Section: Helpers
 
   dec-pow10 : Integer -> Integer
-  dec-pow10 (n) = dec-pow10-loop n 1
+  dec-pow10 (n) = dec-pow10-loop (dec-clamp-scale n) 1
 
   dec-pow10-loop : Integer, Integer -> Integer
   dec-pow10-loop (n) (acc) =

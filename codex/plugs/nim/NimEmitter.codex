@@ -32,6 +32,22 @@ Section: Keywords and Sanitization
    in if is-nim-keyword s then s & "Val"
       else s
 
+ The IR spells a record field as `name/slot`, so a field name reaches the
+ emitter as `a/0` and reads as a division in every target that has one.
+ riscv resolves the slot and needs it; every source plug wants the name.
+
+  nim-slash-pos : Text, Integer, Integer -> Integer
+  nim-slash-pos (f) (i) (len) =
+   if i >= len then (-1)
+   else if char-to-text (char-at f i) == "/" then i
+   else nim-slash-pos f (i + 1) len
+
+  nim-field : Text -> Text
+  nim-field (f) =
+   let slash = nim-slash-pos f 0 (text-length f)
+   in if slash >= 0 then nim-sanitize (substring f 0 slash)
+      else nim-sanitize f
+
   nim-escape-text : Text -> Text
   nim-escape-text (s) =
    let s1 = text-replace s "\\" "\\\\"
@@ -157,8 +173,8 @@ Section: Expression Emission
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-nim-expr-at body arities (depth + 1)
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-nim-expr-at body arities (depth + 1)
     is IrRecord (name) (fields) (ty) (sp) -> emit-nim-record name fields arities
-    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-nim-expr-at rec arities (depth + 1) & "." & nim-sanitize field
-    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(block: (var _r = " & emit-nim-expr-at rec arities (depth + 1) & "; _r." & nim-sanitize field & " = " & emit-nim-expr-at val arities (depth + 1) & "; _r))"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-nim-expr-at rec arities (depth + 1) & "." & nim-field field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(block: (var _r = " & emit-nim-expr-at rec arities (depth + 1) & "; _r." & nim-field field & " = " & emit-nim-expr-at val arities (depth + 1) & "; _r))"
     is IrFork (body) (ty) (sp) -> emit-nim-expr-at body arities (depth + 1)
     is IrAwait (task) (ty) (sp) -> emit-nim-expr-at task arities (depth + 1)
     is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> "(try: " & emit-nim-act body arities & " except: " & emit-nim-act fb arities & ")"
@@ -266,7 +282,7 @@ Section: Builtin Table
    "max", "min", "negate", "print-error-uni", "print-line-uni",
    "read-text", "read-line", "show", "substring", "text-compare",
    "text-contains", "text-length", "text-replace", "text-split",
-   "text-starts-with", "text-to-integer", "write-file"]
+   "text-starts-with", "text-to-integer", "write-file", "list-push"]
 
   nim-find-builtin : List Text, Text, Integer -> Integer
   nim-find-builtin (names) (target) (i) =
@@ -301,7 +317,7 @@ Section: Builtin Table
    else if idx == 22 then "split(" & emit-nim-expr (list-at args 0) arities & ", " & emit-nim-expr (list-at args 1) arities & ")"
    else if idx == 23 then "startsWith(" & emit-nim-expr (list-at args 0) arities & ", " & emit-nim-expr (list-at args 1) arities & ")"
    else if idx == 24 then "parseInt(" & emit-nim-expr (list-at args 0) arities & ")"
-   else "writeFile(" & emit-nim-expr (list-at args 0) arities & ", " & emit-nim-expr (list-at args 1) arities & ")"
+   else if idx == 25 then "writeFile(" & emit-nim-expr (list-at args 0) arities & ", " & emit-nim-expr (list-at args 1) arities & ")"    else emit-nim-expr (list-at args 0) arities & " & @[" & emit-nim-expr (list-at args 1) arities & "]"
 
 Section: Apply Emission
 

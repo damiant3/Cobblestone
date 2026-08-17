@@ -20,6 +20,22 @@ Section: Keywords and Sanitization
    in if clj-is-keyword s 0 then s & "-v"
       else s
 
+ The IR spells a record field as `name/slot`. In a map-keyed target the
+ slot lands INSIDE the key string, so the lookup misses silently rather
+ than dividing; the key has to be the bare name.
+
+  clj-slash-pos : Text, Integer, Integer -> Integer
+  clj-slash-pos (f) (i) (len) =
+   if i >= len then (-1)
+   else if char-to-text (char-at f i) == "/" then i
+   else clj-slash-pos f (i + 1) len
+
+  clj-field : Text -> Text
+  clj-field (f) =
+   let slash = clj-slash-pos f 0 (text-length f)
+   in if slash >= 0 then clj-sanitize (substring f 0 slash)
+      else clj-sanitize f
+
   clj-escape : Text -> Text
   clj-escape (s) =
    let s1 = text-replace s "\\" "\\\\"
@@ -129,8 +145,8 @@ Section: Expression Emission
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-clj-expr-at body arities (depth + 1)
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-clj-expr-at body arities (depth + 1)
     is IrRecord (name) (fields) (ty) (sp) -> "(make-" & clj-sanitize name & " " & emit-clj-field-vals fields 0 arities & ")"
-    is IrFieldAccess (rec) (field) (ty) (sp) -> "(:" & clj-sanitize field & " " & emit-clj-expr-at rec arities (depth + 1) & ")"
-    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(assoc " & emit-clj-expr-at rec arities (depth + 1) & " :" & clj-sanitize field & " " & emit-clj-expr-at val arities (depth + 1) & ")"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> "(:" & clj-field field & " " & emit-clj-expr-at rec arities (depth + 1) & ")"
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(assoc " & emit-clj-expr-at rec arities (depth + 1) & " :" & clj-field field & " " & emit-clj-expr-at val arities (depth + 1) & ")"
     is IrFork (body) (ty) (sp) -> "(future " & emit-clj-expr-at body arities (depth + 1) & ")"
     is IrAwait (task) (ty) (sp) -> "(deref " & emit-clj-expr-at task arities (depth + 1) & ")"
     is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> "(try " & emit-clj-act body arities & " (catch Exception e " & emit-clj-act fb arities & "))"

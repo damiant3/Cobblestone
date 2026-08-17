@@ -13,118 +13,301 @@ The target's own toolchain or runtime is the first thing to notice, and
 for most of these plugs nothing downstream ever runs. Assume silence is
 silence, not agreement (L-GAP).
 
-## 1.2 -- THIRTY-SIX plugs emit a DIVISION where a record field access belongs
+**`codex/plugs/zig/` is Steve Howell's and is not this lane's to change**
+(Damian, 2026-08-16). Where zig appears below it is because a sweep
+measured it, and for no other reason.
 
-The IR spells a field as `name/slot` (`ir-field-with-index`,
-`compiler/Emit/IRTextEmitter.codex`), and a plug that does not strip the
-slot emits the whole thing as an expression.
+## 1.16 -- three plugs left, and they are the three that are not the shape
 
-**This entry said "fourteen" and named them. Measured 2026-08-11 by
-running every plug and grepping its output, it is thirty-six** (L-COUNT).
-The fourteen were the ones anyone had read; the rest were never checked.
+**THE SWEEP IS DONE (val, 2026-08-16): 36 chapters converted, all 36
+build.** What is left is `csharp`, `recheck` and `rust`, and they are left
+because the converter REFUSED them rather than because they were skipped:
+`csharp` and `rust` do not have the canonical send line, `recheck` and
+`rust` emit no `OK` line at all, and `rust` has two send sites. Each needs
+reading rather than a pattern.
 
-| | plugs |
-|---|---|
-| **leak the slot (36)** | ada, angular, clojure, cobol, compose, d, electron, elixir, flutter, fortran, go, groovy, gtk, haskell, java, julia, kotlin, lua, nim, objc, ocaml, pascal, perl, php, qt, react, ruby, rust, scala, scheme, svelte, swift, swiftui, typescript, vue, zig |
-| **clean (6)** | python, html, csharp, javascript, wasm, recheck |
-| **emits no field reference at all (1)** | babbage -- a different gap, not this one |
+The conversion was scripted and every file was checked before and after.
+The guards, because a scripted multi-file edit that does not assert the
+patch applied scores the previous build: exactly one send line, exactly
+one `OK` line, the send variable used exactly twice (its bind and its
+close), the close on the very next line, no existing use of the name
+`sent`, and after the write, exactly one checked send, one rethreaded
+close and one `TRUNCATED` branch. Three files failed a guard and were
+left alone; the 36 that passed all built, and `javascript`, the only
+converted plug with a wired oracle arm, still passes 33 of 33.
 
-Slot 0 divides by zero and crashes, slot 1 divides by one and is
-SILENTLY CORRECT, slot 2+ is silently wrong; the map-lookup plugs (go,
-flutter, groovy, elixir) get a silently missing key instead and need
-different handling than a substring before the slash. Copy `py-field` /
-`js-field`.
+**The sweep found the `go` plug does not build on main, and it is not the
+sweep's doing.** `GoEmitter.codex` carries a `list-snoc` `GoBuiltinEmitter`
+whose BODY LINE IS MISSING -- the entry is immediately followed by the
+`list-push` entry -- so the bundle fails with `CDX1024: Expected field name
+in record literal`. It landed at main 15882, "plugs 1.21 batch 1": the
+`list-push` registration was inserted and consumed the line under it.
+Nothing in any gate builds a plug, so it sat. Fixed here by restoring the
+body, which is the same `append(...)` `list-push` emits. **The other
+fifteen 1.21 plugs were checked by building them, and only `go` was
+damaged.**
 
-**The deferral is lifted for DETECTING it.** This entry used to say the
-change "cannot be verified today" because no runtime is wired into
-`build/plug-oracle-test.ps1`. That is the standard for proving a fix
-CORRECT and it still holds. It is not the standard for seeing the
-defect, which is visible in the emitted text with no runtime at all:
+The os/net half is closed (blu, 2026-08-16): `tcp-step-close-wait`
+answering `EvSend` with `ActError "peer closed"` was the cap, `NetIO` now
+carries `NetSendResult` with `net-io-send-checked` / `-send-raw-checked` /
+`-send-text-checked`, and the account is `ExaminersAssay.md` "A Send That
+Cannot Finish Says So". The checked entry points are ADDITIVE, so nothing
+changed under any plug.
 
-```powershell
-# 10 lines of Codex; the whole probe is a record built and one field read
-pwsh build/compile.ps1 -Src <probe>.codex -Out probe.ir -Log probe.log -IrCce
-pwsh build/plug-run.ps1 -IrInput probe.ir -Out out.txt `
-    -PlugCdx codex/plugs/<name>/build-output/<name>-plug.cdx -Port <its port>
-Select-String -Path out.txt -Pattern 'a/0'      # a hit IS the defect
-```
+The half this entry was raised for was the shape `ts2 <- net-io-send-text
+(recv.transport) output` followed by `print-line-uni ("OK ...")`, which
+reports success for a send that refused. With the CLOSE_WAIT fix in, none
+of them was losing bytes, so it was about a plug never printing `OK` after
+a refusal rather than about recovering lost output.
 
-The probe is `Pair = record { a : Integer }` with
-`print-line-uni (integer-to-text (Pair { a = 7 }).a)`. Emitted today:
-haskell `(a/0 Pair { a = 7 })`, ruby `Pair.new(7).a/0`, go
-`map[...]{"a": 7}["a/0"]`, against python's correct `Pair(a=7).a`.
-**The oracle is validated against the arm that is known-good:** python
-was fixed in 13199 and the grep clears it, so the check discriminates
-rather than merely firing. Each plug's port is the `-Port` literal in its
-own `run.ps1`; passing the wrong one hangs the listener and exits 5,
-which looks nothing like a pass.
+`build/plug-run.ps1` fails with exit 7 when a plug reports `TRUNCATED
+sent=`, so the 38 plugs on the shared harness get the check for free as
+they are converted. The 17 with their own listener each need the same
+three lines; `wpf` writes its guest console to `build-output/plug-wpf.out`.
 
-**The detector is a runner now: `build/check-plug-field-slot.ps1`** (red,
-2026-08-15). One probe (a two-field record, both fields read), compiled once
-to IR and fed to every plug whose `run.ps1` speaks TCP, each output grepped
-for `a/0` and `b/1`. Measured on first run: **38 plugs run, 35 leak, 3 clean**
-(`babbage`, `python`, `zig`); `pascal` leaks only slot 1, so it drops slot 0
-some other way and wants reading. The five that do not run over TCP
-(`csharp`, `html`, `javascript`, `wasm`, `recheck`) are outside the check
-and were measured clean by hand on 2026-08-11. The 35 are recorded in
-`build/plug-field-slot-baseline.txt`, a DEBT LIST: the check fails on a
-leaker not in it (a new plug copying an old emitter) and on `python`
-leaking (the oracle dead), and reports a baseline plug that has stopped
-leaking so the file shrinks. It is not in the gate; run it before and after
-touching any emitter's field access.
+**"None of them is losing bytes today" was false, and the sweep is
+therefore about lost output as well as a wrong `OK` (reek, 2026-08-16).**
+The shape above is not the only one: `pe` did not call `net-io-send-text`
+at all. It carried a PRIVATE send loop, `send-buf-loop`, streaming a heap
+buffer through `net-send` directly, taking `r.session` whether or not the
+send was refused and never reading a frame, so no ACK pruned the rexmit
+queue. Every ARM64 PE over `net-rexmit-capacity * net-mss` = 11,200 bytes
+was cut to exactly 11,200 with a clean close, and the ARM64 boot image has
+been unbootable for it: AAVMF refused the PE `Unsupported` and dropped to
+the UEFI shell. Converted to `net-io-send-raw-checked`, which also removed
+a whole-PE heap copy the buffer stream needed; the same payload now
+delivers 77,824 bytes with the section extents ending exactly there, and
+QEMU boots into Codex on AArch64.
 
-Still wants an owner for the FIXES, and a fix still wants a reviewer or a
-runtime per language. A blind sweep would be a compiling change, not a
-correct one; the runner is what makes each reviewed fix visible. Measured
-2026-08-15: the only target toolchains on this box are node, python and
-dotnet, whose plugs are already clean, so none of the 35 can be run here;
-a fix is reviewed by reading against the language, or on a box that has it.
-## 1.7 -- Which plugs emit `list-push` as an unconditional in-place append?
+**So the census is by CONCEPT, not by the `net-io-send-text` shape.**
+Grep every plug for `net-send` and for a private send or chunk loop, not
+only for the documented call. A plug with its own loop is the case that
+loses bytes silently.
 
-Unswept. `list-push` is NOT unconditionally destructive on bare metal:
-`__list_snoc` (`compiler/Emit/X86_64ListHelpers.codex`) stores in place
-and returns the SAME pointer only when the backing array has spare
-capacity, extends in place when the list is the topmost allocation, and
-otherwise COPIES to a fresh allocation and returns a new pointer.
-**An empty list literal has no spare capacity, so `list-push [] x`
-returns a new list and leaves the original empty**, and the compiler
-depends on that (`tco-ensure-temps`, `X86_64.codex:359`).
+### THE CENSUS, val 2026-08-16. The private-loop class is THREE plugs and `pe` was one
 
-csharp emitted `_l.Add(v); return _l;` and silently reused spill slots
-across tail calls in 17 functions of the 5,000 in the compiler. Fixed
-there with a capacity-aware `_Buf.lpush` (in place when
-`Count < Capacity`, else copy into twice the capacity, floor 4), which is
-amortized O(1) with no measured slowdown.
+Every `.codex` under `codex/plugs`, counting `net-send`, `net-io-send-text`
+and the checked entry points:
 
-**The failure is invisible in small programs: it needs a function with
-two tail calls in one body before it shows.** The other 43 plugs are
-unchecked. The semantics are published in `docs/DevelopersGuide.md`
-under Lists.
+- **A private loop calling `net-send` directly: `pe` (reek, fixed), `elf`
+  (`ElfPlug.codex:27`), `img` (`ImgPlug.codex:37`).** These three are the
+  whole class. All three had the identical body -- `let r = net-send
+  (ts.session) chunk`, take `r.session`, advance the offset regardless --
+  and all three chunk at 1400 with a 10,000,000-iteration `spin-wait`
+  between chunks as the only backpressure.
+- **`arm64`, `riscv` and `recheck` match a `net-send` grep and are NOT in
+  the class.** Their hits are the string `"net-send-raw"` as an EMITTED
+  builtin name in codegen, not a call. Read the hit before counting it.
+- **Converted: `pe`, `elf`, `img`, `python`, `wpf`.** The private-loop
+  class is now empty. Everything else still uses `net-io-send-text`
+  unchecked, which is the original 43-chapter half and all that is left of
+  this entry.
 
-## 1.8 -- Which plugs emit records into a mutable-capable target?
+**`elf` and `img` are converted (val, 2026-08-16).** `elf` sends a byte
+list, so its private loop is deleted outright for
+`net-io-send-raw-checked`. `img` sends from a BUFFER and keeps a chunked
+loop, because reading a whole disk image into one list would pay the
+`__buf-read-bytes` blowup over every sector at once; the loop calls
+`net-io-send-raw-checked` per chunk and STOPS on a refusal instead of
+walking past it. Both report `sent=` and `TRUNCATED`, the shape `pe` uses
+and `build/plug-run.ps1` already fails on. **`img` is exercised end to end
+and delivers a full 16,777,216-byte image on both filesystem paths**; the
+`elf` conversion is read against `pe`'s and not run, because building its
+wire input needs a compiler x86 extract.
 
-Still unswept, but no longer blocked: COMPILER-4 is closed and the wire
-carries `(mutable)` as an optional trailing element on `rec-def` since
-2026-08-08, so a plug CAN now read the answer off `ARecordTypeDef`.
-Deriving it from the `field-store` nodes remains the stricter answer and
-is what csharp does in `collect-mut-names`; the marker is the wider one.
-**Consequence if a plug does neither: every store is a silent no-op and
-the program still compiles.**
+**A trap that class cost a full session, and it is the reason to read the
+next paragraph before writing any send loop.** `img` carried
+`__heap-save` / `__heap-restore` around each chunk, restoring immediately
+after the send returned. **A send RETAINS its chunk in the retransmit
+queue until an ACK prunes it, so the restore handed the network stack a
+pointer into rewound heap that the next chunk then overwrote.** The plug
+died at `!EXC=0e` before delivering anything, and it died INSIDE
+`codex/os/net` -- `__list_concat_many` under `tcp-with-checksum` on the
+send path with the private loop, and `net-rexmit-prune` under
+`net-receive-segment` on the ACK path once the checked channel started
+draining. Two different faults, one cause, and neither of them an os/net
+defect: os/net was walking memory the plug had freed under it (L-MYSIDE).
+Deleting the two heap calls is the whole fix. Swept: `img` was the only
+plug in the tree with a `__heap-restore` anywhere near a send.
 
-**Two measured instances, 2026-08-08, both from reading the emitters:**
+## 1.20 -- the pascal plug still needs HOISTING, and four other gaps found beside it
 
-- **kotlin is the silent no-op, and it is the bad direction.**
-  `emit-kt-record-fields` emits `val` for EVERY field, and
-  `IrFieldStore` is emitted as `rec.copy(field = value)` -- a functional
-  copy whose result is discarded where a statement was wanted. It
-  compiles and it throws the mutation away. Scala has the same shape
-  (`case class` fields with no `var`).
-- **swift is safe by accident.** `emit-sw-record-fields` emits `var` for
-  every field regardless, so it is over-permissive and never refuses a
-  store. It is wrong in the harmless direction.
+The BODY position is fixed (val, 2026-08-16), statements and bindings both.
+`emit-pas-def` routes a definition's body through `emit-pas-body`, one
+Pascal statement per act statement; `IrLet` in body position emits
+`name := val;` and recurses; an act `IrDoBind` assigns its own name rather
+than `Result`, with `Result` set from the last bind if the block ends on
+one; and `pas-var-block` declares every name the body's let-chain and
+act-statement list bind, seeded with the parameter names so a rebound
+PARAMETER is assigned rather than illegally redeclared.
 
-Neither is fixed here. The sweep is the remaining work, and kotlin is
-the one to do first.
+Measured on a probe covering the four shapes a `var` block has to cover (a
+let-chain, a let shadowing a parameter, a name bound more than once, and an
+act that binds then reads). x86-64 answers 18, 16, 19; the emitted Pascal
+now declares `var a, b: Variant;` for the chain, declares nothing for the
+shadow and assigns the parameter, declares `a, c, a2` once each, and hand
+traces to 18, 16, 19. Against `plug-oracle-arith.codex`, undeclared reads
+go 10 to 7 and assignment targets 12 to 19, with every one of the 19
+declared; the three closed are the act binding `c` in `store-one`,
+`store-two` and `store-untouched`.
+
+**A `list-push` in the plug's OWN source cost a build here and is worth the
+next reader's minute.** `pas-var-block` took `list-length seed` after
+pushing onto `seed`, and `list-push` extends in place when the backing
+array has capacity, so the length it read was the GROWN one and the guard
+could never fire: the var block came out empty while every assignment
+emitted correctly. That is the pattern
+`docs/Designs/Done/Language/SAFE-MUTATION.md` marks unsafe. Bind the length
+to an Integer BEFORE the collection runs.
+
+**Still open, and it is the hoisting gap.** `emit-pas-act-expr` is
+last-statement-only and `IrLet` in EXPRESSION position still emits only its
+body, because Pascal has nowhere to put a statement inside an expression.
+Closing either needs the plug to hoist into the enclosing block, which it
+has no machinery for; they are one piece of work, not two.
+
+**Four more undeclared reads the same measurement turned up, none of them
+the binding gap.** In `plug-oracle-arith.codex` pascal emits
+`gauge:g` (a bounded-field read as a bare name), `list_push` and
+`list_snoc` (**pascal has no emitter for either name**, so it emits a call
+to a function it never defines -- pascal is one of the eight plugs 1.7
+names with no `list-snoc` of any kind), and `store-one:ca`,
+`store-two:cb`, `store-untouched:cb` (record field access and store;
+`IrFieldStore` emits the literal `"0"` at `PascalEmitter.codex:162`).
+
+`fortran` has the identical last-statement-only shape in
+`fort-emit-act-expr` and is NOT known to be affected: its top-level path
+emits every statement, so what its expression form costs is a nested act
+used as an expression, and that is unmeasured rather than clean.
+
+**There is no Free Pascal toolchain on this box** (measured 2026-08-16:
+`fpc`, `ppcx64`, `lazbuild` all absent), so anything here is reviewed by
+reading against the language. Two traps the body fix had to get right and
+the next reader will meet again: `WriteLn` and `Halt` are PROCEDURES, so
+`Result := WriteLn(...)` does not compile, and the entry wrapper must emit
+`opening;` rather than `WriteLn(opening);` or it prints an Unassigned
+Variant after the real output.
+
+## 1.7 -- three list-emission gaps left after the sweep
+
+Swept 2026-08-16 (reek) across all 57 directories under `codex/plugs`.
+`list-snoc` is not unconditionally destructive on bare metal: `__list_snoc`
+(`compiler/Emit/X86_64ListHelpers.codex`) stores in place only when the
+backing array has spare capacity, and otherwise COPIES. **An empty list
+literal has no spare capacity, so `list-push [] x` returns a new list and
+leaves the original empty**, and the compiler depends on that
+(`tco-ensure-temps`, `X86_64.codex:359`). **The standard is that an
+UNCONDITIONAL in-place append is the defect**, and the fix is the
+capacity-aware helper: in place under capacity, otherwise copy.
+`csharp`'s `_Buf.lpush` is the model; `lua` and `python` now emit
+`_cx_lpush` against it.
+
+What remains open:
+
+- **`fortran` emits `fort_list_snoc(a, v)` and never defines it.** Two
+  mentions in the whole plug, the names list at `FortranEmitter.codex:339`
+  and the call at `:385`, and no prelude emits a body. The generated
+  Fortran cannot compile.
+- **`java`, `typescript`, `d`, `julia`, `perl`, `scheme`, `groovy` and
+  `clojure` are real language plugs with no `list-snoc` of any kind.**
+  Unmeasured; a third failure mode beyond destructive and correct.
+- `zig` still appends unconditionally (`cx_ll_push`) and is Steve's.
+
+**Two sweep traps, because the next census here will hit both.** The
+builtin is named `list-snoc`, not `list-push`, and a sweep for
+`list-push` finds four plugs and misses the twelve that matter. And there
+are two dispatch shapes: most plugs declare `BuiltinEmitter { name =
+"list-snoc", ... }`, javascript uses an inline `else if n == "list-snoc"`,
+and seven plugs (`ada`, `elixir`, `fortran`, `nim`, `objc` among them)
+keep an ordered `*-builtin-names` list and dispatch on the INDEX, with the
+name nowhere near the emission.
+
+**Do not add an aliasing-observing row to the plug oracle.** Reading a
+list after pushing to it is the UNSAFE pattern
+`docs/Designs/Done/Language/SAFE-MUTATION.md` names explicitly; its answer
+is unspecified by design, so such a row would grade every plug against
+unspecified behaviour. An earlier revision of this entry inverted every
+verdict on the strength of exactly that probe and was rescinded the same
+day.
+
+## 1.21 -- a plug's builtin CATCH-ALL emits a list append for any name it does not know
+
+**The sixteen-plug `list-push` gap this entry was raised for is CLOSED**
+(re-measured val, 2026-08-16, and the entry is kept only for the residue
+below). A census of `"list-snoc"` and `"list-push"` string registrations
+across all 57 directories now finds **zero** plugs carrying the first
+without the second: 21 register both, three register `list-push` only
+(`maui`, `wasm`, `zig`), and none is missing it. Re-run that census rather
+than trusting this paragraph (L-COUNT).
+
+Verified rather than counted, on the entry's own demonstration -- a
+chapter whose only unusual content is `build (list-push acc n) (n - 1)`,
+beside the same loop written with `list-snoc`. x86-64 answers 4 and 4;
+through the built python plug both call sites emit `_cx_lpush(acc, n)` and
+it answers 4 and 4. The entry's recorded failure was `_tco_0 =
+list_push(acc)(n)` and `NameError: name 'list_push' is not defined`.
+
+**What is left is the mechanism, and it is a real hazard.** In the five
+plugs that dispatch a builtin by INDEX (`ada`, `elixir`, `fortran`, `nim`,
+`objc`), `list-push` was closed by appending the name to the end of
+`*-builtin-names` -- so it takes a new index, there is no arm for that
+index, and it reaches the trailing `else`. It emits the right thing only
+because **in all five, the catch-all is byte-identical to the `list-snoc`
+arm**: `a & (b)` in ada, `a ++ [b]` in elixir, `a & @[b]` in nim,
+`arrayByAddingObject:` in objc, `fort_list_snoc(a, b)` in fortran.
+
+So the fix works and the plug is also, in all five, **emitting a list
+append for every builtin name it does not recognise.** A name the plug has
+never heard of does not refuse and does not fall through to a function
+call: it silently becomes a two-argument list concatenation, and if it had
+one argument the emitter reads `list-at args 1` off the end. That is the
+standing hazard at the top of this register in its purest form. The repair
+is an explicit arm per registered name and a catch-all that REFUSES, in
+the shape the other plugs already use (`!UNSUPPORTED: call to an unknown
+function`, which is what `t3isa` emits).
+
+Not measured: whether any unregistered builtin actually reaches this path
+today in a real chapter. Reading the emission is what found it.
+
+## 1.8 -- a field store is not observable through `haskell`, `elixir` or `clojure`
+
+Swept 2026-08-16 (reek), with the arm that makes it visible:
+`codex/test/plug-oracle-arith.codex` carries a `mutable Cell` and three
+rows (`store-one`, `store-two`, `store-untouched`, bare metal 55 / 56 / 7).
+`python`, `javascript`, `kotlin`, `ocaml` and `scala` are fixed and thread
+the `ARecordTypeDef` mutability flag through to the decoration.
+
+**The divergence: `haskell`, `elixir` and `clojure` have no mutable record
+at all.** Record update, `Map.put` and `assoc` all CONSTRUCT rather than
+assign, and the result is discarded in statement position. A Codex program
+that assigns `c.f = v` and then reads `c.f` reads the value from BEFORE
+the store. **This is not a one-line fix and it is not a bug in the plug:**
+closing it means rewriting the store into a rebinding and threading the
+new record through the rest of the expression, an IR-to-source
+transformation rather than an emitter flag. Nobody should attempt it as
+part of this item without deciding that first.
+
+**Census of the rest, READ FROM SOURCE and not executed** -- the same
+silent no-op, by two different causes. Discards a functional copy: `ada`
+(`'Update`), `groovy` (map `+`), `php` (mutates the CLONE). Mutates a copy
+because the language passes records by value: `swift`, `nim`, `rust`,
+`d`, `objc` (`mutableCopy`). Correct as written: `lua`, `perl`, `go`,
+`java`, `ruby`, `typescript`, `julia`. Emits a LITERAL for a store and
+drops it entirely: `fortran` (`"0"`), `scheme` (`"'()"`).
+
+**Two lessons the fixed five paid for.** A plug that emits records
+immutably and a plug that discards the store are the same bug wearing two
+hats, and fixing either alone leaves it broken: making javascript's store
+a real assignment turned a silent wrong answer into `TypeError: Cannot
+assign to read only property`, because the constructor also wrapped the
+record in `Object.freeze`. And `Gauge`, the NON-mutable record in the same
+subject, is the discriminator that keeps a blanket `var` from passing
+every row unnoticed.
+
+**Adjacent and not fixed: the `ocaml` plug emits `type Gauge` and `type
+Cell` with leading capitals**, which OCaml reserves for constructors and
+modules, so the emitted type names are not legal OCaml regardless of
+mutability. It belongs to whoever takes `ocaml` next.
 
 ## 1.3 -- RISC-V frameless TCO is a KNOWN-BAD PAIR, not a gap
 
@@ -149,27 +332,6 @@ account lives in `annotations/codex/plugs/riscv/RiscVCodeGen3.json`; a
 live known-bad should not rest only in a sidecar, which is why it is
 also here.
 
-## 1.4 -- RED, pre-existing: the spirv text emitter drops a call
-
-`codex/plugs/spirv/test-spirv.ps1` fails: `FAIL: missing
-'OpFunctionCall %3'`, from a 9045-char `spirv-probe.spvasm`.
-
-Established with a control rather than assumed: reverting every spirv
-source to depot state, rebuilding the plug and re-running gives the
-IDENTICAL failure and an identically sized artifact, and the plug binary
-is 202,791 bytes either way. So the text path drops a call the probe
-requires. `spirv-probe.codex` exercises a call deliberately, as one of
-the four places the emitter used to produce something SPIR-V would
-refuse.
-
-`test-binary.ps1` (the word/validator path) PASSES with all four negative
-controls firing, so **the defect is the disassembling text emitter, not
-the binary encoder.** `test-emit.ps1` cannot run at all: it wants a plug
-from `build-bin.ps1`, which does not exist in this directory.
-
-**Nothing gates this.** `build/build.ps1` is green and does not run it,
-which is why it can sit red.
-
 ## 1.1 -- Deferred: lift the plug type reconstruction into shared code
 
 `a64-atype-to-codex-type` (`arm64/Arm64CodeGen2.codex:1926`) reconstructs
@@ -188,133 +350,99 @@ javascript clamp paths added in main 13199.
 Deferred 2026-08-05 by Damian: it is a de-risking rehearsal, not a
 prerequisite, and option A's own risks are measured closed.
 
-## 1.9 -- The wasm plug has no clamp code at all
+## 1.26 -- PR 66 carried in; rung 13 does not reproduce on this box
 
-`afields-to-rfields` fills every `type-val` with `ErrorTy`. Pre-existing
-gap, not a regression from any step.
+**Steve Howell's `ZigEmitter.codex` from `showell/NewRepository`
+`zig-plug-arith` (46 commits, head `ea885864`) is TAKEN WHOLESALE** (val,
+2026-08-16), CRLF-normalised on the way in because his tree is LF and the
+depot's is CRLF. His file is 224 definitions against the depot's 207: he
+carries 27 the depot lacked and his own implementations of the 10 it had,
+including all four 1.13 fixes and the third store site. The PR head is on
+**his fork, not `damiant3/NewRepository`** -- that ref 404s.
 
-## 1.10 -- ARM64 has no process/capability kernel (COMPILER-1 has no ARM64 counterpart)
+**Carried: `ZigEmitter.codex` only.** `ZigPlug.codex` is content-identical
+to the depot's (line endings only), and **his `run.ps1` LACKS `-Passes
+'text-plug'`, so the depot's is ahead and stays** -- his emitter was
+developed against the default pipeline and is graded here against the
+text-plug IR the depot serves. `zig-ladder/` stays on his branch, as PR 65
+set the precedent.
 
-The ARM64 target (`codex/plugs/arm64/`) boots a bare runtime with no
-kernel: no process table, no capability cell, no scope cells, no
-boot-time population, and no syscall/servicer path. The whole
-process/cap/scope builtin layer is a hardcoded stub in
-`Arm64CodeGen2.codex:1500-1508`: `process-get-pid`=0, `process-get-cap`=0,
-`process-get-scope`/`-network-scope`="" (`a64-emit-empty-text`),
-`process-set-scope`/`-network-scope`=-1, `process-restrict-cap`=-1. FS and
-net effects are hard-refused before any check: `read-file` /
-`read-file-raw` / `uefi-read-file` emit "arm64 has no filesystem"
-(`a64-emit-unsupported-read`, `:1473-1480`), `net-send-raw`/`net-recv-raw`
-return 0 (`:1507-1508`).
+**MERGED ON TOP, the one thing he lacks: a `list-snoc` registration.** His
+emitter registers `list-push` and not `list-snoc`, so the oracle subject's
+`snoc-len` emitted `@compileError("zig plug: no emitter for list-snoc")`
+and the program did not compile. One line, pointing at the same
+`cx_ll_push` his `list-push` uses. **That is what took zig's arm from red
+to green**, and the arm had been red on main since 1.7 added the row.
 
-**Consequence.** The x86-64 runtime scope and capability enforcement
-shipped and tested under COMPILER-1 (`codex/compiler/compiler-backlog.md`)
-has NO ARM64 counterpart, so a scoped or capability-restricted program is
-silently unenforced on ARM64. The arch-independent library predicates
-(`fat16-scope-admits`, `net-scope-admits`) are never reached there, and
-would read "" if they were.
+**Verified here.** `build/plug-oracle-test.ps1` is **5 passed, 0 failed --
+python, javascript, zig, wasm and csharp each 33 of 33 -- which is the
+first time every wired arm has been green.** The 1.13 checks pass through
+his file: Euclidean `int-mod`, record-literal parens and the list-literal
+element type are oracle rows, and the third store site, which no wired arm
+covers, was run separately (`m.g = n` on a clamping `mutable` field
+answers 100, -100, 42, matching x86-64).
 
-**Parity is the whole chain, not a getter fix:** a process table with
-cap/scope cells (mirror `X86_64Boot.codex:421,432,433`), boot population
-(mirror `emit-set-boot-scope`/`emit-grant-cap-mask` into
-`Arm64Runtime.codex` `__start`, ~`:1957`), real load/store codegen for the
-seven stubs plus an `emit-check-capability` analog, and an SVC/servicer
-path so effect ops reach the library gates. A QEMU/Renode cross bed DOES
-exist now (`build/test-cross-batch.ps1 -Arch arm64 -UseQemu` boots each
-test and asserts UART against `.expected`; `build/boot-arm64.ps1` for one
-image); the runtime scope/cap tests are `.no-cross`-excluded today with
-the reason "the cross lane boots a bare runtime with no kernel", and those
-exclusions lift once the machinery lands. Major effort and its own
-initiative, not a quick parity fix. Recorded 2026-08-11 (val); the bed
-availability is what makes it newly actionable.
+**RUNG 13 DOES NOT REPRODUCE ON THIS BOX, and the reason is not his
+emitter.** His claim is the whole compiler through the plug, 16,874 lines
+of zig, diffing empty against bare metal. Reproduced as far as: his
+`bundle_whole.ps1` builds the subject here (54,856 lines, 2,575,126
+bytes); it compiles at his `-Decks 172` and runs on bare metal, 2,911
+lines of output; IR emission is 13,488,840 bytes in 118 s. **The plug then
+dies.** The guest raises `OUT OF MEMORY` part way through emitting, at
+`SP=0xbdfffd08 HEAP=0xb9e00238`, and the emission stops between 534,800
+and 547,400 bytes -- **five identical runs, five different lengths, every
+one a multiple of `net-mss` 1400**. It is not the guest's `-mem`: 3 GB and
+12 GB both stop in the same band. So his 16,874 lines is HIS measurement
+on HIS harness (`zig-ladder/codex_vm.py`), and the process form is
+Linux-only and is his measurement too.
 
-## 1.12 -- T3ISA: three follow-ons named and not taken (closed, not open)
+**And `build/plug-run.ps1` reported `OK` on every one of those dead
+guests.** It greps the VM's stderr for `TRUNCATED sent=`, but the guest
+console is not on stderr -- capturing it needs `-output`, which the
+harness does not pass -- so a guest that dies mid-emission is
+indistinguishable from one that finished, and a truncated `.zig` is
+written under an OK line. **38 plugs use that harness**; nothing noticed
+because every wired subject is a few KB. The repair is the same shape
+`ExaminersAssay.md` records for the self-check tier: pass `-output`, scan
+it for `OUT OF MEMORY` and `!EXC=`, and fail. `plug-run.ps1` is GENERATED,
+so it is a change to `codex/build/plugrunScript.codex` plus a regeneration,
+submitted together -- not a hand edit.
 
-The t3isa plug is FINISHED and its design is folded to
-`docs/Designs/Done/Compiler/T3IsaPlug.md`. This entry exists so the three
-follow-ons that design names are reachable from the register that owns the
-quire, not because any of them is work waiting for an owner. **Damian's
-ruling 2026-08-11: closed, revisit when the specification next moves.** Do
-not pick one up as filler.
+Converting `ZigPlug.codex` to the checked send channel (1.16's sweep
+skipped it as Steve's) is in this CL and does NOT close the gap: the
+checked send never reports `TRUNCATED`, because the guest dies rather than
+being refused.
 
-1. **v3: what a `List` COSTS** on a bump allocator with no reclamation and
-   16 kilowords of heap. The question is the cost, not the feasibility.
-2. **`show` outside a print.** `fmt::show_int` (syscall 14) is measured
-   working since spec v1.3; the blocker is ours, the emitter having no Text
-   value to carry the handle. Text append stays impossible (`fmt::concat` is
-   not implemented on T3).
-3. **The heap syscall trade.** `heap_alloc_words` (218) against our
-   hand-rolled allocator: one syscall versus eleven instructions, bought
-   with a dependence on a region that has moved once already.
+**Draft PR reply, three lines, for Damian:**
 
-**Before believing a green t3isa gate later, re-measure the target.** Four of
-the seven load-bearing target facts moved between spec v1.0 and v1.3, and one
-(`TSHR` rounding) would have been silent and wrong. The oracles are on this
-machine only (`D:\Toolchain-Ternary`), so `codex/plugs/t3isa/gate.ps1` cannot
-run anywhere else and nothing in `build/build.ps1` reaches it.
+> Carried your ZigEmitter wholesale onto main; it takes the zig oracle arm
+> from red to green and every wired arm is now 33 of 33, the first time
+> that has been true. The one thing added on top was a `list-snoc`
+> registration beside your `list-push` -- without it the shared oracle
+> subject does not compile.
+> Rung 13 we could not reproduce on Windows: the plug guest raises OUT OF
+> MEMORY part way through the whole-compiler emission, stopping between
+> 534,800 and 547,400 bytes across five identical runs, and it is not the
+> guest's memory size. Your 16,874-line result stands as your measurement
+> on your harness; the process form is Linux-only and is recorded the same
+> way.
+> Your run.ps1 is the one file we did not take: main's passes
+> `-Passes 'text-plug'`, which a source plug needs, and yours does not.
+## 1.17 -- ARM64 has no SVC servicer path (Stage 4 of docs/Designs/Done/Compiler/Arm64ProcessKernel.md)
 
-## 1.13 -- The zig plug's central claim cannot be checked on this machine
-
-`build/plug-oracle-test.ps1` wires python, javascript and csharp. Zig is not
-wired and there is no zig toolchain on this box, so the arm that would decide
-Steve Howell's PR 64 does not exist here.
-
-**What that leaves unverified is not a detail.** His claim is that the emitted
-zig COMPILES AND RUNS byte-identical to bare metal on `Syntax/Lexer.codex`
-(61 tokens) and on the whole of `Syntax/Parser.codex` (2,059 lines, 18,812
-tokens, 202 defs). That is the strongest evidence any transpiler plug in this
-quire has ever had, and it is his measurement on his machine, not ours. What
-was verified here is that the plug builds, emits for a real subject, and gets
-the CCE text model right by hand-decode.
-
-The fix is a zig toolchain plus a wiring entry, which is a decision about what
-this box carries, not a code change. Until then a zig regression is invisible
-to every gate.
-
-**zig 0.16.0 is on this box now (2026-08-16, Damian's direction): `D:\zig-0.16.0`,
-on the user PATH.** The plug targets 0.16 (`ZigEmitter` line ~2263 notes 0.16's
-env-API refactor), so it matches. The central claim is no longer unverifiable
-here; measured first-hand through the real plug binary:
-
-- **The plug's CORE is byte-identical to bare metal.** A subject doing `+`, `*`,
-  `-` (negative result), a record built and read through a variable, recursion
-  (`fib 10 = 55`), and text concat emits zig that compiles under 0.16 and prints
-  EXACTLY the bare-metal output. So the strong part of Steve Howell's claim
-  reproduces here, not just on his machine.
-- **The three known defects reproduce exactly**, all in `codex/test/plug-oracle-arith.codex`:
-  (1) `int-mod` emits `@compileError("zig plug: no emitter for int-mod")` (honest,
-  fail-loud); substituting the obvious `@rem` is WRONG on negative dividends
-  (`md -7 3` gives -1 where Euclidean is 2), so the fix is zig `@mod` plus the
-  sign correction, not `@rem`. (2) A record literal emits `Gauge{ .g = n }.g` and
-  0.16 rejects it (`error: expected ';'`); it needs `(Gauge{ .g = n }).g`.
-  (3) A clamping bounded field does not clamp: `gauge 150` emits 150 and
-  `gauge -150` emits -150, against the clamped 100 / -100.
-- **A FOURTH issue, not in Steve's three:** a list literal `[10, 20, 30, 40]` is
-  emitted with element type `void` (`&[_]void{ 10, 20, 30, 40 }`), so
-  `list-length` on a literal fails to compile (`comptime_int` vs `void`).
-  Element-type inference on a list literal is missing, likely the same
-  empty-list-element-type gap one context over.
-
-**The oracle arm is still NOT wired, on purpose** (it is red until those four
-land, the position stated in the PR-65 thread). When they are fixed the entry
-in `build/plug-oracle-test.ps1` is one line:
-`@{ Name='zig'; Cdx='codex\plugs\zig\build-output\zig-plug.cdx'; Ext='zig'; Exe='zig'; Args={param($f) @('run',$f)} }`
--- and note the emitted program prints to STDERR (`std.debug.print`), which the
-harness's `2>&1` already captures.
-
-**PR 65 is carried in (red 15595, 2026-08-16): the eight-rung ladder rebased
-onto Update 43.** PR 64 is closed absorbed. The emitter replace was clean (the
-depot was byte-identical to his base) and the plug rebuilds, but the claim
-above is unchanged: still his measurement, not ours. **Three defects he found
-by hand-running the parser subject through the plug and did NOT fix, open
-here:** (1) no `int-mod` emitter, so floor-mod does not lower (the only integer
-remainder emitted is `IrRemInt -> @rem`, truncating); (2) a record literal is
-emitted without the parentheses zig needs before a field access, so
-`IrFieldAccess` on a literal yields `X{...}.field` rather than `(X{...}).field`;
-(3) bounded-field clamping is not emitted, so `IntegerTy (lo)(hi)(mode)` and
-`ABoundedIntType` both lower to bare `i64` with no clamp. All three are in the
-emitter and are the natural next rungs; none is reachable to a gate here for the
-same toolchain reason.
+x86-64 routes the block and identity families through `syscall` numbers
+10-18 (`X86_64Helpers.codex:3322-3324, 3848, 4415-4489`; dispatch
+`X86_64Boot.codex:2773-3073`) so those helpers cannot be entered without
+passing the servicer's capability check. ARM64 has the vector table and
+all sixteen slots patched to `a64-rt-fault-handler`
+(`Arm64Runtime.codex`, `a64-rt-patch-vectors`); nothing emits an `SVC`. The
+stage is: carve the synchronous-EL1 slot out of the patch loop, an `SVC #n`
+from each serviced helper, dispatch on `n`, `a64-dis-svc` confirming the
+instruction at each site, and a direct-call bypass arm that must be
+refused. **Blocked on `CrossLaneFilesystem.md` steps 2-5** (fester, block
+builtins on ARM64): until a block or identity path exists there is nothing
+for the servicer to serve. Filed 2026-08-16 by red's ruling on
+Arm64ProcessKernel.md question 3.
 
 ## 1.14 -- Codex assumes deep recursion is free; a stack language does not
 
@@ -332,5 +460,65 @@ on a thread with a big stack, 512 MB, the same constant, so they agree.
 
 It is a property of how codex source is written rather than of large input:
 bare metal answers deep recursion with a multi-gigabyte arena and .NET gives
-its main thread 1 MB. Anything targeting a language with a conventional stack
-needs the big-stack entry point, and 40-odd plugs do not have one.
+its main thread 1 MB.
+
+**Campaign plan: `docs/Designs/Active/Compiler/PlugDeepRecursion.md`** (val,
+2026-08-16), which is the handoff if this changes hands. It carries the
+inventory of all 54 entry points, the measurements, and the order.
+
+**EVERY PLUG THIS BOX CAN EXECUTE PASSES, AND THE ARM IS WIRED.** The probe
+is a `Deep recursion` section in `codex/test/plug-oracle-arith.codex`; the
+truth set goes 28 values to 33. `csharp` and `zig` already carried a 512 MB
+thread; `python` needed one line (`sys.setrecursionlimit`, NOT the thread);
+`javascript` needed `worker_threads` with `resourceLimits.stackSizeMb`;
+`wasm` needed nothing in the plug, because the module is correct and the
+HOST's stack is the constraint (`wasmtime run -W
+max-wasm-stack=268435456`, which the oracle arm now passes).
+
+**What is left is the 42 plugs whose runtime is not on this box**, one
+entry-point wrapper each, readable but not runnable here.
+
+**`zig`'s oracle arm is RED on main and it is NOT this item.** The subject
+gained `snoc-len` when 1.7 landed and the zig plug has no emitter for
+`list-snoc`, so the emitted program does not compile: `@compileError("zig
+plug: no emitter for list-snoc")` plus an unused parameter. Measured
+against the DEPOT subject, which fails identically, so it predates the
+recursion rows. It is the same gap wasm had (1.23) and it is Steve
+Howell's to close. **Until it is, `build/plug-oracle-test.ps1` exits 1 even
+though four of five arms pass 33 of 33**, and no gate runs it.
+
+**Measured 2026-08-16, the first time anything asked a plug this question**
+-- `codex/test/plug-oracle-arith.codex` contains no recursion at all. Two
+shapes, self and mutual, at 1,000 and 100,000, plus a non-tail row:
+
+| arm | self 100k | mutual 1k | mutual 100k | non-tail 100k |
+|---|---|---|---|---|
+| x86-64 | ok | ok | ok | 5000050000 |
+| `csharp` | ok | ok | ok | 5000050000 |
+| `javascript` | ok | ok | **RangeError** | -- |
+| `wasm` | ok | ok | **call stack exhausted** | -- |
+| `python` | ok | **RecursionError** | -- | -- |
+
+Self recursion is green everywhere because the plugs already emit a loop
+for it (python emits `while True:` with a reassignment). Every failure is
+the mutual pair, which is the entry's claim, now measured rather than
+argued. `csharp` passing every row is what makes the others mean something.
+
+**The entry says "the big-stack entry point" and that is the wrong fix for
+python**, which four ablations settle: a raised `sys.setrecursionlimit` on
+the MAIN thread passes every row, a 512 MB thread with the default counter
+still dies at 1,000, and `threading.stack_size(512MB)` is refused outright
+on this box. CPython 3.11 stopped consuming C stack for Python-to-Python
+calls, so the limit is a counter and the fix is one line. Establish each
+plug's class by ablation, not by the language's reputation.
+
+## 1.26 -- RISC-V `peek-32` sign-extends where x86-64 and ARM64 zero-extend
+
+`rv-rt-peek-32` (`codex/plugs/riscv/RiscVRuntime.codex`) is `lw`, which sign-extends
+bit 31 into a 64-bit Integer; the x86-64 helper is `mov eax, [rdi]` (zero-extends,
+the `DevelopersGuide` pitfall says so) and ARM64 `ldr w0` zero-extends. Measured
+2026-08-16 (root) while landing `codex/test/poke16-width`: `peek-32` of the bytes
+`44 33 CD AB` answered 2882351940 on x86-64 and ARM64 and -1412615356 on RISC-V;
+the test now avoids bit 31 so it can run on all three lanes. Fix is `lwu` in
+`rv-rt-peek-32` (and a check of `read-mmio-32`, which is the same block); arm: a
+`peek-32` of a word with bit 31 set, recorded on x86-64, green on riscv.

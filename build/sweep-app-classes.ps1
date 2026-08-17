@@ -34,7 +34,8 @@ param(
     [int]$TimeoutSec = 300,
     [string]$OutDir = '',
     [switch]$Check,               # exit non-zero when a unit regresses
-    [string]$Baseline = ''
+    [string]$Baseline = '',
+    [string]$Kernel = ''          # compiler to sweep with; default seed\Codex.cdx. build.ps1 passes the SUT.
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -45,9 +46,16 @@ $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $Repo
 [Environment]::CurrentDirectory = $Repo
 
-$stage0 = Join-Path $Repo 'build-output\bare-metal\Codex.cdx'
-New-Item -ItemType Directory -Force -Path (Split-Path $stage0) | Out-Null
-Copy-Item -Force (Join-Path $Repo 'seed\Codex.cdx') $stage0
+# The kernel is passed to every compile explicitly. This script used to copy
+# seed\Codex.cdx over build-output\bare-metal\Codex.cdx and let compile.ps1
+# default to it, so inside a gate it swept with the OLD seed and never saw the
+# compiler the gate had just built: main 16020 made 'bounded' a keyword and a
+# 270-unit sweep passed while apps\radio\RadioStation.codex:574 stopped
+# compiling (ExaminersAssay, "The App Sweep Passed While An App Was Broken").
+# build.ps1 passes -Kernel $SutCdx; a hand run defaults to the seed and says so.
+if (-not $Kernel) { $Kernel = Join-Path $Repo 'seed\Codex.cdx' }
+$Kernel = (Resolve-Path $Kernel).Path
+Write-Host "kernel: $Kernel [$((Get-FileHash -Algorithm SHA256 $Kernel).Hash.Substring(0, 16))]"
 
 # NOT under build-output: build.ps1's Clean phase deletes that whole tree, so a
 # gate run between taking a sweep and reading it destroys the results. Measured
@@ -75,6 +83,7 @@ $results = $files | ForEach-Object -ThrottleLimit $Jobs -Parallel {
     $OutDir  = $using:OutDir
     $compile = $using:compile
     $timeout = $using:TimeoutSec
+    $kernel  = $using:Kernel
 
     $rel = $f.FullName.Substring($Repo.Length + 1)
     $tag = ($rel -replace '[\\/]', '_') -replace '\.codex$', ''
@@ -84,7 +93,7 @@ $results = $files | ForEach-Object -ThrottleLimit $Jobs -Parallel {
 
     $p = Start-Process -FilePath 'pwsh' -ArgumentList @(
         '-NoProfile', '-File', $compile,
-        '-Src', $f.FullName, '-Out', $cdx, '-Log', $log
+        '-Src', $f.FullName, '-Out', $cdx, '-Log', $log, '-Kernel', $kernel
     ) -PassThru -WindowStyle Hidden -RedirectStandardError $err
 
     if (-not $p.WaitForExit($timeout * 1000)) {
@@ -183,7 +192,7 @@ if ($Check) {
         foreach ($s in $suspect) {
             $tmpLog = Join-Path $OutDir ('recheck-' + ($s.File -replace '[\\/\.]', '_') + '.log')
             $tmpOut = [System.IO.Path]::ChangeExtension($tmpLog, '.cdx')
-            & pwsh (Join-Path $Repo 'build\compile.ps1') -Src $s.File -Out $tmpOut -Log $tmpLog *> $null
+            & pwsh (Join-Path $Repo 'build\compile.ps1') -Src $s.File -Out $tmpOut -Log $tmpLog -Kernel $Kernel *> $null
             $n = @(Select-String -Path $tmpLog -Pattern 'error CDX' -EA SilentlyContinue).Count
             if ($n -eq 0 -and (Test-Path $tmpOut)) {
                 Write-Host "  $($s.File): clean alone -- contention, not a regression"

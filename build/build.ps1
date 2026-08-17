@@ -844,15 +844,15 @@ Measure-Phase 'deck-headroom' {
 # (main 13839) turned RadioStationMain dirty the day CL 13483 landed and
 # sat a full day unobserved.
 # 
-# It runs LAST because it copies seed\Codex.cdx over
-# build-output\bare-metal\Codex.cdx to compile with, which would clobber
-# the stage0 the fixed-point phases are comparing. By here SUT === seed is
-# already proven, so the seed it picks up IS the compiler this run built.
+# It runs LAST and sweeps with -Kernel $SutCdx, the compiler this run built.
+# It used to let the sweep default to seed\Codex.cdx, which inside a gate is
+# the OLD compiler whenever the change moved the seed: main 16020 (a new
+# keyword) passed a 270-unit sweep here and broke apps/radio on main.
 # Cost measured 2026-08-06: 191s of a 517s gate.
 Measure-Phase 'app-sweep' {
     $sweep = Join-Path $PSScriptRoot 'sweep-app-classes.ps1'
     if (Test-Path $sweep) {
-        $swOut = @(& pwsh -NoProfile -File $sweep -Check -Jobs 8 2>&1 | ForEach-Object { "$_" })
+        $swOut = @(& pwsh -NoProfile -File $sweep -Check -Jobs 8 -Kernel $SutCdx 2>&1 | ForEach-Object { "$_" })
         $code = $LASTEXITCODE
         if ($code -ne 0) {
             Write-Host ''

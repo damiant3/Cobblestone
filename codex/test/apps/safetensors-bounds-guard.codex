@@ -1,0 +1,124 @@
+Chapter: SafeTensorsBoundsGuard
+  cites Foreword chapter Maybe
+  cites AI chapter Tensor
+  cites AI chapter SafeTensors
+
+ Track D item 19, the ai/ leg. st-parse-file is already defended -- a short file
+ and a garbage header both answer valid=False, and codex/test/forewords/
+ foreword-safetensors.codex covers both. The LOADERS are not.
+
+ st-read-u32:48 reads four bytes with four bare list-at calls, and
+ st-read-f16-loop:209 and st-read-bf16-loop:239 read theirs directly the same
+ way. The offset is file.st-data-offset + meta.stm-offset-start, both taken from
+ the file's JSON header, and the count is st-element-count, the PRODUCT of the
+ file's declared shape. Nothing checks either against the bytes that arrived.
+
+ The bound is written subtractively, count <= (length - off) / width, so a shape
+ whose product overflows cannot pass it by wrapping. That is the same shape as
+ lz4-fits and for the same reason.
+
+ Row 9 is the discriminator: a tensor whose declared bytes END exactly at the
+ last byte of the file is legitimate and must still load, so an off-by-one in
+ the bound shows up there and nowhere else.
+
+Section: Byte Building
+
+  text-bytes : Text, Integer, Integer, List Integer -> List Integer
+  text-bytes (s) (i) (n) (acc) =
+   if i >= n then acc
+   else text-bytes s (i + 1) n (list-push acc (to-unicode (char-code (char-at s i))))
+
+  u64-le : Integer, Integer, Integer, List Integer -> List Integer
+  u64-le (v) (i) (n) (acc) =
+   if i >= n then acc
+   else u64-le (v / 256) (i + 1) n (list-push acc (v - v / 256 * 256))
+
+  append : List Integer, List Integer, Integer, Integer -> List Integer
+  append (a) (b) (i) (n) =
+   if i >= n then a
+   else append (list-push a (list-at b i)) b (i + 1) n
+
+  wide-le : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  wide-le (vals) (i) (n) (width) (acc) =
+   if i >= n then acc
+   else wide-le vals (i + 1) n width (u64-le (list-at vals i) 0 width acc)
+
+  build-file : Text, List Integer -> List Integer
+  build-file (header) (payload) =
+   let hb = text-bytes header 0 (text-length header) []
+   in let hlen = list-length hb
+   in let prefix = u64-le hlen 0 8 []
+   in let withhdr = append prefix hb 0 hlen
+   in append withhdr payload 0 (list-length payload)
+
+Section: Operands
+
+  f32-raw : List Integer
+  f32-raw = [1065353216, 1056964608, 1073741824, 3212836864, 1069547520]
+
+  f16-raw : List Integer
+  f16-raw = [15360, 14336, 16384, 48128, 15872]
+
+  bf16-raw : List Integer
+  bf16-raw = [16256, 16128, 16384, 49024, 16320]
+
+ The honest headers: five elements, and exactly the bytes for them.
+
+  hdr-f32 : Text
+  hdr-f32 = "{\"t\":{\"dtype\":\"F32\",\"shape\":[5],\"data_offsets\":[0,20]}}"
+
+  hdr-f16 : Text
+  hdr-f16 = "{\"t\":{\"dtype\":\"F16\",\"shape\":[5],\"data_offsets\":[0,10]}}"
+
+  hdr-bf16 : Text
+  hdr-bf16 = "{\"t\":{\"dtype\":\"BF16\",\"shape\":[5],\"data_offsets\":[0,10]}}"
+
+ A shape claiming a million elements behind five elements of payload.
+
+  hdr-f32-big : Text
+  hdr-f32-big = "{\"t\":{\"dtype\":\"F32\",\"shape\":[1000000],\"data_offsets\":[0,4000000]}}"
+
+  hdr-f16-big : Text
+  hdr-f16-big = "{\"t\":{\"dtype\":\"F16\",\"shape\":[1000000],\"data_offsets\":[0,2000000]}}"
+
+  hdr-bf16-big : Text
+  hdr-bf16-big = "{\"t\":{\"dtype\":\"BF16\",\"shape\":[1000000],\"data_offsets\":[0,2000000]}}"
+
+ A start offset past the end of a file that is otherwise well formed.
+
+  hdr-far : Text
+  hdr-far = "{\"t\":{\"dtype\":\"F32\",\"shape\":[2],\"data_offsets\":[900000,900008]}}"
+
+ A two-dimensional shape whose product overflows if it is multiplied out.
+
+  hdr-overflow : Text
+  hdr-overflow = "{\"t\":{\"dtype\":\"F32\",\"shape\":[4294967296,4294967296],\"data_offsets\":[0,8]}}"
+
+Section: Rendering
+
+  show-ints : List Integer, Integer, Integer, Text -> Text
+  show-ints (xs) (i) (n) (acc) =
+   if i >= n then acc
+   else show-ints xs (i + 1) n (if i == 0 then show (list-at xs i) else acc & "," & show (list-at xs i))
+
+  row : Text, Text, List Integer, Integer, Integer -> Text
+  row (label) (hdr) (raw) (count) (width) =
+   let f = build-file hdr (wide-le raw 0 count width [])
+   in let t = st-load-by-name f (st-parse-file f) "t"
+   in label & " rows=" & show (t.rows) & " cols=" & show (t.cols) & " values=" & show (list-length (t.data)) & " [" & show-ints (t.data) 0 (list-length (t.data)) "" & "]"
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni (row "1-f32-honest" hdr-f32 f32-raw 5 4)
+    print-line-uni (row "2-f16-honest" hdr-f16 f16-raw 5 2)
+    print-line-uni (row "3-bf16-honest" hdr-bf16 bf16-raw 5 2)
+    print-line-uni (row "4-f32-shape-1e6" hdr-f32-big f32-raw 5 4)
+    print-line-uni (row "5-f16-shape-1e6" hdr-f16-big f16-raw 5 2)
+    print-line-uni (row "6-bf16-shape-1e6" hdr-bf16-big bf16-raw 5 2)
+    print-line-uni (row "7-offset-far" hdr-far f32-raw 5 4)
+    print-line-uni (row "8-shape-overflow" hdr-overflow f32-raw 5 4)
+    print-line-uni (row "9-exact-fit" hdr-f32 f32-raw 5 4)
+  end
+
+Page 1

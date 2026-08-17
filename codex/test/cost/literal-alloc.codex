@@ -1,0 +1,118 @@
+Chapter: LiteralAlloc
+  cites Foreword chapter Console
+
+ Does evaluating a Text LITERAL allocate, once per evaluation?
+
+ The question is not academic and it did not start as a cost-model question.
+ `&` on Text extends the left operand IN PLACE when that operand is the
+ topmost allocation (`emit-str-concat-prologue`, `X86_64TextHelpers.codex`
+ 160-182, compares `left_base + aligned(len(left))` against the allocation
+ frontier and only copies when they differ). So an accumulator appended to in
+ a loop is LINEAR while it stays topmost. `p-append-text` in
+ `accumulator-corpus` is `acc & "x"` with nothing else in its body, which
+ should keep `acc` topmost, and it measured QUADRATIC at x12.7. Something in
+ that loop allocates between the appends. The literal is the only candidate.
+
+ Four arms, each run at n and 4n, bytes retained across the call from
+ `__heap-save`, the same instrument the corpus uses.
+
+Section: The Instrument
+
+  keep : List Integer -> Integer
+  keep (xs) = list-length xs
+
+  keep-text : Text -> Integer
+  keep-text (t) = text-length t
+
+  ratio-tenths : Integer, Integer -> Integer
+  ratio-tenths (at-n) (at-4n) =
+    if at-n <= 0 then 0
+    else (at-4n * 10) / at-n
+
+  show-tenths : Integer -> Text
+  show-tenths (t) = show (t / 10) & "." & show (t - (t / 10) * 10)
+
+  row : Text, Integer, Integer -> Text
+  row (name) (at-n) (at-4n) =
+    name & " n=" & show at-n & " 4n=" & show at-4n
+      & " x" & show-tenths (ratio-tenths at-n at-4n)
+
+Section: Arms
+
+ 1. THE DIRECT QUESTION. No Text accumulator at all: evaluate the literal
+    once per iteration and fold its length into an Integer. Bytes retained
+    here are the literal's own cost and nothing else. Zero means a literal is
+    a constant; growing with n means every evaluation materialises one.
+
+  lit-eval : Integer, Integer, Integer -> Integer
+  lit-eval (n) (i) (acc) =
+    if i >= n then acc
+    else lit-eval n (i + 1) (acc + text-length "x")
+
+ 2. `p-append-text`'s exact shape, repeated here so both arms sit in one
+    program and one allocator.
+
+  append-literal : Integer, Integer, Text -> Text
+  append-literal (n) (i) (acc) =
+    if i >= n then acc
+    else append-literal n (i + 1) (acc & "x")
+
+ 3. THE DISCRIMINATOR. The same append with the piece HOISTED into a
+    parameter, evaluated once before the loop. If a literal allocates per
+    evaluation, arm 2 is quadratic and this one is linear, and the difference
+    between them is the whole finding. If both are quadratic the literal is
+    not the cause and the topmost account is wrong about this shape.
+
+  append-hoisted : Integer, Integer, Text, Text -> Text
+  append-hoisted (n) (i) (acc) (piece) =
+    if i >= n then acc
+    else append-hoisted n (i + 1) (acc & piece) piece
+
+ 4. CONTROL. The same recursion doing no appending, so the loop's own cost is
+    visible and arms 2 and 3 are read against it rather than against zero.
+
+  no-append : Integer, Integer, Text -> Text
+  no-append (n) (i) (acc) =
+    if i >= n then acc
+    else no-append n (i + 1) acc
+
+Section: Measurement
+
+  m-lit-eval : Integer -> Integer
+  m-lit-eval (n) =
+    let b = __heap-save
+    in let r = lit-eval n 0 0
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-append-literal : Integer -> Integer
+  m-append-literal (n) =
+    let b = __heap-save
+    in let r = keep-text (append-literal n 0 "")
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-append-hoisted : Integer -> Integer
+  m-append-hoisted (n) =
+    let b = __heap-save
+    in let r = keep-text (append-hoisted n 0 "" "x")
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-no-append : Integer -> Integer
+  m-no-append (n) =
+    let b = __heap-save
+    in let r = keep-text (no-append n 0 "")
+    in let a = __heap-save
+    in (a - b) + r - r
+
+Section: Entry
+
+  base : Integer = 64
+
+  opening : [Console] Nothing = act
+    print-line-uni (row "lit-eval       " (m-lit-eval base) (m-lit-eval (base * 4)))
+    print-line-uni (row "append-literal " (m-append-literal base) (m-append-literal (base * 4)))
+    print-line-uni (row "append-hoisted " (m-append-hoisted base) (m-append-hoisted (base * 4)))
+    print-line-uni (row "no-append      " (m-no-append base) (m-no-append (base * 4)))
+  end

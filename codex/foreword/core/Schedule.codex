@@ -143,14 +143,17 @@ Section: English Parser
     in when base
       is None -> None
       is Just (sched) ->
-        if n >= 6 then if list-at words 3 == "between" then
-          let start = sched-parse-hour-ampm (list-at words 4) (if n >= 6 then list-at words 5 else "")
-          in let stop-idx = if n >= 6 then if list-at words 5 == "and" then 6 else 5 else 5
-          in let stop-ampm = if n > stop-idx + 1 then list-at words (stop-idx + 1) else ""
-          in let stop = if stop-idx < n then sched-parse-hour-ampm (list-at words stop-idx) stop-ampm else 24
-          in Just (between-hours start stop sched)
-        else Just sched
-        else Just sched
+        if n < 4 then Just sched
+        else if list-at words 3 /= "between" then Just sched
+        else if n < 6 then None
+        else let start = sched-parse-hour-ampm (list-at words 4) (list-at words 5)
+        in let stop-idx = if list-at words 5 == "and" then 6 else 5
+        in if stop-idx >= n then None
+        else let stop-ampm = if n > stop-idx + 1 then list-at words (stop-idx + 1) else ""
+        in let stop = sched-parse-hour-ampm (list-at words stop-idx) stop-ampm
+        in if sched-hour-ok start == False then None
+        else if sched-hour-ok stop == False then None
+        else Just (between-hours start stop sched)
 
   sched-parse-daily : List Text, Integer -> Maybe Sched
   sched-parse-daily (words) (n) =
@@ -158,27 +161,33 @@ Section: English Parser
     else if list-at words 1 /= "at" then None
     else let ampm = if n >= 4 then list-at words 3 else ""
     in let time = sched-parse-time-ampm (list-at words 2) ampm
-    in Just (daily-at (time.sched-time-hour) (time.sched-time-minute))
+    in if sched-time-ok time == False then None
+    else Just (daily-at (time.sched-time-hour) (time.sched-time-minute))
 
   sched-parse-weekly : List Text, Integer -> Maybe Sched
   sched-parse-weekly (words) (n) =
     if n < 5 then None
     else if list-at words 1 /= "on" then None
     else let day = sched-parse-day-name (list-at words 2)
-    in if list-at words 3 /= "at" then None
+    in if day == sched-day-unknown then None
+    else if list-at words 3 /= "at" then None
     else let ampm = if n >= 6 then list-at words 5 else ""
     in let time = sched-parse-time-ampm (list-at words 4) ampm
-    in Just (weekly-on day (time.sched-time-hour) (time.sched-time-minute))
+    in if sched-time-ok time == False then None
+    else Just (weekly-on day (time.sched-time-hour) (time.sched-time-minute))
 
   sched-parse-monthly : List Text, Integer -> Maybe Sched
   sched-parse-monthly (words) (n) =
     if n < 5 then None
     else if list-at words 1 /= "on" then None
     else let day = sched-parse-int (list-at words 2)
-    in if list-at words 3 /= "at" then None
+    in if day < 1 then None
+    else if day > 31 then None
+    else if list-at words 3 /= "at" then None
     else let ampm = if n >= 6 then list-at words 5 else ""
     in let time = sched-parse-time-ampm (list-at words 4) ampm
-    in Just (monthly-on day (time.sched-time-hour) (time.sched-time-minute))
+    in if sched-time-ok time == False then None
+    else Just (monthly-on day (time.sched-time-hour) (time.sched-time-minute))
 
 Section: Parse Helpers
   SchedTime = record { sched-time-hour : Integer, sched-time-minute : Integer }
@@ -243,6 +252,18 @@ Section: Parse Helpers
     let time = sched-parse-time-ampm s ampm-word
     in time.sched-time-hour
 
+  sched-day-unknown : Integer = 0 - 1
+
+  sched-hour-ok : Integer -> Boolean
+  sched-hour-ok (h) = if h < 0 then False else h <= 24
+
+  sched-time-ok : SchedTime -> Boolean
+  sched-time-ok (t) =
+    if t.sched-time-hour < 0 then False
+    else if t.sched-time-hour > 23 then False
+    else if t.sched-time-minute < 0 then False
+    else t.sched-time-minute <= 59
+
   sched-parse-day-name : Text -> Integer
   sched-parse-day-name (name) =
     if name == "sunday" then 0 else if name == "sun" then 0
@@ -252,6 +273,6 @@ Section: Parse Helpers
     else if name == "thursday" then 4 else if name == "thu" then 4
     else if name == "friday" then 5 else if name == "fri" then 5
     else if name == "saturday" then 6 else if name == "sat" then 6
-    else 0
+    else sched-day-unknown
 
 Page 1

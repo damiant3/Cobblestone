@@ -30,6 +30,22 @@ Section: Keywords and Sanitization
    in if is-sw-keyword s then "`" & s & "`"
       else s
 
+ The IR spells a record field as `name/slot`, so a field name reaches the
+ emitter as `a/0` and reads as a division in every target that has one.
+ riscv resolves the slot and needs it; every source plug wants the name.
+
+  sw-slash-pos : Text, Integer, Integer -> Integer
+  sw-slash-pos (f) (i) (len) =
+   if i >= len then (-1)
+   else if char-to-text (char-at f i) == "/" then i
+   else sw-slash-pos f (i + 1) len
+
+  sw-field : Text -> Text
+  sw-field (f) =
+   let slash = sw-slash-pos f 0 (text-length f)
+   in if slash >= 0 then sw-sanitize (substring f 0 slash)
+      else sw-sanitize f
+
   sw-escape-text : Text -> Text
   sw-escape-text (s) =
    let s1 = text-replace s "\\" "\\\\"
@@ -162,8 +178,8 @@ Section: Expression Emission
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-sw-expr-at body arities (depth + 1)
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-sw-expr-at body arities (depth + 1)
     is IrRecord (name) (fields) (ty) (sp) -> emit-sw-record name fields arities
-    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-sw-expr-at rec arities (depth + 1) & "." & sw-sanitize field
-    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "{ var _r = " & emit-sw-expr-at rec arities (depth + 1) & "; _r." & sw-sanitize field & " = " & emit-sw-expr-at val arities (depth + 1) & "; return _r }()"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-sw-expr-at rec arities (depth + 1) & "." & sw-field field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "{ var _r = " & emit-sw-expr-at rec arities (depth + 1) & "; _r." & sw-field field & " = " & emit-sw-expr-at val arities (depth + 1) & "; return _r }()"
     is IrFork (body) (ty) (sp) -> emit-sw-expr-at body arities (depth + 1)
     is IrAwait (task) (ty) (sp) -> emit-sw-expr-at task arities (depth + 1)
     is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> "(try? { " & emit-sw-act body arities & " } ?? { " & emit-sw-act fb arities & " }())"
@@ -306,6 +322,7 @@ Section: Builtin Emitters
    SwBuiltinEmitter { name = "list-at", emit = \args arities -> "(" & emit-sw-expr (list-at args 0) arities & " as! [Any?])[" & emit-sw-expr (list-at args 1) arities & " as! Int]" },
    SwBuiltinEmitter { name = "list-length", emit = \args arities -> "(" & emit-sw-expr (list-at args 0) arities & " as! [Any?]).count" },
    SwBuiltinEmitter { name = "list-snoc", emit = \args arities -> "(" & emit-sw-expr (list-at args 0) arities & " as! [Any?]) + [" & emit-sw-expr (list-at args 1) arities & "]" },
+   SwBuiltinEmitter { name = "list-push", emit = \args arities -> "(" & emit-sw-expr (list-at args 0) arities & " as! [Any?]) + [" & emit-sw-expr (list-at args 1) arities & "]" },
    SwBuiltinEmitter { name = "max", emit = \args arities -> "max(" & emit-sw-expr (list-at args 0) arities & " as! Int, " & emit-sw-expr (list-at args 1) arities & " as! Int)" },
    SwBuiltinEmitter { name = "min", emit = \args arities -> "min(" & emit-sw-expr (list-at args 0) arities & " as! Int, " & emit-sw-expr (list-at args 1) arities & " as! Int)" },
    SwBuiltinEmitter { name = "negate", emit = \args arities -> "(-(" & emit-sw-expr (list-at args 0) arities & " as! Int))" },

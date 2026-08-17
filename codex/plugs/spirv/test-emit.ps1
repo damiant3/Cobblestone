@@ -16,7 +16,12 @@ if (-not (Test-Path $PlugCdx)) { Write-Host "MISSING plug; run build-bin.ps1"; e
 
 $Seed   = Join-Path $Root 'seed\Codex.cdx'
 $IrFile = Join-Path $OutDir 'emit.ir'
-& pwsh -NoProfile -File (Join-Path $Root 'build\compile.ps1') -Src $Src -Out $IrFile -Log (Join-Path $OutDir 'emit-ir.log') -IrCce -Kernel $Seed
+# text-plug: this plug resolves a Codex call by its NAME, so the inline passes
+# must not substitute a body and delete the call. See text-plug-ir-pipeline in
+# codex/compiler/IR/Passes.codex, and spirv/run.ps1, which passes the same
+# flag: without it this script grades a different program than the plug is
+# handed in service.
+& pwsh -NoProfile -File (Join-Path $Root 'build\compile.ps1') -Src $Src -Out $IrFile -Log (Join-Path $OutDir 'emit-ir.log') -IrCce -Passes 'text-plug' -Kernel $Seed
 if ($LASTEXITCODE -ne 0) { Write-Host "FAIL: IR compile; see emit-ir.log"; exit 3 }
 
 # mode header (CCE "IR-CCE" + CCE newline) + IR bytes + null terminator

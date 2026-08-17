@@ -26,7 +26,6 @@ const SPECIES = [
 // Foreground decoration sprites (parallax layers) -- big, lush, overlapping
 const FG_SPRITES = [
   // Far edges -- tall coral framing the scene
-  { tex:'fg-coral-left',   x:-5.5, y:-0.5, z:1.8, w:4.0, h:6.0 },
   { tex:'fg-coral-right',  x: 5.5, y:-0.5, z:1.8, w:4.0, h:6.0 },
   // Side rocks
   { tex:'fg-rock-left',    x:-4.0, y:-2.5, z:2.2, w:3.0, h:3.0 },
@@ -34,7 +33,6 @@ const FG_SPRITES = [
   // Center-bottom coral cluster
   { tex:'fg-coral-center', x: 0.0, y:-2.5, z:3.0, w:5.0, h:3.5 },
   // Mid-ground fill
-  { tex:'fg-coral-left',   x:-2.5, y:-2.0, z:1.2, w:2.5, h:3.5 },
   { tex:'fg-coral-right',  x: 2.5, y:-2.0, z:1.2, w:2.5, h:3.5 },
   { tex:'fg-rock-left',    x:-1.0, y:-3.0, z:2.5, w:2.0, h:1.5 },
   { tex:'fg-rock-right',   x: 1.0, y:-3.0, z:2.5, w:2.0, h:1.5 },
@@ -700,8 +698,9 @@ function buildAtlas(device, imgs) {
   for (const name of allTexNames) {
     const img = imgs[name];
     if (!img) { regions[name] = {u:0,v:0,w:0.001,h:0.001}; continue; }
-    const iw = Math.min(img.width, 512);
-    const ih = Math.min(img.height, 512);
+    const sc = Math.min(1, 512 / Math.max(img.width, img.height));
+    const iw = Math.max(1, Math.round(img.width * sc));
+    const ih = Math.max(1, Math.round(img.height * sc));
     if (sx + iw > SIZE) { sy += sh; sx = 0; sh = 0; }
     // Clear the target rect first to avoid blending with previous content
     ctx.clearRect(sx, sy, iw, ih);
@@ -930,7 +929,7 @@ async function init() {
   spawnSchool(2, 18); spawnSchool(0, 5); spawnSchool(5, 12);
   spawnSchool(3, 6); spawnFish(1); spawnFish(1);
   spawnFish(4); spawnFish(4); spawnFish(4);
-  spawnFish(6); spawnFish(6); spawnSchool(7, 4);
+  spawnFish(6); spawnFish(6);
 
   initParticles();
   startTime = performance.now()/1000;
