@@ -25,5 +25,9 @@ for m in $LADDER_RUNGS; do
         *ORACLE*|*TRANSPORT\ FAILED*) ;;
         *) echo "NO VERDICT from $m -- treating as failure"; fail=1 ;;
     esac
+    # pingpong carries a claim its arm diff cannot make: that emitting text
+    # from stage 1's text reproduces it. Checked in the sweep so it cannot be
+    # skipped by running the rung on its own.
+    [ "$m" = pingpong ] && { pingpong_fixed_point || fail=1; }
 done
 exit $fail

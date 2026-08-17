@@ -111,6 +111,37 @@ print(f"banked ast/{m}.truth: {len(lines)} lines")
 PY
 }
 
+# The pingpong rung's real claim, which the arm diff does not make.
+#
+# pingpong's subject IS text.truth: stage 2 compiles the text stage 1 emitted
+# and emits again, so a compiler that round-trips its own output must produce
+# the same bytes back. Both arms agreeing says nothing about that -- they would
+# agree just as contentedly on a second pass that dropped half the chapter,
+# because both would drop the same half.
+#
+# This was written in truthcycle_pingpong.sh as "the whole claim" and checked
+# by nothing. The files matched, by luck rather than by test, for as long as
+# the rung has existed. A missing file fails here rather than passing quietly:
+# an unrun rung and a green one must not look alike.
+pingpong_fixed_point() {
+    cd $T/ast
+    local f
+    for f in text.truth pingpong.truth; do
+        [ -s "$f" ] || {
+            echo "FIXED POINT UNCHECKED: no $f (run truthcycle_text.sh and truthcycle_pingpong.sh)"
+            return 1
+        }
+    done
+    if diff <(tr -d '\r' < text.truth) <(tr -d '\r' < pingpong.truth) \
+            > pingpong.fixpoint.diff 2>&1; then
+        echo "FIXED POINT: pingpong.truth byte-identical to text.truth"
+    else
+        echo "FIXED POINT BROKEN (first 15 lines):"
+        head -15 pingpong.fixpoint.diff
+        return 1
+    fi
+}
+
 # Run the emitted zig, diff against the truth. Shared by both arms: the
 # transport is what differs between them, never the verdict.
 zig_verdict() {
@@ -155,7 +186,7 @@ zig_arm() {
 }
 
 # The ring arm, for subjects past the TCP intake ceiling: the receive
-# path costs ~130 bytes of guest heap per IR byte and fibx is 11.2 MB,
+# path costs ~130 bytes of guest heap per IR byte and fibx is 12.9 MB,
 # where read-serial-cce costs one. Same parser, same emitter, and the
 # ring plug is rebuilt from the same ZigEmitter -- only the transport
 # and the plug body differ.

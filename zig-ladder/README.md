@@ -94,12 +94,13 @@ matter.
 **The code generation on the zig arm has genuinely independent lineage.** The
 bytes of the zig arm's executable are produced by the zig toolchain, which has
 nothing to do with Codex -- not its back end, not its seed, not anything in this
-repository. Worth being specific, because it is better than it sounds: these
-rungs build with a plain `zig build-exe`, and zig 0.16 does not use LLVM for
-that. It uses its own x86-64 back end. (Measured, not assumed: the same source
-built with `-fllvm` produces a different binary of a different size.) So the
-machine code on the two arms comes from two independently written x86-64 code
-generators, and a third is one flag away if we ever want it.
+repository. Worth being specific, because it is better than it sounds: the rungs
+run their zig with `zig run` (`ast/oracle_lib.sh`, `zig_verdict`), and zig 0.16
+does not use LLVM for that. It uses its own x86-64 back end. Measured on the
+command the rungs actually use, not on a nearby one: `zig run` produces a
+10,253,773-byte binary and `zig run -fllvm` produces a 4,113,312-byte one. So
+the machine code on the two arms comes from two independently written x86-64
+code generators, and a third is one flag away if we ever want it.
 
 When the two arms agree on the output of a compiler phase, that
 agreement crossed a real toolchain boundary. This is the DDC property, and it is
@@ -119,6 +120,55 @@ the back end computed a rodata offset wrongly, the transpiled back end would
 reproduce that faithfully and the diff would be empty. That is what
 `ast/f4_boot.py` (below) is for: booting the emitted binary asks a third party
 with no stake in the argument.
+
+## Closing arguments: what each rung is worth
+
+The ladder's names invite a reading it does not support. `lex` does not test the
+lexer. **Every rung has the same shape and diverges at the same place**: the
+seed compiles one bundled subject twice, once to a bare-metal CDX and once to
+IR-CCE, and the two arms part company only after the seed's front end, IR
+pipeline and IR serializer have all run. Both arms then execute, and what gets
+compared is program output text. Only the subject changes from rung to rung.
+
+So the phase names describe **how much of the compiler the plug had to
+transpile**, not how deeply that phase was verified. If the seed's lexer is
+wrong, both arms are wrong together and `lex` is green.
+
+What does vary, and what the ladder is really graded on, is *what artifact the
+agreement is about*:
+
+| rungs | compared artifact | what agreement is worth |
+|---|---|---|
+| `lex` `parse` `desugar` `scope` `check` `lower` | a dump this harness designed: tokens, CST, AST, IR text | two independent code generators produce programs that agree on the phase's observable behaviour, for the instruction mix that phase uses. Blind to anything the dump does not print. |
+| `text` `pingpong` | Codex source re-emitted by the compiler's own `CodexEmitter` | as above, plus `pingpong` alone carries a self-consistency claim: emitting from stage 1's text must reproduce it. That is a different question from arm agreement and is checked separately by `pingpong_fixed_point`. |
+| `lir` | machine-code bytes from hand-built `LirFunc` data, no front end involved | the instruction selector agrees. The bytes are compared as decimal text and never executed. |
+| `fib` `fibx` `scale` `whole` `clamp` | the **actual CDX image the compiler emits** -- header, content, tail, symbol map | the strongest rungs, and the reason the ladder exists: the thing under comparison is now the x86 back end's real output rather than a dump of intermediate state. `whole` does it for every chapter but the driver. |
+
+Two provenance facts that bound all of it:
+
+**The plug is not an independent tool.** `zig-plug.cdx` is `ZigEmitter.codex`
+compiled *by the seed* and run *as a QEMU kernel*. The seed therefore produced
+both the IR the two arms rest on and the tool that generates the zig arm. The
+only lineage in the building genuinely unrelated to Codex is zig's own back end.
+
+**Nothing here is checked by running it.** Even in the strongest rungs the CDX
+bytes are compared as digits. `ast/f3_run.zig` and `ast/f4_boot.py` do execute
+emitted code, but they run artifacts already known to be byte-identical between
+arms, so each is one execution rather than a comparison -- and neither is in
+`allcycles.sh`.
+
+Which leaves two sentences worth being careful about.
+
+**What this establishes.** Given IR produced by the seed, the zig plug plus an
+unrelated x86-64 code generator reproduce, byte for byte, the observable output
+of the seed's own back end across thirteen subjects, up to and including the
+entire compiler minus its driver -- and for four of those, the complete CDX
+image the compiler emits.
+
+**What it does not establish.** That the seed is honest. The seed sits upstream
+of the divergence on both arms, and it also compiled the plug that produces the
+zig arm. Agreement here is evidence about code generation, not about the front
+end both arms inherit.
 
 ## The parts
 
@@ -268,7 +318,7 @@ yesterday's emitter for whichever rungs use the other one.
 Paths below are relative to this directory; the bundlers and rung scripts live
 in `ast/`, the transports and VM helpers at the top level.
 
-    ast/truthcycle_lex.sh     # one rung's truth arm: bundle, compile, bank
+    ast/truthcycle.sh         # one rung's truth arm: bundle, compile, bank
     ast/lexcycle.sh           # the same rung through the plug, diffed
     ast/allcycles.sh          # rebuild both plugs, sweep all fourteen
     ast/rebank_all.sh         # re-bank every truth arm, then sweep
