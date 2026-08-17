@@ -90,8 +90,31 @@ def pipeline_source(src, passes, scan=True):
     """frontend_source plus the x86 emission, bound as `res`. The rungs that
     dump a CDX want this; the one that emits IR wants the frontend only --
     calling x86-64-emit-cdx there would put the whole back end in the IR's
-    reachable set for nothing."""
+    reachable set for nothing.
+
+    Emission runs inside a deck reservation. opening.codex builds thirteen of
+    them, one per phase, from init-phase-allocator at line 442 through
+    `lift-base = build lift-deck-height` at 830 -- and emission runs inside that
+    last one. A harness that builds none leaves the deck-pos cell holding
+    whatever boot left there, and deck-record is not a no-op: it compiles to
+    __deck-enter / body / __deck-exit, which points R10 -- the bump allocator --
+    at that cell. bag-add wraps its cons cell and record in deck-record, so the
+    first diagnostic a compile records allocates the bag wherever that stale
+    cell points, and the next bag-add reads [rdi-8] off it. That is the clamp
+    fault: page fault at CR2=0xfffffffffffffff8 inside __list_snoc, with a null
+    list in RDI. Thirteen rungs missed it because a clean compile never calls
+    bag-add at all.
+
+    This is build's body inlined rather than cited, because build also calls
+    deck-reservation-guard -> poke-byte, and poke-byte has no ZigEmitter entry:
+    citing it would make the builtin reachable and break the zig arm. The guard
+    only pokes the boot stack's guard page, which is bare metal's concern and
+    not something a reservation this size reaches.
+    """
     return frontend_source(src, passes, scan) + """
+    in let emit-deck-base = __heap-save
+    in let emit-deck-set = __deck-set emit-deck-base
+    in let emit-deck-adv = __heap-advance demand-lift-floor
     in let res = x86-64-emit-cdx ir sorted"""
 
 
