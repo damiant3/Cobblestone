@@ -106,6 +106,10 @@ foreach ($ch in @('codex/foreword/core/CCE.codex',
                   'codex/compiler/Types/TypeCheckerInference.codex',
                   'codex/compiler/IR/LoweringTypes.codex',
                   'codex/compiler/IR/Lowering.codex',
+                  # RESOLVE: rewrite-ir-defs. Every harness runs the driver's
+                  # resolve phase now, so every subject needs this chapter --
+                  # it used to arrive only via the whole rung's extras.
+                  'codex/compiler/IR/ResolveTypes.codex',
                   'codex/compiler/Emit/IRTextEmitter.codex')) {
     Add-PlugChapter -Lines $lines -Path (Join-Path $repo $ch) -Quire 'Parsmi'
 }

@@ -25,7 +25,6 @@ $ErrorActionPreference = 'Stop'
     -PlugName 'clamp-subject' `
     -ExtraChapters @(
         'codex/compiler/IR/Occurrence.codex',
-        'codex/compiler/IR/ResolveTypes.codex',
         'codex/compiler/IR/IRCheck.codex',
         'codex/compiler/IR/LambdaLifting.codex',
         'codex/compiler/IR/Simplify.codex',

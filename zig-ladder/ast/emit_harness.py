@@ -42,6 +42,22 @@ def frontend_source(src, passes, scan=True):
     purpose -- the driver computes those values -- so nothing should ship with
     it.
     """
+    # opening.codex runs a RESOLVE phase between the IR pipeline and emission
+    # (lines 633-634 and 823-825). Skipping it was the defect behind finding 11:
+    # without build-type-def-map the emitter's st.type-defs holds no entry for a
+    # record declared in the subject, so resolve-constructed-ty fails and
+    # emit-field-access refuses with a ud2; and without rewrite-ir-defs the IR
+    # still carries unresolved ConstructedTy annotations into emission.
+    #
+    # resolve-all-bindings lives in opening.codex and cannot be cited from here,
+    # so its body -- a map applying deep-resolve to each binding -- is written as
+    # the comprehension it is, rather than copied as a function.
+    RESOLVE = """in let resolved-env = for b in ((cr.env).bindings) -> TypeBinding { name = b.name, bound-type = deep-resolve cst (b.bound-type) }
+    in let all-bindings = for b in (sort-bindings (cr.types & resolved-env)) -> TypeBinding { name = b.name, bound-type = deep-resolve cst (b.bound-type) }
+    in let type-map = build-type-def-map (ch.type-defs) 0 (list-length (ch.type-defs)) []
+    in let sorted = sort-bindings (type-map & all-bindings)
+    in let ir = __record-set ir0 "defs" (rewrite-ir-defs sorted (ir0.defs) 0)"""
+
     if scan:
         head = f"""let toks = tokenize {src} 1
     in let scan = scan-document (make-parse-state (toks.tokens) {src})
@@ -53,10 +69,10 @@ def frontend_source(src, passes, scan=True):
     in let assignments = []
     in let colliding = skip-list-text-empty
     in let renames = []"""
-    lower = ("""in let ir-raw = lower-chapter ch sorted cst (rr.ctor-names) renames colliding assignments 0
+    lower = ("""in let ir-raw = lower-chapter ch bound cst (rr.ctor-names) renames colliding assignments 0
     in let passed = run-ir-pipeline default-ir-pipeline ir-raw False
-    in let ir = passed.chapter""" if passes else
-        "in let ir = lower-chapter ch sorted cst (rr.ctor-names) renames colliding assignments 0")
+    in let ir0 = passed.chapter""" if passes else
+        "in let ir0 = lower-chapter ch bound cst (rr.ctor-names) renames colliding assignments 0")
     return head + f"""
     in let doc = parse-document (make-parse-state (toks.tokens) {src}) 0
     in let dr = desugar-document {src} doc (doc.chapter-title) 0
@@ -65,8 +81,9 @@ def frontend_source(src, passes, scan=True):
     in let rr = resolve-chapter ch colliding assignments 0
     in let cr = check-chapter ch renames colliding assignments 0
     in let cst = cr.state
-    in let sorted = sort-bindings (cr.types)
-    {lower}"""
+    in let bound = sort-bindings (cr.types)
+    {lower}
+    {RESOLVE}"""
 
 
 def pipeline_source(src, passes, scan=True):
