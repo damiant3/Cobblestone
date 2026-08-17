@@ -73,7 +73,26 @@ def frontend_source(src, passes, scan=True):
     in let passed = run-ir-pipeline default-ir-pipeline ir-raw False
     in let ir0 = passed.chapter""" if passes else
         "in let ir0 = lower-chapter ch bound cst (rr.ctor-names) renames colliding assignments 0")
-    return head + f"""
+    # opening.codex:442 opens with `let mountain-base = init-phase-allocator`,
+    # and this is not only about setting the deck cell. X86_64Chapter.codex:1147
+    # decides whether deck-record is the intrinsic or an ordinary function:
+    #
+    #   pa-slug = def-chapter-slug defs-lifted "init-phase-allocator" ...
+    #   dr-slug = def-chapter-slug defs-lifted "deck-record" ...
+    #   deck-record-intrinsic = (pa-slug /= "" & pa-slug == dr-slug)
+    #
+    # A harness that never calls init-phase-allocator leaves it unreachable, IR
+    # emission prunes it, pa-slug comes back "", and the flag is False. Then
+    # deck-record is emitted as what it looks like -- `mov rax,rdi ; ret`, four
+    # bytes -- and every value the compiler wraps in it to survive
+    # emit-all-defs's per-function __heap-restore is freed at that boundary
+    # instead. bag-add wraps both its cons cell and its record, so the second
+    # diagnostic a compile records walks a dangling spine: that is clamp's
+    # RDI=0 into __list_snoc.
+    #
+    # Naming it is the whole job -- the marker has to be in the unit. It is
+    # __heap-save + __deck-set, so the zig arm emits it without trouble.
+    return "let mountain-base = init-phase-allocator\n    in " + head + f"""
     in let doc = parse-document (make-parse-state (toks.tokens) {src}) 0
     in let dr = desugar-document {src} doc (doc.chapter-title) 0
     in let ch0 = dr.dr-chapter
