@@ -52,6 +52,24 @@ def frontend_source(src, passes, scan=True):
     # resolve-all-bindings lives in opening.codex and cannot be cited from here,
     # so its body -- a map applying deep-resolve to each binding -- is written as
     # the comprehension it is, rather than copied as a function.
+    # The checker records a type for every expression, not only for bindings,
+    # and the driver resolves that table too: opening.codex:635 runs
+    # resolve-all-expr-types and line 692 rebuilds the UnificationState around
+    # the result, so what reaches lowering is `expr-types = sorted-et`.
+    #
+    # Passing cr.state raw was the second half of clamp. arith's gauge is
+    # `(Gauge { g = n }).g` -- the receiver is a record LITERAL, so its type
+    # comes from expr-types rather than from any binding, and no amount of
+    # resolving bindings reaches it. It arrived at emission unresolved,
+    # emit-field-access refused with a ud2 exactly as it should, and the rung
+    # compared error messages instead of a binary.
+    #
+    # resolve-all-expr-types lives in opening.codex and cannot be cited from
+    # here, so its body -- a map applying deep-resolve to each entry -- is
+    # written as the comprehension it is, the same way resolved-env is.
+    EXPR_TYPES = """in let resolved-et = for e in (sort-expr-types ((cr.state).expr-types)) -> ExprTypeEntry { key = e.key, ty = deep-resolve (cr.state) (e.ty) }
+    in let cst = __record-set (cr.state) "expr-types" resolved-et"""
+
     RESOLVE = """in let resolved-env = for b in ((cr.env).bindings) -> TypeBinding { name = b.name, bound-type = deep-resolve cst (b.bound-type) }
     in let all-bindings = for b in (sort-bindings (cr.types & resolved-env)) -> TypeBinding { name = b.name, bound-type = deep-resolve cst (b.bound-type) }
     in let type-map = build-type-def-map (ch.type-defs) 0 (list-length (ch.type-defs)) []
@@ -124,7 +142,7 @@ def frontend_source(src, passes, scan=True):
     in let ch = scope-achapter ch0 colliding assignments 0
     in let rr = resolve-chapter ch colliding assignments 0
     in let cr = check-chapter ch renames colliding assignments 0
-    in let cst = cr.state
+    {EXPR_TYPES}
     in let bound = sort-bindings (cr.types)
     {lower}
     {RESOLVE}"""
