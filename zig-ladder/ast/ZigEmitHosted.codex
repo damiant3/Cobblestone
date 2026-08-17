@@ -1,0 +1,27 @@
+Chapter: ZigEmitHosted
+
+ The plug as a program: IR in on stdin, zig source out. Same parser and
+ same emitter as ZigPlugRing, with the serial ring and its SIZE: framing
+ replaced by a read and a write, because a hosted process is handed its
+ input by the shell rather than having to fetch it from a device.
+
+ This is the piece that takes QEMU out of the loop. Today an IR reaches
+ the emitter by booting a plug kernel and pushing 13MB through a gdbstub
+ refill loop at roughly a third of a core's throughput; here it is a
+ file read. The emitter's answer must not change, and that is the point
+ of building it this way: the same ZigEmitter compiled two ways, and the
+ ladder already knows how to insist they agree.
+
+ The output goes to stderr, because print-text is cx_print and cx_print
+ is std.debug.print. Redirect with 2> and it is a file. Putting it on
+ stdout would want a builtin this plug does not have yet -- write-binary
+ takes bytes and the emitter's answer is Text, so the conversion would
+ have to happen in Codex rather than at the boundary.
+
+Section: Body
+
+  opening : [Console, FileSystem] Nothing = act
+   src <- read-file-uni "/dev/stdin"
+   let parsed = parse-ir-chapter src
+   in print-text (emit-zig-chapter (parsed.chapter) (parsed.type-defs))
+  end

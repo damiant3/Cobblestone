@@ -4,7 +4,11 @@
 # chapters, because the intake is the serial ring the compiler itself
 # reads from.
 param(
-    [string]$OutName = 'ringplug-source.codex'
+    [string]$OutName = 'ringplug-source.codex',
+    # The body is the only thing that differs between the ring-fed plug and
+    # the hosted one: same declarations, same parser, same emitter.
+    [string]$Body = 'ZigPlugRing.codex',
+    [string]$PlugName = 'ringplug'
 )
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path
@@ -24,7 +28,7 @@ foreach ($decl in @('codex/compiler/Core/Name.codex',
 Add-PlugChapter -Lines $lines -Path (Join-Path $repo 'codex/plugs/common/PlugTypes.codex') -Quire 'Zig'
 Add-PlugChapter -Lines $lines -Path (Join-Path $repo 'codex/plugs/common/IRTextParser.codex') -Quire 'Zig'
 Add-PlugChapter -Lines $lines -Path (Join-Path $repo 'codex/plugs/zig/ZigEmitter.codex') -Quire 'Zig'
-Add-PlugChapter -Lines $lines -Path (Join-Path $here 'ZigPlugRing.codex') -Quire 'Zig'
+Add-PlugChapter -Lines $lines -Path (Join-Path $here $Body) -Quire 'Zig'
 
 $preLines = Resolve-PlugForewords $lines
-Bundle-PlugSource -PreLines $preLines -Lines $lines -BundleSrc (Join-Path $here $OutName) -PlugName 'ringplug'
+Bundle-PlugSource -PreLines $preLines -Lines $lines -BundleSrc (Join-Path $here $OutName) -PlugName $PlugName
