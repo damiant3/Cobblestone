@@ -1499,6 +1499,13 @@ Section: Lambda and List Helpers
    in if i == list-length params - 1 then one
       else one & ", " & zig-lambda-param-types params (i + 1) ty ctx
 
+ The body continues the enclosing depth rather than restarting at 0. A
+ lambda becomes a `fn` inside a struct inside a block, and a zig fn does not
+ close over locals -- but zig's shadowing rules still read the whole lexical
+ path, so a restart makes the body's `_p0`, `_r0` and `b0` collide with the
+ arm capture, record temp and label of whatever scope the lambda sits in.
+ Only a top-level def may emit its body at 0, because nothing encloses it.
+
   zig-lambda-closure : List IRParam, IRExpr, CodexType, ZigCtx, Integer -> Text
   zig-lambda-closure (params) (body) (ty) (ctx) (d) =
    let lbl = zig-label d
@@ -1515,7 +1522,7 @@ Section: Lambda and List Helpers
    in lbl & ": { " & zig-capture-type-decls ctx caps 0 d & "const " & env
     & " = struct { " & zig-capture-fields caps 0 d & "fn call(" & cx & ": *anyopaque, "
     & emit-zig-lambda-params params 0 ty d ctx & ") " & ret
-    & " { " & unpack & discards & "return " & emit-zig-expr body inner 0 & "; } }; break :"
+    & " { " & unpack & discards & "return " & emit-zig-expr body inner (d + 1) & "; } }; break :"
     & lbl & " " & zig-closure-type (list-length params) (zig-lambda-param-types params 0 ty ctx) ret
     & "{ .ctx = cx_new(" & env & "{" & zig-capture-inits ctx caps 0 & "}), .call = &" & env & ".call }; }"
 

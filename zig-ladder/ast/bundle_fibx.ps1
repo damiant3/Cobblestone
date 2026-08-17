@@ -6,7 +6,13 @@
 param(
     [string]$Harness = 'FibxHarness.codex',
     [string]$OutName = 'fibx-subject.codex',
-    [string]$PlugName = 'fibx-subject'
+    [string]$PlugName = 'fibx-subject',
+    # Chapters appended after the list below, and the BootPaint to carry.
+    # The whole-compiler rung adds the middle end and swaps the stub for the
+    # real painter; everything else about the unit is identical, so it stays
+    # one list rather than two that have to be kept in step.
+    [string[]]$ExtraChapters = @(),
+    [string]$BootPaint = 'BootPaintStubs.codex'
 )
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path
@@ -106,7 +112,11 @@ foreach ($ch in @('codex/foreword/core/CCE.codex',
 # Update 42 gave PhaseAllocator a cite of Codex chapter BootPaint, and a cite
 # names a chapter, so the unit has to carry one. See BootPaintStubs.codex for
 # why it is a stub and not the real 341-line screen painter.
-Add-PlugChapter -Lines $lines -Path (Join-Path $here 'BootPaintStubs.codex') -Quire 'Parsmi'
+foreach ($ch in $ExtraChapters) {
+    Add-PlugChapter -Lines $lines -Path (Join-Path $repo $ch) -Quire 'Parsmi'
+}
+$bootPaintPath = if ($BootPaint -match '/') { Join-Path $repo $BootPaint } else { Join-Path $here $BootPaint }
+Add-PlugChapter -Lines $lines -Path $bootPaintPath -Quire 'Parsmi'
 Add-PlugChapter -Lines $lines -Path (Join-Path $here $Harness) -Quire 'Parsmi'
 
 # The seed's emitter hijacks any 1-arg call literally named deck-record

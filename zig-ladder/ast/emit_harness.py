@@ -25,9 +25,25 @@ def codex_literal(s):
     return s.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
 
 
-def harness_source(chapter, prefix, subject_text):
+def harness_source(chapter, prefix, subject_text, passes=False):
     """Render the harness chapter. `prefix` names the walkers so two harnesses
-    can be bundled in one unit without colliding."""
+    can be bundled in one unit without colliding.
+
+    `passes` inserts the IR pipeline between lower and emit, the way
+    compile-frontend-passes does. It is off by default because the rungs that
+    predate it banked truth without it -- and it is not cosmetic: IR emission
+    prunes to what the opening reaches, so a harness that never calls
+    run-ir-pipeline prunes Simplify, Occurrence and LambdaLifting straight
+    back out of the unit however many chapters were bundled."""
+    # The pipeline's infos are the only evidence it did anything. Without
+    # them "the passes ran" is inferred from a byte count, and a pipeline
+    # that silently did nothing would look exactly like one that ran.
+    info = ('\n      print-line-uni ("pass-infos " & show (list-length (passed.infos)))'
+            if passes else '')
+    lower = f"""in let ir-raw = lower-chapter ch sorted cst (rr.ctor-names) [] skip-list-text-empty [] 0
+    in let passed = run-ir-pipeline default-ir-pipeline ir-raw False
+    in let ir = passed.chapter""" if passes else \
+        "in let ir = lower-chapter ch sorted cst (rr.ctor-names) [] skip-list-text-empty [] 0"
     return f'''Chapter: {chapter}
 
 Section: Subject
@@ -94,11 +110,11 @@ Section: Driver
     in let cr = check-chapter ch [] skip-list-text-empty [] 0
     in let cst = cr.state
     in let sorted = sort-bindings (cr.types)
-    in let ir = lower-chapter ch sorted cst (rr.ctor-names) [] skip-list-text-empty [] 0
+    {lower}
     in let res = x86-64-emit-cdx ir sorted
     in act
       print-line-uni ("check-errors " & show ((cst.bag).error-count))
-      print-line-uni ("ir-defs " & show (list-length (ir.defs)))
+      print-line-uni ("ir-defs " & show (list-length (ir.defs))){info}
       print-line-uni ("emit-errors " & show ((res.bag).error-count))
       print-line-uni ("header-len " & show (list-length (res.header-bytes)))
       print-line-uni ("content-len " & show (res.content-len))
