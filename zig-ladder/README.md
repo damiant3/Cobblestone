@@ -1,5 +1,22 @@
 # The zig plug's phase-oracle ladder
 
+## What this is banked against
+
+| | |
+|---|---|
+| Seed | `270227BE0202EDBB` (2,827,487 bytes) |
+| Update | 45 |
+| Rungs | 13 of 14 green |
+| Red | `clamp` -- page fault in `__list_snoc`; cause found, fix in test |
+
+This table is the point of the whole arrangement, so it is the first thing on
+the page and it is allowed to be unflattering. A ladder that cannot say which
+seed it agrees with is not evidence about anything.
+
+The Update is not typed here by hand -- `seed_identity.py` derives it from the
+seed's own hash by finding the release note that names it, so the label cannot
+drift from the binary. Run it to see what a checkout is actually holding.
+
 ## What this is
 
 This directory holds a Diverse Double-Compiling check, in Wheeler's sense:
