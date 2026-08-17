@@ -25,6 +25,34 @@ def codex_literal(s):
     return s.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
 
 
+def pipeline_source(src, passes):
+    """The compiler's own front-to-back sequence, from source text to an
+    EmitChapterResult bound as `res`. Every program built here runs exactly
+    this -- the oracle harnesses and the hosted compiler alike -- so it is
+    written once. `src` is whatever expression yields the source Text.
+
+    When `passes` is set the IR pipeline runs between lower and emit, where
+    compile-frontend-passes runs it. That call is not cosmetic: IR emission
+    prunes to what the opening reaches, so a program that never calls
+    run-ir-pipeline prunes Simplify, Occurrence and LambdaLifting straight
+    back out of the unit however many chapters were bundled."""
+    lower = ("""in let ir-raw = lower-chapter ch sorted cst (rr.ctor-names) [] skip-list-text-empty [] 0
+    in let passed = run-ir-pipeline default-ir-pipeline ir-raw False
+    in let ir = passed.chapter""" if passes else
+        "in let ir = lower-chapter ch sorted cst (rr.ctor-names) [] skip-list-text-empty [] 0")
+    return f"""let toks = tokenize {src} 1
+    in let doc = parse-document (make-parse-state (toks.tokens) {src}) 0
+    in let dr = desugar-document {src} doc (doc.chapter-title) 0
+    in let ch0 = dr.dr-chapter
+    in let ch = scope-achapter ch0 skip-list-text-empty [] 0
+    in let rr = resolve-chapter ch skip-list-text-empty [] 0
+    in let cr = check-chapter ch [] skip-list-text-empty [] 0
+    in let cst = cr.state
+    in let sorted = sort-bindings (cr.types)
+    {lower}
+    in let res = x86-64-emit-cdx ir sorted"""
+
+
 def harness_source(chapter, prefix, subject_text, passes=False):
     """Render the harness chapter. `prefix` names the walkers so two harnesses
     can be bundled in one unit without colliding.
@@ -40,10 +68,6 @@ def harness_source(chapter, prefix, subject_text, passes=False):
     # that silently did nothing would look exactly like one that ran.
     info = ('\n      print-line-uni ("pass-infos " & show (list-length (passed.infos)))'
             if passes else '')
-    lower = f"""in let ir-raw = lower-chapter ch sorted cst (rr.ctor-names) [] skip-list-text-empty [] 0
-    in let passed = run-ir-pipeline default-ir-pipeline ir-raw False
-    in let ir = passed.chapter""" if passes else \
-        "in let ir = lower-chapter ch sorted cst (rr.ctor-names) [] skip-list-text-empty [] 0"
     return f'''Chapter: {chapter}
 
 Section: Subject
@@ -101,17 +125,7 @@ Section: Byte Dump
 Section: Driver
 
   opening : [Console] Nothing = act
-    let toks = tokenize subject-text 1
-    in let doc = parse-document (make-parse-state (toks.tokens) subject-text) 0
-    in let dr = desugar-document subject-text doc (doc.chapter-title) 0
-    in let ch0 = dr.dr-chapter
-    in let ch = scope-achapter ch0 skip-list-text-empty [] 0
-    in let rr = resolve-chapter ch skip-list-text-empty [] 0
-    in let cr = check-chapter ch [] skip-list-text-empty [] 0
-    in let cst = cr.state
-    in let sorted = sort-bindings (cr.types)
-    {lower}
-    in let res = x86-64-emit-cdx ir sorted
+    {pipeline_source("subject-text", passes)}
     in act
       print-line-uni ("check-errors " & show ((cst.bag).error-count))
       print-line-uni ("ir-defs " & show (list-length (ir.defs))){info}

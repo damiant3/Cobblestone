@@ -1,0 +1,88 @@
+Chapter: ClampHarness
+
+Section: Subject
+  subject-text : Text
+  subject-text = "Chapter: PlugOracleArith\n\n Integer division and the two remainders are what this asks about, because\n that is where languages disagree silently rather than failing to compile.\n Codex `/` truncates toward zero, `int-rem` takes the sign of the dividend,\n and `int-mod` is Euclidean. Python, Ruby, Lua and Perl floor instead;\n Haskell's `div` floors where its `quot` truncates; Dart's `%` is never\n negative. Every one of those disagreements is invisible to a compile and\n invisible to a round trip through the same plug.\n\nSection: Operations\n\n  dv : Integer, Integer -> Integer\n  dv (a) (b) = a / b\n\n  rm : Integer, Integer -> Integer\n  rm (a) (b) = int-rem a b\n\n  md : Integer, Integer -> Integer\n  md (a) (b) = int-mod a b\n\nSection: Bounded fields\n\n A clamping bounded field saturates at the declared band rather than\n wrapping or trapping. No target language does this natively: C#, Python\n and JavaScript all store what they are given, so the saturation has to\n be emitted by the plug from the field's declared type. That makes it the\n same class of silent disagreement as the remainders above -- a store\n that stops clamping compiles, runs, and answers 150 where the answer is\n 100.\n\n  Gauge = record {\n    g : Integer between -100 and 100 clamping\n  }\n\n  gauge : Integer -> Integer\n  gauge (n) = (Gauge { g = n }).g\n\nSection: Report\n\n  opening : [Console] Nothing\n  opening = act\n   print-line-uni (show (dv 7 3))\n   print-line-uni (show (dv (0 - 7) 3))\n   print-line-uni (show (dv 7 (0 - 3)))\n   print-line-uni (show (dv (0 - 7) (0 - 3)))\n   print-line-uni (show (dv (0 - 9) 8))\n   print-line-uni (show (dv (0 - 8) 8))\n   print-line-uni (show (rm 7 3))\n   print-line-uni (show (rm (0 - 7) 3))\n   print-line-uni (show (rm 7 (0 - 3)))\n   print-line-uni (show (rm (0 - 7) (0 - 3)))\n   print-line-uni (show (rm (0 - 9) 8))\n   print-line-uni (show (rm (0 - 8) 8))\n   print-line-uni (show (md 7 3))\n   print-line-uni (show (md (0 - 7) 3))\n   print-line-uni (show (md 7 (0 - 3)))\n   print-line-uni (show (md (0 - 7) (0 - 3)))\n   print-line-uni (show (md (0 - 9) 8))\n   print-line-uni (show (gauge 150))\n   print-line-uni (show (gauge (0 - 150)))\n   print-line-uni (show (gauge 42))\n  end\n"
+
+Section: Byte Dump
+
+  clamp-line : Integer, Integer, Integer, List Text -> Text
+  clamp-line (buf) (i) (hi) (acc) =
+   if i >= hi then text-concat-list acc
+   else clamp-line buf (i + 1) hi (list-push acc (integer-to-text (peek-byte buf i) & " "))
+
+  clamp-print-bytes : Integer, Integer, Integer -> [Console] Nothing
+  clamp-print-bytes (buf) (i) (len) = act
+    if i >= len then print-line-uni "."
+    else act
+      print-line-uni (clamp-line buf i (if i + 32 < len then i + 32 else len) [])
+      clamp-print-bytes buf (i + 32) len
+    end
+  end
+
+ header-bytes and tail-bytes arrive as lists rather than in the workspace,
+ so they need their own walker; splitting on the source of the bytes rather
+ than on what they mean keeps both walkers dumb.
+
+  clamp-list-line : List Integer, Integer, Integer, List Text -> Text
+  clamp-list-line (bs) (i) (hi) (acc) =
+   if i >= hi then text-concat-list acc
+   else clamp-list-line bs (i + 1) hi (list-push acc (integer-to-text (list-at bs i) & " "))
+
+  clamp-print-list : List Integer, Integer -> [Console] Nothing
+  clamp-print-list (bs) (i) = act
+    if i >= list-length bs then print-line-uni "."
+    else act
+      print-line-uni (clamp-list-line bs i (if i + 32 < list-length bs then i + 32 else list-length bs) [])
+      clamp-print-list bs (i + 32)
+    end
+  end
+
+ The symbol map is what the real compiler writes beside a .cdx, and it is
+ the only thing that says which bytes are which. It goes through the oracle
+ too: a plug that emitted the code correctly but scrambled the map would
+ still be wrong.
+
+  clamp-print-lines : List Text, Integer -> [Console] Nothing
+  clamp-print-lines (ls) (i) = act
+    if i >= list-length ls then print-line-uni "."
+    else act
+      print-line-uni (list-at ls i)
+      clamp-print-lines ls (i + 1)
+    end
+  end
+
+Section: Driver
+
+  opening : [Console] Nothing = act
+    let toks = tokenize subject-text 1
+    in let doc = parse-document (make-parse-state (toks.tokens) subject-text) 0
+    in let dr = desugar-document subject-text doc (doc.chapter-title) 0
+    in let ch0 = dr.dr-chapter
+    in let ch = scope-achapter ch0 skip-list-text-empty [] 0
+    in let rr = resolve-chapter ch skip-list-text-empty [] 0
+    in let cr = check-chapter ch [] skip-list-text-empty [] 0
+    in let cst = cr.state
+    in let sorted = sort-bindings (cr.types)
+    in let ir-raw = lower-chapter ch sorted cst (rr.ctor-names) [] skip-list-text-empty [] 0
+    in let passed = run-ir-pipeline default-ir-pipeline ir-raw False
+    in let ir = passed.chapter
+    in let res = x86-64-emit-cdx ir sorted
+    in act
+      print-line-uni ("check-errors " & show ((cst.bag).error-count))
+      print-line-uni ("ir-defs " & show (list-length (ir.defs)))
+      print-line-uni ("pass-infos " & show (list-length (passed.infos)))
+      print-line-uni ("emit-errors " & show ((res.bag).error-count))
+      print-line-uni ("header-len " & show (list-length (res.header-bytes)))
+      print-line-uni ("content-len " & show (res.content-len))
+      print-line-uni ("tail-len " & show (list-length (res.tail-bytes)))
+      print-line-uni "--- symbols ---"
+      clamp-print-lines (res.symbol-map) 0
+      print-line-uni "--- header ---"
+      clamp-print-list (res.header-bytes) 0
+      print-line-uni "--- content ---"
+      clamp-print-bytes (res.content-buf) 0 (res.content-len)
+      print-line-uni "--- tail ---"
+      clamp-print-list (res.tail-bytes) 0
+    end
+  end
