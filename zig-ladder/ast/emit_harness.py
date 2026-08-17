@@ -69,16 +69,16 @@ def frontend_source(src, passes, scan=True):
     {lower}"""
 
 
-def pipeline_source(src, passes):
+def pipeline_source(src, passes, scan=True):
     """frontend_source plus the x86 emission, bound as `res`. The rungs that
     dump a CDX want this; the one that emits IR wants the frontend only --
     calling x86-64-emit-cdx there would put the whole back end in the IR's
     reachable set for nothing."""
-    return frontend_source(src, passes) + """
+    return frontend_source(src, passes, scan) + """
     in let res = x86-64-emit-cdx ir sorted"""
 
 
-def harness_source(chapter, prefix, subject_text, passes=False):
+def harness_source(chapter, prefix, subject_text, passes=False, scan=True):
     """Render the harness chapter. `prefix` names the walkers so two harnesses
     can be bundled in one unit without colliding.
 
@@ -146,6 +146,13 @@ Section: Byte Dump
  walker that emits nothing and a list that holds nothing look identical and
  the first reading of this had no control to tell them apart.
 
+ The bag gates the byte sections, the way emit-binary-tail gates them on
+ bag-has-errors. A compile that recorded an error has ALREADY refused: when
+ emit-field-access cannot resolve a record type it emits ud2 where the load
+ belonged, deliberately. Printing those bytes anyway produced a binary that
+ traps at runtime and a rung that compared two crash dumps -- the harness
+ shipping something the compiler had rejected.
+
   {prefix}-print-diags : List Diagnostic, Integer -> [Console] Nothing
   {prefix}-print-diags (ds) (i) = act
     if i >= list-length ds then print-line-uni "."
@@ -167,24 +174,27 @@ Section: Byte Dump
 Section: Driver
 
   opening : [Console] Nothing = act
-    {pipeline_source("subject-text", passes)}
+    {pipeline_source("subject-text", passes, scan)}
     in act
       print-line-uni ("check-errors " & show ((cst.bag).error-count))
       print-line-uni ("ir-defs " & show (list-length (ir.defs))){info}
       print-line-uni ("emit-errors " & show ((res.bag).error-count))
       print-line-uni ("emit-diags " & show (list-length ((res.bag).diagnostics)))
       {prefix}-print-diags ((res.bag).diagnostics) 0
-      print-line-uni ("header-len " & show (list-length (res.header-bytes)))
-      print-line-uni ("content-len " & show (res.content-len))
-      print-line-uni ("tail-len " & show (list-length (res.tail-bytes)))
-      print-line-uni "--- symbols ---"
-      {prefix}-print-lines (res.symbol-map) 0
-      print-line-uni "--- header ---"
-      {prefix}-print-list (res.header-bytes) 0
-      print-line-uni "--- content ---"
-      {prefix}-print-bytes (res.content-buf) 0 (res.content-len)
-      print-line-uni "--- tail ---"
-      {prefix}-print-list (res.tail-bytes) 0
+      if bag-has-errors (res.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no binary printed"
+      else act
+        print-line-uni ("header-len " & show (list-length (res.header-bytes)))
+        print-line-uni ("content-len " & show (res.content-len))
+        print-line-uni ("tail-len " & show (list-length (res.tail-bytes)))
+        print-line-uni "--- symbols ---"
+        {prefix}-print-lines (res.symbol-map) 0
+        print-line-uni "--- header ---"
+        {prefix}-print-list (res.header-bytes) 0
+        print-line-uni "--- content ---"
+        {prefix}-print-bytes (res.content-buf) 0 (res.content-len)
+        print-line-uni "--- tail ---"
+        {prefix}-print-list (res.tail-bytes) 0
+      end
     end
   end
 '''

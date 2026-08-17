@@ -1,4 +1,4 @@
-# Eleven findings: five closed, five standing, one candidate
+# Findings: five closed, five standing, one withdrawn
 
 This directory holds the findings and the probes that make them runnable.
 It is discussion material rather than a proposed addition to the tree --
@@ -457,56 +457,64 @@ strength of the declaration, which is why the divergence appeared at all
 -- and it is now one representation, a pointer, matching bare metal and
 C#. Seed F3722EAC (Update 43), QEMU/TCG, 2026-08-16.
 
-## Finding 11 (candidate): a DiagnosticBag whose count and list disagree
+## Finding 11 (WITHDRAWN as filed; what is left is narrower)
 
-Compiling `codex/test/plug-oracle-arith.codex` through a harness that calls
-`x86-64-emit-cdx` directly produces an emit bag reporting **72 errors with an
-empty diagnostics list**, and the two targets disagree about the number:
+**The original claim was wrong and the cause was ours.** It reported a
+DiagnosticBag reporting 72 errors with an empty diagnostics list, and asked why
+the two targets disagreed about the number. The answer is that our harness
+stands in for `opening.codex` and skipped a phase the driver runs:
 
-    bare metal   emit-errors 72,  diagnostics []
-    zig plug     emit-errors 1,   diagnostics []
-    emitted binary: byte-identical between the two (93,920 bytes)
+    type-map      = build-type-def-map (checked.scoped.type-defs) ...
+    stds          = sort-bindings (type-map & checked.all-bindings)
+    resolved-defs = rewrite-ir-defs stds (ir.defs) resolve-ceiling
 
-The source says this cannot happen. `empty-bag` starts
-`{ diagnostics = [], error-count = 0, truncated = False }`, and every path in
-`bag-add-error` that raises the count also pushes the diagnostic, in the same
-record literal:
+Without `type-map` the emitter's `st.type-defs` has no entry for a record
+declared in the subject, so `resolve-constructed-ty` fails, and without
+`rewrite-ir-defs` the IR still carries unresolved `ConstructedTy` annotations
+into emission. Everything downstream followed from that. Nothing here was a
+defect in the depot.
 
-    error-count = bag.error-count + 1,
-    diagnostics = deck-record (list-push (bag.diagnostics) d),
+### What survives: two record layouts that disagree
 
-So a non-zero count with an empty list means the fields are not tracking each
-other. `max-errors` is 20 and `bag-add-error` stops counting past it, so 72 is
-not reachable by counting either, and `bag-merge` re-adds through `bag-add`
-rather than summing.
+`emit-record` (X86_64Compound.codex:1751) chooses a layout by whether the
+record's type resolved:
 
-Worth noting what DiagnosticBag is shaped like: `diagnostics` is a List (8
-bytes), `error-count` is `Integer between 0 and 255` and `truncated` is a
-Boolean -- a mixed-width record, which is the case X86_64Compound's own note
-flags as where field packing diverges between paths ("runtime variants pack
-fields by width ... divergent for mixed-width ctors"). That is a hypothesis,
-not a diagnosis.
+| | ranked by | offsets |
+|---|---|---|
+| type resolves -- `build-cce-byte-offsets` | `field-sort-key` = `width-prefix(width) & name` | cumulative field widths |
+| type does not -- `emit-store-record-fields-by-list` | the raw field name | `rank * 8` |
 
-Not established: which arm is right, whether the layout hypothesis holds, and
-whether this shares a cause with the runtime fault below.
+Every reader uses the first rule unconditionally: `cce-byte-offset-and-type`
+(via `accumulate-offset-width-sort`) in `emit-field-access` and in
+`emit-record-set-builtin`. The two rules coincide only when every field is
+eight bytes wide, because only then does the width prefix stop affecting the
+order and the uniform slot match the real width.
 
-### The runtime fault, which may or may not be related
+`probe-record-layout.codex` is the smallest record where they part:
 
-The same binary runs correctly for seventeen values and then faults:
+    Box = record { flag : Boolean, items : List Integer }
 
-    2 -2 -2 2 -1 -1 1 -1 1 -1 -1 0 1 2 1 2 7  then  !EXC=06
+    resolved:  items @ 0   flag @ 8    size 9
+    fallback:  flag  @ 0   items @ 8   size 16
 
-`!EXC=06` is #UD, and `emit-unresolved-trap-helper` is `st-append-code st0
-[15, 11]` -- `0F 0B`, `ud2`. The three values never printed (100, -100, 42)
-all come from `gauge`, whose field is `Integer between -100 and 100
-clamping`. The seed's own build of the same source prints them correctly.
+A Box built through the fallback puts `flag` where `items` is read from, so
+`b.items` yields the boolean -- 0 or 1 -- and `list-length` of that reads
+`[0 - 8]`, which faults with CR2 at the top of the address space. That is
+exactly the crash we chased: `__list_snoc + 3`, `RDI = 0`,
+`CR2 = fffffffffffffff8`, called from `bag-add`.
 
-Two things ruled out by measurement rather than argument: the symbol maps of
-our build and the seed's build are identical (160 symbols, no differences), so
-nothing is missing from the offset table; and threading the driver's parse
-scan (`scan-document` -> `build-all-assignments` -> `find-colliding-names` ->
-`build-global-rename-table`) through `scope-achapter`, `resolve-chapter`,
-`check-chapter` and `lower-chapter` changed the output not at all.
+### What is NOT established
 
-Reproduce: `zig-ladder/ast/truthcycle_clamp.sh` (bare metal) and
-`clampcycle.sh` (through the plug).
+**We could not reach the divergent path through `opening.codex`.** The probe
+compiles and prints `3` through the normal driver, because the type resolves and
+the first layout is used. We reached the second one only with a driver that
+skips RESOLVE, which is our bug and now fixed. So this is a latent inconsistency
+visible by inspection, not a demonstrated defect, and it may be unreachable in
+practice.
+
+The part that seems worth a look regardless is the asymmetry. Faced with the
+same unresolved type, `emit-field-access` records an error and emits `ud2` --
+it refuses, loudly. `emit-record` silently lays the record out by a different
+rule than every reader will use. If the fallback is genuinely unreachable, it
+could be an error instead; if it is reachable, it is silent corruption.
+

@@ -1,0 +1,39 @@
+Chapter: RecordLayoutProbe
+
+ A record with two field widths, ordered so that the two layouts in
+ emit-record disagree about which slot holds the pointer.
+
+   flag  : Boolean     -- field-byte-width 1, name sorts FIRST
+   items : List Integer -- field-byte-width 8, name sorts SECOND
+
+ Resolved layout (build-cce-byte-offsets, ranked by field-sort-key =
+ width-prefix & name, offsets = cumulative widths):
+
+   items @ 0   flag @ 8    size 9
+
+ Fallback layout (emit-store-record-fields-by-list, ranked by raw name,
+ offsets = rank * 8):
+
+   flag  @ 0   items @ 8   size 16
+
+ Readers always use the resolved rule (cce-byte-offset-and-type), so a Box
+ built through the fallback puts `flag` where `items` is read from. Reading
+ b.items then yields the boolean -- 0 or 1 -- and list-length of that reads
+ [0 - 8] or [1 - 8], which is a page fault with CR2 near the top of the
+ address space.
+
+ Expected output: 3
+
+Section: Types
+
+  Box = record {
+   flag : Boolean,
+   items : List Integer
+  }
+
+Section: Main
+
+  opening : [Console] Nothing = act
+    let b = Box { flag = True, items = [1, 2, 3] }
+    in print-line-uni (show (list-length (b.items)))
+  end

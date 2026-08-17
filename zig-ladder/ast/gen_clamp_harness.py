@@ -26,7 +26,10 @@ from emit_harness import harness_source
 HERE = pathlib.Path(__file__).parent
 SOURCE = HERE.parent.parent / 'codex' / 'test' / 'plug-oracle-arith.codex'
 
-out = harness_source('ClampHarness', 'clamp', SOURCE.read_text(), passes=True)
+# BISECT, temporary: scan=False restores the empty renames/colliding/
+# assignments this harness passed before the parse scan went in. One variable
+# against the same seed, to attribute the bare-metal page fault.
+out = harness_source('ClampHarness', 'clamp', SOURCE.read_text(), passes=True, scan=False)
 dest = HERE / 'ClampHarness.codex'
 dest.write_text(out)
 print(f'{dest}: {len(out)} bytes')
