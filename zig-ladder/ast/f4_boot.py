@@ -24,6 +24,7 @@ HERE = pathlib.Path(__file__).parent
 RUNGS = [
     ("fibx", "6765"),
     ("scale", "2147\n3\n11"),
+    ("whole", "276"),
 ]
 
 
