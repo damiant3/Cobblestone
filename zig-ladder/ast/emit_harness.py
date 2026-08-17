@@ -36,17 +36,21 @@ def pipeline_source(src, passes):
     prunes to what the opening reaches, so a program that never calls
     run-ir-pipeline prunes Simplify, Occurrence and LambdaLifting straight
     back out of the unit however many chapters were bundled."""
-    lower = ("""in let ir-raw = lower-chapter ch sorted cst (rr.ctor-names) [] skip-list-text-empty [] 0
+    lower = ("""in let ir-raw = lower-chapter ch sorted cst (rr.ctor-names) renames colliding assignments 0
     in let passed = run-ir-pipeline default-ir-pipeline ir-raw False
     in let ir = passed.chapter""" if passes else
-        "in let ir = lower-chapter ch sorted cst (rr.ctor-names) [] skip-list-text-empty [] 0")
+        "in let ir = lower-chapter ch sorted cst (rr.ctor-names) renames colliding assignments 0")
     return f"""let toks = tokenize {src} 1
+    in let scan = scan-document (make-parse-state (toks.tokens) {src})
+    in let assignments = build-all-assignments {src} (scan.def-headers) 0 []
+    in let colliding = find-colliding-names assignments
+    in let renames = build-global-rename-table assignments colliding
     in let doc = parse-document (make-parse-state (toks.tokens) {src}) 0
     in let dr = desugar-document {src} doc (doc.chapter-title) 0
     in let ch0 = dr.dr-chapter
-    in let ch = scope-achapter ch0 skip-list-text-empty [] 0
-    in let rr = resolve-chapter ch skip-list-text-empty [] 0
-    in let cr = check-chapter ch [] skip-list-text-empty [] 0
+    in let ch = scope-achapter ch0 colliding assignments 0
+    in let rr = resolve-chapter ch colliding assignments 0
+    in let cr = check-chapter ch renames colliding assignments 0
     in let cst = cr.state
     in let sorted = sort-bindings (cr.types)
     {lower}
@@ -113,6 +117,19 @@ Section: Byte Dump
  too: a plug that emitted the code correctly but scrambled the map would
  still be wrong.
 
+ A count says a compile went wrong; the messages say what. This prints the
+ bag itself so a rung that fails is a rung that explains itself, which is
+ the difference between "emit-errors 72" and a diagnosis.
+
+  {prefix}-print-diags : List Diagnostic, Integer -> [Console] Nothing
+  {prefix}-print-diags (ds) (i) = act
+    if i >= list-length ds then print-line-uni "."
+    else act
+      print-line-uni ("  diag " & show ((list-at ds i).code) & " sev " & show ((list-at ds i).severity) & " " & (list-at ds i).message)
+      {prefix}-print-diags ds (i + 1)
+    end
+  end
+
   {prefix}-print-lines : List Text, Integer -> [Console] Nothing
   {prefix}-print-lines (ls) (i) = act
     if i >= list-length ls then print-line-uni "."
@@ -130,6 +147,7 @@ Section: Driver
       print-line-uni ("check-errors " & show ((cst.bag).error-count))
       print-line-uni ("ir-defs " & show (list-length (ir.defs))){info}
       print-line-uni ("emit-errors " & show ((res.bag).error-count))
+      {prefix}-print-diags ((res.bag).diagnostics) 0
       print-line-uni ("header-len " & show (list-length (res.header-bytes)))
       print-line-uni ("content-len " & show (res.content-len))
       print-line-uni ("tail-len " & show (list-length (res.tail-bytes)))

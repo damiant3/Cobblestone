@@ -461,3 +461,57 @@ two ways. The zig plug had given plain records value semantics on the
 strength of the declaration, which is why the divergence appeared at all
 -- and it is now one representation, a pointer, matching bare metal and
 C#. Seed F3722EAC (Update 43), QEMU/TCG, 2026-08-16.
+
+## Finding 11 (candidate): a DiagnosticBag whose count and list disagree
+
+Compiling `codex/test/plug-oracle-arith.codex` through a harness that calls
+`x86-64-emit-cdx` directly produces an emit bag reporting **72 errors with an
+empty diagnostics list**, and the two targets disagree about the number:
+
+    bare metal   emit-errors 72,  diagnostics []
+    zig plug     emit-errors 1,   diagnostics []
+    emitted binary: byte-identical between the two (93,920 bytes)
+
+The source says this cannot happen. `empty-bag` starts
+`{ diagnostics = [], error-count = 0, truncated = False }`, and every path in
+`bag-add-error` that raises the count also pushes the diagnostic, in the same
+record literal:
+
+    error-count = bag.error-count + 1,
+    diagnostics = deck-record (list-push (bag.diagnostics) d),
+
+So a non-zero count with an empty list means the fields are not tracking each
+other. `max-errors` is 20 and `bag-add-error` stops counting past it, so 72 is
+not reachable by counting either, and `bag-merge` re-adds through `bag-add`
+rather than summing.
+
+Worth noting what DiagnosticBag is shaped like: `diagnostics` is a List (8
+bytes), `error-count` is `Integer between 0 and 255` and `truncated` is a
+Boolean -- a mixed-width record, which is the case X86_64Compound's own note
+flags as where field packing diverges between paths ("runtime variants pack
+fields by width ... divergent for mixed-width ctors"). That is a hypothesis,
+not a diagnosis.
+
+Not established: which arm is right, whether the layout hypothesis holds, and
+whether this shares a cause with the runtime fault below.
+
+### The runtime fault, which may or may not be related
+
+The same binary runs correctly for seventeen values and then faults:
+
+    2 -2 -2 2 -1 -1 1 -1 1 -1 -1 0 1 2 1 2 7  then  !EXC=06
+
+`!EXC=06` is #UD, and `emit-unresolved-trap-helper` is `st-append-code st0
+[15, 11]` -- `0F 0B`, `ud2`. The three values never printed (100, -100, 42)
+all come from `gauge`, whose field is `Integer between -100 and 100
+clamping`. The seed's own build of the same source prints them correctly.
+
+Two things ruled out by measurement rather than argument: the symbol maps of
+our build and the seed's build are identical (160 symbols, no differences), so
+nothing is missing from the offset table; and threading the driver's parse
+scan (`scan-document` -> `build-all-assignments` -> `find-colliding-names` ->
+`build-global-rename-table`) through `scope-achapter`, `resolve-chapter`,
+`check-chapter` and `lower-chapter` changed the output not at all.
+
+Reproduce: `zig-ladder/ast/truthcycle_clamp.sh` (bare metal) and
+`clampcycle.sh` (through the plug).
