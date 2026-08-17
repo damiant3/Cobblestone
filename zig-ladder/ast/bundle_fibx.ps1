@@ -123,11 +123,28 @@ $bootPaintPath = if ($BootPaint -match '/') { Join-Path $repo $BootPaint } else 
 Add-PlugChapter -Lines $lines -Path $bootPaintPath -Quire 'Parsmi'
 Add-PlugChapter -Lines $lines -Path (Join-Path $here $Harness) -Quire 'Parsmi'
 
-# The seed's emitter hijacks any 1-arg call literally named deck-record
-# (X86_64Compound.codex emit-apply) into __deck-enter/__deck-exit region
-# machinery, which corrupts memory in subjects that lack the compiler
-# opening's phase-allocator runtime. Renaming keeps the identity semantics
-# and sidesteps the intercept; LexStubs defines the renamed identity.
+# There used to be a rename of deck-record to subj-deck-record here. It was
+# right when it was written: the seed's emitter hijacked any 1-arg call
+# literally named deck-record into __deck-enter/__deck-exit, which corrupts
+# memory in a subject that lacks the phase-allocator runtime, and renaming
+# sidestepped it.
+#
+# Update 43 fixed that properly, on our report: the intercept now fires only
+# when deck-record and init-phase-allocator are defined in the SAME chapter,
+# so a bundle without the Phase Allocator gets the plain identity it declared
+# and needs no help from us.
+#
+# Leaving the rename in place then became the bug. The seed doing the
+# compiling is upstream's, so the name it looks for is `deck-record`; we had
+# renamed ours out from under it, dr-slug came back empty, and the flag was
+# False for every bundle here. That switched the deck discipline off across
+# the whole bundled compiler, hundreds of call sites, and stayed invisible for
+# thirteen rungs because a clean compile never needs a value to outlive
+# emit-all-defs's per-function __heap-restore. clamp does: bag-add parks the
+# diagnostic bag on the deck, the bag was freed at the bracket instead, and
+# the second diagnostic read a dangling spine.
+#
+# LexStubs declares deck-record unrenamed, so the stub bundles still resolve.
 
 # All 14 pages of the X86-64 Code Generator chapter are present, so the
 # 'Page N of 14' trailers stand as written; the rewrite below is inherited
@@ -138,9 +155,5 @@ for ($i = 0; $i -lt $lines.Count; $i++) {
         $lines[$i] = $lines[$i] -replace 'of 14$', "of $pageCount"
     }
 }
-for ($i = 0; $i -lt $lines.Count; $i++) {
-    $lines[$i] = $lines[$i].Replace('deck-record', 'subj-deck-record')
-}
-
 $preLines = Resolve-PlugForewords $lines
 Bundle-PlugSource -PreLines $preLines -Lines $lines -BundleSrc (Join-Path $here $OutName) -PlugName $PlugName

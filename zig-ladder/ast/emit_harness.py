@@ -92,7 +92,32 @@ def frontend_source(src, passes, scan=True):
     #
     # Naming it is the whole job -- the marker has to be in the unit. It is
     # __heap-save + __deck-set, so the zig arm emits it without trouble.
-    return "let mountain-base = init-phase-allocator\n    in " + head + f"""
+    #
+    # The reservation has to follow immediately, and cover the whole run rather
+    # than sit in front of emission. init-phase-allocator points the deck cell
+    # at the current heap top and bivy carries on from the same address, so
+    # with the intrinsic live the first deck-record extent would allocate on
+    # top of the parse and check data still in use. opening.codex never leaves
+    # that window open: `build lex-deck-height` is line 444, two lines after
+    # the init at 442. Ours is one region for every phase instead of the
+    # driver's thirteen, which is the part of its shape a harness can skip.
+    #
+    # build's body is inlined rather than cited because build also reaches
+    # deck-reservation-guard -> poke-byte, and poke-byte has no ZigEmitter
+    # entry: citing it would make the builtin reachable and break the zig arm.
+    # The guard pokes the boot stack's guard page, which a reservation this
+    # size does not come near.
+    #
+    # demand-lift-floor is 104 MB against the 1 GB the harness runs in. It is a
+    # first number, not a measured one: until now the intrinsic was off and no
+    # rung allocated on the deck at all, so there is nothing to size against.
+    # Too small shows up as CDX9002 or a fault, which is the honest direction
+    # to be wrong in.
+    return ("let mountain-base = init-phase-allocator\n"
+            "    in let deck-base = __heap-save\n"
+            "    in let deck-set = __deck-set deck-base\n"
+            "    in let deck-adv = __heap-advance demand-lift-floor\n"
+            "    in ") + head + f"""
     in let doc = parse-document (make-parse-state (toks.tokens) {src}) 0
     in let dr = desugar-document {src} doc (doc.chapter-title) 0
     in let ch0 = dr.dr-chapter
@@ -111,29 +136,11 @@ def pipeline_source(src, passes, scan=True):
     calling x86-64-emit-cdx there would put the whole back end in the IR's
     reachable set for nothing.
 
-    Emission runs inside a deck reservation. opening.codex builds thirteen of
-    them, one per phase, from init-phase-allocator at line 442 through
-    `lift-base = build lift-deck-height` at 830 -- and emission runs inside that
-    last one. A harness that builds none leaves the deck-pos cell holding
-    whatever boot left there, and deck-record is not a no-op: it compiles to
-    __deck-enter / body / __deck-exit, which points R10 -- the bump allocator --
-    at that cell. bag-add wraps its cons cell and record in deck-record, so the
-    first diagnostic a compile records allocates the bag wherever that stale
-    cell points, and the next bag-add reads [rdi-8] off it. That is the clamp
-    fault: page fault at CR2=0xfffffffffffffff8 inside __list_snoc, with a null
-    list in RDI. Thirteen rungs missed it because a clean compile never calls
-    bag-add at all.
-
-    This is build's body inlined rather than cited, because build also calls
-    deck-reservation-guard -> poke-byte, and poke-byte has no ZigEmitter entry:
-    citing it would make the builtin reachable and break the zig arm. The guard
-    only pokes the boot stack's guard page, which is bare metal's concern and
-    not something a reservation this size reaches.
+    The deck reservation this used to make here moved into frontend_source: it
+    has to be open before the first deck-record extent anywhere, not before
+    emission, and by emission the frontend has been allocating for a while.
     """
     return frontend_source(src, passes, scan) + """
-    in let emit-deck-base = __heap-save
-    in let emit-deck-set = __deck-set emit-deck-base
-    in let emit-deck-adv = __heap-advance demand-lift-floor
     in let res = x86-64-emit-cdx ir sorted"""
 
 
