@@ -1,5 +1,23 @@
 # net-recv-raw drops the last byte of every odd-length frame
 
+> **RESOLVED in the depot — kept as the record, not as a request.**
+> Re-checked against seed 270227BE on 2026-08-17: the fix is in
+> `emit-net-recv-raw-helper` (X86_64IPCHelpers.codex) as `st56a`/`st56b`,
+> the same two instructions and the same insertion point proposed below:
+>
+>     in let st56a = st-append-code st56 (add-ri reg-rcx 1)
+>     in let st56b = st-append-code st56a (and-ri reg-rcx (0 - 2))
+>
+> Recommendation 2 is also answered: `net-process-ip` drops a segment on
+> `bad-tcp-checksum` before parsing it (NetworkStack.codex). That call was
+> already present when this was written, which leaves the one question this
+> document never settled -- how a substituted byte reached the parser with a
+> checksum in front of it. The likeliest reading is that the byte the DMA
+> dropped fell in Ethernet padding past the IP length rather than inside the
+> checksummed payload, in which case the checksum was never wrong. Untested.
+>
+> Everything below is as submitted, in the present tense it was written in.
+
 ## What we recommend
 
 1. **Take the fix.** It is in this PR, one commit, two added instructions

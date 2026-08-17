@@ -1,35 +1,30 @@
-# Ten findings: five closed by Update 43, five open
+# Eleven findings: five closed, five standing, one candidate
 
 This directory holds the findings and the probes that make them runnable.
 It is discussion material rather than a proposed addition to the tree --
 drop it whenever, or take it; the zig-plug changes in this PR are separate
 and stand on their own.
 
-**Status after Update 43.** Findings 1 through 5 are fixed and this
-document keeps them only as a record of what was asked and what landed.
-Findings 6, 7 and 8 are open. Each closed one is marked at its heading,
-and finding 4's entry is worth a second look: it did not close as a
-one-line cite but as `build/check-subset-cites.ps1`, a gate for the whole
-class it belonged to.
+**Status re-checked against Update 45 / seed 270227BE, 2026-08-17.**
 
-They all came out of one exercise, run as a ladder: for each compiler
-phase, bundle the chapters that implement it into a standalone subject
-with a dump harness, compile it two ways -- seed on bare metal as truth,
-and through the zig plug -- and require the two to agree byte for byte.
-The same oracle discipline as `plug-oracle-test`, with the compiler's own
-source as the subject.
+Findings 1 through 5 were fixed by Update 43 and each is marked at its
+heading. Finding 1's fix is verified present in this seed: `emit-net-recv-raw-helper`
+carries the round-up as `st56a`/`st56b`, the same two instructions and the same
+insertion point that were proposed (see PLUG_IR_TRANSPORT.md, now marked
+resolved).
 
-**Eight rungs pass** as of seed F3722EAC: lex, parse, desugar, scope,
-check, lower, text and pingpong. The last two are the point of the
-exercise. `text` emits canonical codex source out of the IR through the
-plug, and `pingpong` compiles that emitted source again and requires the
-second text to equal the first -- a fixed point, reached through the zig
-plug rather than on the metal.
+Two re-checked today and still standing:
 
-Several of these only appear once a plug carries more payload than plugs
-usually carry, and the later ones only appear once a plug meets code the
-earlier rungs never reached. Nothing here is exotic; it is ordinary code
-meeting a bigger input.
+- **Finding 7** -- no `IRExpr` map or fold exists in `codex/compiler`, so every
+  plug still rewrites the walk.
+- **Finding 10** -- `emit-record-set-builtin` still stores through the
+  evaluated pointer and returns it, so `__record-set` still mutates and the
+  `mutable` keyword still promises value semantics nothing delivers.
+
+**Findings 6, 8 and 9 are not re-checked against this seed.** They were
+measured on 2,798,031 and are recorded here as they were found. Finding 11
+below is a candidate rather than a finding: its reproduction is written down
+and its cause is not.
 
 ## 1. `net-recv-raw` truncates odd-length frames
 
