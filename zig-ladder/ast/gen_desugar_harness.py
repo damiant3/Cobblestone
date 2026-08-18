@@ -10,8 +10,9 @@ not redundant: if a desugar diff appears, the first question is whether
 the CST going in was already different, and having both halves in one run
 answers that without a second experiment."""
 import pathlib
+from roots import CODEX
 
-REPO = pathlib.Path(__file__).resolve().parent.parent.parent
+REPO = CODEX
 HERE = pathlib.Path(__file__).parent
 
 # The chapter the harness parses and desugars. SUBJECT_FILE = None uses the

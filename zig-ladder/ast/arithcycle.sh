@@ -4,8 +4,8 @@
 # chapter, so there is no bundle step -- and the repo's .expected file is a
 # third witness beside our banked truth.
 set -e
-T="$(cd "$(dirname "$0")/.." && pwd)"
-REPO="$(cd "$T/.." && pwd)"
+T="$(cd "$(dirname "$0")/.." && pwd)"  # ladder-root-bootstrap: reaches the LADDER only; the checkout comes from ladder_root
+REPO="$(python3 "$T/ladder_root.py" codex)"
 SUBJ=$REPO/codex/test/plug-oracle-arith.codex
 
 cd $T/ast

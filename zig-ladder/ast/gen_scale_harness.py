@@ -20,9 +20,10 @@ capacity test and start being two experiments at once.
 import pathlib
 
 from emit_harness import harness_source
+from roots import CODEX
 
 HERE = pathlib.Path(__file__).parent
-REPO = HERE.parent.parent
+REPO = CODEX
 SOURCE = REPO / 'codex' / 'foreword' / 'core' / 'CCE.codex'
 
 DRIVER = '''

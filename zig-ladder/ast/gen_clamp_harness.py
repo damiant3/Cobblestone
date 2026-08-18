@@ -22,9 +22,10 @@ diff names the instruction.
 import pathlib
 
 from emit_harness import harness_source
+from roots import CODEX
 
 HERE = pathlib.Path(__file__).parent
-SOURCE = HERE.parent.parent / 'codex' / 'test' / 'plug-oracle-arith.codex'
+SOURCE = CODEX / 'codex' / 'test' / 'plug-oracle-arith.codex'
 
 out = harness_source('ClampHarness', 'clamp', SOURCE.read_text(), passes=True)
 dest = HERE / 'ClampHarness.codex'

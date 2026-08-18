@@ -14,7 +14,9 @@ would mean the reassembly is wrong, not the plug.
 import pathlib
 import sys
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+from roots import LADDER
+
+sys.path.insert(0, str(LADDER))
 import codex_vm  # noqa: E402
 
 HERE = pathlib.Path(__file__).parent

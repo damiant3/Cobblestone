@@ -3,7 +3,7 @@
 # plug consumes, and a bare-metal truth to diff the zig run against. Run
 # after a seed change, or whenever the .ir files are missing.
 set -e
-T="$(cd "$(dirname "$0")/.." && pwd)"
+T="$(cd "$(dirname "$0")/.." && pwd)"  # ladder-root-bootstrap: reaches the LADDER only; the checkout comes from ladder_root
 S=$T/warmups
 
 cd $S

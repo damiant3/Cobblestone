@@ -3,7 +3,7 @@
 # compile, run, print the heap numbers. No zig arm and no diff -- the
 # numbers ARE the result, and a diet iteration is this script end to end.
 set -e
-T="$(cd "$(dirname "$0")/.." && pwd)"
+T="$(cd "$(dirname "$0")/.." && pwd)"  # ladder-root-bootstrap: reaches the LADDER only; the checkout comes from ladder_root
 cd "$T/ast"
 python3 gen_irmem_harness.py
 rm -f irmem-subject.codex

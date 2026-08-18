@@ -16,7 +16,9 @@ import subprocess
 import sys
 import time
 
-REPO = str(__import__("pathlib").Path(__file__).resolve().parent.parent)
+from ladder_root import CODEX
+
+REPO = str(CODEX)
 RING_ADDR = 0x500000
 RING_SIZE = 0x100000          # 1 MB, must match seed's serial-ring-buf-size
 WPOS_ADDR = 28704             # 0x7020

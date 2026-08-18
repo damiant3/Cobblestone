@@ -4,7 +4,7 @@
 # ZigPlugRing change; the ten-rung sweep stays the emitter's
 # correctness gate, this is only the packaging.
 set -e
-T="$(cd "$(dirname "$0")/.." && pwd)"
+T="$(cd "$(dirname "$0")/.." && pwd)"  # ladder-root-bootstrap: reaches the LADDER only; the checkout comes from ladder_root
 cd "$T/ast"
 rm -f ringplug-source.codex
 out=$(~/.local/pwsh/pwsh -NoProfile -File ./bundle_ringplug.ps1 2>&1) || { printf '%s\n' "$out" | tail -5; exit 1; }

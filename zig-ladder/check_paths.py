@@ -19,6 +19,18 @@ The second half is the completeness check. A conversion that missed a site is
 indistinguishable from a finished one until that site runs, so a leftover
 level-count is reported as a failure in its own right rather than left to be
 noticed later.
+
+The rule this enforces is narrower than "never count directories", because that
+rule cannot be obeyed: a script has to reach ladder_root.py somehow, and the
+only thing it knows is where it is. The real rule is that counting may reach the
+LADDER and never the CHECKOUT. The ladder's internal layout is fixed and moves
+as a unit, so ast/ is always one below the root; the checkout is the thing the
+move makes unrelated, and every path to it goes through ladder_root.
+
+So one bootstrap line per script is allowed, and it has to ask: mark it
+`ladder-root-bootstrap` and it is skipped. Exemptions are counted and printed
+rather than passed over in silence, because an exemption nobody counts is how a
+rule stops meaning anything.
 """
 
 import pathlib
@@ -59,11 +71,16 @@ FROM_LADDER = [
 # match is a site the move would break, or has already broken.
 LEFTOVERS = [
     (r'\.parent\.parent', 'python: counts directories up from __file__'),
+    (r'\.parents\[\d+\]', 'python: counts directories up from __file__'),
     (r'dirname[^\n]*\.\.', 'shell: counts directories up from BASH_SOURCE'),
     (r"PSScriptRoot[^\n]*'\.\.'", 'powershell: counts directories up from PSScriptRoot'),
 ]
 
 SKIP = {'ladder_root.py', 'check_paths.py'}
+
+# A line carrying this is the one sanctioned level-count: the step that finds
+# the ladder's own root so ladder_root can be asked for the rest.
+BOOTSTRAP = 'ladder-root-bootstrap'
 
 
 def check_group(entries, root, label, hint=None):
@@ -77,7 +94,7 @@ def check_group(entries, root, label, hint=None):
 
 
 def check_leftovers():
-    bad = []
+    bad, bootstraps = [], []
     for path in sorted(LADDER.rglob('*')):
         if path.suffix not in {'.py', '.sh', '.ps1'} or path.name in SKIP:
             continue
@@ -85,11 +102,16 @@ def check_leftovers():
             text = path.read_text(errors='replace')
         except OSError:
             continue
+        lines = text.splitlines()
         for pattern, why in LEFTOVERS:
             for m in re.finditer(pattern, text):
-                line = text[:m.start()].count('\n') + 1
-                bad.append(f'  {path.relative_to(LADDER)}:{line}  {why}')
-    return bad
+                n = text[:m.start()].count('\n') + 1
+                where = f'{path.relative_to(LADDER)}:{n}'
+                if BOOTSTRAP in lines[n - 1]:
+                    bootstraps.append(f'  {where}')
+                else:
+                    bad.append(f'  {where}  {why}')
+    return bad, bootstraps
 
 
 def main():
@@ -103,8 +125,9 @@ def main():
         hint="run the author's build/build.ps1 once; this is a product, not source")
     failures += check_group(FROM_LADDER, LADDER, 'from the ladder')
 
-    left = check_leftovers()
+    left, bootstraps = check_leftovers()
     print(f'unconverted root derivations: {len(left)}')
+    print(f'sanctioned bootstraps: {len(bootstraps)}')
 
     if failures:
         print('\nUNRESOLVED PATHS:')
@@ -112,11 +135,15 @@ def main():
     if left:
         print('\nSITES STILL COUNTING DIRECTORIES:')
         print('\n'.join(left))
+    if bootstraps:
+        print('\nBOOTSTRAPS (allowed; each reaches the ladder, none the checkout):')
+        print('\n'.join(bootstraps))
 
     if failures or left:
         print('\nFAIL')
         return 1
-    print('\nOK: every path resolves and nothing counts directories')
+    print('\nOK: every path resolves, and the checkout is reached only '
+          'through ladder_root')
     return 0
 
 

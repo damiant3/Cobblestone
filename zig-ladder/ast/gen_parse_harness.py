@@ -5,8 +5,9 @@ structural rather than pretty -- it exists to be diffed between the
 bare-metal and zig arms, so every line must be derivable from the CST
 alone."""
 import pathlib
+from roots import CODEX
 
-REPO = pathlib.Path(__file__).resolve().parent.parent.parent
+REPO = CODEX
 HERE = pathlib.Path(__file__).parent
 
 # The chapter the harness parses. SUBJECT_FILE = None uses the built-in fib

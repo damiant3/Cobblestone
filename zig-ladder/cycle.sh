@@ -4,7 +4,7 @@
 # results. Usage: cycle.sh hello recurse fib
 set -e
 T="$(cd "$(dirname "$0")" && pwd)"
-REPO="$(cd "$T/.." && pwd)"
+REPO="$(python3 "$T/ladder_root.py" codex)"
 # Warmup blobs and IRs live in the repo, not /tmp: a reboot wiped the
 # original scratchpad location and every warmup IR with it.
 S=$T/warmups

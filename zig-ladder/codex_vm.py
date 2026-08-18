@@ -8,7 +8,9 @@ import subprocess
 import sys
 import time
 
-REPO = str(pathlib.Path(__file__).resolve().parent.parent)
+from ladder_root import CODEX
+
+REPO = str(CODEX)
 ACCEL = __import__("os").environ.get("CODEX_ACCEL", "tcg")
 BASE_PORT = 56400
 

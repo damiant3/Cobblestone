@@ -27,8 +27,9 @@ import pathlib
 import re
 
 from emit_harness import DECK_PROLOGUE, RESOLVED_TABLES
+from roots import CODEX
 
-REPO = pathlib.Path(__file__).resolve().parent.parent.parent
+REPO = CODEX
 HERE = pathlib.Path(__file__).parent
 
 # The chapter the harness parses and desugars. SUBJECT_FILE = None uses the

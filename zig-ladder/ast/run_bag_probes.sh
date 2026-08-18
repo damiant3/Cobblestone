@@ -4,7 +4,7 @@
 # clamp rung costs, which is the whole point: the fault we are chasing needs a
 # small reproducer before it needs another theory.
 set -u
-T="$(cd "$(dirname "$0")/.." && pwd)"
+T="$(cd "$(dirname "$0")/.." && pwd)"  # ladder-root-bootstrap: reaches the LADDER only; the checkout comes from ladder_root
 cd "$T"
 for p in "$@"; do
     echo "############ $p"

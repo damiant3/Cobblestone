@@ -5,8 +5,8 @@
 #
 # Milestone <m> owns: gen_<m>_harness.py, bundle_<m>.ps1, and the artifacts
 # <m>-subject.codex, <m>.ir, <m>.truth, <m>.zig, <m>.zigout, <m>.diff.
-T="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-REPO="$(cd "$T/.." && pwd)"
+T="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"  # ladder-root-bootstrap: reaches the LADDER only; the checkout comes from ladder_root
+REPO="$(python3 "$T/ladder_root.py" codex)"
 
 # The ladder, cheapest first. allcycles.sh sweeps it and rebank_all.sh
 # re-banks it, and they must not disagree about what the ladder is: a rung

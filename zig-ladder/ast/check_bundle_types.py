@@ -20,8 +20,9 @@ does not get reported as a missing type.
 import pathlib
 import re
 import sys
+from roots import CODEX
 
-REPO = pathlib.Path(__file__).resolve().parent.parent.parent
+REPO = CODEX
 HERE = pathlib.Path(__file__).parent
 
 BUILTIN = {'Integer', 'Text', 'Boolean', 'Nothing', 'List', 'LinkedList',

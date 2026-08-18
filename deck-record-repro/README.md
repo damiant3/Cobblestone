@@ -1,4 +1,4 @@
-# Findings: five closed, five standing, one withdrawn
+# Findings: five closed upstream, five standing, one fixed here, one withdrawn
 
 This directory holds the findings and the probes that make them runnable.
 It is discussion material rather than a proposed addition to the tree --
@@ -518,3 +518,57 @@ it refuses, loudly. `emit-record` silently lays the record out by a different
 rule than every reader will use. If the fallback is genuinely unreachable, it
 could be an error instead; if it is reachable, it is silent corruption.
 
+
+## 12. `__deck-set` is emitted without its argument, and zig will not compile the result
+
+**Found 2026-08-17 against Update 45 / seed 270227BE. Fixed in this PR.**
+
+`ZigEmitter.codex` mapped the builtin to a bare constant and never touched
+`args`:
+
+    ZigBuiltinEmitter { name = "__deck-set", emit = \args ctx d ty -> "0" },
+
+Answering `0` is right. There is no deck in the zig target, so pointing the
+deck cell somewhere is genuinely a no-op. Dropping the argument is the defect:
+the argument is a binding at the call site, and zig refuses to compile a
+binding whose only consumer disappeared.
+
+    error: unused local constant
+    b2: { const deck_base = cx_heap_save(); break :b2 b3: { _ = 0; ...
+
+The remedy was already written two lines below, in the prelude, for the same
+problem:
+
+    // address-of answers 0 here by X86_64Compound's own account of
+    // targets without it; the argument is still evaluated so its binding
+    // stays used.
+    fn cx_address_of(v: anytype) i64 { _ = v; return 0; }
+
+So this is the second instance of a pattern that has a solved first instance
+sitting beside it. `__deck-set` is the only other entry in the builtins table
+that ignores `args` and takes one -- `__deck-enter`, `__deck-exit` and
+`__deck-pos` also ignore `args`, and all three are nullary.
+
+### Why it stayed latent
+
+Both of the compiler's own callers use the address for something else as well,
+so the binding survives on its second consumer:
+
+    build (size) =
+     let p = __heap-save
+     in let deck-init = __deck-set p
+     in let guarded = deck-reservation-guard p size      <- p used again
+
+    init-phase-allocator =
+     let base = __heap-save
+     in let deck-init = __deck-set base
+     in base                                             <- and here
+
+`whole` transpiles both of those functions to zig and compiles clean. It took a
+caller that only sets, which is what our harness prologue is once it names
+`init-phase-allocator` to turn the deck intrinsic on.
+
+The general shape is worth carrying to the other 43 plugs: a target that has no
+analogue for a builtin still has to consume that builtin's operands, or it
+silently changes which bindings are live. A target whose compiler happens not to
+mind unused locals would not have reported this at all.

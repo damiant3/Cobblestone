@@ -6,7 +6,8 @@ param(
     [string]$OutName = 'lex-subject.codex'
 )
 $ErrorActionPreference = 'Stop'
-$repo = (Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path
+$ladder = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path  # ladder-root-bootstrap: reaches the LADDER only; the checkout comes from ladder_root
+$repo = (& python3 (Join-Path $ladder 'ladder_root.py') codex).Trim()
 $here = $PSScriptRoot
 
 . "$repo/codex/plugs/common/plug-build-lib.ps1"

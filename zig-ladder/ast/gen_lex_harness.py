@@ -4,8 +4,9 @@ snippet and dumps one line per token. show-kind's arms are derived
 mechanically from Token.codex so the harness cannot drift from the
 TokenKind variant."""
 import re, sys, pathlib
+from roots import CODEX
 
-REPO = pathlib.Path(__file__).resolve().parent.parent.parent
+REPO = CODEX
 HERE = pathlib.Path(__file__).parent
 
 token_src = (REPO / 'codex/compiler/Syntax/Token.codex').read_text()
