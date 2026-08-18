@@ -152,6 +152,15 @@ Section: Expression Emission
 
   hs-max-depth : Integer = 256
 
+  hs-let-binder : Text, IRExpr -> Text
+  hs-let-binder (name) (val) =
+   if name == "__seq" then when val
+    is IrFieldStore (rec) (field) (v) (ty) (sp) -> when rec
+     is IrName (rn) (rty) (rsp) -> rn
+     is otherwise -> name
+    is otherwise -> name
+   else name
+
   emit-hs-expr : IRExpr, List ArityEntry -> Text
   emit-hs-expr (e) (arities) = emit-hs-expr-at e arities 0
 
@@ -168,7 +177,7 @@ Section: Expression Emission
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-hs-binary op l r arities
     is IrNegate (operand) (nty) (sp) -> "(negate " & emit-hs-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(if " & emit-hs-expr-at c arities (depth + 1) & " then " & emit-hs-expr-at t arities (depth + 1) & " else " & emit-hs-expr-at el arities (depth + 1) & ")"
-    is IrLet (name) (ty) (val) (body) (sp) -> "(let " & hs-sanitize name & " = " & emit-hs-expr-at val arities (depth + 1) & " in " & emit-hs-expr-at body arities (depth + 1) & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> if hs-let-binder name val == name then "(let " & hs-sanitize name & " = " & emit-hs-expr-at val arities (depth + 1) & " in " & emit-hs-expr-at body arities (depth + 1) & ")" else "((\\" & hs-sanitize (hs-let-binder name val) & " -> " & emit-hs-expr-at body arities (depth + 1) & ") " & emit-hs-expr-at val arities (depth + 1) & ")"
     is IrApply (f) (a) (ty) (sp) -> emit-hs-apply e arities
     is IrLambda (params) (body) (ty) (sp) -> "(\\" & emit-hs-lambda-params params 0 & " -> " & emit-hs-expr body arities & ")"
     is IrList (elems) (ty) (sp) -> "[" & emit-hs-list-elems elems 0 arities & "]"
@@ -335,10 +344,10 @@ Section: Builtin Emitter
     HsBuiltinEmitter { name = "text-compare", emit = \args arities -> "(compare " & emit-hs-expr (list-at args 0) arities & " " & emit-hs-expr (list-at args 1) arities & ")" },
     HsBuiltinEmitter { name = "text-contains", emit = \args arities -> "(Data.List.isInfixOf " & emit-hs-expr (list-at args 1) arities & " " & emit-hs-expr (list-at args 0) arities & ")" },
     HsBuiltinEmitter { name = "text-length", emit = \args arities -> "(length " & emit-hs-expr (list-at args 0) arities & ")" },
-    HsBuiltinEmitter { name = "text-replace", emit = \args arities -> "(Data.Text.unpack (Data.Text.replace (Data.Text.pack " & emit-hs-expr (list-at args 1) arities & ") (Data.Text.pack " & emit-hs-expr (list-at args 2) arities & ") (Data.Text.pack " & emit-hs-expr (list-at args 0) arities & ")))" },
-    HsBuiltinEmitter { name = "text-split", emit = \args arities -> "(Data.List.Split.splitOn " & emit-hs-expr (list-at args 1) arities & " " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "text-replace", emit = \args arities -> "(_cxTextReplace " & emit-hs-expr (list-at args 0) arities & " " & emit-hs-expr (list-at args 1) arities & " " & emit-hs-expr (list-at args 2) arities & ")" },
+    HsBuiltinEmitter { name = "text-split", emit = \args arities -> "(_cxTextSplit " & emit-hs-expr (list-at args 0) arities & " " & emit-hs-expr (list-at args 1) arities & ")" },
     HsBuiltinEmitter { name = "text-starts-with", emit = \args arities -> "(Data.List.isPrefixOf " & emit-hs-expr (list-at args 1) arities & " " & emit-hs-expr (list-at args 0) arities & ")" },
-    HsBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "(read " & emit-hs-expr (list-at args 0) arities & " :: Int)" },
+    HsBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "(_cxTextToInteger " & emit-hs-expr (list-at args 0) arities & ")" },
     HsBuiltinEmitter { name = "write-file", emit = \args arities -> "(writeFile " & emit-hs-expr (list-at args 0) arities & " " & emit-hs-expr (list-at args 1) arities & ")" }
    ]
 
@@ -403,7 +412,19 @@ Section: Chapter Emission
    in let header = "import Data.Map (Map)\nimport qualified Data.Map as Map\nimport qualified Data.List\nimport qualified Data.List.Split\nimport qualified Data.Text\nimport qualified Data.Char\nimport qualified System.IO\nimport qualified System.Directory\n\n"
    in let types-text = emit-hs-type-defs type-defs 0
    in let defs-text = emit-hs-defs (m.defs) 0 arities
-   in header & types-text & defs-text & "main :: IO ()\nmain = " & hs-sanitize opening-entry-point & "\n"
+   in header & hs-text-builtins & types-text & defs-text & "main :: IO ()\nmain = " & hs-sanitize opening-entry-point & "\n"
+
+ `Data.Text.replace` THROWS on an empty needle rather than answering the
+ string unchanged, `Data.List.Split.splitOn` throws on an empty delimiter,
+ and `read :: Int` throws `Prelude.read: no parse` on anything that is not
+ wholly numeric. All three are written out with `Data.List.isPrefixOf`, which
+ keeps the emitted module's dependencies where they already are.
+
+  hs-text-builtins : Text
+  hs-text-builtins =
+   "_cxTextReplace :: String -> String -> String -> String\n_cxTextReplace s a b\n  | null a = s\n  | otherwise = go s\n  where\n    go [] = []\n    go t@(c:cs)\n      | a `Data.List.isPrefixOf` t = b ++ go (drop (length a) t)\n      | otherwise = c : go cs\n\n"
+   & "_cxTextSplit :: String -> String -> [String]\n_cxTextSplit s sep\n  | null sep = [s]\n  | otherwise = go s \"\"\n  where\n    go [] acc = [reverse acc]\n    go t@(c:cs) acc\n      | sep `Data.List.isPrefixOf` t = reverse acc : go (drop (length sep) t) \"\"\n      | otherwise = go cs (c : acc)\n\n"
+   & "_cxTextToInteger :: String -> Int\n_cxTextToInteger s = case s of\n  ('-':rest) -> negate (digits rest)\n  _ -> digits s\n  where digits = foldl (\\acc c -> acc * 10 + (fromEnum c - 48)) 0 . takeWhile (\\c -> c >= '0' && c <= '9')\n\n"
 
   emit-hs-tup-args : List IRExpr, List ArityEntry, Integer -> Text
   emit-hs-tup-args (args) (arities) (i) =

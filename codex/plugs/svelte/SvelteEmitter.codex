@@ -156,7 +156,33 @@ Section: Apply and Helpers
   emit-sv-apply (e) (arities) (indent) =
    let chain = collect-apply-chain e []
    in let func = emit-sv-expr (chain.root) arities indent
-   in func & "(" & emit-sv-apply-args (chain.args) arities indent 0 & ")"
+   in when (chain.root)
+    is IrName (n) (ty) (sp) -> emit-sv-apply-split func (chain.args) (lookup-arity arities n) arities indent
+    is IrLambda (lps) (lbody) (lty) (lsp) -> emit-sv-apply-split ("(" & func & ")") (chain.args) (list-length lps) arities indent
+    is otherwise -> func & "(" & emit-sv-apply-args (chain.args) arities indent 0 & ")"
+
+  emit-sv-apply-split : Text, List IRExpr, Integer, List ArityEntry, Integer -> Text
+  emit-sv-apply-split (func) (args) (ar) (arities) (indent) =
+   if ar > 0 & list-length args > ar
+   then func & "(" & emit-sv-apply-args (list-take args ar) arities indent 0 & ")" & emit-sv-apply-rest (list-drop args ar) arities indent 0
+   else if ar > 0 & list-length args > 0 & list-length args < ar
+   then emit-sv-partial-wrappers 0 (ar - list-length args) & func & "(" & emit-sv-apply-args args arities indent 0 & ", " & emit-sv-partial-params 0 (ar - list-length args) & ")"
+   else func & "(" & emit-sv-apply-args args arities indent 0 & ")"
+
+  emit-sv-partial-wrappers : Integer, Integer -> Text
+  emit-sv-partial-wrappers (i) (count) =
+   if i == count then ""
+   else "(_p" & show i & "_) => " & emit-sv-partial-wrappers (i + 1) count
+
+  emit-sv-partial-params : Integer, Integer -> Text
+  emit-sv-partial-params (i) (count) =
+   if i == count then ""
+   else (if i > 0 then ", " else "") & "_p" & show i & "_" & emit-sv-partial-params (i + 1) count
+
+  emit-sv-apply-rest : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-sv-apply-rest (args) (arities) (indent) (i) =
+   if i == list-length args then ""
+   else "(" & emit-sv-expr (list-at args i) arities indent & ")" & emit-sv-apply-rest args arities indent (i + 1)
 
   emit-sv-apply-args : List IRExpr, List ArityEntry, Integer, Integer -> Text
   emit-sv-apply-args (args) (arities) (indent) (i) =
@@ -295,7 +321,7 @@ Section: Svelte Component Assembly
   emit-svelte-chapter : IRChapter, List ATypeDef -> Text
   emit-svelte-chapter (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
-   in let builtins = "function __narrow(n) { return n; }\nfunction print_line_uni(s) { output.push(s); output = output; }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return s.length; }\nfunction text_replace(s, a, b) { return s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs) { return xs.length; }\nfunction list_at(xs, i) { return xs[i]; }\nfunction integer_to_text(n) { return String(n); }\nfunction negate(n) { return -n; }\n\n"
+   in let builtins = "function __narrow(n) { return n; }\nfunction print_line_uni(s) { output.push(s); output = output; }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return s.length; }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs) { return xs.length; }\nfunction list_at(xs, i) { return xs[i]; }\nfunction integer_to_text(n) { return String(n); }\nfunction negate(n) { return -n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10 + (t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\n\n"
    in let types-text = emit-sv-type-defs type-defs 0
    in let defs-text = emit-sv-defs (m.defs) 0 arities
    in let script = "<script>\nimport { onMount } from 'svelte';\n\nlet output = $state([]);\n\n" & builtins & types-text & defs-text & "onMount(() => {\n  try { opening(); } catch(e) { console.error(e); }\n});\n</script>\n\n"

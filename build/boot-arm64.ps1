@@ -9,7 +9,16 @@ param(
     [Parameter(Mandatory=$true)]
     [string]$Src,
     [switch]$NoBoot,
-    [int]$MemMB = 4096
+    [int]$MemMB = 4096,
+    # Bound the QEMU run so this script can be an ARM. 0, the default, keeps
+    # the interactive behaviour exactly: a foreground -nographic console with no
+    # deadline, which is what a person driving it by hand wants. Any positive
+    # value launches QEMU monitored, kills it at the deadline, sends the UART to
+    # a file, and REPORTS whether it exited on its own or was killed.
+    [int]$TimeoutSec = 0,
+    # Override the derived host-forward port. 0 derives it from the workspace
+    # name, and a port already held is a refusal rather than a silent hop.
+    [int]$HostPort = 0
 )
 
 # Pipeline: source.codex -> IR -> ARM64 codegen -> PE plug (mode 2) -> GPT disk -> QEMU
@@ -153,12 +162,62 @@ if ($NoBoot) {
 
 # --- Phase 5: Boot in QEMU ---
 Write-Host '[boot-arm64] Phase 5: Booting in QEMU aarch64...'
-Write-Host '[boot-arm64] UART output on serial console. Press Ctrl+C to stop.'
+if (($TimeoutSec -lt 1)) {
+    Write-Host '[boot-arm64] UART output on serial console. Press Ctrl+C to stop.'
+}
 # Create varstore if it does not exist (64 MB, zeroed)
 $VarStore = Join-Path $OutDir 'efi-varstore.img'
 if ((-not (Test-Path -PathType Leaf $VarStore))) {
     $fs = [System.IO.File]::Create($VarStore); $fs.SetLength(64 * 1024 * 1024); $fs.Close()
     Write-Host "[boot-arm64] Created EFI varstore: $VarStore"
 }
-$qemuArgs = @('-machine', 'virt,gic-version=3', '-cpu', 'cortex-a72', '-m', '1024', '-drive', "if=pflash,format=raw,file=$UefiFw,readonly=on", '-drive', "if=pflash,format=raw,file=$VarStore", '-drive', "file=$ImgFile,format=raw,if=virtio", '-device', 'virtio-net-pci,netdev=net0,mac=52:54:00:12:34:56', '-netdev', 'user,id=net0,hostfwd=tcp::8080-:80', '-nographic')
-& $QemuBin @qemuArgs
+
+# The hostfwd was a fixed 8080. Two agents booting arm64 on this box forwarded
+# the same host port, so whichever guest bound it first answered the other
+# agent's requests -- the same class as the fixed monitor port that
+# build/boot/test-ovmf.ps1 derives per workspace for exactly this reason
+# (L-SHARED). Derived here in 18080..18279 from the workspace name.
+# 
+# A HELD port is a REFUSAL rather than a hop to the next free number. A run
+# that quietly moves its port answers on an address the caller was never told,
+# which is the same failure one step later.
+$fwdPort = $HostPort
+if ($fwdPort -eq 0) {
+    $tag = (Split-Path $Repo -Leaf) -replace '[^A-Za-z0-9]',''
+    $portHash = 0
+    foreach ($ch in $tag.ToCharArray()) { $portHash = ($portHash * 31 + [int]$ch) % 200 }
+    $fwdPort = 18080 + $portHash
+    $held = @(Get-NetTCPConnection -LocalPort $fwdPort -State Listen -ErrorAction SilentlyContinue)
+    if ($held.Count -gt 0) {
+        throw "hostfwd port $fwdPort (workspace '$tag') is already listening, PID $($held[0].OwningProcess). An arm64 boot from THIS workspace is still alive; refusing to start, because its guest would answer requests meant for this run."
+    }
+}
+Write-Host "[boot-arm64] hostfwd tcp::$fwdPort -> guest :80"
+# The firmware path contains a space, and Start-Process does not re-quote a
+# space inside a single argument token, so a -drive whose file= sits under
+# 'Program Files' reaches QEMU split and it dies on 'Could not open D:\Program'.
+# The foreground `& $exe @args` call quotes per element and never met this; the
+# -TimeoutSec path below uses Start-Process and does. Copy to a space-free
+# path, which is what build/boot/test-ovmf.ps1 already does for the same reason.
+$FwCopy = Join-Path $env:TEMP ("arm64-code-" + ((Split-Path $Repo -Leaf) -replace '[^A-Za-z0-9]','') + ".fd")
+if ((-not (Test-Path $FwCopy)) -or (Get-Item $FwCopy).Length -ne (Get-Item $UefiFw).Length) { Copy-Item -Force $UefiFw $FwCopy }
+$qemuArgs = @('-machine', 'virt,gic-version=3', '-cpu', 'cortex-a72', '-m', '1024', '-drive', "if=pflash,format=raw,file=$FwCopy,readonly=on", '-drive', "if=pflash,format=raw,file=$VarStore", '-drive', "file=$ImgFile,format=raw,if=virtio", '-device', 'virtio-net-pci,netdev=net0,mac=52:54:00:12:34:56', '-netdev', "user,id=net0,hostfwd=tcp::$fwdPort-:80")
+if ($TimeoutSec -le 0) {
+    & $QemuBin @($qemuArgs + '-nographic')
+} else {
+    # A bounded run has to be READABLE or the bound buys nothing: -nographic
+    # puts the UART on a stdout that Start-Process discards, so serial goes to
+    # a file and the path is printed.
+    $SerialLog = Join-Path $OutDir 'arm64-serial.log'
+    Remove-Item $SerialLog -Force -ErrorAction SilentlyContinue
+    $qproc = Start-Process -FilePath $QemuBin -ArgumentList @($qemuArgs + @('-display', 'none', '-serial', "file:$SerialLog")) -PassThru -WindowStyle Hidden
+    Write-Host "[boot-arm64] QEMU pid $($qproc.Id), deadline ${TimeoutSec}s, serial -> $SerialLog"
+    $qproc.WaitForExit($TimeoutSec * 1000)
+    if ($qproc.HasExited) {
+        Write-Host "[boot-arm64] QEMU exited on its own, code $($qproc.ExitCode)"
+    } else {
+        Stop-Process -Id $qproc.Id -Force -ErrorAction SilentlyContinue
+        # An unfinished run is not a verdict, so the report says which this was.
+        Write-Host "[boot-arm64] TIMEOUT at ${TimeoutSec}s: QEMU was killed and the run did NOT finish. Treat the serial log as a partial."
+    }
+}

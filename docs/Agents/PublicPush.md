@@ -132,8 +132,14 @@ its state as a thing to reconcile against.
   any file in a gitignored folder was ever committed, `git add -A` keeps
   publishing it. Check `git ls-files apps/games/magic`. (The expanded
   commercial app `apps/games/codexmagic/` IS public and is different.)
+  **`annotations/apps/games/magic/` is a different path and its publication
+  is intentional** -- Damian ruled it accepted as public 2026-08-17, after
+  the Update 45 push scan found 150 files there dating to Update 39; the
+  code itself stays hidden as before, so do not re-raise this.
 - Do not publish the 8 MB boot image or PNG snapshots; `git reset` them out
-  of the stage.
+  of the stage. **`build/boot/kbd-diag-v16.img` stays up** -- public since
+  2026-08-03 and Damian ruled it kept 2026-08-17, on the grounds that it does
+  not hurt and might help someone.
 
 ## Divergence (Damian's rule: pull but take nothing, keep all local)
 

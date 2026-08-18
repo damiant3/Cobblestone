@@ -58,7 +58,8 @@ Section: Arity Map
   ArityEntry = record {
    name : Text,
    arity : Integer between 0 and 255,
-   generic-count : Integer between 0 and 255
+   generic-count : Integer between 0 and 255,
+   is-proc : Boolean
   }
 
   bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
@@ -82,7 +83,8 @@ Section: Arity Map
    in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
     name = d.name,
     arity = __narrow (list-length (d.params)),
-    generic-count = 0
+    generic-count = 0,
+    is-proc = fort-is-effectful (d.type-val)
    }))
 
   lookup-arity : List ArityEntry, Text -> Integer
@@ -92,6 +94,14 @@ Section: Arity Map
    in if pos >= len then -1
       else let e = list-at entries pos
       in if e.name == name then e.arity else -1
+
+  lookup-is-proc : List ArityEntry, Text -> Boolean
+  lookup-is-proc (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then False
+      else let e = list-at entries pos
+      in if e.name == name then e.is-proc else False
 
 Section: Apply Chain
 
@@ -117,8 +127,8 @@ Section: Type Emission
     is UnitTy (n) (inner) -> "integer(8)"
     is ErrorTy -> "integer(8)"
     is FunTy (p) (fnrow) (r) -> "integer(8)"
-    is ListTy (elem) -> "integer(8)"
-    is LinkedListTy (elem) -> "integer(8)"
+    is ListTy (elem) -> fort-type elem
+    is LinkedListTy (elem) -> fort-type elem
     is TypeVar (id) -> "integer(8)"
     is ForAllTy (id) (body) -> fort-type body
     is ForAllEff (id) (body) -> fort-type body
@@ -138,6 +148,28 @@ Section: Type Emission
    else when fort-strip-forall ty
     is FunTy (p) (fnrow) (r) -> fort-return-type r (n - 1)
     is otherwise -> ty
+
+  fort-is-list : CodexType -> Boolean
+  fort-is-list (ty) =
+   when ty
+    is ListTy (elem) -> True
+    is LinkedListTy (elem) -> True
+    is ForAllTy (id) (body) -> fort-is-list body
+    is ForAllEff (id) (body) -> fort-is-list body
+    is LinearTy (body) -> fort-is-list body
+    is TypeApply (body) (tyarg) -> fort-is-list body
+    is EffectfulTy (effects) (sc) (ret) -> fort-is-list ret
+    is otherwise -> False
+
+  fort-decl-in : CodexType, Text -> Text
+  fort-decl-in (ty) (n) =
+   if fort-is-list ty then "    " & fort-type ty & ", dimension(:), intent(in) :: " & n & "\n"
+   else "    " & fort-type ty & ", intent(in) :: " & n & "\n"
+
+  fort-decl-var : CodexType, Text -> Text
+  fort-decl-var (ty) (n) =
+   if fort-is-list ty then "    " & fort-type ty & ", allocatable :: " & n & "(:)\n"
+   else "    " & fort-type ty & " :: " & n & "\n"
 
   fort-strip-forall : CodexType -> CodexType
   fort-strip-forall (ty) =
@@ -214,7 +246,7 @@ Section: Expression Emission
     is IrLet (name) (ty) (val) (body) (sp) -> fort-emit-expr-at body arities (depth + 1)
     is IrApply (f) (a) (ty) (sp) -> fort-emit-apply e arities
     is IrLambda (params) (body) (ty) (sp) -> fort-emit-expr-at body arities (depth + 1)
-    is IrList (elems) (ty) (sp) -> fort-emit-list elems arities
+    is IrList (elems) (ty) (sp) -> fort-emit-list elems arities (fort-type ty)
     is IrMatch (scrut) (branches) (ty) (sp) -> fort-emit-match scrut branches arities depth
     is IrAct (stmts) (ty) (sp) -> fort-emit-act-expr stmts arities
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> fort-emit-expr-at body arities (depth + 1)
@@ -275,10 +307,10 @@ Section: Expression Emission
    else let sep = if i > 0 then ", " else ""
    in sep & fort-emit-expr (list-at fields i).value arities & fort-emit-record-args fields (i + 1) arities
 
-  fort-emit-list : List IRExpr, List ArityEntry -> Text
-  fort-emit-list (elems) (arities) =
-   if list-length elems == 0 then "(/ /)"
-   else "(/ " & fort-emit-list-elems elems 0 arities & " /)"
+  fort-emit-list : List IRExpr, List ArityEntry, Text -> Text
+  fort-emit-list (elems) (arities) (ety) =
+   if list-length elems == 0 then "(/ " & ety & " :: /)"
+   else "(/ " & ety & " :: " & fort-emit-list-elems elems 0 arities & " /)"
 
   fort-emit-list-elems : List IRExpr, Integer, List ArityEntry -> Text
   fort-emit-list-elems (elems) (i) (arities) =
@@ -365,9 +397,9 @@ Section: Expression Emission
    else if idx == 5 then "ishft(" & fort-emit-expr (list-at args 0) arities & ", int(" & fort-emit-expr (list-at args 1) arities & "))"
    else if idx == 6 then "ishft(" & fort-emit-expr (list-at args 0) arities & ", -int(" & fort-emit-expr (list-at args 1) arities & "))"
    else if idx == 7 then "ieor(" & fort-emit-expr (list-at args 0) arities & ", " & fort-emit-expr (list-at args 1) arities & ")"
-   else if idx == 8 then "int(ichar(" & fort-emit-expr (list-at args 0) arities & "(" & fort-emit-expr (list-at args 1) arities & "+" & "1:" & fort-emit-expr (list-at args 1) arities & "+" & "1)), 8)"
+   else if idx == 8 then "fort_char_code_at(" & fort-emit-expr (list-at args 0) arities & ", " & fort-emit-expr (list-at args 1) arities & ")"
    else if idx == 9 then fort-emit-expr (list-at args 0) arities
-   else if idx == 10 then "int(ichar(" & fort-emit-expr (list-at args 0) arities & "(" & fort-emit-expr (list-at args 1) arities & "+" & "1:" & fort-emit-expr (list-at args 1) arities & "+" & "1)), 8)"
+   else if idx == 10 then "fort_char_code_at(" & fort-emit-expr (list-at args 0) arities & ", " & fort-emit-expr (list-at args 1) arities & ")"
    else if idx == 11 then "achar(int(" & fort-emit-expr (list-at args 0) arities & "))"
    else if idx == 12 then "close(" & fort-emit-expr (list-at args 0) arities & ")"
    else if idx == 13 then fort-emit-expr (list-at args 0) arities
@@ -378,7 +410,7 @@ Section: Expression Emission
    else if idx == 18 then fort-emit-bi-is-digit args arities
    else if idx == 19 then fort-emit-bi-is-letter args arities
    else if idx == 20 then "(" & fort-emit-expr (list-at args 0) arities & " >= 1_8 .and. " & fort-emit-expr (list-at args 0) arities & " <= 2_8)"
-   else if idx == 21 then fort-emit-expr (list-at args 0) arities & "(int(" & fort-emit-expr (list-at args 1) arities & ") + 1)"
+   else if idx == 21 then "fort_list_at(" & fort-emit-expr (list-at args 0) arities & ", " & fort-emit-expr (list-at args 1) arities & ")"
    else if idx == 22 then "fort_list_insert_at(" & fort-emit-expr (list-at args 0) arities & ", " & fort-emit-expr (list-at args 1) arities & ", " & fort-emit-expr (list-at args 2) arities & ")"
    else if idx == 23 then "int(size(" & fort-emit-expr (list-at args 0) arities & "), 8)"
    else if idx == 24 then "fort_list_set_at(" & fort-emit-expr (list-at args 0) arities & ", " & fort-emit-expr (list-at args 1) arities & ", " & fort-emit-expr (list-at args 2) arities & ")"
@@ -412,7 +444,7 @@ Section: Expression Emission
    let a0 = fort-emit-expr (list-at args 0) arities
    in let a1 = fort-emit-expr (list-at args 1) arities
    in let a2 = fort-emit-expr (list-at args 2) arities
-   in a0 & "(int(" & a1 & ")+1:int(" & a1 & ")+int(" & a2 & "))"
+   in "fort_substr(" & a0 & ", " & a1 & ", " & a2 & ")"
 
   fort-emit-bi-is-letter : List IRExpr, List ArityEntry -> Text
   fort-emit-bi-is-letter (args) (arities) =
@@ -463,7 +495,7 @@ Section: Tail Call Optimization
   fort-emit-tco-def (d) (arities) =
    let name = fort-sanitize (d.name)
    in let ret = fort-return-type (d.type-val) (list-length (d.params))
-   in fort-type ret & " function " & name & "(" & fort-emit-tco-in-params (d.params) 0 & ")\n" & fort-emit-tco-in-decls (d.params) 0 & fort-emit-tco-local-decls (d.params) 0 & fort-emit-tco-copy-in (d.params) 0 & "    do while (.true.)\n" & fort-emit-tco-body (d.body) (d.name) (d.params) arities & "    end do\n  end function " & name & "\n"
+   in "function " & name & "(" & fort-emit-tco-in-params (d.params) 0 & ")\n" & fort-emit-tco-in-decls (d.params) 0 & fort-decl-var ret name & fort-emit-tco-local-decls (d.params) 0 & (if list-length (d.params) <= 1 then "" else fort-emit-tco-temp-decls (d.params) 0) & fort-emit-tco-copy-in (d.params) 0 & "    do while (.true.)\n" & fort-emit-tco-body (d.body) (d.name) (d.params) arities & "    end do\n  end function " & name & "\n"
 
   fort-emit-tco-in-params : List IRParam, Integer -> Text
   fort-emit-tco-in-params (params) (i) =
@@ -476,13 +508,13 @@ Section: Tail Call Optimization
   fort-emit-tco-in-decls (params) (i) =
    if i == list-length params then ""
    else let p = list-at params i
-   in "    " & fort-type (p.type-val) & ", intent(in) :: " & fort-sanitize (p.name) & "_in\n" & fort-emit-tco-in-decls params (i + 1)
+   in fort-decl-in (p.type-val) (fort-sanitize (p.name) & "_in") & fort-emit-tco-in-decls params (i + 1)
 
   fort-emit-tco-local-decls : List IRParam, Integer -> Text
   fort-emit-tco-local-decls (params) (i) =
    if i == list-length params then ""
    else let p = list-at params i
-   in "    " & fort-type (p.type-val) & " :: " & fort-sanitize (p.name) & "\n" & fort-emit-tco-local-decls params (i + 1)
+   in fort-decl-var (p.type-val) (fort-sanitize (p.name)) & fort-emit-tco-local-decls params (i + 1)
 
   fort-emit-tco-copy-in : List IRParam, Integer -> Text
   fort-emit-tco-copy-in (params) (i) =
@@ -517,7 +549,8 @@ Section: Tail Call Optimization
   fort-emit-tco-jump : IRExpr, List IRParam, List ArityEntry -> Text
   fort-emit-tco-jump (e) (params) (arities) =
    let chain = collect-apply-chain e []
-   in fort-emit-tco-assigns (chain.args) params arities 0 & "      cycle\n"
+   in if list-length params <= 1 then fort-emit-tco-assigns (chain.args) params arities 0 & "      cycle\n"
+      else fort-emit-tco-temp-set (chain.args) params arities 0 & fort-emit-tco-temp-copy (chain.args) params 0 & "      cycle\n"
 
   fort-emit-tco-assigns : List IRExpr, List IRParam, List ArityEntry, Integer -> Text
   fort-emit-tco-assigns (args) (params) (arities) (i) =
@@ -525,6 +558,26 @@ Section: Tail Call Optimization
    else if i >= list-length params then ""
    else let p = list-at params i
    in "      " & fort-sanitize (p.name) & " = " & fort-emit-expr (list-at args i) arities & "\n" & fort-emit-tco-assigns args params arities (i + 1)
+
+  fort-emit-tco-temp-set : List IRExpr, List IRParam, List ArityEntry, Integer -> Text
+  fort-emit-tco-temp-set (args) (params) (arities) (i) =
+   if i == list-length args then ""
+   else if i >= list-length params then ""
+   else let p = list-at params i
+   in "      " & fort-sanitize (p.name) & "_t = " & fort-emit-expr (list-at args i) arities & "\n" & fort-emit-tco-temp-set args params arities (i + 1)
+
+  fort-emit-tco-temp-copy : List IRExpr, List IRParam, Integer -> Text
+  fort-emit-tco-temp-copy (args) (params) (i) =
+   if i == list-length args then ""
+   else if i >= list-length params then ""
+   else let p = list-at params i
+   in "      " & fort-sanitize (p.name) & " = " & fort-sanitize (p.name) & "_t\n" & fort-emit-tco-temp-copy args params (i + 1)
+
+  fort-emit-tco-temp-decls : List IRParam, Integer -> Text
+  fort-emit-tco-temp-decls (params) (i) =
+   if i == list-length params then ""
+   else let p = list-at params i
+   in fort-decl-var (p.type-val) (fort-sanitize (p.name) & "_t") & fort-emit-tco-temp-decls params (i + 1)
 
 Section: Definition Emission
 
@@ -544,6 +597,7 @@ Section: Definition Emission
   fort-is-effectful (ty) =
    when ty
     is EffectfulTy (effs) (sc) (ret) -> True
+    is FunTy (p) (fnrow) (r) -> if list-length (fnrow.labels) > 0 then True else fort-is-effectful r
     is ForAllTy (id) (body) -> fort-is-effectful body
     is ForAllEff (id) (body) -> fort-is-effectful body
     is LinearTy (body) -> fort-is-effectful body
@@ -552,12 +606,12 @@ Section: Definition Emission
 
   fort-emit-subroutine : IRDef, Text, List ArityEntry -> Text
   fort-emit-subroutine (d) (name) (arities) =
-   "  subroutine " & name & "(" & fort-emit-param-names (d.params) 0 & ")\n" & fort-emit-param-decls (d.params) 0 & "    implicit none\n" & fort-emit-statement (d.body) arities 2 & "  end subroutine " & name & "\n"
+   "  subroutine " & name & "(" & fort-emit-param-names (d.params) 0 & ")\n" & fort-emit-param-decls (d.params) 0 & fort-emit-statement (d.body) arities 2 & "  end subroutine " & name & "\n"
 
   fort-emit-function : IRDef, Text, List ArityEntry -> Text
   fort-emit-function (d) (name) (arities) =
    let ret = fort-return-type (d.type-val) (list-length (d.params))
-   in "  " & fort-type ret & " function " & name & "(" & fort-emit-param-names (d.params) 0 & ")\n" & fort-emit-param-decls (d.params) 0 & "    " & name & " = " & fort-emit-expr (d.body) arities & "\n  end function " & name & "\n"
+   in "  function " & name & "(" & fort-emit-param-names (d.params) 0 & ")\n" & fort-emit-param-decls (d.params) 0 & fort-decl-var ret name & "    " & name & " = " & fort-emit-expr (d.body) arities & "\n  end function " & name & "\n"
 
   fort-emit-param-names : List IRParam, Integer -> Text
   fort-emit-param-names (params) (i) =
@@ -570,7 +624,7 @@ Section: Definition Emission
   fort-emit-param-decls (params) (i) =
    if i == list-length params then ""
    else let p = list-at params i
-   in "    " & fort-type (p.type-val) & ", intent(in) :: " & fort-sanitize (p.name) & "\n" & fort-emit-param-decls params (i + 1)
+   in fort-decl-in (p.type-val) (fort-sanitize (p.name)) & fort-emit-param-decls params (i + 1)
 
   fort-emit-statement : IRExpr, List ArityEntry, Integer -> Text
   fort-emit-statement (e) (arities) (indent) =
@@ -587,8 +641,53 @@ Section: Definition Emission
   fort-emit-act-stmt : IRActStmt, List ArityEntry, Integer -> Text
   fort-emit-act-stmt (s) (arities) (indent) =
    when s
-    is IrDoExec (e) (sp) -> fort-indent indent & fort-emit-expr e arities & "\n"
+    is IrDoExec (e) (sp) -> fort-indent indent & fort-emit-call-or-expr e arities & "\n"
     is IrDoBind (name) (ty) (val) (sp) -> fort-indent indent & fort-sanitize name & " = " & fort-emit-expr val arities & "\n"
+
+  fort-emit-call-or-expr : IRExpr, List ArityEntry -> Text
+  fort-emit-call-or-expr (e) (arities) =
+   if fort-stmt-is-proc-call e arities then "call " & fort-emit-expr e arities
+   else fort-emit-expr e arities
+
+  fort-stmt-is-proc-call : IRExpr, List ArityEntry -> Boolean
+  fort-stmt-is-proc-call (e) (arities) =
+   when e
+    is IrApply (f) (a) (ty) (sp) ->
+     when (collect-apply-chain e []).root
+      is IrName (n) (nty) (nsp) -> lookup-is-proc arities n
+      is otherwise -> False
+    is IrName (n) (nty) (nsp) -> lookup-is-proc arities n
+    is otherwise -> False
+
+Section: Runtime Prelude
+
+  fort-prelude : Text =
+   "module codex_fort_prelude\n  implicit none\n  integer, parameter :: FORT_TEXT_LEN = 256\n  interface fort_list_concat\n    module procedure fort_list_concat_i, fort_list_concat_t\n  end interface\n  interface fort_list_cons\n    module procedure fort_list_cons_i, fort_list_cons_t\n  end interface\n  interface fort_list_snoc\n    module procedure fort_list_snoc_i, fort_list_snoc_t\n  end interface\n  interface fort_list_set_at\n    module procedure fort_list_set_at_i, fort_list_set_at_t\n  end interface\n  interface fort_list_insert_at\n    module procedure fort_list_insert_at_i, fort_list_insert_at_t\n  end interface\n  interface fort_list_at\n    module procedure fort_list_at_i, fort_list_at_t\n  end interface\ncontains\n"
+   & "  function fort_list_at_i(xs, i) result(r)\n    integer(8), dimension(:), intent(in) :: xs\n    integer(8), intent(in) :: i\n    integer(8) :: r\n    r = xs(int(i) + 1)\n  end function fort_list_at_i\n"
+   & "  function fort_list_at_t(xs, i) result(r)\n    character(len=FORT_TEXT_LEN), dimension(:), intent(in) :: xs\n    integer(8), intent(in) :: i\n    character(len=FORT_TEXT_LEN) :: r\n    r = xs(int(i) + 1)\n  end function fort_list_at_t\n"
+   & "  function fort_char_code_at(s, i) result(r)\n    character(len=*), intent(in) :: s\n    integer(8), intent(in) :: i\n    integer(8) :: r\n    r = int(ichar(s(int(i)+1:int(i)+1)), 8)\n  end function fort_char_code_at\n"
+   & "  function fort_substr(s, start, count) result(r)\n    character(len=*), intent(in) :: s\n    integer(8), intent(in) :: start\n    integer(8), intent(in) :: count\n    character(len=FORT_TEXT_LEN) :: r\n    r = s(int(start)+1:int(start)+int(count))\n  end function fort_substr\n"
+   & "  function fort_list_concat_i(a, b) result(r)\n    integer(8), dimension(:), intent(in) :: a, b\n    integer(8), allocatable :: r(:)\n    integer :: na, nb\n    na = size(a)\n    nb = size(b)\n    allocate(r(na + nb))\n    if (na > 0) r(1:na) = a\n    if (nb > 0) r(na+1:na+nb) = b\n  end function fort_list_concat_i\n"
+   & "  function fort_list_concat_t(a, b) result(r)\n    character(len=FORT_TEXT_LEN), dimension(:), intent(in) :: a, b\n    character(len=FORT_TEXT_LEN), allocatable :: r(:)\n    integer :: na, nb\n    na = size(a)\n    nb = size(b)\n    allocate(r(na + nb))\n    if (na > 0) r(1:na) = a\n    if (nb > 0) r(na+1:na+nb) = b\n  end function fort_list_concat_t\n"
+   & "  function fort_list_cons_i(v, xs) result(r)\n    integer(8), intent(in) :: v\n    integer(8), dimension(:), intent(in) :: xs\n    integer(8), allocatable :: r(:)\n    integer :: n\n    n = size(xs)\n    allocate(r(n + 1))\n    r(1) = v\n    if (n > 0) r(2:n+1) = xs\n  end function fort_list_cons_i\n"
+   & "  function fort_list_cons_t(v, xs) result(r)\n    character(len=*), intent(in) :: v\n    character(len=FORT_TEXT_LEN), dimension(:), intent(in) :: xs\n    character(len=FORT_TEXT_LEN), allocatable :: r(:)\n    integer :: n\n    n = size(xs)\n    allocate(r(n + 1))\n    r(1) = v\n    if (n > 0) r(2:n+1) = xs\n  end function fort_list_cons_t\n"
+   & "  function fort_list_snoc_i(xs, v) result(r)\n    integer(8), dimension(:), intent(in) :: xs\n    integer(8), intent(in) :: v\n    integer(8), allocatable :: r(:)\n    integer :: n\n    n = size(xs)\n    allocate(r(n + 1))\n    if (n > 0) r(1:n) = xs\n    r(n + 1) = v\n  end function fort_list_snoc_i\n"
+   & "  function fort_list_snoc_t(xs, v) result(r)\n    character(len=FORT_TEXT_LEN), dimension(:), intent(in) :: xs\n    character(len=*), intent(in) :: v\n    character(len=FORT_TEXT_LEN), allocatable :: r(:)\n    integer :: n\n    n = size(xs)\n    allocate(r(n + 1))\n    if (n > 0) r(1:n) = xs\n    r(n + 1) = v\n  end function fort_list_snoc_t\n"
+   & "  function fort_list_set_at_i(xs, i, v) result(r)\n    integer(8), dimension(:), intent(in) :: xs\n    integer(8), intent(in) :: i, v\n    integer(8), allocatable :: r(:)\n    integer :: n, p\n    n = size(xs)\n    p = int(i)\n    allocate(r(n))\n    if (n > 0) r = xs\n    if (p >= 0 .and. p < n) r(p + 1) = v\n  end function fort_list_set_at_i\n"
+   & "  function fort_list_set_at_t(xs, i, v) result(r)\n    character(len=FORT_TEXT_LEN), dimension(:), intent(in) :: xs\n    integer(8), intent(in) :: i\n    character(len=*), intent(in) :: v\n    character(len=FORT_TEXT_LEN), allocatable :: r(:)\n    integer :: n, p\n    n = size(xs)\n    p = int(i)\n    allocate(r(n))\n    if (n > 0) r = xs\n    if (p >= 0 .and. p < n) r(p + 1) = v\n  end function fort_list_set_at_t\n"
+   & "  function fort_list_insert_at_i(xs, i, v) result(r)\n    integer(8), dimension(:), intent(in) :: xs\n    integer(8), intent(in) :: i, v\n    integer(8), allocatable :: r(:)\n    integer :: n, p\n    n = size(xs)\n    p = int(i)\n    if (p < 0) p = 0\n    if (p > n) p = n\n    allocate(r(n + 1))\n    if (p > 0) r(1:p) = xs(1:p)\n    r(p + 1) = v\n    if (p < n) r(p+2:n+1) = xs(p+1:n)\n  end function fort_list_insert_at_i\n"
+   & "  function fort_list_insert_at_t(xs, i, v) result(r)\n    character(len=FORT_TEXT_LEN), dimension(:), intent(in) :: xs\n    integer(8), intent(in) :: i\n    character(len=*), intent(in) :: v\n    character(len=FORT_TEXT_LEN), allocatable :: r(:)\n    integer :: n, p\n    n = size(xs)\n    p = int(i)\n    if (p < 0) p = 0\n    if (p > n) p = n\n    allocate(r(n + 1))\n    if (p > 0) r(1:p) = xs(1:p)\n    r(p + 1) = v\n    if (p < n) r(p+2:n+1) = xs(p+1:n)\n  end function fort_list_insert_at_t\n"
+   & "  function fort_integer_to_text(n) result(r)\n    integer(8), intent(in) :: n\n    character(len=FORT_TEXT_LEN) :: r\n    r = ''\n    write(r, '(I0)') n\n  end function fort_integer_to_text\n"
+   & "  function fort_text_to_integer(s) result(r)\n    character(len=*), intent(in) :: s\n    integer(8) :: r\n    integer :: ios\n    r = 0_8\n    read(s, *, iostat=ios) r\n    if (ios /= 0) r = 0_8\n  end function fort_text_to_integer\n"
+   & "  function fort_text_compare(a, b) result(r)\n    character(len=*), intent(in) :: a, b\n    integer(8) :: r\n    if (llt(trim(a), trim(b))) then\n      r = -1_8\n    else if (lgt(trim(a), trim(b))) then\n      r = 1_8\n    else\n      r = 0_8\n    end if\n  end function fort_text_compare\n"
+   & "  function fort_text_concat_list(xs) result(r)\n    character(len=FORT_TEXT_LEN), dimension(:), intent(in) :: xs\n    character(len=FORT_TEXT_LEN) :: r\n    integer :: i, p, l\n    r = ''\n    p = 0\n    do i = 1, size(xs)\n      l = len_trim(xs(i))\n      if (l > 0 .and. p + l <= FORT_TEXT_LEN) then\n        r(p+1:p+l) = xs(i)(1:l)\n        p = p + l\n      end if\n    end do\n  end function fort_text_concat_list\n"
+   & "  function fort_text_replace(s, from, to) result(r)\n    character(len=*), intent(in) :: s, from, to\n    character(len=FORT_TEXT_LEN) :: r\n    integer :: i, n, lf, lt, p\n    r = ''\n    n = len_trim(s)\n    lf = len_trim(from)\n    lt = len_trim(to)\n    if (lf == 0) then\n      r = s\n      return\n    end if\n    i = 1\n    p = 0\n    do while (i <= n)\n      if (i + lf - 1 <= n .and. p + lt <= FORT_TEXT_LEN) then\n        if (s(i:i+lf-1) == from(1:lf)) then\n          if (lt > 0) r(p+1:p+lt) = to(1:lt)\n          p = p + lt\n          i = i + lf\n          cycle\n        end if\n      end if\n      if (p + 1 <= FORT_TEXT_LEN) then\n        r(p+1:p+1) = s(i:i)\n        p = p + 1\n      end if\n      i = i + 1\n    end do\n  end function fort_text_replace\n"
+   & "  function fort_text_split(s, sep) result(r)\n    character(len=*), intent(in) :: s, sep\n    character(len=FORT_TEXT_LEN), allocatable :: r(:)\n    integer :: i, n, ls, cnt, k, start\n    n = len_trim(s)\n    ls = len_trim(sep)\n    if (ls == 0) then\n      allocate(r(1))\n      r(1) = s\n      return\n    end if\n    cnt = 1\n    i = 1\n    do while (i + ls - 1 <= n)\n      if (s(i:i+ls-1) == sep(1:ls)) then\n        cnt = cnt + 1\n        i = i + ls\n      else\n        i = i + 1\n      end if\n    end do\n    allocate(r(cnt))\n    r = ''\n    k = 1\n    start = 1\n    i = 1\n    do while (i + ls - 1 <= n)\n      if (s(i:i+ls-1) == sep(1:ls)) then\n        if (i > start) r(k) = s(start:i-1)\n        k = k + 1\n        i = i + ls\n        start = i\n      else\n        i = i + 1\n      end if\n    end do\n    if (start <= n) r(k) = s(start:n)\n  end function fort_text_split\n"
+   & "  function fort_file_exists(path) result(r)\n    character(len=*), intent(in) :: path\n    logical :: r\n    inquire(file=trim(path), exist=r)\n  end function fort_file_exists\n"
+   & "  function fort_open_file(path) result(r)\n    character(len=*), intent(in) :: path\n    integer(8) :: r\n    integer :: u, ios\n    open(newunit=u, file=trim(path), status='old', action='read', iostat=ios)\n    if (ios /= 0) then\n      r = -1_8\n    else\n      r = int(u, 8)\n    end if\n  end function fort_open_file\n"
+   & "  function fort_read_file(path) result(r)\n    character(len=*), intent(in) :: path\n    character(len=FORT_TEXT_LEN) :: r\n    character(len=FORT_TEXT_LEN) :: line\n    integer :: u, ios, p, l\n    r = ''\n    p = 0\n    open(newunit=u, file=trim(path), status='old', action='read', iostat=ios)\n    if (ios /= 0) return\n    do\n      read(u, '(A)', iostat=ios) line\n      if (ios /= 0) exit\n      l = len_trim(line)\n      if (p + l + 1 > FORT_TEXT_LEN) exit\n      if (l > 0) r(p+1:p+l) = line(1:l)\n      p = p + l\n      r(p+1:p+1) = achar(10)\n      p = p + 1\n    end do\n    close(u)\n  end function fort_read_file\n"
+   & "  function fort_write_file(path, content) result(r)\n    character(len=*), intent(in) :: path, content\n    integer(8) :: r\n    integer :: u, ios\n    r = 0_8\n    open(newunit=u, file=trim(path), status='replace', action='write', iostat=ios)\n    if (ios /= 0) then\n      r = -1_8\n      return\n    end if\n    write(u, '(A)') trim(content)\n    close(u)\n  end function fort_write_file\n"
+   & "end module codex_fort_prelude\n"
 
 Section: Chapter Emission
 
@@ -622,11 +721,11 @@ Section: Chapter Emission
    in let mod-name = fort-sanitize (m.name.value)
    in let has-mod = fort-needs-module m
    in let opening-idx = fort-find-opening (m.defs) 0
-   in let mod-part = if has-mod then "module codex_" & mod-name & "\n  implicit none\n\n" & emit-fort-type-defs type-defs 0 & "contains\n\n" & fort-emit-module-defs (m.defs) arities 0 opening-idx & "end module codex_" & mod-name & "\n\n" else ""
+   in let mod-part = if has-mod then "module codex_" & mod-name & "\n  use codex_fort_prelude\n  implicit none\n\n" & emit-fort-type-defs type-defs 0 & "contains\n\n" & fort-emit-module-defs (m.defs) arities 0 opening-idx & "end module codex_" & mod-name & "\n\n" else ""
    in let use-part = if has-mod then "  use codex_" & mod-name & "\n" else ""
    in let main-body = if opening-idx >= 0 then fort-emit-opening-body (list-at (m.defs) opening-idx) arities
                       else if list-length (m.defs) == 0 then "  print *, 'All proofs verified at compile time.'\n"
                       else ""
-   in mod-part & "program main_program\n" & use-part & "  implicit none\n" & main-body & "end program main_program\n"
+   in fort-prelude & "\n" & mod-part & "program main_program\n" & use-part & "  use codex_fort_prelude\n  implicit none\n" & main-body & "end program main_program\n"
 
 Page 1

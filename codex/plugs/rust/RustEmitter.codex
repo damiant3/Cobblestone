@@ -406,7 +406,7 @@ Section: Builtin Dispatch
    RsBuiltinEmitter { name = "is-letter", emit = \args arities cm -> "matches!(" & emit-rs-expr (list-at args 0) arities cm & ", 13..=64 | 97..=127)" },
    RsBuiltinEmitter { name = "is-digit", emit = \args arities cm -> "matches!(" & emit-rs-expr (list-at args 0) arities cm & ", 3..=12)" },
    RsBuiltinEmitter { name = "is-whitespace", emit = \args arities cm -> "matches!(" & emit-rs-expr (list-at args 0) arities cm & ", 1..=2)" },
-   RsBuiltinEmitter { name = "text-to-integer", emit = \args arities cm -> emit-rs-expr (list-at args 0) arities cm & ".parse::<i64>().unwrap()" },
+   RsBuiltinEmitter { name = "text-to-integer", emit = \args arities cm -> "_cx_text_to_integer(&" & emit-rs-expr (list-at args 0) arities cm & ")" },
    RsBuiltinEmitter { name = "integer-to-text", emit = \args arities cm -> emit-rs-expr (list-at args 0) arities cm & ".to_string()" },
    RsBuiltinEmitter { name = "char-code", emit = \args arities cm -> emit-rs-expr (list-at args 0) arities cm },
    RsBuiltinEmitter { name = "code-to-char", emit = \args arities cm -> emit-rs-expr (list-at args 0) arities cm },
@@ -425,9 +425,9 @@ Section: Builtin Dispatch
    RsBuiltinEmitter { name = "map", emit = \args arities cm -> "{ let _f = " & emit-rs-expr (list-at args 0) arities cm & "; " & emit-rs-expr (list-at args 1) arities cm & ".iter().map(|_x| _f(_x.clone())).collect::<Vec<_>>() }" },
    RsBuiltinEmitter { name = "__narrow", emit = \args arities cm -> emit-rs-expr (list-at args 0) arities cm },
    RsBuiltinEmitter { name = "text-compare", emit = \args arities cm -> emit-rs-expr (list-at args 0) arities cm & ".cmp(&" & emit-rs-expr (list-at args 1) arities cm & ") as i64" },
-   RsBuiltinEmitter { name = "text-replace", emit = \args arities cm -> emit-rs-expr (list-at args 0) arities cm & ".replace(&" & emit-rs-expr (list-at args 1) arities cm & ", & " & emit-rs-expr (list-at args 2) arities cm & ")" },
+   RsBuiltinEmitter { name = "text-replace", emit = \args arities cm -> "_cx_text_replace(&" & emit-rs-expr (list-at args 0) arities cm & ", &" & emit-rs-expr (list-at args 1) arities cm & ", &" & emit-rs-expr (list-at args 2) arities cm & ")" },
    RsBuiltinEmitter { name = "text-concat-list", emit = \args arities cm -> emit-rs-expr (list-at args 0) arities cm & ".concat()" },
-   RsBuiltinEmitter { name = "text-split", emit = \args arities cm -> emit-rs-expr (list-at args 0) arities cm & ".split(&*" & emit-rs-expr (list-at args 1) arities cm & ").map(|s| s.to_string()).collect::<Vec<String>>()" },
+   RsBuiltinEmitter { name = "text-split", emit = \args arities cm -> "_cx_text_split(&" & emit-rs-expr (list-at args 0) arities cm & ", &" & emit-rs-expr (list-at args 1) arities cm & ")" },
    RsBuiltinEmitter { name = "text-contains", emit = \args arities cm -> emit-rs-expr (list-at args 0) arities cm & ".contains(&*" & emit-rs-expr (list-at args 1) arities cm & ")" },
    RsBuiltinEmitter { name = "text-starts-with", emit = \args arities cm -> emit-rs-expr (list-at args 0) arities cm & ".starts_with(&*" & emit-rs-expr (list-at args 1) arities cm & ")" },
    RsBuiltinEmitter { name = "open-file", emit = \args arities cm -> "std::fs::File::open(" & emit-rs-expr (list-at args 0) arities cm & ").unwrap()" },
@@ -888,12 +888,24 @@ Section: Chapter Emission
   emit-rs-chapter (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
    in let ctor-map = build-ctor-enum-map type-defs 0 []
-   in let header = "#![allow(non_snake_case, unused_variables, dead_code, unused_mut, unreachable_patterns, unused_imports)]\n\nstatic mut _CODEX_STATE: i64 = 0;\n\n"
+   in let header = "#![allow(non_snake_case, unused_variables, dead_code, unused_mut, unreachable_patterns, unused_imports)]\n\nstatic mut _CODEX_STATE: i64 = 0;\n\n" & rs-text-builtins
    in let type-text = emit-rs-type-defs type-defs 0
    in let defs-text = emit-rs-defs-list (m.defs) 0 arities ctor-map
    in let entry = if has-opening (m.defs) 0 then emit-rs-entry-point (rs-opening-return-type (m.defs))
       else "fn main() {\n    println!(\"Chapter loaded.\");\n}\n"
    in header & type-text & defs-text & entry
+
+ `str::replace` with an empty pattern inserts the replacement between every
+ character, `str::split` on an empty pattern yields an empty field either
+ side of every character, and `parse` followed by `unwrap` PANICS on
+ anything that is not wholly numeric. Codex answers the string unchanged,
+ one field, and a leading-digit prefix or 0.
+
+  rs-text-builtins : Text
+  rs-text-builtins =
+   "fn _cx_text_replace(s: &str, a: &str, b: &str) -> String {\n    if a.is_empty() { return s.to_string(); }\n    s.replace(a, b)\n}\n\n"
+   & "fn _cx_text_split(s: &str, sep: &str) -> Vec<String> {\n    if sep.is_empty() { return vec![s.to_string()]; }\n    s.split(sep).map(|x| x.to_string()).collect::<Vec<String>>()\n}\n\n"
+   & "fn _cx_text_to_integer(s: &str) -> i64 {\n    let bs = s.as_bytes();\n    let mut i: usize = 0;\n    let mut neg = false;\n    if !bs.is_empty() && bs[0] == b'-' { neg = true; i = 1; }\n    let mut v: i64 = 0;\n    while i < bs.len() && bs[i] >= b'0' && bs[i] <= b'9' {\n        v = v * 10 + (bs[i] - b'0') as i64;\n        i += 1;\n    }\n    if neg { -v } else { v }\n}\n\n"
 
   is-mktup-name : Text -> Boolean
   is-mktup-name (n) =

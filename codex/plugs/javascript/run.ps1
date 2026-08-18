@@ -79,16 +79,27 @@ $stderrFile = [System.IO.Path]::GetTempFileName()
     $tcpStream.ReadTimeout = 120000
     $allBytes = [System.Collections.Generic.List[byte]]::new(65536)
     $readBuf = [byte[]]::new(8192)
+    $recvAborted = $false
+    $recvError = ''
     try {
         while ($true) {
             $n = $tcpStream.Read($readBuf, 0, $readBuf.Length)
             if ($n -le 0) { break }
             for ($bi = 0; $bi -lt $n; $bi++) { $allBytes.Add($readBuf[$bi]) }
         }
-    } catch {}
-    $outText = [System.Text.Encoding]::UTF8.GetString($allBytes.ToArray())
+    } catch {
+        # A read timeout and a connection reset are NOT a clean end of stream.
+        # This was a bare catch {}, so a transfer that stopped part way through
+        # was indistinguishable from one that finished: the partial buffer was
+        # written out and the run reported OK.
+        $recvAborted = $true
+        $recvError = $_.Exception.Message
+    }    $outText = [System.Text.Encoding]::UTF8.GetString($allBytes.ToArray())
     [System.IO.File]::WriteAllText($Out, $outText, [System.Text.UTF8Encoding]::new($false))
-    Write-Host "[js-run] OK: $Out ($($outText.Length) chars)"
+    if ($recvAborted) {
+        [Console]::Error.WriteLine("FAIL: the receive ended by exception, not by end of stream -- $recvError. Wrote $($allBytes.Count) bytes and cannot tell whether that is all of them.")
+        exit 8
+    }    Write-Host "[js-run] OK: $Out ($($outText.Length) chars)"
 
     $tcpClient.Close()
 

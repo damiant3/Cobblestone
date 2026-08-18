@@ -142,6 +142,32 @@ Section: Connection Record
     send-window : Integer between 0 and 65535
   }
 
+ RFC 793 section 3.2: a passive OPEN creates a socket bound to a local
+ address with no foreign socket specified. It is not a transition out of a
+ connection that once had a peer, and the difference is load-bearing here:
+ a server closing from ESTABLISHED is in FIN_WAIT_1, and there is no
+ transition from FIN_WAIT_1 to LISTEN in the state diagram, nor should there
+ be. The listener below is CONSTRUCTED from the binding instead.
+
+ send-next carries forward rather than restarting, because the peer of the
+ connection just abandoned may still have segments in flight and RFC 793
+ section 3.3 wants the sequence space advanced past them. recv-next resets
+ because the next caller is a different peer and its sequence numbers are
+ its own.
+
+  tcp-fresh-listener : TcpConnection -> TcpConnection
+  tcp-fresh-listener (c) =
+    TcpConnection {
+      state = TcpListening,
+      local-port = c.local-port,
+      remote-port = 0,
+      local-ip = c.local-ip,
+      remote-ip = c.remote-ip,
+      send-next = c.send-next,
+      recv-next = 0,
+      send-window = c.send-window
+    }
+
   tcp-new-connection : Integer, List Integer, Integer, List Integer, Integer -> TcpConnection
   tcp-new-connection (local-port) (local-ip) (remote-port) (remote-ip) (initial-seq) =
     TcpConnection {
@@ -158,7 +184,6 @@ Section: Connection Record
 Section: State Machine Events
   TcpEvent =
     | EvConnect
-    | EvListen
     | EvSegment (TcpSegment)
     | EvSend (List Integer)
     | EvClose
@@ -221,7 +246,6 @@ Section: CLOSED State
       let syn = tcp-build-segment (conn.local-port) (conn.remote-port) (conn.send-next) 0 tcp-flag-syn (conn.send-window) []
       in let c1 = tcp-set-state (set-send-next conn (conn.send-next + 1)) TcpSynSent
       in TcpStep { conn = c1, action = ActSend syn }
-    is EvListen -> TcpStep { conn = tcp-set-state (set-remote conn 0 (conn.remote-ip)) TcpListening, action = ActNone }
     is EvSegment (seg) -> TcpStep { conn = conn, action = ActNone }
     is EvSend (data) -> TcpStep { conn = conn, action = ActError "not connected" }
     is EvClose -> TcpStep { conn = conn, action = ActNone }
@@ -236,7 +260,6 @@ Section: LISTENING State
         in let synack = tcp-build-segment (c0.local-port) (seg.src-port) (c0.send-next) (seg.seq-num + 1) (bit-or tcp-flag-syn tcp-flag-ack) (c0.send-window) []
         in TcpStep { conn = tcp-set-state c1 TcpSynReceived, action = ActSend synack }
       else TcpStep { conn = conn, action = ActNone }
-    is EvListen -> TcpStep { conn = conn, action = ActNone }
     is EvConnect -> TcpStep { conn = conn, action = ActNone }
     is EvSend (data) -> TcpStep { conn = conn, action = ActError "not connected" }
     is EvClose -> TcpStep { conn = tcp-set-state conn TcpClosed, action = ActClosed }
@@ -253,7 +276,6 @@ Section: SYN_SENT State
       else TcpStep { conn = conn, action = ActNone }
     is EvClose -> TcpStep { conn = tcp-set-state conn TcpClosed, action = ActClosed }
     is EvConnect -> TcpStep { conn = conn, action = ActNone }
-    is EvListen -> TcpStep { conn = conn, action = ActNone }
     is EvSend (data) -> TcpStep { conn = conn, action = ActError "not established" }
 
 Section: SYN_RECEIVED State
@@ -269,7 +291,6 @@ Section: SYN_RECEIVED State
       else TcpStep { conn = conn, action = ActNone }
     is EvClose -> TcpStep { conn = tcp-set-state conn TcpClosed, action = ActClosed }
     is EvConnect -> TcpStep { conn = conn, action = ActNone }
-    is EvListen -> TcpStep { conn = conn, action = ActNone }
     is EvSend (data) -> TcpStep { conn = conn, action = ActError "not established" }
 
 Section: ESTABLISHED State
@@ -294,7 +315,6 @@ Section: ESTABLISHED State
       in let c1 = tcp-set-state (set-send-next conn (conn.send-next + 1)) TcpFinWait1
       in TcpStep { conn = c1, action = ActSend fin }
     is EvConnect -> TcpStep { conn = conn, action = ActNone }
-    is EvListen -> TcpStep { conn = conn, action = ActNone }
 
 Section: FIN_WAIT_1 State
   tcp-step-fin-wait1 : TcpConnection, TcpEvent -> TcpStep
@@ -312,7 +332,6 @@ Section: FIN_WAIT_1 State
       else TcpStep { conn = conn, action = ActNone }
     is EvClose -> TcpStep { conn = conn, action = ActNone }
     is EvConnect -> TcpStep { conn = conn, action = ActNone }
-    is EvListen -> TcpStep { conn = conn, action = ActNone }
     is EvSend (data) -> TcpStep { conn = conn, action = ActError "closing" }
 
 Section: FIN_WAIT_2 State
@@ -326,7 +345,6 @@ Section: FIN_WAIT_2 State
       else TcpStep { conn = conn, action = ActNone }
     is EvClose -> TcpStep { conn = conn, action = ActNone }
     is EvConnect -> TcpStep { conn = conn, action = ActNone }
-    is EvListen -> TcpStep { conn = conn, action = ActNone }
     is EvSend (data) -> TcpStep { conn = conn, action = ActError "closing" }
 
 Section: CLOSE_WAIT State
@@ -338,7 +356,6 @@ Section: CLOSE_WAIT State
       in TcpStep { conn = c1, action = ActSend fin }
     is EvSegment (seg) -> TcpStep { conn = conn, action = ActNone }
     is EvConnect -> TcpStep { conn = conn, action = ActNone }
-    is EvListen -> TcpStep { conn = conn, action = ActNone }
     is EvSend (data) ->
       let seg = tcp-build-segment (conn.local-port) (conn.remote-port) (conn.send-next) (conn.recv-next) (bit-or tcp-flag-ack tcp-flag-psh) (conn.send-window) data
       in let c1 = set-send-next conn (conn.send-next + list-length data)
@@ -352,7 +369,6 @@ Section: LAST_ACK State
       else TcpStep { conn = conn, action = ActNone }
     is EvClose -> TcpStep { conn = conn, action = ActNone }
     is EvConnect -> TcpStep { conn = conn, action = ActNone }
-    is EvListen -> TcpStep { conn = conn, action = ActNone }
     is EvSend (data) -> TcpStep { conn = conn, action = ActError "closing" }
 
 Page 1

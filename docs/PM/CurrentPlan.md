@@ -161,9 +161,49 @@ measurement.
   should ride the same boot rather than spend a flight of its own.
 - **NIC-5: what wedged the box on 2026-08-11.** It was NOT `CTRL.RST` (that
   write is discarded on this part). Terminal by construction, flies last.
-- **B4, serve the repository protocol.** Unowned; blocked on B3. EdgeMesh
-  Phase 2 (`docs/Designs/Active/Features/EdgeMeshGameServers.md`) is the
-  consumer waiting on it.
+- **B4, serve the repository protocol. root, from red's routing 2026-08-17;
+  staged in the BED, one CL per step, and this bullet is the row.** What is
+  already so, measured 2026-08-17 (root, from source): the protocol IS served
+  in the guest today. `tools/cdx-serve.codex` listens on 9300
+  (`net-io-accept (net-io-listen ...)`, `:124`) and answers `tag-work-request`
+  with `tag-work-reply`; `tools/cdx-registry.codex` on 9301 answers locate and
+  announce; the host reaches them through `codex-vm -portfwd host:9300`
+  (`OperatorsManual.md` "-portfwd", "Resolving A Quotation From A Peer"), and
+  `build/cdx-serve-test.ps1`, `quote-from-peer-test.ps1`,
+  `registry-locate-test.ps1` and `nat-conn-churn-test.ps1` drive it. The e1000
+  conversation of main 15013/15028 is `cdx-serve-test.ps1 -VmArgs '-e1000-nat'`
+  and is recorded in `DeviceEmulationCatalog.md:297` ("the full
+  repository-protocol exchange passes over the e1000 branch"). The wire is
+  specified only in code: framing in `codex/os/net/MessageFraming.codex`
+  (`frame-encode:17`, LE32 length + tag byte; `tag-work-request 17`,
+  `tag-work-reply 18`, `tag-locate-request 19`, `tag-locate-reply 20`,
+  `tag-announce-request 21`, `tag-announce-reply 22`) and the codec in
+  `apps/works/RepoProtocol.codex` "Wire Codec" (`:260-505`); no design under
+  `docs/Designs/` writes it down (`V3-REPOSITORY-FEDERATION.md` refers to it as
+  built). EdgeMesh Phase 2 (`EdgeMeshGameServers.md:5, :276-286`) names no
+  repository verb: it asks for "a real socket surface" plus its own
+  GroupMembership/EdgeRouter/TrustNode wiring, and the surface exists.
+  **Steps, each its own CL, none of them seed-affecting:**
+  1. DONE (this CL): the plan and the claim.
+  2. `cdx-serve-test.ps1` gets a `-Card ne2k|e1000` switch (today the e1000 run
+     is an ad-hoc `-VmArgs`), runs the same conversation over both, and the
+     numbers land in `ExaminersAssay.md` beside the existing account; the
+     registry harness gets the same switch. That is B4-in-the-bed made
+     repeatable rather than remembered.
+  3. `registry-probe.ps1:23` hardcodes `D:\Projects\NewRepository-val` and runs
+     from no other workspace; fixed to `$PSScriptRoot`.
+  4. The wire written down where a second implementer reads,
+     `DevelopersRulebook.md` ("The repository wire": frame, tags, the
+     work-request/reply body from `RepoProtocol.codex`, ports 9300/9301),
+     derived from the code with the same "read the source for the truth" note
+     the DDC rows carry. Ask red first whether it belongs there or in a
+     resurrected federation design.
+  5. `EdgeMeshGameServers.md` Status gets one paragraph naming the surface
+     Phase 2 can start against in the bed (`net-io-listen`/`net-io-accept`,
+     `MessageFraming`, `TrustTransport`), so Phase 2 stops waiting on B4 and
+     waits only on its own owner.
+  6. Metal: the same conversation on the part is B3's flight and Damian's
+     sitting; not staged here.
 - **The untrusted-frame class in `codex/os/net` is blu's and the AUDIT IS
   COMPLETE.** Landed: TCP and IP truncation (main 15245), UDP (15266),
   `ip-checksum`'s odd tail (15287), the ARP cache (15310), DNS (15329), the
@@ -235,7 +275,10 @@ and enforced; the accounts are `docs/Designs/Active/Tools/IndependentRechecker.m
 a negative control". What is left is a ruling, a deferral, and two holes in
 the gate that the audit's own claims rest on:
 
-- **COMPILER-5 (val, in flight, seed-affecting).** A hex literal past
+- **COMPILER-5 (val, OPEN and unstarted, seed-affecting).** Nothing is in
+  flight and no token is held; this said "in flight" until 2026-08-17 and no
+  CL for it has ever landed on main, so the words were telling other lanes to
+  route around a path nobody was on. A hex literal past
   i64-max (`#CBF29CE484222325`, bit 63 set) compiles but does not survive the
   text round-trip: the emitter re-prints it to something that re-parses to a
   different constant. That is a hole in the text half of the fixed point.
@@ -366,8 +409,9 @@ the assignment, not a suggestion.
 | **blu** | the net leg of Track D: DONE, `codex/os/net`'s parsers all landed. Item 15 was claimed by reek in the table before blu's announce; blu stood down and shelved the finished `sdw-decode` half as CL 15544 on `//Codex/blu` (ungated). **Note for whoever ranks 10.2: blu's earlier "FactDisk's alloc is sound" was WRONG and is retracted** -- `fd-fold-entry:141` bounds `nsec` against `end-sec`, but `end-sec` is the superblock's own 64-bit log head (`FactLog:39`, `:85`), so the image sets its own bound. About 4.29 GB from a u32 `clen`. The census row was right | NIC-3 flown and answered; **NIC-4 flown 2026-08-16 and HUNG in `e1000-await-link`, fixed in 15588, ring question still open** (see Track B). Nothing is queued for a flight; the ring question should ride B3's boot rather than take one of its own | cost model 3.3 stays a proposal |
 | **val** | COMPILER-5 DONE (main 15410, seed 55983566; no emitter bug -- the sem-equiv normalizer already equates hex/decimal, the miss was a bare-hex-arg paren asymmetry, fixed by parenthesizing the FNV literal; backlog narrowed 15413) | Track D, `VerifiedFormatParsing.md` 10.1 items 1-3, re-ranked by reachability. ~~Item 1 `TcpTransport`~~ DONE (val 2026-08-15): the write overflow in `transport-feed-raw`, the `msg-len == 0` read of length -1, and a `msg-len` past `recv-cap - 4` that stalled the connection forever all refuse now; `codex/test/apps/tcp-transport-guard` is four arms with a positive control and every ablation run; account in `ExaminersAssay.md` "The Transport Length Guards". ~~Item 2 `Handshake`~~ DONE (val 2026-08-15): **the defect was not a bound. `hs-receive-prove` never took the peer's signature as a parameter at all, ignored the challenge nonce, and returned `HsCompleted` unconditionally with the claimed key's trust score, while `trust-complete-as-responder` threw the prove body away and set `authenticated = True` on every path -- so any peer that could hash could claim any identity in the lattice.** It now refuses a non-32-byte key, a non-64-byte signature, and a signature `ed25519-verify` rejects; both length checks also stop a remote guest kill. `codex/test/apps/handshake-prove-guard`, six arms, all four guards ablated; account in `ExaminersAssay.md` "The Handshake Prove Guards". **Reachability correction for the census: the four `TrustTransport` handshake entry points have NO caller in the tree, so item 2 was LATENT, not reached.** ~~Item 3 `TrustTransport` decode~~ DONE (val 2026-08-15), and this one WAS reached: `trust-recv` is called from `TrustNode`'s `node-recv-loop` and what it decodes reaches `eval-policy`. Eight sites read a tag or flag byte with a bare `list-at` past a peer-controlled offset and `decode-agent-msg tag-propose []` died `!EXC=06`; all eight now use `frame-byte-at`. With the fault gone a truncated body still decoded to an empty-fielded message that policy was asked about, so `decode-agent-msg-checked` answers a `valid` flag by round-tripping against our own encoder and `trust-recv` refuses; `agent-tag-known` separately closes the final `else` that decoded any unrecognised tag as a `WorkReply`; `decode-hello-body-checked` closes item 2's residual. `codex/test/apps/agent-msg-truncated`, twelve arms, four ablations; account in `ExaminersAssay.md` "The Agent Message Guards". **Track D lane 2 (items 1-3) is complete.** | ~~COMPILER-3~~ CLOSED 2026-08-16, no defect: the 255,683 bytes are a positional-diff artifact of an 11-byte exit stub relocating everything after `__start` by 8. Account in `OperatorsManual.md`, backlog entry deleted, Track C bullet above carries the summary. Lanes 1-3 done, so val draws from Track D by the take-order. ~~Item 15~~ was CLAIMED BY reek in this table 17 seconds before val's fleet announce and is reek's; val stood down and offered the finished shelf (CL 15548 on `//Codex/val`, ungated, measured against the superseded seed `55983566`). ~~Item 16 (`Gguf`)~~ DONE 2026-08-16, claimed in this table BEFORE announcing: every field was read with a bare `list-at`, `gguf-parse-header` refused a file under 20 bytes and then read bytes 16..23 of a 24-byte header, and `gguf-md-scan` had no offset check at all while `gguf-skip-metadata` had one, so the same file `gguf-tensor-info-offset` refuses killed the guest through `gguf-metadata-text`. `gguf-fits` now precedes every file-supplied read. Arm `codex/test/apps/gguf-hostile`: sixteen rows, three positive controls, **eleven guards ablated separately, each killing the guest at exactly its own row**; `build/gguf-foreign-test.ps1` still parses four real llama.cpp models up to 3,184 MB. Not seed-affecting, no token. Account in `ExaminersAssay.md` "The GGUF Bounds Guards". **Its dequant residue is CLOSED too** (reek found it, val verified and landed it at Damian's direction 2026-08-16): neither dequant loop takes a length off the file, so the metadata guards never reached them, and 64 elements from a one-block buffer died `!EXC=06` on the landed chapter. Both loops now stop on the first block that does not fit -- a clamp, because the count decides how many values come back and not where a read lands -- and `AgentBundle.ab-parse-model` now checks the `gti-valid` the first pass shipped with no caller. Arm is twenty rows, thirteen guards, each isolated by its own row. The item-15 content ceiling reek handed back LANDED at 15631 and moved the seed to `386C4F2012355C5D`. **HANDOFF 2026-08-16: val holds no CL, no shelf and no token, and every claims-table row it took for Track D is released. Nothing is in flight and nothing is assigned.** The three standing rows (the COMPILER-5 integer-literal path, `codex/plugs/csharp/**` with the DDC harness, `codex/plugs/recheck/**`) are lane ownerships rather than open work and are left for whoever picks that lane up. The one thing still owed to val's lane by somebody else is Damian's rulings-queue item 3, whether the compiler emits its type-variable instantiation or the recheck plug keeps deriving it. |
 | **fester** | ~~WORKS-29, the FAT cluster walk~~ DONE, main 15445: `gfat-cluster-ok` on nine walkers, `range32` census arm, ablation moves exactly one cell | A8: wire `compile <path>` into the Console pane once the ASUS allocation is answered; the sitting question stays queued | ~~re-measure IRTypeEmission step 4~~ DONE 2026-08-15: it had already landed at 13661 on 2026-08-06, design moved to `Done/`. Next: draw from `VerifiedFormatParsing.md` 10.1 by the rotation |
-| **reek** | ~~WORKS-12~~ DONE, main 15366: the cause was the desk never unwinding, not stranded pane state, so the fix is one base mark in `desk-run` rather than a bracket per pane; twelve panes reclaim, `desk-edit` deliberately not (its 9 MB lives in a `ds` pointer cell). Standing rules now in `apps/works/works-desk-contract.md`. ~~The `RepoProtocol` caller sites~~ DONE, main 15480 and 15494: eight bare reads use `frame-byte-at`, and the five wire consumers refuse a payload that did not fit rather than persisting an empty-fielded one | ~~WORKS-9's heartbeat~~ DONE, main 15426, bed-verified to WHITE; the queued card's provenance is in `HardwareSitting.md` and it needs a fresh full-mission run on any rebuild (its stub predates red 15469 and fester 15503) | ~~the rest of the USB descriptor family~~ DONE, main 15452: `hid-scan-loop`'s over-run clamped, the three `Usb.codex` parsers pinned, census rows corrected. Lane is clear; next item is a draw rather than a continuation | **HANDOFF 2026-08-16 (second of the day). Nothing in flight: no CL open, nothing shelved, no token held, workspace clean.** Landed this session: Track D row 19 CLOSED whole (ten chapters guarded, three L-UNCALLED, accounts in `ExaminersAssay.md`), its `encode/TrueType` residue, and plugs 1.7 / 1.8 / 1.21. **TWO ITEMS QUEUED BY red AT SESSION END, NOT STARTED, and they are reek's next two in this order:** (1) **`compiler-backlog` COMPILER-7**, make the `tco-ensure-temps` reliance structural rather than positional -- one CL, an arm, and it is SEED-AFFECTING so it takes the token; the full statement of the problem and why no arm can assert the invariant directly is in that row. (2) `docs/Designs/Active/OS/OracleCloudArm64.md` Phase 5, the LOCAL halves only (validate virtio net and blk under QEMU on the arm64 lane, build the image); upload, VCN and smoke wait on Damian's account. (WaDemo was queued here first and withdrawn: Damian 2026-08-16, personal project, not fleet work.) **DONE 2026-08-16, every local half, and the site SERVES:** `GET /` answers 200 with 948 bytes of text/html, `GET /api/health` answers the ok JSON. Phase 4 measured and passing (`arm64-virtio-blk-probe`, main 16065, after its DMA regions were found in FLASH); the QCOW2 is a `-Qcow2` switch on `build-arm64-img.ps1` and the QCOW2 ITSELF boots (16074); first frame on the wire (16098) once root's `peek-16`/`poke-16` builtins landed, `virtio-select-queue` having been a `poke-16` whose 32-bit read-modify-write QEMU dropped by width, so `queue_select` never took and the TX queue was never configured. Serving then needed one more (16123): the VirtIO DMA regions sat INSIDE the kernel's image and heap (`a64pe-kernel-base` 0x40100000 plus a 32 MB grant), so the NIC corrupted a CCE table entry and the path's slash decoded as 18 then 44 instead of 81. **OPEN, unowned, named but NOT investigated:** a SECOND request in the same boot times out, the serve loop reusing `st` after `__heap-restore` being the suspect; and neither virtio driver derives its regions from the stub's allocation, both carrying constants plus a prose warning. **5b-5d are ruling 6, Damian's OCI account.** Also landed: COMPILER-9 and its fix (16081), the ARM64 and RISC-V plug shadow checks now deriving their name set from `func-names` split at `runtime-funcs` instead of a hand list that overlapped the registered helpers 19 of 104. |
+| **reek** | ~~WORKS-12~~ DONE, main 15366: the cause was the desk never unwinding, not stranded pane state, so the fix is one base mark in `desk-run` rather than a bracket per pane; twelve panes reclaim, `desk-edit` deliberately not (its 9 MB lives in a `ds` pointer cell). Standing rules now in `apps/works/works-desk-contract.md`. ~~The `RepoProtocol` caller sites~~ DONE, main 15480 and 15494: eight bare reads use `frame-byte-at`, and the five wire consumers refuse a payload that did not fit rather than persisting an empty-fielded one | ~~WORKS-9's heartbeat~~ DONE, main 15426, bed-verified to WHITE; the queued card's provenance is in `HardwareSitting.md` and it needs a fresh full-mission run on any rebuild (its stub predates red 15469 and fester 15503) | ~~the rest of the USB descriptor family~~ DONE, main 15452: `hid-scan-loop`'s over-run clamped, the three `Usb.codex` parsers pinned, census rows corrected. Lane is clear; next item is a draw rather than a continuation | **HANDOFF 2026-08-16 (second of the day). Nothing in flight: no CL open, nothing shelved, no token held, workspace clean.** Landed this session: Track D row 19 CLOSED whole (ten chapters guarded, three L-UNCALLED, accounts in `ExaminersAssay.md`), its `encode/TrueType` residue, and plugs 1.7 / 1.8 / 1.21. **TWO ITEMS QUEUED BY red AT SESSION END, NOT STARTED, and they are reek's next two in this order:** (1) **`compiler-backlog` COMPILER-6's residual**, make the `tco-ensure-temps` reliance structural rather than positional. **DONE, main 16013**, seed 1A33FB0E; the ablation is that the arm FAILS when the copy is removed. **This is COMPILER-6, not COMPILER-7** -- red ruled the naming on 2026-08-16 and this row said 7 until 2026-08-17, which mis-briefed fester at init. COMPILER-7 is the bounded over-refusal reconsideration and is NOT reek's. (2) `docs/Designs/Active/OS/OracleCloudArm64.md` Phase 5, the LOCAL halves only (validate virtio net and blk under QEMU on the arm64 lane, build the image); upload, VCN and smoke wait on Damian's account. (WaDemo was queued here first and withdrawn: Damian 2026-08-16, personal project, not fleet work.) **DONE 2026-08-16, every local half, and the site SERVES:** `GET /` answers 200 with 948 bytes of text/html, `GET /api/health` answers the ok JSON. Phase 4 measured and passing (`arm64-virtio-blk-probe`, main 16065, after its DMA regions were found in FLASH); the QCOW2 is a `-Qcow2` switch on `build-arm64-img.ps1` and the QCOW2 ITSELF boots (16074); first frame on the wire (16098) once root's `peek-16`/`poke-16` builtins landed, `virtio-select-queue` having been a `poke-16` whose 32-bit read-modify-write QEMU dropped by width, so `queue_select` never took and the TX queue was never configured. Serving then needed one more (16123): the VirtIO DMA regions sat INSIDE the kernel's image and heap (`a64pe-kernel-base` 0x40100000 plus a 32 MB grant), so the NIC corrupted a CCE table entry and the path's slash decoded as 18 then 44 instead of 81. **OPEN, unowned, named but NOT investigated:** a SECOND request in the same boot times out, the serve loop reusing `st` after `__heap-restore` being the suspect; and neither virtio driver derives its regions from the stub's allocation, both carrying constants plus a prose warning. **5b-5d are ruling 6, Damian's OCI account.** Also landed: COMPILER-9 and its fix (16081), the ARM64 and RISC-V plug shadow checks now deriving their name set from `func-names` split at `runtime-funcs` instead of a hand list that overlapped the registered helpers 19 of 104. |
 | **red** | ~~the Track D census~~ DONE, `VerifiedFormatParsing.md` section 10; items 4 and 5 (`http-parse-response`, the font off the stick) DONE 2026-08-15; census lane complete, the rest of 10.1 is the fleet's to draw from; `Cbor`/`MessagePack`/`Protobuf`/`Bencode`/IMAP/OAuth measured UNCALLED and demoted to latent. ~~The SECOND census sweep~~ DONE 2026-08-16 (Damian's direction): every `codex/foreword/` dir the first one skipped; 43 rows in 10.2, 10.1 items 14-19 added and the take order rewritten. ~~item 14 `core/Gpt.codex`~~ DONE 2026-08-16: `gpt-header-geom-ok` (the Works `gpt-array-geom-ok` transcribed), four `gpt-core-*` arms, `ExaminersAssay.md` "The Foreword GPT Geometry Guard". Next: item 16 (`Gguf`) or 17 (`Fat32`), whichever is still unowned | the SetMode half of the native-GOP item, in `codex/build/cdxtopeScript.codex` | the plugs register: ~~1.11~~ DONE 2026-08-15 (plug-smoke rebuilds a stale binary against every bundle input and runs a record-carrying second input); next plugs entry in the register's order is 1.2 |
+| **root** | B4, serve the repository protocol in the bed (Track B bullet above is the row; claimed 2026-08-17 from red's routing; step 1 the plan is landed, step 2 next) | plugs 1.35 unknown-arity residue and 1.8 act-statement residue (plugs-backlog) | 1.34 awaiting Damian's call via red |
 
 **Plugs are val's lane** (red, 2026-08-16), not a rotation.
 `codex/plugs/plugs-backlog.md` is the standing assignment: when an entry
@@ -397,49 +441,31 @@ Named here because a register nobody owns is a register nobody reads.
   half closed 2026-08-16: zig 0.16.0 is on this box, the plug's claim is
   measured here and the oracle arm is wired, `plugs-backlog` 1.13.)
 - **`docs/Designs/Active/Compiler/CrossLaneFilesystem.md`** (fester): **steps
-  2, 3 and 5 are DONE (main 16001, seed 23B3A403).** `codex/test/fs-layer`
-  PASSES on the arm64 lane with no change to the test -- it writes a file
-  through its own handler, reads it back, and reads an absent one, through
-  `Fat16` onto real virtio hardware. **Open: step 4** (the `read-text`
-  servicer, so a program that declares no handler still gets a file read;
-  `codex/test/fs-servicer` is its acceptance test and fails today with
-  `unresolved call to 'read-text'`) **and the RISC-V twin** of the block
-  helpers. Step 0's soft `[WARN]` where the design prescribes a hard failure
-  is still open and still live.
+  2, 3, 4 and 5 are DONE on arm64 (step 4 at main 16224, seed 37334AC5).**
+  `codex/test/fs-servicer` PASSES: a program declaring no handler of its own
+  writes a file and reads it back through the default servicer onto real
+  virtio hardware, and `fs-layer` still passes, so the user-handler path is
+  unchanged. Step 4 also deleted a SILENT STUB: `write-file` was claimed as
+  an arm64 builtin and answered a literal 0, so it never reached the handler
+  table and reported `write False` with no disk touched. **That is a
+  behaviour change for every arm64 program calling `write-file`, not only
+  the disk tests.** A slot on this lane holds the handler's CODE address,
+  not a closure pointer, which is where it differs from x86-64.
+  **Open: the RISC-V twin** of the block helpers (same three against riscv's
+  MMIO geometry, 0x10001000 stride 0x1000, inheriting the arm64 shape), and
+  the capability REFUSAL arms of both servicer stubs are inspected rather
+  than measured. Step 0's soft `[WARN]` where the design prescribes a hard
+  failure is still open and still live. Found and recorded, not chased:
+  plugs 1.29, arm64 effect-op slots are silently capped at 16.
 
-  **Step 4 state at the 2026-08-16 release handoff, so the next session does
-  not re-measure it.** Nothing is written and nothing is shelved; the
-  groundwork is these four measurements.
-  1. **It is unblocked.** `fs-servicer`'s IR declares `read-text` and
-     `write-file` in `(eff-ops ...)`, so `a64-assign-effect-op-addrs` assigns
-     slots and there IS something to install into. The control fails at the
-     right level: `[WARN] unresolved call to 'read-text'`, and the guest
-     prints `write False / read OK.TXT`, which is the op answering its own
-     argument back off a stale register.
-  2. **The shape is x86-64's, one lane over.** `__fs-read-servicer` is
-     emitted machine code that CALLS the Codex function `fat16-servicer-read`
-     (`X86_64Helpers.codex:emit-fs-read-servicer-helper`), and
-     `emit-seed-fs-handler` (`X86_64Chapter.codex`) allocates a 16-byte
-     closure holding the stub's address and stores the closure pointer into
-     the effect-op slot. ARM64 has every piece: `a64-emit-call-to` for the
-     call, `a64-add-func-addr-fixup` for the stub address,
-     `a64-find-effect-op-addr` for the slot.
-  3. **It needs a root, exactly like the driver did.**
-     `fat16-servicer-read` does NOT survive into the IR today (measured: zero
-     defs), so `ir-emit-roots` gains it and its write twin. That half is
-     seed-affecting and is the ONLY part that needs the token; x86-64 already
-     roots the same names in `cdx-emit-roots`, which is the precedent.
-  4. **Not queued for the token before the pin, deliberately.** No code was
-     written, so a slot would have been held for something that could not be
-     handed to a gate.
-
-  **One known-stale thing in landed code, and it is mine.**
-  `VirtioBlk.codex` says there is no `poke-16` builtin and writes the
-  available-ring entry as two byte stores because of it. `peek-16` and
-  `poke-16` ARE builtins now (reek), and a 16-bit store at a 2-aligned
-  address is the correct primitive, so the prose is false and the code is a
-  workaround for a gap that closed. `VirtioBlk` is reached from `Fat16`, so
-  fixing it is seed-affecting and waits for MAIN OPEN.
+  **The `VirtioBlk` `poke-16` workaround is DONE, main 16283**, and it
+  needed NO SEED. This row used to say `VirtioBlk` is reached from `Fat16`
+  and fixing it is therefore seed-affecting. **That was wrong**, measured
+  twice on two different source bases: `Sut` built with the change came out
+  byte-identical to the depot seed both times, so the compiler does not
+  reach `vb-put-avail-entry`. It is the same surprise `DevelopersGuide`
+  records for CL 9432, where 155 lines added to `Fat16` moved no bytes.
+  Predict nothing about a seed; measure `Sut` against the DEPOT seed.
 - **`docs/Designs/Active/OS/OracleCloudArm64.md`**: **every LOCAL half is
   closed** (reek, main 16074 Phase 5a and 16072/16098 virtio-net). Upload,
   VCN and the external smoke test need Damian's account and are in the
@@ -478,6 +504,47 @@ without it. Nothing else is asked.
 9. **`widget-panel` flex defaulting to 0** is a tree-wide layout call the
    browser backlog (BROWSER-2) says is not the browser's to make.
 
+## A TCP send loses bytes with both ends reporting success (unowned, found by val 2026-08-17)
+
+**A 16 MB send over the guest TCP stack intermittently arrives short, and
+neither endpoint notices.** Measured on a verified quiet box through
+`codex/plugs/img/test-img.ps1`, which now asserts the three counts against
+each other and refuses:
+
+```
+guest built 16777216, guest sent 16777216, host received 16629200
+```
+
+The guest built the whole image; **its send loop accounts for having handed
+all 16,777,216 bytes to the transport**, so `net-io-send-raw-checked` answered
+`is-complete` True and was not lying about its own accounting; and the host
+received 148,016 fewer **with a clean close at both ends**, not a timeout and
+not a reset. The bytes are lost between the guest's send accounting and the
+host's socket, which makes this `codex/os/net` (or the NE2K path) and not a
+plugs defect. With the assertion in place it reproduced **twice in six runs**
+(the second short by 48,616), and across the day's measurements the shortfall
+has ranged from 16,416 bytes to 4.9 MB.
+
+What is eliminated, so the next person need not repeat it. It is **not** a
+host-side read timeout or reset swallowed by the harness: that catch is now a
+refusal (`exit 8`, main 16489) and it does **not** fire on these failures. It
+is **not** the plug's own send loop stopping early, which is what the count
+above settles. **An earlier warm-up-after-rebuild reading of mine did not
+reproduce and should not be carried forward** -- failures fell on runs 2 and 4
+with 1 and 3 clean.
+
+What is **not** eliminated, stated plainly because it would be easy to read
+the above as more complete than it is. Host contention is only partly ruled
+out: earlier batches were started with 0 `codex-vm` running and still failed,
+so contention is not NECESSARY, but the six-run batch above began with one
+`codex-vm` still shutting down from the previous batch, and `test-img.ps1`
+runs two arms back to back. Whether a lingering VM raises the rate is
+untested.
+
+The instrument is landed and permanent (main 16515): any img run that loses
+bytes exits 9 and names all three counts, so whoever takes this starts with a
+reproducer rather than a story. `codex/os/net` is blu's ground.
+
 ## An intermittent codex-vm host crash in brotli-interop (unowned)
 
 `build/brotli-interop-test.ps1` failed once on 2026-08-16 with `dict`, `xform`,
@@ -511,7 +578,7 @@ than starting over. `tools/codex-vm.c` is FREE in the table below.
 | `apps/works/RepoProtocol.codex` (the two `list-at` caller sites) | reek |
 | `codex/os/kernel/E1000e.codex`, `codex/os/net/**` | blu |
 | `codex/os/trust/FactSync.codex`, `codex/os/replay/ReplayCrf.codex` | FREE -- blu released 2026-08-16, the framing refusal reached both consumers; announce |
-| `codex/test/cost/**` and `docs/Designs/Active/Features/CostModel.md` | blu. **3.3 SHIPPED at main 16020** -- the `bounded` declaration, its transitive refusal and the docs, so this row is no longer "corpus only, declaration stays a proposal". Note for blu: `CostModel.md`'s own status line still reads "3.3 remains a proposal and is unscheduled", which the CL contradicts |
+| `codex/test/cost/**` and `docs/Designs/Active/Features/CostModel.md` | blu. 3.3 shipped at main 16020, rule 3 at 16118; what is left of it is COMPILER-7 |
 | the integer-literal lexer and text emitter (COMPILER-5) | val |
 | `codex/plugs/csharp/**`, `build/` DDC harness | val |
 | `codex/plugs/recheck/**` | val |

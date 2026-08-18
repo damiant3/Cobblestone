@@ -157,7 +157,8 @@ Section: Expression Emission
    else if n == "False" then "0"
    else if n == "Nothing" then "undef"
    else let ar = lookup-arity arities n
-   in if ar == 0 then pl-sanitize n & "()"
+   in if ar < 0 then "$" & pl-sanitize n
+      else if ar == 0 then pl-sanitize n & "()"
       else "\\&" & pl-sanitize n
 
   emit-pl-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
@@ -319,7 +320,7 @@ Section: Apply Emission
    PlBuiltinEmitter { name = "substring", emit = \args arities -> "substr(" & emit-pl-expr (list-at args 0) arities & ", " & emit-pl-expr (list-at args 1) arities & ", " & emit-pl-expr (list-at args 2) arities & ")" },
    PlBuiltinEmitter { name = "text-contains", emit = \args arities -> "(index(" & emit-pl-expr (list-at args 0) arities & ", " & emit-pl-expr (list-at args 1) arities & ") >= 0)" },
    PlBuiltinEmitter { name = "text-length", emit = \args arities -> "length(" & emit-pl-expr (list-at args 0) arities & ")" },
-   PlBuiltinEmitter { name = "text-replace", emit = \args arities -> "(sub { my $s = " & emit-pl-expr (list-at args 0) arities & "; $s =~ s/\\Q" & emit-pl-expr (list-at args 1) arities & "\\E/" & emit-pl-expr (list-at args 2) arities & "/g; $s })->()" },
+   PlBuiltinEmitter { name = "text-replace", emit = \args arities -> "_cx_text_replace(" & emit-pl-expr (list-at args 0) arities & ", " & emit-pl-expr (list-at args 1) arities & ", " & emit-pl-expr (list-at args 2) arities & ")" },
    PlBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "int(" & emit-pl-expr (list-at args 0) arities & ")" },
    PlBuiltinEmitter { name = "write-file", emit = \args arities -> "(sub { open my $fh, '>', " & emit-pl-expr (list-at args 0) arities & "; print $fh " & emit-pl-expr (list-at args 1) arities & " })->()" }
   ]
@@ -357,7 +358,7 @@ Section: Chapter Emission
   emit-perl-chapter : IRChapter, List ATypeDef -> Text
   emit-perl-chapter (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
-   in let header = "use strict;\nuse warnings;\nuse feature 'say';\n\n"
+   in let header = "use strict;\nuse warnings;\nuse feature 'say';\n\nsub list_snoc { my ($xs, $v) = @_; if (@$xs) { push @$xs, $v; return $xs; } return [$v]; }\nsub list_push { my ($xs, $v) = @_; return list_snoc($xs, $v); }\nsub text_starts_with { my ($s, $p) = @_; return substr($s, 0, length($p)) eq $p; }\nsub text_split { my ($s, $sep) = @_; return [$s] if length($sep) == 0; my @p = split(/\\Q$sep\\E/, $s, -1); return \\@p; }\nsub _cx_text_replace { my ($s, $a, $b) = @_; return $s if length($a) == 0; my $r = ''; my $i = 0; while ($i < length($s)) { if (substr($s, $i, length($a)) eq $a) { $r .= $b; $i += length($a); } else { $r .= substr($s, $i, 1); $i += 1; } } return $r; }\n\n"
    in let types-text = emit-pl-type-defs type-defs 0
    in let defs-text = emit-pl-defs (m.defs) 0 arities
    in let entry = pl-emit-entry (m.defs)

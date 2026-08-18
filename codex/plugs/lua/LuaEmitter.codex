@@ -340,10 +340,10 @@ Section: Builtin Emitters
    LuaBuiltinEmitter { name = "text-compare", emit = \args arities -> "(function() local a, b = " & emit-lua-expr (list-at args 0) arities & ", " & emit-lua-expr (list-at args 1) arities & "; if a < b then return -1 elseif a > b then return 1 else return 0 end end)()" },
    LuaBuiltinEmitter { name = "text-contains", emit = \args arities -> "(string.find(" & emit-lua-expr (list-at args 0) arities & ", " & emit-lua-expr (list-at args 1) arities & ", 1, true) ~= nil)" },
    LuaBuiltinEmitter { name = "text-length", emit = \args arities -> "string.len(" & emit-lua-expr (list-at args 0) arities & ")" },
-   LuaBuiltinEmitter { name = "text-replace", emit = \args arities -> "string.gsub(" & emit-lua-expr (list-at args 0) arities & ", " & emit-lua-expr (list-at args 1) arities & ", " & emit-lua-expr (list-at args 2) arities & ")" },
-   LuaBuiltinEmitter { name = "text-split", emit = \args arities -> "(function() local s, d, r = " & emit-lua-expr (list-at args 0) arities & ", " & emit-lua-expr (list-at args 1) arities & ", {}; for m in (s .. d):gmatch(\"(.-)\" .. d:gsub(\"(%W)\", \"%%%1\")) do r[#r+1] = m end; return r end)()" },
+   LuaBuiltinEmitter { name = "text-replace", emit = \args arities -> "_cx_text_replace(" & emit-lua-expr (list-at args 0) arities & ", " & emit-lua-expr (list-at args 1) arities & ", " & emit-lua-expr (list-at args 2) arities & ")" },
+   LuaBuiltinEmitter { name = "text-split", emit = \args arities -> "_cx_text_split(" & emit-lua-expr (list-at args 0) arities & ", " & emit-lua-expr (list-at args 1) arities & ")" },
    LuaBuiltinEmitter { name = "text-starts-with", emit = \args arities -> "(string.sub(" & emit-lua-expr (list-at args 0) arities & ", 1, #" & emit-lua-expr (list-at args 1) arities & ") == " & emit-lua-expr (list-at args 1) arities & ")" },
-   LuaBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "tonumber(" & emit-lua-expr (list-at args 0) arities & ")" },
+   LuaBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "_cx_text_to_integer(" & emit-lua-expr (list-at args 0) arities & ")" },
    LuaBuiltinEmitter { name = "write-file", emit = \args arities -> "(function() local f = io.open(" & emit-lua-expr (list-at args 0) arities & ", \"w\"); f:write(" & emit-lua-expr (list-at args 1) arities & "); f:close() end)()" }
   ]
 
@@ -412,7 +412,19 @@ Section: Chapter Emission
    in lua-prelude & types-text & defs-text & lua-sanitize opening-entry-point & "()\n"
 
   lua-prelude : Text
-  lua-prelude = "local function _cx_lpush(_l, _v)\n  if #_l > 0 then _l[#_l + 1] = _v; return _l end\n  return { _v }\nend\n\n"
+  lua-prelude = "local function _cx_lpush(_l, _v)\n  if #_l > 0 then _l[#_l + 1] = _v; return _l end\n  return { _v }\nend\n\n" & lua-text-builtins
+
+ `string.gsub` takes a Lua PATTERN, not a literal, so a needle of "." matched
+ every character and a replacement containing "%1" was a capture reference;
+ it also returns TWO values, so `return string.gsub(...)` handed the caller a
+ count it never asked for. `tonumber` answers nil rather than a prefix or 0.
+ All three are written out with `find(..., true)` and explicit indexing.
+
+  lua-text-builtins : Text
+  lua-text-builtins =
+   "local function _cx_text_replace(s, a, b)\n  if #a == 0 then return s end\n  local r, i = \"\", 1\n  while i <= #s do\n    if string.sub(s, i, i + #a - 1) == a then\n      r = r .. b\n      i = i + #a\n    else\n      r = r .. string.sub(s, i, i)\n      i = i + 1\n    end\n  end\n  return r\nend\n\n"
+   & "local function _cx_text_split(s, sep)\n  if #sep == 0 then return { s } end\n  local r, start, i = {}, 1, 1\n  while i + #sep - 1 <= #s do\n    if string.sub(s, i, i + #sep - 1) == sep then\n      r[#r + 1] = string.sub(s, start, i - 1)\n      i = i + #sep\n      start = i\n    else\n      i = i + 1\n    end\n  end\n  r[#r + 1] = string.sub(s, start)\n  return r\nend\n\n"
+   & "local function _cx_text_to_integer(s)\n  local i, neg, v = 1, false, 0\n  if string.sub(s, 1, 1) == \"-\" then neg = true; i = 2 end\n  while i <= #s do\n    local c = string.byte(s, i)\n    if c < 48 or c > 57 then break end\n    v = v * 10 + (c - 48)\n    i = i + 1\n  end\n  if neg then return -v end\n  return v\nend\n\n"
 
 Section: Tuple Helpers
 

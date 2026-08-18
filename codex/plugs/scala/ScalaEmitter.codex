@@ -135,10 +135,10 @@ Section: Builtin Dispatch
    ScBuiltinEmitter { name = "text-compare", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String].compareTo(" & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[String])" },
    ScBuiltinEmitter { name = "text-contains", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String].contains(" & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[String])" },
    ScBuiltinEmitter { name = "text-length", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String].length" },
-   ScBuiltinEmitter { name = "text-replace", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String].replace(" & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[String], " & emit-sc-expr (list-at args 2) arities & ".asInstanceOf[String])" },
-   ScBuiltinEmitter { name = "text-split", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String].split(" & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[String]).toList" },
+   ScBuiltinEmitter { name = "text-replace", emit = \args arities -> "_cx_text_replace(" & emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String], " & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[String], " & emit-sc-expr (list-at args 2) arities & ".asInstanceOf[String])" },
+   ScBuiltinEmitter { name = "text-split", emit = \args arities -> "_cx_text_split(" & emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String], " & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[String])" },
    ScBuiltinEmitter { name = "text-starts-with", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String].startsWith(" & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[String])" },
-   ScBuiltinEmitter { name = "text-to-integer", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String].toInt" },
+   ScBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "_cx_text_to_integer(" & emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String])" },
    ScBuiltinEmitter { name = "write-file", emit = \args arities -> "{ val _pw = new java.io.PrintWriter(" & emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String]); _pw.write(" & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[String]); _pw.close() }" }
   ]
 
@@ -407,7 +407,19 @@ Section: Chapter Emission
    let arities = build-arity-map (m.defs) 0 []
    in let types-text = emit-sc-type-defs type-defs 0
    in let defs-text = emit-sc-defs (m.defs) 0 arities
-   in "object Main:\n" & types-text & defs-text & "  def main(args: Array[String]): Unit =\n    " & sc-sanitize opening-entry-point & "()\n"
+   in "object Main:\n" & sc-text-builtins & types-text & defs-text & "  def main(args: Array[String]): Unit =\n    " & sc-sanitize opening-entry-point & "()\n"
+
+ `String.split` on the JVM takes a REGULAR EXPRESSION and drops trailing
+ empty fields, so a separator of "." matched every character and "a," split
+ on "," answered one field where Codex answers two. `replace` inserts between
+ every character when the needle is empty and `toInt` throws on anything not
+ wholly numeric. All three are written out rather than delegated.
+
+  sc-text-builtins : Text
+  sc-text-builtins =
+   "  def _cx_text_replace(s: String, a: String, b: String): String = { if (a.isEmpty) s else s.replace(a, b) }\n"
+   & "  def _cx_text_split(s: String, sep: String): List[String] = { if (sep.isEmpty) { List(s) } else { val r = List.newBuilder[String]; var start = 0; var i = 0; while (i + sep.length <= s.length) { if (s.substring(i, i + sep.length) == sep) { r += s.substring(start, i); i += sep.length; start = i } else { i += 1 } }; r += s.substring(start); r.result() } }\n"
+   & "  def _cx_text_to_integer(s: String): Int = { var i = 0; var neg = false; if (s.nonEmpty && s(0) == '-') { neg = true; i = 1 }; var v = 0; while (i < s.length && s(i) >= '0' && s(i) <= '9') { v = v * 10 + (s(i) - '0'); i += 1 }; if (neg) -v else v }\n\n"
 
 Section: Tuple Helpers
 

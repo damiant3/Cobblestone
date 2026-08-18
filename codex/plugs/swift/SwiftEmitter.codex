@@ -336,9 +336,9 @@ Section: Builtin Emitters
    SwBuiltinEmitter { name = "text-contains", emit = \args arities -> "(" & emit-sw-expr (list-at args 0) arities & " as! String).contains(" & emit-sw-expr (list-at args 1) arities & " as! String)" },
    SwBuiltinEmitter { name = "text-length", emit = \args arities -> "(" & emit-sw-expr (list-at args 0) arities & " as! String).count" },
    SwBuiltinEmitter { name = "text-replace", emit = \args arities -> "(" & emit-sw-expr (list-at args 0) arities & " as! String).replacingOccurrences(of: " & emit-sw-expr (list-at args 1) arities & " as! String, with: " & emit-sw-expr (list-at args 2) arities & " as! String)" },
-   SwBuiltinEmitter { name = "text-split", emit = \args arities -> "(" & emit-sw-expr (list-at args 0) arities & " as! String).components(separatedBy: " & emit-sw-expr (list-at args 1) arities & " as! String)" },
+   SwBuiltinEmitter { name = "text-split", emit = \args arities -> "_cxTextSplit(" & emit-sw-expr (list-at args 0) arities & " as! String, " & emit-sw-expr (list-at args 1) arities & " as! String)" },
    SwBuiltinEmitter { name = "text-starts-with", emit = \args arities -> "(" & emit-sw-expr (list-at args 0) arities & " as! String).hasPrefix(" & emit-sw-expr (list-at args 1) arities & " as! String)" },
-   SwBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "Int(" & emit-sw-expr (list-at args 0) arities & " as! String)!" },
+   SwBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "_cxTextToInteger(" & emit-sw-expr (list-at args 0) arities & " as! String)" },
    SwBuiltinEmitter { name = "write-file", emit = \args arities -> "try! (" & emit-sw-expr (list-at args 1) arities & " as! String).write(toFile: " & emit-sw-expr (list-at args 0) arities & " as! String, atomically: true, encoding: .utf8)" }
   ]
 
@@ -402,10 +402,20 @@ Section: Chapter Emission
   emit-swift-chapter : IRChapter, List ATypeDef -> Text
   emit-swift-chapter (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
-   in let header = "import Foundation\n\n"
+   in let header = "import Foundation\n\n" & sw-text-builtins
    in let types-text = emit-sw-type-defs type-defs 0
    in let defs-text = emit-sw-defs (m.defs) 0 arities
    in header & types-text & defs-text & sw-sanitize opening-entry-point & "()\n"
+
+ `Int(s)!` FORCE-UNWRAPS, so a non-numeric tail is a crash rather than the
+ prefix or 0 Codex answers, and `components(separatedBy:)` with an empty
+ separator does not answer the whole string. `replacingOccurrences(of:)`
+ already answers the string unchanged for an empty needle and is left alone.
+
+  sw-text-builtins : Text
+  sw-text-builtins =
+   "func _cxTextSplit(_ s: String, _ sep: String) -> [String] {\n  if sep.isEmpty { return [s] }\n  return s.components(separatedBy: sep)\n}\n\n"
+   & "func _cxTextToInteger(_ s: String) -> Int {\n  let u = Array(s.unicodeScalars)\n  var i = 0\n  var neg = false\n  if i < u.count && u[i] == \"-\" { neg = true; i = 1 }\n  var v = 0\n  while i < u.count && u[i].value >= 48 && u[i].value <= 57 {\n    v = v * 10 + Int(u[i].value - 48)\n    i += 1\n  }\n  return neg ? -v : v\n}\n\n"
 
   emit-sw-tup-pat-names : List IRPat, Integer -> Text
   emit-sw-tup-pat-names (subs) (i) =

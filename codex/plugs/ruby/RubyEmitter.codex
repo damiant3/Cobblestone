@@ -138,8 +138,8 @@ Section: Builtin Dispatch
    RbBuiltinEmitter { name = "text-compare", emit = \args arities -> "(" & emit-rb-expr (list-at args 0) arities & " <=> " & emit-rb-expr (list-at args 1) arities & ")" },
    RbBuiltinEmitter { name = "text-contains", emit = \args arities -> emit-rb-expr (list-at args 0) arities & ".include?(" & emit-rb-expr (list-at args 1) arities & ")" },
    RbBuiltinEmitter { name = "text-length", emit = \args arities -> emit-rb-expr (list-at args 0) arities & ".length" },
-   RbBuiltinEmitter { name = "text-replace", emit = \args arities -> emit-rb-expr (list-at args 0) arities & ".gsub(" & emit-rb-expr (list-at args 1) arities & ", " & emit-rb-expr (list-at args 2) arities & ")" },
-   RbBuiltinEmitter { name = "text-split", emit = \args arities -> emit-rb-expr (list-at args 0) arities & ".split(" & emit-rb-expr (list-at args 1) arities & ")" },
+   RbBuiltinEmitter { name = "text-replace", emit = \args arities -> "_cx_text_replace(" & emit-rb-expr (list-at args 0) arities & ", " & emit-rb-expr (list-at args 1) arities & ", " & emit-rb-expr (list-at args 2) arities & ")" },
+   RbBuiltinEmitter { name = "text-split", emit = \args arities -> "_cx_text_split(" & emit-rb-expr (list-at args 0) arities & ", " & emit-rb-expr (list-at args 1) arities & ")" },
    RbBuiltinEmitter { name = "text-starts-with", emit = \args arities -> emit-rb-expr (list-at args 0) arities & ".start_with?(" & emit-rb-expr (list-at args 1) arities & ")" },
    RbBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "(" & emit-rb-expr (list-at args 0) arities & ").to_i" },
    RbBuiltinEmitter { name = "write-file", emit = \args arities -> "File.write(" & emit-rb-expr (list-at args 0) arities & ", " & emit-rb-expr (list-at args 1) arities & ")" }
@@ -412,7 +412,19 @@ Section: Chapter Emission
    let arities = build-arity-map (m.defs) 0 []
    in let types-text = emit-rb-type-defs type-defs 0
    in let defs-text = emit-rb-defs (m.defs) 0 arities
-   in types-text & defs-text & rb-sanitize opening-entry-point & "\n"
+   in rb-text-builtins & types-text & defs-text & rb-sanitize opening-entry-point & "\n"
+
+ `String#gsub` with an empty pattern inserts the replacement between every
+ character, and its replacement string treats `\0` and `\1` as backreferences
+ where Codex means the literal characters. `String#split` DROPS trailing
+ empty fields, so "a," split on "," answered one field where Codex answers
+ two, and an empty separator splits into characters rather than answering
+ the whole string. Both are written out.
+
+  rb-text-builtins : Text
+  rb-text-builtins =
+   "def _cx_text_replace(s, a, b)\n  return s if a.length == 0\n  r = \"\"\n  i = 0\n  while i < s.length\n    if s[i, a.length] == a\n      r += b\n      i += a.length\n    else\n      r += s[i, 1]\n      i += 1\n    end\n  end\n  r\nend\n\n"
+   & "def _cx_text_split(s, sep)\n  return [s] if sep.length == 0\n  r = []\n  start = 0\n  i = 0\n  while i + sep.length <= s.length\n    if s[i, sep.length] == sep\n      r.push(s[start, i - start])\n      i += sep.length\n      start = i\n    else\n      i += 1\n    end\n  end\n  r.push(s[start, s.length - start])\n  r\nend\n\n"
 
 Section: Tuple Helpers
 

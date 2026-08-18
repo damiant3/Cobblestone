@@ -98,6 +98,32 @@ Section: S12 -- Symbol map
     let map-entry = [ScRaw "[uint64]$addr = $loadAddr + [uint64]$textStart + [uint64]$fe.Offset", ScRaw "$nextOff = if ($mi + 1 -lt $funcEntries.Count) { $funcEntries[$mi + 1].Offset } else { $codeLen }", ScRaw "$fsize = $nextOff - $fe.Offset", ScRaw "[void]$mapLines.Add(\"0x$($addr.ToString('X8').PadLeft(8,'0')) $fsize $($fe.Name)\")"]
     in [ScComment "Write symbol map", ScDotNetCallAssign "mapFile" "System.IO.Path" "ChangeExtension" [SeVar "Out", SeLit ".map"], ScRaw "$mapLines = [System.Collections.Generic.List[string]]::new()", ScRaw "[void]$mapLines.Add('# RISC-V Symbol Map')", ScRaw "[void]$mapLines.Add('# Address         Size  Name')", ScForLoop "mi" (SeInt 0) (SeRaw "$mi -lt $funcEntries.Count") (SeRaw "$mi++") [ScAssign "fe" (SeRaw "$funcEntries[$mi]"), ScSequence map-entry], ScDotNetCall "System.IO.File" "WriteAllLines" [SeVar "mapFile", SeVar "mapLines"]]
 
+Section: S12b -- The remap window
+
+  s12b-fail : List ShellCmd =
+    [ScRaw "Write-Host ''", ScRaw "Write-Host 'FAIL: the RISC-V image has grown into the address-remap window.'", ScRaw "Write-Host (\"  image      {0} bytes, loaded at 0x{1:X}\" -f $flatData.Length, $loadAddr)", ScRaw "Write-Host (\"  remap window 0x{0:X} bytes (rv-remap-addr-insns shifts by {1})\" -f $rvRemapWindow, $rvShiftM.Groups[1].Value)", ScRaw "Write-Host (\"  overrun    {0} bytes\" -f ([uint64]$flatData.Length - $rvRemapWindow))", ScRaw "Write-Host ''", ScRaw "Write-Host '  Every address below the window is remapped to 0x80000000 + addr, which is'", ScRaw "Write-Host '  now inside this image: a low peek reads the guest own code instead of the'", ScRaw "Write-Host '  cell it asked for, silently. Raise the shift in rv-remap-addr-insns and the'", ScRaw "Write-Host '  matching rule in docs/Designs/Done/Compiler/RiscVProcessKernel.md, or shrink'", ScRaw "Write-Host '  the image.'", ScRaw "exit 8"]
+
+  s12b : List ShellCmd =
+    [ScComment "The remap window. rv-remap-addr-insns adds 0x80000000 to any address whose",
+     ScComment "high bits are clear, so a test written against the x86-64 low map reads its",
+     ScComment "cells out of RAM. That window lands at [0x80000000, 0x80000000 + threshold),",
+     ScComment "which is exactly where this image is loaded, so an image that grows past the",
+     ScComment "threshold overlaps the addresses the remap hands out and a low peek starts",
+     ScComment "reading the guest's own code.",
+     ScComment "",
+     ScComment "The threshold is READ from rv-remap-addr-insns rather than restated: it is",
+     ScComment "the shift the remap tests, so 24 means 16 MB. An unmatched pattern is a",
+     ScComment "FAILURE, not a skip -- a check whose regex stopped matching has quietly",
+     ScComment "stopped asking (build/build-arm64-img.ps1 states the same rule for the DMA",
+     ScComment "floor, and check-doc-counts.ps1 before it).",
+     ScAssign "rvRuntime" (SeRaw "Join-Path $PSScriptRoot 'RiscVRuntime.codex'"),
+     ScIf (SeRaw "-not (Test-Path -PathType Leaf $rvRuntime)") [ScRaw "Write-Host \"FAIL: remap window check cannot read $rvRuntime\"", ScRaw "exit 8"] [],
+     ScRaw "$rvShiftM = [regex]::Match([System.IO.File]::ReadAllText($rvRuntime), 'rv-srli rv-t0 addr-reg (\\d+)')",
+     ScIf (SeRaw "-not $rvShiftM.Success") [ScRaw "Write-Host \"FAIL: the remap shift in $rvRuntime no longer matches this check's pattern.\"", ScRaw "Write-Host '      A check whose regex stopped matching has quietly stopped asking. Fix the pattern.'", ScRaw "exit 8"] [],
+     ScRaw "$rvRemapWindow = [uint64]1 -shl [int]$rvShiftM.Groups[1].Value",
+     ScIf (SeRaw "[uint64]$flatData.Length -ge $rvRemapWindow") s12b-fail [],
+     ScRaw "Write-Host (\"[riscv-compile] Remap window ok: image {0} bytes, window 0x{1:X}, {2} bytes clear\" -f $flatData.Length, $rvRemapWindow, ($rvRemapWindow - [uint64]$flatData.Length))"]
+
 Section: S13 -- Summary
 
   s13 : List ShellCmd =
@@ -105,7 +131,7 @@ Section: S13 -- Summary
 
 Section: Assembly
 
-  riscv-body : List ShellCmd = [ScSequence s00, ScBlank, ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08, ScBlank, ScSequence s09, ScBlank, ScSequence s10, ScBlank, ScSequence s11, ScBlank, ScSequence s12, ScBlank, ScSequence s13]
+  riscv-body : List ShellCmd = [ScSequence s00, ScBlank, ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08, ScBlank, ScSequence s09, ScBlank, ScSequence s10, ScBlank, ScSequence s11, ScBlank, ScSequence s12, ScBlank, ScSequence s12b, ScBlank, ScSequence s13]
 
   riscv-script : ShellScript = sh-script "compile-riscv" "Compile a Codex source file to a RISC-V ELF binary" riscv-params riscv-body
 

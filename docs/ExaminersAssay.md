@@ -427,8 +427,8 @@ in this document is only ever the number some run actually produced; per-test
 re-measurement retires the rows it covers and does not license editing a
 total nobody measured. Re-run before trusting any of these figures.
 
-`codex/test/errors/` holds **176** expected-failure tests (measured
-2026-08-10).
+`codex/test/errors/` holds **179** expected-failure tests (measured
+2026-08-17).
 
 ## What the standing gate does not cover
 
@@ -4170,7 +4170,7 @@ as a green that means nothing.**
 
 ## Expected-Failure Tests
 
-176 tests in `codex/test/errors/` verify that the compiler rejects
+179 tests in `codex/test/errors/` verify that the compiler rejects
 invalid programs with the correct diagnostic codes. Each has a
 `.failing` sidecar listing the expected CDX error codes. Examples:
 `apply-non-function` (CDX2001), `duplicate-def` (CDX3002),

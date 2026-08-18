@@ -29,7 +29,7 @@ Section: S03 -- Start TCP listener
 
 Section: S04 -- Boot VM
 
-  s04 : List ShellCmd = [ScAssign "vmBin" (SeRaw "Join-Path $Repo 'tools\\codex-vm.exe'"), ScTempFile "stderrFile", ScAssign "vmArgs" (SeArrayLiteral [SeLit "-kernel", SeVar "PlugCdx", SeLit "-mem", SeRaw "\"$MemMB\"", SeLit "-headless"]), ScRaw "$proc = Start-Process -FilePath $vmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile", ScEcho (SeRaw "\"[plug-run] VM PID $($proc.Id)\"")]
+  s04 : List ShellCmd = [ScAssign "vmBin" (SeRaw "Join-Path $Repo 'tools\\codex-vm.exe'"), ScTempFile "stderrFile", ScTempFile "consoleFile", ScAssign "vmArgs" (SeArrayLiteral [SeLit "-kernel", SeVar "PlugCdx", SeLit "-mem", SeRaw "\"$MemMB\"", SeLit "-headless", SeLit "-output", SeVar "consoleFile"]), ScRaw "$proc = Start-Process -FilePath $vmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile", ScEcho (SeRaw "\"[plug-run] VM PID $($proc.Id)\"")]
 
 Section: S05 -- Wait for TCP connection
 
@@ -44,18 +44,19 @@ Section: S06 -- Send IR
 
 Section: S07 -- Receive output
 
-  s07 : List ShellCmd = [ScRaw "$stream.ReadTimeout = $TimeoutSec * 1000", ScRaw "$allBytes = [System.Collections.Generic.List[byte]]::new(65536)", ScRaw "$readBuf = [byte[]]::new(8192)", ScTry [ScLabeledWhile "recv_loop" (SeRaw "$true") [ScRaw "$n = $stream.Read($readBuf, 0, $readBuf.Length)", ScIf (SeRaw "$n -le 0") [ScBreak] [], ScRaw "for ($bi = 0; $bi -lt $n; $bi++) { $allBytes.Add($readBuf[$bi]) }"]] [ScComment "Read timeout or connection reset -- normal end"] [], ScRaw "$client.Close()"]
+  s07 : List ShellCmd = [ScRaw "$stream.ReadTimeout = $TimeoutSec * 1000", ScRaw "$allBytes = [System.Collections.Generic.List[byte]]::new(65536)", ScRaw "$readBuf = [byte[]]::new(8192)", ScRaw "$recvAborted = $false", ScRaw "$recvError = ''", ScTry [ScLabeledWhile "recv_loop" (SeRaw "$true") [ScRaw "$n = $stream.Read($readBuf, 0, $readBuf.Length)", ScIf (SeRaw "$n -le 0") [ScBreak] [], ScRaw "for ($bi = 0; $bi -lt $n; $bi++) { $allBytes.Add($readBuf[$bi]) }"]] [ScComment "A read timeout and a connection reset are NOT a clean end of stream,", ScComment "and this catch used to say they were: the partial buffer was written", ScComment "out and the script reported OK. Record which path ended the loop so a", ScComment "caller can tell a complete transfer from a truncated one.", ScRaw "$recvAborted = $true", ScRaw "$recvError = $_.Exception.Message"] [], ScRaw "$client.Close()"]
 
 Section: S08 -- Write output
 
   s08 : List ShellCmd =
-    let no-output = [ScIf (SeNot (SeProperty (SeVar "proc") "HasExited")) [ScRaw "$proc.WaitForExit(5000)"] [], ScRaw "$stderr = if (Test-Path $stderrFile) { Get-Content $stderrFile -Raw } else { '' }", ScWriteError (SeRaw "\"FAIL: plug produced no output. stderr: $stderr\""), ScExit (SeInt 6)]
+    let no-output = [ScIf (SeNot (SeProperty (SeVar "proc") "HasExited")) [ScRaw "$proc.WaitForExit(5000)"] [], ScRaw "$stderr = if (Test-Path $stderrFile) { Get-Content $stderrFile -Raw } else { '' }", ScRaw "$console = if (Test-Path $consoleFile) { Get-Content $consoleFile -Raw } else { '' }", ScWriteError (SeRaw "\"FAIL: plug produced no output. stderr: $stderr guest console: $console\""), ScExit (SeInt 6)]
     in let truncated = [ScWriteError (SeRaw "\"FAIL: the plug could not send its whole output -- $($truncHit[0].Line.Trim())\""), ScExit (SeInt 7)]
-    in [ScIf (SeRaw "$allBytes.Count -eq 0") no-output [], ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "Out", SeRaw "$allBytes.ToArray()"], ScRaw "$truncHit = @()", ScRaw "if (Test-Path $stderrFile) { $truncHit = @(Select-String -Path $stderrFile -Pattern 'TRUNCATED sent=') }", ScIf (SeRaw "$truncHit.Count -gt 0") truncated [], ScEcho (SeRaw "\"[plug-run] OK: $Out ($($allBytes.Count) bytes)\"")]
+    in let aborted = [ScWriteError (SeRaw "\"FAIL: the receive ended by exception, not by end of stream -- $recvError. Wrote $($allBytes.Count) bytes and cannot tell whether that is all of them.\""), ScExit (SeInt 8)]
+    in [ScIf (SeRaw "$allBytes.Count -eq 0") no-output [], ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "Out", SeRaw "$allBytes.ToArray()"], ScComment "codex-vm dumps its output ring to -output ON EXIT, so grepping before the", ScComment "VM has gone reads a file the guest console has not reached yet. Measured", ScComment "2026-08-17: 1 byte before the wait, the guest's line only after it.", ScIf (SeNot (SeProperty (SeVar "proc") "HasExited")) [ScRaw "$proc.WaitForExit(20000)"] [], ScRaw "$truncHit = @()", ScRaw "if (Test-Path $consoleFile) { $truncHit = @(Select-String -Path $consoleFile -Pattern 'TRUNCATED sent=') }", ScIf (SeRaw "$truncHit.Count -gt 0") truncated [], ScIf (SeVar "recvAborted") aborted [], ScEcho (SeRaw "\"[plug-run] OK: $Out ($($allBytes.Count) bytes)\"")]
 
 Section: S09 -- Cleanup
 
-  s09 : List ShellCmd = [ScIf (SeAnd (SeVar "proc") (SeNot (SeProperty (SeVar "proc") "HasExited"))) [ScRaw "Stop-VmGraceful -ProcessId $proc.Id"] [], ScRaw "Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue", ScRaw "try { $listener.Stop() } catch {}"]
+  s09 : List ShellCmd = [ScIf (SeAnd (SeVar "proc") (SeNot (SeProperty (SeVar "proc") "HasExited"))) [ScRaw "Stop-VmGraceful -ProcessId $proc.Id"] [], ScRaw "Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue", ScRaw "Remove-Item -Force $consoleFile -ErrorAction SilentlyContinue", ScRaw "try { $listener.Stop() } catch {}"]
 
 Section: Assembly
 

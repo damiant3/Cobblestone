@@ -30,8 +30,24 @@ Section: Buffer Region
  from the `unicode-bytes-to-text` suspicion that `bytes-to-text-2f`
  cleared.
 
- Anything here must stay clear of `a64pe-kernel-base` plus the stub's
- `text-pages`, which includes an 8192-page (32 MB) heap grant.
+ Anything here must stay clear of the stub's allocation, whose top is
+ `stack-top` = `a64pe-kernel-base` + `text-pages` * 4096, both computed in
+ `codex/plugs/pe/Arm64PeWriter.codex` (`:38`, `:415`, `:432`). `text-pages`
+ is `(text-size + rodata-size + 4095) / 4096 + a64pe-pt-size / 4096 + 8192`,
+ so it MOVES with the size of the kernel being built.
+
+ Measured 2026-08-17 against the shipped `BOOTAA64.EFI` (78,336 bytes, one
+ 77,016-byte .text): `text-pages` is 8,227, so `stack-top` is #42123000 and
+ the headroom below #44000000 is 32,362,496 bytes.
+
+ **The guard rail is not the image size, it is the 8192 literal.** The image
+ would have to grow by 30.9 MB, four hundred times its present text, to reach
+ this region. The heap grant reaches it after 7,901 more pages -- so raising
+ 8192 to 16384, the obvious next value, puts `stack-top` at #44123000 and
+ both this region and `VirtioBlk`'s INSIDE the allocation again, overrunning
+ by 1.14 MB. The failure is the silent one this section already describes: a
+ device writing over guest memory, surfacing as one wrong byte somewhere
+ unrelated. Change that literal and these constants together.
 
   vnet-buf-base : Integer = #44000000
   vnet-rx-region : Integer = #44000000
@@ -46,8 +62,6 @@ Section: Device State
     tx-queue : VirtqueueState,
     mac : List Integer
   }
-
-  vnet-state-addr : Integer = #80100
 
 Section: Init
 

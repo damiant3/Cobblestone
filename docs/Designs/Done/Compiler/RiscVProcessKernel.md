@@ -82,6 +82,39 @@ can execute it.*
   stand; nothing is moved aside, and the six sidecars left over carry ARM64's
   reasons.
 
+## The address map rule (ruled 2026-08-17 by red, measured by fester)
+
+**The remap window is 16 MB, matching ARM64, and the image must fit inside
+it.** `rv-remap-addr-insns` adds `#80000000` to an address whose high bits
+are clear, so a test written against the x86-64 low map reads its cells out
+of RAM. Two rules follow and neither is optional.
+
+**The window ends at 16 MB, not 2 GB.** It shifted by 31 until 2026-08-17,
+so EVERY address below `#80000000` was relocated, including this machine's
+own virtio-mmio at `#10001000`: the block device could not be reached at
+all, and `read-mmio` / `poke-mmio` are ALIASES of `peek-byte` / `poke-byte`
+here (`rv-emit-runtime` records both names over one emitted block), so
+nothing bypassed it. Measured, one line changed and everything else equal:
+
+| shift | `block-sector-count` |
+|---|---|
+| 31 (2 GB) | `-1`, no device found |
+| 24 (16 MB) | `32768`, the 16 MB fixture, correct |
+
+ARM64's twin (`a64-rt-remap-addr`) has always used 16 MB, which is why its
+MMIO at `#0A000000` was never affected. **Device MMIO must live above the
+window**, and on QEMU virt riscv64 it does.
+
+**The image must stay under the window**, because the window lands at
+`[#80000000, #80000000 + window)` and that is where the image is loaded. An
+image that grows past it overlaps the addresses the remap hands out, and a
+low peek starts reading the guest's own code with no diagnostic.
+`codex/plugs/riscv/compile-riscv.ps1` asserts this on every riscv compile,
+reading the shift out of `rv-remap-addr-insns` rather than restating it, and
+failing rather than skipping if that pattern stops matching. Measured at the
+time of writing: an `fs-handler-install` image is 87,344 bytes against a
+16,777,216-byte window.
+
 ## Decisions
 
 - **Reserve the first 32 KiB of the image for the x86-64 low-memory mirror.**

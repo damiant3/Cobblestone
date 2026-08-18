@@ -23,17 +23,6 @@ Section: Drain
     else 0
    end
 
-Section: Stream Defs
-
-  stream-rs-defs : TcpTransportState, List IRDef, List ArityEntry, List CtorEnumEntry, Integer, Integer -> [Network.Read, Network.Write] TcpTransportState
-  stream-rs-defs (ts) (defs) (arities) (ctor-map) (i) (n) =
-   if i >= n then ts
-   else let rs = emit-rs-def (list-at defs i) arities ctor-map
-   in act
-    ts1 <- net-io-send-text ts (rs & "\n")
-    stream-rs-defs ts1 defs arities ctor-map (i + 1) n
-   end
-
 Section: Body
 
   opening : [Console, FileSystem, Network.Read, Network.Write] Nothing =
@@ -48,10 +37,11 @@ Section: Body
      in let m = parsed.chapter
      in let rs-output = emit-rs-chapter m (parsed.type-defs)
      in act
-      ts5 <- net-io-send-text (recv.transport) rs-output
-      ts6 <- net-io-close ts5
+      sent <- net-io-send-text-checked (recv.transport) rs-output
+      ts6 <- net-io-close (sent.ns-transport)
       drained <- drain-wait ts6 0
-      print-line-uni ("OK defs=" & show (list-length (m.defs) + drained - drained))
+      if sent.ns-complete then print-line-uni ("OK defs=" & show (list-length (m.defs) + drained - drained))
+      else print-line-uni ("TRUNCATED sent=" & show (sent.ns-sent) & " of " & show (text-length rs-output) & " defs=" & show (list-length (m.defs) + drained - drained))
      end
     else print-line-uni "FAIL"
    end

@@ -322,7 +322,7 @@ Section: Apply Emission
    DBuiltinEmitter { name = "substring", emit = \args arities -> emit-d-expr (list-at args 0) arities & "[cast(size_t)" & emit-d-expr (list-at args 1) arities & " .. cast(size_t)(" & emit-d-expr (list-at args 1) arities & " + " & emit-d-expr (list-at args 2) arities & ")]" },
    DBuiltinEmitter { name = "text-contains", emit = \args arities -> "(" & emit-d-expr (list-at args 0) arities & ".canFind(" & emit-d-expr (list-at args 1) arities & "))" },
    DBuiltinEmitter { name = "text-length", emit = \args arities -> "cast(long)" & emit-d-expr (list-at args 0) arities & ".length" },
-   DBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "to!long(" & emit-d-expr (list-at args 0) arities & ")" },
+   DBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "text_to_integer(" & emit-d-expr (list-at args 0) arities & ")" },
    DBuiltinEmitter { name = "write-file", emit = \args arities -> "std.file.write(" & emit-d-expr (list-at args 0) arities & ", " & emit-d-expr (list-at args 1) arities & ")" }
   ]
 
@@ -358,11 +358,23 @@ Section: Chapter Emission
   emit-d-chapter : IRChapter, List ATypeDef -> Text
   emit-d-chapter (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
-   in let header = "import std.stdio;\nimport std.conv;\nimport std.variant;\nimport std.file;\nimport std.algorithm;\n\n"
+   in let header = "import std.stdio;\nimport std.conv;\nimport std.variant;\nimport std.file;\nimport std.algorithm;\n\nauto list_snoc(T)(T[] xs, T v) { return xs ~ v; }\nauto list_push(T)(T[] xs, T v) { return list_snoc(xs, v); }\n" & d-text-builtins & "\n"
    in let types-text = emit-d-type-defs type-defs 0
    in let defs-text = emit-d-defs (m.defs) 0 arities
    in let entry = d-emit-entry (m.defs)
    in header & types-text & defs-text & "void main() {\n    " & entry & "}\n"
+
+ The arguments arrive as `Variant` at some call sites and as `string` at
+ others, and D will not implicitly convert one to the other. A template
+ parameter takes both and `to!string` collapses them, which is why these are
+ not written with plain `string` parameters.
+
+  d-text-builtins : Text
+  d-text-builtins =
+   "bool text_starts_with(A, B)(A s0, B p0) { string s = to!string(s0); string p = to!string(p0); return p.length <= s.length && s[0 .. p.length] == p; }\n"
+   & "string text_replace(A, B, C)(A s0, B a0, C b0) { string s = to!string(s0); string a = to!string(a0); string b = to!string(b0); if (a.length == 0) return s; string r; size_t i = 0; while (i < s.length) { if (i + a.length <= s.length && s[i .. i + a.length] == a) { r ~= b; i += a.length; } else { r ~= s[i]; i++; } } return r; }\n"
+   & "string[] text_split(A, B)(A s0, B sep0) { string s = to!string(s0); string sep = to!string(sep0); if (sep.length == 0) return [s]; string[] r; size_t start = 0; size_t i = 0; while (i + sep.length <= s.length) { if (s[i .. i + sep.length] == sep) { r ~= s[start .. i]; i += sep.length; start = i; } else { i++; } } r ~= s[start .. $]; return r; }\n"
+   & "long text_to_integer(A)(A s0) { string s = to!string(s0); size_t i = 0; bool neg = false; if (s.length > 0 && s[0] == '-') { neg = true; i = 1; } long v = 0; while (i < s.length && s[i] >= '0' && s[i] <= '9') { v = v * 10 + (s[i] - '0'); i++; } return neg ? -v : v; }\n"
 
   d-emit-entry : List IRDef -> Text
   d-emit-entry (defs) = d-emit-entry-loop defs 0

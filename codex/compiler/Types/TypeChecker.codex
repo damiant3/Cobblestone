@@ -3,6 +3,7 @@ Chapter: Type Checker
   cites Codex chapter Phase Allocator (deck-short-of)
   cites Foreword chapter Tuple
   cites Foreword chapter Capability (capability-names)
+  cites Foreword chapter CCE (is-upper)
 
 Section: Resolve Type Expression
 
@@ -3597,17 +3598,45 @@ Section: Type Arity Check
     is ANamedType (name) (s) -> name.value
     is otherwise -> ""
 
+  tdm-has : List TypeBinding, Text -> Boolean
+  tdm-has (tdm) (name) =
+   let len = list-length tdm
+   in if len == 0 then False
+   else let pos = bsearch-text-pos tdm name 0 len
+   in if pos >= len then False
+   else (list-at tdm pos).name == name
+
+  builtin-type-name : Text -> Boolean
+  builtin-type-name (name) =
+   name == "Integer" | name == "Real" | name == "Text" | name == "Boolean"
+   | name == "Char" | name == "Nothing" | name == "Proof"
+   | name == "List" | name == "LinkedList" | name == "Vector"
+
+  type-name-known : List TypeBinding, Text -> Boolean
+  type-name-known (tdm) (name) =
+   if text-length name == 0 then True
+   else if is-upper (char-at name 0) == False then True
+   else if builtin-type-name name then True
+   else tdm-has tdm name
+
+  check-type-name-exists : List TypeBinding, Text, SourceSpan, List Diagnostic -> List Diagnostic
+  check-type-name-exists (tdm) (name) (s) (acc) =
+   if type-name-known tdm name then acc
+   else list-push acc (make-error cdx-undefined-type-name ("Undefined type name: " & name) s)
+
   check-arity-in-expr : List TypeBinding, ATypeExpr, List Diagnostic -> List Diagnostic
   check-arity-in-expr (tdm) (expr) (acc) =
    when expr
+    is ANamedType (name) (s) -> check-type-name-exists tdm (name.value) s acc
     is AAppType (ctor) (args) (s) ->
      let flat = flatten-app ctor args
      in let flat-name = atype-named (flat.ctor)
      in let expected = if text-length flat-name == 0 then -1 else expected-arity-for flat-name tdm
      in let actual = list-length (flat.args)
+     in let acc1 = check-type-name-exists tdm flat-name s acc
      in let acc2 = if expected >= 0 & actual /= expected
-                   then list-push acc (make-error cdx-type-arity ("Type '" & flat-name & "' expects " & integer-to-text expected & " type argument(s), got " & integer-to-text actual) s)
-                   else acc
+                   then list-push acc1 (make-error cdx-type-arity ("Type '" & flat-name & "' expects " & integer-to-text expected & " type argument(s), got " & integer-to-text actual) s)
+                   else acc1
      in check-arity-in-expr-list tdm (flat.args) 0 (list-length (flat.args)) acc2
     is AFunType (param) (ret) (s) -> check-arity-in-expr tdm ret (check-arity-in-expr tdm param acc)
     is AEffectType (effs) (scopes) (tail) (ret) (s) -> check-arity-in-expr tdm ret acc

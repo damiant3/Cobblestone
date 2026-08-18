@@ -597,40 +597,6 @@ Section: Builtin Helpers
   a64-rt-text-length =
    arm64-ldr 0 0 0 & arm64-ret
 
-  a64-rt-list-tail : List Integer
-  a64-rt-list-tail =
-   let i = []
-   in let i = a64-rt-emit i (arm64-stp-pre 29 30 31 (0 - 48))
-   in let i = a64-rt-emit i (arm64-stp 19 20 31 16)
-   in let i = a64-rt-emit i (arm64-stp 21 22 31 32)
-   in let i = a64-rt-emit i (arm64-ldr 19 0 0)
-   in let i = a64-rt-emit i (arm64-sub-imm 19 19 1)
-   in let i = a64-rt-emit i (arm64-mov 20 28)
-   in let i = a64-rt-emit i (arm64-str 19 20 0)
-   in let i = a64-rt-emit i (arm64-add-imm 21 19 1)
-   in let i = i & arm64-lsl-imm 21 21 3
-   in let i = a64-rt-emit i (arm64-add 28 28 21)
-   in let i = a64-rt-emit i (arm64-add-imm 0 0 16)
-   in let i = a64-rt-emit i (arm64-add-imm 22 20 8)
-   in let i = i & arm64-movz 9 0 0
-   in let loop = list-length i / 4
-   in let i = a64-rt-emit i (arm64-cmp 9 19)
-   in let exit-idx = list-length i / 4
-   in let i = a64-rt-emit i arm64-nop
-   in let i = a64-rt-emit i (arm64-ldr 10 0 0)
-   in let i = a64-rt-emit i (arm64-str 10 22 0)
-   in let i = a64-rt-emit i (arm64-add-imm 0 0 8)
-   in let i = a64-rt-emit i (arm64-add-imm 22 22 8)
-   in let i = a64-rt-emit i (arm64-add-imm 9 9 1)
-   in let i = a64-rt-emit i (arm64-b ((loop - list-length i / 4) * 4))
-   in let exit-label = list-length i / 4
-   in let i = a64-rt-emit i (arm64-mov 0 20)
-   in let i = a64-rt-emit i (arm64-ldp 21 22 31 32)
-   in let i = a64-rt-emit i (arm64-ldp 19 20 31 16)
-   in let i = a64-rt-emit i (arm64-ldp-post 29 30 31 48)
-   in let i = a64-rt-emit i arm64-ret
-   in a64-patch-insn-raw i exit-idx (arm64-b-cond 10 ((exit-label - exit-idx) * 4))
-
   a64-rt-list-at : List Integer
   a64-rt-list-at =
    let i = []
@@ -1174,6 +1140,9 @@ Section: text-to-integer (a0=text -> integer, 0 if invalid)
    in let i = a64-rt-emit i (arm64-add 13 10 11)
    in let i = a64-rt-emit i (arm64-ldrb 13 13 0)
    in let i = a64-rt-emit i (arm64-sub-imm 13 13 3)
+   in let i = a64-rt-emit i (arm64-cmp-imm 13 9)
+   in let non-digit = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
    in let i = i & arm64-movz 14 10 0
    in let i = a64-rt-emit i (arm64-mul 0 0 14)
    in let i = a64-rt-emit i (arm64-add 0 0 13)
@@ -1184,6 +1153,7 @@ Section: text-to-integer (a0=text -> integer, 0 if invalid)
    in let i = a64-rt-emit i (arm64-neg 0 0)
    in let i = a64-rt-emit i arm64-ret
    in let i = a64-patch-insn-raw i not-neg (arm64-b-cond 1 ((not-neg-label - not-neg) * 4))
+   in let i = a64-patch-insn-raw i non-digit (arm64-b-cond 8 ((exit-label - non-digit) * 4))
    in a64-patch-insn-raw i exit (arm64-b-cond 10 ((exit-label - exit) * 4))
 
 Section: text-compare (a0=text-a, a1=text-b -> -1/0/1)
@@ -1445,6 +1415,8 @@ Section: Text Replace (a0=text, a1=find, a2=replace -> new text)
    in let i = a64-rt-emit i (arm64-cmp 9 22)
    in let main-exit = list-length i / 4
    in let i = a64-rt-emit i arm64-nop
+   in let empty-needle = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
    in let i = a64-rt-emit i (arm64-sub 10 22 23)
    in let i = a64-rt-emit i (arm64-add-imm 10 10 1)
    in let i = a64-rt-emit i (arm64-cmp 9 10)
@@ -1486,6 +1458,7 @@ Section: Text Replace (a0=text, a1=find, a2=replace -> new text)
    in let i = a64-rt-emit i (arm64-b ((main-loop - list-length i / 4) * 4))
    in let no-match-label = list-length i / 4
    in let i = a64-patch-insn-raw i mismatch (arm64-b-cond 1 ((no-match-label - mismatch) * 4))
+   in let i = a64-patch-insn-raw i empty-needle (arm64-cbz 23 ((no-match-label - empty-needle) * 4))
    in let i = a64-patch-insn-raw i no-room (arm64-b-cond 10 ((no-match-label - no-room) * 4))
    in let i = a64-rt-emit i (arm64-add 12 19 9)
    in let i = a64-rt-emit i (arm64-ldrb 12 12 8)
@@ -1528,16 +1501,24 @@ Section: text-split (a0=text, a1=delim -> list of substrings)
    in let i = a64-rt-emit i (arm64-ldr 22 1 0)
    in let i = i & arm64-movz 23 0 0
    in let i = i & arm64-movz 24 0 0
-   in let i = a64-rt-emit i (arm64-mov 25 28)
-   in let i = i & arm64-movz 9 0 0
+   in let i = a64-rt-emit i (arm64-add-imm 9 21 1)
    in let i = a64-rt-emit i (arm64-str 9 28 0)
-   in let i = a64-rt-emit i (arm64-add-imm 10 21 1)
+   in let i = a64-rt-emit i (arm64-add-imm 25 28 8)
+   in let i = i & arm64-movz 9 0 0
+   in let i = a64-rt-emit i (arm64-str 9 25 0)
+   in let i = a64-rt-emit i (arm64-add-imm 10 21 3)
    in let i = i & arm64-lsl-imm 10 10 3
    in let i = a64-rt-emit i (arm64-add 28 28 10)
    in let i = a64-rt-emit i (arm64-mov 26 25)
    in let outer = list-length i / 4
    in let i = a64-rt-emit i (arm64-cmp 24 21)
    in let outer-exit = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let empty-sep = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let i = a64-rt-emit i (arm64-add 10 24 22)
+   in let i = a64-rt-emit i (arm64-cmp 10 21)
+   in let overhang = list-length i / 4
    in let i = a64-rt-emit i arm64-nop
    in let i = i & arm64-movz 9 0 0
    in let inner = list-length i / 4
@@ -1624,6 +1605,8 @@ Section: text-split (a0=text, a1=delim -> list of substrings)
    in let i = a64-rt-emit i (arm64-ldp-post 29 30 31 96)
    in let i = a64-rt-emit i arm64-ret
    in let i = a64-patch-insn-raw i outer-exit (arm64-b-cond 10 ((outer-done - outer-exit) * 4))
+   in let i = a64-patch-insn-raw i empty-sep (arm64-cbz 22 ((mismatch-label - empty-sep) * 4))
+   in let i = a64-patch-insn-raw i overhang (arm64-b-cond 12 ((mismatch-label - overhang) * 4))
    in let i = a64-patch-insn-raw i inner-exit (arm64-b-cond 10 ((match-label - inner-exit) * 4))
    in let i = a64-patch-insn-raw i mismatch (arm64-b-cond 1 ((mismatch-label - mismatch) * 4))
    in let i = a64-patch-insn-raw i copy1-exit (arm64-b-cond 10 ((copy1-done - copy1-exit) * 4))
@@ -2140,7 +2123,9 @@ Section: Process Table
    in let st7 = a64-emit st6 (arm64-cbnz 11 ((loop - st6.insn-count) * 4))
    in let st8 = a64-emit-li st7 10 a64-proc-table-base
    in let st9 = a64-emit st8 (arm64-movz 9 a64-proc-state-running 0)
-   in a64-emit st9 (arm64-str 9 10 0)
+   in let st10 = a64-emit st9 (arm64-str 9 10 0)
+   in let st11 = a64-emit-li st10 10 a64-fs-elevated-addr
+   in a64-emit st11 (arm64-str 31 10 0)
 
 Section: Capability Gates
 
@@ -2235,6 +2220,13 @@ Section: Block device helpers
  the heap rather than above it, so `a64-heap-start` does not move and the
  process table is untouched.
 
+ Added to that map since: the effect-op slot table at
+ `#40020000`..`#40022000` (`a64-effect-op-table-base`,
+ `a64-effect-op-slots` in `Arm64CodeGen3.codex`), moved off the ELF load
+ base where it had room for only 16 slots. The next free span is
+ therefore `#40022000`..`#40100000`, and whoever places the deck region
+ (plugs-backlog 1.33) takes it from there rather than from `#40020000`.
+
   a64-vblk-ring-base : Integer = #40010000
 
   a64-emit-call-to : A64State, Text -> A64State
@@ -2246,9 +2238,24 @@ Section: Block device helpers
  x30 and returning into a clobbered link register is a jump into the
  callee. Sixteen bytes is under the 4095 the immediate forms mask at.
 
+  a64-svc-block-read : Integer = 10
+  a64-svc-block-write : Integer = 11
+  a64-svc-block-count : Integer = 12
+  a64-cap-block-device : Integer = 10
+  a64-fs-elevated-addr : Integer = #40008D88
+
+  a64-emit-svc-stub : A64State, Text, Integer -> A64State
+  a64-emit-svc-stub (st) (name) (n) =
+   let st1 = a64-record-func st name
+   in let st2 = a64-emit st1 (arm64-svc n)
+   in a64-emit st2 arm64-ret
+
   a64-emit-block-helpers : A64State -> A64State
   a64-emit-block-helpers (st) =
-   let st1 = a64-record-func st "block-sector-count"
+   let sta = a64-emit-svc-stub st "block-sector-count" a64-svc-block-count
+   in let stb = a64-emit-svc-stub sta "block-read-sector" a64-svc-block-read
+   in let stc = a64-emit-svc-stub stb "block-write-sector" a64-svc-block-write
+   in let st1 = a64-record-func stc "__block_count_body"
    in let st2 = a64-emit st1 (arm64-sub-imm a64-sp a64-sp 16)
    in let st3 = a64-emit st2 (arm64-stp a64-fp a64-lr a64-sp 0)
    in let st4 = a64-emit-li st3 0 a64-vblk-mmio-base
@@ -2272,7 +2279,7 @@ Section: Block device helpers
 
   a64-emit-block-read : A64State -> A64State
   a64-emit-block-read (st) =
-   let st1 = a64-record-func st "block-read-sector"
+   let st1 = a64-record-func st "__block_read_body"
    in let st2 = a64-emit st1 (arm64-sub-imm a64-sp a64-sp 32)
    in let st3 = a64-emit st2 (arm64-stp a64-fp a64-lr a64-sp 0)
    in let st4 = a64-emit st3 (arm64-stp a64-x19 a64-x19 a64-sp 16)
@@ -2314,7 +2321,7 @@ Section: Block device helpers
 
   a64-emit-block-write : A64State -> A64State
   a64-emit-block-write (st) =
-   let st1 = a64-record-func st "block-write-sector"
+   let st1 = a64-record-func st "__block_write_body"
    in let st2 = a64-emit st1 (arm64-sub-imm a64-sp a64-sp 16)
    in let st3 = a64-emit st2 (arm64-stp a64-fp a64-lr a64-sp 0)
    in let st4 = a64-emit st3 (arm64-mov 5 1)
@@ -2328,6 +2335,93 @@ Section: Block device helpers
    in let st11 = a64-emit st10a (arm64-ldp a64-fp a64-lr a64-sp 0)
    in let st12 = a64-emit st11 (arm64-add-imm a64-sp a64-sp 16)
    in a64-emit st12 arm64-ret
+
+Section: FileSystem servicer
+
+ The capability bits are Foreword Capability's own, and the refusal
+ answers are x86-64's: the empty text for a read, False for a write
+ (`X86_64Helpers.codex`, `emit-fs-read-servicer-helper`). x86-64 also
+ brackets each call with its `fs-elevated` cell, which is the token its
+ block-device SYSCALL checks before admitting a caller without the
+ capability. This lane has no such syscall -- `block-read-sector` and
+ `block-write-sector` are emitted helpers calling the driver directly --
+ so there is no second gate to open and no cell to set.
+
+  a64-cap-filesystem-read : Integer = 6
+  a64-cap-filesystem-write : Integer = 7
+
+  a64-emit-fs-servicers : A64State -> A64State
+  a64-emit-fs-servicers (st) =
+   if a64-find-effect-op-addr ((st.extra).effect-op-addrs) "read-text" 0 < 0 then st
+   else let st1 = a64-emit-fs-read-servicer st
+   in a64-emit-fs-write-servicer st1
+
+  a64-emit-fs-read-servicer : A64State -> A64State
+  a64-emit-fs-read-servicer (st) =
+   let st0 = a64-record-func st "__fs-read-servicer"
+   in let cc = a64-rt-check-capability [] a64-cap-filesystem-read
+   in let st1 = a64-emit-block st0 cc 0 (list-length cc)
+   in let deny-idx = st1.insn-count
+   in let st2 = a64-emit st1 arm64-nop
+   in let st3 = a64-emit st2 (arm64-sub-imm a64-sp a64-sp 16)
+   in let st4 = a64-emit st3 (arm64-stp a64-fp a64-lr a64-sp 0)
+   in let st4a = a64-emit-li st4 9 a64-fs-elevated-addr
+   in let st4b = a64-emit st4a (arm64-movz 10 1 0)
+   in let st4c = a64-emit st4b (arm64-str 10 9 0)
+   in let st5 = a64-emit-call-to st4c "fat16-servicer-read"
+   in let st5a = a64-emit-li st5 9 a64-fs-elevated-addr
+   in let st5b = a64-emit st5a (arm64-str 31 9 0)
+   in let st6 = a64-emit st5b (arm64-ldp a64-fp a64-lr a64-sp 0)
+   in let st7 = a64-emit st6 (arm64-add-imm a64-sp a64-sp 16)
+   in let st8 = a64-emit st7 arm64-ret
+   in let deny = st8.insn-count
+   in let lit = a64-emit-text-lit st8 ""
+   in let st9 = a64-emit (lit.state) (arm64-mov a64-x0 (lit.reg))
+   in let st10 = a64-emit st9 arm64-ret
+   in a64-patch-insn st10 deny-idx (arm64-b-cond arm64-cond-eq ((deny - deny-idx) * 4))
+
+  a64-emit-fs-write-servicer : A64State -> A64State
+  a64-emit-fs-write-servicer (st) =
+   let st0 = a64-record-func st "__fs-write-servicer"
+   in let cc = a64-rt-check-capability [] a64-cap-filesystem-write
+   in let st1 = a64-emit-block st0 cc 0 (list-length cc)
+   in let deny-idx = st1.insn-count
+   in let st2 = a64-emit st1 arm64-nop
+   in let st3 = a64-emit st2 (arm64-sub-imm a64-sp a64-sp 16)
+   in let st4 = a64-emit st3 (arm64-stp a64-fp a64-lr a64-sp 0)
+   in let st4a = a64-emit-li st4 9 a64-fs-elevated-addr
+   in let st4b = a64-emit st4a (arm64-movz 10 1 0)
+   in let st4c = a64-emit st4b (arm64-str 10 9 0)
+   in let st5 = a64-emit-call-to st4c "fat16-servicer-write"
+   in let st5a = a64-emit-li st5 9 a64-fs-elevated-addr
+   in let st5b = a64-emit st5a (arm64-str 31 9 0)
+   in let st6 = a64-emit st5b (arm64-ldp a64-fp a64-lr a64-sp 0)
+   in let st7 = a64-emit st6 (arm64-add-imm a64-sp a64-sp 16)
+   in let st8 = a64-emit st7 arm64-ret
+   in let deny = st8.insn-count
+   in let st9 = a64-emit st8 (arm64-movz a64-x0 0 0)
+   in let st10 = a64-emit st9 arm64-ret
+   in a64-patch-insn st10 deny-idx (arm64-b-cond arm64-cond-eq ((deny - deny-idx) * 4))
+
+ The install, run once at boot. A slot on this lane holds the handler's
+ CODE address and `a64-emit-effect-op-call` dereferences it exactly once
+ (`ldr` then `blr`); `a64-unwrap-clause-lambda` puts an `adr` of the
+ handler body there, not a closure pointer, which is where this differs
+ from x86-64's slot to closure to code. Writing a closure here instead
+ branches to the closure and faults on its first word.
+
+  a64-emit-seed-fs-handler : A64State, Text, Text -> A64State
+  a64-emit-seed-fs-handler (st) (op-name) (stub-name) =
+   let eoa = a64-find-effect-op-addr ((st.extra).effect-op-addrs) op-name 0
+   in if eoa < 0 then st
+   else let st1 = a64-emit-load-func-addr st 9 stub-name
+   in let st2 = a64-emit-li st1 11 eoa
+   in a64-emit st2 (arm64-str 9 11 0)
+
+  a64-emit-seed-fs-handlers : A64State -> A64State
+  a64-emit-seed-fs-handlers (st) =
+   let st1 = a64-emit-seed-fs-handler st "read-text" "__fs-read-servicer"
+   in a64-emit-seed-fs-handler st1 "write-file" "__fs-write-servicer"
 
   a64-emit-net-helpers : A64State -> A64State
   a64-emit-net-helpers (st) =
@@ -2381,6 +2475,93 @@ Section: Block device helpers
    in let f11 = a64-rt-process-set-scope-at a64-proc-net-scope-offset in let st12 = a64-emit-block st11 f11 0 (list-length f11)
    in let st13 = a64-record-func st12 "process-restrict-cap"
    in let f13 = a64-rt-process-restrict-cap in a64-emit-block st13 f13 0 (list-length f13)
+
+Section: SVC dispatch (the synchronous vector slot)
+
+ x86-64 reaches the block family only through `syscall` 10-13
+ (`X86_64Boot.codex` `emit-syscall-handler`), so the capability check
+ runs on every entry; the block builtins here are `svc #n` stubs into
+ vector slot 4 (current EL, SPx, synchronous), which dispatches on the
+ SVC immediate read back from ESR (EC #15 = SVC from AArch64, ISS low 16
+ bits = imm16) and falls to the fault handler for any other synchronous
+ exception. The gate is x86-64's `emit-block-elev-gate`: the caller's
+ word holds `cap-block-device`, OR the fs-elevated cell (36232 mirrored
+ at #40008D88) is non-zero, which only the FileSystem servicers set,
+ inline, around their fat16 calls. No vector on this lane ever enables
+ an interrupt (all sixteen slots are the fault handler), so ELR/SPSR are
+ not saved across the driver call.
+
+  a64-svc-ec : Integer = 21
+
+  a64-emit-sync-handler : A64State, Integer -> A64State
+  a64-emit-sync-handler (st) (fault-idx) =
+   let st1 = a64-emit st (arm64-stp-pre 29 30 31 (0 - 48))
+   in let st2 = a64-emit st1 (arm64-stp 19 20 31 16)
+   in let st3 = a64-emit st2 (arm64-stp 21 22 31 32)
+   in let st4 = a64-emit st3 (arm64-mrs 20 sysreg-currentel)
+   in let st5 = a64-emit st4 (arm64-lsr-imm 20 20 2)
+   in let st6 = a64-emit st5 (arm64-movz 21 3 0)
+   in let st7 = a64-emit st6 (arm64-and 20 20 21)
+   in let esr = a64-rt-fault-mrs-el [] 11 sysreg-esr-el1
+   in let st8 = a64-emit-block st7 esr 0 (list-length esr)
+   in let st9 = a64-emit st8 (arm64-lsr-imm 12 11 26)
+   in let st10 = a64-emit st9 (arm64-cmp-imm 12 a64-svc-ec)
+   in let not-svc-idx = st10.insn-count
+   in let st11 = a64-emit st10 arm64-nop
+   in let st12 = a64-emit st11 (arm64-movz 13 65535 0)
+   in let st13 = a64-emit st12 (arm64-and 12 11 13)
+   in let cc = a64-rt-check-capability [] a64-cap-block-device
+   in let st14 = a64-emit-block st13 cc 0 (list-length cc)
+   in let has-cap-idx = st14.insn-count
+   in let st15 = a64-emit st14 arm64-nop
+   in let st16 = a64-emit-li st15 10 a64-fs-elevated-addr
+   in let st17 = a64-emit st16 (arm64-ldr 10 10 0)
+   in let elev-idx = st17.insn-count
+   in let st18 = a64-emit st17 arm64-nop
+   in let deny = st18.insn-count
+   in let st19 = a64-emit-li st18 0 (0 - 1)
+   in let deny-done-idx = st19.insn-count
+   in let st20 = a64-emit st19 arm64-nop
+   in let proceed = st20.insn-count
+   in let st21 = a64-emit st20 (arm64-cmp-imm 12 a64-svc-block-read)
+   in let is-read-idx = st21.insn-count
+   in let st22 = a64-emit st21 arm64-nop
+   in let st23 = a64-emit st22 (arm64-cmp-imm 12 a64-svc-block-write)
+   in let is-write-idx = st23.insn-count
+   in let st24 = a64-emit st23 arm64-nop
+   in let st25 = a64-emit st24 (arm64-cmp-imm 12 a64-svc-block-count)
+   in let is-count-idx = st25.insn-count
+   in let st26 = a64-emit st25 arm64-nop
+   in let st27 = a64-emit st26 (arm64-b ((deny - st26.insn-count) * 4))
+   in let do-read = st27.insn-count
+   in let st28 = a64-emit-call-to st27 "__block_read_body"
+   in let read-done-idx = st28.insn-count
+   in let st29 = a64-emit st28 arm64-nop
+   in let do-write = st29.insn-count
+   in let st30 = a64-emit-call-to st29 "__block_write_body"
+   in let write-done-idx = st30.insn-count
+   in let st31 = a64-emit st30 arm64-nop
+   in let do-count = st31.insn-count
+   in let st32 = a64-emit-call-to st31 "__block_count_body"
+   in let done = st32.insn-count
+   in let st33 = a64-emit st32 (arm64-ldp 21 22 31 32)
+   in let st34 = a64-emit st33 (arm64-ldp 19 20 31 16)
+   in let st35 = a64-emit st34 (arm64-ldp-post 29 30 31 48)
+   in let st36 = a64-emit st35 arm64-eret
+   in let not-svc = st36.insn-count
+   in let st37 = a64-emit st36 (arm64-ldp 21 22 31 32)
+   in let st38 = a64-emit st37 (arm64-ldp 19 20 31 16)
+   in let st39 = a64-emit st38 (arm64-ldp-post 29 30 31 48)
+   in let st40 = a64-emit st39 (arm64-b ((fault-idx - st39.insn-count) * 4))
+   in let st41 = a64-patch-insn st40 not-svc-idx (arm64-b-cond 1 ((not-svc - not-svc-idx) * 4))
+   in let st42 = a64-patch-insn st41 has-cap-idx (arm64-b-cond 1 ((proceed - has-cap-idx) * 4))
+   in let st43 = a64-patch-insn st42 elev-idx (arm64-cbnz 10 ((proceed - elev-idx) * 4))
+   in let st44 = a64-patch-insn st43 deny-done-idx (arm64-b ((done - deny-done-idx) * 4))
+   in let st45 = a64-patch-insn st44 is-read-idx (arm64-b-cond arm64-cond-eq ((do-read - is-read-idx) * 4))
+   in let st46 = a64-patch-insn st45 is-write-idx (arm64-b-cond arm64-cond-eq ((do-write - is-write-idx) * 4))
+   in let st47 = a64-patch-insn st46 is-count-idx (arm64-b-cond arm64-cond-eq ((do-count - is-count-idx) * 4))
+   in let st48 = a64-patch-insn st47 read-done-idx (arm64-b ((done - read-done-idx) * 4))
+   in a64-patch-insn st48 write-done-idx (arm64-b ((done - write-done-idx) * 4))
 
 Section: Process Lifecycle
 
@@ -2723,7 +2904,8 @@ Section: Emit All Runtime Helpers
    in let st3d1 = a64-emit-proc-table-init st3d0
    in let st3d = a64-emit-boot-grant st3d1
    in let st3e = a64-patch-insn st3d cbnz-idx (arm64-cbnz 28 ((uefi-label - cbnz-idx) * 4))
-   in let st7f = if (st.extra).smp-boot then a64-emit-smp-boot st3e else a64-emit-uni-boot st3e
+   in let st3f = a64-emit-seed-fs-handlers st3e
+   in let st7f = if (st.extra).smp-boot then a64-emit-smp-boot st3f else a64-emit-uni-boot st3f
    in let st8 = a64-record-func st7f "print-line-uni"
    in let st8a = a64-record-func st8 "print-line"
    in let plu = a64-rt-print-line-uni
@@ -2757,9 +2939,7 @@ Section: Emit All Runtime Helpers
    in let f26 = a64-rt-text-length in let st27 = a64-emit-block st26 f26 0 (list-length f26)
    in let st28 = a64-record-func st27 "list-length"
    in let f28 = a64-rt-text-length in let st29 = a64-emit-block st28 f28 0 (list-length f28)
-   in let st29a = a64-record-func st29 "list-tail"
-   in let f29a = a64-rt-list-tail in let st29b = a64-emit-block st29a f29a 0 (list-length f29a)
-   in let st30 = a64-record-func st29b "list-at"
+   in let st30 = a64-record-func st29 "list-at"
    in let f30 = a64-rt-list-at in let st31 = a64-emit-block st30 f30 0 (list-length f30)
    in let st32 = a64-record-func st31 "char-at"
    in let f32 = a64-rt-char-at in let st33 = a64-emit-block st32 f32 0 (list-length f32)
@@ -2893,10 +3073,15 @@ Section: Emit All Runtime Helpers
    in let st149n = a64-emit-net-helpers st149p
    in let st149l = a64-emit-lifecycle-helpers st149n
    in let st149b = a64-emit-block-helpers st149l
-   in let st150 = a64-emit st149b arm64-ret
+   in let st149f = a64-emit-fs-servicers st149b
+   in let st150 = a64-emit st149f arm64-ret
    in let handler = st150.insn-count
    in let fh = a64-rt-fault-handler
    in let st151 = a64-emit-block st150 fh 0 (list-length fh)
-   in a64-rt-patch-vectors st151 handler 0
+   in let st152 = a64-rt-patch-vectors st151 handler 0
+   in let sync = st152.insn-count
+   in let st153 = a64-emit-sync-handler st152 handler
+   in let sync-slot = a64-rt-vt-branch-slot 4
+   in a64-patch-insn st153 sync-slot (arm64-b ((sync - sync-slot) * 4))
 
 Page 1

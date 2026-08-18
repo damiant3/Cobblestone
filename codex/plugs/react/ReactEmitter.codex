@@ -164,7 +164,33 @@ Section: Let, Apply, Match, Act
   emit-jsx-apply (e) (arities) (indent) =
    let chain = collect-apply-chain e []
    in let func = emit-jsx-expr (chain.root) arities indent
-   in func & "(" & emit-jsx-apply-args (chain.args) arities indent 0 & ")"
+   in when (chain.root)
+    is IrName (n) (ty) (sp) -> emit-jsx-apply-split func (chain.args) (lookup-arity arities n) arities indent
+    is IrLambda (lps) (lbody) (lty) (lsp) -> emit-jsx-apply-split ("(" & func & ")") (chain.args) (list-length lps) arities indent
+    is otherwise -> func & "(" & emit-jsx-apply-args (chain.args) arities indent 0 & ")"
+
+  emit-jsx-apply-split : Text, List IRExpr, Integer, List ArityEntry, Integer -> Text
+  emit-jsx-apply-split (func) (args) (ar) (arities) (indent) =
+   if ar > 0 & list-length args > ar
+   then func & "(" & emit-jsx-apply-args (list-take args ar) arities indent 0 & ")" & emit-jsx-apply-rest (list-drop args ar) arities indent 0
+   else if ar > 0 & list-length args > 0 & list-length args < ar
+   then emit-jsx-partial-wrappers 0 (ar - list-length args) & func & "(" & emit-jsx-apply-args args arities indent 0 & ", " & emit-jsx-partial-params 0 (ar - list-length args) & ")"
+   else func & "(" & emit-jsx-apply-args args arities indent 0 & ")"
+
+  emit-jsx-partial-wrappers : Integer, Integer -> Text
+  emit-jsx-partial-wrappers (i) (count) =
+   if i == count then ""
+   else "(_p" & show i & "_) => " & emit-jsx-partial-wrappers (i + 1) count
+
+  emit-jsx-partial-params : Integer, Integer -> Text
+  emit-jsx-partial-params (i) (count) =
+   if i == count then ""
+   else (if i > 0 then ", " else "") & "_p" & show i & "_" & emit-jsx-partial-params (i + 1) count
+
+  emit-jsx-apply-rest : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-jsx-apply-rest (args) (arities) (indent) (i) =
+   if i == list-length args then ""
+   else "(" & emit-jsx-expr (list-at args i) arities indent & ")" & emit-jsx-apply-rest args arities indent (i + 1)
 
   emit-jsx-apply-args : List IRExpr, List ArityEntry, Integer, Integer -> Text
   emit-jsx-apply-args (args) (arities) (indent) (i) =
@@ -302,7 +328,7 @@ Section: React Component Assembly
    let arities = build-arity-map (m.defs) 0 []
    in let title = if meta.chapter-title == "" then "App" else meta.chapter-title
    in let imports = "import React, { useState, useEffect, useRef } from 'react';\n\n"
-   in let builtins = "function __narrow(n) { return n; }\nfunction print_line_uni(s) { console.log(s); }\nfunction print_line(s) { console.log(s); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return s.length; }\nfunction text_replace(s, a, b) { return s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs) { return xs.length; }\nfunction list_at(xs, i) { return xs[i]; }\nfunction list_push(xs, x) { return [...xs, x]; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return c.charCodeAt ? c.charCodeAt(0) : c; }\nfunction char_at(s, i) { return s[i]; }\nfunction negate(n) { return -n; }\n\n"
+   in let builtins = "function __narrow(n) { return n; }\nfunction print_line_uni(s) { console.log(s); }\nfunction print_line(s) { console.log(s); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return s.length; }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs) { return xs.length; }\nfunction list_at(xs, i) { return xs[i]; }\nfunction list_push(xs, x) { return [...xs, x]; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return c.charCodeAt ? c.charCodeAt(0) : c; }\nfunction char_at(s, i) { return s[i]; }\nfunction negate(n) { return -n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10 + (t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\n\n"
    in let types-text = emit-jsx-type-defs type-defs 0
    in let defs-text = emit-jsx-defs (m.defs) 0 arities
    in let component = "export default function " & react-sanitize title & "() {\n  const [output, setOutput] = useState([]);\n  useEffect(() => {\n    const _print = print_line_uni;\n    print_line_uni = (s) => setOutput(prev => [...prev, s]);\n    try { opening(); } catch(e) { console.error(e); }\n    print_line_uni = _print;\n  }, []);\n  return (\n    <div className=\"app\">\n      {output.map((line, i) => <div key={i}>{line}</div>)}\n    </div>\n  );\n}\n"

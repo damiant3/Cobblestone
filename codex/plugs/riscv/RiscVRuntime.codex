@@ -631,7 +631,7 @@ Section: Address Remap Helpers
   rv-remap-addr-insns (addr-reg) =
    let skip-pos = 1
    in let i = []
-   in let i = rv-rt-emit i (rv-srli rv-t0 addr-reg 31)
+   in let i = rv-rt-emit i (rv-srli rv-t0 addr-reg 24)
    in let i = rv-rt-emit i rv-nop
    in let i = rv-rt-emit i (rv-addi rv-t0 rv-zero 1)
    in let i = rv-rt-emit i (rv-slli rv-t0 rv-t0 31)
@@ -691,12 +691,15 @@ Section: Address Remap Helpers
    in let i = rv-rt-emit i (rv-mv rv-a0 rv-zero)
    in rv-rt-emit i rv-ret
 
+  rv-lwu : Integer, Integer, Integer -> List Integer
+  rv-lwu (rd) (rs1) (offset) = rv-i-type 3 rd 6 rs1 offset
+
   rv-rt-peek-32 : List Integer
   rv-rt-peek-32 =
    let i = []
    in let i = rv-rt-emit i (rv-add rv-a0 rv-a0 rv-a1)
    in let i = i & rv-remap-addr-insns rv-a0
-   in let i = rv-rt-emit i (rv-lw rv-a0 rv-a0 0)
+   in let i = rv-rt-emit i (rv-lwu rv-a0 rv-a0 0)
    in rv-rt-emit i rv-ret
 
   rv-rt-poke-32 : List Integer
@@ -1080,8 +1083,10 @@ Section: text-to-integer (a0=text -> integer, 0 if invalid)
    in let i = rv-rt-emit i rv-nop
    in let i = rv-rt-emit i (rv-add rv-t4 rv-t1 rv-t2)
    in let i = rv-rt-emit i (rv-lb rv-t4 rv-t4 0)
-   in let i = rv-rt-emit i (rv-addi rv-t4 rv-t4 (0 - 48))
+   in let i = rv-rt-emit i (rv-addi rv-t4 rv-t4 (0 - 3))
    in let i = rv-rt-emit i (rv-addi rv-t5 rv-zero 10)
+   in let non-digit = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
    in let i = rv-rt-emit i (rv-mul rv-a0 rv-a0 rv-t5)
    in let i = rv-rt-emit i (rv-add rv-a0 rv-a0 rv-t4)
    in let i = rv-rt-emit i (rv-addi rv-t2 rv-t2 1)
@@ -1094,6 +1099,7 @@ Section: text-to-integer (a0=text -> integer, 0 if invalid)
    in let i = rv-rt-emit i rv-ret
    in let i = rv-patch-insn-raw i not-neg (rv-bne rv-t4 rv-t5 ((not-neg-label - not-neg) * 4))
    in let i = rv-patch-insn-raw i exit (rv-bge rv-t2 rv-t0 ((exit-label - exit) * 4))
+   in let i = rv-patch-insn-raw i non-digit (rv-bgeu rv-t4 rv-t5 ((exit-label - non-digit) * 4))
    in rv-patch-insn-raw i skip-neg (rv-beq rv-t3 rv-zero ((done-label - skip-neg) * 4))
 
 Section: text-compare (a0=text-a, a1=text-b -> -1/0/1)
@@ -1607,6 +1613,8 @@ Section: Text Replace (a0=text, a1=find, a2=replace -> new text)
    in let main-loop = list-length i / 4
    in let main-exit = list-length i / 4
    in let i = rv-rt-emit i rv-nop
+   in let empty-needle = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
    in let i = rv-rt-emit i (rv-sub rv-t1 rv-s5 rv-s6)
    in let i = rv-rt-emit i (rv-addi rv-t1 rv-t1 1)
    in let no-room = list-length i / 4
@@ -1645,6 +1653,7 @@ Section: Text Replace (a0=text, a1=find, a2=replace -> new text)
    in let i = rv-rt-emit i (rv-j ((main-loop - list-length i / 4) * 4))
    in let no-match-label = list-length i / 4
    in let i = rv-patch-insn-raw i mismatch (rv-bne rv-t5 rv-zero ((no-match-label - mismatch) * 4))
+   in let i = rv-patch-insn-raw i empty-needle (rv-beq rv-s6 rv-zero ((no-match-label - empty-needle) * 4))
    in let i = rv-patch-insn-raw i no-room (rv-blt rv-t1 rv-t0 ((no-match-label - no-room) * 4))
    in let i = rv-rt-emit i (rv-add rv-t3 rv-s2 rv-t0)
    in let i = rv-rt-emit i (rv-lb rv-t3 rv-t3 8)
@@ -1697,8 +1706,9 @@ Section: Text Split (a0=text, a1=delimiter -> list of texts)
    in let main-loop = list-length i / 4
    in let main-exit = list-length i / 4
    in let i = rv-rt-emit i rv-nop
+   in let empty-sep = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
    in let i = rv-rt-emit i (rv-sub rv-t1 rv-s4 rv-s5)
-   in let i = rv-rt-emit i (rv-addi rv-t1 rv-t1 1)
    in let no-room = list-length i / 4
    in let i = rv-rt-emit i rv-nop
    in let i = rv-rt-emit i (rv-mv rv-t2 rv-zero)
@@ -1723,6 +1733,7 @@ Section: Text Split (a0=text, a1=delimiter -> list of texts)
    in let i = rv-rt-emit i (rv-j ((main-loop - list-length i / 4) * 4))
    in let no-match-label = list-length i / 4
    in let i = rv-patch-insn-raw i mismatch (rv-bne rv-t5 rv-zero ((no-match-label - mismatch) * 4))
+   in let i = rv-patch-insn-raw i empty-sep (rv-beq rv-s5 rv-zero ((no-match-label - empty-sep) * 4))
    in let i = rv-patch-insn-raw i no-room (rv-blt rv-t1 rv-t0 ((no-match-label - no-room) * 4))
    in let i = rv-rt-emit i (rv-addi rv-t0 rv-t0 1)
    in let i = rv-rt-emit i (rv-j ((main-loop - list-length i / 4) * 4))
@@ -1742,6 +1753,9 @@ Section: Text Split (a0=text, a1=delimiter -> list of texts)
    in let build-loop = list-length i / 4
    in let build-exit = list-length i / 4
    in let i = rv-rt-emit i rv-nop
+   in let empty-sep2 = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-sub rv-t6 rv-s4 rv-s5)
    in let no-room2 = list-length i / 4
    in let i = rv-rt-emit i rv-nop
    in let i = rv-rt-emit i (rv-mv rv-t4 rv-zero)
@@ -1788,7 +1802,8 @@ Section: Text Split (a0=text, a1=delimiter -> list of texts)
    in let i = rv-rt-emit i (rv-j ((build-loop - list-length i / 4) * 4))
    in let no-match2 = list-length i / 4
    in let i = rv-patch-insn-raw i mismatch2 (rv-bne rv-t5 rv-t6 ((no-match2 - mismatch2) * 4))
-   in let i = rv-patch-insn-raw i no-room2 (rv-bge rv-t1 rv-s4 ((no-match2 - no-room2) * 4))
+   in let i = rv-patch-insn-raw i empty-sep2 (rv-beq rv-s5 rv-zero ((no-match2 - empty-sep2) * 4))
+   in let i = rv-patch-insn-raw i no-room2 (rv-blt rv-t6 rv-t1 ((no-match2 - no-room2) * 4))
    in let i = rv-rt-emit i (rv-addi rv-t1 rv-t1 1)
    in let i = rv-rt-emit i (rv-j ((build-loop - list-length i / 4) * 4))
    in let build-exit-label = list-length i / 4
@@ -2003,7 +2018,9 @@ Section: Process Table
    in let st6 = rv-emit st5 (rv-bne rv-t2 rv-zero ((loop - st5.insn-count) * 4))
    in let st7 = rv-emit-li st6 rv-t1 rv-proc-table-base
    in let st8 = rv-emit st7 (rv-addi rv-t2 rv-zero rv-proc-state-running)
-   in rv-emit st8 (rv-sd rv-t1 rv-t2 0)
+   in let st9 = rv-emit st8 (rv-sd rv-t1 rv-t2 0)
+   in let st10 = rv-emit-li st9 rv-t1 rv-fs-elevated-addr
+   in rv-emit st10 (rv-sd rv-t1 rv-zero 0)
 
   rv-emit-or-into-cell : RvState, Integer, Integer -> RvState
   rv-emit-or-into-cell (st) (addr) (mask) =
@@ -2099,6 +2116,228 @@ Section: Capability Gates
    in let st6 = rv-emit-block st5 (rv-rt-gated-zero rv-cap-network-write)
    in let st7 = rv-record-func st6 "net-get-hwaddr"
    in rv-emit-block st7 rv-rt-net-get-hwaddr
+
+Section: Block device helpers
+
+ The port of ARM64's "Block device helpers". Slot geometry is QEMU virt's
+ riscv64 map: virtio-mmio at 0x10001000, 0x1000 apart, 8 slots, which is a
+ machine property and so is passed in rather than reaching the driver
+ chapter.
+
+ The rings need a fixed page-aligned home clear of everything else. This
+ lane's fixed map is the 32 KB mirror window at the image base (holding the
+ process table at 0x80005000), the CCE tables at 0x80080000-0x80080200, the
+ AP marker at 0x80090000, the effect-op slots at 0x80100000 and the heap
+ from 0x80100200. Measured 2026-08-17, an fs-servicer image spans
+ 0x80000080 to 0x80015498, so 0x80091000 is above the image and its tables,
+ below the effect-op slots, and leaves the 12,288 bytes of rings plus the
+ cached device word inside one clear span.
+
+  rv-vblk-mmio-base : Integer = #10001000
+  rv-vblk-mmio-stride : Integer = #1000
+  rv-vblk-mmio-slots : Integer = 8
+  rv-vblk-ring-base : Integer = #80091000
+
+ x86-64 keeps its `fs-elevated` cell at absolute 36232 and ARM64 mirrors it
+ at that offset, but this lane's mirror window is 32 KiB, so 36232 is past
+ its end and lands in the image body. The cell is therefore lane-local, and
+ it sits in the block driver's own reserved span: the rings run from
+ `rv-vblk-ring-base` for 12,288 bytes with the cached device word behind
+ them, ending at `#80094008`.
+
+  rv-cap-block-device : Integer = 10
+  rv-fs-elevated-addr : Integer = #80094100
+
+ The gate ARM64 puts behind its SVC, inline here because these are emitted
+ helpers rather than a syscall (x86-64 gates its network family the same
+ way). Admitted by `cap-block-device`, or by the `fs-elevated` cell, which
+ only the FileSystem servicers set and which is what lets a program holding
+ FileSystem.Read but not Device.Block reach the disk through them. Refusal
+ is -1 for all three, which is x86-64's answer and ARM64's.
+
+ It goes ABOVE each helper's frame and argument shuffling, so the refusal
+ can be a bare `ret`, and that is safe because
+ `rv-rt-proc-caller-cap-in-t0` touches only t0, t1 and t2.
+
+  rv-emit-block-gate : RvState -> RvState
+  rv-emit-block-gate (st) =
+   let cc = rv-rt-check-capability [] rv-cap-block-device
+   in let st1 = rv-emit-block st cc
+   in let has-cap-idx = st1.insn-count
+   in let st2 = rv-emit st1 rv-nop
+   in let st3 = rv-emit-li st2 rv-t1 rv-fs-elevated-addr
+   in let st4 = rv-emit st3 (rv-ld rv-t1 rv-t1 0)
+   in let elev-idx = st4.insn-count
+   in let st5 = rv-emit st4 rv-nop
+   in let st6 = rv-emit-li st5 rv-a0 (0 - 1)
+   in let st7 = rv-emit st6 rv-ret
+   in let proceed = st7.insn-count
+   in let st8 = rv-patch-insn st7 has-cap-idx (rv-bne rv-t0 rv-zero ((proceed - has-cap-idx) * 4))
+   in rv-patch-insn st8 elev-idx (rv-bne rv-t1 rv-zero ((proceed - elev-idx) * 4))
+
+  rv-emit-block-helpers : RvState -> RvState
+  rv-emit-block-helpers (st) =
+   let st1 = rv-record-func st "block-sector-count"
+   in let stg = rv-emit-block-gate st1
+   in let st2 = rv-emit stg (rv-addi rv-sp rv-sp (0 - 16))
+   in let st3 = rv-emit st2 (rv-sd rv-sp rv-ra 0)
+   in let st4 = rv-emit-li st3 rv-a0 rv-vblk-mmio-base
+   in let st5 = rv-emit-li st4 rv-a1 rv-vblk-mmio-stride
+   in let st6 = rv-emit-li st5 rv-a2 rv-vblk-mmio-slots
+   in let st7 = rv-emit-call-to st6 "vb-capacity-auto"
+   in let st8 = rv-emit st7 (rv-ld rv-ra rv-sp 0)
+   in let st9 = rv-emit st8 (rv-addi rv-sp rv-sp 16)
+   in let st10 = rv-emit st9 rv-ret
+   in rv-emit-block-read st10
+
+ The buffer is bump-allocated from the heap frontier in s1 and its address
+ is the answer, which is x86-64's contract for this builtin. It is kept in
+ the frame rather than a callee-saved register across the call: s1 is the
+ heap pointer and the callee bumps it, so the pre-call value is not
+ recoverable from it afterwards.
+
+ The incoming sector arrives in a0 and moves to a4 BEFORE the argument
+ registers are loaded, or loading a0 destroys it.
+
+  rv-emit-block-read : RvState -> RvState
+  rv-emit-block-read (st) =
+   let st1 = rv-record-func st "block-read-sector"
+   in let stg = rv-emit-block-gate st1
+   in let st2 = rv-emit stg (rv-addi rv-sp rv-sp (0 - 32))
+   in let st3 = rv-emit st2 (rv-sd rv-sp rv-ra 0)
+   in let st4 = rv-emit st3 (rv-mv rv-a4 rv-a0)
+   in let st5 = rv-emit st4 (rv-mv rv-a5 rv-s1)
+   in let st6 = rv-emit st5 (rv-sd rv-sp rv-a5 8)
+   in let st7 = rv-emit st6 (rv-addi rv-s1 rv-s1 512)
+   in let st8 = rv-emit-li st7 rv-a0 rv-vblk-mmio-base
+   in let st9 = rv-emit-li st8 rv-a1 rv-vblk-mmio-stride
+   in let st10 = rv-emit-li st9 rv-a2 rv-vblk-mmio-slots
+   in let st11 = rv-emit-li st10 rv-a3 rv-vblk-ring-base
+   in let st12 = rv-emit-call-to st11 "vb-read-auto"
+   in let st13 = rv-emit st12 (rv-ld rv-a0 rv-sp 8)
+   in let st14 = rv-emit st13 (rv-ld rv-ra rv-sp 0)
+   in let st15 = rv-emit st14 (rv-addi rv-sp rv-sp 32)
+   in let st16 = rv-emit st15 rv-ret
+   in rv-emit-block-write st16
+
+ **`block-write-sector` answers 0 for SUCCESS.** That is x86-64's contract
+ and not a convention this lane may choose: `fat16-claim-cluster` reads it
+ as `if w == 0 then c else 0`, so a non-zero answer means the cluster was
+ not claimed. The driver keeps 1 for success like every other `vb-` entry
+ point, and the translation happens here because here is the contract
+ boundary. The `addi -1` maps 1 to 0 and 0 to -1, so success answers 0 and
+ failure answers something that is not 0, which is all either side asks.
+
+  rv-emit-block-write : RvState -> RvState
+  rv-emit-block-write (st) =
+   let st1 = rv-record-func st "block-write-sector"
+   in let stg = rv-emit-block-gate st1
+   in let st2 = rv-emit stg (rv-addi rv-sp rv-sp (0 - 16))
+   in let st3 = rv-emit st2 (rv-sd rv-sp rv-ra 0)
+   in let st4 = rv-emit st3 (rv-mv rv-a5 rv-a1)
+   in let st5 = rv-emit st4 (rv-mv rv-a4 rv-a0)
+   in let st6 = rv-emit-li st5 rv-a0 rv-vblk-mmio-base
+   in let st7 = rv-emit-li st6 rv-a1 rv-vblk-mmio-stride
+   in let st8 = rv-emit-li st7 rv-a2 rv-vblk-mmio-slots
+   in let st9 = rv-emit-li st8 rv-a3 rv-vblk-ring-base
+   in let st10 = rv-emit-call-to st9 "vb-write-auto"
+   in let st11 = rv-emit st10 (rv-addi rv-a0 rv-a0 (0 - 1))
+   in let st12 = rv-emit st11 (rv-ld rv-ra rv-sp 0)
+   in let st13 = rv-emit st12 (rv-addi rv-sp rv-sp 16)
+   in rv-emit st13 rv-ret
+
+Section: FileSystem servicer
+
+ The port of ARM64's "FileSystem servicer". Capability bits are Foreword
+ Capability's own and the refusal answers are x86-64's: the empty text for
+ a read, False for a write.
+
+ Each call is bracketed with `rv-fs-elevated-addr`, which is the token the
+ block gate above admits a caller on when it does not hold
+ `cap-block-device`. A program declaring FileSystem.Read and not
+ Device.Block reaches the disk through here and nowhere else, so the cell is
+ set immediately before the fat16 call and cleared immediately after it.
+
+  rv-cap-filesystem-read : Integer = 6
+  rv-cap-filesystem-write : Integer = 7
+
+  rv-emit-fs-servicers : RvState -> RvState
+  rv-emit-fs-servicers (st) =
+   if rv-find-effect-op-addr (st.effect-op-addrs) "read-text" 0 < 0 then st
+   else let st1 = rv-emit-fs-read-servicer st
+   in rv-emit-fs-write-servicer st1
+
+  rv-emit-fs-read-servicer : RvState -> RvState
+  rv-emit-fs-read-servicer (st) =
+   let st0 = rv-record-func st "__fs-read-servicer"
+   in let cc = rv-rt-check-capability [] rv-cap-filesystem-read
+   in let st1 = rv-emit-block st0 cc
+   in let deny-idx = st1.insn-count
+   in let st2 = rv-emit st1 rv-nop
+   in let st3 = rv-emit st2 (rv-addi rv-sp rv-sp (0 - 16))
+   in let st4 = rv-emit st3 (rv-sd rv-sp rv-ra 0)
+   in let st4a = rv-emit-li st4 rv-t2 rv-fs-elevated-addr
+   in let st4b = rv-emit st4a (rv-addi rv-t3 rv-zero 1)
+   in let st4c = rv-emit st4b (rv-sd rv-t2 rv-t3 0)
+   in let st5 = rv-emit-call-to st4c "fat16-servicer-read"
+   in let st5a = rv-emit-li st5 rv-t2 rv-fs-elevated-addr
+   in let st5b = rv-emit st5a (rv-sd rv-t2 rv-zero 0)
+   in let st6 = rv-emit st5b (rv-ld rv-ra rv-sp 0)
+   in let st7 = rv-emit st6 (rv-addi rv-sp rv-sp 16)
+   in let st8 = rv-emit st7 rv-ret
+   in let deny = st8.insn-count
+   in let lit = rv-emit-text-lit st8 ""
+   in let st9 = rv-emit (lit.state) (rv-mv rv-a0 (lit.reg))
+   in let st10 = rv-emit st9 rv-ret
+   in rv-patch-insn st10 deny-idx (rv-beq rv-t0 rv-zero ((deny - deny-idx) * 4))
+
+  rv-emit-fs-write-servicer : RvState -> RvState
+  rv-emit-fs-write-servicer (st) =
+   let st0 = rv-record-func st "__fs-write-servicer"
+   in let cc = rv-rt-check-capability [] rv-cap-filesystem-write
+   in let st1 = rv-emit-block st0 cc
+   in let deny-idx = st1.insn-count
+   in let st2 = rv-emit st1 rv-nop
+   in let st3 = rv-emit st2 (rv-addi rv-sp rv-sp (0 - 16))
+   in let st4 = rv-emit st3 (rv-sd rv-sp rv-ra 0)
+   in let st4a = rv-emit-li st4 rv-t2 rv-fs-elevated-addr
+   in let st4b = rv-emit st4a (rv-addi rv-t3 rv-zero 1)
+   in let st4c = rv-emit st4b (rv-sd rv-t2 rv-t3 0)
+   in let st5 = rv-emit-call-to st4c "fat16-servicer-write"
+   in let st5a = rv-emit-li st5 rv-t2 rv-fs-elevated-addr
+   in let st5b = rv-emit st5a (rv-sd rv-t2 rv-zero 0)
+   in let st6 = rv-emit st5b (rv-ld rv-ra rv-sp 0)
+   in let st7 = rv-emit st6 (rv-addi rv-sp rv-sp 16)
+   in let st8 = rv-emit st7 rv-ret
+   in let deny = st8.insn-count
+   in let st9 = rv-emit st8 (rv-mv rv-a0 rv-zero)
+   in let st10 = rv-emit st9 rv-ret
+   in rv-patch-insn st10 deny-idx (rv-beq rv-t0 rv-zero ((deny - deny-idx) * 4))
+
+ The install, run once at boot. A slot holds the handler's CODE address and
+ `rv-emit-effect-op-call` dereferences it once, the same shape as ARM64.
+
+ The slot address is materialised BEFORE the stub address is loaded, and
+ the order is load-bearing rather than stylistic. A slot address is above
+ 0x7FFFFFFF, so `rv-li` reaches `rv-li-64`, which takes a SCRATCH register
+ (`RiscVEncoder.codex`: `tmp = if rd == rv-t0 then rv-t1 else rv-t0`).
+ Loading the stub into t0 first and then materialising the address into t1
+ destroys the stub address in the scratch, and the slot receives whatever
+ the low half of the address was: the handler is installed, the call site
+ reaches it, and the jump lands nowhere.
+
+  rv-emit-seed-fs-handler : RvState, Text, Text -> RvState
+  rv-emit-seed-fs-handler (st) (op-name) (stub-name) =
+   let eoa = rv-find-effect-op-addr (st.effect-op-addrs) op-name 0
+   in if eoa < 0 then st
+   else let st1 = rv-emit-li st rv-t1 eoa
+   in let st2 = rv-emit-load-func-addr st1 rv-t0 stub-name
+   in rv-emit st2 (rv-sd rv-t1 rv-t0 0)
+
+  rv-emit-seed-fs-handlers : RvState -> RvState
+  rv-emit-seed-fs-handlers (st) =
+   let st1 = rv-emit-seed-fs-handler st "read-text" "__fs-read-servicer"
+   in rv-emit-seed-fs-handler st1 "write-file" "__fs-write-servicer"
 
 Section: Process Lifecycle
 
@@ -2439,7 +2678,8 @@ Section: Emit All Runtime Helpers
    in let st3c = rv-add-func-addr-fixup st3b4 rv-t0 "__trap_handler"
    in let st3d = rv-emit (rv-emit st3c rv-nop) rv-nop
    in let st3e = rv-emit st3d (rv-csrw #305 rv-t0)
-   in let st4 = rv-add-call-patch st3e "opening"
+   in let st3f = rv-emit-seed-fs-handlers st3e
+   in let st4 = rv-add-call-patch st3f "opening"
    in let st5 = rv-emit st4 rv-nop
    in let st5 = rv-emit st5 rv-wfi
    in let st6 = rv-emit st5 (rv-j (0 - 4))
@@ -2650,6 +2890,8 @@ Section: Emit All Runtime Helpers
    in let st181 = rv-emit st180 rv-ret
    in let st182 = rv-emit-proc-helpers st181
    in let st183 = rv-emit-net-helpers st182
-   in rv-emit-lifecycle-helpers st183
+   in let st184 = rv-emit-lifecycle-helpers st183
+   in let st185 = rv-emit-block-helpers st184
+   in rv-emit-fs-servicers st185
 
 Page 1

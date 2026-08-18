@@ -1134,41 +1134,98 @@ that cross the boundary do so between calls.
 ## Codegen Quality vs C and the JITs
 
 Function-body x86-64 instruction counts for the benchmarks in `bench/`
-(build + compare with `bench/compare.ps1`). The Codex column is measured
-2026-07-17 on the shipping seed C0B74DBE with the LIR selector live; the
-C and JIT reference columns (cl.exe, the .NET JITs) were measured
-2026-06-12 and do not move. The four primordial benches carry the full
-reference set; the elaborate benches have no in-tree x86 C/JIT reference,
-so only the Codex count is shown. Full optimization history and per-CL
-breakdown: `docs/Designs/Done/Compiler/CodegenAnalysis.md`.
+(build + compare with `bench/compare.ps1`, which prints the kernel digest
+and the zig version at the head of `bench/build-output/report.txt`). The
+Codex, C and Zig columns were measured 2026-08-17 on the shipping seed
+`D354208C631FDDA7` (LIR selector live): `cl.exe` (MSVC 2022) at `/Od` and
+`/O2` from `bench/c`, and zig 0.16.0 (`D:\zig-0.16.0`) at `-O Debug` and
+`-O ReleaseFast` from `bench/zig`, hand-ported from `bench/c` with the
+same signatures and `export fn` for the C ABI. The JIT columns are .NET 9
+RyuJIT (SDK 9.0.313) at FullOpts (`DOTNET_TieredCompilation=0`), one
+listing per function from `bench/csharp` and `bench/fsharp`, re-measured
+for all nine the same day. The 2026-06-12 JIT numbers (fib 21/21, fact
+16/15, gcd 11/9, sum 9/4) came from C# and F# sources that never landed in
+the depot, so they cannot be re-derived; today's ports are the C shapes
+(mutable loops, direct recursion, `NoInlining`). The F# `sum` of 4 in
+particular was not a function count at all: `CodegenAnalysis.md` names the
+four, `movsxd; add; dec; jne`, which is the loop BODY of a countdown
+formulation with no prologue and no `ret`, while every other cell in that
+table was a whole function. Today's F# `sum` (11) is the whole method on
+the C shape (`for i in 1 .. n`: `xor; mov; test; jle; inc; movsxd; add;
+inc; cmp; jne; ret`), whose loop body is 5, the count-up needing the `cmp`.
+So the June 4 was a different measurement, not a better compiler; the C#
+9 against today's 10 cannot be re-derived either way. Today's numbers
+replace them. The last
+column is Codex TRANSPILED through the zig plug (`codex/plugs/zig`, run as
+it is graded, `-Passes text-plug`) and built by the same zig at
+`-O ReleaseFast`, with the measured function `export`ed the way the
+hand-written files are; `bench/transpile-zig.ps1`. Full optimization
+history and per-CL breakdown:
+`docs/Designs/Done/Compiler/CodegenAnalysis.md`.
 
-| Bench    | Codex | C /Od | C /O2 | C# JIT | F# JIT |
-|----------|------:|------:|------:|-------:|-------:|
-| fib      | 22    | 19    | 20    | 21     | 21     |
-| fact     | 13    | 16    | 15    | 16     | 15     |
-| gcd      | 10    | 18    | 14    | 11     | 9      |
-| sum      | 7     | 20    | 23    | 9      | 4      |
-| ack      | 23    | --    | --    | --     | --     |
-| tak      | 37    | --    | --    | --     | --     |
-| collatz  | 13*   | --    | --    | --     | --     |
-| locals   | 18    | --    | --    | --     | --     |
-| regright | 14    | --    | --    | --     | --     |
+| Bench    | Codex | C /Od | C /O2 | C# JIT | F# JIT | Zig Debug | Zig ReleaseFast | Codex via zig plug |
+|----------|------:|------:|------:|-------:|-------:|----------:|----------------:|-------------------:|
+| fib      | 22    | 19    | 20    | 21     | 21     | 53        | 23              | 22                 |
+| fact     | 13    | 16    | 15    | 16     | 16     | 42        | 58              | 58                 |
+| gcd      | 10    | 18    | 14    | 9      | 9      | 44        | 18              | 28                 |
+| sum      | 7     | 20    | 23    | 10     | 11     | 44        | 15              | 17                 |
+| ack      | 23    | 28    | 21    | 29     | 20     | 85        | 25              | 25                 |
+| tak      | 37    | 35    | 39    | 45     | 37     | 69        | 42              | 42                 |
+| collatz  | 18    | 28    | 18    | 16     | 16     | 63        | 17              | 17                 |
+| locals   | 18    | 47    | 73    | 20     | 20     | 132       | 35              | 33                 |
+| regright | 14    | 16    | 16    | 18     | 18     | 50        | 21              | 21                 |
 
-\* `collatz` moved when the bounded-division fix landed and the count above predates
-it -- **re-measure before quoting.** Its `n` is an unbounded `Integer`, so
-`n / 2` and `int-mod n 2` cannot take the one-instruction
-shift/mask: those are correct only for a dividend proven non-negative,
-and for any other they lower to `idiv`, which is what truncation
-actually is. The binary grew 16 bytes; the other eight benches are
-byte-identical. The shortcut is recoverable at the source rather than in
-the emitter -- declaring `n : Integer between 1 and ...` proves the
-bound and buys the shift back, which is the type system doing the job it
-exists for.
+**What a JIT count is, because the small ones read as if something must be
+hidden.** The RyuJIT listing is the native x86-64 the runtime emitted and
+runs; `DOTNET_JitDisasm` prints that machine code and nothing interprets it
+afterwards, so a JIT number is the same kind of number as the C and Codex
+ones. It is not the CPython case in `CodegenAnalysis.md`, where each bytecode
+dispatches 20-50 native instructions through the interpreter loop.
+`Bench:Gcd(int,int):int` really is nine instructions in sixteen bytes:
+`mov eax,ecx; test edx,edx; je; mov ecx,edx; cdq; idiv; mov eax,ecx; jmp;
+ret`, a frameless leaf with the loop carried in registers, which is also why
+Codex's 10 (LIR allocator, no frame) sits beside it. What the count leaves
+out is outside the function: the JIT compile itself (once, at the first
+call), the runtime's indirect call cells (`call [Bench:Fib(int):long]` goes
+through a memory word rather than a rel32 target), and the GC and type
+machinery none of these integer leaves touch. Where MSVC looks worse than
+the JIT by a lot (locals 73 against 20) it is loop unrolling: more
+instructions, not slower ones. So read the columns as static code size for
+the same algorithm, which is what they measure, and nothing more.
 
-Codex now beats C /O2 on fact (13 vs 15), gcd (10 vs 14), and sum (7 vs
-23, a 70 percent reduction); fib is +2 over /O2. Against the JITs, gcd
-(10) beats the C# JIT (11), and sum (7) beats it (9); the F# JIT still
-wins gcd (9) and sum (4) by tight margins.
+**Whether the zig plug produces hand-built quality: on the same LLVM at
+ReleaseFast it does, on seven of nine.** fib 22 against 23, fact 58/58, ack
+25/25, tak 42/42, collatz 17/17, regright 21/21, locals 33 against 35 (two
+ahead); sum is two behind (17 against 15: the Codex `sum-to` is an
+accumulator, not a for loop) and gcd ten behind (28 against 18: `my-gcd`
+goes through the Codex `math-mod` def, which the plug emits as a call the
+hand-written `@rem` does not make). Debug builds of the transpiled zig are
+larger than the hand-written ones (every value is `i64` and every helper is
+a call), which is the plug's shape, not a defect.
+
+`collatz` is 18 since the bounded-division fix (it was 13 before it, and
+this table said 13 with a re-measure warning until 2026-08-17). Its `n` is
+an unbounded `Integer`, so `n / 2` and `int-mod n 2` cannot take the
+one-instruction shift/mask: those are correct only for a dividend proven
+non-negative, and for any other they lower to `idiv`, which is what
+truncation actually is. The shortcut is recoverable at the source rather
+than in the emitter -- declaring `n : Integer between 1 and ...` proves
+the bound and buys the shift back, which is the type system doing the job
+it exists for.
+
+Codex beats C /O2 on fact (13 vs 15), gcd (10 vs 14), sum (7 vs 23, a 70
+percent reduction), tak (37 vs 39), locals (18 vs 73) and regright (14 vs
+16); ties collatz (18); and is behind on fib (+2) and ack (+2). Against
+Zig ReleaseFast (LLVM), Codex is ahead on eight of nine and behind only on
+collatz (18 vs 17); Zig's fact is 58 because LLVM turns the recursion into
+an eightfold-unrolled loop, the same transformation GCC -O2 makes of fib
+below. Zig Debug carries its safety checks and is not a codegen
+comparison; it is in the table because it is what a developer runs.
+Against the JITs, measured today rather than in June: Codex beats both on
+sum (7 against 10 and 11), locals (18 against 20), regright (14 against 18)
+and tak (37 against 45 C#, ties F#), ties gcd within one (10 against 9)
+and fib within one (22 against 21), and is behind on collatz (18 against 16)
+and ack (23 against C#'s 29 but F#'s 20).
 
 Campaign start (CL 3091): fib 107, fact 79, gcd 79, sum 82. The
 structural changes that closed the gap, in order: destination-driven
@@ -1212,30 +1269,38 @@ place that settles it: `fib`'s +2 over C /O2 is a source-shape difference, and
 `tak`'s spill is genuinely required, because adding R15 to the pool is unsound
 (`X86_64Builtins.codex` writes it unsaved at closure-call sites).
 
-### RISC-V RV64 Codegen Quality (CL 6287)
+### RISC-V RV64 and ARM64 Codegen Quality
 
-Cross-compiled via the RISC-V plug pipeline. Compared against
-`riscv64-linux-gnu-gcc` 13.3.0 cross-compiler.
+Cross-compiled via the RISC-V and ARM64 plug pipelines
+(`bench/compare-iot.ps1`, report in `bench/build-output/report-iot.txt`
+with the kernel digest at its head). Compared against
+`riscv64-linux-gnu-gcc` and `aarch64-linux-gnu-gcc` 13.3.0. Measured
+2026-08-17 on seed `D354208C631FDDA7` with the plugs built from the same
+source; the RV64 table said the CL 6287 numbers until then.
 
-| Bench   | Codex RV64 | GCC -O0 | GCC -O2 | GCC -Os |
-|---------|----------:|--------:|--------:|--------:|
-| fib     |        20 |      34 |   241*  |      22 |
-| fact    |        14 |      27 |      14 |       9 |
-| gcd     |         7 |      26 |       8 |       6 |
-| sum     |         7 |      27 |      11 |       9 |
-| ack     |        24 |      33 |     103 |      22 |
-| tak     |        39 |      36 |      33 |      34 |
-| collatz |        15 |      29 |      20 |      13 |
-| locals  |        15 |      52 |      25 |      19 |
+| Bench   | Codex RV64 | GCC -O0 | GCC -O2 | GCC -Os | Codex ARM64 | GCC -O0 | GCC -O2 | GCC -Os |
+|---------|----------:|--------:|--------:|--------:|------------:|--------:|--------:|--------:|
+| fib     |        20 |      34 |   241*  |      22 |          19 |      20 |   237*  |      16 |
+| fact    |        14 |      27 |      14 |       9 |          12 |      17 |      15 |       9 |
+| gcd     |         7 |      26 |       8 |       6 |          10 |      21 |       8 |       7 |
+| sum     |         9 |      27 |      11 |       9 |           8 |      20 |      13 |       9 |
+| ack     |        24 |      53 |     111 |      22 |          28 |      33 |     103 |      22 |
+| tak     |        39 |      51 |      39 |      41 |          46 |      36 |      33 |      34 |
+| collatz |        21 |      32 |      25 |      15 |          16 |      29 |      20 |      13 |
+| locals  |        17 |      52 |      25 |      19 |          19 |      47 |      24 |      18 |
 
-*GCC -O2 fib transforms tree recursion into a 241-instruction
-iterative loop (O(n) runtime, larger code). GCC -Os keeps the
-recursive form; that is the fair codegen comparison.
+*GCC -O2 fib transforms tree recursion into a 241- (RV64) or 237-
+(ARM64) instruction iterative loop (O(n) runtime, larger code). GCC -Os
+keeps the recursive form; that is the fair codegen comparison.
 
-Aggregate: Codex 141 vs GCC -Os 134 (+5%). Four benchmarks beat
-GCC -Os (fib, sum, locals by 21%, collatz within 15%). fact gap
-(+56%) is structural: GCC transforms recursion to iteration, a
-compiler-level optimization not available to the plug.
+Aggregate RV64: Codex 151 vs GCC -Os 143 (+6%). Codex beats GCC -Os on
+fib, tak and locals, ties sum, and is behind on fact (+5), gcd (+1), ack
+(+2) and collatz (+6). Aggregate ARM64: Codex 158 vs GCC -Os 128 (+23%), where Codex
+beats GCC -Os only on sum (8 vs 9), is one behind on locals (19 vs 18) and
+behind by three or more elsewhere; against GCC -O2 Codex is ahead on six of eight and behind on
+gcd (+2) and tak (+13). The fact gap on both lanes is structural: GCC transforms the
+recursion to iteration, a compiler-level optimization not available to
+the plug. `regright` has no cross reference and is not in this table.
 
 Two optimization campaigns. Phase 1 (CLs 6147-6172, 8 CLs):
 deferred save-reg, destination-driven emission, frameless TCO,

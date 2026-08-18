@@ -227,14 +227,14 @@ for 135 checks; its phase of the gate takes about 19s.
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (2,827,487 bytes) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (2,831,202 bytes) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `6F2CE9BD66DA95EA` |
-| SHA-256 | `270227BE0202EDBBCC97FB48B8C94F301E51F93C3FC2BB82D0FC88505E438CA1` |
-| MD5 | `7F22DCD855551ACB0BB40681487B5968` |
+| Content hash prefix | `DA461AE78A775F8D` |
+| SHA-256 | `12B07296419847B283198AB69E81CB3A6197C70B1709732D98D1894007F2D9A4` |
+| MD5 | `C4F3048E1EBE1EFC7D6EFB1B5C6C23A3` |
 
 The content hash is the 32 bytes the CDX header carries at offsets 8..39
 and it deliberately EXCLUDES the signature, so it is not a prefix of the
@@ -245,7 +245,7 @@ first-boot ceremony.
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `6F4DA98790E0207F1392B6E05DFE6135B377815F9CC8C16DBB5CA11D55D26EE8` |
+| SHA-256 | `C955F23BDEF2C0BC5D85304E347DD866106C4372C76A81F2795A7F09FE80DA80` |
 
 Boot it on a UEFI machine and it runs its own first-boot ceremony on the
 GOP framebuffer with no OS beneath it: choose an interface, walk the
@@ -493,20 +493,27 @@ measured by a touched-page counter rather than predicted by a formula.
 
 ## Codegen benchmarks
 
-Function-body instruction counts from disassembly, against C compilers.
-Source: `bench/`.
+Function-body instruction counts from disassembly, against C and Zig
+compilers. Source: `bench/` (`compare.ps1` for x86-64, `compare-iot.ps1`
+for ARM64 and RISC-V). Measured 2026-08-17 on seed `D354208C631FDDA7`;
+MSVC 2022 `cl.exe /O2`, zig 0.16.0 `-O ReleaseFast`, GCC 13.3.0 cross.
 
-| Benchmark | Codex x86-64 | MSVC /O2 | Codex ARM64 | GCC -O0 | Codex RV64 | GCC -O0 |
-|---|---:|---:|---:|---:|---:|---:|
-| fib(35) | 21 | 20 | 22 | 20 | 20 | 19 |
-| fact(20) | 13 | 15 | 13 | 17 | 14 | 14 |
-| gcd(a,b) | 17 | 14 | 22 | 21 | 22 | 22 |
-| sum(1M) | 14 | 23 | 13 | 13 | 8 | 12 |
+| Benchmark | Codex x86-64 | MSVC /O2 | Zig ReleaseFast | Codex ARM64 | GCC -O0 | Codex RV64 | GCC -O0 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| fib(35) | 22 | 20 | 23 | 19 | 20 | 20 | 34 |
+| fact(20) | 13 | 15 | 58 | 12 | 17 | 14 | 27 |
+| gcd(a,b) | 10 | 14 | 18 | 10 | 21 | 7 | 26 |
+| sum(1M) | 7 | 23 | 15 | 8 | 20 | 9 | 27 |
 
 Codex has no optimizer -- the code generator emits these sequences
-directly. On x86-64, sum beats MSVC /O2 by 39 per cent (a tight TCO loop
-against an unroll) and fact beats it by 13. On ARM64 and RISC-V all four
-meet or beat GCC -O0.
+directly. On x86-64, sum beats MSVC /O2 by 70 per cent (a tight TCO loop
+against an unroll), gcd by 29 and fact by 13; fib is two instructions
+behind. Against Zig ReleaseFast (LLVM), Codex is ahead on all four (Zig
+unrolls fact's recursion eightfold). On ARM64 and RISC-V all four beat
+GCC -O0. The full nine-benchmark tables, with C /Od, the C# and F# RyuJIT
+columns, Zig Debug, Codex transpiled through the zig plug, and the GCC
+-O2/-Os columns, are in `docs/ArchitectsSketchbook.md` "Codegen Quality vs
+C and the JITs", with a note on what a JIT count does and does not contain.
 
 ---
 
@@ -577,7 +584,7 @@ codex/
   boards/        Board HAL drivers -- 9 target boards
   os/            Kernel, net, trust, verify, sched, dev, observe (160 modules)
   plugs/         55 plugs, 148 source modules -- IR-text-driven emitters
-  test/          Compiler samples + OS integration tests (1,532 files)
+  test/          Compiler samples + OS integration tests (1,541 files)
 apps/            67 applications, 1,019 modules
 annotations/     On-disk annotation sidecars (JSON facts)
 build/           Build and test harness (PowerShell)

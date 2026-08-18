@@ -1239,9 +1239,17 @@ Section: File Reading
     if count <= 0 then acc
     else fat16-copy-bytes buf (off + 1) (count - 1) (list-push acc (peek-byte buf off))
 
+ The unusable-volume check is the one the writes and the listings already
+ make, and reading was the only entry without it. `fat16-find-in-root`
+ divides by `vol-bytes-per-sector` to size the root directory, and a volume
+ that did not parse carries 0 there, so a read on a machine with no disk
+ attached divided by zero. RISC-V and ARM64 define that division and answer
+ without trapping, which is why this reached x86-64 alone, as `!EXC=00`.
+
   fat16-read-bytes : Fat16Volume, Text -> [Device.Block] Maybe (List Integer)
   fat16-read-bytes (vol) (path) =
-    when fat16-resolve-path vol path
+    if fat16-vol-is-usable vol == False then None
+    else when fat16-resolve-path vol path
       is Just (entry) -> Just (fat16-read-cluster-bytes vol (entry.de-cluster) (entry.de-size) 0 [])
       is None -> None
 

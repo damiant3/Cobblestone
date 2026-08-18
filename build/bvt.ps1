@@ -193,10 +193,23 @@ $BvtTests | ForEach-Object -ThrottleLimit $Jobs -Parallel {
             ($using:compileFails).Add("$base (expected compile FAIL but got PASS)")
             Write-Host "  FAIL  $base (expected compile failure)" -ForegroundColor Red
         } else {
-            $codes = (Get-Content $failFile -ErrorAction SilentlyContinue) -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d+$' }
+            $codes = @(Get-Content $failFile -ErrorAction SilentlyContinue | ForEach-Object { $_.Trim() } | Where-Object { $_ })
             $logText = if (Test-Path $logOut) { Get-Content $logOut -Raw -ErrorAction SilentlyContinue } else { '' }
             $allFound = $true
-            foreach ($code in $codes) { if ($logText -notmatch "CDX$code") { $allFound = $false } }
+            # test.ps1 594-602's adjudication, and it has to stay identical to it. A
+            # ^\d+$ filter here dropped every CDX-prefixed sidecar -- 45 of the 176,
+            # five of them BVT's own CDX2001 proof tripwires (normalize-false,
+            # induction-unsound, induction-list-unsound, reverse-reverse-unsound,
+            # kleene-excluded-middle) -- leaving those checked against NO codes, so any
+            # compile failure passed them: a tripwire that cannot fail (L-FALSIF). A
+            # bare CDX<n> search is the other half, and it cannot match the lexer's
+            # unprefixed codes ("error 6:"), which reads as a wrong-code failure.
+            foreach ($code in $codes) {
+                if ($code -match '^(?<c>(CDX)?\d+)@(?<l>\d+):(?<col>\d+)$') {
+                    $cc = $matches['c'] -replace '^CDX', ''
+                    if ($logText -notmatch "\b$($matches['l']):$($matches['col']):\s*error (CDX)?0*$cc\b") { $allFound = $false }
+                } elseif ($logText -notmatch "error (CDX)?0*$code\b") { $allFound = $false }
+            }
             if ($allFound) {
                 ($using:compilePass).Add($base)
                 Write-Host "  PASS  $base (expected error)" -ForegroundColor Green

@@ -290,6 +290,43 @@ sequenced here and not started until one does. Runner: `a64-dis-svc` confirms
 an `SVC` at each serviced op; the arm for the family, and a direct-call bypass
 arm that must be refused.
 
+*Stage 4 DONE 2026-08-17 (root, plugs-backlog 1.17, row deleted). The three
+block builtins are `svc #n` stubs (`a64-emit-svc-stub`: read 10, write 11,
+sector-count 12, x86-64's numbers) and their former bodies are internal
+(`__block_read_body`, `__block_write_body`, `__block_count_body`). Vector slot
+4 (current EL, SPx, synchronous) now branches to `a64-emit-sync-handler`,
+emitted after the fault handler and patched over the slot the sixteen-way
+loop had filled: it reads ESR through the per-EL dispatch the fault handler
+uses, takes EC #15 (SVC from AArch64) and falls to the fault handler for any
+other synchronous exception with x9 intact; gates ONCE with x86-64's
+`emit-block-elev-gate` shape (caller's word holds `cap-block-device`, bit 10,
+OR the fs-elevated cell is non-zero), answers -1 on refusal, else dispatches
+the ISS imm16 to the body by `bl` and `eret`s. The fs-elevated cell is 36232
+mirrored at `#40008D88` (`a64-fs-elevated-addr`), zeroed by
+`a64-emit-proc-table-init`, set to 1 and cleared inline by
+`__fs-read-servicer` / `__fs-write-servicer` around their `fat16-servicer-*`
+calls and reachable as no builtin (x86-64's rule, `X86_64Boot.codex:219`).
+ELR/SPSR are not saved across the body: no vector on this lane enables an
+interrupt. Runner, failing first: `codex/test/block-gate-restrict` (cites
+`Foreword chapter VirtioBlk` so the driver links on this lane; `.disk` is the
+128-sector fixture): x86-64 records `count-before 128 / restrict 0 /
+count-after -1` (`test-run.ps1 -DiskFile`); the OLD plug answered
+`count-after 128` (the bypass val's paragraph named, measured), the new plug
+answers x86-64's lines under `build/test-cross-disk.ps1 -Arch arm64`. The
+SVC at each stub is confirmed from the ELF word at the map address
+(`D4000141`, `D4000161`, `D4000181` = svc #10/#11/#12; `a64-disasm-enabled`
+is a compile-time False, so the disassembler is not the instrument).
+Elevation measured by `fs-deny-runtime`, `fs-servicer` and `fs-layer` through
+the disk runner, all PASS: their processes hold no `Device.Block` and reach
+the disk only through the servicer's cell. Ablation: gate forced open and
+`block-gate-restrict` fails on `count-after 128` vs `-1`. Direct calls to the
+VirtioBlk driver's own Codex functions (`vb-read-auto` etc., reachable by any
+chapter that cites `VirtioBlk`) are NOT behind this gate; x86-64 has no such
+path because its ATA driver lives inside the syscall handler. That is a
+distinct gap, `plugs-backlog` 1.34. PR 66 finding 6 (lambdas on the wire) was decided orthogonal to
+this stage (the SVC path emits no closures) and is `compiler-backlog`
+COMPILER-12.*
+
 **Stage 5. Process lifecycle: spawn, exit status, wait.** `process-spawn`,
 `process-wait`, `process-exit`; the four lifecycle tests
 (`process-exit-status`, `spawn-reuse`, `proc-state-running`, `nested-spawn`)

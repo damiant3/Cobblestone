@@ -314,7 +314,7 @@ function Normalize-OpAliases([System.Collections.Generic.List[string]]$tokens) {
             if ($v -ge 0) {
                 $tokens.RemoveAt($i+1); $tokens[$i] = "$v"
             } else {
-                $tokens[$i] = '-'; $tokens[$i+1] = "$(-([System.Numerics.BigInteger]$v))"
+                $tokens[$i] = '('; $tokens[$i+1] = '-'; $tokens.Insert($i+2, "$(-([System.Numerics.BigInteger]$v))"); $tokens.Insert($i+3, ')')
             }
         }
     }

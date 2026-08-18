@@ -99,6 +99,8 @@ $out = [System.Collections.Generic.List[string]]::new()
 [void]$out.Add("Codex IoT Codegen Comparison Report")
 [void]$out.Add("=" * 70)
 [void]$out.Add("Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+$kernelFile = Join-Path $OutRoot 'codex-cross-kernel.txt'
+if (Test-Path $kernelFile) { [void]$out.Add("Codex kernel: $((Get-Content $kernelFile -Raw).Trim())") }
 [void]$out.Add("Compilers: Codex self-hosted, GCC 13.3.0 (cross)")
 [void]$out.Add("Metric: static instruction count (lower = tighter codegen)")
 [void]$out.Add("")

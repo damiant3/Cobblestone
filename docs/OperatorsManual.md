@@ -1087,6 +1087,42 @@ build/test.ps1 -Jobs 8
 
 `kernel-irqchip=off` required for bare-metal operation under QEMU.
 
+### ARM64 UEFI boot under QEMU (`build/boot-arm64.ps1`)
+
+Source to booted guest in one command: IR, ARM64 codegen, PE through the plug,
+GPT disk image, QEMU. `-NoBoot` stops after the image.
+
+```powershell
+build/boot-arm64.ps1 -Src codex\test\arm64-web-server.codex                  # interactive
+build/boot-arm64.ps1 -Src codex\test\arm64-web-server.codex -NoBoot          # build only
+build/boot-arm64.ps1 -Src codex\test\arm64-web-server.codex -TimeoutSec 45   # as an arm
+```
+
+**`-TimeoutSec` defaults to 0, which is the interactive console: foreground
+`-nographic`, no deadline, Ctrl+C to stop.** Any positive value launches QEMU
+monitored, sends the UART to `build/arm64-output/arm64-serial.log`, and kills it
+at the deadline.
+
+**A TIMEOUT EXITS 0, deliberately, and the printed line is what tells you
+which run you had.** For a server payload the deadline IS the intended end, so a
+kill is not a failure and a nonzero code would cry wolf on every normal run. The
+cost is that the exit code alone cannot separate a healthy guest from a wedged
+one: `QEMU exited on its own, code N` and `TIMEOUT at Ns: ... the run did NOT
+finish` are the discriminator. **Do not script a verdict off the exit code
+here** -- read the line, and read the serial log knowing it may be a partial.
+
+**The host-forward port is derived per workspace in 18080..18279, and a held
+port is a REFUSAL.** It was a fixed 8080, so two agents booting arm64 answered
+each other's requests. Same hash shape as `build/boot/test-ovmf.ps1`'s monitor
+port and for the same reason (L-SHARED). It refuses rather than hopping to the
+next free number, because a run that quietly moves its port answers on an
+address the caller was never told. `-HostPort N` overrides. The chosen port is
+printed as `hostfwd tcp::N -> guest :80`.
+
+To drive requests at the guest, `docs/Probes/arm64-two-requests.ps1` is the
+caller: it banks guest serial, QEMU stderr and a per-request verdict, and
+refuses to report request results unless the guest announced it was listening.
+
 ### Renode (cross-architecture board testing)
 
 Renode v1.16.1 provides cycle-accurate simulation for ARM64 and
@@ -1351,6 +1387,27 @@ Get-ChildItem codex\plugs -Directory | ForEach-Object {
   if (Test-Path $b) { & pwsh -NoProfile -File $b *> $null }
 }                                                # all of them, about 150 s
 ```
+
+### Does every plug have an arm for the builtins that reach it
+
+```powershell
+pwsh build/check-plug-builtins.ps1            # OK, or the gaps + exit 1
+pwsh build/check-plug-builtins.ps1 -Update    # rewrite the baseline
+```
+
+It compiles `codex/test/plug-oracle-arith` to IR under `-Passes 'text-plug'`,
+which is the pipeline a source plug actually receives, takes every
+`(name "X")` whose `X` is a declared builtin, and asks each wired plug's table
+for an arm. A `FAIL` line reads `<plug> <builtin>`: that builtin arrives on
+that plug's wire and the plug has no arm, so it emits a call to a function the
+target never defines and only the target's own toolchain would ever notice.
+
+**Deliberately not wired into `build.ps1`** (it costs a compiler run) and it
+covers the WIRED plugs only. `pascal`, `fortran` and others register builtins
+in a shape it does not model, so it refuses on a thin extraction rather than
+listing phantom gaps against them. The compiler as a subject is not re-checked
+here either: that case is the DDC witness, which already fails on a missing
+builtin.
 
 **Do this after any change under `codex/plugs/common/`**, which every plug
 bundles. On 2026-08-11 a workspace held 44 plug binaries from 08-06 against

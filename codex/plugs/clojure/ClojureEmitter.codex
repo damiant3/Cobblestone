@@ -120,6 +120,15 @@ Section: Type Definition Emission
 
 Section: Expression Emission
 
+  clj-let-binder : Text, IRExpr -> Text
+  clj-let-binder (name) (val) =
+   if name == "__seq" then when val
+    is IrFieldStore (rec) (field) (v) (ty) (sp) -> when rec
+     is IrName (rn) (rty) (rsp) -> rn
+     is otherwise -> name
+    is otherwise -> name
+   else name
+
   emit-clj-expr : IRExpr, List ArityEntry -> Text
   emit-clj-expr (e) (arities) = emit-clj-expr-at e arities 0
 
@@ -136,7 +145,7 @@ Section: Expression Emission
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-clj-binary op l r arities
     is IrNegate (operand) (nty) (sp) -> "(- " & emit-clj-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(if " & emit-clj-expr-at c arities (depth + 1) & " " & emit-clj-expr-at t arities (depth + 1) & " " & emit-clj-expr-at el arities (depth + 1) & ")"
-    is IrLet (name) (ty) (val) (body) (sp) -> "(let [" & clj-sanitize name & " " & emit-clj-expr-at val arities (depth + 1) & "] " & emit-clj-expr-at body arities (depth + 1) & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> "(let [" & clj-sanitize (clj-let-binder name val) & " " & emit-clj-expr-at val arities (depth + 1) & "] " & emit-clj-expr-at body arities (depth + 1) & ")"
     is IrApply (f) (a) (ty) (sp) -> emit-clj-apply e arities
     is IrLambda (params) (body) (ty) (sp) -> "(fn [" & emit-clj-lambda-params params 0 & "] " & emit-clj-expr body arities & ")"
     is IrList (elems) (ty) (sp) -> "[" & emit-clj-list-elems elems 0 arities & "]"
@@ -346,8 +355,8 @@ Section: Apply Emission
    else if tag == 17 then "(compare " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & ")"
    else if tag == 18 then "(clojure.string/includes? " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & ")"
    else if tag == 19 then "(count " & emit-clj-expr (list-at args 0) arities & ")"
-   else if tag == 20 then "(clojure.string/replace " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & " " & emit-clj-expr (list-at args 2) arities & ")"
-   else if tag == 21 then "(Long/parseLong " & emit-clj-expr (list-at args 0) arities & ")"
+   else if tag == 20 then "(text-replace " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & " " & emit-clj-expr (list-at args 2) arities & ")"
+   else if tag == 21 then "(text-to-integer " & emit-clj-expr (list-at args 0) arities & ")"
    else if tag == 22 then "(spit " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & ")"
    else ""
 
@@ -368,7 +377,7 @@ Section: Chapter Emission
   emit-clojure-chapter : IRChapter, List ATypeDef -> Text
   emit-clojure-chapter (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
-   in let header = "(ns codex.main\n  (:require [clojure.string]))\n\n"
+   in let header = "(ns codex.main\n  (:require [clojure.string]))\n\n(defn list-snoc [xs v] (conj xs v))\n(defn list-push [xs v] (list-snoc xs v))\n(defn text-starts-with [s p] (clojure.string/starts-with? s p))\n(defn text-split [s sep] (if (zero? (count sep)) [s] (clojure.string/split s (re-pattern (java.util.regex.Pattern/quote sep)) -1)))\n(defn text-replace [s a b] (if (zero? (count a)) s (clojure.string/replace s a b)))\n(defn text-to-integer [s] (loop [i (if (and (pos? (count s)) (= (nth s 0) \\-)) 1 0) v 0] (if (and (< i (count s)) (Character/isDigit (nth s i))) (recur (inc i) (+ (* v 10) (- (int (nth s i)) 48))) (if (and (pos? (count s)) (= (nth s 0) \\-)) (- v) v))))\n\n"
    in let types-text = emit-clj-type-defs type-defs 0
    in let defs-text = emit-clj-defs (m.defs) 0 arities
    in let entry = clj-emit-entry (m.defs)

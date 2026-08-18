@@ -17,7 +17,7 @@ param(
 # On success, prints only a story. On failure, prints technical details.
 # Phases: clean -> source -> CDX build -> sign -> canary -> jonquil ->
 #         sem-equiv -> text fixed point -> CDX fixed point -> battery ->
-#         oracles -> plugs -> generators -> decks -> app sweep.
+#         oracles -> refusals -> plugs -> generators -> decks -> app sweep.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -35,7 +35,7 @@ $BuildLog = Join-Path $OutDir 'build.log'
 
 # Smart coverage for the internal gate. The CORE phases (clean, source-concat,
 # the pre-build guards, cdx-build, sign, canary, the text round-trip, the CDX
-# fixed point, test-bvt, oracles) always run: they are what certify the seed is
+# fixed point, test-bvt, oracles, check-errors) always run: they are what certify the seed is
 # a byte-identical self-fixed-point that boots. The regression phases below run
 # only when a file they depend on changed in THIS workspace; skipped ones are
 # caught by the next full gate. Mapping, by what actually feeds each phase:
@@ -655,6 +655,31 @@ Measure-Phase 'oracles' {
             Write-Host ''
             Write-Host "FAIL: $o disagrees with the host"
             Get-Content $olog | Select-Object -Last 20 | ForEach-Object { Write-Host "  $_" }
+            exit 1
+        }
+    }
+}
+
+# -- the refusal set: every test under codex/test/errors must still be
+# REFUSED, and with the codes it declares. 176 tests assert a rejection, and
+# until 2026-08-17 the gate ran the thirteen that bvt.ps1 names. The rest were
+# reachable only from build/test.ps1, which is the battery and refuses to run
+# without Damian, so a refusal that stopped happening was caught by nothing an
+# agent is allowed to run. bounded-exceeded reached main green in Update 45
+# with its premise dead: COMPILER-8 made its accumulator extend in place, the
+# declaration it exists to watch fail held instead, and it compiled clean.
+# 
+# The set is derived from the directory, never listed -- a hand-maintained
+# list is how thirteen came to stand for a hundred and seventy-six. It always
+# runs, like the BVT and the oracles, because the diagnostic path is what a
+# codegen or foreword change moves without moving any other phase. Measured
+# 22s over 176 refusals at -Jobs 8.
+Measure-Phase 'check-errors' {
+    $chkErrors = Join-Path $PSScriptRoot 'check-errors.ps1'
+    if (Test-Path $chkErrors) {
+        & pwsh -NoProfile -File $chkErrors -Kernel $testKernel -Jobs 8 2>&1 | ForEach-Object { Write-Host "$_" }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host 'FAIL: a program the compiler must refuse was not refused as declared'
             exit 1
         }
     }

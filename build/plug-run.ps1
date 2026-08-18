@@ -48,7 +48,8 @@ try {
 
     $vmBin = Join-Path $Repo 'tools\codex-vm.exe'
     $stderrFile = [System.IO.Path]::GetTempFileName()
-    $vmArgs = @('-kernel', $PlugCdx, '-mem', "$MemMB", '-headless')
+    $consoleFile = [System.IO.Path]::GetTempFileName()
+    $vmArgs = @('-kernel', $PlugCdx, '-mem', "$MemMB", '-headless', '-output', $consoleFile)
     $proc = Start-Process -FilePath $vmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
     Write-Host "[plug-run] VM PID $($proc.Id)"
 
@@ -93,6 +94,8 @@ try {
     $stream.ReadTimeout = $TimeoutSec * 1000
     $allBytes = [System.Collections.Generic.List[byte]]::new(65536)
     $readBuf = [byte[]]::new(8192)
+    $recvAborted = $false
+    $recvError = ''
     try {
         :recv_loop while ($true) {
             $n = $stream.Read($readBuf, 0, $readBuf.Length)
@@ -102,7 +105,12 @@ try {
             for ($bi = 0; $bi -lt $n; $bi++) { $allBytes.Add($readBuf[$bi]) }
         }
     } catch {
-        # Read timeout or connection reset -- normal end
+        # A read timeout and a connection reset are NOT a clean end of stream,
+        # and this catch used to say they were: the partial buffer was written
+        # out and the script reported OK. Record which path ended the loop so a
+        # caller can tell a complete transfer from a truncated one.
+        $recvAborted = $true
+        $recvError = $_.Exception.Message
     }
     $client.Close()
 
@@ -112,15 +120,26 @@ try {
             $proc.WaitForExit(5000)
         }
         $stderr = if (Test-Path $stderrFile) { Get-Content $stderrFile -Raw } else { '' }
-        [Console]::Error.WriteLine("FAIL: plug produced no output. stderr: $stderr")
+        $console = if (Test-Path $consoleFile) { Get-Content $consoleFile -Raw } else { '' }
+        [Console]::Error.WriteLine("FAIL: plug produced no output. stderr: $stderr guest console: $console")
         exit 6
     }
     [System.IO.File]::WriteAllBytes($Out, $allBytes.ToArray())
+    # codex-vm dumps its output ring to -output ON EXIT, so grepping before the
+    # VM has gone reads a file the guest console has not reached yet. Measured
+    # 2026-08-17: 1 byte before the wait, the guest's line only after it.
+    if ((-not $proc.HasExited)) {
+        $proc.WaitForExit(20000)
+    }
     $truncHit = @()
-    if (Test-Path $stderrFile) { $truncHit = @(Select-String -Path $stderrFile -Pattern 'TRUNCATED sent=') }
+    if (Test-Path $consoleFile) { $truncHit = @(Select-String -Path $consoleFile -Pattern 'TRUNCATED sent=') }
     if ($truncHit.Count -gt 0) {
         [Console]::Error.WriteLine("FAIL: the plug could not send its whole output -- $($truncHit[0].Line.Trim())")
         exit 7
+    }
+    if ($recvAborted) {
+        [Console]::Error.WriteLine("FAIL: the receive ended by exception, not by end of stream -- $recvError. Wrote $($allBytes.Count) bytes and cannot tell whether that is all of them.")
+        exit 8
     }
     Write-Host "[plug-run] OK: $Out ($($allBytes.Count) bytes)"
 
@@ -129,5 +148,6 @@ try {
         Stop-VmGraceful -ProcessId $proc.Id
     }
     Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue
+    Remove-Item -Force $consoleFile -ErrorAction SilentlyContinue
     try { $listener.Stop() } catch {}
 }

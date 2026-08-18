@@ -240,6 +240,31 @@ the header had already drifted: it said 53 against a measured 54, because
 `recheck` arrived without the row being touched. Both were re-measured
 together rather than fixing only the one that moved.
 
+**What the wire carries, for anyone writing a plug (declared 2026-08-17,
+compiler-backlog COMPILER-12; it was undocumented and PR 66 paid for it).**
+The IR a plug receives is the LOWER phase plus the named passes
+(`text-plug` for the text plugs) and nothing after: it is NOT resolved and
+NOT lambda-lifted. RESOLVE and LIFT are phases of the CDX path only
+(`compile-frontend-cdx`, `opening.codex`), so:
+
+- A `lambda` node's body may name a local of the ENCLOSING definition
+  with no marker of any kind (`(lambda (params (param "x" ...)) (... (name
+  "n" ...)))` for `\x -> x + n`). A target with first-class closures emits
+  it as one; a target without them (native lanes, COBOL, Fortran, Pascal,
+  GPU targets) must lift or capture itself. `arm64`, `riscv`, `zig`, `t3isa`,
+  `pascal` and `python` already do; read one before writing a seventh.
+- Application is curried on the wire: `(make-adder 10) 32` arrives as
+  `(apply (apply (name "make-adder") 10) 32)`, and a plug must emit
+  `f(a)(b)`, never `f(a, b)` (plugs-backlog 1.35 is the plug that gets this
+  wrong today).
+- Types on the wire are the checker's, and one measured shape arrives as
+  `error` (a directly-applied inline lambda's parameter, COMPILER-13); a
+  typed target should refuse or default visibly rather than emit `error` as
+  a type name.
+- The standing hazard at the top of `codex/plugs/plugs-backlog.md` applies
+  to all of the above: a plug that does not handle a construct usually
+  emits SOMETHING and reports OK.
+
 ## Library Rules
 
 1. **Foreword modules must be self-contained.** A foreword module may

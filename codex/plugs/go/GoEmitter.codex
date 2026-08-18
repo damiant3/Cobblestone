@@ -205,13 +205,13 @@ Section: Builtin Emitter
     GoBuiltinEmitter { name = "text-length", emit = \args arities indent ->
      "len(" & emit-go-expr (list-at args 0) arities indent & ".(string))" },
     GoBuiltinEmitter { name = "text-replace", emit = \args arities indent ->
-     "strings.ReplaceAll(" & emit-go-expr (list-at args 0) arities indent & ".(string), " & emit-go-expr (list-at args 1) arities indent & ".(string), " & emit-go-expr (list-at args 2) arities indent & ".(string))" },
+     "_cx_text_replace(" & emit-go-expr (list-at args 0) arities indent & ".(string), " & emit-go-expr (list-at args 1) arities indent & ".(string), " & emit-go-expr (list-at args 2) arities indent & ".(string))" },
     GoBuiltinEmitter { name = "text-split", emit = \args arities indent ->
-     "func() interface{} { _parts := strings.Split(" & emit-go-expr (list-at args 0) arities indent & ".(string), " & emit-go-expr (list-at args 1) arities indent & ".(string)); _r := make([]interface{}, len(_parts)); for _i, _p := range _parts { _r[_i] = _p }; return _r }()" },
+     "_cx_text_split(" & emit-go-expr (list-at args 0) arities indent & ".(string), " & emit-go-expr (list-at args 1) arities indent & ".(string))" },
     GoBuiltinEmitter { name = "text-starts-with", emit = \args arities indent ->
      "strings.HasPrefix(" & emit-go-expr (list-at args 0) arities indent & ".(string), " & emit-go-expr (list-at args 1) arities indent & ".(string))" },
     GoBuiltinEmitter { name = "text-to-integer", emit = \args arities indent ->
-     "func() interface{} { _v, _ := strconv.Atoi(" & emit-go-expr (list-at args 0) arities indent & ".(string)); return _v }()" },
+     "_cx_text_to_integer(" & emit-go-expr (list-at args 0) arities indent & ".(string))" },
     GoBuiltinEmitter { name = "write-file", emit = \args arities indent ->
      "func() interface{} { os.WriteFile(" & emit-go-expr (list-at args 0) arities indent & ".(string), []byte(" & emit-go-expr (list-at args 1) arities indent & ".(string)), 0644); return nil }()" }
    ]
@@ -407,11 +407,23 @@ Section: Go Module Assembly
   emit-go-chapter : IRChapter, List ATypeDef -> Text
   emit-go-chapter (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
-   in let header = "package main\n\nimport (\n    \"bufio\"\n    \"fmt\"\n    \"math\"\n    \"os\"\n    \"strconv\"\n    \"strings\"\n)\n\nvar _ = math.Pi\nvar _ = strconv.Atoi\n\n"
+   in let header = "package main\n\nimport (\n    \"bufio\"\n    \"fmt\"\n    \"math\"\n    \"os\"\n    \"strconv\"\n    \"strings\"\n)\n\nvar _ = math.Pi\nvar _ = strconv.Atoi\n\n" & go-text-builtins
    in let types-text = emit-go-type-defs type-defs 0
    in let defs-text = emit-go-defs (m.defs) 0 arities
    in let main-func = "func main() {\n    opening()\n}\n"
    in header & types-text & defs-text & main-func
+
+ `strings.ReplaceAll` with an empty old string inserts the replacement
+ between every character, `strings.Split` on an empty separator splits into
+ UTF-8 characters, and `strconv.Atoi` answers 0 and an error for "12ab"
+ where `parse-decimal` answers 12. The error was being discarded, so the
+ value looked like a parse.
+
+  go-text-builtins : Text
+  go-text-builtins =
+   "func _cx_text_replace(s string, a string, b string) string {\n    if len(a) == 0 {\n        return s\n    }\n    return strings.ReplaceAll(s, a, b)\n}\n\n"
+   & "func _cx_text_split(s string, sep string) []interface{} {\n    if len(sep) == 0 {\n        return []interface{}{s}\n    }\n    _parts := strings.Split(s, sep)\n    _r := make([]interface{}, len(_parts))\n    for _i, _p := range _parts {\n        _r[_i] = _p\n    }\n    return _r\n}\n\n"
+   & "func _cx_text_to_integer(s string) int {\n    i := 0\n    neg := false\n    if len(s) > 0 && s[0] == '-' {\n        neg = true\n        i = 1\n    }\n    v := 0\n    for i < len(s) && s[i] >= '0' && s[i] <= '9' {\n        v = v*10 + int(s[i]-'0')\n        i++\n    }\n    if neg {\n        return -v\n    }\n    return v\n}\n\n"
 
   emit-go-tup-binds : List IRPat, Text, Integer -> Text
   emit-go-tup-binds (subs) (scrut) (i) =
